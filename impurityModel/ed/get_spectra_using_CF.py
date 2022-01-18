@@ -188,10 +188,10 @@ def main(h0_CF_filename,
         print('Slater determinants/product states and correspoinding weights')
         weights = []
         for i, psi in enumerate(psis):
-            print('Eigenstate {:d}.'.format(i))
-            print('Consists of {:d} product states.'.format(len(psi)))
-            ws = np.array([ abs(a)**2 for a in psi.values() ])
-            s = np.array([ ps for ps in psi.keys() ])
+            print("Eigenstate {:d}.".format(i))
+            print("Consists of {:d} product states.".format(len(psi)))
+            ws = np.array([abs(a) ** 2 for a in psi.values()])
+            s = np.array(list(psi.keys()))
             j = np.argsort(ws)
             ws = ws[j[-1::-1]]
             s = s[j[-1::-1]]
@@ -215,8 +215,8 @@ def main(h0_CF_filename,
                     if e[0] == e[1]:
                         print('Diagonal: (i,s) =',e[0],', occupation = {:7.2f}'.format(ne))
                     else:
-                        print('Off-diagonal: (i,si), (j,sj) =',e,', {:7.2f}'.format(ne))
-            print('')
+                        print("Off-diagonal: (i,si), (j,sj) =", e, ", {:7.2f}".format(ne))
+            print("")
 
     # Save some information to disk
     if rank == 0:
@@ -342,9 +342,7 @@ def get_hamiltonian_operator_using_CF(nBaths, nValBaths, slaterCondon, SOCs,
             hHfieldOperator[(((l, s, m), 'c'), ((l, s, m), 'a'))] = hz*1/2 if s==1 else -hz*1/2
 
     # Construct non-relativistic and non-interacting Hamiltonian, from CF parameters.
-    h0_operator = get_CF_hamiltonian(nBaths, nValBaths,
-                                     h0_CF_filename,
-                                     bath_state_basis)
+    h0_operator = get_CF_hamiltonian(nBaths, nValBaths, h0_CF_filename, bath_state_basis)
 
     # Add Hamiltonian terms to one operator.
     hOperator = finite.addOps([uOperator,
@@ -355,7 +353,7 @@ def get_hamiltonian_operator_using_CF(nBaths, nValBaths, slaterCondon, SOCs,
                                h0_operator])
     # Convert spin-orbital and bath state indices to a single index notation.
     hOp = {}
-    for process,value in hOperator.items():
+    for process, value in hOperator.items():
         hOp[tuple((c2i(nBaths, spinOrb), action) for spinOrb, action in process)] = value
     return hOp
 
@@ -414,8 +412,7 @@ def  get_CF_hamiltonian(nBaths, nValBaths,
         for j, mj in enumerate(range(-l, l + 1)):
             if h_imp_3d[i,j] != 0:
                 for s in range(2):
-                    h_imp_3d_operator[(((l, s, mi), 'c'), ((l, s, mj), 'a'))] = h_imp_3d[i,j]
-
+                    h_imp_3d_operator[(((l, s, mi), "c"), ((l, s, mj), "a"))] = h_imp_3d[i, j]
 
     # Bath (3d) on-site energies and hoppings.
     # Calculate hopping terms between bath and impurity.
@@ -453,7 +450,7 @@ def  get_CF_hamiltonian(nBaths, nValBaths,
     # Loop over spin
     for s in range(2):
         # Loop over impurity orbitals
-        for i, mi in enumerate(range(-l, l + 1)):
+        for i, _mi in enumerate(range(-l, l + 1)):
             # Bath state index for valence bath states.
             bi_val = s * (2 * l + 1) + i
             # Bath state index for conduction bath states.
@@ -468,8 +465,8 @@ def  get_CF_hamiltonian(nBaths, nValBaths,
                 vHopp = vVal3d[i,j]
                 eBath = eBathVal3d[i,j]
                 if vHopp != 0:
-                    h_hopp_operator[(((l, bi_val), 'c'), ((l, s, mj), 'a'))] = vHopp
-                    h_hopp_operator[(((l, s, mj), 'c'), ((l, bi_val), 'a'))] = vHopp.conjugate()
+                    h_hopp_operator[(((l, bi_val), "c"), ((l, s, mj), "a"))] = vHopp
+                    h_hopp_operator[(((l, s, mj), "c"), ((l, bi_val), "a"))] = vHopp.conjugate()
                 if eBath != 0:
                     e_bath_3d_operator[(((l, bi_val), 'c'), ((l, bj_val), 'a'))] = eBath
                 # Only add the processes related to the conduction bath states if they are
@@ -479,15 +476,13 @@ def  get_CF_hamiltonian(nBaths, nValBaths,
                     vHopp = vCon3d[i,j]
                     eBath = eBathCon3d[i,j]
                     if vHopp != 0:
-                        h_hopp_operator[(((l, bi_con), 'c'), ((l, s, mj), 'a'))] = vHopp
-                        h_hopp_operator[(((l, s, mj), 'c'), ((l, bi_con), 'a'))] = vHopp.conjugate()
+                        h_hopp_operator[(((l, bi_con), "c"), ((l, s, mj), "a"))] = vHopp
+                        h_hopp_operator[(((l, s, mj), "c"), ((l, bi_con), "a"))] = vHopp.conjugate()
                     if eBath != 0:
-                        e_bath_3d_operator[(((l, bi_con), 'c'), ((l, bj_con), 'a'))] = eBath
+                        e_bath_3d_operator[(((l, bi_con), "c"), ((l, bj_con), "a"))] = eBath
 
     # Add Hamiltonian terms to one operator.
-    h0_operator = finite.addOps([h_imp_3d_operator,
-                                 h_hopp_operator,
-                                 e_bath_3d_operator])
+    h0_operator = finite.addOps([h_imp_3d_operator, h_hopp_operator, e_bath_3d_operator])
     return h0_operator
 
 
@@ -550,63 +545,152 @@ def read_h0_CF_file(h0_CF_filename):
 
 if __name__== "__main__":
     # Parse input parameters
-    parser = argparse.ArgumentParser(description='Spectroscopy simulations using crystal-field Hamiltonian')
-    parser.add_argument('h0_CF_filename', type=str,
-                        help='Filename of non-interacting crystal-field Hamiltonian, in json-format.')
-    parser.add_argument('radial_filename', type=str,
-                        help='Filename of radial part of correlated orbitals.')
-    parser.add_argument('--ls', type=int, nargs='+', default=[1, 2],
-                        help='Angular momenta of correlated orbitals.')
-    parser.add_argument('--nBaths', type=int, nargs='+', default=[0, 10],
-                        help='Number of bath states, for each angular momentum.')
-    parser.add_argument('--nValBaths', type=int, nargs='+', default=[0, 10],
-                        help='Number of valence bath states, for each angular momentum.')
-    parser.add_argument('--n0imps', type=int, nargs='+', default=[6, 8],
-                        help='Initial impurity occupation, for each angular momentum.')
-    parser.add_argument('--dnTols', type=int, nargs='+', default=[0, 2],
-                        help=('Max devation from initial impurity occupation, '
-                              'for each angular momentum.'))
-    parser.add_argument('--dnValBaths', type=int, nargs='+', default=[0, 2],
-                        help=('Max number of electrons to leave valence bath orbitals, '
-                              'for each angular momentum.'))
-    parser.add_argument('--dnConBaths', type=int, nargs='+', default=[0, 0],
-                        help=('Max number of electrons to enter conduction bath orbitals, '
-                              'for each angular momentum.'))
-    parser.add_argument('--Fdd', type=float, nargs='+', default=[7.5, 0, 9.9, 0, 6.6],
-                        help='Slater-Condon parameters Fdd. d-orbitals are assumed.')
-    parser.add_argument('--Fpp', type=float, nargs='+', default=[0., 0., 0.],
-                        help='Slater-Condon parameters Fpp. p-orbitals are assumed.')
-    parser.add_argument('--Fpd', type=float, nargs='+', default=[8.9, 0, 6.8],
-                        help='Slater-Condon parameters Fpd. p- and d-orbitals are assumed.')
-    parser.add_argument('--Gpd', type=float, nargs='+', default=[0., 5., 0, 2.8],
-                        help='Slater-Condon parameters Gpd. p- and d-orbitals are assumed.')
-    parser.add_argument('--xi_2p', type=float, default=11.629,
-                        help='SOC value for p-orbitals. p-orbitals are assumed.')
-    parser.add_argument('--xi_3d', type=float, default=0.096,
-                        help='SOC value for d-orbitals. d-orbitals are assumed.')
-    parser.add_argument('--chargeTransferCorrection', type=float, default=1.5,
-                        help='Double counting parameter.')
-    parser.add_argument('--hField', type=float, nargs='+', default=[0, 0, 0.0001],
-                        help='Magnetic field. (h_x, h_y, h_z)')
-    parser.add_argument('--nPsiMax', type=int, default=5,
-                        help='Maximum number of eigenstates to consider.')
-    parser.add_argument('--nPrintSlaterWeights', type=int, default=3,
-                        help='Printing parameter.')
-    parser.add_argument('--tolPrintOccupation', type=float, default=0.5,
-                        help='Printing parameter.')
-    parser.add_argument('--T', type=float, default=300,
-                        help='Temperature (Kelvin).')
-    parser.add_argument('--energy_cut', type=float, default=10,
-                        help='How many k_B*T above lowest eigenenergy to consider.')
-    parser.add_argument('--delta', type=float, default=0.2,
-                        help=('Smearing, half width half maximum (HWHM). '
-                              'Due to short core-hole lifetime.'))
-    parser.add_argument('--deltaRIXS', type=float, default=0.050,
-                        help=('Smearing, half width half maximum (HWHM). '
-                              'Due to finite lifetime of excited states.'))
-    parser.add_argument('--deltaNIXS', type=float, default=0.100,
-                        help=('Smearing, half width half maximum (HWHM). '
-                              'Due to finite lifetime of excited states.'))
+    parser = argparse.ArgumentParser(description="Spectroscopy simulations using crystal-field Hamiltonian")
+    parser.add_argument(
+        "h0_CF_filename",
+        type=str,
+        help="Filename of non-interacting crystal-field Hamiltonian, in json-format.",
+    )
+    parser.add_argument(
+        "radial_filename",
+        type=str,
+        help="Filename of radial part of correlated orbitals.",
+    )
+    parser.add_argument(
+        "--ls",
+        type=int,
+        nargs="+",
+        default=[1, 2],
+        help="Angular momenta of correlated orbitals.",
+    )
+    parser.add_argument(
+        "--nBaths",
+        type=int,
+        nargs="+",
+        default=[0, 10],
+        help="Number of bath states, for each angular momentum.",
+    )
+    parser.add_argument(
+        "--nValBaths",
+        type=int,
+        nargs="+",
+        default=[0, 10],
+        help="Number of valence bath states, for each angular momentum.",
+    )
+    parser.add_argument(
+        "--n0imps",
+        type=int,
+        nargs="+",
+        default=[6, 8],
+        help="Initial impurity occupation, for each angular momentum.",
+    )
+    parser.add_argument(
+        "--dnTols",
+        type=int,
+        nargs="+",
+        default=[0, 2],
+        help=("Max devation from initial impurity occupation, " "for each angular momentum."),
+    )
+    parser.add_argument(
+        "--dnValBaths",
+        type=int,
+        nargs="+",
+        default=[0, 2],
+        help=("Max number of electrons to leave valence bath orbitals, " "for each angular momentum."),
+    )
+    parser.add_argument(
+        "--dnConBaths",
+        type=int,
+        nargs="+",
+        default=[0, 0],
+        help=("Max number of electrons to enter conduction bath orbitals, " "for each angular momentum."),
+    )
+    parser.add_argument(
+        "--Fdd",
+        type=float,
+        nargs="+",
+        default=[7.5, 0, 9.9, 0, 6.6],
+        help="Slater-Condon parameters Fdd. d-orbitals are assumed.",
+    )
+    parser.add_argument(
+        "--Fpp",
+        type=float,
+        nargs="+",
+        default=[0.0, 0.0, 0.0],
+        help="Slater-Condon parameters Fpp. p-orbitals are assumed.",
+    )
+    parser.add_argument(
+        "--Fpd",
+        type=float,
+        nargs="+",
+        default=[8.9, 0, 6.8],
+        help="Slater-Condon parameters Fpd. p- and d-orbitals are assumed.",
+    )
+    parser.add_argument(
+        "--Gpd",
+        type=float,
+        nargs="+",
+        default=[0.0, 5.0, 0, 2.8],
+        help="Slater-Condon parameters Gpd. p- and d-orbitals are assumed.",
+    )
+    parser.add_argument(
+        "--xi_2p",
+        type=float,
+        default=11.629,
+        help="SOC value for p-orbitals. p-orbitals are assumed.",
+    )
+    parser.add_argument(
+        "--xi_3d",
+        type=float,
+        default=0.096,
+        help="SOC value for d-orbitals. d-orbitals are assumed.",
+    )
+    parser.add_argument(
+        "--chargeTransferCorrection",
+        type=float,
+        default=1.5,
+        help="Double counting parameter.",
+    )
+    parser.add_argument(
+        "--hField",
+        type=float,
+        nargs="+",
+        default=[0, 0, 0.0001],
+        help="Magnetic field. (h_x, h_y, h_z)",
+    )
+    parser.add_argument(
+        "--nPsiMax",
+        type=int,
+        default=5,
+        help="Maximum number of eigenstates to consider.",
+    )
+    parser.add_argument("--nPrintSlaterWeights", type=int, default=3, help="Printing parameter.")
+    parser.add_argument("--tolPrintOccupation", type=float, default=0.5, help="Printing parameter.")
+    parser.add_argument("--T", type=float, default=300, help="Temperature (Kelvin).")
+    parser.add_argument(
+        "--energy_cut",
+        type=float,
+        default=10,
+        help="How many k_B*T above lowest eigenenergy to consider.",
+    )
+    parser.add_argument(
+        "--delta",
+        type=float,
+        default=0.2,
+        help=("Smearing, half width half maximum (HWHM). " "Due to short core-hole lifetime."),
+    )
+    parser.add_argument(
+        "--deltaRIXS",
+        type=float,
+        default=0.050,
+        help=("Smearing, half width half maximum (HWHM). " "Due to finite lifetime of excited states."),
+    )
+    parser.add_argument(
+        "--deltaNIXS",
+        type=float,
+        default=0.100,
+        help=("Smearing, half width half maximum (HWHM). " "Due to finite lifetime of excited states."),
+    )
 
     args = parser.parse_args()
 

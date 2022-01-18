@@ -208,10 +208,10 @@ def main(h0_filename,
         print('Slater determinants/product states and correspoinding weights')
         weights = []
         for i, psi in enumerate(psis):
-            print('Eigenstate {:d}.'.format(i))
-            print('Consists of {:d} product states.'.format(len(psi)))
-            ws = np.array([ abs(a)**2 for a in psi.values() ])
-            s = np.array([ ps for ps in psi.keys() ])
+            print("Eigenstate {:d}.".format(i))
+            print("Consists of {:d} product states.".format(len(psi)))
+            ws = np.array([abs(a) ** 2 for a in psi.values()])
+            s = np.array(list(psi.keys()))
             j = np.argsort(ws)
             ws = ws[j[-1::-1]]
             s = s[j[-1::-1]]
@@ -235,8 +235,8 @@ def main(h0_filename,
                     if e[0] == e[1]:
                         print('Diagonal: (i,s) =',e[0],', occupation = {:7.2f}'.format(ne))
                     else:
-                        print('Off-diagonal: (i,si), (j,sj) =',e,', {:7.2f}'.format(ne))
-            print('')
+                        print("Off-diagonal: (i,si), (j,sj) =", e, ", {:7.2f}".format(ne))
+            print("")
 
     # Save some information to disk
     if rank == 0:
@@ -278,25 +278,40 @@ def main(h0_filename,
         print("time(expectation values) = {:.2f} seconds \n".format(time.time()-t0))
 
     # Consider from now on only eigenstates with low energy
-    es = tuple( e for e in es if e - es[0] < energy_cut )
-    psis = tuple( psis[i] for i in range(len(es)) )
-    if rank == 0: print("Consider {:d} eigenstates for the spectra \n".format(len(es)))
+    es = tuple(e for e in es if e - es[0] < energy_cut)
+    psis = tuple(psis[i] for i in range(len(es)))
+    if rank == 0:
+        print("Consider {:d} eigenstates for the spectra \n".format(len(es)))
 
-    #spectra.simulate_spectra(es, psis, hOp, T, w, delta, epsilons,
-    #                         wLoss, deltaNIXS, qsNIXS, liNIXS, ljNIXS, RiNIXS, RjNIXS,
-    #                         radialMesh, wIn, deltaRIXS, epsilonsRIXSin, epsilonsRIXSout,
-    #                         restrictions, h5f, nBaths)
-    spectra.simulate_spectra(es, psis, hOp, T, w, delta, epsilons,
-                             wLoss, deltaNIXS, qsNIXS, liNIXS, ljNIXS, RiNIXS, RjNIXS,
-                             radialMesh, wIn, deltaRIXS, epsilonsRIXSin, epsilonsRIXSout,
-                             restrictions, h5f, nBaths, RIXS_projectors)
+    spectra.simulate_spectra(
+        es,
+        psis,
+        hOp,
+        T,
+        w,
+        delta,
+        epsilons,
+        wLoss,
+        deltaNIXS,
+        qsNIXS,
+        liNIXS,
+        ljNIXS,
+        RiNIXS,
+        RjNIXS,
+        radialMesh,
+        wIn,
+        deltaRIXS,
+        epsilonsRIXSin,
+        epsilonsRIXSout,
+        restrictions,
+        h5f,
+        nBaths,
+    )
 
-    print('Script finished for rank:', rank)
+    print("Script finished for rank:", rank)
 
 
-def get_hamiltonian_operator(nBaths, nValBaths, slaterCondon, SOCs,
-                             DCinfo, hField,
-                             h0_filename,rank):
+def get_hamiltonian_operator(nBaths, nValBaths, slaterCondon, SOCs, DCinfo, hField, h0_filename):
     """
     Return the Hamiltonian, in operator form.
 
@@ -385,7 +400,7 @@ def get_hamiltonian_operator(nBaths, nValBaths, slaterCondon, SOCs,
 
     # Convert spin-orbital and bath state indices to a single index notation.
     hOp = {}
-    for process,value in hOperator.items():
+    for process, value in hOperator.items():
         hOp[tuple((c2i(nBaths, spinOrb), action) for spinOrb, action in process)] = value
     return hOp
 
@@ -512,63 +527,152 @@ def read_tuple(line):
 
 if __name__== "__main__":
     # Parse input parameters
-    parser = argparse.ArgumentParser(description='Spectroscopy simulations')
-    parser.add_argument('h0_filename', type=str,
-                        help='Filename of non-interacting Hamiltonian, in pickle-format.')
-    parser.add_argument('radial_filename', type=str,
-                        help='Filename of radial part of correlated orbitals.')
-    parser.add_argument('--ls', type=int, nargs='+', default=[1, 2],
-                        help='Angular momenta of correlated orbitals.')
-    parser.add_argument('--nBaths', type=int, nargs='+', default=[0, 10],
-                        help='Number of bath states, for each angular momentum.')
-    parser.add_argument('--nValBaths', type=int, nargs='+', default=[0, 10],
-                        help='Number of valence bath states, for each angular momentum.')
-    parser.add_argument('--n0imps', type=int, nargs='+', default=[6, 8],
-                        help='Initial impurity occupation, for each angular momentum.')
-    parser.add_argument('--dnTols', type=int, nargs='+', default=[0, 2],
-                        help=('Max devation from initial impurity occupation, '
-                              'for each angular momentum.'))
-    parser.add_argument('--dnValBaths', type=int, nargs='+', default=[0, 2],
-                        help=('Max number of electrons to leave valence bath orbitals, '
-                              'for each angular momentum.'))
-    parser.add_argument('--dnConBaths', type=int, nargs='+', default=[0, 0],
-                        help=('Max number of electrons to enter conduction bath orbitals, '
-                              'for each angular momentum.'))
-    parser.add_argument('--Fdd', type=float, nargs='+', default=[7.5, 0, 9.9, 0, 6.6],
-                        help='Slater-Condon parameters Fdd. d-orbitals are assumed.')
-    parser.add_argument('--Fpp', type=float, nargs='+', default=[0., 0., 0.],
-                        help='Slater-Condon parameters Fpp. p-orbitals are assumed.')
-    parser.add_argument('--Fpd', type=float, nargs='+', default=[8.9, 0, 6.8],
-                        help='Slater-Condon parameters Fpd. p- and d-orbitals are assumed.')
-    parser.add_argument('--Gpd', type=float, nargs='+', default=[0., 5., 0, 2.8],
-                        help='Slater-Condon parameters Gpd. p- and d-orbitals are assumed.')
-    parser.add_argument('--xi_2p', type=float, default=11.629,
-                        help='SOC value for p-orbitals. p-orbitals are assumed.')
-    parser.add_argument('--xi_3d', type=float, default=0.096,
-                        help='SOC value for d-orbitals. d-orbitals are assumed.')
-    parser.add_argument('--chargeTransferCorrection', type=float, default=1.5,
-                        help='Double counting parameter.')
-    parser.add_argument('--hField', type=float, nargs='+', default=[0, 0, 0.0001],
-                        help='Magnetic field. (h_x, h_y, h_z)')
-    parser.add_argument('--nPsiMax', type=int, default=5,
-                        help='Maximum number of eigenstates to consider.')
-    parser.add_argument('--nPrintSlaterWeights', type=int, default=3,
-                        help='Printing parameter.')
-    parser.add_argument('--tolPrintOccupation', type=float, default=0.5,
-                        help='Printing parameter.')
-    parser.add_argument('--T', type=float, default=300,
-                        help='Temperature (Kelvin).')
-    parser.add_argument('--energy_cut', type=float, default=10,
-                        help='How many k_B*T above lowest eigenenergy to consider.')
-    parser.add_argument('--delta', type=float, default=0.2,
-                        help=('Smearing, half width half maximum (HWHM). '
-                              'Due to short core-hole lifetime.'))
-    parser.add_argument('--deltaRIXS', type=float, default=0.050,
-                        help=('Smearing, half width half maximum (HWHM). '
-                              'Due to finite lifetime of excited states.'))
-    parser.add_argument('--deltaNIXS', type=float, default=0.100,
-                        help=('Smearing, half width half maximum (HWHM). '
-                              'Due to finite lifetime of excited states.'))
+    parser = argparse.ArgumentParser(description="Spectroscopy simulations")
+    parser.add_argument(
+        "h0_filename",
+        type=str,
+        help="Filename of non-interacting Hamiltonian, in pickle-format.",
+    )
+    parser.add_argument(
+        "radial_filename",
+        type=str,
+        help="Filename of radial part of correlated orbitals.",
+    )
+    parser.add_argument(
+        "--ls",
+        type=int,
+        nargs="+",
+        default=[1, 2],
+        help="Angular momenta of correlated orbitals.",
+    )
+    parser.add_argument(
+        "--nBaths",
+        type=int,
+        nargs="+",
+        default=[0, 10],
+        help="Number of bath states, for each angular momentum.",
+    )
+    parser.add_argument(
+        "--nValBaths",
+        type=int,
+        nargs="+",
+        default=[0, 10],
+        help="Number of valence bath states, for each angular momentum.",
+    )
+    parser.add_argument(
+        "--n0imps",
+        type=int,
+        nargs="+",
+        default=[6, 8],
+        help="Initial impurity occupation, for each angular momentum.",
+    )
+    parser.add_argument(
+        "--dnTols",
+        type=int,
+        nargs="+",
+        default=[0, 2],
+        help=("Max devation from initial impurity occupation, " "for each angular momentum."),
+    )
+    parser.add_argument(
+        "--dnValBaths",
+        type=int,
+        nargs="+",
+        default=[0, 2],
+        help=("Max number of electrons to leave valence bath orbitals, " "for each angular momentum."),
+    )
+    parser.add_argument(
+        "--dnConBaths",
+        type=int,
+        nargs="+",
+        default=[0, 0],
+        help=("Max number of electrons to enter conduction bath orbitals, " "for each angular momentum."),
+    )
+    parser.add_argument(
+        "--Fdd",
+        type=float,
+        nargs="+",
+        default=[7.5, 0, 9.9, 0, 6.6],
+        help="Slater-Condon parameters Fdd. d-orbitals are assumed.",
+    )
+    parser.add_argument(
+        "--Fpp",
+        type=float,
+        nargs="+",
+        default=[0.0, 0.0, 0.0],
+        help="Slater-Condon parameters Fpp. p-orbitals are assumed.",
+    )
+    parser.add_argument(
+        "--Fpd",
+        type=float,
+        nargs="+",
+        default=[8.9, 0, 6.8],
+        help="Slater-Condon parameters Fpd. p- and d-orbitals are assumed.",
+    )
+    parser.add_argument(
+        "--Gpd",
+        type=float,
+        nargs="+",
+        default=[0.0, 5.0, 0, 2.8],
+        help="Slater-Condon parameters Gpd. p- and d-orbitals are assumed.",
+    )
+    parser.add_argument(
+        "--xi_2p",
+        type=float,
+        default=11.629,
+        help="SOC value for p-orbitals. p-orbitals are assumed.",
+    )
+    parser.add_argument(
+        "--xi_3d",
+        type=float,
+        default=0.096,
+        help="SOC value for d-orbitals. d-orbitals are assumed.",
+    )
+    parser.add_argument(
+        "--chargeTransferCorrection",
+        type=float,
+        default=1.5,
+        help="Double counting parameter.",
+    )
+    parser.add_argument(
+        "--hField",
+        type=float,
+        nargs="+",
+        default=[0, 0, 0.0001],
+        help="Magnetic field. (h_x, h_y, h_z)",
+    )
+    parser.add_argument(
+        "--nPsiMax",
+        type=int,
+        default=5,
+        help="Maximum number of eigenstates to consider.",
+    )
+    parser.add_argument("--nPrintSlaterWeights", type=int, default=3, help="Printing parameter.")
+    parser.add_argument("--tolPrintOccupation", type=float, default=0.5, help="Printing parameter.")
+    parser.add_argument("--T", type=float, default=300, help="Temperature (Kelvin).")
+    parser.add_argument(
+        "--energy_cut",
+        type=float,
+        default=10,
+        help="How many k_B*T above lowest eigenenergy to consider.",
+    )
+    parser.add_argument(
+        "--delta",
+        type=float,
+        default=0.2,
+        help=("Smearing, half width half maximum (HWHM). " "Due to short core-hole lifetime."),
+    )
+    parser.add_argument(
+        "--deltaRIXS",
+        type=float,
+        default=0.050,
+        help=("Smearing, half width half maximum (HWHM). " "Due to finite lifetime of excited states."),
+    )
+    parser.add_argument(
+        "--deltaNIXS",
+        type=float,
+        default=0.100,
+        help=("Smearing, half width half maximum (HWHM). " "Due to finite lifetime of excited states."),
+    )
     parser.add_argument('--RIXS_projectors_filename', type=str, default=None,
                         help=('File containing the RIXS projectors. Separated by newlines.'))
 

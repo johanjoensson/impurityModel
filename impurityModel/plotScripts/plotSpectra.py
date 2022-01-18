@@ -7,7 +7,6 @@ Plot script of various spectra.
 import matplotlib.pyplot as plt
 import numpy as np
 import os.path
-import sys
 from math import pi
 import argparse
 import h5py
@@ -97,8 +96,8 @@ def plot_spectra_in_file(filename):
             plt.plot(wIn,(wLoss[1]-wLoss[0])*np.sum(rixs[0:],axis=(0,1,3))*scaleFY,
                     '-r',label='FY')
             mask = wLoss < 0.2
-            y = np.sum(rixs[:,:,:,mask],axis=(0,1,3))
-            plt.plot(wIn,(wLoss[1]-wLoss[0])*y*scaleFY,'-b',label='quasi-elastic FY')
+            y = np.sum(rixs[:, :, :, mask], axis=(0, 1, 3))
+            plt.plot(wIn, (wLoss[1] - wLoss[0]) * y * scaleFY, "-b", label="quasi-elastic FY")
         plt.legend()
         plt.xlabel(r'$\omega_{in}$   (eV)')
         plt.ylabel('Intensity')
@@ -110,8 +109,8 @@ def plot_spectra_in_file(filename):
     if 'nixs' in locals():
         print('NIXS spectrum')
         fig = plt.figure()
-        if 'qs' in locals():
-            labels = ['|q|={:3.1f}'.format(np.linalg.norm(q)) + r' A$^{-1}$' for q in qs]
+        if "qs" in locals():
+            labels = ["|q|={:3.1f}".format(np.linalg.norm(q)) + r" A$^{-1}$" for q in qs]
         else:
             labels = [str(i) for i in range(len(nixs))]
         for i in range(len(nixs)):
@@ -183,10 +182,9 @@ def plot_spectra_in_file(filename):
         plt.show()
 
         # All polarization combinations In:x,y,z , Out:x,y,z
-        fig,axes = plt.subplots(nrows=np.shape(rixs)[0],ncols=np.shape(rixs)[1],
-                                sharex=True,sharey=True)
-        if np.shape(rixs)[:2] == (1,1):
-            tmp = np.copy(rixs[0,0,:,:].T)
+        fig, axes = plt.subplots(nrows=np.shape(rixs)[0], ncols=np.shape(rixs)[1], sharex=True, sharey=True)
+        if np.shape(rixs)[:2] == (1, 1):
+            tmp = np.copy(rixs[0, 0, :, :].T)
             mask = tmp < plotCutOff
             tmp[mask] = np.nan
             # Choose a nice colormap, e.g. 'viridis' or 'Blues'
@@ -209,8 +207,8 @@ def plot_spectra_in_file(filename):
                     mask = tmp < plotCutOff
                     tmp[mask] = np.nan
                     # Choose a nice colormap, e.g. 'viridis' or 'Blues'
-                    cs = axes[i,j].contourf(wIn,wLoss,np.log10(tmp),cmap=plt.get_cmap('viridis'))
-                    #cs2 = plt.contour(cs, levels=cs.levels[::2], cmap=plt.get_cmap('viridis'))
+                    cs = axes[i, j].contourf(wIn, wLoss, np.log10(tmp), cmap=plt.get_cmap("viridis"))
+                    # cs2 = plt.contour(cs, levels=cs.levels[::2], cmap=plt.get_cmap('viridis'))
                     # Make a colorbar for the ContourSet returned by the contourf call.
                     cbar = fig.colorbar(cs, ax=axes[i,j])
                     cbar.ax.set_ylabel('log RIXS intensity')

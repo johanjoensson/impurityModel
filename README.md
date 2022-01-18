@@ -1,8 +1,12 @@
 # Impurity model
 
+![CI](https://github.com/JohanSchott/impurityModel/actions/workflows/buildci.yml/badge.svg?branch=master)
+[![Code style: black](https://img.shields.io/badge/code%20style-black-000000.svg)](https://github.com/psf/black)
+
+
 ### Introduction
 
-Calculate many-body states of an impurity Anderson model and a few spectra, e.g. photoemission spectroscopy (PS), x-ray photoemission spectroscopy (XPS), x-ray absorption spectroscopy (XAS), non-resonant inelastic x-ray scattering (NIXS), and resonant inelastic x-ray scattering (RIXS).
+Calculate many-body states of an impurity Anderson model and a various spectra, e.g. photoemission spectroscopy (PS), x-ray photoemission spectroscopy (XPS), x-ray absorption spectroscopy (XAS), non-resonant inelastic x-ray scattering (NIXS), and resonant inelastic x-ray scattering (RIXS), using the [Lanczos algorithm](https://en.wikipedia.org/wiki/Lanczos_algorithm).
 
 Credits to Petter Saterskog for inspiration and for some of the key functionality.
 
@@ -21,9 +25,9 @@ Credits to Patrik Thunstrom for discussions about computational algorithms.
 </figure>
 
 ### Get started
-- Run the bash-script `setup.sh`:
+- Execute the bash-script `install_setup.sh`:
 ```bash
-source setup.sh
+./install_setup.sh
 ```
 This will create a Python virtual environment, install the required Python packages, and run the unit-tests.
 
@@ -58,10 +62,6 @@ But for more accurate simulations it is better to read in a non-interacting Hami
 The non-interacting Hamiltonians read from file by the scripts `run_Ni_NiO_Xbath.sh` and `run_Ni_NiO_Xbath.sh` have been constructed using non-spin polarized DFT calculations.
 
 - The bash-scripts in the `scripts`-folder act as templates and can easily be modified. For example, to set the temperature to 10 Kelvin in `get_spectra.py`, add `--T 10` as input when calling the python-script.
-
-- For practical advise for usage on two computer clusters in Sweden, or help in installing Open-MPI, Python 3.x, or Python libraries, please see e.g.
-[https://github.com/JohanSchott/impurityModelTutorial](https://github.com/JohanSchott/impurityModelTutorial)
-
 
 #### Output files
 Input parameters used are saved and stored in `.npz` format.

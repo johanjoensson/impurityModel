@@ -1,5 +1,3 @@
-#!/usr/bin/env python3
-
 """
 
 spectra
@@ -131,8 +129,7 @@ def simulate_spectra(es, psis, hOp, T, w, delta, epsilons,
         # Each transition operator seperatly
         for i in range(np.shape(a)[0]): tmp.append(a[i,:])
         print("Save spectra to disk...\n")
-        np.savetxt('PS.dat', np.array(tmp).T, fmt='%8.4f',
-                   header='E  sum  T1  T2  T3 ...')
+        np.savetxt("PS.dat", np.array(tmp).T, fmt="%8.4f", header="E  sum  T1  T2  T3 ...")
     if rank == 0:
         print("time(PS) = {:.2f} seconds \n".format(time.time()-t0))
         t0 = time.time()
@@ -161,8 +158,7 @@ def simulate_spectra(es, psis, hOp, T, w, delta, epsilons,
         # Each transition operator seperatly
         for i in range(np.shape(a)[0]): tmp.append(a[i,:])
         print("Save spectra to disk...\n")
-        np.savetxt('XPS.dat', np.array(tmp).T, fmt='%8.4f',
-                   header='E  sum  T1  T2  T3 ...')
+        np.savetxt("XPS.dat", np.array(tmp).T, fmt="%8.4f", header="E  sum  T1  T2  T3 ...")
     if rank == 0:
         print("time(XPS) = {:.2f} seconds \n".format(time.time()-t0))
         t0 = time.time()
@@ -172,8 +168,7 @@ def simulate_spectra(es, psis, hOp, T, w, delta, epsilons,
     tOps = getNIXSOperators(nBaths, qsNIXS, liNIXS, ljNIXS,
                                     RiNIXS, RjNIXS, radialMesh)
     # Green's function
-    gs = getSpectra(n_spin_orbitals, hOp, tOps, psis, es, wLoss,
-                            deltaNIXS, restrictions)
+    gs = getSpectra(n_spin_orbitals, hOp, tOps, psis, es, wLoss, deltaNIXS, restrictions)
     if rank == 0:
         print('#eigenstates = {:d}'.format(np.shape(gs)[0]))
         print('#q-points = {:d}'.format(np.shape(gs)[1]))
@@ -191,8 +186,7 @@ def simulate_spectra(es, psis, hOp, T, w, delta, epsilons,
         # Each q-point seperatly
         for i in range(np.shape(a)[0]): tmp.append(a[i,:])
         print("Save spectra to disk...\n")
-        np.savetxt('NIXS.dat', np.array(tmp).T, fmt='%8.4f',
-                   header='E  sum  T1  T2  T3 ...')
+        np.savetxt("NIXS.dat", np.array(tmp).T, fmt="%8.4f", header="E  sum  T1  T2  T3 ...")
 
     if rank == 0:
         print("time(NIXS) = {:.2f} seconds \n".format(time.time()-t0))
@@ -220,7 +214,49 @@ def simulate_spectra(es, psis, hOp, T, w, delta, epsilons,
     if rank == 0:
         tmp = [w, aSum]
         # Each transition operator seperatly
-        for i in range(np.shape(a)[0]): tmp.append(a[i,:])
+        for i in range(np.shape(a)[0]):
+            tmp.append(a[i, :])
+        print("Save spectra to disk...\n")
+        np.savetxt("XAS.dat", np.array(tmp).T, fmt="%8.4f", header="E  sum  T1  T2  T3 ...")
+    if rank == 0:
+        print("time(XAS) = {:.2f} seconds \n".format(time.time() - t0))
+        t0 = time.time()
+
+    if rank == 0:
+        print("Create RIXS spectra...")
+    # Dipole 2p -> 3d transition operators
+    tOpsIn = getDipoleOperators(nBaths, epsilonsRIXSin)
+    # Dipole 3d -> 2p transition operators
+    tOpsOut = getDaggeredDipoleOperators(nBaths, epsilonsRIXSout)
+    # Green's function
+    gs = getRIXSmap(
+        n_spin_orbitals,
+        hOp,
+        tOpsIn,
+        tOpsOut,
+        psis,
+        es,
+        wIn,
+        wLoss,
+        delta,
+        deltaRIXS,
+        restrictions,
+    )
+    if rank == 0:
+        print("#eigenstates = {:d}".format(np.shape(gs)[0]))
+        print("#in-polarizations = {:d}".format(np.shape(gs)[1]))
+        print("#out-polarizations = {:d}".format(np.shape(gs)[2]))
+        print("#mesh points of input energy = {:d}".format(np.shape(gs)[3]))
+        print("#mesh points of energy loss = {:d}".format(np.shape(gs)[4]))
+    # Thermal average
+    a = thermal_average(es[: np.shape(gs)[0]], -gs.imag, T=T)
+    if rank == 0:
+        h5f.create_dataset("RIXS", data=-gs.imag)
+        h5f.create_dataset("RIXSthermal", data=a)
+    # Sum over transition operators
+    aSum = np.sum(a, axis=(0, 1))
+    # Save spectra to disk
+    if rank == 0:
         print("Save spectra to disk...\n")
         np.savetxt('XAS.dat', np.array(tmp).T, fmt='%8.4f',
                    header='E  sum  T1  T2  T3 ...')
@@ -489,13 +525,14 @@ def getNIXSOperator(nBaths, q, li, lj, Ri, Rj, r, kmin=1):
     # Azimuthal (longitudinal) coordinate
     phi = np.arccos(q[0]/(qNorm*np.sin(theta)))
     tOp = {}
-    for k in range(kmin,abs(li+lj)+1):
-        if (li+lj+k) % 2 == 0:
-            Rintegral = np.trapz(np.conj(Ri)*spherical_jn(k,qNorm*r)*Rj*r**2,r)
-            if rank == 0: print('Rintegral(k=',k,') =',Rintegral)
-            for mi in range(-li,li+1):
-                for mj in range(-lj,lj+1):
-                    m = mi-mj
+    for k in range(kmin, abs(li + lj) + 1):
+        if (li + lj + k) % 2 == 0:
+            Rintegral = np.trapz(np.conj(Ri) * spherical_jn(k, qNorm * r) * Rj * r ** 2, r)
+            if rank == 0:
+                print("Rintegral(k=", k, ") =", Rintegral)
+            for mi in range(-li, li + 1):
+                for mj in range(-lj, lj + 1):
+                    m = mi - mj
                     if abs(m) <= k:
                         tij = Rintegral
                         tij *= 1j**(k)*sqrt(2*k+1)
@@ -612,14 +649,13 @@ def getGreen(n_spin_orbitals, e, psi, hOp, omega, delta, krylovSize,
         w = list(np.zeros(krylovSize))
         wp = list(np.zeros(krylovSize))
         v[0] = psi
-        #print('len(h_dict) = ',len(h_dict),', len(v[0]) = ',len(v[0]))
-        wp[0] = applyOp(n_spin_orbitals, hOp, v[0], slaterWeightMin,
-                        restrictions, h_dict)
-        #print('#len(h_dict) = ',len(h_dict),', len(wp[0]) = ',len(wp[0]))
-        alpha = np.zeros(krylovSize,dtype=np.float)
-        beta = np.zeros(krylovSize-1,dtype=np.float)
-        alpha[0] = inner(wp[0],v[0]).real
-        w[0] = add(wp[0],v[0],-alpha[0])
+        # print('len(h_dict) = ',len(h_dict),', len(v[0]) = ',len(v[0]))
+        wp[0] = applyOp(n_spin_orbitals, hOp, v[0], slaterWeightMin, restrictions, h_dict)
+        # print('#len(h_dict) = ',len(h_dict),', len(wp[0]) = ',len(wp[0]))
+        alpha = np.zeros(krylovSize, dtype=np.float)
+        beta = np.zeros(krylovSize - 1, dtype=np.float)
+        alpha[0] = inner(wp[0], v[0]).real
+        w[0] = add(wp[0], v[0], -alpha[0])
         # Approximate position of spectrum.
         #print('alpha[0]-E_i = {:5.1f}'.format(alpha[0]-e))
         # Construct Krylov states,
@@ -632,13 +668,12 @@ def getGreen(n_spin_orbitals, e, psi, hOp, omega, delta, krylovSize,
             else:
                 # Pick normalized state v[j],
                 # orthogonal to v[0],v[1],v[2],...,v[j-1]
-                print('Warning: beta==0, implementation missing!')
-            #print('len(v[',j,'] =',len(v[j]))
-            wp[j] = applyOp(n_spin_orbitals, hOp, v[j], slaterWeightMin,
-                            restrictions,h_dict)
-            alpha[j] = inner(wp[j],v[j]).real
-            w[j] = add(add(wp[j],v[j],-alpha[j]),v[j-1],-beta[j-1])
-            #print('len(h_dict) = ',len(h_dict),', len(w[j]) = ',len(w[j]))
+                print("Warning: beta==0, implementation missing!")
+            # print('len(v[',j,'] =',len(v[j]))
+            wp[j] = applyOp(n_spin_orbitals, hOp, v[j], slaterWeightMin, restrictions, h_dict)
+            alpha[j] = inner(wp[j], v[j]).real
+            w[j] = add(add(wp[j], v[j], -alpha[j]), v[j - 1], -beta[j - 1])
+            # print('len(h_dict) = ',len(h_dict),', len(w[j]) = ',len(w[j]))
     elif mode == "sparse" or mode == "dense":
         # If we use a parallelized mode, we want to work with
         # only the MPI local part of the Hamiltonian matrix h.
@@ -758,9 +793,8 @@ def getSpectra(n_spin_orbitals, hOp, tOps, psis, es, w, delta,
             for i in range(n):
                 psi =  psis[i]
                 e = es[i]
-                psiR = applyOp(n_spin_orbitals, tOp, psi, slaterWeightMin,
-                               restrictions, t_big)
-                #if rank == 0: print("len(t_big) = {:d}".format(len(t_big)))
+                psiR = applyOp(n_spin_orbitals, tOp, psi, slaterWeightMin, restrictions, t_big)
+                # if rank == 0: print("len(t_big) = {:d}".format(len(t_big)))
                 normalization = sqrt(norm2(psiR))
                 for state in psiR.keys():
                     psiR[state] /= normalization
@@ -857,8 +891,7 @@ def getRIXSmap(n_spin_orbitals, hOp, tOpsIn, tOpsOut, psis, es, wIns, wLoss,
         h_dict_ground = {}
     nE = len(es)
     # Green's functions
-    gs = np.zeros((nE,len(tOpsIn),len(tOpsOut),len(wIns),len(wLoss)),
-                  dtype=np.complex)
+    gs = np.zeros((nE, len(tOpsIn), len(tOpsOut), len(wIns), len(wLoss)), dtype=np.complex)
     # Hamiltonian dict of the form  |PS> : {H|PS>}
     # For product states with a core hole.
     h_dict_excited = {}
@@ -872,8 +905,7 @@ def getRIXSmap(n_spin_orbitals, hOp, tOpsIn, tOpsOut, psis, es, wIns, wLoss,
                 psi =  psis[iE]
                 e = es[iE]
                 # Core-hole state
-                psi1 = applyOp(n_spin_orbitals, tOpIn, psi, slaterWeightMin,
-                               restrictions, tIn_big)
+                psi1 = applyOp(n_spin_orbitals, tOpIn, psi, slaterWeightMin, restrictions, tIn_big)
                 # Hamiltonian acting on relevant product states. |PS> : {H|PS>}
                 n_tmp = len(h_dict_excited)
                 if rank == 0: print('Construct H for core-hole excited system.')
@@ -947,8 +979,7 @@ def getRIXSmap(n_spin_orbitals, hOp, tOpsIn, tOpsOut, psis, es, wIns, wLoss,
                 psi =  psis[iE]
                 e = es[iE]
                 # Core-hole state
-                psi1 = applyOp(n_spin_orbitals, tOpIn, psi, slaterWeightMin,
-                               restrictions, tIn_big)
+                psi1 = applyOp(n_spin_orbitals, tOpIn, psi, slaterWeightMin, restrictions, tIn_big)
                 # Hamiltonian acting on relevant product states. |PS> : {H|PS>}
                 n_tmp = len(h_dict_excited)
                 if rank == 0: print('Construct H for core-hole excited system.')
