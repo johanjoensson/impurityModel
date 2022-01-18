@@ -1,3 +1,4 @@
+
 """
 test_comparison_with_reference
 ==============================
@@ -19,15 +20,13 @@ def test_comparison():
     compare_spectra()
 
 
-def compare_spectra(
-    script_file="scripts/run_Ni_NiO_Xbath.sh",
-    script_argument=50,
-    reference_file="referenceOutput/Ni_NiO_50bath/spectra.h5",
-):
+def compare_spectra(script_file="scripts/run_Ni_NiO_Xbath.sh",
+                    script_argument=50,
+                    reference_file="referenceOutput/Ni_NiO_50bath/spectra.h5"):
     print("Start comparison of spectra...")
     # Create a temporary directory using the context manager
     with tempfile.TemporaryDirectory() as tmpdirname:
-        print("Created temporary directory", tmpdirname)
+        print('Created temporary directory', tmpdirname)
         os.chdir(tmpdirname)
         print("Current working dir:", os.getcwd())
         path = os.path.dirname(os.path.abspath(inspect.getfile(inspect.currentframe())))
@@ -43,15 +42,13 @@ def compare_spectra(
         # Compare file contents
         for key in ref_file_handle:
             print("Compare dataset:", key)
-            print(
-                "max diff:",
-                np.max(np.abs(file_handle[key][()] - ref_file_handle[key][()])),
-            )
-            np.testing.assert_allclose(
-                file_handle[key][()], ref_file_handle[key][()], rtol=1e-7
-            )
+            print("max diff:", np.max(np.abs(file_handle[key][()] - ref_file_handle[key][()])))
+            np.testing.assert_allclose(file_handle[key][()],
+                                       ref_file_handle[key][()],
+                                       rtol=1e-7)
         print("Comparison successful")
 
 
 if __name__ == "__main__":
     compare_spectra()
+

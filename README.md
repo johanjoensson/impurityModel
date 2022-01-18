@@ -21,20 +21,15 @@ Credits to Patrik Thunstrom for discussions about computational algorithms.
 </figure>
 
 ### Get started
-- Run the bash-script `install_setup.sh`:
+- Run the bash-script `setup.sh`:
 ```bash
-source install_setup.sh
+source setup.sh
 ```
-This will create a Python virtual environment and install the required system and Python packages.
+This will create a Python virtual environment, install the required Python packages, and run the unit-tests.
 
 - Activate the virtual environment and set the PYTHONPATH:
 ```bash
 source env.sh
-```
-
-- To run the unit-tests, type
-```bash
-pytest
 ```
 
 - To perform a simulation, first create a directory somewhere on your computer.

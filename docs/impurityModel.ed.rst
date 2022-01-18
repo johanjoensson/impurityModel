@@ -52,6 +52,14 @@ impurityModel.ed.mpi\_comm module
    :undoc-members:
    :show-inheritance:
 
+impurityModel.ed.op\_parser module
+----------------------------------
+
+.. automodule:: impurityModel.ed.op_parser
+   :members:
+   :undoc-members:
+   :show-inheritance:
+
 impurityModel.ed.product\_state\_representation module
 ------------------------------------------------------
 
