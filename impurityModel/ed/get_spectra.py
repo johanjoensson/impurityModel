@@ -183,7 +183,7 @@ def main(h0_filename,
                                    [xi_2p, xi_3d],
                                    [n0imps, chargeTransferCorrection],
                                    hField,
-                                   h0_filename,rank)
+                                   h0_filename, rank)
     # Measure how many physical processes the Hamiltonian contains.
     if rank == 0: print('{:d} processes in the Hamiltonian.'.format(len(hOp)))
     # Many body basis for the ground state
@@ -306,12 +306,13 @@ def main(h0_filename,
         restrictions,
         h5f,
         nBaths,
+        RIXS_projectors,
     )
 
     print("Script finished for rank:", rank)
 
 
-def get_hamiltonian_operator(nBaths, nValBaths, slaterCondon, SOCs, DCinfo, hField, h0_filename):
+def get_hamiltonian_operator(nBaths, nValBaths, slaterCondon, SOCs, DCinfo, hField, h0_filename, rank):
     """
     Return the Hamiltonian, in operator form.
 
