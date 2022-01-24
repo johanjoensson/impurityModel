@@ -311,6 +311,23 @@ def main(h0_filename,
 
     print("Script finished for rank:", rank)
 
+def get_restrictions(l, n0imps, nBaths, nValBaths, dnTols, dnValBaths, dnConBaths):
+    restrictions = {}
+    # Restriction on impurity orbitals
+    indices = frozenset(c2i(nBaths, (l, s, m)) for s in range(2) for m in range(-l, l + 1))
+    restrictions[indices] = (n0imps[l] - 1, n0imps[l] + dnTols[l] + 1)
+    # Restriction on valence bath orbitals
+    indices = []
+    for b in range(nValBaths[l]):
+        indices.append(c2i(nBaths, (l, b)))
+    restrictions[frozenset(indices)] = (nValBaths[l] - dnValBaths[l], nValBaths[l])
+    # Restriction on conduction bath orbitals
+    indices = []
+    for b in range(nValBaths[l], nBaths[l]):
+        indices.append(c2i(nBaths, (l, b)))
+    restrictions[frozenset(indices)] = (0, dnConBaths[l])
+
+    return restrictions
 
 def get_hamiltonian_operator(nBaths, nValBaths, slaterCondon, SOCs, DCinfo, hField, h0_filename, rank):
     """

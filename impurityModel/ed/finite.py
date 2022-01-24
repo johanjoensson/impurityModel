@@ -117,6 +117,25 @@ def eigensystem(n_spin_orbitals, hOp, basis, nPsiMax, groundDiagMode='Lanczos',
     return es, psis
 
 
+def printSlaterDeterminantsAndWeights(psis, nPrintSlaterWeights):
+    print("Slater determinants/product states and correspoinding weights")
+    weights = []
+    for i, psi in enumerate(psis):
+        print("Eigenstate {:d}.".format(i))
+        print("Consists of {:d} product states.".format(len(psi)))
+        ws = np.array([abs(a) ** 2 for a in psi.values()])
+        s = np.array(list(psi.keys()))
+        j = np.argsort(ws)
+        ws = ws[j[-1::-1]]
+        s = s[j[-1::-1]]
+        weights.append(ws)
+        if nPrintSlaterWeights > 0:
+            print("Highest (product state) weights:")
+            print(ws[:nPrintSlaterWeights])
+            print("Corresponding product states:")
+            print(s[:nPrintSlaterWeights])
+            print("")
+
 def printExpValues(nBaths, es, psis, n=None):
     '''
     print several expectation values, e.g. E, N, L^2.
@@ -1051,6 +1070,25 @@ def getDensityMatrixCubic(nBaths, psi):
                                     else:
                                         nCub[eCub] = tmp
     return nCub
+
+def printDensityMatrixCubic(nBaths, psis, tolPrintOccupation):
+    # Calculate density matrix
+    print("Density matrix (in cubic harmonics basis):")
+    for i, psi in enumerate(psis):
+        print("Eigenstate {:d}".format(i))
+        n = getDensityMatrixCubic(nBaths, psi)
+        print("#density matrix elements: {:d}".format(len(n)))
+        for e, ne in n.items():
+            if abs(ne) > tolPrintOccupation:
+                if e[0] == e[1]:
+                    print(
+                        "Diagonal: (i,s) =",
+                        e[0],
+                        ", occupation = {:7.2f}".format(ne),
+                    )
+                else:
+                    print("Off-diagonal: (i,si), (j,sj) =", e, ", {:7.2f}".format(ne))
+        print("")
 
 
 def getEgT2gOccupation(nBaths, psi):

@@ -7,7 +7,7 @@ import time
 import argparse
 import h5py
 
-from impurityModel.ed.get_spectra import get_hamiltonian_operator, get_h0_operator
+from impurityModel.ed.get_spectra import get_hamiltonian_operator, get_h0_operator, get_restrictions
 from impurityModel.ed import spectra
 from impurityModel.ed import finite
 from impurityModel.ed.finite import c2i
@@ -40,9 +40,11 @@ def get_selfenergy(
         energy_cut,
         delta):
 
-    omega = np.linspace(-25, 25, 4000)
+    omega_mesh = np.linspace(-25, 25, 4000)
+
     comm = MPI.COMM_WORLD
     rank = comm.rank
+
     if rank == 0:
         t0 = time.time()
     # -- System information --
@@ -60,21 +62,14 @@ def get_selfenergy(
     energy_cut *= k_B * T
 
     # -- Occupation restrictions for excited states --
-    l = 2
-    restrictions = {}
-    # Restriction on impurity orbitals
-    indices = frozenset(c2i(nBaths, (l, s, m)) for s in range(2) for m in range(-l, l + 1))
-    restrictions[indices] = (n0imps[l] - 1, n0imps[l] + dnTols[l] + 1)
-    # Restriction on valence bath orbitals
-    indices = []
-    for b in range(nValBaths[l]):
-        indices.append(c2i(nBaths, (l, b)))
-    restrictions[frozenset(indices)] = (nValBaths[l] - dnValBaths[l], nValBaths[l])
-    # Restriction on conduction bath orbitals
-    indices = []
-    for b in range(nValBaths[l], nBaths[l]):
-        indices.append(c2i(nBaths, (l, b)))
-    restrictions[frozenset(indices)] = (0, dnConBaths[l])
+    restrictions = get_restrictions(    l = 2, 
+                                        n0imps = n0imps, 
+                                        nBaths = nBaths, 
+                                        nValBaths = nValBaths, 
+                                        dnTols = dnTols, 
+                                        dnValBaths = dnValBaths, 
+                                        dnConBaths = dnConBaths)
+
     n_spin_orbitals = sum(2 * (2 * ang + 1) + nBath for ang, nBath in nBaths.items())
     if rank == 0:
         print("#spin-orbitals:", n_spin_orbitals)
@@ -104,94 +99,73 @@ def get_selfenergy(
     # Diagonalization of restricted active space Hamiltonian
     es, psis = finite.eigensystem(n_spin_orbitals, hOp, basis, nPsiMax)
 
-    if rank == 0:
-        print("time(ground_state) = {:.2f} seconds \n".format(time.time() - t0))
-        t0 = time.time()
-
     n_spin_orbitals = sum(2 * (2 * ang + 1) + nBath for ang, nBath in nBaths.items())
-    if rank == 0:
-        print("#spin-orbitals:", n_spin_orbitals)
 
     # Print Slater determinants and weights
     if rank == 0:
-        print("Slater determinants/product states and correspoinding weights")
-        weights = []
-        for i, psi in enumerate(psis):
-            print("Eigenstate {:d}.".format(i))
-            print("Consists of {:d} product states.".format(len(psi)))
-            ws = np.array([abs(a) ** 2 for a in psi.values()])
-            s = np.array(list(psi.keys()))
-            j = np.argsort(ws)
-            ws = ws[j[-1::-1]]
-            s = s[j[-1::-1]]
-            weights.append(ws)
-            if nPrintSlaterWeights > 0:
-                print("Highest (product state) weights:")
-                print(ws[:nPrintSlaterWeights])
-                print("Corresponding product states:")
-                print(s[:nPrintSlaterWeights])
-                print("")
-
-    # Calculate density matrix
-    if rank == 0:
-        print("Density matrix (in cubic harmonics basis):")
-        for i, psi in enumerate(psis):
-            print("Eigenstate {:d}".format(i))
-            n = finite.getDensityMatrixCubic(nBaths, psi)
-            print("#density matrix elements: {:d}".format(len(n)))
-            for e, ne in n.items():
-                if abs(ne) > tolPrintOccupation:
-                    if e[0] == e[1]:
-                        print(
-                            "Diagonal: (i,s) =",
-                            e[0],
-                            ", occupation = {:7.2f}".format(ne),
-                        )
-                    else:
-                        print("Off-diagonal: (i,si), (j,sj) =", e, ", {:7.2f}".format(ne))
-            print("")
-    # Save some information to disk
-    if rank == 0:
-        # Most of the input parameters. Dictonaries can be stored in this file format.
-        np.savez_compressed(
-            "data",
-            ls=ls,
-            nBaths=nBaths,
-            nValBaths=nValBaths,
-            n0imps=n0imps,
-            dnTols=dnTols,
-            dnValBaths=dnValBaths,
-            dnConBaths=dnConBaths,
-            Fdd=Fdd,
-            xi_3d=xi_3d,
-            chargeTransferCorrection=chargeTransferCorrection,
-            hField=hField,
-            h0_filename=h0_filename,
-            nPsiMax=nPsiMax,
-            T=T,
-            energy_cut=energy_cut,
-            delta=delta,
-            restrictions=restrictions,
-            n_spin_orbitals=n_spin_orbitals,
-            hOp=hOp,
-        )
-        # Save some of the arrays.
-        # HDF5-format does not directly support dictonaries.
-        h5f = h5py.File("spectra.h5", "w")
-        h5f.create_dataset("E", data=es)
-        h5f.create_dataset("w", data=omega)
-    else:
-        h5f = None
-    if rank == 0:
-        print("time(expectation values) = {:.2f} seconds \n".format(time.time() - t0))
+        finite.printSlaterDeterminantsAndWeights(psis = psis, nPrintSlaterWeights = nPrintSlaterWeights)
+        finite.printDensityMatrixCubic(nBaths = nBaths, psis = psis, tolPrintOccupation = tolPrintOccupation)
 
     # Consider from now on only eigenstates with low energy
     es = tuple(e for e in es if e - es[0] < energy_cut)
     psis = tuple(psis[i] for i in range(len(es)))
     if rank == 0:
         print("Consider {:d} eigenstates for the spectra \n".format(len(es)))
+    gs = get_Greens_functions(  nBaths = nBaths, 
+                                omega_mesh = omega_mesh,
+                                es = es, 
+                                psis = psis, 
+                                l = 2,
+                                hOp = hOp,
+                                delta = delta,
+                                restrictions = restrictions)
 
-    gs = np.zeros((len(es), len(omega)), dtype=np.complex)
+    gs_thermal_avg = spectra.thermal_average(es[:np.shape(gs)[0]], gs, T=T)
+
+    h0op = get_non_interacting_hamiltonian(h0_filename, nBaths)
+    sigma = get_sigma(  omega_mesh = omega_mesh, 
+                        nBaths = nBaths, 
+                        g = gs_thermal_avg, 
+                        h0op = h0op,
+                        delta = delta)
+
+    if rank == 0:
+        save_Greens_function(gs = gs_thermal_avg, omega_mesh = omega_mesh, clustername = clustername)
+        save_selfenergy(sigma = sigma, omega_mesh = omega_mesh, clustername = clustername)
+
+def get_non_interacting_hamiltonian(h0_filename, nBaths):
+    h0 = get_h0_operator(h0_filename, nBaths)
+
+    h0Op = {}
+    for process, value in h0.items():
+        h0Op[tuple((c2i(nBaths, spinOrb), action) for spinOrb, action in process)] = value
+    return h0Op
+
+def get_h0_v_hb(h0op, nBaths):
+    h0Matrix = finite.iOpToMatrix(nBaths, h0op)
+    h0 = h0Matrix[6:16,6:16]
+    v_dagger = h0Matrix[16:, 6:16]
+    v = h0Matrix[6:16, 16:]
+    h0_bath = np.diagonal(h0Matrix[16:, 16:])
+    return h0, v, v_dagger, h0_bath
+
+def get_sigma(omega_mesh, nBaths, g, h0op, delta):
+    h0_d, v, v_dagger, h0_bath = get_h0_v_hb(h0op, nBaths)
+
+    g_inv = np.zeros((h0_d.shape[0], h0_d.shape[1], len(omega_mesh)), dtype = complex)
+    g0_inv = np.zeros((h0_d.shape[0], h0_d.shape[1], len(omega_mesh)), dtype = complex)
+
+    n = h0_d.shape[0]
+    N = h0_bath.shape[0]
+    for i, w in enumerate(omega_mesh):
+        g_inv[:,:, i] = np.linalg.inv(g[:,:,i])
+        g0_inv[:,:,i] = (w + 1j*delta)*np.eye(n, n) - h0_d - np.dot(v, np.dot(np.linalg.inv(w*np.eye(N,N) - h0_bath), v_dagger))
+
+    return g0_inv - g_inv
+
+def get_Greens_functions(nBaths, omega_mesh, es, psis, l, hOp, delta, restrictions):
+    n_spin_orbitals = sum(2 * (2 * ang + 1) + nBath for ang, nBath in nBaths.items())
+    gs = np.zeros((len(es), len(omega_mesh)), dtype=np.complex)
     tOpsPS = spectra.getPhotoEmissionOperators(nBaths, l=2)
     tOpsIPS = spectra.getInversePhotoEmissionOperators(nBaths, l=2)
     gs = calc_Greens_function_with_offdiag(
@@ -200,7 +174,7 @@ def get_selfenergy(
             tOpsIPS, 
             psis, 
             es, 
-            omega, 
+            omega_mesh, 
             delta, 
             restrictions)
     gs -= calc_Greens_function_with_offdiag(
@@ -209,46 +183,26 @@ def get_selfenergy(
             tOpsPS, 
             psis, 
             es, 
-            -omega, 
+            -omega_mesh, 
             -delta, 
             restrictions)
-
-    gs_thermal_avg = spectra.thermal_average(es[:np.shape(gs)[0]], gs, T=T)
-
-    h0 = get_h0_operator(h0_filename, nBaths)
-
-    h0Op = {}
-    for process, value in h0.items():
-        h0Op[tuple((c2i(nBaths, spinOrb), action) for spinOrb, action in process)] = value
-
-    h0Matrix = finite.iOpToMatrix(nBaths, h0Op)
-    h0_d = h0Matrix[6:16,6:16]
-    v_dagger = h0Matrix[16:, 6:16]
-    v = h0Matrix[6:16, 16:]
-    h0_bath = np.diagonal(h0Matrix[16:, 16:])
-
-    g_inv = np.zeros((h0_d.shape[0], h0_d.shape[1], len(omega)), dtype = complex)
-    g0_inv = np.zeros((h0_d.shape[0], h0_d.shape[1], len(omega)), dtype = complex)
-
-    n = h0_d.shape[0]
-    N = h0_bath.shape[0]
-    for i, w in enumerate(omega):
-        g_inv[:,:, i] = np.linalg.inv(gs_thermal_avg[:,:,i])
-        g0_inv[:,:,i] = (w + 1j*delta)*np.eye(n, n) - h0_d - np.dot(v, np.dot(np.linalg.inv(w*np.eye(N,N) - h0_bath), v_dagger))
-
-    sigma = g0_inv - g_inv
-    if rank == 0:
-        print ("Writing Greens function and selfenergy to files")
-        with open(f"real-G-{clustername}.dat", "w") as fg_real, open(f"imag-G-{clustername}.dat", "w") as fg_imag,\
-             open(f"real-realaxis-Sigma-{clustername}.dat", "w") as fs_real, open(f"imag-realaxis-Sigma-{clustername}.dat", "w") as fs_imag:
-            for i, w in enumerate(omega):
-                fg_real.write(f"{w} {np.real(np.sum(gs_thermal_avg[:, :, i]))} " + " ".join(f"{np.real(el)}" for el in np.diag(gs_thermal_avg[:, :, i])) + "\n")
-                fg_imag.write(f"{w} {np.imag(np.sum(gs_thermal_avg[:, :, i]))} " + " ".join(f"{np.imag(el)}" for el in np.diag(gs_thermal_avg[:, :, i])) + "\n")
-                fs_real.write(f"{w} {np.real(np.sum(sigma[:, :, i]))} " + " ".join(f"{np.real(el)}" for el in np.diag(sigma[:, :, i])) + "\n")
-                fs_imag.write(f"{w} {np.imag(np.sum(sigma[:, :, i]))} " + " ".join(f"{np.imag(el)}" for el in np.diag(sigma[:, :, i])) + "\n")
-
-    return 
+    return gs
     
+def save_Greens_function(gs, omega_mesh, clustername):
+    print ("Writing Greens function to files")
+    with open(f"real-G-{clustername}.dat", "w") as fg_real, open(f"imag-G-{clustername}.dat", "w") as fg_imag:
+        for i, w in enumerate(omega_mesh):
+            fg_real.write(f"{w} {np.real(np.sum(gs[:, :, i]))} " + " ".join(f"{np.real(el)}" for el in np.diag(gs[:, :, i])) + "\n")
+            fg_imag.write(f"{w} {np.imag(np.sum(gs[:, :, i]))} " + " ".join(f"{np.imag(el)}" for el in np.diag(gs[:, :, i])) + "\n")
+
+def save_selfenergy(sigma, omega_mesh, clustername):
+    print ("Writing Selfenergy to files")
+    with open(f"real-realaxis-Sigma-{clustername}.dat", "w") as fs_real, open(f"imag-realaxis-Sigma-{clustername}.dat", "w") as fs_imag:
+        for i, w in enumerate(omega_mesh):
+            fs_real.write(f"{w} {np.real(np.sum(sigma[:, :, i]))} " + " ".join(f"{np.real(el)}" for el in np.diag(sigma[:, :, i])) + "\n")
+            fs_imag.write(f"{w} {np.imag(np.sum(sigma[:, :, i]))} " + " ".join(f"{np.imag(el)}" for el in np.diag(sigma[:, :, i])) + "\n")
+
+
 def calc_Greens_function_with_offdiag(
         n_spin_orbitals,
         hOp,
