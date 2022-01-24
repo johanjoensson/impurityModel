@@ -101,25 +101,6 @@ def simulate_spectra(es, psis, hOp, T, w, delta, epsilons,
     # Total number of spin-orbitals in the system
     n_spin_orbitals = sum(2 * (2 * ang + 1) + nBath for ang, nBath in nBaths.items())
 
-    gs = np.zeros((len(es), len(w)), dtype=np.complex)
-    for e_index, e in enumerate(es):
-        gs[e_index, :] = getGreen(  
-                        n_spin_orbitals, 
-                        e, 
-                        psis[e_index], 
-                        hOp, 
-                        w, 
-                        delta, 
-                        krylovSize = 150, 
-                        slaterWeightMin = 1e-7, 
-                        restrictions = restrictions
-                     )
-
-    if rank == 0:
-        np.savetxt("green.dat", gs.T, fmt = '%10.5f %+10.5f')
-
-    return
-
     if rank == 0: print('Create 3d inverse photoemission and photoemission spectra...')
     # Transition operators
     tOpsIPS = getInversePhotoEmissionOperators(nBaths, l=2)

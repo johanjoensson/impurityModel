@@ -90,11 +90,11 @@ def eigensystem(n_spin_orbitals, hOp, basis, nPsiMax, groundDiagMode='Lanczos',
         Minimum product state weight for product states to be kept.
 
     """
-    if rank == 0: print('Create Hamiltonian matrix...')
+    if rank == 0: 
+        print('Create Hamiltonian matrix...')
     h = get_hamiltonian_matrix(n_spin_orbitals, hOp, basis)
     if rank == 0:
         print("<#Hamiltonian elements/column> = {:d}".format(int(len(np.nonzero(h)[0]) / len(basis))))
-    if rank == 0:
         print("Diagonalize the Hamiltonian...")
     if groundDiagMode == "full":
         es, vecs = np.linalg.eigh(h.todense())

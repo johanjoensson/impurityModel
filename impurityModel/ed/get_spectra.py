@@ -710,4 +710,3 @@ if __name__== "__main__":
          T=args.T, energy_cut=args.energy_cut,
          delta=args.delta, deltaRIXS=args.deltaRIXS, deltaNIXS=args.deltaNIXS, 
          RIXS_projectors_filename=args.RIXS_projectors_filename)
-
