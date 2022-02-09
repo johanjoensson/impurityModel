@@ -271,28 +271,6 @@ def simulate_spectra(es, psis, hOp, T, w, delta, epsilons,
       # Dipole 3d -> 2p transition operators
       tOpsOut = getDaggeredDipoleOperators(nBaths, epsilonsRIXSout)
 
-      # MOVE OUTSIDE OF THIS FUNCTION!!!
-      #eg_proj = {}
-      #t2g_proj = {}
-      # loop over spin
-      #for s in range(2):
-      #    eg_proj[(((2, s, 2), 'c'),((2, s, 2), 'a'))] = 0.5
-      #    eg_proj[(((2, s, -2), 'c'),((2,s,  -2), 'a'))] = 0.5
-      #    eg_proj[(((2, s, -2), 'c'),((2,s,  2), 'a'))] = 0.5
-      #    eg_proj[(((2, s, 2), 'c'),((2, s, -2), 'a'))] = 0.5
-      #    eg_proj[(((2, s, 0), 'c'),((2, s, 0), 'a'))] = 1.
-
-      #    t2g_proj[(((2, s, 2), 'c'),((2, s, 2), 'a'))] = 0.5
-      #    t2g_proj[(((2, s, -2), 'c'),((2, s,  -2), 'a'))] = 0.5
-      #    t2g_proj[(((2, s, -2), 'c'),((2, s,  2), 'a'))] = -0.5
-      #    t2g_proj[(((2, s, 2), 'c'),((2, s, -2,), 'a'))] = -0.5
-      #    t2g_proj[(((2, s, -1), 'c'),((2, s,  -1), 'a'))] = 1.
-      #    t2g_proj[(((2, s, 1), 'c'),((2, s, 1), 'a'))] = 1.
-      #RIXS_projectors = [eg_proj, t2g_proj]
-      #RIXS_projectors = None
-      ##########################################################
-
-
       if RIXS_projectors:
           iBasisProjectors = arrayOp2Dict(nBaths, RIXS_projectors.values())
           projectedTOpsIn = []
@@ -592,7 +570,7 @@ def getPhotoEmissionOperators(nBaths, l=2):
 
 def getGreen(n_spin_orbitals, e, psi, hOp, omega, delta, krylovSize,
              slaterWeightMin, restrictions=None, h_dict=None, mode="sparse",
-             parallelization_mode="serial"):
+             parallelization_mode="serial", verbose = True):
     r"""
     return Green's function
     :math:`\langle psi|((omega+1j*delta+e)\hat{1} - hOp)^{-1} |psi \rangle`.
@@ -685,7 +663,7 @@ def getGreen(n_spin_orbitals, e, psi, hOp, omega, delta, krylovSize,
         # Instead all matrix columns are distributed over all the MPI ranks.
         h, basis_index = expand_basis_and_hamiltonian(
             n_spin_orbitals, h_dict, hOp, psi.keys(), restrictions,
-            parallelization_mode, h_local)
+            parallelization_mode, h_local, verbose = verbose)
         # Number of basis states
         n = len(basis_index)
         # Express psi as a vector
@@ -696,7 +674,7 @@ def getGreen(n_spin_orbitals, e, psi, hOp, omega, delta, krylovSize,
         krylovSize = min(krylovSize,n)
         # Get tridiagonal elements of the Krylov Hamiltonian matrix.
         alpha, beta = get_tridiagonal_krylov_vectors(h, psi0, krylovSize,
-                                                     h_local, mode)
+                                                     h_local, mode, verbose = verbose)
     else:
         raise Exception("Value of variable 'mode' is incorrect.")
     # Construct Green's function from continued fraction.

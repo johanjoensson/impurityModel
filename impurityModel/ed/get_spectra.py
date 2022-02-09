@@ -329,7 +329,16 @@ def get_restrictions(l, n0imps, nBaths, nValBaths, dnTols, dnValBaths, dnConBath
 
     return restrictions
 
-def get_hamiltonian_operator(nBaths, nValBaths, slaterCondon, SOCs, DCinfo, hField, h0_filename, rank):
+def get_hamiltonian_operator(
+        nBaths, 
+        nValBaths, 
+        slaterCondon, 
+        SOCs, 
+        DCinfo, 
+        hField, 
+        h0_filename, 
+        rank, 
+        verbose = True):
     """
     Return the Hamiltonian, in operator form.
 
@@ -403,7 +412,7 @@ def get_hamiltonian_operator(nBaths, nValBaths, slaterCondon, SOCs, DCinfo, hFie
     # Read the non-relativistic non-interacting Hamiltonian operator from file.
     h0_operator = get_h0_operator(h0_filename, nBaths)
 
-    if rank == 0:
+    if rank == 0 and verbose:
             print ("Non-interacting, non-relativistic Hamiltonian (h0):")
             print (h0_operator)
 
@@ -414,7 +423,8 @@ def get_hamiltonian_operator(nBaths, nValBaths, slaterCondon, SOCs, DCinfo, hFie
                                SOC3dOperator,
                                eDCOperator,
                                h0_operator])
-    if (rank == 0): finite.printOp(nBaths,hOperator,"Local Hamiltonian: ") 
+    if rank == 0 and verbose: 
+        finite.printOp(nBaths,hOperator,"Local Hamiltonian: ") 
 
     # Convert spin-orbital and bath state indices to a single index notation.
     hOp = {}

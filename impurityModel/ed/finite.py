@@ -63,7 +63,7 @@ def get_job_tasks(rank, ranks, tasks_tot):
 
 
 def eigensystem(n_spin_orbitals, hOp, basis, nPsiMax, groundDiagMode='Lanczos',
-               eigenValueTol=1e-9, slaterWeightMin=1e-7):
+               eigenValueTol=1e-9, slaterWeightMin=1e-7, verbose = True):
     """
     Return eigen-energies and eigenstates.
 
@@ -90,10 +90,10 @@ def eigensystem(n_spin_orbitals, hOp, basis, nPsiMax, groundDiagMode='Lanczos',
         Minimum product state weight for product states to be kept.
 
     """
-    if rank == 0: 
+    if rank == 0 and verbose: 
         print('Create Hamiltonian matrix...')
-    h = get_hamiltonian_matrix(n_spin_orbitals, hOp, basis)
-    if rank == 0:
+    h = get_hamiltonian_matrix(n_spin_orbitals, hOp, basis, verbose = verbose)
+    if rank == 0 and verbose:
         print("<#Hamiltonian elements/column> = {:d}".format(int(len(np.nonzero(h)[0]) / len(basis))))
         print("Diagonalize the Hamiltonian...")
     if groundDiagMode == "full":
@@ -108,7 +108,7 @@ def eigensystem(n_spin_orbitals, hOp, basis, nPsiMax, groundDiagMode='Lanczos',
         vecs = np.array([vecs[:,i] for i in indices]).T
     else:
         print("Wrong diagonalization mode")
-    if rank == 0:
+    if rank == 0 and verbose:
         print("Proceed with {:d} eigenstates.\n".format(len(es)))
     psis = [
         ({basis[i]: vecs[i, vi] for i in range(len(basis)) if slaterWeightMin <= abs(vecs[i, vi]) ** 2})
@@ -308,7 +308,7 @@ def daggerOp(op):
     return opDagger
 
 
-def get_basis(nBaths, valBaths, dnValBaths, dnConBaths, dnTol, n0imp):
+def get_basis(nBaths, valBaths, dnValBaths, dnConBaths, dnTol, n0imp, verbose = True):
     """
     Return restricted basis of product states.
 
@@ -330,7 +330,7 @@ def get_basis(nBaths, valBaths, dnValBaths, dnConBaths, dnTol, n0imp):
     # given the occupation in that partition.
     basisL = {}
     for l in nBaths.keys():
-        if rank == 0: print('l=',l)
+        if rank == 0 and verbose: print('l=',l)
         # Add configurations to this list
         basisL[l] = []
         # Loop over different occupation partitions
@@ -342,11 +342,11 @@ def get_basis(nBaths, valBaths, dnValBaths, dnConBaths, dnTol, n0imp):
                     nVal = valBaths[l]-dnVal
                     nCon = dnCon
 
-                    if rank == 0: print('New partition occupations:')
+                    if rank == 0 and verbose: print('New partition occupations:')
                     #if rank == 0:
                     #    print('nImp,dnVal,dnCon = {:d},{:d},{:d}'.format(
                     #        nImp,dnVal,dnCon))
-                    if rank == 0:
+                    if rank == 0 and verbose:
                         print("New partition occupations:")
                         print("nImp,nVal,nCon = {:d},{:d},{:d}".format(nImp, nVal, nCon))
                     # Impurity electron indices
@@ -1542,7 +1542,7 @@ def applyOp(n_spin_orbitals, op, psi, slaterWeightMin=1e-12, restrictions=None, 
     return psiNew
 
 
-def get_hamiltonian_matrix(n_spin_orbitals, hOp, basis, mode='sparse_MPI'):
+def get_hamiltonian_matrix(n_spin_orbitals, hOp, basis, mode='sparse_MPI', verbose = True):
     """
     Return Hamiltonian expressed in the provided basis of product states.
 
@@ -1566,14 +1566,15 @@ def get_hamiltonian_matrix(n_spin_orbitals, hOp, basis, mode='sparse_MPI'):
     # Number of basis states
     n = len(basis)
     basis_index = {basis[i]:i for i in range(n)}
-    if rank == 0: print('Filling the Hamiltonian...')
+    if rank == 0 and verbose: print('Filling the Hamiltonian...')
     progress = 0
     if mode == 'dense_serial':
         h = np.zeros((n,n),dtype=np.complex)
         for j in range(n):
             if rank == 0 and progress + 10 <= int(j*100./n):
                 progress = int(j*100./n)
-                print('{:d}% done'.format(progress))
+                if verbose:
+                    print('{:d}% done'.format(progress))
             res = applyOp(n_spin_orbitals, hOp, {basis[j]:1})
             for k,v in res.items():
                 if k in basis_index:
@@ -1586,7 +1587,8 @@ def get_hamiltonian_matrix(n_spin_orbitals, hOp, basis, mode='sparse_MPI'):
             hRank[j] = {}
             if rank == 0 and progress + 10 <= int(j*100./len(jobs)):
                 progress = int(j*100./len(jobs))
-                print('{:d}% done'.format(progress))
+                if verbose:
+                    print('{:d}% done'.format(progress))
             res = applyOp(n_spin_orbitals, hOp, {basis[j]:1})
             for k,v in res.items():
                 if k in basis_index:
@@ -1604,7 +1606,8 @@ def get_hamiltonian_matrix(n_spin_orbitals, hOp, basis, mode='sparse_MPI'):
         for j in range(n):
             if rank == 0 and progress + 10 <= int(j*100./n):
                 progress = int(j*100./n)
-                print('{:d}% done'.format(progress))
+                if verbose:
+                    print('{:d}% done'.format(progress))
             res = applyOp(n_spin_orbitals, hOp, {basis[j]:1})
             for k,v in res.items():
                 if k in basis_index:
@@ -1627,11 +1630,13 @@ def get_hamiltonian_matrix(n_spin_orbitals, hOp, basis, mode='sparse_MPI'):
                     row.append(basis_index[k])
             if rank == 0 and progress + 10 <= int((j+1)*100./len(jobs)):
                 progress = int((j+1)*100./len(jobs))
-                print('{:d}% done'.format(progress))
+                if verbose:
+                    print('{:d}% done'.format(progress))
         # Print out that the construction of Hamiltonian is done
         if rank == 0 and progress != 100:
             progress = 100
-            print('{:d}% done'.format(progress))
+            if verbose:
+                print('{:d}% done'.format(progress))
         hSparse = scipy.sparse.csr_matrix((data,(row,col)),shape=(n,n))
         # Different ranks have information about different basis states.
         # Therefor, need to broadcast and append sparse Hamiltonians
@@ -1849,7 +1854,7 @@ def expand_basis(n_spin_orbitals, h_dict, hOp, basis0, restrictions, paralleliza
 
 def expand_basis_and_hamiltonian(n_spin_orbitals, h_dict, hOp, basis0,
                                  restrictions, parallelization_mode="serial",
-                                 return_h_local=False):
+                                 return_h_local=False, verbose = True):
     """
     Return Hamiltonian in matrix format.
 
@@ -1900,19 +1905,19 @@ def expand_basis_and_hamiltonian(n_spin_orbitals, h_dict, hOp, basis0,
     # Obtain tuple containing different product states.
     # Possibly add new product state keys to h_dict.
     basis = expand_basis(n_spin_orbitals, h_dict, hOp, basis0, restrictions, parallelization_mode)
-    if rank == 0:
+    if rank == 0 and verbose:
         print('time(expand_basis) = {:.3f} seconds.'.format(time.time() - t0))
         t0 = time.time()
     # Obtain Hamiltonian in matrix format.
     h, basis_index = get_hamiltonian_matrix_from_h_dict(h_dict, basis, parallelization_mode, return_h_local)
-    if rank == 0:
+    if rank == 0 and verbose:
         print("time(get_hamiltonian_matrix_from_h_dict) = {:.3f} seconds.".format(time.time() - t0))
         t0 = time.time()
 
     if parallelization_mode == 'H_build':
         # Total Hamiltonian size. Only used for printing it.
         len_h_dict_total = comm.reduce(len(h_dict))
-        if rank == 0:
+        if rank == 0 and verbose:
             print(
                 "Hamiltonian basis sizes: "
                 f"len(basis_index) = {len(basis_index)}, "
@@ -1921,7 +1926,7 @@ def expand_basis_and_hamiltonian(n_spin_orbitals, h_dict, hOp, basis0,
                 f"len(h_dict_total) = {len_h_dict_total}"
             )
     elif parallelization_mode == "serial":
-        if rank == 0:
+        if rank == 0 and verbose:
             print(
                 "Hamiltonian basis sizes: "
                 f"len(basis_index) = {len(basis_index)}, "
@@ -1933,7 +1938,7 @@ def expand_basis_and_hamiltonian(n_spin_orbitals, h_dict, hOp, basis0,
 
 
 def get_tridiagonal_krylov_vectors(h, psi0, krylovSize, h_local=False,
-                                   mode='sparse'):
+                                   mode='sparse', verbose = True):
     r"""
     return tridiagonal elements of the Krylov Hamiltonian matrix.
 
@@ -1973,7 +1978,7 @@ def get_tridiagonal_krylov_vectors(h, psi0, krylovSize, h_local=False,
 
     # Start with Krylov iterations.
     if h_local:
-        if rank == 0: print('MPI parallelization in the Krylov loop...')
+        if rank == 0 and verbose: print('MPI parallelization in the Krylov loop...')
         # The Hamiltonian matrix is distributed over MPI ranks,
         # i.e. H = sum_r Hr
         # This means a multiplication of the Hamiltonian matrix H
@@ -2029,7 +2034,7 @@ def get_tridiagonal_krylov_vectors(h, psi0, krylovSize, h_local=False,
             alpha[j] = np.dot(np.conj(wp),v[1,:]).real
             w = wp - alpha[j]*v[1,:] - beta[j-1]*v[0,:]
             v[0,:] = v[1,:]
-    if rank == 0:
+    if rank == 0 and verbose:
         print("time(get_tridiagonal_krylov_vectors) = {:.5f} seconds.".format(time.time() - t0))
     return alpha, beta
 
