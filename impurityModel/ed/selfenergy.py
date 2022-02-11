@@ -207,10 +207,9 @@ def get_sigma(omega_mesh, nBaths, g, h0op, delta):
 
 def get_Greens_functions(nBaths, omega_mesh, es, psis, l, hOp, delta, restrictions, verbose):
     n_spin_orbitals = sum(2 * (2 * ang + 1) + nBath for ang, nBath in nBaths.items())
-    gs = np.zeros((len(es), len(omega_mesh)), dtype=complex)
     tOpsPS = spectra.getPhotoEmissionOperators(nBaths, l=2)
     tOpsIPS = spectra.getInversePhotoEmissionOperators(nBaths, l=2)
-    gs = calc_Greens_function_with_offdiag(
+    gsIPS = calc_Greens_function_with_offdiag(
             n_spin_orbitals,
             hOp, 
             tOpsIPS, 
@@ -220,8 +219,7 @@ def get_Greens_functions(nBaths, omega_mesh, es, psis, l, hOp, delta, restrictio
             delta, 
             restrictions, 
             verbose = verbose)
-    gs -= np.conj(
-            calc_Greens_function_with_offdiag(
+    gsPS = calc_Greens_function_with_offdiag(
                 n_spin_orbitals, 
                 hOp, 
                 tOpsPS, 
@@ -231,8 +229,10 @@ def get_Greens_functions(nBaths, omega_mesh, es, psis, l, hOp, delta, restrictio
                 delta, 
                 restrictions,
                 verbose = verbose)
-            )
-    return gs
+    for i_psi in range(len(psis)):
+        for i_w in range(len(omega_mesh)):
+            gsPS[i_psi, :, :, i_w] = np.conj(gsPS[i_psi, :, :, i_w].T)
+    return gsIPS - gsPS
     
 def save_Greens_function(gs, omega_mesh, clustername):
     print ("Writing Greens function to files")
@@ -245,8 +245,8 @@ def save_Greens_function(gs, omega_mesh, clustername):
                 off_diags.append((row, column))
     with open(f"real-G-{clustername}.dat", "w") as fg_real, open(f"imag-G-{clustername}.dat", "w") as fg_imag:
         for i, w in enumerate(omega_mesh):
-            fg_real.write(f"{w*eV_to_Ry} {np.real(np.sum(gs[:, :, i]))} " + " ".join(f"{np.real(el)}" for el in np.diag(gs[:, :, i])) + " ".join(f"{np.real(gs[row, column, i])}" for row, column in off_diags) + "\n")
-            fg_imag.write(f"{w*eV_to_Ry} {np.imag(np.sum(gs[:, :, i]))} " + " ".join(f"{np.imag(el)}" for el in np.diag(gs[:, :, i])) + " ".join(f"{np.imag(gs[row, column, i])}" for row, column in off_diags) + "\n")
+            fg_real.write(f"{w*eV_to_Ry} {np.real(np.sum(np.diag(gs[:, :, i])))} " + " ".join(f"{np.real(el)}" for el in np.diag(gs[:, :, i])) + " ".join(f"{np.real(gs[row, column, i])}" for row, column in off_diags) + "\n")
+            fg_imag.write(f"{w*eV_to_Ry} {np.imag(np.sum(np.diag(gs[:, :, i])))} " + " ".join(f"{np.imag(el)}" for el in np.diag(gs[:, :, i])) + " ".join(f"{np.imag(gs[row, column, i])}" for row, column in off_diags) + "\n")
 
 def save_selfenergy(sigma, omega_mesh, clustername):
     print ("Writing Selfenergy to files")
@@ -259,8 +259,8 @@ def save_selfenergy(sigma, omega_mesh, clustername):
                 off_diags.append((row, column))
     with open(f"real-realaxis-Sigma-{clustername}.dat", "w") as fs_real, open(f"imag-realaxis-Sigma-{clustername}.dat", "w") as fs_imag:
         for i, w in enumerate(omega_mesh):
-            fs_real.write(f"{w*eV_to_Ry} {np.real(np.sum(sigma[:, :, i]))} " + " ".join(f"{np.real(el)}" for el in np.diag(sigma[:, :, i])) + " ".join(f"{np.real(sigma[row, column, i])}" for row, column in off_diags) + "\n")
-            fs_imag.write(f"{w*eV_to_Ry} {np.imag(np.sum(sigma[:, :, i]))} " + " ".join(f"{np.imag(el)}" for el in np.diag(sigma[:, :, i])) + " ".join(f"{np.imag(sigma[row, column, i])}" for row, column in off_diags) + "\n")
+            fs_real.write(f"{w*eV_to_Ry} {np.real(np.sum(np.diag(sigma[:, :, i])))} " + " ".join(f"{np.real(el)}" for el in np.diag(sigma[:, :, i])) + " ".join(f"{np.real(sigma[row, column, i])}" for row, column in off_diags) + "\n")
+            fs_imag.write(f"{w*eV_to_Ry} {np.imag(np.sum(np.diag(sigma[:, :, i])))} " + " ".join(f"{np.imag(el)}" for el in np.diag(sigma[:, :, i])) + " ".join(f"{np.imag(sigma[row, column, i])}" for row, column in off_diags) + "\n")
 
 
 def calc_Greens_function_with_offdiag(
@@ -321,10 +321,33 @@ def calc_Greens_function_with_offdiag(
     n = len(es)
     # Green's functions
     gs = np.zeros((n,len(tOps), len(tOps), len(w)),dtype=complex)
+
     # Hamiltonian dict of the form  |PS> : {H|PS>}
     # New elements are added each time getGreen is called.
     # Also acts as an input to getGreen and speed things up dramatically.
     h = {}
+
+    for i, (psi, e) in enumerate(zip(psis, es)):
+        v = []
+        for tOp in tOps:
+            v.append(applyOp(n_spin_orbitals, tOp, psi, slaterWeightMin, restrictions, {}))
+
+        gs[i, :, :, :] = get_block_Green(
+                                n_spin_orbitals = n_spin_orbitals,
+                                hOp = hOp,
+                                psi_arr = v,
+                                e = e,
+                                w = w,
+                                delta = delta,
+                                restrictions = restrictions,
+                                krylovSize = krylovSize,
+                                slaterWeightMin = slaterWeightMin,
+                                parallelization_mode = parallelization_mode,
+                                verbose = verbose
+                                )
+    return gs
+
+
     if parallelization_mode == "eigen_states":
         g = {}
         # Loop over eigen states, unique for each MPI rank
@@ -347,33 +370,33 @@ def calc_Greens_function_with_offdiag(
                                 parallelization_mode="serial", verbose = verbose)
                 g[i][t_right, t_right, :] = normalization**2*g_RR
 
-            for t_right, tOp_right in enumerate(tOps):
-                for t_left in range(t_right + 1, len(tÓps)):
-                    tOp_left = tOps[t_left]
-                    opSum = finite.addOps([tOp_right, tOp_left])
-                    opDif = finite.addOps([tOp_right, {key: -val for key, val in tOp_left.items()}])
-                    psiSum = applyOp(n_spin_orbitals, opSum, psi, slaterWeightMin,
-                            restrictions)
-                    psiDif = applyOp(n_spin_orbitals, opDif, psi, slaterWeightMin,
-                            restrictions)
+            #for t_right, tOp_right in enumerate(tOps):
+            #    for t_left in range(t_right + 1, len(tÓps)):
+            #        tOp_left = tOps[t_left]
+            #        opSum = finite.addOps([tOp_right, tOp_left])
+            #        opDif = finite.addOps([tOp_right, {key: -val for key, val in tOp_left.items()}])
+            #        psiSum = applyOp(n_spin_orbitals, opSum, psi, slaterWeightMin,
+            #                restrictions)
+            #        psiDif = applyOp(n_spin_orbitals, opDif, psi, slaterWeightMin,
+            #                restrictions)
 
-                    sumNorm = sqrt(norm2(psiSum))
-                    difNorm = sqrt(norm2(psiDif))
-                    for state in psiSum.keys():
-                        psiSum[state] /= sumNorm
-                    for state in psiDif.keys():
-                        psiDif[state] /= difNorm
-                    g_LR =  0.25*(sumNorm**2*spectra.getGreen(
-                                    n_spin_orbitals, e, psiSum, hOp, w, delta, krylovSize,
-                                    slaterWeightMin, restrictions, h,
-                                    parallelization_mode="serial", verbose = verbose) 
-                                - difNorm**2*spectra.getGreen(
-                                    n_spin_orbitals, e, psiDif, hOp, w, delta, krylovSize,
-                                    slaterWeightMin, restrictions, h,
-                                    parallelization_mode="serial", verbose = verbose)
-                               )
-                    g[i][t_left, t_right, :] = g_LR
-                    g[i][t_right, t_left, :] = g_LR
+            #        sumNorm = sqrt(norm2(psiSum))
+            #        difNorm = sqrt(norm2(psiDif))
+            #        for state in psiSum.keys():
+            #            psiSum[state] /= sumNorm
+            #        for state in psiDif.keys():
+            #            psiDif[state] /= difNorm
+            #        g_LR =  0.25*(sumNorm**2*spectra.getGreen(
+            #                        n_spin_orbitals, e, psiSum, hOp, w, delta, krylovSize,
+            #                        slaterWeightMin, restrictions, h,
+            #                        parallelization_mode="serial", verbose = verbose) 
+            #                    - difNorm**2*spectra.getGreen(
+            #                        n_spin_orbitals, e, psiDif, hOp, w, delta, krylovSize,
+            #                        slaterWeightMin, restrictions, h,
+            #                        parallelization_mode="serial", verbose = verbose)
+            #                   )
+            #        g[i][t_left, t_right, :] = g_LR
+            #        g[i][t_right, t_left, :] = g_LR
         # Distribute the Green's functions among the ranks
         for r in range(ranks):
             gTmp = comm.bcast(g, root=r)
@@ -395,39 +418,115 @@ def calc_Greens_function_with_offdiag(
                     n_spin_orbitals, e, psiR, hOp, w, delta, krylovSize,
                     slaterWeightMin, restrictions, h,
                     parallelization_mode=parallelization_mode, verbose = verbose)
-            for t_right, tOp_right in enumerate(tOps):
-                for t_left in range(t_right + 1, len(tOps)):
-                    tOp_left = tOps[t_left]
-                    t_big = {}
-                    opSum = finite.addOps([tOp_right, tOp_left])
-                    opDif = finite.addOps([tOp_right, {key: -val for key, val in tOp_left.items()}])
-                    psiSum = applyOp(n_spin_orbitals, opSum, psi, slaterWeightMin,
-                            restrictions)
-                    psiDif = applyOp(n_spin_orbitals, opDif, psi, slaterWeightMin,
-                            restrictions)
+            # for t_right, tOp_right in enumerate(tOps):
+            #     for t_left in range(t_right + 1, len(tOps)):
+            #         tOp_left = tOps[t_left]
+            #         t_big = {}
+            #         opSum = finite.addOps([tOp_right, tOp_left])
+            #         opDif = finite.addOps([tOp_right, {key: -val for key, val in tOp_left.items()}])
+            #         psiSum = applyOp(n_spin_orbitals, opSum, psi, slaterWeightMin,
+            #                 restrictions)
+            #         psiDif = applyOp(n_spin_orbitals, opDif, psi, slaterWeightMin,
+            #                 restrictions)
 
-                    sumNorm = sqrt(norm2(psiSum))
-                    for state in psiSum.keys():
-                        psiSum[state] /= sumNorm
-                    difNorm = sqrt(norm2(psiDif))
-                    for state in psiDif.keys():
-                        psiDif[state] /= difNorm
+            #         sumNorm = sqrt(norm2(psiSum))
+            #         for state in psiSum.keys():
+            #             psiSum[state] /= sumNorm
+            #         difNorm = sqrt(norm2(psiDif))
+            #         for state in psiDif.keys():
+            #             psiDif[state] /= difNorm
 
-                    g_LR =  0.25*(sumNorm**2*spectra.getGreen(
-                                    n_spin_orbitals, e, psiSum, hOp, w, delta, krylovSize,
-                                    slaterWeightMin, restrictions, h,
-                                    parallelization_mode="serial", verbose = verbose) 
-                                - difNorm**2*spectra.getGreen(
-                                    n_spin_orbitals, e, psiDif, hOp, w, delta, krylovSize,
-                                    slaterWeightMin, restrictions, h,
-                                    parallelization_mode="serial", verbose = verbose)
-                               )
+            #         g_LR =  0.25*(sumNorm**2*spectra.getGreen(
+            #                         n_spin_orbitals, e, psiSum, hOp, w, delta, krylovSize,
+            #                         slaterWeightMin, restrictions, h,
+            #                         parallelization_mode="serial", verbose = verbose) 
+            #                     - difNorm**2*spectra.getGreen(
+            #                         n_spin_orbitals, e, psiDif, hOp, w, delta, krylovSize,
+            #                         slaterWeightMin, restrictions, h,
+            #                         parallelization_mode="serial", verbose = verbose)
+            #                    )
 
-                    gs[i, t_left, t_right, :] = g_LR
-                    gs[i, t_right, t_left, :] = g_LR
+            #         gs[i, t_left, t_right, :] = g_LR
+            #         gs[i, t_right, t_left, :] = g_LR
     else:
         raise Exception("Incorrect value of variable parallelization_mode.")
     return gs
+
+def get_block_Green(
+        n_spin_orbitals,
+        hOp,
+        psi_arr,
+        e,
+        w,
+        delta,
+        restrictions=None,
+        krylovSize=150,
+        slaterWeightMin=1e-7,
+        parallelization_mode="H_build",
+        verbose = True):
+
+    states = set([key for psi in psi_arr for key in psi.keys()])
+
+    h, basis_index = finite.expand_basis_and_hamiltonian(
+        n_spin_orbitals, {}, hOp, list(states), restrictions,
+        parallelization_mode = 'serial', return_h_local = False, verbose = verbose)
+
+    N = len(basis_index)
+    n = len(psi_arr)
+
+    gs = np.zeros((len(w), n, n), dtype = complex)
+
+
+    psi_start = np.zeros((N,n), dtype= complex)
+    for i, psi in enumerate(psi_arr):
+        for ps, amp in psi.items():
+            psi_start[basis_index[ps], i] = amp
+    krylovSize = min(krylovSize,N)
+
+    # Do a QR decomposition of the target block, to ensure that we start with an orthonormal block
+    psi0, r = np.linalg.qr(psi_start)
+
+    if rank == 0:
+        print (f"Starting block Lanczos!")
+    # Run Lanczos on Q^T* [wI - j*delta - H]^-1 Q
+    alphas, betas = get_block_Lanczons_matrices(psi0, h, n_spin_orbitals, slaterWeightMin, restrictions, krylovSize)
+
+    omegaP = w + 1j*delta + e
+    for i in range(krylovSize - 1, -1, -1):
+        if i == krylovSize - 1:
+            gs = np.linalg.inv([wP*np.eye(n, n, dtype = complex) - alphas[:, :, i] for wP in omegaP])
+        else:
+            gs = np.linalg.inv([wP*np.eye(n, n, dtype = complex) - alphas[:, :, i] - np.linalg.multi_dot([np.conj(betas[:, :, i].T), gs[i_w], betas[:, :, i]]) for i_w, wP in enumerate(omegaP)])
+    # Multiply obtained Green's function with the upper triangular matrix to restore the original block
+    # R^T* G R
+    gs = [np.linalg.multi_dot([np.conj(r.T), gs[i_w, :, :], r]) for i_w in range(len(w))]
+    return np.moveaxis(gs, 0, -1)
+
+def get_block_Lanczons_matrices(psi0, h, n_spin_orbitals, slaterWeightMin, restrictions, KrylovSize):
+    h_dict = {}
+    h_local = False
+    verbose = True
+
+    n = psi0.shape[1]
+    N = psi0.shape[0]
+
+    KrylovSize = min(KrylovSize, N)
+    alphas = np.zeros((n, n, KrylovSize), dtype = complex)
+    betas = np.zeros((n, n, KrylovSize), dtype = complex)
+   
+    q = np.zeros((2, N, n), dtype = complex) 
+    q[1, :, :] = psi0
+
+    for i in range(KrylovSize):
+        wp = h.dot(q[1])
+        alphas[:, :, i] = np.dot(np.conj(q[1].T), wp)
+        w = wp - np.dot(q[1], alphas[:,:,i]) - np.dot(q[0], np.conj(betas[:,:,i-1].T))
+        q[0] = q[1]
+        q[1], betas[:, :, i] = np.linalg.qr(w)
+        if np.any(np.abs(np.diag(betas[:, :, i])) < 1e-10):
+            break
+
+    return alphas, betas
 
 if __name__== "__main__":
     # Parse input parameters

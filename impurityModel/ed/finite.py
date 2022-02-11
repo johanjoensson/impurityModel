@@ -2222,3 +2222,30 @@ def i2cDict2Array(nBaths, iArray):
         for iOp in iArray:
                 res.append(i2cDict(nBaths, iOp))
         return res
+
+
+def QR_decomp_GS(column_array):
+   r'''
+   Calculates the QR decomposition of the "matrix" formed by the row-vectors in column_array.
+   Parameters
+   ----------
+   column_array : Array of multiconfigurational states
+   Returns
+   -------
+   Q : Array of multiconfigurational states, representing he orthonormal rows of column_array.
+   R : Upper triangular matrix
+   '''
+   n = len(column_array)
+   R = np.zeros((n, n), dtype=complex)
+   Q = []
+   for i, v in enumerate(column_array):
+       for j, u in enumerate(Q[:i]):
+           uv = inner(u, v)
+           addToFirst(v, u, -uv)
+           R[i, j] = inner(column_array[i], u)
+       norm = sqrt(norm2(v))
+       for state in v.keys():
+           v[state] /= norm
+       R[i, i] = inner(v, column_array[i])
+       Q.append(v)
+   return Q, R.T
