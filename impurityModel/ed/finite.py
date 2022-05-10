@@ -118,23 +118,24 @@ def eigensystem(n_spin_orbitals, hOp, basis, nPsiMax, groundDiagMode='Lanczos',
 
 
 def printSlaterDeterminantsAndWeights(psis, nPrintSlaterWeights):
-    print("Slater determinants/product states and correspoinding weights")
-    weights = []
-    for i, psi in enumerate(psis):
-        print("Eigenstate {:d}.".format(i))
-        print("Consists of {:d} product states.".format(len(psi)))
-        ws = np.array([abs(a) ** 2 for a in psi.values()])
-        s = np.array(list(psi.keys()))
-        j = np.argsort(ws)
-        ws = ws[j[-1::-1]]
-        s = s[j[-1::-1]]
-        weights.append(ws)
-        if nPrintSlaterWeights > 0:
-            print("Highest (product state) weights:")
-            print(ws[:nPrintSlaterWeights])
-            print("Corresponding product states:")
-            print(s[:nPrintSlaterWeights])
-            print("")
+    if rank == 0:
+        print("Slater determinants/product states and correspoinding weights")
+        weights = []
+        for i, psi in enumerate(psis):
+            print("Eigenstate {:d}.".format(i))
+            print("Consists of {:d} product states.".format(len(psi)))
+            ws = np.array([abs(a) ** 2 for a in psi.values()])
+            s = np.array(list(psi.keys()))
+            j = np.argsort(ws)
+            ws = ws[j[-1::-1]]
+            s = s[j[-1::-1]]
+            weights.append(ws)
+            if nPrintSlaterWeights > 0:
+                print("Highest (product state) weights:")
+                print(ws[:nPrintSlaterWeights])
+                print("Corresponding product states:")
+                print(s[:nPrintSlaterWeights])
+                print("")
 
 def printExpValues(nBaths, es, psis, n=None):
     '''
@@ -229,10 +230,10 @@ def dc_MLFT(n3d_i, c, Fdd, n2p_i=None, Fpd=None, Gpd=None):
     # Average repulsion energy defines Udd and Upd
     Udd = Fdd[0] - 14.0 / 441 * (Fdd[2] + Fdd[4])
     if n2p_i is None and Fpd is None and Gpd is None:
-        return Udd * n3d_i - c
+        return {2: Udd * n3d_i - c}
     if n2p_i == 6 and Fpd is not None and Gpd is not None:
         Upd = Fpd[0] - (1 / 15.0) * Gpd[1] - (3 / 70.0) * Gpd[3]
-        return [Udd * n3d_i + Upd * n2p_i - c, Upd * (n3d_i + 1) - c]
+        return {2 : Udd * n3d_i + Upd * n2p_i - c, 1 : Upd * (n3d_i + 1) - c}
     else:
         raise ValueError('double counting input wrong.')
 
@@ -679,15 +680,24 @@ def get2p3dSlaterCondonUop(Fdd=(9, 0, 8, 0, 6), Fpp=(20, 0, 8), Fpd=(10, 0, 8), 
     # Calculate F_dd^{0,2,4}
     FddOp = getUop(l1=2,l2=2,l3=2,l4=2,R=Fdd)
     # Calculate F_pp^{0,2}
-    FppOp = getUop(l1=1,l2=1,l3=1,l4=1,R=Fpp)
+    if Fpp is not None:
+        FppOp = getUop(l1=1,l2=1,l3=1,l4=1,R=Fpp)
+    else:
+        FppOp = {}
     # Calculate F_pd^{0,2}
-    FpdOp1 = getUop(l1=1,l2=2,l3=2,l4=1,R=Fpd)
-    FpdOp2 = getUop(l1=2,l2=1,l3=1,l4=2,R=Fpd)
-    FpdOp = addOps([FpdOp1,FpdOp2])
+    if Fpd is not None:
+        FpdOp1 = getUop(l1=1,l2=2,l3=2,l4=1,R=Fpd)
+        FpdOp2 = getUop(l1=2,l2=1,l3=1,l4=2,R=Fpd)
+        FpdOp = addOps([FpdOp1,FpdOp2])
+    else:
+        FpdOp = {}
     # Calculate G_pd^{1,3}
-    GpdOp1 = getUop(l1=1,l2=2,l3=1,l4=2,R=Gpd)
-    GpdOp2 = getUop(l1=2,l2=1,l3=2,l4=1,R=Gpd)
-    GpdOp = addOps([GpdOp1,GpdOp2])
+    if Gpd is not None:
+        GpdOp1 = getUop(l1=1,l2=2,l3=1,l4=2,R=Gpd)
+        GpdOp2 = getUop(l1=2,l2=1,l3=2,l4=1,R=Gpd)
+        GpdOp = addOps([GpdOp1,GpdOp2])
+    else:
+        GpdOp = {}
     # Add operators
     uOp = addOps([FddOp,FppOp,FpdOp,GpdOp])
     return uOp
@@ -705,6 +715,8 @@ def getSOCop(xi,l=2):
         where sorb1 is a superindex of (l, s, m).
 
     '''
+    if abs(xi) > 1e-10:
+        return {}
     opDict = {}
     for m in range(-l, l+1):
         for s in range(2):
@@ -1072,23 +1084,24 @@ def getDensityMatrixCubic(nBaths, psi):
     return nCub
 
 def printDensityMatrixCubic(nBaths, psis, tolPrintOccupation):
-    # Calculate density matrix
-    print("Density matrix (in cubic harmonics basis):")
-    for i, psi in enumerate(psis):
-        print("Eigenstate {:d}".format(i))
-        n = getDensityMatrixCubic(nBaths, psi)
-        print("#density matrix elements: {:d}".format(len(n)))
-        for e, ne in n.items():
-            if abs(ne) > tolPrintOccupation:
-                if e[0] == e[1]:
-                    print(
-                        "Diagonal: (i,s) =",
-                        e[0],
-                        ", occupation = {:7.2f}".format(ne),
-                    )
-                else:
-                    print("Off-diagonal: (i,si), (j,sj) =", e, ", {:7.2f}".format(ne))
-        print("")
+    if rank == 0:
+        # Calculate density matrix
+        print("Density matrix (in cubic harmonics basis):")
+        for i, psi in enumerate(psis):
+            print("Eigenstate {:d}".format(i))
+            n = getDensityMatrixCubic(nBaths, psi)
+            print("#density matrix elements: {:d}".format(len(n)))
+            for e, ne in n.items():
+                if abs(ne) > tolPrintOccupation:
+                    if e[0] == e[1]:
+                        print(
+                            "Diagonal: (i,s) =",
+                            e[0],
+                            ", occupation = {:7.2f}".format(ne),
+                        )
+                    else:
+                        print("Off-diagonal: (i,si), (j,sj) =", e, ", {:7.2f}".format(ne))
+            print("")
 
 
 def getEgT2gOccupation(nBaths, psi):
@@ -1539,6 +1552,7 @@ def applyOp(n_spin_orbitals, op, psi, slaterWeightMin=1e-12, restrictions=None, 
     for state, amp in list(psiNew.items()):
         if abs(amp)**2 < slaterWeightMin:
             psiNew.pop(state)
+    # print (f"op: psiNew\n\t{op}: {psiNew}")
     return psiNew
 
 
@@ -1938,7 +1952,7 @@ def expand_basis_and_hamiltonian(n_spin_orbitals, h_dict, hOp, basis0,
 
 
 def get_tridiagonal_krylov_vectors(h, psi0, krylovSize, h_local=False,
-                                   mode='sparse', verbose = True):
+                                   mode='sparse', verbose = True, tol = 1e-16):
     r"""
     return tridiagonal elements of the Krylov Hamiltonian matrix.
 
@@ -1998,13 +2012,16 @@ def get_tridiagonal_krylov_vectors(h, psi0, krylovSize, h_local=False,
         for j in range(1,krylovSize):
             if rank == 0:
                 beta[j-1] = sqrt(np.sum(np.abs(w)**2))
-                if beta[j-1] != 0:
+                if abs(beta[j-1]) > tol:
                     v[1,:] = w/beta[j-1]
                 else:
                     # Pick normalized state v[j],
                     # orthogonal to v[0],v[1],v[2],...,v[j-1]
-                    raise ValueError(('Warning: beta==0, '
-                                      + 'implementation absent!'))
+                    # raise ValueError(('Warning: beta==0, '
+                    #                   + 'implementation absent!'))
+                    print ( "ValueError((\'Warning: beta==0, \'" +
+                                      + "\'implementation absent!\'))")
+                    break
             # Broadcast vector v[1,:] from rank 0 to all ranks.
             comm.Bcast(v[1,:], root=0)
             wp_local = h.dot(v[1,:])
@@ -2024,12 +2041,14 @@ def get_tridiagonal_krylov_vectors(h, psi0, krylovSize, h_local=False,
         # and more importantly the vectors alpha and beta
         for j in range(1,krylovSize):
             beta[j-1] = sqrt(np.sum(np.abs(w)**2))
-            if beta[j-1] != 0:
+            if abs(beta[j-1]) > tol:
                 v[1,:] = w/beta[j-1]
             else:
                 # Pick normalized state v[j],
                 # orthogonal to v[0],v[1],v[2],...,v[j-1]
-                raise ValueError('Warning: beta==0, implementation absent!')
+                # raise ValueError('Warning: beta==0, implementation absent!')
+                print ("ValueError(\'Warning: beta==0, implementation absent!\')")
+                break
             wp = h.dot(v[1,:])
             alpha[j] = np.dot(np.conj(wp),v[1,:]).real
             w = wp - alpha[j]*v[1,:] - beta[j-1]*v[0,:]

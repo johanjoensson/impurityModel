@@ -383,31 +383,29 @@ def get_hamiltonian_operator(
     SOC2pOperator = finite.getSOCop(xi_2p, l=1)
     SOC3dOperator = finite.getSOCop(xi_3d, l=2)
 
-    # Double counting (DC) correction values.
-    # MLFT DC
-    dc = finite.dc_MLFT(n3d_i=n0imps[2], c=chargeTransferCorrection, Fdd=Fdd,
-                        n2p_i=n0imps[1], Fpd=Fpd, Gpd=Gpd)
     eDCOperator = {}
-    for il, l in enumerate([2,1]):
-        for s in range(2):
-            for m in range(-l, l+1):
-                eDCOperator[(((l, s, m), 'c'), ((l, s, m), 'a'))] = -dc[il]
+    if chargeTransferCorrection is not None:
+        # Double counting (DC) correction values.
+        # MLFT DC
+        dc = finite.dc_MLFT(n3d_i=n0imps[2], c=chargeTransferCorrection, Fdd=Fdd,
+                            n2p_i=n0imps[1] if 1 in n0imps.keys() else None, Fpd=Fpd, Gpd=Gpd)
+        dc[2] = 54.185460317
+        print (f"n0imps.keys() {n0imps.keys()}")
+        for il, l in enumerate(n0imps.keys()):
+            for s in range(2):
+                for m in range(-l, l+1):
+                    eDCOperator[(((l, s, m), 'c'), ((l, s, m), 'a'))] = -dc[l]
 
     # Magnetic field
     hHfieldOperator = {}
     l = 2
     for m in range(-l, l+1):
-        #hHfieldOperator[(((l, 1, m), 'c'), ((l, 0, m), 'a'))] = hx*1/2.
-        #hHfieldOperator[(((l, 0, m), 'c'), ((l, 1, m), 'a'))] = hx*1/2.
-        #hHfieldOperator[(((l, 1, m), 'c'), ((l, 0, m), 'a'))] = -hy*1/2.*1j
-        #hHfieldOperator[(((l, 0, m), 'c'), ((l, 1, m), 'a'))] = hy*1/2.*1j
-        hHfieldOperator[(((l, 1, m), 'c'), ((l, 0, m), 'a'))] = hx
-        hHfieldOperator[(((l, 0, m), 'c'), ((l, 1, m), 'a'))] = hx
-        hHfieldOperator[(((l, 1, m), 'c'), ((l, 0, m), 'a'))] += -hy*1j
-        hHfieldOperator[(((l, 0, m), 'c'), ((l, 1, m), 'a'))] += hy*1j
+        hHfieldOperator[(((l, 1, m), 'c'), ((l, 0, m), 'a'))] = hx*1/2.
+        hHfieldOperator[(((l, 0, m), 'c'), ((l, 1, m), 'a'))] = hx*1/2.
+        hHfieldOperator[(((l, 1, m), 'c'), ((l, 0, m), 'a'))] += -hy*1/2.*1j
+        hHfieldOperator[(((l, 0, m), 'c'), ((l, 1, m), 'a'))] += hy*1/2.*1j
         for s in range(2):
-            #hHfieldOperator[(((l, s, m), 'c'), ((l, s, m), 'a'))] = hz*1/2 if s==1 else -hz*1/2
-            hHfieldOperator[(((l, s, m), 'c'), ((l, s, m), 'a'))] = hz if s==1 else -hz
+            hHfieldOperator[(((l, s, m), 'c'), ((l, s, m), 'a'))] = hz*1/2 if s==1 else -hz*1/2
 
     # Read the non-relativistic non-interacting Hamiltonian operator from file.
     h0_operator = get_h0_operator(h0_filename, nBaths)
