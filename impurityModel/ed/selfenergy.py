@@ -155,8 +155,8 @@ def get_selfenergy(
         except UnphysicalSelfenergy as err:
             print (f"ERROR Unphysical selfenergy:\n\t{err}")
     if rank == 0:
-        save_Greens_function(gs = gs_thermal_avg, omega_mesh = omega_mesh, label ='G-'+ clustername)
-        save_Greens_function(gs = sigma, omega_mesh = omega_mesh, label ='Sigma-'+ clustername, tol = 1e-2)
+        save_Greens_function(gs = gs_thermal_avg/eV_to_Ry, omega_mesh = omega_mesh, label ='G-'+ clustername, tol = 5, e_scale = eV_to_Ry)
+        save_Greens_function(gs = sigma*eV_to_Ry, omega_mesh = omega_mesh, label ='Sigma-'+ clustername, tol = 5e-1, e_scale = eV_to_Ry)
 
 def check_sigma(sigma):
     diagonals = [np.diag(sigma[:,:, i]) for i in range(sigma.shape[-1])]
@@ -209,14 +209,14 @@ def get_sigma(omega_mesh, nBaths, g, h0op, delta, mpi_distribute = False, save_G
         return np.linalg.multi_dot([v_dagger, np.linalg.inv((w + 1j*delta)*np.identity(N) - hbath), v])
     if save_hyb:
         hybridization_function = np.array([hyb(w) for w in omega_mesh])
-        save_Greens_function(np.moveaxis(hybridization_function, 0, -1), omega_mesh, label = "Hyb-" + clustername)
+        save_Greens_function(np.moveaxis(hybridization_function, 0, -1)/eV_to_Ry, omega_mesh, label = "Hyb-" + clustername, e_scale = eV_to_Ry)
 
     g0_inv = np.array(
              [(w + 1j*delta)*np.identity(n) - hcorr - hybridization_function[i_w] for i_w, w in enumerate(omega_mesh)]
              )
 
     if save_G0:
-        save_Greens_function(np.moveaxis(np.linalg.inv(g0_inv), 0, -1), omega_mesh, "G0-" + clustername)
+        save_Greens_function(np.moveaxis(np.linalg.inv(g0_inv), 0, -1)/eV_to_Ry, omega_mesh, "G0-" + clustername, e_scale = eV_to_Ry)
 
     g0_inv = np.moveaxis(g0_inv, 0, -1)
 
@@ -254,15 +254,15 @@ def get_Greens_functions(nBaths, omega_mesh, es, psis, l, hOp, delta, restrictio
         comm.Bcast(gsPS, root = 0)
     return gsIPS - gsPS
     
-def save_Greens_function(gs, omega_mesh, label, tol = 1e-12):
+def save_Greens_function(gs, omega_mesh, label, e_scale = eV_to_Ry, tol = 1e-12):
     axis_label = 'realaxis'
     if np.all(np.abs(np.imag(omega_mesh)) > 1e-12):
         axis_label = 'Matsubara'
 
     nl = int(gs.shape[1]/2)
     off_diags = []
-    for row in range(gs.shape[0]):
-        for column in range(gs.shape[1]):
+    for column in range(gs.shape[1]):
+        for row in range(gs.shape[0]):
             if row == column:
                 continue
             if np.any(np.abs(gs[row, column, :]) > tol):
@@ -284,8 +284,8 @@ def save_Greens_function(gs, omega_mesh, label, tol = 1e-12):
         fg_real.write(header + '\n')
         fg_imag.write(header + '\n')
         for i, w in enumerate(omega_mesh):
-            fg_real.write(f"{w*eV_to_Ry} {np.real(np.sum(np.diag(gs[:, :, i])))} {np.real(np.sum(np.diag(gs[0:nl, 0:nl, i])))} {np.real(np.sum(np.diag(gs[nl:, nl:, i])))} " + " ".join(f"{np.real(el)}" for el in np.diag(gs[:, :, i])) + " " + " ".join(f"{np.real(gs[row, column, i])}" for row, column in off_diags) + "\n")
-            fg_imag.write(f"{w*eV_to_Ry} {np.imag(np.sum(np.diag(gs[:, :, i])))} {np.imag(np.sum(np.diag(gs[0:nl, 0:nl, i])))} {np.imag(np.sum(np.diag(gs[nl:, nl:, i])))} " + " ".join(f"{np.imag(el)}" for el in np.diag(gs[:, :, i])) + " " + " ".join(f"{np.imag(gs[row, column, i])}" for row, column in off_diags) + "\n")
+            fg_real.write(f"{w*e_scale} {np.real(np.sum(np.diag(gs[:, :, i])))} {np.real(np.sum(np.diag(gs[0:nl, 0:nl, i])))} {np.real(np.sum(np.diag(gs[nl:, nl:, i])))} " + " ".join(f"{np.real(el)}" for el in np.diag(gs[:, :, i])) + " " + " ".join(f"{np.real(gs[row, column, i])}" for row, column in off_diags) + "\n")
+            fg_imag.write(f"{w*e_scale} {np.imag(np.sum(np.diag(gs[:, :, i])))} {np.imag(np.sum(np.diag(gs[0:nl, 0:nl, i])))} {np.imag(np.sum(np.diag(gs[nl:, nl:, i])))} " + " ".join(f"{np.imag(el)}" for el in np.diag(gs[:, :, i])) + " " + " ".join(f"{np.imag(gs[row, column, i])}" for row, column in off_diags) + "\n")
 
 def calc_Greens_function_with_offdiag(
         n_spin_orbitals,
@@ -433,9 +433,6 @@ def get_block_Green(
     krylovSize = min(krylovSize,N)
 
     mask = np.linalg.norm(psi_start, axis = 0) > 1e-12
-    if rank == 0:
-        print (mask)
-        print (psi_start[:,mask])
     psi0, r = np.linalg.qr(psi_start[:, mask])
 
     if rank == 0:
