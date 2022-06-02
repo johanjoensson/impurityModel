@@ -50,7 +50,7 @@ def get_selfenergy(
         verbose):
 
     omega_mesh = np.linspace(-25, 25, 2000)
-    # omega_mesh = 1j*np.pi*k_B*T*np.arange(start = 1, step = 2, stop = 3001)
+    # omega_mesh = 1j*np.pi*k_B*T*np.arange(start = 1, step = 2, stop = 2*375)
 
     comm = MPI.COMM_WORLD
     rank = comm.rank
@@ -155,8 +155,8 @@ def get_selfenergy(
         except UnphysicalSelfenergy as err:
             print (f"ERROR Unphysical selfenergy:\n\t{err}")
     if rank == 0:
-        save_Greens_function(gs = gs_thermal_avg/eV_to_Ry, omega_mesh = omega_mesh, label ='G-'+ clustername, tol = 5, e_scale = eV_to_Ry)
-        save_Greens_function(gs = sigma*eV_to_Ry, omega_mesh = omega_mesh, label ='Sigma-'+ clustername, tol = 5e-1, e_scale = eV_to_Ry)
+        save_Greens_function(gs = gs_thermal_avg/eV_to_Ry, omega_mesh = omega_mesh, label ='G-'+ clustername, tol = 1, e_scale = eV_to_Ry)
+        save_Greens_function(gs = sigma*eV_to_Ry, omega_mesh = omega_mesh, label ='Sigma-'+ clustername, tol = 5e-2, e_scale = eV_to_Ry)
 
 def check_sigma(sigma):
     diagonals = [np.diag(sigma[:,:, i]) for i in range(sigma.shape[-1])]
@@ -175,15 +175,16 @@ def get_hcorr_v_hbath(h0op, nBaths):
     #   The matrix form of h0op can be written
     #   [  hcorr  V^+    ]
     #   [  V      hbath  ]
-    # TODO: 
-    # Remove assumption that hp can be ignored, 
-    # allow for other l quantum numbers of correlated orbitals than 2
-    # allow for hcorr to contain a mixture of l quantum numbers
+    # where:
+    #       - hcorr is the Hamiltonian for the correlated, impurity, orbitals.
+    #       - V/V^+ is the hopping between impurity and bath orbitals.
+    #       - hbath is the hamiltonian for the non-interacting, bath, orbitals.
     h0Matrix = finite.iOpToMatrix(nBaths, h0op)
-    hcorr = h0Matrix[0:10,0:10]
-    v_dagger = h0Matrix[0:10, 10:]
-    v = h0Matrix[10:, 0:10]
-    h_bath = h0Matrix[10:, 10:]
+    n_corr = sum([2*(2*l + 1) for l in nBaths.keys()])
+    hcorr = h0Matrix[0:n_corr,0:n_corr]
+    v_dagger = h0Matrix[0:n_corr, n_corr:]
+    v = h0Matrix[n_corr:, 0:n_corr]
+    h_bath = h0Matrix[n_corr:, n_corr:]
     return hcorr, v, v_dagger, h_bath
 
 def get_sigma(omega_mesh, nBaths, g, h0op, delta, mpi_distribute = False, save_G0 = False, save_hyb = False, clustername = ""):
@@ -528,15 +529,15 @@ if __name__== "__main__":
     # Parse input parameters
     parser = argparse.ArgumentParser(description="Spectroscopy simulations")
     parser.add_argument(
+        "h0_filename",
+        type=str,
+        help="Filename of non-interacting Hamiltonian, in pickle-format.",
+    )
+    parser.add_argument(
         "--clustername",
         type=str,
         default="cluster",
         help="Id of cluster, used for generating the filename in which to store the calculated self-energy.",
-    )
-    parser.add_argument(
-        "h0_filename",
-        type=str,
-        help="Filename of non-interacting Hamiltonian, in pickle-format.",
     )
     parser.add_argument(
         "--ls",
@@ -590,7 +591,7 @@ if __name__== "__main__":
     parser.add_argument(
         "--xi",
         type=float,
-        default=0.096,
+        default=0,
         help="SOC value for valence orbitals. Assumed to be d-orbitals",
     )
     parser.add_argument(

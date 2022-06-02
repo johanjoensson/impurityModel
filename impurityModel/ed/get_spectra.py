@@ -389,7 +389,10 @@ def get_hamiltonian_operator(
         # MLFT DC
         dc = finite.dc_MLFT(n3d_i=n0imps[2], c=chargeTransferCorrection, Fdd=Fdd,
                             n2p_i=n0imps[1] if 1 in n0imps.keys() else None, Fpd=Fpd, Gpd=Gpd)
-        dc[2] = 54.185460317
+        dc[2] = 48.381051015
+        # dc[2] -= 2.5966908454
+        # dc[2] = 419.05550043
+        # dc[2] = 0
         print (f"n0imps.keys() {n0imps.keys()}")
         for il, l in enumerate(n0imps.keys()):
             for s in range(2):

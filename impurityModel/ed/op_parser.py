@@ -138,7 +138,6 @@ def parse_file(filename):
                 # extracted_ops = extract_operators(line)
                 # for key, val in extracted_ops:
                 key, val = extract_operator(line)
-                print (f"key: {key}, val: {val}")
                 if key in op:
                     op[key] += val
                 else:
