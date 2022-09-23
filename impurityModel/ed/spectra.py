@@ -33,7 +33,7 @@ ranks = comm.size
 def simulate_spectra(es, psis, hOp, T, w, delta, epsilons,
                      wLoss, deltaNIXS, qsNIXS, liNIXS, ljNIXS, RiNIXS, RjNIXS,
                      radialMesh, wIn, deltaRIXS, epsilonsRIXSin, epsilonsRIXSout,
-                     restrictions, h5f, nBaths, RIXS_projectors):
+                     restrictions, h5f, nBaths, XAS_projectors, RIXS_projectors):
     """
     Simulate various spectra.
 
@@ -196,6 +196,15 @@ def simulate_spectra(es, psis, hOp, T, w, delta, epsilons,
     if rank == 0: print('Create XAS spectra...')
     # Dipole transition operators
     tOps = getDipoleOperators(nBaths, epsilons)
+    if XAS_projectors:
+        iBasisProjectors = arrayOp2Dict(nBaths, XAS_projectors.values())
+        projectedTOps = []
+        for proj in iBasisProjectors:
+            for op in tOps:
+                projectedTOps.append( combineOp(nBaths, proj, op) )
+        tOps = projectedTOps
+
+
     # Green's function
     gs = getSpectra(n_spin_orbitals, hOp, tOps, psis, es, w,
                             delta, restrictions)
@@ -222,76 +231,12 @@ def simulate_spectra(es, psis, hOp, T, w, delta, epsilons,
         print("time(XAS) = {:.2f} seconds \n".format(time.time() - t0))
         t0 = time.time()
 
-    if rank == 0:
-        print("Create RIXS spectra...")
-    # Dipole 2p -> 3d transition operators
-    tOpsIn = getDipoleOperators(nBaths, epsilonsRIXSin)
-    # Dipole 3d -> 2p transition operators
-    tOpsOut = getDaggeredDipoleOperators(nBaths, epsilonsRIXSout)
-    # Green's function
-    gs = getRIXSmap(
-        n_spin_orbitals,
-        hOp,
-        tOpsIn,
-        tOpsOut,
-        psis,
-        es,
-        wIn,
-        wLoss,
-        delta,
-        deltaRIXS,
-        restrictions,
-    )
-    if rank == 0:
-        print("#eigenstates = {:d}".format(np.shape(gs)[0]))
-        print("#in-polarizations = {:d}".format(np.shape(gs)[1]))
-        print("#out-polarizations = {:d}".format(np.shape(gs)[2]))
-        print("#mesh points of input energy = {:d}".format(np.shape(gs)[3]))
-        print("#mesh points of energy loss = {:d}".format(np.shape(gs)[4]))
-    # Thermal average
-    a = thermal_average(es[: np.shape(gs)[0]], -gs.imag, T=T)
-    if rank == 0:
-        h5f.create_dataset("RIXS", data=-gs.imag)
-        h5f.create_dataset("RIXSthermal", data=a)
-    # Sum over transition operators
-    aSum = np.sum(a, axis=(0, 1))
-    # Save spectra to disk
-    if rank == 0:
-        print("Save spectra to disk...\n")
-        np.savetxt('XAS.dat', np.array(tmp).T, fmt='%8.4f',
-                   header='E  sum  T1  T2  T3 ...')
-    if rank == 0:
-        print("time(XAS) = {:.2f} seconds \n".format(time.time()-t0))
-        t0 = time.time()
-
     if (len(wIn) > 0):
       if rank == 0: print('Create RIXS spectra...')
       # Dipole 2p -> 3d transition operators
       tOpsIn = getDipoleOperators(nBaths, epsilonsRIXSin)
       # Dipole 3d -> 2p transition operators
       tOpsOut = getDaggeredDipoleOperators(nBaths, epsilonsRIXSout)
-
-      # MOVE OUTSIDE OF THIS FUNCTION!!!
-      #eg_proj = {}
-      #t2g_proj = {}
-      # loop over spin
-      #for s in range(2):
-      #    eg_proj[(((2, s, 2), 'c'),((2, s, 2), 'a'))] = 0.5
-      #    eg_proj[(((2, s, -2), 'c'),((2,s,  -2), 'a'))] = 0.5
-      #    eg_proj[(((2, s, -2), 'c'),((2,s,  2), 'a'))] = 0.5
-      #    eg_proj[(((2, s, 2), 'c'),((2, s, -2), 'a'))] = 0.5
-      #    eg_proj[(((2, s, 0), 'c'),((2, s, 0), 'a'))] = 1.
-
-      #    t2g_proj[(((2, s, 2), 'c'),((2, s, 2), 'a'))] = 0.5
-      #    t2g_proj[(((2, s, -2), 'c'),((2, s,  -2), 'a'))] = 0.5
-      #    t2g_proj[(((2, s, -2), 'c'),((2, s,  2), 'a'))] = -0.5
-      #    t2g_proj[(((2, s, 2), 'c'),((2, s, -2,), 'a'))] = -0.5
-      #    t2g_proj[(((2, s, -1), 'c'),((2, s,  -1), 'a'))] = 1.
-      #    t2g_proj[(((2, s, 1), 'c'),((2, s, 1), 'a'))] = 1.
-      #RIXS_projectors = [eg_proj, t2g_proj]
-      #RIXS_projectors = None
-      ##########################################################
-
 
       if RIXS_projectors:
           iBasisProjectors = arrayOp2Dict(nBaths, RIXS_projectors.values())
@@ -302,11 +247,10 @@ def simulate_spectra(es, psis, hOp, T, w, delta, epsilons,
                   projectedTOpsIn.append( combineOp(nBaths, proj, opIn) )
               for opOut in tOpsOut:
                   projectedTOpsOut.append( combineOp(nBaths, opOut, proj) )
+          tOpsIn = projectedTOpsIn
+          tOpsOut = projectedTOpsOut
 
-          gs = getRIXSmap(n_spin_orbitals, hOp, projectedTOpsIn, projectedTOpsOut, psis, es,
-                          wIn, wLoss, delta, deltaRIXS, restrictions)
-      else:
-          gs = getRIXSmap(n_spin_orbitals, hOp, tOpsIn, tOpsOut, psis, es,
+      gs = getRIXSmap(n_spin_orbitals, hOp, tOpsIn, tOpsOut, psis, es,
                    wIn, wLoss, delta, deltaRIXS, restrictions, parallelization_mode='H_build_wIn')
 
 
@@ -314,6 +258,7 @@ def simulate_spectra(es, psis, hOp, T, w, delta, epsilons,
           print('#eigenstates = {:d}'.format(np.shape(gs)[0]))
           if RIXS_projectors:
                   print('RIXS projectors = {}'.format(RIXS_projectors.keys()))
+          print (f'shape(gs) = {np.shape(gs)}')
           print('#in-polarizations = {:d}'.format(np.shape(gs)[1]))
           print('#out-polarizations = {:d}'.format(np.shape(gs)[2]))
           print('#mesh points of input energy = {:d}'.format(np.shape(gs)[3]))

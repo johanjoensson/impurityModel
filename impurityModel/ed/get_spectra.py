@@ -30,7 +30,7 @@ def main(h0_filename,
          hField, nPsiMax,
          nPrintSlaterWeights, tolPrintOccupation,
          T, energy_cut,
-         delta, deltaRIXS, deltaNIXS, RIXS_projectors_filename):
+         delta, deltaRIXS, deltaNIXS, XAS_projectors_filename, RIXS_projectors_filename):
     """
     First find the lowest eigenstates and then use them to calculate various spectra.
 
@@ -123,14 +123,14 @@ def main(h0_filename,
     # Energy-mesh
     w = np.linspace(-25, 25, 4000)
     # Each element is a XAS polarization vector.
-    #epsilons = [[1, 0, 0], [0, 1, 0], [0, 0, 1]] # [[0,0,1]]
-    epsilons = [[ 1./np.sqrt(2), 1.j/np.sqrt(2), 0.], [ 1/np.sqrt(2), -1j/np.sqrt(2), 0.]] # [[0,0,1]]
+    epsilons = [[1, 0, 0], [0, 1, 0], [0, 0, 1]] # [[0,0,1]]
+    # epsilons = [[ 1./np.sqrt(2), 1.j/np.sqrt(2), 0.], [ 1/np.sqrt(2), -1j/np.sqrt(2), 0.], [0, 0, 1]] # [[0,0,1]]
     #epsilons = [[0.,  -1./np.sqrt(2), -1.j/np.sqrt(2)], [0., 1/np.sqrt(2), -1j/np.sqrt(2)]] # [[0,0,1]]
     # RIXS parameters
     # Polarization vectors, of in and outgoing photon.
     #epsilonsRIXSin = [[ 0., -1./np.sqrt(2), -1.j/np.sqrt(2)], [ 0., 1./np.sqrt(2), -1.j/np.sqrt(2) ]] # [[0,0,1]]
-    epsilonsRIXSin = [[ -1./np.sqrt(2), -1.j/np.sqrt(2), 0.], [1/np.sqrt(2), -1j/np.sqrt(2), 0.]] # [[0,0,1]]
-    # epsilonsRIXSin = [[1, 0, 0], [0, 1, 0], [0, 0, 1]] # x, y, z, cl, cr
+    # epsilonsRIXSin = [[ -1./np.sqrt(2), -1.j/np.sqrt(2), 0.], [1/np.sqrt(2), -1j/np.sqrt(2), 0.]] # [[0,0,1]]
+    epsilonsRIXSin = [[1, 0, 0], [0, 1, 0], [0, 0, 1]] # x, y, z, cl, cr
     #epsilonsRIXSout = [[ -1./np.sqrt(2), -1.j/np.sqrt(2), 0], [  1./np.sqrt(2), -1.j/np.sqrt(2), 0], [0, 0, 1]] # [[0,0,1]]
     #epsilonsRIXSout = [[1./np.sqrt(2), 1.j/np.sqrt(2), 0], [1./np.sqrt(2), -1.j/np.sqrt(2), 0], [0, 0, 1]] # [[0,0,1]]
     epsilonsRIXSout = [[1, 0, 0], [0, 1, 0], [0, 0, 1]] # x, y, z, cl, cr
@@ -140,8 +140,13 @@ def main(h0_filename,
        wIn = []
     wLoss = np.linspace(-0.5, 7.5, 2000 )
 
-    # Read RIXS projectors from file
-    RIXS_projectors = {}
+    # Read XAS and/or RIXS projectors from file
+    XAS_projectors = None
+    RIXS_projectors = None
+    if XAS_projectors_filename:
+            XAS_projectors = get_RIXS_projectors(XAS_projectors_filename)
+            if rank == 0 : print ("XAS projectors")
+            if rank == 0 : print (XAS_projectors)
     if RIXS_projectors_filename:
             RIXS_projectors = get_RIXS_projectors(RIXS_projectors_filename)
             if rank == 0 : print ("RIXS projectors")
@@ -306,12 +311,14 @@ def main(h0_filename,
         restrictions,
         h5f,
         nBaths,
+        XAS_projectors,
+        RIXS_projectors
     )
 
     print("Script finished for rank:", rank)
 
 
-def get_hamiltonian_operator(nBaths, nValBaths, slaterCondon, SOCs, DCinfo, hField, h0_filename):
+def get_hamiltonian_operator(nBaths, nValBaths, slaterCondon, SOCs, DCinfo, hField, h0_filename, rank):
     """
     Return the Hamiltonian, in operator form.
 
@@ -673,6 +680,8 @@ if __name__== "__main__":
         default=0.100,
         help=("Smearing, half width half maximum (HWHM). " "Due to finite lifetime of excited states."),
     )
+    parser.add_argument('--XAS_projectors_filename', type=str, default=None,
+                        help=('File containing the XAS projectors. Separated by newlines.'))
     parser.add_argument('--RIXS_projectors_filename', type=str, default=None,
                         help=('File containing the RIXS projectors. Separated by newlines.'))
 
@@ -708,5 +717,6 @@ if __name__== "__main__":
          tolPrintOccupation=args.tolPrintOccupation,
          T=args.T, energy_cut=args.energy_cut,
          delta=args.delta, deltaRIXS=args.deltaRIXS, deltaNIXS=args.deltaNIXS, 
+         XAS_projectors_filename=args.XAS_projectors_filename,
          RIXS_projectors_filename=args.RIXS_projectors_filename)
 
