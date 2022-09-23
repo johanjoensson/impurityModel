@@ -73,7 +73,7 @@ def allgather_dict(data, total, chunk_maxsize=1*10**6):
 
     """
     # Measure time for constructing H in matrix form
-    t0 = time.time()
+    t0 = time.perf_counter()
     # Number of elements for each rank.
     n_ps_new = np.zeros(ranks, dtype=np.int)
     for r in range(ranks):
@@ -95,4 +95,4 @@ def allgather_dict(data, total, chunk_maxsize=1*10**6):
                 #print('rank' + str(rank) + ': ', chunk)
                 total.update(comm.bcast(chunk, root=r))
     if rank == 0:
-        print("time(Allgather H_dict) = {:.5f} seconds.".format(time.time()-t0))
+        print("time(Allgather H_dict) = {:.5f} seconds.".format(time.perf_counter()-t0))

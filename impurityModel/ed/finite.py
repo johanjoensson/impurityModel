@@ -21,6 +21,7 @@ from impurityModel.ed import product_state_representation as psr
 from impurityModel.ed import create
 from impurityModel.ed import remove
 from impurityModel.ed.average import k_B, thermal_average
+import primme
 
 
 # MPI variables
@@ -93,7 +94,15 @@ def eigensystem(n_spin_orbitals, hOp, basis, nPsiMax, groundDiagMode='Lanczos',
     if rank == 0 and verbose: 
         print('Create Hamiltonian matrix...')
     h = get_hamiltonian_matrix(n_spin_orbitals, hOp, basis, verbose = verbose)
+    scipy.sparse.save_npz("hamiltonian_matrix_h4", h)
     if rank == 0 and verbose:
+        print ("Checking if Hamiltonian is Hermitian!")
+        Op = np.conj(h.T) - h
+        err_max = np.max(np.abs(Op))
+        if err_max > 1e-12:
+            print (f"Warning! hamiltonian matrix is not very Hermitian!\nLargest error = {err_max}")
+        else:
+            print ("Hamiltonian matrix is Hermitian!")
         print("<#Hamiltonian elements/column> = {:d}".format(int(len(np.nonzero(h)[0]) / len(basis))))
         print("Diagonalize the Hamiltonian...")
     if groundDiagMode == "full":
@@ -101,7 +110,8 @@ def eigensystem(n_spin_orbitals, hOp, basis, nPsiMax, groundDiagMode='Lanczos',
         es = es[:nPsiMax]
         vecs = vecs[:, :nPsiMax]
     elif groundDiagMode == "Lanczos":
-        es, vecs = scipy.sparse.linalg.eigsh(h, k=nPsiMax, which="SA", tol=eigenValueTol, ncv = h.shape[0])
+        # es, vecs = scipy.sparse.linalg.eigsh(h, k=nPsiMax, which="SA", tol=eigenValueTol)
+        es, vecs = primme.eigsh(h, k=nPsiMax, which="SA", tol = eigenValueTol, maxBlockSize = 4)
         # Sort the eigenvalues and eigenvectors in ascending order.
         indices = np.argsort(es)
         es = np.array([es[i] for i in indices])
@@ -109,7 +119,18 @@ def eigensystem(n_spin_orbitals, hOp, basis, nPsiMax, groundDiagMode='Lanczos',
     else:
         print("Wrong diagonalization mode")
     if rank == 0 and verbose:
-        print("Proceed with {:d} eigenstates.\n".format(len(es)))
+        print ("Check orthonormality of obtained eigenvectors")
+        V = np.array([ev/np.linalg.norm(ev) for ev in vecs.T]).T
+        Ip = np.conj(V.T) @ V
+        err_max = np.max(np.abs(Ip - np.eye(V.shape[1])))
+        if err_max > 1e-12:
+            print (f"Warning! Obtained eigenvectors are not very orthogonal!\nMaximum overlap {err_max}")
+        else:
+            print (f"Obtained eigenvectors are orthonormal!")
+
+        print(f"Proceed with {len(es)} eigenstates.\n")
+
+
     psis = [
         ({basis[i]: vecs[i, vi] for i in range(len(basis)) if slaterWeightMin <= abs(vecs[i, vi]) ** 2})
         for vi in range(len(es))
@@ -376,6 +397,7 @@ def get_basis(nBaths, valBaths, dnValBaths, dnConBaths, dnTol, n0imp, verbose = 
                         for bVal in basisVal:
                             for bCon in basisCon:
                                 basisL[l].append(bImp+bVal+bCon)
+                                # print (f"basis state : {bImp+bVal+bCon}")
     # Total number of spin-orbitals in the system
     n_spin_orbitals = sum(2*(2*ang+1) + nBath for ang, nBath in nBaths.items())
     basis = []
@@ -678,26 +700,25 @@ def get2p3dSlaterCondonUop(Fdd=(9, 0, 8, 0, 6), Fpp=(20, 0, 8), Fpd=(10, 0, 8), 
 
     """
     # Calculate F_dd^{0,2,4}
-    FddOp = getUop(l1=2,l2=2,l3=2,l4=2,R=Fdd)
+    FddOp = {}
+    if Fdd:
+        FddOp = getUop(l1=2,l2=2,l3=2,l4=2,R=Fdd)
     # Calculate F_pp^{0,2}
-    if Fpp is not None:
+    FppOp = {}
+    if Fpp:
         FppOp = getUop(l1=1,l2=1,l3=1,l4=1,R=Fpp)
-    else:
-        FppOp = {}
     # Calculate F_pd^{0,2}
-    if Fpd is not None:
+    FpdOp = {}
+    if Fpd:
         FpdOp1 = getUop(l1=1,l2=2,l3=2,l4=1,R=Fpd)
         FpdOp2 = getUop(l1=2,l2=1,l3=1,l4=2,R=Fpd)
         FpdOp = addOps([FpdOp1,FpdOp2])
-    else:
-        FpdOp = {}
     # Calculate G_pd^{1,3}
-    if Gpd is not None:
+    GpdOp = {}
+    if Gpd:
         GpdOp1 = getUop(l1=1,l2=2,l3=1,l4=2,R=Gpd)
         GpdOp2 = getUop(l1=2,l2=1,l3=2,l4=1,R=Gpd)
         GpdOp = addOps([GpdOp1,GpdOp2])
-    else:
-        GpdOp = {}
     # Add operators
     uOp = addOps([FddOp,FppOp,FpdOp,GpdOp])
     return uOp
@@ -1812,7 +1833,7 @@ def expand_basis(n_spin_orbitals, h_dict, hOp, basis0, restrictions, paralleliza
             basis_set = frozenset(basis)
             basis_new_local = set()
 
-            #print('rank', rank, ', basis:', basis)
+            # print(f'rank {rank}, basis: {basis}')
 
             # Among the product states in basis[i:n], first consider
             # the product states which exist in h_dict.
@@ -1822,7 +1843,7 @@ def expand_basis(n_spin_orbitals, h_dict, hOp, basis0, restrictions, paralleliza
                 res = h_dict[ps]
                 basis_new_local.update(set(res.keys()).difference(basis_set))
 
-            #print('rank', rank, ', states_setA_local:', states_setA_local)
+            # print(f'rank {rank}, states_setA_local: {states_setA_local}')
 
             # Now consider the product states in basis[i:n] which
             # does not exist in h_dict for any MPI rank.
@@ -1915,18 +1936,18 @@ def expand_basis_and_hamiltonian(n_spin_orbitals, h_dict, hOp, basis0,
 
     """
     # Measure time to expand basis
-    if rank == 0: t0 = time.time()
+    if rank == 0: t0 = time.perf_counter()
     # Obtain tuple containing different product states.
     # Possibly add new product state keys to h_dict.
     basis = expand_basis(n_spin_orbitals, h_dict, hOp, basis0, restrictions, parallelization_mode)
     if rank == 0 and verbose:
-        print('time(expand_basis) = {:.3f} seconds.'.format(time.time() - t0))
-        t0 = time.time()
+        print('time(expand_basis) = {:.3f} seconds.'.format(time.perf_counter() - t0))
+        t0 = time.perf_counter()
     # Obtain Hamiltonian in matrix format.
     h, basis_index = get_hamiltonian_matrix_from_h_dict(h_dict, basis, parallelization_mode, return_h_local)
     if rank == 0 and verbose:
-        print("time(get_hamiltonian_matrix_from_h_dict) = {:.3f} seconds.".format(time.time() - t0))
-        t0 = time.time()
+        print("time(get_hamiltonian_matrix_from_h_dict) = {:.3f} seconds.".format(time.perf_counter() - t0))
+        t0 = time.perf_counter()
 
     if parallelization_mode == 'H_build':
         # Total Hamiltonian size. Only used for printing it.
@@ -1971,7 +1992,7 @@ def get_tridiagonal_krylov_vectors(h, psi0, krylovSize, h_local=False,
     """
     if rank == 0:
         # Measure time to get tridiagonal krylov vectors.
-        t0 = time.time()
+        t0 = time.perf_counter()
     # This is probably not a good idea in terms of computational speed
     # since the Hamiltonians typically are extremely sparse.
     if mode == "dense":
@@ -1989,6 +2010,8 @@ def get_tridiagonal_krylov_vectors(h, psi0, krylovSize, h_local=False,
     v = np.zeros((2,n), dtype=np.complex)
     # Initialization...
     v[0,:] = psi0
+    Q = np.zeros((psi0.shape[0], krylovSize), dtype = complex)
+    Q[:, 0] = v[0, :]
 
     # Start with Krylov iterations.
     if h_local:
@@ -2007,21 +2030,28 @@ def get_tridiagonal_krylov_vectors(h, psi0, krylovSize, h_local=False,
         if rank == 0:
             alpha[0] = np.dot(np.conj(wp),v[0,:]).real
             w = wp - alpha[0]*v[0,:]
+            w -= np.linalg.multi_dot([Q, np.conj(Q.T), w])
         # Construct Krylov states,
         # and more importantly the vectors alpha and beta
+        converged = False
         for j in range(1,krylovSize):
             if rank == 0:
                 beta[j-1] = sqrt(np.sum(np.abs(w)**2))
                 if abs(beta[j-1]) > tol:
                     v[1,:] = w/beta[j-1]
+                    Q[:, j] = v[1, :]
                 else:
                     # Pick normalized state v[j],
                     # orthogonal to v[0],v[1],v[2],...,v[j-1]
                     # raise ValueError(('Warning: beta==0, '
                     #                   + 'implementation absent!'))
-                    print ( "ValueError((\'Warning: beta==0, \'" +
-                                      + "\'implementation absent!\'))")
-                    break
+                    # print ("ValueError(\'Warning: beta==0, implementation absent!\')")
+                    print (f"Lanczos (h_local) converged, beta = {beta[j - 1]}")
+                    converged = True
+            converged = comm.bcast(converged, root = 0)
+            if converged:
+                print (f"rank {rank} breaking!")
+                break
             # Broadcast vector v[1,:] from rank 0 to all ranks.
             comm.Bcast(v[1,:], root=0)
             wp_local = h.dot(v[1,:])
@@ -2031,30 +2061,35 @@ def get_tridiagonal_krylov_vectors(h, psi0, krylovSize, h_local=False,
             if rank == 0:
                 alpha[j] = np.dot(np.conj(wp),v[1,:]).real
                 w = wp - alpha[j]*v[1,:] - beta[j-1]*v[0,:]
+                w -= np.linalg.multi_dot([Q[:, :j + 1], np.conj(Q[:, :j + 1].T), w])
                 v[0,:] = v[1,:]
     else:
         # Initialization...
         wp = h.dot(v[0,:])
         alpha[0] = np.dot(np.conj(wp),v[0,:]).real
         w = wp - alpha[0]*v[0,:]
+        w -= np.linalg.multi_dot([Q, np.conj(Q.T), w])
         # Construct Krylov states,
         # and more importantly the vectors alpha and beta
         for j in range(1,krylovSize):
             beta[j-1] = sqrt(np.sum(np.abs(w)**2))
             if abs(beta[j-1]) > tol:
                 v[1,:] = w/beta[j-1]
+                Q[:, j] = v[1, :]
             else:
                 # Pick normalized state v[j],
                 # orthogonal to v[0],v[1],v[2],...,v[j-1]
                 # raise ValueError('Warning: beta==0, implementation absent!')
-                print ("ValueError(\'Warning: beta==0, implementation absent!\')")
+                # print ("ValueError(\'Warning: beta==0, implementation absent!\')")
+                print (f"Lanczos converged, beta = {beta[j - 1]}")
                 break
             wp = h.dot(v[1,:])
             alpha[j] = np.dot(np.conj(wp),v[1,:]).real
             w = wp - alpha[j]*v[1,:] - beta[j-1]*v[0,:]
+            w -= np.linalg.multi_dot([Q[:, :j + 1], np.conj(Q[:, :j + 1].T), w])
             v[0,:] = v[1,:]
     if rank == 0 and verbose:
-        print("time(get_tridiagonal_krylov_vectors) = {:.5f} seconds.".format(time.time() - t0))
+        print("time(get_tridiagonal_krylov_vectors) = {:.5f} seconds.".format(time.perf_counter() - t0))
     return alpha, beta
 
 

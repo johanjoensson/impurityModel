@@ -103,7 +103,8 @@ def main(h0_filename,
     comm = MPI.COMM_WORLD
     rank = comm.rank
 
-    if rank == 0: t0 = time.time()
+    if rank == 0: 
+        t0 = time.perf_counter()
 
     # -- System information --
     nBaths = OrderedDict(zip(ls, nBaths))
@@ -115,16 +116,18 @@ def main(h0_filename,
     dnValBaths = OrderedDict(zip(ls, dnValBaths))
     dnConBaths = OrderedDict(zip(ls, dnConBaths))
 
-    if rank == 0 : print ("hField = " + repr(hField))
+    if rank == 0 : 
+        print ("hField = " + repr(hField))
     # -- Spectra information --
     # Energy cut in eV.
     energy_cut *= k_B*T
     # XAS parameters
     # Energy-mesh
-    w = np.linspace(-25, 25, 4000)
+    # w = np.linspace(-35, 35, 4000)
+    w = np.linspace(-25, 25, 3001)
     # Each element is a XAS polarization vector.
     epsilons = [[1, 0, 0], [0, 1, 0], [0, 0, 1]] # [[0,0,1]]
-    # epsilons = [[ 1./np.sqrt(2), 1.j/np.sqrt(2), 0.], [ 1/np.sqrt(2), -1j/np.sqrt(2), 0.], [0, 0, 1]] # [[0,0,1]]
+    #epsilons = [[ 1./np.sqrt(2), 1.j/np.sqrt(2), 0.], [ 1/np.sqrt(2), -1j/np.sqrt(2), 0.]] # [[0,0,1]]
     #epsilons = [[0.,  -1./np.sqrt(2), -1.j/np.sqrt(2)], [0., 1/np.sqrt(2), -1j/np.sqrt(2)]] # [[0,0,1]]
     # RIXS parameters
     # Polarization vectors, of in and outgoing photon.
@@ -135,10 +138,12 @@ def main(h0_filename,
     #epsilonsRIXSout = [[1./np.sqrt(2), 1.j/np.sqrt(2), 0], [1./np.sqrt(2), -1.j/np.sqrt(2), 0], [0, 0, 1]] # [[0,0,1]]
     epsilonsRIXSout = [[1, 0, 0], [0, 1, 0], [0, 0, 1]] # x, y, z, cl, cr
     if (deltaRIXS > 0):
-       wIn = np.linspace(-4, 10, 100 )
+       # wIn = np.linspace(-10, 25, 500 )
+       wIn = np.linspace(-1, 2, 500 )
     else:
        wIn = []
-    wLoss = np.linspace(-0.5, 7.5, 2000 )
+    # wLoss = np.linspace(-1.5, 12.5, 2000 )
+    wLoss = np.linspace(-1.0, 2.5, 3000 )
 
     # Read XAS and/or RIXS projectors from file
     XAS_projectors = None
@@ -201,8 +206,8 @@ def main(h0_filename,
     #es, psis = finite.eigensystem(n_spin_orbitals, hOp, basis, nPsiMax, groundDiagMode='full')
 
     if rank == 0:
-        print("time(ground_state) = {:.2f} seconds \n".format(time.time()-t0))
-        t0 = time.time()
+        print("time(ground_state) = {:.2f} seconds \n".format(time.perf_counter()-t0))
+        t0 = time.perf_counter()
 
     # Calculate static expectation values
     finite.printThermalExpValues(nBaths, es, psis)
@@ -280,7 +285,7 @@ def main(h0_filename,
         h5f = None
 
     if rank == 0:
-        print("time(expectation values) = {:.2f} seconds \n".format(time.time()-t0))
+        print("time(expectation values) = {:.2f} seconds \n".format(time.perf_counter()-t0))
 
     # Consider from now on only eigenstates with low energy
     es = tuple(e for e in es if e - es[0] < energy_cut)
@@ -394,12 +399,8 @@ def get_hamiltonian_operator(
         # Double counting (DC) correction values.
         # MLFT DC
         dc = finite.dc_MLFT(n3d_i=n0imps[2], c=chargeTransferCorrection, Fdd=Fdd,
-                            n2p_i=n0imps[1] if 1 in n0imps.keys() else None, Fpd=Fpd, Gpd=Gpd)
-        dc[2] = 48.381051015
-        # dc[2] -= 2.5966908454
-        # dc[2] = 419.05550043
-        # dc[2] = 0
-        print (f"n0imps.keys() {n0imps.keys()}")
+                           n2p_i=n0imps[1] if 1 in n0imps.keys() else None, Fpd=Fpd, Gpd=Gpd)
+        dc[2] = 3.94248015
         for il, l in enumerate(n0imps.keys()):
             for s in range(2):
                 for m in range(-l, l+1):

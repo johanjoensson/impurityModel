@@ -126,8 +126,8 @@ def plot_spectra_in_file(filename):
         fig,axes = plt.subplots(nrows=2,sharex=True)
         # L3-edge energies.
         # Adjust these energies to the current material.
-        es = np.arange(-5 , -0 , 0.1)
-        plotOffset = 0.1
+        es = np.arange(-0.5 , 0.5 , 0.001)
+        plotOffset = 100
         print('Chosen L3 energies: ', es)
         print('Chosen plotOffset: ', plotOffset)
         for n,e in enumerate(es[-1::-1]):
@@ -136,8 +136,8 @@ def plot_spectra_in_file(filename):
                         label=r'$\omega_{in}$' + '={:3.1f}'.format(e))
         # L2-edge energies.
         # Adjust these energies to the current material.
-        es = np.arange( 13  ,  17 , 0.1)
-        plotOffset = 0.1
+        es = np.arange( 0.8 ,  1.5 , 0.001)
+        plotOffset = 100
         print('Chosen L2 energies: ', es)
         print('Chosen plotOffset: ', plotOffset)
         for n,e in enumerate(es[-1::-1]):

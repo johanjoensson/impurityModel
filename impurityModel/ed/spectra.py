@@ -96,7 +96,7 @@ def simulate_spectra(es, psis, hOp, T, w, delta, epsilons,
         dict of dicts representing the projections to apply for the calculation of the RIXS spectra
 
     """
-    if rank == 0: t0 = time.time()
+    if rank == 0: t0 = time.perf_counter()
 
     # Total number of spin-orbitals in the system
     n_spin_orbitals = sum(2 * (2 * ang + 1) + nBath for ang, nBath in nBaths.items())
@@ -131,8 +131,8 @@ def simulate_spectra(es, psis, hOp, T, w, delta, epsilons,
         print("Save spectra to disk...\n")
         np.savetxt("PS.dat", np.array(tmp).T, fmt="%8.4f", header="E  sum  T1  T2  T3 ...")
     if rank == 0:
-        print("time(PS) = {:.2f} seconds \n".format(time.time()-t0))
-        t0 = time.time()
+        print("time(PS) = {:.2f} seconds \n".format(time.perf_counter()-t0))
+        t0 = time.perf_counter()
 
     if rank == 0: print('Create core 2p x-ray photoemission spectra (XPS) ...')
     # Transition operators
@@ -160,8 +160,8 @@ def simulate_spectra(es, psis, hOp, T, w, delta, epsilons,
         print("Save spectra to disk...\n")
         np.savetxt("XPS.dat", np.array(tmp).T, fmt="%8.4f", header="E  sum  T1  T2  T3 ...")
     if rank == 0:
-        print("time(XPS) = {:.2f} seconds \n".format(time.time()-t0))
-        t0 = time.time()
+        print("time(XPS) = {:.2f} seconds \n".format(time.perf_counter()-t0))
+        t0 = time.perf_counter()
 
     if rank == 0: print('Create NIXS spectra...')
     # Transition operator: exp(iq*r)
@@ -189,8 +189,8 @@ def simulate_spectra(es, psis, hOp, T, w, delta, epsilons,
         np.savetxt("NIXS.dat", np.array(tmp).T, fmt="%8.4f", header="E  sum  T1  T2  T3 ...")
 
     if rank == 0:
-        print("time(NIXS) = {:.2f} seconds \n".format(time.time()-t0))
-        t0 = time.time()
+        print("time(NIXS) = {:.2f} seconds \n".format(time.perf_counter()-t0))
+        t0 = time.perf_counter()
 
 
     if rank == 0: print('Create XAS spectra...')
@@ -228,11 +228,12 @@ def simulate_spectra(es, psis, hOp, T, w, delta, epsilons,
         print("Save spectra to disk...\n")
         np.savetxt("XAS.dat", np.array(tmp).T, fmt="%8.4f", header="E  sum  T1  T2  T3 ...")
     if rank == 0:
-        print("time(XAS) = {:.2f} seconds \n".format(time.time() - t0))
-        t0 = time.time()
+        print("time(XAS) = {:.2f} seconds \n".format(time.perf_counter() - t0))
+        t0 = time.perf_counter()
 
     if (len(wIn) > 0):
-      if rank == 0: print('Create RIXS spectra...')
+      if rank == 0: 
+          print('Create RIXS spectra...')
       # Dipole 2p -> 3d transition operators
       tOpsIn = getDipoleOperators(nBaths, epsilonsRIXSin)
       # Dipole 3d -> 2p transition operators
@@ -268,10 +269,10 @@ def simulate_spectra(es, psis, hOp, T, w, delta, epsilons,
       if rank == 0 and h5f:
           h5f.create_dataset('RIXS', data=-gs.imag)
           h5f.create_dataset('RIXSthermal', data=a)
-          #if RIXS_projectors:
-          #    g = h5f.create_group('RIXSprojectors')
-          #    for key, proj in RIXS_projectors:
-          #        g.create_dataset(key, data=str(proj))
+          if RIXS_projectors:
+              g = h5f.create_group('RIXSprojectors')
+              for key, proj in RIXS_projectors:
+                  g.create_dataset(key, data=str(proj))
       # Sum over transition operators
       aSum = np.sum(a, axis=(0,1))
       # Save spectra to disk
@@ -285,8 +286,8 @@ def simulate_spectra(es, psis, hOp, T, w, delta, epsilons,
           tmp[1:,1:] = aSum.T
           tmp.tofile('RIXS.bin')
       if rank == 0:
-          print("time(RIXS) = {:.2f} seconds \n".format(time.time()-t0))
-          t0 = time.time()
+          print("time(RIXS) = {:.2f} seconds \n".format(time.perf_counter()-t0))
+          t0 = time.perf_counter()
 
     if rank == 0 and h5f: h5f.close()
 

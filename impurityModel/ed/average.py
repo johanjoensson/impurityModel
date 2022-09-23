@@ -10,7 +10,8 @@ import numpy as np
 
 # Boltzmann constant. Unit: eV/K. E = k_B * T,
 # energy in eV and temperature in Kelvin.
-k_B = 8.61701580807947e-05
+# k_B = 8.61701580807947e-05
+k_B = 6.3334e-06
 
 def thermal_average(energies,observable,T=300):
     """
@@ -30,15 +31,18 @@ def thermal_average(energies,observable,T=300):
         Temperature
 
     """
+    return thermal_average_scale_indep(energies, observable, k_B*T)
+
+def thermal_average_scale_indep(energies,observable,tau):
     if len(energies) != np.shape(observable)[0]:
         raise ValueError("Passed array is not of the right shape")
     z = 0
     e_average = 0
     o_average = 0
     weights = np.zeros(np.shape(energies),dtype=np.float)
-    shift = np.min(energies)
+    e0 = np.min(energies)
     for j,(e,o) in enumerate(zip(energies,observable)):
-        weight = np.exp(-(e-shift)/(k_B*T))
+        weight = np.exp(-(e-e0)/tau)
         z += weight
         weights[j] = weight
         e_average += weight*e
