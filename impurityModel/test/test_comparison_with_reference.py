@@ -1,10 +1,6 @@
 
 """
-test_comparison_with_reference
-==============================
-
 Module with test comparing new simulations with reference data.
-
 """
 
 
