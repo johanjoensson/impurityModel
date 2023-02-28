@@ -100,7 +100,7 @@ def eigensystem(n_spin_orbitals, hOp, basis, nPsiMax, groundDiagMode='Lanczos',
         Op = np.conj(h.T) - h
         err_max = np.max(np.abs(Op))
         if err_max > 1e-12:
-            print (f"Warning! hamiltonian matrix is not very Hermitian!\nLargest error = {err_max}")
+            print (f"Warning! Hamiltonian matrix is not very Hermitian!\nLargest error = {err_max}")
         else:
             print ("Hamiltonian matrix is Hermitian!")
         print("<#Hamiltonian elements/column> = {:d}".format(int(len(np.nonzero(h)[0]) / len(basis))))
@@ -111,24 +111,21 @@ def eigensystem(n_spin_orbitals, hOp, basis, nPsiMax, groundDiagMode='Lanczos',
         vecs = vecs[:, :nPsiMax]
     elif groundDiagMode == "Lanczos":
         # es, vecs = scipy.sparse.linalg.eigsh(h, k=nPsiMax, which="SA", tol=eigenValueTol)
-        es, vecs = primme.eigsh(h, k=nPsiMax, which="SA", tol = eigenValueTol, maxBlockSize = 4)
+        es, vecs = primme.eigsh(h, k=nPsiMax, which="SA", tol = eigenValueTol)
         # Sort the eigenvalues and eigenvectors in ascending order.
         indices = np.argsort(es)
         es = np.array([es[i] for i in indices])
         vecs = np.array([vecs[:,i] for i in indices]).T
     else:
-        print("Wrong diagonalization mode")
+        print(f"Unknown diagonalization mode: {groundDiagMode}")
     if rank == 0 and verbose:
-        print ("Check orthonormality of obtained eigenvectors")
         V = np.array([ev/np.linalg.norm(ev) for ev in vecs.T]).T
         Ip = np.conj(V.T) @ V
         err_max = np.max(np.abs(Ip - np.eye(V.shape[1])))
         if err_max > 1e-12:
-            print (f"Warning! Obtained eigenvectors are not very orthogonal!\nMaximum overlap {err_max}")
-        else:
-            print (f"Obtained eigenvectors are orthonormal!")
+            print (f"Warning! Obtained eigenvectors are not very orthogonal!\nMaximum overlap {err_max}", flush = True)
 
-        print(f"Proceed with {len(es)} eigenstates.\n")
+        print(f"Proceed with {len(es)} eigenstates.\n", flush = True)
 
 
     psis = [
@@ -199,20 +196,20 @@ def printThermalExpValues(nBaths, es, psis, T=300, cutOff=10):
         e, np.array([getEgT2gOccupation(nBaths, psi) for psi in psis]),
         T=T)
     if rank == 0:
-        print('<E-E0> = {:4.3f}'.format(thermal_average(e, e, T=T)))
-        print('<N(3d)> = {:4.3f}'.format(thermal_average(
+        print('<E-E0> = {:8.7f}'.format(thermal_average(e, e, T=T)))
+        print('<N(3d)> = {:8.7f}'.format(thermal_average(
             e, [getTraceDensityMatrix(nBaths, psi) for psi in psis], T=T)))
-        print('<N(egDn)> = {:4.3f}'.format(occs[0]))
-        print('<N(egUp)> = {:4.3f}'.format(occs[1]))
-        print('<N(t2gDn)> = {:4.3f}'.format(occs[2]))
-        print('<N(t2gUp)> = {:4.3f}'.format(occs[3]))
-        print('<Lz(3d)> = {:4.3f}'.format(thermal_average(
+        print('<N(egDn)> = {:8.7f}'.format(occs[0]))
+        print('<N(egUp)> = {:8.7f}'.format(occs[1]))
+        print('<N(t2gDn)> = {:8.7f}'.format(occs[2]))
+        print('<N(t2gUp)> = {:8.7f}'.format(occs[3]))
+        print('<Lz(3d)> = {:8.7f}'.format(thermal_average(
             e,[getLz3d(nBaths, psi) for psi in psis], T=T)))
-        print('<Sz(3d)> = {:4.3f}'.format(thermal_average(
+        print('<Sz(3d)> = {:8.7f}'.format(thermal_average(
             e,[getSz3d(nBaths, psi) for psi in psis], T=T)))
-        print('<L^2(3d)> = {:4.3f}'.format(thermal_average(
+        print('<L^2(3d)> = {:8.7f}'.format(thermal_average(
             e,[getLsqr3d(nBaths, psi) for psi in psis], T=T)))
-        print('<S^2(3d)> = {:4.3f}'.format(thermal_average(
+        print('<S^2(3d)> = {:8.7f}'.format(thermal_average(
             e,[getSsqr3d(nBaths, psi) for psi in psis], T=T)))
 
 
@@ -286,14 +283,16 @@ def get_spherical_2_cubic_matrix(spinpol=False,l=2):
 
     """
     if l == 1:
-        u = np.zeros((3,3),dtype=np.complex)
+        # u = np.zeros((3,3),dtype=complex)
+        u = np.zeros((3,3),dtype=complex)
         u[0,0] = 1j/np.sqrt(2)
         u[2,0] = 1j/np.sqrt(2)
         u[0,1] = 1/np.sqrt(2)
         u[2,1] = -1/np.sqrt(2)
         u[1,2] = 1
     elif l == 2:
-        u = np.zeros((5,5),dtype=np.complex)
+        # u = np.zeros((5,5),dtype=complex)
+        u = np.zeros((5,5),dtype=complex)
         u[2,0] = 1
         u[[0,-1],1] = 1/np.sqrt(2)
         u[1,2] = -1j/np.sqrt(2)
@@ -304,7 +303,8 @@ def get_spherical_2_cubic_matrix(spinpol=False,l=2):
         u[-1,4] = -1j/np.sqrt(2)
     if spinpol:
         n,m = np.shape(u)
-        U = np.zeros((2*n,2*m),dtype=np.complex)
+        # U = np.zeros((2*n,2*m),dtype=complex)
+        U = np.zeros((2*n,2*m),dtype=complex)
         U[0:n,0:m] = u
         U[n:,m:] = u
         u = U
@@ -411,11 +411,10 @@ def get_basis(nBaths, valBaths, dnValBaths, dnConBaths, dnTol, n0imp, verbose = 
 def printOp(nBaths,pOp,printstr):
    print(printstr)
    a = arrayOp(nBaths,pOp)
-   print(np.array2string(a, max_line_width=5000,threshold=10000, precision=3, suppress_small=True))
+   print(np.array2string(a, max_line_width=2000,threshold=1000, precision=3, suppress_small=True))
    print("Eigenvalues: ")
    print(np.array_str(np.linalg.eigvalsh(a), max_line_width=368, precision=3, suppress_small=True))
-   print('')
-   return
+   print('', flush = True)
 
 def inner(a,b):
     r'''
@@ -656,8 +655,8 @@ def getUop(l1, l2, l3, l4, R):
                                 proccess = (((l1, s, m1), 'c'), ((l2, sp, m2), 'c'),
                                             ((l3, sp, m3), 'a'), ((l4, s, m4), 'a'))
                                 # Pauli exclusion principle
-                                if not (s == sp and ((l1, m1) == (l2, m2) or (l3, m3) == (l4, m4))):
-                                    uDict[proccess] = u / 2.0
+                                # if not (s == sp and ((l1, m1) == (l2, m2) or (l3, m3) == (l4, m4))):
+                                uDict[proccess] = u / 2.0
     return uDict
 
 
@@ -678,7 +677,7 @@ def addOps(ops):
     opSum = {}
     for op in ops:
         for sOp,value in op.items():
-            if value != 0:
+            if np.abs(value) > 1e-12:
               if sOp in opSum:
                   opSum[sOp] += value
               else:
@@ -701,21 +700,21 @@ def get2p3dSlaterCondonUop(Fdd=(9, 0, 8, 0, 6), Fpp=(20, 0, 8), Fpd=(10, 0, 8), 
     """
     # Calculate F_dd^{0,2,4}
     FddOp = {}
-    if Fdd:
+    if Fdd is not None:
         FddOp = getUop(l1=2,l2=2,l3=2,l4=2,R=Fdd)
     # Calculate F_pp^{0,2}
     FppOp = {}
-    if Fpp:
+    if Fpp is not None:
         FppOp = getUop(l1=1,l2=1,l3=1,l4=1,R=Fpp)
     # Calculate F_pd^{0,2}
     FpdOp = {}
-    if Fpd:
+    if Fpd is not None:
         FpdOp1 = getUop(l1=1,l2=2,l3=2,l4=1,R=Fpd)
         FpdOp2 = getUop(l1=2,l2=1,l3=1,l4=2,R=Fpd)
         FpdOp = addOps([FpdOp1,FpdOp2])
     # Calculate G_pd^{1,3}
     GpdOp = {}
-    if Gpd:
+    if Gpd is not None:
         GpdOp1 = getUop(l1=1,l2=2,l3=1,l4=2,R=Gpd)
         GpdOp2 = getUop(l1=2,l2=1,l3=2,l4=1,R=Gpd)
         GpdOp = addOps([GpdOp1,GpdOp2])
@@ -1604,7 +1603,8 @@ def get_hamiltonian_matrix(n_spin_orbitals, hOp, basis, mode='sparse_MPI', verbo
     if rank == 0 and verbose: print('Filling the Hamiltonian...')
     progress = 0
     if mode == 'dense_serial':
-        h = np.zeros((n,n),dtype=np.complex)
+        # h = np.zeros((n,n),dtype=complex)
+        h = np.zeros((n,n),dtype=complex)
         for j in range(n):
             if rank == 0 and progress + 10 <= int(j*100./n):
                 progress = int(j*100./n)
@@ -1615,7 +1615,8 @@ def get_hamiltonian_matrix(n_spin_orbitals, hOp, basis, mode='sparse_MPI', verbo
                 if k in basis_index:
                     h[basis_index[k], j] = v
     elif mode == 'dense_MPI':
-        h = np.zeros((n,n),dtype=np.complex)
+        # h = np.zeros((n,n),dtype=complex)
+        h = np.zeros((n,n),dtype=complex)
         hRank = {}
         jobs = get_job_tasks(rank, ranks, range(n))
         for j in jobs:
@@ -1725,7 +1726,8 @@ def get_hamiltonian_matrix_from_h_dict(h_dict, basis,
     #if rank == 0: print('Filling the Hamiltonian...')
     #progress = 0
     if mode == 'dense' and parallelization_mode == 'serial':
-        h = np.zeros((n,n),dtype=np.complex)
+        # h = np.zeros((n,n),dtype=complex)
+        h = np.zeros((n,n),dtype=complex)
         for j in range(n):
             #if rank == 0 and progress + 10 <= int(j*100./n):
             #    progress = int(j*100./n)
@@ -2003,11 +2005,12 @@ def get_tridiagonal_krylov_vectors(h, psi0, krylovSize, h_local=False,
     krylovSize = min(krylovSize,n)
 
     # Allocate tri-diagonal matrix elements
-    alpha = np.zeros(krylovSize, dtype=np.float)
-    beta = np.zeros(krylovSize-1, dtype=np.float)
+    alpha = np.zeros(krylovSize, dtype=float)
+    beta = np.zeros(krylovSize-1, dtype=float)
     # Allocate space for Krylov state vectors.
     # Do not save all Krylov vectors to save memory.
-    v = np.zeros((2,n), dtype=np.complex)
+    # v = np.zeros((2,n), dtype=complex)
+    v = np.zeros((2,n), dtype=complex)
     # Initialization...
     v[0,:] = psi0
     Q = np.zeros((psi0.shape[0], krylovSize), dtype = complex)
@@ -2265,16 +2268,22 @@ def matrixToIOp(mat):
                res[((i, 'c'), (j, 'a'))] = mat[i,j]
    return res
 
-def i2cDict(nBaths, iDict):
-        res = {}
-        for ((i, opi), (j, opj)), val in iDict.items():
-                res[((i2c(nBaths, i), op1), (i2c(nBaths, j), op2))] = val
-        return res
+def c2i_op(nBaths, c_op):
+    i_op = {}
+    for process, value in c_op.items():
+        i_op[tuple((c2i(nBaths, spinOrb), action) for spinOrb, action in process)] = value
+    return i_op
 
-def i2cDict2Array(nBaths, iArray):
+def i2c_op(nBaths, i_op):
+    c_op = {}
+    for ((i, opi), (j, opj)), val in iDict.items():
+        c_op[((i2c(nBaths, i), opi), (i2c(nBaths, j), opj))] = val
+    return c_op
+
+def i2cDict2Array(nBaths, i_ops):
         res = []
-        for iOp in iArray:
-                res.append(i2cDict(nBaths, iOp))
+        for i_op in i_ops:
+                res.append(i2c_op(nBaths, i_op))
         return res
 
 
