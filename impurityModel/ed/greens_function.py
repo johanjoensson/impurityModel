@@ -222,7 +222,6 @@ def get_block_Green(
     parallelization_mode="H_build",
     verbose=True,
 ):
-
     matsubara = iws is not None
     realaxis = ws is not None
 
@@ -248,8 +247,9 @@ def get_block_Green(
 
     N = len(basis_index)
     n = len(psi_arr)
-    
+
     import numpy as np
+
     psi_start = np.zeros((N, n), dtype=complex)
     for i, psi in enumerate(psi_arr):
         for ps, amp in psi.items():
@@ -259,9 +259,9 @@ def get_block_Green(
     # Later on, use r to restore the block corresponding to
     # psi_start
     psi0, r = np.linalg.qr(psi_start, mode="reduced")
-    # The QR decomposition can, in some rare instances, reduce the number of 
+    # The QR decomposition can, in some rare instances, reduce the number of
     # independent vectors in our block, m is the number of linearly independent
-    # vectors in the block. The full block structure is obtained by multiplying 
+    # vectors in the block. The full block structure is obtained by multiplying
     # with r
     m = psi0.shape[1]
 
@@ -273,29 +273,33 @@ def get_block_Green(
     elif matsubara:
         conv_w = iws
         delta_p = 0
+
     def gaussian(x, mu, sigma):
-        return 1/(sigma*np.sqrt(2*np.pi))*np.exp(-1/2*((x-mu)/sigma)**2)
+        return 1 / (sigma * np.sqrt(2 * np.pi)) * np.exp(-1 / 2 * ((x - mu) / sigma) ** 2)
+
     # Select points from the frequency mesh, according to a Normal distribuition
     # centered on (value) 0.
     n_samples = 50
-    weights = gaussian(conv_w, mu = 0, sigma = 0.5)
+    weights = gaussian(conv_w, mu=0, sigma=0.5)
     weights /= np.sum(weights)
+
     def converged(alphas, betas):
-        
         if alphas.shape[0] == 1:
             return False
 
-        w = np.random.choice(conv_w, size = min(n_samples, len(conv_w)), p = weights, replace = False)
-        wIs = (w + 1j*delta_p + e)[:, np.newaxis, np.newaxis]*np.identity(alphas.shape[1], dtype = complex)[np.newaxis, :, :]
-        gs_new = wIs - alphas[-1]# [np.newaxis, :, :]
+        w = np.random.choice(conv_w, size=min(n_samples, len(conv_w)), p=weights, replace=False)
+        wIs = (w + 1j * delta_p + e)[:, np.newaxis, np.newaxis] * np.identity(alphas.shape[1], dtype=complex)[
+            np.newaxis, :, :
+        ]
+        gs_new = wIs - alphas[-1]  # [np.newaxis, :, :]
         for alpha, beta in zip(alphas[-2::-1], betas[-2::-1]):
             # gs_new = wIs - alpha[np.newaxis, :, :] - np.conj(beta.T)[np.newaxis, :, :] @ np.linalg.solve( gs_new, beta[np.newaxis, :, :])
-            gs_new = wIs - alpha - np.conj(beta.T)[np.newaxis, :, :] @ np.linalg.solve( gs_new, beta[np.newaxis, :, :])
-        
+            gs_new = wIs - alpha - np.conj(beta.T)[np.newaxis, :, :] @ np.linalg.solve(gs_new, beta[np.newaxis, :, :])
+
         gs_prev = wIs - alphas[-2][np.newaxis, :, :]
         for alpha, beta in zip(alphas[-3::-1], betas[-3::-1]):
             # gs_prev = wIs - alpha[np.newaxis, :, :] - np.conj(beta.T)[np.newaxis, :, :] @ np.linalg.solve( gs_prev, beta[np.newaxis, :, :])
-            gs_prev = wIs - alpha - np.conj(beta.T)[np.newaxis, :, :] @ np.linalg.solve( gs_prev, beta[np.newaxis, :, :])
+            gs_prev = wIs - alpha - np.conj(beta.T)[np.newaxis, :, :] @ np.linalg.solve(gs_prev, beta[np.newaxis, :, :])
 
         return np.all(np.abs(gs_new - gs_prev) < 1e-12)
 
@@ -334,17 +338,31 @@ def get_block_Green(
     # for alpha, beta in zip(reversed(alphas), reversed(betas)):
     for alpha, beta in zip(alphas[-2::-1], betas[-2::-1]):
         if matsubara:
-            gs_matsubara_local[iw_indices] = iwIs - alpha[np.newaxis, :, :] - np.conj(beta.T)[np.newaxis, :, :] @ np.linalg.solve(gs_matsubara_local[iw_indices], beta[np.newaxis, :, :])
+            gs_matsubara_local[iw_indices] = (
+                iwIs
+                - alpha[np.newaxis, :, :]
+                - np.conj(beta.T)[np.newaxis, :, :]
+                @ np.linalg.solve(gs_matsubara_local[iw_indices], beta[np.newaxis, :, :])
+            )
         if realaxis:
-            gs_realaxis_local[w_indices] = wIs - alpha[np.newaxis, :, :] - np.conj(beta.T)[np.newaxis, :, :] @ np.linalg.solve(gs_realaxis_local[w_indices],  beta[np.newaxis, :, :])
+            gs_realaxis_local[w_indices] = (
+                wIs
+                - alpha[np.newaxis, :, :]
+                - np.conj(beta.T)[np.newaxis, :, :]
+                @ np.linalg.solve(gs_realaxis_local[w_indices], beta[np.newaxis, :, :])
+            )
     # Multiply obtained Green's function with the upper triangular matrix to restore the original block
     # R^T* G R
     if matsubara:
-        gs_matsubara = np.zeros((len(iws), n, n), dtype = complex)
-        gs_matsubara[iw_indices, :, :] = np.conj(r.T)[np.newaxis, :, :] @ np.linalg.solve(gs_matsubara_local[iw_indices], r[np.newaxis, :, :])
+        gs_matsubara = np.zeros((len(iws), n, n), dtype=complex)
+        gs_matsubara[iw_indices, :, :] = np.conj(r.T)[np.newaxis, :, :] @ np.linalg.solve(
+            gs_matsubara_local[iw_indices], r[np.newaxis, :, :]
+        )
     if realaxis:
-        gs_realaxis = np.zeros((len(ws), n, n), dtype = complex)
-        gs_realaxis[w_indices, :, :] = np.conj(r.T)[np.newaxis, :, :] @ np.linalg.solve(gs_realaxis_local[w_indices], r[np.newaxis, :, :])
+        gs_realaxis = np.zeros((len(ws), n, n), dtype=complex)
+        gs_realaxis[w_indices, :, :] = np.conj(r.T)[np.newaxis, :, :] @ np.linalg.solve(
+            gs_realaxis_local[w_indices], r[np.newaxis, :, :]
+        )
     # Reduce Green's function to rank 0
     if matsubara:
         gs_matsubara = comm.reduce(gs_matsubara, root=0)

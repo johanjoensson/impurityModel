@@ -1,4 +1,3 @@
-
 """
 Script for calculating various spectra.
 
@@ -7,12 +6,13 @@ Script for calculating various spectra.
 import numpy as np
 import scipy.sparse.linalg
 from collections import OrderedDict
-import sys,os
+import sys, os
 from mpi4py import MPI
 import pickle
 import time
 import argparse
 import h5py
+
 # Local stuff
 from impurityModel.ed import spectra
 from impurityModel.ed import finite
@@ -21,16 +21,35 @@ from impurityModel.ed.average import k_B, thermal_average
 from impurityModel.ed import op_parser
 
 
-def main(h0_filename,
-         radial_filename,
-         ls, nBaths, nValBaths,
-         n0imps, dnTols, dnValBaths, dnConBaths,
-         Fdd, Fpp, Fpd, Gpd,
-         xi_2p, xi_3d, chargeTransferCorrection,
-         hField, nPsiMax,
-         nPrintSlaterWeights, tolPrintOccupation,
-         T, energy_cut,
-         delta, deltaRIXS, deltaNIXS, XAS_projectors_filename, RIXS_projectors_filename):
+def main(
+    h0_filename,
+    radial_filename,
+    ls,
+    nBaths,
+    nValBaths,
+    n0imps,
+    dnTols,
+    dnValBaths,
+    dnConBaths,
+    Fdd,
+    Fpp,
+    Fpd,
+    Gpd,
+    xi_2p,
+    xi_3d,
+    chargeTransferCorrection,
+    hField,
+    nPsiMax,
+    nPrintSlaterWeights,
+    tolPrintOccupation,
+    T,
+    energy_cut,
+    delta,
+    deltaRIXS,
+    deltaNIXS,
+    XAS_projectors_filename,
+    RIXS_projectors_filename,
+):
     """
     First find the lowest eigenstates and then use them to calculate various spectra.
 
@@ -103,7 +122,7 @@ def main(h0_filename,
     comm = MPI.COMM_WORLD
     rank = comm.rank
 
-    if rank == 0: 
+    if rank == 0:
         t0 = time.perf_counter()
 
     # -- System information --
@@ -116,51 +135,55 @@ def main(h0_filename,
     dnValBaths = OrderedDict(zip(ls, dnValBaths))
     dnConBaths = OrderedDict(zip(ls, dnConBaths))
 
-    if rank == 0 : 
-        print ("hField = " + repr(hField))
+    if rank == 0:
+        print("hField = " + repr(hField))
     # -- Spectra information --
     # Energy cut in eV.
-    energy_cut *= k_B*T
+    energy_cut *= k_B * T
     # XAS parameters
     # Energy-mesh
     # w = np.linspace(-35, 35, 4000)
     w = np.linspace(-25, 25, 3001)
     # Each element is a XAS polarization vector.
-    epsilons = [[1, 0, 0], [0, 1, 0], [0, 0, 1]] # [[0,0,1]]
-    #epsilons = [[ 1./np.sqrt(2), 1.j/np.sqrt(2), 0.], [ 1/np.sqrt(2), -1j/np.sqrt(2), 0.]] # [[0,0,1]]
-    #epsilons = [[0.,  -1./np.sqrt(2), -1.j/np.sqrt(2)], [0., 1/np.sqrt(2), -1j/np.sqrt(2)]] # [[0,0,1]]
+    epsilons = [[1, 0, 0], [0, 1, 0], [0, 0, 1]]  # [[0,0,1]]
+    # epsilons = [[ 1./np.sqrt(2), 1.j/np.sqrt(2), 0.], [ 1/np.sqrt(2), -1j/np.sqrt(2), 0.]] # [[0,0,1]]
+    # epsilons = [[0.,  -1./np.sqrt(2), -1.j/np.sqrt(2)], [0., 1/np.sqrt(2), -1j/np.sqrt(2)]] # [[0,0,1]]
     # RIXS parameters
     # Polarization vectors, of in and outgoing photon.
-    #epsilonsRIXSin = [[ 0., -1./np.sqrt(2), -1.j/np.sqrt(2)], [ 0., 1./np.sqrt(2), -1.j/np.sqrt(2) ]] # [[0,0,1]]
+    # epsilonsRIXSin = [[ 0., -1./np.sqrt(2), -1.j/np.sqrt(2)], [ 0., 1./np.sqrt(2), -1.j/np.sqrt(2) ]] # [[0,0,1]]
     # epsilonsRIXSin = [[ -1./np.sqrt(2), -1.j/np.sqrt(2), 0.], [1/np.sqrt(2), -1j/np.sqrt(2), 0.]] # [[0,0,1]]
-    epsilonsRIXSin = [[1, 0, 0], [0, 1, 0], [0, 0, 1]] # x, y, z, cl, cr
-    #epsilonsRIXSout = [[ -1./np.sqrt(2), -1.j/np.sqrt(2), 0], [  1./np.sqrt(2), -1.j/np.sqrt(2), 0], [0, 0, 1]] # [[0,0,1]]
-    #epsilonsRIXSout = [[1./np.sqrt(2), 1.j/np.sqrt(2), 0], [1./np.sqrt(2), -1.j/np.sqrt(2), 0], [0, 0, 1]] # [[0,0,1]]
-    epsilonsRIXSout = [[1, 0, 0], [0, 1, 0], [0, 0, 1]] # x, y, z, cl, cr
-    if (deltaRIXS > 0):
-       # wIn = np.linspace(-10, 25, 500 )
-       wIn = np.linspace(-1, 2, 500 )
+    epsilonsRIXSin = [[1, 0, 0], [0, 1, 0], [0, 0, 1]]  # x, y, z, cl, cr
+    # epsilonsRIXSout = [[ -1./np.sqrt(2), -1.j/np.sqrt(2), 0], [  1./np.sqrt(2), -1.j/np.sqrt(2), 0], [0, 0, 1]] # [[0,0,1]]
+    # epsilonsRIXSout = [[1./np.sqrt(2), 1.j/np.sqrt(2), 0], [1./np.sqrt(2), -1.j/np.sqrt(2), 0], [0, 0, 1]] # [[0,0,1]]
+    epsilonsRIXSout = [[1, 0, 0], [0, 1, 0], [0, 0, 1]]  # x, y, z, cl, cr
+    if deltaRIXS > 0:
+        # wIn = np.linspace(-10, 25, 500 )
+        wIn = np.linspace(-1, 2, 500)
     else:
-       wIn = []
+        wIn = []
     # wLoss = np.linspace(-1.5, 12.5, 2000 )
-    wLoss = np.linspace(-1.0, 2.5, 3000 )
+    wLoss = np.linspace(-1.0, 2.5, 3000)
 
     # Read XAS and/or RIXS projectors from file
     XAS_projectors = None
     RIXS_projectors = None
     if XAS_projectors_filename:
-            XAS_projectors = get_RIXS_projectors(XAS_projectors_filename)
-            if rank == 0 : print ("XAS projectors")
-            if rank == 0 : print (XAS_projectors)
+        XAS_projectors = get_RIXS_projectors(XAS_projectors_filename)
+        if rank == 0:
+            print("XAS projectors")
+        if rank == 0:
+            print(XAS_projectors)
     if RIXS_projectors_filename:
-            RIXS_projectors = get_RIXS_projectors(RIXS_projectors_filename)
-            if rank == 0 : print ("RIXS projectors")
-            if rank == 0 : print (RIXS_projectors)
+        RIXS_projectors = get_RIXS_projectors(RIXS_projectors_filename)
+        if rank == 0:
+            print("RIXS projectors")
+        if rank == 0:
+            print(RIXS_projectors)
 
     # NIXS parameters
     qsNIXS = [2 * np.array([1, 1, 1]) / np.sqrt(3), 7 * np.array([1, 1, 1]) / np.sqrt(3)]
     # Angular momentum of final and initial orbitals in the NIXS excitation process.
-    liNIXS,ljNIXS = 2, 2
+    liNIXS, ljNIXS = 2, 2
 
     # -- Occupation restrictions for excited states --
     l = 2
@@ -185,28 +208,37 @@ def main(h0_filename,
 
     # Total number of spin-orbitals in the system
     n_spin_orbitals = sum(2 * (2 * ang + 1) + nBath for ang, nBath in nBaths.items())
-    if rank == 0: print("#spin-orbitals:", n_spin_orbitals)
+    if rank == 0:
+        print("#spin-orbitals:", n_spin_orbitals)
 
     # Hamiltonian
-    if rank == 0: print('Construct the Hamiltonian operator...')
-    hOp = get_hamiltonian_operator(nBaths, nValBaths, [Fdd, Fpp, Fpd, Gpd],
-                                   [xi_2p, xi_3d],
-                                   [n0imps, chargeTransferCorrection],
-                                   hField,
-                                   h0_filename, rank)
+    if rank == 0:
+        print("Construct the Hamiltonian operator...")
+    hOp = get_hamiltonian_operator(
+        nBaths,
+        nValBaths,
+        [Fdd, Fpp, Fpd, Gpd],
+        [xi_2p, xi_3d],
+        [n0imps, chargeTransferCorrection],
+        hField,
+        h0_filename,
+        rank,
+    )
     # Measure how many physical processes the Hamiltonian contains.
-    if rank == 0: print('{:d} processes in the Hamiltonian.'.format(len(hOp)))
+    if rank == 0:
+        print("{:d} processes in the Hamiltonian.".format(len(hOp)))
     # Many body basis for the ground state
-    if rank == 0: print('Create basis...')
-    basis = finite.get_basis(nBaths, nValBaths, dnValBaths, dnConBaths,
-                             dnTols, n0imps)
-    if rank == 0: print('#basis states = {:d}'.format(len(basis)))
+    if rank == 0:
+        print("Create basis...")
+    basis = finite.get_basis(nBaths, nValBaths, dnValBaths, dnConBaths, dnTols, n0imps)
+    if rank == 0:
+        print("#basis states = {:d}".format(len(basis)))
     # Diagonalization of restricted active space Hamiltonian
-    es, psis = finite.eigensystem(n_spin_orbitals, hOp, basis, nPsiMax, groundDiagMode='Lanczos')
-    #es, psis = finite.eigensystem(n_spin_orbitals, hOp, basis, nPsiMax, groundDiagMode='full')
+    es, psis = finite.eigensystem(n_spin_orbitals, hOp, basis, nPsiMax, groundDiagMode="Lanczos")
+    # es, psis = finite.eigensystem(n_spin_orbitals, hOp, basis, nPsiMax, groundDiagMode='full')
 
     if rank == 0:
-        print("time(ground_state) = {:.2f} seconds \n".format(time.perf_counter()-t0))
+        print("time(ground_state) = {:.2f} seconds \n".format(time.perf_counter() - t0))
         t0 = time.perf_counter()
 
     # Calculate static expectation values
@@ -215,7 +247,7 @@ def main(h0_filename,
 
     # Print Slater determinants and weights
     if rank == 0:
-        print('Slater determinants/product states and correspoinding weights')
+        print("Slater determinants/product states and correspoinding weights")
         weights = []
         for i, psi in enumerate(psis):
             print("Eigenstate {:d}.".format(i))
@@ -227,23 +259,23 @@ def main(h0_filename,
             s = s[j[-1::-1]]
             weights.append(ws)
             if nPrintSlaterWeights > 0:
-                print('Highest (product state) weights:')
+                print("Highest (product state) weights:")
                 print(ws[:nPrintSlaterWeights])
-                print('Corresponding product states:')
+                print("Corresponding product states:")
                 print(s[:nPrintSlaterWeights])
-                print('')
+                print("")
 
     # Calculate density matrix
     if rank == 0:
-        print('Density matrix (in cubic harmonics basis):')
+        print("Density matrix (in cubic harmonics basis):")
         for i, psi in enumerate(psis):
-            print('Eigenstate {:d}'.format(i))
+            print("Eigenstate {:d}".format(i))
             n = finite.getDensityMatrixCubic(nBaths, psi)
-            print('#density matrix elements: {:d}'.format(len(n)))
+            print("#density matrix elements: {:d}".format(len(n)))
             for e, ne in n.items():
                 if abs(ne) > tolPrintOccupation:
                     if e[0] == e[1]:
-                        print('Diagonal: (i,s) =',e[0],', occupation = {:7.2f}'.format(ne))
+                        print("Diagonal: (i,s) =", e[0], ", occupation = {:7.2f}".format(ne))
                     else:
                         print("Off-diagonal: (i,si), (j,sj) =", e, ", {:7.2f}".format(ne))
             print("")
@@ -251,41 +283,53 @@ def main(h0_filename,
     # Save some information to disk
     if rank == 0:
         # Most of the input parameters. Dictonaries can be stored in this file format.
-        np.savez_compressed('data', ls=ls, nBaths=nBaths,
-                            nValBaths=nValBaths,
-                            n0imps=n0imps, dnTols=dnTols,
-                            dnValBaths=dnValBaths, dnConBaths=dnConBaths,
-                            Fdd=Fdd, Fpp=Fpp, Fpd=Fpd, Gpd=Gpd,
-                            xi_2p=xi_2p, xi_3d=xi_3d,
-                            chargeTransferCorrection=chargeTransferCorrection,
-                            hField=hField,
-                            h0_filename=h0_filename,
-                            nPsiMax=nPsiMax,
-                            T=T, energy_cut=energy_cut, delta=delta,
-                            restrictions=restrictions,
-                            epsilons=epsilons,
-                            epsilonsRIXSin=epsilonsRIXSin,
-                            epsilonsRIXSout=epsilonsRIXSout,
-                            deltaRIXS=deltaRIXS,
-                            deltaNIXS=deltaNIXS,
-                            n_spin_orbitals=n_spin_orbitals,
-                            hOp=hOp)
+        np.savez_compressed(
+            "data",
+            ls=ls,
+            nBaths=nBaths,
+            nValBaths=nValBaths,
+            n0imps=n0imps,
+            dnTols=dnTols,
+            dnValBaths=dnValBaths,
+            dnConBaths=dnConBaths,
+            Fdd=Fdd,
+            Fpp=Fpp,
+            Fpd=Fpd,
+            Gpd=Gpd,
+            xi_2p=xi_2p,
+            xi_3d=xi_3d,
+            chargeTransferCorrection=chargeTransferCorrection,
+            hField=hField,
+            h0_filename=h0_filename,
+            nPsiMax=nPsiMax,
+            T=T,
+            energy_cut=energy_cut,
+            delta=delta,
+            restrictions=restrictions,
+            epsilons=epsilons,
+            epsilonsRIXSin=epsilonsRIXSin,
+            epsilonsRIXSout=epsilonsRIXSout,
+            deltaRIXS=deltaRIXS,
+            deltaNIXS=deltaNIXS,
+            n_spin_orbitals=n_spin_orbitals,
+            hOp=hOp,
+        )
         # Save some of the arrays.
         # HDF5-format does not directly support dictonaries.
-        h5f = h5py.File('spectra.h5','w')
-        h5f.create_dataset('E',data=es)
-        h5f.create_dataset('w',data=w)
-        h5f.create_dataset('wIn',data=wIn)
-        h5f.create_dataset('wLoss',data=wLoss)
-        h5f.create_dataset('qsNIXS',data=qsNIXS)
-        h5f.create_dataset('r',data=radialMesh)
-        h5f.create_dataset('RiNIXS',data=RiNIXS)
-        h5f.create_dataset('RjNIXS',data=RjNIXS)
+        h5f = h5py.File("spectra.h5", "w")
+        h5f.create_dataset("E", data=es)
+        h5f.create_dataset("w", data=w)
+        h5f.create_dataset("wIn", data=wIn)
+        h5f.create_dataset("wLoss", data=wLoss)
+        h5f.create_dataset("qsNIXS", data=qsNIXS)
+        h5f.create_dataset("r", data=radialMesh)
+        h5f.create_dataset("RiNIXS", data=RiNIXS)
+        h5f.create_dataset("RjNIXS", data=RjNIXS)
     else:
         h5f = None
 
     if rank == 0:
-        print("time(expectation values) = {:.2f} seconds \n".format(time.perf_counter()-t0))
+        print("time(expectation values) = {:.2f} seconds \n".format(time.perf_counter() - t0))
 
     # Consider from now on only eigenstates with low energy
     es = tuple(e for e in es if e - es[0] < energy_cut)
@@ -317,10 +361,11 @@ def main(h0_filename,
         h5f,
         nBaths,
         XAS_projectors,
-        RIXS_projectors
+        RIXS_projectors,
     )
 
     print("Script finished for rank:", rank)
+
 
 def get_restrictions(l, n0imps, nBaths, nValBaths, dnTols, dnValBaths, dnConBaths):
     restrictions = {}
@@ -341,15 +386,10 @@ def get_restrictions(l, n0imps, nBaths, nValBaths, dnTols, dnValBaths, dnConBath
 
     return restrictions
 
+
 def get_noninteracting_hamiltonian_operator(
-        nBaths, 
-        slaterCondon, 
-        SOCs, 
-        DCinfo, 
-        hField, 
-        h0_filename, 
-        rank, 
-        verbose = True):
+    nBaths, slaterCondon, SOCs, DCinfo, hField, h0_filename, rank, verbose=True
+):
     # Divide up input parameters to more concrete variables
     Fdd, Fpp, Fpd, Gpd = slaterCondon
     n0imps, chargeTransferCorrection = DCinfo
@@ -363,50 +403,43 @@ def get_noninteracting_hamiltonian_operator(
     if chargeTransferCorrection is not None:
         # Double counting (DC) correction values.
         # MLFT DC
-        dc = finite.dc_MLFT(n3d_i=n0imps[2], c=chargeTransferCorrection, Fdd=Fdd,
-                           n2p_i=n0imps[1] if 1 in n0imps.keys() else None, Fpd=Fpd, Gpd=Gpd)
+        dc = finite.dc_MLFT(
+            n3d_i=n0imps[2],
+            c=chargeTransferCorrection,
+            Fdd=Fdd,
+            n2p_i=n0imps[1] if 1 in n0imps.keys() else None,
+            Fpd=Fpd,
+            Gpd=Gpd,
+        )
         dc[2] = 4.18011902
         for il, l in enumerate(n0imps.keys()):
             for s in range(2):
-                for m in range(-l, l+1):
-                    eDCOperator[(((l, s, m), 'c'), ((l, s, m), 'a'))] = -dc[l]
+                for m in range(-l, l + 1):
+                    eDCOperator[(((l, s, m), "c"), ((l, s, m), "a"))] = -dc[l]
 
     # Magnetic field
     hHfieldOperator = {}
     l = 2
-    for m in range(-l, l+1):
-        hHfieldOperator[(((l, 1, m), 'c'), ((l, 0, m), 'a'))] = hx*1/2.
-        hHfieldOperator[(((l, 0, m), 'c'), ((l, 1, m), 'a'))] = hx*1/2.
-        hHfieldOperator[(((l, 1, m), 'c'), ((l, 0, m), 'a'))] += -hy*1/2.*1j
-        hHfieldOperator[(((l, 0, m), 'c'), ((l, 1, m), 'a'))] += hy*1/2.*1j
+    for m in range(-l, l + 1):
+        hHfieldOperator[(((l, 1, m), "c"), ((l, 0, m), "a"))] = hx * 1 / 2.0
+        hHfieldOperator[(((l, 0, m), "c"), ((l, 1, m), "a"))] = hx * 1 / 2.0
+        hHfieldOperator[(((l, 1, m), "c"), ((l, 0, m), "a"))] += -hy * 1 / 2.0 * 1j
+        hHfieldOperator[(((l, 0, m), "c"), ((l, 1, m), "a"))] += hy * 1 / 2.0 * 1j
         for s in range(2):
-            hHfieldOperator[(((l, s, m), 'c'), ((l, s, m), 'a'))] = hz*1/2 if s==1 else -hz*1/2
+            hHfieldOperator[(((l, s, m), "c"), ((l, s, m), "a"))] = hz * 1 / 2 if s == 1 else -hz * 1 / 2
 
     h0_operator = {}
     # Read the non-relativistic non-interacting Hamiltonian operator from file.
     h0_operator = read_h0_operator(h0_filename, nBaths)
 
     if rank == 0 and verbose:
-            print ("Non-interacting, non-relativistic Hamiltonian (h0):")
-            print (h0_operator)
-    hOperator = finite.addOps([hHfieldOperator,
-                               SOC2pOperator,
-                               SOC3dOperator,
-                               eDCOperator,
-                               h0_operator])
+        print("Non-interacting, non-relativistic Hamiltonian (h0):")
+        print(h0_operator)
+    hOperator = finite.addOps([hHfieldOperator, SOC2pOperator, SOC3dOperator, eDCOperator, h0_operator])
     return hOperator
 
 
-def get_hamiltonian_operator(
-        nBaths, 
-        nValBaths, 
-        slaterCondon, 
-        SOCs, 
-        DCinfo, 
-        hField, 
-        h0_filename, 
-        rank, 
-        verbose = True):
+def get_hamiltonian_operator(nBaths, nValBaths, slaterCondon, SOCs, DCinfo, hField, h0_filename, rank, verbose=True):
     """
     Return the Hamiltonian, in operator form.
 
@@ -442,22 +475,14 @@ def get_hamiltonian_operator(
     Fdd, Fpp, Fpd, Gpd = slaterCondon
 
     # Calculate the U operator, in spherical harmonics basis.
-    uOperator = finite.get2p3dSlaterCondonUop(Fdd=Fdd, Fpp=Fpp,
-                                              Fpd=Fpd, Gpd=Gpd)
+    uOperator = finite.get2p3dSlaterCondonUop(Fdd=Fdd, Fpp=Fpp, Fpd=Fpd, Gpd=Gpd)
     h_non_interacting = get_noninteracting_hamiltonian_operator(
-            nBaths, 
-            slaterCondon, 
-            SOCs, 
-            DCinfo, 
-            hField, 
-            h0_filename, 
-            rank, 
-            verbose)
+        nBaths, slaterCondon, SOCs, DCinfo, hField, h0_filename, rank, verbose
+    )
     # Add Hamiltonian terms to one operator.
-    hOperator = finite.addOps([uOperator,
-                               h_non_interacting])
-    if rank == 0 and verbose: 
-        finite.printOp(nBaths,hOperator,"Local Hamiltonian: ") 
+    hOperator = finite.addOps([uOperator, h_non_interacting])
+    if rank == 0 and verbose:
+        finite.printOp(nBaths, hOperator, "Local Hamiltonian: ")
 
     # Convert spin-orbital and bath state indices to a single index notation.
     # hOp = {}
@@ -491,102 +516,106 @@ def read_h0_operator(h0_filename, nBaths):
     """
     h0_operator = None
     if h0_filename.endswith(".dict"):
-            h0_operator = read_h0_dict(h0_filename)
-    else:                   
-            with open(h0_filename, 'rb') as handle:
-                    h0_operator = pickle.loads(handle.read())
+        h0_operator = read_h0_dict(h0_filename)
+    else:
+        with open(h0_filename, "rb") as handle:
+            h0_operator = pickle.loads(handle.read())
     # Sanity check
     for process in h0_operator.keys():
         for event in process:
             if len(event[0]) == 2:
-               if (nBaths[event[0][0]] <= event[0][1]):
-                  print("Error in h0!")
-                  print(process)
-                  print(event)
-                  print(nBaths[event[0][0]])
-                  print(event[0][1])
-               assert nBaths[event[0][0]] > event[0][1]
+                if nBaths[event[0][0]] <= event[0][1]:
+                    print("Error in h0!")
+                    print(process)
+                    print(event)
+                    print(nBaths[event[0][0]])
+                    print(event[0][1])
+                assert nBaths[event[0][0]] > event[0][1]
 
     return h0_operator
 
+
 def read_h0_dict(h0_filename):
-        r'''
-        Reads the non-interacting Hamiltoninan from file.
-        Parameters
-        ----------
-            h0_filename : String
-            File containing the non-interacting Hamiltonian.
-        '''
-        h0_dict = {}
-        for _, op in op_parser.parse_file(h0_filename).items():
-                for key, val in op.items():
-                        if key in h0_dict:
-                                h0_dict[key] += val
-                        else:
-                                h0_dict[key] = val
-        return h0_dict
+    r"""
+    Reads the non-interacting Hamiltoninan from file.
+    Parameters
+    ----------
+        h0_filename : String
+        File containing the non-interacting Hamiltonian.
+    """
+    h0_dict = {}
+    for _, op in op_parser.parse_file(h0_filename).items():
+        for key, val in op.items():
+            if key in h0_dict:
+                h0_dict[key] += val
+            else:
+                h0_dict[key] = val
+    return h0_dict
+
 
 def read_RIXS_projectors(filename):
-        r'''
-        Reads projectors for the RIXS calculations from file.
-        Parameters
-        ----------
-            filename : String
-            File containing the projectors. Projectors are separated by new lines.
-        '''
-        return op_parser.parse_file(filename)
+    r"""
+    Reads projectors for the RIXS calculations from file.
+    Parameters
+    ----------
+        filename : String
+        File containing the projectors. Projectors are separated by new lines.
+    """
+    return op_parser.parse_file(filename)
 
 
 def read_key_val(line):
-        r'''
-        Read key and value pair from a string.
-        Returns a tuple, (key, value).
-        Parameters
-        ----------
-            line : String
-            String of the form "key:value"
-        '''
-        parts = line.split(':')
-        if len(parts) != 2:
-                print ("Error reading key, value pair from file!")
-                print (line)
-                return {}
-        val = complex(parts[1])
-        keys = "".join(parts[0].split())
-        key = read_tuple(keys)
-        return (key , val)
+    r"""
+    Read key and value pair from a string.
+    Returns a tuple, (key, value).
+    Parameters
+    ----------
+        line : String
+        String of the form "key:value"
+    """
+    parts = line.split(":")
+    if len(parts) != 2:
+        print("Error reading key, value pair from file!")
+        print(line)
+        return {}
+    val = complex(parts[1])
+    keys = "".join(parts[0].split())
+    key = read_tuple(keys)
+    return (key, val)
+
 
 def read_tuple(line):
-        r'''
-        Read arbitratily nested tuples from string.
-        Returns the tuple contained in string.
-        '''
-        store = []
-        tmp_tup = []
-        line = line.replace("(", "(,")
-        line = line.replace(")", ",)")
-        tmp = line.split(',')
-        for cs in tmp:
-                cs = cs.strip()
-                if cs == "(":
-                        store.append(tmp_tup)
-                        tmp_tup = []
-                elif cs == ")":
-                        t = tuple(tmp_tup)
-                        tmp_tup = []
-                        if store:
-                                s = store.pop()
-                                if s:
-                                        tmp_tup = [s[0]]
-                        tmp_tup.append(t)
-                elif cs not in ["("]:
-                        if cs in ["a", "c"]:
-                                tmp_tup.append(cs)
-                        else:
-                                tmp_tup.append(int(cs))
-        return tuple(tmp_tup[0])
+    r"""
+    Read arbitratily nested tuples from string.
+    Returns the tuple contained in string.
+    """
+    store = []
+    tmp_tup = []
+    line = line.replace("(", "(,")
+    line = line.replace(")", ",)")
+    tmp = line.split(",")
+    for cs in tmp:
+        cs = cs.strip()
+        if cs == "(":
+            store.append(tmp_tup)
+            tmp_tup = []
+        elif cs == ")":
+            t = tuple(tmp_tup)
+            tmp_tup = []
+            if store:
+                s = store.pop()
+                if s:
+                    tmp_tup = [s[0]]
+            tmp_tup.append(t)
+        elif cs not in ["("]:
+            if cs in ["a", "c"]:
+                tmp_tup.append(cs)
+            else:
+                tmp_tup.append(int(cs))
+    return tuple(tmp_tup[0])
 
-if __name__== "__main__":
+
+if __name__ == "__main__":
     # Parse input parameters
     parser = argparse.ArgumentParser(description="Spectroscopy simulations")
     parser.add_argument(
@@ -734,10 +763,18 @@ if __name__== "__main__":
         default=0.100,
         help=("Smearing, half width half maximum (HWHM). " "Due to finite lifetime of excited states."),
     )
-    parser.add_argument('--XAS_projectors_filename', type=str, default=None,
-                        help=('File containing the XAS projectors. Separated by newlines.'))
-    parser.add_argument('--RIXS_projectors_filename', type=str, default=None,
-                        help=('File containing the RIXS projectors. Separated by newlines.'))
+    parser.add_argument(
+        "--XAS_projectors_filename",
+        type=str,
+        default=None,
+        help=("File containing the XAS projectors. Separated by newlines."),
+    )
+    parser.add_argument(
+        "--RIXS_projectors_filename",
+        type=str,
+        default=None,
+        help=("File containing the RIXS projectors. Separated by newlines."),
+    )
 
     args = parser.parse_args()
 
@@ -754,22 +791,34 @@ if __name__== "__main__":
     assert len(args.Fpd) == 3
     assert len(args.Gpd) == 4
     assert len(args.hField) == 3
-    #print("n0imps: ",args.n0imps)
+    # print("n0imps: ",args.n0imps)
 
-    main(h0_filename=args.h0_filename,
-         radial_filename=args.radial_filename,
-         ls=tuple(args.ls), nBaths=tuple(args.nBaths),
-         nValBaths=tuple(args.nValBaths), n0imps=tuple(args.n0imps),
-         dnTols=tuple(args.dnTols), dnValBaths=tuple(args.dnValBaths),
-         dnConBaths=tuple(args.dnConBaths),
-         Fdd=tuple(args.Fdd), Fpp=tuple(args.Fpp),
-         Fpd=tuple(args.Fpd), Gpd=tuple(args.Gpd),
-         xi_2p=args.xi_2p, xi_3d=args.xi_3d,
-         chargeTransferCorrection=args.chargeTransferCorrection,
-         hField=tuple(args.hField), nPsiMax=args.nPsiMax,
-         nPrintSlaterWeights=args.nPrintSlaterWeights,
-         tolPrintOccupation=args.tolPrintOccupation,
-         T=args.T, energy_cut=args.energy_cut,
-         delta=args.delta, deltaRIXS=args.deltaRIXS, deltaNIXS=args.deltaNIXS, 
-         XAS_projectors_filename=args.XAS_projectors_filename,
-         RIXS_projectors_filename=args.RIXS_projectors_filename)
+    main(
+        h0_filename=args.h0_filename,
+        radial_filename=args.radial_filename,
+        ls=tuple(args.ls),
+        nBaths=tuple(args.nBaths),
+        nValBaths=tuple(args.nValBaths),
+        n0imps=tuple(args.n0imps),
+        dnTols=tuple(args.dnTols),
+        dnValBaths=tuple(args.dnValBaths),
+        dnConBaths=tuple(args.dnConBaths),
+        Fdd=tuple(args.Fdd),
+        Fpp=tuple(args.Fpp),
+        Fpd=tuple(args.Fpd),
+        Gpd=tuple(args.Gpd),
+        xi_2p=args.xi_2p,
+        xi_3d=args.xi_3d,
+        chargeTransferCorrection=args.chargeTransferCorrection,
+        hField=tuple(args.hField),
+        nPsiMax=args.nPsiMax,
+        nPrintSlaterWeights=args.nPrintSlaterWeights,
+        tolPrintOccupation=args.tolPrintOccupation,
+        T=args.T,
+        energy_cut=args.energy_cut,
+        delta=args.delta,
+        deltaRIXS=args.deltaRIXS,
+        deltaNIXS=args.deltaNIXS,
+        XAS_projectors_filename=args.XAS_projectors_filename,
+        RIXS_projectors_filename=args.RIXS_projectors_filename,
+    )

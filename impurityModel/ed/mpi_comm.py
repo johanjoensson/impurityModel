@@ -34,13 +34,13 @@ def dict_chunks_from_one_MPI_rank(data, chunk_maxsize=1 * 10**6, root=0):
     """
     if rank == root:
         it = iter(data)
-        n_chunks = math.ceil(len(data)/chunk_maxsize)
+        n_chunks = math.ceil(len(data) / chunk_maxsize)
     else:
         n_chunks = None
     n_chunks = comm.bcast(n_chunks, root=root)
     for _ in range(n_chunks):
         if rank == root:
-            yield {k:data[k] for k in islice(it, chunk_maxsize)}
+            yield {k: data[k] for k in islice(it, chunk_maxsize)}
         else:
             yield None
 
@@ -76,18 +76,20 @@ def allgather_dict(data, total, chunk_maxsize=1 * 10**6):
     # Determine here if we can use a simple Allgather or need
     # to send the data in chunks.
     if max(n_ps_new) <= chunk_maxsize:
-        if rank == 0: print('Allgather everything at once...')
+        if rank == 0:
+            print("Allgather everything at once...")
         for r in range(ranks):
             total.update(comm.bcast(data, root=r))
     else:
-        if rank == 0: print('Allgather chunks...')
+        if rank == 0:
+            print("Allgather chunks...")
         # MPI do not allow to messages bigger than about 2 GB.
         # Therefore we send the data in chunks.
-        #print('rank' + str(rank) +', h_big_new = ', h_big_new)
+        # print('rank' + str(rank) +', h_big_new = ', h_big_new)
         for r in range(ranks):
             # Data in rank r is broadcasted in chunks to all the other ranks.
             for chunk in dict_chunks_from_one_MPI_rank(data, chunk_maxsize, r):
-                #print('rank' + str(rank) + ': ', chunk)
+                # print('rank' + str(rank) + ': ', chunk)
                 total.update(comm.bcast(chunk, root=r))
     if rank == 0:
-        print("time(Allgather H_dict) = {:.5f} seconds.".format(time.perf_counter()-t0))
+        print("time(Allgather H_dict) = {:.5f} seconds.".format(time.perf_counter() - t0))
