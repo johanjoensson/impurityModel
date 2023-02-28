@@ -326,19 +326,76 @@ def get_restrictions(l, n0imps, nBaths, nValBaths, dnTols, dnValBaths, dnConBath
     restrictions = {}
     # Restriction on impurity orbitals
     indices = frozenset(c2i(nBaths, (l, s, m)) for s in range(2) for m in range(-l, l + 1))
-    restrictions[indices] = (n0imps[l] - 1, n0imps[l] + dnTols[l] + 1)
+    # restrictions[indices] = (n0imps[l] - 1, n0imps[l] + dnTols[l] + 1)
+    restrictions[indices] = (n0imps[l] - dnTols[l], n0imps[l] + dnTols[l] + 1)
     # Restriction on valence bath orbitals
     indices = []
     for b in range(nValBaths[l]):
         indices.append(c2i(nBaths, (l, b)))
-    restrictions[frozenset(indices)] = (nValBaths[l] - dnValBaths[l], nValBaths[l])
+    restrictions[frozenset(indices)] = (nValBaths[l] - dnValBaths[l], nValBaths[l] + 1)
     # Restriction on conduction bath orbitals
     indices = []
     for b in range(nValBaths[l], nBaths[l]):
         indices.append(c2i(nBaths, (l, b)))
-    restrictions[frozenset(indices)] = (0, dnConBaths[l])
+    restrictions[frozenset(indices)] = (0, dnConBaths[l] + 1)
 
     return restrictions
+
+def get_noninteracting_hamiltonian_operator(
+        nBaths, 
+        slaterCondon, 
+        SOCs, 
+        DCinfo, 
+        hField, 
+        h0_filename, 
+        rank, 
+        verbose = True):
+    # Divide up input parameters to more concrete variables
+    Fdd, Fpp, Fpd, Gpd = slaterCondon
+    n0imps, chargeTransferCorrection = DCinfo
+    xi_2p, xi_3d = SOCs
+    hx, hy, hz = hField
+    # Add SOC, in spherical harmonics basis.
+    SOC2pOperator = finite.getSOCop(xi_2p, l=1)
+    SOC3dOperator = finite.getSOCop(xi_3d, l=2)
+
+    eDCOperator = {}
+    if chargeTransferCorrection is not None:
+        # Double counting (DC) correction values.
+        # MLFT DC
+        dc = finite.dc_MLFT(n3d_i=n0imps[2], c=chargeTransferCorrection, Fdd=Fdd,
+                           n2p_i=n0imps[1] if 1 in n0imps.keys() else None, Fpd=Fpd, Gpd=Gpd)
+        dc[2] = 4.18011902
+        for il, l in enumerate(n0imps.keys()):
+            for s in range(2):
+                for m in range(-l, l+1):
+                    eDCOperator[(((l, s, m), 'c'), ((l, s, m), 'a'))] = -dc[l]
+
+    # Magnetic field
+    hHfieldOperator = {}
+    l = 2
+    for m in range(-l, l+1):
+        hHfieldOperator[(((l, 1, m), 'c'), ((l, 0, m), 'a'))] = hx*1/2.
+        hHfieldOperator[(((l, 0, m), 'c'), ((l, 1, m), 'a'))] = hx*1/2.
+        hHfieldOperator[(((l, 1, m), 'c'), ((l, 0, m), 'a'))] += -hy*1/2.*1j
+        hHfieldOperator[(((l, 0, m), 'c'), ((l, 1, m), 'a'))] += hy*1/2.*1j
+        for s in range(2):
+            hHfieldOperator[(((l, s, m), 'c'), ((l, s, m), 'a'))] = hz*1/2 if s==1 else -hz*1/2
+
+    h0_operator = {}
+    # Read the non-relativistic non-interacting Hamiltonian operator from file.
+    h0_operator = read_h0_operator(h0_filename, nBaths)
+
+    if rank == 0 and verbose:
+            print ("Non-interacting, non-relativistic Hamiltonian (h0):")
+            print (h0_operator)
+    hOperator = finite.addOps([hHfieldOperator,
+                               SOC2pOperator,
+                               SOC3dOperator,
+                               eDCOperator,
+                               h0_operator])
+    return hOperator
+
 
 def get_hamiltonian_operator(
         nBaths, 
@@ -383,65 +440,33 @@ def get_hamiltonian_operator(
     """
     # Divide up input parameters to more concrete variables
     Fdd, Fpp, Fpd, Gpd = slaterCondon
-    xi_2p, xi_3d = SOCs
-    n0imps, chargeTransferCorrection = DCinfo
-    hx, hy, hz = hField
 
     # Calculate the U operator, in spherical harmonics basis.
     uOperator = finite.get2p3dSlaterCondonUop(Fdd=Fdd, Fpp=Fpp,
                                               Fpd=Fpd, Gpd=Gpd)
-    # Add SOC, in spherical harmonics basis.
-    SOC2pOperator = finite.getSOCop(xi_2p, l=1)
-    SOC3dOperator = finite.getSOCop(xi_3d, l=2)
-
-    eDCOperator = {}
-    if chargeTransferCorrection is not None:
-        # Double counting (DC) correction values.
-        # MLFT DC
-        dc = finite.dc_MLFT(n3d_i=n0imps[2], c=chargeTransferCorrection, Fdd=Fdd,
-                           n2p_i=n0imps[1] if 1 in n0imps.keys() else None, Fpd=Fpd, Gpd=Gpd)
-        dc[2] = 3.94248015
-        for il, l in enumerate(n0imps.keys()):
-            for s in range(2):
-                for m in range(-l, l+1):
-                    eDCOperator[(((l, s, m), 'c'), ((l, s, m), 'a'))] = -dc[l]
-
-    # Magnetic field
-    hHfieldOperator = {}
-    l = 2
-    for m in range(-l, l+1):
-        hHfieldOperator[(((l, 1, m), 'c'), ((l, 0, m), 'a'))] = hx*1/2.
-        hHfieldOperator[(((l, 0, m), 'c'), ((l, 1, m), 'a'))] = hx*1/2.
-        hHfieldOperator[(((l, 1, m), 'c'), ((l, 0, m), 'a'))] += -hy*1/2.*1j
-        hHfieldOperator[(((l, 0, m), 'c'), ((l, 1, m), 'a'))] += hy*1/2.*1j
-        for s in range(2):
-            hHfieldOperator[(((l, s, m), 'c'), ((l, s, m), 'a'))] = hz*1/2 if s==1 else -hz*1/2
-
-    # Read the non-relativistic non-interacting Hamiltonian operator from file.
-    h0_operator = get_h0_operator(h0_filename, nBaths)
-
-    if rank == 0 and verbose:
-            print ("Non-interacting, non-relativistic Hamiltonian (h0):")
-            print (h0_operator)
-
+    h_non_interacting = get_noninteracting_hamiltonian_operator(
+            nBaths, 
+            slaterCondon, 
+            SOCs, 
+            DCinfo, 
+            hField, 
+            h0_filename, 
+            rank, 
+            verbose)
     # Add Hamiltonian terms to one operator.
     hOperator = finite.addOps([uOperator,
-                               hHfieldOperator,
-                               SOC2pOperator,
-                               SOC3dOperator,
-                               eDCOperator,
-                               h0_operator])
+                               h_non_interacting])
     if rank == 0 and verbose: 
         finite.printOp(nBaths,hOperator,"Local Hamiltonian: ") 
 
     # Convert spin-orbital and bath state indices to a single index notation.
-    hOp = {}
-    for process, value in hOperator.items():
-        hOp[tuple((c2i(nBaths, spinOrb), action) for spinOrb, action in process)] = value
-    return hOp
+    # hOp = {}
+    # for process, value in hOperator.items():
+    #     hOp[tuple((c2i(nBaths, spinOrb), action) for spinOrb, action in process)] = value
+    return finite.c2i_op(nBaths, hOperator)
 
 
-def get_h0_operator(h0_filename, nBaths):
+def read_h0_operator(h0_filename, nBaths):
     """
     Return h0 operator.
 
@@ -501,7 +526,7 @@ def read_h0_dict(h0_filename):
                                 h0_dict[key] = val
         return h0_dict
 
-def get_RIXS_projectors(filename):
+def read_RIXS_projectors(filename):
         r'''
         Reads projectors for the RIXS calculations from file.
         Parameters

@@ -9,26 +9,331 @@ import h5py
 
 import scipy as sp
 
-from impurityModel.ed.get_spectra import get_hamiltonian_operator, get_h0_operator, get_restrictions
+from impurityModel.ed.get_spectra import get_noninteracting_hamiltonian_operator, read_h0_operator, get_restrictions
 from impurityModel.ed import spectra
 from impurityModel.ed import finite
-from impurityModel.ed.finite import c2i
 from impurityModel.ed.finite import daggerOp, applyOp, inner, add, norm2
 from impurityModel.ed.average import k_B, thermal_average_scale_indep
 
+from impurityModel.ed.greens_function import get_Greens_function, save_Greens_function
+
+eV_to_Ry = 1/13.605693122994
 
 class UnphysicalSelfenergy(Exception):
     pass
 
-# MPI variables
-comm = MPI.COMM_WORLD
-rank = comm.rank
-ranks = comm.size
+    def matrix_print(matrix, label: str = None):
+        ms = "\n".join([ " ".join([f"{np.real(val): .4f}{np.imag(val):+.4f}j" for val in row]) for row in matrix])
+        if label:
+            print (label)
+        print (ms)
 
-eV_to_Ry = 1/13.605693122994
+def run(cluster, h0, iw, w, delta, tau, verbosity = 0):
+    """
+        cluster     -- The impmod_cluster object containing loads of data.
+        h0          -- Non-interacting hamiltonian.
+        iw          -- Matsubara frequency mesh.
+        w           -- Real frequency mesh.
+        delta       -- Real frequency quantities are evaluated a frequency w_n + =j*delta
+        tau         -- Temperature (in units of energy, i.e., tau = k_B*T)
+        verbosity   -- How much output should be produced? 
+                       0 - quiet, very little output generated. (default)
+                       1 - loud, detailed output generated
+                       2 - SCREAM, insanely detailed output generated
+    """
+    np.seterr(over='raise')
+    energy_cut = 3
+    num_psi_max = 20
+    nPrintSlaterWeights = 3
+    tolPrintOccupation = 0.5
 
-def matrix_print(matrix):
-    print ("\n".join(["  ".join([f"{np.real(el): 7.5f} {np.imag(el):+7.5f}" for el in row]) for row in matrix]))
+    # FIXED Hamiltonian from file, reomve later!!
+    # h0_filename = "h0_impMod.dict"
+    # num_val_baths, num_con_baths = cluster.bath_states
+    # sum_bath_states = {l: num_val_baths[l] + num_con_baths[l] for l in num_val_baths }
+    # n0imps, _, _ = cluster.nominal_occ
+    # hOp = get_noninteracting_hamiltonian_operator(
+    #     sum_bath_states,
+    #     [cluster.slater, None, None, None],
+    #     [0, 0],
+    #     [n0imps, None],
+    #     [0,0,0],
+    #     h0_filename,
+    #     rank = 0,
+    #     verbose = False
+    # )
+    # h0 = hOp
+    #############################################
+
+    cluster.sig[:, :, :], cluster.sig_real[:, :, :], cluster.sig_static[:, :]  = calc_selfenergy(
+            h0,
+            cluster.slater,
+            iw,
+            w,
+            delta,
+            cluster.nominal_occ,
+            cluster.delta_occ,
+            cluster.bath_states,
+            tau,
+            energy_cut,
+            num_psi_max,
+            nPrintSlaterWeights,
+            tolPrintOccupation,
+            verbosity,
+            rotation = cluster.rot_spherical, 
+            cluster_label = cluster.label)
+
+
+
+def calc_selfenergy(
+                    h0,
+                    slater_params,
+                    iw,
+                    w,
+                    delta,
+                    nominal_occ,
+                    delta_occ,
+                    num_bath_states,
+                    tau,
+                    energy_cut,
+                    num_psi_max,
+                    nPrintSlaterWeights,
+                    tolPrintOccupation,
+                    verbosity, 
+                    rotation = None,
+                    cluster_label = None):
+    """
+    """
+    # MPI variables
+    comm = MPI.COMM_WORLD
+    rank = comm.rank
+    ranks = comm.size
+
+    n0_imp, n0_val, n0_con = nominal_occ
+    delta_imp_occ, delta_val_occ, delta_con_occ = delta_occ
+    num_val_baths, num_con_baths = num_bath_states
+    sum_bath_states = {l : num_val_baths[l] + num_con_baths[l] for l in num_val_baths}
+
+    ls = [l for l in num_val_baths]
+    l = ls[0]
+
+    restrictions = get_restrictions(    l = l,
+                                        n0imps = n0_imp, 
+                                        nBaths = sum_bath_states, 
+                                        nValBaths = num_val_baths, 
+                                        dnTols = delta_imp_occ, 
+                                        dnValBaths = delta_val_occ, 
+                                        dnConBaths = delta_con_occ)
+    if rank == 0 and verbosity >= 2:
+        print ("Restrictions on occupation")
+        for key, res in restrictions.items():
+            print (f"{key} : {res}")
+    num_spin_orbitals = sum([2*(2*l + 1) +
+                             num_val_baths[l] + 
+                             num_con_baths[l] for l in num_val_baths])
+
+    # construct local, interacting, hamiltonian
+    u = finite.getUop(l, l, l, l, slater_params)
+    h = finite.addOps([h0, u])
+    if rank == 0 and verbosity >= 1:
+        finite.printOp(sum_bath_states, h, "Local Hamiltonian: ")
+    h = finite.c2i_op(sum_bath_states, h)
+
+    # Measure how many physical processes the Hamiltonian contains.
+    if rank == 0 and verbosity >= 1:
+        print("{:d} processes in the Hamiltonian.".format(len(h)))
+        print("Create basis...")
+    basis = finite.get_basis(sum_bath_states, num_val_baths, delta_val_occ, delta_con_occ, delta_imp_occ, n0_imp, verbose = verbosity >= 2)
+    if rank == 0 and verbosity >= 1:
+        print("#basis states = {:d}".format(len(basis)), flush = True)
+    # Diagonalization of restricted active space Hamiltonian
+    # es, psis = finite.eigensystem(num_spin_orbitals, h, basis, num_psi_max, verbose = verbosity >= 1, groundDiagMode = 'Lanczos', eigenValueTol = 1e-12)
+    es, psis = finite.eigensystem(num_spin_orbitals, h, basis, num_psi_max, verbose = verbosity >= 1, groundDiagMode = 'Lanczos', eigenValueTol = 0)
+
+    if rank == 0 and verbosity >= 1:
+        finite.printThermalExpValues(sum_bath_states, es, psis)
+        finite.printExpValues(sum_bath_states, es, psis)
+        # Print Slater determinants and weights
+        finite.printSlaterDeterminantsAndWeights(psis = psis, nPrintSlaterWeights = nPrintSlaterWeights)
+
+    # Consider from now on only eigenstates with low energy
+    # Energy cut in eV. energy_cut *= k_B * T
+    energy_cut *= tau
+    es = tuple(e for e in es if e - es[0] < energy_cut)
+    psis = tuple(psis[i] for i in range(len(es)))
+    if rank == 0 and verbosity >= 1:
+        print("Consider {:d} eigenstates for the spectra \n".format(len(es)), flush = True)
+        print("Calculate Interacting Green's function...")
+    gs_matsubara, gs_realaxis = get_Greens_function(
+                                                    nBaths = sum_bath_states, 
+                                                    matsubara_mesh = iw,
+                                                    omega_mesh = w,
+                                                    es = es, 
+                                                    psis = psis, 
+                                                    l = l,
+                                                    hOp = h,
+                                                    delta = delta,
+                                                    restrictions = restrictions,
+                                                    verbose = verbosity >= 2,
+                                                    mpi_distribute = True)
+    if iw is not None:
+        gs_matsubara_thermal_avg = thermal_average_scale_indep(es[:np.shape(gs_matsubara)[0]], gs_matsubara, tau=tau)
+        save_Greens_function(gs = gs_matsubara_thermal_avg, omega_mesh = iw, label =f'G-{cluster_label}', e_scale = 1)
+    if w is not None:
+        gs_realaxis_thermal_avg = thermal_average_scale_indep(es[:np.shape(gs_realaxis)[0]], gs_realaxis, tau=tau)
+        save_Greens_function(gs = gs_realaxis_thermal_avg, omega_mesh = w, label =f'G-{cluster_label}', e_scale = 1)
+    if rank == 0 and verbosity >= 1:
+        print("Calculate self-energy...")
+    if w is not None:
+        sigma_real = get_sigma(  omega_mesh = w, 
+                                 nBaths = sum_bath_states, 
+                                 g = gs_realaxis_thermal_avg, 
+                                 h0op = h0,
+                                 delta = delta,
+                                 save_G0 = True,
+                                 save_hyb = True,
+                                 clustername = cluster_label,
+                                 rotation = rotation
+                               )
+        try:
+            check_sigma(sigma_real)
+            m_val = np.max(np.abs(sigma_real))
+            for column in range(sigma_real.shape[1]):
+                for row in range(sigma_real.shape[0]):
+                    if row == column:
+                        continue
+                    # if np.max(np.abs(sigma_real[row, column, :])) < 1e-2*m_val:
+                    #     sigma_real[row, column, :] = 0
+        except UnphysicalSelfenergy as err:
+            if rank == 0:
+                print (f"WARNING! Unphysical realaxis selfenergy:\n\t{err}")
+    else:
+        sigma_real = None
+    if iw is not None:
+        sigma = get_sigma(  omega_mesh = iw, 
+                            nBaths = sum_bath_states, 
+                            g = gs_matsubara_thermal_avg, 
+                            h0op = h0,
+                            delta = 0,
+                            save_G0 = True,
+                            save_hyb = True,
+                            clustername = cluster_label,
+                            rotation = rotation
+                          )
+        try:
+            check_sigma(sigma)
+            m_val = np.max(np.abs(sigma))
+            for column in range(sigma.shape[1]):
+                for row in range(sigma.shape[0]):
+                    if row == column:
+                        continue
+                    # if np.max(np.abs(sigma[row, column, :])) < 1e-2*m_val:
+                    #     sigma[row, column, :] = 0
+        except UnphysicalSelfenergy as err:
+            if rank == 0:
+                print (f"WARNING! Unphysical Matsubara axis selfenergy:\n\t{err}")
+    else:
+        sigma = None
+    if rank == 0:
+        print (f'Calculating sig_static.')
+    sigma_static = get_Sigma_static(sum_bath_states, slater_params, es, psis, l, tau)
+    
+    if rank == 0:
+        if iw is not None:
+            save_Greens_function(gs = sigma, omega_mesh = iw, label =f'Sigma-{cluster_label}', e_scale = 1)
+        if w is not None:
+            save_Greens_function(gs = sigma_real, omega_mesh = w, label =f'Sigma-{cluster_label}', e_scale = 1)
+
+    return sigma, sigma_real, sigma_static
+
+    
+
+def check_sigma(sigma):
+    diagonals = [np.diag(sigma[:,:, i]) for i in range(sigma.shape[-1])]
+    if np.any(np.imag(diagonals) > 0):
+        raise UnphysicalSelfenergy("Diagonal term has positive imaginary part.")
+
+def get_hcorr_v_hbath(h0op, sum_bath_states):
+    #   The matrix form of h0op can be written
+    #   [  hcorr  V^+    ]
+    #   [  V      hbath  ]
+    # where:
+    #       - hcorr is the Hamiltonian for the correlated, impurity, orbitals.
+    #       - V/V^+ is the hopping between impurity and bath orbitals.
+    #       - hbath is the hamiltonian for the non-interacting, bath, orbitals.
+    h0_i = finite.c2i_op(sum_bath_states, h0op)
+    h0Matrix = finite.iOpToMatrix(sum_bath_states, h0_i)
+    n_corr = sum([2*(2*l + 1) for l in sum_bath_states.keys()])
+    hcorr = h0Matrix[0:n_corr,0:n_corr]
+    v_dagger = h0Matrix[0:n_corr, n_corr:]
+    v = h0Matrix[n_corr:, 0:n_corr]
+    h_bath = h0Matrix[n_corr:, n_corr:]
+    return hcorr, v, v_dagger, h_bath
+
+def get_sigma(omega_mesh, nBaths, g, h0op, delta, return_g0 = False, save_G0 = False, save_hyb = False, clustername = "", rotation = None):
+    hcorr, v, v_dagger, hbath = get_hcorr_v_hbath(h0op, nBaths)
+
+    
+    n = hcorr.shape[0]
+    N = hbath.shape[0]
+
+    def hyb(ws):
+        hyb = np.conj(v.T)[np.newaxis, :, :] @ np.linalg.solve((ws + 1j*delta)[:, np.newaxis, np.newaxis]*np.identity(N, dtype = complex)[np.newaxis,:, :] - hbath[np.newaxis, :, :], v[np.newaxis, :, :])
+        max_val = np.max(np.abs(hyb))
+        return hyb
+
+    if save_hyb:
+        hybridization_function = hyb(omega_mesh)
+        save_Greens_function(np.moveaxis(hybridization_function, 0, -1), omega_mesh, label = "Hyb-" + clustername, e_scale = 1)
+        if rotation is not None:
+            rotated_hyb = rotation[np.newaxis, :, :] @ hybridization_function @ np.conj(rotation.T)[np.newaxis, :, :]
+            save_Greens_function(np.moveaxis(rotated_hyb, 0, -1), omega_mesh, label = "rotated-Hyb-" + clustername, e_scale = 1)
+
+    wIs = (omega_mesh + 1j*delta)[:, np.newaxis, np.newaxis]*np.eye(n)[np.newaxis, :, :]
+    hcorrs = hcorr[np.newaxis, :, :]
+    g0_inv = wIs - hcorrs - hyb(omega_mesh)
+
+    if save_G0:
+        save_Greens_function(np.moveaxis(np.linalg.inv(g0_inv), 0, -1), omega_mesh, "G0-" + clustername, e_scale = 1)
+        if rotation is not None:
+            rotated_g0_inv = rotation[np.newaxis, :, :] @ g0_inv @ np.conj(rotation.T)[np.newaxis, :, :]
+            save_Greens_function(np.moveaxis(rotated_g0_inv, 0, -1), omega_mesh, label = "rotated-G0-" + clustername, e_scale = 1)
+
+    g_inv = np.linalg.inv(np.moveaxis(g, -1, 0))
+    return np.moveaxis(g0_inv - g_inv, 0, -1)
+
+
+def get_Sigma_static(nBaths, Fdd, es, psis, l, tau):
+    n = 2*(2*l + 1)
+
+    rhos = [finite.getDensityMatrix(nBaths, psi, l) for psi in psis]
+    rhomats = np.zeros((len(rhos), n, n), dtype = complex)
+    for (mat, rho) in zip(rhomats, rhos):
+        for (state1, state2), val in rho.items():
+            i = finite.c2i(nBaths, state1)
+            j = finite.c2i(nBaths, state2)
+            mat[i, j] = val
+    rho = thermal_average_scale_indep(es, rhomats, tau)
+    
+    U = finite.getUop(l1 = l, l2 = l, l3 = l, l4 = l, R = Fdd)
+    Umat = np.zeros((n, n, n, n), dtype = complex)
+    for ((state1, op1), (state2, op2), (state3, op3), (state4, op4)), val in U.items():
+        assert(op1 == 'c')
+        assert(op2 == 'c')
+        assert(op3 == 'a')
+        assert(op4 == 'a')
+        i = finite.c2i(nBaths, state1)
+        j = finite.c2i(nBaths, state2)
+        k = finite.c2i(nBaths, state3)
+        l = finite.c2i(nBaths, state4)
+        Umat[i, j, k, l] = 2*val
+
+    sigma_static = np.zeros((n, n), dtype = complex)
+    for i in range(n):
+        for j in range(n):
+            sigma_static += (Umat[j, :, :, i] - Umat[j, :, i, :]) * rho[i, j]
+
+    return sigma_static
 
 def get_selfenergy(
         clustername,
@@ -52,18 +357,20 @@ def get_selfenergy(
         delta,
         verbose):
 
+    # MPI variables
+    comm = MPI.COMM_WORLD
+    rank = comm.rank
+    ranks = comm.size
+
     # omega_mesh = np.linspace(-25, 25, 2000)
     omega_mesh = np.linspace(-1.83, 1.83, 2000)
     # omega_mesh = 1j*np.pi*tau*np.arange(start = 1, step = 2, stop = 2*375)
-
-    comm = MPI.COMM_WORLD
-    rank = comm.rank
 
     if rank == 0:
         t0 = time.perf_counter()
     # -- System information --
 
-    nBaths = OrderedDict({ls: nBaths})
+    sum_baths = OrderedDict({ls: nBaths})
     nValBaths = OrderedDict({ls: nValBaths})
     dnValBaths = OrderedDict({ls: dnValBaths})
     dnConBaths = OrderedDict({ls: dnConBaths})
@@ -71,569 +378,50 @@ def get_selfenergy(
     # -- Basis occupation information --
     n0imps = OrderedDict({ls: n0imps})
     dnTols = OrderedDict({ls: dnTols})
+    nominal_occ = (n0imps, {ls: nBaths}, {ls: 0})
+    delta_occ = (dnTols, dnValBaths, dnConBaths)
 
-    # -- Spectra information --
-    # Energy cut in eV.
-    # energy_cut *= k_B * T
-    energy_cut *= tau
-
-    # -- Occupation restrictions for excited states --
-    restrictions = get_restrictions(    l = ls, 
-                                        n0imps = n0imps, 
-                                        nBaths = nBaths, 
-                                        nValBaths = nValBaths, 
-                                        dnTols = dnTols, 
-                                        dnValBaths = dnValBaths, 
-                                        dnConBaths = dnConBaths)
-    for key, res in restrictions.items():
-        print (f"{key} : {res}")
-
-    n_spin_orbitals = sum(2 * (2 * ang + 1) + nBath for ang, nBath in nBaths.items())
-    if rank == 0 and verbose:
-        print("#spin-orbitals:", n_spin_orbitals)
-
+    num_bath_states = ({ls: nValBaths[ls]}, {ls: sum_baths[ls] - nValBaths[ls]})
+    
     # Hamiltonian
     if rank == 0:
         print("Construct the Hamiltonian operator...")
-    hOp = get_hamiltonian_operator(
-        nBaths,
-        nValBaths,
+    hOp = get_noninteracting_hamiltonian_operator(
+        sum_baths,
         [Fdd, None, None, None],
         [0, xi],
         [n0imps, chargeTransferCorrection],
         hField,
         h0_filename,
-        rank,
+        rank = rank,
         verbose = verbose
     )
-    # Measure how many physical processes the Hamiltonian contains.
-    if rank == 0 and verbose:
-        print("{:d} processes in the Hamiltonian.".format(len(hOp)))
-    # Many body basis for the ground state
-    if rank == 0:
-        print("Create basis...")
-    basis = finite.get_basis(nBaths, nValBaths, dnValBaths, dnConBaths, dnTols, n0imps, verbose = verbose)
-    if rank == 0 and verbose:
-        print("#basis states = {:d}".format(len(basis)))
-    # Diagonalization of restricted active space Hamiltonian
-    es, psis = finite.eigensystem(n_spin_orbitals, hOp, basis, nPsiMax, verbose = verbose, groundDiagMode = 'Lanczos', eigenValueTol = 1e-13)
 
-    finite.printThermalExpValues(nBaths, es, psis)
-    finite.printExpValues(nBaths, es, psis)
-    # Print Slater determinants and weights
-    finite.printSlaterDeterminantsAndWeights(psis = psis, nPrintSlaterWeights = nPrintSlaterWeights)
-    finite.printDensityMatrixCubic(nBaths = nBaths, psis = psis, tolPrintOccupation = tolPrintOccupation)
-
-    # Consider from now on only eigenstates with low energy
-    es = tuple(e for e in es if e - es[0] < energy_cut)
-    psis = tuple(psis[i] for i in range(len(es)))
+    sigma, sigma_real, sigma_static = calc_selfenergy(
+            h0 = hOp,
+            slater_params = Fdd,
+            iw = None,
+            w = omega_mesh,
+            delta = delta,
+            nominal_occ = nominal_occ,
+            delta_occ = delta_occ,
+            num_bath_states = num_bath_states,
+            tau = tau,
+            energy_cut = energy_cut,
+            num_psi_max = nPsiMax,
+            nPrintSlaterWeights = nPrintSlaterWeights,
+            tolPrintOccupation = tolPrintOccupation,
+            verbosity = 2 if verbose else 0,
+            cluster_label = clustername)
     if rank == 0:
-        print("Consider {:d} eigenstates for the spectra \n".format(len(es)))
-    if rank == 0:
-        print("Calculate Interacting Green's function...")
-    gs = get_Greens_functions(  nBaths = nBaths, 
-                               omega_mesh = omega_mesh,
-                               es = es, 
-                               psis = psis, 
-                               l = ls,
-                               hOp = hOp,
-                               delta = delta,
-                               restrictions = restrictions,
-                               verbose = verbose,
-                               mpi_distribute = False)
-    # gs[np.abs(gs) < 1e-3] = 0
-
-    # gs_thermal_avg = thermal_average(es, gs, T=T)
-    gs_thermal_avg = thermal_average_scale_indep(es[:np.shape(gs)[0]], gs, tau=tau)
-
-    h0op = get_non_interacting_hamiltonian(h0_filename, nBaths)
-    if rank == 0:
-        print("Calculate self-energy...")
-        sigma = get_sigma(  omega_mesh = omega_mesh, 
-                            nBaths = nBaths, 
-                            g = gs_thermal_avg, 
-                            h0op = h0op,
-                            delta = delta,
-                            save_G0 = True,
-                            save_hyb = True, 
-                            clustername = clustername)
-        try:
-            check_sigma(sigma)
-        except UnphysicalSelfenergy as err:
-            print (f"ERROR Unphysical selfenergy:\n\t{err}")
-    if rank == 0:
-        print (f'Calculating sig_static.')
-        sig_static = get_Sigma_static(nBaths, Fdd, es, psis, ls, tau)
         print (f"Writing sig_static to files")
-        np.savetxt(f'real-sig_static-{clustername}.dat', np.real(sig_static))
-        np.savetxt(f'imag-sig_static-{clustername}.dat', np.imag(sig_static))
+        np.savetxt(f'real-sig_static-{clustername}.dat', np.real(sigma_static))
+        np.savetxt(f'imag-sig_static-{clustername}.dat', np.imag(sigma_static))
     if rank == 0:
-        save_Greens_function(gs = gs_thermal_avg, omega_mesh = omega_mesh, label =f'G-{clustername}', e_scale = 1)
-        save_Greens_function(gs = sigma, omega_mesh = omega_mesh, label =f'Sigma-{clustername}', e_scale = 1)
-
-def check_sigma(sigma):
-    diagonals = [np.diag(sigma[:,:, i]) for i in range(sigma.shape[-1])]
-    if np.any(np.imag(diagonals) > 0):
-        raise UnphysicalSelfenergy("Diagonal term has positive imaginary part.")
-
-def get_non_interacting_hamiltonian(h0_filename, nBaths):
-    h0 = get_h0_operator(h0_filename, nBaths)
-
-    h0Op = {}
-    for process, value in h0.items():
-        h0Op[tuple((c2i(nBaths, spinOrb), action) for spinOrb, action in process)] = value
-    return h0Op
-
-def get_hcorr_v_hbath(h0op, nBaths):
-    #   The matrix form of h0op can be written
-    #   [  hcorr  V^+    ]
-    #   [  V      hbath  ]
-    # where:
-    #       - hcorr is the Hamiltonian for the correlated, impurity, orbitals.
-    #       - V/V^+ is the hopping between impurity and bath orbitals.
-    #       - hbath is the hamiltonian for the non-interacting, bath, orbitals.
-    h0Matrix = finite.iOpToMatrix(nBaths, h0op)
-    n_corr = sum([2*(2*l + 1) for l in nBaths.keys()])
-    hcorr = h0Matrix[0:n_corr,0:n_corr]
-    v_dagger = h0Matrix[0:n_corr, n_corr:]
-    v = h0Matrix[n_corr:, 0:n_corr]
-    h_bath = h0Matrix[n_corr:, n_corr:]
-    return hcorr, v, v_dagger, h_bath
-
-def get_sigma(omega_mesh, nBaths, g, h0op, delta, mpi_distribute = False, save_G0 = False, save_hyb = False, clustername = ""):
-    hcorr, v, v_dagger, hbath = get_hcorr_v_hbath(h0op, nBaths)
-
-    def matrix_print(matrix, label: str = None):
-        ms = "\n".join([ "  ".join([f"{val: .3f}" for val in row]) for row in matrix])
-        if label:
-            print (label)
-        print (ms)
-
-    matrix_print (hcorr, r'H$_d$')
-    matrix_print (v, 'V')
-    matrix_print (hbath, r'H_b')
-    n = hcorr.shape[0]
-    N = hbath.shape[0]
-
-    g_inv = np.linalg.inv(np.moveaxis(g, -1, 0))
-    g_inv = np.moveaxis(g_inv, 0, -1)
+        # save_Greens_function(gs = gs_thermal_avg, omega_mesh = omega_mesh, label =f'G-{clustername}', e_scale = 1)
+        save_Greens_function(gs = sigma_real, omega_mesh = omega_mesh, label =f'Sigma-{clustername}', e_scale = 1)
 
 
-    def hyb(w):
-        # return np.linalg.multi_dot([v_dagger, np.linalg.inv((w + 1j*delta)*np.identity(N) - hbath), v])
-        return v_dagger @ (np.linalg.inv((w + 1j*delta)*np.identity(N) - hbath) @ v)
-
-    if save_hyb:
-        hybridization_function = np.array([hyb(w) for w in omega_mesh])
-        save_Greens_function(np.moveaxis(hybridization_function, 0, -1), omega_mesh, label = "Hyb-" + clustername, e_scale = 1)
-
-    I = np.identity(n, dtype = complex)
-    g0_inv = np.array(
-             [(w + 1j*delta)*I - hcorr - hybridization_function[i_w] for i_w, w in enumerate(omega_mesh)]
-             )
-
-    if save_G0:
-        save_Greens_function(np.moveaxis(np.linalg.inv(g0_inv), 0, -1), omega_mesh, "G0-" + clustername, e_scale = 1)
-
-    g0_inv = np.moveaxis(g0_inv, 0, -1)
-
-    return g0_inv - g_inv
-
-def get_Sigma_static(nBaths, Fdd, es, psis, l, tau):
-    n = 2*(2*l + 1)
-
-    rhos = [finite.getDensityMatrix(nBaths, psi, l) for psi in psis]
-    rhomats = np.zeros((len(rhos), n, n), dtype = complex)
-    for (mat, rho) in zip(rhomats, rhos):
-        for (state1, state2), val in rho.items():
-            i = finite.c2i(nBaths, state1)
-            j = finite.c2i(nBaths, state2)
-            mat[i, j] = val
-        print (f"\nRho:")
-        matrix_print (mat)
-    rho = thermal_average_scale_indep(es, rhomats, tau)
-    print (f"\nThermal avg. rho:")
-    matrix_print(rho)
-    
-    U = finite.getUop(l1 = l, l2 = l, l3 = l, l4 = l, R = Fdd)
-    Umat = np.zeros((n, n, n, n), dtype = complex)
-    for ((state1, op1), (state2, op2), (state3, op3), (state4, op4)), val in U.items():
-        assert(op1 == 'c')
-        assert(op2 == 'c')
-        assert(op3 == 'a')
-        assert(op4 == 'a')
-        i = finite.c2i(nBaths, state1)
-        j = finite.c2i(nBaths, state2)
-        k = finite.c2i(nBaths, state3)
-        l = finite.c2i(nBaths, state4)
-        Umat[i, j, k, l] = 2*val
-
-    with open("U_impmod.dat", 'w') as f:
-        f.write(f"#   i   j   k   l      real(U)                   imag(U)\n")
-        for i in range(n):
-            for j in range(n):
-                for k in range(n):
-                    for l in range(n):
-                        if np.abs(Umat[j, i, k, l]) > 1e-12:
-                            f.write(f" {i+1: 4d}{j+1: 4d}{k+1: 4d}{l+1: 4d}     {np.real(Umat[j, i, k, l]): 19.16f}     {np.imag(Umat[j, i, k, l]): 19.16f}\n")
-
-    sigma_static = np.zeros((n, n), dtype = complex)
-    for i in range(n):
-        for j in range(n):
-            sigma_static += (Umat[j, :, :, i] - Umat[j, :, i, :]) * rho[i, j]
-
-    return sigma_static
-
-def get_Greens_functions(nBaths, omega_mesh, es, psis, l, hOp, delta, restrictions, verbose, mpi_distribute = False):
-    n_spin_orbitals = sum(2 * (2 * ang + 1) + nBath for ang, nBath in nBaths.items())
-    tOpsPS = spectra.getPhotoEmissionOperators(nBaths, l=l)
-    tOpsIPS = spectra.getInversePhotoEmissionOperators(nBaths, l=l)
-    gsIPS = calc_Greens_function_with_offdiag(
-                                    n_spin_orbitals,
-                                    hOp, 
-                                    tOpsIPS, 
-                                    psis, 
-                                    es, 
-                                    omega_mesh, 
-                                    delta, 
-                                    restrictions, 
-                                    krylovSize = 250,
-                                    verbose = verbose)
-    gsPS  = np.transpose(calc_Greens_function_with_offdiag(
-                                    n_spin_orbitals, 
-                                    hOp, 
-                                    tOpsPS, 
-                                    psis, 
-                                    es, 
-                                    -omega_mesh, 
-                                    -delta, 
-                                    restrictions,
-                                    krylovSize = 250,
-                                    verbose = verbose)
-            , (0, 2, 1, 3))
-    if mpi_distribute:
-        comm.Bcast(gsIPS, root = 0)
-        comm.Bcast(gsPS, root = 0)
-    return gsIPS - gsPS
-    
-def save_Greens_function(gs, omega_mesh, label, e_scale = eV_to_Ry, tol = 1e-3):
-    axis_label = 'realaxis'
-    if np.all(np.abs(np.imag(omega_mesh)) > 1e-6):
-        omega_mesh = np.imag(omega_mesh)
-        axis_label = 'Matsubara'
-
-    nl = int(gs.shape[1]/2)
-    off_diags = []
-    for column in range(gs.shape[1]):
-        for row in range(gs.shape[0]):
-            if row == column:
-                continue
-            if np.any(np.abs(gs[row, column, :]) > tol):
-                off_diags.append((row, column))
-
-    print (f"Writing {axis_label} {label} to files")
-    with open(f"real-{axis_label}-{label}.dat", "w") as fg_real, open(f"imag-{axis_label}-{label}.dat", "w") as fg_imag:
-        header = '# 1 - Omega(Ry)  2 - Trace  3 - Spin down  4 - Spin up\n'
-        header +=  '# Individual matrix elements given in the matrix below:'
-        for row in range(gs.shape[0]):
-            header += '\n# '
-            for column in range(gs.shape[1]):
-                if row == column:
-                    header += f'{5 + row:< 4d}'
-                elif (row, column) in off_diags:
-                    header += f'{5 + 2*nl + off_diags.index((row, column)):< 4d}'
-                else:
-                    header += f'{0:< 4d}'
-        fg_real.write(header + '\n')
-        fg_imag.write(header + '\n')
-        for i, w in enumerate(omega_mesh):
-            fg_real.write(f"{w*e_scale} {np.real(np.sum(np.diag(gs[:, :, i])))} " +
-                          f"{np.real(np.sum(np.diag(gs[0:nl, 0:nl, i])))} " +  
-                          f"{np.real(np.sum(np.diag(gs[nl:, nl:, i])))} " + 
-                          " ".join(f"{np.real(el)}" for el in np.diag(gs[:, :, i])) + " " + 
-                          " ".join(f"{np.real(gs[row, column, i])}" for row, column in off_diags) + "\n")
-            fg_imag.write(f"{w*e_scale} {np.imag(np.sum(np.diag(gs[:, :, i])))} " +  
-                          f"{np.imag(np.sum(np.diag(gs[0:nl, 0:nl, i])))} " + 
-                          f"{np.imag(np.sum(np.diag(gs[nl:, nl:, i])))} " + 
-                          " ".join(f"{np.imag(el)}" for el in np.diag(gs[:, :, i])) + " " + 
-                          " ".join(f"{np.imag(gs[row, column, i])}" for row, column in off_diags) + "\n")
-
-def calc_Greens_function_with_offdiag(
-        n_spin_orbitals,
-        hOp,
-        tOps,
-        psis,
-        es,
-        w,
-        delta,
-        restrictions=None,
-        krylovSize=150,
-        slaterWeightMin=1e-7,
-        parallelization_mode="H_build",
-        verbose = True):
-    r"""
-    Return Green's function for states with low enough energy.
-
-    For states :math:`|psi \rangle`, calculate:
-
-    :math:`g(w+1j*delta) =
-    = \langle psi| tOp^\dagger ((w+1j*delta+e)*\hat{1} - hOp)^{-1} tOp
-    |psi \rangle`,
-
-    where :math:`e = \langle psi| hOp |psi \rangle`
-
-    Lanczos algorithm is used.
-
-    Parameters
-    ----------
-    n_spin_orbitals : int
-        Total number of spin-orbitals in the system.
-    hOp : dict
-        Operator
-    tOps : list
-        List of dict operators
-    psis : list
-        List of Multi state dictionaries
-    es : list
-        Total energies
-    w : list
-        Real axis energy mesh
-    delta : float
-        Deviation from real axis.
-        Broadening/resolution parameter.
-    restrictions : dict
-        Restriction the occupation of generated
-        product states.
-    krylovSize : int
-        Size of the Krylov space
-    slaterWeightMin : float
-        Restrict the number of product states by
-        looking at `|amplitudes|^2`.
-    parallelization_mode : str
-            "eigen_states" or "H_build".
-
-    """
-    n = len(es)
-
-    h_mem = {}
-    if parallelization_mode == "eigen_states":
-        # Green's functions
-        gs = np.zeros((n,len(tOps), len(tOps), len(w)),dtype=complex)
-        for i in finite.get_job_tasks(rank, ranks, range(len(psis))):
-            psi = psis[i]
-            e = es[i]
-
-            v = []
-            for tOp in tOps:
-                v.append(applyOp(n_spin_orbitals, tOp, psi, slaterWeightMin, restrictions, {}))
-
-            gs_i = get_block_Green(
-                                    n_spin_orbitals = n_spin_orbitals,
-                                    hOp = hOp,
-                                    psi_arr = v,
-                                    e = e,
-                                    w = w,
-                                    delta = delta,
-                                    restrictions = restrictions,
-                                    h_mem = h_mem,
-                                    krylovSize = krylovSize,
-                                    slaterWeightMin = slaterWeightMin,
-                                    parallelization_mode = 'serial',
-                                    verbose = verbose
-                                    )
-            comm.Reduce(gs_i, gs[i])
-    elif parallelization_mode == "H_build":
-        gs = np.zeros((n,len(tOps), len(tOps), len(w)), dtype=complex)
-        t_mems = [{} for _ in tOps]
-        for i, (psi, e) in enumerate(zip(psis, es)):
-            v = []
-            for i_tOp, tOp in enumerate(tOps):
-                v.append(applyOp(n_spin_orbitals, 
-                                 tOp, 
-                                 psi, 
-                                 slaterWeightMin,
-                                 restrictions,
-                                 t_mems[i_tOp]))
-            gs_i = get_block_Green(
-                                    n_spin_orbitals = n_spin_orbitals,
-                                    hOp = hOp,
-                                    psi_arr = v,
-                                    e = e,
-                                    w = w,
-                                    delta = delta,
-                                    restrictions = restrictions,
-                                    h_mem = h_mem,
-                                    krylovSize = krylovSize,
-                                    slaterWeightMin = slaterWeightMin,
-                                    parallelization_mode = parallelization_mode,
-                                    verbose = verbose
-                                    )
-            if rank == 0:
-                gs[i] = gs_i
-    return gs
-
-def get_block_Green(
-        n_spin_orbitals,
-        hOp,
-        psi_arr,
-        e,
-        w,
-        delta,
-        restrictions=None,
-        h_mem = None,
-        mode = 'sparse',
-        krylovSize=150,
-        slaterWeightMin=1e-7,
-        parallelization_mode="H_build",
-        verbose = True):
-
-    if h_mem is None:
-        h_mem = {}
-
-    # parallelization_mode = 'serial'
-    h_local = True
-
-    states = set(key for psi in psi_arr for key in psi.keys())
-    h, basis_index = finite.expand_basis_and_hamiltonian(
-        n_spin_orbitals, h_mem, hOp, sorted(list(states)), restrictions,
-        parallelization_mode = parallelization_mode, return_h_local = h_local, verbose = True)
-
-    N = len(basis_index)
-    n = len(psi_arr)
-
-
-    psi_start = np.zeros((N,n), dtype= complex)
-    for i, psi in enumerate(psi_arr):
-        for ps, amp in psi.items():
-            psi_start[basis_index[ps], i] = amp
-
-    mask = np.linalg.norm(psi_start, axis = 0) > 1e-12
-    psi0, r = np.linalg.qr(psi_start[:, mask])
-
-    if rank == 0:
-        print (f"Starting block Lanczos!")
-    # Run Lanczos on psi0^T* [wI - j*delta - H]^-1 psi0
-    alphas, betas = get_block_Lanczons_matrices(
-                                            psi0, 
-                                            h, 
-                                            n_spin_orbitals, 
-                                            slaterWeightMin, 
-                                            restrictions, 
-                                            krylovSize, 
-                                            h_local,
-                                            mode,
-                                            verbose
-                                            )
-    if rank == 0:
-        print ('Block Lanczos done!')
-
-    gs_local = np.zeros((len(w), n, n), dtype = complex)
-
-    omegaP = w + 1j*delta + e
-    mask_slice = np.ix_(mask, mask)
-    I = np.identity(alphas.shape[1], dtype = complex)
-    if verbose and rank == 0:
-        t0 = time.perf_counter()
-
-    # Parallelize over omega mesh
-    for i_wP, wP in finite.get_job_tasks(rank, ranks, list(enumerate(omegaP))):
-        for alpha, beta in zip(reversed(alphas), reversed(betas)):
-            gs_local[i_wP][mask_slice] = sp.linalg.inv(wP*I - alpha - np.linalg.multi_dot([np.conj(beta.T), gs_local[i_wP][mask_slice], beta]))
-        # Multiply obtained Green's function with the upper triangular matrix to restore the original block
-        # R^T* G R, only on rank 0
-        gs_local[i_wP][mask_slice] = np.linalg.multi_dot([np.conj(r).T, gs_local[i_wP][mask_slice], r])
-    # Reduce Green's function to rank 0
-    if rank == 0:
-        gs = np.zeros_like(gs_local, dtype = complex)
-    else:
-        gs = None
-    comm.Reduce(gs_local, gs, op = MPI.SUM, root = 0)
-    if verbose and rank == 0:
-        print (f'time(G_from_alpha_beta) = {time.perf_counter() - t0} seconds.')
-    if rank == 0:
-        gs = np.moveaxis(gs, 0, -1)
-    return gs
-
-def get_block_Lanczons_matrices(
-        psi0, 
-        h, 
-        n_spin_orbitals, 
-        slaterWeightMin, 
-        restrictions, 
-        KrylovSize, 
-        h_local = False,
-        mode = 'sparse',
-        verbose = True):
-
-    if verbose:
-        t0 = time.perf_counter()
-
-    if mode == 'dense':
-        h = h.to_array()
-
-    N = psi0.shape[0]
-    n = psi0.shape[1]
-
-    KrylovSize = int(min(KrylovSize, N/n))
-    alphas = np.zeros((KrylovSize, n, n), dtype = complex)
-    betas = np.zeros((KrylovSize, n, n), dtype = complex)
-
-    if rank == 0:
-        Q = np.zeros((N, n*KrylovSize), dtype = complex)
-        Q[:, :n] = psi0
-    q = np.zeros((2, N, n), dtype = complex) 
-    q[1] = psi0
-
-    def converged(beta):
-        # return np.all(np.linalg.norm(beta, axis = 0) < np.sqrt(slaterWeightMin))
-        return np.all(np.linalg.norm(beta, axis = 0) < 1e-3)
-
-    if h_local:
-        done = False
-        for i in range(KrylovSize):
-            wp_local = h.dot(q[1])
-            if rank == 0:
-                wp = np.zeros_like(wp_local)
-            else:
-                wp = None
-            comm.Reduce(wp_local, wp, root = 0)
-
-            if rank == 0:
-                wp -= q[0] @ np.conj(betas[i-1].T)
-                alphas[i] = np.conj(q[1].T) @ wp
-                w = wp - q[1] @ alphas[i]
-                w -= np.linalg.multi_dot([Q, np.conj(Q.T), w])
-                q[0] = q[1]
-                q[1], betas[i] = np.linalg.qr(w)
-                Q[:, i*n : (i + 1)*n] = q[0]
-                done = converged(betas[i])
-                done = False
-            comm.Bcast(q[1], root = 0)
-            comm.bcast(done, root = 0)
-            if done:
-                print (f'rank {rank} breaking the loop')
-                break
-        # Distribute Lanczos matrices to all ranks
-        comm.Bcast(alphas, root = 0)
-        comm.Bcast(betas, root = 0)
-    else:
-        for i in range(KrylovSize):
-            wp = h @ q[1] - q[0] @ np.conj(betas[i-1].T)
-            alphas[i] = np.conj(q[1].T) @ wp
-            if rank == 0:
-                w = wp - q[1] @ alphas[i]
-                w -= np.linalg.multi_dot([Q, np.conj(Q.T), w])
-                Q[:, i*n : (i + 1)*n] = q[1]
-            comm.Bcast(w, root = 0)
-            q[0] = q[1]
-            q[1], betas[i] = np.linalg.qr(w)
-            if converged(betas[i]):
-                break
-
-    betas[i] = np.zeros((n, n), dtype = complex)
-    if rank == 0 and verbose:
-        print (f"time(get_block_Lanczons_matrices) = {time.perf_counter() - t0} seconds.")
-    return alphas[:i + 1], betas[:i + 1]
 
 if __name__== "__main__":
     # Parse input parameters
