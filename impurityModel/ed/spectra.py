@@ -1,10 +1,5 @@
 """
-
-spectra
-=======
-
 This module contains functions for calculating various spectra.
-
 """
 
 from math import sqrt
@@ -472,7 +467,7 @@ def getNIXSOperator(nBaths, q, li, lj, Ri, Rj, r, kmin=1):
     tOp = {}
     for k in range(kmin, abs(li + lj) + 1):
         if (li + lj + k) % 2 == 0:
-            Rintegral = np.trapz(np.conj(Ri) * spherical_jn(k, qNorm * r) * Rj * r ** 2, r)
+            Rintegral = np.trapz(np.conj(Ri) * spherical_jn(k, qNorm * r) * Rj * r**2, r)
             if rank == 0:
                 print("Rintegral(k=", k, ") =", Rintegral)
             for mi in range(-li, li + 1):
@@ -569,7 +564,7 @@ def getGreen(n_spin_orbitals, e, psi, hOp, omega, delta, krylovSize,
     h_dict : dict
         Stores the result of the (Hamiltonian) operator hOp acting
         on individual product states. Information is stored according to:
-        |product state> : H|product state>, where
+        `|product state> : H|product state>`, where
         each product state is represented by an integer, and the result is
         a dictionary (of the format int : complex).
         If present, it may also be updated by this function.
@@ -721,10 +716,19 @@ def getSpectra(n_spin_orbitals, hOp, tOps, psis, es, w, delta,
                 normalization = sqrt(norm2(psiR))
                 for state in psiR.keys():
                     psiR[state] /= normalization
-                g[i][t,:] = normalization**2*getGreen(
-                    n_spin_orbitals, e, psiR, hOp, w, delta, krylovSize,
-                    slaterWeightMin, restrictions, h,
-                    parallelization_mode="serial")
+                g[i][t, :] = normalization**2 * getGreen(
+                    n_spin_orbitals,
+                    e,
+                    psiR,
+                    hOp,
+                    w,
+                    delta,
+                    krylovSize,
+                    slaterWeightMin,
+                    restrictions,
+                    h,
+                    parallelization_mode="serial",
+                )
         # Distribute the Green's functions among the ranks
         for r in range(ranks):
             gTmp = comm.bcast(g, root=r)
@@ -743,10 +747,19 @@ def getSpectra(n_spin_orbitals, hOp, tOps, psis, es, w, delta,
                 normalization = sqrt(norm2(psiR))
                 for state in psiR.keys():
                     psiR[state] /= normalization
-                gs[i,t,:] = normalization**2*getGreen(
-                    n_spin_orbitals, e, psiR, hOp, w, delta, krylovSize,
-                    slaterWeightMin, restrictions, h,
-                    parallelization_mode=parallelization_mode)
+                gs[i, t, :] = normalization**2 * getGreen(
+                    n_spin_orbitals,
+                    e,
+                    psiR,
+                    hOp,
+                    w,
+                    delta,
+                    krylovSize,
+                    slaterWeightMin,
+                    restrictions,
+                    h,
+                    parallelization_mode=parallelization_mode,
+                )
     else:
         raise Exception("Incorrect value of variable parallelization_mode.")
     return gs
@@ -823,7 +836,7 @@ def getRIXSmap(n_spin_orbitals, hOp, tOpsIn, tOpsOut, psis, es, wIns, wLoss,
     h_dict_ground : dict
         Stores the result of the (Hamiltonian) operator hOp acting
         on individual product states. Information is stored according to:
-        |product state> : H|product state>, where
+        `|product state> : H|product state>`, where
         each product state is represented by an integer, and the result is
         a dictionary (of the format int : complex).
         Only product states without a core hole are stored in this variable.
@@ -910,9 +923,16 @@ def getRIXSmap(n_spin_orbitals, hOp, tOpsIn, tOpsOut, psis, es, wIns, wLoss,
                             if abs(amp)**2 < slaterWeightMin:
                                 psi3.pop(state)
                         # Calculate Green's function
-                        gs[iE,tIn,tOut,iwIn,:] = normalization**2*getGreen(
-                            n_spin_orbitals, e, psi3, hOp, wLoss, delta2,
-                            krylovSize, slaterWeightMin, restrictions,
+                        gs[iE, tIn, tOut, iwIn, :] = normalization**2 * getGreen(
+                            n_spin_orbitals,
+                            e,
+                            psi3,
+                            hOp,
+                            wLoss,
+                            delta2,
+                            krylovSize,
+                            slaterWeightMin,
+                            restrictions,
                             h_dict_ground,
                             parallelization_mode=parallelization_mode)
     elif parallelization_mode == 'wIn' or parallelization_mode == "H_build_wIn":
@@ -996,10 +1016,19 @@ def getRIXSmap(n_spin_orbitals, hOp, tOpsIn, tOpsOut, psis, es, wIns, wLoss,
                             if abs(amp)**2 < slaterWeightMin:
                                 psi3.pop(state)
                         # Calculate Green's function
-                        g[iwIn][tOut,:] = normalization**2*getGreen(
-                            n_spin_orbitals, e, psi3, hOp, wLoss, delta2,
-                            krylovSize, slaterWeightMin, restrictions,
-                            h_dict_ground, parallelization_mode="serial")
+                        g[iwIn][tOut, :] = normalization**2 * getGreen(
+                            n_spin_orbitals,
+                            e,
+                            psi3,
+                            hOp,
+                            wLoss,
+                            delta2,
+                            krylovSize,
+                            slaterWeightMin,
+                            restrictions,
+                            h_dict_ground,
+                            parallelization_mode="serial",
+                        )
                 # Distribute the Green's functions among the ranks
                 for r in range(ranks):
                     gTmp = comm.bcast(g, root=r)

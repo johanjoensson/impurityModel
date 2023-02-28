@@ -1,10 +1,5 @@
 """
-
-mpi_comm
-========
-
 This module contains help functions for MPI communication.
-
 """
 
 import math
@@ -20,7 +15,7 @@ rank = comm.rank
 ranks = comm.size
 
 
-def dict_chunks_from_one_MPI_rank(data, chunk_maxsize=1*10**6, root=0):
+def dict_chunks_from_one_MPI_rank(data, chunk_maxsize=1 * 10**6, root=0):
     """
     Divide up date in chunks for one MPI rank.
 
@@ -50,7 +45,7 @@ def dict_chunks_from_one_MPI_rank(data, chunk_maxsize=1*10**6, root=0):
             yield None
 
 
-def allgather_dict(data, total, chunk_maxsize=1*10**6):
+def allgather_dict(data, total, chunk_maxsize=1 * 10**6):
     """
     Distribute data from all ranks to all ranks into variable total.
 

@@ -1,10 +1,5 @@
 """
-
-finite
-======
-
 This module contains functions doing the bulk of the calculations.
-
 """
 
 import sys
@@ -220,8 +215,7 @@ def dc_MLFT(n3d_i, c, Fdd, n2p_i=None, Fpd=None, Gpd=None):
 
 def get_spherical_2_cubic_matrix(spinpol=False,l=2):
     r"""
-    Return unitary ndarray for transforming from spherical
-    to cubic harmonics.
+    Return unitary ndarray for transforming from spherical to cubic harmonics.
 
     Parameters
     ----------
@@ -241,7 +235,7 @@ def get_spherical_2_cubic_matrix(spinpol=False,l=2):
     harmonics :math:`i` to the cubic harmonic :math:`j`:
 
     .. math:: \lvert l_j \rangle  = \sum_{i=0}^4 u_{d,(i,j)}
-    \lvert Y_{d,i} \rangle.
+        \lvert Y_{d,i} \rangle.
 
     """
     if l == 1:
@@ -1026,7 +1020,7 @@ def getDensityMatrixCubic(nBaths, psi):
     densityMatrix : dict
         keys of the form: :math:`((i,si),(j,sj))`.
         values of the form: :math:`\langle psi| c_{jc}^\dagger c_{ic}
-         |psi \rangle`.
+        |psi \rangle`.
 
     '''
     # density matrix in spherical harmonics
@@ -1403,7 +1397,7 @@ def applyOp(n_spin_orbitals, op, psi, slaterWeightMin=1e-12, restrictions=None, 
                         psiNew[stateB] += amp*h*signTot
                     else:
                         psiNew[stateB] = amp * h * signTot
-    elif restrictions is not None:
+    elif opResult is not None and restrictions is not None:
         # Loop over product states in psi.
         for state, amp in psi.items():
             #assert amp != 0
@@ -1455,7 +1449,7 @@ def applyOp(n_spin_orbitals, op, psi, slaterWeightMin=1e-12, restrictions=None, 
                     # Remove product states with small weight
                     if abs(amp)**2 < slaterWeightMin:
                         opResult[state].pop(ps)
-    elif restrictions is None:
+    elif opResult is not None and restrictions is None:
         # Loop over product states in psi.
         for state, amp in psi.items():
             #assert amp != 0
@@ -1616,11 +1610,11 @@ def get_hamiltonian_matrix_from_h_dict(h_dict, basis,
     Parameters
     ----------
     h_dict : dict
-        Elements of the form |PS> : {hOp|PS>},
-        where |PS> is a product state,
-        and {hOp|PS>} is a dictionary containing the result of
-        the (Hamiltonian) operator hOp acting on the product state |PS>.
-        The dictionary {hOp|PS>} has product states as keys.
+        Elements of the form `|PS> : {hOp|PS>}`,
+        where `|PS>` is a product state,
+        and `{hOp|PS>}` is a dictionary containing the result of
+        the (Hamiltonian) operator hOp acting on the product state `|PS>`.
+        The dictionary `{hOp|PS>}` has product states as keys.
         h_dict may contain some product states (as keys) that are not
         part of the active basis.
         Also, if parallelization_mode == 'H_build', each product state in
@@ -1703,11 +1697,11 @@ def expand_basis(n_spin_orbitals, h_dict, hOp, basis0, restrictions, paralleliza
     n_spin_orbitals : int
         Total number of spin-orbitals in the system.
     h_dict : dict
-        Elements of the form |PS> : {hOp|PS>},
-        where |PS> is a product state,
-        and {hOp|PS>} is a dictionary containing the result of
-        the (Hamiltonian) operator hOp acting on the product state |PS>.
-        The dictionary {hOp|PS>} has product states as keys.
+        Elements of the form `|PS> : {hOp|PS>}`,
+        where `|PS>` is a product state,
+        and `{hOp|PS>}` is a dictionary containing the result of
+        the (Hamiltonian) operator hOp acting on the product state `|PS>`.
+        The dictionary `{hOp|PS>}` has product states as keys.
         New elements might be added to this variable.
         h_dict may contain some product states (as keys) that will not
         be part of the final active basis.
@@ -1825,11 +1819,11 @@ def expand_basis_and_hamiltonian(n_spin_orbitals, h_dict, hOp, basis0,
     n_spin_orbitals : int
         Total number of spin-orbitals in the system.
     h_dict : dict
-        Elements of the form |PS> : {hOp|PS>},
-        where |PS> is a product state,
+        Elements of the form `|PS> : {hOp|PS>}`,
+        where `|PS>` is a product state,
         and {hOp|PS>} is a dictionary containing the result of
-        the (Hamiltonian) operator hOp acting on the product state |PS>.
-        The dictionary {hOp|PS>} has product states as keys.
+        the (Hamiltonian) operator hOp acting on the product state `|PS>`.
+        The dictionary `{hOp|PS>}` has product states as keys.
         New elements might be added to this variable.
         h_dict may contain some product states (as keys) that will not
         be part of the final active basis.

@@ -36,6 +36,16 @@ This will create a Python virtual environment, install the required Python packa
 source env.sh
 ```
 
+- To run the unit-tests, type
+```bash
+pytest
+```
+
+- To check linting and static type checking, type
+```bash
+make check
+```
+
 - To perform a simulation, first create a directory somewhere on your computer.
 Then execute one of the example scripts in the `scripts` folder. E.g. type:
 ```bash
@@ -119,7 +129,8 @@ The documentation of this package is found in the directory `docs`.
 To update the manual, type:
 
 ```bash
-cd docs && sphinx-apidoc -f --implicit-namespaces -o . ../impurityModel && make html
+make -s -C doc/sphinx clean
+make -s -C doc/sphinx html
 ```
 to generate a html-page.
 
