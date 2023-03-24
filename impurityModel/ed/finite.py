@@ -1779,6 +1779,8 @@ def get_hamiltonian_matrix_from_h_dict(
                 row.append(basis_index[k])
         h = scipy.sparse.csr_matrix((data, (row, col)), shape=(n, n))
     elif mode == "sparse" and parallelization_mode == "H_build":
+        n = comm.reduce(n, op = MPI.MAX, root = 0)
+        n = comm.bcast(n, root = 0)
         # Loop over product states from the basis
         # which are also stored in h_dict.
         data = []
