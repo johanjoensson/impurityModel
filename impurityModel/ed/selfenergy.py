@@ -43,29 +43,10 @@ def run(cluster, h0, iw, w, delta, tau, verbosity=0):
                    1 - loud, detailed output generated
                    2 - SCREAM, insanely detailed output generated
     """
-    np.seterr(over="raise")
     energy_cut = 3
     num_psi_max = 20
     nPrintSlaterWeights = 3
     tolPrintOccupation = 0.5
-
-    # FIXED Hamiltonian from file, reomve later!!
-    # h0_filename = "h0_impMod.dict"
-    # num_val_baths, num_con_baths = cluster.bath_states
-    # sum_bath_states = {l: num_val_baths[l] + num_con_baths[l] for l in num_val_baths }
-    # n0imps, _, _ = cluster.nominal_occ
-    # hOp = get_noninteracting_hamiltonian_operator(
-    #     sum_bath_states,
-    #     [cluster.slater, None, None, None],
-    #     [0, 0],
-    #     [n0imps, None],
-    #     [0,0,0],
-    #     h0_filename,
-    #     rank = 0,
-    #     verbose = False
-    # )
-    # h0 = hOp
-    #############################################
 
     cluster.sig[:, :, :], cluster.sig_real[:, :, :], cluster.sig_static[:, :] = calc_selfenergy(
         h0,
@@ -82,6 +63,7 @@ def run(cluster, h0, iw, w, delta, tau, verbosity=0):
         nPrintSlaterWeights,
         tolPrintOccupation,
         verbosity,
+        blocks = cluster.blocks,
         rotation=cluster.rot_spherical,
         cluster_label=cluster.label,
     )
@@ -102,6 +84,7 @@ def calc_selfenergy(
     nPrintSlaterWeights,
     tolPrintOccupation,
     verbosity,
+    blocks = None,
     rotation=None,
     cluster_label=None,
 ):
@@ -137,7 +120,7 @@ def calc_selfenergy(
     # construct local, interacting, hamiltonian
     u = finite.getUop(l, l, l, l, slater_params)
     h = finite.addOps([h0, u])
-    if rank == 0 and verbosity >= 1:
+    if rank == 0 and verbosity >= 2:
         finite.printOp(sum_bath_states, h, "Local Hamiltonian: ")
     h = finite.c2i_op(sum_bath_states, h)
 
@@ -151,19 +134,17 @@ def calc_selfenergy(
     if rank == 0 and verbosity >= 1:
         print("#basis states = {:d}".format(len(basis)), flush=True)
     # Diagonalization of restricted active space Hamiltonian
-    # es, psis = finite.eigensystem(num_spin_orbitals, h, basis, num_psi_max, verbose = verbosity >= 1, groundDiagMode = 'Lanczos', eigenValueTol = 1e-12)
     es, psis = finite.eigensystem(
         num_spin_orbitals, h, basis, num_psi_max, verbose=verbosity >= 1, groundDiagMode="Lanczos", eigenValueTol=0
     )
 
-    if rank == 0 and verbosity >= 1:
+    if rank == 0 and verbosity >= 2:
         finite.printThermalExpValues(sum_bath_states, es, psis)
         finite.printExpValues(sum_bath_states, es, psis)
         # Print Slater determinants and weights
         finite.printSlaterDeterminantsAndWeights(psis=psis, nPrintSlaterWeights=nPrintSlaterWeights)
 
     # Consider from now on only eigenstates with low energy
-    # Energy cut in eV. energy_cut *= k_B * T
     energy_cut *= tau
     es = tuple(e for e in es if e - es[0] < energy_cut)
     psis = tuple(psis[i] for i in range(len(es)))
@@ -180,15 +161,22 @@ def calc_selfenergy(
         hOp=h,
         delta=delta,
         restrictions=restrictions,
+        blocks = blocks,
         verbose=verbosity >= 2,
         mpi_distribute=True,
     )
     if iw is not None:
         gs_matsubara_thermal_avg = thermal_average_scale_indep(es[: np.shape(gs_matsubara)[0]], gs_matsubara, tau=tau)
         save_Greens_function(gs=gs_matsubara_thermal_avg, omega_mesh=iw, label=f"G-{cluster_label}", e_scale=1)
+        if rotation is not None:
+            gs_rot = np.moveaxis(rotation[np.newaxis, :, :] @ np.moveaxis(gs_matsubara_thermal_avg, -1, 0) @ np.conj(rotation.T)[np.newaxis, :, :], 0, -1)
+            save_Greens_function(gs=gs_rot, omega_mesh=iw, label=f"rotated-G-{cluster_label}", e_scale=1)
     if w is not None:
         gs_realaxis_thermal_avg = thermal_average_scale_indep(es[: np.shape(gs_realaxis)[0]], gs_realaxis, tau=tau)
         save_Greens_function(gs=gs_realaxis_thermal_avg, omega_mesh=w, label=f"G-{cluster_label}", e_scale=1)
+        if rotation is not None:
+            gs_rot = np.moveaxis(rotation[np.newaxis, :, :] @ np.moveaxis(gs_realaxis_thermal_avg, -1, 0) @ np.conj(rotation.T)[np.newaxis, :, :], 0, -1)
+            save_Greens_function(gs=gs_rot, omega_mesh=w, label=f"rotated-G-{cluster_label}", e_scale=1)
     if rank == 0 and verbosity >= 1:
         print("Calculate self-energy...")
     if w is not None:
@@ -210,7 +198,7 @@ def calc_selfenergy(
                 for row in range(sigma_real.shape[0]):
                     if row == column:
                         continue
-                    # if np.max(np.abs(sigma_real[row, column, :])) < 1e-2*m_val:
+                    # if np.max(np.abs(sigma_real[row, column, :])) < 1e-3*m_val:
                     #     sigma_real[row, column, :] = 0
         except UnphysicalSelfenergy as err:
             if rank == 0:
@@ -236,22 +224,26 @@ def calc_selfenergy(
                 for row in range(sigma.shape[0]):
                     if row == column:
                         continue
-                    # if np.max(np.abs(sigma[row, column, :])) < 1e-2*m_val:
+                    # if np.max(np.abs(sigma[row, column, :])) < 1e-3*m_val:
                     #     sigma[row, column, :] = 0
         except UnphysicalSelfenergy as err:
             if rank == 0:
                 print(f"WARNING! Unphysical Matsubara axis selfenergy:\n\t{err}")
     else:
         sigma = None
-    if rank == 0:
+    if rank == 0 and verbosity >= 1:
         print(f"Calculating sig_static.")
     sigma_static = get_Sigma_static(sum_bath_states, slater_params, es, psis, l, tau)
+    m_val = np.max(np.abs(sigma_static))
+    # sigma_static[np.abs(sigma_static) < 1e-3*m_val] = 0
 
     if rank == 0:
         if iw is not None:
             save_Greens_function(gs=sigma, omega_mesh=iw, label=f"Sigma-{cluster_label}", e_scale=1)
         if w is not None:
             save_Greens_function(gs=sigma_real, omega_mesh=w, label=f"Sigma-{cluster_label}", e_scale=1)
+        np.savetxt(f"real-Sigma_static-{cluster_label}.dat", np.real(sigma_static))
+        np.savetxt(f"imag-Sigma_static-{cluster_label}.dat", np.imag(sigma_static))
 
     return sigma, sigma_real, sigma_static
 
@@ -294,7 +286,6 @@ def get_sigma(
             - hbath[np.newaxis, :, :],
             v[np.newaxis, :, :],
         )
-        max_val = np.max(np.abs(hyb))
         return hyb
 
     if save_hyb:
@@ -317,7 +308,7 @@ def get_sigma(
         if rotation is not None:
             rotated_g0_inv = rotation[np.newaxis, :, :] @ g0_inv @ np.conj(rotation.T)[np.newaxis, :, :]
             save_Greens_function(
-                np.moveaxis(rotated_g0_inv, 0, -1), omega_mesh, label="rotated-G0-" + clustername, e_scale=1
+                np.moveaxis(np.linalg.inv(rotated_g0_inv), 0, -1), omega_mesh, label="rotated-G0-" + clustername, e_scale=1
             )
 
     g_inv = np.linalg.inv(np.moveaxis(g, -1, 0))
@@ -339,15 +330,11 @@ def get_Sigma_static(nBaths, Fdd, es, psis, l, tau):
     U = finite.getUop(l1=l, l2=l, l3=l, l4=l, R=Fdd)
     Umat = np.zeros((n, n, n, n), dtype=complex)
     for ((state1, op1), (state2, op2), (state3, op3), (state4, op4)), val in U.items():
-        assert op1 == "c"
-        assert op2 == "c"
-        assert op3 == "a"
-        assert op4 == "a"
-        i = finite.c2i(nBaths, state1)
-        j = finite.c2i(nBaths, state2)
-        k = finite.c2i(nBaths, state3)
-        l = finite.c2i(nBaths, state4)
-        Umat[i, j, k, l] = 2 * val
+        a = finite.c2i(nBaths, state1)
+        b = finite.c2i(nBaths, state2)
+        c = finite.c2i(nBaths, state3)
+        d = finite.c2i(nBaths, state4)
+        Umat[a, b, c, d] = 2 * val
 
     sigma_static = np.zeros((n, n), dtype=complex)
     for i in range(n):
