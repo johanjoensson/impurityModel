@@ -22,15 +22,73 @@ eV_to_Ry = 1 / 13.605693122994
 
 class UnphysicalSelfenergy(Exception):
     pass
+class UnphysicalGreensFunction(Exception):
+    pass
 
-    def matrix_print(matrix, label: str = None):
-        ms = "\n".join([" ".join([f"{np.real(val): .4f}{np.imag(val):+.4f}j" for val in row]) for row in matrix])
-        if label:
-            print(label)
-        print(ms)
+def matrix_print(matrix, label: str = None):
+    ms = "\n".join([" ".join([f"{np.real(val): .4f}{np.imag(val):+.4f}j" for val in row]) for row in matrix])
+    if label:
+        print(label)
+    print(ms)
+
+def find_gs(h_op, N0, delta_occ, bath_states, num_spin_orbitals, rank):
+    delta_imp_occ, delta_val_occ, delta_con_occ = delta_occ
+    num_val_baths, num_cond_baths = bath_states
+    sum_bath_states = {l: num_val_baths[l] + num_cond_baths[l] for l in num_val_baths}
+    # set up for N0 +- 1, 0
+    dN = [-1, 0, 1]
+    trial_basis = [
+            finite.get_basis(
+                sum_bath_states,
+                num_val_baths,
+                delta_val_occ,
+                delta_con_occ,
+                delta_imp_occ,
+                {l: N0[0][l] + dN[0] for l in N0[0]},
+                verbose = False
+                ),
+            finite.get_basis(
+                sum_bath_states,
+                num_val_baths,
+                delta_val_occ,
+                delta_con_occ,
+                delta_imp_occ,
+                {l: N0[0][l] + dN[1] for l in N0[0]},
+                verbose = False
+                ),
+            finite.get_basis(
+                sum_bath_states,
+                num_val_baths,
+                delta_val_occ,
+                delta_con_occ,
+                delta_imp_occ,
+                {l: N0[0][l] + dN[2] for l in N0[0]},
+                verbose = False
+                )
+            ]
+
+    energies = []
+    for basis in trial_basis:
+        e_trial, _ = finite.eigensystem(
+            num_spin_orbitals, h_op, basis, 1, verbose=False, groundDiagMode="Lanczos", eigenValueTol=0
+        )
+        energies.append(e_trial[0])
+    gs_i = energies.index(min(energies))
+    selected = {0: ' ', 1: ' ', 2: ' '}
+    selected[gs_i] = '='
+    if rank == 0:
+        l = [l for l in N0[0]][0]
+        print (f"N0:    {N0[0][l] - 1: ^10d}  {N0[0][l]: ^10d}  {N0[0][l] + 1: ^10d}")
+        print (f"E0:    {energies[0]: ^10.6f}  {energies[1]: ^10.6f}  {energies[2]: ^10.6f}")
+        print (f"       {selected[0]*10}  {selected[1]*10}  {selected[2]*10}")
 
 
-def run(cluster, h0, iw, w, delta, tau, verbosity=0):
+    return ({ l: N0[0][l] + dN[gs_i] for l in N0[0] }, N0[1], N0[2]), trial_basis[gs_i]
+
+
+
+
+def run(cluster, h0, iw, w, delta, tau, verbosity=0, partial_reort = False):
     """
     cluster     -- The impmod_cluster object containing loads of data.
     h0          -- Non-interacting hamiltonian.
@@ -44,8 +102,8 @@ def run(cluster, h0, iw, w, delta, tau, verbosity=0):
                    2 - SCREAM, insanely detailed output generated
     """
     energy_cut = 3
-    num_psi_max = 20
-    nPrintSlaterWeights = 3
+    num_psi_max = sum(2*(2*l + 1) for l in cluster.nominal_occ[0])
+    nPrintSlaterWeights = 0
     tolPrintOccupation = 0.5
 
     cluster.sig[:, :, :], cluster.sig_real[:, :, :], cluster.sig_static[:, :] = calc_selfenergy(
@@ -66,6 +124,7 @@ def run(cluster, h0, iw, w, delta, tau, verbosity=0):
         blocks = cluster.blocks,
         rotation=cluster.rot_spherical,
         cluster_label=cluster.label,
+        partial_reort = partial_reort,
     )
 
 
@@ -87,6 +146,7 @@ def calc_selfenergy(
     blocks = None,
     rotation=None,
     cluster_label=None,
+    partial_reort = False,
 ):
     """ """
     # MPI variables
@@ -94,28 +154,11 @@ def calc_selfenergy(
     rank = comm.rank
     ranks = comm.size
 
-    n0_imp, n0_val, n0_con = nominal_occ
-    delta_imp_occ, delta_val_occ, delta_con_occ = delta_occ
     num_val_baths, num_con_baths = num_bath_states
     sum_bath_states = {l: num_val_baths[l] + num_con_baths[l] for l in num_val_baths}
 
     ls = [l for l in num_val_baths]
     l = ls[0]
-
-    restrictions = get_restrictions(
-        l=l,
-        n0imps=n0_imp,
-        nBaths=sum_bath_states,
-        nValBaths=num_val_baths,
-        dnTols=delta_imp_occ,
-        dnValBaths=delta_val_occ,
-        dnConBaths=delta_con_occ,
-    )
-    if rank == 0 and verbosity >= 2:
-        print("Restrictions on occupation")
-        for key, res in restrictions.items():
-            print(f"{key} : {res}")
-    num_spin_orbitals = sum([2 * (2 * l + 1) + num_val_baths[l] + num_con_baths[l] for l in num_val_baths])
 
     # construct local, interacting, hamiltonian
     u = finite.getUop(l, l, l, l, slater_params)
@@ -124,33 +167,39 @@ def calc_selfenergy(
         finite.printOp(sum_bath_states, h, "Local Hamiltonian: ")
     h = finite.c2i_op(sum_bath_states, h)
 
+
+    num_spin_orbitals = 2*(2*l + 1) + sum(num_val_baths[l] + num_con_baths[l] for l in num_val_baths)
+
+    (n0_imp, n0_val, n0_con), basis = find_gs(h, nominal_occ, delta_occ, num_bath_states, num_spin_orbitals, rank = rank)
+    delta_imp_occ, delta_val_occ, delta_con_occ = delta_occ
+
+    restrictions = get_restrictions(l, n0_imp, sum_bath_states, num_val_baths, delta_imp_occ, delta_val_occ, delta_con_occ)
+    
+    if rank == 0 and verbosity >= 2:
+        print("Restrictions on occupation")
+        for key, res in restrictions.items():
+            print(f"{key} : {res}")
     # Measure how many physical processes the Hamiltonian contains.
     if rank == 0 and verbosity >= 1:
         print("{:d} processes in the Hamiltonian.".format(len(h)))
         print("Create basis...")
-    basis = finite.get_basis(
-        sum_bath_states, num_val_baths, delta_val_occ, delta_con_occ, delta_imp_occ, n0_imp, verbose=verbosity >= 2
-    )
-    if rank == 0 and verbosity >= 1:
         print("#basis states = {:d}".format(len(basis)), flush=True)
-    # Diagonalization of restricted active space Hamiltonian
-    es, psis = finite.eigensystem(
-        num_spin_orbitals, h, basis, num_psi_max, verbose=verbosity >= 1, groundDiagMode="Lanczos", eigenValueTol=0
-    )
 
+    energy_cut *= tau
+
+    es, psis = finite.eigensystem_new(
+            num_spin_orbitals, h, basis, energy_cut, k = 2*(2*l + 1), verbose = True, groundDiagMode="Lanczos", eigenValueTol=0
+            )
     if rank == 0 and verbosity >= 2:
         finite.printThermalExpValues(sum_bath_states, es, psis)
         finite.printExpValues(sum_bath_states, es, psis)
         # Print Slater determinants and weights
         finite.printSlaterDeterminantsAndWeights(psis=psis, nPrintSlaterWeights=nPrintSlaterWeights)
 
-    # Consider from now on only eigenstates with low energy
-    energy_cut *= tau
-    es = tuple(e for e in es if e - es[0] < energy_cut)
-    psis = tuple(psis[i] for i in range(len(es)))
     if rank == 0 and verbosity >= 1:
         print("Consider {:d} eigenstates for the spectra \n".format(len(es)), flush=True)
         print("Calculate Interacting Green's function...")
+
     gs_matsubara, gs_realaxis = get_Greens_function(
         nBaths=sum_bath_states,
         matsubara_mesh=iw,
@@ -164,15 +213,26 @@ def calc_selfenergy(
         blocks = blocks,
         verbose=verbosity >= 2,
         mpi_distribute=True,
+        partial_reort = partial_reort,
     )
     if iw is not None:
         gs_matsubara_thermal_avg = thermal_average_scale_indep(es[: np.shape(gs_matsubara)[0]], gs_matsubara, tau=tau)
+        try:
+            check_greens_function(gs_matsubara_thermal_avg, iw)
+        except UnphysicalGreensFunction as err:
+            if rank == 0:
+                print(f"WARNING! Unphysical Matsubara-axis Greens function:\n\t{err}")
         save_Greens_function(gs=gs_matsubara_thermal_avg, omega_mesh=iw, label=f"G-{cluster_label}", e_scale=1)
         if rotation is not None:
             gs_rot = np.moveaxis(rotation[np.newaxis, :, :] @ np.moveaxis(gs_matsubara_thermal_avg, -1, 0) @ np.conj(rotation.T)[np.newaxis, :, :], 0, -1)
             save_Greens_function(gs=gs_rot, omega_mesh=iw, label=f"rotated-G-{cluster_label}", e_scale=1)
     if w is not None:
         gs_realaxis_thermal_avg = thermal_average_scale_indep(es[: np.shape(gs_realaxis)[0]], gs_realaxis, tau=tau)
+        try:
+            check_greens_function(gs_realaxis_thermal_avg, w)
+        except UnphysicalGreensFunction as err:
+            if rank == 0:
+                print(f"WARNING! Unphysical real-axis Greens function:\n\t{err}")
         save_Greens_function(gs=gs_realaxis_thermal_avg, omega_mesh=w, label=f"G-{cluster_label}", e_scale=1)
         if rotation is not None:
             gs_rot = np.moveaxis(rotation[np.newaxis, :, :] @ np.moveaxis(gs_realaxis_thermal_avg, -1, 0) @ np.conj(rotation.T)[np.newaxis, :, :], 0, -1)
@@ -193,13 +253,6 @@ def calc_selfenergy(
         )
         try:
             check_sigma(sigma_real)
-            m_val = np.max(np.abs(sigma_real))
-            for column in range(sigma_real.shape[1]):
-                for row in range(sigma_real.shape[0]):
-                    if row == column:
-                        continue
-                    # if np.max(np.abs(sigma_real[row, column, :])) < 1e-3*m_val:
-                    #     sigma_real[row, column, :] = 0
         except UnphysicalSelfenergy as err:
             if rank == 0:
                 print(f"WARNING! Unphysical realaxis selfenergy:\n\t{err}")
@@ -219,13 +272,6 @@ def calc_selfenergy(
         )
         try:
             check_sigma(sigma)
-            m_val = np.max(np.abs(sigma))
-            for column in range(sigma.shape[1]):
-                for row in range(sigma.shape[0]):
-                    if row == column:
-                        continue
-                    # if np.max(np.abs(sigma[row, column, :])) < 1e-3*m_val:
-                    #     sigma[row, column, :] = 0
         except UnphysicalSelfenergy as err:
             if rank == 0:
                 print(f"WARNING! Unphysical Matsubara axis selfenergy:\n\t{err}")
@@ -234,8 +280,6 @@ def calc_selfenergy(
     if rank == 0 and verbosity >= 1:
         print(f"Calculating sig_static.")
     sigma_static = get_Sigma_static(sum_bath_states, slater_params, es, psis, l, tau)
-    m_val = np.max(np.abs(sigma_static))
-    # sigma_static[np.abs(sigma_static) < 1e-3*m_val] = 0
 
     if rank == 0:
         if iw is not None:
@@ -252,6 +296,19 @@ def check_sigma(sigma):
     diagonals = [np.diag(sigma[:, :, i]) for i in range(sigma.shape[-1])]
     if np.any(np.imag(diagonals) > 0):
         raise UnphysicalSelfenergy("Diagonal term has positive imaginary part.")
+
+def check_greens_function(G, energies):
+    diagonals = [np.diag(G[:, :, i]) for i in range(G.shape[-1])]
+    if np.any(np.imag(diagonals) > 0):
+        raise UnphysicalGreensFunction("Diagonal term has positive imaginary part.")
+    # norms = -1/np.pi*np.trapz(diagonals, energies)
+    # if np.any(np.abs(np.imag(diagonals) - 1) > 5*(energies[1] - energies[0])):
+    #     raise UnphysicalGreensFunction("Imaginary part of diagonal term is not norm-conserving.\n"
+    #                                    "Integrating it does not give 1.")
+    # if np.any(np.abs(np.real(diagonals) + 1) > 5*(energies[1] - energies[0])):
+    #     raise UnphysicalGreensFunction("Real part of diagonal term is not norm-conserving.\n"
+    #                                    "Integrating it does not give 0.")
+
 
 
 def get_hcorr_v_hbath(h0op, sum_bath_states):

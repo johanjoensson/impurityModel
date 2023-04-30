@@ -23,7 +23,8 @@ def get_Greens_function(
     restrictions,
     blocks,
     verbose,
-    mpi_distribute=False
+    mpi_distribute=False,
+    partial_reort = False,
 ):
     n_spin_orbitals = sum(2 * (2 * ang + 1) + nBath for ang, nBath in nBaths.items())
     tOpsPS = spectra.getPhotoEmissionOperators(nBaths, l=l)
@@ -41,6 +42,7 @@ def get_Greens_function(
         blocks,
         krylovSize=None,
         verbose=verbose,
+        partial_reort = partial_reort,
     )
     gsPS_matsubara, gsPS_realaxis = calc_Greens_function_with_offdiag(
         n_spin_orbitals,
@@ -55,6 +57,7 @@ def get_Greens_function(
         blocks,
         krylovSize=None,
         verbose=verbose,
+        partial_reort = partial_reort,
     )
 
     if mpi_distribute:
@@ -106,6 +109,7 @@ def calc_Greens_function_with_offdiag(
     slaterWeightMin=1e-12,
     parallelization_mode="H_build",
     verbose=True,
+    partial_reort = False,
 ):
     r"""
     Return Green's function for states with low enough energy.
@@ -180,6 +184,7 @@ def calc_Greens_function_with_offdiag(
                 slaterWeightMin=slaterWeightMin,
                 parallelization_mode="serial",
                 verbose=verbose,
+                partial_reort = partial_reort,
             )
             comm.Reduce(gs_matsubara_i, gs_matsubara)
             comm.Reduce(gs_realaxis_i, gs_realaxis)
@@ -204,7 +209,6 @@ def calc_Greens_function_with_offdiag(
                 gs_matsubara_i, gs_realaxis_i = get_block_Green(
                     n_spin_orbitals=n_spin_orbitals,
                     hOp=hOp,
-                    # psi_arr=v,
                     psi_arr=block_v,
                     e=e,
                     iws=iw,
@@ -216,6 +220,7 @@ def calc_Greens_function_with_offdiag(
                     slaterWeightMin=slaterWeightMin,
                     parallelization_mode=parallelization_mode,
                     verbose=verbose,
+                    partial_reort = partial_reort,
                 )
                 if rank == 0:
                     if iw is not None:
@@ -244,7 +249,7 @@ def get_block_Green(
     slaterWeightMin=1e-7,
     parallelization_mode="H_build",
     verbose=True,
-    partial_reort = False,
+    partial_reort = True,
 ):
     matsubara = iws is not None
     realaxis = ws is not None
@@ -283,18 +288,25 @@ def get_block_Green(
 
     rows, columns = psi_start.shape
     if rows == 0 or columns == 0:
-        return np.zeros((columns, columns, len(iws)), dtype = complex), np.zeros((columns, columns, len(ws)), dtype = complex)
+        return np.zeros((n, n, len(iws)), dtype = complex), np.zeros((n, n, len(ws)), dtype = complex)
     # Do a QR decomposition of the starting block.
     # Later on, use r to restore the block corresponding to
     # psi_start
-    psi0, r = sp.linalg.qr(psi_start, mode="economic", overwrite_a = True)
-    # The QR decomposition can, in some rare instances, reduce the number of
-    # independent vectors in our block, m is the number of linearly independent
-    # vectors in the block. The full block structure is obtained by multiplying
-    # with r
+    # if rank == 0:
+    #     print (f"shape of psi_start = {psi_start.shape}")
+    psi0, r = sp.linalg.qr(psi_start, mode="economic", overwrite_a = True, check_finite = False)
+    # v, r = sp.linalg.qr(psi_start, mode="full", overwrite_a = True)
+    # psi0, r = psi0[:,:n], r[:n, :]
+    # if rank == 0:
+    #     print (f"shape of r = {r.shape}")
+    #     print (f"number of columns in psi0 = {psi0.shape[1]}")
+
+    # Find which columns (if any) are 0 in psi0
+    column_mask = np.any(np.abs(psi0) > 1e-12, axis = 0)
+
     rows, columns = psi0.shape
     if rows == 0 or columns == 0:
-        return np.zeros((columns, columns, len(iws)), dtype = complex), np.zeros((columns, columns, len(ws)), dtype = complex)
+        return np.zeros((n, n, len(iws)), dtype = complex), np.zeros((n, n, len(ws)), dtype = complex)
 
     # If we have a realaxis mesh, prefer to check convergence on that
     # if not, use the Matsubara mesh
@@ -310,17 +322,21 @@ def get_block_Green(
 
     # Select points from the frequency mesh, according to a Normal distribuition
     # centered on (value) 0.
-    n_samples = max(len(conv_w)//2, 1)
+    n_samples = max(len(conv_w)//50, 1)
     # weights = gaussian(conv_w, mu=0, sigma=0.5)
     weights = np.ones(conv_w.shape)
     weights /= np.sum(weights)
 
+    def matrix_print(m):
+        print("\n".join(["  ".join([f"{np.real(el): 5.3f}  {np.imag(el):+5.3f}j" for el in row]) for row in m]))
+
+
     def converged(alphas, betas):
         if alphas.shape[0] == 1:
-            return False
+            return 1.0
+            # return False
 
-        # w = np.random.choice(conv_w, size=min(n_samples, len(conv_w)), p=weights, replace=False)
-        w = conv_w
+        w = np.random.choice(conv_w, size=min(n_samples, len(conv_w)), p=weights, replace=False)
         wIs = (w + 1j * delta_p + e)[:, np.newaxis, np.newaxis] * np.identity(alphas.shape[1], dtype=complex)[
             np.newaxis, :, :
         ]
@@ -330,17 +346,18 @@ def get_block_Green(
         for alpha, beta in zip(alphas[-3::-1], betas[-3::-1]):
             gs_new = wIs - alpha - np.conj(beta.T)[np.newaxis, :, :] @ np.linalg.solve(gs_new, beta[np.newaxis, :, :])
             gs_prev = wIs - alpha - np.conj(beta.T)[np.newaxis, :, :] @ np.linalg.solve(gs_prev, beta[np.newaxis, :, :])
-        return np.all(np.abs(gs_new - gs_prev) < 1e-8)
+        return np.max(np.abs(gs_new - gs_prev))
+        # return np.all(np.abs(gs_new - gs_prev) < 1e-6)
 
     # Run Lanczos on psi0^T* [wI - j*delta - H]^-1 psi0
     alphas, betas = get_block_Lanczos_matrices(
-        psi0=psi0,
-        h=h,
-        converged=converged,
-        h_local=h_local,
-        verbose=verbose,
-        partial_reort = partial_reort,
-    )
+            psi0=psi0[:, column_mask],
+            h=h,
+            converged=converged,
+            h_local=h_local,
+            verbose=verbose,
+            partial_reort = partial_reort,
+            )
 
     if verbose and rank == 0:
         t0 = time.perf_counter()
@@ -352,7 +369,7 @@ def get_block_Green(
         gs_realaxis = np.moveaxis(gs_realaxis, 0, -1)
 
     if verbose and rank == 0:
-        print(f"time(G_from_alpha_beta) = {time.perf_counter() - t0} seconds.")
+        print(f"time(G_from_alpha_beta) = {time.perf_counter() - t0: .4f} seconds.")
 
     return gs_matsubara, gs_realaxis
 
@@ -369,12 +386,12 @@ def calc_mpi_Greens_function_from_alpha_beta(alphas, betas, iws, ws, e, delta, r
     # Multiply obtained Green's function with the upper triangular matrix to restore the original block
     # R^T* G R
     if matsubara:
-        gs_matsubara = np.zeros((len(iws), r.shape[0], r.shape[0]), dtype=complex)
+        gs_matsubara = np.zeros((len(iws), r.shape[1], r.shape[1]), dtype=complex)
         gs_matsubara[iw_indices, :, :] = np.conj(r.T)[np.newaxis, :, :] @ np.linalg.solve(
             gs_matsubara_local[iw_indices], r[np.newaxis, :, :]
         )
     if realaxis:
-        gs_realaxis = np.zeros((len(ws), r.shape[0], r.shape[0]), dtype=complex)
+        gs_realaxis = np.zeros((len(ws), r.shape[1], r.shape[1]), dtype=complex)
         gs_realaxis[w_indices, :, :] = np.conj(r.T)[np.newaxis, :, :] @ np.linalg.solve(
             gs_realaxis_local[w_indices], r[np.newaxis, :, :]
         )

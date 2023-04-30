@@ -58,6 +58,90 @@ def get_job_tasks(rank, ranks, tasks_tot):
         tasks.append(tasks_tot[n_tot - rest + rank])
     return tuple(tasks)
 
+def eigensystem_new(
+    n_spin_orbitals,
+    hOp,
+    basis,
+    e_max,
+    k = 10,
+    groundDiagMode="Lanczos",
+    eigenValueTol=1e-9,
+    slaterWeightMin=1e-7,
+    verbose=True,
+):
+    """
+    Return eigen-energies and eigenstates.
+
+    Parameters
+    ----------
+    n_spin_orbitals : int
+        Total number of spin-orbitals in the system.
+    hOp : dict
+        tuple : float or complex
+        The Hamiltonian operator to diagonalize.
+        Each keyword contains ordered instructions
+        where to add or remove electrons.
+        Values indicate the strengths of
+        the corresponding processes.
+    basis : tuple
+        All product states included in the basis.
+    e_max : float
+        Maximum energy difference for excited states
+    groundDiagMode : str
+        'Lanczos' or 'full' diagonalization.
+    eigenValueTol : float
+        The precision of the returned eigenvalues.
+    slaterWeightMin : float
+        Minimum product state weight for product states to be kept.
+
+    """
+    if rank == 0 and verbose:
+        print("Create Hamiltonian matrix...")
+    h = get_hamiltonian_matrix(n_spin_orbitals, hOp, basis, verbose=verbose)
+    if rank == 0 and verbose:
+        print("Checking if Hamiltonian is Hermitian!")
+        err_max = np.max(np.abs(np.conj(h.T) - h))
+        if err_max > 1e-12:
+            print(f"Warning! Hamiltonian matrix is not very Hermitian!\nLargest error = {err_max}")
+        else:
+            print("Hamiltonian matrix is Hermitian!")
+        print("<#Hamiltonian elements/column> = {:d}".format(int(len(np.nonzero(h)[0]) / len(basis))))
+        print("Diagonalize the Hamiltonian...", flush = True)
+    dk = 5
+    vecs = None
+    es = None
+    mask = [False]
+    while vecs is None or sum(mask) >= len(es) - k :
+        if rank == 0:
+            print (f"calculate {k + dk} eigenvectors and eigenvalues")
+        if groundDiagMode == "full":
+            es_n, vecs_n = np.linalg.eigh(h.todense())
+        elif groundDiagMode == "Lanczos":
+            es, vecs = primme.eigsh(h, k=k + dk, which="SA", tol=eigenValueTol)
+        else:
+            print(f"Unknown diagonalization mode: {groundDiagMode}")
+
+        mask = es - es[0] <= e_max
+        dk += dk
+
+    indices = np.argsort(es)
+    # es = np.array([es[i] for i in indices])
+    es = es[indices]
+    # vecs = np.array([vecs[:, i] for i in indices]).T
+    vecs = vecs[:, indices]
+    if rank == 0 and verbose:
+        # V = np.array([ev / np.linalg.norm(ev) for ev in vecs.T]).T
+        err_max = np.max(np.abs(np.conj(vecs.T) @ vecs - np.identity(vecs.shape[1])))
+        if err_max > 1e-12:
+            print(f"Warning! Obtained eigenvectors are not very orthogonal!\nMaximum overlap {err_max}", flush=True)
+
+        print(f"Proceed with {len(es[mask])} eigenstates.\n", flush=True)
+
+    psis = [
+        ({basis[i]: vecs[i, vi] for i in range(len(basis)) if slaterWeightMin <= abs(vecs[i, vi]) ** 2})
+        for vi in range(len(es))
+    ]
+    return es[mask], [psis[i] for i, b in enumerate(mask) if b]
 
 def eigensystem(
     n_spin_orbitals,
@@ -68,6 +152,7 @@ def eigensystem(
     eigenValueTol=1e-9,
     slaterWeightMin=1e-7,
     verbose=True,
+    lock = None
 ):
     """
     Return eigen-energies and eigenstates.
@@ -98,24 +183,22 @@ def eigensystem(
     if rank == 0 and verbose:
         print("Create Hamiltonian matrix...")
     h = get_hamiltonian_matrix(n_spin_orbitals, hOp, basis, verbose=verbose)
-    scipy.sparse.save_npz("hamiltonian_matrix_h4", h)
     if rank == 0 and verbose:
         print("Checking if Hamiltonian is Hermitian!")
-        Op = np.conj(h.T) - h
-        err_max = np.max(np.abs(Op))
+        err_max = np.max(np.abs(np.conj(h.T) - h))
         if err_max > 1e-12:
             print(f"Warning! Hamiltonian matrix is not very Hermitian!\nLargest error = {err_max}")
         else:
             print("Hamiltonian matrix is Hermitian!")
         print("<#Hamiltonian elements/column> = {:d}".format(int(len(np.nonzero(h)[0]) / len(basis))))
-        print("Diagonalize the Hamiltonian...")
+        print("Diagonalize the Hamiltonian...", flush = True)
     if groundDiagMode == "full":
         es, vecs = np.linalg.eigh(h.todense())
         es = es[:nPsiMax]
         vecs = vecs[:, :nPsiMax]
     elif groundDiagMode == "Lanczos":
         # es, vecs = scipy.sparse.linalg.eigsh(h, k=nPsiMax, which="SA", tol=eigenValueTol)
-        es, vecs = primme.eigsh(h, k=nPsiMax, which="SA", tol=eigenValueTol)
+        es, vecs = primme.eigsh(h, k=nPsiMax, which="SA", tol=eigenValueTol, lock = lock)
         # Sort the eigenvalues and eigenvectors in ascending order.
         indices = np.argsort(es)
         es = np.array([es[i] for i in indices])
@@ -124,8 +207,7 @@ def eigensystem(
         print(f"Unknown diagonalization mode: {groundDiagMode}")
     if rank == 0 and verbose:
         V = np.array([ev / np.linalg.norm(ev) for ev in vecs.T]).T
-        Ip = np.conj(V.T) @ V
-        err_max = np.max(np.abs(Ip - np.eye(V.shape[1])))
+        err_max = np.max(np.abs(np.conj(V.T) @ V - np.eye(V.shape[1])))
         if err_max > 1e-12:
             print(f"Warning! Obtained eigenvectors are not very orthogonal!\nMaximum overlap {err_max}", flush=True)
 
@@ -1706,8 +1788,9 @@ def get_hamiltonian_matrix(n_spin_orbitals, hOp, basis, mode="sparse_MPI", verbo
         hSparse = scipy.sparse.csr_matrix((data, (row, col)), shape=(n, n))
         # Different ranks have information about different basis states.
         # Therefor, need to broadcast and append sparse Hamiltonians
-        for r in range(ranks):
-            h += comm.bcast(hSparse, root=r)
+        h = comm.allreduce(hSparse)
+        # for r in range(ranks):
+        #     h += comm.bcast(hSparse, root=r)
     return h
 
 
