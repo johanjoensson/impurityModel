@@ -6,7 +6,6 @@ from random import uniform
 
 from mpi4py import MPI
 
-from impurityModel.ed.lanczos_cython import mydot
 from numba import njit
 
 comm = MPI.COMM_WORLD
@@ -172,7 +171,6 @@ def get_block_Lanczos_matrices(
             alphas = np.append(alphas, [np.conj(q[1].T) @ wp], axis=0)
             betas = np.append(betas, [np.zeros((n, n), dtype=complex)], axis=0)
             w = wp - q[1] @ alphas[i] - q[0] @ np.conj(betas[i - 1].T)
-            # w = wp - mydot(q[1], alphas[i]) - mydot_triangular(np.conj(betas[i - 1]), q[0].T).T
             q[0] = q[1]
             # q[1], betas[i] = np.linalg.qr(w)
             q[1], betas[i] = sp.linalg.qr(w, mode = 'economic', overwrite_a = True, check_finite = False)
