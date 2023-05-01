@@ -1265,68 +1265,72 @@ static int cffi_start_python(void)
 /************************************************************/
 
 static void *_cffi_types[] = {
-/*  0 */ _CFFI_OP(_CFFI_OP_FUNCTION, 26), // void()(char *, char *, double *, double _Complex *, double _Complex *, double _Complex *, double _Complex *, double _Complex *, double _Complex *, double *, double *, double _Complex *, size_t, size_t, size_t, size_t, double, double, int, size_t, size_t)
-/*  1 */ _CFFI_OP(_CFFI_OP_POINTER, 23), // char *
+/*  0 */ _CFFI_OP(_CFFI_OP_FUNCTION, 28), // void()(char *, char *, char *, int, double *, double _Complex *, double _Complex *, double _Complex *, double _Complex *, double _Complex *, double _Complex *, double *, double *, double _Complex *, size_t, size_t, size_t, size_t, double, double, int, size_t, size_t)
+/*  1 */ _CFFI_OP(_CFFI_OP_POINTER, 25), // char *
 /*  2 */ _CFFI_OP(_CFFI_OP_NOOP, 1),
-/*  3 */ _CFFI_OP(_CFFI_OP_POINTER, 17), // double *
-/*  4 */ _CFFI_OP(_CFFI_OP_POINTER, 24), // double _Complex *
-/*  5 */ _CFFI_OP(_CFFI_OP_NOOP, 4),
-/*  6 */ _CFFI_OP(_CFFI_OP_NOOP, 4),
-/*  7 */ _CFFI_OP(_CFFI_OP_NOOP, 4),
-/*  8 */ _CFFI_OP(_CFFI_OP_NOOP, 4),
-/*  9 */ _CFFI_OP(_CFFI_OP_NOOP, 4),
-/* 10 */ _CFFI_OP(_CFFI_OP_NOOP, 3),
-/* 11 */ _CFFI_OP(_CFFI_OP_NOOP, 3),
-/* 12 */ _CFFI_OP(_CFFI_OP_NOOP, 4),
-/* 13 */ _CFFI_OP(_CFFI_OP_PRIMITIVE, 28), // size_t
-/* 14 */ _CFFI_OP(_CFFI_OP_PRIMITIVE, 28),
-/* 15 */ _CFFI_OP(_CFFI_OP_PRIMITIVE, 28),
+/*  3 */ _CFFI_OP(_CFFI_OP_NOOP, 1),
+/*  4 */ _CFFI_OP(_CFFI_OP_PRIMITIVE, 7), // int
+/*  5 */ _CFFI_OP(_CFFI_OP_POINTER, 19), // double *
+/*  6 */ _CFFI_OP(_CFFI_OP_POINTER, 26), // double _Complex *
+/*  7 */ _CFFI_OP(_CFFI_OP_NOOP, 6),
+/*  8 */ _CFFI_OP(_CFFI_OP_NOOP, 6),
+/*  9 */ _CFFI_OP(_CFFI_OP_NOOP, 6),
+/* 10 */ _CFFI_OP(_CFFI_OP_NOOP, 6),
+/* 11 */ _CFFI_OP(_CFFI_OP_NOOP, 6),
+/* 12 */ _CFFI_OP(_CFFI_OP_NOOP, 5),
+/* 13 */ _CFFI_OP(_CFFI_OP_NOOP, 5),
+/* 14 */ _CFFI_OP(_CFFI_OP_NOOP, 6),
+/* 15 */ _CFFI_OP(_CFFI_OP_PRIMITIVE, 28), // size_t
 /* 16 */ _CFFI_OP(_CFFI_OP_PRIMITIVE, 28),
-/* 17 */ _CFFI_OP(_CFFI_OP_PRIMITIVE, 14), // double
-/* 18 */ _CFFI_OP(_CFFI_OP_PRIMITIVE, 14),
-/* 19 */ _CFFI_OP(_CFFI_OP_PRIMITIVE, 7), // int
-/* 20 */ _CFFI_OP(_CFFI_OP_PRIMITIVE, 28),
-/* 21 */ _CFFI_OP(_CFFI_OP_PRIMITIVE, 28),
-/* 22 */ _CFFI_OP(_CFFI_OP_FUNCTION_END, 0),
-/* 23 */ _CFFI_OP(_CFFI_OP_PRIMITIVE, 2), // char
-/* 24 */ _CFFI_OP(_CFFI_OP_PRIMITIVE, 49), // double _Complex
-/* 25 */ _CFFI_OP(_CFFI_OP_POINTER, 0), // void(*)(char *, char *, double *, double _Complex *, double _Complex *, double _Complex *, double _Complex *, double _Complex *, double _Complex *, double *, double *, double _Complex *, size_t, size_t, size_t, size_t, double, double, int, size_t, size_t)
-/* 26 */ _CFFI_OP(_CFFI_OP_PRIMITIVE, 0), // void
+/* 17 */ _CFFI_OP(_CFFI_OP_PRIMITIVE, 28),
+/* 18 */ _CFFI_OP(_CFFI_OP_PRIMITIVE, 28),
+/* 19 */ _CFFI_OP(_CFFI_OP_PRIMITIVE, 14), // double
+/* 20 */ _CFFI_OP(_CFFI_OP_PRIMITIVE, 14),
+/* 21 */ _CFFI_OP(_CFFI_OP_PRIMITIVE, 7),
+/* 22 */ _CFFI_OP(_CFFI_OP_PRIMITIVE, 28),
+/* 23 */ _CFFI_OP(_CFFI_OP_PRIMITIVE, 28),
+/* 24 */ _CFFI_OP(_CFFI_OP_FUNCTION_END, 0),
+/* 25 */ _CFFI_OP(_CFFI_OP_PRIMITIVE, 2), // char
+/* 26 */ _CFFI_OP(_CFFI_OP_PRIMITIVE, 49), // double _Complex
+/* 27 */ _CFFI_OP(_CFFI_OP_POINTER, 0), // void(*)(char *, char *, char *, int, double *, double _Complex *, double _Complex *, double _Complex *, double _Complex *, double _Complex *, double _Complex *, double *, double *, double _Complex *, size_t, size_t, size_t, size_t, double, double, int, size_t, size_t)
+/* 28 */ _CFFI_OP(_CFFI_OP_PRIMITIVE, 0), // void
 };
 
 static struct _cffi_externpy_s _cffi_externpy__run_impmod_ed =
   { "impmod_ed.run_impmod_ed", 0, 0, 0 };
 
-CFFI_DLLEXPORT void run_impmod_ed(char * a0, char * a1, double * a2, double _Complex * a3, double _Complex * a4, double _Complex * a5, double _Complex * a6, double _Complex * a7, double _Complex * a8, double * a9, double * a10, double _Complex * a11, size_t a12, size_t a13, size_t a14, size_t a15, double a16, double a17, int a18, size_t a19, size_t a20)
+CFFI_DLLEXPORT void run_impmod_ed(char * a0, char * a1, char * a2, int a3, double * a4, double _Complex * a5, double _Complex * a6, double _Complex * a7, double _Complex * a8, double _Complex * a9, double _Complex * a10, double * a11, double * a12, double _Complex * a13, size_t a14, size_t a15, size_t a16, size_t a17, double a18, double a19, int a20, size_t a21, size_t a22)
 {
-  char a[168];
+  char a[184];
   char *p = a;
   *(char * *)(p + 0) = a0;
   *(char * *)(p + 8) = a1;
-  *(double * *)(p + 16) = a2;
-  *(double _Complex * *)(p + 24) = a3;
-  *(double _Complex * *)(p + 32) = a4;
+  *(char * *)(p + 16) = a2;
+  *(int *)(p + 24) = a3;
+  *(double * *)(p + 32) = a4;
   *(double _Complex * *)(p + 40) = a5;
   *(double _Complex * *)(p + 48) = a6;
   *(double _Complex * *)(p + 56) = a7;
   *(double _Complex * *)(p + 64) = a8;
-  *(double * *)(p + 72) = a9;
-  *(double * *)(p + 80) = a10;
-  *(double _Complex * *)(p + 88) = a11;
-  *(size_t *)(p + 96) = a12;
-  *(size_t *)(p + 104) = a13;
+  *(double _Complex * *)(p + 72) = a9;
+  *(double _Complex * *)(p + 80) = a10;
+  *(double * *)(p + 88) = a11;
+  *(double * *)(p + 96) = a12;
+  *(double _Complex * *)(p + 104) = a13;
   *(size_t *)(p + 112) = a14;
   *(size_t *)(p + 120) = a15;
-  *(double *)(p + 128) = a16;
-  *(double *)(p + 136) = a17;
-  *(int *)(p + 144) = a18;
-  *(size_t *)(p + 152) = a19;
-  *(size_t *)(p + 160) = a20;
+  *(size_t *)(p + 128) = a16;
+  *(size_t *)(p + 136) = a17;
+  *(double *)(p + 144) = a18;
+  *(double *)(p + 152) = a19;
+  *(int *)(p + 160) = a20;
+  *(size_t *)(p + 168) = a21;
+  *(size_t *)(p + 176) = a22;
   _cffi_call_python(&_cffi_externpy__run_impmod_ed, p);
 }
 
 static const struct _cffi_global_s _cffi_globals[] = {
-  { "run_impmod_ed", (void *)&_cffi_externpy__run_impmod_ed, _CFFI_OP(_CFFI_OP_EXTERN_PYTHON, 25), (void *)run_impmod_ed },
+  { "run_impmod_ed", (void *)&_cffi_externpy__run_impmod_ed, _CFFI_OP(_CFFI_OP_EXTERN_PYTHON, 27), (void *)run_impmod_ed },
 };
 
 static const struct _cffi_type_context_s _cffi_type_context = {
@@ -1341,7 +1345,7 @@ static const struct _cffi_type_context_s _cffi_type_context = {
   0,  /* num_enums */
   0,  /* num_typenames */
   NULL,  /* no includes */
-  27,  /* num_types */
+  29,  /* num_types */
   1,  /* flags */
 };
 
