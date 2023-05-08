@@ -101,12 +101,32 @@ def run(cluster, h0, iw, w, delta, tau, verbosity=0, partial_reort = False):
                    1 - loud, detailed output generated
                    2 - SCREAM, insanely detailed output generated
     """
-    energy_cut = 3
+    energy_cut = 10
     num_psi_max = sum(2*(2*l + 1) for l in cluster.nominal_occ[0])
     nPrintSlaterWeights = 0
     tolPrintOccupation = 0.5
 
-    cluster.sig[:, :, :], cluster.sig_real[:, :, :], cluster.sig_static[:, :] = calc_selfenergy(
+    # cluster.sig[:, :, :], cluster.sig_real[:, :, :], cluster.sig_static[:, :] = calc_selfenergy(
+    #     h0,
+    #     cluster.slater,
+    #     iw,
+    #     w,
+    #     delta,
+    #     cluster.nominal_occ,
+    #     cluster.delta_occ,
+    #     cluster.bath_states,
+    #     tau,
+    #     energy_cut,
+    #     num_psi_max,
+    #     nPrintSlaterWeights,
+    #     tolPrintOccupation,
+    #     verbosity,
+    #     blocks = cluster.blocks,
+    #     rotation=cluster.rot_spherical,
+    #     cluster_label=cluster.label,
+    #     partial_reort = partial_reort,
+    # )
+    sig_tmp, sig_real_tmp, sig_static_tmp = calc_selfenergy(
         h0,
         cluster.slater,
         iw,
@@ -121,11 +141,19 @@ def run(cluster, h0, iw, w, delta, tau, verbosity=0, partial_reort = False):
         nPrintSlaterWeights,
         tolPrintOccupation,
         verbosity,
-        blocks = cluster.blocks,
+        blocks = None, # cluster.blocks,
         rotation=cluster.rot_spherical,
         cluster_label=cluster.label,
         partial_reort = partial_reort,
     )
+    cluster.sig[:,:,:] = 0
+    cluster.sig_real[:,:,:] = 0
+    cluster.sig_static[:,:] = 0
+    block_idxs = [np.ix_(block,block) for block in cluster.blocks]
+    for block in block_idxs:
+        cluster.sig[block] = sig_tmp[block]
+        cluster.sig_real[block] = sig_real_tmp[block]
+        cluster.sig_static[block] = sig_static_tmp[block]
 
 
 def calc_selfenergy(
