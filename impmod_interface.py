@@ -233,17 +233,26 @@ def run_impmod_ed(
 
     from impurityModel.ed import selfenergy
 
-    selfenergy.run(cluster, h_op, 1j * iw, w, eim, tau, verbosity, partial_reort = partial_reort)
+    # Python exceptions are ignored by the outside code, so we need to capture all exceptions,
+    # print an error message and make sure that the outside code becomes aware that something
+    # has gone terribly wrong.
+    try:
+        selfenergy.run(cluster, h_op, 1j * iw, w, eim, tau, verbosity, partial_reort = partial_reort)
 
-    # Rotate self energy from spherical harmonics basis to RSPt's corr basis
-    u = cluster.rot_spherical
-    cluster.sig[:, :, :] = np.moveaxis(
-        u[np.newaxis, :, :] @ np.moveaxis(cluster.sig, -1, 0) @ np.conj(u.T)[np.newaxis, :, :], 0, -1
-    )
-    cluster.sig_real[:, :, :] = np.moveaxis(
-        u[np.newaxis, :, :] @ np.moveaxis(cluster.sig_real, -1, 0) @ np.conj(u.T)[np.newaxis, :, :], 0, -1
-    )
-    cluster.sig_static[:, :] = u @ cluster.sig_static @ np.conj(u.T)
+        # Rotate self energy from spherical harmonics basis to RSPt's corr basis
+        u = cluster.rot_spherical
+        cluster.sig[:, :, :] = np.moveaxis(
+            u[np.newaxis, :, :] @ np.moveaxis(cluster.sig, -1, 0) @ np.conj(u.T)[np.newaxis, :, :], 0, -1
+        )
+        cluster.sig_real[:, :, :] = np.moveaxis(
+            u[np.newaxis, :, :] @ np.moveaxis(cluster.sig_real, -1, 0) @ np.conj(u.T)[np.newaxis, :, :], 0, -1
+        )
+        cluster.sig_static[:, :] = u @ cluster.sig_static @ np.conj(u.T)
+    except Exception as e:
+        if rank == 0:
+            print(e)
+            print (f"Adding positive infinity to the imaginaty part of the selfenergy at the last matsubara frequency.")
+        cluster.sig[:,:, -1] += 1j*np.inf
 
 def symmetrize_sigma(sigma, blocks, equivalent_blocks):
     symmetrized_sigma = np.zeros_like(sigma)
@@ -382,11 +391,6 @@ def get_ed_h0(
                 x_lim=(w[0], 0 if valence_bath_only else w[-1]),
             )
 
-    # n_orb = 10
-    # h_rspt = np.loadtxt("h0_RSPt_real.dat") + 1j*np.loadtxt("h0_RSPt_imag.dat")
-    # v = h_rspt[n_orb:, :n_orb]
-    # eb = np.diag(h_rspt[n_orb:, n_orb:])
-
     print(f"DFT hamiltonian")
     matrix_print(h_dft)
     print("Hopping parameters")
@@ -396,18 +400,10 @@ def get_ed_h0(
 
     n_orb = v.shape[1]
     h = np.zeros((n_orb + len(eb), n_orb + len(eb)), dtype=np.complex)
-    # h[:n_orb, :n_orb] = h_dft
     h[:n_orb, :n_orb] = np.conj(rot_spherical.T) @ h_dft @ rot_spherical
     h[:n_orb, n_orb:] = np.conj(v.T)
     h[n_orb:, :n_orb] = v
     np.fill_diagonal(h[n_orb:, n_orb:], eb)
-
-    # print("Local Hamiltonian and baths")
-    # matrix_print(h)
-    # u = np.identity(h.shape[0], dtype = complex)
-    # u[:n_orb, :n_orb] = rot_spherical
-    # h = np.conj(u.T) @ h @ u
-    # assert np.all(np.abs(h - np.conj(h.T))) < 1e-12
 
     with open(f"Ham-{label}.inp", "w") as f:
         for i in range(h.shape[0]):
