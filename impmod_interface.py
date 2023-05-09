@@ -199,7 +199,7 @@ def run_impmod_ed(
 
     if rank == 0:
         print(f"Nominal occupation: {nominal_occ}")
-        print(f"Bath states: {n_bath_states}")
+        print(f"Bath states: {n_bath_states}", flush = True)
 
     if rspt_dc_flag == 1:
         dc_line = ffi.string(rspt_dc_line, 100).decode("ascii")
