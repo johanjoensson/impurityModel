@@ -99,13 +99,21 @@ def eigensystem_new(
         print("Create Hamiltonian matrix...", flush = True)
     if groundDiagMode == 'full':
         h = get_hamiltonian_matrix(n_spin_orbitals, hOp, basis, verbose=verbose)
-    elif groundDiagMod == 'Lanczos':
-        h_local, basis = expand_basis_and_hamiltonian(n_spin_orbitals, {}, hOp, basis, restrictions = None, verbose=verbose, parallelization_mode='H_build', return_h_local = True)
+        nonzero = len(h.nonzero()[0])
+    elif groundDiagMode == 'Lanczos':
+        h_local, _ = expand_basis_and_hamiltonian(n_spin_orbitals, {}, hOp, basis, restrictions = None, verbose=verbose, parallelization_mode='H_build', return_h_local = True)
+
         def mpi_matmul(m):
-            res = h_local @ m
-            res = comm.allreduce(res_local, MPI_SUM)
+            res_local = h_local @ m
+            res  = comm.allreduce(res_local)
             return res
-        h = sp.sparse.linalg.LinearOperator(h_local.shape, matvec = mpi_matmul, matmat = mpi_matmul)
+
+        try:
+            h = scipy.sparse.linalg.LinearOperator(h_local.shape, matvec = mpi_matmul)
+            nonzero = comm.reduce(len(h_local.nonzero()[0]), root = 0)
+        except Exception as e:
+            print (f"Exception {e} happened!!", flush = True)
+            raise e
     if rank == 0 and verbose:
         # print("Checking if Hamiltonian is Hermitian!")
         # err_max = np.max(np.abs(np.conj(h.T) - h))
@@ -113,7 +121,7 @@ def eigensystem_new(
         #     print(f"Warning! Hamiltonian matrix is not very Hermitian!\nLargest error = {err_max}")
         # else:
         #     print("Hamiltonian matrix is Hermitian!")
-        # print("<#Hamiltonian elements/column> = {:d}".format(int(len(np.nonzero(h)[0]) / len(basis))))
+        print("<#Hamiltonian elements/column> = {:d}".format(int(nonzero / len(basis))))
         print("Diagonalize the Hamiltonian...")
     dk = 5
     vecs = None
@@ -1870,7 +1878,7 @@ def get_hamiltonian_matrix_from_h_dict(
                 row.append(basis_index[k])
         h = scipy.sparse.csr_matrix((data, (row, col)), shape=(n, n))
     elif mode == "sparse" and parallelization_mode == "H_build":
-        n = comm.allreduce(n, op = MPI.MAX, root = 0)
+        n = comm.allreduce(n, op = MPI.MAX)
         # n = comm.bcast(n, root = 0)
         # Loop over product states from the basis
         # which are also stored in h_dict.
