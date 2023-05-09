@@ -74,6 +74,7 @@ def run_impmod_ed(
     rspt_sig_dc,
     rspt_iw,
     rspt_w,
+    rspt_corr_to_cf,
     rspt_rot_spherical,
     n_orb,
     n_iw,
@@ -131,14 +132,24 @@ def run_impmod_ed(
         order="F",
         dtype=complex,
     )
+    rspt_corr_to_cf = np.ndarray(
+        buffer=ffi.buffer(rspt_corr_to_cf, n_orb * n_rot_rows * size_complex),
+        shape=(n_orb, n_rot_rows),
+        order="F",
+        dtype=complex,
+    )
     slater_from_rspt = np.ndarray(buffer=ffi.buffer(rspt_slater, 4 * size_real), shape=(4,), dtype=float)
 
     if n_rot_rows == n_orb:
         rot_spherical = rspt_rot_spherical
+        corr_to_cf = rspt_corr_to_cf
     else:
         rot_spherical = np.empty((n_orb, n_orb), dtype=complex)
         rot_spherical[:, :n_rot_rows] = rspt_rot_spherical
         rot_spherical[:, n_rot_rows:] = np.roll(rspt_rot_spherical, n_rot_rows, axis=0)
+        corr_to_cf = np.empty((n_orb, n_orb), dtype=complex)
+        corr_to_cf[:, :n_rot_rows] = rspt_corr_to_cf
+        corr_to_cf[:, n_rot_rows:] = np.roll(rspt_corr_to_cf, n_rot_rows, axis=0)
 
     l = (n_orb // 2 - 1) // 2
 
@@ -169,6 +180,7 @@ def run_impmod_ed(
         h_op, e_baths = get_ed_h0(
             h_dft,
             hyb,
+            corr_to_cf,
             rot_spherical,
             bath_states_per_orbital,
             w,
@@ -317,6 +329,7 @@ def fixed_peak_dc(h0_op, dc_struct, rank):
 def get_ed_h0(
     h_dft,
     hyb,
+    corr_to_cf,
     rot_spherical,
     bath_states_per_orbital,
     w,
@@ -364,6 +377,7 @@ def get_ed_h0(
             w,
             eim,
             hyb,
+            corr_to_cf,
             rot_spherical,
             bath_states_per_orbital,
             gamma=gamma,
@@ -384,6 +398,7 @@ def get_ed_h0(
                 w,
                 eim,
                 hyb,
+                corr_to_cf,
                 rot_spherical,
                 bath_states_per_orbital,
                 gamma=gamma,
