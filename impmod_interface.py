@@ -1,6 +1,7 @@
 from impmod_ed import ffi
 import numpy as np
 import scipy as sp
+import traceback
 
 
 def matrix_print(matrix):
@@ -79,7 +80,7 @@ def run_impmod_ed(
     n_orb,
     n_iw,
     n_w,
-    n_rot_rows,
+    n_rot_cols,
     eim,
     tau,
     verbosity,
@@ -126,30 +127,30 @@ def run_impmod_ed(
     sig_dc = np.ndarray(
         buffer=ffi.buffer(rspt_sig_dc, n_orb * n_orb * size_complex), shape=(n_orb, n_orb), order="F", dtype=complex
     )
-    rspt_rot_spherical = np.ndarray(
-        buffer=ffi.buffer(rspt_rot_spherical, n_orb * n_rot_rows * size_complex),
-        shape=(n_orb, n_rot_rows),
+    rspt_rot_spherical_arr = np.ndarray(
+        buffer=ffi.buffer(rspt_rot_spherical, n_orb * n_rot_cols * size_complex),
+        shape=(n_orb, n_rot_cols),
         order="F",
         dtype=complex,
     )
-    rspt_corr_to_cf = np.ndarray(
-        buffer=ffi.buffer(rspt_corr_to_cf, n_orb * n_rot_rows * size_complex),
-        shape=(n_orb, n_rot_rows),
+    rspt_corr_to_cf_arr = np.ndarray(
+        buffer=ffi.buffer(rspt_corr_to_cf, n_orb * n_orb * size_complex),
+        shape=(n_orb, n_rot_cols),
         order="F",
         dtype=complex,
     )
     slater_from_rspt = np.ndarray(buffer=ffi.buffer(rspt_slater, 4 * size_real), shape=(4,), dtype=float)
 
-    if n_rot_rows == n_orb:
-        rot_spherical = rspt_rot_spherical
-        corr_to_cf = rspt_corr_to_cf
+    if n_rot_cols == n_orb:
+        rot_spherical = rspt_rot_spherical_arr
+        corr_to_cf = rspt_corr_to_cf_arr
     else:
         rot_spherical = np.empty((n_orb, n_orb), dtype=complex)
-        rot_spherical[:, :n_rot_rows] = rspt_rot_spherical
-        rot_spherical[:, n_rot_rows:] = np.roll(rspt_rot_spherical, n_rot_rows, axis=0)
+        rot_spherical[:, :n_rot_cols] = rspt_rot_spherical_arr
+        rot_spherical[:, n_rot_cols:] = np.roll(rspt_rot_spherical_arr, n_rot_cols, axis=0)
         corr_to_cf = np.empty((n_orb, n_orb), dtype=complex)
-        corr_to_cf[:, :n_rot_rows] = rspt_corr_to_cf
-        corr_to_cf[:, n_rot_rows:] = np.roll(rspt_corr_to_cf, n_rot_rows, axis=0)
+        corr_to_cf[:, :n_rot_cols] = rspt_corr_to_cf_arr
+        corr_to_cf[:, n_rot_cols:] = np.roll(rspt_corr_to_cf_arr, n_rot_cols, axis=0)
 
     l = (n_orb // 2 - 1) // 2
 
@@ -262,7 +263,8 @@ def run_impmod_ed(
         cluster.sig_static[:, :] = u @ cluster.sig_static @ np.conj(u.T)
     except Exception as e:
         if rank == 0:
-            print(e)
+            print(f"Exception {repr(e)} caught!")
+            print (traceback.format_exc())
             print (f"Adding positive infinity to the imaginaty part of the selfenergy at the last matsubara frequency.")
         cluster.sig[:,:, -1] += 1j*np.inf
 
