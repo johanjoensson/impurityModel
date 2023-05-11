@@ -70,7 +70,14 @@ def find_gs(h_op, N0, delta_occ, bath_states, num_spin_orbitals, rank):
     energies = []
     for basis in trial_basis:
         e_trial, _ = finite.eigensystem_new(
-            num_spin_orbitals, h_op, basis, 1, verbose=False, groundDiagMode="Lanczos", eigenValueTol=0
+            num_spin_orbitals,
+            h_op,
+            basis,
+            e_max = 0,
+            k = 1,
+            verbose=False,
+            groundDiagMode="Lanczos",
+            eigenValueTol=0
         )
         energies.append(e_trial[0])
     gs_i = energies.index(min(energies))
@@ -216,7 +223,14 @@ def calc_selfenergy(
     energy_cut *= tau
 
     es, psis = finite.eigensystem_new(
-            num_spin_orbitals, h, basis, energy_cut, k = 2*(2*l + 1), verbose = True, groundDiagMode="Lanczos", eigenValueTol=0
+            num_spin_orbitals,
+            h,
+            basis,
+            energy_cut,
+            k = 2*(2*l + 1),
+            verbose = True,
+            groundDiagMode="Lanczos",
+            eigenValueTol=0
             )
     if rank == 0 and verbosity >= 2:
         finite.printThermalExpValues(sum_bath_states, es, psis)

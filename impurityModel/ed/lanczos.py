@@ -58,8 +58,9 @@ def get_block_Lanczos_matrices(
         # at most N/n steps in total
         for i in range(int(np.ceil(krylovSize / n))):
             t_h = time.perf_counter()
-            wp = h @ q[1]
-            wp = comm.reduce(wp, root=0)
+            w_local = h @ q[1]
+            wp = np.zeros_like(w_local)
+            comm.Reduce(w_local, wp, root = 0)
             t_matmul += time.perf_counter() - t_h
 
             if rank == 0:

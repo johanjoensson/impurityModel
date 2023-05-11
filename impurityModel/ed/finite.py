@@ -113,8 +113,7 @@ def eigensystem_new(
         def mpi_matmul(m):
             res_local = h_local @ m
             res = np.zeros_like(res_local)
-            # comm.Reduce(res_local, res, op = MPI.SUM, root = 0)
-            # res = comm.bcast(res)
+            # comm.Allreduce([res_local, MPI.DOUBLE_COMPLEX], [res, MPI.DOUBLE_COMPLEX], op = MPI.SUM)
             comm.Allreduce(res_local, res, op = MPI.SUM)
             return res
 
@@ -125,25 +124,17 @@ def eigensystem_new(
             print (f"Exception {e} happened!!", flush = True)
             raise e
     if rank == 0 and verbose:
-        # print("Checking if Hamiltonian is Hermitian!")
-        # err_max = np.max(np.abs(np.conj(h.T) - h))
-        # if err_max > 1e-12:
-        #     print(f"Warning! Hamiltonian matrix is not very Hermitian!\nLargest error = {err_max}")
-        # else:
-        #     print("Hamiltonian matrix is Hermitian!")
         print("<#Hamiltonian elements/column> = {:d}".format(int(nonzero / len(basis))))
         print("Diagonalize the Hamiltonian...", flush = True)
     dk = 5
     vecs = None
     es = None
     mask = [False]
-    while vecs is None or sum(mask) >= len(es) - k :
-        if rank == 0:
-            print (f"calculate {k + dk} eigenvectors and eigenvalues")
+    while vecs is None or sum(mask) >= len(es) - k:
         if groundDiagMode == "full":
-            es_n, vecs_n = np.linalg.eigh(h.todense())
+            es, vecs = np.linalg.eigh(h.todense())
         elif groundDiagMode == "Lanczos":
-            es, vecs = primme.eigsh(h, k=k + dk, which="SA", tol=eigenValueTol)
+            es, vecs = primme.eigsh(h, k = k + dk, v0 = vecs, which="SA", tol=eigenValueTol)
         else:
             print(f"Unknown diagonalization mode: {groundDiagMode}")
 
@@ -1814,9 +1805,9 @@ def get_hamiltonian_matrix(n_spin_orbitals, hOp, basis, mode="sparse_MPI", verbo
         hSparse = scipy.sparse.csr_matrix((data, (row, col)), shape=(n, n))
         # Different ranks have information about different basis states.
         # Therefor, need to broadcast and append sparse Hamiltonians
-        h = comm.allreduce(hSparse)
-        # for r in range(ranks):
-        #     h += comm.bcast(hSparse, root=r)
+        # h = comm.allreduce(hSparse)
+        for r in range(ranks):
+            h += comm.bcast(hSparse, root=r)
     return h
 
 
@@ -1904,10 +1895,10 @@ def get_hamiltonian_matrix_from_h_dict(
         if return_h_local:
             h = h_local
         else:
-            h = scipy.sparse.csr_matrix(([], ([], [])), shape=(n, n))
+            # h = scipy.sparse.csr_matrix(([], ([], [])), shape=(n, n))
             # Different ranks have information about different basis states.
             # Broadcast and append local sparse Hamiltonians.
-            h = comm.allreduce(hSparse)
+            h = comm.allreduce(h_local)
             # for r in range(ranks):
             #     h += comm.bcast(h_local, root=r)
     else:
@@ -2089,8 +2080,8 @@ def expand_basis_and_hamiltonian(
         t0 = time.perf_counter()
     # Obtain tuple containing different product states.
     # Possibly add new product state keys to h_dict.
-    # basis = expand_basis(n_spin_orbitals, h_dict, hOp, basis0, restrictions, parallelization_mode)
-    basis = expand_basis(n_spin_orbitals, h_dict, hOp, basis0, restrictions, 'serial')
+    basis = expand_basis(n_spin_orbitals, h_dict, hOp, basis0, restrictions, parallelization_mode)
+    # basis = expand_basis(n_spin_orbitals, h_dict, hOp, basis0, restrictions, 'serial')
     if rank == 0 and verbose:
         print("time(expand_basis) = {:.3f} seconds.".format(time.perf_counter() - t0))
         t0 = time.perf_counter()
