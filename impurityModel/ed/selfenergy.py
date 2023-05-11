@@ -69,7 +69,7 @@ def find_gs(h_op, N0, delta_occ, bath_states, num_spin_orbitals, rank):
 
     energies = []
     for basis in trial_basis:
-        e_trial, _ = finite.eigensystem(
+        e_trial, _ = finite.eigensystem_new(
             num_spin_orbitals, h_op, basis, 1, verbose=False, groundDiagMode="Lanczos", eigenValueTol=0
         )
         energies.append(e_trial[0])

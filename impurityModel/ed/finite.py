@@ -101,16 +101,26 @@ def eigensystem_new(
         h = get_hamiltonian_matrix(n_spin_orbitals, hOp, basis, verbose=verbose)
         nonzero = len(h.nonzero()[0])
     elif groundDiagMode == 'Lanczos':
-        h_local, _ = expand_basis_and_hamiltonian(n_spin_orbitals, {}, hOp, basis, restrictions = None, verbose=verbose, parallelization_mode='H_build', return_h_local = True)
+        h_local, _ = expand_basis_and_hamiltonian(n_spin_orbitals, 
+                                                  {}, 
+                                                  hOp, 
+                                                  basis, 
+                                                  restrictions = None, 
+                                                  verbose=verbose, 
+                                                  parallelization_mode='H_build', 
+                                                  return_h_local = True)
 
         def mpi_matmul(m):
             res_local = h_local @ m
-            res  = comm.allreduce(res_local)
+            res = np.zeros_like(res_local)
+            # comm.Reduce(res_local, res, op = MPI.SUM, root = 0)
+            # res = comm.bcast(res)
+            comm.Allreduce(res_local, res, op = MPI.SUM)
             return res
 
         try:
-            h = scipy.sparse.linalg.LinearOperator(h_local.shape, matvec = mpi_matmul)
-            nonzero = comm.reduce(len(h_local.nonzero()[0]), root = 0)
+            h = scipy.sparse.linalg.LinearOperator(h_local.shape, matvec = mpi_matmul, rmatvec=mpi_matmul)
+            nonzero = comm.reduce(len(h_local.nonzero()[0]), root = 0, op = MPI.SUM)
         except Exception as e:
             print (f"Exception {e} happened!!", flush = True)
             raise e
@@ -122,7 +132,7 @@ def eigensystem_new(
         # else:
         #     print("Hamiltonian matrix is Hermitian!")
         print("<#Hamiltonian elements/column> = {:d}".format(int(nonzero / len(basis))))
-        print("Diagonalize the Hamiltonian...")
+        print("Diagonalize the Hamiltonian...", flush = True)
     dk = 5
     vecs = None
     es = None
@@ -2079,7 +2089,8 @@ def expand_basis_and_hamiltonian(
         t0 = time.perf_counter()
     # Obtain tuple containing different product states.
     # Possibly add new product state keys to h_dict.
-    basis = expand_basis(n_spin_orbitals, h_dict, hOp, basis0, restrictions, parallelization_mode)
+    # basis = expand_basis(n_spin_orbitals, h_dict, hOp, basis0, restrictions, parallelization_mode)
+    basis = expand_basis(n_spin_orbitals, h_dict, hOp, basis0, restrictions, 'serial')
     if rank == 0 and verbose:
         print("time(expand_basis) = {:.3f} seconds.".format(time.perf_counter() - t0))
         t0 = time.perf_counter()
