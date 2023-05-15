@@ -218,7 +218,7 @@ def calc_selfenergy(
     if rank == 0 and verbosity >= 1:
         print("{:d} processes in the Hamiltonian.".format(len(h)))
         print("Create basis...")
-        print("#basis states = {:d}".format(len(basis)), flush=True)
+        print("#basis states = {:d}".format(len(basis)))
 
     energy_cut *= tau
 

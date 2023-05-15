@@ -14,7 +14,7 @@ ranks = comm.size
 
 def get_block_Lanczos_matrices(
         psi0 : np.ndarray,
-        h : sp.sparse.csr_matrix,
+        h,
         converged : bool,
         h_local : bool = False,
         verbose : bool = True,
