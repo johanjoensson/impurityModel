@@ -265,8 +265,11 @@ def run_impmod_ed(
         if rank == 0:
             print(f"Exception {repr(e)} caught!")
             print (traceback.format_exc())
-            print (f"Adding positive infinity to the imaginaty part of the selfenergy at the last matsubara frequency.")
+            print (f"Adding positive infinity to the imaginaty part of the selfenergy at the last matsubara frequency.", flush = True)
         cluster.sig[:,:, -1] += 1j*np.inf
+    else:
+        if rank == 0:
+            print (f"Self energy calculated! impurityModel shutting down.", flush = True)
 
 def symmetrize_sigma(sigma, blocks, equivalent_blocks):
     symmetrized_sigma = np.zeros_like(sigma)

@@ -1,8 +1,6 @@
 import numpy as np
 import scipy as sp
 
-from hermitian_operator_matmul import hermitian_operator_matvec, hermitian_operator_matmat
-
 class HermitianOperator(sp.sparse.linalg.LinearOperator):
     # [ A00  A10* ...  AN0* ]    [ A00  0   0   ...  0   ]   [ 0    0    ...  0    ]    [ 0    A10* ...  AN0* ]
     # [ A10  A11  ...  AN1* ]  = [ 0    A11 0   ...  0   ] + [ A10  0    ...  0    ]  + [ 0    0    ...  AN1* ] 
