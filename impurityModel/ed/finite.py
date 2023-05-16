@@ -59,6 +59,12 @@ def get_job_tasks(rank, ranks, tasks_tot):
         tasks.append(tasks_tot[n_tot - rest + rank])
     return tuple(tasks)
 
+def mpi_matmul(h_local, m):
+    res_local = h_local @ m
+    res = np.zeros_like(res_local)
+    comm.Allreduce(res_local, res, op = MPI.SUM)
+    return res
+
 def eigensystem_new(
     n_spin_orbitals,
     hOp,
@@ -97,7 +103,7 @@ def eigensystem_new(
 
     """
     if rank == 0 and verbose:
-        print("Create Hamiltonian matrix...", flush = True)
+        print("Create Hamiltonian matrix...")
     if groundDiagMode == 'full':
         h = get_hamiltonian_matrix(n_spin_orbitals, hOp, basis, verbose=verbose)
         nonzero = len(h.nonzero()[0])
@@ -112,36 +118,37 @@ def eigensystem_new(
                                                   parallelization_mode='H_build', 
                                                   return_h_local = True)
 
-        def mpi_matmul(m):
-            res_local = h_local @ m
-            # comm.barrier()
-            res = np.zeros_like(res_local)
-            comm.Allreduce(res_local, res, op = MPI.SUM)
-            return res
-
         try:
 
-            h = scipy.sparse.linalg.LinearOperator(h_local.shape, matvec = mpi_matmul, rmatvec = mpi_matmul, matmat = mpi_matmul, rmatmat = mpi_matmul, dtype = h_local.dtype)
+            mpi_matmat = lambda m: mpi_matmul(h_local, m)
+            h = scipy.sparse.linalg.LinearOperator(h_local.shape, matvec = mpi_matmat, rmatvec = mpi_matmat, matmat = mpi_matmat, rmatmat = mpi_matmat, dtype = h_local.dtype)
             if rank == 0:
                 print (f"h :\n{h}")
-            # nonzero = comm.reduce(len(h_local.nonzero()[0]), root = 0, op = MPI.SUM)
-            nonzero = 0
+            nonzero = comm.reduce(h_local.nnz, root = 0, op = MPI.SUM)
         except Exception as e:
-            print (f"Exception {e} happened!!", flush = True)
+            print (f"Exception {e} happened!!")
             raise e
     if rank == 0 and verbose:
         print("<#Hamiltonian elements/column> = {:d}".format(int(nonzero / len(basis))))
-        print("Diagonalize the Hamiltonian...", flush = True)
+        print("Diagonalize the Hamiltonian...")
     dk = 5
     vecs = None
     es = None
     mask = [False]
-    while vecs is None or sum(mask) >= len(es) - k:
+    while vecs is None or len(es) - sum(mask) < k:
         if groundDiagMode == "full":
             es, vecs = np.linalg.eigh(h.todense())
         elif groundDiagMode == "Lanczos":
-            # es, vecs = primme.eigsh(h, k = k + dk, v0 = vecs, which="SA", tol=eigenValueTol)
-            es, vecs = primme.eigsh(h, k = k + dk, which="SA", tol=eigenValueTol)
+            try:
+                es, vecs = primme.eigsh(h, k = k + dk, v0 = vecs, which="SA", tol=eigenValueTol, maxiter = 10*h.shape[0])
+            except primme.PrimmeError as e:
+                print (f"caught Primme error {e.err}")
+                if e.err == -3:
+                    print (f"Eigenvalues did not converge, resetting eigenvector guess and allowing more max iterations")
+                    es, vecs = primme.eigsh(h, k = k + dk, which="SA", tol=eigenValueTol, maxiter = 50*h.shape[0])
+                else:
+                    raise e
+            # es, vecs = scipy.sparse.linalg.eigsh(h, k = k + dk, which="SA", tol=eigenValueTol, maxiter = h_local.shape[0], ncv = h_local.shape[0] - 1)
         else:
             print(f"Unknown diagonalization mode: {groundDiagMode}")
 
@@ -157,9 +164,9 @@ def eigensystem_new(
         # V = np.array([ev / np.linalg.norm(ev) for ev in vecs.T]).T
         err_max = np.max(np.abs(np.conj(vecs.T) @ vecs - np.identity(vecs.shape[1])))
         if err_max > 1e-12:
-            print(f"Warning! Obtained eigenvectors are not very orthogonal!\nMaximum overlap {err_max}", flush=True)
+            print(f"Warning! Obtained eigenvectors are not very orthogonal!\nMaximum overlap {err_max}")
 
-        print(f"Proceed with {len(es[mask])} eigenstates.\n", flush=True)
+        print(f"Proceed with {len(es[mask])} eigenstates.\n")
 
     psis = [
         ({basis[i]: vecs[i, vi] for i in range(len(basis)) if slaterWeightMin <= abs(vecs[i, vi]) ** 2})
@@ -215,7 +222,7 @@ def eigensystem(
         else:
             print("Hamiltonian matrix is Hermitian!")
         print("<#Hamiltonian elements/column> = {:d}".format(int(len(np.nonzero(h)[0]) / len(basis))))
-        print("Diagonalize the Hamiltonian...", flush = True)
+        print("Diagonalize the Hamiltonian...")
     if groundDiagMode == "full":
         es, vecs = np.linalg.eigh(h.todense())
         es = es[:nPsiMax]
@@ -233,9 +240,9 @@ def eigensystem(
         V = np.array([ev / np.linalg.norm(ev) for ev in vecs.T]).T
         err_max = np.max(np.abs(np.conj(V.T) @ V - np.eye(V.shape[1])))
         if err_max > 1e-12:
-            print(f"Warning! Obtained eigenvectors are not very orthogonal!\nMaximum overlap {err_max}", flush=True)
+            print(f"Warning! Obtained eigenvectors are not very orthogonal!\nMaximum overlap {err_max}")
 
-        print(f"Proceed with {len(es)} eigenstates.\n", flush=True)
+        print(f"Proceed with {len(es)} eigenstates.\n")
 
     psis = [
         ({basis[i]: vecs[i, vi] for i in range(len(basis)) if slaterWeightMin <= abs(vecs[i, vi]) ** 2})
@@ -539,7 +546,7 @@ def printOp(nBaths, pOp, printstr):
     print(np.array2string(a, max_line_width=2000, threshold=1000, precision=3, suppress_small=True))
     print("Eigenvalues: ")
     print(np.array_str(np.linalg.eigvalsh(a), max_line_width=368, precision=3, suppress_small=True))
-    print("", flush=True)
+    print()
 
 
 def inner(a, b):
@@ -2121,6 +2128,115 @@ def expand_basis(n_spin_orbitals, h_dict, hOp, basis0, restrictions, paralleliza
         raise Exception("Wrong parallelization parameter.")
     return tuple(basis)
 
+def combine_sets(set_1, set_2, datatype):
+    return set_1 | set_2
+combine_sets_op = MPI.Op.Create(combine_sets, commute = True)
+
+def expand_basis_new(n_spin_orbitals, h_dict, hOp, basis0, restrictions, parallelization_mode="serial"):
+    """
+    Return basis.
+
+    Parameters
+    ----------
+    n_spin_orbitals : int
+        Total number of spin-orbitals in the system.
+    h_dict : dict
+        Elements of the form `|PS> : {hOp|PS>}`,
+        where `|PS>` is a product state,
+        and `{hOp|PS>}` is a dictionary containing the result of
+        the (Hamiltonian) operator hOp acting on the product state `|PS>`.
+        The dictionary `{hOp|PS>}` has product states as keys.
+        New elements might be added to this variable.
+        h_dict may contain some product states (as keys) that will not
+        be part of the final active basis.
+        Also, if parallelization_mode == 'H_build', each product state in
+        the active basis exists as a key in h_dict for only one MPI rank.
+    hOp : dict
+        The Hamiltonian. With elements of the form:
+        process : h_value
+    basis0 : tuple
+        List of product states.
+        These product states are used to generate more basis states.
+    restrictions : dict
+        Restriction the occupation of generated product states.
+    parallelization_mode : str
+        Parallelization mode. Either: 'serial' or 'H_build'.
+
+    Returns
+    -------
+    basis : tuple
+        The restricted active space basis of product states.
+
+    """
+    # Copy basis0, to avoid changing it when the basis grows
+    basis = list(basis0)
+    i = 0
+    n = len(basis)
+    if parallelization_mode == "serial":
+        while i < n:
+            basis_set = frozenset(basis)
+            basis_new = set()
+            for b in basis[i:n]:
+                if b in h_dict:
+                    res = h_dict[b]
+                else:
+                    res = applyOp(n_spin_orbitals, hOp, {b: 1}, restrictions=restrictions)
+                    h_dict[b] = res
+                basis_new.update(set(res.keys()).difference(basis_set))
+            i = n
+            # Add basis_new to basis.
+            basis += sorted(basis_new)
+            n = len(basis)
+    elif parallelization_mode == "H_build":
+
+        h_dict_new_local = {}
+        while i < n:
+            basis_set = frozenset(basis)
+            basis_new_local = set()
+
+            # Among the product states in basis[i:n], first consider
+            # the product states which exist in h_dict.
+            states_setA_local = set(basis[i:n]).intersection(h_dict.keys())
+            # Loop through these product states
+            for ps in states_setA_local:
+                res = h_dict[ps]
+                basis_new_local.update(set(res.keys()).difference(basis_set))
+
+            # Now consider the product states in basis[i:n] which
+            # does not exist in h_dict for any MPI rank.
+            states_setB = comm.allreduce(states_setA_local, 
+                                                 op = combine_sets_op, 
+                                                 )
+            states_tupleB = tuple(sorted(set(basis[i:n]) - states_setB))
+            # All ranks must agree on the order of the product states, so sort them
+
+            # Distribute and then loop through "unknown" product states
+            for ps_indexB in get_job_tasks(rank, ranks, range(len(states_tupleB))):
+                # One product state.
+                ps = states_tupleB[ps_indexB]
+                res = applyOp(n_spin_orbitals, hOp, {ps: 1}, restrictions=restrictions)
+                h_dict_new_local[ps] = res
+                basis_new_local.update(set(res.keys()).difference(basis_set))
+
+            # Add unique elements of basis_new_local into basis_new
+            basis_new = comm.allreduce(basis_new_local,
+                                       op = combine_sets_op)
+            # Add basis_new to basis.
+            # It is important that all ranks use the same order of the
+            # product states. This is one way to ensure the same ordering.
+            # But any ordering is fine, as long it's the same for all MPI ranks.
+            basis += sorted(basis_new)
+            # Updated total number of product states |PS> in
+            # the basis where know H|PS>.
+            i = n
+            # Updated total number of product states needed to consider.
+            n = len(basis)
+        # Add new elements to h_dict, but only local contribution.
+        h_dict.update(h_dict_new_local)
+    else:
+        raise Exception("Wrong parallelization parameter.")
+    return tuple(basis)
+
 def expand_basis_and_build_hermitian_hamiltonian(
     n_spin_orbitals,
     h_dict,
@@ -2181,7 +2297,7 @@ def expand_basis_and_build_hermitian_hamiltonian(
         t0 = time.perf_counter()
     # Obtain tuple containing different product states.
     # Possibly add new product state keys to h_dict.
-    basis = expand_basis(n_spin_orbitals, h_dict, hOp, basis0, restrictions, parallelization_mode)
+    basis = expand_basis_new(n_spin_orbitals, h_dict, hOp, basis0, restrictions, parallelization_mode)
     if rank == 0 and verbose:
         print("time(expand_basis) = {:.3f} seconds.".format(time.perf_counter() - t0))
         t0 = time.perf_counter()
