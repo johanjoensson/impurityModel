@@ -6,8 +6,6 @@ from random import uniform
 
 from mpi4py import MPI
 
-from numba import njit
-
 comm = MPI.COMM_WORLD
 rank = comm.rank
 ranks = comm.size
