@@ -18,6 +18,7 @@ from impurityModel.ed import create
 from impurityModel.ed import remove
 from impurityModel.ed.average import k_B, thermal_average
 from impurityModel.ed.hermitian_operator import HermitianOperator
+from impurityModel.ed.hermitian_operator_matmul import NewHermitianOperator
 import primme
 
 
@@ -1884,7 +1885,7 @@ def get_hamiltonian_hermitian_operator_from_h_dict(
         diagonal = np.array(diagonal, dtype = float)
         diagonal_indices = np.array(diagonal_indices, dtype = np.int32)
         sort_indices = np.argsort(diagonal_indices)
-        h = HermitianOperator(diagonal[sort_indices], diagonal_indices[sort_indices], h_triangular)
+        h = NewHermitianOperator(diagonal[sort_indices], diagonal_indices[sort_indices], h_triangular)
     elif parallelization_mode == "H_build":
         n = comm.allreduce(n, op = MPI.MAX)
         # Loop over product states from the basis
@@ -1909,7 +1910,7 @@ def get_hamiltonian_hermitian_operator_from_h_dict(
         diagonal = np.array(diagonal, dtype = float)
         diagonal_indices = np.array(diagonal_indices, dtype = np.int32)
         sort_indices = np.argsort(diagonal_indices)
-        h_local = HermitianOperator(diagonal[sort_indices], diagonal_indices[sort_indices], h_triangular)
+        h_local = NewHermitianOperator(diagonal[sort_indices], diagonal_indices[sort_indices], h_triangular)
         if return_h_local:
             h = h_local
         else:
