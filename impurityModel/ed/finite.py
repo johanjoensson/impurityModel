@@ -2224,6 +2224,7 @@ def expand_basis_new(n_spin_orbitals, h_dict, hOp, basis0, restrictions, paralle
                 basis_new_local.update(set(res.keys()).difference(basis_set))
 
             # Add unique elements of basis_new_local into basis_new
+
             basis_new = comm.allreduce(basis_new_local,
                                        op = combine_sets_op)
             # Add basis_new to basis.
@@ -2232,7 +2233,7 @@ def expand_basis_new(n_spin_orbitals, h_dict, hOp, basis0, restrictions, paralle
             # But any ordering is fine, as long it's the same for all MPI ranks.
             basis += sorted(basis_new)
             # Updated total number of product states |PS> in
-            # the basis where know H|PS>.
+            # the basis where we know H|PS>.
             i = n
             # Updated total number of product states needed to consider.
             n = len(basis)
