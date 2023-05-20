@@ -141,15 +141,15 @@ def eigensystem_new(
             es, vecs = np.linalg.eigh(h.todense())
         elif groundDiagMode == "Lanczos":
             try:
-                es, vecs = primme.eigsh(h, k = k + dk, v0 = vecs, which="SA", tol=eigenValueTol, maxiter = 10*h.shape[0])
+                es, vecs = primme.eigsh(h, k = k + dk, v0 = vecs, which="SA", tol=eigenValueTol)
             except primme.PrimmeError as e:
                 print (f"caught Primme error {e.err}")
                 if e.err == -3:
-                    print (f"Eigenvalues did not converge, resetting eigenvector guess and allowing more max iterations")
-                    es, vecs = primme.eigsh(h, k = k + dk, which="SA", tol=eigenValueTol, maxiter = 50*h.shape[0])
+                    print (f"Eigenvalues did not converge, resetting eigenvector guess")
+                    dk = 5
+                    es, vecs = primme.eigsh(h, k = k + dk, which="SA")
                 else:
                     raise e
-            # es, vecs = scipy.sparse.linalg.eigsh(h, k = k + dk, which="SA", tol=eigenValueTol, maxiter = h_local.shape[0], ncv = h_local.shape[0] - 1)
         else:
             print(f"Unknown diagonalization mode: {groundDiagMode}")
 
@@ -157,12 +157,9 @@ def eigensystem_new(
         dk += dk
 
     indices = np.argsort(es)
-    # es = np.array([es[i] for i in indices])
     es = es[indices]
-    # vecs = np.array([vecs[:, i] for i in indices]).T
     vecs = vecs[:, indices]
     if rank == 0 and verbose:
-        # V = np.array([ev / np.linalg.norm(ev) for ev in vecs.T]).T
         err_max = np.max(np.abs(np.conj(vecs.T) @ vecs - np.identity(vecs.shape[1])))
         if err_max > 1e-12:
             print(f"Warning! Obtained eigenvectors are not very orthogonal!\nMaximum overlap {err_max}")
@@ -1861,10 +1858,6 @@ def get_hamiltonian_hermitian_operator_from_h_dict(
         assert return_h_local is False
     # Number of basis states
     n = len(basis)
-    # basis_index = {basis[i]: i for i in range(n)}
-    basis_index = basis
-    # if rank == 0: print('Filling the Hamiltonian...')
-    # progress = 0
     if parallelization_mode == "serial":
         diagonal = []
         diagonal_indices = []
@@ -1875,7 +1868,7 @@ def get_hamiltonian_hermitian_operator_from_h_dict(
             res = h_dict[basis[j]]
             for key, value in res.items():
                 # row = basis_index[key]
-                row = basis_index.index(key)
+                row = basis.index(key)
                 if row == col:
                     diagonal.append(np.real(value))
                     diagonal_indices.append(row)
@@ -1899,10 +1892,10 @@ def get_hamiltonian_hermitian_operator_from_h_dict(
         cols = []
         for ps in set(basis).intersection(h_dict.keys()):
             # col = basis_index[ps]
-            col = basis_index.index(ps)
+            col = basis.index(ps)
             for key, value in h_dict[ps].items():
                 # row = basis_index[key]
-                row = basis_index.index(key)
+                row = basis.index(key)
                 if row == col:
                     diagonal.append(np.real(value))
                     diagonal_indices.append(row)
@@ -1923,7 +1916,7 @@ def get_hamiltonian_hermitian_operator_from_h_dict(
             h = comm.allreduce(h_local)
     else:
         raise Exception("Wrong parallelization mode!")
-    return h, basis_index
+    return h
 
 def get_hamiltonian_matrix_from_h_dict(
     h_dict, basis, parallelization_mode="serial", return_h_local=False, mode="sparse"
@@ -2308,7 +2301,7 @@ def expand_basis_and_build_hermitian_hamiltonian(
         print("time(expand_basis) = {:.3f} seconds.".format(time.perf_counter() - t0))
         t0 = time.perf_counter()
     # Obtain Hamiltonian in matrix format.
-    h, basis_index = get_hamiltonian_hermitian_operator_from_h_dict(h_dict, basis, parallelization_mode, return_h_local)
+    h = get_hamiltonian_hermitian_operator_from_h_dict(h_dict, basis, parallelization_mode, return_h_local)
     if rank == 0 and verbose:
         print("time(get_hamiltonian_matrix_from_h_dict) = {:.3f} seconds.".format(time.perf_counter() - t0))
         t0 = time.perf_counter()
@@ -2319,7 +2312,7 @@ def expand_basis_and_build_hermitian_hamiltonian(
         if rank == 0 and verbose:
             print(
                 "Hamiltonian basis sizes: "
-                f"len(basis_index) = {len(basis_index)}, "
+                f"len(basis_index) = {len(basis)}, "
                 f"np.shape(h)[0] = {np.shape(h)[0]}, "
                 f"len(h_dict) = {len(h_dict)}, "
                 f"len(h_dict_total) = {len_h_dict_total}"
@@ -2328,12 +2321,12 @@ def expand_basis_and_build_hermitian_hamiltonian(
         if rank == 0 and verbose:
             print(
                 "Hamiltonian basis sizes: "
-                f"len(basis_index) = {len(basis_index)}, "
+                f"len(basis_index) = {len(basis)}, "
                 f"np.shape(h)[0] = {np.shape(h)[0]}, "
                 f"len(h_dict) = {len(h_dict)}, "
             )
 
-    return h, basis_index
+    return h, basis
 
 def expand_basis_and_hamiltonian(
     n_spin_orbitals,

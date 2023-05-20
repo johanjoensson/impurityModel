@@ -233,7 +233,6 @@ def calc_Greens_function_with_offdiag(
                         gs_realaxis[i][block_idx] = gs_realaxis_i
     return gs_matsubara, gs_realaxis
 
-
 def get_block_Green(
     n_spin_orbitals,
     hOp,
@@ -264,16 +263,6 @@ def get_block_Green(
     h_local = True
 
     states = set(key for psi in psi_arr for key in psi.keys())
-    # h, basis_index = finite.expand_basis_and_hamiltonian(
-    #     n_spin_orbitals,
-    #     h_mem,
-    #     hOp,
-    #     sorted(tuple(states)),
-    #     restrictions,
-    #     parallelization_mode=parallelization_mode,
-    #     return_h_local=h_local,
-    #     verbose=True,
-    # )
     h, basis_index = finite.expand_basis_and_build_hermitian_hamiltonian(
         n_spin_orbitals,
         h_mem,
@@ -293,7 +282,6 @@ def get_block_Green(
     psi_start = np.zeros((N, n), dtype=complex)
     for i, psi in enumerate(psi_arr):
         for ps, amp in psi.items():
-            # psi_start[basis_index[ps], i] = amp
             psi_start[basis_index.index(ps), i] = amp
 
     rows, columns = psi_start.shape

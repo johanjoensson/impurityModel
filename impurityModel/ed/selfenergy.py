@@ -77,7 +77,7 @@ def find_gs(h_op, N0, delta_occ, bath_states, num_spin_orbitals, rank):
             k = 1,
             verbose=False,
             groundDiagMode="Lanczos",
-            eigenValueTol=0
+            eigenValueTol=1e-8
         )
         energies.append(e_trial[0])
     gs_i = energies.index(min(energies))
@@ -230,7 +230,7 @@ def calc_selfenergy(
             k = 2*(2*l + 1),
             verbose = True,
             groundDiagMode="Lanczos",
-            eigenValueTol=0
+            eigenValueTol= 1e-8
             )
     if rank == 0 and verbosity >= 2:
         finite.printThermalExpValues(sum_bath_states, es, psis)
