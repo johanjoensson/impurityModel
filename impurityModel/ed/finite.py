@@ -141,13 +141,13 @@ def eigensystem_new(
             es, vecs = np.linalg.eigh(h.todense())
         elif groundDiagMode == "Lanczos":
             try:
-                es, vecs = primme.eigsh(h, k = k + dk, v0 = vecs, which="SA", tol=eigenValueTol)
+                es, vecs = primme.eigsh(h, k = k + dk, v0 = vecs, which="SA", tol=eigenValueTol, maxiter = h.shape[0])
             except primme.PrimmeError as e:
                 print (f"caught Primme error {e.err}")
                 if e.err == -3:
-                    print (f"Eigenvalues did not converge, resetting eigenvector guess")
+                    print (f"Eigenvalues did not converge! Do a quick search with lower tolerance")
                     dk = 5
-                    es, vecs = primme.eigsh(h, k = k + dk, which="SA")
+                    es, vecs = primme.eigsh(h, k = k + dk, v0 = vecs, which="SA", tol = 1e-6)
                 else:
                     raise e
         else:
