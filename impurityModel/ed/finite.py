@@ -1861,7 +1861,8 @@ def get_hamiltonian_hermitian_operator_from_h_dict(
         assert return_h_local is False
     # Number of basis states
     n = len(basis)
-    basis_index = {basis[i]: i for i in range(n)}
+    # basis_index = {basis[i]: i for i in range(n)}
+    basis_index = basis
     # if rank == 0: print('Filling the Hamiltonian...')
     # progress = 0
     if parallelization_mode == "serial":
@@ -1873,7 +1874,8 @@ def get_hamiltonian_hermitian_operator_from_h_dict(
         for col in range(n):
             res = h_dict[basis[j]]
             for key, value in res.items():
-                row = basis_index[key]
+                # row = basis_index[key]
+                row = basis_index.index(key)
                 if row == col:
                     diagonal.append(np.real(value))
                     diagonal_indices.append(row)
@@ -1896,9 +1898,11 @@ def get_hamiltonian_hermitian_operator_from_h_dict(
         rows = []
         cols = []
         for ps in set(basis).intersection(h_dict.keys()):
-            col = basis_index[ps]
+            # col = basis_index[ps]
+            col = basis_index.index(ps)
             for key, value in h_dict[ps].items():
-                row = basis_index[key]
+                # row = basis_index[key]
+                row = basis_index.index(key)
                 if row == col:
                     diagonal.append(np.real(value))
                     diagonal_indices.append(row)

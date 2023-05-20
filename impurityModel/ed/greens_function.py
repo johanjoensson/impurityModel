@@ -285,7 +285,6 @@ def get_block_Green(
         verbose=True,
     )
 
-    # N = len(basis_index)
     N = h.shape[0]
     n = len(psi_arr)
 
@@ -294,7 +293,8 @@ def get_block_Green(
     psi_start = np.zeros((N, n), dtype=complex)
     for i, psi in enumerate(psi_arr):
         for ps, amp in psi.items():
-            psi_start[basis_index[ps], i] = amp
+            # psi_start[basis_index[ps], i] = amp
+            psi_start[basis_index.index(ps), i] = amp
 
     rows, columns = psi_start.shape
     if rows == 0 or columns == 0:
