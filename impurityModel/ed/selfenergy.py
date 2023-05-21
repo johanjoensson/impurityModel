@@ -202,7 +202,6 @@ def calc_selfenergy(
         finite.printOp(sum_bath_states, h, "Local Hamiltonian: ")
     h = finite.c2i_op(sum_bath_states, h)
 
-
     num_spin_orbitals = 2*(2*l + 1) + sum(num_val_baths[l] + num_con_baths[l] for l in num_val_baths)
 
     (n0_imp, n0_val, n0_con), basis = find_gs(h, nominal_occ, delta_occ, num_bath_states, num_spin_orbitals, rank = rank)
@@ -230,7 +229,7 @@ def calc_selfenergy(
             k = 2*(2*l + 1),
             verbose = True,
             groundDiagMode="Lanczos",
-            eigenValueTol = np.sqrt(np.finfo(float).eps)
+            eigenValueTol = 1e-12
             )
     if rank == 0 and verbosity >= 2:
         finite.printThermalExpValues(sum_bath_states, es, psis)

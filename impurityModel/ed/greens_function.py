@@ -1,6 +1,7 @@
 import numpy as np
 import scipy as sp
 import time
+from bisect import bisect_left
 
 from impurityModel.ed import spectra
 from impurityModel.ed import finite
@@ -282,7 +283,8 @@ def get_block_Green(
     psi_start = np.zeros((N, n), dtype=complex)
     for i, psi in enumerate(psi_arr):
         for ps, amp in psi.items():
-            psi_start[basis_index.index(ps), i] = amp
+            # psi_start[basis_index.index(ps), i] = amp
+            psi_start[bisect_left(basis_index, ps), i] = amp
 
     rows, columns = psi_start.shape
     if rows == 0 or columns == 0:

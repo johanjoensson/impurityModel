@@ -11,6 +11,7 @@ from collections import OrderedDict
 import scipy.sparse
 from mpi4py import MPI
 import time
+from bisect import bisect_left
 
 # Local imports
 from impurityModel.ed import product_state_representation as psr
@@ -109,7 +110,7 @@ def eigensystem_new(
         h = get_hamiltonian_matrix(n_spin_orbitals, hOp, basis, verbose=verbose)
         nonzero = len(h.nonzero()[0])
     elif groundDiagMode == 'Lanczos':
-        h_local, _ = expand_basis_and_build_hermitian_hamiltonian(
+        h_local, expanded_basis= expand_basis_and_build_hermitian_hamiltonian(
                                                   n_spin_orbitals, 
                                                   {}, 
                                                   hOp, 
@@ -130,8 +131,9 @@ def eigensystem_new(
             print (f"Exception {e} happened!!")
             raise e
     if rank == 0 and verbose:
-        print("<#Hamiltonian elements/column> = {:d}".format(int(nonzero / len(basis))))
+        print("<#Hamiltonian elements/column> = {:d}".format(int(nonzero / len(expanded_basis))))
         print("Diagonalize the Hamiltonian...")
+    max_iter =10* h.shape[0]
     dk = 5
     vecs = None
     es = None
@@ -141,11 +143,12 @@ def eigensystem_new(
             es, vecs = np.linalg.eigh(h.todense())
         elif groundDiagMode == "Lanczos":
             try:
-                es, vecs = primme.eigsh(h, k = k + dk, v0 = vecs, which="SA", tol=eigenValueTol, maxiter = h.shape[0])
+                es, vecs = primme.eigsh(h, k = k + dk, v0 = vecs, which = "SA", tol = eigenValueTol, maxiter = max_iter)
             except primme.PrimmeError as e:
                 print (f"caught Primme error {e.err}")
                 if e.err == -3:
                     print (f"Eigenvalues did not converge! Do a quick search with lower tolerance")
+                    max_iter *= 2
                     dk = 5
                     es, vecs = primme.eigsh(h, k = k + dk, v0 = vecs, which="SA", tol = 1e-6)
                 else:
@@ -167,10 +170,12 @@ def eigensystem_new(
         print(f"Proceed with {len(es[mask])} eigenstates.\n")
 
     psis = [
-        ({basis[i]: vecs[i, vi] for i in range(len(basis)) if slaterWeightMin <= abs(vecs[i, vi]) ** 2})
-        for vi in range(len(es))
+        {expanded_basis[i]: v[i] for i in range(len(expanded_basis)) if abs(v[i])**2 > slaterWeightMin} 
+        for v in vecs.T
+        # ({expanded_basis[i]: vecs[i, vi] for i in range(len(expanded_basis)) if slaterWeightMin <= abs(vecs[i, vi]) ** 2})
+        # for vi in range(len(es))
     ]
-    return es[mask], [psis[i] for i, b in enumerate(mask) if b]
+    return es[:sum(mask)], psis[:sum(mask)]
 
 def eigensystem(
     n_spin_orbitals,
@@ -535,7 +540,7 @@ def get_basis(nBaths, valBaths, dnValBaths, dnConBaths, dnTol, n0imp, verbose=Tr
         # Convert product state representation from a tuple to a object
         # of the class bytes. Then add this product state to the basis.
         basis.append(psr.tuple2bytes(tuple(sorted(itertools.chain.from_iterable(configuration))), n_spin_orbitals))
-    return tuple(basis)
+    return tuple(sorted(basis))
 
 
 def printOp(nBaths, pOp, printstr):
@@ -1865,10 +1870,11 @@ def get_hamiltonian_hermitian_operator_from_h_dict(
         rows = []
         cols = []
         for col in range(n):
-            res = h_dict[basis[j]]
+            res = h_dict[basis[col]]
             for key, value in res.items():
                 # row = basis_index[key]
-                row = basis.index(key)
+                # row = basis.index(key)
+                row = bisect_left(basis,key)
                 if row == col:
                     diagonal.append(np.real(value))
                     diagonal_indices.append(row)
@@ -1892,10 +1898,12 @@ def get_hamiltonian_hermitian_operator_from_h_dict(
         cols = []
         for ps in set(basis).intersection(h_dict.keys()):
             # col = basis_index[ps]
-            col = basis.index(ps)
+            # col = basis.index(ps)
+            col = bisect_left(basis, ps)
             for key, value in h_dict[ps].items():
                 # row = basis_index[key]
-                row = basis.index(key)
+                # row = basis.index(key)
+                row = bisect_left(basis, key)
                 if row == col:
                     diagonal.append(np.real(value))
                     diagonal_indices.append(row)
@@ -2124,7 +2132,8 @@ def expand_basis(n_spin_orbitals, h_dict, hOp, basis0, restrictions, paralleliza
         h_dict.update(h_dict_new_local)
     else:
         raise Exception("Wrong parallelization parameter.")
-    return tuple(basis)
+    return tuple(sorted(basis))
+    # return tuple(basis)
 
 def combine_sets(set_1, set_2, datatype):
     return set_1 | set_2
@@ -2234,7 +2243,7 @@ def expand_basis_new(n_spin_orbitals, h_dict, hOp, basis0, restrictions, paralle
         h_dict.update(h_dict_new_local)
     else:
         raise Exception("Wrong parallelization parameter.")
-    return tuple(basis)
+    return tuple(sorted(basis))
 
 def expand_basis_and_build_hermitian_hamiltonian(
     n_spin_orbitals,
@@ -2296,12 +2305,12 @@ def expand_basis_and_build_hermitian_hamiltonian(
         t0 = time.perf_counter()
     # Obtain tuple containing different product states.
     # Possibly add new product state keys to h_dict.
-    basis = expand_basis_new(n_spin_orbitals, h_dict, hOp, basis0, restrictions, parallelization_mode)
+    expanded_basis = expand_basis_new(n_spin_orbitals, h_dict, hOp, basis0, restrictions, parallelization_mode)
     if rank == 0 and verbose:
         print("time(expand_basis) = {:.3f} seconds.".format(time.perf_counter() - t0))
         t0 = time.perf_counter()
-    # Obtain Hamiltonian in matrix format.
-    h = get_hamiltonian_hermitian_operator_from_h_dict(h_dict, basis, parallelization_mode, return_h_local)
+    # Obtain Hamiltonian in HermitianOperator form.
+    h = get_hamiltonian_hermitian_operator_from_h_dict(h_dict, expanded_basis, parallelization_mode, return_h_local)
     if rank == 0 and verbose:
         print("time(get_hamiltonian_matrix_from_h_dict) = {:.3f} seconds.".format(time.perf_counter() - t0))
         t0 = time.perf_counter()
@@ -2312,7 +2321,7 @@ def expand_basis_and_build_hermitian_hamiltonian(
         if rank == 0 and verbose:
             print(
                 "Hamiltonian basis sizes: "
-                f"len(basis_index) = {len(basis)}, "
+                f"len(basis_index) = {len(expanded_basis)}, "
                 f"np.shape(h)[0] = {np.shape(h)[0]}, "
                 f"len(h_dict) = {len(h_dict)}, "
                 f"len(h_dict_total) = {len_h_dict_total}"
@@ -2321,12 +2330,12 @@ def expand_basis_and_build_hermitian_hamiltonian(
         if rank == 0 and verbose:
             print(
                 "Hamiltonian basis sizes: "
-                f"len(basis_index) = {len(basis)}, "
+                f"len(basis_index) = {len(expanded_basis)}, "
                 f"np.shape(h)[0] = {np.shape(h)[0]}, "
                 f"len(h_dict) = {len(h_dict)}, "
             )
 
-    return h, basis
+    return h, expanded_basis
 
 def expand_basis_and_hamiltonian(
     n_spin_orbitals,
