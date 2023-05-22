@@ -284,7 +284,8 @@ def get_block_Green(
     for i, psi in enumerate(psi_arr):
         for ps, amp in psi.items():
             # psi_start[basis_index.index(ps), i] = amp
-            psi_start[bisect_left(basis_index, ps), i] = amp
+            # psi_start[bisect_left(basis_index, ps), i] = amp
+            psi_start[np.searchsorted(basis_index, ps), i] = amp
 
     rows, columns = psi_start.shape
     if rows == 0 or columns == 0:

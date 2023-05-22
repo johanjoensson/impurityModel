@@ -541,6 +541,7 @@ def get_basis(nBaths, valBaths, dnValBaths, dnConBaths, dnTol, n0imp, verbose=Tr
         # of the class bytes. Then add this product state to the basis.
         basis.append(psr.tuple2bytes(tuple(sorted(itertools.chain.from_iterable(configuration))), n_spin_orbitals))
     return tuple(sorted(basis))
+    # return np.array(sorted(basis))
 
 
 def printOp(nBaths, pOp, printstr):
@@ -1874,7 +1875,8 @@ def get_hamiltonian_hermitian_operator_from_h_dict(
             for key, value in res.items():
                 # row = basis_index[key]
                 # row = basis.index(key)
-                row = bisect_left(basis,key)
+                # row = bisect_left(basis,key)
+                row = np.searchsorted(basis,key)
                 if row == col:
                     diagonal.append(np.real(value))
                     diagonal_indices.append(row)
@@ -1899,11 +1901,13 @@ def get_hamiltonian_hermitian_operator_from_h_dict(
         for ps in set(basis).intersection(h_dict.keys()):
             # col = basis_index[ps]
             # col = basis.index(ps)
-            col = bisect_left(basis, ps)
+            # col = bisect_left(basis, ps)
+            col = np.searchsorted(basis, ps)
             for key, value in h_dict[ps].items():
                 # row = basis_index[key]
                 # row = basis.index(key)
-                row = bisect_left(basis, key)
+                # row = bisect_left(basis, key)
+                row = np.searchsorted(basis, key)
                 if row == col:
                     diagonal.append(np.real(value))
                     diagonal_indices.append(row)
@@ -2243,7 +2247,8 @@ def expand_basis_new(n_spin_orbitals, h_dict, hOp, basis0, restrictions, paralle
         h_dict.update(h_dict_new_local)
     else:
         raise Exception("Wrong parallelization parameter.")
-    return tuple(sorted(basis))
+    # return tuple(sorted(basis))
+    return np.array(sorted(basis))
 
 def expand_basis_and_build_hermitian_hamiltonian(
     n_spin_orbitals,
