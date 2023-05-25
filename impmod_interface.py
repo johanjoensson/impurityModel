@@ -419,7 +419,7 @@ def get_ed_h0(
     print(np.array_str(eb, max_line_width=1000, precision=4, suppress_small=False))
 
     n_orb = v.shape[1]
-    h = np.zeros((n_orb + len(eb), n_orb + len(eb)), dtype=np.complex)
+    h = np.zeros((n_orb + len(eb), n_orb + len(eb)), dtype= complex)
     h[:n_orb, :n_orb] = np.conj(rot_spherical.T) @ h_dft @ rot_spherical
     h[:n_orb, n_orb:] = np.conj(v.T)
     h[n_orb:, :n_orb] = v
