@@ -69,12 +69,9 @@ def get_block_Lanczos_matrices(
                 q[0] = q[1]
                 t_qr_fact = time.perf_counter()
                 q[1], betas[i] = sp.linalg.qr(wp, mode="economic", overwrite_a = True, check_finite = False)
-                # v, r = sp.linalg.qr(wp, mode="full", overwrite_a = True, check_finite = False)
-                # q[1], betas[i] = v[:,:n], r[:n, :]
                 t_qr += time.perf_counter() - t_qr_fact
                 # try:
-                if i % int(np.ceil(krylovSize/n))//10 == 0:
-                # if True:
+                if i % int(np.ceil(krylovSize/n))//10 == 0 or partial_reort:
                     t_converged = time.perf_counter()
                     # done = converged(alphas, betas)
                     delta = converged(alphas, betas)

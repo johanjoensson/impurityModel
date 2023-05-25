@@ -14,6 +14,7 @@ from impurityModel.ed import spectra
 from impurityModel.ed import finite
 from impurityModel.ed.finite import daggerOp, applyOp, inner, add, norm2
 from impurityModel.ed.average import k_B, thermal_average_scale_indep
+from impurityModel.ed.manybody_basis import Basis
 
 from impurityModel.ed.greens_function import get_Greens_function, save_Greens_function
 
@@ -38,33 +39,63 @@ def find_gs(h_op, N0, delta_occ, bath_states, num_spin_orbitals, rank):
     # set up for N0 +- 1, 0
     dN = [-1, 0, 1]
     trial_basis = [
-            finite.get_basis(
-                sum_bath_states,
-                num_val_baths,
-                delta_val_occ,
-                delta_con_occ,
-                delta_imp_occ,
-                {l: N0[0][l] + dN[0] for l in N0[0]},
-                verbose = False
+            Basis(
+                valence_baths        = num_val_baths,
+                conduction_baths     = num_cond_baths,
+                delta_valence_occ    = delta_val_occ,
+                delta_conduction_occ = delta_con_occ,
+                delta_impurity_occ   = delta_imp_occ,
+                nominal_impurity_occ = {l: N0[0][l] + dN[0] for l in N0[0]},
+                verbose = rank == 0,
+                comm = MPI.COMM_WORLD
                 ),
-            finite.get_basis(
-                sum_bath_states,
-                num_val_baths,
-                delta_val_occ,
-                delta_con_occ,
-                delta_imp_occ,
-                {l: N0[0][l] + dN[1] for l in N0[0]},
-                verbose = False
+            Basis(
+                valence_baths        = num_val_baths,  
+                conduction_baths     = num_cond_baths,
+                delta_valence_occ    = delta_val_occ,
+                delta_conduction_occ = delta_con_occ,
+                delta_impurity_occ   = delta_imp_occ,
+                nominal_impurity_occ = {l: N0[0][l] + dN[1] for l in N0[0]},
+                verbose = rank == 0,
+                comm = MPI.COMM_WORLD
                 ),
-            finite.get_basis(
-                sum_bath_states,
-                num_val_baths,
-                delta_val_occ,
-                delta_con_occ,
-                delta_imp_occ,
-                {l: N0[0][l] + dN[2] for l in N0[0]},
-                verbose = False
+            Basis(
+                valence_baths        = num_val_baths,
+                conduction_baths     = num_cond_baths,
+                delta_valence_occ    = delta_val_occ,
+                delta_conduction_occ = delta_con_occ,
+                delta_impurity_occ   = delta_imp_occ,
+                nominal_impurity_occ = {l: N0[0][l] + dN[2] for l in N0[0]},
+                verbose = rank == 0,
+                comm = MPI.COMM_WORLD
                 )
+            # finite.get_basis(
+            #     sum_bath_states,
+            #     num_val_baths,
+            #     delta_val_occ,
+            #     delta_con_occ,
+            #     delta_imp_occ,
+            #     {l: N0[0][l] + dN[0] for l in N0[0]},
+            #     verbose = False
+            #     ),
+            # finite.get_basis(
+            #     sum_bath_states,
+            #     num_val_baths,
+            #     delta_val_occ,
+            #     delta_con_occ,
+            #     delta_imp_occ,
+            #     {l: N0[0][l] + dN[1] for l in N0[0]},
+            #     verbose = False
+            #     ),
+            # finite.get_basis(
+            #     sum_bath_states,
+            #     num_val_baths,
+            #     delta_val_occ,
+            #     delta_con_occ,
+            #     delta_imp_occ,
+            #     {l: N0[0][l] + dN[2] for l in N0[0]},
+            #     verbose = False
+            #     )
             ]
 
     energies = []
@@ -77,7 +108,7 @@ def find_gs(h_op, N0, delta_occ, bath_states, num_spin_orbitals, rank):
             k = 1,
             verbose = False,
             groundDiagMode = "Lanczos",
-            eigenValueTol = np.sqrt(np.finfo(float).eps)
+            eigenValueTol = 0
         )
         energies.append(e_trial[0])
     gs_i = energies.index(min(energies))
@@ -229,7 +260,7 @@ def calc_selfenergy(
             k = 2*(2*l + 1),
             verbose = True,
             groundDiagMode="Lanczos",
-            eigenValueTol = 1e-12
+            eigenValueTol = 0
             )
     if rank == 0 and verbosity >= 2:
         finite.printThermalExpValues(sum_bath_states, es, psis)

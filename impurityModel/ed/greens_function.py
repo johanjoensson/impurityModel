@@ -6,6 +6,7 @@ from bisect import bisect_left
 from impurityModel.ed import spectra
 from impurityModel.ed import finite
 from impurityModel.ed.lanczos import get_block_Lanczos_matrices
+from impurityModel.ed.manybody_basis import Basis
 
 from mpi4py import MPI
 
@@ -263,44 +264,45 @@ def get_block_Green(
         h_mem = {}
     h_local = True
 
-    states = set(key for psi in psi_arr for key in psi.keys())
-    h, basis_index = finite.expand_basis_and_build_hermitian_hamiltonian(
+    if verbose and rank == 0:
+        t0 = time.perf_counter()
+    h, basis = finite.expand_basis_and_build_hermitian_hamiltonian_new(
         n_spin_orbitals,
         h_mem,
         hOp,
-        sorted(tuple(states)),
+        Basis(initial_basis = sorted(set(key for psi in psi_arr for key in psi.keys())),
+              comm = comm,
+              verbose = rank == 0 and verbose),
         restrictions,
         parallelization_mode=parallelization_mode,
         return_h_local=h_local,
-        verbose=True,
+        verbose= rank == 0 and verbose,
     )
+    if verbose and rank == 0:
+        print (f"time(expand_basis_and_build_hermitian_hamiltonian_new) = {time.perf_counter() - t0}")
 
     N = h.shape[0]
     n = len(psi_arr)
 
     import numpy as np
 
+    if verbose and rank == 0:
+        t0 = time.perf_counter()
     psi_start = np.zeros((N, n), dtype=complex)
     for i, psi in enumerate(psi_arr):
         for ps, amp in psi.items():
-            # psi_start[basis_index.index(ps), i] = amp
+            psi_start[basis.index(ps), i] = amp
             # psi_start[bisect_left(basis_index, ps), i] = amp
-            psi_start[np.searchsorted(basis_index, ps), i] = amp
+            # psi_start[np.searchsorted(basis_index, ps), i] = amp
+    if verbose and rank == 0:
+        print (f"time(set up psi_start) = {time.perf_counter() - t0}")
 
     rows, columns = psi_start.shape
     if rows == 0 or columns == 0:
         return np.zeros((n, n, len(iws)), dtype = complex), np.zeros((n, n, len(ws)), dtype = complex)
     # Do a QR decomposition of the starting block.
     # Later on, use r to restore the block corresponding to
-    # psi_start
-    # if rank == 0:
-    #     print (f"shape of psi_start = {psi_start.shape}")
     psi0, r = sp.linalg.qr(psi_start, mode="economic", overwrite_a = True, check_finite = False)
-    # v, r = sp.linalg.qr(psi_start, mode="full", overwrite_a = True)
-    # psi0, r = psi0[:,:n], r[:n, :]
-    # if rank == 0:
-    #     print (f"shape of r = {r.shape}")
-    #     print (f"number of columns in psi0 = {psi0.shape[1]}")
 
     # Find which columns (if any) are 0 in psi0
     column_mask = np.any(np.abs(psi0) > 1e-12, axis = 0)

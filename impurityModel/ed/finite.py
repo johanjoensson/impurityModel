@@ -61,11 +61,12 @@ def get_job_tasks(rank, ranks, tasks_tot):
         tasks.append(tasks_tot[n_tot - rest + rank])
     return tuple(tasks)
 
+m_it = 0
 def mpi_matmul(h_local, m):
     res_local = h_local @ m
-    res = np.zeros_like(res_local)
+    res = np.zeros(res_local.shape, dtype = m.dtype)
     comm.Allreduce(res_local, res, op = MPI.SUM)
-    return res
+    return res.reshape(m.shape)
 
 def eigensystem_new(
     n_spin_orbitals,
@@ -110,7 +111,8 @@ def eigensystem_new(
         h = get_hamiltonian_matrix(n_spin_orbitals, hOp, basis, verbose=verbose)
         nonzero = len(h.nonzero()[0])
     elif groundDiagMode == 'Lanczos':
-        h_local, expanded_basis= expand_basis_and_build_hermitian_hamiltonian(
+        # h_local, expanded_basis= expand_basis_and_build_hermitian_hamiltonian(
+        h_local, expanded_basis= expand_basis_and_build_hermitian_hamiltonian_new(
                                                   n_spin_orbitals, 
                                                   {}, 
                                                   hOp, 
@@ -133,31 +135,22 @@ def eigensystem_new(
     if rank == 0 and verbose:
         print("<#Hamiltonian elements/column> = {:d}".format(int(nonzero / len(expanded_basis))))
         print("Diagonalize the Hamiltonian...")
-    max_iter =10* h.shape[0]
-    dk = 5
-    vecs = None
-    es = None
+    dk = 0
+    vecs = None # np.ones((h.shape[0], 1), dtype = complex)
+    es = []
     mask = [False]
-    while vecs is None or len(es) - sum(mask) < k:
+    it = 0
+    while len(es) - sum(mask) < k:
         if groundDiagMode == "full":
             es, vecs = np.linalg.eigh(h.todense())
         elif groundDiagMode == "Lanczos":
-            try:
-                es, vecs = primme.eigsh(h, k = k + dk, v0 = vecs, which = "SA", tol = eigenValueTol, maxiter = max_iter)
-            except primme.PrimmeError as e:
-                print (f"caught Primme error {e.err}")
-                if e.err == -3:
-                    print (f"Eigenvalues did not converge! Do a quick search with lower tolerance")
-                    max_iter *= 2
-                    dk = 5
-                    es, vecs = primme.eigsh(h, k = k + dk, v0 = vecs, which="SA", tol = 1e-6)
-                else:
-                    raise e
+            es, vecs = primme.eigsh(h, k = k + dk, which = "SA", tol = eigenValueTol )
         else:
             print(f"Unknown diagonalization mode: {groundDiagMode}")
 
         mask = es - es[0] <= e_max
-        dk += dk
+        dk += k
+        it += 1
 
     indices = np.argsort(es)
     es = es[indices]
@@ -540,8 +533,8 @@ def get_basis(nBaths, valBaths, dnValBaths, dnConBaths, dnTol, n0imp, verbose=Tr
         # Convert product state representation from a tuple to a object
         # of the class bytes. Then add this product state to the basis.
         basis.append(psr.tuple2bytes(tuple(sorted(itertools.chain.from_iterable(configuration))), n_spin_orbitals))
-    return tuple(sorted(basis))
-    # return np.array(sorted(basis))
+    # return tuple(sorted(basis))
+    return list(sorted(basis))
 
 
 def printOp(nBaths, pOp, printstr):
@@ -1899,14 +1892,8 @@ def get_hamiltonian_hermitian_operator_from_h_dict(
         rows = []
         cols = []
         for ps in set(basis).intersection(h_dict.keys()):
-            # col = basis_index[ps]
-            # col = basis.index(ps)
-            # col = bisect_left(basis, ps)
             col = np.searchsorted(basis, ps)
             for key, value in h_dict[ps].items():
-                # row = basis_index[key]
-                # row = basis.index(key)
-                # row = bisect_left(basis, key)
                 row = np.searchsorted(basis, key)
                 if row == col:
                     diagonal.append(np.real(value))
@@ -1928,6 +1915,101 @@ def get_hamiltonian_hermitian_operator_from_h_dict(
             h = comm.allreduce(h_local)
     else:
         raise Exception("Wrong parallelization mode!")
+    return h
+
+def get_hamiltonian_hermitian_operator_from_h_dict_new(
+    h_dict, basis, return_h_local=False, comm = None
+):
+    """
+    Return Hamiltonian expressed in the provided basis of product states
+    in matrix format.
+
+    Also return dictionary with product states in basis as keys,
+    and basis indices as values.
+
+    Parameters
+    ----------
+    h_dict : dict
+        Elements of the form `|PS> : {hOp|PS>}`,
+        where `|PS>` is a product state,
+        and `{hOp|PS>}` is a dictionary containing the result of
+        the (Hamiltonian) operator hOp acting on the product state `|PS>`.
+        The dictionary `{hOp|PS>}` has product states as keys.
+        h_dict may contain some product states (as keys) that are not
+        part of the active basis.
+        Also, if parallelization_mode == 'H_build', each product state in
+        the active basis exists as a key in h_dict for only one MPI rank.
+    basis : tuple
+        All product states included in the basis.
+    parallelization_mode : str
+        Parallelization mode. Either: "serial" or "H_build".
+    return_h_local : boolean
+        If parallelization_mode is not serial, whether to return the
+        MPI local Hamiltonian or the full Hamiltonian.
+
+    """
+    if comm is None:
+        assert not return_h_local
+    if return_h_local:
+        assert comm is not None
+    # Number of basis states
+    n = basis.size
+
+    local_column_states = [state for state in h_dict.keys() if state in basis.local_basis]
+
+    local_column_indices = [basis.local_indices[i] for i in np.searchsorted(basis.local_basis, local_column_states, side = 'left')]
+    if basis.is_distributed:
+        remote_column_states = [state for state in h_dict.keys() if state not in basis.local_basis]
+        remote_column_indices = basis.index(remote_column_states)
+    else:
+        remote_column_states = []
+    column_states = local_column_states + remote_column_states
+    column_indices = local_column_indices + remote_column_indices
+    local_row_states_for_each_column = [[s for s in h_dict[state].keys() if s in basis.local_basis] for state in column_states]
+    local_row_indices_for_each_column = [[basis.local_indices[i] for i in np.searchsorted(basis.local_basis, row_states, side = 'left')] for row_states in  local_row_states_for_each_column]
+    if basis.is_distributed:
+        remote_row_states_for_each_column = [[s for s in h_dict[state].keys() if s not in basis.local_basis] for state in column_states] 
+        remote_row_indices_for_each_column = []
+        len_column_states = comm.allreduce(len(column_states), op = MPI.MAX)
+        for col in range(len_column_states):
+            if col < len(column_states):
+                remote_row_indices_for_each_column.append(basis.index(remote_row_states_for_each_column[col]))
+            else:
+                basis.index([])
+    row_states_for_each_column = [ local + remote for local, remote in zip(local_row_states_for_each_column, remote_row_states_for_each_column)]
+    row_indices_for_each_column = [ local + remote for local, remote in zip(local_row_indices_for_each_column, remote_row_indices_for_each_column)]
+
+    cols = []
+    rows = []
+    data = []
+    diagonal_indices = []
+    diagonal = []
+    for i in range(len(column_indices)):
+        col = column_indices[i]
+        col_state = column_states[i]
+        for j in range(len(row_states_for_each_column[i])):
+            row = row_indices_for_each_column[i][j]
+            row_state = row_states_for_each_column[i][j]
+            val = h_dict[col_state][row_state]
+            if row == col:
+                diagonal.append(np.real(val))
+                diagonal_indices.append(row)
+            elif col < row:
+                cols.append(col)
+                rows.append(row)
+                data.append(val)
+
+    h_triangular = scipy.sparse.csr_matrix((data, (rows, cols)), shape=(n, n), dtype = complex)
+    diagonal = np.array(diagonal, dtype = float)
+    diagonal_indices = np.array(diagonal_indices, dtype = np.int32)
+    sort_indices = np.argsort(diagonal_indices)
+    h_local = NewHermitianOperator(diagonal[sort_indices], diagonal_indices[sort_indices], h_triangular)
+    if return_h_local:
+        h = h_local
+    else:
+        # Different ranks have information about different basis states.
+        # Broadcast and append local sparse Hamiltonians.
+        h = comm.allreduce(h_local)
     return h
 
 def get_hamiltonian_matrix_from_h_dict(
@@ -2136,8 +2218,8 @@ def expand_basis(n_spin_orbitals, h_dict, hOp, basis0, restrictions, paralleliza
         h_dict.update(h_dict_new_local)
     else:
         raise Exception("Wrong parallelization parameter.")
-    return tuple(sorted(basis))
-    # return tuple(basis)
+    # return tuple(sorted(basis))
+    return list(sorted(basis))
 
 def combine_sets(set_1, set_2, datatype):
     return set_1 | set_2
@@ -2248,7 +2330,8 @@ def expand_basis_new(n_spin_orbitals, h_dict, hOp, basis0, restrictions, paralle
     else:
         raise Exception("Wrong parallelization parameter.")
     # return tuple(sorted(basis))
-    return np.array(sorted(basis))
+    return list(sorted(basis))
+    # return np.array(sorted(basis))
 
 def expand_basis_and_build_hermitian_hamiltonian(
     n_spin_orbitals,
@@ -2310,7 +2393,11 @@ def expand_basis_and_build_hermitian_hamiltonian(
         t0 = time.perf_counter()
     # Obtain tuple containing different product states.
     # Possibly add new product state keys to h_dict.
-    expanded_basis = expand_basis_new(n_spin_orbitals, h_dict, hOp, basis0, restrictions, parallelization_mode)
+    basis = np.array([state for state in basis0])
+    # expanded_basis = expand_basis_new(n_spin_orbitals, h_dict, hOp, [state for state in basis], restrictions, parallelization_mode)
+    expanded_basis = expand_basis(n_spin_orbitals, h_dict, hOp, basis, restrictions, parallelization_mode)
+    # basis0.expand(n_spin_orbitals, hOp, h_dict, restrictions)
+    # expanded_basis = np.array([state for state in basis0])
     if rank == 0 and verbose:
         print("time(expand_basis) = {:.3f} seconds.".format(time.perf_counter() - t0))
         t0 = time.perf_counter()
@@ -2341,6 +2428,97 @@ def expand_basis_and_build_hermitian_hamiltonian(
             )
 
     return h, expanded_basis
+
+def expand_basis_and_build_hermitian_hamiltonian_new(
+    n_spin_orbitals,
+    h_dict,
+    hOp,
+    basis,
+    restrictions,
+    parallelization_mode="serial",
+    return_h_local=False,
+    verbose=True,
+):
+    """
+    Return Hamiltonian in matrix format.
+
+    Also return dictionary with product states in basis as keys,
+    and basis indices as values.
+
+    Also possibly to add new product state keys to h_dict.
+
+    Parameters
+    ----------
+    n_spin_orbitals : int
+        Total number of spin-orbitals in the system.
+    h_dict : dict
+        Elements of the form `|PS> : {hOp|PS>}`,
+        where `|PS>` is a product state,
+        and {hOp|PS>} is a dictionary containing the result of
+        the (Hamiltonian) operator hOp acting on the product state `|PS>`.
+        The dictionary `{hOp|PS>}` has product states as keys.
+        New elements might be added to this variable.
+        h_dict may contain some product states (as keys) that will not
+        be part of the final active basis.
+        Also, if parallelization_mode == 'H_build', each product state in
+        the active basis exists as a key in h_dict for only one MPI rank.
+    hOp : dict
+        The Hamiltonian. With elements of the form process : h_value
+    basis0 : tuple
+        List of product states.
+        These product states are used to generate more basis states.
+    restrictions : dict
+        Restriction the occupation of generated product states.
+    parallelization_mode : str
+        Parallelization mode. Either: "serial" or "H_build".
+    return_h_local : boolean
+        If parallelization_mode is not serial, whether to return the
+        MPI local Hamiltonian or the full Hamiltonian.
+
+    Returns
+    -------
+    h : scipy sparse csr_matrix
+        The Hamiltonian acting on the relevant product states.
+    basis_index : dict
+        Elements of the form `|PS> : i`,
+        where `|PS>` is a product state and i an integer.
+
+    """
+    # Measure time to expand basis
+    if rank == 0:
+        t0 = time.perf_counter()
+    h_dict = basis.expand(n_spin_orbitals, hOp, h_dict, restrictions)
+
+    if rank == 0 and verbose:
+        print("time(expand_basis) = {:.3f} seconds.".format(time.perf_counter() - t0))
+        t0 = time.perf_counter()
+    # Obtain Hamiltonian in HermitianOperator form.
+    h = get_hamiltonian_hermitian_operator_from_h_dict_new(h_dict, basis, return_h_local, comm = comm)
+    if rank == 0 and verbose:
+        print("time(get_hamiltonian_matrix_from_h_dict) = {:.3f} seconds.".format(time.perf_counter() - t0))
+        t0 = time.perf_counter()
+
+    if parallelization_mode == "H_build":
+        # Total Hamiltonian size. Only used for printing it.
+        len_h_dict_total = comm.reduce(len(h_dict))
+        if rank == 0 and verbose:
+            print(
+                "Hamiltonian basis sizes: "
+                f"len(basis_index) = {len(basis)}, "
+                f"np.shape(h)[0] = {np.shape(h)[0]}, "
+                f"len(h_dict) = {len(h_dict)}, "
+                f"len(h_dict_total) = {len_h_dict_total}"
+            )
+    elif parallelization_mode == "serial":
+        if rank == 0 and verbose:
+            print(
+                "Hamiltonian basis sizes: "
+                f"len(basis_index) = {len(basis)}, "
+                f"np.shape(h)[0] = {np.shape(h)[0]}, "
+                f"len(h_dict) = {len(h_dict)}, "
+            )
+
+    return h, basis
 
 def expand_basis_and_hamiltonian(
     n_spin_orbitals,
