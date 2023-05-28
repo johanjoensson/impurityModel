@@ -262,10 +262,11 @@ def run_impmod_ed(
         )
         cluster.sig_static[:, :] = u @ cluster.sig_static @ np.conj(u.T)
     except Exception as e:
-        if rank == 0:
-            print(f"Exception {repr(e)} caught!")
-            print (traceback.format_exc())
-            print (f"Adding positive infinity to the imaginaty part of the selfenergy at the last matsubara frequency.", flush = True)
+        print(f"!"*100)
+        print(f"Exception {repr(e)} caught on rank {rank}!")
+        print (traceback.format_exc())
+        print (f"Adding positive infinity to the imaginaty part of the selfenergy at the last matsubara frequency.", flush = True)
+        print(f"!"*100)
         cluster.sig[:,:, -1] += 1j*np.inf
     else:
         if rank == 0:
