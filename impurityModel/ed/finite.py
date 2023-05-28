@@ -20,7 +20,11 @@ from impurityModel.ed import remove
 from impurityModel.ed.average import k_B, thermal_average
 from impurityModel.ed.hermitian_operator import HermitianOperator
 from impurityModel.ed.hermitian_operator_matmul import NewHermitianOperator
-import primme
+
+try:
+    from primme import eigsh
+except:
+    from scipy.sparse.linalg import eigsh
 
 
 # MPI variables
@@ -144,7 +148,7 @@ def eigensystem_new(
         if groundDiagMode == "full":
             es, vecs = np.linalg.eigh(h.todense())
         elif groundDiagMode == "Lanczos":
-            es, vecs = primme.eigsh(h, k = k + dk, which = "SA", tol = eigenValueTol )
+            es, vecs = eigsh(h, k = k + dk, which = "SA", tol = eigenValueTol )
         else:
             print(f"Unknown diagonalization mode: {groundDiagMode}")
 
@@ -1955,29 +1959,26 @@ def get_hamiltonian_hermitian_operator_from_h_dict_new(
     # Number of basis states
     n = basis.size
 
-    local_column_states = [state for state in h_dict.keys() if state in basis.local_basis]
+    column_states = [state for state in h_dict.keys() if state in basis.local_basis]
+    column_indices = basis.index(column_states)
 
-    local_column_indices = [basis.local_indices[i] for i in np.searchsorted(basis.local_basis, local_column_states, side = 'left')]
-    if basis.is_distributed:
-        remote_column_states = [state for state in h_dict.keys() if state not in basis.local_basis]
-        remote_column_indices = basis.index(remote_column_states)
-    else:
-        remote_column_states = []
-    column_states = local_column_states + remote_column_states
-    column_indices = local_column_indices + remote_column_indices
-    local_row_states_for_each_column = [[s for s in h_dict[state].keys() if s in basis.local_basis] for state in column_states]
-    local_row_indices_for_each_column = [[basis.local_indices[i] for i in np.searchsorted(basis.local_basis, row_states, side = 'left')] for row_states in  local_row_states_for_each_column]
-    if basis.is_distributed:
-        remote_row_states_for_each_column = [[s for s in h_dict[state].keys() if s not in basis.local_basis] for state in column_states] 
-        remote_row_indices_for_each_column = []
-        len_column_states = comm.allreduce(len(column_states), op = MPI.MAX)
-        for col in range(len_column_states):
-            if col < len(column_states):
-                remote_row_indices_for_each_column.append(basis.index(remote_row_states_for_each_column[col]))
-            else:
-                basis.index([])
-    row_states_for_each_column = [ local + remote for local, remote in zip(local_row_states_for_each_column, remote_row_states_for_each_column)]
-    row_indices_for_each_column = [ local + remote for local, remote in zip(local_row_indices_for_each_column, remote_row_indices_for_each_column)]
+    row_states_for_each_column = [ [state for state in h_dict[column_state] ] for column_state in column_states]
+    max_len_row_states = comm.allreduce(len(column_states), op = MPI.MAX)
+    row_indices_for_each_column = []
+
+    flat_row_states_for_each_column = [state for row_states in row_states_for_each_column for state in row_states]
+    flat_row_indices_for_each_column = basis.index(flat_row_states_for_each_column)
+    row_indices_for_each_columnn = []
+    start = 0
+    for row_states in row_states_for_each_column:
+        stop = start + len(row_states)
+        row_indices_for_each_column.append(flat_row_indices_for_each_column[start:stop])
+        start = stop
+    # for col_index in range(max_len_row_states):
+    #     if col_index < len(column_states):
+    #         row_indices_for_each_column.append(basis.index(row_states_for_each_column[col_index]))
+    #     else:
+    #         basis.index([])
 
     cols = []
     rows = []
@@ -1986,14 +1987,14 @@ def get_hamiltonian_hermitian_operator_from_h_dict_new(
     diagonal = []
     for i in range(len(column_indices)):
         col = column_indices[i]
-        col_state = column_states[i]
+        column_state = column_states[i]
         for j in range(len(row_states_for_each_column[i])):
             row = row_indices_for_each_column[i][j]
             row_state = row_states_for_each_column[i][j]
-            val = h_dict[col_state][row_state]
-            if row == col:
+            val = h_dict[column_state][row_state]
+            if col == row:
+                diagonal_indices.append(col)
                 diagonal.append(np.real(val))
-                diagonal_indices.append(row)
             elif col < row:
                 cols.append(col)
                 rows.append(row)
@@ -2009,7 +2010,7 @@ def get_hamiltonian_hermitian_operator_from_h_dict_new(
     else:
         # Different ranks have information about different basis states.
         # Broadcast and append local sparse Hamiltonians.
-        h = comm.allreduce(h_local)
+        h = comm.allreduce(h_local, op = MPI.SUM)
     return h
 
 def get_hamiltonian_matrix_from_h_dict(
@@ -2487,7 +2488,7 @@ def expand_basis_and_build_hermitian_hamiltonian_new(
     # Measure time to expand basis
     if rank == 0:
         t0 = time.perf_counter()
-    h_dict = basis.expand(n_spin_orbitals, hOp, h_dict, restrictions)
+    h_dict = basis.expand(hOp, h_dict)
 
     if rank == 0 and verbose:
         print("time(expand_basis) = {:.3f} seconds.".format(time.perf_counter() - t0))
