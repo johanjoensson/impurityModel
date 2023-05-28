@@ -32,7 +32,7 @@ def matrix_print(matrix, label: str = None):
         print(label)
     print(ms)
 
-def find_gs(h_op, N0, delta_occ, bath_states, num_spin_orbitals, rank):
+def find_gs(h_op, N0, delta_occ, bath_states, num_spin_orbitals, rank, verbose = True):
     delta_imp_occ, delta_val_occ, delta_con_occ = delta_occ
     num_val_baths, num_cond_baths = bath_states
     sum_bath_states = {l: num_val_baths[l] + num_cond_baths[l] for l in num_val_baths}
@@ -69,33 +69,6 @@ def find_gs(h_op, N0, delta_occ, bath_states, num_spin_orbitals, rank):
                 verbose = rank == 0,
                 comm = MPI.COMM_WORLD
                 )
-            # finite.get_basis(
-            #     sum_bath_states,
-            #     num_val_baths,
-            #     delta_val_occ,
-            #     delta_con_occ,
-            #     delta_imp_occ,
-            #     {l: N0[0][l] + dN[0] for l in N0[0]},
-            #     verbose = False
-            #     ),
-            # finite.get_basis(
-            #     sum_bath_states,
-            #     num_val_baths,
-            #     delta_val_occ,
-            #     delta_con_occ,
-            #     delta_imp_occ,
-            #     {l: N0[0][l] + dN[1] for l in N0[0]},
-            #     verbose = False
-            #     ),
-            # finite.get_basis(
-            #     sum_bath_states,
-            #     num_val_baths,
-            #     delta_val_occ,
-            #     delta_con_occ,
-            #     delta_imp_occ,
-            #     {l: N0[0][l] + dN[2] for l in N0[0]},
-            #     verbose = False
-            #     )
             ]
 
     energies = []
@@ -106,7 +79,7 @@ def find_gs(h_op, N0, delta_occ, bath_states, num_spin_orbitals, rank):
             basis,
             e_max = 0,
             k = 1,
-            verbose = False,
+            verbose = rank == 0 and verbose,
             groundDiagMode = "Lanczos",
             eigenValueTol = 0
         )
@@ -232,10 +205,13 @@ def calc_selfenergy(
     if rank == 0 and verbosity >= 2:
         finite.printOp(sum_bath_states, h, "Local Hamiltonian: ")
     h = finite.c2i_op(sum_bath_states, h)
+    if rank == 0:
+        with open(f"{cluster_label}_hamiltonian.pickle", 'wb') as f:
+            pickle.dump(h, f)
 
     num_spin_orbitals = 2*(2*l + 1) + sum(num_val_baths[l] + num_con_baths[l] for l in num_val_baths)
 
-    (n0_imp, n0_val, n0_con), basis = find_gs(h, nominal_occ, delta_occ, num_bath_states, num_spin_orbitals, rank = rank)
+    (n0_imp, n0_val, n0_con), basis = find_gs(h, nominal_occ, delta_occ, num_bath_states, num_spin_orbitals, rank = rank, verbose = verbosity >= 2 and rank == 0)
     delta_imp_occ, delta_val_occ, delta_con_occ = delta_occ
 
     restrictions = get_restrictions(l, n0_imp, sum_bath_states, num_val_baths, delta_imp_occ, delta_val_occ, delta_con_occ)
