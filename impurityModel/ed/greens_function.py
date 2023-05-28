@@ -271,6 +271,8 @@ def get_block_Green(
         h_mem,
         hOp,
         Basis(initial_basis = sorted(set(key for psi in psi_arr for key in psi.keys())),
+              restrictions = restrictions,
+              num_spin_orbitals = n_spin_orbitals,
               comm = comm,
               verbose = rank == 0 and verbose),
         restrictions,
