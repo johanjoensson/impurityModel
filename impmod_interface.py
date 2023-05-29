@@ -175,23 +175,22 @@ def run_impmod_ed(
         print (f"Partial reorthogonalization? {partial_reort}")
 
     bath_states_per_orbital = int(solver_array[4])
-    h_op = None
-    e_baths = None
-    if rank == 0:
-        h_op, e_baths = get_ed_h0(
-            h_dft,
-            hyb,
-            corr_to_cf,
-            rot_spherical,
-            bath_states_per_orbital,
-            w,
-            eim,
-            gamma=0.01,
-            imag_only=False,
-            valence_bath_only=delta_occ[2][l] == 0,
-            label = label.strip(),
-            save_baths_and_hopping = rspt_dc_flag == 1,
-        )
+    h_op, e_baths = get_ed_h0(
+        h_dft,
+        hyb,
+        corr_to_cf,
+        rot_spherical,
+        bath_states_per_orbital,
+        w,
+        eim,
+        gamma=0.01,
+        imag_only=False,
+        valence_bath_only=delta_occ[2][l] == 0,
+        label = label.strip(),
+        save_baths_and_hopping = rspt_dc_flag == 1,
+        verbose = verbosity >=2 and rank == 0,
+        comm = comm,
+    )
     h_op = comm.bcast(h_op, root=0)
     e_baths = comm.bcast(e_baths, root=0)
 
@@ -220,7 +219,7 @@ def run_impmod_ed(
         )
 
         try:
-            sig_dc[:, :] = fixed_peak_dc(h_op, dc_struct, rank=rank)
+            sig_dc[:, :] = fixed_peak_dc(h_op, dc_struct, rank=rank, verbose  = rank == 0 and verbosity >= 1)
         except Exception as e:
             print(f"!"*100)
             print(f"Exception {repr(e)} caught on rank {rank}!")
@@ -291,7 +290,7 @@ def symmetrize_sigma(sigma, blocks, equivalent_blocks):
     return symmetrized_sigma
 
 
-def fixed_peak_dc(h0_op, dc_struct, rank):
+def fixed_peak_dc(h0_op, dc_struct, rank, verbose = True):
     import primme
     from impurityModel.ed import finite, selfenergy
     from rspt2spectra import h2imp
@@ -365,7 +364,7 @@ def fixed_peak_dc(h0_op, dc_struct, rank):
 
     res = sp.optimize.root_scalar(F, x0 = 0, x1 = F(0))
     dc = res.root
-    if rank == 0:
+    if verbose:
         print(f"dc found : {dc}")
 
     return dc * np.identity(2 * (2 * l + 1), dtype=complex)
@@ -384,6 +383,8 @@ def get_ed_h0(
     valence_bath_only=True,
     label = None,
     save_baths_and_hopping = False,
+    verbose = True,
+    comm = None,
 ):
     """
     Calculate the non-interacting hamiltonian, h0, for use in exact diagonalization.
@@ -428,16 +429,20 @@ def get_ed_h0(
             gamma=gamma,
             imag_only=imag_only,
             x_lim=(w[0], 0 if valence_bath_only else w[-1]),
+            verbose = verbose,
+            comm = comm,
         )
-        with open(f"impurityModel_bath_energies_and_hopping_parameters_{label}.npy", 'wb') as f:
-            np.save(f, eb)
-            np.save(f, v)
+        if comm is not None and comm.rank == 0:
+            with open(f"impurityModel_bath_energies_and_hopping_parameters_{label}.npy", 'wb') as f:
+                np.save(f, eb)
+                np.save(f, v)
     else:
         try:
             with open(f"impurityModel_bath_energies_and_hopping_parameters_{label}.npy", 'rb') as f:
                 eb = np.load(f)
                 v = np.load(f)
-            print (f"Read bath energies and hopping parameters from impurityModel_bath_energies_and_hopping_parameters_{label}.npy")
+            if verbose:
+                print (f"Read bath energies and hopping parameters from impurityModel_bath_energies_and_hopping_parameters_{label}.npy")
         except:
             eb, v = fit_hyb(
                 w,
@@ -449,14 +454,17 @@ def get_ed_h0(
                 gamma=gamma,
                 imag_only=imag_only,
                 x_lim=(w[0], 0 if valence_bath_only else w[-1]),
+                verbose = verbose,
+                comm = comm,
             )
 
-    print(f"DFT hamiltonian")
-    matrix_print(h_dft)
-    print("Hopping parameters")
-    matrix_print(v)
-    print("Bath state energies")
-    print(np.array_str(eb, max_line_width=1000, precision=4, suppress_small=False))
+    if verbose:
+        print(f"DFT hamiltonian")
+        matrix_print(h_dft)
+        print("Hopping parameters")
+        matrix_print(v)
+        print("Bath state energies")
+        print(np.array_str(eb, max_line_width=1000, precision=4, suppress_small=False))
 
     n_orb = v.shape[1]
     h = np.zeros((n_orb + len(eb), n_orb + len(eb)), dtype= complex)
@@ -465,10 +473,11 @@ def get_ed_h0(
     h[n_orb:, :n_orb] = v
     np.fill_diagonal(h[n_orb:, n_orb:], eb)
 
-    with open(f"Ham-{label}.inp", "w") as f:
-        for i in range(h.shape[0]):
-            for j in range(h.shape[1]):
-                f.write(f" 0 0 0 {i+1} {j+1} {np.real(h[i,j])} {np.imag(h[i,j])}\n")
+    if verbose:
+        with open(f"Ham-{label}.inp", "w") as f:
+            for i in range(h.shape[0]):
+                for j in range(h.shape[1]):
+                    f.write(f" 0 0 0 {i+1} {j+1} {np.real(h[i,j])} {np.imag(h[i,j])}\n")
 
     h_op = h2imp.get_H_operator_from_dense_rspt_H_matrix(h, ang=(n_orb // 2 - 1) // 2)
     return h_op, eb
