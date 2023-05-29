@@ -392,14 +392,16 @@ def calc_mpi_Greens_function_from_alpha_beta(alphas, betas, iws, ws, e, delta, r
     # R^T* G R
     if matsubara:
         gs_matsubara = np.zeros((len(iws), r.shape[1], r.shape[1]), dtype=complex)
-        gs_matsubara[iw_indices, :, :] = np.conj(r.T)[np.newaxis, :, :] @ np.linalg.solve(
-            gs_matsubara_local[iw_indices], r[np.newaxis, :, :]
-        )
+        if len(iw_indices) > 0:
+                gs_matsubara[iw_indices, :, :] = np.conj(r.T)[np.newaxis, :, :] @ np.linalg.solve(
+                    gs_matsubara_local[iw_indices], r[np.newaxis, :, :]
+                )
     if realaxis:
         gs_realaxis = np.zeros((len(ws), r.shape[1], r.shape[1]), dtype=complex)
-        gs_realaxis[w_indices, :, :] = np.conj(r.T)[np.newaxis, :, :] @ np.linalg.solve(
-            gs_realaxis_local[w_indices], r[np.newaxis, :, :]
-        )
+        if len(w_indices) > 0:
+                gs_realaxis[w_indices, :, :] = np.conj(r.T)[np.newaxis, :, :] @ np.linalg.solve(
+                    gs_realaxis_local[w_indices], r[np.newaxis, :, :]
+                )
     # Reduce Green's function to rank 0
     if matsubara:
         gs_matsubara = comm.reduce(gs_matsubara, root=0)
@@ -418,36 +420,40 @@ def calc_local_Greens_function_from_alpha_beta(alphas, betas, iws, ws, iw_indice
     if matsubara:
         iomegaP = iws + e
         # Parallelize over omega mesh
-        iwIs = iomegaP[iw_indices][:, np.newaxis, np.newaxis] * I[np.newaxis, :, :]
         gs_matsubara_local = np.zeros((len(iws), alphas.shape[1], alphas.shape[1]), dtype=complex)
-        gs_matsubara_local[iw_indices] = iwIs - alphas[-1][np.newaxis, :, :]
+        if len(iw_indices) > 0:
+                iwIs = iomegaP[iw_indices][:, np.newaxis, np.newaxis] * I[np.newaxis, :, :]
+                gs_matsubara_local[iw_indices] = iwIs - alphas[-1][np.newaxis, :, :]
     else:
         gs_matsubara_local = None
     if realaxis:
         omegaP = ws + 1j * delta + e
         # Parallelize over omega mesh
-        wIs = omegaP[w_indices][:, np.newaxis, np.newaxis] * I[np.newaxis, :, :]
         gs_realaxis_local = np.zeros((len(ws), alphas.shape[1], alphas.shape[1]), dtype=complex)
-        gs_realaxis_local[w_indices] = wIs - alphas[-1][np.newaxis, :, :]
+        if len(w_indices) > 0:
+                wIs = omegaP[w_indices][:, np.newaxis, np.newaxis] * I[np.newaxis, :, :]
+                gs_realaxis_local[w_indices] = wIs - alphas[-1][np.newaxis, :, :]
     else:
         gs_realaxis_local = None
 
     # for alpha, beta in zip(reversed(alphas), reversed(betas)):
     for alpha, beta in zip(alphas[-2::-1], betas[-2::-1]):
         if matsubara:
-            gs_matsubara_local[iw_indices] = (
-                iwIs
-                - alpha[np.newaxis, :, :]
-                - np.conj(beta.T)[np.newaxis, :, :]
-                @ np.linalg.solve(gs_matsubara_local[iw_indices], beta[np.newaxis, :, :])
-            )
+            if len(iw_indices) > 0:
+                gs_matsubara_local[iw_indices] = (
+                    iwIs
+                    - alpha[np.newaxis, :, :]
+                    - np.conj(beta.T)[np.newaxis, :, :]
+                    @ np.linalg.solve(gs_matsubara_local[iw_indices], beta[np.newaxis, :, :])
+                )
         if realaxis:
-            gs_realaxis_local[w_indices] = (
-                wIs
-                - alpha[np.newaxis, :, :]
-                - np.conj(beta.T)[np.newaxis, :, :]
-                @ np.linalg.solve(gs_realaxis_local[w_indices], beta[np.newaxis, :, :])
-            )
+            if len(w_indices) > 0:
+                gs_realaxis_local[w_indices] = (
+                    wIs
+                    - alpha[np.newaxis, :, :]
+                    - np.conj(beta.T)[np.newaxis, :, :]
+                    @ np.linalg.solve(gs_realaxis_local[w_indices], beta[np.newaxis, :, :])
+                )
     return gs_matsubara_local, gs_realaxis_local
 
 def save_Greens_function(gs, omega_mesh, label, e_scale=1, tol=1e-8):
