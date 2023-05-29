@@ -298,8 +298,9 @@ def fixed_peak_dc(h0_op, dc_struct, rank):
     from impurityModel.ed.manybody_basis import Basis
     from mpi4py import MPI
 
+    comm = MPI.COMM_WORLD
+
     N0 = dc_struct.nominal_occ
-    print (f"{dc_struct.delta_occ}")
     delta_impurity_occ, delta_valence_occ, delta_conduction_occ = dc_struct.delta_occ
     peak_position = dc_struct.peak_position
     num_spin_orbitals = dc_struct.num_spin_orbitals
@@ -352,15 +353,14 @@ def fixed_peak_dc(h0_op, dc_struct, rank):
                 verbose = False,
                 comm = MPI.COMM_WORLD
                 )
-
     def F(dc_trial):
         dc_op = {(((l, s, m), "c"), ((l, s, m), "a")): -dc_trial for m in range(-l, l + 1) for s in range(2)}
         h_op_c = finite.addOps([h0_op, u, dc_op])
         h_op_i = finite.c2i_op(sum_bath_states, h_op_c)
-        _, _, h_sparse = finite.setup_hamiltonian(num_spin_orbitals, h_op_i, basis_upper, verbose=False)
-        e_upper, _ = finite.eigensystem_new(h_sparse, basis_upper, 0, k = 1, dk = 0, eigenValueTol = 0, verbose = False)
-        _, _, h_sparse = finite.setup_hamiltonian(num_spin_orbitals, h_op_i, basis_lower, verbose=False)
-        e_lower, _ = finite.eigensystem_new(h_sparse, basis_lower, 0, k = 1, dk = 0, eigenValueTol = 0, verbose = False)
+        _, _, h_sparse = finite.setup_hamiltonian(num_spin_orbitals, h_op_i.copy(), basis_upper, verbose=False)
+        e_upper, _ = finite.eigensystem_new(h_sparse, basis_upper, 0, k = 2, dk = 0, eigenValueTol = 0, verbose = False)
+        _, _, h_sparse = finite.setup_hamiltonian(num_spin_orbitals, h_op_i.copy(), basis_lower, verbose=False)
+        e_lower, _ = finite.eigensystem_new(h_sparse, basis_lower, 0, k = 2, dk = 0, eigenValueTol = 0, verbose = False)
         return e_upper[0] - e_lower[0] - peak_position
 
     res = sp.optimize.root_scalar(F, x0 = 0, x1 = F(0))

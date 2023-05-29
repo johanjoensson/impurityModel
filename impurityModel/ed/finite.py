@@ -63,14 +63,6 @@ def get_job_tasks(rank, ranks, tasks_tot):
         tasks.append(tasks_tot[n_tot - rest + rank])
     return tuple(tasks)
 
-m_it = 0
-def mpi_matmul(h_local, m):
-    res_local = h_local @ m
-    res = np.zeros(res_local.shape, dtype = m.dtype)
-    comm.barrier()
-    comm.Allreduce(res_local, res, op = MPI.SUM)
-    return res.reshape(m.shape)
-
 def setup_hamiltonian(
         n_spin_orbitals,
         hOp,
@@ -94,17 +86,23 @@ def setup_hamiltonian(
                                                   parallelization_mode='H_build', 
                                                   return_h_local = True)
 
-        mpi_matmat = lambda m: mpi_matmul(h_local, m)
-        h = scipy.sparse.linalg.LinearOperator(h_local.shape, matvec = mpi_matmat, rmatvec = mpi_matmat, matmat = mpi_matmat, rmatmat = mpi_matmat, dtype = h_local.dtype)
-        if verbose:
-            print (f"h :\n{h}")
         nonzero = comm.reduce(h_local.nnz, root = 0, op = MPI.SUM)
     if verbose:
+        print (f"h_local :\n{h_local}")
         print("<#Hamiltonian elements/column> = {:d}".format(int(nonzero / len(expanded_basis))))
-    return expanded_basis, h_dict, h
+    return expanded_basis, h_dict, h_local
+
+def mpi_matmul(h_local):
+    def matmat(m):
+        res_local = h_local @ m
+        res = np.empty_like(res_local)
+        comm.Allreduce(res_local, res)
+        return res
+
+    return matmat
 
 def eigensystem_new(
-            h,
+            h_local,
             basis,
             e_max,
             k = 10,
@@ -139,27 +137,25 @@ def eigensystem_new(
         Minimum product state weight for product states to be kept.
 
     """
+
+    h = scipy.sparse.linalg.LinearOperator(h_local.shape, matvec = mpi_matmul(h_local), matmat = mpi_matmul(h_local), dtype = h_local.dtype)
+    # h = scipy.sparse.linalg.LinearOperator(h_local.shape, matvec = mpi_matmul, rmatvec = mpi_matmul, matmat = mpi_matmul, rmatmat = mpi_matmul, dtype = h_local.dtype)
     if rank == 0 and verbose:
         print("Diagonalize the Hamiltonian...")
         print(f"{h}")
+
     vecs = None # np.ones((h.shape[0], 1), dtype = complex)
     es = []
-    mask = [False]
-    it = 0
+    mask = [True]
     while len(es) - sum(mask) < k:
-        es, vecs = eigsh(h, k = k + dk, which = "SA", tol = eigenValueTol )
+        es, vecs = eigsh(h, k = max(k + dk, min(6, h.shape[0])), which = "SA", tol = eigenValueTol)
         mask = es - es[0] <= e_max
-        if dk == 0:
-            break
         dk += k
-        it += 1
-        if rank == 0:
-            print (f"{it=} {dk=}")
 
     indices = np.argsort(es)
     es = es[indices]
     vecs = vecs[:, indices]
-    if rank == 0 and verbose:
+    if verbose:
         err_max = np.max(np.abs(np.conj(vecs.T) @ vecs - np.identity(vecs.shape[1])))
         if err_max > 1e-12:
             print(f"Warning! Obtained eigenvectors are not very orthogonal!\nMaximum overlap {err_max}")
@@ -169,8 +165,6 @@ def eigensystem_new(
     psis = [
         {basis[i]: v[i] for i in range(basis.size) if abs(v[i])**2 > slaterWeightMin} 
         for v in vecs.T
-        # ({expanded_basis[i]: vecs[i, vi] for i in range(len(expanded_basis)) if slaterWeightMin <= abs(vecs[i, vi]) ** 2})
-        # for vi in range(len(es))
     ]
     return es[:sum(mask)], psis[:sum(mask)]
 
@@ -1974,7 +1968,7 @@ def get_hamiltonian_hermitian_operator_from_h_dict_new(
     rows = np.zeros((len(flat_row_states_for_each_column)), dtype = int)
     data = np.zeros((len(flat_row_states_for_each_column)), dtype = complex)
     diagonal_indices = np.array(basis.local_indices)
-    diagonal = np.empty((len(basis.local_basis)), dtype = float)
+    diagonal = np.zeros((len(basis.local_basis)), dtype = float)
     row_offset = 0
     for i in range( len(column_states) ):
         col = column_indices[i]

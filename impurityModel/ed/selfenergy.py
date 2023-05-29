@@ -46,7 +46,7 @@ def find_gs(h_op, N0, delta_occ, bath_states, num_spin_orbitals, rank, verbose =
                 delta_conduction_occ = delta_con_occ,
                 delta_impurity_occ   = delta_imp_occ,
                 nominal_impurity_occ = {l: N0[0][l] + dN[0] for l in N0[0]},
-                verbose = rank == 0,
+                verbose = verbose,
                 comm = MPI.COMM_WORLD
                 ),
             Basis(
@@ -56,7 +56,7 @@ def find_gs(h_op, N0, delta_occ, bath_states, num_spin_orbitals, rank, verbose =
                 delta_conduction_occ = delta_con_occ,
                 delta_impurity_occ   = delta_imp_occ,
                 nominal_impurity_occ = {l: N0[0][l] + dN[1] for l in N0[0]},
-                verbose = rank == 0,
+                verbose = verbose,
                 comm = MPI.COMM_WORLD
                 ),
             Basis(
@@ -66,7 +66,7 @@ def find_gs(h_op, N0, delta_occ, bath_states, num_spin_orbitals, rank, verbose =
                 delta_conduction_occ = delta_con_occ,
                 delta_impurity_occ   = delta_imp_occ,
                 nominal_impurity_occ = {l: N0[0][l] + dN[2] for l in N0[0]},
-                verbose = rank == 0,
+                verbose = verbose,
                 comm = MPI.COMM_WORLD
                 )
             ]
@@ -77,13 +77,13 @@ def find_gs(h_op, N0, delta_occ, bath_states, num_spin_orbitals, rank, verbose =
     selected = 0
     energies = []
     for i, basis in enumerate(trial_basis):
-        expanded_basis, h_dict, h = finite.setup_hamiltonian(num_spin_orbitals, h_op, basis, rank == 0 and verbose)
+        expanded_basis, h_dict, h = finite.setup_hamiltonian(num_spin_orbitals, h_op, basis, verbose = verbose)
         e_trial, _ = finite.eigensystem_new(
                 h,
                 basis,
                 e_max = 0,
                 k = 1,
-                verbose = rank == 0 and verbose,
+                verbose = verbose,
                 eigenValueTol = 0
                 )
         energies.append(e_trial[0])
@@ -124,26 +124,6 @@ def run(cluster, h0, iw, w, delta, tau, verbosity=0, partial_reort = False):
     nPrintSlaterWeights = 0
     tolPrintOccupation = 0.5
 
-    # cluster.sig[:, :, :], cluster.sig_real[:, :, :], cluster.sig_static[:, :] = calc_selfenergy(
-    #     h0,
-    #     cluster.slater,
-    #     iw,
-    #     w,
-    #     delta,
-    #     cluster.nominal_occ,
-    #     cluster.delta_occ,
-    #     cluster.bath_states,
-    #     tau,
-    #     energy_cut,
-    #     num_psi_max,
-    #     nPrintSlaterWeights,
-    #     tolPrintOccupation,
-    #     verbosity,
-    #     blocks = cluster.blocks,
-    #     rotation=cluster.rot_spherical,
-    #     cluster_label=cluster.label,
-    #     partial_reort = partial_reort,
-    # )
     sig_tmp, sig_real_tmp, sig_static_tmp = calc_selfenergy(
         h0,
         cluster.slater,
@@ -218,10 +198,9 @@ def calc_selfenergy(
 
     num_spin_orbitals = 2*(2*l + 1) + sum(num_val_baths[l] + num_con_baths[l] for l in num_val_baths)
 
-    (n0_imp, n0_val, n0_con), basis, h_gs = find_gs(h, nominal_occ, delta_occ, num_bath_states, num_spin_orbitals, rank = rank, verbose = verbosity >= 2 and rank == 0)
+    (n0_imp, n0_val, n0_con), basis, h_gs = find_gs(h, nominal_occ, delta_occ, num_bath_states, num_spin_orbitals, rank = rank, verbose = verbosity)
     delta_imp_occ, delta_val_occ, delta_con_occ = delta_occ
 
-    # restrictions = get_restrictions(l, n0_imp, sum_bath_states, num_val_baths, delta_imp_occ, delta_val_occ, delta_con_occ)
     restrictions = basis.restrictions
     
     if rank == 0 and verbosity >= 2:
@@ -241,10 +220,10 @@ def calc_selfenergy(
             basis,
             energy_cut,
             k = 2*(2*l + 1),
-            verbose = True,
+            verbose = verbosity >= 1,
             eigenValueTol = 0
             )
-    if rank == 0 and verbosity >= 2:
+    if verbosity >= 2:
         finite.printThermalExpValues(sum_bath_states, es, psis)
         finite.printExpValues(sum_bath_states, es, psis)
         # Print Slater determinants and weights
@@ -265,8 +244,8 @@ def calc_selfenergy(
         delta=delta,
         restrictions=restrictions,
         blocks = blocks,
-        verbose=verbosity >= 2,
-        mpi_distribute=True,
+        verbose = verbosity >= 2,
+        mpi_distribute = True,
         partial_reort = partial_reort,
     )
     if iw is not None:
@@ -276,10 +255,11 @@ def calc_selfenergy(
         except UnphysicalGreensFunction as err:
             if rank == 0:
                 print(f"WARNING! Unphysical Matsubara-axis Greens function:\n\t{err}")
-        save_Greens_function(gs=gs_matsubara_thermal_avg, omega_mesh=iw, label=f"G-{cluster_label}", e_scale=1)
-        if rotation is not None:
-            gs_rot = np.moveaxis(rotation[np.newaxis, :, :] @ np.moveaxis(gs_matsubara_thermal_avg, -1, 0) @ np.conj(rotation.T)[np.newaxis, :, :], 0, -1)
-            save_Greens_function(gs=gs_rot, omega_mesh=iw, label=f"rotated-G-{cluster_label}", e_scale=1)
+        if verbosity >= 2:
+            save_Greens_function(gs=gs_matsubara_thermal_avg, omega_mesh=iw, label=f"G-{cluster_label}", e_scale=1)
+            if rotation is not None:
+                gs_rot = np.moveaxis(rotation[np.newaxis, :, :] @ np.moveaxis(gs_matsubara_thermal_avg, -1, 0) @ np.conj(rotation.T)[np.newaxis, :, :], 0, -1)
+                save_Greens_function(gs=gs_rot, omega_mesh=iw, label=f"rotated-G-{cluster_label}", e_scale=1)
     if w is not None:
         gs_realaxis_thermal_avg = thermal_average_scale_indep(es[: np.shape(gs_realaxis)[0]], gs_realaxis, tau=tau)
         try:
@@ -287,10 +267,11 @@ def calc_selfenergy(
         except UnphysicalGreensFunction as err:
             if rank == 0:
                 print(f"WARNING! Unphysical real-axis Greens function:\n\t{err}")
-        save_Greens_function(gs=gs_realaxis_thermal_avg, omega_mesh=w, label=f"G-{cluster_label}", e_scale=1)
-        if rotation is not None:
-            gs_rot = np.moveaxis(rotation[np.newaxis, :, :] @ np.moveaxis(gs_realaxis_thermal_avg, -1, 0) @ np.conj(rotation.T)[np.newaxis, :, :], 0, -1)
-            save_Greens_function(gs=gs_rot, omega_mesh=w, label=f"rotated-G-{cluster_label}", e_scale=1)
+        if verbosity >= 2:
+            save_Greens_function(gs=gs_realaxis_thermal_avg, omega_mesh=w, label=f"G-{cluster_label}", e_scale=1)
+            if rotation is not None:
+                gs_rot = np.moveaxis(rotation[np.newaxis, :, :] @ np.moveaxis(gs_realaxis_thermal_avg, -1, 0) @ np.conj(rotation.T)[np.newaxis, :, :], 0, -1)
+                save_Greens_function(gs=gs_rot, omega_mesh=w, label=f"rotated-G-{cluster_label}", e_scale=1)
     if rank == 0 and verbosity >= 1:
         print("Calculate self-energy...")
     if w is not None:
@@ -335,7 +316,7 @@ def calc_selfenergy(
         print(f"Calculating sig_static.")
     sigma_static = get_Sigma_static(sum_bath_states, slater_params, es, psis, l, tau)
 
-    if rank == 0:
+    if verbosity >= 2:
         if iw is not None:
             save_Greens_function(gs=sigma, omega_mesh=iw, label=f"Sigma-{cluster_label}", e_scale=1)
         if w is not None:
