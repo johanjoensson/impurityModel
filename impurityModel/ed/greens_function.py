@@ -266,7 +266,7 @@ def get_block_Green(
 
     if verbose and rank == 0:
         t0 = time.perf_counter()
-    h, basis = finite.expand_basis_and_build_hermitian_hamiltonian_new(
+    h, _, basis = finite.expand_basis_and_build_hermitian_hamiltonian_new(
         n_spin_orbitals,
         h_mem,
         hOp,

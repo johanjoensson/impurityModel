@@ -219,7 +219,15 @@ def run_impmod_ed(
             peak_position=peak_position,
         )
 
-        sig_dc[:, :] = fixed_peak_dc(h_op, dc_struct, rank=rank)
+        try:
+            sig_dc[:, :] = fixed_peak_dc(h_op, dc_struct, rank=rank)
+        except Exception as e:
+            print(f"!"*100)
+            print(f"Exception {repr(e)} caught on rank {rank}!")
+            print (traceback.format_exc())
+            print (f"Adding positive infinity to the imaginaty part of the DC selfenergy.", flush = True)
+            print(f"!"*100)
+            sig_dc[:, :] = 1j*np.inf
         return
 
     from rspt2spectra.hyb_fit import get_block_structure
@@ -250,7 +258,7 @@ def run_impmod_ed(
     # print an error message and make sure that the outside code becomes aware that something
     # has gone terribly wrong.
     try:
-        selfenergy.run(cluster, h_op, 1j * iw, w, eim, tau, verbosity, partial_reort = partial_reort)
+        selfenergy.run(cluster, h_op, 1j * iw, w, eim, tau, verbosity if rank == 0 else 0, partial_reort = partial_reort)
 
         # Rotate self energy from spherical harmonics basis to RSPt's corr basis
         u = cluster.rot_spherical
@@ -287,9 +295,12 @@ def fixed_peak_dc(h0_op, dc_struct, rank):
     import primme
     from impurityModel.ed import finite, selfenergy
     from rspt2spectra import h2imp
+    from impurityModel.ed.manybody_basis import Basis
+    from mpi4py import MPI
 
     N0 = dc_struct.nominal_occ
-    delta_occ = dc_struct.delta_occ
+    print (f"{dc_struct.delta_occ}")
+    delta_impurity_occ, delta_valence_occ, delta_conduction_occ = dc_struct.delta_occ
     peak_position = dc_struct.peak_position
     num_spin_orbitals = dc_struct.num_spin_orbitals
     num_valence_bath_states, num_conduction_bath_states = dc_struct.bath_states
@@ -300,28 +311,56 @@ def fixed_peak_dc(h0_op, dc_struct, rank):
     Np = ({l: N0[0][l] + 1 for l in N0[0]}, N0[1], N0[2])
     Nm = ({l: N0[0][l] - 1 for l in N0[0]}, N0[1], N0[2])
     if peak_position >= 0:
-        basis_upper = finite.get_basis(
-            sum_bath_states, num_valence_bath_states, delta_occ[1], delta_occ[2], delta_occ[0], Np[0], verbose=False
-        )
-        basis_lower = finite.get_basis(
-            sum_bath_states, num_valence_bath_states, delta_occ[1], delta_occ[2], delta_occ[0], N0[0], verbose=False
-        )
+        basis_upper = Basis(
+                valence_baths        = num_valence_bath_states,
+                conduction_baths     = num_conduction_bath_states,
+                delta_valence_occ    = delta_valence_occ,
+                delta_conduction_occ = delta_conduction_occ,
+                delta_impurity_occ   = delta_impurity_occ,
+                nominal_impurity_occ = Np[0],
+                verbose = False,
+                comm = MPI.COMM_WORLD
+                )
+        basis_lower = Basis(
+                valence_baths        = num_valence_bath_states,
+                conduction_baths     = num_conduction_bath_states,
+                delta_valence_occ    = delta_valence_occ,
+                delta_conduction_occ = delta_conduction_occ,
+                delta_impurity_occ   = delta_impurity_occ,
+                nominal_impurity_occ = N0[0],
+                verbose = False,
+                comm = MPI.COMM_WORLD
+                )
     else:
-        basis_upper = finite.get_basis(
-            sum_bath_states, num_valence_bath_states, delta_occ[1], delta_occ[2], delta_occ[0], N0[0], verbose=False
-        )
-        basis_lower = finite.get_basis(
-            sum_bath_states, num_valence_bath_states, delta_occ[1], delta_occ[2], delta_occ[0], Nm[0], verbose=False
-        )
+        basis_upper = Basis(
+                valence_baths        = num_valence_bath_states,
+                conduction_baths     = num_conduction_bath_states,
+                delta_valence_occ    = delta_valence_occ,
+                delta_conduction_occ = delta_conduction_occ,
+                delta_impurity_occ   = delta_impurity_occ,
+                nominal_impurity_occ = N0[0],
+                verbose = False,
+                comm = MPI.COMM_WORLD
+                )
+        basis_lower = Basis(
+                valence_baths        = num_valence_bath_states,
+                conduction_baths     = num_conduction_bath_states,
+                delta_valence_occ    = delta_valence_occ,
+                delta_conduction_occ = delta_conduction_occ,
+                delta_impurity_occ   = delta_impurity_occ,
+                nominal_impurity_occ = Nm[0],
+                verbose = False,
+                comm = MPI.COMM_WORLD
+                )
 
     def F(dc_trial):
         dc_op = {(((l, s, m), "c"), ((l, s, m), "a")): -dc_trial for m in range(-l, l + 1) for s in range(2)}
         h_op_c = finite.addOps([h0_op, u, dc_op])
         h_op_i = finite.c2i_op(sum_bath_states, h_op_c)
-        h_sparse = finite.get_hamiltonian_matrix(num_spin_orbitals, h_op_i, basis_upper, verbose=False)
-        e_upper, _ = primme.eigsh(h_sparse, k=1, which="SA", tol=0)
-        h_sparse = finite.get_hamiltonian_matrix(num_spin_orbitals, h_op_i, basis_lower, verbose=False)
-        e_lower, _ = primme.eigsh(h_sparse, k=1, which="SA", tol=0)
+        _, _, h_sparse = finite.setup_hamiltonian(num_spin_orbitals, h_op_i, basis_upper, verbose=False)
+        e_upper, _ = finite.eigensystem_new(h_sparse, basis_upper, 0, k = 1, dk = 0, eigenValueTol = 0, verbose = False)
+        _, _, h_sparse = finite.setup_hamiltonian(num_spin_orbitals, h_op_i, basis_lower, verbose=False)
+        e_lower, _ = finite.eigensystem_new(h_sparse, basis_lower, 0, k = 1, dk = 0, eigenValueTol = 0, verbose = False)
         return e_upper[0] - e_lower[0] - peak_position
 
     res = sp.optimize.root_scalar(F, x0 = 0, x1 = F(0))

@@ -71,30 +71,37 @@ def find_gs(h_op, N0, delta_occ, bath_states, num_spin_orbitals, rank, verbose =
                 )
             ]
 
+    e_gs = np.inf
+    basis_gs = None
+    h_gs = None
+    selected = 0
     energies = []
-    for basis in trial_basis:
+    for i, basis in enumerate(trial_basis):
+        expanded_basis, h_dict, h = finite.setup_hamiltonian(num_spin_orbitals, h_op, basis, rank == 0 and verbose)
         e_trial, _ = finite.eigensystem_new(
-            num_spin_orbitals,
-            h_op,
-            basis,
-            e_max = 0,
-            k = 1,
-            verbose = rank == 0 and verbose,
-            groundDiagMode = "Lanczos",
-            eigenValueTol = 0
-        )
+                h,
+                basis,
+                e_max = 0,
+                k = 1,
+                verbose = rank == 0 and verbose,
+                eigenValueTol = 0
+                )
         energies.append(e_trial[0])
-    gs_i = energies.index(min(energies))
-    selected = {0: ' ', 1: ' ', 2: ' '}
-    selected[gs_i] = '='
+        if e_trial[0] < e_gs:
+            e_gs = e_trial[0]
+            basis_gs = expanded_basis
+            h_gs = h
+            selected = i
+    underline = {0: ' ', 1: ' ', 2: ' '}
+    underline[selected] = '='
     if rank == 0:
         l = [l for l in N0[0]][0]
         print (f"N0:    {N0[0][l] - 1: ^10d}  {N0[0][l]: ^10d}  {N0[0][l] + 1: ^10d}")
         print (f"E0:    {energies[0]: ^10.6f}  {energies[1]: ^10.6f}  {energies[2]: ^10.6f}")
-        print (f"       {selected[0]*10}  {selected[1]*10}  {selected[2]*10}")
+        print (f"       {underline[0]*10}  {underline[1]*10}  {underline[2]*10}")
 
 
-    return ({ l: N0[0][l] + dN[gs_i] for l in N0[0] }, N0[1], N0[2]), trial_basis[gs_i]
+    return ({ l: N0[0][l] + dN[selected] for l in N0[0] }, N0[1], N0[2]), basis_gs, h_gs
 
 
 
@@ -211,10 +218,11 @@ def calc_selfenergy(
 
     num_spin_orbitals = 2*(2*l + 1) + sum(num_val_baths[l] + num_con_baths[l] for l in num_val_baths)
 
-    (n0_imp, n0_val, n0_con), basis = find_gs(h, nominal_occ, delta_occ, num_bath_states, num_spin_orbitals, rank = rank, verbose = verbosity >= 2 and rank == 0)
+    (n0_imp, n0_val, n0_con), basis, h_gs = find_gs(h, nominal_occ, delta_occ, num_bath_states, num_spin_orbitals, rank = rank, verbose = verbosity >= 2 and rank == 0)
     delta_imp_occ, delta_val_occ, delta_con_occ = delta_occ
 
-    restrictions = get_restrictions(l, n0_imp, sum_bath_states, num_val_baths, delta_imp_occ, delta_val_occ, delta_con_occ)
+    # restrictions = get_restrictions(l, n0_imp, sum_bath_states, num_val_baths, delta_imp_occ, delta_val_occ, delta_con_occ)
+    restrictions = basis.restrictions
     
     if rank == 0 and verbosity >= 2:
         print("Restrictions on occupation")
@@ -229,13 +237,11 @@ def calc_selfenergy(
     energy_cut *= tau
 
     es, psis = finite.eigensystem_new(
-            num_spin_orbitals,
-            h,
+            h_gs,
             basis,
             energy_cut,
             k = 2*(2*l + 1),
             verbose = True,
-            groundDiagMode="Lanczos",
             eigenValueTol = 0
             )
     if rank == 0 and verbosity >= 2:

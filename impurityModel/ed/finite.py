@@ -58,10 +58,8 @@ def get_job_tasks(rank, ranks, tasks_tot):
     n_tot = len(tasks_tot)
     nj = n_tot // ranks
     rest = n_tot % ranks
-    # tasks = range(nj*rank, nj*rank + nj)
     tasks = [tasks_tot[i] for i in range(nj * rank, nj * rank + nj)]
     if rank < rest:
-        # tasks.append(n_tot - rest + rank)
         tasks.append(tasks_tot[n_tot - rest + rank])
     return tuple(tasks)
 
@@ -69,20 +67,52 @@ m_it = 0
 def mpi_matmul(h_local, m):
     res_local = h_local @ m
     res = np.zeros(res_local.shape, dtype = m.dtype)
+    comm.barrier()
     comm.Allreduce(res_local, res, op = MPI.SUM)
     return res.reshape(m.shape)
 
+def setup_hamiltonian(
+        n_spin_orbitals,
+        hOp,
+        basis,
+        verbose = False,
+        mode = 'sparse',
+        ):
+    if verbose:
+        print("Create Hamiltonian matrix...")
+    if mode != 'sparse':
+        h = get_hamiltonian_matrix(n_spin_orbitals, hOp, basis, verbose=verbose)
+        nonzero = len(h.nonzero()[0])
+    elif mode == 'sparse':
+        h_local, h_dict, expanded_basis = expand_basis_and_build_hermitian_hamiltonian_new(
+                                                  n_spin_orbitals, 
+                                                  {}, 
+                                                  hOp, 
+                                                  basis, 
+                                                  restrictions = basis.restrictions, 
+                                                  verbose=verbose, 
+                                                  parallelization_mode='H_build', 
+                                                  return_h_local = True)
+
+        mpi_matmat = lambda m: mpi_matmul(h_local, m)
+        h = scipy.sparse.linalg.LinearOperator(h_local.shape, matvec = mpi_matmat, rmatvec = mpi_matmat, matmat = mpi_matmat, rmatmat = mpi_matmat, dtype = h_local.dtype)
+        if verbose:
+            print (f"h :\n{h}")
+        nonzero = comm.reduce(h_local.nnz, root = 0, op = MPI.SUM)
+    if verbose:
+        print("<#Hamiltonian elements/column> = {:d}".format(int(nonzero / len(expanded_basis))))
+    return expanded_basis, h_dict, h
+
 def eigensystem_new(
-    n_spin_orbitals,
-    hOp,
-    basis,
-    e_max,
-    k = 10,
-    groundDiagMode="Lanczos",
-    eigenValueTol=1e-9,
-    slaterWeightMin=1e-7,
-    verbose=True,
-):
+            h,
+            basis,
+            e_max,
+            k = 10,
+            dk = 10,
+            eigenValueTol=1e-9,
+            slaterWeightMin=1e-7,
+            verbose=True,
+            ):
     """
     Return eigen-energies and eigenstates.
 
@@ -110,51 +140,21 @@ def eigensystem_new(
 
     """
     if rank == 0 and verbose:
-        print("Create Hamiltonian matrix...")
-    if groundDiagMode == 'full':
-        h = get_hamiltonian_matrix(n_spin_orbitals, hOp, basis, verbose=verbose)
-        nonzero = len(h.nonzero()[0])
-    elif groundDiagMode == 'Lanczos':
-        # h_local, expanded_basis= expand_basis_and_build_hermitian_hamiltonian(
-        h_local, expanded_basis= expand_basis_and_build_hermitian_hamiltonian_new(
-                                                  n_spin_orbitals, 
-                                                  {}, 
-                                                  hOp, 
-                                                  basis, 
-                                                  restrictions = None, 
-                                                  verbose=verbose, 
-                                                  parallelization_mode='H_build', 
-                                                  return_h_local = True)
-
-        try:
-
-            mpi_matmat = lambda m: mpi_matmul(h_local, m)
-            h = scipy.sparse.linalg.LinearOperator(h_local.shape, matvec = mpi_matmat, rmatvec = mpi_matmat, matmat = mpi_matmat, rmatmat = mpi_matmat, dtype = h_local.dtype)
-            if rank == 0:
-                print (f"h :\n{h}")
-            nonzero = comm.reduce(h_local.nnz, root = 0, op = MPI.SUM)
-        except Exception as e:
-            print (f"Exception {e} happened!!")
-            raise e
-    if rank == 0 and verbose:
-        print("<#Hamiltonian elements/column> = {:d}".format(int(nonzero / len(expanded_basis))))
         print("Diagonalize the Hamiltonian...")
-    dk = 0
+        print(f"{h}")
     vecs = None # np.ones((h.shape[0], 1), dtype = complex)
     es = []
     mask = [False]
     it = 0
     while len(es) - sum(mask) < k:
-        if groundDiagMode == "full":
-            es, vecs = np.linalg.eigh(h.todense())
-        elif groundDiagMode == "Lanczos":
-            es, vecs = eigsh(h, k = k + dk, which = "SA", tol = eigenValueTol )
-        else:
-            print(f"Unknown diagonalization mode: {groundDiagMode}")
-
+        es, vecs = eigsh(h, k = k + dk, which = "SA", tol = eigenValueTol )
         mask = es - es[0] <= e_max
+        if dk == 0:
+            break
         dk += k
         it += 1
+        if rank == 0:
+            print (f"{it=} {dk=}")
 
     indices = np.argsort(es)
     es = es[indices]
@@ -167,7 +167,7 @@ def eigensystem_new(
         print(f"Proceed with {len(es[mask])} eigenstates.\n")
 
     psis = [
-        {expanded_basis[i]: v[i] for i in range(len(expanded_basis)) if abs(v[i])**2 > slaterWeightMin} 
+        {basis[i]: v[i] for i in range(basis.size) if abs(v[i])**2 > slaterWeightMin} 
         for v in vecs.T
         # ({expanded_basis[i]: vecs[i, vi] for i in range(len(expanded_basis)) if slaterWeightMin <= abs(vecs[i, vi]) ** 2})
         # for vi in range(len(es))
@@ -1569,6 +1569,7 @@ def applyOp(n_spin_orbitals, op, psi, slaterWeightMin=1e-12, restrictions=None, 
                 # Initialize state
                 state_new = bits.copy()
                 signTot = 1
+                # for i, action in process[-1::-1]:
                 for i, action in process[-1::-1]:
                     if action == "a":
                         sign = remove.ubitarray(i, state_new)
@@ -1968,43 +1969,32 @@ def get_hamiltonian_hermitian_operator_from_h_dict_new(
 
     flat_row_states_for_each_column = [state for row_states in row_states_for_each_column for state in row_states]
     flat_row_indices_for_each_column = basis.index(flat_row_states_for_each_column)
-    row_indices_for_each_columnn = []
-    start = 0
-    for row_states in row_states_for_each_column:
-        stop = start + len(row_states)
-        row_indices_for_each_column.append(flat_row_indices_for_each_column[start:stop])
-        start = stop
-    # for col_index in range(max_len_row_states):
-    #     if col_index < len(column_states):
-    #         row_indices_for_each_column.append(basis.index(row_states_for_each_column[col_index]))
-    #     else:
-    #         basis.index([])
 
-    cols = []
-    rows = []
-    data = []
-    diagonal_indices = []
-    diagonal = []
-    for i in range(len(column_indices)):
+    cols = np.zeros((len(flat_row_states_for_each_column)), dtype = int)
+    rows = np.zeros((len(flat_row_states_for_each_column)), dtype = int)
+    data = np.zeros((len(flat_row_states_for_each_column)), dtype = complex)
+    diagonal_indices = np.array(basis.local_indices)
+    diagonal = np.empty((len(basis.local_basis)), dtype = float)
+    row_offset = 0
+    for i in range( len(column_states) ):
         col = column_indices[i]
         column_state = column_states[i]
         for j in range(len(row_states_for_each_column[i])):
-            row = row_indices_for_each_column[i][j]
+            row = flat_row_indices_for_each_column[row_offset + j]
             row_state = row_states_for_each_column[i][j]
             val = h_dict[column_state][row_state]
-            if col == row:
-                diagonal_indices.append(col)
-                diagonal.append(np.real(val))
+            if row == col:
+                diagonal[row - basis.offset] = np.real(val)
             elif col < row:
-                cols.append(col)
-                rows.append(row)
-                data.append(val)
+                cols[row_offset + j] = col
+                rows[row_offset + j] = row
+                data[row_offset + j] = val
+        row_offset += len(row_states_for_each_column[i])
 
     h_triangular = scipy.sparse.csr_matrix((data, (rows, cols)), shape=(n, n), dtype = complex)
     diagonal = np.array(diagonal, dtype = float)
     diagonal_indices = np.array(diagonal_indices, dtype = np.int32)
-    sort_indices = np.argsort(diagonal_indices)
-    h_local = NewHermitianOperator(diagonal[sort_indices], diagonal_indices[sort_indices], h_triangular)
+    h_local = NewHermitianOperator(diagonal, diagonal_indices, h_triangular)
     if return_h_local:
         h = h_local
     else:
@@ -2054,15 +2044,9 @@ def get_hamiltonian_matrix_from_h_dict(
     # Number of basis states
     n = len(basis)
     basis_index = {basis[i]: i for i in range(n)}
-    # if rank == 0: print('Filling the Hamiltonian...')
-    # progress = 0
     if mode == "dense" and parallelization_mode == "serial":
-        # h = np.zeros((n,n),dtype=complex)
         h = np.zeros((n, n), dtype=complex)
         for j in range(n):
-            # if rank == 0 and progress + 10 <= int(j*100./n):
-            #    progress = int(j*100./n)
-            #    print('{:d}% done'.format(progress))
             res = h_dict[basis[j]]
             for k, v in res.items():
                 h[basis_index[k], j] = v
@@ -2071,9 +2055,6 @@ def get_hamiltonian_matrix_from_h_dict(
         row = []
         col = []
         for j in range(n):
-            # if rank == 0 and progress + 10 <= int(j*100./n):
-            #    progress = int(j*100./n)
-            #    print('{:d}% done'.format(progress))
             res = h_dict[basis[j]]
             for k, v in res.items():
                 data.append(v)
@@ -2082,7 +2063,6 @@ def get_hamiltonian_matrix_from_h_dict(
         h = scipy.sparse.csr_matrix((data, (row, col)), shape=(n, n))
     elif mode == "sparse" and parallelization_mode == "H_build":
         n = comm.allreduce(n, op = MPI.MAX)
-        # n = comm.bcast(n, root = 0)
         # Loop over product states from the basis
         # which are also stored in h_dict.
         data = []
@@ -2097,12 +2077,9 @@ def get_hamiltonian_matrix_from_h_dict(
         if return_h_local:
             h = h_local
         else:
-            # h = scipy.sparse.csr_matrix(([], ([], [])), shape=(n, n))
             # Different ranks have information about different basis states.
             # Broadcast and append local sparse Hamiltonians.
             h = comm.allreduce(h_local)
-            # for r in range(ranks):
-            #     h += comm.bcast(h_local, root=r)
     else:
         raise Exception("Wrong input parameters")
     return h, basis_index
@@ -2169,8 +2146,6 @@ def expand_basis(n_spin_orbitals, h_dict, hOp, basis0, restrictions, paralleliza
             basis_set = frozenset(basis)
             basis_new_local = set()
 
-            # print(f'rank {rank}, basis: {basis}')
-
             # Among the product states in basis[i:n], first consider
             # the product states which exist in h_dict.
             states_setA_local = set(basis[i:n]).intersection(h_dict.keys())
@@ -2178,8 +2153,6 @@ def expand_basis(n_spin_orbitals, h_dict, hOp, basis0, restrictions, paralleliza
             for ps in states_setA_local:
                 res = h_dict[ps]
                 basis_new_local.update(set(res.keys()).difference(basis_set))
-
-            # print(f'rank {rank}, states_setA_local: {states_setA_local}')
 
             # Now consider the product states in basis[i:n] which
             # does not exist in h_dict for any MPI rank.
@@ -2519,7 +2492,7 @@ def expand_basis_and_build_hermitian_hamiltonian_new(
                 f"len(h_dict) = {len(h_dict)}, "
             )
 
-    return h, basis
+    return h, h_dict, basis
 
 def expand_basis_and_hamiltonian(
     n_spin_orbitals,

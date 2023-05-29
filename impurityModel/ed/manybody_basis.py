@@ -28,9 +28,21 @@ def reduce_subscript(a, b, datatype):
                 res[i][j] = a[i][j]
     return res
 
-
 reduce_subscript_op = MPI.Op.Create(reduce_subscript, commute=True)
 
+def getitem_reduce(a, b, datatype):
+    return [max(val_a, val_b) for val_a, val_b in zip(a, b)]
+
+getitem_reduce_op = MPI.Op.Create(getitem_reduce, commute=True)
+
+def getitem_reduce_matrix(a, b, datatype):
+    res = [[None for _ in row] for row in a]
+    for i in range(len(a)):
+        for j in range(len(a[i])):
+            res[i][j] = max(a[i][j], b[i][j])
+    return res
+
+getitem_reduce_matrix_op = MPI.Op.Create(getitem_reduce_matrix, commute=True)
 
 class Basis:
     def _get_offsets_and_local_lengths(self, total_length):
@@ -126,8 +138,6 @@ class Basis:
             restrictions[valence_indices] = (valence_baths[l] - delta_valence_occ[l], valence_baths[l] + 1)
             conduction_indices = frozenset(c2i(total_baths, (l, b)) for b in range(conduction_baths[l]))
             restrictions[conduction_indices] = (conduction_baths[l] - delta_conduction_occ[l], valence_baths[l] + 1)
-            conduction_indices = frozenset(c2i(total_baths, (l, b)) for b in range(conduction_baths[l]))
-            restrictions[conduction_indices] = (conduction_baths[l] - delta_conduction_occ[l], conduction_baths[l] + 1)
 
             if verbose:
                 print(f"l = {l}")
@@ -175,7 +185,7 @@ class Basis:
         self.comm = comm
         self.num_spin_orbitals = num_spin_orbitals
         offset, local_len = self._get_offsets_and_local_lengths(len(initial_basis))
-        self.local_basis = np.array(sorted(initial_basis)[offset : offset + local_len])
+        self.local_basis = sorted(initial_basis)[offset : offset + local_len]
         self.restrictions = restrictions
         self.offset = offset
         self.size = len(initial_basis)
@@ -183,6 +193,7 @@ class Basis:
         self._index_dict = {state : self.offset + i for i, state in enumerate(self.local_basis)}
         self.is_distributed = comm is not None
         self.dtype = type(initial_basis[0])
+        self._larger_than_c_long = self.num_spin_orbitals > 64
 
     def expand(self, op, op_dict):
         done = False
@@ -262,14 +273,12 @@ class Basis:
 
         local_query = np.array(l, dtype=int)
 
-        local_results = np.array(
-            [
+        local_results = [
                 self.local_basis[i - self.offset]
                 if i >= self.offset and i < self.offset + len(self.local_basis)
                 else None
                 for i in l
             ]
-        )
         remote_mask = list(element is None for element in local_results)
 
         remote_query = local_query[remote_mask]
@@ -285,21 +294,39 @@ class Basis:
         remote_queries = np.empty((self.comm.size, max_remote_queries[0]), dtype=int)
         self.comm.Allgather(remote_query, remote_queries)
 
-        results = np.empty_like(remote_queries, dtype=object)
-        results[:, :] = None
-        for i, query in enumerate(remote_queries):
-            for j, q in enumerate(query):
-                if q is not None and q >= self.offset and q < self.offset + len(self.local_basis):
-                    results[i, j] = self.local_basis[q - self.offset]
-        reduced_results = self.comm.reduce(results, op=reduce_subscript_op, root=0)
-        results = self.comm.scatter(reduced_results, root=0)
+        if not self._larger_than_c_long:
+            local_results = np.array(local_results)
+            results = np.zeros_like(remote_queries, dtype=int)
+            for i, query in enumerate(remote_queries):
+                for j, q in enumerate(query):
+                    if q is not None and q >= self.offset and q < self.offset + len(self.local_basis):
+                        results[i, j] = psr.bytes2int(self.local_basis[q - self.offset], self.num_spin_orbitals)
 
-        local_results[remote_mask] = results[:len_remote_query]
+            result = np.empty((max_remote_queries[0]), dtype = int)
+            self.comm.Reduce_scatter(results, result, op = MPI.MAX)
+
+            local_results[remote_mask] = [psr.int2bytes(val, self.num_spin_orbitals) for val in result[:len_remote_query]]
+            local_results = local_results.tolist()
+        else:
+            results = [[psr.int2bytes(0, self.num_spin_orbitals) for _ in row] for row in remote_queries]
+            for i, query in enumerate(remote_queries):
+                for j, q in enumerate(query):
+                    if q is not None and q >= self.offset and q < self.offset + len(self.local_basis):
+                        results[i][j] = self.local_basis[q - self.offset]
+
+            results = self.comm.reduce(results, op = getitem_reduce_matrix_op, root = 0)
+            result = self.comm.scatter(results, root = 0)
+
+            j = 0
+            for i in range(len(local_results)):
+                if remote_mask[i]:
+                    local_results[i] = result[j]
+                    j += 1
         for i, res in enumerate(local_results):
-            if res is None:
+            if res == psr.int2bytes(0, self.num_spin_orbitals):
                 raise IndexError(f"Could not find index {local_query[i]} in basis with size {self.size}!")
 
-        return local_results.tolist()
+        return local_results
 
     def _getitem_slice(self, s):
         start = s.start
@@ -331,22 +358,32 @@ class Basis:
         if not remote_query:
             return local_result
 
-        queries = np.empty((self.comm.size,), dtype=int)
+        queries = np.empty((self.comm.size), dtype=int)
         self.comm.Allgather(np.array([i]), queries)
-        results = np.array([[None] for _ in queries])
-        for i, query in enumerate(queries):
-            if query < 0:
-                query = self.size + query
-            if query >= self.offset and query < self.offset + len(self.local_basis):
-                results[i] = self.local_basis[query - self.offset]
 
-        reduced_results = self.comm.reduce(results, op=reduce_subscript_op, root=0)
-        result = self.comm.scatter(reduced_results)
-        assert len(result.shape) == 1
-        assert result.shape[0] == 1
-        if result[0] is None:
+        if not self._larger_than_c_long:
+            results = np.zeros_like(queries)
+            for i, query in enumerate(queries):
+                if query < 0:
+                    query = self.size + query
+                if query >= self.offset and query < self.offset + len(self.local_basis):
+                    results[i] = psr.bytes2int(self.local_basis[query - self.offset], self.num_spin_orbitals)
+            result = np.empty((1), dtype = int)
+            self.comm.Reduce_scatter(results, result, op=MPI.MAX)
+            result = psr.int2bytes(result[0], self.num_spin_orbitals)
+        else:
+            results = [psr.int2bytes(0, self.num_spin_orbitals) for _ in queries]
+            for i, query in enumerate(queries):
+                if query < 0:
+                    query = self.size + query
+                if query >= self.offset and query < self.offset + len(self.local_basis):
+                    results[i] = self.local_basis[query - self.offset]
+            results = self.comm.reduce(results, op = getitem_reduce_op, root = 0)
+            result = self.comm.scatter(results, root = 0)
+
+        if result == psr.int2bytes(0, self.num_spin_orbitals):
             raise IndexError(f"Could not find index {i} in basis with size {self.size}!")
-        return result[0]
+        return result
 
     def index(self, val):
         if isinstance(val, self.dtype):
@@ -359,20 +396,11 @@ class Basis:
     def _index_sequence(self, s):
         if self.comm is None:
             results = [self._index_dict[val] if val in self.local_basis else self.size for val in s]
-            # results = [np.searchsorted(self.local_basis, val, side="left") for val in s]
-            # for i, res in enumerate(results):
-            #     if res == self.size or self.local_basis[res] != s[i]:
-            #         raise ValueError(f"Could not find state {s[i]} in basis!")
             return results.tolist()
 
         local_result = np.array([self._index_dict[val] if val in self.local_basis else self.size for val in s], dtype = int)
-        # local_result = np.searchsorted(self.local_basis, s, side="left")
-        # for i, val in enumerate(local_result):
-        #     if val == len(self.local_basis) or self.local_basis[val] != s[i]:
-        #         local_result[i] = self.size
         remote_mask = local_result == self.size
         len_remote_query = sum(remote_mask)
-        # local_result[np.logical_not(remote_mask)] += self.offset
 
         max_remote_queries = np.empty((1), dtype=int)
         self.comm.Allreduce(np.array([len_remote_query]), max_remote_queries, op=MPI.MAX)
@@ -382,27 +410,29 @@ class Basis:
                 if res == self.size:
                     raise ValueError(f"Could not find {s[i]} in basis!")
             return local_result.tolist()
-        remote_query = np.array(
-            [psr.bytes2int(state, self.num_spin_orbitals) for i, state in enumerate(s) if remote_mask[i]], dtype=int
-        )
+        if not self._larger_than_c_long:
+            remote_query = np.array(
+                [psr.bytes2int(state, self.num_spin_orbitals) for i, state in enumerate(s) if remote_mask[i]], dtype=int
+            )
 
-        remote_query = np.append(
-            remote_query, np.array([0 for _ in range(len_remote_query, max_remote_queries)], dtype=int)
-        )
-        queries = np.empty((self.comm.size, max_remote_queries), dtype=int)
-        self.comm.Allgather(remote_query, queries)
+            remote_query = np.append(
+                remote_query, np.array([0 for _ in range(len_remote_query, max_remote_queries)], dtype=int)
+            )
+            queries = np.empty((self.comm.size, max_remote_queries), dtype=int)
+            self.comm.Allgather(remote_query, queries)
+            queries = [[psr.int2bytes(state, self.num_spin_orbitals) for state in row] for row in queries]
+        else:
+            remote_query = [state for i, state in enumerate(s) if remote_mask[i]]
+            remote_query.extend([psr.int2bytes(0, self.num_spin_orbitals) for _ in range(len_remote_query, max_remote_queries)])
+            queries = self.comm.allgather(remote_query)
 
-        results = np.empty((self.comm.size, max_remote_queries), dtype=int)
+        results = np.empty((self.comm.size, max_remote_queries), dtype = int)
         results[:, :] = self.size
 
         for i, query in enumerate(queries):
             for j, q in enumerate(query):
-                if q != 0:
-                    q_state = psr.int2bytes(q, self.num_spin_orbitals)
-                    results[i, j] = self._index_dict[q_state] if q_state in self.local_basis else self.size
-                    # res = np.searchsorted(self.local_basis, q_state, side="left")
-                    # if res != len(self.local_basis) and self.local_basis[res] == q_state:
-                    #     results[i, j] = res # + self.offset
+                if q != psr.int2bytes(0, self.num_spin_orbitals):
+                    results[i, j] = self._index_dict[q] if q in self.local_basis else self.size
         result = np.empty((max_remote_queries), dtype=int)
         self.comm.Reduce_scatter(results, result, op=MPI.MIN)
 
@@ -417,27 +447,29 @@ class Basis:
     def _index_single(self, val):
         if self.comm is None:
             return self._index_dict[val]
-            # res = np.searchsorted(self.local_basis, val, side="left")
             if res != self.size and self.local_basis[res] == val:
                 return res
             raise ValueError(f"Index {val} not in basis with size {self.size}")
 
-        local_result = np.searchsorted(self.local_basis, val)
-        if local_result != len(self.local_basis) and self.local_basis[local_result] == val:
-            local_result = self.size
+        local_result = self._index_dict[val] if val in self.local_basis else self.size
         remote_query = self.comm.allreduce(local_result == self.size, op=MPI.LOR)
         if not remote_query:
-            return self.offset + local_result
+            return local_result
 
-        query = psr.bytes2int(val, self.num_spin_orbitals)
-        queries = self.comm.allgather(query)
-        results = np.empty((self.comm.size), dtype=int)
-        results[:] = self.size
-        for i, q in enumerate(queries):
-            q_state = psr.int2bytes(q, self.num_spin_orbitals)
-            res = np.searchsorted(self.local_basis, q_state, side="left")
-            if res != len(self.local_basis) and self.local_basis[res] == q_state:
-                results[i] = self.offset + res
+        if not self._larger_than_c_long: 
+            query = psr.bytes2int(val, self.num_spin_orbitals)
+            queries = np.empty((self.comm.size), dtype = int)
+            self.comm.Allgather(np.array([query], dtype = int), queries)
+            results = np.empty((self.comm.size), dtype=int)
+            results[:] = self.size
+            for i, q in enumerate(queries):
+                q_state = psr.int2bytes(q, self.num_spin_orbitals)
+                results[i] = self._index_dict[q_state] if q_state in self.local_basis else self.size
+        else:
+            queries = self.comm.allgather(val)
+            results = np.empty((self.comm.size), dtype=int)
+            for i, q in enumerate(queries):
+                results[i] = self._index_dict[q] if q in self.local_basis else self.size
         result = np.empty((1), dtype=int)
         self.comm.Reduce_scatter(results, result, op=MPI.MIN)
         result = result[0]
