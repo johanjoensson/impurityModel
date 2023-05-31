@@ -1954,40 +1954,43 @@ def get_hamiltonian_hermitian_operator_from_h_dict_new(
     # Number of basis states
     n = basis.size
 
-    column_states = [state for state in h_dict.keys() if state in basis.local_basis]
-    column_indices = basis.index(column_states)
+    unique_states = list(set([state for state in h_dict] + [state for col in h_dict for state in h_dict[col]]))
+    unique_indices = basis.index(unique_states)
 
-    row_states_for_each_column = [ [state for state in h_dict[column_state] ] for column_state in column_states]
-    max_len_row_states = comm.allreduce(len(column_states), op = MPI.MAX)
-    row_indices_for_each_column = []
+    state_to_index = {}
+    for i in range(len(unique_states)):
+        state = unique_states[i]
+        index = unique_indices[i]
+        state_to_index[state] = index
 
-    flat_row_states_for_each_column = [state for row_states in row_states_for_each_column for state in row_states]
-    flat_row_indices_for_each_column = basis.index(flat_row_states_for_each_column)
+    flat_column_indices = []
+    flat_row_indices = []
+    flat_values = []
+    for col in h_dict.keys():
+        for row in (h_dict[col]).keys():
+            flat_column_indices.append(state_to_index[col])
+            flat_row_indices.append(state_to_index[row])
+            flat_values.append(h_dict[col][row])
 
-    cols = np.zeros((len(flat_row_states_for_each_column)), dtype = int)
-    rows = np.zeros((len(flat_row_states_for_each_column)), dtype = int)
-    data = np.zeros((len(flat_row_states_for_each_column)), dtype = complex)
-    diagonal_indices = np.array(basis.local_indices)
-    diagonal = np.zeros((len(basis.local_basis)), dtype = float)
-    row_offset = 0
-    for i in range( len(column_states) ):
-        col = column_indices[i]
-        column_state = column_states[i]
-        for j in range(len(row_states_for_each_column[i])):
-            row = flat_row_indices_for_each_column[row_offset + j]
-            row_state = row_states_for_each_column[i][j]
-            val = h_dict[column_state][row_state]
-            if row == col:
-                diagonal[row - basis.offset] = np.real(val)
-            elif col < row:
-                cols[row_offset + j] = col
-                rows[row_offset + j] = row
-                data[row_offset + j] = val
-        row_offset += len(row_states_for_each_column[i])
+
+    cols = np.empty((0), dtype = int)
+    rows = np.empty((0), dtype = int)
+    data = np.empty((0), dtype = complex)
+    diagonal_indices = np.empty((0), dtype = np.ulonglong)
+    diagonal = np.empty((0), dtype = float)
+    for i in range(len(flat_values)):
+        row = flat_row_indices[i]
+        col = flat_column_indices[i]
+        val = flat_values[i]
+        if row == col:
+            diagonal_indices = np.append(diagonal_indices, [np.ulonglong(row)])
+            diagonal = np.append(diagonal, [np.real(val)])
+        elif col < row:
+            cols = np.append(cols, [col])
+            rows = np.append(rows, [row])
+            data = np.append(data, [val])
 
     h_triangular = scipy.sparse.csr_matrix((data, (rows, cols)), shape=(n, n), dtype = complex)
-    diagonal = np.array(diagonal, dtype = float)
-    diagonal_indices = np.array(diagonal_indices, dtype = np.int32)
     h_local = NewHermitianOperator(diagonal, diagonal_indices, h_triangular)
     if return_h_local:
         h = h_local

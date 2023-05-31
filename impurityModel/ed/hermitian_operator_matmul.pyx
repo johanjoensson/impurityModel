@@ -58,7 +58,7 @@ class NewHermitianOperator(sp.sparse.linalg.LinearOperator):
 
 
 def hermitian_operator_matvec(const double[:] diagonal,
-                              const int[:] diagonal_indices,
+                              const size_t[:] diagonal_indices,
                               const complex[:] csr_data,
                               const int[:] csr_indices,
                               const int[:] csr_index_ptr,
@@ -76,7 +76,7 @@ def hermitian_operator_matvec(const double[:] diagonal,
     return res
 
 def hermitian_operator_matmat(const double[:] diagonal,
-                              const int[:] diagonal_indices,
+                              const size_t[:] diagonal_indices,
                               const complex[:] csr_data,
                               const int[:] csr_indices,
                               const int[:] csr_index_ptr,
@@ -98,7 +98,7 @@ def hermitian_operator_matmat(const double[:] diagonal,
 @cython.boundscheck(False)
 @cython.wraparound(False)
 cdef void csr_dense_matvec(const double[:] diagonal,
-                           const int[:] diagonal_indices,
+                           const size_t[:] diagonal_indices,
                            const complex[:] csr_data,
                            const int[:] csr_indices,
                            const int[:] csr_index_ptr,
@@ -125,7 +125,7 @@ cdef void csr_dense_matvec(const double[:] diagonal,
 @cython.boundscheck(False)
 @cython.wraparound(False)
 cdef void csr_dense_matmat(const double[:] diagonal,
-                           const int[:] diagonal_indices,
+                           const size_t[:] diagonal_indices,
                            const complex[:] csr_data,
                            const int[:] csr_indices,
                            const int[:] csr_index_ptr,

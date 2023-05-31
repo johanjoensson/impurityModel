@@ -36,51 +36,28 @@ def find_gs(h_op, N0, delta_occ, bath_states, num_spin_orbitals, rank, verbose =
     delta_imp_occ, delta_val_occ, delta_con_occ = delta_occ
     num_val_baths, num_cond_baths = bath_states
     sum_bath_states = {l: num_val_baths[l] + num_cond_baths[l] for l in num_val_baths}
-    # set up for N0 +- 1, 0
-    dN = [-1, 0, 1]
-    trial_basis = [
-            Basis(
-                valence_baths        = num_val_baths,
-                conduction_baths     = num_cond_baths,
-                delta_valence_occ    = delta_val_occ,
-                delta_conduction_occ = delta_con_occ,
-                delta_impurity_occ   = delta_imp_occ,
-                nominal_impurity_occ = {l: N0[0][l] + dN[0] for l in N0[0]},
-                verbose = verbose,
-                comm = MPI.COMM_WORLD
-                ),
-            Basis(
-                valence_baths        = num_val_baths,  
-                conduction_baths     = num_cond_baths,
-                delta_valence_occ    = delta_val_occ,
-                delta_conduction_occ = delta_con_occ,
-                delta_impurity_occ   = delta_imp_occ,
-                nominal_impurity_occ = {l: N0[0][l] + dN[1] for l in N0[0]},
-                verbose = verbose,
-                comm = MPI.COMM_WORLD
-                ),
-            Basis(
-                valence_baths        = num_val_baths,
-                conduction_baths     = num_cond_baths,
-                delta_valence_occ    = delta_val_occ,
-                delta_conduction_occ = delta_con_occ,
-                delta_impurity_occ   = delta_imp_occ,
-                nominal_impurity_occ = {l: N0[0][l] + dN[2] for l in N0[0]},
-                verbose = verbose,
-                comm = MPI.COMM_WORLD
-                )
-            ]
-
     e_gs = np.inf
     basis_gs = None
     h_gs = None
     selected = 0
     energies = []
-    for i, basis in enumerate(trial_basis):
+    # set up for N0 +- 1, 0
+    dN = [-1, 0, 1]
+    for i, d in enumerate(dN):
+        basis = Basis(
+                valence_baths        = num_val_baths,
+                conduction_baths     = num_cond_baths,
+                delta_valence_occ    = delta_val_occ,
+                delta_conduction_occ = delta_con_occ,
+                delta_impurity_occ   = delta_imp_occ,
+                nominal_impurity_occ = {l: N0[0][l] + d for l in N0[0]},
+                verbose = verbose,
+                comm = MPI.COMM_WORLD
+                )
         expanded_basis, h_dict, h = finite.setup_hamiltonian(num_spin_orbitals, h_op, basis, verbose = verbose)
         e_trial, _ = finite.eigensystem_new(
                 h,
-                basis,
+                expanded_basis,
                 e_max = 0,
                 k = 1,
                 verbose = verbose,
