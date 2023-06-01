@@ -94,9 +94,8 @@ def setup_hamiltonian(
 
 def mpi_matmul(h_local):
     def matmat(m):
-        res_local = h_local @ m
-        res = np.empty_like(res_local)
-        comm.Allreduce(res_local, res)
+        res = np.empty((h_local.shape[0]), dtype = complex)
+        comm.Allreduce(h_local @ m, res, op = MPI.SUM)
         return res
 
     return matmat

@@ -302,7 +302,7 @@ class Basis:
                 displacements = np.array([sum(recv_counts[:p]) for p in range(self.comm.size)])
             self.comm.Gatherv(send_list[r], (queries, recv_counts, displacements, MPI.UINT64_T), root = r)
 
-        results = np.empty((len(l)), dtype = self.np_dtype)
+        results = np.empty((sum(recv_counts)), dtype = self.np_dtype)
         for i, query in enumerate(queries):
             if query >= self.offset and query < self.offset + len(self.local_basis):
                 results[i] = self.local_basis[query - self.offset]
