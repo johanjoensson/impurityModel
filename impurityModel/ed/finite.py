@@ -92,7 +92,7 @@ def setup_hamiltonian(
         print("<#Hamiltonian elements/column> = {:d}".format(int(nonzero / len(expanded_basis))))
     return expanded_basis, h_dict, h_local
 
-def mpi_matmul(h_local):
+def mpi_matmul(h_local, comm):
     def matmat(m):
         res = np.empty((h_local.shape[0]), dtype = complex)
         comm.Allreduce(h_local @ m, res, op = MPI.SUM)
@@ -137,7 +137,7 @@ def eigensystem_new(
 
     """
 
-    h = scipy.sparse.linalg.LinearOperator(h_local.shape, matvec = mpi_matmul(h_local), matmat = mpi_matmul(h_local), dtype = h_local.dtype)
+    h = scipy.sparse.linalg.LinearOperator(h_local.shape, matvec = mpi_matmul(h_local, comm), rmatvec = mpi_matmul(h_local, comm), matmat = mpi_matmul(h_local, comm), rmatmat = mpi_matmul(h_local, comm), dtype = h_local.dtype)
     # h = scipy.sparse.linalg.LinearOperator(h_local.shape, matvec = mpi_matmul, rmatvec = mpi_matmul, matmat = mpi_matmul, rmatmat = mpi_matmul, dtype = h_local.dtype)
     if rank == 0 and verbose:
         print("Diagonalize the Hamiltonian...")
