@@ -292,10 +292,18 @@ def get_block_Green(
         t0 = time.perf_counter()
     psi_start = np.zeros((N, n), dtype=complex)
     for i, psi in enumerate(psi_arr):
+
+        states = []
+        amps = []
         for ps, amp in psi.items():
-            psi_start[basis.index(ps), i] = amp
-            # psi_start[bisect_left(basis_index, ps), i] = amp
-            # psi_start[np.searchsorted(basis_index, ps), i] = amp
+            states.append(ps)
+            amps.append(amp)
+        indices = basis.index(states)
+        psi_start[indices, i] = amps
+
+        #     psi_start[basis.index(ps), i] = amp
+        #     # psi_start[bisect_left(basis_index, ps), i] = amp
+        #     # psi_start[np.searchsorted(basis_index, ps), i] = amp
     if verbose and rank == 0:
         print (f"time(set up psi_start) = {time.perf_counter() - t0}")
 
