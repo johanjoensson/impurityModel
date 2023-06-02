@@ -86,7 +86,7 @@ def setup_hamiltonian(
         nonzero = comm.reduce(h_local.nnz, root = 0, op = MPI.SUM)
     if verbose:
         print (f"h_local :\n{h_local}")
-        print("<#Hamiltonian elements/column> = {:d}".format(int(nonzero / len(expanded_basis))))
+        print(f"<#Hamiltonian elements/column> = {int(nonzero / len(expanded_basis))}", flush = True)
     return expanded_basis, h_dict, h_local
 
 def mpi_matmul(h_local, comm):
@@ -2446,7 +2446,7 @@ def expand_basis_and_build_hermitian_hamiltonian(
         t0 = time.perf_counter()
     # Obtain Hamiltonian in HermitianOperator form.
     h = get_hamiltonian_hermitian_operator_from_h_dict(h_dict, expanded_basis, parallelization_mode, return_h_local)
-    if rank == 0 and verbose:
+    if verbose:
         print("time(get_hamiltonian_matrix_from_h_dict) = {:.3f} seconds.".format(time.perf_counter() - t0))
         t0 = time.perf_counter()
 
@@ -2528,29 +2528,30 @@ def expand_basis_and_build_hermitian_hamiltonian_new(
 
     """
     # Measure time to expand basis
-    if rank == 0:
+    if verbose:
         t0 = time.perf_counter()
     h_dict = basis.expand(hOp, h_dict)
 
-    if rank == 0 and verbose:
+    if verbose:
         print("time(expand_basis) = {:.3f} seconds.".format(time.perf_counter() - t0))
         t0 = time.perf_counter()
     # Obtain Hamiltonian in HermitianOperator form.
     h = get_hamiltonian_hermitian_operator_from_h_dict_new(h_dict, basis, return_h_local, comm = comm)
-    if rank == 0 and verbose:
+    if verbose:
         print("time(get_hamiltonian_matrix_from_h_dict) = {:.3f} seconds.".format(time.perf_counter() - t0))
         t0 = time.perf_counter()
 
     if parallelization_mode == "H_build":
         # Total Hamiltonian size. Only used for printing it.
         len_h_dict_total = comm.reduce(len(h_dict))
-        if rank == 0 and verbose:
+        if verbose:
             print(
                 "Hamiltonian basis sizes: "
                 f"len(basis_index) = {len(basis)}, "
                 f"np.shape(h)[0] = {np.shape(h)[0]}, "
                 f"len(h_dict) = {len(h_dict)}, "
-                f"len(h_dict_total) = {len_h_dict_total}"
+                f"len(h_dict_total) = {len_h_dict_total}",
+                flush = True
             )
     elif parallelization_mode == "serial":
         if rank == 0 and verbose:
