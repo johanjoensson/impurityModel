@@ -179,14 +179,12 @@ def eigensystem_new(
 
     if not return_eigvecs:
         return es[:sum(mask)]
-    indices_to_keep = set(i for i in range(basis.size) for v in vecs.T if abs(v[i])**2 > slaterWeightMin)
-    indices_to_keep = list(indices_to_keep)
-    states_to_keep = basis[indices_to_keep]
-    psis = [{states_to_keep[i]: v[indices_to_keep[i]] for i in range(len(indices_to_keep))} for v in vecs.T]
-    # psis = [
-    #     {basis[i]: v[i] for i in range(basis.size) if abs(v[i])**2 > slaterWeightMin} 
-    #     for v in vecs.T
-    # ]
+    psis = []
+    for v in vecs.T:
+        indices = [i for i in range(basis.size) if abs(v[i])** 2 > slaterWeightMin]
+        states = basis[indices]
+        psis.append({state: v[i] for state, i in zip(states, indices)})
+
     return es[:sum(mask)], psis[:sum(mask)]
 
 def eigensystem(
