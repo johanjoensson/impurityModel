@@ -1,5 +1,6 @@
 import numpy as np
 from mpi4py import MPI
+from math import ceil
 
 try:
     from collections.abc import Sequence
@@ -191,15 +192,19 @@ class Basis:
         self.size = len(initial_basis)
         self.local_indices = range(offset, offset + local_len)
         self._index_dict = {state : self.offset + i for i, state in enumerate(self.local_basis)}
-        self.is_distributed = comm is not None
-        self.dtype = type(self.local_basis[0])
-        self.np_dtype = f"|S{len(self.local_basis[0])}"
-        self.n_bytes = len(self.local_basis[0])
+        self.dtype = type(psr.int2bytes(0, self.num_spin_orbitals))
+        self.n_bytes = int(ceil(self.num_spin_orbitals/8))
+        self.np_dtype = f"|S{self.n_bytes}"
 
         local_index_bounds = (self.offset, self.offset + len(self.local_basis))
-        local_state_bounds = (self.local_basis[0], self.local_basis[-1])
+        if len(self.local_basis) > 0:
+            local_state_bounds = (self.local_basis[0], self.local_basis[-1])
+        else:
+            local_state_bounds = (None, None)
         self.index_bounds = self.comm.allgather(local_index_bounds)
         self.state_bounds = self.comm.allgather(local_state_bounds)
+
+        self.is_distributed = comm is not None
 
     def expand(self, op, op_dict):
         done = False
@@ -272,7 +277,10 @@ class Basis:
         self.local_indices = range(self.offset, self.offset + len(self.local_basis))
 
         local_index_bounds = (self.offset, self.offset + len(self.local_basis))
-        local_state_bounds = (self.local_basis[0], self.local_basis[-1])
+        if len(self.local_basis) > 0:
+            local_state_bounds = (self.local_basis[0], self.local_basis[-1])
+        else:
+            local_state_bounds = (None, None)
         self.index_bounds = self.comm.allgather(local_index_bounds)
         self.state_bounds = self.comm.allgather(local_state_bounds)
 
@@ -398,7 +406,7 @@ class Basis:
         send_to_ranks = []
         for val in s:
             for r in range(self.comm.size):
-                if val >= self.state_bounds[r][0] and val <= self.state_bounds[r][1]:
+                if self.state_bounds[r][0] is not None and val >= self.state_bounds[r][0] and val <= self.state_bounds[r][1]:
                     send_list[r].append(val)
                     send_to_ranks.append(r)
         send_order = np.argsort(send_to_ranks, kind = 'stable')
@@ -446,7 +454,7 @@ class Basis:
 
         send_list = [[] for _ in range(self.comm.size)]
         for r in range(self.comm.size):
-            if val >= self.state_bounds[r][0] and val <= self.state_bounds[r][1]:
+            if self.state_bounds[r][0] is not Nonte and val >= self.state_bounds[r][0] and val <= self.state_bounds[r][1]:
                 send_list[r].extend(val)
         recv_counts = np.empty((self.comm.size), dtype = int)
         queries = None
