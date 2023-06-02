@@ -208,7 +208,7 @@ def calc_selfenergy(
             )
     if verbosity >= 2:
         finite.printThermalExpValues_new(sum_bath_states, es, psis, tau, energy_cut)
-        finite.printExpValues_new(sum_bath_states, es, psis, tau, energy_cut)
+        finite.printExpValues(sum_bath_states, es, psis)
         # finite.printSlaterDeterminantsAndWeights(psis = psis, nPrintSlaterWeights = nPrintSlaterWeights)
 
     if verbosity >= 1:

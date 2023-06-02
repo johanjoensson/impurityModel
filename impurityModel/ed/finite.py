@@ -17,7 +17,7 @@ from bisect import bisect_left
 from impurityModel.ed import product_state_representation as psr
 from impurityModel.ed import create
 from impurityModel.ed import remove
-from impurityModel.ed.average import k_B, thermal_average
+from impurityModel.ed.average import k_B, thermal_average, thermal_average_scale_indep
 from impurityModel.ed.hermitian_operator import HermitianOperator
 from impurityModel.ed.hermitian_operator_matmul import NewHermitianOperator
 
@@ -179,9 +179,10 @@ def eigensystem_new(
 
     if not return_eigvecs:
         return es[:sum(mask)]
-    indices_to_keep = [i for i in range(basis.size) if abs(v[i])**2 > slaterWeightMin]
+    indices_to_keep = set(i for i in range(basis.size) for v in vecs.T if abs(v[i])**2 > slaterWeightMin)
+    indices_to_keep = list(indices_to_keep)
     states_to_keep = basis[indices_to_keep]
-    psis = [{states_to_keep[i]: indices_to_keep[i] for i in range(len(indices))}]
+    psis = [{states_to_keep[i]: v[indices_to_keep[i]] for i in range(len(indices_to_keep))} for v in vecs.T]
     # psis = [
     #     {basis[i]: v[i] for i in range(basis.size) if abs(v[i])**2 > slaterWeightMin} 
     #     for v in vecs.T
@@ -369,16 +370,16 @@ def printThermalExpValues_new(nBaths, es, psis, tau, ecut):
     e = e[mask]
     psis = np.array(psis)[mask]
     occs = thermal_average_scale_indep(e, np.array([getEgT2gOccupation(nBaths, psi) for psi in psis]), tau = tau)
-    print("<E-E0> = {:8.7f}".format(thermal_average(e, e, T=T)))
-    print("<N(3d)> = {:8.7f}".format(thermal_average(e, [getTraceDensityMatrix(nBaths, psi) for psi in psis], T=T)))
+    print("<E-E0> = {:8.7f}".format(thermal_average_scale_indep(e, e, tau = tau)))
+    print("<N(3d)> = {:8.7f}".format(thermal_average_scale_indep(e, [getTraceDensityMatrix(nBaths, psi) for psi in psis], tau = tau)))
     print("<N(egDn)> = {:8.7f}".format(occs[0]))
     print("<N(egUp)> = {:8.7f}".format(occs[1]))
     print("<N(t2gDn)> = {:8.7f}".format(occs[2]))
     print("<N(t2gUp)> = {:8.7f}".format(occs[3]))
-    print("<Lz(3d)> = {:8.7f}".format(thermal_average(e, [getLz3d(nBaths, psi) for psi in psis], T=T)))
-    print("<Sz(3d)> = {:8.7f}".format(thermal_average(e, [getSz3d(nBaths, psi) for psi in psis], T=T)))
-    print("<L^2(3d)> = {:8.7f}".format(thermal_average(e, [getLsqr3d(nBaths, psi) for psi in psis], T=T)))
-    print("<S^2(3d)> = {:8.7f}".format(thermal_average(e, [getSsqr3d(nBaths, psi) for psi in psis], T=T)))
+    print("<Lz(3d)> = {:8.7f}".format(thermal_average_scale_indep(e, [getLz3d(nBaths, psi) for psi in psis], tau = tau)))
+    print("<Sz(3d)> = {:8.7f}".format(thermal_average_scale_indep(e, [getSz3d(nBaths, psi) for psi in psis], tau = tau)))
+    print("<L^2(3d)> = {:8.7f}".format(thermal_average_scale_indep(e, [getLsqr3d(nBaths, psi) for psi in psis], tau = tau)))
+    print("<S^2(3d)> = {:8.7f}".format(thermal_average_scale_indep(e, [getSsqr3d(nBaths, psi) for psi in psis], tau = tau)))
 
 def printThermalExpValues(nBaths, es, psis, T=300, cutOff=10):
     """
