@@ -54,15 +54,21 @@ def find_gs(h_op, N0, delta_occ, bath_states, num_spin_orbitals, rank, verbose =
                 verbose = verbose,
                 comm = MPI.COMM_WORLD
                 )
+        if verbose:
+            print(f"{basis.size=}")
+            print(f"expand basis")
         expanded_basis, h_dict, h = finite.setup_hamiltonian(num_spin_orbitals, h_op, basis, verbose = verbose)
-        e_trial, _ = finite.eigensystem_new(
+        e_trial = finite.eigensystem_new(
                 h,
                 expanded_basis,
                 e_max = 0,
                 k = 1,
                 verbose = verbose,
-                eigenValueTol = 0
+                eigenValueTol = 0,
+                return_eigvecs = False,
                 )
+        if verbose:
+            print(f"{e_trial=}")
         energies.append(e_trial[0])
         if e_trial[0] < e_gs:
             e_gs = e_trial[0]
@@ -71,7 +77,7 @@ def find_gs(h_op, N0, delta_occ, bath_states, num_spin_orbitals, rank, verbose =
             selected = i
     underline = {0: ' ', 1: ' ', 2: ' '}
     underline[selected] = '='
-    if rank == 0:
+    if verbose:
         l = [l for l in N0[0]][0]
         print (f"N0:    {N0[0][l] - 1: ^10d}  {N0[0][l]: ^10d}  {N0[0][l] + 1: ^10d}")
         print (f"E0:    {energies[0]: ^10.6f}  {energies[1]: ^10.6f}  {energies[2]: ^10.6f}")
@@ -203,10 +209,9 @@ def calc_selfenergy(
     if verbosity >= 2:
         finite.printThermalExpValues(sum_bath_states, es, psis)
         finite.printExpValues(sum_bath_states, es, psis)
-        # Print Slater determinants and weights
-        finite.printSlaterDeterminantsAndWeights(psis=psis, nPrintSlaterWeights=nPrintSlaterWeights)
+        finite.printSlaterDeterminantsAndWeights(psis = psis, nPrintSlaterWeights = nPrintSlaterWeights)
 
-    if rank == 0 and verbosity >= 1:
+    if verbosity >= 1:
         print("Consider {:d} eigenstates for the spectra \n".format(len(es)), flush=True)
         print("Calculate Interacting Green's function...")
 

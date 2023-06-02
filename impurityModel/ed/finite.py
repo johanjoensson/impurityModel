@@ -108,6 +108,7 @@ def eigensystem_new(
             dk = 10,
             eigenValueTol=1e-9,
             slaterWeightMin=1e-7,
+            return_eigvecs = True,
             verbose=True,
             ):
     """
@@ -137,19 +138,37 @@ def eigensystem_new(
 
     """
 
-    h = scipy.sparse.linalg.LinearOperator(h_local.shape, matvec = mpi_matmul(h_local, comm), rmatvec = mpi_matmul(h_local, comm), matmat = mpi_matmul(h_local, comm), rmatmat = mpi_matmul(h_local, comm), dtype = h_local.dtype)
-    # h = scipy.sparse.linalg.LinearOperator(h_local.shape, matvec = mpi_matmul, rmatvec = mpi_matmul, matmat = mpi_matmul, rmatmat = mpi_matmul, dtype = h_local.dtype)
-    if rank == 0 and verbose:
-        print("Diagonalize the Hamiltonian...")
-        print(f"{h}")
+    if h_local.shape[0] < 5000:
+            if verbose:
+                print(f"Small hamiltonian matrix")
+            diagonal = np.empty((h_local.shape[0]), dtype = float)
+            recv_counts = comm.allgather(len(h_local.diagonal))
+            offsets = np.array([sum(recv_counts[:p]) for p in range(comm.size)])
+            comm.Allgatherv(h_local.diagonal, (diagonal, recv_counts, offsets, MPI.DOUBLE))
+            offdiagonals = comm.allreduce(h_local.triangular_part, op = MPI.SUM) 
+            h = offdiagonals + scipy.sparse.diags(diagonal, offsets = 0, format = 'csr', dtype = complex)
+            es, vecs = np.linalg.eigh(h.toarray(), UPLO = 'L')
+            indices = np.argsort(es)
+            es = es[indices]
+            vecs = vecs[:, indices]
+            mask = es - es[0] <= e_max
+    else:
+            h = scipy.sparse.linalg.LinearOperator(h_local.shape, matvec = mpi_matmul(h_local, comm), rmatvec = mpi_matmul(h_local, comm), matmat = mpi_matmul(h_local, comm), rmatmat = mpi_matmul(h_local, comm), dtype = h_local.dtype)
+            # h = scipy.sparse.linalg.LinearOperator(h_local.shape, matvec = mpi_matmul, rmatvec = mpi_matmul, matmat = mpi_matmul, rmatmat = mpi_matmul, dtype = h_local.dtype)
+            if verbose:
+                print("Diagonalize the Hamiltonian...")
+                print(f"{h}")
 
-    vecs = None # np.ones((h.shape[0], 1), dtype = complex)
-    es = []
-    mask = [True]
-    while len(es) - sum(mask) < k:
-        es, vecs = eigsh(h, k = max(k + dk, min(6, h.shape[0])), which = "SA", tol = eigenValueTol)
-        mask = es - es[0] <= e_max
-        dk += k
+            vecs = None # np.ones((h.shape[0], 1), dtype = complex)
+            es = []
+            mask = [True]
+            while len(es) - sum(mask) < k:
+                es, vecs = eigsh(h, k = max(k + dk, min(6, h.shape[0])), which = "SA", tol = eigenValueTol)
+                indices = np.argsort(es)
+                es = es[indices]
+                vecs = vecs[:, indices]
+                mask = es - es[0] <= e_max
+                dk += k
 
     indices = np.argsort(es)
     es = es[indices]
@@ -161,6 +180,8 @@ def eigensystem_new(
 
         print(f"Proceed with {len(es[mask])} eigenstates.\n")
 
+    if not return_eigvecs:
+        return es[:sum(mask)]
     psis = [
         {basis[i]: v[i] for i in range(basis.size) if abs(v[i])**2 > slaterWeightMin} 
         for v in vecs.T
@@ -1975,14 +1996,14 @@ def get_hamiltonian_hermitian_operator_from_h_dict_new(
     cols = np.empty((0), dtype = int)
     rows = np.empty((0), dtype = int)
     data = np.empty((0), dtype = complex)
-    diagonal_indices = np.empty((0), dtype = np.ulonglong)
+    diagonal_indices = np.empty((0), dtype = np.intc)
     diagonal = np.empty((0), dtype = float)
     for i in range(len(flat_values)):
         row = flat_row_indices[i]
         col = flat_column_indices[i]
         val = flat_values[i]
         if row == col:
-            diagonal_indices = np.append(diagonal_indices, [np.ulonglong(row)])
+            diagonal_indices = np.append(diagonal_indices, [np.intc(row)])
             diagonal = np.append(diagonal, [np.real(val)])
         elif col < row:
             cols = np.append(cols, [col])
