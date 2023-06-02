@@ -263,24 +263,23 @@ def eigensystem(
 
 
 def printSlaterDeterminantsAndWeights(psis, nPrintSlaterWeights):
-    if rank == 0:
-        print("Slater determinants/product states and correspoinding weights")
-        weights = []
-        for i, psi in enumerate(psis):
-            print("Eigenstate {:d}.".format(i))
-            print("Consists of {:d} product states.".format(len(psi)))
-            ws = np.array([abs(a) ** 2 for a in psi.values()])
-            s = np.array(list(psi.keys()))
-            j = np.argsort(ws)
-            ws = ws[j[-1::-1]]
-            s = s[j[-1::-1]]
-            weights.append(ws)
-            if nPrintSlaterWeights > 0:
-                print("Highest (product state) weights:")
-                print(ws[:nPrintSlaterWeights])
-                print("Corresponding product states:")
-                print(s[:nPrintSlaterWeights])
-                print("")
+    print("Slater determinants/product states and correspoinding weights")
+    weights = []
+    for i, psi in enumerate(psis):
+        print("Eigenstate {:d}.".format(i))
+        print("Consists of {:d} product states.".format(len(psi)))
+        ws = np.array([abs(a) ** 2 for a in psi.values()])
+        s = np.array(list(psi.keys()))
+        j = np.argsort(ws)
+        ws = ws[j[-1::-1]]
+        s = s[j[-1::-1]]
+        weights.append(ws)
+        if nPrintSlaterWeights > 0:
+            print("Highest (product state) weights:")
+            print(ws[:nPrintSlaterWeights])
+            print("Corresponding product states:")
+            print(s[:nPrintSlaterWeights])
+            print("")
 
 
 def printExpValues(nBaths, es, psis, n=None):
@@ -329,6 +328,55 @@ def printExpValues(nBaths, es, psis, n=None):
         print("\n")
 
 
+def printThermalExpValues_new(nBaths, es, psis, tau, ecut):
+    """
+    print several thermal expectation values, e.g. E, N, L^2.
+
+    cutOff - float. Energies more than cutOff*kB*T above the
+            lowest energy is not considered in the average.
+    """
+    e = es - es[0]
+    # Select relevant energies
+    mask = e < ecut
+    e = e[mask]
+    psis = np.array(psis)[mask]
+    # occs = thermal_average(e, np.array([getEgT2gOccupation(nBaths, psi) for psi in psis]), T=T)
+    occs = thermal_average_scale_indep(e, np.array([getEgT2gOccupation(nBaths, psi) for psi in psis]), tau = tau)
+    print("<E-E0> = {:8.7f}".format(thermal_average(e, e, T=T)))
+    print("<N(3d)> = {:8.7f}".format(thermal_average(e, [getTraceDensityMatrix(nBaths, psi) for psi in psis], T=T)))
+    print("<N(egDn)> = {:8.7f}".format(occs[0]))
+    print("<N(egUp)> = {:8.7f}".format(occs[1]))
+    print("<N(t2gDn)> = {:8.7f}".format(occs[2]))
+    print("<N(t2gUp)> = {:8.7f}".format(occs[3]))
+    print("<Lz(3d)> = {:8.7f}".format(thermal_average(e, [getLz3d(nBaths, psi) for psi in psis], T=T)))
+    print("<Sz(3d)> = {:8.7f}".format(thermal_average(e, [getSz3d(nBaths, psi) for psi in psis], T=T)))
+    print("<L^2(3d)> = {:8.7f}".format(thermal_average(e, [getLsqr3d(nBaths, psi) for psi in psis], T=T)))
+    print("<S^2(3d)> = {:8.7f}".format(thermal_average(e, [getSsqr3d(nBaths, psi) for psi in psis], T=T)))
+
+def printThermalExpValues_new(nBaths, es, psis, tau, ecut):
+    """
+    print several thermal expectation values, e.g. E, N, L^2.
+
+    cutOff - float. Energies more than cutOff*kB*T above the
+            lowest energy is not considered in the average.
+    """
+    e = es - es[0]
+    # Select relevant energies
+    mask = e < ecut
+    e = e[mask]
+    psis = np.array(psis)[mask]
+    occs = thermal_average_scale_indep(e, np.array([getEgT2gOccupation(nBaths, psi) for psi in psis]), tau = tau)
+    print("<E-E0> = {:8.7f}".format(thermal_average(e, e, T=T)))
+    print("<N(3d)> = {:8.7f}".format(thermal_average(e, [getTraceDensityMatrix(nBaths, psi) for psi in psis], T=T)))
+    print("<N(egDn)> = {:8.7f}".format(occs[0]))
+    print("<N(egUp)> = {:8.7f}".format(occs[1]))
+    print("<N(t2gDn)> = {:8.7f}".format(occs[2]))
+    print("<N(t2gUp)> = {:8.7f}".format(occs[3]))
+    print("<Lz(3d)> = {:8.7f}".format(thermal_average(e, [getLz3d(nBaths, psi) for psi in psis], T=T)))
+    print("<Sz(3d)> = {:8.7f}".format(thermal_average(e, [getSz3d(nBaths, psi) for psi in psis], T=T)))
+    print("<L^2(3d)> = {:8.7f}".format(thermal_average(e, [getLsqr3d(nBaths, psi) for psi in psis], T=T)))
+    print("<S^2(3d)> = {:8.7f}".format(thermal_average(e, [getSsqr3d(nBaths, psi) for psi in psis], T=T)))
+
 def printThermalExpValues(nBaths, es, psis, T=300, cutOff=10):
     """
     print several thermal expectation values, e.g. E, N, L^2.
@@ -353,7 +401,6 @@ def printThermalExpValues(nBaths, es, psis, T=300, cutOff=10):
         print("<Sz(3d)> = {:8.7f}".format(thermal_average(e, [getSz3d(nBaths, psi) for psi in psis], T=T)))
         print("<L^2(3d)> = {:8.7f}".format(thermal_average(e, [getLsqr3d(nBaths, psi) for psi in psis], T=T)))
         print("<S^2(3d)> = {:8.7f}".format(thermal_average(e, [getSsqr3d(nBaths, psi) for psi in psis], T=T)))
-
 
 def dc_MLFT(n3d_i, c, Fdd, n2p_i=None, Fpd=None, Gpd=None):
     r"""
