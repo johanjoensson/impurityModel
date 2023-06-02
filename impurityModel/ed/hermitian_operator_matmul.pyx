@@ -21,6 +21,7 @@ class NewHermitianOperator(sp.sparse.linalg.LinearOperator):
         self.triangular_part = triangular_part
         self.dtype = triangular_part.dtype
         self.nnz = 2*len(triangular_part.nonzero()[0]) + len(diagonal)
+        self.columns = diagonal_indices
 
 
     def _matvec(self, v):
@@ -58,7 +59,7 @@ class NewHermitianOperator(sp.sparse.linalg.LinearOperator):
 
 
 def hermitian_operator_matvec(const double[:] diagonal,
-                              const size_t[:] diagonal_indices,
+                              const unsigned long long[:] diagonal_indices,
                               const complex[:] csr_data,
                               const int[:] csr_indices,
                               const int[:] csr_index_ptr,
@@ -76,7 +77,7 @@ def hermitian_operator_matvec(const double[:] diagonal,
     return res
 
 def hermitian_operator_matmat(const double[:] diagonal,
-                              const size_t[:] diagonal_indices,
+                              const unsigned long long[:] diagonal_indices,
                               const complex[:] csr_data,
                               const int[:] csr_indices,
                               const int[:] csr_index_ptr,
@@ -98,7 +99,7 @@ def hermitian_operator_matmat(const double[:] diagonal,
 @cython.boundscheck(False)
 @cython.wraparound(False)
 cdef void csr_dense_matvec(const double[:] diagonal,
-                           const size_t[:] diagonal_indices,
+                           const unsigned long long[:] diagonal_indices,
                            const complex[:] csr_data,
                            const int[:] csr_indices,
                            const int[:] csr_index_ptr,
@@ -125,7 +126,7 @@ cdef void csr_dense_matvec(const double[:] diagonal,
 @cython.boundscheck(False)
 @cython.wraparound(False)
 cdef void csr_dense_matmat(const double[:] diagonal,
-                           const size_t[:] diagonal_indices,
+                           const unsigned long long[:] diagonal_indices,
                            const complex[:] csr_data,
                            const int[:] csr_indices,
                            const int[:] csr_index_ptr,

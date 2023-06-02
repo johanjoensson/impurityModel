@@ -21,10 +21,7 @@ from impurityModel.ed.average import k_B, thermal_average
 from impurityModel.ed.hermitian_operator import HermitianOperator
 from impurityModel.ed.hermitian_operator_matmul import NewHermitianOperator
 
-try:
-    from primme import eigsh
-except:
-    from scipy.sparse.linalg import eigsh
+from scipy.sparse.linalg import eigsh
 
 
 # MPI variables
@@ -1936,6 +1933,58 @@ def get_hamiltonian_hermitian_operator_from_h_dict(
         raise Exception("Wrong parallelization mode!")
     return h
 
+def get_hamiltonian_hermitian_operator_columns(N, comm, verbose):
+    """
+    Distrubute the columns of the Hamiltonian matrix among the MPI ranks so
+    that each rank has roughly the same number of elements.
+        [ 0 0 0 0 0 0 0 0 ... ]
+        [ 0 1 1 1 1 1 1 1 ... ]
+        [ 0 1 2 2 2 2 2 2 ... ]
+        [ 0 1 2 3 3 3 3 3 ... ]
+    H = [ 0 1 2 3 4 4 4 4 ... ]
+        [ 0 1 2 3 4 5 5 5 ... ]
+        [ 0 1 2 3 4 5 6 6 ... ]
+        [ 0 1 2 3 4 5 6 7 ... ]
+        [ . . . . . . . . ... ]
+    """
+    p = comm.size
+    start = np.empty((p))
+    stop = np.empty((p))
+    if p > N:
+        stop = np.arange(1, p + 1)
+        stop[N:] = N
+    else:
+        stop[-1] = 0
+        for i in range(p):
+            stop[i] = int(( N - 1 - np.sqrt( (stop[i-1] - N)**2  - N**2/p)))
+        remainder = N - stop[-1]
+        inc_rank = 0
+        inc = 1
+        while remainder > 0 and inc_rank < p - 1 :
+            stop[-1] = 0
+            try:
+                for i in range(inc_rank, p):
+                    stop[i] = int(( N - np.sqrt( (stop[i-1] - N)**2  - N**2/p))) + inc
+                remainder = N - stop[-1]
+                inc += 1
+            except ValueError:
+                stop[inc_rank] -= 1
+                inc_rank += 1
+                inc = 1
+    start[1:] = stop[:-1]
+    start[0] = 0
+    stop[-1] = N
+    average_number_of_elements = N**2/p
+    number_of_elements = (start - N)**2 - (stop - N)**2
+    if verbose:
+        print (f"{N=}, {p=}")
+        print (f"New")
+        print (f"|-->max(|N - N_avg|): {np.max(np.abs(number_of_elements - average_number_of_elements))}")
+        print (f"--->max(|N - N_avg|/N_avg): {np.max(np.abs(number_of_elements - average_number_of_elements))/average_number_of_elements}")
+    return start[comm.rank], stop[comm.rank]
+
+
+
 def get_hamiltonian_hermitian_operator_from_h_dict_new(
     h_dict, basis, return_h_local=False, comm = None
 ):
@@ -1974,6 +2023,9 @@ def get_hamiltonian_hermitian_operator_from_h_dict_new(
     # Number of basis states
     n = basis.size
 
+    # col_start, col_end = get_hamiltonian_hermitian_operator_columns(n, comm, verbose = True)
+    # col_states = basis[int(col_start) : int(col_end)]
+
     unique_states = list(set([state for state in h_dict] + [state for col in h_dict for state in h_dict[col]]))
     unique_indices = basis.index(unique_states)
 
@@ -1996,14 +2048,14 @@ def get_hamiltonian_hermitian_operator_from_h_dict_new(
     cols = np.empty((0), dtype = int)
     rows = np.empty((0), dtype = int)
     data = np.empty((0), dtype = complex)
-    diagonal_indices = np.empty((0), dtype = np.intc)
+    diagonal_indices = np.empty((0), dtype = np.ulonglong)
     diagonal = np.empty((0), dtype = float)
     for i in range(len(flat_values)):
         row = flat_row_indices[i]
         col = flat_column_indices[i]
         val = flat_values[i]
         if row == col:
-            diagonal_indices = np.append(diagonal_indices, [np.intc(row)])
+            diagonal_indices = np.append(diagonal_indices, [np.ulonglong(row)])
             diagonal = np.append(diagonal, [np.real(val)])
         elif col < row:
             cols = np.append(cols, [col])
