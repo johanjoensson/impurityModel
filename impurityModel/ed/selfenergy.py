@@ -207,9 +207,9 @@ def calc_selfenergy(
             eigenValueTol = 0
             )
     if verbosity >= 2:
-        finite.printThermalExpValues(sum_bath_states, es, psis)
-        finite.printExpValues(sum_bath_states, es, psis)
-        finite.printSlaterDeterminantsAndWeights(psis = psis, nPrintSlaterWeights = nPrintSlaterWeights)
+        finite.printThermalExpValues_new(sum_bath_states, es, psis, tau, energy_cut)
+        finite.printExpValues_new(sum_bath_states, es, psis, tau, energy_cut)
+        # finite.printSlaterDeterminantsAndWeights(psis = psis, nPrintSlaterWeights = nPrintSlaterWeights)
 
     if verbosity >= 1:
         print("Consider {:d} eigenstates for the spectra \n".format(len(es)), flush=True)
