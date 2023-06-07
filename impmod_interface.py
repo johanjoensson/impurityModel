@@ -2,6 +2,7 @@ from impmod_ed import ffi
 import numpy as np
 import scipy as sp
 import traceback
+import sys
 
 
 def matrix_print(matrix):
@@ -60,6 +61,44 @@ class dcStruct:
         )
 
 
+def parse_solver_line(solver_line):
+    """
+    N0 dN dVal dCon Nbath [pro] [dense_cutoff 5000]
+    """
+    # Remove comments from the solver line
+    solver_line = solver_line.split("!")[0]
+    solver_line = solver_line.split("#")[0]
+    solver_array = solver_line.strip().split()
+    assert len(solver_array) >= 5, "The impurityModel ED solver requires at least 5 arguments; N0 dN dValence dConduction nBaths"
+    try:
+        nominal_occ = (int(solver_array[0]), 0, 0)
+        delta_occ = (int(solver_array[1]), int(solver_array[2]), int(solver_array[3]))
+        nBaths = int(solver_array[4])
+    except Exception as e:
+        raise RuntimeError(f"{e}\n"
+                           f"--->N0 {solver_array[0]}\n"
+                           f"--->dN {solver_array[1]}\n"
+                           f"--->dValence {solver_array[2]}\n"
+                           f"--->dConduction {solver_array[3]}\n"
+                           f"--->Nbaths {solver_array[4]}")
+    partial_reort = False
+    dense_cutoff = 5000
+    if len(solver_array) > 5:
+        skip_next = False
+        for i in range(len(solver_array)):
+            if i < 5:
+                continue
+            if skip_next:
+                skip_next = False
+                continue
+            arg = solver_array[i]
+            if arg.lower() == "pro":
+                partial_reort = True
+            elif arg.lower() == "dense_cutoff":
+                dense_cutoff = int(solver_array[i + 1])
+                skip_next = True
+    return nominal_occ, delta_occ, nBaths, partial_reort, dense_cutoff
+
 @ffi.def_extern()
 def run_impmod_ed(
     rspt_label,
@@ -96,8 +135,6 @@ def run_impmod_ed(
     label = ffi.string(rspt_label, 18).decode("ascii")
     solver_line = ffi.string(rspt_solver_line, 100).decode("ascii")
 
-    if rank == 0:
-        print(f"{label.strip()}\n----{solver_line.strip()}")
     h_dft = np.ndarray(
         buffer=ffi.buffer(rspt_h_dft, n_orb * n_orb * size_complex), shape=(n_orb, n_orb), order="F", dtype=complex
     )
@@ -158,23 +195,13 @@ def run_impmod_ed(
     for i in range(l + 1):
         slater[2 * i] = slater_from_rspt[i]
 
-    # Remove comments from the solver line
-    solver_line = solver_line.split("!")[0]
-    solver_line = solver_line.split("#")[0]
-    solver_array = solver_line.strip().split()
-    assert len(solver_array) >= 5
-    nominal_occ = ({l: int(solver_array[0])}, {l: 0}, {l: 0})
-    delta_occ = ({l: int(solver_array[1])}, {l: int(solver_array[2])}, {l: int(solver_array[3])})
-    partial_reort = False
-    if len(solver_array) > 5:
-        for arg in solver_array[5:]:
-            if arg.lower() == "pro":
-                partial_reort = True
-                break
-    if rank == 0:
-        print (f"Partial reorthogonalization? {partial_reort}")
+    stdout_save = sys.stdout
+    sys.stdout = open(f"impurityModel-{label.strip()}.out", "a")
 
-    bath_states_per_orbital = int(solver_array[4])
+    nominal_occ, delta_occ, bath_states_per_orbital, partial_reort, dense_cutoff = parse_solver_line(solver_line)
+    nominal_occ = ({l: nominal_occ[0]}, {l: nominal_occ[1]}, {l:nominal_occ[2]})
+    delta_occ = ({l: delta_occ[0]}, {l: delta_occ[1]}, {l:delta_occ[2]})
+
     h_op, e_baths = get_ed_h0(
         h_dft,
         hyb,
@@ -185,10 +212,10 @@ def run_impmod_ed(
         eim,
         gamma=0.01,
         imag_only=False,
-        valence_bath_only=delta_occ[2][l] == 0,
+        valence_bath_only = delta_occ[2][l] == 0,
         label = label.strip(),
         save_baths_and_hopping = rspt_dc_flag == 1,
-        verbose = verbosity >=2 and rank == 0,
+        verbose = verbosity >= 2 and rank == 0,
         comm = comm,
     )
     h_op = comm.bcast(h_op, root=0)
@@ -196,10 +223,6 @@ def run_impmod_ed(
 
     n_bath_states = ({l: len(e_baths[e_baths <= 0])}, {l: len(e_baths[e_baths > 0])})
     nominal_occ = (nominal_occ[0], {l: len(e_baths[e_baths <= 0])}, nominal_occ[2])
-
-    if rank == 0:
-        print(f"Nominal occupation: {nominal_occ}")
-        print(f"Bath states: {n_bath_states}", flush = True)
 
     if rspt_dc_flag == 1:
         dc_line = ffi.string(rspt_dc_line, 100).decode("ascii")
@@ -219,7 +242,7 @@ def run_impmod_ed(
         )
 
         try:
-            sig_dc[:, :] = fixed_peak_dc(h_op, dc_struct, rank=rank, verbose  = rank == 0 and verbosity >= 1)
+            sig_dc[:, :] = fixed_peak_dc(h_op, dc_struct, rank=rank, verbose  = rank == 0 and verbosity >= 1, dense_cutoff = dense_cutoff)
         except Exception as e:
             print(f"!"*100)
             print(f"Exception {repr(e)} caught on rank {rank}!")
@@ -227,6 +250,9 @@ def run_impmod_ed(
             print (f"Adding positive infinity to the imaginaty part of the DC selfenergy.", flush = True)
             print(f"!"*100)
             sig_dc[:, :] = 1j*np.inf
+
+        sys.stdout.close()
+        sys.stdout = stdout_save
         return
 
     from rspt2spectra.hyb_fit import get_block_structure
@@ -257,7 +283,7 @@ def run_impmod_ed(
     # print an error message and make sure that the outside code becomes aware that something
     # has gone terribly wrong.
     try:
-        selfenergy.run(cluster, h_op, 1j * iw, w, eim, tau, verbosity if rank == 0 else 0, partial_reort = partial_reort)
+        selfenergy.run(cluster, h_op, 1j * iw, w, eim, tau, verbosity if rank == 0 else 0, partial_reort = partial_reort, dense_cutoff = dense_cutoff)
 
         # Rotate self energy from spherical harmonics basis to RSPt's corr basis
         u = cluster.rot_spherical
@@ -279,6 +305,10 @@ def run_impmod_ed(
         if rank == 0:
             print (f"Self energy calculated! impurityModel shutting down.", flush = True)
 
+    sys.stdout.close()
+    sys.stdout = stdout_save
+    return
+
 def symmetrize_sigma(sigma, blocks, equivalent_blocks):
     symmetrized_sigma = np.zeros_like(sigma)
     for equivalent_block in equivalent_blocks:
@@ -290,9 +320,8 @@ def symmetrize_sigma(sigma, blocks, equivalent_blocks):
     return symmetrized_sigma
 
 
-def fixed_peak_dc(h0_op, dc_struct, rank, verbose = True):
-    import primme
-    from impurityModel.ed import finite, selfenergy
+def fixed_peak_dc(h0_op, dc_struct, rank, verbose, dense_cutoff):
+    from impurityModel.ed import finite
     from rspt2spectra import h2imp
     from impurityModel.ed.manybody_basis import Basis
     from mpi4py import MPI
@@ -357,9 +386,9 @@ def fixed_peak_dc(h0_op, dc_struct, rank, verbose = True):
         h_op_c = finite.addOps([h0_op, u, dc_op])
         h_op_i = finite.c2i_op(sum_bath_states, h_op_c)
         _, _, h_sparse = finite.setup_hamiltonian(num_spin_orbitals, h_op_i.copy(), basis_upper, verbose=False)
-        e_upper, _ = finite.eigensystem_new(h_sparse, basis_upper, 0, k = 2, dk = 0, eigenValueTol = 0, verbose = False)
+        e_upper, _ = finite.eigensystem_new(h_sparse, basis_upper, 0, k = 2, dk = 0, eigenValueTol = 0, verbose = False, dense_cutoff = dense_cutoff)
         _, _, h_sparse = finite.setup_hamiltonian(num_spin_orbitals, h_op_i.copy(), basis_lower, verbose=False)
-        e_lower, _ = finite.eigensystem_new(h_sparse, basis_lower, 0, k = 2, dk = 0, eigenValueTol = 0, verbose = False)
+        e_lower, _ = finite.eigensystem_new(h_sparse, basis_lower, 0, k = 2, dk = 0, eigenValueTol = 0, verbose = False, dense_cutoff = dense_cutoff)
         return e_upper[0] - e_lower[0] - peak_position
 
     res = sp.optimize.root_scalar(F, x0 = 0, x1 = F(0))
@@ -417,7 +446,11 @@ def get_ed_h0(
     from rspt2spectra.hyb_fit import fit_hyb
     from rspt2spectra import energies
     from rspt2spectra import h2imp
+    from impurityModel.ed.greens_function import save_Greens_function
 
+    if comm.rank == 0:
+        with open(f"hyb-in-{label}.npy", 'wb') as f:
+            np.save(f, hyb)
     if save_baths_and_hopping:
         eb, v = fit_hyb(
             w,
@@ -431,6 +464,7 @@ def get_ed_h0(
             x_lim=(w[0], 0 if valence_bath_only else w[-1]),
             verbose = verbose,
             comm = comm,
+            new_v = True,
         )
         if comm is not None and comm.rank == 0:
             with open(f"impurityModel_bath_energies_and_hopping_parameters_{label}.npy", 'wb') as f:
@@ -456,7 +490,13 @@ def get_ed_h0(
                 x_lim=(w[0], 0 if valence_bath_only else w[-1]),
                 verbose = verbose,
                 comm = comm,
+                new_v = True,
             )
+    if verbose:
+        fit_hyb = offdiagonal.get_hyb(w + eim * 1j, eb, v)
+        save_Greens_function(fit_hyb, w, f"{label}-hyb-fit")
+        with open(f"{label}-hyb-fit.npy", 'wb') as f:
+            np.save(f, fit_hyb)
 
     if verbose:
         print(f"DFT hamiltonian")

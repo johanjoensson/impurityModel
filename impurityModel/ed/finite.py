@@ -107,35 +107,38 @@ def eigensystem_new(
             slaterWeightMin=1e-7,
             return_eigvecs = True,
             verbose=True,
+            dense_cutoff = 5000,
             ):
     """
     Return eigen-energies and eigenstates.
 
     Parameters
     ----------
-    n_spin_orbitals : int
-        Total number of spin-orbitals in the system.
-    hOp : dict
-        tuple : float or complex
-        The Hamiltonian operator to diagonalize.
-        Each keyword contains ordered instructions
-        where to add or remove electrons.
-        Values indicate the strengths of
-        the corresponding processes.
-    basis : tuple
-        All product states included in the basis.
+    h_local : HermitianOperator object
+        Contains part of the full many-body Hamiltonian, local to this MPI rank.
+    basis : Basis object
+        Objext containing all or part of the many-body basis.
     e_max : float
         Maximum energy difference for excited states
-    groundDiagMode : str
-        'Lanczos' or 'full' diagonalization.
+    k : int
+        Calculate at least k eigenstates above e_max, helps ensure convergence of eigenvalues and eigenstates.
+    dk : int
+        At every call to eigsh, calculate k + dk eigenstates. dk is increased until we have calculated at least k eigenstates above e_max.
     eigenValueTol : float
         The precision of the returned eigenvalues.
     slaterWeightMin : float
         Minimum product state weight for product states to be kept.
-
+    return_eigvecs : bool
+        If True, return eigenvalues and eigenvectors for all states with energy within e_max of the lowest energy state.
+        If False, return only the calculated eigenvalues.
+    verbose : bool
+        If True, print stuff. If False, don't.
+    dense_cutoff : int
+        All h_local with dimension lower than dense_cutoff are expanded into a full dense matrix and then diagonalised.
+        For h_local with higher dimension, an iterative method is used instead.
     """
 
-    if h_local.shape[0] < 5000:
+    if h_local.shape[0] < dense_cutoff:
             if verbose:
                 print(f"Small hamiltonian matrix")
             diagonal = np.empty((h_local.shape[0]), dtype = float)
@@ -151,7 +154,6 @@ def eigensystem_new(
             mask = es - es[0] <= e_max
     else:
             h = scipy.sparse.linalg.LinearOperator(h_local.shape, matvec = mpi_matmul(h_local, comm), rmatvec = mpi_matmul(h_local, comm), matmat = mpi_matmul(h_local, comm), rmatmat = mpi_matmul(h_local, comm), dtype = h_local.dtype)
-            # h = scipy.sparse.linalg.LinearOperator(h_local.shape, matvec = mpi_matmul, rmatvec = mpi_matmul, matmat = mpi_matmul, rmatmat = mpi_matmul, dtype = h_local.dtype)
             if verbose:
                 print("Diagonalize the Hamiltonian...")
                 print(f"{h}")

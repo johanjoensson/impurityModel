@@ -32,7 +32,7 @@ def matrix_print(matrix, label: str = None):
         print(label)
     print(ms)
 
-def find_gs(h_op, N0, delta_occ, bath_states, num_spin_orbitals, rank, verbose = True):
+def find_gs(h_op, N0, delta_occ, bath_states, num_spin_orbitals, rank, verbose, dense_cutoff):
     delta_imp_occ, delta_val_occ, delta_con_occ = delta_occ
     num_val_baths, num_cond_baths = bath_states
     sum_bath_states = {l: num_val_baths[l] + num_cond_baths[l] for l in num_val_baths}
@@ -66,6 +66,7 @@ def find_gs(h_op, N0, delta_occ, bath_states, num_spin_orbitals, rank, verbose =
                 verbose = verbose,
                 eigenValueTol = 0,
                 return_eigvecs = False,
+                dense_cutoff = dense_cutoff,
                 )
         if verbose:
             print(f"{e_trial=}")
@@ -89,7 +90,7 @@ def find_gs(h_op, N0, delta_occ, bath_states, num_spin_orbitals, rank, verbose =
 
 
 
-def run(cluster, h0, iw, w, delta, tau, verbosity=0, partial_reort = False):
+def run(cluster, h0, iw, w, delta, tau, verbosity, partial_reort, dense_cutoff):
     """
     cluster     -- The impmod_cluster object containing loads of data.
     h0          -- Non-interacting hamiltonian.
@@ -126,6 +127,7 @@ def run(cluster, h0, iw, w, delta, tau, verbosity=0, partial_reort = False):
         rotation=cluster.rot_spherical,
         cluster_label=cluster.label,
         partial_reort = partial_reort,
+        dense_cutoff = dense_cutoff,
     )
     cluster.sig[:,:,:] = 0
     cluster.sig_real[:,:,:] = 0
@@ -152,10 +154,11 @@ def calc_selfenergy(
     nPrintSlaterWeights,
     tolPrintOccupation,
     verbosity,
-    blocks = None,
-    rotation=None,
-    cluster_label=None,
-    partial_reort = False,
+    blocks,
+    rotation,
+    cluster_label,
+    partial_reort,
+    dense_cutoff,
 ):
     """ """
     # MPI variables
@@ -181,7 +184,7 @@ def calc_selfenergy(
 
     num_spin_orbitals = 2*(2*l + 1) + sum(num_val_baths[l] + num_con_baths[l] for l in num_val_baths)
 
-    (n0_imp, n0_val, n0_con), basis, h_gs = find_gs(h, nominal_occ, delta_occ, num_bath_states, num_spin_orbitals, rank = rank, verbose = verbosity)
+    (n0_imp, n0_val, n0_con), basis, h_gs = find_gs(h, nominal_occ, delta_occ, num_bath_states, num_spin_orbitals, rank = rank, verbose = verbosity, dense_cutoff = dense_cutoff)
     delta_imp_occ, delta_val_occ, delta_con_occ = delta_occ
 
     restrictions = basis.restrictions
@@ -204,7 +207,8 @@ def calc_selfenergy(
             energy_cut,
             k = 2*(2*l + 1),
             verbose = verbosity >= 1,
-            eigenValueTol = 0
+            eigenValueTol = 0,
+            dense_cutoff = dense_cutoff,
             )
     if verbosity >= 2:
         finite.printThermalExpValues_new(sum_bath_states, es, psis, tau, energy_cut)
