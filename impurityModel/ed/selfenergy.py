@@ -12,9 +12,8 @@ import scipy as sp
 from impurityModel.ed.get_spectra import get_noninteracting_hamiltonian_operator, read_h0_operator, get_restrictions
 from impurityModel.ed import spectra
 from impurityModel.ed import finite
-from impurityModel.ed.finite import daggerOp, applyOp, inner, add, norm2
-from impurityModel.ed.average import k_B, thermal_average_scale_indep
-from impurityModel.ed.manybody_basis import Basis
+from impurityModel.ed.average import thermal_average_scale_indep
+from impurityModel.ed.manybody_basis import Basis, CIPSI_Basis
 
 from impurityModel.ed.greens_function import get_Greens_function, save_Greens_function
 
@@ -39,55 +38,59 @@ def find_gs(h_op, N0, delta_occ, bath_states, num_spin_orbitals, rank, verbose, 
     e_gs = np.inf
     basis_gs = None
     h_gs = None
-    selected = 0
+    gs_impurity_occ = None
+    selected = 1
     energies = []
     # set up for N0 +- 1, 0
     dN = [-1, 0, 1]
     for i, d in enumerate(dN):
-        basis = Basis(
-                valence_baths        = num_val_baths,
-                conduction_baths     = num_cond_baths,
-                delta_valence_occ    = delta_val_occ,
-                delta_conduction_occ = delta_con_occ,
-                delta_impurity_occ   = delta_imp_occ,
-                nominal_impurity_occ = {l: N0[0][l] + d for l in N0[0]},
-                verbose = verbose,
-                comm = MPI.COMM_WORLD
-                )
+        # basis = Basis(
+        basis = CIPSI_Basis(
+            H = h_op,
+            valence_baths=num_val_baths,
+            conduction_baths=num_cond_baths,
+            delta_valence_occ=delta_val_occ,
+            delta_conduction_occ=delta_con_occ,
+            delta_impurity_occ=delta_imp_occ,
+            nominal_impurity_occ={l: N0[0][l] + d for l in N0[0]},
+            truncation_threshold = 1e6,
+            verbose=verbose,
+            comm=MPI.COMM_WORLD,
+        )
         if verbose:
             print(f"{basis.size=}")
             print(f"expand basis")
-        expanded_basis, h_dict, h = finite.setup_hamiltonian(num_spin_orbitals, h_op, basis, verbose = verbose)
+        _ = basis.expand(h_op, dense_cutoff=dense_cutoff)
+        h = basis.build_sparse_operator(h_op)
+
         e_trial = finite.eigensystem_new(
-                h,
-                expanded_basis,
-                e_max = 0,
-                k = 1,
-                verbose = verbose,
-                eigenValueTol = 0,
-                return_eigvecs = False,
-                dense_cutoff = dense_cutoff,
-                )
-        if verbose:
-            print(f"{e_trial=}")
+            h,
+            basis,
+            e_max = 0,
+            k = 1,
+            dk = 5,
+            verbose=verbose,
+            eigenValueTol=0,
+            slaterWeightMin=0,
+            return_eigvecs=False,
+            dense_cutoff=dense_cutoff,
+        )
         energies.append(e_trial[0])
         if e_trial[0] < e_gs:
             e_gs = e_trial[0]
-            basis_gs = expanded_basis
+            basis_gs = basis
             h_gs = h
+            gs_impurity_occ = {l: N0[0][l] + d for l in N0[0]}
             selected = i
-    underline = {0: ' ', 1: ' ', 2: ' '}
-    underline[selected] = '='
+    underline = {0: " ", 1: " ", 2: " "}
+    underline[selected] = "="
     if verbose:
         l = [l for l in N0[0]][0]
-        print (f"N0:    {N0[0][l] - 1: ^10d}  {N0[0][l]: ^10d}  {N0[0][l] + 1: ^10d}")
-        print (f"E0:    {energies[0]: ^10.6f}  {energies[1]: ^10.6f}  {energies[2]: ^10.6f}")
-        print (f"       {underline[0]*10}  {underline[1]*10}  {underline[2]*10}")
+        print(f"N0:    {N0[0][l] - 1: ^10d}  {N0[0][l]: ^10d}  {N0[0][l] + 1: ^10d}")
+        print(f"E0:    {energies[0]: ^10.6f}  {energies[1]: ^10.6f}  {energies[2]: ^10.6f}")
+        print(f"       {underline[0]*10}  {underline[1]*10}  {underline[2]*10}")
 
-
-    return ({ l: N0[0][l] + dN[selected] for l in N0[0] }, N0[1], N0[2]), basis_gs, h_gs
-
-
+    return (gs_impurity_occ, N0[1], N0[2]), basis_gs, h_gs
 
 
 def run(cluster, h0, iw, w, delta, tau, verbosity, partial_reort, dense_cutoff):
@@ -104,7 +107,7 @@ def run(cluster, h0, iw, w, delta, tau, verbosity, partial_reort, dense_cutoff):
                    2 - SCREAM, insanely detailed output generated
     """
     energy_cut = 10
-    num_psi_max = sum(2*(2*l + 1) for l in cluster.nominal_occ[0])
+    num_psi_max = sum(2 * (2 * l + 1) for l in cluster.nominal_occ[0])
     nPrintSlaterWeights = 0
     tolPrintOccupation = 0.5
 
@@ -123,16 +126,16 @@ def run(cluster, h0, iw, w, delta, tau, verbosity, partial_reort, dense_cutoff):
         nPrintSlaterWeights,
         tolPrintOccupation,
         verbosity,
-        blocks = None, # cluster.blocks,
+        blocks=None,
         rotation=cluster.rot_spherical,
         cluster_label=cluster.label,
-        partial_reort = partial_reort,
-        dense_cutoff = dense_cutoff,
+        partial_reort=partial_reort,
+        dense_cutoff=dense_cutoff,
     )
-    cluster.sig[:,:,:] = 0
-    cluster.sig_real[:,:,:] = 0
-    cluster.sig_static[:,:] = 0
-    block_idxs = [np.ix_(block,block) for block in cluster.blocks]
+    cluster.sig[:, :, :] = 0
+    cluster.sig_real[:, :, :] = 0
+    cluster.sig_static[:, :] = 0
+    block_idxs = [np.ix_(block, block) for block in cluster.blocks]
     for block in block_idxs:
         cluster.sig[block] = sig_tmp[block]
         cluster.sig_real[block] = sig_real_tmp[block]
@@ -178,38 +181,56 @@ def calc_selfenergy(
     if rank == 0 and verbosity >= 2:
         finite.printOp(sum_bath_states, h, "Local Hamiltonian: ")
     h = finite.c2i_op(sum_bath_states, h)
-    if rank == 0:
-        with open(f"{cluster_label}_hamiltonian.pickle", 'wb') as f:
-            pickle.dump(h, f)
+    # if rank == 0:
+    #     with open(f"{cluster_label}_hamiltonian.pickle", "wb") as f:
+    #         pickle.dump(h, f)
 
-    num_spin_orbitals = 2*(2*l + 1) + sum(num_val_baths[l] + num_con_baths[l] for l in num_val_baths)
+    num_spin_orbitals = 2 * (2 * l + 1) + sum(num_val_baths[l] + num_con_baths[l] for l in num_val_baths)
 
-    (n0_imp, n0_val, n0_con), basis, h_gs = find_gs(h, nominal_occ, delta_occ, num_bath_states, num_spin_orbitals, rank = rank, verbose = verbosity, dense_cutoff = dense_cutoff)
+    (n0_imp, n0_val, n0_con), basis, _ = find_gs(
+        h,
+        nominal_occ,
+        delta_occ,
+        num_bath_states,
+        num_spin_orbitals,
+        rank=rank,
+        verbose=verbosity,
+        dense_cutoff=dense_cutoff,
+    )
     delta_imp_occ, delta_val_occ, delta_con_occ = delta_occ
-
     restrictions = basis.restrictions
-    
-    if rank == 0 and verbosity >= 2:
+
+    if verbosity >= 1:
+        print("Nominal occupation ({l: n0})")
+        print(f"N0, valence, conduction")
+        print(f"{n0_imp}, {n0_val}, {n0_con}")
+    if restrictions is not None and verbosity >= 2:
         print("Restrictions on occupation")
         for key, res in restrictions.items():
             print(f"{key} : {res}")
     # Measure how many physical processes the Hamiltonian contains.
-    if rank == 0 and verbosity >= 1:
+    if verbosity >= 1:
         print("{:d} processes in the Hamiltonian.".format(len(h)))
         print("Create basis...")
         print("#basis states = {:d}".format(len(basis)))
 
-    energy_cut *= tau
+    # energy_cut *= tau
+    energy_cut = -tau*np.log(np.finfo(float).eps)
 
+    basis.tau = tau
+    basis.expand(h, dense_cutoff = dense_cutoff)
+    h_gs = basis.build_sparse_operator(h)
     es, psis = finite.eigensystem_new(
-            h_gs,
-            basis,
-            energy_cut,
-            k = 2*(2*l + 1),
-            verbose = verbosity >= 1,
-            eigenValueTol = 0,
-            dense_cutoff = dense_cutoff,
-            )
+        h_gs,
+        basis,
+        energy_cut,
+        k=2 * (2 * l + 1),
+        dk=5,
+        verbose=verbosity >= 1,
+        eigenValueTol = 0,
+        slaterWeightMin = 1e-12,
+        dense_cutoff=dense_cutoff,
+    )
     if verbosity >= 2:
         finite.printThermalExpValues_new(sum_bath_states, es, psis, tau, energy_cut)
         finite.printExpValues(sum_bath_states, es, psis)
@@ -225,14 +246,17 @@ def calc_selfenergy(
         omega_mesh=w,
         es=es,
         psis=psis,
+        basis = basis,
         l=l,
         hOp=h,
         delta=delta,
         restrictions=restrictions,
-        blocks = blocks,
-        verbose = verbosity >= 2,
-        mpi_distribute = True,
-        partial_reort = partial_reort,
+        blocks=blocks,
+        verbose=verbosity >= 2,
+        mpi_distribute=True,
+        partial_reort=partial_reort,
+        dense_cutoff=dense_cutoff,
+        tau = tau,
     )
     if iw is not None:
         gs_matsubara_thermal_avg = thermal_average_scale_indep(es[: np.shape(gs_matsubara)[0]], gs_matsubara, tau=tau)
@@ -244,7 +268,13 @@ def calc_selfenergy(
         if verbosity >= 2:
             save_Greens_function(gs=gs_matsubara_thermal_avg, omega_mesh=iw, label=f"G-{cluster_label}", e_scale=1)
             if rotation is not None:
-                gs_rot = np.moveaxis(rotation[np.newaxis, :, :] @ np.moveaxis(gs_matsubara_thermal_avg, -1, 0) @ np.conj(rotation.T)[np.newaxis, :, :], 0, -1)
+                gs_rot = np.moveaxis(
+                    rotation[np.newaxis, :, :]
+                    @ np.moveaxis(gs_matsubara_thermal_avg, -1, 0)
+                    @ np.conj(rotation.T)[np.newaxis, :, :],
+                    0,
+                    -1,
+                )
                 save_Greens_function(gs=gs_rot, omega_mesh=iw, label=f"rotated-G-{cluster_label}", e_scale=1)
     if w is not None:
         gs_realaxis_thermal_avg = thermal_average_scale_indep(es[: np.shape(gs_realaxis)[0]], gs_realaxis, tau=tau)
@@ -256,7 +286,13 @@ def calc_selfenergy(
         if verbosity >= 2:
             save_Greens_function(gs=gs_realaxis_thermal_avg, omega_mesh=w, label=f"G-{cluster_label}", e_scale=1)
             if rotation is not None:
-                gs_rot = np.moveaxis(rotation[np.newaxis, :, :] @ np.moveaxis(gs_realaxis_thermal_avg, -1, 0) @ np.conj(rotation.T)[np.newaxis, :, :], 0, -1)
+                gs_rot = np.moveaxis(
+                    rotation[np.newaxis, :, :]
+                    @ np.moveaxis(gs_realaxis_thermal_avg, -1, 0)
+                    @ np.conj(rotation.T)[np.newaxis, :, :],
+                    0,
+                    -1,
+                )
                 save_Greens_function(gs=gs_rot, omega_mesh=w, label=f"rotated-G-{cluster_label}", e_scale=1)
     if rank == 0 and verbosity >= 1:
         print("Calculate self-energy...")
@@ -386,7 +422,10 @@ def get_sigma(
         if rotation is not None:
             rotated_g0_inv = rotation[np.newaxis, :, :] @ g0_inv @ np.conj(rotation.T)[np.newaxis, :, :]
             save_Greens_function(
-                np.moveaxis(np.linalg.inv(rotated_g0_inv), 0, -1), omega_mesh, label="rotated-G0-" + clustername, e_scale=1
+                np.moveaxis(np.linalg.inv(rotated_g0_inv), 0, -1),
+                omega_mesh,
+                label="rotated-G0-" + clustername,
+                e_scale=1,
             )
 
     g_inv = np.linalg.inv(np.moveaxis(g, -1, 0))

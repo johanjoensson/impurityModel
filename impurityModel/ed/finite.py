@@ -60,55 +60,60 @@ def get_job_tasks(rank, ranks, tasks_tot):
         tasks.append(tasks_tot[n_tot - rest + rank])
     return tuple(tasks)
 
+
 def setup_hamiltonian(
-        n_spin_orbitals,
-        hOp,
-        basis,
-        verbose = False,
-        mode = 'sparse',
-        ):
+    n_spin_orbitals,
+    hOp,
+    basis,
+    verbose=False,
+    mode="sparse",
+):
     if verbose:
         print("Create Hamiltonian matrix...")
-    if mode != 'sparse':
+    if mode != "sparse":
         h = get_hamiltonian_matrix(n_spin_orbitals, hOp, basis, verbose=verbose)
         nonzero = len(h.nonzero()[0])
-    elif mode == 'sparse':
+    elif mode == "sparse":
         h_local, h_dict, expanded_basis = expand_basis_and_build_hermitian_hamiltonian_new(
-                                                  n_spin_orbitals, 
-                                                  {}, 
-                                                  hOp, 
-                                                  basis, 
-                                                  restrictions = basis.restrictions, 
-                                                  verbose=verbose, 
-                                                  parallelization_mode='H_build', 
-                                                  return_h_local = True)
+            n_spin_orbitals,
+            {},
+            hOp,
+            basis,
+            restrictions=basis.restrictions,
+            verbose=verbose,
+            parallelization_mode="H_build",
+            return_h_local=True,
+        )
 
-        nonzero = comm.reduce(h_local.nnz, root = 0, op = MPI.SUM)
+        nonzero = comm.reduce(h_local.nnz, root=0, op=MPI.SUM)
     if verbose:
-        print (f"h_local :\n{h_local}")
-        print(f"<#Hamiltonian elements/column> = {int(nonzero / len(expanded_basis))}", flush = True)
+        print(f"h_local :\n{h_local}")
+        print(f"<#Hamiltonian elements/column> = {int(nonzero / len(expanded_basis))}", flush=True)
     return expanded_basis, h_dict, h_local
+
 
 def mpi_matmul(h_local, comm):
     def matmat(m):
-        res = np.empty((h_local.shape[0]), dtype = complex)
-        comm.Allreduce(h_local @ m, res, op = MPI.SUM)
+        n_cols = m.shape[1] if len(m.shape) > 1 else 1
+        res = np.zeros((h_local.shape[0], n_cols), dtype=complex)
+        comm.Allreduce(h_local @ m, res, op=MPI.SUM)
         return res
 
     return matmat
 
+
 def eigensystem_new(
-            h_local,
-            basis,
-            e_max,
-            k = 10,
-            dk = 10,
-            eigenValueTol=1e-9,
-            slaterWeightMin=1e-7,
-            return_eigvecs = True,
-            verbose=True,
-            dense_cutoff = 5000,
-            ):
+    h_local,
+    basis,
+    e_max,
+    k=10,
+    dk=10,
+    eigenValueTol=0,
+    slaterWeightMin=0,
+    return_eigvecs=True,
+    verbose=True,
+    dense_cutoff=5000,
+):
     """
     Return eigen-energies and eigenstates.
 
@@ -139,55 +144,70 @@ def eigensystem_new(
     """
 
     if h_local.shape[0] < dense_cutoff:
-            if verbose:
-                print(f"Small hamiltonian matrix")
-            diagonal = np.empty((h_local.shape[0]), dtype = float)
-            recv_counts = comm.allgather(len(h_local.diagonal))
-            offsets = np.array([sum(recv_counts[:p]) for p in range(comm.size)])
-            comm.Allgatherv(h_local.diagonal, (diagonal, recv_counts, offsets, MPI.DOUBLE))
-            offdiagonals = comm.allreduce(h_local.triangular_part, op = MPI.SUM) 
-            h = offdiagonals + scipy.sparse.diags(diagonal, offsets = 0, format = 'csr', dtype = complex)
-            es, vecs = np.linalg.eigh(h.toarray(), UPLO = 'L')
+        if verbose:
+            print(f"Small hamiltonian matrix")
+        # diagonal = np.empty((h_local.shape[0]), dtype = float)
+        # recv_counts = comm.allgather(len(h_local.diagonal))
+        # offsets = np.array([sum(recv_counts[:p]) for p in range(comm.size)])
+        # comm.Allgatherv(h_local.diagonal, (diagonal, recv_counts, offsets, MPI.DOUBLE))
+        # offdiagonals = comm.allreduce(h_local.triangular_part, op = MPI.SUM)
+        # h = offdiagonals + scipy.sparse.diags(diagonal, offsets = 0, format = 'csr', dtype = complex)
+        h = comm.allreduce(h_local, op=MPI.SUM)
+        # if comm.rank == 0:
+        #     print (f"Hermitian error in hamiltonian = {np.max(np.abs(h.getH() - h))}")
+        es, vecs = np.linalg.eigh(h.toarray(), UPLO="L")
+        indices = np.argsort(es)
+        es = es[indices]
+        vecs = vecs[:, indices]
+        mask = es - es[0] <= e_max
+    else:
+        h = scipy.sparse.linalg.LinearOperator(
+            h_local.shape,
+            matvec=mpi_matmul(h_local, comm),
+            rmatvec=mpi_matmul(h_local, comm),
+            matmat=mpi_matmul(h_local, comm),
+            rmatmat=mpi_matmul(h_local, comm),
+            dtype=h_local.dtype,
+        )
+        if verbose:
+            print("Diagonalize the Hamiltonian...")
+            print(f"{h}")
+
+        vecs = None  # np.ones((h.shape[0], 1), dtype = complex)
+        es = []
+        mask = [True]
+        while len(es) - sum(mask) < k:
+            es, vecs = eigsh(
+                h,
+                k=min(k + dk, h.shape[0] - 1),
+                which="SA",
+                tol=eigenValueTol,
+            )
             indices = np.argsort(es)
             es = es[indices]
             vecs = vecs[:, indices]
             mask = es - es[0] <= e_max
-    else:
-            h = scipy.sparse.linalg.LinearOperator(h_local.shape, matvec = mpi_matmul(h_local, comm), rmatvec = mpi_matmul(h_local, comm), matmat = mpi_matmul(h_local, comm), rmatmat = mpi_matmul(h_local, comm), dtype = h_local.dtype)
-            if verbose:
-                print("Diagonalize the Hamiltonian...")
-                print(f"{h}")
+            dk += k
 
-            vecs = None # np.ones((h.shape[0], 1), dtype = complex)
-            es = []
-            mask = [True]
-            while len(es) - sum(mask) < k:
-                es, vecs = eigsh(h, k = max(k + dk, min(6, h.shape[0])), which = "SA", tol = eigenValueTol)
-                indices = np.argsort(es)
-                es = es[indices]
-                vecs = vecs[:, indices]
-                mask = es - es[0] <= e_max
-                dk += k
-
-    indices = np.argsort(es)
-    es = es[indices]
-    vecs = vecs[:, indices]
     if verbose:
-        err_max = np.max(np.abs(np.conj(vecs.T) @ vecs - np.identity(vecs.shape[1])))
+        err_max = np.max(
+            np.abs(np.conj(vecs[:, : sum(mask)].T) @ vecs[:, : sum(mask)] - np.identity(vecs[:, : sum(mask)].shape[1]))
+        )
         if err_max > 1e-12:
             print(f"Warning! Obtained eigenvectors are not very orthogonal!\nMaximum overlap {err_max}")
 
         print(f"Proceed with {len(es[mask])} eigenstates.\n")
 
     if not return_eigvecs:
-        return es[:sum(mask)]
+        return es[: sum(mask)]
     psis = []
     for v in vecs.T:
-        indices = [i for i in range(basis.size) if abs(v[i])** 2 > slaterWeightMin]
+        indices = [i for i in range(basis.size) if abs(v[i]) ** 2 > slaterWeightMin]
         states = basis[indices]
         psis.append({state: v[i] for state, i in zip(states, indices)})
 
-    return es[:sum(mask)], psis[:sum(mask)]
+    return es[: sum(mask)], psis[: sum(mask)]
+
 
 def eigensystem(
     n_spin_orbitals,
@@ -198,7 +218,7 @@ def eigensystem(
     eigenValueTol=1e-9,
     slaterWeightMin=1e-7,
     verbose=True,
-    lock = None
+    lock=None,
 ):
     """
     Return eigen-energies and eigenstates.
@@ -244,7 +264,7 @@ def eigensystem(
         vecs = vecs[:, :nPsiMax]
     elif groundDiagMode == "Lanczos":
         # es, vecs = scipy.sparse.linalg.eigsh(h, k=nPsiMax, which="SA", tol=eigenValueTol)
-        es, vecs = primme.eigsh(h, k=nPsiMax, which="SA", tol=eigenValueTol, lock = lock)
+        es, vecs = primme.eigsh(h, k=nPsiMax, which="SA", tol=eigenValueTol, lock=lock)
         # Sort the eigenvalues and eigenvectors in ascending order.
         indices = np.argsort(es)
         es = np.array([es[i] for i in indices])
@@ -345,7 +365,7 @@ def printThermalExpValues_new(nBaths, es, psis, tau, ecut):
     e = e[mask]
     psis = np.array(psis)[mask]
     # occs = thermal_average(e, np.array([getEgT2gOccupation(nBaths, psi) for psi in psis]), T=T)
-    occs = thermal_average_scale_indep(e, np.array([getEgT2gOccupation(nBaths, psi) for psi in psis]), tau = tau)
+    occs = thermal_average_scale_indep(e, np.array([getEgT2gOccupation(nBaths, psi) for psi in psis]), tau=tau)
     print("<E-E0> = {:8.7f}".format(thermal_average(e, e, T=T)))
     print("<N(3d)> = {:8.7f}".format(thermal_average(e, [getTraceDensityMatrix(nBaths, psi) for psi in psis], T=T)))
     print("<N(egDn)> = {:8.7f}".format(occs[0]))
@@ -369,17 +389,26 @@ def printThermalExpValues_new(nBaths, es, psis, tau, ecut):
     mask = e < ecut
     e = e[mask]
     psis = np.array(psis)[mask]
-    occs = thermal_average_scale_indep(e, np.array([getEgT2gOccupation(nBaths, psi) for psi in psis]), tau = tau)
-    print("<E-E0> = {:8.7f}".format(thermal_average_scale_indep(e, e, tau = tau)))
-    print("<N(3d)> = {:8.7f}".format(thermal_average_scale_indep(e, [getTraceDensityMatrix(nBaths, psi) for psi in psis], tau = tau)))
+    occs = thermal_average_scale_indep(e, np.array([getEgT2gOccupation(nBaths, psi) for psi in psis]), tau=tau)
+    print("<E-E0> = {:8.7f}".format(thermal_average_scale_indep(e, e, tau=tau)))
+    print(
+        "<N(3d)> = {:8.7f}".format(
+            thermal_average_scale_indep(e, [getTraceDensityMatrix(nBaths, psi) for psi in psis], tau=tau)
+        )
+    )
     print("<N(egDn)> = {:8.7f}".format(occs[0]))
     print("<N(egUp)> = {:8.7f}".format(occs[1]))
     print("<N(t2gDn)> = {:8.7f}".format(occs[2]))
     print("<N(t2gUp)> = {:8.7f}".format(occs[3]))
-    print("<Lz(3d)> = {:8.7f}".format(thermal_average_scale_indep(e, [getLz3d(nBaths, psi) for psi in psis], tau = tau)))
-    print("<Sz(3d)> = {:8.7f}".format(thermal_average_scale_indep(e, [getSz3d(nBaths, psi) for psi in psis], tau = tau)))
-    print("<L^2(3d)> = {:8.7f}".format(thermal_average_scale_indep(e, [getLsqr3d(nBaths, psi) for psi in psis], tau = tau)))
-    print("<S^2(3d)> = {:8.7f}".format(thermal_average_scale_indep(e, [getSsqr3d(nBaths, psi) for psi in psis], tau = tau)))
+    print("<Lz(3d)> = {:8.7f}".format(thermal_average_scale_indep(e, [getLz3d(nBaths, psi) for psi in psis], tau=tau)))
+    print("<Sz(3d)> = {:8.7f}".format(thermal_average_scale_indep(e, [getSz3d(nBaths, psi) for psi in psis], tau=tau)))
+    print(
+        "<L^2(3d)> = {:8.7f}".format(thermal_average_scale_indep(e, [getLsqr3d(nBaths, psi) for psi in psis], tau=tau))
+    )
+    print(
+        "<S^2(3d)> = {:8.7f}".format(thermal_average_scale_indep(e, [getSsqr3d(nBaths, psi) for psi in psis], tau=tau))
+    )
+
 
 def printThermalExpValues(nBaths, es, psis, T=300, cutOff=10):
     """
@@ -1567,7 +1596,7 @@ def applyLminus3d(nBaths, psi):
     return psiNew
 
 
-def applyOp(n_spin_orbitals, op, psi, slaterWeightMin=1e-12, restrictions=None, opResult=None):
+def applyOp(n_spin_orbitals, op, psi, slaterWeightMin=0, restrictions=None, opResult=None):
     r"""
     Return :math:`|psi' \rangle = op |psi \rangle`.
 
@@ -1888,9 +1917,8 @@ def get_hamiltonian_matrix(n_spin_orbitals, hOp, basis, mode="sparse_MPI", verbo
             h += comm.bcast(hSparse, root=r)
     return h
 
-def get_hamiltonian_hermitian_operator_from_h_dict(
-    h_dict, basis, parallelization_mode="serial", return_h_local=False
-):
+
+def get_hamiltonian_hermitian_operator_from_h_dict(h_dict, basis, parallelization_mode="serial", return_h_local=False):
     """
     Return Hamiltonian expressed in the provided basis of product states
     in matrix format.
@@ -1936,7 +1964,7 @@ def get_hamiltonian_hermitian_operator_from_h_dict(
                 # row = basis_index[key]
                 # row = basis.index(key)
                 # row = bisect_left(basis,key)
-                row = np.searchsorted(basis,key)
+                row = np.searchsorted(basis, key)
                 if row == col:
                     diagonal.append(np.real(value))
                     diagonal_indices.append(row)
@@ -1944,13 +1972,13 @@ def get_hamiltonian_hermitian_operator_from_h_dict(
                     data.append(value)
                     cols.append(col)
                     rows.append(row)
-        h_triangular = scipy.sparse.csr_matrix((data, (rows, cols)), shape=(n, n), dtype = complex)
-        diagonal = np.array(diagonal, dtype = float)
-        diagonal_indices = np.array(diagonal_indices, dtype = np.int32)
+        h_triangular = scipy.sparse.csr_matrix((data, (rows, cols)), shape=(n, n), dtype=complex)
+        diagonal = np.array(diagonal, dtype=float)
+        diagonal_indices = np.array(diagonal_indices, dtype=np.ulonglong)
         sort_indices = np.argsort(diagonal_indices)
         h = NewHermitianOperator(diagonal[sort_indices], diagonal_indices[sort_indices], h_triangular)
     elif parallelization_mode == "H_build":
-        n = comm.allreduce(n, op = MPI.MAX)
+        n = comm.allreduce(n, op=MPI.MAX)
         # Loop over product states from the basis
         # which are also stored in h_dict.
         diagonal = []
@@ -1969,9 +1997,9 @@ def get_hamiltonian_hermitian_operator_from_h_dict(
                     data.append(value)
                     cols.append(col)
                     rows.append(row)
-        h_triangular = scipy.sparse.csr_matrix((data, (rows, cols)), shape=(n, n), dtype = complex)
-        diagonal = np.array(diagonal, dtype = float)
-        diagonal_indices = np.array(diagonal_indices, dtype = np.int32)
+        h_triangular = scipy.sparse.csr_matrix((data, (rows, cols)), shape=(n, n), dtype=complex)
+        diagonal = np.array(diagonal, dtype=float)
+        diagonal_indices = np.array(diagonal_indices, dtype=np.ulonglong)
         sort_indices = np.argsort(diagonal_indices)
         h_local = NewHermitianOperator(diagonal[sort_indices], diagonal_indices[sort_indices], h_triangular)
         if return_h_local:
@@ -2007,15 +2035,15 @@ def get_hamiltonian_hermitian_operator_columns(N, comm, verbose):
     else:
         stop[-1] = 0
         for i in range(p):
-            stop[i] = int(( N - 1 - np.sqrt( (stop[i-1] - N)**2  - N**2/p)))
+            stop[i] = int((N - 1 - np.sqrt((stop[i - 1] - N) ** 2 - N**2 / p)))
         remainder = N - stop[-1]
         inc_rank = 0
         inc = 1
-        while remainder > 0 and inc_rank < p - 1 :
+        while remainder > 0 and inc_rank < p - 1:
             stop[-1] = 0
             try:
                 for i in range(inc_rank, p):
-                    stop[i] = int(( N - np.sqrt( (stop[i-1] - N)**2  - N**2/p))) + inc
+                    stop[i] = int((N - np.sqrt((stop[i - 1] - N) ** 2 - N**2 / p))) + inc
                 remainder = N - stop[-1]
                 inc += 1
             except ValueError:
@@ -2025,20 +2053,19 @@ def get_hamiltonian_hermitian_operator_columns(N, comm, verbose):
     start[1:] = stop[:-1]
     start[0] = 0
     stop[-1] = N
-    average_number_of_elements = N**2/p
-    number_of_elements = (start - N)**2 - (stop - N)**2
+    average_number_of_elements = N**2 / p
+    number_of_elements = (start - N) ** 2 - (stop - N) ** 2
     if verbose:
-        print (f"{N=}, {p=}")
-        print (f"New")
-        print (f"|-->max(|N - N_avg|): {np.max(np.abs(number_of_elements - average_number_of_elements))}")
-        print (f"--->max(|N - N_avg|/N_avg): {np.max(np.abs(number_of_elements - average_number_of_elements))/average_number_of_elements}")
+        print(f"{N=}, {p=}")
+        print(f"New")
+        print(f"|-->max(|N - N_avg|): {np.max(np.abs(number_of_elements - average_number_of_elements))}")
+        print(
+            f"--->max(|N - N_avg|/N_avg): {np.max(np.abs(number_of_elements - average_number_of_elements))/average_number_of_elements}"
+        )
     return start[comm.rank], stop[comm.rank]
 
 
-
-def get_hamiltonian_hermitian_operator_from_h_dict_new(
-    h_dict, basis, return_h_local=False, comm = None
-):
+def get_hamiltonian_hermitian_operator_from_h_dict_new(h_dict, basis, return_h_local=False, comm=None):
     """
     Return Hamiltonian expressed in the provided basis of product states
     in matrix format.
@@ -2095,12 +2122,11 @@ def get_hamiltonian_hermitian_operator_from_h_dict_new(
             flat_row_indices.append(state_to_index[row])
             flat_values.append(h_dict[col][row])
 
-
-    cols = np.empty((0), dtype = int)
-    rows = np.empty((0), dtype = int)
-    data = np.empty((0), dtype = complex)
-    diagonal_indices = np.empty((0), dtype = np.ulonglong)
-    diagonal = np.empty((0), dtype = float)
+    cols = np.empty((0), dtype=int)
+    rows = np.empty((0), dtype=int)
+    data = np.empty((0), dtype=complex)
+    diagonal_indices = np.empty((0), dtype=np.ulonglong)
+    diagonal = np.empty((0), dtype=float)
     for i in range(len(flat_values)):
         row = flat_row_indices[i]
         col = flat_column_indices[i]
@@ -2113,15 +2139,16 @@ def get_hamiltonian_hermitian_operator_from_h_dict_new(
             rows = np.append(rows, [row])
             data = np.append(data, [val])
 
-    h_triangular = scipy.sparse.csr_matrix((data, (rows, cols)), shape=(n, n), dtype = complex)
+    h_triangular = scipy.sparse.csr_matrix((data, (rows, cols)), shape=(n, n), dtype=complex)
     h_local = NewHermitianOperator(diagonal, diagonal_indices, h_triangular)
     if return_h_local:
         h = h_local
     else:
         # Different ranks have information about different basis states.
         # Broadcast and append local sparse Hamiltonians.
-        h = comm.allreduce(h_local, op = MPI.SUM)
+        h = comm.allreduce(h_local, op=MPI.SUM)
     return h
+
 
 def get_hamiltonian_matrix_from_h_dict(
     h_dict, basis, parallelization_mode="serial", return_h_local=False, mode="sparse"
@@ -2182,7 +2209,7 @@ def get_hamiltonian_matrix_from_h_dict(
                 row.append(basis_index[k])
         h = scipy.sparse.csr_matrix((data, (row, col)), shape=(n, n))
     elif mode == "sparse" and parallelization_mode == "H_build":
-        n = comm.allreduce(n, op = MPI.MAX)
+        n = comm.allreduce(n, op=MPI.MAX)
         # Loop over product states from the basis
         # which are also stored in h_dict.
         data = []
@@ -2315,9 +2342,13 @@ def expand_basis(n_spin_orbitals, h_dict, hOp, basis0, restrictions, paralleliza
     # return tuple(sorted(basis))
     return list(sorted(basis))
 
+
 def combine_sets(set_1, set_2, datatype):
     return set_1 | set_2
-combine_sets_op = MPI.Op.Create(combine_sets, commute = True)
+
+
+combine_sets_op = MPI.Op.Create(combine_sets, commute=True)
+
 
 def expand_basis_new(n_spin_orbitals, h_dict, hOp, basis0, restrictions, parallelization_mode="serial"):
     """
@@ -2391,9 +2422,10 @@ def expand_basis_new(n_spin_orbitals, h_dict, hOp, basis0, restrictions, paralle
 
             # Now consider the product states in basis[i:n] which
             # does not exist in h_dict for any MPI rank.
-            states_setB = comm.allreduce(states_setA_local, 
-                                                 op = combine_sets_op, 
-                                                 )
+            states_setB = comm.allreduce(
+                states_setA_local,
+                op=combine_sets_op,
+            )
             states_tupleB = tuple(sorted(set(basis[i:n]) - states_setB))
             # All ranks must agree on the order of the product states, so sort them
 
@@ -2407,8 +2439,7 @@ def expand_basis_new(n_spin_orbitals, h_dict, hOp, basis0, restrictions, paralle
 
             # Add unique elements of basis_new_local into basis_new
 
-            basis_new = comm.allreduce(basis_new_local,
-                                       op = combine_sets_op)
+            basis_new = comm.allreduce(basis_new_local, op=combine_sets_op)
             # Add basis_new to basis.
             # It is important that all ranks use the same order of the
             # product states. This is one way to ensure the same ordering.
@@ -2587,7 +2618,7 @@ def expand_basis_and_build_hermitian_hamiltonian_new(
         print("time(expand_basis) = {:.3f} seconds.".format(time.perf_counter() - t0))
         t0 = time.perf_counter()
     # Obtain Hamiltonian in HermitianOperator form.
-    h = get_hamiltonian_hermitian_operator_from_h_dict_new(h_dict, basis, return_h_local, comm = comm)
+    h = get_hamiltonian_hermitian_operator_from_h_dict_new(h_dict, basis, return_h_local, comm=comm)
     if verbose:
         print("time(get_hamiltonian_matrix_from_h_dict) = {:.3f} seconds.".format(time.perf_counter() - t0))
         t0 = time.perf_counter()
@@ -2602,7 +2633,7 @@ def expand_basis_and_build_hermitian_hamiltonian_new(
                 f"np.shape(h)[0] = {np.shape(h)[0]}, "
                 f"len(h_dict) = {len(h_dict)}, "
                 f"len(h_dict_total) = {len_h_dict_total}",
-                flush = True
+                flush=True,
             )
     elif parallelization_mode == "serial":
         if rank == 0 and verbose:

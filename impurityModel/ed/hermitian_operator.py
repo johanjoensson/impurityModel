@@ -1,9 +1,10 @@
 import numpy as np
 import scipy as sp
 
+
 class HermitianOperator(sp.sparse.linalg.LinearOperator):
     # [ A00  A10* ...  AN0* ]    [ A00  0   0   ...  0   ]   [ 0    0    ...  0    ]    [ 0    A10* ...  AN0* ]
-    # [ A10  A11  ...  AN1* ]  = [ 0    A11 0   ...  0   ] + [ A10  0    ...  0    ]  + [ 0    0    ...  AN1* ] 
+    # [ A10  A11  ...  AN1* ]  = [ 0    A11 0   ...  0   ] + [ A10  0    ...  0    ]  + [ 0    0    ...  AN1* ]
     # [ .    .    ...  .    ]    [ 0    0   .   ...  0   ]   [ .    .    ...  .    ]    [ .    .    ...  .    ]
     # [ AN0  .    ...  ANN  ]    [ 0    0   0   ...  ANN ]   [ AN0  AN1  ...  0    ]    [ 0    .    ...  0    ]
     #         A                =         D                 +          T                          T^+
@@ -13,7 +14,7 @@ class HermitianOperator(sp.sparse.linalg.LinearOperator):
         self.diagonal_indices = diagonal_indices
         self.triangular_part = triangular_part
         self.dtype = triangular_part.dtype
-        self.nnz = 2*len(triangular_part.nonzero()[0]) + len(diagonal)
+        self.nnz = 2 * len(triangular_part.nonzero()[0]) + len(diagonal)
 
     def _matvec(self, v):
         # [ A00  A10* ...  AN0* ] [ v0 ]
@@ -27,7 +28,7 @@ class HermitianOperator(sp.sparse.linalg.LinearOperator):
         out_shape = v.shape
         v = v.reshape((v.shape[0]))
         res = np.zeros_like(v)
-        res[self.diagonal_indices] = self.diagonal*v[self.diagonal_indices]
+        res[self.diagonal_indices] = self.diagonal * v[self.diagonal_indices]
 
         return (res + self.triangular_part @ v + self.triangular_part.getH() @ v).reshape(out_shape)
 
@@ -36,11 +37,10 @@ class HermitianOperator(sp.sparse.linalg.LinearOperator):
         # [ A10  A11  ...  AN1* ] [ m10   m11   ...  m1M ]
         # [ .    .    ...  .    ] [ .     .     ...  .   ]
         # [ AN0  .    ...  ANN  ] [ mN0   mN1   ...  mNM ]
-        res = np.zeros((self.shape[0], m.shape[1]), dtype = m.dtype)
+        res = np.zeros((self.shape[0], m.shape[1]), dtype=m.dtype)
         for col in range(m.shape[1]):
             res[self.diagonal_indices, col] = self.diagonal * m[self.diagonal_indices, col]
         return res + self.triangular_part @ m + self.triangular_part.getH() @ m
 
     def _adjoint(self):
         return self
-
