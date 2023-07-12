@@ -28,8 +28,8 @@ def get_Greens_function(
     restrictions,
     blocks,
     verbose,
+    reort,
     mpi_distribute=False,
-    partial_reort=False,
     dense_cutoff=1e3,
     tau = 0,
 ):
@@ -46,11 +46,11 @@ def get_Greens_function(
         matsubara_mesh,
         omega_mesh,
         delta,
-        restrictions,
-        blocks,
+        restrictions = restrictions,
+        blocks = blocks,
         krylovSize=None,
         verbose=verbose,
-        partial_reort=partial_reort,
+        reort=reort,
         dense_cutoff=dense_cutoff,
         tau = tau,
     )
@@ -64,11 +64,11 @@ def get_Greens_function(
         -matsubara_mesh if matsubara_mesh is not None else None,
         -omega_mesh if omega_mesh is not None else None,
         -delta,
-        restrictions,
-        blocks,
+        restrictions = restrictions,
+        blocks = blocks,
         krylovSize=None,
         verbose=verbose,
-        partial_reort=partial_reort,
+        reort=reort,
         dense_cutoff=dense_cutoff,
         tau = tau,
     )
@@ -117,13 +117,13 @@ def calc_Greens_function_with_offdiag(
     iw,
     w,
     delta,
+    reort,
     restrictions=None,
     blocks=None,
     krylovSize=None,
     slaterWeightMin=1e-6,
     parallelization_mode="H_build",
     verbose=True,
-    partial_reort=False,
     dense_cutoff=1e3,
     tau = 0,
 ):
@@ -202,7 +202,7 @@ def calc_Greens_function_with_offdiag(
                 slaterWeightMin=slaterWeightMin,
                 parallelization_mode="serial",
                 verbose=verbose,
-                partial_reort=partial_reort,
+                reort=reort,
                 dense_cutoff=dense_cutoff,
                 tau = tau,
             )
@@ -246,7 +246,7 @@ def calc_Greens_function_with_offdiag(
                     slaterWeightMin=slaterWeightMin,
                     parallelization_mode=parallelization_mode,
                     verbose=verbose,
-                    partial_reort=partial_reort,
+                    reort=reort,
                     dense_cutoff=dense_cutoff,
                     tau = tau,
                 )
@@ -271,6 +271,7 @@ def get_block_Green(
     iws,
     ws,
     delta,
+    reort,
     restrictions=None,
     h_mem=None,
     mode="sparse",
@@ -278,7 +279,6 @@ def get_block_Green(
     slaterWeightMin=1e-7,
     parallelization_mode="H_build",
     verbose=True,
-    partial_reort=False,
     dense_cutoff=1e3,
     tau = 0,
 ):
@@ -322,7 +322,6 @@ def get_block_Green(
         t0 = time.perf_counter()
     psi_start = np.zeros((N, n), dtype=complex)
     for i, psi in enumerate(psi_arr):
-
         states = []
         amps = []
         for ps, amp in psi.items():
@@ -370,7 +369,6 @@ def get_block_Green(
     def matrix_print(m):
         print("\n".join(["  ".join([f"{np.real(el): 5.3f}  {np.imag(el):+5.3f}j" for el in row]) for row in m]))
 
-
     def converged(alphas, betas):
         if alphas.shape[0] == 1:
             return 1.0
@@ -400,7 +398,7 @@ def get_block_Green(
         converged=converged,
         h_local=h_local,
         verbose=verbose,
-        partial_reort=partial_reort,
+        reort_mode=reort,
     )
 
     if verbose and rank == 0:

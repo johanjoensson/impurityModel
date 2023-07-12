@@ -108,6 +108,7 @@ def eigensystem_new(
     e_max,
     k=10,
     dk=10,
+    v0 = None,
     eigenValueTol=0,
     slaterWeightMin=0,
     return_eigvecs=True,
@@ -173,7 +174,7 @@ def eigensystem_new(
             print("Diagonalize the Hamiltonian...")
             print(f"{h}")
 
-        vecs = None  # np.ones((h.shape[0], 1), dtype = complex)
+        vecs = v0
         es = []
         mask = [True]
         while len(es) - sum(mask) < k:
@@ -182,6 +183,7 @@ def eigensystem_new(
                 k=min(k + dk, h.shape[0] - 1),
                 which="SA",
                 tol=eigenValueTol,
+                v0 = vecs[:, 0] if vecs is not None else None
             )
             indices = np.argsort(es)
             es = es[indices]

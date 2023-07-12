@@ -10,14 +10,19 @@ comm = MPI.COMM_WORLD
 rank = comm.rank
 ranks = comm.size
 
+from enum import Enum
+class Reort(Enum):
+    NONE = 0
+    PARTIAL = 1
+    FULL = 2
 
 def get_block_Lanczos_matrices(
     psi0: np.ndarray,
     h,
+    reort_mode,
     converged: bool,
     h_local: bool = False,
     verbose: bool = True,
-    partial_reort: bool = False,
     debug_ort: bool = False,
 ):
     krylovSize = h.shape[0]
@@ -32,7 +37,9 @@ def get_block_Lanczos_matrices(
 
     N = psi0.shape[0]
     n = max(psi0.shape[1], 1)
-    partial_reort = partial_reort and krylovSize > 10*n
+
+    if krylovSize < 10*n:
+        reort_mode = Reort.NONE
 
     alphas = np.empty((0, n, n), dtype=complex)
     betas = np.empty((0, n, n), dtype=complex)
@@ -68,29 +75,26 @@ def get_block_Lanczos_matrices(
                 betas = np.append(betas, [np.zeros((n, n), dtype=complex)], axis=0)
                 wp -= q[1] @ alphas[i] + q[0] @ np.conj(betas[i - 1].T)
 
+                if reort_mode == Reort.FULL:
+                    wp -= Q @ (np.conj(Q.T) @ wp)
+
                 q[0] = q[1]
-                for col in range(wp.shape[1]):
-                    if np.linalg.norm(wp[:, col]) > 1e100:
-                        wp[:, col] /= np.linalg.norm(wp[:, col])
                 t_qr_fact = time.perf_counter()
                 q[1], betas[i] = sp.linalg.qr(wp, mode="economic", overwrite_a=True, check_finite=False)
                 t_qr += time.perf_counter() - t_qr_fact
-                b_mask = np.linalg.norm(betas[i], axis = 1) < np.finfo(float).eps
-                b_mask = np.logical_or(b_mask, np.linalg.norm(betas[i], axis = 0) > 1e50)
-                while partial_reort and np.any(b_mask):
+                b_mask = np.abs(np.diagonal(betas[i])) < np.finfo(float).eps
+                # while reort_mode != Reort.NONE and np.any(b_mask):
+                while np.any(b_mask) and i < krylovSize // n - 1:
                     q[1] = q[1] @ betas[i]
                     q[1][:, b_mask] = np.random.rand(N, sum(b_mask)) + 1j*np.random.rand(N, sum(b_mask))
-                    
-                    q[1] -= Q @ (np.conj(Q.T) @ q[1])
-                    q[1], betas[i] = sp.linalg.qr(q[1],
+                    q[1], betas[i] = sp.linalg.qr(q[1] - Q @ (np.conj(Q.T) @ q[1]),
                                                   mode="economic",
-                                                  overwrite_a=True,
-                                                  check_finite=False)
-                    b_mask = np.linalg.norm(betas[i], axis = 1) < np.finfo(float).eps
-                    b_mask = np.logical_or(b_mask, np.linalg.norm(betas[i], axis = 0) > 1e50)
+                                                  overwrite_a = True,
+                                                  check_finite = False)
+                    b_mask = np.abs(np.diagonal(betas[i])) < np.finfo(float).eps
                     W[1, -1] = 1
 
-                if partial_reort or i % int(np.ceil(krylovSize / n)) // 20 == 0:
+                if i % int(np.ceil(krylovSize / n)) // 20 == 0:
                     t_converged = time.perf_counter()
                     try:
                         delta = converged(alphas, betas)
@@ -99,10 +103,10 @@ def get_block_Lanczos_matrices(
                         raise e
 
                     # print (f"{delta=}")
-                    done = delta < 1e-8
-                    # if done:
-                    #     print (f"{betas[-2]=}")
-                    #     print (f"{betas[-1]=}")
+                    done = delta < 1e-12
+                    if done:
+                        print (f"{betas[-2]=}")
+                        print (f"{betas[-1]=}")
                     #     alphas = alphas[:-1]
                     #     betas = betas[:-1]
                     t_conv += time.perf_counter() - t_converged
@@ -111,7 +115,7 @@ def get_block_Lanczos_matrices(
             if done:
                 break
 
-            if rank == 0 and partial_reort:
+            if rank == 0 and reort_mode == Reort.PARTIAL:
                 t_overlap = time.perf_counter()
                 # Clearly a function
                 ####################
@@ -151,7 +155,7 @@ def get_block_Lanczos_matrices(
                         f"{np.max(np.abs(W[1, : i + 1]))}  {np.max(np.abs( np.conj(Q.T) @ q[1]))}  {delta}\n"
                     )
                 reort = np.any(np.abs(W[1, : i + 1]) > np.sqrt(eps))
-                if partial_reort and (reort or force_reort is not None):
+                if reort or force_reort is not None:
                     t_ortho = time.perf_counter()
                     n_reort += 1
                     # clearly a function
@@ -163,28 +167,20 @@ def get_block_Lanczos_matrices(
                         force_reort = np.append(force_reort, [[False] * n], axis=0)
                         Qm = Q[:, np.logical_or(mask, force_reort)[:-1].flatten()]
                     q[1] = q[1] @ betas[i]
-                    q[1] -= Qm @ (np.conj(Qm.T) @ q[1])
 
-                    for col in range(q[1].shape[1]):
-                        if np.linalg.norm(q[1][:, col]) > 1e100:
-                            q[1][:, col] /= np.linalg.norm(q[1][:, col])
-                    q[1], betas[i] = sp.linalg.qr(q[1], mode="economic", overwrite_a=True, check_finite=False)
-                    b_mask = np.linalg.norm(betas[i], axis = 1) < np.finfo(float).eps
-                    b_mask = np.logical_or(b_mask, np.linalg.norm(betas[i], axis = 0) > 1e50)
-                    while partial_reort and np.any(b_mask):
+                    q[1], betas[i] = sp.linalg.qr(q[1] - Qm @ (np.conj(Qm.T) @ q[1]), mode="economic", overwrite_a=True, check_finite=False)
+                    b_mask = np.abs(np.diagonal(betas[i])) < np.finfo(float).eps
+                    while np.any(b_mask):
                         q[1] = q[1] @ betas[i]
                         q[1][:, b_mask] = np.random.rand(N, sum(b_mask)) + 1j*np.random.rand(N, sum(b_mask))
-                        q[1] -= Q @ (np.conj(Q.T) @ q[1])
-                        for col in range(q[1].shape[1]):
-                            if np.linalg.norm(q[1][:, col]) > 1e100:
-                                q[1][:, col] /= np.linalg.norm(q[1][:, col])
-                        q[1], betas[i] = sp.linalg.qr(q[1],
+                        q[1], betas[i] = sp.linalg.qr(q[1] - Q @ (np.conj(Q.T) @ q[1]),
                                                       mode="economic",
                                                       overwrite_a=True,
                                                       check_finite=False)
-                        b_mask = np.linalg.norm(betas[i], axis = 1) < np.finfo(float).eps
-                        b_mask = np.logical_or(b_mask, np.linalg.norm(betas[i], axis = 0) > 1e50)
+                        b_mask = np.abs(np.diagonal(betas[i])) < np.finfo(float).eps
                         W[1, -1] = 1
+                        # reort = True
+                        # mask[-1:] = True
 
                     W[1, mask] = eps * np.random.normal(loc=0, scale=1.5, size=W[1, mask].shape)
 

@@ -40,12 +40,16 @@ def reduce_subscript(a, b, datatype):
                 res[i][j] = a[i][j]
     return res
 
+
 reduce_subscript_op = MPI.Op.Create(reduce_subscript, commute=True)
+
 
 def getitem_reduce(a, b, datatype):
     return [max(val_a, val_b) for val_a, val_b in zip(a, b)]
 
+
 getitem_reduce_op = MPI.Op.Create(getitem_reduce, commute=True)
+
 
 def getitem_reduce_matrix(a, b, datatype):
     res = [[None for _ in row] for row in a]
@@ -54,7 +58,9 @@ def getitem_reduce_matrix(a, b, datatype):
             res[i][j] = max(a[i][j], b[i][j])
     return res
 
+
 getitem_reduce_matrix_op = MPI.Op.Create(getitem_reduce_matrix, commute=True)
+
 
 class Basis:
     def _get_offsets_and_local_lengths(self, total_length):
@@ -679,13 +685,22 @@ class CIPSI_Basis(Basis):
             #     print (f"Time to build sparse H: {t0/self.comm.size:.3f} seconds")
 
             t0 = perf_counter()
+            if psi_ref is not None:
+                v0 = np.zeros((self.size, 1), dtype = complex)
+                v0_states = psi_ref[0].keys()
+                v0_indices = self.index(list(v0_states))
+                for i, state in zip(v0_indices, v0_states):
+                    v0[i, 0] = psi_ref[0][state]
+            else:
+                v0 = None
             e_ref, psi_ref = eigensystem_new(
                 H_sparse,
                 basis=self,
                 e_max=de0_max,
                 k=1,
                 dk= 1 if psi_ref is None else len(psi_ref) - 1,
-                eigenValueTol=1e-9,
+                v0 = v0,
+                eigenValueTol= de_2_min if de_2_min > np.sqrt(np.finfo(float).eps) else 1e-8,
                 slaterWeightMin=0,
                 dense_cutoff=dense_cutoff,
                 verbose=False,

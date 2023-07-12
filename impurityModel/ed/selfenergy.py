@@ -22,14 +22,18 @@ eV_to_Ry = 1 / 13.605693122994
 
 class UnphysicalSelfenergy(Exception):
     pass
+
+
 class UnphysicalGreensFunction(Exception):
     pass
+
 
 def matrix_print(matrix, label: str = None):
     ms = "\n".join([" ".join([f"{np.real(val): .4f}{np.imag(val):+.4f}j" for val in row]) for row in matrix])
     if label:
         print(label)
     print(ms)
+
 
 def find_gs(h_op, N0, delta_occ, bath_states, num_spin_orbitals, rank, verbose, dense_cutoff):
     delta_imp_occ, delta_val_occ, delta_con_occ = delta_occ
@@ -93,7 +97,7 @@ def find_gs(h_op, N0, delta_occ, bath_states, num_spin_orbitals, rank, verbose, 
     return (gs_impurity_occ, N0[1], N0[2]), basis_gs, h_gs
 
 
-def run(cluster, h0, iw, w, delta, tau, verbosity, partial_reort, dense_cutoff):
+def run(cluster, h0, iw, w, delta, tau, verbosity, reort, dense_cutoff):
     """
     cluster     -- The impmod_cluster object containing loads of data.
     h0          -- Non-interacting hamiltonian.
@@ -129,7 +133,7 @@ def run(cluster, h0, iw, w, delta, tau, verbosity, partial_reort, dense_cutoff):
         blocks=None,
         rotation=cluster.rot_spherical,
         cluster_label=cluster.label,
-        partial_reort=partial_reort,
+        reort=reort,
         dense_cutoff=dense_cutoff,
     )
     cluster.sig[:, :, :] = 0
@@ -160,7 +164,7 @@ def calc_selfenergy(
     blocks,
     rotation,
     cluster_label,
-    partial_reort,
+    reort,
     dense_cutoff,
 ):
     """ """
@@ -254,7 +258,7 @@ def calc_selfenergy(
         blocks=blocks,
         verbose=verbosity >= 2,
         mpi_distribute=True,
-        partial_reort=partial_reort,
+        reort=reort,
         dense_cutoff=dense_cutoff,
         tau = tau,
     )
@@ -354,6 +358,7 @@ def check_sigma(sigma):
     if np.any(np.imag(diagonals) > 0):
         raise UnphysicalSelfenergy("Diagonal term has positive imaginary part.")
 
+
 def check_greens_function(G, energies):
     diagonals = [np.diag(G[:, :, i]) for i in range(G.shape[-1])]
     if np.any(np.imag(diagonals) > 0):
@@ -365,7 +370,6 @@ def check_greens_function(G, energies):
     # if np.any(np.abs(np.real(diagonals) + 1) > 5*(energies[1] - energies[0])):
     #     raise UnphysicalGreensFunction("Real part of diagonal term is not norm-conserving.\n"
     #                                    "Integrating it does not give 0.")
-
 
 
 def get_hcorr_v_hbath(h0op, sum_bath_states):

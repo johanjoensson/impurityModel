@@ -4,6 +4,8 @@ import scipy as sp
 import traceback
 import sys
 import pickle
+from impurityModel.ed.lanczos import Reort
+
 
 
 def matrix_print(matrix):
@@ -84,6 +86,7 @@ def parse_solver_line(solver_line):
                            f"--->Nbaths {solver_array[4]}")
     partial_reort = False
     dense_cutoff = 5000
+    reort = Reort.NONE
     if len(solver_array) > 5:
         skip_next = False
         for i in range(len(solver_array)):
@@ -94,11 +97,13 @@ def parse_solver_line(solver_line):
                 continue
             arg = solver_array[i]
             if arg.lower() == "pro":
-                partial_reort = True
+                reort = Reort.PARTIAL
+            elif arg.lower() == "full":
+                reort = Reort.FULL
             elif arg.lower() == "dense_cutoff":
                 dense_cutoff = int(solver_array[i + 1])
                 skip_next = True
-    return nominal_occ, delta_occ, nBaths, partial_reort, dense_cutoff
+    return nominal_occ, delta_occ, nBaths, reort, dense_cutoff
 
 @ffi.def_extern()
 def run_impmod_ed(
@@ -197,9 +202,9 @@ def run_impmod_ed(
         slater[2 * i] = slater_from_rspt[i]
 
     stdout_save = sys.stdout
-    sys.stdout = open(f"impurityModel-{label.strip()}.out", "a")
+    # sys.stdout = open(f"impurityModel-{label.strip()}-{rank}.out", "a")
 
-    nominal_occ, delta_occ, bath_states_per_orbital, partial_reort, dense_cutoff = parse_solver_line(solver_line)
+    nominal_occ, delta_occ, bath_states_per_orbital, reort, dense_cutoff = parse_solver_line(solver_line)
     nominal_occ = ({l: nominal_occ[0]}, {l: nominal_occ[1]}, {l:nominal_occ[2]})
     delta_occ = ({l: delta_occ[0]}, {l: delta_occ[1]}, {l:delta_occ[2]})
 
@@ -219,6 +224,9 @@ def run_impmod_ed(
         verbose = verbosity >= 2 and rank == 0,
         comm = comm,
     )
+    if rank == 0:
+        with open(f"Ham-op-{label.strip()}.pickle", 'wb') as f:
+            pickle.dump(h_op, f)
     h_op = comm.bcast(h_op, root=0)
     e_baths = comm.bcast(e_baths, root=0)
 
@@ -252,7 +260,7 @@ def run_impmod_ed(
             print(f"!"*100)
             sig_dc[:, :] = 1j*np.inf
 
-        sys.stdout.close()
+        # sys.stdout.close()
         sys.stdout = stdout_save
         return
 
@@ -284,7 +292,7 @@ def run_impmod_ed(
     # print an error message and make sure that the outside code becomes aware that something
     # has gone terribly wrong.
     try:
-        selfenergy.run(cluster, h_op, 1j * iw, w, eim, tau, verbosity if rank == 0 else 0, partial_reort = partial_reort, dense_cutoff = dense_cutoff)
+        selfenergy.run(cluster, h_op, 1j * iw, w, eim, tau, verbosity if rank == 0 else 0, reort = reort, dense_cutoff = dense_cutoff)
 
         # Rotate self energy from spherical harmonics basis to RSPt's corr basis
         u = cluster.rot_spherical
