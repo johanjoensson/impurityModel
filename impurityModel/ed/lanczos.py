@@ -11,10 +11,13 @@ rank = comm.rank
 ranks = comm.size
 
 from enum import Enum
+
+
 class Reort(Enum):
     NONE = 0
     PARTIAL = 1
     FULL = 2
+
 
 def get_block_Lanczos_matrices(
     psi0: np.ndarray,
@@ -38,7 +41,7 @@ def get_block_Lanczos_matrices(
     N = psi0.shape[0]
     n = max(psi0.shape[1], 1)
 
-    if krylovSize < 10*n:
+    if krylovSize < 10 * n:
         reort_mode = Reort.NONE
 
     alphas = np.empty((0, n, n), dtype=complex)
@@ -86,11 +89,10 @@ def get_block_Lanczos_matrices(
                 # while reort_mode != Reort.NONE and np.any(b_mask):
                 while np.any(b_mask) and i < krylovSize // n - 1:
                     q[1] = q[1] @ betas[i]
-                    q[1][:, b_mask] = np.random.rand(N, sum(b_mask)) + 1j*np.random.rand(N, sum(b_mask))
-                    q[1], betas[i] = sp.linalg.qr(q[1] - Q @ (np.conj(Q.T) @ q[1]),
-                                                  mode="economic",
-                                                  overwrite_a = True,
-                                                  check_finite = False)
+                    q[1][:, b_mask] = np.random.rand(N, sum(b_mask)) + 1j * np.random.rand(N, sum(b_mask))
+                    q[1], betas[i] = sp.linalg.qr(
+                        q[1] - Q @ (np.conj(Q.T) @ q[1]), mode="economic", overwrite_a=True, check_finite=False
+                    )
                     b_mask = np.abs(np.diagonal(betas[i])) < np.finfo(float).eps
                     W[1, -1] = 1
 
@@ -99,14 +101,14 @@ def get_block_Lanczos_matrices(
                     try:
                         delta = converged(alphas, betas)
                     except Exception as e:
-                        print (f"{betas[i]=}")
+                        print(f"{betas[i]=}")
                         raise e
 
                     # print (f"{delta=}")
                     done = delta < 1e-12
-                    if done:
-                        print (f"{betas[-2]=}")
-                        print (f"{betas[-1]=}")
+                    # if done:
+                    #     print (f"{betas[-2]=}")
+                    #     print (f"{betas[-1]=}")
                     #     alphas = alphas[:-1]
                     #     betas = betas[:-1]
                     t_conv += time.perf_counter() - t_converged
@@ -168,15 +170,16 @@ def get_block_Lanczos_matrices(
                         Qm = Q[:, np.logical_or(mask, force_reort)[:-1].flatten()]
                     q[1] = q[1] @ betas[i]
 
-                    q[1], betas[i] = sp.linalg.qr(q[1] - Qm @ (np.conj(Qm.T) @ q[1]), mode="economic", overwrite_a=True, check_finite=False)
+                    q[1], betas[i] = sp.linalg.qr(
+                        q[1] - Qm @ (np.conj(Qm.T) @ q[1]), mode="economic", overwrite_a=True, check_finite=False
+                    )
                     b_mask = np.abs(np.diagonal(betas[i])) < np.finfo(float).eps
                     while np.any(b_mask):
                         q[1] = q[1] @ betas[i]
-                        q[1][:, b_mask] = np.random.rand(N, sum(b_mask)) + 1j*np.random.rand(N, sum(b_mask))
-                        q[1], betas[i] = sp.linalg.qr(q[1] - Q @ (np.conj(Q.T) @ q[1]),
-                                                      mode="economic",
-                                                      overwrite_a=True,
-                                                      check_finite=False)
+                        q[1][:, b_mask] = np.random.rand(N, sum(b_mask)) + 1j * np.random.rand(N, sum(b_mask))
+                        q[1], betas[i] = sp.linalg.qr(
+                            q[1] - Q @ (np.conj(Q.T) @ q[1]), mode="economic", overwrite_a=True, check_finite=False
+                        )
                         b_mask = np.abs(np.diagonal(betas[i])) < np.finfo(float).eps
                         W[1, -1] = 1
                         # reort = True

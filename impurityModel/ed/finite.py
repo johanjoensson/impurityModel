@@ -108,7 +108,7 @@ def eigensystem_new(
     e_max,
     k=10,
     dk=10,
-    v0 = None,
+    v0=None,
     eigenValueTol=0,
     slaterWeightMin=0,
     return_eigvecs=True,
@@ -153,13 +153,18 @@ def eigensystem_new(
         # comm.Allgatherv(h_local.diagonal, (diagonal, recv_counts, offsets, MPI.DOUBLE))
         # offdiagonals = comm.allreduce(h_local.triangular_part, op = MPI.SUM)
         # h = offdiagonals + scipy.sparse.diags(diagonal, offsets = 0, format = 'csr', dtype = complex)
-        h = comm.allreduce(h_local, op=MPI.SUM)
+        h = comm.reduce(h_local, op=MPI.SUM, root=0)
         # if comm.rank == 0:
         #     print (f"Hermitian error in hamiltonian = {np.max(np.abs(h.getH() - h))}")
-        es, vecs = np.linalg.eigh(h.toarray(), UPLO="L")
-        indices = np.argsort(es)
-        es = es[indices]
-        vecs = vecs[:, indices]
+        es = np.empty((h_local.shape[0]))
+        vecs = np.empty(h_local.shape, dtype=complex)
+        if comm.rank == 0:
+            es, vecs = np.linalg.eigh(h.toarray(), UPLO="L")
+            indices = np.argsort(es)
+            es[:] = es[indices]
+            vecs[:, :] = vecs[:, indices]
+        comm.Bcast(es, root=0)
+        comm.Bcast(vecs, root=0)
         mask = es - es[0] <= e_max
     else:
         h = scipy.sparse.linalg.LinearOperator(
@@ -183,21 +188,22 @@ def eigensystem_new(
                 k=min(k + dk, h.shape[0] - 1),
                 which="SA",
                 tol=eigenValueTol,
-                v0 = vecs[:, 0] if vecs is not None else None
+                v0=vecs[:, 0] if vecs is not None else None,
             )
             indices = np.argsort(es)
             es = es[indices]
             vecs = vecs[:, indices]
             mask = es - es[0] <= e_max
-            dk += k
+            dk += max(k + dk, 1)
+    if verbose and v0 is not None:
+        print(f"log10(1-|<vg|v0>|) = {np.log10(1 - np.abs(np.vdot(v0, vecs[:, 0]))): 4.1f}")
 
+    err_max = np.max(
+        np.abs(np.conj(vecs[:, : sum(mask)].T) @ vecs[:, : sum(mask)] - np.identity(vecs[:, : sum(mask)].shape[1]))
+    )
+    if verbose and err_max > np.sqrt(np.finfo(float).eps):
+        print(f"Warning! Obtained eigenvectors are not very orthogonal!\nMaximum overlap {err_max}")
     if verbose:
-        err_max = np.max(
-            np.abs(np.conj(vecs[:, : sum(mask)].T) @ vecs[:, : sum(mask)] - np.identity(vecs[:, : sum(mask)].shape[1]))
-        )
-        if err_max > 1e-12:
-            print(f"Warning! Obtained eigenvectors are not very orthogonal!\nMaximum overlap {err_max}")
-
         print(f"Proceed with {len(es[mask])} eigenstates.\n")
 
     if not return_eigvecs:
@@ -379,6 +385,7 @@ def printThermalExpValues_new(nBaths, es, psis, tau, ecut):
     print("<L^2(3d)> = {:8.7f}".format(thermal_average(e, [getLsqr3d(nBaths, psi) for psi in psis], T=T)))
     print("<S^2(3d)> = {:8.7f}".format(thermal_average(e, [getSsqr3d(nBaths, psi) for psi in psis], T=T)))
 
+
 def printThermalExpValues_new(nBaths, es, psis, tau, ecut):
     """
     print several thermal expectation values, e.g. E, N, L^2.
@@ -436,6 +443,7 @@ def printThermalExpValues(nBaths, es, psis, T=300, cutOff=10):
         print("<Sz(3d)> = {:8.7f}".format(thermal_average(e, [getSz3d(nBaths, psi) for psi in psis], T=T)))
         print("<L^2(3d)> = {:8.7f}".format(thermal_average(e, [getLsqr3d(nBaths, psi) for psi in psis], T=T)))
         print("<S^2(3d)> = {:8.7f}".format(thermal_average(e, [getSsqr3d(nBaths, psi) for psi in psis], T=T)))
+
 
 def dc_MLFT(n3d_i, c, Fdd, n2p_i=None, Fpd=None, Gpd=None):
     r"""
@@ -2014,6 +2022,7 @@ def get_hamiltonian_hermitian_operator_from_h_dict(h_dict, basis, parallelizatio
         raise Exception("Wrong parallelization mode!")
     return h
 
+
 def get_hamiltonian_hermitian_operator_columns(N, comm, verbose):
     """
     Distrubute the columns of the Hamiltonian matrix among the MPI ranks so
@@ -2460,6 +2469,7 @@ def expand_basis_new(n_spin_orbitals, h_dict, hOp, basis0, restrictions, paralle
     return list(sorted(basis))
     # return np.array(sorted(basis))
 
+
 def expand_basis_and_build_hermitian_hamiltonian(
     n_spin_orbitals,
     h_dict,
@@ -2556,6 +2566,7 @@ def expand_basis_and_build_hermitian_hamiltonian(
 
     return h, expanded_basis
 
+
 def expand_basis_and_build_hermitian_hamiltonian_new(
     n_spin_orbitals,
     h_dict,
@@ -2647,6 +2658,7 @@ def expand_basis_and_build_hermitian_hamiltonian_new(
             )
 
     return h, h_dict, basis
+
 
 def expand_basis_and_hamiltonian(
     n_spin_orbitals,

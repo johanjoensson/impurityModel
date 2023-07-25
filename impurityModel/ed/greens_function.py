@@ -31,7 +31,7 @@ def get_Greens_function(
     reort,
     mpi_distribute=False,
     dense_cutoff=1e3,
-    tau = 0,
+    tau=0,
 ):
     n_spin_orbitals = sum(2 * (2 * ang + 1) + nBath for ang, nBath in nBaths.items())
     tOpsPS = spectra.getPhotoEmissionOperators(nBaths, l=l)
@@ -42,17 +42,17 @@ def get_Greens_function(
         tOpsIPS,
         psis,
         es,
-        basis,
+        basis.copy(),
         matsubara_mesh,
         omega_mesh,
         delta,
-        restrictions = restrictions,
-        blocks = blocks,
+        restrictions=restrictions,
+        blocks=blocks,
         krylovSize=None,
         verbose=verbose,
         reort=reort,
         dense_cutoff=dense_cutoff,
-        tau = tau,
+        tau=tau,
     )
     gsPS_matsubara, gsPS_realaxis = calc_Greens_function_with_offdiag(
         n_spin_orbitals,
@@ -60,17 +60,17 @@ def get_Greens_function(
         tOpsPS,
         psis,
         es,
-        basis,
+        basis.copy(),
         -matsubara_mesh if matsubara_mesh is not None else None,
         -omega_mesh if omega_mesh is not None else None,
         -delta,
-        restrictions = restrictions,
-        blocks = blocks,
+        restrictions=restrictions,
+        blocks=blocks,
         krylovSize=None,
         verbose=verbose,
         reort=reort,
         dense_cutoff=dense_cutoff,
-        tau = tau,
+        tau=tau,
     )
 
     if mpi_distribute:
@@ -125,7 +125,7 @@ def calc_Greens_function_with_offdiag(
     parallelization_mode="H_build",
     verbose=True,
     dense_cutoff=1e3,
-    tau = 0,
+    tau=0,
 ):
     r"""
     Return Green's function for states with low enough energy.
@@ -183,15 +183,45 @@ def calc_Greens_function_with_offdiag(
             e = es[i]
 
             v = []
+            new_basis = CIPSI_Basis(
+                initial_basis=[],
+                restrictions=basis.restrictions,
+                num_spin_orbitals=basis.num_spin_orbitals,
+                comm=basis.comm,
+                verbose=verbose,
+                truncation_threshold=basis.truncation_threshold,
+                tau=basis.tau,
+            )
             for tOp in tOps:
-                v.append(finite.applyOp(n_spin_orbitals, tOp, psi, slaterWeightMin, restrictions, opResult=None))
-                # v.append(finite.applyOp(n_spin_orbitals, tOp, psi, slaterWeightMin, restrictions = None, opResult = None))
+                v.append(
+                    finite.applyOp(
+                        n_spin_orbitals,
+                        tOp,
+                        psi,
+                        slaterWeightMin=0,
+                        restrictions=basis.restrictions,
+                        opResult=t_mems[i_tOp],
+                    )
+                )
+                for s in basis.local_basis:
+                    res = finite.applyOp(
+                        n_spin_orbitals,
+                        tOp,
+                        {s: 1},
+                        slaterWeightMin=0,
+                        restrictions=basis.restrictions,
+                        # opResult=t_mems[i_tOp],
+                    )
+                    new_local_basis |= res.keys()
+
+            new_basis.add_states(new_local_basis)
+            new_basis.expand(hOp, dense_cutoff=dense_cutoff)
 
             gs_matsubara_i, gs_realaxis_i = get_block_Green(
                 n_spin_orbitals=n_spin_orbitals,
                 hOp=hOp,
                 psi_arr=v,
-                basis = basis.copy(),
+                basis=new_basis.copy(),
                 e=e,
                 iw=iw,
                 w=w,
@@ -204,7 +234,7 @@ def calc_Greens_function_with_offdiag(
                 verbose=verbose,
                 reort=reort,
                 dense_cutoff=dense_cutoff,
-                tau = tau,
+                tau=tau,
             )
             comm.Reduce(gs_matsubara_i, gs_matsubara)
             comm.Reduce(gs_realaxis_i, gs_realaxis)
@@ -217,16 +247,52 @@ def calc_Greens_function_with_offdiag(
             gs_realaxis = np.zeros((n, len(tOps), len(tOps), len(w)), dtype=complex)
         else:
             gs_realaxis = None
+
         t_mems = [{} for _ in tOps]
+
+        new_basis = CIPSI_Basis(
+            initial_basis=[],
+            restrictions=basis.restrictions,
+            num_spin_orbitals=basis.num_spin_orbitals,
+            comm=basis.comm,
+            verbose=verbose,
+            truncation_threshold=basis.truncation_threshold,
+            tau=basis.tau,
+        )
+        new_local_basis = set()
+        for i_tOp, tOp in enumerate(tOps):
+            for s in basis.local_basis:
+                res = finite.applyOp(
+                    n_spin_orbitals,
+                    tOp,
+                    {s: 1},
+                    slaterWeightMin=0,
+                    restrictions=basis.restrictions,
+                    # opResult=t_mems[i_tOp],
+                )
+                new_local_basis |= res.keys()
+
+        new_basis.add_states(new_local_basis)
+        if verbose:
+            print(f"Before expanding the excited basis contains {new_basis.size} elements")
+        new_basis.expand(hOp, dense_cutoff=dense_cutoff)
+        if verbose:
+            print(f"Basis common to all eigenstates contains {new_basis.size} elements")
         for i, (psi, e) in enumerate(zip(psis, es)):
             v = []
             for i_tOp, tOp in enumerate(tOps):
                 # v.append(finite.applyOp(n_spin_orbitals, tOp, psi, slaterWeightMin, restrictions, t_mems[i_tOp]))
                 v.append(
                     finite.applyOp(
-                        n_spin_orbitals, tOp, psi, slaterWeightMin, restrictions=None, opResult=t_mems[i_tOp]
+                        n_spin_orbitals,
+                        tOp,
+                        psi,
+                        slaterWeightMin=0,
+                        restrictions=basis.restrictions,
+                        opResult=t_mems[i_tOp],
                     )
                 )
+
             for block in blocks:
                 block_v = []
                 for orb in block:
@@ -235,7 +301,8 @@ def calc_Greens_function_with_offdiag(
                     n_spin_orbitals=n_spin_orbitals,
                     hOp=hOp,
                     psi_arr=block_v,
-                    basis = basis.copy(),
+                    # basis = basis,
+                    basis=new_basis,
                     e=e,
                     iws=iw,
                     ws=w,
@@ -248,7 +315,7 @@ def calc_Greens_function_with_offdiag(
                     verbose=verbose,
                     reort=reort,
                     dense_cutoff=dense_cutoff,
-                    tau = tau,
+                    tau=tau,
                 )
                 if rank == 0:
                     if iw is not None:
@@ -280,7 +347,7 @@ def get_block_Green(
     parallelization_mode="H_build",
     verbose=True,
     dense_cutoff=1e3,
-    tau = 0,
+    tau=0,
 ):
     matsubara = iws is not None
     realaxis = ws is not None
@@ -296,18 +363,24 @@ def get_block_Green(
 
     if verbose and rank == 0:
         t0 = time.perf_counter()
-    # basis.add_states([key for psi in psi_arr for key in psi.keys()])
-    basis = CIPSI_Basis(
-        # basis = Basis(
-        initial_basis=sorted(set(key for psi in psi_arr for key in psi.keys())),
-        restrictions=basis.restrictions,
-        num_spin_orbitals=basis.num_spin_orbitals,
-        comm=basis.comm,
-        verbose=rank == 0 and verbose,
-        truncation_threshold = basis.truncation_threshold,
-        tau = basis.tau,
-    )
-    basis.expand(hOp, dense_cutoff=dense_cutoff)
+    psi_states = [key for psi in psi_arr for key in psi.keys()]
+    if np.any(np.logical_not(basis.contains(psi_states))):
+        basis.add_states(psi_states)
+        # tau = basis.tau
+        # basis = CIPSI_Basis(
+        #     # basis = Basis(
+        #     initial_basis=sorted(set(key for psi in psi_arr for key in psi.keys())),
+        #     restrictions=basis.restrictions,
+        #     num_spin_orbitals=basis.num_spin_orbitals,
+        #     comm=basis.comm,
+        #     verbose=rank == 0 and verbose,
+        #     truncation_threshold = basis.truncation_threshold,
+        #     tau = 0,
+        # )
+        # basis.tau = 0
+        # basis.expand(hOp, dense_cutoff=dense_cutoff)
+        # basis.tau = tau
+        basis.expand(hOp, dense_cutoff=dense_cutoff)
     h = basis.build_sparse_operator(hOp)
 
     if verbose and rank == 0:
@@ -315,8 +388,6 @@ def get_block_Green(
 
     N = h.shape[0]
     n = len(psi_arr)
-
-    import numpy as np
 
     if verbose and rank == 0:
         t0 = time.perf_counter()
@@ -388,7 +459,9 @@ def get_block_Green(
         for alpha, beta in zip(alphas[-3::-1], betas[-3::-1]):
             gs_new = wIs - alpha - np.conj(beta.T)[np.newaxis, :, :] @ np.linalg.solve(gs_new, beta[np.newaxis, :, :])
             gs_prev = wIs - alpha - np.conj(beta.T)[np.newaxis, :, :] @ np.linalg.solve(gs_prev, beta[np.newaxis, :, :])
-        return np.max(np.abs(gs_new - gs_prev))
+        return np.max(
+            np.abs(np.sum(np.diagonal(gs_new, axis1=1, axis2=2)) - np.sum(np.diagonal(gs_prev, axis1=1, axis2=2)))
+        )
         # return np.all(np.abs(gs_new - gs_prev) < 1e-6)
 
     # Run Lanczos on psi0^T* [wI - j*delta - H]^-1 psi0
@@ -414,6 +487,7 @@ def get_block_Green(
         print(f"time(G_from_alpha_beta) = {time.perf_counter() - t0: .4f} seconds.")
 
     return gs_matsubara, gs_realaxis
+
 
 def calc_mpi_Greens_function_from_alpha_beta(alphas, betas, iws, ws, e, delta, r, verbose):
     iw_indices = None
@@ -452,6 +526,7 @@ def calc_mpi_Greens_function_from_alpha_beta(alphas, betas, iws, ws, e, delta, r
         gs_realaxis = None
     return gs_matsubara, gs_realaxis
 
+
 def calc_local_Greens_function_from_alpha_beta(alphas, betas, iws, ws, iw_indices, w_indices, e, delta, verbose):
     I = np.identity(alphas.shape[1], dtype=complex)
     matsubara = iws is not None
@@ -476,24 +551,33 @@ def calc_local_Greens_function_from_alpha_beta(alphas, betas, iws, ws, iw_indice
         gs_realaxis_local = None
 
     # for alpha, beta in zip(reversed(alphas), reversed(betas)):
-    for alpha, beta in zip(alphas[-2::-1], betas[-2::-1]):
-        if matsubara:
-            if len(iw_indices) > 0:
-                gs_matsubara_local[iw_indices] = (
-                    iwIs
-                    - alpha[np.newaxis, :, :]
-                    - np.conj(beta.T)[np.newaxis, :, :]
-                    @ np.linalg.solve(gs_matsubara_local[iw_indices], beta[np.newaxis, :, :])
-                )
-        if realaxis:
-            if len(w_indices) > 0:
-                gs_realaxis_local[w_indices] = (
-                    wIs
-                    - alpha[np.newaxis, :, :]
-                    - np.conj(beta.T)[np.newaxis, :, :]
-                    @ np.linalg.solve(gs_realaxis_local[w_indices], beta[np.newaxis, :, :])
-                )
+    try:
+        for alpha, beta in zip(alphas[-2::-1], betas[-2::-1]):
+            if matsubara:
+                if len(iw_indices) > 0:
+                    gs_matsubara_local[iw_indices] = (
+                        iwIs
+                        - alpha[np.newaxis, :, :]
+                        - np.conj(beta.T)[np.newaxis, :, :]
+                        @ np.linalg.solve(gs_matsubara_local[iw_indices], beta[np.newaxis, :, :])
+                    )
+            if realaxis:
+                if len(w_indices) > 0:
+                    gs_realaxis_local[w_indices] = (
+                        wIs
+                        - alpha[np.newaxis, :, :]
+                        - np.conj(beta.T)[np.newaxis, :, :]
+                        @ np.linalg.solve(gs_realaxis_local[w_indices], beta[np.newaxis, :, :])
+                    )
+    except Exception as e:
+        print(f"{betas[-1]=}")
+        with open(f"gs_matsubara_local_{rank}.npy", "wb") as f:
+            np.save(f, gs_matsubara_local)
+        with open(f"gs_realaxis_local_{rank}.npy", "wb") as f:
+            np.save(f, gs_realaxis_local)
+        raise e
     return gs_matsubara_local, gs_realaxis_local
+
 
 def save_Greens_function(gs, omega_mesh, label, e_scale=1, tol=1e-8):
     n_orb = gs.shape[0]
