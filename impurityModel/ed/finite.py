@@ -21,7 +21,9 @@ from impurityModel.ed.average import k_B, thermal_average, thermal_average_scale
 from impurityModel.ed.hermitian_operator import HermitianOperator
 from impurityModel.ed.hermitian_operator_matmul import NewHermitianOperator
 
-from scipy.sparse.linalg import eigsh
+from scipy.sparse.linalg import eigsh, ArpackNoConvergence
+
+# from primme import eigsh
 
 
 # MPI variables
@@ -183,13 +185,18 @@ def eigensystem_new(
         es = []
         mask = [True]
         while len(es) - sum(mask) < k:
-            es, vecs = eigsh(
-                h,
-                k=min(k + dk, h.shape[0] - 1),
-                which="SA",
-                tol=eigenValueTol,
-                v0=vecs[:, 0] if vecs is not None else None,
-            )
+            try:
+                es, vecs = eigsh(
+                    h,
+                    k=min(k + dk, h.shape[0] - 1),
+                    which="SA",
+                    tol=eigenValueTol,
+                    v0=vecs[:, 0] if vecs is not None else None,
+                )
+            except ArpackNoConvergence as e:
+                eigenvalueTol = max(np.sqrt(eigenValueTol), 1e-6)
+                es = e.eigenvalues
+                vecs = e.eigenvectors
             indices = np.argsort(es)
             es = es[indices]
             vecs = vecs[:, indices]
