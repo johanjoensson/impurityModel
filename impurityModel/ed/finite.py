@@ -198,7 +198,7 @@ def eigensystem_new(
                 vecs = e.eigenvectors
                 if len(e.eigenvalues) < 1:
                     vecs = np.random.rand(h_local.shape[0], 1) + 0j
-                    vecs = vecs[:, 0]/np.linalg.norm(vecs[:, 0])
+                    vecs[:, 0] = vecs[:, 0]/np.linalg.norm(vecs[:, 0])
                 elif len(e.eigenvalues) == 1:
                     vecs = vecs.reshape((vecs.shape[0], 1))
                 es = []
