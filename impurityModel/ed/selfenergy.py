@@ -50,14 +50,14 @@ def find_gs(h_op, N0, delta_occ, bath_states, num_spin_orbitals, rank, verbose, 
     for i, d in enumerate(dN):
         # basis = Basis(
         basis = CIPSI_Basis(
-            H = h_op,
+            H=h_op,
             valence_baths=num_val_baths,
             conduction_baths=num_cond_baths,
             delta_valence_occ=delta_val_occ,
             delta_conduction_occ=delta_con_occ,
             delta_impurity_occ=delta_imp_occ,
             nominal_impurity_occ={l: N0[0][l] + d for l in N0[0]},
-            truncation_threshold = 1e6,
+            truncation_threshold=1e6,
             verbose=verbose,
             comm=MPI.COMM_WORLD,
         )
@@ -70,12 +70,12 @@ def find_gs(h_op, N0, delta_occ, bath_states, num_spin_orbitals, rank, verbose, 
         e_trial = finite.eigensystem_new(
             h,
             basis,
-            e_max = 0,
-            k = 1,
-            dk = 5,
+            e_max=0,
+            k=1,
+            dk=1,
             verbose=verbose,
             eigenValueTol=0,
-            slaterWeightMin=0,
+            slaterWeightMin=1e-20,
             return_eigvecs=False,
             dense_cutoff=dense_cutoff,
         )
@@ -219,10 +219,10 @@ def calc_selfenergy(
         print("#basis states = {:d}".format(len(basis)))
 
     # energy_cut *= tau
-    energy_cut = -tau*np.log(np.finfo(float).eps)
+    energy_cut = -tau * np.log(np.finfo(float).eps)
 
     basis.tau = tau
-    basis.expand(h, dense_cutoff = dense_cutoff)
+    basis.expand(h, slaterWeightMin=1e-20, dense_cutoff=dense_cutoff)
     h_gs = basis.build_sparse_operator(h)
     es, psis = finite.eigensystem_new(
         h_gs,
@@ -231,8 +231,8 @@ def calc_selfenergy(
         k=2 * (2 * l + 1),
         dk=5,
         verbose=verbosity >= 1,
-        eigenValueTol = 0,
-        slaterWeightMin = 1e-12,
+        eigenValueTol=0,
+        slaterWeightMin=1e-12,
         dense_cutoff=dense_cutoff,
     )
     if verbosity >= 2:
@@ -250,7 +250,7 @@ def calc_selfenergy(
         omega_mesh=w,
         es=es,
         psis=psis,
-        basis = basis,
+        basis=basis,
         l=l,
         hOp=h,
         delta=delta,
@@ -260,7 +260,7 @@ def calc_selfenergy(
         mpi_distribute=True,
         reort=reort,
         dense_cutoff=dense_cutoff,
-        tau = tau,
+        tau=tau,
     )
     if iw is not None:
         gs_matsubara_thermal_avg = thermal_average_scale_indep(es[: np.shape(gs_matsubara)[0]], gs_matsubara, tau=tau)
