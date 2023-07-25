@@ -264,7 +264,7 @@ class Basis:
 
         local_states = sorted(set(self.local_basis) | set(new_states))
 
-        n_samples = min(100, max(len(local_states) // (10 * self.comm.size), 1))
+        n_samples = min(100, len(local_states) // 10)
         state_bounds = None
         done = False
         while not done:
