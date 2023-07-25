@@ -195,8 +195,13 @@ def eigensystem_new(
                 )
             except ArpackNoConvergence as e:
                 eigenvalueTol = max(np.sqrt(eigenValueTol), 1e-6)
-                es = e.eigenvalues
                 vecs = e.eigenvectors
+                if len(e.eigenvalues) < 1:
+                    vecs = np.random.rand((h_local.shape[0], 1)) + 0j
+                    vecs = vecs[:, 0]/np.linalg.norm(vecs[:, 0])
+                es = []
+                mask = [True]
+                continue
             indices = np.argsort(es)
             es = es[indices]
             vecs = vecs[:, indices]
