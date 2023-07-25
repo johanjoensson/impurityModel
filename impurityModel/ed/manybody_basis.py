@@ -314,9 +314,6 @@ class Basis:
 
         self.size = self.comm.allreduce(len(self.local_basis), op=MPI.SUM)
         self.offset = self.comm.scan(local_length, op=MPI.SUM) - local_length
-        # for r in range(self.comm.size):
-        #     if r == self.comm.rank:
-        #         print (f"{r=} {self.offset=}")
         self.local_indices = range(self.offset, self.offset + local_length)
         self._index_dict = {state: self.offset + i for i, state in enumerate(self.local_basis)}
         local_index_bounds = (self.offset, self.offset + len(self.local_basis))
@@ -763,7 +760,7 @@ class CIPSI_Basis(Basis):
                 k=1,
                 dk=1 if psi_ref is None else max(1, len(psi_ref)),
                 v0=v0,
-                eigenValueTol=0,
+                eigenValueTol= de_2_min if de_2_min > 1e-8 else 0,
                 slaterWeightMin=slaterWeightMin,
                 dense_cutoff=dense_cutoff,
                 verbose=self.comm.rank == 0 and False,

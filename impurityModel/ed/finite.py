@@ -194,11 +194,13 @@ def eigensystem_new(
                     v0=vecs[:, 0] if vecs is not None else None,
                 )
             except ArpackNoConvergence as e:
-                eigenvalueTol = max(np.sqrt(eigenValueTol), 1e-6)
+                eigenValueTol = max(np.sqrt(eigenValueTol), 1e-6)
                 vecs = e.eigenvectors
                 if len(e.eigenvalues) < 1:
-                    vecs = np.random.rand((h_local.shape[0], 1)) + 0j
+                    vecs = np.random.rand(h_local.shape[0], 1) + 0j
                     vecs = vecs[:, 0]/np.linalg.norm(vecs[:, 0])
+                elif len(e.eigenvalues) == 1:
+                    vecs = vecs.reshape((vecs.shape[0], 1))
                 es = []
                 mask = [True]
                 continue
