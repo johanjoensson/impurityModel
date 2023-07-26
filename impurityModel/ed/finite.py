@@ -146,21 +146,36 @@ def eigensystem_new(
         For h_local with higher dimension, an iterative method is used instead.
     """
 
+    t0 = time.perf_counter()
     if h_local.shape[0] < dense_cutoff:
         if verbose:
             print(f"Small hamiltonian matrix")
-        # diagonal = np.empty((h_local.shape[0]), dtype = float)
-        # recv_counts = comm.allgather(len(h_local.diagonal))
-        # offsets = np.array([sum(recv_counts[:p]) for p in range(comm.size)])
-        # comm.Allgatherv(h_local.diagonal, (diagonal, recv_counts, offsets, MPI.DOUBLE))
-        # offdiagonals = comm.allreduce(h_local.triangular_part, op = MPI.SUM)
-        # h = offdiagonals + scipy.sparse.diags(diagonal, offsets = 0, format = 'csr', dtype = complex)
-        h = comm.reduce(h_local, op=MPI.SUM, root=0)
+        local_data = h_local.data
+        local_rows, local_columns = h_local.nonzero()
+        data = None
+        rows = None
+        columns = None
+        recv_counts = None
+        offsets = None
+        if comm.rank == 0:
+            recv_counts = np.empty((comm.size), dtype = int)
+        comm.Gather(np.array([len(local_data)]), recv_counts, root = 0)
+
+        if comm.rank == 0:
+            offsets = [sum(recv_counts[:i]) for i in range(comm.size)]
+            data = np.empty((sum(recv_counts)), dtype = h_local.dtype)
+            rows = np.empty((sum(recv_counts)), dtype = local_rows.dtype)
+            columns = np.empty((sum(recv_counts)), dtype = local_columns.dtype)
+        comm.Gatherv(local_data, [data, recv_counts, offsets, MPI.DOUBLE_COMPLEX])
+        comm.Gatherv(local_rows, [rows, recv_counts, offsets, MPI.INT])
+        comm.Gatherv(local_columns, [columns, recv_counts, offsets, MPI.INT])
+        # h = comm.reduce(h_local, op=MPI.SUM, root=0)
         # if comm.rank == 0:
         #     print (f"Hermitian error in hamiltonian = {np.max(np.abs(h.getH() - h))}")
         es = np.empty((h_local.shape[0]))
         vecs = np.empty(h_local.shape, dtype=complex)
         if comm.rank == 0:
+            h = scipy.sparse.csr_matrix( (data, (rows, columns) ), shape = h_local.shape)
             es, vecs = np.linalg.eigh(h.toarray(), UPLO="L")
             indices = np.argsort(es)
             es[:] = es[indices]
@@ -204,6 +219,8 @@ def eigensystem_new(
             vecs = vecs[:, indices]
             mask = es - es[0] <= e_max
             dk += max(k + dk, 1)
+    t0 = time.perf_counter() - t0
+
     if verbose and v0 is not None:
         print(f"log10(1-|<vg|v0>|) = {np.log10(1 - np.abs(np.vdot(v0, vecs[:, 0]))): 4.1f}")
 
@@ -218,12 +235,14 @@ def eigensystem_new(
     if not return_eigvecs:
         return es[: sum(mask)]
     psis = []
-    for v in vecs.T:
+    t0 = time.perf_counter()
+    for v in vecs[:, :sum(mask)].T:
         indices = [i for i in range(basis.size) if abs(v[i]) ** 2 > slaterWeightMin]
         states = basis[indices]
         psis.append({state: v[i] for state, i in zip(states, indices)})
+    t0 = time.perf_counter() - t0
 
-    return es[: sum(mask)], psis[: sum(mask)]
+    return es[: sum(mask)], psis
 
 
 def eigensystem(

@@ -273,11 +273,11 @@ def calc_Greens_function_with_offdiag(
                 new_local_basis |= res.keys()
 
         new_basis.add_states(new_local_basis)
-        if verbose:
-            print(f"Before expanding the excited basis contains {new_basis.size} elements")
+        # if verbose:
+        #     print(f"Before expanding the excited basis contains {new_basis.size} elements")
         new_basis.expand(hOp, dense_cutoff=dense_cutoff)
-        if verbose:
-            print(f"Basis common to all eigenstates contains {new_basis.size} elements")
+        # if verbose:
+        #     print(f"Basis common to all eigenstates contains {new_basis.size} elements")
         for i, (psi, e) in enumerate(zip(psis, es)):
             v = []
             for i_tOp, tOp in enumerate(tOps):

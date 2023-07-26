@@ -177,7 +177,7 @@ class Basis:
         delta_conduction_occ=None,
         delta_impurity_occ=None,
         nominal_impurity_occ=None,
-        truncation_threshold=None,
+        truncation_threshold=np.inf,
         comm=None,
         verbose=True,
     ):
@@ -276,33 +276,83 @@ class Basis:
             elif len(local_states) == 1:
                 samples = np.append([local_states[0]], samples)
             else:
-                samples = []
-            all_samples = self.comm.gather(samples, root=0)
+                samples = np.array([])
+            samples_count = np.empty((self.comm.size), dtype = int)
+            self.comm.Gather(np.array([len(samples)]), samples_count, root = 0)
+
+            all_samples_bytes = None
+            offsets = None
+            recv_counts = None
+            if self.comm.rank == 0:
+                all_samples_bytes = np.empty((sum(samples_count)*self.n_bytes), dtype = np.byte)
+                offsets = np.array([sum(samples_count[:i])*self.n_bytes for i in range(self.comm.size)], dtype = int)
+                recv_counts = samples_count*self.n_bytes
+            
+            self.comm.Gatherv(samples.tobytes(), [all_samples_bytes, recv_counts, offsets, MPI.BYTE], root = 0)
 
             if self.comm.rank == 0:
-                all_states = sorted(set([state for samples in all_samples for state in samples]))
+                all_samples = [all_samples_bytes[i*self.n_bytes : (i+1)*self.n_bytes].tobytes() for i in range(sum(samples_count))]
+                all_states = sorted(set(state for state in all_samples))
                 done = True
                 sizes = [
                     len(all_states) // self.comm.size + (1 if i < len(all_states) % self.comm.size else 0)
                     for i in range(self.comm.size)
                 ]
                 bounds = [sum(sizes[:i]) for i in range(self.comm.size)]
-                state_bounds = [all_states[bound] if bound < len(all_states) else all_states[-1] for bound in bounds]
+                state_bounds = np.array([all_states[bound] if bound < len(all_states) else all_states[-1] for bound in bounds])
+                state_bounds_bytes = np.array([byte for state in state_bounds for byte in state], dtype = np.byte)
+            else:
+                state_bounds_bytes = np.empty((self.comm.size*self.n_bytes), dtype = np.byte)
             done = self.comm.bcast(done, root=0)
-        state_bounds = self.comm.bcast(state_bounds, root=0)
+
+        self.comm.Bcast(state_bounds_bytes, root = 0)
+        state_bounds = np.array([state_bounds_bytes[i*self.n_bytes : (i + 1)*self.n_bytes].tobytes() for i in range(self.comm.size)])
         send_list = [[] for _ in range(self.comm.size)]
         for r in range(self.comm.size - 1):
-            send_list[r] = [state for state in local_states if state >= state_bounds[r] and state < state_bounds[r + 1]]
-        send_list[-1] = [state for state in local_states if state >= state_bounds[-1]]
+            send_list[r] = np.array([byte for state in local_states for byte in state if state >= state_bounds[r] and state < state_bounds[r + 1]], dtype = np.byte)
+        send_list[-1] = np.array([byte for state in local_states for byte in state if state >= state_bounds[-1]], dtype = np.byte)
 
-        received_states = None
-        for r in range(self.comm.size):
-            if r == self.comm.rank:
-                received_states = self.comm.gather(send_list[r], root=r)
-            else:
-                _ = self.comm.gather(send_list[r], root=r)
 
-        self.local_basis = sorted(set(state for states in received_states for state in states))
+        recv_counts = np.empty((self.comm.size), dtype = int)
+        self.comm.Alltoall(np.array([len(l) for l in send_list], dtype = int), recv_counts) 
+
+        received_bytes = np.empty((sum(recv_counts)), dtype = np.byte)
+        offsets = [sum(recv_counts[:i]) for i in range(self.comm.size)]
+        send_list_flat = np.array([byte for byte_list in send_list for byte in byte_list], dtype = np.byte)
+
+        send_counts = [len(l) for l in send_list]
+        send_offsets = [sum(send_counts[:i]) for i in range(self.comm.size)]
+        self.comm.Alltoallv([send_list_flat, send_counts, send_offsets, MPI.BYTE], [received_bytes, recv_counts, offsets, MPI.BYTE])
+
+        received_states = np.array([received_bytes[i*self.n_bytes : (i + 1)*self.n_bytes].tobytes() for i in range(sum(recv_counts)//self.n_bytes)])
+
+        # self.comm.barrier()
+        # for r in range(self.comm.size):
+        #     if self.comm.rank == r:
+        #         print (f"{self.comm.rank=} {recv_counts=}")
+        #     self.comm.barrier()
+        # self.comm.barrier()
+
+        # received_states = None
+        # for r in range(self.comm.size):
+        #     recv_counts = None
+        #     if self.comm.rank == r:
+        #         recv_counts = np.empty((self.comm.size), dtype = int)
+        #     self.comm.Gather(np.array([len(send_list[r])]), recv_counts, root = r)
+        #     # if self.comm.rank == r:
+        #     #     print (f"--> {self.comm.rank=} {recv_counts=}")
+        #     self.comm.barrier()
+
+        #     received_bytes = None
+        #     offsets = None
+        #     if r == self.comm.rank:
+        #         received_bytes = np.empty((sum(recv_counts)), dtype = np.byte)
+        #         offsets = [sum(recv_counts[:i]) for i in range(self.comm.size)]
+        #     self.comm.Gatherv(send_list[r], [received_bytes, recv_counts, offsets, MPI.BYTE], root=r)
+        #     if r == self.comm.rank:
+        #         received_states = np.array([received_bytes[i*self.n_bytes : (i + 1)*self.n_bytes].tobytes() for i in range(sum(recv_counts)//self.n_bytes)])
+
+        self.local_basis = sorted(set(state for state in received_states))
         local_length = len(self.local_basis)
         ########################################################################
         # The local lengths are not balanced! The basis is sorted, but not
@@ -453,18 +503,31 @@ class Basis:
 
         send_order = np.argsort(send_to_ranks, kind="stable")
         recv_counts = np.empty((self.comm.size), dtype=int)
-        queries = None
-        displacements = 0
-        for r in range(self.comm.size):
-            self.comm.Gather(np.array([len(send_list[r])], dtype=int), recv_counts, root=r)
-            if self.comm.rank == r:
-                queries = np.empty((sum(recv_counts) * self.n_bytes), dtype=np.byte)
-                displacements = np.array([sum(recv_counts[:p]) for p in range(self.comm.size)])
-            self.comm.Gatherv(
-                send_list[r].tobytes(),
-                (queries, recv_counts * self.n_bytes, displacements * self.n_bytes, MPI.BYTE),
-                root=r,
-            )
+        send_counts = np.array([len(send_list[r]) for r in range(self.comm.size)])
+        send_displacements = np.array([sum(send_counts[:i]) for i in range(self.comm.size)])
+        send_list_flat = np.array([state for states in send_list for state in states])
+
+        self.comm.Alltoall(np.array([len(send_list[r]) for r in range(self.comm.size)], dtype=int), recv_counts)
+
+        queries = np.empty((sum(recv_counts) * self.n_bytes), dtype=np.byte)
+        displacements = np.array([sum(recv_counts[:p]) for p in range(self.comm.size)])
+        self.comm.Alltoallv(
+            (send_list_flat.tobytes(), send_counts * self.n_bytes, send_displacements * self.n_bytes, MPI.BYTE),
+            (queries, recv_counts * self.n_bytes, displacements * self.n_bytes, MPI.BYTE),
+        )
+
+        # queries = None
+        # displacements = 0
+        # for r in range(self.comm.size):
+        #     self.comm.Gather(np.array([len(send_list[r])], dtype=int), recv_counts, root=r)
+        #     if self.comm.rank == r:
+        #         queries = np.empty((sum(recv_counts) * self.n_bytes), dtype=np.byte)
+        #         displacements = np.array([sum(recv_counts[:p]) for p in range(self.comm.size)])
+        #     self.comm.Gatherv(
+        #         send_list[r].tobytes(),
+        #         (queries, recv_counts * self.n_bytes, displacements * self.n_bytes, MPI.BYTE),
+        #         root=r,
+        #     )
 
         results = np.empty((sum(recv_counts)), dtype=int)
         results[:] = self.size
@@ -474,11 +537,15 @@ class Basis:
                 results[i] = self._index_dict[query]
         result = np.empty((len(s)), dtype=int)
         result[:] = self.size
-        for r in range(self.comm.size):
-            receive_array = result[sum(len(l) for l in send_list[:r]) : sum(len(l) for l in send_list[: r + 1])]
-            send_counts = recv_counts if r == self.comm.rank else np.zeros((self.comm.rank))
-            send_displacements = displacements if r == self.comm.rank else np.zeros((self.comm.rank))
-            self.comm.Scatterv((results, send_counts, send_displacements, MPI.UINT64_T), receive_array, root=r)
+
+        self.comm.Alltoallv([results, recv_counts, displacements, MPI.UINT64_T], [result, send_counts, send_displacements, MPI.UINT64_T])
+        
+
+        # for r in range(self.comm.size):
+        #     receive_array = result[sum(len(l) for l in send_list[:r]) : sum(len(l) for l in send_list[: r + 1])]
+        #     send_counts = recv_counts if r == self.comm.rank else np.zeros((self.comm.rank))
+        #     send_displacements = displacements if r == self.comm.rank else np.zeros((self.comm.rank))
+        #     self.comm.Scatterv((results, send_counts, send_displacements, MPI.UINT64_T), receive_array, root=r)
         result[send_order] = result.copy()
         return result.tolist()
 
@@ -617,7 +684,7 @@ class CIPSI_Basis(Basis):
         initial_basis=None,
         restrictions=None,
         num_spin_orbitals=None,
-        truncation_threshold=None,
+        truncation_threshold=np.inf,
         verbose=False,
         H=None,
         tau=None,
@@ -738,10 +805,11 @@ class CIPSI_Basis(Basis):
             H_sparse = self.build_sparse_operator(H)
             t0 = perf_counter() - t0
             t0 = self.comm.reduce(t0, op=MPI.SUM, root=0)
-            # if self.comm.rank == 0:
-            #     print (f"Time to build sparse H: {t0/self.comm.size:.3f} seconds")
+            if self.comm.rank == 0:
+                print (f"Time to build sparse H: {t0/self.comm.size:.3f} seconds")
 
             t0 = perf_counter()
+            # if psi_ref is not None:
             if self.size > dense_cutoff and psi_ref is not None:
                 v0 = np.zeros((self.size, 1), dtype=complex)
                 v0_states = psi_ref[0].keys()
@@ -757,7 +825,7 @@ class CIPSI_Basis(Basis):
                 k=1,
                 dk=1 if psi_ref is None else max(1, len(psi_ref)),
                 v0=v0,
-                eigenValueTol= de_2_min if de_2_min > 1e-8 else 0,
+                eigenValueTol=de_2_min if de_2_min > 1e-12 else 0,
                 slaterWeightMin=slaterWeightMin,
                 dense_cutoff=dense_cutoff,
                 verbose=self.comm.rank == 0 and False,
@@ -784,8 +852,8 @@ class CIPSI_Basis(Basis):
             )
             t0 = perf_counter() - t0
             t0 = self.comm.reduce(t0, op=MPI.SUM, root=0)
-            # if self.comm.rank == 0:
-            #     print (f"Time to average psi_ref: {t0/self.comm.size:.3f} seconds")
+            if self.comm.rank == 0:
+                print (f"Time to average psi_ref: {t0/self.comm.size:.3f} seconds")
             t0 = perf_counter()
             coupled_Dj = list(Hpsi_ref.keys())
             basis_mask = np.logical_not(self.contains(coupled_Dj))
@@ -821,8 +889,8 @@ class CIPSI_Basis(Basis):
 
             t0 = perf_counter() - t0
             t0 = self.comm.reduce(t0, op=MPI.SUM, root=0)
-            # if self.comm.rank == 0:
-            #     print (f"Time to add new Djs: {t0/self.comm.size:.3f} seconds")
+            if self.comm.rank == 0:
+                print (f"Time to add new Djs: {t0/self.comm.size:.3f} seconds")
             e_pt2 = np.empty((1,))
             self.comm.Allreduce(np.array([np.sum(de_2[de_2_mask])]), e_pt2, op=MPI.SUM)
             e_pt2 = e_pt2[0]

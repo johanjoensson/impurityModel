@@ -332,7 +332,7 @@ def symmetrize_sigma(sigma, blocks, equivalent_blocks):
 def fixed_peak_dc(h0_op, dc_struct, rank, verbose, dense_cutoff):
     from impurityModel.ed import finite
     from rspt2spectra import h2imp
-    from impurityModel.ed.manybody_basis import Basis
+    from impurityModel.ed.manybody_basis import Basis, CIPSI_Basis
     from mpi4py import MPI
 
     comm = MPI.COMM_WORLD
@@ -349,7 +349,7 @@ def fixed_peak_dc(h0_op, dc_struct, rank, verbose, dense_cutoff):
     Np = ({l: N0[0][l] + 1 for l in N0[0]}, N0[1], N0[2])
     Nm = ({l: N0[0][l] - 1 for l in N0[0]}, N0[1], N0[2])
     if peak_position >= 0:
-        basis_upper = Basis(
+        basis_upper = CIPSI_Basis(
                 valence_baths        = num_valence_bath_states,
                 conduction_baths     = num_conduction_bath_states,
                 delta_valence_occ    = delta_valence_occ,
@@ -359,7 +359,7 @@ def fixed_peak_dc(h0_op, dc_struct, rank, verbose, dense_cutoff):
                 verbose = False,
                 comm = MPI.COMM_WORLD
                 )
-        basis_lower = Basis(
+        basis_lower = CIPSI_Basis(
                 valence_baths        = num_valence_bath_states,
                 conduction_baths     = num_conduction_bath_states,
                 delta_valence_occ    = delta_valence_occ,
@@ -507,6 +507,7 @@ def get_ed_h0(
         fit_hyb = offdiagonal.get_hyb(w + eim * 1j, eb, v)
         save_Greens_function(fit_hyb, w, f"{label}-hyb-fit")
         with open(f"{label}-hyb-fit.npy", 'wb') as f:
+            fit_hyb = offdiagonal.get_hyb(w + eim * 1j, eb, v @ np.conj(rot_spherical.T))
             np.save(f, fit_hyb)
 
     if verbose:
