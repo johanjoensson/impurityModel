@@ -277,19 +277,10 @@ class Basis:
                 samples = np.append([local_states[0]], samples)
             else:
                 samples = []
-
-            self.comm.barrier()
-            for r in range(self.comm.size):
-                if r == self.comm.rank:
-                    print (f"{self.comm.rank=} {len(samples)=}")
-                self.comm.barrier()
-            self.comm.barrier()
-
             all_samples = self.comm.gather(samples, root=0)
 
             if self.comm.rank == 0:
                 all_states = sorted(set([state for samples in all_samples for state in samples]))
-                print (f"{self.comm.rank=} {len(all_states)=}")
                 done = True
                 sizes = [
                     len(all_states) // self.comm.size + (1 if i < len(all_states) % self.comm.size else 0)
@@ -297,7 +288,6 @@ class Basis:
                 ]
                 bounds = [sum(sizes[:i]) for i in range(self.comm.size)]
                 state_bounds = [all_states[bound] if bound < len(all_states) else all_states[-1] for bound in bounds]
-                print (f"{bounds=}")
             done = self.comm.bcast(done, root=0)
         state_bounds = self.comm.bcast(state_bounds, root=0)
         send_list = [[] for _ in range(self.comm.size)]
@@ -330,8 +320,6 @@ class Basis:
             local_state_bounds = (None, None)
         self.index_bounds = self.comm.allgather(local_index_bounds)
         self.state_bounds = self.comm.allgather(local_state_bounds)
-        print (f"{self.size=}")
-        print (f"{self.index_bounds=}")
 
     def expand(self, op, op_dict={}, dense_cutoff=None):
         done = False
