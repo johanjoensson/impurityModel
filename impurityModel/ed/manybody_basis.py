@@ -289,7 +289,7 @@ class Basis:
                     for i in range(self.comm.size)
                 ]
                 bounds = [sum(sizes[:i]) for i in range(self.comm.size)]
-                state_bounds = [all_states[bound] for bound in bounds]
+                state_bounds = [all_states[bound] if bound < len(all_states) else all_states[-1] for bound in bounds]
                 print (f"{bounds=}")
             done = self.comm.bcast(done, root=0)
         state_bounds = self.comm.bcast(state_bounds, root=0)
