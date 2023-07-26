@@ -283,17 +283,14 @@ class Basis:
             if self.comm.rank == 0:
                 all_states = sorted(set([state for samples in all_samples for state in samples]))
                 print (f"{self.comm.rank=} {len(all_states)=}")
-                if len(all_states) < self.comm.size:
-                    n_samples *= 2
-                else:
-                    done = True
-                    sizes = [
-                        len(all_states) // self.comm.size + (1 if i < len(all_states) % self.comm.size else 0)
-                        for i in range(self.comm.size)
-                    ]
-                    bounds = [sum(sizes[:i]) for i in range(self.comm.size)]
-                    state_bounds = [all_states[bound] for bound in bounds]
-                    print (f"{bounds=}")
+                done = True
+                sizes = [
+                    len(all_states) // self.comm.size + (1 if i < len(all_states) % self.comm.size else 0)
+                    for i in range(self.comm.size)
+                ]
+                bounds = [sum(sizes[:i]) for i in range(self.comm.size)]
+                state_bounds = [all_states[bound] for bound in bounds]
+                print (f"{bounds=}")
             done = self.comm.bcast(done, root=0)
         state_bounds = self.comm.bcast(state_bounds, root=0)
         send_list = [[] for _ in range(self.comm.size)]
