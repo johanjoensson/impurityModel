@@ -177,9 +177,6 @@ def eigensystem_new(
         if comm.rank == 0:
             h = scipy.sparse.csr_matrix( (data, (rows, columns) ), shape = h_local.shape)
             es, vecs = np.linalg.eigh(h.toarray(), UPLO="L")
-            indices = np.argsort(es)
-            es[:] = es[indices]
-            vecs[:, :] = vecs[:, indices]
         comm.Bcast(es, root=0)
         comm.Bcast(vecs, root=0)
         mask = es - es[0] <= e_max
@@ -214,11 +211,11 @@ def eigensystem_new(
                 es = []
                 mask = [True]
                 continue
-            indices = np.argsort(es)
-            es = es[indices]
-            vecs = vecs[:, indices]
-            mask = es - es[0] <= e_max
+            mask = es - np.min(es) <= e_max
             dk += max(k + dk, 1)
+    indices = np.argsort(es)
+    es[:] = es[indices]
+    vecs[:, :] = vecs[:, indices]
     t0 = time.perf_counter() - t0
 
     if verbose and v0 is not None:
@@ -236,10 +233,11 @@ def eigensystem_new(
         return es[: sum(mask)]
     psis = []
     t0 = time.perf_counter()
-    for v in vecs[:, :sum(mask)].T:
-        indices = [i for i in range(basis.size) if abs(v[i]) ** 2 > slaterWeightMin]
+    # for v in vecs[:, :sum(mask)].T:
+    for j in range(sum(mask)):
+        indices = [i for i in range(basis.size) if abs(vecs[i, j]) ** 2 > slaterWeightMin]
         states = basis[indices]
-        psis.append({state: v[i] for state, i in zip(states, indices)})
+        psis.append({state: vecs[i, j] for state, i in zip(states, indices)})
     t0 = time.perf_counter() - t0
 
     return es[: sum(mask)], psis
