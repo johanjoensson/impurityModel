@@ -158,14 +158,14 @@ def eigensystem_new(
         recv_counts = None
         offsets = None
         if comm.rank == 0:
-            recv_counts = np.empty((comm.size), dtype = int)
-        comm.Gather(np.array([len(local_data)]), recv_counts, root = 0)
+            recv_counts = np.empty((comm.size), dtype=int)
+        comm.Gather(np.array([len(local_data)]), recv_counts, root=0)
 
         if comm.rank == 0:
             offsets = [sum(recv_counts[:i]) for i in range(comm.size)]
-            data = np.empty((sum(recv_counts)), dtype = h_local.dtype)
-            rows = np.empty((sum(recv_counts)), dtype = local_rows.dtype)
-            columns = np.empty((sum(recv_counts)), dtype = local_columns.dtype)
+            data = np.empty((sum(recv_counts)), dtype=h_local.dtype)
+            rows = np.empty((sum(recv_counts)), dtype=local_rows.dtype)
+            columns = np.empty((sum(recv_counts)), dtype=local_columns.dtype)
         comm.Gatherv(local_data, [data, recv_counts, offsets, MPI.DOUBLE_COMPLEX])
         comm.Gatherv(local_rows, [rows, recv_counts, offsets, MPI.INT])
         comm.Gatherv(local_columns, [columns, recv_counts, offsets, MPI.INT])
@@ -175,7 +175,7 @@ def eigensystem_new(
         es = np.empty((h_local.shape[0]))
         vecs = np.empty(h_local.shape, dtype=complex)
         if comm.rank == 0:
-            h = scipy.sparse.csr_matrix( (data, (rows, columns) ), shape = h_local.shape)
+            h = scipy.sparse.csr_matrix((data, (rows, columns)), shape=h_local.shape)
             es, vecs = np.linalg.eigh(h.toarray(), UPLO="L")
         comm.Bcast(es, root=0)
         comm.Bcast(vecs, root=0)
