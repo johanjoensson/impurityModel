@@ -5,6 +5,7 @@ import traceback
 import sys
 import pickle
 from impurityModel.ed.lanczos import Reort
+from os import devnull
 
 
 
@@ -202,7 +203,11 @@ def run_impmod_ed(
         slater[2 * i] = slater_from_rspt[i]
 
     stdout_save = sys.stdout
-    # sys.stdout = open(f"impurityModel-{label.strip()}-{rank}.out", "a")
+    if rank == 0:
+        sys.stdout = open(f"impurityModel-{label.strip()}.out", "w")
+    else:
+        sys.stdout = open(f"impurityModel-{label.strip()}-{rank}.out", "w")
+        # sys.stdout = open(devnull, "w")
 
     nominal_occ, delta_occ, bath_states_per_orbital, reort, dense_cutoff = parse_solver_line(solver_line)
     nominal_occ = ({l: nominal_occ[0]}, {l: nominal_occ[1]}, {l:nominal_occ[2]})
@@ -258,9 +263,9 @@ def run_impmod_ed(
             print (traceback.format_exc())
             print (f"Adding positive infinity to the imaginaty part of the DC selfenergy.", flush = True)
             print(f"!"*100)
-            sig_dc[:, :] = 1j*np.inf
+            sig_dc[:, :] = np.inf + 1j*np.inf
 
-        # sys.stdout.close()
+        sys.stdout.close()
         sys.stdout = stdout_save
         return
 
@@ -288,9 +293,6 @@ def run_impmod_ed(
 
     from impurityModel.ed import selfenergy
 
-    # Python exceptions are ignored by the outside code, so we need to capture all exceptions,
-    # print an error message and make sure that the outside code becomes aware that something
-    # has gone terribly wrong.
     try:
         selfenergy.run(cluster, h_op, 1j * iw, w, eim, tau, verbosity if rank == 0 else 0, reort = reort, dense_cutoff = dense_cutoff)
 

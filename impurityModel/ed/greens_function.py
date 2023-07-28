@@ -266,18 +266,18 @@ def calc_Greens_function_with_offdiag(
                     n_spin_orbitals,
                     tOp,
                     {s: 1},
-                    slaterWeightMin=0,
+                    slaterWeightMin=1e-12,
                     restrictions=basis.restrictions,
-                    # opResult=t_mems[i_tOp],
+                    opResult=t_mems[i_tOp],
                 )
                 new_local_basis |= res.keys()
 
         new_basis.add_states(new_local_basis)
-        # if verbose:
-        #     print(f"Before expanding the excited basis contains {new_basis.size} elements")
+        if verbose:
+            print(f"Before expanding the excited basis contains {new_basis.size} elements")
         new_basis.expand(hOp, dense_cutoff=dense_cutoff)
-        # if verbose:
-        #     print(f"Basis common to all eigenstates contains {new_basis.size} elements")
+        if verbose:
+            print(f"Basis common to all eigenstates contains {new_basis.size} elements")
         for i, (psi, e) in enumerate(zip(psis, es)):
             v = []
             for i_tOp, tOp in enumerate(tOps):
