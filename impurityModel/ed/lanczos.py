@@ -47,13 +47,13 @@ def get_block_Lanczos_matrices(
     alphas = np.empty((0, n, n), dtype=complex)
     betas = np.empty((0, n, n), dtype=complex)
 
-    if rank == 0:
+    if rank == 0 and reort_mode != Reort.NONE:
         Q = np.empty((N, n), dtype=complex)
         Q[:, :] = psi0
         W = np.zeros((2, 1, n, n), dtype=complex)
         W[1] = np.identity(n)
         force_reort = None
-        n_reort = 0
+    n_reort = 0
     q = np.zeros((2, N, n), dtype=complex)
     q[1, :, :] = psi0
 
@@ -105,7 +105,7 @@ def get_block_Lanczos_matrices(
                         raise e
 
                     # print (f"{delta=}")
-                    done = delta < 1e-12
+                    done = delta < 1e-6
                     # if done:
                     #     print (f"{betas[-2]=}")
                     #     print (f"{betas[-1]=}")
@@ -189,6 +189,7 @@ def get_block_Lanczos_matrices(
 
                     force_reort = mask if reort else None
                     t_reorth += time.perf_counter() - t_ortho
+            if rank == 0 and reort_mode != Reort.NONE:
                 Q = np.append(Q, q[1], axis=1)
 
             q[1] = comm.bcast(q[1], root=0)

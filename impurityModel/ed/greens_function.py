@@ -250,58 +250,59 @@ def calc_Greens_function_with_offdiag(
 
         t_mems = [{} for _ in tOps]
 
-        new_basis = CIPSI_Basis(
-            initial_basis=[],
-            restrictions=basis.restrictions,
-            num_spin_orbitals=basis.num_spin_orbitals,
-            comm=basis.comm,
-            verbose=verbose,
-            truncation_threshold=basis.truncation_threshold,
-            tau=basis.tau,
-        )
-        new_local_basis = set()
-        for i_tOp, tOp in enumerate(tOps):
-            for s in basis.local_basis:
-                res = finite.applyOp(
-                    n_spin_orbitals,
-                    tOp,
-                    {s: 1},
-                    slaterWeightMin=1e-12,
-                    restrictions=basis.restrictions,
-                    opResult=t_mems[i_tOp],
-                )
-                new_local_basis |= res.keys()
-
-        new_basis.add_states(new_local_basis)
-        if verbose:
-            print(f"Before expanding the excited basis contains {new_basis.size} elements")
-        new_basis.expand(hOp, dense_cutoff=dense_cutoff)
-        if verbose:
-            print(f"Basis common to all eigenstates contains {new_basis.size} elements")
         for i, (psi, e) in enumerate(zip(psis, es)):
-            v = []
-            for i_tOp, tOp in enumerate(tOps):
-                # v.append(finite.applyOp(n_spin_orbitals, tOp, psi, slaterWeightMin, restrictions, t_mems[i_tOp]))
-                v.append(
-                    finite.applyOp(
-                        n_spin_orbitals,
-                        tOp,
-                        psi,
-                        slaterWeightMin=0,
-                        restrictions=basis.restrictions,
-                        opResult=t_mems[i_tOp],
-                    )
-                )
 
             for block in blocks:
                 block_v = []
-                for orb in block:
-                    block_v.append(v[orb])
+                new_local_basis = set()
+                for i_tOp, tOp in [(orb, tOps[orb]) for orb in block]:
+                    # v.append(finite.applyOp(n_spin_orbitals, tOp, psi, slaterWeightMin, restrictions, t_mems[i_tOp]))
+                    for s in basis.local_basis:
+                        res = finite.applyOp(
+                            n_spin_orbitals,
+                            tOps[i_tOp],
+                            {s: 1},
+                            slaterWeightMin=np.finfo(float).eps,
+                            restrictions=basis.restrictions,
+                            opResult=t_mems[i_tOp],
+                        )
+                        new_local_basis |= res.keys()
+                    block_v.append(
+                        finite.applyOp(
+                            n_spin_orbitals,
+                            tOp,
+                            psi,
+                            slaterWeightMin=np.finfo(float).eps,
+                            restrictions=basis.restrictions,
+                            opResult=t_mems[i_tOp],
+                        )
+                    )
+                    new_local_basis |= block_v[-1].keys()
+
+                if basis.size > 1e3:
+                    new_basis = CIPSI_Basis(
+                        initial_basis=list(new_local_basis),
+                        restrictions=basis.restrictions,
+                        num_spin_orbitals=basis.num_spin_orbitals,
+                        comm=basis.comm,
+                        verbose=verbose,
+                        truncation_threshold=basis.truncation_threshold,
+                        tau=basis.tau,
+                    )
+                else:
+                    new_basis = Basis(
+                        initial_basis=list(new_local_basis),
+                        restrictions=basis.restrictions,
+                        num_spin_orbitals=basis.num_spin_orbitals,
+                        comm=basis.comm,
+                        verbose=verbose,
+                        truncation_threshold=basis.truncation_threshold,
+                    )
+                new_basis.expand(hOp, dense_cutoff=dense_cutoff)
                 gs_matsubara_i, gs_realaxis_i = get_block_Green(
                     n_spin_orbitals=n_spin_orbitals,
                     hOp=hOp,
                     psi_arr=block_v,
-                    # basis = basis,
                     basis=new_basis,
                     e=e,
                     iws=iw,

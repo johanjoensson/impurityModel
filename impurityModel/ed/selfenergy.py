@@ -115,7 +115,14 @@ def run(cluster, h0, iw, w, delta, tau, verbosity, reort, dense_cutoff):
     nPrintSlaterWeights = 0
     tolPrintOccupation = 0.5
 
-    sig_tmp, sig_real_tmp, sig_static_tmp = calc_selfenergy(
+    cluster.sig[:, :, :] = 0
+    cluster.sig_real[:, :, :] = 0
+    cluster.sig_static[:, :] = 0
+
+    print (f"{cluster.inequivalent_blocks=}")
+    print (f"{[cluster.blocks[i] for i in cluster.inequivalent_blocks]=}")
+    # sig_tmp, sig_real_tmp, sig_static_tmp = calc_selfenergy(
+    cluster.sig[:], cluster.sig_real[:], cluster.sig_static[:] = calc_selfenergy(
         h0,
         cluster.slater,
         iw,
@@ -130,20 +137,31 @@ def run(cluster, h0, iw, w, delta, tau, verbosity, reort, dense_cutoff):
         nPrintSlaterWeights,
         tolPrintOccupation,
         verbosity,
-        blocks=None,
+        blocks=[cluster.blocks[i] for i in cluster.inequivalent_blocks],
+        # blocks=None,
         rotation=cluster.rot_spherical,
         cluster_label=cluster.label,
         reort=reort,
         dense_cutoff=dense_cutoff,
     )
-    cluster.sig[:, :, :] = 0
-    cluster.sig_real[:, :, :] = 0
-    cluster.sig_static[:, :] = 0
-    block_idxs = [np.ix_(block, block) for block in cluster.blocks]
-    for block in block_idxs:
-        cluster.sig[block] = sig_tmp[block]
-        cluster.sig_real[block] = sig_real_tmp[block]
-        cluster.sig_static[block] = sig_static_tmp[block]
+
+    for block_i in cluster.inequivalent_blocks:
+        block_idx_i = np.ix_(cluster.blocks[block_i], cluster.blocks[block_i])
+        for block_j in cluster.identical_blocks[block_i]:
+            block_idx_j = np.ix_(cluster.blocks[block_j], cluster.blocks[block_j])
+            cluster.sig[block_idx_j] = cluster.sig[block_idx_i]
+            cluster.sig_real[block_idx_j] = cluster.sig_real[block_idx_i]
+            # cluster.sig_static[block_idx_j] = cluster.sig_static[block_idx_i]
+        for block_j in cluster.transposed_blocks[block_i]:
+            block_idx_j = np.ix_(cluster.blocks[block_j], cluster.blocks[block_j])
+            cluster.sig[block_idx_j] = np.transpose(cluster.sig[block_idx_i], (1, 0, 2))
+            cluster.sig_real[block_idx_j] = np.transpose(cluster.sig_real[block_idx_i], (1, 0, 2))
+            # cluster.sig_static[block_idx_j] = np.transpose(cluster.sig_static[block_idx_i], (1, 0))
+    # block_idxs = [np.ix_(block, block) for block in cluster.blocks]
+    # for block in block_idxs:
+    #     cluster.sig[block] = sig_tmp[block]
+    #     cluster.sig_real[block] = sig_real_tmp[block]
+    #     cluster.sig_static[block] = sig_static_tmp[block]
 
 
 def calc_selfenergy(
@@ -311,6 +329,7 @@ def calc_selfenergy(
             save_hyb=True,
             clustername=cluster_label,
             rotation=rotation,
+            blocks = blocks,
         )
         try:
             check_sigma(sigma_real)
@@ -330,6 +349,7 @@ def calc_selfenergy(
             save_hyb=True,
             clustername=cluster_label,
             rotation=rotation,
+            blocks = blocks,
         )
         try:
             check_sigma(sigma)
@@ -391,7 +411,7 @@ def get_hcorr_v_hbath(h0op, sum_bath_states):
 
 
 def get_sigma(
-    omega_mesh, nBaths, g, h0op, delta, return_g0=False, save_G0=False, save_hyb=False, clustername="", rotation=None
+    omega_mesh, nBaths, g, h0op, delta, return_g0=False, save_G0=False, save_hyb=False, clustername="", rotation=None, blocks = None
 ):
     hcorr, v, v_dagger, hbath = get_hcorr_v_hbath(h0op, nBaths)
 
@@ -432,8 +452,17 @@ def get_sigma(
                 e_scale=1,
             )
 
-    g_inv = np.linalg.inv(np.moveaxis(g, -1, 0))
-    return np.moveaxis(g0_inv - g_inv, 0, -1)
+    if blocks is None:
+        g_inv = np.linalg.inv(np.moveaxis(g, -1, 0))
+        return np.moveaxis(g0_inv - g_inv, 0, -1)
+    else:
+        sig = np.zeros_like(g)
+        for block in blocks:
+            block_idx = np.ix_(block, block)
+            sig[block_idx] = np.moveaxis(g0_inv, 0, -1)[block_idx] - np.moveaxis(np.linalg.inv(np.moveaxis(g[block_idx], -1, 0)), 0, -1)
+        return sig
+    return None
+
 
 
 def get_Sigma_static(nBaths, Fdd, es, psis, l, tau):
