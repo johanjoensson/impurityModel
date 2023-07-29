@@ -279,7 +279,7 @@ def calc_Greens_function_with_offdiag(
                     )
                     new_local_basis |= block_v[-1].keys()
 
-                if basis.size > 1e3:
+                if basis.size > dense_cutoff:
                     new_basis = CIPSI_Basis(
                         initial_basis=list(new_local_basis),
                         restrictions=basis.restrictions,
