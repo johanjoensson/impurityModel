@@ -6,6 +6,7 @@ import sys
 import pickle
 from impurityModel.ed.lanczos import Reort
 from os import devnull
+from rspt2spectra.hyb_fit import get_block_structure, get_identical_blocks, get_transposed_blocks
 
 
 
@@ -23,7 +24,6 @@ class impModCluster:
         nominal_occ,
         delta_occ,
         n_bath_states,
-        blocks,
         sig,
         sig_real,
         sig_static,
@@ -37,12 +37,39 @@ class impModCluster:
         self.bath_states = n_bath_states
         self.nominal_occ = nominal_occ
         self.delta_occ = delta_occ
-        self.blocks = blocks
         self.sig = sig
         self.sig_real = sig_real
         self.sig_static = sig_static
         self.sig_dc = sig_dc
         self.rot_spherical = rot_spherical
+
+        self.blocks=get_block_structure( np.moveaxis(np.conj(rot_spherical.T)[np.newaxis, :, :] @ 
+                                                np.moveaxis(hyb, -1, 0) @ 
+                                                rot_spherical[np.newaxis, :, :], 0, -1),
+                                   np.conj(rot_spherical.T) @ h_dft @ rot_spherical
+                                   )
+        self.identical_blocks=get_identical_blocks(self.blocks, np.moveaxis(np.conj(rot_spherical.T)[np.newaxis, :, :] @ 
+                                                np.moveaxis(hyb, -1, 0) @ 
+                                                rot_spherical[np.newaxis, :, :], 0, -1),
+                                   np.conj(rot_spherical.T) @ h_dft @ rot_spherical
+                                                   )
+        self.transposed_blocks=get_transposed_blocks(self.blocks, np.moveaxis(np.conj(rot_spherical.T)[np.newaxis, :, :] @ 
+                                                np.moveaxis(hyb, -1, 0) @ 
+                                                rot_spherical[np.newaxis, :, :], 0, -1),
+                                   np.conj(rot_spherical.T) @ h_dft @ rot_spherical
+                                                   )
+
+        self.inequivalent_blocks = []
+        for blocks in self.identical_blocks:
+            unique = True
+            for transpose in self.transposed_blocks:
+                if blocks[0] in transpose[1:]:
+                    unique = False
+                    break
+            if unique:
+                self.inequivalent_blocks.append(blocks[0])
+
+
 
 
 class dcStruct:
@@ -67,7 +94,7 @@ class dcStruct:
 
 def parse_solver_line(solver_line):
     """
-    N0 dN dVal dCon Nbath [pro] [dense_cutoff 5000]
+    N0 dN dVal dCon Nbath [pro] [dense_cutoff 1000]
     """
     # Remove comments from the solver line
     solver_line = solver_line.split("!")[0]
@@ -86,7 +113,7 @@ def parse_solver_line(solver_line):
                            f"--->dConduction {solver_array[3]}\n"
                            f"--->Nbaths {solver_array[4]}")
     partial_reort = False
-    dense_cutoff = 5000
+    dense_cutoff = 1000
     reort = Reort.NONE
     if len(solver_array) > 5:
         skip_next = False
@@ -206,8 +233,8 @@ def run_impmod_ed(
     if rank == 0:
         sys.stdout = open(f"impurityModel-{label.strip()}.out", "w")
     else:
-        sys.stdout = open(f"impurityModel-{label.strip()}-{rank}.out", "w")
-        # sys.stdout = open(devnull, "w")
+        # sys.stdout = open(f"impurityModel-{label.strip()}-{rank}.out", "w")
+        sys.stdout = open(devnull, "w")
 
     nominal_occ, delta_occ, bath_states_per_orbital, reort, dense_cutoff = parse_solver_line(solver_line)
     nominal_occ = ({l: nominal_occ[0]}, {l: nominal_occ[1]}, {l:nominal_occ[2]})
@@ -269,7 +296,6 @@ def run_impmod_ed(
         sys.stdout = stdout_save
         return
 
-    from rspt2spectra.hyb_fit import get_block_structure
 
     cluster = impModCluster(
         label=label.strip(),
@@ -279,11 +305,6 @@ def run_impmod_ed(
         n_bath_states=n_bath_states,
         nominal_occ=nominal_occ,
         delta_occ=delta_occ,
-        blocks=get_block_structure( np.moveaxis(np.conj(rot_spherical.T)[np.newaxis, :, :] @ 
-                                                np.moveaxis(hyb, -1, 0) @ 
-                                                rot_spherical[np.newaxis, :, :], 0, -1),
-                                   np.conj(rot_spherical.T) @ h_dft @ rot_spherical
-                                   ),
         sig=sig,
         sig_real=sig_real,
         sig_static=sig_static,
