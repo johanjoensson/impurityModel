@@ -198,7 +198,7 @@ def calc_Greens_function_with_offdiag(
                         n_spin_orbitals,
                         tOp,
                         psi,
-                        slaterWeightMin=0,
+                        slaterWeightMin=slaterWeightMin,
                         restrictions=basis.restrictions,
                         opResult=t_mems[i_tOp],
                     )
@@ -208,9 +208,9 @@ def calc_Greens_function_with_offdiag(
                         n_spin_orbitals,
                         tOp,
                         {s: 1},
-                        slaterWeightMin=0,
+                        slaterWeightMin=slaterWeightMin,
                         restrictions=basis.restrictions,
-                        # opResult=t_mems[i_tOp],
+                        opResult=t_mems[i_tOp],
                     )
                     new_local_basis |= res.keys()
 
@@ -262,7 +262,7 @@ def calc_Greens_function_with_offdiag(
                             n_spin_orbitals,
                             tOps[i_tOp],
                             {s: 1},
-                            slaterWeightMin=np.finfo(float).eps,
+                            slaterWeightMin=slaterWeightMin,
                             restrictions=basis.restrictions,
                             opResult=t_mems[i_tOp],
                         )
@@ -272,7 +272,7 @@ def calc_Greens_function_with_offdiag(
                             n_spin_orbitals,
                             tOp,
                             psi,
-                            slaterWeightMin=np.finfo(float).eps,
+                            slaterWeightMin=slaterWeightMin,
                             restrictions=basis.restrictions,
                             opResult=t_mems[i_tOp],
                         )
@@ -298,7 +298,9 @@ def calc_Greens_function_with_offdiag(
                         verbose=verbose,
                         truncation_threshold=basis.truncation_threshold,
                     )
-                new_basis.expand(hOp, dense_cutoff=dense_cutoff)
+                new_basis.expand(hOp, dense_cutoff=dense_cutoff, slaterWeightMin=slaterWeightMin)
+                if verbose:
+                    print(f"time(build excited state basis) = {time.perf_counter() - t0}")
                 gs_matsubara_i, gs_realaxis_i = get_block_Green(
                     n_spin_orbitals=n_spin_orbitals,
                     hOp=hOp,
@@ -344,7 +346,7 @@ def get_block_Green(
     h_mem=None,
     mode="sparse",
     krylovSize=None,
-    slaterWeightMin=1e-7,
+    slaterWeightMin=1e-20,
     parallelization_mode="H_build",
     verbose=True,
     dense_cutoff=1e3,

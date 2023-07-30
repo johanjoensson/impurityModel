@@ -112,6 +112,14 @@ def get_block_Lanczos_matrices(
                     #     alphas = alphas[:-1]
                     #     betas = betas[:-1]
                     t_conv += time.perf_counter() - t_converged
+                while np.any(b_mask) and i < krylovSize // n - 1:
+                    q[1] = q[1] @ betas[i]
+                    q[1][:, b_mask] = np.random.rand(N, sum(b_mask)) + 1j * np.random.rand(N, sum(b_mask))
+                    if reort_mode != Reort.NONE:
+                        q[1] -= Q @ (np.conj(Q.T) @ q[1])
+                    q[1], betas[i] = sp.linalg.qr(q[1], mode="economic", overwrite_a=True, check_finite=False)
+                    b_mask = np.abs(np.diagonal(betas[i])) < np.finfo(float).eps
+                    W[1, -1] = 1
 
             done = comm.bcast(done, root=0)
             if done:

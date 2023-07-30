@@ -442,15 +442,7 @@ class Basis:
         self.index_bounds = self.comm.allgather(local_index_bounds)
         self.state_bounds = self.comm.allgather(local_state_bounds)
 
-        # self.comm.barrier()
-        # for r in range(self.comm.size):
-        #     if self.comm.rank == r:
-        #         print (f"{self.comm.rank=} {self.size=} {self.index_bounds=} {self.state_bounds=}")
-        #         print (f"{self.comm.rank=} {state_bounds=}")
-        #     self.comm.barrier()
-        # self.comm.barrier()
-
-    def expand(self, op, op_dict={}, dense_cutoff=None):
+    def expand(self, op, op_dict={}, dense_cutoff=None, slaterWeightMin=1e-20):
         done = False
         if self.comm is None:
             # serial algorithm
@@ -464,7 +456,11 @@ class Basis:
                         res = op_dict[state]
                     else:
                         res = applyOp(
-                            self.num_spin_orbitals, op, {state: 1}, restrictions=self.restrictions, slaterWeightMin=0
+                            self.num_spin_orbitals,
+                            op,
+                            {state: 1},
+                            restrictions=self.restrictions,
+                            slaterWeightMin=slaterWeightMin,
                         )
                         if len(res) != 0:
                             op_dict[state] = res
@@ -473,18 +469,17 @@ class Basis:
                 new_basis += sorted(new_states)
                 self.local_basis = list(sorted(new_basis))
         else:
-            # MPI distributed algorithm
             while not done:
                 local_states = []
-                # local_states.extend([state for state in op_dict] + [state for key in op_dict for state in op_dict[key]])
-                # states_in_op_dicts = self.comm.allreduce(set(op_dict.keys()), op=combine_sets_op)
 
                 new_local_states = []
                 for state in set(self.local_basis + local_states):
-                    # if state in states_in_op_dicts:
-                    #     continue
                     res = applyOp(
-                        self.num_spin_orbitals, op, {state: 1}, restrictions=self.restrictions, slaterWeightMin=0
+                        self.num_spin_orbitals,
+                        op,
+                        {state: 1},
+                        restrictions=self.restrictions,
+                        slaterWeightMin=slaterWeightMin,
                     )
                     op_dict[state] = res
                     new_local_states.extend(res.keys())
@@ -740,7 +735,7 @@ class Basis:
             verbose=self.verbose,
         )
 
-    def build_operator_dict(self, op, op_dict=None, distributed=True):
+    def build_operator_dict(self, op, op_dict=None, distributed=True, slaterWeightMin=1e-20):
         """
         Express the operator, op, in the current basis. Do not expand the basis.
         Return a dict containing the results of applying op to the different basis states
@@ -756,7 +751,7 @@ class Basis:
                         op,
                         {state: 1},
                         restrictions=self.restrictions,
-                        slaterWeightMin=0,
+                        slaterWeightMin=slaterWeightMin,
                         opResult=op_dict,
                     )
                 except Exception as e:
@@ -862,8 +857,8 @@ class CIPSI_Basis(Basis):
                 k=min(1, self.size - 1),
                 dk=min(10, self.size - 1),
                 eigenValueTol=0,
-                slaterWeightMin=0,
-                verbose=False,
+                slaterWeightMin=1e-20,
+                verbose=self.verbose,
             )
             self.truncate(psi_ref)
 
@@ -886,26 +881,23 @@ class CIPSI_Basis(Basis):
         self.local_basis = []
         self.add_states(new_basis)
 
-    def _calc_de_2(self, Djs, H, H_dict, psi_ref, e_ref):
+    def _calc_de_2(self, Djs, H, H_dict, Hpsi_ref, e_ref, slaterWeightMin=1e-20):
         """
         calculate second variational energy contribution of the Slater determinants in states.
         """
 
         overlap = np.empty((len(Djs)), dtype=complex)
         e_state = np.empty((len(Djs)), dtype=float)
-        Hpsi = applyOp(
-            self.num_spin_orbitals,
-            H,
-            psi_ref,
-            restrictions=self.restrictions,
-            slaterWeightMin=0,
-            opResult=H_dict,
-        )
         for j, Dj in enumerate(Djs):
             # <Dj|H|Psi_ref>
-            overlap[j] = Hpsi[Dj] if Dj in Hpsi else 0
+            overlap[j] = Hpsi_ref[Dj] if Dj in Hpsi_ref else 0
             HDj = applyOp(
-                self.num_spin_orbitals, H, {Dj: 1}, restrictions=self.restrictions, slaterWeightMin=0, opResult=H_dict
+                self.num_spin_orbitals,
+                H,
+                {Dj: 1},
+                restrictions=self.restrictions,
+                slaterWeightMin=slaterWeightMin,
+                opResult=H_dict,
             )
             # <Dj|H|Dj>
             e_state[j] = np.real(HDj[Dj] if Dj in HDj else 0)
@@ -916,7 +908,7 @@ class CIPSI_Basis(Basis):
 
         return np.abs(overlap) ** 2 / de
 
-    def expand(self, H, H_dict={}, e_conv=np.finfo(float).eps, dense_cutoff=1e3, slaterWeightMin=0):
+    def expand(self, H, H_dict={}, e_conv=np.finfo(float).eps, dense_cutoff=1e3, slaterWeightMin=1e-20):
         """
         Use the CIPSI method to expand the basis. Keep adding Slater determinants until the CIPSI energy is converged.
         """
@@ -942,6 +934,7 @@ class CIPSI_Basis(Basis):
                 v0_indices = self.index(list(v0_states))
                 for i, state in zip(v0_indices, v0_states):
                     v0[i, 0] = psi_ref[0][state]
+                self.comm.Allreduce(v0.copy(), v0)
             else:
                 v0 = None
             e_ref, psi_ref = eigensystem_new(
@@ -954,11 +947,12 @@ class CIPSI_Basis(Basis):
                 eigenValueTol=de_2_min if de_2_min > 1e-12 else 0,
                 slaterWeightMin=slaterWeightMin,
                 dense_cutoff=dense_cutoff,
-                verbose=self.comm.rank == 0 and False,
+                verbose=self.verbose,
+                distribute_eigenvectors=True,
             )
             t0 = perf_counter() - t0
             t0 = self.comm.reduce(t0, op=MPI.SUM, root=0)
-            if self.comm.rank == 0:
+            if self.verbose:
                 print(f"Time to get psi_ref: {t0/self.comm.size:.3f} seconds")
 
             t0 = perf_counter()
@@ -969,34 +963,64 @@ class CIPSI_Basis(Basis):
             for i, psi in enumerate(psi_ref):
                 psi_sum = add(psi_sum, psi, weights[i])
             e_ref = np.sum(weights * e_ref)
+            t0 = perf_counter() - t0
+            t0 = self.comm.reduce(t0, op=MPI.SUM, root=0)
+            if self.verbose:
+                print(f"Time to average psi_ref: {t0/self.comm.size:.3f} seconds")
+            t0 = perf_counter()
             Hpsi_ref = applyOp(
                 self.num_spin_orbitals,
                 H,
                 psi_sum,
                 restrictions=self.restrictions,
-                slaterWeightMin=0,
+                slaterWeightMin=slaterWeightMin,
                 opResult=H_dict,
             )
             t0 = perf_counter() - t0
             t0 = self.comm.reduce(t0, op=MPI.SUM, root=0)
-            if self.comm.rank == 0:
-                print(f"Time to average psi_ref: {t0/self.comm.size:.3f} seconds")
+            if self.verbose:
+                print(f"Time to calculate Hpsi_ref: {t0/self.comm.size:.3f} seconds")
+
             t0 = perf_counter()
             coupled_Dj = list(Hpsi_ref.keys())
             basis_mask = np.logical_not(self.contains(coupled_Dj))
-            Djs = [Dj for j, Dj in enumerate(coupled_Dj) if basis_mask[j]]
-            num_Djs = np.empty((1,), dtype=int)
-            self.comm.Allreduce(np.array([len(Djs)]), num_Djs, op=MPI.SUM)
-            if num_Djs == 0:
-                break
 
-            local_Djs = len(Djs) // self.comm.size
-            if self.comm.rank < len(Djs) % self.comm.size:
-                local_Djs += 1
-            offset = self.comm.scan(local_Djs, op=MPI.SUM) - local_Djs
-            Djs = Djs[offset : offset + local_Djs]
+            Dj_basis = Basis(
+                initial_basis=[Dj for j, Dj in enumerate(coupled_Dj) if basis_mask[j]],
+                num_spin_orbitals=self.num_spin_orbitals,
+                restrictions=self.restrictions,
+                comm=self.comm,
+            )
+            t0 = perf_counter() - t0
+            t0 = self.comm.reduce(t0, op=MPI.SUM, root=0)
+            if self.verbose:
+                print(f"Time to setup distributed Djs: {t0/self.comm.size:.3f} seconds")
 
-            de_2 = self._calc_de_2(Djs, H, H_dict, psi_sum, e_ref)
+            t0 = perf_counter()
+            send_list = [[] for _ in range(self.comm.size)]
+            for r in range(self.comm.size):
+                if Dj_basis.state_bounds[r][0] is None:
+                    continue
+                send_list[r] = {
+                    state: val
+                    for state, val in Hpsi_ref.items()
+                    if state >= Dj_basis.state_bounds[r][0] and state <= Dj_basis.state_bounds[r][1]
+                }
+            received_Hpsi_ref = self.comm.alltoall(send_list)
+            Hpsi_ref = {}
+            for received_dict in received_Hpsi_ref:
+                for key in received_dict:
+                    if key in Hpsi_ref:
+                        Hpsi_ref[key] += received_dict[key]
+                    else:
+                        Hpsi_ref[key] = received_dict[key]
+            t0 = perf_counter() - t0
+            t0 = self.comm.reduce(t0, op=MPI.SUM, root=0)
+            if self.verbose:
+                print(f"Time to distribute H|psi_ref>: {t0/self.comm.size:.3f} seconds")
+
+            t0 = perf_counter()
+            de_2 = self._calc_de_2(Dj_basis.local_basis, H, H_dict, Hpsi_ref, e_ref)
             de_2_max_arr = np.empty((1,))
             de_2_min_arr = np.empty((1,))
             if len(de_2) == 0:
@@ -1011,7 +1035,7 @@ class CIPSI_Basis(Basis):
                 break
 
             old_size = self.size
-            new_Dj = [Djs[i] for i, mask in enumerate(de_2_mask) if mask]
+            new_Dj = [Dj_basis.local_basis[i] for i, mask in enumerate(de_2_mask) if mask]
             self.add_states(new_Dj)
 
             t0 = perf_counter() - t0
@@ -1046,7 +1070,7 @@ class CIPSI_Basis(Basis):
                 k=min(1, self.size - 1),
                 dk=min(10, self.size - 1),
                 eigenValueTol=0,
-                slaterWeightMin=0,
+                slaterWeightMin=slaterWeightMin,
                 verbose=False,
             )
             self.truncate(psi_ref)

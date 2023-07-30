@@ -23,8 +23,6 @@ from impurityModel.ed.hermitian_operator_matmul import NewHermitianOperator
 
 from scipy.sparse.linalg import eigsh, ArpackNoConvergence
 
-# from primme import eigsh
-
 
 # MPI variables
 comm = MPI.COMM_WORLD
@@ -115,7 +113,8 @@ def eigensystem_new(
     slaterWeightMin=0,
     return_eigvecs=True,
     verbose=True,
-    dense_cutoff=5000,
+    dense_cutoff=1000,
+    distribute_eigenvectors=False,
 ):
     """
     Return eigen-energies and eigenstates.
@@ -234,10 +233,16 @@ def eigensystem_new(
     psis = []
     t0 = time.perf_counter()
     # for v in vecs[:, :sum(mask)].T:
-    for j in range(sum(mask)):
-        indices = [i for i in range(basis.size) if abs(vecs[i, j]) ** 2 > slaterWeightMin]
-        states = basis[indices]
-        psis.append({state: vecs[i, j] for state, i in zip(states, indices)})
+    if not distribute_eigenvectors:
+        for j in range(sum(mask)):
+            indices = [i for i in range(basis.size) if abs(vecs[i, j]) ** 2 > slaterWeightMin]
+            states = basis[indices]
+            psis.append({state: vecs[i, j] for state, i in zip(states, indices)})
+    else:
+        for j in range(sum(mask)):
+            indices = [i - basis.offset for i in basis.local_indices if abs(vecs[i, j]) ** 2 > slaterWeightMin]
+            states = [basis.local_basis[i] for i in indices]
+            psis.append({state: vecs[i, j] for state, i in zip(states, indices)})
     t0 = time.perf_counter() - t0
 
     return es[: sum(mask)], psis

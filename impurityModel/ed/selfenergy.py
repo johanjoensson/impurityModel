@@ -75,7 +75,7 @@ def find_gs(h_op, N0, delta_occ, bath_states, num_spin_orbitals, rank, verbose, 
             dk=1,
             verbose=verbose,
             eigenValueTol=0,
-            slaterWeightMin=0,
+            slaterWeightMin=np.finfo(float).eps,
             return_eigvecs=False,
             dense_cutoff=dense_cutoff,
         )
@@ -240,17 +240,17 @@ def calc_selfenergy(
     energy_cut = -tau * np.log(np.finfo(float).eps)
 
     basis.tau = tau
-    basis.expand(h, slaterWeightMin=0, dense_cutoff=dense_cutoff)
+    basis.expand(h, slaterWeightMin=np.finfo(float).eps ** 2, dense_cutoff=dense_cutoff)
     h_gs = basis.build_sparse_operator(h)
     es, psis = finite.eigensystem_new(
         h_gs,
         basis,
         energy_cut,
-        k=2 * (2 * l + 1),
-        dk=5,
+        k=1,
+        dk=2 * (2 * l + 1),
         verbose=verbosity >= 1,
         eigenValueTol=0,
-        slaterWeightMin=0,
+        slaterWeightMin=np.finfo(float).eps ** 2,
         dense_cutoff=dense_cutoff,
     )
     if verbosity >= 2:
@@ -329,7 +329,7 @@ def calc_selfenergy(
             save_hyb=True,
             clustername=cluster_label,
             rotation=rotation,
-            blocks = blocks,
+            blocks=blocks,
         )
         try:
             check_sigma(sigma_real)
@@ -349,7 +349,7 @@ def calc_selfenergy(
             save_hyb=True,
             clustername=cluster_label,
             rotation=rotation,
-            blocks = blocks,
+            blocks=blocks,
         )
         try:
             check_sigma(sigma)
