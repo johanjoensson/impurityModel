@@ -92,11 +92,14 @@ def setup_hamiltonian(
     return expanded_basis, h_dict, h_local
 
 
-def mpi_matmul(h_local, comm):
+def mpi_matmul(h_local, comm, h_col_range = None):
     def matmat(m):
         n_cols = m.shape[1] if len(m.shape) > 1 else 1
-        res = np.zeros((h_local.shape[0], n_cols), dtype=complex)
-        comm.Allreduce(h_local @ m, res, op=MPI.SUM)
+        res = np.empty((h_local.shape[0], n_cols), dtype=complex)
+        if h_col_range is None:
+            comm.Allreduce(h_local @ m, res, op=MPI.SUM)
+        else:
+            comm.Allreduce(h_local[:, h_col_range] @ m[h_col_range], res, op=MPI.SUM)
         return res
 
     return matmat
@@ -149,8 +152,8 @@ def eigensystem_new(
     if h_local.shape[0] < dense_cutoff:
         if verbose:
             print(f"Small hamiltonian matrix")
-        local_data = h_local.data
         local_rows, local_columns = h_local.nonzero()
+        local_data = np.array([h_local[row, col] for row, col in zip(local_rows, local_columns)], dtype = complex)
         data = None
         rows = None
         columns = None
@@ -165,13 +168,13 @@ def eigensystem_new(
             data = np.empty((sum(recv_counts)), dtype=h_local.dtype)
             rows = np.empty((sum(recv_counts)), dtype=local_rows.dtype)
             columns = np.empty((sum(recv_counts)), dtype=local_columns.dtype)
-        comm.Gatherv(local_data, [data, recv_counts, offsets, MPI.DOUBLE_COMPLEX])
-        comm.Gatherv(local_rows, [rows, recv_counts, offsets, MPI.INT])
-        comm.Gatherv(local_columns, [columns, recv_counts, offsets, MPI.INT])
+        comm.Gatherv(local_data, [data, recv_counts, offsets, MPI.DOUBLE_COMPLEX], root=0)
+        comm.Gatherv(local_rows, [rows, recv_counts, offsets, MPI.INT], root=0)
+        comm.Gatherv(local_columns, [columns, recv_counts, offsets, MPI.INT], root=0)
         es = np.empty((h_local.shape[0]))
         vecs = np.empty(h_local.shape, dtype=complex)
         if comm.rank == 0:
-            h = scipy.sparse.csr_matrix((data, (rows, columns)), shape=h_local.shape)
+            h = scipy.sparse.coo_matrix((data, (rows, columns)), shape=h_local.shape)
             es, vecs = np.linalg.eigh(h.toarray(), UPLO="L")
         comm.Bcast(es, root=0)
         comm.Bcast(vecs, root=0)
@@ -179,10 +182,10 @@ def eigensystem_new(
     else:
         h = scipy.sparse.linalg.LinearOperator(
             h_local.shape,
-            matvec=mpi_matmul(h_local, comm),
-            rmatvec=mpi_matmul(h_local, comm),
-            matmat=mpi_matmul(h_local, comm),
-            rmatmat=mpi_matmul(h_local, comm),
+            matvec=mpi_matmul(h_local, comm, h_col_range = basis.local_indices),
+            rmatvec=mpi_matmul(h_local, comm, h_col_range = basis.local_indices),
+            matmat=mpi_matmul(h_local, comm, h_col_range = basis.local_indices),
+            rmatmat=mpi_matmul(h_local, comm, h_col_range = basis.local_indices),
             dtype=h_local.dtype,
         )
         if verbose:

@@ -253,7 +253,7 @@ def run_impmod_ed(
         valence_bath_only = delta_occ[2][l] == 0,
         label = label.strip(),
         save_baths_and_hopping = rspt_dc_flag == 1,
-        verbose = verbosity >= 2 and rank == 0,
+        verbose = (verbosity >= 2 or rspt_dc_flag == 1) and rank == 0,
         comm = comm,
     )
     if rank == 0:
@@ -283,7 +283,7 @@ def run_impmod_ed(
         )
 
         try:
-            sig_dc[:, :] = fixed_peak_dc(h_op, dc_struct, rank=rank, verbose  = rank == 0 and verbosity >= 1, dense_cutoff = dense_cutoff)
+            sig_dc[:, :] = fixed_peak_dc(h_op, dc_struct, rank=rank, verbose  = rank == 0, dense_cutoff = dense_cutoff)
         except Exception as e:
             print(f"!"*100)
             print(f"Exception {repr(e)} caught on rank {rank}!")

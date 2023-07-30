@@ -720,7 +720,7 @@ class Basis:
                 values.append(expanded_op_dict[column][row])
         columns = self.index(columns)
         rows = self.index(rows)
-        return sp.sparse.csr_matrix((values, (columns, rows)), shape=(self.size, self.size), dtype=complex)
+        return sp.sparse.csc_matrix((values, (columns, rows)), shape=(self.size, self.size), dtype=complex)
 
 
 class CIPSI_Basis(Basis):

@@ -27,6 +27,7 @@ def get_block_Lanczos_matrices(
     h_local: bool = False,
     verbose: bool = True,
     debug_ort: bool = False,
+    h_col_range = None,
 ):
     krylovSize = h.shape[0]
     eps = np.finfo("float").eps
@@ -68,9 +69,14 @@ def get_block_Lanczos_matrices(
         # at most N/n steps in total
         for i in range(int(np.ceil(krylovSize / n))):
             t_h = time.perf_counter()
-            w_local = h @ q[1]
-            wp = np.empty_like(w_local)
-            comm.Reduce(w_local, wp, op=MPI.SUM, root=0)
+            wp = None
+            if rank == 0:
+                wp = np.empty((h.shape[0], n), dtype = complex)
+
+            if h_col_range is None:
+                comm.Reduce(h @ q[1], wp, op=MPI.SUM, root=0)
+            else:
+                comm.Reduce(h[:, h_col_range] @ q[1, h_col_range], wp, op = MPI.SUM, root = 0)
             t_matmul += time.perf_counter() - t_h
 
             if rank == 0:

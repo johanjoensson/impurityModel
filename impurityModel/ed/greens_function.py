@@ -454,6 +454,7 @@ def get_block_Green(
         h_local=h_local,
         verbose=verbose,
         reort_mode=reort,
+        h_col_range = basis.local_indices,
     )
 
     t0 = time.perf_counter()
