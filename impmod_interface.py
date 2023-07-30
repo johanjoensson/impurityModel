@@ -291,6 +291,9 @@ def run_impmod_ed(
             print (f"Adding positive infinity to the imaginaty part of the DC selfenergy.", flush = True)
             print(f"!"*100)
             sig_dc[:, :] = np.inf + 1j*np.inf
+        else:
+            if rank == 0:
+                print(f"", flush = True)
 
         sys.stdout.close()
         sys.stdout = stdout_save
