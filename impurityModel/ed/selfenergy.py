@@ -48,7 +48,6 @@ def find_gs(h_op, N0, delta_occ, bath_states, num_spin_orbitals, rank, verbose, 
     # set up for N0 +- 1, 0
     dN = [-1, 0, 1]
     for i, d in enumerate(dN):
-        # basis = Basis(
         basis = CIPSI_Basis(
             H=h_op,
             valence_baths=num_val_baths,
@@ -119,8 +118,6 @@ def run(cluster, h0, iw, w, delta, tau, verbosity, reort, dense_cutoff):
     cluster.sig_real[:, :, :] = 0
     cluster.sig_static[:, :] = 0
 
-    print (f"{cluster.inequivalent_blocks=}")
-    print (f"{[cluster.blocks[i] for i in cluster.inequivalent_blocks]=}")
     # sig_tmp, sig_real_tmp, sig_static_tmp = calc_selfenergy(
     cluster.sig[:], cluster.sig_real[:], cluster.sig_static[:] = calc_selfenergy(
         h0,
@@ -316,7 +313,7 @@ def calc_selfenergy(
                     -1,
                 )
                 save_Greens_function(gs=gs_rot, omega_mesh=w, label=f"rotated-G-{cluster_label}", e_scale=1)
-    if rank == 0 and verbosity >= 1:
+    if verbosity >= 1:
         print("Calculate self-energy...")
     if w is not None:
         sigma_real = get_sigma(
@@ -411,7 +408,17 @@ def get_hcorr_v_hbath(h0op, sum_bath_states):
 
 
 def get_sigma(
-    omega_mesh, nBaths, g, h0op, delta, return_g0=False, save_G0=False, save_hyb=False, clustername="", rotation=None, blocks = None
+    omega_mesh,
+    nBaths,
+    g,
+    h0op,
+    delta,
+    return_g0=False,
+    save_G0=False,
+    save_hyb=False,
+    clustername="",
+    rotation=None,
+    blocks=None,
 ):
     hcorr, v, v_dagger, hbath = get_hcorr_v_hbath(h0op, nBaths)
 
@@ -459,10 +466,11 @@ def get_sigma(
         sig = np.zeros_like(g)
         for block in blocks:
             block_idx = np.ix_(block, block)
-            sig[block_idx] = np.moveaxis(g0_inv, 0, -1)[block_idx] - np.moveaxis(np.linalg.inv(np.moveaxis(g[block_idx], -1, 0)), 0, -1)
+            sig[block_idx] = np.moveaxis(g0_inv, 0, -1)[block_idx] - np.moveaxis(
+                np.linalg.inv(np.moveaxis(g[block_idx], -1, 0)), 0, -1
+            )
         return sig
     return None
-
 
 
 def get_Sigma_static(nBaths, Fdd, es, psis, l, tau):

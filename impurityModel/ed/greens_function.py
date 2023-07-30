@@ -6,7 +6,7 @@ from bisect import bisect_left
 from impurityModel.ed import spectra
 from impurityModel.ed import finite
 from impurityModel.ed.lanczos import get_block_Lanczos_matrices
-from impurityModel.ed.manybody_basis import Basis, CIPSI_Basis, CIPSI_Basis
+from impurityModel.ed.manybody_basis import Basis, CIPSI_Basis
 
 from mpi4py import MPI
 
@@ -121,7 +121,7 @@ def calc_Greens_function_with_offdiag(
     restrictions=None,
     blocks=None,
     krylovSize=None,
-    slaterWeightMin=1e-6,
+    slaterWeightMin=1e-20,
     parallelization_mode="H_build",
     verbose=True,
     dense_cutoff=1e3,
@@ -175,7 +175,6 @@ def calc_Greens_function_with_offdiag(
         blocks = [list(range(len(tOps)))]
     h_mem = {}
     if parallelization_mode == "eigen_states":
-        # Green's functions
         gs_matsubara = np.zeros((n, len(tOps), len(tOps), len(iw)), dtype=complex)
         gs_realaxis = np.zeros((n, len(tOps), len(tOps), len(w)), dtype=complex)
         for i in finite.get_job_tasks(rank, ranks, range(len(psis))):
@@ -251,12 +250,11 @@ def calc_Greens_function_with_offdiag(
         t_mems = [{} for _ in tOps]
 
         for i, (psi, e) in enumerate(zip(psis, es)):
-
             for block in blocks:
                 block_v = []
                 new_local_basis = set()
+                t0 = time.perf_counter()
                 for i_tOp, tOp in [(orb, tOps[orb]) for orb in block]:
-                    # v.append(finite.applyOp(n_spin_orbitals, tOp, psi, slaterWeightMin, restrictions, t_mems[i_tOp]))
                     for s in basis.local_basis:
                         res = finite.applyOp(
                             n_spin_orbitals,
@@ -323,11 +321,9 @@ def calc_Greens_function_with_offdiag(
                 if rank == 0:
                     if iw is not None:
                         block_idx = np.ix_(block, block, range(gs_matsubara.shape[3]))
-                        # gs_matsubara[i, :, :, :] = gs_matsubara_i
                         gs_matsubara[i][block_idx] = gs_matsubara_i
                     if w is not None:
                         block_idx = np.ix_(block, block, range(gs_realaxis.shape[3]))
-                        # gs_realaxis[i, :, :, :] = gs_realaxis_i
                         gs_realaxis[i][block_idx] = gs_realaxis_i
     return gs_matsubara, gs_realaxis
 
@@ -364,35 +360,21 @@ def get_block_Green(
         h_mem = {}
     h_local = True
 
-    if verbose and rank == 0:
+    if verbose:
         t0 = time.perf_counter()
     psi_states = [key for psi in psi_arr for key in psi.keys()]
     if np.any(np.logical_not(basis.contains(psi_states))):
         basis.add_states(psi_states)
-        # tau = basis.tau
-        # basis = CIPSI_Basis(
-        #     # basis = Basis(
-        #     initial_basis=sorted(set(key for psi in psi_arr for key in psi.keys())),
-        #     restrictions=basis.restrictions,
-        #     num_spin_orbitals=basis.num_spin_orbitals,
-        #     comm=basis.comm,
-        #     verbose=rank == 0 and verbose,
-        #     truncation_threshold = basis.truncation_threshold,
-        #     tau = 0,
-        # )
-        # basis.tau = 0
-        # basis.expand(hOp, dense_cutoff=dense_cutoff)
-        # basis.tau = tau
         basis.expand(hOp, dense_cutoff=dense_cutoff)
     h = basis.build_sparse_operator(hOp)
 
-    if verbose and rank == 0:
-        print(f"time(expand_basis_and_build_hermitian_hamiltonian_new) = {time.perf_counter() - t0}")
+    if verbose:
+        print(f"time(build Hamiltonian operator) = {time.perf_counter() - t0}")
 
     N = h.shape[0]
     n = len(psi_arr)
 
-    if verbose and rank == 0:
+    if verbose:
         t0 = time.perf_counter()
     psi_start = np.zeros((N, n), dtype=complex)
     for i, psi in enumerate(psi_arr):
@@ -404,7 +386,7 @@ def get_block_Green(
         indices = basis.index(states)
         psi_start[indices, i] = amps
 
-    if verbose and rank == 0:
+    if verbose:
         print(f"time(set up psi_start) = {time.perf_counter() - t0}")
 
     rows, columns = psi_start.shape
@@ -436,7 +418,6 @@ def get_block_Green(
     # Select points from the frequency mesh, according to a Normal distribuition
     # centered on (value) 0.
     n_samples = max(len(conv_w) // 50, 1)
-    # weights = gaussian(conv_w, mu=0, sigma=0.5)
     weights = np.ones(conv_w.shape)
     weights /= np.sum(weights)
 
@@ -446,7 +427,6 @@ def get_block_Green(
     def converged(alphas, betas):
         if alphas.shape[0] == 1:
             return 1.0
-            # return False
 
         w = np.random.choice(conv_w, size=min(n_samples, len(conv_w)), p=weights, replace=False)
         wIs = (w + 1j * delta_p + e)[:, np.newaxis, np.newaxis] * np.identity(alphas.shape[1], dtype=complex)[
@@ -465,7 +445,6 @@ def get_block_Green(
         return np.max(
             np.abs(np.sum(np.diagonal(gs_new, axis1=1, axis2=2)) - np.sum(np.diagonal(gs_prev, axis1=1, axis2=2)))
         )
-        # return np.all(np.abs(gs_new - gs_prev) < 1e-6)
 
     # Run Lanczos on psi0^T* [wI - j*delta - H]^-1 psi0
     alphas, betas = get_block_Lanczos_matrices(
@@ -477,8 +456,7 @@ def get_block_Green(
         reort_mode=reort,
     )
 
-    if verbose and rank == 0:
-        t0 = time.perf_counter()
+    t0 = time.perf_counter()
 
     gs_matsubara, gs_realaxis = calc_mpi_Greens_function_from_alpha_beta(alphas, betas, iws, ws, e, delta, r, verbose)
     if rank == 0 and matsubara:
@@ -486,7 +464,7 @@ def get_block_Green(
     if rank == 0 and realaxis:
         gs_realaxis = np.moveaxis(gs_realaxis, 0, -1)
 
-    if verbose and rank == 0:
+    if verbose:
         print(f"time(G_from_alpha_beta) = {time.perf_counter() - t0: .4f} seconds.")
 
     return gs_matsubara, gs_realaxis
@@ -518,7 +496,6 @@ def calc_mpi_Greens_function_from_alpha_beta(alphas, betas, iws, ws, e, delta, r
             gs_realaxis[w_indices, :, :] = np.conj(r.T)[np.newaxis, :, :] @ np.linalg.solve(
                 gs_realaxis_local[w_indices], r[np.newaxis, :, :]
             )
-    # Reduce Green's function to rank 0
     if matsubara:
         gs_matsubara = comm.reduce(gs_matsubara, root=0)
     else:
@@ -536,7 +513,6 @@ def calc_local_Greens_function_from_alpha_beta(alphas, betas, iws, ws, iw_indice
     realaxis = ws is not None
     if matsubara:
         iomegaP = iws + e
-        # Parallelize over omega mesh
         gs_matsubara_local = np.zeros((len(iws), alphas.shape[1], alphas.shape[1]), dtype=complex)
         if len(iw_indices) > 0:
             iwIs = iomegaP[iw_indices][:, np.newaxis, np.newaxis] * I[np.newaxis, :, :]
@@ -545,7 +521,6 @@ def calc_local_Greens_function_from_alpha_beta(alphas, betas, iws, ws, iw_indice
         gs_matsubara_local = None
     if realaxis:
         omegaP = ws + 1j * delta + e
-        # Parallelize over omega mesh
         gs_realaxis_local = np.zeros((len(ws), alphas.shape[1], alphas.shape[1]), dtype=complex)
         if len(w_indices) > 0:
             wIs = omegaP[w_indices][:, np.newaxis, np.newaxis] * I[np.newaxis, :, :]
@@ -553,32 +528,23 @@ def calc_local_Greens_function_from_alpha_beta(alphas, betas, iws, ws, iw_indice
     else:
         gs_realaxis_local = None
 
-    # for alpha, beta in zip(reversed(alphas), reversed(betas)):
-    try:
-        for alpha, beta in zip(alphas[-2::-1], betas[-2::-1]):
-            if matsubara:
-                if len(iw_indices) > 0:
-                    gs_matsubara_local[iw_indices] = (
-                        iwIs
-                        - alpha[np.newaxis, :, :]
-                        - np.conj(beta.T)[np.newaxis, :, :]
-                        @ np.linalg.solve(gs_matsubara_local[iw_indices], beta[np.newaxis, :, :])
-                    )
-            if realaxis:
-                if len(w_indices) > 0:
-                    gs_realaxis_local[w_indices] = (
-                        wIs
-                        - alpha[np.newaxis, :, :]
-                        - np.conj(beta.T)[np.newaxis, :, :]
-                        @ np.linalg.solve(gs_realaxis_local[w_indices], beta[np.newaxis, :, :])
-                    )
-    except Exception as e:
-        print(f"{betas[-1]=}")
-        with open(f"gs_matsubara_local_{rank}.npy", "wb") as f:
-            np.save(f, gs_matsubara_local)
-        with open(f"gs_realaxis_local_{rank}.npy", "wb") as f:
-            np.save(f, gs_realaxis_local)
-        raise e
+    for alpha, beta in zip(alphas[-2::-1], betas[-2::-1]):
+        if matsubara:
+            if len(iw_indices) > 0:
+                gs_matsubara_local[iw_indices] = (
+                    iwIs
+                    - alpha[np.newaxis, :, :]
+                    - np.conj(beta.T)[np.newaxis, :, :]
+                    @ np.linalg.solve(gs_matsubara_local[iw_indices], beta[np.newaxis, :, :])
+                )
+        if realaxis:
+            if len(w_indices) > 0:
+                gs_realaxis_local[w_indices] = (
+                    wIs
+                    - alpha[np.newaxis, :, :]
+                    - np.conj(beta.T)[np.newaxis, :, :]
+                    @ np.linalg.solve(gs_realaxis_local[w_indices], beta[np.newaxis, :, :])
+                )
     return gs_matsubara_local, gs_realaxis_local
 
 
@@ -597,40 +563,37 @@ def save_Greens_function(gs, omega_mesh, label, e_scale=1, tol=1e-8):
             if np.any(np.abs(gs[row, column, :]) > tol):
                 off_diags.append((row, column))
 
-    if rank == 0:
-        print(f"Writing {axis_label} {label} to files")
-        with open(f"real-{axis_label}-{label}.dat", "w") as fg_real, open(
-            f"imag-{axis_label}-{label}.dat", "w"
-        ) as fg_imag:
-            header = "# 1 - Omega(Ry)  2 - Trace  3 - Spin down  4 - Spin up\n"
-            header += "# Individual matrix elements given in the matrix below:"
-            for row in range(gs.shape[0]):
-                header += "\n# "
-                for column in range(gs.shape[1]):
-                    if row == column:
-                        header += f"{5 + row:< 4d}"
-                    elif (row, column) in off_diags:
-                        header += f"{5 + n_orb + off_diags.index((row, column)):< 4d}"
-                    else:
-                        header += f"{0:< 4d}"
-            fg_real.write(header + "\n")
-            fg_imag.write(header + "\n")
-            for i, w in enumerate(omega_mesh):
-                fg_real.write(
-                    f"{w*e_scale} {np.real(np.sum(np.diag(gs[:, :, i])))} "
-                    + f"{np.real(np.sum(np.diag(gs[:n_orb//2, :n_orb//2, i])))} "
-                    + f"{np.real(np.sum(np.diag(gs[n_orb//2:, n_orb//2:, i])))} "
-                    + " ".join(f"{np.real(el)}" for el in np.diag(gs[:, :, i]))
-                    + " "
-                    + " ".join(f"{np.real(gs[row, column, i])}" for row, column in off_diags)
-                    + "\n"
-                )
-                fg_imag.write(
-                    f"{w*e_scale} {np.imag(np.sum(np.diag(gs[:, :, i])))} "
-                    + f"{np.imag(np.sum(np.diag(gs[:n_orb//2, :n_orb//2, i])))} "
-                    + f"{np.imag(np.sum(np.diag(gs[n_orb//2:, n_orb//2:, i])))} "
-                    + " ".join(f"{np.imag(el)}" for el in np.diag(gs[:, :, i]))
-                    + " "
-                    + " ".join(f"{np.imag(gs[row, column, i])}" for row, column in off_diags)
-                    + "\n"
-                )
+    print(f"Writing {axis_label} {label} to files")
+    with open(f"real-{axis_label}-{label}.dat", "w") as fg_real, open(f"imag-{axis_label}-{label}.dat", "w") as fg_imag:
+        header = "# 1 - Omega(Ry)  2 - Trace  3 - Spin down  4 - Spin up\n"
+        header += "# Individual matrix elements given in the matrix below:"
+        for row in range(gs.shape[0]):
+            header += "\n# "
+            for column in range(gs.shape[1]):
+                if row == column:
+                    header += f"{5 + row:< 4d}"
+                elif (row, column) in off_diags:
+                    header += f"{5 + n_orb + off_diags.index((row, column)):< 4d}"
+                else:
+                    header += f"{0:< 4d}"
+        fg_real.write(header + "\n")
+        fg_imag.write(header + "\n")
+        for i, w in enumerate(omega_mesh):
+            fg_real.write(
+                f"{w*e_scale} {np.real(np.sum(np.diag(gs[:, :, i])))} "
+                + f"{np.real(np.sum(np.diag(gs[:n_orb//2, :n_orb//2, i])))} "
+                + f"{np.real(np.sum(np.diag(gs[n_orb//2:, n_orb//2:, i])))} "
+                + " ".join(f"{np.real(el)}" for el in np.diag(gs[:, :, i]))
+                + " "
+                + " ".join(f"{np.real(gs[row, column, i])}" for row, column in off_diags)
+                + "\n"
+            )
+            fg_imag.write(
+                f"{w*e_scale} {np.imag(np.sum(np.diag(gs[:, :, i])))} "
+                + f"{np.imag(np.sum(np.diag(gs[:n_orb//2, :n_orb//2, i])))} "
+                + f"{np.imag(np.sum(np.diag(gs[n_orb//2:, n_orb//2:, i])))} "
+                + " ".join(f"{np.imag(el)}" for el in np.diag(gs[:, :, i]))
+                + " "
+                + " ".join(f"{np.imag(gs[row, column, i])}" for row, column in off_diags)
+                + "\n"
+            )

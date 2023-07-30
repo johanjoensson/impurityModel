@@ -168,9 +168,6 @@ def eigensystem_new(
         comm.Gatherv(local_data, [data, recv_counts, offsets, MPI.DOUBLE_COMPLEX])
         comm.Gatherv(local_rows, [rows, recv_counts, offsets, MPI.INT])
         comm.Gatherv(local_columns, [columns, recv_counts, offsets, MPI.INT])
-        # h = comm.reduce(h_local, op=MPI.SUM, root=0)
-        # if comm.rank == 0:
-        #     print (f"Hermitian error in hamiltonian = {np.max(np.abs(h.getH() - h))}")
         es = np.empty((h_local.shape[0]))
         vecs = np.empty(h_local.shape, dtype=complex)
         if comm.rank == 0:
@@ -216,6 +213,8 @@ def eigensystem_new(
     es[:] = es[indices]
     vecs[:, :] = vecs[:, indices]
     t0 = time.perf_counter() - t0
+    if verbose:
+        print(f"time to solve the eigenvalue problem: {t0:.3f} seconds")
 
     if verbose and v0 is not None:
         print(f"log10(1-|<vg|v0>|) = {np.log10(1 - np.abs(np.vdot(v0, vecs[:, 0]))): 4.1f}")
@@ -230,6 +229,7 @@ def eigensystem_new(
 
     if not return_eigvecs:
         return es[: sum(mask)]
+    t0 = time.perf_counter()
     psis = []
     t0 = time.perf_counter()
     # for v in vecs[:, :sum(mask)].T:
@@ -244,6 +244,8 @@ def eigensystem_new(
             states = [basis.local_basis[i] for i in indices]
             psis.append({state: vecs[i, j] for state, i in zip(states, indices)})
     t0 = time.perf_counter() - t0
+    if verbose:
+        print(f"time to massage the eigenvectors: {t0:.3f} seconds")
 
     return es[: sum(mask)], psis
 

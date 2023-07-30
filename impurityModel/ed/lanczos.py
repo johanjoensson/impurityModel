@@ -86,16 +86,6 @@ def get_block_Lanczos_matrices(
                 q[1], betas[i] = sp.linalg.qr(wp, mode="economic", overwrite_a=True, check_finite=False)
                 t_qr += time.perf_counter() - t_qr_fact
                 b_mask = np.abs(np.diagonal(betas[i])) < np.finfo(float).eps
-                # while reort_mode != Reort.NONE and np.any(b_mask):
-                while np.any(b_mask) and i < krylovSize // n - 1:
-                    q[1] = q[1] @ betas[i]
-                    q[1][:, b_mask] = np.random.rand(N, sum(b_mask)) + 1j * np.random.rand(N, sum(b_mask))
-                    q[1], betas[i] = sp.linalg.qr(
-                        q[1] - Q @ (np.conj(Q.T) @ q[1]), mode="economic", overwrite_a=True, check_finite=False
-                    )
-                    b_mask = np.abs(np.diagonal(betas[i])) < np.finfo(float).eps
-                    W[1, -1] = 1
-
                 if i % int(np.ceil(krylovSize / n)) // 20 == 0:
                     t_converged = time.perf_counter()
                     try:
@@ -226,7 +216,7 @@ def get_block_Lanczos_matrices(
     if rank == 0 and debug_ort:
         overlap_file.write("\n\n")
         overlap_file.close()
-    if rank == 0 and verbose:
+    if verbose:
         print(f"Breaking after iteration {i}, blocksize = {n}")
         print(f"Matrix vector multiplication took {t_matmul:.4f} seconds")
         print(f"Estimating overlap took {t_estimate:.4f} seconds")
