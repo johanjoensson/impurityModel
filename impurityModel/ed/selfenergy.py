@@ -61,10 +61,9 @@ def find_gs(h_op, N0, delta_occ, bath_states, num_spin_orbitals, rank, verbose, 
             comm=MPI.COMM_WORLD,
         )
         if verbose:
-            print(f"{basis.size=}")
-            print(f"expand basis")
-        _ = basis.expand(h_op, dense_cutoff=dense_cutoff)
-        h = basis.build_sparse_operator(h_op)
+            print(f"Before expansion basis contains {basis.size} elements")
+        h_dict = basis.expand(h_op, dense_cutoff=dense_cutoff)
+        h = basis.build_sparse_operator(h_op, h_dict)
 
         e_trial = finite.eigensystem_new(
             h,
@@ -227,18 +226,16 @@ def calc_selfenergy(
         print("Restrictions on occupation")
         for key, res in restrictions.items():
             print(f"{key} : {res}")
-    # Measure how many physical processes the Hamiltonian contains.
     if verbosity >= 1:
         print("{:d} processes in the Hamiltonian.".format(len(h)))
         print("Create basis...")
         print("#basis states = {:d}".format(len(basis)))
 
-    # energy_cut *= tau
     energy_cut = -tau * np.log(np.finfo(float).eps)
 
     basis.tau = tau
-    basis.expand(h, slaterWeightMin=np.finfo(float).eps ** 2, dense_cutoff=dense_cutoff)
-    h_gs = basis.build_sparse_operator(h)
+    h_dict = basis.expand(h, slaterWeightMin=np.finfo(float).eps ** 2, dense_cutoff=dense_cutoff)
+    h_gs = basis.build_sparse_operator(h, h_dict)
     es, psis = finite.eigensystem_new(
         h_gs,
         basis,

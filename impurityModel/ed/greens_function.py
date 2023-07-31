@@ -173,7 +173,6 @@ def calc_Greens_function_with_offdiag(
 
     if blocks is None:
         blocks = [list(range(len(tOps)))]
-    h_mem = {}
     if parallelization_mode == "eigen_states":
         gs_matsubara = np.zeros((n, len(tOps), len(tOps), len(iw)), dtype=complex)
         gs_realaxis = np.zeros((n, len(tOps), len(tOps), len(w)), dtype=complex)
@@ -214,7 +213,7 @@ def calc_Greens_function_with_offdiag(
                     new_local_basis |= res.keys()
 
             new_basis.add_states(new_local_basis)
-            new_basis.expand(hOp, dense_cutoff=dense_cutoff)
+            h_mem = new_basis.expand(hOp, dense_cutoff=dense_cutoff)
 
             gs_matsubara_i, gs_realaxis_i = get_block_Green(
                 n_spin_orbitals=n_spin_orbitals,
@@ -296,7 +295,7 @@ def calc_Greens_function_with_offdiag(
                         verbose=verbose,
                         truncation_threshold=basis.truncation_threshold,
                     )
-                new_basis.expand(hOp, dense_cutoff=dense_cutoff, slaterWeightMin=slaterWeightMin)
+                h_mem = new_basis.expand(hOp, dense_cutoff=dense_cutoff, slaterWeightMin=slaterWeightMin)
                 if verbose:
                     print(f"time(build excited state basis) = {time.perf_counter() - t0}")
                 gs_matsubara_i, gs_realaxis_i = get_block_Green(
@@ -365,8 +364,8 @@ def get_block_Green(
     psi_states = [key for psi in psi_arr for key in psi.keys()]
     if np.any(np.logical_not(basis.contains(psi_states))):
         basis.add_states(psi_states)
-        basis.expand(hOp, dense_cutoff=dense_cutoff)
-    h = basis.build_sparse_operator(hOp)
+        h_mem = basis.expand(hOp, h_mem, dense_cutoff=dense_cutoff)
+    h = basis.build_sparse_operator(hOp, h_mem)
 
     if verbose:
         print(f"time(build Hamiltonian operator) = {time.perf_counter() - t0}")
@@ -454,7 +453,7 @@ def get_block_Green(
         h_local=h_local,
         verbose=verbose,
         reort_mode=reort,
-        h_col_range = basis.local_indices,
+        h_local_cols = basis.local_indices,
     )
 
     t0 = time.perf_counter()

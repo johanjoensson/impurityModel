@@ -27,7 +27,7 @@ def get_block_Lanczos_matrices(
     h_local: bool = False,
     verbose: bool = True,
     debug_ort: bool = False,
-    h_col_range = None,
+    h_local_cols = None,
 ):
     krylovSize = h.shape[0]
     eps = np.finfo("float").eps
@@ -48,6 +48,8 @@ def get_block_Lanczos_matrices(
     alphas = np.empty((0, n, n), dtype=complex)
     betas = np.empty((0, n, n), dtype=complex)
 
+    if h_local_cols is not None:
+        h2 = h[:, h_local_cols]
     if rank == 0 and reort_mode != Reort.NONE:
         Q = np.empty((N, n), dtype=complex)
         Q[:, :] = psi0
@@ -55,8 +57,11 @@ def get_block_Lanczos_matrices(
         W[1] = np.identity(n)
         force_reort = None
     n_reort = 0
-    q = np.zeros((2, N, n), dtype=complex)
-    q[1, :, :] = psi0
+    if rank == 0:
+        q = np.zeros((2, N, n), dtype=complex)
+        q[1, :, :] = psi0
+
+    q_loc = psi0[h_local_cols, :].copy() if h_local_cols is not None else psi0
 
     if rank == 0 and debug_ort:
         overlap_file = open("overlap.dat", "a")
@@ -64,19 +69,17 @@ def get_block_Lanczos_matrices(
 
     if h_local:
         done = False
+        wp = None
+        wp2 = None
+        if rank == 0:
+            wp = np.empty((h.shape[0], q.shape[2]), dtype = complex)
         # Run at least 1 iteration (to generate $\alpha_0$).
         # We can also not generate more than N Lanczos vectors, meaning we can take
         # at most N/n steps in total
         for i in range(int(np.ceil(krylovSize / n))):
             t_h = time.perf_counter()
-            wp = None
-            if rank == 0:
-                wp = np.empty((h.shape[0], n), dtype = complex)
-
-            if h_col_range is None:
-                comm.Reduce(h @ q[1], wp, op=MPI.SUM, root=0)
-            else:
-                comm.Reduce(h[:, h_col_range] @ q[1, h_col_range], wp, op = MPI.SUM, root = 0)
+            # comm.Reduce(h @ q[1], wp2, op=MPI.SUM, root=0)
+            comm.Reduce(h2 @ q_loc, wp, op=MPI.SUM, root=0)
             t_matmul += time.perf_counter() - t_h
 
             if rank == 0:
@@ -97,16 +100,9 @@ def get_block_Lanczos_matrices(
                     try:
                         delta = converged(alphas, betas)
                     except Exception as e:
-                        print(f"{betas[i]=}")
                         raise e
 
-                    # print (f"{delta=}")
-                    done = delta < 1e-6
-                    # if done:
-                    #     print (f"{betas[-2]=}")
-                    #     print (f"{betas[-1]=}")
-                    #     alphas = alphas[:-1]
-                    #     betas = betas[:-1]
+                    done = delta < 1e-12
                     t_conv += time.perf_counter() - t_converged
                 while np.any(b_mask) and i < krylovSize // n - 1:
                     q[1] = q[1] @ betas[i]
@@ -196,7 +192,14 @@ def get_block_Lanczos_matrices(
             if rank == 0 and reort_mode != Reort.NONE:
                 Q = np.append(Q, q[1], axis=1)
 
-            q[1] = comm.bcast(q[1], root=0)
+            send_counts = None
+            offsets = None
+            if comm.rank == 0:
+                send_counts = np.empty((comm.size), dtype = int)
+            comm.Gather(np.array([len(h_local_cols)*n], dtype = int), send_counts, root = 0)
+            if comm.rank == 0:
+                offsets = np.array([sum(send_counts[:r]) for r in range(comm.size)], dtype = int)
+            comm.Scatterv([q[1] if rank == 0 else None, send_counts, offsets, MPI.DOUBLE_COMPLEX], q_loc, root = 0)
 
         # Distribute Lanczos matrices to all ranks
         alphas = comm.bcast(alphas, root=0)

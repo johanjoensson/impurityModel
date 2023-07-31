@@ -685,14 +685,13 @@ class Basis:
                         opResult=op_dict,
                     )
                 except Exception as e:
-                    print(f"{state=}")
-                    print(f"{op=}")
                     raise e
 
         all_row_states = [state for column in op_dict for state in op_dict[column]]
-        row_indices = np.array(self._index_sequence(all_row_states), dtype=int)
-        in_basis_mask = row_indices != self.size
-        state_in_basis = {state: in_basis for state, in_basis in zip(all_row_states, in_basis_mask)}
+        # row_indices = np.array(self._index_sequence(all_row_states), dtype=int)
+        # in_basis_mask = row_indices != self.size
+        # state_in_basis = {state: in_basis for state, in_basis in zip(all_row_states, in_basis_mask)}
+        state_in_basis = {state: in_basis for state, in_basis in zip(all_row_states, self.contains(all_row_states))}
         for column in list(op_dict.keys()):
             if column not in self.local_basis:
                 op_dict.pop(column, None)
@@ -720,7 +719,8 @@ class Basis:
                 values.append(expanded_op_dict[column][row])
         columns = self.index(columns)
         rows = self.index(rows)
-        return sp.sparse.csc_matrix((values, (columns, rows)), shape=(self.size, self.size), dtype=complex)
+        shape = (self.size, self.size)
+        return sp.sparse.csc_matrix((values, (rows, columns)), shape=shape, dtype=complex)
 
 
 class CIPSI_Basis(Basis):
@@ -859,8 +859,8 @@ class CIPSI_Basis(Basis):
                 print(f"Time to build sparse H: {t0/self.comm.size:.3f} seconds")
 
             t0 = perf_counter()
-            # if psi_ref is not None:
-            if self.size > dense_cutoff and psi_ref is not None:
+            if psi_ref is not None:
+            # if self.size > dense_cutoff and psi_ref is not None:
                 v0 = np.zeros((self.size, 1), dtype=complex)
                 v0_states = psi_ref[0].keys()
                 v0_indices = self.index(list(v0_states))

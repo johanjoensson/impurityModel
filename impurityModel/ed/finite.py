@@ -92,14 +92,12 @@ def setup_hamiltonian(
     return expanded_basis, h_dict, h_local
 
 
-def mpi_matmul(h_local, comm, h_col_range = None):
+def mpi_matmul(h_local, comm, h_col_range):
     def matmat(m):
-        n_cols = m.shape[1] if len(m.shape) > 1 else 1
-        res = np.empty((h_local.shape[0], n_cols), dtype=complex)
-        if h_col_range is None:
-            comm.Allreduce(h_local @ m, res, op=MPI.SUM)
-        else:
-            comm.Allreduce(h_local[:, h_col_range] @ m[h_col_range], res, op=MPI.SUM)
+        m = m.reshape((m.shape[0], m.shape[1] if len(m.shape) > 1 else 1))
+        n_cols = m.shape[1]
+        res = np.empty((h_local.shape[0], n_cols), dtype = h_local.dtype)
+        comm.Allreduce(h_local @ m[h_col_range], res, op=MPI.SUM)
         return res
 
     return matmat
@@ -172,26 +170,27 @@ def eigensystem_new(
         comm.Gatherv(local_rows, [rows, recv_counts, offsets, MPI.INT], root=0)
         comm.Gatherv(local_columns, [columns, recv_counts, offsets, MPI.INT], root=0)
         es = np.empty((h_local.shape[0]))
-        vecs = np.empty(h_local.shape, dtype=complex)
+        vecs = np.empty((h_local.shape[0], h_local.shape[0]), dtype=complex)
         if comm.rank == 0:
-            h = scipy.sparse.coo_matrix((data, (rows, columns)), shape=h_local.shape)
+            h = scipy.sparse.coo_matrix((data, (rows, columns)), shape=(h_local.shape[0], h_local.shape[0]))
             es, vecs = np.linalg.eigh(h.toarray(), UPLO="L")
         comm.Bcast(es, root=0)
         comm.Bcast(vecs, root=0)
         mask = es - es[0] <= e_max
     else:
         h = scipy.sparse.linalg.LinearOperator(
-            h_local.shape,
-            matvec=mpi_matmul(h_local, comm, h_col_range = basis.local_indices),
-            rmatvec=mpi_matmul(h_local, comm, h_col_range = basis.local_indices),
-            matmat=mpi_matmul(h_local, comm, h_col_range = basis.local_indices),
-            rmatmat=mpi_matmul(h_local, comm, h_col_range = basis.local_indices),
+            (h_local.shape[0], h_local.shape[0]),
+            matvec=mpi_matmul(h_local[:, basis.local_indices],  comm, h_col_range = basis.local_indices),
+            rmatvec=mpi_matmul(h_local[:, basis.local_indices], comm, h_col_range = basis.local_indices),
+            matmat=mpi_matmul(h_local[:, basis.local_indices],  comm, h_col_range = basis.local_indices),
+            rmatmat=mpi_matmul(h_local[:, basis.local_indices], comm, h_col_range = basis.local_indices),
             dtype=h_local.dtype,
         )
         if verbose:
             print("Diagonalize the Hamiltonian...")
             print(f"{h}")
 
+        dk_orig = dk
         vecs = v0
         es = []
         mask = [True]
@@ -206,6 +205,7 @@ def eigensystem_new(
                 )
             except ArpackNoConvergence as e:
                 eigenValueTol = max(np.sqrt(eigenValueTol), 1e-6)
+                dk = dk_orig
                 vecs = None
                 es = []
                 mask = [True]
