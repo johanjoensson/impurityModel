@@ -117,7 +117,6 @@ def run(cluster, h0, iw, w, delta, tau, verbosity, reort, dense_cutoff):
     cluster.sig_real[:, :, :] = 0
     cluster.sig_static[:, :] = 0
 
-    # sig_tmp, sig_real_tmp, sig_static_tmp = calc_selfenergy(
     cluster.sig[:], cluster.sig_real[:], cluster.sig_static[:] = calc_selfenergy(
         h0,
         cluster.slater,
@@ -134,7 +133,6 @@ def run(cluster, h0, iw, w, delta, tau, verbosity, reort, dense_cutoff):
         tolPrintOccupation,
         verbosity,
         blocks=[cluster.blocks[i] for i in cluster.inequivalent_blocks],
-        # blocks=None,
         rotation=cluster.rot_spherical,
         cluster_label=cluster.label,
         reort=reort,
@@ -147,12 +145,10 @@ def run(cluster, h0, iw, w, delta, tau, verbosity, reort, dense_cutoff):
             block_idx_j = np.ix_(cluster.blocks[block_j], cluster.blocks[block_j])
             cluster.sig[block_idx_j] = cluster.sig[block_idx_i]
             cluster.sig_real[block_idx_j] = cluster.sig_real[block_idx_i]
-            # cluster.sig_static[block_idx_j] = cluster.sig_static[block_idx_i]
         for block_j in cluster.transposed_blocks[block_i]:
             block_idx_j = np.ix_(cluster.blocks[block_j], cluster.blocks[block_j])
             cluster.sig[block_idx_j] = np.transpose(cluster.sig[block_idx_i], (1, 0, 2))
             cluster.sig_real[block_idx_j] = np.transpose(cluster.sig_real[block_idx_i], (1, 0, 2))
-            # cluster.sig_static[block_idx_j] = np.transpose(cluster.sig_static[block_idx_i], (1, 0))
     # block_idxs = [np.ix_(block, block) for block in cluster.blocks]
     # for block in block_idxs:
     #     cluster.sig[block] = sig_tmp[block]
@@ -196,12 +192,9 @@ def calc_selfenergy(
     # construct local, interacting, hamiltonian
     u = finite.getUop(l, l, l, l, slater_params)
     h = finite.addOps([h0, u])
-    if rank == 0 and verbosity >= 2:
+    if verbosity >= 2:
         finite.printOp(sum_bath_states, h, "Local Hamiltonian: ")
     h = finite.c2i_op(sum_bath_states, h)
-    # if rank == 0:
-    #     with open(f"{cluster_label}_hamiltonian.pickle", "wb") as f:
-    #         pickle.dump(h, f)
 
     num_spin_orbitals = 2 * (2 * l + 1) + sum(num_val_baths[l] + num_con_baths[l] for l in num_val_baths)
 
@@ -319,8 +312,8 @@ def calc_selfenergy(
             g=gs_realaxis_thermal_avg,
             h0op=h0,
             delta=delta,
-            save_G0=True,
-            save_hyb=True,
+            save_G0=verbosity >= 2,
+            save_hyb=verbosity >= 2,
             clustername=cluster_label,
             rotation=rotation,
             blocks=blocks,
@@ -339,8 +332,8 @@ def calc_selfenergy(
             g=gs_matsubara_thermal_avg,
             h0op=h0,
             delta=0,
-            save_G0=True,
-            save_hyb=True,
+            save_G0=verbosity >= 2,
+            save_hyb=verbosity >= 2,
             clustername=cluster_label,
             rotation=rotation,
             blocks=blocks,
@@ -352,7 +345,7 @@ def calc_selfenergy(
                 print(f"WARNING! Unphysical Matsubara axis selfenergy:\n\t{err}")
     else:
         sigma = None
-    if rank == 0 and verbosity >= 1:
+    if verbosity >= 1:
         print(f"Calculating sig_static.")
     sigma_static = get_Sigma_static(sum_bath_states, slater_params, es, psis, l, tau)
 
@@ -583,7 +576,6 @@ def get_selfenergy(
         np.savetxt(f"real-sig_static-{clustername}.dat", np.real(sigma_static))
         np.savetxt(f"imag-sig_static-{clustername}.dat", np.imag(sigma_static))
     if rank == 0:
-        # save_Greens_function(gs = gs_thermal_avg, omega_mesh = omega_mesh, label =f'G-{clustername}', e_scale = 1)
         save_Greens_function(gs=sigma_real, omega_mesh=omega_mesh, label=f"Sigma-{clustername}", e_scale=1)
 
 
