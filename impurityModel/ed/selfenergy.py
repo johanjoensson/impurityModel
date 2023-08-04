@@ -264,7 +264,7 @@ def calc_selfenergy(
         verbose=verbosity >= 2,
         mpi_distribute=True,
         reort=reort,
-        dense_cutoff=dense_cutoff,
+        dense_cutoff=min(dense_cutoff, 1e2),
         tau=tau,
     )
     if iw is not None:
