@@ -877,7 +877,7 @@ class CIPSI_Basis(Basis):
                 dk=1 if psi_ref is None else max(1, len(psi_ref)),
                 v0=v0,
                 eigenValueTol=de_2_min if de_2_min > 1e-12 else 0,
-                slaterWeightMin=slaterWeightMin,
+                slaterWeightMin=0*slaterWeightMin,
                 dense_cutoff=dense_cutoff,
                 verbose=self.verbose,
                 distribute_eigenvectors=True,
