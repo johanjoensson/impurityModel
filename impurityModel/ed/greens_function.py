@@ -121,7 +121,7 @@ def calc_Greens_function_with_offdiag(
     restrictions=None,
     blocks=None,
     krylovSize=None,
-    slaterWeightMin=1e-20,
+    slaterWeightMin=np.finfo(float).eps**2,
     parallelization_mode="H_build",
     verbose=True,
     dense_cutoff=1e3,
