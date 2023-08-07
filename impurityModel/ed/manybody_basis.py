@@ -905,7 +905,7 @@ class CIPSI_Basis(Basis):
                 H,
                 psi_sum,
                 restrictions=self.restrictions,
-                slaterWeightMin=slaterWeightMin,
+                slaterWeightMin=0*slaterWeightMin,
                 opResult=H_dict,
             )
             t0 = perf_counter() - t0
