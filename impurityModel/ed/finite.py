@@ -116,6 +116,7 @@ def eigensystem_new(
     verbose=True,
     dense_cutoff=1000,
     distribute_eigenvectors=False,
+    force_orth = False,
 ):
     """
     Return eigen-energies and eigenstates.
@@ -212,6 +213,12 @@ def eigensystem_new(
                 continue
             mask = es - np.min(es) <= e_max
             dk += max(k + dk, 1)
+            if force_orth:
+                err_max = np.max(
+                    np.abs(np.conj(vecs[:, : sum(mask)].T) @ vecs[:, : sum(mask)] - np.identity(vecs[:, : sum(mask)].shape[1]))
+                )
+                if err_max > np.sqrt(np.finfo(float).eps):
+                    vecs, _ = np.linalg.qr(vecs, mode = 'reduced')
     indices = np.argsort(es)
     es[:] = es[indices]
     vecs[:, :] = vecs[:, indices]
