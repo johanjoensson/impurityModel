@@ -29,6 +29,7 @@ class impModCluster:
         sig_static,
         sig_dc,
         rot_spherical,
+        blocked,
     ):
         self.label = label
         self.h_dft = h_dft
@@ -43,21 +44,27 @@ class impModCluster:
         self.sig_dc = sig_dc
         self.rot_spherical = rot_spherical
 
-        self.blocks=get_block_structure( np.moveaxis(np.conj(rot_spherical.T)[np.newaxis, :, :] @ 
-                                                np.moveaxis(hyb, -1, 0) @ 
-                                                rot_spherical[np.newaxis, :, :], 0, -1),
-                                   np.conj(rot_spherical.T) @ h_dft @ rot_spherical
-                                   )
-        self.identical_blocks=get_identical_blocks(self.blocks, np.moveaxis(np.conj(rot_spherical.T)[np.newaxis, :, :] @ 
-                                                np.moveaxis(hyb, -1, 0) @ 
-                                                rot_spherical[np.newaxis, :, :], 0, -1),
-                                   np.conj(rot_spherical.T) @ h_dft @ rot_spherical
-                                                   )
-        self.transposed_blocks=get_transposed_blocks(self.blocks, np.moveaxis(np.conj(rot_spherical.T)[np.newaxis, :, :] @ 
-                                                np.moveaxis(hyb, -1, 0) @ 
-                                                rot_spherical[np.newaxis, :, :], 0, -1),
-                                   np.conj(rot_spherical.T) @ h_dft @ rot_spherical
-                                                   )
+        if blocked:
+            self.blocks=get_block_structure( np.moveaxis(np.conj(rot_spherical.T)[np.newaxis, :, :] @ 
+                                                    np.moveaxis(hyb, -1, 0) @ 
+                                                    rot_spherical[np.newaxis, :, :], 0, -1),
+                                       np.conj(rot_spherical.T) @ h_dft @ rot_spherical
+                                       )
+            self.identical_blocks=get_identical_blocks(self.blocks, np.moveaxis(np.conj(rot_spherical.T)[np.newaxis, :, :] @ 
+                                                    np.moveaxis(hyb, -1, 0) @ 
+                                                    rot_spherical[np.newaxis, :, :], 0, -1),
+                                       np.conj(rot_spherical.T) @ h_dft @ rot_spherical
+                                                       )
+            self.transposed_blocks=get_transposed_blocks(self.blocks, np.moveaxis(np.conj(rot_spherical.T)[np.newaxis, :, :] @ 
+                                                    np.moveaxis(hyb, -1, 0) @ 
+                                                    rot_spherical[np.newaxis, :, :], 0, -1),
+                                       np.conj(rot_spherical.T) @ h_dft @ rot_spherical
+                                                       )
+        else:
+            # Use only one nxn block
+            self.blocks = [[i for i in range(hyb.shape[1])]]
+            self.identical_blocks = [[0]]
+            self.transposed_blocks = [[]]
 
         self.inequivalent_blocks = []
         for blocks in self.identical_blocks:
@@ -111,10 +118,13 @@ def parse_solver_line(solver_line):
                            f"--->dN {solver_array[1]}\n"
                            f"--->dValence {solver_array[2]}\n"
                            f"--->dConduction {solver_array[3]}\n"
-                           f"--->Nbaths {solver_array[4]}")
+                           f"--->Nbaths {solver_array[4]}\n"
+                           f"--->Other params {solver_array[5:]}"
+                           )
     partial_reort = False
     dense_cutoff = 1000
     reort = Reort.NONE
+    blocked = False
     if len(solver_array) > 5:
         skip_next = False
         for i in range(len(solver_array)):
@@ -131,7 +141,9 @@ def parse_solver_line(solver_line):
             elif arg.lower() == "dense_cutoff":
                 dense_cutoff = int(solver_array[i + 1])
                 skip_next = True
-    return nominal_occ, delta_occ, nBaths, reort, dense_cutoff
+            elif arg.lower() == "blocked":
+                blocked = True
+    return nominal_occ, delta_occ, nBaths, reort, dense_cutoff, blocked
 
 @ffi.def_extern()
 def run_impmod_ed(
@@ -236,7 +248,7 @@ def run_impmod_ed(
         # sys.stdout = open(f"impurityModel-{label.strip()}-{rank}.out", "w")
         sys.stdout = open(devnull, "w")
 
-    nominal_occ, delta_occ, bath_states_per_orbital, reort, dense_cutoff = parse_solver_line(solver_line)
+    nominal_occ, delta_occ, bath_states_per_orbital, reort, dense_cutoff, blocked = parse_solver_line(solver_line)
     nominal_occ = ({l: nominal_occ[0]}, {l: nominal_occ[1]}, {l:nominal_occ[2]})
     delta_occ = ({l: delta_occ[0]}, {l: delta_occ[1]}, {l:delta_occ[2]})
 
@@ -313,6 +325,7 @@ def run_impmod_ed(
         sig_static=sig_static,
         sig_dc=sig_dc,
         rot_spherical=rot_spherical,
+        blocked = blocked,
     )
 
     from impurityModel.ed import selfenergy

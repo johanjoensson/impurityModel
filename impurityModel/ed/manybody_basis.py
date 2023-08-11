@@ -881,7 +881,7 @@ class CIPSI_Basis(Basis):
                 dense_cutoff=dense_cutoff,
                 verbose=self.verbose,
                 distribute_eigenvectors=True,
-                force_orth = True,
+                force_orth = False,
             )
             t0 = perf_counter() - t0
             t0 = self.comm.reduce(t0, op=MPI.SUM, root=0)
