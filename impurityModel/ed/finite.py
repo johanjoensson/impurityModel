@@ -19,8 +19,12 @@ from impurityModel.ed import remove
 from impurityModel.ed.average import k_B, thermal_average, thermal_average_scale_indep
 from impurityModel.ed.hermitian_operator import HermitianOperator
 from impurityModel.ed.hermitian_operator_matmul import NewHermitianOperator
+from impurityModel.ed.lanczos import calculate_thermal_gs
 
-from scipy.sparse.linalg import eigsh, ArpackNoConvergence
+from scipy.sparse.linalg import ArpackNoConvergence, ArpackError, eigsh
+# from primme import eigsh
+from scipy.linalg import qr
+
 
 
 # MPI variables
@@ -115,7 +119,7 @@ def eigensystem_new(
     verbose=True,
     dense_cutoff=1000,
     distribute_eigenvectors=False,
-    force_orth = False,
+    force_orth=False,
 ):
     """
     Return eigen-energies and eigenstates.
@@ -185,6 +189,16 @@ def eigensystem_new(
             except ArpackNoConvergence:
                 eigenValueTol = max(np.sqrt(eigenValueTol), 1e-6)
                 dk = dk_orig
+                vecs = None
+                es = []
+                mask = [True]
+                continue
+            except ArpackError:
+                eigenValueTol = max(np.sqrt(eigenValueTol), 1e-6)
+                if ncv is None:
+                    ncv = min(h.shape[0], max(5 * (k + dk) + 1, 50))
+                else:
+                    ncv = min(h.shape[0], max(2 * (k + dk) + 1, 2 * ncv))
                 vecs = None
                 es = []
                 mask = [True]

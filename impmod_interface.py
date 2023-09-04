@@ -9,7 +9,6 @@ from os import devnull
 from rspt2spectra.hyb_fit import get_block_structure, get_identical_blocks, get_transposed_blocks
 
 
-
 def matrix_print(matrix):
     print("\n".join([" ".join([f"{np.real(el): .6f} {np.imag(el):+.6f}j" for el in row]) for row in matrix]))
 
@@ -45,21 +44,38 @@ class impModCluster:
         self.rot_spherical = rot_spherical
 
         if blocked:
-            self.blocks=get_block_structure( np.moveaxis(np.conj(rot_spherical.T)[np.newaxis, :, :] @ 
-                                                    np.moveaxis(hyb, -1, 0) @ 
-                                                    rot_spherical[np.newaxis, :, :], 0, -1),
-                                       np.conj(rot_spherical.T) @ h_dft @ rot_spherical
-                                       )
-            self.identical_blocks=get_identical_blocks(self.blocks, np.moveaxis(np.conj(rot_spherical.T)[np.newaxis, :, :] @ 
-                                                    np.moveaxis(hyb, -1, 0) @ 
-                                                    rot_spherical[np.newaxis, :, :], 0, -1),
-                                       np.conj(rot_spherical.T) @ h_dft @ rot_spherical
-                                                       )
-            self.transposed_blocks=get_transposed_blocks(self.blocks, np.moveaxis(np.conj(rot_spherical.T)[np.newaxis, :, :] @ 
-                                                    np.moveaxis(hyb, -1, 0) @ 
-                                                    rot_spherical[np.newaxis, :, :], 0, -1),
-                                       np.conj(rot_spherical.T) @ h_dft @ rot_spherical
-                                                       )
+            self.blocks = get_block_structure(
+                np.moveaxis(
+                    np.conj(rot_spherical.T)[np.newaxis, :, :]
+                    @ np.moveaxis(hyb, -1, 0)
+                    @ rot_spherical[np.newaxis, :, :],
+                    0,
+                    -1,
+                ),
+                np.conj(rot_spherical.T) @ h_dft @ rot_spherical,
+            )
+            self.identical_blocks = get_identical_blocks(
+                self.blocks,
+                np.moveaxis(
+                    np.conj(rot_spherical.T)[np.newaxis, :, :]
+                    @ np.moveaxis(hyb, -1, 0)
+                    @ rot_spherical[np.newaxis, :, :],
+                    0,
+                    -1,
+                ),
+                np.conj(rot_spherical.T) @ h_dft @ rot_spherical,
+            )
+            self.transposed_blocks = get_transposed_blocks(
+                self.blocks,
+                np.moveaxis(
+                    np.conj(rot_spherical.T)[np.newaxis, :, :]
+                    @ np.moveaxis(hyb, -1, 0)
+                    @ rot_spherical[np.newaxis, :, :],
+                    0,
+                    -1,
+                ),
+                np.conj(rot_spherical.T) @ h_dft @ rot_spherical,
+            )
         else:
             # Use only one nxn block
             self.blocks = [[i for i in range(hyb.shape[1])]]
@@ -75,8 +91,6 @@ class impModCluster:
                     break
             if unique:
                 self.inequivalent_blocks.append(blocks[0])
-
-
 
 
 class dcStruct:
@@ -107,20 +121,23 @@ def parse_solver_line(solver_line):
     solver_line = solver_line.split("!")[0]
     solver_line = solver_line.split("#")[0]
     solver_array = solver_line.strip().split()
-    assert len(solver_array) >= 5, "The impurityModel ED solver requires at least 5 arguments; N0 dN dValence dConduction nBaths"
+    assert (
+        len(solver_array) >= 5
+    ), "The impurityModel ED solver requires at least 5 arguments; N0 dN dValence dConduction nBaths"
     try:
         nominal_occ = (int(solver_array[0]), 0, 0)
         delta_occ = (int(solver_array[1]), int(solver_array[2]), int(solver_array[3]))
         nBaths = int(solver_array[4])
     except Exception as e:
-        raise RuntimeError(f"{e}\n"
-                           f"--->N0 {solver_array[0]}\n"
-                           f"--->dN {solver_array[1]}\n"
-                           f"--->dValence {solver_array[2]}\n"
-                           f"--->dConduction {solver_array[3]}\n"
-                           f"--->Nbaths {solver_array[4]}\n"
-                           f"--->Other params {solver_array[5:]}"
-                           )
+        raise RuntimeError(
+            f"{e}\n"
+            f"--->N0 {solver_array[0]}\n"
+            f"--->dN {solver_array[1]}\n"
+            f"--->dValence {solver_array[2]}\n"
+            f"--->dConduction {solver_array[3]}\n"
+            f"--->Nbaths {solver_array[4]}\n"
+            f"--->Other params {solver_array[5:]}"
+        )
     partial_reort = False
     dense_cutoff = 1000
     reort = Reort.NONE
@@ -144,6 +161,7 @@ def parse_solver_line(solver_line):
             elif arg.lower() == "blocked":
                 blocked = True
     return nominal_occ, delta_occ, nBaths, reort, dense_cutoff, blocked
+
 
 @ffi.def_extern()
 def run_impmod_ed(
@@ -249,8 +267,8 @@ def run_impmod_ed(
         sys.stdout = open(devnull, "w")
 
     nominal_occ, delta_occ, bath_states_per_orbital, reort, dense_cutoff, blocked = parse_solver_line(solver_line)
-    nominal_occ = ({l: nominal_occ[0]}, {l: nominal_occ[1]}, {l:nominal_occ[2]})
-    delta_occ = ({l: delta_occ[0]}, {l: delta_occ[1]}, {l:delta_occ[2]})
+    nominal_occ = ({l: nominal_occ[0]}, {l: nominal_occ[1]}, {l: nominal_occ[2]})
+    delta_occ = ({l: delta_occ[0]}, {l: delta_occ[1]}, {l: delta_occ[2]})
 
     h_op, e_baths = get_ed_h0(
         h_dft,
@@ -262,15 +280,19 @@ def run_impmod_ed(
         eim,
         gamma=0.01,
         imag_only=False,
-        valence_bath_only = delta_occ[2][l] == 0,
-        label = label.strip(),
-        save_baths_and_hopping = rspt_dc_flag == 1,
-        verbose = (verbosity >= 2 or rspt_dc_flag == 1) and rank == 0,
-        comm = comm,
+        valence_bath_only=delta_occ[2][l] == 0,
+        label=label.strip(),
+        save_baths_and_hopping=rspt_dc_flag == 1,
+        verbose=(verbosity >= 2 or rspt_dc_flag == 1) and rank == 0,
+        comm=comm,
     )
     if rank == 0:
-        with open(f"Ham-op-{label.strip()}.pickle", 'wb') as f:
+        with open(f"Ham-op-{label.strip()}.pickle", "wb") as f:
             pickle.dump(h_op, f)
+
+    # comm.barrier()
+    # return
+
     h_op = comm.bcast(h_op, root=0)
     e_baths = comm.bcast(e_baths, root=0)
 
@@ -295,22 +317,21 @@ def run_impmod_ed(
         )
 
         try:
-            sig_dc[:, :] = fixed_peak_dc(h_op, dc_struct, rank=rank, verbose  = rank == 0, dense_cutoff = dense_cutoff)
+            sig_dc[:, :] = fixed_peak_dc(h_op, dc_struct, rank=rank, verbose=rank == 0, dense_cutoff=dense_cutoff)
         except Exception as e:
-            print(f"!"*100)
+            print(f"!" * 100)
             print(f"Exception {repr(e)} caught on rank {rank}!")
-            print (traceback.format_exc())
-            print (f"Adding positive infinity to the imaginaty part of the DC selfenergy.", flush = True)
-            print(f"!"*100)
-            sig_dc[:, :] = np.inf + 1j*np.inf
+            print(traceback.format_exc())
+            print(f"Adding positive infinity to the imaginaty part of the DC selfenergy.", flush=True)
+            print(f"!" * 100)
+            sig_dc[:, :] = np.inf + 1j * np.inf
         else:
             if rank == 0:
-                print(f"", flush = True)
+                print(f"", flush=True)
 
         sys.stdout.close()
         sys.stdout = stdout_save
         return
-
 
     cluster = impModCluster(
         label=label.strip(),
@@ -325,13 +346,15 @@ def run_impmod_ed(
         sig_static=sig_static,
         sig_dc=sig_dc,
         rot_spherical=rot_spherical,
-        blocked = blocked,
+        blocked=blocked,
     )
 
     from impurityModel.ed import selfenergy
 
     try:
-        selfenergy.run(cluster, h_op, 1j * iw, w, eim, tau, verbosity if rank == 0 else 0, reort = reort, dense_cutoff = dense_cutoff)
+        selfenergy.run(
+            cluster, h_op, 1j * iw, w, eim, tau, verbosity if rank == 0 else 0, reort=reort, dense_cutoff=dense_cutoff
+        )
 
         # Rotate self energy from spherical harmonics basis to RSPt's corr basis
         u = cluster.rot_spherical
@@ -343,19 +366,23 @@ def run_impmod_ed(
         )
         cluster.sig_static[:, :] = u @ cluster.sig_static @ np.conj(u.T)
     except Exception as e:
-        print(f"!"*100)
+        print(f"!" * 100)
         print(f"Exception {repr(e)} caught on rank {rank}!")
-        print (traceback.format_exc())
-        print (f"Adding positive infinity to the imaginaty part of the selfenergy at the last matsubara frequency.", flush = True)
-        print(f"!"*100)
-        cluster.sig[:,:, -1] += 1j*np.inf
+        print(traceback.format_exc())
+        print(
+            f"Adding positive infinity to the imaginaty part of the selfenergy at the last matsubara frequency.",
+            flush=True,
+        )
+        print(f"!" * 100)
+        cluster.sig[:, :, -1] += 1j * np.inf
     else:
         if rank == 0:
-            print (f"Self energy calculated! impurityModel shutting down.", flush = True)
+            print(f"Self energy calculated! impurityModel shutting down.", flush=True)
 
     sys.stdout.close()
     sys.stdout = stdout_save
     return
+
 
 def symmetrize_sigma(sigma, blocks, equivalent_blocks):
     symmetrized_sigma = np.zeros_like(sigma)
@@ -389,46 +416,47 @@ def fixed_peak_dc(h0_op, dc_struct, rank, verbose, dense_cutoff):
     Nm = ({l: N0[0][l] - 1 for l in N0[0]}, N0[1], N0[2])
     if peak_position >= 0:
         basis_upper = CIPSI_Basis(
-                valence_baths        = num_valence_bath_states,
-                conduction_baths     = num_conduction_bath_states,
-                delta_valence_occ    = delta_valence_occ,
-                delta_conduction_occ = delta_conduction_occ,
-                delta_impurity_occ   = delta_impurity_occ,
-                nominal_impurity_occ = Np[0],
-                verbose = False,
-                comm = MPI.COMM_WORLD
-                )
+            valence_baths=num_valence_bath_states,
+            conduction_baths=num_conduction_bath_states,
+            delta_valence_occ=delta_valence_occ,
+            delta_conduction_occ=delta_conduction_occ,
+            delta_impurity_occ=delta_impurity_occ,
+            nominal_impurity_occ=Np[0],
+            verbose=verbose,
+            comm=MPI.COMM_WORLD,
+        )
         basis_lower = CIPSI_Basis(
-                valence_baths        = num_valence_bath_states,
-                conduction_baths     = num_conduction_bath_states,
-                delta_valence_occ    = delta_valence_occ,
-                delta_conduction_occ = delta_conduction_occ,
-                delta_impurity_occ   = delta_impurity_occ,
-                nominal_impurity_occ = N0[0],
-                verbose = False,
-                comm = MPI.COMM_WORLD
-                )
+            valence_baths=num_valence_bath_states,
+            conduction_baths=num_conduction_bath_states,
+            delta_valence_occ=delta_valence_occ,
+            delta_conduction_occ=delta_conduction_occ,
+            delta_impurity_occ=delta_impurity_occ,
+            nominal_impurity_occ=N0[0],
+            verbose=verbose,
+            comm=MPI.COMM_WORLD,
+        )
     else:
-        basis_upper = Basis(
-                valence_baths        = num_valence_bath_states,
-                conduction_baths     = num_conduction_bath_states,
-                delta_valence_occ    = delta_valence_occ,
-                delta_conduction_occ = delta_conduction_occ,
-                delta_impurity_occ   = delta_impurity_occ,
-                nominal_impurity_occ = N0[0],
-                verbose = False,
-                comm = MPI.COMM_WORLD
-                )
-        basis_lower = Basis(
-                valence_baths        = num_valence_bath_states,
-                conduction_baths     = num_conduction_bath_states,
-                delta_valence_occ    = delta_valence_occ,
-                delta_conduction_occ = delta_conduction_occ,
-                delta_impurity_occ   = delta_impurity_occ,
-                nominal_impurity_occ = Nm[0],
-                verbose = False,
-                comm = MPI.COMM_WORLD
-                )
+        basis_upper = CIPSI_Basis(
+            valence_baths=num_valence_bath_states,
+            conduction_baths=num_conduction_bath_states,
+            delta_valence_occ=delta_valence_occ,
+            delta_conduction_occ=delta_conduction_occ,
+            delta_impurity_occ=delta_impurity_occ,
+            nominal_impurity_occ=N0[0],
+            verbose=verbose,
+            comm=MPI.COMM_WORLD,
+        )
+        basis_lower = CIPSI_Basis(
+            valence_baths=num_valence_bath_states,
+            conduction_baths=num_conduction_bath_states,
+            delta_valence_occ=delta_valence_occ,
+            delta_conduction_occ=delta_conduction_occ,
+            delta_impurity_occ=delta_impurity_occ,
+            nominal_impurity_occ=Nm[0],
+            verbose=verbose,
+            comm=MPI.COMM_WORLD,
+        )
+
     def F(dc_trial):
         dc_op = {(((l, s, m), "c"), ((l, s, m), "a")): -dc_trial for m in range(-l, l + 1) for s in range(2)}
         h_op_c = finite.addOps([h0_op, u, dc_op])
@@ -461,7 +489,7 @@ def fixed_peak_dc(h0_op, dc_struct, rank, verbose, dense_cutoff):
             print(f"de = {e_upper[0] - e_lower[0] - peak_position}", flush=True)
         return e_upper[0] - e_lower[0] - peak_position
 
-    res = sp.optimize.root_scalar(F, x0 = 0, x1 = F(0))
+    res = sp.optimize.root_scalar(F, x0=0, x1=F(0))
     dc = res.root
     if verbose:
         print(f"dc found : {dc}")
@@ -480,10 +508,10 @@ def get_ed_h0(
     gamma=0.001,
     imag_only=False,
     valence_bath_only=True,
-    label = None,
-    save_baths_and_hopping = False,
-    verbose = True,
-    comm = None,
+    label=None,
+    save_baths_and_hopping=False,
+    verbose=True,
+    comm=None,
 ):
     """
     Calculate the non-interacting hamiltonian, h0, for use in exact diagonalization.
@@ -519,7 +547,7 @@ def get_ed_h0(
     from impurityModel.ed.greens_function import save_Greens_function
 
     if comm.rank == 0:
-        with open(f"hyb-in-{label}.npy", 'wb') as f:
+        with open(f"hyb-in-{label}.npy", "wb") as f:
             np.save(f, hyb)
     if save_baths_and_hopping:
         eb, v = fit_hyb(
@@ -532,21 +560,23 @@ def get_ed_h0(
             gamma=gamma,
             imag_only=imag_only,
             x_lim=(w[0], 0 if valence_bath_only else w[-1]),
-            verbose = verbose,
-            comm = comm,
-            new_v = True,
+            verbose=verbose,
+            comm=comm,
+            new_v=True,
         )
         if comm is not None and comm.rank == 0:
-            with open(f"impurityModel_bath_energies_and_hopping_parameters_{label}.npy", 'wb') as f:
+            with open(f"impurityModel_bath_energies_and_hopping_parameters_{label}.npy", "wb") as f:
                 np.save(f, eb)
                 np.save(f, v)
     else:
         try:
-            with open(f"impurityModel_bath_energies_and_hopping_parameters_{label}.npy", 'rb') as f:
+            with open(f"impurityModel_bath_energies_and_hopping_parameters_{label}.npy", "rb") as f:
                 eb = np.load(f)
                 v = np.load(f)
             if verbose:
-                print (f"Read bath energies and hopping parameters from impurityModel_bath_energies_and_hopping_parameters_{label}.npy")
+                print(
+                    f"Read bath energies and hopping parameters from impurityModel_bath_energies_and_hopping_parameters_{label}.npy"
+                )
         except:
             eb, v = fit_hyb(
                 w,
@@ -558,14 +588,14 @@ def get_ed_h0(
                 gamma=gamma,
                 imag_only=imag_only,
                 x_lim=(w[0], 0 if valence_bath_only else w[-1]),
-                verbose = verbose,
-                comm = comm,
-                new_v = True,
+                verbose=verbose,
+                comm=comm,
+                new_v=True,
             )
     if verbose:
         fit_hyb = offdiagonal.get_hyb(w + eim * 1j, eb, v)
         save_Greens_function(fit_hyb, w, f"{label}-hyb-fit")
-        with open(f"{label}-hyb-fit.npy", 'wb') as f:
+        with open(f"{label}-hyb-fit.npy", "wb") as f:
             fit_hyb = offdiagonal.get_hyb(w + eim * 1j, eb, v @ np.conj(rot_spherical.T))
             np.save(f, fit_hyb)
 
@@ -578,7 +608,7 @@ def get_ed_h0(
         print(np.array_str(eb, max_line_width=1000, precision=4, suppress_small=False))
 
     n_orb = v.shape[1]
-    h = np.zeros((n_orb + len(eb), n_orb + len(eb)), dtype= complex)
+    h = np.zeros((n_orb + len(eb), n_orb + len(eb)), dtype=complex)
     h[:n_orb, :n_orb] = np.conj(rot_spherical.T) @ h_dft @ rot_spherical
     h[:n_orb, n_orb:] = np.conj(v.T)
     h[n_orb:, :n_orb] = v
