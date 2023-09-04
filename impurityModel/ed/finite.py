@@ -11,7 +11,6 @@ from collections import OrderedDict
 import scipy.sparse
 from mpi4py import MPI
 import time
-from bisect import bisect_left
 
 # Local imports
 from impurityModel.ed import product_state_representation as psr
@@ -88,16 +87,16 @@ def setup_hamiltonian(
         nonzero = comm.reduce(h_local.nnz, root=0, op=MPI.SUM)
     if verbose:
         print(f"h_local :\n{h_local}")
-        print(f"<#Hamiltonian elements/column> = {int(nonzero / len(expanded_basis))}", flush=True)
+        print(f"<#Hamiltonian elements/column> = {int(nonzero / len(expanded_basis))}")
     return expanded_basis, h_dict, h_local
 
 
-def mpi_matmul(h_local, comm, h_col_range):
+def mpi_matmul(h_local, comm):
     def matmat(m):
         m = m.reshape((m.shape[0], m.shape[1] if len(m.shape) > 1 else 1))
         n_cols = m.shape[1]
-        res = np.empty((h_local.shape[0], n_cols), dtype = h_local.dtype)
-        comm.Allreduce(h_local @ m[h_col_range], res, op=MPI.SUM)
+        res = np.empty((h_local.shape[0], n_cols), dtype=h_local.dtype)
+        comm.Allreduce(h_local @ m, res, op=MPI.SUM)
         return res
 
     return matmat
@@ -148,63 +147,42 @@ def eigensystem_new(
     """
 
     t0 = time.perf_counter()
-    if h_local.shape[0] < dense_cutoff:
-        if verbose:
-            print(f"Small hamiltonian matrix")
-        local_rows, local_columns = h_local.nonzero()
-        local_data = np.array([h_local[row, col] for row, col in zip(local_rows, local_columns)], dtype = complex)
-        data = None
-        rows = None
-        columns = None
-        recv_counts = None
-        offsets = None
+    if isinstance(h_local, np.ndarray):
         if comm.rank == 0:
-            recv_counts = np.empty((comm.size), dtype=int)
-        comm.Gather(np.array([len(local_data)]), recv_counts, root=0)
-
-        if comm.rank == 0:
-            offsets = [sum(recv_counts[:i]) for i in range(comm.size)]
-            data = np.empty((sum(recv_counts)), dtype=h_local.dtype)
-            rows = np.empty((sum(recv_counts)), dtype=local_rows.dtype)
-            columns = np.empty((sum(recv_counts)), dtype=local_columns.dtype)
-        comm.Gatherv(local_data, [data, recv_counts, offsets, MPI.DOUBLE_COMPLEX], root=0)
-        comm.Gatherv(local_rows, [rows, recv_counts, offsets, MPI.INT], root=0)
-        comm.Gatherv(local_columns, [columns, recv_counts, offsets, MPI.INT], root=0)
-        es = np.empty((h_local.shape[0]))
-        vecs = np.empty((h_local.shape[0], h_local.shape[0]), dtype=complex)
-        if comm.rank == 0:
-            h = scipy.sparse.coo_matrix((data, (rows, columns)), shape=(h_local.shape[0], h_local.shape[0]))
-            es, vecs = np.linalg.eigh(h.toarray(), UPLO="L")
+            es, vecs = np.linalg.eigh(h_local, UPLO="L")
+        else:
+            es = np.empty((basis.size,))
+            vecs = np.empty((basis.size, basis.size), dtype=complex)
         comm.Bcast(es, root=0)
         comm.Bcast(vecs, root=0)
         mask = es - es[0] <= e_max
-    else:
+    elif isinstance(h_local, scipy.sparse._csr.csr_matrix):
         h = scipy.sparse.linalg.LinearOperator(
             (h_local.shape[0], h_local.shape[0]),
-            matvec=mpi_matmul(h_local[:, basis.local_indices],  comm, h_col_range = basis.local_indices),
-            rmatvec=mpi_matmul(h_local[:, basis.local_indices], comm, h_col_range = basis.local_indices),
-            matmat=mpi_matmul(h_local[:, basis.local_indices],  comm, h_col_range = basis.local_indices),
-            rmatmat=mpi_matmul(h_local[:, basis.local_indices], comm, h_col_range = basis.local_indices),
+            matvec=mpi_matmul(h_local, comm),
+            rmatvec=mpi_matmul(h_local, comm),
+            matmat=mpi_matmul(h_local, comm),
+            rmatmat=mpi_matmul(h_local, comm),
             dtype=h_local.dtype,
         )
-        if verbose:
-            print("Diagonalize the Hamiltonian...")
-            print(f"{h}")
 
         dk_orig = dk
         vecs = v0
         es = []
         mask = [True]
+        ncv = None
         while len(es) - sum(mask) < k:
             try:
                 es, vecs = eigsh(
                     h,
-                    k=min(k + dk, h.shape[0] - 1),
+                    k=min(k + dk, h.shape[0] - 2),
                     which="SA",
                     tol=eigenValueTol,
-                    v0=vecs[:, 0] if vecs is not None else None,
+                    # v0=vecs[:, 0] if vecs is not None else None,
+                    # v0=vecs if vecs is not None else None,
+                    ncv=ncv,
                 )
-            except ArpackNoConvergence as e:
+            except ArpackNoConvergence:
                 eigenValueTol = max(np.sqrt(eigenValueTol), 1e-6)
                 dk = dk_orig
                 vecs = None
@@ -212,37 +190,29 @@ def eigensystem_new(
                 mask = [True]
                 continue
             mask = es - np.min(es) <= e_max
-            dk += max(k + dk, 1)
-            if force_orth:
-                err_max = np.max(
-                    np.abs(np.conj(vecs[:, : sum(mask)].T) @ vecs[:, : sum(mask)] - np.identity(vecs[:, : sum(mask)].shape[1]))
-                )
-                if err_max > np.sqrt(np.finfo(float).eps):
-                    vecs, _ = np.linalg.qr(vecs, mode = 'reduced')
+            if dk_orig > 0:
+                dk += dk_orig
+            else:
+                break
     indices = np.argsort(es)
     es[:] = es[indices]
     vecs[:, :] = vecs[:, indices]
+    mask = es - np.min(es) <= e_max
     t0 = time.perf_counter() - t0
-    if verbose:
-        print(f"time to solve the eigenvalue problem: {t0:.3f} seconds")
-
-    if verbose and v0 is not None:
-        print(f"log10(1-|<vg|v0>|) = {np.log10(1 - np.abs(np.vdot(v0, vecs[:, 0]))): 4.1f}")
 
     err_max = np.max(
         np.abs(np.conj(vecs[:, : sum(mask)].T) @ vecs[:, : sum(mask)] - np.identity(vecs[:, : sum(mask)].shape[1]))
     )
     if verbose and err_max > np.sqrt(np.finfo(float).eps):
         print(f"Warning! Obtained eigenvectors are not very orthogonal!\nMaximum overlap {err_max}")
-    if verbose:
-        print(f"Proceed with {len(es[mask])} eigenstates.\n")
+        vecs, _ = qr(vecs[:, : sum(mask)], mode='economic', overwrite_a=True, check_finite=False)
+        mask = [True] * vecs.shape[1]
 
     if not return_eigvecs:
         return es[: sum(mask)]
     t0 = time.perf_counter()
     psis = []
     t0 = time.perf_counter()
-    # for v in vecs[:, :sum(mask)].T:
     if not distribute_eigenvectors:
         for j in range(sum(mask)):
             indices = [i for i in range(basis.size) if abs(vecs[i, j]) ** 2 > slaterWeightMin]
@@ -254,8 +224,6 @@ def eigensystem_new(
             states = [basis.local_basis[i] for i in indices]
             psis.append({state: vecs[i, j] for state, i in zip(states, indices)})
     t0 = time.perf_counter() - t0
-    if verbose:
-        print(f"time to massage the eigenvectors: {t0:.3f} seconds")
 
     return es[: sum(mask)], psis
 
@@ -266,8 +234,8 @@ def eigensystem(
     basis,
     nPsiMax,
     groundDiagMode="Lanczos",
-    eigenValueTol=1e-9,
-    slaterWeightMin=1e-7,
+    eigenValueTol=1e-12,
+    slaterWeightMin=1e-12,
     verbose=True,
     lock=None,
 ):
@@ -314,8 +282,8 @@ def eigensystem(
         es = es[:nPsiMax]
         vecs = vecs[:, :nPsiMax]
     elif groundDiagMode == "Lanczos":
-        # es, vecs = scipy.sparse.linalg.eigsh(h, k=nPsiMax, which="SA", tol=eigenValueTol)
-        es, vecs = primme.eigsh(h, k=nPsiMax, which="SA", tol=eigenValueTol, lock=lock)
+        es, vecs = scipy.sparse.linalg.eigsh(h, k=nPsiMax, which="SA", tol=eigenValueTol)
+        # es, vecs = primme.eigsh(h, k=nPsiMax, which="SA", tol=eigenValueTol, lock=lock)
         # Sort the eigenvalues and eigenvectors in ascending order.
         indices = np.argsort(es)
         es = np.array([es[i] for i in indices])
@@ -2689,7 +2657,6 @@ def expand_basis_and_build_hermitian_hamiltonian_new(
                 f"np.shape(h)[0] = {np.shape(h)[0]}, "
                 f"len(h_dict) = {len(h_dict)}, "
                 f"len(h_dict_total) = {len_h_dict_total}",
-                flush=True,
             )
     elif parallelization_mode == "serial":
         if rank == 0 and verbose:
@@ -3115,30 +3082,3 @@ def i2cDict2Array(nBaths, i_ops):
     for i_op in i_ops:
         res.append(i2c_op(nBaths, i_op))
     return res
-
-
-def QR_decomp_GS(column_array):
-    r"""
-    Calculates the QR decomposition of the "matrix" formed by the row-vectors in column_array.
-    Parameters
-    ----------
-    column_array : Array of multiconfigurational states
-    Returns
-    -------
-    Q : Array of multiconfigurational states, representing he orthonormal rows of column_array.
-    R : Upper triangular matrix
-    """
-    n = len(column_array)
-    R = np.zeros((n, n), dtype=complex)
-    Q = []
-    for i, v in enumerate(column_array):
-        for j, u in enumerate(Q[:i]):
-            uv = inner(u, v)
-            addToFirst(v, u, -uv)
-            R[i, j] = inner(column_array[i], u)
-        norm = sqrt(norm2(v))
-        for state in v.keys():
-            v[state] /= norm
-        R[i, i] = inner(v, column_array[i])
-        Q.append(v)
-    return Q, R.T

@@ -433,12 +433,32 @@ def fixed_peak_dc(h0_op, dc_struct, rank, verbose, dense_cutoff):
         dc_op = {(((l, s, m), "c"), ((l, s, m), "a")): -dc_trial for m in range(-l, l + 1) for s in range(2)}
         h_op_c = finite.addOps([h0_op, u, dc_op])
         h_op_i = finite.c2i_op(sum_bath_states, h_op_c)
-        h_dict = basis_upper.expand(h_op_i, dense_cutoff = dense_cutoff)
-        h_sparse = basis_upper.build_sparse_operator(h_op_i, h_dict)
-        e_upper, _ = finite.eigensystem_new(h_sparse, basis_upper, 0, k = 1, dk = 2, eigenValueTol = 0, verbose = False, dense_cutoff = dense_cutoff)
-        h_dict = basis_lower.expand(h_op_i, dense_cutoff = dense_cutoff)
-        h_sparse = basis_lower.build_sparse_operator(h_op_i, h_dict)
-        e_lower, _ = finite.eigensystem_new(h_sparse, basis_lower, 0, k = 1, dk = 2, eigenValueTol = 0, verbose = False, dense_cutoff = dense_cutoff)
+        if verbose:
+            print("Expand upper basis", flush=True)
+        h_dict = basis_upper.expand(h_op_i, dense_cutoff=dense_cutoff)
+        if verbose:
+            print("Build upper operator dict", flush=True)
+        h_sparse = basis_upper.build_sparse_matrix(h_op_i, h_dict)
+        # h_sparse = basis_upper.build_PETSc_matrix(h_op_i, h_dict)
+        if verbose:
+            print("Find upper energy", flush=True)
+        e_upper, _ = finite.eigensystem_new(
+            h_sparse, basis_upper, 0, k=1, dk=10, eigenValueTol=0, verbose=verbose, dense_cutoff=dense_cutoff
+        )
+        if verbose:
+            print("Expand lower basis", flush=True)
+        h_dict = basis_lower.expand(h_op_i, dense_cutoff=dense_cutoff)
+        if verbose:
+            print("Build lower operator dict", flush=True)
+        h_sparse = basis_lower.build_sparse_matrix(h_op_i, h_dict)
+        # h_sparse = basis_lower.build_PETSc_matrix(h_op_i, h_dict)
+        if verbose:
+            print("Find lower energy", flush=True)
+        e_lower, _ = finite.eigensystem_new(
+            h_sparse, basis_lower, 0, k=1, dk=10, eigenValueTol=0, verbose=verbose, dense_cutoff=dense_cutoff
+        )
+        if verbose:
+            print(f"de = {e_upper[0] - e_lower[0] - peak_position}", flush=True)
         return e_upper[0] - e_lower[0] - peak_position
 
     res = sp.optimize.root_scalar(F, x0 = 0, x1 = F(0))

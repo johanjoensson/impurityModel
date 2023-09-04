@@ -3,6 +3,7 @@ import scipy as sp
 from mpi4py import MPI
 from math import ceil
 from time import perf_counter
+from impurityModel.ed.finite import c, a
 
 try:
     from collections.abc import Sequence
@@ -178,6 +179,7 @@ class Basis:
         delta_impurity_occ=None,
         nominal_impurity_occ=None,
         truncation_threshold=np.inf,
+        tau=0,
         comm=None,
         verbose=True,
     ):
@@ -241,6 +243,7 @@ class Basis:
             self.rng = np.random.default_rng(seed_sequence)
         else:
             rng = np.random.default_rng()
+        self.tau = tau
 
         num_states = comm.allreduce(len(initial_basis), op=MPI.SUM)
         if num_states > 0:
@@ -702,7 +705,41 @@ class Basis:
 
         return op_dict
 
-    def build_sparse_operator(self, op, op_dict=None):
+    def build_dense_matrix(self, op, op_dict=None, distribute=True):
+        """
+        Get the operator as a dense matrix in the current basis.
+        by default the dense matrix is distributed to all ranks.
+        """
+        h_local = self.build_sparse_matrix(op, op_dict)
+        local_rows, local_columns = h_local.nonzero()
+        local_data = np.array([h_local[row, col] for row, col in zip(local_rows, local_columns)], dtype=complex)
+        data = None
+        rows = None
+        columns = None
+        recv_counts = None
+        offsets = None
+        if self.comm.rank == 0:
+            recv_counts = np.empty((self.comm.size), dtype=int)
+        self.comm.Gather(np.array([len(local_data)]), recv_counts, root=0)
+
+        if self.comm.rank == 0:
+            offsets = [sum(recv_counts[:i]) for i in range(self.comm.size)]
+            data = np.empty((sum(recv_counts)), dtype=h_local.dtype)
+            rows = np.empty((sum(recv_counts)), dtype=local_rows.dtype)
+            columns = np.empty((sum(recv_counts)), dtype=local_columns.dtype)
+        self.comm.Gatherv(local_data, [data, recv_counts, offsets, MPI.DOUBLE_COMPLEX], root=0)
+        self.comm.Gatherv(local_rows, [rows, recv_counts, offsets, MPI.INT], root=0)
+        self.comm.Gatherv(local_columns, [columns, recv_counts, offsets, MPI.INT], root=0)
+        if self.comm.rank == 0:
+            h = sp.sparse.coo_matrix((data, (rows, columns)), shape=(h_local.shape[0], h_local.shape[0]))
+            h = h.todense()
+        else:
+            h = None
+        if distribute:
+            h = self.comm.bcast(h, root=0)
+        return h
+
+    def build_sparse_matrix(self, op, op_dict=None):
         """
         Get the operator as a sparse matrix in the current basis.
         The sparse matrix is distributed over all ranks.
@@ -720,7 +757,7 @@ class Basis:
         columns = self.index(columns)
         rows = self.index(rows)
         shape = (self.size, self.size)
-        return sp.sparse.csc_matrix((values, (rows, columns)), shape=shape, dtype=complex)
+        return sp.sparse.csr_matrix((values, (rows, columns)), shape=shape, dtype=complex)
 
 
 class CIPSI_Basis(Basis):
@@ -738,7 +775,7 @@ class CIPSI_Basis(Basis):
         truncation_threshold=np.inf,
         verbose=False,
         H=None,
-        tau=None,
+        tau=0,
         comm=None,
     ):
         if initial_basis is None:
@@ -771,17 +808,15 @@ class CIPSI_Basis(Basis):
             num_spin_orbitals=num_spin_orbitals,
             restrictions=restrictions,
             truncation_threshold=truncation_threshold,
+            tau=tau,
             verbose=verbose,
             comm=comm,
         )
-        if tau is None:
-            tau = 0.0
-        self.tau = tau
 
         if self.size > self.truncation_threshold and H is not None:
             if self.verbose:
                 print(f"Truncating basis!")
-            H_sparse = self.build_sparse_operator(H)
+            H_sparse = self.build_sparse_matrix(H)
             e_ref, psi_ref = eigensystem_new(
                 H_sparse,
                 basis=self,
@@ -789,7 +824,7 @@ class CIPSI_Basis(Basis):
                 k=min(1, self.size - 1),
                 dk=min(10, self.size - 1),
                 eigenValueTol=0,
-                slaterWeightMin=1e-20,
+                slaterWeightMin=np.finfo(float).eps ** 2,
                 verbose=self.verbose,
             )
             self.truncate(psi_ref)
@@ -840,6 +875,24 @@ class CIPSI_Basis(Basis):
 
         return np.abs(overlap) ** 2 / de
 
+    def _generate_spin_flipped_determinants(self, determinants):
+        # X_lm = c(l, 0, m)*a(l, 1, m) + c(l, 1, m)*a(l, 0, m)
+        # X = 1
+        # for m in -l to l (inclusive)
+        #   X = (1 + X_lm)*X
+        # apply X to det
+        # spin_flipped_dets =
+        determinants = set(determinants)
+        spin_flipped = set()
+        for dn_state in range(self.num_spin_orbitals // 2):
+            up_state = dn_state + self.num_spin_orbitals // 2
+            for det in determinants:
+                dn_to_up = c(self.num_spin_orbitals, up_state, a(self.num_spin_orbitals, dn_state, {det: 1}))
+                up_to_dn = c(self.num_spin_orbitals, dn_state, a(self.num_spin_orbitals, up_state, {det: 1}))
+                spin_flipped |= set(dn_to_up.keys()) | set(up_to_dn.keys())
+            determinants |= spin_flipped
+        return list(determinants)
+
     def expand(self, H, H_dict={}, e_conv=np.finfo(float).eps, dense_cutoff=1e3, slaterWeightMin=1e-20):
         """
         Use the CIPSI method to expand the basis. Keep adding Slater determinants until the CIPSI energy is converged.
@@ -847,25 +900,25 @@ class CIPSI_Basis(Basis):
         psi_ref = None
         e_cipsi_prev = np.inf
         e_cipsi = 0
-        de_2_min = 1e-2
+        de_2_min = 1e-12
         converge_count = 0
         de0_max = -self.tau * np.log(np.finfo(float).eps)
         while converge_count < 3:
             t0 = perf_counter()
-            H_sparse = self.build_sparse_operator(H)
+            H_sparse = self.build_sparse_matrix(H)
             t0 = perf_counter() - t0
             t0 = self.comm.reduce(t0, op=MPI.SUM, root=0)
             if self.verbose:
-                print(f"Time to build sparse H: {t0/self.comm.size:.3f} seconds")
+                print(f"--->Time to build sparse H: {t0/self.comm.size:.3f} seconds")
 
             t0 = perf_counter()
             if psi_ref is not None:
-            # if self.size > dense_cutoff and psi_ref is not None:
-                v0 = np.zeros((self.size, 1), dtype=complex)
-                v0_states = psi_ref[0].keys()
-                v0_indices = self.index(list(v0_states))
-                for i, state in zip(v0_indices, v0_states):
-                    v0[i, 0] = psi_ref[0][state]
+                v0 = np.zeros((self.size, len(psi_ref)), dtype=complex)
+                v0_states = [list(pr.keys()) for pr in psi_ref]
+                v0_indices = [self.index(psi) for psi in v0_states]
+                for j in range(len(v0_indices)):
+                    for i, state in zip(v0_indices[j], v0_states[j]):
+                        v0[i, j] = psi_ref[j][state]
                 self.comm.Allreduce(v0.copy(), v0)
             else:
                 v0 = None
@@ -873,46 +926,45 @@ class CIPSI_Basis(Basis):
                 H_sparse,
                 basis=self,
                 e_max=de0_max,
-                k=1,
-                dk=1 if psi_ref is None else max(1, len(psi_ref)),
+                k=1 if psi_ref is None else max(1, len(psi_ref)),
+                dk=15,
                 v0=v0,
                 eigenValueTol=de_2_min if de_2_min > 1e-12 else 0,
-                slaterWeightMin=0*slaterWeightMin,
+                slaterWeightMin=slaterWeightMin,
                 dense_cutoff=dense_cutoff,
                 verbose=self.verbose,
                 distribute_eigenvectors=True,
-                force_orth = False,
+                force_orth=False,
             )
             t0 = perf_counter() - t0
             t0 = self.comm.reduce(t0, op=MPI.SUM, root=0)
             if self.verbose:
-                print(f"Time to get psi_ref: {t0/self.comm.size:.3f} seconds")
+                print(f"--->Time to get psi_ref: {t0/self.comm.size:.3f} seconds")
 
             t0 = perf_counter()
             weights = np.exp(-(e_ref - e_ref[0]) / max(self.tau, 1e-15))
             weights /= sum(weights)
             psi_sum = {}
-            N = len(psi_ref)
             for i, psi in enumerate(psi_ref):
                 psi_sum = add(psi_sum, psi, weights[i])
             e_ref = np.sum(weights * e_ref)
             t0 = perf_counter() - t0
             t0 = self.comm.reduce(t0, op=MPI.SUM, root=0)
             if self.verbose:
-                print(f"Time to average psi_ref: {t0/self.comm.size:.3f} seconds")
+                print(f"--->Time to average psi_ref: {t0/self.comm.size:.3f} seconds")
             t0 = perf_counter()
             Hpsi_ref = applyOp(
                 self.num_spin_orbitals,
                 H,
                 psi_sum,
                 restrictions=self.restrictions,
-                slaterWeightMin=0*slaterWeightMin,
+                slaterWeightMin=slaterWeightMin,
                 opResult=H_dict,
             )
             t0 = perf_counter() - t0
             t0 = self.comm.reduce(t0, op=MPI.SUM, root=0)
             if self.verbose:
-                print(f"Time to calculate Hpsi_ref: {t0/self.comm.size:.3f} seconds")
+                print(f"--->Time to calculate Hpsi_ref: {t0/self.comm.size:.3f} seconds")
 
             t0 = perf_counter()
             coupled_Dj = list(Hpsi_ref.keys())
@@ -927,7 +979,7 @@ class CIPSI_Basis(Basis):
             t0 = perf_counter() - t0
             t0 = self.comm.reduce(t0, op=MPI.SUM, root=0)
             if self.verbose:
-                print(f"Time to setup distributed Djs: {t0/self.comm.size:.3f} seconds")
+                print(f"--->Time to setup distributed Djs: {t0/self.comm.size:.3f} seconds")
 
             t0 = perf_counter()
             send_list = [[] for _ in range(self.comm.size)]
@@ -950,7 +1002,7 @@ class CIPSI_Basis(Basis):
             t0 = perf_counter() - t0
             t0 = self.comm.reduce(t0, op=MPI.SUM, root=0)
             if self.verbose:
-                print(f"Time to distribute H|psi_ref>: {t0/self.comm.size:.3f} seconds")
+                print(f"--->Time to distribute H|psi_ref>: {t0/self.comm.size:.3f} seconds")
 
             t0 = perf_counter()
             de_2 = self._calc_de_2(Dj_basis.local_basis, H, H_dict, Hpsi_ref, e_ref)
@@ -958,28 +1010,33 @@ class CIPSI_Basis(Basis):
             de_2_min_arr = np.empty((1,))
             if len(de_2) == 0:
                 de_2 = np.array([0], dtype=float)
-            self.comm.Allreduce(np.array([np.max(np.abs(de_2))]), de_2_max_arr, op=MPI.MAX)
-            de_2_min = min(de_2_min, max(de_2_max_arr[0] ** 1.5, np.finfo(float).eps ** 2))
-            de_2_mask = np.abs(de_2) > de_2_min
+            self.comm.Allreduce(np.array([np.max(np.abs(de_2))]), de_2_max_arr, op=MPI.SUM)
+            de_2_min = min(de_2_min, max(de_2_max_arr[0] / (self.comm.size * 10), np.finfo(float).eps ** 2))
+            # self.comm.Allreduce(np.array([np.max(np.abs(de_2))]), de_2_max_arr, op=MPI.MAX)
+            # de_2_min = min(de_2_min, max(de_2_max_arr[0] ** 1.5, np.finfo(float).eps ** 2))
+
+            de_2_mask = np.abs(de_2) >= de_2_min
             de_2_mask_sum = np.empty((1,), dtype=int)
             self.comm.Allreduce(np.array([sum(de_2_mask)]), de_2_mask_sum, op=MPI.SUM)
 
             t0 = perf_counter() - t0
             t0 = self.comm.reduce(t0, op=MPI.SUM, root=0)
             if self.verbose:
-                print(f"Time to calculate de_2: {t0/self.comm.size:.3f} seconds")
+                print(f"--->Time to calculate de_2: {t0/self.comm.size:.3f} seconds")
             if de_2_mask_sum[0] == 0:
                 break
 
             t0 = perf_counter()
             old_size = self.size
             new_Dj = [Dj_basis.local_basis[i] for i, mask in enumerate(de_2_mask) if mask]
+            new_Dj = self._generate_spin_flipped_determinants(new_Dj)
+
             self.add_states(new_Dj)
 
             t0 = perf_counter() - t0
             t0 = self.comm.reduce(t0, op=MPI.SUM, root=0)
             if self.verbose:
-                print(f"Time to add new Djs: {t0/self.comm.size:.3f} seconds")
+                print(f"--->Time to add new Djs: {t0/self.comm.size:.3f} seconds")
             e_pt2 = np.empty((1,))
             self.comm.Allreduce(np.array([np.sum(de_2[de_2_mask])]), e_pt2, op=MPI.SUM)
             e_pt2 = e_pt2[0]
@@ -993,14 +1050,14 @@ class CIPSI_Basis(Basis):
                 converge_count = 0
             if self.verbose:
                 print(
-                    f"--------> N = {self.size: 7,d}, log(de_2_min) = {np.log10(de_2_min): 5.1f}, log(|e_pt2|) = {np.log10(abs(e_pt2)): 5.1f}, log(|de_cipsi|) = {np.log10(de_cipsi): 5.1f}"
+                    f"-------> N = {self.size: 7,d}, log(de_2_min) = {np.log10(de_2_min): 5.1f}, log(|e_pt2|) = {np.log10(abs(e_pt2)): 5.1f}, log(|de_cipsi|) = {np.log10(de_cipsi): 5.1f}",
                 )
 
         if self.verbose:
             print(f"After expansion, the basis contains {self.size} elements.")
 
         if self.size > self.truncation_threshold:
-            H_sparse = self.build_sparse_operator(H)
+            H_sparse = self.build_sparse_matrix(H)
             e_ref, psi_ref = eigensystem_new(
                 H_sparse,
                 basis=self,
@@ -1013,7 +1070,7 @@ class CIPSI_Basis(Basis):
             )
             self.truncate(psi_ref)
             if self.verbose:
-                print(f"After truncation, the basis contains {self.size} elements.")
+                print(f"------->After truncation, the basis contains {self.size} elements.")
         return self.build_operator_dict(H)
 
     def copy(self):

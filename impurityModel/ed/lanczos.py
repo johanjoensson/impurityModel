@@ -1,16 +1,13 @@
 import numpy as np
 import scipy as sp
-
 import time
-from random import uniform
-
 from mpi4py import MPI
+from impurityModel.ed.krylovBasis import KrylovBasis
+from enum import Enum
 
 comm = MPI.COMM_WORLD
 rank = comm.rank
 ranks = comm.size
-
-from enum import Enum
 
 
 class Reort(Enum):
@@ -19,99 +16,220 @@ class Reort(Enum):
     FULL = 2
 
 
+def calculate_thermal_gs(h, block_size, e_max, v0=None, reort=Reort.FULL):
+    def converged(alphas, betas):
+        e, s = eigsh(alphas, betas, de=e_max, select="m")
+        sorted_indices = np.argsort(e)
+        e = e[sorted_indices]
+        s[:, sorted_indices]
+        mask = e - np.min(e) <= e_max
+        return np.linalg.norm(betas[-1] @ s[-block_size:, mask], ord=2)
+
+    if v0 is None:
+        v0 = np.random.rand(h.shape[0], block_size) + 1j * np.random.rand(h.shape[0], block_size)
+        # v0 = np.ones((h.shape[0], block_size), dtype = complex)
+        v0, _ = sp.linalg.qr(v0, mode="economic", overwrite_a=True, check_finite=False)
+        # v0, _ = np.linalg.qr(v0, mode="reduced")
+    elif v0.shape[1] < block_size:
+        new_v0 = np.random.rand(v0.shape[0], block_size - v0.shape[1]) + 1j * np.random.rand(
+            v0.shape[0], block_size - v0.shape[1]
+        )
+        new_v0 -= v0 @ np.conj(v0.T) @ new_v0
+        for col in range(new_v0.shape[1]):
+            new_v0[:, col] = new_v0[:, col] / np.linalg.norm(new_v0[:, col])
+        v0 = np.append(v0, new_v0, axis=1)
+    elif v0.shape[1] > block_size:
+        v0 = v0[:, :block_size]
+    alphas, betas, Q = get_block_Lanczos_matrices(
+        psi0=v0,
+        h=h,
+        converged=converged,
+        h_local=True,
+        verbose=True,
+        reort_mode=reort,
+    )
+    if comm.rank == 0:
+        eigvals, eigvecs = eigsh(alphas, betas, de=e_max, Q=Q[:, : alphas.shape[0] * alphas.shape[1]], select="m")
+    else:
+        eigvals = None
+        eigvecs = None
+    eigvals = comm.bcast(eigvals, root=0)
+    eigvecs = comm.bcast(eigvecs, root=0)
+    return eigvals, eigvecs
+
+
+def build_banded_matrix(alphas, betas):
+    k = alphas.shape[0]
+    p = alphas.shape[1]
+    bands = np.zeros((p + 1, k * p), dtype=alphas.dtype)
+    bands[0, :] = np.diagonal(alphas, offset=0, axis1=1, axis2=2).flatten()
+    for i in range(1, p + 1):
+        for j in range(k):
+            bands[i, j * p : (j + 1) * p] = np.append(
+                np.diagonal(alphas[j], offset=-i),
+                [np.diagonal(betas[j], offset=p - i)],
+            ).flatten()
+    return bands
+
+
+def eigsh(alphas, betas, de=None, Q=None, eigvals_only=False, select="a", select_range=None, max_ev=0):
+    """
+    Solve the (block) lanczos eigenvalue problem. Return the eigenvalues and
+    (optionally) the corresponding eigenvectors. Return only eigenvalues (and,
+    optionally eigenvectors) lying within de of the lowest eigenvalue.
+    NOTE: len(alphas) == len(betas) == n, however the last element in betas
+    will not be accessed.
+         [alpha_0  beta_0* 0        ...      ]
+    Tm = [beta_0   alpha_1 beta_1*  ...      ]
+         [0        beta_1  ...      beta_n-2*]
+         [...              beta_n-2 alpha_n-1  ]
+    If eigvals_only is True, only return the eigenvalues.
+    If Q is None, return the eigenvectors in the Krylov basis. Otherwise, the
+    eigenvectors are transformed using Q, as such: eigvecs = Q @ eigvecs, and
+    then returned.
+    Parameters
+    ==========
+    alphas - (block) diagonal terms of the Matrix in the Krylov basis. [alpha_0
+             ,alpha_1, ..., alpha_n]
+    betas - (block) off-diagnal terms of the Matrix in the Krylov basis.[beta_0
+            ,beta_1, ..., beta_n]
+    """
+    whithin_gs = False
+    if select == "m":
+        assert de is not None
+        select = "a"
+        whithin_gs = True
+
+    Tm = build_banded_matrix(alphas, betas)
+    if eigvals_only:
+        eigvals = sp.linalg.eig_banded(
+            Tm,
+            lower=True,
+            eigvals_only=True,
+            overwrite_a_band=True,
+            check_finite=False,
+            select=select,
+            select_range=select_range,
+            max_ev=max_ev,
+        )
+        eigvals = np.sort(eigvals)
+        return eigvals[eigvals - eigvals[0] <= de]
+    eigvals, eigvecs = sp.linalg.eig_banded(
+        Tm,
+        lower=True,
+        eigvals_only=False,
+        overwrite_a_band=True,
+        check_finite=False,
+        select=select,
+        select_range=select_range,
+        max_ev=max_ev,
+    )
+    if whithin_gs:
+        mask = eigvals - np.min(eigvals) <= de
+    else:
+        mask = [True] * len(eigvals)
+    if Q is not None:
+        eigvecs = Q @ eigvecs
+    sort_indices = np.argsort(eigvals[mask])
+    return eigvals[mask][sort_indices], eigvecs[:, mask][:, sort_indices]
+
+
 def get_block_Lanczos_matrices(
     psi0: np.ndarray,
     h,
     reort_mode,
-    converged: bool,
+    converged,
     h_local: bool = False,
     verbose: bool = True,
-    debug_ort: bool = False,
-    h_local_cols = None,
+    max_krylov_size: int = None,
+    build_basis: bool = True,
 ):
-    krylovSize = h.shape[0]
+    if max_krylov_size is None:
+        krylovSize = h.shape[0]
+    else:
+        krylovSize = min(h.shape[0], max_krylov_size)
     eps = np.finfo("float").eps
     t0 = time.perf_counter()
 
-    t_reorth = 0
-    t_estimate = 0
-    t_matmul = 0
-    t_conv = 0
-    t_qr = 0
+    t_reorth = 0.0
+    t_estimate = 0.0
+    t_matmul = 0.0
+    t_conv = 0.0
+    t_qr = 0.0
 
     N = psi0.shape[0]
     n = max(psi0.shape[1], 1)
 
-    if krylovSize < 10 * n:
-        reort_mode = Reort.NONE
-
     alphas = np.empty((0, n, n), dtype=complex)
     betas = np.empty((0, n, n), dtype=complex)
-
-    if h_local_cols is not None:
-        h2 = h[:, h_local_cols]
+    Q = None
+    build_basis = build_basis or reort_mode != Reort.NONE
+    n_reort = 0
+    if rank == 0:
+        if build_basis:
+            Q = KrylovBasis(N, psi0.dtype, psi0)
+        q = np.zeros((2, N, n), dtype=complex)
+        q[1, :, :] = psi0
     if rank == 0 and reort_mode != Reort.NONE:
-        Q = np.empty((N, n), dtype=complex)
-        Q[:, :] = psi0
         W = np.zeros((2, 1, n, n), dtype=complex)
         W[1] = np.identity(n)
         force_reort = None
-    n_reort = 0
-    if rank == 0:
-        q = np.zeros((2, N, n), dtype=complex)
-        q[1, :, :] = psi0
-
-    q_loc = psi0[h_local_cols, :].copy() if h_local_cols is not None else psi0
-
-    if rank == 0 and debug_ort:
-        overlap_file = open("overlap.dat", "a")
-        overlap_file.write(f"{np.max(np.abs(W[1, : 1]))}  {np.max(np.abs( np.conj(Q.T) @ q[1]))}  {1}\n")
+    q_i = psi0
 
     if h_local:
         done = False
         wp = None
-        wp2 = None
         if rank == 0:
-            wp = np.empty((h.shape[0], q.shape[2]), dtype = complex)
+            wp = np.empty((h.shape[0], q.shape[2]), dtype=complex)
         # Run at least 1 iteration (to generate $\alpha_0$).
-        # We can also not generate more than N Lanczos vectors, meaning we can take
-        # at most N/n steps in total
+        # We can also not generate more than N Lanczos vectors, meaning we can
+        # take at most N/n steps in total
         for i in range(int(np.ceil(krylovSize / n))):
             t_h = time.perf_counter()
             # comm.Reduce(h @ q[1], wp2, op=MPI.SUM, root=0)
-            comm.Reduce(h2 @ q_loc, wp, op=MPI.SUM, root=0)
+            send = h @ q_i
+            comm.Reduce(send, wp, op=MPI.SUM, root=0)
             t_matmul += time.perf_counter() - t_h
 
             if rank == 0:
                 alphas = np.append(alphas, [np.conj(q[1].T) @ wp], axis=0)
-                betas = np.append(betas, [np.zeros((n, n), dtype=complex)], axis=0)
-                wp -= q[1] @ alphas[i] + q[0] @ np.conj(betas[i - 1].T)
-
+                betas = np.append(betas, [np.empty((n, n), dtype=complex)], axis=0)
+                if i == 0:
+                    wp -= q[1] @ alphas[i]
+                else:
+                    wp -= q[1] @ alphas[i] + q[0] @ np.conj(betas[i - 1].T)
                 if reort_mode == Reort.FULL:
-                    wp -= Q @ (np.conj(Q.T) @ wp)
+                    t_ortho = time.perf_counter()
+                    n_reort += 1
+                    wp -= Q.calc_projection(wp)
+                    t_reorth += time.perf_counter() - t_ortho
 
                 q[0] = q[1]
                 t_qr_fact = time.perf_counter()
                 q[1], betas[i] = sp.linalg.qr(wp, mode="economic", overwrite_a=True, check_finite=False)
                 t_qr += time.perf_counter() - t_qr_fact
                 b_mask = np.abs(np.diagonal(betas[i])) < np.finfo(float).eps
-                if i % int(np.ceil(krylovSize / n)) // 20 == 0:
+                if i % int(np.ceil(krylovSize / n)) // 10 == 0:
                     t_converged = time.perf_counter()
                     try:
                         delta = converged(alphas, betas)
                     except Exception as e:
                         raise e
 
-                    done = delta < 1e-12
+                    done = delta < 1e-10
                     t_conv += time.perf_counter() - t_converged
-                while np.any(b_mask) and i < krylovSize // n - 1:
-                    q[1] = q[1] @ betas[i]
-                    q[1][:, b_mask] = np.random.rand(N, sum(b_mask)) + 1j * np.random.rand(N, sum(b_mask))
-                    if reort_mode != Reort.NONE:
-                        q[1] -= Q @ (np.conj(Q.T) @ q[1])
-                        W[1, -1] = 1
-                    q[1], betas[i] = sp.linalg.qr(q[1], mode="economic", overwrite_a=True, check_finite=False)
-                    b_mask = np.abs(np.diagonal(betas[i])) < np.finfo(float).eps
+                # while not done and np.any(b_mask) and i < krylovSize // n - 1:
+                #     q[1] = q[1] @ betas[i]
+                #     q[1, :, b_mask] = np.random.rand(N, sum(b_mask)) + 1j *
+                #     np.random.rand(N, sum(b_mask))
+                #     if reort_mode != Reort.NONE:
+                #         q[1, :, b_mask] -= Q.calc_projection(q[1, :, b_mask])
+                #         # q[1] -= Q @ (np.conj(Q.T) @ q[1])
+                #         W[1, -1] = 1
+                #     q[1], betas[i] = sp.linalg.qr(q[1], mode="economic",
+                #     overwrite_a=False, check_finite=True)
+                #     b_mask = np.abs(np.diagonal(betas[i])) <
+                #     np.finfo(float).eps
 
             done = comm.bcast(done, root=0)
             if done:
@@ -152,34 +270,38 @@ def get_block_Lanczos_matrices(
                 ###
                 t_estimate += time.perf_counter() - t_overlap
 
-                if rank == 0 and debug_ort:
-                    overlap_file.write(
-                        f"{np.max(np.abs(W[1, : i + 1]))}  {np.max(np.abs( np.conj(Q.T) @ q[1]))}  {delta}\n"
-                    )
                 reort = np.any(np.abs(W[1, : i + 1]) > np.sqrt(eps))
                 if reort or force_reort is not None:
                     t_ortho = time.perf_counter()
                     n_reort += 1
-                    # clearly a function
-                    mask = np.array([np.any(np.abs(m) > eps ** (3 / 4), axis=1) for m in W[1]])
-                    mask[-1:] = False
-                    if force_reort is None:
-                        Qm = Q[:, mask[:-1].flatten()]
-                    else:
-                        force_reort = np.append(force_reort, [[False] * n], axis=0)
-                        Qm = Q[:, np.logical_or(mask, force_reort)[:-1].flatten()]
                     q[1] = q[1] @ betas[i]
 
                     q[1], betas[i] = sp.linalg.qr(
-                        q[1] - Qm @ (np.conj(Qm.T) @ q[1]), mode="economic", overwrite_a=True, check_finite=False
+                        q[1] - Q.calc_projection(q[1]), mode="economic", overwrite_a=True, check_finite=False
                     )
+                    # clearly a function
+                    mask = np.array([np.any(np.abs(m) > eps ** (3 / 4), axis=1) for m in W[1]])
+                    mask[-1:] = False
+                    # if force_reort is None:
+                    #     Qm = Q[:, mask[:-1].flatten()]
+                    # else:
+                    #     force_reort = np.append(force_reort, [[False] * n], axis=0)
+                    #     Qm = Q[:, np.logical_or(mask, force_reort)[:-1].flatten()]
+                    # q[1] = q[1] @ betas[i]
+
+                    # q[1], betas[i] = sp.linalg.qr(
+                    #     q[1] - Qm @ (np.conj(Qm.T) @ q[1]), mode="economic", overwrite_a=True, check_finite=False
+                    # )
                     b_mask = np.abs(np.diagonal(betas[i])) < np.finfo(float).eps
                     while np.any(b_mask):
                         q[1] = q[1] @ betas[i]
                         q[1][:, b_mask] = np.random.rand(N, sum(b_mask)) + 1j * np.random.rand(N, sum(b_mask))
                         q[1], betas[i] = sp.linalg.qr(
-                            q[1] - Q @ (np.conj(Q.T) @ q[1]), mode="economic", overwrite_a=True, check_finite=False
+                            q[1] - Q.calc_projection(q[1]), mode="economic", overwrite_a=True, check_finite=False
                         )
+                        # q[1], betas[i] = sp.linalg.qr(
+                        #     q[1] - Q @ (np.conj(Q.T) @ q[1]), mode="economic", overwrite_a=True, check_finite=False
+                        # )
                         b_mask = np.abs(np.diagonal(betas[i])) < np.finfo(float).eps
                         W[1, -1] = 1
                         # reort = True
@@ -189,17 +311,10 @@ def get_block_Lanczos_matrices(
 
                     force_reort = mask if reort else None
                     t_reorth += time.perf_counter() - t_ortho
-            if rank == 0 and reort_mode != Reort.NONE:
-                Q = np.append(Q, q[1], axis=1)
+            if rank == 0 and build_basis:
+                Q.add(q[1])
 
-            send_counts = None
-            offsets = None
-            if comm.rank == 0:
-                send_counts = np.empty((comm.size), dtype = int)
-            comm.Gather(np.array([len(h_local_cols)*n], dtype = int), send_counts, root = 0)
-            if comm.rank == 0:
-                offsets = np.array([sum(send_counts[:r]) for r in range(comm.size)], dtype = int)
-            comm.Scatterv([q[1] if rank == 0 else None, send_counts, offsets, MPI.DOUBLE_COMPLEX], q_loc, root = 0)
+            q_i = comm.bcast(q[1] if rank == 0 else None, root=0)
 
         # Distribute Lanczos matrices to all ranks
         alphas = comm.bcast(alphas, root=0)
@@ -219,12 +334,10 @@ def get_block_Lanczos_matrices(
             # q[1], betas[i] = np.linalg.qr(w)
             q[1], betas[i] = sp.linalg.qr(w, mode="economic", overwrite_a=True, check_finite=False)
             # q[1], betas[i] = my_qr(w)
-            if converged(alphas, betas):
+            delta = converged(alphas, betas)
+            if delta < 1e-15:
                 break
 
-    if rank == 0 and debug_ort:
-        overlap_file.write("\n\n")
-        overlap_file.close()
     if verbose:
         print(f"Breaking after iteration {i}, blocksize = {n}")
         print(f"Matrix vector multiplication took {t_matmul:.4f} seconds")
@@ -234,4 +347,4 @@ def get_block_Lanczos_matrices(
         print(f"Reorthogonalized {n_reort} times")
         print(f"Reorthogonalizing took {t_reorth:.4f} seconds")
         print(f"time(get_block_Lanczons_matrices) = {time.perf_counter() - t0:.4f} seconds.")
-    return alphas, betas
+    return alphas, betas, Q.vectors[: len(Q)].T if Q is not None else None

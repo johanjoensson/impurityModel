@@ -42,7 +42,7 @@ def get_Greens_function(
         tOpsIPS,
         psis,
         es,
-        basis.copy(),
+        basis,
         matsubara_mesh,
         omega_mesh,
         delta,
@@ -60,7 +60,7 @@ def get_Greens_function(
         tOpsPS,
         psis,
         es,
-        basis.copy(),
+        basis,
         -matsubara_mesh if matsubara_mesh is not None else None,
         -omega_mesh if omega_mesh is not None else None,
         -delta,
@@ -213,13 +213,13 @@ def calc_Greens_function_with_offdiag(
                     new_local_basis |= res.keys()
 
             new_basis.add_states(new_local_basis)
-            h_mem = new_basis.expand(hOp, dense_cutoff=dense_cutoff)
+            h_mem = new_basis.expand(hOp, dense_cutoff=dense_cutoff, slaterWeightMin=slaterWeightMin, e_conv=1e-10)
 
             gs_matsubara_i, gs_realaxis_i = get_block_Green(
                 n_spin_orbitals=n_spin_orbitals,
                 hOp=hOp,
                 psi_arr=v,
-                basis=new_basis.copy(),
+                basis=new_basis,
                 e=e,
                 iw=iw,
                 w=w,
@@ -248,6 +248,15 @@ def calc_Greens_function_with_offdiag(
 
         t_mems = [{} for _ in tOps]
 
+        new_basis = CIPSI_Basis(
+            initial_basis=[],
+            restrictions=basis.restrictions,
+            num_spin_orbitals=basis.num_spin_orbitals,
+            comm=basis.comm,
+            verbose=verbose,
+            truncation_threshold=basis.truncation_threshold,
+            tau=basis.tau,
+        )
         for i, (psi, e) in enumerate(zip(psis, es)):
             for block in blocks:
                 block_v = []
@@ -276,26 +285,11 @@ def calc_Greens_function_with_offdiag(
                     )
                     new_local_basis |= block_v[-1].keys()
 
-                if basis.size > dense_cutoff:
-                    new_basis = CIPSI_Basis(
-                        initial_basis=list(new_local_basis),
-                        restrictions=basis.restrictions,
-                        num_spin_orbitals=basis.num_spin_orbitals,
-                        comm=basis.comm,
-                        verbose=verbose,
-                        truncation_threshold=basis.truncation_threshold,
-                        tau=basis.tau,
+                if not np.all(new_basis.contains(new_local_basis)):
+                    new_basis.add_states(new_local_basis)
+                    h_mem = new_basis.expand(
+                        hOp, dense_cutoff=dense_cutoff, slaterWeightMin=slaterWeightMin, e_conv=1e-10
                     )
-                else:
-                    new_basis = Basis(
-                        initial_basis=list(new_local_basis),
-                        restrictions=basis.restrictions,
-                        num_spin_orbitals=basis.num_spin_orbitals,
-                        comm=basis.comm,
-                        verbose=verbose,
-                        truncation_threshold=basis.truncation_threshold,
-                    )
-                h_mem = new_basis.expand(hOp, dense_cutoff=dense_cutoff, slaterWeightMin=slaterWeightMin)
                 if verbose:
                     print(f"time(build excited state basis) = {time.perf_counter() - t0}")
                 gs_matsubara_i, gs_realaxis_i = get_block_Green(
@@ -364,8 +358,8 @@ def get_block_Green(
     psi_states = [key for psi in psi_arr for key in psi.keys()]
     if np.any(np.logical_not(basis.contains(psi_states))):
         basis.add_states(psi_states)
-        h_mem = basis.expand(hOp, h_mem, dense_cutoff=dense_cutoff)
-    h = basis.build_sparse_operator(hOp, h_mem)
+        h_mem = basis.expand(hOp, h_mem, dense_cutoff=dense_cutoff, slaterWeightMin=slaterWeightMin, e_conv=1e-10)
+    h = basis.build_sparse_matrix(hOp, h_mem)
 
     if verbose:
         print(f"time(build Hamiltonian operator) = {time.perf_counter() - t0}")
@@ -446,14 +440,14 @@ def get_block_Green(
         )
 
     # Run Lanczos on psi0^T* [wI - j*delta - H]^-1 psi0
-    alphas, betas = get_block_Lanczos_matrices(
+    alphas, betas, _ = get_block_Lanczos_matrices(
         psi0=psi0[:, column_mask],
         h=h,
         converged=converged,
         h_local=h_local,
         verbose=verbose,
         reort_mode=reort,
-        h_local_cols = basis.local_indices,
+        build_basis=False,
     )
 
     t0 = time.perf_counter()

@@ -20,7 +20,7 @@ def binary_search_bigger(a, x):
     Return the index to the leftmost value bigger than x,
     if x is not in the list.
 
-    If x is in the list, return -1.
+    If x is not in the list, return -1.
 
     """
     i = bisect_left(a, x)

@@ -62,18 +62,19 @@ def find_gs(h_op, N0, delta_occ, bath_states, num_spin_orbitals, rank, verbose, 
         )
         if verbose:
             print(f"Before expansion basis contains {basis.size} elements")
-        h_dict = basis.expand(h_op, dense_cutoff=dense_cutoff)
-        h = basis.build_sparse_operator(h_op, h_dict)
+        h_dict = basis.expand(h_op, dense_cutoff=dense_cutoff, e_conv=1e-10, slaterWeightMin=np.finfo(float).eps ** 2)
+        # h = basis.build_PETSc_matrix(h_op, h_dict)
+        h = basis.build_sparse_matrix(h_op, h_dict)
 
         e_trial = finite.eigensystem_new(
             h,
             basis,
             e_max=0,
             k=1,
-            dk=1,
+            dk=10,
             verbose=verbose,
-            eigenValueTol=0,
-            slaterWeightMin=np.finfo(float).eps,
+            eigenValueTol=1e-6,
+            slaterWeightMin=np.finfo(float).eps ** 2,
             return_eigvecs=False,
             dense_cutoff=dense_cutoff,
         )
@@ -108,9 +109,7 @@ def run(cluster, h0, iw, w, delta, tau, verbosity, reort, dense_cutoff):
                    1 - loud, detailed output generated
                    2 - SCREAM, insanely detailed output generated
     """
-    energy_cut = 10
     num_psi_max = sum(2 * (2 * l + 1) for l in cluster.nominal_occ[0])
-    nPrintSlaterWeights = 0
     tolPrintOccupation = 0.5
 
     cluster.sig[:, :, :] = 0
@@ -127,12 +126,11 @@ def run(cluster, h0, iw, w, delta, tau, verbosity, reort, dense_cutoff):
         cluster.delta_occ,
         cluster.bath_states,
         tau,
-        energy_cut,
         num_psi_max,
-        nPrintSlaterWeights,
         tolPrintOccupation,
         verbosity,
         blocks=[cluster.blocks[i] for i in cluster.inequivalent_blocks],
+        # blocks=None,
         rotation=cluster.rot_spherical,
         cluster_label=cluster.label,
         reort=reort,
@@ -166,9 +164,7 @@ def calc_selfenergy(
     delta_occ,
     num_bath_states,
     tau,
-    energy_cut,
     num_psi_max,
-    nPrintSlaterWeights,
     tolPrintOccupation,
     verbosity,
     blocks,
@@ -227,8 +223,13 @@ def calc_selfenergy(
     energy_cut = -tau * np.log(np.finfo(float).eps)
 
     basis.tau = tau
-    h_dict = basis.expand(h, slaterWeightMin=np.finfo(float).eps ** 2, dense_cutoff=dense_cutoff)
-    h_gs = basis.build_sparse_operator(h, h_dict)
+    h_dict = basis.expand(h, slaterWeightMin=np.finfo(float).eps ** 2, dense_cutoff=dense_cutoff, e_conv=1e-10)
+    # h_gs = basis.build_PETSc_matrix(h, h_dict)
+    if basis.size < dense_cutoff:
+        h_gs = basis.build_dense_matrix(h, h_dict)
+    else:
+        # h_gs = basis.build_PETSc_matrix(h, h_dict)
+        h_gs = basis.build_sparse_matrix(h, h_dict)
     es, psis = finite.eigensystem_new(
         h_gs,
         basis,
@@ -243,10 +244,9 @@ def calc_selfenergy(
     if verbosity >= 2:
         finite.printThermalExpValues_new(sum_bath_states, es, psis, tau, energy_cut)
         finite.printExpValues(sum_bath_states, es, psis)
-        # finite.printSlaterDeterminantsAndWeights(psis = psis, nPrintSlaterWeights = nPrintSlaterWeights)
 
     if verbosity >= 1:
-        print("Consider {:d} eigenstates for the spectra \n".format(len(es)), flush=True)
+        print("Consider {:d} eigenstates for the spectra \n".format(len(es)))
         print("Calculate Interacting Green's function...")
 
     gs_matsubara, gs_realaxis = get_Greens_function(

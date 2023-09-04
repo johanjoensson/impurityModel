@@ -230,11 +230,25 @@ def main(
     # Many body basis for the ground state
     if rank == 0:
         print("Create basis...")
-    basis = finite.get_basis(nBaths, nValBaths, dnValBaths, dnConBaths, dnTols, n0imps)
+    # basis = finite.get_basis(nBaths, nValBaths, dnValBaths, dnConBaths, dnTols, n0imps)
+    basis = CIPSI_Basis(
+        H=hOp,
+        valence_baths=nValBaths,
+        conduction_baths={l_val: nBaths[l_val] - nValBaths[l_val] for l_val in nBaths},
+        delta_valence_occ=dnValBaths,
+        delta_conduction_occ=dnConBaths,
+        delta_impurity_occ=dnTols,
+        nominal_impurity_occ=n0imps,
+        truncation_threshold=1e6,
+        verbose=verbose,
+        comm=MPI.COMM_WORLD,
+    )
+    h_dict = basis.expand(hOp, dense_cutoff=1e6)
+    h = basis.build_sparse_matrix(hOp, h_dict)
     if rank == 0:
         print("#basis states = {:d}".format(len(basis)))
     # Diagonalization of restricted active space Hamiltonian
-    es, psis = finite.eigensystem(n_spin_orbitals, hOp, basis, nPsiMax, groundDiagMode="Lanczos")
+    es, psis = finite.eigensystem_new(h, basis, e_max=energy_cut, k=1, dk=10)
     # es, psis = finite.eigensystem(n_spin_orbitals, hOp, basis, nPsiMax, groundDiagMode='full')
 
     if rank == 0:
