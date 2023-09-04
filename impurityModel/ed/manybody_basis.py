@@ -4,6 +4,7 @@ from mpi4py import MPI
 from math import ceil
 from time import perf_counter
 from impurityModel.ed.finite import c, a
+from petsc4py import PETSc
 
 try:
     from collections.abc import Sequence
@@ -759,6 +760,31 @@ class Basis:
         shape = (self.size, self.size)
         return sp.sparse.csr_matrix((values, (rows, columns)), shape=shape, dtype=complex)
 
+    def build_PETSc_matrix(self, op, op_dict=None):
+        """
+        Get the operator as a sparse matrix in the current basis.
+        The sparse matrix is distributed over all ranks.
+        """
+
+        M = PETSc.Mat().create(comm=self.comm)
+        M.setSizes([self.size, self.size])
+
+        expanded_op_dict = self.build_operator_dict(op, op_dict)
+        columns = []
+        rows = []
+        values = []
+        for column in expanded_op_dict:
+            for row in expanded_op_dict[column]:
+                columns.append(column)
+                rows.append(row)
+                values.append(expanded_op_dict[column][row])
+        columns = self.index(columns)
+        rows = self.index(rows)
+        M.setUp()
+        for i, j, val in zip(rows, columns, values):
+            M[i, j] = val
+        M.assemble()
+        return M
 
 class CIPSI_Basis(Basis):
     def __init__(
@@ -905,7 +931,8 @@ class CIPSI_Basis(Basis):
         de0_max = -self.tau * np.log(np.finfo(float).eps)
         while converge_count < 3:
             t0 = perf_counter()
-            H_sparse = self.build_sparse_matrix(H)
+            # H_sparse = self.build_sparse_matrix(H)
+            H_sparse = self.build_PETSc_matrix(H)
             t0 = perf_counter() - t0
             t0 = self.comm.reduce(t0, op=MPI.SUM, root=0)
             if self.verbose:
