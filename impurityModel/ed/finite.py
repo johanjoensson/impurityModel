@@ -2,7 +2,6 @@
 This module contains functions doing the bulk of the calculations.
 """
 
-import sys
 from math import pi, sqrt
 import numpy as np
 from sympy.physics.wigner import gaunt
@@ -17,14 +16,10 @@ from impurityModel.ed import product_state_representation as psr
 from impurityModel.ed import create
 from impurityModel.ed import remove
 from impurityModel.ed.average import k_B, thermal_average, thermal_average_scale_indep
-from impurityModel.ed.hermitian_operator import HermitianOperator
 from impurityModel.ed.hermitian_operator_matmul import NewHermitianOperator
-from impurityModel.ed.lanczos import calculate_thermal_gs
 
 from scipy.sparse.linalg import ArpackNoConvergence, ArpackError, eigsh
-# from primme import eigsh
 from scipy.linalg import qr
-
 
 
 # MPI variables
@@ -97,9 +92,10 @@ def setup_hamiltonian(
 
 def mpi_matmul(h_local, comm):
     def matmat(m):
-        m = m.reshape((m.shape[0], m.shape[1] if len(m.shape) > 1 else 1))
+        if len(m.shape) == 1:
+            m = m.reshape((m.shape[0], 1))
         n_cols = m.shape[1]
-        res = np.empty((h_local.shape[0], n_cols), dtype=h_local.dtype)
+        res = np.empty((h_local.shape[0], n_cols), dtype=np.result_type(h_local.dtype, m.dtype))
         comm.Allreduce(h_local @ m, res, op=MPI.SUM)
         return res
 
@@ -213,16 +209,20 @@ def eigensystem_new(
     mask = es - np.min(es) <= e_max
     t0 = time.perf_counter() - t0
 
-    err_max = np.max(
-        np.abs(np.conj(vecs[:, : sum(mask)].T) @ vecs[:, : sum(mask)] - np.identity(vecs[:, : sum(mask)].shape[1]))
-    )
-    if verbose and err_max > np.sqrt(np.finfo(float).eps):
-        print(f"Warning! Obtained eigenvectors are not very orthogonal!\nMaximum overlap {err_max}")
-        vecs, _ = qr(vecs[:, : sum(mask)], mode='economic', overwrite_a=True, check_finite=False)
-        mask = [True] * vecs.shape[1]
-
     if not return_eigvecs:
         return es[: sum(mask)]
+
+    # the scipy eigsh function does not guarantee that degenerate eigenvalues get orthogonal eigenvectors.
+    # So we do a qr decomposition of all nearly degenerate eigenvectors.
+    e_diff = np.diff(es[: sum(mask)])
+    group_breaks = np.argwhere(np.abs(e_diff) > 1e-10) + 1
+    group_breaks = np.append([0], group_breaks)
+    group_breaks = np.append(group_breaks, [sum(mask)])
+    for i in range(1, len(group_breaks)):
+        start = group_breaks[i - 1]
+        stop = group_breaks[i]
+        vecs[:, start:stop], _ = qr(vecs[:, start:stop], mode="economic", overwrite_a=True, check_finite=False)
+
     t0 = time.perf_counter()
     psis = []
     t0 = time.perf_counter()
@@ -296,7 +296,6 @@ def eigensystem(
         vecs = vecs[:, :nPsiMax]
     elif groundDiagMode == "Lanczos":
         es, vecs = scipy.sparse.linalg.eigsh(h, k=nPsiMax, which="SA", tol=eigenValueTol)
-        # es, vecs = primme.eigsh(h, k=nPsiMax, which="SA", tol=eigenValueTol, lock=lock)
         # Sort the eigenvalues and eigenvectors in ascending order.
         indices = np.argsort(es)
         es = np.array([es[i] for i in indices])
@@ -342,7 +341,7 @@ def printExpValues(nBaths, es, psis, n=None):
     """
     print several expectation values, e.g. E, N, L^2.
     """
-    if n == None:
+    if n is None:
         n = len(es)
     if rank == 0:
         print("E0 = {:7.4f}".format(es[0]))
@@ -382,32 +381,6 @@ def printExpValues(nBaths, es, psis, n=None):
                 )
             )
         print("\n")
-
-
-def printThermalExpValues_new(nBaths, es, psis, tau, ecut):
-    """
-    print several thermal expectation values, e.g. E, N, L^2.
-
-    cutOff - float. Energies more than cutOff*kB*T above the
-            lowest energy is not considered in the average.
-    """
-    e = es - es[0]
-    # Select relevant energies
-    mask = e < ecut
-    e = e[mask]
-    psis = np.array(psis)[mask]
-    # occs = thermal_average(e, np.array([getEgT2gOccupation(nBaths, psi) for psi in psis]), T=T)
-    occs = thermal_average_scale_indep(e, np.array([getEgT2gOccupation(nBaths, psi) for psi in psis]), tau=tau)
-    print("<E-E0> = {:8.7f}".format(thermal_average(e, e, T=T)))
-    print("<N(3d)> = {:8.7f}".format(thermal_average(e, [getTraceDensityMatrix(nBaths, psi) for psi in psis], T=T)))
-    print("<N(egDn)> = {:8.7f}".format(occs[0]))
-    print("<N(egUp)> = {:8.7f}".format(occs[1]))
-    print("<N(t2gDn)> = {:8.7f}".format(occs[2]))
-    print("<N(t2gUp)> = {:8.7f}".format(occs[3]))
-    print("<Lz(3d)> = {:8.7f}".format(thermal_average(e, [getLz3d(nBaths, psi) for psi in psis], T=T)))
-    print("<Sz(3d)> = {:8.7f}".format(thermal_average(e, [getSz3d(nBaths, psi) for psi in psis], T=T)))
-    print("<L^2(3d)> = {:8.7f}".format(thermal_average(e, [getLsqr3d(nBaths, psi) for psi in psis], T=T)))
-    print("<S^2(3d)> = {:8.7f}".format(thermal_average(e, [getSsqr3d(nBaths, psi) for psi in psis], T=T)))
 
 
 def printThermalExpValues_new(nBaths, es, psis, tau, ecut):
@@ -2092,7 +2065,7 @@ def get_hamiltonian_hermitian_operator_columns(N, comm, verbose):
     number_of_elements = (start - N) ** 2 - (stop - N) ** 2
     if verbose:
         print(f"{N=}, {p=}")
-        print(f"New")
+        print("New")
         print(f"|-->max(|N - N_avg|): {np.max(np.abs(number_of_elements - average_number_of_elements))}")
         print(
             f"--->max(|N - N_avg|/N_avg): {np.max(np.abs(number_of_elements - average_number_of_elements))/average_number_of_elements}"

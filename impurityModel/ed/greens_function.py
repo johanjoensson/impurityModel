@@ -1,12 +1,11 @@
 import numpy as np
 import scipy as sp
 import time
-from bisect import bisect_left
 
 from impurityModel.ed import spectra
 from impurityModel.ed import finite
 from impurityModel.ed.lanczos import get_block_Lanczos_matrices
-from impurityModel.ed.manybody_basis import Basis, CIPSI_Basis
+from impurityModel.ed.manybody_basis import CIPSI_Basis
 
 from mpi4py import MPI
 
@@ -335,7 +334,7 @@ def get_block_Green(
     h_mem=None,
     mode="sparse",
     krylovSize=None,
-    slaterWeightMin=1e-20,
+    slaterWeightMin=np.finfo(float).eps ** 2,
     parallelization_mode="H_build",
     verbose=True,
     dense_cutoff=1e3,

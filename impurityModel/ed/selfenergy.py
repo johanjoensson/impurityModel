@@ -1,19 +1,13 @@
-from math import sqrt
 import numpy as np
 from collections import OrderedDict
 from mpi4py import MPI
-import pickle
 import time
 import argparse
-import h5py
 
-import scipy as sp
-
-from impurityModel.ed.get_spectra import get_noninteracting_hamiltonian_operator, read_h0_operator, get_restrictions
-from impurityModel.ed import spectra
+from impurityModel.ed.get_spectra import get_noninteracting_hamiltonian_operator, read_h0_operator
 from impurityModel.ed import finite
 from impurityModel.ed.average import thermal_average_scale_indep
-from impurityModel.ed.manybody_basis import Basis, CIPSI_Basis
+from impurityModel.ed.manybody_basis import CIPSI_Basis
 
 from impurityModel.ed.greens_function import get_Greens_function, save_Greens_function
 
@@ -38,7 +32,6 @@ def matrix_print(matrix, label: str = None):
 def find_gs(h_op, N0, delta_occ, bath_states, num_spin_orbitals, rank, verbose, dense_cutoff):
     delta_imp_occ, delta_val_occ, delta_con_occ = delta_occ
     num_val_baths, num_cond_baths = bath_states
-    sum_bath_states = {l: num_val_baths[l] + num_cond_baths[l] for l in num_val_baths}
     e_gs = np.inf
     basis_gs = None
     h_gs = None
@@ -176,7 +169,6 @@ def calc_selfenergy(
     # MPI variables
     comm = MPI.COMM_WORLD
     rank = comm.rank
-    ranks = comm.size
 
     num_val_baths, num_con_baths = num_bath_states
     sum_bath_states = {l: num_val_baths[l] + num_con_baths[l] for l in num_val_baths}
@@ -208,7 +200,7 @@ def calc_selfenergy(
 
     if verbosity >= 1:
         print("Nominal occupation ({l: n0})")
-        print(f"N0, valence, conduction")
+        print("N0, valence, conduction")
         print(f"{n0_imp}, {n0_val}, {n0_con}")
     if restrictions is not None and verbosity >= 2:
         print("Restrictions on occupation")
@@ -514,7 +506,6 @@ def get_selfenergy(
     # MPI variables
     comm = MPI.COMM_WORLD
     rank = comm.rank
-    ranks = comm.size
 
     # omega_mesh = np.linspace(-25, 25, 2000)
     omega_mesh = np.linspace(-1.83, 1.83, 2000)
@@ -569,7 +560,7 @@ def get_selfenergy(
         cluster_label=clustername,
     )
     if rank == 0:
-        print(f"Writing sig_static to files")
+        print("Writing sig_static to files")
         np.savetxt(f"real-sig_static-{clustername}.dat", np.real(sigma_static))
         np.savetxt(f"imag-sig_static-{clustername}.dat", np.imag(sigma_static))
     if rank == 0:

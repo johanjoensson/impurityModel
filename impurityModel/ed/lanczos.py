@@ -65,7 +65,7 @@ def build_banded_matrix(alphas, betas):
     bands[0, :] = np.diagonal(alphas, offset=0, axis1=1, axis2=2).flatten()
     for i in range(1, p + 1):
         for j in range(k):
-            bands[i, j * p : (j + 1) * p] = np.append(
+            bands[i, j * p: (j + 1) * p] = np.append(
                 np.diagonal(alphas[j], offset=-i),
                 [np.diagonal(betas[j], offset=p - i)],
             ).flatten()
