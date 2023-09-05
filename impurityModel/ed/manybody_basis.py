@@ -8,7 +8,7 @@ from petsc4py import PETSc
 
 try:
     from collections.abc import Sequence
-except:
+except ModuleNotFoundError:
     from collections import Sequence
 
 from impurityModel.ed import product_state_representation as psr
@@ -16,12 +16,8 @@ import itertools
 from impurityModel.ed.finite import (
     c2i,
     applyOp,
-    get_job_tasks,
     eigensystem_new,
     add,
-    getTraceDensityMatrix,
-    getEgT2gOccupation,
-    thermal_average_scale_indep,
 )
 
 
@@ -104,7 +100,7 @@ class Basis:
                         valence_occupation = valence_baths[l] - delta_valence
                         conduction_occupation = delta_conduction
                         if verbose:
-                            print(f"Partition occupations")
+                            print("Partition occupations")
                             print(f"Impurity occupation:   {impurity_occupation:d}")
                             print(f"Valence onccupation:   {valence_occupation:d}")
                             print(f"Conduction occupation: {conduction_occupation:d}")
@@ -243,7 +239,7 @@ class Basis:
             seed_sequence = comm.scatter(seed_sequences, root=0)
             self.rng = np.random.default_rng(seed_sequence)
         else:
-            rng = np.random.default_rng()
+            self.rng = np.random.default_rng()
         self.tau = tau
 
         num_states = comm.allreduce(len(initial_basis), op=MPI.SUM)
@@ -258,13 +254,13 @@ class Basis:
                 for send_rank in range(self.comm.size):
                     if send_rank == receive_rank:
                         destination_buf[
-                            recv_offsets[send_rank] : recv_offsets[send_rank] + recv_counts[send_rank]
+                            recv_offsets[send_rank]: recv_offsets[send_rank] + recv_counts[send_rank]
                         ] = source_buf[
-                            send_offsets[receive_rank] : send_offsets[receive_rank] + send_counts[receive_rank]
+                            send_offsets[receive_rank]: send_offsets[receive_rank] + send_counts[receive_rank]
                         ]
                         continue
                     recv_reqs[send_rank] = self.comm.Irecv(
-                        destination_buf[recv_offsets[send_rank] : recv_offsets[send_rank] + recv_counts[send_rank]],
+                        destination_buf[recv_offsets[send_rank]: recv_offsets[send_rank] + recv_counts[send_rank]],
                         source=send_rank,
                         tag=send_rank,
                     )
@@ -351,7 +347,7 @@ class Basis:
                 if self.comm.rank == 0:
                     all_states = sorted(
                         set(
-                            all_samples_bytes[i * self.n_bytes : (i + 1) * self.n_bytes].tobytes()
+                            all_samples_bytes[i * self.n_bytes: (i + 1) * self.n_bytes].tobytes()
                             for i in range(sum(samples_count))
                         )
                     )
@@ -511,7 +507,7 @@ class Basis:
         results = np.empty((sum(recv_counts) * self.n_bytes), dtype=np.byte)
         for i, query in enumerate(queries):
             if query >= self.offset and query < self.offset + len(self.local_basis):
-                results[i * self.n_bytes : (i + 1) * self.n_bytes] = np.frombuffer(
+                results[i * self.n_bytes: (i + 1) * self.n_bytes] = np.frombuffer(
                     self.local_basis[query - self.offset], dtype="B"
                 )
         result = np.zeros((len(l) * self.n_bytes), dtype=np.byte)
@@ -524,9 +520,9 @@ class Basis:
         result_new = np.zeros((len(l)), dtype=self.np_dtype)
         for i in range(len(l)):
             if len(send_order) > 0:
-                result_new[send_order[i]] = result[i * self.n_bytes : (i + 1) * self.n_bytes]
+                result_new[send_order[i]] = result[i * self.n_bytes: (i + 1) * self.n_bytes]
             else:
-                result_new[0] = result[0 : self.n_bytes]
+                result_new[0] = result[0: self.n_bytes]
         for state in result_new:
             assert len(state) == self.n_bytes
 
@@ -586,7 +582,7 @@ class Basis:
         results = np.empty((sum(recv_counts)), dtype=int)
         results[:] = self.size
         for i in range(sum(recv_counts)):
-            query = queries[i * self.n_bytes : (i + 1) * self.n_bytes].tobytes()
+            query = queries[i * self.n_bytes: (i + 1) * self.n_bytes].tobytes()
             if query in self._index_dict:
                 results[i] = self._index_dict[query]
         result = np.empty((len(s)), dtype=int)
@@ -680,7 +676,7 @@ class Basis:
         for state in self.local_basis:
             if state not in op_dict:
                 try:
-                    res = applyOp(
+                    _ = applyOp(
                         self.num_spin_orbitals,
                         op,
                         {state: 1},
@@ -841,7 +837,7 @@ class CIPSI_Basis(Basis):
 
         if self.size > self.truncation_threshold and H is not None:
             if self.verbose:
-                print(f"Truncating basis!")
+                print("Truncating basis!")
             H_sparse = self.build_sparse_matrix(H)
             e_ref, psi_ref = eigensystem_new(
                 H_sparse,
@@ -926,7 +922,7 @@ class CIPSI_Basis(Basis):
         psi_ref = None
         e_cipsi_prev = np.inf
         e_cipsi = 0
-        de_2_min = 1e-12
+        de_2_min = 1e-5
         converge_count = 0
         de0_max = -self.tau * np.log(np.finfo(float).eps)
         while converge_count < 3:
@@ -953,8 +949,8 @@ class CIPSI_Basis(Basis):
                 H_sparse,
                 basis=self,
                 e_max=de0_max,
-                k=1 if psi_ref is None else max(1, len(psi_ref)),
-                dk=15,
+                k=1,  # if psi_ref is None else max(1, len(psi_ref)),
+                dk=0,
                 v0=v0,
                 eigenValueTol=de_2_min if de_2_min > 1e-12 else 0,
                 slaterWeightMin=slaterWeightMin,
@@ -1034,7 +1030,6 @@ class CIPSI_Basis(Basis):
             t0 = perf_counter()
             de_2 = self._calc_de_2(Dj_basis.local_basis, H, H_dict, Hpsi_ref, e_ref)
             de_2_max_arr = np.empty((1,))
-            de_2_min_arr = np.empty((1,))
             if len(de_2) == 0:
                 de_2 = np.array([0], dtype=float)
             self.comm.Allreduce(np.array([np.max(np.abs(de_2))]), de_2_max_arr, op=MPI.SUM)
@@ -1069,7 +1064,6 @@ class CIPSI_Basis(Basis):
             e_pt2 = e_pt2[0]
 
             de_cipsi = abs(e_cipsi - (e_ref + e_pt2))
-            e_cipsi_prev = e_cipsi
             e_cipsi = e_ref + e_pt2
             if de_cipsi <= e_conv:
                 converge_count += 1
