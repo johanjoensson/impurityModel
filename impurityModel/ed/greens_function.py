@@ -187,7 +187,7 @@ def calc_Greens_function_with_offdiag(
                 comm=basis.comm,
                 verbose=verbose,
                 truncation_threshold=basis.truncation_threshold,
-                tau=basis.tau,
+                tau=0,  #basis.tau,
             )
             for tOp in tOps:
                 v.append(
@@ -247,8 +247,21 @@ def calc_Greens_function_with_offdiag(
 
         t_mems = [{} for _ in tOps]
 
+        new_local_basis = set()
+        for block in blocks:
+            for i_tOp, tOp in [(orb, tOps[orb]) for orb in block]:
+                for s in basis.local_basis:
+                    res = finite.applyOp(
+                        n_spin_orbitals,
+                        tOps[i_tOp],
+                        {s: 1},
+                        slaterWeightMin=slaterWeightMin,
+                        restrictions=basis.restrictions,
+                        opResult=t_mems[i_tOp],
+                    )
+                    new_local_basis |= res.keys()
         new_basis = CIPSI_Basis(
-            initial_basis=[],
+            initial_basis=new_local_basis,
             restrictions=basis.restrictions,
             num_spin_orbitals=basis.num_spin_orbitals,
             comm=basis.comm,
@@ -256,39 +269,41 @@ def calc_Greens_function_with_offdiag(
             truncation_threshold=basis.truncation_threshold,
             tau=basis.tau,
         )
+        h_mem = new_basis.expand(
+            hOp, dense_cutoff=dense_cutoff, slaterWeightMin=slaterWeightMin, e_conv=1e-10
+        )
         for i, (psi, e) in enumerate(zip(psis, es)):
             for block in blocks:
                 block_v = []
                 new_local_basis = set()
                 t0 = time.perf_counter()
                 for i_tOp, tOp in [(orb, tOps[orb]) for orb in block]:
-                    for s in basis.local_basis:
-                        res = finite.applyOp(
-                            n_spin_orbitals,
-                            tOps[i_tOp],
-                            {s: 1},
-                            slaterWeightMin=slaterWeightMin,
-                            restrictions=basis.restrictions,
-                            opResult=t_mems[i_tOp],
-                        )
-                        new_local_basis |= res.keys()
-                    block_v.append(
-                        finite.applyOp(
+                    v = finite.applyOp(
                             n_spin_orbitals,
                             tOp,
-                            psi,
+                            {state: psi[state] for state in psi if state in basis.local_basis},
                             slaterWeightMin=slaterWeightMin,
                             restrictions=basis.restrictions,
                             opResult=t_mems[i_tOp],
-                        )
-                    )
-                    new_local_basis |= block_v[-1].keys()
+                            )
+                    # new_local_basis |= v.keys() - set(basis.local_basis)
+                    vs = comm.allgather(v)
+                    v = {}
+                    for v_i in vs:
+                        for state in v_i:
+                            if state in v:
+                                v[state] += v_i[state]
+                            else:
+                                v[state] = v_i[state]
+                    block_v.append(v)
 
-                if not np.all(new_basis.contains(new_local_basis)):
-                    new_basis.add_states(new_local_basis)
-                    h_mem = new_basis.expand(
-                        hOp, dense_cutoff=dense_cutoff, slaterWeightMin=slaterWeightMin, e_conv=1e-10
-                    )
+                # if not np.all(new_basis.contains(new_local_basis)):
+                # old_basis_size = new_basis.size
+                # new_basis.add_states(new_local_basis)
+                # if new_basis.size != old_basis_size:
+                #     h_mem = new_basis.expand(
+                #         hOp, dense_cutoff=dense_cutoff, slaterWeightMin=slaterWeightMin, e_conv=1e-8
+                #     )
                 if verbose:
                     print(f"time(build excited state basis) = {time.perf_counter() - t0}")
                 gs_matsubara_i, gs_realaxis_i = get_block_Green(
@@ -357,7 +372,7 @@ def get_block_Green(
     psi_states = [key for psi in psi_arr for key in psi.keys()]
     if np.any(np.logical_not(basis.contains(psi_states))):
         basis.add_states(psi_states)
-        h_mem = basis.expand(hOp, h_mem, dense_cutoff=dense_cutoff, slaterWeightMin=slaterWeightMin, e_conv=1e-10)
+        h_mem = basis.expand(hOp, h_mem, dense_cutoff=dense_cutoff, slaterWeightMin=slaterWeightMin, e_conv=1e-8)
     h = basis.build_sparse_matrix(hOp, h_mem)
 
     if verbose:

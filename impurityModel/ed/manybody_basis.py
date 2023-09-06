@@ -675,17 +675,14 @@ class Basis:
 
         for state in self.local_basis:
             if state not in op_dict:
-                try:
-                    _ = applyOp(
-                        self.num_spin_orbitals,
-                        op,
-                        {state: 1},
-                        restrictions=self.restrictions,
-                        slaterWeightMin=slaterWeightMin,
-                        opResult=op_dict,
-                    )
-                except Exception as e:
-                    raise e
+                _ = applyOp(
+                    self.num_spin_orbitals,
+                    op,
+                    {state: 1},
+                    restrictions=self.restrictions,
+                    slaterWeightMin=slaterWeightMin,
+                    opResult=op_dict,
+                )
 
         all_row_states = [state for column in op_dict for state in op_dict[column]]
         # row_indices = np.array(self._index_sequence(all_row_states), dtype=int)
@@ -891,9 +888,9 @@ class CIPSI_Basis(Basis):
             # <Dj|H|Dj>
             e_state[j] = np.real(HDj[Dj] if Dj in HDj else 0)
         de = e_ref - e_state
-        inf_mask = np.abs(de) < 1e-15
-        overlap[inf_mask] = 1e15
-        de[inf_mask] = 1
+        #  inf_mask = np.abs(de) < 1e-15
+        #  overlap[inf_mask] = 1e15
+        #  de[inf_mask] = 1
 
         return np.abs(overlap) ** 2 / de
 
@@ -913,19 +910,21 @@ class CIPSI_Basis(Basis):
                 up_to_dn = c(self.num_spin_orbitals, dn_state, a(self.num_spin_orbitals, up_state, {det: 1}))
                 spin_flipped |= set(dn_to_up.keys()) | set(up_to_dn.keys())
             determinants |= spin_flipped
-        return list(determinants)
+        return set(determinants)
 
     def expand(self, H, H_dict={}, e_conv=np.finfo(float).eps, dense_cutoff=1e3, slaterWeightMin=1e-20):
         """
         Use the CIPSI method to expand the basis. Keep adding Slater determinants until the CIPSI energy is converged.
         """
         psi_ref = None
-        e_cipsi_prev = np.inf
-        e_cipsi = 0
-        de_2_min = 1e-5
+        e_0_prev = np.inf
+        e_0 = 0
+        de_2_min = 1e-6
+        # de_2_min = e_conv / 10
         converge_count = 0
-        de0_max = -self.tau * np.log(np.finfo(float).eps)
-        while converge_count < 3:
+        de0_max = -self.tau * np.log(1e-4)
+        # de0_max = -self.tau * np.log(np.finfo(float).eps)
+        while converge_count < 1:
             t0 = perf_counter()
             # H_sparse = self.build_sparse_matrix(H)
             H_sparse = self.build_PETSc_matrix(H)
@@ -949,8 +948,8 @@ class CIPSI_Basis(Basis):
                 H_sparse,
                 basis=self,
                 e_max=de0_max,
-                k=1,  # if psi_ref is None else max(1, len(psi_ref)),
-                dk=0,
+                k=1 if psi_ref is None else max(1, len(psi_ref)),
+                dk=10,
                 v0=v0,
                 eigenValueTol=de_2_min if de_2_min > 1e-12 else 0,
                 slaterWeightMin=slaterWeightMin,
@@ -959,120 +958,127 @@ class CIPSI_Basis(Basis):
                 distribute_eigenvectors=True,
                 force_orth=False,
             )
+            e_0 = np.min(e_ref)
             t0 = perf_counter() - t0
             t0 = self.comm.reduce(t0, op=MPI.SUM, root=0)
             if self.verbose:
                 print(f"--->Time to get psi_ref: {t0/self.comm.size:.3f} seconds")
+                print("--->Loop over eigenstates")
 
+            new_Dj = set()
+            de_2_corr = {}
+            for e_i, psi_i in zip(e_ref, psi_ref):
+                t0_loop = perf_counter()
+                Hpsi_i = applyOp(
+                    self.num_spin_orbitals,
+                    H,
+                    psi_i,
+                    restrictions=self.restrictions,
+                    slaterWeightMin=slaterWeightMin,
+                    opResult=H_dict,
+                )
+                t0 = perf_counter() - t0_loop
+                t0 = self.comm.reduce(t0, op=MPI.SUM, root=0)
+                if self.verbose:
+                    print(f"----->Time to calculate Hpsi_i: {t0/self.comm.size:.3f} seconds")
+
+                t0 = perf_counter()
+                coupled_Dj = list(Hpsi_i.keys())
+                basis_mask = np.logical_not(self.contains(coupled_Dj))
+
+                Dj_basis = Basis(
+                    initial_basis=[Dj for j, Dj in enumerate(coupled_Dj) if basis_mask[j]],
+                    num_spin_orbitals=self.num_spin_orbitals,
+                    restrictions=self.restrictions,
+                    comm=self.comm,
+                )
+                t0 = perf_counter() - t0
+                t0 = self.comm.reduce(t0, op=MPI.SUM, root=0)
+                if self.verbose:
+                    print(f"----->Time to setup distributed Djs: {t0/self.comm.size:.3f} seconds")
+
+                t0 = perf_counter()
+                send_list = [[] for _ in range(self.comm.size)]
+                for r in range(self.comm.size):
+                    if Dj_basis.state_bounds[r][0] is None:
+                        continue
+                    send_list[r] = {
+                        state: val
+                        for state, val in Hpsi_i.items()
+                        if state >= Dj_basis.state_bounds[r][0] and state <= Dj_basis.state_bounds[r][1]
+                    }
+                received_Hpsi_i = self.comm.alltoall(send_list)
+                Hpsi_i = {}
+                for received_dict in received_Hpsi_i:
+                    for key in received_dict:
+                        if key in Hpsi_i:
+                            Hpsi_i[key] += received_dict[key]
+                        else:
+                            Hpsi_i[key] = received_dict[key]
+                t0 = perf_counter() - t0
+                t0 = self.comm.reduce(t0, op=MPI.SUM, root=0)
+                if self.verbose:
+                    print(f"----->Time to distribute H|psi_i>: {t0/self.comm.size:.3f} seconds")
+
+                t0 = perf_counter()
+                de_2 = self._calc_de_2(Dj_basis.local_basis, H, H_dict, Hpsi_i, e_i)
+
+                de_2_mask = np.abs(de_2) >= de_2_min
+
+                t0 = perf_counter() - t0
+                t0 = self.comm.reduce(t0, op=MPI.SUM, root=0)
+                if self.verbose:
+                    print(f"----->Time to calculate de_2: {t0/self.comm.size:.3f} seconds")
+
+                t0 = perf_counter()
+                Dji = {Dj_basis.local_basis[i] for i, mask in enumerate(de_2_mask) if mask}
+                de_2_corr.update({Dj_basis.local_basis[i]: de_2[i] for i, mask in enumerate(de_2_mask) if mask})
+                # new_Dj = {Dj_basis.local_basis[i] for i, mask in enumerate(de_2_mask) if mask}
+                Dji = self._generate_spin_flipped_determinants(Dji)
+                t0 = perf_counter() - t0
+                t0 = self.comm.reduce(t0, op=MPI.SUM, root=0)
+                if self.verbose:
+                    print(f"----->Time to generate spin flipped determinants: {t0/self.comm.size:.3f} seconds")
+                new_Dj |= Dji - set(self.local_basis)
+
+                # t0 = perf_counter()
+                # self.add_states(new_Dj)
+
+                # t0 = perf_counter() - t0
+                # t0 = self.comm.reduce(t0, op=MPI.SUM, root=0)
+                # if self.verbose:
+                #     print(f"----->Time to add new states: {t0/self.comm.size:.3f} seconds")
+
+                t0 = perf_counter() - t0_loop
+                t0 = self.comm.reduce(t0, op=MPI.SUM, root=0)
+                if self.verbose:
+                    print(f"--->One loop took a total of: {t0/self.comm.size:.3f} seconds", flush=True)
+
+            new_dj_sum = np.empty((1,), dtype=int)
+            self.comm.Allreduce(np.array([len(new_Dj)]), new_dj_sum, op=MPI.SUM)
             t0 = perf_counter()
-            weights = np.exp(-(e_ref - e_ref[0]) / max(self.tau, 1e-15))
-            weights /= sum(weights)
-            psi_sum = {}
-            for i, psi in enumerate(psi_ref):
-                psi_sum = add(psi_sum, psi, weights[i])
-            e_ref = np.sum(weights * e_ref)
+            self.add_states(new_Dj)
             t0 = perf_counter() - t0
             t0 = self.comm.reduce(t0, op=MPI.SUM, root=0)
             if self.verbose:
-                print(f"--->Time to average psi_ref: {t0/self.comm.size:.3f} seconds")
-            t0 = perf_counter()
-            Hpsi_ref = applyOp(
-                self.num_spin_orbitals,
-                H,
-                psi_sum,
-                restrictions=self.restrictions,
-                slaterWeightMin=slaterWeightMin,
-                opResult=H_dict,
-            )
-            t0 = perf_counter() - t0
-            t0 = self.comm.reduce(t0, op=MPI.SUM, root=0)
-            if self.verbose:
-                print(f"--->Time to calculate Hpsi_ref: {t0/self.comm.size:.3f} seconds")
-
-            t0 = perf_counter()
-            coupled_Dj = list(Hpsi_ref.keys())
-            basis_mask = np.logical_not(self.contains(coupled_Dj))
-
-            Dj_basis = Basis(
-                initial_basis=[Dj for j, Dj in enumerate(coupled_Dj) if basis_mask[j]],
-                num_spin_orbitals=self.num_spin_orbitals,
-                restrictions=self.restrictions,
-                comm=self.comm,
-            )
-            t0 = perf_counter() - t0
-            t0 = self.comm.reduce(t0, op=MPI.SUM, root=0)
-            if self.verbose:
-                print(f"--->Time to setup distributed Djs: {t0/self.comm.size:.3f} seconds")
-
-            t0 = perf_counter()
-            send_list = [[] for _ in range(self.comm.size)]
-            for r in range(self.comm.size):
-                if Dj_basis.state_bounds[r][0] is None:
-                    continue
-                send_list[r] = {
-                    state: val
-                    for state, val in Hpsi_ref.items()
-                    if state >= Dj_basis.state_bounds[r][0] and state <= Dj_basis.state_bounds[r][1]
-                }
-            received_Hpsi_ref = self.comm.alltoall(send_list)
-            Hpsi_ref = {}
-            for received_dict in received_Hpsi_ref:
-                for key in received_dict:
-                    if key in Hpsi_ref:
-                        Hpsi_ref[key] += received_dict[key]
-                    else:
-                        Hpsi_ref[key] = received_dict[key]
-            t0 = perf_counter() - t0
-            t0 = self.comm.reduce(t0, op=MPI.SUM, root=0)
-            if self.verbose:
-                print(f"--->Time to distribute H|psi_ref>: {t0/self.comm.size:.3f} seconds")
-
-            t0 = perf_counter()
-            de_2 = self._calc_de_2(Dj_basis.local_basis, H, H_dict, Hpsi_ref, e_ref)
-            de_2_max_arr = np.empty((1,))
-            if len(de_2) == 0:
-                de_2 = np.array([0], dtype=float)
-            self.comm.Allreduce(np.array([np.max(np.abs(de_2))]), de_2_max_arr, op=MPI.SUM)
-            de_2_min = min(de_2_min, max(de_2_max_arr[0] / (self.comm.size * 10), np.finfo(float).eps ** 2))
-            # self.comm.Allreduce(np.array([np.max(np.abs(de_2))]), de_2_max_arr, op=MPI.MAX)
-            # de_2_min = min(de_2_min, max(de_2_max_arr[0] ** 1.5, np.finfo(float).eps ** 2))
-
-            de_2_mask = np.abs(de_2) >= de_2_min
-            de_2_mask_sum = np.empty((1,), dtype=int)
-            self.comm.Allreduce(np.array([sum(de_2_mask)]), de_2_mask_sum, op=MPI.SUM)
-
-            t0 = perf_counter() - t0
-            t0 = self.comm.reduce(t0, op=MPI.SUM, root=0)
-            if self.verbose:
-                print(f"--->Time to calculate de_2: {t0/self.comm.size:.3f} seconds")
-            if de_2_mask_sum[0] == 0:
+                print(f"----->Time to add new states: {t0/self.comm.size:.3f} seconds")
+            if new_dj_sum[0] == 0:
                 break
 
-            t0 = perf_counter()
-            old_size = self.size
-            new_Dj = [Dj_basis.local_basis[i] for i, mask in enumerate(de_2_mask) if mask]
-            new_Dj = self._generate_spin_flipped_determinants(new_Dj)
-
-            self.add_states(new_Dj)
-
-            t0 = perf_counter() - t0
-            t0 = self.comm.reduce(t0, op=MPI.SUM, root=0)
-            if self.verbose:
-                print(f"--->Time to add new Djs: {t0/self.comm.size:.3f} seconds")
-            e_pt2 = np.empty((1,))
-            self.comm.Allreduce(np.array([np.sum(de_2[de_2_mask])]), e_pt2, op=MPI.SUM)
-            e_pt2 = e_pt2[0]
-
-            de_cipsi = abs(e_cipsi - (e_ref + e_pt2))
-            e_cipsi = e_ref + e_pt2
-            if de_cipsi <= e_conv:
-                converge_count += 1
+            if abs(e_0 - e_0_prev) <= e_conv:
+                pass
+                # converge_count += 1
             else:
                 converge_count = 0
+            de_2_corrs = self.comm.gather(de_2_corr, root=0)
             if self.verbose:
+                de_2_corr = {}
+                for de_2s in de_2_corrs:
+                    de_2_corr.update(de_2s)
                 print(
-                    f"-------> N = {self.size: 7,d}, log(de_2_min) = {np.log10(de_2_min): 5.1f}, log(|e_pt2|) = {np.log10(abs(e_pt2)): 5.1f}, log(|de_cipsi|) = {np.log10(de_cipsi): 5.1f}",
+                    f"-------> N = {self.size: 7,d}, log(de_2_min) = {np.log10(de_2_min): 5.1f}, log(|de_2|) = {np.log10(np.abs(np.sum(list(de_2_corr.values()))))}, log(|de_0|) = {np.log10(abs(e_0 - e_0_prev))}, {converge_count=}",
                 )
+            e_0_prev = e_0
 
         if self.verbose:
             print(f"After expansion, the basis contains {self.size} elements.")
