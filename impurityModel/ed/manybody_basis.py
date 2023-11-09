@@ -17,9 +17,10 @@ from impurityModel.ed import finite
 import itertools
 from impurityModel.ed.finite import (
     c2i,
-    applyOp,
     eigensystem_new,
-    add,
+)
+from impurityModel.ed.ac import (
+    applyOp as applyOp,
 )
 
 
