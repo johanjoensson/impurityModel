@@ -135,13 +135,12 @@ def ubitarray(i, state):
         Amplitude. 0, -1 or 1.
 
     """
-    if state[i]:
-        # Modify the product state by removing an electron
-        state[i] = False
-        # Amplitude
-        return 1 if state[:i].count() % 2 == 0 else -1
-    else:
+    if not state[i]:
         return 0
+    # Modify the product state by removing an electron
+    state[i] = False
+    # Amplitude
+    return 1 if state[:i].count() % 2 == 0 else -1
 
 
 def ubytes(n_spin_orbitals, i, state):
