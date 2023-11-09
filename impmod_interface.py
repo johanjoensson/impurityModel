@@ -263,8 +263,8 @@ def run_impmod_ed(
     if rank == 0:
         sys.stdout = open(f"impurityModel-{label.strip()}{'-dc' if rspt_dc_flag == 1 else ''}.out", "w")
     else:
-        # sys.stdout = open(f"impurityModel-{label.strip()}-{rank}.out", "w")
-        sys.stdout = open(devnull, "w")
+        sys.stdout = open(f"impurityModel-{label.strip()}{'-dc' if rspt_dc_flag == 1 else ''}-{rank}.out", "w")
+        # sys.stdout = open(devnull, "w")
 
     nominal_occ, delta_occ, bath_states_per_orbital, reort, dense_cutoff, blocked = parse_solver_line(solver_line)
     nominal_occ = ({l: nominal_occ[0]}, {l: nominal_occ[1]}, {l: nominal_occ[2]})
