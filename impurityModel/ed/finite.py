@@ -730,10 +730,11 @@ def addToFirst(psi1, psi2, mul=1):
 
     """
     for s, a in psi2.items():
-        if s in psi1:
-            psi1[s] += a * mul
-        else:
-            psi1[s] = a * mul
+        psi1[s] = a * mul + psi1.get(s, 0)
+        # if s in psi1:
+        #     psi1[s] += a * mul
+        # else:
+        #     psi1[s] = a * mul
 
 
 def a(n_spin_orbitals, i, psi):
@@ -788,6 +789,10 @@ def c(n_spin_orbitals, i, psi):
         if sign != 0:
             ret[state_new] = amp * sign
     return ret
+
+
+def identity(n_spin_orbitals, i, psi):
+    return psi
 
 
 def gauntC(k, l, m, lp, mp, prec=16):
@@ -966,6 +971,21 @@ def addOps(ops):
                 else:
                     opSum[sOp] = value
     return opSum
+
+
+def subtractOps(A, B):
+    """
+    Return the operator A - B
+    """
+    opDiff = A.copy()
+    for sOp, value in B.items():
+        if np.abs(value) > 0:
+            opDiff[sOp] = opDiff.get(sOp, 0) - value
+            # if sOp in opDiff:
+            #     opDiff[sOp] -= value
+            # else:
+            #     opDiff[sOp] = -value
+    return opDiff
 
 
 def get2p3dSlaterCondonUop(Fdd=(9, 0, 8, 0, 6), Fpp=(20, 0, 8), Fpd=(10, 0, 8), Gpd=(0, 3, 0, 2)):
@@ -1380,10 +1400,11 @@ def getDensityMatrixCubic(nBaths, psi):
                                 tmp = np.conj(u[m, i]) * nSph[eSph] * u[k, j]
                                 if tmp != 0:
                                     eCub = ((si, i), (sj, j))
-                                    if eCub in nCub:
-                                        nCub[eCub] += tmp
-                                    else:
-                                        nCub[eCub] = tmp
+                                    nCub[eCub] = tmp + nCub.get(eCub, 0)
+                                    # if eCub in nCub:
+                                    #     nCub[eCub] += tmp
+                                    # else:
+                                    #     nCub[eCub] = tmp
     return nCub
 
 
@@ -1654,7 +1675,8 @@ def applyOp(n_spin_orbitals, op, psi, slaterWeightMin=0, restrictions=None, opRe
     operator op acted on the product states in psi.
 
     Parameters
-    ----------
+:
+----------
     n_spin_orbitals : int
         Total number of spin-orbitals in the system.
     op : dict
@@ -1716,6 +1738,8 @@ def applyOp(n_spin_orbitals, op, psi, slaterWeightMin=0, restrictions=None, opRe
                         sign = remove.ubitarray(i, state_new)
                     elif action == "c":
                         sign = create.ubitarray(i, state_new)
+                    elif action == "i":
+                        sign = 1
                     if sign == 0:
                         break
                     signTot *= sign
@@ -1750,15 +1774,18 @@ def applyOp(n_spin_orbitals, op, psi, slaterWeightMin=0, restrictions=None, opRe
                         sign = remove.ubitarray(i, state_new)
                     elif action == "c":
                         sign = create.ubitarray(i, state_new)
+                    elif action == "i":
+                        sign = 1
                     if sign == 0:
                         break
                     signTot *= sign
                 else:
                     stateB = psr.bitarray2bytes(state_new)
-                    if stateB in psiNew:
-                        psiNew[stateB] += amp * h * signTot
-                    else:
-                        psiNew[stateB] = amp * h * signTot
+                    psiNew[stateB] = amp * h *signTot + psiNew.get(stateB, 0)
+                    # if stateB in psiNew:
+                    #     psiNew[stateB] += amp * h * signTot
+                    # else:
+                    #     psiNew[stateB] = amp * h * signTot
     elif opResult is not None and restrictions is not None:
         # Loop over product states in psi.
         for state, amp in psi.items():
@@ -1780,6 +1807,8 @@ def applyOp(n_spin_orbitals, op, psi, slaterWeightMin=0, restrictions=None, opRe
                             sign = remove.ubitarray(i, state_new)
                         elif action == "c":
                             sign = create.ubitarray(i, state_new)
+                        elif action == "i":
+                            sign = 1
                         if sign == 0:
                             break
                         signTot *= sign
@@ -1788,10 +1817,11 @@ def applyOp(n_spin_orbitals, op, psi, slaterWeightMin=0, restrictions=None, opRe
                         if stateB in psiNew:
                             # Occupations ok, so add contributions
                             psiNew[stateB] += amp * h * signTot
-                            if stateB in opResult[state]:
-                                opResult[state][stateB] += h * signTot
-                            else:
-                                opResult[state][stateB] = h * signTot
+                            opResult[state][stateB] = h * signTot + opResult[state].get(stateB, 0)
+                            # if stateB in opResult[state]:
+                            #     opResult[state][stateB] += h * signTot
+                            # else:
+                            #     opResult[state][stateB] = h * signTot
                         else:
                             # Convert product state to the tuple representation.
                             stateB_tuple = psr.bitarray2tuple(state_new)
@@ -1832,19 +1862,23 @@ def applyOp(n_spin_orbitals, op, psi, slaterWeightMin=0, restrictions=None, opRe
                             sign = remove.ubitarray(i, state_new)
                         elif action == "c":
                             sign = create.ubitarray(i, state_new)
+                        elif action == "i":
+                            sign = 1
                         if sign == 0:
                             break
                         signTot *= sign
                     else:
                         stateB = psr.bitarray2bytes(state_new)
-                        if stateB in opResult[state]:
-                            opResult[state][stateB] += h * signTot
-                        else:
-                            opResult[state][stateB] = h * signTot
-                        if stateB in psiNew:
-                            psiNew[stateB] += amp * h * signTot
-                        else:
-                            psiNew[stateB] = amp * h * signTot
+                        opResult[state][stateB] = h * signTot + opResult[state].get(stateB, 0)
+                        # if stateB in opResult[state]:
+                        #     opResult[state][stateB] += h * signTot
+                        # else:
+                        #     opResult[state][stateB] = h * signTot
+                        psiNew[stateB] = amp * h * signTot + psiNew.get(stateB, 0)
+                        # if stateB in psiNew:
+                        #     psiNew[stateB] += amp * h * signTot
+                        # else:
+                        #     psiNew[stateB] = amp * h * signTot
                 # Make sure amplitudes in opResult are bigger than
                 # the slaterWeightMin cutoff.
                 for ps, amp in list(opResult[state].items()):
@@ -2868,11 +2902,9 @@ def get_tridiagonal_krylov_vectors(h, psi0, krylovSize, h_local=False, mode="spa
                     # raise ValueError(('Warning: beta==0, '
                     #                   + 'implementation absent!'))
                     # print ("ValueError(\'Warning: beta==0, implementation absent!\')")
-                    print(f"Lanczos (h_local) converged, beta = {beta[j - 1]}")
                     converged = True
             converged = comm.bcast(converged, root=0)
             if converged:
-                print(f"rank {rank} breaking!")
                 break
             # Broadcast vector v[1,:] from rank 0 to all ranks.
             comm.Bcast(v[1, :], root=0)
@@ -2903,7 +2935,6 @@ def get_tridiagonal_krylov_vectors(h, psi0, krylovSize, h_local=False, mode="spa
                 # orthogonal to v[0],v[1],v[2],...,v[j-1]
                 # raise ValueError('Warning: beta==0, implementation absent!')
                 # print ("ValueError(\'Warning: beta==0, implementation absent!\')")
-                print(f"Lanczos converged, beta = {beta[j - 1]}")
                 break
             wp = h.dot(v[1, :])
             alpha[j] = np.dot(np.conj(wp), v[1, :]).real
@@ -2933,10 +2964,11 @@ def add(psi1, psi2, mul=1):
     """
     psi = psi1.copy()
     for s, a in psi2.items():
-        if s in psi:
-            psi[s] += mul * a
-        else:
-            psi[s] = mul * a
+        psi[s] = mul * a + psi.get(s, 0)
+        # if s in psi:
+        #     psi[s] += mul * a
+        # else:
+        #     psi[s] = mul * a
     return psi
 
 
