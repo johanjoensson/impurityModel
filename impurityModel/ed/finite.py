@@ -1895,6 +1895,115 @@ def applyOp(n_spin_orbitals, op, psi, slaterWeightMin=0, restrictions=None, opRe
     return psiNew
 
 
+def applyOp_2(n_spin_orbitals, op, psi, slaterWeightMin=0, restrictions={}, opResult={}):
+    r"""
+    Return :math:`|psi' \rangle = op |psi \rangle`.
+
+    If opResult is not None, it is updated to contain information of how the
+    operator op acted on the product states in psi.
+
+    Parameters
+    ----------
+    n_spin_orbitals : int
+        Total number of spin-orbitals in the system.
+    op : dict
+        Operator of the format
+        tuple : amplitude,
+
+        where each tuple describes a scattering
+
+        process. Examples of possible tuples (and their meanings) are:
+
+        ((i, 'c'))  <-> c_i^dagger
+
+        ((i, 'a'))  <-> c_i
+
+        ((i, 'c'), (j, 'a'))  <-> c_i^dagger c_j
+
+        ((i, 'c'), (j, 'c'), (k, 'a'), (l, 'a')) <-> c_i^dagger c_j^dagger c_k c_l
+    psi : dict
+        Multi-configurational state.
+        Product states as keys and amplitudes as values.
+    slaterWeightMin : float
+        Restrict the number of product states by
+        looking at `|amplitudes|^2`.
+    restrictions : dict
+        Restriction the occupation of generated
+        product states.
+    opResult : dict
+        In and output argument.
+        If present, the results of the operator op acting on each
+        product state in the state psi is added and stored in this
+        variable.
+
+    Returns
+    -------
+    psiNew : dict
+        New state of the same format as psi.
+
+
+    Note
+    ----
+    Different implementations exist.
+    They return the same result, but calculations vary a bit.
+
+    """
+    psiNew = {}
+    # Loop over product states in psi.
+    for state, amp in psi.items():
+        # assert amp != 0
+        if state in opResult:
+            addToFirst(psiNew, opResult[state], amp)
+            continue
+        state_bits = psr.bytes2bitarray(state, n_spin_orbitals)
+        # Create new element in opResult
+        # Store H|PS> for product states |PS> not yet in opResult
+        opResult[state] = {}
+        for process, h in op.items():
+            state_bits_new = state_bits.copy()
+            signTot = 1
+            for i, action in process[-1::-1]:
+                if action == "a":
+                    sign = remove.ubitarray(i, state_bits_new)
+                elif action == "c":
+                    sign = create.ubitarray(i, state_bits_new)
+                elif action == "i":
+                    sign = 1
+                if sign == 0:
+                    break
+                signTot *= sign
+            else:
+                state_new = psr.bitarray2bytes(state_bits_new)
+                if state_new in psiNew:
+                    # Occupations ok, so add contributions
+                    psiNew[state_new] += amp * h * signTot
+                    opResult[state][state_new] = h * signTot + opResult[state].get(state_new, 0)
+                else:
+                    # Convert product state to the tuple representation.
+                    state_new_tuple = psr.bytes2tuple(state_new, n_spin_orbitals)
+                    # Check that product state sB fulfills the
+                    # occupation restrictions.
+                    for restriction, occupations in restrictions.items():
+                        n = len(restriction.intersection(state_new_tuple))
+                        if n < occupations[0] or occupations[1] < n:
+                            break
+                    else:
+                        # Occupations ok, so add contributions
+                        psiNew[state_new] = amp * h * signTot
+                        opResult[state][state_new] = h * signTot
+            # Make sure amplitudes in opResult are bigger than
+            # the slaterWeightMin cutoff.
+            for ps, amp in list(opResult[state].items()):
+                # Remove product states with small weight
+                if abs(amp) ** 2 < slaterWeightMin:
+                    opResult[state].pop(ps)
+    # Remove product states with small weight
+    for state, amp in list(psiNew.items()):
+        if abs(amp) ** 2 < slaterWeightMin:
+            psiNew.pop(state)
+    return psiNew
+
+
 def get_hamiltonian_matrix(n_spin_orbitals, hOp, basis, mode="sparse_MPI", verbose=True):
     """
     Return Hamiltonian expressed in the provided basis of product states.
