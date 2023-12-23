@@ -36,7 +36,7 @@ def get_Greens_function(
     n_spin_orbitals = sum(2 * (2 * ang + 1) + nBath for ang, nBath in nBaths.items())
     tOpsPS = spectra.getPhotoEmissionOperators(nBaths, l=l)
     tOpsIPS = spectra.getInversePhotoEmissionOperators(nBaths, l=l)
-    gsIPS_matsubara, gsIPS_realaxis = calc_Greens_function_with_offdiag_cg(
+    gsIPS_matsubara, gsIPS_realaxis = calc_Greens_function_with_offdiag(
         n_spin_orbitals,
         hOp,
         tOpsIPS,
@@ -54,7 +54,7 @@ def get_Greens_function(
         dense_cutoff=dense_cutoff,
         tau=tau,
     )
-    gsPS_matsubara, gsPS_realaxis = calc_Greens_function_with_offdiag_cg(
+    gsPS_matsubara, gsPS_realaxis = calc_Greens_function_with_offdiag(
         n_spin_orbitals,
         hOp,
         tOpsPS,
@@ -213,7 +213,7 @@ def calc_Greens_function_with_offdiag(
                     local_excited_basis |= res.keys()
 
             new_basis.add_states(new_local_basis)
-            h_mem = new_basis.expand(hOp, dense_cutoff=dense_cutoff, slaterWeightMin=slaterWeightMin, e_conv=1e-10)
+            h_mem = new_basis.expand(hOp, dense_cutoff=dense_cutoff, slaterWeightMin=slaterWeightMin)
 
             gs_matsubara_i, gs_realaxis_i = get_block_Green(
                 n_spin_orbitals=n_spin_orbitals,
@@ -290,10 +290,7 @@ def calc_Greens_function_with_offdiag(
                     v = {}
                     for v_i in vs:
                         for state in v_i:
-                            if state in v:
-                                v[state] += v_i[state]
-                            else:
-                                v[state] = v_i[state]
+                            v[state] = v_i[state] + v.get(state, 0)
                     block_v.append(v)
 
                 # if not np.all(new_basis.contains(new_local_basis)):
@@ -371,7 +368,7 @@ def get_block_Green(
     psi_states = [key for psi in psi_arr for key in psi.keys()]
     if np.any(np.logical_not(basis.contains(psi_states))):
         basis.add_states(psi_states[basis.comm.rank :: basis.comm.size])
-        h_mem = basis.expand(hOp, h_mem, dense_cutoff=dense_cutoff, slaterWeightMin=slaterWeightMin, e_conv=1e-8)
+        h_mem = basis.expand(hOp, h_mem, dense_cutoff=dense_cutoff, slaterWeightMin=slaterWeightMin)
     h = basis.build_sparse_matrix(hOp, h_mem)
 
     if verbose:
@@ -449,7 +446,7 @@ def get_block_Green(
             gs_new = wIs - alpha - np.conj(beta.T)[np.newaxis, :, :] @ np.linalg.solve(gs_new, beta[np.newaxis, :, :])
             gs_prev = wIs - alpha - np.conj(beta.T)[np.newaxis, :, :] @ np.linalg.solve(gs_prev, beta[np.newaxis, :, :])
         return np.max(
-            np.abs(np.sum(np.diagonal(gs_new, axis1=1, axis2=2)) - np.sum(np.diagonal(gs_prev, axis1=1, axis2=2)))
+            np.abs(np.diagonal(gs_new, axis1=1, axis2=2) - np.diagonal(gs_prev, axis1=1, axis2=2))
         )
 
     # Run Lanczos on psi0^T* [wI - j*delta - H]^-1 psi0
@@ -681,10 +678,7 @@ def calc_Greens_function_with_offdiag_cg(
                 v = {}
                 for v_i in vs:
                     for state in v_i:
-                        if state in v:
-                            v[state] += v_i[state]
-                        else:
-                            v[state] = v_i[state]
+                        v[state] = v_i[state] + v.get(state, 0)
                 block_v.append(v)
             if verbose:
                 print(f"time(build excited state basis) = {time.perf_counter() - t0}")
