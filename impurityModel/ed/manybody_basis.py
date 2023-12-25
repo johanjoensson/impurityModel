@@ -24,11 +24,6 @@ from impurityModel.ed.finite import (
         eigensystem_new,
         norm2,
 )
-# from impurityModel.ed.ac import (
-#         # create as c,
-#         # annihilate as a,
-        # applyOp,
-# )
 
 
 def combine_sets(set_1, set_2, datatype):

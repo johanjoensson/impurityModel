@@ -6,7 +6,6 @@ from impurityModel.ed import spectra
 from impurityModel.ed import finite
 from impurityModel.ed.lanczos import get_block_Lanczos_matrices
 from impurityModel.ed.manybody_basis import CIPSI_Basis, Basis
-from impurityModel.ed.cg import cg_phys
 
 from mpi4py import MPI
 
