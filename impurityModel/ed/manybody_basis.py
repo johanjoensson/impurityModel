@@ -19,10 +19,13 @@ import itertools
 from impurityModel.ed.finite import (
         c,
         a,
-        applyOp,
+        # applyOp,
         c2i,
         eigensystem_new,
         norm2,
+)
+from impurityModel.ed.ac import (
+        applyOp,
 )
 
 

@@ -43,7 +43,7 @@ cpdef add(state_1: dict, state_2: dict, v: complex = 1):
         state_1[s2] = a*v + state_1.get(s2, 0)
     return state_1
 
-def applyOp(n_spin_orbitals, op, psi, slaterWeightMin=0, restrictions=None, opResult=None):
+cpdef applyOp(n_spin_orbitals, op, psi, slaterWeightMin=0, restrictions=None, opResult=None):
     result_psi = {}
     if opResult is None:
         opResult = dict()
@@ -54,7 +54,9 @@ def applyOp(n_spin_orbitals, op, psi, slaterWeightMin=0, restrictions=None, opRe
             result_psi = add(result_psi, opResult[state], amp)
             continue
         opResult[state] = {}
-        new_partial_psi = apply_to_state(n_spin_orbitals, op, state)
+        new_partial_psi = apply_to_state_cy(n_spin_orbitals, op, state)
+        # for new_state, amp in new_partial_psi.items():
+        #     result[state] = amp + result.get(state, 0)
         for new_state, new_amp in new_partial_psi.items():
             new_state_tuple = psr.bytes2tuple(new_state, n_spin_orbitals)
             for restriction, occupations in restrictions.items():
@@ -71,10 +73,14 @@ def applyOp(n_spin_orbitals, op, psi, slaterWeightMin=0, restrictions=None, opRe
     return result_psi
 
 
-def apply_to_state(n_spin_orbitals, op, state):
-    result = dict()
-    new_states, amps = apply_to_state_cy(n_spin_orbitals, list(op.keys()), list(op.values()), state)
-    for state, amp in zip(new_states, amps):
+@cython.initializedcheck(False)
+@cython.boundscheck(False)
+@cython.wraparound(False)
+@cython.cdivision(True)
+cdef apply_to_state(Py_ssize_t n_spin_orbitals, op, state):
+    cdef dict result = dict()
+    psi = apply_to_state_cy(n_spin_orbitals, op, state)
+    for state, amp in psi.items():
         result[state] = amp + result.get(state, 0)
     return result
 
@@ -83,30 +89,21 @@ def apply_to_state(n_spin_orbitals, op, state):
 @cython.boundscheck(False)
 @cython.wraparound(False)
 @cython.cdivision(True)
-cdef apply_to_state_cy(Py_ssize_t n_spin_orbitals, op_processes, op_amps, const unsigned char[:] state):
-    cdef Py_ssize_t i, p_i, op_i
+cdef apply_to_state_cy(n_spin_orbitals, op, const unsigned char[:] state):
+    cdef Py_ssize_t i, p_i
     cdef str action
     cdef unsigned char[:] new_state
     cdef complex signTot, sign, amp
-    cdef tuple process
-    # cdef list[bytes] states = [b'']
-    # cdef list[float] amplitudes = [0]
     states = []
     amplitudes = []
-    for op_i in range(len(op_processes)):
-        process = op_processes[op_i]
-        amp = op_amps[op_i]
+    for process, amp in op.items():
         signTot = 1
-        # for i, action in process[-1::-1]:
-        # for action, i in process:
         new_state = state.copy()
         for p_i in range(len(process) - 1, -1, -1):
             i, action = process[p_i]
             if action == "a":
-                # sign = remove.ubitarray(i, state_new)
                 new_state, sign = annihilate_cy(n_spin_orbitals, i, new_state)
             elif action == "c":
-                # sign = create.ubitarray(i, state_new)
                 new_state, sign  = create_cy(n_spin_orbitals, i, new_state)
             elif action == "i":
                 sign = 1
@@ -118,7 +115,7 @@ cdef apply_to_state_cy(Py_ssize_t n_spin_orbitals, op_processes, op_amps, const 
             continue
         states.append(bytes(new_state))
         amplitudes.append(amp*signTot)
-    return states, amplitudes
+    return dict(zip(states, amplitudes))
 
 @cython.initializedcheck(False)
 @cython.boundscheck(False)
