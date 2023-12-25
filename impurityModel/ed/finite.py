@@ -10,9 +10,12 @@ from collections import OrderedDict
 import scipy.sparse
 from mpi4py import MPI
 import time
-from petsc4py import PETSc
-from slepc4py import SLEPc
-from slepc4py.SLEPc import EPS
+try:
+    from petsc4py import PETSc
+    from slepc4py import SLEPc
+    from slepc4py.SLEPc import EPS
+except:
+    pass
 
 # Local imports
 from impurityModel.ed import product_state_representation as psr
@@ -20,7 +23,6 @@ from impurityModel.ed import create
 from impurityModel.ed import remove
 from impurityModel.ed.average import k_B, thermal_average, thermal_average_scale_indep
 from impurityModel.ed.hermitian_operator_matmul import NewHermitianOperator
-import impurityModel.ed.ac as ac
 
 from scipy.sparse.linalg import ArpackNoConvergence, ArpackError, eigsh
 from scipy.linalg import qr
