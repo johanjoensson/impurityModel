@@ -22,7 +22,6 @@ from impurityModel.ed import product_state_representation as psr
 from impurityModel.ed import create
 from impurityModel.ed import remove
 from impurityModel.ed.average import k_B, thermal_average, thermal_average_scale_indep
-from impurityModel.ed.hermitian_operator_matmul import NewHermitianOperator
 
 from scipy.sparse.linalg import ArpackNoConvergence, ArpackError, eigsh
 from scipy.linalg import qr
