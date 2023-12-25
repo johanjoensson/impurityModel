@@ -322,7 +322,7 @@ def run_impmod_ed(
             print(f"!" * 100)
             print(f"Exception {repr(e)} caught on rank {rank}!")
             print(traceback.format_exc())
-            print(f"Adding positive infinity to the imaginaty part of the DC selfenergy.", flush=True)
+            print(f"Adding positive infinity to the imaginary part of the DC selfenergy.", flush=True)
             print(f"!" * 100)
             sig_dc[:, :] = np.inf + 1j * np.inf
         else:
