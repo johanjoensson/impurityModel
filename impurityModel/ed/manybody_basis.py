@@ -20,7 +20,8 @@ import itertools
 from impurityModel.ed.finite import (
     c,
     a,
-    applyOp,
+    applyOp_2 as applyOp,
+    # applyOp,
     c2i,
     eigensystem_new,
     norm2,
@@ -169,6 +170,7 @@ class Basis:
                 print(f"----Restrictions on the conduction bath   = {restrictions[conduction_indices]}")
 
         return restrictions
+
 
     def __init__(
         self,
@@ -508,36 +510,33 @@ class Basis:
                             {state: 1},
                             restrictions=self.restrictions,
                             slaterWeightMin=slaterWeightMin,
+                            opResult=op_dict
                         )
-                        if len(res) != 0:
-                            op_dict[state] = res
                     new_states |= set(res.keys()) - new_basis
 
                 new_basis += sorted(new_states)
                 self.local_basis = list(sorted(new_basis))
         else:
             while not done:
-                local_states = []
+                local_states = set()
 
-                new_local_states = []
-                for state in set(self.local_basis + local_states):
+                for state in set(self.local_basis) | local_states:
                     res = applyOp(
                         self.num_spin_orbitals,
                         op,
                         {state: 1},
                         restrictions=self.restrictions,
                         slaterWeightMin=slaterWeightMin,
+                        opResult=op_dict,
                     )
-                    op_dict[state] = res
-                    new_local_states.extend(res.keys())
-                local_states.extend(new_local_states)
+                    local_states |= set(res.keys())
 
                 old_size = self.size
                 self.add_states(local_states)
                 done = old_size == self.size
         if self.verbose:
             print(f"Expanded basis contains {self.size} elements")
-        return self.build_operator_dict(op)
+        return self.build_operator_dict(op, op_dict=op_dict)
 
     def _getitem_sequence(self, l):
         if self.comm is None:
@@ -607,13 +606,17 @@ class Basis:
             res = self._index_sequence([val])[0]
             if res == self.size:
                 raise ValueError(f"Could not find {val} in basis!")
-        elif isinstance(val, np.ndarray):
-            res = self._index_sequence([i.tobytes() for i in np.split(val, val.shape[0] // self.n_bytes)])
+        elif isinstance(val, Sequence):
+            res = self._index_sequence(val)
             for i, v in enumerate(res):
                 if v == self.size:
                     raise ValueError(f"Could not find {val[i]} in basis!")
-        elif isinstance(val, Sequence):
-            res = self._index_sequence(val)
+        elif isinstance(val, np.ndarray):
+            assert val.dtype == np.byte
+            if val.shape[0] > 0:
+                res = self._index_sequence([i.tobytes() for i in np.split(val, val.shape[0] // self.n_bytes)])
+            else:
+                res = self._index_sequence([])
             for i, v in enumerate(res):
                 if v == self.size:
                     raise ValueError(f"Could not find {val[i]} in basis!")
@@ -842,19 +845,7 @@ class Basis:
                     slaterWeightMin=slaterWeightMin,
                     opResult=op_dict,
                 )
-
-        # all_row_states = list({state for row in op_dict.values() for state in row})
-        # rows_in_basis = {state for state, in_basis in zip(all_row_states, self.contains(all_row_states)) if in_basis}
-
-        # new_op_dict = {}
-        # for col in self.local_basis:
-        #     new_op_dict[col] = {}
-        #     for row in op_dict[col]:
-        #         if row in rows_in_basis:
-        #             new_op_dict[col][row] = op_dict[col][row]
-
-        # return new_op_dict
-        return op_dict
+        return {state: op_dict[state] for state in self.local_basis}
 
     def build_dense_matrix(self, op, op_dict=None, distribute=True):
         """
@@ -900,29 +891,35 @@ class Basis:
         if "PETSc" in sys.modules:
             return self._build_PETSc_matrix(op, op_dict)
 
-        _ = self.build_operator_dict(op, op_dict)
+        op_dict = self.build_operator_dict(op, op_dict)
 
         rows_in_basis = list({state for states in op_dict.values() for state in states})
         rows_in_basis = {state for state, mask in zip(rows_in_basis, self.contains(rows_in_basis)) if mask}
 
-        rows = np.empty(
-            (sum(row in rows_in_basis for column in self.local_basis for row in op_dict[column]) * self.n_bytes),
-            dtype=np.byte,
-        )
-        columns = np.empty_like(rows)
-        values = np.empty(
-            (sum(row in rows_in_basis for column in self.local_basis for row in op_dict[column])), dtype=complex
-        )
+        # rows = np.empty(
+        #     (sum(row in rows_in_basis for column in self.local_basis for row in op_dict[column]) * self.n_bytes),
+        #     dtype=np.byte,
+        # )
+        # columns = np.empty_like(rows)
+        # values = np.empty(
+        #     (sum(row in rows_in_basis for column in self.local_basis for row in op_dict[column])), dtype=complex
+        # )
+        rows = []
+        columns = []
+        values = []
         i = 0
         for column in self.local_basis:
             for row in op_dict[column]:
                 if row not in rows_in_basis:
                     continue
-                columns[i * self.n_bytes : (i + 1) * self.n_bytes] = np.frombuffer(
-                    column, dtype=np.byte, count=self.n_bytes
-                )
-                rows[i * self.n_bytes : (i + 1) * self.n_bytes] = np.frombuffer(row, dtype=np.byte, count=self.n_bytes)
-                values[i] = op_dict[column][row]
+                # columns[i * self.n_bytes : (i + 1) * self.n_bytes] = np.frombuffer(
+                #     column, dtype=np.byte, count=self.n_bytes
+                # )
+                # rows[i * self.n_bytes : (i + 1) * self.n_bytes] = np.frombuffer(row, dtype=np.byte, count=self.n_bytes)
+                # values[i] = op_dict[column][row]
+                columns.append(column)
+                rows.append(row)
+                values.append(op_dict[column][row])
                 i += 1
         return sp.sparse.csr_matrix(
             (values, (self.index(rows), self.index(columns))), shape=(self.size, self.size), dtype=complex
@@ -1092,7 +1089,7 @@ class CIPSI_Basis(Basis):
         psi_ref = None
         e_0_prev = np.inf
         e_0 = 0
-        de_2_min = 1e-6
+        de_2_min = e_conv / 10
         converge_count = 0
         de0_max = -self.tau * np.log(1e-4)
         while converge_count < 1:
@@ -1112,7 +1109,7 @@ class CIPSI_Basis(Basis):
                 H_sparse,
                 basis=self,
                 e_max=de0_max,
-                k=1 if psi_ref is None else max(1, len(psi_ref)),
+                k=2 if psi_ref is None else max(2, len(psi_ref)),
                 dk=10,
                 v0=v0,
                 eigenValueTol=max(abs(e_0 - e_0_prev), e_conv),
@@ -1221,7 +1218,7 @@ class CIPSI_Basis(Basis):
             if self.verbose:
                 print(f"--->Time to add new states: {t0/self.comm.size:.3f} seconds")
 
-            if abs(e_0 - e_0_prev) <= 10 * e_conv or old_size == self.size:
+            if abs(e_0 - e_0_prev) < e_conv or old_size == self.size:
                 converge_count += 1
             else:
                 converge_count = 0
@@ -1252,7 +1249,7 @@ class CIPSI_Basis(Basis):
             self.truncate(psi_ref)
             if self.verbose:
                 print(f"----->After truncation, the basis contains {self.size} elements.")
-        return self.build_operator_dict(H)
+        return self.build_operator_dict(H, op_dict=None)
 
     def expand_at(self, w, psi_ref, H, H_dict={}, slaterWeightMin=0):
         de_2_min = 1e-5
@@ -1347,7 +1344,7 @@ class CIPSI_Basis(Basis):
             psi_ref = {state: psi_ref[state] / N for state in psi_ref}
             t_massage_Hpsi += perf_counter() - t_0
         t_build_op_dict = perf_counter()
-        h_dict = self.build_operator_dict(H, op_dict=H_dict)
+        h_dict = self.build_operator_dict(H, op_dict=None)
         t_build_op_dict = perf_counter() - t_build_op_dict
         t_tot = perf_counter() - t_tot
 

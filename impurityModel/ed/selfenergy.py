@@ -222,12 +222,12 @@ def calc_selfenergy(
     es, psis = finite.eigensystem_new(
         h_gs,
         basis,
-        energy_cut,
+        e_max=energy_cut,
         k=1,
         dk=2 * (2 * l + 1),
         verbose=verbosity >= 1,
         eigenValueTol=1e-10,
-        slaterWeightMin=np.finfo(float).eps ** 2,
+        slaterWeightMin=0 * np.finfo(float).eps ** 2,
         dense_cutoff=dense_cutoff,
     )
     if verbosity >= 2:

@@ -713,6 +713,10 @@ def inner(a, b):
     return acc
 
 
+def scale(psi, mul):
+    return {s: a * mul for s, a in psi.items()}
+
+
 def addToFirst(psi1, psi2, mul=1):
     r"""
     To state :math:`|\psi_1\rangle`, add  :math:`mul * |\psi_2\rangle`.
@@ -733,10 +737,6 @@ def addToFirst(psi1, psi2, mul=1):
     """
     for s, a in psi2.items():
         psi1[s] = a * mul + psi1.get(s, 0)
-        # if s in psi1:
-        #     psi1[s] += a * mul
-        # else:
-        #     psi1[s] = a * mul
 
 
 def a(n_spin_orbitals, i, psi):
@@ -1897,7 +1897,17 @@ def applyOp(n_spin_orbitals, op, psi, slaterWeightMin=0, restrictions=None, opRe
     return psiNew
 
 
-def applyOp_2(n_spin_orbitals, op, psi, slaterWeightMin=0, restrictions={}, opResult={}):
+def occupation_within_restrictions(state, n_spin_orbitals, restrictions):
+    if restrictions is None:
+        return True
+    state_new_tuple = psr.bytes2tuple(state, n_spin_orbitals)
+    for restriction, occupations in restrictions.items():
+        n = len(restriction.intersection(state_new_tuple))
+        if n < occupations[0] or occupations[1] < n:
+            return False
+    return True
+
+def applyOp_2(n_spin_orbitals, op, psi, slaterWeightMin=0, restrictions=None, opResult=None):
     r"""
     Return :math:`|psi' \rangle = op |psi \rangle`.
 
@@ -1944,19 +1954,14 @@ def applyOp_2(n_spin_orbitals, op, psi, slaterWeightMin=0, restrictions={}, opRe
         New state of the same format as psi.
 
 
-    Note
-    ----
-    Different implementations exist.
-    They return the same result, but calculations vary a bit.
-
     """
     psiNew = {}
     # Loop over product states in psi.
     for state, amp in psi.items():
-        # assert amp != 0
         if state in opResult:
             addToFirst(psiNew, opResult[state], amp)
             continue
+
         state_bits = psr.bytes2bitarray(state, n_spin_orbitals)
         # Create new element in opResult
         # Store H|PS> for product states |PS> not yet in opResult
@@ -1971,35 +1976,18 @@ def applyOp_2(n_spin_orbitals, op, psi, slaterWeightMin=0, restrictions={}, opRe
                     sign = create.ubitarray(i, state_bits_new)
                 elif action == "i":
                     sign = 1
-                if sign == 0:
-                    break
                 signTot *= sign
-            else:
-                state_new = psr.bitarray2bytes(state_bits_new)
-                if state_new in psiNew:
-                    # Occupations ok, so add contributions
-                    psiNew[state_new] += amp * h * signTot
-                    opResult[state][state_new] = h * signTot + opResult[state].get(state_new, 0)
-                else:
-                    # Convert product state to the tuple representation.
-                    state_new_tuple = psr.bytes2tuple(state_new, n_spin_orbitals)
-                    # Check that product state sB fulfills the
-                    # occupation restrictions.
-                    for restriction, occupations in restrictions.items():
-                        n = len(restriction.intersection(state_new_tuple))
-                        if n < occupations[0] or occupations[1] < n:
-                            break
-                    else:
-                        # Occupations ok, so add contributions
-                        psiNew[state_new] = amp * h * signTot
-                        opResult[state][state_new] = h * signTot
-            # Make sure amplitudes in opResult are bigger than
-            # the slaterWeightMin cutoff.
-            for ps, amp in list(opResult[state].items()):
-                # Remove product states with small weight
-                if abs(amp) ** 2 < slaterWeightMin:
-                    opResult[state].pop(ps)
-    # Remove product states with small weight
+                if signTot == 0:
+                    break
+            if signTot == 0:
+                continue
+            state_new = psr.bitarray2bytes(state_bits_new)
+            if not occupation_within_restrictions(state_new, n_spin_orbitals, restrictions):
+                continue
+            psiNew[state_new] = amp * h * signTot + psiNew.get(state_new, 0)
+            if opResult is not None:
+                opResult[state][state_new] = h * signTot + opResult[state].get(state_new, 0)
+
     for state, amp in list(psiNew.items()):
         if abs(amp) ** 2 < slaterWeightMin:
             psiNew.pop(state)
