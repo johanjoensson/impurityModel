@@ -6,6 +6,7 @@ from impurityModel.ed import spectra
 from impurityModel.ed import finite
 from impurityModel.ed.lanczos import get_block_Lanczos_matrices
 from impurityModel.ed.manybody_basis import CIPSI_Basis, Basis
+from impurityModel.ed.cg import cg_phys
 
 from mpi4py import MPI
 
@@ -35,7 +36,7 @@ def get_Greens_function(
     n_spin_orbitals = sum(2 * (2 * ang + 1) + nBath for ang, nBath in nBaths.items())
     tOpsPS = spectra.getPhotoEmissionOperators(nBaths, l=l)
     tOpsIPS = spectra.getInversePhotoEmissionOperators(nBaths, l=l)
-    gsIPS_matsubara, gsIPS_realaxis = calc_Greens_function_with_offdiag(
+    gsIPS_matsubara, gsIPS_realaxis = calc_Greens_function_with_offdiag_cg(
         n_spin_orbitals,
         hOp,
         tOpsIPS,
@@ -53,7 +54,7 @@ def get_Greens_function(
         dense_cutoff=dense_cutoff,
         tau=tau,
     )
-    gsPS_matsubara, gsPS_realaxis = calc_Greens_function_with_offdiag(
+    gsPS_matsubara, gsPS_realaxis = calc_Greens_function_with_offdiag_cg(
         n_spin_orbitals,
         hOp,
         tOpsPS,
