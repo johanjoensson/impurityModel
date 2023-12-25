@@ -438,9 +438,7 @@ def get_block_Green(
         for alpha, beta in zip(alphas[-3::-1], betas[-3::-1]):
             gs_new = wIs - alpha - np.conj(beta.T)[np.newaxis, :, :] @ np.linalg.solve(gs_new, beta[np.newaxis, :, :])
             gs_prev = wIs - alpha - np.conj(beta.T)[np.newaxis, :, :] @ np.linalg.solve(gs_prev, beta[np.newaxis, :, :])
-        return np.max(
-            np.abs(np.diagonal(gs_new, axis1=1, axis2=2) - np.diagonal(gs_prev, axis1=1, axis2=2))
-        )
+        return np.max(np.abs(np.diagonal(gs_new, axis1=1, axis2=2) - np.diagonal(gs_prev, axis1=1, axis2=2)))
 
     # Run Lanczos on psi0^T* [wI - j*delta - H]^-1 psi0
     alphas, betas, _ = get_block_Lanczos_matrices(

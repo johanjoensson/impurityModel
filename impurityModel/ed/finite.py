@@ -10,6 +10,7 @@ from collections import OrderedDict
 import scipy.sparse
 from mpi4py import MPI
 import time
+
 try:
     from petsc4py import PETSc
     from slepc4py import SLEPc
@@ -1670,56 +1671,56 @@ def applyLminus3d(nBaths, psi):
 
 def applyOp(n_spin_orbitals, op, psi, slaterWeightMin=0, restrictions=None, opResult=None):
     r"""
-    Return :math:`|psi' \rangle = op |psi \rangle`.
+        Return :math:`|psi' \rangle = op |psi \rangle`.
 
-    If opResult is not None, it is updated to contain information of how the
-    operator op acted on the product states in psi.
+        If opResult is not None, it is updated to contain information of how the
+        operator op acted on the product states in psi.
 
-    Parameters
-:
-----------
-    n_spin_orbitals : int
-        Total number of spin-orbitals in the system.
-    op : dict
-        Operator of the format
-        tuple : amplitude,
+        Parameters
+    :
+    ----------
+        n_spin_orbitals : int
+            Total number of spin-orbitals in the system.
+        op : dict
+            Operator of the format
+            tuple : amplitude,
 
-        where each tuple describes a scattering
+            where each tuple describes a scattering
 
-        process. Examples of possible tuples (and their meanings) are:
+            process. Examples of possible tuples (and their meanings) are:
 
-        ((i, 'c'))  <-> c_i^dagger
+            ((i, 'c'))  <-> c_i^dagger
 
-        ((i, 'a'))  <-> c_i
+            ((i, 'a'))  <-> c_i
 
-        ((i, 'c'), (j, 'a'))  <-> c_i^dagger c_j
+            ((i, 'c'), (j, 'a'))  <-> c_i^dagger c_j
 
-        ((i, 'c'), (j, 'c'), (k, 'a'), (l, 'a')) <-> c_i^dagger c_j^dagger c_k c_l
-    psi : dict
-        Multi-configurational state.
-        Product states as keys and amplitudes as values.
-    slaterWeightMin : float
-        Restrict the number of product states by
-        looking at `|amplitudes|^2`.
-    restrictions : dict
-        Restriction the occupation of generated
-        product states.
-    opResult : dict
-        In and output argument.
-        If present, the results of the operator op acting on each
-        product state in the state psi is added and stored in this
-        variable.
+            ((i, 'c'), (j, 'c'), (k, 'a'), (l, 'a')) <-> c_i^dagger c_j^dagger c_k c_l
+        psi : dict
+            Multi-configurational state.
+            Product states as keys and amplitudes as values.
+        slaterWeightMin : float
+            Restrict the number of product states by
+            looking at `|amplitudes|^2`.
+        restrictions : dict
+            Restriction the occupation of generated
+            product states.
+        opResult : dict
+            In and output argument.
+            If present, the results of the operator op acting on each
+            product state in the state psi is added and stored in this
+            variable.
 
-    Returns
-    -------
-    psiNew : dict
-        New state of the same format as psi.
+        Returns
+        -------
+        psiNew : dict
+            New state of the same format as psi.
 
 
-    Note
-    ----
-    Different implementations exist.
-    They return the same result, but calculations vary a bit.
+        Note
+        ----
+        Different implementations exist.
+        They return the same result, but calculations vary a bit.
 
     """
     psiNew = {}
@@ -1782,7 +1783,7 @@ def applyOp(n_spin_orbitals, op, psi, slaterWeightMin=0, restrictions=None, opRe
                     signTot *= sign
                 else:
                     stateB = psr.bitarray2bytes(state_new)
-                    psiNew[stateB] = amp * h *signTot + psiNew.get(stateB, 0)
+                    psiNew[stateB] = amp * h * signTot + psiNew.get(stateB, 0)
                     # if stateB in psiNew:
                     #     psiNew[stateB] += amp * h * signTot
                     # else:
@@ -2601,7 +2602,6 @@ def expand_basis_new(n_spin_orbitals, h_dict, hOp, basis0, restrictions, paralle
             basis += sorted(basis_new)
             n = len(basis)
     elif parallelization_mode == "H_build":
-
         h_dict_new_local = {}
         while i < n:
             basis_set = frozenset(basis)
