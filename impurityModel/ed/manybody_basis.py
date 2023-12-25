@@ -536,7 +536,7 @@ class Basis:
                 done = old_size == self.size
         if self.verbose:
             print(f"Expanded basis contains {self.size} elements")
-        return self.build_operator_dict(op, op_dict=op_dict)
+        return self.build_operator_dict(op, op_dict=None)
 
     def _getitem_sequence(self, l):
         if self.comm is None:
@@ -1014,7 +1014,6 @@ class CIPSI_Basis(Basis):
                 basis=self,
                 e_max=1e-12,
                 k=min(1, self.size - 1),
-                dk=min(10, self.size - 1),
                 eigenValueTol=0,
                 slaterWeightMin=np.finfo(float).eps ** 2,
                 verbose=self.verbose,
@@ -1089,7 +1088,7 @@ class CIPSI_Basis(Basis):
         psi_ref = None
         e_0_prev = np.inf
         e_0 = 0
-        de_2_min = e_conv / 10
+        de_2_min = e_conv
         converge_count = 0
         de0_max = -self.tau * np.log(1e-4)
         while converge_count < 1:
@@ -1109,8 +1108,7 @@ class CIPSI_Basis(Basis):
                 H_sparse,
                 basis=self,
                 e_max=de0_max,
-                k=2 if psi_ref is None else max(2, len(psi_ref)),
-                dk=10,
+                k=1 if psi_ref is None else max(1, len(psi_ref)),
                 v0=v0,
                 eigenValueTol=max(abs(e_0 - e_0_prev), e_conv),
                 slaterWeightMin=slaterWeightMin,
@@ -1157,23 +1155,50 @@ class CIPSI_Basis(Basis):
                     print(f"--->Time to setup distributed Djs: {t0/self.comm.size:.3f} seconds")
 
                 t0 = perf_counter()
-                send_list = [[] for _ in range(self.comm.size)]
-                for r in range(self.comm.size):
-                    if Dj_basis.state_bounds[r][0] is None:
-                        continue
-                    send_list[r] = {
-                        state: val
-                        for state, val in Hpsi_i.items()
-                        if state >= Dj_basis.state_bounds[r][0] and state <= Dj_basis.state_bounds[r][1]
-                    }
-                received_Hpsi_i = self.comm.alltoall(send_list)
+
+                send_states = [[] for _ in range(self.comm.size)]
+                send_amps = [[] for _ in range(self.comm.size)]
+                for state, amp in Hpsi_i.items():
+                    for r in range(self.comm.size):
+                        if Dj_basis.state_bounds[r][0] is None:
+                            continue
+                        if state >= Dj_basis.state_bounds[r][0] and state <= Dj_basis.state_bounds[r][1]:
+                            send_states[r].append(state)
+                            send_amps[r].append(amp)
+                            break
+                for r, states in enumerate(send_states):
+                    assert len(send_states[r]) == len(send_amps[r]), f"{r=}: {len(send_states[r])=} != {len(send_amps[r])=}"
+                received_states = self.alltoall_states(send_states)
+                received_amps = self.comm.alltoall(send_amps)
+                assert len(received_states) == len(received_amps), f"{len(received_states)=} != {len(received_amps)=}"
                 Hpsi_i = {}
-                for received_dict in received_Hpsi_i:
-                    for key in received_dict:
-                        if key in Hpsi_i:
-                            Hpsi_i[key] += received_dict[key]
-                        else:
-                            Hpsi_i[key] = received_dict[key]
+                for r, states in enumerate(received_states):
+                    assert len(received_states[r]) == len(
+                        received_amps[r]
+                    ), f"{r=}: {len(received_states[r])=} != {len(received_amps[r])=}"
+                    for i, state in enumerate(states):
+                        Hpsi_i[state] = received_amps[r][i] + Hpsi_i.get(state, 0)
+
+
+
+                # for state, val in Hpsi_i.items():
+                #     for r in range(self.comm.size):
+                #         if Dj_basis.state_bounds[r][0] is None:
+                #             continue
+                #     send_list[r] = {
+                #         state: val
+                #         for state, val in Hpsi_i.items()
+                #         if state >= Dj_basis.state_bounds[r][0] and state <= Dj_basis.state_bounds[r][1]
+                #     }
+
+                # received_Hpsi_i = self.comm.alltoall(send_list)
+                # Hpsi_i = {}
+                # for received_dict in received_Hpsi_i:
+                #     for key in received_dict:
+                #         if key in Hpsi_i:
+                #             Hpsi_i[key] += received_dict[key]
+                #         else:
+                #             Hpsi_i[key] = received_dict[key]
                 t0 = perf_counter() - t0
                 t0 = self.comm.reduce(t0, op=MPI.SUM, root=0)
                 if self.verbose:
@@ -1241,7 +1266,6 @@ class CIPSI_Basis(Basis):
                 basis=self,
                 e_max=0,
                 k=min(1, self.size - 1),
-                dk=min(10, self.size - 1),
                 eigenValueTol=0,
                 slaterWeightMin=slaterWeightMin,
                 verbose=False,

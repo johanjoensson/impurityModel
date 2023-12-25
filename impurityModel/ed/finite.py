@@ -113,7 +113,6 @@ def eigensystem_new(
     basis,
     e_max,
     k=10,
-    dk=10,
     v0=None,
     eigenValueTol=0,
     slaterWeightMin=0,
@@ -171,7 +170,7 @@ def eigensystem_new(
             dtype=h_local.dtype,
         )
 
-        dk_orig = dk
+        dk = 0
         vecs = v0
         es = []
         mask = [True]
@@ -188,7 +187,7 @@ def eigensystem_new(
                 )
             except ArpackNoConvergence:
                 eigenValueTol = max(np.sqrt(eigenValueTol), 1e-6)
-                dk = dk_orig
+                dk = 0
                 vecs = None
                 es = []
                 mask = [True]
@@ -204,10 +203,7 @@ def eigensystem_new(
                 mask = [True]
                 continue
             mask = es - np.min(es) <= e_max
-            if dk_orig > 0:
-                dk += dk_orig
-            else:
-                break
+            dk += k
     elif isinstance(h_local, PETSc.Mat):
         dk_orig = dk
         es = []
@@ -220,7 +216,8 @@ def eigensystem_new(
         eig_solver.setWhichEigenpairs(EPS.Which.SMALLEST_REAL)
         eig_solver.setTolerances(tol=max(eigenValueTol, np.finfo(float).eps))
         while len(es) - sum(mask) <= 0:
-            eig_solver.setDimensions(k + dk, PETSc.DECIDE)
+            eig_solver.setDimensions(k, PETSc.DECIDE)
+            # eig_solver.setDimensions(k + dk, PETSc.DECIDE)
             eig_solver.solve()
             nconv = eig_solver.getConverged()
             es = np.empty((nconv), dtype=float)
