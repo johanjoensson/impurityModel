@@ -119,7 +119,6 @@ def eigensystem_new(
     verbose=True,
     dense_cutoff=1000,
     distribute_eigenvectors=False,
-    force_orth=False,
 ):
     """
     Return eigen-energies and eigenstates.
@@ -182,7 +181,7 @@ def eigensystem_new(
                     k=min(k + dk, h.shape[0] - 2),
                     which="SA",
                     tol=eigenValueTol,
-                    v0=vecs[:, 0] if vecs is not None else None,
+                    v0=vecs[:, np.argwhere(mask)[0]] if vecs is not None else None,
                     ncv=ncv,
                 )
             except ArpackNoConvergence:

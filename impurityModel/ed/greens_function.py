@@ -181,14 +181,14 @@ def calc_Greens_function_with_offdiag(
             e = es[i]
 
             v = []
-            new_basis = CIPSI_Basis(
+            new_basis = Basis(
                 initial_basis=[],
                 restrictions=basis.restrictions,
                 num_spin_orbitals=basis.num_spin_orbitals,
                 comm=basis.comm,
                 verbose=verbose,
                 truncation_threshold=basis.truncation_threshold,
-                tau=0,  # basis.tau,
+                tau=basis.tau,
             )
             for tOp in tOps:
                 v.append(
@@ -261,7 +261,7 @@ def calc_Greens_function_with_offdiag(
                         opResult=t_mems[i_tOp],
                     )
                     local_excited_basis |= res.keys()
-        excited_basis = CIPSI_Basis(
+        excited_basis = Basis(
             initial_basis=local_excited_basis,
             restrictions=basis.restrictions,
             num_spin_orbitals=basis.num_spin_orbitals,
@@ -270,7 +270,7 @@ def calc_Greens_function_with_offdiag(
             truncation_threshold=basis.truncation_threshold,
             tau=basis.tau,
         )
-        h_mem = excited_basis.expand(hOp, dense_cutoff=dense_cutoff, slaterWeightMin=0 * slaterWeightMin)
+        h_mem = excited_basis.expand(hOp, dense_cutoff=dense_cutoff, slaterWeightMin=slaterWeightMin)
         for i, (psi, e) in enumerate(zip(psis, es)):
             for block in blocks:
                 block_v = []
@@ -293,13 +293,6 @@ def calc_Greens_function_with_offdiag(
                             v[state] = v_i[state] + v.get(state, 0)
                     block_v.append(v)
 
-                # if not np.all(new_basis.contains(new_local_basis)):
-                # old_basis_size = new_basis.size
-                # new_basis.add_states(new_local_basis)
-                # if new_basis.size != old_basis_size:
-                #     h_mem = new_basis.expand(
-                #         hOp, dense_cutoff=dense_cutoff, slaterWeightMin=slaterWeightMin, e_conv=1e-8
-                #     )
                 if verbose:
                     print(f"time(build excited state basis) = {time.perf_counter() - t0}")
                 gs_matsubara_i, gs_realaxis_i = get_block_Green(
@@ -345,7 +338,7 @@ def get_block_Green(
     h_mem=None,
     mode="sparse",
     krylovSize=None,
-    slaterWeightMin=np.finfo(float).eps ** 2,
+    slaterWeightMin=0,
     parallelization_mode="H_build",
     verbose=True,
     dense_cutoff=1e3,
@@ -379,15 +372,16 @@ def get_block_Green(
 
     if verbose:
         t0 = time.perf_counter()
-    psi_start = np.zeros((N, n), dtype=complex)
-    for i, psi in enumerate(psi_arr):
-        states = []
-        amps = []
-        for ps, amp in psi.items():
-            states.append(ps)
-            amps.append(amp)
-        indices = basis.index(states)
-        psi_start[indices, i] = amps
+    psi_start = basis.build_vector(psi_arr)
+    # psi_start = np.zeros((N, n), dtype=complex)
+    # for i, psi in enumerate(psi_arr):
+    #     states = []
+    #     amps = []
+    #     for ps, amp in psi.items():
+    #         states.append(ps)
+    #         amps.append(amp)
+    #     indices = basis.index(states)
+    #     psi_start[indices, i] = amps
 
     if verbose:
         print(f"time(set up psi_start) = {time.perf_counter() - t0}")
@@ -634,6 +628,7 @@ def calc_Greens_function_with_offdiag_cg(
         gs_realaxis = None
 
     t_mems = [{} for _ in tOps]
+    h_mem = {}
 
     local_excited_basis = set()
     for block in blocks:
@@ -657,8 +652,6 @@ def calc_Greens_function_with_offdiag_cg(
         truncation_threshold=basis.truncation_threshold,
         tau=0,
     )
-    # h_mem = excited_basis.expand(hOp, dense_cutoff=dense_cutoff, slaterWeightMin=0 * slaterWeightMin)
-    h_mem = {}
     print(f"size of excited space basis is {excited_basis.size}")
     for i, (psi, e) in enumerate(zip(psis, es)):
         for block in blocks:
@@ -707,9 +700,6 @@ def calc_Greens_function_with_offdiag_cg(
     return gs_matsubara, gs_realaxis
 
 
-n_it = 0
-
-
 def get_block_Green_cg(
     n_spin_orbitals,
     hOp,
@@ -721,7 +711,7 @@ def get_block_Green_cg(
     delta,
     restrictions=None,
     h_mem=None,
-    slaterWeightMin=np.finfo(float).eps ** 2,
+    slaterWeightMin=0,
     verbose=True,
     dense_cutoff=1e3,
 ):
@@ -738,11 +728,7 @@ def get_block_Green_cg(
 
     if verbose:
         t0 = time.perf_counter()
-    psi_states = [key for psi in psi_arr for key in psi.keys()]
-    if np.any(np.logical_not(basis.contains(psi_states))):
-        basis.add_states(psi_states[basis.comm.rank::basis.comm.size])
     h = basis.build_sparse_matrix(hOp, h_mem)
-    # h = basis.build_sparse_matrix_2(hOp, h_mem)
 
     if verbose:
         print(f"time(build Hamiltonian operator) = {time.perf_counter() - t0}")
@@ -768,7 +754,7 @@ def get_block_Green_cg(
             A_op = finite.subtractOps(shift, hOp)
             A_dict = {}
             for col in range(n):
-                tmp, info = cg_phys(A_op, A_dict, n_spin_orbitals, {}, psi_arr[col], 0, w.imag, basis.copy())
+                tmp, info = cg_phys(A_op, A_dict, n_spin_orbitals, {}, psi_arr[col], 0, w.imag, basis)
                 T_psi = basis.build_vector(psi_arr)
                 gs_matsubara[w_i, :, col] = np.conj(T_psi.T) @ tmp
         gs_matsubara = np.moveaxis(gs_matsubara, 0, -1)
@@ -779,7 +765,7 @@ def get_block_Green_cg(
             shift = {((0, 'i'),): w + 1j * delta + e}
             A_op = finite.subtractOps(shift, hOp)
             for col in range(n):
-                tmp, info = cg_phys(A_op, {}, n_spin_orbitals, {}, psi_arr[col], w, delta, basis.copy())
+                tmp, info = cg_phys(A_op, {}, n_spin_orbitals, {}, psi_arr[col], w, delta, basis)
                 T_psi = basis.build_vector(psi_arr)
                 gs_realaxis[w_i, :, col] = np.conj(T_psi.T) @ tmp
         gs_realaxis = np.moveaxis(gs_realaxis, 0, -1)

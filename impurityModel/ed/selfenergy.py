@@ -55,7 +55,7 @@ def find_gs(h_op, N0, delta_occ, bath_states, num_spin_orbitals, rank, verbose, 
         )
         if verbose:
             print(f"Before expansion basis contains {basis.size} elements")
-        h_dict = basis.expand(h_op, dense_cutoff=dense_cutoff, slaterWeightMin=1e-10)
+        h_dict = basis.expand(h_op, dense_cutoff=dense_cutoff, slaterWeightMin=np.finfo(float).eps)
         h = basis.build_sparse_matrix(h_op, h_dict)
 
         e_trial = finite.eigensystem_new(
@@ -66,7 +66,7 @@ def find_gs(h_op, N0, delta_occ, bath_states, num_spin_orbitals, rank, verbose, 
             dk=10,
             verbose=verbose,
             eigenValueTol=1e-6,
-            slaterWeightMin=np.finfo(float).eps ** 2,
+            slaterWeightMin=np.finfo(float).eps,
             return_eigvecs=False,
             dense_cutoff=dense_cutoff,
         )
@@ -122,7 +122,6 @@ def run(cluster, h0, iw, w, delta, tau, verbosity, reort, dense_cutoff):
         tolPrintOccupation,
         verbosity,
         blocks=[cluster.blocks[i] for i in cluster.inequivalent_blocks],
-        # blocks=None,
         rotation=cluster.rot_spherical,
         cluster_label=cluster.label,
         reort=reort,
@@ -215,7 +214,7 @@ def calc_selfenergy(
     # energy_cut = -tau * np.log(np.finfo(float).eps)
 
     basis.tau = tau
-    h_dict = basis.expand(h, slaterWeightMin=np.finfo(float).eps ** 2, dense_cutoff=dense_cutoff)
+    h_dict = basis.expand(h, dense_cutoff=dense_cutoff)
     if basis.size < dense_cutoff:
         h_gs = basis.build_dense_matrix(h, h_dict)
     else:
@@ -227,7 +226,7 @@ def calc_selfenergy(
         k=1,
         dk=2 * (2 * l + 1),
         verbose=verbosity >= 1,
-        eigenValueTol=0,
+        eigenValueTol=1e-10,
         slaterWeightMin=np.finfo(float).eps ** 2,
         dense_cutoff=dense_cutoff,
     )
@@ -254,7 +253,7 @@ def calc_selfenergy(
         verbose=verbosity >= 2,
         mpi_distribute=True,
         reort=reort,
-        dense_cutoff=min(dense_cutoff, 1e3),
+        dense_cutoff=dense_cutoff,
         tau=tau,
     )
     if iw is not None:
