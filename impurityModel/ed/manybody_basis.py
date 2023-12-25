@@ -353,7 +353,6 @@ class Basis:
         self.comm.Bcast(state_bounds_bytes, root=0)
         state_bounds = [
             state_bounds_bytes[i * self.n_bytes: (i + 1) * self.n_bytes].tobytes() for i in range(self.comm.size)
-            # i.tobytes() for i in np.split(state_bounds_bytes, self.comm.size)
         ]
         return state_bounds
 
