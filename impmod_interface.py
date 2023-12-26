@@ -253,7 +253,7 @@ def run_impmod_ed(
     slater_from_rspt = np.ndarray(buffer=ffi.buffer(rspt_slater, 4 * size_real), shape=(4,), dtype=float)
 
     if n_rot_cols == n_orb:
-        rot_spherical = np.identity(rspt_rot_spherical_arr.shape[0], dtype=complex)
+        rot_spherical = np.identity(n_orb, dtype=complex)
         # rot_spherical = rspt_rot_spherical_arr
         corr_to_cf = rspt_corr_to_cf_arr
     else:
@@ -371,14 +371,14 @@ def run_impmod_ed(
         )
 
         # Rotate self energy from spherical harmonics basis to RSPt's corr basis
-        u = np.identity(cluster.rot_spherical.shape[0], dtype=complex)
+        u = np.conj(corr_to_cf.T)
         cluster.sig[:, :, :] = np.moveaxis(
-            u[np.newaxis, :, :] @ np.moveaxis(cluster.sig, -1, 0) @ np.conj(u.T)[np.newaxis, :, :], 0, -1
+            np.conj(u.T)[np.newaxis, :, :] @ np.moveaxis(cluster.sig, -1, 0) @ u[np.newaxis, :, :], 0, -1
         )
         cluster.sig_real[:, :, :] = np.moveaxis(
-            u[np.newaxis, :, :] @ np.moveaxis(cluster.sig_real, -1, 0) @ np.conj(u.T)[np.newaxis, :, :], 0, -1
+            np.conj(u.T)[np.newaxis, :, :] @ np.moveaxis(cluster.sig_real, -1, 0) @ u[np.newaxis, :, :], 0, -1
         )
-        cluster.sig_static[:, :] = u @ cluster.sig_static @ np.conj(u.T)
+        cluster.sig_static[:, :] = np.conj(u.T) @ cluster.sig_static @ u
     except Exception as e:
         print(f"!" * 100)
         print(f"Exception {repr(e)} caught on rank {rank}!")
@@ -615,6 +615,8 @@ def get_ed_h0(
     if verbose:
         print(f"DFT hamiltonian")
         matrix_print(h_dft)
+        print(f"DFT hamiltonian in CF basis")
+        matrix_print(np.conj(corr_to_cf.T) @ h_dft @ corr_to_cf)
         print("Hopping parameters")
         matrix_print(v)
         print("Bath state energies")
@@ -622,7 +624,7 @@ def get_ed_h0(
 
     n_orb = v.shape[1]
     h = np.zeros((n_orb + len(eb), n_orb + len(eb)), dtype=complex)
-    h[:n_orb, :n_orb] = np.conj(rot_spherical.T) @ h_dft @ rot_spherical
+    h[:n_orb, :n_orb] = np.conj(corr_to_cf.T) @ h_dft @ corr_to_cf
     h[:n_orb, n_orb:] = np.conj(v.T)
     h[n_orb:, :n_orb] = v
     np.fill_diagonal(h[n_orb:, n_orb:], eb)
