@@ -108,6 +108,7 @@ def run(cluster, h0, iw, w, delta, tau, verbosity, reort, dense_cutoff):
 
     cluster.sig[:], cluster.sig_real[:], cluster.sig_static[:] = calc_selfenergy(
         h0,
+        cluster.u4,
         cluster.slater,
         iw,
         w,
@@ -145,6 +146,7 @@ def run(cluster, h0, iw, w, delta, tau, verbosity, reort, dense_cutoff):
 
 def calc_selfenergy(
     h0,
+    u4,
     slater_params,
     iw,
     w,
@@ -174,7 +176,8 @@ def calc_selfenergy(
     l = ls[0]
 
     # construct local, interacting, hamiltonian
-    u = finite.getUop(l, l, l, l, slater_params)
+    # u = finite.getUop(l, l, l, l, slater_params)
+    u = finite.getUop_from_rspt_u4(u4)
     h = finite.addOps([h0, u])
     if verbosity >= 2:
         finite.printOp(sum_bath_states, h, "Local Hamiltonian: ")

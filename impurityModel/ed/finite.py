@@ -903,6 +903,31 @@ def getNoSpinUop(l1, l2, l3, l4, R):
     return uDict
 
 
+def getUop_from_rspt_u4(u4):
+    l1, l2, l3, l4 = u4.shape
+    l1 = ((l1 // 2) - 1) // 2
+    l2 = ((l2 // 2) - 1) // 2
+    l3 = ((l3 // 2) - 1) // 2
+    l4 = ((l4 // 2) - 1) // 2
+    uDict = {}
+    for i, m1 in enumerate(range(-l1, l1 + 1)):
+        for j, m2 in enumerate(range(-l2, l4 + 1)):
+            for k, m3 in enumerate(range(-l3, l3 + 1)):
+                for l, m4 in enumerate(range(-l4, l2 + 1)):
+                    u = u4[j, i, k, l]
+                    if abs(u) > 1e-10:
+                        for s in range(2):
+                            for sp in range(2):
+                                proccess = (
+                                    ((l1, s, m1), "c"),
+                                    ((l2, sp, m2), "c"),
+                                    ((l3, sp, m3), "a"),
+                                    ((l4, s, m4), "a"),
+                                )
+                                uDict[proccess] = u / 2
+    return uDict
+
+
 def getUop(l1, l2, l3, l4, R):
     r"""
     Return U operator.

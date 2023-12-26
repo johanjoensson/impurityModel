@@ -19,6 +19,7 @@ class impModCluster:
         label,
         h_dft,
         hyb,
+        u4,
         slater,
         nominal_occ,
         delta_occ,
@@ -32,6 +33,7 @@ class impModCluster:
     ):
         self.label = label
         self.h_dft = h_dft
+        self.u4 = u4
         self.hyb = hyb
         self.slater = slater
         self.bath_states = n_bath_states
@@ -94,11 +96,12 @@ class impModCluster:
 
 
 class dcStruct:
-    def __init__(self, nominal_occ, delta_occ, num_spin_orbitals, bath_states, slater_params, peak_position):
+    def __init__(self, nominal_occ, delta_occ, num_spin_orbitals, bath_states, u4, slater_params, peak_position):
         self.nominal_occ = nominal_occ
         self.delta_occ = delta_occ
         self.num_spin_orbitals = num_spin_orbitals
         self.bath_states = bath_states
+        self.u4 = u4
         self.slater_params = slater_params
         self.peak_position = peak_position
 
@@ -170,6 +173,7 @@ def run_impmod_ed(
     rspt_dc_line,
     rspt_dc_flag,
     rspt_slater,
+    rspt_u4,
     rspt_hyb,
     rspt_h_dft,
     rspt_sig,
@@ -201,6 +205,12 @@ def run_impmod_ed(
 
     h_dft = np.ndarray(
         buffer=ffi.buffer(rspt_h_dft, n_orb * n_orb * size_complex), shape=(n_orb, n_orb), order="F", dtype=complex
+    )
+    u4 = np.ndarray(
+        buffer=ffi.buffer(rspt_u4, n_orb * n_orb * n_orb * n_orb * size_complex),
+        shape=(n_orb, n_orb, n_orb, n_orb),
+        order="F",
+        dtype=complex,
     )
     hyb = np.ndarray(
         buffer=ffi.buffer(rspt_hyb, n_w * n_orb * n_orb * size_complex),
@@ -243,12 +253,14 @@ def run_impmod_ed(
     slater_from_rspt = np.ndarray(buffer=ffi.buffer(rspt_slater, 4 * size_real), shape=(4,), dtype=float)
 
     if n_rot_cols == n_orb:
-        rot_spherical = rspt_rot_spherical_arr
+        rot_spherical = np.identity(rspt_rot_spherical_arr.shape[0], dtype=complex)
+        # rot_spherical = rspt_rot_spherical_arr
         corr_to_cf = rspt_corr_to_cf_arr
     else:
-        rot_spherical = np.empty((n_orb, n_orb), dtype=complex)
-        rot_spherical[:, :n_rot_cols] = rspt_rot_spherical_arr
-        rot_spherical[:, n_rot_cols:] = np.roll(rspt_rot_spherical_arr, n_rot_cols, axis=0)
+        rot_spherical = np.identity(n_orb, dtype=complex)
+        # rot_spherical = np.empty((n_orb, n_orb), dtype=complex)
+        # rot_spherical[:, :n_rot_cols] = rspt_rot_spherical_arr
+        # rot_spherical[:, n_rot_cols:] = np.roll(rspt_rot_spherical_arr, n_rot_cols, axis=0)
         corr_to_cf = np.empty((n_orb, n_orb), dtype=complex)
         corr_to_cf[:, :n_rot_cols] = rspt_corr_to_cf_arr
         corr_to_cf[:, n_rot_cols:] = np.roll(rspt_corr_to_cf_arr, n_rot_cols, axis=0)
@@ -312,6 +324,7 @@ def run_impmod_ed(
             delta_occ=delta_occ,
             num_spin_orbitals=n_orb + len(e_baths),
             bath_states=({l: sum(e_baths < 0)}, {l: sum(e_baths >= 0)}),
+            u4=u4,
             slater_params=slater,
             peak_position=peak_position,
         )
@@ -337,6 +350,7 @@ def run_impmod_ed(
         label=label.strip(),
         h_dft=h_dft,
         hyb=hyb,
+        u4=u4,
         slater=slater,
         n_bath_states=n_bath_states,
         nominal_occ=nominal_occ,
@@ -357,7 +371,7 @@ def run_impmod_ed(
         )
 
         # Rotate self energy from spherical harmonics basis to RSPt's corr basis
-        u = cluster.rot_spherical
+        u = np.identity(cluster.rot_spherical.shape[0], dtype=complex)
         cluster.sig[:, :, :] = np.moveaxis(
             u[np.newaxis, :, :] @ np.moveaxis(cluster.sig, -1, 0) @ np.conj(u.T)[np.newaxis, :, :], 0, -1
         )
@@ -410,7 +424,8 @@ def fixed_peak_dc(h0_op, dc_struct, rank, verbose, dense_cutoff):
     num_valence_bath_states, num_conduction_bath_states = dc_struct.bath_states
     sum_bath_states = {l: num_valence_bath_states[l] + num_conduction_bath_states[l] for l in num_valence_bath_states}
     l = [lv for lv in N0[0]][0]
-    u = finite.getUop(l, l, l, l, dc_struct.slater_params)
+    # u = finite.getUop(l, l, l, l, dc_struct.slater_params)
+    u = finite.getUop_from_rspt_u4(dc_struct.u4)
 
     Np = ({l: N0[0][l] + 1 for l in N0[0]}, N0[1], N0[2])
     Nm = ({l: N0[0][l] - 1 for l in N0[0]}, N0[1], N0[2])
