@@ -115,7 +115,6 @@ def eigensystem_new(
     k=10,
     v0=None,
     eigenValueTol=0,
-    slaterWeightMin=0,
     return_eigvecs=True,
     verbose=True,
     dense_cutoff=1000,
@@ -270,13 +269,13 @@ def eigensystem_new(
     t0 = time.perf_counter()
     if not distribute_eigenvectors:
         for j in range(sum(mask)):
-            indices = [i for i in range(basis.size) if abs(vecs[i, j]) ** 2 > slaterWeightMin]
+            indices = [i for i in range(basis.size)]
             states = basis[indices]
             psis.append({state: vecs[i, j] for state, i in zip(states, indices)})
     else:
         for j in range(sum(mask)):
-            indices = [i - basis.offset for i in basis.local_indices if abs(vecs[i, j]) ** 2 > slaterWeightMin]
-            states = [basis.local_basis[i] for i in indices]
+            indices = (i - basis.offset for i in basis.local_indices)
+            states = (basis.local_basis[i] for i in indices)
             psis.append({state: vecs[i, j] for state, i in zip(states, indices)})
     t0 = time.perf_counter() - t0
 
@@ -1903,6 +1902,7 @@ def occupation_within_restrictions(state, n_spin_orbitals, restrictions):
         if n < occupations[0] or occupations[1] < n:
             return False
     return True
+
 
 def applyOp_2(n_spin_orbitals, op, psi, slaterWeightMin=0, restrictions=None, opResult=None):
     r"""

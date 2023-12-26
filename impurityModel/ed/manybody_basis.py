@@ -171,7 +171,6 @@ class Basis:
 
         return restrictions
 
-
     def __init__(
         self,
         num_spin_orbitals=None,
@@ -510,7 +509,7 @@ class Basis:
                             {state: 1},
                             restrictions=self.restrictions,
                             slaterWeightMin=slaterWeightMin,
-                            opResult=op_dict
+                            opResult=op_dict,
                         )
                     new_states |= set(res.keys()) - new_basis
 
@@ -1081,7 +1080,7 @@ class CIPSI_Basis(Basis):
             determinants |= spin_flipped
         return set(determinants)
 
-    def expand(self, H, H_dict={}, e_conv=1e-8, dense_cutoff=1e3, slaterWeightMin=0):
+    def expand(self, H, H_dict={}, e_conv=1e-10, dense_cutoff=1e3, slaterWeightMin=0):
         """
         Use the CIPSI method to expand the basis. Keep adding Slater determinants until the CIPSI energy is converged.
         """
@@ -1110,8 +1109,7 @@ class CIPSI_Basis(Basis):
                 e_max=de0_max,
                 k=1 if psi_ref is None else max(1, len(psi_ref)),
                 v0=v0,
-                eigenValueTol=max(abs(e_0 - e_0_prev), e_conv),
-                slaterWeightMin=slaterWeightMin,
+                eigenValueTol=e_conv,
                 dense_cutoff=dense_cutoff,
                 verbose=self.verbose,
                 distribute_eigenvectors=False,
@@ -1167,7 +1165,9 @@ class CIPSI_Basis(Basis):
                             send_amps[r].append(amp)
                             break
                 for r, states in enumerate(send_states):
-                    assert len(send_states[r]) == len(send_amps[r]), f"{r=}: {len(send_states[r])=} != {len(send_amps[r])=}"
+                    assert len(send_states[r]) == len(
+                        send_amps[r]
+                    ), f"{r=}: {len(send_states[r])=} != {len(send_amps[r])=}"
                 received_states = self.alltoall_states(send_states)
                 received_amps = self.comm.alltoall(send_amps)
                 assert len(received_states) == len(received_amps), f"{len(received_states)=} != {len(received_amps)=}"
@@ -1178,8 +1178,6 @@ class CIPSI_Basis(Basis):
                     ), f"{r=}: {len(received_states[r])=} != {len(received_amps[r])=}"
                     for i, state in enumerate(states):
                         Hpsi_i[state] = received_amps[r][i] + Hpsi_i.get(state, 0)
-
-
 
                 # for state, val in Hpsi_i.items():
                 #     for r in range(self.comm.size):
