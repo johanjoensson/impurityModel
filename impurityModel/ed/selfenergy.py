@@ -126,13 +126,13 @@ def run(cluster, h0, iw, w, delta, tau, verbosity, reort, dense_cutoff):
         dense_cutoff=dense_cutoff,
     )
 
-    for block_i in cluster.inequivalent_blocks:
+    for inequiv_i, block_i in enumerate(cluster.inequivalent_blocks):
         block_idx_i = np.ix_(cluster.blocks[block_i], cluster.blocks[block_i])
-        for block_j in cluster.identical_blocks[block_i]:
+        for block_j in cluster.identical_blocks[inequiv_i]:
             block_idx_j = np.ix_(cluster.blocks[block_j], cluster.blocks[block_j])
             cluster.sig[block_idx_j] = cluster.sig[block_idx_i]
             cluster.sig_real[block_idx_j] = cluster.sig_real[block_idx_i]
-        for block_j in cluster.transposed_blocks[block_i]:
+        for block_j in cluster.transposed_blocks[inequiv_i]:
             block_idx_j = np.ix_(cluster.blocks[block_j], cluster.blocks[block_j])
             cluster.sig[block_idx_j] = np.transpose(cluster.sig[block_idx_i], (1, 0, 2))
             cluster.sig_real[block_idx_j] = np.transpose(cluster.sig_real[block_idx_i], (1, 0, 2))
