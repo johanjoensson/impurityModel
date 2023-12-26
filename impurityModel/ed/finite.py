@@ -914,7 +914,7 @@ def getUop_from_rspt_u4(u4):
         for j, m2 in enumerate(range(-l2, l4 + 1)):
             for k, m3 in enumerate(range(-l3, l3 + 1)):
                 for l, m4 in enumerate(range(-l4, l2 + 1)):
-                    u = u4[j, i, k, l]
+                    u = u4[i, j, k, l]
                     if abs(u) > 1e-10:
                         for s in range(2):
                             for sp in range(2):
