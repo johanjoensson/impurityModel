@@ -491,6 +491,18 @@ class Basis:
         if self.verbose:
             print(f"=======> T set bounds and stuff : {t0}")
 
+    def _generate_spin_flipped_determinants(self, determinants):
+        determinants = set(determinants)
+        spin_flipped = set()
+        for dn_state in range(self.num_spin_orbitals // 2):
+            up_state = dn_state + self.num_spin_orbitals // 2
+            for det in determinants:
+                dn_to_up = c(self.num_spin_orbitals, up_state, a(self.num_spin_orbitals, dn_state, {det: 1}))
+                up_to_dn = c(self.num_spin_orbitals, dn_state, a(self.num_spin_orbitals, up_state, {det: 1}))
+                spin_flipped |= set(itertools.chain(dn_to_up.keys(), up_to_dn.keys()))
+            determinants |= spin_flipped
+        return determinants
+
     def expand(self, op, op_dict={}, dense_cutoff=None, slaterWeightMin=0):
         done = False
         if self.comm is None:
@@ -512,13 +524,13 @@ class Basis:
                             opResult=op_dict,
                         )
                     new_states |= set(res.keys()) - new_basis
+                new_states = self._generate_spin_flipped_determinants(new_states)
 
                 new_basis += sorted(new_states)
                 self.local_basis = list(sorted(new_basis))
         else:
             while not done:
                 local_states = set()
-
                 for state in set(self.local_basis) | local_states:
                     res = applyOp(
                         self.num_spin_orbitals,
@@ -529,6 +541,7 @@ class Basis:
                         opResult=op_dict,
                     )
                     local_states |= set(res.keys())
+                local_states = self._generate_spin_flipped_determinants(local_states)
 
                 old_size = self.size
                 self.add_states(local_states)
@@ -1020,7 +1033,7 @@ class CIPSI_Basis(Basis):
             self.truncate(psi_ref)
 
     def truncate(self, psis):
-        basis_states = list(set(state for psi in psis for state in psi))
+        basis_states = list({state for psi in psis for state in psi})
         coefficients = np.empty(
             (
                 len(
@@ -1038,7 +1051,7 @@ class CIPSI_Basis(Basis):
         self.local_basis = []
         self.add_states(new_basis)
 
-    def _calc_de_2(self, Djs, H, H_dict, Hpsi_ref, e_ref, slaterWeightMin=0):
+    def _calc_de2(self, Djs, H, H_dict, Hpsi_ref, e_ref, slaterWeightMin=0):
         """
         calculate second variational energy contribution of the Slater determinants in states.
         """
@@ -1060,34 +1073,16 @@ class CIPSI_Basis(Basis):
             e_state[j] = np.real(HDj.get(Dj, 0))
         de = e_ref - e_state
 
+        # <Dj|H|Psi_ref>^2 / <Dj|H|Dj>
         return np.abs(overlap) ** 2 / de
 
-    def _generate_spin_flipped_determinants(self, determinants):
-        # X_lm = c(l, 0, m)*a(l, 1, m) + c(l, 1, m)*a(l, 0, m)
-        # X = 1
-        # for m in -l to l (inclusive)
-        #   X = (1 + X_lm)*X
-        # apply X to det
-        # spin_flipped_dets =
-        determinants = set(determinants)
-        spin_flipped = set()
-        for dn_state in range(self.num_spin_orbitals // 2):
-            up_state = dn_state + self.num_spin_orbitals // 2
-            for det in determinants:
-                dn_to_up = c(self.num_spin_orbitals, up_state, a(self.num_spin_orbitals, dn_state, {det: 1}))
-                up_to_dn = c(self.num_spin_orbitals, dn_state, a(self.num_spin_orbitals, up_state, {det: 1}))
-                spin_flipped |= set(dn_to_up.keys()) | set(up_to_dn.keys())
-            determinants |= spin_flipped
-        return set(determinants)
-
-    def expand(self, H, H_dict={}, e_conv=1e-10, dense_cutoff=1e3, slaterWeightMin=0):
+    def expand(self, H, H_dict={}, de2_min=1e-10, dense_cutoff=1e3, slaterWeightMin=0):
         """
         Use the CIPSI method to expand the basis. Keep adding Slater determinants until the CIPSI energy is converged.
         """
         psi_ref = None
-        e_0_prev = np.inf
-        e_0 = 0
-        de_2_min = e_conv
+        e0_prev = np.inf
+        e0 = 0
         converge_count = 0
         de0_max = -self.tau * np.log(1e-4)
         while converge_count < 1:
@@ -1109,13 +1104,13 @@ class CIPSI_Basis(Basis):
                 e_max=de0_max,
                 k=1 if psi_ref is None else max(1, len(psi_ref)),
                 v0=v0,
-                eigenValueTol=e_conv,
+                eigenValueTol=de2_min,
                 dense_cutoff=dense_cutoff,
                 verbose=self.verbose,
                 distribute_eigenvectors=False,
             )
-            e_0_prev = e_0
-            e_0 = np.min(e_ref)
+            e0_prev = e0
+            e0 = np.min(e_ref)
             t0 = perf_counter() - t0
             t0 = self.comm.reduce(t0, op=MPI.SUM, root=0)
             if self.verbose:
@@ -1123,7 +1118,6 @@ class CIPSI_Basis(Basis):
                 print("->Loop over eigenstates")
 
             new_Dj = set()
-            de_2_corr = {}
             for e_i, psi_i in zip(e_ref, psi_ref):
                 t0_loop = perf_counter()
                 Hpsi_i = applyOp(
@@ -1179,33 +1173,15 @@ class CIPSI_Basis(Basis):
                     for i, state in enumerate(states):
                         Hpsi_i[state] = received_amps[r][i] + Hpsi_i.get(state, 0)
 
-                # for state, val in Hpsi_i.items():
-                #     for r in range(self.comm.size):
-                #         if Dj_basis.state_bounds[r][0] is None:
-                #             continue
-                #     send_list[r] = {
-                #         state: val
-                #         for state, val in Hpsi_i.items()
-                #         if state >= Dj_basis.state_bounds[r][0] and state <= Dj_basis.state_bounds[r][1]
-                #     }
-
-                # received_Hpsi_i = self.comm.alltoall(send_list)
-                # Hpsi_i = {}
-                # for received_dict in received_Hpsi_i:
-                #     for key in received_dict:
-                #         if key in Hpsi_i:
-                #             Hpsi_i[key] += received_dict[key]
-                #         else:
-                #             Hpsi_i[key] = received_dict[key]
                 t0 = perf_counter() - t0
                 t0 = self.comm.reduce(t0, op=MPI.SUM, root=0)
                 if self.verbose:
                     print(f"--->Time to distribute H|psi_i>: {t0/self.comm.size:.3f} seconds")
 
                 t0 = perf_counter()
-                de_2 = self._calc_de_2(Dj_basis.local_basis, H, H_dict, Hpsi_i, e_i)
+                de2 = self._calc_de2(Dj_basis.local_basis, H, H_dict, Hpsi_i, e_i)
 
-                de_2_mask = np.abs(de_2) >= de_2_min
+                de2_mask = np.abs(de2) >= de2_min
 
                 t0 = perf_counter() - t0
                 t0 = self.comm.reduce(t0, op=MPI.SUM, root=0)
@@ -1213,14 +1189,7 @@ class CIPSI_Basis(Basis):
                     print(f"--->Time to calculate de_2: {t0/self.comm.size:.3f} seconds")
 
                 t0 = perf_counter()
-                Dji = {Dj_basis.local_basis[i] for i, mask in enumerate(de_2_mask) if mask}
-                de_2_corr.update(
-                    {
-                        Dj_basis.local_basis[i]: max(de_2[i], de_2_corr.get(Dj_basis.local_basis[i], 0))
-                        for i, mask in enumerate(de_2_mask)
-                        if mask
-                    }
-                )
+                Dji = {Dj_basis.local_basis[i] for i, mask in enumerate(de2_mask) if mask}
                 Dji = self._generate_spin_flipped_determinants(Dji)
                 t0 = perf_counter() - t0
                 t0 = self.comm.reduce(t0, op=MPI.SUM, root=0)
@@ -1241,17 +1210,13 @@ class CIPSI_Basis(Basis):
             if self.verbose:
                 print(f"--->Time to add new states: {t0/self.comm.size:.3f} seconds")
 
-            if abs(e_0 - e_0_prev) < e_conv or old_size == self.size:
+            if old_size == self.size:
                 converge_count += 1
             else:
                 converge_count = 0
-            de_2_corrs = self.comm.gather(de_2_corr, root=0)
             if self.verbose:
-                de_2_corr = {}
-                for de_2s in de_2_corrs:
-                    de_2_corr.update(de_2s)
                 print(
-                    f"-----> N = {self.size: 7,d}, log(de_2_min) = {np.log10(de_2_min): 5.1f}, log(|de_2|) = {np.log10(np.abs(np.sum(list(de_2_corr.values()))))}, log(|de_0|) = {np.log10(abs(e_0 - e_0_prev))}, {converge_count=}",
+                    f"-----> N = {self.size: 7,d}, log(de2_min) = {np.log10(de2_min): 5.1f}, log(|de_0|) = {np.log10(abs(e0 - e0_prev))}, {converge_count=}",
                 )
 
         if self.verbose:
@@ -1262,10 +1227,8 @@ class CIPSI_Basis(Basis):
             e_ref, psi_ref = eigensystem_new(
                 H_sparse,
                 basis=self,
-                e_max=0,
+                e_max=de0_max,
                 k=min(1, self.size - 1),
-                eigenValueTol=0,
-                slaterWeightMin=slaterWeightMin,
                 verbose=False,
             )
             self.truncate(psi_ref)
@@ -1274,7 +1237,7 @@ class CIPSI_Basis(Basis):
         return self.build_operator_dict(H, op_dict=None)
 
     def expand_at(self, w, psi_ref, H, H_dict={}, slaterWeightMin=0):
-        de_2_min = 1e-5
+        de2_min = 1e-5
 
         t_applyOp = 0
         t_basis_mask = 0
@@ -1336,13 +1299,13 @@ class CIPSI_Basis(Basis):
             t_distribute_Hpsi += perf_counter() - t_0
 
             t_0 = perf_counter()
-            de_2 = self._calc_de_2(Dj_basis.local_basis, H, H_dict, Hpsi_ref, w)
+            de2 = self._calc_de2(Dj_basis.local_basis, H, H_dict, Hpsi_ref, w)
 
-            de_2_mask = np.abs(de_2) >= de_2_min
+            de2_mask = np.abs(de2) >= de2_min
             t_de2 += perf_counter() - t_0
 
             t_0 = perf_counter()
-            Dji = {Dj_basis.local_basis[i] for i, mask in enumerate(de_2_mask) if mask}
+            Dji = {Dj_basis.local_basis[i] for i, mask in enumerate(de2_mask) if mask}
             t_de2_filter += perf_counter() - t_0
 
             # de_2_corr = {Dj_basis.local_basis[i]: de_2[i] for i, mask in enumerate(de_2_mask) if mask}
