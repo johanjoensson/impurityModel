@@ -639,7 +639,7 @@ class Basis:
             results = [self._index_dict[val] if val in self._index_dict else self.size for val in s]
             return results.tolist()
 
-        send_list = [np.empty((0), dtype=self.dtype) for _ in range(self.comm.size)]
+        send_list = [[] for _ in range(self.comm.size)]
         send_to_ranks = []
         for i, val in enumerate(s):
             send_to_ranks.append(self.comm.size)
@@ -649,7 +649,7 @@ class Basis:
                     and val >= self.state_bounds[r][0]
                     and val <= self.state_bounds[r][1]
                 ):
-                    send_list[r] = np.append(send_list[r], [np.frombuffer(val, dtype="B")], axis=0)
+                    send_list[r].append(val)
                     send_to_ranks[-1] = r
                     break
 
@@ -675,7 +675,7 @@ class Basis:
 
         self.comm.Alltoallv(
             [
-                np.fromiter((byte for states in send_list for state in states for byte in state), dtype=np.byte),
+                np.fromiter((byte for states in send_list for state in states for byte in state), dtype=np.byte, count=np.sum(send_counts) * self.n_bytes),
                 send_counts * self.n_bytes,
                 send_displacements * self.n_bytes,
                 MPI.BYTE,
