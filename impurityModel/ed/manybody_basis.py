@@ -300,7 +300,6 @@ class Basis:
                 i.tobytes()
                 for i in np.split(received_bytes[start : start + recv_counts[r] * self.n_bytes], recv_counts[r])
             ]
-            assert len(states[r]) == recv_counts[r], f"{r=}: {len(states[r])=} != {recv_counts[r]=}"
             start += recv_counts[r] * self.n_bytes
         return states
 
@@ -611,7 +610,6 @@ class Basis:
                 if v == self.size:
                     raise ValueError(f"Could not find {val[i]} in basis!")
         elif isinstance(val, np.ndarray):
-            assert val.dtype == np.byte
             if val.shape[0] > 0:
                 res = self._index_sequence([i.tobytes() for i in np.split(val, val.shape[0] // self.n_bytes)])
             else:
@@ -796,14 +794,11 @@ class Basis:
 
         self.comm.Allreduce(v_local, v, op=MPI.SUM)
         vs = self.comm.allgather(v)
-        for v_i in vs:
-            assert np.all(v == v_i)
         # if len(psis) == 1:
         #     v = v.reshape((self.size))
         return v
 
     def build_state(self, v, distribute=False):
-        assert v.shape[0] == self.size
         if len(v.shape) == 1:
             v = v.reshape((v.shape[0], 1))
         ncols = v.shape[1]
@@ -982,19 +977,9 @@ class CIPSI_Basis(Basis):
                 nominal_impurity_occ,
                 verbose,
             )
-            # restrictions = self._get_restrictions(
-            #     valence_baths=valence_baths,
-            #     conduction_baths=conduction_baths,
-            #     delta_valence_occ=valence_baths,
-            #     delta_conduction_occ=conduction_baths,
-            #     delta_impurity_occ={l: max(abs(2 * (2 * l + 1) - N0), N0) for l, N0 in nominal_impurity_occ.items()},
-            #     nominal_impurity_occ=nominal_impurity_occ,
-            #     verbose=verbose,
-            # )
         else:
             assert num_spin_orbitals is not None
-        Basis.__init__(
-            self,
+        super(CIPSI_Basis, self).__init__(
             initial_basis=initial_basis,
             num_spin_orbitals=num_spin_orbitals,
             restrictions=restrictions,
@@ -1063,12 +1048,6 @@ class CIPSI_Basis(Basis):
         return np.abs(overlap) ** 2 / de
 
     def _generate_spin_flipped_determinants(self, determinants):
-        # X_lm = c(l, 0, m)*a(l, 1, m) + c(l, 1, m)*a(l, 0, m)
-        # X = 1
-        # for m in -l to l (inclusive)
-        #   X = (1 + X_lm)*X
-        # apply X to det
-        # spin_flipped_dets =
         determinants = set(determinants)
         spin_flipped = set()
         for dn_state in range(self.num_spin_orbitals // 2):
@@ -1144,8 +1123,9 @@ class CIPSI_Basis(Basis):
                 Dj_basis = Basis(
                     initial_basis=set(Hpsi_i.keys()),
                     num_spin_orbitals=self.num_spin_orbitals,
-                    restrictions=self.restrictions,
+                    restrictions=None,
                     comm=self.comm,
+                    verbose=False,
                 )
                 t0 = perf_counter() - t0
                 t0 = self.comm.reduce(t0, op=MPI.SUM, root=0)
@@ -1164,39 +1144,13 @@ class CIPSI_Basis(Basis):
                             send_states[r].append(state)
                             send_amps[r].append(amp)
                             break
-                for r, states in enumerate(send_states):
-                    assert len(send_states[r]) == len(
-                        send_amps[r]
-                    ), f"{r=}: {len(send_states[r])=} != {len(send_amps[r])=}"
                 received_states = self.alltoall_states(send_states)
                 received_amps = self.comm.alltoall(send_amps)
-                assert len(received_states) == len(received_amps), f"{len(received_states)=} != {len(received_amps)=}"
                 Hpsi_i = {}
                 for r, states in enumerate(received_states):
-                    assert len(received_states[r]) == len(
-                        received_amps[r]
-                    ), f"{r=}: {len(received_states[r])=} != {len(received_amps[r])=}"
                     for i, state in enumerate(states):
                         Hpsi_i[state] = received_amps[r][i] + Hpsi_i.get(state, 0)
 
-                # for state, val in Hpsi_i.items():
-                #     for r in range(self.comm.size):
-                #         if Dj_basis.state_bounds[r][0] is None:
-                #             continue
-                #     send_list[r] = {
-                #         state: val
-                #         for state, val in Hpsi_i.items()
-                #         if state >= Dj_basis.state_bounds[r][0] and state <= Dj_basis.state_bounds[r][1]
-                #     }
-
-                # received_Hpsi_i = self.comm.alltoall(send_list)
-                # Hpsi_i = {}
-                # for received_dict in received_Hpsi_i:
-                #     for key in received_dict:
-                #         if key in Hpsi_i:
-                #             Hpsi_i[key] += received_dict[key]
-                #         else:
-                #             Hpsi_i[key] = received_dict[key]
                 t0 = perf_counter() - t0
                 t0 = self.comm.reduce(t0, op=MPI.SUM, root=0)
                 if self.verbose:
@@ -1303,8 +1257,9 @@ class CIPSI_Basis(Basis):
             Dj_basis = Basis(
                 initial_basis=set(Hpsi_ref.keys()),
                 num_spin_orbitals=self.num_spin_orbitals,
-                restrictions=self.restrictions,
+                restrictions=None,
                 comm=self.comm,
+                verbose=False,
             )
             if len(Dj_basis) == 0:
                 break
@@ -1321,16 +1276,10 @@ class CIPSI_Basis(Basis):
                         send_states[r].append(state)
                         send_amps[r].append(amp)
                         break
-            for r, states in enumerate(send_states):
-                assert len(send_states[r]) == len(send_amps[r]), f"{r=}: {len(send_states[r])=} != {len(send_amps[r])=}"
             received_states = self.alltoall_states(send_states)
             received_amps = self.comm.alltoall(send_amps)
-            assert len(received_states) == len(received_amps), f"{len(received_states)=} != {len(received_amps)=}"
             Hpsi_ref = {}
             for r, states in enumerate(received_states):
-                assert len(received_states[r]) == len(
-                    received_amps[r]
-                ), f"{r=}: {len(received_states[r])=} != {len(received_amps[r])=}"
                 for i, state in enumerate(states):
                     Hpsi_ref[state] = received_amps[r][i] + Hpsi_ref.get(state, 0)
             t_distribute_Hpsi += perf_counter() - t_0
@@ -1345,7 +1294,6 @@ class CIPSI_Basis(Basis):
             Dji = {Dj_basis.local_basis[i] for i, mask in enumerate(de_2_mask) if mask}
             t_de2_filter += perf_counter() - t_0
 
-            # de_2_corr = {Dj_basis.local_basis[i]: de_2[i] for i, mask in enumerate(de_2_mask) if mask}
             t_0 = perf_counter()
             Dji = self._generate_spin_flipped_determinants(Dji)
             t_spin_flip += perf_counter() - t_0

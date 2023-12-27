@@ -187,7 +187,7 @@ def calc_Greens_function_with_offdiag(
                 restrictions=basis.restrictions,
                 num_spin_orbitals=basis.num_spin_orbitals,
                 comm=basis.comm,
-                verbose=verbose,
+                verbose=False and verbose,
                 truncation_threshold=basis.truncation_threshold,
                 tau=basis.tau,
             )
@@ -267,7 +267,7 @@ def calc_Greens_function_with_offdiag(
             restrictions=basis.restrictions,
             num_spin_orbitals=basis.num_spin_orbitals,
             comm=basis.comm,
-            verbose=verbose,
+            verbose=False and verbose,
             truncation_threshold=basis.truncation_threshold,
             tau=basis.tau,
         )
@@ -543,6 +543,43 @@ def calc_local_Greens_function_from_alpha_beta(alphas, betas, iws, ws, iw_indice
                     @ np.linalg.solve(gs_realaxis_local[w_indices], beta[np.newaxis, :, :])
                 )
     return gs_matsubara_local, gs_realaxis_local
+
+def rotate_matrix(M, T):
+    """
+    Rotate the matrix, M, using the matrix T.
+    Returns M' = T^\dagger M T
+    Parameters
+    ==========
+    M : NDArray - Matrix to rotate
+    T : NDArray - Rotation matrix to use
+    Returns
+    =======
+    M' : NDArray - The rotated matrix
+    """
+    return np.conj(T.T) @ M @ T
+
+def rotate_Greens_function(G, T):
+    """
+    Rotate the Greens function, G, using the matrix T.
+    Returns G'(\omega) = T^\dagger G(\omega) T
+    Parameters
+    ==========
+    G : NDArray - Greens function to rotate
+    T : NDArray - Rotation matrix to use
+    Returns
+    =======
+    G' : NDArray - The rotated Greens function
+    """
+    w_ind = np.argmax(G.shape)
+    return np.moveaxis(
+        np.conj(T.T)[np.newaxis, :, :] @ np.moveaxis(G, w_ind, 0) @ T[np.newaxis, :, :],
+        0,
+        w_ind,
+    )
+
+def rotate_4index_U(U4, T):
+    return np.einsum("ij,kl, jlmo, mn, op", np.conj(T.T),
+                   np.conj(T.T), U4, T, T)
 
 
 def save_Greens_function(gs, omega_mesh, label, e_scale=1, tol=1e-8):

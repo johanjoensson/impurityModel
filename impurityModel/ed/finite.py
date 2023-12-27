@@ -65,6 +65,21 @@ def get_job_tasks(rank, ranks, tasks_tot):
     return tuple(tasks)
 
 
+def rotate_matrix(M, T):
+    """
+    Rotate the matrix, M, using the matrix T.
+    Returns M' = T^\dagger M T
+    Parameters
+    ==========
+    M : NDArray - Matrix to rotate
+    T : NDArray - Rotation matrix to use
+    Returns
+    =======
+    M' : NDArray - The rotated matrix
+    """
+    return np.conj(T.T) @ M @ T
+
+
 def setup_hamiltonian(
     n_spin_orbitals,
     hOp,
@@ -378,53 +393,83 @@ def printSlaterDeterminantsAndWeights(psis, nPrintSlaterWeights):
             print("")
 
 
-def printExpValues(nBaths, es, psis, n=None):
+def printExpValues(nBaths, es, psis, rot_to_spherical, l=2):
     """
     print several expectation values, e.g. E, N, L^2.
     """
-    if n is None:
-        n = len(es)
     if rank == 0:
         print("E0 = {:7.4f}".format(es[0]))
         print(
-            "{:^3s} {:>11s} {:>8s} {:>8s} {:>8s} {:>8s} {:>8s} {:>9s} {:>9s} {:>9s} {:>9s}".format(
+            # "{:^3s} {:>11s} {:>8s} {:>8s} {:>8s} {:>9s} {:>9s} {:>9s} {:>9s}".format(
+            "{:^3s} {:>11s} {:>8s} {:>8s} {:>8s} {:>9s} {:>9s}".format(
                 "i",
                 "E-E0",
                 "N(3d)",
-                "N(egDn)",
-                "N(egUp)",
-                "N(t2gDn)",
-                "N(t2gUp)",
+                "N(Dn)",
+                "N(Up)",
                 "Lz(3d)",
                 "Sz(3d)",
-                "L^2(3d)",
-                "S^2(3d)",
+                # "L^2(3d)",
+                # "S^2(3d)",
             )
         )
     #        print(('  i  E-E0  N(3d) N(egDn) N(egUp) N(t2gDn) '
     #               'N(t2gUp) Lz(3d) Sz(3d) L^2(3d) S^2(3d)'))
     if rank == 0:
-        for i, (e, psi) in enumerate(zip(es[:n] - es[0], psis[:n])):
-            oc = getEgT2gOccupation(nBaths, psi)
+        for i, (e, psi) in enumerate(zip(es - es[0], psis)):
+            rho = getDensityMatrix(nBaths, psi, 2)
+            rhomat = np.zeros((10, 10), dtype=complex)
+            for (state1, state2), val in rho.items():
+                m = c2i(nBaths, state1)
+                n = c2i(nBaths, state2)
+                rhomat[m, n] = val
+            rho_spherical = rotate_matrix(rhomat, rot_to_spherical)
+            N, Ndn, Nup = get_occupations_from_rho_spherical(rho_spherical, l=2)
             print(
-                ("{:3d} {:11.8f} {:8.5f} {:8.5f} {:8.5f} {:8.5f} {:8.5f}" " {: 9.6f} {: 9.6f} {:9.5f} {:9.5f}").format(
+                # ("{:3d} {:11.8f} {:8.5f} {:8.5f} {:8.5f}" " {: 9.6f} {: 9.6f} {:9.5f} {:9.5f}").format(
+                ("{:3d} {:11.8f} {:8.5f} {:8.5f} {:8.5f}" " {: 9.6f} {: 9.6f}").format(
                     i,
                     e,
-                    getTraceDensityMatrix(nBaths, psi),
-                    oc[0],
-                    oc[1],
-                    oc[2],
-                    oc[3],
-                    getLz3d(nBaths, psi),
-                    getSz3d(nBaths, psi),
-                    getLsqr3d(nBaths, psi),
-                    getSsqr3d(nBaths, psi),
+                    N,
+                    Ndn,
+                    Nup,
+                    get_Lz_from_rho_spherical(rho_spherical, l=2),
+                    get_Sz_from_rho_spherical(rho_spherical, l=2),
+                    # get_L2_from_rho_spherical(rho_spherical, l=2),
+                    # get_S2_from_rho_spherical(rho_spherical, l=2),
                 )
             )
         print("\n")
 
 
-def printThermalExpValues_new(nBaths, es, psis, tau, ecut):
+def get_occupations_from_rho_spherical(rho, l):
+    return (
+        np.real(np.trace(rho)),
+        np.real(np.trace(rho[: 2 * l + 1, : 2 * l + 1])),
+        np.real(np.trace(rho[2 * l + 1 :, 2 * l + 1 :])),
+    )
+
+
+def get_Lz_from_rho_spherical(rho, l):
+    return np.real(
+        sum(ml * (rho[i, i] + rho[i + (2 * l + 1), i + (2 * l + 1)]) for i, ml in enumerate(range(-l, l + 1)))
+    )
+
+
+def get_L2_from_rho_spherical(rho, l):
+    return l * (l + 1) * np.real(np.trace(rho))
+
+
+def get_Sz_from_rho_spherical(rho, l):
+    return 1 / 2 * np.real(sum(-rho[i, i] + rho[i + (2 * l + 1), i + (2 * l + 1)] for i in range(2 * l + 1)))
+
+
+def get_S2_from_rho_spherical(rho, l):
+    # S^2 |l, ms, ml> = s(s+1)|l, ms, ml>, s = 1/2
+    return 3 / 4 * np.real(np.trace(rho))
+
+
+def printThermalExpValues_new(nBaths, es, psis, tau, rot_to_spherical):
     """
     print several thermal expectation values, e.g. E, N, L^2.
 
@@ -433,28 +478,25 @@ def printThermalExpValues_new(nBaths, es, psis, tau, ecut):
     """
     e = es - es[0]
     # Select relevant energies
-    mask = e < ecut
-    e = e[mask]
-    psis = np.array(psis)[mask]
-    occs = thermal_average_scale_indep(e, np.array([getEgT2gOccupation(nBaths, psi) for psi in psis]), tau=tau)
+    psis = np.array(psis)
+    rhos = [getDensityMatrix(nBaths, psi, 2) for psi in psis]
+    rhomats = np.zeros((len(rhos), 10, 10), dtype=complex)
+    for mat, rho in zip(rhomats, rhos):
+        for (state1, state2), val in rho.items():
+            i = c2i(nBaths, state1)
+            j = c2i(nBaths, state2)
+            mat[i, j] = val
+    rho_thermal = thermal_average_scale_indep(es, rhomats, tau)
+    rho_thermal_spherical = rotate_matrix(rho_thermal, rot_to_spherical)
+    N, Ndn, Nup = get_occupations_from_rho_spherical(rho_thermal_spherical, l=2)
     print("<E-E0> = {:8.7f}".format(thermal_average_scale_indep(e, e, tau=tau)))
-    print(
-        "<N(3d)> = {:8.7f}".format(
-            thermal_average_scale_indep(e, [getTraceDensityMatrix(nBaths, psi) for psi in psis], tau=tau)
-        )
-    )
-    print("<N(egDn)> = {:8.7f}".format(occs[0]))
-    print("<N(egUp)> = {:8.7f}".format(occs[1]))
-    print("<N(t2gDn)> = {:8.7f}".format(occs[2]))
-    print("<N(t2gUp)> = {:8.7f}".format(occs[3]))
-    print("<Lz(3d)> = {:8.7f}".format(thermal_average_scale_indep(e, [getLz3d(nBaths, psi) for psi in psis], tau=tau)))
-    print("<Sz(3d)> = {:8.7f}".format(thermal_average_scale_indep(e, [getSz3d(nBaths, psi) for psi in psis], tau=tau)))
-    print(
-        "<L^2(3d)> = {:8.7f}".format(thermal_average_scale_indep(e, [getLsqr3d(nBaths, psi) for psi in psis], tau=tau))
-    )
-    print(
-        "<S^2(3d)> = {:8.7f}".format(thermal_average_scale_indep(e, [getSsqr3d(nBaths, psi) for psi in psis], tau=tau))
-    )
+    print("<N(3d)> = {:8.7f}".format(N))
+    print("<N(Dn)> = {:8.7f}".format(Ndn))
+    print("<N(Up)> = {:8.7f}".format(Nup))
+    print("<Lz(3d)> = {:8.7f}".format(get_Lz_from_rho_spherical(rho_thermal_spherical, l=2)))
+    print("<Sz(3d)> = {:8.7f}".format(get_Sz_from_rho_spherical(rho_thermal_spherical, l=2)))
+    # print("<L^2(3d)> = {:8.7f}".format(get_L2_from_rho_spherical(rho_thermal_spherical, l=2)))
+    # print("<S^2(3d)> = {:8.7f}".format(get_S2_from_rho_spherical(rho_thermal_spherical, l=2)))
 
 
 def printThermalExpValues(nBaths, es, psis, T=300, cutOff=10):

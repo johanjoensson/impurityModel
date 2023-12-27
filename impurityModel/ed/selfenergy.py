@@ -50,7 +50,7 @@ def find_gs(h_op, N0, delta_occ, bath_states, num_spin_orbitals, rank, verbose, 
             delta_impurity_occ=delta_imp_occ,
             nominal_impurity_occ={l: N0[0][l] + d for l in N0[0]},
             truncation_threshold=1e6,
-            verbose=verbose,
+            verbose=False and verbose,
             comm=MPI.COMM_WORLD,
         )
         if verbose:
@@ -121,6 +121,7 @@ def run(cluster, h0, iw, w, delta, tau, verbosity, reort, dense_cutoff):
         tolPrintOccupation,
         verbosity,
         blocks=[cluster.blocks[i] for i in cluster.inequivalent_blocks],
+        rot_to_spherical=np.conj(cluster.corr_to_cf.T) @ cluster.corr_to_spherical,
         cluster_label=cluster.label,
         reort=reort,
         dense_cutoff=dense_cutoff,
@@ -153,6 +154,7 @@ def calc_selfenergy(
     tolPrintOccupation,
     verbosity,
     blocks,
+    rot_to_spherical,
     cluster_label,
     reort,
     dense_cutoff,
@@ -205,6 +207,7 @@ def calc_selfenergy(
 
     energy_cut = -tau * np.log(1e-4)
 
+    # basis.verbose = False
     basis.tau = tau
     h_dict = basis.expand(h, dense_cutoff=dense_cutoff, e_conv=1e-10)
     if basis.size < dense_cutoff:
@@ -221,8 +224,8 @@ def calc_selfenergy(
         dense_cutoff=dense_cutoff,
     )
     if verbosity >= 2:
-        finite.printThermalExpValues_new(sum_bath_states, es, psis, tau, energy_cut)
-        finite.printExpValues(sum_bath_states, es, psis)
+        finite.printThermalExpValues_new(sum_bath_states, es, psis, tau, rot_to_spherical)
+        finite.printExpValues(sum_bath_states, es, psis, rot_to_spherical)
 
     if verbosity >= 1:
         print("Consider {:d} eigenstates for the spectra \n".format(len(es)))
