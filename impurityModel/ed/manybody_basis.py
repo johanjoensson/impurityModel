@@ -1061,19 +1061,7 @@ class CIPSI_Basis(Basis):
         # <Dj|H|Psi_ref>^2 / <Dj|H|Dj>
         return np.abs(overlap) ** 2 / de
 
-    def _generate_spin_flipped_determinants(self, determinants):
-        determinants = set(determinants)
-        spin_flipped = set()
-        for dn_state in range(self.num_spin_orbitals // 2):
-            up_state = dn_state + self.num_spin_orbitals // 2
-            for det in determinants:
-                dn_to_up = c(self.num_spin_orbitals, up_state, a(self.num_spin_orbitals, dn_state, {det: 1}))
-                up_to_dn = c(self.num_spin_orbitals, dn_state, a(self.num_spin_orbitals, up_state, {det: 1}))
-                spin_flipped |= set(dn_to_up.keys()) | set(up_to_dn.keys())
-            determinants |= spin_flipped
-        return set(determinants)
-
-    def expand(self, H, H_dict={}, e_conv=1e-10, dense_cutoff=1e3, slaterWeightMin=0):
+    def expand(self, H, H_dict={}, de2_min=1e-10, dense_cutoff=1e3, slaterWeightMin=0):
         """
         Use the CIPSI method to expand the basis. Keep adding Slater determinants until the CIPSI energy is converged.
         """
