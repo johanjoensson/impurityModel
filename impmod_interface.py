@@ -5,7 +5,8 @@ import traceback
 import sys
 import pickle
 from impurityModel.ed.lanczos import Reort
-from os import devnull
+from impurityModel.ed.greens_function import rotate_Greens_function, rotate_matrix, rotate_4index_U
+from os import devnull, remove
 from rspt2spectra.hyb_fit import get_block_structure, get_identical_blocks, get_transposed_blocks
 
 
@@ -19,6 +20,7 @@ class impModCluster:
         label,
         h_dft,
         hyb,
+        u4,
         slater,
         nominal_occ,
         delta_occ,
@@ -27,11 +29,13 @@ class impModCluster:
         sig_real,
         sig_static,
         sig_dc,
-        rot_spherical,
+        corr_to_cf,
+        corr_to_spherical,
         blocked,
     ):
         self.label = label
         self.h_dft = h_dft
+        self.u4 = u4
         self.hyb = hyb
         self.slater = slater
         self.bath_states = n_bath_states
@@ -41,40 +45,23 @@ class impModCluster:
         self.sig_real = sig_real
         self.sig_static = sig_static
         self.sig_dc = sig_dc
-        self.rot_spherical = rot_spherical
+        self.corr_to_cf = corr_to_cf
+        self.corr_to_spherical = corr_to_spherical
 
         if blocked:
             self.blocks = get_block_structure(
-                np.moveaxis(
-                    np.conj(rot_spherical.T)[np.newaxis, :, :]
-                    @ np.moveaxis(hyb, -1, 0)
-                    @ rot_spherical[np.newaxis, :, :],
-                    0,
-                    -1,
-                ),
-                np.conj(rot_spherical.T) @ h_dft @ rot_spherical,
+                self.hyb,
+                h_dft,
             )
             self.identical_blocks = get_identical_blocks(
                 self.blocks,
-                np.moveaxis(
-                    np.conj(rot_spherical.T)[np.newaxis, :, :]
-                    @ np.moveaxis(hyb, -1, 0)
-                    @ rot_spherical[np.newaxis, :, :],
-                    0,
-                    -1,
-                ),
-                np.conj(rot_spherical.T) @ h_dft @ rot_spherical,
+                self.hyb,
+                h_dft,
             )
             self.transposed_blocks = get_transposed_blocks(
                 self.blocks,
-                np.moveaxis(
-                    np.conj(rot_spherical.T)[np.newaxis, :, :]
-                    @ np.moveaxis(hyb, -1, 0)
-                    @ rot_spherical[np.newaxis, :, :],
-                    0,
-                    -1,
-                ),
-                np.conj(rot_spherical.T) @ h_dft @ rot_spherical,
+                self.hyb,
+                h_dft,
             )
         else:
             # Use only one nxn block
@@ -94,11 +81,12 @@ class impModCluster:
 
 
 class dcStruct:
-    def __init__(self, nominal_occ, delta_occ, num_spin_orbitals, bath_states, slater_params, peak_position):
+    def __init__(self, nominal_occ, delta_occ, num_spin_orbitals, bath_states, u4, slater_params, peak_position):
         self.nominal_occ = nominal_occ
         self.delta_occ = delta_occ
         self.num_spin_orbitals = num_spin_orbitals
         self.bath_states = bath_states
+        self.u4 = u4
         self.slater_params = slater_params
         self.peak_position = peak_position
 
@@ -138,7 +126,6 @@ def parse_solver_line(solver_line):
             f"--->Nbaths {solver_array[4]}\n"
             f"--->Other params {solver_array[5:]}"
         )
-    partial_reort = False
     dense_cutoff = 1000
     reort = Reort.NONE
     blocked = False
@@ -170,6 +157,7 @@ def run_impmod_ed(
     rspt_dc_line,
     rspt_dc_flag,
     rspt_slater,
+    rspt_u4,
     rspt_hyb,
     rspt_h_dft,
     rspt_sig,
@@ -201,6 +189,12 @@ def run_impmod_ed(
 
     h_dft = np.ndarray(
         buffer=ffi.buffer(rspt_h_dft, n_orb * n_orb * size_complex), shape=(n_orb, n_orb), order="F", dtype=complex
+    )
+    u4 = np.ndarray(
+        buffer=ffi.buffer(rspt_u4, n_orb * n_orb * n_orb * n_orb * size_complex),
+        shape=(n_orb, n_orb, n_orb, n_orb),
+        order="F",
+        dtype=complex,
     )
     hyb = np.ndarray(
         buffer=ffi.buffer(rspt_hyb, n_w * n_orb * n_orb * size_complex),
@@ -243,15 +237,22 @@ def run_impmod_ed(
     slater_from_rspt = np.ndarray(buffer=ffi.buffer(rspt_slater, 4 * size_real), shape=(4,), dtype=float)
 
     if n_rot_cols == n_orb:
-        rot_spherical = rspt_rot_spherical_arr
         corr_to_cf = rspt_corr_to_cf_arr
+        corr_to_spherical = rspt_rot_spherical_arr
     else:
-        rot_spherical = np.empty((n_orb, n_orb), dtype=complex)
-        rot_spherical[:, :n_rot_cols] = rspt_rot_spherical_arr
-        rot_spherical[:, n_rot_cols:] = np.roll(rspt_rot_spherical_arr, n_rot_cols, axis=0)
         corr_to_cf = np.empty((n_orb, n_orb), dtype=complex)
         corr_to_cf[:, :n_rot_cols] = rspt_corr_to_cf_arr
         corr_to_cf[:, n_rot_cols:] = np.roll(rspt_corr_to_cf_arr, n_rot_cols, axis=0)
+        corr_to_spherical = np.empty((n_orb, n_orb), dtype=complex)
+        corr_to_spherical[:, :n_rot_cols] = rspt_rot_spherical_arr
+        corr_to_spherical[:, n_rot_cols:] = np.roll(rspt_rot_spherical_arr, n_rot_cols, axis=0)
+    # Rotate the U-matrix to the CF basis
+    u4 = rotate_4index_U(u4, corr_to_cf)
+    # impurityModel uses a weird convention for the U-matrix
+    u4 = np.moveaxis(u4, 1, 0)
+    # Rotate hybridization function and DFT hamiltonian to the CF basis
+    hyb = rotate_Greens_function(hyb, corr_to_cf)
+    h_dft = rotate_matrix(h_dft, corr_to_cf)
 
     l = (n_orb // 2 - 1) // 2
 
@@ -262,9 +263,10 @@ def run_impmod_ed(
     stdout_save = sys.stdout
     if rank == 0:
         sys.stdout = open(f"impurityModel-{label.strip()}{'-dc' if rspt_dc_flag == 1 else ''}.out", "w")
-    else:
+    elif verbosity > 0:
         sys.stdout = open(f"impurityModel-{label.strip()}{'-dc' if rspt_dc_flag == 1 else ''}-{rank}.out", "w")
-        # sys.stdout = open(devnull, "w")
+    else:
+        sys.stdout = open(devnull, "w")
 
     nominal_occ, delta_occ, bath_states_per_orbital, reort, dense_cutoff, blocked = parse_solver_line(solver_line)
     nominal_occ = ({l: nominal_occ[0]}, {l: nominal_occ[1]}, {l: nominal_occ[2]})
@@ -274,7 +276,6 @@ def run_impmod_ed(
         h_dft,
         hyb,
         corr_to_cf,
-        rot_spherical,
         bath_states_per_orbital,
         w,
         eim,
@@ -289,9 +290,6 @@ def run_impmod_ed(
     if rank == 0:
         with open(f"Ham-op-{label.strip()}.pickle", "wb") as f:
             pickle.dump(h_op, f)
-
-    # comm.barrier()
-    # return
 
     h_op = comm.bcast(h_op, root=0)
     e_baths = comm.bcast(e_baths, root=0)
@@ -312,6 +310,7 @@ def run_impmod_ed(
             delta_occ=delta_occ,
             num_spin_orbitals=n_orb + len(e_baths),
             bath_states=({l: sum(e_baths < 0)}, {l: sum(e_baths >= 0)}),
+            u4=u4,
             slater_params=slater,
             peak_position=peak_position,
         )
@@ -337,6 +336,7 @@ def run_impmod_ed(
         label=label.strip(),
         h_dft=h_dft,
         hyb=hyb,
+        u4=u4,
         slater=slater,
         n_bath_states=n_bath_states,
         nominal_occ=nominal_occ,
@@ -345,7 +345,8 @@ def run_impmod_ed(
         sig_real=sig_real,
         sig_static=sig_static,
         sig_dc=sig_dc,
-        rot_spherical=rot_spherical,
+        corr_to_cf=corr_to_cf,
+        corr_to_spherical=corr_to_spherical,
         blocked=blocked,
     )
 
@@ -356,15 +357,11 @@ def run_impmod_ed(
             cluster, h_op, 1j * iw, w, eim, tau, verbosity if rank == 0 else 0, reort=reort, dense_cutoff=dense_cutoff
         )
 
-        # Rotate self energy from spherical harmonics basis to RSPt's corr basis
-        u = cluster.rot_spherical
-        cluster.sig[:, :, :] = np.moveaxis(
-            u[np.newaxis, :, :] @ np.moveaxis(cluster.sig, -1, 0) @ np.conj(u.T)[np.newaxis, :, :], 0, -1
-        )
-        cluster.sig_real[:, :, :] = np.moveaxis(
-            u[np.newaxis, :, :] @ np.moveaxis(cluster.sig_real, -1, 0) @ np.conj(u.T)[np.newaxis, :, :], 0, -1
-        )
-        cluster.sig_static[:, :] = u @ cluster.sig_static @ np.conj(u.T)
+        # Rotate self energy from CF basis to RSPt's corr basis
+        u = np.conj(corr_to_cf.T)
+        cluster.sig[:, :, :] = rotate_Greens_function(cluster.sig, u)
+        cluster.sig_real[:, :, :] = rotate_Greens_function(cluster.sig_real, u)
+        cluster.sig_static[:, :] = rotate_matrix(cluster.sig_static, u)
     except Exception as e:
         print(f"!" * 100)
         print(f"Exception {repr(e)} caught on rank {rank}!")
@@ -384,33 +381,19 @@ def run_impmod_ed(
     return
 
 
-def symmetrize_sigma(sigma, blocks, equivalent_blocks):
-    symmetrized_sigma = np.zeros_like(sigma)
-    for equivalent_block in equivalent_blocks:
-        for block_i in equivalent_block:
-            block_idx = np.ix_(blocks[block_i], blocks[block_i])
-            for block in equivalent_block:
-                idx = np.ix_(blocks[block], blocks[block])
-                symmetrized_sigma[idx] += sigma[block_idx] / len(equivalent_block)
-    return symmetrized_sigma
-
-
 def fixed_peak_dc(h0_op, dc_struct, rank, verbose, dense_cutoff):
     from impurityModel.ed import finite
     from rspt2spectra import h2imp
     from impurityModel.ed.manybody_basis import Basis, CIPSI_Basis
     from mpi4py import MPI
 
-    comm = MPI.COMM_WORLD
-
     N0 = dc_struct.nominal_occ
     delta_impurity_occ, delta_valence_occ, delta_conduction_occ = dc_struct.delta_occ
     peak_position = dc_struct.peak_position
-    num_spin_orbitals = dc_struct.num_spin_orbitals
     num_valence_bath_states, num_conduction_bath_states = dc_struct.bath_states
     sum_bath_states = {l: num_valence_bath_states[l] + num_conduction_bath_states[l] for l in num_valence_bath_states}
-    l = [lv for lv in N0[0]][0]
-    u = finite.getUop(l, l, l, l, dc_struct.slater_params)
+    l = list(lv for lv in N0[0])[0]
+    u = finite.getUop_from_rspt_u4(dc_struct.u4)
 
     Np = ({l: N0[0][l] + 1 for l in N0[0]}, N0[1], N0[2])
     Nm = ({l: N0[0][l] - 1 for l in N0[0]}, N0[1], N0[2])
@@ -422,7 +405,7 @@ def fixed_peak_dc(h0_op, dc_struct, rank, verbose, dense_cutoff):
             delta_conduction_occ=delta_conduction_occ,
             delta_impurity_occ=delta_impurity_occ,
             nominal_impurity_occ=Np[0],
-            verbose=verbose,
+            verbose=False and verbose,
             comm=MPI.COMM_WORLD,
         )
         basis_lower = CIPSI_Basis(
@@ -432,7 +415,7 @@ def fixed_peak_dc(h0_op, dc_struct, rank, verbose, dense_cutoff):
             delta_conduction_occ=delta_conduction_occ,
             delta_impurity_occ=delta_impurity_occ,
             nominal_impurity_occ=N0[0],
-            verbose=verbose,
+            verbose=False and verbose,
             comm=MPI.COMM_WORLD,
         )
     else:
@@ -443,7 +426,7 @@ def fixed_peak_dc(h0_op, dc_struct, rank, verbose, dense_cutoff):
             delta_conduction_occ=delta_conduction_occ,
             delta_impurity_occ=delta_impurity_occ,
             nominal_impurity_occ=N0[0],
-            verbose=verbose,
+            verbose=False and verbose,
             comm=MPI.COMM_WORLD,
         )
         basis_lower = CIPSI_Basis(
@@ -453,7 +436,7 @@ def fixed_peak_dc(h0_op, dc_struct, rank, verbose, dense_cutoff):
             delta_conduction_occ=delta_conduction_occ,
             delta_impurity_occ=delta_impurity_occ,
             nominal_impurity_occ=Nm[0],
-            verbose=verbose,
+            verbose=False and verbose,
             comm=MPI.COMM_WORLD,
         )
 
@@ -499,7 +482,6 @@ def get_ed_h0(
     h_dft,
     hyb,
     corr_to_cf,
-    rot_spherical,
     bath_states_per_orbital,
     w,
     eim,
@@ -547,13 +529,27 @@ def get_ed_h0(
     if comm.rank == 0:
         with open(f"hyb-in-{label}.npy", "wb") as f:
             np.save(f, hyb)
-    if save_baths_and_hopping:
+
+    if comm.rank == 0:
+        try:
+            with open(f"impurityModel_bath_energies_and_hopping_parameters_{label}.npy", "rb") as f:
+                eb = np.load(f)
+                v = np.load(f)
+            remove(f"impurityModel_bath_energies_and_hopping_parameters_{label}.npy")
+        except FileNotFoundError:
+            eb = None
+            v = None
+    eb = comm.bcast(eb if comm.rank == 0 else None)
+    v = comm.bcast(v if comm.rank == 0 else None)
+    if eb is not None and verbose:
+        print(
+            f"Read bath energies and hopping parameters from impurityModel_bath_energies_and_hopping_parameters_{label}.npy"
+        )
+    if eb is None and v is None:
         eb, v = fit_hyb(
             w,
             eim,
             hyb,
-            corr_to_cf,
-            rot_spherical,
             bath_states_per_orbital,
             gamma=gamma,
             imag_only=imag_only,
@@ -562,43 +558,23 @@ def get_ed_h0(
             comm=comm,
             new_v=True,
         )
+
+    if save_baths_and_hopping:
         if comm is not None and comm.rank == 0:
             with open(f"impurityModel_bath_energies_and_hopping_parameters_{label}.npy", "wb") as f:
                 np.save(f, eb)
                 np.save(f, v)
-    else:
-        try:
-            with open(f"impurityModel_bath_energies_and_hopping_parameters_{label}.npy", "rb") as f:
-                eb = np.load(f)
-                v = np.load(f)
-            if verbose:
-                print(
-                    f"Read bath energies and hopping parameters from impurityModel_bath_energies_and_hopping_parameters_{label}.npy"
-                )
-        except:
-            eb, v = fit_hyb(
-                w,
-                eim,
-                hyb,
-                corr_to_cf,
-                rot_spherical,
-                bath_states_per_orbital,
-                gamma=gamma,
-                imag_only=imag_only,
-                x_lim=(w[0], 0 if valence_bath_only else w[-1]),
-                verbose=verbose,
-                comm=comm,
-                new_v=True,
-            )
     if verbose:
         fit_hyb = offdiagonal.get_hyb(w + eim * 1j, eb, v)
-        save_Greens_function(fit_hyb, w, f"{label}-hyb-fit")
+        save_Greens_function(rotate_Greens_function(fit_hyb, np.conj(corr_to_cf.T)), w, f"{label}-hyb-fit")
         with open(f"{label}-hyb-fit.npy", "wb") as f:
-            fit_hyb = offdiagonal.get_hyb(w + eim * 1j, eb, v @ np.conj(rot_spherical.T))
+            fit_hyb = offdiagonal.get_hyb(w + eim * 1j, eb, v)
             np.save(f, fit_hyb)
 
     if verbose:
         print(f"DFT hamiltonian")
+        matrix_print(rotate_matrix(h_dft, np.conj(corr_to_cf.T)))
+        print(f"DFT hamiltonian in CF basis")
         matrix_print(h_dft)
         print("Hopping parameters")
         matrix_print(v)
@@ -607,16 +583,21 @@ def get_ed_h0(
 
     n_orb = v.shape[1]
     h = np.zeros((n_orb + len(eb), n_orb + len(eb)), dtype=complex)
-    h[:n_orb, :n_orb] = np.conj(rot_spherical.T) @ h_dft @ rot_spherical
+    h[:n_orb, :n_orb] = h_dft
     h[:n_orb, n_orb:] = np.conj(v.T)
     h[n_orb:, :n_orb] = v
     np.fill_diagonal(h[n_orb:, n_orb:], eb)
 
     if verbose:
+        u = np.identity(h.shape[0], dtype=complex)
+        u[:n_orb, :n_orb] = np.conj(corr_to_cf.T)
+        h_tmp = rotate_matrix(h, u)  # np.conj(u.T) @ h @ u
+        print(f"DFT hamiltonian, with baths")
+        matrix_print(h_tmp)
         with open(f"Ham-{label}.inp", "w") as f:
-            for i in range(h.shape[0]):
-                for j in range(h.shape[1]):
-                    f.write(f" 0 0 0 {i+1} {j+1} {np.real(h[i,j])} {np.imag(h[i,j])}\n")
+            for i in range(h_tmp.shape[0]):
+                for j in range(h_tmp.shape[1]):
+                    f.write(f" 0 0 0 {i+1} {j+1} {np.real(h_tmp[i, j])} {np.imag(h_tmp[i, j])}\n")
 
     h_op = h2imp.get_H_operator_from_dense_rspt_H_matrix(h, ang=(n_orb // 2 - 1) // 2)
     return h_op, eb
