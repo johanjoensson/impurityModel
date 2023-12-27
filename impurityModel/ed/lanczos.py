@@ -186,9 +186,7 @@ def get_block_Lanczos_matrices(
         # take at most N/n steps in total
         for i in range(int(np.ceil(krylovSize / n))):
             t_h = time.perf_counter()
-            # comm.Reduce(h @ q[1], wp2, op=MPI.SUM, root=0)
-            send = h @ q_i
-            comm.Reduce(send, wp, op=MPI.SUM, root=0)
+            comm.Reduce(h @ q_i, wp, op=MPI.SUM, root=0)
             t_matmul += time.perf_counter() - t_h
 
             if rank == 0:
@@ -210,27 +208,14 @@ def get_block_Lanczos_matrices(
                 t_qr += time.perf_counter() - t_qr_fact
                 b_mask = np.abs(np.diagonal(betas[i])) < np.finfo(float).eps
                 if i % max(int(np.ceil(krylovSize // (100 * n))), 1) == 0:
-                # if i % 5 == 0:
                     t_converged = time.perf_counter()
                     try:
                         delta = converged(alphas, betas)
                     except Exception as e:
                         raise e
 
-                    done = delta < 1e-3
+                    done = delta < 1e-6
                     t_conv += time.perf_counter() - t_converged
-                # while not done and np.any(b_mask) and i < krylovSize // n - 1:
-                #     q[1] = q[1] @ betas[i]
-                #     q[1, :, b_mask] = np.random.rand(N, sum(b_mask)) + 1j *
-                #     np.random.rand(N, sum(b_mask))
-                #     if reort_mode != Reort.NONE:
-                #         q[1, :, b_mask] -= Q.calc_projection(q[1, :, b_mask])
-                #         # q[1] -= Q @ (np.conj(Q.T) @ q[1])
-                #         W[1, -1] = 1
-                #     q[1], betas[i] = sp.linalg.qr(q[1], mode="economic",
-                #     overwrite_a=False, check_finite=True)
-                #     b_mask = np.abs(np.diagonal(betas[i])) <
-                #     np.finfo(float).eps
 
             done = comm.bcast(done, root=0)
             if done:
@@ -283,16 +268,6 @@ def get_block_Lanczos_matrices(
                     # clearly a function
                     mask = np.array([np.any(np.abs(m) > eps ** (3 / 4), axis=1) for m in W[1]])
                     mask[-1:] = False
-                    # if force_reort is None:
-                    #     Qm = Q[:, mask[:-1].flatten()]
-                    # else:
-                    #     force_reort = np.append(force_reort, [[False] * n], axis=0)
-                    #     Qm = Q[:, np.logical_or(mask, force_reort)[:-1].flatten()]
-                    # q[1] = q[1] @ betas[i]
-
-                    # q[1], betas[i] = sp.linalg.qr(
-                    #     q[1] - Qm @ (np.conj(Qm.T) @ q[1]), mode="economic", overwrite_a=True, check_finite=False
-                    # )
                     b_mask = np.abs(np.diagonal(betas[i])) < np.finfo(float).eps
                     while np.any(b_mask):
                         q[1] = q[1] @ betas[i]
@@ -300,13 +275,8 @@ def get_block_Lanczos_matrices(
                         q[1], betas[i] = sp.linalg.qr(
                             q[1] - Q.calc_projection(q[1]), mode="economic", overwrite_a=True, check_finite=False
                         )
-                        # q[1], betas[i] = sp.linalg.qr(
-                        #     q[1] - Q @ (np.conj(Q.T) @ q[1]), mode="economic", overwrite_a=True, check_finite=False
-                        # )
                         b_mask = np.abs(np.diagonal(betas[i])) < np.finfo(float).eps
                         W[1, -1] = 1
-                        # reort = True
-                        # mask[-1:] = True
 
                     W[1, mask] = eps * np.random.normal(loc=0, scale=1.5, size=W[1, mask].shape)
 
@@ -326,17 +296,14 @@ def get_block_Lanczos_matrices(
         # at most N/n steps in total
         for i in range(max(krylovSize // n, 1)):
             # Update to PRO block Lanczos!!
-            wp = h @ q[1]  # - q[0] @ np.conj(betas[i-1].T)
-            # alphas[i] = np.conj(q[1].T) @ wp
+            wp = h @ q[1]
             alphas = np.append(alphas, [np.conj(q[1].T) @ wp], axis=0)
             betas = np.append(betas, [np.zeros((n, n), dtype=complex)], axis=0)
             w = wp - q[1] @ alphas[i] - q[0] @ np.conj(betas[i - 1].T)
             q[0] = q[1]
-            # q[1], betas[i] = np.linalg.qr(w)
             q[1], betas[i] = sp.linalg.qr(w, mode="economic", overwrite_a=True, check_finite=False)
-            # q[1], betas[i] = my_qr(w)
             delta = converged(alphas, betas)
-            if delta < 1e-15:
+            if delta < 1e-6:
                 break
 
     if verbose:
