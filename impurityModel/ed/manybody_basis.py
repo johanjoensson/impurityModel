@@ -935,8 +935,10 @@ class Basis:
 
         op_dict = self.build_operator_dict(op, op_dict)
 
-        rows_in_basis = list({state for states in op_dict.values() for state in states})
-        rows_in_basis = {state for state, in_basis in zip(rows_in_basis, self.contains(rows_in_basis)) if in_basis}
+        rows_in_basis = list({row for column in op_dict.keys() for row in op_dict[column].keys()})
+        in_basis_mask = self.contains(rows_in_basis)
+        print(f"{len(rows_in_basis)=} {sum(in_basis_mask)=}")
+        rows_in_basis = {state for state, in_basis in zip(rows_in_basis, in_basis_mask) if in_basis}
 
         # rows = np.empty(
         #     (sum(row in rows_in_basis for column in self.local_basis for row in op_dict[column]) * self.n_bytes),
@@ -962,9 +964,10 @@ class Basis:
                 columns.append(self._index_dict[column])
                 rows.append(row)
                 values.append(op_dict[column][row])
-                i += 1
+                # i += 1
+        rows = self.index(rows)
         return sp.sparse.csr_matrix(
-            (values, (self.index(rows), columns)), shape=(self.size, self.size), dtype=complex
+            (values, (rows, columns)), shape=(self.size, self.size), dtype=complex
         )
 
     def _build_PETSc_matrix(self, op, op_dict=None):
