@@ -338,7 +338,7 @@ class Basis:
                 )
 
             self.comm.Gatherv(
-                np.fromiter((byte for state in samples for byte in state), dtype=np.byte),
+                np.fromiter((byte for state in samples for byte in state), dtype=np.byte, count=len(samples) * self.n_bytes),
                 [all_samples_bytes, samples_count * self.n_bytes, offsets * self.n_bytes, MPI.BYTE],
                 root=0,
             )
@@ -352,7 +352,7 @@ class Basis:
 
                 bounds = [sum(sizes[:i]) for i in range(self.comm.size)]
                 state_bounds = [all_states[bound] if bound < len(all_states) else all_states[-1] for bound in bounds]
-                state_bounds_bytes = np.fromiter((byte for state in state_bounds for byte in state), dtype=np.byte)
+                state_bounds_bytes = np.fromiter((byte for state in state_bounds for byte in np.frombuffer(state, dtype=np.byte, count=self.n_bytes)), dtype=np.byte, count=len(state_bounds) * self.n_bytes)
             else:
                 state_bounds_bytes = np.empty((self.comm.size * self.n_bytes), dtype=np.byte)
                 state_bounds = None
@@ -451,6 +451,7 @@ class Basis:
                     np.fromiter(
                         (byte for state_list in send_list for byte_list in state_list for byte in byte_list),
                         dtype=np.byte,
+                        count=np.sum(send_counts) * self.n_bytes
                     ),
                     send_counts * self.n_bytes,
                     send_offsets * self.n_bytes,
@@ -601,7 +602,7 @@ class Basis:
         for i, query in enumerate(queries):
             if query >= self.offset and query < self.offset + len(self.local_basis):
                 results[i * self.n_bytes : (i + 1) * self.n_bytes] = np.frombuffer(
-                    self.local_basis[query - self.offset], dtype="B"
+                    self.local_basis[query - self.offset], dtype=np.byte, count=self.n_bytes
                 )
         result = np.zeros((len(l) * self.n_bytes), dtype=np.byte)
 
