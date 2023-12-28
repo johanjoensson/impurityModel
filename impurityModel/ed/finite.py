@@ -284,14 +284,24 @@ def eigensystem_new(
     t0 = time.perf_counter()
     if not distribute_eigenvectors:
         for j in range(sum(mask)):
-            indices = [i for i in range(basis.size)]
-            states = basis[indices]
-            psis.append({state: vecs[i, j] for state, i in zip(states, indices)})
+            indices = range(basis.size)
+            states = basis[list(range(basis.size))]
+            psis.append(
+                {
+                    state: vecs[i, j]
+                    for state, i in zip(states, indices)
+                    if abs(vecs[i, j]) > 0
+                }
+            )
     else:
         for j in range(sum(mask)):
-            indices = (i - basis.offset for i in basis.local_indices)
-            states = (basis.local_basis[i] for i in indices)
-            psis.append({state: vecs[i, j] for state, i in zip(states, indices)})
+            psis.append(
+                {
+                    state: vecs[i + basis.offset, j]
+                    for i, state in enumerate(basis.local_basis)
+                    if abs(vecs[i + basis.offset, j]) > 0
+                }
+            )
     t0 = time.perf_counter() - t0
 
     return es[: sum(mask)], psis

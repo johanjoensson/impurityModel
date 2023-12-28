@@ -839,18 +839,28 @@ class Basis:
             verbose=self.verbose,
         )
 
-    def build_vector(self, psis, dtype=complex):
+    def build_vector(self, psis, dtype=complex, distributed=False):
         v_local = np.zeros((self.size, len(psis)), dtype=dtype)
         v = np.empty_like(v_local)
         for col, psi in enumerate(psis):
-            if len(psi) == 0:
-                continue
-            for state in psi:
-                if state in self._index_dict and abs(psi[state]) > 0:
-                    v_local[self._index_dict[state], col] = psi[state]
+            if not distributed:
+                # psis are identical on all MPI ranks.
+                # Only consider the local basis to build the local vector
+                for i, state in enumerate(self.local_basis):
+                    v_local[i + self.offset, col] = psi.get(state, 0)
+            else:
+                # psis are different for all MPI ranks.
+                # Use the full basis to build the local vector.
+                # Not all states in Psi have to be present in the basis!
+                row_states = list(psi.keys())
+                row_states_mask = self.contains(row_states)
+                row_states_in_basis = [row_states[i] for i in range(len(row_states)) if row_states_mask[i]]
+                row_indices = self.index(row_states_in_basis)
+                for row, state in zip(row_indices, row_states_in_basis):
+                    v_local[row, col] = psi[state]
 
         self.comm.Allreduce(v_local, v, op=MPI.SUM)
-        vs = self.comm.allgather(v)
+        # vs = self.comm.allgather(v)
         # if len(psis) == 1:
         #     v = v.reshape((self.size))
         return v
@@ -1127,7 +1137,7 @@ class CIPSI_Basis(Basis):
 
             t0 = perf_counter()
             if psi_ref is not None:
-                v0 = self.build_vector(psi_ref)
+                v0 = self.build_vector(psi_ref, distributed=False)
             else:
                 v0 = None
             e_ref, psi_ref = eigensystem_new(
