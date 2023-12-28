@@ -820,10 +820,11 @@ class Basis:
         return [index != self.size for index in indices]
 
     def contains(self, item):
-        if isinstance(item, Sequence):
-            return self._contains_sequence(item)
-        elif isinstance(item, self.dtype):
+        print(f"{type(item)=} {self.type=}")
+        if isinstance(item, self.type):
             return self._contains_sequence([item])[0]
+        elif isinstance(item, Sequence):
+            return self._contains_sequence(item)
 
     def __iter__(self):
         for i in range(self.size):
