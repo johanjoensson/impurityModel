@@ -318,7 +318,7 @@ class Basis:
         while not done:
             if len(local_states) > 1:
                 local_states_list = list(local_states)
-                random_indices = list(set(np.random.randint(0, high=len(local_states_list), size=n_samples)))
+                random_indices = list(set(self.rng.integers(0, high=len(local_states_list), size=n_samples)))
                 samples = [min(local_states), max(local_states)]
                 for i in random_indices:
                     samples.append(local_states_list[i])
