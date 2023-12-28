@@ -592,6 +592,7 @@ class Basis:
                 if i >= self.index_bounds[r][0] and i < self.index_bounds[r][1]:
                     send_list[r].append(i)
                     send_to_ranks[-1] = r
+                    break
         send_order = np.argsort(send_to_ranks, kind="stable")
         recv_counts = np.empty((self.comm.size), dtype=int)
         queries = None
@@ -614,9 +615,9 @@ class Basis:
                 np.fromiter((i for l in send_list for i in l), dtype=int, count=len(l)),
                 send_counts,
                 send_offsets,
-                MPI.UINT64_T,
+                MPI.INT64_T,
             ),
-            (queries, recv_counts, displacements, MPI.UINT64_T),
+            (queries, recv_counts, displacements, MPI.INT64_T),
         )
 
         results = np.empty((sum(recv_counts) * self.n_bytes), dtype=np.byte)
@@ -733,7 +734,7 @@ class Basis:
         result[:] = self.size
 
         self.comm.Alltoallv(
-            [results, recv_counts, displacements, MPI.UINT64_T], [result, send_counts, send_displacements, MPI.UINT64_T]
+            [results, recv_counts, displacements, MPI.INT64_T], [result, send_counts, send_displacements, MPI.INT64_T]
         )
 
         result[send_order] = result.copy()
