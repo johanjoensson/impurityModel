@@ -372,7 +372,8 @@ class Basis:
 
         self.comm.Bcast(state_bounds_bytes, root=0)
         state_bounds = [
-            state_bounds_bytes[i * self.n_bytes : (i + 1) * self.n_bytes].tobytes() for i in range(self.comm.size)
+            # state_bounds_bytes[i * self.n_bytes : (i + 1) * self.n_bytes].tobytes() for i in range(self.comm.size)
+            i.tobytes() for i in np.split(state_bounds_bytes, self.comm.size)
         ]
         return state_bounds
 
@@ -482,7 +483,8 @@ class Basis:
 
             t0 = perf_counter()
             received_states = {
-                received_bytes[i * self.n_bytes : (i + 1) * self.n_bytes].tobytes() for i in range(sum(recv_counts))
+                # received_bytes[i * self.n_bytes : (i + 1) * self.n_bytes].tobytes() for i in range(sum(recv_counts))
+                i.tobytes() for i in np.split(received_bytes, sum(recv_counts))
             }
             t0 = perf_counter() - t0
             if self.verbose:
