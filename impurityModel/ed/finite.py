@@ -2030,6 +2030,8 @@ def applyOp_2(n_spin_orbitals, op, psi, slaterWeightMin=0, restrictions=None, op
 
     """
     psiNew = {}
+    if opResult is None:
+        opResult = {}
     # Loop over product states in psi.
     for state, amp in psi.items():
         if state in opResult:

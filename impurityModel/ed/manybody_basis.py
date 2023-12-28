@@ -907,7 +907,7 @@ class Basis:
                 {state: 1},
                 restrictions=self.restrictions,
                 slaterWeightMin=slaterWeightMin,
-                opResult={},
+                # opResult={},
             )
             op_dict[state] = res
         return op_dict  # {state: op_dict[state] for state in self.local_basis}
@@ -956,12 +956,11 @@ class Basis:
         if "PETSc" in sys.modules:
             return self._build_PETSc_matrix(op, op_dict)
 
-        op_dict = self.build_operator_dict(op, op_dict)
+        _ = self.build_operator_dict(op, op_dict)
 
         rows_in_basis = list({row for column in op_dict.keys() for row in op_dict[column].keys()})
         in_basis_mask = self.contains(rows_in_basis)
-        print(f"{len(rows_in_basis)=} {sum(in_basis_mask)=}")
-        rows_in_basis = {state for state, in_basis in zip(rows_in_basis, in_basis_mask) if in_basis}
+        rows_in_basis = {rows_in_basis[i] for i in range(len(rows_in_basis)) if in_basis_mask[i]}
 
         # rows = np.empty(
         #     (sum(row in rows_in_basis for column in self.local_basis for row in op_dict[column]) * self.n_bytes),
@@ -974,7 +973,6 @@ class Basis:
         rows = []
         columns = []
         values = []
-        i = 0
         for column in self.local_basis:
             for row in op_dict[column]:
                 if row not in rows_in_basis:
