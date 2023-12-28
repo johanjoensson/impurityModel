@@ -896,18 +896,21 @@ class Basis:
         """
         if op_dict is None:
             op_dict = {}
+        else:
+            op_dict.clear()
 
         for state in self.local_basis:
-            if state not in op_dict:
-                _ = applyOp(
-                    self.num_spin_orbitals,
-                    op,
-                    {state: 1},
-                    restrictions=self.restrictions,
-                    slaterWeightMin=slaterWeightMin,
-                    opResult=op_dict,
-                )
-        return {state: op_dict[state] for state in self.local_basis}
+            # if state not in op_dict:
+            res = applyOp(
+                self.num_spin_orbitals,
+                op,
+                {state: 1},
+                restrictions=self.restrictions,
+                slaterWeightMin=slaterWeightMin,
+                opResult={},
+            )
+            op_dict[state] = res
+        return op_dict  # {state: op_dict[state] for state in self.local_basis}
 
     def build_dense_matrix(self, op, op_dict=None, distribute=True):
         """
