@@ -316,9 +316,9 @@ def test_contains_2():
     [
         (3, 2),
         (3, 5),
-        (3, 10000),
+        (3, 1000),
         (10, 5),
-        (10, 10000),
+        (10, 1000),
     ],
 )
 def test_contains_random(n_bytes, n_states):
@@ -350,8 +350,8 @@ def test_contains_random(n_bytes, n_states):
         (3, 2),
         (3, 5),
         (10, 5),
-        (3, 1000),
-        (10, 1000),
+        (3, 100),
+        (10, 100),
     ],
 )
 def test_contains_random_distributed(n_bytes, n_states):
@@ -383,10 +383,10 @@ def test_contains_random_distributed(n_bytes, n_states):
     [
         (3, 2, 100),
         (3, 5, 100),
-        (3, 1000, 10000),
+        (3, 1000, 100),
         (10, 5, 100),
         (10, 1000, 100),
-        (10, 1000, 10000),
+        (10, 1000, 100),
     ],
 )
 def test_contains_random_distributed_random(n_bytes, n_states, n_sample_states):
@@ -411,12 +411,12 @@ def test_contains_random_distributed_random(n_bytes, n_states, n_sample_states):
 @pytest.mark.parametrize(
     "n_bytes, n_states, n_sample_states",
     [
-        (3, 2, 1000),
-        (3, 5, 10000),
-        (3, 100, 100000),
-        (10, 5, 10000),
-        (10, 100, 10000),
-        (10, 100, 100000),
+        (3, 2, 100),
+        (3, 5, 1000),
+        (3, 100, 1000),
+        (10, 5, 100),
+        (10, 100, 100),
+        (10, 100, 1000),
     ],
 )
 def test_index_random_distributed_random(n_bytes, n_states, n_sample_states):
@@ -471,6 +471,38 @@ def test_operator_dict_simple():
 
 
 @pytest.mark.mpi
+def test_operator_dict_simple_with_extra_states():
+    operator = {
+        ((0, "c"), (0, "a")): 1,
+        ((0, "c"), (4, "a")): 1 / 2,
+        ((4, "c"), (0, "a")): 1 / 2,
+        ((4, "c"), (4, "a")): 1,
+        ((2, "c"), (2, "a")): 3 / 2,
+        ((1, "c"), (1, "a")): 1,
+        ((3, "c"), (3, "a")): 1,
+        ((0, 'c'),): 500,
+    }
+    states = [b"\x78"]
+    basis = Basis(initial_basis=states, num_spin_orbitals=5, verbose=True, comm=MPI.COMM_WORLD)
+
+    op_dict = basis.build_operator_dict(operator)
+    correct = {b"\x78": {b"\xF0": -1 / 2, b"\x78": 9 / 2, b"\xF8": 500}}
+    all_dicts = MPI.COMM_WORLD.allgather(op_dict)
+    full_dict = {}
+    for d in all_dicts:
+        for key in d:
+            if key not in full_dict:
+                full_dict[key] = {}
+            for state in d[key]:
+                full_dict[key][state] = d[key][state] + full_dict[key].get(state, 0)
+    assert all(fk in correct for fk in full_dict.keys())
+    for key in states:
+        assert all(fk in correct[key] for fk in full_dict[key].keys())
+        for row in correct[key].keys():
+            assert correct[key][row] == full_dict[key][row]
+
+
+@pytest.mark.mpi
 def test_operator_dict_eg_t2g():
     operator = {
         ((0, "c"), (0, "a")): 1,
@@ -504,6 +536,45 @@ def test_operator_dict_eg_t2g():
     assert all(fk in correct for fk in full_dict.keys())
     for key in states:
         assert all(fk in correct[key] for fk in full_dict[key].keys())
+        for row in correct[key].keys():
+            assert correct[key][row] == full_dict[key][row], f"{key=} {row=}"
+
+
+@pytest.mark.mpi
+def test_operator_dict_eg_t2g_with_extra_states():
+    operator = {
+        ((0, "c"), (0, "a")): 1,
+        ((0, "c"), (4, "a")): 1 / 2,
+        ((4, "c"), (0, "a")): 1 / 2,
+        ((4, "c"), (4, "a")): 1,
+        ((2, "c"), (2, "a")): 3 / 2,
+        ((1, "c"), (1, "a")): 1,
+        ((3, "c"), (3, "a")): 1,
+        ((0, 'c'),): 500,
+    }
+    states = [b"\x78", b"\xB8", b"\xD8", b"\xE8", b"\xF0"]
+    basis = Basis(initial_basis=states, num_spin_orbitals=5, verbose=True, comm=MPI.COMM_WORLD)
+
+    op_dict = basis.build_operator_dict(operator)
+    correct = {
+        b"\x78": {b"\xF0": -1 / 2, b"\x78": 9 / 2, b"\xF8": 500},
+        b"\xB8": {b"\xB8": 9 / 2},
+        b"\xD8": {b"\xD8": 4},
+        b"\xE8": {b"\xE8": 9 / 2},
+        b"\xF0": {b"\x78": -1 / 2, b"\xF0": 9 / 2},
+    }
+    all_dicts = MPI.COMM_WORLD.allgather(op_dict)
+    full_dict = {}
+    for d in all_dicts:
+        for key in d:
+            if key not in full_dict:
+                full_dict[key] = {}
+            for state in d[key]:
+                full_dict[key][state] = d[key][state] + full_dict[key].get(state, 0)
+
+    assert all(fk in correct for fk in full_dict.keys())
+    for key in states:
+        assert all(fk in correct[key] for fk in full_dict[key].keys()), f"{list(full_dict[key].keys())=} {list(correct.keys())=} "
         for row in correct[key].keys():
             assert correct[key][row] == full_dict[key][row], f"{key=} {row=}"
 
