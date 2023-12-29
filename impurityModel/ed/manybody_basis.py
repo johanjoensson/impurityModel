@@ -384,7 +384,7 @@ class Basis:
         """
         if not self.is_distributed:
             local_basis = sorted(set(itertools.chain(self.local_basis, new_states)))
-            self.local_basis[:] = []
+            self.local_basis.clear()
             self.local_basis = local_basis
             self.size = len(self.local_basis)
             self.offset = 0
@@ -400,7 +400,7 @@ class Basis:
         if not distributed_sort:
             old_basis = self.comm.reduce(set(self.local_basis), op=combine_sets_op, root=0)
             new_states = self.comm.reduce(set(new_states), op=combine_sets_op, root=0)
-            self.local_basis[:] = []
+            self.local_basis.clear()
             if self.comm.rank == 0:
                 new_basis = sorted(old_basis | new_states)
                 send_basis: list[list[self.type]] = [[] for _ in range(self.comm.size)]
@@ -499,7 +499,7 @@ class Basis:
                 print(f"=======> T bytes to states : {t0}")
 
             t0 = perf_counter()
-            self.local_basis[:] = []
+            self.local_basis.clear()
             local_basis = sorted(received_states)
             t0 = perf_counter() - t0
             if self.verbose:
@@ -1081,7 +1081,7 @@ class CIPSI_Basis(Basis):
         for i in range(self.truncation_threshold):
             new_basis.append(basis_states[sort_order[i]])
 
-        self.local_basis[:] = []
+        self.local_basis.clear()
         self.add_states(new_basis)
 
     def _calc_de2(self, Djs, H, H_dict, Hpsi_ref, e_ref, slaterWeightMin=0):
@@ -1335,7 +1335,7 @@ class CIPSI_Basis(Basis):
 
             t_0 = perf_counter()
             old_size = self.size
-            self.local_basis[:] = []
+            self.local_basis.clear()
             self.add_states(Dji)
             if True or self.size == old_size:
                 break
