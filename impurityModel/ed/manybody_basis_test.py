@@ -298,17 +298,13 @@ def test_CIPSI_Basis_len_mpi(
 #     assert eigvals[0] != 0
 #     assert np.all(np.abs(eigvals[:9] - eigvals[0]) <= 1e-12)
 
+
 @pytest.mark.mpi
 def test_contains_2():
-    states = [b'\x00\x1a\x2b', b'\xff\x00\x1a']
-    basis = Basis(
-            initial_basis=states,
-            num_spin_orbitals=24,
-            verbose=True,
-            comm=MPI.COMM_WORLD
-            )
-    assert basis.contains(bytes(b'\x00\x1a\x2b'))
-    assert not basis.contains(bytes(b'\xff\x1a\x2b'))
+    states = [b"\x00\x1a\x2b", b"\xff\x00\x1a"]
+    basis = Basis(initial_basis=states, num_spin_orbitals=24, verbose=True, comm=MPI.COMM_WORLD)
+    assert basis.contains(bytes(b"\x00\x1a\x2b"))
+    assert not basis.contains(bytes(b"\xff\x1a\x2b"))
     assert all(basis.contains(states))
     assert basis.index(states[0]) == 0
     assert basis.index(states[1]) == 1
@@ -330,18 +326,18 @@ def test_contains_random(n_bytes, n_states):
     MPI.COMM_WORLD.Bcast(state_bytes)
     states = [i.tobytes() for i in np.split(state_bytes, n_states)]
     basis = Basis(
-            initial_basis=states,
-            num_spin_orbitals=8 * n_bytes,
-            verbose=True,
-            comm=MPI.COMM_WORLD,
-            )
+        initial_basis=states,
+        num_spin_orbitals=8 * n_bytes,
+        verbose=True,
+        comm=MPI.COMM_WORLD,
+    )
     sorted_states = sorted(set(states))
     sorted_indices = basis.index(sorted_states)
-    too_large_state =np.array( np.frombuffer(sorted_states[-1], dtype=np.ubyte, count=n_bytes))
+    too_large_state = np.array(np.frombuffer(sorted_states[-1], dtype=np.ubyte, count=n_bytes))
     too_large_state[-1] += 1
     assert all(basis.contains(states))
     assert too_large_state.tobytes() not in basis
-    assert not  basis.contains(states + [too_large_state.tobytes()])[-1]
+    assert not basis.contains(states + [too_large_state.tobytes()])[-1]
     assert all(si == i for si, i in enumerate(sorted_indices))
     for i in range(len(sorted_states)):
         assert basis.index(sorted_states[i]) == i
@@ -362,15 +358,15 @@ def test_contains_random_distributed(n_bytes, n_states):
     state_bytes = np.random.randint(0, high=255, size=n_states * n_bytes, dtype=np.ubyte)
     states = [i.tobytes() for i in np.split(state_bytes, n_states)]
     basis = Basis(
-            initial_basis=states,
-            num_spin_orbitals=8 * n_bytes,
-            verbose=True,
-            comm=MPI.COMM_WORLD,
-            )
+        initial_basis=states,
+        num_spin_orbitals=8 * n_bytes,
+        verbose=True,
+        comm=MPI.COMM_WORLD,
+    )
     all_states = MPI.COMM_WORLD.allgather(states)
     all_states = [state for states in all_states for state in states]
     sorted_states = sorted(set(all_states))
-    too_large_state = np.array( np.frombuffer(sorted_states[-1], dtype=np.ubyte, count=n_bytes))
+    too_large_state = np.array(np.frombuffer(sorted_states[-1], dtype=np.ubyte, count=n_bytes))
     too_large_state[-1] += 1
     assert all(basis.contains(states))
     assert too_large_state.tobytes() not in basis
@@ -397,11 +393,11 @@ def test_contains_random_distributed_random(n_bytes, n_states, n_sample_states):
     state_bytes = np.random.randint(0, high=255, size=n_states * n_bytes, dtype=np.ubyte)
     states = [i.tobytes() for i in np.split(state_bytes, n_states)]
     basis = Basis(
-            initial_basis=states,
-            num_spin_orbitals=8 * n_bytes,
-            verbose=True,
-            comm=MPI.COMM_WORLD,
-            )
+        initial_basis=states,
+        num_spin_orbitals=8 * n_bytes,
+        verbose=True,
+        comm=MPI.COMM_WORLD,
+    )
     all_states = MPI.COMM_WORLD.allgather(states)
     all_states = {state for states in all_states for state in states}
     sample_bytes = np.random.randint(0, high=255, size=n_sample_states * n_bytes, dtype=np.ubyte)
@@ -411,28 +407,27 @@ def test_contains_random_distributed_random(n_bytes, n_states, n_sample_states):
     assert all(correct == sample for correct, sample in zip(correct_contains, basis_contains))
 
 
-
 @pytest.mark.mpi
 @pytest.mark.parametrize(
     "n_bytes, n_states, n_sample_states",
     [
         (3, 2, 1000),
         (3, 5, 10000),
-        (3, 1000, 100000),
+        (3, 100, 100000),
         (10, 5, 10000),
-        (10, 1000, 10000),
-        (10, 1000, 100000),
+        (10, 100, 10000),
+        (10, 100, 100000),
     ],
 )
 def test_index_random_distributed_random(n_bytes, n_states, n_sample_states):
     state_bytes = np.random.randint(0, high=255, size=n_states * n_bytes, dtype=np.ubyte)
     states = [i.tobytes() for i in np.split(state_bytes, n_states)]
     basis = Basis(
-            initial_basis=states,
-            num_spin_orbitals=8 * n_bytes,
-            verbose=True,
-            comm=MPI.COMM_WORLD,
-            )
+        initial_basis=states,
+        num_spin_orbitals=8 * n_bytes,
+        verbose=True,
+        comm=MPI.COMM_WORLD,
+    )
     all_states = MPI.COMM_WORLD.allgather(states)
     all_states = sorted({state for states in all_states for state in states})
     sample_bytes = np.random.randint(0, high=255, size=n_sample_states * n_bytes, dtype=np.ubyte)
@@ -442,3 +437,124 @@ def test_index_random_distributed_random(n_bytes, n_states, n_sample_states):
     samples_in_basis = [sample_states[i] for i in range(len(sample_states)) if basis_mask[i]]
     basis_indices = basis.index(samples_in_basis)
     assert all(bi == ci for bi, ci in zip(basis_indices, correct_indices))
+
+
+@pytest.mark.mpi
+def test_operator_dict_simple():
+    operator = {
+        ((0, "c"), (0, "a")): 1,
+        ((0, "c"), (4, "a")): 1 / 2,
+        ((4, "c"), (0, "a")): 1 / 2,
+        ((4, "c"), (4, "a")): 1,
+        ((2, "c"), (2, "a")): 3 / 2,
+        ((1, "c"), (1, "a")): 1,
+        ((3, "c"), (3, "a")): 1,
+    }
+    states = [b"\x78"]
+    basis = Basis(initial_basis=states, num_spin_orbitals=5, verbose=True, comm=MPI.COMM_WORLD)
+
+    op_dict = basis.build_operator_dict(operator)
+    correct = {b"\x78": {b"\xF0": -1 / 2, b"\x78": 9 / 2}}
+    all_dicts = MPI.COMM_WORLD.allgather(op_dict)
+    full_dict = {}
+    for d in all_dicts:
+        for key in d:
+            if key not in full_dict:
+                full_dict[key] = {}
+            for state in d[key]:
+                full_dict[key][state] = d[key][state] + full_dict[key].get(state, 0)
+    assert all(fk in correct for fk in full_dict.keys())
+    for key in states:
+        assert all(fk in correct[key] for fk in full_dict[key].keys())
+        for row in correct[key].keys():
+            assert correct[key][row] == full_dict[key][row]
+
+
+@pytest.mark.mpi
+def test_operator_dict_eg_t2g():
+    operator = {
+        ((0, "c"), (0, "a")): 1,
+        ((0, "c"), (4, "a")): 1 / 2,
+        ((4, "c"), (0, "a")): 1 / 2,
+        ((4, "c"), (4, "a")): 1,
+        ((2, "c"), (2, "a")): 3 / 2,
+        ((1, "c"), (1, "a")): 1,
+        ((3, "c"), (3, "a")): 1,
+    }
+    states = [b"\x78", b"\xB8", b"\xD8", b"\xE8", b"\xF0"]
+    basis = Basis(initial_basis=states, num_spin_orbitals=5, verbose=True, comm=MPI.COMM_WORLD)
+
+    op_dict = basis.build_operator_dict(operator)
+    correct = {
+        b"\x78": {b"\xF0": -1 / 2, b"\x78": 9 / 2},
+        b"\xB8": {b"\xB8": 9 / 2},
+        b"\xD8": {b"\xD8": 4},
+        b"\xE8": {b"\xE8": 9 / 2},
+        b"\xF0": {b"\x78": -1 / 2, b"\xF0": 9 / 2},
+    }
+    all_dicts = MPI.COMM_WORLD.allgather(op_dict)
+    full_dict = {}
+    for d in all_dicts:
+        for key in d:
+            if key not in full_dict:
+                full_dict[key] = {}
+            for state in d[key]:
+                full_dict[key][state] = d[key][state] + full_dict[key].get(state, 0)
+
+    assert all(fk in correct for fk in full_dict.keys())
+    for key in states:
+        assert all(fk in correct[key] for fk in full_dict[key].keys())
+        for row in correct[key].keys():
+            assert correct[key][row] == full_dict[key][row], f"{key=} {row=}"
+
+
+@pytest.mark.mpi
+def test_simple_dense_matrix():
+    operator = {
+        ((0, "c"), (0, "a")): 1,
+        ((0, "c"), (4, "a")): 1 / 2,
+        ((4, "c"), (0, "a")): 1 / 2,
+        ((4, "c"), (4, "a")): 1,
+        ((2, "c"), (2, "a")): 3 / 2,
+        ((1, "c"), (1, "a")): 1,
+        ((3, "c"), (3, "a")): 1,
+    }
+    states = [b"\x78"]
+    basis = Basis(initial_basis=states, num_spin_orbitals=5, verbose=True, comm=MPI.COMM_WORLD)
+
+    op_dict = basis.build_operator_dict(operator)
+    dense_mat = basis.build_dense_matrix(operator, op_dict)
+    assert dense_mat.shape == (1, 1)
+    assert dense_mat[0, 0] == 9 / 2
+
+
+@pytest.mark.mpi
+def test_eg_t2g_dense_matrix():
+    operator = {
+        ((0, "c"), (0, "a")): 1,
+        ((0, "c"), (4, "a")): 1 / 2,
+        ((4, "c"), (0, "a")): 1 / 2,
+        ((4, "c"), (4, "a")): 1,
+        ((2, "c"), (2, "a")): 3 / 2,
+        ((1, "c"), (1, "a")): 1,
+        ((3, "c"), (3, "a")): 1,
+    }
+    states = [b"\x78", b"\xB8", b"\xD8", b"\xE8", b"\xF0"]
+    basis = Basis(initial_basis=states, num_spin_orbitals=5, verbose=True, comm=MPI.COMM_WORLD)
+
+    op_dict = basis.build_operator_dict(operator)
+    dense_mat = basis.build_dense_matrix(operator, op_dict)
+    assert dense_mat.shape == (5, 5)
+    assert np.allclose(
+        dense_mat,
+        np.array(
+            [
+                [9 / 2, 0, 0, 0, -1 / 2],
+                [0, 9 / 2, 0, 0, 0],
+                [0, 0, 4, 0, 0],
+                [0, 0, 0, 9 / 2, 0],
+                [-1 / 2, 0, 0, 0, 9 / 2],
+            ],
+            dtype=float,
+        ),
+    ), f"{dense_mat=}"

@@ -237,7 +237,6 @@ class Basis:
         self._index_dict = {}
         self.type = type(psr.int2bytes(0, self.num_spin_orbitals))
         self.n_bytes = int(ceil(self.num_spin_orbitals / 8))
-        self.dtype = np.dtype(("B", self.n_bytes), align=False)
 
         self.index_bounds = [(None, None)] * comm.size if comm is not None else [(None, None)]
         self.state_bounds = [(None, None)] * comm.size if comm is not None else [(None, None)]
@@ -260,6 +259,7 @@ class Basis:
         if verbose:
             print(f"===> T init rng : {t0}")
         self.tau = tau
+        print(f"{self.num_spin_orbitals=} {self.n_bytes=}")
 
         t0 = perf_counter()
         self.add_states(initial_basis)
