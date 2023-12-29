@@ -383,7 +383,9 @@ class Basis:
         Extend the current basis by adding the new_states to it.
         """
         if not self.is_distributed:
-            self.local_basis = sorted(set(self.local_basis + new_states))
+            local_basis = sorted(set(itertools.chain(self.local_basis, new_states)))
+            self.local_basis[:] = []
+            self.local_basis = local_basis
             self.size = len(self.local_basis)
             self.offset = 0
             self.local_indices = range(0, len(self.local_basis))
@@ -398,6 +400,7 @@ class Basis:
         if not distributed_sort:
             old_basis = self.comm.reduce(set(self.local_basis), op=combine_sets_op, root=0)
             new_states = self.comm.reduce(set(new_states), op=combine_sets_op, root=0)
+            self.local_basis[:] = []
             if self.comm.rank == 0:
                 new_basis = sorted(old_basis | new_states)
                 send_basis: list[list[self.type]] = [[] for _ in range(self.comm.size)]
@@ -410,7 +413,7 @@ class Basis:
                     start = stop
             else:
                 send_basis = None
-            self.local_basis = self.comm.scatter(send_basis, root=0)
+            local_basis = self.comm.scatter(send_basis, root=0)
         else:
             t0 = perf_counter()
             local_states = set(itertools.chain(self.local_basis, new_states))
@@ -496,7 +499,8 @@ class Basis:
                 print(f"=======> T bytes to states : {t0}")
 
             t0 = perf_counter()
-            self.local_basis = sorted(received_states)
+            self.local_basis[:] = []
+            local_basis = sorted(received_states)
             t0 = perf_counter() - t0
             if self.verbose:
                 print(f"=======> T sort received_states : {t0}")
@@ -505,6 +509,7 @@ class Basis:
             # evenly distributed among the ranks.
             ########################################################################
 
+        self.local_basis = local_basis
         t0 = perf_counter()
         local_length = len(self.local_basis)
         self.size = self.comm.allreduce(local_length, op=MPI.SUM)
@@ -896,20 +901,18 @@ class Basis:
         """
         if op_dict is None:
             op_dict = {}
-        else:
-            op_dict.clear()
 
         for state in self.local_basis:
-            # if state not in op_dict:
-            res = applyOp(
-                self.num_spin_orbitals,
-                op,
-                {state: 1},
-                restrictions=self.restrictions,
-                slaterWeightMin=slaterWeightMin,
-                # opResult={},
-            )
-            op_dict[state] = res
+            if state not in op_dict:
+                res = applyOp(
+                    self.num_spin_orbitals,
+                    op,
+                    {state: 1},
+                    restrictions=self.restrictions,
+                    slaterWeightMin=slaterWeightMin,
+                    # opResult={},
+                )
+                op_dict[state] = res
         return op_dict  # {state: op_dict[state] for state in self.local_basis}
 
     def build_dense_matrix(self, op, op_dict=None, distribute=True):
@@ -962,14 +965,6 @@ class Basis:
         in_basis_mask = self.contains(rows_in_basis)
         rows_in_basis = {rows_in_basis[i] for i in range(len(rows_in_basis)) if in_basis_mask[i]}
 
-        # rows = np.empty(
-        #     (sum(row in rows_in_basis for column in self.local_basis for row in op_dict[column]) * self.n_bytes),
-        #     dtype=np.byte,
-        # )
-        # columns = np.empty_like(rows)
-        # values = np.empty(
-        #     (sum(row in rows_in_basis for column in self.local_basis for row in op_dict[column])), dtype=complex
-        # )
         rows = []
         columns = []
         values = []
@@ -977,15 +972,9 @@ class Basis:
             for row in op_dict[column]:
                 if row not in rows_in_basis:
                     continue
-                # columns[i * self.n_bytes : (i + 1) * self.n_bytes] = np.frombuffer(
-                #     column, dtype=np.byte, count=self.n_bytes
-                # )
-                # rows[i * self.n_bytes : (i + 1) * self.n_bytes] = np.frombuffer(row, dtype=np.byte, count=self.n_bytes)
-                # values[i] = op_dict[column][row]
                 columns.append(self._index_dict[column])
                 rows.append(row)
                 values.append(op_dict[column][row])
-                # i += 1
         rows = self.index(rows)
         return sp.sparse.csr_matrix(
             (values, (rows, columns)), shape=(self.size, self.size), dtype=complex
@@ -1092,7 +1081,7 @@ class CIPSI_Basis(Basis):
         for i in range(self.truncation_threshold):
             new_basis.append(basis_states[sort_order[i]])
 
-        self.local_basis = []
+        self.local_basis[:] = []
         self.add_states(new_basis)
 
     def _calc_de2(self, Djs, H, H_dict, Hpsi_ref, e_ref, slaterWeightMin=0):
@@ -1346,7 +1335,7 @@ class CIPSI_Basis(Basis):
 
             t_0 = perf_counter()
             old_size = self.size
-            self.local_basis = []
+            self.local_basis[:] = []
             self.add_states(Dji)
             if True or self.size == old_size:
                 break
