@@ -1125,16 +1125,16 @@ class CIPSI_Basis(Basis):
                 print(f"->Time to build sparse H: {t0/self.comm.size:.3f} seconds")
 
             t0 = perf_counter()
-            # if psi_ref is not None:
-            #     v0 = self.build_vector(psi_ref, distributed=False)
-            # else:
-            #     v0 = None
+            if psi_ref is not None:
+                v0 = self.build_vector(psi_ref, distributed=False)
+            else:
+                v0 = None
             e_ref, psi_ref = eigensystem_new(
                 H_sparse,
                 basis=self,
                 e_max=de0_max,
                 k=1 if psi_ref is None else max(1, len(psi_ref)),
-                v0=None,  # v0,
+                v0=v0,
                 eigenValueTol=de2_min,
                 dense_cutoff=dense_cutoff,
                 verbose=self.verbose,
