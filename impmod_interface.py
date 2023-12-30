@@ -317,6 +317,7 @@ def run_impmod_ed(
 
         try:
             sig_dc[:, :] = fixed_peak_dc(h_op, dc_struct, rank=rank, verbose=rank == 0, dense_cutoff=dense_cutoff)
+            er = 0
         except Exception as e:
             print(f"!" * 100)
             print(f"Exception {repr(e)} caught on rank {rank}!")
@@ -324,13 +325,11 @@ def run_impmod_ed(
             print(f"Adding positive infinity to the imaginary part of the DC selfenergy.", flush=True)
             print(f"!" * 100)
             sig_dc[:, :] = np.inf + 1j * np.inf
-        else:
-            if rank == 0:
-                print(f"", flush=True)
+            er = -1
 
         sys.stdout.close()
         sys.stdout = stdout_save
-        return
+        return er
 
     cluster = impModCluster(
         label=label.strip(),
@@ -362,6 +361,7 @@ def run_impmod_ed(
         cluster.sig[:, :, :] = rotate_Greens_function(cluster.sig, u)
         cluster.sig_real[:, :, :] = rotate_Greens_function(cluster.sig_real, u)
         cluster.sig_static[:, :] = rotate_matrix(cluster.sig_static, u)
+        er = 0
     except Exception as e:
         print(f"!" * 100)
         print(f"Exception {repr(e)} caught on rank {rank}!")
@@ -372,13 +372,14 @@ def run_impmod_ed(
         )
         print(f"!" * 100)
         cluster.sig[:, :, -1] += 1j * np.inf
+        er = -1
     else:
         if rank == 0:
             print(f"Self energy calculated! impurityModel shutting down.", flush=True)
 
     sys.stdout.close()
     sys.stdout = stdout_save
-    return
+    return er
 
 
 def fixed_peak_dc(h0_op, dc_struct, rank, verbose, dense_cutoff):
