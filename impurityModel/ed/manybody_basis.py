@@ -381,6 +381,7 @@ class Basis:
             # state_bounds_bytes[i * self.n_bytes : (i + 1) * self.n_bytes].tobytes() for i in range(self.comm.size)
             i.tobytes() for i in np.split(state_bounds_bytes, self.comm.size)
         ]
+        print(f"{state_bounds}=")
         return state_bounds
 
     def add_states(self, new_states: list, distributed_sort=True):
@@ -979,6 +980,7 @@ class Basis:
                 columns.append(self._index_dict[column])
                 rows.append(row)
                 values.append(op_dict[column][row])
+        # print(f"{list(self)=}")
         rows = self.index(rows)
         return sp.sparse.csr_matrix(
             (values, (rows, columns)), shape=(self.size, self.size), dtype=complex

@@ -263,7 +263,7 @@ def run_impmod_ed(
     stdout_save = sys.stdout
     if rank == 0:
         sys.stdout = open(f"impurityModel-{label.strip()}{'-dc' if rspt_dc_flag == 1 else ''}.out", "w")
-    elif verbosity > 0:
+    elif True or  verbosity > 0:
         sys.stdout = open(f"impurityModel-{label.strip()}{'-dc' if rspt_dc_flag == 1 else ''}-{rank}.out", "w")
     else:
         sys.stdout = open(devnull, "w")
