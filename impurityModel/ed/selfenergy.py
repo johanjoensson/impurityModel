@@ -70,7 +70,7 @@ def find_gs(h_op, N0, delta_occ, bath_states, num_spin_orbitals, rank, verbose, 
         energies.append(e_trial[0])
         if e_trial[0] < e_gs:
             e_gs = e_trial[0]
-            basis_gs = basis
+            basis_gs = basis.copy()
             h_gs = h
             gs_impurity_occ = {l: N0[0][l] + d for l in N0[0]}
             selected = i
