@@ -1125,16 +1125,16 @@ class CIPSI_Basis(Basis):
                 print(f"->Time to build sparse H: {t0/self.comm.size:.3f} seconds")
 
             t0 = perf_counter()
-            if psi_ref is not None:
-                v0 = self.build_vector(psi_ref, distributed=False)
-            else:
-                v0 = None
+            # if psi_ref is not None:
+            #     v0 = self.build_vector(psi_ref, distributed=False)
+            # else:
+            #     v0 = None
             e_ref, psi_ref = eigensystem_new(
                 H_sparse,
                 basis=self,
                 e_max=de0_max,
                 k=1 if psi_ref is None else max(1, len(psi_ref)),
-                v0=v0,
+                v0=None,  # v0,
                 eigenValueTol=de2_min,
                 dense_cutoff=dense_cutoff,
                 verbose=self.verbose,
@@ -1190,12 +1190,12 @@ class CIPSI_Basis(Basis):
                             send_states[r].append(state)
                             send_amps[r].append(amp)
                             break
-                received_states = self.alltoall_states(send_states)
-                received_amps = self.comm.alltoall(send_amps)
-                Hpsi_i = {}
-                for r, states in enumerate(received_states):
-                    for i, state in enumerate(states):
-                        Hpsi_i[state] = received_amps[r][i] + Hpsi_i.get(state, 0)
+                # received_states = self.alltoall_states(send_states)
+                # received_amps = self.comm.alltoall(send_amps)
+                # Hpsi_i = {}
+                # for r, states in enumerate(received_states):
+                #     for i, state in enumerate(states):
+                #         Hpsi_i[state] = received_amps[r][i] + Hpsi_i.get(state, 0)
 
                 t0 = perf_counter() - t0
                 t0 = self.comm.reduce(t0, op=MPI.SUM, root=0)
