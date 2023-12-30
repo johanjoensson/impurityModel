@@ -443,7 +443,8 @@ class Basis:
                     if state >= state_bounds[r] and state < state_bounds[r + 1]:
                         send_list[r].append(state)
                         break
-                if state >= state_bounds[last_rank]:
+                else:
+                    # if state >= state_bounds[last_rank]:
                     send_list[last_rank].append(state)
             t0 = perf_counter() - t0
             if self.verbose:
