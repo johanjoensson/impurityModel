@@ -357,9 +357,6 @@ class Basis:
                     sizes[: len(all_states) % self.comm.size] += 1
 
                     bounds = [sum(sizes[:i]) for i in range(self.comm.size)]
-                    print(f"{len(all_states)}=")
-                    print(f"{sizes}=")
-                    print(f"{bounds}=")
                     state_bounds = [all_states[bound] if bound < len(all_states) else all_states[-1] for bound in bounds]
                     # state_bounds_bytes = np.array([byte for state in state_bounds for byte in state], dtype=np.ubyte)
                 state_bounds_bytes = np.fromiter(
@@ -721,17 +718,17 @@ class Basis:
 
         self.comm.Alltoallv(
             [
-                np.array([byte for states in send_list for state in states for byte in state], dtype=np.ubyte),
-                # np.fromiter(
-                #     (
-                #         byte
-                #         for states in send_list
-                #         for state in states
-                #         for byte in np.frombuffer(state, dtype=np.byte, count=self.n_bytes)
-                #     ),
-                #     dtype=np.byte,
-                #     count=np.sum(send_counts) * self.n_bytes,
-                # ),
+                # np.array([byte for states in send_list for state in states for byte in state], dtype=np.ubyte),
+                np.fromiter(
+                    (
+                        byte
+                        for states in send_list
+                        for state in states
+                        for byte in state
+                    ),
+                    dtype=np.ubyte,
+                    count=sum(send_counts) * self.n_bytes,
+                ),
                 send_counts * self.n_bytes,
                 send_displacements * self.n_bytes,
                 MPI.BYTE,
@@ -740,11 +737,12 @@ class Basis:
         )
 
         results = np.empty((sum(recv_counts)), dtype=int)
-        results[:] = self.size
+        # results[:] = self.size
         for i in range(sum(recv_counts)):
             query = queries[i * self.n_bytes : (i + 1) * self.n_bytes].tobytes()
-            if query in self._index_dict:
-                results[i] = self._index_dict[query]
+            results[i] = self._index_dict.get(query, self.size)
+            # if query in self._index_dict:
+            #     results[i] = self._index_dict[query]
         result = np.empty((len(s)), dtype=int)
         result[:] = self.size
 
@@ -967,7 +965,7 @@ class Basis:
 
         _ = self.build_operator_dict(op, op_dict)
 
-        rows_in_basis = list({row for column in op_dict.keys() for row in op_dict[column].keys()})
+        rows_in_basis = list({row for column in self.local_basis for row in op_dict[column].keys()})
         in_basis_mask = self.contains(rows_in_basis)
         rows_in_basis = {rows_in_basis[i] for i in range(len(rows_in_basis)) if in_basis_mask[i]}
 
