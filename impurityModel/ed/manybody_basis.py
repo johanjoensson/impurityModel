@@ -259,7 +259,6 @@ class Basis:
         if verbose:
             print(f"===> T init rng : {t0}")
         self.tau = tau
-        print(f"{self.num_spin_orbitals=} {self.n_bytes=}")
 
         t0 = perf_counter()
         self.add_states(initial_basis)
@@ -384,7 +383,7 @@ class Basis:
         """
         if not self.is_distributed:
             local_basis = sorted(set(itertools.chain(self.local_basis, new_states)))
-            self.local_basis.clear()
+            # self.local_basis.clear()
             self.local_basis = local_basis
             self.size = len(self.local_basis)
             self.offset = 0
@@ -400,7 +399,7 @@ class Basis:
         if not distributed_sort:
             old_basis = self.comm.reduce(set(self.local_basis), op=combine_sets_op, root=0)
             new_states = self.comm.reduce(set(new_states), op=combine_sets_op, root=0)
-            self.local_basis.clear()
+            # self.local_basis.clear()
             if self.comm.rank == 0:
                 new_basis = sorted(old_basis | new_states)
                 send_basis: list[list[self.type]] = [[] for _ in range(self.comm.size)]
@@ -499,7 +498,7 @@ class Basis:
                 print(f"=======> T bytes to states : {t0}")
 
             t0 = perf_counter()
-            self.local_basis.clear()
+            # self.local_basis.clear()
             local_basis = sorted(received_states)
             t0 = perf_counter() - t0
             if self.verbose:
@@ -825,7 +824,6 @@ class Basis:
         return [index != self.size for index in indices]
 
     def contains(self, item):
-        print(f"{type(item)=} {self.type=}")
         if isinstance(item, self.type):
             return self._contains_sequence([item])[0]
         elif isinstance(item, Sequence):
@@ -904,15 +902,15 @@ class Basis:
 
         for state in self.local_basis:
             if state not in op_dict:
-                res = applyOp(
+                _ = applyOp(
                     self.num_spin_orbitals,
                     op,
                     {state: 1},
                     restrictions=self.restrictions,
                     slaterWeightMin=slaterWeightMin,
-                    # opResult={},
+                    opResult=op_dict,
                 )
-                op_dict[state] = res
+                # op_dict[state] = res
         return op_dict  # {state: op_dict[state] for state in self.local_basis}
 
     def build_dense_matrix(self, op, op_dict=None, distribute=True):
@@ -1081,7 +1079,7 @@ class CIPSI_Basis(Basis):
         for i in range(self.truncation_threshold):
             new_basis.append(basis_states[sort_order[i]])
 
-        self.local_basis.clear()
+        # self.local_basis.clear()
         self.add_states(new_basis)
 
     def _calc_de2(self, Djs, H, H_dict, Hpsi_ref, e_ref, slaterWeightMin=0):
