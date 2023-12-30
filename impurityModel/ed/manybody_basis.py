@@ -645,14 +645,15 @@ class Basis:
             (result, send_counts * self.n_bytes, send_offsets * self.n_bytes, MPI.BYTE),
         )
 
-        result_new = [None] * len(l)
-        for i in range(len(l)):
-            if len(send_order) > 0:
-                result_new[send_order[i]] = result[i * self.n_bytes : (i + 1) * self.n_bytes].tobytes()
-            else:
-                result_new[0] = result[0 : self.n_bytes]
+        return [result[i * self.n_bytes: (i + 1) * self.n_bytes].tobytes() for i in np.argsort(send_order)]
+        # result_new = [None] * len(l)
+        # for i in range(len(l)):
+        #     if len(send_order) > 0:
+        #         result_new[send_order[i]] = result[i * self.n_bytes : (i + 1) * self.n_bytes].tobytes()
+        #     else:
+        #         result_new[0] = result[0 : self.n_bytes]
 
-        return result_new
+        # return result_new
 
     def index(self, val):
         if isinstance(val, self.type):
@@ -750,8 +751,10 @@ class Basis:
             [results, recv_counts, displacements, MPI.INT64_T], [result, send_counts, send_displacements, MPI.INT64_T]
         )
 
-        result[send_order] = result.copy()
-        return result.tolist()
+        # return [result[i] for i in np.argsort(send_order)]
+        return result[np.argsort(send_order)].tolist()
+        # result[send_order] = result.copy()
+        # return result.tolist()
 
         # send_list = [np.empty((0), dtype=self.dtype) for _ in range(self.comm.size)]
         # send_to_ranks = []
