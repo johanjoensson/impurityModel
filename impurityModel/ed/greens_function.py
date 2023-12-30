@@ -249,29 +249,29 @@ def calc_Greens_function_with_offdiag(
 
         t_mems = [{} for _ in tOps]
 
-        local_excited_basis = set()
-        for block in blocks:
-            for i_tOp, tOp in [(orb, tOps[orb]) for orb in block]:
-                for s in basis.local_basis:
-                    res = finite.applyOp(
-                        n_spin_orbitals,
-                        tOps[i_tOp],
-                        {s: 1},
-                        slaterWeightMin=slaterWeightMin,
-                        restrictions=basis.restrictions,
-                        opResult=t_mems[i_tOp],
-                    )
-                    local_excited_basis |= res.keys()
-        excited_basis = Basis(
-            initial_basis=local_excited_basis,
-            restrictions=basis.restrictions,
-            num_spin_orbitals=basis.num_spin_orbitals,
-            comm=basis.comm,
-            verbose=False and verbose,
-            truncation_threshold=basis.truncation_threshold,
-            tau=basis.tau,
-        )
-        h_mem = excited_basis.expand(hOp, dense_cutoff=dense_cutoff, slaterWeightMin=slaterWeightMin)
+        # local_excited_basis = set()
+        # for block in blocks:
+        #     for i_tOp, tOp in [(orb, tOps[orb]) for orb in block]:
+        #         for s in basis.local_basis:
+        #             res = finite.applyOp(
+        #                 n_spin_orbitals,
+        #                 tOps[i_tOp],
+        #                 {s: 1},
+        #                 slaterWeightMin=slaterWeightMin,
+        #                 restrictions=basis.restrictions,
+        #                 opResult=t_mems[i_tOp],
+        #             )
+        #             local_excited_basis |= res.keys()
+        # excited_basis = Basis(
+        #     initial_basis=local_excited_basis,
+        #     restrictions=basis.restrictions,
+        #     num_spin_orbitals=basis.num_spin_orbitals,
+        #     comm=basis.comm,
+        #     verbose=False and verbose,
+        #     truncation_threshold=basis.truncation_threshold,
+        #     tau=basis.tau,
+        # )
+        # h_mem = excited_basis.expand(hOp, dense_cutoff=dense_cutoff, slaterWeightMin=slaterWeightMin)
         for i, (psi, e) in enumerate(zip(psis, es)):
             for block in blocks:
                 block_v = []
@@ -286,13 +286,24 @@ def calc_Greens_function_with_offdiag(
                         restrictions=basis.restrictions,
                         opResult=t_mems[i_tOp],
                     )
-                    # local_excited_basis |= v.keys() - set(basis.local_basis)
+                    local_excited_basis |= v.keys()
                     vs = comm.allgather(v)
                     v = {}
                     for v_i in vs:
                         for state in v_i:
                             v[state] = v_i[state] + v.get(state, 0)
                     block_v.append(v)
+
+                excited_basis = Basis(
+                    initial_basis=local_excited_basis,
+                    restrictions=basis.restrictions,
+                    num_spin_orbitals=basis.num_spin_orbitals,
+                    comm=basis.comm,
+                    verbose=False and verbose,
+                    truncation_threshold=basis.truncation_threshold,
+                    tau=basis.tau,
+                )
+                h_mem = excited_basis.expand(hOp, dense_cutoff=dense_cutoff, slaterWeightMin=slaterWeightMin)
 
                 if verbose:
                     print(f"time(build excited state basis) = {time.perf_counter() - t0}")
@@ -359,10 +370,10 @@ def get_block_Green(
 
     if verbose:
         t0 = time.perf_counter()
-    psi_states = [key for psi in psi_arr for key in psi.keys()]
-    if np.any(np.logical_not(basis.contains(psi_states))):
-        basis.add_states(psi_states[basis.comm.rank :: basis.comm.size])
-        h_mem = basis.expand(hOp, h_mem, dense_cutoff=dense_cutoff, slaterWeightMin=slaterWeightMin)
+    # psi_states = [key for psi in psi_arr for key in psi.keys()]
+    # if np.any(np.logical_not(basis.contains(psi_states))):
+    #     basis.add_states(psi_states[basis.comm.rank :: basis.comm.size])
+    #     h_mem = basis.expand(hOp, h_mem, dense_cutoff=dense_cutoff, slaterWeightMin=slaterWeightMin)
     h = basis.build_sparse_matrix(hOp, h_mem)
 
     if verbose:

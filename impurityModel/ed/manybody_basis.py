@@ -354,7 +354,13 @@ class Basis:
                 sizes[: len(all_states) % self.comm.size] += 1
 
                 bounds = [sum(sizes[:i]) for i in range(self.comm.size)]
-                state_bounds = [all_states[bound] if bound < len(all_states) else all_states[-1] for bound in bounds]
+                print(f"{len(all_states)}=")
+                print(f"{sizes}=")
+                print(f"{bounds}=")
+                if len(all_states) > 0:
+                    state_bounds = [all_states[bound] if bound < len(all_states) else all_states[-1] for bound in bounds]
+                else:
+                    state_bounds = [psr.int2bytes(0, self.num_spin_orbitals)] * self.comm.size
                 # state_bounds_bytes = np.array([byte for state in state_bounds for byte in state], dtype=np.ubyte)
                 state_bounds_bytes = np.fromiter(
                     (
@@ -566,7 +572,7 @@ class Basis:
         else:
             while not done:
                 local_states = set()
-                for state in set(self.local_basis) | local_states:
+                for state in set(itertools.chain(self.local_basis, local_states)):
                     res = applyOp(
                         self.num_spin_orbitals,
                         op,
@@ -583,7 +589,7 @@ class Basis:
                 done = old_size == self.size
         if self.verbose:
             print(f"Expanded basis contains {self.size} elements")
-        return self.build_operator_dict(op, op_dict=None)
+        return self.build_operator_dict(op, op_dict=op_dict)
 
     def _getitem_sequence(self, l):
         if self.comm is None:
@@ -1180,16 +1186,16 @@ class CIPSI_Basis(Basis):
 
                 t0 = perf_counter()
 
-                send_states = [[] for _ in range(self.comm.size)]
-                send_amps = [[] for _ in range(self.comm.size)]
-                for state, amp in Hpsi_i.items():
-                    for r in range(self.comm.size):
-                        if Dj_basis.state_bounds[r][0] is None:
-                            continue
-                        if state >= Dj_basis.state_bounds[r][0] and state <= Dj_basis.state_bounds[r][1]:
-                            send_states[r].append(state)
-                            send_amps[r].append(amp)
-                            break
+                # send_states = [[] for _ in range(self.comm.size)]
+                # send_amps = [[] for _ in range(self.comm.size)]
+                # for state, amp in Hpsi_i.items():
+                #     for r in range(self.comm.size):
+                #         if Dj_basis.state_bounds[r][0] is None:
+                #             continue
+                #         if state >= Dj_basis.state_bounds[r][0] and state <= Dj_basis.state_bounds[r][1]:
+                #             send_states[r].append(state)
+                #             send_amps[r].append(amp)
+                #             break
                 # received_states = self.alltoall_states(send_states)
                 # received_amps = self.comm.alltoall(send_amps)
                 # Hpsi_i = {}
