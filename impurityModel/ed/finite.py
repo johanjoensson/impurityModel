@@ -66,9 +66,9 @@ def get_job_tasks(rank, ranks, tasks_tot):
 
 
 def rotate_matrix(M, T):
-    """
+    r"""
     Rotate the matrix, M, using the matrix T.
-    Returns M' = T^\dagger M T
+    Returns :math:`M' = T^{\dagger} M T`
     Parameters
     ==========
     M : NDArray - Matrix to rotate
