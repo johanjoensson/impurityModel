@@ -539,7 +539,7 @@ class Basis:
             determinants |= spin_flipped
         return determinants
 
-    def expand(self, op, op_dict={}, dense_cutoff=None, slaterWeightMin=0):
+    def expand(self, op, op_dict=None, dense_cutoff=None, slaterWeightMin=0):
         done = False
         if self.comm is None:
             new_basis = set()
@@ -586,7 +586,7 @@ class Basis:
             print(f"Expanded basis contains {self.size} elements")
         return self.build_operator_dict(op, op_dict=op_dict)
 
-    def _getitem_sequence(self, l: list[int]):
+    def _getitem_sequence(self, l: list[int]) -> list[bytes]:
         if self.comm is None:
             return [self.local_basis[i] for i in l]
 
@@ -673,7 +673,7 @@ class Basis:
             raise TypeError(f"Invalid query type {type(val)}! Valid types are {self.dtype} and sequences thereof.")
         return res
 
-    def _index_sequence(self, s: list[bytes]):
+    def _index_sequence(self, s: list[bytes]) -> list[int]:
         if self.comm is None:
             results = [self._index_dict[val] if val in self._index_dict else self.size for val in s]
             return results.tolist()
@@ -951,7 +951,7 @@ class Basis:
             h = self.comm.bcast(h, root=0)
         return h
 
-    def build_sparse_matrix(self, op, op_dict=None):
+    def build_sparse_matrix(self, op, op_dict: dict[bytes, dict[bytes, complex]]=None):
         """
         Get the operator as a sparse matrix in the current basis.
         The sparse matrix is distributed over all ranks.
@@ -961,13 +961,13 @@ class Basis:
 
         _ = self.build_operator_dict(op, op_dict)
 
-        rows_in_basis = list({row for column in self.local_basis for row in op_dict[column].keys()})
-        in_basis_mask = self.contains(rows_in_basis)
-        rows_in_basis = {rows_in_basis[i] for i in range(len(rows_in_basis)) if in_basis_mask[i]}
+        rows_in_basis: list[bytes] = list({row for column in self.local_basis for row in op_dict[column].keys()})
+        in_basis_mask: list[bool] = self.contains(rows_in_basis)
+        rows_in_basis: set[bytes] = {rows_in_basis[i] for i in range(len(rows_in_basis)) if in_basis_mask[i]}
 
-        rows = []
-        columns = []
-        values = []
+        rows: list[bytes] = []
+        columns: list[int] = []
+        values: list[complex] = []
         for column in self.local_basis:
             for row in op_dict[column]:
                 if row not in rows_in_basis:
@@ -975,7 +975,7 @@ class Basis:
                 columns.append(self._index_dict[column])
                 rows.append(row)
                 values.append(op_dict[column][row])
-        rows = self.index(rows)
+        rows: list[int] = self.index(rows)
         return sp.sparse.csr_matrix((values, (rows, columns)), shape=(self.size, self.size), dtype=complex)
 
     def _build_PETSc_matrix(self, op, op_dict=None):
@@ -1107,7 +1107,7 @@ class CIPSI_Basis(Basis):
         # <Dj|H|Psi_ref>^2 / <Dj|H|Dj>
         return np.abs(overlap) ** 2 / de
 
-    def expand(self, H, H_dict={}, de2_min=1e-10, dense_cutoff=1e3, slaterWeightMin=0):
+    def expand(self, H, H_dict=None, de2_min=1e-10, dense_cutoff=1e3, slaterWeightMin=0):
         """
         Use the CIPSI method to expand the basis. Keep adding Slater determinants until the CIPSI energy is converged.
         """
@@ -1261,7 +1261,7 @@ class CIPSI_Basis(Basis):
                 print(f"----->After truncation, the basis contains {self.size} elements.")
         return self.build_operator_dict(H, op_dict=None)
 
-    def expand_at(self, w, psi_ref, H, H_dict={}, slaterWeightMin=0):
+    def expand_at(self, w, psi_ref, H, H_dict=None, slaterWeightMin=0):
         de2_min = 1e-5
 
         t_applyOp = 0
