@@ -954,7 +954,7 @@ static int _cffi_initialize_python(void)
 
         if (f != NULL && f != Py_None) {
             PyFile_WriteString("\nFrom: " _CFFI_MODULE_NAME
-                               "\ncompiled with cffi version: 1.15.1"
+                               "\ncompiled with cffi version: 1.16.0"
                                "\n_cffi_backend module: ", f);
             modules = PyImport_GetModuleDict();
             mod = PyDict_GetItemString(modules, "_cffi_backend");
@@ -1012,6 +1012,15 @@ static int _cffi_carefully_make_gil(void)
        Python < 3.8 because someone might use a mixture of cffi
        embedded modules, some of which were compiled before this file
        changed.
+
+       In Python >= 3.12, this stopped working because that particular
+       tp_version_tag gets modified during interpreter startup.  It's
+       arguably a bad idea before 3.12 too, but again we can't change
+       that because someone might use a mixture of cffi embedded
+       modules, and no-one reported a bug so far.  In Python >= 3.12
+       we go instead for PyCapsuleType.tp_as_buffer, which is supposed
+       to always be NULL.  We write to it temporarily a pointer to
+       a struct full of NULLs, which is semantically the same.
     */
 
 #ifdef WITH_THREAD
@@ -1036,19 +1045,32 @@ static int _cffi_carefully_make_gil(void)
         }
     }
 # else
+#  if PY_VERSION_HEX < 0x030C0000
     int volatile *lock = (int volatile *)&PyCapsule_Type.tp_version_tag;
-    int old_value, locked_value;
+    int old_value, locked_value = -42;
     assert(!(PyCapsule_Type.tp_flags & Py_TPFLAGS_HAVE_VERSION_TAG));
+#  else
+    static struct ebp_s { PyBufferProcs buf; int mark; } empty_buffer_procs;
+    empty_buffer_procs.mark = -42;
+    PyBufferProcs *volatile *lock = (PyBufferProcs *volatile *)
+        &PyCapsule_Type.tp_as_buffer;
+    PyBufferProcs *old_value, *locked_value = &empty_buffer_procs.buf;
+#  endif
 
     while (1) {    /* spin loop */
         old_value = *lock;
-        locked_value = -42;
         if (old_value == 0) {
             if (cffi_compare_and_swap(lock, old_value, locked_value))
                 break;
         }
         else {
+#  if PY_VERSION_HEX < 0x030C0000
             assert(old_value == locked_value);
+#  else
+            /* The pointer should point to a possibly different
+               empty_buffer_procs from another C extension module */
+            assert(((struct ebp_s *)old_value)->mark == -42);
+#  endif
             /* should ideally do a spin loop instruction here, but
                hard to do it portably and doesn't really matter I
                think: PyEval_InitThreads() should be very fast, and
@@ -1265,7 +1287,7 @@ static int cffi_start_python(void)
 /************************************************************/
 
 static void *_cffi_types[] = {
-/*  0 */ _CFFI_OP(_CFFI_OP_FUNCTION, 30), // void()(char *, char *, char *, int, double *, double _Complex *, double _Complex *, double _Complex *, double _Complex *, double _Complex *, double _Complex *, double _Complex *, double *, double *, double _Complex *, double _Complex *, size_t, size_t, size_t, size_t, double, double, int, size_t, size_t)
+/*  0 */ _CFFI_OP(_CFFI_OP_FUNCTION, 4), // int()(char *, char *, char *, int, double *, double _Complex *, double _Complex *, double _Complex *, double _Complex *, double _Complex *, double _Complex *, double _Complex *, double *, double *, double _Complex *, double _Complex *, size_t, size_t, size_t, size_t, double, double, int, size_t, size_t)
 /*  1 */ _CFFI_OP(_CFFI_OP_POINTER, 27), // char *
 /*  2 */ _CFFI_OP(_CFFI_OP_NOOP, 1),
 /*  3 */ _CFFI_OP(_CFFI_OP_NOOP, 1),
@@ -1294,14 +1316,13 @@ static void *_cffi_types[] = {
 /* 26 */ _CFFI_OP(_CFFI_OP_FUNCTION_END, 0),
 /* 27 */ _CFFI_OP(_CFFI_OP_PRIMITIVE, 2), // char
 /* 28 */ _CFFI_OP(_CFFI_OP_PRIMITIVE, 49), // double _Complex
-/* 29 */ _CFFI_OP(_CFFI_OP_POINTER, 0), // void(*)(char *, char *, char *, int, double *, double _Complex *, double _Complex *, double _Complex *, double _Complex *, double _Complex *, double _Complex *, double _Complex *, double *, double *, double _Complex *, double _Complex *, size_t, size_t, size_t, size_t, double, double, int, size_t, size_t)
-/* 30 */ _CFFI_OP(_CFFI_OP_PRIMITIVE, 0), // void
+/* 29 */ _CFFI_OP(_CFFI_OP_POINTER, 0), // int(*)(char *, char *, char *, int, double *, double _Complex *, double _Complex *, double _Complex *, double _Complex *, double _Complex *, double _Complex *, double _Complex *, double *, double *, double _Complex *, double _Complex *, size_t, size_t, size_t, size_t, double, double, int, size_t, size_t)
 };
 
 static struct _cffi_externpy_s _cffi_externpy__run_impmod_ed =
-  { "impmod_ed.run_impmod_ed", 0, 0, 0 };
+  { "impmod_ed.run_impmod_ed", (int)sizeof(int), 0, 0 };
 
-CFFI_DLLEXPORT void run_impmod_ed(char * a0, char * a1, char * a2, int a3, double * a4, double _Complex * a5, double _Complex * a6, double _Complex * a7, double _Complex * a8, double _Complex * a9, double _Complex * a10, double _Complex * a11, double * a12, double * a13, double _Complex * a14, double _Complex * a15, size_t a16, size_t a17, size_t a18, size_t a19, double a20, double a21, int a22, size_t a23, size_t a24)
+CFFI_DLLEXPORT int run_impmod_ed(char * a0, char * a1, char * a2, int a3, double * a4, double _Complex * a5, double _Complex * a6, double _Complex * a7, double _Complex * a8, double _Complex * a9, double _Complex * a10, double _Complex * a11, double * a12, double * a13, double _Complex * a14, double _Complex * a15, size_t a16, size_t a17, size_t a18, size_t a19, double a20, double a21, int a22, size_t a23, size_t a24)
 {
   char a[200];
   char *p = a;
@@ -1331,6 +1352,7 @@ CFFI_DLLEXPORT void run_impmod_ed(char * a0, char * a1, char * a2, int a3, doubl
   *(size_t *)(p + 184) = a23;
   *(size_t *)(p + 192) = a24;
   _cffi_call_python(&_cffi_externpy__run_impmod_ed, p);
+  return *(int *)p;
 }
 
 static const struct _cffi_global_s _cffi_globals[] = {
@@ -1349,7 +1371,7 @@ static const struct _cffi_type_context_s _cffi_type_context = {
   0,  /* num_enums */
   0,  /* num_typenames */
   NULL,  /* no includes */
-  31,  /* num_types */
+  30,  /* num_types */
   1,  /* flags */
 };
 

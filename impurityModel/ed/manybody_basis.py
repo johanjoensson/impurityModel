@@ -186,6 +186,7 @@ class Basis:
         tau=0,
         comm=None,
         verbose=True,
+        debug=True,
     ):
         t0 = perf_counter()
         if initial_basis is not None:
@@ -226,6 +227,7 @@ class Basis:
             print(f"===> T initial_basis : {t0}")
         t0 = perf_counter()
         self.verbose = verbose
+        self.debug = debug
         self.truncation_threshold = truncation_threshold
         self.comm = comm
         self.num_spin_orbitals = num_spin_orbitals
@@ -341,7 +343,7 @@ class Basis:
                     ),
                     MPI.BYTE,
                 ),
-                [all_samples_bytes, samples_count * self.n_bytes, offsets * self.n_bytes, MPI.BYTE],
+                [all_samples_bytes, samples_count * self.n_bytes, offsets * self.n_bytes, MPI.CHAR],
                 root=0,
             )
 
@@ -377,7 +379,6 @@ class Basis:
             i.tobytes()
             for i in np.split(state_bounds_bytes, self.comm.size)
         ]
-        print(f"{state_bounds}=")
         return state_bounds
 
     def add_states(self, new_states: list, distributed_sort=True):
@@ -478,9 +479,9 @@ class Basis:
                     ),
                     send_counts * self.n_bytes,
                     send_offsets * self.n_bytes,
-                    MPI.BYTE,
+                    MPI.CHAR,
                 ],
-                [received_bytes, recv_counts * self.n_bytes, offsets * self.n_bytes, MPI.BYTE],
+                [received_bytes, recv_counts * self.n_bytes, offsets * self.n_bytes, MPI.CHAR],
             )
             t0 = perf_counter() - t0
             if self.verbose:
@@ -540,7 +541,7 @@ class Basis:
             determinants |= spin_flipped
         return determinants
 
-    def expand(self, op, op_dict={}, dense_cutoff=None, slaterWeightMin=0):
+    def expand(self, op, op_dict=None, dense_cutoff=None, slaterWeightMin=0):
         done = False
         if self.comm is None:
             new_basis = set()
@@ -640,8 +641,8 @@ class Basis:
         result = np.zeros((len(l) * self.n_bytes), dtype=np.ubyte)
 
         self.comm.Alltoallv(
-            (results, recv_counts * self.n_bytes, displacements * self.n_bytes, MPI.BYTE),
-            (result, send_counts * self.n_bytes, send_offsets * self.n_bytes, MPI.BYTE),
+            (results, recv_counts * self.n_bytes, displacements * self.n_bytes, MPI.CHAR),
+            (result, send_counts * self.n_bytes, send_offsets * self.n_bytes, MPI.CHAR),
         )
 
         return [result[i * self.n_bytes : (i + 1) * self.n_bytes].tobytes() for i in np.argsort(send_order)]
@@ -661,8 +662,20 @@ class Basis:
                 raise ValueError(f"Could not find {val} in basis!")
         elif isinstance(val, Sequence):
             res = self._index_sequence(val)
+            print(f"{self.local_basis=}", flush=True)
+            print(f"{self._index_dict=}", flush=True)
+            self.comm.barrier()
             for i, v in enumerate(res):
                 if v == self.size:
+                    if self.debug:
+                        proper_rank = self.size
+                        for r in range(self.comm.size):
+                            if val[i] >= self.state_bounds[r][0] and val[i] <= self.state_bounds[r][1]:
+                                proper_rank = r
+                                break
+                        print(f"{proper_rank=}")
+                        print(f"{val=}")
+                        print(f"{i=}")
                     raise ValueError(f"Could not find {val[i]} in basis!")
         elif isinstance(val, np.ndarray):
             if val.shape[0] > 0:
@@ -733,6 +746,9 @@ class Basis:
             ),
             (queries, recv_counts * self.n_bytes, displacements * self.n_bytes, MPI.BYTE),
         )
+        if self.debug:
+            for r in range(self.comm.size):
+                print(f"{r}: {[queries[i * self.n_bytes: (i + 1) * self.n_bytes].tobytes() for i in range(displacements[r], displacements[r] + recv_counts[r])]}")
 
         results = np.empty((sum(recv_counts)), dtype=int)
         # results[:] = self.size
@@ -741,15 +757,17 @@ class Basis:
             results[i] = self._index_dict.get(query, self.size)
             # if query in self._index_dict:
             #     results[i] = self._index_dict[query]
+        # result = np.zeros((sum(send_counts)), dtype=int)
         result = np.empty((len(s)), dtype=int)
-        result[:] = self.size
+        # result[:] = self.size
 
         self.comm.Alltoallv(
             (results, recv_counts, displacements, MPI.INT64_T), (result, send_counts, send_displacements, MPI.UINT64_T)
         )
+        result[sum(send_counts):] = self.size
 
         # return [result[i] for i in np.argsort(send_order)]
-        return result[np.argsort(send_order)].tolist()
+        return result[np.argsort(send_order)].tolist() + [self.size for i in send_to_ranks if i == self.comm.size]
         # result[send_order] = result.copy()
         # return result.tolist()
 
@@ -799,16 +817,19 @@ class Basis:
             query = [i for i in range(start, stop, step)]
             result = self._getitem_sequence(query)
             for i, res in enumerate(result):
-                if res == psr.int2bytes(0, self.num_spin_orbitals):
+                if res is None:
+                # if res == psr.int2bytes(0, self.num_spin_orbitals):
                     raise IndexError(f"Could not find index {query[i]} in basis with size {self.size}!")
         elif isinstance(key, Sequence):
             result = self._getitem_sequence(key)
             for i, res in enumerate(result):
-                if res == psr.int2bytes(0, self.num_spin_orbitals):
+                if res is None:
+                # if res == psr.int2bytes(0, self.num_spin_orbitals):
                     raise IndexError(f"Could not find index {key[i]} in basis with size {self.size}!")
         elif isinstance(key, int):
             result = self._getitem_sequence([key])[0]
-            if result == psr.int2bytes(0, self.num_spin_orbitals):
+            if result in None:
+            # if result == psr.int2bytes(0, self.num_spin_orbitals):
                 raise IndexError(f"Could not find index {key} in basis with size {self.size}!")
         else:
             raise TypeError(f"Invalid index type {type(key)}. Valid types are slice, Sequence and int")
@@ -963,25 +984,30 @@ class Basis:
         if "PETSc" in sys.modules:
             return self._build_PETSc_matrix(op, op_dict)
 
-        _ = self.build_operator_dict(op, op_dict)
+        expanded_dict = self.build_operator_dict(op, op_dict)
 
-        rows_in_basis = list({row for column in self.local_basis for row in op_dict[column].keys()})
+        rows_in_basis = sorted({row for column in self.local_basis for row in expanded_dict[column].keys()})
         in_basis_mask = self.contains(rows_in_basis)
-        rows_in_basis = {rows_in_basis[i] for i in range(len(rows_in_basis)) if in_basis_mask[i]}
+        rows_in_basis = list({rows_in_basis[i] for i in range(len(rows_in_basis)) if in_basis_mask[i]})
+        row_dict = {state: i for state, i in zip(rows_in_basis, self.index(rows_in_basis))}
 
         rows = []
         columns = []
         values = []
         for column in self.local_basis:
-            for row in op_dict[column]:
-                if row not in rows_in_basis:
+            for row in expanded_dict[column]:
+                if row not in row_dict:
                     continue
                 columns.append(self._index_dict[column])
-                rows.append(row)
-                values.append(op_dict[column][row])
+                rows.append(row_dict[row])
+                values.append(expanded_dict[column][row])
         # print(f"{list(self)=}")
-        rows = self.index(rows)
-        return sp.sparse.csr_matrix((values, (rows, columns)), shape=(self.size, self.size), dtype=complex)
+        # rows = self.index(rows)
+        if self.debug and len(rows) > 0:
+            print(f"{self.size=} {max(rows)=}", flush=True)
+        return sp.sparse.csr_matrix(
+            (values, (rows, columns)), shape=(self.size, self.size), dtype=complex
+        )
 
     def _build_PETSc_matrix(self, op, op_dict=None):
         """
@@ -1112,7 +1138,7 @@ class CIPSI_Basis(Basis):
         # <Dj|H|Psi_ref>^2 / <Dj|H|Dj>
         return np.abs(overlap) ** 2 / de
 
-    def expand(self, H, H_dict={}, de2_min=1e-10, dense_cutoff=1e3, slaterWeightMin=0):
+    def expand(self, H, H_dict=None, de2_min=1e-10, dense_cutoff=1e3, slaterWeightMin=0):
         """
         Use the CIPSI method to expand the basis. Keep adding Slater determinants until the CIPSI energy is converged.
         """
@@ -1266,7 +1292,7 @@ class CIPSI_Basis(Basis):
                 print(f"----->After truncation, the basis contains {self.size} elements.")
         return self.build_operator_dict(H, op_dict=None)
 
-    def expand_at(self, w, psi_ref, H, H_dict={}, slaterWeightMin=0):
+    def expand_at(self, w, psi_ref, H, H_dict=None, slaterWeightMin=0):
         de2_min = 1e-5
 
         t_applyOp = 0
