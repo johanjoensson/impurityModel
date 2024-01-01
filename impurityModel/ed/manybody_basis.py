@@ -268,7 +268,7 @@ class Basis:
         if verbose:
             print(f"===> T add_states : {t0}")
 
-    def alltoall_states(self, send_list):
+    def alltoall_states(self, send_list: list[list[bytes]]):
         recv_counts = np.empty((self.comm.size), dtype=int)
         self.comm.Alltoall(
             (np.fromiter((len(l) for l in send_list), dtype=int, count=len(send_list)), MPI.UINT64_T), recv_counts
@@ -296,7 +296,7 @@ class Basis:
             (received_bytes, recv_counts * self.n_bytes, offsets * self.n_bytes, MPI.BYTE),
         )
 
-        states = [[] for _ in range(len(send_list))]
+        states: list[list[bytes]] = [[] for _ in range(len(send_list))]
         start = 0
         for r in range(len(recv_counts)):
             if recv_counts[r] == 0:
@@ -343,7 +343,7 @@ class Basis:
                     ),
                     MPI.BYTE,
                 ),
-                [all_samples_bytes, samples_count * self.n_bytes, offsets * self.n_bytes, MPI.CHAR],
+                (all_samples_bytes, samples_count * self.n_bytes, offsets * self.n_bytes, MPI.BYTE),
                 root=0,
             )
 
@@ -374,7 +374,7 @@ class Basis:
             done = self.comm.bcast(done, root=0)
 
         self.comm.Bcast(state_bounds_bytes, root=0)
-        state_bounds = [
+        state_bounds: list[bytes] = [
             # state_bounds_bytes[i * self.n_bytes : (i + 1) * self.n_bytes].tobytes() for i in range(self.comm.size)
             i.tobytes()
             for i in np.split(state_bounds_bytes, self.comm.size)
@@ -434,7 +434,7 @@ class Basis:
                 if state_bounds[r] == state_bounds[r + 1]:
                     last_rank = r
                     break
-            send_list: list[list[self.type]] = [[] for _ in range(self.comm.size)]
+            send_list: list[list[bytes]] = [[] for _ in range(self.comm.size)]
             for state in local_states:
                 for r in range(last_rank):
                     if state >= state_bounds[r] and state < state_bounds[r + 1]:
@@ -479,9 +479,9 @@ class Basis:
                     ),
                     send_counts * self.n_bytes,
                     send_offsets * self.n_bytes,
-                    MPI.CHAR,
+                    MPI.BYTE,
                 ],
-                [received_bytes, recv_counts * self.n_bytes, offsets * self.n_bytes, MPI.CHAR],
+                [received_bytes, recv_counts * self.n_bytes, offsets * self.n_bytes, MPI.BYTE],
             )
             t0 = perf_counter() - t0
             if self.verbose:
@@ -588,14 +588,14 @@ class Basis:
             print(f"Expanded basis contains {self.size} elements")
         return self.build_operator_dict(op, op_dict=op_dict)
 
-    def _getitem_sequence(self, l):
+    def _getitem_sequence(self, l: list[int]) -> list[bytes]:
         if self.comm is None:
             return [self.local_basis[i] for i in l]
 
         l = np.fromiter((i if i >= 0 else self.size + i for i in l), dtype=int, count=len(l))
 
-        send_list = [[] for _ in range(self.comm.size)]
-        send_to_ranks = []
+        send_list: list[list[int]] = [[] for _ in range(self.comm.size)]
+        send_to_ranks: list[int] = []
         for i in l:
             send_to_ranks.append(self.comm.size)
             for r in range(self.comm.size):
@@ -605,8 +605,6 @@ class Basis:
                     break
         send_order = np.argsort(send_to_ranks, kind="stable")
         recv_counts = np.empty((self.comm.size), dtype=int)
-        queries = None
-        displacements = None
 
         self.comm.Alltoall(
             (np.fromiter((len(l) for l in send_list), dtype=int, count=len(send_list)), MPI.UINT64_T), recv_counts
@@ -616,7 +614,6 @@ class Basis:
         displacements = np.fromiter(
             (sum(recv_counts[:p]) for p in range(self.comm.size)), dtype=int, count=self.comm.size
         )
-        # send_list_flat = np.fromiter((i for l in send_list for i in l), dtype=int, count=len(l))
         send_counts = np.fromiter((len(l) for l in send_list), dtype=int, count=len(send_list))
         send_offsets = np.fromiter(
             (sum(send_counts[:r]) for r in range(self.comm.size)), dtype=int, count=self.comm.size
@@ -641,8 +638,8 @@ class Basis:
         result = np.zeros((len(l) * self.n_bytes), dtype=np.ubyte)
 
         self.comm.Alltoallv(
-            (results, recv_counts * self.n_bytes, displacements * self.n_bytes, MPI.CHAR),
-            (result, send_counts * self.n_bytes, send_offsets * self.n_bytes, MPI.CHAR),
+            (results, recv_counts * self.n_bytes, displacements * self.n_bytes, MPI.BYTE),
+            (result, send_counts * self.n_bytes, send_offsets * self.n_bytes, MPI.BYTE),
         )
 
         return [result[i * self.n_bytes : (i + 1) * self.n_bytes].tobytes() for i in np.argsort(send_order)]
@@ -690,13 +687,13 @@ class Basis:
             raise TypeError(f"Invalid query type {type(val)}! Valid types are {self.dtype} and sequences thereof.")
         return res
 
-    def _index_sequence(self, s):
+    def _index_sequence(self, s: list[bytes]) -> list[int]:
         if self.comm is None:
             results = [self._index_dict[val] if val in self._index_dict else self.size for val in s]
             return results.tolist()
 
-        send_list = [[] for _ in range(self.comm.size)]
-        send_to_ranks = []
+        send_list: list[list[bytes]] = [[] for _ in range(self.comm.size)]
+        send_to_ranks: list[int] = []
         for i, val in enumerate(s):
             send_to_ranks.append(self.comm.size)
             for r in range(self.comm.size):
@@ -976,7 +973,7 @@ class Basis:
             h = self.comm.bcast(h, root=0)
         return h
 
-    def build_sparse_matrix(self, op, op_dict=None):
+    def build_sparse_matrix(self, op, op_dict: dict[bytes, dict[bytes, complex]]=None):
         """
         Get the operator as a sparse matrix in the current basis.
         The sparse matrix is distributed over all ranks.
@@ -986,23 +983,21 @@ class Basis:
 
         expanded_dict = self.build_operator_dict(op, op_dict)
 
-        rows_in_basis = sorted({row for column in self.local_basis for row in expanded_dict[column].keys()})
-        in_basis_mask = self.contains(rows_in_basis)
-        rows_in_basis = list({rows_in_basis[i] for i in range(len(rows_in_basis)) if in_basis_mask[i]})
-        row_dict = {state: i for state, i in zip(rows_in_basis, self.index(rows_in_basis))}
+        rows_in_basis: list[bytes] = list({row for column in self.local_basis for row in op_dict[column].keys()})
+        in_basis_mask: list[bool] = self.contains(rows_in_basis)
+        rows_in_basis: set[bytes] = {rows_in_basis[i] for i in range(len(rows_in_basis)) if in_basis_mask[i]}
 
-        rows = []
-        columns = []
-        values = []
+        rows: list[bytes] = []
+        columns: list[int] = []
+        values: list[complex] = []
         for column in self.local_basis:
             for row in expanded_dict[column]:
                 if row not in row_dict:
                     continue
                 columns.append(self._index_dict[column])
-                rows.append(row_dict[row])
+                rows.append(row)
                 values.append(expanded_dict[column][row])
-        # print(f"{list(self)=}")
-        # rows = self.index(rows)
+        rows: list[int] = self.index(rows)
         if self.debug and len(rows) > 0:
             print(f"{self.size=} {max(rows)=}", flush=True)
         return sp.sparse.csr_matrix(
