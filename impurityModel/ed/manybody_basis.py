@@ -825,7 +825,7 @@ class Basis:
                     raise IndexError(f"Could not find index {key[i]} in basis with size {self.size}!")
         elif isinstance(key, int):
             result = self._getitem_sequence([key])[0]
-            if result in None:
+            if result is None:
             # if result == psr.int2bytes(0, self.num_spin_orbitals):
                 raise IndexError(f"Could not find index {key} in basis with size {self.size}!")
         else:
@@ -983,7 +983,7 @@ class Basis:
 
         expanded_dict = self.build_operator_dict(op, op_dict)
 
-        rows_in_basis: list[bytes] = list({row for column in self.local_basis for row in op_dict[column].keys()})
+        rows_in_basis: list[bytes] = list({row for column in self.local_basis for row in expanded_dict[column].keys()})
         in_basis_mask: list[bool] = self.contains(rows_in_basis)
         rows_in_basis: set[bytes] = {rows_in_basis[i] for i in range(len(rows_in_basis)) if in_basis_mask[i]}
 
@@ -992,7 +992,7 @@ class Basis:
         values: list[complex] = []
         for column in self.local_basis:
             for row in expanded_dict[column]:
-                if row not in row_dict:
+                if row not in rows_in_basis:
                     continue
                 columns.append(self._index_dict[column])
                 rows.append(row)
