@@ -271,7 +271,7 @@ class Basis:
     def alltoall_states(self, send_list: list[list[bytes]]):
         recv_counts = np.empty((self.comm.size), dtype=int)
         self.comm.Alltoall(
-            (np.fromiter((len(l) for l in send_list), dtype=int, count=len(send_list)), MPI.UINT64_T), recv_counts
+            (np.fromiter((len(l) for l in send_list), dtype=int, count=len(send_list)), MPI.INT64_T), recv_counts
         )
 
         received_bytes = np.empty((np.sum(recv_counts) * self.n_bytes), dtype=np.ubyte)
@@ -324,7 +324,7 @@ class Basis:
                 samples = list(local_states)
 
             samples_count = np.empty((self.comm.size), dtype=int)
-            self.comm.Gather((np.array([len(samples)], dtype=int), MPI.UINT64_T), samples_count, root=0)
+            self.comm.Gather((np.array([len(samples)], dtype=int), MPI.INT64_T), samples_count, root=0)
 
             all_samples_bytes = None
             offsets = 0
@@ -453,7 +453,7 @@ class Basis:
 
             recv_counts = np.empty((self.comm.size), dtype=int)
             self.comm.Alltoall(
-                (np.fromiter((len(l) for l in send_list), dtype=int, count=len(send_list)), MPI.UINT64_T), recv_counts
+                (np.fromiter((len(l) for l in send_list), dtype=int, count=len(send_list)), MPI.INT64_T), recv_counts
             )
 
             received_bytes = np.empty((sum(recv_counts) * self.n_bytes), dtype=np.ubyte)
@@ -595,19 +595,19 @@ class Basis:
         l = np.fromiter((i if i >= 0 else self.size + i for i in l), dtype=int, count=len(l))
 
         send_list: list[list[int]] = [[] for _ in range(self.comm.size)]
-        send_to_ranks: list[int] = []
-        for i in l:
-            send_to_ranks.append(self.comm.size)
+        send_to_ranks = np.empty((len(l)), dtype=int)
+        send_to_ranks[:] = self.size
+        for idx, i in enumerate(l):
             for r in range(self.comm.size):
                 if i >= self.index_bounds[r][0] and i < self.index_bounds[r][1]:
                     send_list[r].append(i)
-                    send_to_ranks[-1] = r
+                    send_to_ranks[idx] = r
                     break
         send_order = np.argsort(send_to_ranks, kind="stable")
         recv_counts = np.empty((self.comm.size), dtype=int)
 
         self.comm.Alltoall(
-            (np.fromiter((len(l) for l in send_list), dtype=int, count=len(send_list)), MPI.UINT64_T), recv_counts
+            (np.fromiter((len(l) for l in send_list), dtype=int, count=len(send_list)), MPI.INT64_T), recv_counts
         )
 
         queries = np.empty((sum(recv_counts)), dtype=int)
@@ -624,7 +624,7 @@ class Basis:
                 np.fromiter((i for l in send_list for i in l), dtype=int, count=len(l)),
                 send_counts,
                 send_offsets,
-                MPI.UINT64_T,
+                MPI.INT64_T,
             ),
             (queries, recv_counts, displacements, MPI.INT64_T),
         )
@@ -690,12 +690,12 @@ class Basis:
     def _index_sequence(self, s: list[bytes]) -> list[int]:
         if self.comm is None:
             results = [self._index_dict[val] if val in self._index_dict else self.size for val in s]
-            return results.tolist()
+            return results
 
         send_list: list[list[bytes]] = [[] for _ in range(self.comm.size)]
-        send_to_ranks: list[int] = []
+        send_to_ranks = np.empty((len(s)), dtype=int)
+        send_to_ranks[:] = self.size
         for i, val in enumerate(s):
-            send_to_ranks.append(self.comm.size)
             for r in range(self.comm.size):
                 if (
                     self.state_bounds[r][0] is not None
@@ -703,7 +703,7 @@ class Basis:
                     and val <= self.state_bounds[r][1]
                 ):
                     send_list[r].append(val)
-                    send_to_ranks[-1] = r
+                    send_to_ranks[i] = r
                     break
 
         if self.debug:
@@ -723,7 +723,7 @@ class Basis:
         self.comm.Alltoall(
             (
                 np.fromiter((len(send_list[r]) for r in range(self.comm.size)), dtype=int, count=self.comm.size),
-                MPI.UINT64_T,
+                MPI.INT64_T,
             ),
             recv_counts,
         )
@@ -764,7 +764,7 @@ class Basis:
         # result[:] = self.size
 
         self.comm.Alltoallv(
-            (results, recv_counts, displacements, MPI.INT64_T), (result, send_counts, send_displacements, MPI.UINT64_T)
+            (results, recv_counts, displacements, MPI.INT64_T), (result, send_counts, send_displacements, MPI.INT64_T)
         )
         result[sum(send_counts):] = self.size
 
