@@ -706,6 +706,10 @@ class Basis:
                     send_to_ranks[-1] = r
                     break
 
+        if self.debug:
+            print("send_list:")
+            for r in range(self.comm.size):
+                print(f"    {r}: {send_list[r]}")
         send_order = np.argsort(send_to_ranks, kind="stable")
         recv_counts = np.empty((self.comm.size), dtype=int)
         send_counts = np.fromiter((len(send_list[r]) for r in range(self.comm.size)), dtype=int, count=self.comm.size)
@@ -744,8 +748,9 @@ class Basis:
             (queries, recv_counts * self.n_bytes, displacements * self.n_bytes, MPI.BYTE),
         )
         if self.debug:
+            print("queries:")
             for r in range(self.comm.size):
-                print(f"{r}: {[queries[i * self.n_bytes: (i + 1) * self.n_bytes].tobytes() for i in range(displacements[r], displacements[r] + recv_counts[r])]}")
+                print(f"    {r}: {[queries[i * self.n_bytes: (i + 1) * self.n_bytes].tobytes() for i in range(displacements[r], displacements[r] + recv_counts[r])]}")
 
         results = np.empty((sum(recv_counts)), dtype=int)
         # results[:] = self.size
