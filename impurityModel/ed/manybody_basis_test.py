@@ -480,7 +480,7 @@ def test_operator_dict_simple_with_extra_states():
         ((2, "c"), (2, "a")): 3 / 2,
         ((1, "c"), (1, "a")): 1,
         ((3, "c"), (3, "a")): 1,
-        ((0, 'c'),): 500,
+        ((0, "c"),): 500,
     }
     states = [b"\x78"]
     basis = Basis(initial_basis=states, num_spin_orbitals=5, verbose=True, comm=MPI.COMM_WORLD)
@@ -550,7 +550,7 @@ def test_operator_dict_eg_t2g_with_extra_states():
         ((2, "c"), (2, "a")): 3 / 2,
         ((1, "c"), (1, "a")): 1,
         ((3, "c"), (3, "a")): 1,
-        ((0, 'c'),): 500,
+        ((0, "c"),): 500,
     }
     states = [b"\x78", b"\xB8", b"\xD8", b"\xE8", b"\xF0"]
     basis = Basis(initial_basis=states, num_spin_orbitals=5, verbose=True, comm=MPI.COMM_WORLD)
@@ -574,7 +574,9 @@ def test_operator_dict_eg_t2g_with_extra_states():
 
     assert all(fk in correct for fk in full_dict.keys())
     for key in states:
-        assert all(fk in correct[key] for fk in full_dict[key].keys()), f"{list(full_dict[key].keys())=} {list(correct.keys())=} "
+        assert all(
+            fk in correct[key] for fk in full_dict[key].keys()
+        ), f"{list(full_dict[key].keys())=} {list(correct.keys())=} "
         for row in correct[key].keys():
             assert correct[key][row] == full_dict[key][row], f"{key=} {row=}"
 

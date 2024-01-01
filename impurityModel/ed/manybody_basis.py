@@ -268,7 +268,9 @@ class Basis:
 
     def alltoall_states(self, send_list):
         recv_counts = np.empty((self.comm.size), dtype=int)
-        self.comm.Alltoall((np.fromiter((len(l) for l in send_list), dtype=int, count=len(send_list)), MPI.UINT64_T), recv_counts)
+        self.comm.Alltoall(
+            (np.fromiter((len(l) for l in send_list), dtype=int, count=len(send_list)), MPI.UINT64_T), recv_counts
+        )
 
         received_bytes = np.empty((np.sum(recv_counts) * self.n_bytes), dtype=np.ubyte)
         offsets = np.fromiter((np.sum(recv_counts[:i]) for i in range(self.comm.size)), dtype=int, count=self.comm.size)
@@ -281,12 +283,7 @@ class Basis:
         self.comm.Alltoallv(
             (
                 np.fromiter(
-                    (
-                        byte
-                        for state_list in send_list
-                        for state in state_list
-                        for byte in state
-                    ),
+                    (byte for state_list in send_list for state in state_list for byte in state),
                     dtype=np.ubyte,
                     count=np.sum(send_counts) * self.n_bytes,
                 ),
@@ -336,18 +333,21 @@ class Basis:
                 )
 
             self.comm.Gatherv(
-                (np.fromiter(
-                    (byte for state in samples for byte in state),
-                    dtype=np.ubyte,
-                    count=len(samples) * self.n_bytes,
-                ), MPI.BYTE),
+                (
+                    np.fromiter(
+                        (byte for state in samples for byte in state),
+                        dtype=np.ubyte,
+                        count=len(samples) * self.n_bytes,
+                    ),
+                    MPI.BYTE,
+                ),
                 [all_samples_bytes, samples_count * self.n_bytes, offsets * self.n_bytes, MPI.BYTE],
                 root=0,
             )
 
             if self.comm.rank == 0:
                 done = True
-                if sum(samples_count) ==  0:
+                if sum(samples_count) == 0:
                     state_bounds = [psr.int2bytes(0, self.num_spin_orbitals)] * self.comm.size
                 else:
                     # all_states = sorted({all_samples_bytes[i * self.n_bytes : (i + 1) * self.n_bytes].tobytes() for i in  range(np.sum(samples_count))})
@@ -357,14 +357,12 @@ class Basis:
                     sizes[: len(all_states) % self.comm.size] += 1
 
                     bounds = [sum(sizes[:i]) for i in range(self.comm.size)]
-                    state_bounds = [all_states[bound] if bound < len(all_states) else all_states[-1] for bound in bounds]
+                    state_bounds = [
+                        all_states[bound] if bound < len(all_states) else all_states[-1] for bound in bounds
+                    ]
                     # state_bounds_bytes = np.array([byte for state in state_bounds for byte in state], dtype=np.ubyte)
                 state_bounds_bytes = np.fromiter(
-                    (
-                        byte
-                        for state in state_bounds
-                        for byte in state
-                    ),
+                    (byte for state in state_bounds for byte in state),
                     dtype=np.ubyte,
                     count=len(state_bounds) * self.n_bytes,
                 )
@@ -376,7 +374,8 @@ class Basis:
         self.comm.Bcast(state_bounds_bytes, root=0)
         state_bounds = [
             # state_bounds_bytes[i * self.n_bytes : (i + 1) * self.n_bytes].tobytes() for i in range(self.comm.size)
-            i.tobytes() for i in np.split(state_bounds_bytes, self.comm.size)
+            i.tobytes()
+            for i in np.split(state_bounds_bytes, self.comm.size)
         ]
         return state_bounds
 
@@ -451,7 +450,9 @@ class Basis:
             # received_states = {state for rank_states in received_states for state in rank_states}
 
             recv_counts = np.empty((self.comm.size), dtype=int)
-            self.comm.Alltoall((np.fromiter((len(l) for l in send_list), dtype=int, count=len(send_list)), MPI.UINT64_T), recv_counts)
+            self.comm.Alltoall(
+                (np.fromiter((len(l) for l in send_list), dtype=int, count=len(send_list)), MPI.UINT64_T), recv_counts
+            )
 
             received_bytes = np.empty((sum(recv_counts) * self.n_bytes), dtype=np.ubyte)
             offsets = np.fromiter(
@@ -470,12 +471,7 @@ class Basis:
                 [
                     # np.array([byte for states in send_list for state in states for byte in state], dtype=np.ubyte),
                     np.fromiter(
-                        (
-                            byte
-                            for states in send_list
-                            for state in states
-                            for byte in state
-                        ),
+                        (byte for states in send_list for state in states for byte in state),
                         dtype=np.ubyte,
                         count=np.sum(send_counts) * self.n_bytes,
                     ),
@@ -493,7 +489,8 @@ class Basis:
             if sum(recv_counts) > 0:
                 received_states = {
                     # received_bytes[i * self.n_bytes : (i + 1) * self.n_bytes].tobytes() for i in range(sum(recv_counts))
-                    i.tobytes() for i in np.split(received_bytes, sum(recv_counts))
+                    i.tobytes()
+                    for i in np.split(received_bytes, sum(recv_counts))
                 }
             else:
                 received_states = set()
@@ -609,7 +606,9 @@ class Basis:
         queries = None
         displacements = None
 
-        self.comm.Alltoall((np.fromiter((len(l) for l in send_list), dtype=int, count=len(send_list)), MPI.UINT64_T), recv_counts)
+        self.comm.Alltoall(
+            (np.fromiter((len(l) for l in send_list), dtype=int, count=len(send_list)), MPI.UINT64_T), recv_counts
+        )
 
         queries = np.empty((sum(recv_counts)), dtype=int)
         displacements = np.fromiter(
@@ -644,7 +643,7 @@ class Basis:
             (result, send_counts * self.n_bytes, send_offsets * self.n_bytes, MPI.BYTE),
         )
 
-        return [result[i * self.n_bytes: (i + 1) * self.n_bytes].tobytes() for i in np.argsort(send_order)]
+        return [result[i * self.n_bytes : (i + 1) * self.n_bytes].tobytes() for i in np.argsort(send_order)]
         # result_new = [None] * len(l)
         # for i in range(len(l)):
         #     if len(send_order) > 0:
@@ -707,7 +706,10 @@ class Basis:
         # )
 
         self.comm.Alltoall(
-            (np.fromiter((len(send_list[r]) for r in range(self.comm.size)), dtype=int, count=self.comm.size), MPI.UINT64_T),
+            (
+                np.fromiter((len(send_list[r]) for r in range(self.comm.size)), dtype=int, count=self.comm.size),
+                MPI.UINT64_T,
+            ),
             recv_counts,
         )
 
@@ -720,12 +722,7 @@ class Basis:
             (
                 # np.array([byte for states in send_list for state in states for byte in state], dtype=np.ubyte),
                 np.fromiter(
-                    (
-                        byte
-                        for states in send_list
-                        for state in states
-                        for byte in state
-                    ),
+                    (byte for states in send_list for state in states for byte in state),
                     dtype=np.ubyte,
                     count=sum(send_counts) * self.n_bytes,
                 ),
@@ -982,9 +979,7 @@ class Basis:
                 rows.append(row)
                 values.append(op_dict[column][row])
         rows = self.index(rows)
-        return sp.sparse.csr_matrix(
-            (values, (rows, columns)), shape=(self.size, self.size), dtype=complex
-        )
+        return sp.sparse.csr_matrix((values, (rows, columns)), shape=(self.size, self.size), dtype=complex)
 
     def _build_PETSc_matrix(self, op, op_dict=None):
         """
