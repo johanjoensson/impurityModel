@@ -555,6 +555,7 @@ def calc_local_Greens_function_from_alpha_beta(alphas, betas, iws, ws, iw_indice
                 )
     return gs_matsubara_local, gs_realaxis_local
 
+
 def rotate_matrix(M, T):
     """
     Rotate the matrix, M, using the matrix T.
@@ -568,6 +569,7 @@ def rotate_matrix(M, T):
     M' : NDArray - The rotated matrix
     """
     return np.conj(T.T) @ M @ T
+
 
 def rotate_Greens_function(G, T):
     """
@@ -588,9 +590,9 @@ def rotate_Greens_function(G, T):
         w_ind,
     )
 
+
 def rotate_4index_U(U4, T):
-    return np.einsum("ij,kl, jlmo, mn, op", np.conj(T.T),
-                   np.conj(T.T), U4, T, T)
+    return np.einsum("ij,kl, jlmo, mn, op", np.conj(T.T), np.conj(T.T), U4, T, T)
 
 
 def save_Greens_function(gs, omega_mesh, label, e_scale=1, tol=1e-8):

@@ -286,13 +286,7 @@ def eigensystem_new(
         for j in range(sum(mask)):
             indices = range(basis.size)
             states = basis[list(range(basis.size))]
-            psis.append(
-                {
-                    state: vecs[i, j]
-                    for state, i in zip(states, indices)
-                    if abs(vecs[i, j]) > 0
-                }
-            )
+            psis.append({state: vecs[i, j] for state, i in zip(states, indices) if abs(vecs[i, j]) > 0})
     else:
         for j in range(sum(mask)):
             psis.append(
