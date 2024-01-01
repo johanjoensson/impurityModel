@@ -268,7 +268,7 @@ class Basis:
 
     def alltoall_states(self, send_list):
         recv_counts = np.empty((self.comm.size), dtype=int)
-        self.comm.Alltoall(np.fromiter((len(l) for l in send_list), dtype=int, count=len(send_list)), recv_counts)
+        self.comm.Alltoall((np.fromiter((len(l) for l in send_list), dtype=int, count=len(send_list)), MPI.UINT64_T), recv_counts)
 
         received_bytes = np.empty((np.sum(recv_counts) * self.n_bytes), dtype=np.ubyte)
         offsets = np.fromiter((np.sum(recv_counts[:i]) for i in range(self.comm.size)), dtype=int, count=self.comm.size)
@@ -279,7 +279,7 @@ class Basis:
         )
 
         self.comm.Alltoallv(
-            [
+            (
                 np.fromiter(
                     (
                         byte
@@ -293,8 +293,8 @@ class Basis:
                 send_counts * self.n_bytes,
                 send_offsets * self.n_bytes,
                 MPI.BYTE,
-            ],
-            [received_bytes, recv_counts * self.n_bytes, offsets * self.n_bytes, MPI.BYTE],
+            ),
+            (received_bytes, recv_counts * self.n_bytes, offsets * self.n_bytes, MPI.BYTE),
         )
 
         states = [[] for _ in range(len(send_list))]
@@ -325,7 +325,7 @@ class Basis:
                 samples = list(local_states)
 
             samples_count = np.empty((self.comm.size), dtype=int)
-            self.comm.Gather(np.array([len(samples)], dtype=int), samples_count, root=0)
+            self.comm.Gather((np.array([len(samples)], dtype=int), MPI.UINT64_T), samples_count, root=0)
 
             all_samples_bytes = None
             offsets = 0
@@ -336,11 +336,11 @@ class Basis:
                 )
 
             self.comm.Gatherv(
-                np.fromiter(
+                (np.fromiter(
                     (byte for state in samples for byte in state),
                     dtype=np.ubyte,
                     count=len(samples) * self.n_bytes,
-                ),
+                ), MPI.BYTE),
                 [all_samples_bytes, samples_count * self.n_bytes, offsets * self.n_bytes, MPI.BYTE],
                 root=0,
             )
@@ -451,7 +451,7 @@ class Basis:
             # received_states = {state for rank_states in received_states for state in rank_states}
 
             recv_counts = np.empty((self.comm.size), dtype=int)
-            self.comm.Alltoall(np.fromiter((len(l) for l in send_list), dtype=int, count=len(send_list)), recv_counts)
+            self.comm.Alltoall((np.fromiter((len(l) for l in send_list), dtype=int, count=len(send_list)), MPI.UINT64_T), recv_counts)
 
             received_bytes = np.empty((sum(recv_counts) * self.n_bytes), dtype=np.ubyte)
             offsets = np.fromiter(
@@ -609,7 +609,7 @@ class Basis:
         queries = None
         displacements = None
 
-        self.comm.Alltoall(np.fromiter((len(l) for l in send_list), dtype=int, count=len(send_list)), recv_counts)
+        self.comm.Alltoall((np.fromiter((len(l) for l in send_list), dtype=int, count=len(send_list)), MPI.UINT64_T), recv_counts)
 
         queries = np.empty((sum(recv_counts)), dtype=int)
         displacements = np.fromiter(
@@ -626,7 +626,7 @@ class Basis:
                 np.fromiter((i for l in send_list for i in l), dtype=int, count=len(l)),
                 send_counts,
                 send_offsets,
-                MPI.INT64_T,
+                MPI.UINT64_T,
             ),
             (queries, recv_counts, displacements, MPI.INT64_T),
         )
@@ -707,7 +707,7 @@ class Basis:
         # )
 
         self.comm.Alltoall(
-            np.fromiter((len(send_list[r]) for r in range(self.comm.size)), dtype=int, count=self.comm.size),
+            (np.fromiter((len(send_list[r]) for r in range(self.comm.size)), dtype=int, count=self.comm.size), MPI.UINT64_T),
             recv_counts,
         )
 
@@ -717,7 +717,7 @@ class Basis:
         )
 
         self.comm.Alltoallv(
-            [
+            (
                 # np.array([byte for states in send_list for state in states for byte in state], dtype=np.ubyte),
                 np.fromiter(
                     (
@@ -732,8 +732,8 @@ class Basis:
                 send_counts * self.n_bytes,
                 send_displacements * self.n_bytes,
                 MPI.BYTE,
-            ],
-            [queries, recv_counts * self.n_bytes, displacements * self.n_bytes, MPI.BYTE],
+            ),
+            (queries, recv_counts * self.n_bytes, displacements * self.n_bytes, MPI.BYTE),
         )
 
         results = np.empty((sum(recv_counts)), dtype=int)
@@ -747,7 +747,7 @@ class Basis:
         result[:] = self.size
 
         self.comm.Alltoallv(
-            [results, recv_counts, displacements, MPI.INT64_T], [result, send_counts, send_displacements, MPI.INT64_T]
+            (results, recv_counts, displacements, MPI.INT64_T), (result, send_counts, send_displacements, MPI.UINT64_T)
         )
 
         # return [result[i] for i in np.argsort(send_order)]
@@ -1119,6 +1119,7 @@ class CIPSI_Basis(Basis):
         """
         Use the CIPSI method to expand the basis. Keep adding Slater determinants until the CIPSI energy is converged.
         """
+        distribute_psi = False
         psi_ref = None
         e0_prev = np.inf
         e0 = 0
@@ -1134,7 +1135,7 @@ class CIPSI_Basis(Basis):
 
             t0 = perf_counter()
             if psi_ref is not None:
-                v0 = self.build_vector(psi_ref, distributed=False)
+                v0 = self.build_vector(psi_ref, distributed=distribute_psi)
             else:
                 v0 = None
             e_ref, psi_ref = eigensystem_new(
@@ -1146,7 +1147,7 @@ class CIPSI_Basis(Basis):
                 eigenValueTol=de2_min,
                 dense_cutoff=dense_cutoff,
                 verbose=self.verbose,
-                distribute_eigenvectors=False,
+                distribute_eigenvectors=distribute_psi,
             )
             e0_prev = e0
             e0 = np.min(e_ref)
