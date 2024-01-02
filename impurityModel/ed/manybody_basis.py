@@ -659,8 +659,9 @@ class Basis:
                 raise ValueError(f"Could not find {val} in basis!")
         elif isinstance(val, Sequence):
             res = self._index_sequence(val)
-            print(f"{self.local_basis=}", flush=True)
-            print(f"{self._index_dict=}", flush=True)
+            if self.debug:
+                print(f"{self.local_basis=}", flush=True)
+                print(f"{self._index_dict=}", flush=True)
             self.comm.barrier()
             for i, v in enumerate(res):
                 if v == self.size:
@@ -819,19 +820,19 @@ class Basis:
             query = [i for i in range(start, stop, step)]
             result = self._getitem_sequence(query)
             for i, res in enumerate(result):
-                if res is None:
-                # if res == psr.int2bytes(0, self.num_spin_orbitals):
+                # if res is None:
+                if res == psr.int2bytes(0, self.num_spin_orbitals):
                     raise IndexError(f"Could not find index {query[i]} in basis with size {self.size}!")
         elif isinstance(key, Sequence):
             result = self._getitem_sequence(key)
             for i, res in enumerate(result):
-                if res is None:
-                # if res == psr.int2bytes(0, self.num_spin_orbitals):
+                # if res is None:
+                if res == psr.int2bytes(0, self.num_spin_orbitals):
                     raise IndexError(f"Could not find index {key[i]} in basis with size {self.size}!")
         elif isinstance(key, int):
             result = self._getitem_sequence([key])[0]
-            if result is None:
-            # if result == psr.int2bytes(0, self.num_spin_orbitals):
+            # if result is None:
+            if result == psr.int2bytes(0, self.num_spin_orbitals):
                 raise IndexError(f"Could not find index {key} in basis with size {self.size}!")
         else:
             raise TypeError(f"Invalid index type {type(key)}. Valid types are slice, Sequence and int")
@@ -990,19 +991,19 @@ class Basis:
 
         rows_in_basis: list[bytes] = list({row for column in self.local_basis for row in expanded_dict[column].keys()})
         in_basis_mask: list[bool] = self.contains(rows_in_basis)
-        rows_in_basis: set[bytes] = {rows_in_basis[i] for i in range(len(rows_in_basis)) if in_basis_mask[i]}
+        rows_in_basis: list[bytes] = list({rows_in_basis[i] for i in range(len(rows_in_basis)) if in_basis_mask[i]})
+        row_dict: dict[bytes, int] = self.index(rows_in_basis)
 
         rows: list[bytes] = []
         columns: list[int] = []
         values: list[complex] = []
         for column in self.local_basis:
             for row in expanded_dict[column]:
-                if row not in rows_in_basis:
+                if row not in row_dict:
                     continue
                 columns.append(self._index_dict[column])
-                rows.append(row)
+                rows.append(row_dict[row])
                 values.append(expanded_dict[column][row])
-        rows: list[int] = self.index(rows)
         if self.debug and len(rows) > 0:
             print(f"{self.size=} {max(rows)=}", flush=True)
         return sp.sparse.csr_matrix(
