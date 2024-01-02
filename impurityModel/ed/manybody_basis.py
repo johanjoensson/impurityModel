@@ -5,6 +5,7 @@ from math import ceil
 from time import perf_counter
 import sys
 
+from typing import Optional
 try:
     from petsc4py import PETSc
 except:
@@ -979,7 +980,7 @@ class Basis:
             h = self.comm.bcast(h, root=0)
         return h
 
-    def build_sparse_matrix(self, op, op_dict: dict[bytes, dict[bytes, complex]]=None):
+    def build_sparse_matrix(self, op, op_dict: Optional[dict[bytes, dict[bytes, complex]]]=None):
         """
         Get the operator as a sparse matrix in the current basis.
         The sparse matrix is distributed over all ranks.
@@ -992,9 +993,9 @@ class Basis:
         rows_in_basis: list[bytes] = list({row for column in self.local_basis for row in expanded_dict[column].keys()})
         in_basis_mask: list[bool] = self.contains(rows_in_basis)
         rows_in_basis: list[bytes] = list({rows_in_basis[i] for i in range(len(rows_in_basis)) if in_basis_mask[i]})
-        row_dict: dict[bytes, int] = self.index(rows_in_basis)
+        row_dict: dict[bytes, int] = dict(zip(rows_in_basis, self.index(rows_in_basis)))
 
-        rows: list[bytes] = []
+        rows: list[int] = []
         columns: list[int] = []
         values: list[complex] = []
         for column in self.local_basis:
