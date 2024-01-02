@@ -270,44 +270,45 @@ class Basis:
             print(f"===> T add_states : {t0}")
 
     def alltoall_states(self, send_list: list[list[bytes]]):
-        recv_counts = np.empty((self.comm.size), dtype=int)
-        self.comm.Alltoall(
-            (np.fromiter((len(l) for l in send_list), dtype=int, count=len(send_list)), MPI.INT64_T), recv_counts
-        )
+        states = self.comm.alltoall(send_list)
+        # recv_counts = np.empty((self.comm.size), dtype=int)
+        # self.comm.Alltoall(
+        #     (np.fromiter((len(l) for l in send_list), dtype=int, count=len(send_list)), MPI.INT64_T), recv_counts
+        # )
 
-        received_bytes = np.empty((np.sum(recv_counts) * self.n_bytes), dtype=np.ubyte)
-        offsets = np.fromiter((np.sum(recv_counts[:i]) for i in range(self.comm.size)), dtype=int, count=self.comm.size)
+        # received_bytes = np.empty((np.sum(recv_counts) * self.n_bytes), dtype=np.ubyte)
+        # offsets = np.fromiter((np.sum(recv_counts[:i]) for i in range(self.comm.size)), dtype=int, count=self.comm.size)
 
-        send_counts = np.fromiter((len(l) for l in send_list), dtype=int, count=len(send_list))
-        send_offsets = np.fromiter(
-            (np.sum(send_counts[:i]) for i in range(self.comm.size)), dtype=int, count=self.comm.size
-        )
+        # send_counts = np.fromiter((len(l) for l in send_list), dtype=int, count=len(send_list))
+        # send_offsets = np.fromiter(
+        #     (np.sum(send_counts[:i]) for i in range(self.comm.size)), dtype=int, count=self.comm.size
+        # )
 
-        self.comm.Alltoallv(
-            (
-                np.fromiter(
-                    (byte for state_list in send_list for state in state_list for byte in state),
-                    dtype=np.ubyte,
-                    count=np.sum(send_counts) * self.n_bytes,
-                ),
-                send_counts * self.n_bytes,
-                send_offsets * self.n_bytes,
-                MPI.BYTE,
-            ),
-            (received_bytes, recv_counts * self.n_bytes, offsets * self.n_bytes, MPI.BYTE),
-        )
+        # self.comm.Alltoallv(
+        #     (
+        #         np.fromiter(
+        #             (byte for state_list in send_list for state in state_list for byte in state),
+        #             dtype=np.ubyte,
+        #             count=np.sum(send_counts) * self.n_bytes,
+        #         ),
+        #         send_counts * self.n_bytes,
+        #         send_offsets * self.n_bytes,
+        #         MPI.BYTE,
+        #     ),
+        #     (received_bytes, recv_counts * self.n_bytes, offsets * self.n_bytes, MPI.BYTE),
+        # )
 
-        states: list[list[bytes]] = [[] for _ in range(len(send_list))]
-        start = 0
-        for r in range(len(recv_counts)):
-            if recv_counts[r] == 0:
-                continue
-            states[r] = [
-                # received_bytes[start + i * self.n_bytes : start + (i + 1) * self.n_bytes].tobytes() for i in range(recv_counts[r])
-                i.tobytes()
-                for i in np.split(received_bytes[start : start + recv_counts[r] * self.n_bytes], recv_counts[r])
-            ]
-            start += recv_counts[r] * self.n_bytes
+        # states: list[list[bytes]] = [[] for _ in range(len(send_list))]
+        # start = 0
+        # for r in range(len(recv_counts)):
+        #     if recv_counts[r] == 0:
+        #         continue
+        #     states[r] = [
+        #         # received_bytes[start + i * self.n_bytes : start + (i + 1) * self.n_bytes].tobytes() for i in range(recv_counts[r])
+        #         i.tobytes()
+        #         for i in np.split(received_bytes[start : start + recv_counts[r] * self.n_bytes], recv_counts[r])
+        #     ]
+        #     start += recv_counts[r] * self.n_bytes
         return states
 
     def _set_state_bounds(self, local_states):
@@ -605,45 +606,61 @@ class Basis:
                     send_to_ranks[idx] = r
                     break
         send_order = np.argsort(send_to_ranks, kind="stable")
-        recv_counts = np.empty((self.comm.size), dtype=int)
+        queries = self.comm.alltoall(send_list)
+        # recv_counts = np.empty((self.comm.size), dtype=int)
 
-        self.comm.Alltoall(
-            (np.fromiter((len(l) for l in send_list), dtype=int, count=len(send_list)), MPI.INT64_T), recv_counts
-        )
+        # self.comm.Alltoall(
+        #     (np.fromiter((len(l) for l in send_list), dtype=int, count=len(send_list)), MPI.INT64_T), recv_counts
+        # )
 
-        queries = np.empty((sum(recv_counts)), dtype=int)
-        displacements = np.fromiter(
-            (sum(recv_counts[:p]) for p in range(self.comm.size)), dtype=int, count=self.comm.size
-        )
-        send_counts = np.fromiter((len(l) for l in send_list), dtype=int, count=len(send_list))
-        send_offsets = np.fromiter(
-            (sum(send_counts[:r]) for r in range(self.comm.size)), dtype=int, count=self.comm.size
-        )
+        # queries = np.empty((sum(recv_counts)), dtype=int)
+        # displacements = np.fromiter(
+        #     (sum(recv_counts[:p]) for p in range(self.comm.size)), dtype=int, count=self.comm.size
+        # )
+        # send_counts = np.fromiter((len(l) for l in send_list), dtype=int, count=len(send_list))
+        # send_offsets = np.fromiter(
+        #     (sum(send_counts[:r]) for r in range(self.comm.size)), dtype=int, count=self.comm.size
+        # )
 
-        self.comm.Alltoallv(
-            (
-                np.fromiter((i for l in send_list for i in l), dtype=int, count=len(l)),
-                send_counts,
-                send_offsets,
-                MPI.INT64_T,
-            ),
-            (queries, recv_counts, displacements, MPI.INT64_T),
-        )
+        # self.comm.Alltoallv(
+        #     (
+        #         np.fromiter((i for l in send_list for i in l), dtype=int, count=len(l)),
+        #         send_counts,
+        #         send_offsets,
+        #         MPI.INT64_T,
+        #     ),
+        #     (queries, recv_counts, displacements, MPI.INT64_T),
+        # )
 
-        results = np.empty((sum(recv_counts) * self.n_bytes), dtype=np.ubyte)
-        for i, query in enumerate(queries):
-            if query >= self.offset and query < self.offset + len(self.local_basis):
-                results[i * self.n_bytes : (i + 1) * self.n_bytes] = np.frombuffer(
-                    self.local_basis[query - self.offset], dtype=np.ubyte, count=self.n_bytes
-                )
-        result = np.zeros((len(l) * self.n_bytes), dtype=np.ubyte)
+        results = [[] for _ in range(self.comm.size)]
+        for r in range(self.comm.size):
+            for query in queries[r]:
+                if query >= self.offset and query < self.offset + len(self.local_basis):
+                    results[r].append(self.local_basis[query - self.offset])
+                else:
+                    results[r].append(psr.int2bytes(0, self.num_spin_orbitals))
+        results = self.comm.alltoall(results)
+        # results = np.empty((sum(recv_counts) * self.n_bytes), dtype=np.ubyte)
+        # for i, query in enumerate(queries):
+        #     if query >= self.offset and query < self.offset + len(self.local_basis):
+        #         results[i * self.n_bytes : (i + 1) * self.n_bytes] = np.frombuffer(
+        #             self.local_basis[query - self.offset], dtype=np.ubyte, count=self.n_bytes
+        #         )
+        # result = np.zeros((len(l) * self.n_bytes), dtype=np.ubyte)
+        result = [psr.int2bytes(0, self.num_spin_orbitals)] * len(l)
+        i = 0
+        for r in range(self.comm.size):
+            for res in results[r]:
+                result[i] = res
+                i += 1
 
-        self.comm.Alltoallv(
-            (results, recv_counts * self.n_bytes, displacements * self.n_bytes, MPI.BYTE),
-            (result, send_counts * self.n_bytes, send_offsets * self.n_bytes, MPI.BYTE),
-        )
+        # self.comm.Alltoallv(
+        #     (results, recv_counts * self.n_bytes, displacements * self.n_bytes, MPI.BYTE),
+        #     (result, send_counts * self.n_bytes, send_offsets * self.n_bytes, MPI.BYTE),
+        # )
 
-        return [result[i * self.n_bytes : (i + 1) * self.n_bytes].tobytes() for i in np.argsort(send_order)]
+        return [result[i] for i in np.argsort(send_order)]
+        # return [result[i * self.n_bytes : (i + 1) * self.n_bytes].tobytes() for i in np.argsort(send_order)]
         # result_new = [None] * len(l)
         # for i in range(len(l)):
         #     if len(send_order) > 0:
@@ -713,65 +730,70 @@ class Basis:
             for r in range(self.comm.size):
                 print(f"    {r}: {send_list[r]}")
         send_order = np.argsort(send_to_ranks, kind="stable")
-        recv_counts = np.empty((self.comm.size), dtype=int)
-        send_counts = np.fromiter((len(send_list[r]) for r in range(self.comm.size)), dtype=int, count=self.comm.size)
-        send_displacements = np.fromiter(
-            (sum(send_counts[:i]) for i in range(self.comm.size)), dtype=int, count=self.comm.size
-        )
-        # send_list_flat_bytes = np.fromiter(
-        #     (byte for states in send_list for state in states for byte in state), dtype=np.byte
+        # recv_counts = np.empty((self.comm.size), dtype=int)
+        # send_counts = np.fromiter((len(send_list[r]) for r in range(self.comm.size)), dtype=int, count=self.comm.size)
+        # send_displacements = np.fromiter(
+        #     (sum(send_counts[:i]) for i in range(self.comm.size)), dtype=int, count=self.comm.size
         # )
 
-        self.comm.Alltoall(
-            (
-                np.fromiter((len(send_list[r]) for r in range(self.comm.size)), dtype=int, count=self.comm.size),
-                MPI.INT64_T,
-            ),
-            recv_counts,
-        )
+        # self.comm.Alltoall(
+        #     (
+        #         np.fromiter((len(send_list[r]) for r in range(self.comm.size)), dtype=int, count=self.comm.size),
+        #         MPI.INT64_T,
+        #     ),
+        #     recv_counts,
+        # )
 
-        queries = np.empty((sum(recv_counts) * self.n_bytes), dtype=np.ubyte)
-        displacements = np.fromiter(
-            (sum(recv_counts[:p]) for p in range(self.comm.size)), dtype=int, count=self.comm.size
-        )
+        # queries = np.empty((sum(recv_counts) * self.n_bytes), dtype=np.ubyte)
+        # displacements = np.fromiter(
+        #     (sum(recv_counts[:p]) for p in range(self.comm.size)), dtype=int, count=self.comm.size
+        # )
 
-        self.comm.Alltoallv(
-            (
-                # np.array([byte for states in send_list for state in states for byte in state], dtype=np.ubyte),
-                np.fromiter(
-                    (byte for states in send_list for state in states for byte in state),
-                    dtype=np.ubyte,
-                    count=sum(send_counts) * self.n_bytes,
-                ),
-                send_counts * self.n_bytes,
-                send_displacements * self.n_bytes,
-                MPI.BYTE,
-            ),
-            (queries, recv_counts * self.n_bytes, displacements * self.n_bytes, MPI.BYTE),
-        )
+        # self.comm.Alltoallv(
+        #     (
+        #         np.fromiter(
+        #             (byte for states in send_list for state in states for byte in state),
+        #             dtype=np.ubyte,
+        #             count=sum(send_counts) * self.n_bytes,
+        #         ),
+        #         send_counts * self.n_bytes,
+        #         send_displacements * self.n_bytes,
+        #         MPI.BYTE,
+        #     ),
+        #     (queries, recv_counts * self.n_bytes, displacements * self.n_bytes, MPI.BYTE),
+        # )
+        queries = self.comm.alltoall(send_list)
         if self.debug:
             print("queries:")
             for r in range(self.comm.size):
-                print(f"    {r}: {[queries[i * self.n_bytes: (i + 1) * self.n_bytes].tobytes() for i in range(displacements[r], displacements[r] + recv_counts[r])]}")
+                print(f"    {r}: {[i for i in queries[r]]}")
+                # print(f"    {r}: {[queries[i * self.n_bytes: (i + 1) * self.n_bytes].tobytes() for i in range(displacements[r], displacements[r] + recv_counts[r])]}")
 
-        results = np.empty((sum(recv_counts)), dtype=int)
-        # results[:] = self.size
-        for i in range(sum(recv_counts)):
-            query = queries[i * self.n_bytes : (i + 1) * self.n_bytes].tobytes()
-            results[i] = self._index_dict.get(query, self.size)
-            # if query in self._index_dict:
-            #     results[i] = self._index_dict[query]
-        # result = np.zeros((sum(send_counts)), dtype=int)
+        results = [[] for _ in range(self.comm.size)]
+        for r in range(self.comm.size):
+            for query in queries[r]:
+                results[r].append(self._index_dict.get(query, self.size))
+        results = self.comm.alltoall(results)
+        # results = np.empty((sum(recv_counts)), dtype=int)
+        # for i in range(sum(recv_counts)):
+        #     query = queries[i * self.n_bytes : (i + 1) * self.n_bytes].tobytes()
+        #     results[i] = self._index_dict.get(query, self.size)
         result = np.empty((len(s)), dtype=int)
-        # result[:] = self.size
+        result[:] = self.size
+        i = 0
+        for r in range(self.comm.size):
+            for res in results[r]:
+                result[i] = res
+                i += 1
 
-        self.comm.Alltoallv(
-            (results, recv_counts, displacements, MPI.INT64_T), (result, send_counts, send_displacements, MPI.INT64_T)
-        )
-        result[sum(send_counts):] = self.size
+        # self.comm.Alltoallv(
+        #     (results, recv_counts, displacements, MPI.INT64_T), (result, send_counts, send_displacements, MPI.INT64_T)
+        # )
+        # result[sum(send_counts):] = self.size
 
         # return [result[i] for i in np.argsort(send_order)]
-        return result[np.argsort(send_order)].tolist() + [self.size for i in send_to_ranks if i == self.comm.size]
+        return result[np.argsort(send_order)].tolist()
+        # return result[np.argsort(send_order)].tolist() + [self.size for i in send_to_ranks if i == self.comm.size]
         # result[send_order] = result.copy()
         # return result.tolist()
 
