@@ -187,7 +187,7 @@ class Basis:
         tau=0,
         comm=None,
         verbose=True,
-        debug=True,
+        debug=False,
     ):
         t0 = perf_counter()
         if initial_basis is not None:
@@ -226,7 +226,6 @@ class Basis:
         t0 = perf_counter() - t0
         if verbose:
             print(f"===> T initial_basis : {t0}")
-        print(f"{initial_basis=}")
         t0 = perf_counter()
         self.verbose = verbose
         self.debug = debug
@@ -266,7 +265,6 @@ class Basis:
 
         t0 = perf_counter()
         self.add_states(initial_basis)
-        print(f"{self.local_basis=}")
         t0 = perf_counter() - t0
         if verbose:
             print(f"===> T add_states : {t0}")
@@ -714,11 +712,8 @@ class Basis:
         send_list: list[list[bytes]] = [[] for _ in range(self.comm.size)]
         send_to_ranks = np.empty((len(s)), dtype=int)
         send_to_ranks[:] = self.size
-        print(f"{s=}, {type(s)=}")
         for i, val in enumerate(s):
             for r in range(self.comm.size):
-                print(f"{val=}, {type(val)=}")
-                print(f"{self.state_bounds=}")
                 if (
                     self.state_bounds[r][0] is not None
                     and val >= self.state_bounds[r][0]
