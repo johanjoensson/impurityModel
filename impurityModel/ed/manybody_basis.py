@@ -275,7 +275,8 @@ class Basis:
             (np.fromiter((len(l) for l in send_list), dtype=int, count=len(send_list)), MPI.INT64_T), recv_counts
         )
 
-        received_bytes = np.empty((np.sum(recv_counts) * self.n_bytes), dtype=np.ubyte)
+        # received_bytes = np.empty((np.sum(recv_counts) * self.n_bytes), dtype=np.ubyte)
+        received_bytes = bytearray(sum(recv_counts) * self.n_bytes)
         offsets = np.fromiter((np.sum(recv_counts[:i]) for i in range(self.comm.size)), dtype=int, count=self.comm.size)
 
         send_counts = np.fromiter((len(l) for l in send_list), dtype=int, count=len(send_list))
@@ -303,9 +304,9 @@ class Basis:
             if recv_counts[r] == 0:
                 continue
             states[r] = [
-                # received_bytes[start + i * self.n_bytes : start + (i + 1) * self.n_bytes].tobytes() for i in range(recv_counts[r])
-                i.tobytes()
-                for i in np.split(received_bytes[start : start + recv_counts[r] * self.n_bytes], recv_counts[r])
+                bytes(received_bytes[start + i * self.n_bytes : start + (i + 1) * self.n_bytes]) for i in range(recv_counts[r])
+                # i.tobytes()
+                # for i in np.split(received_bytes[start : start + recv_counts[r] * self.n_bytes], recv_counts[r])
             ]
             start += recv_counts[r] * self.n_bytes
         return states
@@ -457,7 +458,8 @@ class Basis:
                 (np.fromiter((len(l) for l in send_list), dtype=int, count=len(send_list)), MPI.INT64_T), recv_counts
             )
 
-            received_bytes = np.empty((sum(recv_counts) * self.n_bytes), dtype=np.ubyte)
+            received_bytes = bytearray(sum(recv_counts) * self.n_bytes)
+            # received_bytes = np.empty((sum(recv_counts) * self.n_bytes), dtype=np.ubyte)
             offsets = np.fromiter(
                 (sum(recv_counts[:i]) for i in range(self.comm.size)), dtype=int, count=self.comm.size
             )
@@ -491,9 +493,9 @@ class Basis:
             t0 = perf_counter()
             if sum(recv_counts) > 0:
                 received_states = {
-                    # received_bytes[i * self.n_bytes : (i + 1) * self.n_bytes].tobytes() for i in range(sum(recv_counts))
-                    i.tobytes()
-                    for i in np.split(received_bytes, sum(recv_counts))
+                    bytes(received_bytes[i * self.n_bytes : (i + 1) * self.n_bytes]) for i in range(sum(recv_counts))
+                    # i.tobytes()
+                    # for i in np.split(received_bytes, sum(recv_counts))
                 }
             else:
                 received_states = set()
@@ -630,12 +632,14 @@ class Basis:
             (queries, recv_counts, displacements, MPI.INT64_T),
         )
 
-        results = np.empty((sum(recv_counts) * self.n_bytes), dtype=np.ubyte)
+        results = bytearray(sum(recv_counts) * self.n_bytes)
+        # results = np.empty((sum(recv_counts) * self.n_bytes), dtype=np.ubyte)
         for i, query in enumerate(queries):
             if query >= self.offset and query < self.offset + len(self.local_basis):
-                results[i * self.n_bytes : (i + 1) * self.n_bytes] = np.frombuffer(
-                    self.local_basis[query - self.offset], dtype=np.ubyte, count=self.n_bytes
-                )
+                results[i * self.n_bytes : (i + 1) * self.n_bytes] = self.local_basis[query - self.offset]
+                # results[i * self.n_bytes : (i + 1) * self.n_bytes] = np.frombuffer(
+                #     self.local_basis[query - self.offset], dtype=np.ubyte, count=self.n_bytes
+                # )
         result = np.zeros((len(l) * self.n_bytes), dtype=np.ubyte)
 
         self.comm.Alltoallv(
@@ -665,7 +669,7 @@ class Basis:
                 print(f"{self._index_dict=}", flush=True)
             self.comm.barrier()
             for i, v in enumerate(res):
-                if v == self.size:
+                if v >= self.size:
                     if self.debug:
                         proper_rank = self.size
                         for r in range(self.comm.size):
@@ -730,7 +734,8 @@ class Basis:
             recv_counts,
         )
 
-        queries = np.empty((sum(recv_counts) * self.n_bytes), dtype=np.ubyte)
+        queries = bytearray(sum(recv_counts) * self.n_bytes)
+        # queries = np.empty((sum(recv_counts) * self.n_bytes), dtype=np.ubyte)
         displacements = np.fromiter(
             (sum(recv_counts[:p]) for p in range(self.comm.size)), dtype=int, count=self.comm.size
         )
@@ -752,12 +757,14 @@ class Basis:
         if self.debug:
             print("queries:")
             for r in range(self.comm.size):
-                print(f"    {r}: {[queries[i * self.n_bytes: (i + 1) * self.n_bytes].tobytes() for i in range(displacements[r], displacements[r] + recv_counts[r])]}")
+                print(f"    {r}: {[bytes(queries[i * self.n_bytes: (i + 1) * self.n_bytes]) for i in range(displacements[r], displacements[r] + recv_counts[r])]}")
+                # print(f"    {r}: {[queries[i * self.n_bytes: (i + 1) * self.n_bytes].tobytes() for i in range(displacements[r], displacements[r] + recv_counts[r])]}")
 
         results = np.empty((sum(recv_counts)), dtype=int)
         # results[:] = self.size
         for i in range(sum(recv_counts)):
-            query = queries[i * self.n_bytes : (i + 1) * self.n_bytes].tobytes()
+            query = bytes(queries[i * self.n_bytes : (i + 1) * self.n_bytes])
+           # query = queries[i * self.n_bytes : (i + 1) * self.n_bytes].tobytes()
             results[i] = self._index_dict.get(query, self.size)
             # if query in self._index_dict:
             #     results[i] = self._index_dict[query]
