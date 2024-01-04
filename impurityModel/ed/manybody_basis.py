@@ -226,6 +226,7 @@ class Basis:
         t0 = perf_counter() - t0
         if verbose:
             print(f"===> T initial_basis : {t0}")
+        print(f"{initial_basis=}")
         t0 = perf_counter()
         self.verbose = verbose
         self.debug = debug
@@ -265,11 +266,13 @@ class Basis:
 
         t0 = perf_counter()
         self.add_states(initial_basis)
+        print(f"{self.local_basis=}")
         t0 = perf_counter() - t0
         if verbose:
             print(f"===> T add_states : {t0}")
 
     def alltoall_states(self, send_list: list[list[bytes]]):
+        # states = self.comm.alltoall(send_list)
         recv_counts = np.empty((self.comm.size), dtype=int)
         self.comm.Alltoall(
             (np.fromiter((len(l) for l in send_list), dtype=int, count=len(send_list)), MPI.INT64_T), recv_counts
@@ -286,11 +289,12 @@ class Basis:
 
         self.comm.Alltoallv(
             (
-                np.fromiter(
-                    (byte for state_list in send_list for state in state_list for byte in state),
-                    dtype=np.ubyte,
-                    count=np.sum(send_counts) * self.n_bytes,
-                ),
+                bytearray(byte for state_list in send_list for state in state_list for byte in state),
+                # np.fromiter(
+                #     (byte for state_list in send_list for state in state_list for byte in state),
+                #     dtype=np.ubyte,
+                #     count=np.sum(send_counts) * self.n_bytes,
+                # ),
                 send_counts * self.n_bytes,
                 send_offsets * self.n_bytes,
                 MPI.BYTE,
@@ -331,18 +335,20 @@ class Basis:
             all_samples_bytes = None
             offsets = 0
             if self.comm.rank == 0:
-                all_samples_bytes = np.empty((sum(samples_count) * self.n_bytes), dtype=np.ubyte)
+                all_samples_bytes = bytearray(sum(samples_count) * self.n_bytes)
+                # all_samples_bytes = np.empty((sum(samples_count) * self.n_bytes), dtype=np.ubyte)
                 offsets = np.fromiter(
                     (np.sum(samples_count[:i]) for i in range(self.comm.size)), dtype=int, count=self.comm.size
                 )
 
             self.comm.Gatherv(
                 (
-                    np.fromiter(
-                        (byte for state in samples for byte in state),
-                        dtype=np.ubyte,
-                        count=len(samples) * self.n_bytes,
-                    ),
+                    bytearray((byte for state in samples for byte in state)),
+                    # np.fromiter(
+                    #     (byte for state in samples for byte in state),
+                    #     dtype=np.ubyte,
+                    #     count=len(samples) * self.n_bytes,
+                    # ),
                     MPI.BYTE,
                 ),
                 (all_samples_bytes, samples_count * self.n_bytes, offsets * self.n_bytes, MPI.BYTE),
@@ -354,8 +360,8 @@ class Basis:
                 if sum(samples_count) == 0:
                     state_bounds = [psr.int2bytes(0, self.num_spin_orbitals)] * self.comm.size
                 else:
-                    # all_states = sorted({all_samples_bytes[i * self.n_bytes : (i + 1) * self.n_bytes].tobytes() for i in  range(np.sum(samples_count))})
-                    all_states = sorted({i.tobytes() for i in np.split(all_samples_bytes, np.sum(samples_count))})
+                    all_states = sorted({bytes(all_samples_bytes[i * self.n_bytes : (i + 1) * self.n_bytes]) for i in  range(np.sum(samples_count))})
+                    # all_states = sorted({i.tobytes() for i in np.split(all_samples_bytes, np.sum(samples_count))})
 
                     sizes = np.array([len(all_states) // self.comm.size] * self.comm.size, dtype=int)
                     sizes[: len(all_states) % self.comm.size] += 1
@@ -365,21 +371,23 @@ class Basis:
                         all_states[bound] if bound < len(all_states) else all_states[-1] for bound in bounds
                     ]
                     # state_bounds_bytes = np.array([byte for state in state_bounds for byte in state], dtype=np.ubyte)
-                state_bounds_bytes = np.fromiter(
-                    (byte for state in state_bounds for byte in state),
-                    dtype=np.ubyte,
-                    count=len(state_bounds) * self.n_bytes,
-                )
+                state_bounds_bytes = bytearray(byte for state in state_bounds for byte in state)
+                # state_bounds_bytes = np.fromiter(
+                #     (byte for state in state_bounds for byte in state),
+                #     dtype=np.ubyte,
+                #     count=len(state_bounds) * self.n_bytes,
+                # )
             else:
-                state_bounds_bytes = np.empty((self.comm.size * self.n_bytes), dtype=np.ubyte)
+                state_bounds_bytes = bytearray(self.comm.size * self.n_bytes)
+                # state_bounds_bytes = np.empty((self.comm.size * self.n_bytes), dtype=np.ubyte)
                 state_bounds = None
             done = self.comm.bcast(done, root=0)
 
         self.comm.Bcast(state_bounds_bytes, root=0)
         state_bounds: list[bytes] = [
-            # state_bounds_bytes[i * self.n_bytes : (i + 1) * self.n_bytes].tobytes() for i in range(self.comm.size)
-            i.tobytes()
-            for i in np.split(state_bounds_bytes, self.comm.size)
+            bytes(state_bounds_bytes[i * self.n_bytes : (i + 1) * self.n_bytes]) for i in range(self.comm.size)
+            # i.tobytes()
+            # for i in np.split(state_bounds_bytes, self.comm.size)
         ]
         return state_bounds
 
@@ -388,7 +396,7 @@ class Basis:
         Extend the current basis by adding the new_states to it.
         """
         if not self.is_distributed:
-            local_basis = sorted(set(itertools.chain(self.local_basis, new_states)))
+            local_basis: list[bytes] = sorted(set(itertools.chain(self.local_basis, new_states)))
             # self.local_basis.clear()
             self.local_basis = local_basis
             self.size = len(self.local_basis)
@@ -408,7 +416,7 @@ class Basis:
             # self.local_basis.clear()
             if self.comm.rank == 0:
                 new_basis = sorted(old_basis | new_states)
-                send_basis: list[list[self.type]] = [[] for _ in range(self.comm.size)]
+                send_basis: Optional[list[list[bytes]]] = [[] for _ in range(self.comm.size)]
                 start = 0
                 for r in range(self.comm.size):
                     stop = start + len(new_basis) // self.comm.size
@@ -475,11 +483,12 @@ class Basis:
             self.comm.Alltoallv(
                 [
                     # np.array([byte for states in send_list for state in states for byte in state], dtype=np.ubyte),
-                    np.fromiter(
-                        (byte for states in send_list for state in states for byte in state),
-                        dtype=np.ubyte,
-                        count=np.sum(send_counts) * self.n_bytes,
-                    ),
+                    bytearray(byte for states in send_list for state in states for byte in state),
+                    # np.fromiter(
+                    #     (byte for states in send_list for state in states for byte in state),
+                    #     dtype=np.ubyte,
+                    #     count=np.sum(send_counts) * self.n_bytes,
+                    # ),
                     send_counts * self.n_bytes,
                     send_offsets * self.n_bytes,
                     MPI.BYTE,
@@ -505,7 +514,7 @@ class Basis:
 
             t0 = perf_counter()
             # self.local_basis.clear()
-            local_basis = sorted(received_states)
+            local_basis: list[bytes] = sorted(received_states)
             t0 = perf_counter() - t0
             if self.verbose:
                 print(f"=======> T sort received_states : {t0}")
@@ -568,7 +577,7 @@ class Basis:
                 new_states = self._generate_spin_flipped_determinants(new_states)
 
                 new_basis += sorted(new_states)
-                self.local_basis = list(sorted(new_basis))
+                self.local_basis = sorted(new_basis)
         else:
             while not done:
                 local_states = set()
@@ -607,6 +616,7 @@ class Basis:
                     send_to_ranks[idx] = r
                     break
         send_order = np.argsort(send_to_ranks, kind="stable")
+        # queries = self.comm.alltoall(send_list)
         recv_counts = np.empty((self.comm.size), dtype=int)
 
         self.comm.Alltoall(
@@ -640,14 +650,17 @@ class Basis:
                 # results[i * self.n_bytes : (i + 1) * self.n_bytes] = np.frombuffer(
                 #     self.local_basis[query - self.offset], dtype=np.ubyte, count=self.n_bytes
                 # )
-        result = np.zeros((len(l) * self.n_bytes), dtype=np.ubyte)
+        result = bytearray((len(l) * self.n_bytes))
+        # result = np.zeros((len(l) * self.n_bytes), dtype=np.ubyte)
 
         self.comm.Alltoallv(
             (results, recv_counts * self.n_bytes, displacements * self.n_bytes, MPI.BYTE),
             (result, send_counts * self.n_bytes, send_offsets * self.n_bytes, MPI.BYTE),
         )
 
-        return [result[i * self.n_bytes : (i + 1) * self.n_bytes].tobytes() for i in np.argsort(send_order)]
+        # return [result[i] for i in np.argsort(send_order)]
+        return [bytes(result[i * self.n_bytes : (i + 1) * self.n_bytes]) for i in np.argsort(send_order)]
+        # return [result[i * self.n_bytes : (i + 1) * self.n_bytes].tobytes() for i in np.argsort(send_order)]
         # result_new = [None] * len(l)
         # for i in range(len(l)):
         #     if len(send_order) > 0:
@@ -680,15 +693,15 @@ class Basis:
                         print(f"{val=}")
                         print(f"{i=}")
                     raise ValueError(f"Could not find {val[i]} in basis!")
-        elif isinstance(val, np.ndarray):
-            if val.shape[0] > 0:
-                # res = self._index_sequence([val[i * self.n_bytes : (i + 1) * self.n_bytes].tobytes() for i in range(val.shape[0] // self.n_bytes)])
-                res = self._index_sequence([i.tobytes() for i in np.split(val, val.shape[0] // self.n_bytes)])
-            else:
-                res = self._index_sequence([])
-            for i, v in enumerate(res):
-                if v == self.size:
-                    raise ValueError(f"Could not find {val[i]} in basis!")
+        # elif isinstance(val, np.ndarray):
+        #     if val.shape[0] > 0:
+        #         # res = self._index_sequence([val[i * self.n_bytes : (i + 1) * self.n_bytes].tobytes() for i in range(val.shape[0] // self.n_bytes)])
+        #         res = self._index_sequence([i.tobytes() for i in np.split(val, val.shape[0] // self.n_bytes)])
+        #     else:
+        #         res = self._index_sequence([])
+        #     for i, v in enumerate(res):
+        #         if v == self.size:
+        #             raise ValueError(f"Could not find {val[i]} in basis!")
         else:
             raise TypeError(f"Invalid query type {type(val)}! Valid types are {self.dtype} and sequences thereof.")
         return res
@@ -701,8 +714,11 @@ class Basis:
         send_list: list[list[bytes]] = [[] for _ in range(self.comm.size)]
         send_to_ranks = np.empty((len(s)), dtype=int)
         send_to_ranks[:] = self.size
+        print(f"{s=}, {type(s)=}")
         for i, val in enumerate(s):
             for r in range(self.comm.size):
+                print(f"{val=}, {type(val)=}")
+                print(f"{self.state_bounds=}")
                 if (
                     self.state_bounds[r][0] is not None
                     and val >= self.state_bounds[r][0]
@@ -722,9 +738,6 @@ class Basis:
         send_displacements = np.fromiter(
             (sum(send_counts[:i]) for i in range(self.comm.size)), dtype=int, count=self.comm.size
         )
-        # send_list_flat_bytes = np.fromiter(
-        #     (byte for states in send_list for state in states for byte in state), dtype=np.byte
-        # )
 
         self.comm.Alltoall(
             (
@@ -742,18 +755,19 @@ class Basis:
 
         self.comm.Alltoallv(
             (
-                # np.array([byte for states in send_list for state in states for byte in state], dtype=np.ubyte),
-                np.fromiter(
-                    (byte for states in send_list for state in states for byte in state),
-                    dtype=np.ubyte,
-                    count=sum(send_counts) * self.n_bytes,
-                ),
+                bytearray(byte for states in send_list for state in states for byte in state),
+                # np.fromiter(
+                #     (byte for states in send_list for state in states for byte in state),
+                #     dtype=np.ubyte,
+                #     count=sum(send_counts) * self.n_bytes,
+                # ),
                 send_counts * self.n_bytes,
                 send_displacements * self.n_bytes,
                 MPI.BYTE,
             ),
             (queries, recv_counts * self.n_bytes, displacements * self.n_bytes, MPI.BYTE),
         )
+        # queries = self.comm.alltoall(send_list)
         if self.debug:
             print("queries:")
             for r in range(self.comm.size):
@@ -770,7 +784,12 @@ class Basis:
             #     results[i] = self._index_dict[query]
         # result = np.zeros((sum(send_counts)), dtype=int)
         result = np.empty((len(s)), dtype=int)
-        # result[:] = self.size
+        result[:] = self.size
+        # i = 0
+        # for r in range(self.comm.size):
+        #     for res in results[r]:
+        #         result[i] = res
+        #         i += 1
 
         self.comm.Alltoallv(
             (results, recv_counts, displacements, MPI.INT64_T), (result, send_counts, send_displacements, MPI.INT64_T)
@@ -778,7 +797,8 @@ class Basis:
         result[sum(send_counts):] = self.size
 
         # return [result[i] for i in np.argsort(send_order)]
-        return result[np.argsort(send_order)].tolist() + [self.size for i in send_to_ranks if i == self.comm.size]
+        return result[np.argsort(send_order)].tolist()
+        # return result[np.argsort(send_order)].tolist() + [self.size for i in send_to_ranks if i == self.comm.size]
         # result[send_order] = result.copy()
         # return result.tolist()
 
