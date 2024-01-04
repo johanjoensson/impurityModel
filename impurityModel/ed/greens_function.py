@@ -556,6 +556,186 @@ def calc_local_Greens_function_from_alpha_beta(alphas, betas, iws, ws, iw_indice
                 )
     return gs_matsubara_local, gs_realaxis_local
 
+def calc_Greens_function_with_offdiag_cg(
+    n_spin_orbitals,
+    hOp,
+    tOps,
+    psis,
+    es,
+    basis,
+    iw,
+    w,
+    delta,
+    reort,
+    restrictions=None,
+    blocks=None,
+    krylovSize=None,
+    slaterWeightMin=0,
+    parallelization_mode="H_build",
+    verbose=True,
+    dense_cutoff=1e3,
+    tau=0,
+):
+    n = len(es)
+    if iw is not None:
+        gs_matsubara = np.zeros((n, len(tOps), len(tOps), len(iw)), dtype=complex)
+    else:
+        gs_matsubara = None
+    if w is not None:
+        gs_realaxis = np.zeros((n, len(tOps), len(tOps), len(w)), dtype=complex)
+    else:
+        gs_realaxis = None
+
+    t_mems = [{} for _ in tOps]
+    h_mem = {}
+
+    local_excited_basis = set()
+    for block in blocks:
+        for i_tOp, tOp in [(orb, tOps[orb]) for orb in block]:
+            for s in basis.local_basis:
+                res = finite.applyOp(
+                    n_spin_orbitals,
+                    tOps[i_tOp],
+                    {s: 1},
+                    slaterWeightMin=slaterWeightMin,
+                    restrictions=basis.restrictions,
+                    opResult=t_mems[i_tOp],
+                )
+                local_excited_basis |= res.keys()
+    excited_basis = CIPSI_Basis(
+        initial_basis=local_excited_basis,
+        restrictions=basis.restrictions,
+        num_spin_orbitals=basis.num_spin_orbitals,
+        comm=basis.comm,
+        verbose=verbose,
+        truncation_threshold=basis.truncation_threshold,
+        tau=0,
+    )
+    print(f"size of excited space basis is {excited_basis.size}")
+    for i, (psi, e) in enumerate(zip(psis, es)):
+        for block in blocks:
+            block_v = []
+            local_excited_basis = set()
+            t0 = time.perf_counter()
+            for i_tOp, tOp in [(orb, tOps[orb]) for orb in block]:
+                v = finite.applyOp(
+                    n_spin_orbitals,
+                    tOp,
+                    {state: psi[state] for state in psi if state in basis.local_basis},
+                    slaterWeightMin=slaterWeightMin,
+                    restrictions=basis.restrictions,
+                    opResult=t_mems[i_tOp],
+                )
+                vs = comm.allgather(v)
+                v = {}
+                for v_i in vs:
+                    for state in v_i:
+                        v[state] = v_i[state] + v.get(state, 0)
+                block_v.append(v)
+            if verbose:
+                print(f"time(build excited state basis) = {time.perf_counter() - t0}")
+            gs_matsubara_i, gs_realaxis_i = get_block_Green_cg(
+                n_spin_orbitals=n_spin_orbitals,
+                hOp=hOp,
+                psi_arr=block_v,
+                basis=excited_basis,
+                e=e,
+                iws=iw,
+                ws=w,
+                delta=delta,
+                restrictions=restrictions,
+                h_mem=h_mem,
+                slaterWeightMin=slaterWeightMin,
+                verbose=verbose,
+                dense_cutoff=dense_cutoff,
+            )
+            if rank == 0:
+                if iw is not None:
+                    block_idx = np.ix_(block, block, range(gs_matsubara.shape[3]))
+                    gs_matsubara[i][block_idx] = gs_matsubara_i
+                if w is not None:
+                    block_idx = np.ix_(block, block, range(gs_realaxis.shape[3]))
+                    gs_realaxis[i][block_idx] = gs_realaxis_i
+    return gs_matsubara, gs_realaxis
+
+
+def get_block_Green_cg(
+    n_spin_orbitals,
+    hOp,
+    psi_arr,
+    basis,
+    e,
+    iws,
+    ws,
+    delta,
+    restrictions=None,
+    h_mem=None,
+    slaterWeightMin=0,
+    verbose=True,
+    dense_cutoff=1e3,
+):
+    matsubara = iws is not None
+    realaxis = ws is not None
+
+    if not matsubara and not realaxis:
+        if rank == 0:
+            print("No Matsubara mesh or real frequency mesh provided. No Greens function will be calculated.")
+        return None, None
+
+    if h_mem is None:
+        h_mem = {}
+
+    if verbose:
+        t0 = time.perf_counter()
+    h = basis.build_sparse_matrix(hOp, h_mem)
+
+    if verbose:
+        print(f"time(build Hamiltonian operator) = {time.perf_counter() - t0}")
+
+    N = h.shape[0]
+    n = len(psi_arr)
+
+    if verbose:
+        t0 = time.perf_counter()
+
+    if verbose:
+        print(f"time(set up psi_start) = {time.perf_counter() - t0}")
+
+    if N == 0 or n == 0:
+        return np.zeros((n, n, len(iws)), dtype=complex), np.zeros((n, n, len(ws)), dtype=complex)
+
+    local_basis_lens = np.empty((comm.size), dtype=int)
+    comm.Allgather(np.array([len(basis.local_basis)], dtype=int), local_basis_lens)
+    if matsubara:
+        gs_matsubara = np.empty((len(iws), n, n), dtype=complex)
+        for w_i, w in enumerate(iws):
+            shift = {((0, 'i'),): w + e}
+            A_op = finite.subtractOps(shift, hOp)
+            A_dict = {}
+            for col in range(n):
+                tmp, info = cg_phys(A_op, A_dict, n_spin_orbitals, {}, psi_arr[col], 0, w.imag, basis)
+                T_psi = basis.build_vector(psi_arr)
+                gs_matsubara[w_i, :, col] = np.conj(T_psi.T) @ tmp
+        gs_matsubara = np.moveaxis(gs_matsubara, 0, -1)
+
+    if realaxis:
+        gs_realaxis = np.empty((len(ws), n, n), dtype=complex)
+        for w_i, w in enumerate(ws):
+            shift = {((0, 'i'),): w + 1j * delta + e}
+            A_op = finite.subtractOps(shift, hOp)
+            for col in range(n):
+                tmp, info = cg_phys(A_op, {}, n_spin_orbitals, {}, psi_arr[col], w, delta, basis)
+                T_psi = basis.build_vector(psi_arr)
+                gs_realaxis[w_i, :, col] = np.conj(T_psi.T) @ tmp
+        gs_realaxis = np.moveaxis(gs_realaxis, 0, -1)
+
+    def matrix_print(m):
+        print("\n".join(["  ".join([f"{np.real(el): 5.3f}  {np.imag(el):+5.3f}j" for el in row]) for row in m]))
+
+    if verbose:
+        print(f"time(G_cg) = {time.perf_counter() - t0: .4f} seconds.")
+
+    return gs_matsubara, gs_realaxis
 
 def rotate_matrix(M, T):
     """
