@@ -1,4 +1,3 @@
-
 def id(state):
     """
     identity operator
