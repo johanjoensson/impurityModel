@@ -697,7 +697,6 @@ class Basis:
             if self.debug:
                 print(f"{self.local_basis=}", flush=True)
                 print(f"{self._index_dict=}", flush=True)
-            self.comm.barrier()
             for i, v in enumerate(res):
                 if v >= self.size:
                     if self.debug:
@@ -915,53 +914,63 @@ class Basis:
             verbose=self.verbose,
         )
 
-    def build_vector(self, psis, dtype=complex, distributed=False):
-        v_local = np.zeros((self.size, len(psis)), dtype=dtype)
-        v = np.empty_like(v_local)
+    def build_vector(self, psis: list[dict], dtype=complex, distributed=False) -> list[np.ndarray]:
+        v_local = [np.zeros((self.size,), dtype=dtype)] * len(psis)
+        v = [np.empty_like(vl) for vl in v_local]
+        row_states_in_basis: list[bytes] = []
+        row_dict = self._index_dict
         for col, psi in enumerate(psis):
-            if not distributed:
-                # psis are identical on all MPI ranks.
-                # Only consider the local basis to build the local vector
-                for i, state in enumerate(self.local_basis):
-                    v_local[i + self.offset, col] = psi.get(state, 0)
-            else:
-                # psis are different for all MPI ranks.
-                # Use the full basis to build the local vector.
-                # Not all states in Psi have to be present in the basis!
-                row_states = list(psi.keys())
-                row_states_mask = self.contains(row_states)
-                row_states_in_basis = [row_states[i] for i in range(len(row_states)) if row_states_mask[i]]
+            row_states = set(psi.keys())
+            need_mpi = False
+            if self.is_distributed:
+                need_mpi = False
+                if any(state not in row_dict for state in psi):
+                    need_mpi = True
+                need_mpi = self.comm.allreduce(need_mpi, op=MPI.LOR)
+            if need_mpi:
+                sorted_row_states = sorted(row_states)
+                row_states_mask = self.contains(sorted_row_states)
+                row_states_in_basis = [sorted_row_states[i] for i, state in enumerate(sorted_row_states) if row_states_mask[i]]
                 row_indices = self.index(row_states_in_basis)
-                for row, state in zip(row_indices, row_states_in_basis):
-                    v_local[row, col] = psi[state]
+                row_dict.update(zip(row_states_in_basis, row_indices))
+            for state, val in psi.items():
+                if state not in row_dict:
+                    continue
+                v_local[col][row_dict[state]] = val
 
-        self.comm.Allreduce(v_local, v, op=MPI.SUM)
-        # vs = self.comm.allgather(v)
-        # if len(psis) == 1:
-        #     v = v.reshape((self.size))
+        if self.is_distributed:
+            v_send = np.empty((sum(len(vl) for vl in v_local), ), dtype=dtype)
+            offset = 0
+            for vl in v_local:
+                v_send[offset: offset + len(vl)] = vl
+                offset += len(vl)
+            v_recv = np.empty((sum(len(vl) for vl in v_local), ), dtype=dtype)
+            self.comm.Allreduce(v_send, v_recv, op=MPI.SUM)
+            offset = 0
+            for vi in v:
+                vi[:] = v_recv[offset: offset + len(vi)]
+                offset += len(vi)
+        else:
+            v = v_local
         return v
 
-    def build_state(self, v, distribute=False):
-        if len(v.shape) == 1:
-            v = v.reshape((v.shape[0], 1))
-        ncols = v.shape[1]
+    def build_state(self, vs: list[np.ndarray], distribute=False) -> list[dict]:
         local_psis = []
-        for col in range(ncols):
-            state = {}
+        for col, v in enumerate(vs):
+            psi = {}
             for i in self.local_indices:
-                if abs(v[i, col]) > 0:
-                    state[self.local_basis[i - self.offset]] = v[i, col]
-            local_psis.append(state)
+                if abs(v[i]) > 0:
+                    psi[self.local_basis[i - self.offset]] = v[i]
+            local_psis.append(psi)
         if distribute:
             return local_psis
         psis = self.comm.allgather(local_psis)
         res = []
-        for col in range(ncols):
+        for col in range(len(vs)):
             state = {}
             for local_psi in psis:
                 state.update(local_psi[col])
             res.append(state)
-        self.comm.barrier()
         return res
 
     def build_operator_dict(self, op, op_dict=None, slaterWeightMin=0):
@@ -1203,7 +1212,10 @@ class CIPSI_Basis(Basis):
 
             t0 = perf_counter()
             if psi_ref is not None:
-                v0 = self.build_vector(psi_ref, distributed=distribute_psi)
+                v0_vs = self.build_vector(psi_ref, distributed=distribute_psi)
+                v0 = np.empty((len(v0_vs[0]), len(v0_vs)), dtype=v0_vs[0].dtype)
+                for col, v in enumerate(v0_vs):
+                    v0[:, col] = v
             else:
                 v0 = None
             e_ref, psi_ref = eigensystem_new(
@@ -1377,24 +1389,25 @@ class CIPSI_Basis(Basis):
                 break
             t_new_dj += perf_counter() - t_0
 
-            t_0 = perf_counter()
-            send_states = [[] for _ in range(self.comm.size)]
-            send_amps = [[] for _ in range(self.comm.size)]
-            for state, amp in Hpsi_ref.items():
-                for r in range(self.comm.size):
-                    if Dj_basis.state_bounds[r][0] is None:
-                        continue
-                    if state >= Dj_basis.state_bounds[r][0] and state <= Dj_basis.state_bounds[r][1]:
-                        send_states[r].append(state)
-                        send_amps[r].append(amp)
-                        break
-            received_states = self.alltoall_states(send_states)
-            received_amps = self.comm.alltoall(send_amps)
-            Hpsi_ref = {}
-            for r, states in enumerate(received_states):
-                for i, state in enumerate(states):
-                    Hpsi_ref[state] = received_amps[r][i] + Hpsi_ref.get(state, 0)
-            t_distribute_Hpsi += perf_counter() - t_0
+            if self.is_distributed:
+                t_0 = perf_counter()
+                send_states = [[] for _ in range(self.comm.size)]
+                send_amps = [[] for _ in range(self.comm.size)]
+                for state, amp in Hpsi_ref.items():
+                    for r in range(self.comm.size):
+                        if Dj_basis.state_bounds[r][0] is None:
+                            continue
+                        if state >= Dj_basis.state_bounds[r][0] and state <= Dj_basis.state_bounds[r][1]:
+                            send_states[r].append(state)
+                            send_amps[r].append(amp)
+                            break
+                received_states = self.alltoall_states(send_states)
+                received_amps = self.comm.alltoall(send_amps)
+                Hpsi_ref = {}
+                for r, states in enumerate(received_states):
+                    for i, state in enumerate(states):
+                        Hpsi_ref[state] = received_amps[r][i] + Hpsi_ref.get(state, 0)
+                t_distribute_Hpsi += perf_counter() - t_0
 
             t_0 = perf_counter()
             de2 = self._calc_de2(Dj_basis.local_basis, H, H_dict, Hpsi_ref, w)
