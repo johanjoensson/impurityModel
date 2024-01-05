@@ -208,10 +208,11 @@ def calc_selfenergy(
 
     energy_cut = -tau * np.log(1e-4)
 
-    # basis.verbose = False
     basis.tau = tau
     # h_dict = basis.expand(h, dense_cutoff=dense_cutoff)
     h_dict = basis.expand(h, dense_cutoff=dense_cutoff, de2_min=1e-10)
+    if verbosity >= 1:
+        print(f"Ground state basis contains {len(basis)} elsements.")
     if basis.size < dense_cutoff:
         h_gs = basis.build_dense_matrix(h, h_dict)
     else:
