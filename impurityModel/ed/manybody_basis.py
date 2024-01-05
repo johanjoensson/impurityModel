@@ -265,6 +265,7 @@ class Basis:
 
         t0 = perf_counter()
         self.add_states(initial_basis)
+        # self.add_states(self._generate_spin_flipped_determinants(initial_basis))
         t0 = perf_counter() - t0
         if verbose:
             print(f"===> T add_states : {t0}")
@@ -541,14 +542,31 @@ class Basis:
 
     def _generate_spin_flipped_determinants(self, determinants):
         determinants = set(determinants)
-        spin_flipped = set()
-        for dn_state in range(self.num_spin_orbitals // 2):
-            up_state = dn_state + self.num_spin_orbitals // 2
-            for det in determinants:
-                dn_to_up = c(self.num_spin_orbitals, up_state, a(self.num_spin_orbitals, dn_state, {det: 1}))
-                up_to_dn = c(self.num_spin_orbitals, dn_state, a(self.num_spin_orbitals, up_state, {det: 1}))
-                spin_flipped |= set(itertools.chain(dn_to_up.keys(), up_to_dn.keys()))
-            determinants |= spin_flipped
+        for det in determinants.copy():
+            spin_flip = {det}
+            to_check = spin_flip
+            bits = psr.bytes2bitarray(det, self.num_spin_orbitals)
+            n_dn = bits[0:5].count()
+            n_up = bits[5:10].count()
+            n_bath = bits[10:].count()
+            for i_imp in range(5):
+                for state in to_check.copy():
+                    bits = psr.bytes2bitarray(state, self.num_spin_orbitals)
+                    flippable_imp = bits[0:5] ^ bits[5:10]
+                    if not flippable_imp[i_imp]:
+                        continue
+                    new_bits = bits.copy()
+                    new_bits[i_imp], new_bits[i_imp + 5] = new_bits[i_imp + 5], new_bits[i_imp]
+                    to_check.add(psr.bitarray2bytes(new_bits))
+                    if new_bits[0:5].count() == n_dn and new_bits[5:10].count() == n_up:
+                        spin_flip.add(psr.bitarray2bytes(new_bits))
+                        new_bits[10: 10 + (self.num_spin_orbitals - 10) // 2], new_bits[10 + (self.num_spin_orbitals - 10) // 2:] = new_bits[10 + (self.num_spin_orbitals - 10) // 2:], new_bits[10: 10 + (self.num_spin_orbitals - 10) // 2]
+                        spin_flip.add(psr.bitarray2bytes(new_bits))
+                        # for bath_occ in itertools.permutations(new_bits[10:]):
+                        #     new_bits[10:] = psr.str2bitarray(''.join(f'{bit}' for bit in bath_occ))
+                        #     spin_flip.add(psr.bitarray2bytes(new_bits))
+
+            determinants |= spin_flip
         return determinants
 
     def expand(self, op, op_dict=None, dense_cutoff=None, slaterWeightMin=0):
@@ -572,7 +590,7 @@ class Basis:
                             opResult=op_dict,
                         )
                     new_states |= set(res.keys()) - new_basis
-                new_states = self._generate_spin_flipped_determinants(new_states)
+                # new_states = self._generate_spin_flipped_determinants(new_states)
 
                 new_basis += sorted(new_states)
                 self.local_basis = sorted(new_basis)
@@ -589,9 +607,10 @@ class Basis:
                         opResult=op_dict,
                     )
                     local_states |= set(res.keys())
-                local_states = self._generate_spin_flipped_determinants(local_states)
+                # local_states = self._generate_spin_flipped_determinants(local_states)
 
                 old_size = self.size
+                # self.add_states(self._generate_spin_flipped_determinants(local_states))
                 self.add_states(local_states)
                 done = old_size == self.size
         if self.verbose:
@@ -1133,8 +1152,10 @@ class CIPSI_Basis(Basis):
         new_basis = []
         for i in range(self.truncation_threshold):
             new_basis.append(basis_states[sort_order[i]])
+        new_basis = sorted(new_basis)
 
-        # self.local_basis.clear()
+        self.local_basis.clear()
+        # self.add_states(self._generate_spin_flipped_determinants(new_basis))
         self.add_states(new_basis)
 
     def _calc_de2(self, Djs, H, H_dict, Hpsi_ref, e_ref, slaterWeightMin=0):
@@ -1210,7 +1231,8 @@ class CIPSI_Basis(Basis):
                 Hpsi_i = applyOp(
                     self.num_spin_orbitals,
                     H,
-                    psi_i,
+                    {state: val for state, val in psi_i.items() if state in self._index_dict},
+                    # psi_i,
                     restrictions=self.restrictions,
                     slaterWeightMin=slaterWeightMin,
                     opResult=H_dict,
@@ -1224,6 +1246,7 @@ class CIPSI_Basis(Basis):
 
                 Dj_basis = Basis(
                     initial_basis=set(Hpsi_i.keys()),
+                    # initial_basis=self._generate_spin_flipped_determinants(set(Hpsi_i.keys())),
                     num_spin_orbitals=self.num_spin_orbitals,
                     restrictions=None,
                     comm=self.comm,
@@ -1236,22 +1259,22 @@ class CIPSI_Basis(Basis):
 
                 t0 = perf_counter()
 
-                # send_states = [[] for _ in range(self.comm.size)]
-                # send_amps = [[] for _ in range(self.comm.size)]
-                # for state, amp in Hpsi_i.items():
-                #     for r in range(self.comm.size):
-                #         if Dj_basis.state_bounds[r][0] is None:
-                #             continue
-                #         if state >= Dj_basis.state_bounds[r][0] and state <= Dj_basis.state_bounds[r][1]:
-                #             send_states[r].append(state)
-                #             send_amps[r].append(amp)
-                #             break
-                # received_states = self.alltoall_states(send_states)
-                # received_amps = self.comm.alltoall(send_amps)
-                # Hpsi_i = {}
-                # for r, states in enumerate(received_states):
-                #     for i, state in enumerate(states):
-                #         Hpsi_i[state] = received_amps[r][i] + Hpsi_i.get(state, 0)
+                send_states = [[] for _ in range(self.comm.size)]
+                send_amps = [[] for _ in range(self.comm.size)]
+                for state, amp in Hpsi_i.items():
+                    for r in range(self.comm.size):
+                        if Dj_basis.state_bounds[r][0] is None:
+                            continue
+                        if state >= Dj_basis.state_bounds[r][0] and state <= Dj_basis.state_bounds[r][1]:
+                            send_states[r].append(state)
+                            send_amps[r].append(amp)
+                            break
+                received_states = self.alltoall_states(send_states)
+                received_amps = self.comm.alltoall(send_amps)
+                Hpsi_i = {}
+                for r, states in enumerate(received_states):
+                    for i, state in enumerate(states):
+                        Hpsi_i[state] = received_amps[r][i] + Hpsi_i.get(state, 0)
 
                 t0 = perf_counter() - t0
                 t0 = self.comm.reduce(t0, op=MPI.SUM, root=0)
@@ -1270,12 +1293,12 @@ class CIPSI_Basis(Basis):
 
                 t0 = perf_counter()
                 Dji = {Dj_basis.local_basis[i] for i, mask in enumerate(de2_mask) if mask}
-                Dji = self._generate_spin_flipped_determinants(Dji)
+                # Dji = self._generate_spin_flipped_determinants(Dji)
                 t0 = perf_counter() - t0
                 t0 = self.comm.reduce(t0, op=MPI.SUM, root=0)
                 if self.verbose:
                     print(f"--->Time to generate spin flipped determinants: {t0/self.comm.size:.3f} seconds")
-                new_Dj |= Dji - set(self.local_basis)
+                new_Dj |= Dji
 
                 t0 = perf_counter() - t0_loop
                 t0 = self.comm.reduce(t0, op=MPI.SUM, root=0)
@@ -1384,13 +1407,10 @@ class CIPSI_Basis(Basis):
             t_de2_filter += perf_counter() - t_0
 
             t_0 = perf_counter()
-            Dji = self._generate_spin_flipped_determinants(Dji)
-            t_spin_flip += perf_counter() - t_0
-
-            t_0 = perf_counter()
             old_size = self.size
             self.local_basis.clear()
             self.add_states(Dji)
+            # self.add_states(self._generate_spin_flipped_determinants(new_Dj))
             if True or self.size == old_size:
                 break
             t_add_dj += perf_counter() - t_0
