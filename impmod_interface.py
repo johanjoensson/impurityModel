@@ -573,11 +573,11 @@ def get_ed_h0(
             np.save(f, fit_hyb)
 
     if verbose:
-        print(f"DFT hamiltonian")
+        print(f"DFT hamiltonian in correlated basis")
         matrix_print(rotate_matrix(h_dft, np.conj(corr_to_cf.T)))
         print(f"DFT hamiltonian in CF basis")
         matrix_print(h_dft)
-        print("Hopping parameters")
+        print("Hopping parameters in CF basis")
         matrix_print(v)
         print("Bath state energies")
         print(np.array_str(eb, max_line_width=1000, precision=4, suppress_small=False))
