@@ -33,11 +33,9 @@ def get_Greens_function(
     dense_cutoff=1e3,
     tau=0,
 ):
-    n_spin_orbitals = sum(2 * (2 * ang + 1) + nBath for ang, nBath in nBaths.items())
-    tOpsPS = spectra.getPhotoEmissionOperators(nBaths, l=l)
     tOpsIPS = spectra.getInversePhotoEmissionOperators(nBaths, l=l)
     gsIPS_matsubara, gsIPS_realaxis = calc_Greens_function_with_offdiag_cg(
-        n_spin_orbitals,
+        basis.num_spin_orbitals,
         hOp,
         tOpsIPS,
         psis,
@@ -55,8 +53,9 @@ def get_Greens_function(
         dense_cutoff=dense_cutoff,
         tau=tau,
     )
+    tOpsPS = spectra.getPhotoEmissionOperators(nBaths, l=l)
     gsPS_matsubara, gsPS_realaxis = calc_Greens_function_with_offdiag_cg(
-        n_spin_orbitals,
+        basis.num_spin_orbitals,
         hOp,
         tOpsPS,
         psis,
@@ -176,6 +175,7 @@ def calc_Greens_function_with_offdiag(
     if blocks is None:
         blocks = [list(range(len(tOps)))]
     if parallelization_mode == "eigen_states":
+        t_mems = [{} for _ in tOps]
         gs_matsubara = np.zeros((n, len(tOps), len(tOps), len(iw)), dtype=complex)
         gs_realaxis = np.zeros((n, len(tOps), len(tOps), len(w)), dtype=complex)
         for i in finite.get_job_tasks(rank, ranks, range(len(psis))):
@@ -192,7 +192,7 @@ def calc_Greens_function_with_offdiag(
                 truncation_threshold=basis.truncation_threshold,
                 tau=basis.tau,
             )
-            for tOp in tOps:
+            for i_tOp, tOp in enumerate(tOps):
                 v.append(
                     finite.applyOp(
                         n_spin_orbitals,
@@ -203,6 +203,7 @@ def calc_Greens_function_with_offdiag(
                         opResult=t_mems[i_tOp],
                     )
                 )
+                local_excited_basis = set()
                 for s in basis.local_basis:
                     res = finite.applyOp(
                         n_spin_orbitals,
@@ -214,7 +215,7 @@ def calc_Greens_function_with_offdiag(
                     )
                     local_excited_basis |= res.keys()
 
-            new_basis.add_states(new_local_basis)
+            new_basis.add_states(local_excited_basis)
             h_mem = new_basis.expand(hOp, dense_cutoff=dense_cutoff, slaterWeightMin=slaterWeightMin)
 
             gs_matsubara_i, gs_realaxis_i = get_block_Green(
@@ -385,8 +386,10 @@ def get_block_Green(
 
     if verbose:
         t0 = time.perf_counter()
-    psi_start = basis.build_vector(psi_arr)
-    # psi_start = np.zeros((N, n), dtype=complex)
+    psi_start_vs = basis.build_vector(psi_arr)
+    psi_start = np.zeros((N, n), dtype=complex)
+    for col, psi in psi_start_vs:
+        psi_start[:, col] = psi
     # for i, psi in enumerate(psi_arr):
     #     states = []
     #     amps = []
@@ -609,7 +612,7 @@ def calc_Greens_function_with_offdiag_cg(
         comm=basis.comm,
         verbose=verbose,
         truncation_threshold=basis.truncation_threshold,
-        tau=0,
+        tau=basis.tau,
     )
     print(f"size of excited space basis is {excited_basis.size}")
     for i, (psi, e) in enumerate(zip(psis, es)):
@@ -707,26 +710,40 @@ def get_block_Green_cg(
     local_basis_lens = np.empty((comm.size), dtype=int)
     comm.Allgather(np.array([len(basis.local_basis)], dtype=int), local_basis_lens)
     if matsubara:
-        gs_matsubara = np.empty((len(iws), n, n), dtype=complex)
-        for w_i, w in enumerate(iws):
+        gs_matsubara = np.zeros((len(iws), n, n), dtype=complex)
+        local_basis = CIPSI_Basis(
+            initial_basis=list(basis),
+            restrictions=basis.restrictions,
+            num_spin_orbitals=basis.num_spin_orbitals,
+            comm=None,
+            verbose=verbose,
+            truncation_threshold=basis.truncation_threshold,
+            tau=basis.tau,
+                )
+        for w_i, w in finite.get_job_tasks(comm.rank, comm.size, list(enumerate(iws))):
             shift = {((0, 'i'),): w + e}
             A_op = finite.subtractOps(shift, hOp)
             A_dict = {}
             for col in range(n):
-                tmp, info = cg_phys(A_op, A_dict, n_spin_orbitals, {}, psi_arr[col], 0, w.imag, basis)
-                T_psi = basis.build_vector(psi_arr)
+                tmp, info = cg_phys(A_op, A_dict, n_spin_orbitals, {}, psi_arr[col], 0, w.imag, local_basis)
+                T_psi_vs = local_basis.build_vector(psi_arr)
+                T_psi = np.empty((len(T_psi_vs[0]), len(T_psi_vs)), dtype=T_psi_vs[0].dtype)
+                for col, v in enumerate(T_psi_vs):
+                    T_psi[:, col] = v
                 gs_matsubara[w_i, :, col] = np.conj(T_psi.T) @ tmp
+        comm.Allreduce(gs_matsubara.copy(), gs_matsubara, op=MPI.SUM)
         gs_matsubara = np.moveaxis(gs_matsubara, 0, -1)
 
     if realaxis:
-        gs_realaxis = np.empty((len(ws), n, n), dtype=complex)
-        for w_i, w in enumerate(ws):
+        gs_realaxis = np.zeros((len(ws), n, n), dtype=complex)
+        for w_i, w in finite.get_job_tasks(comm.rank, comm.size, list(enumerate(ws))):
             shift = {((0, 'i'),): w + 1j * delta + e}
             A_op = finite.subtractOps(shift, hOp)
             for col in range(n):
-                tmp, info = cg_phys(A_op, {}, n_spin_orbitals, {}, psi_arr[col], w, delta, basis)
-                T_psi = basis.build_vector(psi_arr)
+                tmp, info = cg_phys(A_op, {}, n_spin_orbitals, {}, psi_arr[col], w, delta, local_basis)
+                T_psi = local_basis.build_vector(psi_arr)
                 gs_realaxis[w_i, :, col] = np.conj(T_psi.T) @ tmp
+        comm.Allreduce(gs_realaxis.copy(), gs_realaxis, op=MPI.SUM)
         gs_realaxis = np.moveaxis(gs_realaxis, 0, -1)
 
     def matrix_print(m):

@@ -59,15 +59,14 @@ def cg_phys(A_op, A_dict, n_spin_orbitals, x_psi, y_psi, w, delta, basis, atol=1
     t_cg = perf_counter()
     n = basis.size
     A = basis.build_sparse_matrix(A_op, A_dict)
-    x = basis.build_vector([x_psi])[:, 0]
-    y = basis.build_vector([y_psi])[:, 0]
+    x, y = basis.build_vector([x_psi, y_psi])
     Ax = A @ x
-    basis.comm.Allreduce(Ax.copy(), Ax)
+    if basis.is_distributed:
+        basis.comm.Allreduce(Ax.copy(), Ax)
     r = y - Ax
     p = r
     r_prev = r
     alpha_guess = (1 - delta * 1j) / (1 + delta**2)
-    y_psi = [y_psi]
     t_expansion = 0
     t_build_sparse_mat = 0
     t_build_vectors_separate = 0
@@ -76,26 +75,22 @@ def cg_phys(A_op, A_dict, n_spin_orbitals, x_psi, y_psi, w, delta, basis, atol=1
     for it in range(10 * n):
         x += alpha_guess * p
 
-        p_psi = basis.build_state(p, distribute=True)
-        r_prev_psi = basis.build_state(r_prev, distribute=True)
-        x_psi = basis.build_state(x, distribute=True)
+        p_psi, r_prev_psi, x_psi = basis.build_state([p, r_prev, x], distribute=True)
 
         t_expand = perf_counter()
-        basis.expand_at(w, x_psi[0], A_op, A_dict)
+        basis.expand_at(w, x_psi, A_op, A_dict)
         t_expansion += perf_counter() - t_expand
         t_build_sparse = perf_counter()
         A = basis.build_sparse_matrix(A_op, A_dict)
         t_build_sparse_mat += perf_counter() - t_build_sparse
         t_build_vectors = perf_counter()
-        x = basis.build_vector(x_psi)[:, 0]
-        y = basis.build_vector(y_psi)[:, 0]
-        r_prev = basis.build_vector(r_prev_psi)[:, 0]
-        p = basis.build_vector(p_psi)[:, 0]
+        x, y, r_prev, p = basis.build_vector([x_psi, y_psi, r_prev_psi, p_psi])
         t_build_vectors_separate += perf_counter() - t_build_vectors
 
         t_matmul = perf_counter()
         Ax = A @ x
-        basis.comm.Allreduce(Ax.copy(), Ax)
+        if basis.is_distributed:
+            basis.comm.Allreduce(Ax.copy(), Ax)
         t_matrix_mul += perf_counter() - t_matmul
         t_rest = perf_counter()
         r = y - Ax
@@ -107,7 +102,8 @@ def cg_phys(A_op, A_dict, n_spin_orbitals, x_psi, y_psi, w, delta, basis, atol=1
         r -= (alpha - alpha_guess) * ad
         if it % 10 == 0:
             Ax = A @ x
-            basis.comm.Allreduce(Ax.copy(), Ax)
+            if basis.is_distributed:
+                basis.comm.Allreduce(Ax.copy(), Ax)
             r = y - Ax
         if (np.conj(r) @ r).real < atol**2:
             break
