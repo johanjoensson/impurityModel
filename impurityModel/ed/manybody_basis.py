@@ -24,6 +24,7 @@ from impurityModel.ed.finite import (
     applyOp_2 as applyOp,
     # applyOp,
     c2i,
+    c2i_op,
     eigensystem_new,
     norm2,
 )
@@ -541,22 +542,41 @@ class Basis:
             print(f"=======> T set bounds and stuff : {t0}")
 
     def _generate_spin_flipped_determinants(self, determinants):
+        n_dn_op = {
+                    (((2, 0,-2), "c"), ((2, 0,-2), "a")): 1.0,
+                    (((2, 0,-1), "c"), ((2, 0,-1), "a")): 1.0,
+                    (((2, 0, 0), "c"), ((2, 0, 0), "a")): 1.0,
+                    (((2, 0, 1), "c"), ((2, 0, 1), "a")): 1.0,
+                    (((2, 0, 2), "c"), ((2, 0, 2), "a")): 1.0,
+                }
+        n_dn_iop = c2i_op({2: self.num_spin_orbitals - 10}, n_dn_op)
+        n_up_op = {
+                    (((2, 1,-2), "c"), ((2, 1,-2), "a")): 1.0,
+                    (((2, 1,-1), "c"), ((2, 1,-1), "a")): 1.0,
+                    (((2, 1, 0), "c"), ((2, 1, 0), "a")): 1.0,
+                    (((2, 1, 1), "c"), ((2, 1, 1), "a")): 1.0,
+                    (((2, 1, 2), "c"), ((2, 1, 2), "a")): 1.0,
+                }
+        n_up_iop = c2i_op({2: self.num_spin_orbitals - 10}, n_up_op)
         spin_flip = set()
         for det in determinants:
+            n_dn = int(applyOp(self.num_spin_orbitals, n_dn_iop, {det: 1})[det])
+            n_up = int(applyOp(self.num_spin_orbitals, n_up_iop, {det: 1})[det])
             spin_flip.add(det)
             to_flip = {det}
-            bits = psr.bytes2bitarray(det, self.num_spin_orbitals)
-            n_dn = bits[0:5].count()
-            n_up = bits[5:10].count()
-            n_bath = bits[10:].count()
             for i_imp in range(5):
+                spin_flip_op = {
+                    (((2, 1, i_imp - 2), "c"), ((2, 0, i_imp - 2), "a")): 1.0,
+                    (((2, 0, i_imp - 2), "c"), ((2, 1, i_imp - 2), "a")): 1.0,
+                }
+                spin_flip_iop = c2i_op({2: self.num_spin_orbitals - 10}, spin_flip_op)
                 for state in to_flip.copy():
-                    bits = psr.bytes2bitarray(state, self.num_spin_orbitals)
-                    new_bits = bits.copy()
-                    new_bits[i_imp], new_bits[i_imp + 5] = bits[i_imp + 5], bits[i_imp]
-                    to_flip.add(psr.bitarray2bytes(new_bits))
-                    if new_bits[0:5].count() == n_dn and new_bits[5:10].count() == n_up:
-                        spin_flip.add(psr.bitarray2bytes(new_bits))
+                    flipped = applyOp(self.num_spin_orbitals, spin_flip_iop, {state: 1})
+                    to_flip.update(flipped.keys())
+                    new_n_dn = int(applyOp(self.num_spin_orbitals, n_dn_iop, {state: 1})[state])
+                    new_n_up = int(applyOp(self.num_spin_orbitals, n_up_iop, {state: 1})[state])
+                    if new_n_dn == n_dn and new_n_up == n_up:
+                        spin_flip.update(flipped.keys())
 
         # for state in spin_flip.copy():
         #     new_bits = psr.bytes2bitarray(state, self.num_spin_orbitals)
