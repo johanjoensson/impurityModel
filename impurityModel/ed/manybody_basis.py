@@ -570,11 +570,15 @@ class Basis:
                     (((2, 0, i_imp - 2), "c"), ((2, 1, i_imp - 2), "a")): 1.0,
                 }
                 spin_flip_iop = c2i_op({2: self.num_spin_orbitals - 10}, spin_flip_op)
-                for state in to_flip.copy():
+                print(f"{len(to_flip)=}")
+                for state in list(to_flip):
                     flipped = applyOp(self.num_spin_orbitals, spin_flip_iop, {state: 1})
                     to_flip.update(flipped.keys())
-                    new_n_dn = int(applyOp(self.num_spin_orbitals, n_dn_iop, {state: 1})[state])
-                    new_n_up = int(applyOp(self.num_spin_orbitals, n_up_iop, {state: 1})[state])
+                    if len(flipped) == 0:
+                        continue
+                    flipped_state = list(flipped.keys())[0]
+                    new_n_dn = int(applyOp(self.num_spin_orbitals, n_dn_iop, {flipped_state: 1})[flipped_state])
+                    new_n_up = int(applyOp(self.num_spin_orbitals, n_up_iop, {flipped_state: 1})[flipped_state])
                     if new_n_dn == n_dn and new_n_up == n_up:
                         spin_flip.update(flipped.keys())
 

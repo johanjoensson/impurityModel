@@ -666,3 +666,19 @@ def test_vector():
     assert v.shape == (len(basis), )
     assert v.shape == v_exact.shape
     assert np.all(v == v_exact)
+
+
+@pytest.mark.mpi
+def test_spin_flip():
+    comm = MPI.COMM_WORLD
+    # dn 11001 -> n_dn = 3
+    # up 00101 -> n_up = 2
+    states = [b"\xC9\x40"]
+    basis = Basis(initial_basis=[], num_spin_orbitals=10, verbose=True, comm=comm)
+    spin_flipped = basis._generate_spin_flipped_determinants(states)
+    # flips:
+    # dn 01101  10101
+    # up 10001  01001
+    spin_flipped_check = [b"\xC9\x40", b"\x6C\x40", b"\xAA\x40", ]
+    assert all(state in spin_flipped for state in spin_flipped_check), f"{spin_flipped_check=} {spin_flipped=}"
+    assert all(state in spin_flipped_check for state in spin_flipped), f"{spin_flipped_check=} {spin_flipped=}"
