@@ -57,7 +57,7 @@ def find_gs(h_op, N0, delta_occ, bath_states, num_spin_orbitals, rank, verbose, 
         if verbose:
             print(f"Before expansion basis contains {basis.size} elements")
         # h_dict = basis.expand(h_op, dense_cutoff=dense_cutoff)
-        h_dict = basis.expand(h_op, dense_cutoff=dense_cutoff, de2_min=1e-8)
+        h_dict = basis.expand(h_op, dense_cutoff=dense_cutoff, de2_min=1e-8, slaterWeightMin=1e-8)
         h = basis.build_sparse_matrix(h_op, h_dict)
 
         e_trial = finite.eigensystem_new(
@@ -210,7 +210,7 @@ def calc_selfenergy(
 
     basis.tau = tau
     # h_dict = basis.expand(h, dense_cutoff=dense_cutoff)
-    h_dict = basis.expand(h, dense_cutoff=dense_cutoff, de2_min=1e-10)
+    h_dict = basis.expand(h, dense_cutoff=dense_cutoff, de2_min=1e-8, slaterWeightMin=1e-10)
     if verbosity >= 1:
         print(f"Ground state basis contains {len(basis)} elsements.")
     if basis.size < dense_cutoff:
@@ -223,7 +223,7 @@ def calc_selfenergy(
         e_max=energy_cut,
         k=2 * (2 * l + 1),
         verbose=verbosity >= 1,
-        eigenValueTol=1e-10,
+        eigenValueTol=0,
         dense_cutoff=dense_cutoff,
     )
     if verbosity >= 2:
@@ -232,7 +232,7 @@ def calc_selfenergy(
 
     if verbosity >= 1:
         print("Consider {:d} eigenstates for the spectra \n".format(len(es)))
-        print("Calculate Interacting Green's function...")
+        print("Calculate Interacting Green's function...", flush=True)
 
     gs_matsubara, gs_realaxis = get_Greens_function(
         nBaths=sum_bath_states,

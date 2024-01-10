@@ -280,22 +280,17 @@ def eigensystem_new(
         vecs[:, start:stop], _ = qr(vecs[:, start:stop], mode="economic", overwrite_a=True, check_finite=False)
 
     t0 = time.perf_counter()
-    psis = []
+    psis = basis.build_state(vecs[:, mask].T)
     t0 = time.perf_counter()
     if not distribute_eigenvectors:
-        for j in range(sum(mask)):
-            indices = range(basis.size)
-            states = basis[list(range(basis.size))]
-            psis.append({state: vecs[i, j] for state, i in zip(states, indices) if abs(vecs[i, j]) > 0})
-    else:
-        for j in range(sum(mask)):
-            psis.append(
-                {
-                    state: vecs[i + basis.offset, j]
-                    for i, state in enumerate(basis.local_basis)
-                    if abs(vecs[i + basis.offset, j]) > 0
-                }
-            )
+        all_psis = basis.comm.allgather(psis)
+        psis = [{} for _ in psis]
+        for psis_r in all_psis:
+            for i in range(len(psis)):
+                for state, val in psis_r[i].items():
+                    psis[i][state] = val + psis[i].get(state, 0)
+
+        
     t0 = time.perf_counter() - t0
 
     return es[: sum(mask)], psis

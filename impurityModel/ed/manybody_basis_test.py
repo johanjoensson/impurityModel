@@ -631,3 +631,38 @@ def test_eg_t2g_dense_matrix():
             dtype=float,
         ),
     ), f"{dense_mat=}"
+
+
+@pytest.mark.mpi
+def test_simple_vector():
+    states = [b"\x00\x1a\x2b", b"\xff\x00\x1a"]
+    basis = Basis(initial_basis=states, num_spin_orbitals=24, verbose=True, comm=MPI.COMM_WORLD)
+    state = {}
+    if states[0] in basis._index_dict:
+        state[states[0]] = 0.25 + 0.2j
+    if states[1] in basis._index_dict:
+        state[states[1]] = 0.33 + 0.15j
+
+    v = basis.build_vector([state])[0]
+    v_exact = np.array([0.25 + 0.2j, 0.33 + 0.15j], dtype=complex)
+
+    assert v.shape == (len(basis), )
+    assert v.shape == v_exact.shape
+    assert np.all(v == v_exact)
+
+
+@pytest.mark.mpi
+def test_vector():
+    comm = MPI.COMM_WORLD
+    states = [b"\x78", b"\xB8", b"\xD8", b"\xE8", b"\xF0"]
+    basis = Basis(initial_basis=states[:-1], num_spin_orbitals=5, verbose=True, comm=comm)
+    state = {states[-1]: 1 + 1j}
+    state[states[0]] = 0.25 + 0.2j
+    if states[1] in basis._index_dict:
+        state[states[1]] = 0.33 + 0.15j
+    v = basis.build_vector([state])[0]
+    v_exact = np.array([0.25 * comm.size + 0.2j * comm.size, 0.33 + 0.15j, 0, 0], dtype=complex)
+
+    assert v.shape == (len(basis), )
+    assert v.shape == v_exact.shape
+    assert np.all(v == v_exact)

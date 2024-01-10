@@ -447,25 +447,25 @@ def fixed_peak_dc(h0_op, dc_struct, rank, verbose, dense_cutoff):
         h_op_i = finite.c2i_op(sum_bath_states, h_op_c)
         if verbose:
             print("Expand upper basis", flush=True)
-        h_dict = basis_upper.expand(h_op_i, dense_cutoff=dense_cutoff)
+        h_dict = basis_upper.expand(h_op_i, dense_cutoff=dense_cutoff, de2_min=1e-5, slaterWeightMin=1e-6)
         if verbose:
             print("Build upper operator dict", flush=True)
         h_sparse = basis_upper.build_sparse_matrix(h_op_i, h_dict)
         if verbose:
             print("Find upper energy", flush=True)
-        e_upper, _ = finite.eigensystem_new(
-            h_sparse, basis_upper, 0, k=1, eigenValueTol=0, verbose=verbose, dense_cutoff=dense_cutoff
+        e_upper = finite.eigensystem_new(
+            h_sparse, basis_upper, 0, k=1, eigenValueTol=0, verbose=verbose, dense_cutoff=dense_cutoff, return_eigvecs=False
         )
         if verbose:
             print("Expand lower basis", flush=True)
-        h_dict = basis_lower.expand(h_op_i, dense_cutoff=dense_cutoff)
+        h_dict = basis_lower.expand(h_op_i, dense_cutoff=dense_cutoff, de2_min=1e-5, slaterWeightMin=1e-6)
         if verbose:
             print("Build lower operator dict", flush=True)
         h_sparse = basis_lower.build_sparse_matrix(h_op_i, h_dict)
         if verbose:
             print("Find lower energy", flush=True)
-        e_lower, _ = finite.eigensystem_new(
-            h_sparse, basis_lower, 0, k=1, eigenValueTol=0, verbose=verbose, dense_cutoff=dense_cutoff
+        e_lower = finite.eigensystem_new(
+            h_sparse, basis_lower, 0, k=1, eigenValueTol=0, verbose=verbose, dense_cutoff=dense_cutoff, return_eigvecs=False
         )
         if verbose:
             print(f"de = {e_upper[0] - e_lower[0] - peak_position}", flush=True)

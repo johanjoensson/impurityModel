@@ -541,10 +541,13 @@ class Basis:
             print(f"=======> T set bounds and stuff : {t0}")
 
     def _generate_spin_flipped_determinants(self, determinants):
-        determinants = set(determinants)
-        for det in determinants.copy():
-            spin_flip = {det}
-            to_check = spin_flip
+        spin_flip = set()
+        to_check = set()
+        for det in determinants:
+            if det in to_check:
+                continue
+            spin_flip.add(det)
+            to_check.add(det)
             bits = psr.bytes2bitarray(det, self.num_spin_orbitals)
             n_dn = bits[0:5].count()
             n_up = bits[5:10].count()
@@ -560,14 +563,14 @@ class Basis:
                     to_check.add(psr.bitarray2bytes(new_bits))
                     if new_bits[0:5].count() == n_dn and new_bits[5:10].count() == n_up:
                         spin_flip.add(psr.bitarray2bytes(new_bits))
-                        new_bits[10: 10 + (self.num_spin_orbitals - 10) // 2], new_bits[10 + (self.num_spin_orbitals - 10) // 2:] = new_bits[10 + (self.num_spin_orbitals - 10) // 2:], new_bits[10: 10 + (self.num_spin_orbitals - 10) // 2]
-                        spin_flip.add(psr.bitarray2bytes(new_bits))
-                        # for bath_occ in itertools.permutations(new_bits[10:]):
-                        #     new_bits[10:] = psr.str2bitarray(''.join(f'{bit}' for bit in bath_occ))
-                        #     spin_flip.add(psr.bitarray2bytes(new_bits))
 
-            determinants |= spin_flip
-        return determinants
+        # for state in spin_flip.copy():
+        #     new_bits = psr.bytes2bitarray(state, self.num_spin_orbitals)
+        #     for bath_occ in itertools.permutations(new_bits[10:]):
+        #         new_bits[10:] = psr.str2bitarray(''.join(f'{bit}' for bit in bath_occ))
+        #         spin_flip.add(psr.bitarray2bytes(new_bits))
+
+        return spin_flip
 
     def expand(self, op, op_dict=None, dense_cutoff=None, slaterWeightMin=0):
         done = False
@@ -590,7 +593,7 @@ class Basis:
                             opResult=op_dict,
                         )
                     new_states |= set(res.keys()) - new_basis
-                # new_states = self._generate_spin_flipped_determinants(new_states)
+                new_states = self._generate_spin_flipped_determinants(new_states)
 
                 new_basis += sorted(new_states)
                 self.local_basis = sorted(new_basis)
@@ -610,11 +613,12 @@ class Basis:
                 # local_states = self._generate_spin_flipped_determinants(local_states)
 
                 old_size = self.size
-                # self.add_states(self._generate_spin_flipped_determinants(local_states))
+                self.add_states(self._generate_spin_flipped_determinants(local_states))
                 self.add_states(local_states)
                 done = old_size == self.size
+        # self.add_states(self._generate_spin_flipped_determinants(self.local_basis))
         if self.verbose:
-            print(f"Expanded basis contains {self.size} elements")
+            print(f"Expanded basis contains {self.size} elements", flush=True)
         return self.build_operator_dict(op, op_dict=op_dict)
 
     def _getitem_sequence(self, l: list[int]) -> list[bytes]:
@@ -914,12 +918,12 @@ class Basis:
             verbose=self.verbose,
         )
 
-    def build_vector(self, psis: list[dict], dtype=complex, distributed=False) -> list[np.ndarray]:
-        v_local = [np.zeros((self.size,), dtype=dtype)] * len(psis)
-        v = [np.empty_like(vl) for vl in v_local]
+    def build_vector(self, psis: list[dict], dtype=complex, distributed=False) -> np.ndarray:
+        v_local = np.zeros((len(psis), self.size), dtype=dtype)
+        v = np.empty_like(v_local)
         row_states_in_basis: list[bytes] = []
         row_dict = self._index_dict
-        for col, psi in enumerate(psis):
+        for row, psi in enumerate(psis):
             row_states = set(psi.keys())
             need_mpi = False
             if self.is_distributed:
@@ -936,41 +940,22 @@ class Basis:
             for state, val in psi.items():
                 if state not in row_dict:
                     continue
-                v_local[col][row_dict[state]] = val
+                v_local[row, row_dict[state]] = val
 
         if self.is_distributed:
-            v_send = np.empty((sum(len(vl) for vl in v_local), ), dtype=dtype)
-            offset = 0
-            for vl in v_local:
-                v_send[offset: offset + len(vl)] = vl
-                offset += len(vl)
-            v_recv = np.empty((sum(len(vl) for vl in v_local), ), dtype=dtype)
-            self.comm.Allreduce(v_send, v_recv, op=MPI.SUM)
-            offset = 0
-            for vi in v:
-                vi[:] = v_recv[offset: offset + len(vi)]
-                offset += len(vi)
+            self.comm.Allreduce(v_local, v, op=MPI.SUM)
         else:
             v = v_local
         return v
 
-    def build_state(self, vs: list[np.ndarray], distribute=False) -> list[dict]:
-        local_psis = []
-        for col, v in enumerate(vs):
+    def build_state(self, vs: np.ndarray) -> list[dict]:
+        res = []
+        for _, v in enumerate(vs):
             psi = {}
             for i in self.local_indices:
                 if abs(v[i]) > 0:
                     psi[self.local_basis[i - self.offset]] = v[i]
-            local_psis.append(psi)
-        if distribute:
-            return local_psis
-        psis = self.comm.allgather(local_psis)
-        res = []
-        for col in range(len(vs)):
-            state = {}
-            for local_psi in psis:
-                state.update(local_psi[col])
-            res.append(state)
+            res.append(psi)
         return res
 
     def build_operator_dict(self, op, op_dict=None, slaterWeightMin=0):
@@ -1196,7 +1181,7 @@ class CIPSI_Basis(Basis):
         """
         Use the CIPSI method to expand the basis. Keep adding Slater determinants until the CIPSI energy is converged.
         """
-        distribute_psi = False
+        distribute_psi = True
         psi_ref = None
         e0_prev = np.inf
         e0 = 0
@@ -1212,10 +1197,7 @@ class CIPSI_Basis(Basis):
 
             t0 = perf_counter()
             if psi_ref is not None:
-                v0_vs = self.build_vector(psi_ref, distributed=distribute_psi)
-                v0 = np.empty((len(v0_vs[0]), len(v0_vs)), dtype=v0_vs[0].dtype)
-                for col, v in enumerate(v0_vs):
-                    v0[:, col] = v
+                v0 = self.build_vector(psi_ref).T
             else:
                 v0 = None
             e_ref, psi_ref = eigensystem_new(
@@ -1243,8 +1225,8 @@ class CIPSI_Basis(Basis):
                 Hpsi_i = applyOp(
                     self.num_spin_orbitals,
                     H,
-                    {state: val for state, val in psi_i.items() if state in self._index_dict},
-                    # psi_i,
+                    # {state: val for state, val in psi_i.items() if state in self._index_dict},
+                    psi_i,
                     restrictions=self.restrictions,
                     slaterWeightMin=slaterWeightMin,
                     opResult=H_dict,
@@ -1257,8 +1239,8 @@ class CIPSI_Basis(Basis):
                 t0 = perf_counter()
 
                 Dj_basis = Basis(
-                    initial_basis=set(Hpsi_i.keys()),
-                    # initial_basis=self._generate_spin_flipped_determinants(set(Hpsi_i.keys())),
+                    # initial_basis=set(Hpsi_i.keys()),
+                    initial_basis=self._generate_spin_flipped_determinants(set(Hpsi_i.keys())),
                     num_spin_orbitals=self.num_spin_orbitals,
                     restrictions=None,
                     comm=self.comm,
@@ -1319,6 +1301,7 @@ class CIPSI_Basis(Basis):
 
             t0 = perf_counter()
             old_size = self.size
+            # self.local_basis.clear()
             self.add_states(new_Dj)
             t0 = perf_counter() - t0
             t0 = self.comm.reduce(t0, op=MPI.SUM, root=0)
