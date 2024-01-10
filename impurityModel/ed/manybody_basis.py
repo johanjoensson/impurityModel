@@ -542,25 +542,19 @@ class Basis:
 
     def _generate_spin_flipped_determinants(self, determinants):
         spin_flip = set()
-        to_check = set()
         for det in determinants:
-            if det in to_check:
-                continue
             spin_flip.add(det)
-            to_check.add(det)
+            to_flip = {det}
             bits = psr.bytes2bitarray(det, self.num_spin_orbitals)
             n_dn = bits[0:5].count()
             n_up = bits[5:10].count()
             n_bath = bits[10:].count()
             for i_imp in range(5):
-                for state in to_check.copy():
+                for state in to_flip.copy():
                     bits = psr.bytes2bitarray(state, self.num_spin_orbitals)
-                    flippable_imp = bits[0:5] ^ bits[5:10]
-                    if not flippable_imp[i_imp]:
-                        continue
                     new_bits = bits.copy()
-                    new_bits[i_imp], new_bits[i_imp + 5] = new_bits[i_imp + 5], new_bits[i_imp]
-                    to_check.add(psr.bitarray2bytes(new_bits))
+                    new_bits[i_imp], new_bits[i_imp + 5] = bits[i_imp + 5], bits[i_imp]
+                    to_flip.add(psr.bitarray2bytes(new_bits))
                     if new_bits[0:5].count() == n_dn and new_bits[5:10].count() == n_up:
                         spin_flip.add(psr.bitarray2bytes(new_bits))
 
