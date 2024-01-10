@@ -570,7 +570,6 @@ class Basis:
                     (((2, 0, i_imp - 2), "c"), ((2, 1, i_imp - 2), "a")): 1.0,
                 }
                 spin_flip_iop = c2i_op({2: self.num_spin_orbitals - 10}, spin_flip_op)
-                print(f"{len(to_flip)=}")
                 for state in list(to_flip):
                     flipped = applyOp(self.num_spin_orbitals, spin_flip_iop, {state: 1})
                     to_flip.update(flipped.keys())
@@ -1257,8 +1256,8 @@ class CIPSI_Basis(Basis):
                 t0 = perf_counter()
 
                 Dj_basis = Basis(
-                    # initial_basis=set(Hpsi_i.keys()),
-                    initial_basis=self._generate_spin_flipped_determinants(set(Hpsi_i.keys())),
+                    initial_basis=set(Hpsi_i.keys()),
+                    # initial_basis=self._generate_spin_flipped_determinants(set(Hpsi_i.keys())),
                     num_spin_orbitals=self.num_spin_orbitals,
                     restrictions=None,
                     comm=self.comm,
@@ -1305,7 +1304,7 @@ class CIPSI_Basis(Basis):
 
                 t0 = perf_counter()
                 Dji = {Dj_basis.local_basis[i] for i, mask in enumerate(de2_mask) if mask}
-                # Dji = self._generate_spin_flipped_determinants(Dji)
+                Dji = self._generate_spin_flipped_determinants(Dji)
                 t0 = perf_counter() - t0
                 t0 = self.comm.reduce(t0, op=MPI.SUM, root=0)
                 if self.verbose:
