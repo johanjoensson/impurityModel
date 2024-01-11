@@ -182,7 +182,6 @@ def run_impmod_ed(
 
     comm = MPI.COMM_WORLD
     rank = comm.rank
-    comm.barrier()
 
     label = ffi.string(rspt_label, 18).decode("ascii")
     solver_line = ffi.string(rspt_solver_line, 100).decode("ascii")
@@ -374,6 +373,7 @@ def run_impmod_ed(
         print(f"!" * 100)
         cluster.sig[:, :, -1] += 1j * np.inf
         er = -1
+        comm.Abort(er)
     else:
         if rank == 0:
             print(f"Self energy calculated! impurityModel shutting down.", flush=True)
