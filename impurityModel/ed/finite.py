@@ -218,50 +218,50 @@ def eigensystem_new(
                 continue
             mask = es - np.min(es) <= e_max
             dk += k
-    elif isinstance(h_local, PETSc.Mat):
-        dk_orig = dk
-        es = []
-        mask = [True]
+    # elif isinstance(h_local, PETSc.Mat):
+    #     dk_orig = dk
+    #     es = []
+    #     mask = [True]
 
-        eig_solver = SLEPc.EPS()
-        eig_solver.create()
-        eig_solver.setOperators(h_local, None)
-        eig_solver.setProblemType(SLEPc.EPS.ProblemType.HEP)
-        eig_solver.setWhichEigenpairs(EPS.Which.SMALLEST_REAL)
-        eig_solver.setTolerances(tol=max(eigenValueTol, np.finfo(float).eps))
-        while len(es) - sum(mask) <= 0:
-            eig_solver.setDimensions(k, PETSc.DECIDE)
-            # eig_solver.setDimensions(k + dk, PETSc.DECIDE)
-            eig_solver.solve()
-            nconv = eig_solver.getConverged()
-            es = np.empty((nconv), dtype=float)
-            if nconv > 0:
-                for i in range(nconv):
-                    es[i] = eig_solver.getEigenvalue(i).real
-                mask = es - np.min(es) <= e_max
-            if dk_orig > 0:
-                dk += dk_orig
-            else:
-                break
-        vecs = None
-        if nconv > 0:
-            vecs = np.empty((h_local.size[0], nconv), dtype=complex) if comm.rank == 0 else None
-            vr, wr = h_local.getVecs()
-            vi, wi = h_local.getVecs()
-            for i in range(nconv):
-                _ = eig_solver.getEigenpair(i, vr, vi)
-                offsets = vr.owner_ranges[:-1]
-                counts = [vr.owner_ranges[i] - vr.owner_ranges[i - 1] for i in range(1, len(vr.owner_ranges))]
-                v_real = np.empty((h_local.size[0]), dtype=complex)
-                v_imag = np.empty((h_local.size[0]), dtype=complex)
-                comm.Gatherv(vr.array_r, [v_real, counts, offsets, MPI.DOUBLE_COMPLEX], root=0)
-                comm.Gatherv(vi.array_r, [v_imag, counts, offsets, MPI.DOUBLE_COMPLEX], root=0)
-                if comm.rank == 0:
-                    vecs[:, i] = v_real  # +1j*v_imag
-        vecs = comm.bcast(vecs, root=0)
+    #     eig_solver = SLEPc.EPS()
+    #     eig_solver.create()
+    #     eig_solver.setOperators(h_local, None)
+    #     eig_solver.setProblemType(SLEPc.EPS.ProblemType.HEP)
+    #     eig_solver.setWhichEigenpairs(EPS.Which.SMALLEST_REAL)
+    #     eig_solver.setTolerances(tol=max(eigenValueTol, np.finfo(float).eps))
+    #     while len(es) - sum(mask) <= 0:
+    #         eig_solver.setDimensions(k, PETSc.DECIDE)
+    #         # eig_solver.setDimensions(k + dk, PETSc.DECIDE)
+    #         eig_solver.solve()
+    #         nconv = eig_solver.getConverged()
+    #         es = np.empty((nconv), dtype=float)
+    #         if nconv > 0:
+    #             for i in range(nconv):
+    #                 es[i] = eig_solver.getEigenvalue(i).real
+    #             mask = es - np.min(es) <= e_max
+    #         if dk_orig > 0:
+    #             dk += dk_orig
+    #         else:
+    #             break
+    #     vecs = None
+    #     if nconv > 0:
+    #         vecs = np.empty((h_local.size[0], nconv), dtype=complex) if comm.rank == 0 else None
+    #         vr, wr = h_local.getVecs()
+    #         vi, wi = h_local.getVecs()
+    #         for i in range(nconv):
+    #             _ = eig_solver.getEigenpair(i, vr, vi)
+    #             offsets = vr.owner_ranges[:-1]
+    #             counts = [vr.owner_ranges[i] - vr.owner_ranges[i - 1] for i in range(1, len(vr.owner_ranges))]
+    #             v_real = np.empty((h_local.size[0]), dtype=complex)
+    #             v_imag = np.empty((h_local.size[0]), dtype=complex)
+    #             comm.Gatherv(vr.array_r, [v_real, counts, offsets, MPI.DOUBLE_COMPLEX], root=0)
+    #             comm.Gatherv(vi.array_r, [v_imag, counts, offsets, MPI.DOUBLE_COMPLEX], root=0)
+    #             if comm.rank == 0:
+    #                 vecs[:, i] = v_real  # +1j*v_imag
+    #     vecs = comm.bcast(vecs, root=0)
     indices = np.argsort(es)
-    es[:] = es[indices]
-    vecs[:, :] = vecs[:, indices]
+    es = es[indices]
+    vecs = vecs[:, indices]
     mask = es - np.min(es) <= e_max
     t0 = time.perf_counter() - t0
 
