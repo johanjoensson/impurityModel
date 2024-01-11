@@ -210,14 +210,14 @@ def calc_selfenergy(
 
     basis.tau = tau
     # h_dict = basis.expand(h, dense_cutoff=dense_cutoff)
-    h_dict = basis.expand(h, dense_cutoff=dense_cutoff, de2_min=1e-8, slaterWeightMin=1e-10)
+    h_dict = basis.expand(h, dense_cutoff=dense_cutoff, de2_min=1e-6)
     if verbosity >= 1:
         print(f"Ground state basis contains {len(basis)} elsements.")
     if basis.size < dense_cutoff:
         h_gs = basis.build_dense_matrix(h, h_dict)
     else:
         h_gs = basis.build_sparse_matrix(h, h_dict)
-    es, psis = finite.eigensystem_new(
+    es, psis_dense = finite.eigensystem_new(
         h_gs,
         basis,
         e_max=energy_cut,
@@ -226,7 +226,14 @@ def calc_selfenergy(
         eigenValueTol=0,
         dense_cutoff=dense_cutoff,
     )
+    psis = basis.build_state(psis_dense.T)
+    all_psis = comm.gather(psis)
     if verbosity >= 2:
+        psis = [{} for _ in psis]
+        for psis_r in all_psis:
+            for i in range(len(psis)):
+                for state in psis_r[i]:
+                    psis[i][state] = psis_r[i][state] + psis[i].get(state, 0)
         finite.printThermalExpValues_new(sum_bath_states, es, psis, tau, rot_to_spherical)
         finite.printExpValues(sum_bath_states, es, psis, rot_to_spherical)
 

@@ -966,13 +966,16 @@ class Basis:
         return v
 
     def build_state(self, vs: np.ndarray) -> list[dict]:
+        print(f"{vs.shape=}")
+        if len(vs.shape) == 1:
+            vs = vs.reshape((1, vs.shape[0]))
         res = []
-        for _, v in enumerate(vs):
+        for v in vs:
             psi = {}
             for i in self.local_indices:
-                if abs(v[i]) > 0:
+                if abs(v[i]) > np.finfo(float).eps:
                     psi[self.local_basis[i - self.offset]] = v[i]
-            res.append(psi)
+            res.append(psi.copy())
         return res
 
     def build_operator_dict(self, op, op_dict=None, slaterWeightMin=0):
@@ -1146,7 +1149,7 @@ class CIPSI_Basis(Basis):
                 slaterWeightMin=np.finfo(float).eps ** 2,
                 verbose=self.verbose,
             )
-            self.truncate(psi_ref)
+            self.truncate(self.build_state(psi_ref))
 
     def truncate(self, psis):
         basis_states = list({state for psi in psis for state in psi})
@@ -1217,7 +1220,7 @@ class CIPSI_Basis(Basis):
                 v0 = self.build_vector(psi_ref).T
             else:
                 v0 = None
-            e_ref, psi_ref = eigensystem_new(
+            e_ref, psi_ref_dense = eigensystem_new(
                 H_sparse,
                 basis=self,
                 e_max=de0_max,
@@ -1228,6 +1231,7 @@ class CIPSI_Basis(Basis):
                 verbose=self.verbose,
                 distribute_eigenvectors=distribute_psi,
             )
+            psi_ref = self.build_state(psi_ref_dense.T)
             e0_prev = e0
             e0 = np.min(e_ref)
             t0 = perf_counter() - t0
@@ -1346,7 +1350,7 @@ class CIPSI_Basis(Basis):
                 k=min(1, self.size - 1),
                 verbose=False,
             )
-            self.truncate(psi_ref)
+            self.truncate(self.build_state(psi_ref))
             if self.verbose:
                 print(f"----->After truncation, the basis contains {self.size} elements.")
         return self.build_operator_dict(H, op_dict=None)

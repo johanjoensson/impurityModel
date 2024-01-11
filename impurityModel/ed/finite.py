@@ -279,21 +279,21 @@ def eigensystem_new(
         stop = group_breaks[i]
         vecs[:, start:stop], _ = qr(vecs[:, start:stop], mode="economic", overwrite_a=True, check_finite=False)
 
-    t0 = time.perf_counter()
-    psis = basis.build_state(vecs[:, mask].T)
-    t0 = time.perf_counter()
-    if not distribute_eigenvectors:
-        all_psis = basis.comm.allgather(psis)
-        psis = [{} for _ in psis]
-        for psis_r in all_psis:
-            for i in range(len(psis)):
-                for state, val in psis_r[i].items():
-                    psis[i][state] = val + psis[i].get(state, 0)
+    # t0 = time.perf_counter()
+    # psis = basis.build_state(vecs[:, mask].T)
+    # t0 = time.perf_counter()
+    # if not distribute_eigenvectors:
+    #     all_psis = basis.comm.allgather(psis)
+    #     psis = [{} for _ in psis]
+    #     for psis_r in all_psis:
+    #         for i in range(len(psis)):
+    #             for state, val in psis_r[i].items():
+    #                 psis[i][state] = val + psis[i].get(state, 0)
 
         
     t0 = time.perf_counter() - t0
 
-    return es[: sum(mask)], psis
+    return es[: sum(mask)], vecs[:, : sum(mask)]
 
 
 def eigensystem(
