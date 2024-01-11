@@ -326,6 +326,7 @@ def run_impmod_ed(
             print(f"!" * 100)
             sig_dc[:, :] = np.inf + 1j * np.inf
             er = -1
+            comm.Abort(er)
 
         sys.stdout.close()
         sys.stdout = stdout_save
