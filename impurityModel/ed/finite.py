@@ -152,8 +152,6 @@ def eigensystem_new(
         At every call to eigsh, calculate k + dk eigenstates. dk is increased until we have calculated at least k eigenstates above e_max.
     eigenValueTol : float
         The precision of the returned eigenvalues.
-    slaterWeightMin : float
-        Minimum product state weight for product states to be kept.
     return_eigvecs : bool
         If True, return eigenvalues and eigenvectors for all states with energy within e_max of the lowest energy state.
         If False, return only the calculated eigenvalues.
@@ -290,7 +288,6 @@ def eigensystem_new(
     #             for state, val in psis_r[i].items():
     #                 psis[i][state] = val + psis[i].get(state, 0)
 
-        
     t0 = time.perf_counter() - t0
 
     return es[: sum(mask)], vecs[:, : sum(mask)]

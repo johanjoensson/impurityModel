@@ -6,6 +6,7 @@ from time import perf_counter
 import sys
 
 from typing import Optional
+
 try:
     from petsc4py import PETSc
 except:
@@ -308,7 +309,8 @@ class Basis:
             if recv_counts[r] == 0:
                 continue
             states[r] = [
-                bytes(received_bytes[start + i * self.n_bytes : start + (i + 1) * self.n_bytes]) for i in range(recv_counts[r])
+                bytes(received_bytes[start + i * self.n_bytes : start + (i + 1) * self.n_bytes])
+                for i in range(recv_counts[r])
                 # i.tobytes()
                 # for i in np.split(received_bytes[start : start + recv_counts[r] * self.n_bytes], recv_counts[r])
             ]
@@ -360,7 +362,12 @@ class Basis:
                 if sum(samples_count) == 0:
                     state_bounds = [psr.int2bytes(0, self.num_spin_orbitals)] * self.comm.size
                 else:
-                    all_states = sorted({bytes(all_samples_bytes[i * self.n_bytes : (i + 1) * self.n_bytes]) for i in  range(np.sum(samples_count))})
+                    all_states = sorted(
+                        {
+                            bytes(all_samples_bytes[i * self.n_bytes : (i + 1) * self.n_bytes])
+                            for i in range(np.sum(samples_count))
+                        }
+                    )
                     # all_states = sorted({i.tobytes() for i in np.split(all_samples_bytes, np.sum(samples_count))})
 
                     sizes = np.array([len(all_states) // self.comm.size] * self.comm.size, dtype=int)
@@ -385,7 +392,8 @@ class Basis:
 
         self.comm.Bcast(state_bounds_bytes, root=0)
         state_bounds: list[bytes] = [
-            bytes(state_bounds_bytes[i * self.n_bytes : (i + 1) * self.n_bytes]) for i in range(self.comm.size)
+            bytes(state_bounds_bytes[i * self.n_bytes : (i + 1) * self.n_bytes])
+            for i in range(self.comm.size)
             # i.tobytes()
             # for i in np.split(state_bounds_bytes, self.comm.size)
         ]
@@ -502,7 +510,8 @@ class Basis:
             t0 = perf_counter()
             if sum(recv_counts) > 0:
                 received_states = {
-                    bytes(received_bytes[i * self.n_bytes : (i + 1) * self.n_bytes]) for i in range(sum(recv_counts))
+                    bytes(received_bytes[i * self.n_bytes : (i + 1) * self.n_bytes])
+                    for i in range(sum(recv_counts))
                     # i.tobytes()
                     # for i in np.split(received_bytes, sum(recv_counts))
                 }
@@ -543,20 +552,20 @@ class Basis:
 
     def _generate_spin_flipped_determinants(self, determinants):
         n_dn_op = {
-                    (((2, 0,-2), "c"), ((2, 0,-2), "a")): 1.0,
-                    (((2, 0,-1), "c"), ((2, 0,-1), "a")): 1.0,
-                    (((2, 0, 0), "c"), ((2, 0, 0), "a")): 1.0,
-                    (((2, 0, 1), "c"), ((2, 0, 1), "a")): 1.0,
-                    (((2, 0, 2), "c"), ((2, 0, 2), "a")): 1.0,
-                }
+            (((2, 0, -2), "c"), ((2, 0, -2), "a")): 1.0,
+            (((2, 0, -1), "c"), ((2, 0, -1), "a")): 1.0,
+            (((2, 0, 0), "c"), ((2, 0, 0), "a")): 1.0,
+            (((2, 0, 1), "c"), ((2, 0, 1), "a")): 1.0,
+            (((2, 0, 2), "c"), ((2, 0, 2), "a")): 1.0,
+        }
         n_dn_iop = c2i_op({2: self.num_spin_orbitals - 10}, n_dn_op)
         n_up_op = {
-                    (((2, 1,-2), "c"), ((2, 1,-2), "a")): 1.0,
-                    (((2, 1,-1), "c"), ((2, 1,-1), "a")): 1.0,
-                    (((2, 1, 0), "c"), ((2, 1, 0), "a")): 1.0,
-                    (((2, 1, 1), "c"), ((2, 1, 1), "a")): 1.0,
-                    (((2, 1, 2), "c"), ((2, 1, 2), "a")): 1.0,
-                }
+            (((2, 1, -2), "c"), ((2, 1, -2), "a")): 1.0,
+            (((2, 1, -1), "c"), ((2, 1, -1), "a")): 1.0,
+            (((2, 1, 0), "c"), ((2, 1, 0), "a")): 1.0,
+            (((2, 1, 1), "c"), ((2, 1, 1), "a")): 1.0,
+            (((2, 1, 2), "c"), ((2, 1, 2), "a")): 1.0,
+        }
         n_up_iop = c2i_op({2: self.num_spin_orbitals - 10}, n_up_op)
         spin_flip = set()
         for det in determinants:
@@ -805,14 +814,16 @@ class Basis:
         if self.debug:
             print("queries:")
             for r in range(self.comm.size):
-                print(f"    {r}: {[bytes(queries[i * self.n_bytes: (i + 1) * self.n_bytes]) for i in range(displacements[r], displacements[r] + recv_counts[r])]}")
+                print(
+                    f"    {r}: {[bytes(queries[i * self.n_bytes: (i + 1) * self.n_bytes]) for i in range(displacements[r], displacements[r] + recv_counts[r])]}"
+                )
                 # print(f"    {r}: {[queries[i * self.n_bytes: (i + 1) * self.n_bytes].tobytes() for i in range(displacements[r], displacements[r] + recv_counts[r])]}")
 
         results = np.empty((sum(recv_counts)), dtype=int)
         # results[:] = self.size
         for i in range(sum(recv_counts)):
             query = bytes(queries[i * self.n_bytes : (i + 1) * self.n_bytes])
-           # query = queries[i * self.n_bytes : (i + 1) * self.n_bytes].tobytes()
+            # query = queries[i * self.n_bytes : (i + 1) * self.n_bytes].tobytes()
             results[i] = self._index_dict.get(query, self.size)
             # if query in self._index_dict:
             #     results[i] = self._index_dict[query]
@@ -828,7 +839,7 @@ class Basis:
         self.comm.Alltoallv(
             (results, recv_counts, displacements, MPI.INT64_T), (result, send_counts, send_displacements, MPI.INT64_T)
         )
-        result[sum(send_counts):] = self.size
+        result[sum(send_counts) :] = self.size
 
         # return [result[i] for i in np.argsort(send_order)]
         return result[np.argsort(send_order)].tolist()
@@ -950,10 +961,11 @@ class Basis:
                 need_mpi = self.comm.allreduce(need_mpi, op=MPI.LOR)
             if need_mpi:
                 sorted_row_states = sorted(row_states)
-                row_states_mask = self.contains(sorted_row_states)
-                row_states_in_basis = [sorted_row_states[i] for i, state in enumerate(sorted_row_states) if row_states_mask[i]]
-                row_indices = self.index(row_states_in_basis)
-                row_dict.update(zip(row_states_in_basis, row_indices))
+                row_dict = {
+                    state: i
+                    for state, i in zip(sorted_row_states, self._index_sequence(sorted_row_states))
+                    if i < self.size
+                }
             for state, val in psi.items():
                 if state not in row_dict:
                     continue
@@ -1035,7 +1047,7 @@ class Basis:
             h = self.comm.bcast(h, root=0)
         return h
 
-    def build_sparse_matrix(self, op, op_dict: Optional[dict[bytes, dict[bytes, complex]]]=None):
+    def build_sparse_matrix(self, op, op_dict: Optional[dict[bytes, dict[bytes, complex]]] = None):
         """
         Get the operator as a sparse matrix in the current basis.
         The sparse matrix is distributed over all ranks.
@@ -1062,9 +1074,7 @@ class Basis:
                 values.append(expanded_dict[column][row])
         if self.debug and len(rows) > 0:
             print(f"{self.size=} {max(rows)=}", flush=True)
-        return sp.sparse.csr_matrix(
-            (values, (rows, columns)), shape=(self.size, self.size), dtype=complex
-        )
+        return sp.sparse.csr_matrix((values, (rows, columns)), shape=(self.size, self.size), dtype=complex)
 
     def _build_PETSc_matrix(self, op, op_dict=None):
         """

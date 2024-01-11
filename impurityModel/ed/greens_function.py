@@ -519,6 +519,7 @@ def calc_local_Greens_function_from_alpha_beta(alphas, betas, iws, ws, iw_indice
                 )
     return gs_matsubara_local, gs_realaxis_local
 
+
 def calc_Greens_function_with_offdiag_cg(
     n_spin_orbitals,
     hOp,
@@ -679,9 +680,9 @@ def get_block_Green_cg(
             verbose=verbose,
             truncation_threshold=basis.truncation_threshold,
             tau=basis.tau,
-                )
+        )
         for w_i, w in finite.get_job_tasks(comm.rank, comm.size, list(enumerate(iws))):
-            shift = {((0, 'i'),): w + e}
+            shift = {((0, "i"),): w + e}
             A_op = finite.subtractOps(shift, hOp)
             A_dict = {}
             for col in range(n):
@@ -697,7 +698,7 @@ def get_block_Green_cg(
     if realaxis:
         gs_realaxis = np.zeros((len(ws), n, n), dtype=complex)
         for w_i, w in finite.get_job_tasks(comm.rank, comm.size, list(enumerate(ws))):
-            shift = {((0, 'i'),): w + 1j * delta + e}
+            shift = {((0, "i"),): w + 1j * delta + e}
             A_op = finite.subtractOps(shift, hOp)
             for col in range(n):
                 tmp, info = cg_phys(A_op, {}, n_spin_orbitals, {}, psi_arr[col], w, delta, local_basis)
@@ -713,6 +714,7 @@ def get_block_Green_cg(
         print(f"time(G_cg) = {time.perf_counter() - t0: .4f} seconds.")
 
     return gs_matsubara, gs_realaxis
+
 
 def rotate_matrix(M, T):
     """

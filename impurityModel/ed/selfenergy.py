@@ -43,7 +43,7 @@ def find_gs(h_op, N0, delta_occ, bath_states, num_spin_orbitals, rank, verbose, 
     for i, d in enumerate(dN):
         basis = CIPSI_Basis(
             H=h_op,
-        # basis = Basis(
+            # basis = Basis(
             valence_baths=num_val_baths,
             conduction_baths=num_cond_baths,
             delta_valence_occ=delta_val_occ,
@@ -57,7 +57,7 @@ def find_gs(h_op, N0, delta_occ, bath_states, num_spin_orbitals, rank, verbose, 
         if verbose:
             print(f"Before expansion basis contains {basis.size} elements")
         # h_dict = basis.expand(h_op, dense_cutoff=dense_cutoff)
-        h_dict = basis.expand(h_op, dense_cutoff=dense_cutoff, de2_min=1e-8, slaterWeightMin=1e-8)
+        h_dict = basis.expand(h_op, dense_cutoff=dense_cutoff, de2_min=1e-5, slaterWeightMin=0)
         h = basis.build_sparse_matrix(h_op, h_dict)
 
         e_trial = finite.eigensystem_new(

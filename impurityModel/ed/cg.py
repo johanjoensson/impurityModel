@@ -43,7 +43,7 @@ def cg_2(A, x, y, atol=1e-5):
             info = 0
             print(f"breaking early r {it}")
             break
-        dp = - np.vdot(p_i, r) / np.vdot(p, p_i)
+        dp = -np.vdot(p_i, r) / np.vdot(p, p_i)
         p = r + dp * p
 
     return x, info
@@ -52,7 +52,7 @@ def cg_2(A, x, y, atol=1e-5):
 def cg_phys(A_op, A_dict, n_spin_orbitals, x_psi, y_psi, w, delta, basis, atol=1e-5):
     """
     delta is a small imaginary part added to the diagonal of H in order to form A.
-    CG algorithm, reformulated to only use matrix vector products of the form A.x 
+    CG algorithm, reformulated to only use matrix vector products of the form A.x
     (the sought after solution). This might allow for an approximation of x based on physics
     rather than pure numerics.
     """
@@ -121,4 +121,4 @@ def cg_phys(A_op, A_dict, n_spin_orbitals, x_psi, y_psi, w, delta, basis, atol=1
     print(f"--->Building the vectors took {t_build_vectors_separate:.4f} seconds")
     print(f"--->Matrix multiplication took {t_matrix_mul:.4f} seconds")
     print(f"--->The rest of the CG algorithm took {t_rest_of_cg:.4f} seconds")
-    return x, {'rnorm2': np.conj(r) @ r, 'it': it + 1}
+    return x, {"rnorm2": np.conj(r) @ r, "it": it + 1}

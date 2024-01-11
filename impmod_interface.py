@@ -262,7 +262,7 @@ def run_impmod_ed(
     stdout_save = sys.stdout
     if rank == 0:
         sys.stdout = open(f"impurityModel-{label.strip()}{'-dc' if rspt_dc_flag == 1 else ''}.out", "w")
-    elif True or  verbosity > 0:
+    elif True or verbosity > 0:
         sys.stdout = open(f"impurityModel-{label.strip()}{'-dc' if rspt_dc_flag == 1 else ''}-{rank}.out", "w")
     else:
         sys.stdout = open(devnull, "w")
@@ -455,7 +455,14 @@ def fixed_peak_dc(h0_op, dc_struct, rank, verbose, dense_cutoff):
         if verbose:
             print("Find upper energy", flush=True)
         e_upper = finite.eigensystem_new(
-            h_sparse, basis_upper, 0, k=1, eigenValueTol=0, verbose=verbose, dense_cutoff=dense_cutoff, return_eigvecs=False
+            h_sparse,
+            basis_upper,
+            0,
+            k=1,
+            eigenValueTol=0,
+            verbose=verbose,
+            dense_cutoff=dense_cutoff,
+            return_eigvecs=False,
         )
         if verbose:
             print("Expand lower basis", flush=True)
@@ -466,7 +473,14 @@ def fixed_peak_dc(h0_op, dc_struct, rank, verbose, dense_cutoff):
         if verbose:
             print("Find lower energy", flush=True)
         e_lower = finite.eigensystem_new(
-            h_sparse, basis_lower, 0, k=1, eigenValueTol=0, verbose=verbose, dense_cutoff=dense_cutoff, return_eigvecs=False
+            h_sparse,
+            basis_lower,
+            0,
+            k=1,
+            eigenValueTol=0,
+            verbose=verbose,
+            dense_cutoff=dense_cutoff,
+            return_eigvecs=False,
         )
         if verbose:
             print(f"de = {e_upper[0] - e_lower[0] - peak_position}", flush=True)

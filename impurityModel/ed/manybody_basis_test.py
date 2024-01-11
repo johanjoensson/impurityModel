@@ -646,7 +646,7 @@ def test_simple_vector():
     v = basis.build_vector([state])[0]
     v_exact = np.array([0.25 + 0.2j, 0.33 + 0.15j], dtype=complex)
 
-    assert v.shape == (len(basis), )
+    assert v.shape == (len(basis),)
     assert v.shape == v_exact.shape
     assert np.all(v == v_exact)
 
