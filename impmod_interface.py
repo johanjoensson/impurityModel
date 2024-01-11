@@ -182,7 +182,6 @@ def run_impmod_ed(
 
     comm = MPI.COMM_WORLD
     rank = comm.rank
-    comm.barrier()
 
     label = ffi.string(rspt_label, 18).decode("ascii")
     solver_line = ffi.string(rspt_solver_line, 100).decode("ascii")
@@ -263,7 +262,7 @@ def run_impmod_ed(
     stdout_save = sys.stdout
     if rank == 0:
         sys.stdout = open(f"impurityModel-{label.strip()}{'-dc' if rspt_dc_flag == 1 else ''}.out", "w")
-    elif True or  verbosity > 0:
+    elif True or verbosity > 0:
         sys.stdout = open(f"impurityModel-{label.strip()}{'-dc' if rspt_dc_flag == 1 else ''}-{rank}.out", "w")
     else:
         sys.stdout = open(devnull, "w")
@@ -326,6 +325,7 @@ def run_impmod_ed(
             print(f"!" * 100)
             sig_dc[:, :] = np.inf + 1j * np.inf
             er = -1
+            comm.Abort(er)
 
         sys.stdout.close()
         sys.stdout = stdout_save
@@ -373,6 +373,7 @@ def run_impmod_ed(
         print(f"!" * 100)
         cluster.sig[:, :, -1] += 1j * np.inf
         er = -1
+        comm.Abort(er)
     else:
         if rank == 0:
             print(f"Self energy calculated! impurityModel shutting down.", flush=True)
@@ -447,25 +448,39 @@ def fixed_peak_dc(h0_op, dc_struct, rank, verbose, dense_cutoff):
         h_op_i = finite.c2i_op(sum_bath_states, h_op_c)
         if verbose:
             print("Expand upper basis", flush=True)
-        h_dict = basis_upper.expand(h_op_i, dense_cutoff=dense_cutoff)
+        h_dict = basis_upper.expand(h_op_i, dense_cutoff=dense_cutoff, de2_min=1e-5, slaterWeightMin=1e-6)
         if verbose:
             print("Build upper operator dict", flush=True)
         h_sparse = basis_upper.build_sparse_matrix(h_op_i, h_dict)
         if verbose:
             print("Find upper energy", flush=True)
-        e_upper, _ = finite.eigensystem_new(
-            h_sparse, basis_upper, 0, k=1, eigenValueTol=0, verbose=verbose, dense_cutoff=dense_cutoff
+        e_upper = finite.eigensystem_new(
+            h_sparse,
+            basis_upper,
+            0,
+            k=1,
+            eigenValueTol=0,
+            verbose=verbose,
+            dense_cutoff=dense_cutoff,
+            return_eigvecs=False,
         )
         if verbose:
             print("Expand lower basis", flush=True)
-        h_dict = basis_lower.expand(h_op_i, dense_cutoff=dense_cutoff)
+        h_dict = basis_lower.expand(h_op_i, dense_cutoff=dense_cutoff, de2_min=1e-5, slaterWeightMin=1e-6)
         if verbose:
             print("Build lower operator dict", flush=True)
         h_sparse = basis_lower.build_sparse_matrix(h_op_i, h_dict)
         if verbose:
             print("Find lower energy", flush=True)
-        e_lower, _ = finite.eigensystem_new(
-            h_sparse, basis_lower, 0, k=1, eigenValueTol=0, verbose=verbose, dense_cutoff=dense_cutoff
+        e_lower = finite.eigensystem_new(
+            h_sparse,
+            basis_lower,
+            0,
+            k=1,
+            eigenValueTol=0,
+            verbose=verbose,
+            dense_cutoff=dense_cutoff,
+            return_eigvecs=False,
         )
         if verbose:
             print(f"de = {e_upper[0] - e_lower[0] - peak_position}", flush=True)

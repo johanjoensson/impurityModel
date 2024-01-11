@@ -155,7 +155,7 @@ def bytes2bitarray(bytestr, n):
 
     """
     # Generate a empty bitarray
-    bits = bitarray(0)
+    bits = bitarray(0, endian="big")
     # Load this bitarray with the information stored in the byte string.
     bits.frombytes(bytestr)
     # Return the bitarray
@@ -174,7 +174,7 @@ def int2bitarray(i, n):
         Total number of spin-orbitals in the system.
 
     """
-    return bitarray(int2str(i, n))
+    return bitarray(int2str(i, n), endian="big")
 
 
 def bitarray2int(bits):
@@ -213,7 +213,7 @@ def str2bitarray(s):
         Representation of a product state, in terms of a string.
 
     """
-    return bitarray(s)
+    return bitarray(s, endian="big")
 
 
 def tuple2bitarray(t, n):
@@ -228,7 +228,7 @@ def tuple2bitarray(t, n):
         Total number of spin-orbitals in the system.
 
     """
-    return bitarray(tuple2str(t, n))
+    return bitarray(tuple2str(t, n), endian="big")
 
 
 def bitarray2tuple(bits):
@@ -241,7 +241,7 @@ def bitarray2tuple(bits):
         Representation of a product state, in terms of a bitarray.
 
     """
-    return str2tuple(bitarray2str(bits))
+    return str2tuple(bitarray2str(bits, endian="big"))
 
 
 def tuple2bytes(t, n):

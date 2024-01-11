@@ -249,6 +249,7 @@ def main(
         print("#basis states = {:d}".format(len(basis)))
     # Diagonalization of restricted active space Hamiltonian
     es, psis = finite.eigensystem_new(h, basis, e_max=energy_cut, k=1, dk=10)
+    psis = basis.build_state(psis.T)
     # es, psis = finite.eigensystem(n_spin_orbitals, hOp, basis, nPsiMax, groundDiagMode='full')
 
     if rank == 0:

@@ -631,3 +631,87 @@ def test_eg_t2g_dense_matrix():
             dtype=float,
         ),
     ), f"{dense_mat=}"
+
+
+@pytest.mark.mpi
+def test_simple_vector():
+    states = [b"\x00\x1a\x2b", b"\xff\x00\x1a"]
+    basis = Basis(initial_basis=states, num_spin_orbitals=24, verbose=True, comm=MPI.COMM_WORLD)
+    state = {}
+    if states[0] in basis._index_dict:
+        state[states[0]] = 0.25 + 0.2j
+    if states[1] in basis._index_dict:
+        state[states[1]] = 0.33 + 0.15j
+
+    v = basis.build_vector([state])[0]
+    v_exact = np.array([0.25 + 0.2j, 0.33 + 0.15j], dtype=complex)
+
+    assert v.shape == (len(basis),)
+    assert v.shape == v_exact.shape
+    assert np.all(v == v_exact)
+
+
+@pytest.mark.mpi
+def test_vector():
+    comm = MPI.COMM_WORLD
+    states = [b"\x78", b"\xB8", b"\xD8", b"\xE8", b"\xF0"]
+    basis = Basis(initial_basis=states[:-1], num_spin_orbitals=5, verbose=True, comm=comm)
+    state = {states[-1]: 1 + 1j}
+    state[states[0]] = 0.25 + 0.2j
+    if states[1] in basis._index_dict:
+        state[states[1]] = 0.33 + 0.15j
+    v = basis.build_vector([state])[0]
+    v_exact = np.array([0.25 * comm.size + 0.2j * comm.size, 0.33 + 0.15j, 0, 0], dtype=complex)
+
+    assert v.shape == (len(basis),)
+    assert v.shape == v_exact.shape
+    assert np.all(v == v_exact)
+
+
+@pytest.mark.mpi
+def test_simple_state():
+    states = [b"\x00\x1a\x2b", b"\xff\x00\x1a"]
+    basis = Basis(initial_basis=states, num_spin_orbitals=24, verbose=True, comm=MPI.COMM_WORLD)
+
+    v = np.array([[1.0, -2.5]])
+    s = basis.build_state(v)
+    s_exact = [{states[0]: v[0, 0], states[1]: v[0, 1]}]
+
+    for i in range(len(s)):
+        assert all(s[i][state] == s_exact[i][state] for state in s[i])
+
+
+@pytest.mark.mpi
+def test_state():
+    comm = MPI.COMM_WORLD
+    states = [b"\x78", b"\xB8", b"\xD8", b"\xE8", b"\xF0"]
+    basis = Basis(initial_basis=states, num_spin_orbitals=5, verbose=True, comm=comm)
+    v = np.array([[1.0, -2.5, 0, 0, 1.2], [0, 3, 1, 0, 0]])
+    s = basis.build_state(v)
+    s_exact = [
+        {states[0]: v[0, 0], states[1]: v[0, 1], states[4]: v[0, 4]},
+        {states[1]: v[1, 1], states[2]: v[1, 2]},
+    ]
+
+    for i in range(len(s)):
+        assert all(s[i][state] == s_exact[i][state] for state in s[i])
+
+
+@pytest.mark.mpi
+def test_spin_flip():
+    comm = MPI.COMM_WORLD
+    # dn 11001 -> n_dn = 3
+    # up 00101 -> n_up = 2
+    states = [b"\xC9\x40"]
+    basis = Basis(initial_basis=[], num_spin_orbitals=10, verbose=True, comm=comm)
+    spin_flipped = basis._generate_spin_flipped_determinants(states)
+    # flips:
+    # dn 01101  10101
+    # up 10001  01001
+    spin_flipped_check = [
+        b"\xC9\x40",
+        b"\x6C\x40",
+        b"\xAA\x40",
+    ]
+    assert all(state in spin_flipped for state in spin_flipped_check), f"{spin_flipped_check=} {spin_flipped=}"
+    assert all(state in spin_flipped_check for state in spin_flipped), f"{spin_flipped_check=} {spin_flipped=}"

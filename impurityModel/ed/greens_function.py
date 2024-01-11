@@ -47,7 +47,7 @@ def get_Greens_function(
         restrictions=restrictions,
         blocks=blocks,
         krylovSize=None,
-        slaterWeightMin=1e-8,
+        slaterWeightMin=1e-12,
         verbose=verbose,
         reort=reort,
         dense_cutoff=dense_cutoff,
@@ -67,7 +67,7 @@ def get_Greens_function(
         restrictions=restrictions,
         blocks=blocks,
         krylovSize=None,
-        slaterWeightMin=1e-8,
+        slaterWeightMin=1e-12,
         verbose=verbose,
         reort=reort,
         dense_cutoff=dense_cutoff,
@@ -251,29 +251,6 @@ def calc_Greens_function_with_offdiag(
 
         t_mems = [{} for _ in tOps]
 
-        # local_excited_basis = set()
-        # for block in blocks:
-        #     for i_tOp, tOp in [(orb, tOps[orb]) for orb in block]:
-        #         for s in basis.local_basis:
-        #             res = finite.applyOp(
-        #                 n_spin_orbitals,
-        #                 tOps[i_tOp],
-        #                 {s: 1},
-        #                 slaterWeightMin=slaterWeightMin,
-        #                 restrictions=basis.restrictions,
-        #                 opResult=t_mems[i_tOp],
-        #             )
-        #             local_excited_basis |= res.keys()
-        # excited_basis = Basis(
-        #     initial_basis=local_excited_basis,
-        #     restrictions=basis.restrictions,
-        #     num_spin_orbitals=basis.num_spin_orbitals,
-        #     comm=basis.comm,
-        #     verbose=False and verbose,
-        #     truncation_threshold=basis.truncation_threshold,
-        #     tau=basis.tau,
-        # )
-        # h_mem = excited_basis.expand(hOp, dense_cutoff=dense_cutoff, slaterWeightMin=slaterWeightMin)
         for i, (psi, e) in enumerate(zip(psis, es)):
             for block in blocks:
                 block_v = []
@@ -289,11 +266,11 @@ def calc_Greens_function_with_offdiag(
                         opResult=t_mems[i_tOp],
                     )
                     local_excited_basis |= v.keys()
-                    vs = comm.allgather(v)
-                    v = {}
-                    for v_i in vs:
-                        for state in v_i:
-                            v[state] = v_i[state] + v.get(state, 0)
+                    # vs = comm.allgather(v)
+                    # v = {}
+                    # for v_i in vs:
+                    #     for state in v_i:
+                    #         v[state] = v_i[state] + v.get(state, 0)
                     block_v.append(v)
 
                 excited_basis = Basis(
@@ -301,7 +278,7 @@ def calc_Greens_function_with_offdiag(
                     restrictions=basis.restrictions,
                     num_spin_orbitals=basis.num_spin_orbitals,
                     comm=basis.comm,
-                    verbose=False and verbose,
+                    verbose=verbose,
                     truncation_threshold=basis.truncation_threshold,
                     tau=basis.tau,
                 )
@@ -372,10 +349,6 @@ def get_block_Green(
 
     if verbose:
         t0 = time.perf_counter()
-    # psi_states = [key for psi in psi_arr for key in psi.keys()]
-    # if np.any(np.logical_not(basis.contains(psi_states))):
-    #     basis.add_states(psi_states[basis.comm.rank :: basis.comm.size])
-    #     h_mem = basis.expand(hOp, h_mem, dense_cutoff=dense_cutoff, slaterWeightMin=slaterWeightMin)
     h = basis.build_sparse_matrix(hOp, h_mem)
 
     if verbose:
@@ -386,18 +359,7 @@ def get_block_Green(
 
     if verbose:
         t0 = time.perf_counter()
-    psi_start_vs = basis.build_vector(psi_arr)
-    psi_start = np.zeros((N, n), dtype=complex)
-    for col, psi in psi_start_vs:
-        psi_start[:, col] = psi
-    # for i, psi in enumerate(psi_arr):
-    #     states = []
-    #     amps = []
-    #     for ps, amp in psi.items():
-    #         states.append(ps)
-    #         amps.append(amp)
-    #     indices = basis.index(states)
-    #     psi_start[indices, i] = amps
+    psi_start = basis.build_vector(psi_arr).T  # /basis.comm.size
 
     if verbose:
         print(f"time(set up psi_start) = {time.perf_counter() - t0}")
@@ -559,6 +521,7 @@ def calc_local_Greens_function_from_alpha_beta(alphas, betas, iws, ws, iw_indice
                 )
     return gs_matsubara_local, gs_realaxis_local
 
+
 def calc_Greens_function_with_offdiag_cg(
     n_spin_orbitals,
     hOp,
@@ -719,17 +682,17 @@ def get_block_Green_cg(
             verbose=verbose,
             truncation_threshold=basis.truncation_threshold,
             tau=basis.tau,
-                )
+        )
         for w_i, w in finite.get_job_tasks(comm.rank, comm.size, list(enumerate(iws))):
-            shift = {((0, 'i'),): w + e}
+            shift = {((0, "i"),): w + e}
             A_op = finite.subtractOps(shift, hOp)
             A_dict = {}
             for col in range(n):
                 tmp, info = cg_phys(A_op, A_dict, n_spin_orbitals, {}, psi_arr[col], 0, w.imag, local_basis)
-                T_psi_vs = local_basis.build_vector(psi_arr)
-                T_psi = np.empty((len(T_psi_vs[0]), len(T_psi_vs)), dtype=T_psi_vs[0].dtype)
-                for col, v in enumerate(T_psi_vs):
-                    T_psi[:, col] = v
+                T_psi = local_basis.build_vector(psi_arr).T
+                # T_psi = np.empty((len(T_psi_vs[0]), len(T_psi_vs)), dtype=T_psi_vs[0].dtype)
+                # for col, v in enumerate(T_psi_vs):
+                #     T_psi[:, col] = v
                 gs_matsubara[w_i, :, col] = np.conj(T_psi.T) @ tmp
         comm.Allreduce(gs_matsubara.copy(), gs_matsubara, op=MPI.SUM)
         gs_matsubara = np.moveaxis(gs_matsubara, 0, -1)
@@ -737,7 +700,7 @@ def get_block_Green_cg(
     if realaxis:
         gs_realaxis = np.zeros((len(ws), n, n), dtype=complex)
         for w_i, w in finite.get_job_tasks(comm.rank, comm.size, list(enumerate(ws))):
-            shift = {((0, 'i'),): w + 1j * delta + e}
+            shift = {((0, "i"),): w + 1j * delta + e}
             A_op = finite.subtractOps(shift, hOp)
             for col in range(n):
                 tmp, info = cg_phys(A_op, {}, n_spin_orbitals, {}, psi_arr[col], w, delta, local_basis)
@@ -753,6 +716,7 @@ def get_block_Green_cg(
         print(f"time(G_cg) = {time.perf_counter() - t0: .4f} seconds.")
 
     return gs_matsubara, gs_realaxis
+
 
 def rotate_matrix(M, T):
     """
