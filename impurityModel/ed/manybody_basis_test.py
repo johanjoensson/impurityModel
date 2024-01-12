@@ -581,6 +581,25 @@ def test_operator_dict_eg_t2g_with_extra_states():
             assert correct[key][row] == full_dict[key][row], f"{key=} {row=}"
 
 
+def test_simple_dense_matrix_mpi():
+    operator = {
+        ((0, "c"), (0, "a")): 1,
+        ((0, "c"), (4, "a")): 1 / 2,
+        ((4, "c"), (0, "a")): 1 / 2,
+        ((4, "c"), (4, "a")): 1,
+        ((2, "c"), (2, "a")): 3 / 2,
+        ((1, "c"), (1, "a")): 1,
+        ((3, "c"), (3, "a")): 1,
+    }
+    states = [b"\x78"]
+    basis = Basis(initial_basis=states, num_spin_orbitals=5, verbose=True, comm=None)
+
+    op_dict = basis.build_operator_dict(operator)
+    dense_mat = basis.build_dense_matrix(operator, op_dict)
+    assert dense_mat.shape == (1, 1)
+    assert dense_mat[0, 0] == 9 / 2
+
+
 @pytest.mark.mpi
 def test_simple_dense_matrix():
     operator = {
@@ -601,8 +620,39 @@ def test_simple_dense_matrix():
     assert dense_mat[0, 0] == 9 / 2
 
 
-@pytest.mark.mpi
 def test_eg_t2g_dense_matrix():
+    operator = {
+        ((0, "c"), (0, "a")): 1,
+        ((0, "c"), (4, "a")): 1 / 2,
+        ((4, "c"), (0, "a")): 1 / 2,
+        ((4, "c"), (4, "a")): 1,
+        ((2, "c"), (2, "a")): 3 / 2,
+        ((1, "c"), (1, "a")): 1,
+        ((3, "c"), (3, "a")): 1,
+    }
+    states = [b"\x78", b"\xB8", b"\xD8", b"\xE8", b"\xF0"]
+    basis = Basis(initial_basis=states, num_spin_orbitals=5, verbose=True, comm=None)
+
+    op_dict = basis.build_operator_dict(operator)
+    dense_mat = basis.build_dense_matrix(operator, op_dict)
+    assert dense_mat.shape == (5, 5)
+    assert np.allclose(
+        dense_mat,
+        np.array(
+            [
+                [9 / 2, 0, 0, 0, -1 / 2],
+                [0, 9 / 2, 0, 0, 0],
+                [0, 0, 4, 0, 0],
+                [0, 0, 0, 9 / 2, 0],
+                [-1 / 2, 0, 0, 0, 9 / 2],
+            ],
+            dtype=float,
+        ),
+    ), f"{dense_mat=}"
+    
+
+@pytest.mark.mpi
+def test_eg_t2g_dense_matrix_mpi():
     operator = {
         ((0, "c"), (0, "a")): 1,
         ((0, "c"), (4, "a")): 1 / 2,

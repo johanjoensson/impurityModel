@@ -5,7 +5,7 @@ from math import ceil
 from time import perf_counter
 import sys
 
-from typing import Optional
+from typing import Optional, Union
 
 try:
     from petsc4py import PETSc
@@ -977,15 +977,14 @@ class Basis:
             v = v_local
         return v
 
-    def build_state(self, vs: np.ndarray) -> list[dict]:
-        print(f"{vs.shape=}")
-        if len(vs.shape) == 1:
+    def build_state(self, vs: Union[list[np.ndarray], np.ndarray]) -> list[dict]:
+        if isinstance(vs, np.ndarray) and len(vs.shape) == 1:
             vs = vs.reshape((1, vs.shape[0]))
         res = []
         for v in vs:
             psi = {}
             for i in self.local_indices:
-                if abs(v[i]) > np.finfo(float).eps:
+                if abs(v[i]) > 0:
                     psi[self.local_basis[i - self.offset]] = v[i]
             res.append(psi.copy())
         return res
@@ -1026,25 +1025,28 @@ class Basis:
         columns = None
         recv_counts = None
         offsets = None
-        if self.comm.rank == 0:
-            recv_counts = np.empty((self.comm.size), dtype=int)
-        self.comm.Gather(np.array([len(local_data)]), recv_counts, root=0)
+        if self.is_distributed:
+            if self.comm.rank == 0:
+                recv_counts = np.empty((self.comm.size), dtype=int)
+            self.comm.Gather(np.array([len(local_data)]), recv_counts, root=0)
 
-        if self.comm.rank == 0:
-            offsets = [sum(recv_counts[:i]) for i in range(self.comm.size)]
-            data = np.empty((sum(recv_counts)), dtype=h_local.dtype)
-            rows = np.empty((sum(recv_counts)), dtype=local_rows.dtype)
-            columns = np.empty((sum(recv_counts)), dtype=local_columns.dtype)
-        self.comm.Gatherv(local_data, [data, recv_counts, offsets, MPI.DOUBLE_COMPLEX], root=0)
-        self.comm.Gatherv(local_rows, [rows, recv_counts, offsets, MPI.INT], root=0)
-        self.comm.Gatherv(local_columns, [columns, recv_counts, offsets, MPI.INT], root=0)
-        if self.comm.rank == 0:
-            h = sp.sparse.coo_matrix((data, (rows, columns)), shape=(h_local.shape[0], h_local.shape[0]))
-            h = h.todense()
+            if self.comm.rank == 0:
+                offsets = [sum(recv_counts[:i]) for i in range(self.comm.size)]
+                data = np.empty((sum(recv_counts)), dtype=h_local.dtype)
+                rows = np.empty((sum(recv_counts)), dtype=local_rows.dtype)
+                columns = np.empty((sum(recv_counts)), dtype=local_columns.dtype)
+            self.comm.Gatherv(local_data, [data, recv_counts, offsets, MPI.DOUBLE_COMPLEX], root=0)
+            self.comm.Gatherv(local_rows, [rows, recv_counts, offsets, MPI.INT], root=0)
+            self.comm.Gatherv(local_columns, [columns, recv_counts, offsets, MPI.INT], root=0)
+            if self.comm.rank == 0:
+                h = sp.sparse.coo_matrix((data, (rows, columns)), shape=(h_local.shape[0], h_local.shape[0]))
+                h = h.todense()
+            else:
+                h = None
+            if distribute:
+                h = self.comm.bcast(h, root=0)
         else:
-            h = None
-        if distribute:
-            h = self.comm.bcast(h, root=0)
+            h = h_local.todense()
         return h
 
     def build_sparse_matrix(self, op, op_dict: Optional[dict[bytes, dict[bytes, complex]]] = None):
@@ -1056,24 +1058,35 @@ class Basis:
             return self._build_PETSc_matrix(op, op_dict)
 
         expanded_dict = self.build_operator_dict(op, op_dict)
+        if not self.is_distributed:
+            rows: list[int] = []
+            columns: list[int] = []
+            values: list[complex] = []
+            for column in self.local_basis:
+                for row in expanded_dict[column]:
+                    if row not in self._index_dict:
+                        continue
+                    columns.append(self._index_dict[column])
+                    rows.append(self._index_dict[row])
+                    values.append(expanded_dict[column][row])
+        else:
+            rows_in_basis: list[bytes] = list({row for column in self.local_basis for row in expanded_dict[column].keys()})
+            in_basis_mask: list[bool] = self.contains(rows_in_basis)
+            rows_in_basis: list[bytes] = list({rows_in_basis[i] for i in range(len(rows_in_basis)) if in_basis_mask[i]})
+            row_dict: dict[bytes, int] = dict(zip(rows_in_basis, self.index(rows_in_basis)))
 
-        rows_in_basis: list[bytes] = list({row for column in self.local_basis for row in expanded_dict[column].keys()})
-        in_basis_mask: list[bool] = self.contains(rows_in_basis)
-        rows_in_basis: list[bytes] = list({rows_in_basis[i] for i in range(len(rows_in_basis)) if in_basis_mask[i]})
-        row_dict: dict[bytes, int] = dict(zip(rows_in_basis, self.index(rows_in_basis)))
-
-        rows: list[int] = []
-        columns: list[int] = []
-        values: list[complex] = []
-        for column in self.local_basis:
-            for row in expanded_dict[column]:
-                if row not in row_dict:
-                    continue
-                columns.append(self._index_dict[column])
-                rows.append(row_dict[row])
-                values.append(expanded_dict[column][row])
-        if self.debug and len(rows) > 0:
-            print(f"{self.size=} {max(rows)=}", flush=True)
+            rows: list[int] = []
+            columns: list[int] = []
+            values: list[complex] = []
+            for column in self.local_basis:
+                for row in expanded_dict[column]:
+                    if row not in row_dict:
+                        continue
+                    columns.append(self._index_dict[column])
+                    rows.append(row_dict[row])
+                    values.append(expanded_dict[column][row])
+            if self.debug and len(rows) > 0:
+                print(f"{self.size=} {max(rows)=}", flush=True)
         return sp.sparse.csr_matrix((values, (rows, columns)), shape=(self.size, self.size), dtype=complex)
 
     def _build_PETSc_matrix(self, op, op_dict=None):
@@ -1366,7 +1379,7 @@ class CIPSI_Basis(Basis):
         return self.build_operator_dict(H, op_dict=None)
 
     def expand_at(self, w, psi_ref, H, H_dict=None, slaterWeightMin=0):
-        de2_min = 1e-5
+        de2_min = 1e-8
 
         t_applyOp = 0
         t_basis_mask = 0
