@@ -757,12 +757,17 @@ def test_spin_flip():
     basis = Basis(initial_basis=[], num_spin_orbitals=10, verbose=True, comm=comm)
     spin_flipped = basis._generate_spin_flipped_determinants(states)
     # flips:
-    # dn 01101  10101
-    # up 10001  01001
+    # dn 11001  01001  10001  11101  00001  10101  01101  00101
+    # up 00101  10101  01101  00001  11101  01001  10001  11001
     spin_flipped_check = [
         b"\xC9\x40",
-        b"\x6C\x40",
+        b"\x4D\x40",
+        b"\x8B\x40",
+        # b"\xE8\x40",
+        # b"\x0F\x40",
         b"\xAA\x40",
+        b"\x6C\x40",
+        b"\x2E\x40",
     ]
     assert all(state in spin_flipped for state in spin_flipped_check), f"{spin_flipped_check=} {spin_flipped=}"
     assert all(state in spin_flipped_check for state in spin_flipped), f"{spin_flipped_check=} {spin_flipped=}"
@@ -794,3 +799,37 @@ def test_alltoall_states_with_empty():
     assert all(
         state == comm.rank.to_bytes(bytes_per_state, "big") for rs in received_states for state in rs
     ), f"{comm.rank=} {received_states=} {basis.local_basis=}"
+
+
+@pytest.mark.mpi
+def test_eg_t2g_basis_expand_mpi():
+    Hop= {
+        ((0, "c"), (0, "a")): 1,
+        ((0, "c"), (4, "a")): 1 / 2,
+        ((4, "c"), (0, "a")): 1 / 2,
+        ((4, "c"), (4, "a")): 1,
+        ((2, "c"), (2, "a")): 3 / 2,
+        ((1, "c"), (1, "a")): 1,
+        ((3, "c"), (3, "a")): 1,
+        ((5, "c"), (5, "a")): 1,
+        ((5, "c"), (9, "a")): 1 / 2,
+        ((9, "c"), (5, "a")): 1 / 2,
+        ((9, "c"), (9, "a")): 1,
+        ((7, "c"), (7, "a")): 3 / 2,
+        ((6, "c"), (6, "a")): 1,
+        ((8, "c"), (8, "a")): 1,
+    }
+    # Start with 10000  01000
+    #            00000  00000
+    states = [b"\x80\x00", b"\x40\x00"]
+    basis = Basis(initial_basis=states, num_spin_orbitals=10, verbose=True, comm=MPI.COMM_WORLD)
+
+    basis.expand(Hop)
+    # expect 10000  01000  00001  00000  00000  00000
+    #        00000  00000  00000  10000  01000  00001
+
+
+
+    expected = [b"\x80\x00", b"\x40\x00", b"\x08\x00"]  # , b"\x04\x00", b"\x02\x00", b"\x00\x40"]
+    assert all(state in expected for state in basis), f"{expected=} {list(basis)=}"
+    assert all(state in basis for state in expected), f"{expected=} {list(basis)=}"
