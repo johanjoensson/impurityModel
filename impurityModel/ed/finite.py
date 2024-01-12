@@ -119,7 +119,6 @@ def mpi_matmul(h_local, comm):
         res = np.empty((h_local.shape[0], n_cols), dtype=np.result_type(h_local.dtype, m.dtype))
         comm.Allreduce(h_local @ m, res, op=MPI.SUM)
         return res
-
     return matmat
 
 

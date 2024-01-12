@@ -72,10 +72,13 @@ def cg_phys(A_op, A_dict, n_spin_orbitals, x_psi, y_psi, w, delta, basis, atol=1
     t_build_vectors_separate = 0
     t_matrix_mul = 0
     t_rest_of_cg = 0
-    for it in range(10 * n):
+    # for it in range(1000 * n):
+    it = 0
+    while(True):
+        it += 1
         x += alpha_guess * p
 
-        p_psi, r_prev_psi, x_psi = basis.build_state([p, r_prev, x], distribute=True)
+        p_psi, r_prev_psi, x_psi = basis.build_state([p, r_prev, x])
 
         t_expand = perf_counter()
         basis.expand_at(w, x_psi, A_op, A_dict)
@@ -96,6 +99,15 @@ def cg_phys(A_op, A_dict, n_spin_orbitals, x_psi, y_psi, w, delta, basis, atol=1
         r = y - Ax
 
         ad = (r_prev - r) / alpha_guess
+        if abs(np.conj(r_prev) @ ad) < np.finfo(float).eps:
+            print(f"r did not change!")
+            print(f"{A=}")
+            print(f"{Ax=}")
+            print(f"{x=}")
+            print(f"{y=}")
+            print(f"{r=}")
+            print(f"{r_prev=}")
+            break
         alpha = np.conj(r_prev) @ r_prev / (np.conj(r_prev) @ ad)
 
         x += (alpha - alpha_guess) * p

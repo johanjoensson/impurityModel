@@ -688,7 +688,7 @@ def get_block_Green_cg(
             A_op = finite.subtractOps(shift, hOp)
             A_dict = {}
             for col in range(n):
-                tmp, info = cg_phys(A_op, A_dict, n_spin_orbitals, {}, psi_arr[col], 0, w.imag, local_basis)
+                tmp, info = cg_phys(A_op, A_dict, n_spin_orbitals, {}, psi_arr[col].copy(), 0, w.imag, local_basis)
                 T_psi = local_basis.build_vector(psi_arr).T
                 # T_psi = np.empty((len(T_psi_vs[0]), len(T_psi_vs)), dtype=T_psi_vs[0].dtype)
                 # for col, v in enumerate(T_psi_vs):
@@ -703,8 +703,8 @@ def get_block_Green_cg(
             shift = {((0, "i"),): w + 1j * delta + e}
             A_op = finite.subtractOps(shift, hOp)
             for col in range(n):
-                tmp, info = cg_phys(A_op, {}, n_spin_orbitals, {}, psi_arr[col], w, delta, local_basis)
-                T_psi = local_basis.build_vector(psi_arr)
+                tmp, info = cg_phys(A_op, {}, n_spin_orbitals, {}, psi_arr[col].copy(), w, delta, local_basis)
+                T_psi = local_basis.build_vector(psi_arr).T
                 gs_realaxis[w_i, :, col] = np.conj(T_psi.T) @ tmp
         comm.Allreduce(gs_realaxis.copy(), gs_realaxis, op=MPI.SUM)
         gs_realaxis = np.moveaxis(gs_realaxis, 0, -1)

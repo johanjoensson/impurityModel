@@ -5,7 +5,7 @@ from math import ceil
 from time import perf_counter
 import sys
 
-from typing import Optional
+from typing import Optional, Union
 
 try:
     from petsc4py import PETSc
@@ -1436,8 +1436,8 @@ class CIPSI_Basis(Basis):
             t_0 = perf_counter()
             old_size = self.size
             self.local_basis.clear()
-            self.add_states(Dji)
-            # self.add_states(self._generate_spin_flipped_determinants(new_Dj))
+            # self.add_states(Dji)
+            self.add_states(self._generate_spin_flipped_determinants(Dji))
             if True or self.size == old_size:
                 break
             t_add_dj += perf_counter() - t_0
@@ -1446,11 +1446,11 @@ class CIPSI_Basis(Basis):
             Hpsi_keys = list(Hpsi_ref.keys())
             mask = self.contains(Hpsi_keys)
             psi_ref = {state: Hpsi_ref[state] for state, m in zip(Hpsi_keys, mask) if m}
-            N = np.sqrt(norm2(psi_ref))
-            psi_ref = {state: psi_ref[state] / N for state in psi_ref}
+            # N = np.sqrt(norm2(psi_ref))
+            # psi_ref = {state: psi_ref[state] / N for state in psi_ref}
             t_massage_Hpsi += perf_counter() - t_0
         t_build_op_dict = perf_counter()
-        h_dict = self.build_operator_dict(H, op_dict=None)
+        h_dict = self.build_operator_dict(H)
         t_build_op_dict = perf_counter() - t_build_op_dict
         t_tot = perf_counter() - t_tot
 
