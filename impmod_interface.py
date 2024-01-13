@@ -81,7 +81,9 @@ class impModCluster:
 
 
 class dcStruct:
-    def __init__(self, nominal_occ, delta_occ, num_spin_orbitals, bath_states, u4, slater_params, peak_position):
+    def __init__(
+        self, nominal_occ, delta_occ, num_spin_orbitals, bath_states, u4, slater_params, peak_position, dc_guess
+    ):
         self.nominal_occ = nominal_occ
         self.delta_occ = delta_occ
         self.num_spin_orbitals = num_spin_orbitals
@@ -89,6 +91,7 @@ class dcStruct:
         self.u4 = u4
         self.slater_params = slater_params
         self.peak_position = peak_position
+        self.dc_guess = dc_guess
 
     def __repr__(self):
         return (
@@ -98,6 +101,7 @@ class dcStruct:
             f"          bath_states = {self.bath_states},\n"
             f"          slater_params = {self.slater_params},\n"
             f"          peak_position = {self.peak_position})"
+            f"          dc_guess = {self.dc_guess})"
         )
 
 
@@ -312,6 +316,7 @@ def run_impmod_ed(
             u4=u4,
             slater_params=slater,
             peak_position=peak_position,
+            dc_guess=np.trace(sig_dc) / sig_dc.shape[0],
         )
 
         try:
@@ -442,18 +447,25 @@ def fixed_peak_dc(h0_op, dc_struct, rank, verbose, dense_cutoff):
             comm=MPI.COMM_WORLD,
         )
 
+    # dc_op = {(((l, s, m), "c"), ((l, s, m), "a")): -dc_trial for m in range(-l, l + 1) for s in range(2)}
+    # h_op_c = finite.addOps([h0_op, u, dc_op])
+    h_op_i = finite.c2i_op(sum_bath_states, h0_op)
+    _ = basis_upper.expand(h_op_i, dense_cutoff=dense_cutoff, de2_min=1e-5, slaterWeightMin=1e-6)
+    _ = basis_lower.expand(h_op_i, dense_cutoff=dense_cutoff, de2_min=1e-5, slaterWeightMin=1e-6)
+
     def F(dc_trial):
         dc_op = {(((l, s, m), "c"), ((l, s, m), "a")): -dc_trial for m in range(-l, l + 1) for s in range(2)}
         h_op_c = finite.addOps([h0_op, u, dc_op])
         h_op_i = finite.c2i_op(sum_bath_states, h_op_c)
-        if verbose:
-            print("Expand upper basis", flush=True)
-        h_dict = basis_upper.expand(h_op_i, dense_cutoff=dense_cutoff, de2_min=1e-5, slaterWeightMin=1e-6)
-        if verbose:
-            print("Build upper operator dict", flush=True)
-        h_sparse = basis_upper.build_sparse_matrix(h_op_i, h_dict)
-        if verbose:
-            print("Find upper energy", flush=True)
+        # if verbose:
+        #     print("Expand upper basis", flush=True)
+        # h_dict = basis_upper.expand(h_op_i, dense_cutoff=dense_cutoff, de2_min=1e-5, slaterWeightMin=1e-6)
+        # if verbose:
+        #     print("Build upper operator dict", flush=True)
+        h_sparse = basis_upper.build_sparse_matrix(h_op_i)
+        # h_sparse = basis_upper.build_sparse_matrix(h_op_i, h_dict)
+        # if verbose:
+        #     print("Find upper energy", flush=True)
         e_upper = finite.eigensystem_new(
             h_sparse,
             basis_upper,
@@ -464,14 +476,15 @@ def fixed_peak_dc(h0_op, dc_struct, rank, verbose, dense_cutoff):
             dense_cutoff=dense_cutoff,
             return_eigvecs=False,
         )
-        if verbose:
-            print("Expand lower basis", flush=True)
-        h_dict = basis_lower.expand(h_op_i, dense_cutoff=dense_cutoff, de2_min=1e-5, slaterWeightMin=1e-6)
-        if verbose:
-            print("Build lower operator dict", flush=True)
-        h_sparse = basis_lower.build_sparse_matrix(h_op_i, h_dict)
-        if verbose:
-            print("Find lower energy", flush=True)
+        # if verbose:
+        #     print("Expand lower basis", flush=True)
+        # h_dict = basis_lower.expand(h_op_i, dense_cutoff=dense_cutoff, de2_min=1e-5, slaterWeightMin=1e-6)
+        # if verbose:
+        #     print("Build lower operator dict", flush=True)
+        h_sparse = basis_lower.build_sparse_matrix(h_op_i)
+        # h_sparse = basis_lower.build_sparse_matrix(h_op_i, h_dict)
+        # if verbose:
+        #     print("Find lower energy", flush=True)
         e_lower = finite.eigensystem_new(
             h_sparse,
             basis_lower,
@@ -482,11 +495,11 @@ def fixed_peak_dc(h0_op, dc_struct, rank, verbose, dense_cutoff):
             dense_cutoff=dense_cutoff,
             return_eigvecs=False,
         )
-        if verbose:
-            print(f"de = {e_upper[0] - e_lower[0] - peak_position}", flush=True)
+        # if verbose:
+        #     print(f"de = {e_upper[0] - e_lower[0] - peak_position}", flush=True)
         return e_upper[0] - e_lower[0] - peak_position
 
-    res = sp.optimize.root_scalar(F, x0=0, x1=F(0))
+    res = sp.optimize.root_scalar(F, x0=dc_struct.dc_guess, x1=dc_struct.dc_guess + F(dc_struct.dc_guess))
     dc = res.root
     if verbose:
         print(f"dc found : {dc}")
@@ -610,7 +623,7 @@ def get_ed_h0(
         h_tmp = rotate_matrix(h, u)  # np.conj(u.T) @ h @ u
         print(f"DFT hamiltonian, with baths")
         matrix_print(h_tmp)
-        with open(f"Ham-{label}.inp", "w") as f:
+        with open(f"Ham-{label}{'-dc' if save_baths_and_hopping else ''}.inp", "w") as f:
             for i in range(h_tmp.shape[0]):
                 for j in range(h_tmp.shape[1]):
                     f.write(f" 0 0 0 {i+1} {j+1} {np.real(h_tmp[i, j])} {np.imag(h_tmp[i, j])}\n")

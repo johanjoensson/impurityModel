@@ -569,8 +569,8 @@ class Basis:
         n_up_iop = c2i_op({2: self.num_spin_orbitals - 10}, n_up_op)
         spin_flip = set()
         for det in determinants:
-            n_dn = int(applyOp(self.num_spin_orbitals, n_dn_iop, {det: 1})[det])
-            n_up = int(applyOp(self.num_spin_orbitals, n_up_iop, {det: 1})[det])
+            n_dn = int(applyOp(self.num_spin_orbitals, n_dn_iop, {det: 1}).get(det, 0))
+            n_up = int(applyOp(self.num_spin_orbitals, n_up_iop, {det: 1}).get(det, 0))
             spin_flip.add(det)
             to_flip = {det}
             for i_imp in range(5):
@@ -585,10 +585,11 @@ class Basis:
                     if len(flipped) == 0:
                         continue
                     flipped_state = list(flipped.keys())[0]
-                    new_n_dn = int(applyOp(self.num_spin_orbitals, n_dn_iop, {flipped_state: 1})[flipped_state])
-                    new_n_up = int(applyOp(self.num_spin_orbitals, n_up_iop, {flipped_state: 1})[flipped_state])
-                    if new_n_dn == n_dn and new_n_up == n_up:
+                    new_n_dn = int(applyOp(self.num_spin_orbitals, n_dn_iop, {flipped_state: 1}).get(flipped_state, 0))
+                    new_n_up = int(applyOp(self.num_spin_orbitals, n_up_iop, {flipped_state: 1}).get(flipped_state, 0))
+                    if (new_n_dn == n_dn and new_n_up == n_up) or (new_n_dn == n_up and new_n_up == n_dn):
                         spin_flip.update(flipped.keys())
+                    # spin_flip.update(flipped.keys())
 
         # for state in spin_flip.copy():
         #     new_bits = psr.bytes2bitarray(state, self.num_spin_orbitals)
@@ -619,7 +620,7 @@ class Basis:
                             opResult=op_dict,
                         )
                     new_states |= set(res.keys()) - new_basis
-                new_states = self._generate_spin_flipped_determinants(new_states)
+                # new_states = self._generate_spin_flipped_determinants(new_states)
 
                 new_basis += sorted(new_states)
                 self.local_basis = sorted(new_basis)
@@ -636,10 +637,8 @@ class Basis:
                         opResult=op_dict,
                     )
                     local_states |= set(res.keys())
-                # local_states = self._generate_spin_flipped_determinants(local_states)
-
                 old_size = self.size
-                self.add_states(self._generate_spin_flipped_determinants(local_states))
+                # self.add_states(self._generate_spin_flipped_determinants(local_states))
                 self.add_states(local_states)
                 done = old_size == self.size
         # self.add_states(self._generate_spin_flipped_determinants(self.local_basis))
@@ -977,15 +976,16 @@ class Basis:
             v = v_local
         return v
 
-    def build_state(self, vs: np.ndarray) -> list[dict]:
-        print(f"{vs.shape=}")
-        if len(vs.shape) == 1:
+    def build_state(self, vs: Union[list[np.ndarray], np.ndarray]) -> list[dict]:
+        if isinstance(vs, np.matrix):
+            vs = vs.A
+        if isinstance(vs, np.ndarray) and len(vs.shape) == 1:
             vs = vs.reshape((1, vs.shape[0]))
         res = []
         for v in vs:
             psi = {}
             for i in self.local_indices:
-                if abs(v[i]) > np.finfo(float).eps:
+                if abs(v[i]) > 0:
                     psi[self.local_basis[i - self.offset]] = v[i]
             res.append(psi.copy())
         return res
@@ -1026,25 +1026,28 @@ class Basis:
         columns = None
         recv_counts = None
         offsets = None
-        if self.comm.rank == 0:
-            recv_counts = np.empty((self.comm.size), dtype=int)
-        self.comm.Gather(np.array([len(local_data)]), recv_counts, root=0)
+        if self.is_distributed:
+            if self.comm.rank == 0:
+                recv_counts = np.empty((self.comm.size), dtype=int)
+            self.comm.Gather(np.array([len(local_data)]), recv_counts, root=0)
 
-        if self.comm.rank == 0:
-            offsets = [sum(recv_counts[:i]) for i in range(self.comm.size)]
-            data = np.empty((sum(recv_counts)), dtype=h_local.dtype)
-            rows = np.empty((sum(recv_counts)), dtype=local_rows.dtype)
-            columns = np.empty((sum(recv_counts)), dtype=local_columns.dtype)
-        self.comm.Gatherv(local_data, [data, recv_counts, offsets, MPI.DOUBLE_COMPLEX], root=0)
-        self.comm.Gatherv(local_rows, [rows, recv_counts, offsets, MPI.INT], root=0)
-        self.comm.Gatherv(local_columns, [columns, recv_counts, offsets, MPI.INT], root=0)
-        if self.comm.rank == 0:
-            h = sp.sparse.coo_matrix((data, (rows, columns)), shape=(h_local.shape[0], h_local.shape[0]))
-            h = h.todense()
+            if self.comm.rank == 0:
+                offsets = [sum(recv_counts[:i]) for i in range(self.comm.size)]
+                data = np.empty((sum(recv_counts)), dtype=h_local.dtype)
+                rows = np.empty((sum(recv_counts)), dtype=local_rows.dtype)
+                columns = np.empty((sum(recv_counts)), dtype=local_columns.dtype)
+            self.comm.Gatherv(local_data, [data, recv_counts, offsets, MPI.DOUBLE_COMPLEX], root=0)
+            self.comm.Gatherv(local_rows, [rows, recv_counts, offsets, MPI.INT], root=0)
+            self.comm.Gatherv(local_columns, [columns, recv_counts, offsets, MPI.INT], root=0)
+            if self.comm.rank == 0:
+                h = sp.sparse.coo_matrix((data, (rows, columns)), shape=(h_local.shape[0], h_local.shape[0]))
+                h = h.todense()
+            else:
+                h = None
+            if distribute:
+                h = self.comm.bcast(h, root=0)
         else:
-            h = None
-        if distribute:
-            h = self.comm.bcast(h, root=0)
+            h = h_local.todense()
         return h
 
     def build_sparse_matrix(self, op, op_dict: Optional[dict[bytes, dict[bytes, complex]]] = None):
@@ -1056,24 +1059,37 @@ class Basis:
             return self._build_PETSc_matrix(op, op_dict)
 
         expanded_dict = self.build_operator_dict(op, op_dict)
+        if not self.is_distributed:
+            rows: list[int] = []
+            columns: list[int] = []
+            values: list[complex] = []
+            for column in self.local_basis:
+                for row in expanded_dict[column]:
+                    if row not in self._index_dict:
+                        continue
+                    columns.append(self._index_dict[column])
+                    rows.append(self._index_dict[row])
+                    values.append(expanded_dict[column][row])
+        else:
+            rows_in_basis: list[bytes] = list(
+                {row for column in self.local_basis for row in expanded_dict[column].keys()}
+            )
+            in_basis_mask: list[bool] = self.contains(rows_in_basis)
+            rows_in_basis: list[bytes] = list({rows_in_basis[i] for i in range(len(rows_in_basis)) if in_basis_mask[i]})
+            row_dict: dict[bytes, int] = dict(zip(rows_in_basis, self.index(rows_in_basis)))
 
-        rows_in_basis: list[bytes] = list({row for column in self.local_basis for row in expanded_dict[column].keys()})
-        in_basis_mask: list[bool] = self.contains(rows_in_basis)
-        rows_in_basis: list[bytes] = list({rows_in_basis[i] for i in range(len(rows_in_basis)) if in_basis_mask[i]})
-        row_dict: dict[bytes, int] = dict(zip(rows_in_basis, self.index(rows_in_basis)))
-
-        rows: list[int] = []
-        columns: list[int] = []
-        values: list[complex] = []
-        for column in self.local_basis:
-            for row in expanded_dict[column]:
-                if row not in row_dict:
-                    continue
-                columns.append(self._index_dict[column])
-                rows.append(row_dict[row])
-                values.append(expanded_dict[column][row])
-        if self.debug and len(rows) > 0:
-            print(f"{self.size=} {max(rows)=}", flush=True)
+            rows: list[int] = []
+            columns: list[int] = []
+            values: list[complex] = []
+            for column in self.local_basis:
+                for row in expanded_dict[column]:
+                    if row not in row_dict:
+                        continue
+                    columns.append(self._index_dict[column])
+                    rows.append(row_dict[row])
+                    values.append(expanded_dict[column][row])
+            if self.debug and len(rows) > 0:
+                print(f"{self.size=} {max(rows)=}", flush=True)
         return sp.sparse.csr_matrix((values, (rows, columns)), shape=(self.size, self.size), dtype=complex)
 
     def _build_PETSc_matrix(self, op, op_dict=None):
@@ -1207,16 +1223,90 @@ class CIPSI_Basis(Basis):
         # <Dj|H|Psi_ref>^2 / <Dj|H|Dj>
         return np.abs(overlap) ** 2 / de
 
+    def determine_new_Dj(self, e_ref, psi_ref, H, H_dict, de2_min, slaterWeightMin):
+        new_Dj = set()
+        for e_i, psi_i in zip(e_ref, psi_ref):
+            t0_loop = perf_counter()
+            Hpsi_i = applyOp(
+                self.num_spin_orbitals,
+                H,
+                psi_i,
+                restrictions=self.restrictions,
+                slaterWeightMin=slaterWeightMin,
+                opResult=H_dict,
+            )
+            t0 = perf_counter() - t0_loop
+            t0 = self.comm.reduce(t0, op=MPI.SUM, root=0)
+            if self.verbose:
+                print(f"--->Time to calculate Hpsi_i: {t0/self.comm.size:.3f} seconds")
+
+            t0 = perf_counter()
+
+            Dj_basis = Basis(
+                initial_basis=set(Hpsi_i.keys()),
+                num_spin_orbitals=self.num_spin_orbitals,
+                restrictions=None,
+                comm=self.comm,
+                verbose=False,
+            )
+            t0 = perf_counter() - t0
+            t0 = self.comm.reduce(t0, op=MPI.SUM, root=0)
+            if self.verbose:
+                print(f"--->Time to setup distributed Djs: {t0/self.comm.size:.3f} seconds")
+
+            t0 = perf_counter()
+
+            send_states = [[] for _ in range(self.comm.size)]
+            send_amps = [[] for _ in range(self.comm.size)]
+            for state, amp in Hpsi_i.items():
+                for r in range(self.comm.size):
+                    if Dj_basis.state_bounds[r][0] is None:
+                        continue
+                    if state >= Dj_basis.state_bounds[r][0] and state <= Dj_basis.state_bounds[r][1]:
+                        send_states[r].append(state)
+                        send_amps[r].append(amp)
+                        break
+            received_states = self.alltoall_states(send_states)
+            received_amps = self.comm.alltoall(send_amps)
+            Hpsi_i = {}
+            for r, states in enumerate(received_states):
+                for i, state in enumerate(states):
+                    Hpsi_i[state] = received_amps[r][i] + Hpsi_i.get(state, 0)
+
+            t0 = perf_counter() - t0
+            t0 = self.comm.reduce(t0, op=MPI.SUM, root=0)
+            if self.verbose:
+                print(f"--->Time to distribute H|psi_i>: {t0/self.comm.size:.3f} seconds")
+
+            t0 = perf_counter()
+            de2 = self._calc_de2(Dj_basis.local_basis, H, H_dict, Hpsi_i, e_i)
+
+            de2_mask = np.abs(de2) >= de2_min
+
+            t0 = perf_counter() - t0
+            t0 = self.comm.reduce(t0, op=MPI.SUM, root=0)
+            if self.verbose:
+                print(f"--->Time to calculate de_2: {t0/self.comm.size:.3f} seconds")
+
+            t0 = perf_counter()
+            Dji = {Dj_basis.local_basis[i] for i, mask in enumerate(de2_mask) if mask}
+            t0 = perf_counter() - t0
+            t0 = self.comm.reduce(t0, op=MPI.SUM, root=0)
+            if self.verbose:
+                print(f"--->Time to generate spin flipped determinants: {t0/self.comm.size:.3f} seconds")
+            new_Dj |= Dji
+        return new_Dj
+
     def expand(self, H, H_dict=None, de2_min=1e-10, dense_cutoff=1e3, slaterWeightMin=0):
         """
         Use the CIPSI method to expand the basis. Keep adding Slater determinants until the CIPSI energy is converged.
         """
-        distribute_psi = True
         psi_ref = None
         e0_prev = np.inf
         e0 = 0
         converge_count = 0
         de0_max = -self.tau * np.log(1e-4)
+        psi_ref = None
         while converge_count < 1:
             t0 = perf_counter()
             H_sparse = self.build_sparse_matrix(H, op_dict=H_dict)
@@ -1239,7 +1329,6 @@ class CIPSI_Basis(Basis):
                 eigenValueTol=de2_min,
                 dense_cutoff=dense_cutoff,
                 verbose=self.verbose,
-                distribute_eigenvectors=distribute_psi,
             )
             psi_ref = self.build_state(psi_ref_dense.T)
             e0_prev = e0
@@ -1249,91 +1338,10 @@ class CIPSI_Basis(Basis):
             if self.verbose:
                 print(f"->Time to get psi_ref: {t0/self.comm.size:.3f} seconds")
                 print("->Loop over eigenstates")
-
-            new_Dj = set()
-            for e_i, psi_i in zip(e_ref, psi_ref):
-                t0_loop = perf_counter()
-                Hpsi_i = applyOp(
-                    self.num_spin_orbitals,
-                    H,
-                    # {state: val for state, val in psi_i.items() if state in self._index_dict},
-                    psi_i,
-                    restrictions=self.restrictions,
-                    slaterWeightMin=slaterWeightMin,
-                    opResult=H_dict,
-                )
-                t0 = perf_counter() - t0_loop
-                t0 = self.comm.reduce(t0, op=MPI.SUM, root=0)
-                if self.verbose:
-                    print(f"--->Time to calculate Hpsi_i: {t0/self.comm.size:.3f} seconds")
-
-                t0 = perf_counter()
-
-                Dj_basis = Basis(
-                    initial_basis=set(Hpsi_i.keys()),
-                    # initial_basis=self._generate_spin_flipped_determinants(set(Hpsi_i.keys())),
-                    num_spin_orbitals=self.num_spin_orbitals,
-                    restrictions=None,
-                    comm=self.comm,
-                    verbose=False,
-                )
-                t0 = perf_counter() - t0
-                t0 = self.comm.reduce(t0, op=MPI.SUM, root=0)
-                if self.verbose:
-                    print(f"--->Time to setup distributed Djs: {t0/self.comm.size:.3f} seconds")
-
-                t0 = perf_counter()
-
-                send_states = [[] for _ in range(self.comm.size)]
-                send_amps = [[] for _ in range(self.comm.size)]
-                for state, amp in Hpsi_i.items():
-                    for r in range(self.comm.size):
-                        if Dj_basis.state_bounds[r][0] is None:
-                            continue
-                        if state >= Dj_basis.state_bounds[r][0] and state <= Dj_basis.state_bounds[r][1]:
-                            send_states[r].append(state)
-                            send_amps[r].append(amp)
-                            break
-                received_states = self.alltoall_states(send_states)
-                received_amps = self.comm.alltoall(send_amps)
-                Hpsi_i = {}
-                for r, states in enumerate(received_states):
-                    for i, state in enumerate(states):
-                        Hpsi_i[state] = received_amps[r][i] + Hpsi_i.get(state, 0)
-
-                t0 = perf_counter() - t0
-                t0 = self.comm.reduce(t0, op=MPI.SUM, root=0)
-                if self.verbose:
-                    print(f"--->Time to distribute H|psi_i>: {t0/self.comm.size:.3f} seconds")
-
-                t0 = perf_counter()
-                de2 = self._calc_de2(Dj_basis.local_basis, H, H_dict, Hpsi_i, e_i)
-
-                de2_mask = np.abs(de2) >= de2_min
-
-                t0 = perf_counter() - t0
-                t0 = self.comm.reduce(t0, op=MPI.SUM, root=0)
-                if self.verbose:
-                    print(f"--->Time to calculate de_2: {t0/self.comm.size:.3f} seconds")
-
-                t0 = perf_counter()
-                Dji = {Dj_basis.local_basis[i] for i, mask in enumerate(de2_mask) if mask}
-                Dji = self._generate_spin_flipped_determinants(Dji)
-                t0 = perf_counter() - t0
-                t0 = self.comm.reduce(t0, op=MPI.SUM, root=0)
-                if self.verbose:
-                    print(f"--->Time to generate spin flipped determinants: {t0/self.comm.size:.3f} seconds")
-                new_Dj |= Dji
-
-                t0 = perf_counter() - t0_loop
-                t0 = self.comm.reduce(t0, op=MPI.SUM, root=0)
-                if self.verbose:
-                    print(f"->One loop took a total of: {t0/self.comm.size:.3f} seconds", flush=True)
-
+            new_Dj = self.determine_new_Dj(e_ref, psi_ref, H, H_dict, de2_min, slaterWeightMin=0)
             t0 = perf_counter()
             old_size = self.size
-            # self.local_basis.clear()
-            self.add_states(new_Dj)
+            self.add_states(self._generate_spin_flipped_determinants(new_Dj))
             t0 = perf_counter() - t0
             t0 = self.comm.reduce(t0, op=MPI.SUM, root=0)
             if self.verbose:
@@ -1347,6 +1355,20 @@ class CIPSI_Basis(Basis):
                 print(
                     f"-----> N = {self.size: 7,d}, log(de2_min) = {np.log10(de2_min): 5.1f}, log(|de_0|) = {np.log10(abs(e0 - e0_prev))}, {converge_count=}",
                 )
+        # e_ref, psi_ref_dense = eigensystem_new(
+        #     H_sparse,
+        #     basis=self,
+        #     e_max=de0_max,
+        #     k=len(psi_ref),
+        #     v0=v0,
+        #     eigenValueTol=de2_min,
+        #     dense_cutoff=dense_cutoff,
+        #     verbose=self.verbose,
+        # )
+        # psi_ref = self.build_state(psi_ref_dense.T)
+        # Dj = {state for psi in psi_ref for state in psi if abs(psi[state]) > slaterWeightMin}
+        # self.local_basis.clear()
+        # self.add_states(Dj)
 
         if self.verbose:
             print(f"After expansion, the basis contains {self.size} elements.")
@@ -1366,7 +1388,7 @@ class CIPSI_Basis(Basis):
         return self.build_operator_dict(H, op_dict=None)
 
     def expand_at(self, w, psi_ref, H, H_dict=None, slaterWeightMin=0):
-        de2_min = 1e-5
+        de2_min = 1e-8
 
         t_applyOp = 0
         t_basis_mask = 0

@@ -214,7 +214,7 @@ def get_block_Lanczos_matrices(
                     except Exception as e:
                         raise e
 
-                    done = delta < 1e-6
+                    done = delta < 1e-12
                     t_conv += time.perf_counter() - t_converged
 
             done = comm.bcast(done, root=0)
