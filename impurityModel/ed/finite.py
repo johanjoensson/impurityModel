@@ -15,7 +15,7 @@ try:
     from petsc4py import PETSc
     from slepc4py import SLEPc
     from slepc4py.SLEPc import EPS
-except:
+except ModuleNotFoundError:
     pass
 
 # Local imports

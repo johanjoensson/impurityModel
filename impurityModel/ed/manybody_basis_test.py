@@ -440,8 +440,30 @@ def test_index_random_distributed_random(n_bytes, n_states, n_sample_states):
     assert all(bi == ci for bi, ci in zip(basis_indices, correct_indices))
 
 
-@pytest.mark.mpi
 def test_operator_dict_simple():
+    operator = {
+        ((0, "c"), (0, "a")): 1,
+        ((0, "c"), (4, "a")): 1 / 2,
+        ((4, "c"), (0, "a")): 1 / 2,
+        ((4, "c"), (4, "a")): 1,
+        ((2, "c"), (2, "a")): 3 / 2,
+        ((1, "c"), (1, "a")): 1,
+        ((3, "c"), (3, "a")): 1,
+    }
+    states = [b"\x78"]
+    basis = Basis(initial_basis=states, num_spin_orbitals=5, verbose=True, comm=None)
+
+    op_dict = basis.build_operator_dict(operator)
+    correct = {b"\x78": {b"\xF0": -1 / 2, b"\x78": 9 / 2}}
+    assert all(fk in correct for fk in op_dict.keys())
+    for key in states:
+        assert all(fk in correct[key] for fk in op_dict[key].keys())
+        for row in correct[key].keys():
+            assert correct[key][row] == op_dict[key][row]
+
+
+@pytest.mark.mpi
+def test_operator_dict_simple_mpi():
     operator = {
         ((0, "c"), (0, "a")): 1,
         ((0, "c"), (4, "a")): 1 / 2,
@@ -471,8 +493,31 @@ def test_operator_dict_simple():
             assert correct[key][row] == full_dict[key][row]
 
 
-@pytest.mark.mpi
 def test_operator_dict_simple_with_extra_states():
+    operator = {
+        ((0, "c"), (0, "a")): 1,
+        ((0, "c"), (4, "a")): 1 / 2,
+        ((4, "c"), (0, "a")): 1 / 2,
+        ((4, "c"), (4, "a")): 1,
+        ((2, "c"), (2, "a")): 3 / 2,
+        ((1, "c"), (1, "a")): 1,
+        ((3, "c"), (3, "a")): 1,
+        ((0, "c"),): 500,
+    }
+    states = [b"\x78"]
+    basis = Basis(initial_basis=states, num_spin_orbitals=5, verbose=True, comm=None)
+
+    op_dict = basis.build_operator_dict(operator)
+    correct = {b"\x78": {b"\xF0": -1 / 2, b"\x78": 9 / 2, b"\xF8": 500}}
+    assert all(fk in correct for fk in op_dict.keys())
+    for key in states:
+        assert all(fk in correct[key] for fk in op_dict[key].keys())
+        for row in correct[key].keys():
+            assert correct[key][row] == op_dict[key][row]
+
+
+@pytest.mark.mpi
+def test_operator_dict_simple_with_extra_states_mpi():
     operator = {
         ((0, "c"), (0, "a")): 1,
         ((0, "c"), (4, "a")): 1 / 2,
@@ -503,8 +548,37 @@ def test_operator_dict_simple_with_extra_states():
             assert correct[key][row] == full_dict[key][row]
 
 
-@pytest.mark.mpi
 def test_operator_dict_eg_t2g():
+    operator = {
+        ((0, "c"), (0, "a")): 1,
+        ((0, "c"), (4, "a")): 1 / 2,
+        ((4, "c"), (0, "a")): 1 / 2,
+        ((4, "c"), (4, "a")): 1,
+        ((2, "c"), (2, "a")): 3 / 2,
+        ((1, "c"), (1, "a")): 1,
+        ((3, "c"), (3, "a")): 1,
+    }
+    states = [b"\x78", b"\xB8", b"\xD8", b"\xE8", b"\xF0"]
+    basis = Basis(initial_basis=states, num_spin_orbitals=5, verbose=True, comm=None)
+
+    op_dict = basis.build_operator_dict(operator)
+    correct = {
+        b"\x78": {b"\xF0": -1 / 2, b"\x78": 9 / 2},
+        b"\xB8": {b"\xB8": 9 / 2},
+        b"\xD8": {b"\xD8": 4},
+        b"\xE8": {b"\xE8": 9 / 2},
+        b"\xF0": {b"\x78": -1 / 2, b"\xF0": 9 / 2},
+    }
+
+    assert all(fk in correct for fk in op_dict.keys())
+    for key in states:
+        assert all(fk in correct[key] for fk in op_dict[key].keys())
+        for row in correct[key].keys():
+            assert correct[key][row] == op_dict[key][row], f"{key=} {row=}"
+
+
+@pytest.mark.mpi
+def test_operator_dict_eg_t2g_mpi():
     operator = {
         ((0, "c"), (0, "a")): 1,
         ((0, "c"), (4, "a")): 1 / 2,
@@ -541,8 +615,40 @@ def test_operator_dict_eg_t2g():
             assert correct[key][row] == full_dict[key][row], f"{key=} {row=}"
 
 
-@pytest.mark.mpi
 def test_operator_dict_eg_t2g_with_extra_states():
+    operator = {
+        ((0, "c"), (0, "a")): 1,
+        ((0, "c"), (4, "a")): 1 / 2,
+        ((4, "c"), (0, "a")): 1 / 2,
+        ((4, "c"), (4, "a")): 1,
+        ((2, "c"), (2, "a")): 3 / 2,
+        ((1, "c"), (1, "a")): 1,
+        ((3, "c"), (3, "a")): 1,
+        ((0, "c"),): 500,
+    }
+    states = [b"\x78", b"\xB8", b"\xD8", b"\xE8", b"\xF0"]
+    basis = Basis(initial_basis=states, num_spin_orbitals=5, verbose=True, comm=None)
+
+    op_dict = basis.build_operator_dict(operator)
+    correct = {
+        b"\x78": {b"\xF0": -1 / 2, b"\x78": 9 / 2, b"\xF8": 500},
+        b"\xB8": {b"\xB8": 9 / 2},
+        b"\xD8": {b"\xD8": 4},
+        b"\xE8": {b"\xE8": 9 / 2},
+        b"\xF0": {b"\x78": -1 / 2, b"\xF0": 9 / 2},
+    }
+
+    assert all(fk in correct for fk in op_dict.keys())
+    for key in states:
+        assert all(
+            fk in correct[key] for fk in op_dict[key].keys()
+        ), f"{list(op_dict[key].keys())=} {list(correct.keys())=} "
+        for row in correct[key].keys():
+            assert correct[key][row] == op_dict[key][row], f"{key=} {row=}"
+
+
+@pytest.mark.mpi
+def test_operator_dict_eg_t2g_with_extra_states_mpi():
     operator = {
         ((0, "c"), (0, "a")): 1,
         ((0, "c"), (4, "a")): 1 / 2,
@@ -582,7 +688,7 @@ def test_operator_dict_eg_t2g_with_extra_states():
             assert correct[key][row] == full_dict[key][row], f"{key=} {row=}"
 
 
-def test_simple_dense_matrix_mpi():
+def test_simple_dense_matrix():
     operator = {
         ((0, "c"), (0, "a")): 1,
         ((0, "c"), (4, "a")): 1 / 2,
@@ -602,7 +708,7 @@ def test_simple_dense_matrix_mpi():
 
 
 @pytest.mark.mpi
-def test_simple_dense_matrix():
+def test_simple_dense_matrix_mpi():
     operator = {
         ((0, "c"), (0, "a")): 1,
         ((0, "c"), (4, "a")): 1 / 2,
@@ -684,8 +790,25 @@ def test_eg_t2g_dense_matrix_mpi():
     ), f"{dense_mat=}"
 
 
-@pytest.mark.mpi
 def test_simple_vector():
+    states = [b"\x00\x1a\x2b", b"\xff\x00\x1a"]
+    basis = Basis(initial_basis=states, num_spin_orbitals=24, verbose=True, comm=None)
+    state = {}
+    if states[0] in basis._index_dict:
+        state[states[0]] = 0.25 + 0.2j
+    if states[1] in basis._index_dict:
+        state[states[1]] = 0.33 + 0.15j
+
+    v = basis.build_vector([state])[0]
+    v_exact = np.array([0.25 + 0.2j, 0.33 + 0.15j], dtype=complex)
+
+    assert v.shape == (len(basis),)
+    assert v.shape == v_exact.shape
+    assert np.all(v == v_exact)
+
+
+@pytest.mark.mpi
+def test_simple_vector_mpi():
     states = [b"\x00\x1a\x2b", b"\xff\x00\x1a"]
     basis = Basis(initial_basis=states, num_spin_orbitals=24, verbose=True, comm=MPI.COMM_WORLD)
     state = {}
@@ -702,8 +825,24 @@ def test_simple_vector():
     assert np.all(v == v_exact)
 
 
-@pytest.mark.mpi
 def test_vector():
+    comm = None
+    states = [b"\x78", b"\xB8", b"\xD8", b"\xE8", b"\xF0"]
+    basis = Basis(initial_basis=states[:-1], num_spin_orbitals=5, verbose=True, comm=comm)
+    state = {states[-1]: 1 + 1j}
+    state[states[0]] = 0.25 + 0.2j
+    if states[1] in basis._index_dict:
+        state[states[1]] = 0.33 + 0.15j
+    v = basis.build_vector([state])[0]
+    v_exact = np.array([0.25 + 0.2j, 0.33 + 0.15j, 0, 0], dtype=complex)
+
+    assert v.shape == (len(basis),)
+    assert v.shape == v_exact.shape
+    assert np.all(v == v_exact)
+
+
+@pytest.mark.mpi
+def test_vector_mpi():
     comm = MPI.COMM_WORLD
     states = [b"\x78", b"\xB8", b"\xD8", b"\xE8", b"\xF0"]
     basis = Basis(initial_basis=states[:-1], num_spin_orbitals=5, verbose=True, comm=comm)
@@ -719,8 +858,20 @@ def test_vector():
     assert np.all(v == v_exact)
 
 
-@pytest.mark.mpi
 def test_simple_state():
+    states = [b"\x00\x1a\x2b", b"\xff\x00\x1a"]
+    basis = Basis(initial_basis=states, num_spin_orbitals=24, verbose=True, comm=None)
+
+    v = np.array([[1.0, -2.5]])
+    s = basis.build_state(v)
+    s_exact = [{states[0]: v[0, 0], states[1]: v[0, 1]}]
+
+    for i in range(len(s)):
+        assert all(s[i][state] == s_exact[i][state] for state in s[i])
+
+
+@pytest.mark.mpi
+def test_simple_state_mpi():
     states = [b"\x00\x1a\x2b", b"\xff\x00\x1a"]
     basis = Basis(initial_basis=states, num_spin_orbitals=24, verbose=True, comm=MPI.COMM_WORLD)
 
@@ -732,9 +883,8 @@ def test_simple_state():
         assert all(s[i][state] == s_exact[i][state] for state in s[i])
 
 
-@pytest.mark.mpi
-def test_state():
-    comm = MPI.COMM_WORLD
+def test_state_mpi():
+    comm = None
     states = [b"\x78", b"\xB8", b"\xD8", b"\xE8", b"\xF0"]
     basis = Basis(initial_basis=states, num_spin_orbitals=5, verbose=True, comm=comm)
     v = np.array([[1.0, -2.5, 0, 0, 1.2], [0, 3, 1, 0, 0]])
@@ -749,7 +899,47 @@ def test_state():
 
 
 @pytest.mark.mpi
+def test_state_mpi():
+    comm = MPI.COMM_WORLD
+    states = [b"\x78", b"\xB8", b"\xD8", b"\xE8", b"\xF0"]
+    basis = Basis(initial_basis=states, num_spin_orbitals=5, verbose=True, comm=comm)
+    v = np.array([[1.0, -2.5, 0, 0, 1.2], [0, 3, 1, 0, 0]])
+    s = basis.build_state(v)
+    s_exact = [
+        {states[0]: v[0, 0], states[1]: v[0, 1], states[4]: v[0, 4]},
+        {states[1]: v[1, 1], states[2]: v[1, 2]},
+    ]
+
+    for i in range(len(s)):
+        assert all(s[i][state] == s_exact[i][state] for state in s[i])
+
+
 def test_spin_flip():
+    comm = None
+    # dn 11001 -> n_dn = 3
+    # up 00101 -> n_up = 2
+    states = [b"\xC9\x40"]
+    basis = Basis(initial_basis=[], num_spin_orbitals=10, verbose=True, comm=comm)
+    spin_flipped = basis._generate_spin_flipped_determinants(states)
+    # flips:
+    # dn 11001  01001  10001  11101  00001  10101  01101  00101
+    # up 00101  10101  01101  00001  11101  01001  10001  11001
+    spin_flipped_check = [
+        b"\xC9\x40",
+        b"\x4D\x40",
+        b"\x8B\x40",
+        # b"\xE8\x40",
+        # b"\x0F\x40",
+        b"\xAA\x40",
+        b"\x6C\x40",
+        b"\x2E\x40",
+    ]
+    assert all(state in spin_flipped for state in spin_flipped_check), f"{spin_flipped_check=} {spin_flipped=}"
+    assert all(state in spin_flipped_check for state in spin_flipped), f"{spin_flipped_check=} {spin_flipped=}"
+
+
+@pytest.mark.mpi
+def test_spin_flip_mpi():
     comm = MPI.COMM_WORLD
     # dn 11001 -> n_dn = 3
     # up 00101 -> n_up = 2
@@ -774,7 +964,7 @@ def test_spin_flip():
 
 
 @pytest.mark.mpi
-def test_alltoall_states():
+def test_alltoall_states_mpi():
     comm = MPI.COMM_WORLD
     num_spin_orbitals = comm.size
     bytes_per_state = ceil(num_spin_orbitals // 8)
@@ -788,7 +978,7 @@ def test_alltoall_states():
 
 
 @pytest.mark.mpi
-def test_alltoall_states_with_empty():
+def test_alltoall_states_with_empty_mpi():
     comm = MPI.COMM_WORLD
     num_spin_orbitals = comm.size
     bytes_per_state = ceil(num_spin_orbitals // 8)
@@ -801,9 +991,40 @@ def test_alltoall_states_with_empty():
     ), f"{comm.rank=} {received_states=} {basis.local_basis=}"
 
 
+def test_eg_t2g_basis_expand():
+    Hop = {
+        ((0, "c"), (0, "a")): 1,
+        ((0, "c"), (4, "a")): 1 / 2,
+        ((4, "c"), (0, "a")): 1 / 2,
+        ((4, "c"), (4, "a")): 1,
+        ((2, "c"), (2, "a")): 3 / 2,
+        ((1, "c"), (1, "a")): 1,
+        ((3, "c"), (3, "a")): 1,
+        ((5, "c"), (5, "a")): 1,
+        ((5, "c"), (9, "a")): 1 / 2,
+        ((9, "c"), (5, "a")): 1 / 2,
+        ((9, "c"), (9, "a")): 1,
+        ((7, "c"), (7, "a")): 3 / 2,
+        ((6, "c"), (6, "a")): 1,
+        ((8, "c"), (8, "a")): 1,
+    }
+    # Start with 10000  01000
+    #            00000  00000
+    states = [b"\x80\x00", b"\x40\x00"]
+    basis = Basis(initial_basis=states, num_spin_orbitals=10, verbose=True, comm=None)
+
+    basis.expand(Hop)
+    # expect 10000  01000  00001  00000  00000  00000
+    #        00000  00000  00000  10000  01000  00001
+
+    expected = [b"\x80\x00", b"\x40\x00", b"\x08\x00"]  # , b"\x04\x00", b"\x02\x00", b"\x00\x40"]
+    assert all(state in expected for state in basis), f"{expected=} {list(basis)=}"
+    assert all(state in basis for state in expected), f"{expected=} {list(basis)=}"
+
+
 @pytest.mark.mpi
 def test_eg_t2g_basis_expand_mpi():
-    Hop= {
+    Hop = {
         ((0, "c"), (0, "a")): 1,
         ((0, "c"), (4, "a")): 1 / 2,
         ((4, "c"), (0, "a")): 1 / 2,
@@ -827,8 +1048,6 @@ def test_eg_t2g_basis_expand_mpi():
     basis.expand(Hop)
     # expect 10000  01000  00001  00000  00000  00000
     #        00000  00000  00000  10000  01000  00001
-
-
 
     expected = [b"\x80\x00", b"\x40\x00", b"\x08\x00"]  # , b"\x04\x00", b"\x02\x00", b"\x00\x40"]
     assert all(state in expected for state in basis), f"{expected=} {list(basis)=}"

@@ -1,37 +1,38 @@
-import numpy as np
-import scipy as sp
-from mpi4py import MPI
 from math import ceil
 from time import perf_counter
 import sys
-
 from typing import Optional, Union
-
-try:
-    from petsc4py import PETSc
-except:
-    pass
 
 try:
     from collections.abc import Sequence
 except ModuleNotFoundError:
     from collections import Sequence
+import itertools
+import numpy as np
+import scipy as sp
+from mpi4py import MPI
+
+
+try:
+    from petsc4py import PETSc
+except ModuleNotFoundError:
+    pass
+
 
 from impurityModel.ed import product_state_representation as psr
-import itertools
 from impurityModel.ed.finite import (
-    c,
-    a,
+    # c,
+    # a,
     applyOp_2 as applyOp,
     # applyOp,
     c2i,
     c2i_op,
     eigensystem_new,
-    norm2,
+    # norm2,
 )
 
 
-def combine_sets(set_1, set_2, datatype):
+def combine_sets(set_1, set_2, _):
     return set_1 | set_2
 
 
@@ -243,8 +244,8 @@ class Basis:
         self.type = type(psr.int2bytes(0, self.num_spin_orbitals))
         self.n_bytes = int(ceil(self.num_spin_orbitals / 8))
 
-        self.index_bounds = [(None, None)] * comm.size if comm is not None else [(None, None)]
-        self.state_bounds = [(None, None)] * comm.size if comm is not None else [(None, None)]
+        self.index_bounds = [None] * comm.size if comm is not None else None
+        self.state_bounds = [None] * comm.size if comm is not None else None
 
         self.is_distributed = comm is not None
         t0 = perf_counter() - t0
@@ -317,7 +318,7 @@ class Basis:
             start += recv_counts[r] * self.n_bytes
         return states
 
-    def _set_state_bounds(self, local_states):
+    def _set_state_bounds(self, local_states) -> list[bytes]:
         n_samples = min(100, max(len(local_states) // 100, 2))
         state_bounds = None
         done = False
@@ -334,8 +335,8 @@ class Basis:
             samples_count = np.empty((self.comm.size), dtype=int)
             self.comm.Gather((np.array([len(samples)], dtype=int), MPI.INT64_T), samples_count, root=0)
 
-            all_samples_bytes = None
-            offsets = 0
+            all_samples_bytes = bytearray(0)
+            offsets = np.array([0], dtype=int)
             if self.comm.rank == 0:
                 all_samples_bytes = bytearray(sum(samples_count) * self.n_bytes)
                 # all_samples_bytes = np.empty((sum(samples_count) * self.n_bytes), dtype=np.ubyte)
@@ -405,7 +406,6 @@ class Basis:
         """
         if not self.is_distributed:
             local_basis: list[bytes] = sorted(set(itertools.chain(self.local_basis, new_states)))
-            # self.local_basis.clear()
             self.local_basis = local_basis
             self.size = len(self.local_basis)
             self.offset = 0
@@ -413,18 +413,19 @@ class Basis:
             self._index_dict = {state: i for i, state in enumerate(self.local_basis)}
             self.local_index_bounds = (0, len(self.local_basis))
             if len(self.local_basis) > 0:
-                self.local_state_bounds = (self.local_basis[0], self.local_basis[-1])
+                self.local_state_bounds: Optional[tuple[bytes, bytes]] = (self.local_basis[0], self.local_basis[-1])
             else:
-                self.local_state_bounds = (None, None)
+                self.local_state_bounds = None
             return
 
         if not distributed_sort:
             old_basis = self.comm.reduce(set(self.local_basis), op=combine_sets_op, root=0)
             new_states = self.comm.reduce(set(new_states), op=combine_sets_op, root=0)
             # self.local_basis.clear()
+            send_basis: Optional[list[list[bytes]]] = None
             if self.comm.rank == 0:
                 new_basis = sorted(old_basis | new_states)
-                send_basis: Optional[list[list[bytes]]] = [[] for _ in range(self.comm.size)]
+                send_basis = [[] for _ in range(self.comm.size)]
                 start = 0
                 for r in range(self.comm.size):
                     stop = start + len(new_basis) // self.comm.size
@@ -432,8 +433,6 @@ class Basis:
                         stop += 1
                     send_basis[r] = new_basis[start:stop]
                     start = stop
-            else:
-                send_basis = None
             local_basis = self.comm.scatter(send_basis, root=0)
         else:
             t0 = perf_counter()
@@ -523,7 +522,7 @@ class Basis:
 
             t0 = perf_counter()
             # self.local_basis.clear()
-            local_basis: list[bytes] = sorted(received_states)
+            local_basis = sorted(received_states)
             t0 = perf_counter() - t0
             if self.verbose:
                 print(f"=======> T sort received_states : {t0}")
@@ -543,7 +542,7 @@ class Basis:
         if len(self.local_basis) > 0:
             local_state_bounds = (self.local_basis[0], self.local_basis[-1])
         else:
-            local_state_bounds = (None, None)
+            local_state_bounds = None
         self.index_bounds = self.comm.allgather(local_index_bounds)
         self.state_bounds = self.comm.allgather(local_state_bounds)
         t0 = perf_counter() - t0
@@ -602,6 +601,8 @@ class Basis:
     def expand(self, op, op_dict=None, dense_cutoff=None, slaterWeightMin=0):
         done = False
         if self.comm is None:
+            if op_dict is None:
+                op_dict = {}
             new_basis = set()
             new_states = set(op_dict.keys()) | set(self.local_basis)
             while len(new_states) > 0:
@@ -622,7 +623,7 @@ class Basis:
                     new_states |= set(res.keys()) - new_basis
                 # new_states = self._generate_spin_flipped_determinants(new_states)
 
-                new_basis += sorted(new_states)
+                new_basis |= new_states
                 self.local_basis = sorted(new_basis)
         else:
             while not done:
@@ -657,7 +658,7 @@ class Basis:
         send_to_ranks[:] = self.size
         for idx, i in enumerate(l):
             for r in range(self.comm.size):
-                if i >= self.index_bounds[r][0] and i < self.index_bounds[r][1]:
+                if self.index_bounds[r] is not None and i >= self.index_bounds[r][0] and i < self.index_bounds[r][1]:
                     send_list[r].append(i)
                     send_to_ranks[idx] = r
                     break
@@ -731,7 +732,11 @@ class Basis:
                     if self.debug:
                         proper_rank = self.size
                         for r in range(self.comm.size):
-                            if val[i] >= self.state_bounds[r][0] and val[i] <= self.state_bounds[r][1]:
+                            if (
+                                self.state_bounds is not None
+                                and val[i] >= self.state_bounds[r][0]
+                                and val[i] <= self.state_bounds[r][1]
+                            ):
                                 proper_rank = r
                                 break
                         print(f"{proper_rank=}")
@@ -753,8 +758,7 @@ class Basis:
 
     def _index_sequence(self, s: list[bytes]) -> list[int]:
         if self.comm is None:
-            results = [self._index_dict[val] if val in self._index_dict else self.size for val in s]
-            return results
+            return [self._index_dict[val] if val in self._index_dict else self.size for val in s]
 
         send_list: list[list[bytes]] = [[] for _ in range(self.comm.size)]
         send_to_ranks = np.empty((len(s)), dtype=int)
@@ -762,7 +766,7 @@ class Basis:
         for i, val in enumerate(s):
             for r in range(self.comm.size):
                 if (
-                    self.state_bounds[r][0] is not None
+                    self.state_bounds[r] is not None
                     and val >= self.state_bounds[r][0]
                     and val <= self.state_bounds[r][1]
                 ):
@@ -889,7 +893,7 @@ class Basis:
                 step = 1
             elif step is None:
                 step = -1
-            query = [i for i in range(start, stop, step)]
+            query = list(range(start, stop, step))
             result = self._getitem_sequence(query)
             for i, res in enumerate(result):
                 # if res is None:
@@ -948,7 +952,7 @@ class Basis:
     def build_vector(self, psis: list[dict], dtype=complex, distributed=False) -> np.ndarray:
         v_local = np.zeros((len(psis), self.size), dtype=dtype)
         v = np.empty_like(v_local)
-        row_states_in_basis: list[bytes] = []
+        # row_states_in_basis: list[bytes] = []
         row_dict = self._index_dict
         for row, psi in enumerate(psis):
             row_states = set(psi.keys())
@@ -1059,10 +1063,10 @@ class Basis:
             return self._build_PETSc_matrix(op, op_dict)
 
         expanded_dict = self.build_operator_dict(op, op_dict)
+        rows: list[int] = []
+        columns: list[int] = []
+        values: list[complex] = []
         if not self.is_distributed:
-            rows: list[int] = []
-            columns: list[int] = []
-            values: list[complex] = []
             for column in self.local_basis:
                 for row in expanded_dict[column]:
                     if row not in self._index_dict:
@@ -1078,9 +1082,6 @@ class Basis:
             rows_in_basis: list[bytes] = list({rows_in_basis[i] for i in range(len(rows_in_basis)) if in_basis_mask[i]})
             row_dict: dict[bytes, int] = dict(zip(rows_in_basis, self.index(rows_in_basis)))
 
-            rows: list[int] = []
-            columns: list[int] = []
-            values: list[complex] = []
             for column in self.local_basis:
                 for row in expanded_dict[column]:
                     if row not in row_dict:
@@ -1238,7 +1239,7 @@ class CIPSI_Basis(Basis):
             t0 = perf_counter() - t0_loop
             t0 = self.comm.reduce(t0, op=MPI.SUM, root=0)
             if self.verbose:
-                print(f"--->Time to calculate Hpsi_i: {t0/self.comm.size:.3f} seconds")
+                print(f"--->Time to calculate Hpsi_i: {t0 / self.comm.size:.3f} seconds")
 
             t0 = perf_counter()
 
@@ -1252,7 +1253,7 @@ class CIPSI_Basis(Basis):
             t0 = perf_counter() - t0
             t0 = self.comm.reduce(t0, op=MPI.SUM, root=0)
             if self.verbose:
-                print(f"--->Time to setup distributed Djs: {t0/self.comm.size:.3f} seconds")
+                print(f"--->Time to setup distributed Djs: {t0 / self.comm.size:.3f} seconds")
 
             t0 = perf_counter()
 
@@ -1260,7 +1261,7 @@ class CIPSI_Basis(Basis):
             send_amps = [[] for _ in range(self.comm.size)]
             for state, amp in Hpsi_i.items():
                 for r in range(self.comm.size):
-                    if Dj_basis.state_bounds[r][0] is None:
+                    if Dj_basis.state_bounds[r] is None:
                         continue
                     if state >= Dj_basis.state_bounds[r][0] and state <= Dj_basis.state_bounds[r][1]:
                         send_states[r].append(state)
@@ -1276,7 +1277,7 @@ class CIPSI_Basis(Basis):
             t0 = perf_counter() - t0
             t0 = self.comm.reduce(t0, op=MPI.SUM, root=0)
             if self.verbose:
-                print(f"--->Time to distribute H|psi_i>: {t0/self.comm.size:.3f} seconds")
+                print(f"--->Time to distribute H|psi_i>: {t0 / self.comm.size:.3f} seconds")
 
             t0 = perf_counter()
             de2 = self._calc_de2(Dj_basis.local_basis, H, H_dict, Hpsi_i, e_i)
@@ -1286,14 +1287,14 @@ class CIPSI_Basis(Basis):
             t0 = perf_counter() - t0
             t0 = self.comm.reduce(t0, op=MPI.SUM, root=0)
             if self.verbose:
-                print(f"--->Time to calculate de_2: {t0/self.comm.size:.3f} seconds")
+                print(f"--->Time to calculate de_2: {t0 / self.comm.size:.3f} seconds")
 
             t0 = perf_counter()
             Dji = {Dj_basis.local_basis[i] for i, mask in enumerate(de2_mask) if mask}
             t0 = perf_counter() - t0
             t0 = self.comm.reduce(t0, op=MPI.SUM, root=0)
             if self.verbose:
-                print(f"--->Time to generate spin flipped determinants: {t0/self.comm.size:.3f} seconds")
+                print(f"--->Time to generate spin flipped determinants: {t0 / self.comm.size:.3f} seconds")
             new_Dj |= Dji
         return new_Dj
 
@@ -1313,7 +1314,7 @@ class CIPSI_Basis(Basis):
             t0 = perf_counter() - t0
             t0 = self.comm.reduce(t0, op=MPI.SUM, root=0)
             if self.verbose:
-                print(f"->Time to build sparse H: {t0/self.comm.size:.3f} seconds")
+                print(f"->Time to build sparse H: {t0 / self.comm.size:.3f} seconds")
 
             t0 = perf_counter()
             if psi_ref is not None:
@@ -1336,7 +1337,7 @@ class CIPSI_Basis(Basis):
             t0 = perf_counter() - t0
             t0 = self.comm.reduce(t0, op=MPI.SUM, root=0)
             if self.verbose:
-                print(f"->Time to get psi_ref: {t0/self.comm.size:.3f} seconds")
+                print(f"->Time to get psi_ref: {t0 / self.comm.size:.3f} seconds")
                 print("->Loop over eigenstates")
             new_Dj = self.determine_new_Dj(e_ref, psi_ref, H, H_dict, de2_min, slaterWeightMin=0)
             t0 = perf_counter()
@@ -1345,7 +1346,7 @@ class CIPSI_Basis(Basis):
             t0 = perf_counter() - t0
             t0 = self.comm.reduce(t0, op=MPI.SUM, root=0)
             if self.verbose:
-                print(f"--->Time to add new states: {t0/self.comm.size:.3f} seconds")
+                print(f"--->Time to add new states: {t0 / self.comm.size:.3f} seconds")
 
             if old_size == self.size:
                 converge_count += 1
@@ -1391,12 +1392,12 @@ class CIPSI_Basis(Basis):
         de2_min = 1e-8
 
         t_applyOp = 0
-        t_basis_mask = 0
+        # t_basis_mask = 0
         t_new_dj = 0
         t_distribute_Hpsi = 0
         t_de2 = 0
         t_de2_filter = 0
-        t_spin_flip = 0
+        # t_spin_flip = 0
         t_add_dj = 0
         t_massage_Hpsi = 0
 
@@ -1431,7 +1432,7 @@ class CIPSI_Basis(Basis):
                 send_amps = [[] for _ in range(self.comm.size)]
                 for state, amp in Hpsi_ref.items():
                     for r in range(self.comm.size):
-                        if Dj_basis.state_bounds[r][0] is None:
+                        if Dj_basis.state_bounds[r] is None:
                             continue
                         if state >= Dj_basis.state_bounds[r][0] and state <= Dj_basis.state_bounds[r][1]:
                             send_states[r].append(state)

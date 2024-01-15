@@ -1,20 +1,26 @@
-from impmod_ed import ffi
-import numpy as np
-import scipy as sp
+from os import devnull, remove
 import traceback
 import sys
 import pickle
+import numpy as np
+import scipy as sp
+from impmod_ed import ffi
+from mpi4py import MPI
+from rspt2spectra import offdiagonal, orbitals, h2imp
+from rspt2spectra.hyb_fit import get_block_structure, get_identical_blocks, get_transposed_blocks, fit_hyb
+from rspt2spectra import h2imp, energies
+from impurityModel.ed.greens_function import save_Greens_function
+from impurityModel.ed import finite
 from impurityModel.ed.lanczos import Reort
 from impurityModel.ed.greens_function import rotate_Greens_function, rotate_matrix, rotate_4index_U
-from os import devnull, remove
-from rspt2spectra.hyb_fit import get_block_structure, get_identical_blocks, get_transposed_blocks
+from impurityModel.ed.manybody_basis import CIPSI_Basis
 
 
 def matrix_print(matrix):
     print("\n".join([" ".join([f"{np.real(el): .6f} {np.imag(el):+.6f}j" for el in row]) for row in matrix]))
 
 
-class impModCluster:
+class ImpModCluster:
     def __init__(
         self,
         label,
@@ -336,7 +342,7 @@ def run_impmod_ed(
         sys.stdout = stdout_save
         return er
 
-    cluster = impModCluster(
+    cluster = ImpModCluster(
         label=label.strip(),
         h_dft=h_dft,
         hyb=hyb,
@@ -389,11 +395,6 @@ def run_impmod_ed(
 
 
 def fixed_peak_dc(h0_op, dc_struct, rank, verbose, dense_cutoff):
-    from impurityModel.ed import finite
-    from rspt2spectra import h2imp
-    from impurityModel.ed.manybody_basis import Basis, CIPSI_Basis
-    from mpi4py import MPI
-
     N0 = dc_struct.nominal_occ
     delta_impurity_occ, delta_valence_occ, delta_conduction_occ = dc_struct.delta_occ
     peak_position = dc_struct.peak_position
@@ -548,12 +549,6 @@ def get_ed_h0(
     h0   -- The non-interacting impurity hamiltonian in operator form.
     eb   -- The bath states used for fitting the hybridization function.
     """
-    from rspt2spectra import orbitals
-    from rspt2spectra import offdiagonal
-    from rspt2spectra.hyb_fit import fit_hyb
-    from rspt2spectra import energies
-    from rspt2spectra import h2imp
-    from impurityModel.ed.greens_function import save_Greens_function
 
     if comm.rank == 0:
         with open(f"hyb-in-{label}.npy", "wb") as f:
@@ -601,9 +596,9 @@ def get_ed_h0(
             np.save(f, fit_hyb)
 
     if verbose:
-        print(f"DFT hamiltonian in correlated basis")
+        print("DFT hamiltonian in correlated basis")
         matrix_print(rotate_matrix(h_dft, np.conj(corr_to_cf.T)))
-        print(f"DFT hamiltonian in CF basis")
+        print("DFT hamiltonian in CF basis")
         matrix_print(h_dft)
         print("Hopping parameters in CF basis")
         matrix_print(v)
@@ -621,7 +616,7 @@ def get_ed_h0(
         u = np.identity(h.shape[0], dtype=complex)
         u[:n_orb, :n_orb] = np.conj(corr_to_cf.T)
         h_tmp = rotate_matrix(h, u)  # np.conj(u.T) @ h @ u
-        print(f"DFT hamiltonian, with baths")
+        print("DFT hamiltonian, with baths")
         matrix_print(h_tmp)
         with open(f"Ham-{label}{'-dc' if save_baths_and_hopping else ''}.inp", "w") as f:
             for i in range(h_tmp.shape[0]):

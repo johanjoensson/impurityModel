@@ -1,28 +1,36 @@
-import numpy as np
 from collections import OrderedDict
-from mpi4py import MPI
+from typing import Nothing
 import time
 import argparse
 
-from impurityModel.ed.get_spectra import get_noninteracting_hamiltonian_operator, read_h0_operator
+from mpi4py import MPI
+import numpy as np
+from impurityModel.ed.get_spectra import get_noninteracting_hamiltonian_operator
 from impurityModel.ed import finite
 from impurityModel.ed.average import thermal_average_scale_indep
-from impurityModel.ed.manybody_basis import CIPSI_Basis, Basis
+from impurityModel.ed.manybody_basis import CIPSI_Basis
 
 from impurityModel.ed.greens_function import get_Greens_function, save_Greens_function
 
-eV_to_Ry = 1 / 13.605693122994
+EV_TO_RY = 1 / 13.605693122994
 
 
-class UnphysicalSelfenergy(Exception):
-    pass
+class UnphysicalSelfenergyError(Exception):
+    """
+    Excpetion signalling an unphysical self-energy, i.e. the imaginary part is positive for some frequencies.
+    """
 
 
-class UnphysicalGreensFunction(Exception):
-    pass
+class UnphysicalGreensFunctionError(Exception):
+    """
+    Excpetion signalling an unphysical Greens function, i.e. the imaginary part is positive for some frequencies.
+    """
 
 
-def matrix_print(matrix, label: str = None):
+def matrix_print(matrix: np.ndarray, label: str = None) -> Nothing:
+    """
+    Pretty print the matrix, with optional label.
+    """
     ms = "\n".join([" ".join([f"{np.real(val): .4f}{np.imag(val):+.4f}j" for val in row]) for row in matrix])
     if label:
         print(label)
@@ -30,6 +38,9 @@ def matrix_print(matrix, label: str = None):
 
 
 def find_gs(h_op, N0, delta_occ, bath_states, num_spin_orbitals, rank, verbose, dense_cutoff):
+    """
+    Find the occupation corresponding to the lowest energy, compare N0 - 1, N0 and N0 + 1
+    """
     delta_imp_occ, delta_val_occ, delta_con_occ = delta_occ
     num_val_baths, num_cond_baths = bath_states
     e_gs = np.inf
@@ -263,7 +274,7 @@ def calc_selfenergy(
         gs_matsubara_thermal_avg = thermal_average_scale_indep(es[: np.shape(gs_matsubara)[0]], gs_matsubara, tau=tau)
         try:
             check_greens_function(gs_matsubara_thermal_avg)
-        except UnphysicalGreensFunction as err:
+        except UnphysicalGreensFunctionError as err:
             if rank == 0:
                 print(f"WARNING! Unphysical Matsubara-axis Greens function:\n\t{err}")
         if verbosity >= 2:
@@ -272,7 +283,7 @@ def calc_selfenergy(
         gs_realaxis_thermal_avg = thermal_average_scale_indep(es[: np.shape(gs_realaxis)[0]], gs_realaxis, tau=tau)
         try:
             check_greens_function(gs_realaxis_thermal_avg)
-        except UnphysicalGreensFunction as err:
+        except UnphysicalGreensFunctionError as err:
             if rank == 0:
                 print(f"WARNING! Unphysical real-axis Greens function:\n\t{err}")
         if verbosity >= 2:
@@ -293,7 +304,7 @@ def calc_selfenergy(
         )
         try:
             check_sigma(sigma_real)
-        except UnphysicalSelfenergy as err:
+        except UnphysicalSelfenergyError as err:
             if rank == 0:
                 print(f"WARNING! Unphysical realaxis selfenergy:\n\t{err}")
     else:
@@ -312,13 +323,13 @@ def calc_selfenergy(
         )
         try:
             check_sigma(sigma)
-        except UnphysicalSelfenergy as err:
+        except UnphysicalSelfenergyError as err:
             if rank == 0:
                 print(f"WARNING! Unphysical Matsubara axis selfenergy:\n\t{err}")
     else:
         sigma = None
     if verbosity >= 1:
-        print(f"Calculating sig_static.")
+        print("Calculating sig_static.")
     sigma_static = get_Sigma_static(sum_bath_states, u4, es, psis, l, tau)
 
     if verbosity >= 2:
@@ -335,13 +346,13 @@ def calc_selfenergy(
 def check_sigma(sigma):
     diagonals = [np.diag(sigma[:, :, i]) for i in range(sigma.shape[-1])]
     if np.any(np.imag(diagonals) > 0):
-        raise UnphysicalSelfenergy("Diagonal term has positive imaginary part.")
+        raise UnphysicalSelfenergyError("Diagonal term has positive imaginary part.")
 
 
 def check_greens_function(G):
     diagonals = [np.diag(G[:, :, i]) for i in range(G.shape[-1])]
     if np.any(np.imag(diagonals) > 0):
-        raise UnphysicalGreensFunction("Diagonal term has positive imaginary part.")
+        raise UnphysicalGreensFunctionError("Diagonal term has positive imaginary part.")
     # norms = -1/np.pi*np.trapz(diagonals, energies)
     # if np.any(np.abs(np.imag(diagonals) - 1) > 5*(energies[1] - energies[0])):
     #     raise UnphysicalGreensFunction("Imaginary part of diagonal term is not norm-conserving.\n"
@@ -352,13 +363,15 @@ def check_greens_function(G):
 
 
 def get_hcorr_v_hbath(h0op, sum_bath_states):
-    #   The matrix form of h0op can be written
-    #   [  hcorr  V^+    ]
-    #   [  V      hbath  ]
-    # where:
-    #       - hcorr is the Hamiltonian for the correlated, impurity, orbitals.
-    #       - V/V^+ is the hopping between impurity and bath orbitals.
-    #       - hbath is the hamiltonian for the non-interacting, bath, orbitals.
+    """
+    The matrix form of h0op can be written
+      [  hcorr  V^+    ]
+      [  V      hbath  ]
+    where:
+          - hcorr is the Hamiltonian for the correlated, impurity, orbitals.
+          - V/V^+ is the hopping between impurity and bath orbitals.
+          - hbath is the hamiltonian for the non-interacting, bath, orbitals.
+    """
     h0_i = finite.c2i_op(sum_bath_states, h0op)
     h0Matrix = finite.iOpToMatrix(sum_bath_states, h0_i)
     n_corr = sum([2 * (2 * l + 1) for l in sum_bath_states.keys()])
@@ -470,8 +483,8 @@ def get_selfenergy(
     omega_mesh = np.linspace(-1.83, 1.83, 2000)
     # omega_mesh = 1j*np.pi*tau*np.arange(start = 1, step = 2, stop = 2*375)
 
-    if rank == 0:
-        t0 = time.perf_counter()
+    # if rank == 0:
+    #     t0 = time.perf_counter()
     # -- System information --
 
     sum_baths = OrderedDict({ls: nBaths})
