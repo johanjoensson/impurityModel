@@ -1,5 +1,4 @@
 from collections import OrderedDict
-from typing import Nothing
 import time
 import argparse
 
@@ -27,7 +26,7 @@ class UnphysicalGreensFunctionError(Exception):
     """
 
 
-def matrix_print(matrix: np.ndarray, label: str = None) -> Nothing:
+def matrix_print(matrix: np.ndarray, label: str = None) -> None:
     """
     Pretty print the matrix, with optional label.
     """

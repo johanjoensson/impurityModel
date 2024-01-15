@@ -967,10 +967,9 @@ def test_spin_flip_mpi():
 def test_alltoall_states_mpi():
     comm = MPI.COMM_WORLD
     num_spin_orbitals = comm.size
-    bytes_per_state = ceil(num_spin_orbitals // 8)
+    bytes_per_state = int(ceil(num_spin_orbitals / 8))
     send_states = [[r.to_bytes(bytes_per_state, "big")] for r in range(comm.size)]
     basis = Basis(initial_basis=[], num_spin_orbitals=num_spin_orbitals, verbose=True, comm=comm)
-    # basis.add_states([comm.rank.to_bytes(bytes_per_state, "big")], distributed_sort=False)
     received_states = basis.alltoall_states(send_states)
     assert all(
         state == comm.rank.to_bytes(bytes_per_state, "big") for rs in received_states for state in rs
@@ -981,7 +980,7 @@ def test_alltoall_states_mpi():
 def test_alltoall_states_with_empty_mpi():
     comm = MPI.COMM_WORLD
     num_spin_orbitals = comm.size
-    bytes_per_state = ceil(num_spin_orbitals // 8)
+    bytes_per_state = ceil(num_spin_orbitals / 8)
     send_states = [[r.to_bytes(bytes_per_state, "big")] if r < comm.rank else [] for r in range(comm.size)]
     basis = Basis(initial_basis=[], num_spin_orbitals=num_spin_orbitals, verbose=True, comm=comm)
     basis.add_states([comm.rank.to_bytes(bytes_per_state, "big")], distributed_sort=False)

@@ -7,7 +7,9 @@ import scipy as sp
 from impmod_ed import ffi
 from mpi4py import MPI
 from rspt2spectra import offdiagonal, orbitals, h2imp
-from rspt2spectra.hyb_fit import get_block_structure, get_identical_blocks, get_transposed_blocks, fit_hyb
+import rspt2spectra.hyb_fit as hf
+
+# hf.get_block_structure, hf.get_identical_blocks, hf.get_transposed_blocks, hf.fit_hyb
 from rspt2spectra import h2imp, energies
 from impurityModel.ed.greens_function import save_Greens_function
 from impurityModel.ed import finite
@@ -55,16 +57,16 @@ class ImpModCluster:
         self.corr_to_spherical = corr_to_spherical
 
         if blocked:
-            self.blocks = get_block_structure(
+            self.blocks = hf.get_block_structure(
                 self.hyb,
                 h_dft,
             )
-            self.identical_blocks = get_identical_blocks(
+            self.identical_blocks = hf.get_identical_blocks(
                 self.blocks,
                 self.hyb,
                 h_dft,
             )
-            self.transposed_blocks = get_transposed_blocks(
+            self.transposed_blocks = hf.get_transposed_blocks(
                 self.blocks,
                 self.hyb,
                 h_dft,
@@ -329,11 +331,11 @@ def run_impmod_ed(
             sig_dc[:, :] = fixed_peak_dc(h_op, dc_struct, rank=rank, verbose=rank == 0, dense_cutoff=dense_cutoff)
             er = 0
         except Exception as e:
-            print(f"!" * 100)
+            print("!" * 100)
             print(f"Exception {repr(e)} caught on rank {rank}!")
             print(traceback.format_exc())
-            print(f"Adding positive infinity to the imaginary part of the DC selfenergy.", flush=True)
-            print(f"!" * 100)
+            print("Adding positive infinity to the imaginary part of the DC selfenergy.", flush=True)
+            print("!" * 100)
             sig_dc[:, :] = np.inf + 1j * np.inf
             er = -1
             comm.Abort(er)
@@ -374,20 +376,20 @@ def run_impmod_ed(
         cluster.sig_static[:, :] = rotate_matrix(cluster.sig_static, u)
         er = 0
     except Exception as e:
-        print(f"!" * 100)
+        print("!" * 100)
         print(f"Exception {repr(e)} caught on rank {rank}!")
         print(traceback.format_exc())
         print(
-            f"Adding positive infinity to the imaginaty part of the selfenergy at the last matsubara frequency.",
+            "Adding positive infinity to the imaginaty part of the selfenergy at the last matsubara frequency.",
             flush=True,
         )
-        print(f"!" * 100)
+        print("!" * 100)
         cluster.sig[:, :, -1] += 1j * np.inf
         er = -1
         comm.Abort(er)
     else:
         if rank == 0:
-            print(f"Self energy calculated! impurityModel shutting down.", flush=True)
+            print("Self energy calculated! impurityModel shutting down.", flush=True)
 
     sys.stdout.close()
     sys.stdout = stdout_save
@@ -570,7 +572,7 @@ def get_ed_h0(
             f"Read bath energies and hopping parameters from impurityModel_bath_energies_and_hopping_parameters_{label}.npy"
         )
     if eb is None and v is None:
-        eb, v = fit_hyb(
+        eb, v = hf.fit_hyb(
             w,
             eim,
             hyb,
