@@ -659,7 +659,6 @@ class Basis:
                     send_to_ranks[idx] = r
                     break
         send_order = np.argsort(send_to_ranks, kind="stable")
-        # queries = self.comm.alltoall(send_list)
         recv_counts = np.empty((self.comm.size), dtype=int)
 
         self.comm.Alltoall(
@@ -798,79 +797,32 @@ class Basis:
         self.comm.Alltoallv(
             (
                 bytearray(byte for states in send_list for state in states for byte in state),
-                # np.fromiter(
-                #     (byte for states in send_list for state in states for byte in state),
-                #     dtype=np.ubyte,
-                #     count=sum(send_counts) * self.n_bytes,
-                # ),
                 send_counts * self.n_bytes,
                 send_displacements * self.n_bytes,
                 MPI.BYTE,
             ),
             (queries, recv_counts * self.n_bytes, displacements * self.n_bytes, MPI.BYTE),
         )
-        # queries = self.comm.alltoall(send_list)
         if self.debug:
             print("queries:")
             for r in range(self.comm.size):
                 print(
                     f"    {r}: {[bytes(queries[i * self.n_bytes: (i + 1) * self.n_bytes]) for i in range(displacements[r], displacements[r] + recv_counts[r])]}"
                 )
-                # print(f"    {r}: {[queries[i * self.n_bytes: (i + 1) * self.n_bytes].tobytes() for i in range(displacements[r], displacements[r] + recv_counts[r])]}")
 
         results = np.empty((sum(recv_counts)), dtype=int)
-        # results[:] = self.size
         for i in range(sum(recv_counts)):
             query = bytes(queries[i * self.n_bytes : (i + 1) * self.n_bytes])
-            # query = queries[i * self.n_bytes : (i + 1) * self.n_bytes].tobytes()
             results[i] = self._index_dict.get(query, self.size)
-            # if query in self._index_dict:
-            #     results[i] = self._index_dict[query]
-        # result = np.zeros((sum(send_counts)), dtype=int)
         result = np.empty((len(s)), dtype=int)
         result[:] = self.size
-        # i = 0
-        # for r in range(self.comm.size):
-        #     for res in results[r]:
-        #         result[i] = res
-        #         i += 1
 
         self.comm.Alltoallv(
             (results, recv_counts, displacements, MPI.INT64_T), (result, send_counts, send_displacements, MPI.INT64_T)
         )
         result[sum(send_counts) :] = self.size
 
-        # return [result[i] for i in np.argsort(send_order)]
         return result[np.argsort(send_order)].tolist()
-        # return result[np.argsort(send_order)].tolist() + [self.size for i in send_to_ranks if i == self.comm.size]
-        # result[send_order] = result.copy()
-        # return result.tolist()
-
-        # send_list = [np.empty((0), dtype=self.dtype) for _ in range(self.comm.size)]
-        # send_to_ranks = []
-        # for i, val in enumerate(s):
-        #     for r in range(self.comm.size):
-        #         if (
-        #             self.state_bounds[r][0] is not None
-        #             and val >= self.state_bounds[r][0]
-        #             and val <= self.state_bounds[r][1]
-        #         ):
-        #             send_list[r].append(val)
-        #             send_to_ranks.append(r)
-        #             break
-
-        # send_order = np.argsort(send_to_ranks, kind="stable")
-        # queries = self.comm.alltoall(send_list)
-        # results = [[] for _ in range(self.comm.size)]
-        # for r, query in enumerate(queries):
-        #     for q in query:
-        #         results[r].append(self._index_dict.get(q, self.size))
-        # results = self.comm.alltoall(results)
-        # result = [state for states in results for state in states]
-        # print(f"{len(result)=}")
-        # print(f"{len(send_order)=}")
-        # print(f"{len(s)=}")
-        # return [result[send_order[i]] for i in range(len(result))]
 
     def __getitem__(self, key):
         if isinstance(key, slice):
@@ -957,7 +909,9 @@ class Basis:
                 need_mpi = False
                 if any(state not in row_dict for state in psi):
                     need_mpi = True
-                need_mpi = self.comm.allreduce(need_mpi, op=MPI.LOR)
+                need_mpi_arr = np.empty((1,), dtype=bool)
+                self.comm.Allreduce(np.array([need_mpi], dtype=bool), need_mpi_arr, op=MPI.LOR)
+                need_mpi = need_mpi_arr[0]
             if need_mpi:
                 sorted_row_states = sorted(row_states)
                 row_dict = {
@@ -1264,7 +1218,30 @@ class CIPSI_Basis(Basis):
                         send_amps[r].append(amp)
                         break
             received_states = self.alltoall_states(send_states)
-            received_amps = self.comm.alltoall(send_amps)
+
+            send_counts = [len(send_amps[r]) for r in range(self.comm.size)]
+            send_offsets = [sum(send_counts[:r]) for r in range(self.comm.size)]
+            receive_counts = [len(received_states[r]) for r in range(self.comm.size)]
+            receive_offsets = [sum(receive_counts[:r]) for r in range(self.comm.size)]
+            received_amps_arr = np.empty((sum(receive_counts),), dtype=complex)
+            self.comm.Alltoallv(
+                (
+                    np.fromiter(
+                        (amp for amps in send_amps for amp in amps),
+                        count=sum(len(amps) for amps in send_amps),
+                        dtype=complex,
+                    ),
+                    send_counts,
+                    send_offsets,
+                    MPI.DOUBLE_COMPLEX,
+                ),
+                (received_amps_arr, receive_counts, receive_offsets, MPI.DOUBLE_COMPLEX),
+            )
+            received_amps = []
+            offset = 0
+            for r in range(self.comm.size):
+                received_amps.append(received_amps_arr[offset : offset + receive_counts[r]])
+                offset += receive_counts[r]
             Hpsi_i = {}
             for r, states in enumerate(received_states):
                 for i, state in enumerate(states):
@@ -1435,7 +1412,29 @@ class CIPSI_Basis(Basis):
                             send_amps[r].append(amp)
                             break
                 received_states = self.alltoall_states(send_states)
-                received_amps = self.comm.alltoall(send_amps)
+                send_counts = [len(send_amps[r]) for r in range(self.comm.size)]
+                send_offsets = [sum(send_counts[:r]) for r in range(self.comm.size)]
+                receive_counts = [len(received_states[r]) for r in range(self.comm.size)]
+                receive_offsets = [sum(receive_counts[:r]) for r in range(self.comm.size)]
+                received_amps_arr = np.empty((sum(receive_counts),), dtype=complex)
+                self.comm.Alltoallv(
+                    (
+                        np.fromiter(
+                            (amp for amps in send_amps for amp in amps),
+                            count=sum(len(amps) for amps in send_amps),
+                            dtype=complex,
+                        ),
+                        send_counts,
+                        send_offsets,
+                        MPI.DOUBLE_COMPLEX,
+                    ),
+                    (received_amps_arr, receive_counts, receive_offsets, MPI.DOUBLE_COMPLEX),
+                )
+                received_amps = []
+                offset = 0
+                for r in range(self.comm.size):
+                    received_amps.append(received_amps_arr[offset : offset + receive_counts[r]])
+                    offset += receive_counts[r]
                 Hpsi_ref = {}
                 for r, states in enumerate(received_states):
                     for i, state in enumerate(states):
