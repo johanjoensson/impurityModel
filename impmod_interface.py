@@ -140,7 +140,7 @@ def parse_solver_line(solver_line):
         )
     dense_cutoff = 1000
     reort = Reort.NONE
-    blocked = False
+    blocked = True
     if len(solver_array) > 5:
         skip_next = False
         for i in range(len(solver_array)):
@@ -157,8 +157,8 @@ def parse_solver_line(solver_line):
             elif arg.lower() == "dense_cutoff":
                 dense_cutoff = int(solver_array[i + 1])
                 skip_next = True
-            elif arg.lower() == "blocked":
-                blocked = True
+            elif arg.lower() == "no_block":
+                blocked = False
     return nominal_occ, delta_occ, nBaths, reort, dense_cutoff, blocked
 
 
