@@ -72,10 +72,10 @@ def cg_phys(A_op, A_dict, n_spin_orbitals, x_psi, y_psi, w, delta, basis, atol=1
     t_build_vectors_separate = 0
     t_matrix_mul = 0
     t_rest_of_cg = 0
-    # for it in range(1000 * n):
-    it = 0
-    while(True):
-        it += 1
+    for it in range(1000 * n):
+    # it = 0
+    # while(True):
+        # it += 1
         x += alpha_guess * p
 
         p_psi, r_prev_psi, x_psi = basis.build_state([p, r_prev, x])

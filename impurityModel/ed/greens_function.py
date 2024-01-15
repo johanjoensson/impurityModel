@@ -683,29 +683,30 @@ def get_block_Green_cg(
             truncation_threshold=basis.truncation_threshold,
             tau=basis.tau,
         )
-        for w_i, w in finite.get_job_tasks(comm.rank, comm.size, list(enumerate(iws))):
-            shift = {((0, "i"),): w + e}
-            A_op = finite.subtractOps(shift, hOp)
-            A_dict = {}
-            for col in range(n):
-                tmp, info = cg_phys(A_op, A_dict, n_spin_orbitals, {}, psi_arr[col].copy(), 0, w.imag, local_basis)
+        for col in range(n):
+            sol = {}
+            for w_i, w in finite.get_job_tasks(comm.rank, comm.size, list(enumerate(iws))):
+                shift = {((0, "i"),): w + e}
+                A_op = finite.subtractOps(shift, hOp)
+                sol_dense, info = cg_phys(A_op, {}, n_spin_orbitals, sol, psi_arr[col], 0, w.imag, local_basis)
+                # tmp, info = cg_phys(A_op, A_dict, n_spin_orbitals, {}, psi_arr[col].copy(), 0, w.imag, local_basis)
                 T_psi = local_basis.build_vector(psi_arr).T
-                # T_psi = np.empty((len(T_psi_vs[0]), len(T_psi_vs)), dtype=T_psi_vs[0].dtype)
-                # for col, v in enumerate(T_psi_vs):
-                #     T_psi[:, col] = v
-                gs_matsubara[w_i, :, col] = np.conj(T_psi.T) @ tmp
+                gs_matsubara[w_i, :, col] = np.conj(T_psi.T) @ sol_dense
+                sol = local_basis.build_state(sol_dense)[0]
         comm.Allreduce(gs_matsubara.copy(), gs_matsubara, op=MPI.SUM)
         gs_matsubara = np.moveaxis(gs_matsubara, 0, -1)
 
     if realaxis:
         gs_realaxis = np.zeros((len(ws), n, n), dtype=complex)
-        for w_i, w in finite.get_job_tasks(comm.rank, comm.size, list(enumerate(ws))):
-            shift = {((0, "i"),): w + 1j * delta + e}
-            A_op = finite.subtractOps(shift, hOp)
-            for col in range(n):
-                tmp, info = cg_phys(A_op, {}, n_spin_orbitals, {}, psi_arr[col].copy(), w, delta, local_basis)
+        for col in range(n):
+            sol = dict()
+            for w_i, w in finite.get_job_tasks(comm.rank, comm.size, list(enumerate(ws))):
+                shift = {((0, "i"),): w + 1j * delta + e}
+                A_op = finite.subtractOps(shift, hOp)
+                sol_dense, info = cg_phys(A_op, {}, n_spin_orbitals, sol, psi_arr[col], w, delta, local_basis)
                 T_psi = local_basis.build_vector(psi_arr).T
-                gs_realaxis[w_i, :, col] = np.conj(T_psi.T) @ tmp
+                gs_realaxis[w_i, :, col] = np.conj(T_psi.T) @ sol_dense
+                sol = local_basis.build_state(sol_dense)[0]
         comm.Allreduce(gs_realaxis.copy(), gs_realaxis, op=MPI.SUM)
         gs_realaxis = np.moveaxis(gs_realaxis, 0, -1)
 
