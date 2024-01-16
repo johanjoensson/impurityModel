@@ -52,6 +52,7 @@ def find_gs(h_op, N0, delta_occ, bath_states, num_spin_orbitals, rank, verbose, 
     dN = [-1, 0, 1]
     for i, d in enumerate(dN):
         basis = CIPSI_Basis(
+            ls=[l for l in N0[0]],
             H=h_op,
             # basis = Basis(
             valence_baths=num_val_baths,
@@ -67,7 +68,7 @@ def find_gs(h_op, N0, delta_occ, bath_states, num_spin_orbitals, rank, verbose, 
         if verbose:
             print(f"Before expansion basis contains {basis.size} elements")
         # h_dict = basis.expand(h_op, dense_cutoff=dense_cutoff)
-        h_dict = basis.expand(h_op, dense_cutoff=dense_cutoff, de2_min=1e-5, slaterWeightMin=1e-12)
+        h_dict = basis.expand(h_op, dense_cutoff=dense_cutoff, de2_min=1e-4, slaterWeightMin=1e-4)
         h = basis.build_sparse_matrix(h_op, h_dict)
 
         e_trial = finite.eigensystem_new(
@@ -220,7 +221,7 @@ def calc_selfenergy(
 
     basis.tau = tau
     # h_dict = basis.expand(h, dense_cutoff=dense_cutoff)
-    h_dict = basis.expand(h, dense_cutoff=dense_cutoff, de2_min=1e-8, slaterWeightMin=0)
+    h_dict = basis.expand(h, dense_cutoff=dense_cutoff, de2_min=1e-10, slaterWeightMin=0)
     if verbosity >= 1:
         print(f"Ground state basis contains {len(basis)} elsements.")
     if basis.size < dense_cutoff:

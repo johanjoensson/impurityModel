@@ -467,13 +467,12 @@ def get_S2_from_rho_spherical(rho, l):
 
 def printThermalExpValues_new(nBaths, es, psis, tau, rot_to_spherical):
     """
-    print several thermal expectation values, e.g. E, N, L^2.
+    print several thermal expectation values, e.g. E, N, Sz, Lz.
 
     cutOff - float. Energies more than cutOff*kB*T above the
             lowest energy is not considered in the average.
     """
     e = es - es[0]
-    # Select relevant energies
     psis = np.array(psis)
     rhos = [getDensityMatrix(nBaths, psi, 2) for psi in psis]
     rhomats = np.zeros((len(rhos), 10, 10), dtype=complex)

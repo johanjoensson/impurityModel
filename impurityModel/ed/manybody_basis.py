@@ -174,6 +174,8 @@ class Basis:
 
     def __init__(
         self,
+        ls,
+        bath_states=None,
         num_spin_orbitals=None,
         initial_basis=None,
         restrictions=None,
@@ -194,6 +196,9 @@ class Basis:
             assert (
                 num_spin_orbitals is not None
             ), "when supplying an initial basis, you also need to supply the num_spin_orbitals"
+            assert (
+                bath_states is not None
+            ), "when supplying an initial basis, you also need to supply the number of bath states for each l quantum number"
             assert nominal_impurity_occ is None
             assert valence_baths is None
             assert conduction_baths is None
@@ -223,10 +228,13 @@ class Basis:
                 nominal_impurity_occ=nominal_impurity_occ,
                 verbose=verbose,
             )
+            bath_states = {l: valence_baths[l] + conduction_baths[l] for l in ls}
         t0 = perf_counter() - t0
         if verbose:
             print(f"===> T initial_basis : {t0}")
         t0 = perf_counter()
+        self.ls = ls
+        self.bath_states = bath_states
         self.verbose = verbose
         self.debug = debug
         self.truncation_threshold = truncation_threshold
@@ -547,43 +555,54 @@ class Basis:
 
     def _generate_spin_flipped_determinants(self, determinants):
         n_dn_op = {
-            (((2, 0, -2), "c"), ((2, 0, -2), "a")): 1.0,
-            (((2, 0, -1), "c"), ((2, 0, -1), "a")): 1.0,
-            (((2, 0, 0), "c"), ((2, 0, 0), "a")): 1.0,
-            (((2, 0, 1), "c"), ((2, 0, 1), "a")): 1.0,
-            (((2, 0, 2), "c"), ((2, 0, 2), "a")): 1.0,
+            (((l, 0, ml), "c"), ((l, 0, ml), "a")): 1.0
+            for l in self.ls
+            for ml in range(-l, l + 1)
+            # (((2, 0, -2), "c"), ((2, 0, -2), "a")): 1.0,
+            # (((2, 0, -1), "c"), ((2, 0, -1), "a")): 1.0,
+            # (((2, 0, 0), "c"), ((2, 0, 0), "a")): 1.0,
+            # (((2, 0, 1), "c"), ((2, 0, 1), "a")): 1.0,
+            # (((2, 0, 2), "c"), ((2, 0, 2), "a")): 1.0,
         }
-        n_dn_iop = c2i_op({2: self.num_spin_orbitals - 10}, n_dn_op)
+        n_dn_iop = c2i_op(self.bath_states, n_dn_op)
         n_up_op = {
-            (((2, 1, -2), "c"), ((2, 1, -2), "a")): 1.0,
-            (((2, 1, -1), "c"), ((2, 1, -1), "a")): 1.0,
-            (((2, 1, 0), "c"), ((2, 1, 0), "a")): 1.0,
-            (((2, 1, 1), "c"), ((2, 1, 1), "a")): 1.0,
-            (((2, 1, 2), "c"), ((2, 1, 2), "a")): 1.0,
+            (((l, 1, ml), "c"), ((l, 1, ml), "a")): 1.0
+            for l in self.ls
+            for ml in range(-l, l + 1)
+            # (((2, 1, -2), "c"), ((2, 1, -2), "a")): 1.0,
+            # (((2, 1, -1), "c"), ((2, 1, -1), "a")): 1.0,
+            # (((2, 1, 0), "c"), ((2, 1, 0), "a")): 1.0,
+            # (((2, 1, 1), "c"), ((2, 1, 1), "a")): 1.0,
+            # (((2, 1, 2), "c"), ((2, 1, 2), "a")): 1.0,
         }
-        n_up_iop = c2i_op({2: self.num_spin_orbitals - 10}, n_up_op)
+        n_up_iop = c2i_op(self.bath_states, n_up_op)
         spin_flip = set()
         for det in determinants:
             n_dn = int(applyOp(self.num_spin_orbitals, n_dn_iop, {det: 1}).get(det, 0))
             n_up = int(applyOp(self.num_spin_orbitals, n_up_iop, {det: 1}).get(det, 0))
             spin_flip.add(det)
             to_flip = {det}
-            for i_imp in range(5):
-                spin_flip_op = {
-                    (((2, 1, i_imp - 2), "c"), ((2, 0, i_imp - 2), "a")): 1.0,
-                    (((2, 0, i_imp - 2), "c"), ((2, 1, i_imp - 2), "a")): 1.0,
-                }
-                spin_flip_iop = c2i_op({2: self.num_spin_orbitals - 10}, spin_flip_op)
-                for state in list(to_flip):
-                    flipped = applyOp(self.num_spin_orbitals, spin_flip_iop, {state: 1})
-                    to_flip.update(flipped.keys())
-                    if len(flipped) == 0:
-                        continue
-                    flipped_state = list(flipped.keys())[0]
-                    new_n_dn = int(applyOp(self.num_spin_orbitals, n_dn_iop, {flipped_state: 1}).get(flipped_state, 0))
-                    new_n_up = int(applyOp(self.num_spin_orbitals, n_up_iop, {flipped_state: 1}).get(flipped_state, 0))
-                    if (new_n_dn == n_dn and new_n_up == n_up) or (new_n_dn == n_up and new_n_up == n_dn):
-                        spin_flip.update(flipped.keys())
+            for l in self.ls:
+                for ml in range(-l, l + 1):
+                    spin_flip_op = {
+                        (((l, 1, ml), "c"), ((l, 0, ml), "a")): 1.0,
+                        (((l, 0, ml), "c"), ((l, 1, ml), "a")): 1.0,
+                    }
+                    spin_flip_iop = c2i_op(self.bath_states, spin_flip_op)
+                    for state in list(to_flip):
+                        flipped = applyOp(self.num_spin_orbitals, spin_flip_iop, {state: 1})
+                        to_flip.update(flipped.keys())
+                        if len(flipped) == 0:
+                            continue
+                        flipped_state = list(flipped.keys())[0]
+                        new_n_dn = int(
+                            applyOp(self.num_spin_orbitals, n_dn_iop, {flipped_state: 1}).get(flipped_state, 0)
+                        )
+                        new_n_up = int(
+                            applyOp(self.num_spin_orbitals, n_up_iop, {flipped_state: 1}).get(flipped_state, 0)
+                        )
+                        if (new_n_dn == n_dn and new_n_up == n_up) or (new_n_dn == n_up and new_n_up == n_dn):
+                            spin_flip.update(flipped.keys())
                     # spin_flip.update(flipped.keys())
 
         # for state in spin_flip.copy():
@@ -889,6 +908,8 @@ class Basis:
 
     def copy(self):
         return Basis(
+            ls=self.ls,
+            bath_states=self.bath_states,
             initial_basis=self.local_basis,
             num_spin_orbitals=self.num_spin_orbitals,
             restrictions=self.restrictions,
@@ -1081,6 +1102,8 @@ class Basis:
 class CIPSI_Basis(Basis):
     def __init__(
         self,
+        ls,
+        bath_states=None,
         valence_baths=None,
         conduction_baths=None,
         delta_valence_occ=None,
@@ -1109,9 +1132,13 @@ class CIPSI_Basis(Basis):
                 nominal_impurity_occ,
                 verbose,
             )
+            bath_states = {l: valence_baths[l] + conduction_baths[l] for l in ls}
         else:
             assert num_spin_orbitals is not None
+            assert bath_states is not None
         super(CIPSI_Basis, self).__init__(
+            ls=ls,
+            bath_states=bath_states,
             initial_basis=initial_basis,
             num_spin_orbitals=num_spin_orbitals,
             restrictions=restrictions,
@@ -1129,9 +1156,9 @@ class CIPSI_Basis(Basis):
                 H_sparse,
                 basis=self,
                 e_max=1e-12,
-                k=min(1, self.size - 1),
+                k=sum(2 * (2 * l + 1) for l in self.ls),
                 eigenValueTol=0,
-                slaterWeightMin=np.finfo(float).eps ** 2,
+                slaterWeightMin=0,
                 verbose=self.verbose,
             )
             self.truncate(self.build_state(psi_ref))
@@ -1154,7 +1181,6 @@ class CIPSI_Basis(Basis):
         new_basis = sorted(new_basis)
 
         self.local_basis.clear()
-        # self.add_states(self._generate_spin_flipped_determinants(new_basis))
         self.add_states(new_basis)
 
     def _calc_de2(self, Djs, H, H_dict, Hpsi_ref, e_ref, slaterWeightMin=0):
@@ -1202,6 +1228,8 @@ class CIPSI_Basis(Basis):
             t0 = perf_counter()
 
             Dj_basis = Basis(
+                ls={},
+                bath_states={},
                 initial_basis=set(Hpsi_i.keys()),
                 num_spin_orbitals=self.num_spin_orbitals,
                 restrictions=None,
@@ -1337,11 +1365,13 @@ class CIPSI_Basis(Basis):
                 print(
                     f"-----> N = {self.size: 7,d}, log(de2_min) = {np.log10(de2_min): 5.1f}, log(|de_0|) = {np.log10(abs(e0 - e0_prev))}, {converge_count=}",
                 )
+        # H_sparse = self.build_sparse_matrix(H, op_dict=H_dict)
+        # v0 = self.build_vector(psi_ref).T
         # e_ref, psi_ref_dense = eigensystem_new(
         #     H_sparse,
         #     basis=self,
         #     e_max=de0_max,
-        #     k=len(psi_ref),
+        #     k=sum(2 * (2 * l + 1) for l in self.ls),
         #     v0=v0,
         #     eigenValueTol=de2_min,
         #     dense_cutoff=dense_cutoff,
@@ -1361,7 +1391,7 @@ class CIPSI_Basis(Basis):
                 H_sparse,
                 basis=self,
                 e_max=de0_max,
-                k=min(1, self.size - 1),
+                k=sum(2 * (2 * l + 1) for l in self.ls),
                 verbose=False,
             )
             self.truncate(self.build_state(psi_ref))
@@ -1397,6 +1427,8 @@ class CIPSI_Basis(Basis):
 
             t_0 = perf_counter()
             Dj_basis = Basis(
+                ls={},
+                bath_states={},
                 initial_basis=set(Hpsi_ref.keys()),
                 num_spin_orbitals=self.num_spin_orbitals,
                 restrictions=None,
@@ -1484,7 +1516,9 @@ class CIPSI_Basis(Basis):
 
     def copy(self):
         new_basis = CIPSI_Basis(
-            initial_basis=[],
+            ls=self.ls,
+            bath_states=self.bath_states,
+            initial_basis=self.local_basis,
             num_spin_orbitals=self.num_spin_orbitals,
             restrictions=self.restrictions,
             comm=self.comm,
@@ -1492,5 +1526,4 @@ class CIPSI_Basis(Basis):
             tau=self.tau,
             verbose=self.verbose,
         )
-        new_basis.add_states(self.local_basis)
         return new_basis

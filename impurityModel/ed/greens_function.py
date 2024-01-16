@@ -183,6 +183,8 @@ def calc_Greens_function_with_offdiag(
 
             v = []
             new_basis = Basis(
+                ls=basis.ls,
+                bath_states=basis.bath_states,
                 initial_basis=[],
                 restrictions=basis.restrictions,
                 num_spin_orbitals=basis.num_spin_orbitals,
@@ -272,6 +274,8 @@ def calc_Greens_function_with_offdiag(
                     block_v.append(v)
 
                 excited_basis = Basis(
+                    ls=basis.ls,
+                    bath_states=basis.bath_states,
                     initial_basis=local_excited_basis,
                     restrictions=basis.restrictions,
                     num_spin_orbitals=basis.num_spin_orbitals,
@@ -567,6 +571,8 @@ def calc_Greens_function_with_offdiag_cg(
                 )
                 local_excited_basis |= res.keys()
     excited_basis = CIPSI_Basis(
+        ls=basis.ls,
+        bath_states=basis.bath_states,
         initial_basis=local_excited_basis,
         restrictions=basis.restrictions,
         num_spin_orbitals=basis.num_spin_orbitals,
@@ -673,6 +679,8 @@ def get_block_Green_cg(
     if matsubara:
         gs_matsubara = np.zeros((len(iws), n, n), dtype=complex)
         local_basis = CIPSI_Basis(
+            ls=basis.ls,
+            bath_states=basis.bath_states,
             initial_basis=list(basis),
             restrictions=basis.restrictions,
             num_spin_orbitals=basis.num_spin_orbitals,

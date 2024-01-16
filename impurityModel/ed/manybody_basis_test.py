@@ -24,6 +24,7 @@ def test_Basis_len(
     expected,
 ):
     basis = Basis(
+        ls=[2],
         valence_baths={2: valence_baths},
         conduction_baths={2: conduction_baths},
         delta_valence_occ={2: delta_valence_occ},
@@ -55,6 +56,7 @@ def test_Basis_len_mpi(
     expected,
 ):
     basis = Basis(
+        ls=[2],
         valence_baths={2: valence_baths},
         conduction_baths={2: conduction_baths},
         delta_valence_occ={2: delta_valence_occ},
@@ -84,6 +86,7 @@ def test_Basis_in(
     nominal_impurity_occ,
 ):
     basis = Basis(
+        ls=[2],
         valence_baths={2: valence_baths},
         conduction_baths={2: conduction_baths},
         delta_valence_occ={2: delta_valence_occ},
@@ -114,6 +117,7 @@ def test_Basis_in_mpi(
     nominal_impurity_occ,
 ):
     basis = Basis(
+        ls=[2],
         valence_baths={2: valence_baths},
         conduction_baths={2: conduction_baths},
         delta_valence_occ={2: delta_valence_occ},
@@ -144,6 +148,7 @@ def test_Basis_list(
     nominal_impurity_occ,
 ):
     basis = Basis(
+        ls=[2],
         valence_baths={2: valence_baths},
         conduction_baths={2: conduction_baths},
         delta_valence_occ={2: delta_valence_occ},
@@ -173,6 +178,7 @@ def test_Basis_list_mpi(
     nominal_impurity_occ,
 ):
     basis = Basis(
+        ls=[2],
         valence_baths={2: valence_baths},
         conduction_baths={2: conduction_baths},
         delta_valence_occ={2: delta_valence_occ},
@@ -203,6 +209,7 @@ def test_CIPSI_Basis_len(
     expected,
 ):
     basis = CIPSI_Basis(
+        ls=[2],
         valence_baths={2: valence_baths},
         conduction_baths={2: conduction_baths},
         delta_valence_occ={2: delta_valence_occ},
@@ -233,6 +240,7 @@ def test_CIPSI_Basis_len_mpi(
     expected,
 ):
     basis = CIPSI_Basis(
+        ls=[2],
         valence_baths={2: valence_baths},
         conduction_baths={2: conduction_baths},
         delta_valence_occ={2: delta_valence_occ},
@@ -275,6 +283,7 @@ def test_CIPSI_Basis_len_mpi(
 # @pytest.mark.mpi
 # def test_Basis_dense_matrix():
 #     basis = Basis(
+# ls=[2],
 #         valence_baths={2: 10},
 #         conduction_baths={2: 0},
 #         delta_valence_occ={2: 1},
@@ -303,7 +312,7 @@ def test_CIPSI_Basis_len_mpi(
 @pytest.mark.mpi
 def test_contains_2():
     states = [b"\x00\x1a\x2b", b"\xff\x00\x1a"]
-    basis = Basis(initial_basis=states, num_spin_orbitals=24, verbose=True, comm=MPI.COMM_WORLD)
+    basis = Basis(ls=[], bath_states={}, initial_basis=states, num_spin_orbitals=24, verbose=True, comm=MPI.COMM_WORLD)
     assert basis.contains(bytes(b"\x00\x1a\x2b"))
     assert not basis.contains(bytes(b"\xff\x1a\x2b"))
     assert all(basis.contains(states))
@@ -327,6 +336,8 @@ def test_contains_random(n_bytes, n_states):
     MPI.COMM_WORLD.Bcast(state_bytes)
     states = [i.tobytes() for i in np.split(state_bytes, n_states)]
     basis = Basis(
+        ls=[],
+        bath_states={},
         initial_basis=states,
         num_spin_orbitals=8 * n_bytes,
         verbose=True,
@@ -359,6 +370,8 @@ def test_contains_random_distributed(n_bytes, n_states):
     state_bytes = np.random.randint(0, high=255, size=n_states * n_bytes, dtype=np.ubyte)
     states = [i.tobytes() for i in np.split(state_bytes, n_states)]
     basis = Basis(
+        ls=[],
+        bath_states={},
         initial_basis=states,
         num_spin_orbitals=8 * n_bytes,
         verbose=True,
@@ -394,6 +407,8 @@ def test_contains_random_distributed_random(n_bytes, n_states, n_sample_states):
     state_bytes = np.random.randint(0, high=255, size=n_states * n_bytes, dtype=np.ubyte)
     states = [i.tobytes() for i in np.split(state_bytes, n_states)]
     basis = Basis(
+        ls=[],
+        bath_states={},
         initial_basis=states,
         num_spin_orbitals=8 * n_bytes,
         verbose=True,
@@ -424,6 +439,8 @@ def test_index_random_distributed_random(n_bytes, n_states, n_sample_states):
     state_bytes = np.random.randint(0, high=255, size=n_states * n_bytes, dtype=np.ubyte)
     states = [i.tobytes() for i in np.split(state_bytes, n_states)]
     basis = Basis(
+        ls=[],
+        bath_states={},
         initial_basis=states,
         num_spin_orbitals=8 * n_bytes,
         verbose=True,
@@ -451,7 +468,7 @@ def test_operator_dict_simple():
         ((3, "c"), (3, "a")): 1,
     }
     states = [b"\x78"]
-    basis = Basis(initial_basis=states, num_spin_orbitals=5, verbose=True, comm=None)
+    basis = Basis(ls=[], bath_states={}, initial_basis=states, num_spin_orbitals=5, verbose=True, comm=None)
 
     op_dict = basis.build_operator_dict(operator)
     correct = {b"\x78": {b"\xF0": -1 / 2, b"\x78": 9 / 2}}
@@ -474,7 +491,7 @@ def test_operator_dict_simple_mpi():
         ((3, "c"), (3, "a")): 1,
     }
     states = [b"\x78"]
-    basis = Basis(initial_basis=states, num_spin_orbitals=5, verbose=True, comm=MPI.COMM_WORLD)
+    basis = Basis(ls=[], bath_states={}, initial_basis=states, num_spin_orbitals=5, verbose=True, comm=MPI.COMM_WORLD)
 
     op_dict = basis.build_operator_dict(operator)
     correct = {b"\x78": {b"\xF0": -1 / 2, b"\x78": 9 / 2}}
@@ -505,7 +522,7 @@ def test_operator_dict_simple_with_extra_states():
         ((0, "c"),): 500,
     }
     states = [b"\x78"]
-    basis = Basis(initial_basis=states, num_spin_orbitals=5, verbose=True, comm=None)
+    basis = Basis(ls=[], bath_states={}, initial_basis=states, num_spin_orbitals=5, verbose=True, comm=None)
 
     op_dict = basis.build_operator_dict(operator)
     correct = {b"\x78": {b"\xF0": -1 / 2, b"\x78": 9 / 2, b"\xF8": 500}}
@@ -529,7 +546,7 @@ def test_operator_dict_simple_with_extra_states_mpi():
         ((0, "c"),): 500,
     }
     states = [b"\x78"]
-    basis = Basis(initial_basis=states, num_spin_orbitals=5, verbose=True, comm=MPI.COMM_WORLD)
+    basis = Basis(ls=[], bath_states={}, initial_basis=states, num_spin_orbitals=5, verbose=True, comm=MPI.COMM_WORLD)
 
     op_dict = basis.build_operator_dict(operator)
     correct = {b"\x78": {b"\xF0": -1 / 2, b"\x78": 9 / 2, b"\xF8": 500}}
@@ -559,7 +576,7 @@ def test_operator_dict_eg_t2g():
         ((3, "c"), (3, "a")): 1,
     }
     states = [b"\x78", b"\xB8", b"\xD8", b"\xE8", b"\xF0"]
-    basis = Basis(initial_basis=states, num_spin_orbitals=5, verbose=True, comm=None)
+    basis = Basis(ls=[], bath_states={}, initial_basis=states, num_spin_orbitals=5, verbose=True, comm=None)
 
     op_dict = basis.build_operator_dict(operator)
     correct = {
@@ -589,7 +606,7 @@ def test_operator_dict_eg_t2g_mpi():
         ((3, "c"), (3, "a")): 1,
     }
     states = [b"\x78", b"\xB8", b"\xD8", b"\xE8", b"\xF0"]
-    basis = Basis(initial_basis=states, num_spin_orbitals=5, verbose=True, comm=MPI.COMM_WORLD)
+    basis = Basis(ls=[], bath_states={}, initial_basis=states, num_spin_orbitals=5, verbose=True, comm=MPI.COMM_WORLD)
 
     op_dict = basis.build_operator_dict(operator)
     correct = {
@@ -627,7 +644,7 @@ def test_operator_dict_eg_t2g_with_extra_states():
         ((0, "c"),): 500,
     }
     states = [b"\x78", b"\xB8", b"\xD8", b"\xE8", b"\xF0"]
-    basis = Basis(initial_basis=states, num_spin_orbitals=5, verbose=True, comm=None)
+    basis = Basis(ls=[], bath_states={}, initial_basis=states, num_spin_orbitals=5, verbose=True, comm=None)
 
     op_dict = basis.build_operator_dict(operator)
     correct = {
@@ -660,7 +677,7 @@ def test_operator_dict_eg_t2g_with_extra_states_mpi():
         ((0, "c"),): 500,
     }
     states = [b"\x78", b"\xB8", b"\xD8", b"\xE8", b"\xF0"]
-    basis = Basis(initial_basis=states, num_spin_orbitals=5, verbose=True, comm=MPI.COMM_WORLD)
+    basis = Basis(ls=[], bath_states={}, initial_basis=states, num_spin_orbitals=5, verbose=True, comm=MPI.COMM_WORLD)
 
     op_dict = basis.build_operator_dict(operator)
     correct = {
@@ -699,7 +716,7 @@ def test_simple_dense_matrix():
         ((3, "c"), (3, "a")): 1,
     }
     states = [b"\x78"]
-    basis = Basis(initial_basis=states, num_spin_orbitals=5, verbose=True, comm=None)
+    basis = Basis(ls=[], bath_states={}, initial_basis=states, num_spin_orbitals=5, verbose=True, comm=None)
 
     op_dict = basis.build_operator_dict(operator)
     dense_mat = basis.build_dense_matrix(operator, op_dict)
@@ -719,7 +736,7 @@ def test_simple_dense_matrix_mpi():
         ((3, "c"), (3, "a")): 1,
     }
     states = [b"\x78"]
-    basis = Basis(initial_basis=states, num_spin_orbitals=5, verbose=True, comm=MPI.COMM_WORLD)
+    basis = Basis(ls=[], bath_states={}, initial_basis=states, num_spin_orbitals=5, verbose=True, comm=MPI.COMM_WORLD)
 
     op_dict = basis.build_operator_dict(operator)
     dense_mat = basis.build_dense_matrix(operator, op_dict)
@@ -738,7 +755,7 @@ def test_eg_t2g_dense_matrix():
         ((3, "c"), (3, "a")): 1,
     }
     states = [b"\x78", b"\xB8", b"\xD8", b"\xE8", b"\xF0"]
-    basis = Basis(initial_basis=states, num_spin_orbitals=5, verbose=True, comm=None)
+    basis = Basis(ls=[], bath_states={}, initial_basis=states, num_spin_orbitals=5, verbose=True, comm=None)
 
     op_dict = basis.build_operator_dict(operator)
     dense_mat = basis.build_dense_matrix(operator, op_dict)
@@ -770,7 +787,7 @@ def test_eg_t2g_dense_matrix_mpi():
         ((3, "c"), (3, "a")): 1,
     }
     states = [b"\x78", b"\xB8", b"\xD8", b"\xE8", b"\xF0"]
-    basis = Basis(initial_basis=states, num_spin_orbitals=5, verbose=True, comm=MPI.COMM_WORLD)
+    basis = Basis(ls=[], bath_states={}, initial_basis=states, num_spin_orbitals=5, verbose=True, comm=MPI.COMM_WORLD)
 
     op_dict = basis.build_operator_dict(operator)
     dense_mat = basis.build_dense_matrix(operator, op_dict)
@@ -792,7 +809,7 @@ def test_eg_t2g_dense_matrix_mpi():
 
 def test_simple_vector():
     states = [b"\x00\x1a\x2b", b"\xff\x00\x1a"]
-    basis = Basis(initial_basis=states, num_spin_orbitals=24, verbose=True, comm=None)
+    basis = Basis(ls=[], bath_states={}, initial_basis=states, num_spin_orbitals=24, verbose=True, comm=None)
     state = {}
     if states[0] in basis._index_dict:
         state[states[0]] = 0.25 + 0.2j
@@ -810,7 +827,7 @@ def test_simple_vector():
 @pytest.mark.mpi
 def test_simple_vector_mpi():
     states = [b"\x00\x1a\x2b", b"\xff\x00\x1a"]
-    basis = Basis(initial_basis=states, num_spin_orbitals=24, verbose=True, comm=MPI.COMM_WORLD)
+    basis = Basis(ls=[], bath_states={}, initial_basis=states, num_spin_orbitals=24, verbose=True, comm=MPI.COMM_WORLD)
     state = {}
     if states[0] in basis._index_dict:
         state[states[0]] = 0.25 + 0.2j
@@ -828,7 +845,7 @@ def test_simple_vector_mpi():
 def test_vector():
     comm = None
     states = [b"\x78", b"\xB8", b"\xD8", b"\xE8", b"\xF0"]
-    basis = Basis(initial_basis=states[:-1], num_spin_orbitals=5, verbose=True, comm=comm)
+    basis = Basis(ls=[], bath_states={}, initial_basis=states[:-1], num_spin_orbitals=5, verbose=True, comm=comm)
     state = {states[-1]: 1 + 1j}
     state[states[0]] = 0.25 + 0.2j
     if states[1] in basis._index_dict:
@@ -845,7 +862,7 @@ def test_vector():
 def test_vector_mpi():
     comm = MPI.COMM_WORLD
     states = [b"\x78", b"\xB8", b"\xD8", b"\xE8", b"\xF0"]
-    basis = Basis(initial_basis=states[:-1], num_spin_orbitals=5, verbose=True, comm=comm)
+    basis = Basis(ls=[], bath_states={}, initial_basis=states[:-1], num_spin_orbitals=5, verbose=True, comm=comm)
     state = {states[-1]: 1 + 1j}
     state[states[0]] = 0.25 + 0.2j
     if states[1] in basis._index_dict:
@@ -860,7 +877,7 @@ def test_vector_mpi():
 
 def test_simple_state():
     states = [b"\x00\x1a\x2b", b"\xff\x00\x1a"]
-    basis = Basis(initial_basis=states, num_spin_orbitals=24, verbose=True, comm=None)
+    basis = Basis(ls=[], bath_states={}, initial_basis=states, num_spin_orbitals=24, verbose=True, comm=None)
 
     v = np.array([[1.0, -2.5]])
     s = basis.build_state(v)
@@ -873,7 +890,7 @@ def test_simple_state():
 @pytest.mark.mpi
 def test_simple_state_mpi():
     states = [b"\x00\x1a\x2b", b"\xff\x00\x1a"]
-    basis = Basis(initial_basis=states, num_spin_orbitals=24, verbose=True, comm=MPI.COMM_WORLD)
+    basis = Basis(ls=[], bath_states={}, initial_basis=states, num_spin_orbitals=24, verbose=True, comm=MPI.COMM_WORLD)
 
     v = np.array([[1.0, -2.5]])
     s = basis.build_state(v)
@@ -886,7 +903,7 @@ def test_simple_state_mpi():
 def test_state_mpi():
     comm = None
     states = [b"\x78", b"\xB8", b"\xD8", b"\xE8", b"\xF0"]
-    basis = Basis(initial_basis=states, num_spin_orbitals=5, verbose=True, comm=comm)
+    basis = Basis(ls=[], bath_states={}, initial_basis=states, num_spin_orbitals=5, verbose=True, comm=comm)
     v = np.array([[1.0, -2.5, 0, 0, 1.2], [0, 3, 1, 0, 0]])
     s = basis.build_state(v)
     s_exact = [
@@ -902,7 +919,7 @@ def test_state_mpi():
 def test_state_mpi():
     comm = MPI.COMM_WORLD
     states = [b"\x78", b"\xB8", b"\xD8", b"\xE8", b"\xF0"]
-    basis = Basis(initial_basis=states, num_spin_orbitals=5, verbose=True, comm=comm)
+    basis = Basis(ls=[], bath_states={}, initial_basis=states, num_spin_orbitals=5, verbose=True, comm=comm)
     v = np.array([[1.0, -2.5, 0, 0, 1.2], [0, 3, 1, 0, 0]])
     s = basis.build_state(v)
     s_exact = [
@@ -919,7 +936,7 @@ def test_spin_flip():
     # dn 11001 -> n_dn = 3
     # up 00101 -> n_up = 2
     states = [b"\xC9\x40"]
-    basis = Basis(initial_basis=[], num_spin_orbitals=10, verbose=True, comm=comm)
+    basis = Basis(ls=[2], bath_states={2: 0}, initial_basis=[], num_spin_orbitals=10, verbose=True, comm=comm)
     spin_flipped = basis._generate_spin_flipped_determinants(states)
     # flips:
     # dn 11001  01001  10001  11101  00001  10101  01101  00101
@@ -944,7 +961,7 @@ def test_spin_flip_mpi():
     # dn 11001 -> n_dn = 3
     # up 00101 -> n_up = 2
     states = [b"\xC9\x40"]
-    basis = Basis(initial_basis=[], num_spin_orbitals=10, verbose=True, comm=comm)
+    basis = Basis(ls=[2], bath_states={2: 0}, initial_basis=[], num_spin_orbitals=10, verbose=True, comm=comm)
     spin_flipped = basis._generate_spin_flipped_determinants(states)
     # flips:
     # dn 11001  01001  10001  11101  00001  10101  01101  00101
@@ -969,7 +986,7 @@ def test_alltoall_states_mpi():
     num_spin_orbitals = comm.size
     bytes_per_state = int(ceil(num_spin_orbitals / 8))
     send_states = [[r.to_bytes(bytes_per_state, "big")] for r in range(comm.size)]
-    basis = Basis(initial_basis=[], num_spin_orbitals=num_spin_orbitals, verbose=True, comm=comm)
+    basis = Basis(ls=[], bath_states={}, initial_basis=[], num_spin_orbitals=num_spin_orbitals, verbose=True, comm=comm)
     received_states = basis.alltoall_states(send_states)
     assert all(
         state == comm.rank.to_bytes(bytes_per_state, "big") for rs in received_states for state in rs
@@ -982,7 +999,7 @@ def test_alltoall_states_with_empty_mpi():
     num_spin_orbitals = comm.size
     bytes_per_state = ceil(num_spin_orbitals / 8)
     send_states = [[r.to_bytes(bytes_per_state, "big")] if r < comm.rank else [] for r in range(comm.size)]
-    basis = Basis(initial_basis=[], num_spin_orbitals=num_spin_orbitals, verbose=True, comm=comm)
+    basis = Basis(ls=[], bath_states={}, initial_basis=[], num_spin_orbitals=num_spin_orbitals, verbose=True, comm=comm)
     basis.add_states([comm.rank.to_bytes(bytes_per_state, "big")], distributed_sort=False)
     received_states = basis.alltoall_states(send_states)
     assert all(
@@ -1010,7 +1027,7 @@ def test_eg_t2g_basis_expand():
     # Start with 10000  01000
     #            00000  00000
     states = [b"\x80\x00", b"\x40\x00"]
-    basis = Basis(initial_basis=states, num_spin_orbitals=10, verbose=True, comm=None)
+    basis = Basis(ls=[2], bath_states={2: 0}, initial_basis=states, num_spin_orbitals=10, verbose=True, comm=None)
 
     basis.expand(Hop)
     # expect 10000  01000  00001  00000  00000  00000
@@ -1042,7 +1059,9 @@ def test_eg_t2g_basis_expand_mpi():
     # Start with 10000  01000
     #            00000  00000
     states = [b"\x80\x00", b"\x40\x00"]
-    basis = Basis(initial_basis=states, num_spin_orbitals=10, verbose=True, comm=MPI.COMM_WORLD)
+    basis = Basis(
+        ls=[2], bath_states={2: 0}, initial_basis=states, num_spin_orbitals=10, verbose=True, comm=MPI.COMM_WORLD
+    )
 
     basis.expand(Hop)
     # expect 10000  01000  00001  00000  00000  00000

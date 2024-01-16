@@ -409,6 +409,7 @@ def fixed_peak_dc(h0_op, dc_struct, rank, verbose, dense_cutoff):
     Nm = ({l: N0[0][l] - 1 for l in N0[0]}, N0[1], N0[2])
     if peak_position >= 0:
         basis_upper = CIPSI_Basis(
+            ls=[l for l in N0[0]],
             valence_baths=num_valence_bath_states,
             conduction_baths=num_conduction_bath_states,
             delta_valence_occ=delta_valence_occ,
@@ -419,6 +420,7 @@ def fixed_peak_dc(h0_op, dc_struct, rank, verbose, dense_cutoff):
             comm=MPI.COMM_WORLD,
         )
         basis_lower = CIPSI_Basis(
+            ls=[l for l in N0[0]],
             valence_baths=num_valence_bath_states,
             conduction_baths=num_conduction_bath_states,
             delta_valence_occ=delta_valence_occ,
@@ -430,6 +432,7 @@ def fixed_peak_dc(h0_op, dc_struct, rank, verbose, dense_cutoff):
         )
     else:
         basis_upper = CIPSI_Basis(
+            ls=[l for l in N0[0]],
             valence_baths=num_valence_bath_states,
             conduction_baths=num_conduction_bath_states,
             delta_valence_occ=delta_valence_occ,
@@ -440,6 +443,7 @@ def fixed_peak_dc(h0_op, dc_struct, rank, verbose, dense_cutoff):
             comm=MPI.COMM_WORLD,
         )
         basis_lower = CIPSI_Basis(
+            ls=[l for l in N0[0]],
             valence_baths=num_valence_bath_states,
             conduction_baths=num_conduction_bath_states,
             delta_valence_occ=delta_valence_occ,
