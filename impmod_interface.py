@@ -115,7 +115,7 @@ class dcStruct:
 
 def parse_solver_line(solver_line):
     """
-    N0 dN dVal dCon Nbath [pro] [dense_cutoff 1000]
+    N0 dN dVal dCon Nbath [[pro, full] [dense_cutoff 50] [no_block], [fit_unocc]]
     """
     # Remove comments from the solver line
     solver_line = solver_line.split("!")[0]
@@ -138,14 +138,13 @@ def parse_solver_line(solver_line):
             f"--->Nbaths {solver_array[4]}\n"
             f"--->Other params {solver_array[5:]}"
         )
-    dense_cutoff = 1000
+    dense_cutoff = 50
     reort = Reort.NONE
     blocked = True
+    fit_unocc = False
     if len(solver_array) > 5:
         skip_next = False
-        for i in range(len(solver_array)):
-            if i < 5:
-                continue
+        for i in range(5, len(solver_array)):
             if skip_next:
                 skip_next = False
                 continue
@@ -159,7 +158,21 @@ def parse_solver_line(solver_line):
                 skip_next = True
             elif arg.lower() == "no_block":
                 blocked = False
-    return nominal_occ, delta_occ, nBaths, reort, dense_cutoff, blocked
+            elif arg.lower() == "fit_unocc":
+                fit_unocc = True
+            else:
+                raise RuntimeError(f"Unknown solver parameter {arg}.\n" f"--->Other solver params {solver_array[5:]}")
+
+    print(
+        f"Nominal imp. occupation  +> {nominal_occ[0]}\n"
+        f"Delta occupation         +> {delta_occ}\n"
+        f"# bath states / imp. orb.+> {nBaths}\n"
+        f"Reorthogonalizaion mode  +> {reort}\n"
+        f"Dense matrix size cutoff +> {dense_cutoff}\n"
+        f"Use block structure      +> {blocked}\n"
+        f"Fit unoccupied states    +> {fit_unocc}\n"
+    )
+    return nominal_occ, delta_occ, nBaths, reort, dense_cutoff, blocked, fit_unocc
 
 
 @ffi.def_extern()
@@ -279,7 +292,9 @@ def run_impmod_ed(
     else:
         sys.stdout = open(devnull, "w")
 
-    nominal_occ, delta_occ, bath_states_per_orbital, reort, dense_cutoff, blocked = parse_solver_line(solver_line)
+    nominal_occ, delta_occ, bath_states_per_orbital, reort, dense_cutoff, blocked, fit_unocc = parse_solver_line(
+        solver_line
+    )
     nominal_occ = ({l: nominal_occ[0]}, {l: nominal_occ[1]}, {l: nominal_occ[2]})
     delta_occ = ({l: delta_occ[0]}, {l: delta_occ[1]}, {l: delta_occ[2]})
 
@@ -292,7 +307,7 @@ def run_impmod_ed(
         eim,
         gamma=0.01,
         imag_only=False,
-        valence_bath_only=delta_occ[2][l] == 0,
+        valence_bath_only=not fit_unocc,
         label=label.strip(),
         save_baths_and_hopping=rspt_dc_flag == 1,
         verbose=(verbosity >= 2 or rspt_dc_flag == 1) and rank == 0,
@@ -457,8 +472,8 @@ def fixed_peak_dc(h0_op, dc_struct, rank, verbose, dense_cutoff):
     # dc_op = {(((l, s, m), "c"), ((l, s, m), "a")): -dc_trial for m in range(-l, l + 1) for s in range(2)}
     # h_op_c = finite.addOps([h0_op, u, dc_op])
     h_op_i = finite.c2i_op(sum_bath_states, h0_op)
-    _ = basis_upper.expand(h_op_i, dense_cutoff=dense_cutoff, de2_min=1e-5, slaterWeightMin=1e-6)
-    _ = basis_lower.expand(h_op_i, dense_cutoff=dense_cutoff, de2_min=1e-5, slaterWeightMin=1e-6)
+    _ = basis_upper.expand(h_op_i, dense_cutoff=dense_cutoff, de2_min=1e-5, slaterWeightMin=0)
+    _ = basis_lower.expand(h_op_i, dense_cutoff=dense_cutoff, de2_min=1e-5, slaterWeightMin=0)
 
     def F(dc_trial):
         dc_op = {(((l, s, m), "c"), ((l, s, m), "a")): -dc_trial for m in range(-l, l + 1) for s in range(2)}
@@ -469,12 +484,16 @@ def fixed_peak_dc(h0_op, dc_struct, rank, verbose, dense_cutoff):
         # h_dict = basis_upper.expand(h_op_i, dense_cutoff=dense_cutoff, de2_min=1e-5, slaterWeightMin=1e-6)
         # if verbose:
         #     print("Build upper operator dict", flush=True)
-        h_sparse = basis_upper.build_sparse_matrix(h_op_i)
+        h = (
+            basis_upper.build_sparse_matrix(h_op_i)
+            if basis_upper.size > dense_cutoff
+            else basis_upper.build_dense_matrix(h_op_i)
+        )
         # h_sparse = basis_upper.build_sparse_matrix(h_op_i, h_dict)
         # if verbose:
         #     print("Find upper energy", flush=True)
         e_upper = finite.eigensystem_new(
-            h_sparse,
+            h,
             basis_upper,
             0,
             k=1,
@@ -488,12 +507,16 @@ def fixed_peak_dc(h0_op, dc_struct, rank, verbose, dense_cutoff):
         # h_dict = basis_lower.expand(h_op_i, dense_cutoff=dense_cutoff, de2_min=1e-5, slaterWeightMin=1e-6)
         # if verbose:
         #     print("Build lower operator dict", flush=True)
-        h_sparse = basis_lower.build_sparse_matrix(h_op_i)
+        h = (
+            basis_lower.build_sparse_matrix(h_op_i)
+            if basis_lower.size > dense_cutoff
+            else basis_lower.build_dense_matrix(h_op_i)
+        )
         # h_sparse = basis_lower.build_sparse_matrix(h_op_i, h_dict)
         # if verbose:
         #     print("Find lower energy", flush=True)
         e_lower = finite.eigensystem_new(
-            h_sparse,
+            h,
             basis_lower,
             0,
             k=1,

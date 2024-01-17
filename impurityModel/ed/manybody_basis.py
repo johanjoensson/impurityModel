@@ -315,7 +315,7 @@ class Basis:
         return states
 
     def _set_state_bounds(self, local_states) -> list[bytes]:
-        n_samples = min(100, max(len(local_states) // 100, 2))
+        n_samples = min(len(local_states), 100)
         state_bounds = None
         done = False
         while not done:
@@ -335,7 +335,6 @@ class Basis:
             offsets = np.array([0], dtype=int)
             if self.comm.rank == 0:
                 all_samples_bytes = bytearray(sum(samples_count) * self.n_bytes)
-                # all_samples_bytes = np.empty((sum(samples_count) * self.n_bytes), dtype=np.ubyte)
                 offsets = np.fromiter(
                     (np.sum(samples_count[:i]) for i in range(self.comm.size)), dtype=int, count=self.comm.size
                 )
@@ -360,7 +359,6 @@ class Basis:
                             for i in range(np.sum(samples_count))
                         }
                     )
-                    # all_states = sorted({i.tobytes() for i in np.split(all_samples_bytes, np.sum(samples_count))})
 
                     sizes = np.array([len(all_states) // self.comm.size] * self.comm.size, dtype=int)
                     sizes[: len(all_states) % self.comm.size] += 1
@@ -369,13 +367,7 @@ class Basis:
                     state_bounds = [
                         all_states[bound] if bound < len(all_states) else all_states[-1] for bound in bounds
                     ]
-                    # state_bounds_bytes = np.array([byte for state in state_bounds for byte in state], dtype=np.ubyte)
                 state_bounds_bytes = bytearray(byte for state in state_bounds for byte in state)
-                # state_bounds_bytes = np.fromiter(
-                #     (byte for state in state_bounds for byte in state),
-                #     dtype=np.ubyte,
-                #     count=len(state_bounds) * self.n_bytes,
-                # )
             else:
                 state_bounds_bytes = bytearray(self.comm.size * self.n_bytes)
                 state_bounds = None
@@ -1319,7 +1311,11 @@ class CIPSI_Basis(Basis):
         psi_ref = None
         while converge_count < 1:
             t0 = perf_counter()
-            H_sparse = self.build_sparse_matrix(H, op_dict=H_dict)
+            H_mat = (
+                self.build_sparse_matrix(H, op_dict=H_dict)
+                if self.size > dense_cutoff
+                else self.build_dense_matrix(H, op_dict=H_dict)
+            )
             t0 = perf_counter() - t0
             t0 = self.comm.reduce(t0, op=MPI.SUM, root=0)
             if self.verbose:
@@ -1331,7 +1327,7 @@ class CIPSI_Basis(Basis):
             else:
                 v0 = None
             e_ref, psi_ref_dense = eigensystem_new(
-                H_sparse,
+                H_mat,
                 basis=self,
                 e_max=de0_max,
                 k=1 if psi_ref is None else max(1, len(psi_ref)),

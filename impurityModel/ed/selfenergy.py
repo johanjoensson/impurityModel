@@ -61,15 +61,19 @@ def find_gs(h_op, N0, delta_occ, bath_states, num_spin_orbitals, rank, verbose, 
             delta_conduction_occ=delta_con_occ,
             delta_impurity_occ=delta_imp_occ,
             nominal_impurity_occ={l: N0[0][l] + d for l in N0[0]},
-            truncation_threshold=1e6,
+            truncation_threshold=1e8,
             verbose=False and verbose,
             comm=MPI.COMM_WORLD,
         )
         if verbose:
             print(f"Before expansion basis contains {basis.size} elements")
         # h_dict = basis.expand(h_op, dense_cutoff=dense_cutoff)
-        h_dict = basis.expand(h_op, dense_cutoff=dense_cutoff, de2_min=1e-4, slaterWeightMin=1e-4)
-        h = basis.build_sparse_matrix(h_op, h_dict)
+        h_dict = basis.expand(h_op, dense_cutoff=dense_cutoff, de2_min=1e-5, slaterWeightMin=1e-5)
+        h = (
+            basis.build_sparse_matrix(h_op, h_dict)
+            if basis.size > dense_cutoff
+            else basis.build_dense_matrix(h_op, h_dict)
+        )
 
         e_trial = finite.eigensystem_new(
             h,
@@ -224,7 +228,7 @@ def calc_selfenergy(
     h_dict = basis.expand(h, dense_cutoff=dense_cutoff, de2_min=1e-10, slaterWeightMin=0)
     if verbosity >= 1:
         print(f"Ground state basis contains {len(basis)} elsements.")
-    if basis.size < dense_cutoff:
+    if basis.size <= dense_cutoff:
         h_gs = basis.build_dense_matrix(h, h_dict)
     else:
         h_gs = basis.build_sparse_matrix(h, h_dict)
