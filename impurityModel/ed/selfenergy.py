@@ -68,7 +68,7 @@ def find_gs(h_op, N0, delta_occ, bath_states, num_spin_orbitals, rank, verbose, 
         if verbose:
             print(f"Before expansion basis contains {basis.size} elements")
         # h_dict = basis.expand(h_op, dense_cutoff=dense_cutoff)
-        h_dict = basis.expand(h_op, dense_cutoff=dense_cutoff, de2_min=1e-5, slaterWeightMin=1e-5)
+        h_dict = basis.expand(h_op, dense_cutoff=dense_cutoff, de2_min=1e-5, slaterWeightMin=0)
         h = (
             basis.build_sparse_matrix(h_op, h_dict)
             if basis.size > dense_cutoff
@@ -77,7 +77,6 @@ def find_gs(h_op, N0, delta_occ, bath_states, num_spin_orbitals, rank, verbose, 
 
         e_trial = finite.eigensystem_new(
             h,
-            basis,
             e_max=0,
             k=1,
             verbose=verbose,
@@ -234,7 +233,6 @@ def calc_selfenergy(
         h_gs = basis.build_sparse_matrix(h, h_dict)
     es, psis_dense = finite.eigensystem_new(
         h_gs,
-        basis,
         e_max=energy_cut,
         k=2 * (2 * l + 1),
         verbose=verbosity >= 1,

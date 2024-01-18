@@ -125,7 +125,6 @@ def mpi_matmul(h_local, comm):
 
 def eigensystem_new(
     h_local,
-    basis,
     e_max,
     k=10,
     v0=None,
@@ -167,8 +166,8 @@ def eigensystem_new(
         if comm.rank == 0:
             es, vecs = np.linalg.eigh(h_local, UPLO="L")
         else:
-            es = np.empty((basis.size,))
-            vecs = np.empty((basis.size, basis.size), dtype=complex)
+            es = np.empty((h_local.shape[0],))
+            vecs = np.empty_like(h_local)
         comm.Bcast(es, root=0)
         comm.Bcast(vecs, root=0)
         mask = es - es[0] <= e_max

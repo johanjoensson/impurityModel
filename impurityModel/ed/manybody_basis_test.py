@@ -1070,3 +1070,72 @@ def test_eg_t2g_basis_expand_mpi():
     expected = [b"\x80\x00", b"\x40\x00", b"\x08\x00"]  # , b"\x04\x00", b"\x02\x00", b"\x00\x40"]
     assert all(state in expected for state in basis), f"{expected=} {list(basis)=}"
     assert all(state in basis for state in expected), f"{expected=} {list(basis)=}"
+
+
+def test_eg_t2g_CIPSI_basis_expand():
+    Hop = {
+        ((0, "c"), (0, "a")): 1,
+        ((0, "c"), (4, "a")): 1 / 2,
+        ((4, "c"), (0, "a")): 1 / 2,
+        ((4, "c"), (4, "a")): 1,
+        ((2, "c"), (2, "a")): 3 / 2,
+        ((1, "c"), (1, "a")): 1,
+        ((3, "c"), (3, "a")): 1,
+        ((5, "c"), (5, "a")): 1,
+        ((5, "c"), (9, "a")): 1 / 2,
+        ((9, "c"), (5, "a")): 1 / 2,
+        ((9, "c"), (9, "a")): 1,
+        ((7, "c"), (7, "a")): 3 / 2,
+        ((6, "c"), (6, "a")): 1,
+        ((8, "c"), (8, "a")): 1,
+    }
+    # Start with 10000
+    #            00000
+    states = [b"\x80\x00"]
+    basis = CIPSI_Basis(ls=[2], bath_states={2: 0}, initial_basis=states, num_spin_orbitals=10, verbose=True, comm=None)
+
+    basis.expand(Hop)
+
+    expected = [b"\x80\x00", b"\x08\x00", b"\x00\x40"]
+    assert all(state in expected for state in basis), f"{expected=} {list(basis)=}"
+    assert all(state in basis for state in expected), f"{expected=} {list(basis)=}"
+
+
+@pytest.mark.mpi
+def test_eg_t2g_CIPSI_basis_expand_mpi():
+    Hop = {
+        ((0, "c"), (0, "a")): 1,
+        ((0, "c"), (4, "a")): 1 / 2,
+        ((4, "c"), (0, "a")): 1 / 2,
+        ((4, "c"), (4, "a")): 1,
+        ((2, "c"), (2, "a")): 3 / 2,
+        ((1, "c"), (1, "a")): 1,
+        ((3, "c"), (3, "a")): 1,
+        ((5, "c"), (5, "a")): 1,
+        ((5, "c"), (9, "a")): 1 / 2,
+        ((9, "c"), (5, "a")): 1 / 2,
+        ((9, "c"), (9, "a")): 1,
+        ((7, "c"), (7, "a")): 3 / 2,
+        ((6, "c"), (6, "a")): 1,
+        ((8, "c"), (8, "a")): 1,
+    }
+    # Start with 10000
+    #            00000
+    states = [b"\x80\x00"]
+    basis = CIPSI_Basis(
+        ls=[2],
+        bath_states={2: 0},
+        initial_basis=states,
+        num_spin_orbitals=10,
+        verbose=MPI.COMM_WORLD.rank == 0,
+        comm=MPI.COMM_WORLD,
+    )
+
+    basis.expand(Hop)
+    # expect 10000  00001  00000  00000
+    #        00000  00000  10000  00001
+
+    expected = [b"\x80\x00", b"\x08\x00", b"\x00\x40"]
+    assert all(state in expected for state in basis), f"{expected=} {list(basis)=}"
+    assert all(state in basis for state in expected), f"{expected=} {list(basis)=}"
+    assert False

@@ -494,7 +494,6 @@ def fixed_peak_dc(h0_op, dc_struct, rank, verbose, dense_cutoff):
         #     print("Find upper energy", flush=True)
         e_upper = finite.eigensystem_new(
             h,
-            basis_upper,
             0,
             k=1,
             eigenValueTol=0,
@@ -517,7 +516,6 @@ def fixed_peak_dc(h0_op, dc_struct, rank, verbose, dense_cutoff):
         #     print("Find lower energy", flush=True)
         e_lower = finite.eigensystem_new(
             h,
-            basis_lower,
             0,
             k=1,
             eigenValueTol=0,
