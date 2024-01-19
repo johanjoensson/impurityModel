@@ -305,7 +305,7 @@ def run_impmod_ed(
         bath_states_per_orbital,
         w,
         eim,
-        gamma=0.01,
+        gamma=0.001,
         imag_only=False,
         valence_bath_only=not fit_unocc,
         label=label.strip(),
