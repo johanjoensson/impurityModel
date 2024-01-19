@@ -339,7 +339,7 @@ def run_impmod_ed(
             u4=u4,
             slater_params=slater,
             peak_position=peak_position,
-            dc_guess=np.trace(sig_dc) / sig_dc.shape[0],
+            dc_guess=sig_dc[0, 0],
         )
 
         try:
@@ -469,25 +469,27 @@ def fixed_peak_dc(h0_op, dc_struct, rank, verbose, dense_cutoff):
             comm=MPI.COMM_WORLD,
         )
 
-    # dc_op = {(((l, s, m), "c"), ((l, s, m), "a")): -dc_trial for m in range(-l, l + 1) for s in range(2)}
+    # dc_op = {(((l, s, m), "c"), ((l, s, m), "a")): -dc_struct.dc_guess for m in range(-l, l + 1) for s in range(2)}
     # h_op_c = finite.addOps([h0_op, u, dc_op])
-    h_op_i = finite.c2i_op(sum_bath_states, h0_op)
-    _ = basis_upper.expand(h_op_i, dense_cutoff=dense_cutoff, de2_min=1e-5, slaterWeightMin=0)
-    _ = basis_lower.expand(h_op_i, dense_cutoff=dense_cutoff, de2_min=1e-5, slaterWeightMin=0)
+    # h_op_i = finite.c2i_op(sum_bath_states, h_op_c)
+    # _ = basis_upper.expand(h_op_i, dense_cutoff=dense_cutoff, de2_min=1e-5, slaterWeightMin=0)
+    # _ = basis_lower.expand(h_op_i, dense_cutoff=dense_cutoff, de2_min=1e-5, slaterWeightMin=0)
 
     def F(dc_trial):
+        bu = basis_upper.copy()
+        bl = basis_lower.copy()
         dc_op = {(((l, s, m), "c"), ((l, s, m), "a")): -dc_trial for m in range(-l, l + 1) for s in range(2)}
         h_op_c = finite.addOps([h0_op, u, dc_op])
         h_op_i = finite.c2i_op(sum_bath_states, h_op_c)
         # if verbose:
         #     print("Expand upper basis", flush=True)
-        # h_dict = basis_upper.expand(h_op_i, dense_cutoff=dense_cutoff, de2_min=1e-5, slaterWeightMin=1e-6)
+        h_dict = bu.expand(h_op_i, dense_cutoff=dense_cutoff, de2_min=1e-5, slaterWeightMin=0)
         # if verbose:
         #     print("Build upper operator dict", flush=True)
         h = (
-            basis_upper.build_sparse_matrix(h_op_i)
+            basis_upper.build_sparse_matrix(h_op_i, h_dict)
             if basis_upper.size > dense_cutoff
-            else basis_upper.build_dense_matrix(h_op_i)
+            else basis_upper.build_dense_matrix(h_op_i, h_dict)
         )
         # h_sparse = basis_upper.build_sparse_matrix(h_op_i, h_dict)
         # if verbose:
@@ -503,13 +505,13 @@ def fixed_peak_dc(h0_op, dc_struct, rank, verbose, dense_cutoff):
         )
         # if verbose:
         #     print("Expand lower basis", flush=True)
-        # h_dict = basis_lower.expand(h_op_i, dense_cutoff=dense_cutoff, de2_min=1e-5, slaterWeightMin=1e-6)
+        h_dict = bl.expand(h_op_i, dense_cutoff=dense_cutoff, de2_min=1e-5, slaterWeightMin=0)
         # if verbose:
         #     print("Build lower operator dict", flush=True)
         h = (
-            basis_lower.build_sparse_matrix(h_op_i)
+            basis_lower.build_sparse_matrix(h_op_i, h_dict)
             if basis_lower.size > dense_cutoff
-            else basis_lower.build_dense_matrix(h_op_i)
+            else basis_lower.build_dense_matrix(h_op_i, h_dict)
         )
         # h_sparse = basis_lower.build_sparse_matrix(h_op_i, h_dict)
         # if verbose:
@@ -609,6 +611,9 @@ def get_ed_h0(
             comm=comm,
             new_v=True,
         )
+        sort_indices = np.argsort(eb, kind="stable")
+        eb = eb[sort_indices]
+        v = v[sort_indices]
 
     if save_baths_and_hopping:
         if comm is not None and comm.rank == 0:
