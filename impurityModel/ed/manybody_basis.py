@@ -1037,12 +1037,15 @@ class Basis:
                 {row for column in self.local_basis for row in expanded_dict[column].keys()}
             )
             # This should never need more than one loop, but I think something is wrong on the Dardel supercimputer so let's try this and see what happens
+            retries = 0
             retry = np.array([True], dtype=bool)
             while np.any(retry):
                 row_indices = self._index_sequence(rows_in_basis)
                 self.comm.Allreduce(
                     np.array([any(index > self.size for index in row_indices)], dtype=bool), retry, op=MPI.LOR
                 )
+                retries += 1
+            print(f"Took {retries - 1} retries.")
             row_dict = {state: index for state, index in zip(rows_in_basis, row_indices) if index != self.size}
             # in_basis_mask: list[bool] = self.contains(rows_in_basis)
             # rows_in_basis: list[bytes] = list({rows_in_basis[i] for i in range(len(rows_in_basis)) if in_basis_mask[i]})
