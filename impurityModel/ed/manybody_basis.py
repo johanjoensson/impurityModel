@@ -20,12 +20,7 @@ except ModuleNotFoundError:
 
 
 from impurityModel.ed import product_state_representation as psr
-from impurityModel.ed.finite import (
-    applyOp_2 as applyOp,
-    c2i,
-    c2i_op,
-    eigensystem_new,
-)
+from impurityModel.ed.finite import applyOp_2 as applyOp, c2i, c2i_op, eigensystem_new, norm2
 
 
 def combine_sets(set_1, set_2, _):
@@ -1146,7 +1141,6 @@ class CIPSI_Basis(Basis):
             H_sparse = self.build_sparse_matrix(H)
             e_ref, psi_ref = eigensystem_new(
                 H_sparse,
-                basis=self,
                 e_max=1e-12,
                 k=sum(2 * (2 * l + 1) for l in self.ls),
                 eigenValueTol=0,
@@ -1219,6 +1213,7 @@ class CIPSI_Basis(Basis):
                 ls={},
                 bath_states={},
                 initial_basis=[Dj for Dj, mask in zip(Dj_candidates, Dj_basis_mask) if not mask],
+                # initial_basis=set(Hpsi_i.keys()),
                 num_spin_orbitals=self.num_spin_orbitals,
                 restrictions=None,
                 comm=self.comm,
@@ -1282,7 +1277,7 @@ class CIPSI_Basis(Basis):
         e0_prev = np.inf
         e0 = 0
         converge_count = 0
-        de0_max = -self.tau * np.log(1e-4)
+        de0_max = max(-self.tau * np.log(1e-4), de2_min)
         psi_ref = None
         while converge_count < 1:
             H_mat = (
@@ -1300,7 +1295,7 @@ class CIPSI_Basis(Basis):
                 e_max=de0_max,
                 k=sum(2 * (2 * l + 1) for l in self.ls),
                 v0=v0,
-                eigenValueTol=0,
+                eigenValueTol=de2_min,
                 dense_cutoff=dense_cutoff,
                 verbose=self.verbose,
             )
@@ -1321,31 +1316,32 @@ class CIPSI_Basis(Basis):
                 print(
                     f"-----> N = {self.size: 7,d}, log(de2_min) = {np.log10(de2_min): 5.1f}, log(|de_0|) = {np.log10(abs(e0 - e0_prev))}, {converge_count=}",
                 )
-        H_mat = (
-            self.build_sparse_matrix(H, op_dict=H_dict)
-            if self.size > dense_cutoff
-            else self.build_dense_matrix(H, op_dict=H_dict)
-        )
-        v0 = self.build_vector(psi_ref).T
-        e_ref, psi_ref_dense = eigensystem_new(
-            H_mat,
-            basis=self,
-            e_max=de0_max,
-            k=sum(2 * (2 * l + 1) for l in self.ls),
-            v0=v0,
-            eigenValueTol=0,
-            dense_cutoff=0,
-            verbose=self.verbose,
-        )
-        psi_ref = self.build_state(psi_ref_dense.T)
-        Dj = {state for psi in psi_ref for state in psi if abs(psi[state]) > slaterWeightMin}
-        self.local_basis.clear()
-        self.add_states(Dj)
+        print(f"Length of psi_ref = {len(psi_ref)=}")
+        # H_mat = (
+        #     self.build_sparse_matrix(H, op_dict=H_dict)
+        #     if self.size > dense_cutoff
+        #     else self.build_dense_matrix(H, op_dict=H_dict)
+        # )
+        # v0 = self.build_vector(psi_ref).T
+        # e_ref, psi_ref_dense = eigensystem_new(
+        #     H_mat,
+        #     e_max=de0_max,
+        #     k=sum(2 * (2 * l + 1) for l in self.ls),
+        #     v0=v0,
+        #     eigenValueTol=de2_min,
+        #     dense_cutoff=dense_cutoff,
+        #     verbose=self.verbose,
+        # )
+        # psi_ref = self.build_state(psi_ref_dense.T)
+        # Dj = {state for psi in psi_ref for state in psi if abs(psi[state]) > slaterWeightMin}
+        # self.local_basis.clear()
+        # self.add_states(Dj)
 
         if self.verbose:
             print(f"After expansion, the basis contains {self.size} elements.")
 
         if self.size > self.truncation_threshold:
+            print(f"Truncating!")
             H_sparse = self.build_sparse_matrix(H, op_dict=H_dict)
             e_ref, psi_ref = eigensystem_new(
                 H_sparse,
@@ -1383,78 +1379,79 @@ class CIPSI_Basis(Basis):
                 slaterWeightMin=slaterWeightMin,
                 opResult=H_dict,
             )
-            t_applyOp += perf_counter() - t0
+            new_Dj = self.determine_new_Dj([w], [Hpsi_ref], H, H_dict, de2_min, slaterWeightMin=0)
+            # t_applyOp += perf_counter() - t0
 
-            t_0 = perf_counter()
-            Dj_basis = Basis(
-                ls={},
-                bath_states={},
-                initial_basis=set(Hpsi_ref.keys()),
-                num_spin_orbitals=self.num_spin_orbitals,
-                restrictions=None,
-                comm=self.comm,
-                verbose=False,
-            )
-            if len(Dj_basis) == 0:
-                break
-            t_new_dj += perf_counter() - t_0
+            # t_0 = perf_counter()
+            # Dj_basis = Basis(
+            #     ls={},
+            #     bath_states={},
+            #     initial_basis=set(Hpsi_ref.keys()),
+            #     num_spin_orbitals=self.num_spin_orbitals,
+            #     restrictions=None,
+            #     comm=self.comm,
+            #     verbose=False,
+            # )
+            # if len(Dj_basis) == 0:
+            #     break
+            # t_new_dj += perf_counter() - t_0
 
-            if self.is_distributed:
-                t_0 = perf_counter()
-                send_states = [[] for _ in range(self.comm.size)]
-                send_amps = [[] for _ in range(self.comm.size)]
-                for state, amp in Hpsi_ref.items():
-                    for r in range(self.comm.size):
-                        if Dj_basis.state_bounds[r] is None:
-                            continue
-                        if state >= Dj_basis.state_bounds[r][0] and state <= Dj_basis.state_bounds[r][1]:
-                            send_states[r].append(state)
-                            send_amps[r].append(amp)
-                            break
-                received_states = self.alltoall_states(send_states)
-                send_counts = [len(send_amps[r]) for r in range(self.comm.size)]
-                send_offsets = [sum(send_counts[:r]) for r in range(self.comm.size)]
-                receive_counts = [len(received_states[r]) for r in range(self.comm.size)]
-                receive_offsets = [sum(receive_counts[:r]) for r in range(self.comm.size)]
-                received_amps_arr = np.empty((sum(receive_counts),), dtype=complex)
-                self.comm.Alltoallv(
-                    (
-                        np.fromiter(
-                            (amp for amps in send_amps for amp in amps),
-                            count=sum(len(amps) for amps in send_amps),
-                            dtype=complex,
-                        ),
-                        send_counts,
-                        send_offsets,
-                        MPI.DOUBLE_COMPLEX,
-                    ),
-                    (received_amps_arr, receive_counts, receive_offsets, MPI.DOUBLE_COMPLEX),
-                )
-                received_amps = []
-                offset = 0
-                for r in range(self.comm.size):
-                    received_amps.append(received_amps_arr[offset : offset + receive_counts[r]])
-                    offset += receive_counts[r]
-                Hpsi_ref = {}
-                for r, states in enumerate(received_states):
-                    for i, state in enumerate(states):
-                        Hpsi_ref[state] = received_amps[r][i] + Hpsi_ref.get(state, 0)
-                t_distribute_Hpsi += perf_counter() - t_0
+            # if self.is_distributed:
+            #     t_0 = perf_counter()
+            #     send_states = [[] for _ in range(self.comm.size)]
+            #     send_amps = [[] for _ in range(self.comm.size)]
+            #     for state, amp in Hpsi_ref.items():
+            #         for r in range(self.comm.size):
+            #             if Dj_basis.state_bounds[r] is None:
+            #                 continue
+            #             if state >= Dj_basis.state_bounds[r][0] and state <= Dj_basis.state_bounds[r][1]:
+            #                 send_states[r].append(state)
+            #                 send_amps[r].append(amp)
+            #                 break
+            #     received_states = self.alltoall_states(send_states)
+            #     send_counts = [len(send_amps[r]) for r in range(self.comm.size)]
+            #     send_offsets = [sum(send_counts[:r]) for r in range(self.comm.size)]
+            #     receive_counts = [len(received_states[r]) for r in range(self.comm.size)]
+            #     receive_offsets = [sum(receive_counts[:r]) for r in range(self.comm.size)]
+            #     received_amps_arr = np.empty((sum(receive_counts),), dtype=complex)
+            #     self.comm.Alltoallv(
+            #         (
+            #             np.fromiter(
+            #                 (amp for amps in send_amps for amp in amps),
+            #                 count=sum(len(amps) for amps in send_amps),
+            #                 dtype=complex,
+            #             ),
+            #             send_counts,
+            #             send_offsets,
+            #             MPI.DOUBLE_COMPLEX,
+            #         ),
+            #         (received_amps_arr, receive_counts, receive_offsets, MPI.DOUBLE_COMPLEX),
+            #     )
+            #     received_amps = []
+            #     offset = 0
+            #     for r in range(self.comm.size):
+            #         received_amps.append(received_amps_arr[offset : offset + receive_counts[r]])
+            #         offset += receive_counts[r]
+            #     Hpsi_ref = {}
+            #     for r, states in enumerate(received_states):
+            #         for i, state in enumerate(states):
+            #             Hpsi_ref[state] = received_amps[r][i] + Hpsi_ref.get(state, 0)
+            #     t_distribute_Hpsi += perf_counter() - t_0
 
-            t_0 = perf_counter()
-            de2 = self._calc_de2(Dj_basis.local_basis, H, H_dict, Hpsi_ref, w)
+            # t_0 = perf_counter()
+            # de2 = self._calc_de2(Dj_basis.local_basis, H, H_dict, Hpsi_ref, w)
 
-            de2_mask = np.abs(de2) >= de2_min
-            t_de2 += perf_counter() - t_0
+            # de2_mask = np.abs(de2) >= de2_min
+            # t_de2 += perf_counter() - t_0
 
-            t_0 = perf_counter()
-            Dji = {Dj_basis.local_basis[i] for i, mask in enumerate(de2_mask) if mask}
-            t_de2_filter += perf_counter() - t_0
+            # t_0 = perf_counter()
+            # Dji = {Dj_basis.local_basis[i] for i, mask in enumerate(de2_mask) if mask}
+            # t_de2_filter += perf_counter() - t_0
 
             t_0 = perf_counter()
             old_size = self.size
             self.local_basis.clear()
-            self.add_states(Dji)
+            self.add_states(new_Dj)
             # self.add_states(self._generate_spin_flipped_determinants(new_Dj))
             if True or self.size == old_size:
                 break

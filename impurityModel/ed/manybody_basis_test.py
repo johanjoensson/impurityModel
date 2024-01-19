@@ -1138,4 +1138,3 @@ def test_eg_t2g_CIPSI_basis_expand_mpi():
     expected = [b"\x80\x00", b"\x08\x00", b"\x00\x40"]
     assert all(state in expected for state in basis), f"{expected=} {list(basis)=}"
     assert all(state in basis for state in expected), f"{expected=} {list(basis)=}"
-    assert False
