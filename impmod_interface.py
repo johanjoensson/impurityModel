@@ -590,15 +590,9 @@ def get_ed_h0(
             comm=comm,
             new_v=True,
         )
-<<<<<<< Updated upstream
         sort_indices = np.argsort(eb, kind="stable")
         eb = eb[sort_indices]
         v = v[sort_indices]
-=======
-    elif bath_states_per_orbital == 0:
-        eb = np.array([])
-        v = np.array([[]])
->>>>>>> Stashed changes
 
     if save_baths_and_hopping:
         if comm is not None and comm.rank == 0:
