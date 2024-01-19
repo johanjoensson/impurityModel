@@ -451,8 +451,33 @@ def get_Lz_from_rho_spherical(rho, l):
     )
 
 
+def get_Lplus_from_rho_spherical(rho, l):
+    llp1 = l * (l + 1)
+    #   L+    |2, -2>,  |2, -1>, |2,  0>, |2,  1>, |2,  2>
+    # <2, -2|    0
+    # <2, -1| sqrt(8)
+    # <2,  0|    0
+    # <2,  1|    0
+    # <2,  2|    0
+    Lplus = np.zeros((2 * (2 * l + 1), 2 * (2 * l + 1)))
+    for i, ml in enumerate(range(-l, l)):
+        Lplus[i + 1, i] = np.sqrt(llp1 + ml * (ml + 1))
+    return np.trace(rho @ Lplus)
+
+
 def get_L2_from_rho_spherical(rho, l):
-    return l * (l + 1) * np.real(np.trace(rho))
+    llp1 = l * (l + 1)
+    Lz = get_Lz_from_rho_spherical(rho, l)
+    Lplus = np.zeros((2 * (2 * l + 1), 2 * (2 * l + 1)))
+    for i, ml in enumerate(range(-l, l)):
+        Lplus[i + 1, i] = np.sqrt(llp1 + ml * (ml + 1))
+    Lminus = np.zeros((2 * (2 * l + 1), 2 * (2 * l + 1)))
+    for i, ml in enumerate(range(-l + 1, l + 1)):
+        Lminus[i - 1, i] = np.sqrt(llp1 + ml * (ml - 1))
+    Lz2 = np.identity(2 * (2 * l + 1))
+    for i, ml in enumerate(range(-l, l + 1)):
+        Lz2[i, i] = ml**2
+    return np.trace(rho @ Lz2) + 2 * Lz + np.trace(rho @ Lplus @ Lminus)
 
 
 def get_Sz_from_rho_spherical(rho, l):
@@ -460,8 +485,16 @@ def get_Sz_from_rho_spherical(rho, l):
 
 
 def get_S2_from_rho_spherical(rho, l):
-    # S^2 |l, ms, ml> = s(s+1)|l, ms, ml>, s = 1/2
-    return 3 / 4 * np.real(np.trace(rho))
+    ssp1 = 3 / 4
+    Sz = get_Sz_from_rho_spherical(rho, l)
+    Splus = np.zeros((2 * (2 * l + 1), 2 * (2 * l + 1)))
+    for i, ms in enumerate(np.repeat([-0.5], 2 * l + 1)):
+        Splus[i + 2 * l + 1, i] = np.sqrt(ssp1 + ms * (ms + 1))
+    Sminus = np.zeros((2 * (2 * l + 1), 2 * (2 * l + 1)))
+    for i, ms in enumerate(np.repeat([0.5], 2 * l + 1)):
+        Sminus[i, i + 2 * l + 1] = np.sqrt(ssp1 + ms * (ms - 1))
+    Sz2 = np.identity(2 * (2 * l + 1))
+    return np.trace(rho @ Sz2) + 2 * Sz + np.trace(rho @ Splus @ Sminus)
 
 
 def printThermalExpValues_new(nBaths, es, psis, tau, rot_to_spherical):
@@ -515,8 +548,8 @@ def printThermalExpValues(nBaths, es, psis, T=300, cutOff=10):
         print("<N(t2gUp)> = {:8.7f}".format(occs[3]))
         print("<Lz(3d)> = {:8.7f}".format(thermal_average(e, [getLz3d(nBaths, psi) for psi in psis], T=T)))
         print("<Sz(3d)> = {:8.7f}".format(thermal_average(e, [getSz3d(nBaths, psi) for psi in psis], T=T)))
-        print("<L^2(3d)> = {:8.7f}".format(thermal_average(e, [getLsqr3d(nBaths, psi) for psi in psis], T=T)))
-        print("<S^2(3d)> = {:8.7f}".format(thermal_average(e, [getSsqr3d(nBaths, psi) for psi in psis], T=T)))
+        # print("<L^2(3d)> = {:8.7f}".format(thermal_average(e, [getLsqr3d(nBaths, psi) for psi in psis], T=T)))
+        # print("<S^2(3d)> = {:8.7f}".format(thermal_average(e, [getSsqr3d(nBaths, psi) for psi in psis], T=T)))
 
 
 def dc_MLFT(n3d_i, c, Fdd, n2p_i=None, Fpd=None, Gpd=None):

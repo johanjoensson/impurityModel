@@ -469,7 +469,6 @@ def fixed_peak_dc(h0_op, dc_struct, rank, verbose, dense_cutoff):
             comm=MPI.COMM_WORLD,
         )
 
-
     def F(dc_trial):
         bu = basis_upper.copy()
         bl = basis_lower.copy()
@@ -509,8 +508,10 @@ def fixed_peak_dc(h0_op, dc_struct, rank, verbose, dense_cutoff):
         return e_upper[0] - e_lower[0] - peak_position
 
     res = sp.optimize.root_scalar(F, x0=dc_struct.dc_guess, x1=dc_struct.dc_guess + F(dc_struct.dc_guess))
+    # dc = dc_struct.dc_guess + F(dc_struct.dc_guess)
     dc = res.root
     if verbose:
+        print(f"DC guess {dc_struct.dc_guess}")
         print(f"dc found : {dc}")
 
     return dc * np.identity(2 * (2 * l + 1), dtype=complex)
@@ -597,6 +598,9 @@ def get_ed_h0(
     if save_baths_and_hopping:
         if comm is not None and comm.rank == 0:
             with open(f"impurityModel_bath_energies_and_hopping_parameters_{label}.npy", "wb") as f:
+                np.save(f, eb)
+                np.save(f, v)
+            with open(f"impurityModel_bath_energies_and_hopping_parameters_{label}_bak.npy", "wb") as f:
                 np.save(f, eb)
                 np.save(f, v)
     if verbose:
