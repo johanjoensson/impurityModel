@@ -79,6 +79,7 @@ def find_gs(h_op, N0, delta_occ, bath_states, num_spin_orbitals, rank, verbose, 
             h,
             e_max=0,
             k=1,
+            eigenValueTol=0,
             verbose=verbose,
             return_eigvecs=False,
             dense_cutoff=dense_cutoff,
@@ -87,7 +88,7 @@ def find_gs(h_op, N0, delta_occ, bath_states, num_spin_orbitals, rank, verbose, 
         if e_trial[0] < e_gs:
             e_gs = e_trial[0]
             basis_gs = basis.copy()
-            h_gs = h
+            h_dict_gs = h_dict
             gs_impurity_occ = {l: N0[0][l] + d for l in N0[0]}
             selected = i
     underline = {0: " ", 1: " ", 2: " "}
@@ -98,7 +99,7 @@ def find_gs(h_op, N0, delta_occ, bath_states, num_spin_orbitals, rank, verbose, 
         print(f"E0:    {energies[0]: ^10.6f}  {energies[1]: ^10.6f}  {energies[2]: ^10.6f}")
         print(f"       {underline[0]*10}  {underline[1]*10}  {underline[2]*10}")
 
-    return (gs_impurity_occ, N0[1], N0[2]), basis_gs, h_gs
+    return (gs_impurity_occ, N0[1], N0[2]), basis_gs, h_dict_gs
 
 
 def run(cluster, h0, iw, w, delta, tau, verbosity, reort, dense_cutoff):
@@ -194,7 +195,7 @@ def calc_selfenergy(
 
     num_spin_orbitals = 2 * (2 * l + 1) + sum(num_val_baths[l] + num_con_baths[l] for l in num_val_baths)
 
-    (n0_imp, n0_val, n0_con), basis, _ = find_gs(
+    (n0_imp, n0_val, n0_con), basis, h_dict = find_gs(
         h,
         nominal_occ,
         delta_occ,
@@ -224,7 +225,7 @@ def calc_selfenergy(
 
     basis.tau = tau
     # h_dict = basis.expand(h, dense_cutoff=dense_cutoff)
-    h_dict = basis.expand(h, dense_cutoff=dense_cutoff, de2_min=1e-10, slaterWeightMin=0)  # np.finfo(float).eps)
+    h_dict = basis.expand(h, H_dict=h_dict, dense_cutoff=dense_cutoff, de2_min=1e-10, slaterWeightMin=0)
     if verbosity >= 1:
         print(f"Ground state basis contains {len(basis)} elsements.")
     if basis.size <= dense_cutoff:

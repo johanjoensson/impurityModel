@@ -469,11 +469,6 @@ def fixed_peak_dc(h0_op, dc_struct, rank, verbose, dense_cutoff):
             comm=MPI.COMM_WORLD,
         )
 
-    # dc_op = {(((l, s, m), "c"), ((l, s, m), "a")): -dc_struct.dc_guess for m in range(-l, l + 1) for s in range(2)}
-    # h_op_c = finite.addOps([h0_op, u, dc_op])
-    # h_op_i = finite.c2i_op(sum_bath_states, h_op_c)
-    # _ = basis_upper.expand(h_op_i, dense_cutoff=dense_cutoff, de2_min=1e-5, slaterWeightMin=0)
-    # _ = basis_lower.expand(h_op_i, dense_cutoff=dense_cutoff, de2_min=1e-5, slaterWeightMin=0)
 
     def F(dc_trial):
         bu = basis_upper.copy()
@@ -481,19 +476,12 @@ def fixed_peak_dc(h0_op, dc_struct, rank, verbose, dense_cutoff):
         dc_op = {(((l, s, m), "c"), ((l, s, m), "a")): -dc_trial for m in range(-l, l + 1) for s in range(2)}
         h_op_c = finite.addOps([h0_op, u, dc_op])
         h_op_i = finite.c2i_op(sum_bath_states, h_op_c)
-        # if verbose:
-        #     print("Expand upper basis", flush=True)
         h_dict = bu.expand(h_op_i, dense_cutoff=dense_cutoff, de2_min=1e-5, slaterWeightMin=0)
-        # if verbose:
-        #     print("Build upper operator dict", flush=True)
         h = (
             basis_upper.build_sparse_matrix(h_op_i, h_dict)
             if basis_upper.size > dense_cutoff
             else basis_upper.build_dense_matrix(h_op_i, h_dict)
         )
-        # h_sparse = basis_upper.build_sparse_matrix(h_op_i, h_dict)
-        # if verbose:
-        #     print("Find upper energy", flush=True)
         e_upper = finite.eigensystem_new(
             h,
             0,
@@ -503,19 +491,12 @@ def fixed_peak_dc(h0_op, dc_struct, rank, verbose, dense_cutoff):
             dense_cutoff=dense_cutoff,
             return_eigvecs=False,
         )
-        # if verbose:
-        #     print("Expand lower basis", flush=True)
         h_dict = bl.expand(h_op_i, dense_cutoff=dense_cutoff, de2_min=1e-5, slaterWeightMin=0)
-        # if verbose:
-        #     print("Build lower operator dict", flush=True)
         h = (
             basis_lower.build_sparse_matrix(h_op_i, h_dict)
             if basis_lower.size > dense_cutoff
             else basis_lower.build_dense_matrix(h_op_i, h_dict)
         )
-        # h_sparse = basis_lower.build_sparse_matrix(h_op_i, h_dict)
-        # if verbose:
-        #     print("Find lower energy", flush=True)
         e_lower = finite.eigensystem_new(
             h,
             0,
@@ -525,8 +506,6 @@ def fixed_peak_dc(h0_op, dc_struct, rank, verbose, dense_cutoff):
             dense_cutoff=dense_cutoff,
             return_eigvecs=False,
         )
-        # if verbose:
-        #     print(f"de = {e_upper[0] - e_lower[0] - peak_position}", flush=True)
         return e_upper[0] - e_lower[0] - peak_position
 
     res = sp.optimize.root_scalar(F, x0=dc_struct.dc_guess, x1=dc_struct.dc_guess + F(dc_struct.dc_guess))
@@ -598,7 +577,7 @@ def get_ed_h0(
         print(
             f"Read bath energies and hopping parameters from impurityModel_bath_energies_and_hopping_parameters_{label}.npy"
         )
-    if eb is None and v is None:
+    if eb is None and v is None and bath_states_per_orbital > 0:
         eb, v = hf.fit_hyb(
             w,
             eim,
@@ -611,9 +590,15 @@ def get_ed_h0(
             comm=comm,
             new_v=True,
         )
+<<<<<<< Updated upstream
         sort_indices = np.argsort(eb, kind="stable")
         eb = eb[sort_indices]
         v = v[sort_indices]
+=======
+    elif bath_states_per_orbital == 0:
+        eb = np.array([])
+        v = np.array([[]])
+>>>>>>> Stashed changes
 
     if save_baths_and_hopping:
         if comm is not None and comm.rank == 0:
