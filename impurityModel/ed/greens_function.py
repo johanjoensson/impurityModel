@@ -195,7 +195,7 @@ def calc_Greens_function_with_offdiag(
             )
             for tOp in tOps:
                 v.append(
-                    finite.applyOp(
+                    finite.applyOp_2(
                         n_spin_orbitals,
                         tOp,
                         psi,
@@ -205,7 +205,7 @@ def calc_Greens_function_with_offdiag(
                     )
                 )
                 for s in basis.local_basis:
-                    res = finite.applyOp(
+                    res = finite.applyOp_2(
                         n_spin_orbitals,
                         tOp,
                         {s: 1},
@@ -257,7 +257,7 @@ def calc_Greens_function_with_offdiag(
                 local_excited_basis = set()
                 t0 = time.perf_counter()
                 for i_tOp, tOp in [(orb, tOps[orb]) for orb in block]:
-                    v = finite.applyOp(
+                    v = finite.applyOp_2(
                         n_spin_orbitals,
                         tOp,
                         {state: psi[state] for state in psi if state in basis.local_basis},
@@ -561,7 +561,7 @@ def calc_Greens_function_with_offdiag_cg(
     for block in blocks:
         for i_tOp, tOp in [(orb, tOps[orb]) for orb in block]:
             for s in basis.local_basis:
-                res = finite.applyOp(
+                res = finite.applyOp_2(
                     n_spin_orbitals,
                     tOps[i_tOp],
                     {s: 1},
@@ -588,7 +588,7 @@ def calc_Greens_function_with_offdiag_cg(
             local_excited_basis = set()
             t0 = time.perf_counter()
             for i_tOp, tOp in [(orb, tOps[orb]) for orb in block]:
-                v = finite.applyOp(
+                v = finite.applyOp_2(
                     n_spin_orbitals,
                     tOp,
                     {state: psi[state] for state in psi if state in basis.local_basis},

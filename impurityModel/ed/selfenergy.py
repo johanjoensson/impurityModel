@@ -215,7 +215,7 @@ def calc_selfenergy(
     if restrictions is not None and verbosity >= 2:
         print("Restrictions on occupation")
         for key, res in restrictions.items():
-            print(f"{key} : {res}")
+            print(f"---> {key} : {res}")
     if verbosity >= 1:
         print("{:d} processes in the Hamiltonian.".format(len(h)))
         print("Create basis...")
@@ -242,8 +242,8 @@ def calc_selfenergy(
     )
     psis = basis.build_state(psis_dense.T)
     # psis = [{state: psi[state] for state in psi if abs(psi[state]) > 0} for psi in psis]
-    # basis.local_basis.clear()
-    # basis.add_states(set(state for psi in psis for state in psi))
+    basis.local_basis.clear()
+    basis.add_states(set(state for psi in psis for state in psi))
     all_psis = comm.gather(psis)
     if verbosity >= 2:
         psis = [{} for _ in psis]
@@ -253,10 +253,15 @@ def calc_selfenergy(
                     psis[i][state] = psis_r[i][state] + psis[i].get(state, 0)
         finite.printThermalExpValues_new(sum_bath_states, es, psis, tau, rot_to_spherical)
         finite.printExpValues(sum_bath_states, es, psis, rot_to_spherical)
-
+    basis.restrictions = basis.build_excited_restrictions()
     if verbosity >= 1:
-        print("Consider {:d} eigenstates for the spectra \n".format(len(es)))
-        print("Calculate Interacting Green's function...", flush=True)
+        if verbosity >= 2:
+            print("Restrictions when calculating the excited states:")
+            for indices, occupations in basis.restrictions.items():
+                print(f"---> {indices} : {occupations}")
+            print()
+        print("Consider {len(es):d} eigenstates for the spectra \n")
+        print("Calculate Interacting Green's function...")
 
     gs_matsubara, gs_realaxis = get_Greens_function(
         nBaths=sum_bath_states,

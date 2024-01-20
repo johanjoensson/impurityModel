@@ -241,7 +241,7 @@ def bitarray2tuple(bits):
         Representation of a product state, in terms of a bitarray.
 
     """
-    return str2tuple(bitarray2str(bits, endian="big"))
+    return str2tuple(bitarray2str(bits))
 
 
 def tuple2bytes(t, n):

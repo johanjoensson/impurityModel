@@ -156,7 +156,9 @@ class Basis:
             )
             valence_indices = frozenset(c2i(total_baths, (l, b)) for b in range(valence_baths[l]))
             restrictions[valence_indices] = (max(valence_baths[l] - delta_valence_occ[l], 0), valence_baths[l] + 1)
-            conduction_indices = frozenset(c2i(total_baths, (l, b)) for b in range(conduction_baths[l]))
+            conduction_indices = frozenset(
+                c2i(total_baths, (l, b)) for b in range(valence_baths[l], valence_baths[l] + conduction_baths[l])
+            )
             restrictions[conduction_indices] = (0, delta_conduction_occ[l] + 1)
 
             if verbose:
@@ -165,6 +167,45 @@ class Basis:
                 print(f"|---Restrictions on the valence bath      = {restrictions[valence_indices]}")
                 print(f"----Restrictions on the conduction bath   = {restrictions[conduction_indices]}")
 
+        return restrictions
+
+    def build_excited_restrictions(self):
+        valence_baths, conduction_baths = self.bath_states
+        max_imp = 0
+        min_imp = sum(2 * (2 * l + 1) for l in self.ls)
+        max_val = 0
+        min_val = sum(valence_baths[l] for l in valence_baths)
+        max_con = 0
+        min_con = sum(conduction_baths[l] for l in conduction_baths)
+
+        total_baths = {l: valence_baths[l] + conduction_baths[l] for l in valence_baths}
+        restrictions = {}
+        for l in total_baths:
+            impurity_indices = frozenset(c2i(total_baths, (l, s, m)) for s in range(2) for m in range(-l, l + 1))
+            valence_indices = frozenset(c2i(total_baths, (l, b)) for b in range(valence_baths[l]))
+            conduction_indices = frozenset(
+                c2i(total_baths, (l, b)) for b in range(valence_baths[l], valence_baths[l] + conduction_baths[l])
+            )
+            for state in self.local_basis:
+                bits = psr.bytes2bitarray(state, self.num_spin_orbitals)
+                n_imp = sum(bits[i] for i in impurity_indices)
+                n_val = sum(bits[i] for i in valence_indices)
+                n_con = sum(bits[i] for i in conduction_indices)
+                max_imp = max(max_imp, n_imp)
+                min_imp = min(min_imp, n_imp)
+                max_val = max(max_val, n_val)
+                min_val = min(min_val, n_val)
+                max_con = max(max_con, n_con)
+                min_con = min(min_con, n_con)
+            max_imp = min(2 + self.comm.allreduce(max_imp, op=MPI.MAX), 2 * (2 * l + 1))
+            min_imp = max(self.comm.allreduce(min_imp, op=MPI.MIN) - 1, 0)
+            max_val = valence_baths[l]
+            min_val = max(self.comm.allreduce(min_val, op=MPI.MIN) - 1, 0)
+            max_con = min(2 + self.comm.allreduce(max_con, op=MPI.MAX), conduction_baths[l])
+            min_con = 0
+            restrictions[impurity_indices] = (min_imp, max_imp)
+            restrictions[valence_indices] = (min_val, max_val)
+            restrictions[conduction_indices] = (min_con, max_con)
         return restrictions
 
     def __init__(
@@ -223,7 +264,7 @@ class Basis:
                 nominal_impurity_occ=nominal_impurity_occ,
                 verbose=verbose,
             )
-            bath_states = {l: valence_baths[l] + conduction_baths[l] for l in ls}
+            bath_states = tuple({l: valence_baths[l] for l in ls}, {l: conduction_baths[l] for l in ls})
         t0 = perf_counter() - t0
         if verbose:
             print(f"===> T initial_basis : {t0}")
@@ -551,7 +592,14 @@ class Basis:
             # (((2, 0, 1), "c"), ((2, 0, 1), "a")): 1.0,
             # (((2, 0, 2), "c"), ((2, 0, 2), "a")): 1.0,
         }
-        n_dn_iop = c2i_op(self.bath_states, n_dn_op)
+        n_dn_iop = c2i_op(
+            {
+                l: valence_baths[l] + conduction_baths[l]
+                for valence_baths, conduction_baths in self.bath_states
+                for l in valence_baths
+            },
+            n_dn_op,
+        )
         n_up_op = {
             (((l, 1, ml), "c"), ((l, 1, ml), "a")): 1.0
             for l in self.ls
@@ -562,7 +610,14 @@ class Basis:
             # (((2, 1, 1), "c"), ((2, 1, 1), "a")): 1.0,
             # (((2, 1, 2), "c"), ((2, 1, 2), "a")): 1.0,
         }
-        n_up_iop = c2i_op(self.bath_states, n_up_op)
+        n_up_iop = c2i_op(
+            {
+                l: valence_baths[l] + conduction_baths[l]
+                for valence_baths, conduction_baths in self.bath_states
+                for l in valence_baths
+            },
+            n_up_op,
+        )
         spin_flip = set()
         for det in determinants:
             n_dn = int(applyOp(self.num_spin_orbitals, n_dn_iop, {det: 1}).get(det, 0))
@@ -575,7 +630,14 @@ class Basis:
                         (((l, 1, ml), "c"), ((l, 0, ml), "a")): 1.0,
                         (((l, 0, ml), "c"), ((l, 1, ml), "a")): 1.0,
                     }
-                    spin_flip_iop = c2i_op(self.bath_states, spin_flip_op)
+                    spin_flip_iop = c2i_op(
+                        {
+                            l: valence_baths[l] + conduction_baths[l]
+                            for valence_baths, conduction_baths in self.bath_states
+                            for l in valence_baths
+                        },
+                        spin_flip_op,
+                    )
                     for state in list(to_flip):
                         flipped = applyOp(self.num_spin_orbitals, spin_flip_iop, {state: 1})
                         to_flip.update(flipped.keys())
@@ -1121,7 +1183,7 @@ class CIPSI_Basis(Basis):
                 nominal_impurity_occ,
                 verbose,
             )
-            bath_states = {l: valence_baths[l] + conduction_baths[l] for l in ls}
+            bath_states = (valence_baths, conduction_baths)
         else:
             assert num_spin_orbitals is not None
             assert bath_states is not None
@@ -1319,7 +1381,6 @@ class CIPSI_Basis(Basis):
                 print(
                     f"-----> N = {self.size: 7,d}, log(de2_min) = {np.log10(de2_min): 5.1f}, log(|de_0|) = {np.log10(abs(e0 - e0_prev))}, {converge_count=}",
                 )
-        print(f"Length of psi_ref = {len(psi_ref)=}")
 
         if self.verbose:
             print(f"After expansion, the basis contains {self.size} elements.")
