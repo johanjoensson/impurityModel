@@ -48,7 +48,7 @@ def get_Greens_function(
         restrictions=restrictions,
         blocks=blocks,
         krylovSize=None,
-        slaterWeightMin=1e-12,
+        slaterWeightMin=1e-6,
         verbose=verbose,
         reort=reort,
         dense_cutoff=dense_cutoff,

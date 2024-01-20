@@ -1296,7 +1296,7 @@ class CIPSI_Basis(Basis):
             e_ref, psi_ref_dense = eigensystem_new(
                 H_mat,
                 e_max=de0_max,
-                k=sum(2 * (2 * l + 1) for l in self.ls),
+                k=len(psi_ref) if psi_ref is not None else 1,
                 v0=v0,
                 eigenValueTol=de2_min,
                 dense_cutoff=dense_cutoff,
@@ -1309,7 +1309,8 @@ class CIPSI_Basis(Basis):
                 print("->Loop over eigenstates")
             new_Dj = self.determine_new_Dj(e_ref, psi_ref, H, H_dict, de2_min, slaterWeightMin=0)
             old_size = self.size
-            self.add_states(self._generate_spin_flipped_determinants(new_Dj))
+            self.add_states(new_Dj)
+            # self.add_states(self._generate_spin_flipped_determinants(new_Dj))
 
             if old_size == self.size:
                 converge_count += 1
@@ -1320,31 +1321,11 @@ class CIPSI_Basis(Basis):
                     f"-----> N = {self.size: 7,d}, log(de2_min) = {np.log10(de2_min): 5.1f}, log(|de_0|) = {np.log10(abs(e0 - e0_prev))}, {converge_count=}",
                 )
         print(f"Length of psi_ref = {len(psi_ref)=}")
-        # H_mat = (
-        #     self.build_sparse_matrix(H, op_dict=H_dict)
-        #     if self.size > dense_cutoff
-        #     else self.build_dense_matrix(H, op_dict=H_dict)
-        # )
-        # v0 = self.build_vector(psi_ref).T
-        # e_ref, psi_ref_dense = eigensystem_new(
-        #     H_mat,
-        #     e_max=de0_max,
-        #     k=sum(2 * (2 * l + 1) for l in self.ls),
-        #     v0=v0,
-        #     eigenValueTol=de2_min,
-        #     dense_cutoff=dense_cutoff,
-        #     verbose=self.verbose,
-        # )
-        # psi_ref = self.build_state(psi_ref_dense.T)
-        # Dj = {state for psi in psi_ref for state in psi if abs(psi[state]) > slaterWeightMin}
-        # self.local_basis.clear()
-        # self.add_states(Dj)
 
         if self.verbose:
             print(f"After expansion, the basis contains {self.size} elements.")
 
         if self.size > self.truncation_threshold:
-            print(f"Truncating!")
             H_sparse = self.build_sparse_matrix(H, op_dict=H_dict)
             e_ref, psi_ref = eigensystem_new(
                 H_sparse,

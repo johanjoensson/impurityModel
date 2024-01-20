@@ -115,7 +115,7 @@ class dcStruct:
 
 def parse_solver_line(solver_line):
     """
-    N0 dN dVal dCon Nbath [[pro, full] [dense_cutoff 50] [no_block], [fit_unocc]]
+    N0 dN dVal dCon Nbath [[pro, full] [dense_cutoff 50] [no_block], [fit_unocc] [weight 2]]
     """
     # Remove comments from the solver line
     solver_line = solver_line.split("!")[0]
@@ -142,6 +142,7 @@ def parse_solver_line(solver_line):
     reort = Reort.NONE
     blocked = True
     fit_unocc = False
+    weight = 2
     if len(solver_array) > 5:
         skip_next = False
         for i in range(5, len(solver_array)):
@@ -160,6 +161,9 @@ def parse_solver_line(solver_line):
                 blocked = False
             elif arg.lower() == "fit_unocc":
                 fit_unocc = True
+            elif arg.lower() == "weight":
+                dense_cutoff = float(solver_array[i + 1])
+                skip_next = True
             else:
                 raise RuntimeError(f"Unknown solver parameter {arg}.\n" f"--->Other solver params {solver_array[5:]}")
 
@@ -172,7 +176,7 @@ def parse_solver_line(solver_line):
         f"Use block structure      +> {blocked}\n"
         f"Fit unoccupied states    +> {fit_unocc}\n"
     )
-    return nominal_occ, delta_occ, nBaths, reort, dense_cutoff, blocked, fit_unocc
+    return nominal_occ, delta_occ, nBaths, reort, dense_cutoff, blocked, fit_unocc, weight
 
 
 @ffi.def_extern()
@@ -292,9 +296,16 @@ def run_impmod_ed(
     else:
         sys.stdout = open(devnull, "w")
 
-    nominal_occ, delta_occ, bath_states_per_orbital, reort, dense_cutoff, blocked, fit_unocc = parse_solver_line(
-        solver_line
-    )
+    (
+        nominal_occ,
+        delta_occ,
+        bath_states_per_orbital,
+        reort,
+        dense_cutoff,
+        blocked,
+        fit_unocc,
+        weight,
+    ) = parse_solver_line(solver_line)
     nominal_occ = ({l: nominal_occ[0]}, {l: nominal_occ[1]}, {l: nominal_occ[2]})
     delta_occ = ({l: delta_occ[0]}, {l: delta_occ[1]}, {l: delta_occ[2]})
 
@@ -306,6 +317,7 @@ def run_impmod_ed(
         w,
         eim,
         gamma=0.001,
+        exp_weight=weight,
         imag_only=False,
         valence_bath_only=not fit_unocc,
         label=label.strip(),
@@ -475,7 +487,7 @@ def fixed_peak_dc(h0_op, dc_struct, rank, verbose, dense_cutoff):
         dc_op = {(((l, s, m), "c"), ((l, s, m), "a")): -dc_trial for m in range(-l, l + 1) for s in range(2)}
         h_op_c = finite.addOps([h0_op, u, dc_op])
         h_op_i = finite.c2i_op(sum_bath_states, h_op_c)
-        h_dict = bu.expand(h_op_i, dense_cutoff=dense_cutoff, de2_min=1e-5, slaterWeightMin=0)
+        h_dict = bu.expand(h_op_i, dense_cutoff=dense_cutoff, de2_min=1e-6, slaterWeightMin=0)
         h = (
             basis_upper.build_sparse_matrix(h_op_i, h_dict)
             if basis_upper.size > dense_cutoff
@@ -490,7 +502,7 @@ def fixed_peak_dc(h0_op, dc_struct, rank, verbose, dense_cutoff):
             dense_cutoff=dense_cutoff,
             return_eigvecs=False,
         )
-        h_dict = bl.expand(h_op_i, dense_cutoff=dense_cutoff, de2_min=1e-5, slaterWeightMin=0)
+        h_dict = bl.expand(h_op_i, dense_cutoff=dense_cutoff, de2_min=1e-6, slaterWeightMin=0)
         h = (
             basis_lower.build_sparse_matrix(h_op_i, h_dict)
             if basis_lower.size > dense_cutoff
@@ -525,6 +537,7 @@ def get_ed_h0(
     w,
     eim,
     gamma=0.001,
+    exp_weight=2,
     imag_only=False,
     valence_bath_only=True,
     label=None,
@@ -564,6 +577,9 @@ def get_ed_h0(
             np.save(f, hyb)
 
     if comm.rank == 0:
+        # if bath_states_per_orbital == 0:
+        #     eb = np.empty((0,), dtype=float)
+        #     v = np.empty((0, hyb.shape[1]), dtype=complex)
         try:
             with open(f"impurityModel_bath_energies_and_hopping_parameters_{label}.npy", "rb") as f:
                 eb = np.load(f)
@@ -572,19 +588,24 @@ def get_ed_h0(
         except FileNotFoundError:
             eb = None
             v = None
+        except ValueError:
+            remove(f"impurityModel_bath_energies_and_hopping_parameters_{label}.npy")
+            eb = None
+            v = None
     eb = comm.bcast(eb if comm.rank == 0 else None)
     v = comm.bcast(v if comm.rank == 0 else None)
     if eb is not None and verbose:
         print(
             f"Read bath energies and hopping parameters from impurityModel_bath_energies_and_hopping_parameters_{label}.npy"
         )
-    if eb is None and v is None and bath_states_per_orbital > 0:
+    if eb is None and v is None:
         eb, v = hf.fit_hyb(
             w,
             eim,
             hyb,
             bath_states_per_orbital,
             gamma=gamma,
+            exp_weight=exp_weight,
             imag_only=imag_only,
             x_lim=(w[0], 0 if valence_bath_only else w[-1]),
             verbose=verbose,
@@ -594,21 +615,18 @@ def get_ed_h0(
         sort_indices = np.argsort(eb, kind="stable")
         eb = eb[sort_indices]
         v = v[sort_indices]
+        mask = np.any(np.abs(v) ** 2 / eim > 1e-10, axis=1)
+        v = v[mask]
+        eb = eb[mask]
 
     if save_baths_and_hopping:
         if comm is not None and comm.rank == 0:
             with open(f"impurityModel_bath_energies_and_hopping_parameters_{label}.npy", "wb") as f:
                 np.save(f, eb)
                 np.save(f, v)
-            with open(f"impurityModel_bath_energies_and_hopping_parameters_{label}_bak.npy", "wb") as f:
-                np.save(f, eb)
-                np.save(f, v)
     if verbose:
         fit_hyb = offdiagonal.get_hyb(w + eim * 1j, eb, v)
         save_Greens_function(rotate_Greens_function(fit_hyb, np.conj(corr_to_cf.T)), w, f"{label}-hyb-fit")
-        with open(f"{label}-hyb-fit.npy", "wb") as f:
-            fit_hyb = offdiagonal.get_hyb(w + eim * 1j, eb, v)
-            np.save(f, fit_hyb)
 
     if verbose:
         print("DFT hamiltonian in correlated basis")
@@ -620,7 +638,7 @@ def get_ed_h0(
         print("Bath state energies")
         print(np.array_str(eb, max_line_width=1000, precision=4, suppress_small=False))
 
-    n_orb = v.shape[1]
+    n_orb = h_dft.shape[0]
     h = np.zeros((n_orb + len(eb), n_orb + len(eb)), dtype=complex)
     h[:n_orb, :n_orb] = h_dft
     h[:n_orb, n_orb:] = np.conj(v.T)

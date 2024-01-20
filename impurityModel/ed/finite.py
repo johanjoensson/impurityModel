@@ -190,7 +190,7 @@ def eigensystem_new(
             try:
                 es, vecs = eigsh(
                     h,
-                    k=min(k + dk, h.shape[0] - 1),
+                    k=min(k + dk, h.shape[0] - 2),
                     which="SA",
                     tol=eigenValueTol,
                     v0=vecs[:, np.argwhere(mask)[0]] if vecs is not None else None,
