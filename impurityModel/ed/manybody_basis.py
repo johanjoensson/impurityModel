@@ -1045,7 +1045,6 @@ class Basis:
                     np.array([any(index > self.size for index in row_indices)], dtype=bool), retry, op=MPI.LOR
                 )
                 retries += 1
-            print(f"Took {retries - 1} retries.")
             row_dict = {state: index for state, index in zip(rows_in_basis, row_indices) if index != self.size}
             # in_basis_mask: list[bool] = self.contains(rows_in_basis)
             # rows_in_basis: list[bytes] = list({rows_in_basis[i] for i in range(len(rows_in_basis)) if in_basis_mask[i]})
