@@ -197,11 +197,11 @@ class Basis:
                 min_val = min(min_val, n_val)
                 max_con = max(max_con, n_con)
                 min_con = min(min_con, n_con)
-            max_imp = min(2 + self.comm.allreduce(max_imp, op=MPI.MAX), 2 * (2 * l + 1))
+            max_imp = min(1 + self.comm.allreduce(max_imp, op=MPI.MAX), 2 * (2 * l + 1))
             min_imp = max(self.comm.allreduce(min_imp, op=MPI.MIN) - 1, 0)
             max_val = valence_baths[l]
             min_val = max(self.comm.allreduce(min_val, op=MPI.MIN) - 1, 0)
-            max_con = min(2 + self.comm.allreduce(max_con, op=MPI.MAX), conduction_baths[l])
+            max_con = min(1 + self.comm.allreduce(max_con, op=MPI.MAX), conduction_baths[l])
             min_con = 0
             restrictions[impurity_indices] = (min_imp, max_imp)
             restrictions[valence_indices] = (min_val, max_val)

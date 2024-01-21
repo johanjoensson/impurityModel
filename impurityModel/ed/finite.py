@@ -1990,9 +1990,11 @@ def applyOp(n_spin_orbitals, op, psi, slaterWeightMin=0, restrictions=None, opRe
 def occupation_within_restrictions(state, n_spin_orbitals, restrictions):
     if restrictions is None:
         return True
-    state_new_tuple = psr.bytes2tuple(state, n_spin_orbitals)
+    # state_new_tuple = psr.bytes2tuple(state, n_spin_orbitals)
+    bits = psr.bytes2bitarray(state, n_spin_orbitals)
     for restriction, occupations in restrictions.items():
-        n = len(restriction.intersection(state_new_tuple))
+        n = sum(bits[i] for i in restriction)
+        # n = len(restriction.intersection(state_new_tuple))
         if n < occupations[0] or occupations[1] < n:
             return False
     return True
