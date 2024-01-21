@@ -171,16 +171,16 @@ class Basis:
 
     def build_excited_restrictions(self):
         valence_baths, conduction_baths = self.bath_states
-        max_imp = 0
-        min_imp = sum(2 * (2 * l + 1) for l in self.ls)
-        max_val = 0
-        min_val = sum(valence_baths[l] for l in valence_baths)
-        max_con = 0
-        min_con = sum(conduction_baths[l] for l in conduction_baths)
 
         total_baths = {l: valence_baths[l] + conduction_baths[l] for l in valence_baths}
         restrictions = {}
         for l in total_baths:
+            max_imp = 0
+            min_imp = 2 * (2 * l + 1)
+            max_val = 0
+            min_val = valence_baths[l]
+            max_con = 0
+            min_con = conduction_baths[l]
             impurity_indices = frozenset(c2i(total_baths, (l, s, m)) for s in range(2) for m in range(-l, l + 1))
             valence_indices = frozenset(c2i(total_baths, (l, b)) for b in range(valence_baths[l]))
             conduction_indices = frozenset(
