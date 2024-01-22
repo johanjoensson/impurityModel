@@ -169,7 +169,7 @@ class Basis:
 
         return restrictions
 
-    def build_excited_restrictions(self):
+    def get_effective_restrictions(self):
         valence_baths, conduction_baths = self.bath_states
 
         total_baths = {l: valence_baths[l] + conduction_baths[l] for l in valence_baths}
@@ -197,16 +197,41 @@ class Basis:
                 min_val = min(min_val, n_val)
                 max_con = max(max_con, n_con)
                 min_con = min(min_con, n_con)
-            max_imp = min(1 + self.comm.allreduce(max_imp, op=MPI.MAX), 2 * (2 * l + 1))
-            min_imp = max(self.comm.allreduce(min_imp, op=MPI.MIN) - 1, 0)
+            max_imp = self.comm.allreduce(max_imp, op=MPI.MAX)
+            min_imp = self.comm.allreduce(min_imp, op=MPI.MIN)
             max_val = valence_baths[l]
-            min_val = max(self.comm.allreduce(min_val, op=MPI.MIN) - 1, 0)
-            max_con = min(1 + self.comm.allreduce(max_con, op=MPI.MAX), conduction_baths[l])
+            min_val = self.comm.allreduce(min_val, op=MPI.MIN)
+            max_con = self.comm.allreduce(max_con, op=MPI.MAX)
             min_con = 0
             restrictions[impurity_indices] = (min_imp, max_imp)
             restrictions[valence_indices] = (min_val, max_val)
             restrictions[conduction_indices] = (min_con, max_con)
         return restrictions
+
+    def build_excited_restrictions(self):
+        valence_baths, conduction_baths = self.bath_states
+        total_baths = {l: valence_baths[l] + conduction_baths[l] for l in valence_baths}
+        restrictions = self.get_effective_restrictions()
+        excited_restrictions = {}
+        for l in total_baths:
+            impurity_indices = frozenset(c2i(total_baths, (l, s, m)) for s in range(2) for m in range(-l, l + 1))
+            valence_indices = frozenset(c2i(total_baths, (l, b)) for b in range(valence_baths[l]))
+            conduction_indices = frozenset(
+                c2i(total_baths, (l, b)) for b in range(valence_baths[l], valence_baths[l] + conduction_baths[l])
+            )
+            r_min_imp, r_max_imp = restrictions[impurity_indices]
+            min_imp = max(r_min_imp - 1, 0)
+            max_imp = min(r_max_imp + 1, 2 * (2 * l + 1))
+            r_min_val, r_max_val = restrictions[valence_indices]
+            min_val = max(r_min_val - 1, 0)
+            max_val = valence_baths[l]
+            r_min_cond, r_max_cond = restrictions[conduction_indices]
+            min_cond = 0
+            max_cond = min(r_max_cond + 1, conduction_baths[l])
+            excited_restrictions[impurity_indices] = (min_imp, max_imp)
+            excited_restrictions[valence_indices] = (min_val, max_val)
+            excited_restrictions[conduction_indices] = (min_cond, max_cond)
+        return excited_restrictions
 
     def __init__(
         self,
@@ -690,9 +715,12 @@ class Basis:
                 new_basis |= new_states
             self.local_basis = sorted(new_basis)
         else:
-            while not done:
-                local_states = set()
-                for state in set(itertools.chain(self.local_basis, local_states)):
+            local_states = set(self.local_basis)
+            new_states = local_states
+            while len(new_states) > 0:
+                loop_states = new_states
+                new_states = set()
+                for state in loop_states:
                     res = applyOp(
                         self.num_spin_orbitals,
                         op,
@@ -701,12 +729,26 @@ class Basis:
                         slaterWeightMin=slaterWeightMin,
                         opResult=op_dict,
                     )
-                    local_states |= set(res.keys())
-                old_size = self.size
-                # self.add_states(self._generate_spin_flipped_determinants(local_states))
-                self.add_states(local_states)
-                done = old_size == self.size
-        # self.add_states(self._generate_spin_flipped_determinants(self.local_basis))
+                    new_states |= res.keys() - local_states
+                local_states |= new_states
+            self.add_states(local_states)
+
+            # while not done:
+            #     local_states = set()
+            #     for state in set(itertools.chain(self.local_basis, local_states)):
+            #         res = applyOp(
+            #             self.num_spin_orbitals,
+            #             op,
+            #             {state: 1},
+            #             restrictions=self.restrictions,
+            #             slaterWeightMin=slaterWeightMin,
+            #             opResult=op_dict,
+            #         )
+            #         local_states |= set(res.keys())
+            #     old_size = self.size
+            #     # self.add_states(self._generate_spin_flipped_determinants(local_states))
+            #     self.add_states(local_states)
+            #     done = old_size == self.size
         if self.verbose:
             print(f"Expanded basis contains {self.size} elements", flush=True)
         return self.build_operator_dict(op, op_dict=op_dict)
@@ -983,7 +1025,7 @@ class Basis:
                 self.comm.Allreduce(np.array([need_mpi], dtype=bool), need_mpi_arr, op=MPI.LOR)
                 need_mpi = need_mpi_arr[0]
             if need_mpi:
-                sorted_row_states = sorted(row_states)
+                sorted_row_states = row_states  # sorted(row_states)
                 row_dict = {
                     state: i
                     for state, i in zip(sorted_row_states, self._index_sequence(sorted_row_states))
@@ -1006,11 +1048,11 @@ class Basis:
         if isinstance(vs, np.ndarray) and len(vs.shape) == 1:
             vs = vs.reshape((1, vs.shape[0]))
         res = []
-        for v in vs:
+        for row in range(vs.shape[0]):
             psi = {}
             for i in self.local_indices:
-                if abs(v[i]) > 0:
-                    psi[self.local_basis[i - self.offset]] = v[i]
+                if abs(vs[row, i]) > 0:
+                    psi[self.local_basis[i - self.offset]] = vs[row, i]
             res.append(psi.copy())
         return res
 

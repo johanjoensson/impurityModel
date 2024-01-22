@@ -207,8 +207,7 @@ def get_block_Lanczos_matrices(
                 q[1], betas[i] = sp.linalg.qr(wp, mode="economic", overwrite_a=True, check_finite=False)
                 t_qr += time.perf_counter() - t_qr_fact
                 b_mask = np.abs(np.diagonal(betas[i])) < np.finfo(float).eps
-                if i % 10 == 0:
-                # if i % max(int(np.ceil(krylovSize // (100 * n))), 1) == 0:
+                if reort_mode != Reort.NONE or i % 1 == 0:
                     t_converged = time.perf_counter()
                     try:
                         delta = converged(alphas, betas)
