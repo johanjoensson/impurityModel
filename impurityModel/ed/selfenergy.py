@@ -241,18 +241,17 @@ def calc_selfenergy(
         dense_cutoff=dense_cutoff,
     )
     psis = basis.build_state(psis_dense.T)
-    # psis = [{state: psi[state] for state in psi if abs(psi[state]) > 0} for psi in psis]
     basis.local_basis.clear()
     basis.add_states(set(state for psi in psis for state in psi))
     all_psis = comm.gather(psis)
     if verbosity >= 2:
-        psis = [{} for _ in psis]
+        local_psis = [{} for _ in psis]
         for psis_r in all_psis:
-            for i in range(len(psis)):
+            for i in range(len(local_psis)):
                 for state in psis_r[i]:
-                    psis[i][state] = psis_r[i][state] + psis[i].get(state, 0)
-        finite.printThermalExpValues_new(sum_bath_states, es, psis, tau, rot_to_spherical)
-        finite.printExpValues(sum_bath_states, es, psis, rot_to_spherical)
+                    local_psis[i][state] = psis_r[i][state] + local_psis[i].get(state, 0)
+        finite.printThermalExpValues_new(sum_bath_states, es, local_psis, tau, rot_to_spherical)
+        finite.printExpValues(sum_bath_states, es, local_psis, rot_to_spherical)
     basis.restrictions = basis.build_excited_restrictions()
     if verbosity >= 1:
         if verbosity >= 2:
@@ -273,7 +272,7 @@ def calc_selfenergy(
         l=l,
         hOp=h,
         delta=delta,
-        restrictions=restrictions,
+        restrictions=basis.restrictions,
         blocks=blocks,
         verbose=verbosity >= 2,
         mpi_distribute=True,

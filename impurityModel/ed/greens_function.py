@@ -199,7 +199,7 @@ def calc_Greens_function_with_offdiag(
                         n_spin_orbitals,
                         tOp,
                         psi,
-                        slaterWeightMin=slaterWeightMin,
+                        slaterWeightMin=0,  # slaterWeightMin,
                         restrictions=basis.restrictions,
                         opResult=t_mems[i_tOp],
                     )
@@ -250,7 +250,6 @@ def calc_Greens_function_with_offdiag(
             gs_realaxis = None
 
         t_mems = [{} for _ in tOps]
-
         for i, (psi, e) in enumerate(zip(psis, es)):
             for block in blocks:
                 block_v = []
@@ -260,17 +259,12 @@ def calc_Greens_function_with_offdiag(
                     v = finite.applyOp_2(
                         n_spin_orbitals,
                         tOp,
-                        {state: psi[state] for state in psi if state in basis.local_basis},
-                        slaterWeightMin=slaterWeightMin,
+                        psi,
+                        slaterWeightMin=0,
                         restrictions=basis.restrictions,
                         opResult=t_mems[i_tOp],
                     )
                     local_excited_basis |= v.keys()
-                    # vs = comm.allgather(v)
-                    # v = {}
-                    # for v_i in vs:
-                    #     for state in v_i:
-                    #         v[state] = v_i[state] + v.get(state, 0)
                     block_v.append(v)
 
                 excited_basis = Basis(
@@ -419,7 +413,12 @@ def get_block_Green(
         for alpha, beta in zip(alphas[-3::-1], betas[-3::-1]):
             gs_new = wIs - alpha - np.conj(beta.T)[np.newaxis, :, :] @ np.linalg.solve(gs_new, beta[np.newaxis, :, :])
             gs_prev = wIs - alpha - np.conj(beta.T)[np.newaxis, :, :] @ np.linalg.solve(gs_prev, beta[np.newaxis, :, :])
-        return np.max(np.abs(np.diagonal(gs_new, axis1=1, axis2=2) - np.diagonal(gs_prev, axis1=1, axis2=2)))
+        return np.max(
+            np.abs(
+                np.diagonal(np.linalg.inv(gs_new), axis1=1, axis2=2)
+                - np.diagonal(np.linalg.inv(gs_prev), axis1=1, axis2=2)
+            )
+        )
 
     # Run Lanczos on psi0^T* [wI - j*delta - H]^-1 psi0
     alphas, betas, _ = get_block_Lanczos_matrices(
