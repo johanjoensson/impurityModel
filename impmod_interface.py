@@ -515,35 +515,27 @@ def fixed_peak_dc(h0_op, dc_struct, rank, verbose, dense_cutoff):
         dc_op = {(((l, s, m), "c"), ((l, s, m), "a")): -dc_trial for m in range(-l, l + 1) for s in range(2)}
         h_op_c = finite.addOps([h0_op, u, dc_op])
         h_op_i = finite.c2i_op(sum_bath_states, h_op_c)
-        h_dict = bu.expand(h_op_i, dense_cutoff=dense_cutoff, de2_min=1e-6, slaterWeightMin=0)
-        h = (
-            basis_upper.build_sparse_matrix(h_op_i, h_dict)
-            if basis_upper.size > dense_cutoff
-            else basis_upper.build_dense_matrix(h_op_i, h_dict)
-        )
+        h_dict = bu.expand(h_op_i, dense_cutoff=dense_cutoff, de2_min=1e-6)
+        h = bu.build_sparse_matrix(h_op_i, h_dict) if bu.size > dense_cutoff else bu.build_dense_matrix(h_op_i, h_dict)
         e_upper = finite.eigensystem_new(
             h,
-            0,
+            e_max=0,
             k=1,
-            eigenValueTol=0,
+            eigenValueTol=1e-6,
             verbose=verbose,
-            dense_cutoff=dense_cutoff,
             return_eigvecs=False,
+            dense_cutoff=dense_cutoff,
         )
-        h_dict = bl.expand(h_op_i, dense_cutoff=dense_cutoff, de2_min=1e-6, slaterWeightMin=0)
-        h = (
-            basis_lower.build_sparse_matrix(h_op_i, h_dict)
-            if basis_lower.size > dense_cutoff
-            else basis_lower.build_dense_matrix(h_op_i, h_dict)
-        )
+        h_dict = bl.expand(h_op_i, dense_cutoff=dense_cutoff, de2_min=1e-6)
+        h = bl.build_sparse_matrix(h_op_i, h_dict) if bl.size > dense_cutoff else bl.build_dense_matrix(h_op_i, h_dict)
         e_lower = finite.eigensystem_new(
             h,
-            0,
+            e_max=0,
             k=1,
-            eigenValueTol=0,
+            eigenValueTol=1e-6,
             verbose=verbose,
-            dense_cutoff=dense_cutoff,
             return_eigvecs=False,
+            dense_cutoff=dense_cutoff,
         )
         return e_upper[0] - e_lower[0] - peak_position
 
@@ -551,6 +543,7 @@ def fixed_peak_dc(h0_op, dc_struct, rank, verbose, dense_cutoff):
     # dc = dc_struct.dc_guess + F(dc_struct.dc_guess)
     dc = res.root
     if verbose:
+        print(f"Peak position {dc_struct.peak_position}")
         print(f"DC guess {dc_struct.dc_guess}")
         print(f"dc found : {dc}")
 
