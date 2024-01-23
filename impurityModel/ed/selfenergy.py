@@ -36,7 +36,7 @@ def matrix_print(matrix: np.ndarray, label: str = None) -> None:
     print(ms)
 
 
-def find_gs(h_op, N0, delta_occ, bath_states, num_spin_orbitals, rank, verbose, dense_cutoff):
+def find_gs(h_op, N0, delta_occ, bath_states, num_spin_orbitals, rank, verbose, dense_cutoff, spin_flip_dj):
     """
     Find the occupation corresponding to the lowest energy, compare N0 - 1, N0 and N0 + 1
     """
@@ -44,7 +44,6 @@ def find_gs(h_op, N0, delta_occ, bath_states, num_spin_orbitals, rank, verbose, 
     num_val_baths, num_cond_baths = bath_states
     e_gs = np.inf
     basis_gs = None
-    h_gs = None
     gs_impurity_occ = None
     selected = 1
     energies = []
@@ -54,21 +53,20 @@ def find_gs(h_op, N0, delta_occ, bath_states, num_spin_orbitals, rank, verbose, 
         basis = CIPSI_Basis(
             ls=[l for l in N0[0]],
             H=h_op,
-            # basis = Basis(
             valence_baths=num_val_baths,
             conduction_baths=num_cond_baths,
             delta_valence_occ=delta_val_occ,
             delta_conduction_occ=delta_con_occ,
             delta_impurity_occ=delta_imp_occ,
             nominal_impurity_occ={l: N0[0][l] + d for l in N0[0]},
-            truncation_threshold=1e8,
+            truncation_threshold=1e9,
             verbose=False and verbose,
+            spin_flip_dj=spin_flip_dj,
             comm=MPI.COMM_WORLD,
         )
         if verbose:
             print(f"Before expansion basis contains {basis.size} elements")
-        # h_dict = basis.expand(h_op, dense_cutoff=dense_cutoff)
-        h_dict = basis.expand(h_op, dense_cutoff=dense_cutoff, de2_min=1e-5, slaterWeightMin=1e-8)
+        h_dict = basis.expand(h_op, dense_cutoff=dense_cutoff, de2_min=1e-6)
         h = (
             basis.build_sparse_matrix(h_op, h_dict)
             if basis.size > dense_cutoff
@@ -141,6 +139,7 @@ def run(cluster, h0, iw, w, delta, tau, verbosity, reort, dense_cutoff):
         cluster_label=cluster.label,
         reort=reort,
         dense_cutoff=dense_cutoff,
+        spin_flip_dj=cluster.spin_flip_dj,
     )
 
     for inequiv_i, block_i in enumerate(cluster.inequivalent_blocks):
@@ -174,6 +173,7 @@ def calc_selfenergy(
     cluster_label,
     reort,
     dense_cutoff,
+    spin_flip_dj,
 ):
     """ """
     # MPI variables
@@ -204,6 +204,7 @@ def calc_selfenergy(
         rank=rank,
         verbose=verbosity,
         dense_cutoff=dense_cutoff,
+        spin_flip_dj=spin_flip_dj,
     )
     delta_imp_occ, delta_val_occ, delta_con_occ = delta_occ
     restrictions = basis.restrictions
@@ -225,7 +226,7 @@ def calc_selfenergy(
 
     basis.tau = tau
     # h_dict = basis.expand(h, dense_cutoff=dense_cutoff)
-    h_dict = basis.expand(h, H_dict=h_dict, dense_cutoff=dense_cutoff, de2_min=1e-6, slaterWeightMin=0)
+    h_dict = basis.expand(h, H_dict=h_dict, dense_cutoff=dense_cutoff, de2_min=1e-6)
     if verbosity >= 1:
         print(f"Ground state basis contains {len(basis)} elsements.")
     if basis.size <= dense_cutoff:
@@ -252,14 +253,14 @@ def calc_selfenergy(
                     local_psis[i][state] = psis_r[i][state] + local_psis[i].get(state, 0)
         finite.printThermalExpValues_new(sum_bath_states, es, local_psis, tau, rot_to_spherical)
         finite.printExpValues(sum_bath_states, es, local_psis, rot_to_spherical)
-    basis.restrictions = basis.build_excited_restrictions()
+    excited_restrictions = basis.build_excited_restrictions()
     if verbosity >= 1:
         if verbosity >= 2:
             print("Restrictions when calculating the excited states:")
-            for indices, occupations in basis.restrictions.items():
+            for indices, occupations in excited_restrictions.items():
                 print(f"---> {indices} : {occupations}")
             print()
-        print("Consider {len(es):d} eigenstates for the spectra \n")
+        print(f"Consider {len(es):d} eigenstates for the spectra \n")
         print("Calculate Interacting Green's function...")
 
     gs_matsubara, gs_realaxis = get_Greens_function(
@@ -272,13 +273,11 @@ def calc_selfenergy(
         l=l,
         hOp=h,
         delta=delta,
-        restrictions=basis.restrictions,
         blocks=blocks,
         verbose=verbosity >= 2,
         mpi_distribute=True,
         reort=reort,
         dense_cutoff=dense_cutoff,
-        tau=tau,
     )
     if iw is not None:
         gs_matsubara_thermal_avg = thermal_average_scale_indep(es[: np.shape(gs_matsubara)[0]], gs_matsubara, tau=tau)
