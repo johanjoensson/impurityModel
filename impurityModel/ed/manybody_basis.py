@@ -208,7 +208,10 @@ class Basis:
             restrictions[conduction_indices] = (min_con, max_con)
         return restrictions
 
-    def build_excited_restrictions(self):
+    def build_excited_restrictions(self, imp_change=(1, 1), val_change=(1, 0), con_change=(0, 1)):
+        imp_reduce, imp_increase = imp_change
+        val_reduce, _ = val_change
+        _, con_increase = con_change
         valence_baths, conduction_baths = self.bath_states
         total_baths = {l: valence_baths[l] + conduction_baths[l] for l in valence_baths}
         restrictions = self.get_effective_restrictions()
@@ -220,14 +223,14 @@ class Basis:
                 c2i(total_baths, (l, b)) for b in range(valence_baths[l], valence_baths[l] + conduction_baths[l])
             )
             r_min_imp, r_max_imp = restrictions[impurity_indices]
-            min_imp = max(r_min_imp - 1, 0)
-            max_imp = min(r_max_imp + 1, 2 * (2 * l + 1))
+            min_imp = max(r_min_imp - imp_reduce, 0)
+            max_imp = min(r_max_imp + imp_increase, 2 * (2 * l + 1))
             r_min_val, r_max_val = restrictions[valence_indices]
-            min_val = max(r_min_val - 1, 0)
+            min_val = max(r_min_val - val_reduce, 0)
             max_val = valence_baths[l]
             r_min_cond, r_max_cond = restrictions[conduction_indices]
             min_cond = 0
-            max_cond = min(r_max_cond + 1, conduction_baths[l])
+            max_cond = min(r_max_cond + con_increase, conduction_baths[l])
             excited_restrictions[impurity_indices] = (min_imp, max_imp)
             excited_restrictions[valence_indices] = (min_val, max_val)
             excited_restrictions[conduction_indices] = (min_cond, max_cond)
@@ -290,7 +293,7 @@ class Basis:
                 nominal_impurity_occ=nominal_impurity_occ,
                 verbose=verbose,
             )
-            bath_states = tuple({l: valence_baths[l] for l in ls}, {l: conduction_baths[l] for l in ls})
+            bath_states = ({l: valence_baths[l] for l in ls}, {l: conduction_baths[l] for l in ls})
         t0 = perf_counter() - t0
         if verbose:
             print(f"===> T initial_basis : {t0}")
@@ -609,6 +612,7 @@ class Basis:
             print(f"=======> T set bounds and stuff : {t0}")
 
     def _generate_spin_flipped_determinants(self, determinants):
+        valence_baths, conduction_baths = self.bath_states
         n_dn_op = {
             (((l, 0, ml), "c"), ((l, 0, ml), "a")): 1.0
             for l in self.ls
@@ -620,11 +624,7 @@ class Basis:
             # (((2, 0, 2), "c"), ((2, 0, 2), "a")): 1.0,
         }
         n_dn_iop = c2i_op(
-            {
-                l: valence_baths[l] + conduction_baths[l]
-                for valence_baths, conduction_baths in self.bath_states
-                for l in valence_baths
-            },
+            {l: valence_baths[l] + conduction_baths[l] for l in valence_baths},
             n_dn_op,
         )
         n_up_op = {
@@ -638,11 +638,7 @@ class Basis:
             # (((2, 1, 2), "c"), ((2, 1, 2), "a")): 1.0,
         }
         n_up_iop = c2i_op(
-            {
-                l: valence_baths[l] + conduction_baths[l]
-                for valence_baths, conduction_baths in self.bath_states
-                for l in valence_baths
-            },
+            {l: valence_baths[l] + conduction_baths[l] for l in valence_baths},
             n_up_op,
         )
         spin_flip = set()
@@ -658,11 +654,7 @@ class Basis:
                         (((l, 0, ml), "c"), ((l, 1, ml), "a")): 1.0,
                     }
                     spin_flip_iop = c2i_op(
-                        {
-                            l: valence_baths[l] + conduction_baths[l]
-                            for valence_baths, conduction_baths in self.bath_states
-                            for l in valence_baths
-                        },
+                        {l: valence_baths[l] + conduction_baths[l] for l in valence_baths},
                         spin_flip_op,
                     )
                     for state in list(to_flip):
@@ -1035,8 +1027,7 @@ class Basis:
                     slaterWeightMin=slaterWeightMin,
                     opResult=op_dict,
                 )
-                # op_dict[state] = res
-        return op_dict  # {state: op_dict[state] for state in self.local_basis}
+        return op_dict
 
     def build_dense_matrix(self, op, op_dict=None, distribute=True):
         """
@@ -1111,9 +1102,6 @@ class Basis:
                 )
                 retries += 1
             row_dict = {state: index for state, index in zip(rows_in_basis, row_indices) if index != self.size}
-            # in_basis_mask: list[bool] = self.contains(rows_in_basis)
-            # rows_in_basis: list[bytes] = list({rows_in_basis[i] for i in range(len(rows_in_basis)) if in_basis_mask[i]})
-            # row_dict: dict[bytes, int] = dict(zip(rows_in_basis, self.index(rows_in_basis)))
 
             for column in self.local_basis:
                 for row in expanded_dict[column]:
@@ -1213,7 +1201,6 @@ class CIPSI_Basis(Basis):
                 e_max=1e-12,
                 k=sum(2 * (2 * l + 1) for l in self.ls),
                 eigenValueTol=0,
-                slaterWeightMin=0,
                 verbose=self.verbose,
             )
             self.truncate(self.build_state(psi_ref))
@@ -1275,7 +1262,6 @@ class CIPSI_Basis(Basis):
                 slaterWeightMin=slaterWeightMin,
                 opResult=H_dict,
             )
-
             Dj_candidates = list(set(Hpsi_i.keys()))
             Dj_basis_mask = self.contains(Dj_candidates)
             Dj_basis = Basis(
@@ -1288,7 +1274,6 @@ class CIPSI_Basis(Basis):
                 comm=self.comm,
                 verbose=False,
             )
-
             if self.is_distributed:
                 send_states = [[] for _ in range(self.comm.size)]
                 send_amps = [[] for _ in range(self.comm.size)]
@@ -1301,7 +1286,6 @@ class CIPSI_Basis(Basis):
                             send_amps[r].append(amp)
                             break
                 received_states = self.alltoall_states(send_states)
-
                 send_counts = [len(send_amps[r]) for r in range(self.comm.size)]
                 send_offsets = [sum(send_counts[:r]) for r in range(self.comm.size)]
                 receive_counts = [len(received_states[r]) for r in range(self.comm.size)]
@@ -1329,11 +1313,8 @@ class CIPSI_Basis(Basis):
                 for r, states in enumerate(received_states):
                     for i, state in enumerate(states):
                         Hpsi_i[state] = received_amps[r][i] + Hpsi_i.get(state, 0)
-
             de2 = self._calc_de2(Dj_basis.local_basis, H, H_dict, Hpsi_i, e_i)
-
             de2_mask = np.abs(de2) >= de2_min
-
             Dji = {Dj_basis.local_basis[i] for i, mask in enumerate(de2_mask) if mask}
             new_Dj |= Dji
         return new_Dj
@@ -1389,7 +1370,6 @@ class CIPSI_Basis(Basis):
             H_sparse = self.build_sparse_matrix(H, op_dict=H_dict)
             e_ref, psi_ref = eigensystem_new(
                 H_sparse,
-                basis=self,
                 e_max=de0_max,
                 k=sum(2 * (2 * l + 1) for l in self.ls),
                 verbose=False,
@@ -1401,20 +1381,7 @@ class CIPSI_Basis(Basis):
 
     def expand_at(self, w, psi_ref, H, H_dict=None, slaterWeightMin=0):
         de2_min = 1e-8
-
-        t_applyOp = 0
-        # t_basis_mask = 0
-        t_new_dj = 0
-        t_distribute_Hpsi = 0
-        t_de2 = 0
-        t_de2_filter = 0
-        # t_spin_flip = 0
-        t_add_dj = 0
-        t_massage_Hpsi = 0
-
-        t_tot = perf_counter()
         while True:
-            t0 = perf_counter()
             Hpsi_ref = applyOp(
                 self.num_spin_orbitals,
                 H,
@@ -1424,94 +1391,19 @@ class CIPSI_Basis(Basis):
                 opResult=H_dict,
             )
             new_Dj = self.determine_new_Dj([w], [Hpsi_ref], H, H_dict, de2_min, slaterWeightMin=0)
-            # t_applyOp += perf_counter() - t0
 
-            # t_0 = perf_counter()
-            # Dj_basis = Basis(
-            #     ls={},
-            #     bath_states={},
-            #     initial_basis=set(Hpsi_ref.keys()),
-            #     num_spin_orbitals=self.num_spin_orbitals,
-            #     restrictions=None,
-            #     comm=self.comm,
-            #     verbose=False,
-            # )
-            # if len(Dj_basis) == 0:
-            #     break
-            # t_new_dj += perf_counter() - t_0
-
-            # if self.is_distributed:
-            #     t_0 = perf_counter()
-            #     send_states = [[] for _ in range(self.comm.size)]
-            #     send_amps = [[] for _ in range(self.comm.size)]
-            #     for state, amp in Hpsi_ref.items():
-            #         for r in range(self.comm.size):
-            #             if Dj_basis.state_bounds[r] is None:
-            #                 continue
-            #             if state >= Dj_basis.state_bounds[r][0] and state <= Dj_basis.state_bounds[r][1]:
-            #                 send_states[r].append(state)
-            #                 send_amps[r].append(amp)
-            #                 break
-            #     received_states = self.alltoall_states(send_states)
-            #     send_counts = [len(send_amps[r]) for r in range(self.comm.size)]
-            #     send_offsets = [sum(send_counts[:r]) for r in range(self.comm.size)]
-            #     receive_counts = [len(received_states[r]) for r in range(self.comm.size)]
-            #     receive_offsets = [sum(receive_counts[:r]) for r in range(self.comm.size)]
-            #     received_amps_arr = np.empty((sum(receive_counts),), dtype=complex)
-            #     self.comm.Alltoallv(
-            #         (
-            #             np.fromiter(
-            #                 (amp for amps in send_amps for amp in amps),
-            #                 count=sum(len(amps) for amps in send_amps),
-            #                 dtype=complex,
-            #             ),
-            #             send_counts,
-            #             send_offsets,
-            #             MPI.DOUBLE_COMPLEX,
-            #         ),
-            #         (received_amps_arr, receive_counts, receive_offsets, MPI.DOUBLE_COMPLEX),
-            #     )
-            #     received_amps = []
-            #     offset = 0
-            #     for r in range(self.comm.size):
-            #         received_amps.append(received_amps_arr[offset : offset + receive_counts[r]])
-            #         offset += receive_counts[r]
-            #     Hpsi_ref = {}
-            #     for r, states in enumerate(received_states):
-            #         for i, state in enumerate(states):
-            #             Hpsi_ref[state] = received_amps[r][i] + Hpsi_ref.get(state, 0)
-            #     t_distribute_Hpsi += perf_counter() - t_0
-
-            # t_0 = perf_counter()
-            # de2 = self._calc_de2(Dj_basis.local_basis, H, H_dict, Hpsi_ref, w)
-
-            # de2_mask = np.abs(de2) >= de2_min
-            # t_de2 += perf_counter() - t_0
-
-            # t_0 = perf_counter()
-            # Dji = {Dj_basis.local_basis[i] for i, mask in enumerate(de2_mask) if mask}
-            # t_de2_filter += perf_counter() - t_0
-
-            t_0 = perf_counter()
             old_size = self.size
             self.local_basis.clear()
             self.add_states(new_Dj)
-            # self.add_states(self._generate_spin_flipped_determinants(new_Dj))
             if True or self.size == old_size:
                 break
-            t_add_dj += perf_counter() - t_0
 
-            t_0 = perf_counter()
             Hpsi_keys = list(Hpsi_ref.keys())
             mask = self.contains(Hpsi_keys)
             psi_ref = {state: Hpsi_ref[state] for state, m in zip(Hpsi_keys, mask) if m}
             N = np.sqrt(norm2(psi_ref))
             psi_ref = {state: psi_ref[state] / N for state in psi_ref}
-            t_massage_Hpsi += perf_counter() - t_0
-        t_build_op_dict = perf_counter()
         h_dict = self.build_operator_dict(H, op_dict=None)
-        t_build_op_dict = perf_counter() - t_build_op_dict
-        t_tot = perf_counter() - t_tot
 
         return h_dict
 

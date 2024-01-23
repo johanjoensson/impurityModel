@@ -24,13 +24,11 @@ def get_Greens_function(
     l,
     hOp,
     delta,
-    restrictions,
     blocks,
     verbose,
     reort,
     mpi_distribute=False,
     dense_cutoff=1e3,
-    tau=0,
 ):
     n_spin_orbitals = sum(2 * (2 * ang + 1) + nBath for ang, nBath in nBaths.items())
     tOpsPS = spectra.getPhotoEmissionOperators(nBaths, l=l)
@@ -45,14 +43,11 @@ def get_Greens_function(
         matsubara_mesh,
         omega_mesh,
         delta,
-        restrictions=restrictions,
         blocks=blocks,
-        krylovSize=None,
         slaterWeightMin=1e-8,
         verbose=verbose,
         reort=reort,
         dense_cutoff=dense_cutoff,
-        tau=tau,
     )
     gsPS_matsubara, gsPS_realaxis = calc_Greens_function_with_offdiag(
         n_spin_orbitals,
@@ -64,14 +59,11 @@ def get_Greens_function(
         -matsubara_mesh if matsubara_mesh is not None else None,
         -omega_mesh if omega_mesh is not None else None,
         -delta,
-        restrictions=restrictions,
         blocks=blocks,
-        krylovSize=None,
         slaterWeightMin=1e-8,
         verbose=verbose,
         reort=reort,
         dense_cutoff=dense_cutoff,
-        tau=tau,
     )
 
     if mpi_distribute:
@@ -119,14 +111,11 @@ def calc_Greens_function_with_offdiag(
     w,
     delta,
     reort,
-    restrictions=None,
     blocks=None,
-    krylovSize=None,
     slaterWeightMin=0,
     parallelization_mode="H_build",
     verbose=True,
     dense_cutoff=1e3,
-    tau=0,
 ):
     r"""
     Return Green's function for states with low enough energy.
@@ -171,6 +160,7 @@ def calc_Greens_function_with_offdiag(
 
     """
     n = len(es)
+    excited_restrictions = basis.build_excited_restrictions(imp_change=(0, 0), val_change=(1, 0), con_change=(0, 1))
 
     if blocks is None:
         blocks = [list(range(len(tOps)))]
@@ -186,7 +176,7 @@ def calc_Greens_function_with_offdiag(
                 ls=basis.ls,
                 bath_states=basis.bath_states,
                 initial_basis=[],
-                restrictions=basis.restrictions,
+                restrictions=excited_restrictions,
                 num_spin_orbitals=basis.num_spin_orbitals,
                 comm=basis.comm,
                 verbose=False and verbose,
@@ -201,7 +191,7 @@ def calc_Greens_function_with_offdiag(
                         tOp,
                         psi,
                         slaterWeightMin=0,  # slaterWeightMin,
-                        restrictions=basis.restrictions,
+                        restrictions=excited_restrictions,
                         opResult=t_mems[i_tOp],
                     )
                 )
@@ -210,14 +200,14 @@ def calc_Greens_function_with_offdiag(
                         n_spin_orbitals,
                         tOp,
                         {s: 1},
-                        slaterWeightMin=slaterWeightMin,
-                        restrictions=basis.restrictions,
+                        slaterWeightMin=0,  # slaterWeightMin,
+                        restrictions=excited_restrictions,
                         opResult=t_mems[i_tOp],
                     )
                     local_excited_basis |= res.keys()
 
             new_basis.add_states(new_local_basis)
-            h_mem = new_basis.expand(hOp, dense_cutoff=dense_cutoff, slaterWeightMin=slaterWeightMin)
+            h_mem = new_basis.build_operator_dict(hOp)
 
             gs_matsubara_i, gs_realaxis_i = get_block_Green(
                 n_spin_orbitals=n_spin_orbitals,
@@ -228,15 +218,12 @@ def calc_Greens_function_with_offdiag(
                 iw=iw,
                 w=w,
                 delta=delta,
-                restrictions=restrictions,
                 h_mem=h_mem,
-                krylovSize=krylovSize,
                 slaterWeightMin=slaterWeightMin,
                 parallelization_mode="serial",
                 verbose=verbose,
                 reort=reort,
                 dense_cutoff=dense_cutoff,
-                tau=tau,
             )
             comm.Reduce(gs_matsubara_i, gs_matsubara)
             comm.Reduce(gs_realaxis_i, gs_realaxis)
@@ -249,7 +236,6 @@ def calc_Greens_function_with_offdiag(
             gs_realaxis = np.zeros((n, len(tOps), len(tOps), len(w)), dtype=complex)
         else:
             gs_realaxis = None
-
         t_mems = [{} for _ in tOps]
         for i, (psi, e) in enumerate(zip(psis, es)):
             for block in blocks:
@@ -262,7 +248,7 @@ def calc_Greens_function_with_offdiag(
                         tOp,
                         psi,
                         slaterWeightMin=0,
-                        restrictions=basis.restrictions,
+                        restrictions=None,  # excited_restrictions,
                         opResult=t_mems[i_tOp],
                     )
                     local_excited_basis |= v.keys()
@@ -293,15 +279,12 @@ def calc_Greens_function_with_offdiag(
                     iws=iw,
                     ws=w,
                     delta=delta,
-                    restrictions=restrictions,
                     h_mem=h_mem,
-                    krylovSize=krylovSize,
                     slaterWeightMin=slaterWeightMin,
                     parallelization_mode=parallelization_mode,
                     verbose=verbose,
                     reort=reort,
                     dense_cutoff=dense_cutoff,
-                    tau=tau,
                 )
                 if rank == 0:
                     if iw is not None:
@@ -326,12 +309,10 @@ def get_block_Green(
     restrictions=None,
     h_mem=None,
     mode="sparse",
-    krylovSize=None,
     slaterWeightMin=0,
     parallelization_mode="H_build",
     verbose=True,
     dense_cutoff=1e3,
-    tau=0,
 ):
     matsubara = iws is not None
     realaxis = ws is not None
