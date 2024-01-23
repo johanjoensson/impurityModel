@@ -207,15 +207,11 @@ def get_block_Lanczos_matrices(
                 q[1], betas[i] = sp.linalg.qr(wp, mode="economic", overwrite_a=True, check_finite=False)
                 t_qr += time.perf_counter() - t_qr_fact
                 b_mask = np.abs(np.diagonal(betas[i])) < np.finfo(float).eps
-                if reort_mode != Reort.NONE or i % 1 == 0:
-                    t_converged = time.perf_counter()
-                    try:
-                        delta = converged(alphas, betas)
-                    except Exception as e:
-                        raise e
+                t_converged = time.perf_counter()
+                delta = converged(alphas, betas)
 
-                    done = delta < 1e-12
-                    t_conv += time.perf_counter() - t_converged
+                done = delta < 1e-12
+                t_conv += time.perf_counter() - t_converged
 
             done = comm.bcast(done, root=0)
             if done:
