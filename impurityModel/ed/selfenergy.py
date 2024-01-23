@@ -36,7 +36,7 @@ def matrix_print(matrix: np.ndarray, label: str = None) -> None:
     print(ms)
 
 
-def find_gs(h_op, N0, delta_occ, bath_states, num_spin_orbitals, rank, verbose, dense_cutoff):
+def find_gs(h_op, N0, delta_occ, bath_states, num_spin_orbitals, rank, verbose, dense_cutoff, spin_flip_dj):
     """
     Find the occupation corresponding to the lowest energy, compare N0 - 1, N0 and N0 + 1
     """
@@ -54,21 +54,20 @@ def find_gs(h_op, N0, delta_occ, bath_states, num_spin_orbitals, rank, verbose, 
         basis = CIPSI_Basis(
             ls=[l for l in N0[0]],
             H=h_op,
-            # basis = Basis(
             valence_baths=num_val_baths,
             conduction_baths=num_cond_baths,
             delta_valence_occ=delta_val_occ,
             delta_conduction_occ=delta_con_occ,
             delta_impurity_occ=delta_imp_occ,
             nominal_impurity_occ={l: N0[0][l] + d for l in N0[0]},
-            truncation_threshold=1e8,
+            truncation_threshold=1e9,
             verbose=False and verbose,
+            spin_flip_dj=spin_flip_dj,
             comm=MPI.COMM_WORLD,
         )
         if verbose:
             print(f"Before expansion basis contains {basis.size} elements")
-        # h_dict = basis.expand(h_op, dense_cutoff=dense_cutoff)
-        h_dict = basis.expand(h_op, dense_cutoff=dense_cutoff, de2_min=1e-5, slaterWeightMin=1e-8)
+        h_dict = basis.expand(h_op, dense_cutoff=dense_cutoff, de2_min=1e-6)
         h = (
             basis.build_sparse_matrix(h_op, h_dict)
             if basis.size > dense_cutoff
@@ -141,6 +140,7 @@ def run(cluster, h0, iw, w, delta, tau, verbosity, reort, dense_cutoff):
         cluster_label=cluster.label,
         reort=reort,
         dense_cutoff=dense_cutoff,
+        spin_flip_dj=cluster.spin_flip_dj,
     )
 
     for inequiv_i, block_i in enumerate(cluster.inequivalent_blocks):
@@ -174,6 +174,7 @@ def calc_selfenergy(
     cluster_label,
     reort,
     dense_cutoff,
+    spin_flip_dj,
 ):
     """ """
     # MPI variables
@@ -204,6 +205,7 @@ def calc_selfenergy(
         rank=rank,
         verbose=verbosity,
         dense_cutoff=dense_cutoff,
+        spin_flip_dj=spin_flip_dj,
     )
     delta_imp_occ, delta_val_occ, delta_con_occ = delta_occ
     restrictions = basis.restrictions

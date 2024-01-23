@@ -191,6 +191,7 @@ def calc_Greens_function_with_offdiag(
                 comm=basis.comm,
                 verbose=False and verbose,
                 truncation_threshold=basis.truncation_threshold,
+                spin_flip_dj=basis.spin_flip_dj,
                 tau=basis.tau,
             )
             for tOp in tOps:
@@ -277,6 +278,7 @@ def calc_Greens_function_with_offdiag(
                     verbose=verbose,
                     truncation_threshold=basis.truncation_threshold,
                     tau=basis.tau,
+                    spin_flip_dj=basis.spin_flip_dj,
                 )
                 h_mem = excited_basis.expand(hOp, dense_cutoff=dense_cutoff, slaterWeightMin=slaterWeightMin)
 
@@ -579,6 +581,7 @@ def calc_Greens_function_with_offdiag_cg(
         verbose=verbose,
         truncation_threshold=basis.truncation_threshold,
         tau=basis.tau,
+        spin_flip_dj=basis.spin_flip_dj,
     )
     print(f"size of excited space basis is {excited_basis.size}")
     for i, (psi, e) in enumerate(zip(psis, es)):
@@ -686,6 +689,7 @@ def get_block_Green_cg(
             comm=None,
             verbose=verbose,
             truncation_threshold=basis.truncation_threshold,
+            spin_flip_dj=basis.spin_flip_dj,
             tau=basis.tau,
         )
         for w_i, w in finite.get_job_tasks(comm.rank, comm.size, list(enumerate(iws))):

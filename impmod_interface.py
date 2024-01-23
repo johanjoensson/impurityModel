@@ -40,6 +40,7 @@ class ImpModCluster:
         corr_to_cf,
         corr_to_spherical,
         blocked,
+        spin_flip_dj,
     ):
         self.label = label
         self.h_dft = h_dft
@@ -55,6 +56,7 @@ class ImpModCluster:
         self.sig_dc = sig_dc
         self.corr_to_cf = corr_to_cf
         self.corr_to_spherical = corr_to_spherical
+        self.spin_flip_dj = spin_flip_dj
 
         if blocked:
             self.blocks = hf.get_block_structure(
@@ -90,7 +92,16 @@ class ImpModCluster:
 
 class dcStruct:
     def __init__(
-        self, nominal_occ, delta_occ, num_spin_orbitals, bath_states, u4, slater_params, peak_position, dc_guess
+        self,
+        nominal_occ,
+        delta_occ,
+        num_spin_orbitals,
+        bath_states,
+        u4,
+        slater_params,
+        peak_position,
+        dc_guess,
+        spin_flip_dj,
     ):
         self.nominal_occ = nominal_occ
         self.delta_occ = delta_occ
@@ -100,6 +111,7 @@ class dcStruct:
         self.slater_params = slater_params
         self.peak_position = peak_position
         self.dc_guess = dc_guess
+        self.spin_flip_dj = spin_flip_dj
 
     def __repr__(self):
         return (
@@ -143,6 +155,7 @@ def parse_solver_line(solver_line):
     blocked = True
     fit_unocc = False
     weight = 2
+    spin_flip_dj = False
     if len(solver_array) > 5:
         skip_next = False
         for i in range(5, len(solver_array)):
@@ -162,21 +175,25 @@ def parse_solver_line(solver_line):
             elif arg.lower() == "fit_unocc":
                 fit_unocc = True
             elif arg.lower() == "weight":
-                dense_cutoff = float(solver_array[i + 1])
+                weight = float(solver_array[i + 1])
                 skip_next = True
+            elif arg.lower() == "spin_flip_dj":
+                spin_flip_dj = True
             else:
                 raise RuntimeError(f"Unknown solver parameter {arg}.\n" f"--->Other solver params {solver_array[5:]}")
 
     print(
-        f"Nominal imp. occupation  +> {nominal_occ[0]}\n"
-        f"Delta occupation         +> {delta_occ}\n"
-        f"# bath states / imp. orb.+> {nBaths}\n"
-        f"Reorthogonalizaion mode  +> {reort}\n"
-        f"Dense matrix size cutoff +> {dense_cutoff}\n"
-        f"Use block structure      +> {blocked}\n"
-        f"Fit unoccupied states    +> {fit_unocc}\n"
+        f"Nominal imp. occupation  |> {nominal_occ[0]}\n"
+        f"Delta occupation         |> {delta_occ}\n"
+        f"# bath states / imp. orb.|> {nBaths}\n"
+        f"Reorthogonalizaion mode  |> {reort}\n"
+        f"Dense matrix size cutoff |> {dense_cutoff}\n"
+        f"Use block structure      |> {blocked}\n"
+        f"Fit unoccupied states    |> {fit_unocc}\n"
+        f"Fitting weight factor    |> {weight}\n"
+        f"Generate spin fliped Djs |> {spin_flip_dj}\n"
     )
-    return nominal_occ, delta_occ, nBaths, reort, dense_cutoff, blocked, fit_unocc, weight
+    return nominal_occ, delta_occ, nBaths, reort, dense_cutoff, blocked, fit_unocc, weight, spin_flip_dj
 
 
 @ffi.def_extern()
@@ -305,6 +322,7 @@ def run_impmod_ed(
         blocked,
         fit_unocc,
         weight,
+        spin_flip_dj,
     ) = parse_solver_line(solver_line)
     nominal_occ = ({l: nominal_occ[0]}, {l: nominal_occ[1]}, {l: nominal_occ[2]})
     delta_occ = ({l: delta_occ[0]}, {l: delta_occ[1]}, {l: delta_occ[2]})
@@ -352,6 +370,7 @@ def run_impmod_ed(
             slater_params=slater,
             peak_position=peak_position,
             dc_guess=sig_dc[0, 0],
+            spin_flip_dj=spin_flip_dj,
         )
 
         try:
@@ -387,6 +406,7 @@ def run_impmod_ed(
         corr_to_cf=corr_to_cf,
         corr_to_spherical=corr_to_spherical,
         blocked=blocked,
+        spin_flip_dj=spin_flip_dj,
     )
 
     from impurityModel.ed import selfenergy
@@ -436,49 +456,57 @@ def fixed_peak_dc(h0_op, dc_struct, rank, verbose, dense_cutoff):
     Nm = ({l: N0[0][l] - 1 for l in N0[0]}, N0[1], N0[2])
     if peak_position >= 0:
         basis_upper = CIPSI_Basis(
-            ls=[l for l in N0[0]],
+            ls=list(N0[0].keys()),
             valence_baths=num_valence_bath_states,
             conduction_baths=num_conduction_bath_states,
             delta_valence_occ=delta_valence_occ,
             delta_conduction_occ=delta_conduction_occ,
             delta_impurity_occ=delta_impurity_occ,
             nominal_impurity_occ=Np[0],
+            truncation_threshold=1e9,
             verbose=False and verbose,
             comm=MPI.COMM_WORLD,
+            spin_flip_dj=dc_struct.spin_flip_dj,
         )
         basis_lower = CIPSI_Basis(
-            ls=[l for l in N0[0]],
+            ls=list(N0[0].keys()),
             valence_baths=num_valence_bath_states,
             conduction_baths=num_conduction_bath_states,
             delta_valence_occ=delta_valence_occ,
             delta_conduction_occ=delta_conduction_occ,
             delta_impurity_occ=delta_impurity_occ,
             nominal_impurity_occ=N0[0],
+            truncation_threshold=1e9,
             verbose=False and verbose,
             comm=MPI.COMM_WORLD,
+            spin_flip_dj=dc_struct.spin_flip_dj,
         )
     else:
         basis_upper = CIPSI_Basis(
-            ls=[l for l in N0[0]],
+            ls=list(N0[0].keys()),
             valence_baths=num_valence_bath_states,
             conduction_baths=num_conduction_bath_states,
             delta_valence_occ=delta_valence_occ,
             delta_conduction_occ=delta_conduction_occ,
             delta_impurity_occ=delta_impurity_occ,
             nominal_impurity_occ=N0[0],
+            truncation_threshold=1e9,
             verbose=False and verbose,
             comm=MPI.COMM_WORLD,
+            spin_flip_dj=dc_struct.spin_flip_dj,
         )
         basis_lower = CIPSI_Basis(
-            ls=[l for l in N0[0]],
+            ls=list(N0[0].keys()),
             valence_baths=num_valence_bath_states,
             conduction_baths=num_conduction_bath_states,
             delta_valence_occ=delta_valence_occ,
             delta_conduction_occ=delta_conduction_occ,
             delta_impurity_occ=delta_impurity_occ,
             nominal_impurity_occ=Nm[0],
+            truncation_threshold=1e9,
             verbose=False and verbose,
             comm=MPI.COMM_WORLD,
+            spin_flip_dj=dc_struct.spin_flip_dj,
         )
 
     def F(dc_trial):

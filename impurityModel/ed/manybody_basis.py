@@ -247,6 +247,7 @@ class Basis:
         delta_impurity_occ=None,
         nominal_impurity_occ=None,
         truncation_threshold=np.inf,
+        spin_flip_dj=False,
         tau=0,
         comm=None,
         verbose=True,
@@ -296,6 +297,7 @@ class Basis:
         t0 = perf_counter()
         self.ls = ls
         self.bath_states = bath_states
+        self.spin_flip_dj = spin_flip_dj
         self.verbose = verbose
         self.debug = debug
         self.truncation_threshold = truncation_threshold
@@ -688,67 +690,25 @@ class Basis:
         return spin_flip
 
     def expand(self, op, op_dict=None, dense_cutoff=None, slaterWeightMin=0):
-        done = False
-        if self.comm is None:
-            if op_dict is None:
-                op_dict = {}
-            new_basis = set()
-            new_states = set(op_dict.keys()) | set(self.local_basis)
-            while len(new_states) > 0:
-                states_to_check = new_states
-                new_states = set()
-                for state in states_to_check:
-                    if state in op_dict:
-                        res = op_dict[state]
-                    else:
-                        res = applyOp(
-                            self.num_spin_orbitals,
-                            op,
-                            {state: 1},
-                            restrictions=self.restrictions,
-                            slaterWeightMin=slaterWeightMin,
-                            opResult=op_dict,
-                        )
-                    new_states |= set(res.keys()) - new_basis
-                # new_states = self._generate_spin_flipped_determinants(new_states)
-
-                new_basis |= new_states
-            self.local_basis = sorted(new_basis)
-        else:
+        old_size = self.size + 1
+        while old_size != self.size:
             local_states = set(self.local_basis)
-            new_states = local_states
-            while len(new_states) > 0:
-                loop_states = new_states
-                new_states = set()
-                for state in loop_states:
-                    res = applyOp(
-                        self.num_spin_orbitals,
-                        op,
-                        {state: 1},
-                        restrictions=self.restrictions,
-                        slaterWeightMin=slaterWeightMin,
-                        opResult=op_dict,
-                    )
-                    new_states |= res.keys() - local_states
-                local_states |= new_states
-            self.add_states(local_states)
+            new_states = set()
+            for state in self.local_basis:
+                res = applyOp(
+                    self.num_spin_orbitals,
+                    op,
+                    {state: 1},
+                    restrictions=self.restrictions,
+                    slaterWeightMin=slaterWeightMin,
+                    opResult=op_dict,
+                )
+                new_states |= res.keys() - local_states
+            old_size = self.size
+            if self.spin_flip_dj:
+                new_states = self._generate_spin_flipped_determinants(new_states)
+            self.add_states(new_states)
 
-            # while not done:
-            #     local_states = set()
-            #     for state in set(itertools.chain(self.local_basis, local_states)):
-            #         res = applyOp(
-            #             self.num_spin_orbitals,
-            #             op,
-            #             {state: 1},
-            #             restrictions=self.restrictions,
-            #             slaterWeightMin=slaterWeightMin,
-            #             opResult=op_dict,
-            #         )
-            #         local_states |= set(res.keys())
-            #     old_size = self.size
-            #     # self.add_states(self._generate_spin_flipped_determinants(local_states))
-            #     self.add_states(local_states)
-            #     done = old_size == self.size
         if self.verbose:
             print(f"Expanded basis contains {self.size} elements", flush=True)
         return self.build_operator_dict(op, op_dict=op_dict)
@@ -1004,6 +964,7 @@ class Basis:
             initial_basis=self.local_basis,
             num_spin_orbitals=self.num_spin_orbitals,
             restrictions=self.restrictions,
+            spin_flip_dj=self.spin_flip_dj,
             comm=self.comm,
             truncation_threshold=self.truncation_threshold,
             verbose=self.verbose,
@@ -1207,6 +1168,7 @@ class CIPSI_Basis(Basis):
         restrictions=None,
         num_spin_orbitals=None,
         truncation_threshold=np.inf,
+        spin_flip_dj=False,
         verbose=False,
         H=None,
         tau=0,
@@ -1236,6 +1198,7 @@ class CIPSI_Basis(Basis):
             num_spin_orbitals=num_spin_orbitals,
             restrictions=restrictions,
             truncation_threshold=truncation_threshold,
+            spin_flip_dj=spin_flip_dj,
             tau=tau,
             verbose=verbose,
             comm=comm,
@@ -1408,21 +1371,16 @@ class CIPSI_Basis(Basis):
             psi_ref = self.build_state(psi_ref_dense.T)
             e0_prev = e0
             e0 = np.min(e_ref)
-            if self.verbose:
-                print("->Loop over eigenstates")
             new_Dj = self.determine_new_Dj(e_ref, psi_ref, H, H_dict, de2_min, slaterWeightMin=0)
             old_size = self.size
+            if self.spin_flip_dj:
+                new_DJ = self._generate_spin_flipped_determinants(new_Dj)
             self.add_states(new_Dj)
-            # self.add_states(self._generate_spin_flipped_determinants(new_Dj))
 
             if old_size == self.size:
                 converge_count += 1
             else:
                 converge_count = 0
-            if self.verbose:
-                print(
-                    f"-----> N = {self.size: 7,d}, log(de2_min) = {np.log10(de2_min): 5.1f}, log(|de_0|) = {np.log10(abs(e0 - e0_prev))}, {converge_count=}",
-                )
 
         if self.verbose:
             print(f"After expansion, the basis contains {self.size} elements.")
@@ -1566,6 +1524,7 @@ class CIPSI_Basis(Basis):
             restrictions=self.restrictions,
             comm=self.comm,
             truncation_threshold=self.truncation_threshold,
+            spin_flip_dj=self.spin_flip_dj,
             tau=self.tau,
             verbose=self.verbose,
         )
