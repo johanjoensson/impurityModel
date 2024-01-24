@@ -1376,7 +1376,7 @@ class CIPSI_Basis(Basis):
             self.truncate(self.build_state(psi_ref))
             if self.verbose:
                 print(f"----->After truncation, the basis contains {self.size} elements.")
-        return self.build_operator_dict(H, op_dict=None)
+        return self.build_operator_dict(H, op_dict=H_dict)
 
     def expand_at(self, w, psi_ref, H, H_dict=None):
         de2_min = 1e-8
@@ -1401,9 +1401,8 @@ class CIPSI_Basis(Basis):
             psi_ref = {state: Hpsi_ref[state] for state, m in zip(Hpsi_keys, mask) if m}
             N = np.sqrt(norm2(psi_ref))
             psi_ref = {state: psi_ref[state] / N for state in psi_ref}
-        h_dict = self.build_operator_dict(H, op_dict=None)
 
-        return h_dict
+        return self.build_operator_dict(H, op_dict=H_dict)
 
     def copy(self):
         new_basis = CIPSI_Basis(

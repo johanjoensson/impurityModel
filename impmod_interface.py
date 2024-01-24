@@ -539,9 +539,9 @@ def fixed_peak_dc(h0_op, dc_struct, rank, verbose, dense_cutoff):
         )
         return e_upper[0] - e_lower[0] - peak_position
 
-    res = sp.optimize.root_scalar(F, x0=np.real(dc_struct.dc_guess))
-    dc = res.root
-    # dc = sp.optimize.newton(F, x0=dc_struct.dc_guess)
+    # res = sp.optimize.root_scalar(F, x0=dc_struct.dc_guess)
+    # dc = res.root
+    dc = sp.optimize.newton(F, x0=np.real(dc_struct.dc_guess))
     if verbose:
         print(f"Peak position {dc_struct.peak_position}")
         print(f"DC guess {dc_struct.dc_guess}")
