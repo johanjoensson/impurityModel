@@ -1234,7 +1234,10 @@ class CIPSI_Basis(Basis):
         e_state = np.empty((len(Djs)), dtype=float)
         for j, Dj in enumerate(Djs):
             # <Dj|H|Psi_ref>
-            overlap[j] = Hpsi_ref.get(Dj, 0)
+            if Dj not in Hpsi_ref:
+                overlap[j] = 0
+                continue
+            overlap[j] = Hpsi_ref[Dj]
             HDj = applyOp(
                 self.num_spin_orbitals,
                 H,
@@ -1249,9 +1252,9 @@ class CIPSI_Basis(Basis):
         de[np.abs(de) < np.finfo(float).eps] = np.finfo(float).eps
 
         # <Dj|H|Psi_ref>^2 / <Dj|H|Dj>
-        return np.abs(overlap) ** 2 / de
+        return np.square(np.abs(overlap)) / de
 
-    def determine_new_Dj(self, e_ref, psi_ref, H, H_dict, de2_min, slaterWeightMin):
+    def determine_new_Dj(self, e_ref, psi_ref, H, H_dict, de2_min):
         new_Dj = set()
         for e_i, psi_i in zip(e_ref, psi_ref):
             Hpsi_i = applyOp(
@@ -1259,7 +1262,6 @@ class CIPSI_Basis(Basis):
                 H,
                 psi_i,
                 restrictions=self.restrictions,
-                slaterWeightMin=slaterWeightMin,
                 opResult=H_dict,
             )
             Dj_candidates = list(set(Hpsi_i.keys()))
@@ -1324,7 +1326,6 @@ class CIPSI_Basis(Basis):
         Use the CIPSI method to expand the basis. Keep adding Slater determinants until the CIPSI energy is converged.
         """
         psi_ref = None
-        e0_prev = np.inf
         e0 = 0
         converge_count = 0
         de0_max = max(-self.tau * np.log(1e-4), de2_min)
@@ -1350,12 +1351,10 @@ class CIPSI_Basis(Basis):
                 verbose=self.verbose,
             )
             psi_ref = self.build_state(psi_ref_dense.T)
-            e0_prev = e0
-            e0 = np.min(e_ref)
-            new_Dj = self.determine_new_Dj(e_ref, psi_ref, H, H_dict, de2_min, slaterWeightMin=0)
+            new_Dj = self.determine_new_Dj(e_ref, psi_ref, H, H_dict, de2_min)
             old_size = self.size
             if self.spin_flip_dj:
-                new_DJ = self._generate_spin_flipped_determinants(new_Dj)
+                new_Dj = self._generate_spin_flipped_determinants(new_Dj)
             self.add_states(new_Dj)
 
             if old_size == self.size:
@@ -1379,7 +1378,7 @@ class CIPSI_Basis(Basis):
                 print(f"----->After truncation, the basis contains {self.size} elements.")
         return self.build_operator_dict(H, op_dict=None)
 
-    def expand_at(self, w, psi_ref, H, H_dict=None, slaterWeightMin=0):
+    def expand_at(self, w, psi_ref, H, H_dict=None):
         de2_min = 1e-8
         while True:
             Hpsi_ref = applyOp(
@@ -1387,10 +1386,9 @@ class CIPSI_Basis(Basis):
                 H,
                 psi_ref,
                 restrictions=self.restrictions,
-                slaterWeightMin=slaterWeightMin,
                 opResult=H_dict,
             )
-            new_Dj = self.determine_new_Dj([w], [Hpsi_ref], H, H_dict, de2_min, slaterWeightMin=0)
+            new_Dj = self.determine_new_Dj([w], [Hpsi_ref], H, H_dict, de2_min)
 
             old_size = self.size
             self.local_basis.clear()
