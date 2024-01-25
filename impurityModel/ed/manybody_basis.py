@@ -962,7 +962,7 @@ class Basis:
             verbose=self.verbose,
         )
 
-    def build_vector(self, psis: list[dict], dtype=complex, distributed=False) -> np.ndarray:
+    def build_vector(self, psis: list[dict], dtype=complex) -> np.ndarray:
         v_local = np.zeros((len(psis), self.size), dtype=dtype)
         v = np.empty_like(v_local)
         # row_states_in_basis: list[bytes] = []
@@ -993,6 +993,37 @@ class Basis:
             self.comm.Allreduce(v_local, v, op=MPI.SUM)
         else:
             v = v_local
+        return v
+
+    def build_distributed_vector(self, psis: list[dict], dtype=complex) -> np.ndarray:
+        v = np.empty_like(v_local)
+        for row, psi in enumerate(psis):
+            if self.is_distributed:
+                for r in self.comm.size:
+                    if self.state_bounds[r] is None:
+                        break
+                    r_offset = self.index_bounds[r][0]
+                    local_r_size = np.empty((1,), dtype=int)
+                    if r == self.comm.rank:
+                        local_r_size[0] = len(self.local_basis)
+                    self.comm.Bcast(local_r_size, root=r)
+                    r_send_vec = np.zeros((local_r_size[0],), dtype=dtype)
+                    r_states = [
+                        state for state in psi if state >= self.state_bounds[r][0] and state <= self.state_bounds[r][1]
+                    ]
+                    row_dict = {
+                        state: i - r_offset
+                        for state, i in zip(r_states, self._index_sequence(r_states))
+                        if i < self.size
+                    }
+                    for r_state in r_states:
+                        r_send_vec[row_dict[r_state]] = psi[r_state]
+                    self.comm.Reduce(r_send_vec, v[row, :], root=r)
+            else:
+                for state in psi:
+                    if state not in self._index_dict:
+                        continue
+                    v[row, self._index_dict[state]] = psi[state]
         return v
 
     def build_state(self, vs: Union[list[np.ndarray], np.ndarray]) -> list[dict]:
