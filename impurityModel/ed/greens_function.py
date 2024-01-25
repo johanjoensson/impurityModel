@@ -160,10 +160,11 @@ def calc_Greens_function_with_offdiag(
 
     """
     n = len(es)
-    excited_restrictions = basis.build_excited_restrictions(imp_change=(0, 0), val_change=(1, 0), con_change=(0, 1))
+    excited_restrictions = basis.build_excited_restrictions(imp_change=(1, 1), val_change=(1, 0), con_change=(0, 1))
 
     if blocks is None:
         blocks = [list(range(len(tOps)))]
+    t_mems = [{} for _ in tOps]
     if parallelization_mode == "eigen_states":
         gs_matsubara = np.zeros((n, len(tOps), len(tOps), len(iw)), dtype=complex)
         gs_realaxis = np.zeros((n, len(tOps), len(tOps), len(w)), dtype=complex)
@@ -172,10 +173,24 @@ def calc_Greens_function_with_offdiag(
             e = es[i]
 
             v = []
-            new_basis = Basis(
+            local_excited_basis = set()
+            for block in blocks:
+                block_v = []
+                for i_tOp, tOp in [(orb, tOps[orb]) for orb in block]:
+                    v = finite.applyOp_2(
+                        n_spin_orbitals,
+                        tOp,
+                        psi,
+                        slaterWeightMin=0,
+                        restrictions=None,  # excited_restrictions,
+                        opResult=t_mems[i_tOp],
+                    )
+                    local_excited_basis |= v.keys()
+                    block_v.append(v)
+            excited_basis = Basis(
                 ls=basis.ls,
                 bath_states=basis.bath_states,
-                initial_basis=[],
+                initial_basis=local_excited_basis,
                 restrictions=excited_restrictions,
                 num_spin_orbitals=basis.num_spin_orbitals,
                 comm=basis.comm,
@@ -184,39 +199,17 @@ def calc_Greens_function_with_offdiag(
                 spin_flip_dj=basis.spin_flip_dj,
                 tau=basis.tau,
             )
-            for tOp in tOps:
-                v.append(
-                    finite.applyOp_2(
-                        n_spin_orbitals,
-                        tOp,
-                        psi,
-                        slaterWeightMin=0,  # slaterWeightMin,
-                        restrictions=excited_restrictions,
-                        opResult=t_mems[i_tOp],
-                    )
-                )
-                for s in basis.local_basis:
-                    res = finite.applyOp_2(
-                        n_spin_orbitals,
-                        tOp,
-                        {s: 1},
-                        slaterWeightMin=0,  # slaterWeightMin,
-                        restrictions=excited_restrictions,
-                        opResult=t_mems[i_tOp],
-                    )
-                    local_excited_basis |= res.keys()
 
-            new_basis.add_states(new_local_basis)
-            h_mem = new_basis.build_operator_dict(hOp)
+            h_mem = excited_basis.expand(hOp, slaterWeightMin=slaterWeightMin)
 
             gs_matsubara_i, gs_realaxis_i = get_block_Green(
                 n_spin_orbitals=n_spin_orbitals,
                 hOp=hOp,
                 psi_arr=v,
-                basis=new_basis,
+                basis=excited_basis,
                 e=e,
-                iw=iw,
-                w=w,
+                iws=iw,
+                ws=w,
                 delta=delta,
                 h_mem=h_mem,
                 slaterWeightMin=slaterWeightMin,
@@ -236,7 +229,6 @@ def calc_Greens_function_with_offdiag(
             gs_realaxis = np.zeros((n, len(tOps), len(tOps), len(w)), dtype=complex)
         else:
             gs_realaxis = None
-        t_mems = [{} for _ in tOps]
         for i, (psi, e) in enumerate(zip(psis, es)):
             for block in blocks:
                 block_v = []
@@ -258,7 +250,7 @@ def calc_Greens_function_with_offdiag(
                     ls=basis.ls,
                     bath_states=basis.bath_states,
                     initial_basis=local_excited_basis,
-                    restrictions=basis.restrictions,
+                    restrictions=excited_restrictions,
                     num_spin_orbitals=basis.num_spin_orbitals,
                     comm=basis.comm,
                     verbose=verbose,

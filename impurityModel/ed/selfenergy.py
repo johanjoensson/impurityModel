@@ -225,7 +225,6 @@ def calc_selfenergy(
     energy_cut = -tau * np.log(1e-4)
 
     basis.tau = tau
-    # h_dict = basis.expand(h, dense_cutoff=dense_cutoff)
     h_dict = basis.expand(h, H_dict=h_dict, dense_cutoff=dense_cutoff, de2_min=1e-8)
     if verbosity >= 1:
         print(f"Ground state basis contains {len(basis)} elsements.")
