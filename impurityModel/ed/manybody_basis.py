@@ -683,7 +683,7 @@ class Basis:
 
     def expand(self, op, op_dict=None, dense_cutoff=None, slaterWeightMin=0):
         old_size = self.size + 1
-        while old_size != self.size:
+        while old_size != self.size and self.size < self.truncation_threshold:
             local_states = set(self.local_basis)
             new_states = set()
             for state in self.local_basis:
@@ -1027,6 +1027,9 @@ class Basis:
                     slaterWeightMin=slaterWeightMin,
                     opResult=op_dict,
                 )
+        for state in list(op_dict.keys()):
+            if state not in self._index_dict:
+                op_dict.pop(state)
         return op_dict
 
     def build_dense_matrix(self, op, op_dict=None, distribute=True):
