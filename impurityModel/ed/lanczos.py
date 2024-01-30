@@ -201,7 +201,8 @@ def get_block_Lanczos_matrices(
         for i in range(int(np.ceil(krylovSize / n))):
             t_h = time.perf_counter()
             comm.Reduce(
-                h[:, offsets[comm.rank] : offsets[comm.rank] + psi0.shape[0]] @ q_i,
+                h @ q_i,
+                # h[:, offsets[comm.rank] : offsets[comm.rank] + psi0.shape[0]] @ q_i,
                 wp,
                 op=MPI.SUM,
                 root=0,

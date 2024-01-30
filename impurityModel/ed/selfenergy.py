@@ -274,11 +274,11 @@ def calc_selfenergy(
         delta=delta,
         blocks=blocks,
         verbose=verbosity >= 2,
-        mpi_distribute=True,
+        mpi_distribute=False,
         reort=reort,
         dense_cutoff=dense_cutoff,
     )
-    if iw is not None:
+    if gs_matsubara is not None:
         gs_matsubara_thermal_avg = thermal_average_scale_indep(es[: np.shape(gs_matsubara)[0]], gs_matsubara, tau=tau)
         try:
             check_greens_function(gs_matsubara_thermal_avg)
@@ -287,7 +287,7 @@ def calc_selfenergy(
                 print(f"WARNING! Unphysical Matsubara-axis Greens function:\n\t{err}")
         if verbosity >= 2:
             save_Greens_function(gs=gs_matsubara_thermal_avg, omega_mesh=iw, label=f"G-{cluster_label}", e_scale=1)
-    if w is not None:
+    if gs_realaxis is not None:
         gs_realaxis_thermal_avg = thermal_average_scale_indep(es[: np.shape(gs_realaxis)[0]], gs_realaxis, tau=tau)
         try:
             check_greens_function(gs_realaxis_thermal_avg)
@@ -298,7 +298,7 @@ def calc_selfenergy(
             save_Greens_function(gs=gs_realaxis_thermal_avg, omega_mesh=w, label=f"G-{cluster_label}", e_scale=1)
     if verbosity >= 1:
         print("Calculate self-energy...")
-    if w is not None:
+    if gs_realaxis is not None:
         sigma_real = get_sigma(
             omega_mesh=w,
             nBaths=sum_bath_states,
@@ -317,7 +317,7 @@ def calc_selfenergy(
                 print(f"WARNING! Unphysical realaxis selfenergy:\n\t{err}")
     else:
         sigma_real = None
-    if iw is not None:
+    if gs_matsubara is not None:
         sigma = get_sigma(
             omega_mesh=iw,
             nBaths=sum_bath_states,
@@ -348,6 +348,8 @@ def calc_selfenergy(
         np.savetxt(f"real-Sigma_static-{cluster_label}.dat", np.real(sigma_static))
         np.savetxt(f"imag-Sigma_static-{cluster_label}.dat", np.imag(sigma_static))
 
+    sigma = comm.bcast(sigma)
+    sigma_real = comm.bcast(sigma_real)
     return sigma, sigma_real, sigma_static
 
 

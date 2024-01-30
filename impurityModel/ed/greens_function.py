@@ -73,7 +73,7 @@ def get_Greens_function(
         if omega_mesh is not None:
             gsIPS_realaxis = comm.bcast(gsIPS_realaxis, root=0)
             gsPS_realaxis = comm.bcast(gsPS_realaxis, root=0)
-    if matsubara_mesh is not None:
+    if matsubara_mesh is not None and (mpi_distribute or comm.rank == 0):
         gs_matsubara = gsIPS_matsubara - np.transpose(
             gsPS_matsubara,
             (
@@ -85,7 +85,7 @@ def get_Greens_function(
         )
     else:
         gs_matsubara = None
-    if omega_mesh is not None:
+    if omega_mesh is not None and (mpi_distribute or comm.rank == 0):
         gs_realaxis = gsIPS_realaxis - np.transpose(
             gsPS_realaxis,
             (
@@ -222,11 +222,11 @@ def calc_Greens_function_with_offdiag(
             comm.Reduce(gs_realaxis_i, gs_realaxis)
     elif parallelization_mode == "H_build":
         if iw is not None:
-            gs_matsubara = np.zeros((n, len(tOps), len(tOps), len(iw)), dtype=complex)
+            gs_matsubara = np.zeros((n, len(tOps), len(tOps), len(iw)), dtype=complex) if comm.rank == 0 else None
         else:
             gs_matsubara = None
         if w is not None:
-            gs_realaxis = np.zeros((n, len(tOps), len(tOps), len(w)), dtype=complex)
+            gs_realaxis = np.zeros((n, len(tOps), len(tOps), len(w)), dtype=complex) if comm.rank == 0 else None
         else:
             gs_realaxis = None
         for i, (psi, e) in enumerate(zip(psis, es)):
@@ -410,7 +410,7 @@ def get_block_Green(
     # Run Lanczos on psi0^T* [wI - j*delta - H]^-1 psi0
     alphas, betas, _ = get_block_Lanczos_matrices(
         psi0=psi0[:, column_mask],
-        h=h,
+        h=h[:, basis.local_indices],
         converged=converged,
         h_local=h_local,
         verbose=verbose,
