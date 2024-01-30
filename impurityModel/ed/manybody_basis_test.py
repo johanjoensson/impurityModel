@@ -835,7 +835,7 @@ def test_simple_vector():
 
     assert v.shape == (len(basis),)
     assert v.shape == v_exact.shape
-    assert np.allclose(v == v_exact)
+    assert np.allclose(v, v_exact)
 
 
 @pytest.mark.mpi
@@ -855,7 +855,7 @@ def test_simple_vector_mpi():
 
     assert v.shape == (len(basis),)
     assert v.shape == v_exact.shape
-    assert np.allclose(v == v_exact)
+    assert np.allclose(v, v_exact)
 
 
 def test_vector():
@@ -871,7 +871,7 @@ def test_vector():
 
     assert v.shape == (len(basis),)
     assert v.shape == v_exact.shape
-    assert np.allclose(v == v_exact)
+    assert np.allclose(v, v_exact)
 
 
 @pytest.mark.mpi
@@ -888,7 +888,7 @@ def test_vector_mpi():
 
     assert v.shape == (len(basis),)
     assert v.shape == v_exact.shape
-    assert np.allclose(v == v_exact)
+    assert np.allclose(v, v_exact)
 
 
 def test_simple_state():
