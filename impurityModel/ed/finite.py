@@ -171,7 +171,7 @@ def eigensystem_new(
         comm.Bcast(es, root=0)
         comm.Bcast(vecs, root=0)
         mask = es - es[0] <= e_max
-    elif isinstance(h_local, scipy.sparse._csr.csr_matrix):
+    elif isinstance(h_local, scipy.sparse._csr.csr_matrix) or isinstance(h_local, scipy.sparse._csc.csc_matrix):
         h = scipy.sparse.linalg.LinearOperator(
             (h_local.shape[0], h_local.shape[0]),
             matvec=mpi_matmul(h_local, comm),

@@ -325,27 +325,39 @@ def get_block_Green(
     if verbose:
         print(f"time(build Hamiltonian operator) = {time.perf_counter() - t0}")
 
-    N = h.shape[0]
+    N = len(basis)
     n = len(psi_arr)
 
+    if n == 0 or N == 0:
+        return np.zeros((n, n, len(iws)), dtype=complex), np.zeros((n, n, len(ws)), dtype=complex)
     if verbose:
         t0 = time.perf_counter()
-    psi_start = basis.build_vector(psi_arr).T  # /basis.comm.size
+    # psi_start = basis.build_vector(psi_arr).T  # /basis.comm.size
+    psi_start = basis.build_distributed_vector(psi_arr).T  # /basis.comm.size
+    counts = np.empty((comm.size,), dtype=int)
+    comm.Gather(np.array([n * len(basis.local_basis)], dtype=int), counts, root=0)
+    offsets = [sum(counts[:r]) for r in range(len(counts))]
+    psi_start_0 = np.empty((N, n), dtype=complex) if comm.rank == 0 else None
+    comm.Gatherv(psi_start, (psi_start_0, counts, offsets, MPI.DOUBLE_COMPLEX), root=0)
+    if comm.rank == 0:
+        print(f"{psi_start_0=}")
+        # Do a QR decomposition of the starting block.
+        # Later on, use r to restore the block corresponding to
+        psi0_0, r = sp.linalg.qr(psi_start_0, mode="economic", overwrite_a=True, check_finite=False)
 
+        # Find which columns (if any) are 0 in psi0
+        column_mask = np.any(np.abs(psi0_0) > 1e-12, axis=0)
+        rows, columns = psi0_0.shape
+    else:
+        r = None
+    psi0 = np.empty_like(psi_start)
+    comm.Scatterv((psi0_0, counts, offsets, MPI.DOUBLE_COMPLEX) if comm.rank == 0 else None, psi0, root=0)
+    column_mask = comm.bcast(column_mask if comm.rank == 0 else None, root=0)
+    rows = comm.bcast(rows if comm.rank == 0 else None, root=0)
+    columns = comm.bcast(columns if comm.rank == 0 else None, root=0)
     if verbose:
         print(f"time(set up psi_start) = {time.perf_counter() - t0}")
 
-    rows, columns = psi_start.shape
-    if rows == 0 or columns == 0:
-        return np.zeros((n, n, len(iws)), dtype=complex), np.zeros((n, n, len(ws)), dtype=complex)
-    # Do a QR decomposition of the starting block.
-    # Later on, use r to restore the block corresponding to
-    psi0, r = sp.linalg.qr(psi_start, mode="economic", overwrite_a=True, check_finite=False)
-
-    # Find which columns (if any) are 0 in psi0
-    column_mask = np.any(np.abs(psi0) > 1e-12, axis=0)
-
-    rows, columns = psi0.shape
     if rows == 0 or columns == 0:
         return np.zeros((n, n, len(iws)), dtype=complex), np.zeros((n, n, len(ws)), dtype=complex)
 
@@ -403,7 +415,7 @@ def get_block_Green(
         h_local=h_local,
         verbose=verbose,
         reort_mode=reort,
-        build_basis=False,
+        build_krylov_basis=False,
     )
 
     t0 = time.perf_counter()
@@ -421,81 +433,73 @@ def get_block_Green(
 
 
 def calc_mpi_Greens_function_from_alpha_beta(alphas, betas, iws, ws, e, delta, r, verbose):
-    iw_indices = None
-    w_indices = None
     matsubara = iws is not None
     realaxis = ws is not None
     if matsubara:
-        iw_indices = np.array(finite.get_job_tasks(rank, ranks, range(len(iws))))
+        num_indices = np.array([len(iws) // comm.size] * comm.size, dtype=int)
+        num_indices[: len(iws) % comm.size] += 1
+        iws_split = iws[sum(num_indices[: comm.rank]) : sum(num_indices[: comm.rank + 1])]
     if realaxis:
-        w_indices = np.array(finite.get_job_tasks(rank, ranks, range(len(ws))))
+        num_indices = np.array([len(ws) // comm.size] * comm.size, dtype=int)
+        num_indices[: len(ws) % comm.size] += 1
+        ws_split = ws[sum(num_indices[: comm.rank]) : sum(num_indices[: comm.rank + 1])]
     gs_matsubara_local, gs_realaxis_local = calc_local_Greens_function_from_alpha_beta(
-        alphas, betas, iws, ws, iw_indices, w_indices, e, delta, verbose
+        alphas, betas, iws_split, ws_split, e, delta, verbose
     )
     # Multiply obtained Green's function with the upper triangular matrix to restore the original block
     # R^T* G R
     if matsubara:
-        gs_matsubara = np.zeros((len(iws), r.shape[1], r.shape[1]), dtype=complex)
-        if len(iw_indices) > 0:
-            gs_matsubara[iw_indices, :, :] = np.conj(r.T)[np.newaxis, :, :] @ np.linalg.solve(
-                gs_matsubara_local[iw_indices], r[np.newaxis, :, :]
-            )
+        counts = np.empty((comm.size), dtype=int)
+        comm.Gather(np.array([gs_matsubara_local.shape[1] ** 2 * len(iws_split)], dtype=int), counts)
+        offsets = [sum(counts[:r]) for r in range(len(counts))] if comm.rank == 0 else None
+        gs_matsubara = np.empty((len(iws), r.shape[1], r.shape[1]), dtype=complex) if comm.rank == 0 else None
+        comm.Gatherv(gs_matsubara_local, (gs_matsubara, counts, offsets, MPI.DOUBLE_COMPLEX), root=0)
+        if comm.rank == 0:
+            gs_matsubara = np.conj(r.T)[np.newaxis, :, :] @ np.linalg.solve(gs_matsubara, r[np.newaxis, :, :])
     if realaxis:
-        gs_realaxis = np.zeros((len(ws), r.shape[1], r.shape[1]), dtype=complex)
-        if len(w_indices) > 0:
-            gs_realaxis[w_indices, :, :] = np.conj(r.T)[np.newaxis, :, :] @ np.linalg.solve(
-                gs_realaxis_local[w_indices], r[np.newaxis, :, :]
-            )
-    if matsubara:
-        gs_matsubara = comm.reduce(gs_matsubara, root=0)
-    else:
-        gs_matsubara = None
-    if realaxis:
-        gs_realaxis = comm.reduce(gs_realaxis, root=0)
-    else:
-        gs_realaxis = None
+        counts = np.empty((comm.size), dtype=int)
+        comm.Gather(np.array([gs_realaxis_local.shape[1] ** 2 * len(ws_split)], dtype=int), counts)
+        offsets = [sum(counts[:r]) for r in range(len(counts))] if comm.rank == 0 else None
+        gs_realaxis = np.empty((len(ws), r.shape[1], r.shape[1]), dtype=complex) if comm.rank == 0 else None
+        comm.Gatherv(gs_realaxis_local, (gs_realaxis, counts, offsets, MPI.DOUBLE_COMPLEX), root=0)
+        if comm.rank == 0:
+            gs_realaxis = np.conj(r.T)[np.newaxis, :, :] @ np.linalg.solve(gs_realaxis, r[np.newaxis, :, :])
     return gs_matsubara, gs_realaxis
 
 
-def calc_local_Greens_function_from_alpha_beta(alphas, betas, iws, ws, iw_indices, w_indices, e, delta, verbose):
+def calc_local_Greens_function_from_alpha_beta(alphas, betas, iws, ws, e, delta, verbose):
     I = np.identity(alphas.shape[1], dtype=complex)
     matsubara = iws is not None
     realaxis = ws is not None
     if matsubara:
         iomegaP = iws + e
-        gs_matsubara_local = np.zeros((len(iws), alphas.shape[1], alphas.shape[1]), dtype=complex)
-        if len(iw_indices) > 0:
-            iwIs = iomegaP[iw_indices][:, np.newaxis, np.newaxis] * I[np.newaxis, :, :]
-            gs_matsubara_local[iw_indices] = iwIs - alphas[-1][np.newaxis, :, :]
+        gs_matsubara = np.zeros((len(iws), alphas.shape[1], alphas.shape[1]), dtype=complex)
+        iwIs = iomegaP[:, np.newaxis, np.newaxis] * I[np.newaxis, :, :]
+        gs_matsubara = iwIs - alphas[-1][np.newaxis, :, :]
     else:
-        gs_matsubara_local = None
+        gs_matsubara = None
     if realaxis:
         omegaP = ws + 1j * delta + e
-        gs_realaxis_local = np.zeros((len(ws), alphas.shape[1], alphas.shape[1]), dtype=complex)
-        if len(w_indices) > 0:
-            wIs = omegaP[w_indices][:, np.newaxis, np.newaxis] * I[np.newaxis, :, :]
-            gs_realaxis_local[w_indices] = wIs - alphas[-1][np.newaxis, :, :]
+        gs_realaxis = np.zeros((len(ws), alphas.shape[1], alphas.shape[1]), dtype=complex)
+        wIs = omegaP[:, np.newaxis, np.newaxis] * I[np.newaxis, :, :]
+        gs_realaxis = wIs - alphas[-1][np.newaxis, :, :]
     else:
-        gs_realaxis_local = None
+        gs_realaxis = None
 
     for alpha, beta in zip(alphas[-2::-1], betas[-2::-1]):
         if matsubara:
-            if len(iw_indices) > 0:
-                gs_matsubara_local[iw_indices] = (
-                    iwIs
-                    - alpha[np.newaxis, :, :]
-                    - np.conj(beta.T)[np.newaxis, :, :]
-                    @ np.linalg.solve(gs_matsubara_local[iw_indices], beta[np.newaxis, :, :])
-                )
+            gs_matsubara = (
+                iwIs
+                - alpha[np.newaxis, :, :]
+                - np.conj(beta.T)[np.newaxis, :, :] @ np.linalg.solve(gs_matsubara, beta[np.newaxis, :, :])
+            )
         if realaxis:
-            if len(w_indices) > 0:
-                gs_realaxis_local[w_indices] = (
-                    wIs
-                    - alpha[np.newaxis, :, :]
-                    - np.conj(beta.T)[np.newaxis, :, :]
-                    @ np.linalg.solve(gs_realaxis_local[w_indices], beta[np.newaxis, :, :])
-                )
-    return gs_matsubara_local, gs_realaxis_local
+            gs_realaxis = (
+                wIs
+                - alpha[np.newaxis, :, :]
+                - np.conj(beta.T)[np.newaxis, :, :] @ np.linalg.solve(gs_realaxis, beta[np.newaxis, :, :])
+            )
+    return gs_matsubara, gs_realaxis
 
 
 def calc_Greens_function_with_offdiag_cg(

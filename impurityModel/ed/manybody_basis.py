@@ -996,10 +996,10 @@ class Basis:
         return v
 
     def build_distributed_vector(self, psis: list[dict], dtype=complex) -> np.ndarray:
-        v = np.empty_like(v_local)
+        v = np.empty((len(psis), len(self.local_basis)), dtype=dtype)
         for row, psi in enumerate(psis):
             if self.is_distributed:
-                for r in self.comm.size:
+                for r in range(self.comm.size):
                     if self.state_bounds[r] is None:
                         break
                     r_offset = self.index_bounds[r][0]
@@ -1069,35 +1069,41 @@ class Basis:
         by default the dense matrix is distributed to all ranks.
         """
         h_local = self.build_sparse_matrix(op, op_dict)
-        local_rows, local_columns = h_local.nonzero()
-        local_data = np.fromiter(
-            (h_local[row, col] for row, col in zip(local_rows, local_columns)), dtype=complex, count=len(local_columns)
-        )
-        data = None
-        rows = None
-        columns = None
-        recv_counts = None
-        offsets = None
+        local_dok = h_local.todok()
         if self.is_distributed:
+            reduced_dok = self.comm.reduce(local_dok, op=MPI.SUM, root=0)
             if self.comm.rank == 0:
-                recv_counts = np.empty((self.comm.size), dtype=int)
-            self.comm.Gather(np.array([len(local_data)]), recv_counts, root=0)
+                h = reduced_dok.todense()
+            h = self.comm.bcast(h if self.comm.rank == 0 else None, root=0)
+        # local_rows, local_columns = h_local.nonzero()
+        # local_data = np.fromiter(
+        #     (h_local[row, col] for row, col in zip(local_rows, local_columns)), dtype=complex, count=len(local_columns)
+        # )
+        # data = None
+        # rows = None
+        # columns = None
+        # recv_counts = None
+        # offsets = None
+        # if self.is_distributed:
+        #     if self.comm.rank == 0:
+        #         recv_counts = np.empty((self.comm.size), dtype=int)
+        #     self.comm.Gather(np.array([len(local_data)]), recv_counts, root=0)
 
-            if self.comm.rank == 0:
-                offsets = [sum(recv_counts[:i]) for i in range(self.comm.size)]
-                data = np.empty((sum(recv_counts)), dtype=h_local.dtype)
-                rows = np.empty((sum(recv_counts)), dtype=local_rows.dtype)
-                columns = np.empty((sum(recv_counts)), dtype=local_columns.dtype)
-            self.comm.Gatherv(local_data, [data, recv_counts, offsets, MPI.DOUBLE_COMPLEX], root=0)
-            self.comm.Gatherv(local_rows, [rows, recv_counts, offsets, MPI.INT], root=0)
-            self.comm.Gatherv(local_columns, [columns, recv_counts, offsets, MPI.INT], root=0)
-            if self.comm.rank == 0:
-                h = sp.sparse.coo_matrix((data, (rows, columns)), shape=(h_local.shape[0], h_local.shape[0]))
-                h = h.todense()
-            else:
-                h = None
-            if distribute:
-                h = self.comm.bcast(h, root=0)
+        #     if self.comm.rank == 0:
+        #         offsets = [sum(recv_counts[:i]) for i in range(self.comm.size)]
+        #         data = np.empty((sum(recv_counts)), dtype=h_local.dtype)
+        #         rows = np.empty((sum(recv_counts)), dtype=local_rows.dtype)
+        #         columns = np.empty((sum(recv_counts)), dtype=local_columns.dtype)
+        #     self.comm.Gatherv(local_data, [data, recv_counts, offsets, MPI.DOUBLE_COMPLEX], root=0)
+        #     self.comm.Gatherv(local_rows, [rows, recv_counts, offsets, MPI.INT], root=0)
+        #     self.comm.Gatherv(local_columns, [columns, recv_counts, offsets, MPI.INT], root=0)
+        #     if self.comm.rank == 0:
+        #         h = sp.sparse.coo_matrix((data, (rows, columns)), shape=(h_local.shape[0], h_local.shape[0]))
+        #         h = h.todense()
+        #     else:
+        #         h = None
+        #     if distribute:
+        #         h = self.comm.bcast(h, root=0)
         else:
             h = h_local.todense()
         return h
@@ -1146,7 +1152,7 @@ class Basis:
                     values.append(expanded_dict[column][row])
             if self.debug and len(rows) > 0:
                 print(f"{self.size=} {max(rows)=}", flush=True)
-        return sp.sparse.csr_matrix((values, (rows, columns)), shape=(self.size, self.size), dtype=complex)
+        return sp.sparse.csc_matrix((values, (rows, columns)), shape=(self.size, self.size), dtype=complex)
 
     def _build_PETSc_matrix(self, op, op_dict=None):
         """
