@@ -334,13 +334,12 @@ def get_block_Green(
         t0 = time.perf_counter()
     # psi_start = basis.build_vector(psi_arr).T  # /basis.comm.size
     psi_start = basis.build_distributed_vector(psi_arr).T  # /basis.comm.size
-    counts = np.empty((comm.size,), dtype=int)
+    counts = np.empty((comm.size,), dtype=int) if comm.rank == 0 else None
     comm.Gather(np.array([n * len(basis.local_basis)], dtype=int), counts, root=0)
-    offsets = [sum(counts[:r]) for r in range(len(counts))]
+    offsets = [sum(counts[:r]) for r in range(len(counts))] if comm.rank == 0 else None
     psi_start_0 = np.empty((N, n), dtype=complex) if comm.rank == 0 else None
     comm.Gatherv(psi_start, (psi_start_0, counts, offsets, MPI.DOUBLE_COMPLEX), root=0)
     if comm.rank == 0:
-        print(f"{psi_start_0=}")
         # Do a QR decomposition of the starting block.
         # Later on, use r to restore the block corresponding to
         psi0_0, r = sp.linalg.qr(psi_start_0, mode="economic", overwrite_a=True, check_finite=False)
@@ -560,7 +559,6 @@ def calc_Greens_function_with_offdiag_cg(
         tau=basis.tau,
         spin_flip_dj=basis.spin_flip_dj,
     )
-    print(f"size of excited space basis is {excited_basis.size}")
     for i, (psi, e) in enumerate(zip(psis, es)):
         for block in blocks:
             block_v = []

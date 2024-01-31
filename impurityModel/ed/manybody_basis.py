@@ -380,7 +380,7 @@ class Basis:
             start += recv_counts[r] * self.n_bytes
         return states
 
-    def _set_state_bounds(self, local_states) -> list[bytes]:
+    def _set_state_bounds(self, local_states) -> list[Optional[bytes]]:
         n_samples = min(len(local_states), 100)
         state_bounds = None
         done = False
@@ -429,7 +429,7 @@ class Basis:
                     sizes = np.array([len(all_states) // self.comm.size] * self.comm.size, dtype=int)
                     sizes[: len(all_states) % self.comm.size] += 1
 
-                    bounds = [sum(sizes[:i]) for i in range(self.comm.size)]
+                    bounds = [sum(sizes[: i + 1]) for i in range(self.comm.size)]
                     state_bounds = [
                         all_states[bound] if bound < len(all_states) else all_states[-1] for bound in bounds
                     ]
@@ -443,10 +443,13 @@ class Basis:
             done = done_array[0]
 
         self.comm.Bcast(state_bounds_bytes, root=0)
-        state_bounds: list[bytes] = [
+        state_bounds: list[Optional[bytes]] = [
             bytes(state_bounds_bytes[i * self.n_bytes : (i + 1) * self.n_bytes]) for i in range(self.comm.size)
         ]
-        return state_bounds
+        return [
+            state_bounds[r] if r < self.comm.size - 1 and state_bounds[r] != state_bounds[r + 1] else None
+            for r in range(self.comm.size)
+        ]
 
     def add_states(self, new_states: list, distributed_sort=True):
         """
@@ -461,11 +464,13 @@ class Basis:
             self._index_dict = {state: i for i, state in enumerate(self.local_basis)}
             self.local_index_bounds = (0, len(self.local_basis))
             if len(self.local_basis) > 0:
-                self.local_state_bounds: Optional[tuple[bytes, bytes]] = (self.local_basis[0], self.local_basis[-1])
+                self.state_bounds: Optional[tuple[bytes, Optional[bytes]]] = (self.local_basis[0], None)
             else:
-                self.local_state_bounds = None
+                self.state_bounds = None
             return
 
+        state_bounds: list[Optional[bytes]] = [None] * self.comm.size
+        last_rank: int = self.comm.size - 1
         if not distributed_sort:
             old_basis = self.comm.reduce(set(self.local_basis), op=combine_sets_op, root=0)
             new_states = self.comm.reduce(set(new_states), op=combine_sets_op, root=0)
@@ -480,8 +485,16 @@ class Basis:
                     if r < len(new_basis) % self.comm.size:
                         stop += 1
                     send_basis[r] = new_basis[start:stop]
+                    state_bounds[r] = new_basis[start]
                     start = stop
             local_basis = self.comm.scatter(send_basis, root=0)
+            state_bounds = self.comm.bcast(state_bounds if self.comm.rank == 0 else None, root=0)
+            for r in range(self.comm.size - 1):
+                if state_bounds[r] == state_bounds[r + 1]:
+                    last_rank = r
+                    break
+            for r in range(last_rank + 1, len(state_bounds)):
+                state_bounds[r] = None
         else:
             t0 = perf_counter()
             local_states = set(itertools.chain(self.local_basis, new_states))
@@ -489,24 +502,28 @@ class Basis:
             if self.verbose:
                 print(f"=======> T sorting local states : {t0}")
             t0 = perf_counter()
-            state_bounds = self._set_state_bounds(local_states)
+            local_sizes = np.empty((self.comm.size,), dtype=int)
+            self.comm.Allgather(np.array([len(self.local_basis)], dtype=int), local_sizes)
+            # state_bounds = self._set_state_bounds(local_states)
+            if self.size == 0 or np.any(np.abs(local_sizes - self.size / self.comm.size) > 0.2 * self.size):
+                state_bounds = self._set_state_bounds(local_states)
+            else:
+                state_bounds = self.state_bounds
             t0 = perf_counter() - t0
             if self.verbose:
                 print(f"=======> T set_state_bounds : {t0}")
             t0 = perf_counter()
-            last_rank = self.comm.size - 1
             for r in range(self.comm.size - 1):
-                if state_bounds[r] == state_bounds[r + 1]:
+                if state_bounds[r] is None:
                     last_rank = r
                     break
             send_list: list[list[bytes]] = [[] for _ in range(self.comm.size)]
             for state in local_states:
                 for r in range(last_rank):
-                    if state >= state_bounds[r] and state < state_bounds[r + 1]:
+                    if state < state_bounds[r]:
                         send_list[r].append(state)
                         break
                 else:
-                    # if state >= state_bounds[last_rank]:
                     send_list[last_rank].append(state)
             t0 = perf_counter() - t0
             if self.verbose:
@@ -564,49 +581,54 @@ class Basis:
             # evenly distributed among the ranks.
             ########################################################################
 
-        size_arr = np.empty((1,), dtype=int)
-        offset_arr = np.empty((1,), dtype=int)
+        size_arr = np.empty((self.comm.size,), dtype=int)
+        # offset_arr = np.empty((1,), dtype=int)
         self.local_basis = local_basis
         t0 = perf_counter()
         local_length = len(self.local_basis)
-        self.comm.Allreduce(np.array([local_length], dtype=int), size_arr, op=MPI.SUM)
-        self.size = size_arr[0]
-        self.comm.Scan(np.array([local_length], dtype=int), offset_arr, op=MPI.SUM)
-        self.offset = offset_arr[0] - local_length
+        self.comm.Allgather(np.array([local_length], dtype=int), size_arr)
+        self.size = np.sum(size_arr)
+        # self.comm.Scan(np.array([local_length], dtype=int), offset_arr, op=MPI.SUM)
+        self.offset = np.sum(size_arr[: self.comm.rank])  # offset_arr[0] - local_length
         self.local_indices = range(self.offset, self.offset + local_length)
         self._index_dict = {state: self.offset + i for i, state in enumerate(self.local_basis)}
-        local_index_bounds = (self.offset, self.offset + local_length)
-        if len(self.local_basis) > 0:
-            local_state_bounds = (self.local_basis[0], self.local_basis[-1])
-        else:
-            local_state_bounds = None
-        lower_bounds_arr = np.empty((self.comm.size,), dtype=int)
-        upper_bounds_arr = np.empty((self.comm.size,), dtype=int)
-        self.comm.Allgather(np.array([local_index_bounds[0]], dtype=int), lower_bounds_arr)
-        self.comm.Allgather(np.array([local_index_bounds[1]], dtype=int), upper_bounds_arr)
-        self.index_bounds = [(low, high) for low, high in zip(lower_bounds_arr, upper_bounds_arr)]
-        lower_states_arr = bytearray(self.comm.size * self.n_bytes)
-        upper_states_arr = bytearray(self.comm.size * self.n_bytes)
-        self.comm.Allgather(
-            bytearray(byte for byte in local_state_bounds[0])
-            if local_state_bounds is not None
-            else bytearray(self.n_bytes),
-            lower_states_arr,
-        )
-        self.comm.Allgather(
-            bytearray(byte for byte in local_state_bounds[1])
-            if local_state_bounds is not None
-            else bytearray(self.n_bytes),
-            upper_states_arr,
-        )
-        self.state_bounds = [
-            (bytes(lower_states_arr[i : i + self.n_bytes]), bytes(upper_states_arr[i : i + self.n_bytes]))
-            for i in range(0, len(upper_states_arr), self.n_bytes)
-        ]
-        self.state_bounds = [
-            state_bounds if bytes(state_bounds[0]) != int(0).to_bytes(length=self.n_bytes, byteorder="big") else None
-            for state_bounds in self.state_bounds
-        ]
+        self.index_bounds = [np.sum(size_arr[: r + 1]) if size_arr[r] > 0 else None for r in range(self.comm.size)]
+        self.state_bounds = [state_bounds[r] if r < last_rank else None for r in range(self.comm.size)]
+        # local_index_bounds = (self.offset, self.offset + local_length)
+        # if len(self.local_basis) > 0:
+        #     local_state_bounds = (
+        #         state_bounds[self.comm.rank],
+        #         state_bounds[self.comm.rank + 1] if self.comm.rank < last_rank else None,
+        #     )
+        # else:
+        #     local_state_bounds = None
+        # lower_bounds_arr = np.empty((self.comm.size,), dtype=int)
+        # upper_bounds_arr = np.empty((self.comm.size,), dtype=int)
+        # self.comm.Allgather(np.array([local_index_bounds[0]], dtype=int), lower_bounds_arr)
+        # self.comm.Allgather(np.array([local_index_bounds[1]], dtype=int), upper_bounds_arr)
+        # self.index_bounds = [(low, high) for low, high in zip(lower_bounds_arr, upper_bounds_arr)]
+        # lower_states_arr = bytearray(self.comm.size * self.n_bytes)
+        # upper_states_arr = bytearray(self.comm.size * self.n_bytes)
+        # self.comm.Allgather(
+        #     bytearray(byte for byte in local_state_bounds[0])
+        #     if local_state_bounds is not None
+        #     else bytearray(self.n_bytes),
+        #     lower_states_arr,
+        # )
+        # self.comm.Allgather(
+        #     bytearray(byte for byte in local_state_bounds[1])
+        #     if local_state_bounds is not None
+        #     else bytearray(self.n_bytes),
+        #     upper_states_arr,
+        # )
+        # self.state_bounds = [
+        #     (bytes(lower_states_arr[i : i + self.n_bytes]), bytes(upper_states_arr[i : i + self.n_bytes]))
+        #     for i in range(0, len(upper_states_arr), self.n_bytes)
+        # ]
+        # self.state_bounds = [
+        #     state_bounds if bytes(state_bounds[0]) != int(0).to_bytes(length=self.n_bytes, byteorder="big") else None
+        #     for state_bounds in self.state_bounds
+        # ]
         t0 = perf_counter() - t0
         if self.verbose:
             print(f"=======> T set bounds and stuff : {t0}")
@@ -716,7 +738,7 @@ class Basis:
         send_to_ranks[:] = self.size
         for idx, i in enumerate(l):
             for r in range(self.comm.size):
-                if self.index_bounds[r] is not None and i >= self.index_bounds[r][0] and i < self.index_bounds[r][1]:
+                if self.index_bounds[r] is not None and i < self.index_bounds[r]:
                     send_list[r].append(i)
                     send_to_ranks[idx] = r
                     break
@@ -789,11 +811,7 @@ class Basis:
                     if self.debug:
                         proper_rank = self.size
                         for r in range(self.comm.size):
-                            if (
-                                self.state_bounds is not None
-                                and val[i] >= self.state_bounds[r][0]
-                                and val[i] <= self.state_bounds[r][1]
-                            ):
+                            if self.state_bounds is None or val[i] < self.state_bounds[r]:
                                 proper_rank = r
                                 break
                         print(f"{proper_rank=}")
@@ -822,11 +840,7 @@ class Basis:
         send_to_ranks[:] = self.size
         for i, val in enumerate(s):
             for r in range(self.comm.size):
-                if (
-                    self.state_bounds[r] is not None
-                    and val >= self.state_bounds[r][0]
-                    and val <= self.state_bounds[r][1]
-                ):
+                if self.state_bounds[r] is None or val < self.state_bounds[r]:
                     send_list[r].append(val)
                     send_to_ranks[i] = r
                     break
@@ -999,25 +1013,19 @@ class Basis:
         v = np.empty((len(psis), len(self.local_basis)), dtype=dtype)
         for row, psi in enumerate(psis):
             if self.is_distributed:
+                r_states = list(psi.keys())
+                row_dict = {state: i for state, i in zip(r_states, self._index_sequence(r_states)) if i < self.size}
                 for r in range(self.comm.size):
-                    if self.state_bounds[r] is None:
+                    if self.index_bounds[r] is None:
                         break
-                    r_offset = self.index_bounds[r][0]
-                    local_r_size = np.empty((1,), dtype=int)
-                    if r == self.comm.rank:
-                        local_r_size[0] = len(self.local_basis)
-                    self.comm.Bcast(local_r_size, root=r)
-                    r_send_vec = np.zeros((local_r_size[0],), dtype=dtype)
-                    r_states = [
-                        state for state in psi if state >= self.state_bounds[r][0] and state <= self.state_bounds[r][1]
-                    ]
-                    row_dict = {
-                        state: i - r_offset
-                        for state, i in zip(r_states, self._index_sequence(r_states))
-                        if i < self.size
-                    }
+                    r_offset = self.index_bounds[r - 1] if r > 0 else 0
+                    local_r_size = self.index_bounds[r] - self.index_bounds[r - 1] if r > 0 else self.index_bounds[r]
+                    r_send_vec = np.zeros((local_r_size,), dtype=dtype)
                     for r_state in r_states:
-                        r_send_vec[row_dict[r_state]] = psi[r_state]
+                        state_idx = row_dict[r_state]
+                        if state_idx < r_offset or state_idx >= r_offset + local_r_size:
+                            continue
+                        r_send_vec[state_idx - r_offset] = psi[r_state]
                     self.comm.Reduce(r_send_vec, v[row, :], root=r)
             else:
                 for state in psi:
@@ -1321,9 +1329,9 @@ class CIPSI_Basis(Basis):
                 send_amps = [[] for _ in range(self.comm.size)]
                 for state, amp in Hpsi_i.items():
                     for r in range(self.comm.size):
-                        if Dj_basis.state_bounds[r] is None:
+                        if r > 0 and Dj_basis.state_bounds[r - 1] is None:
                             continue
-                        if state >= Dj_basis.state_bounds[r][0] and state <= Dj_basis.state_bounds[r][1]:
+                        if Dj_basis.state_bounds[r] is None or state < Dj_basis.state_bounds[r]:
                             send_states[r].append(state)
                             send_amps[r].append(amp)
                             break
