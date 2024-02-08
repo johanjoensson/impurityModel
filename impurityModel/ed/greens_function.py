@@ -1,6 +1,7 @@
 import numpy as np
 import scipy as sp
 import time
+from typing import Optional
 
 from impurityModel.ed import spectra
 from impurityModel.ed import finite

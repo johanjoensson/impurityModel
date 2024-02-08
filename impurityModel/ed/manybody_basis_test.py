@@ -1169,3 +1169,45 @@ def test_eg_t2g_CIPSI_basis_expand_mpi():
     expected = [b"\x80\x00", b"\x08\x00"]
     assert all(state in expected for state in basis), f"{expected=} {list(basis)=}"
     assert all(state in basis for state in expected), f"{expected=} {list(basis)=}"
+
+
+@pytest.mark.mpi
+def test_distributed_simple_vector():
+    states = [b"\x00\x1a\x2b", b"\xff\x00\x1a"]
+    basis = Basis(
+        ls=[], bath_states=({}, {}), initial_basis=states, num_spin_orbitals=24, verbose=True, comm=MPI.COMM_WORLD
+    )
+    state = {}
+    if states[0] in basis._index_dict:
+        state[states[0]] = 0.25 + 0.2j
+    if states[1] in basis._index_dict:
+        state[states[1]] = 0.33 + 0.15j
+
+    v = basis.build_distributed_vector([state])[0]
+    v_exact = np.zeros((len(basis.local_basis),), dtype=complex)
+    if states[0] in basis._index_dict:
+        v_exact[0] = 0.25 + 0.2j
+    if states[1] in basis._index_dict:
+        v_exact[-1] = 0.33 + 0.15j
+
+    assert v.shape == (len(basis.local_basis),)
+    assert v.shape == v_exact.shape
+    assert np.allclose(v, v_exact)
+
+
+@pytest.mark.mpi
+def test_distributed_vector_mpi():
+    comm = MPI.COMM_WORLD
+    states = [b"\x78", b"\xB8", b"\xD8", b"\xE8", b"\xF0"]
+    basis = Basis(ls=[], bath_states=({}, {}), initial_basis=states[:-1], num_spin_orbitals=5, verbose=True, comm=comm)
+    state = {states[-1]: 1 + 1j}
+    state[states[0]] = 0.25 + 0.2j
+    if states[1] in basis._index_dict:
+        state[states[1]] = 0.33 + 0.15j
+    v = basis.build_distributed_vector([state])[0]
+    v_exact = np.array([0.25 * comm.size + 0.2j * comm.size, 0.33 + 0.15j, 0, 0], dtype=complex)
+
+    n = len(basis.local_basis)
+    assert v.shape == (len(basis.local_basis),)
+    if n > 0:
+        assert np.allclose(v, v_exact[basis.index_bounds[comm.rank] - n : basis.index_bounds[comm.rank]])

@@ -598,9 +598,6 @@ def get_ed_h0(
             np.save(f, hyb)
 
     if comm.rank == 0:
-        # if bath_states_per_orbital == 0:
-        #     eb = np.empty((0,), dtype=float)
-        #     v = np.empty((0, hyb.shape[1]), dtype=complex)
         try:
             with open(f"impurityModel_bath_energies_and_hopping_parameters_{label}.npy", "rb") as f:
                 eb = np.load(f)
