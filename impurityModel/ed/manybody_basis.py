@@ -1010,7 +1010,7 @@ class Basis:
         return v
 
     def build_distributed_vector(self, psis: list[dict], dtype=complex) -> np.ndarray:
-        v = np.empty((len(psis), len(self.local_basis)), dtype=dtype)
+        v = np.empty((len(psis), len(self.local_basis)), dtype=dtype, order="C")
         for row, psi in enumerate(psis):
             if self.is_distributed:
                 r_states = list(psi.keys())
@@ -1022,6 +1022,8 @@ class Basis:
                     local_r_size = self.index_bounds[r] - self.index_bounds[r - 1] if r > 0 else self.index_bounds[r]
                     r_send_vec = np.zeros((local_r_size,), dtype=dtype)
                     for r_state in r_states:
+                        if r_state not in row_dict:
+                            continue
                         state_idx = row_dict[r_state]
                         if state_idx < r_offset or state_idx >= r_offset + local_r_size:
                             continue
