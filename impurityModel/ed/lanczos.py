@@ -168,16 +168,15 @@ def get_block_Lanczos_matrices(
     if rank == 0:
         if build_krylov_basis:
             Q = KrylovBasis(N, psi0.dtype, psi0)
-        q = np.zeros((2, N, n), dtype=complex)
+        q = np.zeros((2, N, n), dtype=complex, order="C")
     else:
         q = np.empty((2, 0, 0))
-        # q[1, :, :] = psi0
     counts = comm.allgather(n * psi0.shape[0])
     offsets = [sum(counts[:r]) for r in range(len(counts))]
     comm.Gatherv(
         psi0,
         (
-            q[1, :, :],
+            q[1],
             counts,
             offsets,
             MPI.DOUBLE_COMPLEX,
@@ -188,7 +187,7 @@ def get_block_Lanczos_matrices(
         W = np.zeros((2, 1, n, n), dtype=complex)
         W[1] = np.identity(n)
         force_reort = None
-    q_i = psi0
+    q_i = np.array(psi0, copy=True, order="C")
 
     if h_local:
         done = False

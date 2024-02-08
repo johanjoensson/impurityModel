@@ -333,33 +333,32 @@ def get_block_Green(
         return np.zeros((n, n, len(iws)), dtype=complex), np.zeros((n, n, len(ws)), dtype=complex)
     if verbose:
         t0 = time.perf_counter()
-    # psi_start = basis.build_vector(psi_arr).T  # /basis.comm.size
-    psi_start = basis.build_distributed_vector(psi_arr).T  # /basis.comm.size
+    psi_start = np.array(basis.build_distributed_vector(psi_arr).T, copy=False, order="C")
     counts = np.empty((comm.size,), dtype=int) if comm.rank == 0 else None
     comm.Gather(np.array([n * len(basis.local_basis)], dtype=int), counts, root=0)
     offsets = [sum(counts[:r]) for r in range(len(counts))] if comm.rank == 0 else None
-    psi_start_0 = np.empty((N, n), dtype=complex) if comm.rank == 0 else None
+    psi_start_0 = np.empty((N, n), dtype=complex, order="C") if comm.rank == 0 else None
     comm.Gatherv(psi_start, (psi_start_0, counts, offsets, MPI.DOUBLE_COMPLEX), root=0)
+    r: Optional[np.ndarray] = None
     if comm.rank == 0:
         # Do a QR decomposition of the starting block.
         # Later on, use r to restore the block corresponding to
-        psi0_0, r = sp.linalg.qr(psi_start_0, mode="economic", overwrite_a=True, check_finite=False)
-
-        # Find which columns (if any) are 0 in psi0
-        column_mask = np.any(np.abs(psi0_0) > 1e-12, axis=0)
+        psi0_0, r = sp.linalg.qr(psi_start_0, mode="economic", overwrite_a=True, check_finite=False, pivoting=False)
+        psi0_0 = np.array(psi0_0, copy=False, order="C")
+        # Find which columns (if any) are 0 in psi0_0
         rows, columns = psi0_0.shape
-    else:
-        r = None
-    psi0 = np.empty_like(psi_start)
-    comm.Scatterv((psi0_0, counts, offsets, MPI.DOUBLE_COMPLEX) if comm.rank == 0 else None, psi0, root=0)
-    column_mask = comm.bcast(column_mask if comm.rank == 0 else None, root=0)
     rows = comm.bcast(rows if comm.rank == 0 else None, root=0)
     columns = comm.bcast(columns if comm.rank == 0 else None, root=0)
-    if verbose:
-        print(f"time(set up psi_start) = {time.perf_counter() - t0}")
-
     if rows == 0 or columns == 0:
         return np.zeros((n, n, len(iws)), dtype=complex), np.zeros((n, n, len(ws)), dtype=complex)
+
+    counts = np.empty((comm.size,), dtype=int) if comm.rank == 0 else None
+    comm.Gather(np.array([columns * len(basis.local_basis)], dtype=int), counts, root=0)
+    offsets = [sum(counts[:r]) for r in range(len(counts))] if comm.rank == 0 else None
+    psi0 = np.zeros((len(basis.local_basis), columns), dtype=complex)
+    comm.Scatterv((psi0_0, counts, offsets, MPI.DOUBLE_COMPLEX) if comm.rank == 0 else None, psi0, root=0)
+    if verbose:
+        print(f"time(set up psi_start) = {time.perf_counter() - t0}")
 
     # If we have a realaxis mesh, prefer to check convergence on that
     # if not, use the Matsubara mesh
@@ -409,7 +408,7 @@ def get_block_Green(
 
     # Run Lanczos on psi0^T* [wI - j*delta - H]^-1 psi0
     alphas, betas, _ = get_block_Lanczos_matrices(
-        psi0=psi0[:, column_mask],
+        psi0=psi0,
         h=h[:, basis.local_indices],
         converged=converged,
         h_local=h_local,
@@ -452,7 +451,7 @@ def calc_mpi_Greens_function_from_alpha_beta(alphas, betas, iws, ws, e, delta, r
         counts = np.empty((comm.size), dtype=int)
         comm.Gather(np.array([gs_matsubara_local.shape[1] ** 2 * len(iws_split)], dtype=int), counts)
         offsets = [sum(counts[:r]) for r in range(len(counts))] if comm.rank == 0 else None
-        gs_matsubara = np.empty((len(iws), r.shape[1], r.shape[1]), dtype=complex) if comm.rank == 0 else None
+        gs_matsubara = np.empty((len(iws), r.shape[0], r.shape[0]), dtype=complex) if comm.rank == 0 else None
         comm.Gatherv(gs_matsubara_local, (gs_matsubara, counts, offsets, MPI.DOUBLE_COMPLEX), root=0)
         if comm.rank == 0:
             gs_matsubara = np.conj(r.T)[np.newaxis, :, :] @ np.linalg.solve(gs_matsubara, r[np.newaxis, :, :])
@@ -460,7 +459,7 @@ def calc_mpi_Greens_function_from_alpha_beta(alphas, betas, iws, ws, e, delta, r
         counts = np.empty((comm.size), dtype=int)
         comm.Gather(np.array([gs_realaxis_local.shape[1] ** 2 * len(ws_split)], dtype=int), counts)
         offsets = [sum(counts[:r]) for r in range(len(counts))] if comm.rank == 0 else None
-        gs_realaxis = np.empty((len(ws), r.shape[1], r.shape[1]), dtype=complex) if comm.rank == 0 else None
+        gs_realaxis = np.empty((len(ws), r.shape[0], r.shape[0]), dtype=complex) if comm.rank == 0 else None
         comm.Gatherv(gs_realaxis_local, (gs_realaxis, counts, offsets, MPI.DOUBLE_COMPLEX), root=0)
         if comm.rank == 0:
             gs_realaxis = np.conj(r.T)[np.newaxis, :, :] @ np.linalg.solve(gs_realaxis, r[np.newaxis, :, :])
