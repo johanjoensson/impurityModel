@@ -706,7 +706,6 @@ class Basis:
     def expand(self, op, op_dict=None, dense_cutoff=None, slaterWeightMin=0):
         old_size = self.size + 1
         while old_size != self.size and self.size < self.truncation_threshold:
-            local_states = set(self.local_basis)
             new_states = set()
             for state in self.local_basis:
                 res = applyOp(
@@ -717,7 +716,9 @@ class Basis:
                     slaterWeightMin=slaterWeightMin,
                     opResult=op_dict,
                 )
-                new_states |= res.keys()  #  - local_states
+                new_states |= res.keys()
+            res_keys = list(new_states)
+            new_states = {state for state, index in zip(res_keys, self._index_sequence(res_keys)) if index >= self.size}
             old_size = self.size
             if self.spin_flip_dj:
                 new_states = self._generate_spin_flipped_determinants(new_states)

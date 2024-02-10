@@ -166,6 +166,7 @@ def calc_Greens_function_with_offdiag(
     if blocks is None:
         blocks = [list(range(len(tOps)))]
     t_mems = [{} for _ in tOps]
+    h_mem = {}
     if parallelization_mode == "eigen_states":
         gs_matsubara = np.zeros((n, len(tOps), len(tOps), len(iw)), dtype=complex)
         gs_realaxis = np.zeros((n, len(tOps), len(tOps), len(w)), dtype=complex)
@@ -201,7 +202,7 @@ def calc_Greens_function_with_offdiag(
                 tau=basis.tau,
             )
 
-            h_mem = excited_basis.expand(hOp, slaterWeightMin=slaterWeightMin)
+            h_mem = excited_basis.expand(hOp, slaterWeightMin=slaterWeightMin, op_dict=h_mem)
 
             gs_matsubara_i, gs_realaxis_i = get_block_Green(
                 n_spin_orbitals=n_spin_orbitals,
@@ -259,7 +260,9 @@ def calc_Greens_function_with_offdiag(
                     tau=basis.tau,
                     spin_flip_dj=basis.spin_flip_dj,
                 )
-                h_mem = excited_basis.expand(hOp, dense_cutoff=dense_cutoff, slaterWeightMin=slaterWeightMin)
+                h_mem = excited_basis.expand(
+                    hOp, dense_cutoff=dense_cutoff, slaterWeightMin=slaterWeightMin, op_dict=h_mem
+                )
 
                 if verbose:
                     print(f"time(build excited state basis) = {time.perf_counter() - t0}")
