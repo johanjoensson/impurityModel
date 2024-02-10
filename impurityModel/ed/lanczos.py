@@ -226,9 +226,8 @@ def get_block_Lanczos_matrices(
                 t_qr += time.perf_counter() - t_qr_fact
                 b_mask = np.abs(np.diagonal(betas[i])) < np.finfo(float).eps
                 t_converged = time.perf_counter()
-                delta = converged(alphas, betas)
 
-                done = delta < 1e-12
+                done = converged(alphas, betas)
                 t_conv += time.perf_counter() - t_converged
 
             done = comm.bcast(done, root=0)
