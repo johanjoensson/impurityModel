@@ -240,12 +240,13 @@ def calc_selfenergy(
     basis.local_basis.clear()
     basis.add_states(set(state for psi in psis for state in psi))
     all_psis = comm.gather(psis)
-    if verbosity >= 2:
+    if rank == 0:
         local_psis = [{} for _ in psis]
         for psis_r in all_psis:
             for i in range(len(local_psis)):
                 for state in psis_r[i]:
                     local_psis[i][state] = psis_r[i][state] + local_psis[i].get(state, 0)
+    if verbosity >= 2:
         finite.printThermalExpValues_new(sum_bath_states, es, local_psis, tau, rot_to_spherical)
         finite.printExpValues(sum_bath_states, es, local_psis, rot_to_spherical)
     excited_restrictions = basis.build_excited_restrictions()
@@ -334,7 +335,8 @@ def calc_selfenergy(
         sigma = None
     if verbosity >= 1:
         print("Calculating sig_static.")
-    sigma_static = get_Sigma_static(sum_bath_states, u4, es, psis, l, tau)
+    if rank == 0:
+        sigma_static = get_Sigma_static(sum_bath_states, u4, es, local_psis, l, tau)
 
     if verbosity >= 2:
         if iw is not None:
@@ -344,8 +346,9 @@ def calc_selfenergy(
         np.savetxt(f"real-Sigma_static-{cluster_label}.dat", np.real(sigma_static))
         np.savetxt(f"imag-Sigma_static-{cluster_label}.dat", np.imag(sigma_static))
 
-    sigma = comm.bcast(sigma)
-    sigma_real = comm.bcast(sigma_real)
+    sigma = comm.bcast(sigma if rank == 0 else None)
+    sigma_real = comm.bcast(sigma_real if rank == 0 else None)
+    sigma_static = comm.bcast(sigma_static if rank == 0 else None)
     return sigma, sigma_real, sigma_static
 
 

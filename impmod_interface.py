@@ -522,9 +522,7 @@ def fixed_peak_dc(h0_op, dc_struct, rank, verbose, dense_cutoff):
             e_max=0,
             k=1,
             eigenValueTol=1e-6,
-            verbose=verbose,
             return_eigvecs=False,
-            dense_cutoff=dense_cutoff,
         )
         h_dict = bl.expand(h_op_i, dense_cutoff=dense_cutoff, de2_min=1e-6)
         h = bl.build_sparse_matrix(h_op_i, h_dict) if bl.size > dense_cutoff else bl.build_dense_matrix(h_op_i, h_dict)
@@ -533,9 +531,7 @@ def fixed_peak_dc(h0_op, dc_struct, rank, verbose, dense_cutoff):
             e_max=0,
             k=1,
             eigenValueTol=1e-6,
-            verbose=verbose,
             return_eigvecs=False,
-            dense_cutoff=dense_cutoff,
         )
         return e_upper[0] - e_lower[0] - peak_position
 
