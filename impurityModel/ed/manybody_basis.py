@@ -505,7 +505,7 @@ class Basis:
             local_sizes = np.empty((self.comm.size,), dtype=int)
             self.comm.Allgather(np.array([len(self.local_basis)], dtype=int), local_sizes)
             # state_bounds = self._set_state_bounds(local_states)
-            if self.size == 0 or np.any(np.abs(local_sizes - self.size / self.comm.size) > 0.2 * self.size):
+            if self.size == 0 or np.any(np.abs(local_sizes - self.size / self.comm.size) > 0.05 * self.size):
                 state_bounds = self._set_state_bounds(local_states)
             else:
                 state_bounds = self.state_bounds
@@ -717,7 +717,7 @@ class Basis:
                     slaterWeightMin=slaterWeightMin,
                     opResult=op_dict,
                 )
-                new_states |= res.keys() - local_states
+                new_states |= res.keys()  #  - local_states
             old_size = self.size
             if self.spin_flip_dj:
                 new_states = self._generate_spin_flipped_determinants(new_states)
@@ -1068,10 +1068,9 @@ class Basis:
                     slaterWeightMin=slaterWeightMin,
                     opResult=op_dict,
                 )
-        for state in list(op_dict.keys()):
-            if state not in self._index_dict:
-                op_dict.pop(state)
-        return op_dict
+        # op_dict.clear()
+        # op_dict.update(new_op_dict)
+        return {state: op_dict[state] for state in self.local_basis}
 
     def build_dense_matrix(self, op, op_dict=None, distribute=True):
         """
@@ -1123,8 +1122,8 @@ class Basis:
         Get the operator as a sparse matrix in the current basis.
         The sparse matrix is distributed over all ranks.
         """
-        if "PETSc" in sys.modules:
-            return self._build_PETSc_matrix(op, op_dict)
+        # if "PETSc" in sys.modules:
+        #     return self._build_PETSc_matrix(op, op_dict)
 
         expanded_dict = self.build_operator_dict(op, op_dict)
         rows: list[int] = []
@@ -1376,7 +1375,6 @@ class CIPSI_Basis(Basis):
         Use the CIPSI method to expand the basis. Keep adding Slater determinants until the CIPSI energy is converged.
         """
         psi_ref = None
-        e0 = 0
         converge_count = 0
         de0_max = max(-self.tau * np.log(1e-4), de2_min)
         psi_ref = None
@@ -1394,7 +1392,7 @@ class CIPSI_Basis(Basis):
             e_ref, psi_ref_dense = eigensystem_new(
                 H_mat,
                 e_max=de0_max,
-                k=len(psi_ref) if psi_ref is not None else 1,
+                k=len(psi_ref) + 1 if psi_ref is not None else 2,
                 v0=v0,
                 eigenValueTol=de2_min,
             )

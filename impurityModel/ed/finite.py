@@ -174,7 +174,7 @@ def eigensystem_new(
         es = []
         mask = [True]
         ncv = None
-        while len(es) - sum(mask) < 1:
+        while len(es) <= sum(mask):
             try:
                 es, vecs = eigsh(
                     h,

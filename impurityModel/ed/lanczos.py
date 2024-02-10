@@ -193,7 +193,7 @@ def get_block_Lanczos_matrices(
         done = False
         wp = None
         if rank == 0:
-            wp = np.empty((h.shape[0], q.shape[2]), dtype=complex)
+            wp = np.empty((h.shape[0], q.shape[2]), dtype=complex, order="C")
         # Run at least 1 iteration (to generate $\alpha_0$).
         # We can also not generate more than N Lanczos vectors, meaning we can
         # take at most N/n steps in total
@@ -201,7 +201,6 @@ def get_block_Lanczos_matrices(
             t_h = time.perf_counter()
             comm.Reduce(
                 h @ q_i,
-                # h[:, offsets[comm.rank] : offsets[comm.rank] + psi0.shape[0]] @ q_i,
                 wp,
                 op=MPI.SUM,
                 root=0,
