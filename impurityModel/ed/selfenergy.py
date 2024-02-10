@@ -78,9 +78,7 @@ def find_gs(h_op, N0, delta_occ, bath_states, num_spin_orbitals, rank, verbose, 
             e_max=0,
             k=1,
             eigenValueTol=1e-6,
-            verbose=verbose,
             return_eigvecs=False,
-            dense_cutoff=dense_cutoff,
         )
         energies.append(e_trial[0])
         if e_trial[0] < e_gs:
@@ -236,9 +234,7 @@ def calc_selfenergy(
         h_gs,
         e_max=energy_cut,
         k=2 * (2 * l + 1),
-        verbose=verbosity >= 1,
         eigenValueTol=0,
-        dense_cutoff=dense_cutoff,
     )
     psis = basis.build_state(psis_dense.T)
     basis.local_basis.clear()

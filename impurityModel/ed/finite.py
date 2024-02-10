@@ -130,9 +130,6 @@ def eigensystem_new(
     v0=None,
     eigenValueTol=0,
     return_eigvecs=True,
-    verbose=True,
-    dense_cutoff=1000,
-    distribute_eigenvectors=False,
 ):
     """
     Return eigen-energies and eigenstates.
@@ -141,24 +138,15 @@ def eigensystem_new(
     ----------
     h_local : HermitianOperator object
         Contains part of the full many-body Hamiltonian, local to this MPI rank.
-    basis : Basis object
-        Objext containing all or part of the many-body basis.
     e_max : float
         Maximum energy difference for excited states
     k : int
         Calculate at least k eigenstates above e_max, helps ensure convergence of eigenvalues and eigenstates.
-    dk : int
-        At every call to eigsh, calculate k + dk eigenstates. dk is increased until we have calculated at least k eigenstates above e_max.
     eigenValueTol : float
         The precision of the returned eigenvalues.
     return_eigvecs : bool
         If True, return eigenvalues and eigenvectors for all states with energy within e_max of the lowest energy state.
         If False, return only the calculated eigenvalues.
-    verbose : bool
-        If True, print stuff. If False, don't.
-    dense_cutoff : int
-        All h_local with dimension lower than dense_cutoff are expanded into a full dense matrix and then diagonalised.
-        For h_local with higher dimension, an iterative method is used instead.
     """
 
     t0 = time.perf_counter()
@@ -181,24 +169,24 @@ def eigensystem_new(
             dtype=h_local.dtype,
         )
 
-        dk = 0
-        vecs = v0
+        dk = 1
+        v0_guess = v0[:, 0] if v0 is not None else None
         es = []
         mask = [True]
         ncv = None
-        while len(es) - sum(mask) < k:
+        while len(es) - sum(mask) < 1:
             try:
                 es, vecs = eigsh(
                     h,
                     k=min(k + dk, h.shape[0] - 2),
                     which="SA",
                     tol=eigenValueTol,
-                    v0=vecs[:, np.argwhere(mask)[0]] if vecs is not None else None,
+                    v0=v0_guess,
                     ncv=ncv,
                 )
             except ArpackNoConvergence:
                 eigenValueTol = max(np.sqrt(eigenValueTol), 1e-6)
-                dk = 0
+                dk = 1
                 vecs = None
                 es = []
                 mask = [True]
@@ -215,47 +203,7 @@ def eigensystem_new(
                 continue
             mask = es - np.min(es) <= e_max
             dk += k
-    # elif isinstance(h_local, PETSc.Mat):
-    #     dk_orig = dk
-    #     es = []
-    #     mask = [True]
-
-    #     eig_solver = SLEPc.EPS()
-    #     eig_solver.create()
-    #     eig_solver.setOperators(h_local, None)
-    #     eig_solver.setProblemType(SLEPc.EPS.ProblemType.HEP)
-    #     eig_solver.setWhichEigenpairs(EPS.Which.SMALLEST_REAL)
-    #     eig_solver.setTolerances(tol=max(eigenValueTol, np.finfo(float).eps))
-    #     while len(es) - sum(mask) <= 0:
-    #         eig_solver.setDimensions(k, PETSc.DECIDE)
-    #         # eig_solver.setDimensions(k + dk, PETSc.DECIDE)
-    #         eig_solver.solve()
-    #         nconv = eig_solver.getConverged()
-    #         es = np.empty((nconv), dtype=float)
-    #         if nconv > 0:
-    #             for i in range(nconv):
-    #                 es[i] = eig_solver.getEigenvalue(i).real
-    #             mask = es - np.min(es) <= e_max
-    #         if dk_orig > 0:
-    #             dk += dk_orig
-    #         else:
-    #             break
-    #     vecs = None
-    #     if nconv > 0:
-    #         vecs = np.empty((h_local.size[0], nconv), dtype=complex) if comm.rank == 0 else None
-    #         vr, wr = h_local.getVecs()
-    #         vi, wi = h_local.getVecs()
-    #         for i in range(nconv):
-    #             _ = eig_solver.getEigenpair(i, vr, vi)
-    #             offsets = vr.owner_ranges[:-1]
-    #             counts = [vr.owner_ranges[i] - vr.owner_ranges[i - 1] for i in range(1, len(vr.owner_ranges))]
-    #             v_real = np.empty((h_local.size[0]), dtype=complex)
-    #             v_imag = np.empty((h_local.size[0]), dtype=complex)
-    #             comm.Gatherv(vr.array_r, [v_real, counts, offsets, MPI.DOUBLE_COMPLEX], root=0)
-    #             comm.Gatherv(vi.array_r, [v_imag, counts, offsets, MPI.DOUBLE_COMPLEX], root=0)
-    #             if comm.rank == 0:
-    #                 vecs[:, i] = v_real  # +1j*v_imag
-    #     vecs = comm.bcast(vecs, root=0)
+            v0_guess = vecs[:, mask][:, 0]
     indices = np.argsort(es)
     es = es[indices]
     vecs = vecs[:, indices]
@@ -275,17 +223,6 @@ def eigensystem_new(
         start = group_breaks[i - 1]
         stop = group_breaks[i]
         vecs[:, start:stop], _ = qr(vecs[:, start:stop], mode="economic", overwrite_a=True, check_finite=False)
-
-    # t0 = time.perf_counter()
-    # psis = basis.build_state(vecs[:, mask].T)
-    # t0 = time.perf_counter()
-    # if not distribute_eigenvectors:
-    #     all_psis = basis.comm.allgather(psis)
-    #     psis = [{} for _ in psis]
-    #     for psis_r in all_psis:
-    #         for i in range(len(psis)):
-    #             for state, val in psis_r[i].items():
-    #                 psis[i][state] = val + psis[i].get(state, 0)
 
     t0 = time.perf_counter() - t0
 

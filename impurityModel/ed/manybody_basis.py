@@ -1397,8 +1397,6 @@ class CIPSI_Basis(Basis):
                 k=len(psi_ref) if psi_ref is not None else 1,
                 v0=v0,
                 eigenValueTol=de2_min,
-                dense_cutoff=dense_cutoff,
-                verbose=self.verbose,
             )
             psi_ref = self.build_state(psi_ref_dense.T)
             new_Dj = self.determine_new_Dj(e_ref, psi_ref, H, H_dict, de2_min)
@@ -1421,7 +1419,6 @@ class CIPSI_Basis(Basis):
                 H_sparse,
                 e_max=de0_max,
                 k=sum(2 * (2 * l + 1) for l in self.ls),
-                verbose=False,
             )
             self.truncate(self.build_state(psi_ref))
             if self.verbose:
