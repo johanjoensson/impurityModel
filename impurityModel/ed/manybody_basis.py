@@ -505,7 +505,7 @@ class Basis:
             local_sizes = np.empty((self.comm.size,), dtype=int)
             self.comm.Allgather(np.array([len(self.local_basis)], dtype=int), local_sizes)
             # state_bounds = self._set_state_bounds(local_states)
-            if self.size == 0 or np.any(np.abs(local_sizes - self.size / self.comm.size) > 0.05 * self.size):
+            if self.size == 0 or np.any(np.abs(local_sizes - self.size / self.comm.size) > 0.10 * self.size):
                 state_bounds = self._set_state_bounds(local_states)
             else:
                 state_bounds = self.state_bounds
