@@ -1037,7 +1037,7 @@ class Basis:
                     v[row, self._index_dict[state]] = psi[state]
         return v
 
-    def build_state(self, vs: Union[list[np.ndarray], np.ndarray]) -> list[dict]:
+    def build_state(self, vs: Union[list[np.ndarray], np.ndarray], slaterWeightMin=0) -> list[dict]:
         if isinstance(vs, np.matrix):
             vs = vs.A
         if isinstance(vs, np.ndarray) and len(vs.shape) == 1:
@@ -1046,7 +1046,7 @@ class Basis:
         for row in range(vs.shape[0]):
             psi = {}
             for i in self.local_indices:
-                if abs(vs[row, i]) > 0:
+                if abs(vs[row, i]) ** 2 > slaterWeightMin:
                     psi[self.local_basis[i - self.offset]] = vs[row, i]
             res.append(psi.copy())
         return res
