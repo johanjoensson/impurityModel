@@ -1123,9 +1123,6 @@ class Basis:
         Get the operator as a sparse matrix in the current basis.
         The sparse matrix is distributed over all ranks.
         """
-        # if "PETSc" in sys.modules:
-        #     return self._build_PETSc_matrix(op, op_dict)
-
         expanded_dict = self.build_operator_dict(op, op_dict)
         rows: list[int] = []
         columns: list[int] = []
@@ -1164,7 +1161,36 @@ class Basis:
                 print(f"{self.size=} {max(rows)=}", flush=True)
         return sp.sparse.csc_matrix((values, (rows, columns)), shape=(self.size, self.size), dtype=complex)
 
-    def _build_PETSc_matrix(self, op, op_dict=None):
+    def build_PETSc_vector(self, psis: list[dict], dtype=complex) -> PETSc.Mat:
+        vs = PETSc.Mat().create(comm=self.comm)
+        vs.setSizes([len(psis), self.size])
+        row_dict = self._index_dict
+        for row, psi in enumerate(psis):
+            row_states = set(psi.keys())
+            need_mpi = False
+            if self.is_distributed:
+                need_mpi = False
+                if any(state not in row_dict for state in psi):
+                    need_mpi = True
+                need_mpi_arr = np.empty((1,), dtype=bool)
+                self.comm.Allreduce(np.array([need_mpi], dtype=bool), need_mpi_arr, op=MPI.LOR)
+                need_mpi = need_mpi_arr[0]
+            if need_mpi:
+                sorted_row_states = row_states  # sorted(row_states)
+                row_dict = {
+                    state: i
+                    for state, i in zip(sorted_row_states, self._index_sequence(sorted_row_states))
+                    if i < self.size
+                }
+            vs.setUp()
+            for state, val in psi.items():
+                if state not in row_dict:
+                    continue
+                vs[row, row_dict[state]] = val
+            vs.assemble()
+        return vs
+
+    def build_PETSc_matrix(self, op, op_dict=None):
         """
         Get the operator as a sparse matrix in the current basis.
         The sparse matrix is distributed over all ranks.
@@ -1173,17 +1199,40 @@ class Basis:
         M = PETSc.Mat().create(comm=self.comm)
         M.setSizes([self.size, self.size])
 
-        expanded_op_dict = self.build_operator_dict(op, op_dict)
-        columns = []
-        rows = []
-        values = []
-        for column in expanded_op_dict:
-            for row in expanded_op_dict[column]:
-                columns.append(column)
-                rows.append(row)
-                values.append(expanded_op_dict[column][row])
-        columns = self.index(columns)
-        rows = self.index(rows)
+        expanded_dict = self.build_operator_dict(op, op_dict)
+        rows: list[int] = []
+        columns: list[int] = []
+        values: list[complex] = []
+        if not self.is_distributed:
+            for column in self.local_basis:
+                for row in expanded_dict[column]:
+                    if row not in self._index_dict:
+                        continue
+                    columns.append(self._index_dict[column])
+                    rows.append(self._index_dict[row])
+                    values.append(expanded_dict[column][row])
+        else:
+            rows_in_basis: list[bytes] = list(
+                {row for column in self.local_basis for row in expanded_dict[column].keys()}
+            )
+            # This should never need more than one loop, but I think something is wrong on the Dardel supercimputer so let's try this and see what happens
+            retries = 0
+            retry = np.array([True], dtype=bool)
+            while np.any(retry):
+                row_indices = self._index_sequence(rows_in_basis)
+                self.comm.Allreduce(
+                    np.array([any(index > self.size for index in row_indices)], dtype=bool), retry, op=MPI.LOR
+                )
+                retries += 1
+            row_dict = {state: index for state, index in zip(rows_in_basis, row_indices) if index != self.size}
+
+            for column in self.local_basis:
+                for row in expanded_dict[column]:
+                    if row not in row_dict:
+                        continue
+                    columns.append(self._index_dict[column])
+                    rows.append(row_dict[row])
+                    values.append(expanded_dict[column][row])
         M.setUp()
         for i, j, val in zip(rows, columns, values):
             M[i, j] = val

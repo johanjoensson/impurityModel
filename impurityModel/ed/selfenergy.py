@@ -68,7 +68,8 @@ def find_gs(h_op, N0, delta_occ, bath_states, num_spin_orbitals, rank, verbose, 
             print(f"Before expansion basis contains {basis.size} elements")
         h_dict = basis.expand(h_op, dense_cutoff=dense_cutoff, de2_min=1e-6)
         h = (
-            basis.build_sparse_matrix(h_op, h_dict)
+            basis.build_PETSc_matrix(h_op, h_dict)
+            # basis.build_sparse_matrix(h_op, h_dict)
             if basis.size > dense_cutoff
             else basis.build_dense_matrix(h_op, h_dict)
         )
