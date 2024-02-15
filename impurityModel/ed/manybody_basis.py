@@ -725,7 +725,7 @@ class Basis:
             self.add_states(new_states)
 
         if self.verbose:
-            print(f"Expanded basis contains {self.size} elements", flush=True)
+            print(f"After expansion, the basis contains {self.size} elements.")
         return self.build_operator_dict(op, op_dict=op_dict)
 
     def _getitem_sequence(self, l: list[int]) -> list[bytes]:
@@ -1304,8 +1304,9 @@ class CIPSI_Basis(Basis):
         # <Dj|H|Psi_ref>^2 / <Dj|H|Dj>
         return np.square(np.abs(overlap)) / de
 
-    def determine_new_Dj(self, e_ref, psi_ref, H, H_dict, de2_min):
+    def determine_new_Dj(self, e_ref, psi_ref, H, H_dict, de2_min, return_Hpsi_ref=False):
         new_Dj = set()
+        Hpsi_ref = []
         for e_i, psi_i in zip(e_ref, psi_ref):
             Hpsi_i = applyOp(
                 self.num_spin_orbitals,
@@ -1369,6 +1370,9 @@ class CIPSI_Basis(Basis):
             de2_mask = np.abs(de2) >= de2_min
             Dji = {Dj_basis.local_basis[i] for i, mask in enumerate(de2_mask) if mask}
             new_Dj |= Dji
+            Hpsi_ref.append(Hpsi_i)
+        if return_Hpsi_ref:
+            return new_Dj, Hpsi_ref
         return new_Dj
 
     def expand(self, H, H_dict=None, de2_min=1e-10, dense_cutoff=1e3, slaterWeightMin=0):
@@ -1424,30 +1428,38 @@ class CIPSI_Basis(Basis):
                 print(f"----->After truncation, the basis contains {self.size} elements.")
         return self.build_operator_dict(H, op_dict=H_dict)
 
-    def expand_at(self, w, psi_ref, H, H_dict=None):
-        de2_min = 1e-8
-        while True:
-            Hpsi_ref = applyOp(
-                self.num_spin_orbitals,
-                H,
-                psi_ref,
-                restrictions=self.restrictions,
-                opResult=H_dict,
+    def expand_at(self, w, psi_ref, H, H_dict=None, de2_min=1e-3):
+        old_size = self.size - 1
+        while old_size != self.size:
+            # Hpsi_ref = [[] for _ in psi_ref]
+            # for i, psi in enumerate(psi_ref):
+            #     Hpsi_ref[i] = applyOp(
+            #         self.num_spin_orbitals,
+            #         H,
+            #         psi,
+            #         restrictions=self.restrictions,
+            #         opResult=H_dict,
+            #     )
+            new_Dj, Hpsi_ref = self.determine_new_Dj(
+                [w] * len(psi_ref), psi_ref, H, H_dict, de2_min, return_Hpsi_ref=True
             )
-            new_Dj = self.determine_new_Dj([w], [Hpsi_ref], H, H_dict, de2_min)
 
             old_size = self.size
-            self.local_basis.clear()
+            # self.local_basis.clear()
             self.add_states(new_Dj)
-            if True or self.size == old_size:
-                break
 
-            Hpsi_keys = list(Hpsi_ref.keys())
+            Hpsi_keys = list(set(state for psi in Hpsi_ref for state in psi))
             mask = self.contains(Hpsi_keys)
-            psi_ref = {state: Hpsi_ref[state] for state, m in zip(Hpsi_keys, mask) if m}
-            N = np.sqrt(norm2(psi_ref))
-            psi_ref = {state: psi_ref[state] / N for state in psi_ref}
+            psi_ref = [
+                {state: psi[state] for state, m in zip(Hpsi_keys, mask) if m and state in psi} for psi in Hpsi_ref
+            ]
+            local_N2s = np.array([norm2(psi) for psi in psi_ref], dtype=float)
+            N2s = np.empty_like(local_N2s)
+            self.comm.Allreduce(local_N2s, N2s, op=MPI.SUM)
+            psi_ref = [{state: psi[state] / np.sqrt(N2s[i]) for state in psi} for i, psi in enumerate(psi_ref)]
 
+        if self.verbose:
+            print(f"After expansion, the basis contains {self.size} elements.")
         return self.build_operator_dict(H, op_dict=H_dict)
 
     def copy(self):
