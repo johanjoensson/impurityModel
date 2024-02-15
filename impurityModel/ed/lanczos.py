@@ -142,7 +142,7 @@ def get_block_Lanczos_matrices(
     h_local: bool = False,
     verbose: bool = True,
     max_krylov_size: int = None,
-    build_basis: bool = True,
+    build_krylov_basis: bool = True,
 ):
     if max_krylov_size is None:
         krylovSize = h.shape[0]
@@ -157,36 +157,54 @@ def get_block_Lanczos_matrices(
     t_conv = 0.0
     t_qr = 0.0
 
-    N = psi0.shape[0]
-    n = max(psi0.shape[1], 1)
+    N = h.shape[0]
+    n = psi0.shape[1] if len(psi0.shape) == 2 else 1
 
     alphas = np.empty((0, n, n), dtype=complex)
     betas = np.empty((0, n, n), dtype=complex)
     Q = None
-    build_basis = build_basis or reort_mode != Reort.NONE
+    build_krylov_basis = build_krylov_basis or reort_mode != Reort.NONE
     n_reort = 0
     if rank == 0:
-        if build_basis:
+        if build_krylov_basis:
             Q = KrylovBasis(N, psi0.dtype, psi0)
-        q = np.zeros((2, N, n), dtype=complex)
-        q[1, :, :] = psi0
+        q = np.zeros((2, N, n), dtype=complex, order="C")
+    else:
+        q = np.empty((2, 0, 0))
+    counts = comm.allgather(n * psi0.shape[0])
+    offsets = [sum(counts[:r]) for r in range(len(counts))]
+    comm.Gatherv(
+        psi0,
+        (
+            q[1],
+            counts,
+            offsets,
+            MPI.DOUBLE_COMPLEX,
+        ),
+        root=0,
+    )
     if rank == 0 and reort_mode != Reort.NONE:
         W = np.zeros((2, 1, n, n), dtype=complex)
         W[1] = np.identity(n)
         force_reort = None
-    q_i = psi0
+    q_i = np.array(psi0, copy=True, order="C")
 
     if h_local:
         done = False
         wp = None
         if rank == 0:
-            wp = np.empty((h.shape[0], q.shape[2]), dtype=complex)
+            wp = np.empty((h.shape[0], q.shape[2]), dtype=complex, order="C")
         # Run at least 1 iteration (to generate $\alpha_0$).
         # We can also not generate more than N Lanczos vectors, meaning we can
         # take at most N/n steps in total
         for i in range(int(np.ceil(krylovSize / n))):
             t_h = time.perf_counter()
-            comm.Reduce(h @ q_i, wp, op=MPI.SUM, root=0)
+            comm.Reduce(
+                h @ q_i,
+                wp,
+                op=MPI.SUM,
+                root=0,
+            )
             t_matmul += time.perf_counter() - t_h
 
             if rank == 0:
@@ -207,15 +225,10 @@ def get_block_Lanczos_matrices(
                 q[1], betas[i] = sp.linalg.qr(wp, mode="economic", overwrite_a=True, check_finite=False)
                 t_qr += time.perf_counter() - t_qr_fact
                 b_mask = np.abs(np.diagonal(betas[i])) < np.finfo(float).eps
-                if i % max(int(np.ceil(krylovSize // (100 * n))), 1) == 0:
-                    t_converged = time.perf_counter()
-                    try:
-                        delta = converged(alphas, betas)
-                    except Exception as e:
-                        raise e
+                t_converged = time.perf_counter()
 
-                    done = delta < 1e-12
-                    t_conv += time.perf_counter() - t_converged
+                done = converged(alphas, betas)
+                t_conv += time.perf_counter() - t_converged
 
             done = comm.bcast(done, root=0)
             if done:
@@ -282,10 +295,14 @@ def get_block_Lanczos_matrices(
 
                     force_reort = mask if reort else None
                     t_reorth += time.perf_counter() - t_ortho
-            if rank == 0 and build_basis:
+            if rank == 0 and build_krylov_basis:
                 Q.add(q[1])
 
-            q_i = comm.bcast(q[1] if rank == 0 else None, root=0)
+            comm.Scatterv(
+                (q[1], counts, offsets, MPI.DOUBLE_COMPLEX),
+                q_i,
+                root=0,
+            )
 
         # Distribute Lanczos matrices to all ranks
         alphas = comm.bcast(alphas, root=0)

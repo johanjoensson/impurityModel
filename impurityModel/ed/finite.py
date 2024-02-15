@@ -15,7 +15,7 @@ try:
     from petsc4py import PETSc
     from slepc4py import SLEPc
     from slepc4py.SLEPc import EPS
-except:
+except ModuleNotFoundError:
     pass
 
 # Local imports
@@ -124,15 +124,11 @@ def mpi_matmul(h_local, comm):
 
 def eigensystem_new(
     h_local,
-    basis,
     e_max,
     k=10,
     v0=None,
     eigenValueTol=0,
     return_eigvecs=True,
-    verbose=True,
-    dense_cutoff=1000,
-    distribute_eigenvectors=False,
 ):
     """
     Return eigen-energies and eigenstates.
@@ -141,24 +137,15 @@ def eigensystem_new(
     ----------
     h_local : HermitianOperator object
         Contains part of the full many-body Hamiltonian, local to this MPI rank.
-    basis : Basis object
-        Objext containing all or part of the many-body basis.
     e_max : float
         Maximum energy difference for excited states
     k : int
         Calculate at least k eigenstates above e_max, helps ensure convergence of eigenvalues and eigenstates.
-    dk : int
-        At every call to eigsh, calculate k + dk eigenstates. dk is increased until we have calculated at least k eigenstates above e_max.
     eigenValueTol : float
         The precision of the returned eigenvalues.
     return_eigvecs : bool
         If True, return eigenvalues and eigenvectors for all states with energy within e_max of the lowest energy state.
         If False, return only the calculated eigenvalues.
-    verbose : bool
-        If True, print stuff. If False, don't.
-    dense_cutoff : int
-        All h_local with dimension lower than dense_cutoff are expanded into a full dense matrix and then diagonalised.
-        For h_local with higher dimension, an iterative method is used instead.
     """
 
     t0 = time.perf_counter()
@@ -166,12 +153,12 @@ def eigensystem_new(
         if comm.rank == 0:
             es, vecs = np.linalg.eigh(h_local, UPLO="L")
         else:
-            es = np.empty((basis.size,))
-            vecs = np.empty((basis.size, basis.size), dtype=complex)
+            es = np.empty((h_local.shape[0],))
+            vecs = np.empty_like(h_local)
         comm.Bcast(es, root=0)
         comm.Bcast(vecs, root=0)
         mask = es - es[0] <= e_max
-    elif isinstance(h_local, scipy.sparse._csr.csr_matrix):
+    elif isinstance(h_local, scipy.sparse._csr.csr_matrix) or isinstance(h_local, scipy.sparse._csc.csc_matrix):
         h = scipy.sparse.linalg.LinearOperator(
             (h_local.shape[0], h_local.shape[0]),
             matvec=mpi_matmul(h_local, comm),
@@ -181,24 +168,24 @@ def eigensystem_new(
             dtype=h_local.dtype,
         )
 
-        dk = 0
-        vecs = v0
+        dk = 1
+        v0_guess = v0[:, 0] if v0 is not None else None
         es = []
         mask = [True]
         ncv = None
-        while len(es) - sum(mask) < k:
+        while len(es) <= sum(mask):
             try:
                 es, vecs = eigsh(
                     h,
                     k=min(k + dk, h.shape[0] - 2),
                     which="SA",
                     tol=eigenValueTol,
-                    v0=vecs[:, np.argwhere(mask)[0]] if vecs is not None else None,
+                    v0=v0_guess,
                     ncv=ncv,
                 )
             except ArpackNoConvergence:
                 eigenValueTol = max(np.sqrt(eigenValueTol), 1e-6)
-                dk = 0
+                dk = 1
                 vecs = None
                 es = []
                 mask = [True]
@@ -215,47 +202,7 @@ def eigensystem_new(
                 continue
             mask = es - np.min(es) <= e_max
             dk += k
-    # elif isinstance(h_local, PETSc.Mat):
-    #     dk_orig = dk
-    #     es = []
-    #     mask = [True]
-
-    #     eig_solver = SLEPc.EPS()
-    #     eig_solver.create()
-    #     eig_solver.setOperators(h_local, None)
-    #     eig_solver.setProblemType(SLEPc.EPS.ProblemType.HEP)
-    #     eig_solver.setWhichEigenpairs(EPS.Which.SMALLEST_REAL)
-    #     eig_solver.setTolerances(tol=max(eigenValueTol, np.finfo(float).eps))
-    #     while len(es) - sum(mask) <= 0:
-    #         eig_solver.setDimensions(k, PETSc.DECIDE)
-    #         # eig_solver.setDimensions(k + dk, PETSc.DECIDE)
-    #         eig_solver.solve()
-    #         nconv = eig_solver.getConverged()
-    #         es = np.empty((nconv), dtype=float)
-    #         if nconv > 0:
-    #             for i in range(nconv):
-    #                 es[i] = eig_solver.getEigenvalue(i).real
-    #             mask = es - np.min(es) <= e_max
-    #         if dk_orig > 0:
-    #             dk += dk_orig
-    #         else:
-    #             break
-    #     vecs = None
-    #     if nconv > 0:
-    #         vecs = np.empty((h_local.size[0], nconv), dtype=complex) if comm.rank == 0 else None
-    #         vr, wr = h_local.getVecs()
-    #         vi, wi = h_local.getVecs()
-    #         for i in range(nconv):
-    #             _ = eig_solver.getEigenpair(i, vr, vi)
-    #             offsets = vr.owner_ranges[:-1]
-    #             counts = [vr.owner_ranges[i] - vr.owner_ranges[i - 1] for i in range(1, len(vr.owner_ranges))]
-    #             v_real = np.empty((h_local.size[0]), dtype=complex)
-    #             v_imag = np.empty((h_local.size[0]), dtype=complex)
-    #             comm.Gatherv(vr.array_r, [v_real, counts, offsets, MPI.DOUBLE_COMPLEX], root=0)
-    #             comm.Gatherv(vi.array_r, [v_imag, counts, offsets, MPI.DOUBLE_COMPLEX], root=0)
-    #             if comm.rank == 0:
-    #                 vecs[:, i] = v_real  # +1j*v_imag
-    #     vecs = comm.bcast(vecs, root=0)
+            v0_guess = vecs[:, mask][:, 0]
     indices = np.argsort(es)
     es = es[indices]
     vecs = vecs[:, indices]
@@ -275,17 +222,6 @@ def eigensystem_new(
         start = group_breaks[i - 1]
         stop = group_breaks[i]
         vecs[:, start:stop], _ = qr(vecs[:, start:stop], mode="economic", overwrite_a=True, check_finite=False)
-
-    # t0 = time.perf_counter()
-    # psis = basis.build_state(vecs[:, mask].T)
-    # t0 = time.perf_counter()
-    # if not distribute_eigenvectors:
-    #     all_psis = basis.comm.allgather(psis)
-    #     psis = [{} for _ in psis]
-    #     for psis_r in all_psis:
-    #         for i in range(len(psis)):
-    #             for state, val in psis_r[i].items():
-    #                 psis[i][state] = val + psis[i].get(state, 0)
 
     t0 = time.perf_counter() - t0
 
@@ -451,8 +387,33 @@ def get_Lz_from_rho_spherical(rho, l):
     )
 
 
+def get_Lplus_from_rho_spherical(rho, l):
+    llp1 = l * (l + 1)
+    #   L+    |2, -2>,  |2, -1>, |2,  0>, |2,  1>, |2,  2>
+    # <2, -2|    0
+    # <2, -1| sqrt(8)
+    # <2,  0|    0
+    # <2,  1|    0
+    # <2,  2|    0
+    Lplus = np.zeros((2 * (2 * l + 1), 2 * (2 * l + 1)))
+    for i, ml in enumerate(range(-l, l)):
+        Lplus[i + 1, i] = np.sqrt(llp1 + ml * (ml + 1))
+    return np.trace(rho @ Lplus)
+
+
 def get_L2_from_rho_spherical(rho, l):
-    return l * (l + 1) * np.real(np.trace(rho))
+    llp1 = l * (l + 1)
+    Lz = get_Lz_from_rho_spherical(rho, l)
+    Lplus = np.zeros((2 * (2 * l + 1), 2 * (2 * l + 1)))
+    for i, ml in enumerate(range(-l, l)):
+        Lplus[i + 1, i] = np.sqrt(llp1 + ml * (ml + 1))
+    Lminus = np.zeros((2 * (2 * l + 1), 2 * (2 * l + 1)))
+    for i, ml in enumerate(range(-l + 1, l + 1)):
+        Lminus[i - 1, i] = np.sqrt(llp1 + ml * (ml - 1))
+    Lz2 = np.identity(2 * (2 * l + 1))
+    for i, ml in enumerate(range(-l, l + 1)):
+        Lz2[i, i] = ml**2
+    return np.trace(rho @ Lz2) + 2 * Lz + np.trace(rho @ Lplus @ Lminus)
 
 
 def get_Sz_from_rho_spherical(rho, l):
@@ -460,19 +421,26 @@ def get_Sz_from_rho_spherical(rho, l):
 
 
 def get_S2_from_rho_spherical(rho, l):
-    # S^2 |l, ms, ml> = s(s+1)|l, ms, ml>, s = 1/2
-    return 3 / 4 * np.real(np.trace(rho))
+    ssp1 = 3 / 4
+    Sz = get_Sz_from_rho_spherical(rho, l)
+    Splus = np.zeros((2 * (2 * l + 1), 2 * (2 * l + 1)))
+    for i, ms in enumerate(np.repeat([-0.5], 2 * l + 1)):
+        Splus[i + 2 * l + 1, i] = np.sqrt(ssp1 + ms * (ms + 1))
+    Sminus = np.zeros((2 * (2 * l + 1), 2 * (2 * l + 1)))
+    for i, ms in enumerate(np.repeat([0.5], 2 * l + 1)):
+        Sminus[i, i + 2 * l + 1] = np.sqrt(ssp1 + ms * (ms - 1))
+    Sz2 = np.identity(2 * (2 * l + 1))
+    return np.trace(rho @ Sz2) + 2 * Sz + np.trace(rho @ Splus @ Sminus)
 
 
 def printThermalExpValues_new(nBaths, es, psis, tau, rot_to_spherical):
     """
-    print several thermal expectation values, e.g. E, N, L^2.
+    print several thermal expectation values, e.g. E, N, Sz, Lz.
 
     cutOff - float. Energies more than cutOff*kB*T above the
             lowest energy is not considered in the average.
     """
     e = es - es[0]
-    # Select relevant energies
     psis = np.array(psis)
     rhos = [getDensityMatrix(nBaths, psi, 2) for psi in psis]
     rhomats = np.zeros((len(rhos), 10, 10), dtype=complex)
@@ -516,8 +484,8 @@ def printThermalExpValues(nBaths, es, psis, T=300, cutOff=10):
         print("<N(t2gUp)> = {:8.7f}".format(occs[3]))
         print("<Lz(3d)> = {:8.7f}".format(thermal_average(e, [getLz3d(nBaths, psi) for psi in psis], T=T)))
         print("<Sz(3d)> = {:8.7f}".format(thermal_average(e, [getSz3d(nBaths, psi) for psi in psis], T=T)))
-        print("<L^2(3d)> = {:8.7f}".format(thermal_average(e, [getLsqr3d(nBaths, psi) for psi in psis], T=T)))
-        print("<S^2(3d)> = {:8.7f}".format(thermal_average(e, [getSsqr3d(nBaths, psi) for psi in psis], T=T)))
+        # print("<L^2(3d)> = {:8.7f}".format(thermal_average(e, [getLsqr3d(nBaths, psi) for psi in psis], T=T)))
+        # print("<S^2(3d)> = {:8.7f}".format(thermal_average(e, [getSsqr3d(nBaths, psi) for psi in psis], T=T)))
 
 
 def dc_MLFT(n3d_i, c, Fdd, n2p_i=None, Fpd=None, Gpd=None):
@@ -1958,9 +1926,11 @@ def applyOp(n_spin_orbitals, op, psi, slaterWeightMin=0, restrictions=None, opRe
 def occupation_within_restrictions(state, n_spin_orbitals, restrictions):
     if restrictions is None:
         return True
-    state_new_tuple = psr.bytes2tuple(state, n_spin_orbitals)
+    # state_new_tuple = psr.bytes2tuple(state, n_spin_orbitals)
+    bits = psr.bytes2bitarray(state, n_spin_orbitals)
     for restriction, occupations in restrictions.items():
-        n = len(restriction.intersection(state_new_tuple))
+        n = sum(bits[i] for i in restriction)
+        # n = len(restriction.intersection(state_new_tuple))
         if n < occupations[0] or occupations[1] < n:
             return False
     return True

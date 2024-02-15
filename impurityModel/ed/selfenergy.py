@@ -1,40 +1,49 @@
-import numpy as np
 from collections import OrderedDict
-from mpi4py import MPI
 import time
 import argparse
 
-from impurityModel.ed.get_spectra import get_noninteracting_hamiltonian_operator, read_h0_operator
+from mpi4py import MPI
+import numpy as np
+from impurityModel.ed.get_spectra import get_noninteracting_hamiltonian_operator
 from impurityModel.ed import finite
 from impurityModel.ed.average import thermal_average_scale_indep
-from impurityModel.ed.manybody_basis import CIPSI_Basis, Basis
+from impurityModel.ed.manybody_basis import CIPSI_Basis
 
 from impurityModel.ed.greens_function import get_Greens_function, save_Greens_function
 
-eV_to_Ry = 1 / 13.605693122994
+EV_TO_RY = 1 / 13.605693122994
 
 
-class UnphysicalSelfenergy(Exception):
-    pass
+class UnphysicalSelfenergyError(Exception):
+    """
+    Excpetion signalling an unphysical self-energy, i.e. the imaginary part is positive for some frequencies.
+    """
 
 
-class UnphysicalGreensFunction(Exception):
-    pass
+class UnphysicalGreensFunctionError(Exception):
+    """
+    Excpetion signalling an unphysical Greens function, i.e. the imaginary part is positive for some frequencies.
+    """
 
 
-def matrix_print(matrix, label: str = None):
+def matrix_print(matrix: np.ndarray, label: str = None) -> None:
+    """
+    Pretty print the matrix, with optional label.
+    """
     ms = "\n".join([" ".join([f"{np.real(val): .4f}{np.imag(val):+.4f}j" for val in row]) for row in matrix])
     if label:
         print(label)
     print(ms)
 
 
-def find_gs(h_op, N0, delta_occ, bath_states, num_spin_orbitals, rank, verbose, dense_cutoff):
+def find_gs(h_op, N0, delta_occ, bath_states, num_spin_orbitals, rank, verbose, dense_cutoff, spin_flip_dj):
+    """
+    Find the occupation corresponding to the lowest energy, compare N0 - 1, N0 and N0 + 1
+    """
     delta_imp_occ, delta_val_occ, delta_con_occ = delta_occ
     num_val_baths, num_cond_baths = bath_states
     e_gs = np.inf
     basis_gs = None
-    h_gs = None
     gs_impurity_occ = None
     selected = 1
     energies = []
@@ -42,38 +51,40 @@ def find_gs(h_op, N0, delta_occ, bath_states, num_spin_orbitals, rank, verbose, 
     dN = [-1, 0, 1]
     for i, d in enumerate(dN):
         basis = CIPSI_Basis(
+            ls=[l for l in N0[0]],
             H=h_op,
-            # basis = Basis(
             valence_baths=num_val_baths,
             conduction_baths=num_cond_baths,
             delta_valence_occ=delta_val_occ,
             delta_conduction_occ=delta_con_occ,
             delta_impurity_occ=delta_imp_occ,
             nominal_impurity_occ={l: N0[0][l] + d for l in N0[0]},
-            truncation_threshold=1e6,
+            truncation_threshold=1e9,
             verbose=False and verbose,
+            spin_flip_dj=spin_flip_dj,
             comm=MPI.COMM_WORLD,
         )
         if verbose:
             print(f"Before expansion basis contains {basis.size} elements")
-        # h_dict = basis.expand(h_op, dense_cutoff=dense_cutoff)
-        h_dict = basis.expand(h_op, dense_cutoff=dense_cutoff, de2_min=1e-5, slaterWeightMin=1e-12)
-        h = basis.build_sparse_matrix(h_op, h_dict)
+        h_dict = basis.expand(h_op, dense_cutoff=dense_cutoff, de2_min=1e-6)
+        h = (
+            basis.build_sparse_matrix(h_op, h_dict)
+            if basis.size > dense_cutoff
+            else basis.build_dense_matrix(h_op, h_dict)
+        )
 
         e_trial = finite.eigensystem_new(
             h,
-            basis,
             e_max=0,
             k=1,
-            verbose=verbose,
+            eigenValueTol=1e-6,
             return_eigvecs=False,
-            dense_cutoff=dense_cutoff,
         )
         energies.append(e_trial[0])
         if e_trial[0] < e_gs:
             e_gs = e_trial[0]
             basis_gs = basis.copy()
-            h_gs = h
+            h_dict_gs = h_dict
             gs_impurity_occ = {l: N0[0][l] + d for l in N0[0]}
             selected = i
     underline = {0: " ", 1: " ", 2: " "}
@@ -84,7 +95,7 @@ def find_gs(h_op, N0, delta_occ, bath_states, num_spin_orbitals, rank, verbose, 
         print(f"E0:    {energies[0]: ^10.6f}  {energies[1]: ^10.6f}  {energies[2]: ^10.6f}")
         print(f"       {underline[0]*10}  {underline[1]*10}  {underline[2]*10}")
 
-    return (gs_impurity_occ, N0[1], N0[2]), basis_gs, h_gs
+    return (gs_impurity_occ, N0[1], N0[2]), basis_gs, h_dict_gs
 
 
 def run(cluster, h0, iw, w, delta, tau, verbosity, reort, dense_cutoff):
@@ -126,6 +137,7 @@ def run(cluster, h0, iw, w, delta, tau, verbosity, reort, dense_cutoff):
         cluster_label=cluster.label,
         reort=reort,
         dense_cutoff=dense_cutoff,
+        spin_flip_dj=cluster.spin_flip_dj,
     )
 
     for inequiv_i, block_i in enumerate(cluster.inequivalent_blocks):
@@ -159,6 +171,7 @@ def calc_selfenergy(
     cluster_label,
     reort,
     dense_cutoff,
+    spin_flip_dj,
 ):
     """ """
     # MPI variables
@@ -180,7 +193,7 @@ def calc_selfenergy(
 
     num_spin_orbitals = 2 * (2 * l + 1) + sum(num_val_baths[l] + num_con_baths[l] for l in num_val_baths)
 
-    (n0_imp, n0_val, n0_con), basis, _ = find_gs(
+    (n0_imp, n0_val, n0_con), basis, h_dict = find_gs(
         h,
         nominal_occ,
         delta_occ,
@@ -189,6 +202,7 @@ def calc_selfenergy(
         rank=rank,
         verbose=verbosity,
         dense_cutoff=dense_cutoff,
+        spin_flip_dj=spin_flip_dj,
     )
     delta_imp_occ, delta_val_occ, delta_con_occ = delta_occ
     restrictions = basis.restrictions
@@ -200,7 +214,7 @@ def calc_selfenergy(
     if restrictions is not None and verbosity >= 2:
         print("Restrictions on occupation")
         for key, res in restrictions.items():
-            print(f"{key} : {res}")
+            print(f"---> {key} : {res}")
     if verbosity >= 1:
         print("{:d} processes in the Hamiltonian.".format(len(h)))
         print("Create basis...")
@@ -209,37 +223,41 @@ def calc_selfenergy(
     energy_cut = -tau * np.log(1e-4)
 
     basis.tau = tau
-    # h_dict = basis.expand(h, dense_cutoff=dense_cutoff)
-    h_dict = basis.expand(h, dense_cutoff=dense_cutoff, de2_min=1e-8, slaterWeightMin=0)
+    h_dict = basis.expand(h, H_dict=h_dict, dense_cutoff=dense_cutoff, de2_min=1e-8)
     if verbosity >= 1:
         print(f"Ground state basis contains {len(basis)} elsements.")
-    if basis.size < dense_cutoff:
+    if basis.size <= dense_cutoff:
         h_gs = basis.build_dense_matrix(h, h_dict)
     else:
         h_gs = basis.build_sparse_matrix(h, h_dict)
     es, psis_dense = finite.eigensystem_new(
         h_gs,
-        basis,
         e_max=energy_cut,
         k=2 * (2 * l + 1),
-        verbose=verbosity >= 1,
         eigenValueTol=0,
-        dense_cutoff=dense_cutoff,
     )
     psis = basis.build_state(psis_dense.T)
+    basis.local_basis.clear()
+    basis.add_states(set(state for psi in psis for state in psi))
     all_psis = comm.gather(psis)
-    if verbosity >= 2:
-        psis = [{} for _ in psis]
+    if rank == 0:
+        local_psis = [{} for _ in psis]
         for psis_r in all_psis:
-            for i in range(len(psis)):
+            for i in range(len(local_psis)):
                 for state in psis_r[i]:
-                    psis[i][state] = psis_r[i][state] + psis[i].get(state, 0)
-        finite.printThermalExpValues_new(sum_bath_states, es, psis, tau, rot_to_spherical)
-        finite.printExpValues(sum_bath_states, es, psis, rot_to_spherical)
-
+                    local_psis[i][state] = psis_r[i][state] + local_psis[i].get(state, 0)
+    if verbosity >= 2:
+        finite.printThermalExpValues_new(sum_bath_states, es, local_psis, tau, rot_to_spherical)
+        finite.printExpValues(sum_bath_states, es, local_psis, rot_to_spherical)
+    excited_restrictions = basis.build_excited_restrictions()
     if verbosity >= 1:
-        print("Consider {:d} eigenstates for the spectra \n".format(len(es)))
-        print("Calculate Interacting Green's function...", flush=True)
+        if verbosity >= 2:
+            print("Restrictions when calculating the excited states:")
+            for indices, occupations in excited_restrictions.items():
+                print(f"---> {indices} : {occupations}")
+            print()
+        print(f"Consider {len(es):d} eigenstates for the spectra \n")
+        print("Calculate Interacting Green's function...")
 
     gs_matsubara, gs_realaxis = get_Greens_function(
         nBaths=sum_bath_states,
@@ -251,35 +269,33 @@ def calc_selfenergy(
         l=l,
         hOp=h,
         delta=delta,
-        restrictions=restrictions,
         blocks=blocks,
         verbose=verbosity >= 2,
-        mpi_distribute=True,
+        mpi_distribute=False,
         reort=reort,
         dense_cutoff=dense_cutoff,
-        tau=tau,
     )
-    if iw is not None:
+    if gs_matsubara is not None:
         gs_matsubara_thermal_avg = thermal_average_scale_indep(es[: np.shape(gs_matsubara)[0]], gs_matsubara, tau=tau)
         try:
             check_greens_function(gs_matsubara_thermal_avg)
-        except UnphysicalGreensFunction as err:
+        except UnphysicalGreensFunctionError as err:
             if rank == 0:
                 print(f"WARNING! Unphysical Matsubara-axis Greens function:\n\t{err}")
         if verbosity >= 2:
             save_Greens_function(gs=gs_matsubara_thermal_avg, omega_mesh=iw, label=f"G-{cluster_label}", e_scale=1)
-    if w is not None:
+    if gs_realaxis is not None:
         gs_realaxis_thermal_avg = thermal_average_scale_indep(es[: np.shape(gs_realaxis)[0]], gs_realaxis, tau=tau)
         try:
             check_greens_function(gs_realaxis_thermal_avg)
-        except UnphysicalGreensFunction as err:
+        except UnphysicalGreensFunctionError as err:
             if rank == 0:
                 print(f"WARNING! Unphysical real-axis Greens function:\n\t{err}")
         if verbosity >= 2:
             save_Greens_function(gs=gs_realaxis_thermal_avg, omega_mesh=w, label=f"G-{cluster_label}", e_scale=1)
     if verbosity >= 1:
         print("Calculate self-energy...")
-    if w is not None:
+    if gs_realaxis is not None:
         sigma_real = get_sigma(
             omega_mesh=w,
             nBaths=sum_bath_states,
@@ -293,12 +309,12 @@ def calc_selfenergy(
         )
         try:
             check_sigma(sigma_real)
-        except UnphysicalSelfenergy as err:
+        except UnphysicalSelfenergyError as err:
             if rank == 0:
                 print(f"WARNING! Unphysical realaxis selfenergy:\n\t{err}")
     else:
         sigma_real = None
-    if iw is not None:
+    if gs_matsubara is not None:
         sigma = get_sigma(
             omega_mesh=iw,
             nBaths=sum_bath_states,
@@ -312,14 +328,15 @@ def calc_selfenergy(
         )
         try:
             check_sigma(sigma)
-        except UnphysicalSelfenergy as err:
+        except UnphysicalSelfenergyError as err:
             if rank == 0:
                 print(f"WARNING! Unphysical Matsubara axis selfenergy:\n\t{err}")
     else:
         sigma = None
     if verbosity >= 1:
-        print(f"Calculating sig_static.")
-    sigma_static = get_Sigma_static(sum_bath_states, u4, es, psis, l, tau)
+        print("Calculating sig_static.")
+    if rank == 0:
+        sigma_static = get_Sigma_static(sum_bath_states, u4, es, local_psis, l, tau)
 
     if verbosity >= 2:
         if iw is not None:
@@ -329,19 +346,22 @@ def calc_selfenergy(
         np.savetxt(f"real-Sigma_static-{cluster_label}.dat", np.real(sigma_static))
         np.savetxt(f"imag-Sigma_static-{cluster_label}.dat", np.imag(sigma_static))
 
+    sigma = comm.bcast(sigma if rank == 0 else None)
+    sigma_real = comm.bcast(sigma_real if rank == 0 else None)
+    sigma_static = comm.bcast(sigma_static if rank == 0 else None)
     return sigma, sigma_real, sigma_static
 
 
 def check_sigma(sigma):
     diagonals = [np.diag(sigma[:, :, i]) for i in range(sigma.shape[-1])]
     if np.any(np.imag(diagonals) > 0):
-        raise UnphysicalSelfenergy("Diagonal term has positive imaginary part.")
+        raise UnphysicalSelfenergyError("Diagonal term has positive imaginary part.")
 
 
 def check_greens_function(G):
     diagonals = [np.diag(G[:, :, i]) for i in range(G.shape[-1])]
     if np.any(np.imag(diagonals) > 0):
-        raise UnphysicalGreensFunction("Diagonal term has positive imaginary part.")
+        raise UnphysicalGreensFunctionError("Diagonal term has positive imaginary part.")
     # norms = -1/np.pi*np.trapz(diagonals, energies)
     # if np.any(np.abs(np.imag(diagonals) - 1) > 5*(energies[1] - energies[0])):
     #     raise UnphysicalGreensFunction("Imaginary part of diagonal term is not norm-conserving.\n"
@@ -352,13 +372,15 @@ def check_greens_function(G):
 
 
 def get_hcorr_v_hbath(h0op, sum_bath_states):
-    #   The matrix form of h0op can be written
-    #   [  hcorr  V^+    ]
-    #   [  V      hbath  ]
-    # where:
-    #       - hcorr is the Hamiltonian for the correlated, impurity, orbitals.
-    #       - V/V^+ is the hopping between impurity and bath orbitals.
-    #       - hbath is the hamiltonian for the non-interacting, bath, orbitals.
+    """
+    The matrix form of h0op can be written
+      [  hcorr  V^+    ]
+      [  V      hbath  ]
+    where:
+          - hcorr is the Hamiltonian for the correlated, impurity, orbitals.
+          - V/V^+ is the hopping between impurity and bath orbitals.
+          - hbath is the hamiltonian for the non-interacting, bath, orbitals.
+    """
     h0_i = finite.c2i_op(sum_bath_states, h0op)
     h0Matrix = finite.iOpToMatrix(sum_bath_states, h0_i)
     n_corr = sum([2 * (2 * l + 1) for l in sum_bath_states.keys()])
@@ -470,8 +492,8 @@ def get_selfenergy(
     omega_mesh = np.linspace(-1.83, 1.83, 2000)
     # omega_mesh = 1j*np.pi*tau*np.arange(start = 1, step = 2, stop = 2*375)
 
-    if rank == 0:
-        t0 = time.perf_counter()
+    # if rank == 0:
+    #     t0 = time.perf_counter()
     # -- System information --
 
     sum_baths = OrderedDict({ls: nBaths})
