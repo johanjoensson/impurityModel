@@ -1048,7 +1048,7 @@ class Basis:
             for i in self.local_indices:
                 if abs(vs[row, i]) ** 2 > slaterWeightMin:
                     psi[self.local_basis[i - self.offset]] = vs[row, i]
-            res.append(psi.copy())
+            res.append(psi)
         return res
 
     def build_operator_dict(self, op, op_dict=None, slaterWeightMin=0):

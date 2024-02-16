@@ -764,8 +764,8 @@ def save_Greens_function(gs, omega_mesh, label, e_scale=1, tol=1e-8):
 
     print(f"Writing {axis_label} {label} to files")
     with open(f"real-{axis_label}-{label}.dat", "w") as fg_real, open(f"imag-{axis_label}-{label}.dat", "w") as fg_imag:
-        header = "# 1 - Omega(Ry)  2 - Trace  3 - Spin down  4 - Spin up\n"
-        header += "# Individual matrix elements given in the matrix below:"
+        header = "# Frequency, total, spin down, spin up\n"
+        header += "# indexmap: (column index of projected elements)"
         for row in range(gs.shape[0]):
             header += "\n# "
             for column in range(gs.shape[1]):
