@@ -45,7 +45,7 @@ def get_Greens_function(
         omega_mesh,
         delta,
         blocks=blocks,
-        slaterWeightMin=1e-8,
+        slaterWeightMin=1e-6,
         verbose=verbose,
         reort=reort,
         dense_cutoff=dense_cutoff,
