@@ -57,6 +57,7 @@ def cg_phys(A_op, A_dict, n_spin_orbitals, x_psi, y_psi, w, delta, basis, atol=1
     rather than pure numerics.
     """
     t_cg = perf_counter()
+    t_setup = perf_counter()
     n = basis.size
     A = basis.build_sparse_matrix(A_op, A_dict)
     x, y = basis.build_vector([x_psi, y_psi])
@@ -68,20 +69,26 @@ def cg_phys(A_op, A_dict, n_spin_orbitals, x_psi, y_psi, w, delta, basis, atol=1
     r_prev = r
     alpha_guess = (1 - delta * 1j) / (1 + delta**2)
     t_expansion = 0
+    t_build_states = 0
     t_build_sparse_mat = 0
     t_build_vectors_separate = 0
     t_matrix_mul = 0
     t_rest_of_cg = 0
+    t_setup = perf_counter() - t_setup
+    it = 0
     for it in range(1000 * n):
-    # it = 0
-    # while(True):
+        # it = 0
+        # while(True):
         # it += 1
         x += alpha_guess * p
 
-        p_psi, r_prev_psi, x_psi = basis.build_state([p, r_prev, x])
+        t_state = perf_counter()
+        p_psi, r_prev_psi, x_psi = basis.build_state(np.vstack((p, r_prev, x)))
+        t_build_states += perf_counter() - t_state
 
         t_expand = perf_counter()
-        basis.expand_at(w, x_psi, A_op, A_dict)
+        basis.clear()
+        A_dict = basis.expand_at(w, [x_psi], A_op, A_dict)
         t_expansion += perf_counter() - t_expand
         t_build_sparse = perf_counter()
         A = basis.build_sparse_matrix(A_op, A_dict)
@@ -124,10 +131,12 @@ def cg_phys(A_op, A_dict, n_spin_orbitals, x_psi, y_psi, w, delta, basis, atol=1
         dar = da @ r
         p = r - dar / dad * p
         r_prev = r
-        t_rest_of_cg = perf_counter() - t_rest
+        t_rest_of_cg += perf_counter() - t_rest
     t_cg = perf_counter() - t_cg
     print(f"Converged in {it+1} iterations!")
     print(f"Took {t_cg:.3f} seconds")
+    print(f"--->Setup took {t_setup:.4f} seconds")
+    print(f"--->Building the states took {t_build_states:.4f} seconds")
     print(f"--->Expanding the basis took {t_expansion:.4f} seconds")
     print(f"--->Building the matrix took {t_build_sparse_mat:.4f} seconds")
     print(f"--->Building the vectors took {t_build_vectors_separate:.4f} seconds")

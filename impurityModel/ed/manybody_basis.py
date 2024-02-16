@@ -633,6 +633,10 @@ class Basis:
         if self.verbose:
             print(f"=======> T set bounds and stuff : {t0}")
 
+    def clear(self):
+        self.local_basis.clear()
+        self.add_states([])
+
     def _generate_spin_flipped_determinants(self, determinants):
         valence_baths, conduction_baths = self.bath_states
         n_dn_op = {
@@ -1428,7 +1432,7 @@ class CIPSI_Basis(Basis):
                 print(f"----->After truncation, the basis contains {self.size} elements.")
         return self.build_operator_dict(H, op_dict=H_dict)
 
-    def expand_at(self, w, psi_ref, H, H_dict=None, de2_min=1e-3):
+    def expand_at(self, w, psi_ref, H, H_dict=None, de2_min=1e-4):
         old_size = self.size - 1
         while old_size != self.size:
             # Hpsi_ref = [[] for _ in psi_ref]
@@ -1443,10 +1447,11 @@ class CIPSI_Basis(Basis):
             new_Dj, Hpsi_ref = self.determine_new_Dj(
                 [w] * len(psi_ref), psi_ref, H, H_dict, de2_min, return_Hpsi_ref=True
             )
-
+            if len(new_Dj) == 0:
+                break
             old_size = self.size
-            # self.local_basis.clear()
             self.add_states(new_Dj)
+            break
 
             Hpsi_keys = list(set(state for psi in Hpsi_ref for state in psi))
             mask = self.contains(Hpsi_keys)
@@ -1454,9 +1459,13 @@ class CIPSI_Basis(Basis):
                 {state: psi[state] for state, m in zip(Hpsi_keys, mask) if m and state in psi} for psi in Hpsi_ref
             ]
             local_N2s = np.array([norm2(psi) for psi in psi_ref], dtype=float)
-            N2s = np.empty_like(local_N2s)
-            self.comm.Allreduce(local_N2s, N2s, op=MPI.SUM)
-            psi_ref = [{state: psi[state] / np.sqrt(N2s[i]) for state in psi} for i, psi in enumerate(psi_ref)]
+            if self.is_distributed:
+                N2s = np.empty_like(local_N2s)
+                self.comm.Allreduce(local_N2s, N2s, op=MPI.SUM)
+            else:
+                N2s = local_N2s
+            N = np.sqrt(N2s)
+            psi_ref = [{state: psi[state] / N[i] for state in psi} for i, psi in enumerate(psi_ref)]
 
         if self.verbose:
             print(f"After expansion, the basis contains {self.size} elements.")
