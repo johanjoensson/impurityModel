@@ -1126,22 +1126,20 @@ class Basis:
         # if "PETSc" in sys.modules:
         #     return self._build_PETSc_matrix(op, op_dict)
 
-        expanded_dict = self.build_operator_dict(op, op_dict)
+        op_dict = self.build_operator_dict(op, op_dict)
         rows: list[int] = []
         columns: list[int] = []
         values: list[complex] = []
         if not self.is_distributed:
             for column in self.local_basis:
-                for row in expanded_dict[column]:
+                for row in op_dict[column]:
                     if row not in self._index_dict:
                         continue
                     columns.append(self._index_dict[column])
                     rows.append(self._index_dict[row])
-                    values.append(expanded_dict[column][row])
+                    values.append(op_dict[column][row])
         else:
-            rows_in_basis: list[bytes] = list(
-                {row for column in self.local_basis for row in expanded_dict[column].keys()}
-            )
+            rows_in_basis: list[bytes] = list({row for column in self.local_basis for row in op_dict[column].keys()})
             # This should never need more than one loop, but I think something is wrong on the Dardel supercimputer so let's try this and see what happens
             retries = 0
             retry = np.array([True], dtype=bool)
@@ -1154,12 +1152,12 @@ class Basis:
             row_dict = {state: index for state, index in zip(rows_in_basis, row_indices) if index != self.size}
 
             for column in self.local_basis:
-                for row in expanded_dict[column]:
+                for row in op_dict[column]:
                     if row not in row_dict:
                         continue
                     columns.append(self._index_dict[column])
                     rows.append(row_dict[row])
-                    values.append(expanded_dict[column][row])
+                    values.append(op_dict[column][row])
             if self.debug and len(rows) > 0:
                 print(f"{self.size=} {max(rows)=}", flush=True)
         return sp.sparse.csc_matrix((values, (rows, columns)), shape=(self.size, self.size), dtype=complex)
@@ -1383,6 +1381,7 @@ class CIPSI_Basis(Basis):
         converge_count = 0
         de0_max = max(-self.tau * np.log(1e-4), de2_min)
         psi_ref = None
+        H_dict = self.build_operator_dict(H, H_dict)
         while converge_count < 1:
             H_mat = (
                 self.build_sparse_matrix(H, op_dict=H_dict)
@@ -1399,7 +1398,7 @@ class CIPSI_Basis(Basis):
                 e_max=de0_max,
                 k=len(psi_ref) + 1 if psi_ref is not None else 2,
                 v0=v0,
-                eigenValueTol=de2_min,
+                eigenValueTol=1e-3,  # de2_min,
             )
             psi_ref = self.build_state(psi_ref_dense.T)
             new_Dj = self.determine_new_Dj(e_ref, psi_ref, H, H_dict, de2_min)
