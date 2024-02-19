@@ -13,10 +13,10 @@ import scipy as sp
 from mpi4py import MPI
 
 
-try:
-    from petsc4py import PETSc
-except ModuleNotFoundError:
-    pass
+# try:
+#     from petsc4py import PETSc
+# except ModuleNotFoundError:
+#     pass
 
 
 from impurityModel.ed import product_state_representation as psr

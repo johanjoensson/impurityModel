@@ -11,12 +11,12 @@ import scipy.sparse
 from mpi4py import MPI
 import time
 
-try:
-    from petsc4py import PETSc
-    from slepc4py import SLEPc
-    from slepc4py.SLEPc import EPS
-except ModuleNotFoundError:
-    pass
+# try:
+#     from petsc4py import PETSc
+#     from slepc4py import SLEPc
+#     from slepc4py.SLEPc import EPS
+# except ModuleNotFoundError:
+#     pass
 
 # Local imports
 from impurityModel.ed import product_state_representation as psr
