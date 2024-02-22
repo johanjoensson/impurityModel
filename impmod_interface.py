@@ -509,9 +509,10 @@ def fixed_peak_dc(h0_op, dc_struct, rank, verbose, dense_cutoff):
             spin_flip_dj=dc_struct.spin_flip_dj,
         )
 
+    bu = basis_upper
+    bl = basis_lower
+
     def F(dc_trial):
-        bu = basis_upper.copy()
-        bl = basis_lower.copy()
         dc_op = {(((l, s, m), "c"), ((l, s, m), "a")): -dc_trial for m in range(-l, l + 1) for s in range(2)}
         h_op_c = finite.addOps([h0_op, u, dc_op])
         h_op_i = finite.c2i_op(sum_bath_states, h_op_c)
