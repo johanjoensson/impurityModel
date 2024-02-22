@@ -351,7 +351,7 @@ def test_contains_random(n_bytes, n_states):
     too_large_state[-1] += 1
     assert all(basis.contains(states))
     assert too_large_state.tobytes() not in basis
-    assert not basis.contains(states + [too_large_state.tobytes()])[-1]
+    assert not list(basis.contains(states + [too_large_state.tobytes()]))[-1]
     assert all(si == i for si, i in enumerate(sorted_indices))
     for i in range(len(sorted_states)):
         assert basis.index(sorted_states[i]) == i
@@ -386,7 +386,7 @@ def test_contains_random_distributed(n_bytes, n_states):
     too_large_state[-1] += 1
     assert all(basis.contains(states))
     assert too_large_state.tobytes() not in basis
-    assert not basis.contains(states + [too_large_state.tobytes()])[-1]
+    assert not list(basis.contains(states + [too_large_state.tobytes()]))[-1]
     sorted_indices = basis.index(sorted_states)
     assert all(si == i for i, si in enumerate(sorted_indices))
     for i in range(len(sorted_states)):
@@ -453,7 +453,7 @@ def test_index_random_distributed_random(n_bytes, n_states, n_sample_states):
     sample_bytes = np.random.randint(0, high=255, size=n_sample_states * n_bytes, dtype=np.ubyte)
     sample_states = [i.tobytes() for i in np.split(sample_bytes, n_sample_states)]
     correct_indices = [all_states.index(state) for state in sample_states if state in all_states]
-    basis_mask = basis.contains(sample_states)
+    basis_mask = list(basis.contains(sample_states))
     samples_in_basis = [sample_states[i] for i in range(len(sample_states)) if basis_mask[i]]
     basis_indices = basis.index(samples_in_basis)
     assert all(bi == ci for bi, ci in zip(basis_indices, correct_indices))
