@@ -26,6 +26,54 @@ class UnphysicalGreensFunctionError(Exception):
     """
 
 
+# def fixed_peak_dc(h0_op, dc_struct, rank, verbose, dense_cutoff):
+#     basis = CIPSI_Basis(
+#         ls=list(N0[0].keys()),
+#         valence_baths=num_valence_bath_states,
+#         conduction_baths=num_conduction_bath_states,
+#         delta_valence_occ=delta_valence_occ,
+#         delta_conduction_occ=delta_conduction_occ,
+#         delta_impurity_occ=delta_impurity_occ,
+#         nominal_impurity_occ=Np[0],
+#         truncation_threshold=1e9,
+#         verbose=False and verbose,
+#         comm=MPI.COMM_WORLD,
+#         spin_flip_dj=dc_struct.spin_flip_dj,
+#     )
+
+#     dc_init = dc_struct.dc_guess
+#     imp_occ = dc_struct.occ
+#     dc_guess = dc_struct.dc_guess
+#     for _ in range(5):
+#         dc_op = {(((l, s, m), "c"), ((l, s, m), "a")): -imp_occ * dc_init for m in range(-l, l + 1) for s in range(2)}
+#         h_op_c = finite.addOps([h0_op, u, dc_op])
+#         h_op_i = finite.c2i_op(sum_bath_states, h_op_c)
+#         h_dict = basis.expand(h_op_i, dense_cutoff=dense_cutoff, de2_min=1e-4)
+#         h = (
+#             basis.build_sparse_matrix(h_op_i, h_dict)
+#             if basis.size > dense_cutoff
+#             else basis.build_dense_matrix(h_op_i, h_dict)
+#         )
+#         egvals, eigvecs = finite.eigensystem_new(
+#             h,
+#             e_max=0,
+#             k=1,
+#             eigenValueTol=1e-6,
+#         )
+#         rho = finite.getDensityMatrix(nBaths, psi, l)
+#         rhomat = np.zeros((n, n), dtype=complex)
+#         for (state1, state2), val in rho.items():
+#             i = finite.c2i(nBaths, state1)
+#             j = finite.c2i(nBaths, state2)
+#             rhomat[i, j] = val
+#         rhomat = comm.allreduce(rhomat, op=MPI.SUM)
+#         imp_occ = np.trace(rho)
+#         dc_guess += imp_occ * dc_init
+#         if imp_occ * dc_init <= 1 / 2 * min(1 / be, min(np.abs(eb))):
+#             break
+#     return dc * np.identity(2 * (2 * l + 1), dtype=complex)
+
+
 def matrix_print(matrix: np.ndarray, label: str = None) -> None:
     """
     Pretty print the matrix, with optional label.
@@ -66,7 +114,7 @@ def find_gs(h_op, N0, delta_occ, bath_states, num_spin_orbitals, rank, verbose, 
         )
         if verbose:
             print(f"Before expansion basis contains {basis.size} elements")
-        h_dict = basis.expand(h_op, dense_cutoff=dense_cutoff, de2_min=1e-6)
+        h_dict = basis.expand(h_op, dense_cutoff=dense_cutoff, de2_min=1e-3)
         h = (
             basis.build_sparse_matrix(h_op, h_dict)
             if basis.size > dense_cutoff
@@ -220,10 +268,10 @@ def calc_selfenergy(
         print("Create basis...")
         print("#basis states = {:d}".format(len(basis)))
 
-    energy_cut = -tau * np.log(1e-4)
+    energy_cut = -tau * np.log(1e-5)
 
     basis.tau = tau
-    h_dict = basis.expand(h, H_dict=h_dict, dense_cutoff=dense_cutoff, de2_min=1e-8)
+    h_dict = basis.expand(h, H_dict=h_dict, dense_cutoff=dense_cutoff, de2_min=1e-10)
     if verbosity >= 1:
         print(f"Ground state basis contains {len(basis)} elsements.")
     if basis.size <= dense_cutoff:

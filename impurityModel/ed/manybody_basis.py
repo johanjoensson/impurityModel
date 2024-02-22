@@ -11,16 +11,17 @@ import itertools
 import numpy as np
 import scipy as sp
 from mpi4py import MPI
+from time import perf_counter
 
 
-try:
-    from petsc4py import PETSc
-except ModuleNotFoundError:
-    pass
+# try:
+#     from petsc4py import PETSc
+# except ModuleNotFoundError:
+#     pass
 
 
 from impurityModel.ed import product_state_representation as psr
-from impurityModel.ed.finite import applyOp_2 as applyOp, c2i, c2i_op, eigensystem_new, norm2
+from impurityModel.ed.finite import applyOp_3 as applyOp, c2i, c2i_op, eigensystem_new, norm2
 
 
 def combine_sets(set_1, set_2, _):
@@ -295,8 +296,8 @@ class Basis:
             )
             bath_states = ({l: valence_baths[l] for l in ls}, {l: conduction_baths[l] for l in ls})
         t0 = perf_counter() - t0
-        if verbose:
-            print(f"===> T initial_basis : {t0}")
+        # if verbose:
+        #     print(f"===> T initial_basis : {t0}")
         t0 = perf_counter()
         self.ls = ls
         self.bath_states = bath_states
@@ -320,8 +321,8 @@ class Basis:
 
         self.is_distributed = comm is not None
         t0 = perf_counter() - t0
-        if verbose:
-            print(f"===> T init basic stuff : {t0}")
+        # if verbose:
+        #     print(f"===> T init basic stuff : {t0}")
         t0 = perf_counter()
         if comm is not None:
             seed_sequences = None
@@ -333,16 +334,16 @@ class Basis:
         else:
             self.rng = np.random.default_rng()
         t0 = perf_counter() - t0
-        if verbose:
-            print(f"===> T init rng : {t0}")
+        # if verbose:
+        #     print(f"===> T init rng : {t0}")
         self.tau = tau
 
         t0 = perf_counter()
         self.add_states(initial_basis)
         # self.add_states(self._generate_spin_flipped_determinants(initial_basis))
         t0 = perf_counter() - t0
-        if verbose:
-            print(f"===> T add_states : {t0}")
+        # if verbose:
+        #     print(f"===> T add_states : {t0}")
 
     def alltoall_states(self, send_list: list[list[bytes]]):
         recv_counts = np.empty((self.comm.size), dtype=int)
@@ -451,7 +452,7 @@ class Basis:
             for r in range(self.comm.size)
         ]
 
-    def add_states(self, new_states: list, distributed_sort=True):
+    def add_states(self, new_states, distributed_sort=True):
         """
         Extend the current basis by adding the new_states to it.
         """
@@ -499,8 +500,8 @@ class Basis:
             t0 = perf_counter()
             local_states = set(itertools.chain(self.local_basis, new_states))
             t0 = perf_counter() - t0
-            if self.verbose:
-                print(f"=======> T sorting local states : {t0}")
+            # if self.verbose:
+            #     print(f"=======> T sorting local states : {t0}")
             t0 = perf_counter()
             local_sizes = np.empty((self.comm.size,), dtype=int)
             self.comm.Allgather(np.array([len(self.local_basis)], dtype=int), local_sizes)
@@ -510,8 +511,8 @@ class Basis:
             else:
                 state_bounds = self.state_bounds
             t0 = perf_counter() - t0
-            if self.verbose:
-                print(f"=======> T set_state_bounds : {t0}")
+            # if self.verbose:
+            #     print(f"=======> T set_state_bounds : {t0}")
             t0 = perf_counter()
             for r in range(self.comm.size - 1):
                 if state_bounds[r] is None:
@@ -526,8 +527,8 @@ class Basis:
                 else:
                     send_list[last_rank].append(state)
             t0 = perf_counter() - t0
-            if self.verbose:
-                print(f"=======> T setting up send_list : {t0}")
+            # if self.verbose:
+            #     print(f"=======> T setting up send_list : {t0}")
 
             t0 = perf_counter()
 
@@ -556,8 +557,8 @@ class Basis:
                 [received_bytes, recv_counts * self.n_bytes, offsets * self.n_bytes, MPI.BYTE],
             )
             t0 = perf_counter() - t0
-            if self.verbose:
-                print(f"=======> T distributing new states : {t0}")
+            # if self.verbose:
+            #     print(f"=======> T distributing new states : {t0}")
 
             t0 = perf_counter()
             if sum(recv_counts) > 0:
@@ -567,16 +568,16 @@ class Basis:
             else:
                 received_states = set()
             t0 = perf_counter() - t0
-            if self.verbose:
-                print(f"=======> T bytes to states : {t0}")
+            # if self.verbose:
+            #     print(f"=======> T bytes to states : {t0}")
 
             t0 = perf_counter()
             self.local_basis.clear()
             local_basis = sorted(received_states)
             t0 = perf_counter() - t0
-            if self.verbose:
-                print(f"=======> T sort received_states : {t0}")
-            ########################################################################
+            # if self.verbose:
+            #    print(f"=======> T sort received_states : {t0}")
+            #########################################################################
             # The local lengths are not balanced! The basis is sorted, but not
             # evenly distributed among the ranks.
             ########################################################################
@@ -630,8 +631,8 @@ class Basis:
         #     for state_bounds in self.state_bounds
         # ]
         t0 = perf_counter() - t0
-        if self.verbose:
-            print(f"=======> T set bounds and stuff : {t0}")
+        # if self.verbose:
+        #     print(f"=======> T set bounds and stuff : {t0}")
 
     def clear(self):
         self.local_basis.clear()
@@ -708,10 +709,14 @@ class Basis:
         return spin_flip
 
     def expand(self, op, op_dict=None, dense_cutoff=None, slaterWeightMin=0):
+        print(f"Expand")
         old_size = self.size + 1
+        t_Basis_loop = perf_counter()
+        states_to_check = set(self.local_basis)
         while old_size != self.size and self.size < self.truncation_threshold:
             new_states = set()
-            for state in self.local_basis:
+            t_local_loop = perf_counter()
+            for state in states_to_check:
                 res = applyOp(
                     self.num_spin_orbitals,
                     op,
@@ -721,16 +726,45 @@ class Basis:
                     opResult=op_dict,
                 )
                 new_states |= res.keys()
+            print(f"===>t(local_states_loop) = {perf_counter() -  t_local_loop}")
+            t0 = perf_counter()
             res_keys = list(new_states)
-            new_states = {state for state, index in zip(res_keys, self._index_sequence(res_keys)) if index >= self.size}
+            print(f"===>t(list_potential_new_states) = {perf_counter() - t0 }")
+            t0 = perf_counter()
+            new_states = itertools.compress(res_keys, (not x for x in self.contains(res_keys)))
+            # new_states = {state for state, index in zip(res_keys, self._index_sequence(res_keys)) if index >= self.size}
+            print(f"===>t(filter_new_states) = {perf_counter() - t0 }")
             old_size = self.size
+            t0 = perf_counter()
             if self.spin_flip_dj:
                 new_states = self._generate_spin_flipped_determinants(new_states)
+            print(f"===>t(spin_flip_new_states) = {perf_counter() - t0 }")
+            t0 = perf_counter()
             self.add_states(new_states)
+            print(f"===>t(add_states) = {perf_counter() - t0 }")
+            t0 = perf_counter()
+            if self.is_distributed:
+                send_list: list[list[bytes]] = [[] for _ in range(self.comm.size)]
+                for state in new_states:
+                    for r in range(self.comm.size):
+                        if self.state_bounds[r] is None or state < self.state_bounds[r]:
+                            send_list[r].append(state)
+                            break
+                received_states = self.alltoall_states(send_list)
+            else:
+                received_states = new_states
+            states_to_check = set()
+            for states in received_states:
+                states_to_check.update(states)
+            print(f"===>t(altoall_states) = {perf_counter() - t0 }")
+        print(f"===>t(Basis_loop) = {perf_counter() - t_Basis_loop}")
 
         if self.verbose:
             print(f"After expansion, the basis contains {self.size} elements.")
-        return self.build_operator_dict(op, op_dict=op_dict)
+        t0 = perf_counter()
+        op_dict = self.build_operator_dict(op, op_dict=op_dict)
+        print(f"===>t(build_op_dict) = {perf_counter() - t0}")
+        return op_dict
 
     def _getitem_sequence(self, l: list[int]) -> list[bytes]:
         if self.comm is None:
@@ -956,11 +990,12 @@ class Basis:
         if self.comm is None:
             return [item in self._index_dict for item in items]
         indices = self._index_sequence(items)
-        return [index != self.size for index in indices]
+        return (index != self.size for index in indices)
+        # return [index != self.size for index in indices]
 
     def contains(self, item):
         if isinstance(item, self.type):
-            return self._contains_sequence([item])[0]
+            return next(self._contains_sequence([item]))
         elif isinstance(item, Sequence):
             return self._contains_sequence(item)
 
@@ -1052,7 +1087,7 @@ class Basis:
             for i in self.local_indices:
                 if abs(vs[row, i]) ** 2 > slaterWeightMin:
                     psi[self.local_basis[i - self.offset]] = vs[row, i]
-            res.append(psi.copy())
+            res.append(psi)
         return res
 
     def build_operator_dict(self, op, op_dict=None, slaterWeightMin=0):
@@ -1075,7 +1110,8 @@ class Basis:
                 )
         # op_dict.clear()
         # op_dict.update(new_op_dict)
-        return {state: op_dict[state] for state in self.local_basis}
+        # return {state: op_dict[state] for state in self.local_basis}
+        return op_dict
 
     def build_dense_matrix(self, op, op_dict=None, distribute=True):
         """
@@ -1130,22 +1166,20 @@ class Basis:
         # if "PETSc" in sys.modules:
         #     return self._build_PETSc_matrix(op, op_dict)
 
-        expanded_dict = self.build_operator_dict(op, op_dict)
+        op_dict = self.build_operator_dict(op, op_dict)
         rows: list[int] = []
         columns: list[int] = []
         values: list[complex] = []
         if not self.is_distributed:
             for column in self.local_basis:
-                for row in expanded_dict[column]:
+                for row in op_dict[column]:
                     if row not in self._index_dict:
                         continue
                     columns.append(self._index_dict[column])
                     rows.append(self._index_dict[row])
-                    values.append(expanded_dict[column][row])
+                    values.append(op_dict[column][row])
         else:
-            rows_in_basis: list[bytes] = list(
-                {row for column in self.local_basis for row in expanded_dict[column].keys()}
-            )
+            rows_in_basis: list[bytes] = list({row for column in self.local_basis for row in op_dict[column].keys()})
             # This should never need more than one loop, but I think something is wrong on the Dardel supercimputer so let's try this and see what happens
             retries = 0
             retry = np.array([True], dtype=bool)
@@ -1158,12 +1192,12 @@ class Basis:
             row_dict = {state: index for state, index in zip(rows_in_basis, row_indices) if index != self.size}
 
             for column in self.local_basis:
-                for row in expanded_dict[column]:
+                for row in op_dict[column]:
                     if row not in row_dict:
                         continue
                     columns.append(self._index_dict[column])
                     rows.append(row_dict[row])
-                    values.append(expanded_dict[column][row])
+                    values.append(op_dict[column][row])
             if self.debug and len(rows) > 0:
                 print(f"{self.size=} {max(rows)=}", flush=True)
         return sp.sparse.csc_matrix((values, (rows, columns)), shape=(self.size, self.size), dtype=complex)
@@ -1320,11 +1354,13 @@ class CIPSI_Basis(Basis):
                 opResult=H_dict,
             )
             Dj_candidates = list(set(Hpsi_i.keys()))
-            Dj_basis_mask = self.contains(Dj_candidates)
+            Dj_basis_mask = (not x for x in self.contains(Dj_candidates))
+            # Dj_basis_mask = self.contains(Dj_candidates)
             Dj_basis = Basis(
                 ls={},
                 bath_states={},
-                initial_basis=[Dj for Dj, mask in zip(Dj_candidates, Dj_basis_mask) if not mask],
+                initial_basis=itertools.compress(Dj_candidates, Dj_basis_mask),
+                # initial_basis=[Dj for Dj, mask in zip(Dj_candidates, Dj_basis_mask) if not mask],
                 # initial_basis=set(Hpsi_i.keys()),
                 num_spin_orbitals=self.num_spin_orbitals,
                 restrictions=None,
@@ -1383,43 +1419,64 @@ class CIPSI_Basis(Basis):
         """
         Use the CIPSI method to expand the basis. Keep adding Slater determinants until the CIPSI energy is converged.
         """
+        print("Expand")
+        t0 = perf_counter()
         psi_ref = None
         converge_count = 0
         de0_max = max(-self.tau * np.log(1e-4), de2_min)
         psi_ref = None
+        H_dict = self.build_operator_dict(H, H_dict)
+        print(f"==>t(setup) = {perf_counter() - t0}")
+        t_loop = perf_counter()
         while converge_count < 1:
+            t0 = perf_counter()
             H_mat = (
                 self.build_sparse_matrix(H, op_dict=H_dict)
                 if self.size > dense_cutoff
                 else self.build_dense_matrix(H, op_dict=H_dict)
             )
+            print(f"==>t(build_Hmat) = {perf_counter() - t0}")
 
+            t0 = perf_counter()
             if psi_ref is not None:
                 v0 = self.build_vector(psi_ref).T
             else:
                 v0 = None
+            print(f"==>t(build_v0) = {perf_counter() - t0}")
+            t0 = perf_counter()
             e_ref, psi_ref_dense = eigensystem_new(
                 H_mat,
                 e_max=de0_max,
                 k=len(psi_ref) + 1 if psi_ref is not None else 2,
                 v0=v0,
-                eigenValueTol=de2_min,
+                eigenValueTol=1e-3,  # de2_min,
             )
+            print(f"==>t(get_psi_ref_dense) = {perf_counter() - t0}")
+            t0 = perf_counter()
             psi_ref = self.build_state(psi_ref_dense.T)
+            print(f"==>t(build_psi_ref) = {perf_counter() - t0}")
+            t0 = perf_counter()
             new_Dj = self.determine_new_Dj(e_ref, psi_ref, H, H_dict, de2_min)
+            print(f"==>t(get_Dj) = {perf_counter() - t0}")
             old_size = self.size
+            t0 = perf_counter()
             if self.spin_flip_dj:
                 new_Dj = self._generate_spin_flipped_determinants(new_Dj)
+            print(f"==>t(spin_flip_Dj) = {perf_counter() - t0}")
+            t0 = perf_counter()
             self.add_states(new_Dj)
+            print(f"==>t(add_states) = {perf_counter() - t0}")
 
             if old_size == self.size:
                 converge_count += 1
             else:
                 converge_count = 0
 
+        print(f"==>t(CIPSI_loop) = {perf_counter() - t_loop}")
         if self.verbose:
             print(f"After expansion, the basis contains {self.size} elements.")
 
+        t0 = perf_counter()
         if self.size > self.truncation_threshold:
             H_sparse = self.build_sparse_matrix(H, op_dict=H_dict)
             e_ref, psi_ref = eigensystem_new(
@@ -1430,7 +1487,11 @@ class CIPSI_Basis(Basis):
             self.truncate(self.build_state(psi_ref))
             if self.verbose:
                 print(f"----->After truncation, the basis contains {self.size} elements.")
-        return self.build_operator_dict(H, op_dict=H_dict)
+        print(f"==>t(truncate) = {perf_counter() - t0}")
+        t0 = perf_counter()
+        H_dict = self.build_operator_dict(H, op_dict=H_dict)
+        print(f"==>t(build_operator_dict) = {perf_counter() - t0}")
+        return H_dict
 
     def expand_at(self, w, psi_ref, H, H_dict=None, de2_min=1e-4):
         old_size = self.size - 1
@@ -1456,7 +1517,9 @@ class CIPSI_Basis(Basis):
             Hpsi_keys = list(set(state for psi in Hpsi_ref for state in psi))
             mask = self.contains(Hpsi_keys)
             psi_ref = [
-                {state: psi[state] for state, m in zip(Hpsi_keys, mask) if m and state in psi} for psi in Hpsi_ref
+                {state: psi[state] for state in itertools.compress(Hpsi_keys, mask) if state in psi}
+                for psi in Hpsi_ref
+                # {state: psi[state] for state, m in zip(Hpsi_keys, mask) if m and state in psi} for psi in Hpsi_ref
             ]
             local_N2s = np.array([norm2(psi) for psi in psi_ref], dtype=float)
             if self.is_distributed:
