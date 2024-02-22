@@ -705,6 +705,7 @@ class Basis:
         return spin_flip
 
     def expand(self, op, op_dict=None, dense_cutoff=None, slaterWeightMin=0):
+        print(f"Expand")
         old_size = self.size + 1
         t_Basis_loop = perf_counter()
         states_to_check = set(self.local_basis)
