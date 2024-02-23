@@ -705,13 +705,13 @@ class Basis:
         return spin_flip
 
     def expand(self, op, op_dict=None, dense_cutoff=None, slaterWeightMin=0):
-        print(f"Expand")
+        # print(f"Expand")
         old_size = self.size + 1
-        t_Basis_loop = perf_counter()
+        # t_Basis_loop = perf_counter()
         states_to_check = set(self.local_basis)
         while old_size != self.size and self.size < self.truncation_threshold:
             new_states = set()
-            t_local_loop = perf_counter()
+            # t_local_loop = perf_counter()
             for state in states_to_check:
                 res = applyOp(
                     self.num_spin_orbitals,
@@ -722,23 +722,23 @@ class Basis:
                     opResult=op_dict,
                 )
                 new_states |= res.keys()
-            print(f"===>t(local_states_loop) = {perf_counter() -  t_local_loop}")
-            t0 = perf_counter()
+            # print(f"===>t(local_states_loop) = {perf_counter() -  t_local_loop}")
+            # t0 = perf_counter()
             res_keys = list(new_states)
-            print(f"===>t(list_potential_new_states) = {perf_counter() - t0 }")
-            t0 = perf_counter()
+            # print(f"===>t(list_potential_new_states) = {perf_counter() - t0 }")
+            # t0 = perf_counter()
             new_states = itertools.compress(res_keys, (not x for x in self.contains(res_keys)))
             # new_states = {state for state, index in zip(res_keys, self._index_sequence(res_keys)) if index >= self.size}
-            print(f"===>t(filter_new_states) = {perf_counter() - t0 }")
+            # print(f"===>t(filter_new_states) = {perf_counter() - t0 }")
             old_size = self.size
-            t0 = perf_counter()
+            # t0 = perf_counter()
             if self.spin_flip_dj:
                 new_states = self._generate_spin_flipped_determinants(new_states)
-            print(f"===>t(spin_flip_new_states) = {perf_counter() - t0 }")
-            t0 = perf_counter()
+            # print(f"===>t(spin_flip_new_states) = {perf_counter() - t0 }")
+            # t0 = perf_counter()
             self.add_states(new_states)
-            print(f"===>t(add_states) = {perf_counter() - t0 }")
-            t0 = perf_counter()
+            # print(f"===>t(add_states) = {perf_counter() - t0 }")
+            # t0 = perf_counter()
             if self.is_distributed:
                 send_list: list[list[bytes]] = [[] for _ in range(self.comm.size)]
                 for state in new_states:
@@ -752,14 +752,14 @@ class Basis:
             states_to_check = set()
             for states in received_states:
                 states_to_check.update(states)
-            print(f"===>t(altoall_states) = {perf_counter() - t0 }")
-        print(f"===>t(Basis_loop) = {perf_counter() - t_Basis_loop}")
+            # print(f"===>t(altoall_states) = {perf_counter() - t0 }")
+        # print(f"===>t(Basis_loop) = {perf_counter() - t_Basis_loop}")
 
         if self.verbose:
             print(f"After expansion, the basis contains {self.size} elements.")
-        t0 = perf_counter()
+        # t0 = perf_counter()
         op_dict = self.build_operator_dict(op, op_dict=op_dict)
-        print(f"===>t(build_op_dict) = {perf_counter() - t0}")
+        # print(f"===>t(build_op_dict) = {perf_counter() - t0}")
         return op_dict
 
     def _getitem_sequence(self, l: list[int]) -> list[bytes]:
@@ -1415,31 +1415,31 @@ class CIPSI_Basis(Basis):
         """
         Use the CIPSI method to expand the basis. Keep adding Slater determinants until the CIPSI energy is converged.
         """
-        print("Expand")
-        t0 = perf_counter()
+        # print("Expand")
+        # t0 = perf_counter()
         psi_ref = None
         converge_count = 0
         de0_max = max(-self.tau * np.log(1e-4), de2_min)
         psi_ref = None
         H_dict = self.build_operator_dict(H, H_dict)
-        print(f"==>t(setup) = {perf_counter() - t0}")
-        t_loop = perf_counter()
+        # print(f"==>t(setup) = {perf_counter() - t0}")
+        # t_loop = perf_counter()
         while converge_count < 1:
-            t0 = perf_counter()
+            # t0 = perf_counter()
             H_mat = (
                 self.build_sparse_matrix(H, op_dict=H_dict)
                 if self.size > dense_cutoff
                 else self.build_dense_matrix(H, op_dict=H_dict)
             )
-            print(f"==>t(build_Hmat) = {perf_counter() - t0}")
+            # print(f"==>t(build_Hmat) = {perf_counter() - t0}")
 
-            t0 = perf_counter()
+            # t0 = perf_counter()
             if psi_ref is not None:
                 v0 = self.build_vector(psi_ref).T
             else:
                 v0 = None
-            print(f"==>t(build_v0) = {perf_counter() - t0}")
-            t0 = perf_counter()
+            # print(f"==>t(build_v0) = {perf_counter() - t0}")
+            # t0 = perf_counter()
             e_ref, psi_ref_dense = eigensystem_new(
                 H_mat,
                 e_max=de0_max,
@@ -1447,32 +1447,32 @@ class CIPSI_Basis(Basis):
                 v0=v0,
                 eigenValueTol=1e-3,  # de2_min,
             )
-            print(f"==>t(get_psi_ref_dense) = {perf_counter() - t0}")
-            t0 = perf_counter()
+            # print(f"==>t(get_psi_ref_dense) = {perf_counter() - t0}")
+            # t0 = perf_counter()
             psi_ref = self.build_state(psi_ref_dense.T)
-            print(f"==>t(build_psi_ref) = {perf_counter() - t0}")
-            t0 = perf_counter()
+            # print(f"==>t(build_psi_ref) = {perf_counter() - t0}")
+            # t0 = perf_counter()
             new_Dj = self.determine_new_Dj(e_ref, psi_ref, H, H_dict, de2_min)
-            print(f"==>t(get_Dj) = {perf_counter() - t0}")
+            # print(f"==>t(get_Dj) = {perf_counter() - t0}")
             old_size = self.size
-            t0 = perf_counter()
+            # t0 = perf_counter()
             if self.spin_flip_dj:
                 new_Dj = self._generate_spin_flipped_determinants(new_Dj)
-            print(f"==>t(spin_flip_Dj) = {perf_counter() - t0}")
-            t0 = perf_counter()
+            # print(f"==>t(spin_flip_Dj) = {perf_counter() - t0}")
+            # t0 = perf_counter()
             self.add_states(new_Dj)
-            print(f"==>t(add_states) = {perf_counter() - t0}")
+            # print(f"==>t(add_states) = {perf_counter() - t0}")
 
             if old_size == self.size:
                 converge_count += 1
             else:
                 converge_count = 0
 
-        print(f"==>t(CIPSI_loop) = {perf_counter() - t_loop}")
+        # print(f"==>t(CIPSI_loop) = {perf_counter() - t_loop}")
         if self.verbose:
             print(f"After expansion, the basis contains {self.size} elements.")
 
-        t0 = perf_counter()
+        # t0 = perf_counter()
         if self.size > self.truncation_threshold:
             H_sparse = self.build_sparse_matrix(H, op_dict=H_dict)
             e_ref, psi_ref = eigensystem_new(
@@ -1483,10 +1483,10 @@ class CIPSI_Basis(Basis):
             self.truncate(self.build_state(psi_ref))
             if self.verbose:
                 print(f"----->After truncation, the basis contains {self.size} elements.")
-        print(f"==>t(truncate) = {perf_counter() - t0}")
-        t0 = perf_counter()
+        # print(f"==>t(truncate) = {perf_counter() - t0}")
+        # t0 = perf_counter()
         H_dict = self.build_operator_dict(H, op_dict=H_dict)
-        print(f"==>t(build_operator_dict) = {perf_counter() - t0}")
+        # print(f"==>t(build_operator_dict) = {perf_counter() - t0}")
         return H_dict
 
     def expand_at(self, w, psi_ref, H, H_dict=None, de2_min=1e-3):
