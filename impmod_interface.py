@@ -509,29 +509,28 @@ def fixed_peak_dc(h0_op, dc_struct, rank, verbose, dense_cutoff):
             spin_flip_dj=dc_struct.spin_flip_dj,
         )
 
-    bu = basis_upper
-    bl = basis_lower
-
     def F(dc_trial):
+        bu = basis_upper.copy()
+        bl = basis_lower.copy()
         dc_op = {(((l, s, m), "c"), ((l, s, m), "a")): -dc_trial for m in range(-l, l + 1) for s in range(2)}
         h_op_c = finite.addOps([h0_op, u, dc_op])
         h_op_i = finite.c2i_op(sum_bath_states, h_op_c)
-        h_dict = bu.expand(h_op_i, dense_cutoff=dense_cutoff, de2_min=1e-4)
+        h_dict = bu.expand(h_op_i, dense_cutoff=dense_cutoff, de2_min=1e-10)
         h = bu.build_sparse_matrix(h_op_i, h_dict) if bu.size > dense_cutoff else bu.build_dense_matrix(h_op_i, h_dict)
         e_upper = finite.eigensystem_new(
             h,
             e_max=0,
             k=1,
-            eigenValueTol=1e-6,
+            eigenValueTol=0,
             return_eigvecs=False,
         )
-        h_dict = bl.expand(h_op_i, dense_cutoff=dense_cutoff, de2_min=1e-4)
+        h_dict = bl.expand(h_op_i, dense_cutoff=dense_cutoff, de2_min=1e-10)
         h = bl.build_sparse_matrix(h_op_i, h_dict) if bl.size > dense_cutoff else bl.build_dense_matrix(h_op_i, h_dict)
         e_lower = finite.eigensystem_new(
             h,
             e_max=0,
             k=1,
-            eigenValueTol=1e-6,
+            eigenValueTol=0,
             return_eigvecs=False,
         )
         return e_upper[0] - e_lower[0] - peak_position
