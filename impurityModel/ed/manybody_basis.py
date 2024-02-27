@@ -720,11 +720,9 @@ class Basis:
                 )
                 new_states |= res.keys()
             res_keys = list(new_states)
-            # print(f"===>t(list_potential_new_states) = {perf_counter() - t0 }")
-            # t0 = perf_counter()
-            new_states = itertools.compress(res_keys, (not x for x in self.contains(res_keys)))
-            # new_states = {state for state, index in zip(res_keys, self._index_sequence(res_keys)) if index >= self.size}
-            # print(f"===>t(filter_new_states) = {perf_counter() - t0 }")
+            states_mask_it = (not x for x in list(self.contains(res_keys)))
+            new_states = itertools.compress(res_keys, states_mask_it)
+            new_states = res_keys
             old_size = self.size
             if self.spin_flip_dj:
                 new_states = self._generate_spin_flipped_determinants(new_states)
@@ -742,7 +740,6 @@ class Basis:
             states_to_check = set()
             for states in received_states:
                 states_to_check.update(states)
-            print(f"{states_to_check=}")
 
         if self.verbose:
             print(f"After expansion, the basis contains {self.size} elements.")
