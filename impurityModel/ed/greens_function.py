@@ -61,7 +61,7 @@ def get_Greens_function(
         -omega_mesh if omega_mesh is not None else None,
         -delta,
         blocks=blocks,
-        slaterWeightMin=1e-8,
+        slaterWeightMin=1e-6,
         verbose=verbose,
         reort=reort,
         dense_cutoff=dense_cutoff,
@@ -377,7 +377,7 @@ def get_block_Green(
 
     # Select points from the frequency mesh, according to a Normal distribuition
     # centered on (value) 0.
-    n_samples = max(len(conv_w) // 100, 1)
+    n_samples = max(len(conv_w) // 10, 1)
 
     def matrix_print(m):
         print("\n".join(["  ".join([f"{np.real(el): 5.3f}  {np.imag(el):+5.3f}j" for el in row]) for row in m]))

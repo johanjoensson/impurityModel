@@ -268,7 +268,7 @@ def calc_selfenergy(
         print("Create basis...")
         print("#basis states = {:d}".format(len(basis)))
 
-    energy_cut = -tau * np.log(1e-5)
+    energy_cut = -tau * np.log(1e-4)
 
     basis.tau = tau
     h_dict = basis.expand(h, H_dict=h_dict, dense_cutoff=dense_cutoff, de2_min=1e-10)

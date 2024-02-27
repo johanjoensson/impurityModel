@@ -705,13 +705,10 @@ class Basis:
         return spin_flip
 
     def expand(self, op, op_dict=None, dense_cutoff=None, slaterWeightMin=0):
-        # print(f"Expand")
         old_size = self.size + 1
-        # t_Basis_loop = perf_counter()
         states_to_check = set(self.local_basis)
         while old_size != self.size and self.size < self.truncation_threshold:
             new_states = set()
-            # t_local_loop = perf_counter()
             for state in states_to_check:
                 res = applyOp(
                     self.num_spin_orbitals,
@@ -722,8 +719,6 @@ class Basis:
                     opResult=op_dict,
                 )
                 new_states |= res.keys()
-            # print(f"===>t(local_states_loop) = {perf_counter() -  t_local_loop}")
-            # t0 = perf_counter()
             res_keys = list(new_states)
             # print(f"===>t(list_potential_new_states) = {perf_counter() - t0 }")
             # t0 = perf_counter()
@@ -731,14 +726,9 @@ class Basis:
             # new_states = {state for state, index in zip(res_keys, self._index_sequence(res_keys)) if index >= self.size}
             # print(f"===>t(filter_new_states) = {perf_counter() - t0 }")
             old_size = self.size
-            # t0 = perf_counter()
             if self.spin_flip_dj:
                 new_states = self._generate_spin_flipped_determinants(new_states)
-            # print(f"===>t(spin_flip_new_states) = {perf_counter() - t0 }")
-            # t0 = perf_counter()
             self.add_states(new_states)
-            # print(f"===>t(add_states) = {perf_counter() - t0 }")
-            # t0 = perf_counter()
             if self.is_distributed:
                 send_list: list[list[bytes]] = [[] for _ in range(self.comm.size)]
                 for state in new_states:
@@ -752,14 +742,11 @@ class Basis:
             states_to_check = set()
             for states in received_states:
                 states_to_check.update(states)
-            # print(f"===>t(altoall_states) = {perf_counter() - t0 }")
-        # print(f"===>t(Basis_loop) = {perf_counter() - t_Basis_loop}")
+            print(f"{states_to_check=}")
 
         if self.verbose:
             print(f"After expansion, the basis contains {self.size} elements.")
-        # t0 = perf_counter()
         op_dict = self.build_operator_dict(op, op_dict=op_dict)
-        # print(f"===>t(build_op_dict) = {perf_counter() - t0}")
         return op_dict
 
     def _getitem_sequence(self, l: list[int]) -> list[bytes]:
@@ -987,7 +974,6 @@ class Basis:
             return [item in self._index_dict for item in items]
         indices = self._index_sequence(items)
         return (index != self.size for index in indices)
-        # return [index != self.size for index in indices]
 
     def contains(self, item):
         if isinstance(item, self.type):
@@ -1445,7 +1431,7 @@ class CIPSI_Basis(Basis):
                 e_max=de0_max,
                 k=len(psi_ref) + 1 if psi_ref is not None else 2,
                 v0=v0,
-                eigenValueTol=1e-3,  # de2_min,
+                eigenValueTol=de2_min,
             )
             # print(f"==>t(get_psi_ref_dense) = {perf_counter() - t0}")
             # t0 = perf_counter()
