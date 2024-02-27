@@ -736,7 +736,7 @@ class Basis:
                             break
                 received_states = self.alltoall_states(send_list)
             else:
-                received_states = new_states
+                received_states = [new_states]
             states_to_check = set()
             for states in received_states:
                 states_to_check.update(states)
