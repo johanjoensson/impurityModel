@@ -749,9 +749,9 @@ class Basis:
         op_dict = self.build_operator_dict(op, op_dict=op_dict)
         return op_dict
 
-    def _getitem_sequence(self, l: list[int]) -> list[bytes]:
+    def _getitem_sequence(self, l: Iterable[int]) -> Iterable[bytes]:
         if self.comm is None:
-            return [self.local_basis[i] for i in l]
+            return (self.local_basis[i] for i in l)
 
         l = np.fromiter((i if i >= 0 else self.size + i for i in l), dtype=int, count=len(l))
 
@@ -807,7 +807,7 @@ class Basis:
         )
 
         # return [result[i] for i in np.argsort(send_order)]
-        return [bytes(result[i * self.n_bytes : (i + 1) * self.n_bytes]) for i in np.argsort(send_order)]
+        return (bytes(result[i * self.n_bytes : (i + 1) * self.n_bytes]) for i in np.argsort(send_order))
         # return [result[i * self.n_bytes : (i + 1) * self.n_bytes].tobytes() for i in np.argsort(send_order)]
         # result_new = [None] * len(l)
         # for i in range(len(l)):
@@ -818,9 +818,9 @@ class Basis:
 
         # return result_new
 
-    def index(self, val):
+    def index(self, val: bytes) -> int:
         if isinstance(val, self.type):
-            res = self._index_sequence([val])[0]
+            res = next(self._index_sequence([val]))
             if res == self.size:
                 raise ValueError(f"Could not find {val} in basis!")
         elif isinstance(val, Sequence):
@@ -853,9 +853,9 @@ class Basis:
             raise TypeError(f"Invalid query type {type(val)}! Valid types are {self.dtype} and sequences thereof.")
         return res
 
-    def _index_sequence(self, s: Iterable[bytes]) -> list[int]:
+    def _index_sequence(self, s: Iterable[bytes]) -> Iterable[int]:
         if self.comm is None:
-            return [self._index_dict[val] if val in self._index_dict else self.size for val in s]
+            return (self._index_dict[val] if val in self._index_dict else self.size for val in s)
 
         send_list: list[list[bytes]] = [[] for _ in range(self.comm.size)]
         send_to_ranks = np.empty((len(s)), dtype=int)
@@ -920,9 +920,10 @@ class Basis:
         )
         result[sum(send_counts) :] = self.size
 
-        return result[np.argsort(send_order)].tolist()
+        return (res for res in result[np.argsort(send_order)])
+        # return result[np.argsort(send_order)].tolist()
 
-    def __getitem__(self, key):
+    def __getitem__(self, key) -> Iterable[bytes]:
         if isinstance(key, slice):
             start = key.start
             if start is None:
@@ -952,7 +953,7 @@ class Basis:
                 if res == psr.int2bytes(0, self.num_spin_orbitals):
                     raise IndexError(f"Could not find index {key[i]} in basis with size {self.size}!")
         elif isinstance(key, int):
-            result = self._getitem_sequence([key])[0]
+            result = next(self._getitem_sequence([key]))
             # if result is None:
             if result == psr.int2bytes(0, self.num_spin_orbitals):
                 raise IndexError(f"Could not find index {key} in basis with size {self.size}!")
@@ -966,14 +967,13 @@ class Basis:
     def __contains__(self, item):
         if self.comm is None:
             return item in self._index_dict
-        index = self._index_sequence([item])[0]
+        index = next(self._index_sequence([item]))
         return index != self.size
 
     def _contains_sequence(self, items):
         if self.comm is None:
-            return [item in self._index_dict for item in items]
-        indices = self._index_sequence(items)
-        return (index != self.size for index in indices)
+            return (item in self._index_dict for item in items)
+        return (index != self.size for index in self._index_sequence(items))
 
     def contains(self, item) -> Iterable[bool]:
         if isinstance(item, self.type):
@@ -1017,12 +1017,7 @@ class Basis:
                 self.comm.Allreduce(np.array([need_mpi], dtype=bool), need_mpi_arr, op=MPI.LOR)
                 need_mpi = need_mpi_arr[0]
             if need_mpi:
-                sorted_row_states = row_states  # sorted(row_states)
-                row_dict = {
-                    state: i
-                    for state, i in zip(sorted_row_states, self._index_sequence(sorted_row_states))
-                    if i < self.size
-                }
+                row_dict = {state: i for state, i in zip(row_states, self._index_sequence(row_states)) if i < self.size}
             for state, val in psi.items():
                 if state not in row_dict:
                     continue
@@ -1038,7 +1033,7 @@ class Basis:
         v = np.empty((len(psis), len(self.local_basis)), dtype=dtype, order="C")
         for row, psi in enumerate(psis):
             if self.is_distributed:
-                r_states = list(psi.keys())
+                r_states = psi.keys()
                 row_dict = {state: i for state, i in zip(r_states, self._index_sequence(r_states)) if i < self.size}
                 for r in range(self.comm.size):
                     if self.index_bounds[r] is None:
@@ -1084,15 +1079,14 @@ class Basis:
             op_dict = {}
 
         for state in self.local_basis:
-            if state not in op_dict:
-                _ = applyOp(
-                    self.num_spin_orbitals,
-                    op,
-                    {state: 1},
-                    restrictions=self.restrictions,
-                    slaterWeightMin=slaterWeightMin,
-                    opResult=op_dict,
-                )
+            _ = applyOp(
+                self.num_spin_orbitals,
+                op,
+                {state: 1},
+                restrictions=self.restrictions,
+                slaterWeightMin=slaterWeightMin,
+                opResult=op_dict,
+            )
         # op_dict.clear()
         # op_dict.update(new_op_dict)
         # return {state: op_dict[state] for state in self.local_basis}
@@ -1110,35 +1104,6 @@ class Basis:
             if self.comm.rank == 0:
                 h = reduced_dok.todense()
             h = self.comm.bcast(h if self.comm.rank == 0 else None, root=0)
-        # local_rows, local_columns = h_local.nonzero()
-        # local_data = np.fromiter(
-        #     (h_local[row, col] for row, col in zip(local_rows, local_columns)), dtype=complex, count=len(local_columns)
-        # )
-        # data = None
-        # rows = None
-        # columns = None
-        # recv_counts = None
-        # offsets = None
-        # if self.is_distributed:
-        #     if self.comm.rank == 0:
-        #         recv_counts = np.empty((self.comm.size), dtype=int)
-        #     self.comm.Gather(np.array([len(local_data)]), recv_counts, root=0)
-
-        #     if self.comm.rank == 0:
-        #         offsets = [sum(recv_counts[:i]) for i in range(self.comm.size)]
-        #         data = np.empty((sum(recv_counts)), dtype=h_local.dtype)
-        #         rows = np.empty((sum(recv_counts)), dtype=local_rows.dtype)
-        #         columns = np.empty((sum(recv_counts)), dtype=local_columns.dtype)
-        #     self.comm.Gatherv(local_data, [data, recv_counts, offsets, MPI.DOUBLE_COMPLEX], root=0)
-        #     self.comm.Gatherv(local_rows, [rows, recv_counts, offsets, MPI.INT], root=0)
-        #     self.comm.Gatherv(local_columns, [columns, recv_counts, offsets, MPI.INT], root=0)
-        #     if self.comm.rank == 0:
-        #         h = sp.sparse.coo_matrix((data, (rows, columns)), shape=(h_local.shape[0], h_local.shape[0]))
-        #         h = h.todense()
-        #     else:
-        #         h = None
-        #     if distribute:
-        #         h = self.comm.bcast(h, root=0)
         else:
             h = h_local.todense()
         return h
@@ -1164,17 +1129,12 @@ class Basis:
                     rows.append(self._index_dict[row])
                     values.append(op_dict[column][row])
         else:
-            rows_in_basis: list[bytes] = list({row for column in self.local_basis for row in op_dict[column].keys()})
-            # This should never need more than one loop, but I think something is wrong on the Dardel supercimputer so let's try this and see what happens
-            retries = 0
-            retry = np.array([True], dtype=bool)
-            while np.any(retry):
-                row_indices = self._index_sequence(rows_in_basis)
-                self.comm.Allreduce(
-                    np.array([any(index > self.size for index in row_indices)], dtype=bool), retry, op=MPI.LOR
-                )
-                retries += 1
-            row_dict = {state: index for state, index in zip(rows_in_basis, row_indices) if index != self.size}
+            rows_in_basis: set[bytes] = {row for column in self.local_basis for row in op_dict[column].keys()}
+            row_dict = {
+                state: index
+                for state, index in zip(rows_in_basis, self._index_sequence(rows_in_basis))
+                if index != self.size
+            }
 
             for column in self.local_basis:
                 for row in op_dict[column]:
