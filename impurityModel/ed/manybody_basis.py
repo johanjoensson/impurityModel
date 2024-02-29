@@ -4,7 +4,7 @@ import sys
 from typing import Optional, Union
 
 try:
-    from collections.abc import Sequence
+    from collections.abc import Sequence, Iterable
 except ModuleNotFoundError:
     from collections import Sequence
 import itertools
@@ -452,7 +452,7 @@ class Basis:
             for r in range(self.comm.size)
         ]
 
-    def add_states(self, new_states, distributed_sort=True):
+    def add_states(self, new_states: Iterable[bytes], distributed_sort: bool = True) -> None:
         """
         Extend the current basis by adding the new_states to it.
         """
@@ -720,9 +720,9 @@ class Basis:
                 )
                 new_states |= res.keys()
             # res_keys = list(new_states)
-            states_mask_it = (not x for x in list(self.contains(list(new_states))))
+            # states_mask_it = (not x for x in self.contains(new_states))
             # states_mask_it = (not x for x in list(self.contains(res_keys)))
-            filtered_states = itertools.compress(new_states, states_mask_it)
+            filtered_states = list(itertools.compress(new_states, (not x for x in self.contains(new_states))))
             # new_states = itertools.compress(res_keys, states_mask_it)
             # new_states = res_keys
             old_size = self.size
@@ -852,7 +852,7 @@ class Basis:
             raise TypeError(f"Invalid query type {type(val)}! Valid types are {self.dtype} and sequences thereof.")
         return res
 
-    def _index_sequence(self, s: list[bytes]) -> list[int]:
+    def _index_sequence(self, s: Iterable[bytes]) -> list[int]:
         if self.comm is None:
             return [self._index_dict[val] if val in self._index_dict else self.size for val in s]
 
@@ -974,11 +974,14 @@ class Basis:
         indices = self._index_sequence(items)
         return (index != self.size for index in indices)
 
-    def contains(self, item):
+    def contains(self, item) -> Iterable[bool]:
         if isinstance(item, self.type):
             return next(self._contains_sequence([item]))
         elif isinstance(item, Sequence):
             return self._contains_sequence(item)
+        elif isinstance(item, Iterable):
+            return self._contains_sequence(item)
+        return None
 
     def __iter__(self):
         for i in range(self.size):
