@@ -706,10 +706,11 @@ class Basis:
 
     def expand(self, op, op_dict=None, dense_cutoff=None, slaterWeightMin=0):
         old_size = self.size + 1
-        states_to_check = set(self.local_basis)
+        # states_to_check = set(self.local_basis)
         while old_size != self.size and self.size < self.truncation_threshold:
             new_states = set()
-            for state in states_to_check:
+            # for state in states_to_check:
+            for state in self.local_basis:
                 res = applyOp(
                     self.num_spin_orbitals,
                     op,
@@ -729,19 +730,19 @@ class Basis:
             if self.spin_flip_dj:
                 filtered_states = self._generate_spin_flipped_determinants(filtered_states)
             self.add_states(filtered_states)
-            if self.is_distributed:
-                send_list: list[list[bytes]] = [[] for _ in range(self.comm.size)]
-                for state in filtered_states:
-                    for r in range(self.comm.size):
-                        if self.state_bounds[r] is None or state < self.state_bounds[r]:
-                            send_list[r].append(state)
-                            break
-                received_states = self.alltoall_states(send_list)
-            else:
-                received_states = [new_states]
-            states_to_check = set()
-            for states in received_states:
-                states_to_check.update(states)
+            # if self.is_distributed:
+            #     send_list: list[list[bytes]] = [[] for _ in range(self.comm.size)]
+            #     for state in filtered_states:
+            #         for r in range(self.comm.size):
+            #             if self.state_bounds[r] is None or state < self.state_bounds[r]:
+            #                 send_list[r].append(state)
+            #                 break
+            #     received_states = self.alltoall_states(send_list)
+            # else:
+            #     received_states = [filtered_states]
+            # states_to_check = set()
+            # for states in received_states:
+            #     states_to_check.update(states)
 
         if self.verbose:
             print(f"After expansion, the basis contains {self.size} elements.")
