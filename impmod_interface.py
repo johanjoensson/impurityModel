@@ -619,12 +619,13 @@ def get_ed_h0(
             hyb,
             bath_states_per_orbital,
             gamma=gamma,
-            exp_weight=exp_weight,
             imag_only=imag_only,
             x_lim=(w[0], 0 if valence_bath_only else w[-1]),
             verbose=verbose,
             comm=comm,
-            new_v=True,
+            weight_param=exp_weight,
+            w0=0,
+            weight_function_name="Gaussian",
         )
         sort_indices = np.argsort(eb, kind="stable")
         eb = eb[sort_indices]
