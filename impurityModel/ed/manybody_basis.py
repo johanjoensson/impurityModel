@@ -719,17 +719,19 @@ class Basis:
                     opResult=op_dict,
                 )
                 new_states |= res.keys()
-            res_keys = list(new_states)
-            states_mask_it = (not x for x in list(self.contains(res_keys)))
-            new_states = itertools.compress(res_keys, states_mask_it)
-            new_states = res_keys
+            # res_keys = list(new_states)
+            states_mask_it = (not x for x in list(self.contains(list(new_states))))
+            # states_mask_it = (not x for x in list(self.contains(res_keys)))
+            filtered_states = itertools.compress(new_states, states_mask_it)
+            # new_states = itertools.compress(res_keys, states_mask_it)
+            # new_states = res_keys
             old_size = self.size
             if self.spin_flip_dj:
-                new_states = self._generate_spin_flipped_determinants(new_states)
-            self.add_states(new_states)
+                filtered_states = self._generate_spin_flipped_determinants(filtered_states)
+            self.add_states(filtered_states)
             if self.is_distributed:
                 send_list: list[list[bytes]] = [[] for _ in range(self.comm.size)]
-                for state in new_states:
+                for state in filtered_states:
                     for r in range(self.comm.size):
                         if self.state_bounds[r] is None or state < self.state_bounds[r]:
                             send_list[r].append(state)

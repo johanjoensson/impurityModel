@@ -377,7 +377,7 @@ def get_block_Green(
 
     # Select points from the frequency mesh, according to a Normal distribuition
     # centered on (value) 0.
-    n_samples = max(len(conv_w) // 10, 1)
+    n_samples = max(len(conv_w) // 100, 1)
 
     def matrix_print(m):
         print("\n".join(["  ".join([f"{np.real(el): 5.3f}  {np.imag(el):+5.3f}j" for el in row]) for row in m]))
@@ -401,15 +401,13 @@ def get_block_Green(
             gs_new = wIs - alpha - np.conj(beta.T)[np.newaxis, :, :] @ np.linalg.solve(gs_new, beta[np.newaxis, :, :])
             gs_prev = wIs - alpha - np.conj(beta.T)[np.newaxis, :, :] @ np.linalg.solve(gs_prev, beta[np.newaxis, :, :])
         return (
-            np.max(
+            np.all(
                 np.abs(
                     gs_new
                     - gs_prev
-                    # np.diagonal(np.linalg.inv(gs_new), axis1=1, axis2=2)
-                    # - np.diagonal(np.linalg.inv(gs_prev), axis1=1, axis2=2)
                 )
+                < 1e-12
             )
-            < 1e-12
         )
 
     # Run Lanczos on psi0^T* [wI - j*delta - H]^-1 psi0
