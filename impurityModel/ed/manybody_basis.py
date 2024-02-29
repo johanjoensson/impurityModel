@@ -818,40 +818,21 @@ class Basis:
 
         # return result_new
 
-    def index(self, val: bytes) -> int:
+    def index(self, val):
         if isinstance(val, self.type):
             res = next(self._index_sequence([val]))
             if res == self.size:
                 raise ValueError(f"Could not find {val} in basis!")
-        elif isinstance(val, Sequence):
-            res = self._index_sequence(val)
-            if self.debug:
-                print(f"{self.local_basis=}", flush=True)
-                print(f"{self._index_dict=}", flush=True)
+            return res
+        elif isinstance(val, Sequence) or isinstance(val, Iterable):
+            res = list(self._index_sequence(val))
             for i, v in enumerate(res):
                 if v >= self.size:
-                    if self.debug:
-                        proper_rank = self.size
-                        for r in range(self.comm.size):
-                            if self.state_bounds is None or val[i] < self.state_bounds[r]:
-                                proper_rank = r
-                                break
-                        print(f"{proper_rank=}")
-                        print(f"{val=}")
-                        print(f"{i=}")
                     raise ValueError(f"Could not find {val[i]} in basis!")
-        # elif isinstance(val, np.ndarray):
-        #     if val.shape[0] > 0:
-        #         # res = self._index_sequence([val[i * self.n_bytes : (i + 1) * self.n_bytes].tobytes() for i in range(val.shape[0] // self.n_bytes)])
-        #         res = self._index_sequence([i.tobytes() for i in np.split(val, val.shape[0] // self.n_bytes)])
-        #     else:
-        #         res = self._index_sequence([])
-        #     for i, v in enumerate(res):
-        #         if v == self.size:
-        #             raise ValueError(f"Could not find {val[i]} in basis!")
+            return (i for i in res)
         else:
             raise TypeError(f"Invalid query type {type(val)}! Valid types are {self.dtype} and sequences thereof.")
-        return res
+        return None
 
     def _index_sequence(self, s: Iterable[bytes]) -> Iterable[int]:
         if self.comm is None:
@@ -921,7 +902,6 @@ class Basis:
         result[sum(send_counts) :] = self.size
 
         return (res for res in result[np.argsort(send_order)])
-        # return result[np.argsort(send_order)].tolist()
 
     def __getitem__(self, key) -> Iterable[bytes]:
         if isinstance(key, slice):
@@ -941,25 +921,26 @@ class Basis:
             elif step is None:
                 step = -1
             query = list(range(start, stop, step))
-            result = self._getitem_sequence(query)
+            result = list(self._getitem_sequence(query))
             for i, res in enumerate(result):
-                # if res is None:
                 if res == psr.int2bytes(0, self.num_spin_orbitals):
                     raise IndexError(f"Could not find index {query[i]} in basis with size {self.size}!")
-        elif isinstance(key, Sequence):
-            result = self._getitem_sequence(key)
+            return (state for state in result)
+        elif isinstance(key, Sequence) or isinstance(key, Iterable):
+            result = list(self._getitem_sequence(key))
             for i, res in enumerate(result):
-                # if res is None:
                 if res == psr.int2bytes(0, self.num_spin_orbitals):
                     raise IndexError(f"Could not find index {key[i]} in basis with size {self.size}!")
+            return (state for state in res)
         elif isinstance(key, int):
             result = next(self._getitem_sequence([key]))
             # if result is None:
             if result == psr.int2bytes(0, self.num_spin_orbitals):
                 raise IndexError(f"Could not find index {key} in basis with size {self.size}!")
+            return result
         else:
             raise TypeError(f"Invalid index type {type(key)}. Valid types are slice, Sequence and int")
-        return result
+        return None
 
     def __len__(self):
         return self.size
@@ -967,8 +948,7 @@ class Basis:
     def __contains__(self, item):
         if self.comm is None:
             return item in self._index_dict
-        index = next(self._index_sequence([item]))
-        return index != self.size
+        return next(self._index_sequence([item])) != self.size
 
     def _contains_sequence(self, items):
         if self.comm is None:
