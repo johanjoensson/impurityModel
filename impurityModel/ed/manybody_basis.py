@@ -6,7 +6,7 @@ from typing import Optional, Union
 try:
     from collections.abc import Sequence, Iterable
 except ModuleNotFoundError:
-    from collections import Sequence
+    from collections import Sequence, Iterable
 import itertools
 import numpy as np
 import scipy as sp
