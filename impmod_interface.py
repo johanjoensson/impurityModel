@@ -589,9 +589,9 @@ def get_ed_h0(
     eb   -- The bath states used for fitting the hybridization function.
     """
 
-    if comm.rank == 0:
-        with open(f"hyb-in-{label}.npy", "wb") as f:
-            np.save(f, hyb)
+    # if comm.rank == 0:
+    #     with open(f"hyb-in-{label}.npy", "wb") as f:
+    #         np.save(f, hyb)
 
     if comm.rank == 0:
         try:

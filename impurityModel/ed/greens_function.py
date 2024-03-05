@@ -164,7 +164,7 @@ def calc_Greens_function_with_offdiag(
     excited_restrictions = basis.build_excited_restrictions(imp_change=(1, 1), val_change=(1, 0), con_change=(0, 1))
 
     if blocks is None:
-        blocks = [list(range(len(tOps)))]
+        blocks = [range(len(tOps))]
     t_mems = [{} for _ in tOps]
     h_mem = {}
     if parallelization_mode == "eigen_states":
@@ -372,15 +372,9 @@ def get_block_Green(
         conv_w = iws
         delta_p = 0
 
-    def gaussian(x, mu, sigma):
-        return 1 / (sigma * np.sqrt(2 * np.pi)) * np.exp(-1 / 2 * ((x - mu) / sigma) ** 2)
-
     # Select points from the frequency mesh, according to a Normal distribuition
     # centered on (value) 0.
     n_samples = max(len(conv_w) // 100, 1)
-
-    def matrix_print(m):
-        print("\n".join(["  ".join([f"{np.real(el): 5.3f}  {np.imag(el):+5.3f}j" for el in row]) for row in m]))
 
     def converged(alphas, betas):
         if alphas.shape[0] == 1:
@@ -400,15 +394,7 @@ def get_block_Green(
         for alpha, beta in zip(alphas[-3::-1], betas[-3::-1]):
             gs_new = wIs - alpha - np.conj(beta.T)[np.newaxis, :, :] @ np.linalg.solve(gs_new, beta[np.newaxis, :, :])
             gs_prev = wIs - alpha - np.conj(beta.T)[np.newaxis, :, :] @ np.linalg.solve(gs_prev, beta[np.newaxis, :, :])
-        return (
-            np.all(
-                np.abs(
-                    gs_new
-                    - gs_prev
-                )
-                < 1e-12
-            )
-        )
+        return np.all(np.abs(gs_new - gs_prev) < 1e-12)
 
     # Run Lanczos on psi0^T* [wI - j*delta - H]^-1 psi0
     alphas, betas, _ = get_block_Lanczos_matrices(
@@ -662,7 +648,7 @@ def get_block_Green_cg(
         local_basis = CIPSI_Basis(
             ls=basis.ls,
             bath_states=basis.bath_states,
-            initial_basis=list(basis),
+            initial_basis=basis,
             restrictions=basis.restrictions,
             num_spin_orbitals=basis.num_spin_orbitals,
             comm=None,
