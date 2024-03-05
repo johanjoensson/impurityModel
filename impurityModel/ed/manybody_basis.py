@@ -383,12 +383,15 @@ class Basis:
 
     def _set_state_bounds(self, local_states) -> list[Optional[bytes]]:
         local_states_list = local_states
-        n_samples = max(10, min(1e9 // self.comm.size, len(local_states_list) // 100))
+        total_local_states_len = self.comm.allreduce(len(local_states_list), op=MPI.SUM)
+        samples = []
         if len(local_states) > 1:
-            random_indices = np.sort(self.rng.integers(0, high=len(local_states_list), size=n_samples))
-            samples = [local_states_list[0], local_states_list[-1]]
-            for i in random_indices:
-                samples.append(local_states_list[i])
+            n_samples = min(len(local_states), int(np.log10(total_local_states_len) / 0.2))
+            # n_samples = min(len(local_states), int(self.comm.size * np.log10(total_local_states_len) / 0.2**2))
+            # n_samples = max(10, min(1e9 // self.comm.size, len(local_states_list) // 100))
+            # random_indices = np.sort(self.rng.integers(0, high=len(local_states_list), size=n_samples))
+            for i in range(0, len(local_states_list), len(local_states_list) // n_samples):
+                samples.append(self.rng.choice(local_states_list[i : i + len(local_states_list) // n_samples]))
         else:
             samples = local_states_list
 
@@ -730,20 +733,20 @@ class Basis:
         return spin_flip
 
     def expand(self, op, op_dict=None, dense_cutoff=None, slaterWeightMin=0):
-        # old_size = self.size + 1
+        old_size = self.size - 1
         t0 = perf_counter()
         t_apply = 0
         t_filter = 0
         t_add = 0
         t_keys = 0
-        states_to_check = set(self.local_basis)
+        # states_to_check = set(self.local_basis)
         new_states = set()
-        checked_states = set()
-        # while old_size != self.size and self.size < self.truncation_threshold:
-        while len(states_to_check) > 0:
-            checked_states |= states_to_check
-            for state in states_to_check:
-                # for state in self.local_basis:
+        # checked_states = set()
+        while old_size != self.size and self.size < self.truncation_threshold:
+            # while len(states_to_check) > 0:
+            # checked_states |= states_to_check
+            # for state in states_to_check:
+            for state in self.local_basis:
                 t_tmp = perf_counter()
                 res = applyOp(
                     self.num_spin_orbitals,
@@ -755,32 +758,33 @@ class Basis:
                 )
                 t_apply += perf_counter() - t_tmp
                 t_tmp = perf_counter()
-                new_states |= set(res.keys()) - checked_states
+                new_states |= set(res.keys())  #  - set(self.local_basis)
                 t_keys += perf_counter() - t_tmp
-            # if a state appears in op_dict it means it has already been evaluted
-            states_to_check = new_states - checked_states
-            # t_tmp = perf_counter()
-            # filtered_states = list(itertools.compress(new_states, (not x for x in self.contains(new_states))))
-            # t_filter += perf_counter() - t_tmp
-            # old_size = self.size
-            # if self.spin_flip_dj:
-            #     filtered_states = self._generate_spin_flipped_determinants(filtered_states)
-            # t_tmp = perf_counter()
-            # self.add_states(filtered_states)
-            # t_add += perf_counter() - t_tmp
+                # if a state appears in op_dict it means it has already been evaluted
+                # states_to_check = new_states - checked_states
+            t_tmp = perf_counter()
+            filtered_states = new_states
+            # filtered_states = itertools.compress(new_states, (not x for x in self.contains(new_states)))
+            t_filter += perf_counter() - t_tmp
+            if self.spin_flip_dj:
+                filtered_states = self._generate_spin_flipped_determinants(filtered_states)
+            t_tmp = perf_counter()
+            old_size = self.size
+            self.add_states(filtered_states)
+            t_add += perf_counter() - t_tmp
         # t_tmp = perf_counter()
         # filtered_states = list(itertools.compress(new_states, (not x for x in self.contains(new_states))))
         # t_filter += perf_counter() - t_tmp
-        if self.spin_flip_dj:
-            # filtered_states = self._generate_spin_flipped_determinants(filtered_states)
-            new_states = self._generate_spin_flipped_determinants(new_states)
-        t_tmp = perf_counter()
+        # if self.spin_flip_dj:
+        # filtered_states = self._generate_spin_flipped_determinants(filtered_states)
+        # new_states = self._generate_spin_flipped_determinants(new_states)
+        # t_tmp = perf_counter()
         # self.add_states(filtered_states)
-        self.add_states(new_states)
-        t_add += perf_counter() - t_tmp
+        # self.add_states(new_states)
+        # t_add += perf_counter() - t_tmp
 
         print(f"Basis.expand took {perf_counter() - t0} secondsds.")
-        print(f"===> getting new keys took {t_apply} secondsds.")
+        print(f"===> getting new keys took {t_keys} secondsds.")
         print(f"===> applyOp took {t_apply} secondsds.")
         print(f"===> filter states took {t_filter} secondsds.")
         print(f"===> add states took {t_add} secondsds.")
