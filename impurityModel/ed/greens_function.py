@@ -5,7 +5,7 @@ from typing import Optional
 
 from impurityModel.ed import spectra
 from impurityModel.ed import finite
-from impurityModel.ed.lanczos import get_block_Lanczos_matrices
+from impurityModel.ed.lanczos import get_block_Lanczos_matrices, block_lanczos
 from impurityModel.ed.manybody_basis import CIPSI_Basis, Basis
 
 from mpi4py import MPI
@@ -45,7 +45,7 @@ def get_Greens_function(
         omega_mesh,
         delta,
         blocks=blocks,
-        slaterWeightMin=1e-6,
+        slaterWeightMin=1e-12,
         verbose=verbose,
         reort=reort,
         dense_cutoff=dense_cutoff,
@@ -61,7 +61,7 @@ def get_Greens_function(
         -omega_mesh if omega_mesh is not None else None,
         -delta,
         blocks=blocks,
-        slaterWeightMin=1e-6,
+        slaterWeightMin=1e-12,
         verbose=verbose,
         reort=reort,
         dense_cutoff=dense_cutoff,
@@ -161,7 +161,8 @@ def calc_Greens_function_with_offdiag(
 
     """
     n = len(es)
-    excited_restrictions = basis.build_excited_restrictions(imp_change=(1, 1), val_change=(1, 0), con_change=(0, 1))
+    excited_restrictions = None
+    # excited_restrictions = basis.build_excited_restrictions(imp_change=(1, 1), val_change=(1, 0), con_change=(0, 1))
 
     if blocks is None:
         blocks = [range(len(tOps))]
@@ -202,9 +203,9 @@ def calc_Greens_function_with_offdiag(
                 tau=basis.tau,
             )
 
-            h_mem = excited_basis.expand(hOp, slaterWeightMin=slaterWeightMin, op_dict=h_mem)
+            # h_mem = excited_basis.expand(hOp, slaterWeightMin=slaterWeightMin, op_dict=h_mem)
 
-            gs_matsubara_i, gs_realaxis_i = get_block_Green(
+            gs_matsubara_i, gs_realaxis_i = block_Green(
                 n_spin_orbitals=n_spin_orbitals,
                 hOp=hOp,
                 psi_arr=v,
@@ -260,13 +261,13 @@ def calc_Greens_function_with_offdiag(
                     tau=basis.tau,
                     spin_flip_dj=basis.spin_flip_dj,
                 )
-                h_mem = excited_basis.expand(
-                    hOp, dense_cutoff=dense_cutoff, slaterWeightMin=slaterWeightMin, op_dict=h_mem
-                )
+                # h_mem = excited_basis.expand(
+                #     hOp, dense_cutoff=dense_cutoff, slaterWeightMin=slaterWeightMin, op_dict=h_mem
+                # )
 
                 if verbose:
                     print(f"time(build excited state basis) = {time.perf_counter() - t0}")
-                gs_matsubara_i, gs_realaxis_i = get_block_Green(
+                gs_matsubara_i, gs_realaxis_i = block_Green(
                     n_spin_orbitals=n_spin_orbitals,
                     hOp=hOp,
                     psi_arr=block_v,
@@ -394,7 +395,7 @@ def get_block_Green(
         for alpha, beta in zip(alphas[-3::-1], betas[-3::-1]):
             gs_new = wIs - alpha - np.conj(beta.T)[np.newaxis, :, :] @ np.linalg.solve(gs_new, beta[np.newaxis, :, :])
             gs_prev = wIs - alpha - np.conj(beta.T)[np.newaxis, :, :] @ np.linalg.solve(gs_prev, beta[np.newaxis, :, :])
-        return np.all(np.abs(gs_new - gs_prev) < 1e-12)
+        return np.all(np.abs(gs_new - gs_prev) < 1e-8)
 
     # Run Lanczos on psi0^T* [wI - j*delta - H]^-1 psi0
     alphas, betas, _ = get_block_Lanczos_matrices(
@@ -406,6 +407,132 @@ def get_block_Green(
         reort_mode=reort,
         build_krylov_basis=False,
     )
+
+    t0 = time.perf_counter()
+
+    gs_matsubara, gs_realaxis = calc_mpi_Greens_function_from_alpha_beta(alphas, betas, iws, ws, e, delta, r, verbose)
+    if rank == 0 and matsubara:
+        gs_matsubara = np.moveaxis(gs_matsubara, 0, -1)
+    if rank == 0 and realaxis:
+        gs_realaxis = np.moveaxis(gs_realaxis, 0, -1)
+
+    if verbose:
+        print(f"time(G_from_alpha_beta) = {time.perf_counter() - t0: .4f} seconds.")
+
+    return gs_matsubara, gs_realaxis
+
+
+def block_Green(
+    n_spin_orbitals,
+    hOp,
+    psi_arr,
+    basis,
+    e,
+    iws,
+    ws,
+    delta,
+    reort,
+    restrictions=None,
+    h_mem=None,
+    mode="sparse",
+    slaterWeightMin=0,
+    parallelization_mode="H_build",
+    verbose=True,
+    dense_cutoff=1e3,
+):
+    matsubara = iws is not None
+    realaxis = ws is not None
+
+    if not matsubara and not realaxis:
+        if rank == 0:
+            print("No Matsubara mesh or real frequency mesh provided. No Greens function will be calculated.")
+        return None, None
+
+    if verbose:
+        t0 = time.perf_counter()
+
+    if verbose:
+        print(f"time(build Hamiltonian operator) = {time.perf_counter() - t0}")
+
+    N = len(basis)
+    n = len(psi_arr)
+
+    if n == 0 or N == 0:
+        return np.zeros((n, n, len(iws)), dtype=complex), np.zeros((n, n, len(ws)), dtype=complex)
+    if verbose:
+        t0 = time.perf_counter()
+    psi_start = np.array(basis.build_distributed_vector(psi_arr).T, copy=False, order="C")
+    counts = np.empty((comm.size,), dtype=int) if comm.rank == 0 else None
+    comm.Gather(np.array([n * len(basis.local_basis)], dtype=int), counts, root=0)
+    offsets = [sum(counts[:r]) for r in range(len(counts))] if comm.rank == 0 else None
+    psi_start_0 = np.empty((N, n), dtype=complex, order="C") if comm.rank == 0 else None
+    comm.Gatherv(psi_start, (psi_start_0, counts, offsets, MPI.DOUBLE_COMPLEX), root=0)
+    r: Optional[np.ndarray] = None
+    if comm.rank == 0:
+        # Do a QR decomposition of the starting block.
+        # Later on, use r to restore the block corresponding to
+        psi0, r = sp.linalg.qr(psi_start_0, mode="economic", overwrite_a=True, check_finite=False, pivoting=False)
+        psi0 = np.array(psi0, copy=False, order="C")
+        # Find which columns (if any) are 0 in psi0_0
+        rows, columns = psi0.shape
+    rows = comm.bcast(rows if comm.rank == 0 else None, root=0)
+    columns = comm.bcast(columns if comm.rank == 0 else None, root=0)
+    if rows == 0 or columns == 0:
+        return np.zeros((n, n, len(iws)), dtype=complex), np.zeros((n, n, len(ws)), dtype=complex)
+    if comm.rank != 0:
+        psi0 = np.empty((rows, columns), dtype=complex)
+    comm.Bcast(psi0, root=0)
+    psi = basis.build_state(psi0.T, slaterWeightMin=slaterWeightMin)
+    if verbose:
+        print(f"time(set up psi_start) = {time.perf_counter() - t0}")
+
+    # If we have a realaxis mesh, prefer to check convergence on that
+    # if not, use the Matsubara mesh
+    if realaxis:
+        conv_w = ws
+        delta_p = delta
+    elif matsubara:
+        conv_w = iws
+        delta_p = 0
+
+    # Select points from the frequency mesh, according to a Normal distribuition
+    # centered on (value) 0.
+    n_samples = max(len(conv_w) // 50, min(len(conv_w), 10))
+
+    def converged(alphas, betas):
+        if alphas.shape[0] == 1:
+            return False
+
+        w = np.random.choice(conv_w, size=n_samples, replace=False)
+        wIs = (w + 1j * delta_p + e)[:, np.newaxis, np.newaxis] * np.identity(alphas.shape[1], dtype=complex)[
+            np.newaxis, :, :
+        ]
+        gs_new = wIs - alphas[-1]
+        gs_new = (
+            wIs
+            - alphas[-2]
+            - np.conj(betas[-2].T)[np.newaxis, :, :] @ np.linalg.solve(gs_new, betas[-2][np.newaxis, :, :])
+        )
+        gs_prev = wIs - alphas[-2]
+        for alpha, beta in zip(alphas[-3::-1], betas[-3::-1]):
+            gs_new = wIs - alpha - np.conj(beta.T)[np.newaxis, :, :] @ np.linalg.solve(gs_new, beta[np.newaxis, :, :])
+            gs_prev = wIs - alpha - np.conj(beta.T)[np.newaxis, :, :] @ np.linalg.solve(gs_prev, beta[np.newaxis, :, :])
+        print(f"|ΔG| = {np.max(np.abs(gs_new - gs_prev))}")
+        return np.all(np.abs(gs_new - gs_prev) < 1e-8)
+
+    t0 = time.perf_counter()
+    # Run Lanczos on psi0^T* [wI - j*delta - H]^-1 psi0
+    alphas, betas, _ = block_lanczos(
+        psi0=psi,
+        h_op=hOp,
+        basis=basis,
+        converged=converged,
+        h_mem=h_mem,
+        verbose=verbose,
+        slaterWeightMin=slaterWeightMin,
+    )
+    if verbose:
+        print(f"time(block_lanczos) = {time.perf_counter() - t0: .4f} seconds.")
 
     t0 = time.perf_counter()
 

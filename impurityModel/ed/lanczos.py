@@ -1,8 +1,12 @@
+import itertools
 import numpy as np
 import scipy as sp
 import time
+from typing import Optional, NamedTuple, Callable
+from impurityModel.ed.manybody_basis import Basis
 from mpi4py import MPI
 from impurityModel.ed.krylovBasis import KrylovBasis
+from impurityModel.ed.finite import applyOp_3 as applyOp, inner
 from enum import Enum
 
 comm = MPI.COMM_WORLD
@@ -138,7 +142,7 @@ def get_block_Lanczos_matrices(
     psi0: np.ndarray,
     h,
     reort_mode,
-    converged,
+    converged: Callable[[np.ndarray, np.ndarray], bool],
     h_local: bool = False,
     verbose: bool = True,
     max_krylov_size: int = None,
@@ -333,3 +337,86 @@ def get_block_Lanczos_matrices(
         print(f"Reorthogonalizing took {t_reorth:.4f} seconds")
         print(f"time(get_block_Lanczons_matrices) = {time.perf_counter() - t0:.4f} seconds.")
     return alphas, betas, Q.vectors[: len(Q)].T if Q is not None else None
+
+
+def block_lanczos(
+    psi0: list[dict],
+    h_op: dict,
+    basis: Basis,
+    converged: Callable[[np.ndarray, np.ndarray], bool],
+    h_mem: dict = None,
+    verbose: bool = True,
+    build_krylov_basis: bool = True,
+    slaterWeightMin: float = 1e-8,
+) -> (np.ndarray, np.ndarray, Optional[list[dict]]):
+    if h_mem is None:
+        h_mem = {}
+    n = len(psi0)
+
+    alphas = np.empty((0, n, n), dtype=complex)
+    betas = np.empty((0, n, n), dtype=complex)
+    q = [[{}] * len(psi0), psi0]
+    if build_krylov_basis:
+        Q = [psi for psi in psi0]
+
+    it = 0
+    done = False
+    converge_count = 0
+    while True:
+        basis.clear()
+        basis.add_states(state for psis in q for psi in psis for state in psi)
+        wp = [None] * len(q[1])
+        for i, psi_i in enumerate(q[1]):
+            wp[i] = applyOp(
+                basis.num_spin_orbitals,
+                h_op,
+                psi_i,
+                slaterWeightMin=0,
+                restrictions=basis.restrictions,
+                opResult=h_mem,
+            )
+            send_states = [[] for _ in range(basis.comm.size)]
+            send_amps = [[] for _ in range(basis.comm.size)]
+            for state, val in wp[i].items():
+                for r in range(basis.comm.size):
+                    if basis.state_bounds[r] is None or state < basis.state_bounds[r]:
+                        send_states[r].append(state)
+                        send_amps[r].append(val)
+                        break
+            wp[i].clear()
+            received_psi_states = basis.alltoall_states(send_states)
+            received_psi_amps = basis.comm.alltoall(send_amps)
+            for r, psi_states in enumerate(received_psi_states):
+                for state, val in zip(psi_states, received_psi_amps[r]):
+                    wp[i][state] = val + wp[i].get(state, 0)
+        basis.add_states(state for psi in wp for state in psi if abs(psi[state]) ** 2 > slaterWeightMin)
+        qip = basis.build_vector(wp, root=0).T
+        qi = basis.build_vector(q[1], root=0).T
+        qim = basis.build_vector(q[0], root=0).T
+        if rank == 0:
+            alphas = np.append(alphas, [np.conj(qi.T) @ qip], axis=0)
+            betas = np.append(betas, np.empty((1, n, n), dtype=complex), axis=0)
+            if it == 0:
+                qip -= qi @ alphas[-1]
+            else:
+                qip -= qi @ alphas[-1] + qim @ np.conj(betas[-2].T)
+            qi, betas[-1] = sp.linalg.qr(qip, mode="economic", overwrite_a=True, check_finite=False)
+            if it % 5 == 0 or converge_count > 0:
+                done = converged(alphas, betas)
+        done = comm.bcast(done, root=0)
+        converge_count = (1 + converge_count) if done else 0
+        print(f"{converge_count=}")
+        if converge_count > 1:
+            print(f"BREAKING because converge_count = {converge_count}")
+            break
+
+        comm.Bcast(qi, root=0)
+        q[0] = q[1]
+        q[1] = basis.build_state(qi.T)
+        if build_krylov_basis:
+            Q.append(psi for psi in q[1])
+        it += 1
+    # Distribute Lanczos matrices to all ranks
+    alphas = comm.bcast(alphas, root=0)
+    betas = comm.bcast(betas, root=0)
+    return alphas, betas, Q if build_krylov_basis else None
