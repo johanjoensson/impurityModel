@@ -710,8 +710,7 @@ def inner(a, b):
     """
     acc = 0
     for state, amp in b.items():
-        if state in a:
-            acc += np.conj(a[state]) * amp
+        acc += np.conj(a.get(state, 0)) * amp
     return acc
 
 
@@ -1924,7 +1923,7 @@ def applyOp(n_spin_orbitals, op, psi, slaterWeightMin=0, restrictions=None, opRe
     return psiNew
 
 
-def occupation_within_restrictions(state, n_spin_orbitals, restrictions):
+def occupation_is_within_restrictions(state, n_spin_orbitals, restrictions):
     if restrictions is None:
         return True
     # state_new_tuple = psr.bytes2tuple(state, n_spin_orbitals)
@@ -2014,7 +2013,7 @@ def applyOp_2(n_spin_orbitals, op, psi, slaterWeightMin=0, restrictions=None, op
             if signTot == 0:
                 continue
             state_new = psr.bitarray2bytes(state_bits_new)
-            if not occupation_within_restrictions(state_new, n_spin_orbitals, restrictions):
+            if not occupation_is_within_restrictions(state_new, n_spin_orbitals, restrictions):
                 continue
             psiNew[state_new] = amp * h * signTot + psiNew.get(state_new, 0)
             if opResult is not None:
@@ -2099,9 +2098,10 @@ def applyOp_3(n_spin_orbitals, op, psi, slaterWeightMin=0, restrictions=None, op
             if signTot == 0:
                 break
         if signTot == 0:
+            newResults[state] = newResults.get(state, {})
             continue
         state_new = psr.bitarray2bytes(state_bits_new)
-        if not occupation_within_restrictions(state_new, n_spin_orbitals, restrictions):
+        if not occupation_is_within_restrictions(state_new, n_spin_orbitals, restrictions):
             continue
         psiNew[state_new] = amp * h * signTot + psiNew.get(state_new, 0)
         if state not in newResults:
