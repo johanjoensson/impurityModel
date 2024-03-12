@@ -1027,8 +1027,12 @@ class Basis:
             verbose=self.verbose,
         )
 
-    def build_vector(self, psis: list[dict], dtype=complex) -> np.ndarray:
-        v_local = np.zeros((len(psis), self.size), dtype=dtype)
+    def clear(self):
+        self.local_basis.clear()
+        self.add_states([])
+
+    def build_vector(self, psis: list[dict], root: Optional[int] = None) -> np.ndarray:
+        v_local = np.zeros((len(psis), self.size), dtype=complex)
         v = np.empty_like(v_local)
         # row_states_in_basis: list[bytes] = []
         row_dict = self._index_dict
@@ -1036,7 +1040,6 @@ class Basis:
             row_states = set(psi.keys())
             need_mpi = False
             if self.is_distributed:
-                need_mpi = False
                 if any(state not in row_dict for state in psi):
                     need_mpi = True
                 need_mpi_arr = np.empty((1,), dtype=bool)
@@ -1049,8 +1052,10 @@ class Basis:
                     continue
                 v_local[row, row_dict[state]] = val
 
-        if self.is_distributed:
+        if self.is_distributed and root is None:
             self.comm.Allreduce(v_local, v, op=MPI.SUM)
+        elif self.is_distributed:
+            self.comm.Reduce(v_local, v, op=MPI.SUM, root=root)
         else:
             v = v_local
         return v
@@ -1087,6 +1092,8 @@ class Basis:
             vs = vs.A
         if isinstance(vs, np.ndarray) and len(vs.shape) == 1:
             vs = vs.reshape((1, vs.shape[0]))
+        if isinstance(vs, list):
+            vs = np.array(vs)
         res = []
         for row in range(vs.shape[0]):
             psi = {}
