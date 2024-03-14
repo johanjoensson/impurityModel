@@ -517,7 +517,6 @@ def block_Green(
         for alpha, beta in zip(alphas[-3::-1], betas[-3::-1]):
             gs_new = wIs - alpha - np.conj(beta.T)[np.newaxis, :, :] @ np.linalg.solve(gs_new, beta[np.newaxis, :, :])
             gs_prev = wIs - alpha - np.conj(beta.T)[np.newaxis, :, :] @ np.linalg.solve(gs_prev, beta[np.newaxis, :, :])
-        print(f"|ΔG| = {np.max(np.abs(gs_new - gs_prev))}")
         return np.all(np.abs(gs_new - gs_prev) < 1e-8)
 
     t0 = time.perf_counter()
