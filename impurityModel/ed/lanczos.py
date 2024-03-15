@@ -6,7 +6,7 @@ from typing import Optional, NamedTuple, Callable
 from impurityModel.ed.manybody_basis import Basis
 from mpi4py import MPI
 from impurityModel.ed.krylovBasis import KrylovBasis
-from impurityModel.ed.finite import applyOp_3 as applyOp, inner
+from impurityModel.ed.finite import applyOp_3 as applyOp, inner, matmul, removeFromFirst
 from enum import Enum
 
 comm = MPI.COMM_WORLD
@@ -372,12 +372,10 @@ def block_lanczos(
     wp = [None] * n
     while True:
         t_tmp = perf_counter()
-        basis.clear()
-        basis.add_states(state for psis in q for psi in psis for state in psi)
         t_add += perf_counter() - t_tmp
         t_tmp = perf_counter()
-        for i, psi_i in enumerate(q[1]):
-            wp[i] = applyOp(
+        wp = [
+            applyOp(
                 basis.num_spin_orbitals,
                 h_op,
                 psi_i,
@@ -385,59 +383,72 @@ def block_lanczos(
                 restrictions=basis.restrictions,
                 opResult=h_mem,
             )
-            send_states = [[] for _ in range(basis.comm.size)]
-            send_amps = [[] for _ in range(basis.comm.size)]
-            for state, val in wp[i].items():
-                for r in range(basis.comm.size):
-                    if basis.state_bounds[r] is None or state < basis.state_bounds[r]:
-                        send_states[r].append(state)
-                        send_amps[r].append(val)
-                        break
-            wp[i].clear()
-            received_psi_states = basis.alltoall_states(send_states)
-            received_psi_amps = basis.comm.alltoall(send_amps)
-            for r, psi_states in enumerate(received_psi_states):
-                for state, val in zip(psi_states, received_psi_amps[r]):
-                    wp[i][state] = val + wp[i].get(state, 0)
+            for psi_i in q[1]
+        ]
+        basis.redistribute_psis(wp)
         t_apply += perf_counter() - t_tmp
         t_tmp = perf_counter()
-        basis.add_states(state for psi in wp for state in psi if abs(psi[state]) ** 2 > slaterWeightMin)
+        basis.clear()
+        basis.add_states(
+            itertools.chain(
+                (state for psis in q for psi in psis for state in psi),
+                (state for psi in wp for state in psi if abs(psi[state]) ** 2 > slaterWeightMin),
+            )
+        )
         t_add += perf_counter() - t_tmp
         t_tmp = perf_counter()
-        qip = basis.build_vector(wp, root=0).T
-        qi = basis.build_vector(q[1], root=0).T
-        qim = basis.build_vector(q[0], root=0).T
+        basis.redistribute_psis(itertools.chain(q[0], q[1], wp))
+        psi = np.empty((len(basis.local_basis), n), dtype=complex)
+        psip = np.empty_like(psi)
+        psim = np.empty_like(psi)
+        for (i, state), j in itertools.product(enumerate(basis.local_basis), range(n)):
+            psi[i, j] = q[1][j].get(state, 0)
+            psim[i, j] = q[0][j].get(state, 0)
+            psip[i, j] = wp[j].get(state, 0)
+
+        alpha = np.conj(psi.T) @ psip
+        alphas = np.append(alphas, np.empty((1, n, n), dtype=complex), axis=0)
+        basis.comm.Allreduce(alpha, alphas[-1], op=MPI.SUM)
+
+        psip -= psi @ alphas[-1]
+        if it > 0:
+            psip -= psim @ np.conj(betas[-1].T)
+
+        betas = np.append(betas, np.empty((1, n, n), dtype=complex), axis=0)
+        send_counts = np.empty((basis.comm.size), dtype=int)
+        basis.comm.Gather(np.array([n * len(basis.local_basis)]), send_counts)
+        offsets = np.fromiter(
+            (np.sum(send_counts[:i]) for i in range(basis.comm.size)), dtype=int, count=basis.comm.size
+        )
+
+        qip = np.empty((basis.size, n), dtype=complex) if rank == 0 else None
+        basis.comm.Gatherv(psip, [qip, send_counts, offsets, MPI.DOUBLE_COMPLEX], root=0)
         t_vec += perf_counter() - t_tmp
         if rank == 0:
-            alphas = np.append(alphas, [np.conj(qi.T) @ qip], axis=0)
-            betas = np.append(betas, np.empty((1, n, n), dtype=complex), axis=0)
-            if it == 0:
-                qip -= qi @ alphas[-1]
-            else:
-                qip -= qi @ alphas[-1] + qim @ np.conj(betas[-2].T)
             t_tmp = perf_counter()
-            qi, betas[-1] = sp.linalg.qr(qip, mode="economic", overwrite_a=True, check_finite=False)
+            qip[:, :], betas[-1] = sp.linalg.qr(qip, mode="economic", overwrite_a=True, check_finite=False)
             t_qr += perf_counter() - t_tmp
             if it % 5 == 0 or converge_count > 0:
                 t_tmp = perf_counter()
                 done = converged(alphas, betas)
                 t_conv += perf_counter() - t_tmp
+        comm.Bcast(betas[-1], root=0)
         done = comm.bcast(done, root=0)
         converge_count = (1 + converge_count) if done else 0
         if converge_count > 1:
             break
 
         t_tmp = perf_counter()
-        comm.Bcast(qi, root=0)
+        comm.Scatterv([qip, send_counts, offsets, MPI.DOUBLE_COMPLEX], psip, root=0)
         q[0] = q[1]
-        q[1] = basis.build_state(qi.T)
+        q[1] = [{} for _ in range(n)]
+        for j, (i, state) in itertools.product(range(n), enumerate(basis.local_basis)):
+            if abs(psip[i, j]) ** 2 > slaterWeightMin:
+                q[1][j][state] = psip[i, j]
         t_state += perf_counter() - t_tmp
         if build_krylov_basis:
             Q.append(psi for psi in q[1])
         it += 1
-    # Distribute Lanczos matrices to all ranks
-    alphas = comm.bcast(alphas, root=0)
-    betas = comm.bcast(betas, root=0)
     print(f"Breaking after iteration {it}, blocksize = {n}")
     if verbose:
         print(f"===> Applying the hamiltonian took {t_apply:.4f} seconds")
@@ -446,5 +457,5 @@ def block_lanczos(
         print(f"===> Estimating convergence took {t_conv:.4f} seconds")
         print(f"===> QR factorization took {t_qr:.4f} seconds")
         print(f"===> Building states took {t_state:.4f} seconds")
-        print(f"=> time(get_block_Lanczons_matrices) = {perf_counter() - t_tot:.4f} seconds.")
+        print(f"=> time(get_block_Lanczons_matrices) = {perf_counter() - t_tot:.4f} seconds.", flush=True)
     return alphas, betas, Q if build_krylov_basis else None

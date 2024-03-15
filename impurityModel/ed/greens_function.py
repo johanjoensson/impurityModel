@@ -1,3 +1,4 @@
+import itertools
 import numpy as np
 import scipy as sp
 import time
@@ -161,8 +162,8 @@ def calc_Greens_function_with_offdiag(
 
     """
     n = len(es)
-    excited_restrictions = None
-    # excited_restrictions = basis.build_excited_restrictions(imp_change=(1, 1), val_change=(1, 0), con_change=(0, 1))
+    # excited_restrictions = None
+    excited_restrictions = basis.build_excited_restrictions(imp_change=(1, 1), val_change=(1, 0), con_change=(0, 1))
 
     if blocks is None:
         blocks = [range(len(tOps))]
@@ -202,8 +203,6 @@ def calc_Greens_function_with_offdiag(
                 spin_flip_dj=basis.spin_flip_dj,
                 tau=basis.tau,
             )
-
-            # h_mem = excited_basis.expand(hOp, slaterWeightMin=slaterWeightMin, op_dict=h_mem)
 
             gs_matsubara_i, gs_realaxis_i = block_Green(
                 n_spin_orbitals=n_spin_orbitals,
@@ -261,9 +260,6 @@ def calc_Greens_function_with_offdiag(
                     tau=basis.tau,
                     spin_flip_dj=basis.spin_flip_dj,
                 )
-                # h_mem = excited_basis.expand(
-                #     hOp, dense_cutoff=dense_cutoff, slaterWeightMin=slaterWeightMin, op_dict=h_mem
-                # )
 
                 if verbose:
                     print(f"time(build excited state basis) = {time.perf_counter() - t0}")
@@ -448,12 +444,6 @@ def block_Green(
             print("No Matsubara mesh or real frequency mesh provided. No Greens function will be calculated.")
         return None, None
 
-    if verbose:
-        t0 = time.perf_counter()
-
-    if verbose:
-        print(f"time(build Hamiltonian operator) = {time.perf_counter() - t0}")
-
     N = len(basis)
     n = len(psi_arr)
 
@@ -465,14 +455,13 @@ def block_Green(
     counts = np.empty((comm.size,), dtype=int) if comm.rank == 0 else None
     comm.Gather(np.array([n * len(basis.local_basis)], dtype=int), counts, root=0)
     offsets = [sum(counts[:r]) for r in range(len(counts))] if comm.rank == 0 else None
-    psi_start_0 = np.empty((N, n), dtype=complex, order="C") if comm.rank == 0 else None
-    comm.Gatherv(psi_start, (psi_start_0, counts, offsets, MPI.DOUBLE_COMPLEX), root=0)
+    psi0 = np.empty((N, n), dtype=complex, order="C") if comm.rank == 0 else None
+    comm.Gatherv(psi_start, (psi0, counts, offsets, MPI.DOUBLE_COMPLEX), root=0)
     r: Optional[np.ndarray] = None
     if comm.rank == 0:
         # Do a QR decomposition of the starting block.
         # Later on, use r to restore the block corresponding to
-        psi0, r = sp.linalg.qr(psi_start_0, mode="economic", overwrite_a=True, check_finite=False, pivoting=False)
-        psi0 = np.array(psi0, copy=False, order="C")
+        psi0[:, :], r = sp.linalg.qr(psi0, mode="economic", overwrite_a=True, check_finite=False, pivoting=False)
         # Find which columns (if any) are 0 in psi0_0
         rows, columns = psi0.shape
     rows = comm.bcast(rows if comm.rank == 0 else None, root=0)
@@ -480,9 +469,12 @@ def block_Green(
     if rows == 0 or columns == 0:
         return np.zeros((n, n, len(iws)), dtype=complex), np.zeros((n, n, len(ws)), dtype=complex)
     if comm.rank != 0:
-        psi0 = np.empty((rows, columns), dtype=complex)
-    comm.Bcast(psi0, root=0)
-    psi = basis.build_state(psi0.T, slaterWeightMin=slaterWeightMin)
+        psi0 = None
+    comm.Scatterv((psi0, counts, offsets, MPI.DOUBLE_COMPLEX), psi_start, root=0)
+    psi = [{} for _ in range(n)]
+    for j, (i, state) in itertools.product(range(n), enumerate(basis.local_basis)):
+        if abs(psi_start[i, j]) ** 2 > slaterWeightMin:
+            psi[j][state] = psi_start[i, j]
     if verbose:
         print(f"time(set up psi_start) = {time.perf_counter() - t0}")
 
