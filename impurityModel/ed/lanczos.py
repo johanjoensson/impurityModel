@@ -1,13 +1,13 @@
 import itertools
+from enum import Enum
+from time import perf_counter
 import numpy as np
 import scipy as sp
-from time import perf_counter
 from typing import Optional, NamedTuple, Callable
-from impurityModel.ed.manybody_basis import Basis
 from mpi4py import MPI
+from impurityModel.ed.manybody_basis import Basis
 from impurityModel.ed.krylovBasis import KrylovBasis
 from impurityModel.ed.finite import applyOp_3 as applyOp, inner, matmul, removeFromFirst
-from enum import Enum
 
 comm = MPI.COMM_WORLD
 rank = comm.rank
@@ -379,20 +379,19 @@ def block_lanczos(
                 basis.num_spin_orbitals,
                 h_op,
                 psi_i,
-                slaterWeightMin=0,
+                slaterWeightMin=slaterWeightMin,
                 restrictions=basis.restrictions,
                 opResult=h_mem,
             )
             for psi_i in q[1]
         ]
-        basis.redistribute_psis(wp)
         t_apply += perf_counter() - t_tmp
         t_tmp = perf_counter()
         basis.clear()
         basis.add_states(
             itertools.chain(
                 (state for psis in q for psi in psis for state in psi),
-                (state for psi in wp for state in psi if abs(psi[state]) ** 2 > slaterWeightMin),
+                (state for psi in wp for state in psi),
             )
         )
         t_add += perf_counter() - t_tmp

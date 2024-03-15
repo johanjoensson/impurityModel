@@ -345,7 +345,7 @@ class Basis:
         # if verbose:
         #     print(f"===> T add_states : {t0}")
 
-    def alltoall_states(self, send_list: list[list[bytes]]):
+    def alltoall_states(self, send_list: list[list[bytes]], flatten=False):
         recv_counts = np.empty((self.comm.size), dtype=int)
         self.comm.Alltoall(
             (np.fromiter((len(l) for l in send_list), dtype=int, count=len(send_list)), MPI.INT64_T), recv_counts
@@ -369,16 +369,21 @@ class Basis:
             (received_bytes, recv_counts * self.n_bytes, offsets * self.n_bytes, MPI.BYTE),
         )
 
-        states: list[list[bytes]] = [[] for _ in range(len(send_list))]
-        start = 0
-        for r in range(len(recv_counts)):
-            if recv_counts[r] == 0:
-                continue
-            states[r] = [
-                bytes(received_bytes[start + i * self.n_bytes : start + (i + 1) * self.n_bytes])
-                for i in range(recv_counts[r])
+        if not flatten:
+            states: list[list[bytes]] = [[] for _ in range(len(send_list))]
+            start = 0
+            for r in range(len(recv_counts)):
+                if recv_counts[r] == 0:
+                    continue
+                states[r] = [
+                    bytes(received_bytes[start + i * self.n_bytes : start + (i + 1) * self.n_bytes])
+                    for i in range(recv_counts[r])
+                ]
+                start += recv_counts[r] * self.n_bytes
+        else:
+            states: list[bytes] = [
+                bytes(received_bytes[i * self.n_bytes : (i + 1) * self.n_bytes]) for i in range(sum(recv_counts))
             ]
-            start += recv_counts[r] * self.n_bytes
         return states
 
     def _set_state_bounds(self, local_states) -> list[Optional[bytes]]:
@@ -676,10 +681,12 @@ class Basis:
                         send_states[r].append(state)
                         send_amps[r].append(amp)
                         break
-            received_states = self.alltoall_states(send_states)
+            received_states = self.alltoall_states(send_states, flatten=True)
             send_counts = [len(send_amps[r]) for r in range(self.comm.size)]
             send_offsets = [sum(send_counts[:r]) for r in range(self.comm.size)]
-            receive_counts = [len(received_states[r]) for r in range(self.comm.size)]
+            receive_counts = np.empty((self.comm.size), dtype=int)
+            self.comm.Alltoall(np.array(send_counts), receive_counts)
+            # receive_counts = [len(received_states[r]) for r in range(self.comm.size)]
             receive_offsets = [sum(receive_counts[:r]) for r in range(self.comm.size)]
             received_amps_arr = np.empty((sum(receive_counts),), dtype=complex)
             self.comm.Alltoallv(
@@ -695,15 +702,21 @@ class Basis:
                 ),
                 (received_amps_arr, receive_counts, receive_offsets, MPI.DOUBLE_COMPLEX),
             )
-            received_amps = []
-            offset = 0
-            for r in range(self.comm.size):
-                received_amps.append(received_amps_arr[offset : offset + receive_counts[r]])
-                offset += receive_counts[r]
+            # received_amps = []
+            # offset = 0
+            # received_amps = list(
+            #     received_amps_arr[sum(receive_counts[:r]) : sum(receive_counts[: r + 1])] for r in range(self.comm.size)
+            # )
+            # for r in range(self.comm.size):
+            #     received_amps.append(received_amps_arr[offset : offset + receive_counts[r]])
+            #     offset += receive_counts[r]
             psi.clear()
-            for r, states in enumerate(received_states):
-                for i, state in enumerate(states):
-                    psi[state] = received_amps[r][i] + psi.get(state, 0)
+            for state, amp in zip(received_states, received_amps_arr):
+                psi[state] = amp + psi.get(state, 0)
+
+            # for r, states in enumerate(received_states):
+            #     for i, state in enumerate(states):
+            #         psi[state] = received_amps[r][i] + psi.get(state, 0)
 
     def _generate_spin_flipped_determinants(self, determinants):
         valence_baths, conduction_baths = self.bath_states
