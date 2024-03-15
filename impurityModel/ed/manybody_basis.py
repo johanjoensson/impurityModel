@@ -662,6 +662,49 @@ class Basis:
         # if self.verbose:
         #     print(f"=======> T set bounds and stuff : {t0}")
 
+    def redistribute_psis(self, psis: Iterable[dict]):
+        if not self.is_distributed:
+            return
+        for psi in psis:
+            send_states = [[] for _ in range(self.comm.size)]
+            send_amps = [[] for _ in range(self.comm.size)]
+            for state, amp in psi.items():
+                for r in range(self.comm.size):
+                    if r > 0 and self.state_bounds[r - 1] is None:
+                        continue
+                    if self.state_bounds[r] is None or state < self.state_bounds[r]:
+                        send_states[r].append(state)
+                        send_amps[r].append(amp)
+                        break
+            received_states = self.alltoall_states(send_states)
+            send_counts = [len(send_amps[r]) for r in range(self.comm.size)]
+            send_offsets = [sum(send_counts[:r]) for r in range(self.comm.size)]
+            receive_counts = [len(received_states[r]) for r in range(self.comm.size)]
+            receive_offsets = [sum(receive_counts[:r]) for r in range(self.comm.size)]
+            received_amps_arr = np.empty((sum(receive_counts),), dtype=complex)
+            self.comm.Alltoallv(
+                (
+                    np.fromiter(
+                        (amp for amps in send_amps for amp in amps),
+                        count=sum(len(amps) for amps in send_amps),
+                        dtype=complex,
+                    ),
+                    send_counts,
+                    send_offsets,
+                    MPI.DOUBLE_COMPLEX,
+                ),
+                (received_amps_arr, receive_counts, receive_offsets, MPI.DOUBLE_COMPLEX),
+            )
+            received_amps = []
+            offset = 0
+            for r in range(self.comm.size):
+                received_amps.append(received_amps_arr[offset : offset + receive_counts[r]])
+                offset += receive_counts[r]
+            psi.clear()
+            for r, states in enumerate(received_states):
+                for i, state in enumerate(states):
+                    psi[state] = received_amps[r][i] + psi.get(state, 0)
+
     def _generate_spin_flipped_determinants(self, determinants):
         valence_baths, conduction_baths = self.bath_states
         n_dn_op = {
@@ -1338,45 +1381,46 @@ class CIPSI_Basis(Basis):
                 comm=self.comm,
                 verbose=False,
             )
-            if self.is_distributed:
-                send_states = [[] for _ in range(self.comm.size)]
-                send_amps = [[] for _ in range(self.comm.size)]
-                for state, amp in Hpsi_i.items():
-                    for r in range(self.comm.size):
-                        if r > 0 and Dj_basis.state_bounds[r - 1] is None:
-                            continue
-                        if Dj_basis.state_bounds[r] is None or state < Dj_basis.state_bounds[r]:
-                            send_states[r].append(state)
-                            send_amps[r].append(amp)
-                            break
-                received_states = self.alltoall_states(send_states)
-                send_counts = [len(send_amps[r]) for r in range(self.comm.size)]
-                send_offsets = [sum(send_counts[:r]) for r in range(self.comm.size)]
-                receive_counts = [len(received_states[r]) for r in range(self.comm.size)]
-                receive_offsets = [sum(receive_counts[:r]) for r in range(self.comm.size)]
-                received_amps_arr = np.empty((sum(receive_counts),), dtype=complex)
-                self.comm.Alltoallv(
-                    (
-                        np.fromiter(
-                            (amp for amps in send_amps for amp in amps),
-                            count=sum(len(amps) for amps in send_amps),
-                            dtype=complex,
-                        ),
-                        send_counts,
-                        send_offsets,
-                        MPI.DOUBLE_COMPLEX,
-                    ),
-                    (received_amps_arr, receive_counts, receive_offsets, MPI.DOUBLE_COMPLEX),
-                )
-                received_amps = []
-                offset = 0
-                for r in range(self.comm.size):
-                    received_amps.append(received_amps_arr[offset : offset + receive_counts[r]])
-                    offset += receive_counts[r]
-                Hpsi_i = {}
-                for r, states in enumerate(received_states):
-                    for i, state in enumerate(states):
-                        Hpsi_i[state] = received_amps[r][i] + Hpsi_i.get(state, 0)
+            Dj_basis.redistribute_psis([Hpsi_i])
+            # if self.is_distributed:
+            #     send_states = [[] for _ in range(self.comm.size)]
+            #     send_amps = [[] for _ in range(self.comm.size)]
+            #     for state, amp in Hpsi_i.items():
+            #         for r in range(self.comm.size):
+            #             if r > 0 and Dj_basis.state_bounds[r - 1] is None:
+            #                 continue
+            #             if Dj_basis.state_bounds[r] is None or state < Dj_basis.state_bounds[r]:
+            #                 send_states[r].append(state)
+            #                 send_amps[r].append(amp)
+            #                 break
+            #     received_states = self.alltoall_states(send_states)
+            #     send_counts = [len(send_amps[r]) for r in range(self.comm.size)]
+            #     send_offsets = [sum(send_counts[:r]) for r in range(self.comm.size)]
+            #     receive_counts = [len(received_states[r]) for r in range(self.comm.size)]
+            #     receive_offsets = [sum(receive_counts[:r]) for r in range(self.comm.size)]
+            #     received_amps_arr = np.empty((sum(receive_counts),), dtype=complex)
+            #     self.comm.Alltoallv(
+            #         (
+            #             np.fromiter(
+            #                 (amp for amps in send_amps for amp in amps),
+            #                 count=sum(len(amps) for amps in send_amps),
+            #                 dtype=complex,
+            #             ),
+            #             send_counts,
+            #             send_offsets,
+            #             MPI.DOUBLE_COMPLEX,
+            #         ),
+            #         (received_amps_arr, receive_counts, receive_offsets, MPI.DOUBLE_COMPLEX),
+            #     )
+            #     received_amps = []
+            #     offset = 0
+            #     for r in range(self.comm.size):
+            #         received_amps.append(received_amps_arr[offset : offset + receive_counts[r]])
+            #         offset += receive_counts[r]
+            #     Hpsi_i = {}
+            #     for r, states in enumerate(received_states):
+            #         for i, state in enumerate(states):
+            #             Hpsi_i[state] = received_amps[r][i] + Hpsi_i.get(state, 0)
             de2 = self._calc_de2(Dj_basis, H, H_dict, Hpsi_i, e_i)
             de2_mask = np.abs(de2) >= de2_min
             Dji = {Dj_basis.local_basis[i] for i, mask in enumerate(de2_mask) if mask}
