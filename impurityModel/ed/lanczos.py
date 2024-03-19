@@ -361,6 +361,8 @@ def block_lanczos(
     t_add = 0
     t_vec = 0
     t_apply = 0
+    t_redist = 0
+    t_linalg = 0
     t_conv = 0
     t_qr = 0
     t_state = 0
@@ -397,6 +399,8 @@ def block_lanczos(
         t_add += perf_counter() - t_tmp
         t_tmp = perf_counter()
         basis.redistribute_psis(itertools.chain(q[0], q[1], wp))
+        t_redist += perf_counter() - t_tmp
+        t_tmp = perf_counter()
         psi = np.empty((len(basis.local_basis), n), dtype=complex)
         psip = np.empty_like(psi)
         psim = np.empty_like(psi)
@@ -404,7 +408,9 @@ def block_lanczos(
             psi[i, j] = q[1][j].get(state, 0)
             psim[i, j] = q[0][j].get(state, 0)
             psip[i, j] = wp[j].get(state, 0)
+        t_vec += perf_counter() - t_tmp
 
+        t_tmp = perf_counter()
         alpha = np.conj(psi.T) @ psip
         alphas = np.append(alphas, np.empty((1, n, n), dtype=complex), axis=0)
         basis.comm.Allreduce(alpha, alphas[-1], op=MPI.SUM)
@@ -414,6 +420,8 @@ def block_lanczos(
             psip -= psim @ np.conj(betas[-1].T)
 
         betas = np.append(betas, np.empty((1, n, n), dtype=complex), axis=0)
+        t_linalg += perf_counter() - t_tmp
+        t_tmp = perf_counter()
         send_counts = np.empty((basis.comm.size), dtype=int)
         basis.comm.Gather(np.array([n * len(basis.local_basis)]), send_counts)
         offsets = np.fromiter(
@@ -427,14 +435,14 @@ def block_lanczos(
             t_tmp = perf_counter()
             qip[:, :], betas[-1] = sp.linalg.qr(qip, mode="economic", overwrite_a=True, check_finite=False)
             t_qr += perf_counter() - t_tmp
-            if it % 5 == 0 or converge_count > 0:
-                t_tmp = perf_counter()
-                done = converged(alphas, betas)
-                t_conv += perf_counter() - t_tmp
         comm.Bcast(betas[-1], root=0)
-        done = comm.bcast(done, root=0)
+        if it % 5 == 0 or converge_count > 0:
+            t_tmp = perf_counter()
+            done = converged(alphas, betas)
+            t_conv += perf_counter() - t_tmp
+        done = comm.allreduce(done, op=MPI.LAND)
         converge_count = (1 + converge_count) if done else 0
-        if converge_count > 1:
+        if converge_count > 0:
             break
 
         t_tmp = perf_counter()
@@ -452,6 +460,8 @@ def block_lanczos(
     if verbose:
         print(f"===> Applying the hamiltonian took {t_apply:.4f} seconds")
         print(f"===> Adding states took {t_add:.4f} seconds")
+        print(f"===> Redistributing states took {t_redist:.4f} seconds")
+        print(f"===> Local linear algebra took {t_linalg:.4f} seconds")
         print(f"===> Building vectors took {t_vec:.4f} seconds")
         print(f"===> Estimating convergence took {t_conv:.4f} seconds")
         print(f"===> QR factorization took {t_qr:.4f} seconds")

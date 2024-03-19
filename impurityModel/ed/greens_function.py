@@ -495,7 +495,7 @@ def block_Green(
         if alphas.shape[0] == 1:
             return False
 
-        w = np.random.choice(conv_w, size=n_samples, replace=False)
+        w = np.random.choice(conv_w, size=max(n_samples // comm.size, 1), replace=False)
         wIs = (w + 1j * delta_p + e)[:, np.newaxis, np.newaxis] * np.identity(alphas.shape[1], dtype=complex)[
             np.newaxis, :, :
         ]
