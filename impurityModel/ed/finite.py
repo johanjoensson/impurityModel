@@ -2124,7 +2124,7 @@ def applyOp_3(n_spin_orbitals, op, psi, slaterWeightMin=0, restrictions=None, op
     # for state, amp in list(psiNew.items()):
     #     if abs(amp) ** 2 < slaterWeightMin:
     #         psiNew.pop(state)
-    return psiNew
+    return {state: amp for state, amp in psiNew.items() if abs(amp) ** 2 > slaterWeightMin}
 
 
 def get_hamiltonian_matrix(n_spin_orbitals, hOp, basis, mode="sparse_MPI", verbose=True):
