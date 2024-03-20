@@ -402,12 +402,9 @@ class Basis:
         total_local_states_len = self.comm.allreduce(len(local_states_list), op=MPI.SUM)
         samples = []
         if len(local_states) > 1:
-            n_samples = min(len(local_states), int(np.log10(total_local_states_len) / 0.2))
-            # n_samples = min(len(local_states), int(self.comm.size * np.log10(total_local_states_len) / 0.2**2))
-            # n_samples = max(10, min(1e9 // self.comm.size, len(local_states_list) // 100))
-            # random_indices = np.sort(self.rng.integers(0, high=len(local_states_list), size=n_samples))
-            for i in range(0, len(local_states_list), len(local_states_list) // n_samples):
-                samples.append(self.rng.choice(local_states_list[i : i + len(local_states_list) // n_samples]))
+            n_samples = min(len(local_states), int(self.comm.size * np.log10(total_local_states_len) / 0.05**2))
+            for interval in batched(local_states, len(local_states) // n_samples):
+                samples.append(self.rng.choice(list(interval)))
         else:
             samples = local_states_list
 
@@ -529,7 +526,10 @@ class Basis:
             t0 = perf_counter()
             local_sizes = np.empty((self.comm.size,), dtype=int)
             self.comm.Allgather(np.array([len(self.local_basis)], dtype=int), local_sizes)
-            self.state_bounds = self._set_state_bounds(local_states)
+            if self.size > 0 and any(abs((local_sizes - self.size // self.comm.size)) / self.size > 0.50):
+                print(f"max|n-N/p|/N = {max(abs((local_sizes - self.size // self.comm.size)) / self.size)}")
+                print("Rebalancing!")
+                self.state_bounds = self._set_state_bounds(local_states)
             t0 = perf_counter() - t0
             t0 = perf_counter()
             for r in range(self.comm.size):

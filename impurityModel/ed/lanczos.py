@@ -389,7 +389,7 @@ def block_lanczos(
         ]
         t_apply += perf_counter() - t_tmp
         t_tmp = perf_counter()
-        if it % 10 == 0:
+        if converge_count > 0:
             basis.clear()
             basis.add_states(
                 itertools.chain(
@@ -401,17 +401,6 @@ def block_lanczos(
         t_add += perf_counter() - t_tmp
         t_tmp = perf_counter()
         tmp = basis.redistribute_psis(itertools.chain(q[0], q[1], wp))
-        # removable_states = set(basis.local_basis) - set(
-        #     itertools.chain(
-        #         (state for psis in q for psi in psis for state in psi), (state for psi in wp for state in psi)
-        #     )
-        # )
-        # for state in removable_states:
-        #     basis.local_basis.pop(basis.local_basis.index(state))
-        # basis.add_states([])
-        #
-        #
-        #
         q[0] = tmp[0:n]
         q[1] = tmp[n : 2 * n]
         wp = tmp[2 * n : 3 * n]
