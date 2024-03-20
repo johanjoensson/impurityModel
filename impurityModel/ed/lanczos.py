@@ -389,16 +389,32 @@ def block_lanczos(
         ]
         t_apply += perf_counter() - t_tmp
         t_tmp = perf_counter()
-        basis.clear()
-        basis.add_states(
-            itertools.chain(
-                (state for psis in q for psi in psis for state in psi),
-                (state for psi in wp for state in psi),
+        if it % 10 == 0:
+            basis.clear()
+            basis.add_states(
+                itertools.chain(
+                    (state for psis in q for psi in psis for state in psi),
+                    (state for psi in wp for state in psi),
+                )
             )
-        )
+        basis.add_states(state for psi in wp for state in psi)
         t_add += perf_counter() - t_tmp
         t_tmp = perf_counter()
-        basis.redistribute_psis(itertools.chain(q[0], q[1], wp))
+        tmp = basis.redistribute_psis(itertools.chain(q[0], q[1], wp))
+        # removable_states = set(basis.local_basis) - set(
+        #     itertools.chain(
+        #         (state for psis in q for psi in psis for state in psi), (state for psi in wp for state in psi)
+        #     )
+        # )
+        # for state in removable_states:
+        #     basis.local_basis.pop(basis.local_basis.index(state))
+        # basis.add_states([])
+        #
+        #
+        #
+        q[0] = tmp[0:n]
+        q[1] = tmp[n : 2 * n]
+        wp = tmp[2 * n : 3 * n]
         t_redist += perf_counter() - t_tmp
         t_tmp = perf_counter()
         psi = np.empty((len(basis.local_basis), n), dtype=complex)
