@@ -526,7 +526,7 @@ class Basis:
             t0 = perf_counter()
             local_sizes = np.empty((self.comm.size,), dtype=int)
             self.comm.Allgather(np.array([len(self.local_basis)], dtype=int), local_sizes)
-            if self.size > 0 and any(abs((local_sizes - self.size // self.comm.size)) / self.size > 0.50):
+            if self.size > 0 and any(abs((local_sizes - self.size // self.comm.size)) / self.size > 0.10):
                 print(f"max|n-N/p|/N = {max(abs((local_sizes - self.size // self.comm.size)) / self.size)}")
                 print("Rebalancing!")
                 self.state_bounds = self._set_state_bounds(local_states)

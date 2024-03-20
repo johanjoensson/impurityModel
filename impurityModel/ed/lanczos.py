@@ -352,6 +352,7 @@ def block_lanczos(
     if h_mem is None:
         h_mem = {}
     n = len(psi0)
+    N0 = basis.size
 
     alphas = np.empty((0, n, n), dtype=complex)
     betas = np.empty((0, n, n), dtype=complex)
@@ -389,14 +390,11 @@ def block_lanczos(
         ]
         t_apply += perf_counter() - t_tmp
         t_tmp = perf_counter()
-        if converge_count > 0:
+        if basis.size > 2 * N0:
+            print('Purging basis!')
             basis.clear()
-            basis.add_states(
-                itertools.chain(
-                    (state for psis in q for psi in psis for state in psi),
-                    (state for psi in wp for state in psi),
-                )
-            )
+            basis.add_states((state for psis in q for psi in psis for state in psi))
+            N0 = basis.size
         basis.add_states(state for psi in wp for state in psi)
         t_add += perf_counter() - t_tmp
         t_tmp = perf_counter()
