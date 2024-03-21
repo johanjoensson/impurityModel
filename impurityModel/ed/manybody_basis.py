@@ -526,10 +526,6 @@ class Basis:
             t0 = perf_counter()
             local_sizes = np.empty((self.comm.size,), dtype=int)
             self.comm.Allgather(np.array([len(self.local_basis)], dtype=int), local_sizes)
-            if self.size > 0 and any(abs((local_sizes - self.size // self.comm.size)) / self.size > 0.10):
-                print(f"max|n-N/p|/N = {max(abs((local_sizes - self.size // self.comm.size)) / self.size)}")
-                print("Rebalancing!")
-                self.state_bounds = self._set_state_bounds(local_states)
             t0 = perf_counter() - t0
             t0 = perf_counter()
             for r in range(self.comm.size):
@@ -591,7 +587,7 @@ class Basis:
             t0 = perf_counter() - t0
 
             t0 = perf_counter()
-            self.local_basis.clear()
+            # self.local_basis.clear()
             local_basis = []
             for state, _ in itertools.groupby(merge(*received_states)):
                 local_basis.append(state)
@@ -608,9 +604,38 @@ class Basis:
         self.comm.Allgather(np.array([local_length], dtype=int), size_arr)
         self.size = np.sum(size_arr)
         self.offset = np.sum(size_arr[: self.comm.rank])  # offset_arr[0] - local_length
-        self.local_indices = range(self.offset, self.offset + local_length)
+        self.local_indices = range(self.offset, self.offset + len(self.local_basis))
         self._index_dict = {state: self.offset + i for i, state in enumerate(self.local_basis)}
         self.index_bounds = [np.sum(size_arr[: r + 1]) if size_arr[r] > 0 else None for r in range(self.comm.size)]
+        if self.size > 0 and any(abs(size_arr - self.size // self.comm.size) / self.size > 0.10):
+            print(f"max|n-N/p|/N = {max(abs((local_sizes - self.size // self.comm.size)) / self.size)}")
+            print("Rebalancing!")
+            n_states_per_rank = np.array(
+                [
+                    self.size // self.comm.size + (1 if r < self.size % self.comm.size else 0)
+                    for r in range(self.comm.size)
+                ]
+            )
+            local_indices = range(
+                sum(n_states_per_rank[: self.comm.rank]), sum(n_states_per_rank[: self.comm.rank + 1])
+            )
+            local_states = self[(i for i in local_indices if i < self.size)]
+            self.local_basis = list(local_states)
+            local_length = len(self.local_basis)
+            self.comm.Allgather(np.array([local_length], dtype=int), size_arr)
+            self.size = np.sum(size_arr)
+            self.offset = np.sum(size_arr[: self.comm.rank])  # offset_arr[0] - local_length
+            self.local_indices = range(self.offset, self.offset + local_length)
+            self._index_dict = {state: self.offset + i for i, state in enumerate(self.local_basis)}
+            self.index_bounds = [np.sum(size_arr[: r + 1]) if size_arr[r] > 0 else None for r in range(self.comm.size)]
+        state_bounds = list(self[(i for i in self.index_bounds if i is not None and i < self.size)])
+        self.state_bounds = state_bounds + [None] * (self.comm.size - len(state_bounds))
+        self.state_bounds = [
+            self.state_bounds[r]
+            if r < self.comm.size - 1 and self.state_bounds[r] != self.state_bounds[r + 1]
+            else None
+            for r in range(self.comm.size)
+        ]
 
     def redistribute_psis(self, psis: Iterable[dict]):
         if not self.is_distributed:
@@ -813,7 +838,8 @@ class Basis:
         if self.comm is None:
             return (self.local_basis[i] for i in l)
 
-        l = np.fromiter((i if i >= 0 else self.size + i for i in l), dtype=int, count=len(l))
+        l = np.fromiter((i if i >= 0 else self.size + i for i in l), dtype=int)
+        # l = list(l)
 
         send_list: list[list[int]] = [[] for _ in range(self.comm.size)]
         send_to_ranks = np.empty((len(l)), dtype=int)
@@ -828,21 +854,21 @@ class Basis:
         recv_counts = np.empty((self.comm.size), dtype=int)
 
         self.comm.Alltoall(
-            (np.fromiter((len(l) for l in send_list), dtype=int, count=len(send_list)), MPI.INT64_T), recv_counts
+            (np.fromiter((len(sl) for sl in send_list), dtype=int, count=len(send_list)), MPI.INT64_T), recv_counts
         )
 
         queries = np.empty((sum(recv_counts)), dtype=int)
         displacements = np.fromiter(
             (sum(recv_counts[:p]) for p in range(self.comm.size)), dtype=int, count=self.comm.size
         )
-        send_counts = np.fromiter((len(l) for l in send_list), dtype=int, count=len(send_list))
+        send_counts = np.fromiter((len(sl) for sl in send_list), dtype=int, count=len(send_list))
         send_offsets = np.fromiter(
             (sum(send_counts[:r]) for r in range(self.comm.size)), dtype=int, count=self.comm.size
         )
 
         self.comm.Alltoallv(
             (
-                np.fromiter((i for l in send_list for i in l), dtype=int, count=len(l)),
+                np.fromiter((i for sl in send_list for i in sl), dtype=int, count=len(l)),
                 send_counts,
                 send_offsets,
                 MPI.INT64_T,
