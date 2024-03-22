@@ -391,7 +391,7 @@ def block_lanczos(
         t_apply += perf_counter() - t_tmp
         t_tmp = perf_counter()
         if basis.size > 2 * N0:
-            print('Purging basis!')
+            print("Purging basis!")
             basis.clear()
             basis.add_states((state for psis in q for psi in psis for state in psi))
             N0 = basis.size
