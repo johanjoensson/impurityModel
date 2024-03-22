@@ -694,7 +694,7 @@ def printOp(nBaths, pOp, printstr):
     print()
 
 
-def inner(a, b):
+def inner(a: dict, b: dict) -> complex:
     r"""
     Return :math:`\langle a | b \rangle`
 
@@ -709,9 +709,22 @@ def inner(a, b):
     """
     acc = 0
     for state, amp in b.items():
-        if state in a:
-            acc += np.conj(a[state]) * amp
+        acc += np.conj(a.get(state, 0)) * amp
     return acc
+
+
+def matmul(psis: list[dict], mat: np.ndarray) -> list[dict]:
+    n = len(psis)
+    assert mat.shape == (n, n)
+    res = [{} for _ in psis]
+    for j, (i, psi_i) in itertools.product(range(n), enumerate(psis)):
+        addToFirst(res[j], psi_i, mat[i, j])
+    return res
+
+
+def removeFromFirst(psi1, psi2):
+    for state, amp in psi2.items():
+        psi1[state] = psi1.get(state, 0) - psi2[state]
 
 
 def scale(psi, mul):
@@ -1923,7 +1936,7 @@ def applyOp(n_spin_orbitals, op, psi, slaterWeightMin=0, restrictions=None, opRe
     return psiNew
 
 
-def occupation_within_restrictions(state, n_spin_orbitals, restrictions):
+def occupation_is_within_restrictions(state, n_spin_orbitals, restrictions):
     if restrictions is None:
         return True
     # state_new_tuple = psr.bytes2tuple(state, n_spin_orbitals)
@@ -2013,7 +2026,7 @@ def applyOp_2(n_spin_orbitals, op, psi, slaterWeightMin=0, restrictions=None, op
             if signTot == 0:
                 continue
             state_new = psr.bitarray2bytes(state_bits_new)
-            if not occupation_within_restrictions(state_new, n_spin_orbitals, restrictions):
+            if not occupation_is_within_restrictions(state_new, n_spin_orbitals, restrictions):
                 continue
             psiNew[state_new] = amp * h * signTot + psiNew.get(state_new, 0)
             if opResult is not None:
@@ -2076,14 +2089,12 @@ def applyOp_3(n_spin_orbitals, op, psi, slaterWeightMin=0, restrictions=None, op
     psiNew = {}
     if opResult is None:
         opResult = {}
-    for state in psi:
-        if state in opResult:
-            addToFirst(psiNew, opResult[state], psi[state])
-            continue
+    solved_states = psi.keys() & opResult.keys()
+    for state in solved_states:
+        addToFirst(psiNew, opResult[state], psi[state])
     newResults = {}
-    for (state, amp), (process, h) in itertools.product(psi.items(), op.items()):
-        if state in opResult:
-            continue
+    for state, (process, h) in itertools.product(psi.keys() - solved_states, op.items()):
+        amp = psi[state]
         state_bits = psr.bytes2bitarray(state, n_spin_orbitals)
         state_bits_new = state_bits.copy()
         signTot = 1
@@ -2098,9 +2109,10 @@ def applyOp_3(n_spin_orbitals, op, psi, slaterWeightMin=0, restrictions=None, op
             if signTot == 0:
                 break
         if signTot == 0:
+            newResults[state] = newResults.get(state, {})
             continue
         state_new = psr.bitarray2bytes(state_bits_new)
-        if not occupation_within_restrictions(state_new, n_spin_orbitals, restrictions):
+        if not occupation_is_within_restrictions(state_new, n_spin_orbitals, restrictions):
             continue
         psiNew[state_new] = amp * h * signTot + psiNew.get(state_new, 0)
         if state not in newResults:
@@ -2111,7 +2123,7 @@ def applyOp_3(n_spin_orbitals, op, psi, slaterWeightMin=0, restrictions=None, op
     # for state, amp in list(psiNew.items()):
     #     if abs(amp) ** 2 < slaterWeightMin:
     #         psiNew.pop(state)
-    return psiNew
+    return {state: amp for state, amp in psiNew.items() if abs(amp) ** 2 > slaterWeightMin}
 
 
 def get_hamiltonian_matrix(n_spin_orbitals, hOp, basis, mode="sparse_MPI", verbose=True):

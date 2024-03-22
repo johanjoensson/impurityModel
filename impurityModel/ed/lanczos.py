@@ -1,9 +1,13 @@
+import itertools
+from enum import Enum
+from time import perf_counter
 import numpy as np
 import scipy as sp
-import time
+from typing import Optional, NamedTuple, Callable
 from mpi4py import MPI
+from impurityModel.ed.manybody_basis import Basis
 from impurityModel.ed.krylovBasis import KrylovBasis
-from enum import Enum
+from impurityModel.ed.finite import applyOp_3 as applyOp, inner, matmul, removeFromFirst
 
 comm = MPI.COMM_WORLD
 rank = comm.rank
@@ -138,7 +142,7 @@ def get_block_Lanczos_matrices(
     psi0: np.ndarray,
     h,
     reort_mode,
-    converged,
+    converged: Callable[[np.ndarray, np.ndarray], bool],
     h_local: bool = False,
     verbose: bool = True,
     max_krylov_size: int = None,
@@ -149,7 +153,7 @@ def get_block_Lanczos_matrices(
     else:
         krylovSize = min(h.shape[0], max_krylov_size)
     eps = np.finfo("float").eps
-    t0 = time.perf_counter()
+    t0 = perf_counter()
 
     t_reorth = 0.0
     t_estimate = 0.0
@@ -198,14 +202,14 @@ def get_block_Lanczos_matrices(
         # We can also not generate more than N Lanczos vectors, meaning we can
         # take at most N/n steps in total
         for i in range(int(np.ceil(krylovSize / n))):
-            t_h = time.perf_counter()
+            t_h = perf_counter()
             comm.Reduce(
                 h @ q_i,
                 wp,
                 op=MPI.SUM,
                 root=0,
             )
-            t_matmul += time.perf_counter() - t_h
+            t_matmul += perf_counter() - t_h
 
             if rank == 0:
                 alphas = np.append(alphas, [np.conj(q[1].T) @ wp], axis=0)
@@ -215,27 +219,27 @@ def get_block_Lanczos_matrices(
                 else:
                     wp -= q[1] @ alphas[i] + q[0] @ np.conj(betas[i - 1].T)
                 if reort_mode == Reort.FULL:
-                    t_ortho = time.perf_counter()
+                    t_ortho = perf_counter()
                     n_reort += 1
                     wp -= Q.calc_projection(wp)
-                    t_reorth += time.perf_counter() - t_ortho
+                    t_reorth += perf_counter() - t_ortho
 
                 q[0] = q[1]
-                t_qr_fact = time.perf_counter()
+                t_qr_fact = perf_counter()
                 q[1], betas[i] = sp.linalg.qr(wp, mode="economic", overwrite_a=True, check_finite=False)
-                t_qr += time.perf_counter() - t_qr_fact
+                t_qr += perf_counter() - t_qr_fact
                 b_mask = np.abs(np.diagonal(betas[i])) < np.finfo(float).eps
-                t_converged = time.perf_counter()
+                t_converged = perf_counter()
 
                 done = converged(alphas, betas)
-                t_conv += time.perf_counter() - t_converged
+                t_conv += perf_counter() - t_converged
 
             done = comm.bcast(done, root=0)
             if done:
                 break
 
             if rank == 0 and reort_mode == Reort.PARTIAL:
-                t_overlap = time.perf_counter()
+                t_overlap = perf_counter()
                 # Clearly a function
                 ####################
                 w_bar = np.zeros((i + 2, n, n), dtype=complex)
@@ -267,11 +271,11 @@ def get_block_Lanczos_matrices(
                 W_new[1, : i + 2] = w_bar
                 W = W_new
                 ###
-                t_estimate += time.perf_counter() - t_overlap
+                t_estimate += perf_counter() - t_overlap
 
                 reort = np.any(np.abs(W[1, : i + 1]) > np.sqrt(eps))
                 if reort or force_reort is not None:
-                    t_ortho = time.perf_counter()
+                    t_ortho = perf_counter()
                     n_reort += 1
                     q[1] = q[1] @ betas[i]
 
@@ -294,7 +298,7 @@ def get_block_Lanczos_matrices(
                     W[1, mask] = eps * np.random.normal(loc=0, scale=1.5, size=W[1, mask].shape)
 
                     force_reort = mask if reort else None
-                    t_reorth += time.perf_counter() - t_ortho
+                    t_reorth += perf_counter() - t_ortho
             if rank == 0 and build_krylov_basis:
                 Q.add(q[1])
 
@@ -323,13 +327,147 @@ def get_block_Lanczos_matrices(
             if delta < 1e-6:
                 break
 
+    print(f"Breaking after iteration {i}, blocksize = {n}")
     if verbose:
-        print(f"Breaking after iteration {i}, blocksize = {n}")
-        print(f"Matrix vector multiplication took {t_matmul:.4f} seconds")
-        print(f"Estimating overlap took {t_estimate:.4f} seconds")
-        print(f"Estimating convergence took {t_conv:.4f} seconds")
-        print(f"QR factorization took {t_qr:.4f} seconds")
-        print(f"Reorthogonalized {n_reort} times")
-        print(f"Reorthogonalizing took {t_reorth:.4f} seconds")
-        print(f"time(get_block_Lanczons_matrices) = {time.perf_counter() - t0:.4f} seconds.")
+        print(f"===> Matrix vector multiplication took {t_matmul:.4f} seconds")
+        print(f"===> Estimating overlap took {t_estimate:.4f} seconds")
+        print(f"===> Estimating convergence took {t_conv:.4f} seconds")
+        print(f"===> QR factorization took {t_qr:.4f} seconds")
+        print(f"===> Reorthogonalized {n_reort} times")
+        print(f"===> Reorthogonalizing took {t_reorth:.4f} seconds")
+        print(f"=> time(get_block_Lanczons_matrices) = {perf_counter() - t0:.4f} seconds.")
     return alphas, betas, Q.vectors[: len(Q)].T if Q is not None else None
+
+
+def block_lanczos(
+    psi0: list[dict],
+    h_op: dict,
+    basis: Basis,
+    converged: Callable[[np.ndarray, np.ndarray], bool],
+    h_mem: dict = None,
+    verbose: bool = True,
+    build_krylov_basis: bool = True,
+    slaterWeightMin: float = 1e-8,
+) -> (np.ndarray, np.ndarray, Optional[list[dict]]):
+    if h_mem is None:
+        h_mem = {}
+    n = len(psi0)
+    N0 = basis.size
+
+    alphas = np.empty((0, n, n), dtype=complex)
+    betas = np.empty((0, n, n), dtype=complex)
+    q = [[{}] * n, psi0]
+    if build_krylov_basis:
+        Q = [psi for psi in psi0]
+    t_add = 0
+    t_vec = 0
+    t_apply = 0
+    t_redist = 0
+    t_linalg = 0
+    t_conv = 0
+    t_qr = 0
+    t_state = 0
+    t_tot = perf_counter()
+
+    it = 0
+    done = False
+    converge_count = 0
+    wp = [None] * n
+    while True:
+        t_tmp = perf_counter()
+        t_add += perf_counter() - t_tmp
+        t_tmp = perf_counter()
+        wp = [
+            applyOp(
+                basis.num_spin_orbitals,
+                h_op,
+                psi_i,
+                slaterWeightMin=slaterWeightMin,
+                restrictions=basis.restrictions,
+                opResult=h_mem,
+            )
+            for psi_i in q[1]
+        ]
+        t_apply += perf_counter() - t_tmp
+        t_tmp = perf_counter()
+        if basis.size > 2 * N0:
+            print("Purging basis!")
+            basis.clear()
+            basis.add_states((state for psis in q for psi in psis for state in psi))
+            N0 = basis.size
+        basis.add_states(state for psi in wp for state in psi)
+        t_add += perf_counter() - t_tmp
+        t_tmp = perf_counter()
+        tmp = basis.redistribute_psis(itertools.chain(q[0], q[1], wp))
+        q[0] = tmp[0:n]
+        q[1] = tmp[n : 2 * n]
+        wp = tmp[2 * n : 3 * n]
+        t_redist += perf_counter() - t_tmp
+        t_tmp = perf_counter()
+        psi = np.empty((len(basis.local_basis), n), dtype=complex)
+        psip = np.empty_like(psi)
+        psim = np.empty_like(psi)
+        for (i, state), j in itertools.product(enumerate(basis.local_basis), range(n)):
+            psi[i, j] = q[1][j].get(state, 0)
+            psim[i, j] = q[0][j].get(state, 0)
+            psip[i, j] = wp[j].get(state, 0)
+        t_vec += perf_counter() - t_tmp
+
+        t_tmp = perf_counter()
+        alpha = np.conj(psi.T) @ psip
+        alphas = np.append(alphas, np.empty((1, n, n), dtype=complex), axis=0)
+        basis.comm.Allreduce(alpha, alphas[-1], op=MPI.SUM)
+
+        psip -= psi @ alphas[-1]
+        if it > 0:
+            psip -= psim @ np.conj(betas[-1].T)
+
+        betas = np.append(betas, np.empty((1, n, n), dtype=complex), axis=0)
+        t_linalg += perf_counter() - t_tmp
+        t_tmp = perf_counter()
+        send_counts = np.empty((basis.comm.size), dtype=int)
+        basis.comm.Gather(np.array([n * len(basis.local_basis)]), send_counts)
+        offsets = np.fromiter(
+            (np.sum(send_counts[:i]) for i in range(basis.comm.size)), dtype=int, count=basis.comm.size
+        )
+
+        qip = np.empty((basis.size, n), dtype=complex) if rank == 0 else None
+        basis.comm.Gatherv(psip, [qip, send_counts, offsets, MPI.DOUBLE_COMPLEX], root=0)
+        t_vec += perf_counter() - t_tmp
+        if rank == 0:
+            t_tmp = perf_counter()
+            qip[:, :], betas[-1] = sp.linalg.qr(qip, mode="economic", overwrite_a=True, check_finite=False)
+            t_qr += perf_counter() - t_tmp
+        comm.Bcast(betas[-1], root=0)
+        if it % 5 == 0 or converge_count > 0:
+            t_tmp = perf_counter()
+            done = converged(alphas, betas)
+            t_conv += perf_counter() - t_tmp
+        done = comm.allreduce(done, op=MPI.LAND)
+        converge_count = (1 + converge_count) if done else 0
+        if converge_count > 0:
+            break
+
+        t_tmp = perf_counter()
+        comm.Scatterv([qip, send_counts, offsets, MPI.DOUBLE_COMPLEX], psip, root=0)
+        q[0] = q[1]
+        q[1] = [{} for _ in range(n)]
+        for j, (i, state) in itertools.product(range(n), enumerate(basis.local_basis)):
+            if abs(psip[i, j]) ** 2 > slaterWeightMin:
+                q[1][j][state] = psip[i, j]
+        t_state += perf_counter() - t_tmp
+        if build_krylov_basis:
+            Q.append(psi for psi in q[1])
+        it += 1
+    print(f"Breaking after iteration {it}, blocksize = {n}")
+    if verbose:
+        print(f"===> Applying the hamiltonian took {t_apply:.4f} seconds")
+        print(f"===> Adding states took {t_add:.4f} seconds")
+        print(f"===> Redistributing states took {t_redist:.4f} seconds")
+        print(f"===> Local linear algebra took {t_linalg:.4f} seconds")
+        print(f"===> Building vectors took {t_vec:.4f} seconds")
+        print(f"===> Estimating convergence took {t_conv:.4f} seconds")
+        print(f"===> QR factorization took {t_qr:.4f} seconds")
+        print(f"===> Building states took {t_state:.4f} seconds")
+        print(f"=> time(get_block_Lanczons_matrices) = {perf_counter() - t_tot:.4f} seconds.", flush=True)
+    return alphas, betas, Q if build_krylov_basis else None

@@ -1025,7 +1025,7 @@ def test_alltoall_states_with_empty_mpi():
     basis.add_states([comm.rank.to_bytes(bytes_per_state, "big")], distributed_sort=False)
     received_states = basis.alltoall_states(send_states)
     assert all(
-        state == comm.rank.to_bytes(bytes_per_state, "big") for rs in received_states for state in rs
+        state == comm.rank.to_bytes(bytes_per_state, "big") for rs in received_states for state in list(rs)
     ), f"{comm.rank=} {received_states=} {basis.local_basis=}"
 
 
