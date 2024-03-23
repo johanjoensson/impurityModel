@@ -623,7 +623,7 @@ class Basis:
             local_indices = range(
                 sum(n_states_per_rank[: self.comm.rank]), sum(n_states_per_rank[: self.comm.rank + 1])
             )
-            local_states = self[(i for i in local_indices if i < self.size)]
+            local_states = self._getitem_sequence([i for i in local_indices if i < self.size])
             self.local_basis = list(local_states)
             local_length = len(self.local_basis)
             self.comm.Allgather(np.array([local_length], dtype=int), size_arr)
@@ -632,7 +632,7 @@ class Basis:
             self.local_indices = range(self.offset, self.offset + local_length)
             self._index_dict = {state: self.offset + i for i, state in enumerate(self.local_basis)}
             self.index_bounds = [np.sum(size_arr[: r + 1]) if size_arr[r] > 0 else None for r in range(self.comm.size)]
-        state_bounds = list(self[(i for i in self.index_bounds if i is not None and i < self.size)])
+        state_bounds = list(self._getitem_sequence([i for i in self.index_bounds if i is not None and i < self.size]))
         self.state_bounds = state_bounds + [None] * (self.comm.size - len(state_bounds))
         self.state_bounds = [
             self.state_bounds[r]
@@ -1093,7 +1093,7 @@ class Basis:
 
     def __iter__(self):
         for i in range(self.size):
-            yield self[i]
+            yield self.__getitem__(i)
 
     def copy(self):
         return Basis(
