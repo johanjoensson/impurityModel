@@ -368,12 +368,15 @@ class Basis:
         )
 
         request.Wait()
-        received_bytes = np.empty((sum(recv_counts) * self.n_bytes), dtype=np.ubyte)
+        received_bytes = bytearray(sum(recv_counts) * self.n_bytes)
         offsets = np.fromiter((np.sum(recv_counts[:i]) for i in range(self.comm.size)), dtype=int, count=self.comm.size)
 
+        # numpy arrays of bytes do not play nicely with MPI, sometimes datacorruption happens.
+        # bytearrays seem to work though...
+        # Do not use Ialltoallv with bytearrays though, the call seems to simply freeze
         self.comm.Alltoallv(
             (
-                np.array([byte for state_list in send_list for state in state_list for byte in state], dtype=np.ubyte),
+                bytearray(byte for state_list in send_list for state in state_list for byte in state),
                 send_counts * self.n_bytes,
                 send_offsets * self.n_bytes,
                 MPI.BYTE,
@@ -670,26 +673,8 @@ class Basis:
         receive_counts = np.empty((self.comm.size), dtype=int)
         self.comm.Alltoall(np.array(send_counts, dtype=int), receive_counts)
         receive_offsets = np.array([sum(receive_counts[:r]) for r in range(self.comm.size)], dtype=int)
-        received_bytes = np.empty((sum(receive_counts) * self.n_bytes), dtype=np.ubyte)
+        received_bytes = bytearray(sum(receive_counts) * self.n_bytes)
 
-        states_request = self.comm.Ialltoallv(
-            # self.comm.Alltoallv(
-            (
-                np.array(
-                    [
-                        byte
-                        for state_list in send_states
-                        for state in state_list
-                        for byte in np.frombuffer(state, dtype=np.ubyte, count=self.n_bytes)
-                    ],
-                    dtype=np.ubyte,
-                ),
-                send_counts * self.n_bytes,
-                send_offsets * self.n_bytes,
-                MPI.BYTE,
-            ),
-            (received_bytes, receive_counts * self.n_bytes, receive_offsets * self.n_bytes, MPI.BYTE),
-        )
         received_amps_arr = np.empty((sum(receive_counts),), dtype=complex)
         amps_request = self.comm.Ialltoallv(
             # self.comm.Alltoallv(
@@ -720,8 +705,19 @@ class Basis:
             ),
             (received_splits_arr, receive_counts, receive_offsets, MPI.INT64_T),
         )
+        # numpy arrays of bytes do not play very nicely with MPI, sometimes datacorruotion happens.
+        # MPI4PYs Ialltoallv des not play nice with bytearrays, the call just freezes.
+        # The solution to both these issues it to use bytearrays and Alltoallv.
+        self.comm.Alltoallv(
+            (
+                bytearray(byte for state_list in send_states for state in state_list for byte in state),
+                send_counts * self.n_bytes,
+                send_offsets * self.n_bytes,
+                MPI.BYTE,
+            ),
+            (received_bytes, receive_counts * self.n_bytes, receive_offsets * self.n_bytes, MPI.BYTE),
+        )
 
-        states_request.Wait()
         received_states: list[Iterable[bytes]] = [[] for _ in send_states]
         received_states = [
             [
