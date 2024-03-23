@@ -295,6 +295,12 @@ def run_impmod_ed(
     u4 = rotate_4index_U(u4, corr_to_cf)
     # impurityModel uses a weird convention for the U-matrix
     u4 = np.moveaxis(u4, 1, 0)
+
+    # For python, it makes more sense to put the frequency index first, instead of last
+    sig_python = np.moveaxis(sig, -1, 0)
+    sig_real_python = np.moveaxis(sig_real, -1, 0)
+    hyb = np.moveaxis(hyb, -1, 0)
+
     # Rotate hybridization function and DFT hamiltonian to the CF basis
     hyb = rotate_Greens_function(hyb, corr_to_cf)
     h_dft = rotate_matrix(h_dft, corr_to_cf)
@@ -399,8 +405,8 @@ def run_impmod_ed(
         n_bath_states=n_bath_states,
         nominal_occ=nominal_occ,
         delta_occ=delta_occ,
-        sig=sig,
-        sig_real=sig_real,
+        sig=sig_python,
+        sig_real=sig_real_python,
         sig_static=sig_static,
         sig_dc=sig_dc,
         corr_to_cf=corr_to_cf,
@@ -413,7 +419,16 @@ def run_impmod_ed(
 
     try:
         selfenergy.run(
-            cluster, h_op, 1j * iw, w, eim, tau, verbosity if rank == 0 else 0, reort=reort, dense_cutoff=dense_cutoff
+            cluster,
+            h_op,
+            1j * iw,
+            w,
+            eim,
+            tau,
+            verbosity if rank == 0 else 0,
+            reort=reort,
+            dense_cutoff=dense_cutoff,
+            comm=comm,
         )
 
         # Rotate self energy from CF basis to RSPt's corr basis
@@ -421,6 +436,10 @@ def run_impmod_ed(
         cluster.sig[:, :, :] = rotate_Greens_function(cluster.sig, u)
         cluster.sig_real[:, :, :] = rotate_Greens_function(cluster.sig_real, u)
         cluster.sig_static[:, :] = rotate_matrix(cluster.sig_static, u)
+
+        comm.Bcast(sig_static, root=0)
+        comm.Bcast(sig_real, root=0)
+        comm.Bcast(sig, root=0)
         er = 0
     except Exception as e:
         print("!" * 100)
@@ -640,7 +659,7 @@ def get_ed_h0(
                 np.save(f, eb)
                 np.save(f, v)
     if verbose:
-        fit_hyb = offdiagonal.get_hyb(w + eim * 1j, eb, v)
+        fit_hyb = np.moveaxis(offdiagonal.get_hyb(w + eim * 1j, eb, v), -1, 0)
         save_Greens_function(rotate_Greens_function(fit_hyb, np.conj(corr_to_cf.T)), w, f"{label}-hyb-fit")
 
     if verbose:

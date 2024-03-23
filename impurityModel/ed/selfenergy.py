@@ -84,7 +84,7 @@ def matrix_print(matrix: np.ndarray, label: str = None) -> None:
     print(ms)
 
 
-def find_gs(h_op, N0, delta_occ, bath_states, num_spin_orbitals, rank, verbose, dense_cutoff, spin_flip_dj):
+def find_gs(h_op, N0, delta_occ, bath_states, num_spin_orbitals, rank, verbose, dense_cutoff, spin_flip_dj, comm):
     """
     Find the occupation corresponding to the lowest energy, compare N0 - 1, N0 and N0 + 1
     """
@@ -110,7 +110,7 @@ def find_gs(h_op, N0, delta_occ, bath_states, num_spin_orbitals, rank, verbose, 
             truncation_threshold=1e9,
             verbose=False and verbose,
             spin_flip_dj=spin_flip_dj,
-            comm=MPI.COMM_WORLD,
+            comm=comm,
         )
         if verbose:
             print(f"Before expansion basis contains {basis.size} elements")
@@ -146,7 +146,7 @@ def find_gs(h_op, N0, delta_occ, bath_states, num_spin_orbitals, rank, verbose, 
     return (gs_impurity_occ, N0[1], N0[2]), basis_gs, h_dict_gs
 
 
-def run(cluster, h0, iw, w, delta, tau, verbosity, reort, dense_cutoff):
+def run(cluster, h0, iw, w, delta, tau, verbosity, reort, dense_cutoff, comm):
     """
     cluster     -- The impmod_cluster object containing loads of data.
     h0          -- Non-interacting hamiltonian.
@@ -166,7 +166,7 @@ def run(cluster, h0, iw, w, delta, tau, verbosity, reort, dense_cutoff):
     cluster.sig_real[:, :, :] = 0
     cluster.sig_static[:, :] = 0
 
-    cluster.sig[:], cluster.sig_real[:], cluster.sig_static[:] = calc_selfenergy(
+    sigma, sigma_real, cluster.sig_static[:, :] = calc_selfenergy(
         h0,
         cluster.u4,
         cluster.slater,
@@ -186,18 +186,21 @@ def run(cluster, h0, iw, w, delta, tau, verbosity, reort, dense_cutoff):
         reort=reort,
         dense_cutoff=dense_cutoff,
         spin_flip_dj=cluster.spin_flip_dj,
+        comm=comm,
     )
 
-    for inequiv_i, block_i in enumerate(cluster.inequivalent_blocks):
-        block_idx_i = np.ix_(cluster.blocks[block_i], cluster.blocks[block_i])
-        for block_j in cluster.identical_blocks[inequiv_i]:
-            block_idx_j = np.ix_(cluster.blocks[block_j], cluster.blocks[block_j])
-            cluster.sig[block_idx_j] = cluster.sig[block_idx_i]
-            cluster.sig_real[block_idx_j] = cluster.sig_real[block_idx_i]
-        for block_j in cluster.transposed_blocks[inequiv_i]:
-            block_idx_j = np.ix_(cluster.blocks[block_j], cluster.blocks[block_j])
-            cluster.sig[block_idx_j] = np.transpose(cluster.sig[block_idx_i], (1, 0, 2))
-            cluster.sig_real[block_idx_j] = np.transpose(cluster.sig_real[block_idx_i], (1, 0, 2))
+    if comm.rank == 0:
+        for inequiv_i, (sig, sig_real) in enumerate(zip(sigma, sigma_real)):
+            for block_i in cluster.identical_blocks[inequiv_i]:
+                block_idx_matsubara = np.ix_(range(sig.shape[0]), cluster.blocks[block_i], cluster.blocks[block_i])
+                cluster.sig[block_idx_matsubara] = sig
+                block_idx_real = np.ix_(range(sig_real.shape[0]), cluster.blocks[block_i], cluster.blocks[block_i])
+                cluster.sig_real[block_idx_real] = sig_real
+            for block_i in cluster.transposed_blocks[inequiv_i]:
+                block_idx_matsubara = np.ix_(range(sig.shape[0]), cluster.blocks[block_i], cluster.blocks[block_i])
+                cluster.sig[block_idx_matsubara] = np.transpose(sig, (0, 2, 1))
+                block_idx_real = np.ix_(range(sig_real.shape[0]), cluster.blocks[block_i], cluster.blocks[block_i])
+                cluster.sig_real[block_idx_real] = np.transpose(sig_real, (0, 2, 1))
 
 
 def calc_selfenergy(
@@ -220,10 +223,10 @@ def calc_selfenergy(
     reort,
     dense_cutoff,
     spin_flip_dj,
+    comm,
 ):
     """ """
     # MPI variables
-    comm = MPI.COMM_WORLD
     rank = comm.rank
 
     num_val_baths, num_con_baths = num_bath_states
@@ -251,6 +254,7 @@ def calc_selfenergy(
         verbose=verbosity,
         dense_cutoff=dense_cutoff,
         spin_flip_dj=spin_flip_dj,
+        comm=comm,
     )
     delta_imp_occ, delta_val_occ, delta_con_occ = delta_occ
     restrictions = basis.restrictions
@@ -285,7 +289,7 @@ def calc_selfenergy(
         eigenValueTol=0,
     )
     psis = basis.build_state(psis_dense.T)
-    basis.local_basis.clear()
+    basis.clear()
     basis.add_states(set(state for psi in psis for state in psi))
     all_psis = comm.gather(psis)
     if rank == 0:
@@ -308,55 +312,52 @@ def calc_selfenergy(
         print("Calculate Interacting Green's function...")
 
     gs_matsubara, gs_realaxis = get_Greens_function(
-        nBaths=sum_bath_states,
         matsubara_mesh=iw,
         omega_mesh=w,
-        es=es,
         psis=psis,
+        es=es,
+        tau=tau,
         basis=basis,
-        l=l,
         hOp=h,
         delta=delta,
         blocks=blocks,
         verbose=verbosity >= 2,
-        mpi_distribute=False,
         reort=reort,
-        dense_cutoff=dense_cutoff,
     )
+    # basis.comm.barrier()
     if gs_matsubara is not None:
-        gs_matsubara_thermal_avg = thermal_average_scale_indep(es[: np.shape(gs_matsubara)[0]], gs_matsubara, tau=tau)
         try:
-            check_greens_function(gs_matsubara_thermal_avg)
+            for gs in gs_matsubara:
+                check_greens_function(gs)
         except UnphysicalGreensFunctionError as err:
             if rank == 0:
                 print(f"WARNING! Unphysical Matsubara-axis Greens function:\n\t{err}")
-        if verbosity >= 2:
-            save_Greens_function(gs=gs_matsubara_thermal_avg, omega_mesh=iw, label=f"G-{cluster_label}", e_scale=1)
+        # if verbosity >= 2:
+        #     save_Greens_function(gs=gs_matsubara, omega_mesh=iw, label=f"G-{cluster_label}", e_scale=1)
     if gs_realaxis is not None:
-        gs_realaxis_thermal_avg = thermal_average_scale_indep(es[: np.shape(gs_realaxis)[0]], gs_realaxis, tau=tau)
         try:
-            check_greens_function(gs_realaxis_thermal_avg)
+            for gs in gs_realaxis:
+                check_greens_function(gs)
         except UnphysicalGreensFunctionError as err:
             if rank == 0:
                 print(f"WARNING! Unphysical real-axis Greens function:\n\t{err}")
-        if verbosity >= 2:
-            save_Greens_function(gs=gs_realaxis_thermal_avg, omega_mesh=w, label=f"G-{cluster_label}", e_scale=1)
+        # if verbosity >= 2:
+        #     save_Greens_function(gs=gs_realaxis, omega_mesh=w, label=f"G-{cluster_label}", e_scale=1)
     if verbosity >= 1:
         print("Calculate self-energy...")
     if gs_realaxis is not None:
         sigma_real = get_sigma(
             omega_mesh=w,
             nBaths=sum_bath_states,
-            g=gs_realaxis_thermal_avg,
+            gs=gs_realaxis,
             h0op=h0,
             delta=delta,
-            save_G0=verbosity >= 2,
-            save_hyb=verbosity >= 2,
             clustername=cluster_label,
             blocks=blocks,
         )
         try:
-            check_sigma(sigma_real)
+            for sig in sigma_real:
+                check_sigma(sig)
         except UnphysicalSelfenergyError as err:
             if rank == 0:
                 print(f"WARNING! Unphysical realaxis selfenergy:\n\t{err}")
@@ -366,16 +367,15 @@ def calc_selfenergy(
         sigma = get_sigma(
             omega_mesh=iw,
             nBaths=sum_bath_states,
-            g=gs_matsubara_thermal_avg,
+            gs=gs_matsubara,
             h0op=h0,
             delta=0,
-            save_G0=verbosity >= 2,
-            save_hyb=verbosity >= 2,
             clustername=cluster_label,
             blocks=blocks,
         )
         try:
-            check_sigma(sigma)
+            for sig in sigma:
+                check_sigma(sig)
         except UnphysicalSelfenergyError as err:
             if rank == 0:
                 print(f"WARNING! Unphysical Matsubara axis selfenergy:\n\t{err}")
@@ -385,38 +385,30 @@ def calc_selfenergy(
         print("Calculating sig_static.")
     if rank == 0:
         sigma_static = get_Sigma_static(sum_bath_states, u4, es, local_psis, l, tau)
+    else:
+        sigma_static = 0
 
     if verbosity >= 2:
-        if iw is not None:
-            save_Greens_function(gs=sigma, omega_mesh=iw, label=f"Sigma-{cluster_label}", e_scale=1)
-        if w is not None:
-            save_Greens_function(gs=sigma_real, omega_mesh=w, label=f"Sigma-{cluster_label}", e_scale=1)
+        # if iw is not None:
+        #     save_Greens_function(gs=sigma, omega_mesh=iw, label=f"Sigma-{cluster_label}", e_scale=1)
+        # if w is not None:
+        #     save_Greens_function(gs=sigma_real, omega_mesh=w, label=f"Sigma-{cluster_label}", e_scale=1)
         np.savetxt(f"real-Sigma_static-{cluster_label}.dat", np.real(sigma_static))
         np.savetxt(f"imag-Sigma_static-{cluster_label}.dat", np.imag(sigma_static))
 
-    sigma = comm.bcast(sigma if rank == 0 else None)
-    sigma_real = comm.bcast(sigma_real if rank == 0 else None)
-    sigma_static = comm.bcast(sigma_static if rank == 0 else None)
     return sigma, sigma_real, sigma_static
 
 
-def check_sigma(sigma):
-    diagonals = [np.diag(sigma[:, :, i]) for i in range(sigma.shape[-1])]
+def check_sigma(sigma: np.ndarray):
+    diagonals = (np.diag(sigma[i, :, :]) for i in range(sigma.shape[-1]))
     if np.any(np.imag(diagonals) > 0):
         raise UnphysicalSelfenergyError("Diagonal term has positive imaginary part.")
 
 
 def check_greens_function(G):
-    diagonals = [np.diag(G[:, :, i]) for i in range(G.shape[-1])]
+    diagonals = (np.diag(G[i, :, :]) for i in range(G.shape[-1]))
     if np.any(np.imag(diagonals) > 0):
         raise UnphysicalGreensFunctionError("Diagonal term has positive imaginary part.")
-    # norms = -1/np.pi*np.trapz(diagonals, energies)
-    # if np.any(np.abs(np.imag(diagonals) - 1) > 5*(energies[1] - energies[0])):
-    #     raise UnphysicalGreensFunction("Imaginary part of diagonal term is not norm-conserving.\n"
-    #                                    "Integrating it does not give 1.")
-    # if np.any(np.abs(np.real(diagonals) + 1) > 5*(energies[1] - energies[0])):
-    #     raise UnphysicalGreensFunction("Real part of diagonal term is not norm-conserving.\n"
-    #                                    "Integrating it does not give 0.")
 
 
 def get_hcorr_v_hbath(h0op, sum_bath_states):
@@ -439,55 +431,34 @@ def get_hcorr_v_hbath(h0op, sum_bath_states):
     return hcorr, v, v_dagger, h_bath
 
 
+def hyb(ws, v, hbath, delta):
+    hyb = np.conj(v.T)[np.newaxis, :, :] @ np.linalg.solve(
+        (ws + 1j * delta)[:, np.newaxis, np.newaxis] * np.identity(v.shape[0], dtype=complex)[np.newaxis, :, :]
+        - hbath[np.newaxis, :, :],
+        v[np.newaxis, :, :],
+    )
+    return hyb
+
+
 def get_sigma(
     omega_mesh,
     nBaths,
-    g,
+    gs,
     h0op,
     delta,
-    return_g0=False,
-    save_G0=False,
-    save_hyb=False,
+    blocks,
     clustername="",
-    blocks=None,
 ):
-    hcorr, v, v_dagger, hbath = get_hcorr_v_hbath(h0op, nBaths)
+    hcorr, v_full, _, hbath = get_hcorr_v_hbath(h0op, nBaths)
 
-    n = hcorr.shape[0]
-    N = hbath.shape[0]
+    res = []
+    for block, g in zip(blocks, gs):
+        block_idx = np.ix_(block, block)
+        wIs = (omega_mesh + 1j * delta)[:, np.newaxis, np.newaxis] * np.eye(len(block))[np.newaxis, :, :]
+        g0_inv = wIs - hcorr[block_idx] - hyb(omega_mesh, v_full[:, block], hbath, delta)
+        res.append(g0_inv - np.linalg.inv(g))
 
-    def hyb(ws):
-        hyb = np.conj(v.T)[np.newaxis, :, :] @ np.linalg.solve(
-            (ws + 1j * delta)[:, np.newaxis, np.newaxis] * np.identity(N, dtype=complex)[np.newaxis, :, :]
-            - hbath[np.newaxis, :, :],
-            v[np.newaxis, :, :],
-        )
-        return hyb
-
-    if save_hyb:
-        hybridization_function = hyb(omega_mesh)
-        save_Greens_function(
-            np.moveaxis(hybridization_function, 0, -1), omega_mesh, label="Hyb-" + clustername, e_scale=1
-        )
-
-    wIs = (omega_mesh + 1j * delta)[:, np.newaxis, np.newaxis] * np.eye(n)[np.newaxis, :, :]
-    hcorrs = hcorr[np.newaxis, :, :]
-    g0_inv = wIs - hcorrs - hyb(omega_mesh)
-
-    if save_G0:
-        save_Greens_function(np.moveaxis(np.linalg.inv(g0_inv), 0, -1), omega_mesh, "G0-" + clustername, e_scale=1)
-
-    if blocks is None:
-        g_inv = np.linalg.inv(np.moveaxis(g, -1, 0))
-        return np.moveaxis(g0_inv - g_inv, 0, -1)
-    else:
-        sig = np.zeros_like(g)
-        for block in blocks:
-            block_idx = np.ix_(block, block)
-            sig[block_idx] = np.moveaxis(g0_inv, 0, -1)[block_idx] - np.moveaxis(
-                np.linalg.inv(np.moveaxis(g[block_idx], -1, 0)), 0, -1
-            )
-        return sig
+    return res
 
 
 def get_Sigma_static(nBaths, U4, es, psis, l, tau):
@@ -592,8 +563,8 @@ def get_selfenergy(
         print("Writing sig_static to files")
         np.savetxt(f"real-sig_static-{clustername}.dat", np.real(sigma_static))
         np.savetxt(f"imag-sig_static-{clustername}.dat", np.imag(sigma_static))
-    if rank == 0:
-        save_Greens_function(gs=sigma_real, omega_mesh=omega_mesh, label=f"Sigma-{clustername}", e_scale=1)
+    # if rank == 0:
+    #     save_Greens_function(gs=sigma_real, omega_mesh=omega_mesh, label=f"Sigma-{clustername}", e_scale=1)
 
 
 if __name__ == "__main__":

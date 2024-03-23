@@ -9,10 +9,6 @@ from impurityModel.ed.manybody_basis import Basis
 from impurityModel.ed.krylovBasis import KrylovBasis
 from impurityModel.ed.finite import applyOp_3 as applyOp, inner, matmul, removeFromFirst
 
-comm = MPI.COMM_WORLD
-rank = comm.rank
-ranks = comm.size
-
 
 class Reort(Enum):
     NONE = 0
@@ -20,7 +16,7 @@ class Reort(Enum):
     FULL = 2
 
 
-def calculate_thermal_gs(h, block_size, e_max, v0=None, reort=Reort.FULL):
+def calculate_thermal_gs(h, block_size, e_max, v0=None, reort=Reort.FULL, comm=None):
     def converged(alphas, betas):
         e, s = eigsh(alphas, betas, de=e_max, select="m")
         sorted_indices = np.argsort(e)
@@ -76,7 +72,7 @@ def build_banded_matrix(alphas, betas):
     return bands
 
 
-def eigsh(alphas, betas, de=None, Q=None, eigvals_only=False, select="a", select_range=None, max_ev=0):
+def eigsh(alphas, betas, de=None, Q=None, eigvals_only=False, select="a", select_range=None, max_ev=0, comm=None):
     """
     Solve the (block) lanczos eigenvalue problem. Return the eigenvalues and
     (optionally) the corresponding eigenvectors. Return only eigenvalues (and,
@@ -147,6 +143,7 @@ def get_block_Lanczos_matrices(
     verbose: bool = True,
     max_krylov_size: int = None,
     build_krylov_basis: bool = True,
+    comm=None,
 ):
     if max_krylov_size is None:
         krylovSize = h.shape[0]
@@ -169,7 +166,7 @@ def get_block_Lanczos_matrices(
     Q = None
     build_krylov_basis = build_krylov_basis or reort_mode != Reort.NONE
     n_reort = 0
-    if rank == 0:
+    if comm.rank == 0:
         if build_krylov_basis:
             Q = KrylovBasis(N, psi0.dtype, psi0)
         q = np.zeros((2, N, n), dtype=complex, order="C")
@@ -187,7 +184,7 @@ def get_block_Lanczos_matrices(
         ),
         root=0,
     )
-    if rank == 0 and reort_mode != Reort.NONE:
+    if comm.rank == 0 and reort_mode != Reort.NONE:
         W = np.zeros((2, 1, n, n), dtype=complex)
         W[1] = np.identity(n)
         force_reort = None
@@ -196,7 +193,7 @@ def get_block_Lanczos_matrices(
     if h_local:
         done = False
         wp = None
-        if rank == 0:
+        if comm.rank == 0:
             wp = np.empty((h.shape[0], q.shape[2]), dtype=complex, order="C")
         # Run at least 1 iteration (to generate $\alpha_0$).
         # We can also not generate more than N Lanczos vectors, meaning we can
@@ -211,7 +208,7 @@ def get_block_Lanczos_matrices(
             )
             t_matmul += perf_counter() - t_h
 
-            if rank == 0:
+            if comm.rank == 0:
                 alphas = np.append(alphas, [np.conj(q[1].T) @ wp], axis=0)
                 betas = np.append(betas, [np.empty((n, n), dtype=complex)], axis=0)
                 if i == 0:
@@ -238,7 +235,7 @@ def get_block_Lanczos_matrices(
             if done:
                 break
 
-            if rank == 0 and reort_mode == Reort.PARTIAL:
+            if comm.rank == 0 and reort_mode == Reort.PARTIAL:
                 t_overlap = perf_counter()
                 # Clearly a function
                 ####################
@@ -299,7 +296,7 @@ def get_block_Lanczos_matrices(
 
                     force_reort = mask if reort else None
                     t_reorth += perf_counter() - t_ortho
-            if rank == 0 and build_krylov_basis:
+            if comm.rank == 0 and build_krylov_basis:
                 Q.add(q[1])
 
             comm.Scatterv(
@@ -391,7 +388,6 @@ def block_lanczos(
         t_apply += perf_counter() - t_tmp
         t_tmp = perf_counter()
         if basis.size > 2 * N0:
-            print("Purging basis!")
             basis.clear()
             basis.add_states((state for psis in q for psi in psis for state in psi))
             N0 = basis.size
@@ -416,42 +412,44 @@ def block_lanczos(
         t_tmp = perf_counter()
         alpha = np.conj(psi.T) @ psip
         alphas = np.append(alphas, np.empty((1, n, n), dtype=complex), axis=0)
-        basis.comm.Allreduce(alpha, alphas[-1], op=MPI.SUM)
+        request = basis.comm.Iallreduce(alpha, alphas[-1], op=MPI.SUM)
 
-        psip -= psi @ alphas[-1]
         if it > 0:
             psip -= psim @ np.conj(betas[-1].T)
-
         betas = np.append(betas, np.empty((1, n, n), dtype=complex), axis=0)
-        t_linalg += perf_counter() - t_tmp
-        t_tmp = perf_counter()
         send_counts = np.empty((basis.comm.size), dtype=int)
         basis.comm.Gather(np.array([n * len(basis.local_basis)]), send_counts)
+
+        request.Wait()
+        psip -= psi @ alphas[-1]
+        t_linalg += perf_counter() - t_tmp
+        t_tmp = perf_counter()
         offsets = np.fromiter(
             (np.sum(send_counts[:i]) for i in range(basis.comm.size)), dtype=int, count=basis.comm.size
         )
 
-        qip = np.empty((basis.size, n), dtype=complex) if rank == 0 else None
+        qip = np.empty((basis.size, n), dtype=complex) if basis.comm.rank == 0 else None
         basis.comm.Gatherv(psip, [qip, send_counts, offsets, MPI.DOUBLE_COMPLEX], root=0)
         t_vec += perf_counter() - t_tmp
-        if rank == 0:
+        if basis.comm.rank == 0:
             t_tmp = perf_counter()
             qip[:, :], betas[-1] = sp.linalg.qr(qip, mode="economic", overwrite_a=True, check_finite=False)
             t_qr += perf_counter() - t_tmp
-        comm.Bcast(betas[-1], root=0)
+        basis.comm.Bcast(betas[-1], root=0)
+        request = basis.comm.Iscatterv([qip, send_counts, offsets, MPI.DOUBLE_COMPLEX], psip, root=0)
         if it % 5 == 0 or converge_count > 0:
             t_tmp = perf_counter()
             done = converged(alphas, betas)
             t_conv += perf_counter() - t_tmp
-        done = comm.allreduce(done, op=MPI.LAND)
+        done = basis.comm.allreduce(done, op=MPI.LAND)
         converge_count = (1 + converge_count) if done else 0
         if converge_count > 0:
             break
 
         t_tmp = perf_counter()
-        comm.Scatterv([qip, send_counts, offsets, MPI.DOUBLE_COMPLEX], psip, root=0)
         q[0] = q[1]
         q[1] = [{} for _ in range(n)]
+        request.Wait()
         for j, (i, state) in itertools.product(range(n), enumerate(basis.local_basis)):
             if abs(psip[i, j]) ** 2 > slaterWeightMin:
                 q[1][j][state] = psip[i, j]
@@ -459,8 +457,8 @@ def block_lanczos(
         if build_krylov_basis:
             Q.append(psi for psi in q[1])
         it += 1
-    print(f"Breaking after iteration {it}, blocksize = {n}")
     if verbose:
+        print(f"Breaking after iteration {it}, blocksize = {n}")
         print(f"===> Applying the hamiltonian took {t_apply:.4f} seconds")
         print(f"===> Adding states took {t_add:.4f} seconds")
         print(f"===> Redistributing states took {t_redist:.4f} seconds")
