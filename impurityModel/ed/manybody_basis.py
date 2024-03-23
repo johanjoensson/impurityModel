@@ -676,7 +676,13 @@ class Basis:
             # self.comm.Alltoallv(
             (
                 np.array(
-                    [byte for state_list in send_states for state in state_list for byte in state], dtype=np.ubyte
+                    [
+                        byte
+                        for state_list in send_states
+                        for state in state_list
+                        for byte in np.frombuffer(state, dtype=np.ubyte, count=self.n_bytes)
+                    ],
+                    dtype=np.ubyte,
                 ),
                 send_counts * self.n_bytes,
                 send_offsets * self.n_bytes,
@@ -931,7 +937,7 @@ class Basis:
         for i, query in enumerate(queries):
             if query >= self.offset and query < self.offset + len(self.local_basis):
                 results[i * self.n_bytes : (i + 1) * self.n_bytes] = np.frombuffer(
-                    self.local_basis[query - self.offset], dtype=np.ubyte
+                    self.local_basis[query - self.offset], dtype=np.ubyte, count=self.n_bytes
                 )
                 # results[i * self.n_bytes : (i + 1) * self.n_bytes] = np.frombuffer(
                 #     self.local_basis[query - self.offset], dtype=np.ubyte, count=self.n_bytes
