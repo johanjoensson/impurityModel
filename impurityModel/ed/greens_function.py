@@ -2,7 +2,7 @@ import itertools
 import numpy as np
 import scipy as sp
 import time
-from typing import Optional
+from typing import Optional, Iterable
 
 from impurityModel.ed import spectra
 from impurityModel.ed import finite
@@ -12,18 +12,33 @@ from impurityModel.ed.manybody_basis import CIPSI_Basis, Basis
 from mpi4py import MPI
 
 
-def split_comm_and_redistribute_basis(l, basis, psis):
+def split_comm_and_redistribute_basis(priorities: Iterable[float], basis: Basis, psis: list[dict]):
     comm = basis.comm
-    n_colors = min(comm.size, len(l))
-    procs_per_color = np.array([comm.size // n_colors] * n_colors, dtype=int)
-    procs_per_color[: comm.size % n_colors] += 1
+    normalized_priorities = np.array([p for p in priorities], dtype=float)
+    normalized_priorities /= np.sum(normalized_priorities)
+    n_colors = min(comm.size, len(normalized_priorities))
+    if len(normalized_priorities) < comm.size:
+        procs_per_color = np.array([max(1, n) for n in comm.size * normalized_priorities], dtype=int)
+    else:
+        procs_per_color = np.array([1] * n_colors, dtype=int)
+    diff = np.sum(procs_per_color) - comm.size
+    sorted_indices = np.argsort(normalized_priorities)[::-1]
+    if diff != 0:
+        for _ in range(1 + (abs(diff) // n_colors)):
+            if diff > 0:
+                mask = sorted_indices[procs_per_color > 1]
+                procs_per_color[mask[-(diff % n_colors) :]] -= 1
+                diff = np.sum(procs_per_color) - comm.size
+            else:
+                procs_per_color[sorted_indices[: abs(diff) % n_colors]] += 1
+                diff = np.sum(procs_per_color) - comm.size
+    assert sum(procs_per_color) == comm.size
     proc_cutoffs = np.cumsum(procs_per_color)
     color = np.argmax(comm.rank < proc_cutoffs)
-    # color = comm.rank // (comm.size // n_colors)
     split_comm = comm.Split(color=color, key=0)
     split_roots = [0] + proc_cutoffs[:-1].tolist()
-    items_per_color = np.array([len(l) // n_colors] * n_colors, dtype=int)
-    items_per_color[: len(l) % n_colors] += 1
+    items_per_color = np.array([len(priorities) // n_colors] * n_colors, dtype=int)
+    items_per_color[: len(priorities) % n_colors] += 1
     indices_start = sum(items_per_color[:color])
     indices_end = sum(items_per_color[: color + 1])
 
@@ -78,7 +93,7 @@ def get_Greens_function(
         blocks_per_color,
         block_basis,
         psis,
-    ) = split_comm_and_redistribute_basis(blocks, basis, psis)
+    ) = split_comm_and_redistribute_basis([len(block) ** 2 for block in blocks], basis, psis)
     gs_matsubara_block = []
     gs_realaxis_block = []
     for opIPS, opPS in (
@@ -252,8 +267,7 @@ def calc_Greens_function_with_offdiag(
         eigen_per_color,
         eigen_basis,
         psis,
-    ) = split_comm_and_redistribute_basis(es, basis, psis)
-    print(f"{eigen_roots=}")
+    ) = split_comm_and_redistribute_basis([1 for _ in es], basis, psis)
     gs_matsubara_received = np.empty((len(eigen_roots), len(iw), n, n), dtype=complex) if comm.rank == 0 else None
     gs_realaxis_received = np.empty((len(eigen_roots), len(w), n, n), dtype=complex) if comm.rank == 0 else None
     e0 = min(es)
