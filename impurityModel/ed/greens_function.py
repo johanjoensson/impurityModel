@@ -14,14 +14,19 @@ from mpi4py import MPI
 
 def split_comm_and_redistribute_basis(l, basis, psis):
     comm = basis.comm
-    color = comm.rank % len(l)
     n_colors = min(comm.size, len(l))
+    procs_per_color = np.array([comm.size // n_colors] * n_colors, dtype=int)
+    procs_per_color[: comm.size % n_colors] += 1
+    proc_cutoffs = np.cumsum(procs_per_color)
+    color = np.argmax(comm.rank < proc_cutoffs)
+    # color = comm.rank // (comm.size // n_colors)
     split_comm = comm.Split(color=color, key=0)
-    split_roots = list(range(n_colors))
+    split_roots = [0] + proc_cutoffs[:-1].tolist()
     items_per_color = np.array([len(l) // n_colors] * n_colors, dtype=int)
     items_per_color[: len(l) % n_colors] += 1
     indices_start = sum(items_per_color[:color])
     indices_end = sum(items_per_color[: color + 1])
+
     if split_comm.rank == 0:
         assert comm.rank in split_roots
 
@@ -248,6 +253,7 @@ def calc_Greens_function_with_offdiag(
         eigen_basis,
         psis,
     ) = split_comm_and_redistribute_basis(es, basis, psis)
+    print(f"{eigen_roots=}")
     gs_matsubara_received = np.empty((len(eigen_roots), len(iw), n, n), dtype=complex) if comm.rank == 0 else None
     gs_realaxis_received = np.empty((len(eigen_roots), len(w), n, n), dtype=complex) if comm.rank == 0 else None
     e0 = min(es)
@@ -310,12 +316,12 @@ def calc_Greens_function_with_offdiag(
         if w is not None:
             requests.append(comm.Isend(gs_realaxis_block, 0))
     if comm.rank == 0:
-        for r in eigen_roots:
+        for i, r in enumerate(eigen_roots):
             if iw is not None:
-                requests.append(comm.Irecv(gs_matsubara_received[r], r))
-        for r in eigen_roots:
+                requests.append(comm.Irecv(gs_matsubara_received[i], r))
+        for i, r in enumerate(eigen_roots):
             if w is not None:
-                requests.append(comm.Irecv(gs_realaxis_received[r], r))
+                requests.append(comm.Irecv(gs_realaxis_received[i], r))
         requests[-1].Waitall(requests)
         if iw is not None:
             gs_matsubara_block = np.sum(gs_matsubara_received, axis=0)
