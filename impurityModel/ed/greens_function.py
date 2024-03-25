@@ -341,8 +341,8 @@ def calc_Greens_function_with_offdiag(
             gs_matsubara_block = np.sum(gs_matsubara_received, axis=0)
         if w is not None:
             gs_realaxis_block = np.sum(gs_realaxis_received, axis=0)
-    if len(requests) > 0:
-        requests[-1].Waitall(requests)
+    # if len(requests) > 0:
+    #     requests[-1].Waitall(requests)
     return gs_matsubara_block, gs_realaxis_block
 
 
@@ -397,7 +397,7 @@ def get_block_Green(
     comm.Gather(np.array([n * len(basis.local_basis)], dtype=int), counts, root=0)
     offsets = [sum(counts[:r]) for r in range(len(counts))] if comm.rank == 0 else None
     psi_start_0 = np.empty((N, n), dtype=complex, order="C") if comm.rank == 0 else None
-    comm.Gatherv(psi_start, (psi_start_0, counts, offsets, MPI.DOUBLE_COMPLEX), root=0)
+    comm.Gatherv(psi_start, (psi_start_0, counts, offsets, MPI.C_DOUBLE_COMPLEX), root=0)
     r: Optional[np.ndarray] = None
     if comm.rank == 0:
         # Do a QR decomposition of the starting block.
@@ -415,7 +415,7 @@ def get_block_Green(
     comm.Gather(np.array([columns * len(basis.local_basis)], dtype=int), counts, root=0)
     offsets = [sum(counts[:r]) for r in range(len(counts))] if comm.rank == 0 else None
     psi0 = np.zeros((len(basis.local_basis), columns), dtype=complex)
-    comm.Scatterv((psi0_0, counts, offsets, MPI.DOUBLE_COMPLEX) if comm.rank == 0 else None, psi0, root=0)
+    comm.Scatterv((psi0_0, counts, offsets, MPI.C_DOUBLE_COMPLEX) if comm.rank == 0 else None, psi0, root=0)
     if verbose:
         print(f"time(set up psi_start) = {time.perf_counter() - t0}")
 
@@ -513,7 +513,7 @@ def block_Green(
     comm.Gather(np.array([n * len(basis.local_basis)], dtype=int), counts, root=0)
     offsets = [sum(counts[:r]) for r in range(len(counts))] if comm.rank == 0 else None
     psi0 = np.empty((N, n), dtype=complex, order="C") if comm.rank == 0 else None
-    comm.Gatherv(psi_start, (psi0, counts, offsets, MPI.DOUBLE_COMPLEX), root=0)
+    comm.Gatherv(psi_start, (psi0, counts, offsets, MPI.C_DOUBLE_COMPLEX), root=0)
     r: Optional[np.ndarray] = None
     if comm.rank == 0:
         # Do a QR decomposition of the starting block.
@@ -527,7 +527,7 @@ def block_Green(
         return np.zeros((len(iws), n, n), dtype=complex), np.zeros((len(ws), n, n), dtype=complex)
     if comm.rank != 0:
         psi0 = None
-    comm.Scatterv((psi0, counts, offsets, MPI.DOUBLE_COMPLEX), psi_start, root=0)
+    comm.Scatterv((psi0, counts, offsets, MPI.C_DOUBLE_COMPLEX), psi_start, root=0)
     psi = [{} for _ in range(n)]
     for j, (i, state) in itertools.product(range(n), enumerate(basis.local_basis)):
         if abs(psi_start[i, j]) ** 2 > slaterWeightMin:
@@ -615,7 +615,7 @@ def calc_mpi_Greens_function_from_alpha_beta(alphas, betas, iws, ws, e, delta, r
         comm.Gather(np.array([gs_matsubara_local.shape[1] ** 2 * len(iws_split)], dtype=int), counts)
         offsets = [sum(counts[:r]) for r in range(len(counts))] if comm.rank == 0 else None
         gs_matsubara = np.empty((len(iws), r.shape[0], r.shape[0]), dtype=complex) if comm.rank == 0 else None
-        comm.Gatherv(gs_matsubara_local, (gs_matsubara, counts, offsets, MPI.DOUBLE_COMPLEX), root=0)
+        comm.Gatherv(gs_matsubara_local, (gs_matsubara, counts, offsets, MPI.C_DOUBLE_COMPLEX), root=0)
         if comm.rank == 0:
             gs_matsubara = np.conj(r.T)[np.newaxis, :, :] @ np.linalg.solve(gs_matsubara, r[np.newaxis, :, :])
     if realaxis:
@@ -623,7 +623,7 @@ def calc_mpi_Greens_function_from_alpha_beta(alphas, betas, iws, ws, e, delta, r
         comm.Gather(np.array([gs_realaxis_local.shape[1] ** 2 * len(ws_split)], dtype=int), counts)
         offsets = [sum(counts[:r]) for r in range(len(counts))] if comm.rank == 0 else None
         gs_realaxis = np.empty((len(ws), r.shape[0], r.shape[0]), dtype=complex) if comm.rank == 0 else None
-        comm.Gatherv(gs_realaxis_local, (gs_realaxis, counts, offsets, MPI.DOUBLE_COMPLEX), root=0)
+        comm.Gatherv(gs_realaxis_local, (gs_realaxis, counts, offsets, MPI.C_DOUBLE_COMPLEX), root=0)
         if comm.rank == 0:
             gs_realaxis = np.conj(r.T)[np.newaxis, :, :] @ np.linalg.solve(gs_realaxis, r[np.newaxis, :, :])
     return gs_matsubara, gs_realaxis

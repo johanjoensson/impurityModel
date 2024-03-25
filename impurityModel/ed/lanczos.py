@@ -180,7 +180,7 @@ def get_block_Lanczos_matrices(
             q[1],
             counts,
             offsets,
-            MPI.DOUBLE_COMPLEX,
+            MPI.C_DOUBLE_COMPLEX,
         ),
         root=0,
     )
@@ -300,7 +300,7 @@ def get_block_Lanczos_matrices(
                 Q.add(q[1])
 
             comm.Scatterv(
-                (q[1], counts, offsets, MPI.DOUBLE_COMPLEX),
+                (q[1], counts, offsets, MPI.C_DOUBLE_COMPLEX),
                 q_i,
                 root=0,
             )
@@ -429,14 +429,14 @@ def block_lanczos(
         )
 
         qip = np.empty((basis.size, n), dtype=complex) if basis.comm.rank == 0 else None
-        basis.comm.Gatherv(psip, [qip, send_counts, offsets, MPI.DOUBLE_COMPLEX], root=0)
+        basis.comm.Gatherv(psip, [qip, send_counts, offsets, MPI.C_DOUBLE_COMPLEX], root=0)
         t_vec += perf_counter() - t_tmp
         if basis.comm.rank == 0:
             t_tmp = perf_counter()
             qip[:, :], betas[-1] = sp.linalg.qr(qip, mode="economic", overwrite_a=True, check_finite=False)
             t_qr += perf_counter() - t_tmp
         basis.comm.Bcast(betas[-1], root=0)
-        request = basis.comm.Iscatterv([qip, send_counts, offsets, MPI.DOUBLE_COMPLEX], psip, root=0)
+        request = basis.comm.Iscatterv([qip, send_counts, offsets, MPI.C_DOUBLE_COMPLEX], psip, root=0)
         if it % 5 == 0 or converge_count > 0:
             t_tmp = perf_counter()
             done = converged(alphas, betas)

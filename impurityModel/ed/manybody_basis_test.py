@@ -1022,7 +1022,7 @@ def test_alltoall_states_with_empty_mpi():
     basis = Basis(
         ls=[], bath_states=({}, {}), initial_basis=[], num_spin_orbitals=num_spin_orbitals, verbose=True, comm=comm
     )
-    basis.add_states([comm.rank.to_bytes(bytes_per_state, "big")], distributed_sort=False)
+    basis.add_states([comm.rank.to_bytes(bytes_per_state, "big")])
     received_states = basis.alltoall_states(send_states)
     assert all(
         state == comm.rank.to_bytes(bytes_per_state, "big") for rs in received_states for state in list(rs)
