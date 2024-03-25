@@ -505,113 +505,104 @@ class Basis:
 
         # state_bounds: list[Optional[bytes]] = [None] * self.comm.size
         last_rank: int = self.comm.size - 1
-        if not distributed_sort:
-            old_basis = self.comm.reduce(set(self.local_basis), op=combine_sets_op, root=0)
-            new_states = self.comm.reduce(set(new_states), op=combine_sets_op, root=0)
-            # self.local_basis.clear()
-            send_basis: Optional[list[list[bytes]]] = None
-            if self.comm.rank == 0:
-                new_basis = sorted(old_basis | new_states)
-                send_basis = [[] for _ in range(self.comm.size)]
-                start = 0
-                for r in range(self.comm.size):
-                    stop = start + len(new_basis) // self.comm.size
-                    if r < len(new_basis) % self.comm.size:
-                        stop += 1
-                    send_basis[r] = new_basis[start:stop]
-                    self.state_bounds[r] = new_basis[start]
-                    start = stop
-            local_basis = self.comm.scatter(send_basis, root=0)
-            self.state_bounds = self.comm.bcast(self.state_bounds if self.comm.rank == 0 else None, root=0)
-            for r in range(self.comm.size - 1):
-                if self.state_bounds[r] == self.state_bounds[r + 1]:
-                    last_rank = r
-                    break
-            for r in range(last_rank + 1, len(self.state_bounds)):
-                self.state_bounds[r] = None
-        else:
-            t0 = perf_counter()
-            local_it = merge(self.local_basis, sorted(set(new_states)))
-            local_states = []
-            for state, _ in itertools.groupby(local_it):
-                local_states.append(state)
-            t0 = perf_counter() - t0
-            t0 = perf_counter()
-            local_sizes = np.empty((self.comm.size,), dtype=int)
-            self.comm.Allgather(np.array([len(self.local_basis)], dtype=int), local_sizes)
-            t0 = perf_counter() - t0
-            t0 = perf_counter()
-            for r in range(self.comm.size):
-                if self.state_bounds[r] is None:
-                    last_rank = r
-                    break
+        t0 = perf_counter()
+        local_it = merge(self.local_basis, sorted(set(new_states)))
+        local_states = []
+        for state, _ in itertools.groupby(local_it):
+            local_states.append(state)
+        t0 = perf_counter() - t0
+        t0 = perf_counter()
+        local_sizes = np.empty((self.comm.size,), dtype=int)
+        self.comm.Allgather(np.array([len(self.local_basis)], dtype=int), local_sizes)
+        t0 = perf_counter() - t0
+        t0 = perf_counter()
+        for r in range(self.comm.size):
+            if self.state_bounds[r] is None:
+                last_rank = r
+                break
 
-            send_list: list[list[bytes]] = [[] for _ in range(self.comm.size)]
-            treated_states = [False] * len(local_states)
-            for (i, state), (r, state_bounds) in itertools.product(
-                enumerate(local_states), enumerate(self.state_bounds)
-            ):
-                if treated_states[i]:
-                    continue
-                if state_bounds is None or state < state_bounds:
-                    send_list[r].append(state)
-                    treated_states[i] = True
+        send_list: list[list[bytes]] = [[] for _ in range(self.comm.size)]
+        treated_states = [False] * len(local_states)
+        for (i, state), (r, state_bounds) in itertools.product(enumerate(local_states), enumerate(self.state_bounds)):
+            if treated_states[i]:
+                continue
+            if state_bounds is None or state < state_bounds:
+                send_list[r].append(state)
+                treated_states[i] = True
 
-            recv_counts = np.empty((self.comm.size), dtype=int)
-            request = self.comm.Ialltoall(
-                (np.fromiter((len(l) for l in send_list), dtype=int, count=len(send_list)), MPI.INT64_T), recv_counts
+        recv_counts = np.empty((self.comm.size), dtype=int)
+        request = self.comm.Ialltoall(
+            (np.fromiter((len(l) for l in send_list), dtype=int, count=len(send_list)), MPI.INT64_T), recv_counts
+        )
+
+        send_counts = np.fromiter((len(l) for l in send_list), dtype=int, count=len(send_list))
+        send_offsets = np.fromiter(
+            (sum(send_counts[:i]) for i in range(self.comm.size)), dtype=int, count=self.comm.size
+        )
+
+        request.Wait()
+        received_bytes = [bytearray(recv_counts[r] * self.n_bytes) for r in range(self.comm.size)]
+        # received_bytes = bytearray(sum(recv_counts) * self.n_bytes)
+        # received_bytes = np.empty((sum(recv_counts) * self.n_bytes), dtype=np.ubyte)
+        offsets = np.fromiter((sum(recv_counts[:i]) for i in range(self.comm.size)), dtype=int, count=self.comm.size)
+
+        send_requests = []
+        for r in range(self.comm.size):
+            if send_counts[r] == 0:
+                continue
+            send_requests.append(
+                self.comm.Isend(
+                    (
+                        bytearray(byte for state in send_list[r] for byte in state),
+                        send_counts[r] * self.n_bytes,
+                        MPI.BYTE,
+                    ),
+                    r,
+                )
             )
+        receive_requests = []
+        for r in range(self.comm.size):
+            if recv_counts[r] == 0:
+                continue
+            receive_requests.append(self.comm.Irecv((received_bytes[r], recv_counts[r] * self.n_bytes, MPI.BYTE), r))
+        if len(receive_requests) > 0:
+            receive_requests[-1].Waitall(receive_requests)
+        # self.comm.Alltoallv(
+        #     [
+        #         bytearray(byte for states in send_list for state in states for byte in state),
+        #         send_counts * self.n_bytes,
+        #         send_offsets * self.n_bytes,
+        #         MPI.BYTE,
+        #     ],
+        #     [received_bytes, recv_counts * self.n_bytes, offsets * self.n_bytes, MPI.BYTE],
+        # )
+        t0 = perf_counter() - t0
 
-            send_counts = np.fromiter((len(l) for l in send_list), dtype=int, count=len(send_list))
-            send_offsets = np.fromiter(
-                (sum(send_counts[:i]) for i in range(self.comm.size)), dtype=int, count=self.comm.size
-            )
+        t0 = perf_counter()
+        received_states = []
+        for r in range(self.comm.size):
+            received_states.append([bytes(bs) for bs in batched(received_bytes[r], self.n_bytes)])
 
-            request.Wait()
-            received_bytes = bytearray(sum(recv_counts) * self.n_bytes)
-            # received_bytes = np.empty((sum(recv_counts) * self.n_bytes), dtype=np.ubyte)
-            offsets = np.fromiter(
-                (sum(recv_counts[:i]) for i in range(self.comm.size)), dtype=int, count=self.comm.size
-            )
+        # if sum(recv_counts) > 0:
+        #     received_states = []
+        #     offset = 0
+        #     for r in range(self.comm.size):
+        #         received_states.append(
+        #             [
+        #                 bytes(received_bytes[(offset + i) * self.n_bytes : (offset + i + 1) * self.n_bytes])
+        #                 for i in range(recv_counts[r])
+        #             ]
+        #         )
+        #         offset += recv_counts[r]
+        # else:
+        #     received_states = []
+        t0 = perf_counter() - t0
 
-            self.comm.Alltoallv(
-                [
-                    bytearray(byte for states in send_list for state in states for byte in state),
-                    # np.array([byte for states in send_list for state in states for byte in state], dtype=np.ubyte),
-                    send_counts * self.n_bytes,
-                    send_offsets * self.n_bytes,
-                    MPI.BYTE,
-                ],
-                [received_bytes, recv_counts * self.n_bytes, offsets * self.n_bytes, MPI.BYTE],
-            )
-            t0 = perf_counter() - t0
-
-            t0 = perf_counter()
-            if sum(recv_counts) > 0:
-                received_states = []
-                offset = 0
-                for r in range(self.comm.size):
-                    received_states.append(
-                        [
-                            bytes(received_bytes[(offset + i) * self.n_bytes : (offset + i + 1) * self.n_bytes])
-                            for i in range(recv_counts[r])
-                        ]
-                    )
-                    offset += recv_counts[r]
-            else:
-                received_states = []
-            t0 = perf_counter() - t0
-
-            t0 = perf_counter()
-            # self.local_basis.clear()
-            local_basis = []
-            for state, _ in itertools.groupby(merge(*received_states)):
-                local_basis.append(state)
-            t0 = perf_counter() - t0
-            #########################################################################
-            # The local lengths are not balanced! The basis is sorted, but not
-            # evenly distributed among the ranks.
-            ########################################################################
+        t0 = perf_counter()
+        local_basis = []
+        for state, _ in itertools.groupby(merge(*received_states)):
+            local_basis.append(state)
+        t0 = perf_counter() - t0
 
         size_arr = np.empty((self.comm.size,), dtype=int)
         self.local_basis = local_basis
@@ -680,69 +671,146 @@ class Basis:
         receive_counts = np.empty((self.comm.size), dtype=int)
         self.comm.Alltoall(np.array(send_counts, dtype=int), receive_counts)
         receive_offsets = np.array([sum(receive_counts[:r]) for r in range(self.comm.size)], dtype=int)
-        received_bytes = bytearray(sum(receive_counts) * self.n_bytes)
+        received_bytes = [bytearray(receive_counts[r] * self.n_bytes) for r in range(self.comm.size)]
+        received_amps = [np.empty(receive_counts[r], dtype=complex) for r in range(self.comm.size)]
+        received_splits = [np.empty(receive_counts[r], dtype=int) for r in range(self.comm.size)]
+        send_requests = []
+        for r in range(self.comm.size):
+            if send_counts[r] == 0:
+                continue
+            send_requests.append(
+                self.comm.Isend(
+                    (
+                        bytearray(byte for state in send_states[r] for byte in state),
+                        send_counts[r] * self.n_bytes,
+                        MPI.BYTE,
+                    ),
+                    r,
+                )
+            )
+            send_requests.append(
+                self.comm.Isend(
+                    (
+                        np.array(send_amps[r]),
+                        send_counts[r],
+                        MPI.DOUBLE_COMPLEX,
+                    ),
+                    r,
+                )
+            )
+            send_requests.append(
+                self.comm.Isend(
+                    (
+                        np.array(send_to_rank[r]),
+                        send_counts[r],
+                        MPI.INT64_T,
+                    ),
+                    r,
+                )
+            )
+        receive_requests = []
+        for r in range(self.comm.size):
+            if receive_counts[r] == 0:
+                continue
+            receive_requests.append(
+                self.comm.Irecv(
+                    (
+                        received_bytes[r],
+                        receive_counts[r] * self.n_bytes,
+                        MPI.BYTE,
+                    ),
+                    r,
+                )
+            )
+            receive_requests.append(
+                self.comm.Irecv(
+                    (
+                        received_amps[r],
+                        receive_counts[r],
+                        MPI.DOUBLE_COMPLEX,
+                    ),
+                    r,
+                )
+            )
+            receive_requests.append(
+                self.comm.Irecv(
+                    (
+                        received_splits[r],
+                        receive_counts[r],
+                        MPI.INT64_T,
+                    ),
+                    r,
+                )
+            )
+        if len(receive_requests) > 0:
+            receive_requests[-1].Waitall(receive_requests)
 
-        received_amps_arr = np.empty((sum(receive_counts),), dtype=complex)
-        amps_request = self.comm.Ialltoallv(
-            # self.comm.Alltoallv(
-            (
-                np.array(
-                    [amp for amps in send_amps for amp in amps],
-                    dtype=complex,
-                ),
-                send_counts,
-                send_offsets,
-                MPI.DOUBLE_COMPLEX,
-            ),
-            (received_amps_arr, receive_counts, receive_offsets, MPI.DOUBLE_COMPLEX),
-        )
-        received_splits_arr = np.empty((sum(receive_counts),), dtype=int)
-        splits_request = self.comm.Ialltoallv(
-            # self.comm.Alltoallv(
-            (
-                np.array([split for splits in send_to_rank for split in splits], dtype=int),
-                send_counts,
-                send_offsets,
-                MPI.INT64_T,
-            ),
-            (received_splits_arr, receive_counts, receive_offsets, MPI.INT64_T),
-        )
+        # received_bytes = bytearray(sum(receive_counts) * self.n_bytes)
+
+        # received_amps_arr = np.empty((sum(receive_counts),), dtype=complex)
+        # amps_request = self.comm.Ialltoallv(
+        #     # self.comm.Alltoallv(
+        #     (
+        #         np.array(
+        #             [amp for amps in send_amps for amp in amps],
+        #             dtype=complex,
+        #         ),
+        #         send_counts,
+        #         send_offsets,
+        #         MPI.DOUBLE_COMPLEX,
+        #     ),
+        #     (received_amps_arr, receive_counts, receive_offsets, MPI.DOUBLE_COMPLEX),
+        # )
+        # received_splits_arr = np.empty((sum(receive_counts),), dtype=int)
+        # splits_request = self.comm.Ialltoallv(
+        #     # self.comm.Alltoallv(
+        #     (
+        #         np.array([split for splits in send_to_rank for split in splits], dtype=int),
+        #         send_counts,
+        #         send_offsets,
+        #         MPI.INT64_T,
+        #     ),
+        #     (received_splits_arr, receive_counts, receive_offsets, MPI.INT64_T),
+        # )
         # numpy arrays of bytes do not play very nicely with MPI, sometimes datacorruotion happens.
         # MPI4PYs Ialltoallv des not play nice with bytearrays, the call just freezes.
         # The solution to both these issues it to use bytearrays and Alltoallv.
-        self.comm.Alltoallv(
-            (
-                bytearray(byte for state_list in send_states for state in state_list for byte in state),
-                send_counts * self.n_bytes,
-                send_offsets * self.n_bytes,
-                MPI.BYTE,
-            ),
-            (received_bytes, receive_counts * self.n_bytes, receive_offsets * self.n_bytes, MPI.BYTE),
-        )
+        # self.comm.Alltoallv(
+        #     (
+        #         bytearray(byte for state_list in send_states for state in state_list for byte in state),
+        #         send_counts * self.n_bytes,
+        #         send_offsets * self.n_bytes,
+        #         MPI.BYTE,
+        #     ),
+        #     (received_bytes, receive_counts * self.n_bytes, receive_offsets * self.n_bytes, MPI.BYTE),
+        # )
 
         received_states: list[Iterable[bytes]] = [[] for _ in send_states]
         received_states = [
-            [
-                bytes(r_bytes)
-                for r_bytes in batched(
-                    received_bytes[
-                        receive_offsets[r] * self.n_bytes : (receive_offsets[r] + receive_counts[r]) * self.n_bytes
-                    ],
-                    self.n_bytes,
-                )
-            ]
-            for r in range(self.comm.size)
+            [bytes(r_bytes) for r_bytes in batched(received_bytes[r], self.n_bytes)] for r in range(self.comm.size)
         ]
-        amps_request.Wait()
-        received_amps = [
-            received_amps_arr[receive_offsets[r] : receive_offsets[r] + receive_counts[r]]
-            for r in range(self.comm.size)
-        ]
-        splits_request.Wait()
-        received_splits = [
-            received_splits_arr[receive_offsets[r] : receive_offsets[r] + receive_counts[r]]
-            for r in range(self.comm.size)
-        ]
+        # received_states = [
+        #     [
+        #         bytes(r_bytes)
+        #         for r_bytes in batched(
+        #             received_bytes[
+        #                 receive_offsets[r] * self.n_bytes : (receive_offsets[r] + receive_counts[r]) * self.n_bytes
+        #             ],
+        #             self.n_bytes,
+        #         )
+        #     ]
+        #     for r in range(self.comm.size)
+        # ]
+        # amps_request.Wait()
+        # received_amps = [
+        #     received_amps_arr[receive_offsets[r] : receive_offsets[r] + receive_counts[r]]
+        #     for r in range(self.comm.size)
+        # ]
+        # splits_request.Wait()
+        # received_splits = [
+        #     received_splits_arr[receive_offsets[r] : receive_offsets[r] + receive_counts[r]]
+        #     for r in range(self.comm.size)
+        # ]
         res = [{} for _ in range(n_psis)]
         for n, state, amp in zip(
             itertools.chain.from_iterable(received_splits),
