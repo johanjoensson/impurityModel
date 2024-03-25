@@ -667,13 +667,13 @@ class Basis:
                         send_to_rank[r].append(n)
                         break
         send_counts = np.array([len(send_amps[r]) for r in range(self.comm.size)], dtype=int)
-        send_offsets = np.array([sum(send_counts[:r]) for r in range(self.comm.size)], dtype=int)
+        # send_offsets = np.array([sum(send_counts[:r]) for r in range(self.comm.size)], dtype=int)
         receive_counts = np.empty((self.comm.size), dtype=int)
         self.comm.Alltoall(np.array(send_counts, dtype=int), receive_counts)
-        receive_offsets = np.array([sum(receive_counts[:r]) for r in range(self.comm.size)], dtype=int)
+        # receive_offsets = np.array([sum(receive_counts[:r]) for r in range(self.comm.size)], dtype=int)
         received_bytes = [bytearray(receive_counts[r] * self.n_bytes) for r in range(self.comm.size)]
-        received_amps = [np.empty(receive_counts[r], dtype=complex) for r in range(self.comm.size)]
-        received_splits = [np.empty(receive_counts[r], dtype=int) for r in range(self.comm.size)]
+        received_amps = [np.empty(receive_counts[r], dtype=np.complex128) for r in range(self.comm.size)]
+        received_splits = [np.empty(receive_counts[r], dtype=np.uint64) for r in range(self.comm.size)]
         send_requests = []
         for r in range(self.comm.size):
             if send_counts[r] == 0:
@@ -691,7 +691,7 @@ class Basis:
             send_requests.append(
                 self.comm.Isend(
                     (
-                        np.array(send_amps[r]),
+                        np.array(send_amps[r], dtype=np.complex128),
                         send_counts[r],
                         MPI.DOUBLE_COMPLEX,
                     ),
@@ -701,9 +701,9 @@ class Basis:
             send_requests.append(
                 self.comm.Isend(
                     (
-                        np.array(send_to_rank[r]),
+                        np.array(send_to_rank[r], dtype=np.uint64),
                         send_counts[r],
-                        MPI.INT64_T,
+                        MPI.UINT64_T,
                     ),
                     r,
                 )
@@ -737,11 +737,13 @@ class Basis:
                     (
                         received_splits[r],
                         receive_counts[r],
-                        MPI.INT64_T,
+                        MPI.UINT64_T,
                     ),
                     r,
                 )
             )
+        if len(send_requests) > 0:
+            send_requests[-1].Waitall(send_requests)
         if len(receive_requests) > 0:
             receive_requests[-1].Waitall(receive_requests)
 
