@@ -336,13 +336,13 @@ def printExpValues(nBaths, es, psis, rot_to_spherical, l=2):
             "{:^3s} {:>11s} {:>8s} {:>8s} {:>8s} {:>9s} {:>9s}".format(
                 "i",
                 "E-E0",
-                "N(3d)",
+                "N",
                 "N(Dn)",
                 "N(Up)",
-                "Lz(3d)",
-                "Sz(3d)",
-                # "L^2(3d)",
-                # "S^2(3d)",
+                "Lz",
+                "Sz",
+                "L^2",
+                "S^2",
             )
         )
     #        print(('  i  E-E0  N(3d) N(egDn) N(egUp) N(t2gDn) '
@@ -367,8 +367,8 @@ def printExpValues(nBaths, es, psis, rot_to_spherical, l=2):
                     Nup,
                     get_Lz_from_rho_spherical(rho_spherical, l=2),
                     get_Sz_from_rho_spherical(rho_spherical, l=2),
-                    # get_L2_from_rho_spherical(rho_spherical, l=2),
-                    # get_S2_from_rho_spherical(rho_spherical, l=2),
+                    # get_L_from_rho_spherical(rho_spherical, l=2),
+                    # get_S_from_rho_spherical(rho_spherical, l=2, s=1 / 2),
                 )
             )
         print("\n")
@@ -389,17 +389,91 @@ def get_Lz_from_rho_spherical(rho, l):
 
 
 def get_Lplus_from_rho_spherical(rho, l):
+    # L+ |l, ml> = sqrt(l*(l+1) - ml*(ml+1))|l, ml+1>
     llp1 = l * (l + 1)
     #   L+    |2, -2>,  |2, -1>, |2,  0>, |2,  1>, |2,  2>
-    # <2, -2|    0
-    # <2, -1| sqrt(8)
-    # <2,  0|    0
-    # <2,  1|    0
-    # <2,  2|    0
-    Lplus = np.zeros((2 * (2 * l + 1), 2 * (2 * l + 1)))
-    for i, ml in enumerate(range(-l, l)):
-        Lplus[i + 1, i] = np.sqrt(llp1 + ml * (ml + 1))
-    return np.trace(rho @ Lplus)
+    # <2, -2|    0         0        0        0        0
+    # <2, -1| sqrt(8)      0        0        0        0
+    # <2,  0|    0      sqrt(6)     0        0        0
+    # <2,  1|    0         0     sqrt(6)     0        0
+    # <2,  2|    0         0        0     sqrt(8)     0
+    Lplus = np.diag([np.sqrt(llp1 - ml * (ml + 1)) for ml in range(-l, l)], k=-1)
+    return np.trace(
+        rho @ np.block([[Lplus, np.zeros((2 * l + 1, 2 * l + 1))], [np.zeros((2 * l + 1, 2 * l + 1)), Lplus]])
+    )
+
+
+def get_Sminus_from_rho_spherical(rho, l, s=1 / 2):
+    # S+ |s, ms> = sqrt(s*(s+1) - ms*(ms+1))|s, ms+1>
+    ssp1 = s * (s + 1)
+    ms = +1 / 2
+    #   S-      |1/2,-1/2>,  |1/2, 1/2>
+    # <1/2,-1/2|    0            1
+    # <1/2, 1/2|    0            0
+    # S- = [[0   S-],
+    #        0   0 ]]
+    Sminus = np.diag(np.repeat(np.sqrt(ssp1 - ms * (ms - 1)), 2 * l), k=1)
+    return np.trace(
+        rho
+        @ np.block(
+            [
+                [np.zeros((2 * l + 1, 2 * l + 1)), Sminus],
+                [np.zeros((2 * l + 1, 2 * l + 1)), np.zeros((2 * l + 1, 2 * l + 1))],
+            ]
+        )
+    )
+
+
+def get_Lminus_from_rho_spherical(rho, l):
+    # L- |l, ml> = sqrt(l*(l+1) - ml*(ml-1))|l, ml-1>
+    llp1 = l * (l + 1)
+    #   L+    |2, -2>,  |2, -1>, |2,  0>, |2,  1>, |2,  2>
+    # <2, -2|    0      sqrt(4)     0        0        0
+    # <2, -1|    0         0     sqrt(6)     0        0
+    # <2,  0|    0         0        0     sqrt(6)     0
+    # <2,  1|    0         0        0        0     sqrt(4)
+    # <2,  2|    0         0        0        0        0
+    Lminus = np.diag([np.sqrt(llp1 - ml * (ml - 1)) for ml in range(-l + 1, l + 1)], k=1)
+    return np.trace(
+        rho @ np.block([[Lminus, np.zeros((2 * l + 1, 2 * l + 1))], [np.zeros((2 * l + 1, 2 * l + 1)), Lminus]])
+    )
+
+
+def get_Splus_from_rho_spherical(rho, l, s=1 / 2):
+    # S+ |s, ms> = sqrt(s*(s+1) - ms*(ms+1))|s, ms+1>
+    ssp1 = s * (s + 1)
+    ms = -1 / 2
+    #   S+      |1/2,-1/2>,  |1/2, 1/2>
+    # <1/2,-1/2|    0            0
+    # <1/2, 1/2|    1            0
+    # S+ = [[0   0],
+    #        S+  0]]
+    Splus = np.diag(np.repeat(np.sqrt(ssp1 - ms * (ms + 1)), 2 * l), k=-1)
+    return np.trace(
+        rho
+        @ np.block(
+            [
+                [np.zeros((2 * l + 1, 2 * l + 1)), np.zeros((2 * l + 1, 2 * l + 1))],
+                [Splus, np.zeros((2 * l + 1, 2 * l + 1))],
+            ]
+        )
+    )
+
+
+def get_L_from_rho_spherical(rho, l):
+    return np.sqrt(
+        (0.5 * (get_Lplus_from_rho_spherical(rho, l) + get_Lminus_from_rho_spherical(rho, l))) ** 2
+        + (-1j / 2 * (get_Lplus_from_rho_spherical(rho, l) - get_Lminus_from_rho_spherical(rho, l))) ** 2
+        + get_Lz_from_rho_spherical(rho, l) ** 2
+    )
+
+
+def get_S_from_rho_spherical(rho, l, s):
+    return np.sqrt(
+        (0.5 * (get_Splus_from_rho_spherical(rho, l, s=s) + get_Sminus_from_rho_spherical(rho, l, s=s)) ** 2)
+        + (-1j / 2 * (get_Splus_from_rho_spherical(rho, l, s=s) - get_Sminus_from_rho_spherical(rho, l, s=s)) ** 2)
+        + get_Sz_from_rho_spherical(rho, l) ** 2
+    )
 
 
 def get_L2_from_rho_spherical(rho, l):
@@ -444,7 +518,7 @@ def printThermalExpValues_new(nBaths, es, psis, tau, rot_to_spherical):
     e = es - es[0]
     psis = np.array(psis)
     rhos = [getDensityMatrix(nBaths, psi, 2) for psi in psis]
-    rhomats = np.zeros((len(rhos), 10, 10), dtype=complex)
+    rhomats = np.zeros((len(rhos), rot_to_spherical.shape[0], rot_to_spherical.shape[1]), dtype=complex)
     for mat, rho in zip(rhomats, rhos):
         for (state1, state2), val in rho.items():
             i = c2i(nBaths, state1)
@@ -457,10 +531,10 @@ def printThermalExpValues_new(nBaths, es, psis, tau, rot_to_spherical):
     print("<N(3d)> = {:8.7f}".format(N))
     print("<N(Dn)> = {:8.7f}".format(Ndn))
     print("<N(Up)> = {:8.7f}".format(Nup))
-    print("<Lz(3d)> = {:8.7f}".format(get_Lz_from_rho_spherical(rho_thermal_spherical, l=2)))
-    print("<Sz(3d)> = {:8.7f}".format(get_Sz_from_rho_spherical(rho_thermal_spherical, l=2)))
-    # print("<L^2(3d)> = {:8.7f}".format(get_L2_from_rho_spherical(rho_thermal_spherical, l=2)))
-    # print("<S^2(3d)> = {:8.7f}".format(get_S2_from_rho_spherical(rho_thermal_spherical, l=2)))
+    print("<Lz> = {:8.7f}".format(get_Lz_from_rho_spherical(rho_thermal_spherical, l=2)))
+    print("<Sz> = {:8.7f}".format(get_Sz_from_rho_spherical(rho_thermal_spherical, l=2)))
+    # print("<L> = {:8.7f}".format(get_L_from_rho_spherical(rho_thermal_spherical, l=2)))
+    # print("<S> = {:8.7f}".format(get_S_from_rho_spherical(rho_thermal_spherical, l=2, s=1 / 2)))
 
 
 def printThermalExpValues(nBaths, es, psis, T=300, cutOff=10):
