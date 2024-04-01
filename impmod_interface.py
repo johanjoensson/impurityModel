@@ -483,7 +483,7 @@ def fixed_peak_dc(h0_op, dc_struct, rank, verbose, dense_cutoff):
             delta_impurity_occ=delta_impurity_occ,
             nominal_impurity_occ=Np[0],
             truncation_threshold=1e9,
-            verbose=False and verbose,
+            verbose=verbose,
             comm=MPI.COMM_WORLD,
             spin_flip_dj=dc_struct.spin_flip_dj,
         )
@@ -496,7 +496,7 @@ def fixed_peak_dc(h0_op, dc_struct, rank, verbose, dense_cutoff):
             delta_impurity_occ=delta_impurity_occ,
             nominal_impurity_occ=N0[0],
             truncation_threshold=1e9,
-            verbose=False and verbose,
+            verbose=verbose,
             comm=MPI.COMM_WORLD,
             spin_flip_dj=dc_struct.spin_flip_dj,
         )
@@ -510,7 +510,7 @@ def fixed_peak_dc(h0_op, dc_struct, rank, verbose, dense_cutoff):
             delta_impurity_occ=delta_impurity_occ,
             nominal_impurity_occ=N0[0],
             truncation_threshold=1e9,
-            verbose=False and verbose,
+            verbose=verbose,
             comm=MPI.COMM_WORLD,
             spin_flip_dj=dc_struct.spin_flip_dj,
         )
@@ -523,7 +523,7 @@ def fixed_peak_dc(h0_op, dc_struct, rank, verbose, dense_cutoff):
             delta_impurity_occ=delta_impurity_occ,
             nominal_impurity_occ=Nm[0],
             truncation_threshold=1e9,
-            verbose=False and verbose,
+            verbose=verbose,
             comm=MPI.COMM_WORLD,
             spin_flip_dj=dc_struct.spin_flip_dj,
         )
@@ -554,7 +554,7 @@ def fixed_peak_dc(h0_op, dc_struct, rank, verbose, dense_cutoff):
         )
         return e_upper[0] - e_lower[0] - peak_position
 
-    # res = sp.optimize.root_scalar(F, x0=dc_struct.dc_guess)
+    # res = sp.optimize.root_scalar(F, x0=np.real(dc_struct.dc_guess))
     # dc = res.root
     dc = sp.optimize.newton(F, x0=np.real(dc_struct.dc_guess))
     if verbose:

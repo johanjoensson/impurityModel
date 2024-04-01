@@ -830,16 +830,16 @@ class Basis:
         # self.add_states(new_states)
         # t_add += perf_counter() - t_tmp
 
-        print(f"Basis.expand took {perf_counter() - t0} secondsds.")
-        print(f"===> getting new keys took {t_keys} secondsds.")
-        print(f"===> applyOp took {t_apply} secondsds.")
-        print(f"===> filter states took {t_filter} secondsds.")
-        print(f"===> add states took {t_add} secondsds.")
+        # print(f"Basis.expand took {perf_counter() - t0} secondsds.")
+        # print(f"===> getting new keys took {t_keys} secondsds.")
+        # print(f"===> applyOp took {t_apply} secondsds.")
+        # print(f"===> filter states took {t_filter} secondsds.")
+        # print(f"===> add states took {t_add} secondsds.")
         if self.verbose:
             print(f"After expansion, the basis contains {self.size} elements.")
         t0 = perf_counter()
         op_dict = self.build_operator_dict(op, op_dict=op_dict)
-        print(f"Building operator took {perf_counter() - t0} seconds.")
+        # print(f"Building operator took {perf_counter() - t0} seconds.")
         return op_dict
 
     def _getitem_sequence(self, l: Iterable[int]) -> Iterable[bytes]:
@@ -1443,13 +1443,13 @@ class CIPSI_Basis(Basis):
             else:
                 converge_count = 0
 
-        print(f"CIPSI_Basis.expand took {perf_counter() - t0} seconds.")
-        print(f"===> building matrix took {t_build_mat} secondsds.")
-        print(f"===> building vector took {t_build_vec} secondsds.")
-        print(f"===> building state took {t_build_state} secondsds.")
-        print(f"===> finding eigenstates took {t_eigen} secondsds.")
-        print(f"===> determining new Djs took {t_Dj} seconds.")
-        print(f"===> add states took {t_add} seconds.")
+        # print(f"CIPSI_Basis.expand took {perf_counter() - t0} seconds.")
+        # print(f"===> building matrix took {t_build_mat} secondsds.")
+        # print(f"===> building vector took {t_build_vec} secondsds.")
+        # print(f"===> building state took {t_build_state} secondsds.")
+        # print(f"===> finding eigenstates took {t_eigen} secondsds.")
+        # print(f"===> determining new Djs took {t_Dj} seconds.")
+        # print(f"===> add states took {t_add} seconds.")
         if self.verbose:
             print(f"After expansion, the basis contains {self.size} elements.")
 
@@ -1466,7 +1466,7 @@ class CIPSI_Basis(Basis):
         t_tmp = perf_counter()
         H_dict = self.build_operator_dict(H, op_dict=H_dict)
         t_build_dict += perf_counter() - t_tmp
-        print(f"Building operator took {t_build_dict} seconds.")
+        # print(f"Building operator took {t_build_dict} seconds.")
         return H_dict
 
     def expand_at(self, w, psi_ref, H, H_dict=None, de2_min=1e-3):

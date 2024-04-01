@@ -298,7 +298,7 @@ def calc_selfenergy(
             for i in range(len(local_psis)):
                 for state in psis_r[i]:
                     local_psis[i][state] = psis_r[i][state] + local_psis[i].get(state, 0)
-    if verbosity >= 2:
+    if verbosity >= 1:
         finite.printThermalExpValues_new(sum_bath_states, es, local_psis, tau, rot_to_spherical)
         finite.printExpValues(sum_bath_states, es, local_psis, rot_to_spherical)
     excited_restrictions = basis.build_excited_restrictions()
@@ -324,7 +324,6 @@ def calc_selfenergy(
         verbose=verbosity >= 2,
         reort=reort,
     )
-    # basis.comm.barrier()
     if gs_matsubara is not None:
         try:
             for gs in gs_matsubara:
@@ -332,8 +331,6 @@ def calc_selfenergy(
         except UnphysicalGreensFunctionError as err:
             if rank == 0:
                 print(f"WARNING! Unphysical Matsubara-axis Greens function:\n\t{err}")
-        # if verbosity >= 2:
-        #     save_Greens_function(gs=gs_matsubara, omega_mesh=iw, label=f"G-{cluster_label}", e_scale=1)
     if gs_realaxis is not None:
         try:
             for gs in gs_realaxis:
@@ -341,8 +338,6 @@ def calc_selfenergy(
         except UnphysicalGreensFunctionError as err:
             if rank == 0:
                 print(f"WARNING! Unphysical real-axis Greens function:\n\t{err}")
-        # if verbosity >= 2:
-        #     save_Greens_function(gs=gs_realaxis, omega_mesh=w, label=f"G-{cluster_label}", e_scale=1)
     if verbosity >= 1:
         print("Calculate self-energy...")
     if gs_realaxis is not None:
@@ -387,14 +382,6 @@ def calc_selfenergy(
         sigma_static = get_Sigma_static(sum_bath_states, u4, es, local_psis, l, tau)
     else:
         sigma_static = 0
-
-    if verbosity >= 2:
-        # if iw is not None:
-        #     save_Greens_function(gs=sigma, omega_mesh=iw, label=f"Sigma-{cluster_label}", e_scale=1)
-        # if w is not None:
-        #     save_Greens_function(gs=sigma_real, omega_mesh=w, label=f"Sigma-{cluster_label}", e_scale=1)
-        np.savetxt(f"real-Sigma_static-{cluster_label}.dat", np.real(sigma_static))
-        np.savetxt(f"imag-Sigma_static-{cluster_label}.dat", np.imag(sigma_static))
 
     return sigma, sigma_real, sigma_static
 
