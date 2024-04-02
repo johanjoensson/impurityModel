@@ -281,8 +281,9 @@ def calc_Greens_function_with_offdiag(
                 eigen_basis.num_spin_orbitals,
                 tOp,
                 psi,
-                slaterWeightMin=0,
-                restrictions=None,
+                slaterWeightMin=slaterWeightMin,
+                # slaterWeightMin=0,
+                restrictions=basis.restrictions,
                 opResult=t_mems[i_tOp],
             )
             local_excited_basis |= v.keys()
