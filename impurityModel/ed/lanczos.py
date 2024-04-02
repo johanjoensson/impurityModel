@@ -7,7 +7,7 @@ from typing import Optional, NamedTuple, Callable
 from mpi4py import MPI
 from impurityModel.ed.manybody_basis import Basis
 from impurityModel.ed.krylovBasis import KrylovBasis
-from impurityModel.ed.finite import applyOp_3 as applyOp, inner, matmul, removeFromFirst
+from impurityModel.ed.finite import applyOp_new as applyOp, inner, matmul, removeFromFirst
 
 
 class Reort(Enum):

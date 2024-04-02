@@ -79,7 +79,7 @@ def matrix_print(matrix: np.ndarray, label: str = None) -> None:
     Pretty print the matrix, with optional label.
     """
     ms = "\n".join([" ".join([f"{np.real(val): .4f}{np.imag(val):+.4f}j" for val in row]) for row in matrix])
-    if label:
+    if label is not None:
         print(label)
     print(ms)
 
@@ -87,6 +87,10 @@ def matrix_print(matrix: np.ndarray, label: str = None) -> None:
 def find_gs(h_op, N0, delta_occ, bath_states, num_spin_orbitals, rank, verbose, dense_cutoff, spin_flip_dj, comm):
     """
     Find the occupation corresponding to the lowest energy, compare N0 - 1, N0 and N0 + 1
+    Returns:
+    gs_impurity_occ, dict: Impurity occupation corresponding to the lowest energy.
+    basis_gs, ManybodyBasis: Initial basis for the ground state
+    h_dict_gs, dict: Memoized states for the hamiltonian operator.
     """
     delta_imp_occ, delta_val_occ, delta_con_occ = delta_occ
     num_val_baths, num_cond_baths = bath_states
@@ -225,7 +229,9 @@ def calc_selfenergy(
     spin_flip_dj,
     comm,
 ):
-    """ """
+    """
+    Calculate the self energy of the impurity.
+    """
     # MPI variables
     rank = comm.rank
 
@@ -387,13 +393,19 @@ def calc_selfenergy(
 
 
 def check_sigma(sigma: np.ndarray):
-    diagonals = (np.diag(sigma[i, :, :]) for i in range(sigma.shape[-1]))
+    """
+    Verify that sigma makes physical sense.
+    """
+    diagonals = (np.diag(sigma[i, :, :]) for i in range(sigma.shape[0]))
     if np.any(np.imag(diagonals) > 0):
         raise UnphysicalSelfenergyError("Diagonal term has positive imaginary part.")
 
 
 def check_greens_function(G):
-    diagonals = (np.diag(G[i, :, :]) for i in range(G.shape[-1]))
+    """
+    Verify that G makes physical sense.
+    """
+    diagonals = (np.diag(G[i, :, :]) for i in range(G.shape[0]))
     if np.any(np.imag(diagonals) > 0):
         raise UnphysicalGreensFunctionError("Diagonal term has positive imaginary part.")
 
@@ -419,6 +431,9 @@ def get_hcorr_v_hbath(h0op, sum_bath_states):
 
 
 def hyb(ws, v, hbath, delta):
+    """
+    Calculate hybridization function from hopping parameters and bath energies.
+    """
     hyb = np.conj(v.T)[np.newaxis, :, :] @ np.linalg.solve(
         (ws + 1j * delta)[:, np.newaxis, np.newaxis] * np.identity(v.shape[0], dtype=complex)[np.newaxis, :, :]
         - hbath[np.newaxis, :, :],
@@ -436,6 +451,9 @@ def get_sigma(
     blocks,
     clustername="",
 ):
+    """
+    Calculate self-energy from interacting Greens function and local hamiltonian.
+    """
     hcorr, v_full, _, hbath = get_hcorr_v_hbath(h0op, nBaths)
 
     res = []
@@ -449,6 +467,9 @@ def get_sigma(
 
 
 def get_Sigma_static(nBaths, U4, es, psis, l, tau):
+    """
+    Calculate the static (Hartree-Fock) self-energy.
+    """
     n = 2 * (2 * l + 1)
 
     rhos = [finite.getDensityMatrix(nBaths, psi, l) for psi in psis]
@@ -490,6 +511,9 @@ def get_selfenergy(
     delta,
     verbose,
 ):
+    """
+    Calculate the self energy starting from a large number of arguments.
+    """
     # MPI variables
     comm = MPI.COMM_WORLD
     rank = comm.rank

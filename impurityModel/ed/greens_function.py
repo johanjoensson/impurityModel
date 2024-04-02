@@ -13,6 +13,10 @@ from mpi4py import MPI
 
 
 def split_comm_and_redistribute_basis(priorities: Iterable[float], basis: Basis, psis: list[dict]):
+    """
+    Split MPI communicator in order to divide MPI ranks among items, number of ranks per item is determined using the priorities.
+    Higher priority means more MPI ranks assigned to the element.
+    """
     comm = basis.comm
     normalized_priorities = np.array([p for p in priorities], dtype=float)
     normalized_priorities /= np.sum(normalized_priorities)
@@ -86,6 +90,9 @@ def get_Greens_function(
     verbose,
     reort,
 ):
+    """
+    Calculate interacting Greens function.
+    """
     (
         block_indices,
         block_roots,
@@ -277,12 +284,11 @@ def calc_Greens_function_with_offdiag(
         local_excited_basis = set()
         t0 = time.perf_counter()
         for i_tOp, tOp in enumerate(tOps):
-            v = finite.applyOp_3(
+            v = finite.applyOp_new(
                 eigen_basis.num_spin_orbitals,
                 tOp,
                 psi,
                 slaterWeightMin=slaterWeightMin,
-                # slaterWeightMin=0,
                 restrictions=basis.restrictions,
                 opResult=t_mems[i_tOp],
             )
@@ -365,6 +371,9 @@ def get_block_Green(
     verbose=True,
     dense_cutoff=1e3,
 ):
+    """
+    Calculate one block of the inteacting Greens function. Including offdiagonal terms.
+    """
     comm = basis.comm
     rank = comm.rank
     matsubara = iws is not None
@@ -492,6 +501,9 @@ def block_Green(
     slaterWeightMin=0,
     verbose=True,
 ):
+    """
+    calculate  one block of the Greens function. This function builds the many body basis iteratively. Reducing memory requrements.
+    """
     comm = basis.comm
     rank = comm.rank
     matsubara = iws is not None
@@ -596,6 +608,10 @@ def block_Green(
 
 
 def calc_mpi_Greens_function_from_alpha_beta(alphas, betas, iws, ws, e, delta, r, verbose, comm):
+    """
+    Calculate the Greens function from the diagonal and offdiagonal terms obtained from the Lanczos procedure.
+    This function splits the frequency axes over MPI ranks.
+    """
     matsubara = iws is not None
     realaxis = ws is not None
     if matsubara:
@@ -631,6 +647,9 @@ def calc_mpi_Greens_function_from_alpha_beta(alphas, betas, iws, ws, e, delta, r
 
 
 def calc_local_Greens_function_from_alpha_beta(alphas, betas, iws, ws, e, delta, verbose):
+    """
+    Calculate the Greens function from alphas and betas, for all frequencies in iws and ws.
+    """
     I = np.identity(alphas.shape[1], dtype=complex)
     matsubara = iws is not None
     realaxis = ws is not None
@@ -685,6 +704,10 @@ def calc_Greens_function_with_offdiag_cg(
     dense_cutoff=1e3,
     tau=0,
 ):
+    """
+    Use conjugate gradient method to calculate the interacting Greens function function with offdiagonal elements.
+    Keep the manybody basis optimized for the excited state.
+    """
     n = len(es)
     if iw is not None:
         gs_matsubara = np.zeros((n, len(tOps), len(tOps), len(iw)), dtype=complex)
@@ -702,7 +725,7 @@ def calc_Greens_function_with_offdiag_cg(
     for block in blocks:
         for i_tOp, tOp in [(orb, tOps[orb]) for orb in block]:
             for s in basis.local_basis:
-                res = finite.applyOp_3(
+                res = finite.applyOp_new(
                     n_spin_orbitals,
                     tOps[i_tOp],
                     {s: 1},
@@ -729,7 +752,7 @@ def calc_Greens_function_with_offdiag_cg(
             local_excited_basis = set()
             t0 = time.perf_counter()
             for i_tOp, tOp in [(orb, tOps[orb]) for orb in block]:
-                v = finite.applyOp_3(
+                v = finite.applyOp_new(
                     n_spin_orbitals,
                     tOp,
                     {state: psi[state] for state in psi if state in basis.local_basis},
@@ -785,6 +808,9 @@ def get_block_Green_cg(
     verbose=True,
     dense_cutoff=1e3,
 ):
+    """
+    Calculate one block of the Greens function using the conjugate gradient method.
+    """
     matsubara = iws is not None
     realaxis = ws is not None
 
@@ -897,10 +923,24 @@ def rotate_Greens_function(G, T):
 
 
 def rotate_4index_U(U4, T):
+    """
+    Rotate the four index tensor, U4, using the matrix T.
+    Returns U4' = T^\daggerT^\dagger U4 TT
+    Parameters
+    ==========
+    U4 : NDArray - Tensor function to rotate
+    T : NDArray - Rotation matrix to use
+    Returns
+    =======
+    U4' : NDArray - The rotated tensor function
+    """
     return np.einsum("ij,kl, jlmo, mn, op", np.conj(T.T), np.conj(T.T), U4, T, T)
 
 
 def save_Greens_function(gs, omega_mesh, label, e_scale=1, tol=1e-8):
+    """
+    Save Greens function to file, using RSPt .dat format. Including offdiagonal elements.
+    """
     n_orb = gs.shape[1]
     axis_label = "realaxis"
     if np.all(np.abs(np.imag(omega_mesh)) > 1e-6):

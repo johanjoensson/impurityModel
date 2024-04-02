@@ -14,14 +14,8 @@ import scipy as sp
 from mpi4py import MPI
 
 
-# try:
-#     from petsc4py import PETSc
-# except ModuleNotFoundError:
-#     pass
-
-
 from impurityModel.ed import product_state_representation as psr
-from impurityModel.ed.finite import applyOp_3 as applyOp, c2i, c2i_op, eigensystem_new, norm2
+from impurityModel.ed.finite import applyOp_new as applyOp, c2i, c2i_op, eigensystem_new, norm2
 
 
 def batched(iterable, n):

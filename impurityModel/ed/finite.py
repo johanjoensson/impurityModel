@@ -112,6 +112,11 @@ def setup_hamiltonian(
 
 
 def mpi_matmul(h_local, comm):
+    """
+    MPI parallelized matrix multiplication.
+    Each rank has a number of columns of the matrix and the full vector.
+    """
+
     def matmat(m):
         if len(m.shape) == 1:
             m = m.reshape((m.shape[0], 1))
@@ -375,6 +380,9 @@ def printExpValues(nBaths, es, psis, rot_to_spherical, l=2):
 
 
 def get_occupations_from_rho_spherical(rho, l):
+    """
+    Calculate the (spin polarized) occupation from the density matrix.
+    """
     return (
         np.real(np.trace(rho)),
         np.real(np.trace(rho[: 2 * l + 1, : 2 * l + 1])),
@@ -797,12 +805,30 @@ def matmul(psis: list[dict], mat: np.ndarray) -> list[dict]:
     return res
 
 
-def removeFromFirst(psi1, psi2):
+def removeFromFirst(psi1, psi2, mul=1):
+    r"""
+    From state :math:`|\psi_1\rangle`, remove  :math:`mul * |\psi_2\rangle`.
+
+    Parameters
+    ----------
+    psi1 : dict
+        Multi-configurational state.
+        Product states as keys and amplitudes as values.
+    psi2 : dict
+        Multi-configurational state.
+        Product states as keys and amplitudes as values.
+    mul : int, float or complex
+        Optional
+
+    """
     for state, amp in psi2.items():
-        psi1[state] = psi1.get(state, 0) - psi2[state]
+        psi1[state] = psi1.get(state, 0) - mul * psi2[state]
 
 
 def scale(psi, mul):
+    """
+    return mul*|\psi\rangle
+    """
     return {s: a * mul for s, a in psi.items()}
 
 
@@ -2012,6 +2038,9 @@ def applyOp(n_spin_orbitals, op, psi, slaterWeightMin=0, restrictions=None, opRe
 
 
 def occupation_is_within_restrictions(state, n_spin_orbitals, restrictions):
+    """
+    Return True if the occupations in state are within the restrictions. Otherwise, return False.
+    """
     if restrictions is None:
         return True
     # state_new_tuple = psr.bytes2tuple(state, n_spin_orbitals)
@@ -2024,96 +2053,7 @@ def occupation_is_within_restrictions(state, n_spin_orbitals, restrictions):
     return True
 
 
-def applyOp_2(n_spin_orbitals, op, psi, slaterWeightMin=0, restrictions=None, opResult=None):
-    r"""
-    Return :math:`|psi' \rangle = op |psi \rangle`.
-
-    If opResult is not None, it is updated to contain information of how the
-    operator op acted on the product states in psi.
-
-    Parameters
-    ----------
-    n_spin_orbitals : int
-        Total number of spin-orbitals in the system.
-    op : dict
-        Operator of the format
-        tuple : amplitude,
-
-        where each tuple describes a scattering
-
-        process. Examples of possible tuples (and their meanings) are:
-
-        ((i, 'c'))  <-> c_i^dagger
-
-        ((i, 'a'))  <-> c_i
-
-        ((i, 'c'), (j, 'a'))  <-> c_i^dagger c_j
-
-        ((i, 'c'), (j, 'c'), (k, 'a'), (l, 'a')) <-> c_i^dagger c_j^dagger c_k c_l
-    psi : dict
-        Multi-configurational state.
-        Product states as keys and amplitudes as values.
-    slaterWeightMin : float
-        Restrict the number of product states by
-        looking at `|amplitudes|^2`.
-    restrictions : dict
-        Restriction the occupation of generated
-        product states.
-    opResult : dict
-        In and output argument.
-        If present, the results of the operator op acting on each
-        product state in the state psi is added and stored in this
-        variable.
-
-    Returns
-    -------
-    psiNew : dict
-        New state of the same format as psi.
-
-
-    """
-    psiNew = {}
-    if opResult is None:
-        opResult = {}
-    # Loop over product states in psi.
-    for state, amp in psi.items():
-        if state in opResult:
-            addToFirst(psiNew, opResult[state], amp)
-            continue
-
-        state_bits = psr.bytes2bitarray(state, n_spin_orbitals)
-        # Create new element in opResult
-        # Store H|PS> for product states |PS> not yet in opResult
-        opResult[state] = {}
-        for process, h in op.items():
-            state_bits_new = state_bits.copy()
-            signTot = 1
-            for i, action in process[-1::-1]:
-                if action == "a":
-                    sign = remove.ubitarray(i, state_bits_new)
-                elif action == "c":
-                    sign = create.ubitarray(i, state_bits_new)
-                elif action == "i":
-                    sign = 1
-                signTot *= sign
-                if signTot == 0:
-                    break
-            if signTot == 0:
-                continue
-            state_new = psr.bitarray2bytes(state_bits_new)
-            if not occupation_is_within_restrictions(state_new, n_spin_orbitals, restrictions):
-                continue
-            psiNew[state_new] = amp * h * signTot + psiNew.get(state_new, 0)
-            if opResult is not None:
-                opResult[state][state_new] = h * signTot + opResult[state].get(state_new, 0)
-
-    for state, amp in list(psiNew.items()):
-        if abs(amp) ** 2 < slaterWeightMin:
-            psiNew.pop(state)
-    return psiNew
-
-
-def applyOp_3(n_spin_orbitals, op, psi, slaterWeightMin=0, restrictions=None, opResult=None):
+def applyOp_new(n_spin_orbitals, op, psi, slaterWeightMin=0, restrictions=None, opResult=None):
     r"""
     Return :math:`|psi' \rangle = op |psi \rangle`.
 
@@ -2195,9 +2135,6 @@ def applyOp_3(n_spin_orbitals, op, psi, slaterWeightMin=0, restrictions=None, op
         newResults[state][state_new] = h * signTot + newResults[state].get(state_new, 0)
     opResult.update(newResults)
 
-    # for state, amp in list(psiNew.items()):
-    #     if abs(amp) ** 2 < slaterWeightMin:
-    #         psiNew.pop(state)
     return {state: amp for state, amp in psiNew.items() if abs(amp) ** 2 > slaterWeightMin}
 
 
