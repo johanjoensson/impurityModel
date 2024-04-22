@@ -1,9 +1,11 @@
 from collections import OrderedDict
+import itertools
 import time
 import argparse
 
 from mpi4py import MPI
 import numpy as np
+import scipy as sp
 from impurityModel.ed.get_spectra import get_noninteracting_hamiltonian_operator
 from impurityModel.ed import finite
 from impurityModel.ed.average import thermal_average_scale_indep
@@ -26,52 +28,148 @@ class UnphysicalGreensFunctionError(Exception):
     """
 
 
-# def fixed_peak_dc(h0_op, dc_struct, rank, verbose, dense_cutoff):
-#     basis = CIPSI_Basis(
-#         ls=list(N0[0].keys()),
-#         valence_baths=num_valence_bath_states,
-#         conduction_baths=num_conduction_bath_states,
-#         delta_valence_occ=delta_valence_occ,
-#         delta_conduction_occ=delta_conduction_occ,
-#         delta_impurity_occ=delta_impurity_occ,
-#         nominal_impurity_occ=Np[0],
-#         truncation_threshold=1e9,
-#         verbose=False and verbose,
-#         comm=MPI.COMM_WORLD,
-#         spin_flip_dj=dc_struct.spin_flip_dj,
-#     )
+def fixed_peak_dc(h0_op, dc_struct, rank, verbose, dense_cutoff):
+    N0 = dc_struct.nominal_occ
+    delta_impurity_occ, delta_valence_occ, delta_conduction_occ = dc_struct.delta_occ
+    peak_position = max(dc_struct.peak_position, 4 * dc_struct.tau)
+    num_valence_bath_states, num_conduction_bath_states = dc_struct.bath_states
+    sum_bath_states = {l: num_valence_bath_states[l] + num_conduction_bath_states[l] for l in num_valence_bath_states}
+    l = list(lv for lv in N0[0])[0]
+    u = finite.getUop_from_rspt_u4(dc_struct.u4)
+    dc_trial = dc_struct.dc_guess
+    # dc_trial = np.identity(dc_struct.dc_guess.shape[0], dtype=complex)
 
-#     dc_init = dc_struct.dc_guess
-#     imp_occ = dc_struct.occ
-#     dc_guess = dc_struct.dc_guess
-#     for _ in range(5):
-#         dc_op = {(((l, s, m), "c"), ((l, s, m), "a")): -imp_occ * dc_init for m in range(-l, l + 1) for s in range(2)}
-#         h_op_c = finite.addOps([h0_op, u, dc_op])
-#         h_op_i = finite.c2i_op(sum_bath_states, h_op_c)
-#         h_dict = basis.expand(h_op_i, dense_cutoff=dense_cutoff, de2_min=1e-4)
-#         h = (
-#             basis.build_sparse_matrix(h_op_i, h_dict)
-#             if basis.size > dense_cutoff
-#             else basis.build_dense_matrix(h_op_i, h_dict)
-#         )
-#         egvals, eigvecs = finite.eigensystem_new(
-#             h,
-#             e_max=0,
-#             k=1,
-#             eigenValueTol=1e-6,
-#         )
-#         rho = finite.getDensityMatrix(nBaths, psi, l)
-#         rhomat = np.zeros((n, n), dtype=complex)
-#         for (state1, state2), val in rho.items():
-#             i = finite.c2i(nBaths, state1)
-#             j = finite.c2i(nBaths, state2)
-#             rhomat[i, j] = val
-#         rhomat = comm.allreduce(rhomat, op=MPI.SUM)
-#         imp_occ = np.trace(rho)
-#         dc_guess += imp_occ * dc_init
-#         if imp_occ * dc_init <= 1 / 2 * min(1 / be, min(np.abs(eb))):
-#             break
-#     return dc * np.identity(2 * (2 * l + 1), dtype=complex)
+    Np = ({l: N0[0][l] + 1 for l in N0[0]}, N0[1], N0[2])
+    Nm = ({l: N0[0][l] - 1 for l in N0[0]}, N0[1], N0[2])
+    if peak_position >= 0:
+        basis_upper = CIPSI_Basis(
+            ls=list(N0[0].keys()),
+            valence_baths=num_valence_bath_states,
+            conduction_baths=num_conduction_bath_states,
+            delta_valence_occ=delta_valence_occ,
+            delta_conduction_occ=delta_conduction_occ,
+            delta_impurity_occ=delta_impurity_occ,
+            nominal_impurity_occ=Np[0],
+            truncation_threshold=1e9,
+            verbose=verbose,
+            comm=MPI.COMM_WORLD,
+            spin_flip_dj=dc_struct.spin_flip_dj,
+        )
+        basis_lower = CIPSI_Basis(
+            ls=list(N0[0].keys()),
+            valence_baths=num_valence_bath_states,
+            conduction_baths=num_conduction_bath_states,
+            delta_valence_occ=delta_valence_occ,
+            delta_conduction_occ=delta_conduction_occ,
+            delta_impurity_occ=delta_impurity_occ,
+            nominal_impurity_occ=N0[0],
+            truncation_threshold=1e9,
+            verbose=verbose,
+            comm=MPI.COMM_WORLD,
+            spin_flip_dj=dc_struct.spin_flip_dj,
+        )
+    else:
+        basis_upper = CIPSI_Basis(
+            ls=list(N0[0].keys()),
+            valence_baths=num_valence_bath_states,
+            conduction_baths=num_conduction_bath_states,
+            delta_valence_occ=delta_valence_occ,
+            delta_conduction_occ=delta_conduction_occ,
+            delta_impurity_occ=delta_impurity_occ,
+            nominal_impurity_occ=N0[0],
+            truncation_threshold=1e9,
+            verbose=verbose,
+            comm=MPI.COMM_WORLD,
+            spin_flip_dj=dc_struct.spin_flip_dj,
+        )
+        basis_lower = CIPSI_Basis(
+            ls=list(N0[0].keys()),
+            valence_baths=num_valence_bath_states,
+            conduction_baths=num_conduction_bath_states,
+            delta_valence_occ=delta_valence_occ,
+            delta_conduction_occ=delta_conduction_occ,
+            delta_impurity_occ=delta_impurity_occ,
+            nominal_impurity_occ=Nm[0],
+            truncation_threshold=1e9,
+            verbose=verbose,
+            comm=MPI.COMM_WORLD,
+            spin_flip_dj=dc_struct.spin_flip_dj,
+        )
+    h_op_c = finite.addOps([h0_op, u])
+    h_op_i = finite.c2i_op(sum_bath_states, h_op_c)
+    # h_dict = basis_upper.expand(h_op_i, dense_cutoff=dense_cutoff, de2_min=1e-6)
+    # h_dict = basis_lower.expand(h_op_i, dense_cutoff=dense_cutoff, de2_min=1e-6)
+
+    def F(dc_fac):
+        dc = dc_fac * dc_trial
+        bu = basis_upper.copy()
+        bl = basis_lower.copy()
+        dc_op_i = {
+            ((i, "c"), (j, "a")): -dc[i, j] + 0j
+            for i in range(dc_trial.shape[0])
+            for j in range(dc_trial.shape[1])
+            if abs(dc_trial[i, j]) > 0
+        }
+        h_op = finite.addOps([h_op_i, dc_op_i])
+        h_dict = bu.expand(h_op, dense_cutoff=dense_cutoff, de2_min=1e-6)
+        h = bu.build_sparse_matrix(h_op, {}) if bu.size > dense_cutoff else bu.build_dense_matrix(h_op, h_dict)
+        e_upper, psi_upper = finite.eigensystem_new(
+            h,
+            e_max=0,
+            k=1,
+            eigenValueTol=0,
+            return_eigvecs=True,
+        )
+        h_dict = bl.expand(h_op, dense_cutoff=dense_cutoff, de2_min=1e-6)
+        h = bl.build_sparse_matrix(h_op, {}) if bl.size > dense_cutoff else bl.build_dense_matrix(h_op, h_dict)
+        e_lower, psi_lower = finite.eigensystem_new(
+            h,
+            e_max=0,
+            k=1,
+            eigenValueTol=0,
+            return_eigvecs=True,
+        )
+        psi_lower_local = bl.build_state(psi_lower[:, 0].T)[0]
+        psi_upper_local = bu.build_state(psi_upper[:, 0].T)[0]
+        psi_lowers = bl.comm.allgather(psi_lower_local)
+        psi_uppers = bu.comm.allgather(psi_upper_local)
+        psi_lower = {}
+        psi_upper = {}
+        for psi_lower_local, psi_upper_local in zip(psi_lowers, psi_uppers):
+            for state in psi_lower_local:
+                psi_lower[state] = psi_lower_local[state] + psi_lower.get(state, 0)
+            for state in psi_upper_local:
+                psi_upper[state] = psi_upper_local[state] + psi_upper.get(state, 0)
+        rho_lower = finite.getDensityMatrix(sum_bath_states, psi_lower, 2)
+        rho_lower_mat = np.zeros_like(dc_trial)
+        for (state1, state2), val in rho_lower.items():
+            m = finite.c2i(sum_bath_states, state1)
+            n = finite.c2i(sum_bath_states, state2)
+            rho_lower_mat[m, n] = val
+        rho_upper = finite.getDensityMatrix(sum_bath_states, psi_upper, 2)
+        rho_upper_mat = np.zeros_like(dc_trial)
+        for (state1, state2), val in rho_upper.items():
+            m = finite.c2i(sum_bath_states, state1)
+            n = finite.c2i(sum_bath_states, state2)
+            rho_upper_mat[m, n] = val
+        avg_dc_lower = np.real(np.trace(rho_lower_mat @ dc))
+        avg_dc_upper = np.real(np.trace(rho_upper_mat @ dc))
+        if abs(avg_dc_upper - avg_dc_lower) < min(dc_struct.tau, 1e-2):
+            return dc_trial
+        return (e_upper[0] - e_lower[0] - peak_position) / (avg_dc_upper - avg_dc_lower)
+        # return (e_upper[0] - e_lower[0] - peak_position + avg_dc_upper - avg_dc_lower) / (avg_dc_upper - avg_dc_lower)
+
+    res = sp.optimize.root_scalar(F, x0=1)
+    dc_fac = res.root
+    # dc_fac = 1
+    # for _ in range(5):
+    #     dc_fac += F(dc_fac)
+    if verbose:
+        print(f"Peak position {dc_struct.peak_position}")
+        print(f"DC guess {dc_struct.dc_guess}")
+        print(f"dc found : {dc_fac*dc_trial}")
+
+    return dc_fac * dc_trial
 
 
 def matrix_print(matrix: np.ndarray, label: str = None) -> None:

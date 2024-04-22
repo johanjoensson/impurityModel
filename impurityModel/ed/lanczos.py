@@ -443,7 +443,7 @@ def block_lanczos(
             t_conv += perf_counter() - t_tmp
         done = basis.comm.allreduce(done, op=MPI.LAND)
         converge_count = (1 + converge_count) if done else 0
-        if converge_count > 0:
+        if converge_count > 0 or it > N0:
             break
 
         t_tmp = perf_counter()
