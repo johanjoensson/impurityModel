@@ -83,6 +83,7 @@ class Basis:
 
     def _get_initial_basis(
         self,
+        impurity_orbitals,
         valence_baths,
         conduction_baths,
         delta_valence_occ,
@@ -91,37 +92,36 @@ class Basis:
         nominal_impurity_occ,
         verbose,
     ):
-        total_baths = {l: valence_baths[l] + conduction_baths[l] for l in valence_baths}
+        total_baths = {i: valence_baths[i] + conduction_baths[i] for i in valence_baths}
         configurations = {}
-        for l in valence_baths:
+        n_imp_orbs = 0
+        n_val_orbs = sum(imp_orbs for imp_orbs in impurity_orbitals.values())
+        n_cond_orbs = n_val_orbs + sum(val_orbs for val_orbs in valence_orbitals.values())
+        for i in valence_baths:
             if verbose:
-                print(f"{l=}")
+                print(f"{i=}")
             valid_configurations = []
-            for delta_valence in range(delta_valence_occ[l] + 1):
-                for delta_conduction in range(delta_conduction_occ[l] + 1):
+            for delta_valence in range(delta_valence_occ[i] + 1):
+                for delta_conduction in range(delta_conduction_occ[i] + 1):
                     delta_impurity = delta_valence - delta_conduction
                     if (
-                        abs(delta_impurity) <= delta_impurity_occ[l]
-                        and nominal_impurity_occ[l] + delta_impurity <= 2 * (2 * l + 1)
-                        and nominal_impurity_occ[l] + delta_impurity >= 0
+                        abs(delta_impurity) <= delta_impurity_occ[i]
+                        and nominal_impurity_occ[i] + delta_impurity <= impurity_orbitals[i]
+                        and nominal_impurity_occ[i] + delta_impurity >= 0
                     ):
-                        impurity_occupation = nominal_impurity_occ[l] + delta_impurity
-                        valence_occupation = valence_baths[l] - delta_valence
+                        impurity_occupation = nominal_impurity_occ[i] + delta_impurity
+                        valence_occupation = valence_baths[i] - delta_valence
                         conduction_occupation = delta_conduction
                         if verbose:
                             print("Partition occupations")
                             print(f"Impurity occupation:   {impurity_occupation:d}")
-                            print(f"Valence onccupation:   {valence_occupation:d}")
+                            print(f"Valence occupation:   {valence_occupation:d}")
                             print(f"Conduction occupation: {conduction_occupation:d}")
-                        impurity_electron_indices = [
-                            c2i(total_baths, (l, s, m)) for s in range(2) for m in range(-l, l + 1)
-                        ]
+                        impurity_electron_indices = list(range(n_imp_orbs, n_imp_orbs + impurity_orbitals[i]))
                         impurity_configurations = itertools.combinations(impurity_electron_indices, impurity_occupation)
-                        valence_electron_indices = [c2i(total_baths, (l, b)) for b in range(valence_baths[l])]
+                        valence_electron_indices = list(range(n_val_orbs, n_val_orbs + valence_baths[i]))
                         valence_configurations = itertools.combinations(valence_electron_indices, valence_occupation)
-                        conduction_electron_indices = [
-                            c2i(total_baths, (l, b)) for b in range(valence_baths[l], total_baths[l])
-                        ]
+                        conduction_electron_indices = list(range(n_cond_orbs, n_cond_orbs + conduction_baths[i]))
                         conduction_configurations = itertools.combinations(
                             conduction_electron_indices, conduction_occupation
                         )
@@ -130,10 +130,13 @@ class Basis:
                                 impurity_configurations, valence_configurations, conduction_configurations
                             )
                         )
-            configurations[l] = [
+            configurations[i] = [
                 imp + val + cond for configuration in valid_configurations for (imp, val, cond) in configuration
             ]
-        num_spin_orbitals = sum(2 * (2 * l + 1) + total_baths[l] for l in total_baths)
+            n_imp_orbs += impurity_orbitals[i]
+            n_val_orbs += valence_baths[i]
+            n_cond_orbs += conduction_baths[i]
+        num_spin_orbitals = {i: impurity_orbitals[i] + total_baths[i] for i in total_baths}
         basis = []
         # Combine all valid configurations for all l-subconfigurations (ex. p-states and d-states)
         for system_configuration in itertools.product(*configurations.values()):
@@ -144,6 +147,7 @@ class Basis:
 
     def _get_restrictions(
         self,
+        impurity_orbitals,
         valence_baths,
         conduction_baths,
         delta_valence_occ,
@@ -153,22 +157,26 @@ class Basis:
         verbose,
     ):
         restrictions = {}
-        total_baths = {l: valence_baths[l] + conduction_baths[l] for l in valence_baths}
-        for l in total_baths:
-            impurity_indices = frozenset(c2i(total_baths, (l, s, m)) for s in range(2) for m in range(-l, l + 1))
+        total_baths = {i: valence_baths[i] + conduction_baths[i] for i in valence_baths}
+        impurity_orbs = 0
+        valence_orbs = sum(imp_orbs for imp_orbs in impurity_orbitals.values())
+        conduction_orbs = valence_orbs + sum(val_orbs for val_orbs in valence_orbitals.values())
+        for i in total_baths:
+            impurity_indices = frozenset(range(impurity_orbs, impurity_orbs + impurity_orbitals[i]))
             restrictions[impurity_indices] = (
-                max(nominal_impurity_occ[l] - delta_impurity_occ[l], 0),
-                min(nominal_impurity_occ[l] + delta_impurity_occ[l] + 1, 2 * (2 * l + 1) + 1),
+                max(nominal_impurity_occ[i] - delta_impurity_occ[i], 0),
+                min(nominal_impurity_occ[i] + delta_impurity_occ[i] + 1, impurity_orbitals[i] + 1),
             )
-            valence_indices = frozenset(c2i(total_baths, (l, b)) for b in range(valence_baths[l]))
-            restrictions[valence_indices] = (max(valence_baths[l] - delta_valence_occ[l], 0), valence_baths[l] + 1)
-            conduction_indices = frozenset(
-                c2i(total_baths, (l, b)) for b in range(valence_baths[l], valence_baths[l] + conduction_baths[l])
-            )
-            restrictions[conduction_indices] = (0, delta_conduction_occ[l] + 1)
+            valence_indices = frozenset(range(valence_orbs, valence_orbs+valence_baths[i]))
+            restrictions[valence_indices] = (max(valence_baths[i] - delta_valence_occ[i], 0), valence_baths[i] + 1)
+            conduction_indices = frozenset( range(conduction_orbs, conduction_orbs + conduction_baths[i]))
+            restrictions[conduction_indices] = (0, delta_conduction_occ[i] + 1)
+            impurity_orbs += impurity_orbitals[i]
+            valence_orbs += valence_baths[i]
+            conduction_orbs += conduction_baths[i]
 
             if verbose:
-                print(f"l = {l}")
+                print(f"l = {i}")
                 print(f"|---Restrictions on the impurity orbitals = {restrictions[impurity_indices]}")
                 print(f"|---Restrictions on the valence bath      = {restrictions[valence_indices]}")
                 print(f"----Restrictions on the conduction bath   = {restrictions[conduction_indices]}")
@@ -244,9 +252,8 @@ class Basis:
 
     def __init__(
         self,
-        ls,
+        impurity_orbitals,
         bath_states=None,
-        num_spin_orbitals=None,
         initial_basis=None,
         restrictions=None,
         valence_baths=None,
@@ -279,9 +286,9 @@ class Basis:
             initial_basis = initial_basis
         else:
             assert initial_basis is None
-            assert num_spin_orbitals is None
             assert restrictions is None
             initial_basis, num_spin_orbitals = self._get_initial_basis(
+                impurity_orbitals=impurity_orbitals,
                 valence_baths=valence_baths,
                 conduction_baths=conduction_baths,
                 delta_valence_occ=delta_valence_occ,
@@ -304,14 +311,16 @@ class Basis:
         # if verbose:
         #     print(f"===> T initial_basis : {t0}")
         t0 = perf_counter()
-        self.ls = ls
+        self.impurity_orbitals=impurity_orbitals,
         self.bath_states = bath_states
         self.spin_flip_dj = spin_flip_dj
         self.verbose = verbose
         self.debug = debug
         self.truncation_threshold = truncation_threshold
         self.comm = comm
-        self.num_spin_orbitals = num_spin_orbitals
+        self.num_spin_orbitals = {
+            i: impurity_orbitals[i] + valence_baths[i] + conduction_baths[i] for i in impurity_orbitals
+        }
         self.local_basis = []
         self.restrictions = restrictions
         self.offset = 0
@@ -1241,7 +1250,7 @@ class Basis:
 class CIPSI_Basis(Basis):
     def __init__(
         self,
-        ls,
+        impurity_orbitals,
         bath_states=None,
         valence_baths=None,
         conduction_baths=None,
@@ -1264,6 +1273,7 @@ class CIPSI_Basis(Basis):
             assert conduction_baths is not None
             assert nominal_impurity_occ is not None
             initial_basis, num_spin_orbitals = self._get_initial_basis(
+                impurity_orbitals=impurity_orbitals,
                 valence_baths,
                 conduction_baths,
                 delta_valence_occ,
@@ -1277,7 +1287,7 @@ class CIPSI_Basis(Basis):
             assert num_spin_orbitals is not None
             assert bath_states is not None
         super(CIPSI_Basis, self).__init__(
-            ls=ls,
+            impurity_orbitals=impurity_orbitals,
             bath_states=bath_states,
             initial_basis=initial_basis,
             num_spin_orbitals=num_spin_orbitals,
