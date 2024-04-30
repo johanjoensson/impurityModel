@@ -276,7 +276,6 @@ class Basis:
             assert delta_valence_occ is None
             assert delta_conduction_occ is None
             assert delta_impurity_occ is None
-            initial_basis = initial_basis
         else:
             assert initial_basis is None
             assert num_spin_orbitals is None
@@ -301,8 +300,6 @@ class Basis:
             )
             bath_states = (valence_baths, conduction_baths)
         t0 = perf_counter() - t0
-        # if verbose:
-        #     print(f"===> T initial_basis : {t0}")
         t0 = perf_counter()
         self.ls = ls
         self.bath_states = bath_states
@@ -326,8 +323,6 @@ class Basis:
 
         self.is_distributed = comm is not None
         t0 = perf_counter() - t0
-        # if verbose:
-        #     print(f"===> T init basic stuff : {t0}")
         t0 = perf_counter()
         if comm is not None:
             seed_sequences = None
@@ -339,16 +334,11 @@ class Basis:
         else:
             self.rng = np.random.default_rng()
         t0 = perf_counter() - t0
-        # if verbose:
-        #     print(f"===> T init rng : {t0}")
         self.tau = tau
 
         t0 = perf_counter()
         self.add_states(initial_basis)
-        # self.add_states(self._generate_spin_flipped_determinants(initial_basis))
         t0 = perf_counter() - t0
-        # if verbose:
-        #     print(f"===> T add_states : {t0}")
 
     def alltoall_states(self, send_list: list[list[bytes]], flatten=False):
         recv_counts = np.empty((self.comm.size), dtype=int)
@@ -587,8 +577,8 @@ class Basis:
             local_indices = range(
                 sum(n_states_per_rank[: self.comm.rank]), sum(n_states_per_rank[: self.comm.rank + 1])
             )
-            local_states = self._getitem_sequence([i for i in local_indices if i < self.size])
-            self.local_basis = list(local_states)
+            self.local_basis = list(self._getitem_sequence([i for i in local_indices if i < self.size]))
+            # self.local_basis = list(local_states)
             local_length = len(self.local_basis)
             self.comm.Allgather(np.array([local_length], dtype=int), size_arr)
             self.size = np.sum(size_arr)
@@ -979,6 +969,9 @@ class Basis:
             (results, recv_counts, displacements, MPI.INT64_T), (result, send_counts, send_displacements, MPI.INT64_T)
         )
         result[sum(send_counts) :] = self.size
+        while np.any(np.logical_or(result > self.size, result < 0)):
+            mask = np.logical_or(result > self.size, result < 0)
+            result[mask] = np.from_iter(self._index_sequence(itertools.compress(s, mask)), dtype=int)
 
         return (res for res in result[np.argsort(send_order)])
 
@@ -1067,19 +1060,10 @@ class Basis:
     def build_vector(self, psis: list[dict], root: Optional[int] = None) -> np.ndarray:
         v_local = np.zeros((len(psis), self.size), dtype=complex)
         v = np.empty_like(v_local)
+        psis = self.redistribute_psis(psis)
         # row_states_in_basis: list[bytes] = []
         row_dict = self._index_dict
         for row, psi in enumerate(psis):
-            row_states = set(psi.keys())
-            need_mpi = False
-            if self.is_distributed:
-                if any(state not in row_dict for state in psi):
-                    need_mpi = True
-                need_mpi_arr = np.empty((1,), dtype=bool)
-                self.comm.Allreduce(np.array([need_mpi], dtype=bool), need_mpi_arr, op=MPI.LOR)
-                need_mpi = need_mpi_arr[0]
-            if need_mpi:
-                row_dict = {state: i for state, i in zip(row_states, self._index_sequence(row_states)) if i < self.size}
             for state, val in psi.items():
                 if state not in row_dict:
                     continue
@@ -1094,30 +1078,13 @@ class Basis:
         return v
 
     def build_distributed_vector(self, psis: list[dict], dtype=complex) -> np.ndarray:
-        v = np.empty((len(psis), len(self.local_basis)), dtype=dtype, order="C")
-        for row, psi in enumerate(psis):
-            if self.is_distributed:
-                r_states = psi.keys()
-                row_dict = {state: i for state, i in zip(r_states, self._index_sequence(r_states)) if i < self.size}
-                for r in range(self.comm.size):
-                    if self.index_bounds[r] is None:
-                        break
-                    r_offset = self.index_bounds[r - 1] if r > 0 else 0
-                    local_r_size = self.index_bounds[r] - self.index_bounds[r - 1] if r > 0 else self.index_bounds[r]
-                    r_send_vec = np.zeros((local_r_size,), dtype=dtype)
-                    for r_state in r_states:
-                        if r_state not in row_dict:
-                            continue
-                        state_idx = row_dict[r_state]
-                        if state_idx < r_offset or state_idx >= r_offset + local_r_size:
-                            continue
-                        r_send_vec[state_idx - r_offset] = psi[r_state]
-                    self.comm.Reduce(r_send_vec, v[row, :], root=r)
-            else:
-                for state in psi:
-                    if state not in self._index_dict:
-                        continue
-                    v[row, self._index_dict[state]] = psi[state]
+        v = np.zeros((len(psis), len(self.local_basis)), dtype=dtype, order="C")
+        psis_new = self.redistribute_psis(psis)
+        for row, psi in enumerate(psis_new):
+            for state in psi:
+                if state not in self._index_dict:
+                    continue
+                v[row, self._index_dict[state] - self.offset] = psi[state]
         return v
 
     def build_state(self, vs: Union[list[np.ndarray], np.ndarray], slaterWeightMin=0) -> list[dict]:

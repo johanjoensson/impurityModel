@@ -1173,7 +1173,7 @@ def test_eg_t2g_CIPSI_basis_expand_mpi():
 
 @pytest.mark.mpi
 def test_distributed_simple_vector():
-    states = [b"\x00\x1a\x2b", b"\xff\x00\x1a"]
+    states = (b"\x00\x1a\x2b", b"\xff\x00\x1a")
     basis = Basis(
         ls=[], bath_states=({}, {}), initial_basis=states, num_spin_orbitals=24, verbose=True, comm=MPI.COMM_WORLD
     )
