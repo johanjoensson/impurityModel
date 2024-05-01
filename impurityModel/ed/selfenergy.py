@@ -159,8 +159,9 @@ def fixed_peak_dc(h0_op, dc_struct, rank, verbose, dense_cutoff):
         return (e_upper[0] - e_lower[0] - peak_position) / (avg_dc_upper - avg_dc_lower)
         # return (e_upper[0] - e_lower[0] - peak_position + avg_dc_upper - avg_dc_lower) / (avg_dc_upper - avg_dc_lower)
 
-    res = sp.optimize.root_scalar(F, x0=1)
-    dc_fac = res.root
+    # res = sp.optimize.root_scalar(F, x0=1)
+    # dc_fac = res.root
+    dc_fac = sp.optimize.newton(F, x0=1)
     # dc_fac = 1
     # for _ in range(5):
     #     dc_fac += F(dc_fac)
