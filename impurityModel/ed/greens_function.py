@@ -567,13 +567,12 @@ def block_Green(
         if alphas.shape[0] == 1:
             return False
 
-        w = np.empty((n_samples), dtype=conv_w.dtype)
+        w = np.zeros((n_samples), dtype=conv_w.dtype)
         intervals = np.linspace(start=conv_w[0], stop=conv_w[-1], num=n_samples + 1)
         for i in range(n_samples):
             w[i] = basis.rng.uniform(
                 low=min(intervals[i], intervals[i + 1]), high=max(intervals[i], intervals[i + 1]), size=None
             )
-        # w = np.random.choice(conv_w, size=max(n_samples // comm.size, 1), replace=False)
         wIs = (w + 1j * delta_p + e)[:, np.newaxis, np.newaxis] * np.identity(alphas.shape[1], dtype=complex)[
             np.newaxis, :, :
         ]
@@ -587,7 +586,7 @@ def block_Green(
         for alpha, beta in zip(alphas[-3::-1], betas[-3::-1]):
             gs_new = wIs - alpha - np.conj(beta.T)[np.newaxis, :, :] @ np.linalg.solve(gs_new, beta[np.newaxis, :, :])
             gs_prev = wIs - alpha - np.conj(beta.T)[np.newaxis, :, :] @ np.linalg.solve(gs_prev, beta[np.newaxis, :, :])
-        return np.all(np.abs(gs_new - gs_prev) < 1e-8)
+        return np.all(np.abs(gs_new - gs_prev) < 1e-12)
 
     t0 = time.perf_counter()
     # Run Lanczos on psi0^T* [wI - j*delta - H]^-1 psi0
