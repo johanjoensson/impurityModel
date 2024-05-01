@@ -343,7 +343,9 @@ class Basis:
     def alltoall_states(self, send_list: list[list[bytes]], flatten=False):
         recv_counts = np.empty((self.comm.size), dtype=int)
         request = self.comm.Ialltoall(
-            (np.fromiter((len(l) for l in send_list), dtype=int, count=len(send_list)), MPI.INT64_T), recv_counts
+            (np.fromiter((len(l) for l in send_list), dtype=int, count=len(send_list)), MPI.LONG),
+            recv_counts
+            # (np.fromiter((len(l) for l in send_list), dtype=int, count=len(send_list)), MPI.INT64_T), recv_counts
         )
 
         send_counts = np.fromiter((len(l) for l in send_list), dtype=int, count=len(send_list))
@@ -401,7 +403,8 @@ class Basis:
             samples = local_states_list
 
         samples_count = np.empty((self.comm.size), dtype=int)
-        self.comm.Gather((np.array([len(samples)], dtype=int), MPI.INT64_T), samples_count, root=0)
+        self.comm.Gather((np.array([len(samples)], dtype=int), MPI.LONG), samples_count, root=0)
+        # self.comm.Gather((np.array([len(samples)], dtype=int), MPI.INT64_T), samples_count, root=0)
 
         all_samples_bytes = bytearray(0)
         # all_samples_bytes = np.empty((0), dtype=np.ubyte)
@@ -510,7 +513,9 @@ class Basis:
 
         recv_counts = np.empty((self.comm.size), dtype=np.int64)
         request = self.comm.Ialltoall(
-            (np.fromiter((len(l) for l in send_list), dtype=int, count=len(send_list)), MPI.INT64_T), recv_counts
+            (np.fromiter((len(l) for l in send_list), dtype=int, count=len(send_list)), MPI.LONG),
+            recv_counts
+            # (np.fromiter((len(l) for l in send_list), dtype=int, count=len(send_list)), MPI.INT64_T), recv_counts
         )
 
         send_counts = np.fromiter((len(l) for l in send_list), dtype=int, count=len(send_list))
@@ -655,9 +660,11 @@ class Basis:
                 np.array([split for splits in send_to_rank for split in splits], dtype=np.int64),
                 send_counts,
                 send_offsets,
-                MPI.INT64_T,
+                MPI.LONG,
+                # MPI.INT64_T,
             ),
-            (received_splits_arr, receive_counts, receive_offsets, MPI.INT64_T),
+            (received_splits_arr, receive_counts, receive_offsets, MPI.LONG),
+            # (received_splits_arr, receive_counts, receive_offsets, MPI.INT64_T),
         )
 
         received_states: list[Iterable[bytes]] = [[] for _ in send_states]
@@ -846,7 +853,9 @@ class Basis:
         recv_counts = np.empty((self.comm.size), dtype=int)
 
         request = self.comm.Ialltoall(
-            (np.fromiter((len(sl) for sl in send_list), dtype=int, count=len(send_list)), MPI.INT64_T), recv_counts
+            (np.fromiter((len(sl) for sl in send_list), dtype=int, count=len(send_list)), MPI.LONG),
+            recv_counts
+            # (np.fromiter((len(sl) for sl in send_list), dtype=int, count=len(send_list)), MPI.INT64_T), recv_counts
         )
 
         send_counts = np.fromiter((len(sl) for sl in send_list), dtype=int, count=len(send_list))
@@ -866,9 +875,11 @@ class Basis:
                 np.fromiter((i for sl in send_list for i in sl), dtype=int, count=len(l)),
                 send_counts,
                 send_offsets,
-                MPI.INT64_T,
+                MPI.LONG,
+                # MPI.INT64_T,
             ),
-            (queries, recv_counts, displacements, MPI.INT64_T),
+            (queries, recv_counts, displacements, MPI.LONG),
+            # (queries, recv_counts, displacements, MPI.INT64_T),
         )
 
         results = bytearray(sum(recv_counts) * self.n_bytes)
@@ -884,6 +895,7 @@ class Basis:
             (result, send_counts * self.n_bytes, send_offsets * self.n_bytes, MPI.BYTE),
         )
 
+        # return (result[i * self.n_bytes : (i + 1) * self.n_bytes].tobytes() for i in np.argsort(send_order))
         return (bytes(result[i * self.n_bytes : (i + 1) * self.n_bytes]) for i in np.argsort(send_order))
 
     def index(self, val):
@@ -930,7 +942,8 @@ class Basis:
         self.comm.Alltoall(
             (
                 np.fromiter((len(send_list[r]) for r in range(self.comm.size)), dtype=int, count=self.comm.size),
-                MPI.INT64_T,
+                MPI.LONG,
+                # MPI.INT64_T,
             ),
             recv_counts,
         )
@@ -966,7 +979,9 @@ class Basis:
         result[:] = self.size
 
         self.comm.Alltoallv(
-            (results, recv_counts, displacements, MPI.INT64_T), (result, send_counts, send_displacements, MPI.INT64_T)
+            (results, recv_counts, displacements, MPI.LONG),
+            (result, send_counts, send_displacements, MPI.LONG)
+            # (results, recv_counts, displacements, MPI.INT64_T), (result, send_counts, send_displacements, MPI.INT64_T)
         )
         result[sum(send_counts) :] = self.size
         while np.any(np.logical_or(result > self.size, result < 0)):
