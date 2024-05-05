@@ -393,7 +393,7 @@ def calc_selfenergy(
         k=2 * (2 * l + 1),
         eigenValueTol=0,
     )
-    psis = basis.build_state(psis_dense.T)
+    psis = basis.build_state(psis_dense.T, slaterWeightMin=0)
     basis.clear()
     basis.add_states(set(state for psi in psis for state in psi))
     all_psis = comm.gather(psis)
@@ -444,7 +444,7 @@ def calc_selfenergy(
             if rank == 0:
                 print(f"WARNING! Unphysical real-axis Greens function:\n\t{err}")
     if verbosity >= 1:
-        print("Calculate self-energy...")
+        print("Calculate self-energy...", flush=True)
     if gs_realaxis is not None:
         sigma_real = get_sigma(
             omega_mesh=w,
@@ -533,12 +533,11 @@ def hyb(ws, v, hbath, delta):
     """
     Calculate hybridization function from hopping parameters and bath energies.
     """
-    hyb = np.conj(v.T)[np.newaxis, :, :] @ np.linalg.solve(
+    return np.conj(v.T)[np.newaxis, :, :] @ np.linalg.solve(
         (ws + 1j * delta)[:, np.newaxis, np.newaxis] * np.identity(v.shape[0], dtype=complex)[np.newaxis, :, :]
         - hbath[np.newaxis, :, :],
         v[np.newaxis, :, :],
     )
-    return hyb
 
 
 def get_sigma(

@@ -344,12 +344,24 @@ def block_lanczos(
     h_mem: dict = None,
     verbose: bool = True,
     build_krylov_basis: bool = True,
-    slaterWeightMin: float = 1e-8,
+    slaterWeightMin: float = 0,
 ) -> (np.ndarray, np.ndarray, Optional[list[dict]]):
     if h_mem is None:
         h_mem = {}
+    mpi = basis.comm is not None
+    rank = basis.comm.rank if mpi else 0
     n = len(psi0)
     N0 = basis.size
+    if mpi:
+        psi_len = basis.comm.allreduce(sum(len(psi) for psi in psi0), op=MPI.SUM)
+    else:
+        psi_len = sum(len(psi) for psi in psi0)
+    if psi_len == 0:
+        return (
+            np.zeros((1, n, n), dtype=complex),
+            np.zeros((1, n, n), dtype=complex),
+            psi0 if build_krylov_basis else None,
+        )
 
     alphas = np.empty((0, n, n), dtype=complex)
     betas = np.empty((0, n, n), dtype=complex)
@@ -379,7 +391,7 @@ def block_lanczos(
                 basis.num_spin_orbitals,
                 h_op,
                 psi_i,
-                slaterWeightMin=slaterWeightMin,
+                slaterWeightMin=0,  # slaterWeightMin,
                 restrictions=basis.restrictions,
                 opResult=h_mem,
             )
@@ -412,45 +424,65 @@ def block_lanczos(
         t_tmp = perf_counter()
         alpha = np.conj(psi.T) @ psip
         alphas = np.append(alphas, np.empty((1, n, n), dtype=complex), axis=0)
-        request = basis.comm.Iallreduce(alpha, alphas[-1], op=MPI.SUM)
+        if mpi:
+            request = basis.comm.Iallreduce(alpha, alphas[-1], op=MPI.SUM)
+        else:
+            alphas[-1] = alpha
 
         if it > 0:
             psip -= psim @ np.conj(betas[-1].T)
         betas = np.append(betas, np.empty((1, n, n), dtype=complex), axis=0)
-        send_counts = np.empty((basis.comm.size), dtype=int)
-        basis.comm.Gather(np.array([n * len(basis.local_basis)]), send_counts)
+        if mpi:
+            send_counts = np.empty((basis.comm.size), dtype=int)
+            basis.comm.Gather(np.array([n * len(basis.local_basis)]), send_counts)
+            request.Wait()
 
-        request.Wait()
         psip -= psi @ alphas[-1]
         t_linalg += perf_counter() - t_tmp
         t_tmp = perf_counter()
-        offsets = np.fromiter(
-            (np.sum(send_counts[:i]) for i in range(basis.comm.size)), dtype=int, count=basis.comm.size
-        )
+        if mpi:
+            offsets = np.fromiter(
+                (np.sum(send_counts[:i]) for i in range(basis.comm.size)), dtype=int, count=basis.comm.size
+            )
 
-        qip = np.empty((basis.size, n), dtype=complex) if basis.comm.rank == 0 else None
-        basis.comm.Gatherv(psip, [qip, send_counts, offsets, MPI.C_DOUBLE_COMPLEX], root=0)
+        qip = np.empty((basis.size, n), dtype=complex) if rank == 0 else None
+        if mpi:
+            basis.comm.Gatherv(psip, [qip, send_counts, offsets, MPI.C_DOUBLE_COMPLEX], root=0)
+        else:
+            qip[:, :] = psip
         t_vec += perf_counter() - t_tmp
-        if basis.comm.rank == 0:
+        if rank == 0:
             t_tmp = perf_counter()
-            qip[:, :], betas[-1] = sp.linalg.qr(qip, mode="economic", overwrite_a=True, check_finite=False)
+            qip, betas[-1] = sp.linalg.qr(qip, mode="economic", overwrite_a=True, check_finite=False)
             t_qr += perf_counter() - t_tmp
-        basis.comm.Bcast(betas[-1], root=0)
-        request = basis.comm.Iscatterv([qip, send_counts, offsets, MPI.C_DOUBLE_COMPLEX], psip, root=0)
+            qip = np.array(qip, order="C")
+            _, columns = qip.shape
+
+        if mpi:
+            basis.comm.Bcast(betas[-1], root=0)
+            columns = basis.comm.bcast(columns if rank == 0 else None)
+            request = basis.comm.Iscatterv([qip, send_counts, offsets, MPI.C_DOUBLE_COMPLEX], psip[:, :columns], root=0)
+
         if it % 5 == 0 or converge_count > 0:
             t_tmp = perf_counter()
             done = converged(alphas, betas)
             t_conv += perf_counter() - t_tmp
-        done = basis.comm.allreduce(done, op=MPI.LAND)
+
+        if mpi:
+            done = basis.comm.allreduce(done, op=MPI.LAND)
+
         converge_count = (1 + converge_count) if done else 0
-        if converge_count > 0 or it > N0:
+        if converge_count > 0 or it * n > N0:
             break
 
         t_tmp = perf_counter()
         q[0] = q[1]
-        q[1] = [{} for _ in range(n)]
-        request.Wait()
-        for j, (i, state) in itertools.product(range(n), enumerate(basis.local_basis)):
+        q[1] = [{} for _ in range(columns)]
+        # q[1] = [{} for _ in range(n)]
+        if mpi:
+            request.Wait()
+        for j, (i, state) in itertools.product(range(columns), enumerate(basis.local_basis)):
+            # for j, (i, state) in itertools.product(range(n), enumerate(basis.local_basis)):
             if abs(psip[i, j]) ** 2 > slaterWeightMin:
                 q[1][j][state] = psip[i, j]
         t_state += perf_counter() - t_tmp

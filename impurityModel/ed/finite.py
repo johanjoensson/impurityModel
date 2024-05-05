@@ -2053,7 +2053,7 @@ def occupation_is_within_restrictions(state, n_spin_orbitals, restrictions):
     return True
 
 
-def applyOp_new(n_spin_orbitals, op, psi, slaterWeightMin=0, restrictions=None, opResult=None):
+def applyOp_new(n_spin_orbitals: int, op: dict, psi: dict, slaterWeightMin=0, restrictions=None, opResult=None):
     r"""
     Return :math:`|psi' \rangle = op |psi \rangle`.
 

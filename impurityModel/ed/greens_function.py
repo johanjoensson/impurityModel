@@ -121,7 +121,7 @@ def get_Greens_function(
             omega_mesh,
             delta,
             reort=reort,
-            slaterWeightMin=1e-12,
+            slaterWeightMin=1e-8,
             verbose=verbose,
         )
         gsPS_matsubara, gsPS_realaxis = calc_Greens_function_with_offdiag(
@@ -134,7 +134,7 @@ def get_Greens_function(
             -matsubara_mesh if matsubara_mesh is not None else None,
             -omega_mesh if omega_mesh is not None else None,
             -delta,
-            slaterWeightMin=1e-12,
+            slaterWeightMin=1e-8,
             verbose=verbose,
             reort=reort,
         )
@@ -288,7 +288,7 @@ def calc_Greens_function_with_offdiag(
                 eigen_basis.num_spin_orbitals,
                 tOp,
                 psi,
-                slaterWeightMin=slaterWeightMin,
+                slaterWeightMin=0,  # slaterWeightMin,
                 restrictions=basis.restrictions,
                 opResult=t_mems[i_tOp],
             )
@@ -460,10 +460,8 @@ def get_block_Green(
         for alpha, beta in zip(alphas[-3::-1], betas[-3::-1]):
             gs_new = wIs - alpha - np.conj(beta.T)[np.newaxis, :, :] @ np.linalg.solve(gs_new, beta[np.newaxis, :, :])
             gs_prev = wIs - alpha - np.conj(beta.T)[np.newaxis, :, :] @ np.linalg.solve(gs_prev, beta[np.newaxis, :, :])
-        # print(rf"$\Delta$G = {np.max(np.abs(gs_new - gs_prev))}", flush=True)
         return np.all(np.abs(gs_new - gs_prev) < 1e-8)
 
-    print("Get alpha and beta!", flush=True)
     # Run Lanczos on psi0^T* [wI - j*delta - H]^-1 psi0
     alphas, betas, _ = get_block_Lanczos_matrices(
         psi0=psi0,
@@ -473,6 +471,7 @@ def get_block_Green(
         verbose=verbose,
         reort_mode=reort,
         build_krylov_basis=False,
+        slaterWeightMin=slaterWeightMin,
     )
 
     t0 = time.perf_counter()
@@ -526,25 +525,29 @@ def block_Green(
     psi_start = np.array(basis.build_distributed_vector(psi_arr).T, copy=False, order="C")
     counts = np.empty((comm.size,), dtype=int) if comm.rank == 0 else None
     comm.Gather(np.array([n * len(basis.local_basis)], dtype=int), counts, root=0)
-    offsets = [sum(counts[:r]) for r in range(len(counts))] if comm.rank == 0 else None
+    offsets = np.array([sum(counts[:r]) for r in range(len(counts))]) if comm.rank == 0 else None
     psi0 = np.empty((N, n), dtype=complex, order="C") if comm.rank == 0 else None
     comm.Gatherv(psi_start, (psi0, counts, offsets, MPI.C_DOUBLE_COMPLEX), root=0)
     r: Optional[np.ndarray] = None
     if comm.rank == 0:
         # Do a QR decomposition of the starting block.
         # Later on, use r to restore the block corresponding to
-        psi0[:, :], r = sp.linalg.qr(psi0, mode="economic", overwrite_a=True, check_finite=False, pivoting=False)
+        psi0, r = sp.linalg.qr(psi0, mode="economic", overwrite_a=True, check_finite=False, pivoting=False)
+        psi0 = np.array(psi0, order="C")
         # Find which columns (if any) are 0 in psi0_0
         rows, columns = psi0.shape
     rows = comm.bcast(rows if comm.rank == 0 else None, root=0)
     columns = comm.bcast(columns if comm.rank == 0 else None, root=0)
     if rows == 0 or columns == 0:
         return np.zeros((len(iws), n, n), dtype=complex), np.zeros((len(ws), n, n), dtype=complex)
-    if comm.rank != 0:
-        psi0 = None
-    comm.Scatterv((psi0, counts, offsets, MPI.C_DOUBLE_COMPLEX), psi_start, root=0)
-    psi = [{} for _ in range(n)]
-    for j, (i, state) in itertools.product(range(n), enumerate(basis.local_basis)):
+    # psi_start = np.empty((len(basis.local_basis), columns), dtype=complex)
+    comm.Scatterv(
+        (psi0, counts * columns // n, offsets * columns // n, MPI.C_DOUBLE_COMPLEX) if comm.rank == 0 else None,
+        psi_start[:, :columns],
+        root=0,
+    )
+    psi = [{} for _ in range(columns)]
+    for j, (i, state) in itertools.product(range(columns), enumerate(basis.local_basis)):
         if abs(psi_start[i, j]) ** 2 > slaterWeightMin:
             psi[j][state] = psi_start[i, j]
     if verbose:
@@ -586,7 +589,7 @@ def block_Green(
         for alpha, beta in zip(alphas[-3::-1], betas[-3::-1]):
             gs_new = wIs - alpha - np.conj(beta.T)[np.newaxis, :, :] @ np.linalg.solve(gs_new, beta[np.newaxis, :, :])
             gs_prev = wIs - alpha - np.conj(beta.T)[np.newaxis, :, :] @ np.linalg.solve(gs_prev, beta[np.newaxis, :, :])
-        return np.all(np.abs(gs_new - gs_prev) < 1e-12)
+        return np.all(np.abs(gs_new - gs_prev) < max(slaterWeightMin, 1e-10))
 
     t0 = time.perf_counter()
     # Run Lanczos on psi0^T* [wI - j*delta - H]^-1 psi0
@@ -600,7 +603,7 @@ def block_Green(
         slaterWeightMin=slaterWeightMin,
     )
     if verbose:
-        print(f"time(block_lanczos) = {time.perf_counter() - t0: .4f} seconds.")
+        print(f"time(block_lanczos) = {time.perf_counter() - t0: .4f} seconds.", flush=True)
 
     t0 = time.perf_counter()
 
@@ -638,7 +641,7 @@ def calc_mpi_Greens_function_from_alpha_beta(alphas, betas, iws, ws, e, delta, r
         counts = np.empty((comm.size), dtype=int)
         comm.Gather(np.array([gs_matsubara_local.shape[1] ** 2 * len(iws_split)], dtype=int), counts)
         offsets = [sum(counts[:r]) for r in range(len(counts))] if comm.rank == 0 else None
-        gs_matsubara = np.empty((len(iws), r.shape[0], r.shape[0]), dtype=complex) if comm.rank == 0 else None
+        gs_matsubara = np.empty((len(iws), alphas.shape[1], alphas.shape[1]), dtype=complex) if comm.rank == 0 else None
         comm.Gatherv(gs_matsubara_local, (gs_matsubara, counts, offsets, MPI.C_DOUBLE_COMPLEX), root=0)
         if comm.rank == 0:
             gs_matsubara = np.conj(r.T)[np.newaxis, :, :] @ np.linalg.solve(gs_matsubara, r[np.newaxis, :, :])
@@ -646,7 +649,7 @@ def calc_mpi_Greens_function_from_alpha_beta(alphas, betas, iws, ws, e, delta, r
         counts = np.empty((comm.size), dtype=int)
         comm.Gather(np.array([gs_realaxis_local.shape[1] ** 2 * len(ws_split)], dtype=int), counts)
         offsets = [sum(counts[:r]) for r in range(len(counts))] if comm.rank == 0 else None
-        gs_realaxis = np.empty((len(ws), r.shape[0], r.shape[0]), dtype=complex) if comm.rank == 0 else None
+        gs_realaxis = np.empty((len(ws), alphas.shape[1], alphas.shape[1]), dtype=complex) if comm.rank == 0 else None
         comm.Gatherv(gs_realaxis_local, (gs_realaxis, counts, offsets, MPI.C_DOUBLE_COMPLEX), root=0)
         if comm.rank == 0:
             gs_realaxis = np.conj(r.T)[np.newaxis, :, :] @ np.linalg.solve(gs_realaxis, r[np.newaxis, :, :])
