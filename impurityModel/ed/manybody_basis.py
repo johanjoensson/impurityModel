@@ -312,7 +312,7 @@ class Basis:
         self.restrictions = restrictions
         self.type = type(psr.int2bytes(0, self.num_spin_orbitals))
         self.n_bytes = int(ceil(self.num_spin_orbitals / 8))
-
+        self.truncation_threshold = truncation_threshold
         self.is_distributed = comm is not None
         t0 = perf_counter() - t0
         t0 = perf_counter()
@@ -335,7 +335,6 @@ class Basis:
             bytes_per_state=self.n_bytes,
             comm=self.comm,
             verbose=verbose,
-            truncation_threshold=truncation_threshold,
         )
         self.offset = self.state_container.offset
         self.size = self.state_container.size

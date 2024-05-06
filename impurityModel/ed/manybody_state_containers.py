@@ -12,6 +12,7 @@ from heapq import merge
 import numpy as np
 import scipy as sp
 from mpi4py import MPI
+from impurityModel.ed import product_state_representation as psr
 
 
 def batched(iterable: Iterable, n: int) -> Iterable:
@@ -25,10 +26,8 @@ def batched(iterable: Iterable, n: int) -> Iterable:
         yield batch
 
 
-class DistributedStateContainer:
-    def __init__(
-        self, states: Iterable, bytes_per_state, state_type=bytes, comm=None, verbose=True, truncation_threshold=np.inf
-    ):
+class StateContainer:
+    def __init__(self, states, bytes_per_state, state_type, comm):
         self.local_basis = []
         self.comm = comm
         self.offset = 0
@@ -37,12 +36,9 @@ class DistributedStateContainer:
         self._index_dict = {}
         self.type = state_type
         self.n_bytes = bytes_per_state
-
         self.index_bounds = [None] * comm.size if comm is not None else None
         self.state_bounds = [None] * comm.size if comm is not None else None
-
         self.is_distributed = comm is not None
-
         self.add_states(states)
         if self.size > 0 and self.type is None:
             self.type = type(self[0])
@@ -50,6 +46,35 @@ class DistributedStateContainer:
     def __iter__(self):
         for i in range(self.size):
             yield self.__getitem__(i)
+
+    def add_states(self, new_states: Iterable[bytes]) -> None:
+        pass
+
+    def __getitem__(self, key) -> Iterable[bytes]:
+        pass
+
+    def __len__(self):
+        return self.size
+
+    def index(self, val):
+        pass
+
+    def _index_sequence(self, s: Iterable[bytes]) -> Iterable[int]:
+        pass
+
+    def __contains__(self, item):
+        pass
+
+    def _contains_sequence(self, items):
+        pass
+
+    def clear(self):
+        pass
+
+
+class DistributedStateContainer(StateContainer):
+    def __init__(self, states: Iterable, bytes_per_state, state_type=bytes, comm=None, verbose=True):
+        super(DistributedStateContainer, self).__init__(states, bytes_per_state, state_type, comm)
 
     def _set_state_bounds(self, local_states) -> list[Optional[bytes]]:
         local_states_list = local_states
@@ -394,7 +419,7 @@ class DistributedStateContainer:
             query = range(start, stop, step)
             result = list(self._getitem_sequence(query))
             for i, res in enumerate(result):
-                if res == psr.int2bytes(0, self.num_spin_orbitals):
+                if res == bytes(0 for _ in range(self.n_bytes)):
                     raise IndexError(f"Could not find index {query[i]} in basis with size {self.size}!")
             return (state for state in result)
         elif isinstance(key, Sequence) or isinstance(key, Iterable):
@@ -406,15 +431,12 @@ class DistributedStateContainer:
         elif isinstance(key, int):
             result = next(self._getitem_sequence([key]))
             # if result is None:
-            if result == psr.int2bytes(0, self.num_spin_orbitals):
+            if result == bytes(0 for _ in range(self.n_bytes)):
                 raise IndexError(f"Could not find index {key} in basis with size {self.size}!")
             return result
         else:
             raise TypeError(f"Invalid index type {type(key)}. Valid types are slice, Sequence and int")
         return None
-
-    def __len__(self):
-        return self.size
 
     def __contains__(self, item):
         if self.comm is None:
@@ -434,10 +456,6 @@ class DistributedStateContainer:
         elif isinstance(item, Iterable):
             return self._contains_sequence(item)
         return None
-
-    def __iter__(self):
-        for i in range(self.size):
-            yield self.__getitem__(i)
 
     def clear(self):
         self.local_basis.clear()
