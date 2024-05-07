@@ -1,6 +1,4 @@
-from math import ceil
-from time import perf_counter
-import sys
+from bisect import bisect_left
 from typing import Optional, Union
 
 try:
@@ -36,9 +34,9 @@ class StateContainer:
         self._index_dict = {}
         self.type = state_type
         self.n_bytes = bytes_per_state
-        self.index_bounds = [None] * comm.size if comm is not None else None
-        self.state_bounds = [None] * comm.size if comm is not None else None
         self.is_distributed = comm is not None
+        self.index_bounds = [None] * comm.size if self.is_distributed else [None]
+        self.state_bounds = [None] * comm.size if self.is_distributed else [None]
         self.add_states(states)
         if self.size > 0 and self.type is None:
             self.type = type(self[0])
@@ -51,25 +49,134 @@ class StateContainer:
         pass
 
     def __getitem__(self, key) -> Iterable[bytes]:
-        pass
+        if isinstance(key, slice):
+            start = key.start
+            if start is None:
+                start = 0
+            elif start < 0:
+                start = self.size + start
+            stop = key.stop
+            if stop is None:
+                stop = self.size
+            elif stop < 0:
+                stop = self.size + stop
+            step = key.step
+            if step is None and start < stop:
+                step = 1
+            elif step is None:
+                step = -1
+            query = range(start, stop, step)
+            result = list(self._getitem_sequence(query))
+            for i, res in enumerate(result):
+                if res == bytes(0 for _ in range(self.n_bytes)):
+                    raise IndexError(f"Could not find index {query[i]} in basis with size {self.size}!")
+            return (state for state in result)
+        elif isinstance(key, Sequence) or isinstance(key, Iterable):
+            result = list(self._getitem_sequence(key))
+            for i, res in enumerate(result):
+                if res == psr.int2bytes(0, self.num_spin_orbitals):
+                    raise IndexError(f"Could not find index {key[i]} in basis with size {self.size}!")
+            return (state for state in result)
+        elif isinstance(key, int):
+            result = next(self._getitem_sequence([key]))
+            # if result is None:
+            if result == bytes(0 for _ in range(self.n_bytes)):
+                raise IndexError(f"Could not find index {key} in basis with size {self.size}!")
+            return result
+        else:
+            raise TypeError(f"Invalid index type {type(key)}. Valid types are slice, Sequence and int")
+        return None
 
     def __len__(self):
         return self.size
 
     def index(self, val):
-        pass
+        if isinstance(val, self.type):
+            res = next(self._index_sequence([val]))
+            if res == self.size:
+                raise ValueError(f"Could not find {val} in basis!")
+            return res
+        elif isinstance(val, Sequence) or isinstance(val, Iterable):
+            res = list(self._index_sequence(val))
+            for i, v in enumerate(res):
+                if v >= self.size:
+                    raise ValueError(f"Could not find {val[i]} in basis!")
+            return (i for i in res)
+        else:
+            raise TypeError(f"Invalid query type {type(val)}! Valid types are {self.dtype} and sequences thereof.")
+        return None
 
     def _index_sequence(self, s: Iterable[bytes]) -> Iterable[int]:
         pass
 
+    def contains(self, item) -> Iterable[bool]:
+        if isinstance(item, self.type):
+            return next(self._contains_sequence([item]))
+        elif isinstance(item, Sequence):
+            return self._contains_sequence(item)
+        elif isinstance(item, Iterable):
+            return self._contains_sequence(item)
+        return None
+
     def __contains__(self, item):
-        pass
+        if self.comm is None:
+            return item in self._index_dict
+        return next(self._index_sequence([item])) != self.size
 
     def _contains_sequence(self, items):
         pass
 
     def clear(self):
-        pass
+        self.local_basis.clear()
+        self.offset = 0
+        self.size = 0
+        self.local_indices = range(0, 0)
+        self._index_dict = {}
+        self.index_bounds = [None] * self.comm.size if self.is_distributed else None
+        self.state_bounds = [None] * self.comm.size if self.is_distributed else None
+
+    def alltoall_states(self, send_list: list[list[bytes]], flatten=False):
+        recv_counts = np.empty((self.comm.size), dtype=int)
+        request = self.comm.Ialltoall(
+            (np.fromiter((len(l) for l in send_list), dtype=int, count=len(send_list)), MPI.LONG), recv_counts
+        )
+
+        send_counts = np.fromiter((len(l) for l in send_list), dtype=int, count=len(send_list))
+        send_offsets = np.fromiter(
+            (np.sum(send_counts[:i]) for i in range(self.comm.size)), dtype=int, count=self.comm.size
+        )
+
+        request.Wait()
+        received_bytes = bytearray(sum(recv_counts) * self.n_bytes)
+        offsets = np.fromiter((np.sum(recv_counts[:i]) for i in range(self.comm.size)), dtype=int, count=self.comm.size)
+
+        # numpy arrays of bytes do not play nicely with MPI, sometimes datacorruption happens.
+        # bytearrays seem to work though...
+        # Do not use Ialltoallv with bytearrays though, the call seems to simply freeze
+        self.comm.Alltoallv(
+            (
+                bytearray(byte for state_list in send_list for state in state_list for byte in state),
+                send_counts * self.n_bytes,
+                send_offsets * self.n_bytes,
+                MPI.BYTE,
+            ),
+            (received_bytes, recv_counts * self.n_bytes, offsets * self.n_bytes, MPI.BYTE),
+        )
+
+        if not flatten:
+            states: list[Iterable[bytes]] = [()] * len(send_list)
+            start = 0
+            for r in range(len(recv_counts)):
+                if recv_counts[r] == 0:
+                    continue
+                states[r] = [
+                    bytes(r_bytes)
+                    for r_bytes in batched(received_bytes[start : start + recv_counts[r] * self.n_bytes], self.n_bytes)
+                ]
+                start += recv_counts[r] * self.n_bytes
+        else:
+            states: Iterable[bytes] = [bytes(r_bytes) for r_bytes in batched(received_bytes, self.n_bytes)]
+        return states
 
 
 class DistributedStateContainer(StateContainer):
@@ -162,11 +269,11 @@ class DistributedStateContainer(StateContainer):
             self.offset = 0
             self.local_indices = range(0, len(self.local_basis))
             self._index_dict = {state: i for i, state in enumerate(self.local_basis)}
-            self.local_index_bounds = (0, len(self.local_basis))
+            self.local_index_bounds = [(0, len(self.local_basis))]
             if len(self.local_basis) > 0:
-                self.state_bounds: Optional[tuple[bytes, Optional[bytes]]] = (self.local_basis[0], None)
+                self.state_bounds: Optional[tuple[bytes, Optional[bytes]]] = [(self.local_basis[0], None)]
             else:
-                self.state_bounds = None
+                self.state_bounds = [None]
             return
 
         local_it = merge(self.local_basis, sorted(set(new_states)))
@@ -321,22 +428,6 @@ class DistributedStateContainer(StateContainer):
 
         return (bytes(result[i * self.n_bytes : (i + 1) * self.n_bytes]) for i in np.argsort(send_order))
 
-    def index(self, val):
-        if isinstance(val, self.type):
-            res = next(self._index_sequence([val]))
-            if res == self.size:
-                raise ValueError(f"Could not find {val} in basis!")
-            return res
-        elif isinstance(val, Sequence) or isinstance(val, Iterable):
-            res = list(self._index_sequence(val))
-            for i, v in enumerate(res):
-                if v >= self.size:
-                    raise ValueError(f"Could not find {val[i]} in basis!")
-            return (i for i in res)
-        else:
-            raise TypeError(f"Invalid query type {type(val)}! Valid types are {self.dtype} and sequences thereof.")
-        return None
-
     def _index_sequence(self, s: Iterable[bytes]) -> Iterable[int]:
         if self.comm is None:
             return (self._index_dict[val] if val in self._index_dict else self.size for val in s)
@@ -399,67 +490,10 @@ class DistributedStateContainer(StateContainer):
 
         return (res for res in result[np.argsort(send_order)])
 
-    def __getitem__(self, key) -> Iterable[bytes]:
-        if isinstance(key, slice):
-            start = key.start
-            if start is None:
-                start = 0
-            elif start < 0:
-                start = self.size + start
-            stop = key.stop
-            if stop is None:
-                stop = self.size
-            elif stop < 0:
-                stop = self.size + stop
-            step = key.step
-            if step is None and start < stop:
-                step = 1
-            elif step is None:
-                step = -1
-            query = range(start, stop, step)
-            result = list(self._getitem_sequence(query))
-            for i, res in enumerate(result):
-                if res == bytes(0 for _ in range(self.n_bytes)):
-                    raise IndexError(f"Could not find index {query[i]} in basis with size {self.size}!")
-            return (state for state in result)
-        elif isinstance(key, Sequence) or isinstance(key, Iterable):
-            result = list(self._getitem_sequence(key))
-            for i, res in enumerate(result):
-                if res == psr.int2bytes(0, self.num_spin_orbitals):
-                    raise IndexError(f"Could not find index {key[i]} in basis with size {self.size}!")
-            return (state for state in result)
-        elif isinstance(key, int):
-            result = next(self._getitem_sequence([key]))
-            # if result is None:
-            if result == bytes(0 for _ in range(self.n_bytes)):
-                raise IndexError(f"Could not find index {key} in basis with size {self.size}!")
-            return result
-        else:
-            raise TypeError(f"Invalid index type {type(key)}. Valid types are slice, Sequence and int")
-        return None
-
-    def __contains__(self, item):
-        if self.comm is None:
-            return item in self._index_dict
-        return next(self._index_sequence([item])) != self.size
-
-    def _contains_sequence(self, items):
+    def _contains_sequence(self, items) -> Iterable[bool]:
         if self.comm is None:
             return (item in self._index_dict for item in items)
         return (index < self.size for index in self._index_sequence(items))
-
-    def contains(self, item) -> Iterable[bool]:
-        if isinstance(item, self.type):
-            return next(self._contains_sequence([item]))
-        elif isinstance(item, Sequence):
-            return self._contains_sequence(item)
-        elif isinstance(item, Iterable):
-            return self._contains_sequence(item)
-        return None
-
-    def clear(self):
-        self.local_basis.clear()
-        self.add_states([])
 
     def alltoall_states(self, send_list: list[list[bytes]], flatten=False):
         recv_counts = np.empty((self.comm.size), dtype=int)
@@ -503,3 +537,76 @@ class DistributedStateContainer(StateContainer):
         else:
             states: Iterable[bytes] = [bytes(r_bytes) for r_bytes in batched(received_bytes, self.n_bytes)]
         return states
+
+
+class CentralizedStateContainer(StateContainer):
+    def __init__(self, states: Iterable, bytes_per_state, state_type=bytes, comm=None, verbose=True):
+        self._full_basis = []
+        super(CentralizedStateContainer, self).__init__(states, bytes_per_state, state_type, comm)
+
+    def _set_state_bounds(self, local_states) -> list[Optional[bytes]]:
+        local_sizes = (
+            [self.size // self.comm.size + (1 if r < self.size % self.comm.size else 0) for r in range(self.comm.size)]
+            if self.is_distributed
+            else None
+        )
+        return (
+            [self.local_basis[sum(local_sizes[: r + 1])] if local_sizes[r] > 0 else None for r in range(self.comm.size)]
+            if self.is_distributed
+            else [None]
+        )
+
+    def add_states(self, new_states) -> None:
+        states_to_add = sorted({state for state in new_states if state not in self._full_basis})
+        if self.is_distributed:
+            states_from_ranks = self.comm.allgather(states_to_add)
+            merged_states_from_ranks = merge(*states_from_ranks)
+            states_to_add = [state for state, _ in itertools.groupby(merged_states_from_ranks)]
+        new_full_basis = merge(self._full_basis, states_to_add)
+        self._full_basis = [state for state, _ in itertools.groupby(new_full_basis)]
+        self.size = len(self._full_basis)
+        local_sizes = (
+            [self.size // self.comm.size + (1 if r < self.size % self.comm.size else 0) for r in range(self.comm.size)]
+            if self.is_distributed
+            else None
+        )
+        self.offset = sum(local_sizes[: self.comm.rank]) if self.is_distributed else 0
+        self.local_basis = (
+            self._full_basis[self.offset : self.offset + local_sizes[self.comm.rank]]
+            if self.is_distributed
+            else self._full_basis
+        )
+        self.local_indices = (
+            range(self.offset, self.offset + local_sizes[self.comm.rank])
+            if self.is_distributed
+            else range(0, self.size)
+        )
+        self._index_dict = {state: self.offset + i for i, state in enumerate(self.local_basis)}
+        self.index_bounds = (
+            [np.sum(local_sizes[: r + 1]) for r in range(self.comm.size)] if self.is_distributed else [self.size]
+        )
+        self.state_bounds = (
+            [
+                self._full_basis[sum(local_sizes[: r + 1])] if sum(local_sizes[: r + 1]) < self.size else None
+                for r in range(self.comm.size - 1)
+            ]
+            + [None]
+            if self.is_distributed
+            else [None]
+        )
+        if self.is_distributed:
+            print(f"{self.comm.rank=}")
+            print(f"self.comm.local_basis=")
+
+    def _getitem_sequence(self, l: Iterable[int]) -> Iterable[bytes]:
+        return (self._full_basis[i] for i in l)
+
+    def _search_sorted(self, key):
+        return bisect_left(self._full_basis, key)
+
+    def _index_sequence(self, key: Iterable[bytes]) -> Iterable[int]:
+        return (self._search_sorted(k) for k in key)
+        # return (self._index_dict[k] for k in key)
+
+    def _contains_sequence(self, items) -> Iterable[bool]:
+        return (self._search_sorted(i) != self.size and self._full_basis[self._search_sorted(i)] == i for i in items)
