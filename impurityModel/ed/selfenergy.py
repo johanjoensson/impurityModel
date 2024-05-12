@@ -34,7 +34,6 @@ def fixed_peak_dc(h0_op, dc_struct, rank, verbose, dense_cutoff):
     peak_position = max(dc_struct.peak_position, 4 * dc_struct.tau)
     num_valence_bath_states, num_conduction_bath_states = dc_struct.bath_states
     sum_bath_states = {l: num_valence_bath_states[l] + num_conduction_bath_states[l] for l in num_valence_bath_states}
-    l = list(lv for lv in N0[0])[0]
     u = finite.getUop_from_rspt_u4(dc_struct.u4)
     dc_trial = dc_struct.dc_guess
     # dc_trial = np.identity(dc_struct.dc_guess.shape[0], dtype=complex)
@@ -43,7 +42,7 @@ def fixed_peak_dc(h0_op, dc_struct, rank, verbose, dense_cutoff):
     Nm = ({l: N0[0][l] - 1 for l in N0[0]}, N0[1], N0[2])
     if peak_position >= 0:
         basis_upper = CIPSI_Basis(
-            ls=list(N0[0].keys()),
+            impurity_orbitals=dc_struct.impurity_orbitals,
             valence_baths=num_valence_bath_states,
             conduction_baths=num_conduction_bath_states,
             delta_valence_occ=delta_valence_occ,
@@ -56,7 +55,7 @@ def fixed_peak_dc(h0_op, dc_struct, rank, verbose, dense_cutoff):
             spin_flip_dj=dc_struct.spin_flip_dj,
         )
         basis_lower = CIPSI_Basis(
-            ls=list(N0[0].keys()),
+            impurity_orbitals=dc_struct.impurity_orbitals,
             valence_baths=num_valence_bath_states,
             conduction_baths=num_conduction_bath_states,
             delta_valence_occ=delta_valence_occ,
@@ -70,7 +69,7 @@ def fixed_peak_dc(h0_op, dc_struct, rank, verbose, dense_cutoff):
         )
     else:
         basis_upper = CIPSI_Basis(
-            ls=list(N0[0].keys()),
+            impurity_orbitals=dc_struct.impurity_orbitals,
             valence_baths=num_valence_bath_states,
             conduction_baths=num_conduction_bath_states,
             delta_valence_occ=delta_valence_occ,
@@ -83,7 +82,7 @@ def fixed_peak_dc(h0_op, dc_struct, rank, verbose, dense_cutoff):
             spin_flip_dj=dc_struct.spin_flip_dj,
         )
         basis_lower = CIPSI_Basis(
-            ls=list(N0[0].keys()),
+            impurity_orbitals=dc_struct.impurity_orbitals,
             valence_baths=num_valence_bath_states,
             conduction_baths=num_conduction_bath_states,
             delta_valence_occ=delta_valence_occ,
@@ -95,8 +94,8 @@ def fixed_peak_dc(h0_op, dc_struct, rank, verbose, dense_cutoff):
             comm=MPI.COMM_WORLD,
             spin_flip_dj=dc_struct.spin_flip_dj,
         )
-    h_op_c = finite.addOps([h0_op, u])
-    h_op_i = finite.c2i_op(sum_bath_states, h_op_c)
+    h_op_i = finite.addOps([h0_op, u])
+    # h_op_i = finite.c2i_op(sum_bath_states, h_op_c)
     # h_dict = basis_upper.expand(h_op_i, dense_cutoff=dense_cutoff, de2_min=1e-6)
     # h_dict = basis_lower.expand(h_op_i, dense_cutoff=dense_cutoff, de2_min=1e-6)
 
@@ -140,20 +139,14 @@ def fixed_peak_dc(h0_op, dc_struct, rank, verbose, dense_cutoff):
                 psi_lower[state] = psi_lower_local[state] + psi_lower.get(state, 0)
             for state in psi_upper_local:
                 psi_upper[state] = psi_upper_local[state] + psi_upper.get(state, 0)
-        rho_lower = finite.getDensityMatrix(sum_bath_states, psi_lower, 2)
-        rho_lower_mat = np.zeros_like(dc_trial)
-        for (state1, state2), val in rho_lower.items():
-            m = finite.c2i(sum_bath_states, state1)
-            n = finite.c2i(sum_bath_states, state2)
-            rho_lower_mat[m, n] = val
-        rho_upper = finite.getDensityMatrix(sum_bath_states, psi_upper, 2)
-        rho_upper_mat = np.zeros_like(dc_trial)
-        for (state1, state2), val in rho_upper.items():
-            m = finite.c2i(sum_bath_states, state1)
-            n = finite.c2i(sum_bath_states, state2)
-            rho_upper_mat[m, n] = val
-        avg_dc_lower = np.real(np.trace(rho_lower_mat @ dc))
-        avg_dc_upper = np.real(np.trace(rho_upper_mat @ dc))
+        rho_lower = finite.build_impurity_density_matrix(
+            sum(no for no in bl.impurity_orbitals.values()), sum(nb for nb in sum_bath_states.values()), psi_lower
+        )
+        rho_upper = finite.build_impurity_density_matrix(
+            sum(no for no in bu.impurity_orbitals.values()), sum(nb for nb in sum_bath_states.values()), psi_upper
+        )
+        avg_dc_lower = np.real(np.trace(rho_lower @ dc))
+        avg_dc_upper = np.real(np.trace(rho_upper @ dc))
         if abs(avg_dc_upper - avg_dc_lower) < min(dc_struct.tau, 1e-2):
             return dc_trial
         return (e_upper[0] - e_lower[0] - peak_position) / (avg_dc_upper - avg_dc_lower)
@@ -182,7 +175,7 @@ def matrix_print(matrix: np.ndarray, label: str = None) -> None:
     print(ms)
 
 
-def find_gs(h_op, N0, delta_occ, bath_states, num_spin_orbitals, rank, verbose, dense_cutoff, spin_flip_dj, comm):
+def find_gs(h_op, N0, delta_occ, bath_states, num_impurity_orbitals, rank, verbose, dense_cutoff, spin_flip_dj, comm):
     """
     Find the occupation corresponding to the lowest energy, compare N0 - 1, N0 and N0 + 1
     Returns:
@@ -201,7 +194,7 @@ def find_gs(h_op, N0, delta_occ, bath_states, num_spin_orbitals, rank, verbose, 
     dN = [-1, 0, 1]
     for i, d in enumerate(dN):
         basis = CIPSI_Basis(
-            ls=[l for l in N0[0]],
+            impurity_orbitals=num_impurity_orbitals,
             H=h_op,
             valence_baths=num_val_baths,
             conduction_baths=num_cond_baths,
@@ -261,9 +254,6 @@ def run(cluster, h0, iw, w, delta, tau, verbosity, reort, dense_cutoff, comm):
                    1 - loud, detailed output generated
                    2 - SCREAM, insanely detailed output generated
     """
-    num_psi_max = sum(2 * (2 * l + 1) for l in cluster.nominal_occ[0])
-    tolPrintOccupation = 0.5
-
     cluster.sig[:, :, :] = 0
     cluster.sig_real[:, :, :] = 0
     cluster.sig_static[:, :] = 0
@@ -271,7 +261,6 @@ def run(cluster, h0, iw, w, delta, tau, verbosity, reort, dense_cutoff, comm):
     sigma, sigma_real, cluster.sig_static[:, :] = calc_selfenergy(
         h0,
         cluster.u4,
-        cluster.slater,
         iw,
         w,
         delta,
@@ -279,8 +268,6 @@ def run(cluster, h0, iw, w, delta, tau, verbosity, reort, dense_cutoff, comm):
         cluster.delta_occ,
         cluster.bath_states,
         tau,
-        num_psi_max,
-        tolPrintOccupation,
         verbosity,
         blocks=[cluster.blocks[i] for i in cluster.inequivalent_blocks],
         rot_to_spherical=np.conj(cluster.corr_to_cf.T) @ cluster.corr_to_spherical,
@@ -308,7 +295,6 @@ def run(cluster, h0, iw, w, delta, tau, verbosity, reort, dense_cutoff, comm):
 def calc_selfenergy(
     h0,
     u4,
-    slater_params,
     iw,
     w,
     delta,
@@ -316,8 +302,6 @@ def calc_selfenergy(
     delta_occ,
     num_bath_states,
     tau,
-    num_psi_max,
-    tolPrintOccupation,
     verbosity,
     blocks,
     rot_to_spherical,
@@ -333,27 +317,25 @@ def calc_selfenergy(
     # MPI variables
     rank = comm.rank
 
+    n_imp_orbs = rot_to_spherical.shape[0]
     num_val_baths, num_con_baths = num_bath_states
-    sum_bath_states = {l: num_val_baths[l] + num_con_baths[l] for l in num_val_baths}
-
-    ls = [l for l in num_val_baths]
-    l = ls[0]
+    sum_bath_states = {i: num_val_baths[i] + num_con_baths[i] for i in num_val_baths}
 
     # construct local, interacting, hamiltonian
     u = finite.getUop_from_rspt_u4(u4)
     h = finite.addOps([h0, u])
     if verbosity >= 2:
-        finite.printOp(sum_bath_states, h, "Local Hamiltonian: ")
-    h = finite.c2i_op(sum_bath_states, h)
+        print(f"Local Hamiltonian\n{h}")
+    #     finite.printOp(sum_bath_states, h, "Local Hamiltonian: ")
 
-    num_spin_orbitals = 2 * (2 * l + 1) + sum(num_val_baths[l] + num_con_baths[l] for l in num_val_baths)
+    num_spin_orbitals = n_imp_orbs + sum(num_val_baths[i] + num_con_baths[i] for i in num_val_baths)
 
     (n0_imp, n0_val, n0_con), basis, h_dict = find_gs(
         h,
         nominal_occ,
         delta_occ,
         num_bath_states,
-        num_spin_orbitals,
+        {i: n_imp_orbs for i in num_val_baths},
         rank=rank,
         verbose=verbosity,
         dense_cutoff=dense_cutoff,
@@ -389,7 +371,7 @@ def calc_selfenergy(
     es, psis_dense = finite.eigensystem_new(
         h_gs,
         e_max=energy_cut,
-        k=2 * (2 * l + 1),
+        k=n_imp_orbs,
         eigenValueTol=0,
     )
     psis = basis.build_state(psis_dense.T)
@@ -403,8 +385,10 @@ def calc_selfenergy(
                 for state in psis_r[i]:
                     local_psis[i][state] = psis_r[i][state] + local_psis[i].get(state, 0)
     if verbosity >= 1:
-        finite.printThermalExpValues_new(sum_bath_states, es, local_psis, tau, rot_to_spherical)
-        finite.printExpValues(sum_bath_states, es, local_psis, rot_to_spherical)
+        finite.printThermalExpValues_new(
+            {i: n_imp_orbs for i in num_val_baths}, sum_bath_states, es, local_psis, tau, rot_to_spherical
+        )
+        finite.printExpValues(sum_bath_states, es, local_psis, rot_to_spherical, sum(n_imp_orbs for _ in num_val_baths))
     excited_restrictions = basis.build_excited_restrictions()
     if verbosity >= 1:
         if verbosity >= 2:
@@ -447,6 +431,7 @@ def calc_selfenergy(
     if gs_realaxis is not None:
         sigma_real = get_sigma(
             omega_mesh=w,
+            impurity_orbitals=basis.impurity_orbitals,
             nBaths=sum_bath_states,
             gs=gs_realaxis,
             h0op=h0,
@@ -465,6 +450,7 @@ def calc_selfenergy(
     if gs_matsubara is not None:
         sigma = get_sigma(
             omega_mesh=iw,
+            impurity_orbitals=basis.impurity_orbitals,
             nBaths=sum_bath_states,
             gs=gs_matsubara,
             h0op=h0,
@@ -483,7 +469,7 @@ def calc_selfenergy(
     if verbosity >= 1:
         print("Calculating sig_static.")
     if rank == 0:
-        sigma_static = get_Sigma_static(sum_bath_states, u4, es, local_psis, l, tau)
+        sigma_static = get_Sigma_static(basis.impurity_orbitals, sum_bath_states, u4, es, local_psis, tau)
     else:
         sigma_static = 0
 
@@ -508,7 +494,7 @@ def check_greens_function(G):
         raise UnphysicalGreensFunctionError("Diagonal term has positive imaginary part.")
 
 
-def get_hcorr_v_hbath(h0op, sum_bath_states):
+def get_hcorr_v_hbath(h0op, impurity_orbitals, sum_bath_states):
     """
     The matrix form of h0op can be written
       [  hcorr  V^+    ]
@@ -518,9 +504,21 @@ def get_hcorr_v_hbath(h0op, sum_bath_states):
           - V/V^+ is the hopping between impurity and bath orbitals.
           - hbath is the hamiltonian for the non-interacting, bath, orbitals.
     """
-    h0_i = finite.c2i_op(sum_bath_states, h0op)
-    h0Matrix = finite.iOpToMatrix(sum_bath_states, h0_i)
-    n_corr = sum([2 * (2 * l + 1) for l in sum_bath_states.keys()])
+    # h0_i = finite.c2i_op(sum_bath_states, h0op)
+    # h0Matrix = finite.iOpToMatrix(sum_bath_states, h0op)
+
+    # n_corr = sum([2 * (2 * l + 1) for l in sum_bath_states.keys()])
+    num_spin_orbitals = sum(impurity_orbitals[i] + sum_bath_states[i] for i in impurity_orbitals)
+    n_corr = sum(ni for ni in impurity_orbitals.values())
+    h0Matrix = np.zeros((num_spin_orbitals, num_spin_orbitals), dtype=complex)
+    for ((i, opi), (j, opj)), val in h0op.items():
+        if opi == "c" and opj == "a":
+            h0Matrix[i, j] = val
+        elif opj == "c" and opi == "a":
+            if i == j:
+                h0Matrix[i, j] = 1 - val
+            else:
+                h0Matrix[i, j] = -val
     hcorr = h0Matrix[0:n_corr, 0:n_corr]
     v_dagger = h0Matrix[0:n_corr, n_corr:]
     v = h0Matrix[n_corr:, 0:n_corr]
@@ -542,6 +540,7 @@ def hyb(ws, v, hbath, delta):
 
 def get_sigma(
     omega_mesh,
+    impurity_orbitals,
     nBaths,
     gs,
     h0op,
@@ -552,7 +551,7 @@ def get_sigma(
     """
     Calculate self-energy from interacting Greens function and local hamiltonian.
     """
-    hcorr, v_full, _, hbath = get_hcorr_v_hbath(h0op, nBaths)
+    hcorr, v_full, _, hbath = get_hcorr_v_hbath(h0op, impurity_orbitals, nBaths)
 
     res = []
     for block, g in zip(blocks, gs):
@@ -564,25 +563,22 @@ def get_sigma(
     return res
 
 
-def get_Sigma_static(nBaths, U4, es, psis, l, tau):
+def get_Sigma_static(n_impurity_orbitals, nBaths, U4, es, psis, tau):
     """
     Calculate the static (Hartree-Fock) self-energy.
     """
-    n = 2 * (2 * l + 1)
-
-    rhos = [finite.getDensityMatrix(nBaths, psi, l) for psi in psis]
-    rhomats = np.zeros((len(rhos), n, n), dtype=complex)
-    for mat, rho in zip(rhomats, rhos):
-        for (state1, state2), val in rho.items():
-            i = finite.c2i(nBaths, state1)
-            j = finite.c2i(nBaths, state2)
-            mat[i, j] = val
-    rho = thermal_average_scale_indep(es, rhomats, tau)
+    n = sum(ni for ni in n_impurity_orbitals.values())
+    rhos = [
+        finite.build_impurity_density_matrix(
+            sum(ni for ni in n_impurity_orbitals.values()), sum(nb for nb in nBaths.values()), psi
+        )
+        for psi in psis
+    ]
+    rho = thermal_average_scale_indep(es, rhos, tau)
 
     sigma_static = np.zeros((n, n), dtype=complex)
-    for i in range(n):
-        for j in range(n):
-            sigma_static += (U4[j, :, :, i] - U4[j, :, i, :]) * rho[i, j]
+    for i, j in itertools.product(range(n), range(n)):
+        sigma_static += (U4[j, :, :, i] - U4[j, :, i, :]) * rho[i, j]
 
     return sigma_static
 
@@ -603,7 +599,6 @@ def get_selfenergy(
     hField,
     nPsiMax,
     nPrintSlaterWeights,
-    tolPrintOccupation,
     tau,
     energy_cut,
     delta,
@@ -653,7 +648,6 @@ def get_selfenergy(
 
     sigma, sigma_real, sigma_static = calc_selfenergy(
         h0=hOp,
-        slater_params=Fdd,
         iw=None,
         w=omega_mesh,
         delta=delta,
@@ -662,9 +656,7 @@ def get_selfenergy(
         num_bath_states=num_bath_states,
         tau=tau,
         energy_cut=energy_cut,
-        num_psi_max=nPsiMax,
         nPrintSlaterWeights=nPrintSlaterWeights,
-        tolPrintOccupation=tolPrintOccupation,
         verbosity=2 if verbose else 0,
         cluster_label=clustername,
     )
@@ -765,7 +757,6 @@ if __name__ == "__main__":
         help="Maximum number of eigenstates to consider.",
     )
     parser.add_argument("--nPrintSlaterWeights", type=int, default=3, help="Printing parameter.")
-    parser.add_argument("--tolPrintOccupation", type=float, default=0.5, help="Printing parameter.")
     parser.add_argument("--tau", type=float, default=0.002, help="Fundamental temperature (kb*T).")
     parser.add_argument(
         "--energy_cut",
@@ -810,7 +801,6 @@ if __name__ == "__main__":
         hField=tuple(args.hField),
         nPsiMax=args.nPsiMax,
         nPrintSlaterWeights=args.nPrintSlaterWeights,
-        tolPrintOccupation=args.tolPrintOccupation,
         tau=args.tau,
         energy_cut=args.energy_cut,
         delta=args.delta,

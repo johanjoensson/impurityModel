@@ -330,7 +330,7 @@ def printSlaterDeterminantsAndWeights(psis, nPrintSlaterWeights):
             print("")
 
 
-def printExpValues(nBaths, es, psis, rot_to_spherical, l=2):
+def printExpValues(nBaths, es, psis, rot_to_spherical, n_orbs):
     """
     print several expectation values, e.g. E, N, L^2.
     """
@@ -354,14 +354,9 @@ def printExpValues(nBaths, es, psis, rot_to_spherical, l=2):
     #               'N(t2gUp) Lz(3d) Sz(3d) L^2(3d) S^2(3d)'))
     if rank == 0:
         for i, (e, psi) in enumerate(zip(es - es[0], psis)):
-            rho = getDensityMatrix(nBaths, psi, 2)
-            rhomat = np.zeros((10, 10), dtype=complex)
-            for (state1, state2), val in rho.items():
-                m = c2i(nBaths, state1)
-                n = c2i(nBaths, state2)
-                rhomat[m, n] = val
-            rho_spherical = rotate_matrix(rhomat, rot_to_spherical)
-            N, Ndn, Nup = get_occupations_from_rho_spherical(rho_spherical, l=2)
+            rho = build_impurity_density_matrix(n_orbs, sum(nb for nb in nBaths.values()), psi)
+            rho_spherical = rotate_matrix(rho, rot_to_spherical)
+            N, Ndn, Nup = get_occupations_from_rho_spherical(rho_spherical)
             print(
                 # ("{:3d} {:11.8f} {:8.5f} {:8.5f} {:8.5f}" " {: 9.6f} {: 9.6f} {:9.5f} {:9.5f}").format(
                 ("{:3d} {:11.8f} {:8.5f} {:8.5f} {:8.5f}" " {: 9.6f} {: 9.6f}").format(
@@ -370,27 +365,29 @@ def printExpValues(nBaths, es, psis, rot_to_spherical, l=2):
                     N,
                     Ndn,
                     Nup,
-                    get_Lz_from_rho_spherical(rho_spherical, l=2),
-                    get_Sz_from_rho_spherical(rho_spherical, l=2),
-                    # get_L_from_rho_spherical(rho_spherical, l=2),
-                    # get_S_from_rho_spherical(rho_spherical, l=2, s=1 / 2),
+                    get_Lz_from_rho_spherical(rho_spherical),
+                    get_Sz_from_rho_spherical(rho_spherical),
+                    # get_L_from_rho_spherical(rho_spherical),
+                    # get_S_from_rho_spherical(rho_spherical),
                 )
             )
         print("\n")
 
 
-def get_occupations_from_rho_spherical(rho, l):
+def get_occupations_from_rho_spherical(rho):
     """
     Calculate the (spin polarized) occupation from the density matrix.
     """
+    n_orbs = rho.shape[0]
     return (
         np.real(np.trace(rho)),
-        np.real(np.trace(rho[: 2 * l + 1, : 2 * l + 1])),
-        np.real(np.trace(rho[2 * l + 1 :, 2 * l + 1 :])),
+        np.real(np.trace(rho[: n_orbs // 2, : n_orbs // 2])),
+        np.real(np.trace(rho[n_orbs // 2 :, n_orbs // 2 :])),
     )
 
 
-def get_Lz_from_rho_spherical(rho, l):
+def get_Lz_from_rho_spherical(rho):
+    l = (rho.shape[0] // 2 - 1) // 2
     return np.real(
         sum(ml * (rho[i, i] + rho[i + (2 * l + 1), i + (2 * l + 1)]) for i, ml in enumerate(range(-l, l + 1)))
     )
@@ -484,9 +481,10 @@ def get_S_from_rho_spherical(rho, l, s):
     )
 
 
-def get_L2_from_rho_spherical(rho, l):
+def get_L2_from_rho_spherical(rho):
+    l = (rho.shape[0] // 2 - 1) // 2
     llp1 = l * (l + 1)
-    Lz = get_Lz_from_rho_spherical(rho, l)
+    Lz = get_Lz_from_rho_spherical(rho)
     Lplus = np.zeros((2 * (2 * l + 1), 2 * (2 * l + 1)))
     for i, ml in enumerate(range(-l, l)):
         Lplus[i + 1, i] = np.sqrt(llp1 + ml * (ml + 1))
@@ -499,13 +497,15 @@ def get_L2_from_rho_spherical(rho, l):
     return np.trace(rho @ Lz2) + 2 * Lz + np.trace(rho @ Lplus @ Lminus)
 
 
-def get_Sz_from_rho_spherical(rho, l):
+def get_Sz_from_rho_spherical(rho):
+    l = (rho.shape[0] // 2 - 1) // 2
     return 1 / 2 * np.real(sum(-rho[i, i] + rho[i + (2 * l + 1), i + (2 * l + 1)] for i in range(2 * l + 1)))
 
 
-def get_S2_from_rho_spherical(rho, l):
+def get_S2_from_rho_spherical(rho):
+    l = (rho.shape[0] // 2 - 1) // 2
     ssp1 = 3 / 4
-    Sz = get_Sz_from_rho_spherical(rho, l)
+    Sz = get_Sz_from_rho_spherical(rho)
     Splus = np.zeros((2 * (2 * l + 1), 2 * (2 * l + 1)))
     for i, ms in enumerate(np.repeat([-0.5], 2 * l + 1)):
         Splus[i + 2 * l + 1, i] = np.sqrt(ssp1 + ms * (ms + 1))
@@ -516,7 +516,7 @@ def get_S2_from_rho_spherical(rho, l):
     return np.trace(rho @ Sz2) + 2 * Sz + np.trace(rho @ Splus @ Sminus)
 
 
-def printThermalExpValues_new(nBaths, es, psis, tau, rot_to_spherical):
+def printThermalExpValues_new(imp_orbitals, nBaths, es, psis, tau, rot_to_spherical):
     """
     print several thermal expectation values, e.g. E, N, Sz, Lz.
 
@@ -525,24 +525,28 @@ def printThermalExpValues_new(nBaths, es, psis, tau, rot_to_spherical):
     """
     e = es - es[0]
     psis = np.array(psis)
-    rhos = [getDensityMatrix(nBaths, psi, 2) for psi in psis]
-    rhomats = np.zeros((len(rhos), rot_to_spherical.shape[0], rot_to_spherical.shape[1]), dtype=complex)
-    for mat, rho in zip(rhomats, rhos):
-        for (state1, state2), val in rho.items():
-            i = c2i(nBaths, state1)
-            j = c2i(nBaths, state2)
-            mat[i, j] = val
-    rho_thermal = thermal_average_scale_indep(es, rhomats, tau)
+    rhos = [
+        build_impurity_density_matrix(sum(ni for ni in imp_orbitals.values()), sum(nb for nb in nBaths.values()), psi)
+        for psi in psis
+    ]
+    # rhos = [getDensityMatrix(nBaths, psi, 2) for psi in psis]
+    # rhomats = np.zeros((len(rhos), rot_to_spherical.shape[0], rot_to_spherical.shape[1]), dtype=complex)
+    # for mat, rho in zip(rhomats, rhos):
+    #     for (state1, state2), val in rho.items():
+    #         i = c2i(nBaths, state1)
+    #         j = c2i(nBaths, state2)
+    #         mat[i, j] = val
+    rho_thermal = thermal_average_scale_indep(es, rhos, tau)
     rho_thermal_spherical = rotate_matrix(rho_thermal, rot_to_spherical)
-    N, Ndn, Nup = get_occupations_from_rho_spherical(rho_thermal_spherical, l=2)
+    N, Ndn, Nup = get_occupations_from_rho_spherical(rho_thermal_spherical)
     print("<E-E0> = {:8.7f}".format(thermal_average_scale_indep(e, e, tau=tau)))
     print("<N(3d)> = {:8.7f}".format(N))
     print("<N(Dn)> = {:8.7f}".format(Ndn))
     print("<N(Up)> = {:8.7f}".format(Nup))
-    print("<Lz> = {:8.7f}".format(get_Lz_from_rho_spherical(rho_thermal_spherical, l=2)))
-    print("<Sz> = {:8.7f}".format(get_Sz_from_rho_spherical(rho_thermal_spherical, l=2)))
-    # print("<L> = {:8.7f}".format(get_L_from_rho_spherical(rho_thermal_spherical, l=2)))
-    # print("<S> = {:8.7f}".format(get_S_from_rho_spherical(rho_thermal_spherical, l=2, s=1 / 2)))
+    print("<Lz> = {:8.7f}".format(get_Lz_from_rho_spherical(rho_thermal_spherical)))
+    print("<Sz> = {:8.7f}".format(get_Sz_from_rho_spherical(rho_thermal_spherical)))
+    # print("<L> = {:8.7f}".format(get_L_from_rho_spherical(rho_thermal_spherical)))
+    # print("<S> = {:8.7f}".format(get_S_from_rho_spherical(rho_thermal_spherical)))
 
 
 def printThermalExpValues(nBaths, es, psis, T=300, cutOff=10):
@@ -1029,21 +1033,29 @@ def getUop_from_rspt_u4(u4):
     l3 = ((l3 // 2) - 1) // 2
     l4 = ((l4 // 2) - 1) // 2
     uDict = {}
-    for i, m1 in enumerate(range(-l1, l1 + 1)):
-        for j, m2 in enumerate(range(-l2, l4 + 1)):
-            for k, m3 in enumerate(range(-l3, l3 + 1)):
-                for l, m4 in enumerate(range(-l4, l2 + 1)):
-                    u = u4[i, j, k, l]
-                    if abs(u) > 1e-10:
-                        for s in range(2):
-                            for sp in range(2):
-                                proccess = (
-                                    ((l1, s, m1), "c"),
-                                    ((l2, sp, m2), "c"),
-                                    ((l3, sp, m3), "a"),
-                                    ((l4, s, m4), "a"),
-                                )
-                                uDict[proccess] = u / 2
+    # for i, m1 in enumerate(range(-l1, l1 + 1)):
+    #     for j, m2 in enumerate(range(-l2, l4 + 1)):
+    #         for k, m3 in enumerate(range(-l3, l3 + 1)):
+    #             for l, m4 in enumerate(range(-l4, l2 + 1)):
+    for i, j, k, l in itertools.product(range(u4.shape[0]), range(u4.shape[1]), range(u4.shape[2]), range(u4.shape[3])):
+        u = u4[i, j, k, l]
+        if abs(u) > 1e-10:
+            proccess = (
+                (i, "c"),
+                (j, "c"),
+                (k, "a"),
+                (l, "a"),
+            )
+            uDict[proccess] = u / 2
+            # for s in range(2):
+            #     for sp in range(2):
+            #         proccess = (
+            #             ((l1, s, m1), "c"),
+            #             ((l2, sp, m2), "c"),
+            #             ((l3, sp, m3), "a"),
+            #             ((l4, s, m4), "a"),
+            #         )
+            #         uDict[proccess] = u / 2
     return uDict
 
 
@@ -1451,6 +1463,18 @@ def getTraceDensityMatrix(nBaths, psi, l=2):
         nState *= abs(amp) ** 2
         n += nState
     return n
+
+
+def build_impurity_density_matrix(n_imp_orbitals, n_bath_orbitals, psi):
+    n_spin_orbitals = n_imp_orbitals + n_bath_orbitals
+    densityMatrix = np.zeros((n_imp_orbitals, n_imp_orbitals), dtype=complex)
+    for i, j in itertools.product(range(n_imp_orbitals), range(n_imp_orbitals)):
+        psi_new = a(n_spin_orbitals, i, psi)
+        psi_new = c(n_spin_orbitals, j, psi_new)
+        tmp = inner(psi, psi_new)
+        if tmp != 0:
+            densityMatrix[i, j] = tmp
+    return densityMatrix
 
 
 def getDensityMatrix(nBaths, psi, l=2):
