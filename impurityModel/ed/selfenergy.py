@@ -328,8 +328,6 @@ def calc_selfenergy(
         print(f"Local Hamiltonian\n{h}")
     #     finite.printOp(sum_bath_states, h, "Local Hamiltonian: ")
 
-    num_spin_orbitals = n_imp_orbs + sum(num_val_baths[i] + num_con_baths[i] for i in num_val_baths)
-
     (n0_imp, n0_val, n0_con), basis, h_dict = find_gs(
         h,
         nominal_occ,
