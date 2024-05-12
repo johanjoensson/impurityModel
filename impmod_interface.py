@@ -277,7 +277,6 @@ def run_impmod_ed(
     )
     # slater_from_rspt = np.ndarray(buffer=ffi.buffer(rspt_slater, 4 * size_real), shape=(4,), dtype=float)
 
-    print(f"{n_orb=} {n_rot_cols=} {n_orb_full=}", flush=True)
     if n_rot_cols == n_orb_full:
         corr_to_spherical = rspt_corr_to_spherical_arr
         corr_to_cf = rspt_corr_to_cf_arr
