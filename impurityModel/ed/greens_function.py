@@ -61,11 +61,11 @@ def split_comm_and_redistribute_basis(priorities: Iterable[float], basis: Basis,
                 for state in partial_psi:
                     psis[i][state] = partial_psi[state] + psis[i].get(state, 0)
     split_basis = Basis(
-        ls=basis.ls,
-        bath_states=basis.bath_states,
+        impurity_orbitals=basis.impurity_orbitals,
+        valence_baths=basis.bath_states[0],
+        conduction_baths=basis.bath_states[1],
         initial_basis=(state for psi in psis for state in psi),
         restrictions=basis.restrictions,
-        num_spin_orbitals=basis.num_spin_orbitals,
         comm=split_comm,
         verbose=basis.verbose,
         truncation_threshold=basis.truncation_threshold,
@@ -296,11 +296,11 @@ def calc_Greens_function_with_offdiag(
             block_v.append(v)
 
         excited_basis = Basis(
-            ls=eigen_basis.ls,
-            bath_states=eigen_basis.bath_states,
+            impurity_orbitals=eigen_basis.impurity_orbitals,
+            valence_baths=eigen_basis.bath_states[0],
+            conduction_baths=eigen_basis.bath_states[1],
             initial_basis=local_excited_basis,
             restrictions=excited_restrictions,
-            num_spin_orbitals=eigen_basis.num_spin_orbitals,
             comm=eigen_basis.comm,
             verbose=verbose,
             truncation_threshold=eigen_basis.truncation_threshold,
@@ -745,11 +745,10 @@ def calc_Greens_function_with_offdiag_cg(
                 )
                 local_excited_basis |= res.keys()
     excited_basis = CIPSI_Basis(
-        ls=basis.ls,
+        impurity_orbitals=basis.impurity_orbitals,
         bath_states=basis.bath_states,
         initial_basis=local_excited_basis,
         restrictions=basis.restrictions,
-        num_spin_orbitals=basis.num_spin_orbitals,
         comm=basis.comm,
         verbose=verbose,
         truncation_threshold=basis.truncation_threshold,
@@ -856,11 +855,10 @@ def get_block_Green_cg(
     if matsubara:
         gs_matsubara = np.zeros((len(iws), n, n), dtype=complex)
         local_basis = CIPSI_Basis(
-            ls=basis.ls,
+            impurity_orbitals=basis.impurity_orbitals,
             bath_states=basis.bath_states,
             initial_basis=basis,
             restrictions=basis.restrictions,
-            num_spin_orbitals=basis.num_spin_orbitals,
             comm=None,
             verbose=verbose,
             truncation_threshold=basis.truncation_threshold,
