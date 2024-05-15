@@ -10,6 +10,7 @@ from impurityModel.ed.get_spectra import get_noninteracting_hamiltonian_operator
 from impurityModel.ed import finite
 from impurityModel.ed.average import thermal_average_scale_indep
 from impurityModel.ed.manybody_basis import CIPSI_Basis
+import impurityModel.ed.product_state_representation as psr
 
 from impurityModel.ed.greens_function import get_Greens_function, save_Greens_function
 
@@ -325,8 +326,8 @@ def calc_selfenergy(
     # construct local, interacting, hamiltonian
     u = finite.getUop_from_rspt_u4(u4)
     h = finite.addOps([h0, u])
-    if verbosity >= 2:
-        print(f"Local Hamiltonian\n{h}")
+    # if verbosity >= 2:
+    #     print(f"Local Hamiltonian\n{h}")
     #     finite.printOp(sum_bath_states, h, "Local Hamiltonian: ")
 
     (n0_imp, n0_val, n0_con), basis, h_dict = find_gs(
@@ -360,7 +361,7 @@ def calc_selfenergy(
     energy_cut = -tau * np.log(1e-4)
 
     basis.tau = tau
-    h_dict = basis.expand(h, H_dict=h_dict, dense_cutoff=dense_cutoff, de2_min=1e-8)
+    h_dict = basis.expand(h, H_dict=h_dict, dense_cutoff=dense_cutoff, de2_min=1e-12)
     if verbosity >= 1:
         print(f"Ground state basis contains {len(basis)} elsements.")
     if basis.size <= dense_cutoff:
@@ -373,21 +374,41 @@ def calc_selfenergy(
         k=n_imp_orbs,
         eigenValueTol=0,
     )
-    psis = basis.build_state(psis_dense.T, slaterWeightMin=0)
+    psis = basis.build_state(psis_dense.T, slaterWeightMin=np.finfo(float).eps ** 2)
     basis.clear()
     basis.add_states(set(state for psi in psis for state in psi))
+    n_imp = sum(ni for ni in basis.impurity_orbitals.values())
+    n_val = sum(nv for nv in basis.bath_states[0].values())
+    impurity_indices = range(0, n_imp)
+    valence_indices = range(n_imp, n_imp + n_val)
+    conduction_indices = range(n_imp + n_val, basis.num_spin_orbitals)
+    gs_stats = [
+        state_statistics(psi, impurity_indices, valence_indices, conduction_indices, basis.num_spin_orbitals)
+        for psi in psis
+    ]
     all_psis = comm.gather(psis)
+    all_gs_stats = comm.gather(gs_stats)
     if rank == 0:
         local_psis = [{} for _ in psis]
         for psis_r in all_psis:
             for i in range(len(local_psis)):
                 for state in psis_r[i]:
                     local_psis[i][state] = psis_r[i][state] + local_psis[i].get(state, 0)
+        gs_stats = [{} for _ in psis]
+        for psi_stats in all_gs_stats:
+            for i, psi_stat in enumerate(psi_stats):
+                for key in psi_stat:
+                    gs_stats[i][key] = psi_stat[key] + gs_stats[i].get(key, 0)
     if verbosity >= 1:
         finite.printThermalExpValues_new(
             {i: n_imp_orbs for i in num_val_baths}, sum_bath_states, es, local_psis, tau, rot_to_spherical
         )
         finite.printExpValues(sum_bath_states, es, local_psis, rot_to_spherical, sum(n_imp_orbs for _ in num_val_baths))
+        print("Ground state occupation statistics:")
+        for psi_stats in gs_stats:
+            print(f"{psi_stats}")
+    comm.barrier()
+
     excited_restrictions = basis.build_excited_restrictions()
     if verbosity >= 1:
         if verbosity >= 2:
@@ -475,6 +496,17 @@ def calc_selfenergy(
     return sigma, sigma_real, sigma_static
 
 
+def state_statistics(psi, impurity_indices, valence_indices, conduction_indices, num_spin_orbitals):
+    stat = {}
+    for state, amp in psi.items():
+        bits = psr.bytes2bitarray(state, num_spin_orbitals)
+        n_imp = sum(bits[i] for i in impurity_indices)
+        n_valence = sum(bits[i] for i in valence_indices)
+        n_cond = sum(bits[i] for i in conduction_indices)
+        stat[(n_imp, n_valence, n_cond)] = abs(amp) ** 2 + stat.get((n_imp, n_valence, n_cond), 0)
+    return stat
+
+
 def check_sigma(sigma: np.ndarray):
     """
     Verify that sigma makes physical sense.
@@ -529,11 +561,11 @@ def hyb(ws, v, hbath, delta):
     """
     Calculate hybridization function from hopping parameters and bath energies.
     """
-    return np.conj(v.T)[np.newaxis, :, :] @ np.linalg.solve(
-        (ws + 1j * delta)[:, np.newaxis, np.newaxis] * np.identity(v.shape[0], dtype=complex)[np.newaxis, :, :]
-        - hbath[np.newaxis, :, :],
-        v[np.newaxis, :, :],
-    )
+    n_imp = v.shape[1]
+    hyb = np.zeros((n_imp, n_imp, len(ws)), dtype=complex)
+    for bi, eb in enumerate(np.diagonal(hbath)):
+        hyb += np.outer(np.conj(v[bi]), v[bi])[:, :, np.newaxis] * 1 / (ws + 1j * delta - eb)
+    return np.moveaxis(hyb, -1, 0)
 
 
 def get_sigma(

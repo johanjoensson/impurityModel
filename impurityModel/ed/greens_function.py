@@ -121,7 +121,7 @@ def get_Greens_function(
             omega_mesh,
             delta,
             reort=reort,
-            slaterWeightMin=1e-8,
+            slaterWeightMin=np.finfo(float).eps ** 2,
             verbose=verbose,
         )
         gsPS_matsubara, gsPS_realaxis = calc_Greens_function_with_offdiag(
@@ -134,7 +134,7 @@ def get_Greens_function(
             -matsubara_mesh if matsubara_mesh is not None else None,
             -omega_mesh if omega_mesh is not None else None,
             -delta,
-            slaterWeightMin=1e-8,
+            slaterWeightMin=np.finfo(float).eps ** 2,
             verbose=verbose,
             reort=reort,
         )
@@ -192,7 +192,7 @@ def get_Greens_function(
                     requests.append(basis.comm.Irecv(gs_realaxis[block_i], color_root))
     if len(requests) > 0:
         requests[-1].Waitall(requests)
-    return gs_matsubara, gs_realaxis
+    return (gs_matsubara, gs_realaxis) if basis.comm.rank == 0 else (None, None)
 
 
 def calc_Greens_function_with_offdiag(
@@ -288,7 +288,7 @@ def calc_Greens_function_with_offdiag(
                 eigen_basis.num_spin_orbitals,
                 tOp,
                 psi,
-                slaterWeightMin=0,  # slaterWeightMin,
+                slaterWeightMin=0,
                 restrictions=basis.restrictions,
                 opResult=t_mems[i_tOp],
             )
@@ -589,7 +589,7 @@ def block_Green(
         for alpha, beta in zip(alphas[-3::-1], betas[-3::-1]):
             gs_new = wIs - alpha - np.conj(beta.T)[np.newaxis, :, :] @ np.linalg.solve(gs_new, beta[np.newaxis, :, :])
             gs_prev = wIs - alpha - np.conj(beta.T)[np.newaxis, :, :] @ np.linalg.solve(gs_prev, beta[np.newaxis, :, :])
-        return np.all(np.abs(gs_new - gs_prev) < max(slaterWeightMin, 1e-10))
+        return np.all(np.abs(gs_new - gs_prev) < max(slaterWeightMin, 1e-12))
 
     t0 = time.perf_counter()
     # Run Lanczos on psi0^T* [wI - j*delta - H]^-1 psi0

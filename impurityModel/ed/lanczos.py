@@ -391,7 +391,7 @@ def block_lanczos(
                 basis.num_spin_orbitals,
                 h_op,
                 psi_i,
-                slaterWeightMin=0,  # slaterWeightMin,
+                slaterWeightMin=0,
                 restrictions=basis.restrictions,
                 opResult=h_mem,
             )
@@ -478,11 +478,9 @@ def block_lanczos(
         t_tmp = perf_counter()
         q[0] = q[1]
         q[1] = [{} for _ in range(columns)]
-        # q[1] = [{} for _ in range(n)]
         if mpi:
             request.Wait()
         for j, (i, state) in itertools.product(range(columns), enumerate(basis.local_basis)):
-            # for j, (i, state) in itertools.product(range(n), enumerate(basis.local_basis)):
             if abs(psip[i, j]) ** 2 > slaterWeightMin:
                 q[1][j][state] = psip[i, j]
         t_state += perf_counter() - t_tmp

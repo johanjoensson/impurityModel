@@ -347,8 +347,8 @@ class Basis:
 
         t0 = perf_counter()
 
-        self.state_container = CentralizedStateContainer(
-            # self.state_container = DistributedStateContainer(
+        # self.state_container = CentralizedStateContainer(
+        self.state_container = DistributedStateContainer(
             initial_basis,
             bytes_per_state=self.n_bytes,
             comm=self.comm,
