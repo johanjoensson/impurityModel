@@ -443,7 +443,7 @@ def run_impmod_ed(
         print(f"Exception {repr(e)} caught on rank {rank}!")
         print(traceback.format_exc())
         print(
-            "Adding positive infinity to the imaginaty part of the selfenergy at the last matsubara frequency.",
+            "Adding positive infinity to the imaginary part of the selfenergy at the last matsubara frequency.",
             flush=True,
         )
         print("!" * 100)
