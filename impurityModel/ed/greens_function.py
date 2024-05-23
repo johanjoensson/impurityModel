@@ -1,122 +1,213 @@
+import itertools
 import numpy as np
 import scipy as sp
 import time
-from typing import Optional
+from typing import Optional, Iterable
 
 from impurityModel.ed import spectra
 from impurityModel.ed import finite
-from impurityModel.ed.lanczos import get_block_Lanczos_matrices
+from impurityModel.ed.lanczos import get_block_Lanczos_matrices, block_lanczos
 from impurityModel.ed.manybody_basis import CIPSI_Basis, Basis
 
 from mpi4py import MPI
 
-comm = MPI.COMM_WORLD
-rank = comm.rank
-ranks = comm.size
+
+def split_comm_and_redistribute_basis(priorities: Iterable[float], basis: Basis, psis: list[dict]):
+    """
+    Split MPI communicator in order to divide MPI ranks among items, number of ranks per item is determined using the priorities.
+    Higher priority means more MPI ranks assigned to the element.
+    """
+    comm = basis.comm
+    normalized_priorities = np.array([p for p in priorities], dtype=float)
+    normalized_priorities /= np.sum(normalized_priorities)
+    n_colors = min(comm.size, len(normalized_priorities))
+    if len(normalized_priorities) < comm.size:
+        procs_per_color = np.array([max(1, n) for n in comm.size * normalized_priorities], dtype=int)
+    else:
+        procs_per_color = np.array([1] * n_colors, dtype=int)
+    diff = np.sum(procs_per_color) - comm.size
+    sorted_indices = np.argsort(normalized_priorities)[::-1]
+    if diff != 0:
+        for _ in range(1 + (abs(diff) // n_colors)):
+            if diff > 0:
+                mask = sorted_indices[procs_per_color > 1]
+                procs_per_color[mask[-(diff % n_colors) :]] -= 1
+                diff = np.sum(procs_per_color) - comm.size
+            else:
+                procs_per_color[sorted_indices[: abs(diff) % n_colors]] += 1
+                diff = np.sum(procs_per_color) - comm.size
+    assert sum(procs_per_color) == comm.size
+    proc_cutoffs = np.cumsum(procs_per_color)
+    color = np.argmax(comm.rank < proc_cutoffs)
+    split_comm = comm.Split(color=color, key=0)
+    split_roots = [0] + proc_cutoffs[:-1].tolist()
+    items_per_color = np.array([len(priorities) // n_colors] * n_colors, dtype=int)
+    items_per_color[: len(priorities) % n_colors] += 1
+    indices_start = sum(items_per_color[:color])
+    indices_end = sum(items_per_color[: color + 1])
+
+    if split_comm.rank == 0:
+        assert comm.rank in split_roots
+
+    for color_root in split_roots:
+        if comm.rank == color_root:
+            all_psis = comm.gather(psis, root=color_root)
+        else:
+            _ = comm.gather(psis, root=color_root)
+    psis = [{} for _ in range(len(psis))]
+    if split_comm.rank == 0:
+        for partial_psis in all_psis:
+            for i, partial_psi in enumerate(partial_psis):
+                for state in partial_psi:
+                    psis[i][state] = partial_psi[state] + psis[i].get(state, 0)
+    split_basis = Basis(
+        impurity_orbitals=basis.impurity_orbitals,
+        valence_baths=basis.bath_states[0],
+        conduction_baths=basis.bath_states[1],
+        initial_basis=(state for psi in psis for state in psi),
+        restrictions=basis.restrictions,
+        comm=split_comm,
+        verbose=basis.verbose,
+        truncation_threshold=basis.truncation_threshold,
+        tau=basis.tau,
+        spin_flip_dj=basis.spin_flip_dj,
+    )
+    psis = split_basis.redistribute_psis(psis)
+
+    return slice(indices_start, indices_end), split_roots, n_colors, items_per_color, split_basis, psis
 
 
 def get_Greens_function(
-    nBaths,
     matsubara_mesh,
     omega_mesh,
-    es,
     psis,
+    es,
+    tau,
     basis,
-    l,
     hOp,
     delta,
     blocks,
     verbose,
     reort,
-    mpi_distribute=False,
-    dense_cutoff=1e3,
 ):
-    n_spin_orbitals = sum(2 * (2 * ang + 1) + nBath for ang, nBath in nBaths.items())
-    tOpsPS = spectra.getPhotoEmissionOperators(nBaths, l=l)
-    tOpsIPS = spectra.getInversePhotoEmissionOperators(nBaths, l=l)
-    gsIPS_matsubara, gsIPS_realaxis = calc_Greens_function_with_offdiag(
-        n_spin_orbitals,
-        hOp,
-        tOpsIPS,
+    """
+    Calculate interacting Greens function.
+    """
+    (
+        block_indices,
+        block_roots,
+        n_colors,
+        blocks_per_color,
+        block_basis,
         psis,
-        es,
-        basis,
-        matsubara_mesh,
-        omega_mesh,
-        delta,
-        blocks=blocks,
-        slaterWeightMin=1e-8,
-        verbose=verbose,
-        reort=reort,
-        dense_cutoff=dense_cutoff,
-    )
-    gsPS_matsubara, gsPS_realaxis = calc_Greens_function_with_offdiag(
-        n_spin_orbitals,
-        hOp,
-        tOpsPS,
-        psis,
-        es,
-        basis,
-        -matsubara_mesh if matsubara_mesh is not None else None,
-        -omega_mesh if omega_mesh is not None else None,
-        -delta,
-        blocks=blocks,
-        slaterWeightMin=1e-8,
-        verbose=verbose,
-        reort=reort,
-        dense_cutoff=dense_cutoff,
-    )
+    ) = split_comm_and_redistribute_basis([len(block) ** 2 for block in blocks], basis, psis)
+    gs_matsubara_block = []
+    gs_realaxis_block = []
+    for opIPS, opPS in (
+        (
+            [{((orb, "c"),): 1} for orb in block],
+            [{((orb, "a"),): 1} for orb in block],
+        )
+        for block in blocks[block_indices]
+    ):
+        gsIPS_matsubara, gsIPS_realaxis = calc_Greens_function_with_offdiag(
+            hOp,
+            opIPS,
+            psis,
+            es,
+            tau,
+            block_basis,
+            matsubara_mesh,
+            omega_mesh,
+            delta,
+            reort=reort,
+            slaterWeightMin=np.finfo(float).eps ** 2,
+            verbose=verbose,
+        )
+        gsPS_matsubara, gsPS_realaxis = calc_Greens_function_with_offdiag(
+            hOp,
+            opPS,
+            psis,
+            es,
+            tau,
+            block_basis,
+            -matsubara_mesh if matsubara_mesh is not None else None,
+            -omega_mesh if omega_mesh is not None else None,
+            -delta,
+            slaterWeightMin=np.finfo(float).eps ** 2,
+            verbose=verbose,
+            reort=reort,
+        )
 
-    if mpi_distribute:
+        if matsubara_mesh is not None and block_basis.comm.rank == 0:
+            gs_matsubara_block.append(
+                gsIPS_matsubara
+                - np.transpose(
+                    gsPS_matsubara,
+                    (
+                        0,
+                        2,
+                        1,
+                    ),
+                )
+            )
+        if omega_mesh is not None and block_basis.comm.rank == 0:
+            gs_realaxis_block.append(
+                gsIPS_realaxis
+                - np.transpose(
+                    gsPS_realaxis,
+                    (
+                        0,
+                        2,
+                        1,
+                    ),
+                )
+            )
+    gs_matsubara = (
+        [np.empty((len(matsubara_mesh), len(block), len(block)), dtype=complex) for block in blocks]
+        if basis.comm.rank == 0
+        else None
+    )
+    gs_realaxis = (
+        [np.empty((len(omega_mesh), len(block), len(block)), dtype=complex) for block in blocks]
+        if basis.comm.rank == 0
+        else None
+    )
+    requests = []
+    if block_basis.comm.rank == 0:
         if matsubara_mesh is not None:
-            gsIPS_matsubara = comm.bcast(gsIPS_matsubara, root=0)
-            gsPS_matsubara = comm.bcast(gsPS_matsubara, root=0)
+            for matsubara_block_gs in gs_matsubara_block:
+                requests.append(basis.comm.Isend(matsubara_block_gs, 0))
         if omega_mesh is not None:
-            gsIPS_realaxis = comm.bcast(gsIPS_realaxis, root=0)
-            gsPS_realaxis = comm.bcast(gsPS_realaxis, root=0)
-    if matsubara_mesh is not None and (mpi_distribute or comm.rank == 0):
-        gs_matsubara = gsIPS_matsubara - np.transpose(
-            gsPS_matsubara,
-            (
-                0,
-                2,
-                1,
-                3,
-            ),
-        )
-    else:
-        gs_matsubara = None
-    if omega_mesh is not None and (mpi_distribute or comm.rank == 0):
-        gs_realaxis = gsIPS_realaxis - np.transpose(
-            gsPS_realaxis,
-            (
-                0,
-                2,
-                1,
-                3,
-            ),
-        )
-    else:
-        gs_realaxis = None
-    return gs_matsubara, gs_realaxis
+            for real_block_gs in gs_realaxis_block:
+                requests.append(basis.comm.Isend(real_block_gs, 0))
+    if basis.comm.rank == 0:
+        for color, color_root in zip(range(n_colors), block_roots):
+            block_is = range(sum(blocks_per_color[:color]), sum(blocks_per_color[: color + 1]))
+            if matsubara_mesh is not None:
+                for block_i in block_is:
+                    requests.append(basis.comm.Irecv(gs_matsubara[block_i], color_root))
+            if omega_mesh is not None:
+                for block_i in block_is:
+                    requests.append(basis.comm.Irecv(gs_realaxis[block_i], color_root))
+    if len(requests) > 0:
+        requests[-1].Waitall(requests)
+    return (gs_matsubara, gs_realaxis) if basis.comm.rank == 0 else (None, None)
 
 
 def calc_Greens_function_with_offdiag(
-    n_spin_orbitals,
     hOp,
     tOps,
     psis,
     es,
+    tau,
     basis,
     iw,
     w,
     delta,
     reort,
-    blocks=None,
     slaterWeightMin=0,
-    parallelization_mode="H_build",
     verbose=True,
-    dense_cutoff=1e3,
 ):
     r"""
     Return Green's function for states with low enough energy.
@@ -160,136 +251,105 @@ def calc_Greens_function_with_offdiag(
             "eigen_states" or "H_build".
 
     """
-    n = len(es)
+    comm = basis.comm
+    n = len(tOps)
     excited_restrictions = basis.build_excited_restrictions(imp_change=(1, 1), val_change=(1, 0), con_change=(0, 1))
 
-    if blocks is None:
-        blocks = [list(range(len(tOps)))]
     t_mems = [{} for _ in tOps]
     h_mem = {}
-    if parallelization_mode == "eigen_states":
-        gs_matsubara = np.zeros((n, len(tOps), len(tOps), len(iw)), dtype=complex)
-        gs_realaxis = np.zeros((n, len(tOps), len(tOps), len(w)), dtype=complex)
-        for i in finite.get_job_tasks(rank, ranks, range(len(psis))):
-            psi = psis[i]
-            e = es[i]
+    if iw is not None:
+        gs_matsubara_block = np.zeros((len(iw), n, n), dtype=complex)
+    else:
+        gs_matsubara_block = None
+    if w is not None:
+        gs_realaxis_block = np.zeros((len(w), n, n), dtype=complex)
+    else:
+        gs_realaxis_block = None
 
-            v = []
-            local_excited_basis = set()
-            for block in blocks:
-                block_v = []
-                for i_tOp, tOp in [(orb, tOps[orb]) for orb in block]:
-                    v = finite.applyOp_2(
-                        n_spin_orbitals,
-                        tOp,
-                        psi,
-                        slaterWeightMin=0,
-                        restrictions=None,  # excited_restrictions,
-                        opResult=t_mems[i_tOp],
-                    )
-                    local_excited_basis |= v.keys()
-                    block_v.append(v)
-            excited_basis = Basis(
-                ls=basis.ls,
-                bath_states=basis.bath_states,
-                initial_basis=local_excited_basis,
-                restrictions=excited_restrictions,
-                num_spin_orbitals=basis.num_spin_orbitals,
-                comm=basis.comm,
-                verbose=False and verbose,
-                truncation_threshold=basis.truncation_threshold,
-                spin_flip_dj=basis.spin_flip_dj,
-                tau=basis.tau,
+    (
+        eigen_indices,
+        eigen_roots,
+        n_colors,
+        eigen_per_color,
+        eigen_basis,
+        psis,
+    ) = split_comm_and_redistribute_basis([1 for _ in es], basis, psis)
+    gs_matsubara_received = np.empty((len(eigen_roots), len(iw), n, n), dtype=complex) if comm.rank == 0 else None
+    gs_realaxis_received = np.empty((len(eigen_roots), len(w), n, n), dtype=complex) if comm.rank == 0 else None
+    e0 = min(es)
+    Z = np.sum(np.exp(-(es - e0) / tau))
+    for psi, e in zip(psis[eigen_indices], es[eigen_indices]):
+        block_v = []
+        local_excited_basis = set()
+        t0 = time.perf_counter()
+        for i_tOp, tOp in enumerate(tOps):
+            v = finite.applyOp_new(
+                eigen_basis.num_spin_orbitals,
+                tOp,
+                psi,
+                slaterWeightMin=0,
+                restrictions=eigen_basis.restrictions,
+                opResult=t_mems[i_tOp],
             )
+            local_excited_basis |= v.keys()
+            block_v.append(v)
 
-            h_mem = excited_basis.expand(hOp, slaterWeightMin=slaterWeightMin, op_dict=h_mem)
+        excited_basis = Basis(
+            impurity_orbitals=eigen_basis.impurity_orbitals,
+            valence_baths=eigen_basis.bath_states[0],
+            conduction_baths=eigen_basis.bath_states[1],
+            initial_basis=local_excited_basis,
+            restrictions=excited_restrictions,
+            comm=eigen_basis.comm,
+            verbose=verbose,
+            truncation_threshold=eigen_basis.truncation_threshold,
+            tau=eigen_basis.tau,
+            spin_flip_dj=eigen_basis.spin_flip_dj,
+        )
 
-            gs_matsubara_i, gs_realaxis_i = get_block_Green(
-                n_spin_orbitals=n_spin_orbitals,
-                hOp=hOp,
-                psi_arr=v,
-                basis=excited_basis,
-                e=e,
-                iws=iw,
-                ws=w,
-                delta=delta,
-                h_mem=h_mem,
-                slaterWeightMin=slaterWeightMin,
-                parallelization_mode="serial",
-                verbose=verbose,
-                reort=reort,
-                dense_cutoff=dense_cutoff,
-            )
-            comm.Reduce(gs_matsubara_i, gs_matsubara)
-            comm.Reduce(gs_realaxis_i, gs_realaxis)
-    elif parallelization_mode == "H_build":
+        if verbose:
+            print(f"time(build excited state basis) = {time.perf_counter() - t0}")
+        gs_matsubara_block_i, gs_realaxis_block_i = block_Green(
+            n_spin_orbitals=excited_basis.num_spin_orbitals,
+            hOp=hOp,
+            psi_arr=block_v,
+            basis=excited_basis,
+            e=e,
+            iws=iw,
+            ws=w,
+            delta=delta,
+            h_mem=h_mem,
+            slaterWeightMin=slaterWeightMin,
+            verbose=verbose,
+            reort=reort,
+        )
+        if excited_basis.comm.rank == 0:
+            if iw is not None:
+                gs_matsubara_block += np.exp(-(e - e0) / tau) / Z * gs_matsubara_block_i
+            if w is not None:
+                gs_realaxis_block += np.exp(-(e - e0) / tau) / Z * gs_realaxis_block_i
+    # Send calculated Greens functions to root
+    requests = []
+    if eigen_basis.comm.rank == 0:
         if iw is not None:
-            gs_matsubara = np.zeros((n, len(tOps), len(tOps), len(iw)), dtype=complex) if comm.rank == 0 else None
-        else:
-            gs_matsubara = None
+            requests.append(comm.Isend(gs_matsubara_block, 0))
         if w is not None:
-            gs_realaxis = np.zeros((n, len(tOps), len(tOps), len(w)), dtype=complex) if comm.rank == 0 else None
-        else:
-            gs_realaxis = None
-        for i, (psi, e) in enumerate(zip(psis, es)):
-            for block in blocks:
-                block_v = []
-                local_excited_basis = set()
-                t0 = time.perf_counter()
-                for i_tOp, tOp in [(orb, tOps[orb]) for orb in block]:
-                    v = finite.applyOp_2(
-                        n_spin_orbitals,
-                        tOp,
-                        psi,
-                        slaterWeightMin=0,
-                        restrictions=None,  # excited_restrictions,
-                        opResult=t_mems[i_tOp],
-                    )
-                    local_excited_basis |= v.keys()
-                    block_v.append(v)
-
-                excited_basis = Basis(
-                    ls=basis.ls,
-                    bath_states=basis.bath_states,
-                    initial_basis=local_excited_basis,
-                    restrictions=excited_restrictions,
-                    num_spin_orbitals=basis.num_spin_orbitals,
-                    comm=basis.comm,
-                    verbose=verbose,
-                    truncation_threshold=basis.truncation_threshold,
-                    tau=basis.tau,
-                    spin_flip_dj=basis.spin_flip_dj,
-                )
-                h_mem = excited_basis.expand(
-                    hOp, dense_cutoff=dense_cutoff, slaterWeightMin=slaterWeightMin, op_dict=h_mem
-                )
-
-                if verbose:
-                    print(f"time(build excited state basis) = {time.perf_counter() - t0}")
-                gs_matsubara_i, gs_realaxis_i = get_block_Green(
-                    n_spin_orbitals=n_spin_orbitals,
-                    hOp=hOp,
-                    psi_arr=block_v,
-                    basis=excited_basis,
-                    e=e,
-                    iws=iw,
-                    ws=w,
-                    delta=delta,
-                    h_mem=h_mem,
-                    slaterWeightMin=slaterWeightMin,
-                    parallelization_mode=parallelization_mode,
-                    verbose=verbose,
-                    reort=reort,
-                    dense_cutoff=dense_cutoff,
-                )
-                if rank == 0:
-                    if iw is not None:
-                        block_idx = np.ix_(block, block, range(gs_matsubara.shape[3]))
-                        gs_matsubara[i][block_idx] = gs_matsubara_i
-                    if w is not None:
-                        block_idx = np.ix_(block, block, range(gs_realaxis.shape[3]))
-                        gs_realaxis[i][block_idx] = gs_realaxis_i
-    return gs_matsubara, gs_realaxis
+            requests.append(comm.Isend(gs_realaxis_block, 0))
+    if comm.rank == 0:
+        for i, r in enumerate(eigen_roots):
+            if iw is not None:
+                requests.append(comm.Irecv(gs_matsubara_received[i], r))
+        for i, r in enumerate(eigen_roots):
+            if w is not None:
+                requests.append(comm.Irecv(gs_realaxis_received[i], r))
+        requests[-1].Waitall(requests)
+        if iw is not None:
+            gs_matsubara_block = np.sum(gs_matsubara_received, axis=0)
+        if w is not None:
+            gs_realaxis_block = np.sum(gs_realaxis_received, axis=0)
+    if len(requests) > 0:
+        requests[-1].Waitall(requests)
+    return gs_matsubara_block, gs_realaxis_block
 
 
 def get_block_Green(
@@ -310,6 +370,11 @@ def get_block_Green(
     verbose=True,
     dense_cutoff=1e3,
 ):
+    """
+    Calculate one block of the inteacting Greens function. Including offdiagonal terms.
+    """
+    comm = basis.comm
+    rank = comm.rank
     matsubara = iws is not None
     realaxis = ws is not None
 
@@ -341,7 +406,7 @@ def get_block_Green(
     comm.Gather(np.array([n * len(basis.local_basis)], dtype=int), counts, root=0)
     offsets = [sum(counts[:r]) for r in range(len(counts))] if comm.rank == 0 else None
     psi_start_0 = np.empty((N, n), dtype=complex, order="C") if comm.rank == 0 else None
-    comm.Gatherv(psi_start, (psi_start_0, counts, offsets, MPI.DOUBLE_COMPLEX), root=0)
+    comm.Gatherv(psi_start, (psi_start_0, counts, offsets, MPI.C_DOUBLE_COMPLEX), root=0)
     r: Optional[np.ndarray] = None
     if comm.rank == 0:
         # Do a QR decomposition of the starting block.
@@ -359,7 +424,7 @@ def get_block_Green(
     comm.Gather(np.array([columns * len(basis.local_basis)], dtype=int), counts, root=0)
     offsets = [sum(counts[:r]) for r in range(len(counts))] if comm.rank == 0 else None
     psi0 = np.zeros((len(basis.local_basis), columns), dtype=complex)
-    comm.Scatterv((psi0_0, counts, offsets, MPI.DOUBLE_COMPLEX) if comm.rank == 0 else None, psi0, root=0)
+    comm.Scatterv((psi0_0, counts, offsets, MPI.C_DOUBLE_COMPLEX) if comm.rank == 0 else None, psi0, root=0)
     if verbose:
         print(f"time(set up psi_start) = {time.perf_counter() - t0}")
 
@@ -372,15 +437,9 @@ def get_block_Green(
         conv_w = iws
         delta_p = 0
 
-    def gaussian(x, mu, sigma):
-        return 1 / (sigma * np.sqrt(2 * np.pi)) * np.exp(-1 / 2 * ((x - mu) / sigma) ** 2)
-
     # Select points from the frequency mesh, according to a Normal distribuition
     # centered on (value) 0.
     n_samples = max(len(conv_w) // 100, 1)
-
-    def matrix_print(m):
-        print("\n".join(["  ".join([f"{np.real(el): 5.3f}  {np.imag(el):+5.3f}j" for el in row]) for row in m]))
 
     def converged(alphas, betas):
         if alphas.shape[0] == 1:
@@ -400,17 +459,7 @@ def get_block_Green(
         for alpha, beta in zip(alphas[-3::-1], betas[-3::-1]):
             gs_new = wIs - alpha - np.conj(beta.T)[np.newaxis, :, :] @ np.linalg.solve(gs_new, beta[np.newaxis, :, :])
             gs_prev = wIs - alpha - np.conj(beta.T)[np.newaxis, :, :] @ np.linalg.solve(gs_prev, beta[np.newaxis, :, :])
-        return (
-            np.max(
-                np.abs(
-                    gs_new
-                    - gs_prev
-                    # np.diagonal(np.linalg.inv(gs_new), axis1=1, axis2=2)
-                    # - np.diagonal(np.linalg.inv(gs_prev), axis1=1, axis2=2)
-                )
-            )
-            < 1e-12
-        )
+        return np.all(np.abs(gs_new - gs_prev) < 1e-8)
 
     # Run Lanczos on psi0^T* [wI - j*delta - H]^-1 psi0
     alphas, betas, _ = get_block_Lanczos_matrices(
@@ -421,6 +470,7 @@ def get_block_Green(
         verbose=verbose,
         reort_mode=reort,
         build_krylov_basis=False,
+        slaterWeightMin=slaterWeightMin,
     )
 
     t0 = time.perf_counter()
@@ -437,7 +487,145 @@ def get_block_Green(
     return gs_matsubara, gs_realaxis
 
 
-def calc_mpi_Greens_function_from_alpha_beta(alphas, betas, iws, ws, e, delta, r, verbose):
+def block_Green(
+    n_spin_orbitals,
+    hOp,
+    psi_arr,
+    basis,
+    e,
+    iws,
+    ws,
+    delta,
+    reort,
+    h_mem=None,
+    slaterWeightMin=0,
+    verbose=True,
+):
+    """
+    calculate  one block of the Greens function. This function builds the many body basis iteratively. Reducing memory requrements.
+    """
+    comm = basis.comm
+    rank = comm.rank
+    matsubara = iws is not None
+    realaxis = ws is not None
+
+    if not matsubara and not realaxis:
+        if rank == 0:
+            print("No Matsubara mesh or real frequency mesh provided. No Greens function will be calculated.")
+        return None, None
+
+    N = len(basis)
+    n = len(psi_arr)
+
+    if n == 0 or N == 0:
+        return np.zeros((len(iws), n, n), dtype=complex), np.zeros((len(ws), n, n), dtype=complex)
+    if verbose:
+        t0 = time.perf_counter()
+    psi_start = np.array(basis.build_distributed_vector(psi_arr).T, copy=False, order="C")
+    counts = np.empty((comm.size,), dtype=int) if comm.rank == 0 else None
+    comm.Gather(np.array([n * len(basis.local_basis)], dtype=int), counts, root=0)
+    offsets = np.array([sum(counts[:r]) for r in range(len(counts))]) if comm.rank == 0 else None
+    psi0 = np.empty((N, n), dtype=complex, order="C") if comm.rank == 0 else None
+    comm.Gatherv(psi_start, (psi0, counts, offsets, MPI.C_DOUBLE_COMPLEX), root=0)
+    r: Optional[np.ndarray] = None
+    if comm.rank == 0:
+        # Do a QR decomposition of the starting block.
+        # Later on, use r to restore the block corresponding to
+        psi0, r = sp.linalg.qr(psi0, mode="economic", overwrite_a=True, check_finite=False, pivoting=False)
+        psi0 = psi0.copy(order="C")
+        # Find which columns (if any) are 0 in psi0_0
+        rows, columns = psi0.shape
+    rows = comm.bcast(rows if comm.rank == 0 else None, root=0)
+    columns = comm.bcast(columns if comm.rank == 0 else None, root=0)
+    print(f"{psi_start.shape=} {rows=} {columns=}", flush=True)
+    if rows == 0 or columns == 0:
+        return np.zeros((len(iws), n, n), dtype=complex), np.zeros((len(ws), n, n), dtype=complex)
+    # psi_start = np.empty((len(basis.local_basis), columns), dtype=complex)
+    comm.Scatterv(
+        (psi0, counts * columns // n, offsets * columns // n, MPI.C_DOUBLE_COMPLEX) if comm.rank == 0 else None,
+        psi_start.T,
+        root=0,
+    )
+    psi = [{} for _ in range(columns)]
+    for j, (i, state) in itertools.product(range(columns), enumerate(basis.local_basis)):
+        if abs(psi_start[i, j]) ** 2 > slaterWeightMin:
+            psi[j][state] = psi_start[i, j]
+    if verbose:
+        print(f"time(set up psi_start) = {time.perf_counter() - t0}")
+
+    # If we have a realaxis mesh, prefer to check convergence on that
+    # if not, use the Matsubara mesh
+    if realaxis:
+        conv_w = ws
+        delta_p = delta
+    elif matsubara:
+        conv_w = iws
+        delta_p = 0
+
+    # Select points from the frequency mesh, according to a Normal distribuition
+    # centered on (value) 0.
+    n_samples = max(len(conv_w) // 20, min(len(conv_w), 10))
+
+    def converged(alphas, betas):
+        if np.any(np.linalg.norm(betas[-1], axis=1) < np.sqrt(np.finfo(float).eps)):
+            return True
+
+        if alphas.shape[0] == 1:
+            return False
+        w = np.zeros((n_samples), dtype=conv_w.dtype)
+        intervals = np.linspace(start=conv_w[0], stop=conv_w[-1], num=n_samples + 1)
+        for i in range(n_samples):
+            w[i] = basis.rng.uniform(
+                low=min(intervals[i], intervals[i + 1]), high=max(intervals[i], intervals[i + 1]), size=None
+            )
+        wIs = (w + 1j * delta_p + e)[:, np.newaxis, np.newaxis] * np.identity(alphas.shape[1], dtype=complex)[
+            np.newaxis, :, :
+        ]
+        gs_new = wIs - alphas[-1]
+        gs_new = (
+            wIs
+            - alphas[-2]
+            - np.conj(betas[-2].T)[np.newaxis, :, :] @ np.linalg.solve(gs_new, betas[-2][np.newaxis, :, :])
+        )
+        gs_prev = wIs - alphas[-2]
+        for alpha, beta in zip(alphas[-3::-1], betas[-3::-1]):
+            gs_new = wIs - alpha - np.conj(beta.T)[np.newaxis, :, :] @ np.linalg.solve(gs_new, beta[np.newaxis, :, :])
+            gs_prev = wIs - alpha - np.conj(beta.T)[np.newaxis, :, :] @ np.linalg.solve(gs_prev, beta[np.newaxis, :, :])
+        print(rf"δ = {np.max(np.abs(gs_new - gs_prev))}", flush=True)
+        return np.all(np.abs(gs_new - gs_prev) < max(slaterWeightMin, 1e-8))
+
+    t0 = time.perf_counter()
+    # Run Lanczos on psi0^T* [wI - j*delta - H]^-1 psi0
+    alphas, betas, _ = block_lanczos(
+        psi0=psi,
+        h_op=hOp,
+        basis=basis,
+        converged=converged,
+        h_mem=h_mem,
+        verbose=verbose,
+        slaterWeightMin=slaterWeightMin,
+        reort=reort,
+    )
+    if verbose:
+        print(f"time(block_lanczos) = {time.perf_counter() - t0: .4f} seconds.", flush=True)
+
+    t0 = time.perf_counter()
+
+    gs_matsubara, gs_realaxis = calc_mpi_Greens_function_from_alpha_beta(
+        alphas, betas, iws, ws, e, delta, r, verbose, comm=comm
+    )
+
+    if verbose:
+        print(f"time(G_from_alpha_beta) = {time.perf_counter() - t0: .4f} seconds.")
+
+    return gs_matsubara, gs_realaxis
+
+
+def calc_mpi_Greens_function_from_alpha_beta(alphas, betas, iws, ws, e, delta, r, verbose, comm):
+    """
+    Calculate the Greens function from the diagonal and offdiagonal terms obtained from the Lanczos procedure.
+    This function splits the frequency axes over MPI ranks.
+    """
     matsubara = iws is not None
     realaxis = ws is not None
     if matsubara:
@@ -457,22 +645,25 @@ def calc_mpi_Greens_function_from_alpha_beta(alphas, betas, iws, ws, e, delta, r
         counts = np.empty((comm.size), dtype=int)
         comm.Gather(np.array([gs_matsubara_local.shape[1] ** 2 * len(iws_split)], dtype=int), counts)
         offsets = [sum(counts[:r]) for r in range(len(counts))] if comm.rank == 0 else None
-        gs_matsubara = np.empty((len(iws), r.shape[0], r.shape[0]), dtype=complex) if comm.rank == 0 else None
-        comm.Gatherv(gs_matsubara_local, (gs_matsubara, counts, offsets, MPI.DOUBLE_COMPLEX), root=0)
+        gs_matsubara = np.empty((len(iws), alphas.shape[1], alphas.shape[1]), dtype=complex) if comm.rank == 0 else None
+        comm.Gatherv(gs_matsubara_local, (gs_matsubara, counts, offsets, MPI.C_DOUBLE_COMPLEX), root=0)
         if comm.rank == 0:
             gs_matsubara = np.conj(r.T)[np.newaxis, :, :] @ np.linalg.solve(gs_matsubara, r[np.newaxis, :, :])
     if realaxis:
         counts = np.empty((comm.size), dtype=int)
         comm.Gather(np.array([gs_realaxis_local.shape[1] ** 2 * len(ws_split)], dtype=int), counts)
         offsets = [sum(counts[:r]) for r in range(len(counts))] if comm.rank == 0 else None
-        gs_realaxis = np.empty((len(ws), r.shape[0], r.shape[0]), dtype=complex) if comm.rank == 0 else None
-        comm.Gatherv(gs_realaxis_local, (gs_realaxis, counts, offsets, MPI.DOUBLE_COMPLEX), root=0)
+        gs_realaxis = np.empty((len(ws), alphas.shape[1], alphas.shape[1]), dtype=complex) if comm.rank == 0 else None
+        comm.Gatherv(gs_realaxis_local, (gs_realaxis, counts, offsets, MPI.C_DOUBLE_COMPLEX), root=0)
         if comm.rank == 0:
             gs_realaxis = np.conj(r.T)[np.newaxis, :, :] @ np.linalg.solve(gs_realaxis, r[np.newaxis, :, :])
     return gs_matsubara, gs_realaxis
 
 
 def calc_local_Greens_function_from_alpha_beta(alphas, betas, iws, ws, e, delta, verbose):
+    """
+    Calculate the Greens function from alphas and betas, for all frequencies in iws and ws.
+    """
     I = np.identity(alphas.shape[1], dtype=complex)
     matsubara = iws is not None
     realaxis = ws is not None
@@ -527,6 +718,10 @@ def calc_Greens_function_with_offdiag_cg(
     dense_cutoff=1e3,
     tau=0,
 ):
+    """
+    Use conjugate gradient method to calculate the interacting Greens function function with offdiagonal elements.
+    Keep the manybody basis optimized for the excited state.
+    """
     n = len(es)
     if iw is not None:
         gs_matsubara = np.zeros((n, len(tOps), len(tOps), len(iw)), dtype=complex)
@@ -544,7 +739,7 @@ def calc_Greens_function_with_offdiag_cg(
     for block in blocks:
         for i_tOp, tOp in [(orb, tOps[orb]) for orb in block]:
             for s in basis.local_basis:
-                res = finite.applyOp_2(
+                res = finite.applyOp_new(
                     n_spin_orbitals,
                     tOps[i_tOp],
                     {s: 1},
@@ -554,11 +749,10 @@ def calc_Greens_function_with_offdiag_cg(
                 )
                 local_excited_basis |= res.keys()
     excited_basis = CIPSI_Basis(
-        ls=basis.ls,
+        impurity_orbitals=basis.impurity_orbitals,
         bath_states=basis.bath_states,
         initial_basis=local_excited_basis,
         restrictions=basis.restrictions,
-        num_spin_orbitals=basis.num_spin_orbitals,
         comm=basis.comm,
         verbose=verbose,
         truncation_threshold=basis.truncation_threshold,
@@ -571,7 +765,7 @@ def calc_Greens_function_with_offdiag_cg(
             local_excited_basis = set()
             t0 = time.perf_counter()
             for i_tOp, tOp in [(orb, tOps[orb]) for orb in block]:
-                v = finite.applyOp_2(
+                v = finite.applyOp_new(
                     n_spin_orbitals,
                     tOp,
                     {state: psi[state] for state in psi if state in basis.local_basis},
@@ -627,6 +821,9 @@ def get_block_Green_cg(
     verbose=True,
     dense_cutoff=1e3,
 ):
+    """
+    Calculate one block of the Greens function using the conjugate gradient method.
+    """
     matsubara = iws is not None
     realaxis = ws is not None
 
@@ -662,11 +859,10 @@ def get_block_Green_cg(
     if matsubara:
         gs_matsubara = np.zeros((len(iws), n, n), dtype=complex)
         local_basis = CIPSI_Basis(
-            ls=basis.ls,
+            impurity_orbitals=basis.impurity_orbitals,
             bath_states=basis.bath_states,
-            initial_basis=list(basis),
+            initial_basis=basis,
             restrictions=basis.restrictions,
-            num_spin_orbitals=basis.num_spin_orbitals,
             comm=None,
             verbose=verbose,
             truncation_threshold=basis.truncation_threshold,
@@ -735,40 +931,49 @@ def rotate_Greens_function(G, T):
     =======
     G' : NDArray - The rotated Greens function
     """
-    w_ind = np.argmax(G.shape)
-    return np.moveaxis(
-        np.conj(T.T)[np.newaxis, :, :] @ np.moveaxis(G, w_ind, 0) @ T[np.newaxis, :, :],
-        0,
-        w_ind,
-    )
+    return np.conj(T.T)[np.newaxis, :, :] @ G @ T[np.newaxis, :, :]
 
 
 def rotate_4index_U(U4, T):
+    """
+    Rotate the four index tensor, U4, using the matrix T.
+    Returns U4' = T^\daggerT^\dagger U4 TT
+    Parameters
+    ==========
+    U4 : NDArray - Tensor function to rotate
+    T : NDArray - Rotation matrix to use
+    Returns
+    =======
+    U4' : NDArray - The rotated tensor function
+    """
     return np.einsum("ij,kl, jlmo, mn, op", np.conj(T.T), np.conj(T.T), U4, T, T)
 
 
 def save_Greens_function(gs, omega_mesh, label, e_scale=1, tol=1e-8):
-    n_orb = gs.shape[0]
+    """
+    Save Greens function to file, using RSPt .dat format. Including offdiagonal elements.
+    """
+    n_orb = gs.shape[1]
     axis_label = "realaxis"
     if np.all(np.abs(np.imag(omega_mesh)) > 1e-6):
         omega_mesh = np.imag(omega_mesh)
         axis_label = "Matsubara"
 
     off_diags = []
-    for column in range(gs.shape[1]):
-        for row in range(gs.shape[0]):
+    for column in range(gs.shape[2]):
+        for row in range(gs.shape[1]):
             if row == column:
                 continue
-            if np.any(np.abs(gs[row, column, :]) > tol):
+            if np.any(np.abs(gs[:, row, column]) > tol):
                 off_diags.append((row, column))
 
     print(f"Writing {axis_label} {label} to files")
     with open(f"real-{axis_label}-{label}.dat", "w") as fg_real, open(f"imag-{axis_label}-{label}.dat", "w") as fg_imag:
-        header = "# 1 - Omega(Ry)  2 - Trace  3 - Spin down  4 - Spin up\n"
-        header += "# Individual matrix elements given in the matrix below:"
-        for row in range(gs.shape[0]):
+        header = "# Frequency, total, spin down, spin up\n"
+        header += "# indexmap: (column index of projected elements)"
+        for row in range(gs.shape[1]):
             header += "\n# "
-            for column in range(gs.shape[1]):
+            for column in range(gs.shape[2]):
                 if row == column:
                     header += f"{5 + row:< 4d}"
                 elif (row, column) in off_diags:
@@ -779,20 +984,20 @@ def save_Greens_function(gs, omega_mesh, label, e_scale=1, tol=1e-8):
         fg_imag.write(header + "\n")
         for i, w in enumerate(omega_mesh):
             fg_real.write(
-                f"{w*e_scale} {np.real(np.sum(np.diag(gs[:, :, i])))} "
-                + f"{np.real(np.sum(np.diag(gs[:n_orb//2, :n_orb//2, i])))} "
-                + f"{np.real(np.sum(np.diag(gs[n_orb//2:, n_orb//2:, i])))} "
-                + " ".join(f"{np.real(el)}" for el in np.diag(gs[:, :, i]))
+                f"{w*e_scale} {np.real(np.sum(np.diag(gs[i, :, :])))} "
+                + f"{np.real(np.sum(np.diag(gs[i, :n_orb//2, :n_orb//2])))} "
+                + f"{np.real(np.sum(np.diag(gs[i, n_orb//2:, n_orb//2:])))} "
+                + " ".join(f"{np.real(el)}" for el in np.diag(gs[i, :, :]))
                 + " "
-                + " ".join(f"{np.real(gs[row, column, i])}" for row, column in off_diags)
+                + " ".join(f"{np.real(gs[i, row, column])}" for row, column in off_diags)
                 + "\n"
             )
             fg_imag.write(
-                f"{w*e_scale} {np.imag(np.sum(np.diag(gs[:, :, i])))} "
-                + f"{np.imag(np.sum(np.diag(gs[:n_orb//2, :n_orb//2, i])))} "
-                + f"{np.imag(np.sum(np.diag(gs[n_orb//2:, n_orb//2:, i])))} "
-                + " ".join(f"{np.imag(el)}" for el in np.diag(gs[:, :, i]))
+                f"{w*e_scale} {np.imag(np.sum(np.diag(gs[i, :, :])))} "
+                + f"{np.imag(np.sum(np.diag(gs[i, :n_orb//2, :n_orb//2])))} "
+                + f"{np.imag(np.sum(np.diag(gs[i, n_orb//2:, n_orb//2:])))} "
+                + " ".join(f"{np.imag(el)}" for el in np.diag(gs[i, :, :]))
                 + " "
-                + " ".join(f"{np.imag(gs[row, column, i])}" for row, column in off_diags)
+                + " ".join(f"{np.imag(gs[i, row, column])}" for row, column in off_diags)
                 + "\n"
             )

@@ -16,6 +16,7 @@ from impurityModel.ed import finite
 from impurityModel.ed.lanczos import Reort
 from impurityModel.ed.greens_function import rotate_Greens_function, rotate_matrix, rotate_4index_U
 from impurityModel.ed.manybody_basis import CIPSI_Basis
+from impurityModel.ed.selfenergy import fixed_peak_dc
 
 
 def matrix_print(matrix):
@@ -29,7 +30,6 @@ class ImpModCluster:
         h_dft,
         hyb,
         u4,
-        slater,
         nominal_occ,
         delta_occ,
         n_bath_states,
@@ -37,8 +37,8 @@ class ImpModCluster:
         sig_real,
         sig_static,
         sig_dc,
-        corr_to_cf,
         corr_to_spherical,
+        corr_to_cf,
         blocked,
         spin_flip_dj,
     ):
@@ -46,7 +46,6 @@ class ImpModCluster:
         self.h_dft = h_dft
         self.u4 = u4
         self.hyb = hyb
-        self.slater = slater
         self.bath_states = n_bath_states
         self.nominal_occ = nominal_occ
         self.delta_occ = delta_occ
@@ -54,10 +53,11 @@ class ImpModCluster:
         self.sig_real = sig_real
         self.sig_static = sig_static
         self.sig_dc = sig_dc
-        self.corr_to_cf = corr_to_cf
         self.corr_to_spherical = corr_to_spherical
+        self.corr_to_cf = corr_to_cf
         self.spin_flip_dj = spin_flip_dj
 
+        valence_baths, conduction_baths = self.bath_states
         if blocked:
             self.blocks = hf.get_block_structure(
                 self.hyb,
@@ -95,23 +95,23 @@ class dcStruct:
         self,
         nominal_occ,
         delta_occ,
-        num_spin_orbitals,
+        impurity_orbitals,
         bath_states,
         u4,
-        slater_params,
         peak_position,
         dc_guess,
         spin_flip_dj,
+        tau,
     ):
         self.nominal_occ = nominal_occ
         self.delta_occ = delta_occ
-        self.num_spin_orbitals = num_spin_orbitals
+        self.impurity_orbitals = impurity_orbitals
         self.bath_states = bath_states
         self.u4 = u4
-        self.slater_params = slater_params
         self.peak_position = peak_position
         self.dc_guess = dc_guess
         self.spin_flip_dj = spin_flip_dj
+        self.tau = tau
 
     def __repr__(self):
         return (
@@ -119,7 +119,6 @@ class dcStruct:
             f"          delta_occ = {self.delta_occ},\n"
             f"          num_spin_orbitals = {self.num_spin_orbitals},\n"
             f"          bath_states = {self.bath_states},\n"
-            f"          slater_params = {self.slater_params},\n"
             f"          peak_position = {self.peak_position})"
             f"          dc_guess = {self.dc_guess})"
         )
@@ -202,7 +201,6 @@ def run_impmod_ed(
     rspt_solver_line,
     rspt_dc_line,
     rspt_dc_flag,
-    rspt_slater,
     rspt_u4,
     rspt_hyb,
     rspt_h_dft,
@@ -212,20 +210,19 @@ def run_impmod_ed(
     rspt_sig_dc,
     rspt_iw,
     rspt_w,
+    rspt_corr_to_spherical,
     rspt_corr_to_cf,
-    rspt_rot_spherical,
     n_orb,
+    n_rot_cols,
+    n_orb_full,
     n_iw,
     n_w,
-    n_rot_cols,
     eim,
     tau,
     verbosity,
     size_real,
     size_complex,
 ):
-    from mpi4py import MPI
-
     comm = MPI.COMM_WORLD
     rank = comm.rank
 
@@ -267,43 +264,49 @@ def run_impmod_ed(
     sig_dc = np.ndarray(
         buffer=ffi.buffer(rspt_sig_dc, n_orb * n_orb * size_complex), shape=(n_orb, n_orb), order="F", dtype=complex
     )
-    rspt_rot_spherical_arr = np.ndarray(
-        buffer=ffi.buffer(rspt_rot_spherical, n_orb * n_rot_cols * size_complex),
-        shape=(n_orb, n_rot_cols),
+    rspt_corr_to_spherical_arr = np.ndarray(
+        buffer=ffi.buffer(rspt_corr_to_spherical, n_orb * n_orb_full * size_complex),
+        shape=(n_orb, n_orb_full),
         order="F",
         dtype=complex,
     )
     rspt_corr_to_cf_arr = np.ndarray(
-        buffer=ffi.buffer(rspt_corr_to_cf, n_orb * n_orb * size_complex),
+        buffer=ffi.buffer(rspt_corr_to_cf, n_orb * n_rot_cols * size_complex),
         shape=(n_orb, n_rot_cols),
         order="F",
         dtype=complex,
     )
-    slater_from_rspt = np.ndarray(buffer=ffi.buffer(rspt_slater, 4 * size_real), shape=(4,), dtype=float)
+    # slater_from_rspt = np.ndarray(buffer=ffi.buffer(rspt_slater, 4 * size_real), shape=(4,), dtype=float)
 
-    if n_rot_cols == n_orb:
+    if n_rot_cols == n_orb_full and n_orb == n_orb_full:
+        corr_to_spherical = rspt_corr_to_spherical_arr
         corr_to_cf = rspt_corr_to_cf_arr
-        corr_to_spherical = rspt_rot_spherical_arr
     else:
+        corr_to_spherical = np.empty((n_orb, 2 * n_orb_full), dtype=complex)
         corr_to_cf = np.empty((n_orb, n_orb), dtype=complex)
+        corr_to_spherical[:, :n_orb_full] = rspt_corr_to_spherical_arr
+        corr_to_spherical[:, n_orb_full:] = np.roll(rspt_corr_to_spherical_arr, n_orb_full, axis=0)
         corr_to_cf[:, :n_rot_cols] = rspt_corr_to_cf_arr
         corr_to_cf[:, n_rot_cols:] = np.roll(rspt_corr_to_cf_arr, n_rot_cols, axis=0)
-        corr_to_spherical = np.empty((n_orb, n_orb), dtype=complex)
-        corr_to_spherical[:, :n_rot_cols] = rspt_rot_spherical_arr
-        corr_to_spherical[:, n_rot_cols:] = np.roll(rspt_rot_spherical_arr, n_rot_cols, axis=0)
     # Rotate the U-matrix to the CF basis
     u4 = rotate_4index_U(u4, corr_to_cf)
     # impurityModel uses a weird convention for the U-matrix
     u4 = np.moveaxis(u4, 1, 0)
+
+    # For python, it makes more sense to put the frequency index first, instead of last
+    sig_python = np.moveaxis(sig, -1, 0)
+    sig_real_python = np.moveaxis(sig_real, -1, 0)
+    hyb = np.moveaxis(hyb, -1, 0)
+
     # Rotate hybridization function and DFT hamiltonian to the CF basis
     hyb = rotate_Greens_function(hyb, corr_to_cf)
     h_dft = rotate_matrix(h_dft, corr_to_cf)
 
-    l = (n_orb // 2 - 1) // 2
+    # l = (n_orb // 2 - 1) // 2
 
-    slater = [0] * (2 * l + 1)
-    for i in range(l + 1):
-        slater[2 * i] = slater_from_rspt[i]
+    # slater = [0] * (2 * l + 1)
+    # for i in range(l + 1):
+    #     slater[2 * i] = slater_from_rspt[i]
 
     stdout_save = sys.stdout
     if rank == 0:
@@ -324,8 +327,10 @@ def run_impmod_ed(
         weight,
         spin_flip_dj,
     ) = parse_solver_line(solver_line)
-    nominal_occ = ({l: nominal_occ[0]}, {l: nominal_occ[1]}, {l: nominal_occ[2]})
-    delta_occ = ({l: delta_occ[0]}, {l: delta_occ[1]}, {l: delta_occ[2]})
+    nominal_occ = ({0: nominal_occ[0]}, {0: nominal_occ[1]}, {0: nominal_occ[2]})
+    delta_occ = ({0: delta_occ[0]}, {0: delta_occ[1]}, {0: delta_occ[2]})
+    if any(n0 > n_orb for n0 in nominal_occ[0].values()) or any(n0 < 0 for n0 in nominal_occ[0].values()):
+        raise RuntimeError(f"Nominal impurity occupation {nominal_occ[0]} out of bounds [0, {n_orb}]")
 
     h_op, e_baths = get_ed_h0(
         h_dft,
@@ -350,8 +355,8 @@ def run_impmod_ed(
     h_op = comm.bcast(h_op, root=0)
     e_baths = comm.bcast(e_baths, root=0)
 
-    n_bath_states = ({l: len(e_baths[e_baths <= 0])}, {l: len(e_baths[e_baths > 0])})
-    nominal_occ = (nominal_occ[0], {l: len(e_baths[e_baths <= 0])}, nominal_occ[2])
+    n_bath_states = ({0: len(e_baths[e_baths <= 0])}, {0: len(e_baths[e_baths > 0])})
+    nominal_occ = (nominal_occ[0], {0: len(e_baths[e_baths <= 0])}, nominal_occ[2])
 
     if rspt_dc_flag == 1:
         dc_line = ffi.string(rspt_dc_line, 100).decode("ascii")
@@ -364,13 +369,13 @@ def run_impmod_ed(
         dc_struct = dcStruct(
             nominal_occ=nominal_occ,
             delta_occ=delta_occ,
-            num_spin_orbitals=n_orb + len(e_baths),
-            bath_states=({l: sum(e_baths < 0)}, {l: sum(e_baths >= 0)}),
+            impurity_orbitals={0: n_orb},
+            bath_states=({0: sum(e_baths < 0)}, {0: sum(e_baths >= 0)}),
             u4=u4,
-            slater_params=slater,
             peak_position=peak_position,
-            dc_guess=sig_dc[0, 0],
+            dc_guess=sig_dc,
             spin_flip_dj=spin_flip_dj,
+            tau=tau,
         )
 
         try:
@@ -395,16 +400,15 @@ def run_impmod_ed(
         h_dft=h_dft,
         hyb=hyb,
         u4=u4,
-        slater=slater,
         n_bath_states=n_bath_states,
         nominal_occ=nominal_occ,
         delta_occ=delta_occ,
-        sig=sig,
-        sig_real=sig_real,
+        sig=sig_python,
+        sig_real=sig_real_python,
         sig_static=sig_static,
         sig_dc=sig_dc,
-        corr_to_cf=corr_to_cf,
         corr_to_spherical=corr_to_spherical,
+        corr_to_cf=corr_to_cf,
         blocked=blocked,
         spin_flip_dj=spin_flip_dj,
     )
@@ -413,7 +417,16 @@ def run_impmod_ed(
 
     try:
         selfenergy.run(
-            cluster, h_op, 1j * iw, w, eim, tau, verbosity if rank == 0 else 0, reort=reort, dense_cutoff=dense_cutoff
+            cluster,
+            h_op,
+            1j * iw,
+            w,
+            eim,
+            tau,
+            verbosity if rank == 0 else 0,
+            reort=reort,
+            dense_cutoff=dense_cutoff,
+            comm=comm,
         )
 
         # Rotate self energy from CF basis to RSPt's corr basis
@@ -421,13 +434,17 @@ def run_impmod_ed(
         cluster.sig[:, :, :] = rotate_Greens_function(cluster.sig, u)
         cluster.sig_real[:, :, :] = rotate_Greens_function(cluster.sig_real, u)
         cluster.sig_static[:, :] = rotate_matrix(cluster.sig_static, u)
+
+        comm.Bcast(sig_static, root=0)
+        comm.Bcast(sig_real, root=0)
+        comm.Bcast(sig, root=0)
         er = 0
     except Exception as e:
         print("!" * 100)
         print(f"Exception {repr(e)} caught on rank {rank}!")
         print(traceback.format_exc())
         print(
-            "Adding positive infinity to the imaginaty part of the selfenergy at the last matsubara frequency.",
+            "Adding positive infinity to the imaginary part of the selfenergy at the last matsubara frequency.",
             flush=True,
         )
         print("!" * 100)
@@ -441,109 +458,6 @@ def run_impmod_ed(
     sys.stdout.close()
     sys.stdout = stdout_save
     return er
-
-
-def fixed_peak_dc(h0_op, dc_struct, rank, verbose, dense_cutoff):
-    N0 = dc_struct.nominal_occ
-    delta_impurity_occ, delta_valence_occ, delta_conduction_occ = dc_struct.delta_occ
-    peak_position = dc_struct.peak_position
-    num_valence_bath_states, num_conduction_bath_states = dc_struct.bath_states
-    sum_bath_states = {l: num_valence_bath_states[l] + num_conduction_bath_states[l] for l in num_valence_bath_states}
-    l = list(lv for lv in N0[0])[0]
-    u = finite.getUop_from_rspt_u4(dc_struct.u4)
-
-    Np = ({l: N0[0][l] + 1 for l in N0[0]}, N0[1], N0[2])
-    Nm = ({l: N0[0][l] - 1 for l in N0[0]}, N0[1], N0[2])
-    if peak_position >= 0:
-        basis_upper = CIPSI_Basis(
-            ls=list(N0[0].keys()),
-            valence_baths=num_valence_bath_states,
-            conduction_baths=num_conduction_bath_states,
-            delta_valence_occ=delta_valence_occ,
-            delta_conduction_occ=delta_conduction_occ,
-            delta_impurity_occ=delta_impurity_occ,
-            nominal_impurity_occ=Np[0],
-            truncation_threshold=1e9,
-            verbose=False and verbose,
-            comm=MPI.COMM_WORLD,
-            spin_flip_dj=dc_struct.spin_flip_dj,
-        )
-        basis_lower = CIPSI_Basis(
-            ls=list(N0[0].keys()),
-            valence_baths=num_valence_bath_states,
-            conduction_baths=num_conduction_bath_states,
-            delta_valence_occ=delta_valence_occ,
-            delta_conduction_occ=delta_conduction_occ,
-            delta_impurity_occ=delta_impurity_occ,
-            nominal_impurity_occ=N0[0],
-            truncation_threshold=1e9,
-            verbose=False and verbose,
-            comm=MPI.COMM_WORLD,
-            spin_flip_dj=dc_struct.spin_flip_dj,
-        )
-    else:
-        basis_upper = CIPSI_Basis(
-            ls=list(N0[0].keys()),
-            valence_baths=num_valence_bath_states,
-            conduction_baths=num_conduction_bath_states,
-            delta_valence_occ=delta_valence_occ,
-            delta_conduction_occ=delta_conduction_occ,
-            delta_impurity_occ=delta_impurity_occ,
-            nominal_impurity_occ=N0[0],
-            truncation_threshold=1e9,
-            verbose=False and verbose,
-            comm=MPI.COMM_WORLD,
-            spin_flip_dj=dc_struct.spin_flip_dj,
-        )
-        basis_lower = CIPSI_Basis(
-            ls=list(N0[0].keys()),
-            valence_baths=num_valence_bath_states,
-            conduction_baths=num_conduction_bath_states,
-            delta_valence_occ=delta_valence_occ,
-            delta_conduction_occ=delta_conduction_occ,
-            delta_impurity_occ=delta_impurity_occ,
-            nominal_impurity_occ=Nm[0],
-            truncation_threshold=1e9,
-            verbose=False and verbose,
-            comm=MPI.COMM_WORLD,
-            spin_flip_dj=dc_struct.spin_flip_dj,
-        )
-
-    def F(dc_trial):
-        bu = basis_upper.copy()
-        bl = basis_lower.copy()
-        dc_op = {(((l, s, m), "c"), ((l, s, m), "a")): -dc_trial for m in range(-l, l + 1) for s in range(2)}
-        h_op_c = finite.addOps([h0_op, u, dc_op])
-        h_op_i = finite.c2i_op(sum_bath_states, h_op_c)
-        h_dict = bu.expand(h_op_i, dense_cutoff=dense_cutoff, de2_min=1e-6)
-        h = bu.build_sparse_matrix(h_op_i, h_dict) if bu.size > dense_cutoff else bu.build_dense_matrix(h_op_i, h_dict)
-        e_upper = finite.eigensystem_new(
-            h,
-            e_max=0,
-            k=1,
-            eigenValueTol=1e-6,
-            return_eigvecs=False,
-        )
-        h_dict = bl.expand(h_op_i, dense_cutoff=dense_cutoff, de2_min=1e-6)
-        h = bl.build_sparse_matrix(h_op_i, h_dict) if bl.size > dense_cutoff else bl.build_dense_matrix(h_op_i, h_dict)
-        e_lower = finite.eigensystem_new(
-            h,
-            e_max=0,
-            k=1,
-            eigenValueTol=1e-6,
-            return_eigvecs=False,
-        )
-        return e_upper[0] - e_lower[0] - peak_position
-
-    # res = sp.optimize.root_scalar(F, x0=dc_struct.dc_guess)
-    # dc = res.root
-    dc = sp.optimize.newton(F, x0=np.real(dc_struct.dc_guess))
-    if verbose:
-        print(f"Peak position {dc_struct.peak_position}")
-        print(f"DC guess {dc_struct.dc_guess}")
-        print(f"dc found : {dc}")
-
-    return dc * np.identity(2 * (2 * l + 1), dtype=complex)
 
 
 def get_ed_h0(
@@ -589,9 +503,9 @@ def get_ed_h0(
     eb   -- The bath states used for fitting the hybridization function.
     """
 
-    if comm.rank == 0:
-        with open(f"hyb-in-{label}.npy", "wb") as f:
-            np.save(f, hyb)
+    # if comm.rank == 0:
+    #     with open(f"hyb-in-{label}.npy", "wb") as f:
+    #         np.save(f, hyb)
 
     if comm.rank == 0:
         try:
@@ -619,12 +533,13 @@ def get_ed_h0(
             hyb,
             bath_states_per_orbital,
             gamma=gamma,
-            exp_weight=exp_weight,
             imag_only=imag_only,
             x_lim=(w[0], 0 if valence_bath_only else w[-1]),
             verbose=verbose,
             comm=comm,
-            new_v=True,
+            weight_param=exp_weight,
+            w0=0,
+            weight_function_name="Gaussian",
         )
         sort_indices = np.argsort(eb, kind="stable")
         eb = eb[sort_indices]
@@ -639,7 +554,7 @@ def get_ed_h0(
                 np.save(f, eb)
                 np.save(f, v)
     if verbose:
-        fit_hyb = offdiagonal.get_hyb(w + eim * 1j, eb, v)
+        fit_hyb = np.moveaxis(offdiagonal.get_hyb(w + eim * 1j, eb, v), -1, 0)
         save_Greens_function(rotate_Greens_function(fit_hyb, np.conj(corr_to_cf.T)), w, f"{label}-hyb-fit")
 
     if verbose:
@@ -670,5 +585,6 @@ def get_ed_h0(
                 for j in range(h_tmp.shape[1]):
                     f.write(f" 0 0 0 {i+1} {j+1} {np.real(h_tmp[i, j])} {np.imag(h_tmp[i, j])}\n")
 
-    h_op = h2imp.get_H_operator_from_dense_rspt_H_matrix(h, ang=(n_orb // 2 - 1) // 2)
+    # h_op = h2imp.get_H_operator_from_dense_rspt_H_matrix(h, ang=(n_orb // 2 - 1) // 2)
+    h_op = finite.matrixToIOp(h)
     return h_op, eb

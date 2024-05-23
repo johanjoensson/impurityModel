@@ -351,7 +351,7 @@ def test_contains_random(n_bytes, n_states):
     too_large_state[-1] += 1
     assert all(basis.contains(states))
     assert too_large_state.tobytes() not in basis
-    assert not basis.contains(states + [too_large_state.tobytes()])[-1]
+    assert not list(basis.contains(states + [too_large_state.tobytes()]))[-1]
     assert all(si == i for si, i in enumerate(sorted_indices))
     for i in range(len(sorted_states)):
         assert basis.index(sorted_states[i]) == i
@@ -386,7 +386,7 @@ def test_contains_random_distributed(n_bytes, n_states):
     too_large_state[-1] += 1
     assert all(basis.contains(states))
     assert too_large_state.tobytes() not in basis
-    assert not basis.contains(states + [too_large_state.tobytes()])[-1]
+    assert not list(basis.contains(states + [too_large_state.tobytes()]))[-1]
     sorted_indices = basis.index(sorted_states)
     assert all(si == i for i, si in enumerate(sorted_indices))
     for i in range(len(sorted_states)):
@@ -453,7 +453,7 @@ def test_index_random_distributed_random(n_bytes, n_states, n_sample_states):
     sample_bytes = np.random.randint(0, high=255, size=n_sample_states * n_bytes, dtype=np.ubyte)
     sample_states = [i.tobytes() for i in np.split(sample_bytes, n_sample_states)]
     correct_indices = [all_states.index(state) for state in sample_states if state in all_states]
-    basis_mask = basis.contains(sample_states)
+    basis_mask = list(basis.contains(sample_states))
     samples_in_basis = [sample_states[i] for i in range(len(sample_states)) if basis_mask[i]]
     basis_indices = basis.index(samples_in_basis)
     assert all(bi == ci for bi, ci in zip(basis_indices, correct_indices))
@@ -1022,10 +1022,10 @@ def test_alltoall_states_with_empty_mpi():
     basis = Basis(
         ls=[], bath_states=({}, {}), initial_basis=[], num_spin_orbitals=num_spin_orbitals, verbose=True, comm=comm
     )
-    basis.add_states([comm.rank.to_bytes(bytes_per_state, "big")], distributed_sort=False)
+    basis.add_states([comm.rank.to_bytes(bytes_per_state, "big")])
     received_states = basis.alltoall_states(send_states)
     assert all(
-        state == comm.rank.to_bytes(bytes_per_state, "big") for rs in received_states for state in rs
+        state == comm.rank.to_bytes(bytes_per_state, "big") for rs in received_states for state in list(rs)
     ), f"{comm.rank=} {received_states=} {basis.local_basis=}"
 
 
@@ -1173,7 +1173,7 @@ def test_eg_t2g_CIPSI_basis_expand_mpi():
 
 @pytest.mark.mpi
 def test_distributed_simple_vector():
-    states = [b"\x00\x1a\x2b", b"\xff\x00\x1a"]
+    states = (b"\x00\x1a\x2b", b"\xff\x00\x1a")
     basis = Basis(
         ls=[], bath_states=({}, {}), initial_basis=states, num_spin_orbitals=24, verbose=True, comm=MPI.COMM_WORLD
     )
