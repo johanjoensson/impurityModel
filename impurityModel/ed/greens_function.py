@@ -253,7 +253,6 @@ def calc_Greens_function_with_offdiag(
     """
     comm = basis.comm
     n = len(tOps)
-    # excited_restrictions = None
     excited_restrictions = basis.build_excited_restrictions(imp_change=(1, 1), val_change=(1, 0), con_change=(0, 1))
 
     t_mems = [{} for _ in tOps]
