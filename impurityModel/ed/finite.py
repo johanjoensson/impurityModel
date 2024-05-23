@@ -156,6 +156,8 @@ def eigensystem_new(
 
     t0 = time.perf_counter()
     if isinstance(h_local, np.ndarray):
+        if h_local.shape[0] == 0:
+            return np.zeros((0,), dtype=float), np.zeros((0, 0), dtype=h_local.dtype)
         if comm.rank == 0:
             es, vecs = np.linalg.eigh(h_local, UPLO="L")
         else:
@@ -220,14 +222,15 @@ def eigensystem_new(
 
     # the scipy eigsh function does not guarantee that degenerate eigenvalues get orthogonal eigenvectors.
     # So we do a qr decomposition of all nearly degenerate eigenvectors.
-    e_diff = np.diff(es[: sum(mask)])
-    group_breaks = np.argwhere(np.abs(e_diff) > 1e-10) + 1
-    group_breaks = np.append([0], group_breaks)
-    group_breaks = np.append(group_breaks, [sum(mask)])
-    for i in range(1, len(group_breaks)):
-        start = group_breaks[i - 1]
-        stop = group_breaks[i]
-        vecs[:, start:stop], _ = qr(vecs[:, start:stop], mode="economic", overwrite_a=True, check_finite=False)
+    # e_diff = np.diff(es[: sum(mask)])
+    # group_breaks = np.argwhere(np.abs(e_diff) > 1e-8) + 1
+    # group_breaks = np.append([0], group_breaks)
+    # group_breaks = np.append(group_breaks, [sum(mask)])
+    # for i in range(1, len(group_breaks)):
+    #     start = group_breaks[i - 1]
+    #     stop = group_breaks[i]
+    #     vecs[:, start:stop], _ = qr(vecs[:, start:stop], mode="economic", overwrite_a=True, check_finite=False)
+    vecs[:, : sum(mask)], _ = qr(vecs[:, : sum(mask)], mode="economic", overwrite_a=True, check_finite=False)
 
     t0 = time.perf_counter() - t0
 
