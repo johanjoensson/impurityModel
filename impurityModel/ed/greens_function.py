@@ -289,7 +289,7 @@ def calc_Greens_function_with_offdiag(
                 tOp,
                 psi,
                 slaterWeightMin=0,
-                restrictions=basis.restrictions,
+                restrictions=eigen_basis.restrictions,
                 opResult=t_mems[i_tOp],
             )
             local_excited_basis |= v.keys()
@@ -348,8 +348,8 @@ def calc_Greens_function_with_offdiag(
             gs_matsubara_block = np.sum(gs_matsubara_received, axis=0)
         if w is not None:
             gs_realaxis_block = np.sum(gs_realaxis_received, axis=0)
-    # if len(requests) > 0:
-    #     requests[-1].Waitall(requests)
+    if len(requests) > 0:
+        requests[-1].Waitall(requests)
     return gs_matsubara_block, gs_realaxis_block
 
 
@@ -533,17 +533,18 @@ def block_Green(
         # Do a QR decomposition of the starting block.
         # Later on, use r to restore the block corresponding to
         psi0, r = sp.linalg.qr(psi0, mode="economic", overwrite_a=True, check_finite=False, pivoting=False)
-        psi0 = np.array(psi0, order="C")
+        psi0 = psi0.copy(order="C")
         # Find which columns (if any) are 0 in psi0_0
         rows, columns = psi0.shape
     rows = comm.bcast(rows if comm.rank == 0 else None, root=0)
     columns = comm.bcast(columns if comm.rank == 0 else None, root=0)
+    print(f"{psi_start.shape=} {rows=} {columns=}", flush=True)
     if rows == 0 or columns == 0:
         return np.zeros((len(iws), n, n), dtype=complex), np.zeros((len(ws), n, n), dtype=complex)
     # psi_start = np.empty((len(basis.local_basis), columns), dtype=complex)
     comm.Scatterv(
         (psi0, counts * columns // n, offsets * columns // n, MPI.C_DOUBLE_COMPLEX) if comm.rank == 0 else None,
-        psi_start[:, :columns],
+        psi_start.T,
         root=0,
     )
     psi = [{} for _ in range(columns)]
@@ -567,6 +568,9 @@ def block_Green(
     n_samples = max(len(conv_w) // 50, min(len(conv_w), 10))
 
     def converged(alphas, betas):
+        if np.any(np.linalg.norm(betas[-1], axis=1) < np.sqrt(np.finfo(float).eps)):
+            return True
+
         if alphas.shape[0] == 1:
             return False
 
@@ -589,7 +593,8 @@ def block_Green(
         for alpha, beta in zip(alphas[-3::-1], betas[-3::-1]):
             gs_new = wIs - alpha - np.conj(beta.T)[np.newaxis, :, :] @ np.linalg.solve(gs_new, beta[np.newaxis, :, :])
             gs_prev = wIs - alpha - np.conj(beta.T)[np.newaxis, :, :] @ np.linalg.solve(gs_prev, beta[np.newaxis, :, :])
-        return np.all(np.abs(gs_new - gs_prev) < max(slaterWeightMin, 1e-12))
+        print(rf"δ = {np.max(np.abs(gs_new - gs_prev))}", flush=True)
+        return np.all(np.abs(gs_new - gs_prev) < max(slaterWeightMin, 1e-8))
 
     t0 = time.perf_counter()
     # Run Lanczos on psi0^T* [wI - j*delta - H]^-1 psi0
@@ -601,6 +606,7 @@ def block_Green(
         h_mem=h_mem,
         verbose=verbose,
         slaterWeightMin=slaterWeightMin,
+        reort=reort,
     )
     if verbose:
         print(f"time(block_lanczos) = {time.perf_counter() - t0: .4f} seconds.", flush=True)
