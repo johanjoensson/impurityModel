@@ -3,6 +3,7 @@ import itertools
 import time
 import argparse
 
+import h5py as h5
 from mpi4py import MPI
 import numpy as np
 import scipy as sp
@@ -177,6 +178,36 @@ def matrix_print(matrix: np.ndarray, label: str = None) -> None:
     print(ms)
 
 
+def calc_occ_e(
+    h_op, N0, N_imp, N_val, N_con, delta_imp, delta_val, delta_con, spin_flip_dj, dense_cutoff, comm, verbose
+):
+    basis = CIPSI_Basis(
+        impurity_orbitals=N_imp,
+        H=h_op,
+        valence_baths=N_val,
+        conduction_baths=N_con,
+        delta_impurity_occ=delta_imp,
+        delta_valence_occ=delta_val,
+        delta_conduction_occ=delta_con,
+        nominal_impurity_occ=N0,
+        truncation_threshold=1e9,
+        verbose=verbose,
+        spin_flip_dj=spin_flip_dj,
+        comm=comm,
+    )
+    h_dict = basis.expand(h_op, dense_cutoff=dense_cutoff, de2_min=1e-4)
+    h = basis.build_sparse_matrix(h_op, h_dict) if basis.size > dense_cutoff else basis.build_dense_matrix(h_op, h_dict)
+
+    e_trial = finite.eigensystem_new(
+        h,
+        e_max=0,
+        k=5,
+        eigenValueTol=0,
+        return_eigvecs=False,
+    )
+    return e_trial[0], basis, h_dict
+
+
 def find_gs(h_op, N0, delta_occ, bath_states, num_impurity_orbitals, rank, verbose, dense_cutoff, spin_flip_dj, comm):
     """
     Find the occupation corresponding to the lowest energy, compare N0 - 1, N0 and N0 + 1
@@ -190,56 +221,50 @@ def find_gs(h_op, N0, delta_occ, bath_states, num_impurity_orbitals, rank, verbo
     e_gs = np.inf
     basis_gs = None
     gs_impurity_occ = None
-    selected = 1
-    energies = []
-    # set up for N0 +- 1, 0
-    dN = [-1, 0, 1]
-    for i, d in enumerate(dN):
-        basis = CIPSI_Basis(
-            impurity_orbitals=num_impurity_orbitals,
-            H=h_op,
-            valence_baths=num_val_baths,
-            conduction_baths=num_cond_baths,
-            delta_valence_occ=delta_val_occ,
-            delta_conduction_occ=delta_con_occ,
-            delta_impurity_occ=delta_imp_occ,
-            nominal_impurity_occ={l: N0[0][l] + d for l in N0[0]},
-            truncation_threshold=1e9,
-            verbose=False and verbose,
-            spin_flip_dj=spin_flip_dj,
+    for dN in [0, -1, 1]:
+        e_trial, basis, h_dict = calc_occ_e(
+            h_op,
+            {i: N0[0][i] + dN for i in N0[0]},
+            num_impurity_orbitals,
+            num_val_baths,
+            num_cond_baths,
+            delta_imp_occ,
+            delta_val_occ,
+            delta_con_occ,
+            spin_flip_dj,
+            dense_cutoff,
             comm=comm,
+            verbose=False,
         )
-        if verbose:
-            print(f"Before expansion basis contains {basis.size} elements")
-        h_dict = basis.expand(h_op, dense_cutoff=dense_cutoff, de2_min=1e-4)
-        h = (
-            basis.build_sparse_matrix(h_op, h_dict)
-            if basis.size > dense_cutoff
-            else basis.build_dense_matrix(h_op, h_dict)
-        )
-
-        e_trial = finite.eigensystem_new(
-            h,
-            e_max=0,
-            k=1,
-            eigenValueTol=0,
-            return_eigvecs=False,
-        )
-        energies.append(e_trial[0])
-        if e_trial[0] < e_gs:
-            e_gs = e_trial[0]
-            basis_gs = basis.copy()
+        if e_trial < e_gs:
+            e_gs = e_trial
+            basis_gs = basis
             h_dict_gs = h_dict
-            gs_impurity_occ = {l: N0[0][l] + d for l in N0[0]}
-            selected = i
-    underline = {0: " ", 1: " ", 2: " "}
-    underline[selected] = "="
+            dN_gs = dN
+            gs_impurity_occ = {i: N0[0][i] + dN for i in N0[0]}
+    while dN_gs != 0:
+        e_trial, basis, h_dict = calc_occ_e(
+            h_op,
+            {i: gs_impurity_occ[i] + dN_gs for i in gs_impurity_occ},
+            num_impurity_orbitals,
+            num_val_baths,
+            num_cond_baths,
+            delta_imp_occ,
+            delta_val_occ,
+            delta_con_occ,
+            spin_flip_dj,
+            dense_cutoff,
+            comm=comm,
+            verbose=False,
+        )
+        if e_trial >= e_gs:
+            break
+        e_gs = e_trial
+        basis_gs = basis
+        h_dict_gs = h_dict
+        gs_impurity_occ = {i: gs_impurity_occ[i] + dN_gs for i in gs_impurity_occ}
     if verbose:
-        l = [l for l in N0[0]][0]
-        print(f"N0:    {N0[0][l] - 1: ^10d}  {N0[0][l]: ^10d}  {N0[0][l] + 1: ^10d}")
-        print(f"E0:    {energies[0]: ^10.6f}  {energies[1]: ^10.6f}  {energies[2]: ^10.6f}")
-        print(f"       {underline[0]*10}  {underline[1]*10}  {underline[2]*10}")
-
+        print(f"Nominal GS occupation; impurity: {gs_impurity_occ}, valence: {N0[1]}, conduction: {N0[2]}")
     return (gs_impurity_occ, N0[1], N0[2]), basis_gs, h_dict_gs
 
 
@@ -326,9 +351,6 @@ def calc_selfenergy(
     # construct local, interacting, hamiltonian
     u = finite.getUop_from_rspt_u4(u4)
     h = finite.addOps([h0, u])
-    # if verbosity >= 2:
-    #     print(f"Local Hamiltonian\n{h}")
-    #     finite.printOp(sum_bath_states, h, "Local Hamiltonian: ")
 
     (n0_imp, n0_val, n0_con), basis, h_dict = find_gs(
         h,
@@ -345,25 +367,18 @@ def calc_selfenergy(
     delta_imp_occ, delta_val_occ, delta_con_occ = delta_occ
     restrictions = basis.restrictions
 
-    if verbosity >= 1:
-        print("Nominal occupation ({l: n0})")
-        print("N0, valence, conduction")
-        print(f"{n0_imp}, {n0_val}, {n0_con}")
     if restrictions is not None and verbosity >= 2:
         print("Restrictions on occupation")
         for key, res in restrictions.items():
             print(f"---> {key} : {res}")
-    if verbosity >= 1:
-        print("{:d} processes in the Hamiltonian.".format(len(h)))
-        print("Create basis...")
-        print("#basis states = {:d}".format(len(basis)))
 
     energy_cut = -tau * np.log(1e-4)
 
     basis.tau = tau
     h_dict = basis.expand(h, H_dict=h_dict, dense_cutoff=dense_cutoff, de2_min=1e-12)
     if verbosity >= 1:
-        print(f"Ground state basis contains {len(basis)} elsements.")
+        print(f"{len(h)} processes in the Hamiltonian.")
+        print(f"#basis states = {len(basis)}")
     if basis.size <= dense_cutoff:
         h_gs = basis.build_dense_matrix(h, h_dict)
     else:
@@ -374,31 +389,17 @@ def calc_selfenergy(
         k=n_imp_orbs,
         eigenValueTol=0,
     )
-    psis = basis.build_state(psis_dense.T, slaterWeightMin=np.finfo(float).eps ** 2)
+    psis = basis.build_state(psis_dense.T, slaterWeightMin=0)
     basis.clear()
     basis.add_states(set(state for psi in psis for state in psi))
-    n_imp = sum(ni for ni in basis.impurity_orbitals.values())
-    n_val = sum(nv for nv in basis.bath_states[0].values())
-    impurity_indices = range(0, n_imp)
-    valence_indices = range(n_imp, n_imp + n_val)
-    conduction_indices = range(n_imp + n_val, basis.num_spin_orbitals)
-    gs_stats = [
-        state_statistics(psi, impurity_indices, valence_indices, conduction_indices, basis.num_spin_orbitals)
-        for psi in psis
-    ]
+    gs_stats = basis.get_state_statistics(psis)
     all_psis = comm.gather(psis)
-    all_gs_stats = comm.gather(gs_stats)
+    local_psis = [{} for _ in psis]
     if rank == 0:
-        local_psis = [{} for _ in psis]
         for psis_r in all_psis:
             for i in range(len(local_psis)):
                 for state in psis_r[i]:
                     local_psis[i][state] = psis_r[i][state] + local_psis[i].get(state, 0)
-        gs_stats = [{} for _ in psis]
-        for psi_stats in all_gs_stats:
-            for i, psi_stat in enumerate(psi_stats):
-                for key in psi_stat:
-                    gs_stats[i][key] = psi_stat[key] + gs_stats[i].get(key, 0)
     if verbosity >= 1:
         finite.printThermalExpValues_new(
             {i: n_imp_orbs for i in num_val_baths}, sum_bath_states, es, local_psis, tau, rot_to_spherical
@@ -407,7 +408,6 @@ def calc_selfenergy(
         print("Ground state occupation statistics:")
         for psi_stats in gs_stats:
             print(f"{psi_stats}")
-    comm.barrier()
 
     excited_restrictions = basis.build_excited_restrictions()
     if verbosity >= 1:
@@ -492,19 +492,32 @@ def calc_selfenergy(
         sigma_static = get_Sigma_static(basis.impurity_orbitals, sum_bath_states, u4, es, local_psis, tau)
     else:
         sigma_static = 0
+    if rank == 0:
+        with h5.File("impurityModel_solver.h5", "a") as ar:
+            it = 1
+            if f"{cluster_label}/last_iteration" in ar:
+                it = ar[f"{cluster_label}/last_iteration"][0] + 1
+            else:
+                ar.create_dataset(f"{cluster_label}/last_iteration", (1,), dtype=int)
+            ar[f"{cluster_label}/last_iteration"][0] = it
+            group = f"{cluster_label}/it_{it}"
+            ar.create_dataset(f"{group}/tau", data=np.array([tau], dtype=float))
+            ar.create_dataset(f"{group}/delta", data=np.array([delta], dtype=float))
+            ar.create_dataset(f"{group}/gs_vecs", data=psis_dense)
+            ar.create_dataset(f"{group}/gs_es", data=es)
+            ar.create_dataset(f"{group}/iw", data=iw)
+            ar.create_dataset(f"{group}/w", data=w)
+            ar.create_dataset(f"{group}/rot_to_spherical", data=rot_to_spherical)
+            ar.create_dataset(f"{group}/num_blocks", data=np.array([len(blocks)], dtype=int))
+            for block_i, block in enumerate(blocks):
+                ar.create_dataset(f"{group}/block_{block_i}/orbs", data=np.array(block, dtype=int))
+                ar.create_dataset(f"{group}/block_{block_i}/gs_matsubara", data=gs_matsubara[block_i])
+                ar.create_dataset(f"{group}/block_{block_i}/gs_real", data=gs_realaxis[block_i])
+                ar.create_dataset(f"{group}/block_{block_i}/sigma_static", data=sigma_static[block_i])
+                ar.create_dataset(f"{group}/block_{block_i}/sigma", data=sigma[block_i])
+                ar.create_dataset(f"{group}/block_{block_i}/sigma_real", data=sigma_real[block_i])
 
     return sigma, sigma_real, sigma_static
-
-
-def state_statistics(psi, impurity_indices, valence_indices, conduction_indices, num_spin_orbitals):
-    stat = {}
-    for state, amp in psi.items():
-        bits = psr.bytes2bitarray(state, num_spin_orbitals)
-        n_imp = sum(bits[i] for i in impurity_indices)
-        n_valence = sum(bits[i] for i in valence_indices)
-        n_cond = sum(bits[i] for i in conduction_indices)
-        stat[(n_imp, n_valence, n_cond)] = abs(amp) ** 2 + stat.get((n_imp, n_valence, n_cond), 0)
-    return stat
 
 
 def check_sigma(sigma: np.ndarray):
@@ -690,10 +703,11 @@ def get_selfenergy(
         verbosity=2 if verbose else 0,
         cluster_label=clustername,
     )
-    if rank == 0:
-        print("Writing sig_static to files")
-        np.savetxt(f"real-sig_static-{clustername}.dat", np.real(sigma_static))
-        np.savetxt(f"imag-sig_static-{clustername}.dat", np.imag(sigma_static))
+
+    # if rank == 0:
+    #     print("Writing sig_static to files")
+    #     np.savetxt(f"real-sig_static-{clustername}.dat", np.real(sigma_static))
+    #     np.savetxt(f"imag-sig_static-{clustername}.dat", np.imag(sigma_static))
     # if rank == 0:
     #     save_Greens_function(gs=sigma_real, omega_mesh=omega_mesh, label=f"Sigma-{clustername}", e_scale=1)
 
