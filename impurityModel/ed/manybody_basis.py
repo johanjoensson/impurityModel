@@ -481,70 +481,36 @@ class Basis:
     def _generate_spin_flipped_determinants(self, determinants):
         valence_baths, conduction_baths = self.bath_states
         n_dn_op = {
-            (((l, 0, ml), "c"), ((l, 0, ml), "a")): 1.0
-            for l in self.ls
-            for ml in range(-l, l + 1)
-            # (((2, 0, -2), "c"), ((2, 0, -2), "a")): 1.0,
-            # (((2, 0, -1), "c"), ((2, 0, -1), "a")): 1.0,
-            # (((2, 0, 0), "c"), ((2, 0, 0), "a")): 1.0,
-            # (((2, 0, 1), "c"), ((2, 0, 1), "a")): 1.0,
-            # (((2, 0, 2), "c"), ((2, 0, 2), "a")): 1.0,
+            ((i, "c"), (i, "a")): 1.0 for l in self.impurity_orbitals for i in range(self.impurity_orbitals[l] // 2)
         }
-        n_dn_iop = c2i_op(
-            {l: valence_baths[l] + conduction_baths[l] for l in valence_baths},
-            n_dn_op,
-        )
         n_up_op = {
-            (((l, 1, ml), "c"), ((l, 1, ml), "a")): 1.0
-            for l in self.ls
-            for ml in range(-l, l + 1)
-            # (((2, 1, -2), "c"), ((2, 1, -2), "a")): 1.0,
-            # (((2, 1, -1), "c"), ((2, 1, -1), "a")): 1.0,
-            # (((2, 1, 0), "c"), ((2, 1, 0), "a")): 1.0,
-            # (((2, 1, 1), "c"), ((2, 1, 1), "a")): 1.0,
-            # (((2, 1, 2), "c"), ((2, 1, 2), "a")): 1.0,
+            ((i, "c"), (i, "a")): 1.0
+            for l in self.impurity_orbitals
+            for i in range(self.impurity_orbitals[l] // 2, self.impurity_orbitals[l])
         }
-        n_up_iop = c2i_op(
-            {l: valence_baths[l] + conduction_baths[l] for l in valence_baths},
-            n_up_op,
-        )
         spin_flip = set()
         for det in determinants:
-            n_dn = int(applyOp(self.num_spin_orbitals, n_dn_iop, {det: 1}).get(det, 0))
-            n_up = int(applyOp(self.num_spin_orbitals, n_up_iop, {det: 1}).get(det, 0))
+            n_dn = int(applyOp(self.num_spin_orbitals, n_dn_op, {det: 1}).get(det, 0))
+            n_up = int(applyOp(self.num_spin_orbitals, n_up_op, {det: 1}).get(det, 0))
             spin_flip.add(det)
             to_flip = {det}
-            for l in self.ls:
-                for ml in range(-l, l + 1):
+            for l in self.impurity_orbitals:
+                n_orb = self.impurity_orbitals[l]
+                for i in range(n_orb // 2):
                     spin_flip_op = {
-                        (((l, 1, ml), "c"), ((l, 0, ml), "a")): 1.0,
-                        (((l, 0, ml), "c"), ((l, 1, ml), "a")): 1.0,
+                        ((i + n_orb // 2, "c"), (i, "a")): 1.0,
+                        ((i, "c"), (i + n_orb // 2, "a")): 1.0,
                     }
-                    spin_flip_iop = c2i_op(
-                        {l: valence_baths[l] + conduction_baths[l] for l in valence_baths},
-                        spin_flip_op,
-                    )
                     for state in list(to_flip):
-                        flipped = applyOp(self.num_spin_orbitals, spin_flip_iop, {state: 1})
+                        flipped = applyOp(self.num_spin_orbitals, spin_flip_op, {state: 1})
                         to_flip.update(flipped.keys())
                         if len(flipped) == 0:
                             continue
                         flipped_state = list(flipped.keys())[0]
-                        new_n_dn = int(
-                            applyOp(self.num_spin_orbitals, n_dn_iop, {flipped_state: 1}).get(flipped_state, 0)
-                        )
-                        new_n_up = int(
-                            applyOp(self.num_spin_orbitals, n_up_iop, {flipped_state: 1}).get(flipped_state, 0)
-                        )
+                        new_n_dn = int(applyOp(self.num_spin_orbitals, n_dn, {flipped_state: 1}).get(flipped_state, 0))
+                        new_n_up = int(applyOp(self.num_spin_orbitals, n_up, {flipped_state: 1}).get(flipped_state, 0))
                         if (new_n_dn == n_dn and new_n_up == n_up) or (new_n_dn == n_up and new_n_up == n_dn):
                             spin_flip.update(flipped.keys())
-                    # spin_flip.update(flipped.keys())
-
-        # for state in spin_flip.copy():
-        #     new_bits = psr.bytes2bitarray(state, self.num_spin_orbitals)
-        #     for bath_occ in itertools.permutations(new_bits[10:]):
-        #         new_bits[10:] = psr.str2bitarray(''.join(f'{bit}' for bit in bath_occ))
-        #         spin_flip.add(psr.bitarray2bytes(new_bits))
 
         return spin_flip
 
@@ -774,6 +740,37 @@ class Basis:
         M.assemble()
         return M
 
+    def _state_statistics(self, psi, impurity_indices, valence_indices, conduction_indices, num_spin_orbitals):
+        stat = {}
+        for state, amp in psi.items():
+            bits = psr.bytes2bitarray(state, num_spin_orbitals)
+            n_imp = sum(bits[i] for i in impurity_indices)
+            n_valence = sum(bits[i] for i in valence_indices)
+            n_cond = sum(bits[i] for i in conduction_indices)
+            stat[(n_imp, n_valence, n_cond)] = abs(amp) ** 2 + stat.get((n_imp, n_valence, n_cond), 0)
+        return stat
+
+    def get_state_statistics(self, psis):
+        n_imp = sum(ni for ni in self.impurity_orbitals.values())
+        n_val = sum(nv for nv in self.bath_states[0].values())
+        impurity_indices = range(0, n_imp)
+        valence_indices = range(n_imp, n_imp + n_val)
+        conduction_indices = range(n_imp + n_val, self.num_spin_orbitals)
+        psi_stats = [
+            self._state_statistics(psi, impurity_indices, valence_indices, conduction_indices, self.num_spin_orbitals)
+            for psi in psis
+        ]
+        if self.is_distributed:
+            all_psi_stats = self.comm.gather(psi_stats)
+            if self.comm.rank == 0:
+                psi_stats = [{} for _ in psis]
+                for local_psi_stats in all_psi_stats:
+                    for i, psi_stat in enumerate(local_psi_stats):
+                        for key in psi_stat:
+                            psi_stats[i][key] = psi_stat[key] + psi_stats[i].get(key, 0)
+            psi_stats = self.comm.bcast(psi_stats)
+        return psi_stats
+
 
 class CIPSI_Basis(Basis):
     def __init__(
@@ -949,7 +946,7 @@ class CIPSI_Basis(Basis):
                 e_max=de0_max,
                 k=len(psi_ref) + 1 if psi_ref is not None else 2,
                 v0=v0,
-                eigenValueTol=de2_min,
+                eigenValueTol=0,  # de2_min,
             )
             t_eigen += perf_counter() - t_tmp
             t_tmp = perf_counter()
