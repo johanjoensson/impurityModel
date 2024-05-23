@@ -565,7 +565,7 @@ def block_Green(
 
     # Select points from the frequency mesh, according to a Normal distribuition
     # centered on (value) 0.
-    n_samples = max(len(conv_w) // 50, min(len(conv_w), 10))
+    n_samples = max(len(conv_w) // 20, min(len(conv_w), 10))
 
     def converged(alphas, betas):
         if np.any(np.linalg.norm(betas[-1], axis=1) < np.sqrt(np.finfo(float).eps)):
@@ -573,7 +573,6 @@ def block_Green(
 
         if alphas.shape[0] == 1:
             return False
-
         w = np.zeros((n_samples), dtype=conv_w.dtype)
         intervals = np.linspace(start=conv_w[0], stop=conv_w[-1], num=n_samples + 1)
         for i in range(n_samples):
