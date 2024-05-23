@@ -57,6 +57,7 @@ class ImpModCluster:
         self.corr_to_cf = corr_to_cf
         self.spin_flip_dj = spin_flip_dj
 
+        valence_baths, conduction_baths = self.bath_states
         if blocked:
             self.blocks = hf.get_block_structure(
                 self.hyb,
@@ -457,109 +458,6 @@ def run_impmod_ed(
     sys.stdout.close()
     sys.stdout = stdout_save
     return er
-
-
-# def fixed_peak_dc(h0_op, dc_struct, rank, verbose, dense_cutoff):
-#     N0 = dc_struct.nominal_occ
-#     delta_impurity_occ, delta_valence_occ, delta_conduction_occ = dc_struct.delta_occ
-#     peak_position = dc_struct.peak_position
-#     num_valence_bath_states, num_conduction_bath_states = dc_struct.bath_states
-#     sum_bath_states = {l: num_valence_bath_states[l] + num_conduction_bath_states[l] for l in num_valence_bath_states}
-#     l = list(lv for lv in N0[0])[0]
-#     u = finite.getUop_from_rspt_u4(dc_struct.u4)
-
-#     Np = ({l: N0[0][l] + 1 for l in N0[0]}, N0[1], N0[2])
-#     Nm = ({l: N0[0][l] - 1 for l in N0[0]}, N0[1], N0[2])
-#     if peak_position >= 0:
-#         basis_upper = CIPSI_Basis(
-#             ls=list(N0[0].keys()),
-#             valence_baths=num_valence_bath_states,
-#             conduction_baths=num_conduction_bath_states,
-#             delta_valence_occ=delta_valence_occ,
-#             delta_conduction_occ=delta_conduction_occ,
-#             delta_impurity_occ=delta_impurity_occ,
-#             nominal_impurity_occ=Np[0],
-#             truncation_threshold=1e9,
-#             verbose=verbose,
-#             comm=MPI.COMM_WORLD,
-#             spin_flip_dj=dc_struct.spin_flip_dj,
-#         )
-#         basis_lower = CIPSI_Basis(
-#             ls=list(N0[0].keys()),
-#             valence_baths=num_valence_bath_states,
-#             conduction_baths=num_conduction_bath_states,
-#             delta_valence_occ=delta_valence_occ,
-#             delta_conduction_occ=delta_conduction_occ,
-#             delta_impurity_occ=delta_impurity_occ,
-#             nominal_impurity_occ=N0[0],
-#             truncation_threshold=1e9,
-#             verbose=verbose,
-#             comm=MPI.COMM_WORLD,
-#             spin_flip_dj=dc_struct.spin_flip_dj,
-#         )
-#     else:
-#         basis_upper = CIPSI_Basis(
-#             ls=list(N0[0].keys()),
-#             valence_baths=num_valence_bath_states,
-#             conduction_baths=num_conduction_bath_states,
-#             delta_valence_occ=delta_valence_occ,
-#             delta_conduction_occ=delta_conduction_occ,
-#             delta_impurity_occ=delta_impurity_occ,
-#             nominal_impurity_occ=N0[0],
-#             truncation_threshold=1e9,
-#             verbose=verbose,
-#             comm=MPI.COMM_WORLD,
-#             spin_flip_dj=dc_struct.spin_flip_dj,
-#         )
-#         basis_lower = CIPSI_Basis(
-#             ls=list(N0[0].keys()),
-#             valence_baths=num_valence_bath_states,
-#             conduction_baths=num_conduction_bath_states,
-#             delta_valence_occ=delta_valence_occ,
-#             delta_conduction_occ=delta_conduction_occ,
-#             delta_impurity_occ=delta_impurity_occ,
-#             nominal_impurity_occ=Nm[0],
-#             truncation_threshold=1e9,
-#             verbose=verbose,
-#             comm=MPI.COMM_WORLD,
-#             spin_flip_dj=dc_struct.spin_flip_dj,
-#         )
-
-#     def F(dc_trial):
-#         bu = basis_upper.copy()
-#         bl = basis_lower.copy()
-#         dc_op = {(((l, s, m), "c"), ((l, s, m), "a")): -dc_trial for m in range(-l, l + 1) for s in range(2)}
-#         h_op_c = finite.addOps([h0_op, u, dc_op])
-#         h_op_i = finite.c2i_op(sum_bath_states, h_op_c)
-#         h_dict = bu.expand(h_op_i, dense_cutoff=dense_cutoff, de2_min=1e-10)
-#         h = bu.build_sparse_matrix(h_op_i, h_dict) if bu.size > dense_cutoff else bu.build_dense_matrix(h_op_i, h_dict)
-#         e_upper = finite.eigensystem_new(
-#             h,
-#             e_max=0,
-#             k=1,
-#             eigenValueTol=0,
-#             return_eigvecs=False,
-#         )
-#         h_dict = bl.expand(h_op_i, dense_cutoff=dense_cutoff, de2_min=1e-10)
-#         h = bl.build_sparse_matrix(h_op_i, h_dict) if bl.size > dense_cutoff else bl.build_dense_matrix(h_op_i, h_dict)
-#         e_lower = finite.eigensystem_new(
-#             h,
-#             e_max=0,
-#             k=1,
-#             eigenValueTol=0,
-#             return_eigvecs=False,
-#         )
-#         return e_upper[0] - e_lower[0] - peak_position
-
-#     # res = sp.optimize.root_scalar(F, x0=np.real(dc_struct.dc_guess))
-#     # dc = res.root
-#     dc = sp.optimize.newton(F, x0=np.real(dc_struct.dc_guess))
-#     if verbose:
-#         print(f"Peak position {dc_struct.peak_position}")
-#         print(f"DC guess {dc_struct.dc_guess}")
-#         print(f"dc found : {dc}")
-
-#     return dc * np.identity(2 * (2 * l + 1), dtype=complex)
 
 
 def get_ed_h0(
