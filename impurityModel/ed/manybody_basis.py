@@ -664,7 +664,7 @@ class Basis:
         Get the operator as a dense matrix in the current basis.
         by default the dense matrix is distributed to all ranks.
         """
-        h_local = self.build_sparse_matrix(op, op_dict)
+        h_local = self.build_sparse_matrix(op, op_dict, petsc=False)
         local_dok = h_local.todok()
         if self.is_distributed:
             reduced_dok = self.comm.reduce(local_dok, op=MPI.SUM, root=0)
@@ -675,12 +675,14 @@ class Basis:
             h = h_local.todense()
         return h
 
-    def build_sparse_matrix(self, op, op_dict: Optional[dict[bytes, dict[bytes, complex]]] = None):
+    def build_sparse_matrix(
+        self, op, op_dict: Optional[dict[bytes, dict[bytes, complex]]] = None, petsc="petsc4py" in sys.modules
+    ):
         """
         Get the operator as a sparse matrix in the current basis.
         The sparse matrix is distributed over all ranks.
         """
-        if "PETSc" in sys.modules:
+        if petsc:
             return self._build_PETSc_matrix(op, op_dict)
 
         op_dict = self.build_operator_dict(op, op_dict)
@@ -714,7 +716,7 @@ class Basis:
                 print(f"{self.size=} {max(rows)=}", flush=True)
         return sp.sparse.csc_matrix((values, (rows, columns)), shape=(self.size, self.size), dtype=complex)
 
-    def build_PETSc_vector(self, psis: list[dict], dtype=complex) -> PETSc.Mat:
+    def _build_PETSc_vector(self, psis: list[dict], dtype=complex) -> PETSc.Mat:
         vs = PETSc.Mat().create(comm=self.comm)
         vs.setSizes([len(psis), self.size])
         row_dict = self._index_dict
@@ -731,9 +733,7 @@ class Basis:
             if need_mpi:
                 sorted_row_states = row_states  # sorted(row_states)
                 row_dict = {
-                    state: i
-                    for state, i in zip(sorted_row_states, self._index_sequence(sorted_row_states))
-                    if i < self.size
+                    state: i for state, i in zip(sorted_row_states, self.index(sorted_row_states)) if i < self.size
                 }
             vs.setUp()
             for state, val in psi.items():
@@ -743,7 +743,7 @@ class Basis:
             vs.assemble()
         return vs
 
-    def build_PETSc_matrix(self, op, op_dict=None):
+    def _build_PETSc_matrix(self, op, op_dict=None):
         """
         Get the operator as a sparse matrix in the current basis.
         The sparse matrix is distributed over all ranks.
@@ -765,27 +765,20 @@ class Basis:
                     rows.append(self._index_dict[row])
                     values.append(expanded_dict[column][row])
         else:
-            rows_in_basis: list[bytes] = list(
-                {row for column in self.local_basis for row in expanded_dict[column].keys()}
-            )
-            # This should never need more than one loop, but I think something is wrong on the Dardel supercimputer so let's try this and see what happens
-            retries = 0
-            retry = np.array([True], dtype=bool)
-            while np.any(retry):
-                row_indices = self._index_sequence(rows_in_basis)
-                self.comm.Allreduce(
-                    np.array([any(index > self.size for index in row_indices)], dtype=bool), retry, op=MPI.LOR
-                )
-                retries += 1
-            row_dict = {state: index for state, index in zip(rows_in_basis, row_indices) if index != self.size}
+            rows_in_basis: set[bytes] = {row for column in self.local_basis for row in op_dict[column].keys()}
+            row_dict = {
+                state: index
+                for state, index in zip(rows_in_basis, self.state_container._index_sequence(rows_in_basis))
+                if index != self.size
+            }
 
             for column in self.local_basis:
-                for row in expanded_dict[column]:
+                for row in op_dict[column]:
                     if row not in row_dict:
                         continue
                     columns.append(self._index_dict[column])
                     rows.append(row_dict[row])
-                    values.append(expanded_dict[column][row])
+                    values.append(op_dict[column][row])
         M.setUp()
         for i, j, val in zip(rows, columns, values):
             M[i, j] = val
@@ -1019,13 +1012,6 @@ class CIPSI_Basis(Basis):
             else:
                 converge_count = 0
 
-        # print(f"CIPSI_Basis.expand took {perf_counter() - t0} seconds.")
-        # print(f"===> building matrix took {t_build_mat} secondsds.")
-        # print(f"===> building vector took {t_build_vec} secondsds.")
-        # print(f"===> building state took {t_build_state} secondsds.")
-        # print(f"===> finding eigenstates took {t_eigen} secondsds.")
-        # print(f"===> determining new Djs took {t_Dj} seconds.")
-        # print(f"===> add states took {t_add} seconds.")
         if self.verbose:
             print(f"After expansion, the basis contains {self.size} elements.")
 
@@ -1042,7 +1028,6 @@ class CIPSI_Basis(Basis):
         t_tmp = perf_counter()
         H_dict = self.build_operator_dict(H, op_dict=H_dict)
         t_build_dict += perf_counter() - t_tmp
-        # print(f"Building operator took {t_build_dict} seconds.")
         return H_dict
 
     def expand_at(self, w, psi_ref, H, H_dict=None, de2_min=1e-3):

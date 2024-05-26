@@ -11,12 +11,12 @@ import scipy.sparse
 from mpi4py import MPI
 import time
 
-# try:
-#     from petsc4py import PETSc
-#     from slepc4py import SLEPc
-#     from slepc4py.SLEPc import EPS
-# except ModuleNotFoundError:
-#     pass
+try:
+    from petsc4py import PETSc
+    from slepc4py import SLEPc
+    from slepc4py.SLEPc import EPS
+except ModuleNotFoundError:
+    pass
 
 # Local imports
 from impurityModel.ed import product_state_representation as psr
@@ -258,16 +258,8 @@ def eigensystem_new(
         return es[: sum(mask)]
 
     # the scipy eigsh function does not guarantee that degenerate eigenvalues get orthogonal eigenvectors.
-    # So we do a qr decomposition of all nearly degenerate eigenvectors.
-    # e_diff = np.diff(es[: sum(mask)])
-    # group_breaks = np.argwhere(np.abs(e_diff) > 1e-8) + 1
-    # group_breaks = np.append([0], group_breaks)
-    # group_breaks = np.append(group_breaks, [sum(mask)])
-    # for i in range(1, len(group_breaks)):
-    #     start = group_breaks[i - 1]
-    #     stop = group_breaks[i]
-    #     vecs[:, start:stop], _ = qr(vecs[:, start:stop], mode="economic", overwrite_a=True, check_finite=False)
-    vecs[:, : sum(mask)], _ = qr(vecs[:, : sum(mask)], mode="economic", overwrite_a=True, check_finite=False)
+    if isinstance(h_local, scipy.sparse._csr.csr_matrix) or isinstance(h_local, scipy.sparse._csc.csc_matrix):
+        vecs[:, : sum(mask)], _ = qr(vecs[:, : sum(mask)], mode="economic", overwrite_a=True, check_finite=False)
 
     t0 = time.perf_counter() - t0
 

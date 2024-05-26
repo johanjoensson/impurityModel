@@ -837,7 +837,7 @@ def get_block_Green_cg(
 
     if verbose:
         t0 = time.perf_counter()
-    h = basis.build_sparse_matrix(hOp, h_mem)
+    h = basis.build_sparse_matrix(hOp, h_mem, petsc=False)
 
     if verbose:
         print(f"time(build Hamiltonian operator) = {time.perf_counter() - t0}")
