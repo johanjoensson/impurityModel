@@ -201,7 +201,7 @@ def calc_occ_e(
     e_trial = finite.eigensystem_new(
         h,
         e_max=0,
-        k=5,
+        k=basis.num_spin_orbitals,
         eigenValueTol=0,
         return_eigvecs=False,
     )
@@ -375,7 +375,7 @@ def calc_selfenergy(
     energy_cut = -tau * np.log(1e-4)
 
     basis.tau = tau
-    h_dict = basis.expand(h, H_dict=h_dict, dense_cutoff=dense_cutoff, de2_min=1e-12)
+    h_dict = basis.expand(h, H_dict=h_dict, dense_cutoff=dense_cutoff, de2_min=1e-8)
     if verbosity >= 1:
         print(f"{len(h)} processes in the Hamiltonian.")
         print(f"#basis states = {len(basis)}")

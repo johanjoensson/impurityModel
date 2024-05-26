@@ -121,7 +121,7 @@ def get_Greens_function(
             omega_mesh,
             delta,
             reort=reort,
-            slaterWeightMin=np.finfo(float).eps ** 2,
+            slaterWeightMin=np.finfo(float).eps,
             verbose=verbose,
         )
         gsPS_matsubara, gsPS_realaxis = calc_Greens_function_with_offdiag(
@@ -134,7 +134,7 @@ def get_Greens_function(
             -matsubara_mesh if matsubara_mesh is not None else None,
             -omega_mesh if omega_mesh is not None else None,
             -delta,
-            slaterWeightMin=np.finfo(float).eps ** 2,
+            slaterWeightMin=np.finfo(float).eps,
             verbose=verbose,
             reort=reort,
         )
@@ -287,7 +287,7 @@ def calc_Greens_function_with_offdiag(
                 eigen_basis.num_spin_orbitals,
                 tOp,
                 psi,
-                slaterWeightMin=0,
+                slaterWeightMin=slaterWeightMin,
                 restrictions=eigen_basis.restrictions,
                 opResult=t_mems[i_tOp],
             )
@@ -310,6 +310,7 @@ def calc_Greens_function_with_offdiag(
         if verbose:
             print(f"time(build excited state basis) = {time.perf_counter() - t0}")
         gs_matsubara_block_i, gs_realaxis_block_i = block_Green(
+            # gs_matsubara_block_i, gs_realaxis_block_i = get_block_Green(
             n_spin_orbitals=excited_basis.num_spin_orbitals,
             hOp=hOp,
             psi_arr=block_v,
@@ -385,10 +386,10 @@ def get_block_Green(
 
     if h_mem is None:
         h_mem = {}
-    h_local = True
 
     if verbose:
         t0 = time.perf_counter()
+    h_mem = basis.expand(hOp, h_mem, slaterWeightMin=slaterWeightMin)
     h = basis.build_sparse_matrix(hOp, h_mem)
 
     if verbose:
@@ -398,33 +399,33 @@ def get_block_Green(
     n = len(psi_arr)
 
     if n == 0 or N == 0:
-        return np.zeros((n, n, len(iws)), dtype=complex), np.zeros((n, n, len(ws)), dtype=complex)
+        return np.zeros((len(iws), n, n), dtype=complex), np.zeros((len(ws), n, n), dtype=complex)
     if verbose:
         t0 = time.perf_counter()
-    psi_start = np.array(basis.build_distributed_vector(psi_arr).T, copy=False, order="C")
+    psi0 = np.array(basis.build_distributed_vector(psi_arr).T, copy=False, order="C")
     counts = np.empty((comm.size,), dtype=int) if comm.rank == 0 else None
     comm.Gather(np.array([n * len(basis.local_basis)], dtype=int), counts, root=0)
-    offsets = [sum(counts[:r]) for r in range(len(counts))] if comm.rank == 0 else None
-    psi_start_0 = np.empty((N, n), dtype=complex, order="C") if comm.rank == 0 else None
-    comm.Gatherv(psi_start, (psi_start_0, counts, offsets, MPI.C_DOUBLE_COMPLEX), root=0)
+    offsets = np.array([sum(counts[:r]) for r in range(len(counts))]) if comm.rank == 0 else None
+    psi0_full = np.empty((N, n), dtype=complex, order="C") if comm.rank == 0 else None
+    comm.Gatherv(psi0, (psi0_full, counts, offsets, MPI.C_DOUBLE_COMPLEX), root=0)
     r: Optional[np.ndarray] = None
     if comm.rank == 0:
         # Do a QR decomposition of the starting block.
         # Later on, use r to restore the block corresponding to
-        psi0_0, r = sp.linalg.qr(psi_start_0, mode="economic", overwrite_a=True, check_finite=False, pivoting=False)
-        psi0_0 = np.array(psi0_0, copy=False, order="C")
-        # Find which columns (if any) are 0 in psi0_0
-        rows, columns = psi0_0.shape
+        psi0_full, r = sp.linalg.qr(psi0_full, mode="economic", overwrite_a=True, check_finite=False, pivoting=False)
+        psi0_full = np.array(psi0_full, copy=False, order="C")
+        rows, columns = psi0_full.shape
     rows = comm.bcast(rows if comm.rank == 0 else None, root=0)
     columns = comm.bcast(columns if comm.rank == 0 else None, root=0)
     if rows == 0 or columns == 0:
-        return np.zeros((n, n, len(iws)), dtype=complex), np.zeros((n, n, len(ws)), dtype=complex)
+        return np.zeros((len(iws), n, n), dtype=complex), np.zeros((len(ws), n, n), dtype=complex)
 
-    counts = np.empty((comm.size,), dtype=int) if comm.rank == 0 else None
     comm.Gather(np.array([columns * len(basis.local_basis)], dtype=int), counts, root=0)
-    offsets = [sum(counts[:r]) for r in range(len(counts))] if comm.rank == 0 else None
-    psi0 = np.zeros((len(basis.local_basis), columns), dtype=complex)
-    comm.Scatterv((psi0_0, counts, offsets, MPI.C_DOUBLE_COMPLEX) if comm.rank == 0 else None, psi0, root=0)
+    comm.Scatterv(
+        (psi0_full, counts * columns // n, offsets * columns // n, MPI.C_DOUBLE_COMPLEX) if comm.rank == 0 else None,
+        psi0.T,
+        root=0,
+    )
     if verbose:
         print(f"time(set up psi_start) = {time.perf_counter() - t0}")
 
@@ -439,13 +440,20 @@ def get_block_Green(
 
     # Select points from the frequency mesh, according to a Normal distribuition
     # centered on (value) 0.
-    n_samples = max(len(conv_w) // 100, 1)
+    n_samples = max(len(conv_w) // 10, 1)
 
     def converged(alphas, betas):
+        if np.any(np.linalg.norm(betas[-1], axis=1) < np.sqrt(np.finfo(float).eps)):
+            return True
+
         if alphas.shape[0] == 1:
             return False
-
-        w = np.random.choice(conv_w, size=n_samples, replace=False)
+        w = np.zeros((n_samples), dtype=conv_w.dtype)
+        intervals = np.linspace(start=conv_w[0], stop=conv_w[-1], num=n_samples + 1)
+        for i in range(n_samples):
+            w[i] = basis.rng.uniform(
+                low=min(intervals[i], intervals[i + 1]), high=max(intervals[i], intervals[i + 1]), size=None
+            )
         wIs = (w + 1j * delta_p + e)[:, np.newaxis, np.newaxis] * np.identity(alphas.shape[1], dtype=complex)[
             np.newaxis, :, :
         ]
@@ -459,28 +467,25 @@ def get_block_Green(
         for alpha, beta in zip(alphas[-3::-1], betas[-3::-1]):
             gs_new = wIs - alpha - np.conj(beta.T)[np.newaxis, :, :] @ np.linalg.solve(gs_new, beta[np.newaxis, :, :])
             gs_prev = wIs - alpha - np.conj(beta.T)[np.newaxis, :, :] @ np.linalg.solve(gs_prev, beta[np.newaxis, :, :])
-        return np.all(np.abs(gs_new - gs_prev) < 1e-8)
+        print(rf"δ = {np.max(np.abs(gs_new - gs_prev))}", flush=True)
+        return np.all(np.abs(gs_new - gs_prev) < max(slaterWeightMin, 1e-8))
 
     # Run Lanczos on psi0^T* [wI - j*delta - H]^-1 psi0
     alphas, betas, _ = get_block_Lanczos_matrices(
-        psi0=psi0,
+        psi0=psi0[:, :columns],
         h=h[:, basis.local_indices],
         converged=converged,
-        h_local=h_local,
         verbose=verbose,
         reort_mode=reort,
         build_krylov_basis=False,
-        slaterWeightMin=slaterWeightMin,
+        comm=basis.comm,
     )
 
     t0 = time.perf_counter()
 
-    gs_matsubara, gs_realaxis = calc_mpi_Greens_function_from_alpha_beta(alphas, betas, iws, ws, e, delta, r, verbose)
-    if rank == 0 and matsubara:
-        gs_matsubara = np.moveaxis(gs_matsubara, 0, -1)
-    if rank == 0 and realaxis:
-        gs_realaxis = np.moveaxis(gs_realaxis, 0, -1)
-
+    gs_matsubara, gs_realaxis = calc_mpi_Greens_function_from_alpha_beta(
+        alphas, betas, iws, ws, e, delta, r, verbose, comm=comm
+    )
     if verbose:
         print(f"time(G_from_alpha_beta) = {time.perf_counter() - t0: .4f} seconds.")
 
@@ -537,7 +542,6 @@ def block_Green(
         rows, columns = psi0.shape
     rows = comm.bcast(rows if comm.rank == 0 else None, root=0)
     columns = comm.bcast(columns if comm.rank == 0 else None, root=0)
-    print(f"{psi_start.shape=} {rows=} {columns=}", flush=True)
     if rows == 0 or columns == 0:
         return np.zeros((len(iws), n, n), dtype=complex), np.zeros((len(ws), n, n), dtype=complex)
     # psi_start = np.empty((len(basis.local_basis), columns), dtype=complex)
