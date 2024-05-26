@@ -18,6 +18,11 @@ from impurityModel.ed.manybody_state_containers import DistributedStateContainer
 from impurityModel.ed import product_state_representation as psr
 from impurityModel.ed.finite import applyOp_new as applyOp, c2i, c2i_op, eigensystem_new, norm2
 
+try:
+    from petsc4py import PETSc
+except ModuleNotFoundError:
+    pass
+
 
 def batched(iterable: Iterable, n: int) -> Iterable:
     """
