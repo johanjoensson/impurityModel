@@ -1022,7 +1022,7 @@ def test_alltoall_states_with_empty_mpi():
     basis = Basis(
         ls=[], bath_states=({}, {}), initial_basis=[], num_spin_orbitals=num_spin_orbitals, verbose=True, comm=comm
     )
-    basis.add_states([comm.rank.to_bytes(bytes_per_state, "big")], distributed_sort=False)
+    basis.add_states([comm.rank.to_bytes(bytes_per_state, "big")])
     received_states = basis.alltoall_states(send_states)
     assert all(
         state == comm.rank.to_bytes(bytes_per_state, "big") for rs in received_states for state in list(rs)
@@ -1173,7 +1173,7 @@ def test_eg_t2g_CIPSI_basis_expand_mpi():
 
 @pytest.mark.mpi
 def test_distributed_simple_vector():
-    states = [b"\x00\x1a\x2b", b"\xff\x00\x1a"]
+    states = (b"\x00\x1a\x2b", b"\xff\x00\x1a")
     basis = Basis(
         ls=[], bath_states=({}, {}), initial_basis=states, num_spin_orbitals=24, verbose=True, comm=MPI.COMM_WORLD
     )

@@ -112,6 +112,11 @@ def setup_hamiltonian(
 
 
 def mpi_matmul(h_local, comm):
+    """
+    MPI parallelized matrix multiplication.
+    Each rank has a number of columns of the matrix and the full vector.
+    """
+
     def matmat(m):
         if len(m.shape) == 1:
             m = m.reshape((m.shape[0], 1))
@@ -150,6 +155,8 @@ def eigensystem_new(
 
     t0 = time.perf_counter()
     if isinstance(h_local, np.ndarray):
+        if h_local.shape[0] == 0:
+            return np.zeros((0,), dtype=float), np.zeros((0, 0), dtype=h_local.dtype)
         if comm.rank == 0:
             es, vecs = np.linalg.eigh(h_local, UPLO="L")
         else:
@@ -214,14 +221,15 @@ def eigensystem_new(
 
     # the scipy eigsh function does not guarantee that degenerate eigenvalues get orthogonal eigenvectors.
     # So we do a qr decomposition of all nearly degenerate eigenvectors.
-    e_diff = np.diff(es[: sum(mask)])
-    group_breaks = np.argwhere(np.abs(e_diff) > 1e-10) + 1
-    group_breaks = np.append([0], group_breaks)
-    group_breaks = np.append(group_breaks, [sum(mask)])
-    for i in range(1, len(group_breaks)):
-        start = group_breaks[i - 1]
-        stop = group_breaks[i]
-        vecs[:, start:stop], _ = qr(vecs[:, start:stop], mode="economic", overwrite_a=True, check_finite=False)
+    # e_diff = np.diff(es[: sum(mask)])
+    # group_breaks = np.argwhere(np.abs(e_diff) > 1e-8) + 1
+    # group_breaks = np.append([0], group_breaks)
+    # group_breaks = np.append(group_breaks, [sum(mask)])
+    # for i in range(1, len(group_breaks)):
+    #     start = group_breaks[i - 1]
+    #     stop = group_breaks[i]
+    #     vecs[:, start:stop], _ = qr(vecs[:, start:stop], mode="economic", overwrite_a=True, check_finite=False)
+    vecs[:, : sum(mask)], _ = qr(vecs[:, : sum(mask)], mode="economic", overwrite_a=True, check_finite=False)
 
     t0 = time.perf_counter() - t0
 
@@ -324,7 +332,7 @@ def printSlaterDeterminantsAndWeights(psis, nPrintSlaterWeights):
             print("")
 
 
-def printExpValues(nBaths, es, psis, rot_to_spherical, l=2):
+def printExpValues(nBaths, es, psis, rot_to_spherical, n_orbs):
     """
     print several expectation values, e.g. E, N, L^2.
     """
@@ -335,27 +343,22 @@ def printExpValues(nBaths, es, psis, rot_to_spherical, l=2):
             "{:^3s} {:>11s} {:>8s} {:>8s} {:>8s} {:>9s} {:>9s}".format(
                 "i",
                 "E-E0",
-                "N(3d)",
+                "N",
                 "N(Dn)",
                 "N(Up)",
-                "Lz(3d)",
-                "Sz(3d)",
-                # "L^2(3d)",
-                # "S^2(3d)",
+                "Lz",
+                "Sz",
+                "L^2",
+                "S^2",
             )
         )
     #        print(('  i  E-E0  N(3d) N(egDn) N(egUp) N(t2gDn) '
     #               'N(t2gUp) Lz(3d) Sz(3d) L^2(3d) S^2(3d)'))
     if rank == 0:
         for i, (e, psi) in enumerate(zip(es - es[0], psis)):
-            rho = getDensityMatrix(nBaths, psi, 2)
-            rhomat = np.zeros((10, 10), dtype=complex)
-            for (state1, state2), val in rho.items():
-                m = c2i(nBaths, state1)
-                n = c2i(nBaths, state2)
-                rhomat[m, n] = val
-            rho_spherical = rotate_matrix(rhomat, rot_to_spherical)
-            N, Ndn, Nup = get_occupations_from_rho_spherical(rho_spherical, l=2)
+            rho = build_impurity_density_matrix(n_orbs, sum(nb for nb in nBaths.values()), psi)
+            rho_spherical = rotate_matrix(rho, rot_to_spherical)
+            N, Ndn, Nup = get_occupations_from_rho_spherical(rho_spherical)
             print(
                 # ("{:3d} {:11.8f} {:8.5f} {:8.5f} {:8.5f}" " {: 9.6f} {: 9.6f} {:9.5f} {:9.5f}").format(
                 ("{:3d} {:11.8f} {:8.5f} {:8.5f} {:8.5f}" " {: 9.6f} {: 9.6f}").format(
@@ -364,46 +367,126 @@ def printExpValues(nBaths, es, psis, rot_to_spherical, l=2):
                     N,
                     Ndn,
                     Nup,
-                    get_Lz_from_rho_spherical(rho_spherical, l=2),
-                    get_Sz_from_rho_spherical(rho_spherical, l=2),
-                    # get_L2_from_rho_spherical(rho_spherical, l=2),
-                    # get_S2_from_rho_spherical(rho_spherical, l=2),
+                    get_Lz_from_rho_spherical(rho_spherical),
+                    get_Sz_from_rho_spherical(rho_spherical),
+                    # get_L_from_rho_spherical(rho_spherical),
+                    # get_S_from_rho_spherical(rho_spherical),
                 )
             )
         print("\n")
 
 
-def get_occupations_from_rho_spherical(rho, l):
+def get_occupations_from_rho_spherical(rho):
+    """
+    Calculate the (spin polarized) occupation from the density matrix.
+    """
+    n_orbs = rho.shape[0]
     return (
         np.real(np.trace(rho)),
-        np.real(np.trace(rho[: 2 * l + 1, : 2 * l + 1])),
-        np.real(np.trace(rho[2 * l + 1 :, 2 * l + 1 :])),
+        np.real(np.trace(rho[: n_orbs // 2, : n_orbs // 2])),
+        np.real(np.trace(rho[n_orbs // 2 :, n_orbs // 2 :])),
     )
 
 
-def get_Lz_from_rho_spherical(rho, l):
+def get_Lz_from_rho_spherical(rho):
+    l = (rho.shape[0] // 2 - 1) // 2
     return np.real(
         sum(ml * (rho[i, i] + rho[i + (2 * l + 1), i + (2 * l + 1)]) for i, ml in enumerate(range(-l, l + 1)))
     )
 
 
 def get_Lplus_from_rho_spherical(rho, l):
+    # L+ |l, ml> = sqrt(l*(l+1) - ml*(ml+1))|l, ml+1>
     llp1 = l * (l + 1)
     #   L+    |2, -2>,  |2, -1>, |2,  0>, |2,  1>, |2,  2>
-    # <2, -2|    0
-    # <2, -1| sqrt(8)
-    # <2,  0|    0
-    # <2,  1|    0
-    # <2,  2|    0
-    Lplus = np.zeros((2 * (2 * l + 1), 2 * (2 * l + 1)))
-    for i, ml in enumerate(range(-l, l)):
-        Lplus[i + 1, i] = np.sqrt(llp1 + ml * (ml + 1))
-    return np.trace(rho @ Lplus)
+    # <2, -2|    0         0        0        0        0
+    # <2, -1| sqrt(8)      0        0        0        0
+    # <2,  0|    0      sqrt(6)     0        0        0
+    # <2,  1|    0         0     sqrt(6)     0        0
+    # <2,  2|    0         0        0     sqrt(8)     0
+    Lplus = np.diag([np.sqrt(llp1 - ml * (ml + 1)) for ml in range(-l, l)], k=-1)
+    return np.trace(
+        rho @ np.block([[Lplus, np.zeros((2 * l + 1, 2 * l + 1))], [np.zeros((2 * l + 1, 2 * l + 1)), Lplus]])
+    )
 
 
-def get_L2_from_rho_spherical(rho, l):
+def get_Sminus_from_rho_spherical(rho, l, s=1 / 2):
+    # S+ |s, ms> = sqrt(s*(s+1) - ms*(ms+1))|s, ms+1>
+    ssp1 = s * (s + 1)
+    ms = +1 / 2
+    #   S-      |1/2,-1/2>,  |1/2, 1/2>
+    # <1/2,-1/2|    0            1
+    # <1/2, 1/2|    0            0
+    # S- = [[0   S-],
+    #        0   0 ]]
+    Sminus = np.diag(np.repeat(np.sqrt(ssp1 - ms * (ms - 1)), 2 * l), k=1)
+    return np.trace(
+        rho
+        @ np.block(
+            [
+                [np.zeros((2 * l + 1, 2 * l + 1)), Sminus],
+                [np.zeros((2 * l + 1, 2 * l + 1)), np.zeros((2 * l + 1, 2 * l + 1))],
+            ]
+        )
+    )
+
+
+def get_Lminus_from_rho_spherical(rho, l):
+    # L- |l, ml> = sqrt(l*(l+1) - ml*(ml-1))|l, ml-1>
     llp1 = l * (l + 1)
-    Lz = get_Lz_from_rho_spherical(rho, l)
+    #   L+    |2, -2>,  |2, -1>, |2,  0>, |2,  1>, |2,  2>
+    # <2, -2|    0      sqrt(4)     0        0        0
+    # <2, -1|    0         0     sqrt(6)     0        0
+    # <2,  0|    0         0        0     sqrt(6)     0
+    # <2,  1|    0         0        0        0     sqrt(4)
+    # <2,  2|    0         0        0        0        0
+    Lminus = np.diag([np.sqrt(llp1 - ml * (ml - 1)) for ml in range(-l + 1, l + 1)], k=1)
+    return np.trace(
+        rho @ np.block([[Lminus, np.zeros((2 * l + 1, 2 * l + 1))], [np.zeros((2 * l + 1, 2 * l + 1)), Lminus]])
+    )
+
+
+def get_Splus_from_rho_spherical(rho, l, s=1 / 2):
+    # S+ |s, ms> = sqrt(s*(s+1) - ms*(ms+1))|s, ms+1>
+    ssp1 = s * (s + 1)
+    ms = -1 / 2
+    #   S+      |1/2,-1/2>,  |1/2, 1/2>
+    # <1/2,-1/2|    0            0
+    # <1/2, 1/2|    1            0
+    # S+ = [[0   0],
+    #        S+  0]]
+    Splus = np.diag(np.repeat(np.sqrt(ssp1 - ms * (ms + 1)), 2 * l), k=-1)
+    return np.trace(
+        rho
+        @ np.block(
+            [
+                [np.zeros((2 * l + 1, 2 * l + 1)), np.zeros((2 * l + 1, 2 * l + 1))],
+                [Splus, np.zeros((2 * l + 1, 2 * l + 1))],
+            ]
+        )
+    )
+
+
+def get_L_from_rho_spherical(rho, l):
+    return np.sqrt(
+        (0.5 * (get_Lplus_from_rho_spherical(rho, l) + get_Lminus_from_rho_spherical(rho, l))) ** 2
+        + (-1j / 2 * (get_Lplus_from_rho_spherical(rho, l) - get_Lminus_from_rho_spherical(rho, l))) ** 2
+        + get_Lz_from_rho_spherical(rho, l) ** 2
+    )
+
+
+def get_S_from_rho_spherical(rho, l, s):
+    return np.sqrt(
+        (0.5 * (get_Splus_from_rho_spherical(rho, l, s=s) + get_Sminus_from_rho_spherical(rho, l, s=s)) ** 2)
+        + (-1j / 2 * (get_Splus_from_rho_spherical(rho, l, s=s) - get_Sminus_from_rho_spherical(rho, l, s=s)) ** 2)
+        + get_Sz_from_rho_spherical(rho, l) ** 2
+    )
+
+
+def get_L2_from_rho_spherical(rho):
+    l = (rho.shape[0] // 2 - 1) // 2
+    llp1 = l * (l + 1)
+    Lz = get_Lz_from_rho_spherical(rho)
     Lplus = np.zeros((2 * (2 * l + 1), 2 * (2 * l + 1)))
     for i, ml in enumerate(range(-l, l)):
         Lplus[i + 1, i] = np.sqrt(llp1 + ml * (ml + 1))
@@ -416,13 +499,15 @@ def get_L2_from_rho_spherical(rho, l):
     return np.trace(rho @ Lz2) + 2 * Lz + np.trace(rho @ Lplus @ Lminus)
 
 
-def get_Sz_from_rho_spherical(rho, l):
+def get_Sz_from_rho_spherical(rho):
+    l = (rho.shape[0] // 2 - 1) // 2
     return 1 / 2 * np.real(sum(-rho[i, i] + rho[i + (2 * l + 1), i + (2 * l + 1)] for i in range(2 * l + 1)))
 
 
-def get_S2_from_rho_spherical(rho, l):
+def get_S2_from_rho_spherical(rho):
+    l = (rho.shape[0] // 2 - 1) // 2
     ssp1 = 3 / 4
-    Sz = get_Sz_from_rho_spherical(rho, l)
+    Sz = get_Sz_from_rho_spherical(rho)
     Splus = np.zeros((2 * (2 * l + 1), 2 * (2 * l + 1)))
     for i, ms in enumerate(np.repeat([-0.5], 2 * l + 1)):
         Splus[i + 2 * l + 1, i] = np.sqrt(ssp1 + ms * (ms + 1))
@@ -433,7 +518,7 @@ def get_S2_from_rho_spherical(rho, l):
     return np.trace(rho @ Sz2) + 2 * Sz + np.trace(rho @ Splus @ Sminus)
 
 
-def printThermalExpValues_new(nBaths, es, psis, tau, rot_to_spherical):
+def printThermalExpValues_new(imp_orbitals, nBaths, es, psis, tau, rot_to_spherical):
     """
     print several thermal expectation values, e.g. E, N, Sz, Lz.
 
@@ -442,24 +527,28 @@ def printThermalExpValues_new(nBaths, es, psis, tau, rot_to_spherical):
     """
     e = es - es[0]
     psis = np.array(psis)
-    rhos = [getDensityMatrix(nBaths, psi, 2) for psi in psis]
-    rhomats = np.zeros((len(rhos), 10, 10), dtype=complex)
-    for mat, rho in zip(rhomats, rhos):
-        for (state1, state2), val in rho.items():
-            i = c2i(nBaths, state1)
-            j = c2i(nBaths, state2)
-            mat[i, j] = val
-    rho_thermal = thermal_average_scale_indep(es, rhomats, tau)
+    rhos = [
+        build_impurity_density_matrix(sum(ni for ni in imp_orbitals.values()), sum(nb for nb in nBaths.values()), psi)
+        for psi in psis
+    ]
+    # rhos = [getDensityMatrix(nBaths, psi, 2) for psi in psis]
+    # rhomats = np.zeros((len(rhos), rot_to_spherical.shape[0], rot_to_spherical.shape[1]), dtype=complex)
+    # for mat, rho in zip(rhomats, rhos):
+    #     for (state1, state2), val in rho.items():
+    #         i = c2i(nBaths, state1)
+    #         j = c2i(nBaths, state2)
+    #         mat[i, j] = val
+    rho_thermal = thermal_average_scale_indep(es, rhos, tau)
     rho_thermal_spherical = rotate_matrix(rho_thermal, rot_to_spherical)
-    N, Ndn, Nup = get_occupations_from_rho_spherical(rho_thermal_spherical, l=2)
+    N, Ndn, Nup = get_occupations_from_rho_spherical(rho_thermal_spherical)
     print("<E-E0> = {:8.7f}".format(thermal_average_scale_indep(e, e, tau=tau)))
     print("<N(3d)> = {:8.7f}".format(N))
     print("<N(Dn)> = {:8.7f}".format(Ndn))
     print("<N(Up)> = {:8.7f}".format(Nup))
-    print("<Lz(3d)> = {:8.7f}".format(get_Lz_from_rho_spherical(rho_thermal_spherical, l=2)))
-    print("<Sz(3d)> = {:8.7f}".format(get_Sz_from_rho_spherical(rho_thermal_spherical, l=2)))
-    # print("<L^2(3d)> = {:8.7f}".format(get_L2_from_rho_spherical(rho_thermal_spherical, l=2)))
-    # print("<S^2(3d)> = {:8.7f}".format(get_S2_from_rho_spherical(rho_thermal_spherical, l=2)))
+    print("<Lz> = {:8.7f}".format(get_Lz_from_rho_spherical(rho_thermal_spherical)))
+    print("<Sz> = {:8.7f}".format(get_Sz_from_rho_spherical(rho_thermal_spherical)))
+    # print("<L> = {:8.7f}".format(get_L_from_rho_spherical(rho_thermal_spherical)))
+    # print("<S> = {:8.7f}".format(get_S_from_rho_spherical(rho_thermal_spherical)))
 
 
 def printThermalExpValues(nBaths, es, psis, T=300, cutOff=10):
@@ -722,12 +811,30 @@ def matmul(psis: list[dict], mat: np.ndarray) -> list[dict]:
     return res
 
 
-def removeFromFirst(psi1, psi2):
+def removeFromFirst(psi1, psi2, mul=1):
+    r"""
+    From state :math:`|\psi_1\rangle`, remove  :math:`mul * |\psi_2\rangle`.
+
+    Parameters
+    ----------
+    psi1 : dict
+        Multi-configurational state.
+        Product states as keys and amplitudes as values.
+    psi2 : dict
+        Multi-configurational state.
+        Product states as keys and amplitudes as values.
+    mul : int, float or complex
+        Optional
+
+    """
     for state, amp in psi2.items():
-        psi1[state] = psi1.get(state, 0) - psi2[state]
+        psi1[state] = psi1.get(state, 0) - mul * psi2[state]
 
 
 def scale(psi, mul):
+    """
+    return mul*|\psi\rangle
+    """
     return {s: a * mul for s, a in psi.items()}
 
 
@@ -928,21 +1035,29 @@ def getUop_from_rspt_u4(u4):
     l3 = ((l3 // 2) - 1) // 2
     l4 = ((l4 // 2) - 1) // 2
     uDict = {}
-    for i, m1 in enumerate(range(-l1, l1 + 1)):
-        for j, m2 in enumerate(range(-l2, l4 + 1)):
-            for k, m3 in enumerate(range(-l3, l3 + 1)):
-                for l, m4 in enumerate(range(-l4, l2 + 1)):
-                    u = u4[i, j, k, l]
-                    if abs(u) > 1e-10:
-                        for s in range(2):
-                            for sp in range(2):
-                                proccess = (
-                                    ((l1, s, m1), "c"),
-                                    ((l2, sp, m2), "c"),
-                                    ((l3, sp, m3), "a"),
-                                    ((l4, s, m4), "a"),
-                                )
-                                uDict[proccess] = u / 2
+    # for i, m1 in enumerate(range(-l1, l1 + 1)):
+    #     for j, m2 in enumerate(range(-l2, l4 + 1)):
+    #         for k, m3 in enumerate(range(-l3, l3 + 1)):
+    #             for l, m4 in enumerate(range(-l4, l2 + 1)):
+    for i, j, k, l in itertools.product(range(u4.shape[0]), range(u4.shape[1]), range(u4.shape[2]), range(u4.shape[3])):
+        u = u4[i, j, k, l]
+        if abs(u) > 1e-10:
+            proccess = (
+                (i, "c"),
+                (j, "c"),
+                (k, "a"),
+                (l, "a"),
+            )
+            uDict[proccess] = u / 2
+            # for s in range(2):
+            #     for sp in range(2):
+            #         proccess = (
+            #             ((l1, s, m1), "c"),
+            #             ((l2, sp, m2), "c"),
+            #             ((l3, sp, m3), "a"),
+            #             ((l4, s, m4), "a"),
+            #         )
+            #         uDict[proccess] = u / 2
     return uDict
 
 
@@ -1350,6 +1465,18 @@ def getTraceDensityMatrix(nBaths, psi, l=2):
         nState *= abs(amp) ** 2
         n += nState
     return n
+
+
+def build_impurity_density_matrix(n_imp_orbitals, n_bath_orbitals, psi):
+    n_spin_orbitals = n_imp_orbitals + n_bath_orbitals
+    densityMatrix = np.zeros((n_imp_orbitals, n_imp_orbitals), dtype=complex)
+    for i, j in itertools.product(range(n_imp_orbitals), range(n_imp_orbitals)):
+        psi_new = a(n_spin_orbitals, i, psi)
+        psi_new = c(n_spin_orbitals, j, psi_new)
+        tmp = inner(psi, psi_new)
+        if tmp != 0:
+            densityMatrix[i, j] = tmp
+    return densityMatrix
 
 
 def getDensityMatrix(nBaths, psi, l=2):
@@ -1937,6 +2064,9 @@ def applyOp(n_spin_orbitals, op, psi, slaterWeightMin=0, restrictions=None, opRe
 
 
 def occupation_is_within_restrictions(state, n_spin_orbitals, restrictions):
+    """
+    Return True if the occupations in state are within the restrictions. Otherwise, return False.
+    """
     if restrictions is None:
         return True
     # state_new_tuple = psr.bytes2tuple(state, n_spin_orbitals)
@@ -1949,96 +2079,7 @@ def occupation_is_within_restrictions(state, n_spin_orbitals, restrictions):
     return True
 
 
-def applyOp_2(n_spin_orbitals, op, psi, slaterWeightMin=0, restrictions=None, opResult=None):
-    r"""
-    Return :math:`|psi' \rangle = op |psi \rangle`.
-
-    If opResult is not None, it is updated to contain information of how the
-    operator op acted on the product states in psi.
-
-    Parameters
-    ----------
-    n_spin_orbitals : int
-        Total number of spin-orbitals in the system.
-    op : dict
-        Operator of the format
-        tuple : amplitude,
-
-        where each tuple describes a scattering
-
-        process. Examples of possible tuples (and their meanings) are:
-
-        ((i, 'c'))  <-> c_i^dagger
-
-        ((i, 'a'))  <-> c_i
-
-        ((i, 'c'), (j, 'a'))  <-> c_i^dagger c_j
-
-        ((i, 'c'), (j, 'c'), (k, 'a'), (l, 'a')) <-> c_i^dagger c_j^dagger c_k c_l
-    psi : dict
-        Multi-configurational state.
-        Product states as keys and amplitudes as values.
-    slaterWeightMin : float
-        Restrict the number of product states by
-        looking at `|amplitudes|^2`.
-    restrictions : dict
-        Restriction the occupation of generated
-        product states.
-    opResult : dict
-        In and output argument.
-        If present, the results of the operator op acting on each
-        product state in the state psi is added and stored in this
-        variable.
-
-    Returns
-    -------
-    psiNew : dict
-        New state of the same format as psi.
-
-
-    """
-    psiNew = {}
-    if opResult is None:
-        opResult = {}
-    # Loop over product states in psi.
-    for state, amp in psi.items():
-        if state in opResult:
-            addToFirst(psiNew, opResult[state], amp)
-            continue
-
-        state_bits = psr.bytes2bitarray(state, n_spin_orbitals)
-        # Create new element in opResult
-        # Store H|PS> for product states |PS> not yet in opResult
-        opResult[state] = {}
-        for process, h in op.items():
-            state_bits_new = state_bits.copy()
-            signTot = 1
-            for i, action in process[-1::-1]:
-                if action == "a":
-                    sign = remove.ubitarray(i, state_bits_new)
-                elif action == "c":
-                    sign = create.ubitarray(i, state_bits_new)
-                elif action == "i":
-                    sign = 1
-                signTot *= sign
-                if signTot == 0:
-                    break
-            if signTot == 0:
-                continue
-            state_new = psr.bitarray2bytes(state_bits_new)
-            if not occupation_is_within_restrictions(state_new, n_spin_orbitals, restrictions):
-                continue
-            psiNew[state_new] = amp * h * signTot + psiNew.get(state_new, 0)
-            if opResult is not None:
-                opResult[state][state_new] = h * signTot + opResult[state].get(state_new, 0)
-
-    for state, amp in list(psiNew.items()):
-        if abs(amp) ** 2 < slaterWeightMin:
-            psiNew.pop(state)
-    return psiNew
-
-
-def applyOp_3(n_spin_orbitals, op, psi, slaterWeightMin=0, restrictions=None, opResult=None):
+def applyOp_new(n_spin_orbitals: int, op: dict, psi: dict, slaterWeightMin=0, restrictions=None, opResult=None):
     r"""
     Return :math:`|psi' \rangle = op |psi \rangle`.
 
@@ -2120,9 +2161,6 @@ def applyOp_3(n_spin_orbitals, op, psi, slaterWeightMin=0, restrictions=None, op
         newResults[state][state_new] = h * signTot + newResults[state].get(state_new, 0)
     opResult.update(newResults)
 
-    # for state, amp in list(psiNew.items()):
-    #     if abs(amp) ** 2 < slaterWeightMin:
-    #         psiNew.pop(state)
     return {state: amp for state, amp in psiNew.items() if abs(amp) ** 2 > slaterWeightMin}
 
 
