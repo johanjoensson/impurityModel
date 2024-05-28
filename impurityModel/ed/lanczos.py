@@ -607,3 +607,102 @@ def block_lanczos(
         print(f"===> Building states took {t_state:.4f} seconds")
         print(f"=> time(get_block_Lanczons_matrices) = {perf_counter() - t_tot:.4f} seconds.", flush=True)
     return alphas, betas, Q if build_krylov_basis else None
+
+
+# def block_Lanczos_matrices_petsc(
+#     psi0: np.ndarray,
+#     h,
+#     reort_mode,
+#     converged: Callable[[np.ndarray, np.ndarray], bool],
+#     h_local: bool = False,
+#     verbose: bool = True,
+#     max_krylov_size: int = None,
+#     build_krylov_basis: bool = True,
+#     comm=None,
+# ):
+#     if max_krylov_size is None:
+#         krylovSize = h.shape[0]
+#     else:
+#         krylovSize = min(h.shape[0], max_krylov_size)
+#     eps = np.finfo("float").eps
+#     t0 = perf_counter()
+
+#     t_reorth = 0.0
+#     t_estimate = 0.0
+#     t_matmul = 0.0
+#     t_conv = 0.0
+#     t_qr = 0.0
+
+#     N = h.shape[0]
+#     n = psi0.shape[1] if len(psi0.shape) == 2 else 1
+
+#     alphas = np.empty((0, n, n), dtype=complex)
+#     betas = np.empty((0, n, n), dtype=complex)
+#     betah = PETSc.Mat.create(comm=comm)
+#     betah.setSizes([n, n])
+#     beta.assemble()
+#     zero = PETSc.Mat.create(comm=comm)
+#     zero.setSizes([N, n])
+#     zero.assemble()
+#     q = [zero, psi0]
+
+#     if h_local:
+#         done = False
+#         # Run at least 1 iteration (to generate $\alpha_0$).
+#         # We can also not generate more than N Lanczos vectors, meaning we can
+#         # take at most N/n steps in total
+#         for i in range(int(np.ceil(krylovSize / n))):
+#             # Update to PRO block Lanczos!!
+#             wp = h @ q[1]
+#             wph = q[1].duplicate(copy=False)
+#             wph.hermitianTranspose()
+#             alpha = wph @ wp
+#             # alphas = np.append(alphas, [np.conj(q[1].T) @ wp], axis=0)
+#             alphas = np.append(alphas, np.zeros((1, n, n), dtype=complex), axis=0)
+#             betas = np.append(betas, np.zeros((1, n, n), dtype=complex), axis=0)
+#             start, stop = alpha.getOwnershipRange()
+#             for row in range(start, stop):
+#                 cols, vals = alpha.getRow(row)
+#                 for col, val in zip(cols, vals):
+#                     alphas[-1, row, col] = val
+#             comm.Allreduce(alphas[-1].copy(), alphas[-1], op=MPI.SUM)
+#             w = wp - q[1] @ alpha - q[0] @ betah
+#             q[0] = q[1]
+#             start, stop = w.getOwnershipRange()
+#             w_loc = np.zeros((stop - start, n), dtype=complex)
+#             for row in range(start, stop):
+#                 cols, vals = w.getRow(row)
+#                 for col, val in zip(cols, vals):
+#                     w_loc[row, col] = val
+#             rows = np.empty((comm.size), dtype=int)
+#             comm.Gather(np.array([stop - start]), rows)
+#             w_full = np.empty((N, n), dtype=complex) if comm.rank == 0 else None
+#             counts = rows * n
+#             offsets = np.array([sum(counts[:r]) for r in range(comm.size)])
+#             comm.Gatherv(w_loc, [w_full, counts, offsets, MPI.C_DOUBLE_COMPLEX])
+#             if comm.rank == 0:
+#                 w_full, betas[i] = sp.linalg.qr(w_full, mode="economic", overwrite_a=True, check_finite=False)
+#             comm.Bcast(betas[i])
+#             for row, col in itertools.product(range(n), range(n)):
+#                 betah[col, row] = np.conj(betas[i, row, col])
+#             betah.assemble()
+#             comm.Scatterv([w_full, counts, offsets, MPI.C_DOUBLE_COMPLEX], w_loc)
+#             for row in range(start, stop):
+#                 cols, vals = w.getRow(row)
+#                 for col, _ in zip(cols, vals):
+#                     q[1][row, col] = w_loc[row, col]
+#             q[1].assemble()
+#             delta = converged(alphas, betas)
+#             if delta < 1e-6:
+#                 break
+
+#     print(f"Breaking after iteration {i}, blocksize = {n}")
+#     if verbose:
+#         print(f"===> Matrix vector multiplication took {t_matmul:.4f} seconds")
+#         print(f"===> Estimating overlap took {t_estimate:.4f} seconds")
+#         print(f"===> Estimating convergence took {t_conv:.4f} seconds")
+#         print(f"===> QR factorization took {t_qr:.4f} seconds")
+#         print(f"===> Reorthogonalized {n_reort} times")
+#         print(f"===> Reorthogonalizing took {t_reorth:.4f} seconds")
+#         print(f"=> time(get_block_Lanczons_matrices) = {perf_counter() - t0:.4f} seconds.")
+#     return alphas, betas, Q.vectors[: len(Q)].T if Q is not None else None
