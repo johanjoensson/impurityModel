@@ -198,7 +198,7 @@ class Basis:
 
         imp_orbs = 0
         val_orbs = n_imp_orbs
-        con_orbs = n_imp_orbs + n_conduction_states
+        con_orbs = n_imp_orbs + n_valence_states
         for i in total_baths:
             max_imp = 0
             min_imp = self.impurity_orbitals[i]

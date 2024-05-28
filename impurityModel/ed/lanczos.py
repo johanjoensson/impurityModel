@@ -434,9 +434,8 @@ def block_lanczos(
         ]
         t_apply += perf_counter() - t_tmp
         t_tmp = perf_counter()
-        if basis.size > 2 * N0:
-            N0 = basis.size
-            basis.clear()
+        N0 = basis.size
+        basis.clear()
         basis.add_states(
             itertools.chain(
                 (state for psis in q for psi in psis for state in psi), (state for psi in wp for state in psi)
@@ -449,6 +448,13 @@ def block_lanczos(
         q[0] = tmp[0:n]
         q[1] = tmp[n : 2 * n]
         wp = tmp[2 * n : 3 * n]
+        if N0 > basis.truncation_threshold:
+            local_states = {}
+            for state, amp in itertools.chain(q[0].items(), q[1].items(), wp.items()):
+                local_states[state] = max(abs(amp), local_states.get(state, 0))
+            local_states = sorted(local_states.items(), key=lambda x: x[1])
+            basis.clear()
+            basis.add_states(state for state, _ in local_states[: basis.truncation_threshold // basis.comm.size])
         t_redist += perf_counter() - t_tmp
         t_tmp = perf_counter()
         psi = np.empty((len(basis.local_basis), n), dtype=complex)

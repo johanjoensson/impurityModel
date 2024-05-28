@@ -375,7 +375,7 @@ def calc_selfenergy(
     energy_cut = -tau * np.log(1e-4)
 
     basis.tau = tau
-    h_dict = basis.expand(h, H_dict=h_dict, dense_cutoff=dense_cutoff, de2_min=1e-8)
+    h_dict = basis.expand(h, H_dict=h_dict, dense_cutoff=dense_cutoff, de2_min=1e-6)
     if verbosity >= 1:
         print(f"{len(h)} processes in the Hamiltonian.")
         print(f"#basis states = {len(basis)}")
@@ -389,7 +389,7 @@ def calc_selfenergy(
         k=n_imp_orbs,
         eigenValueTol=0,
     )
-    psis = basis.build_state(psis_dense.T, slaterWeightMin=0)
+    psis = basis.build_state(psis_dense.T, slaterWeightMin=np.finfo(float).eps)
     basis.clear()
     basis.add_states(set(state for psi in psis for state in psi))
     gs_stats = basis.get_state_statistics(psis)
