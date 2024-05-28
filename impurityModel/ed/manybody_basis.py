@@ -12,7 +12,11 @@ from heapq import merge
 import numpy as np
 import scipy as sp
 from mpi4py import MPI
-from impurityModel.ed.manybody_state_containers import DistributedStateContainer, CentralizedStateContainer
+from impurityModel.ed.manybody_state_containers import (
+    DistributedStateContainer,
+    CentralizedStateContainer,
+    SimpleDistributedStateContainer,
+)
 
 
 from impurityModel.ed import product_state_representation as psr
@@ -348,7 +352,7 @@ class Basis:
         t0 = perf_counter()
 
         # self.state_container = CentralizedStateContainer(
-        self.state_container = DistributedStateContainer(
+        self.state_container = SimpleDistributedStateContainer(
             initial_basis,
             bytes_per_state=self.n_bytes,
             comm=self.comm,
