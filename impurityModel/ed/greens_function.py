@@ -571,7 +571,7 @@ def block_Green(
     n_samples = max(len(conv_w) // 20, min(len(conv_w), 10))
 
     def converged(alphas, betas):
-        if np.any(np.linalg.norm(betas[-1], axis=1) < np.sqrt(np.finfo(float).eps)):
+        if np.any(np.linalg.norm(betas[-1], axis=1) < slaterWeightMin):
             return True
 
         if alphas.shape[0] == 1:
@@ -747,8 +747,8 @@ def calc_Greens_function_with_offdiag_cg(
                     n_spin_orbitals,
                     tOps[i_tOp],
                     {s: 1},
-                    slaterWeightMin=0,  # slaterWeightMin,
-                    restrictions=None,  # basis.restrictions,
+                    slaterWeightMin=slaterWeightMin,
+                    restrictions=basis.restrictions,
                     opResult=t_mems[i_tOp],
                 )
                 local_excited_basis |= res.keys()

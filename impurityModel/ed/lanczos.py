@@ -441,7 +441,6 @@ def block_lanczos(
                 (state for psis in q for psi in psis for state in psi), (state for psi in wp for state in psi)
             )
         )
-        # basis.add_states(state for psi in wp for state in psi)
         t_add += perf_counter() - t_tmp
         t_tmp = perf_counter()
         tmp = basis.redistribute_psis(itertools.chain(q[0], q[1], wp))
@@ -507,10 +506,6 @@ def block_lanczos(
         if rank == 0:
             t_tmp = perf_counter()
             qip, betas[-1] = qr_decomp(qip)
-            # qip, beta = sp.linalg.qr(qip, mode="economic", overwrite_a=True, check_finite=False)
-            # betas[it, : beta.shape[0], : beta.shape[1]]
-            # t_qr += perf_counter() - t_tmp
-            # qip = np.array(qip, order="C")
             _, columns = qip.shape
 
         if mpi:
@@ -529,14 +524,11 @@ def block_lanczos(
             done = basis.comm.allreduce(done, op=MPI.LAND)
 
         converge_count = (1 + converge_count) if done else 0
-        if converge_count > 0:  #  or it * n > basis.size:
+        if converge_count > 0:
             break
 
         if reort == Reort.PARTIAL:
-            # try:
             W = estimate_orthonormality(W, alphas, betas, N=basis.size)
-            # except np.linalg.LinAlgError:
-            #     W[1, :] = 1
             orth_loss = np.any(np.abs(W[1]) > np.sqrt(np.finfo(float).eps))
             if orth_loss or force_reort is not None:
                 mask = np.array([np.any(np.abs(m) > np.finfo(float).eps ** (3 / 4), axis=1) for m in W[1]])
@@ -545,6 +537,7 @@ def block_lanczos(
                 combined_mask[:-1] = np.logical_or(mask[:-1], force_reort) if force_reort is not None else mask[:-1]
                 Qm = basis.build_distributed_vector(list(itertools.compress(Q, combined_mask.flatten()))).T
                 W[1, combined_mask] = np.finfo(float).eps * np.random.normal(loc=0, scale=1.5, size=W[1, mask].shape)
+                basis.comm.Bcast(W[1])
                 psip = psip @ betas[it]
                 if mpi:
                     tmp = np.empty((Qm.shape[1], n), dtype=complex)
@@ -584,8 +577,7 @@ def block_lanczos(
 
         t_state += perf_counter() - t_tmp
         if build_krylov_basis:
-            for psi in q[1]:
-                Q.append(psi)
+            Q.extend(q[1])
         it += 1
     if verbose:
         print(f"Breaking after iteration {it}, blocksize = {n}")
