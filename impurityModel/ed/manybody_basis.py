@@ -618,7 +618,7 @@ class Basis:
         elif self.is_distributed:
             self.comm.Reduce(v_local, v, op=MPI.SUM, root=root)
         else:
-            v = v_local
+            v[:, :] = v_local
         return v
 
     def build_distributed_vector(self, psis: list[dict], dtype=complex) -> np.ndarray:
@@ -895,12 +895,12 @@ class CIPSI_Basis(Basis):
                 opResult=H_dict,
             )
             Dj_candidates = Hpsi_i.keys()
-            Dj_basis_mask = (not x for x in self.contains(Dj_candidates))
             Dj_basis = Basis(
                 impurity_orbitals=self.impurity_orbitals,
                 valence_baths=self.bath_states[0],
                 conduction_baths=self.bath_states[1],
-                initial_basis=itertools.compress(Dj_candidates, Dj_basis_mask),
+                initial_basis=Dj_candidates,
+                # initial_basis=itertools.compress(Dj_candidates, Dj_basis_mask),
                 restrictions=None,
                 comm=self.comm,
                 verbose=False,
@@ -1001,7 +1001,7 @@ class CIPSI_Basis(Basis):
         # print(f"Building operator took {t_build_dict} seconds.")
         return H_dict
 
-    def expand_at(self, w, psi_ref, H, H_dict=None, de2_min=1e-4):
+    def expand_at(self, w, psi_ref, H, H_dict=None, de2_min=1e-20):
         old_size = self.size - 1
         while old_size != self.size:
             # Hpsi_ref = [[] for _ in psi_ref]
@@ -1020,7 +1020,7 @@ class CIPSI_Basis(Basis):
                 break
             old_size = self.size
             self.add_states(new_Dj)
-            break
+            # break
 
             Hpsi_keys = set(state for psi in Hpsi_ref for state in psi)
             mask = list(self.contains(Hpsi_keys))

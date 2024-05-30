@@ -83,7 +83,7 @@ def cg_phys(A_op, A_dict, n_spin_orbitals, x_psi, y_psi, w, delta, basis, atol=1
         x += alpha_guess * p
 
         t_state = perf_counter()
-        p_psi, r_prev_psi, x_psi = basis.build_state(np.vstack((p, r_prev, x)))
+        p_psi, r_prev_psi, x_psi = basis.build_state([p, r_prev, x])
         t_build_states += perf_counter() - t_state
 
         t_expand = perf_counter()
@@ -106,7 +106,7 @@ def cg_phys(A_op, A_dict, n_spin_orbitals, x_psi, y_psi, w, delta, basis, atol=1
         r = y - Ax
 
         ad = (r_prev - r) / alpha_guess
-        if abs(np.conj(r_prev) @ ad) < np.finfo(float).eps:
+        if abs(np.conj(r_prev) @ ad) < atol**2:
             print(f"r did not change!")
             print(f"{A=}")
             print(f"{Ax=}")

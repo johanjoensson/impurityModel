@@ -310,8 +310,8 @@ def calc_Greens_function_with_offdiag(
 
         if verbose:
             print(f"time(build excited state basis) = {time.perf_counter() - t0}")
-        gs_matsubara_block_i, gs_realaxis_block_i = block_Green(
-            # gs_matsubara_block_i, gs_realaxis_block_i = get_block_Green(
+        gs_matsubara_block_i, gs_realaxis_block_i = get_block_Green_cg(
+            # gs_matsubara_block_i, gs_realaxis_block_i = block_Green(
             n_spin_orbitals=excited_basis.num_spin_orbitals,
             hOp=hOp,
             psi_arr=block_v,
@@ -703,114 +703,6 @@ def calc_local_Greens_function_from_alpha_beta(alphas, betas, iws, ws, e, delta,
     return gs_matsubara, gs_realaxis
 
 
-def calc_Greens_function_with_offdiag_cg(
-    n_spin_orbitals,
-    hOp,
-    tOps,
-    psis,
-    es,
-    basis,
-    iw,
-    w,
-    delta,
-    reort,
-    restrictions=None,
-    blocks=None,
-    krylovSize=None,
-    slaterWeightMin=0,
-    parallelization_mode="H_build",
-    verbose=True,
-    dense_cutoff=1e3,
-    tau=0,
-):
-    """
-    Use conjugate gradient method to calculate the interacting Greens function function with offdiagonal elements.
-    Keep the manybody basis optimized for the excited state.
-    """
-    n = len(es)
-    if iw is not None:
-        gs_matsubara = np.zeros((n, len(tOps), len(tOps), len(iw)), dtype=complex)
-    else:
-        gs_matsubara = None
-    if w is not None:
-        gs_realaxis = np.zeros((n, len(tOps), len(tOps), len(w)), dtype=complex)
-    else:
-        gs_realaxis = None
-
-    t_mems = [{} for _ in tOps]
-    h_mem = {}
-
-    local_excited_basis = set()
-    for block in blocks:
-        for i_tOp, tOp in [(orb, tOps[orb]) for orb in block]:
-            for s in basis.local_basis:
-                res = finite.applyOp_new(
-                    n_spin_orbitals,
-                    tOps[i_tOp],
-                    {s: 1},
-                    slaterWeightMin=slaterWeightMin,
-                    restrictions=basis.restrictions,
-                    opResult=t_mems[i_tOp],
-                )
-                local_excited_basis |= res.keys()
-    excited_basis = CIPSI_Basis(
-        impurity_orbitals=basis.impurity_orbitals,
-        bath_states=basis.bath_states,
-        initial_basis=local_excited_basis,
-        restrictions=basis.restrictions,
-        comm=basis.comm,
-        verbose=verbose,
-        truncation_threshold=basis.truncation_threshold,
-        tau=basis.tau,
-        spin_flip_dj=basis.spin_flip_dj,
-    )
-    for i, (psi, e) in enumerate(zip(psis, es)):
-        for block in blocks:
-            block_v = []
-            local_excited_basis = set()
-            t0 = time.perf_counter()
-            for i_tOp, tOp in [(orb, tOps[orb]) for orb in block]:
-                v = finite.applyOp_new(
-                    n_spin_orbitals,
-                    tOp,
-                    {state: psi[state] for state in psi if state in basis.local_basis},
-                    slaterWeightMin=slaterWeightMin,
-                    restrictions=basis.restrictions,
-                    opResult=t_mems[i_tOp],
-                )
-                vs = comm.allgather(v)
-                v = {}
-                for v_i in vs:
-                    for state in v_i:
-                        v[state] = v_i[state] + v.get(state, 0)
-                block_v.append(v)
-            if verbose:
-                print(f"time(build excited state basis) = {time.perf_counter() - t0}")
-            gs_matsubara_i, gs_realaxis_i = get_block_Green_cg(
-                n_spin_orbitals=n_spin_orbitals,
-                hOp=hOp,
-                psi_arr=block_v,
-                basis=excited_basis,
-                e=e,
-                iws=iw,
-                ws=w,
-                delta=delta,
-                restrictions=restrictions,
-                h_mem=h_mem,
-                slaterWeightMin=slaterWeightMin,
-                verbose=verbose,
-                dense_cutoff=dense_cutoff,
-            )
-            if rank == 0:
-                if iw is not None:
-                    block_idx = np.ix_(block, block, range(gs_matsubara.shape[3]))
-                    gs_matsubara[i][block_idx] = gs_matsubara_i
-                if w is not None:
-                    block_idx = np.ix_(block, block, range(gs_realaxis.shape[3]))
-                    gs_realaxis[i][block_idx] = gs_realaxis_i
-    return gs_matsubara, gs_realaxis
-
-
 def get_block_Green_cg(
     n_spin_orbitals,
     hOp,
@@ -820,17 +712,18 @@ def get_block_Green_cg(
     iws,
     ws,
     delta,
-    restrictions=None,
+    reort=None,
     h_mem=None,
     slaterWeightMin=0,
     verbose=True,
-    dense_cutoff=1e3,
 ):
     """
     Calculate one block of the Greens function using the conjugate gradient method.
     """
     matsubara = iws is not None
     realaxis = ws is not None
+    comm = basis.comm
+    rank = comm.rank
 
     if not matsubara and not realaxis:
         if rank == 0:
@@ -842,13 +735,31 @@ def get_block_Green_cg(
 
     if verbose:
         t0 = time.perf_counter()
-    h = basis.build_sparse_matrix(hOp, h_mem)
+    # build full starting vectors on each MPI rank
+    all_psis = comm.allgather(psi_arr)
+    psis = [{} for _ in psi_arr]
+    for r_psis in all_psis:
+        for psi, r_psi in zip(psis, r_psis):
+            for state, amp in r_psi.items():
+                psi[state] = amp + psi.get(state, 0)
+    local_basis = CIPSI_Basis(
+        impurity_orbitals=basis.impurity_orbitals,
+        valence_baths=basis.bath_states[0],
+        conduction_baths=basis.bath_states[1],
+        initial_basis=[state for psi in psis for state in psi],
+        restrictions=basis.restrictions,
+        comm=None,
+        verbose=verbose,
+        truncation_threshold=basis.truncation_threshold,
+        spin_flip_dj=basis.spin_flip_dj,
+        tau=basis.tau,
+    )
+    N = len(local_basis)
 
     if verbose:
         print(f"time(build Hamiltonian operator) = {time.perf_counter() - t0}")
 
-    N = h.shape[0]
-    n = len(psi_arr)
+    n = len(psis)
 
     if verbose:
         t0 = time.perf_counter()
@@ -857,69 +768,40 @@ def get_block_Green_cg(
         print(f"time(set up psi_start) = {time.perf_counter() - t0}")
 
     if N == 0 or n == 0:
-        return np.zeros((n, n, len(iws)), dtype=complex), np.zeros((n, n, len(ws)), dtype=complex)
+        return np.zeros((len(iws), n, n), dtype=complex), np.zeros((len(ws), n, n), dtype=complex)
 
-    # local_basis_lens = np.empty((comm.size), dtype=int)
-    # comm.Allgather(np.array([len(basis.local_basis)], dtype=int), local_basis_lens)
-    local_basis = CIPSI_Basis(
-        ls=basis.ls,
-        bath_states=basis.bath_states,
-        initial_basis=list(basis),
-        restrictions=basis.restrictions,
-        num_spin_orbitals=basis.num_spin_orbitals,
-        comm=None,
-        verbose=verbose,
-        truncation_threshold=basis.truncation_threshold,
-        spin_flip_dj=basis.spin_flip_dj,
-        tau=basis.tau,
-    )
-    A_mem = {}
     if matsubara:
         gs_matsubara = np.zeros((len(iws), n, n), dtype=complex)
-        local_basis = CIPSI_Basis(
-            impurity_orbitals=basis.impurity_orbitals,
-            bath_states=basis.bath_states,
-            initial_basis=basis,
-            restrictions=basis.restrictions,
-            comm=None,
-            verbose=verbose,
-            truncation_threshold=basis.truncation_threshold,
-            spin_flip_dj=basis.spin_flip_dj,
-            tau=basis.tau,
-        )
+        sol = {}
         for w_i, w in finite.get_job_tasks(comm.rank, comm.size, list(enumerate(iws))):
             shift = {((0, "i"),): w + e}
             A_op = finite.subtractOps(shift, hOp)
             A_dict = {}
             for col in range(n):
-                tmp, info = cg_phys(A_op, A_dict, n_spin_orbitals, {}, psi_arr[col], 0, w.imag, local_basis)
-                T_psi = local_basis.build_vector(psi_arr).T
-                gs_matsubara[w_i, :, col] = np.conj(T_psi.T) @ sol_dense
-                sol = local_basis.build_state(sol_dense)[0]
+                tmp, info = cg_phys(A_op, A_dict, n_spin_orbitals, sol, psis[col], 0, w.imag, local_basis)
+                T_psi = local_basis.build_vector(psis).T
+                gs_matsubara[w_i, :, col] = np.conj(T_psi.T) @ tmp
+                sol = {}  # local_basis.build_state(tmp)[0]
         comm.Allreduce(gs_matsubara.copy(), gs_matsubara, op=MPI.SUM)
-        gs_matsubara = np.moveaxis(gs_matsubara, 0, -1)
 
     if realaxis:
         gs_realaxis = np.zeros((len(ws), n, n), dtype=complex)
-        for col in range(n):
-            sol = dict()
-            for w_i, w in finite.get_job_tasks(comm.rank, comm.size, list(enumerate(ws))):
-                shift = {((0, "i"),): w + 1j * delta + e}
-                A_op = finite.subtractOps(shift, hOp)
-                for state in A_mem:
-                    A_mem[state][state] = A_mem[state].get(state, 0) + w + 1j * delta + e
-                sol_dense, info = cg_phys(A_op, A_mem, n_spin_orbitals, sol, psi_arr[col], w, delta, local_basis)
-                for state in A_mem:
-                    A_mem[state][state] = A_mem[state].get(state, 0) - (w + 1j * delta + e)
-                T_psi = local_basis.build_vector(psi_arr).T
-                gs_realaxis[w_i, :, col] = np.conj(T_psi.T) @ sol_dense
-                sol = local_basis.build_state(sol_dense)[0]
+        sol = {}
+        for w_i, w in finite.get_job_tasks(comm.rank, comm.size, list(enumerate(ws))):
+            shift = {((0, "i"),): w + e}
+            A_op = finite.subtractOps(shift, hOp)
+            A_dict = {}
+            for col in range(n):
+                tmp, info = cg_phys(A_op, A_dict, n_spin_orbitals, sol, psis[col], w, delta, local_basis)
+                T_psi = local_basis.build_vector(psis).T
+                gs_realaxis[w_i, :, col] = np.conj(T_psi.T) @ tmp
+                sol = {}  # local_basis.build_state(tmp)[0]
         comm.Allreduce(gs_realaxis.copy(), gs_realaxis, op=MPI.SUM)
-        gs_realaxis = np.moveaxis(gs_realaxis, 0, -1)
 
-        if verbose:
-            print(f"time(G_cg) = {time.perf_counter() - t0: .4f} seconds.")
+    if verbose:
+        print(f"time(G_cg) = {time.perf_counter() - t0: .4f} seconds.")
 
+    print(f"{gs_matsubara.shape=} {gs_realaxis.shape=}", flush=True)
     return gs_matsubara, gs_realaxis
 
 
