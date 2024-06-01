@@ -61,18 +61,34 @@ def split_comm_and_redistribute_basis(priorities: Iterable[float], basis: Basis,
             for i, partial_psi in enumerate(partial_psis):
                 for state in partial_psi:
                     psis[i][state] = partial_psi[state] + psis[i].get(state, 0)
-    split_basis = Basis(
-        impurity_orbitals=basis.impurity_orbitals,
-        valence_baths=basis.bath_states[0],
-        conduction_baths=basis.bath_states[1],
-        initial_basis=(state for psi in psis for state in psi),
-        restrictions=basis.restrictions,
-        comm=split_comm,
-        verbose=basis.verbose,
-        truncation_threshold=basis.truncation_threshold,
-        tau=basis.tau,
-        spin_flip_dj=basis.spin_flip_dj,
-    )
+    if isinstance(basis, CIPSI_Basis):
+        split_basis = CIPSI_Basis(
+            impurity_orbitals=basis.impurity_orbitals,
+            valence_baths=basis.bath_states[0],
+            conduction_baths=basis.bath_states[1],
+            initial_basis=(state for psi in psis for state in psi),
+            restrictions=basis.restrictions,
+            comm=split_comm,
+            verbose=basis.verbose,
+            truncation_threshold=basis.truncation_threshold,
+            tau=basis.tau,
+            spin_flip_dj=basis.spin_flip_dj,
+        )
+    elif isinstance(basis, Basis):
+        split_basis = Basis(
+            impurity_orbitals=basis.impurity_orbitals,
+            valence_baths=basis.bath_states[0],
+            conduction_baths=basis.bath_states[1],
+            initial_basis=(state for psi in psis for state in psi),
+            restrictions=basis.restrictions,
+            comm=split_comm,
+            verbose=basis.verbose,
+            truncation_threshold=basis.truncation_threshold,
+            tau=basis.tau,
+            spin_flip_dj=basis.spin_flip_dj,
+        )
+    else:
+        raise RuntimeError(f"Unknown manybody basis type {type(basis)}!")
     psis = split_basis.redistribute_psis(psis)
 
     return slice(indices_start, indices_end), split_roots, n_colors, items_per_color, split_basis, psis
@@ -735,31 +751,24 @@ def get_block_Green_cg(
 
     if verbose:
         t0 = time.perf_counter()
-    # build full starting vectors on each MPI rank
-    all_psis = comm.allgather(psi_arr)
-    psis = [{} for _ in psi_arr]
-    for r_psis in all_psis:
-        for psi, r_psi in zip(psis, r_psis):
-            for state, amp in r_psi.items():
-                psi[state] = amp + psi.get(state, 0)
-    local_basis = CIPSI_Basis(
+    cipsi = CIPSI_Basis(
         impurity_orbitals=basis.impurity_orbitals,
         valence_baths=basis.bath_states[0],
         conduction_baths=basis.bath_states[1],
-        initial_basis=[state for psi in psis for state in psi],
-        restrictions=basis.restrictions,
-        comm=None,
+        initial_basis=basis.local_basis,
+        restrictions=None,
+        comm=basis.comm,
         verbose=verbose,
         truncation_threshold=basis.truncation_threshold,
         spin_flip_dj=basis.spin_flip_dj,
         tau=basis.tau,
     )
-    N = len(local_basis)
+    N = len(basis)
 
     if verbose:
         print(f"time(build Hamiltonian operator) = {time.perf_counter() - t0}")
 
-    n = len(psis)
+    n = len(psi_arr)
 
     if verbose:
         t0 = time.perf_counter()
@@ -771,32 +780,52 @@ def get_block_Green_cg(
         return np.zeros((len(iws), n, n), dtype=complex), np.zeros((len(ws), n, n), dtype=complex)
 
     if matsubara:
+        (
+            iw_indices,
+            iw_roots,
+            n_colors,
+            iw_per_color,
+            iw_basis,
+            psi,
+        ) = split_comm_and_redistribute_basis([1] * len(iws), cipsi, psi_arr)
         gs_matsubara = np.zeros((len(iws), n, n), dtype=complex)
         sol = {}
-        for w_i, w in finite.get_job_tasks(comm.rank, comm.size, list(enumerate(iws))):
+        for w_i, w in zip(list(range(len(iws)))[iw_indices], iws[iw_indices]):
+            # for w_i, w in finite.get_job_tasks(comm.rank, comm.size, list(enumerate(iws))):
             shift = {((0, "i"),): w + e}
             A_op = finite.subtractOps(shift, hOp)
             A_dict = {}
             for col in range(n):
-                tmp, info = cg_phys(A_op, A_dict, n_spin_orbitals, sol, psis[col], 0, w.imag, local_basis)
-                T_psi = local_basis.build_vector(psis).T
-                gs_matsubara[w_i, :, col] = np.conj(T_psi.T) @ tmp
-                sol = {}  # local_basis.build_state(tmp)[0]
-        comm.Allreduce(gs_matsubara.copy(), gs_matsubara, op=MPI.SUM)
+                tmp, info = cg_phys(A_op, A_dict, n_spin_orbitals, sol, psi[col], 0, w.imag, iw_basis)
+                if iw_basis.comm.rank == 0:
+                    T_psi = iw_basis.build_vector(psi).T
+                    gs_matsubara[w_i, :, col] = np.conj(T_psi.T) @ tmp
+                # sol = {}  # local_basis.build_state(tmp)[0]
+        comm.Reduce(gs_matsubara.copy(), gs_matsubara, op=MPI.SUM)
 
     if realaxis:
+        (
+            w_indices,
+            w_roots,
+            n_colors,
+            w_per_color,
+            w_basis,
+            psi,
+        ) = split_comm_and_redistribute_basis([1] * len(ws), cipsi, psi_arr)
         gs_realaxis = np.zeros((len(ws), n, n), dtype=complex)
         sol = {}
-        for w_i, w in finite.get_job_tasks(comm.rank, comm.size, list(enumerate(ws))):
-            shift = {((0, "i"),): w + e}
+        for w_i, w in zip(list(range(len(ws)))[w_indices], ws[w_indices]):
+            # for w_i, w in finite.get_job_tasks(comm.rank, comm.size, list(enumerate(ws))):
+            shift = {((0, "i"),): w + 1j * delta + e}
             A_op = finite.subtractOps(shift, hOp)
             A_dict = {}
             for col in range(n):
-                tmp, info = cg_phys(A_op, A_dict, n_spin_orbitals, sol, psis[col], w, delta, local_basis)
-                T_psi = local_basis.build_vector(psis).T
-                gs_realaxis[w_i, :, col] = np.conj(T_psi.T) @ tmp
-                sol = {}  # local_basis.build_state(tmp)[0]
-        comm.Allreduce(gs_realaxis.copy(), gs_realaxis, op=MPI.SUM)
+                tmp, info = cg_phys(A_op, A_dict, n_spin_orbitals, sol, psi[col], w, delta, w_basis)
+                if w_basis.comm.rank == 0:
+                    T_psi = w_basis.build_vector(psi).T
+                    gs_realaxis[w_i, :, col] = np.conj(T_psi.T) @ tmp
+                # sol = {}  # local_basis.build_state(tmp)[0]
+        comm.Reduce(gs_realaxis.copy(), gs_realaxis, op=MPI.SUM)
 
     if verbose:
         print(f"time(G_cg) = {time.perf_counter() - t0: .4f} seconds.")

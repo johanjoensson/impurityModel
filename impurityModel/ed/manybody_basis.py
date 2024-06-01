@@ -1020,7 +1020,7 @@ class CIPSI_Basis(Basis):
                 break
             old_size = self.size
             self.add_states(new_Dj)
-            # break
+            break
 
             Hpsi_keys = set(state for psi in Hpsi_ref for state in psi)
             mask = list(self.contains(Hpsi_keys))
