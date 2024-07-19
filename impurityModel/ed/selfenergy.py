@@ -294,6 +294,8 @@ def run(cluster, h0, iw, w, delta, tau, verbosity, reort, dense_cutoff, comm):
         cluster.nominal_occ,
         cluster.delta_occ,
         cluster.bath_states,
+        cluster.h_star_bath,
+        cluster.v_star,
         tau,
         verbosity,
         blocks=[cluster.blocks[i] for i in cluster.inequivalent_blocks],
@@ -328,6 +330,8 @@ def calc_selfenergy(
     nominal_occ,
     delta_occ,
     num_bath_states,
+    h_star_bath,
+    v_star,
     tau,
     verbosity,
     blocks,
@@ -455,6 +459,8 @@ def calc_selfenergy(
             nBaths=sum_bath_states,
             gs=gs_realaxis,
             h0op=h0,
+            h_bath=h_star_bath,
+            v_full=v_star,
             delta=delta,
             clustername=cluster_label,
             blocks=blocks,
@@ -474,6 +480,8 @@ def calc_selfenergy(
             nBaths=sum_bath_states,
             gs=gs_matsubara,
             h0op=h0,
+            h_bath=h_star_bath,
+            v_full=v_star,
             delta=0,
             clustername=cluster_label,
             blocks=blocks,
@@ -587,6 +595,8 @@ def get_sigma(
     nBaths,
     gs,
     h0op,
+    h_bath,
+    v_full,
     delta,
     blocks,
     clustername="",
@@ -594,13 +604,13 @@ def get_sigma(
     """
     Calculate self-energy from interacting Greens function and local hamiltonian.
     """
-    hcorr, v_full, _, hbath = get_hcorr_v_hbath(h0op, impurity_orbitals, nBaths)
+    hcorr, _, _, _ = get_hcorr_v_hbath(h0op, impurity_orbitals, nBaths)
 
     res = []
     for block, g in zip(blocks, gs):
         block_idx = np.ix_(block, block)
         wIs = (omega_mesh + 1j * delta)[:, np.newaxis, np.newaxis] * np.eye(len(block))[np.newaxis, :, :]
-        g0_inv = wIs - hcorr[block_idx] - hyb(omega_mesh, v_full[:, block], hbath, delta)
+        g0_inv = wIs - hcorr[block_idx] - hyb(omega_mesh, v_full[:, block], h_bath, delta)
         res.append(g0_inv - np.linalg.inv(g))
 
     return res

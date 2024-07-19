@@ -155,54 +155,56 @@ def estimate_orthonormality(W, alphas, betas, eps=np.finfo(float).eps, N=1, rng=
     # i is the index of the latest calculated vector
     i = alphas.shape[0] - 1
     n = alphas.shape[1]
-    W_out = np.empty((2, i + 2, n, n), dtype=complex)
-    w_bar = np.zeros((i + 2, n, n), dtype=complex)
-    w_bar[i + 1, :, :] = np.identity(n)
-    w_bar[i, :, :] = (
+    W_out = np.empty((2, i + 1, n, n), dtype=complex)
+    w_bar = np.zeros((i + 1, n, n), dtype=complex)
+    w_bar[i, :, :] = np.identity(n)
+    w_bar[i - 1, :, :] = (
         eps
         * N
         * sp.linalg.solve_triangular(betas[i], betas[0], lower=False, trans="C", check_finite=False)
+        * 0.6
         # * sp.linalg.solve_triangular(np.conj(betas[i].T), betas[0], lower = True)
         # * 0.6
         # * rng.standard_normal(size=(n, n))
     )
     if i == 0:
-        W_out[0, : i + 1] = W[1]
-        W_out[1, : i + 2] = np.identity(n)
+        W_out[0, :i] = W[1]
+        W_out[1, : i + 1] = np.identity(n)
         return W_out
 
+    print(f"{W.shape=}")
     if n > 1:
-        w_bar[0] = W[1, 1] @ betas[0] + W[1, 0] @ alphas[0] - alphas[i] @ W[1, 0] - betas[i - 1] @ W[0, 0]
+        w_bar[0] = W[1, 0] @ betas[0] + W[1, 0] @ alphas[0] - alphas[i] @ W[1, 0] - betas[i - 1] @ W[0, 0]
         w_bar[0] = sp.linalg.solve_triangular(betas[i], w_bar[0], lower=False, trans="C", check_finite=False)
         # w_bar[0] = sp.linalg.solve_triangular(np.conj(betas[i].T), w_bar[0], lower = True)
-        w_bar[1:i] = (
-            W[1, 2 : i + 1] @ betas[1:i]
-            + W[1, 1:i] @ alphas[1:i]
-            - alphas[i][np.newaxis, :, :] @ W[1, 1:i]
+        w_bar[1 : i - 1] = (
+            W[1, 1 : i + 1] @ betas[1:i]
+            + W[1, 0 : i - 1] @ alphas[1:i]
+            - alphas[i][np.newaxis, :, :] @ W[1, 1 : i - 1]
             + W[1, 0 : i - 1] @ np.conj(np.transpose(betas[0 : i - 1], axes=[0, 2, 1]))
-            - betas[i - 1][np.newaxis, :, :] @ W[0, 1:i]
+            - betas[i - 1][np.newaxis, :, :] @ W[0, 0 : i - 1]
         )
-        for j in range(1, i):
-            w_bar[j] = sp.linalg.solve_triangular(betas[i], w_bar[j], lower=False, trans="C", check_finite=False)
-            # w_bar[j] = sp.linalg.solve_triangular(np.conj(betas[i].T), w_bar[j], lower = True)
-        # w_bar[1:i] = np.linalg.solve(np.conj(betas[i].T)[np.newaxis, :, :], w_bar[1:i])
+        # for j in range(1, i):
+        # w_bar[j] = sp.linalg.solve_triangular(betas[i], w_bar[j], lower=False, trans="C", check_finite=False)
+        # w_bar[j] = sp.linalg.solve_triangular(np.conj(betas[i].T), w_bar[j], lower = True)
+        w_bar[1 : i - 1] = np.linalg.solve(np.conj(betas[i].T)[np.newaxis, :, :], w_bar[1 : i - 1])
     elif n == 1:
         # For standard Lanczos, broadcasting is faster than looping
-        w_bar[:i] = (
-            W[1, 1 : i + 1] * betas[:i]
-            + (alphas[:i] - alphas[i]) * W[1, :i]
+        w_bar[: i - 1] = (
+            W[1, 0:i] * betas[:i]
+            + (alphas[:i] - alphas[i]) * W[1, : i - 1]
             + np.append(
                 np.zeros((1, 1, 1), dtype=complex),
-                W[1, 0 : i - 1] * betas[0 : i - 1],
+                W[1, 0 : i - 2] * betas[0 : i - 2],
                 axis=0,
             )
-            - betas[i - 1] * W[0, :i]
+            - betas[i - 1] * W[0, : i - 1]
         )
-        w_bar[:i] = w_bar[:i] / betas[i]
+        w_bar[: i - 1] = w_bar[: i - 1] / betas[i]
 
-    w_bar[:i] += eps * (betas[i] + betas[:i])  # * 0.3 * rng.standard_normal(size=(i, n, n))
-    W_out[0, : i + 1] = W[1]
-    W_out[1, : i + 2] = w_bar
+    w_bar[: i - 1] += eps * (betas[i] + betas[:i]) * 0.3  # * 0.3 * rng.standard_normal(size=(i, n, n))
+    W_out[0, :i] = W[1]
+    W_out[1, : i + 1] = w_bar
 
     return W_out
 
@@ -438,7 +440,8 @@ def block_lanczos(
         basis.clear()
         basis.add_states(
             itertools.chain(
-                (state for psis in q for psi in psis for state in psi), (state for psi in wp for state in psi)
+                (state for psis in q for psi in psis for state in psi),
+                (state for psi in wp for state in psi),  #  if psi[state] ** 2 >= 0 * slaterWeightMin),
             )
         )
         t_add += perf_counter() - t_tmp
@@ -497,6 +500,51 @@ def block_lanczos(
             else:
                 tmp = np.conj(Qm.T) @ psip
             psip -= Qm @ tmp
+        elif reort == Reort.PARTIAL and it > 0:
+            W = estimate_orthonormality(W, alphas[:-1], betas[:-1], N=1)
+            print(f"{W.shape=} {len(Q)=} {it=}")
+            orth_loss = np.any(np.abs(W[1]) > np.sqrt(np.finfo(float).eps))
+            if orth_loss or force_reort is not None:
+                mask = np.array([[True] * n] * (W.shape[1]))
+                # mask = np.any(np.abs(W[1, :-1]) > np.finfo(float).eps ** (3 / 4), axis=1)
+                combined_mask = (
+                    np.logical_or(mask, np.append(force_reort, [[False] * n], axis=0))
+                    if force_reort is not None
+                    else mask
+                )
+                # Qm = basis.build_distributed_vector(list(itertools.compress(Q, combined_mask.flatten()))).T
+                Qm = basis.build_distributed_vector(Q).T
+                W[1][combined_mask] = np.finfo(float).eps  #  * np.random.normal(loc=0, scale=1.5, size=W[1, :-2].shape)
+                basis.comm.Bcast(W[1])
+                force_reort = None if force_reort is not None else mask
+            else:
+                Qm = np.zeros((len(basis.local_basis), 0), dtype=complex)
+        else:
+            Qm = np.zeros((len(basis.local_basis), 0), dtype=complex)
+
+        if reort == Reort.FULL or reort == Reort.PARTIAL:
+            if mpi:
+                tmp = np.empty((Qm.shape[1], n), dtype=complex)
+                basis.comm.Allreduce(np.conj(Qm.T) @ psip, tmp, op=MPI.SUM)
+            else:
+                tmp = np.conj(Qm.T) @ psip
+            psip -= Qm @ tmp
+            # if mpi:
+            #     basis.comm.Gatherv(psip, [qip, send_counts, offsets, MPI.C_DOUBLE_COMPLEX], root=0)
+            # else:
+            #     qip = psip
+            # t_vec += perf_counter() - t_tmp
+            # if rank == 0:
+            #     t_tmp = perf_counter()
+            #     qip, betas[-1] = qr_decomp(qip)
+            #     _, columns = qip.shape
+
+            # if mpi:
+            #     basis.comm.Bcast(betas[it], root=0)
+            #     columns = basis.comm.bcast(columns if rank == 0 else None)
+            #     request = basis.comm.Iscatterv([qip, send_counts, offsets, MPI.C_DOUBLE_COMPLEX], psip.T, root=0)
+            # else:
+            #     psip = qip
         qip = np.empty((basis.size, n), dtype=complex) if rank == 0 else None
         if mpi:
             basis.comm.Gatherv(psip, [qip, send_counts, offsets, MPI.C_DOUBLE_COMPLEX], root=0)
@@ -527,52 +575,13 @@ def block_lanczos(
         if converge_count > 0:
             break
 
-        if reort == Reort.PARTIAL:
-            W = estimate_orthonormality(W, alphas, betas, N=basis.size)
-            orth_loss = np.any(np.abs(W[1]) > np.sqrt(np.finfo(float).eps))
-            if orth_loss or force_reort is not None:
-                mask = np.array([np.any(np.abs(m) > np.finfo(float).eps ** (3 / 4), axis=1) for m in W[1]])
-                mask[-1:] = False
-                combined_mask = mask
-                combined_mask[:-1] = np.logical_or(mask[:-1], force_reort) if force_reort is not None else mask[:-1]
-                Qm = basis.build_distributed_vector(list(itertools.compress(Q, combined_mask.flatten()))).T
-                W[1, combined_mask] = np.finfo(float).eps * np.random.normal(loc=0, scale=1.5, size=W[1, mask].shape)
-                basis.comm.Bcast(W[1])
-                psip = psip @ betas[it]
-                if mpi:
-                    tmp = np.empty((Qm.shape[1], n), dtype=complex)
-                    basis.comm.Allreduce(np.conj(Qm.T) @ psip, tmp, op=MPI.SUM)
-                else:
-                    tmp = np.conj(Qm.T) @ psip
-                psip -= Qm @ tmp
-            if mpi:
-                basis.comm.Gatherv(psip, [qip, send_counts, offsets, MPI.C_DOUBLE_COMPLEX], root=0)
-            else:
-                qip = psip
-            t_vec += perf_counter() - t_tmp
-            if rank == 0:
-                t_tmp = perf_counter()
-                qip, betas[-1] = qr_decomp(qip)
-                # qip, beta = sp.linalg.qr(qip, mode="economic", overwrite_a=True, check_finite=False)
-                # betas[it, : beta.shape[0], : beta.shape[1]]
-                # t_qr += perf_counter() - t_tmp
-                # qip = np.array(qip, order="C")
-                _, columns = qip.shape
-
-            if mpi:
-                basis.comm.Bcast(betas[it], root=0)
-                columns = basis.comm.bcast(columns if rank == 0 else None)
-                request = basis.comm.Iscatterv([qip, send_counts, offsets, MPI.C_DOUBLE_COMPLEX], psip.T, root=0)
-            else:
-                psip = qip
-
         t_tmp = perf_counter()
         q[0] = q[1]
         q[1] = [{} for _ in range(columns)]
         if mpi:
             request.Wait()
         for j, (i, state) in itertools.product(range(columns), enumerate(basis.local_basis)):
-            if abs(psip[i, j]) ** 2 > slaterWeightMin:
+            if abs(psip[i, j]) ** 2 >= slaterWeightMin:
                 q[1][j][state] = psip[i, j]
 
         t_state += perf_counter() - t_tmp
