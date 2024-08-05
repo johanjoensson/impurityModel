@@ -570,7 +570,7 @@ def block_Green(
 
     # Select points from the frequency mesh, according to a Normal distribuition
     # centered on (value) 0.
-    n_samples = max(len(conv_w) // 20, min(len(conv_w), 10))
+    n_samples = max(len(conv_w) // 5, min(len(conv_w), 10))
 
     def converged(alphas, betas):
         if np.any(np.linalg.norm(betas[-1], axis=1) < slaterWeightMin):
@@ -778,6 +778,7 @@ def block_Green_freq(
         gs_realaxis = np.conj(r.T)[np.newaxis, :, :] @ np.linalg.solve(gs_realaxis, r[np.newaxis, :, :])
 
     return gs_matsubara, gs_realaxis
+
 
 def calc_mpi_Greens_function_from_alpha_beta(alphas, betas, iws, ws, e, delta, r, verbose, comm):
     """

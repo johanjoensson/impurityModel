@@ -1480,6 +1480,18 @@ def build_impurity_density_matrix(n_imp_orbitals, n_bath_orbitals, psi):
     return densityMatrix
 
 
+def build_bath_density_matrix(n_imp_orbitals, n_bath_orbitals, psi):
+    n_spin_orbitals = n_imp_orbitals + n_bath_orbitals
+    densityMatrix = np.zeros((n_bath_orbitals, n_bath_orbitals), dtype=complex)
+    for i, j in itertools.product(range(n_imp_orbitals, n_spin_orbitals), range(n_imp_orbitals, n_spin_orbitals)):
+        psi_new = a(n_spin_orbitals, i, psi)
+        psi_new = c(n_spin_orbitals, j, psi_new)
+        tmp = inner(psi, psi_new)
+        if tmp != 0:
+            densityMatrix[i - n_imp_orbitals, j - n_imp_orbitals] = tmp
+    return densityMatrix
+
+
 def getDensityMatrix(nBaths, psi, l=2):
     r"""
     Return density matrix in spherical harmonics basis.
@@ -3384,7 +3396,7 @@ def matrixToIOp(mat):
     ----------
     mat : numpy matrix
     """
-    (rows, columns) = mat.shape
+    rows, columns = mat.shape
     res = {}
     for i in range(rows):
         for j in range(columns):

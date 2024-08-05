@@ -1,4 +1,5 @@
 from os import devnull, remove
+from collections import namedtuple
 import traceback
 import sys
 import pickle
@@ -27,6 +28,34 @@ from impurityModel.ed.manybody_basis import CIPSI_Basis
 from impurityModel.ed.selfenergy import fixed_peak_dc
 from impurityModel.ed.edchain import tridiagonalize, edchains
 
+BlockStructure = namedtuple(
+    "BlockStructure",
+    [
+        "inequivalent_blocks",
+        "blocks",
+        "identical_blocks",
+        "transposed_blocks",
+        "particle_hole_blocks",
+        "particle_hole_transposed_blocks",
+    ],
+)
+
+
+def get_hyb_chain(w, V0, H_bath):
+    n_orb = V0.shape[1]
+    assert H_bath.shape[0] % V0.shape[0] == 0
+    I = np.identity(n_orb, dtype=complex)
+    wI = w[:, np.newaxis, np.newaxis] * I[np.newaxis, :, :]
+    hyb = wI - H_bath[np.newaxis, -n_orb:, -n_orb:]
+    for i in range(H_bath.shape[0] // n_orb - 1, 0, -1):
+        hyb[:] = (
+            wI
+            - H_bath[np.newaxis, (i - 1) * n_orb : i * n_orb, (i - 1) * n_orb : i * n_orb]
+            - H_bath[np.newaxis, (i - 1) * n_orb : i * n_orb, i * n_orb : (i + 1) * n_orb]
+            @ np.linalg.solve(hyb, H_bath[np.newaxis, i * n_orb : (i + 1) * n_orb, (i - 1) * n_orb : i * n_orb])
+        )
+    return np.conj(V0.T)[np.newaxis, :, :] @ np.linalg.solve(hyb, V0[np.newaxis, :, :])
+
 
 def kth_diag_indices(m, k):
     rows, cols = np.diag_indices_from(m)
@@ -38,7 +67,9 @@ def kth_diag_indices(m, k):
         return rows, cols
 
 
-def matrix_print(matrix):
+def matrix_print(matrix, label=None):
+    if label is not None:
+        print(label)
     print("\n".join([" ".join([f"{np.real(el): .6f} {np.imag(el):+.6f}j" for el in row]) for row in matrix]))
 
 
@@ -172,12 +203,15 @@ def parse_solver_line(solver_line):
             f"--->Nbaths {solver_array[4]}\n"
             f"--->Other params {solver_array[5:]}"
         )
-    dense_cutoff = 50
-    reort = Reort.NONE
-    blocked = True
-    fit_unocc = False
-    weight = 2
-    spin_flip_dj = False
+    options = {
+        "dense_cutoff": 50,
+        "reort": Reort.NONE,
+        "blocked": True,
+        "fit_unocc": False,
+        "weight": 2,
+        "spin_flip_dj": False,
+        "bath_geometry": "star",
+    }
     if len(solver_array) > 5:
         skip_next = False
         for i in range(5, len(solver_array)):
@@ -186,21 +220,23 @@ def parse_solver_line(solver_line):
                 continue
             arg = solver_array[i]
             if arg.lower() == "pro":
-                reort = Reort.PARTIAL
+                options["reort"] = Reort.PARTIAL
             elif arg.lower() == "full":
-                reort = Reort.FULL
+                options["reort"] = Reort.FULL
             elif arg.lower() == "dense_cutoff":
-                dense_cutoff = int(solver_array[i + 1])
+                options["dense_cutoff"] = int(solver_array[i + 1])
                 skip_next = True
             elif arg.lower() == "no_block":
-                blocked = False
+                options["blocked"] = False
             elif arg.lower() == "fit_unocc":
-                fit_unocc = True
+                options["fit_unocc"] = True
             elif arg.lower() == "weight":
-                weight = float(solver_array[i + 1])
+                options["weight"] = float(solver_array[i + 1])
                 skip_next = True
             elif arg.lower() == "spin_flip_dj":
-                spin_flip_dj = True
+                options["spin_flip_dj"] = True
+            elif arg.lower() == "chain":
+                options["bath_geometry"] = "chain"
             else:
                 raise RuntimeError(f"Unknown solver parameter {arg}.\n" f"--->Other solver params {solver_array[5:]}")
 
@@ -208,14 +244,15 @@ def parse_solver_line(solver_line):
         f"Nominal imp. occupation  |> {nominal_occ[0]}\n"
         f"Delta occupation         |> {delta_occ}\n"
         f"# bath states / imp. orb.|> {nBaths}\n"
-        f"Reorthogonalizaion mode  |> {reort}\n"
-        f"Dense matrix size cutoff |> {dense_cutoff}\n"
-        f"Use block structure      |> {blocked}\n"
-        f"Fit unoccupied states    |> {fit_unocc}\n"
-        f"Fitting weight factor    |> {weight}\n"
-        f"Generate spin fliped Djs |> {spin_flip_dj}\n"
+        f"Reorthogonalizaion mode  |> {options['reort']}\n"
+        f"Dense matrix size cutoff |> {options['dense_cutoff']}\n"
+        f"Use block structure      |> {options['blocked']}\n"
+        f"Fit unoccupied states    |> {options['fit_unocc']}\n"
+        f"Fitting weight factor    |> {options['weight']}\n"
+        f"Generate spin fliped Djs |> {options['spin_flip_dj']}\n"
+        f"Bath geometry            |> {options['bath_geometry']}\n"
     )
-    return nominal_occ, delta_occ, nBaths, reort, dense_cutoff, blocked, fit_unocc, weight, spin_flip_dj
+    return nominal_occ, delta_occ, nBaths, options
 
 
 def exp_weight(w, w0, e):
@@ -319,7 +356,6 @@ def run_impmod_ed(
         order="F",
         dtype=complex,
     )
-    # slater_from_rspt = np.ndarray(buffer=ffi.buffer(rspt_slater, 4 * size_real), shape=(4,), dtype=float)
 
     if n_rot_cols == n_orb_full and n_orb == n_orb_full:
         corr_to_spherical = rspt_corr_to_spherical_arr
@@ -359,17 +395,7 @@ def run_impmod_ed(
     else:
         sys.stdout = open(devnull, "w")
 
-    (
-        nominal_occ,
-        delta_occ,
-        bath_states_per_orbital,
-        reort,
-        dense_cutoff,
-        blocked,
-        fit_unocc,
-        weight,
-        spin_flip_dj,
-    ) = parse_solver_line(solver_line)
+    (nominal_occ, delta_occ, bath_states_per_orbital, options) = parse_solver_line(solver_line)
     nominal_occ = ({0: nominal_occ[0]}, {0: nominal_occ[1]}, {0: nominal_occ[2]})
     delta_occ = ({0: delta_occ[0]}, {0: delta_occ[1]}, {0: delta_occ[2]})
     if any(n0 > n_orb for n0 in nominal_occ[0].values()) or any(n0 < 0 for n0 in nominal_occ[0].values()):
@@ -383,23 +409,37 @@ def run_impmod_ed(
         w,
         eim,
         gamma=0.001,
-        exp_weight=weight,
+        exp_weight=options["weight"],
         imag_only=False,
-        valence_bath_only=not fit_unocc,
+        valence_bath_only=not options["fit_unocc"],
+        bath_geometry=options["bath_geometry"],
         label=label.strip(),
         save_baths_and_hopping=rspt_dc_flag == 1,
         verbose=(verbosity >= 0 or rspt_dc_flag == 1),
         comm=comm,
     )
     if rank == 0:
+        # print(f"Hamiltonian operator:\n{h_op}", flush=True)
+        # print(" " * 15, end="")
+        # for j in range(h_dft.shape[0] + H_star_bath.shape[0]):
+        #     print(f"{j:^15d}   ", end="")
+        # print()
+        # for i in range(h_dft.shape[0] + H_star_bath.shape[0]):
+        #     print(f"{i:^15d}:  ", end="")
+        #     for j in range(h_dft.shape[0] + H_star_bath.shape[0]):
+        #         amp = h_op.get(((i, "c"), (j, "a")), 0)
+        #         print(f"{amp.real: 5f}{amp.imag:+5f}i  ", end="")
+        #     print()
+        # print()
+        print(f"{e_baths}=")
         with open(f"Ham-op-{label.strip()}.pickle", "wb") as f:
             pickle.dump(h_op, f)
 
-    h_op = comm.bcast(h_op, root=0)
-    e_baths = comm.bcast(e_baths, root=0)
+    # h_op = comm.bcast(h_op, root=0)
+    # e_baths = comm.bcast(e_baths, root=0)
 
-    n_bath_states = ({0: len(e_baths[e_baths <= 0])}, {0: len(e_baths[e_baths > 0])})
-    nominal_occ = (nominal_occ[0], {0: len(e_baths[e_baths <= 0])}, nominal_occ[2])
+    n_bath_states = ({0: sum(e_baths <= 0)}, {0: sum(e_baths > 0)})
+    nominal_occ = (nominal_occ[0], {0: sum(e_baths <= 0)}, nominal_occ[2])
 
     if rspt_dc_flag == 1:
         dc_line = ffi.string(rspt_dc_line, 100).decode("ascii")
@@ -417,12 +457,14 @@ def run_impmod_ed(
             u4=u4,
             peak_position=peak_position,
             dc_guess=sig_dc,
-            spin_flip_dj=spin_flip_dj,
+            spin_flip_dj=options["spin_flip_dj"],
             tau=tau,
         )
 
         try:
-            sig_dc[:, :] = fixed_peak_dc(h_op, dc_struct, rank=rank, verbose=verbosity > 0, dense_cutoff=dense_cutoff)
+            sig_dc[:, :] = fixed_peak_dc(
+                h_op, dc_struct, rank=rank, verbose=verbosity > 0, dense_cutoff=options["dense_cutoff"]
+            )
             er = 0
         except Exception as e:
             print("!" * 100)
@@ -454,8 +496,8 @@ def run_impmod_ed(
         sig_dc=sig_dc,
         corr_to_spherical=corr_to_spherical,
         corr_to_cf=corr_to_cf,
-        blocked=blocked,
-        spin_flip_dj=spin_flip_dj,
+        blocked=options["blocked"],
+        spin_flip_dj=options["spin_flip_dj"],
     )
 
     from impurityModel.ed import selfenergy
@@ -469,8 +511,8 @@ def run_impmod_ed(
             eim,
             tau,
             verbosity,
-            reort=reort,
-            dense_cutoff=dense_cutoff,
+            reort=options["reort"],
+            dense_cutoff=options["dense_cutoff"],
             comm=comm,
         )
 
@@ -515,6 +557,7 @@ def get_ed_h0(
     exp_weight=2,
     imag_only=False,
     valence_bath_only=True,
+    bath_geometry="star",
     label=None,
     save_baths_and_hopping=False,
     verbose=True,
@@ -547,43 +590,51 @@ def get_ed_h0(
     eb   -- The bath states used for fitting the hybridization function.
     """
 
+    # We do the fitting by first transforming the hyridization function into a basis
+    # where each block is (hopefully) close to diagonal
+    # np.conj(Q.T) @ cf_hyb @ Q is the transformation performed
+    phase_hyb, Q = block_diagonalize_hyb(hyb)
+
+    block_structure = build_block_structure(phase_hyb, tol=1e-6)
+    comm.barrier()
+
+    H_bath_star_loaded = None
     if comm.rank == 0:
         # Check to see if we have already done a fit
+        vs_star = []
+        ebs_star = []
         try:
             with open(f"impurityModel_bath_energies_and_hopping_parameters_{label}.npy", "rb") as f:
-                v = np.load(f)
-                H_bath = np.load(f)
-                v_star = np.load(f)
-                H_star_bath = np.load(f)
+                n_block = np.load(f)
+                for _ in range(n_block):
+                    vs_star.append(np.load(f))
+                    ebs_star.append(np.load(f))
+                H_bath_star_loaded = np.load(f)
+            print(f"Data read:\n{n_block=}\n{vs_star=}\n{ebs_star=}")
             remove(f"impurityModel_bath_energies_and_hopping_parameters_{label}.npy")
         except FileNotFoundError:
-            v = None
-            H_bath = None
-            v_star = None
-            H_star_bath = None
+            vs_star = None
+            ebs_star = None
         except ValueError:
             remove(f"impurityModel_bath_energies_and_hopping_parameters_{label}.npy")
-            H_bath = None
-            v = None
-            H_star_bath = None
-            v_star = None
-    H_bath = comm.bcast(H_bath if comm.rank == 0 else None)
-    v = comm.bcast(v if comm.rank == 0 else None)
-    H_star_bath = comm.bcast(H_bath if comm.rank == 0 else None)
-    v_star = comm.bcast(v if comm.rank == 0 else None)
-    if H_bath is not None and verbose:
+            vs_star = None
+            ebs_star = None
+    vs_star = comm.bcast(vs_star if comm.rank == 0 else None)
+    ebs_star = comm.bcast(ebs_star if comm.rank == 0 else None)
+    H_bath_star_loaded = comm.bcast(H_bath_star_loaded if comm.rank == 0 else None)
+    if ebs_star is not None and verbose:
         print(
             f"Read bath energies and hopping parameters from impurityModel_bath_energies_and_hopping_parameters_{label}.npy"
         )
-        eb = np.diag(H_bath)
 
     # We haven't already done a fit, so we do one now
-    if H_bath is None and v is None:
-        v, H_bath, v_star, H_star_bath = fit_hyb(
+    if ebs_star is None and vs_star is None:
+        ebs_star, vs_star = fit_hyb(
             w,
             eim,
-            hyb,
+            phase_hyb,
             bath_states_per_orbital,
+            block_structure,
             gamma=gamma,
             imag_only=imag_only,
             x_lim=(w[0], 0 if valence_bath_only else w[-1]),
@@ -591,18 +642,55 @@ def get_ed_h0(
             comm=comm,
             weight_fun=get_weight_function("Gaussian", 0, exp_weight),
         )
-        eb = np.diag(H_bath)
+    else:
+        assert len(ebs_star) == len(block_structure.inequivalent_blocks), "Number of inequivalent blocks is inconsitent"
+        assert len(vs_star) == len(block_structure.inequivalent_blocks), "Number of inequivalent blocks is inconsitent"
     if verbose:
-        fitted_hyb = np.moveaxis(offdiagonal.get_hyb(w + eim * 1j, np.diag(H_star_bath), v_star), -1, 0)
+        print(f"{ebs_star=}\n{vs_star=}")
+    H_bath_star, v_star = build_full_bath([np.diag(eb) for eb in ebs_star], vs_star, block_structure)
+
+    sorted_indices = np.argsort(np.diag(H_bath_star))
+    H_bath_star = H_bath_star[np.ix_(sorted_indices, sorted_indices)]
+    v_star = v_star[sorted_indices]
+    if H_bath_star_loaded is not None:
+        assert np.allclose(H_bath_star_loaded, H_bath_star), f"{H_bath_star_loaded=}\n{H_bath_star=}"
+    if verbose:
+        fitted_hyb = np.moveaxis(offdiagonal.get_hyb(w + eim * 1j, np.diag(H_bath_star), v_star @ np.conj(Q.T)), -1, 0)
         save_Greens_function(rotate_Greens_function(fitted_hyb, np.conj(corr_to_cf.T)), w, f"{label}-hyb-fit")
+
+    if bath_geometry == "star":
+        H_bath, v = H_bath_star, v_star
+    elif bath_geometry == "chain":
+        H_baths_occ = []
+        H_baths_unocc = []
+        vs_occ = []
+        vs_unocc = []
+        for vs, ebs in zip(vs_star, ebs_star):
+            (H_bath_occ, v_occ), (H_bath_unocc, v_unocc) = edchains(vs, ebs)
+            H_baths_occ.append(H_bath_occ)
+            vs_occ.append(v_occ)
+            H_baths_unocc.append(H_bath_unocc)
+            vs_unocc.append(v_unocc)
+        H_bath_occ, v_occ = build_full_bath(H_baths_occ, vs_occ, block_structure)
+        H_bath_unocc, v_unocc = build_full_bath(H_baths_unocc, vs_unocc, block_structure)
+        H_bath = sp.linalg.block_diag(H_bath_occ, H_bath_unocc)
+        v = np.vstack((v_occ, v_unocc))
 
     if save_baths_and_hopping:
         if comm is not None and comm.rank == 0:
             with open(f"impurityModel_bath_energies_and_hopping_parameters_{label}.npy", "wb") as f:
-                np.save(f, v)
-                np.save(f, H_bath)
-                np.save(f, v_star)
-                np.save(f, H_star_bath)
+                np.save(f, len(vs_star))
+                for i in range(len(vs_star)):
+                    np.save(f, vs_star[i])
+                    np.save(f, ebs_star[i])
+                np.save(f, H_bath_star)
+            with open(f"impurityModel_bath_energies_and_hopping_parameters_{label}_bak.npy", "wb") as f:
+                np.save(f, len(vs_star))
+                for i in range(len(vs_star)):
+                    np.save(f, vs_star[i])
+                    np.save(f, ebs_star[i])
+                np.save(f, H_bath_star)
+        print(f"Rank {comm.rank}: Data saved:\n{vs_star=}\n{ebs_star=}\n{H_bath_star=}")
 
     if verbose:
         print("DFT hamiltonian in correlated basis")
@@ -618,27 +706,24 @@ def get_ed_h0(
     H = np.zeros((n_orb + H_bath.shape[0], n_orb + H_bath.shape[0]), dtype=complex)
     H[:n_orb, :n_orb] = H_dft
     H[n_orb:, n_orb:] = H_bath
-    H[:n_orb, n_orb:] = np.conj(v.T)
-    H[n_orb:, :n_orb] = v
+    H[:n_orb, n_orb:] = Q @ np.conj(v.T)
+    H[n_orb:, :n_orb] = v @ np.conj(Q.T)
 
     if verbose:
-        H_tmp = np.zeros((n_orb + H_star_bath.shape[0], n_orb + H_star_bath.shape[0]), dtype=complex)
+        H_tmp = np.zeros((n_orb + H_bath_star.shape[0], n_orb + H_bath_star.shape[0]), dtype=complex)
         H_tmp[:n_orb, :n_orb] = H_dft
-        H_tmp[n_orb:, n_orb:] = H_star_bath
-        H_tmp[:n_orb, n_orb:] = np.conj(v_star.T)
-        H_tmp[n_orb:, :n_orb] = v_star
-        u = np.identity(H_tmp.shape[0], dtype=complex)
-        u[:n_orb, :n_orb] = np.conj(corr_to_cf.T)
-        H_tmp = rotate_matrix(H_tmp, u)  # np.conj(u.T) @ H @ u
-        print("DFT (star) hamiltonian, with baths")
-        matrix_print(H_tmp)
+        H_tmp[n_orb:, n_orb:] = H_bath_star
+        H_tmp[:n_orb, n_orb:] = Q @ np.conj(v_star.T)
+        H_tmp[n_orb:, :n_orb] = v_star @ np.conj(Q.T)
+        print("DFT hamiltonian, with baths")
+        matrix_print(H)
         with open(f"Ham-{label}{'-dc' if save_baths_and_hopping else ''}.inp", "w") as f:
             for i in range(H_tmp.shape[0]):
                 for j in range(H_tmp.shape[1]):
                     f.write(f" 0 0 0 {i+1} {j+1} {np.real(H_tmp[i, j])} {np.imag(H_tmp[i, j])}\n")
 
     h_op = finite.matrixToIOp(H)
-    return h_op, eb, v_star, H_star_bath
+    return h_op, np.diag(H_bath), v_star @ np.conj(Q.T), H_bath_star
 
 
 def fit_hyb(
@@ -646,6 +731,7 @@ def fit_hyb(
     delta,
     hyb,
     bath_states_per_orbital,
+    block_structure,
     gamma,
     imag_only,
     x_lim=None,
@@ -677,60 +763,30 @@ def fit_hyb(
     else:
         mask = np.array([True] * len(w))
 
-    # We do the fitting by first transforming the hyridization function into a basis
-    # where each block is (hopefully) close to diagonal
-    # np.conj(Q.T) @ cf_hyb @ Q is the transformation performed
-    phase_hyb, Q = block_diagonalize_hyb(hyb)
-
-    phase_blocks = get_block_structure(phase_hyb, tol=tol)
-    phase_identical_blocks = get_identical_blocks(phase_blocks, phase_hyb, tol=tol)
-    phase_transposed_blocks = get_transposed_blocks(phase_blocks, phase_hyb, tol=tol)
-    phase_particle_hole_blocks = get_particle_hole_blocks(phase_blocks, phase_hyb, tol=tol)
-    phase_particle_hole_and_transpose_blocks = get_particle_hole_and_transpose_blocks(phase_blocks, phase_hyb, tol=tol)
-
     if verbose:
-        print(f"block structure : {phase_blocks}")
-        print(f"identical blocks : {phase_identical_blocks}")
-        print(f"transposed blocks : {phase_transposed_blocks}")
-        print(f"particle hole blocks : {phase_particle_hole_blocks}")
-        print(f"particle hole and transpose blocks : { phase_particle_hole_and_transpose_blocks}")
+        print(block_structure)
 
-    n_orb = sum(len(block) for block in phase_blocks)
-
-    H_baths = [np.empty((0, 0), dtype=complex)] * len(phase_blocks)
-    vs = [np.empty((0, n_orb), dtype=complex)] * len(phase_blocks)
-    H_star_baths = [np.empty((0, 0), dtype=complex)] * len(phase_blocks)
-    vs_star = [np.empty((0, n_orb), dtype=complex)] * len(phase_blocks)
-    inequivalent_blocks = get_inequivalent_blocks(
-        phase_identical_blocks,
-        phase_transposed_blocks,
-        phase_particle_hole_blocks,
-        phase_particle_hole_and_transpose_blocks,
-    )
+    ebs_star = [None] * len(block_structure.inequivalent_blocks)
+    vs_star = [None] * len(block_structure.inequivalent_blocks)
     if verbose:
-        print(f"inequivalent blocks = {inequivalent_blocks}")
+        print(f"inequivalent blocks = {block_structure.inequivalent_blocks}")
     states_per_inequivalent_block = get_state_per_inequivalent_block(
-        inequivalent_blocks,
-        phase_identical_blocks,
-        phase_transposed_blocks,
-        phase_particle_hole_blocks,
-        phase_particle_hole_and_transpose_blocks,
-        phase_blocks,
+        block_structure,
         bath_states_per_orbital,
-        phase_hyb[mask, :, :],
+        hyb[mask, :, :],
         w[mask],
         weight_fun,
     )
 
-    #### Do the fit, and copy to symmetrically equivalent blocks
-    for inequivalent_block_i, block_i in enumerate(inequivalent_blocks):
+    #### Do the fit
+    for inequivalent_block_i, block_i in enumerate(block_structure.inequivalent_blocks):
         if states_per_inequivalent_block[inequivalent_block_i] == 0:
             continue
-        block = phase_blocks[block_i]
-        idx = np.ix_(range(phase_hyb.shape[0]), block, block)
-        block_hyb = phase_hyb[idx]
+        block = block_structure.blocks[block_i]
+        idx = np.ix_(range(hyb.shape[0]), block, block)
+        block_hyb = hyb[idx]
         realvalue_v = np.all(np.abs(block_hyb - np.transpose(block_hyb, (0, 2, 1))) < 1e-6)
-        block_star_eb, block_star_v = hf.fit_block(
+        block_eb_star, block_vs_star = hf.fit_block(
             block_hyb[mask, :, :],
             w[mask],
             delta,
@@ -742,74 +798,20 @@ def fit_hyb(
             verbose=verbose,
             weight_fun=weight_fun,
         )
-        n_block_orb = len(block)
-        ##### Remove states with negligleble hopping
+        # Remove states with negligleble hopping
         bath_mask = []
-        for block_i in range(0, len(block_star_v), n_block_orb):
-            if np.all(np.abs(block_star_v[block_i : block_i + n_block_orb]) ** 2 < 1e-10):
-                bath_mask.extend([False] * n_block_orb)
+        for group_i in range(0, block_vs_star.shape[0], len(block)):
+            if np.any(np.all(np.abs(block_vs_star[group_i : group_i + len(block)]) ** 2 < 1e-10, axis=1)):
+                bath_mask.extend([False] * len(block))
             else:
-                bath_mask.extend([True] * n_block_orb)
-        block_star_v = block_star_v[bath_mask]
-        block_star_eb = block_star_eb[bath_mask]
-        copy_to_symmetrically_equivalent_blocks(
-            np.diag(block_star_eb),
-            block_star_v,
-            H_star_baths,
-            vs_star,
-            n_orb,
-            phase_identical_blocks[inequivalent_block_i],
-            phase_transposed_blocks[inequivalent_block_i],
-            phase_particle_hole_blocks[inequivalent_block_i],
-            phase_particle_hole_and_transpose_blocks[inequivalent_block_i],
-            phase_blocks,
-        )
-        if False:
-            H_bath_block = np.diag(block_star_eb)
-            block_v = block_star_v
-        else:
-            block_v, H_bath_block = edchains(block_star_v, block_star_eb)
+                bath_mask.extend([True] * len(block))
+        block_vs_star = block_vs_star[bath_mask]
+        block_eb_star = block_eb_star[bath_mask]
 
-        if verbose:
-            print(f"--> eb {np.diag(H_bath_block)}")
-            print(f"--> v  {block_v}", flush=True)
+        vs_star[inequivalent_block_i] = block_vs_star
+        ebs_star[inequivalent_block_i] = block_eb_star
 
-        #### Copy to symmetrically equivalent blocks
-        copy_to_symmetrically_equivalent_blocks(
-            H_bath_block,
-            block_v,
-            H_baths,
-            vs,
-            n_orb,
-            phase_identical_blocks[inequivalent_block_i],
-            phase_transposed_blocks[inequivalent_block_i],
-            phase_particle_hole_blocks[inequivalent_block_i],
-            phase_particle_hole_and_transpose_blocks[inequivalent_block_i],
-            phase_blocks,
-        )
-
-    print(f"{H_baths=}")
-    H_bath = sp.linalg.block_diag(*H_baths)
-    H_star_bath = sp.linalg.block_diag(*H_star_baths)
-    print(f"{H_bath=}")
-    # eb = np.concatenate(ebs, axis=0)
-    v = np.vstack(vs)
-    v_star = np.vstack(vs_star)
-
-    # Transform hopping parameters back from the (close to) diagonal
-    # basis to the original basis
-    v = v @ np.conj(Q.T)
-    v_star = v_star @ np.conj(Q.T)
-    # Sort bath states, it is important for impurityModel that all unoccupied states come after the occupied states
-    sort_indices = np.argsort(np.diag(H_bath), kind="stable")
-    # sort_indices = np.argsort(eb, kind="stable")
-    # eb = eb[sort_indices]
-    H_bath = H_bath[np.ix_(sort_indices, sort_indices)]
-    v = v[sort_indices]
-    print(f"{H_bath=}")
-    print(f"{np.diag(H_bath)=}")
-
-    return v, H_bath, v_star, H_star_bath
+    return ebs_star, vs_star
 
 
 def get_inequivalent_blocks(
@@ -839,17 +841,21 @@ def get_inequivalent_blocks(
 
 
 def get_state_per_inequivalent_block(
-    inequivalent_blocks,
-    identical_blocks,
-    transposed_blocks,
-    particle_hole_blocks,
-    particle_hole_and_transpose_blocks,
-    blocks,
+    block_structure,
     bath_states_per_orbital,
     hyb,
     w,
     weight_fun,
 ):
+    (
+        inequivalent_blocks,
+        blocks,
+        identical_blocks,
+        transposed_blocks,
+        particle_hole_blocks,
+        particle_hole_and_transpose_blocks,
+    ) = block_structure
+
     orbitals_per_inequivalent_block = [0] * len(inequivalent_blocks)
     weight_per_inequivalent_block = np.zeros((len(inequivalent_blocks)), dtype=float)
     for inequivalent_block_i, block_i in enumerate(inequivalent_blocks):
@@ -881,45 +887,62 @@ def get_state_per_inequivalent_block(
     return states_per_inequivalent_block
 
 
-def copy_to_symmetrically_equivalent_blocks(
-    H_bath,
-    v,
-    H_baths,
-    vs,
-    n_orb,
-    identical_blocks,
-    transposed_blocks,
-    particle_hole_blocks,
-    particle_hole_and_transpose_blocks,
-    blocks,
-):
-    n_block_orb = v.shape[1]
-    n_eb = H_bath.shape[0]
-    for b in identical_blocks:
-        H_baths[b] = H_bath
-        for i_orb, orb in enumerate(blocks[b]):
-            # ebs[orb] = np.append(ebs[orb], [eb[i_orb::n_block_orb]])
-            v_tmp = np.zeros((n_eb // n_block_orb, n_orb), dtype=complex)
-            v_tmp[:, blocks[b]] = v[i_orb::n_block_orb, :]
-            vs[orb] = np.append(vs[orb], v_tmp, axis=0)
-    for b in transposed_blocks:
-        H_baths[b] = H_bath.T
-        for i_orb, orb in enumerate(blocks[b]):
-            # ebs[orb] = np.append(ebs[orb], [eb[i_orb::n_block_orb]])
-            v_tmp = np.zeros((n_eb // n_block_orb, n_orb), dtype=complex)
-            v_tmp[:, blocks[b]] = np.conj(v[i_orb::n_block_orb, :])
-            vs[orb] = np.append(vs[orb], v_tmp, axis=0)
-    for b in particle_hole_blocks:
-        H_baths[b] = H_bath @ (-np.identity(H_bath.shape[0]))
-        for i_orb, orb in enumerate(blocks[b]):
-            # ebs[orb] = np.append(ebs[orb], [-eb[i_orb::n_block_orb]])
-            v_tmp = np.zeros((n_eb // n_block_orb, n_orb), dtype=complex)
-            v_tmp[:, blocks[b]] = v[i_orb::n_block_orb, :]
-            vs[orb] = np.append(vs[orb], v_tmp, axis=0)
-    for b in particle_hole_and_transpose_blocks:
-        H_baths[b] = H_bath.T @ (-np.identity(H_bath.shape[0]))
-        for i_orb, orb in enumerate(blocks[b]):
-            # ebs[orb] = np.append(ebs[orb], [-eb[i_orb::n_block_orb]])
-            v_tmp = np.zeros((n_eb // n_block_orb, n_orb), dtype=complex)
-            v_tmp[:, blocks[b]] = np.conj(v[i_orb::n_block_orb, :])
-            vs[orb] = np.append(vs[orb], v_tmp, axis=0)
+def build_block_structure(hyb, tol):
+    blocks = get_block_structure(hyb, tol=tol)
+    identical_blocks = get_identical_blocks(blocks, hyb, tol=tol)
+    transposed_blocks = get_transposed_blocks(blocks, hyb, tol=tol)
+    particle_hole_blocks = get_particle_hole_blocks(blocks, hyb, tol=tol)
+    particle_hole_and_transpose_blocks = get_particle_hole_and_transpose_blocks(blocks, hyb, tol=tol)
+    inequivalent_blocks = get_inequivalent_blocks(
+        identical_blocks,
+        transposed_blocks,
+        particle_hole_blocks,
+        particle_hole_and_transpose_blocks,
+    )
+
+    return BlockStructure(
+        inequivalent_blocks,
+        blocks,
+        identical_blocks,
+        transposed_blocks,
+        particle_hole_blocks,
+        particle_hole_and_transpose_blocks,
+    )
+
+
+def build_full_bath(H_bath_inequiv, v_inequiv, block_structure: BlockStructure):
+    (
+        inequivalent_blocks,
+        blocks,
+        identical_blocks,
+        transposed_blocks,
+        particle_hole_blocks,
+        particle_hole_and_transposed_blocks,
+    ) = block_structure
+    n_orb = sum(len(b) for b in blocks)
+    H_baths = [None] * len(blocks)
+    vs = [None] * len(blocks)
+    for i, _ in enumerate(inequivalent_blocks):
+        H_bath = H_bath_inequiv[i]
+        v = v_inequiv[i]
+        for b in identical_blocks[i]:
+            v_tmp = np.zeros((v.shape[0], n_orb), dtype=complex)
+            H_baths[b] = H_bath.copy()
+            v_tmp[:, blocks[b]] = v
+            vs[b] = v_tmp
+        for b in transposed_blocks[i]:
+            v_tmp = np.zeros((v.shape[0], n_orb), dtype=complex)
+            H_baths[b] = H_bath.copy().T
+            v_tmp[:, blocks[b]] = v
+            vs[b] = v_tmp
+        for b in particle_hole_blocks[i]:
+            v_tmp = np.zeros((v.shape[0], n_orb), dtype=complex)
+            H_baths[b] = H_bath.copy() @ (-np.identity(H_bath.shape[0]))
+            v_tmp[:, blocks[b]] = v
+            vs[b] = v_tmp
+        for b in particle_hole_and_transposed_blocks[i]:
+            v_tmp = np.zeros((v.shape[0], n_orb), dtype=complex)
+            H_baths[b] = H_bath.copy().T @ (-np.identity(H_bath.shape[0]))
+            v_tmp[:, blocks[b]] = v
+            vs[b] = v_tmp
+    return sp.linalg.block_diag(*H_baths), np.vstack(vs)
