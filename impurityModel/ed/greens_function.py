@@ -722,7 +722,7 @@ def block_Green_freq(
     #     iw_basis,
     #     psis,
     # ) = split_comm_and_redistribute_basis([1] * len(iws), basis, psi)
-    iw_indices = list(range(len(iws)))
+    iw_indices = slice(0, len(iws))  # list(range(len(iws)))
     iw_basis = basis
     psis = psi
     for w_i, w in zip(list(range(len(iws)))[iw_indices], iws[iw_indices]):
@@ -753,7 +753,7 @@ def block_Green_freq(
     #     w_basis,
     #     psis,
     # ) = split_comm_and_redistribute_basis([1] * len(ws), basis, psi)
-    w_indices = list(range(len(ws)))
+    w_indices = slice(0, len(ws))  # list(range(len(ws)))
     w_basis = basis
     psis = psi
     for w_i, w in zip(list(range(len(ws)))[w_indices], ws[w_indices]):
