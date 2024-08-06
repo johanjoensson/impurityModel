@@ -714,15 +714,17 @@ def block_Green_freq(
     t0 = time.perf_counter()
 
     gs_matsubara = np.zeros((len(iws), columns, columns), dtype=complex)
-    (
-        iw_indices,
-        iw_roots,
-        n_colors,
-        iw_per_color,
-        iw_basis,
-        psis,
-    ) = split_comm_and_redistribute_basis([1] * len(iws), basis, psi)
-    # for w_i, w in finite.get_job_tasks(comm.rank, comm.size, list(enumerate(iws))):
+    # (
+    #     iw_indices,
+    #     iw_roots,
+    #     n_colors,
+    #     iw_per_color,
+    #     iw_basis,
+    #     psis,
+    # ) = split_comm_and_redistribute_basis([1] * len(iws), basis, psi)
+    iw_indices = list(range(len(iws)))
+    iw_basis = basis
+    psis = psi
     for w_i, w in zip(list(range(len(iws)))[iw_indices], iws[iw_indices]):
         A = finite.subtractOps({((0, "i"),): w + e}, hOp)
         # Run Lanczos on psi0^T* [wI - j*delta - H]^-1 psi0
@@ -743,14 +745,17 @@ def block_Green_freq(
     comm.Reduce(gs_matsubara.copy(), gs_matsubara, op=MPI.SUM)
 
     gs_realaxis = np.zeros((len(ws), columns, columns), dtype=complex)
-    (
-        w_indices,
-        w_roots,
-        n_colors,
-        w_per_color,
-        w_basis,
-        psis,
-    ) = split_comm_and_redistribute_basis([1] * len(ws), basis, psi)
+    # (
+    #     w_indices,
+    #     w_roots,
+    #     n_colors,
+    #     w_per_color,
+    #     w_basis,
+    #     psis,
+    # ) = split_comm_and_redistribute_basis([1] * len(ws), basis, psi)
+    w_indices = list(range(len(ws)))
+    w_basis = basis
+    psis = psi
     for w_i, w in zip(list(range(len(ws)))[w_indices], ws[w_indices]):
         # for w_i, w in finite.get_job_tasks(comm.rank, comm.size, list(enumerate(ws))):
         A = finite.subtractOps({((0, "i"),): w + 1j * delta + e}, hOp)
