@@ -374,7 +374,7 @@ def printExpValues(nBaths, es, psis, rot_to_spherical, n_orbs):
                     # get_S_from_rho_spherical(rho_spherical),
                 )
             )
-        print("\n")
+        print("\n", flush=True)
 
 
 def get_occupations_from_rho_spherical(rho):

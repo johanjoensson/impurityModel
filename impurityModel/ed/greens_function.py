@@ -121,7 +121,7 @@ def get_Greens_function(
             omega_mesh,
             delta,
             reort=reort,
-            slaterWeightMin=0,  #  np.finfo(float).eps,
+            slaterWeightMin=np.finfo(float).eps,
             verbose=verbose,
         )
         gsPS_matsubara, gsPS_realaxis = calc_Greens_function_with_offdiag(
@@ -134,7 +134,7 @@ def get_Greens_function(
             -matsubara_mesh if matsubara_mesh is not None else None,
             -omega_mesh if omega_mesh is not None else None,
             -delta,
-            slaterWeightMin=0,  # np.finfo(float).eps,
+            slaterWeightMin=np.finfo(float).eps,
             verbose=verbose,
             reort=reort,
         )

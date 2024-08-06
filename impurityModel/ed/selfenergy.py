@@ -122,7 +122,7 @@ def fixed_peak_dc(h0_op, dc_struct, rank, verbose, dense_cutoff):
             if abs(dc_trial[i, j]) > 0
         }
         h_op = finite.addOps([h_op_i, dc_op_i])
-        h_dict = bu.expand(h_op, dense_cutoff=dense_cutoff, de2_min=1e-8)
+        h_dict = bu.expand(h_op, dense_cutoff=dense_cutoff, de2_min=1e-4)
         h = bu.build_sparse_matrix(h_op, {}) if bu.size > dense_cutoff else bu.build_dense_matrix(h_op, h_dict)
         e_upper, psi_upper = finite.eigensystem_new(
             h,
@@ -131,7 +131,7 @@ def fixed_peak_dc(h0_op, dc_struct, rank, verbose, dense_cutoff):
             eigenValueTol=0,
             return_eigvecs=True,
         )
-        h_dict = bl.expand(h_op, dense_cutoff=dense_cutoff, de2_min=1e-8)
+        h_dict = bl.expand(h_op, dense_cutoff=dense_cutoff, de2_min=1e-4)
         h = bl.build_sparse_matrix(h_op, {}) if bl.size > dense_cutoff else bl.build_dense_matrix(h_op, h_dict)
         e_lower, psi_lower = finite.eigensystem_new(
             h,
@@ -162,7 +162,6 @@ def fixed_peak_dc(h0_op, dc_struct, rank, verbose, dense_cutoff):
         if abs(avg_dc_upper - avg_dc_lower) < min(dc_struct.tau, 1e-2):
             return dc_trial
         return (e_upper[0] - e_lower[0] - peak_position) / (avg_dc_upper - avg_dc_lower)
-        # return (e_upper[0] - e_lower[0] - peak_position + avg_dc_upper - avg_dc_lower) / (avg_dc_upper - avg_dc_lower)
 
     # res = sp.optimize.root_scalar(F, x0=1)
     # dc_fac = res.root
@@ -205,7 +204,7 @@ def calc_occ_e(
         spin_flip_dj=spin_flip_dj,
         comm=comm,
     )
-    h_dict = basis.expand(h_op, dense_cutoff=dense_cutoff, de2_min=1e-8)
+    h_dict = basis.expand(h_op, dense_cutoff=dense_cutoff, de2_min=1e-6)
     h = basis.build_sparse_matrix(h_op, h_dict) if basis.size > dense_cutoff else basis.build_dense_matrix(h_op, h_dict)
 
     e_trial = finite.eigensystem_new(
@@ -389,7 +388,7 @@ def calc_selfenergy(
     energy_cut = -tau * np.log(1e-4)
 
     basis.tau = tau
-    h_dict = basis.expand(h, H_dict=h_dict, dense_cutoff=dense_cutoff, de2_min=1e-8)
+    h_dict = basis.expand(h, H_dict=h_dict, dense_cutoff=dense_cutoff, de2_min=1e-6)
     if basis.size <= dense_cutoff:
         h_gs = basis.build_dense_matrix(h, h_dict)
     else:
