@@ -253,7 +253,9 @@ def calc_Greens_function_with_offdiag(
     """
     comm = basis.comm
     n = len(tOps)
-    excited_restrictions = basis.build_excited_restrictions(imp_change=(1, 1), val_change=(1, 0), con_change=(0, 1))
+    excited_restrictions = (
+        None  # basis.build_excited_restrictions(imp_change=(1, 1), val_change=(1, 0), con_change=(0, 1))
+    )
 
     t_mems = [{} for _ in tOps]
     h_mem = {}
@@ -568,7 +570,7 @@ def block_Green(
 
     # Select points from the frequency mesh, according to a Normal distribuition
     # centered on (value) 0.
-    n_samples = max(len(conv_w) // 20, min(len(conv_w), 10))
+    n_samples = max(len(conv_w) // 5, min(len(conv_w), 10))
 
     def converged(alphas, betas):
         if np.any(np.linalg.norm(betas[-1], axis=1) < max(slaterWeightMin, 1e-8)):
@@ -691,7 +693,8 @@ def block_Green_freq(
         print(f"time(set up psi_start) = {time.perf_counter() - t0}")
 
     def converged(alphas, betas):
-        if np.any(np.linalg.norm(betas[-1], axis=1) < max(slaterWeightMin, 1e-8)):
+        if np.any(np.abs(np.diagonal(betas[-1])) < max(slaterWeightMin, np.finfo(float).eps)):
+            # if np.any(np.linalg.norm(betas[-1], axis=1) < max(slaterWeightMin, np.finfo(float).eps)):
             return True
 
         if alphas.shape[0] == 1:
@@ -703,7 +706,10 @@ def block_Green_freq(
             gs_new = alpha - np.conj(beta.T) @ np.linalg.solve(gs_new, beta)
             gs_prev = alpha - np.conj(beta.T) @ np.linalg.solve(gs_prev, beta)
         print(rf"δ = {np.max(np.abs(gs_new - gs_prev))}", flush=True)
-        return np.all(np.abs(gs_new - gs_prev) < max(slaterWeightMin, 1e-8))
+        delta = np.abs(gs_new - gs_prev)
+        if np.any(np.isnan(delta)):
+            raise RuntimeError(f"Error in calculating Greens function.\n{betas[-2]=}{betas[-1]=}")
+        return np.all(delta < max(slaterWeightMin, 1e-12))
 
     t0 = time.perf_counter()
 
@@ -725,7 +731,7 @@ def block_Green_freq(
             h_op=A,
             basis=iw_basis,
             converged=converged,
-            h_mem={},  # h_mem,
+            h_mem=None,  # h_mem,
             verbose=verbose,
             slaterWeightMin=slaterWeightMin,
             reort=reort,
@@ -754,7 +760,7 @@ def block_Green_freq(
             h_op=A,
             basis=w_basis,
             converged=converged,
-            h_mem={},  # h_mem,
+            h_mem=None,  # h_mem,
             verbose=verbose,
             slaterWeightMin=slaterWeightMin,
             reort=reort,
@@ -1070,6 +1076,149 @@ def rotate_matrix(M, T):
     M' : NDArray - The rotated matrix
     """
     return np.conj(T.T) @ M @ T
+
+
+def block_diagonalize_hyb(hyb):
+    hyb_herm = 1 / 2 * (hyb + np.conj(np.transpose(hyb, (0, 2, 1))))
+    blocks = get_block_structure(hyb_herm)
+    Q_full = np.zeros((hyb.shape[1], hyb.shape[2]), dtype=complex)
+    treated_orbitals = 0
+    for block in blocks:
+        block_idx = np.ix_(range(hyb.shape[0]), block, block)
+        if len(block) == 1:
+            Q_full[block_idx[1:], treated_orbitals] = 1
+            treated_orbitals += 1
+            continue
+        block_hyb = hyb_herm[block_idx]
+        upper_triangular_hyb = np.triu(hyb_herm, k=1)
+        ind_max_offdiag = np.unravel_index(np.argmax(np.abs(upper_triangular_hyb)), upper_triangular_hyb.shape)
+        eigvals, Q = np.linalg.eigh(block_hyb[ind_max_offdiag[0], :, :])
+        sorted_indices = np.argsort(eigvals)
+        Q = Q[:, sorted_indices]
+        for column in range(Q.shape[1]):
+            j = np.argmax(np.abs(Q[:, column]))
+            Q_full[block, treated_orbitals + column] = Q[:, column] * abs(Q[j, column]) / Q[j, column]
+        treated_orbitals += Q.shape[1]
+    phase_hyb = np.conj(Q_full.T)[np.newaxis, :, :] @ hyb @ Q_full[np.newaxis, :, :]
+    return phase_hyb, Q_full
+
+
+def get_block_structure(hyb: np.ndarray, hamiltonian=None, tol=1e-6):
+    # Extract matrix elements with nonzero hybridization function
+    if hamiltonian is None:
+        hamiltonian = np.zeros((hyb.shape[1], hyb.shape[2]))
+    mask = np.logical_or(np.any(np.abs(hyb) > tol, axis=0), np.abs(hamiltonian) > tol)
+
+    # Use the extracted mask to extract blocks
+    from scipy.sparse import csr_matrix
+    from scipy.sparse.csgraph import connected_components
+
+    n_blocks, block_idxs = connected_components(csgraph=csr_matrix(mask), directed=False, return_labels=True)
+
+    blocks = [[] for _ in range(n_blocks)]
+    for orb_i, block_i in enumerate(block_idxs):
+        blocks[block_i].append(orb_i)
+
+    return blocks
+
+
+def get_identical_blocks(blocks, hyb, hamiltonian=None, tol=1e-6):
+    if hamiltonian is None:
+        hamiltonian = np.zeros((hyb.shape[1], hyb.shape[2]))
+    identical_blocks = []
+    for i, block_i in enumerate(blocks):
+        if np.any([i in b for b in identical_blocks]):
+            continue
+        identical = []
+        idx_i = np.ix_(range(hyb.shape[0]), block_i, block_i)
+        for jp, block_j in enumerate(blocks[i:]):
+            if len(block_i) != len(block_j):
+                continue
+            j = i + jp
+            if any(j in b for b in identical_blocks):
+                continue
+            idx_j = np.ix_(range(hyb.shape[0]), block_j, block_j)
+            if np.all(np.abs(hyb[idx_i] - hyb[idx_j]) < tol) and np.all(
+                np.abs(hamiltonian[idx_i[1:]] - hamiltonian[idx_j[1:]]) < tol
+            ):
+                identical.append(j)
+        identical_blocks.append(identical)
+    return identical_blocks
+
+
+def get_transposed_blocks(blocks, hyb, hamiltonian=None, tol=1e-6):
+    if hamiltonian is None:
+        hamiltonian = np.zeros((hyb.shape[1], hyb.shape[2]))
+    transposed_blocks = [[] for _ in blocks]
+    for i, block_i in enumerate(blocks):
+        if len(block_i) == 1 or np.any([i in b for b in transposed_blocks]):
+            continue
+        transposed = []
+        idx_i = np.ix_(range(hyb.shape[0]), block_i, block_i)
+        for jp, block_j in enumerate(blocks[i + 1 :]):
+            if len(block_i) != len(block_j):
+                continue
+            j = i + jp + 1
+            if any(j in b for b in transposed_blocks):
+                continue
+            idx_j = np.ix_(range(hyb.shape[0]), block_j, block_j)
+            if np.all(np.abs(hyb[idx_i] - np.transpose(hyb[idx_j], (0, 2, 1))) < tol) and np.all(
+                np.abs(hamiltonian[idx_i[1:]] - hamiltonian[idx_j[1:]].T) < tol
+            ):
+                transposed.append(j)
+        transposed_blocks[i] = transposed
+    return transposed_blocks
+
+
+def get_particle_hole_blocks(blocks, hyb, hamiltonian=None, tol=1e-6):
+    if hamiltonian is None:
+        hamiltonian = np.zeros((hyb.shape[0], hyb.shape[1]))
+    particle_hole_blocks = []
+    for i, block_i in enumerate(blocks):
+        if np.any([i in b for b in particle_hole_blocks]):
+            continue
+        particle_hole = []
+        idx_i = np.ix_(range(hyb.shape[0]), block_i, block_i)
+        for jp, block_j in enumerate(blocks[i:]):
+            if len(block_i) != len(block_j):
+                continue
+            j = i + jp
+            if any(j in b for b in particle_hole_blocks):
+                continue
+            idx_j = np.ix_(range(hyb.shape[0]), block_j, block_j)
+            if (
+                np.all(np.abs(np.real(hyb[idx_i] + hyb[idx_j])) < tol)
+                and np.all(np.abs(np.imag(hyb[idx_i] - hyb[idx_j])) < tol)
+                and np.all(np.abs(np.real(hamiltonian[idx_i[1:]] - hamiltonian[idx_j[1:]])) < tol)
+                and np.all(np.abs(np.imag(hamiltonian[idx_i[1:]] - hamiltonian[idx_j[1:]])) < tol)
+            ):
+                particle_hole.append(j)
+        particle_hole_blocks.append(particle_hole)
+    return particle_hole_blocks
+
+
+def get_particle_hole_and_transpose_blocks(blocks, hyb, hamiltonian=None, tol=1e-6):
+    if hamiltonian is None:
+        hamiltonian = np.zeros((hyb.shape[1], hyb.shape[2]))
+    patricle_hole_and_transpose_blocks = []
+    for i, block_i in enumerate(blocks):
+        if np.any([i in b for b in patricle_hole_and_transpose_blocks]):
+            continue
+        patricle_hole_and_transpose = []
+        idx_i = np.ix_(range(hyb.shape[0]), block_i, block_i)
+        for jp, block_j in enumerate(blocks[i:]):
+            if len(block_i) != len(block_j):
+                continue
+            j = i + jp
+            if any(j in b for b in patricle_hole_and_transpose_blocks):
+                continue
+            idx_j = np.ix_(range(hyb.shape[0]), block_j, block_j)
+            if np.all(np.abs(hyb[idx_i] + np.transpose(hyb[idx_j], (0, 2, 1))) < tol) and np.all(
+                np.abs(hamiltonian[idx_i[1:]] + hamiltonian[idx_j[1:]].T) < tol
+            ):
+                patricle_hole_and_transpose.append(j)
+        patricle_hole_and_transpose_blocks.append(patricle_hole_and_transpose)
+    return patricle_hole_and_transpose_blocks
 
 
 def rotate_Greens_function(G, T):

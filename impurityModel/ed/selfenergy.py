@@ -18,6 +18,16 @@ from impurityModel.ed.greens_function import get_Greens_function, save_Greens_fu
 EV_TO_RY = 1 / 13.605693122994
 
 
+def matrix_print(matrix: np.ndarray, label: str = None) -> None:
+    """
+    Pretty print the matrix, with optional label.
+    """
+    ms = "\n".join([" ".join([f"{np.real(val): .4f}{np.imag(val):+.4f}j" for val in row]) for row in matrix])
+    if label is not None:
+        print(label)
+    print(ms)
+
+
 class UnphysicalSelfenergyError(Exception):
     """
     Excpetion signalling an unphysical self-energy, i.e. the imaginary part is positive for some frequencies.
@@ -112,7 +122,7 @@ def fixed_peak_dc(h0_op, dc_struct, rank, verbose, dense_cutoff):
             if abs(dc_trial[i, j]) > 0
         }
         h_op = finite.addOps([h_op_i, dc_op_i])
-        h_dict = bu.expand(h_op, dense_cutoff=dense_cutoff, de2_min=1e-6)
+        h_dict = bu.expand(h_op, dense_cutoff=dense_cutoff, de2_min=1e-4)
         h = bu.build_sparse_matrix(h_op, {}) if bu.size > dense_cutoff else bu.build_dense_matrix(h_op, h_dict)
         e_upper, psi_upper = finite.eigensystem_new(
             h,
@@ -121,7 +131,7 @@ def fixed_peak_dc(h0_op, dc_struct, rank, verbose, dense_cutoff):
             eigenValueTol=0,
             return_eigvecs=True,
         )
-        h_dict = bl.expand(h_op, dense_cutoff=dense_cutoff, de2_min=1e-6)
+        h_dict = bl.expand(h_op, dense_cutoff=dense_cutoff, de2_min=1e-4)
         h = bl.build_sparse_matrix(h_op, {}) if bl.size > dense_cutoff else bl.build_dense_matrix(h_op, h_dict)
         e_lower, psi_lower = finite.eigensystem_new(
             h,
@@ -152,14 +162,13 @@ def fixed_peak_dc(h0_op, dc_struct, rank, verbose, dense_cutoff):
         if abs(avg_dc_upper - avg_dc_lower) < min(dc_struct.tau, 1e-2):
             return dc_trial
         return (e_upper[0] - e_lower[0] - peak_position) / (avg_dc_upper - avg_dc_lower)
-        # return (e_upper[0] - e_lower[0] - peak_position + avg_dc_upper - avg_dc_lower) / (avg_dc_upper - avg_dc_lower)
 
     # res = sp.optimize.root_scalar(F, x0=1)
     # dc_fac = res.root
-    dc_fac = sp.optimize.newton(F, x0=1)
-    # dc_fac = 1
-    # for _ in range(5):
-    #     dc_fac += F(dc_fac)
+    # dc_fac = sp.optimize.newton(F, x0=1)
+    dc_fac = 1
+    for _ in range(5):
+        dc_fac += F(dc_fac)
     if verbose:
         print(f"Peak position {dc_struct.peak_position}")
         print(f"DC guess {dc_struct.dc_guess}")
@@ -195,7 +204,7 @@ def calc_occ_e(
         spin_flip_dj=spin_flip_dj,
         comm=comm,
     )
-    h_dict = basis.expand(h_op, dense_cutoff=dense_cutoff, de2_min=1e-4)
+    h_dict = basis.expand(h_op, dense_cutoff=dense_cutoff, de2_min=1e-6)
     h = basis.build_sparse_matrix(h_op, h_dict) if basis.size > dense_cutoff else basis.build_dense_matrix(h_op, h_dict)
 
     e_trial = finite.eigensystem_new(
@@ -294,6 +303,8 @@ def run(cluster, h0, iw, w, delta, tau, verbosity, reort, dense_cutoff, comm):
         cluster.nominal_occ,
         cluster.delta_occ,
         cluster.bath_states,
+        cluster.h_star_bath,
+        cluster.v_star,
         tau,
         verbosity,
         blocks=[cluster.blocks[i] for i in cluster.inequivalent_blocks],
@@ -328,6 +339,8 @@ def calc_selfenergy(
     nominal_occ,
     delta_occ,
     num_bath_states,
+    h_star_bath,
+    v_star,
     tau,
     verbosity,
     blocks,
@@ -376,9 +389,6 @@ def calc_selfenergy(
 
     basis.tau = tau
     h_dict = basis.expand(h, H_dict=h_dict, dense_cutoff=dense_cutoff, de2_min=1e-6)
-    if verbosity >= 1:
-        print(f"{len(h)} processes in the Hamiltonian.")
-        print(f"#basis states = {len(basis)}")
     if basis.size <= dense_cutoff:
         h_gs = basis.build_dense_matrix(h, h_dict)
     else:
@@ -392,6 +402,9 @@ def calc_selfenergy(
     psis = basis.build_state(psis_dense.T, slaterWeightMin=np.finfo(float).eps)
     basis.clear()
     basis.add_states(set(state for psi in psis for state in psi))
+    if verbosity >= 1:
+        print(f"{len(h)} processes in the Hamiltonian.")
+        print(f"#basis states = {len(basis)}")
     gs_stats = basis.get_state_statistics(psis)
     all_psis = comm.gather(psis)
     local_psis = [{} for _ in psis]
@@ -400,6 +413,17 @@ def calc_selfenergy(
             for i in range(len(local_psis)):
                 for state in psis_r[i]:
                     local_psis[i][state] = psis_r[i][state] + local_psis[i].get(state, 0)
+        rho_imps = np.array(
+            [finite.build_impurity_density_matrix(n_imp_orbs, sum(sum_bath_states.values()), psi) for psi in local_psis]
+        )
+        rho_baths = np.array(
+            [finite.build_bath_density_matrix(n_imp_orbs, sum(sum_bath_states.values()), psi) for psi in local_psis]
+        )
+    else:
+        rho_imps = np.empty((len(psis), n_imp_orbs, n_imp_orbs), dtype=complex)
+        rho_baths = np.empty((len(psis), sum(sum_bath_states.values()), sum(sum_bath_states.values())), dtype=complex)
+    comm.Bcast(rho_imps)
+    comm.Bcast(rho_baths)
     if verbosity >= 1:
         finite.printThermalExpValues_new(
             {i: n_imp_orbs for i in num_val_baths}, sum_bath_states, es, local_psis, tau, rot_to_spherical
@@ -408,6 +432,9 @@ def calc_selfenergy(
         print("Ground state occupation statistics:")
         for psi_stats in gs_stats:
             print(f"{psi_stats}")
+        print("Ground state bath occupation statistics:")
+        thermal_bath_rho = finite.thermal_average_scale_indep(es, rho_baths, tau)
+        matrix_print(thermal_bath_rho, "Bath density matrix:")
 
     excited_restrictions = basis.build_excited_restrictions()
     if verbosity >= 1:
@@ -455,6 +482,8 @@ def calc_selfenergy(
             nBaths=sum_bath_states,
             gs=gs_realaxis,
             h0op=h0,
+            h_bath=h_star_bath,
+            v_full=v_star,
             delta=delta,
             clustername=cluster_label,
             blocks=blocks,
@@ -474,6 +503,8 @@ def calc_selfenergy(
             nBaths=sum_bath_states,
             gs=gs_matsubara,
             h0op=h0,
+            h_bath=h_star_bath,
+            v_full=v_star,
             delta=0,
             clustername=cluster_label,
             blocks=blocks,
@@ -509,6 +540,9 @@ def calc_selfenergy(
             ar.create_dataset(f"{group}/w", data=w)
             ar.create_dataset(f"{group}/rot_to_spherical", data=rot_to_spherical)
             ar.create_dataset(f"{group}/num_blocks", data=np.array([len(blocks)], dtype=int))
+            ar.create_dataset(f"{group}/rho_imps", data=rho_imps, dtype=complex)
+            ar.create_dataset(f"{group}/rho_baths", data=rho_baths, dtype=complex)
+
             for block_i, block in enumerate(blocks):
                 ar.create_dataset(f"{group}/block_{block_i}/orbs", data=np.array(block, dtype=int))
                 ar.create_dataset(f"{group}/block_{block_i}/gs_matsubara", data=gs_matsubara[block_i])
@@ -587,6 +621,8 @@ def get_sigma(
     nBaths,
     gs,
     h0op,
+    h_bath,
+    v_full,
     delta,
     blocks,
     clustername="",
@@ -594,13 +630,13 @@ def get_sigma(
     """
     Calculate self-energy from interacting Greens function and local hamiltonian.
     """
-    hcorr, v_full, _, hbath = get_hcorr_v_hbath(h0op, impurity_orbitals, nBaths)
+    hcorr, _, _, _ = get_hcorr_v_hbath(h0op, impurity_orbitals, nBaths)
 
     res = []
     for block, g in zip(blocks, gs):
         block_idx = np.ix_(block, block)
         wIs = (omega_mesh + 1j * delta)[:, np.newaxis, np.newaxis] * np.eye(len(block))[np.newaxis, :, :]
-        g0_inv = wIs - hcorr[block_idx] - hyb(omega_mesh, v_full[:, block], hbath, delta)
+        g0_inv = wIs - hcorr[block_idx] - hyb(omega_mesh, v_full[:, block], h_bath, delta)
         res.append(g0_inv - np.linalg.inv(g))
 
     return res
