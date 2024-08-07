@@ -431,12 +431,8 @@ def run_impmod_ed(
         #         print(f"{amp.real: 5f}{amp.imag:+5f}i  ", end="")
         #     print()
         # print()
-        print(f"{e_baths}=")
         with open(f"Ham-op-{label.strip()}.pickle", "wb") as f:
             pickle.dump(h_op, f)
-
-    # h_op = comm.bcast(h_op, root=0)
-    # e_baths = comm.bcast(e_baths, root=0)
 
     n_bath_states = ({0: sum(e_baths <= 0)}, {0: sum(e_baths > 0)})
     nominal_occ = (nominal_occ[0], {0: sum(e_baths <= 0)}, nominal_occ[2])
@@ -610,7 +606,6 @@ def get_ed_h0(
                     vs_star.append(np.load(f))
                     ebs_star.append(np.load(f))
                 H_bath_star_loaded = np.load(f)
-            print(f"Data read:\n{n_block=}\n{vs_star=}\n{ebs_star=}")
             remove(f"impurityModel_bath_energies_and_hopping_parameters_{label}.npy")
         except FileNotFoundError:
             vs_star = None
@@ -645,8 +640,6 @@ def get_ed_h0(
     else:
         assert len(ebs_star) == len(block_structure.inequivalent_blocks), "Number of inequivalent blocks is inconsitent"
         assert len(vs_star) == len(block_structure.inequivalent_blocks), "Number of inequivalent blocks is inconsitent"
-    if verbose:
-        print(f"{ebs_star=}\n{vs_star=}")
     H_bath_star, v_star = build_full_bath([np.diag(eb) for eb in ebs_star], vs_star, block_structure)
 
     sorted_indices = np.argsort(np.diag(H_bath_star))
@@ -659,6 +652,9 @@ def get_ed_h0(
         save_Greens_function(rotate_Greens_function(fitted_hyb, np.conj(corr_to_cf.T)), w, f"{label}-hyb-fit")
 
     if bath_geometry == "star":
+        if verbose:
+            print(f"Bath energies: {ebs_star}")
+            print(f"Hopping parameters: {v_star}")
         H_bath, v = H_bath_star, v_star
     elif bath_geometry == "chain":
         H_baths_occ = []
@@ -671,6 +667,11 @@ def get_ed_h0(
             vs_occ.append(v_occ)
             H_baths_unocc.append(H_bath_unocc)
             vs_unocc.append(v_unocc)
+        if verbose:
+            print(
+                f"Bath energies: {[np.append(Hb_occ, Hb_unocc) for Hb_occ, Hb_unocc in zip(H_baths_occ, H_baths_unocc)]}"
+            )
+            print(f"Hopping parameters: {[np.vstack((vo, vu)) for vo, vu in zip(vs_occ, vs_unocc)]}")
         H_bath_occ, v_occ = build_full_bath(H_baths_occ, vs_occ, block_structure)
         H_bath_unocc, v_unocc = build_full_bath(H_baths_unocc, vs_unocc, block_structure)
         H_bath = sp.linalg.block_diag(H_bath_occ, H_bath_unocc)
@@ -690,7 +691,6 @@ def get_ed_h0(
                     np.save(f, vs_star[i])
                     np.save(f, ebs_star[i])
                 np.save(f, H_bath_star)
-        print(f"Rank {comm.rank}: Data saved:\n{vs_star=}\n{ebs_star=}\n{H_bath_star=}")
 
     if verbose:
         print("DFT hamiltonian in correlated basis")
