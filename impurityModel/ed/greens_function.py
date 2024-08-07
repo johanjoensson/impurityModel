@@ -311,8 +311,8 @@ def calc_Greens_function_with_offdiag(
 
         if verbose:
             print(f"time(build excited state basis) = {time.perf_counter() - t0}")
-        gs_matsubara_block_i, gs_realaxis_block_i = block_Green_freq(
-            # gs_matsubara_block_i, gs_realaxis_block_i = get_block_Green(
+        # gs_matsubara_block_i, gs_realaxis_block_i = block_Green_freq(
+        gs_matsubara_block_i, gs_realaxis_block_i = get_block_Green(
             n_spin_orbitals=excited_basis.num_spin_orbitals,
             hOp=hOp,
             psi_arr=block_v,
@@ -598,7 +598,7 @@ def block_Green(
             gs_new = wIs - alpha - np.conj(beta.T)[np.newaxis, :, :] @ np.linalg.solve(gs_new, beta[np.newaxis, :, :])
             gs_prev = wIs - alpha - np.conj(beta.T)[np.newaxis, :, :] @ np.linalg.solve(gs_prev, beta[np.newaxis, :, :])
         print(rf"δ = {np.max(np.abs(gs_new - gs_prev))}", flush=True)
-        return np.all(np.abs(gs_new - gs_prev) < max(slaterWeightMin, 1e-8))
+        return np.all(np.abs(gs_new - gs_prev) < max(slaterWeightMin, 1e-6))
 
     t0 = time.perf_counter()
     # Run Lanczos on psi0^T* [wI - j*delta - H]^-1 psi0
@@ -709,7 +709,7 @@ def block_Green_freq(
         delta = np.abs(gs_new - gs_prev)
         if np.any(np.isnan(delta)):
             raise RuntimeError(f"Error in calculating Greens function.\n{betas[-2]=}{betas[-1]=}")
-        return np.all(delta < max(slaterWeightMin, 1e-12))
+        return np.all(delta < max(slaterWeightMin, 1e-8))
 
     t0 = time.perf_counter()
 

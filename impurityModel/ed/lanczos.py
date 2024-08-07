@@ -372,9 +372,9 @@ def block_lanczos(
     h_op: dict,
     basis: Basis,
     converged: Callable[[np.ndarray, np.ndarray], bool],
-    h_mem: dict = None,
+    h_mem: Optional[dict] = None,
     verbose: bool = True,
-    reort=Reort.NONE,
+    reort: Reort = Reort.NONE,
     slaterWeightMin: float = 0,
 ) -> (np.ndarray, np.ndarray, Optional[list[dict]]):
     if h_mem is None:
