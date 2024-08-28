@@ -62,8 +62,7 @@ def split_comm_and_redistribute_basis(priorities: Iterable[float], basis: Basis,
                     psis[i][state] = partial_psi[state] + psis[i].get(state, 0)
     split_basis = Basis(
         impurity_orbitals=basis.impurity_orbitals,
-        valence_baths=basis.bath_states[0],
-        conduction_baths=basis.bath_states[1],
+        bath_states=basis.bath_states,
         initial_basis=(state for psi in psis for state in psi),
         restrictions=basis.restrictions,
         comm=split_comm,
@@ -121,7 +120,7 @@ def get_Greens_function(
             omega_mesh,
             delta,
             reort=reort,
-            slaterWeightMin=np.finfo(float).eps,
+            slaterWeightMin=0 * np.finfo(float).eps,
             verbose=verbose,
         )
         gsPS_matsubara, gsPS_realaxis = calc_Greens_function_with_offdiag(
@@ -134,7 +133,7 @@ def get_Greens_function(
             -matsubara_mesh if matsubara_mesh is not None else None,
             -omega_mesh if omega_mesh is not None else None,
             -delta,
-            slaterWeightMin=np.finfo(float).eps,
+            slaterWeightMin=0 * np.finfo(float).eps,
             verbose=verbose,
             reort=reort,
         )
@@ -254,7 +253,8 @@ def calc_Greens_function_with_offdiag(
     comm = basis.comm
     n = len(tOps)
     excited_restrictions = (
-        None  # basis.build_excited_restrictions(imp_change=(1, 1), val_change=(1, 0), con_change=(0, 1))
+        None
+        # basis.build_excited_restrictions(imp_change=(1, 1), val_change=(1, 0), con_change=(0, 1))
     )
 
     t_mems = [{} for _ in tOps]
@@ -298,8 +298,7 @@ def calc_Greens_function_with_offdiag(
 
         excited_basis = Basis(
             impurity_orbitals=eigen_basis.impurity_orbitals,
-            valence_baths=eigen_basis.bath_states[0],
-            conduction_baths=eigen_basis.bath_states[1],
+            bath_states=eigen_basis.bath_states,
             initial_basis=local_excited_basis,
             restrictions=excited_restrictions,
             comm=eigen_basis.comm,
@@ -445,8 +444,8 @@ def get_block_Green(
     n_samples = max(len(conv_w) // 10, 1)
 
     def converged(alphas, betas):
-        if np.any(np.linalg.norm(betas[-1], axis=1) < np.sqrt(np.finfo(float).eps)):
-            return True
+        # if np.any(np.linalg.norm(betas[-1], axis=1) < np.sqrt(np.finfo(float).eps)):
+        #     return True
 
         if alphas.shape[0] == 1:
             return False
@@ -1130,7 +1129,7 @@ def get_block_structure(hyb: np.ndarray, hamiltonian=None, tol=1e-6):
 def get_identical_blocks(blocks, hyb, hamiltonian=None, tol=1e-6):
     if hamiltonian is None:
         hamiltonian = np.zeros((hyb.shape[1], hyb.shape[2]))
-    identical_blocks = []
+    identical_blocks = [[] for _ in blocks]
     for i, block_i in enumerate(blocks):
         if np.any([i in b for b in identical_blocks]):
             continue
@@ -1147,7 +1146,7 @@ def get_identical_blocks(blocks, hyb, hamiltonian=None, tol=1e-6):
                 np.abs(hamiltonian[idx_i[1:]] - hamiltonian[idx_j[1:]]) < tol
             ):
                 identical.append(j)
-        identical_blocks.append(identical)
+        identical_blocks[i] = identical
     return identical_blocks
 
 
@@ -1171,7 +1170,7 @@ def get_transposed_blocks(blocks, hyb, hamiltonian=None, tol=1e-6):
                 np.abs(hamiltonian[idx_i[1:]] - hamiltonian[idx_j[1:]].T) < tol
             ):
                 transposed.append(j)
-        transposed_blocks[i] = transposed
+        transposed_blocks.append(transposed)
     return transposed_blocks
 
 

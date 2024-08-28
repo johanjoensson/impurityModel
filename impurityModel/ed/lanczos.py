@@ -441,7 +441,7 @@ def block_lanczos(
         basis.add_states(
             itertools.chain(
                 (state for psis in q for psi in psis for state in psi),
-                (state for psi in wp for state in psi if psi[state] ** 2 >= slaterWeightMin),
+                (state for psi in wp for state in psi if abs(psi[state]) ** 2 >= slaterWeightMin),
             )
         )
         t_add += perf_counter() - t_tmp

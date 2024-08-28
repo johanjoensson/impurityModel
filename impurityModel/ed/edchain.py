@@ -100,43 +100,55 @@ def edchains(vs, ebs):
     else:
         chain_v_unocc = np.zeros((0 * n_block_orb, n_block_orb), dtype=complex)
         H_bath_unocc = np.zeros((0 * n_block_orb, 0 * n_block_orb), dtype=complex)
-    return (H_bath_occ, chain_v_occ), (H_bath_unocc, chain_v_unocc)
+    return (H_bath_occ[::-1, ::-1], chain_v_occ[::-1]), (H_bath_unocc, chain_v_unocc)
 
 
-def edchains_haverkort(eloc, tns, ens):
-    nb = len(ens)
-    assert tns.shape[0] == ens.shape[0]
-    H = np.zeros((nb + 1, nb + 1), dtype=complex)
+def haverkort_chain(eloc, tns, ens):
+    block_size = eloc.shape[0]
+    assert (
+        block_size == 1
+    ), f"The current implementation does not support offdiagonal elements in the hybridization!\n{block_size=}"
+    # Diagonalize one spin-channel
+    hsize = len(ens) + 1
+    H = np.zeros((hsize, hsize), dtype=complex)
     H[0, 0] = eloc
     for i in range(len(ens)):
         H[i + 1, i + 1] = ens[i]
         H[i, i + 1] = tns[i]
         H[i + 1, i] = tns[i]
+    matrix_print(H, "Hchain=")
+    print("", flush=True)
+
+    # Get the eigenvalues and eigenvectors
     w, v = np.linalg.eigh(H)
-    n = sum(w < 0)
-    # Number of nom. occupied bath states
-    prevtocc = v[:, n - 1 :: -1].T
-    prevtunocc = v[:, n:].T
 
-    qocc, vtocc = sp.linalg.qr(prevtocc)
-    qunocc, vtunocc = sp.linalg.qr(prevtunocc)
+    # Divide into the occupied and unoccupied part
+    n = min(sum(w < 0), hsize - 1)
 
-    vtot = np.zeros_like(H)
-    vtot[:, :n] = vtocc[::-1, :].T
-    vtot[:, n:] = vtunocc.T
+    prevtocc = v[:, n - 1 :: -1].transpose()
+    prevtunocc = v[:, n:].transpose()
+    # Make a QR decomposition of the two chains
+    qocc, vtocc = sp.linalg.qr(prevtocc, check_finite=False, overwrite_a=True)
+    qunocc, vtunocc = sp.linalg.qr(prevtunocc, check_finite=False, overwrite_a=True)
 
-    tns2 = np.zeros((nb, 1), dtype=complex)
-    for i in range(tns2.shape[0]):
-        tns2[i] = (np.conj(vtot[:, i].T) * H * vtot[:, i + 1])[0, 0]
-        if np.real(tns2[i]) < 0:
-            vtot[:, i + 1] = -vtot[:, i + 1]
-            tns2[i] = -tns2[i]
-    ens2 = np.zeros((len(ens) + 1), dtype=complex)
-    for i in range(nb + 1):
-        ens2[i] = (np.conj(vtot[:, i].T) * H * vtot[:, i])[0, 0]
+    # Patch the two decompositions together
+    vtot = np.zeros((hsize, hsize), dtype=complex)
+    vtot[:, 0:n] = vtocc[::-1, :].transpose()
+    vtot[:, n:hsize] = vtunocc.transpose()
+
+    # # Get the tridiagonal terms
+    # tns2 = np.zeros(hsize - 1, dtype=complex)
+    # for i in range(hsize - 1):
+    #     tns2[i] = np.conj(vtot[:, i].T) @ H @ vtot[:, i + 1]
+    #     if np.real(tns2[i]) < 0:  # Adjust the phase of the eigenvectors
+    #         vtot[:, i + 1] = -vtot[:, i + 1]
+    #         tns2[i] = -tns2[i]
+    # ens2 = np.zeros(hsize, dtype=complex)
+    # for i in range(hsize):
+    #     ens2[i] = np.conj(vtot[:, i].T) @ H @ vtot[:, i]
 
     # Get the final transform to extract the impurity orbital (It goes into element n-1)
-    cs = vtot[1, n - 1 : n + 1]
+    cs = vtot[0, n - 1 : n + 1]
     r = np.linalg.norm(cs)
     R = np.empty((2, 2), dtype=complex)
     R[0, 0] = np.conj(cs[0]) / r
@@ -144,20 +156,20 @@ def edchains_haverkort(eloc, tns, ens):
     R[0, 1] = cs[1] / r
     R[1, 1] = cs[0] / r
 
-    # R ~ [[Hopping to occupied chain, herm_conj, hopping to unoccupied chain]
-    #      [Hopping to unoccupied chain, - herm_conj, hopping to occupied chain]]
-
+    Hnew = np.conj(vtot.T) @ H @ vtot
+    matrix_print(vtot, "Q before rotating impurity=")
+    matrix_print(Hnew, "H before rotating impurity=")
     # Write it out
-    print(f"{n=}")
-    matrix_print(np.round(H, 3), "H")
     vtot[:, n - 1 : n + 1] = vtot[:, n - 1 : n + 1] @ np.conj(R.T)
-    Htest = np.conj(vtot.T) @ H @ vtot
-    print("ens2")
-    print(np.round(ens2, 3))
-    matrix_print(np.round(vtot, 3), "vtot")
-    matrix_print(np.round(Htest, 3), "Htest")
+    matrix_print(vtot, "Q after rotating impurity=")
 
-    # print(np.linalg.inv(H)[0, 0], "H^{-1}")
-    # print(np.linalg.inv(Htest)[n, n], "Htest^{-1}")
+    indices = np.append(np.roll(np.arange(0, n), 1), np.arange(n, hsize))
+    idx = np.ix_(indices, indices)
+    Hnew = np.conj(vtot.T) @ H @ vtot
+    matrix_print(Hnew, "Hhaverkort=")
+    Hnew = Hnew[idx]
+    matrix_print(Hnew, "Hhaverkort 2=")
+    matrix_print(Hnew[block_size:, :block_size], "T haverkort=")
+    matrix_print(Hnew[block_size:, block_size:], "H haverkort=")
 
-    return ens2, tns2, R
+    return Hnew[block_size:, :block_size], Hnew[block_size:, block_size:]

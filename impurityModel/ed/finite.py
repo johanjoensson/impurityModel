@@ -1468,28 +1468,25 @@ def getTraceDensityMatrix(nBaths, psi, l=2):
     return n
 
 
-def build_impurity_density_matrix(n_imp_orbitals, n_bath_orbitals, psi):
-    n_spin_orbitals = n_imp_orbitals + n_bath_orbitals
-    densityMatrix = np.zeros((n_imp_orbitals, n_imp_orbitals), dtype=complex)
-    for i, j in itertools.product(range(n_imp_orbitals), range(n_imp_orbitals)):
-        psi_new = a(n_spin_orbitals, i, psi)
-        psi_new = c(n_spin_orbitals, j, psi_new)
+def build_density_matrix(orbital_indices, psi, n_spin_orbitals):
+    rho = np.zeros((len(orbital_indices), len(orbital_indices)), dtype=complex)
+    for i, j in itertools.product(range(len(orbital_indices)), range(len(orbital_indices))):
+        psi_new = a(n_spin_orbitals, orbital_indices[i], psi)
+        psi_new = c(n_spin_orbitals, orbital_indices[j], psi_new)
         tmp = inner(psi, psi_new)
         if tmp != 0:
-            densityMatrix[i, j] = tmp
-    return densityMatrix
+            rho[i, j] = tmp
+    return rho
+
+
+def build_impurity_density_matrix(n_imp_orbitals, n_bath_orbitals, psi):
+    n_spin_orbitals = n_imp_orbitals + n_bath_orbitals
+    return build_density_matrix(range(n_imp_orbitals), psi, n_spin_orbitals)
 
 
 def build_bath_density_matrix(n_imp_orbitals, n_bath_orbitals, psi):
     n_spin_orbitals = n_imp_orbitals + n_bath_orbitals
-    densityMatrix = np.zeros((n_bath_orbitals, n_bath_orbitals), dtype=complex)
-    for i, j in itertools.product(range(n_imp_orbitals, n_spin_orbitals), range(n_imp_orbitals, n_spin_orbitals)):
-        psi_new = a(n_spin_orbitals, i, psi)
-        psi_new = c(n_spin_orbitals, j, psi_new)
-        tmp = inner(psi, psi_new)
-        if tmp != 0:
-            densityMatrix[i - n_imp_orbitals, j - n_imp_orbitals] = tmp
-    return densityMatrix
+    return build_density_matrix(range(n_imp_orbitals, n_spin_orbitals), psi, n_spin_orbitals)
 
 
 def getDensityMatrix(nBaths, psi, l=2):
