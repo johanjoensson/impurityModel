@@ -539,6 +539,192 @@ class DistributedStateContainer(StateContainer):
         return states
 
 
+class SimpleDistributedStateContainer(StateContainer):
+    def __init__(self, states: Iterable, bytes_per_state, state_type=bytes, comm=None, verbose=True):
+        super(SimpleDistributedStateContainer, self).__init__(states, bytes_per_state, state_type, comm)
+
+    def _set_state_bounds(self, local_states) -> list[Optional[bytes]]:
+        local_states_list = local_states
+        total_local_states_len = self.comm.allreduce(len(local_states_list), op=MPI.SUM)
+        samples = []
+        if len(local_states) > 1:
+            n_samples = min(len(local_states), int(self.comm.size * np.log10(total_local_states_len) / 0.05**2))
+            for interval in batched(local_states, len(local_states) // n_samples):
+                samples.append(self.rng.choice(list(interval)))
+        else:
+            samples = local_states_list
+
+        all_states_received = self.comm.gather(samples)
+
+        if self.comm.rank == 0:
+            all_states_it = merge(*all_states_received)
+            all_states = []
+            for state, _ in itertools.groupby(all_states_it):
+                all_states.append(state)
+
+            sizes = np.array([len(all_states) // self.comm.size] * self.comm.size, dtype=int)
+            sizes[: len(all_states) % self.comm.size] += 1
+
+            bounds = (sum(sizes[: i + 1]) for i in range(self.comm.size))
+            state_bounds = (all_states[bound] if bound < len(all_states) else all_states[-1] for bound in bounds)
+        else:
+            state_bounds = None
+
+        state_bounds = self.comm.bcast(state_bounds)
+        return [
+            state_bounds[r] if r < self.comm.size - 1 and state_bounds[r] != state_bounds[r + 1] else None
+            for r in range(self.comm.size)
+        ]
+
+    def add_states(self, new_states: Iterable[bytes]) -> None:
+        """
+        Extend the current basis by adding the new_states to it.
+        """
+        if not self.is_distributed:
+            local_it = merge(self.local_basis, sorted(set(new_states)))
+            local_basis: list[bytes] = []
+            for state, _ in itertools.groupby(local_it):
+                local_basis.append(state)
+            self.local_basis = local_basis
+            self.size = len(self.local_basis)
+            self.offset = 0
+            self.local_indices = range(0, len(self.local_basis))
+            self._index_dict = {state: i for i, state in enumerate(self.local_basis)}
+            self.local_index_bounds = [(0, len(self.local_basis))]
+            if len(self.local_basis) > 0:
+                self.state_bounds: Optional[tuple[bytes, Optional[bytes]]] = [(self.local_basis[0], None)]
+            else:
+                self.state_bounds = [None]
+            return
+
+        local_it = merge(self.local_basis, sorted(set(new_states)))
+        local_states = []
+        for state, _ in itertools.groupby(local_it):
+            local_states.append(state)
+
+        send_list: list[list[bytes]] = [[] for _ in range(self.comm.size)]
+        treated_states = [False] * len(local_states)
+        for (i, state), (r, state_bounds) in itertools.product(enumerate(local_states), enumerate(self.state_bounds)):
+            if treated_states[i]:
+                continue
+            if state_bounds is None or state < state_bounds:
+                send_list[r].append(state)
+                treated_states[i] = True
+
+        received_states = self.comm.alltoall(send_list)
+
+        local_basis = []
+        for state, _ in itertools.groupby(merge(*received_states)):
+            local_basis.append(state)
+
+        size_arr = np.empty((self.comm.size,), dtype=int)
+        self.local_basis = local_basis
+        local_length = len(self.local_basis)
+        size_arr = np.array(self.comm.allgather(local_length), dtype=int)
+        self.size = np.sum(size_arr)
+        self.offset = np.sum(size_arr[: self.comm.rank])  # offset_arr[0] - local_length
+        self.local_indices = range(self.offset, self.offset + len(self.local_basis))
+        self._index_dict = {state: self.offset + i for i, state in enumerate(self.local_basis)}
+        self.index_bounds = [np.sum(size_arr[: r + 1]) if size_arr[r] > 0 else None for r in range(self.comm.size)]
+        if self.size > 0 and any(abs(size_arr - self.size // self.comm.size) / self.size > 0.10):
+            n_states_per_rank = np.array(
+                [
+                    self.size // self.comm.size + (1 if r < self.size % self.comm.size else 0)
+                    for r in range(self.comm.size)
+                ]
+            )
+            local_indices = range(
+                sum(n_states_per_rank[: self.comm.rank]), sum(n_states_per_rank[: self.comm.rank + 1])
+            )
+            self.local_basis = list(self._getitem_sequence([i for i in local_indices if i < self.size]))
+            local_length = len(self.local_basis)
+            size_arr = np.array(self.comm.allgather(local_length), dtype=int)
+            self.size = int(np.sum(size_arr))
+            self.offset = int(np.sum(size_arr[: self.comm.rank]))  # offset_arr[0] - local_length
+            self.local_indices = range(self.offset, self.offset + local_length)
+            self._index_dict = {state: self.offset + i for i, state in enumerate(self.local_basis)}
+            self.index_bounds = [np.sum(size_arr[: r + 1]) if size_arr[r] > 0 else None for r in range(self.comm.size)]
+        state_bounds = list(self._getitem_sequence([i for i in self.index_bounds if i is not None and i < self.size]))
+        self.state_bounds = state_bounds + [None] * (self.comm.size - len(state_bounds))
+        self.state_bounds = [
+            self.state_bounds[r]
+            if r < self.comm.size - 1 and self.state_bounds[r] != self.state_bounds[r + 1]
+            else None
+            for r in range(self.comm.size)
+        ]
+
+    def _getitem_sequence(self, l: Iterable[int]) -> Iterable[bytes]:
+        if self.comm is None:
+            return (self.local_basis[i] for i in l)
+
+        l = np.fromiter((i if i >= 0 else self.size + i for i in l), dtype=int)
+
+        send_list: list[list[int]] = [[] for _ in range(self.comm.size)]
+        send_to_ranks = np.empty((len(l)), dtype=int)
+        send_to_ranks[:] = self.size
+        for idx, i in enumerate(l):
+            for r in range(self.comm.size):
+                if self.index_bounds[r] is not None and i < self.index_bounds[r]:
+                    send_list[r].append(i)
+                    send_to_ranks[idx] = r
+                    break
+        send_order = np.argsort(send_to_ranks, kind="stable")
+
+        queries = self.comm.alltoall(send_list)
+
+        results = [[] for _ in range(self.comm.size)]
+        for r in range(len(queries)):
+            for i, query in enumerate(queries[r]):
+                if query >= self.offset and query < self.offset + len(self.local_basis):
+                    results[r].append(self.local_basis[query - self.offset])
+
+        result = self.comm.alltoall(results)
+        result = [state for r_results in result for state in r_results]
+
+        return (result[i] for i in np.argsort(send_order))
+
+    def _index_sequence(self, s: Iterable[bytes]) -> Iterable[int]:
+        if self.comm is None:
+            return (self._index_dict[val] if val in self._index_dict else self.size for val in s)
+
+        send_list: list[list[bytes]] = [[] for _ in range(self.comm.size)]
+        send_to_ranks = np.empty((len(s)), dtype=int)
+        send_to_ranks[:] = self.size
+        for i, val in enumerate(s):
+            for r in range(self.comm.size):
+                if self.state_bounds[r] is None or val < self.state_bounds[r]:
+                    send_list[r].append(val)
+                    send_to_ranks[i] = r
+                    break
+
+        send_order = np.argsort(send_to_ranks, kind="stable")
+
+        queries = self.comm.alltoall(send_list)
+
+        results = [[] for _ in range(self.comm.size)]
+        for r in range(self.comm.size):
+            for query in queries[r]:
+                results[r].append(self._index_dict.get(query, self.size))
+        result = self.comm.alltoall(results)
+        result = np.array([i for r_i in result for i in r_i], dtype=int)
+        while np.any(np.logical_or(result > self.size, result < 0)):
+            mask = np.logical_or(result > self.size, result < 0)
+            result[mask] = np.from_iter(self._index_sequence(itertools.compress(s, mask)), dtype=int)
+
+        return (res for res in result[np.argsort(send_order)])
+
+    def _contains_sequence(self, items) -> Iterable[bool]:
+        if self.comm is None:
+            return (item in self._index_dict for item in items)
+        return (index < self.size for index in self._index_sequence(items))
+
+    def alltoall_states(self, send_list: list[list[bytes]], flatten=False):
+        states = self.comm.alltoall(send_list)
+        if flatten:
+            states = [state for r_states in states for state in r_states]
+        return states
+
+
 class CentralizedStateContainer(StateContainer):
     def __init__(self, states: Iterable, bytes_per_state, state_type=bytes, comm=None, verbose=True):
         self._full_basis = []
@@ -594,9 +780,6 @@ class CentralizedStateContainer(StateContainer):
             if self.is_distributed
             else [None]
         )
-        if self.is_distributed:
-            print(f"{self.comm.rank=}")
-            print(f"self.comm.local_basis=")
 
     def _getitem_sequence(self, l: Iterable[int]) -> Iterable[bytes]:
         return (self._full_basis[i] for i in l)

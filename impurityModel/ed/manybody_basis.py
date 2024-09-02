@@ -12,7 +12,11 @@ from heapq import merge
 import numpy as np
 import scipy as sp
 from mpi4py import MPI
-from impurityModel.ed.manybody_state_containers import DistributedStateContainer, CentralizedStateContainer
+from impurityModel.ed.manybody_state_containers import (
+    DistributedStateContainer,
+    CentralizedStateContainer,
+    SimpleDistributedStateContainer,
+)
 
 
 from impurityModel.ed import product_state_representation as psr
@@ -90,99 +94,101 @@ class Basis:
     def _get_initial_basis(
         self,
         impurity_orbitals,
-        valence_baths,
-        conduction_baths,
+        bath_states,
         delta_valence_occ,
         delta_conduction_occ,
         delta_impurity_occ,
         nominal_impurity_occ,
         verbose,
     ):
-        total_baths = {i: valence_baths[i] + conduction_baths[i] for i in valence_baths}
-        configurations = {}
-        n_imp_orbs = 0
-        n_val_orbs = sum(imp_orbs for imp_orbs in impurity_orbitals.values())
-        n_cond_orbs = n_val_orbs + sum(val_orbs for val_orbs in valence_baths.values())
+        valence_baths, zero_baths, conduction_baths = bath_states
+        total_baths = {
+            i: sum(len(orbs) for orbs in valence_baths[i])
+            + sum(len(orbs) for orbs in zero_baths[i])
+            + sum(len(orbs) for orbs in conduction_baths[i])
+            for i in valence_baths
+        }
+        total_impurity_orbitals = {i: sum(len(orbs) for orbs in impurity_orbitals[i]) for i in impurity_orbitals}
         for i in valence_baths:
             if verbose:
                 print(f"{i=}")
             valid_configurations = []
+            impurity_electron_indices = [orb for imp_orbs in impurity_orbitals[i] for orb in imp_orbs]
+            valence_electron_indices = [orb for val_orbs in valence_baths[i] for orb in val_orbs]
+            conduction_electron_indices = [orb for con_orbs in conduction_baths[i] for orb in con_orbs]
             for delta_valence in range(delta_valence_occ[i] + 1):
                 for delta_conduction in range(delta_conduction_occ[i] + 1):
                     delta_impurity = delta_valence - delta_conduction
                     if (
                         abs(delta_impurity) <= delta_impurity_occ[i]
-                        and nominal_impurity_occ[i] + delta_impurity <= impurity_orbitals[i]
+                        and nominal_impurity_occ[i] + delta_impurity <= total_impurity_orbitals[i]
                         and nominal_impurity_occ[i] + delta_impurity >= 0
                     ):
                         impurity_occupation = nominal_impurity_occ[i] + delta_impurity
-                        valence_occupation = valence_baths[i] - delta_valence
+                        valence_occupation = len(valence_electron_indices) - delta_valence
                         conduction_occupation = delta_conduction
                         if verbose:
                             print("Partition occupations")
                             print(f"Impurity occupation:   {impurity_occupation:d}")
                             print(f"Valence occupation:   {valence_occupation:d}")
-                            print(f"Conduction occupation: {conduction_occupation:d}")
-                        impurity_electron_indices = list(range(n_imp_orbs, n_imp_orbs + impurity_orbitals[i]))
+                            print(f"Conduction occupation: {conduction_occupation:d}", flush=True)
                         impurity_configurations = itertools.combinations(impurity_electron_indices, impurity_occupation)
-                        valence_electron_indices = list(range(n_val_orbs, n_val_orbs + valence_baths[i]))
                         valence_configurations = itertools.combinations(valence_electron_indices, valence_occupation)
-                        conduction_electron_indices = list(range(n_cond_orbs, n_cond_orbs + conduction_baths[i]))
                         conduction_configurations = itertools.combinations(
                             conduction_electron_indices, conduction_occupation
                         )
                         valid_configurations.append(
-                            itertools.product(
-                                impurity_configurations, valence_configurations, conduction_configurations
-                            )
+                            (impurity_configurations, valence_configurations, conduction_configurations)
                         )
-            configurations[i] = [
-                imp + val + cond for configuration in valid_configurations for (imp, val, cond) in configuration
-            ]
-            n_imp_orbs += impurity_orbitals[i]
-            n_val_orbs += valence_baths[i]
-            n_cond_orbs += conduction_baths[i]
-        num_spin_orbitals = sum(impurity_orbitals[i] + total_baths[i] for i in total_baths)
+        num_spin_orbitals = sum(total_impurity_orbitals[i] + total_baths[i] for i in total_baths)
         basis = []
         # Combine all valid configurations for all l-subconfigurations (ex. p-states and d-states)
-        for system_configuration in itertools.product(*configurations.values()):
-            basis.append(
-                psr.tuple2bytes(
-                    tuple(sorted(itertools.chain.from_iterable(system_configuration))),
-                    num_spin_orbitals,
-                )
-            )
+        for config in valid_configurations:
+            for imp, val, con in itertools.product(*config):
+                for i in zero_baths:
+                    for imp_i, zero_i in zip(impurity_orbitals[i], zero_baths[i]):
+                        if len(zero_i) > 0:
+                            n_imp = sum(i_orb in imp for i_orb in imp_i)
+                            n_zeros = len(imp_i) - n_imp
+                            for zero in itertools.combinations(zero_i, n_zeros):
+                                basis.append(psr.tuple2bytes(imp + val + zero + con, num_spin_orbitals))
+                        else:
+                            basis.append(psr.tuple2bytes(imp + val + con, num_spin_orbitals))
+            print()
         return basis, num_spin_orbitals
 
     def _get_restrictions(
         self,
         impurity_orbitals,
-        valence_baths,
-        conduction_baths,
+        bath_states,
         delta_valence_occ,
         delta_conduction_occ,
         delta_impurity_occ,
         nominal_impurity_occ,
         verbose,
     ):
+        valence_baths, zero_baths, conduction_baths = bath_states
         restrictions = {}
-        total_baths = {i: valence_baths[i] + conduction_baths[i] for i in valence_baths}
-        impurity_orbs = 0
-        valence_orbs = sum(imp_orbs for imp_orbs in impurity_orbitals.values())
-        conduction_orbs = valence_orbs + sum(val_orbs for val_orbs in valence_orbitals.values())
+        total_baths = {
+            i: sum(len(orbs) for orbs in valence_baths[i])
+            + sum(len(orbs) for orbs in zero_baths[i])
+            + sum(len(orbs) for orbs in conduction_baths[i])
+            for i in valence_baths
+        }
+        total_impurity_orbitals = {i: sum(len(orbs) for orbs in impurity_orbitals[i]) for i in impurity_orbitals}
         for i in total_baths:
-            impurity_indices = frozenset(range(impurity_orbs, impurity_orbs + impurity_orbitals[i]))
+            impurity_indices = frozenset(orb for imp_orbs in impurity_orbitals[i] for orb in imp_orbs)
             restrictions[impurity_indices] = (
                 max(nominal_impurity_occ[i] - delta_impurity_occ[i], 0),
-                min(nominal_impurity_occ[i] + delta_impurity_occ[i] + 1, impurity_orbitals[i] + 1),
+                min(nominal_impurity_occ[i] + delta_impurity_occ[i] + 1, total_impurity_orbitals[i] + 1),
             )
-            valence_indices = frozenset(range(valence_orbs, valence_orbs + valence_baths[i]))
-            restrictions[valence_indices] = (max(valence_baths[i] - delta_valence_occ[i], 0), valence_baths[i] + 1)
-            conduction_indices = frozenset(range(conduction_orbs, conduction_orbs + conduction_baths[i]))
+            valence_indices = frozenset(orb for val_orbs in valence_baths[i] for orb in val_orbs)
+            restrictions[valence_indices] = (
+                max(sum(len(orbs) for orbs in valence_baths[i]) - delta_valence_occ[i], 0),
+                sum(len(orbs) for orbs in valence_baths[i]) + 1,
+            )
+            conduction_indices = frozenset(orb for con_orbs in conduction_baths[i] for orb in con_orbs)
             restrictions[conduction_indices] = (0, delta_conduction_occ[i] + 1)
-            impurity_orbs += impurity_orbitals[i]
-            valence_orbs += valence_baths[i]
-            conduction_orbs += conduction_baths[i]
 
             if verbose:
                 print(f"l = {i}")
@@ -193,78 +199,101 @@ class Basis:
         return restrictions
 
     def get_effective_restrictions(self):
-        valence_baths, conduction_baths = self.bath_states
+        valence_baths, zero_baths, conduction_baths = self.bath_states
 
-        total_baths = {i: valence_baths[i] + conduction_baths[i] for i in valence_baths}
+        total_baths = {
+            i: sum(len(orbs) for orbs in valence_baths[i])
+            + sum(len(orbs) for orbs in zero_baths[i])
+            + sum(len(orbs) for orbs in conduction_baths[i])
+            for i in valence_baths
+        }
+        total_impurity_orbitals = {
+            i: sum(len(orbs) for orbs in self.impurity_orbitals[i]) for i in self.impurity_orbitals
+        }
         restrictions = {}
-        n_imp_orbs = sum(num for num in self.impurity_orbitals.values())
-        n_valence_states = sum(num for num in valence_baths.values())
-        n_conduction_states = sum(num for num in conduction_baths.values())
 
-        imp_orbs = 0
-        val_orbs = n_imp_orbs
-        con_orbs = n_imp_orbs + n_conduction_states
-        for i in total_baths:
+        for i in sorted(total_baths.keys()):
             max_imp = 0
-            min_imp = self.impurity_orbitals[i]
+            min_imp = total_impurity_orbitals[i]
             max_val = 0
-            min_val = valence_baths[i]
+            min_val = sum(len(orbs) for orbs in valence_baths[i])
+            max_zero = 0
+            min_zero = sum(len(orbs) for orbs in valence_baths[i])
             max_con = 0
-            min_con = conduction_baths[i]
-            impurity_indices = frozenset(ind for ind in range(imp_orbs, imp_orbs + self.impurity_orbitals[i]))
-            valence_indices = frozenset(ind for ind in range(val_orbs, val_orbs + valence_baths[i]))
-            conduction_indices = frozenset(ind for ind in range(con_orbs, con_orbs + conduction_baths[i]))
+            min_con = sum(len(orbs) for orbs in conduction_baths[i])
+            impurity_indices = frozenset(sorted(ind for imp_ind in self.impurity_orbitals[i] for ind in imp_ind))
+            valence_indices = frozenset(sorted(ind for val_ind in valence_baths[i] for ind in val_ind))
+            zero_indices = frozenset(sorted(ind for zero_ind in zero_baths[i] for ind in zero_ind))
+            conduction_indices = frozenset(sorted(ind for con_ind in conduction_baths[i] for ind in con_ind))
             for state in self.local_basis:
                 bits = psr.bytes2bitarray(state, self.num_spin_orbitals)
                 n_imp = sum(bits[i] for i in impurity_indices)
                 n_val = sum(bits[i] for i in valence_indices)
+                n_zero = sum(bits[i] for i in zero_indices)
                 n_con = sum(bits[i] for i in conduction_indices)
                 max_imp = max(max_imp, n_imp)
                 min_imp = min(min_imp, n_imp)
                 max_val = max(max_val, n_val)
                 min_val = min(min_val, n_val)
+                max_zero = max(max_zero, n_zero)
+                min_zero = min(min_zero, n_zero)
                 max_con = max(max_con, n_con)
                 min_con = min(min_con, n_con)
-            max_imp = self.comm.allreduce(max_imp, op=MPI.MAX)
-            min_imp = self.comm.allreduce(min_imp, op=MPI.MIN)
-            max_val = valence_baths[i]
-            min_val = self.comm.allreduce(min_val, op=MPI.MIN)
-            max_con = self.comm.allreduce(max_con, op=MPI.MAX)
+            max_val = len(valence_indices)
             min_con = 0
-            restrictions[impurity_indices] = (min_imp, max_imp)
-            restrictions[valence_indices] = (min_val, max_val)
-            restrictions[conduction_indices] = (min_con, max_con)
+            if self.is_distributed:
+                max_imp = self.comm.allreduce(max_imp, op=MPI.MAX)
+                min_imp = self.comm.allreduce(min_imp, op=MPI.MIN)
+                min_val = self.comm.allreduce(min_val, op=MPI.MIN)
+                max_zero = self.comm.allreduce(max_zero, op=MPI.MAX)
+                min_zero = self.comm.allreduce(min_zero, op=MPI.MIN)
+                max_con = self.comm.allreduce(max_con, op=MPI.MAX)
+            if len(impurity_indices) > 0:
+                restrictions[impurity_indices] = (min_imp, max_imp)
+            if len(valence_indices) > 0:
+                restrictions[valence_indices] = (min_val, max_val)
+            if len(zero_indices) > 0:
+                restrictions[zero_indices] = (min_zero, max_zero)
+            if len(conduction_indices) > 0:
+                restrictions[conduction_indices] = (min_con, max_con)
         return restrictions
 
     def build_excited_restrictions(self, imp_change=(1, 1), val_change=(1, 0), con_change=(0, 1)):
         imp_reduce, imp_increase = imp_change
         val_reduce, _ = val_change
         _, con_increase = con_change
-        valence_baths, conduction_baths = self.bath_states
-        total_baths = {i: valence_baths[i] + conduction_baths[i] for i in valence_baths}
+        valence_baths, zero_baths, conduction_baths = self.bath_states
+        total_baths = {
+            i: sum(len(orbs) for orbs in valence_baths[i])
+            + sum(len(orbs) for orbs in zero_baths[i])
+            + sum(len(orbs) for orbs in conduction_baths[i])
+            for i in valence_baths
+        }
+        total_impurity_orbitals = {
+            i: sum(len(orbs) for orbs in self.impurity_orbitals[i]) for i in self.impurity_orbitals
+        }
         restrictions = self.get_effective_restrictions()
         excited_restrictions = {}
-        n_imp_orbs = sum(num for num in self.impurity_orbitals.values())
-        n_valence_states = sum(num for num in valence_baths.values())
-        n_conduction_states = sum(num for num in conduction_baths.values())
-        imp_orbs = 0
-        val_orbs = n_imp_orbs
-        con_orbs = n_imp_orbs + n_valence_states
         for i in total_baths:
-            impurity_indices = frozenset(ind for ind in range(imp_orbs, imp_orbs + self.impurity_orbitals[i]))
-            valence_indices = frozenset(ind for ind in range(val_orbs, val_orbs + valence_baths[i]))
-            conduction_indices = frozenset(ind for ind in range(con_orbs, con_orbs + conduction_baths[i]))
+            impurity_indices = frozenset(ind for imp_ind in self.impurity_orbitals[i] for ind in imp_ind)
+            valence_indices = frozenset(ind for val_ind in valence_baths[i] for ind in val_ind)
+            zero_indices = frozenset(ind for zero_ind in zero_baths[i] for ind in zero_ind)
+            conduction_indices = frozenset(ind for con_ind in conduction_baths[i] for ind in con_ind)
             r_min_imp, r_max_imp = restrictions[impurity_indices]
             min_imp = max(r_min_imp - imp_reduce, 0)
-            max_imp = min(r_max_imp + imp_increase, self.impurity_orbitals[i])
+            max_imp = min(r_max_imp + imp_increase, total_impurity_orbitals[i])
             r_min_val, r_max_val = restrictions[valence_indices]
             min_val = max(r_min_val - val_reduce, 0)
-            max_val = valence_baths[i]
+            max_val = sum(len(orbs) for orbs in valence_baths[i])
+            r_min_zero, r_max_zero = restrictions[zero_indices]
+            min_zero = max(r_min_zero - imp_reduce, 0)
+            max_zero = min(r_max_zero + imp_increase, len(zero_indices))
             r_min_cond, r_max_cond = restrictions[conduction_indices]
             min_cond = 0
-            max_cond = min(r_max_cond + con_increase, conduction_baths[i])
+            max_cond = min(r_max_cond + con_increase, sum(len(orbs) for orbs in conduction_baths[i]))
             excited_restrictions[impurity_indices] = (min_imp, max_imp)
             excited_restrictions[valence_indices] = (min_val, max_val)
+            excited_restrictions[zero_indices] = (min_zero, max_zero)
             excited_restrictions[conduction_indices] = (min_cond, max_cond)
         return excited_restrictions
 
@@ -273,8 +302,7 @@ class Basis:
         impurity_orbitals,
         initial_basis=None,
         restrictions=None,
-        valence_baths=None,
-        conduction_baths=None,
+        bath_states=None,
         delta_valence_occ=None,
         delta_conduction_occ=None,
         delta_impurity_occ=None,
@@ -290,9 +318,7 @@ class Basis:
         assert (
             impurity_orbitals is not None
         ), "You need to supply the number of impurity orbitals in each set in impurity_orbitals"
-        assert valence_baths is not None, "You need to supply the number of bath states for each l quantum number"
-        assert conduction_baths is not None, "You need to supply the number of bath states for each l quantum number"
-        bath_states = (valence_baths, conduction_baths)
+        assert bath_states is not None, "You need to supply the number of bath states for each l quantum number"
         if initial_basis is not None:
             assert nominal_impurity_occ is None
             assert delta_valence_occ is None
@@ -302,8 +328,7 @@ class Basis:
             assert restrictions is None
             initial_basis, num_spin_orbitals = self._get_initial_basis(
                 impurity_orbitals=impurity_orbitals,
-                valence_baths=valence_baths,
-                conduction_baths=conduction_baths,
+                bath_states=bath_states,
                 delta_valence_occ=delta_valence_occ,
                 delta_conduction_occ=delta_conduction_occ,
                 delta_impurity_occ=delta_impurity_occ,
@@ -312,8 +337,7 @@ class Basis:
             )
             restrictions = self._get_restrictions(
                 impurity_orbitals=impurity_orbitals,
-                valence_baths=valence_baths,
-                conduction_baths=conduction_baths,
+                bath_states=bath_states,
                 delta_valence_occ=delta_valence_occ,
                 delta_conduction_occ=delta_conduction_occ,
                 delta_impurity_occ=delta_impurity_occ,
@@ -329,7 +353,11 @@ class Basis:
         self.debug = debug
         self.comm = comm
         self.num_spin_orbitals = sum(
-            impurity_orbitals[i] + valence_baths[i] + conduction_baths[i] for i in impurity_orbitals
+            sum(len(orbs) for orbs in impurity_orbitals[i])
+            + sum(len(orbs) for orbs in bath_states[0][i])
+            + sum(len(orbs) for orbs in bath_states[1][i])
+            + sum(len(orbs) for orbs in bath_states[2][i])
+            for i in bath_states[0]
         )
         self.restrictions = restrictions
         self.type = type(psr.int2bytes(0, self.num_spin_orbitals))
@@ -353,7 +381,7 @@ class Basis:
         t0 = perf_counter()
 
         # self.state_container = CentralizedStateContainer(
-        self.state_container = DistributedStateContainer(
+        self.state_container = SimpleDistributedStateContainer(
             initial_basis,
             bytes_per_state=self.n_bytes,
             comm=self.comm,
@@ -484,9 +512,12 @@ class Basis:
         return res
 
     def _generate_spin_flipped_determinants(self, determinants):
-        valence_baths, conduction_baths = self.bath_states
+        valence_baths, zero_baths, conduction_baths = self.bath_states
+        n_imp_orbs = sum()
         n_dn_op = {
-            ((i, "c"), (i, "a")): 1.0 for l in self.impurity_orbitals for i in range(self.impurity_orbitals[l] // 2)
+            ((i, "c"), (i, "a")): 1.0
+            for l in self.impurity_orbitals
+            for i in range(sum(len(orbs) for orbs in self.impurity_orbitals[l]) // 2)
         }
         n_up_op = {
             ((i, "c"), (i, "a")): 1.0
@@ -585,7 +616,8 @@ class Basis:
         return Basis(
             impurity_orbitals=self.impurity_orbitals,
             valence_baths=self.bath_states[0],
-            conduction_baths=self.bath_states[1],
+            zero_baths=self.bath_states[1],
+            conduction_baths=self.bath_states[2],
             initial_basis=self.local_basis,
             restrictions=self.restrictions,
             spin_flip_dj=self.spin_flip_dj,
@@ -801,11 +833,11 @@ class Basis:
         return stat
 
     def get_state_statistics(self, psis):
-        n_imp = sum(ni for ni in self.impurity_orbitals.values())
-        n_val = sum(nv for nv in self.bath_states[0].values())
-        impurity_indices = range(0, n_imp)
-        valence_indices = range(n_imp, n_imp + n_val)
-        conduction_indices = range(n_imp + n_val, self.num_spin_orbitals)
+        impurity_indices = [
+            orb for blocks in self.impurity_orbitals.values() for imp_orbs in blocks for orb in imp_orbs
+        ]
+        valence_indices = [orb for blocks in self.bath_states[0].values() for val_orbs in blocks for orb in val_orbs]
+        conduction_indices = [orb for blocks in self.bath_states[2].values() for con_orbs in blocks for orb in con_orbs]
         psi_stats = [
             self._state_statistics(psi, impurity_indices, valence_indices, conduction_indices, self.num_spin_orbitals)
             for psi in psis
@@ -826,8 +858,7 @@ class CIPSI_Basis(Basis):
     def __init__(
         self,
         impurity_orbitals,
-        valence_baths=None,
-        conduction_baths=None,
+        bath_states=None,
         delta_valence_occ=None,
         delta_conduction_occ=None,
         delta_impurity_occ=None,
@@ -841,15 +872,13 @@ class CIPSI_Basis(Basis):
         tau=0,
         comm=None,
     ):
-        assert valence_baths is not None
-        assert conduction_baths is not None
-        bath_states = (valence_baths, conduction_baths)
+        assert bath_states is not None
+        (valence_baths, zero_baths, conduction_baths) = bath_states
         if initial_basis is None:
             assert nominal_impurity_occ is not None
             initial_basis, num_spin_orbitals = self._get_initial_basis(
                 impurity_orbitals,
-                valence_baths,
-                conduction_baths,
+                bath_states,
                 delta_valence_occ,
                 delta_conduction_occ,
                 delta_impurity_occ,
@@ -858,8 +887,7 @@ class CIPSI_Basis(Basis):
             )
         super(CIPSI_Basis, self).__init__(
             impurity_orbitals=impurity_orbitals,
-            valence_baths=bath_states[0],
-            conduction_baths=bath_states[1],
+            bath_states=bath_states,
             initial_basis=initial_basis,
             restrictions=restrictions,
             truncation_threshold=truncation_threshold,
@@ -876,7 +904,7 @@ class CIPSI_Basis(Basis):
             e_ref, psi_ref = eigensystem_new(
                 H_sparse,
                 e_max=1e-12,
-                k=sum(2 * (2 * l + 1) for l in self.ls),
+                k=len(self.impurity_orbitals[0]),
                 eigenValueTol=0,
                 verbose=self.verbose,
             )
@@ -940,8 +968,7 @@ class CIPSI_Basis(Basis):
             Dj_basis_mask = (not x for x in self.contains(Dj_candidates))
             Dj_basis = Basis(
                 impurity_orbitals=self.impurity_orbitals,
-                valence_baths=self.bath_states[0],
-                conduction_baths=self.bath_states[1],
+                bath_states=self.bath_states,
                 initial_basis=itertools.compress(Dj_candidates, Dj_basis_mask),
                 restrictions=None,
                 comm=self.comm,
@@ -1073,7 +1100,8 @@ class CIPSI_Basis(Basis):
         new_basis = CIPSI_Basis(
             impurity_orbitals=self.impurity_orbitals,
             valence_baths=self.bath_states[0],
-            conduction_baths=self.bath_states[1],
+            zero_baths=self.bath_states[1],
+            conduction_baths=self.bath_states[2],
             initial_basis=self.local_basis,
             restrictions=self.restrictions,
             comm=self.comm,

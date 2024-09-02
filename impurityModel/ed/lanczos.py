@@ -155,54 +155,56 @@ def estimate_orthonormality(W, alphas, betas, eps=np.finfo(float).eps, N=1, rng=
     # i is the index of the latest calculated vector
     i = alphas.shape[0] - 1
     n = alphas.shape[1]
-    W_out = np.empty((2, i + 2, n, n), dtype=complex)
-    w_bar = np.zeros((i + 2, n, n), dtype=complex)
-    w_bar[i + 1, :, :] = np.identity(n)
-    w_bar[i, :, :] = (
+    W_out = np.empty((2, i + 1, n, n), dtype=complex)
+    w_bar = np.zeros((i + 1, n, n), dtype=complex)
+    w_bar[i, :, :] = np.identity(n)
+    w_bar[i - 1, :, :] = (
         eps
         * N
         * sp.linalg.solve_triangular(betas[i], betas[0], lower=False, trans="C", check_finite=False)
+        * 0.6
         # * sp.linalg.solve_triangular(np.conj(betas[i].T), betas[0], lower = True)
         # * 0.6
         # * rng.standard_normal(size=(n, n))
     )
     if i == 0:
-        W_out[0, : i + 1] = W[1]
-        W_out[1, : i + 2] = np.identity(n)
+        W_out[0, :i] = W[1]
+        W_out[1, : i + 1] = np.identity(n)
         return W_out
 
+    print(f"{W.shape=}")
     if n > 1:
-        w_bar[0] = W[1, 1] @ betas[0] + W[1, 0] @ alphas[0] - alphas[i] @ W[1, 0] - betas[i - 1] @ W[0, 0]
+        w_bar[0] = W[1, 0] @ betas[0] + W[1, 0] @ alphas[0] - alphas[i] @ W[1, 0] - betas[i - 1] @ W[0, 0]
         w_bar[0] = sp.linalg.solve_triangular(betas[i], w_bar[0], lower=False, trans="C", check_finite=False)
         # w_bar[0] = sp.linalg.solve_triangular(np.conj(betas[i].T), w_bar[0], lower = True)
-        w_bar[1:i] = (
-            W[1, 2 : i + 1] @ betas[1:i]
-            + W[1, 1:i] @ alphas[1:i]
-            - alphas[i][np.newaxis, :, :] @ W[1, 1:i]
+        w_bar[1 : i - 1] = (
+            W[1, 1 : i + 1] @ betas[1:i]
+            + W[1, 0 : i - 1] @ alphas[1:i]
+            - alphas[i][np.newaxis, :, :] @ W[1, 1 : i - 1]
             + W[1, 0 : i - 1] @ np.conj(np.transpose(betas[0 : i - 1], axes=[0, 2, 1]))
-            - betas[i - 1][np.newaxis, :, :] @ W[0, 1:i]
+            - betas[i - 1][np.newaxis, :, :] @ W[0, 0 : i - 1]
         )
-        for j in range(1, i):
-            w_bar[j] = sp.linalg.solve_triangular(betas[i], w_bar[j], lower=False, trans="C", check_finite=False)
-            # w_bar[j] = sp.linalg.solve_triangular(np.conj(betas[i].T), w_bar[j], lower = True)
-        # w_bar[1:i] = np.linalg.solve(np.conj(betas[i].T)[np.newaxis, :, :], w_bar[1:i])
+        # for j in range(1, i):
+        # w_bar[j] = sp.linalg.solve_triangular(betas[i], w_bar[j], lower=False, trans="C", check_finite=False)
+        # w_bar[j] = sp.linalg.solve_triangular(np.conj(betas[i].T), w_bar[j], lower = True)
+        w_bar[1 : i - 1] = np.linalg.solve(np.conj(betas[i].T)[np.newaxis, :, :], w_bar[1 : i - 1])
     elif n == 1:
         # For standard Lanczos, broadcasting is faster than looping
-        w_bar[:i] = (
-            W[1, 1 : i + 1] * betas[:i]
-            + (alphas[:i] - alphas[i]) * W[1, :i]
+        w_bar[: i - 1] = (
+            W[1, 0:i] * betas[:i]
+            + (alphas[:i] - alphas[i]) * W[1, : i - 1]
             + np.append(
                 np.zeros((1, 1, 1), dtype=complex),
-                W[1, 0 : i - 1] * betas[0 : i - 1],
+                W[1, 0 : i - 2] * betas[0 : i - 2],
                 axis=0,
             )
-            - betas[i - 1] * W[0, :i]
+            - betas[i - 1] * W[0, : i - 1]
         )
-        w_bar[:i] = w_bar[:i] / betas[i]
+        w_bar[: i - 1] = w_bar[: i - 1] / betas[i]
 
-    w_bar[:i] += eps * (betas[i] + betas[:i])  # * 0.3 * rng.standard_normal(size=(i, n, n))
-    W_out[0, : i + 1] = W[1]
-    W_out[1, : i + 2] = w_bar
+    w_bar[: i - 1] += eps * (betas[i] + betas[:i]) * 0.3  # * 0.3 * rng.standard_normal(size=(i, n, n))
+    W_out[0, :i] = W[1]
+    W_out[1, : i + 1] = w_bar
 
     return W_out
 
@@ -224,7 +226,6 @@ def get_block_Lanczos_matrices(
     h,
     reort_mode,
     converged: Callable[[np.ndarray, np.ndarray], bool],
-    h_local: bool = False,
     verbose: bool = True,
     max_krylov_size: int = None,
     build_krylov_basis: bool = True,
@@ -275,97 +276,84 @@ def get_block_Lanczos_matrices(
         force_reort = None
     q_i = np.array(psi0, copy=True, order="C")
 
-    if h_local:
-        done = False
-        wp = None
+    done = False
+    wp = None
+    if comm.rank == 0:
+        wp = np.empty((h.shape[0], q.shape[2]), dtype=complex, order="C")
+    # Run at least 1 iteration (to generate $\alpha_0$).
+    # We can also not generate more than N Lanczos vectors, meaning we can
+    # take at most N/n steps in total
+    for i in range(int(np.ceil(krylovSize / n))):
+        t_h = perf_counter()
+        comm.Reduce(
+            h @ q_i,
+            wp,
+            op=MPI.SUM,
+            root=0,
+        )
+        t_matmul += perf_counter() - t_h
+
         if comm.rank == 0:
-            wp = np.empty((h.shape[0], q.shape[2]), dtype=complex, order="C")
-        # Run at least 1 iteration (to generate $\alpha_0$).
-        # We can also not generate more than N Lanczos vectors, meaning we can
-        # take at most N/n steps in total
-        for i in range(int(np.ceil(krylovSize / n))):
-            t_h = perf_counter()
-            comm.Reduce(
-                h @ q_i,
-                wp,
-                op=MPI.SUM,
-                root=0,
-            )
-            t_matmul += perf_counter() - t_h
+            alphas = np.append(alphas, [np.conj(q[1].T) @ wp], axis=0)
+            betas = np.append(betas, np.zeros((1, n, n), dtype=complex), axis=0)
+            wp -= q[1] @ alphas[i] + q[0] @ np.conj(betas[i - 1].T)
+            if reort_mode == Reort.FULL:
+                t_ortho = perf_counter()
+                n_reort += 1
+                wp -= Q.calc_projection(wp)
+                t_reorth += perf_counter() - t_ortho
 
-            if comm.rank == 0:
-                alphas = np.append(alphas, [np.conj(q[1].T) @ wp], axis=0)
-                betas = np.append(betas, np.zeros((1, n, n), dtype=complex), axis=0)
-                wp -= q[1] @ alphas[i] + q[0] @ np.conj(betas[i - 1].T)
-                if reort_mode == Reort.PARTIAL:
-                    t_overlap = perf_counter()
-                    W = estimate_orthonormality(W, alphas, betas, N=N)
-                    t_estimate += perf_counter() - t_overlap
+            q[0] = q[1]
+            t_qr_fact = perf_counter()
+            q[1], betas[i] = sp.linalg.qr(wp, mode="economic", overwrite_a=True, check_finite=False)
+            t_qr += perf_counter() - t_qr_fact
+            t_converged = perf_counter()
 
-                    reort = np.any(np.abs(W[1, : i + 1]) > np.sqrt(eps))
-                    if reort or force_reort is not None:
-                        t_ortho = perf_counter()
-                        n_reort += 1
-                        mask = np.array([np.any(np.abs(m) > eps ** (3 / 4), axis=1) for m in W[1]])
-                        mask[-1:] = False
-                        combined_mask = mask
-                        combined_mask[:-1] = (
-                            np.logical_or(mask[:-1], force_reort) if force_reort is not None else mask[:-1]
-                        )
+            done = converged(alphas, betas)
+            t_conv += perf_counter() - t_converged
 
-                        Qm = Q[combined_mask.flatten()]
-                        wp -= Qm @ np.conj(Qm.T) @ wp
+        done = comm.bcast(done, root=0)
+        if done:
+            break
 
-                        W[1, combined_mask.flatten()] = eps * np.random.normal(loc=0, scale=1.5, size=W[1, mask].shape)
+        if comm.rank == 0:
+            if reort_mode == Reort.PARTIAL:
+                t_overlap = perf_counter()
+                W = estimate_orthonormality(W, alphas, betas, N=N)
+                t_estimate += perf_counter() - t_overlap
 
-                        force_reort = mask if reort else None
-                        t_reorth += perf_counter() - t_ortho
-                if reort_mode == Reort.FULL:
+                reort = np.any(np.abs(W[1, : i + 1]) > np.sqrt(eps))
+                if reort or force_reort is not None:
                     t_ortho = perf_counter()
                     n_reort += 1
+                    mask = np.array([np.any(np.abs(m) > eps ** (3 / 4), axis=1) for m in W[1]])
+                    mask[-1:] = False
+                    combined_mask = mask
+                    combined_mask[:-1] = np.logical_or(mask[:-1], force_reort) if force_reort is not None else mask[:-1]
+
+                    # Qm = Q[combined_mask.flatten()]
+                    wp = q[1] @ betas[i]
+                    # wp -= Qm @ np.conj(Qm.T) @ wp
                     wp -= Q.calc_projection(wp)
+                    q[1], betas[i] = sp.linalg.qr(wp, mode="economic", overwrite_a=True, check_finite=False)
+
+                    W[1, :-1] = eps * np.random.normal(loc=0, scale=1.5, size=W[1, :-1].shape)
+                    # W[1, combined_mask.flatten()] = eps * np.random.normal(loc=0, scale=1.5, size=W[1, mask].shape)
+
+                    force_reort = mask if reort else None
                     t_reorth += perf_counter() - t_ortho
+        if comm.rank == 0 and build_krylov_basis:
+            Q.add(q[1])
 
-                q[0] = q[1]
-                t_qr_fact = perf_counter()
-                q[1], betas[i] = sp.linalg.qr(wp, mode="economic", overwrite_a=True, check_finite=False)
-                t_qr += perf_counter() - t_qr_fact
-                t_converged = perf_counter()
+        comm.Scatterv(
+            (q[1], counts, offsets, MPI.C_DOUBLE_COMPLEX),
+            q_i,
+            root=0,
+        )
 
-                done = converged(alphas, betas)
-                t_conv += perf_counter() - t_converged
-
-            done = comm.bcast(done, root=0)
-            if done:
-                break
-
-            if comm.rank == 0 and build_krylov_basis:
-                Q.add(q[1])
-
-            comm.Scatterv(
-                (q[1], counts, offsets, MPI.C_DOUBLE_COMPLEX),
-                q_i,
-                root=0,
-            )
-
-        # Distribute Lanczos matrices to all ranks
-        alphas = comm.bcast(alphas, root=0)
-        betas = comm.bcast(betas, root=0)
-    else:
-        # Run at least 1 iteration (to generate $\alpha_0$).
-        # We can also not generate more than N Lanczos vectors, meaning we can take
-        # at most N/n steps in total
-        for i in range(max(krylovSize // n, 1)):
-            # Update to PRO block Lanczos!!
-            wp = h @ q[1]
-            alphas = np.append(alphas, [np.conj(q[1].T) @ wp], axis=0)
-            betas = np.append(betas, [np.zeros((n, n), dtype=complex)], axis=0)
-            w = wp - q[1] @ alphas[i] - q[0] @ np.conj(betas[i - 1].T)
-            q[0] = q[1]
-            q[1], betas[i] = sp.linalg.qr(w, mode="economic", overwrite_a=True, check_finite=False)
-            delta = converged(alphas, betas)
-            if delta < 1e-6:
-                break
+    # Distribute Lanczos matrices to all ranks
+    alphas = comm.bcast(alphas, root=0)
+    betas = comm.bcast(betas, root=0)
 
     print(f"Breaking after iteration {i}, blocksize = {n}")
     if verbose:
@@ -384,9 +372,9 @@ def block_lanczos(
     h_op: dict,
     basis: Basis,
     converged: Callable[[np.ndarray, np.ndarray], bool],
-    h_mem: dict = None,
+    h_mem: Optional[dict] = None,
     verbose: bool = True,
-    reort=Reort.NONE,
+    reort: Reort = Reort.NONE,
     slaterWeightMin: float = 0,
 ) -> (np.ndarray, np.ndarray, Optional[list[dict]]):
     if h_mem is None:
@@ -440,7 +428,7 @@ def block_lanczos(
                 basis.num_spin_orbitals,
                 h_op,
                 psi_i,
-                slaterWeightMin=0,
+                slaterWeightMin=slaterWeightMin,
                 restrictions=basis.restrictions,
                 opResult=h_mem,
             )
@@ -448,21 +436,27 @@ def block_lanczos(
         ]
         t_apply += perf_counter() - t_tmp
         t_tmp = perf_counter()
-        if basis.size > 2 * N0:
-            N0 = basis.size
-            basis.clear()
+        N0 = basis.size
+        basis.clear()
         basis.add_states(
             itertools.chain(
-                (state for psis in q for psi in psis for state in psi), (state for psi in wp for state in psi)
+                (state for psis in q for psi in psis for state in psi),
+                (state for psi in wp for state in psi if abs(psi[state]) ** 2 >= slaterWeightMin),
             )
         )
-        # basis.add_states(state for psi in wp for state in psi)
         t_add += perf_counter() - t_tmp
         t_tmp = perf_counter()
         tmp = basis.redistribute_psis(itertools.chain(q[0], q[1], wp))
         q[0] = tmp[0:n]
         q[1] = tmp[n : 2 * n]
         wp = tmp[2 * n : 3 * n]
+        if N0 > basis.truncation_threshold:
+            local_states = {}
+            for state, amp in itertools.chain(q[0].items(), q[1].items(), wp.items()):
+                local_states[state] = max(abs(amp), local_states.get(state, 0))
+            local_states = sorted(local_states.items(), key=lambda x: x[1])
+            basis.clear()
+            basis.add_states(state for state, _ in local_states[: basis.truncation_threshold // basis.comm.size])
         t_redist += perf_counter() - t_tmp
         t_tmp = perf_counter()
         psi = np.empty((len(basis.local_basis), n), dtype=complex)
@@ -506,6 +500,51 @@ def block_lanczos(
             else:
                 tmp = np.conj(Qm.T) @ psip
             psip -= Qm @ tmp
+        elif reort == Reort.PARTIAL and it > 0:
+            W = estimate_orthonormality(W, alphas[:-1], betas[:-1], N=1)
+            print(f"{W.shape=} {len(Q)=} {it=}")
+            orth_loss = np.any(np.abs(W[1]) > np.sqrt(np.finfo(float).eps))
+            if orth_loss or force_reort is not None:
+                mask = np.array([[True] * n] * (W.shape[1]))
+                # mask = np.any(np.abs(W[1, :-1]) > np.finfo(float).eps ** (3 / 4), axis=1)
+                combined_mask = (
+                    np.logical_or(mask, np.append(force_reort, [[False] * n], axis=0))
+                    if force_reort is not None
+                    else mask
+                )
+                # Qm = basis.build_distributed_vector(list(itertools.compress(Q, combined_mask.flatten()))).T
+                Qm = basis.build_distributed_vector(Q).T
+                W[1][combined_mask] = np.finfo(float).eps  #  * np.random.normal(loc=0, scale=1.5, size=W[1, :-2].shape)
+                basis.comm.Bcast(W[1])
+                force_reort = None if force_reort is not None else mask
+            else:
+                Qm = np.zeros((len(basis.local_basis), 0), dtype=complex)
+        else:
+            Qm = np.zeros((len(basis.local_basis), 0), dtype=complex)
+
+        if reort == Reort.FULL or reort == Reort.PARTIAL:
+            if mpi:
+                tmp = np.empty((Qm.shape[1], n), dtype=complex)
+                basis.comm.Allreduce(np.conj(Qm.T) @ psip, tmp, op=MPI.SUM)
+            else:
+                tmp = np.conj(Qm.T) @ psip
+            psip -= Qm @ tmp
+            # if mpi:
+            #     basis.comm.Gatherv(psip, [qip, send_counts, offsets, MPI.C_DOUBLE_COMPLEX], root=0)
+            # else:
+            #     qip = psip
+            # t_vec += perf_counter() - t_tmp
+            # if rank == 0:
+            #     t_tmp = perf_counter()
+            #     qip, betas[-1] = qr_decomp(qip)
+            #     _, columns = qip.shape
+
+            # if mpi:
+            #     basis.comm.Bcast(betas[it], root=0)
+            #     columns = basis.comm.bcast(columns if rank == 0 else None)
+            #     request = basis.comm.Iscatterv([qip, send_counts, offsets, MPI.C_DOUBLE_COMPLEX], psip.T, root=0)
+            # else:
+            #     psip = qip
         qip = np.empty((basis.size, n), dtype=complex) if rank == 0 else None
         if mpi:
             basis.comm.Gatherv(psip, [qip, send_counts, offsets, MPI.C_DOUBLE_COMPLEX], root=0)
@@ -515,10 +554,6 @@ def block_lanczos(
         if rank == 0:
             t_tmp = perf_counter()
             qip, betas[-1] = qr_decomp(qip)
-            # qip, beta = sp.linalg.qr(qip, mode="economic", overwrite_a=True, check_finite=False)
-            # betas[it, : beta.shape[0], : beta.shape[1]]
-            # t_qr += perf_counter() - t_tmp
-            # qip = np.array(qip, order="C")
             _, columns = qip.shape
 
         if mpi:
@@ -537,49 +572,8 @@ def block_lanczos(
             done = basis.comm.allreduce(done, op=MPI.LAND)
 
         converge_count = (1 + converge_count) if done else 0
-        if converge_count > 0:  #  or it * n > basis.size:
+        if converge_count > 0:
             break
-
-        if reort == Reort.PARTIAL:
-            # try:
-            W = estimate_orthonormality(W, alphas, betas, N=basis.size)
-            # except np.linalg.LinAlgError:
-            #     W[1, :] = 1
-            orth_loss = np.any(np.abs(W[1]) > np.sqrt(np.finfo(float).eps))
-            if orth_loss or force_reort is not None:
-                mask = np.array([np.any(np.abs(m) > np.finfo(float).eps ** (3 / 4), axis=1) for m in W[1]])
-                mask[-1:] = False
-                combined_mask = mask
-                combined_mask[:-1] = np.logical_or(mask[:-1], force_reort) if force_reort is not None else mask[:-1]
-                Qm = basis.build_distributed_vector(list(itertools.compress(Q, combined_mask.flatten()))).T
-                W[1, combined_mask] = np.finfo(float).eps * np.random.normal(loc=0, scale=1.5, size=W[1, mask].shape)
-                psip = psip @ betas[it]
-                if mpi:
-                    tmp = np.empty((Qm.shape[1], n), dtype=complex)
-                    basis.comm.Allreduce(np.conj(Qm.T) @ psip, tmp, op=MPI.SUM)
-                else:
-                    tmp = np.conj(Qm.T) @ psip
-                psip -= Qm @ tmp
-            if mpi:
-                basis.comm.Gatherv(psip, [qip, send_counts, offsets, MPI.C_DOUBLE_COMPLEX], root=0)
-            else:
-                qip = psip
-            t_vec += perf_counter() - t_tmp
-            if rank == 0:
-                t_tmp = perf_counter()
-                qip, betas[-1] = qr_decomp(qip)
-                # qip, beta = sp.linalg.qr(qip, mode="economic", overwrite_a=True, check_finite=False)
-                # betas[it, : beta.shape[0], : beta.shape[1]]
-                # t_qr += perf_counter() - t_tmp
-                # qip = np.array(qip, order="C")
-                _, columns = qip.shape
-
-            if mpi:
-                basis.comm.Bcast(betas[it], root=0)
-                columns = basis.comm.bcast(columns if rank == 0 else None)
-                request = basis.comm.Iscatterv([qip, send_counts, offsets, MPI.C_DOUBLE_COMPLEX], psip.T, root=0)
-            else:
-                psip = qip
 
         t_tmp = perf_counter()
         q[0] = q[1]
@@ -587,13 +581,12 @@ def block_lanczos(
         if mpi:
             request.Wait()
         for j, (i, state) in itertools.product(range(columns), enumerate(basis.local_basis)):
-            if abs(psip[i, j]) ** 2 > slaterWeightMin:
+            if abs(psip[i, j]) ** 2 >= slaterWeightMin:
                 q[1][j][state] = psip[i, j]
 
         t_state += perf_counter() - t_tmp
         if build_krylov_basis:
-            for psi in q[1]:
-                Q.append(psi)
+            Q.extend(q[1])
         it += 1
     if verbose:
         print(f"Breaking after iteration {it}, blocksize = {n}")
