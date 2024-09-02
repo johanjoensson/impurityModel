@@ -120,7 +120,7 @@ def get_Greens_function(
             omega_mesh,
             delta,
             reort=reort,
-            slaterWeightMin=0 * np.finfo(float).eps,
+            slaterWeightMin=np.finfo(float).eps,
             verbose=verbose,
         )
         gsPS_matsubara, gsPS_realaxis = calc_Greens_function_with_offdiag(
@@ -133,7 +133,7 @@ def get_Greens_function(
             -matsubara_mesh if matsubara_mesh is not None else None,
             -omega_mesh if omega_mesh is not None else None,
             -delta,
-            slaterWeightMin=0 * np.finfo(float).eps,
+            slaterWeightMin=np.finfo(float).eps,
             verbose=verbose,
             reort=reort,
         )
@@ -410,10 +410,11 @@ def get_block_Green(
     psi0_full = np.empty((N, n), dtype=complex, order="C") if comm.rank == 0 else None
     comm.Gatherv(psi0, (psi0_full, counts, offsets, MPI.C_DOUBLE_COMPLEX), root=0)
     r: Optional[np.ndarray] = None
+    p: Optional[np.ndarray] = None
     if comm.rank == 0:
         # Do a QR decomposition of the starting block.
         # Later on, use r to restore the block corresponding to
-        psi0_full, r = sp.linalg.qr(psi0_full, mode="economic", overwrite_a=True, check_finite=False, pivoting=False)
+        psi0_full, r, p = sp.linalg.qr(psi0_full, mode="economic", overwrite_a=True, check_finite=False, pivoting=True)
         psi0_full = np.array(psi0_full, copy=False, order="C")
         rows, columns = psi0_full.shape
     rows = comm.bcast(rows if comm.rank == 0 else None, root=0)
@@ -485,7 +486,7 @@ def get_block_Green(
     t0 = time.perf_counter()
 
     gs_matsubara, gs_realaxis = calc_mpi_Greens_function_from_alpha_beta(
-        alphas, betas, iws, ws, e, delta, r, verbose, comm=comm
+        alphas, betas, iws, ws, e, delta, r, p, verbose, comm=comm
     )
     if verbose:
         print(f"time(G_from_alpha_beta) = {time.perf_counter() - t0: .4f} seconds.")
@@ -534,10 +535,11 @@ def block_Green(
     psi0 = np.empty((N, n), dtype=complex, order="C") if comm.rank == 0 else None
     comm.Gatherv(psi_start, (psi0, counts, offsets, MPI.C_DOUBLE_COMPLEX), root=0)
     r: Optional[np.ndarray] = None
+    p: Optional[np.ndarray] = None
     if comm.rank == 0:
         # Do a QR decomposition of the starting block.
         # Later on, use r to restore the block corresponding to
-        psi0, r = sp.linalg.qr(psi0, mode="economic", overwrite_a=True, check_finite=False, pivoting=False)
+        psi0, r, p = sp.linalg.qr(psi0, mode="economic", overwrite_a=True, check_finite=False, pivoting=True)
         psi0 = psi0.copy(order="C")
         # Find which columns (if any) are 0 in psi0_0
         rows, columns = psi0.shape
@@ -617,7 +619,7 @@ def block_Green(
     t0 = time.perf_counter()
 
     gs_matsubara, gs_realaxis = calc_mpi_Greens_function_from_alpha_beta(
-        alphas, betas, iws, ws, e, delta, r, verbose, comm=comm
+        alphas, betas, iws, ws, e, delta, r, p, verbose, comm=comm
     )
 
     if verbose:
@@ -667,10 +669,11 @@ def block_Green_freq(
     psi0 = np.empty((N, n), dtype=complex, order="C") if comm.rank == 0 else None
     comm.Gatherv(psi_start, (psi0, counts, offsets, MPI.C_DOUBLE_COMPLEX), root=0)
     r: Optional[np.ndarray] = None
+    p: Optional[np.ndarray] = None
     if comm.rank == 0:
         # Do a QR decomposition of the starting block.
         # Later on, use r to restore the block corresponding to
-        psi0, r = sp.linalg.qr(psi0, mode="economic", overwrite_a=True, check_finite=False, pivoting=False)
+        psi0, r = sp.linalg.qr(psi0, mode="economic", overwrite_a=True, check_finite=False, pivoting=True)
         psi0 = psi0.copy(order="C")
         # Find which columns (if any) are 0 in psi0_0
         rows, columns = psi0.shape
@@ -777,14 +780,15 @@ def block_Green_freq(
     if verbose:
         print(f"time(block_lanczos) = {time.perf_counter() - t0: .4f} seconds.", flush=True)
     if comm.rank == 0:
-        print(f"{gs_matsubara.shape=} {gs_realaxis.shape=} {r.shape=}", flush=True)
         gs_matsubara = np.conj(r.T)[np.newaxis, :, :] @ np.linalg.solve(gs_matsubara, r[np.newaxis, :, :])
         gs_realaxis = np.conj(r.T)[np.newaxis, :, :] @ np.linalg.solve(gs_realaxis, r[np.newaxis, :, :])
+        gs_matsubara[:, :, p] = gs_matsubara
+        gs_realaxis[:, :, p] = gs_realaxis
 
     return gs_matsubara, gs_realaxis
 
 
-def calc_mpi_Greens_function_from_alpha_beta(alphas, betas, iws, ws, e, delta, r, verbose, comm):
+def calc_mpi_Greens_function_from_alpha_beta(alphas, betas, iws, ws, e, delta, r, p, verbose, comm):
     """
     Calculate the Greens function from the diagonal and offdiagonal terms obtained from the Lanczos procedure.
     This function splits the frequency axes over MPI ranks.
@@ -811,7 +815,7 @@ def calc_mpi_Greens_function_from_alpha_beta(alphas, betas, iws, ws, e, delta, r
         gs_matsubara = np.empty((len(iws), alphas.shape[1], alphas.shape[1]), dtype=complex) if comm.rank == 0 else None
         comm.Gatherv(gs_matsubara_local, (gs_matsubara, counts, offsets, MPI.C_DOUBLE_COMPLEX), root=0)
         if comm.rank == 0:
-            gs_matsubara = np.conj(r.T)[np.newaxis, :, :] @ np.linalg.solve(gs_matsubara, r[np.newaxis, :, :])
+            gs_matsubara[:, :, p] = np.conj(r.T)[np.newaxis, :, :] @ np.linalg.solve(gs_matsubara, r[np.newaxis, :, :])
     if realaxis:
         counts = np.empty((comm.size), dtype=int)
         comm.Gather(np.array([gs_realaxis_local.shape[1] ** 2 * len(ws_split)], dtype=int), counts)
@@ -819,7 +823,7 @@ def calc_mpi_Greens_function_from_alpha_beta(alphas, betas, iws, ws, e, delta, r
         gs_realaxis = np.empty((len(ws), alphas.shape[1], alphas.shape[1]), dtype=complex) if comm.rank == 0 else None
         comm.Gatherv(gs_realaxis_local, (gs_realaxis, counts, offsets, MPI.C_DOUBLE_COMPLEX), root=0)
         if comm.rank == 0:
-            gs_realaxis = np.conj(r.T)[np.newaxis, :, :] @ np.linalg.solve(gs_realaxis, r[np.newaxis, :, :])
+            gs_realaxis[:, :, p] = np.conj(r.T)[np.newaxis, :, :] @ np.linalg.solve(gs_realaxis, r[np.newaxis, :, :])
     return gs_matsubara, gs_realaxis
 
 

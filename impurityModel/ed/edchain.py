@@ -124,6 +124,7 @@ def haverkort_chain(eloc, tns, ens):
 
     # Divide into the occupied and unoccupied part
     n = min(sum(w < 0), hsize - 1)
+    print(f"{n=}")
 
     prevtocc = v[:, n - 1 :: -1].transpose()
     prevtunocc = v[:, n:].transpose()
@@ -138,11 +139,10 @@ def haverkort_chain(eloc, tns, ens):
 
     # # Get the tridiagonal terms
     # tns2 = np.zeros(hsize - 1, dtype=complex)
-    # for i in range(hsize - 1):
-    #     tns2[i] = np.conj(vtot[:, i].T) @ H @ vtot[:, i + 1]
-    #     if np.real(tns2[i]) < 0:  # Adjust the phase of the eigenvectors
-    #         vtot[:, i + 1] = -vtot[:, i + 1]
-    #         tns2[i] = -tns2[i]
+    for i in range(hsize - 1):
+        tmp = np.conj(vtot[:, i].T) @ H @ vtot[:, i + 1]
+        if np.real(tmp) < 0:  # Adjust the phase of the eigenvectors
+            vtot[:, i + 1] = -vtot[:, i + 1]
     # ens2 = np.zeros(hsize, dtype=complex)
     # for i in range(hsize):
     #     ens2[i] = np.conj(vtot[:, i].T) @ H @ vtot[:, i]

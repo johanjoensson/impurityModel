@@ -104,9 +104,6 @@ class Basis:
             for i in valence_baths
         }
         total_impurity_orbitals = {i: sum(len(orbs) for orbs in impurity_orbitals[i]) for i in impurity_orbitals}
-        print(f"{total_baths=}")
-        print(f"{total_impurity_orbitals=}")
-        configurations = {}
         for i in valence_baths:
             if verbose:
                 print(f"{i=}")
@@ -136,42 +133,23 @@ class Basis:
                             conduction_electron_indices, conduction_occupation
                         )
                         valid_configurations.append(
-                            itertools.product(
-                                impurity_configurations, valence_configurations, conduction_configurations
-                            )
+                            (impurity_configurations, valence_configurations, conduction_configurations)
                         )
-            print(f"{impurity_electron_indices=} {valence_electron_indices=} {conduction_electron_indices=}")
-            # Once we have the impurity configurations we can set up the initial occupations of the states at 0.
-            # the initial occupation of state b_i is 1-n_i where n_i is the occupation of impurity orbital i.
-            configs = []
-            print(f"{valid_configurations=}", flush=True)
-            for configuration in valid_configurations:
-                for imp_config, val_config, con_config in configuration:
-                    for imp_i, zero_i in zip(impurity_orbitals[i], zero_baths[i]):
-                        n_imp = sum(imp in imp_config for imp in imp_i)
-                        n_zeros = len(imp_i) - n_imp
-                        for zero in itertools.combinations(zero_i, n_zeros):
-                            configs.append((imp_config, val_config, zero, con_config))
-
-            # configurations[i] = [imp + val + cond for config in valid_configurations for imp, val, cond in config]
-            configurations[i] = [imp + val + zero + cond for imp, val, zero, cond in configs]
         num_spin_orbitals = sum(total_impurity_orbitals[i] + total_baths[i] for i in total_baths)
-        print(f"{num_spin_orbitals=}")
         basis = []
         # Combine all valid configurations for all l-subconfigurations (ex. p-states and d-states)
-        print("Initial basis:")
-        for system_configurations in itertools.product(*configurations.values()):
-            for s_conf in system_configurations:
-                # for system_configuration in itertools.product(*configurations.values()):
-                print(f"{sorted(s_conf)},", end=" ")
-                basis.append(psr.tuple2bytes(tuple(sorted(s_conf)), num_spin_orbitals))
-            print("")
-            # basis.append(
-            #     psr.tuple2bytes(
-            #         tuple(sorted(itertools.chain.from_iterable(system_configuration))),
-            #         num_spin_orbitals,
-            #     )
-            # )
+        for config in valid_configurations:
+            for imp, val, con in itertools.product(*config):
+                for i in zero_baths:
+                    for imp_i, zero_i in zip(impurity_orbitals[i], zero_baths[i]):
+                        if len(zero_i) > 0:
+                            n_imp = sum(i_orb in imp for i_orb in imp_i)
+                            n_zeros = len(imp_i) - n_imp
+                            for zero in itertools.combinations(zero_i, n_zeros):
+                                basis.append(psr.tuple2bytes(imp + val + zero + con, num_spin_orbitals))
+                        else:
+                            basis.append(psr.tuple2bytes(imp + val + con, num_spin_orbitals))
+            print()
         return basis, num_spin_orbitals
 
     def _get_restrictions(
@@ -197,10 +175,13 @@ class Basis:
             impurity_indices = frozenset(orb for imp_orbs in impurity_orbitals[i] for orb in imp_orbs)
             restrictions[impurity_indices] = (
                 max(nominal_impurity_occ[i] - delta_impurity_occ[i], 0),
-                min(nominal_impurity_occ[i] + delta_impurity_occ[i] + 1, impurity_orbitals[i] + 1),
+                min(nominal_impurity_occ[i] + delta_impurity_occ[i] + 1, total_impurity_orbitals[i] + 1),
             )
             valence_indices = frozenset(orb for val_orbs in valence_baths[i] for orb in val_orbs)
-            restrictions[valence_indices] = (max(valence_baths[i] - delta_valence_occ[i], 0), valence_baths[i] + 1)
+            restrictions[valence_indices] = (
+                max(sum(len(orbs) for orbs in valence_baths[i]) - delta_valence_occ[i], 0),
+                sum(len(orbs) for orbs in valence_baths[i]) + 1,
+            )
             conduction_indices = frozenset(orb for con_orbs in conduction_baths[i] for orb in con_orbs)
             restrictions[conduction_indices] = (0, delta_conduction_occ[i] + 1)
 
@@ -231,31 +212,44 @@ class Basis:
             min_imp = total_impurity_orbitals[i]
             max_val = 0
             min_val = sum(len(orbs) for orbs in valence_baths[i])
+            max_zero = 0
+            min_zero = sum(len(orbs) for orbs in valence_baths[i])
             max_con = 0
             min_con = sum(len(orbs) for orbs in conduction_baths[i])
             impurity_indices = frozenset(ind for imp_ind in self.impurity_orbitals[i] for ind in imp_ind)
             valence_indices = frozenset(ind for val_ind in valence_baths[i] for ind in val_ind)
+            zero_indices = frozenset(ind for zero_ind in zero_baths[i] for ind in zero_ind)
             conduction_indices = frozenset(ind for con_ind in conduction_baths[i] for ind in con_ind)
             for state in self.local_basis:
                 bits = psr.bytes2bitarray(state, self.num_spin_orbitals)
                 n_imp = sum(bits[i] for i in impurity_indices)
                 n_val = sum(bits[i] for i in valence_indices)
+                n_zero = sum(bits[i] for i in zero_indices)
                 n_con = sum(bits[i] for i in conduction_indices)
                 max_imp = max(max_imp, n_imp)
                 min_imp = min(min_imp, n_imp)
                 max_val = max(max_val, n_val)
                 min_val = min(min_val, n_val)
+                max_zero = max(max_zero, n_zero)
+                min_zero = min(min_zero, n_zero)
                 max_con = max(max_con, n_con)
                 min_con = min(min_con, n_con)
             max_imp = self.comm.allreduce(max_imp, op=MPI.MAX)
             min_imp = self.comm.allreduce(min_imp, op=MPI.MIN)
             max_val = len(valence_indices)
             min_val = self.comm.allreduce(min_val, op=MPI.MIN)
+            max_zero = self.comm.allreduce(max_zero, op=MPI.MAX)
+            min_zero = self.comm.allreduce(min_zero, op=MPI.MIN)
             max_con = self.comm.allreduce(max_con, op=MPI.MAX)
             min_con = 0
-            restrictions[impurity_indices] = (min_imp, max_imp)
-            restrictions[valence_indices] = (min_val, max_val)
-            restrictions[conduction_indices] = (min_con, max_con)
+            if len(impurity_indices) > 0:
+                restrictions[impurity_indices] = (min_imp, max_imp)
+            if len(valence_indices) > 0:
+                restrictions[valence_indices] = (min_val, max_val)
+            if len(zero_indices) > 0:
+                restrictions[zero_indices] = (min_zero, max_zero)
+            if len(conduction_indices) > 0:
+                restrictions[conduction_indices] = (min_con, max_con)
         return restrictions
 
     def build_excited_restrictions(self, imp_change=(1, 1), val_change=(1, 0), con_change=(0, 1)):
@@ -277,6 +271,7 @@ class Basis:
         for i in total_baths:
             impurity_indices = frozenset(ind for imp_ind in self.impurity_orbitals[i] for ind in imp_ind)
             valence_indices = frozenset(ind for val_ind in valence_baths[i] for ind in val_ind)
+            zero_indices = frozenset(ind for zero_ind in zero_baths[i] for ind in zero_ind)
             conduction_indices = frozenset(ind for con_ind in conduction_baths[i] for ind in con_ind)
             r_min_imp, r_max_imp = restrictions[impurity_indices]
             min_imp = max(r_min_imp - imp_reduce, 0)
@@ -284,11 +279,15 @@ class Basis:
             r_min_val, r_max_val = restrictions[valence_indices]
             min_val = max(r_min_val - val_reduce, 0)
             max_val = sum(len(orbs) for orbs in valence_baths[i])
+            r_min_zero, r_max_zero = restrictions[zero_indices]
+            min_zero = max(r_min_zero - imp_reduce, 0)
+            max_zero = min(r_max_zero + imp_increase, len(zero_indices))
             r_min_cond, r_max_cond = restrictions[conduction_indices]
             min_cond = 0
             max_cond = min(r_max_cond + con_increase, sum(len(orbs) for orbs in conduction_baths[i]))
             excited_restrictions[impurity_indices] = (min_imp, max_imp)
             excited_restrictions[valence_indices] = (min_val, max_val)
+            excited_restrictions[zero_indices] = (min_zero, max_zero)
             excited_restrictions[conduction_indices] = (min_cond, max_cond)
         return excited_restrictions
 
@@ -507,9 +506,12 @@ class Basis:
         return res
 
     def _generate_spin_flipped_determinants(self, determinants):
-        valence_baths, conduction_baths = self.bath_states
+        valence_baths, zero_baths, conduction_baths = self.bath_states
+        n_imp_orbs = sum()
         n_dn_op = {
-            ((i, "c"), (i, "a")): 1.0 for l in self.impurity_orbitals for i in range(self.impurity_orbitals[l] // 2)
+            ((i, "c"), (i, "a")): 1.0
+            for l in self.impurity_orbitals
+            for i in range(sum(len(orbs) for orbs in self.impurity_orbitals[l]) // 2)
         }
         n_up_op = {
             ((i, "c"), (i, "a")): 1.0
@@ -785,8 +787,6 @@ class Basis:
         ]
         valence_indices = [orb for blocks in self.bath_states[0].values() for val_orbs in blocks for orb in val_orbs]
         conduction_indices = [orb for blocks in self.bath_states[2].values() for con_orbs in blocks for orb in con_orbs]
-        print(f"{impurity_indices=}")
-        print(f"{self.impurity_orbitals=}", flush=True)
         psi_stats = [
             self._state_statistics(psi, impurity_indices, valence_indices, conduction_indices, self.num_spin_orbitals)
             for psi in psis

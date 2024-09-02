@@ -79,8 +79,6 @@ class ImpModCluster:
         label,
         h_dft,
         hyb,
-        h_star_bath,
-        v_star,
         u4,
         nominal_occ,
         delta_occ,
@@ -99,8 +97,6 @@ class ImpModCluster:
         self.h_dft = h_dft
         self.u4 = u4
         self.hyb = hyb
-        self.h_star_bath = h_star_bath
-        self.v_star = v_star
         self.impurity_orbitals = impurity_orbitals
         self.bath_states = bath_states
         self.nominal_occ = nominal_occ
@@ -193,7 +189,7 @@ def parse_solver_line(solver_line):
         len(solver_array) >= 5
     ), "The impurityModel ED solver requires at least 5 arguments; N0 dN dValence dConduction nBaths"
     try:
-        nominal_occ = (int(solver_array[0]), 0, 0)
+        nominal_occ = int(solver_array[0])
         delta_occ = (int(solver_array[1]), int(solver_array[2]), int(solver_array[3]))
         nBaths = int(solver_array[4])
     except Exception as e:
@@ -222,40 +218,39 @@ def parse_solver_line(solver_line):
                 skip_next = False
                 continue
             arg = solver_array[i]
-            if arg.lower() == "pro":
-                options["reort"] = Reort.PARTIAL
-            elif arg.lower() == "full":
-                options["reort"] = Reort.FULL
+            if arg.lower() in {"pro", "full"}:
+                if arg.lower() == "pro":
+                    options["reort"] = Reort.PARTIAL
+                elif arg.lower() == "full":
+                    options["reort"] = Reort.FULL
+            elif arg.lower() in {"star", "chain", "haver"}:
+                options["bath_geometry"] = arg.lower()
+            elif arg.lower() == "fit_unocc":
+                options["fit_unocc"] = True
             elif arg.lower() == "dense_cutoff":
                 options["dense_cutoff"] = int(solver_array[i + 1])
                 skip_next = True
             elif arg.lower() == "no_block":
                 options["blocked"] = False
-            elif arg.lower() == "fit_unocc":
-                options["fit_unocc"] = True
             elif arg.lower() == "weight":
                 options["weight"] = float(solver_array[i + 1])
                 skip_next = True
             elif arg.lower() == "spin_flip_dj":
                 options["spin_flip_dj"] = True
-            elif arg.lower() == "chain":
-                options["bath_geometry"] = "chain"
-            elif arg.lower() == "haver":
-                options["bath_geometry"] = "haver"
             else:
                 raise RuntimeError(f"Unknown solver parameter {arg}.\n" f"--->Other solver params {solver_array[5:]}")
 
     print(
-        f"Nominal imp. occupation  |> {nominal_occ[0]}\n"
+        f"Nominal imp. occupation  |> {nominal_occ}\n"
         f"Delta occupation         |> {delta_occ}\n"
         f"# bath states / imp. orb.|> {nBaths}\n"
+        f"Bath geometry            |> {options['bath_geometry']}\n"
+        f"Fit unoccupied states    |> {options['fit_unocc']}\n"
+        f"Generate spin fliped Djs |> {options['spin_flip_dj']}\n"
+        f"Use block structure      |> {options['blocked']}\n"
         f"Reorthogonalizaion mode  |> {options['reort']}\n"
         f"Dense matrix size cutoff |> {options['dense_cutoff']}\n"
-        f"Use block structure      |> {options['blocked']}\n"
-        f"Fit unoccupied states    |> {options['fit_unocc']}\n"
         f"Fitting weight factor    |> {options['weight']}\n"
-        f"Generate spin fliped Djs |> {options['spin_flip_dj']}\n"
-        f"Bath geometry            |> {options['bath_geometry']}\n"
     )
     return nominal_occ, delta_occ, nBaths, options
 
@@ -401,12 +396,12 @@ def run_impmod_ed(
         sys.stdout = open(devnull, "w")
 
     (nominal_occ, delta_occ, bath_states_per_orbital, options) = parse_solver_line(solver_line)
-    nominal_occ = ({0: nominal_occ[0]}, {0: nominal_occ[1]}, {0: nominal_occ[2]})
+    nominal_occ = {0: nominal_occ}
     delta_occ = ({0: delta_occ[0]}, {0: delta_occ[1]}, {0: delta_occ[2]})
-    if any(n0 > n_orb for n0 in nominal_occ[0].values()) or any(n0 < 0 for n0 in nominal_occ[0].values()):
-        raise RuntimeError(f"Nominal impurity occupation {nominal_occ[0]} out of bounds [0, {n_orb}]")
+    if any(n0 > n_orb for n0 in nominal_occ.values()) or any(n0 < 0 for n0 in nominal_occ.values()):
+        raise RuntimeError(f"Nominal impurity occupation {nominal_occ} out of bounds [0, {n_orb}]")
 
-    h_op, imp_bath_blocks, v_star, H_star_bath = get_ed_h0(
+    h_op, imp_bath_blocks = get_ed_h0(
         h_dft,
         hyb,
         corr_to_cf,
@@ -424,23 +419,20 @@ def run_impmod_ed(
         comm=comm,
     )
     if rank == 0:
-        print(f"Hamiltonian operator:\n{h_op}", flush=True)
-        print(" " * 18, end="")
-        for j in range(h_dft.shape[0] + H_star_bath.shape[0]):
-            print(f"{j:^18d}   ", end="")
-        print()
-        for i in range(h_dft.shape[0] + H_star_bath.shape[0]):
-            print(f"{i:^15d}:  ", end="")
-            for j in range(h_dft.shape[0] + H_star_bath.shape[0]):
-                amp = h_op.get(((i, "c"), (j, "a")), 0)
-                print(f"{amp.real: 5f}{amp.imag:+5f}i  ", end="")
-            print()
-        print()
+        # print(f"Hamiltonian operator:\n{h_op}", flush=True)
+        # print(" " * 18, end="")
+        # for j in range(h_dft.shape[0] + H_star_bath.shape[0]):
+        #     print(f"{j:^18d}   ", end="")
+        # print()
+        # for i in range(h_dft.shape[0] + H_star_bath.shape[0]):
+        #     print(f"{i:^15d}:  ", end="")
+        #     for j in range(h_dft.shape[0] + H_star_bath.shape[0]):
+        #         amp = h_op.get(((i, "c"), (j, "a")), 0)
+        #         print(f"{amp.real: 5f}{amp.imag:+5f}i  ", end="")
+        #     print()
+        # print()
         with open(f"Ham-op-{label.strip()}.pickle", "wb") as f:
             pickle.dump(h_op, f)
-
-    n_bath_states = ({0: sum(np.diag(H_star_bath) < -1e-8)}, {0: sum(np.diag(H_star_bath) > 1e-8)})
-    nominal_occ = (nominal_occ[0], n_bath_states[0], {0: 0})
 
     if rspt_dc_flag == 1:
         dc_line = ffi.string(rspt_dc_line, 100).decode("ascii")
@@ -489,8 +481,6 @@ def run_impmod_ed(
         label=label.strip(),
         h_dft=h_dft,
         hyb=hyb,
-        h_star_bath=H_star_bath,
-        v_star=v_star,
         u4=u4,
         impurity_orbitals={0: [block[0] for block in imp_bath_blocks]},
         bath_states=(
@@ -657,9 +647,12 @@ def get_ed_h0(
             ebss[:] = ebss[sorted_indices]
             vss[:] = vss[sorted_indices]
         assert len(vs_star) == len(block_structure.inequivalent_blocks), "Number of inequivalent blocks is inconsitent"
-    n_occ_block = [np.sum(eb < -1e-8) for i, eb in enumerate(ebs_star)]
-    n_zero_block = [np.sum(np.abs(eb) <= 1e-8) for i, eb in enumerate(ebs_star)]
-    n_empty_block = [np.sum(eb > 1e-8) for i, eb in enumerate(ebs_star)]
+    # n_occ_block = [np.sum(eb <= 0) for i, eb in enumerate(ebs_star)]
+    # n_zero_block = [0 for i, eb in enumerate(ebs_star)]
+    # n_empty_block = [np.sum(eb > 0) for i, eb in enumerate(ebs_star)]
+    n_occ_block = [np.sum(eb < -1e-4) for i, eb in enumerate(ebs_star)]
+    n_zero_block = [np.sum(np.abs(eb) <= 1e-4) for i, eb in enumerate(ebs_star)]
+    n_empty_block = [np.sum(eb > 1e-4) for i, eb in enumerate(ebs_star)]
     H_bath_star, v_star = build_full_bath([np.diag(eb) for eb in ebs_star], vs_star, block_structure)
 
     if H_bath_star_loaded is not None:
@@ -669,8 +662,13 @@ def get_ed_h0(
         save_Greens_function(rotate_Greens_function(fitted_hyb, np.conj(corr_to_cf.T)), w, f"{label}-hyb-fit")
 
     if verbose:
-        print(f"Star bath energies: {ebs_star}")
-        print(f"Star hopping parameters: {v_star}")
+        print(f"Star bath energies:")
+        for eb in ebs_star:
+            print(eb)
+        print(f"Star hopping parameters:")
+        for vb in vs_star:
+            matrix_print(vb)
+            print("")
     if bath_geometry == "star":
         H_bath, v = H_bath_star, v_star
     elif bath_geometry == "chain":
@@ -684,45 +682,40 @@ def get_ed_h0(
             print(f"Chain baths")
             for Hb in H_baths:
                 matrix_print(Hb)
+                print("")
             print(f"Hopping parameters")
             for vb in vs:
                 matrix_print(vb)
+                print("")
         H_baths, vs = build_full_bath(H_baths, vs, block_structure)
         H_bath = sp.linalg.block_diag(H_baths)
         v = np.vstack(tuple(vs))
     elif bath_geometry == "haver":
-        Hbs = []
+        H_baths = []
         vs = []
         for i_b, (vss, ebss) in enumerate(zip(vs_star, ebs_star)):
             sorted_indices = np.argsort(ebss)
             ebss = ebss[sorted_indices]
             vss = vss[sorted_indices]
             ebs_chain, tns_chain, v0 = tridiagonalize(ebss, vss)
-            if np.any(ebss >= 0) or True:
-                block_ix = block_structure.inequivalent_blocks[i_b]
-                block_orbs = block_structure.blocks[block_ix]
-                b_ix = np.ix_(block_orbs, block_orbs)
-                vh, Hh = haverkort_chain(H_dft[b_ix], np.append(v0, tns_chain[:-1]), ebs_chain)
-            else:
-                ebs_chain, tns_chain, v0 = tridiagonalize(ebss[::-1], vss[::-1])
-                Hh = np.zeros((ebs_chain.shape[0], ebs_chain.shape[0]), dtype=complex)
-                vh = np.zeros((ebs_chain.shape[0], v0.shape[1]), dtype=complex)
-                for i in range(ebs_chain.shape[0] - 1):
-                    Hh[i, i] = ebs_chain[i]
-                    Hh[i, i + 1] = tns_chain[i]
-                    Hh[i + 1, i] = tns_chain[i]
-                Hh[-1, -1] = ebs_chain[-1]
-                vh[: v0.shape[0], : v0.shape[1]] = v0
-                Hh = Hh[::-1, ::-1]
-                vh = vh[::-1]
-            Hbs.append(Hh)
+            block_ix = block_structure.inequivalent_blocks[i_b]
+            block_orbs = block_structure.blocks[block_ix]
+            b_ix = np.ix_(block_orbs, block_orbs)
+            vh, Hh = haverkort_chain(H_dft[b_ix], np.append(v0, tns_chain[:-1]), ebs_chain)
+            H_baths.append(Hh)
             vs.append(vh)
         if verbose:
-            matrix_print(sp.linalg.block_diag(*Hbs), "Bath Hamiltonian")
-            matrix_print(np.vstack(tuple(vs)), "Hopping parameters")
-        H_bath, v = build_full_bath(Hbs, vs, block_structure)
+            print("Haverkort chain baths")
+            for Hb in H_baths:
+                matrix_print(Hb)
+                print("")
+            print("Hopping parameters")
+            for vb in vs:
+                matrix_print(vb)
+                print("")
+        H_bath, v = build_full_bath(H_baths, vs, block_structure)
 
-    if save_baths_and_hopping:
+    if save_baths_and_hopping or True:
         if comm is None or comm.rank == 0:
             with open(f"impurityModel_bath_energies_and_hopping_parameters_{label}.npy", "wb") as f:
                 np.save(f, len(vs_star))
@@ -751,8 +744,8 @@ def get_ed_h0(
     H = np.zeros((n_orb + H_bath.shape[0], n_orb + H_bath.shape[0]), dtype=complex)
     H[:n_orb, :n_orb] = H_dft
     H[n_orb:, n_orb:] = H_bath
-    H[:n_orb, n_orb:] = Q @ np.conj(v.T)
     H[n_orb:, :n_orb] = v @ np.conj(Q.T)
+    H[:n_orb, n_orb:] = np.conj(H[n_orb:, :n_orb].T)
 
     if verbose:
         if comm is None or comm.rank == 0:
@@ -765,13 +758,13 @@ def get_ed_h0(
                 (w + 1j * eim)[:, None, None] * np.identity(H_bath.shape[0], dtype=complex)[None, :, :] - H_bath,
                 (v @ np.conj(Q.T))[None, :, :],
             )
-            save_Greens_function(hyb_star, w, "Hyb_star")
-            save_Greens_function(hyb, w, "Hyb")
+            save_Greens_function(hyb_star, w, f"Hyb_star-{label}")
+            save_Greens_function(hyb, w, f"Hyb-{label}")
         H_tmp = np.zeros((n_orb + H_bath_star.shape[0], n_orb + H_bath_star.shape[0]), dtype=complex)
         H_tmp[:n_orb, :n_orb] = H_dft
         H_tmp[n_orb:, n_orb:] = H_bath_star
-        H_tmp[:n_orb, n_orb:] = Q @ np.conj(v_star.T)
         H_tmp[n_orb:, :n_orb] = v_star @ np.conj(Q.T)
+        H_tmp[:n_orb, n_orb:] = np.conj(H_tmp[n_orb:, :n_orb].T)
         print("DFT hamiltonian, with baths")
         matrix_print(H)
         with open(f"Ham-{label}{'-dc' if save_baths_and_hopping else ''}.inp", "w") as f:
@@ -807,9 +800,6 @@ def get_ed_h0(
         offset += len(zero_indices[i])
         unoccupied_indices[i] = [index + offset for index in unoccupied_indices[i]]
         offset += len(unoccupied_indices[i])
-    print(f"{occupied_indices=}")
-    print(f"{zero_indices=}")
-    print(f"{unoccupied_indices=}", flush=True)
     occupied_indices = {i for block in occupied_indices for i in block}
     zero_indices = {i for block in zero_indices for i in block}
     unoccupied_indices = {i for block in unoccupied_indices for i in block}
@@ -829,10 +819,10 @@ def get_ed_h0(
         zero_baths = [i for i in bath_block if i in zero_indices]
         empty_baths = [i for i in bath_block if i in unoccupied_indices]
         imp_bath_blocks[block_i] = (imp_orbs, occ_baths, zero_baths, empty_baths)
-    print(f"{imp_bath_blocks=}", flush=True)
+    print(f"{imp_bath_blocks=}")
 
     h_op = finite.matrixToIOp(H)
-    return h_op, imp_bath_blocks, v_star @ np.conj(Q.T), H_bath_star
+    return h_op, imp_bath_blocks
 
 
 def fit_hyb(

@@ -333,7 +333,7 @@ def printSlaterDeterminantsAndWeights(psis, nPrintSlaterWeights):
             print("")
 
 
-def printExpValues(nBaths, es, psis, rot_to_spherical, n_orbs):
+def printExpValues(rhos, es, rot_to_spherical):
     """
     print several expectation values, e.g. E, N, L^2.
     """
@@ -349,15 +349,14 @@ def printExpValues(nBaths, es, psis, rot_to_spherical, n_orbs):
                 "N(Up)",
                 "Lz",
                 "Sz",
-                "L^2",
-                "S^2",
+                # "L^2",
+                # "S^2",
             )
         )
     #        print(('  i  E-E0  N(3d) N(egDn) N(egUp) N(t2gDn) '
     #               'N(t2gUp) Lz(3d) Sz(3d) L^2(3d) S^2(3d)'))
     if rank == 0:
-        for i, (e, psi) in enumerate(zip(es - es[0], psis)):
-            rho = build_impurity_density_matrix(n_orbs, sum(nb for nb in nBaths.values()), psi)
+        for i, (e, rho) in enumerate(zip(es - es[0], rhos)):
             rho_spherical = rotate_matrix(rho, rot_to_spherical)
             N, Ndn, Nup = get_occupations_from_rho_spherical(rho_spherical)
             print(
@@ -519,7 +518,7 @@ def get_S2_from_rho_spherical(rho):
     return np.trace(rho @ Sz2) + 2 * Sz + np.trace(rho @ Splus @ Sminus)
 
 
-def printThermalExpValues_new(imp_orbitals, nBaths, es, psis, tau, rot_to_spherical):
+def printThermalExpValues_new(rhos, es, tau, rot_to_spherical):
     """
     print several thermal expectation values, e.g. E, N, Sz, Lz.
 
@@ -527,18 +526,6 @@ def printThermalExpValues_new(imp_orbitals, nBaths, es, psis, tau, rot_to_spheri
             lowest energy is not considered in the average.
     """
     e = es - es[0]
-    psis = np.array(psis)
-    rhos = [
-        build_impurity_density_matrix(sum(ni for ni in imp_orbitals.values()), sum(nb for nb in nBaths.values()), psi)
-        for psi in psis
-    ]
-    # rhos = [getDensityMatrix(nBaths, psi, 2) for psi in psis]
-    # rhomats = np.zeros((len(rhos), rot_to_spherical.shape[0], rot_to_spherical.shape[1]), dtype=complex)
-    # for mat, rho in zip(rhomats, rhos):
-    #     for (state1, state2), val in rho.items():
-    #         i = c2i(nBaths, state1)
-    #         j = c2i(nBaths, state2)
-    #         mat[i, j] = val
     rho_thermal = thermal_average_scale_indep(es, rhos, tau)
     rho_thermal_spherical = rotate_matrix(rho_thermal, rot_to_spherical)
     N, Ndn, Nup = get_occupations_from_rho_spherical(rho_thermal_spherical)

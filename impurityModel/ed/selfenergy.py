@@ -222,7 +222,7 @@ def calc_occ_e(
         spin_flip_dj=spin_flip_dj,
         comm=comm,
     )
-    h_dict = basis.expand(h_op, dense_cutoff=dense_cutoff, de2_min=1e-6)
+    h_dict = basis.expand(h_op, dense_cutoff=dense_cutoff, de2_min=1e-4)
     h = basis.build_sparse_matrix(h_op, h_dict) if basis.size > dense_cutoff else basis.build_dense_matrix(h_op, h_dict)
 
     e_trial = finite.eigensystem_new(
@@ -251,7 +251,7 @@ def find_gs(h_op, N0, delta_occ, bath_states, impurity_orbitals, rank, verbose, 
     for dN in [0, -1, 1]:
         e_trial, basis, h_dict = calc_occ_e(
             h_op,
-            {i: N0[0][i] + dN for i in N0[0]},
+            {i: N0[i] + dN for i in N0},
             impurity_orbitals,
             bath_states,
             delta_imp_occ,
@@ -267,7 +267,7 @@ def find_gs(h_op, N0, delta_occ, bath_states, impurity_orbitals, rank, verbose, 
             basis_gs = basis
             h_dict_gs = h_dict
             dN_gs = dN
-            gs_impurity_occ = {i: N0[0][i] + dN for i in N0[0]}
+            gs_impurity_occ = {i: N0[i] + dN for i in N0}
     while (
         dN_gs != 0
         and all(imp_occ + dN_gs > 0 for imp_occ in gs_impurity_occ.values())
@@ -292,9 +292,16 @@ def find_gs(h_op, N0, delta_occ, bath_states, impurity_orbitals, rank, verbose, 
         basis_gs = basis
         h_dict_gs = h_dict
         gs_impurity_occ = {i: gs_impurity_occ[i] + dN_gs for i in gs_impurity_occ}
+    valence_occ = {i: sum(len(bs) for bs in blocks) for i, blocks in bath_states[0].items()}
+    zero_occ = {i: sum(len(bs) for bs in blocks) / 2 for i, blocks in bath_states[1].items()}
+    conduction_occ = {i: 0 for i in bath_states[2]}
     if verbose:
-        print(f"Nominal GS occupation; impurity: {gs_impurity_occ}, valence: {N0[1]}, conduction: {N0[2]}")
-    return (gs_impurity_occ, N0[1], N0[2]), basis_gs, h_dict_gs
+        print("Nominal GS occupation")
+        print(f"--->impurity: {gs_impurity_occ}")
+        print(f"--->valence: {valence_occ}")
+        print(f"--->zero: {zero_occ}")
+        print(f"--->conduction: {conduction_occ}")
+    return (gs_impurity_occ, valence_occ, zero_occ, conduction_occ), basis_gs, h_dict_gs
 
 
 def run(cluster, h0, iw, w, delta, tau, verbosity, reort, dense_cutoff, comm):
@@ -324,8 +331,6 @@ def run(cluster, h0, iw, w, delta, tau, verbosity, reort, dense_cutoff, comm):
         cluster.delta_occ,
         cluster.impurity_orbitals,
         cluster.bath_states,
-        cluster.h_star_bath,
-        cluster.v_star,
         tau,
         verbosity,
         blocks=[cluster.blocks[i] for i in cluster.inequivalent_blocks],
@@ -361,8 +366,6 @@ def calc_selfenergy(
     delta_occ,
     impurity_orbitals,
     bath_states,
-    h_star_bath,
-    v_star,
     tau,
     verbosity,
     blocks,
@@ -389,13 +392,11 @@ def calc_selfenergy(
         for i in valence_baths
     }
 
-    print(f"{valence_baths=} {conduction_baths=}", flush=True)
-
     # construct local, interacting, hamiltonian
     u = finite.getUop_from_rspt_u4(u4)
     h = finite.addOps([h0, u])
 
-    (n0_imp, n0_val, n0_con), basis, h_dict = find_gs(
+    (n0_imp, n0_val, n0_zero, n0_con), basis, h_dict = find_gs(
         h,
         nominal_occ,
         delta_occ,
@@ -456,9 +457,6 @@ def calc_selfenergy(
                     psi,
                     basis.num_spin_orbitals,
                 )
-                # finite.build_impurity_density_matrix(
-                #     sum(total_impurity_orbitals.values()), sum(sum_bath_states.values()), psi
-                # )
                 for psi in local_psis
             ]
         )
@@ -476,10 +474,8 @@ def calc_selfenergy(
     comm.Bcast(rho_imps)
     comm.Bcast(rho_baths)
     if verbosity >= 1:
-        finite.printThermalExpValues_new(
-            total_impurity_orbitals, sum_bath_states, es, local_psis, tau, rot_to_spherical
-        )
-        finite.printExpValues(sum_bath_states, es, local_psis, rot_to_spherical, sum(n_imp_orbs for _ in valence_baths))
+        finite.printThermalExpValues_new(rho_imps, es, tau, rot_to_spherical)
+        finite.printExpValues(rho_imps, es, rot_to_spherical)
         print("Ground state occupation statistics:")
         for psi_stats in gs_stats:
             print(f"{psi_stats}")
@@ -503,15 +499,10 @@ def calc_selfenergy(
 
     # excited_restrictions = basis.build_excited_restrictions()
     if verbosity >= 1:
-        # print("Effective GS restrictions:", flush=True)
-        # for indices, occupations in basis.get_effective_restrictions().items():
-        #     print(f"---> {indices} : {occupations}", flush=True)
-        # print()
-        # if verbosity >= 2:
-        #     print("Restrictions when calculating the excited states:")
-        #     for indices, occupations in excited_restrictions.items():
-        #         print(f"---> {indices} : {occupations}", flush=True)
-        #     print()
+        print("Effective GS restrictions:", flush=True)
+        for indices, occupations in basis.get_effective_restrictions().items():
+            print(f"---> {indices} : {occupations}", flush=True)
+        print()
         print(f"Consider {len(es):d} eigenstates for the spectra \n")
         print("Calculate Interacting Green's function...", flush=True)
 
@@ -551,8 +542,6 @@ def calc_selfenergy(
             nBaths=sum_bath_states,
             gs=gs_realaxis,
             h0op=h0,
-            h_bath=h_star_bath,
-            v_full=v_star,
             delta=delta,
             clustername=cluster_label,
             blocks=blocks,
@@ -572,8 +561,6 @@ def calc_selfenergy(
             nBaths=sum_bath_states,
             gs=gs_matsubara,
             h0op=h0,
-            h_bath=h_star_bath,
-            v_full=v_star,
             delta=0,
             clustername=cluster_label,
             blocks=blocks,
@@ -694,8 +681,6 @@ def get_sigma(
     nBaths,
     gs,
     h0op,
-    h_bath,
-    v_full,
     delta,
     blocks,
     clustername="",
@@ -703,7 +688,7 @@ def get_sigma(
     """
     Calculate self-energy from interacting Greens function and local hamiltonian.
     """
-    hcorr, _, _, _ = get_hcorr_v_hbath(h0op, impurity_orbitals, nBaths)
+    hcorr, v_full, _, h_bath = get_hcorr_v_hbath(h0op, impurity_orbitals, nBaths)
 
     res = []
     for block, g in zip(blocks, gs):
