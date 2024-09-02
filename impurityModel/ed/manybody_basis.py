@@ -207,7 +207,7 @@ class Basis:
         }
         restrictions = {}
 
-        for i in total_baths:
+        for i in sorted(total_baths.keys()):
             max_imp = 0
             min_imp = total_impurity_orbitals[i]
             max_val = 0
@@ -216,10 +216,10 @@ class Basis:
             min_zero = sum(len(orbs) for orbs in valence_baths[i])
             max_con = 0
             min_con = sum(len(orbs) for orbs in conduction_baths[i])
-            impurity_indices = frozenset(ind for imp_ind in self.impurity_orbitals[i] for ind in imp_ind)
-            valence_indices = frozenset(ind for val_ind in valence_baths[i] for ind in val_ind)
-            zero_indices = frozenset(ind for zero_ind in zero_baths[i] for ind in zero_ind)
-            conduction_indices = frozenset(ind for con_ind in conduction_baths[i] for ind in con_ind)
+            impurity_indices = frozenset(sorted(ind for imp_ind in self.impurity_orbitals[i] for ind in imp_ind))
+            valence_indices = frozenset(sorted(ind for val_ind in valence_baths[i] for ind in val_ind))
+            zero_indices = frozenset(sorted(ind for zero_ind in zero_baths[i] for ind in zero_ind))
+            conduction_indices = frozenset(sorted(ind for con_ind in conduction_baths[i] for ind in con_ind))
             for state in self.local_basis:
                 bits = psr.bytes2bitarray(state, self.num_spin_orbitals)
                 n_imp = sum(bits[i] for i in impurity_indices)
@@ -234,14 +234,15 @@ class Basis:
                 min_zero = min(min_zero, n_zero)
                 max_con = max(max_con, n_con)
                 min_con = min(min_con, n_con)
-            max_imp = self.comm.allreduce(max_imp, op=MPI.MAX)
-            min_imp = self.comm.allreduce(min_imp, op=MPI.MIN)
             max_val = len(valence_indices)
-            min_val = self.comm.allreduce(min_val, op=MPI.MIN)
-            max_zero = self.comm.allreduce(max_zero, op=MPI.MAX)
-            min_zero = self.comm.allreduce(min_zero, op=MPI.MIN)
-            max_con = self.comm.allreduce(max_con, op=MPI.MAX)
             min_con = 0
+            if self.is_distributed:
+                max_imp = self.comm.allreduce(max_imp, op=MPI.MAX)
+                min_imp = self.comm.allreduce(min_imp, op=MPI.MIN)
+                min_val = self.comm.allreduce(min_val, op=MPI.MIN)
+                max_zero = self.comm.allreduce(max_zero, op=MPI.MAX)
+                min_zero = self.comm.allreduce(min_zero, op=MPI.MIN)
+                max_con = self.comm.allreduce(max_con, op=MPI.MAX)
             if len(impurity_indices) > 0:
                 restrictions[impurity_indices] = (min_imp, max_imp)
             if len(valence_indices) > 0:
