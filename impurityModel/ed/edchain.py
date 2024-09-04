@@ -108,7 +108,6 @@ def haverkort_chain(eloc, tns, ens):
     assert (
         block_size == 1
     ), f"The current implementation does not support offdiagonal elements in the hybridization!\n{block_size=}"
-    # Diagonalize one spin-channel
     hsize = len(ens) + 1
     H = np.zeros((hsize, hsize), dtype=complex)
     H[0, 0] = eloc
@@ -119,20 +118,15 @@ def haverkort_chain(eloc, tns, ens):
     matrix_print(H, "Hchain=")
     print("", flush=True)
 
-    # Get the eigenvalues and eigenvectors
     w, v = np.linalg.eigh(H)
 
-    # Divide into the occupied and unoccupied part
     n = min(sum(w < 0), hsize - 1)
-    print(f"{n=}")
 
     prevtocc = v[:, n - 1 :: -1].transpose()
     prevtunocc = v[:, n:].transpose()
-    # Make a QR decomposition of the two chains
     qocc, vtocc = sp.linalg.qr(prevtocc, check_finite=False, overwrite_a=True)
     qunocc, vtunocc = sp.linalg.qr(prevtunocc, check_finite=False, overwrite_a=True)
 
-    # Patch the two decompositions together
     vtot = np.zeros((hsize, hsize), dtype=complex)
     vtot[:, 0:n] = vtocc[::-1, :].transpose()
     vtot[:, n:hsize] = vtunocc.transpose()
@@ -159,7 +153,6 @@ def haverkort_chain(eloc, tns, ens):
     Hnew = np.conj(vtot.T) @ H @ vtot
     matrix_print(vtot, "Q before rotating impurity=")
     matrix_print(Hnew, "H before rotating impurity=")
-    # Write it out
     vtot[:, n - 1 : n + 1] = vtot[:, n - 1 : n + 1] @ np.conj(R.T)
     matrix_print(vtot, "Q after rotating impurity=")
 
@@ -171,5 +164,7 @@ def haverkort_chain(eloc, tns, ens):
     matrix_print(Hnew, "Hhaverkort 2=")
     matrix_print(Hnew[block_size:, :block_size], "T haverkort=")
     matrix_print(Hnew[block_size:, block_size:], "H haverkort=")
+
+    assert np.allclose(np.linalg.eigvalsh(H), np.linalg.eigvalsh(Hnew))
 
     return Hnew[block_size:, :block_size], Hnew[block_size:, block_size:]

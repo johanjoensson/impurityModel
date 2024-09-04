@@ -771,6 +771,7 @@ def get_ed_h0(
             for i in range(H_tmp.shape[0]):
                 for j in range(H_tmp.shape[1]):
                     f.write(f" 0 0 0 {i+1} {j+1} {np.real(H_tmp[i, j])} {np.imag(H_tmp[i, j])}\n")
+        assert np.allclose(np.linalg.eigvalsh(H), np.linalg.eigvalsh(H_tmp))
 
     occupied_indices = [None] * len(block_structure.blocks)
     zero_indices = [None] * len(block_structure.blocks)

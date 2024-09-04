@@ -157,7 +157,7 @@ def fixed_peak_dc(h0_op, dc_struct, rank, verbose, dense_cutoff):
             for state in psi_upper_local:
                 psi_upper[state] = psi_upper_local[state] + psi_upper.get(state, 0)
         rho_lower = finite.build_density_matrix(
-            [orb for blocks in bl.impurity_orbitals.values() for block in blocks for orb in block],
+            sorted([orb for blocks in bl.impurity_orbitals.values() for block in blocks for orb in block]),
             psi_lower,
             bl.num_spin_orbitals,
         )
@@ -167,7 +167,7 @@ def fixed_peak_dc(h0_op, dc_struct, rank, verbose, dense_cutoff):
         #     psi_lower,
         # )
         rho_upper = finite.build_density_matrix(
-            [orb for blocks in bu.impurity_orbitals.values() for block in blocks for orb in block],
+            sorted([orb for blocks in bu.impurity_orbitals.values() for block in blocks for orb in block]),
             psi_upper,
             bu.num_spin_orbitals,
         )
@@ -453,7 +453,7 @@ def calc_selfenergy(
         rho_imps = np.array(
             [
                 finite.build_density_matrix(
-                    [orb for blocks in basis.impurity_orbitals.values() for block in blocks for orb in block],
+                    sorted([orb for blocks in basis.impurity_orbitals.values() for block in blocks for orb in block]),
                     psi,
                     basis.num_spin_orbitals,
                 )
@@ -497,10 +497,10 @@ def calc_selfenergy(
                 ar.create_dataset(f"{group}/thermal_rho_imp", data=thermal_imp_rho, dtype=complex)
                 ar.create_dataset(f"{group}/thermal_rho_bath", data=thermal_bath_rho, dtype=complex)
 
-    # excited_restrictions = basis.build_excited_restrictions()
+    effective_restrictions = basis.get_effective_restrictions()
     if verbosity >= 1:
         print("Effective GS restrictions:", flush=True)
-        for indices, occupations in basis.get_effective_restrictions().items():
+        for indices, occupations in effective_restrictions.items():
             print(f"---> {indices} : {occupations}", flush=True)
         print()
         print(f"Consider {len(es):d} eigenstates for the spectra \n")

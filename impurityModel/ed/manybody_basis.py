@@ -145,16 +145,20 @@ class Basis:
         # Combine all valid configurations for all l-subconfigurations (ex. p-states and d-states)
         for config in valid_configurations:
             for imp, val, con in itertools.product(*config):
+                zeros = []
                 for i in zero_baths:
                     for imp_i, zero_i in zip(impurity_orbitals[i], zero_baths[i]):
-                        if len(zero_i) > 0:
-                            n_imp = sum(i_orb in imp for i_orb in imp_i)
-                            n_zeros = len(imp_i) - n_imp
-                            for zero in itertools.combinations(zero_i, n_zeros):
-                                basis.append(psr.tuple2bytes(imp + val + zero + con, num_spin_orbitals))
-                        else:
-                            basis.append(psr.tuple2bytes(imp + val + con, num_spin_orbitals))
-            print()
+                        if len(zero_i) == 0:
+                            continue
+                        n_imp = sum(i_orb in imp for i_orb in imp_i)
+                        n_zeros = len(imp_i) - n_imp
+                        zeros.append(itertools.combinations(zero_i, n_zeros))
+                if len(zeros) > 0:
+                    for zero in itertools.product(*zeros):
+                        z = tuple(i for seq in zero for i in seq)
+                        basis.append(psr.tuple2bytes(imp + val + z + con, num_spin_orbitals))
+                else:
+                    basis.append(psr.tuple2bytes(imp + val + con, num_spin_orbitals))
         return basis, num_spin_orbitals
 
     def _get_restrictions(
@@ -1021,7 +1025,7 @@ class CIPSI_Basis(Basis):
             e_ref, psi_ref_dense = eigensystem_new(
                 H_mat,
                 e_max=de0_max,
-                k=len(psi_ref) + 1 if psi_ref is not None else 2,
+                k=len(psi_ref) + 1 if psi_ref is not None else 10,
                 v0=v0,
                 eigenValueTol=0,  # de2_min,
             )
@@ -1052,7 +1056,7 @@ class CIPSI_Basis(Basis):
             e_ref, psi_ref = eigensystem_new(
                 H_sparse,
                 e_max=de0_max,
-                k=sum(2 * (2 * l + 1) for l in self.ls),
+                k=10,
             )
             self.truncate(self.build_state(psi_ref))
             if self.verbose:

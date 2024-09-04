@@ -6,6 +6,66 @@ from impurityModel.ed.manybody_basis import Basis, CIPSI_Basis
 from math import ceil
 
 
+def test_Basis_states():
+    # 10000000  01000000 00100000 00010000 00001000
+    exact = [b"\x80", b"\x40", b"\x20", b"\x10", b"\x08"]
+    basis = Basis(
+        impurity_orbitals={0: [list(range(5))]},
+        bath_states=(
+            {0: [[]]},
+            {0: [[]]},
+            {0: [[]]},
+        ),
+        delta_valence_occ={0: 0},
+        delta_conduction_occ={0: 0},
+        delta_impurity_occ={0: 0},
+        nominal_impurity_occ={0: 1},
+        verbose=True,
+    )
+    assert all(state in basis for state in exact), basis.local_basis
+    assert all(state in exact for state in basis)
+
+
+def test_Basis_states_val():
+    # 1000 0111 1100 0000  0100 0111 1100 0000  0010 0111 1100 0000  0001 0111 1100 0000  0000 1111 1100 0000
+    exact = [b"\x87\xc0", b"\x47\xc0", b"\x27\xc0", b"\x17\xc0", b"\x0f\xc0"]
+    basis = Basis(
+        impurity_orbitals={0: [list(range(5))]},
+        bath_states=(
+            {0: [list(range(5, 10))]},
+            {0: [[]]},
+            {0: [[]]},
+        ),
+        delta_valence_occ={0: 0},
+        delta_conduction_occ={0: 0},
+        delta_impurity_occ={0: 0},
+        nominal_impurity_occ={0: 1},
+        verbose=True,
+    )
+    assert all(state in basis for state in exact), basis.local_basis
+    assert all(state in exact for state in basis)
+
+
+def test_Basis_states_zero():
+    # 1000 0011 1100 0000  0100 0101 1100 0000  0010 0110 1100 0000  0001 0111 0100 0000  0000 1111 1000 0000
+    exact = [b"\x83\xc0", b"\x45\xc0", b"\x26\xc0", b"\x17\x40", b"\x0f\x80"]
+    basis = Basis(
+        impurity_orbitals={0: [[i] for i in range(5)]},
+        bath_states=(
+            {0: [[]]},
+            {0: [[i] for i in range(5, 10)]},
+            {0: [[]]},
+        ),
+        delta_valence_occ={0: 0},
+        delta_conduction_occ={0: 0},
+        delta_impurity_occ={0: 0},
+        nominal_impurity_occ={0: 1},
+        verbose=True,
+    )
+    assert all(state in basis for state in exact), f"{basis.local_basis=}"
+    assert all(state in exact for state in basis)
+
+
 @pytest.mark.parametrize(
     "valence_baths, conduction_baths, delta_valence_occ, delta_conduction_occ, delta_impurity_occ, nominal_impurity_occ, expected",
     [
