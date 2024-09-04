@@ -757,7 +757,7 @@ class Basis:
                 print(f"{self.size=} {max(rows)=}", flush=True)
         return sp.sparse.csc_matrix((values, (rows, columns)), shape=(self.size, self.size), dtype=complex)
 
-    def _build_PETSc_vector(self, psis: list[dict], dtype=complex) -> PETSc.Mat:
+    def _build_PETSc_vector(self, psis: list[dict], dtype=complex):
         vs = PETSc.Mat().create(comm=self.comm)
         vs.setSizes([len(psis), self.size])
         row_dict = self._index_dict
