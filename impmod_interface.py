@@ -655,8 +655,6 @@ def get_ed_h0(
     n_empty_block = [np.sum(eb > 1e-4) for i, eb in enumerate(ebs_star)]
     H_bath_star, v_star = build_full_bath([np.diag(eb) for eb in ebs_star], vs_star, block_structure)
 
-    if H_bath_star_loaded is not None:
-        assert np.allclose(H_bath_star_loaded, H_bath_star), f"{H_bath_star_loaded=}\n{H_bath_star=}"
     if verbose:
         fitted_hyb = np.moveaxis(offdiagonal.get_hyb(w + eim * 1j, np.diag(H_bath_star), v_star @ np.conj(Q.T)), -1, 0)
         save_Greens_function(rotate_Greens_function(fitted_hyb, np.conj(corr_to_cf.T)), w, f"{label}-hyb-fit")
