@@ -619,9 +619,7 @@ class Basis:
     def copy(self):
         return Basis(
             impurity_orbitals=self.impurity_orbitals,
-            valence_baths=self.bath_states[0],
-            zero_baths=self.bath_states[1],
-            conduction_baths=self.bath_states[2],
+            bath_states=self.bath_states,
             initial_basis=self.local_basis,
             restrictions=self.restrictions,
             spin_flip_dj=self.spin_flip_dj,
@@ -1103,9 +1101,7 @@ class CIPSI_Basis(Basis):
     def copy(self):
         new_basis = CIPSI_Basis(
             impurity_orbitals=self.impurity_orbitals,
-            valence_baths=self.bath_states[0],
-            zero_baths=self.bath_states[1],
-            conduction_baths=self.bath_states[2],
+            bath_states=self.bath_states,
             initial_basis=self.local_basis,
             restrictions=self.restrictions,
             comm=self.comm,

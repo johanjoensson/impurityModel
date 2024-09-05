@@ -41,7 +41,7 @@ class UnphysicalGreensFunctionError(Exception):
 
 
 def fixed_peak_dc(h0_op, dc_struct, rank, verbose, dense_cutoff):
-    N0, _, _ = dc_struct.nominal_occ
+    N0 = dc_struct.nominal_occ
     delta_impurity_occ, delta_valence_occ, delta_conduction_occ = dc_struct.delta_occ
     peak_position = max(dc_struct.peak_position, 4 * dc_struct.tau)
     valence_baths, zero_baths, conduction_baths = dc_struct.bath_states
@@ -59,9 +59,7 @@ def fixed_peak_dc(h0_op, dc_struct, rank, verbose, dense_cutoff):
     if peak_position >= 0:
         basis_upper = CIPSI_Basis(
             impurity_orbitals=dc_struct.impurity_orbitals,
-            valence_baths=dc_struct.bath_states[0],
-            zero_baths=dc_struct.bath_states[1],
-            conduction_baths=dc_struct.bath_states[2],
+            bath_states=dc_struct.bath_states,
             delta_valence_occ=delta_valence_occ,
             delta_conduction_occ=delta_conduction_occ,
             delta_impurity_occ=delta_impurity_occ,
@@ -73,9 +71,7 @@ def fixed_peak_dc(h0_op, dc_struct, rank, verbose, dense_cutoff):
         )
         basis_lower = CIPSI_Basis(
             impurity_orbitals=dc_struct.impurity_orbitals,
-            valence_baths=dc_struct.bath_states[0],
-            zero_baths=dc_struct.bath_states[1],
-            conduction_baths=dc_struct.bath_states[2],
+            bath_states=dc_struct.bath_states,
             delta_valence_occ=delta_valence_occ,
             delta_conduction_occ=delta_conduction_occ,
             delta_impurity_occ=delta_impurity_occ,
@@ -88,9 +84,7 @@ def fixed_peak_dc(h0_op, dc_struct, rank, verbose, dense_cutoff):
     else:
         basis_upper = CIPSI_Basis(
             impurity_orbitals=dc_struct.impurity_orbitals,
-            valence_baths=dc_struct.bath_states[0],
-            zero_baths=dc_struct.bath_states[1],
-            conduction_baths=dc_struct.bath_states[2],
+            bath_states=dc_struct.bath_states,
             delta_valence_occ=delta_valence_occ,
             delta_conduction_occ=delta_conduction_occ,
             delta_impurity_occ=delta_impurity_occ,
@@ -102,9 +96,7 @@ def fixed_peak_dc(h0_op, dc_struct, rank, verbose, dense_cutoff):
         )
         basis_lower = CIPSI_Basis(
             impurity_orbitals=dc_struct.impurity_orbitals,
-            valence_baths=dc_struct.bath_states[0],
-            zero_baths=dc_struct.bath_states[1],
-            conduction_baths=dc_struct.bath_states[2],
+            bath_states=dc_struct.bath_states,
             delta_valence_occ=delta_valence_occ,
             delta_conduction_occ=delta_conduction_occ,
             delta_impurity_occ=delta_impurity_occ,

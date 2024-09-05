@@ -153,12 +153,12 @@ def estimate_orthonormality(W, alphas, betas, eps=np.finfo(float).eps, N=1, rng=
              Lanczos method. Dimensions (2, i+1, n, n)
     """
     # i is the index of the latest calculated vector
-    i = alphas.shape[0] - 1
+    i = alphas.shape[0] - 2
     n = alphas.shape[1]
-    W_out = np.empty((2, i + 1, n, n), dtype=complex)
-    w_bar = np.zeros((i + 1, n, n), dtype=complex)
-    w_bar[i, :, :] = np.identity(n)
-    w_bar[i - 1, :, :] = (
+    W_out = np.empty((2, i + 2, n, n), dtype=complex)
+    w_bar = np.zeros((i + 2, n, n), dtype=complex)
+    w_bar[i + 1, :, :] = np.identity(n)
+    w_bar[i, :, :] = (
         eps
         * N
         * sp.linalg.solve_triangular(betas[i], betas[0], lower=False, trans="C", check_finite=False)
@@ -168,8 +168,8 @@ def estimate_orthonormality(W, alphas, betas, eps=np.finfo(float).eps, N=1, rng=
         # * rng.standard_normal(size=(n, n))
     )
     if i == 0:
-        W_out[0, :i] = W[1]
-        W_out[1, : i + 1] = np.identity(n)
+        W_out[0, : i + 1] = W[1]
+        W_out[1, : i + 2] = np.identity(n)
         return W_out
 
     print(f"{W.shape=}")
@@ -177,34 +177,34 @@ def estimate_orthonormality(W, alphas, betas, eps=np.finfo(float).eps, N=1, rng=
         w_bar[0] = W[1, 0] @ betas[0] + W[1, 0] @ alphas[0] - alphas[i] @ W[1, 0] - betas[i - 1] @ W[0, 0]
         w_bar[0] = sp.linalg.solve_triangular(betas[i], w_bar[0], lower=False, trans="C", check_finite=False)
         # w_bar[0] = sp.linalg.solve_triangular(np.conj(betas[i].T), w_bar[0], lower = True)
-        w_bar[1 : i - 1] = (
-            W[1, 1 : i + 1] @ betas[1:i]
-            + W[1, 0 : i - 1] @ alphas[1:i]
-            - alphas[i][np.newaxis, :, :] @ W[1, 1 : i - 1]
+        w_bar[1:i] = (
+            W[1, 2 : i + 2] @ betas[1:i]
+            + W[1, 1:i] @ alphas[1:i]
+            - alphas[i][np.newaxis, :, :] @ W[1, 1:i]
             + W[1, 0 : i - 1] @ np.conj(np.transpose(betas[0 : i - 1], axes=[0, 2, 1]))
-            - betas[i - 1][np.newaxis, :, :] @ W[0, 0 : i - 1]
+            - betas[i - 1][np.newaxis, :, :] @ W[0, 1:i]
         )
         # for j in range(1, i):
         # w_bar[j] = sp.linalg.solve_triangular(betas[i], w_bar[j], lower=False, trans="C", check_finite=False)
         # w_bar[j] = sp.linalg.solve_triangular(np.conj(betas[i].T), w_bar[j], lower = True)
-        w_bar[1 : i - 1] = np.linalg.solve(np.conj(betas[i].T)[np.newaxis, :, :], w_bar[1 : i - 1])
+        w_bar[1:i] = np.linalg.solve(np.conj(betas[i].T)[np.newaxis, :, :], w_bar[1:i])
     elif n == 1:
         # For standard Lanczos, broadcasting is faster than looping
-        w_bar[: i - 1] = (
-            W[1, 0:i] * betas[:i]
-            + (alphas[:i] - alphas[i]) * W[1, : i - 1]
+        w_bar[:i] = (
+            W[1, 1 : i + 1] * betas[:i]
+            + (alphas[:i] - alphas[i]) * W[1, :i]
             + np.append(
                 np.zeros((1, 1, 1), dtype=complex),
-                W[1, 0 : i - 2] * betas[0 : i - 2],
+                W[1, 0 : i - 1] * betas[0 : i - 1],
                 axis=0,
             )
-            - betas[i - 1] * W[0, : i - 1]
+            - betas[i - 1] * W[0, :i]
         )
-        w_bar[: i - 1] = w_bar[: i - 1] / betas[i]
+        w_bar[:i] = w_bar[:i] / betas[i]
 
-    w_bar[: i - 1] += eps * (betas[i] + betas[:i]) * 0.3  # * 0.3 * rng.standard_normal(size=(i, n, n))
-    W_out[0, :i] = W[1]
-    W_out[1, : i + 1] = w_bar
+    w_bar[:i] += eps * (betas[i] + betas[:i]) * 0.3  # * 0.3 * rng.standard_normal(size=(i, n, n))
+    W_out[0, : i + 1] = W[1]
+    W_out[1, : i + 2] = w_bar
 
     return W_out
 
@@ -501,9 +501,9 @@ def block_lanczos(
                 tmp = np.conj(Qm.T) @ psip
             psip -= Qm @ tmp
         elif reort == Reort.PARTIAL and it > 0:
-            W = estimate_orthonormality(W, alphas[:-1], betas[:-1], N=1)
+            W = estimate_orthonormality(W, alphas, betas, N=1)
             print(f"{W.shape=} {len(Q)=} {it=}")
-            orth_loss = np.any(np.abs(W[1]) > np.sqrt(np.finfo(float).eps))
+            orth_loss = np.any(np.abs(W[1, :-1]) > np.sqrt(np.finfo(float).eps))
             if orth_loss or force_reort is not None:
                 mask = np.array([[True] * n] * (W.shape[1]))
                 # mask = np.any(np.abs(W[1, :-1]) > np.finfo(float).eps ** (3 / 4), axis=1)

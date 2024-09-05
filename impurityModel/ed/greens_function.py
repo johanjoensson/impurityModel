@@ -673,7 +673,7 @@ def block_Green_freq(
     if comm.rank == 0:
         # Do a QR decomposition of the starting block.
         # Later on, use r to restore the block corresponding to
-        psi0, r = sp.linalg.qr(psi0, mode="economic", overwrite_a=True, check_finite=False, pivoting=True)
+        psi0, r, p = sp.linalg.qr(psi0, mode="economic", overwrite_a=True, check_finite=False, pivoting=True)
         psi0 = psi0.copy(order="C")
         # Find which columns (if any) are 0 in psi0_0
         rows, columns = psi0.shape

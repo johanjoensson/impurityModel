@@ -85,8 +85,8 @@ def edchains(vs, ebs):
     H_bath_occ[-n_block_orb:, -n_block_orb:] = chain_eb[-1]
     if n < len(ebs):
         chain_eb, chain_v, v0_tilde = tridiagonalize(ebs[n:], vs[n:])
-        chain_v_unocc = np.zeros((len(chain_eb), n_block_orb), dtype=complex)
-        H_bath_unocc = np.zeros((len(chain_eb), len(chain_eb)), dtype=complex)
+        chain_v_unocc = np.zeros((len(chain_eb) * n_block_orb, n_block_orb), dtype=complex)
+        H_bath_unocc = np.zeros((len(chain_eb) * n_block_orb, len(chain_eb) * n_block_orb), dtype=complex)
         chain_v_unocc[0:n_block_orb] = v0_tilde
         for i in range(0, len(chain_eb) - 1):
             H_bath_unocc[i * n_block_orb : (i + 1) * n_block_orb, i * n_block_orb : (i + 1) * n_block_orb] = chain_eb[i]

@@ -625,28 +625,28 @@ def get_ed_h0(
             f"Read bath energies and hopping parameters from impurityModel_bath_energies_and_hopping_parameters_{label}.npy"
         )
 
-    # We haven't already done a fit, so we do one now
-    if ebs_star is None and vs_star is None:
-        ebs_star, vs_star = fit_hyb(
-            w,
-            eim,
-            phase_hyb,
-            bath_states_per_orbital,
-            block_structure,
-            gamma=gamma,
-            imag_only=imag_only,
-            x_lim=(w[0], 0 if valence_bath_only else w[-1]),
-            verbose=verbose,
-            comm=comm,
-            weight_fun=get_weight_function("Gaussian", 0, exp_weight),
-        )
-        for ebss, vss in zip(ebs_star, vs_star):
-            if len(ebss) == 0:
-                continue
-            sorted_indices = np.argsort(ebss)
-            ebss[:] = ebss[sorted_indices]
-            vss[:] = vss[sorted_indices]
-        assert len(vs_star) == len(block_structure.inequivalent_blocks), "Number of inequivalent blocks is inconsitent"
+    ebs_star, vs_star = fit_hyb(
+        w,
+        eim,
+        phase_hyb,
+        bath_states_per_orbital,
+        block_structure,
+        gamma=gamma,
+        imag_only=imag_only,
+        x_lim=(w[0], 0 if valence_bath_only else w[-1]),
+        verbose=verbose,
+        comm=comm,
+        weight_fun=get_weight_function("Gaussian", 0, exp_weight),
+        ebs_guess=ebs_star,
+        vs_guess=vs_star,
+    )
+    for ebss, vss in zip(ebs_star, vs_star):
+        if len(ebss) == 0:
+            continue
+        sorted_indices = np.argsort(ebss)
+        ebss[:] = ebss[sorted_indices]
+        vss[:] = vss[sorted_indices]
+    assert len(vs_star) == len(block_structure.inequivalent_blocks), "Number of inequivalent blocks is inconsitent"
     # n_occ_block = [np.sum(eb <= 0) for i, eb in enumerate(ebs_star)]
     # n_zero_block = [0 for i, eb in enumerate(ebs_star)]
     # n_empty_block = [np.sum(eb > 0) for i, eb in enumerate(ebs_star)]
@@ -813,7 +813,7 @@ def get_ed_h0(
     blocks = [[] for _ in range(n_blocks)]
     for orb_i, block_i in enumerate(block_idxs):
         blocks[block_i].append(orb_i)
-    imp_bath_blocks = [None] * n_orb
+    imp_bath_blocks = [None] * n_blocks
     for block_i, bath_block in enumerate(blocks):
         imp_orbs = [i for i in bath_block if i in range(n_orb)]
         occ_baths = [i for i in bath_block if i in occupied_indices]
@@ -839,6 +839,8 @@ def fit_hyb(
     verbose=True,
     comm=None,
     weight_fun=lambda w, w0, e: np.ones_like(w),
+    ebs_guess=None,
+    vs_guess=None,
 ):
     """
     Calculate the bath energies and hopping parameters for fitting the
@@ -899,6 +901,8 @@ def fit_hyb(
             comm=comm,
             verbose=verbose,
             weight_fun=weight_fun,
+            bath_guess=ebs_guess[inequivalent_block_i] if ebs_guess is not None else None,
+            v_guess=vs_guess[inequivalent_block_i] if vs_guess is not None else None,
         )
         # Remove states with negligleble hopping
         bath_mask = []
