@@ -538,16 +538,15 @@ def block_Green(
     p: Optional[np.ndarray] = None
     if comm.rank == 0:
         # Do a QR decomposition of the starting block.
-        # Later on, use r to restore the block corresponding to
+        # Later on, use r to restore the psi0 block
+        # Allow for permutations of rows in psi0 as well
         psi0, r, p = sp.linalg.qr(psi0, mode="economic", overwrite_a=True, check_finite=False, pivoting=True)
         psi0 = psi0.copy(order="C")
-        # Find which columns (if any) are 0 in psi0_0
         rows, columns = psi0.shape
     rows = comm.bcast(rows if comm.rank == 0 else None, root=0)
     columns = comm.bcast(columns if comm.rank == 0 else None, root=0)
     if rows == 0 or columns == 0:
         return np.zeros((len(iws), n, n), dtype=complex), np.zeros((len(ws), n, n), dtype=complex)
-    # psi_start = np.empty((len(basis.local_basis), columns), dtype=complex)
     comm.Scatterv(
         (psi0, counts * columns // n, offsets * columns // n, MPI.C_DOUBLE_COMPLEX) if comm.rank == 0 else None,
         psi_start.T,
@@ -569,8 +568,6 @@ def block_Green(
         conv_w = iws
         delta_p = 0
 
-    # Select points from the frequency mesh, according to a Normal distribuition
-    # centered on (value) 0.
     n_samples = max(len(conv_w) // 5, min(len(conv_w), 10))
 
     def converged(alphas, betas):
@@ -598,7 +595,7 @@ def block_Green(
         for alpha, beta in zip(alphas[-3::-1], betas[-3::-1]):
             gs_new = wIs - alpha - np.conj(beta.T)[np.newaxis, :, :] @ np.linalg.solve(gs_new, beta[np.newaxis, :, :])
             gs_prev = wIs - alpha - np.conj(beta.T)[np.newaxis, :, :] @ np.linalg.solve(gs_prev, beta[np.newaxis, :, :])
-        print(rf"δ = {np.max(np.abs(gs_new - gs_prev))}", flush=True)
+        # print(rf"δ = {np.max(np.abs(gs_new - gs_prev))}", flush=True)
         return np.all(np.abs(gs_new - gs_prev) < max(slaterWeightMin, 1e-6))
 
     t0 = time.perf_counter()
@@ -672,16 +669,15 @@ def block_Green_freq(
     p: Optional[np.ndarray] = None
     if comm.rank == 0:
         # Do a QR decomposition of the starting block.
-        # Later on, use r to restore the block corresponding to
+        # Later on, use r to restore the block corresponding to psi0
+        # Allow QR decomp to permute the rows of psi0
         psi0, r, p = sp.linalg.qr(psi0, mode="economic", overwrite_a=True, check_finite=False, pivoting=True)
         psi0 = psi0.copy(order="C")
-        # Find which columns (if any) are 0 in psi0_0
         rows, columns = psi0.shape
     rows = comm.bcast(rows if comm.rank == 0 else None, root=0)
     columns = comm.bcast(columns if comm.rank == 0 else None, root=0)
     if rows == 0 or columns == 0:
         return np.zeros((len(iws), n, n), dtype=complex), np.zeros((len(ws), n, n), dtype=complex)
-    # psi_start = np.empty((len(basis.local_basis), columns), dtype=complex)
     comm.Scatterv(
         (psi0, counts * columns // n, offsets * columns // n, MPI.C_DOUBLE_COMPLEX) if comm.rank == 0 else None,
         psi_start.T,
@@ -696,7 +692,6 @@ def block_Green_freq(
 
     def converged(alphas, betas):
         if np.any(np.abs(np.diagonal(betas[-1])) < max(slaterWeightMin, np.finfo(float).eps)):
-            # if np.any(np.linalg.norm(betas[-1], axis=1) < max(slaterWeightMin, np.finfo(float).eps)):
             return True
 
         if alphas.shape[0] == 1:
@@ -707,7 +702,7 @@ def block_Green_freq(
         for alpha, beta in zip(alphas[-3::-1], betas[-3::-1]):
             gs_new = alpha - np.conj(beta.T) @ np.linalg.solve(gs_new, beta)
             gs_prev = alpha - np.conj(beta.T) @ np.linalg.solve(gs_prev, beta)
-        print(rf"δ = {np.max(np.abs(gs_new - gs_prev))}", flush=True)
+        # print(rf"δ = {np.max(np.abs(gs_new - gs_prev))}", flush=True)
         delta = np.abs(gs_new - gs_prev)
         if np.any(np.isnan(delta)):
             raise RuntimeError(f"Error in calculating Greens function.\n{betas[-2]=}{betas[-1]=}")
@@ -716,15 +711,7 @@ def block_Green_freq(
     t0 = time.perf_counter()
 
     gs_matsubara = np.zeros((len(iws), columns, columns), dtype=complex)
-    # (
-    #     iw_indices,
-    #     iw_roots,
-    #     n_colors,
-    #     iw_per_color,
-    #     iw_basis,
-    #     psis,
-    # ) = split_comm_and_redistribute_basis([1] * len(iws), basis, psi)
-    iw_indices = slice(0, len(iws))  # list(range(len(iws)))
+    iw_indices = slice(0, len(iws))
     iw_basis = basis
     psis = psi
     for w_i, w in zip(list(range(len(iws)))[iw_indices], iws[iw_indices]):
@@ -747,19 +734,10 @@ def block_Green_freq(
     comm.Reduce(gs_matsubara.copy(), gs_matsubara, op=MPI.SUM)
 
     gs_realaxis = np.zeros((len(ws), columns, columns), dtype=complex)
-    # (
-    #     w_indices,
-    #     w_roots,
-    #     n_colors,
-    #     w_per_color,
-    #     w_basis,
-    #     psis,
-    # ) = split_comm_and_redistribute_basis([1] * len(ws), basis, psi)
-    w_indices = slice(0, len(ws))  # list(range(len(ws)))
+    w_indices = slice(0, len(ws))
     w_basis = basis
     psis = psi
     for w_i, w in zip(list(range(len(ws)))[w_indices], ws[w_indices]):
-        # for w_i, w in finite.get_job_tasks(comm.rank, comm.size, list(enumerate(ws))):
         A = finite.subtractOps({((0, "i"),): w + 1j * delta + e}, hOp)
         # Run Lanczos on psi0^T* [wI - j*delta - H]^-1 psi0
         alphas, betas, _ = block_lanczos(
@@ -780,10 +758,10 @@ def block_Green_freq(
     if verbose:
         print(f"time(block_lanczos) = {time.perf_counter() - t0: .4f} seconds.", flush=True)
     if comm.rank == 0:
-        gs_matsubara = np.conj(r.T)[np.newaxis, :, :] @ np.linalg.solve(gs_matsubara, r[np.newaxis, :, :])
-        gs_realaxis = np.conj(r.T)[np.newaxis, :, :] @ np.linalg.solve(gs_realaxis, r[np.newaxis, :, :])
-        gs_matsubara[:, :, p] = gs_matsubara
-        gs_realaxis[:, :, p] = gs_realaxis
+        ix = np.ix_(range(len(iws)), p, p)
+        gs_matsubara = (np.conj(r.T)[np.newaxis, :, :] @ np.linalg.solve(gs_matsubara, r[np.newaxis, :, :]))[ix]
+        ix = np.ix_(range(len(ws)), p, p)
+        gs_realaxis = (np.conj(r.T)[np.newaxis, :, :] @ np.linalg.solve(gs_realaxis, r[np.newaxis, :, :]))[ix]
 
     return gs_matsubara, gs_realaxis
 
@@ -815,7 +793,8 @@ def calc_mpi_Greens_function_from_alpha_beta(alphas, betas, iws, ws, e, delta, r
         gs_matsubara = np.empty((len(iws), alphas.shape[1], alphas.shape[1]), dtype=complex) if comm.rank == 0 else None
         comm.Gatherv(gs_matsubara_local, (gs_matsubara, counts, offsets, MPI.C_DOUBLE_COMPLEX), root=0)
         if comm.rank == 0:
-            gs_matsubara[:, :, p] = np.conj(r.T)[np.newaxis, :, :] @ np.linalg.solve(gs_matsubara, r[np.newaxis, :, :])
+            ix = np.ix_(range(len(iws)), np.argsort(p), np.argsort(p))
+            gs_matsubara = (np.conj(r.T)[np.newaxis, :, :] @ np.linalg.solve(gs_matsubara, r[np.newaxis, :, :]))[ix]
     if realaxis:
         counts = np.empty((comm.size), dtype=int)
         comm.Gather(np.array([gs_realaxis_local.shape[1] ** 2 * len(ws_split)], dtype=int), counts)
@@ -823,7 +802,8 @@ def calc_mpi_Greens_function_from_alpha_beta(alphas, betas, iws, ws, e, delta, r
         gs_realaxis = np.empty((len(ws), alphas.shape[1], alphas.shape[1]), dtype=complex) if comm.rank == 0 else None
         comm.Gatherv(gs_realaxis_local, (gs_realaxis, counts, offsets, MPI.C_DOUBLE_COMPLEX), root=0)
         if comm.rank == 0:
-            gs_realaxis[:, :, p] = np.conj(r.T)[np.newaxis, :, :] @ np.linalg.solve(gs_realaxis, r[np.newaxis, :, :])
+            ix = np.ix_(range(len(ws)), np.argsort(p), np.argsort(p))
+            gs_realaxis = (np.conj(r.T)[np.newaxis, :, :] @ np.linalg.solve(gs_realaxis, r[np.newaxis, :, :]))[ix]
     return gs_matsubara, gs_realaxis
 
 

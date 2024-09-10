@@ -428,7 +428,7 @@ def block_lanczos(
                 basis.num_spin_orbitals,
                 h_op,
                 psi_i,
-                slaterWeightMin=slaterWeightMin,
+                slaterWeightMin=0,
                 restrictions=basis.restrictions,
                 opResult=h_mem,
             )

@@ -255,19 +255,11 @@ def parse_solver_line(solver_line):
     return nominal_occ, delta_occ, nBaths, options
 
 
-def exp_weight(w, w0, e):
-    return np.exp(-e * np.abs(w - w0))
-
-
-def gauss_weight(w, w0, e):
-    return np.exp(-e / 2 * np.abs(w - w0) ** 2)
-
-
 def get_weight_function(weight_function_name, w0, e):
     if weight_function_name == "Gaussian":
-        return lambda w: gauss_weight(w, w0, e)
+        return lambda w: np.exp(-e * np.abs(w - w0))
     elif weight_function_name == "Exponential":
-        return lambda w: exp_weight(w, w0, e)
+        return lambda w: np.exp(-e / 2 * np.abs(w - w0) ** 2)
     elif weight_function_name == "RSPt":
         return lambda w: np.abs(w - w0) / (1 + e * np.abs(w - w0)) ** 3
     else:
@@ -555,6 +547,8 @@ def get_ed_h0(
     eim,
     gamma=0.001,
     exp_weight=2,
+    weight_function="Gaussian",
+    weight_w0=0,
     imag_only=False,
     valence_bath_only=True,
     bath_geometry="star",
@@ -597,7 +591,8 @@ def get_ed_h0(
 
     block_structure = build_block_structure(phase_hyb, tol=1e-6)
 
-    H_bath_star_loaded = None
+    vs_star = None
+    ebs_star = None
     if comm.rank == 0:
         # Check to see if we have already done a fit
         vs_star = []
@@ -608,7 +603,6 @@ def get_ed_h0(
                 for _ in range(n_block):
                     vs_star.append(np.load(f))
                     ebs_star.append(np.load(f))
-                H_bath_star_loaded = np.load(f)
             remove(f"impurityModel_bath_energies_and_hopping_parameters_{label}.npy")
         except FileNotFoundError:
             vs_star = None
@@ -617,9 +611,6 @@ def get_ed_h0(
             remove(f"impurityModel_bath_energies_and_hopping_parameters_{label}.npy")
             vs_star = None
             ebs_star = None
-    vs_star = comm.bcast(vs_star if comm.rank == 0 else None)
-    ebs_star = comm.bcast(ebs_star if comm.rank == 0 else None)
-    H_bath_star_loaded = comm.bcast(H_bath_star_loaded if comm.rank == 0 else None)
     if ebs_star is not None and verbose:
         print(
             f"Read bath energies and hopping parameters from impurityModel_bath_energies_and_hopping_parameters_{label}.npy"
@@ -636,20 +627,17 @@ def get_ed_h0(
         x_lim=(w[0], 0 if valence_bath_only else w[-1]),
         verbose=verbose,
         comm=comm,
-        weight_fun=get_weight_function("Gaussian", 0, exp_weight),
+        weight_fun=get_weight_function(weight_function, weight_w0, exp_weight),
         ebs_guess=ebs_star,
         vs_guess=vs_star,
     )
     for ebss, vss in zip(ebs_star, vs_star):
         if len(ebss) == 0:
             continue
-        sorted_indices = np.argsort(ebss)
+        sorted_indices = np.argsort(ebss, kind="stable")
         ebss[:] = ebss[sorted_indices]
         vss[:] = vss[sorted_indices]
     assert len(vs_star) == len(block_structure.inequivalent_blocks), "Number of inequivalent blocks is inconsitent"
-    # n_occ_block = [np.sum(eb <= 0) for i, eb in enumerate(ebs_star)]
-    # n_zero_block = [0 for i, eb in enumerate(ebs_star)]
-    # n_empty_block = [np.sum(eb > 0) for i, eb in enumerate(ebs_star)]
     n_occ_block = [np.sum(eb < -1e-4) for i, eb in enumerate(ebs_star)]
     n_zero_block = [np.sum(np.abs(eb) <= 1e-4) for i, eb in enumerate(ebs_star)]
     n_empty_block = [np.sum(eb > 1e-4) for i, eb in enumerate(ebs_star)]
@@ -720,13 +708,11 @@ def get_ed_h0(
                 for i in range(len(vs_star)):
                     np.save(f, vs_star[i])
                     np.save(f, ebs_star[i])
-                np.save(f, H_bath_star)
             with open(f"impurityModel_bath_energies_and_hopping_parameters_{label}_bak.npy", "wb") as f:
                 np.save(f, len(vs_star))
                 for i in range(len(vs_star)):
                     np.save(f, vs_star[i])
                     np.save(f, ebs_star[i])
-                np.save(f, H_bath_star)
 
     if verbose:
         print("DFT hamiltonian in correlated basis")

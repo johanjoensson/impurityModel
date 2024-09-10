@@ -108,10 +108,18 @@ def fixed_peak_dc(h0_op, dc_struct, rank, verbose, dense_cutoff):
         )
     h_op_i = finite.addOps([h0_op, u])
 
+    dc_op_i = {
+        ((i, "c"), (j, "a")): -dc_trial[i, j] + 0j
+        for i in range(dc_trial.shape[0])
+        for j in range(dc_trial.shape[1])
+        if abs(dc_trial[i, j]) > 0
+    }
+    h_op = finite.addOps([h_op_i, dc_op_i])
+    _ = basis_upper.expand(h_op, dense_cutoff=dense_cutoff, de2_min=1e-4)
+    _ = basis_lower.expand(h_op, dense_cutoff=dense_cutoff, de2_min=1e-4)
+
     def F(dc_fac):
         dc = dc_fac * dc_trial
-        bu = basis_upper.copy()
-        bl = basis_lower.copy()
         dc_op_i = {
             ((i, "c"), (j, "a")): -dc[i, j] + 0j
             for i in range(dc_trial.shape[0])
@@ -119,8 +127,12 @@ def fixed_peak_dc(h0_op, dc_struct, rank, verbose, dense_cutoff):
             if abs(dc_trial[i, j]) > 0
         }
         h_op = finite.addOps([h_op_i, dc_op_i])
-        h_dict = bu.expand(h_op, dense_cutoff=dense_cutoff, de2_min=1e-4)
-        h = bu.build_sparse_matrix(h_op, {}) if bu.size > dense_cutoff else bu.build_dense_matrix(h_op, h_dict)
+        h_dict = basis_upper.build_operator_dict(h_op)
+        h = (
+            basis_upper.build_sparse_matrix(h_op, {})
+            if basis_upper.size > dense_cutoff
+            else basis_upper.build_dense_matrix(h_op, h_dict)
+        )
         e_upper, psi_upper = finite.eigensystem_new(
             h,
             e_max=0,
@@ -128,8 +140,12 @@ def fixed_peak_dc(h0_op, dc_struct, rank, verbose, dense_cutoff):
             eigenValueTol=0,
             return_eigvecs=True,
         )
-        h_dict = bl.expand(h_op, dense_cutoff=dense_cutoff, de2_min=1e-4)
-        h = bl.build_sparse_matrix(h_op, {}) if bl.size > dense_cutoff else bl.build_dense_matrix(h_op, h_dict)
+        h_dict = basis_lower.build_operator_dict(h_op)
+        h = (
+            basis_lower.build_sparse_matrix(h_op, {})
+            if basis_lower.size > dense_cutoff
+            else basis_lower.build_dense_matrix(h_op, h_dict)
+        )
         e_lower, psi_lower = finite.eigensystem_new(
             h,
             e_max=0,
@@ -137,10 +153,10 @@ def fixed_peak_dc(h0_op, dc_struct, rank, verbose, dense_cutoff):
             eigenValueTol=0,
             return_eigvecs=True,
         )
-        psi_lower_local = bl.build_state(psi_lower[:, 0].T)[0]
-        psi_upper_local = bu.build_state(psi_upper[:, 0].T)[0]
-        psi_lowers = bl.comm.allgather(psi_lower_local)
-        psi_uppers = bu.comm.allgather(psi_upper_local)
+        psi_lower_local = basis_lower.build_state(psi_lower[:, 0].T)[0]
+        psi_upper_local = basis_upper.build_state(psi_upper[:, 0].T)[0]
+        psi_lowers = basis_lower.comm.allgather(psi_lower_local)
+        psi_uppers = basis_upper.comm.allgather(psi_upper_local)
         psi_lower = {}
         psi_upper = {}
         for psi_lower_local, psi_upper_local in zip(psi_lowers, psi_uppers):
@@ -149,34 +165,21 @@ def fixed_peak_dc(h0_op, dc_struct, rank, verbose, dense_cutoff):
             for state in psi_upper_local:
                 psi_upper[state] = psi_upper_local[state] + psi_upper.get(state, 0)
         rho_lower = finite.build_density_matrix(
-            sorted([orb for blocks in bl.impurity_orbitals.values() for block in blocks for orb in block]),
+            sorted([orb for blocks in basis_lower.impurity_orbitals.values() for block in blocks for orb in block]),
             psi_lower,
-            bl.num_spin_orbitals,
+            basis_lower.num_spin_orbitals,
         )
-        # rho_lower = finite.build_impurity_density_matrix(
-        #     sum(len(block) for blocks in bl.impurity_orbitals.values() for block in blocks),
-        #     sum(nb for nb in sum_bath_states.values()),
-        #     psi_lower,
-        # )
         rho_upper = finite.build_density_matrix(
-            sorted([orb for blocks in bu.impurity_orbitals.values() for block in blocks for orb in block]),
+            sorted([orb for blocks in basis_upper.impurity_orbitals.values() for block in blocks for orb in block]),
             psi_upper,
-            bu.num_spin_orbitals,
+            basis_upper.num_spin_orbitals,
         )
-        # rho_upper = finite.build_impurity_density_matrix(
-        #     sum(len(block) for blocks in bu.impurity_orbitals.values() for block in blocks),
-        #     sum(nb for nb in sum_bath_states.values()),
-        #     psi_upper,
-        # )
         avg_dc_lower = np.real(np.trace(rho_lower @ dc))
         avg_dc_upper = np.real(np.trace(rho_upper @ dc))
         if abs(avg_dc_upper - avg_dc_lower) < min(dc_struct.tau, 1e-2):
-            return dc_trial
+            return 0
         return (e_upper[0] - e_lower[0] - peak_position) / (avg_dc_upper - avg_dc_lower)
 
-    # res = sp.optimize.root_scalar(F, x0=1)
-    # dc_fac = res.root
-    # dc_fac = sp.optimize.newton(F, x0=1)
     dc_fac = 1
     for _ in range(5):
         dc_fac += F(dc_fac)
@@ -411,7 +414,7 @@ def calc_selfenergy(
     energy_cut = -tau * np.log(1e-4)
 
     basis.tau = tau
-    h_dict = basis.expand(h, H_dict=h_dict, dense_cutoff=dense_cutoff, de2_min=1e-10)
+    h_dict = basis.expand(h, H_dict=h_dict, dense_cutoff=dense_cutoff, de2_min=1e-6)
     if basis.size <= dense_cutoff:
         h_gs = basis.build_dense_matrix(h, h_dict)
     else:
@@ -422,7 +425,7 @@ def calc_selfenergy(
         k=total_impurity_orbitals[0],
         eigenValueTol=0,
     )
-    psis = basis.build_state(psis_dense.T, slaterWeightMin=np.finfo(float).eps ** 2)
+    psis = basis.build_state(psis_dense.T, slaterWeightMin=np.finfo(float).eps)
     basis.clear()
     basis.add_states(set(state for psi in psis for state in psi))
     if verbosity >= 1:
@@ -701,7 +704,7 @@ def get_Sigma_static(basis, U4, es, psis, tau):
     # n = sum(ni for ni in n_impurity_orbitals.values())
     rhos = [
         finite.build_density_matrix(
-            [orb for blocks in basis.impurity_orbitals.values() for block in blocks for orb in block],
+            sorted([orb for blocks in basis.impurity_orbitals.values() for block in blocks for orb in block]),
             psi,
             basis.num_spin_orbitals,
         )
