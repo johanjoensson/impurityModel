@@ -155,7 +155,7 @@ def bytes2bitarray(bytestr, n):
 
     """
     # Generate a empty bitarray
-    bits = bitarray(0, endian="big")
+    bits = bitarray(endian="big")
     # Load this bitarray with the information stored in the byte string.
     bits.frombytes(bytestr)
     # Return the bitarray
