@@ -2,6 +2,7 @@ from math import ceil
 from time import perf_counter
 import sys
 from typing import Optional, Union
+from os import environ
 
 try:
     from collections.abc import Sequence, Iterable
@@ -20,7 +21,14 @@ from impurityModel.ed.manybody_state_containers import (
 
 
 from impurityModel.ed import product_state_representation as psr
-from impurityModel.ed.finite import applyOp_new as applyOp, c2i, c2i_op, eigensystem_new, norm2
+from impurityModel.ed.finite import c2i, c2i_op, eigensystem_new, norm2
+
+from impurityModel.ed.finit import applyOp_new as applyOp
+
+# if int(environ.get("OMP_NUM_THREADS", 1)) > 1:
+#     from impurityModel.ed.finite import applyOp_multiprocess as applyOp
+# else:
+#     from impurityModel.ed.finite import applyOp_new as applyOp
 
 try:
     from petsc4py import PETSc

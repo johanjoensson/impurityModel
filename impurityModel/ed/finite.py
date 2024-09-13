@@ -10,6 +10,8 @@ from collections import OrderedDict
 import scipy.sparse
 from mpi4py import MPI
 import time
+from multiprocessing import Process, Queue, current_process, freeze_support
+from os import environ
 
 try:
     from petsc4py import PETSc
@@ -2187,6 +2189,121 @@ def applyOp_new(n_spin_orbitals: int, op: dict, psi: dict, slaterWeightMin=0, re
             newResults[state] = {}
         newResults[state][state_new] = h * signTot + newResults[state].get(state_new, 0)
     opResult.update(newResults)
+
+    return {state: amp for state, amp in psiNew.items() if abs(amp) ** 2 > slaterWeightMin}
+
+
+def applyOp_worker(output, op, psi, n_spin_orbitals, restrictions):
+    opResult = dict()
+    psiNew = dict()
+    for (process, h), (state, amp) in itertools.product(op, psi.items()):
+        state_bits_new = psr.bytes2bitarray(state, n_spin_orbitals)
+        signTot = 1
+        for i, action in process[-1::-1]:
+            if action == "a":
+                sign = remove.ubitarray(i, state_bits_new)
+            elif action == "c":
+                sign = create.ubitarray(i, state_bits_new)
+            elif action == "i":
+                sign = 1
+            signTot *= sign
+            if signTot == 0:
+                break
+        if signTot == 0:
+            opResult[state] = opResult.get(state, {})
+            continue
+        state_new = psr.bitarray2bytes(state_bits_new)
+        if not occupation_is_within_restrictions(state_new, n_spin_orbitals, restrictions):
+            continue
+        psiNew[state_new] = amp * h * signTot + psiNew.get(state_new, 0)
+        if state not in opResult:
+            opResult[state] = {}
+        opResult[state][state_new] = h * signTot + opResult[state].get(state_new, 0)
+    output.put((psiNew, opResult))
+
+
+def applyOp_multiprocess(
+    n_spin_orbitals: int, op: dict, psi: dict, slaterWeightMin=0, restrictions=None, opResult=None
+):
+    r"""
+    Return :math:`|psi' \rangle = op |psi \rangle`.
+
+    If opResult is not None, it is updated to contain information of how the
+    operator op acted on the product states in psi.
+
+    Parameters
+    ----------
+    n_spin_orbitals : int
+        Total number of spin-orbitals in the system.
+    op : dict
+        Operator of the format
+        tuple : amplitude,
+
+        where each tuple describes a scattering
+
+        process. Examples of possible tuples (and their meanings) are:
+
+        ((i, 'c'))  <-> c_i^dagger
+
+        ((i, 'a'))  <-> c_i
+
+        ((i, 'c'), (j, 'a'))  <-> c_i^dagger c_j
+
+        ((i, 'c'), (j, 'c'), (k, 'a'), (l, 'a')) <-> c_i^dagger c_j^dagger c_k c_l
+    psi : dict
+        Multi-configurational state.
+        Product states as keys and amplitudes as values.
+    slaterWeightMin : float
+        Restrict the number of product states by
+        looking at `|amplitudes|^2`.
+    restrictions : dict
+        Restriction the occupation of generated
+        product states.
+    opResult : dict
+        In and output argument.
+        If present, the results of the operator op acting on each
+        product state in the state psi is added and stored in this
+        variable.
+
+    Returns
+    -------
+    psiNew : dict
+        New state of the same format as psi.
+
+
+    """
+    NUM_PROCESSES = int(environ.get("OMP_NUM_THREADS", 1))
+    psiNew = dict()
+    if opResult is None:
+        opResult = dict()
+    solved_states = psi.keys() & opResult.keys()
+    for state in solved_states:
+        addToFirst(psiNew, opResult[state], psi[state])
+
+    done_queue = Queue()
+
+    processes = [None] * NUM_PROCESSES
+    for i in range(NUM_PROCESSES):
+        processes[i] = Process(
+            target=applyOp_worker,
+            args=(
+                done_queue,
+                [op_i for op_i in itertools.islice(op.items(), i, None, NUM_PROCESSES)],
+                {state: amp for state, amp in psi.items() if state not in solved_states},
+                n_spin_orbitals,
+                restrictions,
+            ),
+        )
+        processes[i].start()
+    for i in range(NUM_PROCESSES):
+        psiNew_p, opResult_p = done_queue.get()
+        addToFirst(psiNew, psiNew_p)
+        for state, res in opResult_p.items():
+            tmp = opResult.get(state, {})
+            addToFirst(tmp, res)
+            opResult[state] = tmp
+    for proc in processes:
+        proc.join()
 
     return {state: amp for state, amp in psiNew.items() if abs(amp) ** 2 > slaterWeightMin}
 
