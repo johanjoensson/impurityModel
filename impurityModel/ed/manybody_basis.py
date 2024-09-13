@@ -23,10 +23,10 @@ from impurityModel.ed.manybody_state_containers import (
 from impurityModel.ed import product_state_representation as psr
 from impurityModel.ed.finite import c2i, c2i_op, eigensystem_new, norm2
 
-from impurityModel.ed.finit import applyOp_new as applyOp
 
+from impurityModel.ed.finite import applyOp_new as applyOp
 # if int(environ.get("OMP_NUM_THREADS", 1)) > 1:
-#     from impurityModel.ed.finite import applyOp_multiprocess as applyOp
+#     from impurityModel.ed.finite import applyOp_threadpool as applyOp
 # else:
 #     from impurityModel.ed.finite import applyOp_new as applyOp
 
