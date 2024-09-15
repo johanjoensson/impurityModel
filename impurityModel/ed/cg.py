@@ -62,7 +62,9 @@ def cg_phys(A_op, A_dict, n_spin_orbitals, x_psi, y_psi, w, delta, basis, atol=1
     x, y = basis.build_vector([x_psi, y_psi])
     Ax = A @ x
     if basis.is_distributed:
-        basis.comm.Allreduce(Ax.copy(), Ax)
+        Ax_recv = np.empy_like(Ax) if basis.comm.rank == 0 else None
+        basis.comm.Allreduce(Ax, Ax_recv)
+        Ax = Ax_recv
     r = y - Ax
     p = r
     r_prev = r
@@ -90,7 +92,9 @@ def cg_phys(A_op, A_dict, n_spin_orbitals, x_psi, y_psi, w, delta, basis, atol=1
         t_matmul = perf_counter()
         Ax = A @ x
         if basis.is_distributed:
-            basis.comm.Allreduce(Ax.copy(), Ax)
+            Ax_recv = np.empy_like(Ax) if basis.comm.rank == 0 else None
+            basis.comm.Allreduce(Ax, Ax_recv)
+            Ax = Ax_recv
         t_matrix_mul += perf_counter() - t_matmul
         t_rest = perf_counter()
         r = y - Ax
@@ -103,7 +107,9 @@ def cg_phys(A_op, A_dict, n_spin_orbitals, x_psi, y_psi, w, delta, basis, atol=1
         if it % 10 == 0:
             Ax = A @ x
             if basis.is_distributed:
-                basis.comm.Allreduce(Ax.copy(), Ax)
+                Ax_recv = np.empy_like(Ax) if basis.comm.rank == 0 else None
+                basis.comm.Allreduce(Ax, Ax_recv)
+                Ax = Ax_recv
             r = y - Ax
         if (np.conj(r) @ r).real < atol**2:
             break

@@ -100,6 +100,9 @@ def get_Greens_function(
         block_basis,
         psis,
     ) = split_comm_and_redistribute_basis([len(block) ** 2 for block in blocks], basis, psis)
+    if verbose:
+        print(f"New root ranks:{block_roots}")
+        print(f"Number blocks per subgroup: {blocks_per_color}")
     gs_matsubara_block = []
     gs_realaxis_block = []
     for opIPS, opPS in (
@@ -276,6 +279,9 @@ def calc_Greens_function_with_offdiag(
         eigen_basis,
         psis,
     ) = split_comm_and_redistribute_basis([1 for _ in es], basis, psis)
+    if verbose:
+        print(f"New root ranks for eigenstates:{eigen_roots}")
+        print(f"Number of eigenstates per subgroup: {eigen_per_color}")
     gs_matsubara_received = np.empty((len(eigen_roots), len(iw), n, n), dtype=complex) if comm.rank == 0 else None
     gs_realaxis_received = np.empty((len(eigen_roots), len(w), n, n), dtype=complex) if comm.rank == 0 else None
     e0 = min(es)
@@ -310,8 +316,8 @@ def calc_Greens_function_with_offdiag(
 
         if verbose:
             print(f"time(build excited state basis) = {time.perf_counter() - t0}")
-        # gs_matsubara_block_i, gs_realaxis_block_i = block_Green_freq(
-        gs_matsubara_block_i, gs_realaxis_block_i = block_Green(
+        gs_matsubara_block_i, gs_realaxis_block_i = block_Green_freq(
+            # gs_matsubara_block_i, gs_realaxis_block_i = block_Green(
             n_spin_orbitals=excited_basis.num_spin_orbitals,
             hOp=hOp,
             psi_arr=block_v,
@@ -691,8 +697,8 @@ def block_Green_freq(
         print(f"time(set up psi_start) = {time.perf_counter() - t0}")
 
     def converged(alphas, betas):
-        if np.any(np.abs(np.diagonal(betas[-1])) < max(slaterWeightMin, np.finfo(float).eps)):
-            return True
+        # if np.any(np.abs(np.diagonal(betas[-1])) < max(slaterWeightMin, np.finfo(float).eps)):
+        #     return True
 
         if alphas.shape[0] == 1:
             return False
@@ -710,57 +716,71 @@ def block_Green_freq(
 
     t0 = time.perf_counter()
 
+    iw_indices, freq_roots, _, freqs_per_color, freq_basis, psis = split_comm_and_redistribute_basis(
+        [1] * len(iws), basis, psi
+    )
+    if verbose:
+        print(f"New root ranks for matsubara frequencies:{freq_roots}")
+        print(f"Number of frequencies per subgroup: {freqs_per_color}")
     gs_matsubara = np.zeros((len(iws), columns, columns), dtype=complex)
-    iw_indices = slice(0, len(iws))
-    iw_basis = basis
-    psis = psi
-    for w_i, w in zip(list(range(len(iws)))[iw_indices], iws[iw_indices]):
+    for w_i, w in zip(range(iw_indices.start, iw_indices.stop), iws[iw_indices]):
         A = finite.subtractOps({((0, "i"),): w + e}, hOp)
         # Run Lanczos on psi0^T* [wI - j*delta - H]^-1 psi0
         alphas, betas, _ = block_lanczos(
             psi0=psis,
             h_op=A,
-            basis=iw_basis,
+            basis=freq_basis,
             converged=converged,
             h_mem=None,  # h_mem,
-            verbose=verbose,
+            verbose=False and verbose,
             slaterWeightMin=slaterWeightMin,
             reort=reort,
         )
-        if iw_basis.comm.rank == 0:
+        if freq_basis.comm.rank == 0:
             gs_matsubara[w_i, :, :] = alphas[-1]
             for alpha, beta in zip(alphas[-2::-1], betas[-2::-1]):
                 gs_matsubara[w_i, :, :] = alpha - np.conj(beta.T) @ np.linalg.solve(gs_matsubara[w_i], beta)
-    comm.Reduce(gs_matsubara.copy(), gs_matsubara, op=MPI.SUM)
+        freq_basis.clear()
+        freq_basis.add_states(state for psi in psis for state in psi)
+    gs_received = np.empty_like(gs_matsubara) if comm.rank == 0 else None
+    comm.Reduce(gs_matsubara, gs_received, op=MPI.SUM)
+    gs_matsubara = gs_received
 
+    w_indices, freq_roots, _, freqs_per_color, freq_basis, psis = split_comm_and_redistribute_basis(
+        [1] * len(ws), basis, psi
+    )
     gs_realaxis = np.zeros((len(ws), columns, columns), dtype=complex)
-    w_indices = slice(0, len(ws))
-    w_basis = basis
-    psis = psi
-    for w_i, w in zip(list(range(len(ws)))[w_indices], ws[w_indices]):
+    if verbose:
+        print(f"New root ranks for realaxis frequencies:{freq_roots}")
+        print(f"Number of frequencies per subgroup: {freqs_per_color}")
+    for w_i, w in zip(range(w_indices.start, w_indices.stop), ws[w_indices]):
         A = finite.subtractOps({((0, "i"),): w + 1j * delta + e}, hOp)
         # Run Lanczos on psi0^T* [wI - j*delta - H]^-1 psi0
         alphas, betas, _ = block_lanczos(
             psi0=psis,
             h_op=A,
-            basis=w_basis,
+            basis=freq_basis,
             converged=converged,
             h_mem=None,  # h_mem,
-            verbose=verbose,
+            verbose=False and verbose,
             slaterWeightMin=slaterWeightMin,
             reort=reort,
         )
-        if w_basis.comm.rank == 0:
+        if freq_basis.comm.rank == 0:
             gs_realaxis[w_i, :, :] = alphas[-1]
             for alpha, beta in zip(alphas[-2::-1], betas[-2::-1]):
                 gs_realaxis[w_i, :, :] = alpha - np.conj(beta.T) @ np.linalg.solve(gs_realaxis[w_i], beta)
-    comm.Reduce(gs_realaxis.copy(), gs_realaxis, op=MPI.SUM)
+        freq_basis.clear()
+        freq_basis.add_states(state for psi in psis for state in psi)
+    gs_received = np.empty_like(gs_realaxis) if comm.rank == 0 else None
+    comm.Reduce(gs_realaxis, gs_received, op=MPI.SUM)
+    gs_realaxis = gs_received
     if verbose:
         print(f"time(block_lanczos) = {time.perf_counter() - t0: .4f} seconds.", flush=True)
     if comm.rank == 0:
-        ix = np.ix_(range(len(iws)), p, p)
+        ix = np.ix_(range(len(iws)), np.argsort(p), np.argsort(p))
         gs_matsubara = (np.conj(r.T)[np.newaxis, :, :] @ np.linalg.solve(gs_matsubara, r[np.newaxis, :, :]))[ix]
-        ix = np.ix_(range(len(ws)), p, p)
+        ix = np.ix_(range(len(ws)), np.argsort(p), np.argsort(p))
         gs_realaxis = (np.conj(r.T)[np.newaxis, :, :] @ np.linalg.solve(gs_realaxis, r[np.newaxis, :, :]))[ix]
 
     return gs_matsubara, gs_realaxis
@@ -973,6 +993,7 @@ def get_block_Green_cg(
     """
     matsubara = iws is not None
     realaxis = ws is not None
+    comm = basis.comm
 
     if not matsubara and not realaxis:
         if rank == 0:
@@ -1027,8 +1048,12 @@ def get_block_Green_cg(
                 # for col, v in enumerate(T_psi_vs):
                 #     T_psi[:, col] = v
                 gs_matsubara[w_i, :, col] = np.conj(T_psi.T) @ tmp
-        comm.Allreduce(gs_matsubara.copy(), gs_matsubara, op=MPI.SUM)
-        gs_matsubara = np.moveaxis(gs_matsubara, 0, -1)
+        gs_recv = np.empty_like(gs_matsubara) if comm.rank == 0 else None
+        comm.Allreduce(gs_matsubara, gs_recv, op=MPI.SUM)
+        gs_matsubara = gs_recv
+
+        if gs_matsubara is not None:
+            gs_matsubara = np.moveaxis(gs_matsubara, 0, -1)
 
     if realaxis:
         gs_realaxis = np.zeros((len(ws), n, n), dtype=complex)
@@ -1039,8 +1064,11 @@ def get_block_Green_cg(
                 tmp, info = cg_phys(A_op, {}, n_spin_orbitals, {}, psi_arr[col], w, delta, local_basis)
                 T_psi = local_basis.build_vector(psi_arr)
                 gs_realaxis[w_i, :, col] = np.conj(T_psi.T) @ tmp
-        comm.Allreduce(gs_realaxis.copy(), gs_realaxis, op=MPI.SUM)
-        gs_realaxis = np.moveaxis(gs_realaxis, 0, -1)
+        gs_recv = np.empty_like(gs_realaxis) if comm.rank == 0 else None
+        comm.Allreduce(gs_realaxis, gs_recv, op=MPI.SUM)
+        gs_realaxis = gs_recv
+        if gs_realaxis is not None:
+            gs_realaxis = np.moveaxis(gs_realaxis, 0, -1)
 
     def matrix_print(m):
         print("\n".join(["  ".join([f"{np.real(el): 5.3f}  {np.imag(el):+5.3f}j" for el in row]) for row in m]))

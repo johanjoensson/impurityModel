@@ -25,6 +25,7 @@ from impurityModel.ed.finite import c2i, c2i_op, eigensystem_new, norm2
 
 
 from impurityModel.ed.finite import applyOp_new as applyOp
+
 # if int(environ.get("OMP_NUM_THREADS", 1)) > 1:
 #     from impurityModel.ed.finite import applyOp_threadpool as applyOp
 # else:
@@ -415,6 +416,7 @@ class Basis:
         Extend the current basis by adding the new_states to it.
         """
         self.state_container.add_states(new_states)
+
         self.offset = self.state_container.offset
         self.size = self.state_container.size
         self.local_indices = self.state_container.local_indices

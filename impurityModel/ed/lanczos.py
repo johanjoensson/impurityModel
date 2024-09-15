@@ -502,18 +502,17 @@ def block_lanczos(
             psip -= Qm @ tmp
         elif reort == Reort.PARTIAL and it > 0:
             W = estimate_orthonormality(W, alphas, betas, N=1)
-            print(f"{W.shape=} {len(Q)=} {it=}")
             orth_loss = np.any(np.abs(W[1, :-1]) > np.sqrt(np.finfo(float).eps))
             if orth_loss or force_reort is not None:
-                mask = np.array([[True] * n] * (W.shape[1]))
-                # mask = np.any(np.abs(W[1, :-1]) > np.finfo(float).eps ** (3 / 4), axis=1)
+                # mask = np.array([[False] * n] * (W.shape[1]))
+                mask = np.any(np.abs(W[1, :-1]) > np.finfo(float).eps ** (3 / 4), axis=1)
                 combined_mask = (
                     np.logical_or(mask, np.append(force_reort, [[False] * n], axis=0))
                     if force_reort is not None
                     else mask
                 )
-                # Qm = basis.build_distributed_vector(list(itertools.compress(Q, combined_mask.flatten()))).T
-                Qm = basis.build_distributed_vector(Q).T
+                Qm = basis.build_distributed_vector(list(itertools.compress(Q, combined_mask.flatten()))).T
+                # Qm = basis.build_distributed_vector(Q).T
                 W[1][combined_mask] = np.finfo(float).eps  #  * np.random.normal(loc=0, scale=1.5, size=W[1, :-2].shape)
                 basis.comm.Bcast(W[1])
                 force_reort = None if force_reort is not None else mask
