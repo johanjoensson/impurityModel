@@ -289,25 +289,29 @@ class Basis:
         excited_restrictions = {}
         for i in total_baths:
             impurity_indices = frozenset(ind for imp_ind in self.impurity_orbitals[i] for ind in imp_ind)
+            if len(impurity_indices) > 0:
+                r_min_imp, r_max_imp = restrictions[impurity_indices]
+                min_imp = max(r_min_imp - imp_reduce, 0)
+                max_imp = min(r_max_imp + imp_increase, total_impurity_orbitals[i])
+                excited_restrictions[impurity_indices] = (min_imp, max_imp)
             valence_indices = frozenset(ind for val_ind in valence_baths[i] for ind in val_ind)
+            if len(valence_indices) > 0:
+                r_min_val, r_max_val = restrictions[valence_indices]
+                min_val = max(r_min_val - val_reduce, 0)
+                max_val = sum(len(orbs) for orbs in valence_baths[i])
+                excited_restrictions[valence_indices] = (min_val, max_val)
             zero_indices = frozenset(ind for zero_ind in zero_baths[i] for ind in zero_ind)
+            if len(zero_indices) > 0:
+                r_min_zero, r_max_zero = restrictions[zero_indices]
+                min_zero = max(r_min_zero - imp_reduce, 0)
+                max_zero = min(r_max_zero + imp_increase, len(zero_indices))
+                excited_restrictions[zero_indices] = (min_zero, max_zero)
             conduction_indices = frozenset(ind for con_ind in conduction_baths[i] for ind in con_ind)
-            r_min_imp, r_max_imp = restrictions[impurity_indices]
-            min_imp = max(r_min_imp - imp_reduce, 0)
-            max_imp = min(r_max_imp + imp_increase, total_impurity_orbitals[i])
-            r_min_val, r_max_val = restrictions[valence_indices]
-            min_val = max(r_min_val - val_reduce, 0)
-            max_val = sum(len(orbs) for orbs in valence_baths[i])
-            r_min_zero, r_max_zero = restrictions[zero_indices]
-            min_zero = max(r_min_zero - imp_reduce, 0)
-            max_zero = min(r_max_zero + imp_increase, len(zero_indices))
-            r_min_cond, r_max_cond = restrictions[conduction_indices]
-            min_cond = 0
-            max_cond = min(r_max_cond + con_increase, sum(len(orbs) for orbs in conduction_baths[i]))
-            excited_restrictions[impurity_indices] = (min_imp, max_imp)
-            excited_restrictions[valence_indices] = (min_val, max_val)
-            excited_restrictions[zero_indices] = (min_zero, max_zero)
-            excited_restrictions[conduction_indices] = (min_cond, max_cond)
+            if len(conduction_indices) > 0:
+                r_min_cond, r_max_cond = restrictions[conduction_indices]
+                min_cond = 0
+                max_cond = min(r_max_cond + con_increase, sum(len(orbs) for orbs in conduction_baths[i]))
+                excited_restrictions[conduction_indices] = (min_cond, max_cond)
         return excited_restrictions
 
     def __init__(
