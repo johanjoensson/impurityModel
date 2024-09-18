@@ -256,9 +256,14 @@ def calc_Greens_function_with_offdiag(
     comm = basis.comm
     n = len(tOps)
     excited_restrictions = (
-        None
-        # basis.build_excited_restrictions(imp_change=(1, 1), val_change=(1, 0), con_change=(0, 1))
+        # None
+        basis.build_excited_restrictions(imp_change=(1, 1), val_change=(1, 0), con_change=(0, 1))
     )
+    if verbose and excited_restrictions is not None:
+        print("Excited state restrictions:", flush=True)
+        for indices, occupations in excited_restrictions.items():
+            print(f"---> {indices} : {occupations}", flush=True)
+        print()
 
     t_mems = [{} for _ in tOps]
     h_mem = {}
@@ -296,7 +301,7 @@ def calc_Greens_function_with_offdiag(
                 tOp,
                 psi,
                 slaterWeightMin=slaterWeightMin,
-                restrictions=eigen_basis.restrictions,
+                restrictions=None,
                 opResult=t_mems[i_tOp],
             )
             local_excited_basis |= v.keys()

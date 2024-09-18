@@ -303,8 +303,8 @@ class Basis:
             zero_indices = frozenset(ind for zero_ind in zero_baths[i] for ind in zero_ind)
             if len(zero_indices) > 0:
                 r_min_zero, r_max_zero = restrictions[zero_indices]
-                min_zero = max(r_min_zero - imp_reduce, 0)
-                max_zero = min(r_max_zero + imp_increase, len(zero_indices))
+                min_zero = 0  # max(r_min_zero - imp_reduce, 0)
+                max_zero = len(zero_indices)  # min(r_max_zero + imp_increase, len(zero_indices))
                 excited_restrictions[zero_indices] = (min_zero, max_zero)
             conduction_indices = frozenset(ind for con_ind in conduction_baths[i] for ind in con_ind)
             if len(conduction_indices) > 0:

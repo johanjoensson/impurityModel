@@ -854,8 +854,10 @@ def fit_hyb(
     if verbose:
         print(block_structure)
 
-    ebs_star = [None] * len(block_structure.inequivalent_blocks)
-    vs_star = [None] * len(block_structure.inequivalent_blocks)
+    ebs_star = [np.empty((0,), dtype=float) for ib in block_structure.inequivalent_blocks]
+    vs_star = [
+        np.empty((0, len(block_structure.blocks[ib])), dtype=complex) for ib in block_structure.inequivalent_blocks
+    ]
     if verbose:
         print(f"inequivalent blocks = {block_structure.inequivalent_blocks}")
     states_per_inequivalent_block = get_state_per_inequivalent_block(

@@ -454,7 +454,7 @@ def block_lanczos(
             local_states = {}
             for state, amp in itertools.chain(q[0].items(), q[1].items(), wp.items()):
                 local_states[state] = max(abs(amp), local_states.get(state, 0))
-            local_states = sorted(local_states.items(), key=lambda x: x[1])
+            local_states = sorted(local_states.items(), key=lambda x: abs(x[1]))
             basis.clear()
             basis.add_states(state for state, _ in local_states[: basis.truncation_threshold // basis.comm.size])
         t_redist += perf_counter() - t_tmp
