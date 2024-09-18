@@ -227,6 +227,8 @@ def parse_solver_line(solver_line):
                 options["bath_geometry"] = arg.lower()
             elif arg.lower() == "fit_unocc":
                 options["fit_unocc"] = True
+            elif arg.lower() == "fit_occ":
+                options["fit_unocc"] = False
             elif arg.lower() == "dense_cutoff":
                 options["dense_cutoff"] = int(solver_array[i + 1])
                 skip_next = True
