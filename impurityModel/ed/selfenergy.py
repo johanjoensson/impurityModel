@@ -377,7 +377,6 @@ def calc_selfenergy(
     # MPI variables
     rank = comm.rank
 
-    n_imp_orbs = rot_to_spherical.shape[0]
     valence_baths, zero_baths, conduction_baths = bath_states
     total_impurity_orbitals = {i: sum(len(orbs) for orbs in impurity_orbitals[i]) for i in impurity_orbitals}
     sum_bath_states = {
@@ -445,39 +444,37 @@ def calc_selfenergy(
             for i in range(len(local_psis)):
                 for state in psis_r[i]:
                     local_psis[i][state] = psis_r[i][state] + local_psis[i].get(state, 0)
-        rho_imps = np.array(
-            [
-                finite.build_density_matrix(
-                    sorted([orb for blocks in basis.impurity_orbitals.values() for block in blocks for orb in block]),
-                    psi,
-                    basis.num_spin_orbitals,
-                )
-                for psi in local_psis
-            ]
-        )
-        rho_baths = np.array(
-            [
-                finite.build_bath_density_matrix(
-                    sum(total_impurity_orbitals.values()), sum(sum_bath_states.values()), psi
-                )
-                for psi in local_psis
-            ]
-        )
-    else:
-        rho_imps = np.empty((len(psis), sum(total_impurity_orbitals.values()), n_imp_orbs), dtype=complex)
-        rho_baths = np.empty((len(psis), sum(sum_bath_states.values()), sum(sum_bath_states.values())), dtype=complex)
-    comm.Bcast(rho_imps)
-    comm.Bcast(rho_baths)
+    rho_imps, rho_baths, bath_indices = basis.build_density_matrices(psis)
+    thermal_imp_rhos = {
+        i: [finite.thermal_average_scale_indep(es, block_rhos, tau) for block_rhos in rho_imps[i]]
+        for i in basis.impurity_orbitals.keys()
+    }
+    thermal_bath_rhos = {
+        i: [finite.thermal_average_scale_indep(es, block_rhos, tau) for block_rhos in rho_baths[i]]
+        for i in basis.impurity_orbitals.keys()
+    }
     if verbosity >= 1:
-        finite.printThermalExpValues_new(rho_imps, es, tau, rot_to_spherical)
-        finite.printExpValues(rho_imps, es, rot_to_spherical)
+        n_orb = sum(len(block) for blocks in basis.impurity_orbitals.values() for block in blocks)
+        full_rho_imps = np.zeros((len(local_psis), n_orb, n_orb), dtype=complex)
+        for k, k_blocks in basis.impurity_orbitals.items():
+            for i in range(len(local_psis)):
+                for j, block in enumerate(k_blocks):
+                    idx = np.ix_([i], block, block)
+                    full_rho_imps[idx] = rho_imps[k][j][i]
+        finite.printThermalExpValues_new(full_rho_imps, es, tau, rot_to_spherical)
+        finite.printExpValues(full_rho_imps, es, rot_to_spherical)
         print("Ground state occupation statistics:")
         for psi_stats in gs_stats:
             print(f"{psi_stats}")
         print("Ground state bath occupation statistics:", flush=True)
-        thermal_imp_rho = finite.thermal_average_scale_indep(es, rho_imps, tau)
-        thermal_bath_rho = finite.thermal_average_scale_indep(es, rho_baths, tau)
-        matrix_print(thermal_bath_rho, "Bath density matrix:")
+        for i in basis.impurity_orbitals.keys():
+            print(f"orbital set {i}:")
+            print("Impuity density matrix:")
+            for rho in thermal_imp_rhos[i]:
+                matrix_print(rho, "")
+            print("Bath density matrix:")
+            for rho in thermal_bath_rhos[i]:
+                matrix_print(rho, "")
         if rank == 0:
             with h5.File("impurityModel_solver.h5", "a") as ar:
                 it = 1
@@ -487,10 +484,24 @@ def calc_selfenergy(
                     ar.create_dataset(f"{cluster_label}/last_iteration", (1,), dtype=int)
                 ar[f"{cluster_label}/last_iteration"][0] = it
                 group = f"{cluster_label}/it_{it}"
-                ar.create_dataset(f"{group}/rho_imps", data=rho_imps, dtype=complex)
-                ar.create_dataset(f"{group}/rho_baths", data=rho_baths, dtype=complex)
-                ar.create_dataset(f"{group}/thermal_rho_imp", data=thermal_imp_rho, dtype=complex)
-                ar.create_dataset(f"{group}/thermal_rho_bath", data=thermal_bath_rho, dtype=complex)
+                ar.create_dataset(f"{group}/tau", data=np.array([tau], dtype=float))
+                ar.create_dataset(f"{group}/delta", data=np.array([delta], dtype=float))
+                ar.create_dataset(f"{group}/gs_vecs", data=psis_dense)
+                ar.create_dataset(f"{group}/gs_es", data=es)
+                ar.create_dataset(f"{group}/iw", data=iw)
+                ar.create_dataset(f"{group}/w", data=w)
+                ar.create_dataset(f"{group}/rot_to_spherical", data=rot_to_spherical)
+                ar.create_dataset(f"{group}/num_blocks", data=np.array([len(blocks)], dtype=int))
+                for block_i, block in enumerate(blocks):
+                    ar.create_dataset(f"{group}/block_{block_i}/orbs", data=np.array(block, dtype=int))
+                    ar.create_dataset(f"{group}/block_{block_i}/rho_imps", data=rho_imps[0][block_i], dtype=complex)
+                    ar.create_dataset(f"{group}/block_{block_i}/rho_baths", data=rho_baths[0][block_i], dtype=complex)
+                    ar.create_dataset(
+                        f"{group}/block_{block_i}/thermal_rho_imp", data=thermal_imp_rhos[0][block_i], dtype=complex
+                    )
+                    ar.create_dataset(
+                        f"{group}/block_{block_i}/thermal_rho_bath", data=thermal_bath_rhos[0][block_i], dtype=complex
+                    )
 
     effective_restrictions = basis.get_effective_restrictions()
     if verbosity >= 1:
@@ -574,7 +585,7 @@ def calc_selfenergy(
         sigma_static = get_Sigma_static(basis, u4, es, local_psis, tau)
         # sigma_static = get_Sigma_static(total_impurity_orbitals, sum_bath_states, u4, es, local_psis, tau)
     else:
-        sigma_static = 0
+        sigma_static = None
     if rank == 0:
         with h5.File("impurityModel_solver.h5", "a") as ar:
             it = 1
@@ -584,17 +595,8 @@ def calc_selfenergy(
                 ar.create_dataset(f"{cluster_label}/last_iteration", (1,), dtype=int)
             ar[f"{cluster_label}/last_iteration"][0] = it
             group = f"{cluster_label}/it_{it}"
-            ar.create_dataset(f"{group}/tau", data=np.array([tau], dtype=float))
-            ar.create_dataset(f"{group}/delta", data=np.array([delta], dtype=float))
-            ar.create_dataset(f"{group}/gs_vecs", data=psis_dense)
-            ar.create_dataset(f"{group}/gs_es", data=es)
-            ar.create_dataset(f"{group}/iw", data=iw)
-            ar.create_dataset(f"{group}/w", data=w)
-            ar.create_dataset(f"{group}/rot_to_spherical", data=rot_to_spherical)
-            ar.create_dataset(f"{group}/num_blocks", data=np.array([len(blocks)], dtype=int))
 
             for block_i, block in enumerate(blocks):
-                ar.create_dataset(f"{group}/block_{block_i}/orbs", data=np.array(block, dtype=int))
                 ar.create_dataset(f"{group}/block_{block_i}/gs_matsubara", data=gs_matsubara[block_i])
                 ar.create_dataset(f"{group}/block_{block_i}/gs_real", data=gs_realaxis[block_i])
                 ar.create_dataset(f"{group}/block_{block_i}/sigma_static", data=sigma_static[block_i])

@@ -7,6 +7,7 @@ import numpy as np
 from sympy.physics.wigner import gaunt
 import itertools
 from collections import OrderedDict
+from copy import deepcopy
 import scipy.sparse
 from mpi4py import MPI
 import time
@@ -1154,7 +1155,7 @@ def subtractOps(A, B):
     """
     Return the operator A - B
     """
-    opDiff = A.copy()
+    opDiff = deepcopy(A)
     for sOp, value in B.items():
         if np.abs(value) > 0:
             opDiff[sOp] = opDiff.get(sOp, 0) - value
@@ -1928,7 +1929,7 @@ def applyOp(n_spin_orbitals, op, psi, slaterWeightMin=0, restrictions=None, opRe
             for process, h in op.items():
                 # assert h != 0
                 # Initialize state
-                state_new = bits.copy()
+                state_new = deepcopy(bits)  # .copy()
                 signTot = 1
                 # for i, action in process[-1::-1]:
                 for i, action in process[-1::-1]:
@@ -1965,7 +1966,7 @@ def applyOp(n_spin_orbitals, op, psi, slaterWeightMin=0, restrictions=None, opRe
             for process, h in op.items():
                 # assert h != 0
                 # Initialize state
-                state_new = bits.copy()
+                state_new = deepcopy(bits)  # .copy()
                 signTot = 1
                 for i, action in process[-1::-1]:
                     if action == "a":
@@ -1998,7 +1999,7 @@ def applyOp(n_spin_orbitals, op, psi, slaterWeightMin=0, restrictions=None, opRe
                 for process, h in op.items():
                     # assert h != 0
                     # Initialize state
-                    state_new = bits.copy()
+                    state_new = deepcopy(bits)  # .copy()
                     signTot = 1
                     for i, action in process[-1::-1]:
                         if action == "a":
@@ -2053,7 +2054,7 @@ def applyOp(n_spin_orbitals, op, psi, slaterWeightMin=0, restrictions=None, opRe
                 for process, h in op.items():
                     # assert h != 0
                     # Initialize state
-                    state_new = bits.copy()
+                    state_new = deepcopy(bits)  # .copy()
                     signTot = 1
                     for i, action in process[-1::-1]:
                         if action == "a":
@@ -2104,7 +2105,7 @@ def occupation_is_within_restrictions(state, n_spin_orbitals, restrictions):
     for restriction, occupations in restrictions.items():
         n = sum(bits[i] for i in restriction)
         # n = len(restriction.intersection(state_new_tuple))
-        if n < occupations[0] or occupations[1] < n:
+        if n < occupations[0] or n > occupations[1]:
             return False
     return True
 
@@ -3489,7 +3490,7 @@ def add(psi1, psi2, mul=1):
     psi : dict
 
     """
-    psi = psi1.copy()
+    psi = deepcopy(psi1)  # .copy()
     for s, a in psi2.items():
         psi[s] = mul * a + psi.get(s, 0)
         # if s in psi:

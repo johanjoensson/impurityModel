@@ -657,7 +657,8 @@ def block_lanczos(
 #                 cols, vals = alpha.getRow(row)
 #                 for col, val in zip(cols, vals):
 #                     alphas[-1, row, col] = val
-#             comm.Allreduce(alphas[-1].copy(), alphas[-1], op=MPI.SUM)
+#             tmp = alphas[-1].copy()
+#             comm.Allreduce(memoryview[alphas[-1]], alphas[-1], op=MPI.SUM)
 #             w = wp - q[1] @ alpha - q[0] @ betah
 #             q[0] = q[1]
 #             start, stop = w.getOwnershipRange()

@@ -734,6 +734,9 @@ def get_ed_h0(
     H[:n_orb, n_orb:] = np.conj(H[n_orb:, :n_orb].T)
 
     if verbose:
+        print("DFT hamiltonian, with baths, in CF basis")
+        matrix_print(H)
+
         if comm is None or comm.rank == 0:
             hyb_star = np.conj((v_star @ np.conj(Q.T)).T) @ np.linalg.solve(
                 (w + 1j * eim)[:, None, None] * np.identity(H_bath_star.shape[0], dtype=complex)[None, :, :]
@@ -744,15 +747,13 @@ def get_ed_h0(
                 (w + 1j * eim)[:, None, None] * np.identity(H_bath.shape[0], dtype=complex)[None, :, :] - H_bath,
                 (v @ np.conj(Q.T))[None, :, :],
             )
-            save_Greens_function(hyb_star, w, f"Hyb_star-{label}")
-            save_Greens_function(hyb, w, f"Hyb-{label}")
+            save_Greens_function(rotate_Greens_function(hyb_star, np.conj(corr_to_cf.T)), w, f"hyb-star-fit-{label}")
+            save_Greens_function(rotate_Greens_function(hyb, np.conj(corr_to_cf.T)), w, f"hyb-fit-{label}")
         H_tmp = np.zeros((n_orb + H_bath_star.shape[0], n_orb + H_bath_star.shape[0]), dtype=complex)
-        H_tmp[:n_orb, :n_orb] = H_dft
+        H_tmp[:n_orb, :n_orb] = corr_to_cf @ H_dft @ np.conj(corr_to_cf).T
         H_tmp[n_orb:, n_orb:] = H_bath_star
-        H_tmp[n_orb:, :n_orb] = v_star @ np.conj(Q.T)
+        H_tmp[n_orb:, :n_orb] = v_star @ np.conj(Q.T) @ np.conj(corr_to_cf).T
         H_tmp[:n_orb, n_orb:] = np.conj(H_tmp[n_orb:, :n_orb].T)
-        print("DFT hamiltonian, with baths")
-        matrix_print(H)
         with open(f"Ham-{label}{'-dc' if save_baths_and_hopping else ''}.inp", "w") as f:
             for i in range(H_tmp.shape[0]):
                 for j in range(H_tmp.shape[1]):

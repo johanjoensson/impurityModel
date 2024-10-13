@@ -255,15 +255,6 @@ def calc_Greens_function_with_offdiag(
     """
     comm = basis.comm
     n = len(tOps)
-    excited_restrictions = (
-        # None
-        basis.build_excited_restrictions(imp_change=(1, 1), val_change=(1, 0), con_change=(0, 1))
-    )
-    if verbose and excited_restrictions is not None:
-        print("Excited state restrictions:", flush=True)
-        for indices, occupations in excited_restrictions.items():
-            print(f"---> {indices} : {occupations}", flush=True)
-        print()
 
     t_mems = [{} for _ in tOps]
     h_mem = {}
@@ -292,6 +283,19 @@ def calc_Greens_function_with_offdiag(
     e0 = min(es)
     Z = np.sum(np.exp(-(es - e0) / tau))
     for psi, e in zip(psis[eigen_indices], es[eigen_indices]):
+        _, bath_rho, bath_indices = basis.build_density_matrices([psi])
+        excited_restrictions = basis.build_excited_restrictions(
+            bath_rhos={i: [rho for block_rho in bath_rho[i] for rho in block_rho] for i in bath_rho.keys()},
+            bath_indices=bath_indices,
+            imp_change=(1, 1),
+            val_change=(1, 0),
+            con_change=(0, 1),
+        )
+        if verbose and excited_restrictions is not None:
+            print("Excited state restrictions:", flush=True)
+            for indices, occupations in excited_restrictions.items():
+                print(f"---> {indices} : {occupations}", flush=True)
+            print()
         block_v = []
         local_excited_basis = set()
         t0 = time.perf_counter()
