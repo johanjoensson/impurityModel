@@ -5,13 +5,14 @@ import sys
 import pickle
 import numpy as np
 import scipy as sp
+from scipy.sparse import csr_matrix
+from scipy.sparse.csgraph import connected_components
 from impmod_ed import ffi
 from mpi4py import MPI
-from rspt2spectra import offdiagonal, orbitals, h2imp
+from rspt2spectra import offdiagonal, orbitals, h2imp, energies
 import rspt2spectra.hyb_fit as hf
 
 # hf.get_block_structure, hf.get_identical_blocks, hf.get_transposed_blocks, hf.fit_hyb
-from rspt2spectra import h2imp, energies
 from impurityModel.ed.greens_function import (
     save_Greens_function,
     get_block_structure,
@@ -92,6 +93,9 @@ class ImpModCluster:
         corr_to_cf,
         blocked,
         spin_flip_dj,
+        occ_restrict,
+        chain_restrict,
+        truncation_threshold,
     ):
         self.label = label
         self.h_dft = h_dft
@@ -108,6 +112,9 @@ class ImpModCluster:
         self.corr_to_spherical = corr_to_spherical
         self.corr_to_cf = corr_to_cf
         self.spin_flip_dj = spin_flip_dj
+        self.occ_restrict = occ_restrict
+        self.chain_restrict = chain_restrict
+        self.truncation_threshold = truncation_threshold
 
         if blocked:
             self.blocks = get_block_structure(
@@ -207,9 +214,13 @@ def parse_solver_line(solver_line):
         "reort": Reort.NONE,
         "blocked": True,
         "fit_unocc": False,
+        "weight_function": "gaussian",
         "weight": 2,
         "spin_flip_dj": False,
         "bath_geometry": "star",
+        "occ_restrict": True,
+        "chain_restrict": True,
+        "truncation_threshold": int(1e9),
     }
     if len(solver_array) > 5:
         skip_next = False
@@ -234,13 +245,24 @@ def parse_solver_line(solver_line):
                 skip_next = True
             elif arg.lower() == "no_block":
                 options["blocked"] = False
+            elif arg.lower() in {"gaussian", "rspt", "exponential"}:
+                options["weight_function"] = arg.lower()
             elif arg.lower() == "weight":
                 options["weight"] = float(solver_array[i + 1])
                 skip_next = True
             elif arg.lower() == "spin_flip_dj":
                 options["spin_flip_dj"] = True
+            elif arg.lower() == "no_restrict":
+                options["occ_restrict"] = False
+            elif arg.lower() == "no_chain_restrict":
+                options["chain_restrict"] = False
+            elif arg.lower() == "truncation_threshold":
+                options["truncation_threshold"] = int(solver_array[i + 1])
+                skip_next = True
             else:
                 raise RuntimeError(f"Unknown solver parameter {arg}.\n" f"--->Other solver params {solver_array[5:]}")
+    if options["bath_geometry"] == "star":
+        options["chain_restrict"] = False
 
     print(
         f"Nominal imp. occupation  |> {nominal_occ}\n"
@@ -252,17 +274,20 @@ def parse_solver_line(solver_line):
         f"Use block structure      |> {options['blocked']}\n"
         f"Reorthogonalizaion mode  |> {options['reort']}\n"
         f"Dense matrix size cutoff |> {options['dense_cutoff']}\n"
+        f"Fitting weight function  |> {options['weight_function']}\n"
         f"Fitting weight factor    |> {options['weight']}\n"
+        f"Occupation restrictions  |> {options['occ_restrict']}\n"
+        f"Chain occ. restrictions  |> {options['chain_restrict']}\n"
     )
     return nominal_occ, delta_occ, nBaths, options
 
 
 def get_weight_function(weight_function_name, w0, e):
-    if weight_function_name == "Gaussian":
+    if weight_function_name.lower() == "gaussian":
         return lambda w: np.exp(-e * np.abs(w - w0))
-    elif weight_function_name == "Exponential":
+    elif weight_function_name.lower() == "exponential":
         return lambda w: np.exp(-e / 2 * np.abs(w - w0) ** 2)
-    elif weight_function_name == "RSPt":
+    elif weight_function_name.lower() == "rspt":
         return lambda w: np.abs(w - w0) / (1 + e * np.abs(w - w0)) ** 3
     else:
         raise RuntimeError(f"Unknown weight function {weight_function_name}")
@@ -375,12 +400,6 @@ def run_impmod_ed(
     hyb = rotate_Greens_function(hyb, corr_to_cf)
     h_dft = rotate_matrix(h_dft, corr_to_cf)
 
-    # l = (n_orb // 2 - 1) // 2
-
-    # slater = [0] * (2 * l + 1)
-    # for i in range(l + 1):
-    #     slater[2 * i] = slater_from_rspt[i]
-
     stdout_save = sys.stdout
     if rank == 0:
         sys.stdout = open(f"impurityModel-{label.strip()}{'-dc' if rspt_dc_flag == 1 else ''}.out", "w")
@@ -403,6 +422,7 @@ def run_impmod_ed(
         w,
         eim,
         gamma=0.001,
+        weight_function=options["weight_function"],
         exp_weight=options["weight"],
         imag_only=False,
         valence_bath_only=not options["fit_unocc"],
@@ -413,18 +433,6 @@ def run_impmod_ed(
         comm=comm,
     )
     if rank == 0:
-        # print(f"Hamiltonian operator:\n{h_op}", flush=True)
-        # print(" " * 18, end="")
-        # for j in range(h_dft.shape[0] + H_star_bath.shape[0]):
-        #     print(f"{j:^18d}   ", end="")
-        # print()
-        # for i in range(h_dft.shape[0] + H_star_bath.shape[0]):
-        #     print(f"{i:^15d}:  ", end="")
-        #     for j in range(h_dft.shape[0] + H_star_bath.shape[0]):
-        #         amp = h_op.get(((i, "c"), (j, "a")), 0)
-        #         print(f"{amp.real: 5f}{amp.imag:+5f}i  ", end="")
-        #     print()
-        # print()
         with open(f"Ham-op-{label.strip()}.pickle", "wb") as f:
             pickle.dump(h_op, f)
 
@@ -492,6 +500,9 @@ def run_impmod_ed(
         corr_to_cf=corr_to_cf,
         blocked=options["blocked"],
         spin_flip_dj=options["spin_flip_dj"],
+        occ_restrict=options["occ_restrict"],
+        chain_restrict=options["chain_restrict"],
+        truncation_threshold=options["truncation_threshold"],
     )
 
     from impurityModel.ed import selfenergy
@@ -646,10 +657,6 @@ def get_ed_h0(
     H_bath_star, v_star = build_full_bath([np.diag(eb) for eb in ebs_star], vs_star, block_structure)
 
     if verbose:
-        fitted_hyb = np.moveaxis(offdiagonal.get_hyb(w + eim * 1j, np.diag(H_bath_star), v_star @ np.conj(Q.T)), -1, 0)
-        save_Greens_function(rotate_Greens_function(fitted_hyb, np.conj(corr_to_cf.T)), w, f"{label}-hyb-fit")
-
-    if verbose:
         print(f"Star bath energies:")
         for eb in ebs_star:
             print(eb)
@@ -749,11 +756,14 @@ def get_ed_h0(
             )
             save_Greens_function(rotate_Greens_function(hyb_star, np.conj(corr_to_cf.T)), w, f"hyb-star-fit-{label}")
             save_Greens_function(rotate_Greens_function(hyb, np.conj(corr_to_cf.T)), w, f"hyb-fit-{label}")
+
         H_tmp = np.zeros((n_orb + H_bath_star.shape[0], n_orb + H_bath_star.shape[0]), dtype=complex)
         H_tmp[:n_orb, :n_orb] = corr_to_cf @ H_dft @ np.conj(corr_to_cf).T
         H_tmp[n_orb:, n_orb:] = H_bath_star
         H_tmp[n_orb:, :n_orb] = v_star @ np.conj(Q.T) @ np.conj(corr_to_cf).T
         H_tmp[:n_orb, n_orb:] = np.conj(H_tmp[n_orb:, :n_orb].T)
+        print("DFT hamiltonian, with star geometry baths, in correlated basis")
+        matrix_print(H_tmp)
         with open(f"Ham-{label}{'-dc' if save_baths_and_hopping else ''}.inp", "w") as f:
             for i in range(H_tmp.shape[0]):
                 for j in range(H_tmp.shape[1]):
@@ -793,8 +803,6 @@ def get_ed_h0(
     unoccupied_indices = {i for block in unoccupied_indices for i in block}
 
     imp_bath_mask = np.abs(H) > 1e-6
-    from scipy.sparse import csr_matrix
-    from scipy.sparse.csgraph import connected_components
 
     n_blocks, block_idxs = connected_components(csgraph=csr_matrix(imp_bath_mask), directed=False, return_labels=True)
     blocks = [[] for _ in range(n_blocks)]
@@ -807,7 +815,6 @@ def get_ed_h0(
         zero_baths = [i for i in bath_block if i in zero_indices]
         empty_baths = [i for i in bath_block if i in unoccupied_indices]
         imp_bath_blocks[block_i] = (imp_orbs, occ_baths, zero_baths, empty_baths)
-    print(f"{imp_bath_blocks=}")
 
     h_op = finite.matrixToIOp(H)
     return h_op, imp_bath_blocks

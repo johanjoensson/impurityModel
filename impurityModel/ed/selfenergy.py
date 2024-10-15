@@ -64,7 +64,7 @@ def fixed_peak_dc(h0_op, dc_struct, rank, verbose, dense_cutoff):
             delta_conduction_occ=delta_conduction_occ,
             delta_impurity_occ=delta_impurity_occ,
             nominal_impurity_occ=Np,
-            truncation_threshold=1e9,
+            truncation_threshold=1e5,
             verbose=verbose,
             comm=MPI.COMM_WORLD,
             spin_flip_dj=dc_struct.spin_flip_dj,
@@ -76,7 +76,7 @@ def fixed_peak_dc(h0_op, dc_struct, rank, verbose, dense_cutoff):
             delta_conduction_occ=delta_conduction_occ,
             delta_impurity_occ=delta_impurity_occ,
             nominal_impurity_occ=N0,
-            truncation_threshold=1e9,
+            truncation_threshold=1e5,
             verbose=verbose,
             comm=MPI.COMM_WORLD,
             spin_flip_dj=dc_struct.spin_flip_dj,
@@ -89,7 +89,7 @@ def fixed_peak_dc(h0_op, dc_struct, rank, verbose, dense_cutoff):
             delta_conduction_occ=delta_conduction_occ,
             delta_impurity_occ=delta_impurity_occ,
             nominal_impurity_occ=N0,
-            truncation_threshold=1e9,
+            truncation_threshold=1e5,
             verbose=verbose,
             comm=MPI.COMM_WORLD,
             spin_flip_dj=dc_struct.spin_flip_dj,
@@ -101,7 +101,7 @@ def fixed_peak_dc(h0_op, dc_struct, rank, verbose, dense_cutoff):
             delta_conduction_occ=delta_conduction_occ,
             delta_impurity_occ=delta_impurity_occ,
             nominal_impurity_occ=Nm,
-            truncation_threshold=1e9,
+            truncation_threshold=1e5,
             verbose=verbose,
             comm=MPI.COMM_WORLD,
             spin_flip_dj=dc_struct.spin_flip_dj,
@@ -202,7 +202,18 @@ def matrix_print(matrix: np.ndarray, label: str = None) -> None:
 
 
 def calc_occ_e(
-    h_op, N0, N_imp, bath_states, delta_imp, delta_val, delta_con, spin_flip_dj, dense_cutoff, comm, verbose
+    h_op,
+    N0,
+    N_imp,
+    bath_states,
+    delta_imp,
+    delta_val,
+    delta_con,
+    spin_flip_dj,
+    dense_cutoff,
+    comm,
+    verbose,
+    truncation_threshold,
 ):
     basis = CIPSI_Basis(
         impurity_orbitals=N_imp,
@@ -212,8 +223,8 @@ def calc_occ_e(
         delta_valence_occ=delta_val,
         delta_conduction_occ=delta_con,
         nominal_impurity_occ=N0,
-        truncation_threshold=1e9,
-        verbose=True,  # verbose,
+        truncation_threshold=truncation_threshold,
+        verbose=verbose,
         spin_flip_dj=spin_flip_dj,
         comm=comm,
     )
@@ -230,7 +241,19 @@ def calc_occ_e(
     return e_trial[0], basis, h_dict
 
 
-def find_gs(h_op, N0, delta_occ, bath_states, impurity_orbitals, rank, verbose, dense_cutoff, spin_flip_dj, comm):
+def find_gs(
+    h_op,
+    N0,
+    delta_occ,
+    bath_states,
+    impurity_orbitals,
+    rank,
+    verbose,
+    dense_cutoff,
+    spin_flip_dj,
+    comm,
+    truncation_threshold,
+):
     """
     Find the occupation corresponding to the lowest energy, compare N0 - 1, N0 and N0 + 1
     Returns:
@@ -256,6 +279,7 @@ def find_gs(h_op, N0, delta_occ, bath_states, impurity_orbitals, rank, verbose, 
             dense_cutoff,
             comm=comm,
             verbose=False,
+            truncation_threshold=truncation_threshold,
         )
         if e_trial < e_gs:
             e_gs = e_trial
@@ -280,6 +304,7 @@ def find_gs(h_op, N0, delta_occ, bath_states, impurity_orbitals, rank, verbose, 
             dense_cutoff,
             comm=comm,
             verbose=False,
+            truncation_threshold=truncation_threshold,
         )
         if e_trial >= e_gs:
             break
@@ -335,6 +360,9 @@ def run(cluster, h0, iw, w, delta, tau, verbosity, reort, dense_cutoff, comm):
         dense_cutoff=dense_cutoff,
         spin_flip_dj=cluster.spin_flip_dj,
         comm=comm,
+        occ_restrict=cluster.occ_restrict,
+        chain_restrict=cluster.chain_restrict,
+        truncation_threshold=cluster.truncation_threshold,
     )
 
     if comm.rank == 0:
@@ -370,6 +398,9 @@ def calc_selfenergy(
     dense_cutoff,
     spin_flip_dj,
     comm,
+    occ_restrict,
+    chain_restrict,
+    truncation_threshold,
 ):
     """
     Calculate the self energy of the impurity.
@@ -401,6 +432,7 @@ def calc_selfenergy(
         dense_cutoff=dense_cutoff,
         spin_flip_dj=spin_flip_dj,
         comm=comm,
+        truncation_threshold=truncation_threshold,
     )
     delta_imp_occ, delta_val_occ, delta_con_occ = delta_occ
     restrictions = basis.restrictions
@@ -424,9 +456,9 @@ def calc_selfenergy(
         k=total_impurity_orbitals[0],
         eigenValueTol=0,
     )
-    psis = basis.build_state(psis_dense.T, slaterWeightMin=np.finfo(float).eps)
-    basis.clear()
-    basis.add_states(set(state for psi in psis for state in psi))
+    psis = basis.build_state(psis_dense.T)
+    # basis.clear()
+    # basis.add_states(set(state for psi in psis for state in psi))
     if verbosity >= 1:
         print(f"{len(h)} processes in the Hamiltonian.")
         print(f"#basis states = {len(basis)}")
@@ -469,10 +501,10 @@ def calc_selfenergy(
         print("Ground state bath occupation statistics:", flush=True)
         for i in basis.impurity_orbitals.keys():
             print(f"orbital set {i}:")
-            print("Impuity density matrix:")
+            print("Impuity density matrices:")
             for rho in thermal_imp_rhos[i]:
                 matrix_print(rho, "")
-            print("Bath density matrix:")
+            print("Bath density matrices:")
             for rho in thermal_bath_rhos[i]:
                 matrix_print(rho, "")
         if rank == 0:
@@ -524,6 +556,8 @@ def calc_selfenergy(
         blocks=blocks,
         verbose=verbosity >= 2,
         reort=reort,
+        occ_restrict=occ_restrict,
+        chain_restrict=chain_restrict,
     )
     if gs_matsubara is not None:
         try:
@@ -583,7 +617,6 @@ def calc_selfenergy(
         print("Calculating sig_static.")
     if rank == 0:
         sigma_static = get_Sigma_static(basis, u4, es, local_psis, tau)
-        # sigma_static = get_Sigma_static(total_impurity_orbitals, sum_bath_states, u4, es, local_psis, tau)
     else:
         sigma_static = None
     if rank == 0:
@@ -665,11 +698,6 @@ def hyb(ws, v, hbath, delta):
         (ws + 1j * delta)[:, None, None] * np.identity(hbath.shape[0], dtype=complex)[None, :, :] - hbath[None, :, :],
         v[None, :, :],
     )
-    # n_imp = v.shape[1]
-    # hyb = np.zeros((n_imp, n_imp, len(ws)), dtype=complex)
-    # for bi, eb in enumerate(np.diagonal(hbath)):
-    #     hyb += np.outer(np.conj(v[bi]), v[bi])[:, :, np.newaxis] * 1 / (ws + 1j * delta - eb)
-    # return np.moveaxis(hyb, -1, 0)
 
 
 def get_sigma(

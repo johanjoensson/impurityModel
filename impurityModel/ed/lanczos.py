@@ -1,5 +1,6 @@
 import itertools
 from enum import Enum
+from heapq import merge
 from time import perf_counter
 import numpy as np
 import scipy as sp
@@ -383,7 +384,8 @@ def block_lanczos(
     rank = basis.comm.rank if mpi else 0
     build_krylov_basis = reort != Reort.NONE
     n = len(psi0)
-    N0 = basis.size
+    N_old = basis.size
+    N_max = basis.size
     if mpi:
         psi_len = basis.comm.allreduce(sum(len(psi) for psi in psi0), op=MPI.SUM)
     else:
@@ -436,27 +438,39 @@ def block_lanczos(
         ]
         t_apply += perf_counter() - t_tmp
         t_tmp = perf_counter()
-        N0 = basis.size
-        basis.clear()
-        basis.add_states(
-            itertools.chain(
-                (state for psis in q for psi in psis for state in psi),
-                (state for psi in wp for state in psi if abs(psi[state]) ** 2 >= slaterWeightMin),
+        basis.add_states([state for psi in wp for state in psi.keys() if abs(psi[state]) > slaterWeightMin])
+
+        if basis.size > int(1.5 * N_old):
+            basis.clear()
+            basis.add_states(
+                itertools.chain(
+                    (state for psis in q for psi in psis for state in psi if abs(psi[state]) > slaterWeightMin),
+                    (state for psi in wp for state in psi if abs(psi[state]) > slaterWeightMin),
+                )
             )
-        )
-        t_add += perf_counter() - t_tmp
-        t_tmp = perf_counter()
+            N_old = basis.size
+
+        if basis.size > basis.truncation_threshold:
+            print(f"Basis size {basis.size} > {basis.truncation_threshold}")
+            print("truncating basis")
+            basis.clear()
+            local_states = {}
+            for state, amp in ((state, amp) for qp in itertools.chain(q[0], q[1], wp) for state, amp in qp.items()):
+                local_states[state] = max(abs(amp), local_states.get(state, 0))
+            local_states = sorted(local_states.items(), key=lambda x: abs(x[1]), reverse=True)
+            all_local_states = basis.comm.allgather(local_states)
+            all_states = [state for state, _ in merge(*all_local_states, key=lambda x: abs(x[1]), reverse=True)]
+            step = int(basis.truncation_threshold) // basis.comm.size
+            start = basis.comm.rank * step
+            basis.add_states(all_states[start : start + step])
+            print(f"After truncation basis contains {basis.size} elements", flush=True)
+        N_max = max(N_max, basis.size)
         tmp = basis.redistribute_psis(itertools.chain(q[0], q[1], wp))
         q[0] = tmp[0:n]
         q[1] = tmp[n : 2 * n]
         wp = tmp[2 * n : 3 * n]
-        if N0 > basis.truncation_threshold:
-            local_states = {}
-            for state, amp in itertools.chain(q[0].items(), q[1].items(), wp.items()):
-                local_states[state] = max(abs(amp), local_states.get(state, 0))
-            local_states = sorted(local_states.items(), key=lambda x: abs(x[1]))
-            basis.clear()
-            basis.add_states(state for state, _ in local_states[: basis.truncation_threshold // basis.comm.size])
+        t_add += perf_counter() - t_tmp
+        t_tmp = perf_counter()
         t_redist += perf_counter() - t_tmp
         t_tmp = perf_counter()
         psi = np.empty((len(basis.local_basis), n), dtype=complex)
@@ -528,22 +542,6 @@ def block_lanczos(
             else:
                 tmp = np.conj(Qm.T) @ psip
             psip -= Qm @ tmp
-            # if mpi:
-            #     basis.comm.Gatherv(psip, [qip, send_counts, offsets, MPI.C_DOUBLE_COMPLEX], root=0)
-            # else:
-            #     qip = psip
-            # t_vec += perf_counter() - t_tmp
-            # if rank == 0:
-            #     t_tmp = perf_counter()
-            #     qip, betas[-1] = qr_decomp(qip)
-            #     _, columns = qip.shape
-
-            # if mpi:
-            #     basis.comm.Bcast(betas[it], root=0)
-            #     columns = basis.comm.bcast(columns if rank == 0 else None)
-            #     request = basis.comm.Iscatterv([qip, send_counts, offsets, MPI.C_DOUBLE_COMPLEX], psip.T, root=0)
-            # else:
-            #     psip = qip
         qip = np.empty((basis.size, n), dtype=complex) if rank == 0 else None
         if mpi:
             basis.comm.Gatherv(psip, [qip, send_counts, offsets, MPI.C_DOUBLE_COMPLEX], root=0)
@@ -580,7 +578,7 @@ def block_lanczos(
         if mpi:
             request.Wait()
         for j, (i, state) in itertools.product(range(columns), enumerate(basis.local_basis)):
-            if abs(psip[i, j]) ** 2 >= slaterWeightMin:
+            if abs(psip[i, j]) >= slaterWeightMin:
                 q[1][j][state] = psip[i, j]
 
         t_state += perf_counter() - t_tmp
@@ -589,6 +587,7 @@ def block_lanczos(
         it += 1
     if verbose:
         print(f"Breaking after iteration {it}, blocksize = {n}")
+        print(f"===> Maximum basis size: {N_max} Slater determinants")
         print(f"===> Applying the hamiltonian took {t_apply:.4f} seconds")
         print(f"===> Adding states took {t_add:.4f} seconds")
         print(f"===> Redistributing states took {t_redist:.4f} seconds")
@@ -599,103 +598,3 @@ def block_lanczos(
         print(f"===> Building states took {t_state:.4f} seconds")
         print(f"=> time(get_block_Lanczons_matrices) = {perf_counter() - t_tot:.4f} seconds.", flush=True)
     return alphas, betas, Q if build_krylov_basis else None
-
-
-# def block_Lanczos_matrices_petsc(
-#     psi0: np.ndarray,
-#     h,
-#     reort_mode,
-#     converged: Callable[[np.ndarray, np.ndarray], bool],
-#     h_local: bool = False,
-#     verbose: bool = True,
-#     max_krylov_size: int = None,
-#     build_krylov_basis: bool = True,
-#     comm=None,
-# ):
-#     if max_krylov_size is None:
-#         krylovSize = h.shape[0]
-#     else:
-#         krylovSize = min(h.shape[0], max_krylov_size)
-#     eps = np.finfo("float").eps
-#     t0 = perf_counter()
-
-#     t_reorth = 0.0
-#     t_estimate = 0.0
-#     t_matmul = 0.0
-#     t_conv = 0.0
-#     t_qr = 0.0
-
-#     N = h.shape[0]
-#     n = psi0.shape[1] if len(psi0.shape) == 2 else 1
-
-#     alphas = np.empty((0, n, n), dtype=complex)
-#     betas = np.empty((0, n, n), dtype=complex)
-#     betah = PETSc.Mat.create(comm=comm)
-#     betah.setSizes([n, n])
-#     beta.assemble()
-#     zero = PETSc.Mat.create(comm=comm)
-#     zero.setSizes([N, n])
-#     zero.assemble()
-#     q = [zero, psi0]
-
-#     if h_local:
-#         done = False
-#         # Run at least 1 iteration (to generate $\alpha_0$).
-#         # We can also not generate more than N Lanczos vectors, meaning we can
-#         # take at most N/n steps in total
-#         for i in range(int(np.ceil(krylovSize / n))):
-#             # Update to PRO block Lanczos!!
-#             wp = h @ q[1]
-#             wph = q[1].duplicate(copy=False)
-#             wph.hermitianTranspose()
-#             alpha = wph @ wp
-#             # alphas = np.append(alphas, [np.conj(q[1].T) @ wp], axis=0)
-#             alphas = np.append(alphas, np.zeros((1, n, n), dtype=complex), axis=0)
-#             betas = np.append(betas, np.zeros((1, n, n), dtype=complex), axis=0)
-#             start, stop = alpha.getOwnershipRange()
-#             for row in range(start, stop):
-#                 cols, vals = alpha.getRow(row)
-#                 for col, val in zip(cols, vals):
-#                     alphas[-1, row, col] = val
-#             tmp = alphas[-1].copy()
-#             comm.Allreduce(memoryview[alphas[-1]], alphas[-1], op=MPI.SUM)
-#             w = wp - q[1] @ alpha - q[0] @ betah
-#             q[0] = q[1]
-#             start, stop = w.getOwnershipRange()
-#             w_loc = np.zeros((stop - start, n), dtype=complex)
-#             for row in range(start, stop):
-#                 cols, vals = w.getRow(row)
-#                 for col, val in zip(cols, vals):
-#                     w_loc[row, col] = val
-#             rows = np.empty((comm.size), dtype=int)
-#             comm.Gather(np.array([stop - start]), rows)
-#             w_full = np.empty((N, n), dtype=complex) if comm.rank == 0 else None
-#             counts = rows * n
-#             offsets = np.array([sum(counts[:r]) for r in range(comm.size)])
-#             comm.Gatherv(w_loc, [w_full, counts, offsets, MPI.C_DOUBLE_COMPLEX])
-#             if comm.rank == 0:
-#                 w_full, betas[i] = sp.linalg.qr(w_full, mode="economic", overwrite_a=True, check_finite=False)
-#             comm.Bcast(betas[i])
-#             for row, col in itertools.product(range(n), range(n)):
-#                 betah[col, row] = np.conj(betas[i, row, col])
-#             betah.assemble()
-#             comm.Scatterv([w_full, counts, offsets, MPI.C_DOUBLE_COMPLEX], w_loc)
-#             for row in range(start, stop):
-#                 cols, vals = w.getRow(row)
-#                 for col, _ in zip(cols, vals):
-#                     q[1][row, col] = w_loc[row, col]
-#             q[1].assemble()
-#             delta = converged(alphas, betas)
-#             if delta < 1e-6:
-#                 break
-
-#     print(f"Breaking after iteration {i}, blocksize = {n}")
-#     if verbose:
-#         print(f"===> Matrix vector multiplication took {t_matmul:.4f} seconds")
-#         print(f"===> Estimating overlap took {t_estimate:.4f} seconds")
-#         print(f"===> Estimating convergence took {t_conv:.4f} seconds")
-#         print(f"===> QR factorization took {t_qr:.4f} seconds")
-#         print(f"===> Reorthogonalized {n_reort} times")
-#         print(f"===> Reorthogonalizing took {t_reorth:.4f} seconds")
-#         print(f"=> time(get_block_Lanczons_matrices) = {perf_counter() - t0:.4f} seconds.")
-#     return alphas, betas, Q.vectors[: len(Q)].T if Q is not None else None

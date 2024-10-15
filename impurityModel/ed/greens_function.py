@@ -88,6 +88,8 @@ def get_Greens_function(
     blocks,
     verbose,
     reort,
+    occ_restrict=True,
+    chain_restrict=False,
 ):
     """
     Calculate interacting Greens function.
@@ -123,8 +125,10 @@ def get_Greens_function(
             omega_mesh if omega_mesh is not None else None,
             delta,
             reort=reort,
-            slaterWeightMin=np.finfo(float).eps,
+            slaterWeightMin=1e-9,  # np.finfo(float).eps,
             verbose=verbose,
+            occ_restrict=occ_restrict,
+            chain_restrict=chain_restrict,
         )
         gsPS_matsubara, gsPS_realaxis = calc_Greens_function_with_offdiag(
             hOp,
@@ -136,9 +140,11 @@ def get_Greens_function(
             -matsubara_mesh if matsubara_mesh is not None else None,
             -omega_mesh if omega_mesh is not None else None,
             -delta,
-            slaterWeightMin=np.finfo(float).eps,
+            slaterWeightMin=1e-9,  # np.finfo(float).eps,
             verbose=verbose,
             reort=reort,
+            occ_restrict=occ_restrict,
+            chain_restrict=chain_restrict,
         )
 
         if matsubara_mesh is not None and block_basis.comm.rank == 0:
@@ -210,51 +216,74 @@ def calc_Greens_function_with_offdiag(
     reort,
     slaterWeightMin=0,
     verbose=True,
+    occ_restrict=True,
+    chain_restrict=False,
 ):
     r"""
-    Return Green's function for states with low enough energy.
+        Return Green's function for states with low enough energy.
 
-    For states :math:`|psi \rangle`, calculate:
+        For states :math:`|psi \rangle`, calculate:
 
-    :math:`g(w+1j*delta) =
-    = \langle psi| tOp^\dagger ((w+1j*delta+e)*\hat{1} - hOp)^{-1} tOp
-    |psi \rangle`,
+        :math:`g(w+1j*delta) =
+        = \langle psi| tOp^\dagger ((w+1j*delta+e)*\hat{1} - hOp)^{-1} tOp
+        |psi \rangle`,
 
-    where :math:`e = \langle psi| hOp |psi \rangle`
+        where :math:`e = \langle psi| hOp |psi \rangle`
+    ,
+        Lanczos algorithm is used.
 
-    Lanczos algorithm is used.
-
-    Parameters
-    ----------
-    n_spin_orbitals : int
-        Total number of spin-orbitals in the system.
-    hOp : dict
-        Operator
-    tOps : list
-        List of dict operators
-    psis : list
-        List of Multi state dictionaries
-    es : list
-        Total energies
-    w : list
-        Real axis energy mesh
-    delta : float
-        Deviation from real axis.
-        Broadening/resolution parameter.
-    restrictions : dict
-        Restriction the occupation of generated
-        product states.
-    krylovSize : int
-        Size of the Krylov space
-    slaterWeightMin : float
-        Restrict the number of product states by
-        looking at `|amplitudes|^2`.
-    parallelization_mode : str
-            "eigen_states" or "H_build".
+        Parameters
+        ----------
+        n_spin_orbitals : int
+            Total number of spin-orbitals in the system.
+        hOp : dict
+            Operator
+        tOps : list
+            List of dict operators
+        psis : list
+            List of Multi state dictionaries
+        es : list
+            Total energies
+        w : list
+            Real axis energy mesh
+        delta : float
+            Deviation from real axis.
+            Broadening/resolution parameter.
+        restrictions : dict
+            Restriction the occupation of generated
+            product states.
+        krylovSize : int
+            Size of the Krylov space
+        slaterWeightMin : float
+            Restrict the number of product states by
+            looking at `|amplitudes|^2`.
+        parallelization_mode : str
+                "eigen_states" or "H_build".
 
     """
     comm = basis.comm
     n = len(tOps)
+
+    if chain_restrict:
+        _, bath_rhos, bath_indices = basis.build_density_matrices(psis)
+        thermal_bath_rhos = {
+            i: [finite.thermal_average_scale_indep(es, block_rhos, tau) for block_rhos in bath_rhos[i]]
+            for i in basis.impurity_orbitals.keys()
+        }
+    else:
+        thermal_bath_rhos = None
+        bath_indices = None
+
+    if occ_restrict or chain_restrict:
+        excited_restrictions = basis.build_excited_restrictions(
+            bath_rhos=thermal_bath_rhos,
+            bath_indices=bath_indices,
+            imp_change=(1, 1),
+            val_change=(1, 0),
+            con_change=(0, 1),
+        )
+    else:
+        excited_restrictions = None
 
     t_mems = [{} for _ in tOps]
     h_mem = {}
@@ -283,14 +312,15 @@ def calc_Greens_function_with_offdiag(
     e0 = min(es)
     Z = np.sum(np.exp(-(es - e0) / tau))
     for psi, e in zip(psis[eigen_indices], es[eigen_indices]):
-        _, bath_rho, bath_indices = basis.build_density_matrices([psi])
-        excited_restrictions = basis.build_excited_restrictions(
-            bath_rhos={i: [rho for block_rho in bath_rho[i] for rho in block_rho] for i in bath_rho.keys()},
-            bath_indices=bath_indices,
-            imp_change=(1, 1),
-            val_change=(1, 0),
-            con_change=(0, 1),
-        )
+        # _, bath_rho, bath_indices = basis.build_density_matrices([psi])
+        # excited_restrictions = None
+        # excited_restrictions = basis.build_excited_restrictions(
+        # bath_rhos={i: [rho for block_rho in bath_rho[i] for rho in block_rho] for i in bath_rho.keys()},
+        # bath_indices=bath_indices,
+        # imp_change=(1, 1),
+        # val_change=(1, 0),
+        # con_change=(0, 1),
+        # )
         if verbose and excited_restrictions is not None:
             print("Excited state restrictions:", flush=True)
             for indices, occupations in excited_restrictions.items():
@@ -304,7 +334,7 @@ def calc_Greens_function_with_offdiag(
                 eigen_basis.num_spin_orbitals,
                 tOp,
                 psi,
-                slaterWeightMin=slaterWeightMin,
+                slaterWeightMin=0,
                 restrictions=None,
                 opResult=t_mems[i_tOp],
             )
@@ -325,21 +355,21 @@ def calc_Greens_function_with_offdiag(
 
         if verbose:
             print(f"time(build excited state basis) = {time.perf_counter() - t0}")
-        gs_matsubara_block_i, gs_realaxis_block_i = block_Green_freq(
-            # gs_matsubara_block_i, gs_realaxis_block_i = block_Green(
-            n_spin_orbitals=excited_basis.num_spin_orbitals,
-            hOp=hOp,
-            psi_arr=block_v,
-            basis=excited_basis,
-            e=e,
-            iws=iw,
-            ws=w,
-            delta=delta,
-            h_mem=h_mem,
-            slaterWeightMin=slaterWeightMin,
-            verbose=verbose,
-            reort=reort,
-        )
+            # gs_matsubara_block_i, gs_realaxis_block_i = block_Green_freq(
+            gs_matsubara_block_i, gs_realaxis_block_i = block_Green(
+                n_spin_orbitals=excited_basis.num_spin_orbitals,
+                hOp=hOp,
+                psi_arr=block_v,
+                basis=excited_basis,
+                e=e,
+                iws=iw,
+                ws=w,
+                delta=delta,
+                h_mem=h_mem,
+                slaterWeightMin=slaterWeightMin,
+                verbose=verbose,
+                reort=reort,
+            )
         if excited_basis.comm.rank == 0:
             if iw is not None:
                 gs_matsubara_block += np.exp(-(e - e0) / tau) / Z * gs_matsubara_block_i
@@ -569,7 +599,7 @@ def block_Green(
     )
     psi = [{} for _ in range(columns)]
     for j, (i, state) in itertools.product(range(columns), enumerate(basis.local_basis)):
-        if abs(psi_start[i, j]) ** 2 > slaterWeightMin:
+        if abs(psi_start[i, j]) > slaterWeightMin:
             psi[j][state] = psi_start[i, j]
     if verbose:
         print(f"time(set up psi_start) = {time.perf_counter() - t0}")
@@ -700,7 +730,7 @@ def block_Green_freq(
     )
     psi = [{} for _ in range(columns)]
     for j, (i, state) in itertools.product(range(columns), enumerate(basis.local_basis)):
-        if abs(psi_start[i, j]) ** 2 > slaterWeightMin:
+        if abs(psi_start[i, j]) > slaterWeightMin:
             psi[j][state] = psi_start[i, j]
     if verbose:
         print(f"time(set up psi_start) = {time.perf_counter() - t0}")

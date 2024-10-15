@@ -622,7 +622,8 @@ class Basis:
             itertools.chain.from_iterable(received_states),
             itertools.chain.from_iterable(received_amps),
         ):
-            res[n][state] = amp + res[n].get(state, 0)
+            if state in self.local_basis:
+                res[n][state] = amp + res[n].get(state, 0)
         return res
 
     def _generate_spin_flipped_determinants(self, determinants):
