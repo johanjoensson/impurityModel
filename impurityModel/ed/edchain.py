@@ -120,7 +120,7 @@ def haverkort_chain(eloc, tns, ens):
 
     w, v = np.linalg.eigh(H)
 
-    n = min(sum(w < 0), hsize - 1)
+    n = min(sum(w < 0) - 1, hsize - 1)
 
     prevtocc = v[:, n - 1 :: -1].transpose()
     prevtunocc = v[:, n:].transpose()
