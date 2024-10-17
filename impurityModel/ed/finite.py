@@ -14,6 +14,7 @@ import time
 from multiprocessing import Process, Queue, current_process, freeze_support
 from concurrent.futures import ThreadPoolExecutor, ProcessPoolExecutor, as_completed
 from os import environ
+import sys
 
 try:
     from petsc4py import PETSc
@@ -216,7 +217,7 @@ def eigensystem_new(
             mask = es - np.min(es) <= e_max
             dk += k
             v0_guess = vecs[:, mask][:, 0]
-    elif isinstance(h_local, PETSc.Mat):
+    elif "petsc4py" in sys.modules and isinstance(h_local, PETSc.Mat):
         dk = 1
         es = []
         mask = [True]

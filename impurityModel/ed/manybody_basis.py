@@ -867,6 +867,8 @@ class Basis:
         return sp.sparse.csc_matrix((values, (rows, columns)), shape=(self.size, self.size), dtype=complex)
 
     def _build_PETSc_vector(self, psis: list[dict], dtype=complex):
+        if "petsc4py" not in sys.modules:
+            return None
         vs = PETSc.Mat().create(comm=self.comm)
         vs.setSizes([len(psis), self.size])
         row_dict = self._index_dict
@@ -898,6 +900,8 @@ class Basis:
         Get the operator as a sparse matrix in the current basis.
         The sparse matrix is distributed over all ranks.
         """
+        if "petsc4py" not in sys.modules:
+            return None
 
         M = PETSc.Mat().create(comm=self.comm)
         M.setSizes([self.size, self.size])

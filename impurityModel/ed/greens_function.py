@@ -355,8 +355,8 @@ def calc_Greens_function_with_offdiag(
 
         if verbose:
             print(f"time(build excited state basis) = {time.perf_counter() - t0}")
-            # gs_matsubara_block_i, gs_realaxis_block_i = block_Green_freq(
-        gs_matsubara_block_i, gs_realaxis_block_i = block_Green(
+        gs_matsubara_block_i, gs_realaxis_block_i = block_Green_freq(
+        # gs_matsubara_block_i, gs_realaxis_block_i = block_Green(
             n_spin_orbitals=excited_basis.num_spin_orbitals,
             hOp=hOp,
             psi_arr=block_v,
