@@ -651,9 +651,9 @@ def get_ed_h0(
         ebss[:] = ebss[sorted_indices]
         vss[:] = vss[sorted_indices]
     assert len(vs_star) == len(block_structure.inequivalent_blocks), "Number of inequivalent blocks is inconsitent"
-    n_occ_block = [np.sum(eb < -1e-4) for i, eb in enumerate(ebs_star)]
-    n_zero_block = [np.sum(np.abs(eb) <= 1e-4) for i, eb in enumerate(ebs_star)]
-    n_empty_block = [np.sum(eb > 1e-4) for i, eb in enumerate(ebs_star)]
+    n_occ_block = [np.sum(eb < -1e-2) for i, eb in enumerate(ebs_star)]
+    n_zero_block = [np.sum(np.abs(eb) <= 1e-2) for i, eb in enumerate(ebs_star)]
+    n_empty_block = [np.sum(eb > 1e-2) for i, eb in enumerate(ebs_star)]
     H_bath_star, v_star = build_full_bath([np.diag(eb) for eb in ebs_star], vs_star, block_structure)
 
     if verbose:
