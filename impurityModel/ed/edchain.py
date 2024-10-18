@@ -120,7 +120,8 @@ def haverkort_chain(eloc, tns, ens):
 
     w, v = np.linalg.eigh(H)
 
-    n = min(sum(w < 0) - 1, hsize - 1)
+    n = np.argmin(np.abs(w))
+    # n = min(sum(w < 0) - 1, hsize - 1)
 
     prevtocc = v[:, n - 1 :: -1].transpose()
     prevtunocc = v[:, n:].transpose()
@@ -132,14 +133,10 @@ def haverkort_chain(eloc, tns, ens):
     vtot[:, n:hsize] = vtunocc.transpose()
 
     # # Get the tridiagonal terms
-    # tns2 = np.zeros(hsize - 1, dtype=complex)
     for i in range(hsize - 1):
         tmp = np.conj(vtot[:, i].T) @ H @ vtot[:, i + 1]
         if np.real(tmp) < 0:  # Adjust the phase of the eigenvectors
             vtot[:, i + 1] = -vtot[:, i + 1]
-    # ens2 = np.zeros(hsize, dtype=complex)
-    # for i in range(hsize):
-    #     ens2[i] = np.conj(vtot[:, i].T) @ H @ vtot[:, i]
 
     # Get the final transform to extract the impurity orbital (It goes into element n-1)
     cs = vtot[0, n - 1 : n + 1]
