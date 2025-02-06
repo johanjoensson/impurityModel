@@ -1097,7 +1097,7 @@ def test_simple_state():
 
 @pytest.mark.mpi
 def test_simple_state_mpi():
-    states = [b"\x00\x1a\x2b", b"\xff\x00\x1a"]
+    states = [b"\x2b", b"\x1a"]
     basis = Basis(
         impurity_orbitals={0: [list(range(5))]},
         bath_states=({0: [[]]}, {0: [[]]}, {0: [[]]}),
@@ -1106,12 +1106,17 @@ def test_simple_state_mpi():
         comm=MPI.COMM_WORLD,
     )
 
-    v = np.array([[1.0, -2.5]])
+    # v = np.array([[1.0, -2.5]])
+    v = np.zeros([1,len(states)])
+    v[0, basis.index(states[0])] = 1.0
+    v[0, basis.index(states[1])] = 2.5
     s = basis.build_state(v)
-    s_exact = [{states[0]: v[0, 0], states[1]: v[0, 1]}]
+    s_exact = [{states[0]: v[0, basis.index(states[0])], states[1]: v[0, basis.index(states[1])]}]
 
+    print(f"{basis[0]=}, {basis[1]=}")
+    print(f"{s=}")
     for i in range(len(s)):
-        assert all(s[i][state] == s_exact[i][state] for state in s[i])
+        assert all(s[i][state] == s_exact[i][state] for state in basis.local_basis), f"{s=} {s_exact=}"
 
 
 def test_state_mpi():
