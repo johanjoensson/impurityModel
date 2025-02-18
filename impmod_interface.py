@@ -481,9 +481,9 @@ def run_impmod_ed(
 
     cluster = ImpModCluster(
         label=label.strip(),
-        h_dft=h_dft,
-        hyb=hyb,
-        u4=u4,
+        h_dft=h_dft.view(),
+        hyb=hyb.view(),
+        u4=u4.view(),
         impurity_orbitals={0: [block[0] for block in imp_bath_blocks]},
         bath_states=(
             {0: [block[1] for block in imp_bath_blocks]},
@@ -492,12 +492,12 @@ def run_impmod_ed(
         ),
         nominal_occ=nominal_occ,
         delta_occ=delta_occ,
-        sig=sig_python,
-        sig_real=sig_real_python,
-        sig_static=sig_static,
-        sig_dc=sig_dc,
-        corr_to_spherical=corr_to_spherical,
-        corr_to_cf=corr_to_cf,
+        sig=sig_python.view(),
+        sig_real=sig_real_python.view(),
+        sig_static=sig_static.view(),
+        sig_dc=sig_dc.view(),
+        corr_to_spherical=corr_to_spherical.view(),
+        corr_to_cf=corr_to_cf.view(),
         blocked=options["blocked"],
         spin_flip_dj=options["spin_flip_dj"],
         occ_restrict=options["occ_restrict"],
@@ -531,6 +531,7 @@ def run_impmod_ed(
         comm.Bcast(sig_real, root=0)
         comm.Bcast(sig, root=0)
         er = 0
+
     except Exception as e:
         print("!" * 100)
         print(f"Exception {repr(e)} caught on rank {rank}!")

@@ -341,7 +341,7 @@ def run(cluster, h0, iw, w, delta, tau, verbosity, reort, dense_cutoff, comm):
     cluster.sig_real[:, :, :] = 0
     cluster.sig_static[:, :] = 0
 
-    sigma, sigma_real, cluster.sig_static[:, :] = calc_selfenergy(
+    sigma, sigma_real, sig_static = calc_selfenergy(
         h0,
         cluster.u4,
         iw,
@@ -366,6 +366,7 @@ def run(cluster, h0, iw, w, delta, tau, verbosity, reort, dense_cutoff, comm):
     )
 
     if comm.rank == 0:
+        cluster.sig_static[:, :] = sig_static
         for inequiv_i, (sig, sig_real) in enumerate(zip(sigma, sigma_real)):
             for block_i in cluster.identical_blocks[cluster.inequivalent_blocks[inequiv_i]]:
                 block_idx_matsubara = np.ix_(range(sig.shape[0]), cluster.blocks[block_i], cluster.blocks[block_i])
@@ -621,12 +622,7 @@ def calc_selfenergy(
         sigma_static = None
     if rank == 0:
         with h5.File("impurityModel_solver.h5", "a") as ar:
-            it = 1
-            if f"{cluster_label}/last_iteration" in ar:
-                it = ar[f"{cluster_label}/last_iteration"][0] + 1
-            else:
-                ar.create_dataset(f"{cluster_label}/last_iteration", (1,), dtype=int)
-            ar[f"{cluster_label}/last_iteration"][0] = it
+            it = ar[f"{cluster_label}/last_iteration"][0]
             group = f"{cluster_label}/it_{it}"
 
             for block_i, block in enumerate(blocks):
