@@ -421,6 +421,7 @@ def run_impmod_ed(
         bath_states_per_orbital,
         w,
         eim,
+        tau,
         gamma=0.001,
         weight_function=options["weight_function"],
         exp_weight=options["weight"],
@@ -559,6 +560,7 @@ def get_ed_h0(
     bath_states_per_orbital,
     w,
     eim,
+    tau,
     gamma=0.001,
     exp_weight=2,
     weight_function="Gaussian",
@@ -652,9 +654,9 @@ def get_ed_h0(
         ebss[:] = ebss[sorted_indices]
         vss[:] = vss[sorted_indices]
     assert len(vs_star) == len(block_structure.inequivalent_blocks), "Number of inequivalent blocks is inconsitent"
-    n_occ_block = [np.sum(eb < -1e-2) for i, eb in enumerate(ebs_star)]
-    n_zero_block = [np.sum(np.abs(eb) <= 1e-2) for i, eb in enumerate(ebs_star)]
-    n_empty_block = [np.sum(eb > 1e-2) for i, eb in enumerate(ebs_star)]
+    n_occ_block = [np.sum(eb < -tau / 2) for i, eb in enumerate(ebs_star)]
+    n_zero_block = [np.sum(np.abs(eb) <= tau / 2) for i, eb in enumerate(ebs_star)]
+    n_empty_block = [np.sum(eb > tau / 2) for i, eb in enumerate(ebs_star)]
     H_bath_star, v_star = build_full_bath([np.diag(eb) for eb in ebs_star], vs_star, block_structure)
 
     if verbose:

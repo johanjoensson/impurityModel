@@ -401,12 +401,23 @@ class Basis:
                 min_cond = 0
                 max_cond = min(r_max_cond + con_increase, sum(len(orbs) for orbs in new_conduction_baths[i]))
                 excited_restrictions[new_conduction_indices] = (min_cond, max_cond)
-            for full_index in full_bath_states[i]:
-                if len(full_index) > 0:
-                    excited_restrictions[full_index] = (len(full_index) - 1, len(full_index))
-            for empty_index in empty_bath_states[i]:
-                if len(empty_index) > 0:
-                    excited_restrictions[empty_index] = (0, 1)
+            num_full_bath_states = sum(len(full_indices) for full_indices in full_bath_states[i])
+            if num_full_bath_states > 0:
+                excited_restrictions[frozenset(orb for full_indices in full_bath_states[i] for orb in full_indices)] = (
+                    num_full_bath_states - 1,
+                    num_full_bath_states,
+                )
+            num_empty_bath_states = sum(len(empty_indices) for empty_indices in empty_bath_states[i])
+            if num_empty_bath_states > 0:
+                excited_restrictions[
+                    frozenset(orb for empty_indices in empty_bath_states[i] for orb in empty_indices)
+                ] = (0, 1)
+            # for full_index in full_bath_states[i]:
+            #     if len(full_index) > 0:
+            #         excited_restrictions[full_index] = (len(full_index) - 1, len(full_index))
+            # for empty_index in empty_bath_states[i]:
+            #     if len(empty_index) > 0:
+            #         excited_restrictions[empty_index] = (0, 1)
         return excited_restrictions
 
     def __init__(

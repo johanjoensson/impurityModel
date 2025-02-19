@@ -457,9 +457,9 @@ def calc_selfenergy(
         k=total_impurity_orbitals[0],
         eigenValueTol=0,
     )
-    psis = basis.build_state(psis_dense.T)
-    # basis.clear()
-    # basis.add_states(set(state for psi in psis for state in psi))
+    psis = basis.build_state(psis_dense.T, slaterWeightMin=1e-12)
+    basis.clear()
+    basis.add_states(set(state for psi in psis for state in psi))
     if verbosity >= 1:
         print(f"{len(h)} processes in the Hamiltonian.")
         print(f"#basis states = {len(basis)}")
