@@ -759,7 +759,7 @@ class Basis:
         v = np.empty_like(v_local)
         psis = self.redistribute_psis(psis)
         # row_states_in_basis: list[bytes] = []
-        row_dict = self._index_dict
+        row_dict = {state: self._index_dict[state] for state in self.local_basis}
         for row, psi in enumerate(psis):
             for state, val in psi.items():
                 if state not in row_dict:

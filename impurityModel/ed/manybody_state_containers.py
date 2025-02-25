@@ -365,9 +365,11 @@ class DistributedStateContainer(StateContainer):
         state_bounds = list(self._getitem_sequence([i for i in self.index_bounds if i is not None and i < self.size]))
         self.state_bounds = state_bounds + [None] * (self.comm.size - len(state_bounds))
         self.state_bounds = [
-            self.state_bounds[r]
-            if r < self.comm.size - 1 and self.state_bounds[r] != self.state_bounds[r + 1]
-            else None
+            (
+                self.state_bounds[r]
+                if r < self.comm.size - 1 and self.state_bounds[r] != self.state_bounds[r + 1]
+                else None
+            )
             for r in range(self.comm.size)
         ]
 
@@ -647,9 +649,11 @@ class SimpleDistributedStateContainer(StateContainer):
         state_bounds = list(self._getitem_sequence([i for i in self.index_bounds if i is not None and i < self.size]))
         self.state_bounds = state_bounds + [None] * (self.comm.size - len(state_bounds))
         self.state_bounds = [
-            self.state_bounds[r]
-            if r < self.comm.size - 1 and self.state_bounds[r] != self.state_bounds[r + 1]
-            else None
+            (
+                self.state_bounds[r]
+                if r < self.comm.size - 1 and self.state_bounds[r] != self.state_bounds[r + 1]
+                else None
+            )
             for r in range(self.comm.size)
         ]
 
@@ -767,7 +771,8 @@ class CentralizedStateContainer(StateContainer):
             if self.is_distributed
             else range(0, self.size)
         )
-        self._index_dict = {state: self.offset + i for i, state in enumerate(self.local_basis)}
+        self._index_dict = {state: i for i, state in enumerate(self._full_basis)}
+        # self._index_dict = {state: self.offset + i for i, state in enumerate(self.local_basis)}
         self.index_bounds = (
             [np.sum(local_sizes[: r + 1]) for r in range(self.comm.size)] if self.is_distributed else [self.size]
         )
@@ -788,8 +793,9 @@ class CentralizedStateContainer(StateContainer):
         return bisect_left(self._full_basis, key)
 
     def _index_sequence(self, key: Iterable[bytes]) -> Iterable[int]:
-        return (self._search_sorted(k) for k in key)
-        # return (self._index_dict[k] for k in key)
+        # return (self._search_sorted(k) for k in key)
+        return (self._index_dict.get(k, len(self._full_basis)) for k in key)
 
     def _contains_sequence(self, items) -> Iterable[bool]:
-        return (self._search_sorted(i) != self.size and self._full_basis[self._search_sorted(i)] == i for i in items)
+        return (i in self._index_dict for i in items)
+        # return (self._search_sorted(i) != self.size and self._full_basis[self._search_sorted(i)] == i for i in items)

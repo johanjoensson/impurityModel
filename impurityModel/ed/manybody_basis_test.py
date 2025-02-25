@@ -583,7 +583,7 @@ def test_operator_dict_simple():
     )
 
     op_dict = basis.build_operator_dict(operator)
-    correct = {b"\x78": {b"\xF0": -1 / 2, b"\x78": 9 / 2}}
+    correct = {b"\x78": {b"\xf0": -1 / 2, b"\x78": 9 / 2}}
     assert all(fk in correct for fk in op_dict.keys())
     for key in states:
         assert all(fk in correct[key] for fk in op_dict[key].keys())
@@ -612,7 +612,7 @@ def test_operator_dict_simple_mpi():
     )
 
     op_dict = basis.build_operator_dict(operator)
-    correct = {b"\x78": {b"\xF0": -1 / 2, b"\x78": 9 / 2}}
+    correct = {b"\x78": {b"\xf0": -1 / 2, b"\x78": 9 / 2}}
     all_dicts = MPI.COMM_WORLD.allgather(op_dict)
     full_dict = {}
     for d in all_dicts:
@@ -649,7 +649,7 @@ def test_operator_dict_simple_with_extra_states():
     )
 
     op_dict = basis.build_operator_dict(operator)
-    correct = {b"\x78": {b"\xF0": -1 / 2, b"\x78": 9 / 2, b"\xF8": 500}}
+    correct = {b"\x78": {b"\xf0": -1 / 2, b"\x78": 9 / 2, b"\xf8": 500}}
     assert all(fk in correct for fk in op_dict.keys())
     for key in states:
         assert all(fk in correct[key] for fk in op_dict[key].keys())
@@ -679,7 +679,7 @@ def test_operator_dict_simple_with_extra_states_mpi():
     )
 
     op_dict = basis.build_operator_dict(operator)
-    correct = {b"\x78": {b"\xF0": -1 / 2, b"\x78": 9 / 2, b"\xF8": 500}}
+    correct = {b"\x78": {b"\xf0": -1 / 2, b"\x78": 9 / 2, b"\xf8": 500}}
     all_dicts = MPI.COMM_WORLD.allgather(op_dict)
     full_dict = {}
     for d in all_dicts:
@@ -705,7 +705,7 @@ def test_operator_dict_eg_t2g():
         ((1, "c"), (1, "a")): 1,
         ((3, "c"), (3, "a")): 1,
     }
-    states = [b"\x78", b"\xB8", b"\xD8", b"\xE8", b"\xF0"]
+    states = [b"\x78", b"\xb8", b"\xd8", b"\xe8", b"\xf0"]
     basis = Basis(
         impurity_orbitals={0: [list(range(5))]},
         bath_states=({0: [[]]}, {0: [[]]}, {0: [[]]}),
@@ -716,11 +716,11 @@ def test_operator_dict_eg_t2g():
 
     op_dict = basis.build_operator_dict(operator)
     correct = {
-        b"\x78": {b"\xF0": -1 / 2, b"\x78": 9 / 2},
-        b"\xB8": {b"\xB8": 9 / 2},
-        b"\xD8": {b"\xD8": 4},
-        b"\xE8": {b"\xE8": 9 / 2},
-        b"\xF0": {b"\x78": -1 / 2, b"\xF0": 9 / 2},
+        b"\x78": {b"\xf0": -1 / 2, b"\x78": 9 / 2},
+        b"\xb8": {b"\xb8": 9 / 2},
+        b"\xd8": {b"\xd8": 4},
+        b"\xe8": {b"\xe8": 9 / 2},
+        b"\xf0": {b"\x78": -1 / 2, b"\xf0": 9 / 2},
     }
 
     assert all(fk in correct for fk in op_dict.keys())
@@ -741,7 +741,7 @@ def test_operator_dict_eg_t2g_mpi():
         ((1, "c"), (1, "a")): 1,
         ((3, "c"), (3, "a")): 1,
     }
-    states = [b"\x78", b"\xB8", b"\xD8", b"\xE8", b"\xF0"]
+    states = [b"\x78", b"\xb8", b"\xd8", b"\xe8", b"\xf0"]
     basis = Basis(
         impurity_orbitals={0: [list(range(5))]},
         bath_states=({0: [[]]}, {0: [[]]}, {0: [[]]}),
@@ -752,11 +752,11 @@ def test_operator_dict_eg_t2g_mpi():
 
     op_dict = basis.build_operator_dict(operator)
     correct = {
-        b"\x78": {b"\xF0": -1 / 2, b"\x78": 9 / 2},
-        b"\xB8": {b"\xB8": 9 / 2},
-        b"\xD8": {b"\xD8": 4},
-        b"\xE8": {b"\xE8": 9 / 2},
-        b"\xF0": {b"\x78": -1 / 2, b"\xF0": 9 / 2},
+        b"\x78": {b"\xf0": -1 / 2, b"\x78": 9 / 2},
+        b"\xb8": {b"\xb8": 9 / 2},
+        b"\xd8": {b"\xd8": 4},
+        b"\xe8": {b"\xe8": 9 / 2},
+        b"\xf0": {b"\x78": -1 / 2, b"\xf0": 9 / 2},
     }
     all_dicts = MPI.COMM_WORLD.allgather(op_dict)
     full_dict = {}
@@ -785,7 +785,7 @@ def test_operator_dict_eg_t2g_with_extra_states():
         ((3, "c"), (3, "a")): 1,
         ((0, "c"),): 500,
     }
-    states = [b"\x78", b"\xB8", b"\xD8", b"\xE8", b"\xF0"]
+    states = [b"\x78", b"\xb8", b"\xd8", b"\xe8", b"\xf0"]
     basis = Basis(
         impurity_orbitals={0: [list(range(5))]},
         bath_states=({0: [[]]}, {0: [[]]}, {0: [[]]}),
@@ -796,11 +796,11 @@ def test_operator_dict_eg_t2g_with_extra_states():
 
     op_dict = basis.build_operator_dict(operator)
     correct = {
-        b"\x78": {b"\xF0": -1 / 2, b"\x78": 9 / 2, b"\xF8": 500},
-        b"\xB8": {b"\xB8": 9 / 2},
-        b"\xD8": {b"\xD8": 4},
-        b"\xE8": {b"\xE8": 9 / 2},
-        b"\xF0": {b"\x78": -1 / 2, b"\xF0": 9 / 2},
+        b"\x78": {b"\xf0": -1 / 2, b"\x78": 9 / 2, b"\xf8": 500},
+        b"\xb8": {b"\xb8": 9 / 2},
+        b"\xd8": {b"\xd8": 4},
+        b"\xe8": {b"\xe8": 9 / 2},
+        b"\xf0": {b"\x78": -1 / 2, b"\xf0": 9 / 2},
     }
 
     assert all(fk in correct for fk in op_dict.keys())
@@ -824,7 +824,7 @@ def test_operator_dict_eg_t2g_with_extra_states_mpi():
         ((3, "c"), (3, "a")): 1,
         ((0, "c"),): 500,
     }
-    states = [b"\x78", b"\xB8", b"\xD8", b"\xE8", b"\xF0"]
+    states = [b"\x78", b"\xb8", b"\xd8", b"\xe8", b"\xf0"]
     basis = Basis(
         impurity_orbitals={0: [list(range(5))]},
         bath_states=({0: [[]]}, {0: [[]]}, {0: [[]]}),
@@ -835,11 +835,11 @@ def test_operator_dict_eg_t2g_with_extra_states_mpi():
 
     op_dict = basis.build_operator_dict(operator)
     correct = {
-        b"\x78": {b"\xF0": -1 / 2, b"\x78": 9 / 2, b"\xF8": 500},
-        b"\xB8": {b"\xB8": 9 / 2},
-        b"\xD8": {b"\xD8": 4},
-        b"\xE8": {b"\xE8": 9 / 2},
-        b"\xF0": {b"\x78": -1 / 2, b"\xF0": 9 / 2},
+        b"\x78": {b"\xf0": -1 / 2, b"\x78": 9 / 2, b"\xf8": 500},
+        b"\xb8": {b"\xb8": 9 / 2},
+        b"\xd8": {b"\xd8": 4},
+        b"\xe8": {b"\xe8": 9 / 2},
+        b"\xf0": {b"\x78": -1 / 2, b"\xf0": 9 / 2},
     }
     all_dicts = MPI.COMM_WORLD.allgather(op_dict)
     full_dict = {}
@@ -920,7 +920,7 @@ def test_eg_t2g_dense_matrix():
         ((1, "c"), (1, "a")): 1,
         ((3, "c"), (3, "a")): 1,
     }
-    states = [b"\x78", b"\xB8", b"\xD8", b"\xE8", b"\xF0"]
+    states = [b"\x78", b"\xb8", b"\xd8", b"\xe8", b"\xf0"]
     basis = Basis(
         impurity_orbitals={0: [list(range(5))]},
         bath_states=({0: [[]]}, {0: [[]]}, {0: [[]]}),
@@ -958,7 +958,7 @@ def test_eg_t2g_dense_matrix_mpi():
         ((1, "c"), (1, "a")): 1,
         ((3, "c"), (3, "a")): 1,
     }
-    states = [b"\x78", b"\xB8", b"\xD8", b"\xE8", b"\xF0"]
+    states = [b"\x78", b"\xb8", b"\xd8", b"\xe8", b"\xf0"]
     basis = Basis(
         impurity_orbitals={0: [list(range(5))]},
         bath_states=({0: [[]]}, {0: [[]]}, {0: [[]]}),
@@ -1019,9 +1019,9 @@ def test_simple_vector_mpi():
         comm=MPI.COMM_WORLD,
     )
     state = {}
-    if states[0] in basis._index_dict:
+    if states[0] in basis.local_basis:
         state[states[0]] = 0.25 + 0.2j
-    if states[1] in basis._index_dict:
+    if states[1] in basis.local_basis:
         state[states[1]] = 0.33 + 0.15j
 
     v = basis.build_vector([state])[0]
@@ -1034,7 +1034,7 @@ def test_simple_vector_mpi():
 
 def test_vector():
     comm = None
-    states = [b"\x78", b"\xB8", b"\xD8", b"\xE8", b"\xF0"]
+    states = [b"\x78", b"\xb8", b"\xd8", b"\xe8", b"\xf0"]
     basis = Basis(
         impurity_orbitals={0: [list(range(5))]},
         bath_states=({0: [[]]}, {0: [[]]}, {0: [[]]}),
@@ -1057,7 +1057,7 @@ def test_vector():
 @pytest.mark.mpi
 def test_vector_mpi():
     comm = MPI.COMM_WORLD
-    states = [b"\x78", b"\xB8", b"\xD8", b"\xE8", b"\xF0"]
+    states = [b"\x78", b"\xb8", b"\xd8", b"\xe8", b"\xf0"]
     basis = Basis(
         impurity_orbitals={0: [list(range(5))]},
         bath_states=({0: [[]]}, {0: [[]]}, {0: [[]]}),
@@ -1067,7 +1067,7 @@ def test_vector_mpi():
     )
     state = {states[-1]: 1 + 1j}
     state[states[0]] = 0.25 + 0.2j
-    if states[1] in basis._index_dict:
+    if states[1] in basis.local_basis:
         state[states[1]] = 0.33 + 0.15j
     v = basis.build_vector([state])[0]
     v_exact = np.array([0.25 * comm.size + 0.2j * comm.size, 0.33 + 0.15j, 0, 0], dtype=complex)
@@ -1107,7 +1107,7 @@ def test_simple_state_mpi():
     )
 
     # v = np.array([[1.0, -2.5]])
-    v = np.zeros([1,len(states)])
+    v = np.zeros([1, len(states)])
     v[0, basis.index(states[0])] = 1.0
     v[0, basis.index(states[1])] = 2.5
     s = basis.build_state(v)
@@ -1121,7 +1121,7 @@ def test_simple_state_mpi():
 
 def test_state_mpi():
     comm = None
-    states = [b"\x78", b"\xB8", b"\xD8", b"\xE8", b"\xF0"]
+    states = [b"\x78", b"\xb8", b"\xd8", b"\xe8", b"\xf0"]
     basis = Basis(
         impurity_orbitals={0: [list(range(5))]},
         bath_states=({0: [[]]}, {0: [[]]}, {0: [[]]}),
@@ -1143,7 +1143,7 @@ def test_state_mpi():
 @pytest.mark.mpi
 def test_state_mpi():
     comm = MPI.COMM_WORLD
-    states = [b"\x78", b"\xB8", b"\xD8", b"\xE8", b"\xF0"]
+    states = [b"\x78", b"\xb8", b"\xd8", b"\xe8", b"\xf0"]
     basis = Basis(
         impurity_orbitals={0: [list(range(5))]},
         bath_states=({0: [[]]}, {0: [[]]}, {0: [[]]}),
@@ -1421,16 +1421,16 @@ def test_distributed_simple_vector():
         comm=MPI.COMM_WORLD,
     )
     state = {}
-    if states[0] in basis._index_dict:
+    if states[0] in basis.local_basis:
         state[states[0]] = 0.25 + 0.2j
-    if states[1] in basis._index_dict:
+    if states[1] in basis.local_basis:
         state[states[1]] = 0.33 + 0.15j
 
     v = basis.build_distributed_vector([state])[0]
     v_exact = np.zeros((len(basis.local_basis),), dtype=complex)
-    if states[0] in basis._index_dict:
+    if states[0] in basis.local_basis:
         v_exact[0] = 0.25 + 0.2j
-    if states[1] in basis._index_dict:
+    if states[1] in basis.local_basis:
         v_exact[-1] = 0.33 + 0.15j
 
     assert v.shape == (len(basis.local_basis),)
@@ -1441,7 +1441,7 @@ def test_distributed_simple_vector():
 @pytest.mark.mpi
 def test_distributed_vector_mpi():
     comm = MPI.COMM_WORLD
-    states = [b"\x78", b"\xB8", b"\xD8", b"\xE8", b"\xF0"]
+    states = [b"\x78", b"\xb8", b"\xd8", b"\xe8", b"\xf0"]
     basis = Basis(
         impurity_orbitals={0: [list(range(5))]},
         bath_states=({0: [[]]}, {0: [[]]}, {0: [[]]}),
@@ -1451,7 +1451,7 @@ def test_distributed_vector_mpi():
     )
     state = {states[-1]: 1 + 1j}
     state[states[0]] = 0.25 + 0.2j
-    if states[1] in basis._index_dict:
+    if states[1] in basis.local_basis:
         state[states[1]] = 0.33 + 0.15j
     v = basis.build_distributed_vector([state])[0]
     v_exact = np.array([0.25 * comm.size + 0.2j * comm.size, 0.33 + 0.15j, 0, 0], dtype=complex)
