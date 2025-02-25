@@ -769,14 +769,14 @@ def block_Green_freq(
     for w_i, w in zip(range(iw_indices.start, iw_indices.stop), iws[iw_indices]):
         A = finite.subtractOps({((0, "i"),): w + e}, hOp)
         h_mem = {}
-        finite.applyOp_new(
-            freq_basis.num_spin_orbitals,
-            A,
-            {state: 1 for state in basis.local_basis},
-            slaterWeightMin=slaterWeightMin,
-            restrictions=req_basis.restrictions,
-            opResult=h_mem,
-        )
+        # finite.applyOp_new(
+        #     freq_basis.num_spin_orbitals,
+        #     A,
+        #     {state: 1 for state in basis.local_basis},
+        #     slaterWeightMin=slaterWeightMin,
+        #     restrictions=freq_basis.restrictions,
+        #     opResult=h_mem,
+        # )
 
         # Run Lanczos on psi0^T* [wI - j*delta - H]^-1 psi0
         alphas, betas, _ = block_lanczos(
@@ -792,8 +792,8 @@ def block_Green_freq(
             gs_matsubara[w_i, :, :] = alphas[-1]
             for alpha, beta in zip(alphas[-2::-1], betas[-2::-1]):
                 gs_matsubara[w_i, :, :] = alpha - np.conj(beta.T) @ np.linalg.solve(gs_matsubara[w_i], beta)
-        # freq_basis.clear()
-        # freq_basis.add_states(state for psi in psis for state in psi)
+    freq_basis.clear()
+    freq_basis.add_states(state for psi in psis for state in psi)
     gs_received = np.empty_like(gs_matsubara) if comm.rank == 0 else None
     comm.Reduce(gs_matsubara, gs_received, op=MPI.SUM)
     gs_matsubara = gs_received
@@ -811,13 +811,22 @@ def block_Green_freq(
         print(f"New root ranks for realaxis frequencies:{freq_roots}")
     for w_i, w in zip(range(w_indices.start, w_indices.stop), ws[w_indices]):
         A = finite.subtractOps({((0, "i"),): w + 1j * delta + e}, hOp)
+        h_mem = {}
+        # finite.applyOp_new(
+        #     freq_basis.num_spin_orbitals,
+        #     A,
+        #     {state: 1 for state in basis.local_basis},
+        #     slaterWeightMin=slaterWeightMin,
+        #     restrictions=freq_basis.restrictions,
+        #     opResult=h_mem,
+        # )
         # Run Lanczos on psi0^T* [wI - j*delta - H]^-1 psi0
         alphas, betas, _ = block_lanczos(
             psi0=psis,
             h_op=A,
             basis=freq_basis,
             converged=converged,
-            h_mem=None,  # h_mem,
+            h_mem=h_mem,
             verbose=verbose,
             slaterWeightMin=slaterWeightMin,
             reort=reort,
@@ -826,8 +835,6 @@ def block_Green_freq(
             gs_realaxis[w_i, :, :] = alphas[-1]
             for alpha, beta in zip(alphas[-2::-1], betas[-2::-1]):
                 gs_realaxis[w_i, :, :] = alpha - np.conj(beta.T) @ np.linalg.solve(gs_realaxis[w_i], beta)
-        freq_basis.clear()
-        freq_basis.add_states(state for psi in psis for state in psi)
     gs_received = np.empty_like(gs_realaxis) if comm.rank == 0 else None
     comm.Reduce(gs_realaxis, gs_received, op=MPI.SUM)
     gs_realaxis = gs_received
