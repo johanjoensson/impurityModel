@@ -813,7 +813,7 @@ def block_Green_freq(
     if verbose:
         print(f"New root ranks for realaxis frequencies:{freq_roots}")
     freq_basis = freq_basis_orig.copy()
-    for w_i, w in zip(range(w_indices.start, w_indices.stop), ws[w_indices]):
+    for w_i, w in zip(range(w_indices.start, w_indices.stop, w_indices.step), ws[w_indices]):
         A = finite.subtractOps({((0, "i"),): w + 1j * delta + e}, hOp)
         h_mem = {}
         # finite.applyOp_new(
