@@ -190,7 +190,7 @@ def get_Greens_function(
             for real_block_gs in gs_realaxis_block:
                 requests.append(basis.comm.Isend(real_block_gs, 0))
     if basis.comm.rank == 0:
-        for color, color_root in zip(range(n_colors), block_roots):
+        for color, color_root in enumerate(block_roots):
             block_is = range(sum(blocks_per_color[:color]), sum(blocks_per_color[: color + 1]))
             if matsubara_mesh is not None:
                 for block_i in block_is:
