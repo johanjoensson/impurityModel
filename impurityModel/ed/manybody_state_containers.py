@@ -747,12 +747,13 @@ class CentralizedStateContainer(StateContainer):
         )
 
     def add_states(self, new_states) -> None:
-        states_to_add = sorted({state for state in new_states if state not in self._full_basis})
+        states_to_add = sorted(itertools.compress(new_states, self.contains_sequence(new_states)))
         if self.is_distributed:
             states_from_ranks = self.comm.allgather(states_to_add)
             merged_states_from_ranks = merge(*states_from_ranks)
             states_to_add = [state for state, _ in itertools.groupby(merged_states_from_ranks)]
         new_full_basis = merge(self._full_basis, states_to_add)
+        # Remove duplicates from new_full_basis
         self._full_basis = [state for state, _ in itertools.groupby(new_full_basis)]
         self.size = len(self._full_basis)
         local_sizes = (
