@@ -266,6 +266,7 @@ def find_gs(
     e_gs = np.inf
     basis_gs = None
     gs_impurity_occ = None
+    dN_gs = np.inf
     for dN in [0, -1, 1]:
         e_trial, basis, h_dict = calc_occ_e(
             h_op,
