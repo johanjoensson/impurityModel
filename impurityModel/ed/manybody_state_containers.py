@@ -747,6 +747,7 @@ class CentralizedStateContainer(StateContainer):
         )
 
     def add_states(self, new_states) -> None:
+        new_states = sorted(set(new_states))
         states_to_add = sorted(itertools.compress(new_states, (not b for b in self._contains_sequence(new_states))))
         if self.is_distributed:
             states_from_ranks = self.comm.allgather(states_to_add)

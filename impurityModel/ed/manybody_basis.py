@@ -486,7 +486,7 @@ class Basis:
         self.type = type(psr.int2bytes(0, self.num_spin_orbitals))
         self.n_bytes = int(ceil(self.num_spin_orbitals / 8))
         self.truncation_threshold = truncation_threshold
-        self.is_distributed = comm is not None
+        self.is_distributed = comm is not None and comm.size > 1
         t0 = perf_counter() - t0
         t0 = perf_counter()
         if comm is not None:
@@ -503,9 +503,9 @@ class Basis:
 
         t0 = perf_counter()
 
-        # self.state_container = CentralizedStateContainer(
-        # self.state_container = SimpleDistributedStateContainer(
-        self.state_container = DistributedStateContainer(
+        self.state_container = CentralizedStateContainer(
+            # self.state_container = SimpleDistributedStateContainer(
+            # self.state_container = DistributedStateContainer(
             initial_basis,
             bytes_per_state=self.n_bytes,
             comm=self.comm,
