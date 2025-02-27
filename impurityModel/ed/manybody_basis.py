@@ -503,8 +503,8 @@ class Basis:
 
         t0 = perf_counter()
 
-        self.state_container = CentralizedStateContainer(
-            # self.state_container = SimpleDistributedStateContainer(
+        # self.state_container = CentralizedStateContainer(
+        self.state_container = SimpleDistributedStateContainer(
             # self.state_container = DistributedStateContainer(
             initial_basis,
             bytes_per_state=self.n_bytes,
@@ -759,7 +759,10 @@ class Basis:
         v = np.empty_like(v_local)
         psis = self.redistribute_psis(psis)
         # row_states_in_basis: list[bytes] = []
-        row_dict = {state: self._index_dict[state] for state in self.local_basis}
+        # row_dict = {state: self._index_dict[state] for state in self.local_basis}
+        row_dict = {
+            state: i for state, i in zip(self.local_basis, range(self.local_indices.start, self.local_indices.stop))
+        }
         for row, psi in enumerate(psis):
             for state, val in psi.items():
                 if state not in row_dict:
@@ -779,9 +782,10 @@ class Basis:
         psis_new = self.redistribute_psis(psis)
         for row, psi in enumerate(psis_new):
             for state in psi:
-                if state not in self._index_dict:
+                if state not in self.local_basis:
                     continue
-                v[row, self._index_dict[state] - self.offset] = psi[state]
+                local_idx = self.local_basis.index(state)
+                v[row, local_idx] = psi[state]
         return v
 
     def build_state(self, vs: Union[list[np.ndarray], np.ndarray], slaterWeightMin=0) -> list[dict]:
@@ -851,12 +855,13 @@ class Basis:
         columns: list[int] = []
         values: list[complex] = []
         if not self.is_distributed:
-            for column in self.local_basis:
+            for local_col_idx, column in enumerate(self.local_basis):
                 for row in op_dict[column]:
-                    if row not in self._index_dict:
+                    if row not in self.local_basis:
                         continue
-                    columns.append(self._index_dict[column])
-                    rows.append(self._index_dict[row])
+                    local_row_idx = self.local_basis.index(row)
+                    columns.append(local_col_idx + self.offset)
+                    rows.append(local_row_idx + self.offset)
                     values.append(op_dict[column][row])
         else:
             rows_in_basis: set[bytes] = {row for column in self.local_basis for row in op_dict[column].keys()}
@@ -866,11 +871,11 @@ class Basis:
                 if index != self.size
             }
 
-            for column in self.local_basis:
+            for local_col_idx, column in enumerate(self.local_basis):
                 for row in op_dict[column]:
                     if row not in row_dict:
                         continue
-                    columns.append(self._index_dict[column])
+                    columns.append(local_col_idx + self.offset)
                     rows.append(row_dict[row])
                     values.append(op_dict[column][row])
             if self.debug and len(rows) > 0:
@@ -882,7 +887,9 @@ class Basis:
             return None
         vs = PETSc.Mat().create(comm=self.comm)
         vs.setSizes([len(psis), self.size])
-        row_dict = self._index_dict
+        row_dict = {
+            state: i for state, i in zip(self.local_basis, range(self.local_indices.start, self.local_indices.stop))
+        }
         for row, psi in enumerate(psis):
             row_states = set(psi.keys())
             need_mpi = False
@@ -922,12 +929,13 @@ class Basis:
         columns: list[int] = []
         values: list[complex] = []
         if not self.is_distributed:
-            for column in self.local_basis:
+            for local_col_idx, column in enumerate(self.local_basis):
                 for row in expanded_dict[column]:
-                    if row not in self._index_dict:
+                    if row not in self.local_basis:
                         continue
-                    columns.append(self._index_dict[column])
-                    rows.append(self._index_dict[row])
+                    local_row_idx = self.local_basis.index(row)
+                    columns.append(local_col_idx + self.offset)
+                    rows.append(local_row_idx + self.offset)
                     values.append(expanded_dict[column][row])
         else:
             rows_in_basis: set[bytes] = {row for column in self.local_basis for row in op_dict[column].keys()}
@@ -937,11 +945,11 @@ class Basis:
                 if index != self.size
             }
 
-            for column in self.local_basis:
+            for local_col_idx, column in enumerate(self.local_basis):
                 for row in op_dict[column]:
                     if row not in row_dict:
                         continue
-                    columns.append(self._index_dict[column])
+                    columns.append(local_col_idx + self.offset)
                     rows.append(row_dict[row])
                     values.append(op_dict[column][row])
         M.setUp()
