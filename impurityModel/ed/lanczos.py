@@ -438,14 +438,14 @@ def block_lanczos(
         ]
         t_apply += perf_counter() - t_tmp
         t_tmp = perf_counter()
-        basis.add_states([state for psi in wp for state in psi.keys() if abs(psi[state]) > slaterWeightMin])
+        basis.add_states([state for psi in wp for state in psi.keys() if abs(psi[state]) ** 2 > slaterWeightMin])
 
-        if basis.size > int(1.5 * N_old):
+        if basis.size > int(1.5 * N_old) and False:
             basis.clear()
             basis.add_states(
                 itertools.chain(
-                    (state for psis in q for psi in psis for state in psi if abs(psi[state]) > slaterWeightMin),
-                    (state for psi in wp for state in psi if abs(psi[state]) > slaterWeightMin),
+                    (state for psis in q for psi in psis for state in psi if abs(psi[state]) ** 2 > slaterWeightMin),
+                    (state for psi in wp for state in psi if abs(psi[state]) ** 2 > slaterWeightMin),
                 )
             )
             N_old = basis.size
@@ -527,7 +527,9 @@ def block_lanczos(
                 )
                 Qm = basis.build_distributed_vector(list(itertools.compress(Q, combined_mask.flatten()))).T
                 # Qm = basis.build_distributed_vector(Q).T
-                W[1][combined_mask] = np.finfo(float).eps  #  * np.random.normal(loc=0, scale=1.5, size=W[1, :-2].shape)
+                W[1, :-1][combined_mask] = np.finfo(
+                    float
+                ).eps  #  * np.random.normal(loc=0, scale=1.5, size=W[1, :-2].shape)
                 basis.comm.Bcast(W[1])
                 force_reort = None if force_reort is not None else mask
             else:
@@ -578,7 +580,7 @@ def block_lanczos(
         if mpi:
             request.Wait()
         for j, (i, state) in itertools.product(range(columns), enumerate(basis.local_basis)):
-            if abs(psip[i, j]) >= slaterWeightMin:
+            if abs(psip[i, j]) ** 2 >= slaterWeightMin:
                 q[1][j][state] = psip[i, j]
 
         t_state += perf_counter() - t_tmp
