@@ -278,9 +278,9 @@ def calc_Greens_function_with_offdiag(
         excited_restrictions = basis.build_excited_restrictions(
             bath_rhos=thermal_bath_rhos,
             bath_indices=bath_indices,
-            imp_change=(1, 1),
-            val_change=(1, 0),
-            con_change=(0, 1),
+            imp_change=(2, 2),
+            val_change=(2, 0),
+            con_change=(0, 2),
         )
     else:
         excited_restrictions = None
@@ -355,8 +355,8 @@ def calc_Greens_function_with_offdiag(
 
         if verbose:
             print(f"time(build excited state basis) = {time.perf_counter() - t0}")
-        gs_matsubara_block_i, gs_realaxis_block_i = block_Green_freq(
-            # gs_matsubara_block_i, gs_realaxis_block_i = block_Green(
+        # gs_matsubara_block_i, gs_realaxis_block_i = block_Green_freq(
+        gs_matsubara_block_i, gs_realaxis_block_i = block_Green(
             n_spin_orbitals=excited_basis.num_spin_orbitals,
             hOp=hOp,
             psi_arr=block_v,
@@ -599,7 +599,7 @@ def block_Green(
     )
     psi = [{} for _ in range(columns)]
     for j, (i, state) in itertools.product(range(columns), enumerate(basis.local_basis)):
-        if abs(psi_start[i, j]) > slaterWeightMin:
+        if abs(psi_start[i, j]) ** 2 > slaterWeightMin:
             psi[j][state] = psi_start[i, j]
     if verbose:
         print(f"time(set up psi_start) = {time.perf_counter() - t0}")
@@ -731,14 +731,14 @@ def block_Green_freq(
     )
     psi = [{} for _ in range(columns)]
     for j, (i, state) in itertools.product(range(columns), enumerate(basis.local_basis)):
-        if abs(psi_start[i, j]) > slaterWeightMin:
+        if abs(psi_start[i, j]) ** 2 > slaterWeightMin:
             psi[j][state] = psi_start[i, j]
     if verbose:
         print(f"time(set up psi_start) = {time.perf_counter() - t0}")
 
     def converged(alphas, betas):
-        # if np.any(np.abs(np.diagonal(betas[-1])) < max(slaterWeightMin, np.finfo(float).eps)):
-        #     return True
+        if np.any(np.abs(np.diagonal(betas[-1])) < max(slaterWeightMin, np.finfo(float).eps)):
+            return True
 
         if alphas.shape[0] == 1:
             return False
@@ -748,22 +748,13 @@ def block_Green_freq(
         for alpha, beta in zip(alphas[-3::-1], betas[-3::-1]):
             gs_new = alpha - np.conj(beta.T) @ np.linalg.solve(gs_new, beta)
             gs_prev = alpha - np.conj(beta.T) @ np.linalg.solve(gs_prev, beta)
-        # print(rf"δ = {np.max(np.abs(gs_new - gs_prev))}", flush=True)
         delta = np.abs(gs_new - gs_prev)
         if np.any(np.isnan(delta)):
             raise RuntimeError(f"Error in calculating Greens function.\n{betas[-2]=}{betas[-1]=}")
-        return np.all(delta < max(slaterWeightMin, 1e-8))
+        return np.all(delta < max(slaterWeightMin, 1e-6))
 
     t0 = time.perf_counter()
 
-    # n_groups = min(len(iws), max(1000 * basis.comm.size // basis.size, 1))
-    # iw_splits = np.array([len(iws) // n_groups] * n_groups)
-    # iw_splits[: (len(iws) % n_groups)] += 1
-    # iw_groups, freq_roots, _, freqs_per_color, freq_basis_orig, psis = split_comm_and_redistribute_basis(
-    #     [1] * n_groups, basis, psi
-    # )
-    # iw_indices = [slice(np.sum(iw_splits[:i]), np.sum(iw_splits[: i + 1])) for i in range(n_groups)][iw_groups]
-    # iw_indices = slice(iw_indices[0].start, iw_indices[-1].stop)
     _, freq_roots, color, _, freq_basis_orig, psis = split_comm_and_redistribute_basis([1] * len(iws), basis, psi)
     iw_indices = slice(color, len(iws), len(freq_roots))
     if verbose:
@@ -773,16 +764,6 @@ def block_Green_freq(
     for w_i, w in zip(range(iw_indices.start, iw_indices.stop, iw_indices.step), iws[iw_indices]):
         A = finite.subtractOps({((0, "i"),): w + e}, hOp)
         h_mem = {}
-        # finite.applyOp_new(
-        #     freq_basis.num_spin_orbitals,
-        #     A,
-        #     {state: 1 for state in basis.local_basis},
-        #     slaterWeightMin=slaterWeightMin,
-        #     restrictions=freq_basis.restrictions,
-        #     opResult=h_mem,
-        # )
-
-        # Run Lanczos on psi0^T* [wI - j*delta - H]^-1 psi0
         alphas, betas, _ = block_lanczos(
             psi0=psis,
             h_op=A,
@@ -800,14 +781,6 @@ def block_Green_freq(
     comm.Reduce(gs_matsubara, gs_received, op=MPI.SUM)
     gs_matsubara = gs_received
 
-    # n_groups = min(len(ws), max(1000 * basis.comm.size // basis.size, 1))
-    # w_splits = np.array([len(ws) // n_groups] * n_groups)
-    # w_splits[: (len(ws) % n_groups)] += 1
-    # w_groups, freq_roots, _, freqs_per_color, freq_basis_orig, psis = split_comm_and_redistribute_basis(
-    #     [1] * n_groups, basis, psi
-    # )
-    # w_indices = [slice(np.sum(w_splits[:i]), np.sum(w_splits[: i + 1])) for i in range(n_groups)][w_groups]
-    # w_indices = slice(w_indices[0].start, w_indices[-1].stop)
     _, freq_roots, color, _, freq_basis_orig, psis = split_comm_and_redistribute_basis([1] * len(ws), basis, psi)
     w_indices = slice(color, len(ws), len(freq_roots))
     gs_realaxis = np.zeros((len(ws), columns, columns), dtype=complex)
@@ -817,15 +790,6 @@ def block_Green_freq(
     for w_i, w in zip(range(w_indices.start, w_indices.stop, w_indices.step), ws[w_indices]):
         A = finite.subtractOps({((0, "i"),): w + 1j * delta + e}, hOp)
         h_mem = {}
-        # finite.applyOp_new(
-        #     freq_basis.num_spin_orbitals,
-        #     A,
-        #     {state: 1 for state in basis.local_basis},
-        #     slaterWeightMin=slaterWeightMin,
-        #     restrictions=freq_basis.restrictions,
-        #     opResult=h_mem,
-        # )
-        # Run Lanczos on psi0^T* [wI - j*delta - H]^-1 psi0
         alphas, betas, _ = block_lanczos(
             psi0=psis,
             h_op=A,

@@ -84,6 +84,9 @@ def kth_diag_indices(m, k):
 def matrix_print(matrix, label=None):
     if label is not None:
         print(label)
+    if matrix.size == 0:
+        print("")
+        return
     print(
         "\n".join(
             [
@@ -230,7 +233,7 @@ def parse_solver_line(solver_line):
             f"--->Other params {solver_array[5:]}"
         )
     options = {
-        "dense_cutoff": 50,
+        "dense_cutoff": 100,
         "reort": Reort.NONE,
         "blocked": True,
         "fit_unocc": False,
@@ -737,7 +740,7 @@ def get_ed_h0(
         H_baths = []
         vs = []
         for v, ebs in zip(vs_star, ebs_star):
-            if len(ebs) == 1:
+            if len(ebs) <= 1:
                 H_baths.append(np.diag(ebs))
                 vs.append(v)
                 continue
@@ -753,13 +756,15 @@ def get_ed_h0(
             for vb in vs:
                 matrix_print(vb)
                 print("")
-        H_baths, vs = build_full_bath(H_baths, vs, block_structure)
-        H_bath = sp.linalg.block_diag(H_baths)
-        v = np.vstack(tuple(vs))
+        H_bath, v = build_full_bath(H_baths, vs, block_structure)
     elif bath_geometry == "haver":
         H_baths = []
         vs = []
         for i_b, (vss, ebss) in enumerate(zip(vs_star, ebs_star)):
+            if len(ebs) == 0:
+                H_baths.append(np.array([], dtype=complex))
+                vs.append(v)
+                continue
             if len(ebs) == 1:
                 H_baths.append(np.diag(ebs))
                 vs.append(v)
@@ -970,7 +975,7 @@ def fit_hyb(
     """
     if bath_states_per_orbital == 0:
         return [
-            np.empty((0,), dtype=float) for ib in block_structure.inequivalent_blocks
+            np.array([], dtype=float) for ib in block_structure.inequivalent_blocks
         ], [
             np.empty((0, len(block_structure.blocks[ib])), dtype=complex)
             for ib in block_structure.inequivalent_blocks

@@ -134,11 +134,7 @@ def fixed_peak_dc(h0_op, dc_struct, rank, verbose, dense_cutoff):
             else basis_upper.build_dense_matrix(h_op, h_dict)
         )
         e_upper, psi_upper = finite.eigensystem_new(
-            h,
-            e_max=0,
-            k=1,
-            eigenValueTol=0,
-            return_eigvecs=True,
+            h, e_max=0, k=1, eigenValueTol=0, return_eigvecs=True, comm=basis_upper.comm
         )
         h_dict = basis_lower.build_operator_dict(h_op)
         h = (
@@ -147,11 +143,7 @@ def fixed_peak_dc(h0_op, dc_struct, rank, verbose, dense_cutoff):
             else basis_lower.build_dense_matrix(h_op, h_dict)
         )
         e_lower, psi_lower = finite.eigensystem_new(
-            h,
-            e_max=0,
-            k=1,
-            eigenValueTol=0,
-            return_eigvecs=True,
+            h, e_max=0, k=1, eigenValueTol=0, return_eigvecs=True, comm=basis_upper.comm
         )
         psi_lower_local = basis_lower.build_state(psi_lower[:, 0].T)[0]
         psi_upper_local = basis_upper.build_state(psi_upper[:, 0].T)[0]
@@ -228,16 +220,10 @@ def calc_occ_e(
         spin_flip_dj=spin_flip_dj,
         comm=comm,
     )
-    h_dict = basis.expand(h_op, dense_cutoff=dense_cutoff, de2_min=1e-4)
+    h_dict = basis.expand(h_op, dense_cutoff=dense_cutoff, de2_min=1e-6)
     h = basis.build_sparse_matrix(h_op, h_dict) if basis.size > dense_cutoff else basis.build_dense_matrix(h_op, h_dict)
 
-    e_trial = finite.eigensystem_new(
-        h,
-        e_max=0,
-        k=basis.num_spin_orbitals,
-        eigenValueTol=0,
-        return_eigvecs=False,
-    )
+    e_trial = finite.eigensystem_new(h, e_max=0, k=1, eigenValueTol=1e-6, return_eigvecs=False, comm=basis.comm)
     return e_trial[0], basis, h_dict
 
 
@@ -285,7 +271,7 @@ def find_gs(
         if e_trial < e_gs:
             e_gs = e_trial
             basis_gs = basis
-            h_dict_gs = h_dict
+            h_dict_gs = h_dict.copy()
             dN_gs = dN
             gs_impurity_occ = {i: N0[i] + dN for i in N0}
     while (
@@ -311,7 +297,7 @@ def find_gs(
             break
         e_gs = e_trial
         basis_gs = basis
-        h_dict_gs = h_dict
+        h_dict_gs = h_dict.copy()
         gs_impurity_occ = {i: gs_impurity_occ[i] + dN_gs for i in gs_impurity_occ}
     valence_occ = {i: sum(len(bs) for bs in blocks) for i, blocks in bath_states[0].items()}
     zero_occ = {i: sum(len(bs) for bs in blocks) / 2 for i, blocks in bath_states[1].items()}
@@ -457,10 +443,11 @@ def calc_selfenergy(
         e_max=energy_cut,
         k=total_impurity_orbitals[0],
         eigenValueTol=0,
+        comm=basis.comm,
     )
     psis = basis.build_state(psis_dense.T)  # , slaterWeightMin=1e-12)
-    basis.clear()
-    basis.add_states(set(state for psi in psis for state in psi))
+    # basis.clear()
+    # basis.add_states(set(state for psi in psis for state in psi))
     if verbosity >= 1:
         print(f"{len(h)} processes in the Hamiltonian.")
         print(f"#basis states = {len(basis)}")

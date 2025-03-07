@@ -34,9 +34,9 @@ from scipy.linalg import qr
 
 
 # MPI variables
-comm = MPI.COMM_WORLD
-rank = comm.rank
-ranks = comm.size
+# comm = MPI.COMM_WORLD
+# rank = comm.rank
+# ranks = comm.size
 
 
 def get_job_tasks(rank, ranks, tasks_tot):
@@ -123,12 +123,9 @@ def mpi_matmul(h_local, comm):
     """
 
     def matmat(m):
-        if len(m.shape) == 1:
-            m = m.reshape((m.shape[0], 1))
-        n_cols = m.shape[1]
-        res = np.empty((h_local.shape[0], n_cols), dtype=np.result_type(h_local.dtype, m.dtype))
-        tmp = h_local @ m
-        comm.Allreduce(tmp, res, op=MPI.SUM)
+        res_local = h_local @ m
+        res = np.empty_like(res_local)
+        comm.Allreduce(res_local, res, op=MPI.SUM)
         return res
 
     return matmat
@@ -141,6 +138,7 @@ def eigensystem_new(
     v0=None,
     eigenValueTol=0,
     return_eigvecs=True,
+    comm=None,
 ):
     """
     Return eigen-energies and eigenstates.
@@ -164,13 +162,14 @@ def eigensystem_new(
     if isinstance(h_local, np.ndarray):
         if h_local.shape[0] == 0:
             return np.zeros((0,), dtype=float), np.zeros((0, 0), dtype=h_local.dtype)
-        if comm.rank == 0:
+        if comm is None or comm.rank == 0:
             es, vecs = np.linalg.eigh(h_local, UPLO="L")
         else:
             es = np.empty((h_local.shape[0],))
             vecs = np.empty_like(h_local)
-        comm.Bcast(es, root=0)
-        comm.Bcast(vecs, root=0)
+        if comm is not None:
+            comm.Bcast(es, root=0)
+            comm.Bcast(vecs, root=0)
         mask = es - es[0] <= e_max
     elif isinstance(h_local, scipy.sparse._csr.csr_matrix) or isinstance(h_local, scipy.sparse._csc.csc_matrix):
         h = scipy.sparse.linalg.LinearOperator(
@@ -183,77 +182,41 @@ def eigensystem_new(
         )
 
         dk = 1
-        v0_guess = v0[:, 0] if v0 is not None else None
+        v0_guess = v0[:, [0]] if v0 is not None else np.ones((h_local.shape[0], 1), dtype=complex)
         es = []
         mask = [True]
-        ncv = None
         while len(es) <= sum(mask):
-            try:
-                es, vecs = eigsh(
-                    h,
-                    k=min(k + dk, h.shape[0] - 2),
-                    which="SA",
-                    tol=eigenValueTol,
-                    v0=v0_guess,
-                    ncv=ncv,
-                )
-            except ArpackNoConvergence:
-                eigenValueTol = max(np.sqrt(eigenValueTol), 1e-6)
-                dk = 1
-                vecs = None
-                es = []
-                mask = [True]
-                continue
-            except ArpackError:
-                eigenValueTol = max(np.sqrt(eigenValueTol), 1e-6)
-                if ncv is None:
-                    ncv = min(h.shape[0], max(5 * (k + dk) + 1, 50))
-                else:
-                    ncv = min(h.shape[0], max(2 * (k + dk) + 1, 2 * ncv))
-                vecs = None
-                es = []
-                mask = [True]
-                continue
+            es, vecs = eigsh(h, k=min(k + dk, h.shape[0] - 2), which="SA", tol=eigenValueTol, v0=v0_guess)
             mask = es - np.min(es) <= e_max
             dk += k
-            v0_guess = vecs[:, mask][:, 0]
+            v0_guess = vecs[:, mask][:, [0]]
     elif "petsc4py" in sys.modules and isinstance(h_local, PETSc.Mat):
-        dk = 1
+        dk = 5
         es = []
         mask = [True]
 
         eig_solver = SLEPc.EPS()
         eig_solver.create()
-        eig_solver.setOperators(h_local, None)
+        eig_solver.setOperators(h_local)
         eig_solver.setProblemType(SLEPc.EPS.ProblemType.HEP)
         eig_solver.setWhichEigenpairs(EPS.Which.SMALLEST_REAL)
-        eig_solver.setTolerances(tol=max(eigenValueTol, np.finfo(float).eps))
-        while len(es) - sum(mask) <= 0:
-            eig_solver.setDimensions(k + dk, PETSc.DECIDE)
-            eig_solver.solve()
-            nconv = eig_solver.getConverged()
-            es = np.empty((nconv), dtype=float)
-            if nconv > 0:
-                for i in range(nconv):
-                    es[i] = eig_solver.getEigenvalue(i).real
-                mask = es - np.min(es) <= e_max
-                dk += k
-        vecs = None
-        if nconv > 0:
-            vecs = np.empty((h_local.size[0], nconv), dtype=complex) if comm.rank == 0 else None
-            vr, wr = h_local.getVecs()
-            vi, wi = h_local.getVecs()
-            for i in range(nconv):
-                _ = eig_solver.getEigenpair(i, vr, vi)
-                offsets = vr.owner_ranges[:-1]
-                counts = [vr.owner_ranges[i] - vr.owner_ranges[i - 1] for i in range(1, len(vr.owner_ranges))]
-                v_real = np.empty((h_local.size[0]), dtype=complex)
-                v_imag = np.empty((h_local.size[0]), dtype=complex)
-                comm.Gatherv(vr.array_r, [v_real, counts, offsets, MPI.DOUBLE_COMPLEX], root=0)
-                comm.Gatherv(vi.array_r, [v_imag, counts, offsets, MPI.DOUBLE_COMPLEX], root=0)
-                if comm.rank == 0:
-                    vecs[:, i] = v_real + 1j * v_imag
-        vecs = comm.bcast(vecs, root=0)
+        eig_solver.setDimensions(k + dk, PETSc.DECIDE)
+        eig_solver.solve()
+        nconv = eig_solver.getConverged()
+        es = np.empty((nconv), dtype=float)
+        if nconv == 0:
+            raise RuntimeError("SLEPc failed to converg!")
+        vecs = np.empty((h_local.size[0], nconv), dtype=complex, order="F")
+        vr, wr = h_local.getVecs()
+        vi, wi = h_local.getVecs()
+        for i in range(nconv):
+            es[i] = eig_solver.getEigenpair(i, vr, vi).real
+            offsets = vr.owner_ranges[:-1]
+            counts = np.diff(vr.owner_ranges)
+            if comm is not None:
+                comm.Gatherv(vr.array_r, [vecs[:, i], counts, offsets, MPI.DOUBLE_COMPLEX], root=0)
+        if comm is not None:
+            vecs = comm.bcast(vecs, root=0)
     indices = np.argsort(es)
     es = es[indices]
     vecs = vecs[:, indices]
@@ -372,43 +335,41 @@ def printExpValues(rhos, es, rot_to_spherical):
     """
     print several expectation values, e.g. E, N, L^2.
     """
-    if rank == 0:
-        print("E0 = {:7.4f}".format(es[0]))
-        print(
-            # "{:^3s} {:>11s} {:>8s} {:>8s} {:>8s} {:>9s} {:>9s} {:>9s} {:>9s}".format(
-            "{:^3s} {:>11s} {:>8s} {:>8s} {:>8s} {:>9s} {:>9s}".format(
-                "i",
-                "E-E0",
-                "N",
-                "N(Dn)",
-                "N(Up)",
-                "Lz",
-                "Sz",
-                # "L^2",
-                # "S^2",
-            )
+    print("E0 = {:7.4f}".format(es[0]))
+    print(
+        # "{:^3s} {:>11s} {:>8s} {:>8s} {:>8s} {:>9s} {:>9s} {:>9s} {:>9s}".format(
+        "{:^3s} {:>11s} {:>8s} {:>8s} {:>8s} {:>9s} {:>9s}".format(
+            "i",
+            "E-E0",
+            "N",
+            "N(Dn)",
+            "N(Up)",
+            "Lz",
+            "Sz",
+            # "L^2",
+            # "S^2",
         )
+    )
     #        print(('  i  E-E0  N(3d) N(egDn) N(egUp) N(t2gDn) '
     #               'N(t2gUp) Lz(3d) Sz(3d) L^2(3d) S^2(3d)'))
-    if rank == 0:
-        for i, (e, rho) in enumerate(zip(es - es[0], rhos)):
-            rho_spherical = rotate_matrix(rho, rot_to_spherical)
-            N, Ndn, Nup = get_occupations_from_rho_spherical(rho_spherical)
-            print(
-                # ("{:3d} {:11.8f} {:8.5f} {:8.5f} {:8.5f}" " {: 9.6f} {: 9.6f} {:9.5f} {:9.5f}").format(
-                ("{:3d} {:11.8f} {:8.5f} {:8.5f} {:8.5f}" " {: 9.6f} {: 9.6f}").format(
-                    i,
-                    e,
-                    N,
-                    Ndn,
-                    Nup,
-                    get_Lz_from_rho_spherical(rho_spherical),
-                    get_Sz_from_rho_spherical(rho_spherical),
-                    # get_L_from_rho_spherical(rho_spherical),
-                    # get_S_from_rho_spherical(rho_spherical),
-                )
+    for i, (e, rho) in enumerate(zip(es - es[0], rhos)):
+        rho_spherical = rotate_matrix(rho, rot_to_spherical)
+        N, Ndn, Nup = get_occupations_from_rho_spherical(rho_spherical)
+        print(
+            # ("{:3d} {:11.8f} {:8.5f} {:8.5f} {:8.5f}" " {: 9.6f} {: 9.6f} {:9.5f} {:9.5f}").format(
+            ("{:3d} {:11.8f} {:8.5f} {:8.5f} {:8.5f}" " {: 9.6f} {: 9.6f}").format(
+                i,
+                e,
+                N,
+                Ndn,
+                Nup,
+                get_Lz_from_rho_spherical(rho_spherical),
+                get_Sz_from_rho_spherical(rho_spherical),
+                # get_L_from_rho_spherical(rho_spherical),
+                # get_S_from_rho_spherical(rho_spherical),
             )
-        print("\n", flush=True)
+        )
+    print("\n", flush=True)
 
 
 def get_occupations_from_rho_spherical(rho):
@@ -587,17 +548,16 @@ def printThermalExpValues(nBaths, es, psis, T=300, cutOff=10):
     e = e[mask]
     psis = np.array(psis)[mask]
     occs = thermal_average(e, np.array([getEgT2gOccupation(nBaths, psi) for psi in psis]), T=T)
-    if rank == 0:
-        print("<E-E0> = {:8.7f}".format(thermal_average(e, e, T=T)))
-        print("<N(3d)> = {:8.7f}".format(thermal_average(e, [getTraceDensityMatrix(nBaths, psi) for psi in psis], T=T)))
-        print("<N(egDn)> = {:8.7f}".format(occs[0]))
-        print("<N(egUp)> = {:8.7f}".format(occs[1]))
-        print("<N(t2gDn)> = {:8.7f}".format(occs[2]))
-        print("<N(t2gUp)> = {:8.7f}".format(occs[3]))
-        print("<Lz(3d)> = {:8.7f}".format(thermal_average(e, [getLz3d(nBaths, psi) for psi in psis], T=T)))
-        print("<Sz(3d)> = {:8.7f}".format(thermal_average(e, [getSz3d(nBaths, psi) for psi in psis], T=T)))
-        # print("<L^2(3d)> = {:8.7f}".format(thermal_average(e, [getLsqr3d(nBaths, psi) for psi in psis], T=T)))
-        # print("<S^2(3d)> = {:8.7f}".format(thermal_average(e, [getSsqr3d(nBaths, psi) for psi in psis], T=T)))
+    print("<E-E0> = {:8.7f}".format(thermal_average(e, e, T=T)))
+    print("<N(3d)> = {:8.7f}".format(thermal_average(e, [getTraceDensityMatrix(nBaths, psi) for psi in psis], T=T)))
+    print("<N(egDn)> = {:8.7f}".format(occs[0]))
+    print("<N(egUp)> = {:8.7f}".format(occs[1]))
+    print("<N(t2gDn)> = {:8.7f}".format(occs[2]))
+    print("<N(t2gUp)> = {:8.7f}".format(occs[3]))
+    print("<Lz(3d)> = {:8.7f}".format(thermal_average(e, [getLz3d(nBaths, psi) for psi in psis], T=T)))
+    print("<Sz(3d)> = {:8.7f}".format(thermal_average(e, [getSz3d(nBaths, psi) for psi in psis], T=T)))
+    # print("<L^2(3d)> = {:8.7f}".format(thermal_average(e, [getLsqr3d(nBaths, psi) for psi in psis], T=T)))
+    # print("<S^2(3d)> = {:8.7f}".format(thermal_average(e, [getSsqr3d(nBaths, psi) for psi in psis], T=T)))
 
 
 def dc_MLFT(n3d_i, c, Fdd, n2p_i=None, Fpd=None, Gpd=None):
@@ -738,8 +698,7 @@ def get_basis(nBaths, valBaths, dnValBaths, dnConBaths, dnTol, n0imp, verbose=Tr
     # given the occupation in that partition.
     basisL = {}
     for l in nBaths.keys():
-        if rank == 0 and verbose:
-            print("l=", l)
+        print("l=", l)
         # Add configurations to this list
         basisL[l] = []
         # Loop over different occupation partitions
@@ -751,12 +710,12 @@ def get_basis(nBaths, valBaths, dnValBaths, dnConBaths, dnTol, n0imp, verbose=Tr
                     nVal = valBaths[l] - dnVal
                     nCon = dnCon
 
-                    if rank == 0 and verbose:
+                    if verbose:
                         print("New partition occupations:")
                     # if rank == 0:
                     #    print('nImp,dnVal,dnCon = {:d},{:d},{:d}'.format(
                     #        nImp,dnVal,dnCon))
-                    if rank == 0 and verbose:
+                    if verbose:
                         print("New partition occupations:")
                         print("nImp,nVal,nCon = {:d},{:d},{:d}".format(nImp, nVal, nCon))
                     # Impurity electron indices
@@ -1015,16 +974,13 @@ def printGaunt(l=2, lp=2):
     """
     # Print Gauent coefficients
     for k in range(l + lp + 1):
-        if rank == 0:
-            print("k={:d}".format(k))
+        print("k={:d}".format(k))
         for m in range(-l, l + 1):
             s = ""
             for mp in range(-lp, lp + 1):
                 s += " {:3.2f}".format(gauntC(k, l, m, lp, mp))
-            if rank == 0:
-                print(s)
-        if rank == 0:
-            print("")
+            print(s)
+        print("")
 
 
 def getNoSpinUop(l1, l2, l3, l4, R):
@@ -1609,24 +1565,23 @@ def getDensityMatrixCubic(nBaths, psi):
 
 
 def printDensityMatrixCubic(nBaths, psis, tolPrintOccupation):
-    if rank == 0:
-        # Calculate density matrix
-        print("Density matrix (in cubic harmonics basis):")
-        for i, psi in enumerate(psis):
-            print("Eigenstate {:d}".format(i))
-            n = getDensityMatrixCubic(nBaths, psi)
-            print("#density matrix elements: {:d}".format(len(n)))
-            for e, ne in n.items():
-                if abs(ne) > tolPrintOccupation:
-                    if e[0] == e[1]:
-                        print(
-                            "Diagonal: (i,s) =",
-                            e[0],
-                            ", occupation = {:7.2f}".format(ne),
-                        )
-                    else:
-                        print("Off-diagonal: (i,si), (j,sj) =", e, ", {:7.2f}".format(ne))
-            print("")
+    # Calculate density matrix
+    print("Density matrix (in cubic harmonics basis):")
+    for i, psi in enumerate(psis):
+        print("Eigenstate {:d}".format(i))
+        n = getDensityMatrixCubic(nBaths, psi)
+        print("#density matrix elements: {:d}".format(len(n)))
+        for e, ne in n.items():
+            if abs(ne) > tolPrintOccupation:
+                if e[0] == e[1]:
+                    print(
+                        "Diagonal: (i,s) =",
+                        e[0],
+                        ", occupation = {:7.2f}".format(ne),
+                    )
+                else:
+                    print("Off-diagonal: (i,si), (j,sj) =", e, ", {:7.2f}".format(ne))
+        print("")
 
 
 def getEgT2gOccupation(nBaths, psi):
@@ -2449,14 +2404,14 @@ def get_hamiltonian_matrix(n_spin_orbitals, hOp, basis, mode="sparse_MPI", verbo
     # Number of basis states
     n = len(basis)
     basis_index = {basis[i]: i for i in range(n)}
-    if rank == 0 and verbose:
+    if verbose:
         print("Filling the Hamiltonian...")
     progress = 0
     if mode == "dense_serial":
         # h = np.zeros((n,n),dtype=complex)
         h = np.zeros((n, n), dtype=complex)
         for j in range(n):
-            if rank == 0 and progress + 10 <= int(j * 100.0 / n):
+            if progress + 10 <= int(j * 100.0 / n):
                 progress = int(j * 100.0 / n)
                 if verbose:
                     print("{:d}% done".format(progress))

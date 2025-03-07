@@ -430,7 +430,7 @@ def block_lanczos(
                 basis.num_spin_orbitals,
                 h_op,
                 psi_i,
-                slaterWeightMin=0,
+                slaterWeightMin=slaterWeightMin,
                 restrictions=basis.restrictions,
                 opResult=h_mem,
             )
@@ -438,39 +438,69 @@ def block_lanczos(
         ]
         t_apply += perf_counter() - t_tmp
         t_tmp = perf_counter()
-        basis.add_states([state for psi in wp for state in psi.keys() if abs(psi[state]) ** 2 > slaterWeightMin])
+        wp = basis.redistribute_psis(wp)
+        # basis.add_states([state for psi in wp for state in psi.keys() if abs(psi[state]) ** 2 > slaterWeightMin])
 
-        if basis.size > int(1.5 * N_old) and False:
-            basis.clear()
-            basis.add_states(
-                itertools.chain(
-                    (state for psis in q for psi in psis for state in psi if abs(psi[state]) ** 2 > slaterWeightMin),
-                    (state for psi in wp for state in psi if abs(psi[state]) ** 2 > slaterWeightMin),
-                )
+        # if basis.size > int(1.5 * N_old) and False:
+        #     basis.clear()
+        #     basis.add_states(
+        #         itertools.chain(
+        #             (state for psis in q for psi in psis for state in psi if abs(psi[state]) ** 2 > slaterWeightMin),
+        #             (state for psi in wp for state in psi if abs(psi[state]) ** 2 > slaterWeightMin),
+        #         )
+        #     )
+        #     N_old = basis.size
+
+        wp_size = basis.comm.allreduce(
+            np.array([len(psi) for psi in wp]),
+        )
+        cutoff = slaterWeightMin
+        while max(wp_size) > basis.truncation_threshold:
+            wp = [{state: w for state, w in psi.items() if abs(w) ** 2 >= cutoff} for psi in wp]
+            wp_size = basis.comm.allreduce(
+                np.array([len(psi) for psi in wp]),
             )
-            N_old = basis.size
+            cutoff *= 5
 
-        if basis.size > basis.truncation_threshold:
-            print(f"Basis size {basis.size} > {basis.truncation_threshold}")
-            print("truncating basis")
-            basis.clear()
-            local_states = {}
-            for state, amp in ((state, amp) for qp in itertools.chain(q[0], q[1], wp) for state, amp in qp.items()):
-                local_states[state] = max(abs(amp), local_states.get(state, 0))
-            local_states = sorted(local_states.items(), key=lambda x: abs(x[1]), reverse=True)
-            all_local_states = basis.comm.allgather(local_states)
-            all_states = [state for state, _ in merge(*all_local_states, key=lambda x: abs(x[1]), reverse=True)]
-            step = int(basis.truncation_threshold) // basis.comm.size
-            start = basis.comm.rank * step
-            basis.add_states(all_states[start : start + step])
-            print(f"After truncation basis contains {basis.size} elements", flush=True)
+            # if basis.size > basis.truncation_threshold:
+            #     local_states_dict = {}
+            #     for psi in wp:
+            #         for state in psi:
+            #             local_states_dict[state] = max(abs(psi[state]) ** 2, local_states_dict.get(state, 0))
+            #     local_states = sorted(((state, abs(w) ** 2) for state, w in local_states_dict.items()), key=lambda x: x[1])
+            #     print(f"Basis size {basis.size} > {basis.truncation_threshold}")
+            #     print("truncating basis")
+            #     all_local_states = basis.comm.gather(local_states, root=0)
+            #     if basis.comm.rank == 0:
+            #         all_states = [state for state, _ in merge(*all_local_states, key=lambda x: abs(x[1]), reverse=True)]
+            #     else:
+            #         all_states = []
+            # local_states = {}
+            # for state, amp in ((state, amp) for qp in itertools.chain(q[0], q[1], wp) for state, amp in qp.items()):
+            #     local_states[state] = max(abs(amp), local_states.get(state, 0))
+            # local_states = sorted(local_states.items(), key=lambda x: abs(x[1]), reverse=True)
+            # all_local_states = basis.comm.allgather(local_states)
+            # all_states = [state for state, _ in merge(*all_local_states, key=lambda x: abs(x[1]), reverse=True)]
+            # step = int(basis.truncation_threshold // 100) // basis.comm.size
+            # start = basis.comm.rank * step
+            # basis.add_states(all_states[start : start + step])
+            # print(f"After truncation basis contains {basis.size} elements", flush=True)
+            # basis.clear()
+            # basis.add_states(all_states[: basis.truncation_threshold])
+            # wp = basis.redistribute_psis(wp)
+            # wp = [{state: w for state, w in psi.items() if state in basis.local_basis} for psi in wp]
+        n_trunc = int(cutoff / (5 * slaterWeightMin))
+        if verbose and n_trunc > 0:
+            print(f"truncated {n_trunc} times")
+
+        basis.add_states(state for psi in wp for state in psi if state not in basis.local_basis)
+        t_add += perf_counter() - t_tmp
+        t_tmp = perf_counter()
         N_max = max(N_max, basis.size)
         tmp = basis.redistribute_psis(itertools.chain(q[0], q[1], wp))
         q[0] = tmp[0:n]
         q[1] = tmp[n : 2 * n]
-        wp = tmp[2 * n : 3 * n]
-        t_add += perf_counter() - t_tmp
-        t_tmp = perf_counter()
+        wp = tmp[2 * n :]
         t_redist += perf_counter() - t_tmp
         t_tmp = perf_counter()
         psi = np.empty((len(basis.local_basis), n), dtype=complex)

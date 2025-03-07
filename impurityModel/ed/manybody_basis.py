@@ -288,36 +288,62 @@ class Basis:
                 )
 
             bath_occupations = {i: [np.diag(bath_rho) for bath_rho in bath_rhos[i]] for i in bath_rhos.keys()}
-            full_bath_states = {
-                i: [
-                    frozenset(
+            full_bath_states = {}
+            empty_bath_states = {}
+            for i in bath_occupations.keys():
+                full_bath_states[i] = []
+                empty_bath_states[i] = []
+                for block_i, (block_orbs, block_occs) in enumerate(zip(bath_indices[i], bath_occupations[i])):
+                    filled_baths = [
                         orb
                         for orbs, occs in zip(
                             batched(block_orbs, len(self.impurity_orbitals[i][block_i])),
                             batched(block_occs, len(self.impurity_orbitals[i][block_i])),
                         )
                         for orb in orbs
-                        if sum(occs) / len(orbs) > 0.995
-                    )
-                    for block_i, (block_orbs, block_occs) in enumerate(zip(bath_indices[i], bath_occupations[i]))
-                ]
-                for i in bath_occupations.keys()
-            }
-            empty_bath_states = {
-                i: [
-                    frozenset(
+                        if sum(occs) / len(orbs) >= 0.995
+                    ]
+                    empty_baths = [
                         orb
                         for orbs, occs in zip(
                             batched(block_orbs, len(self.impurity_orbitals[i][block_i])),
                             batched(block_occs, len(self.impurity_orbitals[i][block_i])),
                         )
                         for orb in orbs
-                        if sum(occs) / len(orbs) < 0.005
-                    )
-                    for block_i, (block_orbs, block_occs) in enumerate(zip(bath_indices[i], bath_occupations[i]))
-                ]
-                for i in bath_occupations.keys()
-            }
+                        if sum(occs) / len(orbs) <= 0.005
+                    ]
+                    full_bath_states[i].append(filled_baths[:-1])
+                    empty_bath_states[i].append(empty_baths[1:])
+            # full_bath_states = {
+            #     i: [
+            #         frozenset(
+            #             orb
+            #             for orbs, occs in zip(
+            #                 batched(block_orbs, len(self.impurity_orbitals[i][block_i])),
+            #                 batched(block_occs, len(self.impurity_orbitals[i][block_i])),
+            #             )
+            #             for orb in orbs
+            #             if sum(occs) / len(orbs) > 0.99
+            #         )
+            #         for block_i, (block_orbs, block_occs) in enumerate(zip(bath_indices[i], bath_occupations[i]))
+            #     ]
+            #     for i in bath_occupations.keys()
+            # }
+            # empty_bath_states = {
+            #     i: [
+            #         frozenset(
+            #             orb
+            #             for orbs, occs in zip(
+            #                 batched(block_orbs, len(self.impurity_orbitals[i][block_i])),
+            #                 batched(block_occs, len(self.impurity_orbitals[i][block_i])),
+            #             )
+            #             for orb in orbs
+            #             if sum(occs) / len(orbs) < 0.01
+            #         )
+            #         for block_i, (block_orbs, block_occs) in enumerate(zip(bath_indices[i], bath_occupations[i]))
+            #     ]
+            #     for i in bath_occupations.keys()
+            # }
         else:
             full_bath_states = {i: [] for i in self.impurity_orbitals.keys()}
             empty_bath_states = {i: [] for i in self.impurity_orbitals.keys()}
@@ -540,6 +566,26 @@ class Basis:
         if not self.is_distributed:
             return list(psis)
 
+        psis = list(psis)
+        res = [{} for _ in psis]
+        send_array = [[{} for _ in psis] for _ in range(self.comm.size)]
+        for n, psi in enumerate(psis):
+            for state, amp in psi.items():
+                for r, state_bound in enumerate(self.state_bounds):
+                    if state_bound is None or state < state_bound:
+                        send_array[r][n][state] = send_array[r][n].get(state, 0) + amp
+                        break
+        received_array = self.comm.alltoall(send_array)
+        for received_psi in received_array:
+            for n, psi in enumerate(received_psi):
+                for state, amp in psi.items():
+                    res[n][state] = res[n].get(state, 0) + amp
+        return res
+
+    def redistribute_psis_old(self, psis: Iterable[dict]):
+        if not self.is_distributed:
+            return list(psis)
+
         res = []
         send_to_rank = [[] for _ in range(self.comm.size)]
         send_states = [[] for _ in range(self.comm.size)]
@@ -633,8 +679,8 @@ class Basis:
             itertools.chain.from_iterable(received_states),
             itertools.chain.from_iterable(received_amps),
         ):
-            if state in self.local_basis:
-                res[n][state] = amp + res[n].get(state, 0)
+            # if state in self.local_basis:
+            res[n][state] = amp + res[n].get(state, 0)
         return res
 
     def _generate_spin_flipped_determinants(self, determinants):
@@ -716,7 +762,7 @@ class Basis:
             t_add += perf_counter() - t_tmp
         if self.verbose:
             print(f"After expansion, the basis contains {self.size} elements.")
-        op_dict = self.build_operator_dict(op, op_dict=op_dict)
+        _ = self.build_operator_dict(op, op_dict=op_dict)
         return op_dict
 
     def index(self, val):
@@ -802,7 +848,7 @@ class Basis:
                 psi[self.local_basis[i - self.offset]] = vs[row, i]
         return res
 
-    def build_operator_dict(self, op, op_dict=None, slaterWeightMin=0):
+    def build_operator_dict(self, op, op_dict=None, slaterWeightMin=1e-16):
         """
         Express the operator, op, in the current basis. Do not expand the basis.
         Return a dict containing the results of applying op to the different basis states
@@ -822,7 +868,7 @@ class Basis:
         # op_dict.clear()
         # op_dict.update(new_op_dict)
         # return {state: op_dict[state] for state in self.local_basis}
-        return op_dict
+        return op_dict.copy()
 
     def build_dense_matrix(self, op, op_dict=None, distribute=True):
         """
@@ -847,24 +893,22 @@ class Basis:
         Get the operator as a sparse matrix in the current basis.
         The sparse matrix is distributed over all ranks.
         """
-        if petsc:
-            return self._build_PETSc_matrix(op, op_dict)
 
-        op_dict = self.build_operator_dict(op, op_dict)
+        expanded_dict = self.build_operator_dict(op, op_dict)
         rows: list[int] = []
         columns: list[int] = []
         values: list[complex] = []
         if not self.is_distributed:
             for local_col_idx, column in enumerate(self.local_basis):
-                for row in op_dict[column]:
+                for row in expanded_dict[column]:
                     if row not in self.local_basis:
                         continue
                     local_row_idx = self.local_basis.index(row)
-                    columns.append(local_col_idx + self.offset)
-                    rows.append(local_row_idx + self.offset)
-                    values.append(op_dict[column][row])
+                    columns.append(local_col_idx)
+                    rows.append(local_row_idx)
+                    values.append(expanded_dict[column][row])
         else:
-            rows_in_basis: set[bytes] = {row for column in self.local_basis for row in op_dict[column].keys()}
+            rows_in_basis: set[bytes] = {row for column in self.local_basis for row in expanded_dict[column].keys()}
             row_dict = {
                 state: index
                 for state, index in zip(rows_in_basis, self.state_container._index_sequence(rows_in_basis))
@@ -872,14 +916,21 @@ class Basis:
             }
 
             for local_col_idx, column in enumerate(self.local_basis):
-                for row in op_dict[column]:
+                for row in expanded_dict[column]:
                     if row not in row_dict:
                         continue
                     columns.append(local_col_idx + self.offset)
                     rows.append(row_dict[row])
-                    values.append(op_dict[column][row])
-            if self.debug and len(rows) > 0:
-                print(f"{self.size=} {max(rows)=}", flush=True)
+                    values.append(expanded_dict[column][row])
+        if petsc:
+            M = PETSc.Mat().create(comm=self.comm)
+            M.setSizes([self.size, self.size])
+            M.setType(PETSc.Mat.Type.AIJ)
+            for i, j, val in zip(rows, columns, values):
+                M[i, j] = val
+            M.assemblyBegin()
+            M.assemblyEnd()
+            return M
         return sp.sparse.csc_matrix((values, (rows, columns)), shape=(self.size, self.size), dtype=complex)
 
     def _build_PETSc_vector(self, psis: list[dict], dtype=complex):
@@ -912,51 +963,6 @@ class Basis:
                 vs[row, row_dict[state]] = val
             vs.assemble()
         return vs
-
-    def _build_PETSc_matrix(self, op, op_dict=None):
-        """
-        Get the operator as a sparse matrix in the current basis.
-        The sparse matrix is distributed over all ranks.
-        """
-        if "petsc4py" not in sys.modules:
-            return None
-
-        M = PETSc.Mat().create(comm=self.comm)
-        M.setSizes([self.size, self.size])
-
-        expanded_dict = self.build_operator_dict(op, op_dict)
-        rows: list[int] = []
-        columns: list[int] = []
-        values: list[complex] = []
-        if not self.is_distributed:
-            for local_col_idx, column in enumerate(self.local_basis):
-                for row in expanded_dict[column]:
-                    if row not in self.local_basis:
-                        continue
-                    local_row_idx = self.local_basis.index(row)
-                    columns.append(local_col_idx + self.offset)
-                    rows.append(local_row_idx + self.offset)
-                    values.append(expanded_dict[column][row])
-        else:
-            rows_in_basis: set[bytes] = {row for column in self.local_basis for row in op_dict[column].keys()}
-            row_dict = {
-                state: index
-                for state, index in zip(rows_in_basis, self.state_container._index_sequence(rows_in_basis))
-                if index != self.size
-            }
-
-            for local_col_idx, column in enumerate(self.local_basis):
-                for row in op_dict[column]:
-                    if row not in row_dict:
-                        continue
-                    columns.append(local_col_idx + self.offset)
-                    rows.append(row_dict[row])
-                    values.append(op_dict[column][row])
-        M.setUp()
-        for i, j, val in zip(rows, columns, values):
-            M[i, j] = val
-        M.assemble()
-        return M
 
     def _state_statistics(self, psi, impurity_indices, valence_indices, conduction_indices, num_spin_orbitals):
         stat = {}
@@ -1089,6 +1095,7 @@ class CIPSI_Basis(Basis):
                 k=len(self.impurity_orbitals[0]),
                 eigenValueTol=0,
                 verbose=self.verbose,
+                comm=self.comm,
             )
             self.truncate(self.build_state(psi_ref))
 
@@ -1183,42 +1190,45 @@ class CIPSI_Basis(Basis):
         de0_max = max(1e-6, -self.tau * np.log(1e-4))
         psi_ref = None
         t_tmp = perf_counter()
-        H_dict = self.build_operator_dict(H, H_dict)
+        if H_dict is None:
+            H_dict = {}
+        _ = self.build_operator_dict(H, H_dict)
         t_build_dict += perf_counter() - t_tmp
         while converge_count < 1:
             t_tmp = perf_counter()
             H_mat = (
-                self.build_sparse_matrix(H, op_dict=H_dict)
+                self.build_sparse_matrix(H, op_dict={})
                 if self.size > dense_cutoff
-                else self.build_dense_matrix(H, op_dict=H_dict)
+                else self.build_dense_matrix(H, op_dict={})
             )
             t_build_mat += perf_counter() - t_tmp
             t_tmp = perf_counter()
             if psi_ref is not None:
                 v0 = self.build_vector(psi_ref).T
-            else:
-                v0 = None
             t_build_vec += perf_counter() - t_tmp
             t_tmp = perf_counter()
             e_ref, psi_ref_dense = eigensystem_new(
                 H_mat,
                 e_max=de0_max,
-                k=len(psi_ref) + 1 if psi_ref is not None else 10,
-                v0=v0,
-                eigenValueTol=0,  # de2_min,
+                k=v0.shape[1] + 1 if psi_ref is not None else 2,
+                v0=v0 if psi_ref is not None else None,
+                eigenValueTol=de2_min,
+                comm=self.comm,
             )
             t_eigen += perf_counter() - t_tmp
             t_tmp = perf_counter()
             psi_ref = self.build_state(psi_ref_dense.T)
+
             t_build_state += perf_counter() - t_tmp
             t_tmp = perf_counter()
-            new_Dj = self.determine_new_Dj(e_ref, psi_ref, H, H_dict, de2_min)
+            new_Dj = self.determine_new_Dj(e_ref, psi_ref, H, {}, de2_min)
             t_Dj += perf_counter() - t_tmp
             old_size = self.size
             if self.spin_flip_dj:
                 new_Dj = self._generate_spin_flipped_determinants(new_Dj)
             t_tmp = perf_counter()
             self.add_states(new_Dj)
+            psi_ref = self.redistribute_psis(psi_ref)
             t_add += perf_counter() - t_tmp
 
             if old_size == self.size:
@@ -1230,17 +1240,18 @@ class CIPSI_Basis(Basis):
             print(f"After expansion, the basis contains {self.size} elements.")
 
         if self.size > self.truncation_threshold:
-            H_sparse = self.build_sparse_matrix(H, op_dict=H_dict)
+            H_sparse = self.build_sparse_matrix(H, op_dict={})
             e_ref, psi_ref = eigensystem_new(
                 H_sparse,
                 e_max=de0_max,
-                k=10,
+                k=2,
+                comm=self.comm,
             )
             self.truncate(self.build_state(psi_ref))
             if self.verbose:
                 print(f"----->After truncation, the basis contains {self.size} elements.")
         t_tmp = perf_counter()
-        H_dict = self.build_operator_dict(H, op_dict=H_dict)
+        _ = self.build_operator_dict(H, op_dict=H_dict)
         t_build_dict += perf_counter() - t_tmp
         return H_dict
 
@@ -1276,7 +1287,8 @@ class CIPSI_Basis(Basis):
 
         if self.verbose:
             print(f"After expansion, the basis contains {self.size} elements.")
-        return self.build_operator_dict(H, op_dict=H_dict)
+        _ = self.build_operator_dict(H, op_dict=H_dict)
+        return H_dict
 
     def copy(self):
         new_basis = CIPSI_Basis(
