@@ -13,6 +13,16 @@ from impurityModel.ed.cg import bicgstab
 from mpi4py import MPI
 
 
+def matrix_print(matrix: np.ndarray, label: str = None) -> None:
+    """
+    Pretty print the matrix, with optional label.
+    """
+    ms = "\n".join([" ".join([f"{np.real(val): .4f}{np.imag(val):+.4f}j" for val in row]) for row in matrix])
+    if label is not None:
+        print(label)
+    print(ms)
+
+
 def split_comm_and_redistribute_basis(priorities: Iterable[float], basis: Basis, psis: list[dict]):
     """
     Split MPI communicator in order to divide MPI ranks among items, number of ranks per item is determined using the priorities.
@@ -319,16 +329,15 @@ def calc_Greens_function_with_offdiag(
     e0 = min(es)
     Z = np.sum(np.exp(-(es - e0) / tau))
     for psi, e in zip(psis[eigen_indices], es[eigen_indices]):
-
         if chain_restrict:
-            _, bath_rhos, bath_indices = basis.build_density_matrices([psi])
+            _, bath_rhos, bath_indices = eigen_basis.build_density_matrices([psi])
             bath_rhos = {i: [rho[0] for rho in br] for i, br in bath_rhos.items()}
         else:
             bath_rhos = None
             bath_indices = None
 
         if occ_restrict or chain_restrict:
-            excited_restrictions = basis.build_excited_restrictions(
+            excited_restrictions = eigen_basis.build_excited_restrictions(
                 bath_rhos=bath_rhos,
                 bath_indices=bath_indices,
                 imp_change=(1, 1),

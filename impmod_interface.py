@@ -301,6 +301,7 @@ def parse_solver_line(solver_line):
         f"Occupation restrictions  |> {options['occ_restrict']}\n"
         f"Occupation cutoff        |> {options['occ_cutoff']}\n"
         f"Chain occ. restrictions  |> {options['chain_restrict']}\n",
+        f"Minimal Slater weight    |> {options['slater_min']}\n",
         flush=True,
     )
     return nominal_occ, delta_occ, nBaths, options
