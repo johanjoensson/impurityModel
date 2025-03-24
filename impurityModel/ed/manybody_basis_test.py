@@ -14,7 +14,6 @@ def test_Basis_states():
         bath_states=(
             {0: [[]]},
             {0: [[]]},
-            {0: [[]]},
         ),
         delta_valence_occ={0: 0},
         delta_conduction_occ={0: 0},
@@ -34,7 +33,6 @@ def test_Basis_states_val():
         bath_states=(
             {0: [list(range(5, 10))]},
             {0: [[]]},
-            {0: [[]]},
         ),
         delta_valence_occ={0: 0},
         delta_conduction_occ={0: 0},
@@ -43,26 +41,6 @@ def test_Basis_states_val():
         verbose=True,
     )
     assert all(state in basis for state in exact), basis.local_basis
-    assert all(state in exact for state in basis)
-
-
-def test_Basis_states_zero():
-    # 1000 0011 1100 0000  0100 0101 1100 0000  0010 0110 1100 0000  0001 0111 0100 0000  0000 1111 1000 0000
-    exact = [b"\x83\xc0", b"\x45\xc0", b"\x26\xc0", b"\x17\x40", b"\x0f\x80"]
-    basis = Basis(
-        impurity_orbitals={0: [[i] for i in range(5)]},
-        bath_states=(
-            {0: [[]]},
-            {0: [[i] for i in range(5, 10)]},
-            {0: [[]]},
-        ),
-        delta_valence_occ={0: 0},
-        delta_conduction_occ={0: 0},
-        delta_impurity_occ={0: 0},
-        nominal_impurity_occ={0: 1},
-        verbose=True,
-    )
-    assert all(state in basis for state in exact), f"{basis.local_basis=}"
     assert all(state in exact for state in basis)
 
 
@@ -87,7 +65,6 @@ def test_Basis_len(
         impurity_orbitals={0: [list(range(10))]},
         bath_states=(
             {0: [list(range(10, 10 + valence_baths))]},
-            {0: [[]]},
             {0: [list(range(10 + valence_baths, 10 + valence_baths + conduction_baths))]},
         ),
         delta_valence_occ={0: delta_valence_occ},
@@ -122,7 +99,6 @@ def test_Basis_len_mpi(
         impurity_orbitals={0: [list(range(10))]},
         bath_states=(
             {0: [list(range(10, 10 + valence_baths))]},
-            {0: [[]]},
             {0: [list(range(10 + valence_baths, 10 + valence_baths + conduction_baths))]},
         ),
         delta_valence_occ={0: delta_valence_occ},
@@ -155,7 +131,6 @@ def test_Basis_in(
         impurity_orbitals={0: [list(range(10))]},
         bath_states=(
             {0: [list(range(10, 10 + valence_baths))]},
-            {0: [[]]},
             {0: [list(range(10 + valence_baths, 10 + valence_baths + conduction_baths))]},
         ),
         delta_valence_occ={0: delta_valence_occ},
@@ -189,7 +164,6 @@ def test_Basis_in_mpi(
         impurity_orbitals={0: [list(range(10))]},
         bath_states=(
             {0: [list(range(10, 10 + valence_baths))]},
-            {0: [[]]},
             {0: [list(range(10 + valence_baths, 10 + valence_baths + conduction_baths))]},
         ),
         delta_valence_occ={0: delta_valence_occ},
@@ -223,7 +197,6 @@ def test_Basis_list(
         impurity_orbitals={0: [list(range(10))]},
         bath_states=(
             {0: [list(range(10, 10 + valence_baths))]},
-            {0: [[]]},
             {0: [list(range(10 + valence_baths, 10 + valence_baths + conduction_baths))]},
         ),
         delta_valence_occ={0: delta_valence_occ},
@@ -256,7 +229,6 @@ def test_Basis_list_mpi(
         impurity_orbitals={0: [list(range(10))]},
         bath_states=(
             {0: [list(range(10, 10 + valence_baths))]},
-            {0: [[]]},
             {0: [list(range(10 + valence_baths, 10 + valence_baths + conduction_baths))]},
         ),
         delta_valence_occ={0: delta_valence_occ},
@@ -290,7 +262,6 @@ def test_CIPSI_Basis_len(
         impurity_orbitals={0: [list(range(10))]},
         bath_states=(
             {0: [list(range(10, 10 + valence_baths))]},
-            {0: [[]]},
             {0: [list(range(10 + valence_baths, 10 + valence_baths + conduction_baths))]},
         ),
         delta_valence_occ={0: delta_valence_occ},
@@ -324,7 +295,6 @@ def test_CIPSI_Basis_len_mpi(
         impurity_orbitals={0: [list(range(10))]},
         bath_states=(
             {0: [list(range(10, 10 + valence_baths))]},
-            {0: [[]]},
             {0: [list(range(10 + valence_baths, 10 + valence_baths + conduction_baths))]},
         ),
         delta_valence_occ={0: delta_valence_occ},
@@ -401,7 +371,6 @@ def test_contains_2():
         bath_states=(
             {0: [[]]},
             {0: [[]]},
-            {0: [[]]},
         ),
         initial_basis=states,
         verbose=True,
@@ -432,7 +401,6 @@ def test_contains_random(n_bytes, n_states):
     basis = Basis(
         impurity_orbitals={0: [list(range(8 * n_bytes))]},
         bath_states=(
-            {0: [[]]},
             {0: [[]]},
             {0: [[]]},
         ),
@@ -469,7 +437,6 @@ def test_contains_random_distributed(n_bytes, n_states):
     basis = Basis(
         impurity_orbitals={0: [list(range(8 * n_bytes))]},
         bath_states=(
-            {0: [[]]},
             {0: [[]]},
             {0: [[]]},
         ),
@@ -511,7 +478,6 @@ def test_contains_random_distributed_random(n_bytes, n_states, n_sample_states):
         bath_states=(
             {0: [[]]},
             {0: [[]]},
-            {0: [[]]},
         ),
         initial_basis=states,
         verbose=True,
@@ -546,7 +512,6 @@ def test_index_random_distributed_random(n_bytes, n_states, n_sample_states):
         bath_states=(
             {0: [[]]},
             {0: [[]]},
-            {0: [[]]},
         ),
         initial_basis=states,
         verbose=True,
@@ -576,7 +541,7 @@ def test_operator_dict_simple():
     states = [b"\x78"]
     basis = Basis(
         impurity_orbitals={0: [list(range(5))]},
-        bath_states=({0: [[]]}, {0: [[]]}, {0: [[]]}),
+        bath_states=({0: [[]]}, {0: [[]]}),
         initial_basis=states,
         verbose=True,
         comm=None,
@@ -605,7 +570,7 @@ def test_operator_dict_simple_mpi():
     states = [b"\x78"]
     basis = Basis(
         impurity_orbitals={0: [list(range(5))]},
-        bath_states=({0: [[]]}, {0: [[]]}, {0: [[]]}),
+        bath_states=({0: [[]]}, {0: [[]]}),
         initial_basis=states,
         verbose=True,
         comm=MPI.COMM_WORLD,
@@ -642,7 +607,10 @@ def test_operator_dict_simple_with_extra_states():
     states = [b"\x78"]
     basis = Basis(
         impurity_orbitals={0: [list(range(5))]},
-        bath_states=({0: [[]]}, {0: [[]]}, {0: [[]]}),
+        bath_states=(
+            {0: [[]]},
+            {0: [[]]},
+        ),
         initial_basis=states,
         verbose=True,
         comm=None,
@@ -672,7 +640,10 @@ def test_operator_dict_simple_with_extra_states_mpi():
     states = [b"\x78"]
     basis = Basis(
         impurity_orbitals={0: [list(range(5))]},
-        bath_states=({0: [[]]}, {0: [[]]}, {0: [[]]}),
+        bath_states=(
+            {0: [[]]},
+            {0: [[]]},
+        ),
         initial_basis=states,
         verbose=True,
         comm=MPI.COMM_WORLD,
@@ -708,7 +679,10 @@ def test_operator_dict_eg_t2g():
     states = [b"\x78", b"\xb8", b"\xd8", b"\xe8", b"\xf0"]
     basis = Basis(
         impurity_orbitals={0: [list(range(5))]},
-        bath_states=({0: [[]]}, {0: [[]]}, {0: [[]]}),
+        bath_states=(
+            {0: [[]]},
+            {0: [[]]},
+        ),
         initial_basis=states,
         verbose=True,
         comm=None,
@@ -744,7 +718,10 @@ def test_operator_dict_eg_t2g_mpi():
     states = [b"\x78", b"\xb8", b"\xd8", b"\xe8", b"\xf0"]
     basis = Basis(
         impurity_orbitals={0: [list(range(5))]},
-        bath_states=({0: [[]]}, {0: [[]]}, {0: [[]]}),
+        bath_states=(
+            {0: [[]]},
+            {0: [[]]},
+        ),
         initial_basis=states,
         verbose=True,
         comm=MPI.COMM_WORLD,
@@ -788,7 +765,10 @@ def test_operator_dict_eg_t2g_with_extra_states():
     states = [b"\x78", b"\xb8", b"\xd8", b"\xe8", b"\xf0"]
     basis = Basis(
         impurity_orbitals={0: [list(range(5))]},
-        bath_states=({0: [[]]}, {0: [[]]}, {0: [[]]}),
+        bath_states=(
+            {0: [[]]},
+            {0: [[]]},
+        ),
         initial_basis=states,
         verbose=True,
         comm=None,
@@ -827,7 +807,10 @@ def test_operator_dict_eg_t2g_with_extra_states_mpi():
     states = [b"\x78", b"\xb8", b"\xd8", b"\xe8", b"\xf0"]
     basis = Basis(
         impurity_orbitals={0: [list(range(5))]},
-        bath_states=({0: [[]]}, {0: [[]]}, {0: [[]]}),
+        bath_states=(
+            {0: [[]]},
+            {0: [[]]},
+        ),
         initial_basis=states,
         verbose=True,
         comm=MPI.COMM_WORLD,
@@ -872,7 +855,10 @@ def test_simple_dense_matrix():
     states = [b"\x78"]
     basis = Basis(
         impurity_orbitals={0: [list(range(5))]},
-        bath_states=({0: [[]]}, {0: [[]]}, {0: [[]]}),
+        bath_states=(
+            {0: [[]]},
+            {0: [[]]},
+        ),
         initial_basis=states,
         verbose=True,
         comm=None,
@@ -898,7 +884,10 @@ def test_simple_dense_matrix_mpi():
     states = [b"\x78"]
     basis = Basis(
         impurity_orbitals={0: [list(range(5))]},
-        bath_states=({0: [[]]}, {0: [[]]}, {0: [[]]}),
+        bath_states=(
+            {0: [[]]},
+            {0: [[]]},
+        ),
         initial_basis=states,
         verbose=True,
         comm=MPI.COMM_WORLD,
@@ -923,7 +912,10 @@ def test_eg_t2g_dense_matrix():
     states = [b"\x78", b"\xb8", b"\xd8", b"\xe8", b"\xf0"]
     basis = Basis(
         impurity_orbitals={0: [list(range(5))]},
-        bath_states=({0: [[]]}, {0: [[]]}, {0: [[]]}),
+        bath_states=(
+            {0: [[]]},
+            {0: [[]]},
+        ),
         initial_basis=states,
         verbose=True,
         comm=None,
@@ -961,7 +953,10 @@ def test_eg_t2g_dense_matrix_mpi():
     states = [b"\x78", b"\xb8", b"\xd8", b"\xe8", b"\xf0"]
     basis = Basis(
         impurity_orbitals={0: [list(range(5))]},
-        bath_states=({0: [[]]}, {0: [[]]}, {0: [[]]}),
+        bath_states=(
+            {0: [[]]},
+            {0: [[]]},
+        ),
         initial_basis=states,
         verbose=True,
         comm=MPI.COMM_WORLD,
@@ -989,7 +984,10 @@ def test_simple_vector():
     states = [b"\x00\x1a\x2b", b"\xff\x00\x1a"]
     basis = Basis(
         impurity_orbitals={0: [list(range(24))]},
-        bath_states=({0: [[]]}, {0: [[]]}, {0: [[]]}),
+        bath_states=(
+            {0: [[]]},
+            {0: [[]]},
+        ),
         initial_basis=states,
         verbose=True,
         comm=None,
@@ -1013,7 +1011,10 @@ def test_simple_vector_mpi():
     states = [b"\x00\x1a\x2b", b"\xff\x00\x1a"]
     basis = Basis(
         impurity_orbitals={0: [list(range(24))]},
-        bath_states=({0: [[]]}, {0: [[]]}, {0: [[]]}),
+        bath_states=(
+            {0: [[]]},
+            {0: [[]]},
+        ),
         initial_basis=states,
         verbose=True,
         comm=MPI.COMM_WORLD,
@@ -1037,7 +1038,10 @@ def test_vector():
     states = [b"\x78", b"\xb8", b"\xd8", b"\xe8", b"\xf0"]
     basis = Basis(
         impurity_orbitals={0: [list(range(5))]},
-        bath_states=({0: [[]]}, {0: [[]]}, {0: [[]]}),
+        bath_states=(
+            {0: [[]]},
+            {0: [[]]},
+        ),
         initial_basis=states[:-1],
         verbose=True,
         comm=None,
@@ -1060,7 +1064,10 @@ def test_vector_mpi():
     states = [b"\x78", b"\xb8", b"\xd8", b"\xe8", b"\xf0"]
     basis = Basis(
         impurity_orbitals={0: [list(range(5))]},
-        bath_states=({0: [[]]}, {0: [[]]}, {0: [[]]}),
+        bath_states=(
+            {0: [[]]},
+            {0: [[]]},
+        ),
         initial_basis=states[:-1],
         verbose=True,
         comm=comm,
@@ -1081,7 +1088,10 @@ def test_simple_state():
     states = [b"\x00\x1a\x2b", b"\xff\x00\x1a"]
     basis = Basis(
         impurity_orbitals={0: [list(range(5))]},
-        bath_states=({0: [[]]}, {0: [[]]}, {0: [[]]}),
+        bath_states=(
+            {0: [[]]},
+            {0: [[]]},
+        ),
         initial_basis=states,
         verbose=True,
         comm=None,
@@ -1100,7 +1110,10 @@ def test_simple_state_mpi():
     states = [b"\x2b", b"\x1a"]
     basis = Basis(
         impurity_orbitals={0: [list(range(5))]},
-        bath_states=({0: [[]]}, {0: [[]]}, {0: [[]]}),
+        bath_states=(
+            {0: [[]]},
+            {0: [[]]},
+        ),
         initial_basis=states,
         verbose=True,
         comm=MPI.COMM_WORLD,
@@ -1124,7 +1137,10 @@ def test_state_mpi():
     states = [b"\x78", b"\xb8", b"\xd8", b"\xe8", b"\xf0"]
     basis = Basis(
         impurity_orbitals={0: [list(range(5))]},
-        bath_states=({0: [[]]}, {0: [[]]}, {0: [[]]}),
+        bath_states=(
+            {0: [[]]},
+            {0: [[]]},
+        ),
         initial_basis=states,
         verbose=True,
         comm=comm,
@@ -1146,7 +1162,10 @@ def test_state_mpi():
     states = [b"\x78", b"\xb8", b"\xd8", b"\xe8", b"\xf0"]
     basis = Basis(
         impurity_orbitals={0: [list(range(5))]},
-        bath_states=({0: [[]]}, {0: [[]]}, {0: [[]]}),
+        bath_states=(
+            {0: [[]]},
+            {0: [[]]},
+        ),
         initial_basis=states,
         verbose=True,
         comm=comm,
@@ -1231,7 +1250,10 @@ def test_alltoall_states_mpi():
     send_states = [[r.to_bytes(bytes_per_state, "big")] for r in range(comm.size)]
     basis = Basis(
         impurity_orbitals={0: [list(range(num_spin_orbitals))]},
-        bath_states=({0: [[]]}, {0: [[]]}, {0: [[]]}),
+        bath_states=(
+            {0: [[]]},
+            {0: [[]]},
+        ),
         initial_basis=[],
         verbose=True,
         comm=comm,
@@ -1250,7 +1272,10 @@ def test_alltoall_states_with_empty_mpi():
     send_states = [[r.to_bytes(bytes_per_state, "big")] if r < comm.rank else [] for r in range(comm.size)]
     basis = Basis(
         impurity_orbitals={0: [list(range(num_spin_orbitals))]},
-        bath_states=({0: [[]]}, {0: [[]]}, {0: [[]]}),
+        bath_states=(
+            {0: [[]]},
+            {0: [[]]},
+        ),
         initial_basis=[],
         verbose=True,
         comm=comm,
@@ -1284,7 +1309,10 @@ def test_eg_t2g_basis_expand():
     states = [b"\x80\x00", b"\x40\x00"]
     basis = Basis(
         impurity_orbitals={0: [list(range(10))]},
-        bath_states=({0: [[]]}, {0: [[]]}, {0: [[]]}),
+        bath_states=(
+            {0: [[]]},
+            {0: [[]]},
+        ),
         initial_basis=states,
         verbose=True,
         comm=None,
@@ -1322,7 +1350,10 @@ def test_eg_t2g_basis_expand_mpi():
     states = [b"\x80\x00", b"\x40\x00"]
     basis = Basis(
         impurity_orbitals={2: [list(range(10))]},
-        bath_states=({2: [[]]}, {2: [[]]}, {2: [[]]}),
+        bath_states=(
+            {2: [[]]},
+            {2: [[]]},
+        ),
         initial_basis=states,
         verbose=True,
         comm=MPI.COMM_WORLD,
@@ -1359,7 +1390,10 @@ def test_eg_t2g_CIPSI_basis_expand():
     states = [b"\x80\x00"]
     basis = CIPSI_Basis(
         impurity_orbitals={2: [list(range(10))]},
-        bath_states=({2: [[]]}, {2: [[]]}, {2: [[]]}),
+        bath_states=(
+            {2: [[]]},
+            {2: [[]]},
+        ),
         initial_basis=states,
         verbose=True,
         comm=None,
@@ -1395,7 +1429,10 @@ def test_eg_t2g_CIPSI_basis_expand_mpi():
     states = [b"\x80\x00"]
     basis = CIPSI_Basis(
         impurity_orbitals={2: [list(range(10))]},
-        bath_states=({2: [[]]}, {2: [[]]}, {2: [[]]}),
+        bath_states=(
+            {2: [[]]},
+            {2: [[]]},
+        ),
         initial_basis=states,
         verbose=True,
         comm=MPI.COMM_WORLD,
@@ -1415,7 +1452,10 @@ def test_distributed_simple_vector():
     states = (b"\x00\x1a\x2b", b"\xff\x00\x1a")
     basis = Basis(
         impurity_orbitals={2: [list(range(24))]},
-        bath_states=({2: [[]]}, {2: [[]]}, {2: [[]]}),
+        bath_states=(
+            {2: [[]]},
+            {2: [[]]},
+        ),
         initial_basis=states,
         verbose=True,
         comm=MPI.COMM_WORLD,
@@ -1444,7 +1484,10 @@ def test_distributed_vector_mpi():
     states = [b"\x78", b"\xb8", b"\xd8", b"\xe8", b"\xf0"]
     basis = Basis(
         impurity_orbitals={0: [list(range(5))]},
-        bath_states=({0: [[]]}, {0: [[]]}, {0: [[]]}),
+        bath_states=(
+            {0: [[]]},
+            {0: [[]]},
+        ),
         initial_basis=states[:-1],
         verbose=True,
         comm=comm,

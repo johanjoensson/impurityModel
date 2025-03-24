@@ -90,12 +90,12 @@ def edchains(vs, ebs):
         chain_v_unocc[0:n_block_orb] = v0_tilde
         for i in range(0, len(chain_eb) - 1):
             H_bath_unocc[i * n_block_orb : (i + 1) * n_block_orb, i * n_block_orb : (i + 1) * n_block_orb] = chain_eb[i]
-            H_bath_unocc[
-                (i + 1) * n_block_orb : (i + 2) * n_block_orb, i * n_block_orb : (i + 1) * n_block_orb
-            ] = chain_v[i]
-            H_bath_unocc[
-                i * n_block_orb : (i + 1) * n_block_orb, (i + 1) * n_block_orb : (i + 2) * n_block_orb
-            ] = np.conj(chain_v[i].T)
+            H_bath_unocc[(i + 1) * n_block_orb : (i + 2) * n_block_orb, i * n_block_orb : (i + 1) * n_block_orb] = (
+                chain_v[i]
+            )
+            H_bath_unocc[i * n_block_orb : (i + 1) * n_block_orb, (i + 1) * n_block_orb : (i + 2) * n_block_orb] = (
+                np.conj(chain_v[i].T)
+            )
         H_bath_unocc[-n_block_orb:, -n_block_orb:] = chain_eb[-1]
     else:
         chain_v_unocc = np.zeros((0 * n_block_orb, n_block_orb), dtype=complex)
@@ -115,8 +115,6 @@ def haverkort_chain(eloc, tns, ens):
         H[i + 1, i + 1] = ens[i]
         H[i, i + 1] = tns[i]
         H[i + 1, i] = tns[i]
-    matrix_print(H, "Hchain=")
-    print("", flush=True)
 
     w, v = np.linalg.eigh(H)
 
@@ -148,19 +146,12 @@ def haverkort_chain(eloc, tns, ens):
     R[1, 1] = cs[0] / r
 
     Hnew = np.conj(vtot.T) @ H @ vtot
-    matrix_print(vtot, "Q before rotating impurity=")
-    matrix_print(Hnew, "H before rotating impurity=")
     vtot[:, n - 1 : n + 1] = vtot[:, n - 1 : n + 1] @ np.conj(R.T)
-    matrix_print(vtot, "Q after rotating impurity=")
 
     indices = np.append(np.roll(np.arange(0, n), 1), np.arange(n, hsize))
     idx = np.ix_(indices, indices)
     Hnew = np.conj(vtot.T) @ H @ vtot
-    matrix_print(Hnew, "Hhaverkort=")
     Hnew = Hnew[idx]
-    matrix_print(Hnew, "Hhaverkort 2=")
-    matrix_print(Hnew[block_size:, :block_size], "T haverkort=")
-    matrix_print(Hnew[block_size:, block_size:], "H haverkort=")
 
     assert np.allclose(np.linalg.eigvalsh(H), np.linalg.eigvalsh(Hnew))
 

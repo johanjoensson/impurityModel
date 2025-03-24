@@ -44,11 +44,9 @@ def fixed_peak_dc(h0_op, dc_struct, rank, verbose, dense_cutoff):
     N0 = dc_struct.nominal_occ
     delta_impurity_occ, delta_valence_occ, delta_conduction_occ = dc_struct.delta_occ
     peak_position = max(dc_struct.peak_position, 4 * dc_struct.tau)
-    valence_baths, zero_baths, conduction_baths = dc_struct.bath_states
+    valence_baths, conduction_baths = dc_struct.bath_states
     sum_bath_states = {
-        i: sum(len(orbs) for orbs in valence_baths[i])
-        + sum(len(orbs) for orbs in zero_baths[i])
-        + sum(len(orbs) for orbs in conduction_baths[i])
+        i: sum(len(orbs) for orbs in valence_baths[i]) + sum(len(orbs) for orbs in conduction_baths[i])
         for i in valence_baths
     }
     u = finite.getUop_from_rspt_u4(dc_struct.u4)
@@ -127,9 +125,12 @@ def fixed_peak_dc(h0_op, dc_struct, rank, verbose, dense_cutoff):
             if abs(dc_trial[i, j]) > 0
         }
         h_op = finite.addOps([h_op_i, dc_op_i])
+        _ = basis_upper.expand(h_op, dense_cutoff=dense_cutoff, de2_min=1e-4)
+        _ = basis_lower.expand(h_op, dense_cutoff=dense_cutoff, de2_min=1e-4)
+
         h_dict = basis_upper.build_operator_dict(h_op)
         h = (
-            basis_upper.build_sparse_matrix(h_op, {})
+            basis_upper.build_sparse_matrix(h_op)
             if basis_upper.size > dense_cutoff
             else basis_upper.build_dense_matrix(h_op, h_dict)
         )
@@ -138,7 +139,7 @@ def fixed_peak_dc(h0_op, dc_struct, rank, verbose, dense_cutoff):
         )
         h_dict = basis_lower.build_operator_dict(h_op)
         h = (
-            basis_lower.build_sparse_matrix(h_op, {})
+            basis_lower.build_sparse_matrix(h_op)
             if basis_lower.size > dense_cutoff
             else basis_lower.build_dense_matrix(h_op, h_dict)
         )
@@ -248,7 +249,10 @@ def find_gs(
     h_dict_gs, dict: Memoized states for the hamiltonian operator.
     """
     delta_imp_occ, delta_val_occ, delta_con_occ = delta_occ
-    num_val_baths, zero_baths, num_cond_baths = bath_states
+    (
+        num_val_baths,
+        num_cond_baths,
+    ) = bath_states
     e_gs = np.inf
     basis_gs = None
     gs_impurity_occ = None
@@ -265,7 +269,7 @@ def find_gs(
             spin_flip_dj,
             dense_cutoff,
             comm=comm,
-            verbose=False,
+            verbose=verbose,
             truncation_threshold=truncation_threshold,
         )
         if e_trial < e_gs:
@@ -290,7 +294,7 @@ def find_gs(
             spin_flip_dj,
             dense_cutoff,
             comm=comm,
-            verbose=False,
+            verbose=verbose,
             truncation_threshold=truncation_threshold,
         )
         if e_trial >= e_gs:
@@ -299,19 +303,10 @@ def find_gs(
         basis_gs = basis
         h_dict_gs = h_dict.copy()
         gs_impurity_occ = {i: gs_impurity_occ[i] + dN_gs for i in gs_impurity_occ}
-    valence_occ = {i: sum(len(bs) for bs in blocks) for i, blocks in bath_states[0].items()}
-    zero_occ = {i: sum(len(bs) for bs in blocks) / 2 for i, blocks in bath_states[1].items()}
-    conduction_occ = {i: 0 for i in bath_states[2]}
-    if verbose:
-        print("Nominal GS occupation")
-        print(f"--->impurity: {gs_impurity_occ}")
-        print(f"--->valence: {valence_occ}")
-        print(f"--->zero: {zero_occ}")
-        print(f"--->conduction: {conduction_occ}")
-    return (gs_impurity_occ, valence_occ, zero_occ, conduction_occ), basis_gs, h_dict_gs
+    return gs_impurity_occ, basis_gs, h_dict_gs
 
 
-def run(cluster, h0, iw, w, delta, tau, verbosity, reort, dense_cutoff, comm):
+def run(cluster, h0, iw, w, delta, tau, verbosity, reort, dense_cutoff, slaterWeightMin, comm):
     """
     cluster     -- The impmod_cluster object containing loads of data.
     h0          -- Non-interacting hamiltonian.
@@ -349,7 +344,9 @@ def run(cluster, h0, iw, w, delta, tau, verbosity, reort, dense_cutoff, comm):
         comm=comm,
         occ_restrict=cluster.occ_restrict,
         chain_restrict=cluster.chain_restrict,
+        occ_cutoff=cluster.occ_cutoff,
         truncation_threshold=cluster.truncation_threshold,
+        slaterWeightMin=slaterWeightMin,
     )
 
     if comm.rank == 0:
@@ -388,7 +385,9 @@ def calc_selfenergy(
     comm,
     occ_restrict,
     chain_restrict,
+    occ_cutoff,
     truncation_threshold,
+    slaterWeightMin,
 ):
     """
     Calculate the self energy of the impurity.
@@ -396,12 +395,10 @@ def calc_selfenergy(
     # MPI variables
     rank = comm.rank
 
-    valence_baths, zero_baths, conduction_baths = bath_states
+    valence_baths, conduction_baths = bath_states
     total_impurity_orbitals = {i: sum(len(orbs) for orbs in impurity_orbitals[i]) for i in impurity_orbitals}
     sum_bath_states = {
-        i: sum(len(orbs) for orbs in valence_baths[i])
-        + sum(len(orbs) for orbs in zero_baths[i])
-        + sum(len(orbs) for orbs in conduction_baths[i])
+        i: sum(len(orbs) for orbs in valence_baths[i]) + sum(len(orbs) for orbs in conduction_baths[i])
         for i in valence_baths
     }
 
@@ -409,7 +406,7 @@ def calc_selfenergy(
     u = finite.getUop_from_rspt_u4(u4)
     h = finite.addOps([h0, u])
 
-    (n0_imp, n0_val, n0_zero, n0_con), basis, h_dict = find_gs(
+    gs_impurity_occ, basis, h_dict = find_gs(
         h,
         nominal_occ,
         delta_occ,
@@ -425,8 +422,11 @@ def calc_selfenergy(
     delta_imp_occ, delta_val_occ, delta_con_occ = delta_occ
     restrictions = basis.restrictions
 
+    if verbosity >= 1:
+        print("Nominal GS occupation")
+        print(f"--->impurity: {gs_impurity_occ}")
     if restrictions is not None and verbosity >= 2:
-        print("Restrictions on occupation")
+        print("Restrictions GS on occupation")
         for key, res in restrictions.items():
             print(f"---> {key} : {res}")
 
@@ -441,7 +441,7 @@ def calc_selfenergy(
     es, psis_dense = finite.eigensystem_new(
         h_gs,
         e_max=energy_cut,
-        k=total_impurity_orbitals[0],
+        k=2 * total_impurity_orbitals[0],
         eigenValueTol=0,
         comm=basis.comm,
     )
@@ -450,14 +450,12 @@ def calc_selfenergy(
     # basis.add_states(set(state for psi in psis for state in psi))
     if verbosity >= 1:
         print(f"{len(h)} processes in the Hamiltonian.")
-        print(f"#basis states = {len(basis)}")
+        print(f"{len(basis)} Slater determinants in the basis.")
     gs_stats = basis.get_state_statistics(psis)
     all_psis = comm.gather(psis)
     local_psis = [{} for _ in psis]
     sum_bath_states = {
-        i: sum(len(orbs) for orbs in valence_baths[i])
-        + sum(len(orbs) for orbs in zero_baths[i])
-        + sum(len(orbs) for orbs in conduction_baths[i])
+        i: sum(len(orbs) for orbs in valence_baths[i]) + sum(len(orbs) for orbs in conduction_baths[i])
         for i in valence_baths
     }
     if rank == 0:
@@ -490,7 +488,7 @@ def calc_selfenergy(
         print("Ground state bath occupation statistics:", flush=True)
         for i in basis.impurity_orbitals.keys():
             print(f"orbital set {i}:")
-            print("Impuity density matrices:")
+            print("Impurity density matrices:")
             for rho in thermal_imp_rhos[i]:
                 matrix_print(rho, "")
             print("Bath density matrices:")
@@ -547,6 +545,7 @@ def calc_selfenergy(
         reort=reort,
         occ_restrict=occ_restrict,
         chain_restrict=chain_restrict,
+        occ_cutoff=occ_cutoff,
     )
     if gs_matsubara is not None:
         try:

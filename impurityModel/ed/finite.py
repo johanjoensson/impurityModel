@@ -131,6 +131,18 @@ def mpi_matmul(h_local, comm):
     return matmat
 
 
+def create_linear_operator(A_local, comm):
+    A = scipy.sparse.linalg.LinearOperator(
+        (A_local.shape[0], A_local.shape[0]),
+        matvec=mpi_matmul(A_local, comm),
+        rmatvec=mpi_matmul(np.conj(A_local.T), comm),
+        matmat=mpi_matmul(A_local, comm),
+        rmatmat=mpi_matmul(np.conj(A_local.T), comm),
+        dtype=A_local.dtype,
+    )
+    return A
+
+
 def eigensystem_new(
     h_local,
     e_max,
@@ -191,16 +203,15 @@ def eigensystem_new(
             dk += k
             v0_guess = vecs[:, mask][:, [0]]
     elif "petsc4py" in sys.modules and isinstance(h_local, PETSc.Mat):
-        dk = 5
+        dk = 10
         es = []
-        mask = [True]
 
         eig_solver = SLEPc.EPS()
         eig_solver.create()
         eig_solver.setOperators(h_local)
         eig_solver.setProblemType(SLEPc.EPS.ProblemType.HEP)
         eig_solver.setWhichEigenpairs(EPS.Which.SMALLEST_REAL)
-        eig_solver.setDimensions(k + dk, PETSc.DECIDE)
+        eig_solver.setDimensions(k, PETSc.DECIDE)
         eig_solver.solve()
         nconv = eig_solver.getConverged()
         es = np.empty((nconv), dtype=float)
@@ -814,7 +825,7 @@ def removeFromFirst(psi1, psi2, mul=1):
 
 
 def scale(psi, mul):
-    """
+    r"""
     return mul*|\psi\rangle
     """
     return {s: a * mul for s, a in psi.items()}
@@ -1100,11 +1111,12 @@ def addOps(ops):
     opSum = {}
     for op in ops:
         for sOp, value in op.items():
-            if np.abs(value) > 1e-12:
-                if sOp in opSum:
-                    opSum[sOp] += value
-                else:
-                    opSum[sOp] = value
+            opSum[sOp] = opSum.get(sOp, 0) + value
+            # if np.abs(value) > 1e-12:
+            #     if sOp in opSum:
+            #         opSum[sOp] += value
+            #     else:
+            #         opSum[sOp] = value
     return opSum
 
 
@@ -1114,12 +1126,12 @@ def subtractOps(A, B):
     """
     opDiff = deepcopy(A)
     for sOp, value in B.items():
-        if np.abs(value) > 0:
-            opDiff[sOp] = opDiff.get(sOp, 0) - value
-            # if sOp in opDiff:
-            #     opDiff[sOp] -= value
-            # else:
-            #     opDiff[sOp] = -value
+        opDiff[sOp] = opDiff.get(sOp, 0) - value
+        # if np.abs(value) > 0:
+        # if sOp in opDiff:
+        #     opDiff[sOp] -= value
+        # else:
+        #     opDiff[sOp] = -value
     return opDiff
 
 
