@@ -300,7 +300,7 @@ def parse_solver_line(solver_line):
         f"Fitting weight factor    |> {options['weight']}\n"
         f"Occupation restrictions  |> {options['occ_restrict']}\n"
         f"Occupation cutoff        |> {options['occ_cutoff']}\n"
-        f"Chain occ. restrictions  |> {options['chain_restrict']}\n",
+        f"Chain occ. restrictions  |> {options['chain_restrict']}\n"
         f"Minimal Slater weight    |> {options['slater_min']}\n",
         flush=True,
     )

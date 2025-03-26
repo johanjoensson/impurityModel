@@ -193,7 +193,7 @@ def eigensystem_new(
             dtype=h_local.dtype,
         )
 
-        dk = 1
+        dk = 5
         v0_guess = v0[:, [0]] if v0 is not None else np.ones((h_local.shape[0], 1), dtype=complex)
         es = []
         mask = [True]

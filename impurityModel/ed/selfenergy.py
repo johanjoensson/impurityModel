@@ -256,53 +256,55 @@ def find_gs(
     e_gs = np.inf
     basis_gs = None
     gs_impurity_occ = None
-    dN_gs = np.inf
+    dN_gs = [np.inf for _ in N0]
     for dN in [0, -1, 1]:
-        e_trial, basis, h_dict = calc_occ_e(
-            h_op,
-            {i: N0[i] + dN for i in N0},
-            impurity_orbitals,
-            bath_states,
-            delta_imp_occ,
-            delta_val_occ,
-            delta_con_occ,
-            spin_flip_dj,
-            dense_cutoff,
-            comm=comm,
-            verbose=verbose,
-            truncation_threshold=truncation_threshold,
-        )
-        if e_trial < e_gs:
+        for i in N0:
+            e_trial, basis, h_dict = calc_occ_e(
+                h_op,
+                {i: N0[i] + dN for i in N0},
+                impurity_orbitals,
+                bath_states,
+                delta_imp_occ,
+                delta_val_occ,
+                delta_con_occ,
+                spin_flip_dj,
+                dense_cutoff,
+                comm=comm,
+                verbose=verbose,
+                truncation_threshold=truncation_threshold,
+            )
+            if e_trial < e_gs:
+                e_gs = e_trial
+                basis_gs = basis
+                h_dict_gs = h_dict.copy()
+                dN_gs[i] = dN
+                gs_impurity_occ = {i: N0[i] + dN for i in N0}
+    for i in N0:
+        while (
+            all(dn != 0 for dn in dN_gs)
+            and all(imp_occ + dN_gs[i] > 0 for i, imp_occ in gs_impurity_occ.items())
+            and all(gs_impurity_occ[i] + dN_gs[i] <= len(impurity_orbitals[i]) for i in gs_impurity_occ)
+        ):
+            e_trial, basis, h_dict = calc_occ_e(
+                h_op,
+                {i: gs_impurity_occ[i] + dN_gs[i] for i in gs_impurity_occ},
+                impurity_orbitals,
+                bath_states,
+                delta_imp_occ,
+                delta_val_occ,
+                delta_con_occ,
+                spin_flip_dj,
+                dense_cutoff,
+                comm=comm,
+                verbose=verbose,
+                truncation_threshold=truncation_threshold,
+            )
+            if e_trial >= e_gs:
+                break
             e_gs = e_trial
             basis_gs = basis
             h_dict_gs = h_dict.copy()
-            dN_gs = dN
-            gs_impurity_occ = {i: N0[i] + dN for i in N0}
-    while (
-        dN_gs != 0
-        and all(imp_occ + dN_gs > 0 for imp_occ in gs_impurity_occ.values())
-        and all(gs_impurity_occ[i] + dN_gs < len(impurity_orbitals[i]) for i in gs_impurity_occ)
-    ):
-        e_trial, basis, h_dict = calc_occ_e(
-            h_op,
-            {i: gs_impurity_occ[i] + dN_gs for i in gs_impurity_occ},
-            impurity_orbitals,
-            bath_states,
-            delta_imp_occ,
-            delta_val_occ,
-            delta_con_occ,
-            spin_flip_dj,
-            dense_cutoff,
-            comm=comm,
-            verbose=verbose,
-            truncation_threshold=truncation_threshold,
-        )
-        if e_trial >= e_gs:
-            break
-        e_gs = e_trial
-        basis_gs = basis
-        h_dict_gs = h_dict.copy()
-        gs_impurity_occ = {i: gs_impurity_occ[i] + dN_gs for i in gs_impurity_occ}
+            gs_impurity_occ = {i: gs_impurity_occ[i] + dN_gs[i] for i in gs_impurity_occ}
     return gs_impurity_occ, basis_gs, h_dict_gs
 
 
