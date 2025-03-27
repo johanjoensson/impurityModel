@@ -273,8 +273,8 @@ def find_gs(
     for i in N0:
         while (
             all(dn != 0 for dn in dN_gs)
-            and all(imp_occ + dN_gs[i] > 0 for i, imp_occ in gs_impurity_occ.items())
-            and all(gs_impurity_occ[i] + dN_gs[i] <= len(impurity_orbitals[i]) for i in gs_impurity_occ)
+            and all(imp_occ + dN_gs[j] > 0 for j, imp_occ in gs_impurity_occ.items())
+            and all(gs_impurity_occ[j] + dN_gs[j] <= len(impurity_orbitals[j]) for j in gs_impurity_occ)
         ):
             e_trial, basis, h_dict = calc_occ_e(
                 h_op,
