@@ -272,7 +272,7 @@ def find_gs(
                 gs_impurity_occ[i] = N0[i] + dN
     for i in N0:
         while (
-            all(dn != 0 for dn in dN_gs)
+            dN_gs[i] != 0
             and all(imp_occ + dN_gs[j] > 0 for j, imp_occ in gs_impurity_occ.items())
             and all(
                 imp_occ + dN_gs[j] <= sum(len(block) for block in impurity_orbitals[j])
