@@ -667,7 +667,7 @@ def block_Green(
             gs_prev = wIs - alpha - np.conj(beta.T)[np.newaxis, :, :] @ np.linalg.solve(gs_prev, beta[np.newaxis, :, :])
         if verbose:
             print(rf"δ = {np.max(np.abs(gs_new - gs_prev))}", flush=True)
-        return np.all(np.abs(gs_new - gs_prev) < max(np.sqrt(slaterWeightMin), 1e-8))
+        return np.all(np.abs(gs_new - gs_prev) < max(slaterWeightMin, 1e-8))
 
     t0 = time.perf_counter()
     # Run Lanczos on psi0^T* [wI - j*delta - H]^-1 psi0
