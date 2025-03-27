@@ -216,7 +216,7 @@ def eigensystem_new(
         nconv = eig_solver.getConverged()
         es = np.empty((nconv), dtype=float)
         if nconv == 0:
-            raise RuntimeError("SLEPc failed to converg!")
+            raise RuntimeError("SLEPc failed to converge!")
         vecs = np.empty((h_local.size[0], nconv), dtype=complex, order="F")
         vr, wr = h_local.getVecs()
         vi, wi = h_local.getVecs()
