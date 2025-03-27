@@ -499,9 +499,6 @@ def block_lanczos(
         elif reort == Reort.PARTIAL and it > 0:
             W = estimate_orthonormality(W, alphas, betas, N=1)
             mask = np.append(mask, [False] * n)
-            # orth_loss = np.any(np.abs(S) > np.sqrt(np.finfo(float).eps))
-            # if orth_loss:
-            #     assert np.any(np.abs(W[1, :-1]) > np.sqrt(np.finfo(float).eps))
             orth_loss = np.any(np.abs(W[1, :-1]) > np.sqrt(slaterWeightMin))
 
             if orth_loss:
@@ -542,7 +539,7 @@ def block_lanczos(
 
         if it % 1 == 0 or converge_count > 0:
             t_tmp = perf_counter()
-            done = converged(alphas, betas)
+            done = converged(alphas, betas, verbose=reort == Reort.PARTIAL)
             t_conv += perf_counter() - t_tmp
 
         if mpi:
@@ -566,7 +563,7 @@ def block_lanczos(
             Q.extend(q[1])
         it += 1
     if verbose:
-        print(f"Breaking after iteration {it}, blocksize = {n}")
+        print(f"Breaking after iteration {it+1}, blocksize = {n}")
         print(f"===> Maximum basis size: {N_max} Slater determinants")
         print(f"===> Applying the hamiltonian took {t_apply:.4f} seconds")
         print(f"===> Adding states took {t_add:.4f} seconds")
