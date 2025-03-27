@@ -247,12 +247,12 @@ def find_gs(
         num_val_baths,
         num_cond_baths,
     ) = bath_states
-    e_gs = np.inf
     basis_gs = None
     gs_impurity_occ = N0.copy()
-    dN_gs = [np.inf for _ in N0]
-    for dN in [0, -1, 1]:
-        for i in N0:
+    dN_gs = dict.fromkeys(N0.keys(), 0)
+    for i in N0:
+        e_gs = np.inf
+        for dN in [0, -1, 1]:
             e_trial, basis, h_dict = calc_occ_e(
                 h_op,
                 {j: N0[j] + dN for j in N0},
@@ -264,7 +264,7 @@ def find_gs(
                 verbose=verbose,
                 truncation_threshold=truncation_threshold,
             )
-            if e_trial - e_gs < -1e-6:
+            if e_trial < e_gs:
                 e_gs = e_trial
                 basis_gs = basis
                 h_dict_gs = h_dict.copy()
@@ -274,7 +274,10 @@ def find_gs(
         while (
             all(dn != 0 for dn in dN_gs)
             and all(imp_occ + dN_gs[j] > 0 for j, imp_occ in gs_impurity_occ.items())
-            and all(gs_impurity_occ[j] + dN_gs[j] <= len(impurity_orbitals[j]) for j in gs_impurity_occ)
+            and all(
+                imp_occ + dN_gs[j] <= sum(len(block) for block in impurity_orbitals[j])
+                for j, imp_occ in gs_impurity_occ.items()
+            )
         ):
             e_trial, basis, h_dict = calc_occ_e(
                 h_op,
@@ -287,9 +290,7 @@ def find_gs(
                 verbose=verbose,
                 truncation_threshold=truncation_threshold,
             )
-            if e_trial - e_gs >= 1e-6:
-                break
-            elif abs(e_trial - e_gs) < 1e-6:
+            if e_trial >= e_gs:
                 break
             e_gs = e_trial
             basis_gs = basis
