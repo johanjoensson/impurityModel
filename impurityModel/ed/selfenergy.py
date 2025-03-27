@@ -249,7 +249,7 @@ def find_gs(
     ) = bath_states
     e_gs = np.inf
     basis_gs = None
-    gs_impurity_occ = N0
+    gs_impurity_occ = N0.copy()
     dN_gs = [np.inf for _ in N0]
     for dN in [0, -1, 1]:
         for i in N0:
