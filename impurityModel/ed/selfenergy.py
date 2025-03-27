@@ -444,11 +444,6 @@ def calc_selfenergy(
         i: sum(len(orbs) for orbs in valence_baths[i]) + sum(len(orbs) for orbs in conduction_baths[i])
         for i in valence_baths
     }
-    if rank == 0:
-        for psis_r in all_psis:
-            for i in range(len(local_psis)):
-                for state in psis_r[i]:
-                    local_psis[i][state] = psis_r[i][state] + local_psis[i].get(state, 0)
     rho_imps, rho_baths, bath_indices = basis.build_density_matrices(psis)
     thermal_imp_rhos = {
         i: [finite.thermal_average_scale_indep(es, block_rhos, tau) for block_rhos in rho_imps[i]]
@@ -460,12 +455,12 @@ def calc_selfenergy(
     }
     if verbosity >= 1:
         n_orb = sum(len(block) for blocks in basis.impurity_orbitals.values() for block in blocks)
-        full_rho_imps = np.zeros((len(local_psis), n_orb, n_orb), dtype=complex)
-        for k, k_blocks in basis.impurity_orbitals.items():
-            for i in range(len(local_psis)):
-                for j, block in enumerate(k_blocks):
-                    idx = np.ix_([i], block, block)
-                    full_rho_imps[idx] = rho_imps[k][j][i]
+        full_rho_imps = np.zeros((len(psis), n_orb, n_orb), dtype=complex)
+        for i, i_blocks in basis.impurity_orbitals.items():
+            for k in range(len(psis)):
+                for j, block_orbs in enumerate(i_blocks):
+                    idx = np.ix_([k], block_orbs, block_orbs)
+                    full_rho_imps[idx] = rho_imps[i][j][k]
         finite.printThermalExpValues_new(full_rho_imps, es, tau, rot_to_spherical)
         finite.printExpValues(full_rho_imps, es, rot_to_spherical)
         print("Ground state occupation statistics:")
@@ -589,10 +584,7 @@ def calc_selfenergy(
         sigma = None
     if verbosity >= 1:
         print("Calculating sig_static.")
-    if rank == 0:
-        sigma_static = get_Sigma_static(basis, u4, es, local_psis, tau)
-    else:
-        sigma_static = None
+    sigma_static = get_Sigma_static(basis, u4, es, psis, tau)
     if rank == 0:
         with h5.File("impurityModel_solver.h5", "a") as ar:
             it = ar[f"{cluster_label}/last_iteration"][0]
@@ -695,27 +687,25 @@ def get_sigma(
 
 
 def get_Sigma_static(basis, U4, es, psis, tau):
-    # def get_Sigma_static(n_impurity_orbitals, nBaths, U4, es, psis, tau):
     """
     Calculate the static (Hartree-Fock) self-energy.
     """
-    n = sum(len(block) for blocks in basis.impurity_orbitals.values() for block in blocks)
-    # n = sum(ni for ni in n_impurity_orbitals.values())
-    rhos = [
-        finite.build_density_matrix(
-            sorted([orb for blocks in basis.impurity_orbitals.values() for block in blocks for orb in block]),
-            psi,
-            basis.num_spin_orbitals,
-        )
-        # finite.build_impurity_density_matrix(
-        #     sum(ni for ni in n_impurity_orbitals.values()), sum(nb for nb in nBaths.values()), psi
-        # )
-        for psi in psis
-    ]
-    rho = thermal_average_scale_indep(es, rhos, tau)
+    rho_imps, rho_baths, bath_indices = basis.build_density_matrices(psis)
+    thermal_imp_rhos = {
+        i: [finite.thermal_average_scale_indep(es, block_rhos, tau) for block_rhos in rho_imps[i]]
+        for i in basis.impurity_orbitals.keys()
+    }
+    n_orb = sum(
+        len(block_imp_rho) for thermal_imp_rho in thermal_imp_rhos.values() for block_imp_rho in thermal_imp_rho
+    )
+    rho = np.zeros((n_orb, n_orb), dtype=complex)
+    for i, blocks in basis.impurity_orbitals.items():
+        for j, block_orbs in enumerate(blocks):
+            idx = np.ix_(block_orbs, block_orbs)
+            rho[idx] = thermal_imp_rhos[i][j]
 
-    sigma_static = np.zeros((n, n), dtype=complex)
-    for i, j in itertools.product(range(n), range(n)):
+    sigma_static = np.zeros_like(rho)
+    for i, j in itertools.product(range(n_orb), range(n_orb)):
         sigma_static += (U4[j, :, :, i] - U4[j, :, i, :]) * rho[i, j]
 
     return sigma_static
