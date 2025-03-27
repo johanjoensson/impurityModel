@@ -594,15 +594,16 @@ class SimpleDistributedStateContainer(StateContainer):
             self._index_dict = {state: i for i, state in enumerate(self.local_basis)}
             self.local_index_bounds = [(0, len(self.local_basis))]
             if len(self.local_basis) > 0:
-                self.state_bounds: Optional[tuple[bytes, Optional[bytes]]] = [(self.local_basis[0], None)]
+                self.state_bounds: Optional[bytes] = [None]
             else:
                 self.state_bounds = [None]
             return
 
-        local_it = merge(self.local_basis, sorted(set(new_states)))
-        local_states = []
-        for state, _ in itertools.groupby(local_it):
-            local_states.append(state)
+        # local_it = merge(self.local_basis, sorted(set(new_states)))
+        # local_states = []
+        # for state, _ in itertools.groupby(local_it):
+        #     local_states.append(state)
+        local_states = sorted(set(new_states))
 
         send_list: list[list[bytes]] = [[] for _ in range(self.comm.size)]
         treated_states = [False] * len(local_states)
@@ -615,9 +616,12 @@ class SimpleDistributedStateContainer(StateContainer):
 
         received_states = self.comm.alltoall(send_list)
 
-        local_basis = []
-        for state, _ in itertools.groupby(merge(*received_states)):
-            local_basis.append(state)
+        local_basis = [
+            state
+            for state, _ in itertools.groupby(
+                merge(self.local_basis, (rec_state for rec_state, _ in itertools.groupby(merge(*received_states))))
+            )
+        ]
 
         size_arr = np.empty((self.comm.size,), dtype=int)
         self.local_basis = local_basis

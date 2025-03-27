@@ -1,3 +1,4 @@
+from bisect import bisect_left
 import itertools
 from enum import Enum
 from heapq import merge
@@ -423,7 +424,7 @@ def block_lanczos(
 
         wp_size = np.array([len(psi) for psi in wp], dtype=int)
         basis.comm.Allreduce(wp_size.copy(), wp_size, op=MPI.SUM)
-        cutoff = slaterWeightMin
+        cutoff = max(slaterWeightMin, np.finfo(float).eps)
         n_trunc = 0
         while np.max(wp_size) > basis.truncation_threshold:
             wp = [{state: w for state, w in psi.items() if abs(w) ** 2 >= cutoff} for psi in wp]
@@ -431,10 +432,25 @@ def block_lanczos(
             cutoff *= 5
             n_trunc += 1
 
-        if verbose and n_trunc > 0:
-            print(f"truncated {n_trunc} times")
+        if n_trunc > 0:
+            basis.clear()
+            if verbose:
+                print(f"truncated {n_trunc} times")
 
-        basis.add_states(state for psi in wp for state in psi)
+        # states_to_add = {}
+        # for psi in wp:
+        #     for state in psi:
+        #         state_idx = bisect_left(basis.local_basis, state)
+        #         if state_idx == len(basis.local_basis) or state != basis.local_basis[state_idx]:
+        #             states_to_add.add(state)
+        # basis.add_states( states_to_add)
+        basis.add_states(
+            state
+            for psi in wp
+            for state in psi
+            for state_idx in [bisect_left(basis.local_basis, state)]
+            if state_idx == len(basis.local_basis) or basis.local_basis[state_idx] != state
+        )
         t_add += perf_counter() - t_tmp
         t_tmp = perf_counter()
         N_max = max(N_max, basis.size)
