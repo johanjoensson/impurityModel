@@ -799,9 +799,14 @@ class CentralizedStateContainer(StateContainer):
         return bisect_left(self._full_basis, key)
 
     def _index_sequence(self, key: Iterable[bytes]) -> Iterable[int]:
-        # return (self._search_sorted(k) for k in key)
-        return (self._index_dict.get(k, len(self._full_basis)) for k in key)
+        return (
+            idx
+            for k in key
+            for idx in [self._search_sorted(k)]
+            if idx != len(self._full_basis) and self._full_basis[idx] == k else len(self._full_basis)
+        )
+        # return (self._index_dict.get(k, len(self._full_basis)) for k in key)
 
     def _contains_sequence(self, items) -> Iterable[bool]:
-        return (i in self._index_dict for i in items)
-        # return (self._search_sorted(i) != self.size and self._full_basis[self._search_sorted(i)] == i for i in items)
+        # return (i in self._index_dict for i in items)
+        return (idx != len(self._full_basis) for idx in self._index_sequence(items))
