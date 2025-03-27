@@ -92,7 +92,6 @@ class ImpModCluster:
         hyb,
         u4,
         nominal_occ,
-        delta_occ,
         impurity_orbitals,
         bath_states,
         sig,
@@ -115,7 +114,6 @@ class ImpModCluster:
         self.impurity_orbitals = impurity_orbitals
         self.bath_states = bath_states
         self.nominal_occ = nominal_occ
-        self.delta_occ = delta_occ
         self.sig = sig
         self.sig_real = sig_real
         self.sig_static = sig_static
@@ -166,7 +164,6 @@ class dcStruct:
     def __init__(
         self,
         nominal_occ,
-        delta_occ,
         impurity_orbitals,
         bath_states,
         u4,
@@ -176,7 +173,6 @@ class dcStruct:
         tau,
     ):
         self.nominal_occ = nominal_occ
-        self.delta_occ = delta_occ
         self.impurity_orbitals = impurity_orbitals
         self.bath_states = bath_states
         self.u4 = u4
@@ -188,7 +184,6 @@ class dcStruct:
     def __repr__(self):
         return (
             f"dcStruct( nominal_occ = {self.nominal_occ},\n"
-            f"          delta_occ = {self.delta_occ},\n"
             f"          num_spin_orbitals = {self.num_spin_orbitals},\n"
             f"          bath_states = {self.bath_states},\n"
             f"          peak_position = {self.peak_position})"
@@ -205,21 +200,17 @@ def parse_solver_line(solver_line):
     solver_line = solver_line.split("#")[0]
     solver_array = solver_line.strip().split()
     assert (
-        len(solver_array) >= 5
-    ), "The impurityModel ED solver requires at least 5 arguments; N0 dN dValence dConduction nBaths"
+        len(solver_array) >= 2
+    ), "The impurityModel ED solver requires at least 2 arguments; N0 nBaths"
     try:
         nominal_occ = int(solver_array[0])
-        delta_occ = (int(solver_array[1]), int(solver_array[2]), int(solver_array[3]))
-        nBaths = int(solver_array[4])
+        nBaths = int(solver_array[1])
     except Exception as e:
         raise RuntimeError(
             f"{e}\n"
             f"--->N0 {solver_array[0]}\n"
-            f"--->dN {solver_array[1]}\n"
-            f"--->dValence {solver_array[2]}\n"
-            f"--->dConduction {solver_array[3]}\n"
-            f"--->Nbaths {solver_array[4]}\n"
-            f"--->Other params {solver_array[5:]}"
+            f"--->Nbaths {solver_array[1]}\n"
+            f"--->Other params {solver_array[2:]}"
         )
     options = {
         "dense_cutoff": 100,
@@ -231,14 +222,14 @@ def parse_solver_line(solver_line):
         "spin_flip_dj": False,
         "bath_geometry": "star",
         "occ_restrict": True,
-        "occ_cutoff": 5e-2,
+        "occ_cutoff": 1e-6,
         "chain_restrict": True,
-        "truncation_threshold": int(1e9),
+        "truncation_threshold": int(1e8),
         "slater_min": np.finfo(float).eps,
     }
-    if len(solver_array) > 5:
+    if len(solver_array) > 2:
         skip_next = False
-        for i in range(5, len(solver_array)):
+        for i in range(2, len(solver_array)):
             if skip_next:
                 skip_next = False
                 continue
@@ -276,19 +267,21 @@ def parse_solver_line(solver_line):
                 options["occ_cutoff"] = float(solver_array[i + 1])
                 skip_next = True
             elif arg.lower() == "truncation_threshold":
-                options["truncation_threshold"] = int(solver_array[i + 1])
+                options["truncation_threshold"] = int(float(solver_array[i + 1]))
                 skip_next = True
             elif arg.lower() == "slater_min":
                 options["slater_min"] = float(solver_array[i + 1])
                 skip_next = True
             else:
-                raise RuntimeError(f"Unknown solver parameter {arg}.\n" f"--->Other solver params {solver_array[5:]}")
+                raise RuntimeError(
+                    f"Unknown solver parameter {arg}.\n"
+                    f"--->Other solver params {solver_array[5:]}"
+                )
     if options["bath_geometry"] == "star":
         options["chain_restrict"] = False
 
     print(
         f"Nominal imp. occupation  |> {nominal_occ}\n"
-        f"Delta occupation         |> {delta_occ}\n"
         f"# bath states / imp. orb.|> {nBaths}\n"
         f"Bath geometry            |> {options['bath_geometry']}\n"
         f"Fit unoccupied states    |> {options['fit_unocc']}\n"
@@ -304,7 +297,7 @@ def parse_solver_line(solver_line):
         f"Minimal Slater weight    |> {options['slater_min']}\n",
         flush=True,
     )
-    return nominal_occ, delta_occ, nBaths, options
+    return nominal_occ, nBaths, options
 
 
 def get_weight_function(weight_function_name, w0, e):
@@ -448,11 +441,14 @@ def run_impmod_ed(
     else:
         sys.stdout = open(devnull, "w")
 
-    (nominal_occ, delta_occ, bath_states_per_orbital, options) = parse_solver_line(solver_line)
+    (nominal_occ, bath_states_per_orbital, options) = parse_solver_line(solver_line)
     nominal_occ = {0: nominal_occ}
-    delta_occ = ({0: delta_occ[0]}, {0: delta_occ[1]}, {0: delta_occ[2]})
-    if any(n0 > n_orb for n0 in nominal_occ.values()) or any(n0 < 0 for n0 in nominal_occ.values()):
-        raise RuntimeError(f"Nominal impurity occupation {nominal_occ} out of bounds [0, {n_orb}]")
+    if any(n0 > n_orb for n0 in nominal_occ.values()) or any(
+        n0 < 0 for n0 in nominal_occ.values()
+    ):
+        raise RuntimeError(
+            f"Nominal impurity occupation {nominal_occ} out of bounds [0, {n_orb}]"
+        )
 
     h_op, imp_bath_blocks = get_ed_h0(
         h_dft,
@@ -487,7 +483,6 @@ def run_impmod_ed(
 
         dc_struct = dcStruct(
             nominal_occ=nominal_occ,
-            delta_occ=delta_occ,
             impurity_orbitals={0: [block[0] for block in imp_bath_blocks]},
             bath_states=(
                 {0: [block[1] for block in imp_bath_blocks]},
@@ -537,7 +532,6 @@ def run_impmod_ed(
             {0: [block[2] for block in imp_bath_blocks]},
         ),
         nominal_occ=nominal_occ,
-        delta_occ=delta_occ,
         sig=sig_python.view(),
         sig_real=sig_real_python.view(),
         sig_static=sig_static.view(),

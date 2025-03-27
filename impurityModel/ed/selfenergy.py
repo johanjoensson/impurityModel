@@ -42,7 +42,6 @@ class UnphysicalGreensFunctionError(Exception):
 
 def fixed_peak_dc(h0_op, dc_struct, rank, verbose, dense_cutoff):
     N0 = dc_struct.nominal_occ
-    delta_impurity_occ, delta_valence_occ, delta_conduction_occ = dc_struct.delta_occ
     peak_position = max(dc_struct.peak_position, 4 * dc_struct.tau)
     valence_baths, conduction_baths = dc_struct.bath_states
     sum_bath_states = {
@@ -58,9 +57,9 @@ def fixed_peak_dc(h0_op, dc_struct, rank, verbose, dense_cutoff):
         basis_upper = CIPSI_Basis(
             impurity_orbitals=dc_struct.impurity_orbitals,
             bath_states=dc_struct.bath_states,
-            delta_valence_occ=delta_valence_occ,
-            delta_conduction_occ=delta_conduction_occ,
-            delta_impurity_occ=delta_impurity_occ,
+            delta_valence_occ={i: 0 for i in N0},
+            delta_conduction_occ={i: 0 for i in N0},
+            delta_impurity_occ={i: 0 for i in N0},
             nominal_impurity_occ=Np,
             truncation_threshold=1e5,
             verbose=verbose,
@@ -70,9 +69,9 @@ def fixed_peak_dc(h0_op, dc_struct, rank, verbose, dense_cutoff):
         basis_lower = CIPSI_Basis(
             impurity_orbitals=dc_struct.impurity_orbitals,
             bath_states=dc_struct.bath_states,
-            delta_valence_occ=delta_valence_occ,
-            delta_conduction_occ=delta_conduction_occ,
-            delta_impurity_occ=delta_impurity_occ,
+            delta_valence_occ={i: 0 for i in N0},
+            delta_conduction_occ={i: 0 for i in N0},
+            delta_impurity_occ={i: 0 for i in N0},
             nominal_impurity_occ=N0,
             truncation_threshold=1e5,
             verbose=verbose,
@@ -83,9 +82,9 @@ def fixed_peak_dc(h0_op, dc_struct, rank, verbose, dense_cutoff):
         basis_upper = CIPSI_Basis(
             impurity_orbitals=dc_struct.impurity_orbitals,
             bath_states=dc_struct.bath_states,
-            delta_valence_occ=delta_valence_occ,
-            delta_conduction_occ=delta_conduction_occ,
-            delta_impurity_occ=delta_impurity_occ,
+            delta_valence_occ={i: 0 for i in N0},
+            delta_conduction_occ={i: 0 for i in N0},
+            delta_impurity_occ={i: 0 for i in N0},
             nominal_impurity_occ=N0,
             truncation_threshold=1e5,
             verbose=verbose,
@@ -95,9 +94,9 @@ def fixed_peak_dc(h0_op, dc_struct, rank, verbose, dense_cutoff):
         basis_lower = CIPSI_Basis(
             impurity_orbitals=dc_struct.impurity_orbitals,
             bath_states=dc_struct.bath_states,
-            delta_valence_occ=delta_valence_occ,
-            delta_conduction_occ=delta_conduction_occ,
-            delta_impurity_occ=delta_impurity_occ,
+            delta_valence_occ={i: 0 for i in N0},
+            delta_conduction_occ={i: 0 for i in N0},
+            delta_impurity_occ={i: 0 for i in N0},
             nominal_impurity_occ=Nm,
             truncation_threshold=1e5,
             verbose=verbose,
@@ -199,9 +198,6 @@ def calc_occ_e(
     N0,
     N_imp,
     bath_states,
-    delta_imp,
-    delta_val,
-    delta_con,
     spin_flip_dj,
     dense_cutoff,
     comm,
@@ -212,9 +208,9 @@ def calc_occ_e(
         impurity_orbitals=N_imp,
         H=h_op,
         bath_states=bath_states,
-        delta_impurity_occ=delta_imp,
-        delta_valence_occ=delta_val,
-        delta_conduction_occ=delta_con,
+        delta_impurity_occ={i: 0 for i in N0},
+        delta_valence_occ={i: 0 for i in N0},
+        delta_conduction_occ={i: 0 for i in N0},
         nominal_impurity_occ=N0,
         truncation_threshold=truncation_threshold,
         verbose=verbose,
@@ -231,7 +227,6 @@ def calc_occ_e(
 def find_gs(
     h_op,
     N0,
-    delta_occ,
     bath_states,
     impurity_orbitals,
     rank,
@@ -248,37 +243,33 @@ def find_gs(
     basis_gs, ManybodyBasis: Initial basis for the ground state
     h_dict_gs, dict: Memoized states for the hamiltonian operator.
     """
-    delta_imp_occ, delta_val_occ, delta_con_occ = delta_occ
     (
         num_val_baths,
         num_cond_baths,
     ) = bath_states
     e_gs = np.inf
     basis_gs = None
-    gs_impurity_occ = None
+    gs_impurity_occ = N0
     dN_gs = [np.inf for _ in N0]
     for dN in [0, -1, 1]:
         for i in N0:
             e_trial, basis, h_dict = calc_occ_e(
                 h_op,
-                {i: N0[i] + dN for i in N0},
+                {j: N0[j] + dN for j in N0},
                 impurity_orbitals,
                 bath_states,
-                delta_imp_occ,
-                delta_val_occ,
-                delta_con_occ,
                 spin_flip_dj,
                 dense_cutoff,
                 comm=comm,
                 verbose=verbose,
                 truncation_threshold=truncation_threshold,
             )
-            if e_trial < e_gs:
+            if e_trial - e_gs < -1e-6:
                 e_gs = e_trial
                 basis_gs = basis
                 h_dict_gs = h_dict.copy()
                 dN_gs[i] = dN
-                gs_impurity_occ = {i: N0[i] + dN for i in N0}
+                gs_impurity_occ[i] = N0[i] + dN
     for i in N0:
         while (
             all(dn != 0 for dn in dN_gs)
@@ -287,24 +278,27 @@ def find_gs(
         ):
             e_trial, basis, h_dict = calc_occ_e(
                 h_op,
-                {i: gs_impurity_occ[i] + dN_gs[i] for i in gs_impurity_occ},
+                {j: gs_impurity_occ[j] + dN_gs[j] for j in gs_impurity_occ},
                 impurity_orbitals,
                 bath_states,
-                delta_imp_occ,
-                delta_val_occ,
-                delta_con_occ,
                 spin_flip_dj,
                 dense_cutoff,
                 comm=comm,
                 verbose=verbose,
                 truncation_threshold=truncation_threshold,
             )
-            if e_trial >= e_gs:
+            if e_trial - e_gs >= 1e-6:
+                break
+            elif abs(e_trial - e_gs) < 1e-6:
                 break
             e_gs = e_trial
             basis_gs = basis
             h_dict_gs = h_dict.copy()
-            gs_impurity_occ = {i: gs_impurity_occ[i] + dN_gs[i] for i in gs_impurity_occ}
+            gs_impurity_occ[i] += dN_gs[i]
+    if verbose:
+        print("Ground state occupation")
+        print("\n".join((f"{i}: {gs_impurity_occ[i]: ^5d}" for i in gs_impurity_occ)))
+        print(rf"E$_{{GS}}$={e_gs}")
     return gs_impurity_occ, basis_gs, h_dict_gs
 
 
@@ -332,7 +326,6 @@ def run(cluster, h0, iw, w, delta, tau, verbosity, reort, dense_cutoff, slaterWe
         w,
         delta,
         cluster.nominal_occ,
-        cluster.delta_occ,
         cluster.impurity_orbitals,
         cluster.bath_states,
         tau,
@@ -373,7 +366,6 @@ def calc_selfenergy(
     w,
     delta,
     nominal_occ,
-    delta_occ,
     impurity_orbitals,
     bath_states,
     tau,
@@ -411,7 +403,6 @@ def calc_selfenergy(
     gs_impurity_occ, basis, h_dict = find_gs(
         h,
         nominal_occ,
-        delta_occ,
         bath_states,
         impurity_orbitals,
         rank=rank,
@@ -421,12 +412,8 @@ def calc_selfenergy(
         comm=comm,
         truncation_threshold=truncation_threshold,
     )
-    delta_imp_occ, delta_val_occ, delta_con_occ = delta_occ
     restrictions = basis.restrictions
 
-    if verbosity >= 1:
-        print("Nominal GS occupation")
-        print(f"--->impurity: {gs_impurity_occ}")
     if restrictions is not None and verbosity >= 2:
         print("Restrictions GS on occupation")
         for key, res in restrictions.items():
@@ -447,11 +434,8 @@ def calc_selfenergy(
         eigenValueTol=0,
         comm=basis.comm,
     )
-    psis = basis.build_state(psis_dense.T)  # , slaterWeightMin=1e-12)
-    # basis.clear()
-    # basis.add_states(set(state for psi in psis for state in psi))
+    psis = basis.build_state(psis_dense.T)
     if verbosity >= 1:
-        print(f"{len(h)} processes in the Hamiltonian.")
         print(f"{len(basis)} Slater determinants in the basis.")
     gs_stats = basis.get_state_statistics(psis)
     all_psis = comm.gather(psis)
@@ -775,14 +759,10 @@ def get_selfenergy(
 
     sum_baths = OrderedDict({ls: nBaths})
     nValBaths = OrderedDict({ls: nValBaths})
-    dnValBaths = OrderedDict({ls: dnValBaths})
-    dnConBaths = OrderedDict({ls: dnConBaths})
 
     # -- Basis occupation information --
     n0imps = OrderedDict({ls: n0imps})
-    dnTols = OrderedDict({ls: dnTols})
     nominal_occ = (n0imps, {ls: nBaths}, {ls: 0})
-    delta_occ = (dnTols, dnValBaths, dnConBaths)
 
     num_bath_states = ({ls: nValBaths[ls]}, {ls: sum_baths[ls] - nValBaths[ls]})
 
@@ -806,7 +786,6 @@ def get_selfenergy(
         w=omega_mesh,
         delta=delta,
         nominal_occ=nominal_occ,
-        delta_occ=delta_occ,
         bath_states=num_bath_states,
         tau=tau,
         energy_cut=energy_cut,
