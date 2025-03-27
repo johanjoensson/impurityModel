@@ -800,10 +800,9 @@ class CentralizedStateContainer(StateContainer):
 
     def _index_sequence(self, key: Iterable[bytes]) -> Iterable[int]:
         return (
-            idx
+            idx if idx != len(self._full_basis) and self._full_basis[idx] == k else len(self._full_basis)
             for k in key
             for idx in [self._search_sorted(k)]
-            if idx != len(self._full_basis) and self._full_basis[idx] == k else len(self._full_basis)
         )
         # return (self._index_dict.get(k, len(self._full_basis)) for k in key)
 
