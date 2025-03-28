@@ -127,8 +127,8 @@ class Basis:
             delta_valence_occ = dict.fromkeys(impurity_orbitals.keys(), 0)
         if delta_conduction_occ is None:
             delta_conduction_occ = dict.fromkeys(impurity_orbitals.keys(), 0)
-        if delta_impurity_occ_occ is None:
-            delta_impurity_occ_occ = dict.fromkeys(impurity_orbitals.keys(), 0)
+        if delta_impurity_occ is None:
+            delta_impurity_occ = dict.fromkeys(impurity_orbitals.keys(), 0)
 
         total_impurity_orbitals = {i: sum(len(orbs) for orbs in impurity_orbitals[i]) for i in impurity_orbitals}
         for i in valence_baths:
