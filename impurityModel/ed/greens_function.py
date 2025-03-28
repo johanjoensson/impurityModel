@@ -377,7 +377,7 @@ def calc_Greens_function_with_offdiag(
             bath_states=eigen_basis.bath_states,
             initial_basis=local_excited_basis,
             restrictions=excited_restrictions,
-            comm=eigen_basis.comm,
+            comm=eigen_basis.comm.Clone(),
             verbose=verbose,
             truncation_threshold=eigen_basis.truncation_threshold,
             tau=eigen_basis.tau,
@@ -404,9 +404,10 @@ def calc_Greens_function_with_offdiag(
                 gs_matsubara_block += np.exp(-(e - e0) / tau) / Z * gs_matsubara_block_i
             if w is not None:
                 gs_realaxis_block += np.exp(-(e - e0) / tau) / Z * gs_realaxis_block_i
+        excited_basis.comm.Free()
     # Send calculated Greens functions to root
     requests = []
-    if excited_basis.comm.rank == 0:
+    if eigen_basis.comm.rank == 0:
         if iw is not None:
             requests.append(comm.Isend(gs_matsubara_block, 0))
         if w is not None:
@@ -791,7 +792,7 @@ def block_Green_freq_2(
             spin_flip_dj=split_basis.spin_flip_dj,
             tau=split_basis.tau,
             verbose=verbose,
-            comm=split_basis.comm,
+            comm=split_basis.comm.Clone(),
         )
 
         for w_i, w in itertools.islice(
@@ -830,6 +831,7 @@ def block_Green_freq_2(
                 gs[w_i, :, :] = (w + e) * np.eye(n) - alphas[-1]
                 for alpha, beta in zip(alphas[-2::-1], betas[-2::-1]):
                     gs[w_i, :, :] = (w + e) * np.eye(n) - alpha - np.conj(beta.T) @ np.linalg.solve(gs[w_i], beta)
+        freq_basis.comm.Free()
     basis.comm.Reduce(MPI.IN_PLACE if basis.comm.rank == 0 else gs_matsubara, gs_matsubara, op=MPI.SUM)
     basis.comm.Reduce(MPI.IN_PLACE if basis.comm.rank == 0 else gs_realaxis, gs_realaxis, op=MPI.SUM)
     if verbose:
@@ -893,7 +895,7 @@ def block_Green_freq(
             spin_flip_dj=split_basis.spin_flip_dj,
             tau=split_basis.tau,
             verbose=verbose,
-            comm=split_basis.comm,
+            comm=split_basis.comm.Clone(),
         )
 
         A_inv_psi = [{} for _ in psi]
@@ -934,6 +936,7 @@ def block_Green_freq(
                             raise RuntimeError("Parameter breakdown in bicgstab!")
                 gs[w_i, :, :] = np.conj(psi_i) @ A_inv_psi_v
                 A_inv_psi = freq_basis.build_state(A_inv_psi_v.T)
+        freq_basis.comm.Free()
 
     basis.comm.Reduce(MPI.IN_PLACE if basis.comm.rank == 0 else gs_matsubara, gs_matsubara, op=MPI.SUM, root=0)
     basis.comm.Reduce(MPI.IN_PLACE if basis.comm.rank == 0 else gs_realaxis, gs_realaxis, op=MPI.SUM, root=0)
