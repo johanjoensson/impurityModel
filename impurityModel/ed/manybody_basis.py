@@ -1170,7 +1170,7 @@ class CIPSI_Basis(Basis):
             e_ref, psi_ref_dense = eigensystem_new(
                 H_mat,
                 e_max=de0_max,
-                k=2 * v0.shape[1] if psi_ref is not None else 2,
+                k=v0.shape[1] if psi_ref is not None else 1,
                 v0=v0 if psi_ref is not None else None,
                 eigenValueTol=de2_min,
                 comm=self.comm,
