@@ -210,14 +210,15 @@ def eigensystem_new(
         eig_solver.setWhichEigenpairs(EPS.Which.SMALLEST_REAL)
         eig_solver.setDimensions(k, PETSc.DECIDE, PETSc.DECIDE)
 
-        if v0 is not None:
-            tmp = [h_local.createVecRight() for _ in v0.T]
-            for i in range(v0.shape[1]):
-                start, end = tmp[i].getOwnershipRange()
+        if v0 is not None and v0.size > 0:
+            vs = [h_local.createVecRight() for _ in range(v0.shape[1])]
+            print("\n".join(f"{v=}" for v in vs))
+            for i, v in enumerate(vs):
+                start, end = v.getOwnershipRange()
                 for j in range(start, end):
-                    tmp[i][j] = v0[j, i]
-                tmp[i].assemble()
-            eig_solver.setInitialSpace(tmp)
+                    v[j] = v0[j, i]
+                v.assemble()
+            eig_solver.setInitialSpace(vs)
 
         eig_solver.solve()
         nconv = eig_solver.getConverged()
