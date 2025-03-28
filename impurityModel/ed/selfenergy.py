@@ -412,14 +412,11 @@ def calc_selfenergy(
 
     basis.tau = tau
     h_dict = basis.expand(h, H_dict=h_dict, dense_cutoff=dense_cutoff, de2_min=1e-6)
-    if basis.size <= dense_cutoff:
-        h_gs = basis.build_dense_matrix(h, h_dict)
-    else:
-        h_gs = basis.build_sparse_matrix(h, h_dict)
+    h_gs = basis.build_sparse_matrix(h, h_dict) if basis.size > dense_cutoff else basis.build_dense_matrix(h, h_dict)
     es, psis_dense = finite.eigensystem_new(
         h_gs,
         e_max=energy_cut,
-        k=2 * total_impurity_orbitals[0],
+        k=total_impurity_orbitals[0],
         eigenValueTol=0,
         comm=basis.comm,
     )

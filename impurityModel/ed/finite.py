@@ -194,7 +194,7 @@ def eigensystem_new(
         )
 
         dk = 5
-        v0_guess = v0[:, [0]] if v0 is not None else np.ones((h_local.shape[0], 1), dtype=complex)
+        v0_guess = v0[:, [0]] if v0 is not None else None
         es = []
         mask = [True]
         while len(es) <= sum(mask):
@@ -210,13 +210,11 @@ def eigensystem_new(
         eig_solver.setWhichEigenpairs(EPS.Which.SMALLEST_REAL)
         eig_solver.setDimensions(k, PETSc.DECIDE, PETSc.DECIDE)
 
-        if v0 is not None and v0.size > 0:
+        if v0 is not None:
             vs = [h_local.createVecRight() for _ in range(v0.shape[1])]
-            print("\n".join(f"{v=}" for v in vs))
             for i, v in enumerate(vs):
                 start, end = v.getOwnershipRange()
-                for j in range(start, end):
-                    v[j] = v0[j, i]
+                v[start:end] = v0[start:end, i]
                 v.assemble()
             eig_solver.setInitialSpace(vs)
 

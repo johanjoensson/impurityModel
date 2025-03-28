@@ -1157,9 +1157,9 @@ class CIPSI_Basis(Basis):
         while converge_count < 1:
             t_tmp = perf_counter()
             H_mat = (
-                self.build_sparse_matrix(H, op_dict={})
+                self.build_sparse_matrix(H, op_dict=H_dict)
                 if self.size > dense_cutoff
-                else self.build_dense_matrix(H, op_dict={})
+                else self.build_dense_matrix(H, op_dict=H_dict)
             )
             t_build_mat += perf_counter() - t_tmp
             t_tmp = perf_counter()

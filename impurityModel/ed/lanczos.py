@@ -437,13 +437,6 @@ def block_lanczos(
             if verbose:
                 print(f"truncated {n_trunc} times")
 
-        # states_to_add = {}
-        # for psi in wp:
-        #     for state in psi:
-        #         state_idx = bisect_left(basis.local_basis, state)
-        #         if state_idx == len(basis.local_basis) or state != basis.local_basis[state_idx]:
-        #             states_to_add.add(state)
-        # basis.add_states( states_to_add)
         basis.add_states(
             state
             for psi in wp
