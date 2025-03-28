@@ -211,6 +211,7 @@ def eigensystem_new(
         eig_solver.setDimensions(k, PETSc.DECIDE, PETSc.DECIDE)
 
         eig_solver.solve()
+        nconv = eig_solver.getConverged()
         # Failed to converge with default settings.
         # Decrease required accuracy and try again.
         if nconv == 0:
