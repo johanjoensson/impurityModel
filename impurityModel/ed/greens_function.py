@@ -826,8 +826,8 @@ def block_Green_freq_2(
                 gs[w_i, :, :] = (w + e) * np.eye(n) - alphas[-1]
                 for alpha, beta in zip(alphas[-2::-1], betas[-2::-1]):
                     gs[w_i, :, :] = (w + e) * np.eye(n) - alpha - np.conj(beta.T) @ np.linalg.solve(gs[w_i], beta)
-    basis.comm.Reduce(gs_matsubara.copy(), gs_matsubara, op=MPI.SUM)
-    basis.comm.Reduce(gs_realaxis.copy(), gs_realaxis, op=MPI.SUM)
+    basis.comm.Reduce(MPI.IN_PLACE if basis.comm.rank == 0 else gs_matsubara, gs_matsubara, op=MPI.SUM)
+    basis.comm.Reduce(MPI.IN_PLACE if basis.comm.rank == 0 else gs_realaxis, gs_realaxis, op=MPI.SUM)
     if verbose:
         print(f"time(block_lanczos) = {time.perf_counter() - t0: .4f} seconds.", flush=True)
     if basis.comm.rank == 0:
@@ -931,8 +931,8 @@ def block_Green_freq(
                 gs[w_i, :, :] = np.conj(psi_i) @ A_inv_psi_v
                 A_inv_psi = freq_basis.build_state(A_inv_psi_v.T)
 
-    basis.comm.Reduce(gs_matsubara.copy(), gs_matsubara, op=MPI.SUM, root=0)
-    basis.comm.Reduce(gs_realaxis.copy(), gs_realaxis, op=MPI.SUM, root=0)
+    basis.comm.Reduce(MPI.IN_PLACE if basis.comm.rank == 0 else gs_matsubara, gs_matsubara, op=MPI.SUM, root=0)
+    basis.comm.Reduce(MPI.IN_PLACE if basis.comm.rank == 0 else gs_realaxis, gs_realaxis, op=MPI.SUM, root=0)
     # if basis.comm.rank == 0:
     #     ix = np.ix_(range(len(iws)), np.argsort(p), np.argsort(p))
     #     gs_matsubara = (np.conj(r.T)[np.newaxis, :, :] @ np.linalg.solve(gs_matsubara.copy(), r[np.newaxis, :, :]))[ix]
@@ -1205,9 +1205,7 @@ def get_block_Green_cg(
                 # for col, v in enumerate(T_psi_vs):
                 #     T_psi[:, col] = v
                 gs_matsubara[w_i, :, col] = np.conj(T_psi.T) @ tmp
-        gs_recv = np.empty_like(gs_matsubara) if comm.rank == 0 else None
-        comm.Allreduce(gs_matsubara, gs_recv, op=MPI.SUM)
-        gs_matsubara = gs_recv
+        comm.Allreduce(MPI.IN_PLACE, gs_matsubara, op=MPI.SUM)
 
         if gs_matsubara is not None:
             gs_matsubara = np.moveaxis(gs_matsubara, 0, -1)
@@ -1221,9 +1219,7 @@ def get_block_Green_cg(
                 tmp, info = cg_phys(A_op, {}, n_spin_orbitals, {}, psi_arr[col], w, delta, local_basis)
                 T_psi = local_basis.build_vector(psi_arr)
                 gs_realaxis[w_i, :, col] = np.conj(T_psi.T) @ tmp
-        gs_recv = np.empty_like(gs_realaxis) if comm.rank == 0 else None
-        comm.Allreduce(gs_realaxis, gs_recv, op=MPI.SUM)
-        gs_realaxis = gs_recv
+        comm.Allreduce(MPI.IN_PLACE, gs_realaxis, op=MPI.SUM)
         if gs_realaxis is not None:
             gs_realaxis = np.moveaxis(gs_realaxis, 0, -1)
 

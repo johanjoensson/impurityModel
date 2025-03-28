@@ -123,9 +123,8 @@ def mpi_matmul(h_local, comm):
     """
 
     def matmat(m):
-        res_local = h_local @ m
-        res = np.empty_like(res_local)
-        comm.Allreduce(res_local, res, op=MPI.SUM)
+        res = h_local @ m
+        comm.Allreduce(MPI.IN_PLACE, res, op=MPI.SUM)
         return res
 
     return matmat
@@ -3387,10 +3386,9 @@ def get_tridiagonal_krylov_vectors(h, psi0, krylovSize, h_local=False, mode="spa
         # y = H*x = sum_r Hr*x = sum_r y_r
 
         # Initialization...
-        wp_local = h.dot(v[0, :])
+        wp = h.dot(v[0, :])
         # Reduce vector wp_local to the vector wp at rank 0.
-        wp = np.zeros_like(wp_local)
-        comm.Reduce(wp_local, wp)
+        comm.Reduce(MPI.IN_PLACE if comm.rank == 0 else wp, wp)
         if rank == 0:
             alpha[0] = np.dot(np.conj(wp), v[0, :]).real
             w = wp - alpha[0] * v[0, :]
@@ -3416,10 +3414,9 @@ def get_tridiagonal_krylov_vectors(h, psi0, krylovSize, h_local=False, mode="spa
                 break
             # Broadcast vector v[1,:] from rank 0 to all ranks.
             comm.Bcast(v[1, :], root=0)
-            wp_local = h.dot(v[1, :])
+            wp = h.dot(v[1, :])
             # Reduce vector wp_local to the vector wp at rank 0.
-            wp = np.zeros_like(wp_local)
-            comm.Reduce(wp_local, wp)
+            comm.Reduce(MPI.IN_PLACE if comm.basis.rank == 0 else wp, wp)
             if rank == 0:
                 alpha[j] = np.dot(np.conj(wp), v[1, :]).real
                 w = wp - alpha[j] * v[1, :] - beta[j - 1] * v[0, :]

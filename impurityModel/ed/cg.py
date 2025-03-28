@@ -3,6 +3,7 @@ import scipy as sp
 from time import perf_counter
 import itertools
 import impurityModel.ed.finite as finite
+from mpi4py import MPI
 
 
 def cg(A, x, y, atol=1e-5):
@@ -75,7 +76,7 @@ def bicgstab(A_op, A_op_dict, x_0, y, basis, slaterWeightMin, atol=1e-8):
     r_i = [{state: amp for state, amp in ri.items()} for ri in r_0]
     rho_i = np.array([finite.norm2(ri) for ri in r_i], dtype=complex)
     if basis.is_distributed:
-        basis.comm.Allreduce(rho_i.copy(), rho_i)
+        basis.comm.Allreduce(MPI.IN_PLACE, rho_i)
     p_i = [{state: amp for state, amp in ri.items()} for ri in r_i]
     it = 0
     while True:
@@ -94,13 +95,13 @@ def bicgstab(A_op, A_op_dict, x_0, y, basis, slaterWeightMin, atol=1e-8):
         nu = basis.redistribute_psis(nu)
         rnui = np.array([finite.inner(ri, nui) for ri, nui in zip(r_0, nu)], dtype=complex)
         if basis.is_distributed:
-            basis.comm.Allreduce(rnui.copy(), rnui)
+            basis.comm.Allreduce(MPI.IN_PLACE, rnui)
         alpha = rho_i / rnui
         h = [finite.add(xi, pi, mul=a) for xi, a, pi in zip(x_i, alpha, p_i)]
         s = [finite.add(ri, nui, mul=-a) for ri, a, nui in zip(r_i, alpha, nu)]
         s2 = np.array([finite.norm2(si) for si in s], dtype=complex)
         if basis.is_distributed:
-            basis.comm.Allreduce(s2.copy(), s2)
+            basis.comm.Allreduce(MPI.IN_PLACE, s2)
         if np.all(np.abs(s2) < atol**2):
             x_i = h
             break
@@ -119,9 +120,9 @@ def bicgstab(A_op, A_op_dict, x_0, y, basis, slaterWeightMin, atol=1e-8):
         ts = np.array([finite.inner(ti, si) for ti, si in zip(t, s)], dtype=complex)
         t2 = np.array([finite.norm2(ti) for ti in t])
         if basis.is_distributed:
-            basis.comm.Allreduce(ts.copy(), ts)
+            basis.comm.Allreduce(MPI.IN_PLACE, ts)
         if basis.is_distributed:
-            basis.comm.Allreduce(t2.copy(), t2)
+            basis.comm.Allreduce(MPI.IN_PLACE, t2)
         omega = ts / t2
         x_i = [finite.add(hi, si, mul=w) for hi, w, si in zip(h, omega, s)]
         r_i = [finite.add(si, ti, mul=-w) for si, w, ti in zip(s, omega, t)]
@@ -140,13 +141,13 @@ def bicgstab(A_op, A_op_dict, x_0, y, basis, slaterWeightMin, atol=1e-8):
 
         r2 = np.array([finite.norm2(ri) for ri in r_i], dtype=complex)
         if basis.is_distributed:
-            basis.comm.Allreduce(r2.copy(), r2)
+            basis.comm.Allreduce(MPI.IN_PLACE, r2)
         if np.all(np.abs(r2) < atol**2):
             break
 
         rho_ip = np.array([finite.inner(r0i, ri) for r0i, ri in zip(r_0, r_i)], dtype=complex)
         if basis.is_distributed:
-            basis.comm.Allreduce(rho_ip.copy(), rho_ip)
+            basis.comm.Allreduce(MPI.IN_PLACE, rho_ip)
         beta = (rho_ip / rho_i) * (alpha / omega)
         p_i = [
             finite.add(ri, finite.add(pi, nui, mul=-w), mul=b)
@@ -170,9 +171,7 @@ def cg_phys(A_op, A_dict, n_spin_orbitals, x_psi, y_psi, w, delta, basis, atol=1
     x, y = basis.build_vector([x_psi, y_psi])
     Ax = A @ x
     if basis.is_distributed:
-        Ax_recv = np.empy_like(Ax) if basis.comm.rank == 0 else None
-        basis.comm.Allreduce(Ax, Ax_recv)
-        Ax = Ax_recv
+        basis.comm.Allreduce(MPI.IN_PLACE, Ax, op=MPI.SUM)
     r = y - Ax
     p = r
     r_prev = r
@@ -200,9 +199,7 @@ def cg_phys(A_op, A_dict, n_spin_orbitals, x_psi, y_psi, w, delta, basis, atol=1
         t_matmul = perf_counter()
         Ax = A @ x
         if basis.is_distributed:
-            Ax_recv = np.empy_like(Ax) if basis.comm.rank == 0 else None
-            basis.comm.Allreduce(Ax, Ax_recv)
-            Ax = Ax_recv
+            basis.comm.Allreduce(MPI.IN_PLACE, Ax, op=MPI.SUM)
         t_matrix_mul += perf_counter() - t_matmul
         t_rest = perf_counter()
         r = y - Ax
@@ -215,9 +212,7 @@ def cg_phys(A_op, A_dict, n_spin_orbitals, x_psi, y_psi, w, delta, basis, atol=1
         if it % 10 == 0:
             Ax = A @ x
             if basis.is_distributed:
-                Ax_recv = np.empy_like(Ax) if basis.comm.rank == 0 else None
-                basis.comm.Allreduce(Ax, Ax_recv)
-                Ax = Ax_recv
+                basis.comm.Allreduce(MPI.IN_PLACE, Ax, op=MPI.SUM)
             r = y - Ax
         if (np.conj(r) @ r).real < atol**2:
             break

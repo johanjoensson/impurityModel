@@ -423,7 +423,8 @@ def block_lanczos(
         wp = basis.redistribute_psis(wp)
 
         wp_size = np.array([len(psi) for psi in wp], dtype=int)
-        basis.comm.Allreduce(wp_size.copy(), wp_size, op=MPI.SUM)
+        basis.comm.Allreduce(MPI.IN_PLACE, wp_size, op=MPI.SUM)
+        # wp_size = basis.comm.allreduce(wp_size, op=MPI.SUM)
         cutoff = max(slaterWeightMin, np.finfo(float).eps)
         n_trunc = 0
         while np.max(wp_size) > basis.truncation_threshold:
@@ -508,7 +509,7 @@ def block_lanczos(
             Qm = basis.build_distributed_vector(Qt).T
             tmp = np.conj(Qm.T) @ psip
             if mpi:
-                basis.comm.Allreduce(tmp.copy(), tmp, op=MPI.SUM)
+                basis.comm.Allreduce(MPI.IN_PLACE, tmp, op=MPI.SUM)
             psip -= Qm @ tmp
             perform_reort = False
 

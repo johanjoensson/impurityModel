@@ -762,8 +762,7 @@ class Basis:
         self.add_states([])
 
     def build_vector(self, psis: list[dict], root: Optional[int] = None) -> np.ndarray:
-        v_local = np.zeros((len(psis), self.size), dtype=complex)
-        v = np.empty_like(v_local)
+        v = np.zeros((len(psis), self.size), dtype=complex)
         psis = self.redistribute_psis(psis)
         # row_states_in_basis: list[bytes] = []
         # row_dict = {state: self._index_dict[state] for state in self.local_basis}
@@ -772,14 +771,12 @@ class Basis:
             for state, val in psi.items():
                 if state not in col_dict:
                     continue
-                v_local[row, col_dict[state]] = val
+                v[row, col_dict[state]] = val
 
         if self.is_distributed and root is None:
-            self.comm.Allreduce(v_local, v, op=MPI.SUM)
+            self.comm.Allreduce(MPI.IN_PLACE, v, op=MPI.SUM)
         elif self.is_distributed:
-            self.comm.Reduce(v_local, v, op=MPI.SUM, root=root)
-        else:
-            v = v_local
+            self.comm.Reduce(MPI.IN_PLACE if self.comm.rank == root else v, v, op=MPI.SUM, root=root)
         return v
 
     def build_distributed_vector(self, psis: list[dict], dtype=complex) -> np.ndarray:
@@ -909,8 +906,7 @@ class Basis:
                 if any(state not in row_dict for state in psi):
                     need_mpi = True
                 need_mpi_arr = np.empty((1,), dtype=bool)
-                self.comm.Allreduce(np.array([need_mpi], dtype=bool), need_mpi_arr, op=MPI.LOR)
-                need_mpi = need_mpi_arr[0]
+                need_mpi = self.comm.allreduce(need_mpi, op=MPI.LOR)
             if need_mpi:
                 sorted_row_states = row_states  # sorted(row_states)
                 row_dict = {
@@ -1235,7 +1231,7 @@ class CIPSI_Basis(Basis):
             ]
             N2s = np.array([norm2(psi) for psi in psi_ref], dtype=float)
             if self.is_distributed:
-                self.comm.Allreduce(N2s.copy(), N2s, op=MPI.SUM)
+                self.comm.Allreduce(MPI.IN_PLACE, N2s, op=MPI.SUM)
             psi_ref = [{state: psi[state] / np.sqrt(N2s[i]) for state in psi} for i, psi in enumerate(psi_ref)]
 
         _ = self.build_operator_dict(H, op_dict=H_dict)
