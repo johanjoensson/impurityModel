@@ -957,10 +957,10 @@ class Basis:
     def build_density_matrices(self, psis):
         local_psis = [{} for _ in psis]
         all_psis = self.comm.allgather(psis)
-        for psis_r in all_psis:
-            for i in range(len(local_psis)):
-                for state in psis_r[i]:
-                    local_psis[i][state] = psis_r[i][state] + local_psis[i].get(state, 0)
+        for i, psi in enumerate(local_psis):
+            for psis_r in all_psis:
+                for state, amp in psis_r[i].items():
+                    psi[state] = amp + psi.get(state, 0)
         rho_imps = {
             i: [
                 np.array(
