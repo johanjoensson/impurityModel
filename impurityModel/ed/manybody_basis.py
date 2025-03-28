@@ -122,6 +122,14 @@ class Basis:
             i: sum(len(orbs) for orbs in valence_baths[i]) + sum(len(orbs) for orbs in conduction_baths[i])
             for i in valence_baths
         }
+
+        if delta_valence_occ is None:
+            delta_valence_occ = dict.fromkeys(impurity_orbitals.keys(), 0)
+        if delta_conduction_occ is None:
+            delta_conduction_occ = dict.fromkeys(impurity_orbitals.keys(), 0)
+        if delta_impurity_occ_occ is None:
+            delta_impurity_occ_occ = dict.fromkeys(impurity_orbitals.keys(), 0)
+
         total_impurity_orbitals = {i: sum(len(orbs) for orbs in impurity_orbitals[i]) for i in impurity_orbitals}
         for i in valence_baths:
             valid_configurations = []
