@@ -147,6 +147,7 @@ class StateContainer:
         )
 
         request.Wait()
+        request.free()
         received_bytes = bytearray(sum(recv_counts) * self.n_bytes)
         offsets = np.fromiter((np.sum(recv_counts[:i]) for i in range(self.comm.size)), dtype=int, count=self.comm.size)
 
@@ -303,6 +304,7 @@ class DistributedStateContainer(StateContainer):
         )
 
         request.Wait()
+        request.free()
         received_bytes = bytearray(sum(recv_counts) * self.n_bytes)
         offsets = np.fromiter(
             (sum(recv_counts[:i]) for i in range(self.comm.size)), dtype=np.int64, count=self.comm.size
@@ -318,6 +320,7 @@ class DistributedStateContainer(StateContainer):
             [received_bytes, recv_counts * self.n_bytes, offsets * self.n_bytes, MPI.BYTE],
         )
         request.Wait()
+        request.free()
         received_states = []
         if sum(recv_counts) > 0:
             received_states = []
@@ -401,6 +404,7 @@ class DistributedStateContainer(StateContainer):
         )
 
         request.Wait()
+        request.free()
 
         queries = np.empty((sum(recv_counts)), dtype=int)
         displacements = np.fromiter(
@@ -509,6 +513,7 @@ class DistributedStateContainer(StateContainer):
         )
 
         request.Wait()
+        request.free()
         received_bytes = bytearray(sum(recv_counts) * self.n_bytes)
         offsets = np.fromiter((np.sum(recv_counts[:i]) for i in range(self.comm.size)), dtype=int, count=self.comm.size)
 

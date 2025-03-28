@@ -613,6 +613,7 @@ class Basis:
 
         received_states: list[Iterable[bytes]] = [[] for _ in send_states]
         state_request.Wait()
+        state_request.free()
         received_states = [
             (
                 bytes(r_bytes)
@@ -626,11 +627,13 @@ class Basis:
             for r in range(self.comm.size)
         ]
         amps_request.Wait()
+        amps_request.free()
         received_amps: list[Iterable[complex]] = [
             received_amps_arr[receive_offsets[r] : receive_offsets[r] + receive_counts[r]]
             for r in range(self.comm.size)
         ]
         splits_request.Wait()
+        splits_request.free()
         received_splits: list[Iterable[int]] = [
             received_splits_arr[receive_offsets[r] : receive_offsets[r] + receive_counts[r]]
             for r in range(self.comm.size)

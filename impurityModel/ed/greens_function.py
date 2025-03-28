@@ -50,7 +50,8 @@ def split_comm_and_redistribute_basis(priorities: Iterable[float], basis: Basis,
     assert sum(procs_per_color) == comm.size
     proc_cutoffs = np.cumsum(procs_per_color)
     color = np.argmax(comm.rank < proc_cutoffs)
-    split_comm = comm.Split(color=color, key=0)
+    comm.Barrier()
+    split_comm = comm.Split(color=color, key=comm.rank)
     split_roots = [0] + proc_cutoffs[:-1].tolist()
     items_per_color = np.array([len(priorities) // n_colors] * n_colors, dtype=int)
     items_per_color[: len(priorities) % n_colors] += 1
@@ -215,6 +216,9 @@ def get_Greens_function(
                     requests.append(basis.comm.Irecv(gs_realaxis[block_i], color_root))
     if len(requests) > 0:
         requests[-1].Waitall(requests)
+        for request in requests:
+            request.free()
+    block_basis.comm.Free()
     return (gs_matsubara, gs_realaxis) if basis.comm.rank == 0 else (None, None)
 
 
@@ -402,7 +406,7 @@ def calc_Greens_function_with_offdiag(
                 gs_realaxis_block += np.exp(-(e - e0) / tau) / Z * gs_realaxis_block_i
     # Send calculated Greens functions to root
     requests = []
-    if eigen_basis.comm.rank == 0:
+    if excited_basis.comm.rank == 0:
         if iw is not None:
             requests.append(comm.Isend(gs_matsubara_block, 0))
         if w is not None:
@@ -421,6 +425,9 @@ def calc_Greens_function_with_offdiag(
             gs_realaxis_block = np.sum(gs_realaxis_received, axis=0)
     if len(requests) > 0:
         requests[-1].Waitall(requests)
+        for request in requests:
+            request.free()
+    eigen_basis.comm.Free()
     return gs_matsubara_block, gs_realaxis_block
 
 
@@ -539,7 +546,7 @@ def get_block_Green(
         for alpha, beta in zip(alphas[-3::-1], betas[-3::-1]):
             gs_new = wIs - alpha - np.conj(beta.T)[np.newaxis, :, :] @ np.linalg.solve(gs_new, beta[np.newaxis, :, :])
             gs_prev = wIs - alpha - np.conj(beta.T)[np.newaxis, :, :] @ np.linalg.solve(gs_prev, beta[np.newaxis, :, :])
-        print(rf"δ = {np.max(np.abs(gs_new - gs_prev))}", flush=True)
+        print(rf"δ = {np.max(np.abs(gs_new - gs_prev))}")
         return np.all(np.abs(gs_new - gs_prev) < max(slaterWeightMin, 1e-8))
 
     # Run Lanczos on psi0^T* [wI - j*delta - H]^-1 psi0
@@ -627,9 +634,6 @@ def block_Green(
     if len(psi) == 0:
         return np.zeros((len(iws), n, n), dtype=complex), np.zeros((len(ws), n, n), dtype=complex)
 
-    if verbose:
-        print(f"time(set up psi_start) = {time.perf_counter() - t0}")
-
     # If we have a realaxis mesh, prefer to check convergence on that
     # if not, use the Matsubara mesh
     if realaxis:
@@ -666,7 +670,7 @@ def block_Green(
             gs_new = wIs - alpha - np.conj(beta.T)[np.newaxis, :, :] @ np.linalg.solve(gs_new, beta[np.newaxis, :, :])
             gs_prev = wIs - alpha - np.conj(beta.T)[np.newaxis, :, :] @ np.linalg.solve(gs_prev, beta[np.newaxis, :, :])
         if verbose:
-            print(rf"δ = {np.max(np.abs(gs_new - gs_prev))}", flush=True)
+            print(rf"δ = {np.max(np.abs(gs_new - gs_prev))}")
         return np.all(np.abs(gs_new - gs_prev) < max(slaterWeightMin, 1e-8))
 
     t0 = time.perf_counter()
@@ -682,7 +686,7 @@ def block_Green(
         reort=reort,
     )
     if verbose:
-        print(f"time(block_lanczos) = {time.perf_counter() - t0: .4f} seconds.", flush=True)
+        print(f"time(block_lanczos) = {time.perf_counter() - t0: .4f} seconds.")
 
     t0 = time.perf_counter()
 
@@ -829,7 +833,7 @@ def block_Green_freq_2(
     basis.comm.Reduce(MPI.IN_PLACE if basis.comm.rank == 0 else gs_matsubara, gs_matsubara, op=MPI.SUM)
     basis.comm.Reduce(MPI.IN_PLACE if basis.comm.rank == 0 else gs_realaxis, gs_realaxis, op=MPI.SUM)
     if verbose:
-        print(f"time(block_lanczos) = {time.perf_counter() - t0: .4f} seconds.", flush=True)
+        print(f"time(block_lanczos) = {time.perf_counter() - t0: .4f} seconds.")
     if basis.comm.rank == 0:
         ix = np.ix_(range(len(iws)), np.argsort(p), np.argsort(p))
         gs_matsubara = (np.conj(r.T)[np.newaxis, :, :] @ np.linalg.solve(gs_matsubara, r[np.newaxis, :, :]))[ix]
