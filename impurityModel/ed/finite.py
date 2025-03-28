@@ -203,20 +203,22 @@ def eigensystem_new(
             dk += k
             v0_guess = vecs[:, mask][:, [0]]
     elif "petsc4py" in sys.modules and isinstance(h_local, PETSc.Mat):
-        dk = 10
-        es = []
-
         eig_solver = SLEPc.EPS()
         eig_solver.create()
         eig_solver.setOperators(h_local)
         eig_solver.setProblemType(SLEPc.EPS.ProblemType.HEP)
         eig_solver.setWhichEigenpairs(EPS.Which.SMALLEST_REAL)
-        eig_solver.setDimensions(k, PETSc.DECIDE)
+        eig_solver.setDimensions(k, PETSc.DECIDE, PETSc.DECIDE)
+
         eig_solver.solve()
-        nconv = eig_solver.getConverged()
-        es = np.empty((nconv), dtype=float)
+        # Failed to converge with default settings.
+        # Decrease required accuracy and try again.
         if nconv == 0:
-            raise RuntimeError("SLEPc failed to converge!")
+            eig_solver.setTolerances(max(eigenValueTol, 1e-4), PETSc.DECIDE)
+            nconv = eig_solver.getConverged()
+        if nconv == 0:
+            raise RuntimeError(f"SLEPc EPS failed to converge!")
+        es = np.empty((nconv), dtype=float)
         vecs = np.empty((h_local.size[0], nconv), dtype=complex, order="F")
         vr, wr = h_local.getVecs()
         vi, wi = h_local.getVecs()
