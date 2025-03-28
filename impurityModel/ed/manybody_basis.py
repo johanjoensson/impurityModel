@@ -975,21 +975,21 @@ class Basis:
                 )
                 for block in self.impurity_orbitals[i]
             ]
-            for i in self.impurity_orbitals.keys()
+            for i in self.impurity_orbitals
         }
         valence, conduction = self.bath_states
         rho_baths = {
             i: [
                 np.array(
-                    [build_density_matrix(sorted(val_b + cond_b), psi, self.num_spin_orbitals) for psi in local_psis]
+                    [build_density_matrix(sorted(val_b + cond_b), psi, self.num_spin_orbitals) for psi in local_psis],
+                    dtype=complex,
                 )
                 for val_b, cond_b in zip(valence[i], conduction[i])
             ]
-            for i in valence.keys()
+            for i in valence
         }
         bath_indices = {
-            i: [list(sorted(val_b + cond_b)) for val_b, cond_b in zip(valence[i], conduction[i])]
-            for i in valence.keys()
+            i: [list(sorted(val_b + cond_b)) for val_b, cond_b in zip(valence[i], conduction[i])] for i in valence
         }
 
         return rho_imps, rho_baths, bath_indices

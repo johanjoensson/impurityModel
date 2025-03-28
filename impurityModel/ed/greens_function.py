@@ -355,7 +355,7 @@ def calc_Greens_function_with_offdiag(
         if verbose and excited_restrictions is not None:
             print("Excited state restrictions:")
             for indices, occupations in excited_restrictions.items():
-                print(f"---> {indices} : {occupations}")
+                print(f"---> {sorted(indices)} : {occupations}")
             print()
         block_v = []
         local_excited_basis = set()

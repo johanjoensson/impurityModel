@@ -192,15 +192,25 @@ def eigensystem_new(
             dtype=h_local.dtype,
         )
 
-        dk = 5
+        ncv = None
         v0_guess = v0[:, [0]] if v0 is not None else None
         es = []
         mask = [True]
         while len(es) <= sum(mask):
-            es, vecs = eigsh(h, k=min(k + dk, h.shape[0] - 2), which="SA", tol=eigenValueTol, v0=v0_guess)
+            try:
+                es, vecs = eigsh(h, k=min(k + 1, h.shape[0] - 2), which="SA", tol=eigenValueTol, v0=v0_guess, ncv=ncv)
+                k = len(es)
+            except ArpackNoConvergence as e:
+                es = e.eigenvalues
+                vecs = e.eigenvectors
+                eigenValueTol = max(eigenValueTol * 10, 1e-6)
+            except ArpackError as e:
+                ncv = min(h.shape[0], max(2 * k + 3, 20)) if ncv is None else min(ncv * 2, h.shape[0])
+                es = [0]
+                vecs = None
+
             mask = es - np.min(es) <= e_max
-            dk += k
-            v0_guess = vecs[:, mask][:, [0]]
+            v0_guess = vecs[:, mask][:, [0]] if vecs is not None else None
     elif "petsc4py" in sys.modules and isinstance(h_local, PETSc.Mat):
         eig_solver = SLEPc.EPS()
         eig_solver.create(comm=comm)

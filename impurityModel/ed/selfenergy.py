@@ -405,8 +405,8 @@ def calc_selfenergy(
 
     if restrictions is not None and verbosity >= 2:
         print("Restrictions GS on occupation")
-        for key, res in restrictions.items():
-            print(f"---> {key} : {res}")
+        for indices, limits in restrictions.items():
+            print(f"---> {sorted(indices)} : {limits}")
 
     energy_cut = -tau * np.log(1e-4)
 
@@ -493,7 +493,7 @@ def calc_selfenergy(
     if verbosity >= 1:
         print("Effective GS restrictions:", flush=True)
         for indices, occupations in effective_restrictions.items():
-            print(f"---> {indices} : {occupations}", flush=True)
+            print(f"---> {sorted(indices)} : {occupations}", flush=True)
         print()
         print(f"Consider {len(es):d} eigenstates for the spectra \n")
         print("Calculate Interacting Green's function...", flush=True)
