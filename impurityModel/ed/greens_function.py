@@ -582,8 +582,8 @@ def build_qrp(psi, basis, slaterWeightMin):
         # Allow for permutations of rows in psi as well
         psi_v, r, p = sp.linalg.qr(psi_v.copy(), mode="economic", overwrite_a=True, check_finite=False, pivoting=True)
         rows, columns = psi_v.shape
-    rows = basis.comm.bcast(rows, root=0)
-    columns = basis.comm.bcast(columns, root=0)
+    rows = basis.comm.bcast(rows if basis.comm.rank == 0 else None, root=0)
+    columns = basis.comm.bcast(columns if basis.comm.rank == 0 else None, root=0)
     if basis.comm.rank != 0:
         psi_v = np.empty((rows, columns), dtype=complex)
     # psi_v = basis.comm.bcast(psi_v, root=0)
