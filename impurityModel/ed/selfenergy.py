@@ -511,6 +511,7 @@ def calc_selfenergy(
         occ_restrict=occ_restrict,
         chain_restrict=chain_restrict,
         occ_cutoff=occ_cutoff,
+        slaterWeightMin=slaterWeightMin,
     )
     if gs_matsubara is not None:
         try:

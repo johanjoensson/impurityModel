@@ -493,10 +493,12 @@ def block_lanczos(
         elif reort == Reort.PARTIAL and it > 0:
             W = estimate_orthonormality(W, alphas, betas, N=1)
             mask = np.append(mask, [False] * n)
-            orth_loss = np.any(np.abs(W[1, :-1]) > np.sqrt(slaterWeightMin))
+            orth_loss = np.any(np.abs(W[1, :-1]) > np.sqrt(np.finfo(float).eps))
+            # orth_loss = np.any(np.abs(W[1, :-1]) > np.sqrt(slaterWeightMin))
 
             if orth_loss:
-                block_mask = np.abs(W[1, :-1]) > slaterWeightMin ** (3 / 4)
+                block_mask = np.abs(W[1, :-1]) > np.finfo(float).eps ** (3 / 4)
+                # block_mask = np.abs(W[1, :-1]) > slaterWeightMin ** (3 / 4)
                 mask = np.logical_or(mask, np.any(block_mask, axis=1).flatten())
 
             perform_reort = orth_loss or force_reort

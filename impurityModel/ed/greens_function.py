@@ -644,7 +644,7 @@ def block_Green(
     else:
         conv_w = np.linspace(start=-0.5, stop=0.5, num=501)
 
-    n_samples = max(len(conv_w) // 5, min(len(conv_w), 10))
+    n_samples = max(len(conv_w) // 20, min(len(conv_w), 10))
 
     def converged(alphas, betas, verbose=False):
         if alphas.shape[0] == 1:
@@ -652,6 +652,8 @@ def block_Green(
 
         # if alphas.shape[0] % 10 != 0:
         #     return False
+        if np.any(np.abs(betas[-1]) > 1e6):
+            return True
 
         w = np.zeros((n_samples), dtype=conv_w.dtype)
         intervals = np.linspace(start=conv_w[0], stop=conv_w[-1], num=n_samples + 1)
@@ -674,7 +676,7 @@ def block_Green(
             gs_prev = wIs - alpha - np.conj(beta.T)[np.newaxis, :, :] @ np.linalg.solve(gs_prev, beta[np.newaxis, :, :])
         if verbose:
             print(rf"δ = {np.max(np.abs(gs_new - gs_prev))}")
-        return np.all(np.abs(gs_new - gs_prev) < max(slaterWeightMin, 1e-8))
+        return np.all(np.abs(gs_new - gs_prev) < max(np.sqrt(slaterWeightMin), 1e-6))
 
     t0 = time.perf_counter()
     # Run Lanczos on psi0^T* [wI - j*delta - H]^-1 psi0
