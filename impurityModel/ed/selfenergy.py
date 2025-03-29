@@ -424,13 +424,11 @@ def calc_selfenergy(
     if verbosity >= 1:
         print(f"{len(basis)} Slater determinants in the basis.")
     gs_stats = basis.get_state_statistics(psis)
-    all_psis = comm.gather(psis)
-    local_psis = [{} for _ in psis]
     sum_bath_states = {
         i: sum(len(orbs) for orbs in valence_baths[i]) + sum(len(orbs) for orbs in conduction_baths[i])
         for i in valence_baths
     }
-    rho_imps, rho_baths, bath_indices = basis.build_density_matrices(psis)
+    rho_imps, rho_baths, _ = basis.build_density_matrices(psis)
     n_orb = sum(len(block) for blocks in basis.impurity_orbitals.values() for block in blocks)
     full_rho_imps = np.zeros((len(psis), n_orb, n_orb), dtype=complex)
     for i, i_blocks in basis.impurity_orbitals.items():
@@ -576,7 +574,7 @@ def calc_selfenergy(
             it = ar[f"{cluster_label}/last_iteration"][0]
             group = f"{cluster_label}/it_{it}"
 
-            for block_i, block in enumerate(blocks):
+            for block_i, _ in enumerate(blocks):
                 ar.create_dataset(f"{group}/block_{block_i}/gs_matsubara", data=gs_matsubara[block_i])
                 ar.create_dataset(f"{group}/block_{block_i}/gs_real", data=gs_realaxis[block_i])
                 ar.create_dataset(f"{group}/block_{block_i}/sigma_static", data=sigma_static[block_i])
