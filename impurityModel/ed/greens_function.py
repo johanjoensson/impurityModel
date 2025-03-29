@@ -650,10 +650,10 @@ def block_Green(
         if alphas.shape[0] == 1:
             return False
 
-        # if alphas.shape[0] % 10 != 0:
-        #     return False
         if np.any(np.abs(betas[-1]) > 1e6):
             return True
+        if alphas.shape[0] % 10 != 0:
+            return False
 
         w = np.zeros((n_samples), dtype=conv_w.dtype)
         intervals = np.linspace(start=conv_w[0], stop=conv_w[-1], num=n_samples + 1)
