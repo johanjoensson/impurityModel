@@ -768,8 +768,7 @@ def block_lanczos_fixed_basis(
         if mpi:
             request.Wait()
         for j, (i, state) in itertools.product(range(columns), enumerate(basis.local_basis)):
-            if abs(psip[i, j]) ** 2 >= slaterWeightMin:
-                q[1][j][state] = psip[i, j]
+            q[1][j][state] = psip[i, j]
 
         t_state += perf_counter() - t_tmp
         if build_krylov_basis:
