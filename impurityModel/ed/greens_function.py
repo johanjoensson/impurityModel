@@ -646,12 +646,52 @@ def block_Green(
 
     n_samples = max(len(conv_w) // 20, min(len(conv_w), 10))
 
+    time.sleep(basis.rng.integers(15))
+    if rank == 0:
+        import glob
+
+        conv_files = glob.glob(f"conv_test_*.dat")
+        n_conv_files = len(conv_files)
+        conv_file = open(f"conv_test_{n_conv_files}.dat", "w")
+
+
+    conv_cutoff = max(slaterWeightMin, 1e-8)
+
     def converged(alphas, betas, verbose=False):
         if alphas.shape[0] == 1:
             return False
 
-        if np.any(np.abs(betas[-1]) > 1e6):
+        # Catastrophic breakdown has occured, just quit!
+        if np.any(np.abs(np.diag(betas[-1])) > 1 / max(slaterWeightMin, np.finfo(float).eps)):
+            w = np.zeros((n_samples), dtype=conv_w.dtype)
+            intervals = np.linspace(start=conv_w[0], stop=conv_w[-1], num=n_samples + 1)
+            for i in range(n_samples):
+                w[i] = basis.rng.uniform(
+                    low=min(intervals[i], intervals[i + 1]), high=max(intervals[i], intervals[i + 1]), size=None
+                )
+            wIs = (w + 1j * delta + e)[:, np.newaxis, np.newaxis] * np.identity(alphas.shape[1], dtype=complex)[
+                np.newaxis, :, :
+            ]
+            gs_new = wIs - alphas[-1]
+            gs_new = (
+                wIs
+                - alphas[-2]
+                - np.conj(betas[-2].T)[np.newaxis, :, :] @ np.linalg.solve(gs_new, betas[-2][np.newaxis, :, :])
+            )
+            gs_prev = wIs - alphas[-2]
+            for alpha, beta in zip(alphas[-3::-1], betas[-3::-1]):
+                gs_new = (
+                    wIs - alpha - np.conj(beta.T)[np.newaxis, :, :] @ np.linalg.solve(gs_new, beta[np.newaxis, :, :])
+                )
+                gs_prev = (
+                    wIs - alpha - np.conj(beta.T)[np.newaxis, :, :] @ np.linalg.solve(gs_prev, beta[np.newaxis, :, :])
+                )
+            δ = np.max(np.abs(gs_new - gs_prev))
+            if rank == 0:
+                conv_file.write("  ".join(f"{np.real(el)}" for el in np.append([δ], abs(np.diag(betas[-1])))))
+                conv_file.write("\n")
             return True
+
         if alphas.shape[0] % 10 != 0:
             return False
 
@@ -676,6 +716,10 @@ def block_Green(
             gs_prev = wIs - alpha - np.conj(beta.T)[np.newaxis, :, :] @ np.linalg.solve(gs_prev, beta[np.newaxis, :, :])
 
         δ = np.max(np.abs(gs_new - gs_prev))
+
+        if rank == 0:
+            conv_file.write("  ".join(f"{np.real(el)}" for el in np.append([δ], abs(np.diagonal(betas[-1])))))
+            conv_file.write("\n")
         if verbose:
             print(rf"{δ=}")
         return δ < conv_cutoff
@@ -692,6 +736,9 @@ def block_Green(
         slaterWeightMin=slaterWeightMin,
         reort=reort,
     )
+    if rank == 0:
+        conv_file.close()
+
     if verbose:
         print(f"time(block_lanczos) = {time.perf_counter() - t0: .4f} seconds.")
 

@@ -401,6 +401,12 @@ def block_lanczos(
     t_state = 0
     t_tot = perf_counter()
 
+    if rank == 0:
+        import glob
+
+        n_ort_files = len(glob.glob("orth_*.dat"))
+        ort_file = open(f"orth_{n_ort_files}.dat", "w")
+
     it = 0
     done = False
     converge_count = 0
@@ -515,6 +521,11 @@ def block_lanczos(
             request.Wait()
             W = estimate_orthonormality(W, alphas, betas, N=max(basis.size, 100), eps=eps)
 
+            Q = basis.redistribute_psis(Q)
+            Qm = basis.build_vector(Q, root=0).T
+            if rank == 0 and it > 0:
+                ort_file.write(f"{np.max(np.abs(np.conj(Qm.T) @ psip))}  {np.max(np.abs(W[1, :-1]))}\n")
+
             mask = np.append(mask, [False] * n)
             orth_loss = np.any(np.abs(W[1, :-1]) > np.sqrt(eps))
 
@@ -572,6 +583,9 @@ def block_lanczos(
         if build_krylov_basis:
             Q.extend(q[1])
         it += 1
+
+    if rank == 0:
+        ort_file.close()
     if verbose:
         print(f"Breaking after iteration {it+1}, blocksize = {n}")
         print(f"===> Maximum basis size: {N_max} Slater determinants")
