@@ -156,9 +156,9 @@ def estimate_orthonormality(W, alphas, betas, eps=np.finfo(float).eps, N=1, rng=
              Lanczos method. Dimensions (2, i+1, n, n)
     """
     # i is the index of the latest calculated vector
-    i = alphas.shape[0] - 2
+    i = alphas.shape[0] - 1
     n = alphas.shape[1]
-    W_out = np.empty((2, i + 2, n, n), dtype=complex)
+    W_out = np.zeros((2, i + 2, n, n), dtype=complex)
     w_bar = np.zeros((i + 2, n, n), dtype=complex)
     w_bar[i + 1, :, :] = np.identity(n)
     w_bar[i, :, :] = (
@@ -166,7 +166,7 @@ def estimate_orthonormality(W, alphas, betas, eps=np.finfo(float).eps, N=1, rng=
     )
     if i == 0:
         W_out[0, : i + 1] = W[1]
-        W_out[1, : i + 2] = np.identity(n)
+        W_out[1, : i + 2] = w_bar
         return W_out
 
     w_bar[0] = W[1, 1] @ betas[0] + W[1, 0] @ alphas[0] - alphas[i] @ W[1, 0] - betas[i - 1] @ W[0, 0]
@@ -361,6 +361,7 @@ def block_lanczos(
     if h_mem is None:
         h_mem = {}
     mpi = basis.comm is not None
+    comm = basis.comm if mpi else MPI.COMM_SELF
     rank = basis.comm.rank if mpi else 0
     build_krylov_basis = reort != Reort.NONE
     n = len(psi0)
@@ -389,6 +390,7 @@ def block_lanczos(
     if reort == Reort.PARTIAL:
         W = np.zeros((2, 1, n, n), dtype=complex)
         W[1, 0, :, :] = np.identity(n, dtype=complex)
+    eps = max(slaterWeightMin, np.finfo(float).eps)
     t_add = 0
     t_vec = 0
     t_apply = 0
@@ -424,8 +426,7 @@ def block_lanczos(
 
         wp_size = np.array([len(psi) for psi in wp], dtype=int)
         basis.comm.Allreduce(MPI.IN_PLACE, wp_size, op=MPI.SUM)
-        # wp_size = basis.comm.allreduce(wp_size, op=MPI.SUM)
-        cutoff = max(slaterWeightMin, np.finfo(float).eps)
+        cutoff = eps
         n_trunc = 0
         while np.max(wp_size) > basis.truncation_threshold:
             wp = [{state: w for state, w in psi.items() if abs(w) ** 2 >= cutoff} for psi in wp]
@@ -484,36 +485,13 @@ def block_lanczos(
             offsets = np.fromiter(
                 (np.sum(send_counts[:i]) for i in range(basis.comm.size)), dtype=int, count=basis.comm.size
             )
-        if reort == Reort.FULL:
-            perform_reort = True
-            mask = [True] * len(Q)
-        elif reort == Reort.PERIODIC and it % 5 < 2:
-            perform_reort = True
-            mask = [True] * len(Q)
-        elif reort == Reort.PARTIAL and it > 0:
-            W = estimate_orthonormality(W, alphas, betas, N=1)
-            mask = np.append(mask, [False] * n)
-            orth_loss = np.any(np.abs(W[1, :-1]) > np.sqrt(np.finfo(float).eps))
-            # orth_loss = np.any(np.abs(W[1, :-1]) > np.sqrt(slaterWeightMin))
-
-            if orth_loss:
-                block_mask = np.abs(W[1, :-1]) > np.finfo(float).eps ** (3 / 4)
-                # block_mask = np.abs(W[1, :-1]) > slaterWeightMin ** (3 / 4)
-                mask = np.logical_or(mask, np.any(block_mask, axis=1).flatten())
-
-            perform_reort = orth_loss or force_reort
-            force_reort = orth_loss
-            if orth_loss:
-                W[1, np.argwhere(block_mask)] = np.finfo(float).eps
-
-        if perform_reort:
-            Qt = basis.redistribute_psis(itertools.compress(Q, mask))
+        if reort == Reort.FULL or reort == Reort.PERIODIC and it % 5 < 2:
+            Qt = basis.redistribute_psis(Q)
             Qm = basis.build_distributed_vector(Qt).T
             tmp = np.conj(Qm.T) @ psip
             if mpi:
                 basis.comm.Allreduce(MPI.IN_PLACE, tmp, op=MPI.SUM)
             psip -= Qm @ tmp
-            perform_reort = False
 
         qip = np.empty((basis.size, n), dtype=complex) if rank == 0 else None
         if mpi:
@@ -533,10 +511,47 @@ def block_lanczos(
         else:
             psip = qip
 
-        if it % 1 == 0 or converge_count > 0:
-            t_tmp = perf_counter()
-            done = converged(alphas, betas, verbose=reort == Reort.PARTIAL)
-            t_conv += perf_counter() - t_tmp
+        if reort == Reort.PARTIAL:
+            request.Wait()
+            W = estimate_orthonormality(W, alphas, betas, N=max(basis.size, 100), eps=eps)
+
+            mask = np.append(mask, [False] * n)
+            orth_loss = np.any(np.abs(W[1, :-1]) > np.sqrt(eps))
+
+            if orth_loss:
+                block_mask = np.abs(W[1, :-1]) > eps ** (3 / 4)
+                mask = np.logical_or(mask, np.any(block_mask, axis=2).flatten())
+            perform_reort = orth_loss or force_reort
+            force_reort = orth_loss
+            if perform_reort:
+                W[1, np.argwhere(block_mask)] = eps
+                psip = psip @ betas[-1]
+                Qt = basis.redistribute_psis(itertools.compress(Q, mask))
+                Qm = basis.build_distributed_vector(Qt).T
+                tmp = np.conj(Qm.T) @ psip
+                if mpi:
+                    basis.comm.Allreduce(MPI.IN_PLACE, tmp, op=MPI.SUM)
+                psip -= Qm @ tmp
+                perform_reort = False
+
+                qip = np.empty((basis.size, n), dtype=complex) if rank == 0 else None
+                if mpi:
+                    basis.comm.Gatherv(psip, [qip, send_counts, offsets, MPI.C_DOUBLE_COMPLEX], root=0)
+                else:
+                    qip = psip
+                t_vec += perf_counter() - t_tmp
+                if rank == 0:
+                    t_tmp = perf_counter()
+                    qip, betas[-1] = qr_decomp(qip)
+                    _, columns = qip.shape
+                if mpi:
+                    basis.comm.Bcast(betas[it], root=0)
+                    columns = basis.comm.bcast(columns if rank == 0 else None)
+                    request = basis.comm.Iscatterv([qip, send_counts, offsets, MPI.C_DOUBLE_COMPLEX], psip.T, root=0)
+                else:
+                    psip = qip
+
+        done = converged(alphas, betas, verbose=reort == Reort.PARTIAL)
 
         if mpi:
             done = basis.comm.allreduce(done, op=MPI.LAND)
@@ -551,8 +566,7 @@ def block_lanczos(
         if mpi:
             request.Wait()
         for j, (i, state) in itertools.product(range(columns), enumerate(basis.local_basis)):
-            if abs(psip[i, j]) ** 2 >= slaterWeightMin:
-                q[1][j][state] = psip[i, j]
+            q[1][j][state] = psip[i, j]
 
         t_state += perf_counter() - t_tmp
         if build_krylov_basis:

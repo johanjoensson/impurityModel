@@ -208,7 +208,7 @@ def calc_occ_e(
     h_dict = basis.expand(h_op, dense_cutoff=dense_cutoff, de2_min=1e-4)
     h = basis.build_sparse_matrix(h_op, h_dict) if basis.size > dense_cutoff else basis.build_dense_matrix(h_op, h_dict)
 
-    e_trial = finite.eigensystem_new(h, e_max=0, k=1, eigenValueTol=1e-6, return_eigvecs=False, comm=basis.comm)
+    e_trial = finite.eigensystem_new(h, e_max=0, k=2, eigenValueTol=1e-6, return_eigvecs=False, comm=basis.comm)
     return e_trial[0], basis, h_dict
 
 
