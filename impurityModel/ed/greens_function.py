@@ -678,7 +678,7 @@ def block_Green(
         δ = np.max(np.abs(gs_new - gs_prev))
         if verbose:
             print(rf"{δ=}")
-        return δ < conv_cutoff
+        return δ < max(slaterWeightMin, 1e-12)
 
     t0 = time.perf_counter()
     # Run Lanczos on psi0^T* [wI - j*delta - H]^-1 psi0

@@ -498,21 +498,16 @@ def block_lanczos(
             basis.comm.Gatherv(psip, [qip, send_counts, offsets, MPI.C_DOUBLE_COMPLEX], root=0)
         else:
             qip = psip
+
         t_vec += perf_counter() - t_tmp
         if rank == 0:
             t_tmp = perf_counter()
             qip, betas[-1] = qr_decomp(qip)
             _, columns = qip.shape
-
         if mpi:
             basis.comm.Bcast(betas[it], root=0)
-            columns = basis.comm.bcast(columns if rank == 0 else None)
-            request = basis.comm.Iscatterv([qip, send_counts, offsets, MPI.C_DOUBLE_COMPLEX], psip.T, root=0)
-        else:
-            psip = qip
 
         if reort == Reort.PARTIAL:
-            request.Wait()
             W = estimate_orthonormality(W, alphas, betas, N=max(basis.size, 100), eps=eps)
 
             mask = np.append(mask, [False] * n)
@@ -525,7 +520,6 @@ def block_lanczos(
             force_reort = orth_loss
             if perform_reort:
                 W[1, np.argwhere(block_mask)] = eps
-                psip = psip @ betas[-1]
                 Qt = basis.redistribute_psis(itertools.compress(Q, mask))
                 Qm = basis.build_distributed_vector(Qt).T
                 tmp = np.conj(Qm.T) @ psip
@@ -546,10 +540,11 @@ def block_lanczos(
                     _, columns = qip.shape
                 if mpi:
                     basis.comm.Bcast(betas[it], root=0)
-                    columns = basis.comm.bcast(columns if rank == 0 else None)
-                    request = basis.comm.Iscatterv([qip, send_counts, offsets, MPI.C_DOUBLE_COMPLEX], psip.T, root=0)
-                else:
-                    psip = qip
+        if mpi:
+            columns = basis.comm.bcast(columns if rank == 0 else None)
+            request = basis.comm.Iscatterv([qip, send_counts, offsets, MPI.C_DOUBLE_COMPLEX], psip.T, root=0)
+        else:
+            psip = qip
 
         done = converged(alphas, betas, verbose=reort == Reort.PARTIAL)
 
