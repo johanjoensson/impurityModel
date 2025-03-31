@@ -960,25 +960,26 @@ def calc_mpi_Greens_function_from_alpha_beta(alphas, betas, iws, ws, e, delta, r
     """
     matsubara = iws is not None
     realaxis = ws is not None
-    if matsubara:
-        num_indices = np.array([len(iws) // comm.size] * comm.size, dtype=int)
-        num_indices[: len(iws) % comm.size] += 1
-        iws_split = iws[sum(num_indices[: comm.rank]) : sum(num_indices[: comm.rank + 1])]
-    if realaxis:
-        num_indices = np.array([len(ws) // comm.size] * comm.size, dtype=int)
-        num_indices[: len(ws) % comm.size] += 1
-        ws_split = ws[sum(num_indices[: comm.rank]) : sum(num_indices[: comm.rank + 1])]
-    gs_matsubara_local, gs_realaxis_local = calc_local_Greens_function_from_alpha_beta(
-        alphas, betas, iws_split, ws_split, e, delta, verbose
-    )
+    # if matsubara:
+    #     num_indices = np.array([len(iws) // comm.size] * comm.size, dtype=int)
+    #     num_indices[: len(iws) % comm.size] += 1
+    #     iws_split = iws[sum(num_indices[: comm.rank]) : sum(num_indices[: comm.rank + 1])]
+    # if realaxis:
+    #     num_indices = np.array([len(ws) // comm.size] * comm.size, dtype=int)
+    #     num_indices[: len(ws) % comm.size] += 1
+    #     ws_split = ws[sum(num_indices[: comm.rank]) : sum(num_indices[: comm.rank + 1])]
+    # gs_matsubara_local, gs_realaxis_local = calc_local_Greens_function_from_alpha_beta(
+    #     alphas, betas, iws_split, ws_split, e, delta, verbose
+    # )
+    gs_matsubara, gs_realaxis = calc_local_Greens_function_from_alpha_beta(alphas, betas, iws, ws, e, delta, verbose)
     # Multiply obtained Green's function with the upper triangular matrix to restore the original block
     # R^T* G R
     if matsubara:
-        counts = np.empty((comm.size), dtype=int)
-        comm.Gather(np.array([gs_matsubara_local.shape[1] ** 2 * len(iws_split)], dtype=int), counts)
-        offsets = [sum(counts[:r]) for r in range(len(counts))] if comm.rank == 0 else None
-        gs_matsubara = np.empty((len(iws), alphas.shape[1], alphas.shape[1]), dtype=complex) if comm.rank == 0 else None
-        comm.Gatherv(gs_matsubara_local, (gs_matsubara, counts, offsets, MPI.C_DOUBLE_COMPLEX), root=0)
+        # counts = np.empty((comm.size), dtype=int)
+        # comm.Gather(np.array([gs_matsubara_local.shape[1] ** 2 * len(iws_split)], dtype=int), counts)
+        # offsets = [sum(counts[:r]) for r in range(len(counts))] if comm.rank == 0 else None
+        # gs_matsubara = np.empty((len(iws), alphas.shape[1], alphas.shape[1]), dtype=complex) if comm.rank == 0 else None
+        # comm.Gatherv(gs_matsubara_local, (gs_matsubara, counts, offsets, MPI.C_DOUBLE_COMPLEX), root=0)
         if comm.rank == 0:
             # ix = np.ix_(range(len(iws)), np.argsort(p), np.argsort(p))
             gs_matsubara = np.conj(r.T)[np.newaxis, :, :] @ np.linalg.solve(gs_matsubara, r[np.newaxis, :, :])  # [ix]
@@ -986,11 +987,11 @@ def calc_mpi_Greens_function_from_alpha_beta(alphas, betas, iws, ws, e, delta, r
             #     gs_matsubara, r[np.newaxis, :, np.argsort(p)]
             # )  # [ix]
     if realaxis:
-        counts = np.empty((comm.size), dtype=int)
-        comm.Gather(np.array([gs_realaxis_local.shape[1] ** 2 * len(ws_split)], dtype=int), counts)
-        offsets = [sum(counts[:r]) for r in range(len(counts))] if comm.rank == 0 else None
-        gs_realaxis = np.empty((len(ws), alphas.shape[1], alphas.shape[1]), dtype=complex) if comm.rank == 0 else None
-        comm.Gatherv(gs_realaxis_local, (gs_realaxis, counts, offsets, MPI.C_DOUBLE_COMPLEX), root=0)
+        # counts = np.empty((comm.size), dtype=int)
+        # comm.Gather(np.array([gs_realaxis_local.shape[1] ** 2 * len(ws_split)], dtype=int), counts)
+        # offsets = [sum(counts[:r]) for r in range(len(counts))] if comm.rank == 0 else None
+        # gs_realaxis = np.empty((len(ws), alphas.shape[1], alphas.shape[1]), dtype=complex) if comm.rank == 0 else None
+        # comm.Gatherv(gs_realaxis_local, (gs_realaxis, counts, offsets, MPI.C_DOUBLE_COMPLEX), root=0)
         if comm.rank == 0:
             # ix = np.ix_(range(len(ws)), np.argsort(p), np.argsort(p))
             gs_realaxis = np.conj(r.T)[np.newaxis, :, :] @ np.linalg.solve(gs_realaxis, r[np.newaxis, :, :])  # [ix]
