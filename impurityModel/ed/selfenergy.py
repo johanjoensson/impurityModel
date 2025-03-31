@@ -100,8 +100,8 @@ def fixed_peak_dc(h0_op, dc_struct, rank, verbose, dense_cutoff):
         if abs(dc_trial[i, j]) > 0
     }
     h_op = finite.addOps([h_op_i, dc_op_i])
-    _ = basis_upper.expand(h_op, dense_cutoff=dense_cutoff, de2_min=1e-4)
-    _ = basis_lower.expand(h_op, dense_cutoff=dense_cutoff, de2_min=1e-4)
+    _ = basis_upper.expand(h_op, dense_cutoff=dense_cutoff, de2_min=1e-3)
+    _ = basis_lower.expand(h_op, dense_cutoff=dense_cutoff, de2_min=1e-3)
 
     def F(dc_fac):
         dc = dc_fac * dc_trial
@@ -112,8 +112,8 @@ def fixed_peak_dc(h0_op, dc_struct, rank, verbose, dense_cutoff):
             if abs(dc_trial[i, j]) > 0
         }
         h_op = finite.addOps([h_op_i, dc_op_i])
-        _ = basis_upper.expand(h_op, dense_cutoff=dense_cutoff, de2_min=1e-4)
-        _ = basis_lower.expand(h_op, dense_cutoff=dense_cutoff, de2_min=1e-4)
+        _ = basis_upper.expand(h_op, dense_cutoff=dense_cutoff, de2_min=1e-3)
+        _ = basis_lower.expand(h_op, dense_cutoff=dense_cutoff, de2_min=1e-3)
 
         h_dict = basis_upper.build_operator_dict(h_op)
         h = (
@@ -122,7 +122,7 @@ def fixed_peak_dc(h0_op, dc_struct, rank, verbose, dense_cutoff):
             else basis_upper.build_dense_matrix(h_op, h_dict)
         )
         e_upper, psi_upper = finite.eigensystem_new(
-            h, e_max=0, k=1, eigenValueTol=1e-4, return_eigvecs=True, comm=basis_upper.comm
+            h, e_max=0, k=2, eigenValueTol=1e-6, return_eigvecs=True, comm=basis_upper.comm
         )
         h_dict = basis_lower.build_operator_dict(h_op)
         h = (
@@ -131,7 +131,7 @@ def fixed_peak_dc(h0_op, dc_struct, rank, verbose, dense_cutoff):
             else basis_lower.build_dense_matrix(h_op, h_dict)
         )
         e_lower, psi_lower = finite.eigensystem_new(
-            h, e_max=0, k=1, eigenValueTol=1e-4, return_eigvecs=True, comm=basis_upper.comm
+            h, e_max=0, k=2, eigenValueTol=1e-6, return_eigvecs=True, comm=basis_upper.comm
         )
         psi_lower_local = basis_lower.build_state(psi_lower[:, 0].T)[0]
         psi_upper_local = basis_upper.build_state(psi_upper[:, 0].T)[0]

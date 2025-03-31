@@ -554,11 +554,12 @@ def run_impmod_ed(
             comm=comm,
         )
 
-        # Rotate self energy from CF basis to RSPt's corr basis
-        u = np.conj(corr_to_cf.T)
-        cluster.sig[:, :, :] = rotate_Greens_function(cluster.sig, u)
-        cluster.sig_real[:, :, :] = rotate_Greens_function(cluster.sig_real, u)
-        cluster.sig_static[:, :] = rotate_matrix(cluster.sig_static, u)
+        if comm.rank == 0:
+            # Rotate self energy from CF basis to RSPt's corr basis
+            u = np.conj(corr_to_cf.T)
+            cluster.sig[:, :, :] = rotate_Greens_function(cluster.sig.copy(), u)
+            cluster.sig_real[:, :, :] = rotate_Greens_function(cluster.sig_real.copy(), u)
+            cluster.sig_static[:, :] = rotate_matrix(cluster.sig_static.copy(), u)
 
         comm.Bcast(sig_static, root=0)
         comm.Bcast(sig_real, root=0)

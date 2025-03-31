@@ -216,8 +216,6 @@ def get_Greens_function(
                     requests.append(basis.comm.Irecv(gs_realaxis[block_i], color_root))
     if len(requests) > 0:
         requests[-1].Waitall(requests)
-        for request in requests:
-            request.free()
     block_basis.comm.Free()
     return (gs_matsubara, gs_realaxis) if basis.comm.rank == 0 else (None, None)
 
@@ -408,6 +406,7 @@ def calc_Greens_function_with_offdiag(
     # Send calculated Greens functions to root
     requests = []
     if eigen_basis.comm.rank == 0:
+        assert comm.rank in eigen_roots
         if iw is not None:
             requests.append(comm.Isend(gs_matsubara_block, 0))
         if w is not None:
@@ -426,8 +425,6 @@ def calc_Greens_function_with_offdiag(
             gs_realaxis_block = np.sum(gs_realaxis_received, axis=0)
     if len(requests) > 0:
         requests[-1].Waitall(requests)
-        for request in requests:
-            request.free()
     eigen_basis.comm.Free()
     return gs_matsubara_block, gs_realaxis_block
 
