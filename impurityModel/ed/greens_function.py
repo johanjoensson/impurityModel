@@ -51,7 +51,7 @@ def split_comm_and_redistribute_basis(priorities: Iterable[float], basis: Basis,
     proc_cutoffs = np.cumsum(procs_per_color)
     color = np.argmax(comm.rank < proc_cutoffs)
     comm.Barrier()
-    split_comm = comm.Split(color=color, key=comm.rank)
+    split_comm = comm.Split(color=color, key=0)
     split_roots = [0] + proc_cutoffs[:-1].tolist()
     items_per_color = np.array([len(priorities) // n_colors] * n_colors, dtype=int)
     items_per_color[: len(priorities) % n_colors] += 1
