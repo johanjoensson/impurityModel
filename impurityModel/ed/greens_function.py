@@ -397,11 +397,11 @@ def calc_Greens_function_with_offdiag(
             verbose=verbose,
             reort=reort,
         )
-        if excited_basis.comm.rank == 0:
+        if eigen_basis.comm.rank == 0:
             if iw is not None:
-                gs_matsubara_block += np.exp(-(e - e0) / tau) / Z * gs_matsubara_block_i
+                gs_matsubara_block += (np.exp(-(e - e0) / tau) / Z) * gs_matsubara_block_i
             if w is not None:
-                gs_realaxis_block += np.exp(-(e - e0) / tau) / Z * gs_realaxis_block_i
+                gs_realaxis_block += (np.exp(-(e - e0) / tau) / Z) * gs_realaxis_block_i
         excited_basis.comm.Free()
     # Send calculated Greens functions to root
     requests = []
@@ -577,7 +577,7 @@ def build_qrp(psi, basis, slaterWeightMin):
         # Do a QR decomposition of the starting block.
         # Later on, use r to restore the psi block
         # Allow for permutations of rows in psi as well
-        psi_v, r, p = sp.linalg.qr(psi_v.copy(), mode="economic", overwrite_a=True, check_finite=False, pivoting=True)
+        psi_v, r = sp.linalg.qr(psi_v.copy(), mode="economic", overwrite_a=True, check_finite=False, pivoting=False)
         rows, columns = psi_v.shape
     rows = basis.comm.bcast(rows if basis.comm.rank == 0 else None, root=0)
     columns = basis.comm.bcast(columns if basis.comm.rank == 0 else None, root=0)
@@ -592,7 +592,7 @@ def build_qrp(psi, basis, slaterWeightMin):
     #     for i, ps in enumerate(psi_local):
     #         for state in ps:
     #             psi[i][state] = ps[state] + psi[i].get(state, 0)
-    return psi, r, p
+    return psi, r, None
 
 
 def block_Green(
@@ -980,8 +980,11 @@ def calc_mpi_Greens_function_from_alpha_beta(alphas, betas, iws, ws, e, delta, r
         gs_matsubara = np.empty((len(iws), alphas.shape[1], alphas.shape[1]), dtype=complex) if comm.rank == 0 else None
         comm.Gatherv(gs_matsubara_local, (gs_matsubara, counts, offsets, MPI.C_DOUBLE_COMPLEX), root=0)
         if comm.rank == 0:
-            ix = np.ix_(range(len(iws)), np.argsort(p), np.argsort(p))
-            gs_matsubara = (np.conj(r.T)[np.newaxis, :, :] @ np.linalg.solve(gs_matsubara, r[np.newaxis, :, :]))[ix]
+            # ix = np.ix_(range(len(iws)), np.argsort(p), np.argsort(p))
+            gs_matsubara = np.conj(r.T)[np.newaxis, :, :] @ np.linalg.solve(gs_matsubara, r[np.newaxis, :, :])  # [ix]
+            # gs_matsubara = np.conj(r.T)[np.newaxis, np.argsort(p), :] @ np.linalg.solve(
+            #     gs_matsubara, r[np.newaxis, :, np.argsort(p)]
+            # )  # [ix]
     if realaxis:
         counts = np.empty((comm.size), dtype=int)
         comm.Gather(np.array([gs_realaxis_local.shape[1] ** 2 * len(ws_split)], dtype=int), counts)
@@ -989,8 +992,8 @@ def calc_mpi_Greens_function_from_alpha_beta(alphas, betas, iws, ws, e, delta, r
         gs_realaxis = np.empty((len(ws), alphas.shape[1], alphas.shape[1]), dtype=complex) if comm.rank == 0 else None
         comm.Gatherv(gs_realaxis_local, (gs_realaxis, counts, offsets, MPI.C_DOUBLE_COMPLEX), root=0)
         if comm.rank == 0:
-            ix = np.ix_(range(len(ws)), np.argsort(p), np.argsort(p))
-            gs_realaxis = (np.conj(r.T)[np.newaxis, :, :] @ np.linalg.solve(gs_realaxis, r[np.newaxis, :, :]))[ix]
+            # ix = np.ix_(range(len(ws)), np.argsort(p), np.argsort(p))
+            gs_realaxis = np.conj(r.T)[np.newaxis, :, :] @ np.linalg.solve(gs_realaxis, r[np.newaxis, :, :])  # [ix]
     return gs_matsubara, gs_realaxis
 
 

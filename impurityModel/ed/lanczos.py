@@ -505,7 +505,7 @@ def block_lanczos(
             qip, betas[-1] = qr_decomp(qip)
             _, columns = qip.shape
         if mpi:
-            basis.comm.Bcast(betas[it], root=0)
+            basis.comm.Bcast(betas[-1], root=0)
 
         if reort == Reort.PARTIAL:
             W = estimate_orthonormality(W, alphas, betas, N=max(basis.size, 100), eps=eps)
@@ -539,7 +539,7 @@ def block_lanczos(
                     qip, betas[-1] = qr_decomp(qip)
                     _, columns = qip.shape
                 if mpi:
-                    basis.comm.Bcast(betas[it], root=0)
+                    basis.comm.Bcast(betas[-1], root=0)
         if mpi:
             columns = basis.comm.bcast(columns if rank == 0 else None)
             request = basis.comm.Iscatterv([qip, send_counts, offsets, MPI.C_DOUBLE_COMPLEX], psip.T, root=0)
