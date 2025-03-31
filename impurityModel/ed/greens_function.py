@@ -119,9 +119,9 @@ def get_Greens_function(
     if verbose:
         print(f"New root ranks:{block_roots}")
         print(f"Number blocks per subgroup: {blocks_per_color}")
-    gs_matsubara_block = []
-    gs_realaxis_block = []
-    for opIPS, opPS in (
+    gs_matsubara = [None for _ in blocks]
+    gs_realaxis = [None for _ in blocks]
+    for block_i, (opIPS, opPS) in enumerate(
         (
             [{((orb, "c"),): 1} for orb in block],
             [{((orb, "a"),): 1} for orb in block],
@@ -164,58 +164,73 @@ def get_Greens_function(
         )
 
         if matsubara_mesh is not None and block_basis.comm.rank == 0:
-            gs_matsubara_block.append(
-                gsIPS_matsubara
-                - np.transpose(
-                    gsPS_matsubara,
-                    (
-                        0,
-                        2,
-                        1,
-                    ),
-                )
+            gs_matsubara_block[block_i] = gsIPS_matsubara - np.transpose(
+                gsPS_matsubara,
+                (
+                    0,
+                    2,
+                    1,
+                ),
             )
         if omega_mesh is not None and block_basis.comm.rank == 0:
-            gs_realaxis_block.append(
-                gsIPS_realaxis
-                - np.transpose(
-                    gsPS_realaxis,
-                    (
-                        0,
-                        2,
-                        1,
-                    ),
-                )
+            gs_realaxis_block[block_i] = gsIPS_realaxis - np.transpose(
+                gsPS_realaxis,
+                (
+                    0,
+                    2,
+                    1,
+                ),
             )
-    gs_matsubara = (
-        [np.empty((len(matsubara_mesh), len(block), len(block)), dtype=complex) for block in blocks]
-        if basis.comm.rank == 0
-        else None
-    )
-    gs_realaxis = (
-        [np.empty((len(omega_mesh), len(block), len(block)), dtype=complex) for block in blocks]
-        if basis.comm.rank == 0
-        else None
-    )
-    requests = []
-    if block_basis.comm.rank == 0:
-        if matsubara_mesh is not None:
-            for matsubara_block_gs in gs_matsubara_block:
-                requests.append(basis.comm.isend(matsubara_block_gs, 0))
-        if omega_mesh is not None:
-            for real_block_gs in gs_realaxis_block:
-                requests.append(basis.comm.isend(real_block_gs, 0))
-    if basis.comm.rank == 0:
-        for color, color_root in enumerate(block_roots):
-            block_is = range(sum(blocks_per_color[:color]), sum(blocks_per_color[: color + 1]))
-            if matsubara_mesh is not None:
-                for block_i in block_is:
-                    requests.append(basis.comm.irecv(gs_matsubara[block_i], color_root))
-            if omega_mesh is not None:
-                for block_i in block_is:
-                    requests.append(basis.comm.irecv(gs_realaxis[block_i], color_root))
-    if len(requests) > 0:
-        MPI.Request().waitall(requests)
+    all_gs_matsubara = basis.comm.gather(gs_matsubara, root=0)
+    all_gs_realaxis = basis.comm.gather(gs_realaxis, root=0)
+    for gs_mats in all_gs_matsubara:
+        for i, gm in enumerate(gs_mats):
+            if gm is None:
+                continue
+            gs_matsubara[i] = gm
+    for gs_reals in all_gs_realaxis:
+        for i, gr in enumerate(gs_reals):
+            if gr is None:
+                continue
+            gs_realaxis[i] = gr
+
+    # gs_matsubara = (
+    #     [np.empty((len(matsubara_mesh), len(block), len(block)), dtype=complex) for block in blocks]
+    #     if basis.comm.rank == 0
+    #     else None
+    # )
+    # gs_realaxis = (
+    #     [np.empty((len(omega_mesh), len(block), len(block)), dtype=complex) for block in blocks]
+    #     if basis.comm.rank == 0
+    #     else None
+    # )
+    # # requests = []
+    # if block_basis.comm.rank == 0 and basis.comm.rank != 0:
+    #     assert basis.comm.rank in block_roots
+    #     if matsubara_mesh is not None:
+    #         for matsubara_block_gs in gs_matsubara_block:
+    #             basis.comm.send(matsubara_block_gs, 0)
+    #             # requests.append(basis.comm.isend(matsubara_block_gs, 0))
+    #     if omega_mesh is not None:
+    #     assert basis.comm.rank in block_roots
+    #         for real_block_gs in gs_realaxis_block:
+    #             basis.comm.isend(real_block_gs, 0)
+    #             # requests.append(basis.comm.isend(real_block_gs, 0))
+    # if basis.comm.rank == 0:
+    #     for color, color_root in enumerate(block_roots):
+    #         block_is = range(sum(blocks_per_color[:color]), sum(blocks_per_color[: color + 1]))
+    #         if matsubara_mesh is not None:
+    #             if color_root == block_basis.rank:
+    #                 continue
+    #             for block_i in block_is:
+    #                 basis.comm.recv(gs_matsubara[block_i], color_root)
+    #                 # requests.append(basis.comm.irecv(gs_matsubara[block_i], color_root))
+    #         if omega_mesh is not None:
+    #             for block_i in block_is:
+    #                 basis.comm.recv(gs_realaxis[block_i], color_root)
+    #                 # requests.append(basis.comm.irecv(gs_realaxis[block_i], color_root))
+    # if len(requests) > 0:
+    #     MPI.Request().waitall(requests)
     block_basis.comm.Free()
     return (gs_matsubara, gs_realaxis) if basis.comm.rank == 0 else (None, None)
 
@@ -326,8 +341,6 @@ def calc_Greens_function_with_offdiag(
     if verbose:
         print(f"New root ranks for eigenstates:{eigen_roots}")
         print(f"Number of eigenstates per subgroup: {eigen_per_color}")
-    gs_matsubara_received = np.empty((len(eigen_roots), len(iw), n, n), dtype=complex) if comm.rank == 0 else None
-    gs_realaxis_received = np.empty((len(eigen_roots), len(w), n, n), dtype=complex) if comm.rank == 0 else None
     e0 = min(es)
     Z = np.sum(np.exp(-(es - e0) / tau))
     for psi, e in zip(psis[eigen_indices], es[eigen_indices]):
@@ -399,32 +412,34 @@ def calc_Greens_function_with_offdiag(
         )
         if eigen_basis.comm.rank == 0:
             if iw is not None:
-                gs_matsubara_block += (np.exp(-(e - e0) / tau) / Z) * gs_matsubara_block_i
+                gs_matsubara_block += np.exp(-(e - e0) / tau) * gs_matsubara_block_i
             if w is not None:
-                gs_realaxis_block += (np.exp(-(e - e0) / tau) / Z) * gs_realaxis_block_i
+                gs_realaxis_block += np.exp(-(e - e0) / tau) * gs_realaxis_block_i
         excited_basis.comm.Free()
     # Send calculated Greens functions to root
-    requests = []
-    if eigen_basis.comm.rank == 0:
-        assert comm.rank in eigen_roots
-        if iw is not None:
-            requests.append(comm.isend(gs_matsubara_block, 0))
-        if w is not None:
-            requests.append(comm.isend(gs_realaxis_block, 0))
-    if comm.rank == 0:
-        for i, r in enumerate(eigen_roots):
-            if iw is not None:
-                requests.append(comm.irecv(gs_matsubara_received[i], r))
-        for i, r in enumerate(eigen_roots):
-            if w is not None:
-                requests.append(comm.irecv(gs_realaxis_received[i], r))
-        MPI.Request().waitall(requests)
-        if iw is not None:
-            gs_matsubara_block = np.sum(gs_matsubara_received, axis=0)
-        if w is not None:
-            gs_realaxis_block = np.sum(gs_realaxis_received, axis=0)
-    if len(requests) > 0:
-        MPI.Request().waitall(requests)
+    basis.comm.Reduce(MPI.IN_PLACE if comm.rank == 0 else None, gs_matsubara_block, root=0)
+    basis.comm.Reduce(MPI.IN_PLACE if comm.rank == 0 else None, gs_realaxis_block, root=0)
+    # requests = []
+    # if eigen_basis.comm.rank == 0:
+    #     assert comm.rank in eigen_roots
+    #     if iw is not None:
+    #         requests.append(comm.isend(gs_matsubara_block, 0))
+    #     if w is not None:
+    #         requests.append(comm.isend(gs_realaxis_block, 0))
+    # if comm.rank == 0:
+    #     for i, r in enumerate(eigen_roots):
+    #         if iw is not None:
+    #             requests.append(comm.irecv(gs_matsubara_received[i], r))
+    #     for i, r in enumerate(eigen_roots):
+    #         if w is not None:
+    #             requests.append(comm.irecv(gs_realaxis_received[i], r))
+    #     MPI.Request().waitall(requests)
+    #     if iw is not None:
+    #         gs_matsubara_block = np.sum(gs_matsubara_received, axis=0)
+    #     if w is not None:
+    #         gs_realaxis_block = np.sum(gs_realaxis_received, axis=0)
+    # if len(requests) > 0:
+    #     MPI.Request().waitall(requests)
     eigen_basis.comm.Free()
     return gs_matsubara_block, gs_realaxis_block
 
