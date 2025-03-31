@@ -119,9 +119,10 @@ def get_Greens_function(
     if verbose:
         print(f"New root ranks:{block_roots}")
         print(f"Number blocks per subgroup: {blocks_per_color}")
+    bis = list(range(block_indices))
     gs_matsubara = [None for _ in blocks]
     gs_realaxis = [None for _ in blocks]
-    for block_i, (opIPS, opPS) in enumerate(
+    for block_i, (opIPS, opPS) in zip(
         (
             [{((orb, "c"),): 1} for orb in block],
             [{((orb, "a"),): 1} for orb in block],
@@ -164,7 +165,7 @@ def get_Greens_function(
         )
 
         if matsubara_mesh is not None and block_basis.comm.rank == 0:
-            gs_matsubara[block_i] = gsIPS_matsubara - np.transpose(
+            gs_matsubara[bis[block_i]] = gsIPS_matsubara - np.transpose(
                 gsPS_matsubara,
                 (
                     0,
@@ -173,7 +174,7 @@ def get_Greens_function(
                 ),
             )
         if omega_mesh is not None and block_basis.comm.rank == 0:
-            gs_realaxis[block_i] = gsIPS_realaxis - np.transpose(
+            gs_realaxis[bis[block_i]] = gsIPS_realaxis - np.transpose(
                 gsPS_realaxis,
                 (
                     0,
