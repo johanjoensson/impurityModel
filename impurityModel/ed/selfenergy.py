@@ -499,8 +499,8 @@ def calc_selfenergy(
     gs_matsubara, gs_realaxis = get_Greens_function(
         matsubara_mesh=iw,
         omega_mesh=w,
-        psis=psis.copy(),
-        es=es.copy(),
+        psis=psis,
+        es=es,
         tau=tau,
         basis=basis,
         hOp=h,
