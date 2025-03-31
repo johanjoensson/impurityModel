@@ -119,7 +119,7 @@ def get_Greens_function(
     if verbose:
         print(f"New root ranks:{block_roots}")
         print(f"Number blocks per subgroup: {blocks_per_color}")
-    bis = list(range(block_indices.start, block_indices.stop, block_indices.step))
+    bis = list(range(block_indices.start, block_indices.stop))
     gs_matsubara = [None for _ in blocks]
     gs_realaxis = [None for _ in blocks]
     for block_i, (opIPS, opPS) in zip(
