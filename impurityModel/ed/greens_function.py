@@ -164,7 +164,7 @@ def get_Greens_function(
         )
 
         if matsubara_mesh is not None and block_basis.comm.rank == 0:
-            gs_matsubara_block[block_i] = gsIPS_matsubara - np.transpose(
+            gs_matsubara[block_i] = gsIPS_matsubara - np.transpose(
                 gsPS_matsubara,
                 (
                     0,
@@ -173,7 +173,7 @@ def get_Greens_function(
                 ),
             )
         if omega_mesh is not None and block_basis.comm.rank == 0:
-            gs_realaxis_block[block_i] = gsIPS_realaxis - np.transpose(
+            gs_realaxis[block_i] = gsIPS_realaxis - np.transpose(
                 gsPS_realaxis,
                 (
                     0,
