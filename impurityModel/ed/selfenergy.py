@@ -516,6 +516,8 @@ def calc_selfenergy(
     if gs_matsubara is not None:
         try:
             for gs in gs_matsubara:
+                if gs is None:
+                    continue
                 check_greens_function(gs)
         except UnphysicalGreensFunctionError as err:
             if rank == 0:
@@ -523,6 +525,8 @@ def calc_selfenergy(
     if gs_realaxis is not None:
         try:
             for gs in gs_realaxis:
+                if gs is None:
+                    continue
                 check_greens_function(gs)
         except UnphysicalGreensFunctionError as err:
             if rank == 0:
