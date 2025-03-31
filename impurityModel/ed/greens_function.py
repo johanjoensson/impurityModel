@@ -183,17 +183,23 @@ def get_Greens_function(
             )
     all_gs_matsubara = basis.comm.gather(gs_matsubara, root=0)
     all_gs_realaxis = basis.comm.gather(gs_realaxis, root=0)
+    print(f"{all_gs_matsubara=}")
+    print(f"{all_gs_realaxis=}")
     if basis.comm.rank == 0:
         for gs_mats in all_gs_matsubara:
+            print(f"{gs_mats=}")
             for i, gm in enumerate(gs_mats):
                 if gm is None:
                     continue
                 gs_matsubara[i] = gm
         for gs_reals in all_gs_realaxis:
+            print(f"{gs_reals=}")
             for i, gr in enumerate(gs_reals):
                 if gr is None:
                     continue
                 gs_realaxis[i] = gr
+        assert all(gs is not None for gs in gs_matsubara)
+        assert all(gs is not None for gs in gs_realaxis)
 
     # gs_matsubara = (
     #     [np.empty((len(matsubara_mesh), len(block), len(block)), dtype=complex) for block in blocks]
