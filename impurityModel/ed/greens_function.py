@@ -417,8 +417,8 @@ def calc_Greens_function_with_offdiag(
                 gs_realaxis_block += np.exp(-(e - e0) / tau) * gs_realaxis_block_i
         excited_basis.comm.Free()
     # Send calculated Greens functions to root
-    basis.comm.Reduce(MPI.IN_PLACE if comm.rank == 0 else None, gs_matsubara_block, root=0)
-    basis.comm.Reduce(MPI.IN_PLACE if comm.rank == 0 else None, gs_realaxis_block, root=0)
+    basis.comm.Reduce(MPI.IN_PLACE if basis.comm.rank == 0 else gs_matsubara_block, gs_matsubara_block, root=0)
+    basis.comm.Reduce(MPI.IN_PLACE if basis.comm.rank == 0 else gs_realaxis_block, gs_realaxis_block, root=0)
     # requests = []
     # if eigen_basis.comm.rank == 0:
     #     assert comm.rank in eigen_roots
