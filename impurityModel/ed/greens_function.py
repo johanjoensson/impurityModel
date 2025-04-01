@@ -122,7 +122,7 @@ def get_Greens_function(
     bis = list(range(block_indices.start, block_indices.stop))
     gs_matsubara = [None for _ in blocks]
     gs_realaxis = [None for _ in blocks]
-    for block_i, (opIPS, opPS) in zip(
+    for block_i, (opIPS, opPS) in enumerate(
         (
             [{((orb, "c"),): 1} for orb in block],
             [{((orb, "a"),): 1} for orb in block],
