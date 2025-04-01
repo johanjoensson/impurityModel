@@ -638,8 +638,8 @@ def block_Green(
     psi_dense = basis.build_vector(psi_arr, root=0).T
     if rank == 0:
         psi_dense, r, p = build_qrp(psi_dense)
-    r = basis.comm.bcast(r, root=0)
-    p = basis.comm.bcast(p, root=0)
+    r = basis.comm.bcast(r if rank == 0 else None, root=0)
+    p = basis.comm.bcast(p if rank == 0 else None, root=0)
     rows, columns = basis.comm.bcast(psi_dense.shape if rank == 0 else None, root=0)
     assert rows == basis.size
     psi_dense_local = np.empty((len(basis.local_basis), columns), dtype=complex, order="C")
