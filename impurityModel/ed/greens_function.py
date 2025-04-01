@@ -449,7 +449,7 @@ def calc_Greens_function_with_offdiag(
     # if len(requests) > 0:
     #     MPI.Request().waitall(requests)
     eigen_basis.comm.Free()
-    return gs_matsubara_block, gs_realaxis_block
+    return gs_matsubara_block / Z, gs_realaxis_block / Z
 
 
 def get_block_Green(
@@ -592,30 +592,12 @@ def get_block_Green(
     return gs_matsubara, gs_realaxis
 
 
-def build_qrp(psi, basis, slaterWeightMin):
-    psi_v = basis.build_vector(psi, root=0).T
-    r: Optional[np.ndarray] = None
-    p: Optional[np.ndarray] = None
-    if basis.comm.rank == 0:
-        # Do a QR decomposition of the starting block.
-        # Later on, use r to restore the psi block
-        # Allow for permutations of rows in psi as well
-        psi_v, r = sp.linalg.qr(psi_v.copy(), mode="economic", overwrite_a=True, check_finite=False, pivoting=False)
-        rows, columns = psi_v.shape
-    rows = basis.comm.bcast(rows if basis.comm.rank == 0 else None, root=0)
-    columns = basis.comm.bcast(columns if basis.comm.rank == 0 else None, root=0)
-    if basis.comm.rank != 0:
-        psi_v = np.empty((rows, columns), dtype=complex)
-    # psi_v = basis.comm.bcast(psi_v, root=0)
-    basis.comm.Bcast(psi_v, root=0)
-    psi = basis.build_state(psi_v.T, slaterWeightMin=slaterWeightMin)
-    # all_psi_locals = basis.comm.allgather(psi_local)
-    # psi = [{} for _ in psi_local]
-    # for psi_local in all_psi_locals:
-    #     for i, ps in enumerate(psi_local):
-    #         for state in ps:
-    #             psi[i][state] = ps[state] + psi[i].get(state, 0)
-    return psi, r, None
+def build_qrp(psi):
+    # Do a QR decomposition of the starting block.
+    # Later on, use r to restore the psi block
+    # Allow for permutations of rows in psi as well
+    psi, r, p = sp.linalg.qr(psi.copy(), mode="economic", overwrite_a=True, check_finite=False, pivoting=True)
+    return np.ascontiguousarray(psi), r, p
 
 
 def block_Green(
@@ -652,7 +634,25 @@ def block_Green(
         return np.zeros((len(iws), n, n), dtype=complex), np.zeros((len(ws), n, n), dtype=complex)
     if verbose:
         t0 = time.perf_counter()
-    psi, r, p = build_qrp(psi_arr, basis, 0 * slaterWeightMin)
+
+    psi_dense = basis.build_vector(psi_arr, root=0).T
+    if rank == 0:
+        psi_dense, r, p = build_qrp(psi_dense)
+    r = basis.comm.bcast(r, root=0)
+    p = basis.comm.bcast(p, root=0)
+    rows, columns = basis.comm.bcast(psi_dense.shape if rank == 0 else None, root=0)
+    assert rows == basis.size
+    psi_dense_local = np.empty((len(basis.local_basis), columns), dtype=complex, order="C")
+    send_counts = np.empty((basis.comm.size), dtype=int) if rank == 0 else None
+    basis.comm.Gather(np.array([psi_dense_local.size]), send_counts if rank == 0 else None)
+    offsets = np.array([np.sum(send_counts[:r]) for r in range(comm.size)], dtype=int) if rank == 0 else None
+    if rank == 0:
+        print(f"{send_counts=} {offsets=}")
+        print(f"{basis.size=} {columns=}")
+    comm.Scatterv(
+        [psi_dense, send_counts, offsets, MPI.C_DOUBLE_COMPLEX] if rank == 0 else None, psi_dense_local, root=0
+    )
+    psi = basis.build_state(psi_dense_local.T, slaterWeightMin=slaterWeightMin)
 
     if len(psi) == 0:
         return np.zeros((len(iws), n, n), dtype=complex), np.zeros((len(ws), n, n), dtype=complex)
@@ -997,23 +997,35 @@ def calc_mpi_Greens_function_from_alpha_beta(alphas, betas, iws, ws, e, delta, r
     # Multiply obtained Green's function with the upper triangular matrix to restore the original block
     # R^T* G R
     if matsubara:
+        ix = np.ix_(range(len(iws_split)), p, p)
+        gs_matsubara_local = (
+            np.conj(r.T)[np.newaxis, :, :] @ np.linalg.solve(gs_matsubara_local, r[np.newaxis, :, :])
+        )[ix]
         counts = np.empty((comm.size), dtype=int)
-        comm.Gather(np.array([gs_matsubara_local.shape[1] ** 2 * len(iws_split)], dtype=int), counts)
-        offsets = [sum(counts[:r]) for r in range(len(counts))] if comm.rank == 0 else None
-        gs_matsubara = np.empty((len(iws), alphas.shape[1], alphas.shape[1]), dtype=complex) if comm.rank == 0 else None
-        comm.Gatherv(gs_matsubara_local, (gs_matsubara, counts, offsets, MPI.C_DOUBLE_COMPLEX), root=0)
-        if comm.rank == 0:
-            # ix = np.ix_(range(len(iws)), np.argsort(p), np.argsort(p))
-            gs_matsubara = np.conj(r.T)[np.newaxis, :, :] @ np.linalg.solve(gs_matsubara, r[np.newaxis, :, :])  # [ix]
+        comm.Gather(np.array([gs_matsubara_local.size], dtype=int), counts)
+        offsets = [sum(counts[:rank]) for rank in range(len(counts))] if comm.rank == 0 else None
+        gs_matsubara = (
+            np.empty((len(iws), r.shape[1], r.shape[1]), dtype=complex, order="C") if comm.rank == 0 else None
+        )
+        comm.Gatherv(
+            np.ascontiguousarray(gs_matsubara_local), (gs_matsubara, counts, offsets, MPI.C_DOUBLE_COMPLEX), root=0
+        )
+    else:
+        gs_matsubara = None
     if realaxis:
+        ix = np.ix_(range(len(ws_split)), p, p)
+        gs_realaxis_local = (np.conj(r.T)[np.newaxis, :, :] @ np.linalg.solve(gs_realaxis_local, r[np.newaxis, :, :]))[
+            ix
+        ]
         counts = np.empty((comm.size), dtype=int)
-        comm.Gather(np.array([gs_realaxis_local.shape[1] ** 2 * len(ws_split)], dtype=int), counts)
-        offsets = [sum(counts[:r]) for r in range(len(counts))] if comm.rank == 0 else None
-        gs_realaxis = np.empty((len(ws), alphas.shape[1], alphas.shape[1]), dtype=complex) if comm.rank == 0 else None
-        comm.Gatherv(gs_realaxis_local, (gs_realaxis, counts, offsets, MPI.C_DOUBLE_COMPLEX), root=0)
-        if comm.rank == 0:
-            # ix = np.ix_(range(len(ws)), np.argsort(p), np.argsort(p))
-            gs_realaxis = np.conj(r.T)[np.newaxis, :, :] @ np.linalg.solve(gs_realaxis, r[np.newaxis, :, :])  # [ix]
+        comm.Gather(np.array([gs_realaxis_local.size], dtype=int), counts)
+        offsets = [sum(counts[:rank]) for rank in range(len(counts))] if comm.rank == 0 else None
+        gs_realaxis = np.empty((len(ws), r.shape[1], r.shape[1]), dtype=complex, order="C") if comm.rank == 0 else None
+        comm.Gatherv(
+            np.ascontiguousarray(gs_realaxis_local), (gs_realaxis, counts, offsets, MPI.C_DOUBLE_COMPLEX), root=0
+        )
+    else:
+        gs_realaxis = None
     return gs_matsubara, gs_realaxis
 
 

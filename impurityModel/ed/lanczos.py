@@ -187,16 +187,12 @@ def estimate_orthonormality(W, alphas, betas, eps=np.finfo(float).eps, N=1, rng=
     return W_out
 
 
-def qr_decomp(psi):
-    psi, beta = sp.linalg.qr(psi, mode="economic", overwrite_a=True, check_finite=False)
-    # while np.any(np.linalg.norm(beta, axis=1) < np.finfo(float).eps):
-    #     mask = np.linalg.norm(beta, axis=1) < np.finfo(float).eps
-    #     print(f"{mask=}", flush=True)
-    #     print(f"{beta=}", flush=True)
-    #     psi = psi @ beta
-    #     psi[:, mask] = np.random.rand(psi.shape[0], sum(mask)) + 1j * np.random.rand(psi.shape[0], sum(mask))
-    #     psi, beta = sp.linalg.qr(psi, mode="economic", overwrite_a=True, check_finite=False)
-    return np.array(psi, order="C"), beta
+def qr_decomp(psi, pivoting=False):
+    if pivoting:
+        psi, beta, p = sp.linalg.qr(psi, mode="economic", overwrite_a=True, check_finite=False, pivoting=True)
+        return np.ascontiguousarray(psi), beta, p
+    psi, beta = sp.linalg.qr(psi, mode="economic", overwrite_a=True, check_finite=False, pivoting=False)
+    return np.ascontiguousarray(psi), beta, None
 
 
 def get_block_Lanczos_matrices(
@@ -365,6 +361,7 @@ def block_lanczos(
     rank = basis.comm.rank if mpi else 0
     build_krylov_basis = reort != Reort.NONE
     n = len(psi0)
+    columns = n
     N_max = basis.size
     if mpi:
         psi_len = basis.comm.allreduce(sum(len(psi) for psi in psi0), op=MPI.SUM)
@@ -405,7 +402,7 @@ def block_lanczos(
     done = False
     converge_count = 0
     wp = [None] * n
-    while it == 0 or (it + 1) * n < basis.size:
+    while (it + 1) * n < basis.size or it == 0:
         t_tmp = perf_counter()
         t_add += perf_counter() - t_tmp
         t_tmp = perf_counter()
@@ -425,12 +422,12 @@ def block_lanczos(
         wp = basis.redistribute_psis(wp)
 
         wp_size = np.array([len(psi) for psi in wp], dtype=int)
-        basis.comm.Allreduce(MPI.IN_PLACE, wp_size, op=MPI.SUM)
+        comm.Allreduce(MPI.IN_PLACE, wp_size, op=MPI.SUM)
         cutoff = eps
         n_trunc = 0
         while np.max(wp_size) > basis.truncation_threshold:
             wp = [{state: w for state, w in psi.items() if abs(w) ** 2 >= cutoff} for psi in wp]
-            basis.comm.Allreduce(np.array([len(psi) for psi in wp]), wp_size, op=MPI.SUM)
+            comm.Allreduce(np.array([len(psi) for psi in wp]), wp_size, op=MPI.SUM)
             cutoff *= 5
             n_trunc += 1
 
@@ -455,7 +452,7 @@ def block_lanczos(
         wp = tmp[2 * n :]
         t_redist += perf_counter() - t_tmp
         t_tmp = perf_counter()
-        psi = np.empty((len(basis.local_basis), n), dtype=complex)
+        psi = np.empty((len(basis.local_basis), n), dtype=complex, order="C")
         psip = np.empty_like(psi)
         psim = np.empty_like(psi)
         for (i, state), j in itertools.product(enumerate(basis.local_basis), range(n)):
@@ -468,44 +465,43 @@ def block_lanczos(
         alpha = np.conj(psi.T) @ psip
         alphas = np.append(alphas, np.empty((1, n, n), dtype=complex), axis=0)
         if mpi:
-            request = basis.comm.Iallreduce(alpha, alphas[-1], op=MPI.SUM)
+            request = comm.Iallreduce(alpha, alphas[-1], op=MPI.SUM)
         else:
             alphas[-1, :, :] = alpha
 
         betas = np.append(betas, np.zeros((1, n, n), dtype=complex), axis=0)
         if mpi:
-            send_counts = np.empty((basis.comm.size), dtype=int)
-            basis.comm.Gather(np.array([n * len(basis.local_basis)]), send_counts)
-            request.Wait()
+            send_counts = np.empty((comm.size), dtype=int)
+            comm.Gather(np.array([n * len(basis.local_basis)]), send_counts)
+            request.wait()
 
         psip -= psi @ alphas[it] + psim @ np.conj(betas[it - 1].T)
         t_linalg += perf_counter() - t_tmp
         t_tmp = perf_counter()
         if mpi:
-            offsets = np.fromiter(
-                (np.sum(send_counts[:i]) for i in range(basis.comm.size)), dtype=int, count=basis.comm.size
-            )
+            offsets = np.fromiter((np.sum(send_counts[:i]) for i in range(comm.size)), dtype=int, count=comm.size)
         if reort == Reort.FULL or reort == Reort.PERIODIC and it % 5 < 2:
             Qt = basis.redistribute_psis(Q)
             Qm = basis.build_distributed_vector(Qt).T
             tmp = np.conj(Qm.T) @ psip
             if mpi:
-                basis.comm.Allreduce(MPI.IN_PLACE, tmp, op=MPI.SUM)
+                comm.Allreduce(MPI.IN_PLACE, tmp, op=MPI.SUM)
             psip -= Qm @ tmp
 
         qip = np.empty((basis.size, n), dtype=complex) if rank == 0 else None
         if mpi:
-            basis.comm.Gatherv(psip, [qip, send_counts, offsets, MPI.C_DOUBLE_COMPLEX], root=0)
+            comm.Gatherv(psip, [qip, send_counts, offsets, MPI.C_DOUBLE_COMPLEX], root=0)
         else:
             qip = psip
 
         t_vec += perf_counter() - t_tmp
         if rank == 0:
             t_tmp = perf_counter()
-            qip, betas[-1] = qr_decomp(qip)
+            qip, betas[-1], _ = qr_decomp(qip)
+            assert columns == qip.shape[1]
             _, columns = qip.shape
         if mpi:
-            basis.comm.Bcast(betas[-1], root=0)
+            comm.Bcast(betas[-1], root=0)
 
         if reort == Reort.PARTIAL:
             W = estimate_orthonormality(W, alphas, betas, N=max(basis.size, 100), eps=eps)
@@ -524,32 +520,32 @@ def block_lanczos(
                 Qm = basis.build_distributed_vector(Qt).T
                 tmp = np.conj(Qm.T) @ psip
                 if mpi:
-                    basis.comm.Allreduce(MPI.IN_PLACE, tmp, op=MPI.SUM)
+                    comm.Allreduce(MPI.IN_PLACE, tmp, op=MPI.SUM)
                 psip -= Qm @ tmp
                 perform_reort = False
 
                 qip = np.empty((basis.size, n), dtype=complex) if rank == 0 else None
                 if mpi:
-                    basis.comm.Gatherv(psip, [qip, send_counts, offsets, MPI.C_DOUBLE_COMPLEX], root=0)
+                    comm.Gatherv(psip, [qip, send_counts, offsets, MPI.C_DOUBLE_COMPLEX], root=0)
                 else:
                     qip = psip
                 t_vec += perf_counter() - t_tmp
                 if rank == 0:
                     t_tmp = perf_counter()
-                    qip, betas[-1] = qr_decomp(qip)
+                    qip, betas[-1], _ = qr_decomp(qip)
                     _, columns = qip.shape
                 if mpi:
-                    basis.comm.Bcast(betas[-1], root=0)
+                    comm.Bcast(betas[-1], root=0)
         if mpi:
-            columns = basis.comm.bcast(columns if rank == 0 else None)
-            request = basis.comm.Iscatterv([qip, send_counts, offsets, MPI.C_DOUBLE_COMPLEX], psip.T, root=0)
+            columns = comm.bcast(columns if rank == 0 else None)
+            request = comm.Iscatterv([qip, send_counts, offsets, MPI.C_DOUBLE_COMPLEX], psip, root=0)
         else:
             psip = qip
 
         done = converged(alphas, betas, verbose=reort == Reort.PARTIAL)
 
         if mpi:
-            done = basis.comm.allreduce(done, op=MPI.LAND)
+            done = comm.allreduce(done, op=MPI.LAND)
 
         converge_count = (1 + converge_count) if done else 0
         if converge_count > 0:
@@ -560,7 +556,8 @@ def block_lanczos(
         q[1] = [{} for _ in range(columns)]
         if mpi:
             request.Wait()
-        for j, (i, state) in itertools.product(range(columns), enumerate(basis.local_basis)):
+        for i, j in np.argwhere(np.abs(psip) ** 2 > slaterWeightMin):
+            state = basis.local_basis[i]
             q[1][j][state] = psip[i, j]
 
         t_state += perf_counter() - t_tmp
@@ -735,7 +732,7 @@ def block_lanczos_fixed_basis(
         t_vec += perf_counter() - t_tmp
         if rank == 0:
             t_tmp = perf_counter()
-            qip, betas[-1] = qr_decomp(qip)
+            qip, betas[-1], _ = qr_decomp(qip)
             _, columns = qip.shape
 
         if mpi:

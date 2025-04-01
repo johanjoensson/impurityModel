@@ -801,10 +801,20 @@ class Basis:
         if isinstance(vs, list):
             vs = np.array(vs)
         res = [{} for _ in range(vs.shape[0])]
-        for row, i in itertools.product(range(vs.shape[0]), self.local_indices):
-            psi = res[row]
-            if abs(vs[row, i]) ** 2 > slaterWeightMin:
-                psi[self.local_basis[i - self.offset]] = vs[row, i]
+        if vs.shape[1] == self.size:
+            for row, (i, state) in itertools.product(range(vs.shape[0]), zip(self.local_indices, self.local_basis)):
+                psi = res[row]
+                if abs(vs[row, i]) ** 2 > slaterWeightMin:
+                    psi[state] = vs[row, i]
+        elif vs.shape[1] == len(self.local_basis):
+            for row, (i, state) in itertools.product(range(vs.shape[0]), enumerate(self.local_basis)):
+                psi = res[row]
+                if abs(vs[row, i]) ** 2 > slaterWeightMin:
+                    psi[state] = vs[row, i]
+        else:
+            raise RuntimeError(
+                f"The dimensions of the input dense vector does not match a distributed, or full vector.\n{vs.shape} != ({vs.shape[0]}, {self.size}) || ({vs.shape[0]}, {len(self.local_basis)})"
+            )
         return res
 
     def build_operator_dict(self, op, op_dict=None, slaterWeightMin=1e-16):
