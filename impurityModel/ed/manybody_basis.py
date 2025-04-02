@@ -156,7 +156,7 @@ class Basis:
                             print("Partition occupations")
                             print(f"Impurity occupation:   {impurity_occupation:d}")
                             print(f"Valence occupation:   {valence_occupation:d}")
-                            print(f"Conduction occupation: {conduction_occupation:d}", flush=True)
+                            print(f"Conduction occupation: {conduction_occupation:d}")
                         valid_configurations.append(
                             (impurity_configurations, valence_configurations, conduction_configurations)
                         )

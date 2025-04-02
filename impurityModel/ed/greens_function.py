@@ -117,8 +117,10 @@ def get_Greens_function(
         psis,
     ) = split_comm_and_redistribute_basis([len(block) ** 2 for block in blocks], basis, psis)
     if verbose:
+        print("=" * 80)
         print(f"New root ranks:{block_roots}")
         print(f"Number blocks per subgroup: {blocks_per_color}")
+        print()
     bis = list(range(block_indices.start, block_indices.stop))
     gs_matsubara = [None for _ in blocks]
     gs_realaxis = [None for _ in blocks]
@@ -371,7 +373,6 @@ def calc_Greens_function_with_offdiag(
             print("Excited state restrictions:")
             for indices, occupations in excited_restrictions.items():
                 print(f"---> {sorted(indices)} : {occupations}")
-            print()
         block_v = []
         local_excited_basis = set()
         # t0 = time.perf_counter()
@@ -487,9 +488,6 @@ def get_block_Green(
     h_mem = basis.expand(hOp, h_mem, slaterWeightMin=slaterWeightMin)
     h = basis.build_sparse_matrix(hOp, h_mem, petsc=False)
 
-    if verbose:
-        print(f"time(build Hamiltonian operator) = {time.perf_counter() - t0}")
-
     N = len(basis)
     n = len(psi_arr)
 
@@ -522,8 +520,6 @@ def get_block_Green(
         psi0.T,
         root=0,
     )
-    if verbose:
-        print(f"time(set up psi_start) = {time.perf_counter() - t0}")
 
     # If we have a realaxis mesh, prefer to check convergence on that
     # if not, use the Matsubara mesh
@@ -581,8 +577,6 @@ def get_block_Green(
     gs_matsubara, gs_realaxis = calc_mpi_Greens_function_from_alpha_beta(
         alphas, betas, iws, ws, e, delta, r, p, verbose, comm=comm
     )
-    if verbose:
-        print(f"time(G_from_alpha_beta) = {time.perf_counter() - t0: .4f} seconds.")
 
     return gs_matsubara, gs_realaxis
 
@@ -641,9 +635,6 @@ def block_Green(
     send_counts = np.empty((basis.comm.size), dtype=int) if rank == 0 else None
     basis.comm.Gather(np.array([psi_dense_local.size]), send_counts if rank == 0 else None)
     offsets = np.array([np.sum(send_counts[:r]) for r in range(comm.size)], dtype=int) if rank == 0 else None
-    if rank == 0:
-        print(f"{send_counts=} {offsets=}")
-        print(f"{basis.size=} {columns=}")
     comm.Scatterv(
         [psi_dense, send_counts, offsets, MPI.C_DOUBLE_COMPLEX] if rank == 0 else None, psi_dense_local, root=0
     )
@@ -707,17 +698,12 @@ def block_Green(
         slaterWeightMin=slaterWeightMin,
         reort=reort,
     )
-    if verbose:
-        print(f"time(block_lanczos) = {time.perf_counter() - t0: .4f} seconds.")
 
     t0 = time.perf_counter()
 
     gs_matsubara, gs_realaxis = calc_mpi_Greens_function_from_alpha_beta(
         alphas, betas, iws, ws, e, delta, r, p, verbose, comm=comm
     )
-
-    if verbose:
-        print(f"time(G_from_alpha_beta) = {time.perf_counter() - t0: .4f} seconds.")
 
     return gs_matsubara, gs_realaxis
 
@@ -758,9 +744,6 @@ def block_Green_freq_2(
     psi_orig, r, p = build_qrp(psi_arr, basis, slaterWeightMin)
     if len(psi_orig) == 0:
         return np.zeros((len(iws), n, n), dtype=complex), np.zeros((len(ws), n, n), dtype=complex)
-
-    if verbose:
-        print(f"time(set up psi_start) = {time.perf_counter() - t0}")
 
     def build_converged(w, delta):
         def converged(alphas, betas):
@@ -855,8 +838,6 @@ def block_Green_freq_2(
         freq_basis.comm.Free()
     basis.comm.Reduce(MPI.IN_PLACE if basis.comm.rank == 0 else gs_matsubara, gs_matsubara, op=MPI.SUM)
     basis.comm.Reduce(MPI.IN_PLACE if basis.comm.rank == 0 else gs_realaxis, gs_realaxis, op=MPI.SUM)
-    if verbose:
-        print(f"time(block_lanczos) = {time.perf_counter() - t0: .4f} seconds.")
     if basis.comm.rank == 0:
         ix = np.ix_(range(len(iws)), np.argsort(p), np.argsort(p))
         gs_matsubara = (np.conj(r.T)[np.newaxis, :, :] @ np.linalg.solve(gs_matsubara, r[np.newaxis, :, :]))[ix]
@@ -1137,8 +1118,6 @@ def calc_Greens_function_with_offdiag_cg(
                     for state in v_i:
                         v[state] = v_i[state] + v.get(state, 0)
                 block_v.append(v)
-            if verbose:
-                print(f"time(build excited state basis) = {time.perf_counter() - t0}")
             gs_matsubara_i, gs_realaxis_i = get_block_Green_cg(
                 n_spin_orbitals=n_spin_orbitals,
                 hOp=hOp,
@@ -1198,17 +1177,11 @@ def get_block_Green_cg(
         t0 = time.perf_counter()
     # h = basis.build_sparse_matrix(hOp, h_mem, petsc=False)
 
-    if verbose:
-        print(f"time(build Hamiltonian operator) = {time.perf_counter() - t0}")
-
     # N = h.shape[0]
     n = len(psi_arr)
 
     if verbose:
         t0 = time.perf_counter()
-
-    if verbose:
-        print(f"time(set up psi_start) = {time.perf_counter() - t0}")
 
     # if N == 0 or n == 0:
     #     return np.zeros((n, n, len(iws)), dtype=complex), np.zeros((n, n, len(ws)), dtype=complex)
@@ -1259,9 +1232,6 @@ def get_block_Green_cg(
 
     def matrix_print(m):
         print("\n".join(["  ".join([f"{np.real(el): 5.3f}  {np.imag(el):+5.3f}j" for el in row]) for row in m]))
-
-    if verbose:
-        print(f"time(G_cg) = {time.perf_counter() - t0: .4f} seconds.")
 
     return gs_matsubara, gs_realaxis
 

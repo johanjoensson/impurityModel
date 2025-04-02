@@ -333,6 +333,7 @@ def get_block_Lanczos_matrices(
     betas = comm.bcast(betas, root=0)
 
     if verbose:
+        print()
         print(f"Breaking after iteration {i+1}, blocksize = {n}")
         print(f"===> Matrix vector multiplication took {t_matmul:.4f} seconds")
         print(f"===> Estimating overlap took {t_estimate:.4f} seconds")
@@ -341,6 +342,7 @@ def get_block_Lanczos_matrices(
         print(f"===> Reorthogonalized {n_reort} times")
         print(f"===> Reorthogonalizing took {t_reorth:.4f} seconds")
         print(f"=> time(get_block_Lanczons_matrices) = {perf_counter() - t0:.4f} seconds.")
+        print("=" * 80)
     return alphas, betas, Q.vectors[: len(Q)].T if Q is not None else None
 
 
@@ -565,6 +567,7 @@ def block_lanczos(
             Q.extend(q[1])
         it += 1
     if verbose:
+        print()
         print(f"Breaking after iteration {it+1}, blocksize = {n}")
         print(f"===> Maximum basis size: {N_max} Slater determinants")
         print(f"===> Applying the hamiltonian took {t_apply:.4f} seconds")
@@ -575,7 +578,8 @@ def block_lanczos(
         print(f"===> Estimating convergence took {t_conv:.4f} seconds")
         print(f"===> QR factorization took {t_qr:.4f} seconds")
         print(f"===> Building states took {t_state:.4f} seconds")
-        print(f"=> time(get_block_Lanczons_matrices) = {perf_counter() - t_tot:.4f} seconds.", flush=True)
+        print(f"=> time(get_block_Lanczons_matrices) = {perf_counter() - t_tot:.4f} seconds.")
+        print("=" * 80)
     return alphas, betas, Q if build_krylov_basis else None
 
 
@@ -767,6 +771,7 @@ def block_lanczos_fixed_basis(
             Q.extend(q[1])
         it += 1
     if verbose:
+        print()
         print(f"Breaking after iteration {it}, blocksize = {n}")
         print(f"===> Maximum basis size: {N_max} Slater determinants")
         print(f"===> Applying the hamiltonian took {t_apply:.4f} seconds")
@@ -777,5 +782,6 @@ def block_lanczos_fixed_basis(
         print(f"===> Estimating convergence took {t_conv:.4f} seconds")
         print(f"===> QR factorization took {t_qr:.4f} seconds")
         print(f"===> Building states took {t_state:.4f} seconds")
-        print(f"=> time(get_block_Lanczons_matrices) = {perf_counter() - t_tot:.4f} seconds.", flush=True)
+        print(f"=> time(get_block_Lanczons_matrices) = {perf_counter() - t_tot:.4f} seconds.")
+        print("=" * 80)
     return alphas, betas, Q if build_krylov_basis else None

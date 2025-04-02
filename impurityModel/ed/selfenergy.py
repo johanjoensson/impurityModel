@@ -44,10 +44,6 @@ def fixed_peak_dc(h0_op, dc_struct, rank, verbose, dense_cutoff):
     N0 = dc_struct.nominal_occ
     peak_position = max(dc_struct.peak_position, 4 * dc_struct.tau)
     valence_baths, conduction_baths = dc_struct.bath_states
-    sum_bath_states = {
-        i: sum(len(orbs) for orbs in valence_baths[i]) + sum(len(orbs) for orbs in conduction_baths[i])
-        for i in valence_baths
-    }
     u = finite.getUop_from_rspt_u4(dc_struct.u4)
     dc_trial = dc_struct.dc_guess
 
@@ -59,7 +55,7 @@ def fixed_peak_dc(h0_op, dc_struct, rank, verbose, dense_cutoff):
             bath_states=dc_struct.bath_states,
             nominal_impurity_occ=Np,
             truncation_threshold=1e5,
-            verbose=verbose,
+            verbose=False,
             comm=MPI.COMM_WORLD,
             spin_flip_dj=dc_struct.spin_flip_dj,
         )
@@ -68,7 +64,7 @@ def fixed_peak_dc(h0_op, dc_struct, rank, verbose, dense_cutoff):
             bath_states=dc_struct.bath_states,
             nominal_impurity_occ=N0,
             truncation_threshold=1e5,
-            verbose=verbose,
+            verbose=False,
             comm=MPI.COMM_WORLD,
             spin_flip_dj=dc_struct.spin_flip_dj,
         )
@@ -78,7 +74,7 @@ def fixed_peak_dc(h0_op, dc_struct, rank, verbose, dense_cutoff):
             bath_states=dc_struct.bath_states,
             nominal_impurity_occ=N0,
             truncation_threshold=1e5,
-            verbose=verbose,
+            verbose=False,
             comm=MPI.COMM_WORLD,
             spin_flip_dj=dc_struct.spin_flip_dj,
         )
@@ -87,7 +83,7 @@ def fixed_peak_dc(h0_op, dc_struct, rank, verbose, dense_cutoff):
             bath_states=dc_struct.bath_states,
             nominal_impurity_occ=Nm,
             truncation_threshold=1e5,
-            verbose=verbose,
+            verbose=False,
             comm=MPI.COMM_WORLD,
             spin_flip_dj=dc_struct.spin_flip_dj,
         )
@@ -165,20 +161,11 @@ def fixed_peak_dc(h0_op, dc_struct, rank, verbose, dense_cutoff):
         dc_fac += F(dc_fac)
     if verbose:
         print(f"Peak position {dc_struct.peak_position}")
-        print(f"DC guess {dc_struct.dc_guess}")
-        print(f"dc found : {dc_fac*dc_trial}")
+        matrix_print(dc_struct.dc_guess, label="DC guess")
+        matrix_print(dc_fac * dc_trial, label="dc found")
+        print("=" * 80)
 
     return dc_fac * dc_trial
-
-
-def matrix_print(matrix: np.ndarray, label: str = None) -> None:
-    """
-    Pretty print the matrix, with optional label.
-    """
-    ms = "\n".join([" ".join([f"{np.real(val): .4f}{np.imag(val):+.4f}j" for val in row]) for row in matrix])
-    if label is not None:
-        print(label)
-    print(ms)
 
 
 def calc_occ_e(
@@ -218,11 +205,11 @@ def find_gs(
     bath_states,
     impurity_orbitals,
     rank,
-    verbose,
     dense_cutoff,
     spin_flip_dj,
     comm,
     truncation_threshold,
+    verbose,
 ):
     """
     Find the occupation corresponding to the lowest energy, compare N0 - 1, N0 and N0 + 1
@@ -239,6 +226,8 @@ def find_gs(
     gs_impurity_occ = N0.copy()
     dN_gs = dict.fromkeys(N0.keys(), 0)
     for i in N0:
+        if verbose >= 2:
+            print(f"{i=}")
         e_gs = np.inf
         for dN in [0, -1, 1]:
             e_trial, basis, h_dict = calc_occ_e(
@@ -249,10 +238,12 @@ def find_gs(
                 spin_flip_dj,
                 dense_cutoff,
                 comm=comm,
-                verbose=verbose,
+                verbose=False,
                 truncation_threshold=truncation_threshold,
             )
             if e_trial < e_gs:
+                if verbose >= 2:
+                    print(f"N0 {N0[i] + dN:^5d}: E = {e_trial:^9.6f} ")
                 e_gs = e_trial
                 basis_gs = basis
                 h_dict_gs = h_dict.copy()
@@ -275,7 +266,7 @@ def find_gs(
                 spin_flip_dj,
                 dense_cutoff,
                 comm=comm,
-                verbose=verbose,
+                verbose=False,
                 truncation_threshold=truncation_threshold,
             )
             if e_trial >= e_gs:
@@ -284,10 +275,13 @@ def find_gs(
             basis_gs = basis
             h_dict_gs = h_dict.copy()
             gs_impurity_occ[i] += dN_gs[i]
-    if verbose:
+            if verbose >= 2:
+                print(f"N0 {gs_impurity_occ[i]:^5d}: E = {e_gs:^9.6f} ")
+    if verbose >= 1:
         print("Ground state occupation")
-        print("\n".join((f"{i}: {gs_impurity_occ[i]: ^5d}" for i in gs_impurity_occ)))
-        print(rf"E$_{{GS}}$={e_gs}")
+        print("\n".join((f"{i:^3d}: {gs_impurity_occ[i]: ^5d}" for i in gs_impurity_occ)))
+        print(rf"E$_{{GS}}$ = {e_gs:^9.6f}")
+        print("=" * 80)
     return gs_impurity_occ, basis_gs, h_dict_gs
 
 
@@ -395,11 +389,11 @@ def calc_selfenergy(
         bath_states,
         impurity_orbitals,
         rank=rank,
-        verbose=verbosity,
         dense_cutoff=dense_cutoff,
         spin_flip_dj=spin_flip_dj,
         comm=comm,
         truncation_threshold=truncation_threshold,
+        verbose=verbosity,
     )
     restrictions = basis.restrictions
 
@@ -447,18 +441,23 @@ def calc_selfenergy(
     if verbosity >= 1:
         finite.printThermalExpValues_new(full_rho_imps, es, tau, rot_to_spherical)
         finite.printExpValues(full_rho_imps, es, rot_to_spherical)
-        print("Ground state occupation statistics:")
-        for psi_stats in gs_stats:
-            print(f"{psi_stats}")
-        print("Ground state bath occupation statistics:", flush=True)
+        print("Occupation statistics for each eigenstate in the thermal ground state")
+        print("Impurity, Valence, Conduction: Weight (|amp|^2)")
+        for i, psi_stats in enumerate(gs_stats):
+            print(f"{i}:")
+            for imp_occ, val_occ, con_occ in sorted(psi_stats.keys()):
+                print(f"{imp_occ:^8d},{val_occ:^8d},{con_occ:^11d}: {psi_stats[(imp_occ, val_occ, con_occ)]}")
+            print("=" * 80)
+            print()
+        print("Ground state bath occupation statistics:")
         for i in basis.impurity_orbitals.keys():
             print(f"orbital set {i}:")
-            print("Impurity density matrices:")
-            for rho in thermal_imp_rhos[i]:
-                matrix_print(rho, "")
-            print("Bath density matrices:")
-            for rho in thermal_bath_rhos[i]:
-                matrix_print(rho, "")
+            for block_i, (imp_rho, bath_rho) in enumerate(zip(thermal_imp_rhos[i], thermal_bath_rhos[i])):
+                print(f"Block {block_i} (impurity orbitals {basis.impurity_orbitals[i][block_i]})")
+                matrix_print(imp_rho, "Impurity density matrix:")
+                matrix_print(bath_rho, "Bath density matrix:")
+                print("=" * 80)
+            print()
         if rank == 0:
             with h5.File("impurityModel_solver.h5", "a") as ar:
                 it = 1
@@ -489,12 +488,13 @@ def calc_selfenergy(
 
     effective_restrictions = basis.get_effective_restrictions()
     if verbosity >= 1:
-        print("Effective GS restrictions:", flush=True)
+        print("Effective GS restrictions:")
         for indices, occupations in effective_restrictions.items():
-            print(f"---> {sorted(indices)} : {occupations}", flush=True)
+            print(f"---> {sorted(indices)} : {occupations}")
+        print("=" * 80)
         print()
         print(f"Consider {len(es):d} eigenstates for the spectra \n")
-        print("Calculate Interacting Green's function...", flush=True)
+        print("Calculate Interacting Green's function...")
 
     gs_matsubara, gs_realaxis = get_Greens_function(
         matsubara_mesh=iw,
@@ -532,7 +532,7 @@ def calc_selfenergy(
             if rank == 0:
                 print(f"WARNING! Unphysical real-axis Greens function:\n\t{err}")
     if verbosity >= 1:
-        print("Calculate self-energy...", flush=True)
+        print("Calculate self-energy...")
     if gs_realaxis is not None:
         sigma_real = get_sigma(
             omega_mesh=w,

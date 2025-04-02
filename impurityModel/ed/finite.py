@@ -401,7 +401,7 @@ def printExpValues(rhos, es, rot_to_spherical):
                 # get_S_from_rho_spherical(rho_spherical),
             )
         )
-    print("\n", flush=True)
+    print("\n")
 
 
 def get_occupations_from_rho_spherical(rho):
