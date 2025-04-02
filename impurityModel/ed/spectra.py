@@ -712,7 +712,7 @@ def getSpectra(
     delta,
     restrictions=None,
     krylovSize=150,
-    slaterWeightMin=1e-7,
+    slaterWeightMin=np.finfo(float).eps,
     parallelization_mode="H_build",
 ):
     r"""
@@ -840,7 +840,7 @@ def getRIXSmap(
     delta2,
     restrictions=None,
     krylovSize=150,
-    slaterWeightMin=1e-7,
+    slaterWeightMin=np.finfo(float).eps,
     h_dict_ground=None,
     parallelization_mode="H_build_wIn",
 ):
@@ -997,7 +997,7 @@ def getRIXSmap(
                             psi3[state] /= normalization
                         # Remove product states with small weight
                         for state, amp in list(psi3.items()):
-                            if abs(amp) ** 2 < slaterWeightMin:
+                            if abs(amp) < slaterWeightMin:
                                 psi3.pop(state)
                         # Calculate Green's function
                         gs[iE, tIn, tOut, iwIn, :] = normalization**2 * getGreen(
@@ -1097,7 +1097,7 @@ def getRIXSmap(
                             psi3[state] /= normalization
                         # Remove product states with small weight
                         for state, amp in list(psi3.items()):
-                            if abs(amp) ** 2 < slaterWeightMin:
+                            if abs(amp) < slaterWeightMin:
                                 psi3.pop(state)
                         # Calculate Green's function
                         g[iwIn][tOut, :] = normalization**2 * getGreen(

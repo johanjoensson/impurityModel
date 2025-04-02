@@ -337,7 +337,7 @@ def eigensystem(
         print(f"Proceed with {len(es)} eigenstates.\n")
 
     psis = [
-        ({basis[i]: vecs[i, vi] for i in range(len(basis)) if slaterWeightMin <= abs(vecs[i, vi]) ** 2})
+        ({basis[i]: vecs[i, vi] for i in range(len(basis)) if slaterWeightMin <= abs(vecs[i, vi])})
         for vi in range(len(es))
     ]
     return es, psis
@@ -2027,7 +2027,7 @@ def applyOp(n_spin_orbitals, op, psi, slaterWeightMin=0, restrictions=None, opRe
                 # the slaterWeightMin cutoff.
                 for ps, amp in list(opResult[state].items()):
                     # Remove product states with small weight
-                    if abs(amp) ** 2 < slaterWeightMin:
+                    if abs(amp) < slaterWeightMin:
                         opResult[state].pop(ps)
     elif opResult is not None and restrictions is None:
         # Loop over product states in psi.
@@ -2071,13 +2071,13 @@ def applyOp(n_spin_orbitals, op, psi, slaterWeightMin=0, restrictions=None, opRe
                 # the slaterWeightMin cutoff.
                 for ps, amp in list(opResult[state].items()):
                     # Remove product states with small weight
-                    if abs(amp) ** 2 < slaterWeightMin:
+                    if abs(amp) < slaterWeightMin:
                         opResult[state].pop(ps)
     else:
         raise Exception("Method not implemented.")
     # Remove product states with small weight
     for state, amp in list(psiNew.items()):
-        if abs(amp) ** 2 < slaterWeightMin:
+        if abs(amp) < slaterWeightMin:
             psiNew.pop(state)
     # print (f"op: psiNew\n\t{op}: {psiNew}")
     return psiNew
@@ -2182,7 +2182,7 @@ def applyOp_new(n_spin_orbitals: int, op: dict, psi: dict, slaterWeightMin=0, re
         newResults[state][state_new] = h * signTot + newResults[state].get(state_new, 0)
     opResult.update(newResults)
 
-    return {state: amp for state, amp in psiNew.items() if abs(amp) ** 2 > slaterWeightMin}
+    return {state: amp for state, amp in psiNew.items() if abs(amp) > slaterWeightMin}
 
 
 def applyOp_thread_worker(op, psi, n_spin_orbitals, restrictions):
@@ -2295,7 +2295,7 @@ def applyOp_threadpool(n_spin_orbitals: int, op: dict, psi: dict, slaterWeightMi
                 addToFirst(tmp, res)
                 opResult[state] = tmp
 
-    return {state: amp for state, amp in psiNew.items() if abs(amp) ** 2 > slaterWeightMin}
+    return {state: amp for state, amp in psiNew.items() if abs(amp) > slaterWeightMin}
 
 
 def applyOp_worker(output, op, psi, n_spin_orbitals, restrictions):
@@ -2410,7 +2410,7 @@ def applyOp_multiprocess(
     for proc in processes:
         proc.join()
 
-    return {state: amp for state, amp in psiNew.items() if abs(amp) ** 2 > slaterWeightMin}
+    return {state: amp for state, amp in psiNew.items() if abs(amp) > slaterWeightMin}
 
 
 def get_hamiltonian_matrix(n_spin_orbitals, hOp, basis, mode="sparse_MPI", verbose=True):

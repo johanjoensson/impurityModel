@@ -558,7 +558,7 @@ def block_lanczos(
         q[1] = [{} for _ in range(columns)]
         if mpi:
             request.Wait()
-        for i, j in np.argwhere(np.abs(psip) ** 2 > slaterWeightMin):
+        for i, j in np.argwhere(np.abs(psip) > slaterWeightMin):
             state = basis.local_basis[i]
             q[1][j][state] = psip[i, j]
 

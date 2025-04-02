@@ -804,12 +804,12 @@ class Basis:
         if vs.shape[1] == self.size:
             for row, (i, state) in itertools.product(range(vs.shape[0]), zip(self.local_indices, self.local_basis)):
                 psi = res[row]
-                if abs(vs[row, i]) ** 2 > slaterWeightMin:
+                if abs(vs[row, i]) > slaterWeightMin:
                     psi[state] = vs[row, i]
         elif vs.shape[1] == len(self.local_basis):
             for row, (i, state) in itertools.product(range(vs.shape[0]), enumerate(self.local_basis)):
                 psi = res[row]
-                if abs(vs[row, i]) ** 2 > slaterWeightMin:
+                if abs(vs[row, i]) > slaterWeightMin:
                     psi[state] = vs[row, i]
         else:
             raise RuntimeError(

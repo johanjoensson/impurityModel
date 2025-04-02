@@ -914,8 +914,8 @@ def block_Green_freq(
                     x_0=A_inv_psi,
                     y=psi,
                     basis=freq_basis,
-                    slaterWeightMin=0 * slaterWeightMin,
-                    atol=max(np.sqrt(slaterWeightMin), 1e-5),
+                    slaterWeightMin=slaterWeightMin,
+                    atol=max(slaterWeightMin, 1e-5),
                 )
                 for (i, psi_i), (j, Ainvpsi_j) in itertools.product(enumerate(psi), enumerate(A_inv_psi)):
                     gs[w_i, i, j] = finite.inner(psi_i, Ainvpsi_j)
@@ -932,7 +932,7 @@ def block_Green_freq(
 
                     while info != 0:
                         A_inv_psi_v[:, j], info = sp.sparse.linalg.gmres(
-                            A, psi_j, x0=A_inv_psi_v[:, j], atol=np.sqrt(slaterWeightMin)
+                            A, psi_j, x0=A_inv_psi_v[:, j], atol=slaterWeightMin
                         )
                         if info < 0:
                             raise RuntimeError("Parameter breakdown in bicgstab!")

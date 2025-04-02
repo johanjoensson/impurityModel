@@ -127,17 +127,13 @@ def bicgstab(A_op, A_op_dict, x_0, y, basis, slaterWeightMin, atol=1e-8):
         x_i = [finite.add(hi, si, mul=w) for hi, w, si in zip(h, omega, s)]
         r_i = [finite.add(si, ti, mul=-w) for si, w, ti in zip(s, omega, t)]
 
-        basis.add_states(state for xi in x_i for state, amp in xi.items() if abs(amp) ** 2 > slaterWeightMin)
+        basis.add_states(state for xi in x_i for state, amp in xi.items() if abs(amp) > slaterWeightMin)
         tmp = basis.redistribute_psis(itertools.chain(r_0, p_i, x_i, r_i))
 
         r_0 = tmp[:n]
         p_i = tmp[n : 2 * n]
-        x_i = [
-            {state: amp for state, amp in xi.items() if abs(amp) ** 2 > slaterWeightMin} for xi in tmp[2 * n : 3 * n]
-        ]
-        r_i = [
-            {state: amp for state, amp in ri.items() if abs(amp) ** 2 > slaterWeightMin} for ri in tmp[3 * n : 4 * n]
-        ]
+        x_i = [{state: amp for state, amp in xi.items() if abs(amp) > slaterWeightMin} for xi in tmp[2 * n : 3 * n]]
+        r_i = [{state: amp for state, amp in ri.items() if abs(amp) > slaterWeightMin} for ri in tmp[3 * n : 4 * n]]
 
         r2 = np.array([finite.norm2(ri) for ri in r_i], dtype=complex)
         if basis.is_distributed:
