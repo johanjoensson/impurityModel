@@ -184,17 +184,13 @@ def get_Greens_function(
             )
     all_gs_matsubara = basis.comm.gather(gs_matsubara, root=0)
     all_gs_realaxis = basis.comm.gather(gs_realaxis, root=0)
-    print(f"{all_gs_matsubara=}")
-    print(f"{all_gs_realaxis=}")
     if basis.comm.rank == 0:
         for gs_mats in all_gs_matsubara:
-            print(f"{gs_mats=}")
             for i, gm in enumerate(gs_mats):
                 if gm is None:
                     continue
                 gs_matsubara[i] = gm
         for gs_reals in all_gs_realaxis:
-            print(f"{gs_reals=}")
             for i, gr in enumerate(gs_reals):
                 if gr is None:
                     continue
@@ -567,7 +563,6 @@ def get_block_Green(
         for alpha, beta in zip(alphas[-3::-1], betas[-3::-1]):
             gs_new = wIs - alpha - np.conj(beta.T)[np.newaxis, :, :] @ np.linalg.solve(gs_new, beta[np.newaxis, :, :])
             gs_prev = wIs - alpha - np.conj(beta.T)[np.newaxis, :, :] @ np.linalg.solve(gs_prev, beta[np.newaxis, :, :])
-        print(rf"δ = {np.max(np.abs(gs_new - gs_prev))}")
         return np.all(np.abs(gs_new - gs_prev) < max(slaterWeightMin, 1e-8))
 
     # Run Lanczos on psi0^T* [wI - j*delta - H]^-1 psi0
@@ -966,12 +961,6 @@ def block_Green_freq(
 
     basis.comm.Reduce(MPI.IN_PLACE if basis.comm.rank == 0 else gs_matsubara, gs_matsubara, op=MPI.SUM, root=0)
     basis.comm.Reduce(MPI.IN_PLACE if basis.comm.rank == 0 else gs_realaxis, gs_realaxis, op=MPI.SUM, root=0)
-    # if basis.comm.rank == 0:
-    #     ix = np.ix_(range(len(iws)), np.argsort(p), np.argsort(p))
-    #     gs_matsubara = (np.conj(r.T)[np.newaxis, :, :] @ np.linalg.solve(gs_matsubara.copy(), r[np.newaxis, :, :]))[ix]
-    #     ix = np.ix_(range(len(ws)), np.argsort(p), np.argsort(p))
-    #     gs_realaxis = (np.conj(r.T)[np.newaxis, :, :] @ np.linalg.solve(gs_realaxis.copy(), r[np.newaxis, :, :]))[ix]
-    # print(f"{gs_matsubara.shape=} {gs_realaxis.shape=}")
 
     return gs_matsubara, gs_realaxis
 
@@ -1198,7 +1187,7 @@ def get_block_Green_cg(
     comm = basis.comm
 
     if not matsubara and not realaxis:
-        if rank == 0:
+        if comm.rank == 0:
             print("No Matsubara mesh or real frequency mesh provided. No Greens function will be calculated.")
         return None, None
 
