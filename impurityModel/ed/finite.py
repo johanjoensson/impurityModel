@@ -367,7 +367,7 @@ def printExpValues(rhos, es, rot_to_spherical):
     """
     print several expectation values, e.g. E, N, L^2.
     """
-    print("E0 = {:7.4f}".format(es[0]))
+    print("E0 = {:9.6f}".format(es[0]))
     print(
         # "{:^3s} {:>11s} {:>8s} {:>8s} {:>8s} {:>9s} {:>9s} {:>9s} {:>9s}".format(
         "{:^3s} {:>11s} {:>8s} {:>8s} {:>8s} {:>9s} {:>9s}".format(

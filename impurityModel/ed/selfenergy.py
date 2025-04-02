@@ -243,7 +243,7 @@ def find_gs(
             )
             if e_trial < e_gs:
                 if verbose >= 2:
-                    print(f"N0 {N0[i] + dN:^5d}: E = {e_trial:^9.6f} ")
+                    print(f"N0 {N0[i] + dN:^5d}: E = {e_trial:^7.4f} ")
                 e_gs = e_trial
                 basis_gs = basis
                 h_dict_gs = h_dict.copy()
@@ -276,11 +276,11 @@ def find_gs(
             h_dict_gs = h_dict.copy()
             gs_impurity_occ[i] += dN_gs[i]
             if verbose >= 2:
-                print(f"N0 {gs_impurity_occ[i]:^5d}: E = {e_gs:^9.6f} ")
+                print(f"N0 {gs_impurity_occ[i]:^5d}: E = {e_gs:^7.4f} ")
     if verbose >= 1:
         print("Ground state occupation")
         print("\n".join((f"{i:^3d}: {gs_impurity_occ[i]: ^5d}" for i in gs_impurity_occ)))
-        print(rf"E$_{{GS}}$ = {e_gs:^9.6f}")
+        print(rf"E$_{{GS}}$ = {e_gs:^7.4f}")
         print("=" * 80)
     return gs_impurity_occ, basis_gs, h_dict_gs
 
