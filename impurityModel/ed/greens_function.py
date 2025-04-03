@@ -1424,15 +1424,15 @@ def rotate_4index_U(U4, T):
     return np.einsum("ij,kl, jlmo, mn, op", np.conj(T.T), np.conj(T.T), U4, T, T)
 
 
-def save_Greens_function(gs, omega_mesh, label, e_scale=1, tol=1e-8):
+def save_Greens_function(gs, omega_mesh, label, cluster_label, e_scale=1, tol=1e-8):
     """
     Save Greens function to file, using RSPt .dat format. Including offdiagonal elements.
     """
     n_orb = gs.shape[1]
-    axis_label = "realaxis"
+    axis_label = "-realaxis"
     if np.all(np.abs(np.imag(omega_mesh)) > 1e-6):
         omega_mesh = np.imag(omega_mesh)
-        axis_label = "Matsubara"
+        axis_label = ""
 
     off_diags = []
     for column in range(gs.shape[2]):
@@ -1443,7 +1443,9 @@ def save_Greens_function(gs, omega_mesh, label, e_scale=1, tol=1e-8):
                 off_diags.append((row, column))
 
     print(f"Writing {axis_label} {label} to files")
-    with open(f"real-{axis_label}-{label}.dat", "w") as fg_real, open(f"imag-{axis_label}-{label}.dat", "w") as fg_imag:
+    with open(f"real-{label}{axis_label}-{cluster_label}.dat", "w") as fg_real, open(
+        f"imag-{label}{axis_label}-{cluster_label}.dat", "w"
+    ) as fg_imag:
         header = "# Frequency, total, spin down, spin up\n"
         header += "# indexmap: (column index of projected elements)"
         for row in range(gs.shape[1]):
