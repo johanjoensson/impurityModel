@@ -249,6 +249,7 @@ def eigensystem_new(
                 comm.Gatherv(vr.array_r, [vecs[:, i], counts, offsets, MPI.DOUBLE_COMPLEX], root=0)
         if comm is not None:
             vecs = comm.bcast(vecs, root=0)
+        eig_solver.destroy()
     indices = np.argsort(es)
     es = es[indices]
     vecs = vecs[:, indices]
@@ -260,7 +261,7 @@ def eigensystem_new(
 
     # the scipy eigsh function does not guarantee that degenerate eigenvalues get orthogonal eigenvectors.
     if isinstance(h_local, scipy.sparse._csr.csr_matrix) or isinstance(h_local, scipy.sparse._csc.csc_matrix):
-        vecs[:, : sum(mask)], _ = qr(vecs[:, : sum(mask)], mode="economic", overwrite_a=True, check_finite=False)
+        vecs[:, : sum(mask)], _ = qr(vecs[:, : sum(mask)].copy(), mode="economic", overwrite_a=True, check_finite=False)
 
     t0 = time.perf_counter() - t0
 

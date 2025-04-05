@@ -894,12 +894,9 @@ class Basis:
         if petsc:
             M = PETSc.Mat().create(comm=self.comm)
             M.setSizes([self.size, self.size])
-            # M.setType(PETSc.Mat.Type.AIJ)
             for i, j, val in zip(rows, columns, values):
                 M[i, j] = val
             M.assemble()
-            # M.assemblyBegin()
-            # M.assemblyEnd()
             return M
         return sp.sparse.csc_matrix((values, (rows, columns)), shape=(self.size, self.size), dtype=complex)
 
@@ -1063,6 +1060,8 @@ class CIPSI_Basis(Basis):
                 verbose=self.verbose,
                 comm=self.comm,
             )
+            if callable(getattr(H_sparse, "destroy", None)):
+                H_sparse.destroy()
             self.truncate(self.build_state(psi_ref))
 
     def truncate(self, psis):
@@ -1184,6 +1183,9 @@ class CIPSI_Basis(Basis):
                 eigenValueTol=de2_min,
                 comm=self.comm,
             )
+
+            if callable(getattr(H_mat, "destroy", None)):
+                H_mat.destroy()
             t_eigen += perf_counter() - t_tmp
             t_tmp = perf_counter()
             psi_ref = self.build_state(psi_ref_dense.T)
@@ -1216,6 +1218,8 @@ class CIPSI_Basis(Basis):
                 k=2,
                 comm=self.comm,
             )
+            if callable(getattr(H_sparse, "destroy", None)):
+                H_sparse.destroy()
             self.truncate(self.build_state(psi_ref))
             if self.verbose:
                 print(f"----->After truncation, the basis contains {self.size} elements.")

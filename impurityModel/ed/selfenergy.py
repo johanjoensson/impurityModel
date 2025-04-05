@@ -120,6 +120,8 @@ def fixed_peak_dc(h0_op, dc_struct, rank, verbose, dense_cutoff):
         e_upper, psi_upper = finite.eigensystem_new(
             h, e_max=0, k=2, eigenValueTol=1e-6, return_eigvecs=True, comm=basis_upper.comm
         )
+        if callable(getattr(h, "destroy", None)):
+            h.destroy()
         h_dict = basis_lower.build_operator_dict(h_op)
         h = (
             basis_lower.build_sparse_matrix(h_op)
@@ -129,6 +131,8 @@ def fixed_peak_dc(h0_op, dc_struct, rank, verbose, dense_cutoff):
         e_lower, psi_lower = finite.eigensystem_new(
             h, e_max=0, k=2, eigenValueTol=1e-6, return_eigvecs=True, comm=basis_upper.comm
         )
+        if callable(getattr(h, "destroy", None)):
+            h.destroy()
         psi_lower_local = basis_lower.build_state(psi_lower[:, 0].T)[0]
         psi_upper_local = basis_upper.build_state(psi_upper[:, 0].T)[0]
         psi_lowers = basis_lower.comm.allgather(psi_lower_local)
@@ -196,6 +200,8 @@ def calc_occ_e(
     h = basis.build_sparse_matrix(h_op, h_dict) if basis.size > dense_cutoff else basis.build_dense_matrix(h_op, h_dict)
 
     e_trial = finite.eigensystem_new(h, e_max=0, k=2, eigenValueTol=1e-6, return_eigvecs=False, comm=basis.comm)
+    if callable(getattr(h, "destroy", None)):
+        h.destroy()
     return e_trial[0], basis, h_dict
 
 
