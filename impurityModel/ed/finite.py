@@ -15,6 +15,7 @@ from multiprocessing import Process, Queue, current_process, freeze_support
 from concurrent.futures import ThreadPoolExecutor, ProcessPoolExecutor, as_completed
 from os import environ
 import sys
+import warnings
 
 try:
     from petsc4py import PETSc
@@ -192,35 +193,64 @@ def eigensystem_new(
             dtype=h_local.dtype,
         )
 
+        es = [0]
+        rng = np.random.default_rng()
+        if v0 is None:
+            v0, _ = np.linalg.qr(
+                rng.uniform(size=(h.shape[0], k)) + 1j * rng.uniform(size=(h.shape[0], k)), mode="reduced"
+            )
+        vecs = v0
         ncv = None
-        v0_guess = v0[:, [0]] if v0 is not None else None
-        es = []
-        mask = [True]
-        while len(es) <= sum(mask):
+        conv_fail = False
+        # We don't know the degeneracies of the eigenstates, so as long as all found
+        # states are within e0 + e_max, keep looking for more eigenstates
+        while np.sum(es - np.min(es) <= e_max) == len(es):
             try:
-                es, vecs = eigsh(h, k=min(k + 1, h.shape[0] - 2), which="SA", tol=eigenValueTol, v0=v0_guess, ncv=ncv)
-                k = len(es)
+                es, vecs = eigsh(
+                    h,
+                    k=min(vecs.shape[1] + k, h.shape[0] - 2),
+                    which="SA",
+                    v0=vecs[:, 0],
+                    ncv=ncv,
+                    tol=eigenValueTol if conv_fail else 0,
+                )
             except ArpackNoConvergence as e:
                 es = e.eigenvalues
                 vecs = e.eigenvectors
-                eigenValueTol = max(eigenValueTol * 10, 1e-6)
+                eigenValueTol = (
+                    max(eigenValueTol, np.sqrt(np.finfo(float).eps)) if not conv_fail else eigenValueTol * 10
+                )
+                conv_fail = True
             except ArpackError as e:
                 ncv = min(h.shape[0], max(2 * k + 3, 20)) if ncv is None else min(ncv * 2, h.shape[0])
                 es = [0]
                 vecs = None
+        # eigsh does not guarantee that the eigenvectors are orthonormal. therefore we do a QR decomposition on them.
+        vecs, _ = np.linalg.qr(vecs, mode="reduced")
 
-            mask = es - np.min(es) <= e_max
-            v0_guess = vecs[:, mask][:, [0]] if vecs is not None else None
-    elif "petsc4py" in sys.modules and isinstance(h_local, PETSc.Mat):
+        # In principle, lobpcg should be able to correct some errors in the eigenvectors ad eigenvalues found by eigsh (which uses ARPACK behind the scenes).
+        # eigsh struggles with degenerate or nearly degenerate eigenstates, so do one round of lobpcg to correct any errors.
+        # lobpcg is robust as long as the preconditioner is very good (is this what robust means?). We don't have a good preconditioner, so we ignore any warnings from lobpcg instead.
+        with warnings.catch_warnings():
+            warnings.simplefilter("ignore")
+            es, vecs = scipy.sparse.linalg.lobpcg(h, vecs, largest=False)
+
+    elif "petsc4py" in sys.modules:
+        M = PETSc.Mat().create(comm=comm)
+        M.setSizes([h_local.shape[0], h_local.shape[0]])
+        for i, j in zip(*h_local.nonzero()):
+            M[i, j] = h_local[i, j]
+        M.assemble()
+
         eig_solver = SLEPc.EPS()
         eig_solver.create(comm=comm)
-        eig_solver.setOperators(h_local)
+        eig_solver.setOperators(M)
         eig_solver.setProblemType(SLEPc.EPS.ProblemType.HEP)
         eig_solver.setWhichEigenpairs(EPS.Which.SMALLEST_REAL)
         eig_solver.setDimensions(k, PETSc.DECIDE, PETSc.DECIDE)
 
         if v0 is not None:
-            vs = [h_local.createVecRight() for _ in range(v0.shape[1])]
+            vs = [M.createVecRight() for _ in range(v0.shape[1])]
             for i, v in enumerate(vs):
                 start, end = v.getOwnershipRange()
                 v[start:end] = v0[start:end, i]
@@ -250,6 +280,7 @@ def eigensystem_new(
         if comm is not None:
             vecs = comm.bcast(vecs, root=0)
         eig_solver.destroy()
+        M.destroy()
     indices = np.argsort(es)
     es = es[indices]
     vecs = vecs[:, indices]
@@ -258,10 +289,6 @@ def eigensystem_new(
 
     if not return_eigvecs:
         return es[: sum(mask)]
-
-    # the scipy eigsh function does not guarantee that degenerate eigenvalues get orthogonal eigenvectors.
-    if isinstance(h_local, scipy.sparse._csr.csr_matrix) or isinstance(h_local, scipy.sparse._csc.csc_matrix):
-        vecs[:, : sum(mask)], _ = qr(vecs[:, : sum(mask)].copy(), mode="economic", overwrite_a=True, check_finite=False)
 
     t0 = time.perf_counter() - t0
 

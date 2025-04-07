@@ -638,7 +638,7 @@ def block_Green(
     comm.Scatterv(
         [psi_dense, send_counts, offsets, MPI.C_DOUBLE_COMPLEX] if rank == 0 else None, psi_dense_local, root=0
     )
-    psi = basis.build_state(psi_dense_local.T, slaterWeightMin=slaterWeightMin)
+    psi = basis.build_state(psi_dense_local.T)
 
     if len(psi) == 0:
         return np.zeros((len(iws), n, n), dtype=complex), np.zeros((len(ws), n, n), dtype=complex)

@@ -428,7 +428,7 @@ def block_lanczos(
         cutoff = eps
         n_trunc = 0
         while np.max(wp_size) > basis.truncation_threshold:
-            wp = [{state: w for state, w in psi.items() if abs(w) ** 2 >= cutoff} for psi in wp]
+            wp = [{state: w for state, w in psi.items() if abs(w) >= cutoff} for psi in wp]
             comm.Allreduce(np.array([len(psi) for psi in wp]), wp_size, op=MPI.SUM)
             cutoff *= 5
             n_trunc += 1

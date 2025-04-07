@@ -891,13 +891,6 @@ class Basis:
                     columns.append(local_col_idx + self.offset)
                     rows.append(row_dict[row])
                     values.append(expanded_dict[column][row])
-        if petsc:
-            M = PETSc.Mat().create(comm=self.comm)
-            M.setSizes([self.size, self.size])
-            for i, j, val in zip(rows, columns, values):
-                M[i, j] = val
-            M.assemble()
-            return M
         return sp.sparse.csc_matrix((values, (rows, columns)), shape=(self.size, self.size), dtype=complex)
 
     def _build_PETSc_vector(self, psis: list[dict], dtype=complex):
@@ -1060,8 +1053,6 @@ class CIPSI_Basis(Basis):
                 verbose=self.verbose,
                 comm=self.comm,
             )
-            if callable(getattr(H_sparse, "destroy", None)):
-                H_sparse.destroy()
             self.truncate(self.build_state(psi_ref))
 
     def truncate(self, psis):
@@ -1184,8 +1175,6 @@ class CIPSI_Basis(Basis):
                 comm=self.comm,
             )
 
-            if callable(getattr(H_mat, "destroy", None)):
-                H_mat.destroy()
             t_eigen += perf_counter() - t_tmp
             t_tmp = perf_counter()
             psi_ref = self.build_state(psi_ref_dense.T)
@@ -1218,8 +1207,6 @@ class CIPSI_Basis(Basis):
                 k=2,
                 comm=self.comm,
             )
-            if callable(getattr(H_sparse, "destroy", None)):
-                H_sparse.destroy()
             self.truncate(self.build_state(psi_ref))
             if self.verbose:
                 print(f"----->After truncation, the basis contains {self.size} elements.")
