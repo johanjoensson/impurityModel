@@ -486,7 +486,7 @@ def get_block_Green(
     if verbose:
         t0 = time.perf_counter()
     h_mem = basis.expand(hOp, h_mem, slaterWeightMin=slaterWeightMin)
-    h = basis.build_sparse_matrix(hOp, h_mem, petsc=False)
+    h = basis.build_sparse_matrix(hOp, h_mem)
 
     N = len(basis)
     n = len(psi_arr)
@@ -808,7 +808,7 @@ def block_Green_freq_2(
             if True:
                 # Use fully sparse implementation
                 # Build basis for each frequency
-                h_local = freq_basis.build_sparse_matrix(hOp, h_mem, petsc=False)
+                h_local = freq_basis.build_sparse_matrix(hOp, h_mem)
                 alphas, betas, _ = block_lanczos(
                     psi0=psi,
                     h_op=hOp,
@@ -821,7 +821,7 @@ def block_Green_freq_2(
                 )
             else:
                 # Use build basis before building sparse matrix and ruhnning Lanczos
-                h_local = freq_basis.build_sparse_matrix(hOp, h_mem, petsc=False)
+                h_local = freq_basis.build_sparse_matrix(hOp, h_mem)
                 h = finite.create_linear_operator(h_local, freq_basis.comm)
                 alphas, betas, _ = get_block_Lanczos_matrices(
                     psi0=freq_basis.build_vector(psi).T,
@@ -920,7 +920,7 @@ def block_Green_freq(
                 for (i, psi_i), (j, Ainvpsi_j) in itertools.product(enumerate(psi), enumerate(A_inv_psi)):
                     gs[w_i, i, j] = finite.inner(psi_i, Ainvpsi_j)
             else:
-                A = freq_basis.build_sparse_matrix(A_op, petsc=False)
+                A = freq_basis.build_sparse_matrix(A_op)
                 A = finite.create_linear_operator(A, freq_basis.comm)
                 psi_i = freq_basis.build_vector(psi)
                 A_inv_psi_v = freq_basis.build_vector(A_inv_psi).T
@@ -1175,7 +1175,7 @@ def get_block_Green_cg(
 
     if verbose:
         t0 = time.perf_counter()
-    # h = basis.build_sparse_matrix(hOp, h_mem, petsc=False)
+    # h = basis.build_sparse_matrix(hOp, h_mem)
 
     # N = h.shape[0]
     n = len(psi_arr)

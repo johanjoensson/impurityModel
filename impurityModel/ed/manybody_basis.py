@@ -38,11 +38,6 @@ from impurityModel.ed.finite import applyOp_new as applyOp
 # else:
 #     from impurityModel.ed.finite import applyOp_new as applyOp
 
-try:
-    from petsc4py import PETSc
-except ModuleNotFoundError:
-    pass
-
 
 def batched(iterable: Iterable, n: int) -> Iterable:
     """
@@ -844,7 +839,7 @@ class Basis:
         Get the operator as a dense matrix in the current basis.
         by default the dense matrix is distributed to all ranks.
         """
-        h_local = self.build_sparse_matrix(op, op_dict, petsc=False)
+        h_local = self.build_sparse_matrix(op, op_dict)
         local_dok = h_local.todok()
         if self.is_distributed:
             reduced_dok = self.comm.reduce(local_dok, op=MPI.SUM, root=0)
@@ -855,9 +850,7 @@ class Basis:
             h = h_local.todense()
         return h
 
-    def build_sparse_matrix(
-        self, op, op_dict: Optional[dict[bytes, dict[bytes, complex]]] = None, petsc="petsc4py" in sys.modules
-    ):
+    def build_sparse_matrix(self, op, op_dict: Optional[dict[bytes, dict[bytes, complex]]] = None):
         """
         Get the operator as a sparse matrix in the current basis.
         The sparse matrix is distributed over all ranks.
@@ -892,36 +885,6 @@ class Basis:
                     rows.append(row_dict[row])
                     values.append(expanded_dict[column][row])
         return sp.sparse.csc_matrix((values, (rows, columns)), shape=(self.size, self.size), dtype=complex)
-
-    def _build_PETSc_vector(self, psis: list[dict], dtype=complex):
-        if "petsc4py" not in sys.modules:
-            return None
-        vs = PETSc.Mat().create(comm=self.comm)
-        vs.setSizes([len(psis), self.size])
-        row_dict = {
-            state: i for state, i in zip(self.local_basis, range(self.local_indices.start, self.local_indices.stop))
-        }
-        for row, psi in enumerate(psis):
-            row_states = set(psi.keys())
-            need_mpi = False
-            if self.is_distributed:
-                need_mpi = False
-                if any(state not in row_dict for state in psi):
-                    need_mpi = True
-                need_mpi_arr = np.empty((1,), dtype=bool)
-                need_mpi = self.comm.allreduce(need_mpi, op=MPI.LOR)
-            if need_mpi:
-                sorted_row_states = row_states  # sorted(row_states)
-                row_dict = {
-                    state: i for state, i in zip(sorted_row_states, self.index(sorted_row_states)) if i < self.size
-                }
-            vs.setUp()
-            for state, val in psi.items():
-                if state not in row_dict:
-                    continue
-                vs[row, row_dict[state]] = val
-            vs.assemble()
-        return vs
 
     def _state_statistics(self, psi, impurity_indices, valence_indices, conduction_indices, num_spin_orbitals):
         stat = {}

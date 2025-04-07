@@ -183,6 +183,52 @@ def eigensystem_new(
             comm.Bcast(es, root=0)
             comm.Bcast(vecs, root=0)
         mask = es - es[0] <= e_max
+    elif "petsc4py" in sys.modules:
+        M = PETSc.Mat().create(comm=comm)
+        M.setSizes([h_local.shape[0], h_local.shape[0]])
+        for i, j in zip(*h_local.nonzero()):
+            M[i, j] = h_local[i, j]
+        M.assemble()
+
+        eig_solver = SLEPc.EPS()
+        eig_solver.create(comm=comm)
+        eig_solver.setOperators(M)
+        eig_solver.setProblemType(SLEPc.EPS.ProblemType.HEP)
+        eig_solver.setWhichEigenpairs(EPS.Which.SMALLEST_REAL)
+        eig_solver.setDimensions(k, PETSc.DECIDE, PETSc.DECIDE)
+
+        if v0 is not None:
+            vs = [M.createVecRight() for _ in range(v0.shape[1])]
+            for i, v in enumerate(vs):
+                start, end = v.getOwnershipRange()
+                v[start:end] = v0[start:end, i]
+                v.assemble()
+            eig_solver.setInitialSpace(vs)
+
+        eig_solver.solve()
+        nconv = eig_solver.getConverged()
+        if nconv == 0:
+            # Failed to converge with default settings.
+            # Decrease required accuracy and try again.
+            eig_solver.setTolerances(max(eigenValueTol, 1e-4), PETSc.DECIDE)
+            eig_solver.solve()
+            nconv = eig_solver.getConverged()
+        if nconv == 0:
+            raise RuntimeError(f"SLEPc EPS failed to converge!")
+        es = np.empty((nconv), dtype=float)
+        vecs = np.empty((h_local.size[0], nconv), dtype=complex, order="F")
+        vr, wr = h_local.getVecs()
+        vi, wi = h_local.getVecs()
+        for i in range(nconv):
+            es[i] = eig_solver.getEigenpair(i, vr, vi).real
+            offsets = vr.owner_ranges[:-1]
+            counts = np.diff(vr.owner_ranges)
+            if comm is not None:
+                comm.Gatherv(vr.array_r, [vecs[:, i], counts, offsets, MPI.DOUBLE_COMPLEX], root=0)
+        if comm is not None:
+            vecs = comm.bcast(vecs, root=0)
+        eig_solver.destroy()
+        M.destroy()
     elif isinstance(h_local, scipy.sparse._csr.csr_matrix) or isinstance(h_local, scipy.sparse._csc.csc_matrix):
         h = scipy.sparse.linalg.LinearOperator(
             (h_local.shape[0], h_local.shape[0]),
@@ -235,52 +281,6 @@ def eigensystem_new(
             warnings.simplefilter("ignore")
             es, vecs = scipy.sparse.linalg.lobpcg(h, vecs, largest=False)
 
-    elif "petsc4py" in sys.modules:
-        M = PETSc.Mat().create(comm=comm)
-        M.setSizes([h_local.shape[0], h_local.shape[0]])
-        for i, j in zip(*h_local.nonzero()):
-            M[i, j] = h_local[i, j]
-        M.assemble()
-
-        eig_solver = SLEPc.EPS()
-        eig_solver.create(comm=comm)
-        eig_solver.setOperators(M)
-        eig_solver.setProblemType(SLEPc.EPS.ProblemType.HEP)
-        eig_solver.setWhichEigenpairs(EPS.Which.SMALLEST_REAL)
-        eig_solver.setDimensions(k, PETSc.DECIDE, PETSc.DECIDE)
-
-        if v0 is not None:
-            vs = [M.createVecRight() for _ in range(v0.shape[1])]
-            for i, v in enumerate(vs):
-                start, end = v.getOwnershipRange()
-                v[start:end] = v0[start:end, i]
-                v.assemble()
-            eig_solver.setInitialSpace(vs)
-
-        eig_solver.solve()
-        nconv = eig_solver.getConverged()
-        if nconv == 0:
-            # Failed to converge with default settings.
-            # Decrease required accuracy and try again.
-            eig_solver.setTolerances(max(eigenValueTol, 1e-4), PETSc.DECIDE)
-            eig_solver.solve()
-            nconv = eig_solver.getConverged()
-        if nconv == 0:
-            raise RuntimeError(f"SLEPc EPS failed to converge!")
-        es = np.empty((nconv), dtype=float)
-        vecs = np.empty((h_local.size[0], nconv), dtype=complex, order="F")
-        vr, wr = h_local.getVecs()
-        vi, wi = h_local.getVecs()
-        for i in range(nconv):
-            es[i] = eig_solver.getEigenpair(i, vr, vi).real
-            offsets = vr.owner_ranges[:-1]
-            counts = np.diff(vr.owner_ranges)
-            if comm is not None:
-                comm.Gatherv(vr.array_r, [vecs[:, i], counts, offsets, MPI.DOUBLE_COMPLEX], root=0)
-        if comm is not None:
-            vecs = comm.bcast(vecs, root=0)
-        eig_solver.destroy()
-        M.destroy()
     indices = np.argsort(es)
     es = es[indices]
     vecs = vecs[:, indices]
