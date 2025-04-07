@@ -270,7 +270,9 @@ def eigensystem_new(
             except ArpackError as e:
                 ncv = min(h.shape[0], max(2 * k + 3, 20)) if ncv is None else min(ncv * 2, h.shape[0])
                 es = [0]
-                vecs = None
+                vecs, _ = np.linalg.qr(
+                    rng.uniform(size=(h.shape[0], k)) + 1j * rng.uniform(size=(h.shape[0], k)), mode="reduced"
+                )
         # eigsh does not guarantee that the eigenvectors are orthonormal. therefore we do a QR decomposition on them.
         vecs, _ = np.linalg.qr(vecs, mode="reduced")
 
