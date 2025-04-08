@@ -273,6 +273,8 @@ def eigensystem_new(
                 vecs, _ = np.linalg.qr(
                     rng.uniform(size=(h.shape[0], k)) + 1j * rng.uniform(size=(h.shape[0], k)), mode="reduced"
                 )
+            if es is None or len(es) == 0:
+                es = [0]
         # eigsh does not guarantee that the eigenvectors are orthonormal. therefore we do a QR decomposition on them.
         vecs, _ = np.linalg.qr(vecs, mode="reduced")
 
