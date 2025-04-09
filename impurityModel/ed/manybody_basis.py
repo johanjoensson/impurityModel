@@ -1015,6 +1015,7 @@ class CIPSI_Basis(Basis):
                 eigenValueTol=0,
                 verbose=self.verbose,
                 comm=self.comm,
+                dense=False,
             )
             self.truncate(self.build_state(psi_ref))
 
@@ -1118,11 +1119,7 @@ class CIPSI_Basis(Basis):
         t_build_dict += perf_counter() - t_tmp
         while converge_count < 1:
             t_tmp = perf_counter()
-            H_mat = (
-                self.build_sparse_matrix(H, op_dict=H_dict)
-                if self.size > dense_cutoff
-                else self.build_dense_matrix(H, op_dict=H_dict)
-            )
+            H_mat = self.build_sparse_matrix(H, op_dict=H_dict)
             t_build_mat += perf_counter() - t_tmp
             t_tmp = perf_counter()
             if psi_ref is not None:
@@ -1136,6 +1133,7 @@ class CIPSI_Basis(Basis):
                 v0=v0 if psi_ref is not None else None,
                 eigenValueTol=de2_min,
                 comm=self.comm,
+                dense=self.size < dense_cutoff,
             )
 
             t_eigen += perf_counter() - t_tmp
@@ -1164,12 +1162,7 @@ class CIPSI_Basis(Basis):
 
         if self.size > self.truncation_threshold:
             H_sparse = self.build_sparse_matrix(H, op_dict={})
-            e_ref, psi_ref = eigensystem_new(
-                H_sparse,
-                e_max=de0_max,
-                k=2,
-                comm=self.comm,
-            )
+            e_ref, psi_ref = eigensystem_new(H_sparse, e_max=de0_max, k=2, comm=self.comm, dense=False)
             self.truncate(self.build_state(psi_ref))
             if self.verbose:
                 print(f"----->After truncation, the basis contains {self.size} elements.")

@@ -111,23 +111,25 @@ def fixed_peak_dc(h0_op, dc_struct, rank, verbose, dense_cutoff):
         _ = basis_upper.expand(h_op, dense_cutoff=dense_cutoff, de2_min=1e-3)
         _ = basis_lower.expand(h_op, dense_cutoff=dense_cutoff, de2_min=1e-3)
 
-        h_dict = basis_upper.build_operator_dict(h_op)
-        h = (
-            basis_upper.build_sparse_matrix(h_op)
-            if basis_upper.size > dense_cutoff
-            else basis_upper.build_dense_matrix(h_op, h_dict)
-        )
+        h = basis_upper.build_sparse_matrix(h_op)
         e_upper, psi_upper = finite.eigensystem_new(
-            h, e_max=0, k=2, eigenValueTol=1e-6, return_eigvecs=True, comm=basis_upper.comm
+            h,
+            e_max=0,
+            k=2,
+            eigenValueTol=1e-6,
+            return_eigvecs=True,
+            comm=basis_upper.comm,
+            dense=basis_upper.size < dense_cutoff,
         )
-        h_dict = basis_lower.build_operator_dict(h_op)
-        h = (
-            basis_lower.build_sparse_matrix(h_op)
-            if basis_lower.size > dense_cutoff
-            else basis_lower.build_dense_matrix(h_op, h_dict)
-        )
+        h = basis_lower.build_sparse_matrix(h_op)
         e_lower, psi_lower = finite.eigensystem_new(
-            h, e_max=0, k=2, eigenValueTol=1e-6, return_eigvecs=True, comm=basis_upper.comm
+            h,
+            e_max=0,
+            k=2,
+            eigenValueTol=1e-6,
+            return_eigvecs=True,
+            comm=basis_upper.comm,
+            dense=basis_lower.size < dense_cutoff,
         )
         psi_lower_local = basis_lower.build_state(psi_lower[:, 0].T)[0]
         psi_upper_local = basis_upper.build_state(psi_upper[:, 0].T)[0]
@@ -193,9 +195,17 @@ def calc_occ_e(
         comm=comm,
     )
     h_dict = basis.expand(h_op, dense_cutoff=dense_cutoff, de2_min=1e-4)
-    h = basis.build_sparse_matrix(h_op, h_dict) if basis.size > dense_cutoff else basis.build_dense_matrix(h_op, h_dict)
+    h = basis.build_sparse_matrix(h_op, h_dict)
 
-    e_trial = finite.eigensystem_new(h, e_max=0, k=2, eigenValueTol=1e-6, return_eigvecs=False, comm=basis.comm)
+    e_trial = finite.eigensystem_new(
+        h,
+        e_max=0,
+        k=2,
+        eigenValueTol=1e-6,
+        return_eigvecs=False,
+        comm=basis.comm,
+        dense=basis.size < dense_cutoff,
+    )
     return e_trial[0], basis, h_dict
 
 
@@ -406,13 +416,14 @@ def calc_selfenergy(
 
     basis.tau = tau
     h_dict = basis.expand(h, H_dict=h_dict, dense_cutoff=dense_cutoff, de2_min=1e-6)
-    h_gs = basis.build_sparse_matrix(h, h_dict) if basis.size > dense_cutoff else basis.build_dense_matrix(h, h_dict)
+    h_gs = basis.build_sparse_matrix(h, h_dict)
     es, psis_dense = finite.eigensystem_new(
         h_gs,
         e_max=energy_cut,
         k=total_impurity_orbitals[0],
         eigenValueTol=0,
         comm=basis.comm,
+        dense=basis.size < dense_cutoff,
     )
     psis = basis.build_state(psis_dense.T)
     if verbosity >= 1:

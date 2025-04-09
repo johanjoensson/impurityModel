@@ -143,15 +143,7 @@ def create_linear_operator(A_local, comm):
     return A
 
 
-def eigensystem_new(
-    h_local,
-    e_max,
-    k=10,
-    v0=None,
-    eigenValueTol=0,
-    return_eigvecs=True,
-    comm=None,
-):
+def eigensystem_new(h_local, e_max, k=10, v0=None, eigenValueTol=0, return_eigvecs=True, comm=None, dense=False):
     """
     Return eigen-energies and eigenstates.
 
@@ -171,18 +163,18 @@ def eigensystem_new(
     """
 
     t0 = time.perf_counter()
-    if isinstance(h_local, np.ndarray):
-        if h_local.shape[0] == 0:
-            return np.zeros((0,), dtype=float), np.zeros((0, 0), dtype=h_local.dtype)
+    if dense:
+        h = h_local.todense()
+        if comm is not None:
+            comm.Reduce(MPI.IN_PLACE if comm.rank == 0 else h, h, root=0, op=MPI.SUM)
         if comm is None or comm.rank == 0:
-            es, vecs = np.linalg.eigh(h_local, UPLO="L")
+            es, vecs = np.linalg.eigh(h, UPLO="L")
         else:
-            es = np.empty((h_local.shape[0],))
-            vecs = np.empty_like(h_local)
+            es = np.empty((h.shape[0]), dtype=float)
+            vecs = np.empty_like(h)
         if comm is not None:
             comm.Bcast(es, root=0)
             comm.Bcast(vecs, root=0)
-        mask = es - es[0] <= e_max
     elif "petsc4py" in sys.modules:
         M = PETSc.Mat().create(comm=comm)
         M.setSizes([h_local.shape[0], h_local.shape[0]])
