@@ -303,36 +303,14 @@ def calc_Greens_function_with_offdiag(
     comm = basis.comm
     n = len(tOps)
 
-    # if chain_restrict:
-    #     _, bath_rhos, bath_indices = basis.build_density_matrices(psis)
-    #     thermal_bath_rhos = {
-    #         i: [finite.thermal_average_scale_indep(es, block_rhos, tau) for block_rhos in bath_rhos[i]]
-    #         for i in basis.impurity_orbitals.keys()
-    #     }
-    # else:
-    #     thermal_bath_rhos = None
-    #     bath_indices = None
-
-    # if occ_restrict or chain_restrict:
-    #     excited_restrictions = basis.build_excited_restrictions(
-    #         bath_rhos=thermal_bath_rhos,
-    #         bath_indices=bath_indices,
-    #         imp_change=(1, 1),
-    #         val_change=(1, 0),
-    #         con_change=(0, 1),
-    #         occ_cutoff=occ_cutoff,
-    #     )
-    # else:
-    #     excited_restrictions = None
-
     t_mems = [{} for _ in tOps]
     h_mem = {}
     if iw is not None:
-        gs_matsubara_block = np.zeros((len(iw), n, n), dtype=complex)
+        gs_matsubara_block = np.zeros((len(iw), n, n), dtype=complex, order="C")
     else:
         gs_matsubara_block = None
     if w is not None:
-        gs_realaxis_block = np.zeros((len(w), n, n), dtype=complex)
+        gs_realaxis_block = np.zeros((len(w), n, n), dtype=complex, order="C")
     else:
         gs_realaxis_block = None
 
@@ -424,27 +402,6 @@ def calc_Greens_function_with_offdiag(
     # Send calculated Greens functions to root
     basis.comm.Reduce(MPI.IN_PLACE if basis.comm.rank == 0 else gs_matsubara_block, gs_matsubara_block, root=0)
     basis.comm.Reduce(MPI.IN_PLACE if basis.comm.rank == 0 else gs_realaxis_block, gs_realaxis_block, root=0)
-    # requests = []
-    # if eigen_basis.comm.rank == 0:
-    #     assert comm.rank in eigen_roots
-    #     if iw is not None:
-    #         requests.append(comm.isend(gs_matsubara_block, 0))
-    #     if w is not None:
-    #         requests.append(comm.isend(gs_realaxis_block, 0))
-    # if comm.rank == 0:
-    #     for i, r in enumerate(eigen_roots):
-    #         if iw is not None:
-    #             requests.append(comm.irecv(gs_matsubara_received[i], r))
-    #     for i, r in enumerate(eigen_roots):
-    #         if w is not None:
-    #             requests.append(comm.irecv(gs_realaxis_received[i], r))
-    #     MPI.Request().waitall(requests)
-    #     if iw is not None:
-    #         gs_matsubara_block = np.sum(gs_matsubara_received, axis=0)
-    #     if w is not None:
-    #         gs_realaxis_block = np.sum(gs_realaxis_received, axis=0)
-    # if len(requests) > 0:
-    #     MPI.Request().waitall(requests)
     eigen_basis.comm.Free()
     return gs_matsubara_block / Z, gs_realaxis_block / Z
 
@@ -780,8 +737,8 @@ def block_Green_freq_2(
         return converged
 
     t0 = time.perf_counter()
-    gs_matsubara = np.zeros((len(iws), len(psi_orig), len(psi_orig)), dtype=complex)
-    gs_realaxis = np.zeros((len(ws), len(psi_orig), len(psi_orig)), dtype=complex)
+    gs_matsubara = np.zeros((len(iws), len(psi_orig), len(psi_orig)), dtype=complex, order="C")
+    gs_realaxis = np.zeros((len(ws), len(psi_orig), len(psi_orig)), dtype=complex, order="C")
     for w_mesh, gs in zip((iws, ws + 1j * delta), (gs_matsubara, gs_realaxis)):
         if w_mesh is None:
             continue
@@ -881,8 +838,8 @@ def block_Green_freq(
             (len(ws), len(psi_arr), len(psi_arr)), dtype=complex
         )
 
-    gs_matsubara = np.zeros((len(iws), n_orb, n_orb), dtype=complex)
-    gs_realaxis = np.zeros((len(ws), n_orb, n_orb), dtype=complex)
+    gs_matsubara = np.zeros((len(iws), n_orb, n_orb), dtype=complex, order="C")
+    gs_realaxis = np.zeros((len(ws), n_orb, n_orb), dtype=complex, order="C")
     for w_mesh, gs in zip((iws, ws + 1j * delta), (gs_matsubara, gs_realaxis)):
         if w_mesh is None:
             continue
