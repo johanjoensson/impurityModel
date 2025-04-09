@@ -636,7 +636,9 @@ def block_Green(
     basis.comm.Gather(np.array([psi_dense_local.size]), send_counts if rank == 0 else None)
     offsets = np.array([np.sum(send_counts[:r]) for r in range(comm.size)], dtype=int) if rank == 0 else None
     comm.Scatterv(
-        [psi_dense, send_counts, offsets, MPI.C_DOUBLE_COMPLEX] if rank == 0 else None, psi_dense_local, root=0
+        [np.ascontiguousarray(psi_dense), send_counts, offsets, MPI.C_DOUBLE_COMPLEX] if rank == 0 else None,
+        psi_dense_local,
+        root=0,
     )
     psi = basis.build_state(psi_dense_local.T)
 

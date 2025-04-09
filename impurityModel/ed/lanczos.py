@@ -471,13 +471,14 @@ def block_lanczos(
         else:
             alphas[-1, :, :] = alpha
 
-        betas = np.append(betas, np.zeros((1, n, n), dtype=complex), axis=0)
+        betas = np.append(betas, np.zeros((1, n, n), dtype=complex, order="C"), axis=0)
         if mpi:
             send_counts = np.empty((comm.size), dtype=int)
             comm.Gather(np.array([n * len(basis.local_basis)]), send_counts)
             request.wait()
 
         psip -= psi @ alphas[it] + psim @ np.conj(betas[it - 1].T)
+        psip = np.ascontiguousarray(psip)
         t_linalg += perf_counter() - t_tmp
         t_tmp = perf_counter()
         if mpi:
@@ -490,9 +491,9 @@ def block_lanczos(
                 comm.Allreduce(MPI.IN_PLACE, tmp, op=MPI.SUM)
             psip -= Qm @ tmp
 
-        qip = np.empty((basis.size, n), dtype=complex) if rank == 0 else None
+        qip = np.empty((basis.size, n), dtype=complex, order="C") if rank == 0 else None
         if mpi:
-            comm.Gatherv(psip, [qip, send_counts, offsets, MPI.C_DOUBLE_COMPLEX], root=0)
+            comm.Gatherv(np.ascontiguousarray(psip), [qip, send_counts, offsets, MPI.C_DOUBLE_COMPLEX], root=0)
         else:
             qip = psip
 
@@ -500,6 +501,7 @@ def block_lanczos(
         if rank == 0:
             t_tmp = perf_counter()
             qip, betas[-1], _ = qr_decomp(qip)
+            qip = np.ascontiguousarray(qip)
             assert columns == qip.shape[1]
             _, columns = qip.shape
         if mpi:
@@ -526,15 +528,16 @@ def block_lanczos(
                 psip -= Qm @ tmp
                 perform_reort = False
 
-                qip = np.empty((basis.size, n), dtype=complex) if rank == 0 else None
+                qip = np.empty((basis.size, n), dtype=complex, order="C") if rank == 0 else None
                 if mpi:
-                    comm.Gatherv(psip, [qip, send_counts, offsets, MPI.C_DOUBLE_COMPLEX], root=0)
+                    comm.Gatherv(np.ascontiguousarray(psip), [qip, send_counts, offsets, MPI.C_DOUBLE_COMPLEX], root=0)
                 else:
                     qip = psip
                 t_vec += perf_counter() - t_tmp
                 if rank == 0:
                     t_tmp = perf_counter()
                     qip, betas[-1], _ = qr_decomp(qip)
+                    qip = np.ascontiguousarray(qip)
                     _, columns = qip.shape
                 if mpi:
                     comm.Bcast(betas[-1], root=0)

@@ -760,7 +760,7 @@ class Basis:
         self.add_states([])
 
     def build_vector(self, psis: list[dict], root: Optional[int] = None) -> np.ndarray:
-        v = np.zeros((len(psis), self.size), dtype=complex)
+        v = np.zeros((len(psis), self.size), dtype=complex, order="C")
         psis = self.redistribute_psis(psis)
         # row_states_in_basis: list[bytes] = []
         # row_dict = {state: self._index_dict[state] for state in self.local_basis}
