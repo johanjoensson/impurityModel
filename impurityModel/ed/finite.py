@@ -242,7 +242,7 @@ def eigensystem_new(h_local, e_max, k=10, v0=None, eigenValueTol=0, return_eigve
         conv_fail = False
         # We don't know the degeneracies of the eigenstates, so as long as all found
         # states are within e0 + e_max, keep looking for more eigenstates
-        while np.sum(es - np.min(es) <= e_max) == len(es):
+        while np.sum(es - np.min(es) <= e_max) >= len(es) // 2:
             try:
                 es, vecs = eigsh(
                     h,
