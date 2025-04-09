@@ -149,18 +149,23 @@ def eigensystem_new(h_local, e_max, k=10, v0=None, eigenValueTol=0, return_eigve
 
     Parameters
     ----------
-    h_local : HermitianOperator object
+    h_local : scipy.sparse sparse array (any kind)
         Contains part of the full many-body Hamiltonian, local to this MPI rank.
     e_max : float
         Maximum energy difference for excited states
     k : int
-        Calculate at least k eigenstates above e_max, helps ensure convergence of eigenvalues and eigenstates.
+        Calculate at least k eigenstates.
     eigenValueTol : float
         The precision of the returned eigenvalues.
     return_eigvecs : bool
         If True, return eigenvalues and eigenvectors for all states with energy within e_max of the lowest energy state.
         If False, return only the calculated eigenvalues.
+    comm : MPI communicator to use for any MPI communication
+    dende : Convert h_local to dense form and use standard np.linalg.eigh to calculate the full spectra
     """
+
+    if not scipy.sparse.issparse(h_local):
+        raise RuntimeError(f"eigensystem can't hancle a matrix of type {type(h_local)}")
 
     t0 = time.perf_counter()
     if dense:
@@ -211,7 +216,7 @@ def eigensystem_new(h_local, e_max, k=10, v0=None, eigenValueTol=0, return_eigve
             nconv = eig_solver.getConverged()
         if nconv == 0:
             raise RuntimeError(f"SLEPc EPS failed to converge!")
-        es = np.empty((nconv), dtype=float)
+        es = np.empty((nconv), dtype=float, order="C")
         vecs = np.empty((h_local.size[0], nconv), dtype=complex, order="F")
         vr, wr = h_local.getVecs()
         vi, wi = h_local.getVecs()
@@ -225,7 +230,7 @@ def eigensystem_new(h_local, e_max, k=10, v0=None, eigenValueTol=0, return_eigve
             vecs = comm.bcast(vecs, root=0)
         eig_solver.destroy()
         M.destroy()
-    elif isinstance(h_local, scipy.sparse._csr.csr_matrix) or isinstance(h_local, scipy.sparse._csc.csc_matrix):
+    else:
         h = scipy.sparse.linalg.LinearOperator(
             (h_local.shape[0], h_local.shape[0]),
             matvec=mpi_matmul(h_local, comm),
@@ -279,6 +284,7 @@ def eigensystem_new(h_local, e_max, k=10, v0=None, eigenValueTol=0, return_eigve
         with warnings.catch_warnings():
             warnings.simplefilter("ignore")
             es, vecs = scipy.sparse.linalg.lobpcg(h, vecs, largest=False)
+            vecs = np.ascontiguousarray(vecs)
 
     indices = np.argsort(es)
     es = es[indices]
