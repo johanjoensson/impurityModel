@@ -164,14 +164,18 @@ def eigensystem_new(h_local, e_max, k=10, v0=None, eigenValueTol=0, return_eigve
 
     t0 = time.perf_counter()
     if dense:
-        h = h_local.todense()
+        h = h_local.toarray()
         if comm is not None:
             comm.Reduce(MPI.IN_PLACE if comm.rank == 0 else h, h, root=0, op=MPI.SUM)
         if comm is None or comm.rank == 0:
             es, vecs = np.linalg.eigh(h, UPLO="L")
+            # Make sure the eigenvectors are laid out in 'C'/'row major'order
+            # This is needed for the upper case MPI communication (vecs has to have
+            # consistent layout between MPI ranks, I choose 'C' layout).
+            vecs = np.ascontiguousarray(vecs)
         else:
-            es = np.empty((h.shape[0]), dtype=float)
-            vecs = np.empty_like(h)
+            es = np.empty((h.shape[0]), dtype=float, order="C")
+            vecs = np.empty_like(h, order="C")
         if comm is not None:
             comm.Bcast(es, root=0)
             comm.Bcast(vecs, root=0)
@@ -240,9 +244,10 @@ def eigensystem_new(h_local, e_max, k=10, v0=None, eigenValueTol=0, return_eigve
         vecs = v0
         ncv = None
         conv_fail = False
+        k = min(max(k, 5), h.shape[1] - 2)
         # We don't know the degeneracies of the eigenstates, so as long as all found
         # states are within e0 + e_max, keep looking for more eigenstates
-        while np.sum(es - np.min(es) <= e_max) >= len(es) // 2:
+        while np.sum(es - np.min(es) <= e_max) == len(es) and len(es) < h.shape[0] - 2:
             try:
                 es, vecs = eigsh(
                     h,
@@ -255,9 +260,7 @@ def eigensystem_new(h_local, e_max, k=10, v0=None, eigenValueTol=0, return_eigve
             except ArpackNoConvergence as e:
                 es = e.eigenvalues
                 vecs = e.eigenvectors
-                eigenValueTol = (
-                    max(eigenValueTol, np.sqrt(np.finfo(float).eps)) if not conv_fail else eigenValueTol * 10
-                )
+                eigenValueTol = max(eigenValueTol, np.finfo(float).eps) if not conv_fail else eigenValueTol * 10
                 conv_fail = True
             except ArpackError as e:
                 ncv = min(h.shape[0], max(2 * k + 3, 20)) if ncv is None else min(ncv * 2, h.shape[0])
