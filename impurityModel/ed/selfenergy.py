@@ -40,52 +40,64 @@ class UnphysicalGreensFunctionError(Exception):
     """
 
 
-def fixed_peak_dc(h0_op, dc_struct, rank, verbose, dense_cutoff):
-    N0 = dc_struct.nominal_occ
-    peak_position = max(dc_struct.peak_position, 4 * dc_struct.tau)
-    valence_baths, conduction_baths = dc_struct.bath_states
-    u = finite.getUop_from_rspt_u4(dc_struct.u4)
-    dc_trial = dc_struct.dc_guess
+def fixed_peak_dc(
+    h0_op,
+    N0,
+    impurity_orbitals,
+    bath_states,
+    u4,
+    peak_position,
+    dc_guess,
+    spin_flip_dj,
+    tau,
+    rank,
+    verbose,
+    dense_cutoff,
+):
+    peak_position = max(peak_position, 4 * tau)
+    valence_baths, conduction_baths = bath_states
+    u = finite.getUop_from_rspt_u4(u4)
+    dc_trial = dc_guess
 
     Np = {l: N0[l] + 1 for l in N0}
     Nm = {l: N0[l] - 1 for l in N0}
     if peak_position >= 0:
         basis_upper = CIPSI_Basis(
-            impurity_orbitals=dc_struct.impurity_orbitals,
-            bath_states=dc_struct.bath_states,
+            impurity_orbitals=impurity_orbitals,
+            bath_states=bath_states,
             nominal_impurity_occ=Np,
             truncation_threshold=1e5,
             verbose=False,
             comm=MPI.COMM_WORLD,
-            spin_flip_dj=dc_struct.spin_flip_dj,
+            spin_flip_dj=spin_flip_dj,
         )
         basis_lower = CIPSI_Basis(
-            impurity_orbitals=dc_struct.impurity_orbitals,
-            bath_states=dc_struct.bath_states,
+            impurity_orbitals=impurity_orbitals,
+            bath_states=bath_states,
             nominal_impurity_occ=N0,
             truncation_threshold=1e5,
             verbose=False,
             comm=MPI.COMM_WORLD,
-            spin_flip_dj=dc_struct.spin_flip_dj,
+            spin_flip_dj=spin_flip_dj,
         )
     else:
         basis_upper = CIPSI_Basis(
-            impurity_orbitals=dc_struct.impurity_orbitals,
-            bath_states=dc_struct.bath_states,
+            impurity_orbitals=impurity_orbitals,
+            bath_states=bath_states,
             nominal_impurity_occ=N0,
             truncation_threshold=1e5,
             verbose=False,
             comm=MPI.COMM_WORLD,
-            spin_flip_dj=dc_struct.spin_flip_dj,
+            spin_flip_dj=spin_flip_dj,
         )
         basis_lower = CIPSI_Basis(
-            impurity_orbitals=dc_struct.impurity_orbitals,
-            bath_states=dc_struct.bath_states,
+            impurity_orbitals=impurity_orbitals,
+            bath_states=bath_states,
             nominal_impurity_occ=Nm,
             truncation_threshold=1e5,
             verbose=False,
             comm=MPI.COMM_WORLD,
-            spin_flip_dj=dc_struct.spin_flip_dj,
+            spin_flip_dj=spin_flip_dj,
         )
     h_op_i = finite.addOps([h0_op, u])
 
@@ -154,7 +166,7 @@ def fixed_peak_dc(h0_op, dc_struct, rank, verbose, dense_cutoff):
         )
         avg_dc_lower = np.real(np.trace(rho_lower @ dc))
         avg_dc_upper = np.real(np.trace(rho_upper @ dc))
-        if abs(avg_dc_upper - avg_dc_lower) < min(dc_struct.tau, 1e-2):
+        if abs(avg_dc_upper - avg_dc_lower) < min(tau, 1e-2):
             return 0
         return (e_upper[0] - e_lower[0] - peak_position) / (avg_dc_upper - avg_dc_lower)
 
@@ -162,8 +174,8 @@ def fixed_peak_dc(h0_op, dc_struct, rank, verbose, dense_cutoff):
     for _ in range(5):
         dc_fac += F(dc_fac)
     if verbose:
-        print(f"Peak position {dc_struct.peak_position}")
-        matrix_print(dc_struct.dc_guess, label="DC guess")
+        print(f"Peak position {peak_position}")
+        matrix_print(dc_guess, label="DC guess")
         matrix_print(dc_fac * dc_trial, label="dc found")
         print("=" * 80)
 
@@ -295,61 +307,71 @@ def find_gs(
     return gs_impurity_occ, basis_gs, h_dict_gs
 
 
-def run(cluster, h0, iw, w, delta, tau, verbosity, reort, dense_cutoff, slaterWeightMin, comm):
-    """
-    cluster     -- The impmod_cluster object containing loads of data.
-    h0          -- Non-interacting hamiltonian.
-    iw          -- Matsubara frequency mesh.
-    w           -- Real frequency mesh.
-    delta       -- Real frequency quantities are evaluated a frequency w_n + =j*delta
-    tau         -- Temperature (in units of energy, i.e., tau = k_B*T)
-    verbosity   -- How much output should be produced?
-                   0 - quiet, very little output generated. (default)
-                   1 - loud, detailed output generated
-                   2 - SCREAM, insanely detailed output generated
-    """
-    cluster.sig[:, :, :] = 0
-    cluster.sig_real[:, :, :] = 0
-    cluster.sig_static[:, :] = 0
+# def run(cluster, h0, iw, w, delta, tau, verbosity, reort, dense_cutoff, slaterWeightMin, comm):
+#     """
+#     cluster     -- The impmod_cluster object containing loads of data.
+#     h0          -- Non-interacting hamiltonian.
+#     iw          -- Matsubara frequency mesh.
+#     w           -- Real frequency mesh.
+#     delta       -- Real frequency quantities are evaluated a frequency w_n + =j*delta
+#     tau         -- Temperature (in units of energy, i.e., tau = k_B*T)
+#     verbosity   -- How much output should be produced?
+#                    0 - quiet, very little output generated. (default)
+#                    1 - loud, detailed output generated
+#                    2 - SCREAM, insanely detailed output generated
+#     """
+#     cluster.sig[:, :, :] = 0
+#     cluster.sig_real[:, :, :] = 0
+#     cluster.sig_static[:, :] = 0
 
-    sigma, sigma_real, sig_static = calc_selfenergy(
-        h0,
-        cluster.u4,
-        iw,
-        w,
-        delta,
-        cluster.nominal_occ,
-        cluster.impurity_orbitals,
-        cluster.bath_states,
-        tau,
-        verbosity,
-        blocks=[cluster.blocks[i] for i in cluster.inequivalent_blocks],
-        rot_to_spherical=np.conj(cluster.corr_to_cf.T) @ cluster.corr_to_spherical,
-        cluster_label=cluster.label,
-        reort=reort,
-        dense_cutoff=dense_cutoff,
-        spin_flip_dj=cluster.spin_flip_dj,
-        comm=comm,
-        occ_restrict=cluster.occ_restrict,
-        chain_restrict=cluster.chain_restrict,
-        occ_cutoff=cluster.occ_cutoff,
-        truncation_threshold=cluster.truncation_threshold,
-        slaterWeightMin=slaterWeightMin,
-    )
+#     results = calc_selfenergy(
+#         h0,
+#         cluster.u4,
+#         iw,
+#         w,
+#         delta,
+#         cluster.nominal_occ,
+#         cluster.impurity_orbitals,
+#         cluster.bath_states,
+#         tau,
+#         verbosity,
+#         blocks=[cluster.blocks[i] for i in cluster.inequivalent_blocks],
+#         rot_to_spherical=np.conj(cluster.corr_to_cf.T) @ cluster.corr_to_spherical,
+#         cluster_label=cluster.label,
+#         reort=reort,
+#         dense_cutoff=dense_cutoff,
+#         spin_flip_dj=cluster.spin_flip_dj,
+#         comm=comm,
+#         occ_restrict=cluster.occ_restrict,
+#         chain_restrict=cluster.chain_restrict,
+#         occ_cutoff=cluster.occ_cutoff,
+#         truncation_threshold=cluster.truncation_threshold,
+#         slaterWeightMin=slaterWeightMin,
+#     )
 
-    if comm.rank == 0:
-        cluster.sig_static[:, :] = sig_static
-        for inequiv_i, (sig, sig_real) in enumerate(zip(sigma, sigma_real)):
-            for block_i in cluster.identical_blocks[cluster.inequivalent_blocks[inequiv_i]]:
-                block_idx_matsubara = np.ix_(range(sig.shape[0]), cluster.blocks[block_i], cluster.blocks[block_i])
-                cluster.sig[block_idx_matsubara] = sig
-                block_idx_real = np.ix_(range(sig_real.shape[0]), cluster.blocks[block_i], cluster.blocks[block_i])
-                cluster.sig_real[block_idx_real] = sig_real
-            for block_i in cluster.transposed_blocks[cluster.inequivalent_blocks[inequiv_i]]:
-                block_idx_matsubara = np.ix_(range(sig.shape[0]), cluster.blocks[block_i], cluster.blocks[block_i])
-                cluster.sig[block_idx_matsubara] = np.transpose(sig, (0, 2, 1))
-                block_idx_real = np.ix_(range(sig_real.shape[0]), cluster.blocks[block_i], cluster.blocks[block_i])
-                cluster.sig_real[block_idx_real] = np.transpose(sig_real, (0, 2, 1))
+#     if comm.rank == 0:
+#         cluster.sig_static[:, :] = results['sig_static']
+#         for inequiv_i, (sig, sig_real) in enumerate(zip(results['sigma'], results['sigma_real'])):
+#             for block_i in cluster.identical_blocks[cluster.inequivalent_blocks[inequiv_i]]:
+#                 block_idx_matsubara = np.ix_(range(sig.shape[0]), cluster.blocks[block_i], cluster.blocks[block_i])
+#                 cluster.sig[block_idx_matsubara] = sig
+#                 block_idx_real = np.ix_(range(sig_real.shape[0]), cluster.blocks[block_i], cluster.blocks[block_i])
+#                 cluster.sig_real[block_idx_real] = sig_real
+#             for block_i in cluster.transposed_blocks[cluster.inequivalent_blocks[inequiv_i]]:
+#                 block_idx_matsubara = np.ix_(range(sig.shape[0]), cluster.blocks[block_i], cluster.blocks[block_i])
+#                 cluster.sig[block_idx_matsubara] = np.transpose(sig, (0, 2, 1))
+#                 block_idx_real = np.ix_(range(sig_real.shape[0]), cluster.blocks[block_i], cluster.blocks[block_i])
+#                 cluster.sig_real[block_idx_real] = np.transpose(sig_real, (0, 2, 1))
+#             for block_i in cluster.particle_hole_blocks[cluster.inequivalent_blocks[inequiv_i]]:
+#                 block_idx_matsubara = np.ix_(range(sig.shape[0])), cluster.blocks[block_i], cluster.blocks[block_i])
+#                 cluster.sig[block_idx_matsubara] = -np.conj(sig)
+#                 block_idx_real = np.ix_(range(sig_real.shape[0]), cluster.blocks[block_i], cluster.blocks[block_i])
+#                 cluster.sig_real[block_idx_real] = -np.conj(sig_real)
+#             for block_i in cluster.particle_hole_transposed_blocks[cluster.inequivalent_blocks[inequiv_i]]:
+#                 block_idx_matsubara = np.ix_(range(sig.shape[0]), cluster.blocks[block_i], cluster.blocks[block_i])
+#                 cluster.sig[block_idx_matsubara] = -np.transpose(np.conj(sig), (0, 2, 1))
+#                 block_idx_real = np.ix_(range(sig_real.shape[0]), cluster.blocks[block_i], cluster.blocks[block_i])
+#                 cluster.sig_real[block_idx_real] = -np.transpose(np.conj(sig_real), (0, 2, 1))
 
 
 def calc_selfenergy(
@@ -441,11 +463,11 @@ def calc_selfenergy(
             for j, block_orbs in enumerate(i_blocks):
                 idx = np.ix_([k], block_orbs, block_orbs)
                 full_rho_imps[idx] = rho_imps[i][j][k]
-    thermal_imp_rhos = {
+    thermal_rho_imps = {
         i: [finite.thermal_average_scale_indep(es, block_rhos, tau) for block_rhos in rho_imps[i]]
         for i in basis.impurity_orbitals.keys()
     }
-    thermal_bath_rhos = {
+    thermal_rho_baths = {
         i: [finite.thermal_average_scale_indep(es, block_rhos, tau) for block_rhos in rho_baths[i]]
         for i in basis.impurity_orbitals.keys()
     }
@@ -463,39 +485,12 @@ def calc_selfenergy(
         print("Ground state bath occupation statistics:")
         for i in basis.impurity_orbitals.keys():
             print(f"orbital set {i}:")
-            for block_i, (imp_rho, bath_rho) in enumerate(zip(thermal_imp_rhos[i], thermal_bath_rhos[i])):
+            for block_i, (imp_rho, bath_rho) in enumerate(zip(thermal_rho_imps[i], thermal_rho_baths[i])):
                 print(f"Block {block_i} (impurity orbitals {basis.impurity_orbitals[i][block_i]})")
                 matrix_print(imp_rho, "Impurity density matrix:")
                 matrix_print(bath_rho, "Bath density matrix:")
                 print("=" * 80)
             print()
-        if rank == 0:
-            with h5.File("impurityModel_solver.h5", "a") as ar:
-                it = 1
-                if f"{cluster_label}/last_iteration" in ar:
-                    it = ar[f"{cluster_label}/last_iteration"][0] + 1
-                else:
-                    ar.create_dataset(f"{cluster_label}/last_iteration", (1,), dtype=int)
-                ar[f"{cluster_label}/last_iteration"][0] = it
-                group = f"{cluster_label}/it_{it}"
-                ar.create_dataset(f"{group}/tau", data=np.array([tau], dtype=float))
-                ar.create_dataset(f"{group}/delta", data=np.array([delta], dtype=float))
-                ar.create_dataset(f"{group}/gs_vecs", data=psis_dense)
-                ar.create_dataset(f"{group}/gs_es", data=es)
-                ar.create_dataset(f"{group}/iw", data=iw)
-                ar.create_dataset(f"{group}/w", data=w)
-                ar.create_dataset(f"{group}/rot_to_spherical", data=rot_to_spherical)
-                ar.create_dataset(f"{group}/num_blocks", data=np.array([len(blocks)], dtype=int))
-                for block_i, block in enumerate(blocks):
-                    ar.create_dataset(f"{group}/block_{block_i}/orbs", data=np.array(block, dtype=int))
-                    ar.create_dataset(f"{group}/block_{block_i}/rho_imps", data=rho_imps[0][block_i], dtype=complex)
-                    ar.create_dataset(f"{group}/block_{block_i}/rho_baths", data=rho_baths[0][block_i], dtype=complex)
-                    ar.create_dataset(
-                        f"{group}/block_{block_i}/thermal_rho_imp", data=thermal_imp_rhos[0][block_i], dtype=complex
-                    )
-                    ar.create_dataset(
-                        f"{group}/block_{block_i}/thermal_rho_bath", data=thermal_bath_rhos[0][block_i], dtype=complex
-                    )
 
     effective_restrictions = basis.get_effective_restrictions()
     if verbosity >= 1:
@@ -585,19 +580,18 @@ def calc_selfenergy(
     if verbosity >= 1:
         print("Calculating sig_static.")
     sigma_static = get_Sigma_static(u4, full_rho_imps, es, tau)
-    if rank == 0:
-        with h5.File("impurityModel_solver.h5", "a") as ar:
-            it = ar[f"{cluster_label}/last_iteration"][0]
-            group = f"{cluster_label}/it_{it}"
 
-            for block_i, _ in enumerate(blocks):
-                ar.create_dataset(f"{group}/block_{block_i}/gs_matsubara", data=gs_matsubara[block_i])
-                ar.create_dataset(f"{group}/block_{block_i}/gs_real", data=gs_realaxis[block_i])
-                ar.create_dataset(f"{group}/block_{block_i}/sigma_static", data=sigma_static[block_i])
-                ar.create_dataset(f"{group}/block_{block_i}/sigma", data=sigma[block_i])
-                ar.create_dataset(f"{group}/block_{block_i}/sigma_real", data=sigma_real[block_i])
-
-    return sigma, sigma_real, sigma_static
+    return {
+        "sigma": sigma,
+        "sigma_real": sigma_real,
+        "sigma_static": sigma_static,
+        "gs_matsubara": gs_matsubara,
+        "gs_realaxis": gs_realaxis,
+        "rho_imps": rho_imps,
+        "rho_baths": rho_baths,
+        "thermal_rho_imps": thermal_rho_imps,
+        "thermal_rho_baths": thermal_rho_baths,
+    }
 
 
 def check_sigma(sigma: np.ndarray):

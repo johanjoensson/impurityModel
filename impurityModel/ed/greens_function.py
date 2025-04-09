@@ -1321,7 +1321,7 @@ def get_particle_hole_blocks(blocks, hyb, hamiltonian=None, tol=1e-6):
             if (
                 np.all(np.abs(np.real(hyb[idx_i] + hyb[idx_j])) < tol)
                 and np.all(np.abs(np.imag(hyb[idx_i] - hyb[idx_j])) < tol)
-                and np.all(np.abs(np.real(hamiltonian[idx_i[1:]] - hamiltonian[idx_j[1:]])) < tol)
+                and np.all(np.abs(np.real(hamiltonian[idx_i[1:]] + hamiltonian[idx_j[1:]])) < tol)
                 and np.all(np.abs(np.imag(hamiltonian[idx_i[1:]] - hamiltonian[idx_j[1:]])) < tol)
             ):
                 particle_hole.append(j)
@@ -1345,8 +1345,11 @@ def get_particle_hole_and_transpose_blocks(blocks, hyb, hamiltonian=None, tol=1e
             if any(j in b for b in patricle_hole_and_transpose_blocks):
                 continue
             idx_j = np.ix_(range(hyb.shape[0]), block_j, block_j)
-            if np.all(np.abs(hyb[idx_i] + np.transpose(hyb[idx_j], (0, 2, 1))) < tol) and np.all(
-                np.abs(hamiltonian[idx_i[1:]] + hamiltonian[idx_j[1:]].T) < tol
+            if (
+                np.all(np.abs(np.real(hyb[idx_i] + np.transpose(hyb[idx_j], (0, 2, 1)))) < tol)
+                and np.all(np.abs(np.imag(hyb[idx_i] - np.transpose(hyb[idx_j], (0, 2, 1)))) < tol)
+                and np.all(np.abs(np.real(hamiltonian[idx_i[1:]] + hamiltonian[idx_j[1:]].T)) < tol)
+                and np.all(np.abs(np.imag(hamiltonian[idx_i[1:]] - hamiltonian[idx_j[1:]].T)) < tol)
             ):
                 patricle_hole_and_transpose.append(j)
         patricle_hole_and_transpose_blocks.append(patricle_hole_and_transpose)

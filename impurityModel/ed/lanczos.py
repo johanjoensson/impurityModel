@@ -352,7 +352,7 @@ def block_lanczos(
     basis: Basis,
     converged: Callable[[np.ndarray, np.ndarray], bool],
     h_mem: Optional[dict] = None,
-    verbose: bool = True,
+    verbose: bool = False,
     reort: Reort = Reort.NONE,
     slaterWeightMin: float = 0,
 ) -> (np.ndarray, np.ndarray, Optional[list[dict]]):
@@ -390,24 +390,12 @@ def block_lanczos(
         W = np.zeros((2, 1, n, n), dtype=complex)
         W[1, 0, :, :] = np.identity(n, dtype=complex)
     eps = max(slaterWeightMin, np.finfo(float).eps)
-    t_add = 0
-    t_vec = 0
-    t_apply = 0
-    t_redist = 0
-    t_linalg = 0
-    t_conv = 0
-    t_qr = 0
-    t_state = 0
-    t_tot = perf_counter()
 
     it = 0
     done = False
     converge_count = 0
     wp = [None] * n
     while (it + 1) * n < basis.size or it == 0:
-        t_tmp = perf_counter()
-        t_add += perf_counter() - t_tmp
-        t_tmp = perf_counter()
         wp = [
             applyOp(
                 basis.num_spin_orbitals,
@@ -419,8 +407,6 @@ def block_lanczos(
             )
             for psi_i in q[1]
         ]
-        t_apply += perf_counter() - t_tmp
-        t_tmp = perf_counter()
         wp = basis.redistribute_psis(wp)
 
         wp_size = np.array([len(psi) for psi in wp], dtype=int)
@@ -435,8 +421,6 @@ def block_lanczos(
 
         if n_trunc > 0:
             basis.clear()
-            if verbose:
-                print(f"truncated {n_trunc} times")
 
         basis.add_states(
             state
@@ -445,15 +429,11 @@ def block_lanczos(
             for state_idx in [bisect_left(basis.local_basis, state)]
             if state_idx == len(basis.local_basis) or basis.local_basis[state_idx] != state
         )
-        t_add += perf_counter() - t_tmp
-        t_tmp = perf_counter()
         N_max = max(N_max, basis.size)
         tmp = basis.redistribute_psis(itertools.chain(q[0], q[1], wp))
         q[0] = tmp[0:n]
         q[1] = tmp[n : 2 * n]
         wp = tmp[2 * n :]
-        t_redist += perf_counter() - t_tmp
-        t_tmp = perf_counter()
         psi = np.empty((len(basis.local_basis), n), dtype=complex, order="C")
         psip = np.empty_like(psi)
         psim = np.empty_like(psi)
@@ -461,9 +441,6 @@ def block_lanczos(
             psi[i, j] = q[1][j].get(state, 0)
             psim[i, j] = q[0][j].get(state, 0)
             psip[i, j] = wp[j].get(state, 0)
-        t_vec += perf_counter() - t_tmp
-
-        t_tmp = perf_counter()
         alpha = np.conj(psi.T) @ psip
         alphas = np.append(alphas, np.empty((1, n, n), dtype=complex), axis=0)
         if mpi:
@@ -479,8 +456,6 @@ def block_lanczos(
 
         psip -= psi @ alphas[it] + psim @ np.conj(betas[it - 1].T)
         psip = np.ascontiguousarray(psip)
-        t_linalg += perf_counter() - t_tmp
-        t_tmp = perf_counter()
         if mpi:
             offsets = np.fromiter((np.sum(send_counts[:i]) for i in range(comm.size)), dtype=int, count=comm.size)
         if reort == Reort.FULL or reort == Reort.PERIODIC and it % 5 < 2:
@@ -497,9 +472,7 @@ def block_lanczos(
         else:
             qip = psip
 
-        t_vec += perf_counter() - t_tmp
         if rank == 0:
-            t_tmp = perf_counter()
             qip, betas[-1], _ = qr_decomp(qip)
             qip = np.ascontiguousarray(qip)
             assert columns == qip.shape[1]
@@ -533,9 +506,7 @@ def block_lanczos(
                     comm.Gatherv(np.ascontiguousarray(psip), [qip, send_counts, offsets, MPI.C_DOUBLE_COMPLEX], root=0)
                 else:
                     qip = psip
-                t_vec += perf_counter() - t_tmp
                 if rank == 0:
-                    t_tmp = perf_counter()
                     qip, betas[-1], _ = qr_decomp(qip)
                     qip = np.ascontiguousarray(qip)
                     _, columns = qip.shape
@@ -556,7 +527,6 @@ def block_lanczos(
         if converge_count > 0:
             break
 
-        t_tmp = perf_counter()
         q[0] = q[1]
         q[1] = [{} for _ in range(columns)]
         if mpi:
@@ -565,24 +535,9 @@ def block_lanczos(
             state = basis.local_basis[i]
             q[1][j][state] = psip[i, j]
 
-        t_state += perf_counter() - t_tmp
         if build_krylov_basis:
             Q.extend(q[1])
         it += 1
-    if verbose:
-        print()
-        print(f"Breaking after iteration {it+1}, blocksize = {n}")
-        print(f"===> Maximum basis size: {N_max} Slater determinants")
-        print(f"===> Applying the hamiltonian took {t_apply:.4f} seconds")
-        print(f"===> Adding states took {t_add:.4f} seconds")
-        print(f"===> Redistributing states took {t_redist:.4f} seconds")
-        print(f"===> Local linear algebra took {t_linalg:.4f} seconds")
-        print(f"===> Building vectors took {t_vec:.4f} seconds")
-        print(f"===> Estimating convergence took {t_conv:.4f} seconds")
-        print(f"===> QR factorization took {t_qr:.4f} seconds")
-        print(f"===> Building states took {t_state:.4f} seconds")
-        print(f"=> time(get_block_Lanczons_matrices) = {perf_counter() - t_tot:.4f} seconds.")
-        print("=" * 80)
     return alphas, betas, Q if build_krylov_basis else None
 
 
