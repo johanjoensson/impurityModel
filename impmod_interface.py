@@ -627,7 +627,7 @@ def run_impmod_ed(
         comm.Bcast(sig_static, root=0)
         comm.Bcast(sig_real, root=0)
         comm.Bcast(sig, root=0)
-        if comm.rank == 0:
+        if comm.rank == 0 and False:
             with h5.File("impurityModel_data.h5", "a") as f:
                 if "last iteration" not in f.attrs:
                     f.attrs["last iteration"] = 0
