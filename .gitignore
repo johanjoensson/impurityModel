@@ -9,3 +9,5 @@ doc/sphinx/_doc_build/*
 *.pyc
 *.so
 
+# VIM files
+.*~
