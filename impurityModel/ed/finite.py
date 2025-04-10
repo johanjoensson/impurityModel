@@ -218,8 +218,8 @@ def eigensystem_new(h_local, e_max, k=10, v0=None, eigenValueTol=0, return_eigve
             raise RuntimeError(f"SLEPc EPS failed to converge!")
         es = np.empty((nconv), dtype=float, order="C")
         vecs = np.empty((h_local.shape[0], nconv), dtype=complex, order="F")
-        vr, wr = h_local.getVecs()
-        vi, wi = h_local.getVecs()
+        vr, wr = M.getVecs()
+        vi, wi = M.getVecs()
         for i in range(nconv):
             es[i] = eig_solver.getEigenpair(i, vr, vi).real
             offsets = vr.owner_ranges[:-1]
