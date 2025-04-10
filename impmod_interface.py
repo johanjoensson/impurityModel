@@ -629,48 +629,42 @@ def run_impmod_ed(
         comm.Bcast(sig, root=0)
         if comm.rank == 0:
             with h5.File("impurityModel_data.h5", "a") as f:
-                if "last iteration" not in f:
-                    f.create_dataset(
-                        "last iteration", (1,), data=np.array([0], dtype=int)
-                    )
-                it = f["last iteration"][0] + 1
+                if "last iteration" not in f.attrs:
+                    f.attrs["last iteration"] = 0
+                it = f.attrs["last iteration"] + 1
 
                 if f"iteration {it}" in f and label.strip() in f[f"iteration {it}"]:
-                    f["last iteration"][...] = np.array([it], dtype=int)
+                    f.attrs["last iteration"] = it
                     it += 1
 
                 if f"iteration {it}" not in f:
                     f.create_group(f"iteration {it}")
                 it_g = f[f"iteration {it}"]
+                it_g.attrs["tau"] = tau
+                it_g.attrs["delta"] = eim
+                it_g.create_dataset("H DFT", data=h_dft)
+                it_g.create_dataset("H DFT", data=h_dft)
+                it_g.create_dataset("H bath", data=H_bath)
+                it_g.create_dataset("V", data=v)
+                it_g.create_dataset("Sigma Static", data=results["sigma_static"])
+                it_g.create_dataset("Real frequency mesh", data=w)
+                it_g.create_dataset("Matsubara frequency mesh", data=iw)
+                it_g.create_dataset("Rot to spherical", data=np.conj(corr_to_cf.T) @ corr_to_spherical)
                 if label.strip() not in it_g:
                     it_g.create_group(label.strip())
                 cluster_g = it_g[label.strip()]
-                cluster_g.create_dataset("H DFT", data=h_dft)
-                cluster_g.create_dataset("H bath", data=H_bath)
-                cluster_g.create_dataset("hopping", data=v)
-                cluster_g.create_dataset("Sigma Static", data=results["sigma_static"])
                 for i, inequiv_block in enumerate(inequivalent_blocks):
                     orbs = blocks[inequiv_block]
                     block_g = cluster_g.create_group(f"block {inequiv_block}")
                     block_g.create_dataset("orbitals", data=np.array(orbs, dtype=int))
-                    block_g.create_dataset(
-                        "Gimp Matsubara", data=results["gs_matsubara"][i]
-                    )
-                    block_g.create_dataset(
-                        "Gimp Realaxis", data=results["gs_realaxis"][i]
-                    )
+                    block_g.create_dataset("Gimp Matsubara", data=results["gs_matsubara"][i])
+                    block_g.create_dataset("Gimp Realaxis", data=results["gs_realaxis"][i])
                     block_g.create_dataset("rho_imp", data=results["rho_imps"][0][i])
                     block_g.create_dataset("rho_bath", data=results["rho_baths"][0][i])
-                    block_g.create_dataset(
-                        "thermal_rho_imp", data=results["thermal_rho_imps"][0][i]
-                    )
-                    block_g.create_dataset(
-                        "thermal_rho_bath", data=results["thermal_rho_baths"][0][i]
-                    )
+                    block_g.create_dataset("thermal_rho_imp", data=results["thermal_rho_imps"][0][i])
+                    block_g.create_dataset("thermal_rho_bath", data=results["thermal_rho_baths"][0][i])
                     block_g.create_dataset("Sigma Matsubara", data=results["sigma"][i])
-                    block_g.create_dataset(
-                        "Sigma Realaxis", data=results["sigma_real"][i]
-                    )
+                    block_g.create_dataset("Sigma Realaxis", data=results["sigma_real"][i])
         er = 0
 
     except Exception as e:
