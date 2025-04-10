@@ -11,6 +11,7 @@ from impmod_ed import ffi
 from mpi4py import MPI
 from rspt2spectra import offdiagonal, orbitals, h2imp, energies
 import rspt2spectra.hyb_fit as hf
+import h5py as h5
 
 # hf.get_block_structure, hf.get_identical_blocks, hf.get_transposed_blocks, hf.fit_hyb
 from impurityModel.ed.greens_function import (
@@ -442,7 +443,7 @@ def run_impmod_ed(
     if any(n0 > n_orb for n0 in nominal_occ.values()) or any(n0 < 0 for n0 in nominal_occ.values()):
         raise RuntimeError(f"Nominal impurity occupation {nominal_occ} out of bounds [0, {n_orb}]")
 
-    h_op, imp_bath_blocks = get_ed_h0(
+    h_op, imp_bath_blocks, v, H_bath = get_ed_h0(
         h_dft,
         hyb,
         corr_to_cf,
@@ -520,31 +521,6 @@ def run_impmod_ed(
         sys.stdout.close()
         sys.stdout = stdout_save
         return er
-
-    # cluster = ImpModCluster(
-    #     label=label.strip(),
-    #     h_dft=h_dft.view(),
-    #     hyb=hyb.view(),
-    #     u4=u4.view(),
-    #     impurity_orbitals={0: [block[0] for block in imp_bath_blocks]},
-    #     bath_states=(
-    #         {0: [block[1] for block in imp_bath_blocks]},
-    #         {0: [block[2] for block in imp_bath_blocks]},
-    #     ),
-    #     nominal_occ=nominal_occ,
-    #     sig=sig_python.view(),
-    #     sig_real=sig_real_python.view(),
-    #     sig_static=sig_static.view(),
-    #     sig_dc=sig_dc.view(),
-    #     corr_to_spherical=corr_to_spherical.view(),
-    #     corr_to_cf=corr_to_cf.view(),
-    #     blocked=options["blocked"],
-    #     spin_flip_dj=options["spin_flip_dj"],
-    #     occ_restrict=options["occ_restrict"],
-    #     chain_restrict=options["chain_restrict"],
-    #     occ_cutoff=options["occ_cutoff"],
-    #     truncation_threshold=options["truncation_threshold"],
-    # )
 
     blocks = get_block_structure(
         hyb,
@@ -651,6 +627,50 @@ def run_impmod_ed(
         comm.Bcast(sig_static, root=0)
         comm.Bcast(sig_real, root=0)
         comm.Bcast(sig, root=0)
+        if comm.rank == 0:
+            with h5.File("impurityModel_data.h5", "a") as f:
+                if "last iteration" not in f:
+                    f.create_dataset(
+                        "last iteration", (1,), data=np.array([0], dtype=int)
+                    )
+                it = f["last iteration"][0] + 1
+
+                if f"iteration {it}" in f and label.strip() in f[f"iteration {it}"]:
+                    f["last iteration"][...] = np.array([it], dtype=int)
+                    it += 1
+
+                if f"iteration {it}" not in f:
+                    f.create_group(f"iteration {it}")
+                it_g = f[f"iteration {it}"]
+                if label.strip() not in it_g:
+                    it_g.create_group(label.strip())
+                cluster_g = it_g[label.strip()]
+                cluster_g.create_dataset("H DFT", data=h_dft)
+                cluster_g.create_dataset("H bath", data=H_bath)
+                cluster_g.create_dataset("hopping", data=v)
+                cluster_g.create_dataset("Sigma Static", data=results["sigma_static"])
+                for i, inequiv_block in enumerate(inequivalent_blocks):
+                    orbs = blocks[inequiv_block]
+                    block_g = cluster_g.create_group(f"block {inequiv_block}")
+                    block_g.create_dataset("orbitals", data=np.array(orbs, dtype=int))
+                    block_g.create_dataset(
+                        "Gimp Matsubara", data=results["gs_matsubara"][i]
+                    )
+                    block_g.create_dataset(
+                        "Gimp Realaxis", data=results["gs_realaxis"][i]
+                    )
+                    block_g.create_dataset("rho_imp", data=results["rho_imps"][0][i])
+                    block_g.create_dataset("rho_bath", data=results["rho_baths"][0][i])
+                    block_g.create_dataset(
+                        "thermal_rho_imp", data=results["thermal_rho_imps"][0][i]
+                    )
+                    block_g.create_dataset(
+                        "thermal_rho_bath", data=results["thermal_rho_baths"][0][i]
+                    )
+                    block_g.create_dataset("Sigma Matsubara", data=results["sigma"][i])
+                    block_g.create_dataset(
+                        "Sigma Realaxis", data=results["sigma_real"][i]
+                    )
         er = 0
 
     except Exception as e:
@@ -927,7 +947,7 @@ def get_ed_h0(
         imp_bath_blocks[block_i] = (imp_orbs, occ_baths, empty_baths)
 
     h_op = finite.matrixToIOp(H)
-    return h_op, imp_bath_blocks
+    return h_op, imp_bath_blocks, v, H_bath
 
 
 def fit_hyb(
