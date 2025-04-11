@@ -3,6 +3,7 @@ import numpy as np
 import scipy as sp
 import time
 from typing import Optional, Iterable
+from collections import namedtuple
 
 from impurityModel.ed import spectra
 from impurityModel.ed import finite
@@ -11,6 +12,127 @@ from impurityModel.ed.manybody_basis import CIPSI_Basis, Basis
 from impurityModel.ed.cg import bicgstab
 
 from mpi4py import MPI
+
+BlockStructure = namedtuple(
+    "BlockStructure",
+    [
+        "blocks",
+        "identical_blocks",
+        "transposed_blocks",
+        "particle_hole_blocks",
+        "particle_hole_transposed_blocks",
+        "inequivalent_blocks",
+    ],
+)
+
+
+def build_block_structure(hyb, ham=None, tol=1e-6):
+    blocks = get_block_structure(hyb, ham, tol=tol)
+    identical_blocks = get_identical_blocks(blocks, hyb, ham, tol=tol)
+    transposed_blocks = get_transposed_blocks(blocks, hyb, ham, tol=tol)
+    particle_hole_blocks = get_particle_hole_blocks(blocks, hyb, ham, tol=tol)
+    particle_hole_and_transpose_blocks = get_particle_hole_and_transpose_blocks(blocks, hyb, ham, tol=tol)
+    inequivalent_blocks = get_inequivalent_blocks(
+        identical_blocks,
+        transposed_blocks,
+        particle_hole_blocks,
+        particle_hole_and_transpose_blocks,
+    )
+
+    return BlockStructure(
+        blocks,
+        identical_blocks,
+        transposed_blocks,
+        particle_hole_blocks,
+        particle_hole_and_transpose_blocks,
+        inequivalent_blocks,
+    )
+
+
+def get_inequivalent_blocks(
+    identical_blocks,
+    transposed_blocks,
+    particle_hole_blocks,
+    particle_hole_and_transpose_blocks,
+):
+    inequivalent_blocks = []
+    for blocks in identical_blocks:
+        if len(blocks) == 0:
+            continue
+        unique = True
+        for transpose in transposed_blocks:
+            if blocks[0] in transpose[1:]:
+                unique = False
+                break
+        for particle_hole in particle_hole_blocks:
+            if blocks[0] in particle_hole[1:]:
+                unique = False
+                break
+        for particle_hole_and_transpose in particle_hole_and_transpose_blocks:
+            if blocks[0] in particle_hole_and_transpose[1:]:
+                unique = False
+                break
+        if unique:
+            inequivalent_blocks.append(blocks[0])
+    return inequivalent_blocks
+
+
+def build_full_greens_function(block_gf, block_structure: BlockStructure):
+    (
+        blocks,
+        identical_blocks,
+        transposed_blocks,
+        particle_hole_blocks,
+        particle_hole_transposed_blocks,
+        inequivalent_blocks,
+    ) = block_structure
+    n_orb = sum(len(block) for block in block_structure.blocks)
+    if len(block_gf[0].shape) == 2:
+        res = np.zeros((n_orb, n_orb), dtype=block_gf[0].dtype)
+    elif len(block_gf[0].shape) == 3:
+        res = np.zeros((block_gf[0].shape[0], n_orb, n_orb), dtype=block_gf[0].dtype)
+    else:
+        raise RuntimeError(
+            f"Unknown data shape {block_gf[0].shape}. Should be 3 index (n_freq, n_orb,n_orb) or 2 index (n_orb,n_orb)"
+        )
+    if len(block_gf) == len(inequivalent_blocks):
+        # block_gf contains only symmetrically inequivalent blocks
+        for inequiv_i, gf_i in enumerate(block_gf):
+            for block_i in identical_blocks[inequivalent_blocks[inequiv_i]]:
+                if len(gf_i.shape) == 2:
+                    block_idx = np.ix_(blocks[block_i], blocks[block_i])
+                elif len(gf_i.shape) == 3:
+                    block_idx = np.ix_(range(gf_i.shape[0]), blocks[block_i], blocks[block_i])
+                res[block_idx] = gf_i
+            for block_i in transposed_blocks[inequivalent_blocks[inequiv_i]]:
+                if len(gf_i.shape) == 2:
+                    block_idx = np.ix_(blocks[block_i], blocks[block_i])
+                elif len(gf_i.shape) == 3:
+                    block_idx = np.ix_(range(gf_i.shape[0]), blocks[block_i], blocks[block_i])
+                res[block_idx] = np.transpose(gf_i, (0, 2, 1))
+            for block_i in particle_hole_blocks[inequivalent_blocks[inequiv_i]]:
+                if len(gf_i.shape) == 2:
+                    block_idx = np.ix_(blocks[block_i], blocks[block_i])
+                elif len(gf_i.shape) == 3:
+                    block_idx = np.ix_(range(gf_i.shape[0]), blocks[block_i], blocks[block_i])
+                res[block_idx] = -np.conj(gf_i)
+            for block_i in particle_hole_transposed_blocks[inequivalent_blocks[inequiv_i]]:
+                if len(gf_i.shape) == 2:
+                    block_idx = np.ix_(blocks[block_i], blocks[block_i])
+                elif len(gf_i.shape) == 3:
+                    block_idx = np.ix_(range(gf_i.shape[0]), blocks[block_i], blocks[block_i])
+                res[block_idx] = -np.transpose(np.conj(gf_i), (0, 2, 1))
+    elif len(block_gf) == len(blocks):
+        # block_gf contains all blocks
+        for block_i, gf_i in enumerate(block_gf):
+            if len(gf_i.shape) == 2:
+                block_idx = np.ix_(blocks[block_i], blocks[block_i])
+            elif len(gf_i.shape) == 3:
+                block_idx = np.ix_(range(gf_i.shape[0]), blocks[block_i], blocks[block_i])
+            res[block_idx] = gf_i
+    else:
+        raise RuntimeError(f"Block structure does not match block_gf.\n{block_structure=} {len(block_gf)=}")
+    return res
 
 
 def matrix_print(matrix: np.ndarray, label: str = None) -> None:

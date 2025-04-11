@@ -100,7 +100,7 @@ def edchains(vs, ebs):
     else:
         chain_v_unocc = np.zeros((0 * n_block_orb, n_block_orb), dtype=complex)
         H_bath_unocc = np.zeros((0 * n_block_orb, 0 * n_block_orb), dtype=complex)
-    return (H_bath_occ[::-1, ::-1], chain_v_occ[::-1]), (H_bath_unocc, chain_v_unocc)
+    return (H_bath_occ[::-1, ::-1].copy(), chain_v_occ[::-1].copy()), (H_bath_unocc, chain_v_unocc)
 
 
 def haverkort_chain(eloc, tns, ens):
@@ -113,13 +113,12 @@ def haverkort_chain(eloc, tns, ens):
     H[0, 0] = eloc
     for i in range(len(ens)):
         H[i + 1, i + 1] = ens[i]
-        H[i, i + 1] = tns[i]
+        H[i, i + 1] = np.conj(tns[i].T)
         H[i + 1, i] = tns[i]
 
     w, v = np.linalg.eigh(H)
 
     n = np.argmin(np.abs(w))
-    # n = min(sum(w < 0) - 1, hsize - 1)
 
     prevtocc = v[:, n - 1 :: -1].transpose()
     prevtunocc = v[:, n:].transpose()
@@ -130,7 +129,7 @@ def haverkort_chain(eloc, tns, ens):
     vtot[:, 0:n] = vtocc[::-1, :].transpose()
     vtot[:, n:hsize] = vtunocc.transpose()
 
-    # # Get the tridiagonal terms
+    # Get the tridiagonal terms
     for i in range(hsize - 1):
         tmp = np.conj(vtot[:, i].T) @ H @ vtot[:, i + 1]
         if np.real(tmp) < 0:  # Adjust the phase of the eigenvectors
@@ -155,4 +154,4 @@ def haverkort_chain(eloc, tns, ens):
 
     assert np.allclose(np.linalg.eigvalsh(H), np.linalg.eigvalsh(Hnew))
 
-    return Hnew[block_size:, :block_size], Hnew[block_size:, block_size:]
+    return Hnew[block_size:, :block_size].copy(), Hnew[block_size:, block_size:].copy()

@@ -1,5 +1,4 @@
 from os import devnull, remove
-from collections import namedtuple
 import traceback
 import sys
 import pickle
@@ -16,11 +15,9 @@ import h5py as h5
 # hf.get_block_structure, hf.get_identical_blocks, hf.get_transposed_blocks, hf.fit_hyb
 from impurityModel.ed.greens_function import (
     save_Greens_function,
-    get_block_structure,
-    get_identical_blocks,
-    get_transposed_blocks,
-    get_particle_hole_blocks,
-    get_particle_hole_and_transpose_blocks,
+    BlockStructure,
+    build_block_structure,
+    build_full_greens_function,
     block_diagonalize_hyb,
 )
 from impurityModel.ed import finite
@@ -34,18 +31,6 @@ from impurityModel.ed.manybody_basis import CIPSI_Basis
 from impurityModel.ed.selfenergy import fixed_peak_dc
 from impurityModel.ed.edchain import tridiagonalize, edchains, haverkort_chain
 from impurityModel.ed.selfenergy import calc_selfenergy
-
-BlockStructure = namedtuple(
-    "BlockStructure",
-    [
-        "inequivalent_blocks",
-        "blocks",
-        "identical_blocks",
-        "transposed_blocks",
-        "particle_hole_blocks",
-        "particle_hole_transposed_blocks",
-    ],
-)
 
 
 def get_hyb_chain(w, V0, H_bath):
@@ -84,113 +69,6 @@ def matrix_print(matrix, label=None):
         print("")
         return
     print("\n".join([" ".join([f"{np.real(el): .6f} {np.imag(el):+.6f}j" for el in row]) for row in matrix]))
-
-
-class ImpModCluster:
-    def __init__(
-        self,
-        label,
-        h_dft,
-        hyb,
-        u4,
-        nominal_occ,
-        impurity_orbitals,
-        bath_states,
-        sig,
-        sig_real,
-        sig_static,
-        sig_dc,
-        corr_to_spherical,
-        corr_to_cf,
-        blocked,
-        spin_flip_dj,
-        occ_restrict,
-        chain_restrict,
-        occ_cutoff,
-        truncation_threshold,
-    ):
-        self.label = label
-        self.h_dft = h_dft
-        self.u4 = u4
-        self.hyb = hyb
-        self.impurity_orbitals = impurity_orbitals
-        self.bath_states = bath_states
-        self.nominal_occ = nominal_occ
-        self.sig = sig
-        self.sig_real = sig_real
-        self.sig_static = sig_static
-        self.sig_dc = sig_dc
-        self.corr_to_spherical = corr_to_spherical
-        self.corr_to_cf = corr_to_cf
-        self.spin_flip_dj = spin_flip_dj
-        self.occ_restrict = occ_restrict
-        self.chain_restrict = chain_restrict
-        self.occ_cutoff = occ_cutoff
-        self.truncation_threshold = truncation_threshold
-
-        if blocked:
-            self.blocks = get_block_structure(
-                self.hyb,
-                h_dft,
-            )
-            self.identical_blocks = get_identical_blocks(
-                self.blocks,
-                self.hyb,
-                h_dft,
-            )
-            self.transposed_blocks = get_transposed_blocks(
-                self.blocks,
-                self.hyb,
-                h_dft,
-            )
-        else:
-            # Use only one nxn block
-            self.blocks = [[i for i in range(hyb.shape[1])]]
-            self.identical_blocks = [[0]]
-            self.transposed_blocks = [[]]
-
-        self.inequivalent_blocks = []
-        for blocks in self.identical_blocks:
-            if len(blocks) == 0:
-                continue
-            unique = True
-            for transpose in self.transposed_blocks:
-                if blocks[0] in transpose[1:]:
-                    unique = False
-                    break
-            if unique:
-                self.inequivalent_blocks.append(blocks[0])
-
-
-class dcStruct:
-    def __init__(
-        self,
-        nominal_occ,
-        impurity_orbitals,
-        bath_states,
-        u4,
-        peak_position,
-        dc_guess,
-        spin_flip_dj,
-        tau,
-    ):
-        self.nominal_occ = nominal_occ
-        self.impurity_orbitals = impurity_orbitals
-        self.bath_states = bath_states
-        self.u4 = u4
-        self.peak_position = peak_position
-        self.dc_guess = dc_guess
-        self.spin_flip_dj = spin_flip_dj
-        self.tau = tau
-
-    def __repr__(self):
-        return (
-            f"dcStruct( nominal_occ = {self.nominal_occ},\n"
-            f"          num_spin_orbitals = {self.num_spin_orbitals},\n"
-            f"          bath_states = {self.bath_states},\n"
-            f"          peak_position = {self.peak_position})"
-            f"          dc_guess = {self.dc_guess})"
-        )
 
 
 def parse_solver_line(solver_line):
@@ -522,49 +400,7 @@ def run_impmod_ed(
         sys.stdout = stdout_save
         return er
 
-    blocks = get_block_structure(
-        hyb,
-        h_dft,
-    )
-    identical_blocks = get_identical_blocks(
-        blocks,
-        hyb,
-        h_dft,
-    )
-    transposed_blocks = get_transposed_blocks(
-        blocks,
-        hyb,
-        h_dft,
-    )
-    particle_hole_blocks = get_particle_hole_blocks(
-        blocks,
-        hyb,
-        h_dft,
-    )
-    particle_hole_transposed_blocks = get_particle_hole_and_transpose_blocks(
-        blocks,
-        hyb,
-        h_dft,
-    )
-    inequivalent_blocks = []
-    for i_blocks in identical_blocks:
-        if len(i_blocks) == 0:
-            continue
-        unique = True
-        for transpose in transposed_blocks:
-            if i_blocks[0] in transpose[1:]:
-                unique = False
-                break
-        for particle_hole in particle_hole_blocks:
-            if i_blocks[0] in particle_hole[1:]:
-                unique = False
-                break
-        for particle_hole_transposed in particle_hole_transposed_blocks:
-            if i_blocks[0] in particle_hole_transposed[1:]:
-                unique = False
-                break
-        if unique:
-            inequivalent_blocks.append(i_blocks[0])
+    block_structure = build_block_structure(hyb, h_dft)
 
     try:
         results = calc_selfenergy(
@@ -581,7 +417,7 @@ def run_impmod_ed(
             ),
             tau=tau,
             verbosity=verbosity,
-            blocks=[blocks[i] for i in inequivalent_blocks],
+            blocks=[block_structure.blocks[i] for i in block_structure.inequivalent_blocks],
             rot_to_spherical=np.conj(corr_to_cf.T) @ corr_to_spherical,
             cluster_label=label.strip(),
             comm=comm,
@@ -596,75 +432,62 @@ def run_impmod_ed(
         )
         if comm.rank == 0:
             sig_static[:, :] = results["sigma_static"]
-            for inequiv_i, (sig_i, sig_real_i) in enumerate(zip(results["sigma"], results["sigma_real"])):
-                for block_i in identical_blocks[inequivalent_blocks[inequiv_i]]:
-                    block_idx_matsubara = np.ix_(range(sig_i.shape[0]), blocks[block_i], blocks[block_i])
-                    sig_python[block_idx_matsubara] = sig_i
-                    block_idx_real = np.ix_(range(sig_real_i.shape[0]), blocks[block_i], blocks[block_i])
-                    sig_real_python[block_idx_real] = sig_real_i
-                for block_i in transposed_blocks[inequivalent_blocks[inequiv_i]]:
-                    block_idx_matsubara = np.ix_(range(sig_i.shape[0]), blocks[block_i], blocks[block_i])
-                    sig_python[block_idx_matsubara] = np.transpose(sig_i, (0, 2, 1))
-                    block_idx_real = np.ix_(range(sig_real_i.shape[0]), blocks[block_i], blocks[block_i])
-                    sig_real_python[block_idx_real] = np.transpose(sig_real_i, (0, 2, 1))
-                for block_i in particle_hole_blocks[inequivalent_blocks[inequiv_i]]:
-                    block_idx_matsubara = np.ix_(range(sig_i.shape[0]), blocks[block_i], blocks[block_i])
-                    sig_python[block_idx_matsubara] = -np.conj(sig_i)
-                    block_idx_real = np.ix_(range(sig_real_i.shape[0]), blocks[block_i], blocks[block_i])
-                    sig_real_python[block_idx_real] = -np.conj(sig_real_i)
-                for block_i in particle_hole_transposed_blocks[inequivalent_blocks[inequiv_i]]:
-                    block_idx_matsubara = np.ix_(range(sig_i.shape[0]), blocks[block_i], blocks[block_i])
-                    sig_python[block_idx_matsubara] = -np.transpose(np.conj(sig_i), (0, 2, 1))
-                    block_idx_real = np.ix_(range(sig_real_i.shape[0]), blocks[block_i], blocks[block_i])
-                    sig_real_python[block_idx_real] = -np.transpose(np.conj(sig_real_i), (0, 2, 1))
+            sig_python[:, :, :] = build_full_greens_function(results["sigma"], block_structure)
+            sig_real_python[:, :, :] = build_full_greens_function(results["sigma_real"], block_structure)
 
             # Rotate self energy from CF basis to RSPt's corr basis
             u = np.conj(corr_to_cf.T)
-            sig_python[:, :, :] = rotate_Greens_function(sig_python.copy(), u)
-            sig_real_python[:, :, :] = rotate_Greens_function(sig_real_python.copy(), u)
-            sig_static[:, :] = rotate_matrix(sig_static.copy(), u)
+            sig_python[:, :, :] = rotate_Greens_function(sig_python, u)
+            sig_real_python[:, :, :] = rotate_Greens_function(sig_real_python, u)
+            sig_static[:, :] = rotate_matrix(sig_static, u)
 
         comm.Bcast(sig_static, root=0)
         comm.Bcast(sig_real, root=0)
         comm.Bcast(sig, root=0)
-        if comm.rank == 0 and False:
+        if comm.rank == 0:
             with h5.File("impurityModel_data.h5", "a") as f:
                 if "last iteration" not in f.attrs:
-                    f.attrs["last iteration"] = 0
-                it = f.attrs["last iteration"] + 1
+                    f.attrs["last iteration"] = 1
+                it = f.attrs["last iteration"]
 
-                if f"iteration {it}" in f and label.strip() in f[f"iteration {it}"]:
-                    f.attrs["last iteration"] = it
+                while f"{label.strip()} {it}" in f:
                     it += 1
+                    f.attrs["last iteration"] = it
 
-                if f"iteration {it}" not in f:
-                    f.create_group(f"iteration {it}")
-                it_g = f[f"iteration {it}"]
-                it_g.attrs["tau"] = tau
-                it_g.attrs["delta"] = eim
-                it_g.create_dataset("H DFT", data=h_dft)
-                it_g.create_dataset("H DFT", data=h_dft)
-                it_g.create_dataset("H bath", data=H_bath)
-                it_g.create_dataset("V", data=v)
-                it_g.create_dataset("Sigma Static", data=results["sigma_static"])
-                it_g.create_dataset("Real frequency mesh", data=w)
-                it_g.create_dataset("Matsubara frequency mesh", data=iw)
-                it_g.create_dataset("Rot to spherical", data=np.conj(corr_to_cf.T) @ corr_to_spherical)
-                if label.strip() not in it_g:
-                    it_g.create_group(label.strip())
-                cluster_g = it_g[label.strip()]
-                for i, inequiv_block in enumerate(inequivalent_blocks):
-                    orbs = blocks[inequiv_block]
+                cluster_g = f.create_group(f"{label.strip()} {it}")
+                cluster_g.attrs["tau"] = tau
+                cluster_g.attrs["delta"] = eim
+                cluster_g.create_dataset("Real frequency mesh", data=w)
+                cluster_g.create_dataset("Matsubara frequency mesh", data=iw)
+                cluster_g.create_dataset("Rot to spherical", data=np.conj(corr_to_cf.T) @ corr_to_spherical)
+                cluster_g.create_dataset("H DFT", data=h_dft)
+                cluster_g.create_dataset("H bath", data=H_bath)
+                cluster_g.create_dataset("V", data=v)
+                cluster_g.create_dataset("Sigma Static", data=sig_static)
+                cluster_g.create_dataset("Sigma real", data=sig_real_python)
+                cluster_g.create_dataset("Sigma Matsubara", data=sig_python)
+                cluster_g.create_dataset(
+                    "Gimp Matsubara",
+                    data=rotate_Greens_function(
+                        build_full_greens_function(results["gs_matsubara"], block_structure), u
+                    ),
+                )
+                cluster_g.create_dataset(
+                    "Gimp real",
+                    data=rotate_Greens_function(build_full_greens_function(results["gs_realaxis"], block_structure), u),
+                )
+                for i, inequiv_block in enumerate(block_structure.inequivalent_blocks):
+                    orbs = block_structure.blocks[inequiv_block]
                     block_g = cluster_g.create_group(f"block {inequiv_block}")
                     block_g.create_dataset("orbitals", data=np.array(orbs, dtype=int))
                     block_g.create_dataset("Gimp Matsubara", data=results["gs_matsubara"][i])
-                    block_g.create_dataset("Gimp Realaxis", data=results["gs_realaxis"][i])
-                    block_g.create_dataset("rho_imp", data=results["rho_imps"][0][i])
-                    block_g.create_dataset("rho_bath", data=results["rho_baths"][0][i])
-                    block_g.create_dataset("thermal_rho_imp", data=results["thermal_rho_imps"][0][i])
-                    block_g.create_dataset("thermal_rho_bath", data=results["thermal_rho_baths"][0][i])
+                    block_g.create_dataset("Gimp real", data=results["gs_realaxis"][i])
+                    block_g.create_dataset("impurity rho", data=results["rho_imps"][0][i])
+                    block_g.create_dataset("bath rho", data=results["rho_baths"][0][i])
+                    block_g.create_dataset("thermal average impurity rho", data=results["thermal_rho_imps"][0][i])
+                    block_g.create_dataset("thermal average bath rho", data=results["thermal_rho_baths"][0][i])
                     block_g.create_dataset("Sigma Matsubara", data=results["sigma"][i])
-                    block_g.create_dataset("Sigma Realaxis", data=results["sigma_real"][i])
+                    block_g.create_dataset("Sigma real", data=results["sigma_real"][i])
         er = 0
 
     except Exception as e:
@@ -791,7 +614,6 @@ def get_ed_h0(
     assert len(vs_star) == len(block_structure.inequivalent_blocks), "Number of inequivalent blocks is inconsitent"
     n_valence_block = [np.sum(eb < 0) for i, eb in enumerate(ebs_star)]
     n_conduction_block = [np.sum(eb >= 0) for i, eb in enumerate(ebs_star)]
-    H_bath_star, v_star = build_full_bath([np.diag(eb) for eb in ebs_star], vs_star, block_structure)
 
     if verbose:
         print("Star bath energies and hopping parameters:")
@@ -804,7 +626,7 @@ def get_ed_h0(
             print("")
         print("=" * 80)
     if bath_geometry == "star":
-        H_bath, v = H_bath_star, v_star
+        H_bath, v = build_full_bath([np.diag(eb) for eb in ebs_star], vs_star, block_structure)
     elif bath_geometry == "chain":
         H_baths = []
         vs = []
@@ -856,6 +678,8 @@ def get_ed_h0(
                 print("")
             print("=" * 80)
         H_bath, v = build_full_bath(H_baths, vs, block_structure)
+    H_bath = comm.allreduce(H_bath, op=MPI.SUM) / comm.size
+    v = comm.allreduce(v, op=MPI.SUM) / comm.size
 
     if save_baths_and_hopping or True:
         if comm is None or comm.rank == 0:
@@ -889,6 +713,7 @@ def get_ed_h0(
                 label,
             )
 
+        H_bath_star, v_star = build_full_bath([np.diag(eb) for eb in ebs_star], vs_star, block_structure)
         H_tmp = np.zeros((n_orb + H_bath_star.shape[0], n_orb + H_bath_star.shape[0]), dtype=complex)
         H_tmp[:n_orb, :n_orb] = corr_to_cf @ H_dft @ np.conj(corr_to_cf).T
         H_tmp[n_orb:, n_orb:] = H_bath_star
@@ -1073,34 +898,6 @@ def fit_hyb(
     return ebs_star, vs_star
 
 
-def get_inequivalent_blocks(
-    identical_blocks,
-    transposed_blocks,
-    particle_hole_blocks,
-    particle_hole_and_transpose_blocks,
-):
-    inequivalent_blocks = []
-    for blocks in identical_blocks:
-        if len(blocks) == 0:
-            continue
-        unique = True
-        for transpose in transposed_blocks:
-            if blocks[0] in transpose[1:]:
-                unique = False
-                break
-        for particle_hole in particle_hole_blocks:
-            if blocks[0] in particle_hole[1:]:
-                unique = False
-                break
-        for particle_hole_and_transpose in particle_hole_and_transpose_blocks:
-            if blocks[0] in particle_hole_and_transpose[1:]:
-                unique = False
-                break
-        if unique:
-            inequivalent_blocks.append(blocks[0])
-    return inequivalent_blocks
-
-
 def get_state_per_inequivalent_block(
     block_structure,
     bath_states_per_orbital,
@@ -1109,12 +906,12 @@ def get_state_per_inequivalent_block(
     weight_fun,
 ):
     (
-        inequivalent_blocks,
         blocks,
         identical_blocks,
         transposed_blocks,
         particle_hole_blocks,
         particle_hole_and_transpose_blocks,
+        inequivalent_blocks,
     ) = block_structure
 
     orbitals_per_inequivalent_block = [0] * len(inequivalent_blocks)
@@ -1148,37 +945,14 @@ def get_state_per_inequivalent_block(
     return states_per_inequivalent_block
 
 
-def build_block_structure(hyb, tol):
-    blocks = get_block_structure(hyb, tol=tol)
-    identical_blocks = get_identical_blocks(blocks, hyb, tol=tol)
-    transposed_blocks = get_transposed_blocks(blocks, hyb, tol=tol)
-    particle_hole_blocks = get_particle_hole_blocks(blocks, hyb, tol=tol)
-    particle_hole_and_transpose_blocks = get_particle_hole_and_transpose_blocks(blocks, hyb, tol=tol)
-    inequivalent_blocks = get_inequivalent_blocks(
-        identical_blocks,
-        transposed_blocks,
-        particle_hole_blocks,
-        particle_hole_and_transpose_blocks,
-    )
-
-    return BlockStructure(
-        inequivalent_blocks,
-        blocks,
-        identical_blocks,
-        transposed_blocks,
-        particle_hole_blocks,
-        particle_hole_and_transpose_blocks,
-    )
-
-
 def build_full_bath(H_bath_inequiv, v_inequiv, block_structure: BlockStructure):
     (
-        inequivalent_blocks,
         blocks,
         identical_blocks,
         transposed_blocks,
         particle_hole_blocks,
         particle_hole_and_transposed_blocks,
+        inequivalent_blocks,
     ) = block_structure
     n_orb = sum(len(b) for b in blocks)
     H_baths = [None] * len(blocks)

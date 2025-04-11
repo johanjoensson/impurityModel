@@ -206,14 +206,14 @@ def calc_occ_e(
         spin_flip_dj=spin_flip_dj,
         comm=comm,
     )
-    h_dict = basis.expand(h_op, dense_cutoff=dense_cutoff, de2_min=1e-4)
+    h_dict = basis.expand(h_op, dense_cutoff=dense_cutoff, de2_min=1e-6)
     h = basis.build_sparse_matrix(h_op, h_dict)
 
     e_trial = finite.eigensystem_new(
         h,
         e_max=0,
         k=2,
-        eigenValueTol=1e-6,
+        eigenValueTol=0,
         return_eigvecs=False,
         comm=basis.comm,
         dense=basis.size < dense_cutoff,
@@ -305,73 +305,6 @@ def find_gs(
         print(rf"E$_{{GS}}$ = {e_gs:^7.4f}")
         print("=" * 80)
     return gs_impurity_occ, basis_gs, h_dict_gs
-
-
-# def run(cluster, h0, iw, w, delta, tau, verbosity, reort, dense_cutoff, slaterWeightMin, comm):
-#     """
-#     cluster     -- The impmod_cluster object containing loads of data.
-#     h0          -- Non-interacting hamiltonian.
-#     iw          -- Matsubara frequency mesh.
-#     w           -- Real frequency mesh.
-#     delta       -- Real frequency quantities are evaluated a frequency w_n + =j*delta
-#     tau         -- Temperature (in units of energy, i.e., tau = k_B*T)
-#     verbosity   -- How much output should be produced?
-#                    0 - quiet, very little output generated. (default)
-#                    1 - loud, detailed output generated
-#                    2 - SCREAM, insanely detailed output generated
-#     """
-#     cluster.sig[:, :, :] = 0
-#     cluster.sig_real[:, :, :] = 0
-#     cluster.sig_static[:, :] = 0
-
-#     results = calc_selfenergy(
-#         h0,
-#         cluster.u4,
-#         iw,
-#         w,
-#         delta,
-#         cluster.nominal_occ,
-#         cluster.impurity_orbitals,
-#         cluster.bath_states,
-#         tau,
-#         verbosity,
-#         blocks=[cluster.blocks[i] for i in cluster.inequivalent_blocks],
-#         rot_to_spherical=np.conj(cluster.corr_to_cf.T) @ cluster.corr_to_spherical,
-#         cluster_label=cluster.label,
-#         reort=reort,
-#         dense_cutoff=dense_cutoff,
-#         spin_flip_dj=cluster.spin_flip_dj,
-#         comm=comm,
-#         occ_restrict=cluster.occ_restrict,
-#         chain_restrict=cluster.chain_restrict,
-#         occ_cutoff=cluster.occ_cutoff,
-#         truncation_threshold=cluster.truncation_threshold,
-#         slaterWeightMin=slaterWeightMin,
-#     )
-
-#     if comm.rank == 0:
-#         cluster.sig_static[:, :] = results['sig_static']
-#         for inequiv_i, (sig, sig_real) in enumerate(zip(results['sigma'], results['sigma_real'])):
-#             for block_i in cluster.identical_blocks[cluster.inequivalent_blocks[inequiv_i]]:
-#                 block_idx_matsubara = np.ix_(range(sig.shape[0]), cluster.blocks[block_i], cluster.blocks[block_i])
-#                 cluster.sig[block_idx_matsubara] = sig
-#                 block_idx_real = np.ix_(range(sig_real.shape[0]), cluster.blocks[block_i], cluster.blocks[block_i])
-#                 cluster.sig_real[block_idx_real] = sig_real
-#             for block_i in cluster.transposed_blocks[cluster.inequivalent_blocks[inequiv_i]]:
-#                 block_idx_matsubara = np.ix_(range(sig.shape[0]), cluster.blocks[block_i], cluster.blocks[block_i])
-#                 cluster.sig[block_idx_matsubara] = np.transpose(sig, (0, 2, 1))
-#                 block_idx_real = np.ix_(range(sig_real.shape[0]), cluster.blocks[block_i], cluster.blocks[block_i])
-#                 cluster.sig_real[block_idx_real] = np.transpose(sig_real, (0, 2, 1))
-#             for block_i in cluster.particle_hole_blocks[cluster.inequivalent_blocks[inequiv_i]]:
-#                 block_idx_matsubara = np.ix_(range(sig.shape[0])), cluster.blocks[block_i], cluster.blocks[block_i])
-#                 cluster.sig[block_idx_matsubara] = -np.conj(sig)
-#                 block_idx_real = np.ix_(range(sig_real.shape[0]), cluster.blocks[block_i], cluster.blocks[block_i])
-#                 cluster.sig_real[block_idx_real] = -np.conj(sig_real)
-#             for block_i in cluster.particle_hole_transposed_blocks[cluster.inequivalent_blocks[inequiv_i]]:
-#                 block_idx_matsubara = np.ix_(range(sig.shape[0]), cluster.blocks[block_i], cluster.blocks[block_i])
-#                 cluster.sig[block_idx_matsubara] = -np.transpose(np.conj(sig), (0, 2, 1))
-#                 block_idx_real = np.ix_(range(sig_real.shape[0]), cluster.blocks[block_i], cluster.blocks[block_i])
-#                 cluster.sig_real[block_idx_real] = -np.transpose(np.conj(sig_real), (0, 2, 1))
 
 
 def calc_selfenergy(
