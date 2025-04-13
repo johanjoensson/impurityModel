@@ -403,6 +403,7 @@ def run_impmod_ed(
     block_structure = build_block_structure(hyb, h_dft)
 
     try:
+        print("", flush=verbosity >= 2, end="")
         results = calc_selfenergy(
             h0=h_op,
             u4=u4,

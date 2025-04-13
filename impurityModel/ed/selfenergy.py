@@ -365,7 +365,7 @@ def calc_selfenergy(
     if restrictions is not None and verbosity >= 2:
         print("Restrictions GS on occupation")
         for indices, limits in restrictions.items():
-            print(f"---> {sorted(indices)} : {limits}")
+            print(f"---> {sorted(indices)} : {limits}", flush=True)
 
     energy_cut = -tau * np.log(1e-4)
 
@@ -423,7 +423,7 @@ def calc_selfenergy(
                 matrix_print(imp_rho, "Impurity density matrix:")
                 matrix_print(bath_rho, "Bath density matrix:")
                 print("=" * 80)
-            print()
+            print("", flush=verbosity >= 2)
 
     effective_restrictions = basis.get_effective_restrictions()
     if verbosity >= 1:
@@ -433,7 +433,7 @@ def calc_selfenergy(
         print("=" * 80)
         print()
         print(f"Consider {len(es):d} eigenstates for the spectra \n")
-        print("Calculate Interacting Green's function...")
+        print("Calculate Interacting Green's function...", flush=verbosity >= 2)
 
     gs_matsubara, gs_realaxis = get_Greens_function(
         matsubara_mesh=iw,
