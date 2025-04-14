@@ -399,119 +399,118 @@ def run_impmod_ed(
             sig_dc[:, :] = np.inf + 1j * np.inf
             er = -1
             comm.Abort(er)
-
-        sys.stdout.close()
-        sys.stdout = stdout_save
-        return er
-
-    block_structure = build_block_structure(hyb, h_dft)
-
-    try:
-        print("", flush=verbosity >= 2, end="")
-        results = calc_selfenergy(
-            h0=h_op,
-            u4=u4,
-            iw=1j * iw,
-            w=w,
-            delta=eim,
-            nominal_occ=nominal_occ,
-            impurity_orbitals={0: [block[0] for block in imp_bath_blocks]},
-            bath_states=(
-                {0: [block[1] for block in imp_bath_blocks]},
-                {0: [block[2] for block in imp_bath_blocks]},
-            ),
-            tau=tau,
-            verbosity=verbosity,
-            blocks=[block_structure.blocks[i] for i in block_structure.inequivalent_blocks],
-            rot_to_spherical=np.conj(corr_to_cf.T) @ corr_to_spherical,
-            cluster_label=label.strip(),
-            comm=comm,
-            reort=options["reort"],
-            dense_cutoff=options["dense_cutoff"],
-            spin_flip_dj=options["spin_flip_dj"],
-            occ_restrict=options["occ_restrict"],
-            chain_restrict=options["chain_restrict"],
-            occ_cutoff=options["occ_cutoff"],
-            truncation_threshold=options["truncation_threshold"],
-            slaterWeightMin=options["slater_min"],
-        )
-        if comm.rank == 0:
-            sig_static[:, :] = results["sigma_static"]
-            sig_python[:, :, :] = build_full_greens_function(results["sigma"], block_structure)
-            sig_real_python[:, :, :] = build_full_greens_function(results["sigma_real"], block_structure)
-
-            # Rotate self energy from CF basis to RSPt's corr basis
-            u = np.conj(corr_to_cf.T)
-            sig_python[:, :, :] = rotate_Greens_function(sig_python, u)
-            sig_real_python[:, :, :] = rotate_Greens_function(sig_real_python, u)
-            sig_static[:, :] = rotate_matrix(sig_static, u)
-
-        comm.Bcast(sig_static, root=0)
-        comm.Bcast(sig_real, root=0)
-        comm.Bcast(sig, root=0)
-        if comm.rank == 0:
-            with h5.File("impurityModel_data.h5", "a") as f:
-                if "last iteration" not in f.attrs:
-                    f.attrs["last iteration"] = 1
-                it = f.attrs["last iteration"]
-
-                while f"{label.strip()} {it}" in f:
-                    it += 1
-                    f.attrs["last iteration"] = it
-
-                cluster_g = f.create_group(f"{label.strip()} {it}")
-                cluster_g.attrs["tau"] = tau
-                cluster_g.attrs["delta"] = eim
-                cluster_g.create_dataset("Real frequency mesh", data=w)
-                cluster_g.create_dataset("Matsubara frequency mesh", data=iw)
-                cluster_g.create_dataset("Rot to spherical", data=np.conj(corr_to_cf.T) @ corr_to_spherical)
-                cluster_g.create_dataset("H DFT", data=h_dft)
-                cluster_g.create_dataset("H bath", data=H_bath)
-                cluster_g.create_dataset("V", data=v)
-                cluster_g.create_dataset("Sigma Static", data=sig_static)
-                cluster_g.create_dataset("Sigma real", data=sig_real_python)
-                cluster_g.create_dataset("Sigma Matsubara", data=sig_python)
-                cluster_g.create_dataset(
-                    "Gimp Matsubara",
-                    data=rotate_Greens_function(
-                        build_full_greens_function(results["gs_matsubara"], block_structure), u
-                    ),
-                )
-                cluster_g.create_dataset(
-                    "Gimp real",
-                    data=rotate_Greens_function(build_full_greens_function(results["gs_realaxis"], block_structure), u),
-                )
-                for i, inequiv_block in enumerate(block_structure.inequivalent_blocks):
-                    orbs = block_structure.blocks[inequiv_block]
-                    block_g = cluster_g.create_group(f"block {inequiv_block}")
-                    block_g.create_dataset("orbitals", data=np.array(orbs, dtype=int))
-                    block_g.create_dataset("Gimp Matsubara", data=results["gs_matsubara"][i])
-                    block_g.create_dataset("Gimp real", data=results["gs_realaxis"][i])
-                    block_g.create_dataset("impurity rho", data=results["rho_imps"][0][i])
-                    block_g.create_dataset("bath rho", data=results["rho_baths"][0][i])
-                    block_g.create_dataset("thermal average impurity rho", data=results["thermal_rho_imps"][0][i])
-                    block_g.create_dataset("thermal average bath rho", data=results["thermal_rho_baths"][0][i])
-                    block_g.create_dataset("Sigma Matsubara", data=results["sigma"][i])
-                    block_g.create_dataset("Sigma real", data=results["sigma_real"][i])
-        er = 0
-
-    except Exception as e:
-        print("!" * 100)
-        print(f"Exception {repr(e)} caught on rank {rank}!")
-        print(traceback.format_exc())
-        print(
-            "Adding positive infinity to the imaginary part of the selfenergy at the last matsubara frequency.",
-            flush=True,
-        )
-        print("!" * 100)
-        sig[:, :, -1] += 1j * np.inf
-        er = -1
-        comm.Abort(er)
     else:
-        print("Self energy calculated! impurityModel shutting down.", flush=True)
+
+        try:
+            block_structure = build_block_structure(hyb, h_dft)
+            print("", flush=verbosity >= 2, end="")
+            results = calc_selfenergy(
+                h0=h_op,
+                u4=u4,
+                iw=1j * iw,
+                w=w,
+                delta=eim,
+                nominal_occ=nominal_occ,
+                impurity_orbitals={0: [block[0] for block in imp_bath_blocks]},
+                bath_states=(
+                    {0: [block[1] for block in imp_bath_blocks]},
+                    {0: [block[2] for block in imp_bath_blocks]},
+                ),
+                tau=tau,
+                verbosity=verbosity,
+                blocks=[block_structure.blocks[i] for i in block_structure.inequivalent_blocks],
+                rot_to_spherical=np.conj(corr_to_cf.T) @ corr_to_spherical,
+                cluster_label=label.strip(),
+                comm=comm,
+                reort=options["reort"],
+                dense_cutoff=options["dense_cutoff"],
+                spin_flip_dj=options["spin_flip_dj"],
+                occ_restrict=options["occ_restrict"],
+                chain_restrict=options["chain_restrict"],
+                occ_cutoff=options["occ_cutoff"],
+                truncation_threshold=options["truncation_threshold"],
+                slaterWeightMin=options["slater_min"],
+            )
+            if comm.rank == 0:
+                sig_static[:, :] = results["sigma_static"]
+                sig_python[:, :, :] = build_full_greens_function(results["sigma"], block_structure)
+                sig_real_python[:, :, :] = build_full_greens_function(results["sigma_real"], block_structure)
+
+                # Rotate self energy from CF basis to RSPt's corr basis
+                u = np.conj(corr_to_cf.T)
+                sig_python[:, :, :] = rotate_Greens_function(sig_python, u)
+                sig_real_python[:, :, :] = rotate_Greens_function(sig_real_python, u)
+                sig_static[:, :] = rotate_matrix(sig_static, u)
+
+            comm.Bcast(sig_static, root=0)
+            comm.Bcast(sig_real, root=0)
+            comm.Bcast(sig, root=0)
+            if comm.rank == 0:
+                with h5.File("impurityModel_data.h5", "a") as f:
+                    if "last iteration" not in f.attrs:
+                        f.attrs["last iteration"] = 1
+                    it = f.attrs["last iteration"]
+
+                    while f"{label.strip()} {it}" in f:
+                        it += 1
+                        f.attrs["last iteration"] = it
+
+                    cluster_g = f.create_group(f"{label.strip()} {it}")
+                    cluster_g.attrs["tau"] = tau
+                    cluster_g.attrs["delta"] = eim
+                    cluster_g.create_dataset("Real frequency mesh", data=w)
+                    cluster_g.create_dataset("Matsubara frequency mesh", data=iw)
+                    cluster_g.create_dataset("Rot to spherical", data=np.conj(corr_to_cf.T) @ corr_to_spherical)
+                    cluster_g.create_dataset("H DFT", data=h_dft)
+                    cluster_g.create_dataset("H bath", data=H_bath)
+                    cluster_g.create_dataset("V", data=v)
+                    cluster_g.create_dataset("Sigma Static", data=sig_static)
+                    cluster_g.create_dataset("Sigma real", data=sig_real_python)
+                    cluster_g.create_dataset("Sigma Matsubara", data=sig_python)
+                    cluster_g.create_dataset(
+                        "Gimp Matsubara",
+                        data=rotate_Greens_function(
+                            build_full_greens_function(results["gs_matsubara"], block_structure), u
+                        ),
+                    )
+                    cluster_g.create_dataset(
+                        "Gimp real",
+                        data=rotate_Greens_function(
+                            build_full_greens_function(results["gs_realaxis"], block_structure), u
+                        ),
+                    )
+                    for i, inequiv_block in enumerate(block_structure.inequivalent_blocks):
+                        orbs = block_structure.blocks[inequiv_block]
+                        block_g = cluster_g.create_group(f"block {inequiv_block}")
+                        block_g.create_dataset("orbitals", data=np.array(orbs, dtype=int))
+                        block_g.create_dataset("Gimp Matsubara", data=results["gs_matsubara"][i])
+                        block_g.create_dataset("Gimp real", data=results["gs_realaxis"][i])
+                        block_g.create_dataset("impurity rho", data=results["rho_imps"][0][i])
+                        block_g.create_dataset("bath rho", data=results["rho_baths"][0][i])
+                        block_g.create_dataset("thermal average impurity rho", data=results["thermal_rho_imps"][0][i])
+                        block_g.create_dataset("thermal average bath rho", data=results["thermal_rho_baths"][0][i])
+                        block_g.create_dataset("Sigma Matsubara", data=results["sigma"][i])
+                        block_g.create_dataset("Sigma real", data=results["sigma_real"][i])
+            er = 0
+
+        except Exception as e:
+            print("!" * 100)
+            print(f"Exception {repr(e)} caught on rank {rank}!")
+            print(traceback.format_exc())
+            print(
+                "Adding positive infinity to the imaginary part of the selfenergy at the last matsubara frequency.",
+                flush=True,
+            )
+            print("!" * 100)
+            sig[:, :, -1] += 1j * np.inf
+            er = -1
+            comm.Abort(er)
+        else:
+            print("Self energy calculated! impurityModel shutting down.", flush=True)
 
     sys.stdout.close()
     sys.stdout = stdout_save
+    comm.barrier()
     return er
 
 
