@@ -1,2 +1,44 @@
+[project]
+name = "impurityModel"
+description = "Package for solving the Anderson impurity model."
+requires-python = ">=3.8"
+classifiers = [
+    "Programming Language :: Python :: 3",
+    "Operating System :: OS Independent",
+]
+license = "MIT"
+license-files = ["LICEN[CS]E*"]
+dependencies = [
+"bitarray",
+"black",
+"flake8",
+"flake8-bugbear",
+"flake8-comprehensions",
+"pep8-naming",
+"h5py",
+"matplotlib",
+"mpi4py",
+"numpy",
+"numpydoc",
+"pytest",
+"sympy",
+"scipy",
+"sphinx",
+"sphinx-rtd-theme",
+"flake8-return",
+"pylint",
+"rspt2spectra @ git+https://github.com/johanjoensson/rspt2spectra@1.0.0"
+]
+dynamic = ["version"]
+
+[project.urls]
+Homepage = "https://github.com/johanjoensson/impurityModel/"
+Issues = "https://github.com/johanjoensson/impurityModel//issues"
+
+
+[build-system]
+requires = ["setuptools >= 77.0.3"]
+build-backend = "setuptools.build_meta"
+
 [tool.black]
 line-length = 120
