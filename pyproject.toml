@@ -27,7 +27,7 @@ dependencies = [
 "sphinx-rtd-theme",
 "flake8-return",
 "pylint",
-"rspt2spectra @ git+https://github.com/johanjoensson/rspt2spectra@1.0.0"
+"rspt2spectra @ git+https://github.com/johanjoensson/rspt2spectra.git@v1.0.0"
 ]
 dynamic = ["version"]
 
