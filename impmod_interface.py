@@ -6,17 +6,15 @@ import numpy as np
 import scipy as sp
 from scipy.sparse import csr_matrix
 from scipy.sparse.csgraph import connected_components
+import h5py as h5
 from impmod_ed import ffi
 import mpi4py
 
 mpi4py.rc.initialize = False
 mpi4py.rc.finalize = False
 from mpi4py import MPI
-from rspt2spectra import offdiagonal, orbitals, h2imp, energies
 import rspt2spectra.hyb_fit as hf
-import h5py as h5
 
-# hf.get_block_structure, hf.get_identical_blocks, hf.get_transposed_blocks, hf.fit_hyb
 from impurityModel.ed.greens_function import (
     save_Greens_function,
     BlockStructure,
