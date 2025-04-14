@@ -7,6 +7,10 @@ import scipy as sp
 from scipy.sparse import csr_matrix
 from scipy.sparse.csgraph import connected_components
 from impmod_ed import ffi
+import mpi4py
+
+mpi4py.rc.initialize = False
+mpi4py.rc.finalize = False
 from mpi4py import MPI
 from rspt2spectra import offdiagonal, orbitals, h2imp, energies
 import rspt2spectra.hyb_fit as hf
