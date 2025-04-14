@@ -2,23 +2,34 @@
 This module contains functions for calculating various spectra.
 """
 
+import time
 from math import sqrt
+
 import numpy as np
-from mpi4py import MPI
 import scipy.sparse
 import scipy.sparse.linalg
-from scipy.special import spherical_jn
-from scipy.special import sph_harm
+from mpi4py import MPI
+from scipy.special import sph_harm, spherical_jn
+
 from impurityModel.ed.average import thermal_average
-import time
 
 # Local imports
-from impurityModel.ed.finite import gauntC, c2i, get_job_tasks
-from impurityModel.ed.finite import daggerOp, applyOp, inner, add, norm2
-from impurityModel.ed.finite import expand_basis_and_hamiltonian
-from impurityModel.ed.finite import get_tridiagonal_krylov_vectors
-from impurityModel.ed.finite import op2Dict, arrayOp2Dict, combineOp, addOps
-
+from impurityModel.ed.finite import (
+    add,
+    applyOp,
+    c2i,
+    daggerOp,
+    expand_basis_and_hamiltonian,
+    gauntC,
+    get_job_tasks,
+    get_tridiagonal_krylov_vectors,
+    inner,
+    norm2,
+    op2Dict,
+    arrayOp2Dict,
+    combineOp,
+    addOps,
+)
 
 # MPI variables
 comm = MPI.COMM_WORLD
@@ -668,7 +679,7 @@ def getGreen(
             alpha[j] = inner(wp[j], v[j]).real
             w[j] = add(add(wp[j], v[j], -alpha[j]), v[j - 1], -beta[j - 1])
             # print('len(h_dict) = ',len(h_dict),', len(w[j]) = ',len(w[j]))
-    elif mode == "sparse" or mode == "dense":
+    elif mode in ("sparse", "dense"):
         # If we use a parallelized mode, we want to work with
         # only the MPI local part of the Hamiltonian matrix h.
         h_local = parallelization_mode == "H_build"
@@ -695,10 +706,7 @@ def getGreen(
     # Construct Green's function from continued fraction.
     omegaP = omega + 1j * delta + e
     for i in range(krylovSize - 1, -1, -1):
-        if i == krylovSize - 1:
-            g = 1.0 / (omegaP - alpha[i])
-        else:
-            g = 1.0 / (omegaP - alpha[i] - beta[i] ** 2 * g)
+        g = 1.0 / (omegaP - alpha[i]) if i == krylovSize - 1 else 1.0 / (omegaP - alpha[i] - beta[i] ** 2 * g)
     return g
 
 
@@ -929,7 +937,7 @@ def getRIXSmap(
     # For product states with a core hole.
     h_dict_excited = {}
     tOut_big = [{} for _ in tOpsOut]
-    if parallelization_mode == "serial" or parallelization_mode == "H_build":
+    if parallelization_mode in ("serial", "H_build"):
         # Loop over in-coming transition operators
         for tIn, tOpIn in enumerate(tOpsIn):
             tIn_big = {}
@@ -1013,7 +1021,7 @@ def getRIXSmap(
                             h_dict_ground,
                             parallelization_mode=parallelization_mode,
                         )
-    elif parallelization_mode == "wIn" or parallelization_mode == "H_build_wIn":
+    elif parallelization_mode in ("wIn", "H_build_wIn"):
         # Loop over in-coming transition operators
         for tIn, tOpIn in enumerate(tOpsIn):
             tIn_big = {}

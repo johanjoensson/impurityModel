@@ -8,9 +8,6 @@
 
 Calculate many-body states of an impurity Anderson model and a various spectra, e.g. photoemission spectroscopy (PS), x-ray photoemission spectroscopy (XPS), x-ray absorption spectroscopy (XAS), non-resonant inelastic x-ray scattering (NIXS), and resonant inelastic x-ray scattering (RIXS), using the [Lanczos algorithm](https://en.wikipedia.org/wiki/Lanczos_algorithm).
 
-Credits to Petter Saterskog for inspiration and for some of the key functionality.
-
-Credits to Patrik Thunstrom for discussions about computational algorithms.
 
 <figure>
 <div class="row">
@@ -47,11 +44,11 @@ make check
 ```
 
 - To perform a simulation, first create a directory somewhere on your computer.
-Then execute one of the example scripts in the `scripts` folder. E.g. type:
+Move to that directory and then execute one of the example scripts in the `scripts` folder. E.g. type:
 ```bash
 path/to/folder/impurityModel/scripts/run_Ni_NiO_Xbath.sh
 ```
-This will create start a simulation with 10 bath states and one MPI rank.
+This will start a simulation with 10 bath states and one MPI rank.
 To have e.g. 20 bath states instead of 10, instead type:
 ```bash
 path/to/folder/impurityModel/scripts/run_Ni_NiO_Xbath.sh 20
@@ -74,8 +71,8 @@ The non-interacting Hamiltonians read from file by the scripts `run_Ni_NiO_Xbath
 - The bash-scripts in the `scripts`-folder act as templates and can easily be modified. For example, to set the temperature to 10 Kelvin in `get_spectra.py`, add `--T 10` as input when calling the python-script.
 
 #### Output files
-Input parameters used are saved and stored in `.npz` format.
-Spectra are saved to the file `spectra.h5`.
+The input parameters to the simulation are saved in `.npz` format.
+Calculated spectra are saved to the file `spectra.h5`.
 Some small size spectra are also stored in `.dat` and `.bin` format, for easy and fast plotting with e.g. gnuplot.
 For plotting all generated spectra (using matplotlib), type:
 ```bash
@@ -121,16 +118,44 @@ Type
 ```bash
 pytest
 ``` 
-to perform the (unit) tests in the `test`-folder.
+and 
+```bash
+pytest impurityModel/test/test_comparison_with_reference.py
+```
+to run all python unit tests in the repository.
 
 ### Documentation
-The documentation of this package is found in the directory `docs`.
+The documentation of this package is found in the directory `doc`.
 
-To update the manual, type:
+To update the manual type:
 
 ```bash
 make -s -C doc/sphinx clean
 make -s -C doc/sphinx html
 ```
-to generate a html-page.
+Open the generated `doc/sphinx/generated_doc/html/index.html` in a web browser.
+
+### Contributors
+
+Call for contributions: The impurityModel project welcomes your expertise and enthusiasm!
+
+Contributors:
+- Johan Schött (@JohanSchott): Implemented many of the functionalities needed to solve the impurity problem.
+- Johan Jönsson (@johanjoensson): Implementented the entire DMFT cycle in the fork https://github.com/johanjoensson/impurityModel. Also developed the related repo: https://github.com/johanjoensson/rspt2spectra
+- Felix Sorgenfrei (@fesorg): First author in [publication](https://journals.aps.org/prb/abstract/10.1103/PhysRevB.109.115126) using the impurityModel repo. Has also made the related repo: https://github.com/fesorg/Tutorial-X-ray-from-RSPt
+- Patrik Thunström (@patrikthunstrom): Involved in discussions about computational algorithms, reported bugs, and has provided theoretical knowledge and inspiration.
+- Petter Säterskog (@PetterSaterskog): Written some of the initial key functionalities.
+- Christian Häggström (@kalvdans): Has provided valuable reviews on PRs.
+- Mébarek Alouani: Has provided theoretical knowledge and inspiration.
+- Olle Eriksson: Has provided theoretical knowledge and inspiration.
+- Igor Di Marco (@igordimarco): Has provided theoretical knowledge and inspiration.
+
+Please note that the list and the contribution information are incomplete.
+
+
+### Publications using impurityModel
+
+[Theory of x-ray absorption spectroscopy for ferrites](https://journals.aps.org/prb/abstract/10.1103/PhysRevB.109.115126)
+
+[Re-Dichalcogenides: Resolving Conflicts of TheirStructure–Property Relationship](https://onlinelibrary.wiley.com/doi/epdf/10.1002/apxr.202200010)
 

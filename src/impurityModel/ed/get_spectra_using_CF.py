@@ -3,22 +3,19 @@ Script for calculating various spectra.
 
 """
 
-import numpy as np
-import scipy.sparse.linalg
-from collections import OrderedDict
-import sys, os
-from mpi4py import MPI
-import pickle
+import argparse
 import json
 import time
-import argparse
+from collections import OrderedDict
+
 import h5py
+import numpy as np
+from mpi4py import MPI
 
 # Local stuff
-from impurityModel.ed import spectra
-from impurityModel.ed import finite
-from impurityModel.ed.finite import c2i
+from impurityModel.ed import finite, spectra
 from impurityModel.ed.average import k_B
+from impurityModel.ed.finite import assert_hermitian, c2i
 
 
 def main(
@@ -406,6 +403,8 @@ def get_hamiltonian_operator_using_CF(
     hOp = {}
     for process, value in hOperator.items():
         hOp[tuple((c2i(nBaths, spinOrb), action) for spinOrb, action in process)] = value
+
+    assert_hermitian(hOp)
     return hOp
 
 
@@ -582,17 +581,28 @@ def read_h0_CF_file(h0_CF_filename):
     with open(h0_CF_filename, "r") as file_handle:
         parameters = json.loads(file_handle.read())
     # Default values are for Ni in NiO.
-    e_imp = parameters["e_imp"] if "e_imp" in parameters else -1.31796
-    e_deltaO_imp = parameters["e_deltaO_imp"] if "e_deltaO_imp" in parameters else 0.60422
-    e_val_eg = parameters["e_val_eg"] if "e_val_eg" in parameters else -4.4
-    e_val_t2g = parameters["e_val_t2g"] if "e_val_t2g" in parameters else -6.5
-    e_con_eg = parameters["e_con_eg"] if "e_con_eg" in parameters else 3
-    e_con_t2g = parameters["e_con_t2g"] if "e_con_t2g" in parameters else 2
-    v_val_eg = parameters["v_val_eg"] if "v_val_eg" in parameters else 1.883
-    v_val_t2g = parameters["v_val_t2g"] if "v_val_t2g" in parameters else 1.395
-    v_con_eg = parameters["v_con_eg"] if "v_con_eg" in parameters else 0.6
-    v_con_t2g = parameters["v_con_t2g"] if "v_con_t2g" in parameters else 0.4
-    return (e_imp, e_deltaO_imp, e_val_eg, e_val_t2g, e_con_eg, e_con_t2g, v_val_eg, v_val_t2g, v_con_eg, v_con_t2g)
+    e_imp = parameters.get("e_imp", -1.31796)
+    e_deltaO_imp = parameters.get("e_deltaO_imp", 0.60422)
+    e_val_eg = parameters.get("e_val_eg", -4.4)
+    e_val_t2g = parameters.get("e_val_t2g", -6.5)
+    e_con_eg = parameters.get("e_con_eg", 3)
+    e_con_t2g = parameters.get("e_con_t2g", 2)
+    v_val_eg = parameters.get("v_val_eg", 1.883)
+    v_val_t2g = parameters.get("v_val_t2g", 1.395)
+    v_con_eg = parameters.get("v_con_eg", 0.6)
+    v_con_t2g = parameters.get("v_con_t2g", 0.4)
+    return (
+        e_imp,
+        e_deltaO_imp,
+        e_val_eg,
+        e_val_t2g,
+        e_con_eg,
+        e_con_t2g,
+        v_val_eg,
+        v_val_t2g,
+        v_con_eg,
+        v_con_t2g,
+    )
 
 
 if __name__ == "__main__":
@@ -762,7 +772,7 @@ if __name__ == "__main__":
 
     assert args.ls[0] == 1
     assert args.ls[1] == 2
-    assert args.nBaths[1] == 10 or args.nBaths[1] == 20
+    assert args.nBaths[1] in (10, 20)
     assert args.nValBaths[1] == 10
 
     main(

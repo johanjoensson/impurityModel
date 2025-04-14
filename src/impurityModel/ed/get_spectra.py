@@ -8,15 +8,19 @@ import scipy.sparse.linalg
 from collections import OrderedDict
 import sys, os
 from mpi4py import MPI
+import argparse
 import pickle
 import time
-import argparse
+from collections import OrderedDict
+
 import h5py
+import numpy as np
+from mpi4py import MPI
 
 # Local stuff
-from impurityModel.ed import spectra
-from impurityModel.ed import finite
-from impurityModel.ed.finite import c2i
+from impurityModel.ed import finite, spectra
+from impurityModel.ed.average import k_B
+from impurityModel.ed.finite import assert_hermitian, c2i
 from impurityModel.ed.average import k_B, thermal_average
 from impurityModel.ed import op_parser
 
@@ -494,60 +498,36 @@ def get_hamiltonian_operator(nBaths, nValBaths, slaterCondon, SOCs, DCinfo, hFie
     h_non_interacting = get_noninteracting_hamiltonian_operator(
         nBaths, slaterCondon, SOCs, DCinfo, hField, h0_filename, rank, verbose
     )
+    eDCOperator = {}
+    for il, l in enumerate([2, 1]):
+        for s in range(2):
+            for m in range(-l, l + 1):
+                eDCOperator[(((l, s, m), "c"), ((l, s, m), "a"))] = -dc[il]
+
+    # Magnetic field
+    hHfieldOperator = finite.gethHfieldop(hx, hy, hz, l=2)
+
+    # Read the non-relativistic non-interacting Hamiltonian operator from file.
+    h0_operator = read_pickled_file(h0_filename)
+
     # Add Hamiltonian terms to one operator.
     hOperator = finite.addOps([uOperator, h_non_interacting])
     if rank == 0 and verbose:
         finite.printOp(nBaths, hOperator, "Local Hamiltonian: ")
 
     # Convert spin-orbital and bath state indices to a single index notation.
-    # hOp = {}
-    # for process, value in hOperator.items():
-    #     hOp[tuple((c2i(nBaths, spinOrb), action) for spinOrb, action in process)] = value
-    return finite.c2i_op(nBaths, hOperator)
+    hOp = {}
+    for process, value in hOperator.items():
+        hOp[tuple((c2i(nBaths, spinOrb), action) for spinOrb, action in process)] = value
+
+    assert_hermitian(hOp)
+    return hOp
 
 
-def read_h0_operator(h0_filename, nBaths):
-    """
-    Return h0 operator.
-
-    Parameters
-    ----------
-    h0_filename : str
-        Filename of non-interacting, non-relativistic operator.
-    nBaths : dict
-        Number of bath states for each angular momentum.
-
-    Returns
-    -------
-    h0_operator : dict
-        The non-relativistic non-interacting Hamiltonian in operator form.
-        Hamiltonian describes 3d orbitals and bath orbitals.
-        tuple : complex,
-        where each tuple describes a process of two steps (annihilation and then creation).
-        Each step is described by a tuple of the form:
-        (spin_orb, 'c') or (spin_orb, 'a'),
-        where spin_orb is a tuple of the form (l, s, m) or (l, b) or ((l_a, l_b), b).
-
-    """
-    h0_operator = None
-    if h0_filename.endswith(".dict"):
-        h0_operator = read_h0_dict(h0_filename)
-    else:
-        with open(h0_filename, "rb") as handle:
-            h0_operator = pickle.loads(handle.read())
-    # Sanity check
-    for process in h0_operator.keys():
-        for event in process:
-            if len(event[0]) == 2:
-                if nBaths[event[0][0]] <= event[0][1]:
-                    print("Error in h0!")
-                    print(process)
-                    print(event)
-                    print(nBaths[event[0][0]])
-                    print(event[0][1])
-                assert nBaths[event[0][0]] > event[0][1]
-
-    return h0_operator
+def read_pickled_file(filename: str):
+    with open(filename, "rb") as handle:
+        content = pickle.load(handle)
+    return content
 
 
 def read_h0_dict(h0_filename):

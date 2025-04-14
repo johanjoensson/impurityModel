@@ -2,6 +2,9 @@
 This module contains functions doing the bulk of the calculations.
 """
 
+import itertools
+import time
+from collections import OrderedDict
 from math import pi, sqrt
 import numpy as np
 from sympy.physics.wigner import gaunt
@@ -623,6 +626,7 @@ def printThermalExpValues(nBaths, es, psis, T=300, cutOff=10):
     print("<Sz(3d)> = {:8.7f}".format(thermal_average(e, [getSz3d(nBaths, psi) for psi in psis], T=T)))
     # print("<L^2(3d)> = {:8.7f}".format(thermal_average(e, [getLsqr3d(nBaths, psi) for psi in psis], T=T)))
     # print("<S^2(3d)> = {:8.7f}".format(thermal_average(e, [getSsqr3d(nBaths, psi) for psi in psis], T=T)))
+    # print("<S^2(3d)> = {:4.3f}".format(thermal_average(e, [getSsqr3d(nBaths, psi) for psi in psis], T=T)))
 
 
 def dc_MLFT(n3d_i, c, Fdd, n2p_i=None, Fpd=None, Gpd=None):
@@ -739,6 +743,10 @@ def daggerOp(op):
         processNew = tuple(processNew)
         opDagger[processNew] = value.conjugate()
     return opDagger
+
+
+def assert_hermitian(op: dict[tuple, int | float | complex]):
+    assert daggerOp(op) == op
 
 
 def get_basis(nBaths, valBaths, dnValBaths, dnConBaths, dnTol, n0imp, verbose=True):
@@ -1039,13 +1047,16 @@ def printGaunt(l=2, lp=2):
     """
     # Print Gauent coefficients
     for k in range(l + lp + 1):
-        print("k={:d}".format(k))
+        if rank == 0:
+            print("k={:d}".format(k))
         for m in range(-l, l + 1):
             s = ""
             for mp in range(-lp, lp + 1):
                 s += " {:3.2f}".format(gauntC(k, l, m, lp, mp))
-            print(s)
-        print("")
+            if rank == 0:
+                print(s)
+        if rank == 0:
+            print("")
 
 
 def getNoSpinUop(l1, l2, l3, l4, R):

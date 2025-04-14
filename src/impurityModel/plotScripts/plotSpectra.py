@@ -10,6 +10,8 @@ import os.path
 from math import pi
 import argparse
 import h5py
+import matplotlib.pyplot as plt
+import numpy as np
 
 
 def plot_spectra_in_file(filename):
@@ -95,6 +97,10 @@ def plot_spectra_in_file(filename):
             print('Fluorescence yield spectrum')
             plt.plot(wIn,(wLoss[1]-wLoss[0])*np.sum(rixs[0:],axis=(0,1,3))*scaleFY,
                     '-r',label='FY')
+                (wLoss[1] - wLoss[0]) * np.sum(rixs, axis=(0, 1, 3)) * scaleFY,
+                "-r",
+                label="FY",
+            )
             mask = wLoss < 0.2
             y = np.sum(rixs[:, :, :, mask], axis=(0, 1, 3))
             plt.plot(wIn, (wLoss[1] - wLoss[0]) * y * scaleFY, "-b", label="quasi-elastic FY")
@@ -134,6 +140,9 @@ def plot_spectra_in_file(filename):
             i = np.argmin(np.abs(wIn-e))
             axes[0].plot(wLoss, plotOffset*(len(es)-1-n) + np.sum(rixs, axis=(0,1))[i,:],
                         label=r'$\omega_{in}$' + '={:3.1f}'.format(e))
+                plotOffset * (len(es) - 1 - n) + np.sum(rixs, axis=(0, 1))[i, :],
+                label=r"$\omega_{in}$" + "={:3.1f}".format(e),
+            )
         # L2-edge energies.
         # Adjust these energies to the current material.
         es = np.arange( 0.8 ,  1.5 , 0.001)
@@ -147,6 +156,9 @@ def plot_spectra_in_file(filename):
         axes[1].set_xlabel(r'$E_{loss}$   (eV)')
         axes[0].set_title(r'$L_3$')
         axes[1].set_title(r'$L_2$')
+        axes[1].set_xlabel(r"$E_{loss}$   (eV)")
+        axes[0].set_title(r"$L_3$")
+        axes[1].set_title(r"$L_2$")
         for ax in axes:
             ax.legend()
         #plt.tight_layout()
@@ -178,6 +190,7 @@ def plot_spectra_in_file(filename):
         plt.grid(c='k', ls='-', alpha=0.3)
         plt.xlabel(r'$\omega_{in}$   (eV)')
         plt.ylabel(r'$\omega_{loss}$   (eV)')
+        plt.ylabel(r"$\omega_{loss}$   (eV)")
         plt.tight_layout()
         plt.show()
 
@@ -230,6 +243,10 @@ if __name__ == "__main__":
     parser = argparse.ArgumentParser(description='Plot spectra')
     parser.add_argument('--filename', type=str, default="spectra.h5",
                         help='Filename containing spectra.')
+        type=str,
+        default="spectra.h5",
+        help="Filename containing spectra.",
+    )
     args = parser.parse_args()
     if not os.path.isfile(args.filename):
         raise Exception('Data file does not exist: ' + args.filename)
