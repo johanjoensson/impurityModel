@@ -269,11 +269,11 @@ def eigensystem_new(h_local, e_max, k=10, v0=None, eigenValueTol=0, return_eigve
                 es = e.eigenvalues
                 vecs = e.eigenvectors
                 if vecs.size == 0:
-                    vecs = rng.uniform(size=(h.shape[0], k)) + 1j * rng.uniform(size=(h.shape[0], k)), mode="reduced"
+                    vecs = rng.uniform(size=(h.shape[0], k)) + 1j * rng.uniform(size=(h.shape[0], k))
                     vecs /= np.linalg.norm(vecs)
                 eigenValueTol = max(eigenValueTol, np.finfo(float).eps) if not conv_fail else eigenValueTol * 10
                 conv_fail = True
-            except ArpackError as e:
+            except ArpackError:
                 ncv = min(h.shape[0], max(2 * k + 3, 20)) if ncv is None else min(ncv * 2, h.shape[0])
                 es = [0]
                 vecs, _ = np.linalg.qr(
