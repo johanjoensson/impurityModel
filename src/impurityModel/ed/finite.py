@@ -261,7 +261,7 @@ def eigensystem_new(h_local, e_max, k=10, v0=None, eigenValueTol=0, return_eigve
                     h,
                     k=min(vecs.shape[1] + k, h.shape[0] - 2),
                     which="SA",
-                    v0=vecs[:, 0],
+                    v0=vecs[:, 0] if len(vecs.shape) > 1 else vecs.resahpe((vecs.shape[0], 1)),
                     ncv=ncv,
                     tol=eigenValueTol if conv_fail else 0,
                 )
