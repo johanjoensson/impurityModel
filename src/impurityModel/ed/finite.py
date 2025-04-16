@@ -268,6 +268,9 @@ def eigensystem_new(h_local, e_max, k=10, v0=None, eigenValueTol=0, return_eigve
             except ArpackNoConvergence as e:
                 es = e.eigenvalues
                 vecs = e.eigenvectors
+                if vecs.size == 0:
+                    vecs = rng.uniform(size=(h.shape[0], k)) + 1j * rng.uniform(size=(h.shape[0], k)), mode="reduced"
+                    vecs /= np.linalg.norm(vecs)
                 eigenValueTol = max(eigenValueTol, np.finfo(float).eps) if not conv_fail else eigenValueTol * 10
                 conv_fail = True
             except ArpackError as e:
