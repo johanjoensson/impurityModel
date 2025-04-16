@@ -14,6 +14,7 @@ from impurityModel.ed.manybody_basis import CIPSI_Basis
 import impurityModel.ed.product_state_representation as psr
 
 from impurityModel.ed.greens_function import get_Greens_function, save_Greens_function
+from impurityModel.ed.block_structure import print_block_structure
 
 EV_TO_RY = 1 / 13.605693122994
 
@@ -318,7 +319,7 @@ def calc_selfenergy(
     bath_states,
     tau,
     verbosity,
-    blocks,
+    block_structure,
     rot_to_spherical,
     cluster_label,
     reort,
@@ -405,8 +406,10 @@ def calc_selfenergy(
         for i in basis.impurity_orbitals.keys()
     }
     if verbosity >= 1:
-        finite.printThermalExpValues_new(full_rho_imps, es, tau, rot_to_spherical)
-        finite.printExpValues(full_rho_imps, es, rot_to_spherical)
+        print("Block structure")
+        print_block_structure(block_structure)
+        finite.printThermalExpValues_new(full_rho_imps, es, tau, rot_to_spherical, block_structure)
+        finite.printExpValues(full_rho_imps, es, rot_to_spherical, block_structure)
         print("Occupation statistics for each eigenstate in the thermal ground state")
         print("Impurity, Valence, Conduction: Weight (|amp|^2)")
         for i, psi_stats in enumerate(gs_stats):
@@ -444,7 +447,7 @@ def calc_selfenergy(
         basis=basis,
         hOp=h,
         delta=delta,
-        blocks=blocks,
+        blocks=[block_structure.blocks[block_i] for block_i in block_structure.inequivalent_blocks],
         verbose=verbosity >= 2,
         reort=reort,
         occ_restrict=occ_restrict,
@@ -481,7 +484,7 @@ def calc_selfenergy(
             h0op=h0,
             delta=delta,
             clustername=cluster_label,
-            blocks=blocks,
+            blocks=[block_structure.blocks[block_i] for block_i in block_structure.inequivalent_blocks],
         )
         try:
             for sig in sigma_real:
@@ -500,7 +503,7 @@ def calc_selfenergy(
             h0op=h0,
             delta=0,
             clustername=cluster_label,
-            blocks=blocks,
+            blocks=[block_structure.blocks[block_i] for block_i in block_structure.inequivalent_blocks],
         )
         try:
             for sig in sigma:

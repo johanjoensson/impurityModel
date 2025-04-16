@@ -32,6 +32,7 @@ from impurityModel.ed import product_state_representation as psr
 from impurityModel.ed import create
 from impurityModel.ed import remove
 from impurityModel.ed.average import k_B, thermal_average, thermal_average_scale_indep
+from impurityModel.ed.block_structure import get_equivalent_blocks
 
 from scipy.sparse.linalg import ArpackNoConvergence, ArpackError, eigsh
 from scipy.linalg import qr
@@ -402,43 +403,34 @@ def printSlaterDeterminantsAndWeights(psis, nPrintSlaterWeights):
             print("")
 
 
-def printExpValues(rhos, es, rot_to_spherical):
+def printExpValues(rhos, es, rot_to_spherical, block_structure):
     """
     print several expectation values, e.g. E, N, L^2.
     """
-    print("E0 = {:9.6f}".format(es[0]))
+    equivalent_blocks = get_equivalent_blocks(block_structure)
+    print(f"E0 = {es[0]:9.6f}")
+    block_N_string = [f"N({','.join(f'{b}' for b in blocks)})" for blocks in equivalent_blocks]
+    block_N_string_formatted = ["" for _ in block_N_string]
+    for i, Ns in enumerate(block_N_string):
+        block_N_string_formatted[i] = " " * max(8 - len(Ns), 0) + Ns
     print(
-        # "{:^3s} {:>11s} {:>8s} {:>8s} {:>8s} {:>9s} {:>9s} {:>9s} {:>9s}".format(
-        "{:^3s} {:>11s} {:>8s} {:>8s} {:>8s} {:>9s} {:>9s}".format(
-            "i",
-            "E-E0",
-            "N",
-            "N(Dn)",
-            "N(Up)",
-            "Lz",
-            "Sz",
-            # "L^2",
-            # "S^2",
-        )
+        f"{'i':>3s} {'E-E0':>11s} {'N':>8s} {'N(Dn)':>8s} {'N(Up)':>8s} {' '.join(block_N_string_formatted)} {'Lz':>8s} {'Sz':>8s}"
     )
-    #        print(('  i  E-E0  N(3d) N(egDn) N(egUp) N(t2gDn) '
-    #               'N(t2gUp) Lz(3d) Sz(3d) L^2(3d) S^2(3d)'))
     for i, (e, rho) in enumerate(zip(es - es[0], rhos)):
+        block_occs = [
+            np.sum(np.diag(rho)[list(orb for block in blocks for orb in block_structure.blocks[block])])
+            for blocks in equivalent_blocks
+        ]
+        block_occ_string = [f"{occ.real: 8.5f}" for occ in block_occs]
+        block_occ_string_formatted = ["" for _ in block_occ_string]
+        for ib, bs in enumerate(block_occ_string):
+            block_occ_string_formatted[ib] = " " * (len(block_N_string[ib]) - 8) + bs
         rho_spherical = rotate_matrix(rho, rot_to_spherical)
         N, Ndn, Nup = get_occupations_from_rho_spherical(rho_spherical)
+        Lz = get_Lz_from_rho_spherical(rho_spherical)
+        Sz = get_Sz_from_rho_spherical(rho_spherical)
         print(
-            # ("{:3d} {:11.8f} {:8.5f} {:8.5f} {:8.5f}" " {: 9.6f} {: 9.6f} {:9.5f} {:9.5f}").format(
-            ("{:3d} {:11.8f} {:8.5f} {:8.5f} {:8.5f}" " {: 9.6f} {: 9.6f}").format(
-                i,
-                e,
-                N,
-                Ndn,
-                Nup,
-                get_Lz_from_rho_spherical(rho_spherical),
-                get_Sz_from_rho_spherical(rho_spherical),
-                # get_L_from_rho_spherical(rho_spherical),
-                # get_S_from_rho_spherical(rho_spherical),
-            )
+            f"{i:^3d} {e:11.8f} {N:8.5f} {Ndn:8.5f} {Nup:8.5f} {' '.join(block_occ_string_formatted)} {Lz: 8.6f} {Sz: 8.6f}"
         )
     print("\n")
 
@@ -585,23 +577,27 @@ def get_S2_from_rho_spherical(rho):
     return np.trace(rho @ Sz2) + 2 * Sz + np.trace(rho @ Splus @ Sminus)
 
 
-def printThermalExpValues_new(rhos, es, tau, rot_to_spherical):
+def printThermalExpValues_new(rhos, es, tau, rot_to_spherical, block_structure):
     """
     print several thermal expectation values, e.g. E, N, Sz, Lz.
 
     cutOff - float. Energies more than cutOff*kB*T above the
             lowest energy is not considered in the average.
     """
+    equivalent_blocks = get_equivalent_blocks(block_structure)
     e = es - es[0]
     rho_thermal = thermal_average_scale_indep(es, rhos, tau)
     rho_thermal_spherical = rotate_matrix(rho_thermal, rot_to_spherical)
     N, Ndn, Nup = get_occupations_from_rho_spherical(rho_thermal_spherical)
-    print("<E-E0> = {:8.7f}".format(thermal_average_scale_indep(e, e, tau=tau)))
-    print("<N(3d)> = {:8.7f}".format(N))
-    print("<N(Dn)> = {:8.7f}".format(Ndn))
-    print("<N(Up)> = {:8.7f}".format(Nup))
-    print("<Lz> = {:8.7f}".format(get_Lz_from_rho_spherical(rho_thermal_spherical)))
-    print("<Sz> = {:8.7f}".format(get_Sz_from_rho_spherical(rho_thermal_spherical)))
+    print(f"<E-E0> = {thermal_average_scale_indep(e, e, tau=tau):8.7f}")
+    print(f"<N(3d)> = {N:8.7f}")
+    print(f"<N(Dn)> = {Ndn:8.7f}")
+    print(f"<N(Up)> = {Nup:8.7f}")
+    for blocks in equivalent_blocks:
+        occ = np.sum(np.diag(rho_thermal)[list(orb for block in blocks for orb in block_structure.blocks[block])]).real
+        print(f"<N({','.join(str(orb) for orb in blocks)})> = {occ:8.7f}")
+    print(f"<Lz> = {get_Lz_from_rho_spherical(rho_thermal_spherical): 8.7f}")
+    print(f"<Sz> = {get_Sz_from_rho_spherical(rho_thermal_spherical): 8.7f}")
     # print("<L> = {:8.7f}".format(get_L_from_rho_spherical(rho_thermal_spherical)))
     # print("<S> = {:8.7f}".format(get_S_from_rho_spherical(rho_thermal_spherical)))
 
