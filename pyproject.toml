@@ -37,7 +37,7 @@ Issues = "https://github.com/johanjoensson/impurityModel//issues"
 
 
 [build-system]
-requires = ["setuptools >= 77.0.3"]
+requires = ["setuptools >= 77.0.3", "setuptools-scm"]
 build-backend = "setuptools.build_meta"
 
 [tool.black]
