@@ -109,7 +109,6 @@ def split_comm_and_redistribute_basis(priorities: Iterable[float], basis: Basis,
     assert sum(procs_per_color) == comm.size
     proc_cutoffs = np.cumsum(procs_per_color)
     color = np.argmax(comm.rank < proc_cutoffs)
-    comm.Barrier()
     split_comm = comm.Split(color=color, key=0)
     split_roots = [0] + proc_cutoffs[:-1].tolist()
     items_per_color = np.array([len(priorities) // n_colors] * n_colors, dtype=int)
@@ -131,6 +130,7 @@ def split_comm_and_redistribute_basis(priorities: Iterable[float], basis: Basis,
             for i, partial_psi in enumerate(partial_psis):
                 for state in partial_psi:
                     psis[i][state] = partial_psi[state] + psis[i].get(state, 0)
+    split_comm.barrier()
     split_basis = Basis(
         impurity_orbitals=basis.impurity_orbitals,
         bath_states=basis.bath_states,
@@ -158,6 +158,7 @@ def get_Greens_function(
     delta,
     blocks,
     verbose,
+    verbose_extra,
     reort,
     occ_restrict=True,
     chain_restrict=False,
@@ -175,7 +176,7 @@ def get_Greens_function(
         block_basis,
         psis,
     ) = split_comm_and_redistribute_basis([len(block) ** 2 for block in blocks], basis, psis)
-    if verbose:
+    if verbose_extra:
         print("=" * 80)
         print(f"New root ranks:{block_roots}")
         print(f"Number blocks per subgroup: {blocks_per_color}")
@@ -183,6 +184,8 @@ def get_Greens_function(
     bis = list(range(block_indices.start, block_indices.stop))
     gs_matsubara = [None for _ in blocks]
     gs_realaxis = [None for _ in blocks]
+    excited_basis_sizes_IPS = [[] for _ in blocks]
+    excited_basis_sizes_PS = [[] for _ in blocks]
     for block_i, (opIPS, opPS) in enumerate(
         (
             [{((orb, "c"),): 1} for orb in block],
@@ -190,7 +193,7 @@ def get_Greens_function(
         )
         for block in blocks[block_indices]
     ):
-        gsIPS_matsubara, gsIPS_realaxis = calc_Greens_function_with_offdiag(
+        gsIPS_matsubara, gsIPS_realaxis, excited_basis_sizes_IPS[bis[block_i]] = calc_Greens_function_with_offdiag(
             hOp,
             opIPS,
             psis,
@@ -202,12 +205,12 @@ def get_Greens_function(
             delta,
             reort=reort,
             slaterWeightMin=slaterWeightMin,
-            verbose=verbose,
+            verbose=verbose_extra,
             occ_restrict=occ_restrict,
             chain_restrict=chain_restrict,
             occ_cutoff=occ_cutoff,
         )
-        gsPS_matsubara, gsPS_realaxis = calc_Greens_function_with_offdiag(
+        gsPS_matsubara, gsPS_realaxis, excited_basis_sizes_PS[bis[block_i]] = calc_Greens_function_with_offdiag(
             hOp,
             opPS,
             psis,
@@ -218,7 +221,7 @@ def get_Greens_function(
             -omega_mesh if omega_mesh is not None else None,
             -delta,
             slaterWeightMin=slaterWeightMin,
-            verbose=verbose,
+            verbose=verbose_extra,
             reort=reort,
             occ_restrict=occ_restrict,
             chain_restrict=chain_restrict,
@@ -259,44 +262,32 @@ def get_Greens_function(
         assert all(gs is not None for gs in gs_matsubara)
         assert all(gs is not None for gs in gs_realaxis)
 
-    # gs_matsubara = (
-    #     [np.empty((len(matsubara_mesh), len(block), len(block)), dtype=complex) for block in blocks]
-    #     if basis.comm.rank == 0
-    #     else None
-    # )
-    # gs_realaxis = (
-    #     [np.empty((len(omega_mesh), len(block), len(block)), dtype=complex) for block in blocks]
-    #     if basis.comm.rank == 0
-    #     else None
-    # )
-    # # requests = []
-    # if block_basis.comm.rank == 0 and basis.comm.rank != 0:
-    #     assert basis.comm.rank in block_roots
-    #     if matsubara_mesh is not None:
-    #         for matsubara_block_gs in gs_matsubara_block:
-    #             basis.comm.send(matsubara_block_gs, 0)
-    #             # requests.append(basis.comm.isend(matsubara_block_gs, 0))
-    #     if omega_mesh is not None:
-    #     assert basis.comm.rank in block_roots
-    #         for real_block_gs in gs_realaxis_block:
-    #             basis.comm.isend(real_block_gs, 0)
-    #             # requests.append(basis.comm.isend(real_block_gs, 0))
-    # if basis.comm.rank == 0:
-    #     for color, color_root in enumerate(block_roots):
-    #         block_is = range(sum(blocks_per_color[:color]), sum(blocks_per_color[: color + 1]))
-    #         if matsubara_mesh is not None:
-    #             if color_root == block_basis.rank:
-    #                 continue
-    #             for block_i in block_is:
-    #                 basis.comm.recv(gs_matsubara[block_i], color_root)
-    #                 # requests.append(basis.comm.irecv(gs_matsubara[block_i], color_root))
-    #         if omega_mesh is not None:
-    #             for block_i in block_is:
-    #                 basis.comm.recv(gs_realaxis[block_i], color_root)
-    #                 # requests.append(basis.comm.irecv(gs_realaxis[block_i], color_root))
-    # if len(requests) > 0:
-    #     MPI.Request().waitall(requests)
+    all_excited_basis_sizes_IPS = basis.comm.allgather(excited_basis_sizes_IPS)
+    all_excited_basis_sizes_PS = basis.comm.allgather(excited_basis_sizes_PS)
+    if verbose:
+        print("=" * 80)
+        print("Electron addition")
+        for ebs in all_excited_basis_sizes_IPS:
+            for block_i, ei in enumerate(ebs):
+                if len(ei) == 0 or len(excited_basis_sizes_IPS[block_i]) > 0:
+                    continue
+                excited_basis_sizes_IPS[block_i] = ei
+        for block_i, ebs in enumerate(excited_basis_sizes_IPS):
+            print(f"   inequivalen  block {block_i}:")
+            for ei, eb in enumerate(ebs):
+                print(f"   ---> Excited basis for eigenstate {ei} contains {eb} states")
+        print("Electron removal")
+        for ebs in all_excited_basis_sizes_PS:
+            for block_i, ei in enumerate(ebs):
+                if len(ei) == 0 or len(excited_basis_sizes_PS[block_i]) > 0:
+                    continue
+                excited_basis_sizes_PS[block_i] = ei
+        for block_i, ebs in enumerate(excited_basis_sizes_PS):
+            print(f"   inequivalen  block {block_i}:")
+            for ei, eb in enumerate(ebs):
+                print(f"   ---> Excited basis for eigenstate {ei} contains {eb} states")
     block_basis.comm.Free()
+    basis.comm.Barrier()
     return (gs_matsubara, gs_realaxis) if basis.comm.rank == 0 else (None, None)
 
 
@@ -362,6 +353,7 @@ def calc_Greens_function_with_offdiag(
     comm = basis.comm
     n = len(tOps)
 
+    excited_basis_sizes = np.array([0] * len(es))
     t_mems = [{} for _ in tOps]
     h_mem = {}
     if iw is not None:
@@ -386,7 +378,7 @@ def calc_Greens_function_with_offdiag(
         print(f"Number of eigenstates per subgroup: {eigen_per_color}")
     e0 = min(es)
     Z = np.sum(np.exp(-(es - e0) / tau))
-    for psi, e in zip(psis[eigen_indices], es[eigen_indices]):
+    for ei, psi, e in zip(range(eigen_indices.start, eigen_indices.stop), psis[eigen_indices], es[eigen_indices]):
         if chain_restrict:
             _, bath_rhos, bath_indices = eigen_basis.build_density_matrices([psi])
             bath_rhos = {i: [rho[0] for rho in br] for i, br in bath_rhos.items()}
@@ -457,12 +449,17 @@ def calc_Greens_function_with_offdiag(
                 gs_matsubara_block += np.exp(-(e - e0) / tau) * gs_matsubara_block_i
             if w is not None:
                 gs_realaxis_block += np.exp(-(e - e0) / tau) * gs_realaxis_block_i
+        excited_basis_sizes[ei] = excited_basis.size
+        excited_basis.comm.barrier()
         excited_basis.comm.Free()
+    eigen_basis.comm.barrier()
+    eigen_basis.comm.Free()
+
     # Send calculated Greens functions to root
     basis.comm.Reduce(MPI.IN_PLACE if basis.comm.rank == 0 else gs_matsubara_block, gs_matsubara_block, root=0)
     basis.comm.Reduce(MPI.IN_PLACE if basis.comm.rank == 0 else gs_realaxis_block, gs_realaxis_block, root=0)
-    eigen_basis.comm.Free()
-    return gs_matsubara_block / Z, gs_realaxis_block / Z
+    basis.comm.Allreduce(MPI.IN_PLACE, excited_basis_sizes, op=MPI.MAX)
+    return gs_matsubara_block / Z, gs_realaxis_block / Z, excited_basis_sizes
 
 
 def get_block_Green(
@@ -594,6 +591,7 @@ def get_block_Green(
         alphas, betas, iws, ws, e, delta, r, p, verbose, comm=comm
     )
 
+    comm.barrier()
     return gs_matsubara, gs_realaxis
 
 
@@ -722,6 +720,7 @@ def block_Green(
     gs_matsubara, gs_realaxis = calc_mpi_Greens_function_from_alpha_beta(
         alphas, betas, iws, ws, e, delta, r, p, verbose, comm=comm
     )
+    comm.barrier()
 
     return gs_matsubara, gs_realaxis
 
@@ -861,6 +860,7 @@ def block_Green_freq_2(
         gs_matsubara = (np.conj(r.T)[np.newaxis, :, :] @ np.linalg.solve(gs_matsubara, r[np.newaxis, :, :]))[ix]
         ix = np.ix_(range(len(ws)), np.argsort(p), np.argsort(p))
         gs_realaxis = (np.conj(r.T)[np.newaxis, :, :] @ np.linalg.solve(gs_realaxis, r[np.newaxis, :, :]))[ix]
+    basis.comm.barrier()
 
     return gs_matsubara, gs_realaxis
 
@@ -960,6 +960,7 @@ def block_Green_freq(
 
     basis.comm.Reduce(MPI.IN_PLACE if basis.comm.rank == 0 else gs_matsubara, gs_matsubara, op=MPI.SUM, root=0)
     basis.comm.Reduce(MPI.IN_PLACE if basis.comm.rank == 0 else gs_realaxis, gs_realaxis, op=MPI.SUM, root=0)
+    basis.comm.barrier()
 
     return gs_matsubara, gs_realaxis
 
@@ -1248,9 +1249,7 @@ def get_block_Green_cg(
         if gs_realaxis is not None:
             gs_realaxis = np.moveaxis(gs_realaxis, 0, -1)
 
-    def matrix_print(m):
-        print("\n".join(["  ".join([f"{np.real(el): 5.3f}  {np.imag(el):+5.3f}j" for el in row]) for row in m]))
-
+    comm.Barrier()
     return gs_matsubara, gs_realaxis
 
 

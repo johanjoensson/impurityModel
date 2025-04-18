@@ -1020,22 +1020,15 @@ class CIPSI_Basis(Basis):
             self.truncate(self.build_state(psi_ref))
 
     def truncate(self, psis):
+        cutoff = np.finfo(float).eps
+
         self.local_basis.clear()
-        basis_states = {state for psi in psis for state in psi}
-        coefficients = np.empty(
-            (
-                len(
-                    basis_states,
-                )
-            )
-        )
-        for i, state in enumerate(basis_states):
-            coefficients[i] = np.max([abs(psi[state]) for psi in psis if state in psi])
-        sort_order = np.argsort(coefficients)[::-1]
-        new_basis = []
-        for i in range(self.truncation_threshold):
-            new_basis.append(list(basis_states)[sort_order[i]])
-        self.add_states(new_basis)
+        num_states = self.comm.allreduce(max(len(psi) for psi in psis))
+        while num_states > self.truncation_threshold:
+            psis = [{state: amp for state, amp in psi.items() if abs(amp) > cutoff} for psi in psis]
+            num_states = self.comm.allreduce(max(len(psi) for psi in psis))
+            cutoff *= 10
+        self.add_states(state for psi in psis for state in psi)
 
     def _calc_de2(self, Djs: Basis, H: dict, H_dict: dict, Hpsi_ref: dict, e_ref: float, slaterWeightMin: float = 0):
         """
@@ -1163,7 +1156,7 @@ class CIPSI_Basis(Basis):
         if self.size > self.truncation_threshold:
             H_sparse = self.build_sparse_matrix(H, op_dict={})
             e_ref, psi_ref = eigensystem_new(H_sparse, e_max=de0_max, k=2, comm=self.comm, dense=False)
-            self.truncate(self.build_state(psi_ref))
+            self.truncate(self.build_state(psi_ref.T))
             if self.verbose:
                 print(f"----->After truncation, the basis contains {self.size} elements.")
         t_tmp = perf_counter()
