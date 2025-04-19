@@ -1029,6 +1029,7 @@ class CIPSI_Basis(Basis):
             num_states = self.comm.allreduce(max(len(psi) for psi in psis))
             cutoff *= 10
         self.add_states(state for psi in psis for state in psi)
+        return self.redistribute_psis(psis)
 
     def _calc_de2(self, Djs: Basis, H: dict, H_dict: dict, Hpsi_ref: dict, e_ref: float, slaterWeightMin: float = 0):
         """
@@ -1132,6 +1133,8 @@ class CIPSI_Basis(Basis):
             t_eigen += perf_counter() - t_tmp
             t_tmp = perf_counter()
             psi_ref = self.build_state(psi_ref_dense.T)
+            if self.size > self.truncation_threshold:
+                psi_ref = self.truncate(psi_ref)
 
             t_build_state += perf_counter() - t_tmp
             t_tmp = perf_counter()
@@ -1144,6 +1147,8 @@ class CIPSI_Basis(Basis):
             self.add_states(new_Dj)
             psi_ref = self.redistribute_psis(psi_ref)
             t_add += perf_counter() - t_tmp
+            if self.verbose:
+                print(f"----->After truncation, the basis contains {self.size} elements.")
 
             if old_size == self.size:
                 converge_count += 1
@@ -1153,12 +1158,6 @@ class CIPSI_Basis(Basis):
         if self.verbose:
             print(f"After expansion, the basis contains {self.size} elements.")
 
-        if self.size > self.truncation_threshold:
-            H_sparse = self.build_sparse_matrix(H, op_dict={})
-            e_ref, psi_ref = eigensystem_new(H_sparse, e_max=de0_max, k=2, comm=self.comm, dense=False)
-            self.truncate(self.build_state(psi_ref.T))
-            if self.verbose:
-                print(f"----->After truncation, the basis contains {self.size} elements.")
         t_tmp = perf_counter()
         _ = self.build_operator_dict(H, op_dict=H_dict)
         t_build_dict += perf_counter() - t_tmp
