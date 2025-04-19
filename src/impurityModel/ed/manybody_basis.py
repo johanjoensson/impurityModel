@@ -1158,10 +1158,7 @@ class CIPSI_Basis(Basis):
         if self.verbose:
             print(f"After expansion, the basis contains {self.size} elements.")
 
-        t_tmp = perf_counter()
-        _ = self.build_operator_dict(H, op_dict=H_dict)
-        t_build_dict += perf_counter() - t_tmp
-        return H_dict.copy()
+        return self.build_operator_dict(H, op_dict=H_dict)
 
     def expand_at(self, w, psi_ref, H, H_dict=None, de2_min=1e-3):
         if H_dict is None:
