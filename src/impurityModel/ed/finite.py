@@ -247,9 +247,11 @@ def eigensystem_new(h_local, e_max, k=10, v0=None, eigenValueTol=0, return_eigve
         es = [0]
         rng = np.random.default_rng()
         if v0 is None:
-            v0, _ = np.linalg.qr(
-                rng.uniform(size=(h.shape[0], k)) + 1j * rng.uniform(size=(h.shape[0], k)), mode="reduced"
-            )
+            v0 = rng.uniform(size=(h.shape[0], k)) + 1j * rng.uniform(size=(h.shape[0], k))
+            if comm is not None:
+                comm.Allreduce(MPI.IN_PLACE, v0, op=MPI.SUM)
+            v0, _ = np.linalg.qr(v0, mode="reduced")
+
         vecs = v0
         ncv = None
         conv_fail = False
@@ -271,15 +273,18 @@ def eigensystem_new(h_local, e_max, k=10, v0=None, eigenValueTol=0, return_eigve
                 vecs = e.eigenvectors
                 if vecs.size == 0:
                     vecs = rng.uniform(size=(h.shape[0], k)) + 1j * rng.uniform(size=(h.shape[0], k))
-                    vecs /= np.linalg.norm(vecs)
+                    if comm is not None:
+                        comm.Allreduce(MPI.IN_PLACE, vecs, op=MPI.SUM)
+                    vecs, _ = np.linalg.qr(vecs, mode="reduced")
                 eigenValueTol = max(eigenValueTol, np.finfo(float).eps) if not conv_fail else eigenValueTol * 10
                 conv_fail = True
             except ArpackError:
                 ncv = min(h.shape[0], max(2 * k + 3, 20)) if ncv is None else min(ncv * 2, h.shape[0])
                 es = [0]
-                vecs, _ = np.linalg.qr(
-                    rng.uniform(size=(h.shape[0], k)) + 1j * rng.uniform(size=(h.shape[0], k)), mode="reduced"
-                )
+                vecs = rng.uniform(size=(h.shape[0], k)) + 1j * rng.uniform(size=(h.shape[0], k))
+                if comm is not None:
+                    comm.Allreduce(MPI.IN_PLACE, vecs, op=MPI.SUM)
+                vecs, _ = np.linalg.qr(vecs, mode="reduced")
             if es is None or len(es) == 0:
                 es = [0]
         # eigsh does not guarantee that the eigenvectors are orthonormal. therefore we do a QR decomposition on them.
@@ -290,7 +295,7 @@ def eigensystem_new(h_local, e_max, k=10, v0=None, eigenValueTol=0, return_eigve
         # lobpcg is robust as long as the preconditioner is very good (is this what robust means?). We don't have a good preconditioner, so we ignore any warnings from lobpcg instead.
         with warnings.catch_warnings():
             warnings.simplefilter("ignore")
-            es, vecs = scipy.sparse.linalg.lobpcg(h, vecs, largest=False)
+            es, vecs = scipy.sparse.linalg.lobpcg(h, vecs, largest=False, maxiter=10 * vecs.shape[1])
             vecs = np.ascontiguousarray(vecs)
 
     indices = np.argsort(es)
