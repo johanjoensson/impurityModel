@@ -207,7 +207,7 @@ def calc_occ_e(
         spin_flip_dj=spin_flip_dj,
         comm=comm,
     )
-    h_dict = basis.expand(h_op, dense_cutoff=dense_cutoff, de2_min=1e-6)
+    h_dict = basis.expand(h_op, dense_cutoff=dense_cutoff, de2_min=1e-4)
     h = basis.build_sparse_matrix(h_op, h_dict)
 
     e_trial = finite.eigensystem_new(

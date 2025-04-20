@@ -588,19 +588,19 @@ def get_block_Green(
     t0 = time.perf_counter()
 
     gs_matsubara, gs_realaxis = calc_mpi_Greens_function_from_alpha_beta(
-        alphas, betas, iws, ws, e, delta, r, p, verbose, comm=comm
+        alphas, betas, iws, ws, e, delta, r, verbose, comm=comm
     )
 
     comm.barrier()
     return gs_matsubara, gs_realaxis
 
 
-def build_qrp(psi):
+def build_qr(psi):
     # Do a QR decomposition of the starting block.
     # Later on, use r to restore the psi block
     # Allow for permutations of rows in psi as well
-    psi, r, p = sp.linalg.qr(psi.copy(), mode="economic", overwrite_a=True, check_finite=False, pivoting=True)
-    return np.ascontiguousarray(psi), r, p
+    psi, r = sp.linalg.qr(psi.copy(), mode="economic", overwrite_a=True, check_finite=False, pivoting=False)
+    return np.ascontiguousarray(psi), r
 
 
 def block_Green(
@@ -640,9 +640,8 @@ def block_Green(
 
     psi_dense = basis.build_vector(psi_arr, root=0).T
     if rank == 0:
-        psi_dense, r, p = build_qrp(psi_dense)
+        psi_dense, r = build_qr(psi_dense)
     r = basis.comm.bcast(r if rank == 0 else None, root=0)
-    p = basis.comm.bcast(p if rank == 0 else None, root=0)
     rows, columns = basis.comm.bcast(psi_dense.shape if rank == 0 else None, root=0)
     assert rows == basis.size
     psi_dense_local = np.empty((len(basis.local_basis), columns), dtype=complex, order="C")
@@ -718,7 +717,7 @@ def block_Green(
     t0 = time.perf_counter()
 
     gs_matsubara, gs_realaxis = calc_mpi_Greens_function_from_alpha_beta(
-        alphas, betas, iws, ws, e, delta, r, p, verbose, comm=comm
+        alphas, betas, iws, ws, e, delta, r, verbose, comm=comm
     )
     comm.barrier()
 
@@ -758,7 +757,7 @@ def block_Green_freq_2(
     if verbose:
         t0 = time.perf_counter()
 
-    psi_orig, r, p = build_qrp(psi_arr, basis, slaterWeightMin)
+    psi_orig, r = build_qr(psi_arr)
     if len(psi_orig) == 0:
         return np.zeros((len(iws), n, n), dtype=complex), np.zeros((len(ws), n, n), dtype=complex)
 
@@ -856,10 +855,8 @@ def block_Green_freq_2(
     basis.comm.Reduce(MPI.IN_PLACE if basis.comm.rank == 0 else gs_matsubara, gs_matsubara, op=MPI.SUM)
     basis.comm.Reduce(MPI.IN_PLACE if basis.comm.rank == 0 else gs_realaxis, gs_realaxis, op=MPI.SUM)
     if basis.comm.rank == 0:
-        ix = np.ix_(range(len(iws)), np.argsort(p), np.argsort(p))
-        gs_matsubara = (np.conj(r.T)[np.newaxis, :, :] @ np.linalg.solve(gs_matsubara, r[np.newaxis, :, :]))[ix]
-        ix = np.ix_(range(len(ws)), np.argsort(p), np.argsort(p))
-        gs_realaxis = (np.conj(r.T)[np.newaxis, :, :] @ np.linalg.solve(gs_realaxis, r[np.newaxis, :, :]))[ix]
+        gs_matsubara = np.conj(r.T)[np.newaxis, :, :] @ np.linalg.solve(gs_matsubara, r[np.newaxis, :, :])
+        gs_realaxis = np.conj(r.T)[np.newaxis, :, :] @ np.linalg.solve(gs_realaxis, r[np.newaxis, :, :])
     basis.comm.barrier()
 
     return gs_matsubara, gs_realaxis
@@ -965,7 +962,7 @@ def block_Green_freq(
     return gs_matsubara, gs_realaxis
 
 
-def calc_mpi_Greens_function_from_alpha_beta(alphas, betas, iws, ws, e, delta, r, p, verbose, comm):
+def calc_mpi_Greens_function_from_alpha_beta(alphas, betas, iws, ws, e, delta, r, verbose, comm):
     """
     Calculate the Greens function from the diagonal and offdiagonal terms obtained from the Lanczos procedure.
     This function splits the frequency axes over MPI ranks.
@@ -986,10 +983,7 @@ def calc_mpi_Greens_function_from_alpha_beta(alphas, betas, iws, ws, e, delta, r
     # Multiply obtained Green's function with the upper triangular matrix to restore the original block
     # R^T* G R
     if matsubara:
-        ix = np.ix_(range(len(iws_split)), p, p)
-        gs_matsubara_local = (
-            np.conj(r.T)[np.newaxis, :, :] @ np.linalg.solve(gs_matsubara_local, r[np.newaxis, :, :])
-        )[ix]
+        gs_matsubara_local = np.conj(r.T)[np.newaxis, :, :] @ np.linalg.solve(gs_matsubara_local, r[np.newaxis, :, :])
         counts = np.empty((comm.size), dtype=int)
         comm.Gather(np.array([gs_matsubara_local.size], dtype=int), counts)
         offsets = [sum(counts[:rank]) for rank in range(len(counts))] if comm.rank == 0 else None
@@ -1002,10 +996,7 @@ def calc_mpi_Greens_function_from_alpha_beta(alphas, betas, iws, ws, e, delta, r
     else:
         gs_matsubara = None
     if realaxis:
-        ix = np.ix_(range(len(ws_split)), p, p)
-        gs_realaxis_local = (np.conj(r.T)[np.newaxis, :, :] @ np.linalg.solve(gs_realaxis_local, r[np.newaxis, :, :]))[
-            ix
-        ]
+        gs_realaxis_local = np.conj(r.T)[np.newaxis, :, :] @ np.linalg.solve(gs_realaxis_local, r[np.newaxis, :, :])
         counts = np.empty((comm.size), dtype=int)
         comm.Gather(np.array([gs_realaxis_local.size], dtype=int), counts)
         offsets = [sum(counts[:rank]) for rank in range(len(counts))] if comm.rank == 0 else None
