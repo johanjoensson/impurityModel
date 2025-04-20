@@ -531,9 +531,11 @@ def block_lanczos(
         q[1] = [{} for _ in range(columns)]
         if mpi:
             request.Wait()
-        for i, j in np.argwhere(np.abs(psip) > slaterWeightMin):
-            state = basis.local_basis[i]
-            q[1][j][state] = psip[i, j]
+        # for i, j in np.argwhere(np.abs(psip) > slaterWeightMin):
+        q[1] = basis.build_state(psip.T)
+        # for i, j in itertools.product(range(psip.shape[0]), range(psip.shape[1])):
+        #     state = basis.local_basis[i]
+        #     q[1][j][state] = psip[i, j]
 
         if build_krylov_basis:
             Q.extend(q[1])

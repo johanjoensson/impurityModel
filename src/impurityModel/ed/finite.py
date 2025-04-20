@@ -12,6 +12,8 @@ import itertools
 from collections import OrderedDict
 from copy import deepcopy
 import scipy.sparse
+from scipy.sparse.linalg import ArpackNoConvergence, ArpackError, eigsh
+from scipy.linalg import qr
 from mpi4py import MPI
 import time
 from multiprocessing import Process, Queue, current_process, freeze_support
@@ -33,9 +35,6 @@ from impurityModel.ed import create
 from impurityModel.ed import remove
 from impurityModel.ed.average import k_B, thermal_average, thermal_average_scale_indep
 from impurityModel.ed.block_structure import get_equivalent_blocks
-
-from scipy.sparse.linalg import ArpackNoConvergence, ArpackError, eigsh
-from scipy.linalg import qr
 
 
 # MPI variables
@@ -264,7 +263,7 @@ def eigensystem_new(h_local, e_max, k=10, v0=None, eigenValueTol=0, return_eigve
                     h,
                     k=min(vecs.shape[1] + k, h.shape[0] - 2),
                     which="SA",
-                    v0=vecs[:, 0] if len(vecs.shape) > 1 else vecs.resahpe((vecs.shape[0], 1)),
+                    v0=vecs[:, [0]] if len(vecs.shape) > 1 else vecs.resahpe((vecs.shape[0], 1)),
                     ncv=ncv,
                     tol=eigenValueTol if conv_fail else 0,
                 )

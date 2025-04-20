@@ -797,15 +797,20 @@ class Basis:
             vs = np.array(vs)
         res = [{} for _ in range(vs.shape[0])]
         if vs.shape[1] == self.size:
-            for row, (i, state) in itertools.product(range(vs.shape[0]), zip(self.local_indices, self.local_basis)):
-                psi = res[row]
-                if abs(vs[row, i]) > slaterWeightMin:
-                    psi[state] = vs[row, i]
+            # vs = vs[:, self.local_indices]
+            for j, i in np.argwhere(np.abs(vs[:, self.local_indices]) > slaterWeightMin):
+                res[j][self.local_basis[i]] = vs[j, i + self.offset]
+            # for row, (i, state) in itertools.product(range(vs.shape[0]), zip(self.local_indices, self.local_basis)):
+            #     psi = res[row]
+            #     if abs(vs[row, i]) > slaterWeightMin:
+            #         psi[state] = vs[row, i]
         elif vs.shape[1] == len(self.local_basis):
-            for row, (i, state) in itertools.product(range(vs.shape[0]), enumerate(self.local_basis)):
-                psi = res[row]
-                if abs(vs[row, i]) > slaterWeightMin:
-                    psi[state] = vs[row, i]
+            for j, i in np.argwhere(np.abs(vs) > slaterWeightMin):
+                res[j][self.local_basis[i]] = vs[j, i]
+            # for row, (i, state) in itertools.product(range(vs.shape[0]), enumerate(self.local_basis)):
+            #     psi = res[row]
+            #     if abs(vs[row, i]) > slaterWeightMin:
+            #         psi[state] = vs[row, i]
         else:
             raise RuntimeError(
                 f"The dimensions of the input dense vector does not match a distributed, or full vector.\n{vs.shape} != ({vs.shape[0]}, {self.size}) || ({vs.shape[0]}, {len(self.local_basis)})"
