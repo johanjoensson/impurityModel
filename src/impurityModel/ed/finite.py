@@ -2130,18 +2130,18 @@ def applyOp(n_spin_orbitals, op, psi, slaterWeightMin=0, restrictions=None, opRe
     return psiNew
 
 
-def occupation_is_within_restrictions(state, n_spin_orbitals, restrictions):
+def occupation_is_within_restrictions(bits, restrictions):
     """
     Return True if the occupations in state are within the restrictions. Otherwise, return False.
     """
     if restrictions is None:
         return True
-    # state_new_tuple = psr.bytes2tuple(state, n_spin_orbitals)
-    bits = psr.bytes2bitarray(state, n_spin_orbitals)
+    # bits = psr.bytes2bitarray(state, n_spin_orbitals)
     for restriction, occupations in restrictions.items():
-        n = sum(bits[i] for i in restriction)
-        # n = len(restriction.intersection(state_new_tuple))
-        if n < occupations[0] or n > occupations[1]:
+        # n = sum(bits[i] for i in restriction)
+        n = bits[list(restriction)].count(1)
+        # if n < occupations[0] or n > occupations[1]:
+        if not (occupations[0] <= n <= occupations[1]):
             return False
     return True
 
@@ -2220,9 +2220,9 @@ def applyOp_new(n_spin_orbitals: int, op: dict, psi: dict, slaterWeightMin=0, re
         if signTot == 0:
             newResults[state] = newResults.get(state, {})
             continue
-        state_new = psr.bitarray2bytes(state_bits_new)
-        if not occupation_is_within_restrictions(state_new, n_spin_orbitals, restrictions):
+        if not occupation_is_within_restrictions(state_bits_new, restrictions):
             continue
+        state_new = psr.bitarray2bytes(state_bits_new)
         psiNew[state_new] = amp * h * signTot + psiNew.get(state_new, 0)
         if state not in newResults:
             newResults[state] = {}
