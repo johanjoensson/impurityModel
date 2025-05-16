@@ -2239,6 +2239,7 @@ def applyOp_thread_worker(op, psi, n_spin_orbitals, restrictions):
         state_bits_new = psr.bytes2bitarray(state, n_spin_orbitals)
         signTot = 1
         for i, action in process[-1::-1]:
+            sign = 0
             if action == "a":
                 sign = remove.ubitarray(i, state_bits_new)
             elif action == "c":
@@ -2251,9 +2252,9 @@ def applyOp_thread_worker(op, psi, n_spin_orbitals, restrictions):
         if signTot == 0:
             opResult[state] = opResult.get(state, {})
             continue
-        state_new = psr.bitarray2bytes(state_bits_new)
-        if not occupation_is_within_restrictions(state_new, n_spin_orbitals, restrictions):
+        if not occupation_is_within_restrictions(state_bits_new, restrictions):
             continue
+        state_new = psr.bitarray2bytes(state_bits_new)
         psiNew[state_new] = amp * h * signTot + psiNew.get(state_new, 0)
         if state not in opResult:
             opResult[state] = {}
@@ -2364,9 +2365,9 @@ def applyOp_worker(output, op, psi, n_spin_orbitals, restrictions):
         if signTot == 0:
             opResult[state] = opResult.get(state, {})
             continue
-        state_new = psr.bitarray2bytes(state_bits_new)
-        if not occupation_is_within_restrictions(state_new, n_spin_orbitals, restrictions):
+        if not occupation_is_within_restrictions(state_bits_new, restrictions):
             continue
+        state_new = psr.bitarray2bytes(state_bits_new)
         psiNew[state_new] = amp * h * signTot + psiNew.get(state_new, 0)
         if state not in opResult:
             opResult[state] = {}
