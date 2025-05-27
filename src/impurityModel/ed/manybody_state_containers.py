@@ -74,8 +74,10 @@ class StateContainer:
         elif isinstance(key, Sequence) or isinstance(key, Iterable):
             result = list(self._getitem_sequence(key))
             for i, res in enumerate(result):
-                if res == psr.int2bytes(0, self.num_spin_orbitals):
-                    raise IndexError(f"Could not find index {key[i]} in basis with size {self.size}!")
+                if res == bytes(0 for _ in range(self.n_bytes)):
+                    raise IndexError(f"Could not find index {query[i]} in basis with size {self.size}!")
+                # if res == psr.int2bytes(0, self.num_spin_orbitals):
+                #     raise IndexError(f"Could not find index {key[i]} in basis with size {self.size}!")
             return (state for state in result)
         elif isinstance(key, int):
             result = next(self._getitem_sequence([key]))
@@ -100,7 +102,7 @@ class StateContainer:
             res = list(self._index_sequence(val))
             for i, v in enumerate(res):
                 if v >= self.size:
-                    raise ValueError(f"Could not find {val[i]} in basis!")
+                    raise ValueError(f"Could not find {list(val)[i]} in basis!")
             return (i for i in res)
         else:
             raise TypeError(f"Invalid query type {type(val)}! Valid types are {self.dtype} and sequences thereof.")

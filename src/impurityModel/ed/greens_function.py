@@ -164,6 +164,7 @@ def get_Greens_function(
     chain_restrict=False,
     occ_cutoff=5e-2,
     slaterWeightMin=np.finfo(float).eps,
+    dN=2,
 ):
     """
     Calculate interacting Greens function.
@@ -209,6 +210,7 @@ def get_Greens_function(
             occ_restrict=occ_restrict,
             chain_restrict=chain_restrict,
             occ_cutoff=occ_cutoff,
+            dN=dN,
         )
         gsPS_matsubara, gsPS_realaxis, excited_basis_sizes_PS[bis[block_i]] = calc_Greens_function_with_offdiag(
             hOp,
@@ -226,6 +228,7 @@ def get_Greens_function(
             occ_restrict=occ_restrict,
             chain_restrict=chain_restrict,
             occ_cutoff=occ_cutoff,
+            dN=dN,
         )
 
         if matsubara_mesh is not None and block_basis.comm.rank == 0:
@@ -307,6 +310,7 @@ def calc_Greens_function_with_offdiag(
     occ_restrict=True,
     chain_restrict=False,
     occ_cutoff=5e-2,
+    dN=2,
 ):
     r"""
         Return Green's function for states with low enough energy.
@@ -390,9 +394,9 @@ def calc_Greens_function_with_offdiag(
             excited_restrictions = eigen_basis.build_excited_restrictions(
                 bath_rhos=bath_rhos,
                 bath_indices=bath_indices,
-                imp_change=(1, 1),
-                val_change=(1, 0),
-                con_change=(0, 1),
+                imp_change=(dN, dN) if dN is not None else None,
+                val_change=(dN, 0) if dN is not None else None,
+                con_change=(0, dN) if dN is not None else None,
                 occ_cutoff=occ_cutoff,
             )
         else:
@@ -1332,7 +1336,7 @@ def save_Greens_function(gs, omega_mesh, label, cluster_label, e_scale=1, tol=1e
             if np.any(np.abs(gs[:, row, column]) > tol):
                 off_diags.append((row, column))
 
-    print(f"Writing {axis_label} {label} to files")
+    print(f"Writing {label}{axis_label}-{cluster_label} to files")
     with open(f"real-{label}{axis_label}-{cluster_label}.dat", "w") as fg_real, open(
         f"imag-{label}{axis_label}-{cluster_label}.dat", "w"
     ) as fg_imag:
@@ -1351,20 +1355,20 @@ def save_Greens_function(gs, omega_mesh, label, cluster_label, e_scale=1, tol=1e
         fg_imag.write(header + "\n")
         for i, w in enumerate(omega_mesh):
             fg_real.write(
-                f"{w*e_scale} {np.real(np.sum(np.diag(gs[i, :, :])))} "
-                + f"{np.real(np.sum(np.diag(gs[i, :n_orb//2, :n_orb//2])))} "
-                + f"{np.real(np.sum(np.diag(gs[i, n_orb//2:, n_orb//2:])))} "
-                + " ".join(f"{np.real(el)}" for el in np.diag(gs[i, :, :]))
+                f"{w*e_scale} {np.real(np.sum(np.diag(gs[i, :, :])))/e_scale} "
+                + f"{np.real(np.sum(np.diag(gs[i, :n_orb//2, :n_orb//2])))/e_scale} "
+                + f"{np.real(np.sum(np.diag(gs[i, n_orb//2:, n_orb//2:])))/e_scale} "
+                + " ".join(f"{np.real(el)/e_scale}" for el in np.diag(gs[i, :, :]))
                 + " "
-                + " ".join(f"{np.real(gs[i, row, column])}" for row, column in off_diags)
+                + " ".join(f"{np.real(gs[i, row, column])/e_scale}" for row, column in off_diags)
                 + "\n"
             )
             fg_imag.write(
-                f"{w*e_scale} {np.imag(np.sum(np.diag(gs[i, :, :])))} "
-                + f"{np.imag(np.sum(np.diag(gs[i, :n_orb//2, :n_orb//2])))} "
-                + f"{np.imag(np.sum(np.diag(gs[i, n_orb//2:, n_orb//2:])))} "
-                + " ".join(f"{np.imag(el)}" for el in np.diag(gs[i, :, :]))
+                f"{w*e_scale} {np.imag(np.sum(np.diag(gs[i, :, :])))/e_scale} "
+                + f"{np.imag(np.sum(np.diag(gs[i, :n_orb//2, :n_orb//2])))/e_scale} "
+                + f"{np.imag(np.sum(np.diag(gs[i, n_orb//2:, n_orb//2:])))/e_scale} "
+                + " ".join(f"{np.imag(el)/e_scale}" for el in np.diag(gs[i, :, :]))
                 + " "
-                + " ".join(f"{np.imag(gs[i, row, column])}" for row, column in off_diags)
+                + " ".join(f"{np.imag(gs[i, row, column])/e_scale}" for row, column in off_diags)
                 + "\n"
             )

@@ -253,12 +253,12 @@ class Basis:
 
     def build_excited_restrictions(
         self,
-        bath_rhos=None,
-        bath_indices=None,
-        imp_change=(1, 1),
-        val_change=(1, 0),
-        con_change=(0, 1),
-        occ_cutoff=5e-2,
+        bath_rhos,
+        bath_indices,
+        imp_change,
+        val_change,
+        con_change,
+        occ_cutoff,
     ):
         if bath_rhos is not None:
             if bath_indices is None:
@@ -293,44 +293,18 @@ class Basis:
                     ]
                     full_bath_states[i].append(filled_baths[:-1])
                     empty_bath_states[i].append(empty_baths[1:])
-            # full_bath_states = {
-            #     i: [
-            #         frozenset(
-            #             orb
-            #             for orbs, occs in zip(
-            #                 batched(block_orbs, len(self.impurity_orbitals[i][block_i])),
-            #                 batched(block_occs, len(self.impurity_orbitals[i][block_i])),
-            #             )
-            #             for orb in orbs
-            #             if sum(occs) / len(orbs) > 0.99
-            #         )
-            #         for block_i, (block_orbs, block_occs) in enumerate(zip(bath_indices[i], bath_occupations[i]))
-            #     ]
-            #     for i in bath_occupations.keys()
-            # }
-            # empty_bath_states = {
-            #     i: [
-            #         frozenset(
-            #             orb
-            #             for orbs, occs in zip(
-            #                 batched(block_orbs, len(self.impurity_orbitals[i][block_i])),
-            #                 batched(block_occs, len(self.impurity_orbitals[i][block_i])),
-            #             )
-            #             for orb in orbs
-            #             if sum(occs) / len(orbs) < 0.01
-            #         )
-            #         for block_i, (block_orbs, block_occs) in enumerate(zip(bath_indices[i], bath_occupations[i]))
-            #     ]
-            #     for i in bath_occupations.keys()
-            # }
         else:
             full_bath_states = {i: [] for i in self.impurity_orbitals.keys()}
             empty_bath_states = {i: [] for i in self.impurity_orbitals.keys()}
 
-        imp_reduce, imp_increase = imp_change
-        val_reduce, _ = val_change
-        _, con_increase = con_change
         valence_baths, conduction_baths = self.bath_states
+
+        if imp_change is not None:
+            imp_reduce, imp_increase = imp_change
+        if val_change is not None:
+            val_reduce, _ = val_change
+        if con_change is not None:
+            _, con_increase = con_change
 
         new_valence_baths = {
             i: [
@@ -360,38 +334,40 @@ class Basis:
             i: sum(len(orbs) for orbs in valence_baths[i]) - sum(len(orbs) for orbs in new_valence_baths[i])
             for i in valence_baths.keys()
         }
-        con_diff = {
-            i: sum(len(orbs) for orbs in conduction_baths[i]) - sum(len(orbs) for orbs in new_conduction_baths[i])
-            for i in conduction_baths.keys()
-        }
         restrictions = self.get_effective_restrictions()
         excited_restrictions = {}
         for i in self.impurity_orbitals.keys():
+
             impurity_indices = frozenset(ind for imp_ind in self.impurity_orbitals[i] for ind in imp_ind)
-            if len(impurity_indices) > 0:
+            if len(impurity_indices) > 0 and imp_change is not None:
                 r_min_imp, r_max_imp = restrictions[impurity_indices]
                 min_imp = max(r_min_imp - imp_reduce, 0)
                 max_imp = min(r_max_imp + imp_increase, sum(len(orbs) for orbs in self.impurity_orbitals[i]))
                 excited_restrictions[impurity_indices] = (min_imp, max_imp)
-            valence_indices = frozenset(ind for val_ind in valence_baths[i] for ind in val_ind)
-            new_valence_indices = frozenset(ind for val_ind in new_valence_baths[i] for ind in val_ind)
+
             min_val = 0
             max_val = 0
-            if len(valence_indices) > 0:
-                r_min_val, r_max_val = restrictions[valence_indices]
-                min_val = max(r_min_val - val_diff[i] - val_reduce, 0)
-                max_val = sum(len(orbs) for orbs in new_valence_baths[i])
-                # excited_restrictions[new_valence_indices] = (min_val, max_val)
-            conduction_indices = frozenset(ind for con_ind in conduction_baths[i] for ind in con_ind)
-            new_conduction_indices = frozenset(ind for con_ind in new_conduction_baths[i] for ind in con_ind)
-            min_cond = 0
+            new_valence_indices = frozenset()
+            if val_change is not None:
+                valence_indices = frozenset(ind for val_ind in valence_baths[i] for ind in val_ind)
+                new_valence_indices = frozenset(ind for val_ind in new_valence_baths[i] for ind in val_ind)
+                max_val = len(new_valence_indices)
+                if len(valence_indices) > 0:
+                    r_min_val, _ = restrictions[valence_indices]
+                    min_val = max(r_min_val - val_diff[i] - val_reduce, 0)
+
             max_cond = 0
-            if len(conduction_indices) > 0:
-                r_min_cond, r_max_cond = restrictions[conduction_indices]
-                min_cond = 0
-                max_cond = min(r_max_cond + con_increase, sum(len(orbs) for orbs in new_conduction_baths[i]))
-                # excited_restrictions[new_conduction_indices] = (min_cond, max_cond)
-            excited_restrictions[new_valence_indices.union(new_conduction_indices)] = (min_val, max_val + max_cond)
+            new_conduction_indices = frozenset()
+            if con_change is not None:
+                conduction_indices = frozenset(ind for con_ind in conduction_baths[i] for ind in con_ind)
+                new_conduction_indices = frozenset(ind for con_ind in new_conduction_baths[i] for ind in con_ind)
+                if len(conduction_indices) > 0:
+                    _, r_max_cond = restrictions[conduction_indices]
+                    max_cond = min(r_max_cond + con_increase, sum(len(orbs) for orbs in new_conduction_baths[i]))
+
+            if val_change is not None or con_change is not None:
+                excited_restrictions[new_valence_indices.union(new_conduction_indices)] = (min_val, max_val + max_cond)
+
             num_full_bath_states = sum(len(full_indices) for full_indices in full_bath_states[i])
             if num_full_bath_states > 0:
                 excited_restrictions[frozenset(orb for full_indices in full_bath_states[i] for orb in full_indices)] = (

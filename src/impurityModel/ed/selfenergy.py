@@ -331,6 +331,7 @@ def calc_selfenergy(
     occ_cutoff,
     truncation_threshold,
     slaterWeightMin,
+    dN,
 ):
     """
     Calculate the self energy of the impurity.
@@ -455,6 +456,7 @@ def calc_selfenergy(
         chain_restrict=chain_restrict,
         occ_cutoff=occ_cutoff,
         slaterWeightMin=slaterWeightMin,
+        dN=dN,
     )
     if gs_matsubara is not None:
         try:
