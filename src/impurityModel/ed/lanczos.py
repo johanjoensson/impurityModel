@@ -197,6 +197,56 @@ def estimate_orthonormality(W, alphas, betas, eps=np.finfo(float).eps, N=1, rng=
     return W_out
 
 
+def qr_decomp_new(basis, psi):
+    print(f"{psi=}")
+
+    def reflect(v, x):
+        p = inner(v, x)
+        p = basis.comm.allreduce(p, op=MPI.SUM)
+        res = subtractOps(x, scale(v, 2 * p))
+        return {state: amp for state, amp in res.items() if abs(amp) ** 2 > 0 * np.finfo(float).eps}
+
+    k_max = min(len(psi), basis.size - 1)
+    selected_states = list(basis[range(k_max)])
+    A = psi.copy()
+    vs = [None for _ in range(k_max)]
+    for i, state in enumerate(selected_states):
+        x = {s: amp for s, amp in A[i].items() if s not in selected_states[:i]}
+        x_norm = np.sqrt(basis.comm.allreduce(norm2(x)))
+        if state in A[i]:
+            xi = A[i][state]
+            alpha = -rect(x_norm, phase(xi))
+        else:
+            alpha = 0
+        alpha = basis.comm.allreduce(alpha)
+        u = subtractOps(x, scale({state: 1}, alpha))
+        u_norm = np.sqrt(basis.comm.allreduce(norm2(u)))
+        v = scale(u, 1 / u_norm)
+        # Q = lambda x: reflect(v, x)
+        vs[i] = v
+        tmp = [{s: amp for s, amp in A[i].items() if s not in selected_states[:i]} for i in range(len(A))]
+        for j, y in enumerate(tmp):
+            tmp[j] = reflect(v, y)
+        for j, s in itertools.product(range(len(tmp)), selected_states[:i]):
+            if s in A[j]:
+                tmp[j][s] = A[j][s]
+        A = tmp
+    Q = [{} for _ in psi]
+    for (i, state_i), (j, state_j) in itertools.product(enumerate(basis.local_basis), enumerate(selected_states)):
+        x = {state_j: 1}
+        for v in reversed(vs):
+            p = np.conj(v.get(state, 0))
+            x = subtractOps(x, scale(v, 2 * p))
+        if state_i in x:
+            Q[j][state_i] = x[state_i] + Q[j].get(state_i, 0)
+
+    R = basis.build_vector(A, root=0)
+    R = basis.comm.bcast(R)
+    print(f"{Q=}")
+    print(f"{R=}")
+    return Q, R
+
+
 def qr_decomp(psi, pivoting=False):
     if pivoting:
         psi, beta, p = sp.linalg.qr(psi, mode="economic", overwrite_a=True, check_finite=False, pivoting=True)
@@ -354,6 +404,191 @@ def get_block_Lanczos_matrices(
         print(f"=> time(get_block_Lanczons_matrices) = {perf_counter() - t0:.4f} seconds.")
         print("=" * 80)
     return alphas, betas, Q.vectors[: len(Q)].T if Q is not None else None
+
+
+def block_lanczos_sparse(
+    psi0: list[dict],
+    h_op: dict,
+    basis: Basis,
+    converged: Callable[[np.ndarray, np.ndarray], bool],
+    h_mem: Optional[dict] = None,
+    verbose: bool = False,
+    reort: Reort = Reort.NONE,
+    slaterWeightMin: float = 0,
+) -> (np.ndarray, np.ndarray, Optional[list[dict]]):
+    if h_mem is None:
+        h_mem = {}
+    mpi = basis.comm is not None
+    comm = basis.comm if mpi else MPI.COMM_SELF
+    rank = basis.comm.rank if mpi else 0
+    build_krylov_basis = reort != Reort.NONE
+    n = len(psi0)
+    columns = n
+    N_max = basis.size
+    if mpi:
+        psi_len = basis.comm.allreduce(sum(len(psi) for psi in psi0), op=MPI.SUM)
+    else:
+        psi_len = sum(len(psi) for psi in psi0)
+    if psi_len == 0:
+        return (
+            np.zeros((1, n, n), dtype=complex),
+            np.zeros((1, n, n), dtype=complex),
+            psi0 if build_krylov_basis else None,
+        )
+
+    alphas = np.empty((0, n, n), dtype=complex)
+    betas = np.empty((0, n, n), dtype=complex)
+    q = [[{}] * n, psi0]
+    if build_krylov_basis:
+        Q = list(psi0)
+
+    eps = max(slaterWeightMin, np.finfo(float).eps)
+
+    it = 0
+    done = False
+    converge_count = 0
+    wp = [None] * n
+    while (it + 1) * n < basis.size or it == 0:
+        wp = [
+            applyOp(
+                basis.num_spin_orbitals,
+                h_op,
+                psi_i,
+                slaterWeightMin=slaterWeightMin,
+                restrictions=basis.restrictions,
+                opResult=h_mem,
+            )
+            for psi_i in q[1]
+        ]
+        wp = basis.redistribute_psis(wp)
+
+        wp_size = np.array([len(psi) for psi in wp], dtype=int)
+        comm.Allreduce(MPI.IN_PLACE, wp_size, op=MPI.SUM)
+        cutoff = eps
+        n_trunc = 0
+        while np.max(wp_size) > basis.truncation_threshold:
+            wp = [{state: w for state, w in psi.items() if abs(w) >= cutoff} for psi in wp]
+            comm.Allreduce(np.array([len(psi) for psi in wp]), wp_size, op=MPI.SUM)
+            cutoff *= 5
+            n_trunc += 1
+
+        if n_trunc > 0:
+            basis.clear()
+
+        basis.add_states(
+            state
+            for psi in wp
+            for state in psi
+            for state_idx in [bisect_left(basis.local_basis, state)]
+            if state_idx == len(basis.local_basis) or basis.local_basis[state_idx] != state
+        )
+        N_max = max(N_max, basis.size)
+        tmp = basis.redistribute_psis(itertools.chain(q[0], q[1], wp))
+        q[0] = tmp[0:n]
+        q[1] = tmp[n : 2 * n]
+        wp = tmp[2 * n :]
+        alpha = np.empty((n, n), dtype=complex)
+        for i, j in itertools.product(range(n), repeat=2):
+            alpha[i, j] = inner(wp[i], wp[j])
+        alphas = np.append(alphas, np.empty((1, n, n), dtype=complex), axis=0)
+        if mpi:
+            request = comm.Iallreduce(alpha, alphas[-1], op=MPI.SUM)
+        else:
+            alphas[-1, :, :] = alpha
+
+        betas = np.append(betas, np.zeros((1, n, n), dtype=complex, order="C"), axis=0)
+
+        tmp = [{} for _ in wp]
+        for i, j in itertools.product(range(n), repeat=2):
+            tmp[i] = addOps(tmp[i], scale(q[1][i], alpha[i, j]))
+
+        # psip -= psi @ alphas[it] + psim @ np.conj(betas[it - 1].T)
+        # psip = np.ascontiguousarray(psip)
+        if mpi:
+            offsets = np.fromiter((np.sum(send_counts[:i]) for i in range(comm.size)), dtype=int, count=comm.size)
+        if reort == Reort.FULL or reort == Reort.PERIODIC and it % 5 < 2:
+            Qt = basis.redistribute_psis(Q)
+            Qm = basis.build_distributed_vector(Qt).T
+            tmp = np.conj(Qm.T) @ psip
+            if mpi:
+                comm.Allreduce(MPI.IN_PLACE, tmp, op=MPI.SUM)
+            psip -= Qm @ tmp
+
+        qip = np.empty((basis.size, n), dtype=complex, order="C") if rank == 0 else None
+        if mpi:
+            comm.Gatherv(np.ascontiguousarray(psip), [qip, send_counts, offsets, MPI.C_DOUBLE_COMPLEX], root=0)
+        else:
+            qip = psip
+
+        if rank == 0:
+            qip, betas[-1], _ = qr_decomp(qip)
+            qip = np.ascontiguousarray(qip)
+            assert columns == qip.shape[1]
+            _, columns = qip.shape
+        if mpi:
+            comm.Bcast(betas[-1], root=0)
+
+        if reort == Reort.PARTIAL:
+            W = estimate_orthonormality(W, alphas, betas, N=max(basis.size, 100), eps=eps)
+
+            mask = np.append(mask, [False] * n)
+            orth_loss = np.any(np.abs(W[1, :-1]) > np.sqrt(eps))
+
+            if orth_loss:
+                block_mask = np.abs(W[1, :-1]) > eps ** (3 / 4)
+                mask = np.logical_or(mask, np.any(block_mask, axis=2).flatten())
+            perform_reort = orth_loss or force_reort
+            force_reort = orth_loss
+            if perform_reort:
+                W[1, np.argwhere(block_mask)] = eps
+                Qt = basis.redistribute_psis(itertools.compress(Q, mask))
+                Qm = basis.build_distributed_vector(Qt).T
+                tmp = np.conj(Qm.T) @ psip
+                if mpi:
+                    comm.Allreduce(MPI.IN_PLACE, tmp, op=MPI.SUM)
+                psip -= Qm @ tmp
+                perform_reort = False
+
+                qip = np.empty((basis.size, n), dtype=complex, order="C") if rank == 0 else None
+                if mpi:
+                    comm.Gatherv(np.ascontiguousarray(psip), [qip, send_counts, offsets, MPI.C_DOUBLE_COMPLEX], root=0)
+                else:
+                    qip = psip
+                if rank == 0:
+                    qip, betas[-1], _ = qr_decomp(qip)
+                    qip = np.ascontiguousarray(qip)
+                    _, columns = qip.shape
+                if mpi:
+                    comm.Bcast(betas[-1], root=0)
+        if mpi:
+            columns = comm.bcast(columns if rank == 0 else None)
+            request = comm.Iscatterv([qip, send_counts, offsets, MPI.C_DOUBLE_COMPLEX], psip, root=0)
+        else:
+            psip = qip
+
+        done = converged(alphas, betas, verbose=reort == Reort.PARTIAL)
+
+        if mpi:
+            done = comm.allreduce(done, op=MPI.LAND)
+
+        converge_count = (1 + converge_count) if done else 0
+        if converge_count > 0:
+            break
+
+        q[0] = q[1]
+        q[1] = [{} for _ in range(columns)]
+        if mpi:
+            request.Wait()
+        # for i, j in np.argwhere(np.abs(psip) > slaterWeightMin):
+        q[1] = basis.build_state(psip.T)
+        # for i, j in itertools.product(range(psip.shape[0]), range(psip.shape[1])):
+        #     state = basis.local_basis[i]
+        #     q[1][j][state] = psip[i, j]
+
+        if build_krylov_basis:
+            Q.extend(q[1])
+        it += 1
+    return alphas, betas, Q if build_krylov_basis else None
 
 
 def block_lanczos(
