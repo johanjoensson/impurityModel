@@ -521,8 +521,24 @@ def block_lanczos_sparse(
             if basis.comm.rank == 0:
                 psip, betas[-1], _ = qr_decomp(psip.T)
             comm.bcast(betas[-1], root=0)
-            psip = comm.bcast(psip, root=0)
-            wp = basis.build_state(psip.T)
+            psip_local = np.empty((len(basis.local_basis), betas.shape[-1]), dtype=complex, order="C")
+            send_counts = np.empty((basis.comm.size), dtype=int) if basis.comm.rank == 0 else None
+            basis.comm.Gather(np.array([psip_local.size]), send_counts if basis.comm.rank == 0 else None)
+            offsets = (
+                np.array([np.sum(send_counts[:r]) for r in range(comm.size)], dtype=int)
+                if basis.comm.rank == 0
+                else None
+            )
+            comm.Scatterv(
+                (
+                    [np.ascontiguousarray(psip), send_counts, offsets, MPI.C_DOUBLE_COMPLEX]
+                    if basis.comm.rank == 0
+                    else None
+                ),
+                psip_local,
+                root=0,
+            )
+            wp = basis.build_state(psip_local.T, slaterWeightMin=np.finfo(float).eps)
 
         done = converged(alphas, betas, verbose=reort == Reort.PARTIAL)
 

@@ -706,7 +706,6 @@ def block_Green(
             print(rf"{δ=}")
         return δ < max(slaterWeightMin, 1e-6)
 
-    t0 = time.perf_counter()
     # Run Lanczos on psi0^T* [wI - j*delta - H]^-1 psi0
     alphas, betas, _ = block_lanczos(
         psi0=psi,
