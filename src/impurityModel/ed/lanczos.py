@@ -198,15 +198,23 @@ def estimate_orthonormality(W, alphas, betas, eps=np.finfo(float).eps, N=1, rng=
 
 
 def qr_decomp_new(basis, psi):
-    print(f"{psi=}")
+    print(f"{len(psi)=}")
+
+    if basis.size <= len(psi):
+        v = basis.build_vector(psi, root=0)
+        if basis.comm.rank == 0:
+            q, r, _ = qr_decomp(v.T)
+        q = basis.comm.bcast(q if basis.comm.rank == 0 else None, root=0)
+        r = basis.comm.bcast(q if basis.comm.rank == 0 else None, root=0)
+        return basis.build_state(q.T), r
 
     def reflect(v, x):
         p = inner(v, x)
         p = basis.comm.allreduce(p, op=MPI.SUM)
-        res = subtractOps(x, scale(v, 2 * p))
-        return {state: amp for state, amp in res.items() if abs(amp) ** 2 > 0 * np.finfo(float).eps}
+        return subtractOps(x, scale(v, 2 * p))
 
     k_max = min(len(psi), basis.size - 1)
+    print(f"{k_max=}")
     selected_states = list(basis[range(k_max)])
     A = psi.copy()
     vs = [None for _ in range(k_max)]
@@ -232,19 +240,19 @@ def qr_decomp_new(basis, psi):
                 tmp[j][s] = A[j][s]
         A = tmp
     Q = [{} for _ in psi]
+    print(f"{len(Q)=} {k_max=}")
     for (i, state_i), (j, state_j) in itertools.product(enumerate(basis.local_basis), enumerate(selected_states)):
         x = {state_j: 1}
-        for v in reversed(vs):
-            p = np.conj(v.get(state, 0))
+        for v in vs:
+            p = np.conj(v.get(state_j, 0))
             x = subtractOps(x, scale(v, 2 * p))
         if state_i in x:
             Q[j][state_i] = x[state_i] + Q[j].get(state_i, 0)
 
-    R = basis.build_vector(A, root=0)
-    R = basis.comm.bcast(R)
-    print(f"{Q=}")
-    print(f"{R=}")
-    return Q, R
+    R = basis.build_vector(A)
+    print(f"{R.shape=}")
+    print(f"Q = {[{state: amp for state, amp in q.items()} for q in Q]}")
+    return [{state: amp for state, amp in q.items() if amp > np.finfo(float).eps} for q in Q], R[:k_max, :k_max]
 
 
 def qr_decomp(psi, pivoting=False):
@@ -420,10 +428,8 @@ def block_lanczos_sparse(
         h_mem = {}
     mpi = basis.comm is not None
     comm = basis.comm if mpi else MPI.COMM_SELF
-    rank = basis.comm.rank if mpi else 0
     build_krylov_basis = reort != Reort.NONE
     n = len(psi0)
-    columns = n
     N_max = basis.size
     if mpi:
         psi_len = basis.comm.allreduce(sum(len(psi) for psi in psi0), op=MPI.SUM)
@@ -460,7 +466,7 @@ def block_lanczos_sparse(
             )
             for psi_i in q[1]
         ]
-        wp = basis.redistribute_psis(wp)
+        # wp = basis.redistribute_psis(wp)
 
         wp_size = np.array([len(psi) for psi in wp], dtype=int)
         comm.Allreduce(MPI.IN_PLACE, wp_size, op=MPI.SUM)
@@ -489,7 +495,7 @@ def block_lanczos_sparse(
         wp = tmp[2 * n :]
         alpha = np.empty((n, n), dtype=complex)
         for i, j in itertools.product(range(n), repeat=2):
-            alpha[i, j] = inner(wp[i], wp[j])
+            alpha[i, j] = inner(q[1][i], wp[j])
         alphas = np.append(alphas, np.empty((1, n, n), dtype=complex), axis=0)
         if mpi:
             request = comm.Iallreduce(alpha, alphas[-1], op=MPI.SUM)
@@ -498,73 +504,25 @@ def block_lanczos_sparse(
 
         betas = np.append(betas, np.zeros((1, n, n), dtype=complex, order="C"), axis=0)
 
+        if mpi:
+            request.wait()
         tmp = [{} for _ in wp]
         for i, j in itertools.product(range(n), repeat=2):
-            tmp[i] = addOps(tmp[i], scale(q[1][i], alpha[i, j]))
+            tmp[i] = addOps((tmp[i], scale(q[1][j], alpha[j, i])))
+            tmp[i] = addOps((tmp[i], scale(q[0][j], np.conj(betas[it - 1, i, j]))))
+        for i in range(n):
+            wp[i] = subtractOps(wp[i], tmp[i])
 
-        # psip -= psi @ alphas[it] + psim @ np.conj(betas[it - 1].T)
-        # psip = np.ascontiguousarray(psip)
-        if mpi:
-            offsets = np.fromiter((np.sum(send_counts[:i]) for i in range(comm.size)), dtype=int, count=comm.size)
-        if reort == Reort.FULL or reort == Reort.PERIODIC and it % 5 < 2:
-            Qt = basis.redistribute_psis(Q)
-            Qm = basis.build_distributed_vector(Qt).T
-            tmp = np.conj(Qm.T) @ psip
-            if mpi:
-                comm.Allreduce(MPI.IN_PLACE, tmp, op=MPI.SUM)
-            psip -= Qm @ tmp
-
-        qip = np.empty((basis.size, n), dtype=complex, order="C") if rank == 0 else None
-        if mpi:
-            comm.Gatherv(np.ascontiguousarray(psip), [qip, send_counts, offsets, MPI.C_DOUBLE_COMPLEX], root=0)
+        if False:
+            print(f"{n=}")
+            wp, betas[-1] = qr_decomp_new(basis, wp)
         else:
-            qip = psip
-
-        if rank == 0:
-            qip, betas[-1], _ = qr_decomp(qip)
-            qip = np.ascontiguousarray(qip)
-            assert columns == qip.shape[1]
-            _, columns = qip.shape
-        if mpi:
-            comm.Bcast(betas[-1], root=0)
-
-        if reort == Reort.PARTIAL:
-            W = estimate_orthonormality(W, alphas, betas, N=max(basis.size, 100), eps=eps)
-
-            mask = np.append(mask, [False] * n)
-            orth_loss = np.any(np.abs(W[1, :-1]) > np.sqrt(eps))
-
-            if orth_loss:
-                block_mask = np.abs(W[1, :-1]) > eps ** (3 / 4)
-                mask = np.logical_or(mask, np.any(block_mask, axis=2).flatten())
-            perform_reort = orth_loss or force_reort
-            force_reort = orth_loss
-            if perform_reort:
-                W[1, np.argwhere(block_mask)] = eps
-                Qt = basis.redistribute_psis(itertools.compress(Q, mask))
-                Qm = basis.build_distributed_vector(Qt).T
-                tmp = np.conj(Qm.T) @ psip
-                if mpi:
-                    comm.Allreduce(MPI.IN_PLACE, tmp, op=MPI.SUM)
-                psip -= Qm @ tmp
-                perform_reort = False
-
-                qip = np.empty((basis.size, n), dtype=complex, order="C") if rank == 0 else None
-                if mpi:
-                    comm.Gatherv(np.ascontiguousarray(psip), [qip, send_counts, offsets, MPI.C_DOUBLE_COMPLEX], root=0)
-                else:
-                    qip = psip
-                if rank == 0:
-                    qip, betas[-1], _ = qr_decomp(qip)
-                    qip = np.ascontiguousarray(qip)
-                    _, columns = qip.shape
-                if mpi:
-                    comm.Bcast(betas[-1], root=0)
-        if mpi:
-            columns = comm.bcast(columns if rank == 0 else None)
-            request = comm.Iscatterv([qip, send_counts, offsets, MPI.C_DOUBLE_COMPLEX], psip, root=0)
-        else:
-            psip = qip
+            psip = basis.build_vector(wp, root=0)
+            if basis.comm.rank == 0:
+                psip, betas[-1], _ = qr_decomp(psip.T)
+            comm.bcast(betas[-1], root=0)
+            psip = comm.bcast(psip, root=0)
+            wp = basis.build_state(psip.T)
 
         done = converged(alphas, betas, verbose=reort == Reort.PARTIAL)
 
@@ -576,14 +534,7 @@ def block_lanczos_sparse(
             break
 
         q[0] = q[1]
-        q[1] = [{} for _ in range(columns)]
-        if mpi:
-            request.Wait()
-        # for i, j in np.argwhere(np.abs(psip) > slaterWeightMin):
-        q[1] = basis.build_state(psip.T)
-        # for i, j in itertools.product(range(psip.shape[0]), range(psip.shape[1])):
-        #     state = basis.local_basis[i]
-        #     q[1][j][state] = psip[i, j]
+        q[1] = wp
 
         if build_krylov_basis:
             Q.extend(q[1])

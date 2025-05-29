@@ -6,7 +6,7 @@ from typing import Optional, Iterable
 
 from impurityModel.ed import spectra
 from impurityModel.ed import finite
-from impurityModel.ed.lanczos import get_block_Lanczos_matrices, block_lanczos
+from impurityModel.ed.lanczos import get_block_Lanczos_matrices, block_lanczos, block_lanczos_sparse
 from impurityModel.ed.manybody_basis import CIPSI_Basis, Basis
 from impurityModel.ed.cg import bicgstab
 from impurityModel.ed.block_structure import BlockStructure, get_block_structure
@@ -718,8 +718,6 @@ def block_Green(
         slaterWeightMin=slaterWeightMin,
         reort=reort,
     )
-
-    t0 = time.perf_counter()
 
     gs_matsubara, gs_realaxis = calc_mpi_Greens_function_from_alpha_beta(
         alphas, betas, iws, ws, e, delta, r, verbose, comm=comm
