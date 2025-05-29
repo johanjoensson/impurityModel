@@ -619,7 +619,6 @@ def block_lanczos(
             )
             for psi_i in q[1]
         ]
-        wp = basis.redistribute_psis(wp)
 
         wp_size = np.array([len(psi) for psi in wp], dtype=int)
         comm.Allreduce(MPI.IN_PLACE, wp_size, op=MPI.SUM)
@@ -743,11 +742,7 @@ def block_lanczos(
         q[1] = [{} for _ in range(columns)]
         if mpi:
             request.Wait()
-        # for i, j in np.argwhere(np.abs(psip) > slaterWeightMin):
         q[1] = basis.build_state(psip.T, slaterWeightMin=np.finfo(float).eps)
-        # for i, j in itertools.product(range(psip.shape[0]), range(psip.shape[1])):
-        #     state = basis.local_basis[i]
-        #     q[1][j][state] = psip[i, j]
 
         if build_krylov_basis:
             Q.extend(q[1])
