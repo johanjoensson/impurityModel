@@ -9,7 +9,17 @@ from typing import Optional, NamedTuple, Callable
 from mpi4py import MPI
 from impurityModel.ed.manybody_basis import Basis
 from impurityModel.ed.krylovBasis import KrylovBasis
-from impurityModel.ed.finite import applyOp_new as applyOp, inner, matmul, removeFromFirst
+from impurityModel.ed.finite import (
+    applyOp_new as applyOp,
+    inner,
+    matmul,
+    removeFromFirst,
+    addOps,
+    subtractOps,
+    scale,
+    norm2,
+)
+from cmath import phase, rect
 
 
 class Reort(Enum):
@@ -532,7 +542,7 @@ def block_lanczos(
         if mpi:
             request.Wait()
         # for i, j in np.argwhere(np.abs(psip) > slaterWeightMin):
-        q[1] = basis.build_state(psip.T)
+        q[1] = basis.build_state(psip.T, slaterWeightMin=np.finfo(float).eps)
         # for i, j in itertools.product(range(psip.shape[0]), range(psip.shape[1])):
         #     state = basis.local_basis[i]
         #     q[1][j][state] = psip[i, j]

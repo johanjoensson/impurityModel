@@ -657,7 +657,8 @@ def block_Green(
         psi_dense_local,
         root=0,
     )
-    psi = basis.build_state(psi_dense_local.T)
+    psi = basis.build_state(psi_dense_local.T, slaterWeightMin=np.finfo(float).eps)
+    r[np.abs(r) < np.finfo(float).eps] = 0
 
     if len(psi) == 0:
         return np.zeros((len(iws), n, n), dtype=complex), np.zeros((len(ws), n, n), dtype=complex)
@@ -703,7 +704,7 @@ def block_Green(
         δ = np.max(np.abs(gs_new - gs_prev))
         if verbose:
             print(rf"{δ=}")
-        return δ < max(slaterWeightMin, 1e-12)
+        return δ < max(slaterWeightMin, 1e-6)
 
     t0 = time.perf_counter()
     # Run Lanczos on psi0^T* [wI - j*delta - H]^-1 psi0
