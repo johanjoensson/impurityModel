@@ -398,6 +398,7 @@ def calc_Greens_function_with_offdiag(
                 val_change=(dN, 0) if dN is not None else None,
                 con_change=(0, dN) if dN is not None else None,
                 occ_cutoff=occ_cutoff,
+                collapse_chains=False,
             )
         else:
             excited_restrictions = None

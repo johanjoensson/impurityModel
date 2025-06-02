@@ -251,48 +251,48 @@ class Basis:
                 restrictions[conduction_indices] = (min_con, max_con)
         return restrictions
 
+    def _build_full_empty_bath_states(self, bath_rhos, bath_indices, occ_cutoff):
+
+        bath_occupations = {i: [np.diag(bath_rho) for bath_rho in brs] for i, brs in bath_rhos.items()}
+        full_bath_states = {}
+        empty_bath_states = {}
+        for i in bath_occupations.keys():
+            full_bath_states[i] = []
+            empty_bath_states[i] = []
+            for block_i, (block_orbs, block_occs) in enumerate(zip(bath_indices[i], bath_occupations[i])):
+                filled_baths = [
+                    orb
+                    for orbs, occs in zip(
+                        batched(block_orbs, len(self.impurity_orbitals[i][block_i])),
+                        batched(block_occs, len(self.impurity_orbitals[i][block_i])),
+                    )
+                    for orb in orbs
+                    if sum(occs) / len(orbs) >= 1 - occ_cutoff
+                ]
+                empty_baths = [
+                    orb
+                    for orbs, occs in zip(
+                        batched(block_orbs, len(self.impurity_orbitals[i][block_i])),
+                        batched(block_occs, len(self.impurity_orbitals[i][block_i])),
+                    )
+                    for orb in orbs
+                    if sum(occs) / len(orbs) <= occ_cutoff
+                ]
+                full_bath_states[i].append(filled_baths[:-1])
+                empty_bath_states[i].append(empty_baths[1:])
+        return full_bath_states, empty_bath_states
+
     def build_excited_restrictions(
-        self,
-        bath_rhos,
-        bath_indices,
-        imp_change,
-        val_change,
-        con_change,
-        occ_cutoff,
+        self, bath_rhos, bath_indices, imp_change, val_change, con_change, occ_cutoff, collapse_chains=True
     ):
         if bath_rhos is not None:
             if bath_indices is None:
                 raise RuntimeError(
                     "When supplying bath_rhos for calculating excited state restrictions you MUST also supply the corresponding bath_indices."
                 )
-
-            bath_occupations = {i: [np.diag(bath_rho) for bath_rho in brs] for i, brs in bath_rhos.items()}
-            full_bath_states = {}
-            empty_bath_states = {}
-            for i in bath_occupations.keys():
-                full_bath_states[i] = []
-                empty_bath_states[i] = []
-                for block_i, (block_orbs, block_occs) in enumerate(zip(bath_indices[i], bath_occupations[i])):
-                    filled_baths = [
-                        orb
-                        for orbs, occs in zip(
-                            batched(block_orbs, len(self.impurity_orbitals[i][block_i])),
-                            batched(block_occs, len(self.impurity_orbitals[i][block_i])),
-                        )
-                        for orb in orbs
-                        if sum(occs) / len(orbs) >= 1 - occ_cutoff
-                    ]
-                    empty_baths = [
-                        orb
-                        for orbs, occs in zip(
-                            batched(block_orbs, len(self.impurity_orbitals[i][block_i])),
-                            batched(block_occs, len(self.impurity_orbitals[i][block_i])),
-                        )
-                        for orb in orbs
-                        if sum(occs) / len(orbs) <= occ_cutoff
-                    ]
-                    full_bath_states[i].append(filled_baths[:-1])
-                    empty_bath_states[i].append(empty_baths[1:])
+            full_bath_states, empty_bath_states = self._build_full_empty_bath_states(
+                bath_rhos, bath_indices, occ_cutoff
+            )
         else:
             full_bath_states = {i: [] for i in self.impurity_orbitals.keys()}
             empty_bath_states = {i: [] for i in self.impurity_orbitals.keys()}
@@ -337,7 +337,6 @@ class Basis:
         restrictions = self.get_effective_restrictions()
         excited_restrictions = {}
         for i in self.impurity_orbitals.keys():
-
             impurity_indices = frozenset(ind for imp_ind in self.impurity_orbitals[i] for ind in imp_ind)
             if len(impurity_indices) > 0 and imp_change is not None:
                 r_min_imp, r_max_imp = restrictions[impurity_indices]
@@ -368,17 +367,30 @@ class Basis:
             if val_change is not None or con_change is not None:
                 excited_restrictions[new_valence_indices.union(new_conduction_indices)] = (min_val, max_val + max_cond)
 
-            num_full_bath_states = sum(len(full_indices) for full_indices in full_bath_states[i])
-            if num_full_bath_states > 0:
-                excited_restrictions[frozenset(orb for full_indices in full_bath_states[i] for orb in full_indices)] = (
-                    num_full_bath_states - 1,
-                    num_full_bath_states,
-                )
-            num_empty_bath_states = sum(len(empty_indices) for empty_indices in empty_bath_states[i])
-            if num_empty_bath_states > 0:
-                excited_restrictions[
-                    frozenset(orb for empty_indices in empty_bath_states[i] for orb in empty_indices)
-                ] = (0, 1)
+            if collapse_chains:
+                full_indices = frozenset(orb for full_indices in full_bath_states[i] for orb in full_indices)
+                if len(full_indices) > 0:
+                    excited_restrictions[full_indices] = (
+                        len(full_indices) - 1,
+                        len(full_indices),
+                    )
+                empty_indices = frozenset(orb for empty_indices in empty_bath_states[i] for orb in empty_indices)
+                if len(empty_indices) > 0:
+                    excited_restrictions[empty_indices] = (0, 1)
+            else:
+                for full_indices in full_bath_states.values():
+                    for idx in full_indices:
+                        if len(idx) == 0:
+                            continue
+                        excited_restrictions[frozenset(idx)] = (
+                            len(idx) - 1,
+                            len(idx),
+                        )
+                for empty_indices in empty_bath_states.values():
+                    for idx in empty_indices:
+                        if len(idx) == 0:
+                            continue
+                        excited_restrictions[frozenset(idx)] = (0, 1)
         return excited_restrictions
 
     def __init__(
