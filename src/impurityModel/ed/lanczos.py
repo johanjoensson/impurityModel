@@ -205,8 +205,15 @@ def qr_decomp_new(basis, psi):
         if basis.comm.rank == 0:
             q, r, _ = qr_decomp(v.T)
         q = basis.comm.bcast(q if basis.comm.rank == 0 else None, root=0)
-        r = basis.comm.bcast(q if basis.comm.rank == 0 else None, root=0)
+        r = basis.comm.bcast(r if basis.comm.rank == 0 else None, root=0)
         return basis.build_state(q.T), r
+
+    v = basis.build_vector(psi, root=0)
+    if basis.comm.rank == 0:
+        q, r, _ = qr_decomp(v.T)
+    q_check = basis.comm.bcast(q if basis.comm.rank == 0 else None, root=0)
+    r_check = basis.comm.bcast(r if basis.comm.rank == 0 else None, root=0)
+    q_check = basis.build_state(q_check.T)
 
     def reflect(v, x):
         p = inner(v, x)
@@ -214,33 +221,31 @@ def qr_decomp_new(basis, psi):
         return subtractOps(x, scale(v, 2 * p))
 
     k_max = min(len(psi), basis.size - 1)
-    print(f"{k_max=}")
     selected_states = list(basis[range(k_max)])
     A = psi.copy()
     vs = [None for _ in range(k_max)]
     for i, state in enumerate(selected_states):
-        x = {s: amp for s, amp in A[i].items() if s not in selected_states[:i]}
+        Ap = [{s: amp for s, amp in A[j].items() if s not in selected_states[:i]} for j in range(i, len(A))]
+        x = Ap[0]
         x_norm = np.sqrt(basis.comm.allreduce(norm2(x)))
-        if state in A[i]:
-            xi = A[i][state]
+        if state in basis.local_basis:
+            xi = x[state]
             alpha = -rect(x_norm, phase(xi))
         else:
             alpha = 0
         alpha = basis.comm.allreduce(alpha)
-        u = subtractOps(x, scale({state: 1}, alpha))
+        u = subtractOps(x, scale({state: 1} if state in basis.local_basis else {}, alpha))
         u_norm = np.sqrt(basis.comm.allreduce(norm2(u)))
         v = scale(u, 1 / u_norm)
         # Q = lambda x: reflect(v, x)
         vs[i] = v
-        tmp = [{s: amp for s, amp in A[i].items() if s not in selected_states[:i]} for i in range(len(A))]
-        for j, y in enumerate(tmp):
-            tmp[j] = reflect(v, y)
-        for j, s in itertools.product(range(len(tmp)), selected_states[:i]):
-            if s in A[j]:
-                tmp[j][s] = A[j][s]
-        A = tmp
+        # for j, y in enumerate(tmp):
+        for j, y in enumerate(Ap):
+            Ap[j] = reflect(v, y)
+        for j in range(i, len(A)):
+            for s, amp in Ap[j - i].items():
+                A[j][s] = amp
     Q = [{} for _ in psi]
-    print(f"{len(Q)=} {k_max=}")
     for (i, state_i), (j, state_j) in itertools.product(enumerate(basis.local_basis), enumerate(selected_states)):
         x = {state_j: 1}
         for v in vs:
@@ -250,9 +255,16 @@ def qr_decomp_new(basis, psi):
             Q[j][state_i] = x[state_i] + Q[j].get(state_i, 0)
 
     R = basis.build_vector(A)
-    print(f"{R.shape=}")
-    print(f"Q = {[{state: amp for state, amp in q.items()} for q in Q]}")
-    return [{state: amp for state, amp in q.items() if amp > np.finfo(float).eps} for q in Q], R[:k_max, :k_max]
+    print(f"Q = {[{state: amp for state, amp in q.items() if abs(amp) > np.finfo(float).eps} for q in Q]}")
+    print(f"Q_check = {[{state: amp for state, amp in q.items() if abs(amp) > np.finfo(float).eps} for q in q_check]}")
+    print(f"R = {R[:k_max, :k_max]}")
+    print(f"R_check = {r_check}")
+    for (i, qi), (j, qj) in itertools.product(enumerate(Q), repeat=2):
+        if i == j:
+            assert abs(1 - basis.comm.allreduce(inner(qi, qj))) < 1e-12, f"{i=} {j=}: {inner(qi,qj)=}"
+        else:
+            assert abs(-basis.comm.allreduce(inner(qi, qj))) < 1e-12, f"{i=} {j=}: {inner(qi, qj)=}"
+    return [{state: amp for state, amp in q.items() if abs(amp) > np.finfo(float).eps} for q in Q], R[:k_max, :k_max]
 
 
 def qr_decomp(psi, pivoting=False):
@@ -513,8 +525,7 @@ def block_lanczos_sparse(
         for i in range(n):
             wp[i] = subtractOps(wp[i], tmp[i])
 
-        if False:
-            print(f"{n=}")
+        if True:
             wp, betas[-1] = qr_decomp_new(basis, wp)
         else:
             psip = basis.build_vector(wp, root=0)
