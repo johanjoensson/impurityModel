@@ -50,6 +50,17 @@ def batched(iterable: Iterable, n: int) -> Iterable:
         yield batch
 
 
+def reduce_states(a: list[dict], b: list[dict], _):
+    res = a.copy()
+    for sa, sb in zip(res, b):
+        for state, amp in sb.items():
+            sa[state] = amp + sa.get(state, 0)
+    return res
+
+
+reduce_states_op = MPI.Op.Create(reduce_states, commute=True)
+
+
 def combine_sets(set_1, set_2, _):
     return set_1 | set_2
 
@@ -507,24 +518,65 @@ class Basis:
         self.state_bounds = self.state_container.state_bounds
         self.local_basis = self.state_container.local_basis
 
-    def redistribute_psis(self, psis: Iterable[dict]):
+    def redistribute_psis(self, psis):
         if not self.is_distributed:
-            return list(psis)
+            return psis
 
-        psis = list(psis)
+        receive_requests = [None for _ in range(self.comm.size)]
+        req = None
         res = [{} for _ in psis]
-        send_array = [[{} for _ in psis] for _ in range(self.comm.size)]
-        for n, psi in enumerate(psis):
-            for state, amp in psi.items():
-                for r, state_bound in enumerate(self.state_bounds):
-                    if state_bound is None or state < state_bound:
-                        send_array[r][n][state] = send_array[r][n].get(state, 0) + amp
-                        break
-        received_array = self.comm.alltoall(send_array)
-        for received_psi in received_array:
-            for n, psi in enumerate(received_psi):
-                for state, amp in psi.items():
-                    res[n][state] = res[n].get(state, 0) + amp
+        states = sorted({state for psi in psis for state in psi})
+        offset = 0
+        for r, state_bounds in enumerate(self.state_bounds):
+            send_list = [{} for _ in psis]
+            d_offset = 0
+            for state in states[offset:]:
+                if state_bounds is not None and state >= state_bounds:
+                    break
+                d_offset += 1
+                for send_n, psi_n in zip(send_list, psis):
+                    send_n[state] = psi_n.get(state, 0)
+            offset += d_offset
+            if self.comm.rank == r:
+                if req is not None:
+                    req.wait()
+                    req = None
+                res = send_list
+                for sender in range(self.comm.size):
+                    if sender == r:
+                        continue
+                    receive_requests[sender] = self.comm.irecv(source=sender)
+                done = {self.comm.rank}
+                while len(done) < self.comm.size:
+                    for i, request in enumerate(receive_requests):
+                        if i in done:
+                            continue
+                        completed, received = request.test()
+                        if not completed:
+                            continue
+                        done.add(i)
+                        for res_n, psi_n in zip(res, received):
+                            for state, amp in psi_n.items():
+                                res_n[state] = amp + res_n.get(state, 0)
+            else:
+                if req is not None:
+                    req.wait()
+                req = self.comm.isend(send_list, dest=r)
+
+        # psis = list(psis)
+        # res = [{} for _ in psis]
+        # send_array = [[{} for _ in psis] for _ in range(self.comm.size)]
+        # for n, psi in enumerate(psis):
+        #     for state, amp in psi.items():
+        #         for r, state_bound in enumerate(self.state_bounds):
+        #             if state_bound is None or state < state_bound:
+        #                 send_array[r][n][state] = send_array[r][n].get(state, 0) + amp
+        #                 break
+        # received_array = self.comm.alltoall(send_array)
+        # for received_psi in received_array:
+        #     for n, psi in enumerate(received_psi):
+        #         for state, amp in psi.items():
+        #             res[n][state] = res[n].get(state, 0) + amp
         return res
 
     def redistribute_psis_old(self, psis: Iterable[dict]):

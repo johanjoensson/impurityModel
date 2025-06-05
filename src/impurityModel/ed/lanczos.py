@@ -641,10 +641,13 @@ def block_lanczos(
             if state_idx == len(basis.local_basis) or basis.local_basis[state_idx] != state
         )
         N_max = max(N_max, basis.size)
-        tmp = basis.redistribute_psis(itertools.chain(q[0], q[1], wp))
-        q[0] = tmp[0:n]
-        q[1] = tmp[n : 2 * n]
-        wp = tmp[2 * n :]
+        q[0] = basis.redistribute_psis(q[0])
+        q[1] = basis.redistribute_psis(q[1])
+        wp = basis.redistribute_psis(wp)
+        # tmp = basis.redistribute_psis(itertools.chain(q[0], q[1], wp))
+        # q[0] = tmp[0:n]
+        # q[1] = tmp[n : 2 * n]
+        # wp = tmp[2 * n :]
         psi = np.empty((len(basis.local_basis), n), dtype=complex, order="C")
         psip = np.empty_like(psi)
         psim = np.empty_like(psi)
