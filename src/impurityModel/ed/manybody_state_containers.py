@@ -549,6 +549,18 @@ class DistributedStateContainer(StateContainer):
 
 
 class SimpleDistributedStateContainer(StateContainer):
+
+    def _point2point(send_list, comm):
+        result = [None for _ in range(comm.size)]
+        for r_offset in range(comm.size):
+            send_to = (comm.rank + r_offset) % comm.size
+            receive_from = (comm.rank - r_offset) % comm.size
+            if r_offset == 0:
+                result[receive_from] = send_list[send_to]
+            else:
+                result[receive_from] = comm.sendrecv(send_list[send_to], dest=send_to, source=receive_from)
+        return result
+
     def __init__(self, states: Iterable, bytes_per_state, state_type=bytes, comm=None, verbose=True):
         super(SimpleDistributedStateContainer, self).__init__(states, bytes_per_state, state_type, comm)
 
@@ -687,7 +699,8 @@ class SimpleDistributedStateContainer(StateContainer):
                     break
         send_order = np.argsort(send_to_ranks, kind="stable")
 
-        queries = self.comm.alltoall(send_list)
+        queries = SimpleDistributedStateContainer._point2point(send_list, self.comm)
+        # queries = self.comm.alltoall(send_list)
 
         results = [[] for _ in range(self.comm.size)]
         for r in range(len(queries)):
@@ -695,8 +708,12 @@ class SimpleDistributedStateContainer(StateContainer):
                 if query >= self.offset and query < self.offset + len(self.local_basis):
                     results[r].append(self.local_basis[query - self.offset])
 
-        result = self.comm.alltoall(results)
-        result = [state for r_results in result for state in r_results]
+        # result = self.comm.alltoall(results)
+        result = [
+            state
+            for r_results in SimpleDistributedStateContainer._point2point(results, self.comm)
+            for state in r_results
+        ]
 
         return (result[i] for i in np.argsort(send_order))
 
@@ -716,14 +733,16 @@ class SimpleDistributedStateContainer(StateContainer):
 
         send_order = np.argsort(send_to_ranks, kind="stable")
 
-        queries = self.comm.alltoall(send_list)
+        queries = SimpleDistributedStateContainer._point2point(send_list, self.comm)
+        # queries = self.comm.alltoall(send_list)
 
         results = [[] for _ in range(self.comm.size)]
         for r in range(self.comm.size):
             for query in queries[r]:
                 results[r].append(self._index_dict.get(query, self.size))
-        result = self.comm.alltoall(results)
-        result = np.array([i for r_i in result for i in r_i], dtype=int)
+        result = np.array(
+            [i for r_i in SimpleDistributedStateContainer._point2point(results, self.comm) for i in r_i], dtype=int
+        )
         while np.any(np.logical_or(result > self.size, result < 0)):
             mask = np.logical_or(result > self.size, result < 0)
             result[mask] = np.from_iter(self._index_sequence(itertools.compress(s, mask)), dtype=int)
@@ -736,7 +755,7 @@ class SimpleDistributedStateContainer(StateContainer):
         return (index < self.size for index in self._index_sequence(items))
 
     def alltoall_states(self, send_list: list[list[bytes]], flatten=False):
-        states = self.comm.alltoall(send_list)
+        states = SimpleDistributedStateContainer._point2point(send_list, self.comm)
         if flatten:
             states = [state for r_states in states for state in r_states]
         return states

@@ -522,8 +522,6 @@ class Basis:
         if not self.is_distributed:
             return psis
 
-        # receive_requests = [None for _ in range(self.comm.size)]
-        # req = None
         res = [{} for _ in psis]
         states = sorted({state for psi in psis for state in psi})
         for r_offset in range(self.comm.size):
@@ -552,51 +550,6 @@ class Basis:
             for res_n, psi_n in zip(res, received):
                 for state, amp in psi_n.items():
                     res_n[state] = amp + res_n.get(state, 0)
-            # if self.comm.rank == r:
-            #     # if req is not None:
-            #     #     req.wait()
-            #     #     req = None
-            #     res = send_list
-            #     for sender in range(self.comm.size):
-            #         if sender == r:
-            #             continue
-            #         # receive_requests[sender] = self.comm.irecv(source=sender)
-            #         received = self.comm.recv(source=sender)
-            #         for res_n, psi_n in zip(res, received):
-            #             for state, amp in psi_n.items():
-            #                 res_n[state] = amp + res_n.get(state, 0)
-            #     # done = {self.comm.rank}
-            #     # while len(done) < self.comm.size:
-            #     #     for i, request in enumerate(receive_requests):
-            #     #         if i in done:
-            #     #             continue
-            #     #         completed, received = request.test()
-            #     #         if not completed:
-            #     #             continue
-            #     #         done.add(i)
-            #     #         for res_n, psi_n in zip(res, received):
-            #     #             for state, amp in psi_n.items():
-            #     #                 res_n[state] = amp + res_n.get(state, 0)
-            # else:
-            #     # if req is not None:
-            #     #     req.wait()
-            #     # req = self.comm.isend(send_list, dest=r)
-            #     self.comm.send(send_list, dest=r)
-
-        # psis = list(psis)
-        # res = [{} for _ in psis]
-        # send_array = [[{} for _ in psis] for _ in range(self.comm.size)]
-        # for n, psi in enumerate(psis):
-        #     for state, amp in psi.items():
-        #         for r, state_bound in enumerate(self.state_bounds):
-        #             if state_bound is None or state < state_bound:
-        #                 send_array[r][n][state] = send_array[r][n].get(state, 0) + amp
-        #                 break
-        # received_array = self.comm.alltoall(send_array)
-        # for received_psi in received_array:
-        #     for n, psi in enumerate(received_psi):
-        #         for state, amp in psi.items():
-        #             res[n][state] = res[n].get(state, 0) + amp
         return res
 
     def redistribute_psis_old(self, psis: Iterable[dict]):
