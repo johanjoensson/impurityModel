@@ -746,6 +746,7 @@ def block_lanczos(
         done = converged(alphas, betas, verbose=reort == Reort.PARTIAL)
 
         if mpi:
+            request.wait()
             done = comm.allreduce(done, op=MPI.LAND)
 
         converge_count = (1 + converge_count) if done else 0
@@ -754,8 +755,6 @@ def block_lanczos(
 
         q[0] = q[1]
         q[1] = [{} for _ in range(columns)]
-        if mpi:
-            request.Wait()
         q[1] = basis.build_state(psip.T, slaterWeightMin=np.finfo(float).eps)
 
         if build_krylov_basis:
