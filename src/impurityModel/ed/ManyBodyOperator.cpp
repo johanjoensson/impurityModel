@@ -48,32 +48,50 @@ int annihilate(ManyBodyState::key_type &state, size_t idx) {
 
 ManyBodyOperator::ManyBodyOperator(
     const std::vector<std::pair<OPS, SCALAR>> &ops)
-    : m_ops(ops), m_memory() {}
+    : m_ops(), m_memory() {
+  for (const auto &p : ops) {
+    m_ops.insert(p);
+  }
+}
 
 ManyBodyOperator::ManyBodyOperator(std::vector<std::pair<OPS, SCALAR>> &&ops)
-    : m_ops(std::move(ops)), m_memory() {}
+    : m_ops(), m_memory() {
+  for (auto &p : ops) {
+    m_ops.insert(std::move(p));
+  }
+}
+
+ManyBodyOperator::ManyBodyOperator(const Map &m) : m_ops(m), m_memory() {}
+ManyBodyOperator::ManyBodyOperator(Map &&m) : m_ops(std::move(m)), m_memory() {}
 
 void ManyBodyOperator::add_ops(const std::vector<std::pair<OPS, SCALAR>> &ops) {
   for (const auto &op : ops) {
-    m_ops.push_back(op);
+    m_ops[op.first] += op.second;
   }
 }
 
 void ManyBodyOperator::add_ops(std::vector<std::pair<OPS, SCALAR>> &&ops) {
   for (auto &op : ops) {
-    m_ops.push_back(std::move(op));
+    m_ops[std::move(op.first)] += std::move(op.second);
   }
 }
 
-ManyBodyState ManyBodyOperator::operator()(const ManyBodyState &state) const {
+ManyBodyOperator::Map::size_type ManyBodyOperator::size() const {
+  return m_ops.size();
+}
+
+void ManyBodyOperator::clear_memory() noexcept { m_memory.clear(); }
+
+ManyBodyState ManyBodyOperator::operator()(const ManyBodyState &state,
+                                           double cutoff = 0) {
   ManyBodyState::key_type new_state;
   ManyBodyState res, tmp;
-  int sign;
+  int sign = 0;
   for (const auto &key_amp : state) {
-    // if (m_memory.find(key_amp.first) != m_memory.end()) {
-    //   res += key_amp.second * m_memory[key_amp.first];
-    //   continue;
-    // }
+    if (m_memory.find(key_amp.first) != m_memory.end()) {
+      res += key_amp.second * m_memory[key_amp.first];
+      continue;
+    }
     for (const auto &ops_scalar : m_ops) {
       tmp.clear();
       new_state = key_amp.first;
@@ -84,19 +102,93 @@ ManyBodyState ManyBodyOperator::operator()(const ManyBodyState &state) const {
           sign = annihilate(new_state, static_cast<size_t>(-(idx + 1)));
         }
         if (sign == 0) {
-          // m_memory[key_amp.first] = ManyBodyState();
+          m_memory[key_amp.first] = ManyBodyState();
           break;
         }
       }
       tmp[std::move(new_state)] +=
           static_cast<double>(sign) * ops_scalar.second;
     }
-    // m_memory[key_amp.first] = tmp;
+    m_memory[key_amp.first] = tmp;
     tmp *= key_amp.second;
     res += tmp;
   }
 
-  res.prune(0);
+  res.prune(cutoff);
+  return res;
+}
+
+ManyBodyOperator &ManyBodyOperator::operator+=(const ManyBodyOperator &other) {
+
+  for (const auto &p : other.m_ops) {
+    m_ops[p.first] += p.second;
+  }
+
+  Memory new_mem;
+  auto left_it = this->m_memory.cbegin(), right_it = other.m_memory.cbegin();
+  while (left_it != this->m_memory.cend() &&
+         right_it != other.m_memory.cend()) {
+    if (left_it->first < right_it->first) {
+      left_it++;
+    } else if (right_it->first < left_it->first) {
+      right_it++;
+    } else {
+      new_mem.insert({left_it->first, left_it->second + right_it->second});
+    }
+  }
+  this->m_memory = std::move(new_mem);
+
+  return *this;
+}
+
+ManyBodyOperator &ManyBodyOperator::operator-=(const ManyBodyOperator &other) {
+  for (const auto &p : other.m_ops) {
+    m_ops[p.first] -= p.second;
+  }
+  Memory new_mem;
+  auto left_it = this->m_memory.cbegin(), right_it = other.m_memory.cbegin();
+  while (left_it != this->m_memory.cend() &&
+         right_it != other.m_memory.cend()) {
+    if (left_it->first < right_it->first) {
+      left_it++;
+    } else if (right_it->first < left_it->first) {
+      right_it++;
+    } else {
+      new_mem.insert({left_it->first, left_it->second - right_it->second});
+    }
+  }
+  this->m_memory = std::move(new_mem);
+  return *this;
+}
+
+ManyBodyOperator &ManyBodyOperator::operator*=(const SCALAR &s) {
+  for (auto &p : m_ops) {
+    p.second *= s;
+  }
+  for (auto &p : m_memory) {
+    p.second *= s;
+  }
+  return *this;
+}
+
+ManyBodyOperator &ManyBodyOperator::operator/=(const SCALAR &s) {
+  for (auto &p : m_ops) {
+    p.second /= s;
+  }
+  for (auto &p : m_memory) {
+    p.second /= s;
+  }
+  return *this;
+}
+
+ManyBodyOperator ManyBodyOperator::operator-() const {
+  ManyBodyOperator res(*this);
+  for (auto &p : res.m_ops) {
+    p.second = -p.second;
+  }
+  for (auto &p : res.m_memory) {
+    p.second = -p.second;
+  }
   return res;
 }
 

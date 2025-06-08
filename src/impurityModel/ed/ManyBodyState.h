@@ -48,12 +48,13 @@ public:
 
   ManyBodyState() = default;
   ManyBodyState(const ManyBodyState &) = default;
-  ManyBodyState(ManyBodyState &&other) : m_map(std::move(other.m_map)) {
-    std::cout << "Move constructor!\n";
-  }
+  ManyBodyState(ManyBodyState &&other) : m_map(std::move(other.m_map)) {}
   ManyBodyState &operator=(const ManyBodyState &) = default;
   ManyBodyState &operator=(ManyBodyState &&) = default;
   ~ManyBodyState() = default;
+
+  ManyBodyState(const Map &);
+  ManyBodyState(Map &&);
 
   ManyBodyState(const std::vector<std::vector<uint8_t>> &keys,
                 const std::vector<std::complex<double>> &values);
@@ -63,10 +64,11 @@ public:
   double norm2() const;
   double norm() const;
 
-  ManyBodyState operator+=(const ManyBodyState &);
-  ManyBodyState operator-=(const ManyBodyState &);
-  ManyBodyState operator*=(const std::complex<double> &);
-  ManyBodyState operator/=(const std::complex<double> &);
+  ManyBodyState &operator+=(const ManyBodyState &);
+  ManyBodyState &operator-=(const ManyBodyState &);
+  ManyBodyState &operator*=(const std::complex<double> &);
+  ManyBodyState &operator/=(const std::complex<double> &);
+  ManyBodyState operator-() const;
   inline ManyBodyState operator+(const ManyBodyState &b) const {
     ManyBodyState res(*this);
     return res += b;
@@ -75,17 +77,9 @@ public:
     ManyBodyState res(*this);
     return res -= b;
   }
-  inline ManyBodyState operator-() const {
-    ManyBodyState res(*this);
-    for (auto &p : res) {
-      p.second = -p.second;
-    }
-    return res;
-  }
   friend inline ManyBodyState operator*(const std::complex<double> &s,
                                         const ManyBodyState &a) {
-    ManyBodyState res(a);
-    return res *= s;
+    return a * s;
   }
   inline ManyBodyState operator*(const std::complex<double> &s) const {
     ManyBodyState res(*this);

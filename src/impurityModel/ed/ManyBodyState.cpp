@@ -17,6 +17,8 @@ ManyBodyState::ManyBodyState(const std::vector<std::vector<uint8_t>> &&keys,
     // m_map.insert({std::move(keys[i]), std::move(values[i])});
   }
 }
+ManyBodyState::ManyBodyState(const Map &m) : m_map(m) {}
+ManyBodyState::ManyBodyState(Map &&m) : m_map(std::move(m)) {}
 
 double ManyBodyState::norm2() const {
   return std::accumulate(m_map.cbegin(), m_map.cend(), 0.,
@@ -27,29 +29,37 @@ double ManyBodyState::norm2() const {
 
 double ManyBodyState::norm() const { return sqrt(norm2()); }
 
-ManyBodyState ManyBodyState::operator+=(const ManyBodyState &other) {
+ManyBodyState &ManyBodyState::operator+=(const ManyBodyState &other) {
   for (const auto &p : other) {
     (*this)[p.first] += p.second;
   }
   return *this;
 }
-ManyBodyState ManyBodyState::operator-=(const ManyBodyState &other) {
+ManyBodyState &ManyBodyState::operator-=(const ManyBodyState &other) {
   for (const auto &p : other) {
     (*this)[p.first] -= p.second;
   }
   return *this;
 }
-ManyBodyState ManyBodyState::operator*=(const std::complex<double> &s) {
+ManyBodyState &ManyBodyState::operator*=(const std::complex<double> &s) {
   for (auto &p : *this) {
     p.second *= s;
   }
   return *this;
 }
-ManyBodyState ManyBodyState::operator/=(const std::complex<double> &s) {
+ManyBodyState &ManyBodyState::operator/=(const std::complex<double> &s) {
   for (auto &p : *this) {
     p.second /= s;
   }
   return *this;
+}
+
+ManyBodyState ManyBodyState::operator-() const {
+  ManyBodyState res(*this);
+  for (auto &p : res) {
+    p.second = -p.second;
+  }
+  return res;
 }
 
 std::complex<double> inner(const ManyBodyState &a, const ManyBodyState &b) {

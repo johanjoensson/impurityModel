@@ -2207,7 +2207,7 @@ def applyOp_new(n_spin_orbitals: int, op: dict, psi: dict, slaterWeightMin=0, re
         state_bits_new = psr.bytes2bitarray(state, n_spin_orbitals)
         # state_bits_new = state_bits.copy()
         signTot = 1
-        for i, action in process[-1::-1]:
+        for i, action in process[::-1]:
             if action == "a":
                 sign = remove.ubitarray(i, state_bits_new)
             elif action == "c":
