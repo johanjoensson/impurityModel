@@ -518,11 +518,11 @@ class Basis:
         self.state_bounds = self.state_container.state_bounds
         self.local_basis = self.state_container.local_basis
 
-    def redistribute_psis(self, psis):
+    def redistribute_psis(self, psis: list[dict[bytes, complex]]):
         if not self.is_distributed:
             return psis
 
-        receive_requests = [None for _ in range(self.comm.size)]
+        # receive_requests = [None for _ in range(self.comm.size)]
         req = None
         res = [{} for _ in psis]
         states = sorted({state for psi in psis for state in psi})
@@ -538,30 +538,35 @@ class Basis:
                     send_n[state] = psi_n.get(state, 0)
             offset += d_offset
             if self.comm.rank == r:
-                if req is not None:
-                    req.wait()
-                    req = None
+                # if req is not None:
+                #     req.wait()
+                #     req = None
                 res = send_list
                 for sender in range(self.comm.size):
                     if sender == r:
                         continue
-                    receive_requests[sender] = self.comm.irecv(source=sender)
-                done = {self.comm.rank}
-                while len(done) < self.comm.size:
-                    for i, request in enumerate(receive_requests):
-                        if i in done:
-                            continue
-                        completed, received = request.test()
-                        if not completed:
-                            continue
-                        done.add(i)
-                        for res_n, psi_n in zip(res, received):
-                            for state, amp in psi_n.items():
-                                res_n[state] = amp + res_n.get(state, 0)
+                    # receive_requests[sender] = self.comm.irecv(source=sender)
+                    received = self.comm.recv(source=sender)
+                    for res_n, psi_n in zip(res, received):
+                        for state, amp in psi_n.items():
+                            res_n[state] = amp + res_n.get(state, 0)
+                # done = {self.comm.rank}
+                # while len(done) < self.comm.size:
+                #     for i, request in enumerate(receive_requests):
+                #         if i in done:
+                #             continue
+                #         completed, received = request.test()
+                #         if not completed:
+                #             continue
+                #         done.add(i)
+                #         for res_n, psi_n in zip(res, received):
+                #             for state, amp in psi_n.items():
+                #                 res_n[state] = amp + res_n.get(state, 0)
             else:
-                if req is not None:
-                    req.wait()
-                req = self.comm.isend(send_list, dest=r)
+                # if req is not None:
+                #     req.wait()
+                # req = self.comm.isend(send_list, dest=r)
+                self.comm.send(send_list, dest=r)
 
         # psis = list(psis)
         # res = [{} for _ in psis]
