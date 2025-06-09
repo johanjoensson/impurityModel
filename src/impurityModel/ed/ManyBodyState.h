@@ -48,7 +48,7 @@ public:
 
   ManyBodyState() = default;
   ManyBodyState(const ManyBodyState &) = default;
-  ManyBodyState(ManyBodyState &&other) : m_map(std::move(other.m_map)) {}
+  ManyBodyState(ManyBodyState &&other) = default;
   ManyBodyState &operator=(const ManyBodyState &) = default;
   ManyBodyState &operator=(ManyBodyState &&) = default;
   ~ManyBodyState() = default;
@@ -71,7 +71,8 @@ public:
   ManyBodyState operator-() const;
   inline ManyBodyState operator+(const ManyBodyState &b) const {
     ManyBodyState res(*this);
-    return res += b;
+    res += b;
+    return res;
   }
   inline ManyBodyState operator-(const ManyBodyState &b) const {
     ManyBodyState res(*this);

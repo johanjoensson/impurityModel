@@ -2,7 +2,6 @@
 #include "ManyBodyState.h"
 #include <bitset>
 #include <cassert>
-#include <iostream>
 
 inline size_t set_bits(const ManyBodyState::key_type::value_type &byte) {
   const std::bitset<8 * sizeof(ManyBodyState::key_type::value_type)> bits(byte);
@@ -82,8 +81,32 @@ ManyBodyOperator::Map::size_type ManyBodyOperator::size() const {
 
 void ManyBodyOperator::clear_memory() noexcept { m_memory.clear(); }
 
-ManyBodyState ManyBodyOperator::operator()(const ManyBodyState &state,
-                                           double cutoff = 0) {
+bool ManyBodyOperator::state_is_within_restrictions(
+    const ManyBodyState::key_type &state, const Restrictions &restrictions) {
+  const size_t num_bits = 8 * sizeof(ManyBodyState::key_type::value_type);
+  for (const auto &p : restrictions) {
+    size_t bit_count = 0;
+    const Restrictions::key_type indices(p.first);
+    const Restrictions::mapped_type limits(p.second);
+    ManyBodyState::key_type mask(state.size(), 0);
+    for (auto idx : indices) {
+      auto state_idx = idx / num_bits;
+      auto bit_idx = num_bits - 1 - (idx % num_bits);
+      mask[state_idx] |= (1 << bit_idx);
+    }
+    for (size_t i = 0; i < state.size(); i++) {
+      bit_count += set_bits(state[i] & mask[i]);
+    }
+    if (bit_count < limits.first || bit_count > limits.second) {
+      return false;
+    }
+  }
+  return true;
+}
+
+ManyBodyState
+ManyBodyOperator::operator()(const ManyBodyState &state, double cutoff = 0,
+                             const Restrictions &restrictions = {}) {
   ManyBodyState::key_type new_state;
   ManyBodyState res, tmp;
   int sign = 0;
@@ -95,26 +118,32 @@ ManyBodyState ManyBodyOperator::operator()(const ManyBodyState &state,
     tmp.clear();
     for (const auto &ops_scalar : m_ops) {
       new_state = key_amp.first;
+      sign = 1;
       for (const int64_t idx : ops_scalar.first) {
         if (idx >= 0) {
-          sign = create(new_state, static_cast<size_t>(idx));
+          sign *= create(new_state, static_cast<size_t>(idx));
         } else {
-          sign = annihilate(new_state, static_cast<size_t>(-(idx + 1)));
+          sign *= annihilate(new_state, static_cast<size_t>(-(idx + 1)));
         }
         if (sign == 0) {
-          // m_memory[key_amp.first] = ManyBodyState();
           break;
         }
       }
-      tmp[std::move(new_state)] +=
-          static_cast<double>(sign) * ops_scalar.second;
+      if (sign == 0) {
+        m_memory.insert({key_amp.first, ManyBodyState()});
+        continue;
+      }
+      if (!state_is_within_restrictions(new_state, restrictions)) {
+        continue;
+      }
+      tmp[new_state] += static_cast<double>(sign) * ops_scalar.second;
     }
-    // m_memory.insert({key_amp.first, tmp});
+    m_memory[key_amp.first] += tmp;
     tmp *= key_amp.second;
     res += tmp;
   }
 
-  // res.prune(cutoff);
+  res.prune(cutoff);
   return res;
 }
 

@@ -1,17 +1,21 @@
 # distutils: language = c++
+# cython: language_level=3, boundscheck=False, initializedcheck=False, wraparound=False, freethreading_compatible=True, cdivision=True, cpow=True 
 
 from ManyBodyState cimport ManyBodyState as ManyBodyState_cpp, inner as inner_cpp
 from ManyBodyOperator cimport ManyBodyOperator as ManyBodyOperator_cpp
 from libcpp.pair cimport pair
 from libcpp.vector cimport vector
+from libcpp.map cimport map
+from libcpp.string cimport string
 from libc.stdint cimport uint8_t, int64_t
 
 cdef bytes key_to_bytes(vector[uint8_t]& key):
-    cdef bytes res = b""
-    cdef uint8_t i
-    for i in key:
-        res += <bytes>i
-    return res
+    cdef bytearray res = bytearray(key.size())
+    cdef size_t i
+    for i in range(key.size()):
+        res[i] = key[i]
+
+    return bytes(res)
 
 cdef vector[uint8_t] bytes_to_key(bytes b):
     cdef vector[uint8_t] key 
@@ -44,28 +48,28 @@ cdef class ManyBodyState:
         return self.v == other.v
 
     def __add__(self, ManyBodyState other):
-        res = self
-        res.v = res.v + other.v
+        res = ManyBodyState()
+        res.v = self.v + other.v
         return res
 
     def __sub__(self, ManyBodyState other):
-        res = self
-        res.v = res.v - other.v
+        res = ManyBodyState()
+        res.v = self.v - other.v
         return res
 
     def __mul__(self, double complex s):
-        res = self
-        res.v = res.v*  s
+        res = ManyBodyState()
+        res.v = self.v*  s
         return res
 
     def __rmul__(self, double complex s):
-        res = self
-        res.v = res.v*s
+        res = ManyBodyState()
+        res.v = self.v*s
         return res
 
-    def __div__(self, double complex s):
-        res = self
-        res.v = res.v/  s
+    def __truediv__(self, double complex s):
+        res = ManyBodyState()
+        res.v = self.v /  s
         return res
 
     def __getitem__(self, bytes key):
@@ -141,7 +145,7 @@ cdef tuple[tuple[int, str]] ints_to_processes(vector[int64_t]& ints):
 cdef class ManyBodyOperator:
     cdef ManyBodyOperator_cpp o
 
-    def __init__(self, dict[list[tuple[int, str]], complex] op={}):
+    def __init__(self, dict[tuple[tuple[int, str]], complex] op={}):
         cdef double complex amp 
         cdef tuple[int64_t, str] processes
         cdef str action
@@ -160,34 +164,34 @@ cdef class ManyBodyOperator:
     def __eq__(self, ManyBodyOperator other):
         return self.o == other.o
 
-    def __getitem__(self, list[tuple[int, str]] key):
+    def __getitem__(self, tuple[tuple[int, str]] key):
         return self.o[processes_to_ints(key)]
 
-    def __setitem__(self, list[tuple[int, str]]key, double complex value):
+    def __setitem__(self, tuple[tuple[int, str]]key, double complex value):
         self.o[processes_to_ints(key)] = value
         self.o.clear_memory()
 
     def __add__(self, ManyBodyOperator other) ->ManyBodyOperator:
-        res = self
-        res.o = res.o + other.o
+        res = ManyBodyOperator()
+        res.o = self.o + other.o
         return res
 
     def __sub__(self, ManyBodyOperator other) -> ManyBodyOperator:
-        res = self
-        res.o = res.o - other.o
+        res = ManyBodyOperator()
+        res.o = self.o - other.o
         return res
 
     def __mul__(self, complex s) ->ManyBodyOperator:
-        res = self
-        res.o = res.o*s
+        res = ManyBodyOperator()
+        res.o = self.o*s
         return res
 
     def __rmul__(self, complex s) -> ManyBodyOperator:
         return self*s
 
-    def __div__(self, complex s) -> ManyBodyOperator:
-        res = self
-        res.o = res.o/s
+    def __truediv__(self, complex s) -> ManyBodyOperator:
+        res = ManyBodyOperator()
+        res.o = self.o/s
         return res
 
     def __len__(self):
@@ -196,16 +200,21 @@ cdef class ManyBodyOperator:
     def size(self):
         return len(self)
 
-    def __call__(self, ManyBodyState psi, double cutoff) -> ManyBodyState:
+    def __call__(self, ManyBodyState psi, double cutoff=0, dict[vector[size_t], pair[size_t, size_t]] restrictions=dict()) -> ManyBodyState:
         res = ManyBodyState()
-        res.v = self.o(psi.v, cutoff)
+        cdef map[vector[size_t], pair[size_t, size_t], ManyBodyOperator_cpp.Comparer[size_t]] rest
+        cdef vector[size_t] indices
+        cdef pair[size_t, size_t] limits
+        for indices, limits in restrictions:
+            rest.insert((indices, limits))
+        res.v = self.o(psi.v, cutoff, rest)
         return res
 
-    def erase(self, list[tuple[int, str]]key):
+    def erase(self, tuple[tuple[int, str]]key):
         self.op.erase(processes_to_ints(key))
         self.o.clear_memory()
 
-    def __contains__(self, list[tuple[int, str]]key):
+    def __contains__(self, tuple[tuple[int, str]]key):
         return self.o.find(processes_to_ints(key)) != self.o.end()
 
     def __iter__(self):
@@ -225,26 +234,5 @@ cdef class ManyBodyOperator:
         return dict((ints_to_processes(p.first), p.second) for p in self.o)
 
 
-def applyOp(ManyBodyOperator op, ManyBodyState psi, double cutoff):
+def applyOp(ManyBodyOperator op, ManyBodyState psi, double cutoff=0, dict[vector[size_t], pair[size_t, size_t]] restrictions={}):
     return op(psi, cutoff)
-
-
-def main():
-    cdef vector[vector[uint8_t]] keys
-    cdef vector[double complex] amps
-    keys.push_back((0,0,1))
-    amps.push_back(1)
-    keys.push_back((1,0,0))
-    amps.push_back(0.2+0.8j)
-
-    cdef ManyBodyState_cpp v=ManyBodyState_cpp(keys, amps)
-    # v.insert(((0, 0, 1), 1))
-    # v.insert(((1, 0, 0), 0.2+0.8j)) 
-    v[(0, 1, 1)] = 5e-3+ 5e-3j
-    cdef ManyBodyState_cpp w
-    w.insert(((0, 0, 1),-0.2+ 0.3j)) 
-    w.insert(((1, 1, 0), 0.2+ 0.8j))
-    print(f"{v.norm2()=}")
-    v.prune(1e-2)
-    print(f"{v.norm2()=}")
-    print(f"{(v+w)[(0, 0,1)]=}")

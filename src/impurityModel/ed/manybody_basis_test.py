@@ -1,5 +1,4 @@
 import pytest
-import pickle
 from mpi4py import MPI
 import numpy as np
 from impurityModel.ed.manybody_basis import Basis, CIPSI_Basis

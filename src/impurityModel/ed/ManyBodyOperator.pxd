@@ -13,6 +13,9 @@ cdef extern from "ManyBodyOperator.cpp":
 
 cdef extern from "ManyBodyOperator.h":
     cdef cppclass ManyBodyOperator:
+        cppclass Comparer[T]:
+            bint operator()(const vector[T]&, const vector[T]&)
+
         ManyBodyOperator()
         ManyBodyOperator(const ManyBodyOperator&)
         ManyBodyOperator& operator=(const ManyBodyOperator&)
@@ -22,7 +25,7 @@ cdef extern from "ManyBodyOperator.h":
         
         double complex& operator[](const vector[int64_t]&)
         double complex& at(const vector[int64_t]&)
-        ManyBodyState operator()(const ManyBodyState&, double)
+        ManyBodyState operator()(const ManyBodyState&, double, const map[vector[size_t], pair[size_t,size_t], Comparer[size_t]]&)
 
         void clear_memory()
 

@@ -580,6 +580,7 @@ def block_lanczos(
     reort: Reort = Reort.NONE,
     slaterWeightMin: float = 0,
 ) -> (np.ndarray, np.ndarray, Optional[list[dict]]):
+    CYTHON = True
     if h_mem is None:
         h_mem = {}
     mpi = basis.comm is not None
@@ -600,9 +601,15 @@ def block_lanczos(
             psi0 if build_krylov_basis else None,
         )
 
+    q = None
+    if CYTHON:
+        psi0 = [ManyBodyState(psi) for psi in psi0]
+        h_op = ManyBodyOperator(h_op)
+        q = [[ManyBodyState()] * n, psi0]
+    else:
+        q = [[{}] * n, psi0]
     alphas = np.empty((0, n, n), dtype=complex)
     betas = np.empty((0, n, n), dtype=complex)
-    q = [[{}] * n, psi0]
     if build_krylov_basis:
         Q = list(psi0)
 
@@ -620,17 +627,31 @@ def block_lanczos(
     converge_count = 0
     wp = [None] * n
     while (it + 1) * n < basis.size or it == 0:
-        # wp = [applyOp_test(h_op, psi_i, slaterWeightMin) for psi_i in q[1]]
-        wp = [applyOp(basis.num_spin_orbitals, h_op, psi_i, slaterWeightMin) for psi_i in q[1]]
+        if CYTHON:
+            wp = [applyOp_test(h_op, psi_i, cutoff=slaterWeightMin, restrictions=basis.restrictions) for psi_i in q[1]]
+        else:
+            wp = [
+                applyOp(
+                    basis.num_spin_orbitals,
+                    h_op,
+                    psi_i,
+                    slaterWeightMin=slaterWeightMin,
+                    restrictions=basis.restrictions,
+                    opResult=h_mem,
+                )
+                for psi_i in q[1]
+            ]
 
         wp_size = np.array([len(psi) for psi in wp], dtype=int)
         comm.Allreduce(MPI.IN_PLACE, wp_size, op=MPI.SUM)
         cutoff = eps
         n_trunc = 0
         while np.max(wp_size) > basis.truncation_threshold:
-            wp = [{state: amp for state, amp in psi.items() if abs(amp) > cutoff} for psi in wp]
-            # for psi in wp:
-            #     psi.prune(cutoff)
+            if CYTHON:
+                for psi in wp:
+                    psi.prune(cutoff)
+            else:
+                wp = [{state: amp for state, amp in psi.items() if abs(amp) > cutoff} for psi in wp]
             comm.Allreduce(np.array([len(psi) for psi in wp]), wp_size, op=MPI.SUM)
             cutoff *= 5
             n_trunc += 1
@@ -646,22 +667,20 @@ def block_lanczos(
             if state_idx == len(basis.local_basis) or basis.local_basis[state_idx] != state
         )
         N_max = max(N_max, basis.size)
-        q[0] = basis.redistribute_psis(q[0])
-        q[1] = basis.redistribute_psis(q[1])
-        wp = basis.redistribute_psis(wp)
-        # q[0] = [ManyBodyState(out) for out in basis.redistribute_psis([p.to_dict() for p in q[0]])]
-        # q[1] = [ManyBodyState(out) for out in basis.redistribute_psis([p.to_dict() for p in q[1]])]
-        # wp = [ManyBodyState(out) for out in basis.redistribute_psis([p.to_dict() for p in wp])]
-        psim = basis.build_distributed_vector(q[0]).T
-        psi = basis.build_distributed_vector(q[1]).T
-        psip = basis.build_distributed_vector(wp).T
-        # psi = np.empty((len(basis.local_basis), n), dtype=complex, order="C")
-        # psip = np.empty_like(psi)
-        # psim = np.empty_like(psi)
-        # for (i, state), j in itertools.product(enumerate(basis.local_basis), range(n)):
-        #     psi[i, j] = q[1][j][state]
-        #     psim[i, j] = q[0][j][state]
-        #     psip[i, j] = wp[j][state]
+        if CYTHON:
+            q[0] = [ManyBodyState(out) for out in basis.redistribute_psis([p.to_dict() for p in q[0]])]
+            q[1] = [ManyBodyState(out) for out in basis.redistribute_psis([p.to_dict() for p in q[1]])]
+            wp = [ManyBodyState(out) for out in basis.redistribute_psis([p.to_dict() for p in wp])]
+            psim = basis.build_distributed_vector([p.to_dict() for p in q[0]]).T
+            psi = basis.build_distributed_vector([p.to_dict() for p in q[1]]).T
+            psip = basis.build_distributed_vector([p.to_dict() for p in wp]).T
+        else:
+            q[0] = basis.redistribute_psis(q[0])
+            q[1] = basis.redistribute_psis(q[1])
+            wp = basis.redistribute_psis(wp)
+            psim = basis.build_distributed_vector(q[0]).T
+            psi = basis.build_distributed_vector(q[1]).T
+            psip = basis.build_distributed_vector(wp).T
         alpha = np.conj(psi.T) @ psip
         alphas = np.append(alphas, np.empty((1, n, n), dtype=complex), axis=0)
         if mpi:
@@ -750,8 +769,10 @@ def block_lanczos(
             break
 
         q[0] = q[1]
-        q[1] = basis.build_state(psip.T, slaterWeightMin=np.finfo(float).eps)
-        # q[1] = [ManyBodyState(psi) for psi in basis.build_state(psip.T, slaterWeightMin=np.finfo(float).eps)]
+        if CYTHON:
+            q[1] = [ManyBodyState(psi) for psi in basis.build_state(psip.T, slaterWeightMin=np.finfo(float).eps)]
+        else:
+            q[1] = basis.build_state(psip.T, slaterWeightMin=np.finfo(float).eps)
 
         if build_krylov_basis:
             Q.extend(q[1])

@@ -9,11 +9,10 @@
 
 class ManyBodyOperator {
 
-private:
-  using SCALAR = std::complex<double>;
-  using OPS = std::vector<int64_t>;
-  struct Comparer {
-    inline bool operator()(const OPS &a, const OPS &b) const noexcept {
+public:
+  template <typename T> struct Comparer {
+    inline bool operator()(const std::vector<T> &a,
+                           const std::vector<T> &b) const noexcept {
       for (size_t i = 0; i < a.size(); i++) {
         if (a[i] < b[i]) {
           return true;
@@ -24,12 +23,19 @@ private:
       return false;
     }
   };
-  using Map = std::map<OPS, SCALAR, Comparer>;
+  using SCALAR = std::complex<double>;
+  using OPS = std::vector<int64_t>;
+  using Map = std::map<OPS, SCALAR, Comparer<int64_t>>;
   using Memory = std::map<ManyBodyState::key_type, ManyBodyState,
                           ManyBodyState::key_compare>;
+  using Restrictions = std::map<std::vector<size_t>, std::pair<size_t, size_t>,
+                                Comparer<size_t>>;
 
+private:
   Map m_ops;
   Memory m_memory;
+  static bool state_is_within_restrictions(const ManyBodyState::key_type &,
+                                           const Restrictions &);
 
 public:
   using key_type = Map::key_type;
@@ -63,7 +69,7 @@ public:
 
   void add_ops(const std::vector<std::pair<key_type, mapped_type>> &ops);
   void add_ops(std::vector<std::pair<key_type, mapped_type>> &&ops);
-  ManyBodyState operator()(const ManyBodyState &, double);
+  ManyBodyState operator()(const ManyBodyState &, double, const Restrictions &);
 
   Map::size_type size() const;
   bool empty() const;
