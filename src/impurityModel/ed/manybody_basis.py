@@ -522,8 +522,6 @@ class Basis:
         if not self.is_distributed:
             return psis
 
-        send_reqs = []
-        receive_reqs = [None] * self.comm.size
         res = [{} for _ in psis]
         states = sorted({state for psi in psis for state in psi})
         for r_offset in range(self.comm.size):
@@ -548,22 +546,10 @@ class Basis:
             if send_to == self.comm.rank:
                 res = send_list
             else:
-                receive_reqs[receive_from] = self.comm.irecv(source=receive_from)
-                send_reqs.append(self.comm.isend(send_list, dest=send_to))
-
-        done = {self.comm.rank}
-        while len(done) < self.comm.size:
-            for r in range(self.comm.size):
-                if r in done:
-                    continue
-                completed, received = receive_reqs[r].test()
-                if not completed:
-                    continue
-                done.add(r)
+                received = self.comm.sendrecv(send_list, dest=send_to, source=receive_from)
                 for res_n, psi_n in zip(res, received):
                     for state, amp in psi_n.items():
                         res_n[state] = amp + res_n.get(state, 0)
-        MPI.Request.waitall(send_reqs)
         return res
 
     def redistribute_psis_old(self, psis: Iterable[dict]):

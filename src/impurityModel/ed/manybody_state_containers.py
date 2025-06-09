@@ -552,27 +552,13 @@ class SimpleDistributedStateContainer(StateContainer):
 
     def _point2point(send_list, comm):
         result = [None for _ in range(comm.size)]
-        send_req = []
-        receive_req = [None] * comm.size
         for r_offset in range(comm.size):
             send_to = (comm.rank + r_offset) % comm.size
             receive_from = (comm.rank + comm.size - r_offset) % comm.size
             if r_offset == 0:
                 result[receive_from] = send_list[send_to]
             else:
-                receive_req[receive_from] = comm.irecv(source=receive_from)
-                send_req.append(comm.isend(send_list[send_to], dest=send_to))
-        done = {comm.rank}
-        while len(done) < comm.size:
-            for r in range(comm.size):
-                if r in done:
-                    continue
-                completed, received = receive_req[r].test()
-                if not completed:
-                    continue
-                done.add(r)
-                result[r] = received
-        MPI.Request.waitall(send_req)
+                result[receive_from] = comm.sendrecv(send_list[send_to], dest=send_to, source=receive_from)
         return result
 
     def __init__(self, states: Iterable, bytes_per_state, state_type=bytes, comm=None, verbose=True):
@@ -630,8 +616,6 @@ class SimpleDistributedStateContainer(StateContainer):
                 self.state_bounds = [None]
             return
 
-        send_req = []
-        receive_req = [None] * self.comm.size
         local_states = sorted(set(new_states))
         for r_offset in range(self.comm.size):
             send_to = (self.comm.rank + r_offset) % self.comm.size
@@ -654,17 +638,7 @@ class SimpleDistributedStateContainer(StateContainer):
             if send_to == self.comm.rank:
                 self.local_basis = [state for state, _ in itertools.groupby(merge(self.local_basis, send_list))]
             else:
-                receive_req[receive_from] = self.comm.irecv(source=receive_from)
-                send_req.append(self.comm.isend(send_list, dest=send_to))
-        done = {self.comm.rank}
-        while len(done) < self.comm.size:
-            for r in range(self.comm.size):
-                if r in done:
-                    continue
-                completed, received = receive_req[r].test()
-                if not completed:
-                    continue
-                done.add(r)
+                received = self.comm.sendrecv(send_list, dest=send_to, source=receive_from)
                 self.local_basis = [state for state, _ in itertools.groupby(merge(self.local_basis, received))]
         size_arr = np.empty((self.comm.size,), dtype=int)
         local_length = len(self.local_basis)
@@ -702,7 +676,6 @@ class SimpleDistributedStateContainer(StateContainer):
             )
             for r in range(self.comm.size)
         ]
-        MPI.Request.waitall(send_req)
 
     def _getitem_sequence(self, l: Iterable[int]) -> Iterable[bytes]:
         if self.comm is None:
