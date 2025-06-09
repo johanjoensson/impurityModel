@@ -92,8 +92,8 @@ ManyBodyState ManyBodyOperator::operator()(const ManyBodyState &state,
       res += key_amp.second * m_memory[key_amp.first];
       continue;
     }
+    tmp.clear();
     for (const auto &ops_scalar : m_ops) {
-      tmp.clear();
       new_state = key_amp.first;
       for (const int64_t idx : ops_scalar.first) {
         if (idx >= 0) {
@@ -102,19 +102,19 @@ ManyBodyState ManyBodyOperator::operator()(const ManyBodyState &state,
           sign = annihilate(new_state, static_cast<size_t>(-(idx + 1)));
         }
         if (sign == 0) {
-          m_memory[key_amp.first] = ManyBodyState();
+          // m_memory[key_amp.first] = ManyBodyState();
           break;
         }
       }
       tmp[std::move(new_state)] +=
           static_cast<double>(sign) * ops_scalar.second;
     }
-    m_memory[key_amp.first] = tmp;
+    // m_memory.insert({key_amp.first, tmp});
     tmp *= key_amp.second;
     res += tmp;
   }
 
-  res.prune(cutoff);
+  // res.prune(cutoff);
   return res;
 }
 

@@ -22,7 +22,7 @@ cdef extern from "ManyBodyOperator.h":
         
         double complex& operator[](const vector[int64_t]&)
         double complex& at(const vector[int64_t]&)
-        ManyBodyState operator()(const ManyBodyState&)
+        ManyBodyState operator()(const ManyBodyState&, double)
 
         void clear_memory()
 

@@ -97,7 +97,7 @@ cdef class ManyBodyState:
 
     def __iter__(self):
         for p in self.v:
-            yield p.first
+            yield key_to_bytes(p.first)
 
     def keys(self):
         return (key_to_bytes(p.first) for p in self.v)
@@ -117,7 +117,7 @@ cdef class ManyBodyState:
 def inner(ManyBodyState a, ManyBodyState b):
     return inner_cpp(a.v, b.v)
 
-cdef vector[int64_t] processes_to_ints(list[tuple[int, str]] processes):
+cdef vector[int64_t] processes_to_ints(tuple[tuple[int, str]] processes):
     cdef tuple[int, str] process
     cdef vector[int64_t] ints
     ints.reserve(len(processes))
@@ -128,7 +128,7 @@ cdef vector[int64_t] processes_to_ints(list[tuple[int, str]] processes):
             ints.push_back(process[0])
     return ints
 
-cdef list[tuple[int, str]] ints_to_processes(vector[int64_t]& ints):
+cdef tuple[tuple[int, str]] ints_to_processes(vector[int64_t]& ints):
     cdef  list[tuple[int, str]] processes = []
     cdef int64_t i
     for i in ints:
@@ -136,7 +136,7 @@ cdef list[tuple[int, str]] ints_to_processes(vector[int64_t]& ints):
             processes.append((-i-1, 'a'))
         else:
             processes.append((i, 'c'))
-    return  processes
+    return  tuple(processes)
 
 cdef class ManyBodyOperator:
     cdef ManyBodyOperator_cpp o
@@ -196,9 +196,9 @@ cdef class ManyBodyOperator:
     def size(self):
         return len(self)
 
-    def __call__(self, ManyBodyState psi) -> ManyBodyState:
+    def __call__(self, ManyBodyState psi, double cutoff) -> ManyBodyState:
         res = ManyBodyState()
-        res.v = self.o(psi.v)
+        res.v = self.o(psi.v, cutoff)
         return res
 
     def erase(self, list[tuple[int, str]]key):
@@ -225,8 +225,8 @@ cdef class ManyBodyOperator:
         return dict((ints_to_processes(p.first), p.second) for p in self.o)
 
 
-def applyOp(ManyBodyOperator op, ManyBodyState psi):
-    return op(psi)
+def applyOp(ManyBodyOperator op, ManyBodyState psi, double cutoff):
+    return op(psi, cutoff)
 
 
 def main():

@@ -20,6 +20,7 @@ from impurityModel.ed.finite import (
     norm2,
 )
 from cmath import phase, rect
+from impurityModel.ed.manybody_state import ManyBodyState, ManyBodyOperator, applyOp as applyOp_test
 
 
 class Reort(Enum):
@@ -619,24 +620,17 @@ def block_lanczos(
     converge_count = 0
     wp = [None] * n
     while (it + 1) * n < basis.size or it == 0:
-        wp = [
-            applyOp(
-                basis.num_spin_orbitals,
-                h_op,
-                psi_i,
-                slaterWeightMin=slaterWeightMin,
-                restrictions=basis.restrictions,
-                opResult=h_mem,
-            )
-            for psi_i in q[1]
-        ]
+        # wp = [applyOp_test(h_op, psi_i, slaterWeightMin) for psi_i in q[1]]
+        wp = [applyOp(basis.num_spin_orbitals, h_op, psi_i, slaterWeightMin) for psi_i in q[1]]
 
         wp_size = np.array([len(psi) for psi in wp], dtype=int)
         comm.Allreduce(MPI.IN_PLACE, wp_size, op=MPI.SUM)
         cutoff = eps
         n_trunc = 0
         while np.max(wp_size) > basis.truncation_threshold:
-            wp = [{state: w for state, w in psi.items() if abs(w) >= cutoff} for psi in wp]
+            wp = [{state: amp for state, amp in psi.items() if abs(amp) > cutoff} for psi in wp]
+            # for psi in wp:
+            #     psi.prune(cutoff)
             comm.Allreduce(np.array([len(psi) for psi in wp]), wp_size, op=MPI.SUM)
             cutoff *= 5
             n_trunc += 1
@@ -655,17 +649,19 @@ def block_lanczos(
         q[0] = basis.redistribute_psis(q[0])
         q[1] = basis.redistribute_psis(q[1])
         wp = basis.redistribute_psis(wp)
-        # tmp = basis.redistribute_psis(itertools.chain(q[0], q[1], wp))
-        # q[0] = tmp[0:n]
-        # q[1] = tmp[n : 2 * n]
-        # wp = tmp[2 * n :]
-        psi = np.empty((len(basis.local_basis), n), dtype=complex, order="C")
-        psip = np.empty_like(psi)
-        psim = np.empty_like(psi)
-        for (i, state), j in itertools.product(enumerate(basis.local_basis), range(n)):
-            psi[i, j] = q[1][j].get(state, 0)
-            psim[i, j] = q[0][j].get(state, 0)
-            psip[i, j] = wp[j].get(state, 0)
+        # q[0] = [ManyBodyState(out) for out in basis.redistribute_psis([p.to_dict() for p in q[0]])]
+        # q[1] = [ManyBodyState(out) for out in basis.redistribute_psis([p.to_dict() for p in q[1]])]
+        # wp = [ManyBodyState(out) for out in basis.redistribute_psis([p.to_dict() for p in wp])]
+        psim = basis.build_distributed_vector(q[0]).T
+        psi = basis.build_distributed_vector(q[1]).T
+        psip = basis.build_distributed_vector(wp).T
+        # psi = np.empty((len(basis.local_basis), n), dtype=complex, order="C")
+        # psip = np.empty_like(psi)
+        # psim = np.empty_like(psi)
+        # for (i, state), j in itertools.product(enumerate(basis.local_basis), range(n)):
+        #     psi[i, j] = q[1][j][state]
+        #     psim[i, j] = q[0][j][state]
+        #     psip[i, j] = wp[j][state]
         alpha = np.conj(psi.T) @ psip
         alphas = np.append(alphas, np.empty((1, n, n), dtype=complex), axis=0)
         if mpi:
@@ -676,8 +672,8 @@ def block_lanczos(
         betas = np.append(betas, np.zeros((1, n, n), dtype=complex, order="C"), axis=0)
         if mpi:
             send_counts = np.empty((comm.size), dtype=int)
-            comm.Gather(np.array([n * len(basis.local_basis)]), send_counts)
             request.wait()
+            comm.Gather(np.array([n * len(basis.local_basis)]), send_counts)
 
         psip -= psi @ alphas[it] + psim @ np.conj(betas[it - 1].T)
         psip = np.ascontiguousarray(psip)
@@ -746,6 +742,7 @@ def block_lanczos(
         done = converged(alphas, betas, verbose=reort == Reort.PARTIAL)
 
         if mpi:
+            request.Wait()
             done = comm.allreduce(done, op=MPI.LAND)
 
         converge_count = (1 + converge_count) if done else 0
@@ -753,10 +750,8 @@ def block_lanczos(
             break
 
         q[0] = q[1]
-        q[1] = [{} for _ in range(columns)]
-        if mpi:
-            request.Wait()
         q[1] = basis.build_state(psip.T, slaterWeightMin=np.finfo(float).eps)
+        # q[1] = [ManyBodyState(psi) for psi in basis.build_state(psip.T, slaterWeightMin=np.finfo(float).eps)]
 
         if build_krylov_basis:
             Q.extend(q[1])
