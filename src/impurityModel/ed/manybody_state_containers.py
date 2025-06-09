@@ -549,6 +549,32 @@ class DistributedStateContainer(StateContainer):
 
 
 class SimpleDistributedStateContainer(StateContainer):
+
+    def _point2point(send_list, comm):
+        result = [None for _ in range(comm.size)]
+        send_req = []
+        receive_req = [None] * comm.size
+        for r_offset in range(comm.size):
+            send_to = (comm.rank + r_offset) % comm.size
+            receive_from = (comm.rank + comm.size - r_offset) % comm.size
+            if r_offset == 0:
+                result[receive_from] = send_list[send_to]
+            else:
+                receive_req[receive_from] = comm.irecv(source=receive_from)
+                send_req.append(comm.isend(send_list[send_to], dest=send_to))
+        done = {comm.rank}
+        while len(done) < comm.size:
+            for r in range(comm.size):
+                if r in done:
+                    continue
+                completed, received = receive_req[r].test()
+                if not completed:
+                    continue
+                done.add(r)
+                result[r] = received
+        MPI.Request.waitall(send_req)
+        return result
+
     def __init__(self, states: Iterable, bytes_per_state, state_type=bytes, comm=None, verbose=True):
         super(SimpleDistributedStateContainer, self).__init__(states, bytes_per_state, state_type, comm)
 
@@ -590,7 +616,6 @@ class SimpleDistributedStateContainer(StateContainer):
         Extend the current basis by adding the new_states to it.
         """
         if not self.is_distributed:
-            # local_basis = self.local_basis
             self.local_basis = [
                 state for state, _ in itertools.groupby(merge(self.local_basis, sorted(set(new_states))))
             ]
@@ -605,78 +630,47 @@ class SimpleDistributedStateContainer(StateContainer):
                 self.state_bounds = [None]
             return
 
+        send_req = []
+        receive_req = [None] * self.comm.size
         local_states = sorted(set(new_states))
-        receive_requests = [None for _ in range(self.comm.size)]
-        req = None
-        offset = 0
-        for r, state_bounds in enumerate(self.state_bounds):
-            send_list = []
-            d_offset = 0
-            for state in local_states[offset:]:
-                if state_bounds is not None and state >= state_bounds:
-                    break
-                d_offset += 1
-                send_list.append(state)
-            offset += d_offset
-            if self.comm.rank == r:
-                self.local_basis = [state for state, _ in itertools.groupby(merge(self.local_basis, send_list))]
-                for sender in range(self.comm.size):
-                    if sender == r:
-                        continue
-                    received_states = self.comm.recv(source=sender)
-                    # receive_requests[sender] = self.comm.irecv(source=sender)
-                    # received_states = receive_requests[sender].wait()
-                    self.local_basis = [
-                        state
-                        for state, _ in itertools.groupby(
-                            merge(self.local_basis, received_states),
-                        )
-                    ]
-                # done = {self.comm.rank}
-                # while len(done) != self.comm.size:
-                #     for i, request in enumerate(receive_requests):
-                #         if i in done:
-                #             continue
+        for r_offset in range(self.comm.size):
+            send_to = (self.comm.rank + r_offset) % self.comm.size
+            receive_from = (self.comm.rank + self.comm.size - r_offset) % self.comm.size
 
-                #         completed, received_states = request.Test()
-                #         if not completed:
-                #             continue
-                #         done.add(i)
-                #         self.local_basis = [
-                #             state
-                #             for state, _ in itertools.groupby(
-                #                 merge(self.local_basis, received_states),
-                #             )
-                #         ]
+            if send_to > 0:
+                lower_bound = self.state_bounds[send_to - 1]
             else:
-                self.comm.send(send_list, dest=r)
-                # req = self.comm.isend(send_list, dest=r)
-                # req.wait()
+                lower_bound = bytes(self.n_bytes)
 
-        # local_states = sorted(set(new_states))
-        # send_list: list[list[bytes]] = [[] for _ in range(self.comm.size)]
-        # treated_states = [False] * len(local_states)
-        # for (i, state), (r, state_bounds) in itertools.product(enumerate(local_states), enumerate(self.state_bounds)):
-        #     if treated_states[i]:
-        #         continue
-        #     if state_bounds is None or state < state_bounds:
-        #         send_list[r].append(state)
-        #         treated_states[i] = True
+            upper_bound = self.state_bounds[send_to]
+            if upper_bound is None:
+                upper_bound = bytes([0xFF] * (self.n_bytes + 1))
 
-        # received_states = self.comm.alltoall(send_list)
-
-        # self.local_basis = [
-        #     state
-        #     for state, _ in itertools.groupby(
-        #         merge(self.local_basis, (rec_state for rec_state, _ in itertools.groupby(merge(*received_states))))
-        #     )
-        # ]
-
+            send_list = []
+            if lower_bound is not None:
+                for state in local_states:
+                    if lower_bound <= state < upper_bound:
+                        send_list.append(state)
+            if send_to == self.comm.rank:
+                self.local_basis = [state for state, _ in itertools.groupby(merge(self.local_basis, send_list))]
+            else:
+                receive_req[receive_from] = self.comm.irecv(source=receive_from)
+                send_req.append(self.comm.isend(send_list, dest=send_to))
+        done = {self.comm.rank}
+        while len(done) < self.comm.size:
+            for r in range(self.comm.size):
+                if r in done:
+                    continue
+                completed, received = receive_req[r].test()
+                if not completed:
+                    continue
+                done.add(r)
+                self.local_basis = [state for state, _ in itertools.groupby(merge(self.local_basis, received))]
         size_arr = np.empty((self.comm.size,), dtype=int)
         local_length = len(self.local_basis)
         size_arr = np.array(self.comm.allgather(local_length), dtype=int)
         self.size = np.sum(size_arr)
-        self.offset = np.sum(size_arr[: self.comm.rank])  # offset_arr[0] - local_length
+        self.offset = np.sum(size_arr[: self.comm.rank])
         self.local_indices = range(self.offset, self.offset + len(self.local_basis))
         self._index_dict = {state: self.offset + i for i, state in enumerate(self.local_basis)}
         self.index_bounds = [np.sum(size_arr[: r + 1]) if size_arr[r] > 0 else None for r in range(self.comm.size)]
@@ -708,6 +702,7 @@ class SimpleDistributedStateContainer(StateContainer):
             )
             for r in range(self.comm.size)
         ]
+        MPI.Request.waitall(send_req)
 
     def _getitem_sequence(self, l: Iterable[int]) -> Iterable[bytes]:
         if self.comm is None:
@@ -726,7 +721,7 @@ class SimpleDistributedStateContainer(StateContainer):
                     break
         send_order = np.argsort(send_to_ranks, kind="stable")
 
-        queries = self.comm.alltoall(send_list)
+        queries = SimpleDistributedStateContainer._point2point(send_list, self.comm)
 
         results = [[] for _ in range(self.comm.size)]
         for r in range(len(queries)):
@@ -734,8 +729,11 @@ class SimpleDistributedStateContainer(StateContainer):
                 if query >= self.offset and query < self.offset + len(self.local_basis):
                     results[r].append(self.local_basis[query - self.offset])
 
-        result = self.comm.alltoall(results)
-        result = [state for r_results in result for state in r_results]
+        result = [
+            state
+            for r_results in SimpleDistributedStateContainer._point2point(results, self.comm)
+            for state in r_results
+        ]
 
         return (result[i] for i in np.argsort(send_order))
 
@@ -755,14 +753,16 @@ class SimpleDistributedStateContainer(StateContainer):
 
         send_order = np.argsort(send_to_ranks, kind="stable")
 
-        queries = self.comm.alltoall(send_list)
+        queries = SimpleDistributedStateContainer._point2point(send_list, self.comm)
+        # queries = self.comm.alltoall(send_list)
 
         results = [[] for _ in range(self.comm.size)]
         for r in range(self.comm.size):
             for query in queries[r]:
                 results[r].append(self._index_dict.get(query, self.size))
-        result = self.comm.alltoall(results)
-        result = np.array([i for r_i in result for i in r_i], dtype=int)
+        result = np.array(
+            [i for r_i in SimpleDistributedStateContainer._point2point(results, self.comm) for i in r_i], dtype=int
+        )
         while np.any(np.logical_or(result > self.size, result < 0)):
             mask = np.logical_or(result > self.size, result < 0)
             result[mask] = np.from_iter(self._index_sequence(itertools.compress(s, mask)), dtype=int)
@@ -775,7 +775,7 @@ class SimpleDistributedStateContainer(StateContainer):
         return (index < self.size for index in self._index_sequence(items))
 
     def alltoall_states(self, send_list: list[list[bytes]], flatten=False):
-        states = self.comm.alltoall(send_list)
+        states = SimpleDistributedStateContainer._point2point(send_list, self.comm)
         if flatten:
             states = [state for r_states in states for state in r_states]
         return states

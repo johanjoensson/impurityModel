@@ -742,7 +742,7 @@ def block_lanczos(
         done = converged(alphas, betas, verbose=reort == Reort.PARTIAL)
 
         if mpi:
-            request.Wait()
+            request.wait()
             done = comm.allreduce(done, op=MPI.LAND)
 
         converge_count = (1 + converge_count) if done else 0
