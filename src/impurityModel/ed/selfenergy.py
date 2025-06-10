@@ -15,6 +15,7 @@ import impurityModel.ed.product_state_representation as psr
 
 from impurityModel.ed.greens_function import get_Greens_function, save_Greens_function
 from impurityModel.ed.block_structure import print_block_structure
+from impurityModel.ed.manybody_state import ManyBodyOperator
 
 EV_TO_RY = 1 / 13.605693122994
 
@@ -207,8 +208,8 @@ def calc_occ_e(
         spin_flip_dj=spin_flip_dj,
         comm=comm,
     )
-    h_dict = basis.expand(h_op, dense_cutoff=dense_cutoff, de2_min=1e-4)
-    h = basis.build_sparse_matrix(h_op, h_dict)
+    h_dict = basis.expand(h_op, dense_cutoff=dense_cutoff, de2_min=1e-5)
+    h = basis.build_sparse_matrix(h_op)
 
     e_trial = finite.eigensystem_new(
         h,
@@ -348,7 +349,8 @@ def calc_selfenergy(
 
     # construct local, interacting, hamiltonian
     u = finite.getUop_from_rspt_u4(u4)
-    h = finite.addOps([h0, u])
+    h = ManyBodyOperator(h0) + ManyBodyOperator(u)
+    # h = finite.addOps([h0, u])
 
     gs_impurity_occ, basis, h_dict = find_gs(
         h,
@@ -372,8 +374,8 @@ def calc_selfenergy(
     energy_cut = -tau * np.log(1e-4)
 
     basis.tau = tau
-    h_dict = basis.expand(h, H_dict=h_dict, dense_cutoff=dense_cutoff, de2_min=1e-6)
-    h_gs = basis.build_sparse_matrix(h, h_dict)
+    _ = basis.expand(h, dense_cutoff=dense_cutoff, de2_min=1e-8)
+    h_gs = basis.build_sparse_matrix(h)
     es, psis_dense = finite.eigensystem_new(
         h_gs,
         e_max=energy_cut,

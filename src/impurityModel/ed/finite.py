@@ -287,7 +287,7 @@ def eigensystem_new(h_local, e_max, k=10, v0=None, eigenValueTol=0, return_eigve
             if es is None or len(es) == 0:
                 es = [0]
         # eigsh does not guarantee that the eigenvectors are orthonormal. therefore we do a QR decomposition on them.
-        vecs, _ = np.linalg.qr(vecs, mode="reduced")
+        # vecs, _ = np.linalg.qr(vecs, mode="reduced")
 
         # In principle, lobpcg should be able to correct some errors in the eigenvectors ad eigenvalues found by eigsh (which uses ARPACK behind the scenes).
         # eigsh struggles with degenerate or nearly degenerate eigenstates, so do one round of lobpcg to correct any errors.

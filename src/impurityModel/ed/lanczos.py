@@ -580,7 +580,7 @@ def block_lanczos(
     reort: Reort = Reort.NONE,
     slaterWeightMin: float = 0,
 ) -> (np.ndarray, np.ndarray, Optional[list[dict]]):
-    CYTHON = True
+    CYTHON = isinstance(h_op, ManyBodyOperator)
     if h_mem is None:
         h_mem = {}
     mpi = basis.comm is not None
@@ -603,8 +603,8 @@ def block_lanczos(
 
     q = None
     if CYTHON:
-        psi0 = [ManyBodyState(psi) for psi in psi0]
-        h_op = ManyBodyOperator(h_op)
+        # psi0 = [ManyBodyState(psi) for psi in psi0]
+        # h_op = ManyBodyOperator(h_op)
         q = [[ManyBodyState()] * n, psi0]
     else:
         q = [[{}] * n, psi0]
@@ -668,9 +668,9 @@ def block_lanczos(
         )
         N_max = max(N_max, basis.size)
         if CYTHON:
-            q[0] = [ManyBodyState(out) for out in basis.redistribute_psis([p.to_dict() for p in q[0]])]
-            q[1] = [ManyBodyState(out) for out in basis.redistribute_psis([p.to_dict() for p in q[1]])]
-            wp = [ManyBodyState(out) for out in basis.redistribute_psis([p.to_dict() for p in wp])]
+            # q[0] = [ManyBodyState(out) for out in basis.redistribute_psis([p.to_dict() for p in q[0]])]
+            # q[1] = [ManyBodyState(out) for out in basis.redistribute_psis([p.to_dict() for p in q[1]])]
+            # wp = [ManyBodyState(out) for out in basis.redistribute_psis([p.to_dict() for p in wp])]
             psim = basis.build_distributed_vector([p.to_dict() for p in q[0]]).T
             psi = basis.build_distributed_vector([p.to_dict() for p in q[1]]).T
             psip = basis.build_distributed_vector([p.to_dict() for p in wp]).T
@@ -678,9 +678,17 @@ def block_lanczos(
             q[0] = basis.redistribute_psis(q[0])
             q[1] = basis.redistribute_psis(q[1])
             wp = basis.redistribute_psis(wp)
-            psim = basis.build_distributed_vector(q[0]).T
-            psi = basis.build_distributed_vector(q[1]).T
-            psip = basis.build_distributed_vector(wp).T
+            psi = np.empty((len(basis.local_basis), n), dtype=complex, order="C")
+            psip = np.empty_like(psi)
+            psim = np.empty_like(psi)
+            for (i, state), j in itertools.product(enumerate(basis.local_basis), range(n)):
+                psi[i, j] = q[1][j].get(state, 0)
+                psim[i, j] = q[0][j].get(state, 0)
+                psip[i, j] = wp[j].get(state, 0)
+            # psim = basis.build_distributed_vector(q[0]).T
+            # psi = basis.build_distributed_vector(q[1]).T
+            # psip = basis.build_distributed_vector(wp).T
+
         alpha = np.conj(psi.T) @ psip
         alphas = np.append(alphas, np.empty((1, n, n), dtype=complex), axis=0)
         if mpi:

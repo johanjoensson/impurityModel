@@ -13,7 +13,12 @@ public:
   template <typename T> struct Comparer {
     inline bool operator()(const std::vector<T> &a,
                            const std::vector<T> &b) const noexcept {
-      for (size_t i = 0; i < a.size(); i++) {
+      for (size_t i = 0; i < std::min(a.size(), b.size()); i++) {
+        if (i >= a.size()) {
+          return true;
+        } else if (i >= b.size()) {
+          return false;
+        }
         if (a[i] < b[i]) {
           return true;
         } else if (a[i] > b[i]) {
@@ -70,6 +75,8 @@ public:
   void add_ops(const std::vector<std::pair<key_type, mapped_type>> &ops);
   void add_ops(std::vector<std::pair<key_type, mapped_type>> &&ops);
   ManyBodyState operator()(const ManyBodyState &, double, const Restrictions &);
+
+  Memory memory() const;
 
   Map::size_type size() const;
   bool empty() const;

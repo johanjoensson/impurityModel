@@ -200,13 +200,17 @@ cdef class ManyBodyOperator:
     def size(self):
         return len(self)
 
-    def __call__(self, ManyBodyState psi, double cutoff=0, dict[vector[size_t], pair[size_t, size_t]] restrictions=dict()) -> ManyBodyState:
+    def __call__(self, ManyBodyState psi, double cutoff=0, dict[frozenset[int], tuple[int, int]] restrictions=None) -> ManyBodyState:
         res = ManyBodyState()
+        if restrictions is None:
+            restrictions = {}
         cdef map[vector[size_t], pair[size_t, size_t], ManyBodyOperator_cpp.Comparer[size_t]] rest
-        cdef vector[size_t] indices
-        cdef pair[size_t, size_t] limits
-        for indices, limits in restrictions:
-            rest.insert((indices, limits))
+        cdef frozenset[int] indices
+        cdef tuple[int, int] limits
+        for indices, limits in restrictions.items():
+            if len(indices) == 0:
+                continue
+            rest.insert((sorted(indices),limits))
         res.v = self.o(psi.v, cutoff, rest)
         return res
 
@@ -230,9 +234,13 @@ cdef class ManyBodyOperator:
     def items(self):
         return ((ints_to_processes(p.first), p.second) for p in self.o)
 
+    def memory(self):
+        res = dict((key_to_bytes(p.first), dict((key_to_bytes(s.first), s.second) for s in p.second)) for p in self.o.memory())
+        return res
+
     def to_dict(self):
         return dict((ints_to_processes(p.first), p.second) for p in self.o)
 
 
-def applyOp(ManyBodyOperator op, ManyBodyState psi, double cutoff=0, dict[vector[size_t], pair[size_t, size_t]] restrictions={}):
-    return op(psi, cutoff)
+def applyOp(ManyBodyOperator op, ManyBodyState psi, double cutoff=0, dict[vector[size_t], pair[size_t, size_t]] restrictions=None):
+    return op(psi, cutoff, restrictions)

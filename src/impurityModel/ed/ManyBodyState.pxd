@@ -9,6 +9,9 @@ cdef extern from "ManyBodyState.cpp":
 
 cdef extern from "ManyBodyState.h":
     cdef cppclass ManyBodyState:
+        cppclass Comparer:
+            bint operator()(const vector[uint8_t]&, const vector[uint8_t]&)
+
         ManyBodyState()
         ManyBodyState(const ManyBodyState&)
         ManyBodyState& operator=(const ManyBodyState&)

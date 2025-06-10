@@ -3,6 +3,7 @@ from time import perf_counter
 import sys
 from typing import Optional, Union
 from os import environ
+from bisect import bisect_left
 
 try:
     from collections.abc import Sequence, Iterable
@@ -30,13 +31,10 @@ from impurityModel.ed.finite import (
     thermal_average_scale_indep,
 )
 
+from impurityModel.ed.manybody_state import ManyBodyState, ManyBodyOperator, applyOp as applyOp_test
+
 
 from impurityModel.ed.finite import applyOp_new as applyOp
-
-# if int(environ.get("OMP_NUM_THREADS", 1)) > 1:
-#     from impurityModel.ed.finite import applyOp_threadpool as applyOp
-# else:
-#     from impurityModel.ed.finite import applyOp_new as applyOp
 
 
 def batched(iterable: Iterable, n: int) -> Iterable:
@@ -376,7 +374,10 @@ class Basis:
                     max_cond = min(r_max_cond + con_increase, sum(len(orbs) for orbs in new_conduction_baths[i]))
 
             if val_change is not None or con_change is not None:
-                excited_restrictions[new_valence_indices.union(new_conduction_indices)] = (min_val, max_val + max_cond)
+                new_fluctuating_indices = new_valence_indices.union(new_conduction_indices)
+                if len(new_fluctuating_indices) == 0:
+                    continue
+                excited_restrictions[new_fluctuating_indices] = (min_val, max_val + max_cond)
 
             if collapse_chains:
                 full_indices = frozenset(orb for full_indices in full_bath_states[i] for orb in full_indices)
@@ -695,35 +696,29 @@ class Basis:
 
         return spin_flip
 
-    def expand(self, op, op_dict=None, dense_cutoff=None, slaterWeightMin=0):
+    def expand(self, op, dense_cutoff=None, slaterWeightMin=0):
+        if isinstance(op, dict):
+            op = ManyBodyOperator(op)
         old_size = self.size - 1
         t0 = perf_counter()
         t_apply = 0
         t_filter = 0
         t_add = 0
         t_keys = 0
-        # states_to_check = set(self.local_basis)
         new_states = set()
-        # checked_states = set()
         while old_size != self.size and self.size < self.truncation_threshold:
-            # while len(states_to_check) > 0:
-            # checked_states |= states_to_check
-            # for state in states_to_check:
             for state in self.local_basis:
                 t_tmp = perf_counter()
-                res = applyOp(
-                    self.num_spin_orbitals,
+                res = applyOp_test(
                     op,
-                    {state: 1},
+                    ManyBodyState({state: 1}),
+                    cutoff=slaterWeightMin,
                     restrictions=self.restrictions,
-                    slaterWeightMin=slaterWeightMin,
-                    opResult=op_dict,
                 )
                 t_apply += perf_counter() - t_tmp
                 t_tmp = perf_counter()
-                new_states |= set(res.keys())  #  - set(self.local_basis)
+                new_states |= set(res.keys())
                 t_keys += perf_counter() - t_tmp
-                # if a state appears in op_dict it means it has already been evaluted
             t_tmp = perf_counter()
             filtered_states = new_states
             t_filter += perf_counter() - t_tmp
@@ -735,7 +730,7 @@ class Basis:
             t_add += perf_counter() - t_tmp
         if self.verbose:
             print(f"After expansion, the basis contains {self.size} elements.")
-        return self.build_operator_dict(op, op_dict=op_dict)
+        return self.build_operator_dict(op)
 
     def index(self, val):
         return self.state_container.index(val)
@@ -791,14 +786,10 @@ class Basis:
         return v
 
     def build_distributed_vector(self, psis: list[dict], dtype=complex) -> np.ndarray:
-        v = np.zeros((len(psis), len(self.local_basis)), dtype=dtype, order="C")
-        psis_new = self.redistribute_psis(psis)
-        for row, psi in enumerate(psis_new):
-            for state in psi:
-                if state not in self.local_basis:
-                    continue
-                local_idx = self.local_basis.index(state)
-                v[row, local_idx] = psi[state]
+        psis = self.redistribute_psis(psis)
+        v = np.empty((len(psis), len(self.local_basis)), dtype=dtype, order="C")
+        for (row, psi), (col, state) in itertools.product(enumerate(psis), enumerate(self.local_basis)):
+            v[row, col] = psi.get(state, 0)
         return v
 
     def build_state(self, vs: Union[list[np.ndarray], np.ndarray], slaterWeightMin=0) -> list[dict]:
@@ -830,34 +821,29 @@ class Basis:
             )
         return res
 
-    def build_operator_dict(self, op, op_dict=None, slaterWeightMin=1e-16):
+    def build_operator_dict(self, op, slaterWeightMin=1e-16):
         """
         Express the operator, op, in the current basis. Do not expand the basis.
         Return a dict containing the results of applying op to the different basis states
         """
-        if op_dict is None:
-            op_dict = {}
+        if isinstance(op, dict):
+            op = ManyBodyOperator(op)
 
         for state in self.local_basis:
-            _ = applyOp(
-                self.num_spin_orbitals,
+            _ = applyOp_test(
                 op,
-                {state: 1},
+                ManyBodyState({state: 1}),
+                cutoff=slaterWeightMin,
                 restrictions=self.restrictions,
-                slaterWeightMin=slaterWeightMin,
-                opResult=op_dict,
             )
-        # op_dict.clear()
-        # op_dict.update(new_op_dict)
-        # return {state: op_dict[state] for state in self.local_basis}
-        return op_dict.copy()
+        return op.memory()
 
-    def build_dense_matrix(self, op, op_dict=None, distribute=True):
+    def build_dense_matrix(self, op, distribute=True):
         """
         Get the operator as a dense matrix in the current basis.
         by default the dense matrix is distributed to all ranks.
         """
-        h_local = self.build_sparse_matrix(op, op_dict)
+        h_local = self.build_sparse_matrix(op)
         local_dok = h_local.todok()
         if self.is_distributed:
             reduced_dok = self.comm.reduce(local_dok, op=MPI.SUM, root=0)
@@ -868,25 +854,23 @@ class Basis:
             h = h_local.todense()
         return h
 
-    def build_sparse_matrix(self, op, op_dict: Optional[dict[bytes, dict[bytes, complex]]] = None):
+    def build_sparse_matrix(self, op):
         """
         Get the operator as a sparse matrix in the current basis.
         The sparse matrix is distributed over all ranks.
         """
 
-        expanded_dict = self.build_operator_dict(op, op_dict)
+        expanded_dict = self.build_operator_dict(op)
         rows: list[int] = []
         columns: list[int] = []
         values: list[complex] = []
         if not self.is_distributed:
-            for local_col_idx, column in enumerate(self.local_basis):
-                for row in expanded_dict[column]:
-                    if row not in self.local_basis:
-                        continue
-                    local_row_idx = self.local_basis.index(row)
-                    columns.append(local_col_idx)
-                    rows.append(local_row_idx)
-                    values.append(expanded_dict[column][row])
+            for (col, ket), (row, bra) in itertools.product(enumerate(self.local_basis), repeat=2):
+                if bra not in expanded_dict[ket]:
+                    continue
+                columns.append(col)
+                rows.append(row)
+                values.append(expanded_dict[ket][bra])
         else:
             rows_in_basis: set[bytes] = {row for column in self.local_basis for row in expanded_dict[column].keys()}
             row_dict = {
@@ -1049,45 +1033,43 @@ class CIPSI_Basis(Basis):
         self.add_states(state for psi in psis for state in psi)
         return self.redistribute_psis(psis)
 
-    def _calc_de2(self, Djs: Basis, H: dict, H_dict: dict, Hpsi_ref: dict, e_ref: float, slaterWeightMin: float = 0):
+    def _calc_de2(self, Djs: Basis, H, Hpsi_ref, e_ref: float, slaterWeightMin: float = 0):
         """
         calculate second variational energy contribution of the Slater determinants in states.
         """
 
+        if isinstance(H, dict):
+            H = ManyBodyOperator(H)
         overlaps = np.empty((len(Djs.local_basis)), dtype=complex)
         e_Dj = np.empty((len(Djs.local_basis)), dtype=float)
         for j, (Dj, overlap) in enumerate((d, Hpsi_ref[d]) for d in Djs.local_basis):
             overlaps[j] = overlap
-            HDj = applyOp(
-                self.num_spin_orbitals,
+            HDj = applyOp_test(
                 H,
-                {Dj: 1},
+                ManyBodyState({Dj: 1}),
+                cutoff=slaterWeightMin,
                 restrictions=self.restrictions,
-                slaterWeightMin=slaterWeightMin,
-                opResult=H_dict,
             )
             # <Dj|H|Dj>
-            e_Dj[j] = np.real(HDj.get(Dj, 0))
+            e_Dj[j] = np.real(HDj[Dj])
         de = e_ref - e_Dj
         de[np.abs(de) < np.finfo(float).eps] = np.finfo(float).eps
 
         # <Dj|H|Psi_ref>^2 / (E_ref - <Dj|H|Dj>)
         return np.square(np.abs(overlaps)) / de
 
-    def determine_new_Dj(self, e_ref, psi_ref, H, H_dict, de2_min, return_Hpsi_ref=False):
-        if H_dict is None:
-            H_dict = {}
+    def determine_new_Dj(self, e_ref, psi_ref, H, de2_min, return_Hpsi_ref=False):
+        if isinstance(H, dict):
+            H = ManyBodyOperator(H)
         new_Dj = set()
         Hpsi_ref = []
         for e_i, psi_i in zip(e_ref, psi_ref):
-            Hpsi_i = applyOp(
-                self.num_spin_orbitals,
+            Hpsi_i = applyOp_test(
                 H,
-                psi_i,
+                ManyBodyState(psi_i),
                 restrictions=self.restrictions,
-                opResult=H_dict,
             )
-            Dj_candidates = Hpsi_i.keys()
+            Dj_candidates = list(Hpsi_i.keys())
             Dj_basis_mask = (not x for x in self.contains(Dj_candidates))
             Dj_basis = Basis(
                 impurity_orbitals=self.impurity_orbitals,
@@ -1097,8 +1079,8 @@ class CIPSI_Basis(Basis):
                 comm=self.comm,
                 verbose=False,
             )
-            Hpsi_i = Dj_basis.redistribute_psis([Hpsi_i])[0]
-            de2 = self._calc_de2(Dj_basis, H, H_dict, Hpsi_i, e_i)
+            Hpsi_i = Dj_basis.redistribute_psis([Hpsi_i.to_dict()])[0]
+            de2 = self._calc_de2(Dj_basis, H, Hpsi_i, e_i)
             de2_mask = np.abs(de2) >= de2_min
             Dji = {Dj_basis.local_basis[i] for i, mask in enumerate(de2_mask) if mask}
             new_Dj |= Dji
@@ -1108,7 +1090,7 @@ class CIPSI_Basis(Basis):
 
         return new_Dj
 
-    def expand(self, H, H_dict=None, de2_min=1e-10, dense_cutoff=1e3, slaterWeightMin=0):
+    def expand(self, H, de2_min=1e-10, dense_cutoff=1e3, slaterWeightMin=0):
         """
         Use the CIPSI method to expand the basis. Keep adding Slater determinants until the CIPSI energy is converged.
         """
@@ -1125,13 +1107,14 @@ class CIPSI_Basis(Basis):
         de0_max = max(1e-6, -self.tau * np.log(1e-4))
         psi_ref = None
         t_tmp = perf_counter()
-        if H_dict is None:
-            H_dict = {}
-        _ = self.build_operator_dict(H, H_dict)
+
+        if isinstance(H, dict):
+            H = ManyBodyOperator(H)
+
         t_build_dict += perf_counter() - t_tmp
         while converge_count < 1:
             t_tmp = perf_counter()
-            H_mat = self.build_sparse_matrix(H, op_dict=H_dict)
+            H_mat = self.build_sparse_matrix(H)
             t_build_mat += perf_counter() - t_tmp
             t_tmp = perf_counter()
             if psi_ref is not None:
@@ -1153,10 +1136,11 @@ class CIPSI_Basis(Basis):
             psi_ref = self.build_state(psi_ref_dense.T)
             if self.size > self.truncation_threshold:
                 psi_ref = self.truncate(psi_ref)
+                print(f"----->After truncation, the basis contains {self.size} elements.")
 
             t_build_state += perf_counter() - t_tmp
             t_tmp = perf_counter()
-            new_Dj = self.determine_new_Dj(e_ref, psi_ref, H, {}, de2_min)
+            new_Dj = self.determine_new_Dj(e_ref, psi_ref, H, de2_min)
             t_Dj += perf_counter() - t_tmp
             old_size = self.size
             if self.spin_flip_dj:
@@ -1165,8 +1149,6 @@ class CIPSI_Basis(Basis):
             self.add_states(new_Dj)
             psi_ref = self.redistribute_psis(psi_ref)
             t_add += perf_counter() - t_tmp
-            if self.verbose:
-                print(f"----->After truncation, the basis contains {self.size} elements.")
 
             if old_size == self.size:
                 converge_count += 1
@@ -1176,17 +1158,15 @@ class CIPSI_Basis(Basis):
         if self.verbose:
             print(f"After expansion, the basis contains {self.size} elements.")
 
-        return self.build_operator_dict(H, op_dict=H_dict)
+        return self.build_operator_dict(H)
 
-    def expand_at(self, w, psi_ref, H, H_dict=None, de2_min=1e-3):
-        if H_dict is None:
-            H_dict = {}
+    def expand_at(self, w, psi_ref, H, de2_min=1e-3):
 
+        if isinstance(H, dict):
+            H = ManyBodyOperator(H)
         old_size = self.size - 1
         while old_size != self.size:
-            new_Dj, Hpsi_ref = self.determine_new_Dj(
-                [w] * len(psi_ref), psi_ref, H, H_dict, de2_min, return_Hpsi_ref=True
-            )
+            new_Dj, Hpsi_ref = self.determine_new_Dj([w] * len(psi_ref), psi_ref, H, de2_min, return_Hpsi_ref=True)
 
             old_size = self.size
             self.add_states(new_Dj)
@@ -1201,8 +1181,7 @@ class CIPSI_Basis(Basis):
                 self.comm.Allreduce(MPI.IN_PLACE, N2s, op=MPI.SUM)
             psi_ref = [{state: psi[state] / np.sqrt(N2s[i]) for state in psi} for i, psi in enumerate(psi_ref)]
 
-        _ = self.build_operator_dict(H, op_dict=H_dict)
-        return H_dict.copy()
+        return self.build_operator_dict(H)
 
     def copy(self):
         new_basis = CIPSI_Basis(

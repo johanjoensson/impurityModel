@@ -10,6 +10,7 @@ from impurityModel.ed.lanczos import get_block_Lanczos_matrices, block_lanczos, 
 from impurityModel.ed.manybody_basis import CIPSI_Basis, Basis
 from impurityModel.ed.cg import bicgstab
 from impurityModel.ed.block_structure import BlockStructure, get_block_structure
+from impurityModel.ed.manybody_state import ManyBodyState
 
 from mpi4py import MPI
 
@@ -503,7 +504,7 @@ def get_block_Green(
 
     if verbose:
         t0 = time.perf_counter()
-    h_mem = basis.expand(hOp, h_mem, slaterWeightMin=slaterWeightMin)
+    h_mem = basis.expand(hOp, slaterWeightMin=slaterWeightMin)
     h = basis.build_sparse_matrix(hOp, h_mem)
 
     N = len(basis)
@@ -658,7 +659,7 @@ def block_Green(
         psi_dense_local,
         root=0,
     )
-    psi = basis.build_state(psi_dense_local.T, slaterWeightMin=np.finfo(float).eps)
+    psi = [ManyBodyState(p) for p in basis.build_state(psi_dense_local.T, slaterWeightMin=np.finfo(float).eps)]
     r[np.abs(r) < np.finfo(float).eps] = 0
 
     if len(psi) == 0:
@@ -822,15 +823,14 @@ def block_Green_freq_2(
             zip(range(len(w_mesh)), w_mesh), w_indices.start, w_indices.stop, w_indices.step
         ):
 
-            freq_basis.expand_at(w + e, psi, hOp, H_dict=h_mem, de2_min=1e-12)
+            freq_basis.expand_at(w + e, psi, hOp, de2_min=1e-12)
 
             if True:
                 # Use fully sparse implementation
                 # Build basis for each frequency
-                h_local = freq_basis.build_sparse_matrix(hOp, h_mem)
+                h_local = freq_basis.build_sparse_matrix(hOp)
                 alphas, betas, _ = block_lanczos(
                     psi0=psi,
-                    h_op=hOp,
                     basis=basis,
                     converged=build_converged(w, delta),
                     h_mem=h_mem,
@@ -840,7 +840,7 @@ def block_Green_freq_2(
                 )
             else:
                 # Use build basis before building sparse matrix and ruhnning Lanczos
-                h_local = freq_basis.build_sparse_matrix(hOp, h_mem)
+                h_local = freq_basis.build_sparse_matrix(hOp)
                 h = finite.create_linear_operator(h_local, freq_basis.comm)
                 alphas, betas, _ = get_block_Lanczos_matrices(
                     psi0=freq_basis.build_vector(psi).T,

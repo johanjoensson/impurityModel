@@ -10,7 +10,7 @@
 
 class ManyBodyState {
 
-private:
+public:
   using Key = std::vector<uint8_t>;
   using Value = std::complex<double>;
   struct Comparer {
@@ -26,6 +26,8 @@ private:
     }
   };
   using Map = std::map<Key, Value, Comparer>;
+
+private:
   Map m_map;
 
 public:

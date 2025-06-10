@@ -3,7 +3,7 @@
 from libcpp.map cimport map
 from libcpp.vector cimport vector
 from libcpp.pair cimport pair
-from libc.stdint cimport int64_t
+from libc.stdint cimport int64_t, uint8_t
 cimport cython
 
 from ManyBodyState cimport ManyBodyState
@@ -26,6 +26,8 @@ cdef extern from "ManyBodyOperator.h":
         double complex& operator[](const vector[int64_t]&)
         double complex& at(const vector[int64_t]&)
         ManyBodyState operator()(const ManyBodyState&, double, const map[vector[size_t], pair[size_t,size_t], Comparer[size_t]]&)
+
+        map[vector[uint8_t], ManyBodyState, ManyBodyState.Comparer] memory()
 
         void clear_memory()
 
