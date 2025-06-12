@@ -1,5 +1,6 @@
 #include "ManyBodyOperator.h"
 #include "ManyBodyState.h"
+#include <algorithm>
 #include <bitset>
 #include <cassert>
 
@@ -45,37 +46,252 @@ int annihilate(ManyBodyState::key_type &state, size_t idx) {
   return sign * (set_bits(state[state_idx] >> (bit_idx + 1)) % 2 ? -1 : 1);
 }
 
-ManyBodyOperator::ManyBodyOperator(
-    const std::vector<std::pair<OPS, SCALAR>> &ops)
+ManyBodyOperator::ManyBodyOperator(const std::vector<value_type> &ops)
     : m_ops(), m_memory() {
+  m_ops.reserve(ops.size());
   for (const auto &p : ops) {
-    m_ops.insert(p);
+    insert(p);
   }
 }
 
-ManyBodyOperator::ManyBodyOperator(std::vector<std::pair<OPS, SCALAR>> &&ops)
+ManyBodyOperator::ManyBodyOperator(std::vector<value_type> &&ops)
     : m_ops(), m_memory() {
+  m_ops.reserve(ops.size());
   for (auto &p : ops) {
-    m_ops.insert(std::move(p));
+    insert(std::move(p));
   }
 }
 
-ManyBodyOperator::ManyBodyOperator(const Map &m) : m_ops(m), m_memory() {}
-ManyBodyOperator::ManyBodyOperator(Map &&m) : m_ops(std::move(m)), m_memory() {}
-
-void ManyBodyOperator::add_ops(const std::vector<std::pair<OPS, SCALAR>> &ops) {
-  for (const auto &op : ops) {
-    m_ops[op.first] += op.second;
+ManyBodyOperator::ManyBodyOperator(const OPS_VEC &ops, const SCALAR_VEC &amps)
+    : m_ops(), m_memory() {
+  m_ops.reserve(ops.size());
+  for (size_t i = 0; i < ops.size(); i++) {
+    emplace(ops[i], amps[i]);
+  }
+}
+ManyBodyOperator::ManyBodyOperator(OPS_VEC &&ops, SCALAR_VEC &&amps)
+    : m_ops(), m_memory() {
+  m_ops.reserve(ops.size());
+  for (size_t i = 0; i < ops.size(); i++) {
+    emplace(std::move(ops[i]), std::move(amps[i]));
   }
 }
 
-void ManyBodyOperator::add_ops(std::vector<std::pair<OPS, SCALAR>> &&ops) {
-  for (auto &op : ops) {
-    m_ops[std::move(op.first)] += std::move(op.second);
+ManyBodyOperator::iterator ManyBodyOperator::find(iterator first, iterator last,
+                                                  const key_type &key) {
+  return std::lower_bound(first, last, key,
+                          [](const value_type &a, const key_type &b) {
+                            return compare_type{}(a.first, b);
+                          });
+}
+
+ManyBodyOperator::iterator ManyBodyOperator::find(const key_type &key) {
+  return find(m_ops.begin(), m_ops.end(), key);
+}
+
+ManyBodyOperator::const_iterator
+ManyBodyOperator::find(const_iterator first, const_iterator last,
+                       const key_type &key) const {
+  return std::lower_bound(first, last, key,
+                          [](const value_type &a, const key_type &b) {
+                            return compare_type{}(a.first, b);
+                          });
+}
+
+ManyBodyOperator::const_iterator
+ManyBodyOperator::find(const key_type &key) const {
+  return find(m_ops.cbegin(), m_ops.cend(), key);
+}
+
+template <class K>
+ManyBodyOperator::iterator ManyBodyOperator::find(const K &key) {
+  return find(m_ops.begin(), m_ops.end(), static_cast<key_type>(key));
+}
+
+template <class K>
+ManyBodyOperator::const_iterator ManyBodyOperator::find(const K &key) const {
+  return find(m_ops.cbegin(), m_ops.cend(), static_cast<key_type>(key));
+}
+
+ManyBodyOperator::mapped_type &
+ManyBodyOperator::operator[](const key_type &key) {
+  auto it = find(key);
+  if (it == m_ops.end() || it->first != key) {
+    it = m_ops.emplace(it, key, mapped_type());
+  }
+  return (*it).second;
+}
+
+ManyBodyOperator::mapped_type &ManyBodyOperator::operator[](key_type &&key) {
+  auto it = find(key);
+  if (it == m_ops.end() || it->first != key) {
+    it = m_ops.emplace(it, std::move(key), mapped_type());
+  }
+  return (*it).second;
+}
+
+ManyBodyOperator::mapped_type &ManyBodyOperator::at(const key_type &key) {
+  auto it = find(key);
+  if (it == m_ops.end() || it->first != key) {
+    throw std::out_of_range("Element not found!");
+  }
+  return it->second;
+}
+
+const ManyBodyOperator::mapped_type &
+ManyBodyOperator::at(const key_type &key) const {
+  const auto it = find(key);
+  if (it == m_ops.end() || it->first != key) {
+    throw std::out_of_range("Element not found!");
+  }
+  return it->second;
+}
+
+std::pair<ManyBodyOperator::iterator, bool>
+ManyBodyOperator::insert(const value_type &val) {
+  auto it = find(val.first);
+  if (it != m_ops.end() && it->first == val.first) {
+    return {it, false};
+  }
+  it = m_ops.emplace(it, val);
+  return {it, true};
+}
+std::pair<ManyBodyOperator::iterator, bool>
+ManyBodyOperator::insert(value_type &&val) {
+  auto it = find(val.first);
+  if (it != m_ops.end() && it->first != val.first) {
+    return {it, false};
+  }
+  it = m_ops.emplace(it, std::move(val));
+  return {it, true};
+}
+ManyBodyOperator::iterator ManyBodyOperator::insert(iterator pos,
+                                                    const value_type &val) {
+  auto it = find(m_ops.begin(), pos, val.first);
+  return m_ops.emplace(it, val);
+}
+
+ManyBodyOperator::iterator ManyBodyOperator::insert(iterator pos,
+                                                    value_type &&val) {
+  auto it = find(m_ops.begin(), pos, val.first);
+  return m_ops.emplace(it, std::move(val));
+}
+template <class InputIt>
+void ManyBodyOperator::insert(InputIt first, InputIt last) {
+  for (auto it = first; it != last; it++) {
+    insert(std::move(*it));
   }
 }
 
-ManyBodyOperator::Map::size_type ManyBodyOperator::size() const {
+void ManyBodyOperator::insert(std::initializer_list<value_type> l) {
+  for (auto &&val : l) {
+    insert(std::move(val));
+  }
+}
+
+template <class... Args>
+std::pair<ManyBodyOperator::iterator, bool>
+ManyBodyOperator::emplace(Args &&...args) {
+  value_type val{std::forward<Args>(args)...};
+  auto it = find(val.first);
+  if (it != m_ops.end() && it->first == val.first) {
+    return {it, false};
+  }
+  it = m_ops.emplace(it, std::move(val));
+  return {it, true};
+}
+
+template <class... Args>
+ManyBodyOperator::iterator ManyBodyOperator::emplace_hint(const_iterator hint,
+                                                          Args &&...args) {
+  value_type val{std::forward<Args>(args)...};
+  auto it = find(m_ops.begin(), hint, val.first);
+  if (it == m_ops.end() || it->first == val.first) {
+    return m_ops.begin() + (it - m_ops.begin());
+  }
+  it = m_ops.emplace(it, std::move(val));
+  return m_ops.begin() + (it - m_ops.begin());
+}
+
+ManyBodyOperator::iterator ManyBodyOperator::erase(iterator pos) {
+  return m_ops.erase(pos);
+}
+
+ManyBodyOperator::iterator ManyBodyOperator::erase(const_iterator pos) {
+  return m_ops.erase(pos);
+}
+ManyBodyOperator::iterator ManyBodyOperator::erase(const_iterator first,
+                                                   const_iterator last) {
+  return m_ops.erase(first, last);
+}
+ManyBodyOperator::size_type ManyBodyOperator::erase(const key_type &key) {
+  auto it = find(key);
+  if (it == m_ops.end() || it->first != key) {
+    return 0;
+  }
+  m_ops.erase(it);
+  return 1;
+}
+
+ManyBodyOperator::iterator ManyBodyOperator::lower_bound(const key_type &key) {
+  return std::lower_bound(m_ops.begin(), m_ops.end(), key,
+                          [](const value_type &a, const key_type &b) {
+                            return compare_type()(a.first, b);
+                          });
+}
+ManyBodyOperator::const_iterator
+ManyBodyOperator::lower_bound(const key_type &key) const {
+  return std::lower_bound(m_ops.cbegin(), m_ops.cend(), key,
+                          [](const value_type &a, const key_type &b) {
+                            return compare_type()(a.first, b);
+                          });
+}
+template <class K>
+ManyBodyOperator::iterator ManyBodyOperator::lower_bound(const K &key) {
+  return std::lower_bound(m_ops.begin(), m_ops.end(), key,
+                          [](const value_type &a, const key_type &b) {
+                            return compare_type()(a.first, b);
+                          });
+}
+template <class K>
+ManyBodyOperator::const_iterator
+ManyBodyOperator::lower_bound(const K &key) const {
+  return std::lower_bound(m_ops.cbegin(), m_ops.cend(), key,
+                          [](const value_type &a, const key_type &b) {
+                            return compare_type()(a.first, b);
+                          });
+}
+
+ManyBodyOperator::iterator ManyBodyOperator::upper_bound(const key_type &key) {
+  return std::upper_bound(m_ops.begin(), m_ops.end(), key,
+                          [](const key_type &a, const value_type &b) {
+                            return compare_type()(a, b.first);
+                          });
+}
+ManyBodyOperator::const_iterator
+ManyBodyOperator::upper_bound(const key_type &key) const {
+  return std::upper_bound(m_ops.cbegin(), m_ops.cend(), key,
+                          [](const key_type &a, const value_type &b) {
+                            return compare_type()(a, b.first);
+                          });
+}
+template <class K>
+ManyBodyOperator::iterator ManyBodyOperator::upper_bound(const K &key) {
+  return std::upper_bound(m_ops.begin(), m_ops.end(), key,
+                          [](const key_type &a, const value_type &b) {
+                            return compare_type()(a, b.first);
+                          });
+}
+template <class K>
+ManyBodyOperator::const_iterator
+ManyBodyOperator::upper_bound(const K &key) const {
+  return std::upper_bound(m_ops.cbegin(), m_ops.cend(), key,
+                          [](const key_type &a, const value_type &b) {
+                            return compare_type()(a, b.first);
+                          });
+}
+
+ManyBodyOperator::size_type ManyBodyOperator::size() const {
   return m_ops.size();
 }
 
@@ -150,9 +366,14 @@ ManyBodyOperator::operator()(const ManyBodyState &state, double cutoff = 0,
 ManyBodyOperator::Memory ManyBodyOperator::memory() const { return m_memory; }
 
 ManyBodyOperator &ManyBodyOperator::operator+=(const ManyBodyOperator &other) {
-
-  for (const auto &p : other.m_ops) {
-    m_ops[p.first] += p.second;
+  auto current = m_ops.begin();
+  for (const auto &op : other.m_ops) {
+    current = find(current, m_ops.end(), op.first);
+    if (current->first == op.first) {
+      current->second += op.second;
+    } else {
+      current = m_ops.emplace(current, op);
+    }
   }
 
   Memory new_mem;
@@ -164,7 +385,7 @@ ManyBodyOperator &ManyBodyOperator::operator+=(const ManyBodyOperator &other) {
     } else if (right_it->first < left_it->first) {
       right_it++;
     } else {
-      new_mem.insert({left_it->first, left_it->second + right_it->second});
+      new_mem.emplace(left_it->first, left_it->second + right_it->second);
     }
   }
   this->m_memory = std::move(new_mem);
@@ -173,8 +394,14 @@ ManyBodyOperator &ManyBodyOperator::operator+=(const ManyBodyOperator &other) {
 }
 
 ManyBodyOperator &ManyBodyOperator::operator-=(const ManyBodyOperator &other) {
-  for (const auto &p : other.m_ops) {
-    m_ops[p.first] -= p.second;
+  auto current = m_ops.begin();
+  for (const auto &op : other.m_ops) {
+    current = find(current, m_ops.end(), op.first);
+    if (current->first == op.first) {
+      current->second -= op.second;
+    } else {
+      current = m_ops.emplace(current, op.first, -op.second);
+    }
   }
   Memory new_mem;
   auto left_it = this->m_memory.cbegin(), right_it = other.m_memory.cbegin();
@@ -185,7 +412,7 @@ ManyBodyOperator &ManyBodyOperator::operator-=(const ManyBodyOperator &other) {
     } else if (right_it->first < left_it->first) {
       right_it++;
     } else {
-      new_mem.insert({left_it->first, left_it->second - right_it->second});
+      new_mem.emplace(left_it->first, left_it->second - right_it->second);
     }
   }
   this->m_memory = std::move(new_mem);
@@ -221,49 +448,4 @@ ManyBodyOperator ManyBodyOperator::operator-() const {
     p.second = -p.second;
   }
   return res;
-}
-
-int main() {
-
-  const std::vector<uint8_t> state_orig{0xFF, 0x80};
-  auto state = state_orig;
-  int sign = create(state, 1);
-  assert(sign == 0);
-  assert(state == state_orig);
-  std::vector<uint8_t> state_res{0xFF, 0xA0};
-  sign = create(state, 10);
-  assert(sign == -1);
-  assert(state == state_res);
-  state = state_orig;
-  state_res = {0xFF, 0x81};
-  sign = create(state, 15);
-  assert(sign == -1);
-  assert(state == state_res);
-  state = state_orig;
-  state_res = {0xFF, 0x00};
-  sign = annihilate(state, 8);
-  assert(sign == 1);
-  assert(state == state_res);
-  state = state_orig;
-  state_res = {0b11111110, 0x80};
-  sign = annihilate(state, 7);
-  assert(sign == -1);
-  assert(state == state_res);
-  state = state_orig;
-  state_res = state_orig;
-  sign = annihilate(state, 9);
-  assert(sign == 0);
-  assert(state == state_res);
-
-  std::vector<int64_t> indices({0, 1, 2, -1, -2, -3});
-  std::complex<double> scalar(1, 0);
-  std::vector<std::pair<std::vector<int64_t>, std::complex<double>>> ops(
-      {std::pair<std::vector<int64_t>, std::complex<double>>(
-          std::move(indices), std::move(scalar))});
-  ManyBodyOperator op(std::move(ops));
-  std::vector<std::vector<uint8_t>> keys{{1}, {6}};
-  std::vector<std::complex<double>> amps{{1, 0}, {0, 0.5}};
-  ManyBodyState psi(std::move(keys), std::move(amps));
-  ManyBodyState psi_new = op(psi);
-  return 0;
 }

@@ -4,6 +4,7 @@
 #include <complex>
 #include <cstdint>
 #include <map>
+#include <stdexcept>
 #include <utility>
 #include <vector>
 
@@ -30,35 +31,35 @@ public:
   };
   using SCALAR = std::complex<double>;
   using OPS = std::vector<int64_t>;
-  using Map = std::map<OPS, SCALAR, Comparer<int64_t>>;
+  using OPS_VEC = std::vector<OPS>;
+  using SCALAR_VEC = std::vector<SCALAR>;
+  // using Map = std::map<OPS, SCALAR, Comparer<int64_t>>;
   using Memory = std::map<ManyBodyState::key_type, ManyBodyState,
                           ManyBodyState::key_compare>;
   using Restrictions = std::map<std::vector<size_t>, std::pair<size_t, size_t>,
                                 Comparer<size_t>>;
 
 private:
-  Map m_ops;
+  // Map m_ops;
+  std::vector<std::pair<OPS, SCALAR>> m_ops;
   Memory m_memory;
   static bool state_is_within_restrictions(const ManyBodyState::key_type &,
                                            const Restrictions &);
 
 public:
-  using key_type = Map::key_type;
-  using mapped_type = Map::mapped_type;
-  using value_type = Map::value_type;
-  using size_type = Map::size_type;
-  using difference_type = Map::difference_type;
-  using key_compare = Map::key_compare;
-  using value_compare = Map::value_compare;
-  using allocator_type = Map::allocator_type;
-  using reference = Map::reference;
-  using const_reference = Map::const_reference;
-  using pointer = Map::pointer;
-  using const_pointer = Map::const_pointer;
-  using iterator = Map::iterator;
-  using const_iterator = Map::const_iterator;
-  using reverse_iterator = Map::reverse_iterator;
-  using const_reverse_iterator = Map::const_reverse_iterator;
+  using key_type = const OPS;
+  using mapped_type = SCALAR;
+  using value_type = std::pair<OPS, mapped_type>;
+  using size_type = std::vector<value_type>::size_type;
+  using difference_type = std::vector<std::pair<OPS, SCALAR>>::difference_type;
+  using reference = value_type &;
+  using const_reference = const value_type &;
+  using compare_type = Comparer<OPS::value_type>;
+  using iterator = std::vector<value_type>::iterator;
+  using const_iterator = std::vector<value_type>::const_iterator;
+  using reverse_iterator = std::vector<value_type>::reverse_iterator;
+  using const_reverse_iterator =
+      std::vector<value_type>::const_reverse_iterator;
 
   ManyBodyOperator() = default;
   ManyBodyOperator(const ManyBodyOperator &) = default;
@@ -67,18 +68,16 @@ public:
   ManyBodyOperator &operator=(const ManyBodyOperator &) = default;
   ManyBodyOperator &operator=(ManyBodyOperator &&) = default;
 
-  ManyBodyOperator(const std::vector<std::pair<key_type, mapped_type>> &);
-  ManyBodyOperator(std::vector<std::pair<key_type, mapped_type>> &&);
-  ManyBodyOperator(const Map &);
-  ManyBodyOperator(Map &&);
+  ManyBodyOperator(const std::vector<value_type> &);
+  ManyBodyOperator(std::vector<value_type> &&);
+  ManyBodyOperator(const OPS_VEC &, const SCALAR_VEC &);
+  ManyBodyOperator(OPS_VEC &&, SCALAR_VEC &&);
 
-  void add_ops(const std::vector<std::pair<key_type, mapped_type>> &ops);
-  void add_ops(std::vector<std::pair<key_type, mapped_type>> &&ops);
   ManyBodyState operator()(const ManyBodyState &, double, const Restrictions &);
 
   Memory memory() const;
 
-  Map::size_type size() const;
+  size_type size() const;
   bool empty() const;
   bool clear();
 
@@ -121,115 +120,54 @@ public:
   inline bool operator!=(const ManyBodyOperator &other) {
     return this->m_ops != other.m_ops;
   }
-  inline allocator_type get_allocator() const { return m_ops.get_allocator(); }
-  inline mapped_type &operator[](const key_type &key) { return m_ops[key]; }
-  inline mapped_type &operator[](key_type &&key) {
-    return m_ops[std::forward<key_type>(key)];
-  }
-  inline mapped_type &at(const key_type &key) { return m_ops.at(key); }
-  inline const mapped_type &at(const key_type &key) const {
-    return m_ops.at(key);
-  }
-  inline std::pair<iterator, bool> insert(const value_type &val) {
-    return m_ops.insert(val);
-  }
-  inline std::pair<iterator, bool> insert(value_type &&val) {
-    return m_ops.insert(std::forward<value_type>(val));
-  }
-  inline iterator insert(iterator pos, const value_type &val) {
-    return m_ops.insert(pos, val);
-  }
-  inline iterator insert(iterator pos, value_type &&val) {
-    return m_ops.insert(pos, std::forward<value_type>(val));
-  }
-  template <class InputIt> inline void insert(InputIt first, InputIt last) {
-    return m_ops.insert(first, last);
-  }
-  inline void insert(std::initializer_list<value_type> l) {
-    return m_ops.insert(l);
-  }
+  mapped_type &operator[](const key_type &key);
+  mapped_type &operator[](key_type &&key);
 
-  template <class... Args>
-  std::pair<iterator, bool> inline emplace(Args &&...args) {
-    return m_ops.emplace(std::forward(args...));
-  }
-  template <class... Args>
-  inline iterator emplace_hint(const_iterator hint, Args &&...args) {
-    return m_ops.emplace_hint(hint, std::forward(args...));
-  }
+  mapped_type &at(const key_type &key);
+  const mapped_type &at(const key_type &key) const;
 
-  inline iterator erase(iterator pos) { return m_ops.erase(pos); }
-  inline iterator erase(const_iterator pos) { return m_ops.erase(pos); }
-  inline iterator erase(const_iterator first, const_iterator last) {
-    return m_ops.erase(first, last);
-  }
-  inline size_type erase(const key_type &key) { return m_ops.erase(key); }
+  std::pair<iterator, bool> insert(const value_type &val);
+  std::pair<iterator, bool> insert(value_type &&val);
+  iterator insert(iterator pos, const value_type &val);
+  iterator insert(iterator pos, value_type &&val);
+  template <class InputIt> void insert(InputIt first, InputIt last);
+  void insert(std::initializer_list<value_type> l);
+
+  template <class... Args> std::pair<iterator, bool> emplace(Args &&...args);
+  template <class... Args>
+  iterator emplace_hint(const_iterator hint, Args &&...args);
+
+  iterator erase(iterator pos);
+  iterator erase(const_iterator pos);
+  iterator erase(const_iterator first, const_iterator last);
+  size_type erase(const key_type &key);
 
   inline void swap(ManyBodyOperator &other) {
     m_ops.swap(other.m_ops);
     m_memory.swap(other.m_memory);
   }
 
-  inline size_type count(const key_type &key) const { return m_ops.count(key); }
-  template <class K> inline size_type count(const K &x) const {
-    return m_ops.count(x);
-  }
-
-  inline iterator find(const key_type &key) { return m_ops.find(key); }
-  inline const_iterator find(const key_type &key) const {
-    return m_ops.find(key);
-  }
-  template <class K> inline iterator find(const K &x) { return m_ops.find(x); }
-  template <class K> inline const_iterator find(const K &x) const {
-    return m_ops.find(x);
-  }
-
-  inline std::pair<iterator, iterator> equal_range(const key_type &key) {
-    return m_ops.equal_range(key);
-  }
-  inline std::pair<const_iterator, const_iterator>
-  equal_range(const key_type &key) const {
-    return m_ops.equal_range(key);
-  }
+  iterator find(const key_type &);
+  iterator find(iterator, iterator, const key_type &);
+  const_iterator find(const key_type &key) const;
+  const_iterator find(const_iterator, const_iterator, const key_type &) const;
+  template <class K> iterator find(const K &);
+  template <class K> iterator find(iterator, iterator, const K &);
+  template <class K> const_iterator find(const K &) const;
   template <class K>
-  inline std::pair<iterator, iterator> equal_range(const K &x) {
-    return m_ops.equal_range(x);
-  }
-  template <class K>
-  inline std::pair<const_iterator, const_iterator>
-  equal_range(const K &x) const {
-    return m_ops.equal_range(x);
-  }
+  const_iterator find(const_iterator, const_iterator, const K &) const;
 
-  inline iterator lower_bound(const key_type &key) {
-    return m_ops.lower_bound(key);
-  }
-  inline const_iterator lower_bound(const key_type &key) const {
-    return m_ops.lower_bound(key);
-  }
-  template <class K> inline iterator lower_bound(const K &x) {
-    return m_ops.lower_bound(x);
-  }
-  template <class K> inline const_iterator lower_bound(const K &x) const {
-    return m_ops.lower_bound(x);
-  }
+  iterator lower_bound(const key_type &);
+  const_iterator lower_bound(const key_type &) const;
+  template <class K> iterator lower_bound(const K &);
+  template <class K> const_iterator lower_bound(const K &) const;
 
-  inline iterator upper_bound(const key_type &key) {
-    return m_ops.upper_bound(key);
-  }
-  inline const_iterator upper_bound(const key_type &key) const {
-    return m_ops.upper_bound(key);
-  }
-  template <class K> inline iterator upper_bound(const K &x) {
-    return m_ops.upper_bound(x);
-  }
-  template <class K> inline const_iterator upper_bound(const K &x) const {
-    return m_ops.upper_bound(x);
-  }
+  iterator upper_bound(const key_type &ey);
+  const_iterator upper_bound(const key_type &ey) const;
+  template <class K> iterator upper_bound(const K &);
+  template <class K> const_iterator upper_bound(const K &) const;
 
-  inline key_compare key_comp() const { return m_ops.key_comp(); }
-
-  inline value_compare value_comp() const { return m_ops.value_comp(); }
+  inline compare_type key_comp() const { return compare_type(); }
 
   inline iterator begin() { return m_ops.begin(); }
   inline const_iterator begin() const { return m_ops.begin(); }

@@ -44,16 +44,19 @@ cdef extern from "ManyBodyOperator.h":
 
         bint operator==(const ManyBodyOperator&)
         bint operator!=(const ManyBodyOperator&)
-        cppclass iterator:
-            pair[vector[int64_t], doublecomplex] operator*()
-            iterator operator++()
-            bint operator==(iterator)
-            bint operator!=(iterator)
-        cppclass const_iterator:
-            pair[vector[int64_t], doublecomplex] operator*()
-            iterator operator++()
-            bint operator==(const_iterator)
-            bint operator!=(const_iterator)
+        ctypedef vector[pair[vector[int64_t], doublecomplex]].iterator iterator
+        ctypedef vector[pair[vector[int64_t], doublecomplex]].const_iterator const_iterator
+        # cppclass iterator:
+        #     pair[vector[int64_t], doublecomplex] operator*()
+        #     iterator operator++()
+        #     bint operator==(iterator)
+        #     bint operator!=(iterator)
+
+        # cppclass const_iterator:
+        #     pair[vector[int64_t], doublecomplex] operator*()
+        #     iterator operator++()
+        #     bint operator==(const_iterator)
+        #     bint operator!=(const_iterator)
         iterator begin()
         iterator end()
         const_iterator cbegin()

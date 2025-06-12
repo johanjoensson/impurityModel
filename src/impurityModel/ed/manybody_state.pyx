@@ -152,7 +152,7 @@ cdef class ManyBodyOperator:
         cdef int64_t i
         cdef vector[pair[vector[int64_t], doublecomplex]] new_ops
         for processes, amp in op.items():
-            new_ops.push_back((processes_to_ints(processes), amp))
+            new_ops.emplace_back(processes_to_ints(processes), amp)
 
 
         self.o = ManyBodyOperator_cpp(new_ops)
