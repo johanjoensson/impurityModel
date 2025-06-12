@@ -204,13 +204,14 @@ cdef class ManyBodyOperator:
         res = ManyBodyState()
         if restrictions is None:
             restrictions = {}
-        cdef map[vector[size_t], pair[size_t, size_t], ManyBodyOperator_cpp.Comparer[size_t]] rest
+        cdef vector[pair[vector[size_t], pair[size_t, size_t]]] rest
         cdef frozenset[int] indices
-        cdef tuple[int, int] limits
+        cdef pair[size_t, size_t] limits
+        rest.reserve(len(restrictions))
         for indices, limits in restrictions.items():
             if len(indices) == 0:
                 continue
-            rest.insert((sorted(indices),limits))
+            rest.push_back({sorted(indices),limits})
         res.v = self.o(psi.v, cutoff, rest)
         return res
 

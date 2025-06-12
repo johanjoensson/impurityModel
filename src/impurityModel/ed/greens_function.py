@@ -10,7 +10,7 @@ from impurityModel.ed.lanczos import get_block_Lanczos_matrices, block_lanczos, 
 from impurityModel.ed.manybody_basis import CIPSI_Basis, Basis
 from impurityModel.ed.cg import bicgstab
 from impurityModel.ed.block_structure import BlockStructure, get_block_structure
-from impurityModel.ed.manybody_state import ManyBodyState
+from impurityModel.ed.ManyBodyUtils import ManyBodyState
 
 from mpi4py import MPI
 

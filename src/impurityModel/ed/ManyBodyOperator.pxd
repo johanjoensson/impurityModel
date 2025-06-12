@@ -25,7 +25,7 @@ cdef extern from "ManyBodyOperator.h":
         
         double complex& operator[](const vector[int64_t]&)
         double complex& at(const vector[int64_t]&)
-        ManyBodyState operator()(const ManyBodyState&, double, const map[vector[size_t], pair[size_t,size_t], Comparer[size_t]]&)
+        ManyBodyState operator()(const ManyBodyState&, double, const vector[pair[vector[size_t], pair[size_t,size_t]]]&)
 
         map[vector[uint8_t], ManyBodyState, ManyBodyState.Comparer] memory()
 

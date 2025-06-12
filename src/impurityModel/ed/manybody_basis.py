@@ -31,7 +31,7 @@ from impurityModel.ed.finite import (
     thermal_average_scale_indep,
 )
 
-from impurityModel.ed.manybody_state import ManyBodyState, ManyBodyOperator, applyOp as applyOp_test
+from impurityModel.ed.ManyBodyUtils import ManyBodyState, ManyBodyOperator, applyOp as applyOp_test
 
 
 from impurityModel.ed.finite import applyOp_new as applyOp

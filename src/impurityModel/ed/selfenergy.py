@@ -15,7 +15,7 @@ import impurityModel.ed.product_state_representation as psr
 
 from impurityModel.ed.greens_function import get_Greens_function, save_Greens_function
 from impurityModel.ed.block_structure import print_block_structure
-from impurityModel.ed.manybody_state import ManyBodyOperator
+from impurityModel.ed.ManyBodyUtils import ManyBodyOperator
 
 EV_TO_RY = 1 / 13.605693122994
 

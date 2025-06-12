@@ -43,7 +43,7 @@ build-backend = "setuptools.build_meta"
 
 [tool.setuptools]
 ext-modules = [
-{name = "impurityModel.ed.manybody_state", sources=["src/impurityModel/ed/manybody_state.pyx"], language="c++"}
+{name = "impurityModel.ed.ManyBodyUtils", sources=["src/impurityModel/ed/ManyBodyUtils.pyx"], language="c++"}
 ]
 
 

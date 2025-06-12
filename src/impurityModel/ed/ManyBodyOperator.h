@@ -36,8 +36,8 @@ public:
   // using Map = std::map<OPS, SCALAR, Comparer<int64_t>>;
   using Memory = std::map<ManyBodyState::key_type, ManyBodyState,
                           ManyBodyState::key_compare>;
-  using Restrictions = std::map<std::vector<size_t>, std::pair<size_t, size_t>,
-                                Comparer<size_t>>;
+  using Restrictions =
+      std::vector<std::pair<std::vector<size_t>, std::pair<size_t, size_t>>>;
 
 private:
   // Map m_ops;

@@ -20,7 +20,7 @@ from impurityModel.ed.finite import (
     norm2,
 )
 from cmath import phase, rect
-from impurityModel.ed.manybody_state import ManyBodyState, ManyBodyOperator, applyOp as applyOp_test
+from impurityModel.ed.ManyBodyUtils import ManyBodyState, ManyBodyOperator, applyOp as applyOp_test
 
 
 class Reort(Enum):

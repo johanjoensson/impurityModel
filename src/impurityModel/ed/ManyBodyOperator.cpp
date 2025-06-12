@@ -302,12 +302,12 @@ bool ManyBodyOperator::state_is_within_restrictions(
   const size_t num_bits = 8 * sizeof(ManyBodyState::key_type::value_type);
   for (const auto &p : restrictions) {
     size_t bit_count = 0;
-    const Restrictions::key_type indices = p.first;
-    const Restrictions::mapped_type limits = p.second;
+    const Restrictions::value_type::first_type indices = p.first;
+    const Restrictions::value_type::second_type limits = p.second;
     ManyBodyState::key_type mask(state.size(), 0);
     for (auto idx : indices) {
-      auto state_idx = idx / num_bits;
-      auto bit_idx = num_bits - 1 - (idx % num_bits);
+      const auto state_idx = idx / num_bits;
+      const auto bit_idx = num_bits - 1 - (idx % num_bits);
       mask[state_idx] |= (1 << bit_idx);
     }
     for (size_t i = 0; i < state.size(); i++) {
