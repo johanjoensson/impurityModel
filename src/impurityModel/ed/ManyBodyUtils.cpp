@@ -1257,7 +1257,6 @@ static CYTHON_INLINE float __PYX_NAN() {
 #include "new"
 #include "stdexcept"
 #include "typeinfo"
-#include <vector>
 #include <utility>
 
     #if __cplusplus >= 201103L || (defined(_MSC_VER) && _MSC_VER >= 1600)
@@ -1271,10 +1270,11 @@ static CYTHON_INLINE float __PYX_NAN() {
 
     #endif
     
+#include <map>
+#include <vector>
 #include <stdint.h>
 #include "ManyBodyState.cpp"
 #include "ManyBodyState.h"
-#include <map>
 #include "ManyBodyOperator.cpp"
 #include "ManyBodyOperator.h"
 #include <string.h>
@@ -1592,7 +1592,7 @@ struct __pyx_obj_13impurityModel_2ed_13ManyBodyUtils___pyx_scope_struct_11_genex
 struct __pyx_ctuple_int__and_int;
 typedef struct __pyx_ctuple_int__and_int __pyx_ctuple_int__and_int;
 
-/* "impurityModel/ed/ManyBodyUtils.pyx":203
+/* "impurityModel/ed/ManyBodyUtils.pyx":202
  *         return len(self)
  * 
  *     def __call__(self, ManyBodyState psi, double cutoff=0, dict[frozenset[int], tuple[int, int]] restrictions=None) -> ManyBodyState:             # <<<<<<<<<<<<<<
@@ -1617,7 +1617,7 @@ struct __pyx_obj_13impurityModel_2ed_13ManyBodyUtils_ManyBodyState {
 };
 
 
-/* "impurityModel/ed/ManyBodyUtils.pyx":145
+/* "impurityModel/ed/ManyBodyUtils.pyx":144
  *     return  tuple(processes)
  * 
  * cdef class ManyBodyOperator:             # <<<<<<<<<<<<<<
@@ -1630,7 +1630,7 @@ struct __pyx_obj_13impurityModel_2ed_13ManyBodyUtils_ManyBodyOperator {
 };
 
 
-/* "impurityModel/ed/ManyBodyUtils.pyx":102
+/* "impurityModel/ed/ManyBodyUtils.pyx":101
  *         return self.v.find(bytes_to_key(key)) != self.v.end()
  * 
  *     def __iter__(self):             # <<<<<<<<<<<<<<
@@ -1645,7 +1645,7 @@ struct __pyx_obj_13impurityModel_2ed_13ManyBodyUtils___pyx_scope_struct____iter_
 };
 
 
-/* "impurityModel/ed/ManyBodyUtils.pyx":107
+/* "impurityModel/ed/ManyBodyUtils.pyx":106
  * 
  *     def keys(self):
  *         return (key_to_bytes(p.first) for p in self.v)             # <<<<<<<<<<<<<<
@@ -1660,7 +1660,7 @@ struct __pyx_obj_13impurityModel_2ed_13ManyBodyUtils___pyx_scope_struct_1_genexp
 };
 
 
-/* "impurityModel/ed/ManyBodyUtils.pyx":110
+/* "impurityModel/ed/ManyBodyUtils.pyx":109
  * 
  *     def values(self):
  *         return (p.second for p in self.v)             # <<<<<<<<<<<<<<
@@ -1675,7 +1675,7 @@ struct __pyx_obj_13impurityModel_2ed_13ManyBodyUtils___pyx_scope_struct_2_genexp
 };
 
 
-/* "impurityModel/ed/ManyBodyUtils.pyx":113
+/* "impurityModel/ed/ManyBodyUtils.pyx":112
  * 
  *     def items(self):
  *         return ((key_to_bytes(p.first), p.second) for p in self.v)             # <<<<<<<<<<<<<<
@@ -1690,7 +1690,7 @@ struct __pyx_obj_13impurityModel_2ed_13ManyBodyUtils___pyx_scope_struct_3_genexp
 };
 
 
-/* "impurityModel/ed/ManyBodyUtils.pyx":119
+/* "impurityModel/ed/ManyBodyUtils.pyx":118
  * 
  *     def to_dict(self):
  *         return dict((key_to_bytes(p.first), p.second) for p in self.v)             # <<<<<<<<<<<<<<
@@ -1713,7 +1713,7 @@ struct __pyx_obj_13impurityModel_2ed_13ManyBodyUtils___pyx_scope_struct_4_genexp
  */
 struct __pyx_obj_13impurityModel_2ed_13ManyBodyUtils___pyx_scope_struct_5___iter__ {
   PyObject_HEAD
-  std::pair<std::vector<int64_t> ,__pyx_t_double_complex>  __pyx_v_p;
+  ManyBodyOperator::value_type __pyx_v_p;
   struct __pyx_obj_13impurityModel_2ed_13ManyBodyUtils_ManyBodyOperator *__pyx_v_self;
   ManyBodyOperator::iterator __pyx_t_0;
 };
@@ -1729,7 +1729,7 @@ struct __pyx_obj_13impurityModel_2ed_13ManyBodyUtils___pyx_scope_struct_5___iter
 struct __pyx_obj_13impurityModel_2ed_13ManyBodyUtils___pyx_scope_struct_6_genexpr {
   PyObject_HEAD
   ManyBodyOperator __pyx_genexpr_arg_0;
-  std::pair<std::vector<int64_t> ,__pyx_t_double_complex>  __pyx_v_p;
+  ManyBodyOperator::value_type __pyx_v_p;
   ManyBodyOperator::iterator __pyx_t_0;
 };
 
@@ -1744,7 +1744,7 @@ struct __pyx_obj_13impurityModel_2ed_13ManyBodyUtils___pyx_scope_struct_6_genexp
 struct __pyx_obj_13impurityModel_2ed_13ManyBodyUtils___pyx_scope_struct_7_genexpr {
   PyObject_HEAD
   ManyBodyOperator __pyx_genexpr_arg_0;
-  std::pair<std::vector<int64_t> ,__pyx_t_double_complex>  __pyx_v_p;
+  ManyBodyOperator::value_type __pyx_v_p;
   ManyBodyOperator::iterator __pyx_t_0;
 };
 
@@ -1759,7 +1759,7 @@ struct __pyx_obj_13impurityModel_2ed_13ManyBodyUtils___pyx_scope_struct_7_genexp
 struct __pyx_obj_13impurityModel_2ed_13ManyBodyUtils___pyx_scope_struct_8_genexpr {
   PyObject_HEAD
   ManyBodyOperator __pyx_genexpr_arg_0;
-  std::pair<std::vector<int64_t> ,__pyx_t_double_complex>  __pyx_v_p;
+  ManyBodyOperator::value_type __pyx_v_p;
   ManyBodyOperator::iterator __pyx_t_0;
 };
 
@@ -1773,9 +1773,9 @@ struct __pyx_obj_13impurityModel_2ed_13ManyBodyUtils___pyx_scope_struct_8_genexp
  */
 struct __pyx_obj_13impurityModel_2ed_13ManyBodyUtils___pyx_scope_struct_9_genexpr {
   PyObject_HEAD
-  std::map<std::vector<uint8_t> ,ManyBodyState,ManyBodyState::Comparer>  __pyx_genexpr_arg_0;
+  ManyBodyOperator::Memory __pyx_genexpr_arg_0;
   PyObject *__pyx_v_genexpr;
-  std::pair<std::vector<uint8_t> ,ManyBodyState>  __pyx_v_p;
+  std::pair<ManyBodyState::key_type,ManyBodyState>  __pyx_v_p;
 };
 
 struct __pyx_obj_13impurityModel_2ed_13ManyBodyUtils___pyx_scope_struct_10_genexpr {
@@ -1795,7 +1795,7 @@ struct __pyx_obj_13impurityModel_2ed_13ManyBodyUtils___pyx_scope_struct_10_genex
 struct __pyx_obj_13impurityModel_2ed_13ManyBodyUtils___pyx_scope_struct_11_genexpr {
   PyObject_HEAD
   ManyBodyOperator __pyx_genexpr_arg_0;
-  std::pair<std::vector<int64_t> ,__pyx_t_double_complex>  __pyx_v_p;
+  ManyBodyOperator::value_type __pyx_v_p;
 };
 
 /* #### Code section: utility_code_proto ### */
@@ -2137,14 +2137,6 @@ static CYTHON_INLINE int __Pyx_dict_iter_next(PyObject* dict_or_iter, Py_ssize_t
 /* RaiseUnexpectedTypeError.proto */
 static int __Pyx_RaiseUnexpectedTypeError(const char *expected, PyObject *obj);
 
-/* MoveIfSupported.proto */
-#if CYTHON_USE_CPP_STD_MOVE
-  #include <utility>
-  #define __PYX_STD_MOVE_IF_SUPPORTED(x) std::move(x)
-#else
-  #define __PYX_STD_MOVE_IF_SUPPORTED(x) x
-#endif
-
 /* ListCompAppend.proto */
 #if CYTHON_USE_PYLIST_INTERNALS && CYTHON_ASSUME_SAFE_MACROS
 static CYTHON_INLINE int __Pyx_ListComp_Append(PyObject* list, PyObject* x) {
@@ -2212,6 +2204,14 @@ static PyObject* __Pyx_PyUnicode_Join(PyObject* value_tuple, Py_ssize_t value_co
 
 /* KeywordStringCheck.proto */
 static int __Pyx_CheckKeywordStrings(PyObject *kw, const char* function_name, int kw_allowed);
+
+/* MoveIfSupported.proto */
+#if CYTHON_USE_CPP_STD_MOVE
+  #include <utility>
+  #define __PYX_STD_MOVE_IF_SUPPORTED(x) std::move(x)
+#else
+  #define __PYX_STD_MOVE_IF_SUPPORTED(x) x
+#endif
 
 /* GetException.proto */
 #if CYTHON_FAST_THREAD_STATE
@@ -2639,6 +2639,9 @@ static CYTHON_INLINE size_t __Pyx_PyInt_As_size_t(PyObject *);
 static CYTHON_INLINE uint8_t __Pyx_PyInt_As_uint8_t(PyObject *);
 
 /* CIntToPy.proto */
+static CYTHON_INLINE PyObject* __Pyx_PyInt_From_uint8_t(uint8_t value);
+
+/* CIntToPy.proto */
 static CYTHON_INLINE PyObject* __Pyx_PyInt_From_long(long value);
 
 /* CIntFromPy.proto */
@@ -2798,19 +2801,19 @@ static int __Pyx_InitStrings(__Pyx_StringTabEntry *t);
 
 /* #### Code section: module_declarations ### */
 
-/* Module declarations from "libcpp.vector" */
+/* Module declarations from "cython" */
 
 /* Module declarations from "libcpp.utility" */
+
+/* Module declarations from "libcpp.map" */
+
+/* Module declarations from "libcpp.vector" */
 
 /* Module declarations from "libcpp.pair" */
 
 /* Module declarations from "libc.stdint" */
 
 /* Module declarations from "ManyBodyState" */
-
-/* Module declarations from "libcpp.map" */
-
-/* Module declarations from "cython" */
 
 /* Module declarations from "ManyBodyOperator" */
 
@@ -2819,14 +2822,15 @@ static int __Pyx_InitStrings(__Pyx_StringTabEntry *t);
 /* Module declarations from "libcpp.string" */
 
 /* Module declarations from "impurityModel.ed.ManyBodyUtils" */
-static PyObject *__pyx_f_13impurityModel_2ed_13ManyBodyUtils_key_to_bytes(std::vector<uint8_t>  &); /*proto*/
-static std::vector<uint8_t>  __pyx_f_13impurityModel_2ed_13ManyBodyUtils_bytes_to_key(PyObject *); /*proto*/
-static std::vector<int64_t>  __pyx_f_13impurityModel_2ed_13ManyBodyUtils_processes_to_ints(PyObject *); /*proto*/
-static PyObject *__pyx_f_13impurityModel_2ed_13ManyBodyUtils_ints_to_processes(std::vector<int64_t>  &); /*proto*/
+static PyObject *__pyx_f_13impurityModel_2ed_13ManyBodyUtils_key_to_bytes(ManyBodyState::key_type const &); /*proto*/
+static ManyBodyState::key_type __pyx_f_13impurityModel_2ed_13ManyBodyUtils_bytes_to_key(PyObject *); /*proto*/
+static std::pair<std::vector<int64_t> ,__pyx_t_double_complex> ::first_type __pyx_f_13impurityModel_2ed_13ManyBodyUtils_processes_to_ints(PyObject *); /*proto*/
+static PyObject *__pyx_f_13impurityModel_2ed_13ManyBodyUtils_ints_to_processes(std::pair<std::vector<int64_t> ,__pyx_t_double_complex> ::first_type &); /*proto*/
+static PyObject *__pyx_convert_vector_to_py_uint8_t(std::vector<uint8_t>  const &); /*proto*/
+static PyObject *__pyx_convert_pair_to_py_std_3a__3a_vector_3c_uint8_t_3e_________pyx_t_double_complex(std::pair<std::vector<uint8_t> ,__pyx_t_double_complex>  const &); /*proto*/
+static std::vector<uint8_t>  __pyx_convert_vector_from_py_uint8_t(PyObject *); /*proto*/
 static std::pair<size_t,size_t>  __pyx_convert_pair_from_py_size_t__and_size_t(PyObject *); /*proto*/
-static PyObject *__pyx_convert_pair_to_py_size_t____size_t(std::pair<size_t,size_t>  const &); /*proto*/
 static std::vector<size_t>  __pyx_convert_vector_from_py_size_t(PyObject *); /*proto*/
-static std::pair<std::vector<size_t> ,std::pair<size_t,size_t> >  __pyx_convert_pair_from_py_std_3a__3a_vector_3c_size_t_3e_____and_std_3a__3a_pair_3c_size_t_2c_size_t_3e___(PyObject *); /*proto*/
 static PyObject *__pyx_convert_vector_to_py_int64_t(std::vector<int64_t>  const &); /*proto*/
 /* #### Code section: typeinfo ### */
 /* #### Code section: before_global_var ### */
@@ -2986,7 +2990,7 @@ static PyObject *__pyx_pf_13impurityModel_2ed_13ManyBodyUtils_16ManyBodyOperator
 static PyObject *__pyx_pf_13impurityModel_2ed_13ManyBodyUtils_16ManyBodyOperator_5items_genexpr(CYTHON_UNUSED PyObject *__pyx_self, ManyBodyOperator __pyx_genexpr_arg_0); /* proto */
 static PyObject *__pyx_pf_13impurityModel_2ed_13ManyBodyUtils_16ManyBodyOperator_37items(struct __pyx_obj_13impurityModel_2ed_13ManyBodyUtils_ManyBodyOperator *__pyx_v_self); /* proto */
 static PyObject *__pyx_pf_13impurityModel_2ed_13ManyBodyUtils_16ManyBodyOperator_6memory_7genexpr_genexpr(CYTHON_UNUSED PyObject *__pyx_self, ManyBodyState __pyx_genexpr_arg_0); /* proto */
-static PyObject *__pyx_pf_13impurityModel_2ed_13ManyBodyUtils_16ManyBodyOperator_6memory_genexpr(CYTHON_UNUSED PyObject *__pyx_self, std::map<std::vector<uint8_t> ,ManyBodyState,ManyBodyState::Comparer>  __pyx_genexpr_arg_0); /* proto */
+static PyObject *__pyx_pf_13impurityModel_2ed_13ManyBodyUtils_16ManyBodyOperator_6memory_genexpr(CYTHON_UNUSED PyObject *__pyx_self, ManyBodyOperator::Memory __pyx_genexpr_arg_0); /* proto */
 static PyObject *__pyx_pf_13impurityModel_2ed_13ManyBodyUtils_16ManyBodyOperator_39memory(struct __pyx_obj_13impurityModel_2ed_13ManyBodyUtils_ManyBodyOperator *__pyx_v_self); /* proto */
 static PyObject *__pyx_pf_13impurityModel_2ed_13ManyBodyUtils_16ManyBodyOperator_7to_dict_genexpr(CYTHON_UNUSED PyObject *__pyx_self, ManyBodyOperator __pyx_genexpr_arg_0); /* proto */
 static PyObject *__pyx_pf_13impurityModel_2ed_13ManyBodyUtils_16ManyBodyOperator_41to_dict(struct __pyx_obj_13impurityModel_2ed_13ManyBodyUtils_ManyBodyOperator *__pyx_v_self); /* proto */
@@ -3798,6 +3802,359 @@ static int __pyx_m_traverse(PyObject *m, visitproc visit, void *arg) {
 #define __pyx_codeobj__37 __pyx_mstate_global->__pyx_codeobj__37
 /* #### Code section: module_code ### */
 
+/* "vector.to_py":66
+ * 
+ * @cname("__pyx_convert_vector_to_py_uint8_t")
+ * cdef object __pyx_convert_vector_to_py_uint8_t(const vector[X]& v):             # <<<<<<<<<<<<<<
+ *     if v.size() > <size_t> PY_SSIZE_T_MAX:
+ *         raise MemoryError()
+ */
+
+static PyObject *__pyx_convert_vector_to_py_uint8_t(std::vector<uint8_t>  const &__pyx_v_v) {
+  Py_ssize_t __pyx_v_v_size_signed;
+  PyObject *__pyx_v_o = NULL;
+  Py_ssize_t __pyx_v_i;
+  PyObject *__pyx_v_item = 0;
+  PyObject *__pyx_r = NULL;
+  __Pyx_RefNannyDeclarations
+  int __pyx_t_1;
+  PyObject *__pyx_t_2 = NULL;
+  Py_ssize_t __pyx_t_3;
+  Py_ssize_t __pyx_t_4;
+  Py_ssize_t __pyx_t_5;
+  int __pyx_lineno = 0;
+  const char *__pyx_filename = NULL;
+  int __pyx_clineno = 0;
+  __Pyx_RefNannySetupContext("__pyx_convert_vector_to_py_uint8_t", 1);
+
+  /* "vector.to_py":67
+ * @cname("__pyx_convert_vector_to_py_uint8_t")
+ * cdef object __pyx_convert_vector_to_py_uint8_t(const vector[X]& v):
+ *     if v.size() > <size_t> PY_SSIZE_T_MAX:             # <<<<<<<<<<<<<<
+ *         raise MemoryError()
+ *     v_size_signed = <Py_ssize_t> v.size()
+ */
+  __pyx_t_1 = (__pyx_v_v.size() > ((size_t)PY_SSIZE_T_MAX));
+  if (unlikely(__pyx_t_1)) {
+
+    /* "vector.to_py":68
+ * cdef object __pyx_convert_vector_to_py_uint8_t(const vector[X]& v):
+ *     if v.size() > <size_t> PY_SSIZE_T_MAX:
+ *         raise MemoryError()             # <<<<<<<<<<<<<<
+ *     v_size_signed = <Py_ssize_t> v.size()
+ * 
+ */
+    PyErr_NoMemory(); __PYX_ERR(1, 68, __pyx_L1_error)
+
+    /* "vector.to_py":67
+ * @cname("__pyx_convert_vector_to_py_uint8_t")
+ * cdef object __pyx_convert_vector_to_py_uint8_t(const vector[X]& v):
+ *     if v.size() > <size_t> PY_SSIZE_T_MAX:             # <<<<<<<<<<<<<<
+ *         raise MemoryError()
+ *     v_size_signed = <Py_ssize_t> v.size()
+ */
+  }
+
+  /* "vector.to_py":69
+ *     if v.size() > <size_t> PY_SSIZE_T_MAX:
+ *         raise MemoryError()
+ *     v_size_signed = <Py_ssize_t> v.size()             # <<<<<<<<<<<<<<
+ * 
+ *     o = PyList_New(v_size_signed)
+ */
+  __pyx_v_v_size_signed = ((Py_ssize_t)__pyx_v_v.size());
+
+  /* "vector.to_py":71
+ *     v_size_signed = <Py_ssize_t> v.size()
+ * 
+ *     o = PyList_New(v_size_signed)             # <<<<<<<<<<<<<<
+ * 
+ *     cdef Py_ssize_t i
+ */
+  __pyx_t_2 = PyList_New(__pyx_v_v_size_signed); if (unlikely(!__pyx_t_2)) __PYX_ERR(1, 71, __pyx_L1_error)
+  __Pyx_GOTREF(__pyx_t_2);
+  __pyx_v_o = ((PyObject*)__pyx_t_2);
+  __pyx_t_2 = 0;
+
+  /* "vector.to_py":76
+ *     cdef object item
+ * 
+ *     for i in range(v_size_signed):             # <<<<<<<<<<<<<<
+ *         item = v[i]
+ *         Py_INCREF(item)
+ */
+  __pyx_t_3 = __pyx_v_v_size_signed;
+  __pyx_t_4 = __pyx_t_3;
+  for (__pyx_t_5 = 0; __pyx_t_5 < __pyx_t_4; __pyx_t_5+=1) {
+    __pyx_v_i = __pyx_t_5;
+
+    /* "vector.to_py":77
+ * 
+ *     for i in range(v_size_signed):
+ *         item = v[i]             # <<<<<<<<<<<<<<
+ *         Py_INCREF(item)
+ *         PyList_SET_ITEM(o, i, item)
+ */
+    __pyx_t_2 = __Pyx_PyInt_From_uint8_t((__pyx_v_v[__pyx_v_i])); if (unlikely(!__pyx_t_2)) __PYX_ERR(1, 77, __pyx_L1_error)
+    __Pyx_GOTREF(__pyx_t_2);
+    __Pyx_XDECREF_SET(__pyx_v_item, __pyx_t_2);
+    __pyx_t_2 = 0;
+
+    /* "vector.to_py":78
+ *     for i in range(v_size_signed):
+ *         item = v[i]
+ *         Py_INCREF(item)             # <<<<<<<<<<<<<<
+ *         PyList_SET_ITEM(o, i, item)
+ * 
+ */
+    Py_INCREF(__pyx_v_item);
+
+    /* "vector.to_py":79
+ *         item = v[i]
+ *         Py_INCREF(item)
+ *         PyList_SET_ITEM(o, i, item)             # <<<<<<<<<<<<<<
+ * 
+ *     return o
+ */
+    PyList_SET_ITEM(__pyx_v_o, __pyx_v_i, __pyx_v_item);
+  }
+
+  /* "vector.to_py":81
+ *         PyList_SET_ITEM(o, i, item)
+ * 
+ *     return o             # <<<<<<<<<<<<<<
+ * 
+ */
+  __Pyx_XDECREF(__pyx_r);
+  __Pyx_INCREF(__pyx_v_o);
+  __pyx_r = __pyx_v_o;
+  goto __pyx_L0;
+
+  /* "vector.to_py":66
+ * 
+ * @cname("__pyx_convert_vector_to_py_uint8_t")
+ * cdef object __pyx_convert_vector_to_py_uint8_t(const vector[X]& v):             # <<<<<<<<<<<<<<
+ *     if v.size() > <size_t> PY_SSIZE_T_MAX:
+ *         raise MemoryError()
+ */
+
+  /* function exit code */
+  __pyx_L1_error:;
+  __Pyx_XDECREF(__pyx_t_2);
+  __Pyx_AddTraceback("vector.to_py.__pyx_convert_vector_to_py_uint8_t", __pyx_clineno, __pyx_lineno, __pyx_filename);
+  __pyx_r = 0;
+  __pyx_L0:;
+  __Pyx_XDECREF(__pyx_v_o);
+  __Pyx_XDECREF(__pyx_v_item);
+  __Pyx_XGIVEREF(__pyx_r);
+  __Pyx_RefNannyFinishContext();
+  return __pyx_r;
+}
+
+/* "pair.to_py":190
+ * 
+ * @cname("__pyx_convert_pair_to_py_std_3a__3a_vector_3c_uint8_t_3e_________pyx_t_double_complex")
+ * cdef object __pyx_convert_pair_to_py_std_3a__3a_vector_3c_uint8_t_3e_________pyx_t_double_complex(const pair[X,Y]& p):             # <<<<<<<<<<<<<<
+ *     return p.first, p.second
+ * 
+ */
+
+static PyObject *__pyx_convert_pair_to_py_std_3a__3a_vector_3c_uint8_t_3e_________pyx_t_double_complex(std::pair<std::vector<uint8_t> ,__pyx_t_double_complex>  const &__pyx_v_p) {
+  PyObject *__pyx_r = NULL;
+  __Pyx_RefNannyDeclarations
+  PyObject *__pyx_t_1 = NULL;
+  PyObject *__pyx_t_2 = NULL;
+  PyObject *__pyx_t_3 = NULL;
+  int __pyx_lineno = 0;
+  const char *__pyx_filename = NULL;
+  int __pyx_clineno = 0;
+  __Pyx_RefNannySetupContext("__pyx_convert_pair_to_py_std_3a__3a_vector_3c_uint8_t_3e_________pyx_t_double_complex", 1);
+
+  /* "pair.to_py":191
+ * @cname("__pyx_convert_pair_to_py_std_3a__3a_vector_3c_uint8_t_3e_________pyx_t_double_complex")
+ * cdef object __pyx_convert_pair_to_py_std_3a__3a_vector_3c_uint8_t_3e_________pyx_t_double_complex(const pair[X,Y]& p):
+ *     return p.first, p.second             # <<<<<<<<<<<<<<
+ * 
+ * 
+ */
+  __Pyx_XDECREF(__pyx_r);
+  __pyx_t_1 = __pyx_convert_vector_to_py_uint8_t(__pyx_v_p.first); if (unlikely(!__pyx_t_1)) __PYX_ERR(1, 191, __pyx_L1_error)
+  __Pyx_GOTREF(__pyx_t_1);
+  __pyx_t_2 = __pyx_PyComplex_FromComplex(__pyx_v_p.second); if (unlikely(!__pyx_t_2)) __PYX_ERR(1, 191, __pyx_L1_error)
+  __Pyx_GOTREF(__pyx_t_2);
+  __pyx_t_3 = PyTuple_New(2); if (unlikely(!__pyx_t_3)) __PYX_ERR(1, 191, __pyx_L1_error)
+  __Pyx_GOTREF(__pyx_t_3);
+  __Pyx_GIVEREF(__pyx_t_1);
+  if (__Pyx_PyTuple_SET_ITEM(__pyx_t_3, 0, __pyx_t_1)) __PYX_ERR(1, 191, __pyx_L1_error);
+  __Pyx_GIVEREF(__pyx_t_2);
+  if (__Pyx_PyTuple_SET_ITEM(__pyx_t_3, 1, __pyx_t_2)) __PYX_ERR(1, 191, __pyx_L1_error);
+  __pyx_t_1 = 0;
+  __pyx_t_2 = 0;
+  __pyx_r = __pyx_t_3;
+  __pyx_t_3 = 0;
+  goto __pyx_L0;
+
+  /* "pair.to_py":190
+ * 
+ * @cname("__pyx_convert_pair_to_py_std_3a__3a_vector_3c_uint8_t_3e_________pyx_t_double_complex")
+ * cdef object __pyx_convert_pair_to_py_std_3a__3a_vector_3c_uint8_t_3e_________pyx_t_double_complex(const pair[X,Y]& p):             # <<<<<<<<<<<<<<
+ *     return p.first, p.second
+ * 
+ */
+
+  /* function exit code */
+  __pyx_L1_error:;
+  __Pyx_XDECREF(__pyx_t_1);
+  __Pyx_XDECREF(__pyx_t_2);
+  __Pyx_XDECREF(__pyx_t_3);
+  __Pyx_AddTraceback("pair.to_py.__pyx_convert_pair_to_py_std_3a__3a_vector_3c_uint8_t_3e_________pyx_t_double_complex", __pyx_clineno, __pyx_lineno, __pyx_filename);
+  __pyx_r = 0;
+  __pyx_L0:;
+  __Pyx_XGIVEREF(__pyx_r);
+  __Pyx_RefNannyFinishContext();
+  return __pyx_r;
+}
+
+/* "vector.from_py":45
+ * 
+ * @cname("__pyx_convert_vector_from_py_uint8_t")
+ * cdef vector[X] __pyx_convert_vector_from_py_uint8_t(object o) except *:             # <<<<<<<<<<<<<<
+ *     cdef vector[X] v
+ *     for item in o:
+ */
+
+static std::vector<uint8_t>  __pyx_convert_vector_from_py_uint8_t(PyObject *__pyx_v_o) {
+  std::vector<uint8_t>  __pyx_v_v;
+  PyObject *__pyx_v_item = NULL;
+  std::vector<uint8_t>  __pyx_r;
+  __Pyx_RefNannyDeclarations
+  PyObject *__pyx_t_1 = NULL;
+  Py_ssize_t __pyx_t_2;
+  PyObject *(*__pyx_t_3)(PyObject *);
+  PyObject *__pyx_t_4 = NULL;
+  uint8_t __pyx_t_5;
+  int __pyx_lineno = 0;
+  const char *__pyx_filename = NULL;
+  int __pyx_clineno = 0;
+  __Pyx_RefNannySetupContext("__pyx_convert_vector_from_py_uint8_t", 1);
+
+  /* "vector.from_py":47
+ * cdef vector[X] __pyx_convert_vector_from_py_uint8_t(object o) except *:
+ *     cdef vector[X] v
+ *     for item in o:             # <<<<<<<<<<<<<<
+ *         v.push_back(<X>item)
+ *     return v
+ */
+  if (likely(PyList_CheckExact(__pyx_v_o)) || PyTuple_CheckExact(__pyx_v_o)) {
+    __pyx_t_1 = __pyx_v_o; __Pyx_INCREF(__pyx_t_1);
+    __pyx_t_2 = 0;
+    __pyx_t_3 = NULL;
+  } else {
+    __pyx_t_2 = -1; __pyx_t_1 = PyObject_GetIter(__pyx_v_o); if (unlikely(!__pyx_t_1)) __PYX_ERR(1, 47, __pyx_L1_error)
+    __Pyx_GOTREF(__pyx_t_1);
+    __pyx_t_3 = __Pyx_PyObject_GetIterNextFunc(__pyx_t_1); if (unlikely(!__pyx_t_3)) __PYX_ERR(1, 47, __pyx_L1_error)
+  }
+  for (;;) {
+    if (likely(!__pyx_t_3)) {
+      if (likely(PyList_CheckExact(__pyx_t_1))) {
+        {
+          Py_ssize_t __pyx_temp = __Pyx_PyList_GET_SIZE(__pyx_t_1);
+          #if !CYTHON_ASSUME_SAFE_MACROS
+          if (unlikely((__pyx_temp < 0))) __PYX_ERR(1, 47, __pyx_L1_error)
+          #endif
+          if (__pyx_t_2 >= __pyx_temp) break;
+        }
+        #if CYTHON_ASSUME_SAFE_MACROS && !CYTHON_AVOID_BORROWED_REFS
+        __pyx_t_4 = PyList_GET_ITEM(__pyx_t_1, __pyx_t_2); __Pyx_INCREF(__pyx_t_4); __pyx_t_2++; if (unlikely((0 < 0))) __PYX_ERR(1, 47, __pyx_L1_error)
+        #else
+        __pyx_t_4 = __Pyx_PySequence_ITEM(__pyx_t_1, __pyx_t_2); __pyx_t_2++; if (unlikely(!__pyx_t_4)) __PYX_ERR(1, 47, __pyx_L1_error)
+        __Pyx_GOTREF(__pyx_t_4);
+        #endif
+      } else {
+        {
+          Py_ssize_t __pyx_temp = __Pyx_PyTuple_GET_SIZE(__pyx_t_1);
+          #if !CYTHON_ASSUME_SAFE_MACROS
+          if (unlikely((__pyx_temp < 0))) __PYX_ERR(1, 47, __pyx_L1_error)
+          #endif
+          if (__pyx_t_2 >= __pyx_temp) break;
+        }
+        #if CYTHON_ASSUME_SAFE_MACROS && !CYTHON_AVOID_BORROWED_REFS
+        __pyx_t_4 = PyTuple_GET_ITEM(__pyx_t_1, __pyx_t_2); __Pyx_INCREF(__pyx_t_4); __pyx_t_2++; if (unlikely((0 < 0))) __PYX_ERR(1, 47, __pyx_L1_error)
+        #else
+        __pyx_t_4 = __Pyx_PySequence_ITEM(__pyx_t_1, __pyx_t_2); __pyx_t_2++; if (unlikely(!__pyx_t_4)) __PYX_ERR(1, 47, __pyx_L1_error)
+        __Pyx_GOTREF(__pyx_t_4);
+        #endif
+      }
+    } else {
+      __pyx_t_4 = __pyx_t_3(__pyx_t_1);
+      if (unlikely(!__pyx_t_4)) {
+        PyObject* exc_type = PyErr_Occurred();
+        if (exc_type) {
+          if (likely(__Pyx_PyErr_GivenExceptionMatches(exc_type, PyExc_StopIteration))) PyErr_Clear();
+          else __PYX_ERR(1, 47, __pyx_L1_error)
+        }
+        break;
+      }
+      __Pyx_GOTREF(__pyx_t_4);
+    }
+    __Pyx_XDECREF_SET(__pyx_v_item, __pyx_t_4);
+    __pyx_t_4 = 0;
+
+    /* "vector.from_py":48
+ *     cdef vector[X] v
+ *     for item in o:
+ *         v.push_back(<X>item)             # <<<<<<<<<<<<<<
+ *     return v
+ * 
+ */
+    __pyx_t_5 = __Pyx_PyInt_As_uint8_t(__pyx_v_item); if (unlikely((__pyx_t_5 == ((uint8_t)-1)) && PyErr_Occurred())) __PYX_ERR(1, 48, __pyx_L1_error)
+    try {
+      __pyx_v_v.push_back(((uint8_t)__pyx_t_5));
+    } catch(...) {
+      __Pyx_CppExn2PyErr();
+      __PYX_ERR(1, 48, __pyx_L1_error)
+    }
+
+    /* "vector.from_py":47
+ * cdef vector[X] __pyx_convert_vector_from_py_uint8_t(object o) except *:
+ *     cdef vector[X] v
+ *     for item in o:             # <<<<<<<<<<<<<<
+ *         v.push_back(<X>item)
+ *     return v
+ */
+  }
+  __Pyx_DECREF(__pyx_t_1); __pyx_t_1 = 0;
+
+  /* "vector.from_py":49
+ *     for item in o:
+ *         v.push_back(<X>item)
+ *     return v             # <<<<<<<<<<<<<<
+ * 
+ * 
+ */
+  __pyx_r = __pyx_v_v;
+  goto __pyx_L0;
+
+  /* "vector.from_py":45
+ * 
+ * @cname("__pyx_convert_vector_from_py_uint8_t")
+ * cdef vector[X] __pyx_convert_vector_from_py_uint8_t(object o) except *:             # <<<<<<<<<<<<<<
+ *     cdef vector[X] v
+ *     for item in o:
+ */
+
+  /* function exit code */
+  __pyx_L1_error:;
+  __Pyx_XDECREF(__pyx_t_1);
+  __Pyx_XDECREF(__pyx_t_4);
+  __Pyx_AddTraceback("vector.from_py.__pyx_convert_vector_from_py_uint8_t", __pyx_clineno, __pyx_lineno, __pyx_filename);
+  __Pyx_pretend_to_initialize(&__pyx_r);
+  __pyx_L0:;
+  __Pyx_XDECREF(__pyx_v_item);
+  __Pyx_RefNannyFinishContext();
+  return __pyx_r;
+}
+
 /* "pair.from_py":177
  * 
  * @cname("__pyx_convert_pair_from_py_size_t__and_size_t")
@@ -3915,70 +4272,6 @@ static std::pair<size_t,size_t>  __pyx_convert_pair_from_py_size_t__and_size_t(P
   __pyx_L0:;
   __Pyx_XDECREF(__pyx_v_x);
   __Pyx_XDECREF(__pyx_v_y);
-  __Pyx_RefNannyFinishContext();
-  return __pyx_r;
-}
-
-/* "pair.to_py":190
- * 
- * @cname("__pyx_convert_pair_to_py_size_t____size_t")
- * cdef object __pyx_convert_pair_to_py_size_t____size_t(const pair[X,Y]& p):             # <<<<<<<<<<<<<<
- *     return p.first, p.second
- * 
- */
-
-static PyObject *__pyx_convert_pair_to_py_size_t____size_t(std::pair<size_t,size_t>  const &__pyx_v_p) {
-  PyObject *__pyx_r = NULL;
-  __Pyx_RefNannyDeclarations
-  PyObject *__pyx_t_1 = NULL;
-  PyObject *__pyx_t_2 = NULL;
-  PyObject *__pyx_t_3 = NULL;
-  int __pyx_lineno = 0;
-  const char *__pyx_filename = NULL;
-  int __pyx_clineno = 0;
-  __Pyx_RefNannySetupContext("__pyx_convert_pair_to_py_size_t____size_t", 1);
-
-  /* "pair.to_py":191
- * @cname("__pyx_convert_pair_to_py_size_t____size_t")
- * cdef object __pyx_convert_pair_to_py_size_t____size_t(const pair[X,Y]& p):
- *     return p.first, p.second             # <<<<<<<<<<<<<<
- * 
- * 
- */
-  __Pyx_XDECREF(__pyx_r);
-  __pyx_t_1 = __Pyx_PyInt_FromSize_t(__pyx_v_p.first); if (unlikely(!__pyx_t_1)) __PYX_ERR(1, 191, __pyx_L1_error)
-  __Pyx_GOTREF(__pyx_t_1);
-  __pyx_t_2 = __Pyx_PyInt_FromSize_t(__pyx_v_p.second); if (unlikely(!__pyx_t_2)) __PYX_ERR(1, 191, __pyx_L1_error)
-  __Pyx_GOTREF(__pyx_t_2);
-  __pyx_t_3 = PyTuple_New(2); if (unlikely(!__pyx_t_3)) __PYX_ERR(1, 191, __pyx_L1_error)
-  __Pyx_GOTREF(__pyx_t_3);
-  __Pyx_GIVEREF(__pyx_t_1);
-  if (__Pyx_PyTuple_SET_ITEM(__pyx_t_3, 0, __pyx_t_1)) __PYX_ERR(1, 191, __pyx_L1_error);
-  __Pyx_GIVEREF(__pyx_t_2);
-  if (__Pyx_PyTuple_SET_ITEM(__pyx_t_3, 1, __pyx_t_2)) __PYX_ERR(1, 191, __pyx_L1_error);
-  __pyx_t_1 = 0;
-  __pyx_t_2 = 0;
-  __pyx_r = __pyx_t_3;
-  __pyx_t_3 = 0;
-  goto __pyx_L0;
-
-  /* "pair.to_py":190
- * 
- * @cname("__pyx_convert_pair_to_py_size_t____size_t")
- * cdef object __pyx_convert_pair_to_py_size_t____size_t(const pair[X,Y]& p):             # <<<<<<<<<<<<<<
- *     return p.first, p.second
- * 
- */
-
-  /* function exit code */
-  __pyx_L1_error:;
-  __Pyx_XDECREF(__pyx_t_1);
-  __Pyx_XDECREF(__pyx_t_2);
-  __Pyx_XDECREF(__pyx_t_3);
-  __Pyx_AddTraceback("pair.to_py.__pyx_convert_pair_to_py_size_t____size_t", __pyx_clineno, __pyx_lineno, __pyx_filename);
-  __pyx_r = 0;
-  __pyx_L0:;
-  __Pyx_XGIVEREF(__pyx_r);
   __Pyx_RefNannyFinishContext();
   return __pyx_r;
 }
@@ -4119,127 +4412,6 @@ static std::vector<size_t>  __pyx_convert_vector_from_py_size_t(PyObject *__pyx_
   __Pyx_pretend_to_initialize(&__pyx_r);
   __pyx_L0:;
   __Pyx_XDECREF(__pyx_v_item);
-  __Pyx_RefNannyFinishContext();
-  return __pyx_r;
-}
-
-/* "pair.from_py":177
- * 
- * @cname("__pyx_convert_pair_from_py_std_3a__3a_vector_3c_size_t_3e_____and_std_3a__3a_pair_3c_size_t_2c_size_t_3e___")
- * cdef pair[X,Y] __pyx_convert_pair_from_py_std_3a__3a_vector_3c_size_t_3e_____and_std_3a__3a_pair_3c_size_t_2c_size_t_3e___(object o) except *:             # <<<<<<<<<<<<<<
- *     x, y = o
- *     return pair[X,Y](<X>x, <Y>y)
- */
-
-static std::pair<std::vector<size_t> ,std::pair<size_t,size_t> >  __pyx_convert_pair_from_py_std_3a__3a_vector_3c_size_t_3e_____and_std_3a__3a_pair_3c_size_t_2c_size_t_3e___(PyObject *__pyx_v_o) {
-  PyObject *__pyx_v_x = NULL;
-  PyObject *__pyx_v_y = NULL;
-  std::pair<std::vector<size_t> ,std::pair<size_t,size_t> >  __pyx_r;
-  __Pyx_RefNannyDeclarations
-  PyObject *__pyx_t_1 = NULL;
-  PyObject *__pyx_t_2 = NULL;
-  PyObject *__pyx_t_3 = NULL;
-  PyObject *(*__pyx_t_4)(PyObject *);
-  std::vector<size_t>  __pyx_t_5;
-  std::pair<size_t,size_t>  __pyx_t_6;
-  std::pair<std::vector<size_t> ,std::pair<size_t,size_t> >  __pyx_t_7;
-  int __pyx_lineno = 0;
-  const char *__pyx_filename = NULL;
-  int __pyx_clineno = 0;
-  __Pyx_RefNannySetupContext("__pyx_convert_pair_from_py_std_3a__3a_vector_3c_size_t_3e_____and_std_3a__3a_pair_3c_size_t_2c_size_t_3e___", 1);
-
-  /* "pair.from_py":178
- * @cname("__pyx_convert_pair_from_py_std_3a__3a_vector_3c_size_t_3e_____and_std_3a__3a_pair_3c_size_t_2c_size_t_3e___")
- * cdef pair[X,Y] __pyx_convert_pair_from_py_std_3a__3a_vector_3c_size_t_3e_____and_std_3a__3a_pair_3c_size_t_2c_size_t_3e___(object o) except *:
- *     x, y = o             # <<<<<<<<<<<<<<
- *     return pair[X,Y](<X>x, <Y>y)
- * 
- */
-  if ((likely(PyTuple_CheckExact(__pyx_v_o))) || (PyList_CheckExact(__pyx_v_o))) {
-    PyObject* sequence = __pyx_v_o;
-    Py_ssize_t size = __Pyx_PySequence_SIZE(sequence);
-    if (unlikely(size != 2)) {
-      if (size > 2) __Pyx_RaiseTooManyValuesError(2);
-      else if (size >= 0) __Pyx_RaiseNeedMoreValuesError(size);
-      __PYX_ERR(1, 178, __pyx_L1_error)
-    }
-    #if CYTHON_ASSUME_SAFE_MACROS && !CYTHON_AVOID_BORROWED_REFS
-    if (likely(PyTuple_CheckExact(sequence))) {
-      __pyx_t_1 = PyTuple_GET_ITEM(sequence, 0); 
-      __pyx_t_2 = PyTuple_GET_ITEM(sequence, 1); 
-    } else {
-      __pyx_t_1 = PyList_GET_ITEM(sequence, 0); 
-      __pyx_t_2 = PyList_GET_ITEM(sequence, 1); 
-    }
-    __Pyx_INCREF(__pyx_t_1);
-    __Pyx_INCREF(__pyx_t_2);
-    #else
-    __pyx_t_1 = PySequence_ITEM(sequence, 0); if (unlikely(!__pyx_t_1)) __PYX_ERR(1, 178, __pyx_L1_error)
-    __Pyx_GOTREF(__pyx_t_1);
-    __pyx_t_2 = PySequence_ITEM(sequence, 1); if (unlikely(!__pyx_t_2)) __PYX_ERR(1, 178, __pyx_L1_error)
-    __Pyx_GOTREF(__pyx_t_2);
-    #endif
-  } else {
-    Py_ssize_t index = -1;
-    __pyx_t_3 = PyObject_GetIter(__pyx_v_o); if (unlikely(!__pyx_t_3)) __PYX_ERR(1, 178, __pyx_L1_error)
-    __Pyx_GOTREF(__pyx_t_3);
-    __pyx_t_4 = __Pyx_PyObject_GetIterNextFunc(__pyx_t_3);
-    index = 0; __pyx_t_1 = __pyx_t_4(__pyx_t_3); if (unlikely(!__pyx_t_1)) goto __pyx_L3_unpacking_failed;
-    __Pyx_GOTREF(__pyx_t_1);
-    index = 1; __pyx_t_2 = __pyx_t_4(__pyx_t_3); if (unlikely(!__pyx_t_2)) goto __pyx_L3_unpacking_failed;
-    __Pyx_GOTREF(__pyx_t_2);
-    if (__Pyx_IternextUnpackEndCheck(__pyx_t_4(__pyx_t_3), 2) < 0) __PYX_ERR(1, 178, __pyx_L1_error)
-    __pyx_t_4 = NULL;
-    __Pyx_DECREF(__pyx_t_3); __pyx_t_3 = 0;
-    goto __pyx_L4_unpacking_done;
-    __pyx_L3_unpacking_failed:;
-    __Pyx_DECREF(__pyx_t_3); __pyx_t_3 = 0;
-    __pyx_t_4 = NULL;
-    if (__Pyx_IterFinish() == 0) __Pyx_RaiseNeedMoreValuesError(index);
-    __PYX_ERR(1, 178, __pyx_L1_error)
-    __pyx_L4_unpacking_done:;
-  }
-  __pyx_v_x = __pyx_t_1;
-  __pyx_t_1 = 0;
-  __pyx_v_y = __pyx_t_2;
-  __pyx_t_2 = 0;
-
-  /* "pair.from_py":179
- * cdef pair[X,Y] __pyx_convert_pair_from_py_std_3a__3a_vector_3c_size_t_3e_____and_std_3a__3a_pair_3c_size_t_2c_size_t_3e___(object o) except *:
- *     x, y = o
- *     return pair[X,Y](<X>x, <Y>y)             # <<<<<<<<<<<<<<
- * 
- * 
- */
-  __pyx_t_5 = __pyx_convert_vector_from_py_size_t(__pyx_v_x); if (unlikely(PyErr_Occurred())) __PYX_ERR(1, 179, __pyx_L1_error)
-  __pyx_t_6 = __pyx_convert_pair_from_py_size_t__and_size_t(__pyx_v_y); if (unlikely(PyErr_Occurred())) __PYX_ERR(1, 179, __pyx_L1_error)
-  try {
-    __pyx_t_7 = std::pair<std::vector<size_t> ,std::pair<size_t,size_t> > (((std::vector<size_t> )__pyx_t_5), ((std::pair<size_t,size_t> )__pyx_t_6));
-  } catch(...) {
-    __Pyx_CppExn2PyErr();
-    __PYX_ERR(1, 179, __pyx_L1_error)
-  }
-  __pyx_r = __pyx_t_7;
-  goto __pyx_L0;
-
-  /* "pair.from_py":177
- * 
- * @cname("__pyx_convert_pair_from_py_std_3a__3a_vector_3c_size_t_3e_____and_std_3a__3a_pair_3c_size_t_2c_size_t_3e___")
- * cdef pair[X,Y] __pyx_convert_pair_from_py_std_3a__3a_vector_3c_size_t_3e_____and_std_3a__3a_pair_3c_size_t_2c_size_t_3e___(object o) except *:             # <<<<<<<<<<<<<<
- *     x, y = o
- *     return pair[X,Y](<X>x, <Y>y)
- */
-
-  /* function exit code */
-  __pyx_L1_error:;
-  __Pyx_XDECREF(__pyx_t_1);
-  __Pyx_XDECREF(__pyx_t_2);
-  __Pyx_XDECREF(__pyx_t_3);
-  __Pyx_AddTraceback("pair.from_py.__pyx_convert_pair_from_py_std_3a__3a_vector_3c_size_t_3e_____and_std_3a__3a_pair_3c_size_t_2c_size_t_3e___", __pyx_clineno, __pyx_lineno, __pyx_filename);
-  __Pyx_pretend_to_initialize(&__pyx_r);
-  __pyx_L0:;
-  __Pyx_XDECREF(__pyx_v_x);
-  __Pyx_XDECREF(__pyx_v_y);
   __Pyx_RefNannyFinishContext();
   return __pyx_r;
 }
@@ -4396,12 +4568,12 @@ static PyObject *__pyx_convert_vector_to_py_int64_t(std::vector<int64_t>  const 
 /* "impurityModel/ed/ManyBodyUtils.pyx":12
  * from libc.stdint cimport uint8_t, int64_t
  * 
- * cdef bytes key_to_bytes(vector[uint8_t]& key):             # <<<<<<<<<<<<<<
+ * cdef bytes key_to_bytes(const ManyBodyState_cpp.key_type& key):             # <<<<<<<<<<<<<<
  *     cdef bytearray res = bytearray(key.size())
  *     cdef size_t i
  */
 
-static PyObject *__pyx_f_13impurityModel_2ed_13ManyBodyUtils_key_to_bytes(std::vector<uint8_t>  &__pyx_v_key) {
+static PyObject *__pyx_f_13impurityModel_2ed_13ManyBodyUtils_key_to_bytes(ManyBodyState::key_type const &__pyx_v_key) {
   PyObject *__pyx_v_res = 0;
   size_t __pyx_v_i;
   PyObject *__pyx_r = NULL;
@@ -4418,7 +4590,7 @@ static PyObject *__pyx_f_13impurityModel_2ed_13ManyBodyUtils_key_to_bytes(std::v
 
   /* "impurityModel/ed/ManyBodyUtils.pyx":13
  * 
- * cdef bytes key_to_bytes(vector[uint8_t]& key):
+ * cdef bytes key_to_bytes(const ManyBodyState_cpp.key_type& key):
  *     cdef bytearray res = bytearray(key.size())             # <<<<<<<<<<<<<<
  *     cdef size_t i
  *     for i in range(key.size()):
@@ -4461,7 +4633,7 @@ static PyObject *__pyx_f_13impurityModel_2ed_13ManyBodyUtils_key_to_bytes(std::v
  * 
  *     return bytes(res)             # <<<<<<<<<<<<<<
  * 
- * cdef vector[uint8_t] bytes_to_key(bytes b):
+ * cdef ManyBodyState_cpp.key_type bytes_to_key(bytes b):
  */
   __Pyx_XDECREF(__pyx_r);
   __pyx_t_2 = __Pyx_PyObject_CallOneArg(((PyObject *)(&PyBytes_Type)), __pyx_v_res); if (unlikely(!__pyx_t_2)) __PYX_ERR(0, 18, __pyx_L1_error)
@@ -4473,7 +4645,7 @@ static PyObject *__pyx_f_13impurityModel_2ed_13ManyBodyUtils_key_to_bytes(std::v
   /* "impurityModel/ed/ManyBodyUtils.pyx":12
  * from libc.stdint cimport uint8_t, int64_t
  * 
- * cdef bytes key_to_bytes(vector[uint8_t]& key):             # <<<<<<<<<<<<<<
+ * cdef bytes key_to_bytes(const ManyBodyState_cpp.key_type& key):             # <<<<<<<<<<<<<<
  *     cdef bytearray res = bytearray(key.size())
  *     cdef size_t i
  */
@@ -4494,15 +4666,15 @@ static PyObject *__pyx_f_13impurityModel_2ed_13ManyBodyUtils_key_to_bytes(std::v
 /* "impurityModel/ed/ManyBodyUtils.pyx":20
  *     return bytes(res)
  * 
- * cdef vector[uint8_t] bytes_to_key(bytes b):             # <<<<<<<<<<<<<<
- *     cdef vector[uint8_t] key
- *     cdef uint8_t byte
+ * cdef ManyBodyState_cpp.key_type bytes_to_key(bytes b):             # <<<<<<<<<<<<<<
+ *     cdef ManyBodyState_cpp.key_type key
+ *     cdef ManyBodyState_cpp.key_type.value_type byte
  */
 
-static std::vector<uint8_t>  __pyx_f_13impurityModel_2ed_13ManyBodyUtils_bytes_to_key(PyObject *__pyx_v_b) {
-  std::vector<uint8_t>  __pyx_v_key;
-  uint8_t __pyx_v_byte;
-  std::vector<uint8_t>  __pyx_r;
+static ManyBodyState::key_type __pyx_f_13impurityModel_2ed_13ManyBodyUtils_bytes_to_key(PyObject *__pyx_v_b) {
+  ManyBodyState::key_type __pyx_v_key;
+  std::vector<uint8_t> ::value_type __pyx_v_byte;
+  ManyBodyState::key_type __pyx_r;
   __Pyx_RefNannyDeclarations
   Py_ssize_t __pyx_t_1;
   PyObject *__pyx_t_2 = NULL;
@@ -4516,8 +4688,8 @@ static std::vector<uint8_t>  __pyx_f_13impurityModel_2ed_13ManyBodyUtils_bytes_t
   __Pyx_RefNannySetupContext("bytes_to_key", 1);
 
   /* "impurityModel/ed/ManyBodyUtils.pyx":23
- *     cdef vector[uint8_t] key
- *     cdef uint8_t byte
+ *     cdef ManyBodyState_cpp.key_type key
+ *     cdef ManyBodyState_cpp.key_type.value_type byte
  *     key.reserve(len(b))             # <<<<<<<<<<<<<<
  *     for byte in b:
  *         key.push_back(byte)
@@ -4535,7 +4707,7 @@ static std::vector<uint8_t>  __pyx_f_13impurityModel_2ed_13ManyBodyUtils_bytes_t
   }
 
   /* "impurityModel/ed/ManyBodyUtils.pyx":24
- *     cdef uint8_t byte
+ *     cdef ManyBodyState_cpp.key_type.value_type byte
  *     key.reserve(len(b))
  *     for byte in b:             # <<<<<<<<<<<<<<
  *         key.push_back(byte)
@@ -4582,9 +4754,9 @@ static std::vector<uint8_t>  __pyx_f_13impurityModel_2ed_13ManyBodyUtils_bytes_t
   /* "impurityModel/ed/ManyBodyUtils.pyx":20
  *     return bytes(res)
  * 
- * cdef vector[uint8_t] bytes_to_key(bytes b):             # <<<<<<<<<<<<<<
- *     cdef vector[uint8_t] key
- *     cdef uint8_t byte
+ * cdef ManyBodyState_cpp.key_type bytes_to_key(bytes b):             # <<<<<<<<<<<<<<
+ *     cdef ManyBodyState_cpp.key_type key
+ *     cdef ManyBodyState_cpp.key_type.value_type byte
  */
 
   /* function exit code */
@@ -4601,7 +4773,7 @@ static std::vector<uint8_t>  __pyx_f_13impurityModel_2ed_13ManyBodyUtils_bytes_t
  *     cdef ManyBodyState_cpp v
  * 
  *     def __init__(self, dict[bytes, complex] psi={}):             # <<<<<<<<<<<<<<
- *         cdef vector[vector[uint8_t]] keys
+ *         cdef vector[ManyBodyState_cpp.key_type] keys
  *         cdef vector[double complex] amplitudes
  */
 
@@ -4693,7 +4865,7 @@ static int __pyx_pw_13impurityModel_2ed_13ManyBodyUtils_13ManyBodyState_1__init_
 }
 
 static int __pyx_pf_13impurityModel_2ed_13ManyBodyUtils_13ManyBodyState___init__(struct __pyx_obj_13impurityModel_2ed_13ManyBodyUtils_ManyBodyState *__pyx_v_self, PyObject *__pyx_v_psi) {
-  std::vector<std::vector<uint8_t> >  __pyx_v_keys;
+  std::vector<ManyBodyState::key_type>  __pyx_v_keys;
   std::vector<__pyx_t_double_complex>  __pyx_v_amplitudes;
   __pyx_t_double_complex __pyx_v_val;
   PyObject *__pyx_v_b = 0;
@@ -4707,7 +4879,7 @@ static int __pyx_pf_13impurityModel_2ed_13ManyBodyUtils_13ManyBodyState___init__
   PyObject *__pyx_t_6 = NULL;
   int __pyx_t_7;
   __pyx_t_double_complex __pyx_t_8;
-  std::vector<uint8_t>  __pyx_t_9;
+  ManyBodyState::key_type __pyx_t_9;
   int __pyx_lineno = 0;
   const char *__pyx_filename = NULL;
   int __pyx_clineno = 0;
@@ -4787,7 +4959,7 @@ static int __pyx_pf_13impurityModel_2ed_13ManyBodyUtils_13ManyBodyState___init__
  *     cdef ManyBodyState_cpp v
  * 
  *     def __init__(self, dict[bytes, complex] psi={}):             # <<<<<<<<<<<<<<
- *         cdef vector[vector[uint8_t]] keys
+ *         cdef vector[ManyBodyState_cpp.key_type] keys
  *         cdef vector[double complex] amplitudes
  */
 
@@ -4810,8 +4982,8 @@ static int __pyx_pf_13impurityModel_2ed_13ManyBodyUtils_13ManyBodyState___init__
  *         self.v = ManyBodyState_cpp(keys, amplitudes)
  * 
  *     def __repr__(self):             # <<<<<<<<<<<<<<
- *         cdef pair[vector[uint8_t], double complex] p
- *         return "ManyBodyState({ " + ", ".join([f"{key_to_bytes(p.first)}: {p.second}" for p in self.v]) + "})"
+ *         return "ManyBodyState({ " + ", ".join([f"{key_to_bytes(key)}: {amp}" for (key, amp) in self.v]) + "})"
+ * 
  */
 
 /* Python wrapper */
@@ -4830,111 +5002,175 @@ static PyObject *__pyx_pw_13impurityModel_2ed_13ManyBodyUtils_13ManyBodyState_3_
 }
 
 static PyObject *__pyx_pf_13impurityModel_2ed_13ManyBodyUtils_13ManyBodyState_2__repr__(struct __pyx_obj_13impurityModel_2ed_13ManyBodyUtils_ManyBodyState *__pyx_v_self) {
-  std::pair<std::vector<uint8_t> ,__pyx_t_double_complex>  __pyx_7genexpr__pyx_v_p;
+  PyObject *__pyx_7genexpr__pyx_v_key = NULL;
+  PyObject *__pyx_7genexpr__pyx_v_amp = NULL;
   PyObject *__pyx_r = NULL;
   __Pyx_RefNannyDeclarations
   PyObject *__pyx_t_1 = NULL;
   ManyBodyState::iterator __pyx_t_2;
   std::pair<std::vector<uint8_t> ,__pyx_t_double_complex>  __pyx_t_3;
   PyObject *__pyx_t_4 = NULL;
-  Py_ssize_t __pyx_t_5;
-  Py_UCS4 __pyx_t_6;
+  PyObject *__pyx_t_5 = NULL;
+  PyObject *__pyx_t_6 = NULL;
   PyObject *__pyx_t_7 = NULL;
-  PyObject *__pyx_t_8 = NULL;
+  PyObject *(*__pyx_t_8)(PyObject *);
+  Py_ssize_t __pyx_t_9;
+  Py_UCS4 __pyx_t_10;
+  ManyBodyState::key_type __pyx_t_11;
   int __pyx_lineno = 0;
   const char *__pyx_filename = NULL;
   int __pyx_clineno = 0;
   __Pyx_RefNannySetupContext("__repr__", 1);
 
-  /* "impurityModel/ed/ManyBodyUtils.pyx":45
+  /* "impurityModel/ed/ManyBodyUtils.pyx":44
+ * 
  *     def __repr__(self):
- *         cdef pair[vector[uint8_t], double complex] p
- *         return "ManyBodyState({ " + ", ".join([f"{key_to_bytes(p.first)}: {p.second}" for p in self.v]) + "})"             # <<<<<<<<<<<<<<
+ *         return "ManyBodyState({ " + ", ".join([f"{key_to_bytes(key)}: {amp}" for (key, amp) in self.v]) + "})"             # <<<<<<<<<<<<<<
  * 
  *     def __eq__(self, ManyBodyState other):
  */
   __Pyx_XDECREF(__pyx_r);
   { /* enter inner scope */
-    __pyx_t_1 = PyList_New(0); if (unlikely(!__pyx_t_1)) __PYX_ERR(0, 45, __pyx_L1_error)
+    __pyx_t_1 = PyList_New(0); if (unlikely(!__pyx_t_1)) __PYX_ERR(0, 44, __pyx_L5_error)
     __Pyx_GOTREF(__pyx_t_1);
     __pyx_t_2 = __pyx_v_self->v.begin();
     for (;;) {
       if (!(__pyx_t_2 != __pyx_v_self->v.end())) break;
       __pyx_t_3 = *__pyx_t_2;
       ++__pyx_t_2;
-      __pyx_7genexpr__pyx_v_p = __PYX_STD_MOVE_IF_SUPPORTED(__pyx_t_3);
-      __pyx_t_4 = PyTuple_New(3); if (unlikely(!__pyx_t_4)) __PYX_ERR(0, 45, __pyx_L1_error)
+      __pyx_t_4 = __pyx_convert_pair_to_py_std_3a__3a_vector_3c_uint8_t_3e_________pyx_t_double_complex(__pyx_t_3); if (unlikely(!__pyx_t_4)) __PYX_ERR(0, 44, __pyx_L5_error)
       __Pyx_GOTREF(__pyx_t_4);
+      if ((likely(PyTuple_CheckExact(__pyx_t_4))) || (PyList_CheckExact(__pyx_t_4))) {
+        PyObject* sequence = __pyx_t_4;
+        Py_ssize_t size = __Pyx_PySequence_SIZE(sequence);
+        if (unlikely(size != 2)) {
+          if (size > 2) __Pyx_RaiseTooManyValuesError(2);
+          else if (size >= 0) __Pyx_RaiseNeedMoreValuesError(size);
+          __PYX_ERR(0, 44, __pyx_L5_error)
+        }
+        #if CYTHON_ASSUME_SAFE_MACROS && !CYTHON_AVOID_BORROWED_REFS
+        if (likely(PyTuple_CheckExact(sequence))) {
+          __pyx_t_5 = PyTuple_GET_ITEM(sequence, 0); 
+          __pyx_t_6 = PyTuple_GET_ITEM(sequence, 1); 
+        } else {
+          __pyx_t_5 = PyList_GET_ITEM(sequence, 0); 
+          __pyx_t_6 = PyList_GET_ITEM(sequence, 1); 
+        }
+        __Pyx_INCREF(__pyx_t_5);
+        __Pyx_INCREF(__pyx_t_6);
+        #else
+        __pyx_t_5 = PySequence_ITEM(sequence, 0); if (unlikely(!__pyx_t_5)) __PYX_ERR(0, 44, __pyx_L5_error)
+        __Pyx_GOTREF(__pyx_t_5);
+        __pyx_t_6 = PySequence_ITEM(sequence, 1); if (unlikely(!__pyx_t_6)) __PYX_ERR(0, 44, __pyx_L5_error)
+        __Pyx_GOTREF(__pyx_t_6);
+        #endif
+        __Pyx_DECREF(__pyx_t_4); __pyx_t_4 = 0;
+      } else {
+        Py_ssize_t index = -1;
+        __pyx_t_7 = PyObject_GetIter(__pyx_t_4); if (unlikely(!__pyx_t_7)) __PYX_ERR(0, 44, __pyx_L5_error)
+        __Pyx_GOTREF(__pyx_t_7);
+        __Pyx_DECREF(__pyx_t_4); __pyx_t_4 = 0;
+        __pyx_t_8 = __Pyx_PyObject_GetIterNextFunc(__pyx_t_7);
+        index = 0; __pyx_t_5 = __pyx_t_8(__pyx_t_7); if (unlikely(!__pyx_t_5)) goto __pyx_L8_unpacking_failed;
+        __Pyx_GOTREF(__pyx_t_5);
+        index = 1; __pyx_t_6 = __pyx_t_8(__pyx_t_7); if (unlikely(!__pyx_t_6)) goto __pyx_L8_unpacking_failed;
+        __Pyx_GOTREF(__pyx_t_6);
+        if (__Pyx_IternextUnpackEndCheck(__pyx_t_8(__pyx_t_7), 2) < 0) __PYX_ERR(0, 44, __pyx_L5_error)
+        __pyx_t_8 = NULL;
+        __Pyx_DECREF(__pyx_t_7); __pyx_t_7 = 0;
+        goto __pyx_L9_unpacking_done;
+        __pyx_L8_unpacking_failed:;
+        __Pyx_DECREF(__pyx_t_7); __pyx_t_7 = 0;
+        __pyx_t_8 = NULL;
+        if (__Pyx_IterFinish() == 0) __Pyx_RaiseNeedMoreValuesError(index);
+        __PYX_ERR(0, 44, __pyx_L5_error)
+        __pyx_L9_unpacking_done:;
+      }
+      __Pyx_XDECREF_SET(__pyx_7genexpr__pyx_v_key, __pyx_t_5);
       __pyx_t_5 = 0;
-      __pyx_t_6 = 127;
-      __pyx_t_7 = __pyx_f_13impurityModel_2ed_13ManyBodyUtils_key_to_bytes(__pyx_7genexpr__pyx_v_p.first); if (unlikely(!__pyx_t_7)) __PYX_ERR(0, 45, __pyx_L1_error)
-      __Pyx_GOTREF(__pyx_t_7);
-      __pyx_t_8 = __Pyx_PyObject_FormatSimple(__pyx_t_7, __pyx_empty_unicode); if (unlikely(!__pyx_t_8)) __PYX_ERR(0, 45, __pyx_L1_error)
-      __Pyx_GOTREF(__pyx_t_8);
-      __Pyx_DECREF(__pyx_t_7); __pyx_t_7 = 0;
-      __pyx_t_6 = (__Pyx_PyUnicode_MAX_CHAR_VALUE(__pyx_t_8) > __pyx_t_6) ? __Pyx_PyUnicode_MAX_CHAR_VALUE(__pyx_t_8) : __pyx_t_6;
-      __pyx_t_5 += __Pyx_PyUnicode_GET_LENGTH(__pyx_t_8);
-      __Pyx_GIVEREF(__pyx_t_8);
-      PyTuple_SET_ITEM(__pyx_t_4, 0, __pyx_t_8);
-      __pyx_t_8 = 0;
+      __Pyx_XDECREF_SET(__pyx_7genexpr__pyx_v_amp, __pyx_t_6);
+      __pyx_t_6 = 0;
+      __pyx_t_4 = PyTuple_New(3); if (unlikely(!__pyx_t_4)) __PYX_ERR(0, 44, __pyx_L5_error)
+      __Pyx_GOTREF(__pyx_t_4);
+      __pyx_t_9 = 0;
+      __pyx_t_10 = 127;
+      __pyx_t_11 = __pyx_convert_vector_from_py_uint8_t(__pyx_7genexpr__pyx_v_key); if (unlikely(PyErr_Occurred())) __PYX_ERR(0, 44, __pyx_L5_error)
+      __pyx_t_6 = __pyx_f_13impurityModel_2ed_13ManyBodyUtils_key_to_bytes(__pyx_t_11); if (unlikely(!__pyx_t_6)) __PYX_ERR(0, 44, __pyx_L5_error)
+      __Pyx_GOTREF(__pyx_t_6);
+      __pyx_t_5 = __Pyx_PyObject_FormatSimple(__pyx_t_6, __pyx_empty_unicode); if (unlikely(!__pyx_t_5)) __PYX_ERR(0, 44, __pyx_L5_error)
+      __Pyx_GOTREF(__pyx_t_5);
+      __Pyx_DECREF(__pyx_t_6); __pyx_t_6 = 0;
+      __pyx_t_10 = (__Pyx_PyUnicode_MAX_CHAR_VALUE(__pyx_t_5) > __pyx_t_10) ? __Pyx_PyUnicode_MAX_CHAR_VALUE(__pyx_t_5) : __pyx_t_10;
+      __pyx_t_9 += __Pyx_PyUnicode_GET_LENGTH(__pyx_t_5);
+      __Pyx_GIVEREF(__pyx_t_5);
+      PyTuple_SET_ITEM(__pyx_t_4, 0, __pyx_t_5);
+      __pyx_t_5 = 0;
       __Pyx_INCREF(__pyx_kp_u__3);
-      __pyx_t_5 += 2;
+      __pyx_t_9 += 2;
       __Pyx_GIVEREF(__pyx_kp_u__3);
       PyTuple_SET_ITEM(__pyx_t_4, 1, __pyx_kp_u__3);
-      __pyx_t_8 = __pyx_PyComplex_FromComplex(__pyx_7genexpr__pyx_v_p.second); if (unlikely(!__pyx_t_8)) __PYX_ERR(0, 45, __pyx_L1_error)
-      __Pyx_GOTREF(__pyx_t_8);
-      __pyx_t_7 = __Pyx_PyObject_FormatSimple(__pyx_t_8, __pyx_empty_unicode); if (unlikely(!__pyx_t_7)) __PYX_ERR(0, 45, __pyx_L1_error)
-      __Pyx_GOTREF(__pyx_t_7);
-      __Pyx_DECREF(__pyx_t_8); __pyx_t_8 = 0;
-      __pyx_t_6 = (__Pyx_PyUnicode_MAX_CHAR_VALUE(__pyx_t_7) > __pyx_t_6) ? __Pyx_PyUnicode_MAX_CHAR_VALUE(__pyx_t_7) : __pyx_t_6;
-      __pyx_t_5 += __Pyx_PyUnicode_GET_LENGTH(__pyx_t_7);
-      __Pyx_GIVEREF(__pyx_t_7);
-      PyTuple_SET_ITEM(__pyx_t_4, 2, __pyx_t_7);
-      __pyx_t_7 = 0;
-      __pyx_t_7 = __Pyx_PyUnicode_Join(__pyx_t_4, 3, __pyx_t_5, __pyx_t_6); if (unlikely(!__pyx_t_7)) __PYX_ERR(0, 45, __pyx_L1_error)
-      __Pyx_GOTREF(__pyx_t_7);
+      __pyx_t_5 = __Pyx_PyObject_FormatSimple(__pyx_7genexpr__pyx_v_amp, __pyx_empty_unicode); if (unlikely(!__pyx_t_5)) __PYX_ERR(0, 44, __pyx_L5_error)
+      __Pyx_GOTREF(__pyx_t_5);
+      __pyx_t_10 = (__Pyx_PyUnicode_MAX_CHAR_VALUE(__pyx_t_5) > __pyx_t_10) ? __Pyx_PyUnicode_MAX_CHAR_VALUE(__pyx_t_5) : __pyx_t_10;
+      __pyx_t_9 += __Pyx_PyUnicode_GET_LENGTH(__pyx_t_5);
+      __Pyx_GIVEREF(__pyx_t_5);
+      PyTuple_SET_ITEM(__pyx_t_4, 2, __pyx_t_5);
+      __pyx_t_5 = 0;
+      __pyx_t_5 = __Pyx_PyUnicode_Join(__pyx_t_4, 3, __pyx_t_9, __pyx_t_10); if (unlikely(!__pyx_t_5)) __PYX_ERR(0, 44, __pyx_L5_error)
+      __Pyx_GOTREF(__pyx_t_5);
       __Pyx_DECREF(__pyx_t_4); __pyx_t_4 = 0;
-      if (unlikely(__Pyx_ListComp_Append(__pyx_t_1, (PyObject*)__pyx_t_7))) __PYX_ERR(0, 45, __pyx_L1_error)
-      __Pyx_DECREF(__pyx_t_7); __pyx_t_7 = 0;
+      if (unlikely(__Pyx_ListComp_Append(__pyx_t_1, (PyObject*)__pyx_t_5))) __PYX_ERR(0, 44, __pyx_L5_error)
+      __Pyx_DECREF(__pyx_t_5); __pyx_t_5 = 0;
     }
+    __Pyx_XDECREF(__pyx_7genexpr__pyx_v_amp); __pyx_7genexpr__pyx_v_amp = 0;
+    __Pyx_XDECREF(__pyx_7genexpr__pyx_v_key); __pyx_7genexpr__pyx_v_key = 0;
+    goto __pyx_L11_exit_scope;
+    __pyx_L5_error:;
+    __Pyx_XDECREF(__pyx_7genexpr__pyx_v_amp); __pyx_7genexpr__pyx_v_amp = 0;
+    __Pyx_XDECREF(__pyx_7genexpr__pyx_v_key); __pyx_7genexpr__pyx_v_key = 0;
+    goto __pyx_L1_error;
+    __pyx_L11_exit_scope:;
   } /* exit inner scope */
-  __pyx_t_7 = PyUnicode_Join(__pyx_kp_u__2, __pyx_t_1); if (unlikely(!__pyx_t_7)) __PYX_ERR(0, 45, __pyx_L1_error)
-  __Pyx_GOTREF(__pyx_t_7);
+  __pyx_t_5 = PyUnicode_Join(__pyx_kp_u__2, __pyx_t_1); if (unlikely(!__pyx_t_5)) __PYX_ERR(0, 44, __pyx_L1_error)
+  __Pyx_GOTREF(__pyx_t_5);
   __Pyx_DECREF(__pyx_t_1); __pyx_t_1 = 0;
-  __pyx_t_1 = __Pyx_PyUnicode_Concat(__pyx_kp_u_ManyBodyState, __pyx_t_7); if (unlikely(!__pyx_t_1)) __PYX_ERR(0, 45, __pyx_L1_error)
+  __pyx_t_1 = __Pyx_PyUnicode_Concat(__pyx_kp_u_ManyBodyState, __pyx_t_5); if (unlikely(!__pyx_t_1)) __PYX_ERR(0, 44, __pyx_L1_error)
   __Pyx_GOTREF(__pyx_t_1);
-  __Pyx_DECREF(__pyx_t_7); __pyx_t_7 = 0;
-  __pyx_t_7 = __Pyx_PyUnicode_ConcatInPlace(__pyx_t_1, __pyx_kp_u__4); if (unlikely(!__pyx_t_7)) __PYX_ERR(0, 45, __pyx_L1_error)
-  __Pyx_GOTREF(__pyx_t_7);
+  __Pyx_DECREF(__pyx_t_5); __pyx_t_5 = 0;
+  __pyx_t_5 = __Pyx_PyUnicode_ConcatInPlace(__pyx_t_1, __pyx_kp_u__4); if (unlikely(!__pyx_t_5)) __PYX_ERR(0, 44, __pyx_L1_error)
+  __Pyx_GOTREF(__pyx_t_5);
   __Pyx_DECREF(__pyx_t_1); __pyx_t_1 = 0;
-  __pyx_r = __pyx_t_7;
-  __pyx_t_7 = 0;
+  __pyx_r = __pyx_t_5;
+  __pyx_t_5 = 0;
   goto __pyx_L0;
 
   /* "impurityModel/ed/ManyBodyUtils.pyx":43
  *         self.v = ManyBodyState_cpp(keys, amplitudes)
  * 
  *     def __repr__(self):             # <<<<<<<<<<<<<<
- *         cdef pair[vector[uint8_t], double complex] p
- *         return "ManyBodyState({ " + ", ".join([f"{key_to_bytes(p.first)}: {p.second}" for p in self.v]) + "})"
+ *         return "ManyBodyState({ " + ", ".join([f"{key_to_bytes(key)}: {amp}" for (key, amp) in self.v]) + "})"
+ * 
  */
 
   /* function exit code */
   __pyx_L1_error:;
   __Pyx_XDECREF(__pyx_t_1);
   __Pyx_XDECREF(__pyx_t_4);
+  __Pyx_XDECREF(__pyx_t_5);
+  __Pyx_XDECREF(__pyx_t_6);
   __Pyx_XDECREF(__pyx_t_7);
-  __Pyx_XDECREF(__pyx_t_8);
   __Pyx_AddTraceback("impurityModel.ed.ManyBodyUtils.ManyBodyState.__repr__", __pyx_clineno, __pyx_lineno, __pyx_filename);
   __pyx_r = NULL;
   __pyx_L0:;
+  __Pyx_XDECREF(__pyx_7genexpr__pyx_v_key);
+  __Pyx_XDECREF(__pyx_7genexpr__pyx_v_amp);
   __Pyx_XGIVEREF(__pyx_r);
   __Pyx_RefNannyFinishContext();
   return __pyx_r;
 }
 
-/* "impurityModel/ed/ManyBodyUtils.pyx":47
- *         return "ManyBodyState({ " + ", ".join([f"{key_to_bytes(p.first)}: {p.second}" for p in self.v]) + "})"
+/* "impurityModel/ed/ManyBodyUtils.pyx":46
+ *         return "ManyBodyState({ " + ", ".join([f"{key_to_bytes(key)}: {amp}" for (key, amp) in self.v]) + "})"
  * 
  *     def __eq__(self, ManyBodyState other):             # <<<<<<<<<<<<<<
  *         return self.v == other.v
@@ -4952,7 +5188,7 @@ static PyObject *__pyx_pw_13impurityModel_2ed_13ManyBodyUtils_13ManyBodyState_5_
   __Pyx_RefNannyDeclarations
   __Pyx_RefNannySetupContext("__eq__ (wrapper)", 0);
   __pyx_kwvalues = __Pyx_KwValues_VARARGS(__pyx_args, __pyx_nargs);
-  if (unlikely(!__Pyx_ArgTypeTest(((PyObject *)__pyx_v_other), __pyx_ptype_13impurityModel_2ed_13ManyBodyUtils_ManyBodyState, 1, "other", 0))) __PYX_ERR(0, 47, __pyx_L1_error)
+  if (unlikely(!__Pyx_ArgTypeTest(((PyObject *)__pyx_v_other), __pyx_ptype_13impurityModel_2ed_13ManyBodyUtils_ManyBodyState, 1, "other", 0))) __PYX_ERR(0, 46, __pyx_L1_error)
   __pyx_r = __pyx_pf_13impurityModel_2ed_13ManyBodyUtils_13ManyBodyState_4__eq__(((struct __pyx_obj_13impurityModel_2ed_13ManyBodyUtils_ManyBodyState *)__pyx_v_self), ((struct __pyx_obj_13impurityModel_2ed_13ManyBodyUtils_ManyBodyState *)__pyx_v_other));
 
   /* function exit code */
@@ -4973,7 +5209,7 @@ static PyObject *__pyx_pf_13impurityModel_2ed_13ManyBodyUtils_13ManyBodyState_4_
   int __pyx_clineno = 0;
   __Pyx_RefNannySetupContext("__eq__", 1);
 
-  /* "impurityModel/ed/ManyBodyUtils.pyx":48
+  /* "impurityModel/ed/ManyBodyUtils.pyx":47
  * 
  *     def __eq__(self, ManyBodyState other):
  *         return self.v == other.v             # <<<<<<<<<<<<<<
@@ -4981,14 +5217,14 @@ static PyObject *__pyx_pf_13impurityModel_2ed_13ManyBodyUtils_13ManyBodyState_4_
  *     def __add__(self, ManyBodyState other):
  */
   __Pyx_XDECREF(__pyx_r);
-  __pyx_t_1 = __Pyx_PyBool_FromLong((__pyx_v_self->v == __pyx_v_other->v)); if (unlikely(!__pyx_t_1)) __PYX_ERR(0, 48, __pyx_L1_error)
+  __pyx_t_1 = __Pyx_PyBool_FromLong((__pyx_v_self->v == __pyx_v_other->v)); if (unlikely(!__pyx_t_1)) __PYX_ERR(0, 47, __pyx_L1_error)
   __Pyx_GOTREF(__pyx_t_1);
   __pyx_r = __pyx_t_1;
   __pyx_t_1 = 0;
   goto __pyx_L0;
 
-  /* "impurityModel/ed/ManyBodyUtils.pyx":47
- *         return "ManyBodyState({ " + ", ".join([f"{key_to_bytes(p.first)}: {p.second}" for p in self.v]) + "})"
+  /* "impurityModel/ed/ManyBodyUtils.pyx":46
+ *         return "ManyBodyState({ " + ", ".join([f"{key_to_bytes(key)}: {amp}" for (key, amp) in self.v]) + "})"
  * 
  *     def __eq__(self, ManyBodyState other):             # <<<<<<<<<<<<<<
  *         return self.v == other.v
@@ -5006,7 +5242,7 @@ static PyObject *__pyx_pf_13impurityModel_2ed_13ManyBodyUtils_13ManyBodyState_4_
   return __pyx_r;
 }
 
-/* "impurityModel/ed/ManyBodyUtils.pyx":50
+/* "impurityModel/ed/ManyBodyUtils.pyx":49
  *         return self.v == other.v
  * 
  *     def __add__(self, ManyBodyState other):             # <<<<<<<<<<<<<<
@@ -5025,7 +5261,7 @@ static PyObject *__pyx_pw_13impurityModel_2ed_13ManyBodyUtils_13ManyBodyState_7_
   __Pyx_RefNannyDeclarations
   __Pyx_RefNannySetupContext("__add__ (wrapper)", 0);
   __pyx_kwvalues = __Pyx_KwValues_VARARGS(__pyx_args, __pyx_nargs);
-  if (unlikely(!__Pyx_ArgTypeTest(((PyObject *)__pyx_v_other), __pyx_ptype_13impurityModel_2ed_13ManyBodyUtils_ManyBodyState, 1, "other", 0))) __PYX_ERR(0, 50, __pyx_L1_error)
+  if (unlikely(!__Pyx_ArgTypeTest(((PyObject *)__pyx_v_other), __pyx_ptype_13impurityModel_2ed_13ManyBodyUtils_ManyBodyState, 1, "other", 0))) __PYX_ERR(0, 49, __pyx_L1_error)
   __pyx_r = __pyx_pf_13impurityModel_2ed_13ManyBodyUtils_13ManyBodyState_6__add__(((struct __pyx_obj_13impurityModel_2ed_13ManyBodyUtils_ManyBodyState *)__pyx_v_self), ((struct __pyx_obj_13impurityModel_2ed_13ManyBodyUtils_ManyBodyState *)__pyx_v_other));
 
   /* function exit code */
@@ -5047,19 +5283,19 @@ static PyObject *__pyx_pf_13impurityModel_2ed_13ManyBodyUtils_13ManyBodyState_6_
   int __pyx_clineno = 0;
   __Pyx_RefNannySetupContext("__add__", 1);
 
-  /* "impurityModel/ed/ManyBodyUtils.pyx":51
+  /* "impurityModel/ed/ManyBodyUtils.pyx":50
  * 
  *     def __add__(self, ManyBodyState other):
  *         res = ManyBodyState()             # <<<<<<<<<<<<<<
  *         res.v = self.v + other.v
  *         return res
  */
-  __pyx_t_1 = __Pyx_PyObject_CallNoArg(((PyObject *)__pyx_ptype_13impurityModel_2ed_13ManyBodyUtils_ManyBodyState)); if (unlikely(!__pyx_t_1)) __PYX_ERR(0, 51, __pyx_L1_error)
+  __pyx_t_1 = __Pyx_PyObject_CallNoArg(((PyObject *)__pyx_ptype_13impurityModel_2ed_13ManyBodyUtils_ManyBodyState)); if (unlikely(!__pyx_t_1)) __PYX_ERR(0, 50, __pyx_L1_error)
   __Pyx_GOTREF(__pyx_t_1);
   __pyx_v_res = ((struct __pyx_obj_13impurityModel_2ed_13ManyBodyUtils_ManyBodyState *)__pyx_t_1);
   __pyx_t_1 = 0;
 
-  /* "impurityModel/ed/ManyBodyUtils.pyx":52
+  /* "impurityModel/ed/ManyBodyUtils.pyx":51
  *     def __add__(self, ManyBodyState other):
  *         res = ManyBodyState()
  *         res.v = self.v + other.v             # <<<<<<<<<<<<<<
@@ -5068,7 +5304,7 @@ static PyObject *__pyx_pf_13impurityModel_2ed_13ManyBodyUtils_13ManyBodyState_6_
  */
   __pyx_v_res->v = (__pyx_v_self->v + __pyx_v_other->v);
 
-  /* "impurityModel/ed/ManyBodyUtils.pyx":53
+  /* "impurityModel/ed/ManyBodyUtils.pyx":52
  *         res = ManyBodyState()
  *         res.v = self.v + other.v
  *         return res             # <<<<<<<<<<<<<<
@@ -5080,7 +5316,7 @@ static PyObject *__pyx_pf_13impurityModel_2ed_13ManyBodyUtils_13ManyBodyState_6_
   __pyx_r = ((PyObject *)__pyx_v_res);
   goto __pyx_L0;
 
-  /* "impurityModel/ed/ManyBodyUtils.pyx":50
+  /* "impurityModel/ed/ManyBodyUtils.pyx":49
  *         return self.v == other.v
  * 
  *     def __add__(self, ManyBodyState other):             # <<<<<<<<<<<<<<
@@ -5100,7 +5336,7 @@ static PyObject *__pyx_pf_13impurityModel_2ed_13ManyBodyUtils_13ManyBodyState_6_
   return __pyx_r;
 }
 
-/* "impurityModel/ed/ManyBodyUtils.pyx":55
+/* "impurityModel/ed/ManyBodyUtils.pyx":54
  *         return res
  * 
  *     def __sub__(self, ManyBodyState other):             # <<<<<<<<<<<<<<
@@ -5119,7 +5355,7 @@ static PyObject *__pyx_pw_13impurityModel_2ed_13ManyBodyUtils_13ManyBodyState_9_
   __Pyx_RefNannyDeclarations
   __Pyx_RefNannySetupContext("__sub__ (wrapper)", 0);
   __pyx_kwvalues = __Pyx_KwValues_VARARGS(__pyx_args, __pyx_nargs);
-  if (unlikely(!__Pyx_ArgTypeTest(((PyObject *)__pyx_v_other), __pyx_ptype_13impurityModel_2ed_13ManyBodyUtils_ManyBodyState, 1, "other", 0))) __PYX_ERR(0, 55, __pyx_L1_error)
+  if (unlikely(!__Pyx_ArgTypeTest(((PyObject *)__pyx_v_other), __pyx_ptype_13impurityModel_2ed_13ManyBodyUtils_ManyBodyState, 1, "other", 0))) __PYX_ERR(0, 54, __pyx_L1_error)
   __pyx_r = __pyx_pf_13impurityModel_2ed_13ManyBodyUtils_13ManyBodyState_8__sub__(((struct __pyx_obj_13impurityModel_2ed_13ManyBodyUtils_ManyBodyState *)__pyx_v_self), ((struct __pyx_obj_13impurityModel_2ed_13ManyBodyUtils_ManyBodyState *)__pyx_v_other));
 
   /* function exit code */
@@ -5141,19 +5377,19 @@ static PyObject *__pyx_pf_13impurityModel_2ed_13ManyBodyUtils_13ManyBodyState_8_
   int __pyx_clineno = 0;
   __Pyx_RefNannySetupContext("__sub__", 1);
 
-  /* "impurityModel/ed/ManyBodyUtils.pyx":56
+  /* "impurityModel/ed/ManyBodyUtils.pyx":55
  * 
  *     def __sub__(self, ManyBodyState other):
  *         res = ManyBodyState()             # <<<<<<<<<<<<<<
  *         res.v = self.v - other.v
  *         return res
  */
-  __pyx_t_1 = __Pyx_PyObject_CallNoArg(((PyObject *)__pyx_ptype_13impurityModel_2ed_13ManyBodyUtils_ManyBodyState)); if (unlikely(!__pyx_t_1)) __PYX_ERR(0, 56, __pyx_L1_error)
+  __pyx_t_1 = __Pyx_PyObject_CallNoArg(((PyObject *)__pyx_ptype_13impurityModel_2ed_13ManyBodyUtils_ManyBodyState)); if (unlikely(!__pyx_t_1)) __PYX_ERR(0, 55, __pyx_L1_error)
   __Pyx_GOTREF(__pyx_t_1);
   __pyx_v_res = ((struct __pyx_obj_13impurityModel_2ed_13ManyBodyUtils_ManyBodyState *)__pyx_t_1);
   __pyx_t_1 = 0;
 
-  /* "impurityModel/ed/ManyBodyUtils.pyx":57
+  /* "impurityModel/ed/ManyBodyUtils.pyx":56
  *     def __sub__(self, ManyBodyState other):
  *         res = ManyBodyState()
  *         res.v = self.v - other.v             # <<<<<<<<<<<<<<
@@ -5162,7 +5398,7 @@ static PyObject *__pyx_pf_13impurityModel_2ed_13ManyBodyUtils_13ManyBodyState_8_
  */
   __pyx_v_res->v = (__pyx_v_self->v - __pyx_v_other->v);
 
-  /* "impurityModel/ed/ManyBodyUtils.pyx":58
+  /* "impurityModel/ed/ManyBodyUtils.pyx":57
  *         res = ManyBodyState()
  *         res.v = self.v - other.v
  *         return res             # <<<<<<<<<<<<<<
@@ -5174,7 +5410,7 @@ static PyObject *__pyx_pf_13impurityModel_2ed_13ManyBodyUtils_13ManyBodyState_8_
   __pyx_r = ((PyObject *)__pyx_v_res);
   goto __pyx_L0;
 
-  /* "impurityModel/ed/ManyBodyUtils.pyx":55
+  /* "impurityModel/ed/ManyBodyUtils.pyx":54
  *         return res
  * 
  *     def __sub__(self, ManyBodyState other):             # <<<<<<<<<<<<<<
@@ -5194,7 +5430,7 @@ static PyObject *__pyx_pf_13impurityModel_2ed_13ManyBodyUtils_13ManyBodyState_8_
   return __pyx_r;
 }
 
-/* "impurityModel/ed/ManyBodyUtils.pyx":60
+/* "impurityModel/ed/ManyBodyUtils.pyx":59
  *         return res
  * 
  *     def __mul__(self, double complex s):             # <<<<<<<<<<<<<<
@@ -5215,7 +5451,7 @@ static PyObject *__pyx_pw_13impurityModel_2ed_13ManyBodyUtils_13ManyBodyState_11
   __Pyx_RefNannySetupContext("__mul__ (wrapper)", 0);
   __pyx_kwvalues = __Pyx_KwValues_VARARGS(__pyx_args, __pyx_nargs);
   assert(__pyx_arg_s); {
-    __pyx_v_s = __Pyx_PyComplex_As___pyx_t_double_complex(__pyx_arg_s); if (unlikely(PyErr_Occurred())) __PYX_ERR(0, 60, __pyx_L3_error)
+    __pyx_v_s = __Pyx_PyComplex_As___pyx_t_double_complex(__pyx_arg_s); if (unlikely(PyErr_Occurred())) __PYX_ERR(0, 59, __pyx_L3_error)
   }
   goto __pyx_L4_argument_unpacking_done;
   __pyx_L3_error:;
@@ -5240,19 +5476,19 @@ static PyObject *__pyx_pf_13impurityModel_2ed_13ManyBodyUtils_13ManyBodyState_10
   int __pyx_clineno = 0;
   __Pyx_RefNannySetupContext("__mul__", 1);
 
-  /* "impurityModel/ed/ManyBodyUtils.pyx":61
+  /* "impurityModel/ed/ManyBodyUtils.pyx":60
  * 
  *     def __mul__(self, double complex s):
  *         res = ManyBodyState()             # <<<<<<<<<<<<<<
  *         res.v = self.v*  s
  *         return res
  */
-  __pyx_t_1 = __Pyx_PyObject_CallNoArg(((PyObject *)__pyx_ptype_13impurityModel_2ed_13ManyBodyUtils_ManyBodyState)); if (unlikely(!__pyx_t_1)) __PYX_ERR(0, 61, __pyx_L1_error)
+  __pyx_t_1 = __Pyx_PyObject_CallNoArg(((PyObject *)__pyx_ptype_13impurityModel_2ed_13ManyBodyUtils_ManyBodyState)); if (unlikely(!__pyx_t_1)) __PYX_ERR(0, 60, __pyx_L1_error)
   __Pyx_GOTREF(__pyx_t_1);
   __pyx_v_res = ((struct __pyx_obj_13impurityModel_2ed_13ManyBodyUtils_ManyBodyState *)__pyx_t_1);
   __pyx_t_1 = 0;
 
-  /* "impurityModel/ed/ManyBodyUtils.pyx":62
+  /* "impurityModel/ed/ManyBodyUtils.pyx":61
  *     def __mul__(self, double complex s):
  *         res = ManyBodyState()
  *         res.v = self.v*  s             # <<<<<<<<<<<<<<
@@ -5261,7 +5497,7 @@ static PyObject *__pyx_pf_13impurityModel_2ed_13ManyBodyUtils_13ManyBodyState_10
  */
   __pyx_v_res->v = (__pyx_v_self->v * __pyx_v_s);
 
-  /* "impurityModel/ed/ManyBodyUtils.pyx":63
+  /* "impurityModel/ed/ManyBodyUtils.pyx":62
  *         res = ManyBodyState()
  *         res.v = self.v*  s
  *         return res             # <<<<<<<<<<<<<<
@@ -5273,7 +5509,7 @@ static PyObject *__pyx_pf_13impurityModel_2ed_13ManyBodyUtils_13ManyBodyState_10
   __pyx_r = ((PyObject *)__pyx_v_res);
   goto __pyx_L0;
 
-  /* "impurityModel/ed/ManyBodyUtils.pyx":60
+  /* "impurityModel/ed/ManyBodyUtils.pyx":59
  *         return res
  * 
  *     def __mul__(self, double complex s):             # <<<<<<<<<<<<<<
@@ -5293,7 +5529,7 @@ static PyObject *__pyx_pf_13impurityModel_2ed_13ManyBodyUtils_13ManyBodyState_10
   return __pyx_r;
 }
 
-/* "impurityModel/ed/ManyBodyUtils.pyx":65
+/* "impurityModel/ed/ManyBodyUtils.pyx":64
  *         return res
  * 
  *     def __rmul__(self, double complex s):             # <<<<<<<<<<<<<<
@@ -5314,7 +5550,7 @@ static PyObject *__pyx_pw_13impurityModel_2ed_13ManyBodyUtils_13ManyBodyState_13
   __Pyx_RefNannySetupContext("__rmul__ (wrapper)", 0);
   __pyx_kwvalues = __Pyx_KwValues_VARARGS(__pyx_args, __pyx_nargs);
   assert(__pyx_arg_s); {
-    __pyx_v_s = __Pyx_PyComplex_As___pyx_t_double_complex(__pyx_arg_s); if (unlikely(PyErr_Occurred())) __PYX_ERR(0, 65, __pyx_L3_error)
+    __pyx_v_s = __Pyx_PyComplex_As___pyx_t_double_complex(__pyx_arg_s); if (unlikely(PyErr_Occurred())) __PYX_ERR(0, 64, __pyx_L3_error)
   }
   goto __pyx_L4_argument_unpacking_done;
   __pyx_L3_error:;
@@ -5339,19 +5575,19 @@ static PyObject *__pyx_pf_13impurityModel_2ed_13ManyBodyUtils_13ManyBodyState_12
   int __pyx_clineno = 0;
   __Pyx_RefNannySetupContext("__rmul__", 1);
 
-  /* "impurityModel/ed/ManyBodyUtils.pyx":66
+  /* "impurityModel/ed/ManyBodyUtils.pyx":65
  * 
  *     def __rmul__(self, double complex s):
  *         res = ManyBodyState()             # <<<<<<<<<<<<<<
  *         res.v = self.v*s
  *         return res
  */
-  __pyx_t_1 = __Pyx_PyObject_CallNoArg(((PyObject *)__pyx_ptype_13impurityModel_2ed_13ManyBodyUtils_ManyBodyState)); if (unlikely(!__pyx_t_1)) __PYX_ERR(0, 66, __pyx_L1_error)
+  __pyx_t_1 = __Pyx_PyObject_CallNoArg(((PyObject *)__pyx_ptype_13impurityModel_2ed_13ManyBodyUtils_ManyBodyState)); if (unlikely(!__pyx_t_1)) __PYX_ERR(0, 65, __pyx_L1_error)
   __Pyx_GOTREF(__pyx_t_1);
   __pyx_v_res = ((struct __pyx_obj_13impurityModel_2ed_13ManyBodyUtils_ManyBodyState *)__pyx_t_1);
   __pyx_t_1 = 0;
 
-  /* "impurityModel/ed/ManyBodyUtils.pyx":67
+  /* "impurityModel/ed/ManyBodyUtils.pyx":66
  *     def __rmul__(self, double complex s):
  *         res = ManyBodyState()
  *         res.v = self.v*s             # <<<<<<<<<<<<<<
@@ -5360,7 +5596,7 @@ static PyObject *__pyx_pf_13impurityModel_2ed_13ManyBodyUtils_13ManyBodyState_12
  */
   __pyx_v_res->v = (__pyx_v_self->v * __pyx_v_s);
 
-  /* "impurityModel/ed/ManyBodyUtils.pyx":68
+  /* "impurityModel/ed/ManyBodyUtils.pyx":67
  *         res = ManyBodyState()
  *         res.v = self.v*s
  *         return res             # <<<<<<<<<<<<<<
@@ -5372,7 +5608,7 @@ static PyObject *__pyx_pf_13impurityModel_2ed_13ManyBodyUtils_13ManyBodyState_12
   __pyx_r = ((PyObject *)__pyx_v_res);
   goto __pyx_L0;
 
-  /* "impurityModel/ed/ManyBodyUtils.pyx":65
+  /* "impurityModel/ed/ManyBodyUtils.pyx":64
  *         return res
  * 
  *     def __rmul__(self, double complex s):             # <<<<<<<<<<<<<<
@@ -5392,7 +5628,7 @@ static PyObject *__pyx_pf_13impurityModel_2ed_13ManyBodyUtils_13ManyBodyState_12
   return __pyx_r;
 }
 
-/* "impurityModel/ed/ManyBodyUtils.pyx":70
+/* "impurityModel/ed/ManyBodyUtils.pyx":69
  *         return res
  * 
  *     def __truediv__(self, double complex s):             # <<<<<<<<<<<<<<
@@ -5413,7 +5649,7 @@ static PyObject *__pyx_pw_13impurityModel_2ed_13ManyBodyUtils_13ManyBodyState_15
   __Pyx_RefNannySetupContext("__truediv__ (wrapper)", 0);
   __pyx_kwvalues = __Pyx_KwValues_VARARGS(__pyx_args, __pyx_nargs);
   assert(__pyx_arg_s); {
-    __pyx_v_s = __Pyx_PyComplex_As___pyx_t_double_complex(__pyx_arg_s); if (unlikely(PyErr_Occurred())) __PYX_ERR(0, 70, __pyx_L3_error)
+    __pyx_v_s = __Pyx_PyComplex_As___pyx_t_double_complex(__pyx_arg_s); if (unlikely(PyErr_Occurred())) __PYX_ERR(0, 69, __pyx_L3_error)
   }
   goto __pyx_L4_argument_unpacking_done;
   __pyx_L3_error:;
@@ -5438,19 +5674,19 @@ static PyObject *__pyx_pf_13impurityModel_2ed_13ManyBodyUtils_13ManyBodyState_14
   int __pyx_clineno = 0;
   __Pyx_RefNannySetupContext("__truediv__", 1);
 
-  /* "impurityModel/ed/ManyBodyUtils.pyx":71
+  /* "impurityModel/ed/ManyBodyUtils.pyx":70
  * 
  *     def __truediv__(self, double complex s):
  *         res = ManyBodyState()             # <<<<<<<<<<<<<<
  *         res.v = self.v /  s
  *         return res
  */
-  __pyx_t_1 = __Pyx_PyObject_CallNoArg(((PyObject *)__pyx_ptype_13impurityModel_2ed_13ManyBodyUtils_ManyBodyState)); if (unlikely(!__pyx_t_1)) __PYX_ERR(0, 71, __pyx_L1_error)
+  __pyx_t_1 = __Pyx_PyObject_CallNoArg(((PyObject *)__pyx_ptype_13impurityModel_2ed_13ManyBodyUtils_ManyBodyState)); if (unlikely(!__pyx_t_1)) __PYX_ERR(0, 70, __pyx_L1_error)
   __Pyx_GOTREF(__pyx_t_1);
   __pyx_v_res = ((struct __pyx_obj_13impurityModel_2ed_13ManyBodyUtils_ManyBodyState *)__pyx_t_1);
   __pyx_t_1 = 0;
 
-  /* "impurityModel/ed/ManyBodyUtils.pyx":72
+  /* "impurityModel/ed/ManyBodyUtils.pyx":71
  *     def __truediv__(self, double complex s):
  *         res = ManyBodyState()
  *         res.v = self.v /  s             # <<<<<<<<<<<<<<
@@ -5459,7 +5695,7 @@ static PyObject *__pyx_pf_13impurityModel_2ed_13ManyBodyUtils_13ManyBodyState_14
  */
   __pyx_v_res->v = (__pyx_v_self->v / __pyx_v_s);
 
-  /* "impurityModel/ed/ManyBodyUtils.pyx":73
+  /* "impurityModel/ed/ManyBodyUtils.pyx":72
  *         res = ManyBodyState()
  *         res.v = self.v /  s
  *         return res             # <<<<<<<<<<<<<<
@@ -5471,7 +5707,7 @@ static PyObject *__pyx_pf_13impurityModel_2ed_13ManyBodyUtils_13ManyBodyState_14
   __pyx_r = ((PyObject *)__pyx_v_res);
   goto __pyx_L0;
 
-  /* "impurityModel/ed/ManyBodyUtils.pyx":70
+  /* "impurityModel/ed/ManyBodyUtils.pyx":69
  *         return res
  * 
  *     def __truediv__(self, double complex s):             # <<<<<<<<<<<<<<
@@ -5491,7 +5727,7 @@ static PyObject *__pyx_pf_13impurityModel_2ed_13ManyBodyUtils_13ManyBodyState_14
   return __pyx_r;
 }
 
-/* "impurityModel/ed/ManyBodyUtils.pyx":75
+/* "impurityModel/ed/ManyBodyUtils.pyx":74
  *         return res
  * 
  *     def __getitem__(self, bytes key):             # <<<<<<<<<<<<<<
@@ -5510,7 +5746,7 @@ static PyObject *__pyx_pw_13impurityModel_2ed_13ManyBodyUtils_13ManyBodyState_17
   __Pyx_RefNannyDeclarations
   __Pyx_RefNannySetupContext("__getitem__ (wrapper)", 0);
   __pyx_kwvalues = __Pyx_KwValues_VARARGS(__pyx_args, __pyx_nargs);
-  if (unlikely(!__Pyx_ArgTypeTest(((PyObject *)__pyx_v_key), (&PyBytes_Type), 1, "key", 1))) __PYX_ERR(0, 75, __pyx_L1_error)
+  if (unlikely(!__Pyx_ArgTypeTest(((PyObject *)__pyx_v_key), (&PyBytes_Type), 1, "key", 1))) __PYX_ERR(0, 74, __pyx_L1_error)
   __pyx_r = __pyx_pf_13impurityModel_2ed_13ManyBodyUtils_13ManyBodyState_16__getitem__(((struct __pyx_obj_13impurityModel_2ed_13ManyBodyUtils_ManyBodyState *)__pyx_v_self), ((PyObject*)__pyx_v_key));
 
   /* function exit code */
@@ -5525,7 +5761,7 @@ static PyObject *__pyx_pw_13impurityModel_2ed_13ManyBodyUtils_13ManyBodyState_17
 static PyObject *__pyx_pf_13impurityModel_2ed_13ManyBodyUtils_13ManyBodyState_16__getitem__(struct __pyx_obj_13impurityModel_2ed_13ManyBodyUtils_ManyBodyState *__pyx_v_self, PyObject *__pyx_v_key) {
   PyObject *__pyx_r = NULL;
   __Pyx_RefNannyDeclarations
-  std::vector<uint8_t>  __pyx_t_1;
+  ManyBodyState::key_type __pyx_t_1;
   __pyx_t_double_complex __pyx_t_2;
   PyObject *__pyx_t_3 = NULL;
   int __pyx_lineno = 0;
@@ -5533,7 +5769,7 @@ static PyObject *__pyx_pf_13impurityModel_2ed_13ManyBodyUtils_13ManyBodyState_16
   int __pyx_clineno = 0;
   __Pyx_RefNannySetupContext("__getitem__", 1);
 
-  /* "impurityModel/ed/ManyBodyUtils.pyx":76
+  /* "impurityModel/ed/ManyBodyUtils.pyx":75
  * 
  *     def __getitem__(self, bytes key):
  *         return self.v[bytes_to_key(key)]             # <<<<<<<<<<<<<<
@@ -5541,15 +5777,15 @@ static PyObject *__pyx_pf_13impurityModel_2ed_13ManyBodyUtils_13ManyBodyState_16
  *     def __setitem__(self, bytes key, double complex value):
  */
   __Pyx_XDECREF(__pyx_r);
-  __pyx_t_1 = __pyx_f_13impurityModel_2ed_13ManyBodyUtils_bytes_to_key(__pyx_v_key); if (unlikely(PyErr_Occurred())) __PYX_ERR(0, 76, __pyx_L1_error)
+  __pyx_t_1 = __pyx_f_13impurityModel_2ed_13ManyBodyUtils_bytes_to_key(__pyx_v_key); if (unlikely(PyErr_Occurred())) __PYX_ERR(0, 75, __pyx_L1_error)
   __pyx_t_2 = (__pyx_v_self->v[__pyx_t_1]);
-  __pyx_t_3 = __pyx_PyComplex_FromComplex(__pyx_t_2); if (unlikely(!__pyx_t_3)) __PYX_ERR(0, 76, __pyx_L1_error)
+  __pyx_t_3 = __pyx_PyComplex_FromComplex(__pyx_t_2); if (unlikely(!__pyx_t_3)) __PYX_ERR(0, 75, __pyx_L1_error)
   __Pyx_GOTREF(__pyx_t_3);
   __pyx_r = __pyx_t_3;
   __pyx_t_3 = 0;
   goto __pyx_L0;
 
-  /* "impurityModel/ed/ManyBodyUtils.pyx":75
+  /* "impurityModel/ed/ManyBodyUtils.pyx":74
  *         return res
  * 
  *     def __getitem__(self, bytes key):             # <<<<<<<<<<<<<<
@@ -5568,7 +5804,7 @@ static PyObject *__pyx_pf_13impurityModel_2ed_13ManyBodyUtils_13ManyBodyState_16
   return __pyx_r;
 }
 
-/* "impurityModel/ed/ManyBodyUtils.pyx":78
+/* "impurityModel/ed/ManyBodyUtils.pyx":77
  *         return self.v[bytes_to_key(key)]
  * 
  *     def __setitem__(self, bytes key, double complex value):             # <<<<<<<<<<<<<<
@@ -5589,7 +5825,7 @@ static int __pyx_pw_13impurityModel_2ed_13ManyBodyUtils_13ManyBodyState_19__seti
   __Pyx_RefNannySetupContext("__setitem__ (wrapper)", 0);
   __pyx_kwvalues = __Pyx_KwValues_VARARGS(__pyx_args, __pyx_nargs);
   assert(__pyx_arg_value); {
-    __pyx_v_value = __Pyx_PyComplex_As___pyx_t_double_complex(__pyx_arg_value); if (unlikely(PyErr_Occurred())) __PYX_ERR(0, 78, __pyx_L3_error)
+    __pyx_v_value = __Pyx_PyComplex_As___pyx_t_double_complex(__pyx_arg_value); if (unlikely(PyErr_Occurred())) __PYX_ERR(0, 77, __pyx_L3_error)
   }
   goto __pyx_L4_argument_unpacking_done;
   __pyx_L3_error:;
@@ -5597,7 +5833,7 @@ static int __pyx_pw_13impurityModel_2ed_13ManyBodyUtils_13ManyBodyState_19__seti
   __Pyx_RefNannyFinishContext();
   return -1;
   __pyx_L4_argument_unpacking_done:;
-  if (unlikely(!__Pyx_ArgTypeTest(((PyObject *)__pyx_v_key), (&PyBytes_Type), 1, "key", 1))) __PYX_ERR(0, 78, __pyx_L1_error)
+  if (unlikely(!__Pyx_ArgTypeTest(((PyObject *)__pyx_v_key), (&PyBytes_Type), 1, "key", 1))) __PYX_ERR(0, 77, __pyx_L1_error)
   __pyx_r = __pyx_pf_13impurityModel_2ed_13ManyBodyUtils_13ManyBodyState_18__setitem__(((struct __pyx_obj_13impurityModel_2ed_13ManyBodyUtils_ManyBodyState *)__pyx_v_self), ((PyObject*)__pyx_v_key), __pyx_v_value);
 
   /* function exit code */
@@ -5611,22 +5847,22 @@ static int __pyx_pw_13impurityModel_2ed_13ManyBodyUtils_13ManyBodyState_19__seti
 
 static int __pyx_pf_13impurityModel_2ed_13ManyBodyUtils_13ManyBodyState_18__setitem__(struct __pyx_obj_13impurityModel_2ed_13ManyBodyUtils_ManyBodyState *__pyx_v_self, PyObject *__pyx_v_key, __pyx_t_double_complex __pyx_v_value) {
   int __pyx_r;
-  std::vector<uint8_t>  __pyx_t_1;
+  ManyBodyState::key_type __pyx_t_1;
   int __pyx_lineno = 0;
   const char *__pyx_filename = NULL;
   int __pyx_clineno = 0;
 
-  /* "impurityModel/ed/ManyBodyUtils.pyx":79
+  /* "impurityModel/ed/ManyBodyUtils.pyx":78
  * 
  *     def __setitem__(self, bytes key, double complex value):
  *         self.v[bytes_to_key(key)] = value             # <<<<<<<<<<<<<<
  * 
  *     def norm2(self):
  */
-  __pyx_t_1 = __pyx_f_13impurityModel_2ed_13ManyBodyUtils_bytes_to_key(__pyx_v_key); if (unlikely(PyErr_Occurred())) __PYX_ERR(0, 79, __pyx_L1_error)
+  __pyx_t_1 = __pyx_f_13impurityModel_2ed_13ManyBodyUtils_bytes_to_key(__pyx_v_key); if (unlikely(PyErr_Occurred())) __PYX_ERR(0, 78, __pyx_L1_error)
   (__pyx_v_self->v[__pyx_t_1]) = __pyx_v_value;
 
-  /* "impurityModel/ed/ManyBodyUtils.pyx":78
+  /* "impurityModel/ed/ManyBodyUtils.pyx":77
  *         return self.v[bytes_to_key(key)]
  * 
  *     def __setitem__(self, bytes key, double complex value):             # <<<<<<<<<<<<<<
@@ -5644,7 +5880,7 @@ static int __pyx_pf_13impurityModel_2ed_13ManyBodyUtils_13ManyBodyState_18__seti
   return __pyx_r;
 }
 
-/* "impurityModel/ed/ManyBodyUtils.pyx":81
+/* "impurityModel/ed/ManyBodyUtils.pyx":80
  *         self.v[bytes_to_key(key)] = value
  * 
  *     def norm2(self):             # <<<<<<<<<<<<<<
@@ -5702,7 +5938,7 @@ static PyObject *__pyx_pf_13impurityModel_2ed_13ManyBodyUtils_13ManyBodyState_20
   int __pyx_clineno = 0;
   __Pyx_RefNannySetupContext("norm2", 1);
 
-  /* "impurityModel/ed/ManyBodyUtils.pyx":82
+  /* "impurityModel/ed/ManyBodyUtils.pyx":81
  * 
  *     def norm2(self):
  *         return self.v.norm2()             # <<<<<<<<<<<<<<
@@ -5710,13 +5946,13 @@ static PyObject *__pyx_pf_13impurityModel_2ed_13ManyBodyUtils_13ManyBodyState_20
  *     def norm(self):
  */
   __Pyx_XDECREF(__pyx_r);
-  __pyx_t_1 = PyFloat_FromDouble(__pyx_v_self->v.norm2()); if (unlikely(!__pyx_t_1)) __PYX_ERR(0, 82, __pyx_L1_error)
+  __pyx_t_1 = PyFloat_FromDouble(__pyx_v_self->v.norm2()); if (unlikely(!__pyx_t_1)) __PYX_ERR(0, 81, __pyx_L1_error)
   __Pyx_GOTREF(__pyx_t_1);
   __pyx_r = __pyx_t_1;
   __pyx_t_1 = 0;
   goto __pyx_L0;
 
-  /* "impurityModel/ed/ManyBodyUtils.pyx":81
+  /* "impurityModel/ed/ManyBodyUtils.pyx":80
  *         self.v[bytes_to_key(key)] = value
  * 
  *     def norm2(self):             # <<<<<<<<<<<<<<
@@ -5735,7 +5971,7 @@ static PyObject *__pyx_pf_13impurityModel_2ed_13ManyBodyUtils_13ManyBodyState_20
   return __pyx_r;
 }
 
-/* "impurityModel/ed/ManyBodyUtils.pyx":84
+/* "impurityModel/ed/ManyBodyUtils.pyx":83
  *         return self.v.norm2()
  * 
  *     def norm(self):             # <<<<<<<<<<<<<<
@@ -5793,7 +6029,7 @@ static PyObject *__pyx_pf_13impurityModel_2ed_13ManyBodyUtils_13ManyBodyState_22
   int __pyx_clineno = 0;
   __Pyx_RefNannySetupContext("norm", 1);
 
-  /* "impurityModel/ed/ManyBodyUtils.pyx":85
+  /* "impurityModel/ed/ManyBodyUtils.pyx":84
  * 
  *     def norm(self):
  *         return self.v.norm()             # <<<<<<<<<<<<<<
@@ -5801,13 +6037,13 @@ static PyObject *__pyx_pf_13impurityModel_2ed_13ManyBodyUtils_13ManyBodyState_22
  *     def __len__(self):
  */
   __Pyx_XDECREF(__pyx_r);
-  __pyx_t_1 = PyFloat_FromDouble(__pyx_v_self->v.norm()); if (unlikely(!__pyx_t_1)) __PYX_ERR(0, 85, __pyx_L1_error)
+  __pyx_t_1 = PyFloat_FromDouble(__pyx_v_self->v.norm()); if (unlikely(!__pyx_t_1)) __PYX_ERR(0, 84, __pyx_L1_error)
   __Pyx_GOTREF(__pyx_t_1);
   __pyx_r = __pyx_t_1;
   __pyx_t_1 = 0;
   goto __pyx_L0;
 
-  /* "impurityModel/ed/ManyBodyUtils.pyx":84
+  /* "impurityModel/ed/ManyBodyUtils.pyx":83
  *         return self.v.norm2()
  * 
  *     def norm(self):             # <<<<<<<<<<<<<<
@@ -5826,7 +6062,7 @@ static PyObject *__pyx_pf_13impurityModel_2ed_13ManyBodyUtils_13ManyBodyState_22
   return __pyx_r;
 }
 
-/* "impurityModel/ed/ManyBodyUtils.pyx":87
+/* "impurityModel/ed/ManyBodyUtils.pyx":86
  *         return self.v.norm()
  * 
  *     def __len__(self):             # <<<<<<<<<<<<<<
@@ -5852,7 +6088,7 @@ static Py_ssize_t __pyx_pw_13impurityModel_2ed_13ManyBodyUtils_13ManyBodyState_2
 static Py_ssize_t __pyx_pf_13impurityModel_2ed_13ManyBodyUtils_13ManyBodyState_24__len__(struct __pyx_obj_13impurityModel_2ed_13ManyBodyUtils_ManyBodyState *__pyx_v_self) {
   Py_ssize_t __pyx_r;
 
-  /* "impurityModel/ed/ManyBodyUtils.pyx":88
+  /* "impurityModel/ed/ManyBodyUtils.pyx":87
  * 
  *     def __len__(self):
  *         return self.v.size()             # <<<<<<<<<<<<<<
@@ -5862,7 +6098,7 @@ static Py_ssize_t __pyx_pf_13impurityModel_2ed_13ManyBodyUtils_13ManyBodyState_2
   __pyx_r = __pyx_v_self->v.size();
   goto __pyx_L0;
 
-  /* "impurityModel/ed/ManyBodyUtils.pyx":87
+  /* "impurityModel/ed/ManyBodyUtils.pyx":86
  *         return self.v.norm()
  * 
  *     def __len__(self):             # <<<<<<<<<<<<<<
@@ -5875,7 +6111,7 @@ static Py_ssize_t __pyx_pf_13impurityModel_2ed_13ManyBodyUtils_13ManyBodyState_2
   return __pyx_r;
 }
 
-/* "impurityModel/ed/ManyBodyUtils.pyx":90
+/* "impurityModel/ed/ManyBodyUtils.pyx":89
  *         return self.v.size()
  * 
  *     def size(self):             # <<<<<<<<<<<<<<
@@ -5934,7 +6170,7 @@ static PyObject *__pyx_pf_13impurityModel_2ed_13ManyBodyUtils_13ManyBodyState_26
   int __pyx_clineno = 0;
   __Pyx_RefNannySetupContext("size", 1);
 
-  /* "impurityModel/ed/ManyBodyUtils.pyx":91
+  /* "impurityModel/ed/ManyBodyUtils.pyx":90
  * 
  *     def size(self):
  *         return len(self)             # <<<<<<<<<<<<<<
@@ -5942,14 +6178,14 @@ static PyObject *__pyx_pf_13impurityModel_2ed_13ManyBodyUtils_13ManyBodyState_26
  *     def max_size(self):
  */
   __Pyx_XDECREF(__pyx_r);
-  __pyx_t_1 = PyObject_Length(((PyObject *)__pyx_v_self)); if (unlikely(__pyx_t_1 == ((Py_ssize_t)-1))) __PYX_ERR(0, 91, __pyx_L1_error)
-  __pyx_t_2 = PyInt_FromSsize_t(__pyx_t_1); if (unlikely(!__pyx_t_2)) __PYX_ERR(0, 91, __pyx_L1_error)
+  __pyx_t_1 = PyObject_Length(((PyObject *)__pyx_v_self)); if (unlikely(__pyx_t_1 == ((Py_ssize_t)-1))) __PYX_ERR(0, 90, __pyx_L1_error)
+  __pyx_t_2 = PyInt_FromSsize_t(__pyx_t_1); if (unlikely(!__pyx_t_2)) __PYX_ERR(0, 90, __pyx_L1_error)
   __Pyx_GOTREF(__pyx_t_2);
   __pyx_r = __pyx_t_2;
   __pyx_t_2 = 0;
   goto __pyx_L0;
 
-  /* "impurityModel/ed/ManyBodyUtils.pyx":90
+  /* "impurityModel/ed/ManyBodyUtils.pyx":89
  *         return self.v.size()
  * 
  *     def size(self):             # <<<<<<<<<<<<<<
@@ -5968,7 +6204,7 @@ static PyObject *__pyx_pf_13impurityModel_2ed_13ManyBodyUtils_13ManyBodyState_26
   return __pyx_r;
 }
 
-/* "impurityModel/ed/ManyBodyUtils.pyx":93
+/* "impurityModel/ed/ManyBodyUtils.pyx":92
  *         return len(self)
  * 
  *     def max_size(self):             # <<<<<<<<<<<<<<
@@ -6026,7 +6262,7 @@ static PyObject *__pyx_pf_13impurityModel_2ed_13ManyBodyUtils_13ManyBodyState_28
   int __pyx_clineno = 0;
   __Pyx_RefNannySetupContext("max_size", 1);
 
-  /* "impurityModel/ed/ManyBodyUtils.pyx":94
+  /* "impurityModel/ed/ManyBodyUtils.pyx":93
  * 
  *     def max_size(self):
  *         return self.v.max_size()             # <<<<<<<<<<<<<<
@@ -6034,13 +6270,13 @@ static PyObject *__pyx_pf_13impurityModel_2ed_13ManyBodyUtils_13ManyBodyState_28
  *     def erase(self, bytes key):
  */
   __Pyx_XDECREF(__pyx_r);
-  __pyx_t_1 = __Pyx_PyInt_FromSize_t(__pyx_v_self->v.max_size()); if (unlikely(!__pyx_t_1)) __PYX_ERR(0, 94, __pyx_L1_error)
+  __pyx_t_1 = __Pyx_PyInt_FromSize_t(__pyx_v_self->v.max_size()); if (unlikely(!__pyx_t_1)) __PYX_ERR(0, 93, __pyx_L1_error)
   __Pyx_GOTREF(__pyx_t_1);
   __pyx_r = __pyx_t_1;
   __pyx_t_1 = 0;
   goto __pyx_L0;
 
-  /* "impurityModel/ed/ManyBodyUtils.pyx":93
+  /* "impurityModel/ed/ManyBodyUtils.pyx":92
  *         return len(self)
  * 
  *     def max_size(self):             # <<<<<<<<<<<<<<
@@ -6059,7 +6295,7 @@ static PyObject *__pyx_pf_13impurityModel_2ed_13ManyBodyUtils_13ManyBodyState_28
   return __pyx_r;
 }
 
-/* "impurityModel/ed/ManyBodyUtils.pyx":96
+/* "impurityModel/ed/ManyBodyUtils.pyx":95
  *         return self.v.max_size()
  * 
  *     def erase(self, bytes key):             # <<<<<<<<<<<<<<
@@ -6120,12 +6356,12 @@ PyObject *__pyx_args, PyObject *__pyx_kwds
           (void)__Pyx_Arg_NewRef_FASTCALL(values[0]);
           kw_args--;
         }
-        else if (unlikely(PyErr_Occurred())) __PYX_ERR(0, 96, __pyx_L3_error)
+        else if (unlikely(PyErr_Occurred())) __PYX_ERR(0, 95, __pyx_L3_error)
         else goto __pyx_L5_argtuple_error;
       }
       if (unlikely(kw_args > 0)) {
         const Py_ssize_t kwd_pos_args = __pyx_nargs;
-        if (unlikely(__Pyx_ParseOptionalKeywords(__pyx_kwds, __pyx_kwvalues, __pyx_pyargnames, 0, values + 0, kwd_pos_args, "erase") < 0)) __PYX_ERR(0, 96, __pyx_L3_error)
+        if (unlikely(__Pyx_ParseOptionalKeywords(__pyx_kwds, __pyx_kwvalues, __pyx_pyargnames, 0, values + 0, kwd_pos_args, "erase") < 0)) __PYX_ERR(0, 95, __pyx_L3_error)
       }
     } else if (unlikely(__pyx_nargs != 1)) {
       goto __pyx_L5_argtuple_error;
@@ -6136,7 +6372,7 @@ PyObject *__pyx_args, PyObject *__pyx_kwds
   }
   goto __pyx_L6_skip;
   __pyx_L5_argtuple_error:;
-  __Pyx_RaiseArgtupleInvalid("erase", 1, 1, 1, __pyx_nargs); __PYX_ERR(0, 96, __pyx_L3_error)
+  __Pyx_RaiseArgtupleInvalid("erase", 1, 1, 1, __pyx_nargs); __PYX_ERR(0, 95, __pyx_L3_error)
   __pyx_L6_skip:;
   goto __pyx_L4_argument_unpacking_done;
   __pyx_L3_error:;
@@ -6150,7 +6386,7 @@ PyObject *__pyx_args, PyObject *__pyx_kwds
   __Pyx_RefNannyFinishContext();
   return NULL;
   __pyx_L4_argument_unpacking_done:;
-  if (unlikely(!__Pyx_ArgTypeTest(((PyObject *)__pyx_v_key), (&PyBytes_Type), 1, "key", 1))) __PYX_ERR(0, 96, __pyx_L1_error)
+  if (unlikely(!__Pyx_ArgTypeTest(((PyObject *)__pyx_v_key), (&PyBytes_Type), 1, "key", 1))) __PYX_ERR(0, 95, __pyx_L1_error)
   __pyx_r = __pyx_pf_13impurityModel_2ed_13ManyBodyUtils_13ManyBodyState_30erase(((struct __pyx_obj_13impurityModel_2ed_13ManyBodyUtils_ManyBodyState *)__pyx_v_self), __pyx_v_key);
 
   /* function exit code */
@@ -6171,23 +6407,23 @@ PyObject *__pyx_args, PyObject *__pyx_kwds
 static PyObject *__pyx_pf_13impurityModel_2ed_13ManyBodyUtils_13ManyBodyState_30erase(struct __pyx_obj_13impurityModel_2ed_13ManyBodyUtils_ManyBodyState *__pyx_v_self, PyObject *__pyx_v_key) {
   PyObject *__pyx_r = NULL;
   __Pyx_RefNannyDeclarations
-  std::vector<uint8_t>  __pyx_t_1;
+  ManyBodyState::key_type __pyx_t_1;
   int __pyx_lineno = 0;
   const char *__pyx_filename = NULL;
   int __pyx_clineno = 0;
   __Pyx_RefNannySetupContext("erase", 1);
 
-  /* "impurityModel/ed/ManyBodyUtils.pyx":97
+  /* "impurityModel/ed/ManyBodyUtils.pyx":96
  * 
  *     def erase(self, bytes key):
  *         self.v.erase(bytes_to_key(key))             # <<<<<<<<<<<<<<
  * 
  *     def __contains__(self, bytes key):
  */
-  __pyx_t_1 = __pyx_f_13impurityModel_2ed_13ManyBodyUtils_bytes_to_key(__pyx_v_key); if (unlikely(PyErr_Occurred())) __PYX_ERR(0, 97, __pyx_L1_error)
+  __pyx_t_1 = __pyx_f_13impurityModel_2ed_13ManyBodyUtils_bytes_to_key(__pyx_v_key); if (unlikely(PyErr_Occurred())) __PYX_ERR(0, 96, __pyx_L1_error)
   (void)(__pyx_v_self->v.erase(__pyx_t_1));
 
-  /* "impurityModel/ed/ManyBodyUtils.pyx":96
+  /* "impurityModel/ed/ManyBodyUtils.pyx":95
  *         return self.v.max_size()
  * 
  *     def erase(self, bytes key):             # <<<<<<<<<<<<<<
@@ -6207,7 +6443,7 @@ static PyObject *__pyx_pf_13impurityModel_2ed_13ManyBodyUtils_13ManyBodyState_30
   return __pyx_r;
 }
 
-/* "impurityModel/ed/ManyBodyUtils.pyx":99
+/* "impurityModel/ed/ManyBodyUtils.pyx":98
  *         self.v.erase(bytes_to_key(key))
  * 
  *     def __contains__(self, bytes key):             # <<<<<<<<<<<<<<
@@ -6226,7 +6462,7 @@ static int __pyx_pw_13impurityModel_2ed_13ManyBodyUtils_13ManyBodyState_33__cont
   __Pyx_RefNannyDeclarations
   __Pyx_RefNannySetupContext("__contains__ (wrapper)", 0);
   __pyx_kwvalues = __Pyx_KwValues_VARARGS(__pyx_args, __pyx_nargs);
-  if (unlikely(!__Pyx_ArgTypeTest(((PyObject *)__pyx_v_key), (&PyBytes_Type), 1, "key", 1))) __PYX_ERR(0, 99, __pyx_L1_error)
+  if (unlikely(!__Pyx_ArgTypeTest(((PyObject *)__pyx_v_key), (&PyBytes_Type), 1, "key", 1))) __PYX_ERR(0, 98, __pyx_L1_error)
   __pyx_r = __pyx_pf_13impurityModel_2ed_13ManyBodyUtils_13ManyBodyState_32__contains__(((struct __pyx_obj_13impurityModel_2ed_13ManyBodyUtils_ManyBodyState *)__pyx_v_self), ((PyObject*)__pyx_v_key));
 
   /* function exit code */
@@ -6240,23 +6476,23 @@ static int __pyx_pw_13impurityModel_2ed_13ManyBodyUtils_13ManyBodyState_33__cont
 
 static int __pyx_pf_13impurityModel_2ed_13ManyBodyUtils_13ManyBodyState_32__contains__(struct __pyx_obj_13impurityModel_2ed_13ManyBodyUtils_ManyBodyState *__pyx_v_self, PyObject *__pyx_v_key) {
   int __pyx_r;
-  std::vector<uint8_t>  __pyx_t_1;
+  ManyBodyState::key_type __pyx_t_1;
   int __pyx_lineno = 0;
   const char *__pyx_filename = NULL;
   int __pyx_clineno = 0;
 
-  /* "impurityModel/ed/ManyBodyUtils.pyx":100
+  /* "impurityModel/ed/ManyBodyUtils.pyx":99
  * 
  *     def __contains__(self, bytes key):
  *         return self.v.find(bytes_to_key(key)) != self.v.end()             # <<<<<<<<<<<<<<
  * 
  *     def __iter__(self):
  */
-  __pyx_t_1 = __pyx_f_13impurityModel_2ed_13ManyBodyUtils_bytes_to_key(__pyx_v_key); if (unlikely(PyErr_Occurred())) __PYX_ERR(0, 100, __pyx_L1_error)
+  __pyx_t_1 = __pyx_f_13impurityModel_2ed_13ManyBodyUtils_bytes_to_key(__pyx_v_key); if (unlikely(PyErr_Occurred())) __PYX_ERR(0, 99, __pyx_L1_error)
   __pyx_r = (__pyx_v_self->v.find(__pyx_t_1) != __pyx_v_self->v.end());
   goto __pyx_L0;
 
-  /* "impurityModel/ed/ManyBodyUtils.pyx":99
+  /* "impurityModel/ed/ManyBodyUtils.pyx":98
  *         self.v.erase(bytes_to_key(key))
  * 
  *     def __contains__(self, bytes key):             # <<<<<<<<<<<<<<
@@ -6273,7 +6509,7 @@ static int __pyx_pf_13impurityModel_2ed_13ManyBodyUtils_13ManyBodyState_32__cont
 }
 static PyObject *__pyx_gb_13impurityModel_2ed_13ManyBodyUtils_13ManyBodyState_36generator(__pyx_CoroutineObject *__pyx_generator, CYTHON_UNUSED PyThreadState *__pyx_tstate, PyObject *__pyx_sent_value); /* proto */
 
-/* "impurityModel/ed/ManyBodyUtils.pyx":102
+/* "impurityModel/ed/ManyBodyUtils.pyx":101
  *         return self.v.find(bytes_to_key(key)) != self.v.end()
  * 
  *     def __iter__(self):             # <<<<<<<<<<<<<<
@@ -6308,7 +6544,7 @@ static PyObject *__pyx_pf_13impurityModel_2ed_13ManyBodyUtils_13ManyBodyState_34
   if (unlikely(!__pyx_cur_scope)) {
     __pyx_cur_scope = ((struct __pyx_obj_13impurityModel_2ed_13ManyBodyUtils___pyx_scope_struct____iter__ *)Py_None);
     __Pyx_INCREF(Py_None);
-    __PYX_ERR(0, 102, __pyx_L1_error)
+    __PYX_ERR(0, 101, __pyx_L1_error)
   } else {
     __Pyx_GOTREF((PyObject *)__pyx_cur_scope);
   }
@@ -6316,7 +6552,7 @@ static PyObject *__pyx_pf_13impurityModel_2ed_13ManyBodyUtils_13ManyBodyState_34
   __Pyx_INCREF((PyObject *)__pyx_cur_scope->__pyx_v_self);
   __Pyx_GIVEREF((PyObject *)__pyx_cur_scope->__pyx_v_self);
   {
-    __pyx_CoroutineObject *gen = __Pyx_Generator_New((__pyx_coroutine_body_t) __pyx_gb_13impurityModel_2ed_13ManyBodyUtils_13ManyBodyState_36generator, NULL, (PyObject *) __pyx_cur_scope, __pyx_n_s_iter, __pyx_n_s_ManyBodyState___iter, __pyx_n_s_impurityModel_ed_ManyBodyUtils); if (unlikely(!gen)) __PYX_ERR(0, 102, __pyx_L1_error)
+    __pyx_CoroutineObject *gen = __Pyx_Generator_New((__pyx_coroutine_body_t) __pyx_gb_13impurityModel_2ed_13ManyBodyUtils_13ManyBodyState_36generator, NULL, (PyObject *) __pyx_cur_scope, __pyx_n_s_iter, __pyx_n_s_ManyBodyState___iter, __pyx_n_s_impurityModel_ed_ManyBodyUtils); if (unlikely(!gen)) __PYX_ERR(0, 101, __pyx_L1_error)
     __Pyx_DECREF(__pyx_cur_scope);
     __Pyx_RefNannyFinishContext();
     return (PyObject *) gen;
@@ -6352,9 +6588,9 @@ static PyObject *__pyx_gb_13impurityModel_2ed_13ManyBodyUtils_13ManyBodyState_36
     return NULL;
   }
   __pyx_L3_first_run:;
-  if (unlikely(!__pyx_sent_value)) __PYX_ERR(0, 102, __pyx_L1_error)
+  if (unlikely(!__pyx_sent_value)) __PYX_ERR(0, 101, __pyx_L1_error)
 
-  /* "impurityModel/ed/ManyBodyUtils.pyx":103
+  /* "impurityModel/ed/ManyBodyUtils.pyx":102
  * 
  *     def __iter__(self):
  *         for p in self.v:             # <<<<<<<<<<<<<<
@@ -6368,14 +6604,14 @@ static PyObject *__pyx_gb_13impurityModel_2ed_13ManyBodyUtils_13ManyBodyState_36
     ++__pyx_t_1;
     __pyx_cur_scope->__pyx_v_p = __PYX_STD_MOVE_IF_SUPPORTED(__pyx_t_2);
 
-    /* "impurityModel/ed/ManyBodyUtils.pyx":104
+    /* "impurityModel/ed/ManyBodyUtils.pyx":103
  *     def __iter__(self):
  *         for p in self.v:
  *             yield key_to_bytes(p.first)             # <<<<<<<<<<<<<<
  * 
  *     def keys(self):
  */
-    __pyx_t_3 = __pyx_f_13impurityModel_2ed_13ManyBodyUtils_key_to_bytes(__pyx_cur_scope->__pyx_v_p.first); if (unlikely(!__pyx_t_3)) __PYX_ERR(0, 104, __pyx_L1_error)
+    __pyx_t_3 = __pyx_f_13impurityModel_2ed_13ManyBodyUtils_key_to_bytes(__pyx_cur_scope->__pyx_v_p.first); if (unlikely(!__pyx_t_3)) __PYX_ERR(0, 103, __pyx_L1_error)
     __Pyx_GOTREF(__pyx_t_3);
     __pyx_r = __pyx_t_3;
     __pyx_t_3 = 0;
@@ -6388,9 +6624,9 @@ static PyObject *__pyx_gb_13impurityModel_2ed_13ManyBodyUtils_13ManyBodyState_36
     return __pyx_r;
     __pyx_L6_resume_from_yield:;
     __pyx_t_1 = __PYX_STD_MOVE_IF_SUPPORTED(__pyx_cur_scope->__pyx_t_0);
-    if (unlikely(!__pyx_sent_value)) __PYX_ERR(0, 104, __pyx_L1_error)
+    if (unlikely(!__pyx_sent_value)) __PYX_ERR(0, 103, __pyx_L1_error)
 
-    /* "impurityModel/ed/ManyBodyUtils.pyx":103
+    /* "impurityModel/ed/ManyBodyUtils.pyx":102
  * 
  *     def __iter__(self):
  *         for p in self.v:             # <<<<<<<<<<<<<<
@@ -6400,7 +6636,7 @@ static PyObject *__pyx_gb_13impurityModel_2ed_13ManyBodyUtils_13ManyBodyState_36
   }
   CYTHON_MAYBE_UNUSED_VAR(__pyx_cur_scope);
 
-  /* "impurityModel/ed/ManyBodyUtils.pyx":102
+  /* "impurityModel/ed/ManyBodyUtils.pyx":101
  *         return self.v.find(bytes_to_key(key)) != self.v.end()
  * 
  *     def __iter__(self):             # <<<<<<<<<<<<<<
@@ -6426,7 +6662,7 @@ static PyObject *__pyx_gb_13impurityModel_2ed_13ManyBodyUtils_13ManyBodyState_36
   return __pyx_r;
 }
 
-/* "impurityModel/ed/ManyBodyUtils.pyx":106
+/* "impurityModel/ed/ManyBodyUtils.pyx":105
  *             yield key_to_bytes(p.first)
  * 
  *     def keys(self):             # <<<<<<<<<<<<<<
@@ -6476,7 +6712,7 @@ PyObject *__pyx_args, PyObject *__pyx_kwds
 }
 static PyObject *__pyx_gb_13impurityModel_2ed_13ManyBodyUtils_13ManyBodyState_4keys_2generator2(__pyx_CoroutineObject *__pyx_generator, CYTHON_UNUSED PyThreadState *__pyx_tstate, PyObject *__pyx_sent_value); /* proto */
 
-/* "impurityModel/ed/ManyBodyUtils.pyx":107
+/* "impurityModel/ed/ManyBodyUtils.pyx":106
  * 
  *     def keys(self):
  *         return (key_to_bytes(p.first) for p in self.v)             # <<<<<<<<<<<<<<
@@ -6496,13 +6732,13 @@ static PyObject *__pyx_pf_13impurityModel_2ed_13ManyBodyUtils_13ManyBodyState_4k
   if (unlikely(!__pyx_cur_scope)) {
     __pyx_cur_scope = ((struct __pyx_obj_13impurityModel_2ed_13ManyBodyUtils___pyx_scope_struct_1_genexpr *)Py_None);
     __Pyx_INCREF(Py_None);
-    __PYX_ERR(0, 107, __pyx_L1_error)
+    __PYX_ERR(0, 106, __pyx_L1_error)
   } else {
     __Pyx_GOTREF((PyObject *)__pyx_cur_scope);
   }
   __pyx_cur_scope->__pyx_genexpr_arg_0 = __pyx_genexpr_arg_0;
   {
-    __pyx_CoroutineObject *gen = __Pyx_Generator_New((__pyx_coroutine_body_t) __pyx_gb_13impurityModel_2ed_13ManyBodyUtils_13ManyBodyState_4keys_2generator2, NULL, (PyObject *) __pyx_cur_scope, __pyx_n_s_genexpr, __pyx_n_s_keys_locals_genexpr, __pyx_n_s_impurityModel_ed_ManyBodyUtils); if (unlikely(!gen)) __PYX_ERR(0, 107, __pyx_L1_error)
+    __pyx_CoroutineObject *gen = __Pyx_Generator_New((__pyx_coroutine_body_t) __pyx_gb_13impurityModel_2ed_13ManyBodyUtils_13ManyBodyState_4keys_2generator2, NULL, (PyObject *) __pyx_cur_scope, __pyx_n_s_genexpr, __pyx_n_s_keys_locals_genexpr, __pyx_n_s_impurityModel_ed_ManyBodyUtils); if (unlikely(!gen)) __PYX_ERR(0, 106, __pyx_L1_error)
     __Pyx_DECREF(__pyx_cur_scope);
     __Pyx_RefNannyFinishContext();
     return (PyObject *) gen;
@@ -6538,14 +6774,14 @@ static PyObject *__pyx_gb_13impurityModel_2ed_13ManyBodyUtils_13ManyBodyState_4k
     return NULL;
   }
   __pyx_L3_first_run:;
-  if (unlikely(!__pyx_sent_value)) __PYX_ERR(0, 107, __pyx_L1_error)
+  if (unlikely(!__pyx_sent_value)) __PYX_ERR(0, 106, __pyx_L1_error)
   __pyx_t_1 = __pyx_cur_scope->__pyx_genexpr_arg_0.begin();
   for (;;) {
     if (!(__pyx_t_1 != __pyx_cur_scope->__pyx_genexpr_arg_0.end())) break;
     __pyx_t_2 = *__pyx_t_1;
     ++__pyx_t_1;
     __pyx_cur_scope->__pyx_v_p = __PYX_STD_MOVE_IF_SUPPORTED(__pyx_t_2);
-    __pyx_t_3 = __pyx_f_13impurityModel_2ed_13ManyBodyUtils_key_to_bytes(__pyx_cur_scope->__pyx_v_p.first); if (unlikely(!__pyx_t_3)) __PYX_ERR(0, 107, __pyx_L1_error)
+    __pyx_t_3 = __pyx_f_13impurityModel_2ed_13ManyBodyUtils_key_to_bytes(__pyx_cur_scope->__pyx_v_p.first); if (unlikely(!__pyx_t_3)) __PYX_ERR(0, 106, __pyx_L1_error)
     __Pyx_GOTREF(__pyx_t_3);
     __pyx_r = __pyx_t_3;
     __pyx_t_3 = 0;
@@ -6558,7 +6794,7 @@ static PyObject *__pyx_gb_13impurityModel_2ed_13ManyBodyUtils_13ManyBodyState_4k
     return __pyx_r;
     __pyx_L6_resume_from_yield:;
     __pyx_t_1 = __PYX_STD_MOVE_IF_SUPPORTED(__pyx_cur_scope->__pyx_t_0);
-    if (unlikely(!__pyx_sent_value)) __PYX_ERR(0, 107, __pyx_L1_error)
+    if (unlikely(!__pyx_sent_value)) __PYX_ERR(0, 106, __pyx_L1_error)
   }
   CYTHON_MAYBE_UNUSED_VAR(__pyx_cur_scope);
 
@@ -6580,7 +6816,7 @@ static PyObject *__pyx_gb_13impurityModel_2ed_13ManyBodyUtils_13ManyBodyState_4k
   return __pyx_r;
 }
 
-/* "impurityModel/ed/ManyBodyUtils.pyx":106
+/* "impurityModel/ed/ManyBodyUtils.pyx":105
  *             yield key_to_bytes(p.first)
  * 
  *     def keys(self):             # <<<<<<<<<<<<<<
@@ -6598,7 +6834,7 @@ static PyObject *__pyx_pf_13impurityModel_2ed_13ManyBodyUtils_13ManyBodyState_37
   int __pyx_clineno = 0;
   __Pyx_RefNannySetupContext("keys", 1);
 
-  /* "impurityModel/ed/ManyBodyUtils.pyx":107
+  /* "impurityModel/ed/ManyBodyUtils.pyx":106
  * 
  *     def keys(self):
  *         return (key_to_bytes(p.first) for p in self.v)             # <<<<<<<<<<<<<<
@@ -6606,13 +6842,13 @@ static PyObject *__pyx_pf_13impurityModel_2ed_13ManyBodyUtils_13ManyBodyState_37
  *     def values(self):
  */
   __Pyx_XDECREF(__pyx_r);
-  __pyx_t_1 = __pyx_pf_13impurityModel_2ed_13ManyBodyUtils_13ManyBodyState_4keys_genexpr(NULL, __pyx_v_self->v); if (unlikely(!__pyx_t_1)) __PYX_ERR(0, 107, __pyx_L1_error)
+  __pyx_t_1 = __pyx_pf_13impurityModel_2ed_13ManyBodyUtils_13ManyBodyState_4keys_genexpr(NULL, __pyx_v_self->v); if (unlikely(!__pyx_t_1)) __PYX_ERR(0, 106, __pyx_L1_error)
   __Pyx_GOTREF(__pyx_t_1);
   __pyx_r = __pyx_t_1;
   __pyx_t_1 = 0;
   goto __pyx_L0;
 
-  /* "impurityModel/ed/ManyBodyUtils.pyx":106
+  /* "impurityModel/ed/ManyBodyUtils.pyx":105
  *             yield key_to_bytes(p.first)
  * 
  *     def keys(self):             # <<<<<<<<<<<<<<
@@ -6632,7 +6868,7 @@ static PyObject *__pyx_pf_13impurityModel_2ed_13ManyBodyUtils_13ManyBodyState_37
   return __pyx_r;
 }
 
-/* "impurityModel/ed/ManyBodyUtils.pyx":109
+/* "impurityModel/ed/ManyBodyUtils.pyx":108
  *         return (key_to_bytes(p.first) for p in self.v)
  * 
  *     def values(self):             # <<<<<<<<<<<<<<
@@ -6682,7 +6918,7 @@ PyObject *__pyx_args, PyObject *__pyx_kwds
 }
 static PyObject *__pyx_gb_13impurityModel_2ed_13ManyBodyUtils_13ManyBodyState_6values_2generator3(__pyx_CoroutineObject *__pyx_generator, CYTHON_UNUSED PyThreadState *__pyx_tstate, PyObject *__pyx_sent_value); /* proto */
 
-/* "impurityModel/ed/ManyBodyUtils.pyx":110
+/* "impurityModel/ed/ManyBodyUtils.pyx":109
  * 
  *     def values(self):
  *         return (p.second for p in self.v)             # <<<<<<<<<<<<<<
@@ -6702,13 +6938,13 @@ static PyObject *__pyx_pf_13impurityModel_2ed_13ManyBodyUtils_13ManyBodyState_6v
   if (unlikely(!__pyx_cur_scope)) {
     __pyx_cur_scope = ((struct __pyx_obj_13impurityModel_2ed_13ManyBodyUtils___pyx_scope_struct_2_genexpr *)Py_None);
     __Pyx_INCREF(Py_None);
-    __PYX_ERR(0, 110, __pyx_L1_error)
+    __PYX_ERR(0, 109, __pyx_L1_error)
   } else {
     __Pyx_GOTREF((PyObject *)__pyx_cur_scope);
   }
   __pyx_cur_scope->__pyx_genexpr_arg_0 = __pyx_genexpr_arg_0;
   {
-    __pyx_CoroutineObject *gen = __Pyx_Generator_New((__pyx_coroutine_body_t) __pyx_gb_13impurityModel_2ed_13ManyBodyUtils_13ManyBodyState_6values_2generator3, NULL, (PyObject *) __pyx_cur_scope, __pyx_n_s_genexpr, __pyx_n_s_values_locals_genexpr, __pyx_n_s_impurityModel_ed_ManyBodyUtils); if (unlikely(!gen)) __PYX_ERR(0, 110, __pyx_L1_error)
+    __pyx_CoroutineObject *gen = __Pyx_Generator_New((__pyx_coroutine_body_t) __pyx_gb_13impurityModel_2ed_13ManyBodyUtils_13ManyBodyState_6values_2generator3, NULL, (PyObject *) __pyx_cur_scope, __pyx_n_s_genexpr, __pyx_n_s_values_locals_genexpr, __pyx_n_s_impurityModel_ed_ManyBodyUtils); if (unlikely(!gen)) __PYX_ERR(0, 109, __pyx_L1_error)
     __Pyx_DECREF(__pyx_cur_scope);
     __Pyx_RefNannyFinishContext();
     return (PyObject *) gen;
@@ -6744,14 +6980,14 @@ static PyObject *__pyx_gb_13impurityModel_2ed_13ManyBodyUtils_13ManyBodyState_6v
     return NULL;
   }
   __pyx_L3_first_run:;
-  if (unlikely(!__pyx_sent_value)) __PYX_ERR(0, 110, __pyx_L1_error)
+  if (unlikely(!__pyx_sent_value)) __PYX_ERR(0, 109, __pyx_L1_error)
   __pyx_t_1 = __pyx_cur_scope->__pyx_genexpr_arg_0.begin();
   for (;;) {
     if (!(__pyx_t_1 != __pyx_cur_scope->__pyx_genexpr_arg_0.end())) break;
     __pyx_t_2 = *__pyx_t_1;
     ++__pyx_t_1;
     __pyx_cur_scope->__pyx_v_p = __PYX_STD_MOVE_IF_SUPPORTED(__pyx_t_2);
-    __pyx_t_3 = __pyx_PyComplex_FromComplex(__pyx_cur_scope->__pyx_v_p.second); if (unlikely(!__pyx_t_3)) __PYX_ERR(0, 110, __pyx_L1_error)
+    __pyx_t_3 = __pyx_PyComplex_FromComplex(__pyx_cur_scope->__pyx_v_p.second); if (unlikely(!__pyx_t_3)) __PYX_ERR(0, 109, __pyx_L1_error)
     __Pyx_GOTREF(__pyx_t_3);
     __pyx_r = __pyx_t_3;
     __pyx_t_3 = 0;
@@ -6764,7 +7000,7 @@ static PyObject *__pyx_gb_13impurityModel_2ed_13ManyBodyUtils_13ManyBodyState_6v
     return __pyx_r;
     __pyx_L6_resume_from_yield:;
     __pyx_t_1 = __PYX_STD_MOVE_IF_SUPPORTED(__pyx_cur_scope->__pyx_t_0);
-    if (unlikely(!__pyx_sent_value)) __PYX_ERR(0, 110, __pyx_L1_error)
+    if (unlikely(!__pyx_sent_value)) __PYX_ERR(0, 109, __pyx_L1_error)
   }
   CYTHON_MAYBE_UNUSED_VAR(__pyx_cur_scope);
 
@@ -6786,7 +7022,7 @@ static PyObject *__pyx_gb_13impurityModel_2ed_13ManyBodyUtils_13ManyBodyState_6v
   return __pyx_r;
 }
 
-/* "impurityModel/ed/ManyBodyUtils.pyx":109
+/* "impurityModel/ed/ManyBodyUtils.pyx":108
  *         return (key_to_bytes(p.first) for p in self.v)
  * 
  *     def values(self):             # <<<<<<<<<<<<<<
@@ -6804,7 +7040,7 @@ static PyObject *__pyx_pf_13impurityModel_2ed_13ManyBodyUtils_13ManyBodyState_39
   int __pyx_clineno = 0;
   __Pyx_RefNannySetupContext("values", 1);
 
-  /* "impurityModel/ed/ManyBodyUtils.pyx":110
+  /* "impurityModel/ed/ManyBodyUtils.pyx":109
  * 
  *     def values(self):
  *         return (p.second for p in self.v)             # <<<<<<<<<<<<<<
@@ -6812,13 +7048,13 @@ static PyObject *__pyx_pf_13impurityModel_2ed_13ManyBodyUtils_13ManyBodyState_39
  *     def items(self):
  */
   __Pyx_XDECREF(__pyx_r);
-  __pyx_t_1 = __pyx_pf_13impurityModel_2ed_13ManyBodyUtils_13ManyBodyState_6values_genexpr(NULL, __pyx_v_self->v); if (unlikely(!__pyx_t_1)) __PYX_ERR(0, 110, __pyx_L1_error)
+  __pyx_t_1 = __pyx_pf_13impurityModel_2ed_13ManyBodyUtils_13ManyBodyState_6values_genexpr(NULL, __pyx_v_self->v); if (unlikely(!__pyx_t_1)) __PYX_ERR(0, 109, __pyx_L1_error)
   __Pyx_GOTREF(__pyx_t_1);
   __pyx_r = __pyx_t_1;
   __pyx_t_1 = 0;
   goto __pyx_L0;
 
-  /* "impurityModel/ed/ManyBodyUtils.pyx":109
+  /* "impurityModel/ed/ManyBodyUtils.pyx":108
  *         return (key_to_bytes(p.first) for p in self.v)
  * 
  *     def values(self):             # <<<<<<<<<<<<<<
@@ -6838,7 +7074,7 @@ static PyObject *__pyx_pf_13impurityModel_2ed_13ManyBodyUtils_13ManyBodyState_39
   return __pyx_r;
 }
 
-/* "impurityModel/ed/ManyBodyUtils.pyx":112
+/* "impurityModel/ed/ManyBodyUtils.pyx":111
  *         return (p.second for p in self.v)
  * 
  *     def items(self):             # <<<<<<<<<<<<<<
@@ -6888,7 +7124,7 @@ PyObject *__pyx_args, PyObject *__pyx_kwds
 }
 static PyObject *__pyx_gb_13impurityModel_2ed_13ManyBodyUtils_13ManyBodyState_5items_2generator4(__pyx_CoroutineObject *__pyx_generator, CYTHON_UNUSED PyThreadState *__pyx_tstate, PyObject *__pyx_sent_value); /* proto */
 
-/* "impurityModel/ed/ManyBodyUtils.pyx":113
+/* "impurityModel/ed/ManyBodyUtils.pyx":112
  * 
  *     def items(self):
  *         return ((key_to_bytes(p.first), p.second) for p in self.v)             # <<<<<<<<<<<<<<
@@ -6908,13 +7144,13 @@ static PyObject *__pyx_pf_13impurityModel_2ed_13ManyBodyUtils_13ManyBodyState_5i
   if (unlikely(!__pyx_cur_scope)) {
     __pyx_cur_scope = ((struct __pyx_obj_13impurityModel_2ed_13ManyBodyUtils___pyx_scope_struct_3_genexpr *)Py_None);
     __Pyx_INCREF(Py_None);
-    __PYX_ERR(0, 113, __pyx_L1_error)
+    __PYX_ERR(0, 112, __pyx_L1_error)
   } else {
     __Pyx_GOTREF((PyObject *)__pyx_cur_scope);
   }
   __pyx_cur_scope->__pyx_genexpr_arg_0 = __pyx_genexpr_arg_0;
   {
-    __pyx_CoroutineObject *gen = __Pyx_Generator_New((__pyx_coroutine_body_t) __pyx_gb_13impurityModel_2ed_13ManyBodyUtils_13ManyBodyState_5items_2generator4, NULL, (PyObject *) __pyx_cur_scope, __pyx_n_s_genexpr, __pyx_n_s_items_locals_genexpr, __pyx_n_s_impurityModel_ed_ManyBodyUtils); if (unlikely(!gen)) __PYX_ERR(0, 113, __pyx_L1_error)
+    __pyx_CoroutineObject *gen = __Pyx_Generator_New((__pyx_coroutine_body_t) __pyx_gb_13impurityModel_2ed_13ManyBodyUtils_13ManyBodyState_5items_2generator4, NULL, (PyObject *) __pyx_cur_scope, __pyx_n_s_genexpr, __pyx_n_s_items_locals_genexpr, __pyx_n_s_impurityModel_ed_ManyBodyUtils); if (unlikely(!gen)) __PYX_ERR(0, 112, __pyx_L1_error)
     __Pyx_DECREF(__pyx_cur_scope);
     __Pyx_RefNannyFinishContext();
     return (PyObject *) gen;
@@ -6952,23 +7188,23 @@ static PyObject *__pyx_gb_13impurityModel_2ed_13ManyBodyUtils_13ManyBodyState_5i
     return NULL;
   }
   __pyx_L3_first_run:;
-  if (unlikely(!__pyx_sent_value)) __PYX_ERR(0, 113, __pyx_L1_error)
+  if (unlikely(!__pyx_sent_value)) __PYX_ERR(0, 112, __pyx_L1_error)
   __pyx_t_1 = __pyx_cur_scope->__pyx_genexpr_arg_0.begin();
   for (;;) {
     if (!(__pyx_t_1 != __pyx_cur_scope->__pyx_genexpr_arg_0.end())) break;
     __pyx_t_2 = *__pyx_t_1;
     ++__pyx_t_1;
     __pyx_cur_scope->__pyx_v_p = __PYX_STD_MOVE_IF_SUPPORTED(__pyx_t_2);
-    __pyx_t_3 = __pyx_f_13impurityModel_2ed_13ManyBodyUtils_key_to_bytes(__pyx_cur_scope->__pyx_v_p.first); if (unlikely(!__pyx_t_3)) __PYX_ERR(0, 113, __pyx_L1_error)
+    __pyx_t_3 = __pyx_f_13impurityModel_2ed_13ManyBodyUtils_key_to_bytes(__pyx_cur_scope->__pyx_v_p.first); if (unlikely(!__pyx_t_3)) __PYX_ERR(0, 112, __pyx_L1_error)
     __Pyx_GOTREF(__pyx_t_3);
-    __pyx_t_4 = __pyx_PyComplex_FromComplex(__pyx_cur_scope->__pyx_v_p.second); if (unlikely(!__pyx_t_4)) __PYX_ERR(0, 113, __pyx_L1_error)
+    __pyx_t_4 = __pyx_PyComplex_FromComplex(__pyx_cur_scope->__pyx_v_p.second); if (unlikely(!__pyx_t_4)) __PYX_ERR(0, 112, __pyx_L1_error)
     __Pyx_GOTREF(__pyx_t_4);
-    __pyx_t_5 = PyTuple_New(2); if (unlikely(!__pyx_t_5)) __PYX_ERR(0, 113, __pyx_L1_error)
+    __pyx_t_5 = PyTuple_New(2); if (unlikely(!__pyx_t_5)) __PYX_ERR(0, 112, __pyx_L1_error)
     __Pyx_GOTREF(__pyx_t_5);
     __Pyx_GIVEREF(__pyx_t_3);
-    if (__Pyx_PyTuple_SET_ITEM(__pyx_t_5, 0, __pyx_t_3)) __PYX_ERR(0, 113, __pyx_L1_error);
+    if (__Pyx_PyTuple_SET_ITEM(__pyx_t_5, 0, __pyx_t_3)) __PYX_ERR(0, 112, __pyx_L1_error);
     __Pyx_GIVEREF(__pyx_t_4);
-    if (__Pyx_PyTuple_SET_ITEM(__pyx_t_5, 1, __pyx_t_4)) __PYX_ERR(0, 113, __pyx_L1_error);
+    if (__Pyx_PyTuple_SET_ITEM(__pyx_t_5, 1, __pyx_t_4)) __PYX_ERR(0, 112, __pyx_L1_error);
     __pyx_t_3 = 0;
     __pyx_t_4 = 0;
     __pyx_r = __pyx_t_5;
@@ -6982,7 +7218,7 @@ static PyObject *__pyx_gb_13impurityModel_2ed_13ManyBodyUtils_13ManyBodyState_5i
     return __pyx_r;
     __pyx_L6_resume_from_yield:;
     __pyx_t_1 = __PYX_STD_MOVE_IF_SUPPORTED(__pyx_cur_scope->__pyx_t_0);
-    if (unlikely(!__pyx_sent_value)) __PYX_ERR(0, 113, __pyx_L1_error)
+    if (unlikely(!__pyx_sent_value)) __PYX_ERR(0, 112, __pyx_L1_error)
   }
   CYTHON_MAYBE_UNUSED_VAR(__pyx_cur_scope);
 
@@ -7006,7 +7242,7 @@ static PyObject *__pyx_gb_13impurityModel_2ed_13ManyBodyUtils_13ManyBodyState_5i
   return __pyx_r;
 }
 
-/* "impurityModel/ed/ManyBodyUtils.pyx":112
+/* "impurityModel/ed/ManyBodyUtils.pyx":111
  *         return (p.second for p in self.v)
  * 
  *     def items(self):             # <<<<<<<<<<<<<<
@@ -7024,7 +7260,7 @@ static PyObject *__pyx_pf_13impurityModel_2ed_13ManyBodyUtils_13ManyBodyState_41
   int __pyx_clineno = 0;
   __Pyx_RefNannySetupContext("items", 1);
 
-  /* "impurityModel/ed/ManyBodyUtils.pyx":113
+  /* "impurityModel/ed/ManyBodyUtils.pyx":112
  * 
  *     def items(self):
  *         return ((key_to_bytes(p.first), p.second) for p in self.v)             # <<<<<<<<<<<<<<
@@ -7032,13 +7268,13 @@ static PyObject *__pyx_pf_13impurityModel_2ed_13ManyBodyUtils_13ManyBodyState_41
  *     def prune(self, double cutoff):
  */
   __Pyx_XDECREF(__pyx_r);
-  __pyx_t_1 = __pyx_pf_13impurityModel_2ed_13ManyBodyUtils_13ManyBodyState_5items_genexpr(NULL, __pyx_v_self->v); if (unlikely(!__pyx_t_1)) __PYX_ERR(0, 113, __pyx_L1_error)
+  __pyx_t_1 = __pyx_pf_13impurityModel_2ed_13ManyBodyUtils_13ManyBodyState_5items_genexpr(NULL, __pyx_v_self->v); if (unlikely(!__pyx_t_1)) __PYX_ERR(0, 112, __pyx_L1_error)
   __Pyx_GOTREF(__pyx_t_1);
   __pyx_r = __pyx_t_1;
   __pyx_t_1 = 0;
   goto __pyx_L0;
 
-  /* "impurityModel/ed/ManyBodyUtils.pyx":112
+  /* "impurityModel/ed/ManyBodyUtils.pyx":111
  *         return (p.second for p in self.v)
  * 
  *     def items(self):             # <<<<<<<<<<<<<<
@@ -7058,7 +7294,7 @@ static PyObject *__pyx_pf_13impurityModel_2ed_13ManyBodyUtils_13ManyBodyState_41
   return __pyx_r;
 }
 
-/* "impurityModel/ed/ManyBodyUtils.pyx":115
+/* "impurityModel/ed/ManyBodyUtils.pyx":114
  *         return ((key_to_bytes(p.first), p.second) for p in self.v)
  * 
  *     def prune(self, double cutoff):             # <<<<<<<<<<<<<<
@@ -7119,23 +7355,23 @@ PyObject *__pyx_args, PyObject *__pyx_kwds
           (void)__Pyx_Arg_NewRef_FASTCALL(values[0]);
           kw_args--;
         }
-        else if (unlikely(PyErr_Occurred())) __PYX_ERR(0, 115, __pyx_L3_error)
+        else if (unlikely(PyErr_Occurred())) __PYX_ERR(0, 114, __pyx_L3_error)
         else goto __pyx_L5_argtuple_error;
       }
       if (unlikely(kw_args > 0)) {
         const Py_ssize_t kwd_pos_args = __pyx_nargs;
-        if (unlikely(__Pyx_ParseOptionalKeywords(__pyx_kwds, __pyx_kwvalues, __pyx_pyargnames, 0, values + 0, kwd_pos_args, "prune") < 0)) __PYX_ERR(0, 115, __pyx_L3_error)
+        if (unlikely(__Pyx_ParseOptionalKeywords(__pyx_kwds, __pyx_kwvalues, __pyx_pyargnames, 0, values + 0, kwd_pos_args, "prune") < 0)) __PYX_ERR(0, 114, __pyx_L3_error)
       }
     } else if (unlikely(__pyx_nargs != 1)) {
       goto __pyx_L5_argtuple_error;
     } else {
       values[0] = __Pyx_Arg_FASTCALL(__pyx_args, 0);
     }
-    __pyx_v_cutoff = __pyx_PyFloat_AsDouble(values[0]); if (unlikely((__pyx_v_cutoff == (double)-1) && PyErr_Occurred())) __PYX_ERR(0, 115, __pyx_L3_error)
+    __pyx_v_cutoff = __pyx_PyFloat_AsDouble(values[0]); if (unlikely((__pyx_v_cutoff == (double)-1) && PyErr_Occurred())) __PYX_ERR(0, 114, __pyx_L3_error)
   }
   goto __pyx_L6_skip;
   __pyx_L5_argtuple_error:;
-  __Pyx_RaiseArgtupleInvalid("prune", 1, 1, 1, __pyx_nargs); __PYX_ERR(0, 115, __pyx_L3_error)
+  __Pyx_RaiseArgtupleInvalid("prune", 1, 1, 1, __pyx_nargs); __PYX_ERR(0, 114, __pyx_L3_error)
   __pyx_L6_skip:;
   goto __pyx_L4_argument_unpacking_done;
   __pyx_L3_error:;
@@ -7167,7 +7403,7 @@ static PyObject *__pyx_pf_13impurityModel_2ed_13ManyBodyUtils_13ManyBodyState_43
   __Pyx_RefNannyDeclarations
   __Pyx_RefNannySetupContext("prune", 1);
 
-  /* "impurityModel/ed/ManyBodyUtils.pyx":116
+  /* "impurityModel/ed/ManyBodyUtils.pyx":115
  * 
  *     def prune(self, double cutoff):
  *         self.v.prune(cutoff)             # <<<<<<<<<<<<<<
@@ -7176,7 +7412,7 @@ static PyObject *__pyx_pf_13impurityModel_2ed_13ManyBodyUtils_13ManyBodyState_43
  */
   __pyx_v_self->v.prune(__pyx_v_cutoff);
 
-  /* "impurityModel/ed/ManyBodyUtils.pyx":115
+  /* "impurityModel/ed/ManyBodyUtils.pyx":114
  *         return ((key_to_bytes(p.first), p.second) for p in self.v)
  * 
  *     def prune(self, double cutoff):             # <<<<<<<<<<<<<<
@@ -7191,7 +7427,7 @@ static PyObject *__pyx_pf_13impurityModel_2ed_13ManyBodyUtils_13ManyBodyState_43
   return __pyx_r;
 }
 
-/* "impurityModel/ed/ManyBodyUtils.pyx":118
+/* "impurityModel/ed/ManyBodyUtils.pyx":117
  *         self.v.prune(cutoff)
  * 
  *     def to_dict(self):             # <<<<<<<<<<<<<<
@@ -7241,7 +7477,7 @@ PyObject *__pyx_args, PyObject *__pyx_kwds
 }
 static PyObject *__pyx_gb_13impurityModel_2ed_13ManyBodyUtils_13ManyBodyState_7to_dict_2generator5(__pyx_CoroutineObject *__pyx_generator, CYTHON_UNUSED PyThreadState *__pyx_tstate, PyObject *__pyx_sent_value); /* proto */
 
-/* "impurityModel/ed/ManyBodyUtils.pyx":119
+/* "impurityModel/ed/ManyBodyUtils.pyx":118
  * 
  *     def to_dict(self):
  *         return dict((key_to_bytes(p.first), p.second) for p in self.v)             # <<<<<<<<<<<<<<
@@ -7261,13 +7497,13 @@ static PyObject *__pyx_pf_13impurityModel_2ed_13ManyBodyUtils_13ManyBodyState_7t
   if (unlikely(!__pyx_cur_scope)) {
     __pyx_cur_scope = ((struct __pyx_obj_13impurityModel_2ed_13ManyBodyUtils___pyx_scope_struct_4_genexpr *)Py_None);
     __Pyx_INCREF(Py_None);
-    __PYX_ERR(0, 119, __pyx_L1_error)
+    __PYX_ERR(0, 118, __pyx_L1_error)
   } else {
     __Pyx_GOTREF((PyObject *)__pyx_cur_scope);
   }
   __pyx_cur_scope->__pyx_genexpr_arg_0 = __pyx_genexpr_arg_0;
   {
-    __pyx_CoroutineObject *gen = __Pyx_Generator_New((__pyx_coroutine_body_t) __pyx_gb_13impurityModel_2ed_13ManyBodyUtils_13ManyBodyState_7to_dict_2generator5, NULL, (PyObject *) __pyx_cur_scope, __pyx_n_s_genexpr, __pyx_n_s_to_dict_locals_genexpr, __pyx_n_s_impurityModel_ed_ManyBodyUtils); if (unlikely(!gen)) __PYX_ERR(0, 119, __pyx_L1_error)
+    __pyx_CoroutineObject *gen = __Pyx_Generator_New((__pyx_coroutine_body_t) __pyx_gb_13impurityModel_2ed_13ManyBodyUtils_13ManyBodyState_7to_dict_2generator5, NULL, (PyObject *) __pyx_cur_scope, __pyx_n_s_genexpr, __pyx_n_s_to_dict_locals_genexpr, __pyx_n_s_impurityModel_ed_ManyBodyUtils); if (unlikely(!gen)) __PYX_ERR(0, 118, __pyx_L1_error)
     __Pyx_DECREF(__pyx_cur_scope);
     __Pyx_RefNannyFinishContext();
     return (PyObject *) gen;
@@ -7303,8 +7539,8 @@ static PyObject *__pyx_gb_13impurityModel_2ed_13ManyBodyUtils_13ManyBodyState_7t
     return NULL;
   }
   __pyx_L3_first_run:;
-  if (unlikely(!__pyx_sent_value)) __PYX_ERR(0, 119, __pyx_L1_error)
-  __pyx_r = PyDict_New(); if (unlikely(!__pyx_r)) __PYX_ERR(0, 119, __pyx_L1_error)
+  if (unlikely(!__pyx_sent_value)) __PYX_ERR(0, 118, __pyx_L1_error)
+  __pyx_r = PyDict_New(); if (unlikely(!__pyx_r)) __PYX_ERR(0, 118, __pyx_L1_error)
   __Pyx_GOTREF(__pyx_r);
   __pyx_t_1 = __pyx_cur_scope->__pyx_genexpr_arg_0.begin();
   for (;;) {
@@ -7312,11 +7548,11 @@ static PyObject *__pyx_gb_13impurityModel_2ed_13ManyBodyUtils_13ManyBodyState_7t
     __pyx_t_2 = *__pyx_t_1;
     ++__pyx_t_1;
     __pyx_cur_scope->__pyx_v_p = __PYX_STD_MOVE_IF_SUPPORTED(__pyx_t_2);
-    __pyx_t_3 = __pyx_f_13impurityModel_2ed_13ManyBodyUtils_key_to_bytes(__pyx_cur_scope->__pyx_v_p.first); if (unlikely(!__pyx_t_3)) __PYX_ERR(0, 119, __pyx_L1_error)
+    __pyx_t_3 = __pyx_f_13impurityModel_2ed_13ManyBodyUtils_key_to_bytes(__pyx_cur_scope->__pyx_v_p.first); if (unlikely(!__pyx_t_3)) __PYX_ERR(0, 118, __pyx_L1_error)
     __Pyx_GOTREF(__pyx_t_3);
-    __pyx_t_4 = __pyx_PyComplex_FromComplex(__pyx_cur_scope->__pyx_v_p.second); if (unlikely(!__pyx_t_4)) __PYX_ERR(0, 119, __pyx_L1_error)
+    __pyx_t_4 = __pyx_PyComplex_FromComplex(__pyx_cur_scope->__pyx_v_p.second); if (unlikely(!__pyx_t_4)) __PYX_ERR(0, 118, __pyx_L1_error)
     __Pyx_GOTREF(__pyx_t_4);
-    if (unlikely(PyDict_SetItem(__pyx_r, (PyObject*)__pyx_t_3, (PyObject*)__pyx_t_4))) __PYX_ERR(0, 119, __pyx_L1_error)
+    if (unlikely(PyDict_SetItem(__pyx_r, (PyObject*)__pyx_t_3, (PyObject*)__pyx_t_4))) __PYX_ERR(0, 118, __pyx_L1_error)
     __Pyx_DECREF(__pyx_t_3); __pyx_t_3 = 0;
     __Pyx_DECREF(__pyx_t_4); __pyx_t_4 = 0;
   }
@@ -7341,7 +7577,7 @@ static PyObject *__pyx_gb_13impurityModel_2ed_13ManyBodyUtils_13ManyBodyState_7t
   return __pyx_r;
 }
 
-/* "impurityModel/ed/ManyBodyUtils.pyx":118
+/* "impurityModel/ed/ManyBodyUtils.pyx":117
  *         self.v.prune(cutoff)
  * 
  *     def to_dict(self):             # <<<<<<<<<<<<<<
@@ -7360,7 +7596,7 @@ static PyObject *__pyx_pf_13impurityModel_2ed_13ManyBodyUtils_13ManyBodyState_45
   int __pyx_clineno = 0;
   __Pyx_RefNannySetupContext("to_dict", 1);
 
-  /* "impurityModel/ed/ManyBodyUtils.pyx":119
+  /* "impurityModel/ed/ManyBodyUtils.pyx":118
  * 
  *     def to_dict(self):
  *         return dict((key_to_bytes(p.first), p.second) for p in self.v)             # <<<<<<<<<<<<<<
@@ -7368,16 +7604,16 @@ static PyObject *__pyx_pf_13impurityModel_2ed_13ManyBodyUtils_13ManyBodyState_45
  * def inner(ManyBodyState a, ManyBodyState b):
  */
   __Pyx_XDECREF(__pyx_r);
-  __pyx_t_1 = __pyx_pf_13impurityModel_2ed_13ManyBodyUtils_13ManyBodyState_7to_dict_genexpr(NULL, __pyx_v_self->v); if (unlikely(!__pyx_t_1)) __PYX_ERR(0, 119, __pyx_L1_error)
+  __pyx_t_1 = __pyx_pf_13impurityModel_2ed_13ManyBodyUtils_13ManyBodyState_7to_dict_genexpr(NULL, __pyx_v_self->v); if (unlikely(!__pyx_t_1)) __PYX_ERR(0, 118, __pyx_L1_error)
   __Pyx_GOTREF(__pyx_t_1);
-  __pyx_t_2 = __Pyx_Generator_Next(__pyx_t_1); if (unlikely(!__pyx_t_2)) __PYX_ERR(0, 119, __pyx_L1_error)
+  __pyx_t_2 = __Pyx_Generator_Next(__pyx_t_1); if (unlikely(!__pyx_t_2)) __PYX_ERR(0, 118, __pyx_L1_error)
   __Pyx_GOTREF(__pyx_t_2);
   __Pyx_DECREF(__pyx_t_1); __pyx_t_1 = 0;
   __pyx_r = __pyx_t_2;
   __pyx_t_2 = 0;
   goto __pyx_L0;
 
-  /* "impurityModel/ed/ManyBodyUtils.pyx":118
+  /* "impurityModel/ed/ManyBodyUtils.pyx":117
  *         self.v.prune(cutoff)
  * 
  *     def to_dict(self):             # <<<<<<<<<<<<<<
@@ -7612,7 +7848,7 @@ static PyObject *__pyx_pf_13impurityModel_2ed_13ManyBodyUtils_13ManyBodyState_49
   return __pyx_r;
 }
 
-/* "impurityModel/ed/ManyBodyUtils.pyx":121
+/* "impurityModel/ed/ManyBodyUtils.pyx":120
  *         return dict((key_to_bytes(p.first), p.second) for p in self.v)
  * 
  * def inner(ManyBodyState a, ManyBodyState b):             # <<<<<<<<<<<<<<
@@ -7676,7 +7912,7 @@ PyObject *__pyx_args, PyObject *__pyx_kwds
           (void)__Pyx_Arg_NewRef_FASTCALL(values[0]);
           kw_args--;
         }
-        else if (unlikely(PyErr_Occurred())) __PYX_ERR(0, 121, __pyx_L3_error)
+        else if (unlikely(PyErr_Occurred())) __PYX_ERR(0, 120, __pyx_L3_error)
         else goto __pyx_L5_argtuple_error;
         CYTHON_FALLTHROUGH;
         case  1:
@@ -7684,14 +7920,14 @@ PyObject *__pyx_args, PyObject *__pyx_kwds
           (void)__Pyx_Arg_NewRef_FASTCALL(values[1]);
           kw_args--;
         }
-        else if (unlikely(PyErr_Occurred())) __PYX_ERR(0, 121, __pyx_L3_error)
+        else if (unlikely(PyErr_Occurred())) __PYX_ERR(0, 120, __pyx_L3_error)
         else {
-          __Pyx_RaiseArgtupleInvalid("inner", 1, 2, 2, 1); __PYX_ERR(0, 121, __pyx_L3_error)
+          __Pyx_RaiseArgtupleInvalid("inner", 1, 2, 2, 1); __PYX_ERR(0, 120, __pyx_L3_error)
         }
       }
       if (unlikely(kw_args > 0)) {
         const Py_ssize_t kwd_pos_args = __pyx_nargs;
-        if (unlikely(__Pyx_ParseOptionalKeywords(__pyx_kwds, __pyx_kwvalues, __pyx_pyargnames, 0, values + 0, kwd_pos_args, "inner") < 0)) __PYX_ERR(0, 121, __pyx_L3_error)
+        if (unlikely(__Pyx_ParseOptionalKeywords(__pyx_kwds, __pyx_kwvalues, __pyx_pyargnames, 0, values + 0, kwd_pos_args, "inner") < 0)) __PYX_ERR(0, 120, __pyx_L3_error)
       }
     } else if (unlikely(__pyx_nargs != 2)) {
       goto __pyx_L5_argtuple_error;
@@ -7704,7 +7940,7 @@ PyObject *__pyx_args, PyObject *__pyx_kwds
   }
   goto __pyx_L6_skip;
   __pyx_L5_argtuple_error:;
-  __Pyx_RaiseArgtupleInvalid("inner", 1, 2, 2, __pyx_nargs); __PYX_ERR(0, 121, __pyx_L3_error)
+  __Pyx_RaiseArgtupleInvalid("inner", 1, 2, 2, __pyx_nargs); __PYX_ERR(0, 120, __pyx_L3_error)
   __pyx_L6_skip:;
   goto __pyx_L4_argument_unpacking_done;
   __pyx_L3_error:;
@@ -7718,8 +7954,8 @@ PyObject *__pyx_args, PyObject *__pyx_kwds
   __Pyx_RefNannyFinishContext();
   return NULL;
   __pyx_L4_argument_unpacking_done:;
-  if (unlikely(!__Pyx_ArgTypeTest(((PyObject *)__pyx_v_a), __pyx_ptype_13impurityModel_2ed_13ManyBodyUtils_ManyBodyState, 1, "a", 0))) __PYX_ERR(0, 121, __pyx_L1_error)
-  if (unlikely(!__Pyx_ArgTypeTest(((PyObject *)__pyx_v_b), __pyx_ptype_13impurityModel_2ed_13ManyBodyUtils_ManyBodyState, 1, "b", 0))) __PYX_ERR(0, 121, __pyx_L1_error)
+  if (unlikely(!__Pyx_ArgTypeTest(((PyObject *)__pyx_v_a), __pyx_ptype_13impurityModel_2ed_13ManyBodyUtils_ManyBodyState, 1, "a", 0))) __PYX_ERR(0, 120, __pyx_L1_error)
+  if (unlikely(!__Pyx_ArgTypeTest(((PyObject *)__pyx_v_b), __pyx_ptype_13impurityModel_2ed_13ManyBodyUtils_ManyBodyState, 1, "b", 0))) __PYX_ERR(0, 120, __pyx_L1_error)
   __pyx_r = __pyx_pf_13impurityModel_2ed_13ManyBodyUtils_inner(__pyx_self, __pyx_v_a, __pyx_v_b);
 
   /* function exit code */
@@ -7747,22 +7983,22 @@ static PyObject *__pyx_pf_13impurityModel_2ed_13ManyBodyUtils_inner(CYTHON_UNUSE
   int __pyx_clineno = 0;
   __Pyx_RefNannySetupContext("inner", 1);
 
-  /* "impurityModel/ed/ManyBodyUtils.pyx":122
+  /* "impurityModel/ed/ManyBodyUtils.pyx":121
  * 
  * def inner(ManyBodyState a, ManyBodyState b):
  *     return inner_cpp(a.v, b.v)             # <<<<<<<<<<<<<<
  * 
- * cdef vector[int64_t] processes_to_ints(tuple[tuple[int, str]] processes):
+ * cdef ManyBodyOperator_cpp.value_type.first_type processes_to_ints(tuple[tuple[int, str]] processes):
  */
   __Pyx_XDECREF(__pyx_r);
   __pyx_t_1 = inner(__pyx_v_a->v, __pyx_v_b->v);
-  __pyx_t_2 = __pyx_PyComplex_FromComplex(__pyx_t_1); if (unlikely(!__pyx_t_2)) __PYX_ERR(0, 122, __pyx_L1_error)
+  __pyx_t_2 = __pyx_PyComplex_FromComplex(__pyx_t_1); if (unlikely(!__pyx_t_2)) __PYX_ERR(0, 121, __pyx_L1_error)
   __Pyx_GOTREF(__pyx_t_2);
   __pyx_r = __pyx_t_2;
   __pyx_t_2 = 0;
   goto __pyx_L0;
 
-  /* "impurityModel/ed/ManyBodyUtils.pyx":121
+  /* "impurityModel/ed/ManyBodyUtils.pyx":120
  *         return dict((key_to_bytes(p.first), p.second) for p in self.v)
  * 
  * def inner(ManyBodyState a, ManyBodyState b):             # <<<<<<<<<<<<<<
@@ -7781,18 +8017,18 @@ static PyObject *__pyx_pf_13impurityModel_2ed_13ManyBodyUtils_inner(CYTHON_UNUSE
   return __pyx_r;
 }
 
-/* "impurityModel/ed/ManyBodyUtils.pyx":124
+/* "impurityModel/ed/ManyBodyUtils.pyx":123
  *     return inner_cpp(a.v, b.v)
  * 
- * cdef vector[int64_t] processes_to_ints(tuple[tuple[int, str]] processes):             # <<<<<<<<<<<<<<
+ * cdef ManyBodyOperator_cpp.value_type.first_type processes_to_ints(tuple[tuple[int, str]] processes):             # <<<<<<<<<<<<<<
  *     cdef tuple[int, str] process
- *     cdef vector[int64_t] ints
+ *     cdef ManyBodyOperator_cpp.value_type.first_type ints
  */
 
-static std::vector<int64_t>  __pyx_f_13impurityModel_2ed_13ManyBodyUtils_processes_to_ints(PyObject *__pyx_v_processes) {
+static std::pair<std::vector<int64_t> ,__pyx_t_double_complex> ::first_type __pyx_f_13impurityModel_2ed_13ManyBodyUtils_processes_to_ints(PyObject *__pyx_v_processes) {
   PyObject *__pyx_v_process = 0;
-  std::vector<int64_t>  __pyx_v_ints;
-  std::vector<int64_t>  __pyx_r;
+  std::pair<std::vector<int64_t> ,__pyx_t_double_complex> ::first_type __pyx_v_ints;
+  std::pair<std::vector<int64_t> ,__pyx_t_double_complex> ::first_type __pyx_r;
   __Pyx_RefNannyDeclarations
   Py_ssize_t __pyx_t_1;
   PyObject *__pyx_t_2 = NULL;
@@ -7805,33 +8041,33 @@ static std::vector<int64_t>  __pyx_f_13impurityModel_2ed_13ManyBodyUtils_process
   int __pyx_clineno = 0;
   __Pyx_RefNannySetupContext("processes_to_ints", 1);
 
-  /* "impurityModel/ed/ManyBodyUtils.pyx":127
+  /* "impurityModel/ed/ManyBodyUtils.pyx":126
  *     cdef tuple[int, str] process
- *     cdef vector[int64_t] ints
+ *     cdef ManyBodyOperator_cpp.value_type.first_type ints
  *     ints.reserve(len(processes))             # <<<<<<<<<<<<<<
  *     for process in processes[::-1]:
  *         if process[1] == 'a':
  */
   if (unlikely(__pyx_v_processes == Py_None)) {
     PyErr_SetString(PyExc_TypeError, "object of type 'NoneType' has no len()");
-    __PYX_ERR(0, 127, __pyx_L1_error)
+    __PYX_ERR(0, 126, __pyx_L1_error)
   }
-  __pyx_t_1 = __Pyx_PyTuple_GET_SIZE(__pyx_v_processes); if (unlikely(__pyx_t_1 == ((Py_ssize_t)-1))) __PYX_ERR(0, 127, __pyx_L1_error)
+  __pyx_t_1 = __Pyx_PyTuple_GET_SIZE(__pyx_v_processes); if (unlikely(__pyx_t_1 == ((Py_ssize_t)-1))) __PYX_ERR(0, 126, __pyx_L1_error)
   try {
     __pyx_v_ints.reserve(__pyx_t_1);
   } catch(...) {
     __Pyx_CppExn2PyErr();
-    __PYX_ERR(0, 127, __pyx_L1_error)
+    __PYX_ERR(0, 126, __pyx_L1_error)
   }
 
-  /* "impurityModel/ed/ManyBodyUtils.pyx":128
- *     cdef vector[int64_t] ints
+  /* "impurityModel/ed/ManyBodyUtils.pyx":127
+ *     cdef ManyBodyOperator_cpp.value_type.first_type ints
  *     ints.reserve(len(processes))
  *     for process in processes[::-1]:             # <<<<<<<<<<<<<<
  *         if process[1] == 'a':
  *             ints.push_back(-process[0] -1)
  */
-  __pyx_t_2 = __Pyx_PyObject_GetItem(__pyx_v_processes, __pyx_slice__5); if (unlikely(!__pyx_t_2)) __PYX_ERR(0, 128, __pyx_L1_error)
+  __pyx_t_2 = __Pyx_PyObject_GetItem(__pyx_v_processes, __pyx_slice__5); if (unlikely(!__pyx_t_2)) __PYX_ERR(0, 127, __pyx_L1_error)
   __Pyx_GOTREF(__pyx_t_2);
   __pyx_t_3 = __pyx_t_2; __Pyx_INCREF(__pyx_t_3);
   __pyx_t_1 = 0;
@@ -7840,21 +8076,21 @@ static std::vector<int64_t>  __pyx_f_13impurityModel_2ed_13ManyBodyUtils_process
     {
       Py_ssize_t __pyx_temp = __Pyx_PyTuple_GET_SIZE(__pyx_t_3);
       #if !CYTHON_ASSUME_SAFE_MACROS
-      if (unlikely((__pyx_temp < 0))) __PYX_ERR(0, 128, __pyx_L1_error)
+      if (unlikely((__pyx_temp < 0))) __PYX_ERR(0, 127, __pyx_L1_error)
       #endif
       if (__pyx_t_1 >= __pyx_temp) break;
     }
     #if CYTHON_ASSUME_SAFE_MACROS && !CYTHON_AVOID_BORROWED_REFS
-    __pyx_t_2 = PyTuple_GET_ITEM(__pyx_t_3, __pyx_t_1); __Pyx_INCREF(__pyx_t_2); __pyx_t_1++; if (unlikely((0 < 0))) __PYX_ERR(0, 128, __pyx_L1_error)
+    __pyx_t_2 = PyTuple_GET_ITEM(__pyx_t_3, __pyx_t_1); __Pyx_INCREF(__pyx_t_2); __pyx_t_1++; if (unlikely((0 < 0))) __PYX_ERR(0, 127, __pyx_L1_error)
     #else
-    __pyx_t_2 = __Pyx_PySequence_ITEM(__pyx_t_3, __pyx_t_1); __pyx_t_1++; if (unlikely(!__pyx_t_2)) __PYX_ERR(0, 128, __pyx_L1_error)
+    __pyx_t_2 = __Pyx_PySequence_ITEM(__pyx_t_3, __pyx_t_1); __pyx_t_1++; if (unlikely(!__pyx_t_2)) __PYX_ERR(0, 127, __pyx_L1_error)
     __Pyx_GOTREF(__pyx_t_2);
     #endif
-    if (!(likely(PyTuple_CheckExact(__pyx_t_2))||((__pyx_t_2) == Py_None) || __Pyx_RaiseUnexpectedTypeError("tuple", __pyx_t_2))) __PYX_ERR(0, 128, __pyx_L1_error)
+    if (!(likely(PyTuple_CheckExact(__pyx_t_2))||((__pyx_t_2) == Py_None) || __Pyx_RaiseUnexpectedTypeError("tuple", __pyx_t_2))) __PYX_ERR(0, 127, __pyx_L1_error)
     __Pyx_XDECREF_SET(__pyx_v_process, ((PyObject*)__pyx_t_2));
     __pyx_t_2 = 0;
 
-    /* "impurityModel/ed/ManyBodyUtils.pyx":129
+    /* "impurityModel/ed/ManyBodyUtils.pyx":128
  *     ints.reserve(len(processes))
  *     for process in processes[::-1]:
  *         if process[1] == 'a':             # <<<<<<<<<<<<<<
@@ -7863,12 +8099,12 @@ static std::vector<int64_t>  __pyx_f_13impurityModel_2ed_13ManyBodyUtils_process
  */
     if (unlikely(__pyx_v_process == Py_None)) {
       PyErr_SetString(PyExc_TypeError, "'NoneType' object is not subscriptable");
-      __PYX_ERR(0, 129, __pyx_L1_error)
+      __PYX_ERR(0, 128, __pyx_L1_error)
     }
-    __pyx_t_4 = (__Pyx_PyUnicode_Equals(PyTuple_GET_ITEM(__pyx_v_process, 1), __pyx_n_u_a, Py_EQ)); if (unlikely((__pyx_t_4 < 0))) __PYX_ERR(0, 129, __pyx_L1_error)
+    __pyx_t_4 = (__Pyx_PyUnicode_Equals(PyTuple_GET_ITEM(__pyx_v_process, 1), __pyx_n_u_a, Py_EQ)); if (unlikely((__pyx_t_4 < 0))) __PYX_ERR(0, 128, __pyx_L1_error)
     if (__pyx_t_4) {
 
-      /* "impurityModel/ed/ManyBodyUtils.pyx":130
+      /* "impurityModel/ed/ManyBodyUtils.pyx":129
  *     for process in processes[::-1]:
  *         if process[1] == 'a':
  *             ints.push_back(-process[0] -1)             # <<<<<<<<<<<<<<
@@ -7877,23 +8113,23 @@ static std::vector<int64_t>  __pyx_f_13impurityModel_2ed_13ManyBodyUtils_process
  */
       if (unlikely(__pyx_v_process == Py_None)) {
         PyErr_SetString(PyExc_TypeError, "'NoneType' object is not subscriptable");
-        __PYX_ERR(0, 130, __pyx_L1_error)
+        __PYX_ERR(0, 129, __pyx_L1_error)
       }
-      __pyx_t_2 = PyNumber_Negative(PyTuple_GET_ITEM(__pyx_v_process, 0)); if (unlikely(!__pyx_t_2)) __PYX_ERR(0, 130, __pyx_L1_error)
+      __pyx_t_2 = PyNumber_Negative(PyTuple_GET_ITEM(__pyx_v_process, 0)); if (unlikely(!__pyx_t_2)) __PYX_ERR(0, 129, __pyx_L1_error)
       __Pyx_GOTREF(__pyx_t_2);
-      __pyx_t_5 = __Pyx_PyInt_SubtractObjC(__pyx_t_2, __pyx_int_1, 1, 0, 0); if (unlikely(!__pyx_t_5)) __PYX_ERR(0, 130, __pyx_L1_error)
+      __pyx_t_5 = __Pyx_PyInt_SubtractObjC(__pyx_t_2, __pyx_int_1, 1, 0, 0); if (unlikely(!__pyx_t_5)) __PYX_ERR(0, 129, __pyx_L1_error)
       __Pyx_GOTREF(__pyx_t_5);
       __Pyx_DECREF(__pyx_t_2); __pyx_t_2 = 0;
-      __pyx_t_6 = __Pyx_PyInt_As_int64_t(__pyx_t_5); if (unlikely((__pyx_t_6 == ((int64_t)-1)) && PyErr_Occurred())) __PYX_ERR(0, 130, __pyx_L1_error)
+      __pyx_t_6 = __Pyx_PyInt_As_int64_t(__pyx_t_5); if (unlikely((__pyx_t_6 == ((int64_t)-1)) && PyErr_Occurred())) __PYX_ERR(0, 129, __pyx_L1_error)
       __Pyx_DECREF(__pyx_t_5); __pyx_t_5 = 0;
       try {
         __pyx_v_ints.push_back(__pyx_t_6);
       } catch(...) {
         __Pyx_CppExn2PyErr();
-        __PYX_ERR(0, 130, __pyx_L1_error)
+        __PYX_ERR(0, 129, __pyx_L1_error)
       }
 
-      /* "impurityModel/ed/ManyBodyUtils.pyx":129
+      /* "impurityModel/ed/ManyBodyUtils.pyx":128
  *     ints.reserve(len(processes))
  *     for process in processes[::-1]:
  *         if process[1] == 'a':             # <<<<<<<<<<<<<<
@@ -7903,7 +8139,7 @@ static std::vector<int64_t>  __pyx_f_13impurityModel_2ed_13ManyBodyUtils_process
       goto __pyx_L5;
     }
 
-    /* "impurityModel/ed/ManyBodyUtils.pyx":132
+    /* "impurityModel/ed/ManyBodyUtils.pyx":131
  *             ints.push_back(-process[0] -1)
  *         else:
  *             ints.push_back(process[0])             # <<<<<<<<<<<<<<
@@ -7913,20 +8149,20 @@ static std::vector<int64_t>  __pyx_f_13impurityModel_2ed_13ManyBodyUtils_process
     /*else*/ {
       if (unlikely(__pyx_v_process == Py_None)) {
         PyErr_SetString(PyExc_TypeError, "'NoneType' object is not subscriptable");
-        __PYX_ERR(0, 132, __pyx_L1_error)
+        __PYX_ERR(0, 131, __pyx_L1_error)
       }
-      __pyx_t_6 = __Pyx_PyInt_As_int64_t(PyTuple_GET_ITEM(__pyx_v_process, 0)); if (unlikely((__pyx_t_6 == ((int64_t)-1)) && PyErr_Occurred())) __PYX_ERR(0, 132, __pyx_L1_error)
+      __pyx_t_6 = __Pyx_PyInt_As_int64_t(PyTuple_GET_ITEM(__pyx_v_process, 0)); if (unlikely((__pyx_t_6 == ((int64_t)-1)) && PyErr_Occurred())) __PYX_ERR(0, 131, __pyx_L1_error)
       try {
         __pyx_v_ints.push_back(__pyx_t_6);
       } catch(...) {
         __Pyx_CppExn2PyErr();
-        __PYX_ERR(0, 132, __pyx_L1_error)
+        __PYX_ERR(0, 131, __pyx_L1_error)
       }
     }
     __pyx_L5:;
 
-    /* "impurityModel/ed/ManyBodyUtils.pyx":128
- *     cdef vector[int64_t] ints
+    /* "impurityModel/ed/ManyBodyUtils.pyx":127
+ *     cdef ManyBodyOperator_cpp.value_type.first_type ints
  *     ints.reserve(len(processes))
  *     for process in processes[::-1]:             # <<<<<<<<<<<<<<
  *         if process[1] == 'a':
@@ -7935,22 +8171,22 @@ static std::vector<int64_t>  __pyx_f_13impurityModel_2ed_13ManyBodyUtils_process
   }
   __Pyx_DECREF(__pyx_t_3); __pyx_t_3 = 0;
 
-  /* "impurityModel/ed/ManyBodyUtils.pyx":133
+  /* "impurityModel/ed/ManyBodyUtils.pyx":132
  *         else:
  *             ints.push_back(process[0])
  *     return ints             # <<<<<<<<<<<<<<
  * 
- * cdef tuple[tuple[int, str]] ints_to_processes(vector[int64_t]& ints):
+ * cdef tuple[tuple[int, str]] ints_to_processes(ManyBodyOperator_cpp.value_type.first_type& ints):
  */
   __pyx_r = __pyx_v_ints;
   goto __pyx_L0;
 
-  /* "impurityModel/ed/ManyBodyUtils.pyx":124
+  /* "impurityModel/ed/ManyBodyUtils.pyx":123
  *     return inner_cpp(a.v, b.v)
  * 
- * cdef vector[int64_t] processes_to_ints(tuple[tuple[int, str]] processes):             # <<<<<<<<<<<<<<
+ * cdef ManyBodyOperator_cpp.value_type.first_type processes_to_ints(tuple[tuple[int, str]] processes):             # <<<<<<<<<<<<<<
  *     cdef tuple[int, str] process
- *     cdef vector[int64_t] ints
+ *     cdef ManyBodyOperator_cpp.value_type.first_type ints
  */
 
   /* function exit code */
@@ -7966,17 +8202,17 @@ static std::vector<int64_t>  __pyx_f_13impurityModel_2ed_13ManyBodyUtils_process
   return __pyx_r;
 }
 
-/* "impurityModel/ed/ManyBodyUtils.pyx":135
+/* "impurityModel/ed/ManyBodyUtils.pyx":134
  *     return ints
  * 
- * cdef tuple[tuple[int, str]] ints_to_processes(vector[int64_t]& ints):             # <<<<<<<<<<<<<<
+ * cdef tuple[tuple[int, str]] ints_to_processes(ManyBodyOperator_cpp.value_type.first_type& ints):             # <<<<<<<<<<<<<<
  *     cdef  list[tuple[int, str]] processes = []
- *     cdef int64_t i
+ *     cdef ManyBodyOperator_cpp.value_type.first_type.value_type i
  */
 
-static PyObject *__pyx_f_13impurityModel_2ed_13ManyBodyUtils_ints_to_processes(std::vector<int64_t>  &__pyx_v_ints) {
+static PyObject *__pyx_f_13impurityModel_2ed_13ManyBodyUtils_ints_to_processes(std::pair<std::vector<int64_t> ,__pyx_t_double_complex> ::first_type &__pyx_v_ints) {
   PyObject *__pyx_v_processes = 0;
-  int64_t __pyx_v_i;
+  std::vector<int64_t> ::value_type __pyx_v_i;
   PyObject *__pyx_r = NULL;
   __Pyx_RefNannyDeclarations
   PyObject *__pyx_t_1 = NULL;
@@ -7990,21 +8226,21 @@ static PyObject *__pyx_f_13impurityModel_2ed_13ManyBodyUtils_ints_to_processes(s
   int __pyx_clineno = 0;
   __Pyx_RefNannySetupContext("ints_to_processes", 1);
 
-  /* "impurityModel/ed/ManyBodyUtils.pyx":136
+  /* "impurityModel/ed/ManyBodyUtils.pyx":135
  * 
- * cdef tuple[tuple[int, str]] ints_to_processes(vector[int64_t]& ints):
+ * cdef tuple[tuple[int, str]] ints_to_processes(ManyBodyOperator_cpp.value_type.first_type& ints):
  *     cdef  list[tuple[int, str]] processes = []             # <<<<<<<<<<<<<<
- *     cdef int64_t i
+ *     cdef ManyBodyOperator_cpp.value_type.first_type.value_type i
  *     for i in ints:
  */
-  __pyx_t_1 = PyList_New(0); if (unlikely(!__pyx_t_1)) __PYX_ERR(0, 136, __pyx_L1_error)
+  __pyx_t_1 = PyList_New(0); if (unlikely(!__pyx_t_1)) __PYX_ERR(0, 135, __pyx_L1_error)
   __Pyx_GOTREF(__pyx_t_1);
   __pyx_v_processes = ((PyObject*)__pyx_t_1);
   __pyx_t_1 = 0;
 
-  /* "impurityModel/ed/ManyBodyUtils.pyx":138
+  /* "impurityModel/ed/ManyBodyUtils.pyx":137
  *     cdef  list[tuple[int, str]] processes = []
- *     cdef int64_t i
+ *     cdef ManyBodyOperator_cpp.value_type.first_type.value_type i
  *     for i in ints:             # <<<<<<<<<<<<<<
  *         if i < 0:
  *             processes.append((-i-1, 'a'))
@@ -8016,8 +8252,8 @@ static PyObject *__pyx_f_13impurityModel_2ed_13ManyBodyUtils_ints_to_processes(s
     ++__pyx_t_2;
     __pyx_v_i = __pyx_t_3;
 
-    /* "impurityModel/ed/ManyBodyUtils.pyx":139
- *     cdef int64_t i
+    /* "impurityModel/ed/ManyBodyUtils.pyx":138
+ *     cdef ManyBodyOperator_cpp.value_type.first_type.value_type i
  *     for i in ints:
  *         if i < 0:             # <<<<<<<<<<<<<<
  *             processes.append((-i-1, 'a'))
@@ -8026,28 +8262,28 @@ static PyObject *__pyx_f_13impurityModel_2ed_13ManyBodyUtils_ints_to_processes(s
     __pyx_t_4 = (__pyx_v_i < 0);
     if (__pyx_t_4) {
 
-      /* "impurityModel/ed/ManyBodyUtils.pyx":140
+      /* "impurityModel/ed/ManyBodyUtils.pyx":139
  *     for i in ints:
  *         if i < 0:
  *             processes.append((-i-1, 'a'))             # <<<<<<<<<<<<<<
  *         else:
  *             processes.append((i, 'c'))
  */
-      __pyx_t_1 = __Pyx_PyInt_From_int64_t(((-__pyx_v_i) - 1)); if (unlikely(!__pyx_t_1)) __PYX_ERR(0, 140, __pyx_L1_error)
+      __pyx_t_1 = __Pyx_PyInt_From_int64_t(((-__pyx_v_i) - 1)); if (unlikely(!__pyx_t_1)) __PYX_ERR(0, 139, __pyx_L1_error)
       __Pyx_GOTREF(__pyx_t_1);
-      __pyx_t_5 = PyTuple_New(2); if (unlikely(!__pyx_t_5)) __PYX_ERR(0, 140, __pyx_L1_error)
+      __pyx_t_5 = PyTuple_New(2); if (unlikely(!__pyx_t_5)) __PYX_ERR(0, 139, __pyx_L1_error)
       __Pyx_GOTREF(__pyx_t_5);
       __Pyx_GIVEREF(__pyx_t_1);
-      if (__Pyx_PyTuple_SET_ITEM(__pyx_t_5, 0, __pyx_t_1)) __PYX_ERR(0, 140, __pyx_L1_error);
+      if (__Pyx_PyTuple_SET_ITEM(__pyx_t_5, 0, __pyx_t_1)) __PYX_ERR(0, 139, __pyx_L1_error);
       __Pyx_INCREF(__pyx_n_u_a);
       __Pyx_GIVEREF(__pyx_n_u_a);
-      if (__Pyx_PyTuple_SET_ITEM(__pyx_t_5, 1, __pyx_n_u_a)) __PYX_ERR(0, 140, __pyx_L1_error);
+      if (__Pyx_PyTuple_SET_ITEM(__pyx_t_5, 1, __pyx_n_u_a)) __PYX_ERR(0, 139, __pyx_L1_error);
       __pyx_t_1 = 0;
-      __pyx_t_6 = __Pyx_PyList_Append(__pyx_v_processes, __pyx_t_5); if (unlikely(__pyx_t_6 == ((int)-1))) __PYX_ERR(0, 140, __pyx_L1_error)
+      __pyx_t_6 = __Pyx_PyList_Append(__pyx_v_processes, __pyx_t_5); if (unlikely(__pyx_t_6 == ((int)-1))) __PYX_ERR(0, 139, __pyx_L1_error)
       __Pyx_DECREF(__pyx_t_5); __pyx_t_5 = 0;
 
-      /* "impurityModel/ed/ManyBodyUtils.pyx":139
- *     cdef int64_t i
+      /* "impurityModel/ed/ManyBodyUtils.pyx":138
+ *     cdef ManyBodyOperator_cpp.value_type.first_type.value_type i
  *     for i in ints:
  *         if i < 0:             # <<<<<<<<<<<<<<
  *             processes.append((-i-1, 'a'))
@@ -8056,7 +8292,7 @@ static PyObject *__pyx_f_13impurityModel_2ed_13ManyBodyUtils_ints_to_processes(s
       goto __pyx_L5;
     }
 
-    /* "impurityModel/ed/ManyBodyUtils.pyx":142
+    /* "impurityModel/ed/ManyBodyUtils.pyx":141
  *             processes.append((-i-1, 'a'))
  *         else:
  *             processes.append((i, 'c'))             # <<<<<<<<<<<<<<
@@ -8064,31 +8300,31 @@ static PyObject *__pyx_f_13impurityModel_2ed_13ManyBodyUtils_ints_to_processes(s
  * 
  */
     /*else*/ {
-      __pyx_t_5 = __Pyx_PyInt_From_int64_t(__pyx_v_i); if (unlikely(!__pyx_t_5)) __PYX_ERR(0, 142, __pyx_L1_error)
+      __pyx_t_5 = __Pyx_PyInt_From_int64_t(__pyx_v_i); if (unlikely(!__pyx_t_5)) __PYX_ERR(0, 141, __pyx_L1_error)
       __Pyx_GOTREF(__pyx_t_5);
-      __pyx_t_1 = PyTuple_New(2); if (unlikely(!__pyx_t_1)) __PYX_ERR(0, 142, __pyx_L1_error)
+      __pyx_t_1 = PyTuple_New(2); if (unlikely(!__pyx_t_1)) __PYX_ERR(0, 141, __pyx_L1_error)
       __Pyx_GOTREF(__pyx_t_1);
       __Pyx_GIVEREF(__pyx_t_5);
-      if (__Pyx_PyTuple_SET_ITEM(__pyx_t_1, 0, __pyx_t_5)) __PYX_ERR(0, 142, __pyx_L1_error);
+      if (__Pyx_PyTuple_SET_ITEM(__pyx_t_1, 0, __pyx_t_5)) __PYX_ERR(0, 141, __pyx_L1_error);
       __Pyx_INCREF(__pyx_n_u_c);
       __Pyx_GIVEREF(__pyx_n_u_c);
-      if (__Pyx_PyTuple_SET_ITEM(__pyx_t_1, 1, __pyx_n_u_c)) __PYX_ERR(0, 142, __pyx_L1_error);
+      if (__Pyx_PyTuple_SET_ITEM(__pyx_t_1, 1, __pyx_n_u_c)) __PYX_ERR(0, 141, __pyx_L1_error);
       __pyx_t_5 = 0;
-      __pyx_t_6 = __Pyx_PyList_Append(__pyx_v_processes, __pyx_t_1); if (unlikely(__pyx_t_6 == ((int)-1))) __PYX_ERR(0, 142, __pyx_L1_error)
+      __pyx_t_6 = __Pyx_PyList_Append(__pyx_v_processes, __pyx_t_1); if (unlikely(__pyx_t_6 == ((int)-1))) __PYX_ERR(0, 141, __pyx_L1_error)
       __Pyx_DECREF(__pyx_t_1); __pyx_t_1 = 0;
     }
     __pyx_L5:;
 
-    /* "impurityModel/ed/ManyBodyUtils.pyx":138
+    /* "impurityModel/ed/ManyBodyUtils.pyx":137
  *     cdef  list[tuple[int, str]] processes = []
- *     cdef int64_t i
+ *     cdef ManyBodyOperator_cpp.value_type.first_type.value_type i
  *     for i in ints:             # <<<<<<<<<<<<<<
  *         if i < 0:
  *             processes.append((-i-1, 'a'))
  */
   }
 
-  /* "impurityModel/ed/ManyBodyUtils.pyx":143
+  /* "impurityModel/ed/ManyBodyUtils.pyx":142
  *         else:
  *             processes.append((i, 'c'))
  *     return  tuple(processes)             # <<<<<<<<<<<<<<
@@ -8096,18 +8332,18 @@ static PyObject *__pyx_f_13impurityModel_2ed_13ManyBodyUtils_ints_to_processes(s
  * cdef class ManyBodyOperator:
  */
   __Pyx_XDECREF(__pyx_r);
-  __pyx_t_1 = PyList_AsTuple(__pyx_v_processes); if (unlikely(!__pyx_t_1)) __PYX_ERR(0, 143, __pyx_L1_error)
+  __pyx_t_1 = PyList_AsTuple(__pyx_v_processes); if (unlikely(!__pyx_t_1)) __PYX_ERR(0, 142, __pyx_L1_error)
   __Pyx_GOTREF(__pyx_t_1);
   __pyx_r = ((PyObject*)__pyx_t_1);
   __pyx_t_1 = 0;
   goto __pyx_L0;
 
-  /* "impurityModel/ed/ManyBodyUtils.pyx":135
+  /* "impurityModel/ed/ManyBodyUtils.pyx":134
  *     return ints
  * 
- * cdef tuple[tuple[int, str]] ints_to_processes(vector[int64_t]& ints):             # <<<<<<<<<<<<<<
+ * cdef tuple[tuple[int, str]] ints_to_processes(ManyBodyOperator_cpp.value_type.first_type& ints):             # <<<<<<<<<<<<<<
  *     cdef  list[tuple[int, str]] processes = []
- *     cdef int64_t i
+ *     cdef ManyBodyOperator_cpp.value_type.first_type.value_type i
  */
 
   /* function exit code */
@@ -8123,12 +8359,12 @@ static PyObject *__pyx_f_13impurityModel_2ed_13ManyBodyUtils_ints_to_processes(s
   return __pyx_r;
 }
 
-/* "impurityModel/ed/ManyBodyUtils.pyx":148
+/* "impurityModel/ed/ManyBodyUtils.pyx":147
  *     cdef ManyBodyOperator_cpp o
  * 
  *     def __init__(self, dict[tuple[tuple[int, str]], complex] op={}):             # <<<<<<<<<<<<<<
  *         cdef double complex amp
- *         cdef tuple[int64_t, str] processes
+ *         cdef tuple[int, str] processes
  */
 
 /* Python wrapper */
@@ -8167,12 +8403,12 @@ static int __pyx_pw_13impurityModel_2ed_13ManyBodyUtils_16ManyBodyOperator_1__in
         if (kw_args > 0) {
           PyObject* value = __Pyx_GetKwValue_VARARGS(__pyx_kwds, __pyx_kwvalues, __pyx_n_s_op);
           if (value) { values[0] = __Pyx_Arg_NewRef_VARARGS(value); kw_args--; }
-          else if (unlikely(PyErr_Occurred())) __PYX_ERR(0, 148, __pyx_L3_error)
+          else if (unlikely(PyErr_Occurred())) __PYX_ERR(0, 147, __pyx_L3_error)
         }
       }
       if (unlikely(kw_args > 0)) {
         const Py_ssize_t kwd_pos_args = __pyx_nargs;
-        if (unlikely(__Pyx_ParseOptionalKeywords(__pyx_kwds, __pyx_kwvalues, __pyx_pyargnames, 0, values + 0, kwd_pos_args, "__init__") < 0)) __PYX_ERR(0, 148, __pyx_L3_error)
+        if (unlikely(__Pyx_ParseOptionalKeywords(__pyx_kwds, __pyx_kwvalues, __pyx_pyargnames, 0, values + 0, kwd_pos_args, "__init__") < 0)) __PYX_ERR(0, 147, __pyx_L3_error)
       }
     } else {
       switch (__pyx_nargs) {
@@ -8186,7 +8422,7 @@ static int __pyx_pw_13impurityModel_2ed_13ManyBodyUtils_16ManyBodyOperator_1__in
   }
   goto __pyx_L6_skip;
   __pyx_L5_argtuple_error:;
-  __Pyx_RaiseArgtupleInvalid("__init__", 0, 0, 1, __pyx_nargs); __PYX_ERR(0, 148, __pyx_L3_error)
+  __Pyx_RaiseArgtupleInvalid("__init__", 0, 0, 1, __pyx_nargs); __PYX_ERR(0, 147, __pyx_L3_error)
   __pyx_L6_skip:;
   goto __pyx_L4_argument_unpacking_done;
   __pyx_L3_error:;
@@ -8200,7 +8436,7 @@ static int __pyx_pw_13impurityModel_2ed_13ManyBodyUtils_16ManyBodyOperator_1__in
   __Pyx_RefNannyFinishContext();
   return -1;
   __pyx_L4_argument_unpacking_done:;
-  if (unlikely(!__Pyx_ArgTypeTest(((PyObject *)__pyx_v_op), (&PyDict_Type), 1, "op", 1))) __PYX_ERR(0, 148, __pyx_L1_error)
+  if (unlikely(!__Pyx_ArgTypeTest(((PyObject *)__pyx_v_op), (&PyDict_Type), 1, "op", 1))) __PYX_ERR(0, 147, __pyx_L1_error)
   __pyx_r = __pyx_pf_13impurityModel_2ed_13ManyBodyUtils_16ManyBodyOperator___init__(((struct __pyx_obj_13impurityModel_2ed_13ManyBodyUtils_ManyBodyOperator *)__pyx_v_self), __pyx_v_op);
 
   /* function exit code */
@@ -8221,7 +8457,7 @@ static int __pyx_pw_13impurityModel_2ed_13ManyBodyUtils_16ManyBodyOperator_1__in
 static int __pyx_pf_13impurityModel_2ed_13ManyBodyUtils_16ManyBodyOperator___init__(struct __pyx_obj_13impurityModel_2ed_13ManyBodyUtils_ManyBodyOperator *__pyx_v_self, PyObject *__pyx_v_op) {
   __pyx_t_double_complex __pyx_v_amp;
   PyObject *__pyx_v_processes = 0;
-  std::vector<std::pair<std::vector<int64_t> ,__pyx_t_double_complex> >  __pyx_v_new_ops;
+  std::vector<ManyBodyOperator::value_type>  __pyx_v_new_ops;
   int __pyx_r;
   __Pyx_RefNannyDeclarations
   PyObject *__pyx_t_1 = NULL;
@@ -8232,15 +8468,15 @@ static int __pyx_pf_13impurityModel_2ed_13ManyBodyUtils_16ManyBodyOperator___ini
   PyObject *__pyx_t_6 = NULL;
   int __pyx_t_7;
   __pyx_t_double_complex __pyx_t_8;
-  std::vector<int64_t>  __pyx_t_9;
+  std::pair<std::vector<int64_t> ,__pyx_t_double_complex> ::first_type __pyx_t_9;
   int __pyx_lineno = 0;
   const char *__pyx_filename = NULL;
   int __pyx_clineno = 0;
   __Pyx_RefNannySetupContext("__init__", 1);
 
-  /* "impurityModel/ed/ManyBodyUtils.pyx":154
- *         cdef int64_t i
- *         cdef vector[pair[vector[int64_t], doublecomplex]] new_ops
+  /* "impurityModel/ed/ManyBodyUtils.pyx":153
+ *         cdef ManyBodyOperator_cpp.value_type.first_type.value_type  i
+ *         cdef vector[ManyBodyOperator_cpp.value_type] new_ops
  *         for processes, amp in op.items():             # <<<<<<<<<<<<<<
  *             new_ops.emplace_back(processes_to_ints(processes), amp)
  * 
@@ -8248,9 +8484,9 @@ static int __pyx_pf_13impurityModel_2ed_13ManyBodyUtils_16ManyBodyOperator___ini
   __pyx_t_2 = 0;
   if (unlikely(__pyx_v_op == Py_None)) {
     PyErr_Format(PyExc_AttributeError, "'NoneType' object has no attribute '%.30s'", "items");
-    __PYX_ERR(0, 154, __pyx_L1_error)
+    __PYX_ERR(0, 153, __pyx_L1_error)
   }
-  __pyx_t_5 = __Pyx_dict_iterator(__pyx_v_op, 1, __pyx_n_s_items, (&__pyx_t_3), (&__pyx_t_4)); if (unlikely(!__pyx_t_5)) __PYX_ERR(0, 154, __pyx_L1_error)
+  __pyx_t_5 = __Pyx_dict_iterator(__pyx_v_op, 1, __pyx_n_s_items, (&__pyx_t_3), (&__pyx_t_4)); if (unlikely(!__pyx_t_5)) __PYX_ERR(0, 153, __pyx_L1_error)
   __Pyx_GOTREF(__pyx_t_5);
   __Pyx_XDECREF(__pyx_t_1);
   __pyx_t_1 = __pyx_t_5;
@@ -8258,34 +8494,34 @@ static int __pyx_pf_13impurityModel_2ed_13ManyBodyUtils_16ManyBodyOperator___ini
   while (1) {
     __pyx_t_7 = __Pyx_dict_iter_next(__pyx_t_1, __pyx_t_3, &__pyx_t_2, &__pyx_t_5, &__pyx_t_6, NULL, __pyx_t_4);
     if (unlikely(__pyx_t_7 == 0)) break;
-    if (unlikely(__pyx_t_7 == -1)) __PYX_ERR(0, 154, __pyx_L1_error)
+    if (unlikely(__pyx_t_7 == -1)) __PYX_ERR(0, 153, __pyx_L1_error)
     __Pyx_GOTREF(__pyx_t_5);
     __Pyx_GOTREF(__pyx_t_6);
-    if (!(likely(PyTuple_CheckExact(__pyx_t_5))||((__pyx_t_5) == Py_None) || __Pyx_RaiseUnexpectedTypeError("tuple", __pyx_t_5))) __PYX_ERR(0, 154, __pyx_L1_error)
-    __pyx_t_8 = __Pyx_PyComplex_As___pyx_t_double_complex(__pyx_t_6); if (unlikely(PyErr_Occurred())) __PYX_ERR(0, 154, __pyx_L1_error)
+    if (!(likely(PyTuple_CheckExact(__pyx_t_5))||((__pyx_t_5) == Py_None) || __Pyx_RaiseUnexpectedTypeError("tuple", __pyx_t_5))) __PYX_ERR(0, 153, __pyx_L1_error)
+    __pyx_t_8 = __Pyx_PyComplex_As___pyx_t_double_complex(__pyx_t_6); if (unlikely(PyErr_Occurred())) __PYX_ERR(0, 153, __pyx_L1_error)
     __Pyx_DECREF(__pyx_t_6); __pyx_t_6 = 0;
     __Pyx_XDECREF_SET(__pyx_v_processes, ((PyObject*)__pyx_t_5));
     __pyx_t_5 = 0;
     __pyx_v_amp = __pyx_t_8;
 
-    /* "impurityModel/ed/ManyBodyUtils.pyx":155
- *         cdef vector[pair[vector[int64_t], doublecomplex]] new_ops
+    /* "impurityModel/ed/ManyBodyUtils.pyx":154
+ *         cdef vector[ManyBodyOperator_cpp.value_type] new_ops
  *         for processes, amp in op.items():
  *             new_ops.emplace_back(processes_to_ints(processes), amp)             # <<<<<<<<<<<<<<
  * 
  * 
  */
-    __pyx_t_9 = __pyx_f_13impurityModel_2ed_13ManyBodyUtils_processes_to_ints(__pyx_v_processes); if (unlikely(PyErr_Occurred())) __PYX_ERR(0, 155, __pyx_L1_error)
+    __pyx_t_9 = __pyx_f_13impurityModel_2ed_13ManyBodyUtils_processes_to_ints(__pyx_v_processes); if (unlikely(PyErr_Occurred())) __PYX_ERR(0, 154, __pyx_L1_error)
     try {
       __pyx_v_new_ops.emplace_back(__PYX_STD_MOVE_IF_SUPPORTED(__pyx_t_9), __pyx_v_amp);
     } catch(...) {
       __Pyx_CppExn2PyErr();
-      __PYX_ERR(0, 155, __pyx_L1_error)
+      __PYX_ERR(0, 154, __pyx_L1_error)
     }
   }
   __Pyx_DECREF(__pyx_t_1); __pyx_t_1 = 0;
 
-  /* "impurityModel/ed/ManyBodyUtils.pyx":158
+  /* "impurityModel/ed/ManyBodyUtils.pyx":157
  * 
  * 
  *         self.o = ManyBodyOperator_cpp(new_ops)             # <<<<<<<<<<<<<<
@@ -8294,12 +8530,12 @@ static int __pyx_pf_13impurityModel_2ed_13ManyBodyUtils_16ManyBodyOperator___ini
  */
   __pyx_v_self->o = ManyBodyOperator(__pyx_v_new_ops);
 
-  /* "impurityModel/ed/ManyBodyUtils.pyx":148
+  /* "impurityModel/ed/ManyBodyUtils.pyx":147
  *     cdef ManyBodyOperator_cpp o
  * 
  *     def __init__(self, dict[tuple[tuple[int, str]], complex] op={}):             # <<<<<<<<<<<<<<
  *         cdef double complex amp
- *         cdef tuple[int64_t, str] processes
+ *         cdef tuple[int, str] processes
  */
 
   /* function exit code */
@@ -8317,11 +8553,11 @@ static int __pyx_pf_13impurityModel_2ed_13ManyBodyUtils_16ManyBodyOperator___ini
   return __pyx_r;
 }
 
-/* "impurityModel/ed/ManyBodyUtils.pyx":160
+/* "impurityModel/ed/ManyBodyUtils.pyx":159
  *         self.o = ManyBodyOperator_cpp(new_ops)
  * 
  *     def __repr__(self):             # <<<<<<<<<<<<<<
- *         cdef pair[vector[int64_t], double complex] p
+ *         cdef ManyBodyOperator_cpp.value_type p
  *         return "ManyBodyOperator({" + ", ".join([f"{ints_to_processes(p.first)}: {p.second}" for p in self.o]) + "})"
  */
 
@@ -8341,12 +8577,12 @@ static PyObject *__pyx_pw_13impurityModel_2ed_13ManyBodyUtils_16ManyBodyOperator
 }
 
 static PyObject *__pyx_pf_13impurityModel_2ed_13ManyBodyUtils_16ManyBodyOperator_2__repr__(struct __pyx_obj_13impurityModel_2ed_13ManyBodyUtils_ManyBodyOperator *__pyx_v_self) {
-  std::pair<std::vector<int64_t> ,__pyx_t_double_complex>  __pyx_8genexpr5__pyx_v_p;
+  ManyBodyOperator::value_type __pyx_8genexpr5__pyx_v_p;
   PyObject *__pyx_r = NULL;
   __Pyx_RefNannyDeclarations
   PyObject *__pyx_t_1 = NULL;
   ManyBodyOperator::iterator __pyx_t_2;
-  std::pair<std::vector<int64_t> ,__pyx_t_double_complex>  __pyx_t_3;
+  ManyBodyOperator::value_type __pyx_t_3;
   PyObject *__pyx_t_4 = NULL;
   Py_ssize_t __pyx_t_5;
   Py_UCS4 __pyx_t_6;
@@ -8357,16 +8593,16 @@ static PyObject *__pyx_pf_13impurityModel_2ed_13ManyBodyUtils_16ManyBodyOperator
   int __pyx_clineno = 0;
   __Pyx_RefNannySetupContext("__repr__", 1);
 
-  /* "impurityModel/ed/ManyBodyUtils.pyx":162
+  /* "impurityModel/ed/ManyBodyUtils.pyx":161
  *     def __repr__(self):
- *         cdef pair[vector[int64_t], double complex] p
+ *         cdef ManyBodyOperator_cpp.value_type p
  *         return "ManyBodyOperator({" + ", ".join([f"{ints_to_processes(p.first)}: {p.second}" for p in self.o]) + "})"             # <<<<<<<<<<<<<<
  * 
  *     def __eq__(self, ManyBodyOperator other):
  */
   __Pyx_XDECREF(__pyx_r);
   { /* enter inner scope */
-    __pyx_t_1 = PyList_New(0); if (unlikely(!__pyx_t_1)) __PYX_ERR(0, 162, __pyx_L1_error)
+    __pyx_t_1 = PyList_New(0); if (unlikely(!__pyx_t_1)) __PYX_ERR(0, 161, __pyx_L1_error)
     __Pyx_GOTREF(__pyx_t_1);
     __pyx_t_2 = __pyx_v_self->o.begin();
     for (;;) {
@@ -8374,13 +8610,13 @@ static PyObject *__pyx_pf_13impurityModel_2ed_13ManyBodyUtils_16ManyBodyOperator
       __pyx_t_3 = *__pyx_t_2;
       ++__pyx_t_2;
       __pyx_8genexpr5__pyx_v_p = __PYX_STD_MOVE_IF_SUPPORTED(__pyx_t_3);
-      __pyx_t_4 = PyTuple_New(3); if (unlikely(!__pyx_t_4)) __PYX_ERR(0, 162, __pyx_L1_error)
+      __pyx_t_4 = PyTuple_New(3); if (unlikely(!__pyx_t_4)) __PYX_ERR(0, 161, __pyx_L1_error)
       __Pyx_GOTREF(__pyx_t_4);
       __pyx_t_5 = 0;
       __pyx_t_6 = 127;
-      __pyx_t_7 = __pyx_f_13impurityModel_2ed_13ManyBodyUtils_ints_to_processes(__pyx_8genexpr5__pyx_v_p.first); if (unlikely(!__pyx_t_7)) __PYX_ERR(0, 162, __pyx_L1_error)
+      __pyx_t_7 = __pyx_f_13impurityModel_2ed_13ManyBodyUtils_ints_to_processes(__pyx_8genexpr5__pyx_v_p.first); if (unlikely(!__pyx_t_7)) __PYX_ERR(0, 161, __pyx_L1_error)
       __Pyx_GOTREF(__pyx_t_7);
-      __pyx_t_8 = __Pyx_PyObject_FormatSimple(__pyx_t_7, __pyx_empty_unicode); if (unlikely(!__pyx_t_8)) __PYX_ERR(0, 162, __pyx_L1_error)
+      __pyx_t_8 = __Pyx_PyObject_FormatSimple(__pyx_t_7, __pyx_empty_unicode); if (unlikely(!__pyx_t_8)) __PYX_ERR(0, 161, __pyx_L1_error)
       __Pyx_GOTREF(__pyx_t_8);
       __Pyx_DECREF(__pyx_t_7); __pyx_t_7 = 0;
       __pyx_t_6 = (__Pyx_PyUnicode_MAX_CHAR_VALUE(__pyx_t_8) > __pyx_t_6) ? __Pyx_PyUnicode_MAX_CHAR_VALUE(__pyx_t_8) : __pyx_t_6;
@@ -8392,9 +8628,9 @@ static PyObject *__pyx_pf_13impurityModel_2ed_13ManyBodyUtils_16ManyBodyOperator
       __pyx_t_5 += 2;
       __Pyx_GIVEREF(__pyx_kp_u__3);
       PyTuple_SET_ITEM(__pyx_t_4, 1, __pyx_kp_u__3);
-      __pyx_t_8 = __pyx_PyComplex_FromComplex(__pyx_8genexpr5__pyx_v_p.second); if (unlikely(!__pyx_t_8)) __PYX_ERR(0, 162, __pyx_L1_error)
+      __pyx_t_8 = __pyx_PyComplex_FromComplex(__pyx_8genexpr5__pyx_v_p.second); if (unlikely(!__pyx_t_8)) __PYX_ERR(0, 161, __pyx_L1_error)
       __Pyx_GOTREF(__pyx_t_8);
-      __pyx_t_7 = __Pyx_PyObject_FormatSimple(__pyx_t_8, __pyx_empty_unicode); if (unlikely(!__pyx_t_7)) __PYX_ERR(0, 162, __pyx_L1_error)
+      __pyx_t_7 = __Pyx_PyObject_FormatSimple(__pyx_t_8, __pyx_empty_unicode); if (unlikely(!__pyx_t_7)) __PYX_ERR(0, 161, __pyx_L1_error)
       __Pyx_GOTREF(__pyx_t_7);
       __Pyx_DECREF(__pyx_t_8); __pyx_t_8 = 0;
       __pyx_t_6 = (__Pyx_PyUnicode_MAX_CHAR_VALUE(__pyx_t_7) > __pyx_t_6) ? __Pyx_PyUnicode_MAX_CHAR_VALUE(__pyx_t_7) : __pyx_t_6;
@@ -8402,31 +8638,31 @@ static PyObject *__pyx_pf_13impurityModel_2ed_13ManyBodyUtils_16ManyBodyOperator
       __Pyx_GIVEREF(__pyx_t_7);
       PyTuple_SET_ITEM(__pyx_t_4, 2, __pyx_t_7);
       __pyx_t_7 = 0;
-      __pyx_t_7 = __Pyx_PyUnicode_Join(__pyx_t_4, 3, __pyx_t_5, __pyx_t_6); if (unlikely(!__pyx_t_7)) __PYX_ERR(0, 162, __pyx_L1_error)
+      __pyx_t_7 = __Pyx_PyUnicode_Join(__pyx_t_4, 3, __pyx_t_5, __pyx_t_6); if (unlikely(!__pyx_t_7)) __PYX_ERR(0, 161, __pyx_L1_error)
       __Pyx_GOTREF(__pyx_t_7);
       __Pyx_DECREF(__pyx_t_4); __pyx_t_4 = 0;
-      if (unlikely(__Pyx_ListComp_Append(__pyx_t_1, (PyObject*)__pyx_t_7))) __PYX_ERR(0, 162, __pyx_L1_error)
+      if (unlikely(__Pyx_ListComp_Append(__pyx_t_1, (PyObject*)__pyx_t_7))) __PYX_ERR(0, 161, __pyx_L1_error)
       __Pyx_DECREF(__pyx_t_7); __pyx_t_7 = 0;
     }
   } /* exit inner scope */
-  __pyx_t_7 = PyUnicode_Join(__pyx_kp_u__2, __pyx_t_1); if (unlikely(!__pyx_t_7)) __PYX_ERR(0, 162, __pyx_L1_error)
+  __pyx_t_7 = PyUnicode_Join(__pyx_kp_u__2, __pyx_t_1); if (unlikely(!__pyx_t_7)) __PYX_ERR(0, 161, __pyx_L1_error)
   __Pyx_GOTREF(__pyx_t_7);
   __Pyx_DECREF(__pyx_t_1); __pyx_t_1 = 0;
-  __pyx_t_1 = __Pyx_PyUnicode_Concat(__pyx_kp_u_ManyBodyOperator, __pyx_t_7); if (unlikely(!__pyx_t_1)) __PYX_ERR(0, 162, __pyx_L1_error)
+  __pyx_t_1 = __Pyx_PyUnicode_Concat(__pyx_kp_u_ManyBodyOperator, __pyx_t_7); if (unlikely(!__pyx_t_1)) __PYX_ERR(0, 161, __pyx_L1_error)
   __Pyx_GOTREF(__pyx_t_1);
   __Pyx_DECREF(__pyx_t_7); __pyx_t_7 = 0;
-  __pyx_t_7 = __Pyx_PyUnicode_ConcatInPlace(__pyx_t_1, __pyx_kp_u__4); if (unlikely(!__pyx_t_7)) __PYX_ERR(0, 162, __pyx_L1_error)
+  __pyx_t_7 = __Pyx_PyUnicode_ConcatInPlace(__pyx_t_1, __pyx_kp_u__4); if (unlikely(!__pyx_t_7)) __PYX_ERR(0, 161, __pyx_L1_error)
   __Pyx_GOTREF(__pyx_t_7);
   __Pyx_DECREF(__pyx_t_1); __pyx_t_1 = 0;
   __pyx_r = __pyx_t_7;
   __pyx_t_7 = 0;
   goto __pyx_L0;
 
-  /* "impurityModel/ed/ManyBodyUtils.pyx":160
+  /* "impurityModel/ed/ManyBodyUtils.pyx":159
  *         self.o = ManyBodyOperator_cpp(new_ops)
  * 
  *     def __repr__(self):             # <<<<<<<<<<<<<<
- *         cdef pair[vector[int64_t], double complex] p
+ *         cdef ManyBodyOperator_cpp.value_type p
  *         return "ManyBodyOperator({" + ", ".join([f"{ints_to_processes(p.first)}: {p.second}" for p in self.o]) + "})"
  */
 
@@ -8444,7 +8680,7 @@ static PyObject *__pyx_pf_13impurityModel_2ed_13ManyBodyUtils_16ManyBodyOperator
   return __pyx_r;
 }
 
-/* "impurityModel/ed/ManyBodyUtils.pyx":164
+/* "impurityModel/ed/ManyBodyUtils.pyx":163
  *         return "ManyBodyOperator({" + ", ".join([f"{ints_to_processes(p.first)}: {p.second}" for p in self.o]) + "})"
  * 
  *     def __eq__(self, ManyBodyOperator other):             # <<<<<<<<<<<<<<
@@ -8463,7 +8699,7 @@ static PyObject *__pyx_pw_13impurityModel_2ed_13ManyBodyUtils_16ManyBodyOperator
   __Pyx_RefNannyDeclarations
   __Pyx_RefNannySetupContext("__eq__ (wrapper)", 0);
   __pyx_kwvalues = __Pyx_KwValues_VARARGS(__pyx_args, __pyx_nargs);
-  if (unlikely(!__Pyx_ArgTypeTest(((PyObject *)__pyx_v_other), __pyx_ptype_13impurityModel_2ed_13ManyBodyUtils_ManyBodyOperator, 1, "other", 0))) __PYX_ERR(0, 164, __pyx_L1_error)
+  if (unlikely(!__Pyx_ArgTypeTest(((PyObject *)__pyx_v_other), __pyx_ptype_13impurityModel_2ed_13ManyBodyUtils_ManyBodyOperator, 1, "other", 0))) __PYX_ERR(0, 163, __pyx_L1_error)
   __pyx_r = __pyx_pf_13impurityModel_2ed_13ManyBodyUtils_16ManyBodyOperator_4__eq__(((struct __pyx_obj_13impurityModel_2ed_13ManyBodyUtils_ManyBodyOperator *)__pyx_v_self), ((struct __pyx_obj_13impurityModel_2ed_13ManyBodyUtils_ManyBodyOperator *)__pyx_v_other));
 
   /* function exit code */
@@ -8484,7 +8720,7 @@ static PyObject *__pyx_pf_13impurityModel_2ed_13ManyBodyUtils_16ManyBodyOperator
   int __pyx_clineno = 0;
   __Pyx_RefNannySetupContext("__eq__", 1);
 
-  /* "impurityModel/ed/ManyBodyUtils.pyx":165
+  /* "impurityModel/ed/ManyBodyUtils.pyx":164
  * 
  *     def __eq__(self, ManyBodyOperator other):
  *         return self.o == other.o             # <<<<<<<<<<<<<<
@@ -8492,13 +8728,13 @@ static PyObject *__pyx_pf_13impurityModel_2ed_13ManyBodyUtils_16ManyBodyOperator
  *     def __getitem__(self, tuple[tuple[int, str]] key):
  */
   __Pyx_XDECREF(__pyx_r);
-  __pyx_t_1 = __Pyx_PyBool_FromLong((__pyx_v_self->o == __pyx_v_other->o)); if (unlikely(!__pyx_t_1)) __PYX_ERR(0, 165, __pyx_L1_error)
+  __pyx_t_1 = __Pyx_PyBool_FromLong((__pyx_v_self->o == __pyx_v_other->o)); if (unlikely(!__pyx_t_1)) __PYX_ERR(0, 164, __pyx_L1_error)
   __Pyx_GOTREF(__pyx_t_1);
   __pyx_r = __pyx_t_1;
   __pyx_t_1 = 0;
   goto __pyx_L0;
 
-  /* "impurityModel/ed/ManyBodyUtils.pyx":164
+  /* "impurityModel/ed/ManyBodyUtils.pyx":163
  *         return "ManyBodyOperator({" + ", ".join([f"{ints_to_processes(p.first)}: {p.second}" for p in self.o]) + "})"
  * 
  *     def __eq__(self, ManyBodyOperator other):             # <<<<<<<<<<<<<<
@@ -8517,7 +8753,7 @@ static PyObject *__pyx_pf_13impurityModel_2ed_13ManyBodyUtils_16ManyBodyOperator
   return __pyx_r;
 }
 
-/* "impurityModel/ed/ManyBodyUtils.pyx":167
+/* "impurityModel/ed/ManyBodyUtils.pyx":166
  *         return self.o == other.o
  * 
  *     def __getitem__(self, tuple[tuple[int, str]] key):             # <<<<<<<<<<<<<<
@@ -8536,7 +8772,7 @@ static PyObject *__pyx_pw_13impurityModel_2ed_13ManyBodyUtils_16ManyBodyOperator
   __Pyx_RefNannyDeclarations
   __Pyx_RefNannySetupContext("__getitem__ (wrapper)", 0);
   __pyx_kwvalues = __Pyx_KwValues_VARARGS(__pyx_args, __pyx_nargs);
-  if (unlikely(!__Pyx_ArgTypeTest(((PyObject *)__pyx_v_key), (&PyTuple_Type), 1, "key", 1))) __PYX_ERR(0, 167, __pyx_L1_error)
+  if (unlikely(!__Pyx_ArgTypeTest(((PyObject *)__pyx_v_key), (&PyTuple_Type), 1, "key", 1))) __PYX_ERR(0, 166, __pyx_L1_error)
   __pyx_r = __pyx_pf_13impurityModel_2ed_13ManyBodyUtils_16ManyBodyOperator_6__getitem__(((struct __pyx_obj_13impurityModel_2ed_13ManyBodyUtils_ManyBodyOperator *)__pyx_v_self), ((PyObject*)__pyx_v_key));
 
   /* function exit code */
@@ -8551,7 +8787,7 @@ static PyObject *__pyx_pw_13impurityModel_2ed_13ManyBodyUtils_16ManyBodyOperator
 static PyObject *__pyx_pf_13impurityModel_2ed_13ManyBodyUtils_16ManyBodyOperator_6__getitem__(struct __pyx_obj_13impurityModel_2ed_13ManyBodyUtils_ManyBodyOperator *__pyx_v_self, PyObject *__pyx_v_key) {
   PyObject *__pyx_r = NULL;
   __Pyx_RefNannyDeclarations
-  std::vector<int64_t>  __pyx_t_1;
+  std::pair<std::vector<int64_t> ,__pyx_t_double_complex> ::first_type __pyx_t_1;
   __pyx_t_double_complex __pyx_t_2;
   PyObject *__pyx_t_3 = NULL;
   int __pyx_lineno = 0;
@@ -8559,7 +8795,7 @@ static PyObject *__pyx_pf_13impurityModel_2ed_13ManyBodyUtils_16ManyBodyOperator
   int __pyx_clineno = 0;
   __Pyx_RefNannySetupContext("__getitem__", 1);
 
-  /* "impurityModel/ed/ManyBodyUtils.pyx":168
+  /* "impurityModel/ed/ManyBodyUtils.pyx":167
  * 
  *     def __getitem__(self, tuple[tuple[int, str]] key):
  *         return self.o[processes_to_ints(key)]             # <<<<<<<<<<<<<<
@@ -8567,15 +8803,15 @@ static PyObject *__pyx_pf_13impurityModel_2ed_13ManyBodyUtils_16ManyBodyOperator
  *     def __setitem__(self, tuple[tuple[int, str]]key, double complex value):
  */
   __Pyx_XDECREF(__pyx_r);
-  __pyx_t_1 = __pyx_f_13impurityModel_2ed_13ManyBodyUtils_processes_to_ints(__pyx_v_key); if (unlikely(PyErr_Occurred())) __PYX_ERR(0, 168, __pyx_L1_error)
+  __pyx_t_1 = __pyx_f_13impurityModel_2ed_13ManyBodyUtils_processes_to_ints(__pyx_v_key); if (unlikely(PyErr_Occurred())) __PYX_ERR(0, 167, __pyx_L1_error)
   __pyx_t_2 = (__pyx_v_self->o[__pyx_t_1]);
-  __pyx_t_3 = __pyx_PyComplex_FromComplex(__pyx_t_2); if (unlikely(!__pyx_t_3)) __PYX_ERR(0, 168, __pyx_L1_error)
+  __pyx_t_3 = __pyx_PyComplex_FromComplex(__pyx_t_2); if (unlikely(!__pyx_t_3)) __PYX_ERR(0, 167, __pyx_L1_error)
   __Pyx_GOTREF(__pyx_t_3);
   __pyx_r = __pyx_t_3;
   __pyx_t_3 = 0;
   goto __pyx_L0;
 
-  /* "impurityModel/ed/ManyBodyUtils.pyx":167
+  /* "impurityModel/ed/ManyBodyUtils.pyx":166
  *         return self.o == other.o
  * 
  *     def __getitem__(self, tuple[tuple[int, str]] key):             # <<<<<<<<<<<<<<
@@ -8594,7 +8830,7 @@ static PyObject *__pyx_pf_13impurityModel_2ed_13ManyBodyUtils_16ManyBodyOperator
   return __pyx_r;
 }
 
-/* "impurityModel/ed/ManyBodyUtils.pyx":170
+/* "impurityModel/ed/ManyBodyUtils.pyx":169
  *         return self.o[processes_to_ints(key)]
  * 
  *     def __setitem__(self, tuple[tuple[int, str]]key, double complex value):             # <<<<<<<<<<<<<<
@@ -8615,7 +8851,7 @@ static int __pyx_pw_13impurityModel_2ed_13ManyBodyUtils_16ManyBodyOperator_9__se
   __Pyx_RefNannySetupContext("__setitem__ (wrapper)", 0);
   __pyx_kwvalues = __Pyx_KwValues_VARARGS(__pyx_args, __pyx_nargs);
   assert(__pyx_arg_value); {
-    __pyx_v_value = __Pyx_PyComplex_As___pyx_t_double_complex(__pyx_arg_value); if (unlikely(PyErr_Occurred())) __PYX_ERR(0, 170, __pyx_L3_error)
+    __pyx_v_value = __Pyx_PyComplex_As___pyx_t_double_complex(__pyx_arg_value); if (unlikely(PyErr_Occurred())) __PYX_ERR(0, 169, __pyx_L3_error)
   }
   goto __pyx_L4_argument_unpacking_done;
   __pyx_L3_error:;
@@ -8623,7 +8859,7 @@ static int __pyx_pw_13impurityModel_2ed_13ManyBodyUtils_16ManyBodyOperator_9__se
   __Pyx_RefNannyFinishContext();
   return -1;
   __pyx_L4_argument_unpacking_done:;
-  if (unlikely(!__Pyx_ArgTypeTest(((PyObject *)__pyx_v_key), (&PyTuple_Type), 1, "key", 1))) __PYX_ERR(0, 170, __pyx_L1_error)
+  if (unlikely(!__Pyx_ArgTypeTest(((PyObject *)__pyx_v_key), (&PyTuple_Type), 1, "key", 1))) __PYX_ERR(0, 169, __pyx_L1_error)
   __pyx_r = __pyx_pf_13impurityModel_2ed_13ManyBodyUtils_16ManyBodyOperator_8__setitem__(((struct __pyx_obj_13impurityModel_2ed_13ManyBodyUtils_ManyBodyOperator *)__pyx_v_self), ((PyObject*)__pyx_v_key), __pyx_v_value);
 
   /* function exit code */
@@ -8637,22 +8873,22 @@ static int __pyx_pw_13impurityModel_2ed_13ManyBodyUtils_16ManyBodyOperator_9__se
 
 static int __pyx_pf_13impurityModel_2ed_13ManyBodyUtils_16ManyBodyOperator_8__setitem__(struct __pyx_obj_13impurityModel_2ed_13ManyBodyUtils_ManyBodyOperator *__pyx_v_self, PyObject *__pyx_v_key, __pyx_t_double_complex __pyx_v_value) {
   int __pyx_r;
-  std::vector<int64_t>  __pyx_t_1;
+  std::pair<std::vector<int64_t> ,__pyx_t_double_complex> ::first_type __pyx_t_1;
   int __pyx_lineno = 0;
   const char *__pyx_filename = NULL;
   int __pyx_clineno = 0;
 
-  /* "impurityModel/ed/ManyBodyUtils.pyx":171
+  /* "impurityModel/ed/ManyBodyUtils.pyx":170
  * 
  *     def __setitem__(self, tuple[tuple[int, str]]key, double complex value):
  *         self.o[processes_to_ints(key)] = value             # <<<<<<<<<<<<<<
  *         self.o.clear_memory()
  * 
  */
-  __pyx_t_1 = __pyx_f_13impurityModel_2ed_13ManyBodyUtils_processes_to_ints(__pyx_v_key); if (unlikely(PyErr_Occurred())) __PYX_ERR(0, 171, __pyx_L1_error)
+  __pyx_t_1 = __pyx_f_13impurityModel_2ed_13ManyBodyUtils_processes_to_ints(__pyx_v_key); if (unlikely(PyErr_Occurred())) __PYX_ERR(0, 170, __pyx_L1_error)
   (__pyx_v_self->o[__pyx_t_1]) = __pyx_v_value;
 
-  /* "impurityModel/ed/ManyBodyUtils.pyx":172
+  /* "impurityModel/ed/ManyBodyUtils.pyx":171
  *     def __setitem__(self, tuple[tuple[int, str]]key, double complex value):
  *         self.o[processes_to_ints(key)] = value
  *         self.o.clear_memory()             # <<<<<<<<<<<<<<
@@ -8661,7 +8897,7 @@ static int __pyx_pf_13impurityModel_2ed_13ManyBodyUtils_16ManyBodyOperator_8__se
  */
   __pyx_v_self->o.clear_memory();
 
-  /* "impurityModel/ed/ManyBodyUtils.pyx":170
+  /* "impurityModel/ed/ManyBodyUtils.pyx":169
  *         return self.o[processes_to_ints(key)]
  * 
  *     def __setitem__(self, tuple[tuple[int, str]]key, double complex value):             # <<<<<<<<<<<<<<
@@ -8679,7 +8915,7 @@ static int __pyx_pf_13impurityModel_2ed_13ManyBodyUtils_16ManyBodyOperator_8__se
   return __pyx_r;
 }
 
-/* "impurityModel/ed/ManyBodyUtils.pyx":174
+/* "impurityModel/ed/ManyBodyUtils.pyx":173
  *         self.o.clear_memory()
  * 
  *     def __add__(self, ManyBodyOperator other) ->ManyBodyOperator:             # <<<<<<<<<<<<<<
@@ -8698,7 +8934,7 @@ static PyObject *__pyx_pw_13impurityModel_2ed_13ManyBodyUtils_16ManyBodyOperator
   __Pyx_RefNannyDeclarations
   __Pyx_RefNannySetupContext("__add__ (wrapper)", 0);
   __pyx_kwvalues = __Pyx_KwValues_VARARGS(__pyx_args, __pyx_nargs);
-  if (unlikely(!__Pyx_ArgTypeTest(((PyObject *)__pyx_v_other), __pyx_ptype_13impurityModel_2ed_13ManyBodyUtils_ManyBodyOperator, 1, "other", 0))) __PYX_ERR(0, 174, __pyx_L1_error)
+  if (unlikely(!__Pyx_ArgTypeTest(((PyObject *)__pyx_v_other), __pyx_ptype_13impurityModel_2ed_13ManyBodyUtils_ManyBodyOperator, 1, "other", 0))) __PYX_ERR(0, 173, __pyx_L1_error)
   __pyx_r = __pyx_pf_13impurityModel_2ed_13ManyBodyUtils_16ManyBodyOperator_10__add__(((struct __pyx_obj_13impurityModel_2ed_13ManyBodyUtils_ManyBodyOperator *)__pyx_v_self), ((struct __pyx_obj_13impurityModel_2ed_13ManyBodyUtils_ManyBodyOperator *)__pyx_v_other));
 
   /* function exit code */
@@ -8720,19 +8956,19 @@ static PyObject *__pyx_pf_13impurityModel_2ed_13ManyBodyUtils_16ManyBodyOperator
   int __pyx_clineno = 0;
   __Pyx_RefNannySetupContext("__add__", 1);
 
-  /* "impurityModel/ed/ManyBodyUtils.pyx":175
+  /* "impurityModel/ed/ManyBodyUtils.pyx":174
  * 
  *     def __add__(self, ManyBodyOperator other) ->ManyBodyOperator:
  *         res = ManyBodyOperator()             # <<<<<<<<<<<<<<
  *         res.o = self.o + other.o
  *         return res
  */
-  __pyx_t_1 = __Pyx_PyObject_CallNoArg(((PyObject *)__pyx_ptype_13impurityModel_2ed_13ManyBodyUtils_ManyBodyOperator)); if (unlikely(!__pyx_t_1)) __PYX_ERR(0, 175, __pyx_L1_error)
+  __pyx_t_1 = __Pyx_PyObject_CallNoArg(((PyObject *)__pyx_ptype_13impurityModel_2ed_13ManyBodyUtils_ManyBodyOperator)); if (unlikely(!__pyx_t_1)) __PYX_ERR(0, 174, __pyx_L1_error)
   __Pyx_GOTREF(__pyx_t_1);
   __pyx_v_res = ((struct __pyx_obj_13impurityModel_2ed_13ManyBodyUtils_ManyBodyOperator *)__pyx_t_1);
   __pyx_t_1 = 0;
 
-  /* "impurityModel/ed/ManyBodyUtils.pyx":176
+  /* "impurityModel/ed/ManyBodyUtils.pyx":175
  *     def __add__(self, ManyBodyOperator other) ->ManyBodyOperator:
  *         res = ManyBodyOperator()
  *         res.o = self.o + other.o             # <<<<<<<<<<<<<<
@@ -8741,7 +8977,7 @@ static PyObject *__pyx_pf_13impurityModel_2ed_13ManyBodyUtils_16ManyBodyOperator
  */
   __pyx_v_res->o = (__pyx_v_self->o + __pyx_v_other->o);
 
-  /* "impurityModel/ed/ManyBodyUtils.pyx":177
+  /* "impurityModel/ed/ManyBodyUtils.pyx":176
  *         res = ManyBodyOperator()
  *         res.o = self.o + other.o
  *         return res             # <<<<<<<<<<<<<<
@@ -8753,7 +8989,7 @@ static PyObject *__pyx_pf_13impurityModel_2ed_13ManyBodyUtils_16ManyBodyOperator
   __pyx_r = ((PyObject *)__pyx_v_res);
   goto __pyx_L0;
 
-  /* "impurityModel/ed/ManyBodyUtils.pyx":174
+  /* "impurityModel/ed/ManyBodyUtils.pyx":173
  *         self.o.clear_memory()
  * 
  *     def __add__(self, ManyBodyOperator other) ->ManyBodyOperator:             # <<<<<<<<<<<<<<
@@ -8773,7 +9009,7 @@ static PyObject *__pyx_pf_13impurityModel_2ed_13ManyBodyUtils_16ManyBodyOperator
   return __pyx_r;
 }
 
-/* "impurityModel/ed/ManyBodyUtils.pyx":179
+/* "impurityModel/ed/ManyBodyUtils.pyx":178
  *         return res
  * 
  *     def __sub__(self, ManyBodyOperator other) -> ManyBodyOperator:             # <<<<<<<<<<<<<<
@@ -8792,7 +9028,7 @@ static PyObject *__pyx_pw_13impurityModel_2ed_13ManyBodyUtils_16ManyBodyOperator
   __Pyx_RefNannyDeclarations
   __Pyx_RefNannySetupContext("__sub__ (wrapper)", 0);
   __pyx_kwvalues = __Pyx_KwValues_VARARGS(__pyx_args, __pyx_nargs);
-  if (unlikely(!__Pyx_ArgTypeTest(((PyObject *)__pyx_v_other), __pyx_ptype_13impurityModel_2ed_13ManyBodyUtils_ManyBodyOperator, 1, "other", 0))) __PYX_ERR(0, 179, __pyx_L1_error)
+  if (unlikely(!__Pyx_ArgTypeTest(((PyObject *)__pyx_v_other), __pyx_ptype_13impurityModel_2ed_13ManyBodyUtils_ManyBodyOperator, 1, "other", 0))) __PYX_ERR(0, 178, __pyx_L1_error)
   __pyx_r = __pyx_pf_13impurityModel_2ed_13ManyBodyUtils_16ManyBodyOperator_12__sub__(((struct __pyx_obj_13impurityModel_2ed_13ManyBodyUtils_ManyBodyOperator *)__pyx_v_self), ((struct __pyx_obj_13impurityModel_2ed_13ManyBodyUtils_ManyBodyOperator *)__pyx_v_other));
 
   /* function exit code */
@@ -8814,19 +9050,19 @@ static PyObject *__pyx_pf_13impurityModel_2ed_13ManyBodyUtils_16ManyBodyOperator
   int __pyx_clineno = 0;
   __Pyx_RefNannySetupContext("__sub__", 1);
 
-  /* "impurityModel/ed/ManyBodyUtils.pyx":180
+  /* "impurityModel/ed/ManyBodyUtils.pyx":179
  * 
  *     def __sub__(self, ManyBodyOperator other) -> ManyBodyOperator:
  *         res = ManyBodyOperator()             # <<<<<<<<<<<<<<
  *         res.o = self.o - other.o
  *         return res
  */
-  __pyx_t_1 = __Pyx_PyObject_CallNoArg(((PyObject *)__pyx_ptype_13impurityModel_2ed_13ManyBodyUtils_ManyBodyOperator)); if (unlikely(!__pyx_t_1)) __PYX_ERR(0, 180, __pyx_L1_error)
+  __pyx_t_1 = __Pyx_PyObject_CallNoArg(((PyObject *)__pyx_ptype_13impurityModel_2ed_13ManyBodyUtils_ManyBodyOperator)); if (unlikely(!__pyx_t_1)) __PYX_ERR(0, 179, __pyx_L1_error)
   __Pyx_GOTREF(__pyx_t_1);
   __pyx_v_res = ((struct __pyx_obj_13impurityModel_2ed_13ManyBodyUtils_ManyBodyOperator *)__pyx_t_1);
   __pyx_t_1 = 0;
 
-  /* "impurityModel/ed/ManyBodyUtils.pyx":181
+  /* "impurityModel/ed/ManyBodyUtils.pyx":180
  *     def __sub__(self, ManyBodyOperator other) -> ManyBodyOperator:
  *         res = ManyBodyOperator()
  *         res.o = self.o - other.o             # <<<<<<<<<<<<<<
@@ -8835,7 +9071,7 @@ static PyObject *__pyx_pf_13impurityModel_2ed_13ManyBodyUtils_16ManyBodyOperator
  */
   __pyx_v_res->o = (__pyx_v_self->o - __pyx_v_other->o);
 
-  /* "impurityModel/ed/ManyBodyUtils.pyx":182
+  /* "impurityModel/ed/ManyBodyUtils.pyx":181
  *         res = ManyBodyOperator()
  *         res.o = self.o - other.o
  *         return res             # <<<<<<<<<<<<<<
@@ -8847,7 +9083,7 @@ static PyObject *__pyx_pf_13impurityModel_2ed_13ManyBodyUtils_16ManyBodyOperator
   __pyx_r = ((PyObject *)__pyx_v_res);
   goto __pyx_L0;
 
-  /* "impurityModel/ed/ManyBodyUtils.pyx":179
+  /* "impurityModel/ed/ManyBodyUtils.pyx":178
  *         return res
  * 
  *     def __sub__(self, ManyBodyOperator other) -> ManyBodyOperator:             # <<<<<<<<<<<<<<
@@ -8867,7 +9103,7 @@ static PyObject *__pyx_pf_13impurityModel_2ed_13ManyBodyUtils_16ManyBodyOperator
   return __pyx_r;
 }
 
-/* "impurityModel/ed/ManyBodyUtils.pyx":184
+/* "impurityModel/ed/ManyBodyUtils.pyx":183
  *         return res
  * 
  *     def __mul__(self, complex s) ->ManyBodyOperator:             # <<<<<<<<<<<<<<
@@ -8888,7 +9124,7 @@ static PyObject *__pyx_pw_13impurityModel_2ed_13ManyBodyUtils_16ManyBodyOperator
   __Pyx_RefNannySetupContext("__mul__ (wrapper)", 0);
   __pyx_kwvalues = __Pyx_KwValues_VARARGS(__pyx_args, __pyx_nargs);
   assert(__pyx_arg_s); {
-    __pyx_v_s = __Pyx_PyComplex_As___pyx_t_double_complex(__pyx_arg_s); if (unlikely(PyErr_Occurred())) __PYX_ERR(0, 184, __pyx_L3_error)
+    __pyx_v_s = __Pyx_PyComplex_As___pyx_t_double_complex(__pyx_arg_s); if (unlikely(PyErr_Occurred())) __PYX_ERR(0, 183, __pyx_L3_error)
   }
   goto __pyx_L4_argument_unpacking_done;
   __pyx_L3_error:;
@@ -8913,19 +9149,19 @@ static PyObject *__pyx_pf_13impurityModel_2ed_13ManyBodyUtils_16ManyBodyOperator
   int __pyx_clineno = 0;
   __Pyx_RefNannySetupContext("__mul__", 1);
 
-  /* "impurityModel/ed/ManyBodyUtils.pyx":185
+  /* "impurityModel/ed/ManyBodyUtils.pyx":184
  * 
  *     def __mul__(self, complex s) ->ManyBodyOperator:
  *         res = ManyBodyOperator()             # <<<<<<<<<<<<<<
  *         res.o = self.o*s
  *         return res
  */
-  __pyx_t_1 = __Pyx_PyObject_CallNoArg(((PyObject *)__pyx_ptype_13impurityModel_2ed_13ManyBodyUtils_ManyBodyOperator)); if (unlikely(!__pyx_t_1)) __PYX_ERR(0, 185, __pyx_L1_error)
+  __pyx_t_1 = __Pyx_PyObject_CallNoArg(((PyObject *)__pyx_ptype_13impurityModel_2ed_13ManyBodyUtils_ManyBodyOperator)); if (unlikely(!__pyx_t_1)) __PYX_ERR(0, 184, __pyx_L1_error)
   __Pyx_GOTREF(__pyx_t_1);
   __pyx_v_res = ((struct __pyx_obj_13impurityModel_2ed_13ManyBodyUtils_ManyBodyOperator *)__pyx_t_1);
   __pyx_t_1 = 0;
 
-  /* "impurityModel/ed/ManyBodyUtils.pyx":186
+  /* "impurityModel/ed/ManyBodyUtils.pyx":185
  *     def __mul__(self, complex s) ->ManyBodyOperator:
  *         res = ManyBodyOperator()
  *         res.o = self.o*s             # <<<<<<<<<<<<<<
@@ -8934,7 +9170,7 @@ static PyObject *__pyx_pf_13impurityModel_2ed_13ManyBodyUtils_16ManyBodyOperator
  */
   __pyx_v_res->o = (__pyx_v_self->o * __pyx_t_double_complex_from_parts(__Pyx_CREAL(__pyx_v_s), __Pyx_CIMAG(__pyx_v_s)));
 
-  /* "impurityModel/ed/ManyBodyUtils.pyx":187
+  /* "impurityModel/ed/ManyBodyUtils.pyx":186
  *         res = ManyBodyOperator()
  *         res.o = self.o*s
  *         return res             # <<<<<<<<<<<<<<
@@ -8946,7 +9182,7 @@ static PyObject *__pyx_pf_13impurityModel_2ed_13ManyBodyUtils_16ManyBodyOperator
   __pyx_r = ((PyObject *)__pyx_v_res);
   goto __pyx_L0;
 
-  /* "impurityModel/ed/ManyBodyUtils.pyx":184
+  /* "impurityModel/ed/ManyBodyUtils.pyx":183
  *         return res
  * 
  *     def __mul__(self, complex s) ->ManyBodyOperator:             # <<<<<<<<<<<<<<
@@ -8966,7 +9202,7 @@ static PyObject *__pyx_pf_13impurityModel_2ed_13ManyBodyUtils_16ManyBodyOperator
   return __pyx_r;
 }
 
-/* "impurityModel/ed/ManyBodyUtils.pyx":189
+/* "impurityModel/ed/ManyBodyUtils.pyx":188
  *         return res
  * 
  *     def __rmul__(self, complex s) -> ManyBodyOperator:             # <<<<<<<<<<<<<<
@@ -8987,7 +9223,7 @@ static PyObject *__pyx_pw_13impurityModel_2ed_13ManyBodyUtils_16ManyBodyOperator
   __Pyx_RefNannySetupContext("__rmul__ (wrapper)", 0);
   __pyx_kwvalues = __Pyx_KwValues_VARARGS(__pyx_args, __pyx_nargs);
   assert(__pyx_arg_s); {
-    __pyx_v_s = __Pyx_PyComplex_As___pyx_t_double_complex(__pyx_arg_s); if (unlikely(PyErr_Occurred())) __PYX_ERR(0, 189, __pyx_L3_error)
+    __pyx_v_s = __Pyx_PyComplex_As___pyx_t_double_complex(__pyx_arg_s); if (unlikely(PyErr_Occurred())) __PYX_ERR(0, 188, __pyx_L3_error)
   }
   goto __pyx_L4_argument_unpacking_done;
   __pyx_L3_error:;
@@ -9012,7 +9248,7 @@ static PyObject *__pyx_pf_13impurityModel_2ed_13ManyBodyUtils_16ManyBodyOperator
   int __pyx_clineno = 0;
   __Pyx_RefNannySetupContext("__rmul__", 1);
 
-  /* "impurityModel/ed/ManyBodyUtils.pyx":190
+  /* "impurityModel/ed/ManyBodyUtils.pyx":189
  * 
  *     def __rmul__(self, complex s) -> ManyBodyOperator:
  *         return self*s             # <<<<<<<<<<<<<<
@@ -9020,16 +9256,16 @@ static PyObject *__pyx_pf_13impurityModel_2ed_13ManyBodyUtils_16ManyBodyOperator
  *     def __truediv__(self, complex s) -> ManyBodyOperator:
  */
   __Pyx_XDECREF(__pyx_r);
-  __pyx_t_1 = __pyx_PyComplex_FromComplex(__pyx_v_s); if (unlikely(!__pyx_t_1)) __PYX_ERR(0, 190, __pyx_L1_error)
+  __pyx_t_1 = __pyx_PyComplex_FromComplex(__pyx_v_s); if (unlikely(!__pyx_t_1)) __PYX_ERR(0, 189, __pyx_L1_error)
   __Pyx_GOTREF(__pyx_t_1);
-  __pyx_t_2 = PyNumber_Multiply(((PyObject *)__pyx_v_self), __pyx_t_1); if (unlikely(!__pyx_t_2)) __PYX_ERR(0, 190, __pyx_L1_error)
+  __pyx_t_2 = PyNumber_Multiply(((PyObject *)__pyx_v_self), __pyx_t_1); if (unlikely(!__pyx_t_2)) __PYX_ERR(0, 189, __pyx_L1_error)
   __Pyx_GOTREF(__pyx_t_2);
   __Pyx_DECREF(__pyx_t_1); __pyx_t_1 = 0;
   __pyx_r = __pyx_t_2;
   __pyx_t_2 = 0;
   goto __pyx_L0;
 
-  /* "impurityModel/ed/ManyBodyUtils.pyx":189
+  /* "impurityModel/ed/ManyBodyUtils.pyx":188
  *         return res
  * 
  *     def __rmul__(self, complex s) -> ManyBodyOperator:             # <<<<<<<<<<<<<<
@@ -9049,7 +9285,7 @@ static PyObject *__pyx_pf_13impurityModel_2ed_13ManyBodyUtils_16ManyBodyOperator
   return __pyx_r;
 }
 
-/* "impurityModel/ed/ManyBodyUtils.pyx":192
+/* "impurityModel/ed/ManyBodyUtils.pyx":191
  *         return self*s
  * 
  *     def __truediv__(self, complex s) -> ManyBodyOperator:             # <<<<<<<<<<<<<<
@@ -9070,7 +9306,7 @@ static PyObject *__pyx_pw_13impurityModel_2ed_13ManyBodyUtils_16ManyBodyOperator
   __Pyx_RefNannySetupContext("__truediv__ (wrapper)", 0);
   __pyx_kwvalues = __Pyx_KwValues_VARARGS(__pyx_args, __pyx_nargs);
   assert(__pyx_arg_s); {
-    __pyx_v_s = __Pyx_PyComplex_As___pyx_t_double_complex(__pyx_arg_s); if (unlikely(PyErr_Occurred())) __PYX_ERR(0, 192, __pyx_L3_error)
+    __pyx_v_s = __Pyx_PyComplex_As___pyx_t_double_complex(__pyx_arg_s); if (unlikely(PyErr_Occurred())) __PYX_ERR(0, 191, __pyx_L3_error)
   }
   goto __pyx_L4_argument_unpacking_done;
   __pyx_L3_error:;
@@ -9095,19 +9331,19 @@ static PyObject *__pyx_pf_13impurityModel_2ed_13ManyBodyUtils_16ManyBodyOperator
   int __pyx_clineno = 0;
   __Pyx_RefNannySetupContext("__truediv__", 1);
 
-  /* "impurityModel/ed/ManyBodyUtils.pyx":193
+  /* "impurityModel/ed/ManyBodyUtils.pyx":192
  * 
  *     def __truediv__(self, complex s) -> ManyBodyOperator:
  *         res = ManyBodyOperator()             # <<<<<<<<<<<<<<
  *         res.o = self.o/s
  *         return res
  */
-  __pyx_t_1 = __Pyx_PyObject_CallNoArg(((PyObject *)__pyx_ptype_13impurityModel_2ed_13ManyBodyUtils_ManyBodyOperator)); if (unlikely(!__pyx_t_1)) __PYX_ERR(0, 193, __pyx_L1_error)
+  __pyx_t_1 = __Pyx_PyObject_CallNoArg(((PyObject *)__pyx_ptype_13impurityModel_2ed_13ManyBodyUtils_ManyBodyOperator)); if (unlikely(!__pyx_t_1)) __PYX_ERR(0, 192, __pyx_L1_error)
   __Pyx_GOTREF(__pyx_t_1);
   __pyx_v_res = ((struct __pyx_obj_13impurityModel_2ed_13ManyBodyUtils_ManyBodyOperator *)__pyx_t_1);
   __pyx_t_1 = 0;
 
-  /* "impurityModel/ed/ManyBodyUtils.pyx":194
+  /* "impurityModel/ed/ManyBodyUtils.pyx":193
  *     def __truediv__(self, complex s) -> ManyBodyOperator:
  *         res = ManyBodyOperator()
  *         res.o = self.o/s             # <<<<<<<<<<<<<<
@@ -9116,7 +9352,7 @@ static PyObject *__pyx_pf_13impurityModel_2ed_13ManyBodyUtils_16ManyBodyOperator
  */
   __pyx_v_res->o = (__pyx_v_self->o / __pyx_t_double_complex_from_parts(__Pyx_CREAL(__pyx_v_s), __Pyx_CIMAG(__pyx_v_s)));
 
-  /* "impurityModel/ed/ManyBodyUtils.pyx":195
+  /* "impurityModel/ed/ManyBodyUtils.pyx":194
  *         res = ManyBodyOperator()
  *         res.o = self.o/s
  *         return res             # <<<<<<<<<<<<<<
@@ -9128,7 +9364,7 @@ static PyObject *__pyx_pf_13impurityModel_2ed_13ManyBodyUtils_16ManyBodyOperator
   __pyx_r = ((PyObject *)__pyx_v_res);
   goto __pyx_L0;
 
-  /* "impurityModel/ed/ManyBodyUtils.pyx":192
+  /* "impurityModel/ed/ManyBodyUtils.pyx":191
  *         return self*s
  * 
  *     def __truediv__(self, complex s) -> ManyBodyOperator:             # <<<<<<<<<<<<<<
@@ -9148,7 +9384,7 @@ static PyObject *__pyx_pf_13impurityModel_2ed_13ManyBodyUtils_16ManyBodyOperator
   return __pyx_r;
 }
 
-/* "impurityModel/ed/ManyBodyUtils.pyx":197
+/* "impurityModel/ed/ManyBodyUtils.pyx":196
  *         return res
  * 
  *     def __len__(self):             # <<<<<<<<<<<<<<
@@ -9174,7 +9410,7 @@ static Py_ssize_t __pyx_pw_13impurityModel_2ed_13ManyBodyUtils_16ManyBodyOperato
 static Py_ssize_t __pyx_pf_13impurityModel_2ed_13ManyBodyUtils_16ManyBodyOperator_20__len__(struct __pyx_obj_13impurityModel_2ed_13ManyBodyUtils_ManyBodyOperator *__pyx_v_self) {
   Py_ssize_t __pyx_r;
 
-  /* "impurityModel/ed/ManyBodyUtils.pyx":198
+  /* "impurityModel/ed/ManyBodyUtils.pyx":197
  * 
  *     def __len__(self):
  *         return self.o.size()             # <<<<<<<<<<<<<<
@@ -9184,7 +9420,7 @@ static Py_ssize_t __pyx_pf_13impurityModel_2ed_13ManyBodyUtils_16ManyBodyOperato
   __pyx_r = __pyx_v_self->o.size();
   goto __pyx_L0;
 
-  /* "impurityModel/ed/ManyBodyUtils.pyx":197
+  /* "impurityModel/ed/ManyBodyUtils.pyx":196
  *         return res
  * 
  *     def __len__(self):             # <<<<<<<<<<<<<<
@@ -9197,7 +9433,7 @@ static Py_ssize_t __pyx_pf_13impurityModel_2ed_13ManyBodyUtils_16ManyBodyOperato
   return __pyx_r;
 }
 
-/* "impurityModel/ed/ManyBodyUtils.pyx":200
+/* "impurityModel/ed/ManyBodyUtils.pyx":199
  *         return self.o.size()
  * 
  *     def size(self):             # <<<<<<<<<<<<<<
@@ -9256,7 +9492,7 @@ static PyObject *__pyx_pf_13impurityModel_2ed_13ManyBodyUtils_16ManyBodyOperator
   int __pyx_clineno = 0;
   __Pyx_RefNannySetupContext("size", 1);
 
-  /* "impurityModel/ed/ManyBodyUtils.pyx":201
+  /* "impurityModel/ed/ManyBodyUtils.pyx":200
  * 
  *     def size(self):
  *         return len(self)             # <<<<<<<<<<<<<<
@@ -9264,14 +9500,14 @@ static PyObject *__pyx_pf_13impurityModel_2ed_13ManyBodyUtils_16ManyBodyOperator
  *     def __call__(self, ManyBodyState psi, double cutoff=0, dict[frozenset[int], tuple[int, int]] restrictions=None) -> ManyBodyState:
  */
   __Pyx_XDECREF(__pyx_r);
-  __pyx_t_1 = PyObject_Length(((PyObject *)__pyx_v_self)); if (unlikely(__pyx_t_1 == ((Py_ssize_t)-1))) __PYX_ERR(0, 201, __pyx_L1_error)
-  __pyx_t_2 = PyInt_FromSsize_t(__pyx_t_1); if (unlikely(!__pyx_t_2)) __PYX_ERR(0, 201, __pyx_L1_error)
+  __pyx_t_1 = PyObject_Length(((PyObject *)__pyx_v_self)); if (unlikely(__pyx_t_1 == ((Py_ssize_t)-1))) __PYX_ERR(0, 200, __pyx_L1_error)
+  __pyx_t_2 = PyInt_FromSsize_t(__pyx_t_1); if (unlikely(!__pyx_t_2)) __PYX_ERR(0, 200, __pyx_L1_error)
   __Pyx_GOTREF(__pyx_t_2);
   __pyx_r = __pyx_t_2;
   __pyx_t_2 = 0;
   goto __pyx_L0;
 
-  /* "impurityModel/ed/ManyBodyUtils.pyx":200
+  /* "impurityModel/ed/ManyBodyUtils.pyx":199
  *         return self.o.size()
  * 
  *     def size(self):             # <<<<<<<<<<<<<<
@@ -9290,7 +9526,7 @@ static PyObject *__pyx_pf_13impurityModel_2ed_13ManyBodyUtils_16ManyBodyOperator
   return __pyx_r;
 }
 
-/* "impurityModel/ed/ManyBodyUtils.pyx":203
+/* "impurityModel/ed/ManyBodyUtils.pyx":202
  *         return len(self)
  * 
  *     def __call__(self, ManyBodyState psi, double cutoff=0, dict[frozenset[int], tuple[int, int]] restrictions=None) -> ManyBodyState:             # <<<<<<<<<<<<<<
@@ -9341,26 +9577,26 @@ static PyObject *__pyx_pw_13impurityModel_2ed_13ManyBodyUtils_16ManyBodyOperator
           (void)__Pyx_Arg_NewRef_VARARGS(values[0]);
           kw_args--;
         }
-        else if (unlikely(PyErr_Occurred())) __PYX_ERR(0, 203, __pyx_L3_error)
+        else if (unlikely(PyErr_Occurred())) __PYX_ERR(0, 202, __pyx_L3_error)
         else goto __pyx_L5_argtuple_error;
         CYTHON_FALLTHROUGH;
         case  1:
         if (kw_args > 0) {
           PyObject* value = __Pyx_GetKwValue_VARARGS(__pyx_kwds, __pyx_kwvalues, __pyx_n_s_cutoff);
           if (value) { values[1] = __Pyx_Arg_NewRef_VARARGS(value); kw_args--; }
-          else if (unlikely(PyErr_Occurred())) __PYX_ERR(0, 203, __pyx_L3_error)
+          else if (unlikely(PyErr_Occurred())) __PYX_ERR(0, 202, __pyx_L3_error)
         }
         CYTHON_FALLTHROUGH;
         case  2:
         if (kw_args > 0) {
           PyObject* value = __Pyx_GetKwValue_VARARGS(__pyx_kwds, __pyx_kwvalues, __pyx_n_s_restrictions);
           if (value) { values[2] = __Pyx_Arg_NewRef_VARARGS(value); kw_args--; }
-          else if (unlikely(PyErr_Occurred())) __PYX_ERR(0, 203, __pyx_L3_error)
+          else if (unlikely(PyErr_Occurred())) __PYX_ERR(0, 202, __pyx_L3_error)
         }
       }
       if (unlikely(kw_args > 0)) {
         const Py_ssize_t kwd_pos_args = __pyx_nargs;
-        if (unlikely(__Pyx_ParseOptionalKeywords(__pyx_kwds, __pyx_kwvalues, __pyx_pyargnames, 0, values + 0, kwd_pos_args, "__call__") < 0)) __PYX_ERR(0, 203, __pyx_L3_error)
+        if (unlikely(__Pyx_ParseOptionalKeywords(__pyx_kwds, __pyx_kwvalues, __pyx_pyargnames, 0, values + 0, kwd_pos_args, "__call__") < 0)) __PYX_ERR(0, 202, __pyx_L3_error)
       }
     } else {
       switch (__pyx_nargs) {
@@ -9375,7 +9611,7 @@ static PyObject *__pyx_pw_13impurityModel_2ed_13ManyBodyUtils_16ManyBodyOperator
     }
     __pyx_v_psi = ((struct __pyx_obj_13impurityModel_2ed_13ManyBodyUtils_ManyBodyState *)values[0]);
     if (values[1]) {
-      __pyx_v_cutoff = __pyx_PyFloat_AsDouble(values[1]); if (unlikely((__pyx_v_cutoff == (double)-1) && PyErr_Occurred())) __PYX_ERR(0, 203, __pyx_L3_error)
+      __pyx_v_cutoff = __pyx_PyFloat_AsDouble(values[1]); if (unlikely((__pyx_v_cutoff == (double)-1) && PyErr_Occurred())) __PYX_ERR(0, 202, __pyx_L3_error)
     } else {
       __pyx_v_cutoff = ((double)0.0);
     }
@@ -9383,7 +9619,7 @@ static PyObject *__pyx_pw_13impurityModel_2ed_13ManyBodyUtils_16ManyBodyOperator
   }
   goto __pyx_L6_skip;
   __pyx_L5_argtuple_error:;
-  __Pyx_RaiseArgtupleInvalid("__call__", 0, 1, 3, __pyx_nargs); __PYX_ERR(0, 203, __pyx_L3_error)
+  __Pyx_RaiseArgtupleInvalid("__call__", 0, 1, 3, __pyx_nargs); __PYX_ERR(0, 202, __pyx_L3_error)
   __pyx_L6_skip:;
   goto __pyx_L4_argument_unpacking_done;
   __pyx_L3_error:;
@@ -9397,8 +9633,8 @@ static PyObject *__pyx_pw_13impurityModel_2ed_13ManyBodyUtils_16ManyBodyOperator
   __Pyx_RefNannyFinishContext();
   return NULL;
   __pyx_L4_argument_unpacking_done:;
-  if (unlikely(!__Pyx_ArgTypeTest(((PyObject *)__pyx_v_psi), __pyx_ptype_13impurityModel_2ed_13ManyBodyUtils_ManyBodyState, 1, "psi", 0))) __PYX_ERR(0, 203, __pyx_L1_error)
-  if (unlikely(!__Pyx_ArgTypeTest(((PyObject *)__pyx_v_restrictions), (&PyDict_Type), 1, "restrictions", 1))) __PYX_ERR(0, 203, __pyx_L1_error)
+  if (unlikely(!__Pyx_ArgTypeTest(((PyObject *)__pyx_v_psi), __pyx_ptype_13impurityModel_2ed_13ManyBodyUtils_ManyBodyState, 1, "psi", 0))) __PYX_ERR(0, 202, __pyx_L1_error)
+  if (unlikely(!__Pyx_ArgTypeTest(((PyObject *)__pyx_v_restrictions), (&PyDict_Type), 1, "restrictions", 1))) __PYX_ERR(0, 202, __pyx_L1_error)
   __pyx_r = __pyx_pf_13impurityModel_2ed_13ManyBodyUtils_16ManyBodyOperator_24__call__(((struct __pyx_obj_13impurityModel_2ed_13ManyBodyUtils_ManyBodyOperator *)__pyx_v_self), __pyx_v_psi, __pyx_v_cutoff, __pyx_v_restrictions);
 
   /* function exit code */
@@ -9434,7 +9670,7 @@ static PyObject *__pyx_pf_13impurityModel_2ed_13ManyBodyUtils_16ManyBodyOperator
   std::pair<size_t,size_t>  __pyx_t_9;
   Py_ssize_t __pyx_t_10;
   int __pyx_t_11;
-  PyObject *__pyx_t_12 = NULL;
+  std::vector<size_t>  __pyx_t_12;
   std::pair<std::vector<size_t> ,std::pair<size_t,size_t> >  __pyx_t_13;
   int __pyx_lineno = 0;
   const char *__pyx_filename = NULL;
@@ -9442,46 +9678,46 @@ static PyObject *__pyx_pf_13impurityModel_2ed_13ManyBodyUtils_16ManyBodyOperator
   __Pyx_RefNannySetupContext("__call__", 0);
   __Pyx_INCREF(__pyx_v_restrictions);
 
-  /* "impurityModel/ed/ManyBodyUtils.pyx":204
+  /* "impurityModel/ed/ManyBodyUtils.pyx":203
  * 
  *     def __call__(self, ManyBodyState psi, double cutoff=0, dict[frozenset[int], tuple[int, int]] restrictions=None) -> ManyBodyState:
  *         res = ManyBodyState()             # <<<<<<<<<<<<<<
  *         if restrictions is None:
  *             restrictions = {}
  */
-  __pyx_t_1 = __Pyx_PyObject_CallNoArg(((PyObject *)__pyx_ptype_13impurityModel_2ed_13ManyBodyUtils_ManyBodyState)); if (unlikely(!__pyx_t_1)) __PYX_ERR(0, 204, __pyx_L1_error)
+  __pyx_t_1 = __Pyx_PyObject_CallNoArg(((PyObject *)__pyx_ptype_13impurityModel_2ed_13ManyBodyUtils_ManyBodyState)); if (unlikely(!__pyx_t_1)) __PYX_ERR(0, 203, __pyx_L1_error)
   __Pyx_GOTREF(__pyx_t_1);
   __pyx_v_res = ((struct __pyx_obj_13impurityModel_2ed_13ManyBodyUtils_ManyBodyState *)__pyx_t_1);
   __pyx_t_1 = 0;
 
-  /* "impurityModel/ed/ManyBodyUtils.pyx":205
+  /* "impurityModel/ed/ManyBodyUtils.pyx":204
  *     def __call__(self, ManyBodyState psi, double cutoff=0, dict[frozenset[int], tuple[int, int]] restrictions=None) -> ManyBodyState:
  *         res = ManyBodyState()
  *         if restrictions is None:             # <<<<<<<<<<<<<<
  *             restrictions = {}
- *         cdef vector[pair[vector[size_t], pair[size_t, size_t]]] rest
+ *         # For some reason using ManyBodyOpeartor_cpp.restrictions does not work
  */
   __pyx_t_2 = (__pyx_v_restrictions == ((PyObject*)Py_None));
   if (__pyx_t_2) {
 
-    /* "impurityModel/ed/ManyBodyUtils.pyx":206
+    /* "impurityModel/ed/ManyBodyUtils.pyx":205
  *         res = ManyBodyState()
  *         if restrictions is None:
  *             restrictions = {}             # <<<<<<<<<<<<<<
+ *         # For some reason using ManyBodyOpeartor_cpp.restrictions does not work
  *         cdef vector[pair[vector[size_t], pair[size_t, size_t]]] rest
- *         cdef frozenset[int] indices
  */
-    __pyx_t_1 = __Pyx_PyDict_NewPresized(0); if (unlikely(!__pyx_t_1)) __PYX_ERR(0, 206, __pyx_L1_error)
+    __pyx_t_1 = __Pyx_PyDict_NewPresized(0); if (unlikely(!__pyx_t_1)) __PYX_ERR(0, 205, __pyx_L1_error)
     __Pyx_GOTREF(__pyx_t_1);
     __Pyx_DECREF_SET(__pyx_v_restrictions, ((PyObject*)__pyx_t_1));
     __pyx_t_1 = 0;
 
-    /* "impurityModel/ed/ManyBodyUtils.pyx":205
+    /* "impurityModel/ed/ManyBodyUtils.pyx":204
  *     def __call__(self, ManyBodyState psi, double cutoff=0, dict[frozenset[int], tuple[int, int]] restrictions=None) -> ManyBodyState:
  *         res = ManyBodyState()
  *         if restrictions is None:             # <<<<<<<<<<<<<<
  *             restrictions = {}
- *         cdef vector[pair[vector[size_t], pair[size_t, size_t]]] rest
+ *         # For some reason using ManyBodyOpeartor_cpp.restrictions does not work
  */
   }
 
@@ -9539,7 +9775,7 @@ static PyObject *__pyx_pf_13impurityModel_2ed_13ManyBodyUtils_16ManyBodyOperator
  *         for indices, limits in restrictions.items():
  *             if len(indices) == 0:             # <<<<<<<<<<<<<<
  *                 continue
- *             rest.push_back({sorted(indices),limits})
+ *             rest.push_back(pair[vector[size_t], pair[size_t, size_t]](sorted(indices),pair[size_t, size_t](limits.first, limits.second)))
  */
     if (unlikely(__pyx_v_indices == Py_None)) {
       PyErr_SetString(PyExc_TypeError, "object of type 'NoneType' has no len()");
@@ -9553,7 +9789,7 @@ static PyObject *__pyx_pf_13impurityModel_2ed_13ManyBodyUtils_16ManyBodyOperator
  *         for indices, limits in restrictions.items():
  *             if len(indices) == 0:
  *                 continue             # <<<<<<<<<<<<<<
- *             rest.push_back({sorted(indices),limits})
+ *             rest.push_back(pair[vector[size_t], pair[size_t, size_t]](sorted(indices),pair[size_t, size_t](limits.first, limits.second)))
  *         res.v = self.o(psi.v, cutoff, rest)
  */
       goto __pyx_L4_continue;
@@ -9563,14 +9799,14 @@ static PyObject *__pyx_pf_13impurityModel_2ed_13ManyBodyUtils_16ManyBodyOperator
  *         for indices, limits in restrictions.items():
  *             if len(indices) == 0:             # <<<<<<<<<<<<<<
  *                 continue
- *             rest.push_back({sorted(indices),limits})
+ *             rest.push_back(pair[vector[size_t], pair[size_t, size_t]](sorted(indices),pair[size_t, size_t](limits.first, limits.second)))
  */
     }
 
     /* "impurityModel/ed/ManyBodyUtils.pyx":214
  *             if len(indices) == 0:
  *                 continue
- *             rest.push_back({sorted(indices),limits})             # <<<<<<<<<<<<<<
+ *             rest.push_back(pair[vector[size_t], pair[size_t, size_t]](sorted(indices),pair[size_t, size_t](limits.first, limits.second)))             # <<<<<<<<<<<<<<
  *         res.v = self.o(psi.v, cutoff, rest)
  *         return res
  */
@@ -9579,16 +9815,20 @@ static PyObject *__pyx_pf_13impurityModel_2ed_13ManyBodyUtils_16ManyBodyOperator
     __pyx_t_7 = ((PyObject*)__pyx_t_6);
     __pyx_t_6 = 0;
     __pyx_t_11 = PyList_Sort(__pyx_t_7); if (unlikely(__pyx_t_11 == ((int)-1))) __PYX_ERR(0, 214, __pyx_L1_error)
-    __pyx_t_6 = __pyx_convert_pair_to_py_size_t____size_t(__pyx_v_limits); if (unlikely(!__pyx_t_6)) __PYX_ERR(0, 214, __pyx_L1_error)
-    __Pyx_GOTREF(__pyx_t_6);
-    __pyx_t_12 = PySet_New(0); if (unlikely(!__pyx_t_12)) __PYX_ERR(0, 214, __pyx_L1_error)
-    __Pyx_GOTREF(__pyx_t_12);
-    if (PySet_Add(__pyx_t_12, __pyx_t_7) < 0) __PYX_ERR(0, 214, __pyx_L1_error)
+    __pyx_t_12 = __pyx_convert_vector_from_py_size_t(__pyx_t_7); if (unlikely(PyErr_Occurred())) __PYX_ERR(0, 214, __pyx_L1_error)
     __Pyx_DECREF(__pyx_t_7); __pyx_t_7 = 0;
-    if (PySet_Add(__pyx_t_12, __pyx_t_6) < 0) __PYX_ERR(0, 214, __pyx_L1_error)
-    __Pyx_DECREF(__pyx_t_6); __pyx_t_6 = 0;
-    __pyx_t_13 = __pyx_convert_pair_from_py_std_3a__3a_vector_3c_size_t_3e_____and_std_3a__3a_pair_3c_size_t_2c_size_t_3e___(__pyx_t_12); if (unlikely(PyErr_Occurred())) __PYX_ERR(0, 214, __pyx_L1_error)
-    __Pyx_DECREF(__pyx_t_12); __pyx_t_12 = 0;
+    try {
+      __pyx_t_9 = std::pair<size_t,size_t> (__pyx_v_limits.first, __pyx_v_limits.second);
+    } catch(...) {
+      __Pyx_CppExn2PyErr();
+      __PYX_ERR(0, 214, __pyx_L1_error)
+    }
+    try {
+      __pyx_t_13 = std::pair<std::vector<size_t> ,std::pair<size_t,size_t> > (__pyx_t_12, __pyx_t_9);
+    } catch(...) {
+      __Pyx_CppExn2PyErr();
+      __PYX_ERR(0, 214, __pyx_L1_error)
+    }
     try {
       __pyx_v_rest.push_back(__pyx_t_13);
     } catch(...) {
@@ -9601,7 +9841,7 @@ static PyObject *__pyx_pf_13impurityModel_2ed_13ManyBodyUtils_16ManyBodyOperator
 
   /* "impurityModel/ed/ManyBodyUtils.pyx":215
  *                 continue
- *             rest.push_back({sorted(indices),limits})
+ *             rest.push_back(pair[vector[size_t], pair[size_t, size_t]](sorted(indices),pair[size_t, size_t](limits.first, limits.second)))
  *         res.v = self.o(psi.v, cutoff, rest)             # <<<<<<<<<<<<<<
  *         return res
  * 
@@ -9609,7 +9849,7 @@ static PyObject *__pyx_pf_13impurityModel_2ed_13ManyBodyUtils_16ManyBodyOperator
   __pyx_v_res->v = __pyx_v_self->o(__pyx_v_psi->v, __pyx_v_cutoff, __pyx_v_rest);
 
   /* "impurityModel/ed/ManyBodyUtils.pyx":216
- *             rest.push_back({sorted(indices),limits})
+ *             rest.push_back(pair[vector[size_t], pair[size_t, size_t]](sorted(indices),pair[size_t, size_t](limits.first, limits.second)))
  *         res.v = self.o(psi.v, cutoff, rest)
  *         return res             # <<<<<<<<<<<<<<
  * 
@@ -9620,7 +9860,7 @@ static PyObject *__pyx_pf_13impurityModel_2ed_13ManyBodyUtils_16ManyBodyOperator
   __pyx_r = ((PyObject *)__pyx_v_res);
   goto __pyx_L0;
 
-  /* "impurityModel/ed/ManyBodyUtils.pyx":203
+  /* "impurityModel/ed/ManyBodyUtils.pyx":202
  *         return len(self)
  * 
  *     def __call__(self, ManyBodyState psi, double cutoff=0, dict[frozenset[int], tuple[int, int]] restrictions=None) -> ManyBodyState:             # <<<<<<<<<<<<<<
@@ -9633,7 +9873,6 @@ static PyObject *__pyx_pf_13impurityModel_2ed_13ManyBodyUtils_16ManyBodyOperator
   __Pyx_XDECREF(__pyx_t_1);
   __Pyx_XDECREF(__pyx_t_6);
   __Pyx_XDECREF(__pyx_t_7);
-  __Pyx_XDECREF(__pyx_t_12);
   __Pyx_AddTraceback("impurityModel.ed.ManyBodyUtils.ManyBodyOperator.__call__", __pyx_clineno, __pyx_lineno, __pyx_filename);
   __pyx_r = NULL;
   __pyx_L0:;
@@ -9760,7 +9999,7 @@ static PyObject *__pyx_pf_13impurityModel_2ed_13ManyBodyUtils_16ManyBodyOperator
   PyObject *__pyx_t_1 = NULL;
   PyObject *__pyx_t_2 = NULL;
   PyObject *__pyx_t_3 = NULL;
-  std::vector<int64_t>  __pyx_t_4;
+  std::pair<std::vector<int64_t> ,__pyx_t_double_complex> ::first_type __pyx_t_4;
   PyObject *__pyx_t_5 = NULL;
   unsigned int __pyx_t_6;
   int __pyx_lineno = 0;
@@ -9874,7 +10113,7 @@ static int __pyx_pw_13impurityModel_2ed_13ManyBodyUtils_16ManyBodyOperator_29__c
 
 static int __pyx_pf_13impurityModel_2ed_13ManyBodyUtils_16ManyBodyOperator_28__contains__(struct __pyx_obj_13impurityModel_2ed_13ManyBodyUtils_ManyBodyOperator *__pyx_v_self, PyObject *__pyx_v_key) {
   int __pyx_r;
-  std::vector<int64_t>  __pyx_t_1;
+  std::pair<std::vector<int64_t> ,__pyx_t_double_complex> ::first_type __pyx_t_1;
   int __pyx_lineno = 0;
   const char *__pyx_filename = NULL;
   int __pyx_clineno = 0;
@@ -9971,7 +10210,7 @@ static PyObject *__pyx_gb_13impurityModel_2ed_13ManyBodyUtils_16ManyBodyOperator
   struct __pyx_obj_13impurityModel_2ed_13ManyBodyUtils___pyx_scope_struct_5___iter__ *__pyx_cur_scope = ((struct __pyx_obj_13impurityModel_2ed_13ManyBodyUtils___pyx_scope_struct_5___iter__ *)__pyx_generator->closure);
   PyObject *__pyx_r = NULL;
   ManyBodyOperator::iterator __pyx_t_1;
-  std::pair<std::vector<int64_t> ,__pyx_t_double_complex>  __pyx_t_2;
+  ManyBodyOperator::value_type __pyx_t_2;
   PyObject *__pyx_t_3 = NULL;
   int __pyx_lineno = 0;
   const char *__pyx_filename = NULL;
@@ -10157,7 +10396,7 @@ static PyObject *__pyx_gb_13impurityModel_2ed_13ManyBodyUtils_16ManyBodyOperator
   struct __pyx_obj_13impurityModel_2ed_13ManyBodyUtils___pyx_scope_struct_6_genexpr *__pyx_cur_scope = ((struct __pyx_obj_13impurityModel_2ed_13ManyBodyUtils___pyx_scope_struct_6_genexpr *)__pyx_generator->closure);
   PyObject *__pyx_r = NULL;
   ManyBodyOperator::iterator __pyx_t_1;
-  std::pair<std::vector<int64_t> ,__pyx_t_double_complex>  __pyx_t_2;
+  ManyBodyOperator::value_type __pyx_t_2;
   PyObject *__pyx_t_3 = NULL;
   int __pyx_lineno = 0;
   const char *__pyx_filename = NULL;
@@ -10363,7 +10602,7 @@ static PyObject *__pyx_gb_13impurityModel_2ed_13ManyBodyUtils_16ManyBodyOperator
   struct __pyx_obj_13impurityModel_2ed_13ManyBodyUtils___pyx_scope_struct_7_genexpr *__pyx_cur_scope = ((struct __pyx_obj_13impurityModel_2ed_13ManyBodyUtils___pyx_scope_struct_7_genexpr *)__pyx_generator->closure);
   PyObject *__pyx_r = NULL;
   ManyBodyOperator::iterator __pyx_t_1;
-  std::pair<std::vector<int64_t> ,__pyx_t_double_complex>  __pyx_t_2;
+  ManyBodyOperator::value_type __pyx_t_2;
   PyObject *__pyx_t_3 = NULL;
   int __pyx_lineno = 0;
   const char *__pyx_filename = NULL;
@@ -10569,7 +10808,7 @@ static PyObject *__pyx_gb_13impurityModel_2ed_13ManyBodyUtils_16ManyBodyOperator
   struct __pyx_obj_13impurityModel_2ed_13ManyBodyUtils___pyx_scope_struct_8_genexpr *__pyx_cur_scope = ((struct __pyx_obj_13impurityModel_2ed_13ManyBodyUtils___pyx_scope_struct_8_genexpr *)__pyx_generator->closure);
   PyObject *__pyx_r = NULL;
   ManyBodyOperator::iterator __pyx_t_1;
-  std::pair<std::vector<int64_t> ,__pyx_t_double_complex>  __pyx_t_2;
+  ManyBodyOperator::value_type __pyx_t_2;
   PyObject *__pyx_t_3 = NULL;
   PyObject *__pyx_t_4 = NULL;
   PyObject *__pyx_t_5 = NULL;
@@ -10843,7 +11082,7 @@ static PyObject *__pyx_gb_13impurityModel_2ed_13ManyBodyUtils_16ManyBodyOperator
   return __pyx_r;
 }
 
-static PyObject *__pyx_pf_13impurityModel_2ed_13ManyBodyUtils_16ManyBodyOperator_6memory_genexpr(CYTHON_UNUSED PyObject *__pyx_self, std::map<std::vector<uint8_t> ,ManyBodyState,ManyBodyState::Comparer>  __pyx_genexpr_arg_0) {
+static PyObject *__pyx_pf_13impurityModel_2ed_13ManyBodyUtils_16ManyBodyOperator_6memory_genexpr(CYTHON_UNUSED PyObject *__pyx_self, ManyBodyOperator::Memory __pyx_genexpr_arg_0) {
   struct __pyx_obj_13impurityModel_2ed_13ManyBodyUtils___pyx_scope_struct_9_genexpr *__pyx_cur_scope;
   PyObject *__pyx_gb_13impurityModel_2ed_13ManyBodyUtils_16ManyBodyOperator_6memory_7genexpr_2generator10 = 0;
   PyObject *__pyx_r = NULL;
@@ -10883,8 +11122,8 @@ static PyObject *__pyx_gb_13impurityModel_2ed_13ManyBodyUtils_16ManyBodyOperator
 {
   struct __pyx_obj_13impurityModel_2ed_13ManyBodyUtils___pyx_scope_struct_9_genexpr *__pyx_cur_scope = ((struct __pyx_obj_13impurityModel_2ed_13ManyBodyUtils___pyx_scope_struct_9_genexpr *)__pyx_generator->closure);
   PyObject *__pyx_r = NULL;
-  std::map<std::vector<uint8_t> ,ManyBodyState,ManyBodyState::Comparer> ::iterator __pyx_t_1;
-  std::pair<std::vector<uint8_t> ,ManyBodyState>  __pyx_t_2;
+  std::map<ManyBodyState::key_type,ManyBodyState,ManyBodyState::key_compare> ::iterator __pyx_t_1;
+  std::pair<ManyBodyState::key_type,ManyBodyState>  __pyx_t_2;
   PyObject *__pyx_t_3 = NULL;
   PyObject *__pyx_t_4 = NULL;
   PyObject *__pyx_t_5 = NULL;
@@ -11108,7 +11347,7 @@ static PyObject *__pyx_gb_13impurityModel_2ed_13ManyBodyUtils_16ManyBodyOperator
   struct __pyx_obj_13impurityModel_2ed_13ManyBodyUtils___pyx_scope_struct_11_genexpr *__pyx_cur_scope = ((struct __pyx_obj_13impurityModel_2ed_13ManyBodyUtils___pyx_scope_struct_11_genexpr *)__pyx_generator->closure);
   PyObject *__pyx_r = NULL;
   ManyBodyOperator::iterator __pyx_t_1;
-  std::pair<std::vector<int64_t> ,__pyx_t_double_complex>  __pyx_t_2;
+  ManyBodyOperator::value_type __pyx_t_2;
   PyObject *__pyx_t_3 = NULL;
   PyObject *__pyx_t_4 = NULL;
   int __pyx_lineno = 0;
@@ -13368,7 +13607,7 @@ static PyObject *__pyx_tp_new_13impurityModel_2ed_13ManyBodyUtils___pyx_scope_st
   }
   #endif
   p = ((struct __pyx_obj_13impurityModel_2ed_13ManyBodyUtils___pyx_scope_struct_5___iter__ *)o);
-  new((void*)&(p->__pyx_v_p)) std::pair<std::vector<int64_t> ,__pyx_t_double_complex> ();
+  new((void*)&(p->__pyx_v_p)) ManyBodyOperator::value_type();
   new((void*)&(p->__pyx_t_0)) ManyBodyOperator::iterator();
   return o;
 }
@@ -13538,7 +13777,7 @@ static PyObject *__pyx_tp_new_13impurityModel_2ed_13ManyBodyUtils___pyx_scope_st
   #endif
   p = ((struct __pyx_obj_13impurityModel_2ed_13ManyBodyUtils___pyx_scope_struct_6_genexpr *)o);
   new((void*)&(p->__pyx_genexpr_arg_0)) ManyBodyOperator();
-  new((void*)&(p->__pyx_v_p)) std::pair<std::vector<int64_t> ,__pyx_t_double_complex> ();
+  new((void*)&(p->__pyx_v_p)) ManyBodyOperator::value_type();
   new((void*)&(p->__pyx_t_0)) ManyBodyOperator::iterator();
   return o;
 }
@@ -13697,7 +13936,7 @@ static PyObject *__pyx_tp_new_13impurityModel_2ed_13ManyBodyUtils___pyx_scope_st
   #endif
   p = ((struct __pyx_obj_13impurityModel_2ed_13ManyBodyUtils___pyx_scope_struct_7_genexpr *)o);
   new((void*)&(p->__pyx_genexpr_arg_0)) ManyBodyOperator();
-  new((void*)&(p->__pyx_v_p)) std::pair<std::vector<int64_t> ,__pyx_t_double_complex> ();
+  new((void*)&(p->__pyx_v_p)) ManyBodyOperator::value_type();
   new((void*)&(p->__pyx_t_0)) ManyBodyOperator::iterator();
   return o;
 }
@@ -13856,7 +14095,7 @@ static PyObject *__pyx_tp_new_13impurityModel_2ed_13ManyBodyUtils___pyx_scope_st
   #endif
   p = ((struct __pyx_obj_13impurityModel_2ed_13ManyBodyUtils___pyx_scope_struct_8_genexpr *)o);
   new((void*)&(p->__pyx_genexpr_arg_0)) ManyBodyOperator();
-  new((void*)&(p->__pyx_v_p)) std::pair<std::vector<int64_t> ,__pyx_t_double_complex> ();
+  new((void*)&(p->__pyx_v_p)) ManyBodyOperator::value_type();
   new((void*)&(p->__pyx_t_0)) ManyBodyOperator::iterator();
   return o;
 }
@@ -14015,8 +14254,8 @@ static PyObject *__pyx_tp_new_13impurityModel_2ed_13ManyBodyUtils___pyx_scope_st
   }
   #endif
   p = ((struct __pyx_obj_13impurityModel_2ed_13ManyBodyUtils___pyx_scope_struct_9_genexpr *)o);
-  new((void*)&(p->__pyx_genexpr_arg_0)) std::map<std::vector<uint8_t> ,ManyBodyState,ManyBodyState::Comparer> ();
-  new((void*)&(p->__pyx_v_p)) std::pair<std::vector<uint8_t> ,ManyBodyState> ();
+  new((void*)&(p->__pyx_genexpr_arg_0)) ManyBodyOperator::Memory();
+  new((void*)&(p->__pyx_v_p)) std::pair<ManyBodyState::key_type,ManyBodyState> ();
   return o;
 }
 
@@ -14342,7 +14581,7 @@ static PyObject *__pyx_tp_new_13impurityModel_2ed_13ManyBodyUtils___pyx_scope_st
   #endif
   p = ((struct __pyx_obj_13impurityModel_2ed_13ManyBodyUtils___pyx_scope_struct_11_genexpr *)o);
   new((void*)&(p->__pyx_genexpr_arg_0)) ManyBodyOperator();
-  new((void*)&(p->__pyx_v_p)) std::pair<std::vector<int64_t> ,__pyx_t_double_complex> ();
+  new((void*)&(p->__pyx_v_p)) ManyBodyOperator::value_type();
   return o;
 }
 
@@ -14601,118 +14840,118 @@ static CYTHON_SMALL_CODE int __Pyx_InitCachedConstants(void) {
   __Pyx_RefNannyDeclarations
   __Pyx_RefNannySetupContext("__Pyx_InitCachedConstants", 0);
 
-  /* "impurityModel/ed/ManyBodyUtils.pyx":128
- *     cdef vector[int64_t] ints
+  /* "impurityModel/ed/ManyBodyUtils.pyx":127
+ *     cdef ManyBodyOperator_cpp.value_type.first_type ints
  *     ints.reserve(len(processes))
  *     for process in processes[::-1]:             # <<<<<<<<<<<<<<
  *         if process[1] == 'a':
  *             ints.push_back(-process[0] -1)
  */
-  __pyx_slice__5 = PySlice_New(Py_None, Py_None, __pyx_int_neg_1); if (unlikely(!__pyx_slice__5)) __PYX_ERR(0, 128, __pyx_L1_error)
+  __pyx_slice__5 = PySlice_New(Py_None, Py_None, __pyx_int_neg_1); if (unlikely(!__pyx_slice__5)) __PYX_ERR(0, 127, __pyx_L1_error)
   __Pyx_GOTREF(__pyx_slice__5);
   __Pyx_GIVEREF(__pyx_slice__5);
 
-  /* "impurityModel/ed/ManyBodyUtils.pyx":81
+  /* "impurityModel/ed/ManyBodyUtils.pyx":80
  *         self.v[bytes_to_key(key)] = value
  * 
  *     def norm2(self):             # <<<<<<<<<<<<<<
  *         return self.v.norm2()
  * 
  */
-  __pyx_tuple__7 = PyTuple_Pack(1, __pyx_n_s_self); if (unlikely(!__pyx_tuple__7)) __PYX_ERR(0, 81, __pyx_L1_error)
+  __pyx_tuple__7 = PyTuple_Pack(1, __pyx_n_s_self); if (unlikely(!__pyx_tuple__7)) __PYX_ERR(0, 80, __pyx_L1_error)
   __Pyx_GOTREF(__pyx_tuple__7);
   __Pyx_GIVEREF(__pyx_tuple__7);
-  __pyx_codeobj__8 = (PyObject*)__Pyx_PyCode_New(1, 0, 0, 1, 0, CO_OPTIMIZED|CO_NEWLOCALS, __pyx_empty_bytes, __pyx_empty_tuple, __pyx_empty_tuple, __pyx_tuple__7, __pyx_empty_tuple, __pyx_empty_tuple, __pyx_kp_s_ManyBodyUtils_pyx, __pyx_n_s_norm2, 81, __pyx_empty_bytes); if (unlikely(!__pyx_codeobj__8)) __PYX_ERR(0, 81, __pyx_L1_error)
+  __pyx_codeobj__8 = (PyObject*)__Pyx_PyCode_New(1, 0, 0, 1, 0, CO_OPTIMIZED|CO_NEWLOCALS, __pyx_empty_bytes, __pyx_empty_tuple, __pyx_empty_tuple, __pyx_tuple__7, __pyx_empty_tuple, __pyx_empty_tuple, __pyx_kp_s_ManyBodyUtils_pyx, __pyx_n_s_norm2, 80, __pyx_empty_bytes); if (unlikely(!__pyx_codeobj__8)) __PYX_ERR(0, 80, __pyx_L1_error)
 
-  /* "impurityModel/ed/ManyBodyUtils.pyx":84
+  /* "impurityModel/ed/ManyBodyUtils.pyx":83
  *         return self.v.norm2()
  * 
  *     def norm(self):             # <<<<<<<<<<<<<<
  *         return self.v.norm()
  * 
  */
-  __pyx_codeobj__9 = (PyObject*)__Pyx_PyCode_New(1, 0, 0, 1, 0, CO_OPTIMIZED|CO_NEWLOCALS, __pyx_empty_bytes, __pyx_empty_tuple, __pyx_empty_tuple, __pyx_tuple__7, __pyx_empty_tuple, __pyx_empty_tuple, __pyx_kp_s_ManyBodyUtils_pyx, __pyx_n_s_norm, 84, __pyx_empty_bytes); if (unlikely(!__pyx_codeobj__9)) __PYX_ERR(0, 84, __pyx_L1_error)
+  __pyx_codeobj__9 = (PyObject*)__Pyx_PyCode_New(1, 0, 0, 1, 0, CO_OPTIMIZED|CO_NEWLOCALS, __pyx_empty_bytes, __pyx_empty_tuple, __pyx_empty_tuple, __pyx_tuple__7, __pyx_empty_tuple, __pyx_empty_tuple, __pyx_kp_s_ManyBodyUtils_pyx, __pyx_n_s_norm, 83, __pyx_empty_bytes); if (unlikely(!__pyx_codeobj__9)) __PYX_ERR(0, 83, __pyx_L1_error)
 
-  /* "impurityModel/ed/ManyBodyUtils.pyx":90
+  /* "impurityModel/ed/ManyBodyUtils.pyx":89
  *         return self.v.size()
  * 
  *     def size(self):             # <<<<<<<<<<<<<<
  *         return len(self)
  * 
  */
-  __pyx_codeobj__10 = (PyObject*)__Pyx_PyCode_New(1, 0, 0, 1, 0, CO_OPTIMIZED|CO_NEWLOCALS, __pyx_empty_bytes, __pyx_empty_tuple, __pyx_empty_tuple, __pyx_tuple__7, __pyx_empty_tuple, __pyx_empty_tuple, __pyx_kp_s_ManyBodyUtils_pyx, __pyx_n_s_size, 90, __pyx_empty_bytes); if (unlikely(!__pyx_codeobj__10)) __PYX_ERR(0, 90, __pyx_L1_error)
+  __pyx_codeobj__10 = (PyObject*)__Pyx_PyCode_New(1, 0, 0, 1, 0, CO_OPTIMIZED|CO_NEWLOCALS, __pyx_empty_bytes, __pyx_empty_tuple, __pyx_empty_tuple, __pyx_tuple__7, __pyx_empty_tuple, __pyx_empty_tuple, __pyx_kp_s_ManyBodyUtils_pyx, __pyx_n_s_size, 89, __pyx_empty_bytes); if (unlikely(!__pyx_codeobj__10)) __PYX_ERR(0, 89, __pyx_L1_error)
 
-  /* "impurityModel/ed/ManyBodyUtils.pyx":93
+  /* "impurityModel/ed/ManyBodyUtils.pyx":92
  *         return len(self)
  * 
  *     def max_size(self):             # <<<<<<<<<<<<<<
  *         return self.v.max_size()
  * 
  */
-  __pyx_codeobj__11 = (PyObject*)__Pyx_PyCode_New(1, 0, 0, 1, 0, CO_OPTIMIZED|CO_NEWLOCALS, __pyx_empty_bytes, __pyx_empty_tuple, __pyx_empty_tuple, __pyx_tuple__7, __pyx_empty_tuple, __pyx_empty_tuple, __pyx_kp_s_ManyBodyUtils_pyx, __pyx_n_s_max_size, 93, __pyx_empty_bytes); if (unlikely(!__pyx_codeobj__11)) __PYX_ERR(0, 93, __pyx_L1_error)
+  __pyx_codeobj__11 = (PyObject*)__Pyx_PyCode_New(1, 0, 0, 1, 0, CO_OPTIMIZED|CO_NEWLOCALS, __pyx_empty_bytes, __pyx_empty_tuple, __pyx_empty_tuple, __pyx_tuple__7, __pyx_empty_tuple, __pyx_empty_tuple, __pyx_kp_s_ManyBodyUtils_pyx, __pyx_n_s_max_size, 92, __pyx_empty_bytes); if (unlikely(!__pyx_codeobj__11)) __PYX_ERR(0, 92, __pyx_L1_error)
 
-  /* "impurityModel/ed/ManyBodyUtils.pyx":96
+  /* "impurityModel/ed/ManyBodyUtils.pyx":95
  *         return self.v.max_size()
  * 
  *     def erase(self, bytes key):             # <<<<<<<<<<<<<<
  *         self.v.erase(bytes_to_key(key))
  * 
  */
-  __pyx_tuple__12 = PyTuple_Pack(2, __pyx_n_s_self, __pyx_n_s_key); if (unlikely(!__pyx_tuple__12)) __PYX_ERR(0, 96, __pyx_L1_error)
+  __pyx_tuple__12 = PyTuple_Pack(2, __pyx_n_s_self, __pyx_n_s_key); if (unlikely(!__pyx_tuple__12)) __PYX_ERR(0, 95, __pyx_L1_error)
   __Pyx_GOTREF(__pyx_tuple__12);
   __Pyx_GIVEREF(__pyx_tuple__12);
-  __pyx_codeobj__13 = (PyObject*)__Pyx_PyCode_New(2, 0, 0, 2, 0, CO_OPTIMIZED|CO_NEWLOCALS, __pyx_empty_bytes, __pyx_empty_tuple, __pyx_empty_tuple, __pyx_tuple__12, __pyx_empty_tuple, __pyx_empty_tuple, __pyx_kp_s_ManyBodyUtils_pyx, __pyx_n_s_erase, 96, __pyx_empty_bytes); if (unlikely(!__pyx_codeobj__13)) __PYX_ERR(0, 96, __pyx_L1_error)
+  __pyx_codeobj__13 = (PyObject*)__Pyx_PyCode_New(2, 0, 0, 2, 0, CO_OPTIMIZED|CO_NEWLOCALS, __pyx_empty_bytes, __pyx_empty_tuple, __pyx_empty_tuple, __pyx_tuple__12, __pyx_empty_tuple, __pyx_empty_tuple, __pyx_kp_s_ManyBodyUtils_pyx, __pyx_n_s_erase, 95, __pyx_empty_bytes); if (unlikely(!__pyx_codeobj__13)) __PYX_ERR(0, 95, __pyx_L1_error)
 
-  /* "impurityModel/ed/ManyBodyUtils.pyx":106
+  /* "impurityModel/ed/ManyBodyUtils.pyx":105
  *             yield key_to_bytes(p.first)
  * 
  *     def keys(self):             # <<<<<<<<<<<<<<
  *         return (key_to_bytes(p.first) for p in self.v)
  * 
  */
-  __pyx_tuple__14 = PyTuple_Pack(3, __pyx_n_s_self, __pyx_n_s_genexpr, __pyx_n_s_genexpr); if (unlikely(!__pyx_tuple__14)) __PYX_ERR(0, 106, __pyx_L1_error)
+  __pyx_tuple__14 = PyTuple_Pack(3, __pyx_n_s_self, __pyx_n_s_genexpr, __pyx_n_s_genexpr); if (unlikely(!__pyx_tuple__14)) __PYX_ERR(0, 105, __pyx_L1_error)
   __Pyx_GOTREF(__pyx_tuple__14);
   __Pyx_GIVEREF(__pyx_tuple__14);
-  __pyx_codeobj__15 = (PyObject*)__Pyx_PyCode_New(1, 0, 0, 3, 0, CO_OPTIMIZED|CO_NEWLOCALS, __pyx_empty_bytes, __pyx_empty_tuple, __pyx_empty_tuple, __pyx_tuple__14, __pyx_empty_tuple, __pyx_empty_tuple, __pyx_kp_s_ManyBodyUtils_pyx, __pyx_n_s_keys, 106, __pyx_empty_bytes); if (unlikely(!__pyx_codeobj__15)) __PYX_ERR(0, 106, __pyx_L1_error)
+  __pyx_codeobj__15 = (PyObject*)__Pyx_PyCode_New(1, 0, 0, 3, 0, CO_OPTIMIZED|CO_NEWLOCALS, __pyx_empty_bytes, __pyx_empty_tuple, __pyx_empty_tuple, __pyx_tuple__14, __pyx_empty_tuple, __pyx_empty_tuple, __pyx_kp_s_ManyBodyUtils_pyx, __pyx_n_s_keys, 105, __pyx_empty_bytes); if (unlikely(!__pyx_codeobj__15)) __PYX_ERR(0, 105, __pyx_L1_error)
 
-  /* "impurityModel/ed/ManyBodyUtils.pyx":109
+  /* "impurityModel/ed/ManyBodyUtils.pyx":108
  *         return (key_to_bytes(p.first) for p in self.v)
  * 
  *     def values(self):             # <<<<<<<<<<<<<<
  *         return (p.second for p in self.v)
  * 
  */
-  __pyx_codeobj__16 = (PyObject*)__Pyx_PyCode_New(1, 0, 0, 3, 0, CO_OPTIMIZED|CO_NEWLOCALS, __pyx_empty_bytes, __pyx_empty_tuple, __pyx_empty_tuple, __pyx_tuple__14, __pyx_empty_tuple, __pyx_empty_tuple, __pyx_kp_s_ManyBodyUtils_pyx, __pyx_n_s_values, 109, __pyx_empty_bytes); if (unlikely(!__pyx_codeobj__16)) __PYX_ERR(0, 109, __pyx_L1_error)
+  __pyx_codeobj__16 = (PyObject*)__Pyx_PyCode_New(1, 0, 0, 3, 0, CO_OPTIMIZED|CO_NEWLOCALS, __pyx_empty_bytes, __pyx_empty_tuple, __pyx_empty_tuple, __pyx_tuple__14, __pyx_empty_tuple, __pyx_empty_tuple, __pyx_kp_s_ManyBodyUtils_pyx, __pyx_n_s_values, 108, __pyx_empty_bytes); if (unlikely(!__pyx_codeobj__16)) __PYX_ERR(0, 108, __pyx_L1_error)
 
-  /* "impurityModel/ed/ManyBodyUtils.pyx":112
+  /* "impurityModel/ed/ManyBodyUtils.pyx":111
  *         return (p.second for p in self.v)
  * 
  *     def items(self):             # <<<<<<<<<<<<<<
  *         return ((key_to_bytes(p.first), p.second) for p in self.v)
  * 
  */
-  __pyx_codeobj__17 = (PyObject*)__Pyx_PyCode_New(1, 0, 0, 3, 0, CO_OPTIMIZED|CO_NEWLOCALS, __pyx_empty_bytes, __pyx_empty_tuple, __pyx_empty_tuple, __pyx_tuple__14, __pyx_empty_tuple, __pyx_empty_tuple, __pyx_kp_s_ManyBodyUtils_pyx, __pyx_n_s_items, 112, __pyx_empty_bytes); if (unlikely(!__pyx_codeobj__17)) __PYX_ERR(0, 112, __pyx_L1_error)
+  __pyx_codeobj__17 = (PyObject*)__Pyx_PyCode_New(1, 0, 0, 3, 0, CO_OPTIMIZED|CO_NEWLOCALS, __pyx_empty_bytes, __pyx_empty_tuple, __pyx_empty_tuple, __pyx_tuple__14, __pyx_empty_tuple, __pyx_empty_tuple, __pyx_kp_s_ManyBodyUtils_pyx, __pyx_n_s_items, 111, __pyx_empty_bytes); if (unlikely(!__pyx_codeobj__17)) __PYX_ERR(0, 111, __pyx_L1_error)
 
-  /* "impurityModel/ed/ManyBodyUtils.pyx":115
+  /* "impurityModel/ed/ManyBodyUtils.pyx":114
  *         return ((key_to_bytes(p.first), p.second) for p in self.v)
  * 
  *     def prune(self, double cutoff):             # <<<<<<<<<<<<<<
  *         self.v.prune(cutoff)
  * 
  */
-  __pyx_tuple__18 = PyTuple_Pack(2, __pyx_n_s_self, __pyx_n_s_cutoff); if (unlikely(!__pyx_tuple__18)) __PYX_ERR(0, 115, __pyx_L1_error)
+  __pyx_tuple__18 = PyTuple_Pack(2, __pyx_n_s_self, __pyx_n_s_cutoff); if (unlikely(!__pyx_tuple__18)) __PYX_ERR(0, 114, __pyx_L1_error)
   __Pyx_GOTREF(__pyx_tuple__18);
   __Pyx_GIVEREF(__pyx_tuple__18);
-  __pyx_codeobj__19 = (PyObject*)__Pyx_PyCode_New(2, 0, 0, 2, 0, CO_OPTIMIZED|CO_NEWLOCALS, __pyx_empty_bytes, __pyx_empty_tuple, __pyx_empty_tuple, __pyx_tuple__18, __pyx_empty_tuple, __pyx_empty_tuple, __pyx_kp_s_ManyBodyUtils_pyx, __pyx_n_s_prune, 115, __pyx_empty_bytes); if (unlikely(!__pyx_codeobj__19)) __PYX_ERR(0, 115, __pyx_L1_error)
+  __pyx_codeobj__19 = (PyObject*)__Pyx_PyCode_New(2, 0, 0, 2, 0, CO_OPTIMIZED|CO_NEWLOCALS, __pyx_empty_bytes, __pyx_empty_tuple, __pyx_empty_tuple, __pyx_tuple__18, __pyx_empty_tuple, __pyx_empty_tuple, __pyx_kp_s_ManyBodyUtils_pyx, __pyx_n_s_prune, 114, __pyx_empty_bytes); if (unlikely(!__pyx_codeobj__19)) __PYX_ERR(0, 114, __pyx_L1_error)
 
-  /* "impurityModel/ed/ManyBodyUtils.pyx":118
+  /* "impurityModel/ed/ManyBodyUtils.pyx":117
  *         self.v.prune(cutoff)
  * 
  *     def to_dict(self):             # <<<<<<<<<<<<<<
  *         return dict((key_to_bytes(p.first), p.second) for p in self.v)
  * 
  */
-  __pyx_codeobj__20 = (PyObject*)__Pyx_PyCode_New(1, 0, 0, 3, 0, CO_OPTIMIZED|CO_NEWLOCALS, __pyx_empty_bytes, __pyx_empty_tuple, __pyx_empty_tuple, __pyx_tuple__14, __pyx_empty_tuple, __pyx_empty_tuple, __pyx_kp_s_ManyBodyUtils_pyx, __pyx_n_s_to_dict, 118, __pyx_empty_bytes); if (unlikely(!__pyx_codeobj__20)) __PYX_ERR(0, 118, __pyx_L1_error)
+  __pyx_codeobj__20 = (PyObject*)__Pyx_PyCode_New(1, 0, 0, 3, 0, CO_OPTIMIZED|CO_NEWLOCALS, __pyx_empty_bytes, __pyx_empty_tuple, __pyx_empty_tuple, __pyx_tuple__14, __pyx_empty_tuple, __pyx_empty_tuple, __pyx_kp_s_ManyBodyUtils_pyx, __pyx_n_s_to_dict, 117, __pyx_empty_bytes); if (unlikely(!__pyx_codeobj__20)) __PYX_ERR(0, 117, __pyx_L1_error)
 
   /* "(tree fragment)":1
  * def __reduce_cython__(self):             # <<<<<<<<<<<<<<
@@ -14732,26 +14971,26 @@ static CYTHON_SMALL_CODE int __Pyx_InitCachedConstants(void) {
   __Pyx_GIVEREF(__pyx_tuple__22);
   __pyx_codeobj__23 = (PyObject*)__Pyx_PyCode_New(2, 0, 0, 2, 0, CO_OPTIMIZED|CO_NEWLOCALS, __pyx_empty_bytes, __pyx_empty_tuple, __pyx_empty_tuple, __pyx_tuple__22, __pyx_empty_tuple, __pyx_empty_tuple, __pyx_kp_s_stringsource, __pyx_n_s_setstate_cython, 3, __pyx_empty_bytes); if (unlikely(!__pyx_codeobj__23)) __PYX_ERR(1, 3, __pyx_L1_error)
 
-  /* "impurityModel/ed/ManyBodyUtils.pyx":121
+  /* "impurityModel/ed/ManyBodyUtils.pyx":120
  *         return dict((key_to_bytes(p.first), p.second) for p in self.v)
  * 
  * def inner(ManyBodyState a, ManyBodyState b):             # <<<<<<<<<<<<<<
  *     return inner_cpp(a.v, b.v)
  * 
  */
-  __pyx_tuple__24 = PyTuple_Pack(2, __pyx_n_s_a, __pyx_n_s_b); if (unlikely(!__pyx_tuple__24)) __PYX_ERR(0, 121, __pyx_L1_error)
+  __pyx_tuple__24 = PyTuple_Pack(2, __pyx_n_s_a, __pyx_n_s_b); if (unlikely(!__pyx_tuple__24)) __PYX_ERR(0, 120, __pyx_L1_error)
   __Pyx_GOTREF(__pyx_tuple__24);
   __Pyx_GIVEREF(__pyx_tuple__24);
-  __pyx_codeobj__25 = (PyObject*)__Pyx_PyCode_New(2, 0, 0, 2, 0, CO_OPTIMIZED|CO_NEWLOCALS, __pyx_empty_bytes, __pyx_empty_tuple, __pyx_empty_tuple, __pyx_tuple__24, __pyx_empty_tuple, __pyx_empty_tuple, __pyx_kp_s_ManyBodyUtils_pyx, __pyx_n_s_inner, 121, __pyx_empty_bytes); if (unlikely(!__pyx_codeobj__25)) __PYX_ERR(0, 121, __pyx_L1_error)
+  __pyx_codeobj__25 = (PyObject*)__Pyx_PyCode_New(2, 0, 0, 2, 0, CO_OPTIMIZED|CO_NEWLOCALS, __pyx_empty_bytes, __pyx_empty_tuple, __pyx_empty_tuple, __pyx_tuple__24, __pyx_empty_tuple, __pyx_empty_tuple, __pyx_kp_s_ManyBodyUtils_pyx, __pyx_n_s_inner, 120, __pyx_empty_bytes); if (unlikely(!__pyx_codeobj__25)) __PYX_ERR(0, 120, __pyx_L1_error)
 
-  /* "impurityModel/ed/ManyBodyUtils.pyx":200
+  /* "impurityModel/ed/ManyBodyUtils.pyx":199
  *         return self.o.size()
  * 
  *     def size(self):             # <<<<<<<<<<<<<<
  *         return len(self)
  * 
  */
-  __pyx_codeobj__26 = (PyObject*)__Pyx_PyCode_New(1, 0, 0, 1, 0, CO_OPTIMIZED|CO_NEWLOCALS, __pyx_empty_bytes, __pyx_empty_tuple, __pyx_empty_tuple, __pyx_tuple__7, __pyx_empty_tuple, __pyx_empty_tuple, __pyx_kp_s_ManyBodyUtils_pyx, __pyx_n_s_size, 200, __pyx_empty_bytes); if (unlikely(!__pyx_codeobj__26)) __PYX_ERR(0, 200, __pyx_L1_error)
+  __pyx_codeobj__26 = (PyObject*)__Pyx_PyCode_New(1, 0, 0, 1, 0, CO_OPTIMIZED|CO_NEWLOCALS, __pyx_empty_bytes, __pyx_empty_tuple, __pyx_empty_tuple, __pyx_tuple__7, __pyx_empty_tuple, __pyx_empty_tuple, __pyx_kp_s_ManyBodyUtils_pyx, __pyx_n_s_size, 199, __pyx_empty_bytes); if (unlikely(!__pyx_codeobj__26)) __PYX_ERR(0, 199, __pyx_L1_error)
 
   /* "impurityModel/ed/ManyBodyUtils.pyx":218
  *         return res
@@ -14921,15 +15160,15 @@ static int __Pyx_modinit_type_init_code(void) {
   if (__Pyx_setup_reduce((PyObject *) __pyx_ptype_13impurityModel_2ed_13ManyBodyUtils_ManyBodyState) < 0) __PYX_ERR(0, 28, __pyx_L1_error)
   #endif
   #if CYTHON_USE_TYPE_SPECS
-  __pyx_ptype_13impurityModel_2ed_13ManyBodyUtils_ManyBodyOperator = (PyTypeObject *) __Pyx_PyType_FromModuleAndSpec(__pyx_m, &__pyx_type_13impurityModel_2ed_13ManyBodyUtils_ManyBodyOperator_spec, NULL); if (unlikely(!__pyx_ptype_13impurityModel_2ed_13ManyBodyUtils_ManyBodyOperator)) __PYX_ERR(0, 145, __pyx_L1_error)
-  if (__Pyx_fix_up_extension_type_from_spec(&__pyx_type_13impurityModel_2ed_13ManyBodyUtils_ManyBodyOperator_spec, __pyx_ptype_13impurityModel_2ed_13ManyBodyUtils_ManyBodyOperator) < 0) __PYX_ERR(0, 145, __pyx_L1_error)
+  __pyx_ptype_13impurityModel_2ed_13ManyBodyUtils_ManyBodyOperator = (PyTypeObject *) __Pyx_PyType_FromModuleAndSpec(__pyx_m, &__pyx_type_13impurityModel_2ed_13ManyBodyUtils_ManyBodyOperator_spec, NULL); if (unlikely(!__pyx_ptype_13impurityModel_2ed_13ManyBodyUtils_ManyBodyOperator)) __PYX_ERR(0, 144, __pyx_L1_error)
+  if (__Pyx_fix_up_extension_type_from_spec(&__pyx_type_13impurityModel_2ed_13ManyBodyUtils_ManyBodyOperator_spec, __pyx_ptype_13impurityModel_2ed_13ManyBodyUtils_ManyBodyOperator) < 0) __PYX_ERR(0, 144, __pyx_L1_error)
   #else
   __pyx_ptype_13impurityModel_2ed_13ManyBodyUtils_ManyBodyOperator = &__pyx_type_13impurityModel_2ed_13ManyBodyUtils_ManyBodyOperator;
   #endif
   #if !CYTHON_COMPILING_IN_LIMITED_API
   #endif
   #if !CYTHON_USE_TYPE_SPECS
-  if (__Pyx_PyType_Ready(__pyx_ptype_13impurityModel_2ed_13ManyBodyUtils_ManyBodyOperator) < 0) __PYX_ERR(0, 145, __pyx_L1_error)
+  if (__Pyx_PyType_Ready(__pyx_ptype_13impurityModel_2ed_13ManyBodyUtils_ManyBodyOperator) < 0) __PYX_ERR(0, 144, __pyx_L1_error)
   #endif
   #if PY_MAJOR_VERSION < 3
   __pyx_ptype_13impurityModel_2ed_13ManyBodyUtils_ManyBodyOperator->tp_print = 0;
@@ -14939,20 +15178,20 @@ static int __Pyx_modinit_type_init_code(void) {
     __pyx_ptype_13impurityModel_2ed_13ManyBodyUtils_ManyBodyOperator->tp_getattro = __Pyx_PyObject_GenericGetAttr;
   }
   #endif
-  if (PyObject_SetAttr(__pyx_m, __pyx_n_s_ManyBodyOperator_2, (PyObject *) __pyx_ptype_13impurityModel_2ed_13ManyBodyUtils_ManyBodyOperator) < 0) __PYX_ERR(0, 145, __pyx_L1_error)
+  if (PyObject_SetAttr(__pyx_m, __pyx_n_s_ManyBodyOperator_2, (PyObject *) __pyx_ptype_13impurityModel_2ed_13ManyBodyUtils_ManyBodyOperator) < 0) __PYX_ERR(0, 144, __pyx_L1_error)
   #if !CYTHON_COMPILING_IN_LIMITED_API
-  if (__Pyx_setup_reduce((PyObject *) __pyx_ptype_13impurityModel_2ed_13ManyBodyUtils_ManyBodyOperator) < 0) __PYX_ERR(0, 145, __pyx_L1_error)
+  if (__Pyx_setup_reduce((PyObject *) __pyx_ptype_13impurityModel_2ed_13ManyBodyUtils_ManyBodyOperator) < 0) __PYX_ERR(0, 144, __pyx_L1_error)
   #endif
   #if CYTHON_USE_TYPE_SPECS
-  __pyx_ptype_13impurityModel_2ed_13ManyBodyUtils___pyx_scope_struct____iter__ = (PyTypeObject *) __Pyx_PyType_FromModuleAndSpec(__pyx_m, &__pyx_type_13impurityModel_2ed_13ManyBodyUtils___pyx_scope_struct____iter___spec, NULL); if (unlikely(!__pyx_ptype_13impurityModel_2ed_13ManyBodyUtils___pyx_scope_struct____iter__)) __PYX_ERR(0, 102, __pyx_L1_error)
-  if (__Pyx_fix_up_extension_type_from_spec(&__pyx_type_13impurityModel_2ed_13ManyBodyUtils___pyx_scope_struct____iter___spec, __pyx_ptype_13impurityModel_2ed_13ManyBodyUtils___pyx_scope_struct____iter__) < 0) __PYX_ERR(0, 102, __pyx_L1_error)
+  __pyx_ptype_13impurityModel_2ed_13ManyBodyUtils___pyx_scope_struct____iter__ = (PyTypeObject *) __Pyx_PyType_FromModuleAndSpec(__pyx_m, &__pyx_type_13impurityModel_2ed_13ManyBodyUtils___pyx_scope_struct____iter___spec, NULL); if (unlikely(!__pyx_ptype_13impurityModel_2ed_13ManyBodyUtils___pyx_scope_struct____iter__)) __PYX_ERR(0, 101, __pyx_L1_error)
+  if (__Pyx_fix_up_extension_type_from_spec(&__pyx_type_13impurityModel_2ed_13ManyBodyUtils___pyx_scope_struct____iter___spec, __pyx_ptype_13impurityModel_2ed_13ManyBodyUtils___pyx_scope_struct____iter__) < 0) __PYX_ERR(0, 101, __pyx_L1_error)
   #else
   __pyx_ptype_13impurityModel_2ed_13ManyBodyUtils___pyx_scope_struct____iter__ = &__pyx_type_13impurityModel_2ed_13ManyBodyUtils___pyx_scope_struct____iter__;
   #endif
   #if !CYTHON_COMPILING_IN_LIMITED_API
   #endif
   #if !CYTHON_USE_TYPE_SPECS
-  if (__Pyx_PyType_Ready(__pyx_ptype_13impurityModel_2ed_13ManyBodyUtils___pyx_scope_struct____iter__) < 0) __PYX_ERR(0, 102, __pyx_L1_error)
+  if (__Pyx_PyType_Ready(__pyx_ptype_13impurityModel_2ed_13ManyBodyUtils___pyx_scope_struct____iter__) < 0) __PYX_ERR(0, 101, __pyx_L1_error)
   #endif
   #if PY_MAJOR_VERSION < 3
   __pyx_ptype_13impurityModel_2ed_13ManyBodyUtils___pyx_scope_struct____iter__->tp_print = 0;
@@ -14963,15 +15202,15 @@ static int __Pyx_modinit_type_init_code(void) {
   }
   #endif
   #if CYTHON_USE_TYPE_SPECS
-  __pyx_ptype_13impurityModel_2ed_13ManyBodyUtils___pyx_scope_struct_1_genexpr = (PyTypeObject *) __Pyx_PyType_FromModuleAndSpec(__pyx_m, &__pyx_type_13impurityModel_2ed_13ManyBodyUtils___pyx_scope_struct_1_genexpr_spec, NULL); if (unlikely(!__pyx_ptype_13impurityModel_2ed_13ManyBodyUtils___pyx_scope_struct_1_genexpr)) __PYX_ERR(0, 107, __pyx_L1_error)
-  if (__Pyx_fix_up_extension_type_from_spec(&__pyx_type_13impurityModel_2ed_13ManyBodyUtils___pyx_scope_struct_1_genexpr_spec, __pyx_ptype_13impurityModel_2ed_13ManyBodyUtils___pyx_scope_struct_1_genexpr) < 0) __PYX_ERR(0, 107, __pyx_L1_error)
+  __pyx_ptype_13impurityModel_2ed_13ManyBodyUtils___pyx_scope_struct_1_genexpr = (PyTypeObject *) __Pyx_PyType_FromModuleAndSpec(__pyx_m, &__pyx_type_13impurityModel_2ed_13ManyBodyUtils___pyx_scope_struct_1_genexpr_spec, NULL); if (unlikely(!__pyx_ptype_13impurityModel_2ed_13ManyBodyUtils___pyx_scope_struct_1_genexpr)) __PYX_ERR(0, 106, __pyx_L1_error)
+  if (__Pyx_fix_up_extension_type_from_spec(&__pyx_type_13impurityModel_2ed_13ManyBodyUtils___pyx_scope_struct_1_genexpr_spec, __pyx_ptype_13impurityModel_2ed_13ManyBodyUtils___pyx_scope_struct_1_genexpr) < 0) __PYX_ERR(0, 106, __pyx_L1_error)
   #else
   __pyx_ptype_13impurityModel_2ed_13ManyBodyUtils___pyx_scope_struct_1_genexpr = &__pyx_type_13impurityModel_2ed_13ManyBodyUtils___pyx_scope_struct_1_genexpr;
   #endif
   #if !CYTHON_COMPILING_IN_LIMITED_API
   #endif
   #if !CYTHON_USE_TYPE_SPECS
-  if (__Pyx_PyType_Ready(__pyx_ptype_13impurityModel_2ed_13ManyBodyUtils___pyx_scope_struct_1_genexpr) < 0) __PYX_ERR(0, 107, __pyx_L1_error)
+  if (__Pyx_PyType_Ready(__pyx_ptype_13impurityModel_2ed_13ManyBodyUtils___pyx_scope_struct_1_genexpr) < 0) __PYX_ERR(0, 106, __pyx_L1_error)
   #endif
   #if PY_MAJOR_VERSION < 3
   __pyx_ptype_13impurityModel_2ed_13ManyBodyUtils___pyx_scope_struct_1_genexpr->tp_print = 0;
@@ -14982,15 +15221,15 @@ static int __Pyx_modinit_type_init_code(void) {
   }
   #endif
   #if CYTHON_USE_TYPE_SPECS
-  __pyx_ptype_13impurityModel_2ed_13ManyBodyUtils___pyx_scope_struct_2_genexpr = (PyTypeObject *) __Pyx_PyType_FromModuleAndSpec(__pyx_m, &__pyx_type_13impurityModel_2ed_13ManyBodyUtils___pyx_scope_struct_2_genexpr_spec, NULL); if (unlikely(!__pyx_ptype_13impurityModel_2ed_13ManyBodyUtils___pyx_scope_struct_2_genexpr)) __PYX_ERR(0, 110, __pyx_L1_error)
-  if (__Pyx_fix_up_extension_type_from_spec(&__pyx_type_13impurityModel_2ed_13ManyBodyUtils___pyx_scope_struct_2_genexpr_spec, __pyx_ptype_13impurityModel_2ed_13ManyBodyUtils___pyx_scope_struct_2_genexpr) < 0) __PYX_ERR(0, 110, __pyx_L1_error)
+  __pyx_ptype_13impurityModel_2ed_13ManyBodyUtils___pyx_scope_struct_2_genexpr = (PyTypeObject *) __Pyx_PyType_FromModuleAndSpec(__pyx_m, &__pyx_type_13impurityModel_2ed_13ManyBodyUtils___pyx_scope_struct_2_genexpr_spec, NULL); if (unlikely(!__pyx_ptype_13impurityModel_2ed_13ManyBodyUtils___pyx_scope_struct_2_genexpr)) __PYX_ERR(0, 109, __pyx_L1_error)
+  if (__Pyx_fix_up_extension_type_from_spec(&__pyx_type_13impurityModel_2ed_13ManyBodyUtils___pyx_scope_struct_2_genexpr_spec, __pyx_ptype_13impurityModel_2ed_13ManyBodyUtils___pyx_scope_struct_2_genexpr) < 0) __PYX_ERR(0, 109, __pyx_L1_error)
   #else
   __pyx_ptype_13impurityModel_2ed_13ManyBodyUtils___pyx_scope_struct_2_genexpr = &__pyx_type_13impurityModel_2ed_13ManyBodyUtils___pyx_scope_struct_2_genexpr;
   #endif
   #if !CYTHON_COMPILING_IN_LIMITED_API
   #endif
   #if !CYTHON_USE_TYPE_SPECS
-  if (__Pyx_PyType_Ready(__pyx_ptype_13impurityModel_2ed_13ManyBodyUtils___pyx_scope_struct_2_genexpr) < 0) __PYX_ERR(0, 110, __pyx_L1_error)
+  if (__Pyx_PyType_Ready(__pyx_ptype_13impurityModel_2ed_13ManyBodyUtils___pyx_scope_struct_2_genexpr) < 0) __PYX_ERR(0, 109, __pyx_L1_error)
   #endif
   #if PY_MAJOR_VERSION < 3
   __pyx_ptype_13impurityModel_2ed_13ManyBodyUtils___pyx_scope_struct_2_genexpr->tp_print = 0;
@@ -15001,15 +15240,15 @@ static int __Pyx_modinit_type_init_code(void) {
   }
   #endif
   #if CYTHON_USE_TYPE_SPECS
-  __pyx_ptype_13impurityModel_2ed_13ManyBodyUtils___pyx_scope_struct_3_genexpr = (PyTypeObject *) __Pyx_PyType_FromModuleAndSpec(__pyx_m, &__pyx_type_13impurityModel_2ed_13ManyBodyUtils___pyx_scope_struct_3_genexpr_spec, NULL); if (unlikely(!__pyx_ptype_13impurityModel_2ed_13ManyBodyUtils___pyx_scope_struct_3_genexpr)) __PYX_ERR(0, 113, __pyx_L1_error)
-  if (__Pyx_fix_up_extension_type_from_spec(&__pyx_type_13impurityModel_2ed_13ManyBodyUtils___pyx_scope_struct_3_genexpr_spec, __pyx_ptype_13impurityModel_2ed_13ManyBodyUtils___pyx_scope_struct_3_genexpr) < 0) __PYX_ERR(0, 113, __pyx_L1_error)
+  __pyx_ptype_13impurityModel_2ed_13ManyBodyUtils___pyx_scope_struct_3_genexpr = (PyTypeObject *) __Pyx_PyType_FromModuleAndSpec(__pyx_m, &__pyx_type_13impurityModel_2ed_13ManyBodyUtils___pyx_scope_struct_3_genexpr_spec, NULL); if (unlikely(!__pyx_ptype_13impurityModel_2ed_13ManyBodyUtils___pyx_scope_struct_3_genexpr)) __PYX_ERR(0, 112, __pyx_L1_error)
+  if (__Pyx_fix_up_extension_type_from_spec(&__pyx_type_13impurityModel_2ed_13ManyBodyUtils___pyx_scope_struct_3_genexpr_spec, __pyx_ptype_13impurityModel_2ed_13ManyBodyUtils___pyx_scope_struct_3_genexpr) < 0) __PYX_ERR(0, 112, __pyx_L1_error)
   #else
   __pyx_ptype_13impurityModel_2ed_13ManyBodyUtils___pyx_scope_struct_3_genexpr = &__pyx_type_13impurityModel_2ed_13ManyBodyUtils___pyx_scope_struct_3_genexpr;
   #endif
   #if !CYTHON_COMPILING_IN_LIMITED_API
   #endif
   #if !CYTHON_USE_TYPE_SPECS
-  if (__Pyx_PyType_Ready(__pyx_ptype_13impurityModel_2ed_13ManyBodyUtils___pyx_scope_struct_3_genexpr) < 0) __PYX_ERR(0, 113, __pyx_L1_error)
+  if (__Pyx_PyType_Ready(__pyx_ptype_13impurityModel_2ed_13ManyBodyUtils___pyx_scope_struct_3_genexpr) < 0) __PYX_ERR(0, 112, __pyx_L1_error)
   #endif
   #if PY_MAJOR_VERSION < 3
   __pyx_ptype_13impurityModel_2ed_13ManyBodyUtils___pyx_scope_struct_3_genexpr->tp_print = 0;
@@ -15020,15 +15259,15 @@ static int __Pyx_modinit_type_init_code(void) {
   }
   #endif
   #if CYTHON_USE_TYPE_SPECS
-  __pyx_ptype_13impurityModel_2ed_13ManyBodyUtils___pyx_scope_struct_4_genexpr = (PyTypeObject *) __Pyx_PyType_FromModuleAndSpec(__pyx_m, &__pyx_type_13impurityModel_2ed_13ManyBodyUtils___pyx_scope_struct_4_genexpr_spec, NULL); if (unlikely(!__pyx_ptype_13impurityModel_2ed_13ManyBodyUtils___pyx_scope_struct_4_genexpr)) __PYX_ERR(0, 119, __pyx_L1_error)
-  if (__Pyx_fix_up_extension_type_from_spec(&__pyx_type_13impurityModel_2ed_13ManyBodyUtils___pyx_scope_struct_4_genexpr_spec, __pyx_ptype_13impurityModel_2ed_13ManyBodyUtils___pyx_scope_struct_4_genexpr) < 0) __PYX_ERR(0, 119, __pyx_L1_error)
+  __pyx_ptype_13impurityModel_2ed_13ManyBodyUtils___pyx_scope_struct_4_genexpr = (PyTypeObject *) __Pyx_PyType_FromModuleAndSpec(__pyx_m, &__pyx_type_13impurityModel_2ed_13ManyBodyUtils___pyx_scope_struct_4_genexpr_spec, NULL); if (unlikely(!__pyx_ptype_13impurityModel_2ed_13ManyBodyUtils___pyx_scope_struct_4_genexpr)) __PYX_ERR(0, 118, __pyx_L1_error)
+  if (__Pyx_fix_up_extension_type_from_spec(&__pyx_type_13impurityModel_2ed_13ManyBodyUtils___pyx_scope_struct_4_genexpr_spec, __pyx_ptype_13impurityModel_2ed_13ManyBodyUtils___pyx_scope_struct_4_genexpr) < 0) __PYX_ERR(0, 118, __pyx_L1_error)
   #else
   __pyx_ptype_13impurityModel_2ed_13ManyBodyUtils___pyx_scope_struct_4_genexpr = &__pyx_type_13impurityModel_2ed_13ManyBodyUtils___pyx_scope_struct_4_genexpr;
   #endif
   #if !CYTHON_COMPILING_IN_LIMITED_API
   #endif
   #if !CYTHON_USE_TYPE_SPECS
-  if (__Pyx_PyType_Ready(__pyx_ptype_13impurityModel_2ed_13ManyBodyUtils___pyx_scope_struct_4_genexpr) < 0) __PYX_ERR(0, 119, __pyx_L1_error)
+  if (__Pyx_PyType_Ready(__pyx_ptype_13impurityModel_2ed_13ManyBodyUtils___pyx_scope_struct_4_genexpr) < 0) __PYX_ERR(0, 118, __pyx_L1_error)
   #endif
   #if PY_MAJOR_VERSION < 3
   __pyx_ptype_13impurityModel_2ed_13ManyBodyUtils___pyx_scope_struct_4_genexpr->tp_print = 0;
@@ -15485,7 +15724,7 @@ if (!__Pyx_RefNanny) {
  *     cdef ManyBodyState_cpp v
  * 
  *     def __init__(self, dict[bytes, complex] psi={}):             # <<<<<<<<<<<<<<
- *         cdef vector[vector[uint8_t]] keys
+ *         cdef vector[ManyBodyState_cpp.key_type] keys
  *         cdef vector[double complex] amplitudes
  */
   __pyx_t_2 = __Pyx_PyDict_NewPresized(0); if (unlikely(!__pyx_t_2)) __PYX_ERR(0, 32, __pyx_L1_error)
@@ -15494,133 +15733,133 @@ if (!__Pyx_RefNanny) {
   __Pyx_GIVEREF(__pyx_t_2);
   __pyx_t_2 = 0;
 
-  /* "impurityModel/ed/ManyBodyUtils.pyx":81
+  /* "impurityModel/ed/ManyBodyUtils.pyx":80
  *         self.v[bytes_to_key(key)] = value
  * 
  *     def norm2(self):             # <<<<<<<<<<<<<<
  *         return self.v.norm2()
  * 
  */
-  __pyx_t_2 = __Pyx_CyFunction_New(&__pyx_mdef_13impurityModel_2ed_13ManyBodyUtils_13ManyBodyState_21norm2, __Pyx_CYFUNCTION_CCLASS, __pyx_n_s_ManyBodyState_norm2, NULL, __pyx_n_s_impurityModel_ed_ManyBodyUtils, __pyx_d, ((PyObject *)__pyx_codeobj__8)); if (unlikely(!__pyx_t_2)) __PYX_ERR(0, 81, __pyx_L1_error)
+  __pyx_t_2 = __Pyx_CyFunction_New(&__pyx_mdef_13impurityModel_2ed_13ManyBodyUtils_13ManyBodyState_21norm2, __Pyx_CYFUNCTION_CCLASS, __pyx_n_s_ManyBodyState_norm2, NULL, __pyx_n_s_impurityModel_ed_ManyBodyUtils, __pyx_d, ((PyObject *)__pyx_codeobj__8)); if (unlikely(!__pyx_t_2)) __PYX_ERR(0, 80, __pyx_L1_error)
   __Pyx_GOTREF(__pyx_t_2);
-  if (__Pyx_SetItemOnTypeDict((PyObject *)__pyx_ptype_13impurityModel_2ed_13ManyBodyUtils_ManyBodyState, __pyx_n_s_norm2, __pyx_t_2) < 0) __PYX_ERR(0, 81, __pyx_L1_error)
+  if (__Pyx_SetItemOnTypeDict((PyObject *)__pyx_ptype_13impurityModel_2ed_13ManyBodyUtils_ManyBodyState, __pyx_n_s_norm2, __pyx_t_2) < 0) __PYX_ERR(0, 80, __pyx_L1_error)
   __Pyx_DECREF(__pyx_t_2); __pyx_t_2 = 0;
   PyType_Modified(__pyx_ptype_13impurityModel_2ed_13ManyBodyUtils_ManyBodyState);
 
-  /* "impurityModel/ed/ManyBodyUtils.pyx":84
+  /* "impurityModel/ed/ManyBodyUtils.pyx":83
  *         return self.v.norm2()
  * 
  *     def norm(self):             # <<<<<<<<<<<<<<
  *         return self.v.norm()
  * 
  */
-  __pyx_t_2 = __Pyx_CyFunction_New(&__pyx_mdef_13impurityModel_2ed_13ManyBodyUtils_13ManyBodyState_23norm, __Pyx_CYFUNCTION_CCLASS, __pyx_n_s_ManyBodyState_norm, NULL, __pyx_n_s_impurityModel_ed_ManyBodyUtils, __pyx_d, ((PyObject *)__pyx_codeobj__9)); if (unlikely(!__pyx_t_2)) __PYX_ERR(0, 84, __pyx_L1_error)
+  __pyx_t_2 = __Pyx_CyFunction_New(&__pyx_mdef_13impurityModel_2ed_13ManyBodyUtils_13ManyBodyState_23norm, __Pyx_CYFUNCTION_CCLASS, __pyx_n_s_ManyBodyState_norm, NULL, __pyx_n_s_impurityModel_ed_ManyBodyUtils, __pyx_d, ((PyObject *)__pyx_codeobj__9)); if (unlikely(!__pyx_t_2)) __PYX_ERR(0, 83, __pyx_L1_error)
   __Pyx_GOTREF(__pyx_t_2);
-  if (__Pyx_SetItemOnTypeDict((PyObject *)__pyx_ptype_13impurityModel_2ed_13ManyBodyUtils_ManyBodyState, __pyx_n_s_norm, __pyx_t_2) < 0) __PYX_ERR(0, 84, __pyx_L1_error)
+  if (__Pyx_SetItemOnTypeDict((PyObject *)__pyx_ptype_13impurityModel_2ed_13ManyBodyUtils_ManyBodyState, __pyx_n_s_norm, __pyx_t_2) < 0) __PYX_ERR(0, 83, __pyx_L1_error)
   __Pyx_DECREF(__pyx_t_2); __pyx_t_2 = 0;
   PyType_Modified(__pyx_ptype_13impurityModel_2ed_13ManyBodyUtils_ManyBodyState);
 
-  /* "impurityModel/ed/ManyBodyUtils.pyx":90
+  /* "impurityModel/ed/ManyBodyUtils.pyx":89
  *         return self.v.size()
  * 
  *     def size(self):             # <<<<<<<<<<<<<<
  *         return len(self)
  * 
  */
-  __pyx_t_2 = __Pyx_CyFunction_New(&__pyx_mdef_13impurityModel_2ed_13ManyBodyUtils_13ManyBodyState_27size, __Pyx_CYFUNCTION_CCLASS, __pyx_n_s_ManyBodyState_size, NULL, __pyx_n_s_impurityModel_ed_ManyBodyUtils, __pyx_d, ((PyObject *)__pyx_codeobj__10)); if (unlikely(!__pyx_t_2)) __PYX_ERR(0, 90, __pyx_L1_error)
+  __pyx_t_2 = __Pyx_CyFunction_New(&__pyx_mdef_13impurityModel_2ed_13ManyBodyUtils_13ManyBodyState_27size, __Pyx_CYFUNCTION_CCLASS, __pyx_n_s_ManyBodyState_size, NULL, __pyx_n_s_impurityModel_ed_ManyBodyUtils, __pyx_d, ((PyObject *)__pyx_codeobj__10)); if (unlikely(!__pyx_t_2)) __PYX_ERR(0, 89, __pyx_L1_error)
   __Pyx_GOTREF(__pyx_t_2);
-  if (__Pyx_SetItemOnTypeDict((PyObject *)__pyx_ptype_13impurityModel_2ed_13ManyBodyUtils_ManyBodyState, __pyx_n_s_size, __pyx_t_2) < 0) __PYX_ERR(0, 90, __pyx_L1_error)
+  if (__Pyx_SetItemOnTypeDict((PyObject *)__pyx_ptype_13impurityModel_2ed_13ManyBodyUtils_ManyBodyState, __pyx_n_s_size, __pyx_t_2) < 0) __PYX_ERR(0, 89, __pyx_L1_error)
   __Pyx_DECREF(__pyx_t_2); __pyx_t_2 = 0;
   PyType_Modified(__pyx_ptype_13impurityModel_2ed_13ManyBodyUtils_ManyBodyState);
 
-  /* "impurityModel/ed/ManyBodyUtils.pyx":93
+  /* "impurityModel/ed/ManyBodyUtils.pyx":92
  *         return len(self)
  * 
  *     def max_size(self):             # <<<<<<<<<<<<<<
  *         return self.v.max_size()
  * 
  */
-  __pyx_t_2 = __Pyx_CyFunction_New(&__pyx_mdef_13impurityModel_2ed_13ManyBodyUtils_13ManyBodyState_29max_size, __Pyx_CYFUNCTION_CCLASS, __pyx_n_s_ManyBodyState_max_size, NULL, __pyx_n_s_impurityModel_ed_ManyBodyUtils, __pyx_d, ((PyObject *)__pyx_codeobj__11)); if (unlikely(!__pyx_t_2)) __PYX_ERR(0, 93, __pyx_L1_error)
+  __pyx_t_2 = __Pyx_CyFunction_New(&__pyx_mdef_13impurityModel_2ed_13ManyBodyUtils_13ManyBodyState_29max_size, __Pyx_CYFUNCTION_CCLASS, __pyx_n_s_ManyBodyState_max_size, NULL, __pyx_n_s_impurityModel_ed_ManyBodyUtils, __pyx_d, ((PyObject *)__pyx_codeobj__11)); if (unlikely(!__pyx_t_2)) __PYX_ERR(0, 92, __pyx_L1_error)
   __Pyx_GOTREF(__pyx_t_2);
-  if (__Pyx_SetItemOnTypeDict((PyObject *)__pyx_ptype_13impurityModel_2ed_13ManyBodyUtils_ManyBodyState, __pyx_n_s_max_size, __pyx_t_2) < 0) __PYX_ERR(0, 93, __pyx_L1_error)
+  if (__Pyx_SetItemOnTypeDict((PyObject *)__pyx_ptype_13impurityModel_2ed_13ManyBodyUtils_ManyBodyState, __pyx_n_s_max_size, __pyx_t_2) < 0) __PYX_ERR(0, 92, __pyx_L1_error)
   __Pyx_DECREF(__pyx_t_2); __pyx_t_2 = 0;
   PyType_Modified(__pyx_ptype_13impurityModel_2ed_13ManyBodyUtils_ManyBodyState);
 
-  /* "impurityModel/ed/ManyBodyUtils.pyx":96
+  /* "impurityModel/ed/ManyBodyUtils.pyx":95
  *         return self.v.max_size()
  * 
  *     def erase(self, bytes key):             # <<<<<<<<<<<<<<
  *         self.v.erase(bytes_to_key(key))
  * 
  */
-  __pyx_t_2 = __Pyx_CyFunction_New(&__pyx_mdef_13impurityModel_2ed_13ManyBodyUtils_13ManyBodyState_31erase, __Pyx_CYFUNCTION_CCLASS, __pyx_n_s_ManyBodyState_erase, NULL, __pyx_n_s_impurityModel_ed_ManyBodyUtils, __pyx_d, ((PyObject *)__pyx_codeobj__13)); if (unlikely(!__pyx_t_2)) __PYX_ERR(0, 96, __pyx_L1_error)
+  __pyx_t_2 = __Pyx_CyFunction_New(&__pyx_mdef_13impurityModel_2ed_13ManyBodyUtils_13ManyBodyState_31erase, __Pyx_CYFUNCTION_CCLASS, __pyx_n_s_ManyBodyState_erase, NULL, __pyx_n_s_impurityModel_ed_ManyBodyUtils, __pyx_d, ((PyObject *)__pyx_codeobj__13)); if (unlikely(!__pyx_t_2)) __PYX_ERR(0, 95, __pyx_L1_error)
   __Pyx_GOTREF(__pyx_t_2);
-  if (__Pyx_SetItemOnTypeDict((PyObject *)__pyx_ptype_13impurityModel_2ed_13ManyBodyUtils_ManyBodyState, __pyx_n_s_erase, __pyx_t_2) < 0) __PYX_ERR(0, 96, __pyx_L1_error)
+  if (__Pyx_SetItemOnTypeDict((PyObject *)__pyx_ptype_13impurityModel_2ed_13ManyBodyUtils_ManyBodyState, __pyx_n_s_erase, __pyx_t_2) < 0) __PYX_ERR(0, 95, __pyx_L1_error)
   __Pyx_DECREF(__pyx_t_2); __pyx_t_2 = 0;
   PyType_Modified(__pyx_ptype_13impurityModel_2ed_13ManyBodyUtils_ManyBodyState);
 
-  /* "impurityModel/ed/ManyBodyUtils.pyx":106
+  /* "impurityModel/ed/ManyBodyUtils.pyx":105
  *             yield key_to_bytes(p.first)
  * 
  *     def keys(self):             # <<<<<<<<<<<<<<
  *         return (key_to_bytes(p.first) for p in self.v)
  * 
  */
-  __pyx_t_2 = __Pyx_CyFunction_New(&__pyx_mdef_13impurityModel_2ed_13ManyBodyUtils_13ManyBodyState_38keys, __Pyx_CYFUNCTION_CCLASS, __pyx_n_s_ManyBodyState_keys, NULL, __pyx_n_s_impurityModel_ed_ManyBodyUtils, __pyx_d, ((PyObject *)__pyx_codeobj__15)); if (unlikely(!__pyx_t_2)) __PYX_ERR(0, 106, __pyx_L1_error)
+  __pyx_t_2 = __Pyx_CyFunction_New(&__pyx_mdef_13impurityModel_2ed_13ManyBodyUtils_13ManyBodyState_38keys, __Pyx_CYFUNCTION_CCLASS, __pyx_n_s_ManyBodyState_keys, NULL, __pyx_n_s_impurityModel_ed_ManyBodyUtils, __pyx_d, ((PyObject *)__pyx_codeobj__15)); if (unlikely(!__pyx_t_2)) __PYX_ERR(0, 105, __pyx_L1_error)
   __Pyx_GOTREF(__pyx_t_2);
-  if (__Pyx_SetItemOnTypeDict((PyObject *)__pyx_ptype_13impurityModel_2ed_13ManyBodyUtils_ManyBodyState, __pyx_n_s_keys, __pyx_t_2) < 0) __PYX_ERR(0, 106, __pyx_L1_error)
+  if (__Pyx_SetItemOnTypeDict((PyObject *)__pyx_ptype_13impurityModel_2ed_13ManyBodyUtils_ManyBodyState, __pyx_n_s_keys, __pyx_t_2) < 0) __PYX_ERR(0, 105, __pyx_L1_error)
   __Pyx_DECREF(__pyx_t_2); __pyx_t_2 = 0;
   PyType_Modified(__pyx_ptype_13impurityModel_2ed_13ManyBodyUtils_ManyBodyState);
 
-  /* "impurityModel/ed/ManyBodyUtils.pyx":109
+  /* "impurityModel/ed/ManyBodyUtils.pyx":108
  *         return (key_to_bytes(p.first) for p in self.v)
  * 
  *     def values(self):             # <<<<<<<<<<<<<<
  *         return (p.second for p in self.v)
  * 
  */
-  __pyx_t_2 = __Pyx_CyFunction_New(&__pyx_mdef_13impurityModel_2ed_13ManyBodyUtils_13ManyBodyState_40values, __Pyx_CYFUNCTION_CCLASS, __pyx_n_s_ManyBodyState_values, NULL, __pyx_n_s_impurityModel_ed_ManyBodyUtils, __pyx_d, ((PyObject *)__pyx_codeobj__16)); if (unlikely(!__pyx_t_2)) __PYX_ERR(0, 109, __pyx_L1_error)
+  __pyx_t_2 = __Pyx_CyFunction_New(&__pyx_mdef_13impurityModel_2ed_13ManyBodyUtils_13ManyBodyState_40values, __Pyx_CYFUNCTION_CCLASS, __pyx_n_s_ManyBodyState_values, NULL, __pyx_n_s_impurityModel_ed_ManyBodyUtils, __pyx_d, ((PyObject *)__pyx_codeobj__16)); if (unlikely(!__pyx_t_2)) __PYX_ERR(0, 108, __pyx_L1_error)
   __Pyx_GOTREF(__pyx_t_2);
-  if (__Pyx_SetItemOnTypeDict((PyObject *)__pyx_ptype_13impurityModel_2ed_13ManyBodyUtils_ManyBodyState, __pyx_n_s_values, __pyx_t_2) < 0) __PYX_ERR(0, 109, __pyx_L1_error)
+  if (__Pyx_SetItemOnTypeDict((PyObject *)__pyx_ptype_13impurityModel_2ed_13ManyBodyUtils_ManyBodyState, __pyx_n_s_values, __pyx_t_2) < 0) __PYX_ERR(0, 108, __pyx_L1_error)
   __Pyx_DECREF(__pyx_t_2); __pyx_t_2 = 0;
   PyType_Modified(__pyx_ptype_13impurityModel_2ed_13ManyBodyUtils_ManyBodyState);
 
-  /* "impurityModel/ed/ManyBodyUtils.pyx":112
+  /* "impurityModel/ed/ManyBodyUtils.pyx":111
  *         return (p.second for p in self.v)
  * 
  *     def items(self):             # <<<<<<<<<<<<<<
  *         return ((key_to_bytes(p.first), p.second) for p in self.v)
  * 
  */
-  __pyx_t_2 = __Pyx_CyFunction_New(&__pyx_mdef_13impurityModel_2ed_13ManyBodyUtils_13ManyBodyState_42items, __Pyx_CYFUNCTION_CCLASS, __pyx_n_s_ManyBodyState_items, NULL, __pyx_n_s_impurityModel_ed_ManyBodyUtils, __pyx_d, ((PyObject *)__pyx_codeobj__17)); if (unlikely(!__pyx_t_2)) __PYX_ERR(0, 112, __pyx_L1_error)
+  __pyx_t_2 = __Pyx_CyFunction_New(&__pyx_mdef_13impurityModel_2ed_13ManyBodyUtils_13ManyBodyState_42items, __Pyx_CYFUNCTION_CCLASS, __pyx_n_s_ManyBodyState_items, NULL, __pyx_n_s_impurityModel_ed_ManyBodyUtils, __pyx_d, ((PyObject *)__pyx_codeobj__17)); if (unlikely(!__pyx_t_2)) __PYX_ERR(0, 111, __pyx_L1_error)
   __Pyx_GOTREF(__pyx_t_2);
-  if (__Pyx_SetItemOnTypeDict((PyObject *)__pyx_ptype_13impurityModel_2ed_13ManyBodyUtils_ManyBodyState, __pyx_n_s_items, __pyx_t_2) < 0) __PYX_ERR(0, 112, __pyx_L1_error)
+  if (__Pyx_SetItemOnTypeDict((PyObject *)__pyx_ptype_13impurityModel_2ed_13ManyBodyUtils_ManyBodyState, __pyx_n_s_items, __pyx_t_2) < 0) __PYX_ERR(0, 111, __pyx_L1_error)
   __Pyx_DECREF(__pyx_t_2); __pyx_t_2 = 0;
   PyType_Modified(__pyx_ptype_13impurityModel_2ed_13ManyBodyUtils_ManyBodyState);
 
-  /* "impurityModel/ed/ManyBodyUtils.pyx":115
+  /* "impurityModel/ed/ManyBodyUtils.pyx":114
  *         return ((key_to_bytes(p.first), p.second) for p in self.v)
  * 
  *     def prune(self, double cutoff):             # <<<<<<<<<<<<<<
  *         self.v.prune(cutoff)
  * 
  */
-  __pyx_t_2 = __Pyx_CyFunction_New(&__pyx_mdef_13impurityModel_2ed_13ManyBodyUtils_13ManyBodyState_44prune, __Pyx_CYFUNCTION_CCLASS, __pyx_n_s_ManyBodyState_prune, NULL, __pyx_n_s_impurityModel_ed_ManyBodyUtils, __pyx_d, ((PyObject *)__pyx_codeobj__19)); if (unlikely(!__pyx_t_2)) __PYX_ERR(0, 115, __pyx_L1_error)
+  __pyx_t_2 = __Pyx_CyFunction_New(&__pyx_mdef_13impurityModel_2ed_13ManyBodyUtils_13ManyBodyState_44prune, __Pyx_CYFUNCTION_CCLASS, __pyx_n_s_ManyBodyState_prune, NULL, __pyx_n_s_impurityModel_ed_ManyBodyUtils, __pyx_d, ((PyObject *)__pyx_codeobj__19)); if (unlikely(!__pyx_t_2)) __PYX_ERR(0, 114, __pyx_L1_error)
   __Pyx_GOTREF(__pyx_t_2);
-  if (__Pyx_SetItemOnTypeDict((PyObject *)__pyx_ptype_13impurityModel_2ed_13ManyBodyUtils_ManyBodyState, __pyx_n_s_prune, __pyx_t_2) < 0) __PYX_ERR(0, 115, __pyx_L1_error)
+  if (__Pyx_SetItemOnTypeDict((PyObject *)__pyx_ptype_13impurityModel_2ed_13ManyBodyUtils_ManyBodyState, __pyx_n_s_prune, __pyx_t_2) < 0) __PYX_ERR(0, 114, __pyx_L1_error)
   __Pyx_DECREF(__pyx_t_2); __pyx_t_2 = 0;
   PyType_Modified(__pyx_ptype_13impurityModel_2ed_13ManyBodyUtils_ManyBodyState);
 
-  /* "impurityModel/ed/ManyBodyUtils.pyx":118
+  /* "impurityModel/ed/ManyBodyUtils.pyx":117
  *         self.v.prune(cutoff)
  * 
  *     def to_dict(self):             # <<<<<<<<<<<<<<
  *         return dict((key_to_bytes(p.first), p.second) for p in self.v)
  * 
  */
-  __pyx_t_2 = __Pyx_CyFunction_New(&__pyx_mdef_13impurityModel_2ed_13ManyBodyUtils_13ManyBodyState_46to_dict, __Pyx_CYFUNCTION_CCLASS, __pyx_n_s_ManyBodyState_to_dict, NULL, __pyx_n_s_impurityModel_ed_ManyBodyUtils, __pyx_d, ((PyObject *)__pyx_codeobj__20)); if (unlikely(!__pyx_t_2)) __PYX_ERR(0, 118, __pyx_L1_error)
+  __pyx_t_2 = __Pyx_CyFunction_New(&__pyx_mdef_13impurityModel_2ed_13ManyBodyUtils_13ManyBodyState_46to_dict, __Pyx_CYFUNCTION_CCLASS, __pyx_n_s_ManyBodyState_to_dict, NULL, __pyx_n_s_impurityModel_ed_ManyBodyUtils, __pyx_d, ((PyObject *)__pyx_codeobj__20)); if (unlikely(!__pyx_t_2)) __PYX_ERR(0, 117, __pyx_L1_error)
   __Pyx_GOTREF(__pyx_t_2);
-  if (__Pyx_SetItemOnTypeDict((PyObject *)__pyx_ptype_13impurityModel_2ed_13ManyBodyUtils_ManyBodyState, __pyx_n_s_to_dict, __pyx_t_2) < 0) __PYX_ERR(0, 118, __pyx_L1_error)
+  if (__Pyx_SetItemOnTypeDict((PyObject *)__pyx_ptype_13impurityModel_2ed_13ManyBodyUtils_ManyBodyState, __pyx_n_s_to_dict, __pyx_t_2) < 0) __PYX_ERR(0, 117, __pyx_L1_error)
   __Pyx_DECREF(__pyx_t_2); __pyx_t_2 = 0;
   PyType_Modified(__pyx_ptype_13impurityModel_2ed_13ManyBodyUtils_ManyBodyState);
 
@@ -15645,41 +15884,41 @@ if (!__Pyx_RefNanny) {
   if (PyDict_SetItem(__pyx_d, __pyx_n_s_setstate_cython, __pyx_t_2) < 0) __PYX_ERR(1, 3, __pyx_L1_error)
   __Pyx_DECREF(__pyx_t_2); __pyx_t_2 = 0;
 
-  /* "impurityModel/ed/ManyBodyUtils.pyx":121
+  /* "impurityModel/ed/ManyBodyUtils.pyx":120
  *         return dict((key_to_bytes(p.first), p.second) for p in self.v)
  * 
  * def inner(ManyBodyState a, ManyBodyState b):             # <<<<<<<<<<<<<<
  *     return inner_cpp(a.v, b.v)
  * 
  */
-  __pyx_t_2 = __Pyx_CyFunction_New(&__pyx_mdef_13impurityModel_2ed_13ManyBodyUtils_1inner, 0, __pyx_n_s_inner, NULL, __pyx_n_s_impurityModel_ed_ManyBodyUtils, __pyx_d, ((PyObject *)__pyx_codeobj__25)); if (unlikely(!__pyx_t_2)) __PYX_ERR(0, 121, __pyx_L1_error)
+  __pyx_t_2 = __Pyx_CyFunction_New(&__pyx_mdef_13impurityModel_2ed_13ManyBodyUtils_1inner, 0, __pyx_n_s_inner, NULL, __pyx_n_s_impurityModel_ed_ManyBodyUtils, __pyx_d, ((PyObject *)__pyx_codeobj__25)); if (unlikely(!__pyx_t_2)) __PYX_ERR(0, 120, __pyx_L1_error)
   __Pyx_GOTREF(__pyx_t_2);
-  if (PyDict_SetItem(__pyx_d, __pyx_n_s_inner, __pyx_t_2) < 0) __PYX_ERR(0, 121, __pyx_L1_error)
+  if (PyDict_SetItem(__pyx_d, __pyx_n_s_inner, __pyx_t_2) < 0) __PYX_ERR(0, 120, __pyx_L1_error)
   __Pyx_DECREF(__pyx_t_2); __pyx_t_2 = 0;
 
-  /* "impurityModel/ed/ManyBodyUtils.pyx":148
+  /* "impurityModel/ed/ManyBodyUtils.pyx":147
  *     cdef ManyBodyOperator_cpp o
  * 
  *     def __init__(self, dict[tuple[tuple[int, str]], complex] op={}):             # <<<<<<<<<<<<<<
  *         cdef double complex amp
- *         cdef tuple[int64_t, str] processes
+ *         cdef tuple[int, str] processes
  */
-  __pyx_t_2 = __Pyx_PyDict_NewPresized(0); if (unlikely(!__pyx_t_2)) __PYX_ERR(0, 148, __pyx_L1_error)
+  __pyx_t_2 = __Pyx_PyDict_NewPresized(0); if (unlikely(!__pyx_t_2)) __PYX_ERR(0, 147, __pyx_L1_error)
   __Pyx_GOTREF(__pyx_t_2);
   __pyx_k__6 = ((PyObject*)__pyx_t_2);
   __Pyx_GIVEREF(__pyx_t_2);
   __pyx_t_2 = 0;
 
-  /* "impurityModel/ed/ManyBodyUtils.pyx":200
+  /* "impurityModel/ed/ManyBodyUtils.pyx":199
  *         return self.o.size()
  * 
  *     def size(self):             # <<<<<<<<<<<<<<
  *         return len(self)
  * 
  */
-  __pyx_t_2 = __Pyx_CyFunction_New(&__pyx_mdef_13impurityModel_2ed_13ManyBodyUtils_16ManyBodyOperator_23size, __Pyx_CYFUNCTION_CCLASS, __pyx_n_s_ManyBodyOperator_size, NULL, __pyx_n_s_impurityModel_ed_ManyBodyUtils, __pyx_d, ((PyObject *)__pyx_codeobj__26)); if (unlikely(!__pyx_t_2)) __PYX_ERR(0, 200, __pyx_L1_error)
+  __pyx_t_2 = __Pyx_CyFunction_New(&__pyx_mdef_13impurityModel_2ed_13ManyBodyUtils_16ManyBodyOperator_23size, __Pyx_CYFUNCTION_CCLASS, __pyx_n_s_ManyBodyOperator_size, NULL, __pyx_n_s_impurityModel_ed_ManyBodyUtils, __pyx_d, ((PyObject *)__pyx_codeobj__26)); if (unlikely(!__pyx_t_2)) __PYX_ERR(0, 199, __pyx_L1_error)
   __Pyx_GOTREF(__pyx_t_2);
-  if (__Pyx_SetItemOnTypeDict((PyObject *)__pyx_ptype_13impurityModel_2ed_13ManyBodyUtils_ManyBodyOperator, __pyx_n_s_size, __pyx_t_2) < 0) __PYX_ERR(0, 200, __pyx_L1_error)
+  if (__Pyx_SetItemOnTypeDict((PyObject *)__pyx_ptype_13impurityModel_2ed_13ManyBodyUtils_ManyBodyOperator, __pyx_n_s_size, __pyx_t_2) < 0) __PYX_ERR(0, 199, __pyx_L1_error)
   __Pyx_DECREF(__pyx_t_2); __pyx_t_2 = 0;
   PyType_Modified(__pyx_ptype_13impurityModel_2ed_13ManyBodyUtils_ManyBodyOperator);
 
@@ -20543,6 +20782,77 @@ raise_neg_overflow:
     PyErr_SetString(PyExc_OverflowError,
         "can't convert negative value to uint8_t");
     return (uint8_t) -1;
+}
+
+/* CIntToPy */
+static CYTHON_INLINE PyObject* __Pyx_PyInt_From_uint8_t(uint8_t value) {
+#ifdef __Pyx_HAS_GCC_DIAGNOSTIC
+#pragma GCC diagnostic push
+#pragma GCC diagnostic ignored "-Wconversion"
+#endif
+    const uint8_t neg_one = (uint8_t) -1, const_zero = (uint8_t) 0;
+#ifdef __Pyx_HAS_GCC_DIAGNOSTIC
+#pragma GCC diagnostic pop
+#endif
+    const int is_unsigned = neg_one > const_zero;
+    if (is_unsigned) {
+        if (sizeof(uint8_t) < sizeof(long)) {
+            return PyInt_FromLong((long) value);
+        } else if (sizeof(uint8_t) <= sizeof(unsigned long)) {
+            return PyLong_FromUnsignedLong((unsigned long) value);
+#ifdef HAVE_LONG_LONG
+        } else if (sizeof(uint8_t) <= sizeof(unsigned PY_LONG_LONG)) {
+            return PyLong_FromUnsignedLongLong((unsigned PY_LONG_LONG) value);
+#endif
+        }
+    } else {
+        if (sizeof(uint8_t) <= sizeof(long)) {
+            return PyInt_FromLong((long) value);
+#ifdef HAVE_LONG_LONG
+        } else if (sizeof(uint8_t) <= sizeof(PY_LONG_LONG)) {
+            return PyLong_FromLongLong((PY_LONG_LONG) value);
+#endif
+        }
+    }
+    {
+        unsigned char *bytes = (unsigned char *)&value;
+#if !CYTHON_COMPILING_IN_LIMITED_API && PY_VERSION_HEX >= 0x030d00A4
+        if (is_unsigned) {
+            return PyLong_FromUnsignedNativeBytes(bytes, sizeof(value), -1);
+        } else {
+            return PyLong_FromNativeBytes(bytes, sizeof(value), -1);
+        }
+#elif !CYTHON_COMPILING_IN_LIMITED_API && PY_VERSION_HEX < 0x030d0000
+        int one = 1; int little = (int)*(unsigned char *)&one;
+        return _PyLong_FromByteArray(bytes, sizeof(uint8_t),
+                                     little, !is_unsigned);
+#else
+        int one = 1; int little = (int)*(unsigned char *)&one;
+        PyObject *from_bytes, *result = NULL;
+        PyObject *py_bytes = NULL, *arg_tuple = NULL, *kwds = NULL, *order_str = NULL;
+        from_bytes = PyObject_GetAttrString((PyObject*)&PyLong_Type, "from_bytes");
+        if (!from_bytes) return NULL;
+        py_bytes = PyBytes_FromStringAndSize((char*)bytes, sizeof(uint8_t));
+        if (!py_bytes) goto limited_bad;
+        order_str = PyUnicode_FromString(little ? "little" : "big");
+        if (!order_str) goto limited_bad;
+        arg_tuple = PyTuple_Pack(2, py_bytes, order_str);
+        if (!arg_tuple) goto limited_bad;
+        if (!is_unsigned) {
+            kwds = PyDict_New();
+            if (!kwds) goto limited_bad;
+            if (PyDict_SetItemString(kwds, "signed", __Pyx_NewRef(Py_True))) goto limited_bad;
+        }
+        result = PyObject_Call(from_bytes, arg_tuple, kwds);
+        limited_bad:
+        Py_XDECREF(kwds);
+        Py_XDECREF(arg_tuple);
+        Py_XDECREF(order_str);
+        Py_XDECREF(py_bytes);
+        Py_XDECREF(from_bytes);
+        return result;
+#endif
+    }
 }
 
 /* CIntToPy */
