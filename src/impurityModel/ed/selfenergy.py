@@ -265,6 +265,7 @@ def find_gs(
                 verbose=False,
                 truncation_threshold=truncation_threshold,
             )
+            print(f"N0 {N0[i] + dN:^5d}: E = {e_trial:^7.4f} ")
             if e_trial < e_gs:
                 if verbose >= 2:
                     print(f"N0 {N0[i] + dN:^5d}: E = {e_trial:^7.4f} ")
@@ -362,7 +363,7 @@ def calc_selfenergy(
         spin_flip_dj=spin_flip_dj,
         comm=comm,
         truncation_threshold=truncation_threshold,
-        verbose=verbosity,
+        verbose=2,  # verbosity,
     )
     restrictions = basis.restrictions
 
