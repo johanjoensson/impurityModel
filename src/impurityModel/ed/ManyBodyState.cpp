@@ -1,20 +1,18 @@
 #include "ManyBodyState.h"
 #include <numeric>
 
-ManyBodyState::ManyBodyState(const std::vector<std::vector<uint8_t>> &keys,
-                             const std::vector<std::complex<double>> &values)
+ManyBodyState::ManyBodyState(const std::vector<key_type> &keys,
+                             const std::vector<mapped_type> &values)
     : m_map() {
   for (size_t i = 0; i < keys.size(); i++) {
-    m_map[keys[i]] = values[i];
-    // m_map.insert({keys[i], values[i]});
+    m_map.emplace(keys[i], values[i]);
   }
 }
-ManyBodyState::ManyBodyState(const std::vector<std::vector<uint8_t>> &&keys,
-                             const std::vector<std::complex<double>> &&values)
+ManyBodyState::ManyBodyState(const std::vector<key_type> &&keys,
+                             const std::vector<mapped_type> &&values)
     : m_map() {
   for (size_t i = 0; i < keys.size(); i++) {
-    m_map[keys[i]] = std::move(values[i]);
-    // m_map.insert({std::move(keys[i]), std::move(values[i])});
+    m_map.emplace(std::move(keys[i]), std::move(values[i]));
   }
 }
 ManyBodyState::ManyBodyState(const Map &m) : m_map(m) {}
@@ -41,13 +39,13 @@ ManyBodyState &ManyBodyState::operator-=(const ManyBodyState &other) {
   }
   return *this;
 }
-ManyBodyState &ManyBodyState::operator*=(const std::complex<double> &s) {
+ManyBodyState &ManyBodyState::operator*=(const mapped_type &s) {
   for (auto &p : *this) {
     p.second *= s;
   }
   return *this;
 }
-ManyBodyState &ManyBodyState::operator/=(const std::complex<double> &s) {
+ManyBodyState &ManyBodyState::operator/=(const mapped_type &s) {
   for (auto &p : *this) {
     p.second /= s;
   }

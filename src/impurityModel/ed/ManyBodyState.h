@@ -58,10 +58,10 @@ public:
   ManyBodyState(const Map &);
   ManyBodyState(Map &&);
 
-  ManyBodyState(const std::vector<std::vector<uint8_t>> &keys,
-                const std::vector<std::complex<double>> &values);
-  ManyBodyState(const std::vector<std::vector<uint8_t>> &&keys,
-                const std::vector<std::complex<double>> &&values);
+  ManyBodyState(const std::vector<key_type> &keys,
+                const std::vector<mapped_type> &values);
+  ManyBodyState(const std::vector<key_type> &&keys,
+                const std::vector<mapped_type> &&values);
 
   double norm2() const;
   double norm() const;
@@ -137,11 +137,11 @@ public:
 
   template <class... Args>
   std::pair<iterator, bool> inline emplace(Args &&...args) {
-    return m_map.emplace(std::forward(args...));
+    return m_map.emplace(std::forward<Args>(args)...);
   }
   template <class... Args>
   inline iterator emplace_hint(const_iterator hint, Args &&...args) {
-    return m_map.emplace_hint(hint, std::forward(args...));
+    return m_map.emplace_hint(hint, std::forward<Args>(args)...);
   }
 
   inline iterator erase(iterator pos) { return m_map.erase(pos); }
@@ -149,23 +149,27 @@ public:
   inline iterator erase(const_iterator first, const_iterator last) {
     return m_map.erase(first, last);
   }
-  inline size_type erase(const Key &key) { return m_map.erase(key); }
+  inline size_type erase(const key_type &key) { return m_map.erase(key); }
 
   inline void swap(ManyBodyState &other) { m_map.swap(other.m_map); }
 
-  inline size_type count(const Key &key) const { return m_map.count(key); }
-  template <class K> inline size_type count(const K &x) const {
-    return m_map.count(x);
+  inline size_type count(const key_type &key) const { return m_map.count(key); }
+  template <class K> inline size_type count(const K &key) const {
+    return m_map.count(key);
   }
 
-  inline iterator find(const Key &key) { return m_map.find(key); }
-  inline const_iterator find(const Key &key) const { return m_map.find(key); }
-  template <class K> inline iterator find(const K &x) { return m_map.find(x); }
+  inline iterator find(const key_type &key) { return m_map.find(key); }
+  inline const_iterator find(const key_type &key) const {
+    return m_map.find(key);
+  }
+  template <class K> inline iterator find(const K &key) {
+    return m_map.find(key);
+  }
   template <class K> inline const_iterator find(const K &x) const {
     return m_map.find(x);
   }
 
-  inline std::pair<iterator, iterator> equal_range(const Key &key) {
+  inline std::pair<iterator, iterator> equal_range(const key_type &key) {
     return m_map.equal_range(key);
   }
   inline std::pair<const_iterator, const_iterator>
@@ -173,35 +177,39 @@ public:
     return m_map.equal_range(key);
   }
   template <class K>
-  inline std::pair<iterator, iterator> equal_range(const K &x) {
-    return m_map.equal_range(x);
+  inline std::pair<iterator, iterator> equal_range(const K &key) {
+    return m_map.equal_range(key);
   }
   template <class K>
   inline std::pair<const_iterator, const_iterator>
-  equal_range(const K &x) const {
-    return m_map.equal_range(x);
+  equal_range(const K &key) const {
+    return m_map.equal_range(key);
   }
 
-  inline iterator lower_bound(const Key &key) { return m_map.lower_bound(key); }
-  inline const_iterator lower_bound(const Key &key) const {
+  inline iterator lower_bound(const key_type &key) {
     return m_map.lower_bound(key);
   }
-  template <class K> inline iterator lower_bound(const K &x) {
-    return m_map.lower_bound(x);
+  inline const_iterator lower_bound(const key_type &key) const {
+    return m_map.lower_bound(key);
   }
-  template <class K> inline const_iterator lower_bound(const K &x) const {
-    return m_map.lower_bound(x);
+  template <class K> inline iterator lower_bound(const K &key) {
+    return m_map.lower_bound(key);
+  }
+  template <class K> inline const_iterator lower_bound(const K &key) const {
+    return m_map.lower_bound(key);
   }
 
-  inline iterator upper_bound(const Key &key) { return m_map.upper_bound(key); }
-  inline const_iterator upper_bound(const Key &key) const {
+  inline iterator upper_bound(const key_type &key) {
     return m_map.upper_bound(key);
   }
-  template <class K> inline iterator upper_bound(const K &x) {
-    return m_map.upper_bound(x);
+  inline const_iterator upper_bound(const key_type &key) const {
+    return m_map.upper_bound(key);
   }
-  template <class K> inline const_iterator upper_bound(const K &x) const {
-    return m_map.upper_bound(x);
+  template <class K> inline iterator upper_bound(const K &key) {
+    return m_map.upper_bound(key);
+  }
+  template <class K> inline const_iterator upper_bound(const K &key) const {
+    return m_map.upper_bound(key);
   }
 
   inline key_compare key_comp() const { return m_map.key_comp(); }

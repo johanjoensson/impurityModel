@@ -9,7 +9,7 @@ from libcpp.map cimport map
 from libcpp.string cimport string
 from libc.stdint cimport uint8_t, int64_t
 
-cdef bytes key_to_bytes(vector[uint8_t]& key):
+cdef bytes key_to_bytes(const ManyBodyState_cpp.key_type& key):
     cdef bytearray res = bytearray(key.size())
     cdef size_t i
     for i in range(key.size()):
@@ -17,9 +17,9 @@ cdef bytes key_to_bytes(vector[uint8_t]& key):
 
     return bytes(res)
 
-cdef vector[uint8_t] bytes_to_key(bytes b):
-    cdef vector[uint8_t] key 
-    cdef uint8_t byte
+cdef ManyBodyState_cpp.key_type bytes_to_key(bytes b):
+    cdef ManyBodyState_cpp.key_type key 
+    cdef ManyBodyState_cpp.key_type.value_type byte
     key.reserve(len(b))
     for byte in b:
         key.push_back(byte)
@@ -30,9 +30,9 @@ cdef class ManyBodyState:
     cdef ManyBodyState_cpp v
 
     def __init__(self, dict[bytes, complex] psi={}):
-        cdef vector[vector[uint8_t]] keys
+        cdef vector[ManyBodyState_cpp.key_type] keys
         cdef vector[double complex] amplitudes
-        cdef vector[uint8_t] key
+        cdef ManyBodyState_cpp.key_type key
         cdef double complex val
         cdef bytes b
         for b, val in psi.items():
@@ -41,8 +41,7 @@ cdef class ManyBodyState:
         self.v = ManyBodyState_cpp(keys, amplitudes)
 
     def __repr__(self):
-        cdef pair[vector[uint8_t], double complex] p
-        return "ManyBodyState({ " + ", ".join([f"{key_to_bytes(p.first)}: {p.second}" for p in self.v]) + "})"
+        return "ManyBodyState({ " + ", ".join([f"{key_to_bytes(key)}: {amp}" for (key, amp) in self.v]) + "})"
 
     def __eq__(self, ManyBodyState other):
         return self.v == other.v
@@ -121,9 +120,9 @@ cdef class ManyBodyState:
 def inner(ManyBodyState a, ManyBodyState b):
     return inner_cpp(a.v, b.v)
 
-cdef vector[int64_t] processes_to_ints(tuple[tuple[int, str]] processes):
+cdef ManyBodyOperator_cpp.value_type.first_type processes_to_ints(tuple[tuple[int, str]] processes):
     cdef tuple[int, str] process
-    cdef vector[int64_t] ints
+    cdef ManyBodyOperator_cpp.value_type.first_type ints
     ints.reserve(len(processes))
     for process in processes[::-1]:
         if process[1] == 'a':
@@ -132,9 +131,9 @@ cdef vector[int64_t] processes_to_ints(tuple[tuple[int, str]] processes):
             ints.push_back(process[0])
     return ints
 
-cdef tuple[tuple[int, str]] ints_to_processes(vector[int64_t]& ints):
+cdef tuple[tuple[int, str]] ints_to_processes(ManyBodyOperator_cpp.value_type.first_type& ints):
     cdef  list[tuple[int, str]] processes = []
-    cdef int64_t i
+    cdef ManyBodyOperator_cpp.value_type.first_type.value_type i
     for i in ints:
         if i < 0:
             processes.append((-i-1, 'a'))
@@ -147,10 +146,10 @@ cdef class ManyBodyOperator:
 
     def __init__(self, dict[tuple[tuple[int, str]], complex] op={}):
         cdef double complex amp 
-        cdef tuple[int64_t, str] processes
+        cdef tuple[int, str] processes
         cdef str action
-        cdef int64_t i
-        cdef vector[pair[vector[int64_t], doublecomplex]] new_ops
+        cdef ManyBodyOperator_cpp.value_type.first_type.value_type  i
+        cdef vector[ManyBodyOperator_cpp.value_type] new_ops
         for processes, amp in op.items():
             new_ops.emplace_back(processes_to_ints(processes), amp)
 
@@ -158,7 +157,7 @@ cdef class ManyBodyOperator:
         self.o = ManyBodyOperator_cpp(new_ops)
 
     def __repr__(self):
-        cdef pair[vector[int64_t], double complex] p
+        cdef ManyBodyOperator_cpp.value_type p
         return "ManyBodyOperator({" + ", ".join([f"{ints_to_processes(p.first)}: {p.second}" for p in self.o]) + "})"
 
     def __eq__(self, ManyBodyOperator other):
@@ -204,6 +203,7 @@ cdef class ManyBodyOperator:
         res = ManyBodyState()
         if restrictions is None:
             restrictions = {}
+        # For some reason using ManyBodyOpeartor_cpp.restrictions does not work
         cdef vector[pair[vector[size_t], pair[size_t, size_t]]] rest
         cdef frozenset[int] indices
         cdef pair[size_t, size_t] limits
@@ -211,7 +211,7 @@ cdef class ManyBodyOperator:
         for indices, limits in restrictions.items():
             if len(indices) == 0:
                 continue
-            rest.push_back({sorted(indices),limits})
+            rest.push_back(pair[vector[size_t], pair[size_t, size_t]](sorted(indices),pair[size_t, size_t](limits.first, limits.second)))
         res.v = self.o(psi.v, cutoff, rest)
         return res
 
