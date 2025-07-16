@@ -461,10 +461,14 @@ def calc_Greens_function_with_offdiag(
     eigen_basis.comm.Free()
 
     # Send calculated Greens functions to root
-    basis.comm.Reduce(MPI.IN_PLACE if basis.comm.rank == 0 else gs_matsubara_block, gs_matsubara_block, root=0)
-    basis.comm.Reduce(MPI.IN_PLACE if basis.comm.rank == 0 else gs_realaxis_block, gs_realaxis_block, root=0)
+    if iw is not None:
+        basis.comm.Reduce(MPI.IN_PLACE if basis.comm.rank == 0 else gs_matsubara_block, gs_matsubara_block, root=0)
+        gs_matsubara_block /= Z
+    if w is not None:
+        basis.comm.Reduce(MPI.IN_PLACE if basis.comm.rank == 0 else gs_realaxis_block, gs_realaxis_block, root=0)
+        gs_realaxis_block /= Z
     basis.comm.Allreduce(MPI.IN_PLACE, excited_basis_sizes, op=MPI.MAX)
-    return gs_matsubara_block / Z, gs_realaxis_block / Z, excited_basis_sizes
+    return gs_matsubara_block, gs_realaxis_block, excited_basis_sizes
 
 
 def get_block_Green(

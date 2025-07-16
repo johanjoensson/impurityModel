@@ -30,6 +30,9 @@ from impurityModel.ed.finite import (
     combineOp,
     addOps,
 )
+import impurityModel.ed.selfenergy as se
+import impurityModel.ed.greens_function as gf
+from impurityModel.ed.lanczos import Reort
 
 # MPI variables
 comm = MPI.COMM_WORLD
@@ -240,7 +243,24 @@ def simulate_spectra(
         tOps = projectedTOps
 
     # Green's function
-    gs = getSpectra(n_spin_orbitals, hOp, tOps, psis, es, w, delta, restrictions)
+    gs = getSpectra_new(
+        hOp,
+        tOps,
+        psis,
+        es,
+        T,
+        w,
+        basis,
+        delta,
+        blocks,
+        slaterWeightMin,
+        verbose,
+        occ_restrict,
+        chain_restrict,
+        occ_cutoff,
+        dN,
+    )
+    # gs = getSpectra(n_spin_orbitals, hOp, tOps, psis, es, w, delta, restrictions)
     if rank == 0:
         print("#eigenstates = {:d}".format(np.shape(gs)[0]))
         print("#polarizations = {:d}".format(np.shape(gs)[1]))
@@ -708,6 +728,63 @@ def getGreen(
     for i in range(krylovSize - 1, -1, -1):
         g = 1.0 / (omegaP - alpha[i]) if i == krylovSize - 1 else 1.0 / (omegaP - alpha[i] - beta[i] ** 2 * g)
     return g
+
+
+def getSpectra_new(
+    hOp,
+    tOps,
+    psis,
+    es,
+    tau,
+    w,
+    basis,
+    delta,
+    blocks,
+    slaterWeightMin,
+    verbose,
+    occ_restrict,
+    chain_restrict,
+    occ_cutoff,
+    dN,
+):
+
+    rank == basis.comm.rank
+    (
+        tOps_indices,
+        tOps_roots,
+        color,
+        tOps_per_color,
+        tOp_basis,
+        psis,
+    ) = gf.split_comm_and_redistribute_basis([1] * len(tOps), basis, psis)
+
+    gs_realaxis_local = np.empty((len(range(tOps_indices.start, tOps_indices.stop)), len(w)), dtype=complex)
+    for tOp_i, tOp in zip(range(tOps_indices.start, tOps_indices.stop), tOps[tOps_indices]):
+        _, gs_realaxis_local[tOp_i], basis_size = gf.calc_Greens_function_with_offdiag(
+            hOp,
+            [tOp],
+            psis,
+            es,
+            tau,
+            tOp_basis,
+            None,
+            w,
+            delta,
+            Reort.NONE,
+            slaterWeightMin,
+            verbose,
+            occ_restrict,
+            chain_restrict,
+            occ_cutoff,
+            dN,
+        )
+    if rank == 0:
+        gs_realaxis = np.empty((len(tOps), len(w)), dtype=complex)
+        for sender in tOps_roots:
+            basis.comm.Recv(gs_realaxis[sum(tOps_roots[:sender]) : sum(tOps_roots[: sender + 1])], source=sender)
+    elif rank in tOps_roots:
+        basis.comm.Send(gs_realaxis_local, dest=0)
+    return gs_realaxis
 
 
 def getSpectra(
