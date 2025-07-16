@@ -367,6 +367,9 @@ def eigensystem(
     elif groundDiagMode == "Lanczos":
         es, vecs = scipy.sparse.linalg.eigsh(h, k=nPsiMax, which="SA", tol=eigenValueTol)
         # Sort the eigenvalues and eigenvectors in ascending order.
+        with warnings.catch_warnings():
+            warnings.simplefilter("ignore")
+            es, vecs = scipy.sparse.linalg.lobpcg(h, vecs, largest=False, maxiter=10 * vecs.shape[1])
         indices = np.argsort(es)
         es = np.array([es[i] for i in indices])
         vecs = np.array([vecs[:, i] for i in indices]).T
