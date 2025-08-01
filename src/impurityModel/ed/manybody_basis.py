@@ -137,6 +137,7 @@ class Basis:
             delta_impurity_occ = dict.fromkeys(impurity_orbitals.keys(), 0)
 
         total_impurity_orbitals = {i: sum(len(orbs) for orbs in impurity_orbitals[i]) for i in impurity_orbitals}
+        total_configurations = {}
         for i in valence_baths:
             valid_configurations = []
             impurity_electron_indices = [orb for imp_orbs in impurity_orbitals[i] for orb in imp_orbs]
@@ -149,6 +150,7 @@ class Basis:
                         abs(delta_impurity) <= abs(delta_impurity_occ[i])
                         and nominal_impurity_occ[i] + delta_impurity <= total_impurity_orbitals[i]
                         and nominal_impurity_occ[i] + delta_impurity >= 0
+                        and delta_valence <= len(valence_electron_indices)
                     ):
                         impurity_occupation = nominal_impurity_occ[i] + delta_impurity
                         valence_occupation = len(valence_electron_indices) - delta_valence
@@ -164,14 +166,23 @@ class Basis:
                             print(f"Valence occupation:   {valence_occupation:d}")
                             print(f"Conduction occupation: {conduction_occupation:d}")
                         valid_configurations.append(
-                            (impurity_configurations, valence_configurations, conduction_configurations)
+                            itertools.product(
+                                impurity_configurations,
+                                valence_configurations,
+                                conduction_configurations,
+                            )
                         )
+            total_configurations[i] = valid_configurations
         num_spin_orbitals = sum(total_impurity_orbitals[i] + total_baths[i] for i in total_baths)
         basis = []
         # Combine all valid configurations for all l-subconfigurations (ex. p-states and d-states)
-        for config in valid_configurations:
-            for imp, val, con in itertools.product(*config):
-                basis.append(psr.tuple2bytes(imp + val + con, num_spin_orbitals))
+        for config in itertools.product(*total_configurations.values()):
+            for set_bits in itertools.product(*config):
+                basis.append(
+                    psr.tuple2bytes(
+                        tuple(idx for subset in set_bits for part in subset for idx in part), num_spin_orbitals
+                    )
+                )
 
         return basis, num_spin_orbitals
 
@@ -697,20 +708,9 @@ class Basis:
 
     def expand(self, op, op_dict=None, dense_cutoff=None, slaterWeightMin=0):
         old_size = self.size - 1
-        t0 = perf_counter()
-        t_apply = 0
-        t_filter = 0
-        t_add = 0
-        t_keys = 0
-        # states_to_check = set(self.local_basis)
-        new_states = set()
-        # checked_states = set()
         while old_size != self.size and self.size < self.truncation_threshold:
-            # while len(states_to_check) > 0:
-            # checked_states |= states_to_check
-            # for state in states_to_check:
+            new_states = set()
             for state in self.local_basis:
-                t_tmp = perf_counter()
                 res = applyOp(
                     self.num_spin_orbitals,
                     op,
@@ -719,20 +719,11 @@ class Basis:
                     slaterWeightMin=slaterWeightMin,
                     opResult=op_dict,
                 )
-                t_apply += perf_counter() - t_tmp
-                t_tmp = perf_counter()
-                new_states |= set(res.keys())  #  - set(self.local_basis)
-                t_keys += perf_counter() - t_tmp
-                # if a state appears in op_dict it means it has already been evaluted
-            t_tmp = perf_counter()
-            filtered_states = new_states
-            t_filter += perf_counter() - t_tmp
+                new_states |= set(res.keys()) - set(self.local_basis)
             if self.spin_flip_dj:
-                filtered_states = self._generate_spin_flipped_determinants(filtered_states)
-            t_tmp = perf_counter()
+                new_states = self._generate_spin_flipped_determinants(new_states)
             old_size = self.size
-            self.add_states(filtered_states)
-            t_add += perf_counter() - t_tmp
+            self.add_states(new_states)
         if self.verbose:
             print(f"After expansion, the basis contains {self.size} elements.")
         return self.build_operator_dict(op, op_dict=op_dict)
@@ -847,9 +838,6 @@ class Basis:
                 slaterWeightMin=slaterWeightMin,
                 opResult=op_dict,
             )
-        # op_dict.clear()
-        # op_dict.update(new_op_dict)
-        # return {state: op_dict[state] for state in self.local_basis}
         return op_dict.copy()
 
     def build_dense_matrix(self, op, op_dict=None, distribute=True):
@@ -1129,6 +1117,7 @@ class CIPSI_Basis(Basis):
             H_dict = {}
         _ = self.build_operator_dict(H, H_dict)
         t_build_dict += perf_counter() - t_tmp
+        i = 1
         while converge_count < 1:
             t_tmp = perf_counter()
             H_mat = self.build_sparse_matrix(H, op_dict=H_dict)
@@ -1166,12 +1155,13 @@ class CIPSI_Basis(Basis):
             psi_ref = self.redistribute_psis(psi_ref)
             t_add += perf_counter() - t_tmp
             if self.verbose:
-                print(f"----->After truncation, the basis contains {self.size} elements.")
+                print(f"----->After step {i} the basis contains {self.size} elements.")
 
             if old_size == self.size:
                 converge_count += 1
             else:
                 converge_count = 0
+            i += 1
 
         if self.verbose:
             print(f"After expansion, the basis contains {self.size} elements.")

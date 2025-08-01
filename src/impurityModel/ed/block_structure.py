@@ -16,11 +16,12 @@ BlockStructure = namedtuple(
 
 
 def print_block_structure(block_structure):
+    orb_offset = min(orb for block in block_structure.blocks for orb in block)
     n_orb = sum(len(block) for block in block_structure.blocks)
     mat = np.empty((n_orb, n_orb), dtype=int)
     mat[:, :] = -1
     for block_i, orbs in enumerate(block_structure.blocks):
-        idx = np.ix_(orbs, orbs)
+        idx = np.ix_([orb - orb_offset for orb in orbs], [orb - orb_offset for orb in orbs])
         mat[idx] = block_i
     print("\n".join(" ".join(f"{el:^3d}" if el != -1 else " + " for el in row) for row in mat))
 

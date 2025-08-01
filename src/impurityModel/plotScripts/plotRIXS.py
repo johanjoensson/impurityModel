@@ -23,6 +23,7 @@ def main():
         sys.exit("Number of input arguments wrong")
 
     x = np.fromfile(filename, dtype=np.float32)
+    print(f"{x.shape=}")
     ncols = int(x[0])
     x = x.reshape((int(len(x) / (ncols + 1)), ncols + 1))
     wLoss = x[1:, 0]

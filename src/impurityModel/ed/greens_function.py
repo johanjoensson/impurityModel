@@ -4,7 +4,7 @@ import scipy as sp
 import time
 from typing import Optional, Iterable
 
-from impurityModel.ed import spectra
+# from impurityModel.ed import spectra
 from impurityModel.ed import finite
 from impurityModel.ed.lanczos import get_block_Lanczos_matrices, block_lanczos, block_lanczos_sparse
 from impurityModel.ed.manybody_basis import CIPSI_Basis, Basis
@@ -119,22 +119,20 @@ def split_comm_and_redistribute_basis(priorities: Iterable[float], basis: Basis,
     if split_comm.rank == 0:
         assert comm.rank in split_roots
 
-    for color_root in split_roots:
-        if comm.rank == color_root:
-            all_psis = comm.gather(psis, root=color_root)
+    new_states = set(basis.local_basis)
+    for c, c_root in enumerate(split_roots):
+        if color != c:
+            comm.send(basis.local_basis, dest=c_root + (comm.rank % procs_per_color[c]))
         else:
-            _ = comm.gather(psis, root=color_root)
-    psis = [{} for _ in range(len(psis))]
-    if split_comm.rank == 0:
-        for partial_psis in all_psis:
-            for i, partial_psi in enumerate(partial_psis):
-                for state in partial_psi:
-                    psis[i][state] = partial_psi[state] + psis[i].get(state, 0)
-    split_comm.barrier()
+            for sender in range(comm.size):
+                if sender == comm.rank or sender % procs_per_color[c] != split_comm.rank:
+                    continue
+                new_states |= set(comm.recv(source=sender))
+
     split_basis = Basis(
         impurity_orbitals=basis.impurity_orbitals,
         bath_states=basis.bath_states,
-        initial_basis=(state for psi in psis for state in psi),
+        initial_basis=list(new_states),
         restrictions=basis.restrictions,
         comm=split_comm,
         verbose=basis.verbose,
@@ -142,8 +140,34 @@ def split_comm_and_redistribute_basis(priorities: Iterable[float], basis: Basis,
         tau=basis.tau,
         spin_flip_dj=basis.spin_flip_dj,
     )
-    psis = split_basis.redistribute_psis(psis)
 
+    # Distrubute vectors by sending them to all new roots
+    # for color_root in split_roots:
+    #     if comm.rank == color_root:
+    #         all_psis = comm.gather(psis, root=color_root)
+    #     else:
+    #         _ = comm.gather(psis, root=color_root)
+    # psis = [{} for _ in range(len(psis))]
+    # if split_comm.rank == 0:
+    #     for partial_psis in all_psis:
+    #         for i, partial_psi in enumerate(partial_psis):
+    #             for state in partial_psi:
+    #                 psis[i][state] = partial_psi[state] + psis[i].get(state, 0)
+
+    new_psis = [p.copy() for p in psis]
+    for c, c_root in enumerate(split_roots):
+        if color != c:
+            comm.send(psis, dest=c_root + (comm.rank % procs_per_color[c]))
+        else:
+            for sender in range(comm.size):
+                if sender == comm.rank or sender % procs_per_color[c] != split_comm.rank:
+                    continue
+                received_psis = comm.recv(source=sender)
+                for i, received_psi in enumerate(received_psis):
+                    for state, val in received_psi.items():
+                        new_psis[i][state] = val + new_psis[i].get(state, 0)
+
+    psis = split_basis.redistribute_psis(new_psis)
     return slice(indices_start, indices_end), split_roots, color, items_per_color, split_basis, psis
 
 
@@ -179,8 +203,9 @@ def get_Greens_function(
     ) = split_comm_and_redistribute_basis([len(block) ** 2 for block in blocks], basis, psis)
     if verbose_extra:
         print("=" * 80)
-        print(f"New root ranks:{block_roots}")
-        print(f"Number blocks per subgroup: {blocks_per_color}")
+        print(f"Distribute blocks over {len(block_roots)} groups")
+        print(f"Root ranks for each group: {block_roots}")
+        print(f"Number blocks per group: {blocks_per_color}")
         print()
     bis = list(range(block_indices.start, block_indices.stop))
     gs_matsubara = [None for _ in blocks]
@@ -378,8 +403,9 @@ def calc_Greens_function_with_offdiag(
         psis,
     ) = split_comm_and_redistribute_basis([1 for _ in es], basis, psis)
     if verbose:
-        print(f"New root ranks for eigenstates:{eigen_roots}")
-        print(f"Number of eigenstates per subgroup: {eigen_per_color}")
+        print(f"Distribute eigenstates over {len(eigen_roots)} groups")
+        print(f"Root ranks for each group: {eigen_roots}")
+        print(f"Number of eigenstates per group: {eigen_per_color}")
     e0 = min(es)
     Z = np.sum(np.exp(-(es - e0) / tau))
     for ei, psi, e in zip(range(eigen_indices.start, eigen_indices.stop), psis[eigen_indices], es[eigen_indices]):
@@ -433,10 +459,10 @@ def calc_Greens_function_with_offdiag(
             tau=eigen_basis.tau,
             spin_flip_dj=eigen_basis.spin_flip_dj,
         )
+        v = excited_basis.redistribute_psis(v)
 
         # gs_matsubara_block_i, gs_realaxis_block_i = block_Green_freq(
         gs_matsubara_block_i, gs_realaxis_block_i = block_Green(
-            n_spin_orbitals=excited_basis.num_spin_orbitals,
             hOp=hOp,
             psi_arr=block_v,
             basis=excited_basis,
@@ -455,9 +481,7 @@ def calc_Greens_function_with_offdiag(
             if w is not None:
                 gs_realaxis_block += np.exp(-(e - e0) / tau) * gs_realaxis_block_i
         excited_basis_sizes[ei] = excited_basis.size
-        excited_basis.comm.barrier()
         excited_basis.comm.Free()
-    eigen_basis.comm.barrier()
     eigen_basis.comm.Free()
 
     # Send calculated Greens functions to root
@@ -613,7 +637,6 @@ def build_qr(psi):
 
 
 def block_Green(
-    n_spin_orbitals,
     hOp,
     psi_arr,
     basis,
@@ -643,9 +666,9 @@ def block_Green(
     n = len(psi_arr)
 
     if n == 0 or N == 0:
-        return np.zeros((len(iws), n, n), dtype=complex), np.zeros((len(ws), n, n), dtype=complex)
-    if verbose:
-        t0 = time.perf_counter()
+        return np.zeros((len(iws), n, n), dtype=complex) if matsubara else None, (
+            np.zeros((len(ws), n, n), dtype=complex) if realaxis else None
+        )
 
     psi_dense = basis.build_vector(psi_arr, root=0).T
     if rank == 0:
@@ -980,10 +1003,15 @@ def calc_mpi_Greens_function_from_alpha_beta(alphas, betas, iws, ws, e, delta, r
         num_indices = np.array([len(iws) // comm.size] * comm.size, dtype=int)
         num_indices[: len(iws) % comm.size] += 1
         iws_split = iws[sum(num_indices[: comm.rank]) : sum(num_indices[: comm.rank + 1])]
+    else:
+        iws_split = None
+
     if realaxis:
         num_indices = np.array([len(ws) // comm.size] * comm.size, dtype=int)
         num_indices[: len(ws) % comm.size] += 1
         ws_split = ws[sum(num_indices[: comm.rank]) : sum(num_indices[: comm.rank + 1])]
+    else:
+        ws_split = None
     gs_matsubara_local, gs_realaxis_local = calc_local_Greens_function_from_alpha_beta(
         alphas, betas, iws_split, ws_split, e, delta, verbose
     )

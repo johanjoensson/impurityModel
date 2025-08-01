@@ -411,6 +411,7 @@ def printExpValues(rhos, es, rot_to_spherical, block_structure):
     """
     print several expectation values, e.g. E, N, L^2.
     """
+    orb_offset = min(orb for block in block_structure.blocks for orb in block)
     equivalent_blocks = get_equivalent_blocks(block_structure)
     print(f"E0 = {es[0]:9.6f}")
     block_N_string = [f"N({','.join(f'{b}' for b in blocks)})" for blocks in equivalent_blocks]
@@ -422,7 +423,7 @@ def printExpValues(rhos, es, rot_to_spherical, block_structure):
     )
     for i, (e, rho) in enumerate(zip(es - es[0], rhos)):
         block_occs = [
-            np.sum(np.diag(rho)[list(orb for block in blocks for orb in block_structure.blocks[block])])
+            np.sum(np.diag(rho)[list(orb - orb_offset for block in blocks for orb in block_structure.blocks[block])])
             for blocks in equivalent_blocks
         ]
         block_occ_string = [f"{occ.real: 8.5f}" for occ in block_occs]
@@ -588,17 +589,20 @@ def printThermalExpValues_new(rhos, es, tau, rot_to_spherical, block_structure):
     cutOff - float. Energies more than cutOff*kB*T above the
             lowest energy is not considered in the average.
     """
+    orb_offset = min(orb for block in block_structure.blocks for orb in block)
     equivalent_blocks = get_equivalent_blocks(block_structure)
     e = es - es[0]
+    print(f"<E-E0>  = {thermal_average_scale_indep(e, e, tau=tau):8.7f}")
     rho_thermal = thermal_average_scale_indep(es, rhos, tau)
     rho_thermal_spherical = rotate_matrix(rho_thermal, rot_to_spherical)
     N, Ndn, Nup = get_occupations_from_rho_spherical(rho_thermal_spherical)
-    print(f"<E-E0> = {thermal_average_scale_indep(e, e, tau=tau):8.7f}")
-    print(f"<N(3d)> = {N:8.7f}")
+    print(f"<N>     = {N:8.7f}")
     print(f"<N(Dn)> = {Ndn:8.7f}")
     print(f"<N(Up)> = {Nup:8.7f}")
     for blocks in equivalent_blocks:
-        occ = np.sum(np.diag(rho_thermal)[list(orb for block in blocks for orb in block_structure.blocks[block])]).real
+        occ = np.sum(
+            np.diag(rho_thermal)[list(orb - orb_offset for block in blocks for orb in block_structure.blocks[block])]
+        ).real
         print(f"<N({','.join(str(orb) for orb in blocks)})> = {occ:8.7f}")
     print(f"<Lz> = {get_Lz_from_rho_spherical(rho_thermal_spherical): 8.7f}")
     print(f"<Sz> = {get_Sz_from_rho_spherical(rho_thermal_spherical): 8.7f}")
@@ -1157,8 +1161,8 @@ def getUop(l1, l2, l3, l4, R):
                                     ((l4, s, m4), "a"),
                                 )
                                 # Pauli exclusion principle
-                                # if not (s == sp and ((l1, m1) == (l2, m2) or (l3, m3) == (l4, m4))):
-                                uDict[proccess] = u / 2.0
+                                if not (s == sp and ((l1, m1) == (l2, m2) or (l3, m3) == (l4, m4))):
+                                    uDict[proccess] = u / 2.0
     return uDict
 
 
@@ -1253,8 +1257,6 @@ def getSOCop(xi, l=2):
         where sorb1 is a superindex of (l, s, m).
 
     """
-    if abs(xi) > 1e-10:
-        return {}
     opDict = {}
     for m in range(-l, l + 1):
         for s in range(2):
