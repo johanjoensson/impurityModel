@@ -301,12 +301,11 @@ def find_gs(
                 for j, imp_occ in gs_impurity_occ.items()
             )
         ):
-            gs_impurity_occ[i] += dN_gs[i]
             e_trial, basis, h_dict = calc_occ_e(
                 h_op,
                 impurity_orbitals,
                 bath_states,
-                gs_impurity_occ,
+                {j: n + dN_gs[i] if i == j else n for j, n in gs_impurity_occ.items()},
                 tau,
                 chain_restrict,
                 spin_flip_dj,
@@ -317,6 +316,7 @@ def find_gs(
             )
             if e_trial >= e_gs:
                 break
+            gs_impurity_occ[i] += dN_gs[i]
             e_gs = e_trial
             basis_gs = basis.copy()
             h_dict_gs = h_dict
