@@ -19,13 +19,12 @@ from mpi4py import MPI
 
 # Local stuff
 from impurityModel.ed import finite, spectra
-from impurityModel.ed.average import k_B
 from impurityModel.ed.finite import assert_hermitian, c2i
 from impurityModel.ed.average import k_B, thermal_average
 from impurityModel.ed import op_parser
 from impurityModel.ed.manybody_basis import CIPSI_Basis, Basis
-from impurityModel.ed.selfenergy import find_gs
 from impurityModel.ed.block_structure import BlockStructure, print_block_structure
+from impurityModel.ed.ManyBodyUtils import ManyBodyOperator, ManyBodyState
 
 
 def matrix_print(matrix: np.ndarray, label: str = None) -> None:
@@ -140,8 +139,7 @@ def main(
     rank = comm.rank
 
     verbosity = 2 if rank == 0 else 0
-    truncation_threshold = int(1e9)
-    dense_cutoff = int(1e9)
+    dense_cutoff = int(500)
     rot_to_spherical = {1: np.eye(6, dtype=complex), 2: np.eye(10, dtype=complex)}
     block_structure = BlockStructure(
         blocks=[list(range(6)), list(range(6, 16))],
@@ -214,13 +212,11 @@ def main(
         XAS_projectors = get_RIXS_projectors(XAS_projectors_filename)
         if rank == 0:
             print("XAS projectors")
-        if rank == 0:
             print(XAS_projectors)
     if RIXS_projectors_filename:
         RIXS_projectors = get_RIXS_projectors(RIXS_projectors_filename)
         if rank == 0:
             print("RIXS projectors")
-        if rank == 0:
             print(RIXS_projectors)
 
     # NIXS parameters
@@ -243,8 +239,6 @@ def main(
     # Hamiltonian
     if rank == 0:
         print("Construct the Hamiltonian operator...")
-        print(f"{nBaths=} {nValBaths=} {Fdd=} {Fpp=} {Fpd=} {Gpd=}")
-        print(f"{xi_2p=} {xi_3d=} {n0imps=} {chargeTransferCorrection=} {hField=}")
     hOp = get_hamiltonian_operator_new(
         nBaths,
         nValBaths,
@@ -255,36 +249,24 @@ def main(
         h0_filename,
         rank,
     )
+    hOp = ManyBodyOperator(hOp)
     # Measure how many physical processes the Hamiltonian contains.
     if rank == 0:
-        print(f"{hOp=}")
         print("{:d} processes in the Hamiltonian.".format(len(hOp)))
     # Many body basis for the ground state
     if rank == 0:
         print("Create basis...")
-    # basis = finite.get_basis(nBaths, nValBaths, dnValBaths, dnConBaths, dnTols, n0imps)
     tau = k_B * T
     basis = CIPSI_Basis(
-        impurity_orbitals,
-        (valence_baths, conduction_baths),
+        H=hOp,
+        impurity_orbitals=impurity_orbitals,
+        bath_states=(valence_baths, conduction_baths),
         nominal_impurity_occ=n0imps,
         truncation_threshold=1e9,
         tau=tau,
         comm=comm,
     )
-    # impurity_occ, basis, h_dict = find_gs(
-    #     hOp,
-    #     n0imps,
-    #     (valence_baths, conduction_baths),
-    #     impurity_orbitals,
-    #     tau,
-    #     rank,
-    #     dense_cutoff,
-    #     False,
-    #     comm,
-    #     truncation_threshold,
-    #     verbosity,
-    # )
+    basis.expand(hOp, de2_min=1e-4)
     restrictions = basis.restrictions
 
     if restrictions is not None and verbosity >= 2:
@@ -294,21 +276,26 @@ def main(
 
     energy_cut = -tau * np.log(1e-4)
 
-    h_dict = basis.expand(hOp, dense_cutoff=dense_cutoff)
-    h_gs = basis.build_sparse_matrix(hOp, h_dict)
+    h_gs = basis.build_sparse_matrix(hOp)
     es, psis_dense = finite.eigensystem_new(
         h_gs,
         e_max=energy_cut,
-        k=sum(len(block) for blocks in basis.impurity_orbitals.values() for block in blocks),
+        k=5,
         eigenValueTol=0,
         comm=basis.comm,
         dense=basis.size < dense_cutoff,
     )
     psis = basis.build_state(psis_dense.T)
+    effective_restrictions = basis.get_effective_restrictions()
+    if verbosity >= 1:
+        print("Effective GS restrictions:")
+        for indices, occupations in effective_restrictions.items():
+            print(f"---> {sorted(indices)} : {occupations}")
+        print("=" * 80)
     if verbosity >= 1:
         print(f"{len(basis)} Slater determinants in the basis.")
     gs_stats = basis.get_state_statistics(psis)
-    rho_imps, rho_baths, _ = basis.build_density_matrices(psis)
+    rho_imps, rho_baths = basis.build_density_matrices(psis)
     n_orb = {i: sum(len(block) for block in basis.impurity_orbitals[i]) for i in basis.impurity_orbitals}
     full_rho_imps = {i: np.zeros((len(psis), n_orb[i], n_orb[i]), dtype=complex) for i in basis.impurity_orbitals}
     for i, i_blocks in basis.impurity_orbitals.items():
@@ -358,16 +345,6 @@ def main(
                 print("=" * 80)
             print("", flush=verbosity >= 2)
 
-    effective_restrictions = basis.get_effective_restrictions()
-    if verbosity >= 1:
-        print("Effective GS restrictions:")
-        for indices, occupations in effective_restrictions.items():
-            print(f"---> {sorted(indices)} : {occupations}")
-        print("=" * 80)
-        print()
-        print(f"Consider {len(es):d} eigenstates for the spectra \n")
-        print("Calculate Interacting Green's function...", flush=verbosity >= 2)
-
     # Save some information to disk
     h5f = None
     if rank == 0:
@@ -401,7 +378,7 @@ def main(
             deltaRIXS=deltaRIXS,
             deltaNIXS=deltaNIXS,
             n_spin_orbitals=n_spin_orbitals,
-            hOp=hOp,
+            hOp=hOp.to_dict(),
         )
         # Save some of the arrays.
         # HDF5-format does not directly support dictonaries.
@@ -416,8 +393,9 @@ def main(
         h5f.create_dataset("RjNIXS", data=RjNIXS)
 
     if rank == 0:
-        print("time(expectation values) = {:.2f} seconds \n".format(time.perf_counter() - t0))
-
+        print()
+        print(f"Consider {len(es):d} eigenstates for the spectra \n")
+        print("Calculate Interacting Green's function...", flush=verbosity >= 2)
     spectra.simulate_spectra(
         es,
         psis,
@@ -444,11 +422,9 @@ def main(
         XAS_projectors,
         RIXS_projectors,
         basis,
-        True,
-        False,
         1e-6,
         2,
-        np.finfo(float).eps,
+        np.sqrt(np.finfo(float).eps),
         verbosity >= 1,
     )
 

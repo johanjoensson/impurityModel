@@ -1,5 +1,4 @@
 import pytest
-import pickle
 from mpi4py import MPI
 import numpy as np
 from impurityModel.ed.manybody_basis import Basis, CIPSI_Basis
@@ -1389,6 +1388,7 @@ def test_eg_t2g_CIPSI_basis_expand():
     #            00000
     states = [b"\x80\x00"]
     basis = CIPSI_Basis(
+        H=Hop,
         impurity_orbitals={2: [list(range(10))]},
         bath_states=(
             {2: [[]]},
@@ -1428,6 +1428,7 @@ def test_eg_t2g_CIPSI_basis_expand_mpi():
     #            00000
     states = [b"\x80\x00"]
     basis = CIPSI_Basis(
+        H=Hop,
         impurity_orbitals={2: [list(range(10))]},
         bath_states=(
             {2: [[]]},

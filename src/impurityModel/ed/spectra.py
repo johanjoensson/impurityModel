@@ -34,6 +34,7 @@ import impurityModel.ed.selfenergy as se
 import impurityModel.ed.greens_function as gf
 from impurityModel.ed.lanczos import Reort
 from impurityModel.ed.manybody_basis import Basis
+from impurityModel.ed.ManyBodyUtils import ManyBodyOperator, ManyBodyState, applyOp as applyOp_test
 
 # MPI variables
 comm = MPI.COMM_WORLD
@@ -67,8 +68,6 @@ def simulate_spectra(
     XAS_projectors,
     RIXS_projectors,
     basis,
-    occ_restrict,
-    chain_restrict,
     occ_cutoff,
     dN,
     slaterWeightMin,
@@ -139,9 +138,6 @@ def simulate_spectra(
     if rank == 0:
         t0 = time.perf_counter()
 
-    # Total number of spin-orbitals in the system
-    n_spin_orbitals = sum(2 * (2 * ang + 1) + nBath for ang, nBath in nBaths.items())
-
     if rank == 0:
         print("Create 3d inverse photoemission and photoemission spectra...")
     # Transition operators
@@ -149,9 +145,10 @@ def simulate_spectra(
     tOpsPS = getPhotoEmissionOperators(nBaths, l=2)
     if rank == 0:
         print("Inverse photoemission Green's function..")
+    assert isinstance(hOp, ManyBodyOperator)
     gsIPS = getSpectra_new(
         hOp,
-        tOpsIPS,
+        [ManyBodyOperator(t) for t in tOpsIPS],
         psis,
         es,
         tau,
@@ -160,17 +157,16 @@ def simulate_spectra(
         delta,
         slaterWeightMin,
         verbose,
-        occ_restrict,
-        chain_restrict,
         occ_cutoff,
-        dN,
+        dN_imp={1: (0, 0), 2: (0, 1)},
+        dN_val={1: (0, 0), 2: (1, 0)},
+        dN_con={1: (0, 0), 2: (0, 1)},
     )
-    # gsIPS = getSpectra(n_spin_orbitals, hOp, tOpsIPS, psis, es, w, delta, restrictions)
     if rank == 0:
         print("Photoemission Green's function..")
     gsPS = getSpectra_new(
         hOp,
-        tOpsPS,
+        [ManyBodyOperator(t) for t in tOpsPS],
         psis,
         es,
         tau,
@@ -179,10 +175,10 @@ def simulate_spectra(
         -delta,
         slaterWeightMin,
         verbose,
-        occ_restrict,
-        chain_restrict,
         occ_cutoff,
-        dN,
+        dN_imp={1: (0, 0), 2: (1, 0)},
+        dN_val={1: (0, 0), 2: (1, 0)},
+        dN_con={1: (0, 0), 2: (0, 1)},
     )
     # gsPS = getSpectra(n_spin_orbitals, hOp, tOpsPS, psis, es, -w, -delta, restrictions)
     gsPS *= -1
@@ -217,7 +213,7 @@ def simulate_spectra(
     # Photoemission Green's function
     gs = getSpectra_new(
         hOp,
-        tOpsPS,
+        [ManyBodyOperator(t) for t in tOpsPS],
         psis,
         es,
         tau,
@@ -226,10 +222,10 @@ def simulate_spectra(
         -delta,
         slaterWeightMin,
         verbose,
-        occ_restrict,
-        chain_restrict,
         occ_cutoff,
-        dN,
+        dN_imp={1: (1, 0), 2: (1, 1)},
+        dN_val={1: (0, 0), 2: (1, 0)},
+        dN_con={1: (0, 0), 2: (0, 1)},
     )
     # gs = getSpectra(n_spin_orbitals, hOp, tOpsPS, psis, es, -w, -delta, restrictions)
     gs *= -1
@@ -263,7 +259,7 @@ def simulate_spectra(
     # Green's function
     gs = getSpectra_new(
         hOp,
-        tOps,
+        [ManyBodyOperator(t) for t in tOps],
         psis,
         es,
         tau,
@@ -272,10 +268,10 @@ def simulate_spectra(
         deltaNIXS,
         slaterWeightMin,
         verbose,
-        occ_restrict,
-        chain_restrict,
         occ_cutoff,
-        dN,
+        dN_imp={liNIXS: (1, 1), ljNIXS: (1, 1)},
+        dN_val={liNIXS: (1, 0), ljNIXS: (1, 0)},
+        dN_con={liNIXS: (0, 1), ljNIXS: (0, 1)},
     )
     # gs = getSpectra(n_spin_orbitals, hOp, tOps, psis, es, wLoss, deltaNIXS, restrictions)
     if rank == 0:
@@ -317,7 +313,7 @@ def simulate_spectra(
     # Green's function
     gs = getSpectra_new(
         hOp,
-        tOps,
+        [ManyBodyOperator(t) for t in tOps],
         psis,
         es,
         tau,
@@ -326,10 +322,10 @@ def simulate_spectra(
         delta,
         slaterWeightMin,
         verbose,
-        occ_restrict,
-        chain_restrict,
         occ_cutoff,
-        dN,
+        dN_imp={1: (1, 0), 2: (0, 1)},
+        dN_val={1: (0, 0), 2: (1, 0)},
+        dN_con={1: (0, 0), 2: (0, 1)},
     )
     # gs = getSpectra(n_spin_orbitals, hOp, tOps, psis, es, w, delta, restrictions)
     if rank == 0:
@@ -377,8 +373,8 @@ def simulate_spectra(
 
         gs = getRIXSmap_new(
             hOp,
-            tOpsIn,
-            tOpsOut,
+            [ManyBodyOperator(t) for t in tOpsIn],
+            [ManyBodyOperator(t) for t in tOpsOut],
             psis,
             es,
             tau,
@@ -813,10 +809,10 @@ def getSpectra_new(
     delta,
     slaterWeightMin,
     verbose,
-    occ_restrict,
-    chain_restrict,
     occ_cutoff,
-    dN,
+    dN_imp,
+    dN_val,
+    dN_con,
 ):
 
     rank == basis.comm.rank
@@ -829,13 +825,9 @@ def getSpectra_new(
         psis,
     ) = gf.split_comm_and_redistribute_basis([1] * len(tOps), basis, psis)
 
-    if verbose:
-        print(f"Split transition operators into {len(tOps_roots)} groups")
-        print(f"Root ranks for each group: {tOps_roots}")
-        print(f"Number of transition operators per group: {tOps_per_color}", flush=True)
-
     gs_realaxis_local = np.empty((len(range(tOps_indices.start, tOps_indices.stop)), len(w)), dtype=complex)
     for tOp_i, tOp in enumerate(tOps[tOps_indices]):
+        assert isinstance(hOp, ManyBodyOperator)
         _, gs_realaxis_local[tOp_i, :, None, None], basis_size = gf.calc_Greens_function_with_offdiag(
             hOp,
             [tOp],
@@ -847,12 +839,12 @@ def getSpectra_new(
             w,
             delta,
             Reort.NONE,
+            dN_imp,
+            dN_val,
+            dN_con,
             slaterWeightMin,
-            verbose,
-            occ_restrict,
-            chain_restrict,
+            verbose and False,
             occ_cutoff,
-            dN,
         )
     if basis.comm.rank == 0:
         gs_realaxis = np.empty((len(tOps), len(w)), dtype=complex)
@@ -863,6 +855,7 @@ def getSpectra_new(
             basis.comm.Recv(gs_realaxis[sum(tOps_per_color[:color]) : sum(tOps_per_color[: color + 1])], source=sender)
     elif rank in tOps_roots:
         basis.comm.Send(gs_realaxis_local, dest=0)
+    hOp.clear_memory()
     return gs_realaxis if rank == 0 else np.empty((0, 0), dtype=complex)
 
 
@@ -1082,21 +1075,22 @@ def getRIXSmap_new(
         "serial", "H_build", "wIn" or "H_build_wIn"
 
     """
-    if False:
+    if True:
         excited_restrictions = basis.build_excited_restrictions(
-            bath_rhos=None,
-            bath_indices=None,
-            imp_change=(2, 2),
-            val_change=(2, 0),
-            con_change=(0, 2),
-            occ_cutoff=0,
+            psis,
+            imp_change={1: (1, 0), 2: (1, 1)},
+            val_change={1: (0, 0), 2: (1, 0)},
+            con_change={1: (0, 0), 2: (0, 1)},
+        )
+        relaxed_restrictions = basis.build_excited_restrictions(
+            psis,
+            imp_change={1: (0, 0), 2: (1, 1)},
+            val_change={1: (0, 0), 2: (1, 0)},
+            con_change={1: (0, 0), 2: (0, 1)},
         )
     else:
         excited_restrictions = None
 
-    nso = basis.num_spin_orbitals
-    tin_dicts = [{} for _ in tOpsIn]
-    tout_dicts = [{} for _ in tOpsOut]
     E0 = min(Es)
     Z = np.sum(np.exp(-(Es - E0) / tau))
     (
@@ -1107,17 +1101,12 @@ def getRIXSmap_new(
         eigen_basis,
         psis,
     ) = gf.split_comm_and_redistribute_basis([1 for _ in Es], basis, psis)
-    eigen_basis.restrictions = excited_restrictions
+    eigen_basis.restrictions = relaxed_restrictions
     if eigen_basis.comm.rank == 0:
         gs = np.zeros((len(tOpsIn), len(wIns), len(tOpsOut), len(wLoss)), dtype=complex)
-    if verbose:
-        print(f"Distribute eigenstates over {len(eigen_roots)} groups")
-        print(f"Root ranks for each group: {eigen_roots}")
-        print(f"Number of eigenstates per group: {eigen_per_color}")
     for e, psi_e, E_e in zip(range(eigen_indices.start, eigen_indices.stop), psis[eigen_indices], Es[eigen_indices]):
-        h_mem = {}
         for i, tin in enumerate(tOpsIn):
-            psi1 = applyOp(nso, tin, psi_e, opResult=tin_dicts[i])
+            psi1 = applyOp_test(tin, psi_e)
 
             basis_final = Basis(
                 impurity_orbitals=eigen_basis.impurity_orbitals,
@@ -1138,10 +1127,6 @@ def getRIXSmap_new(
                 wIn_basis,
                 psi1_arr,
             ) = gf.split_comm_and_redistribute_basis([1 for _ in wIns], basis_final, [psi1])
-            if verbose:
-                print(f"Distribute incoming frequencies over {len(wIn_roots)} groups")
-                print(f"Root ranks for each group: {wIn_roots}")
-                print(f"Number of frequencies per group: {wIn_per_color}")
             if eigen_basis.comm.rank != 0:
                 gs = np.empty(
                     (len(tOpsIn), wIn_indices.stop - wIn_indices.start, len(tOpsOut), len(wLoss)), dtype=complex
@@ -1150,7 +1135,7 @@ def getRIXSmap_new(
                 impurity_orbitals=eigen_basis.impurity_orbitals,
                 bath_states=eigen_basis.bath_states,
                 initial_basis=[],
-                restrictions=None,
+                restrictions=excited_restrictions,
                 comm=wIn_basis.comm.Clone(),
                 verbose=verbose,
                 truncation_threshold=eigen_basis.truncation_threshold,
@@ -1159,9 +1144,9 @@ def getRIXSmap_new(
             )
             psi1 = psi1_arr[0]
             basis_tmp.add_states(psi1.keys())
-            h_dict_tmp = basis_tmp.expand(hOp)
             psi1 = basis_tmp.redistribute_psis([psi1])[0]
-            h = basis_tmp.build_sparse_matrix(hOp, h_dict_tmp)
+            basis_tmp.expand(hOp)
+            h = basis_tmp.build_sparse_matrix(hOp)
             y = basis_tmp.build_vector([psi1])[0]
             n = h.shape[0]
             for k, win in enumerate(wIns[wIn_indices]):
@@ -1180,7 +1165,7 @@ def getRIXSmap_new(
                 x, info = scipy.sparse.linalg.bicgstab(lop, y)
                 psi2 = basis_tmp.build_state(x)[0]
                 for j, tout in enumerate(tOpsOut):
-                    psi3 = applyOp(nso, tout, psi2, opResult=tout_dicts[j])
+                    psi3 = applyOp_test(tout, psi2)
                     wIn_basis.add_states(psi3.keys())
                     psi3 = wIn_basis.redistribute_psis([psi3])[0]
                     _, gs_eijk = gf.block_Green(
@@ -1192,9 +1177,8 @@ def getRIXSmap_new(
                         wLoss,
                         delta2,
                         Reort.NONE,
-                        h_mem=h_mem,
                         slaterWeightMin=slaterWeightMin,
-                        verbose=verbose,
+                        verbose=verbose and False,
                     )
                     if gs_eijk is not None:
                         gs[i, k, j, :, None, None] += np.exp(-(E_e - E0) / tau) * gs_eijk
@@ -1204,10 +1188,8 @@ def getRIXSmap_new(
                         continue
                     start = sum(wIn_per_color[:c])
                     stop = start + wIn_per_color[c]
-                    print(f"rank {basis.comm.rank} receiving slice({start}, {stop}) from {sender}")
                     eigen_basis.comm.Recv(gs[i, start:stop, :, :], source=sender)
             elif eigen_basis.comm.rank in wIn_roots:
-                print(f"rank {basis.comm.rank} sending {wIn_indices}")
                 eigen_basis.comm.Send(gs[i, :, :, :], dest=0)
 
     if basis.comm.rank == 0:

@@ -6,3 +6,7 @@ A package dealing with many-body impurity models using exact diagonalization.
         - Calculate static expectation values
 
 """
+
+from os import environ
+
+environ["OMP_NUM_THREADS"] = "1"

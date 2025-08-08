@@ -714,6 +714,7 @@ class SimpleDistributedStateContainer(StateContainer):
         if self.comm is None:
             return (self._index_dict[val] if val in self._index_dict else self.size for val in s)
 
+        s = list(s)
         send_list: list[list[bytes]] = [[] for _ in range(self.comm.size)]
         send_to_ranks = np.empty((len(s)), dtype=int)
         send_to_ranks[:] = self.size

@@ -14,8 +14,21 @@ from mpi4py import MPI
 
 # Local stuff
 from impurityModel.ed import finite, spectra
-from impurityModel.ed.average import k_B
+from impurityModel.ed.average import k_B, thermal_average
 from impurityModel.ed.finite import assert_hermitian, c2i
+from impurityModel.ed.manybody_basis import CIPSI_Basis, Basis
+from impurityModel.ed.block_structure import BlockStructure, print_block_structure
+from impurityModel.ed.ManyBodyUtils import ManyBodyOperator, ManyBodyState
+
+
+def matrix_print(matrix: np.ndarray, label: str = None) -> None:
+    """
+    Pretty print the matrix, with optional label.
+    """
+    ms = "\n".join([" ".join([f"{np.real(val): .4f}{np.imag(val):+.4f}j" for val in row]) for row in matrix])
+    if label is not None:
+        print(label)
+    print(ms)
 
 
 def main(
@@ -116,12 +129,34 @@ def main(
     comm = MPI.COMM_WORLD
     rank = comm.rank
 
+    verbosity = 2 if rank == 0 else 0
+    dense_cutoff = int(500)
+    rot_to_spherical = {1: np.eye(6, dtype=complex), 2: np.eye(10, dtype=complex)}
+    block_structure = BlockStructure(
+        blocks=[list(range(6)), list(range(6, 16))],
+        identical_blocks=[[i] for i in range(2)],
+        transposed_blocks=[[] for _ in range(2)],
+        particle_hole_blocks=[[] for _ in range(2)],
+        particle_hole_transposed_blocks=[[] for _ in range(2)],
+        inequivalent_blocks=list(range(2)),
+    )
     if rank == 0:
         t0 = time.time()
 
     # -- System information --
     nBaths = OrderedDict(zip(ls, nBaths))
     nValBaths = OrderedDict(zip(ls, nValBaths))
+    impurity_orbitals = {}
+    valence_baths = {}
+    conduction_baths = {}
+    offset = 0
+    for l in ls:
+        impurity_orbitals[l] = [[offset + i for i in range(2 * (2 * l + 1))]]
+        offset += 2 * (2 * l + 1)
+        valence_baths[l] = [[offset + i for i in range(nValBaths[l])]]
+        offset += nValBaths[l]
+        conduction_baths[l] = [[offset + i for i in range(nBaths[l] - nValBaths[l])]]
+        offset += nBaths[l] - nValBaths[l]
 
     # -- Basis occupation information --
     n0imps = OrderedDict(zip(ls, n0imps))
@@ -143,6 +178,20 @@ def main(
     epsilonsRIXSout = [[1, 0, 0], [0, 1, 0], [0, 0, 1]]  # [[0,0,1]]
     wIn = np.linspace(-10, 20, 50)
     wLoss = np.linspace(-2, 12, 4000)
+    XAS_projectors = None
+    RIXS_projectors = None
+    # if XAS_projectors_filename:
+    #     XAS_projectors = get_RIXS_projectors(XAS_projectors_filename)
+    #     if rank == 0:
+    #         print("XAS projectors")
+    #     if rank == 0:
+    #         print(XAS_projectors)
+    # if RIXS_projectors_filename:
+    #     RIXS_projectors = get_RIXS_projectors(RIXS_projectors_filename)
+    #     if rank == 0:
+    #         print("RIXS projectors")
+    #     if rank == 0:
+    #         print(RIXS_projectors)
     # NIXS parameters
     qsNIXS = [2 * np.array([1, 1, 1]) / np.sqrt(3), 7 * np.array([1, 1, 1]) / np.sqrt(3)]
     # Angular momentum of final and initial orbitals in the NIXS excitation process.
@@ -150,21 +199,6 @@ def main(
 
     # -- Occupation restrictions for excited states --
     l = 2
-    restrictions = {}
-    # Restriction on impurity orbitals
-    indices = frozenset(c2i(nBaths, (l, s, m)) for s in range(2) for m in range(-l, l + 1))
-    restrictions[indices] = (n0imps[l] - 1, n0imps[l] + dnTols[l] + 1)
-    # Restriction on valence bath orbitals
-    indices = []
-    for b in range(nValBaths[l]):
-        indices.append(c2i(nBaths, (l, b)))
-    restrictions[frozenset(indices)] = (nValBaths[l] - dnValBaths[l], nValBaths[l])
-    # Restriction on conduction bath orbitals
-    indices = []
-    for b in range(nValBaths[l], nBaths[l]):
-        indices.append(c2i(nBaths, (l, b)))
-    restrictions[frozenset(indices)] = (0, dnConBaths[l])
-
     # Read the radial part of correlated orbitals
     radialMesh, RiNIXS = np.loadtxt(radial_filename).T
     RjNIXS = np.copy(RiNIXS)
@@ -186,60 +220,107 @@ def main(
         hField,
         h0_CF_filename,
     )
+    hOp = ManyBodyOperator(hOp)
     # Measure how many physical processes the Hamiltonian contains.
     if rank == 0:
         print("{:d} processes in the Hamiltonian.".format(len(hOp)))
     # Many body basis for the ground state
     if rank == 0:
         print("Create basis...")
-    basis = finite.get_basis(nBaths, nValBaths, dnValBaths, dnConBaths, dnTols, n0imps)
-    if rank == 0:
-        print("#basis states = {:d}".format(len(basis)))
-    # Diagonalization of restricted active space Hamiltonian
-    es, psis = finite.eigensystem(n_spin_orbitals, hOp, basis, nPsiMax)
+    tau = k_B * T
+    basis = CIPSI_Basis(
+        hOp,
+        impurity_orbitals,
+        (valence_baths, conduction_baths),
+        nominal_impurity_occ=n0imps,
+        truncation_threshold=1e9,
+        tau=tau,
+        comm=comm,
+        verbose=verbosity >= 2,
+    )
+    if verbosity >= 2:
+        print(f"Initial basis contains {len(basis)} determinants")
+    basis.expand(hOp, de2_min=1e-3)
+    restrictions = basis.restrictions
 
-    if rank == 0:
-        print("time(ground_state) = {:.2f} seconds \n".format(time.time() - t0))
-        t0 = time.time()
+    if restrictions is not None and verbosity >= 2:
+        print("Restrictions GS on occupation")
+        for indices, limits in restrictions.items():
+            print(f"---> {sorted(indices)} : {limits}", flush=True)
 
-    # Calculate static expectation values
-    finite.printThermalExpValues(nBaths, es, psis)
-    finite.printExpValues(nBaths, es, psis)
+    energy_cut = -tau * np.log(1e-4)
 
-    # Print Slater determinants and weights
-    if rank == 0:
-        print("Slater determinants/product states and correspoinding weights")
-        weights = []
-        for i, psi in enumerate(psis):
-            print("Eigenstate {:d}.".format(i))
-            print("Consists of {:d} product states.".format(len(psi)))
-            ws = np.array([abs(a) ** 2 for a in psi.values()])
-            s = np.array(list(psi.keys()))
-            j = np.argsort(ws)
-            ws = ws[j[-1::-1]]
-            s = s[j[-1::-1]]
-            weights.append(ws)
-            if nPrintSlaterWeights > 0:
-                print("Highest (product state) weights:")
-                print(ws[:nPrintSlaterWeights])
-                print("Corresponding product states:")
-                print(s[:nPrintSlaterWeights])
-                print("")
-
-    # Calculate density matrix
-    if rank == 0:
-        print("Density matrix (in cubic harmonics basis):")
-        for i, psi in enumerate(psis):
-            print("Eigenstate {:d}".format(i))
-            n = finite.getDensityMatrixCubic(nBaths, psi)
-            print("#density matrix elements: {:d}".format(len(n)))
-            for e, ne in n.items():
-                if abs(ne) > tolPrintOccupation:
-                    if e[0] == e[1]:
-                        print("Diagonal: (i,s) =", e[0], ", occupation = {:7.2f}".format(ne))
-                    else:
-                        print("Off-diagonal: (i,si), (j,sj) =", e, ", {:7.2f}".format(ne))
-            print("")
+    h_gs = basis.build_sparse_matrix(hOp)
+    es, psis_dense = finite.eigensystem_new(
+        h_gs,
+        e_max=energy_cut,
+        k=5,
+        eigenValueTol=0,
+        comm=basis.comm,
+        dense=basis.size < dense_cutoff,
+    )
+    psis = basis.build_state(psis_dense.T)
+    effective_restrictions = basis.get_effective_restrictions()
+    if verbosity >= 1:
+        print("Effective GS restrictions:")
+        for indices, occupations in effective_restrictions.items():
+            print(f"---> {sorted(indices)} : {occupations}")
+        print("=" * 80)
+        print()
+        print(f"Consider {len(es):d} eigenstates for the spectra \n")
+        print("Calculate Interacting Green's function...", flush=verbosity >= 2)
+    if verbosity >= 1:
+        print(f"{len(basis)} Slater determinants in the basis.")
+    gs_stats = basis.get_state_statistics(psis)
+    rho_imps, rho_baths = basis.build_density_matrices(psis)
+    n_orb = {i: sum(len(block) for block in basis.impurity_orbitals[i]) for i in basis.impurity_orbitals}
+    full_rho_imps = {i: np.zeros((len(psis), n_orb[i], n_orb[i]), dtype=complex) for i in basis.impurity_orbitals}
+    for i, i_blocks in basis.impurity_orbitals.items():
+        orb_offset = min(orb for block in i_blocks for orb in block)
+        for k in range(len(psis)):
+            for j, block_orbs in enumerate(i_blocks):
+                idx = np.ix_([k], [orb - orb_offset for orb in block_orbs], [orb - orb_offset for orb in block_orbs])
+                full_rho_imps[i][idx] = rho_imps[i][j][k]
+    thermal_rho_imps = {
+        i: [finite.thermal_average_scale_indep(es, block_rhos, tau) for block_rhos in rho_imps[i]]
+        for i in basis.impurity_orbitals.keys()
+    }
+    thermal_rho_baths = {
+        i: [finite.thermal_average_scale_indep(es, block_rhos, tau) for block_rhos in rho_baths[i]]
+        for i in basis.impurity_orbitals.keys()
+    }
+    if verbosity >= 1:
+        print("Block structure")
+        print_block_structure(block_structure)
+        for i, blocks in basis.impurity_orbitals.items():
+            print(f"Impurity orbital set {i}")
+            subset_block_structuce = BlockStructure(
+                blocks=blocks,
+                identical_blocks=[[i] for i in range(len(blocks))],
+                transposed_blocks=[[] for _ in range(len(blocks))],
+                particle_hole_blocks=[[] for _ in range(len(blocks))],
+                particle_hole_transposed_blocks=[[] for _ in range(len(blocks))],
+                inequivalent_blocks=[j for j in range(len(blocks))],
+            )
+            finite.printThermalExpValues_new(full_rho_imps[i], es, tau, rot_to_spherical[i], subset_block_structuce)
+            finite.printExpValues(full_rho_imps[i], es, rot_to_spherical[i], subset_block_structuce)
+        print("Occupation statistics for each eigenstate in the thermal ground state")
+        print("Impurity, Valence, Conduction: Weight (|amp|^2)")
+        for i, psi_stats in enumerate(gs_stats):
+            print(f"{i}:")
+            for imp_occ, val_occ, con_occ in sorted(psi_stats.keys()):
+                print(f"{imp_occ:^8d},{val_occ:^8d},{con_occ:^11d}: {psi_stats[(imp_occ, val_occ, con_occ)]}")
+            print("=" * 80)
+            print()
+        print("Ground state bath occupation statistics:")
+        for i in basis.impurity_orbitals.keys():
+            print(f"orbital set {i}:")
+            for block_i, (imp_rho, bath_rho) in enumerate(zip(thermal_rho_imps[i], thermal_rho_baths[i])):
+                print(f"Block {block_i} (impurity orbitals {basis.impurity_orbitals[i][block_i]})")
+                matrix_print(imp_rho, "Impurity density matrix:")
+                matrix_print(bath_rho, "Bath density matrix:")
+                print("=" * 80)
+            print("", flush=verbosity >= 2)
 
     # Save some information to disk
     if rank == 0:
@@ -273,7 +354,7 @@ def main(
             deltaRIXS=deltaRIXS,
             deltaNIXS=deltaNIXS,
             n_spin_orbitals=n_spin_orbitals,
-            hOp=hOp,
+            hOp=hOp.to_dict(),
         )
         # Save some of the arrays.
         # HDF5-format does not directly support dictonaries.
@@ -288,20 +369,12 @@ def main(
         h5f.create_dataset("RjNIXS", data=RjNIXS)
     else:
         h5f = None
-    if rank == 0:
-        print("time(expectation values) = {:.2f} seconds \n".format(time.time() - t0))
-
-    # Consider from now on only eigenstates with low energy
-    es = tuple(e for e in es if e - es[0] < energy_cut)
-    psis = tuple(psis[i] for i in range(len(es)))
-    if rank == 0:
-        print("Consider {:d} eigenstates for the spectra \n".format(len(es)))
 
     spectra.simulate_spectra(
         es,
         psis,
         hOp,
-        T,
+        k_B * T,
         w,
         delta,
         epsilons,
@@ -320,6 +393,13 @@ def main(
         restrictions,
         h5f,
         nBaths,
+        XAS_projectors,
+        RIXS_projectors,
+        basis,
+        1e-6,
+        2,
+        np.sqrt(np.finfo(float).eps),
+        verbosity >= 1,
     )
 
     print("Script finished for rank:", rank)
@@ -381,7 +461,7 @@ def get_hamiltonian_operator_using_CF(
     for il, l in enumerate([2, 1]):
         for s in range(2):
             for m in range(-l, l + 1):
-                eDCOperator[(((l, s, m), "c"), ((l, s, m), "a"))] = -dc[il]
+                eDCOperator[(((l, s, m), "c"), ((l, s, m), "a"))] = -dc[l]
 
     # Magnetic field
     hHfieldOperator = {}

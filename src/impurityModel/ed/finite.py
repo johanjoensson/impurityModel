@@ -2,32 +2,38 @@
 This module contains functions doing the bulk of the calculations.
 """
 
-import itertools
-import time
-from collections import OrderedDict
-from math import pi, sqrt
-import numpy as np
-from sympy.physics.wigner import gaunt
-import itertools
-from collections import OrderedDict
-from copy import deepcopy
-import scipy.sparse
-from scipy.sparse.linalg import ArpackNoConvergence, ArpackError, eigsh
-from scipy.linalg import qr
-from mpi4py import MPI
-import time
-from multiprocessing import Process, Queue, current_process, freeze_support
-from concurrent.futures import ThreadPoolExecutor, ProcessPoolExecutor, as_completed
-from os import environ
-import sys
-import warnings
-
 try:
     from petsc4py import PETSc
     from slepc4py import SLEPc
     from slepc4py.SLEPc import EPS
+
+    USE_PETSc = True
 except ModuleNotFoundError:
-    pass
+    USE_PETSc = False
+
+try:
+    from primme import eigsh as primme_eigsh
+    from os import environ
+
+    USE_PRIMME = False  # primme tends to hang randomly, so disable it for now
+
+except ModuleNotFoundError:
+    USE_PRIMME = False
+
+import itertools
+import time
+from collections import OrderedDict
+from math import pi, sqrt
+import warnings
+from copy import deepcopy
+from multiprocessing import Process, Queue, current_process, freeze_support
+from concurrent.futures import ThreadPoolExecutor, ProcessPoolExecutor, as_completed
+import numpy as np
+from sympy.physics.wigner import gaunt
+import scipy.sparse
+from scipy.sparse.linalg import ArpackNoConvergence, ArpackError, eigsh
+from mpi4py import MPI
+
 
 # Local imports
 from impurityModel.ed import product_state_representation as psr
@@ -35,12 +41,6 @@ from impurityModel.ed import create
 from impurityModel.ed import remove
 from impurityModel.ed.average import k_B, thermal_average, thermal_average_scale_indep
 from impurityModel.ed.block_structure import get_equivalent_blocks
-
-
-# MPI variables
-# comm = MPI.COMM_WORLD
-# rank = comm.rank
-# ranks = comm.size
 
 
 def get_job_tasks(rank, ranks, tasks_tot):
@@ -120,30 +120,230 @@ def setup_hamiltonian(
     return expanded_basis, h_dict, h_local
 
 
-def mpi_matmul(h_local, comm):
-    """
-    MPI parallelized matrix multiplication.
-    Each rank has a number of columns of the matrix and the full vector.
-    """
+def mpi_matmat(m, comm):
+    def f(v):
+        res = m @ v
+        if comm is not None:
+            comm.Allreduce(MPI.IN_PLACE, res)
+        return res.reshape(v.shape)
 
-    def matmat(m):
-        res = h_local @ m
-        comm.Allreduce(MPI.IN_PLACE, res, op=MPI.SUM)
-        return res
-
-    return matmat
+    return f
 
 
-def create_linear_operator(A_local, comm):
-    A = scipy.sparse.linalg.LinearOperator(
-        (A_local.shape[0], A_local.shape[0]),
-        matvec=mpi_matmul(A_local, comm),
-        rmatvec=mpi_matmul(np.conj(A_local.T), comm),
-        matmat=mpi_matmul(A_local, comm),
-        rmatmat=mpi_matmul(np.conj(A_local.T), comm),
-        dtype=A_local.dtype,
+def petsc_eigensystem(h_local, e_max, k=10, v0=None, eigenValueTol=0, return_eigvecs=True, comm=None):
+    # Set up the distributed matrix
+    M = PETSc.Mat()
+    M.create(comm=comm)
+    M.setSizes([h_local.shape[0], h_local.shape[0]])
+    M.setType(PETSc.Mat.Type.MPIAIJ)
+    M.setUp()
+    for i, j in zip(*h_local.nonzero()):
+        M[i, j] = h_local[i, j]
+    M.assemble()
+
+    # set up the eigenproblem solver
+    eig_solver = EPS()
+    eig_solver.create(comm=comm)
+    eig_solver.setOperators(M)
+    eig_solver.setProblemType(SLEPc.EPS.ProblemType.HEP)
+    eig_solver.setWhichEigenpairs(EPS.Which.SMALLEST_REAL)
+    eig_solver.setTolerances(PETSc.DECIDE, PETSc.DECIDE)
+
+    # set initial vectors
+    if v0 is not None:
+        vs = [M.createVecRight() for _ in range(v0.shape[1])]
+        for i, v in enumerate(vs):
+            start, end = v.getOwnershipRange()
+            v[start:end] = v0[start:end, i]
+            v.assemble()
+        eig_solver.setInitialSpace(vs)
+    es = [0]
+    nconv = 0
+    while np.sum(es - np.min(es) <= e_max) == len(es) and len(es) < h_local.shape[0] - 2:
+        eig_solver.setDimensions(k + nconv, PETSc.DECIDE, PETSc.DECIDE)
+
+        eig_solver.solve()
+        nconv = eig_solver.getConverged()
+        if nconv == 0:
+            # Failed to converge with default settings.
+            # Decrease required accuracy and try again.
+            eig_solver.setTolerances(max(eigenValueTol, 1e-4), PETSc.DECIDE)
+            eig_solver.solve()
+            nconv = eig_solver.getConverged()
+        if nconv == 0:
+            raise RuntimeError("SLEPc EPS failed to converge!")
+        es = np.empty((nconv), dtype=float, order="C")
+        if return_eigvecs:
+            vecs = np.empty((h_local.shape[0], nconv), dtype=complex, order="F")
+            vr, wr = M.getVecs()
+            vi, wi = M.getVecs()
+            for i in range(nconv):
+                es[i] = eig_solver.getEigenpair(i, vr, vi).real
+                offsets = vr.owner_ranges[:-1]
+                counts = np.diff(vr.owner_ranges)
+                if comm is not None:
+                    comm.Gatherv(vr.array_r, [vecs[:, i], counts, offsets, MPI.DOUBLE_COMPLEX], root=0)
+        else:
+            for i in range(nconv):
+                es[i] = eig_solver.getEigenvalue(i).real
+    eig_solver.destroy()
+    M.destroy()
+
+    if return_eigvecs and comm is not None:
+        vecs = comm.bcast(vecs, root=0)
+        return es, vecs
+    return es
+
+
+def dense_eigensystem(h_local, return_eigvecs=True, comm=None):
+    h = h_local.toarray()
+    if comm is not None:
+        comm.Reduce(MPI.IN_PLACE if comm.rank == 0 else h, h, root=0, op=MPI.SUM)
+    if return_eigvecs:
+        if comm is None or comm.rank == 0:
+            es, vecs = np.linalg.eigh(h, UPLO="L")
+            # Make sure the eigenvectors are laid out in 'C'/'row major'order
+            # This is needed for the upper case MPI communication (vecs has to have
+            # consistent layout between MPI ranks, I choose 'C' layout).
+            vecs = np.ascontiguousarray(vecs)
+        else:
+            es = np.empty((h.shape[0]), dtype=float, order="C")
+            vecs = np.empty_like(h, order="C")
+        if comm is not None:
+            comm.Bcast(es, root=0)
+            comm.Bcast(vecs, root=0)
+        return es, vecs
+    if comm is None or comm.rank == 0:
+        es = np.linalg.eigvalsh(h, UPLO="L")
+    else:
+        es = np.empty((h.shape[0]), dtype=float, order="C")
+    if comm is not None:
+        comm.Bcast(es, root=0)
+    return es
+
+
+def primme_eigensystem(h_local, e_max, k=10, v0=None, eigenValueTol=0, return_eigvecs=True, comm=None):
+    print(f"PRIMME")
+    h = scipy.sparse.linalg.LinearOperator(
+        h_local.shape,
+        matvec=mpi_matmat(h_local, comm),
+        rmatvec=mpi_matmat(h_local, comm),
+        matmat=mpi_matmat(h_local, comm),
+        rmatmat=mpi_matmat(h_local, comm),
+        dtype=h_local.dtype,
     )
-    return A
+    es = [0]
+    rng = np.random.default_rng()
+    if v0 is None:
+        v0 = rng.uniform(size=(h.shape[0], 1)) + 1j * rng.uniform(size=(h.shape[0], 1))
+        if comm is not None:
+            comm.Allreduce(MPI.IN_PLACE, v0, op=MPI.SUM)
+
+    vecs = v0 / np.linalg.norm(v0)
+    k = min(k, h.shape[1] - 2)
+    # We don't know the degeneracies of the eigenstates, so as long as all found
+    # states are within e0 + e_max, keep looking for more eigenstates
+    while np.sum(es - np.min(es) <= e_max) == len(es) and len(es) < h.shape[0] - 2:
+        if return_eigvecs:
+            es, vecs = primme_eigsh(
+                h,
+                k=min(vecs.shape[1] + k, h.shape[0] - 2),
+                which="SA",
+                v0=vecs,
+                tol=eigenValueTol,
+            )
+        else:
+            es = eigsh(
+                h,
+                k=min(vecs.shape[1] + k, h.shape[0] - 2),
+                which="SA",
+                v0=vecs,
+                tol=eigenValueTol,
+                return_eigenvectors=False,
+            )
+    if return_eigvecs:
+        return es, vecs
+    return es
+
+
+def scipy_eigensystem(h_local, e_max, k=10, v0=None, eigenValueTol=0, return_eigvecs=True, comm=None):
+    h = scipy.sparse.linalg.LinearOperator(
+        h_local.shape,
+        matvec=mpi_matmat(h_local, comm),
+        rmatvec=mpi_matmat(h_local, comm),
+        dtype=h_local.dtype,
+    )
+
+    es = [0]
+    rng = np.random.default_rng()
+    if v0 is None:
+        v0 = rng.uniform(size=(h.shape[0], 1)) + 1j * rng.uniform(size=(h.shape[0], 1))
+        if comm is not None:
+            comm.Allreduce(MPI.IN_PLACE, v0, op=MPI.SUM)
+
+    vecs = v0 / np.linalg.norm(v0)
+    ncv = None
+    conv_fail = False
+    k = min(k, h.shape[1] - 2)
+    while np.sum(es - np.min(es) <= e_max) == len(es) and len(es) < h.shape[0] - 2:
+        try:
+            if return_eigvecs:
+                es, vecs = eigsh(
+                    h,
+                    k=min(vecs.shape[1] + k, h.shape[0] - 2),
+                    which="SA",
+                    v0=vecs[:, 0] if len(vecs.shape) > 1 else vecs,
+                    ncv=ncv,
+                    tol=eigenValueTol if conv_fail else 0,
+                )
+            else:
+                es = eigsh(
+                    h,
+                    k=min(vecs.shape[1] + k, h.shape[0] - 2),
+                    which="SA",
+                    v0=vecs[:, 0] if len(vecs.shape) > 1 else vecs,
+                    ncv=ncv,
+                    tol=eigenValueTol if conv_fail else 0,
+                    return_eigenvectors=False,
+                )
+                k *= 2
+        except ArpackNoConvergence as e:
+            es = e.eigenvalues
+            vecs = e.eigenvectors
+            if vecs.size == 0:
+                vecs = rng.uniform(size=(h.shape[0], k)) + 1j * rng.uniform(size=(h.shape[0], k))
+                if comm is not None:
+                    comm.Allreduce(MPI.IN_PLACE, vecs, op=MPI.SUM)
+                vecs, _ = np.linalg.qr(vecs, mode="reduced")
+            eigenValueTol = max(eigenValueTol, np.finfo(float).eps) if not conv_fail else eigenValueTol * 10
+            conv_fail = True
+        except ArpackError:
+            ncv = min(h.shape[0], max(2 * k + 3, 20)) if ncv is None else min(ncv * 2, h.shape[0])
+            es = [0]
+            vecs = rng.uniform(size=(h.shape[0], k)) + 1j * rng.uniform(size=(h.shape[0], k))
+            if comm is not None:
+                comm.Allreduce(MPI.IN_PLACE, vecs, op=MPI.SUM)
+            vecs, _ = np.linalg.qr(vecs, mode="reduced")
+        if es is None or len(es) == 0:
+            es = [0]
+    indices = np.argsort(es)
+    es = es[indices]
+    if return_eigvecs:
+        vecs = vecs[:, indices]
+        # eigsh does not guarantee that the eigenvectors are orthonormal. therefore we do a QR decomposition on them.
+        vecs, _ = np.linalg.qr(vecs, mode="reduced")
+
+        if 5 * vecs.shape[1] < h.shape[0]:
+            # In principle, lobpcg should be able to correct some errors in the eigenvectors ad eigenvalues found by eigsh (which uses ARPACK behind the scenes).
+            # eigsh struggles with degenerate or nearly degenerate eigenstates, so do one round of lobpcg to correct any errors.
+            # lobpcg is robust as long as the preconditioner is very good (is this what robust means?). We don't have a good preconditioner, so we ignore any warnings from lobpcg instead.
+            # if comm.rank == 0:
+            with warnings.catch_warnings():
+                warnings.simplefilter("ignore")
+                es, vecs = scipy.sparse.linalg.lobpcg(h, vecs, largest=False)
+                vecs = np.ascontiguousarray(vecs)
+        return es, vecs
+    return es
 
 
 def eigensystem_new(h_local, e_max, k=10, v0=None, eigenValueTol=0, return_eigvecs=True, comm=None, dense=False):
@@ -168,147 +368,36 @@ def eigensystem_new(h_local, e_max, k=10, v0=None, eigenValueTol=0, return_eigve
     """
 
     if not scipy.sparse.issparse(h_local):
-        raise RuntimeError(f"eigensystem can't hancle a matrix of type {type(h_local)}")
+        raise RuntimeError(f"eigensystem can't handle a matrix of type {type(h_local)}")
 
-    t0 = time.perf_counter()
-    if dense:
-        h = h_local.toarray()
-        if comm is not None:
-            comm.Reduce(MPI.IN_PLACE if comm.rank == 0 else h, h, root=0, op=MPI.SUM)
-        if comm is None or comm.rank == 0:
-            es, vecs = np.linalg.eigh(h, UPLO="L")
-            # Make sure the eigenvectors are laid out in 'C'/'row major'order
-            # This is needed for the upper case MPI communication (vecs has to have
-            # consistent layout between MPI ranks, I choose 'C' layout).
-            vecs = np.ascontiguousarray(vecs)
+    if return_eigvecs:
+        if dense:
+            es, vecs = dense_eigensystem(h_local, return_eigvecs, comm)
+        elif USE_PETSc:
+            es, vecs = petsc_eigensystem(h_local, e_max, k, v0, eigenValueTol, return_eigvecs, comm)
+        elif USE_PRIMME:
+            es, vecs = primme_eigensystem(h_local, e_max, k, v0, eigenValueTol, return_eigvecs, comm)
         else:
-            es = np.empty((h.shape[0]), dtype=float, order="C")
-            vecs = np.empty_like(h, order="C")
-        if comm is not None:
-            comm.Bcast(es, root=0)
-            comm.Bcast(vecs, root=0)
-    elif "petsc4py" in sys.modules:
-        M = PETSc.Mat().create(comm=comm)
-        M.setSizes([h_local.shape[0], h_local.shape[0]])
-        for i, j in zip(*h_local.nonzero()):
-            M[i, j] = h_local[i, j]
-        M.assemble()
-
-        eig_solver = SLEPc.EPS()
-        eig_solver.create(comm=comm)
-        eig_solver.setOperators(M)
-        eig_solver.setProblemType(SLEPc.EPS.ProblemType.HEP)
-        eig_solver.setWhichEigenpairs(EPS.Which.SMALLEST_REAL)
-        eig_solver.setDimensions(k, PETSc.DECIDE, PETSc.DECIDE)
-
-        if v0 is not None:
-            vs = [M.createVecRight() for _ in range(v0.shape[1])]
-            for i, v in enumerate(vs):
-                start, end = v.getOwnershipRange()
-                v[start:end] = v0[start:end, i]
-                v.assemble()
-            eig_solver.setInitialSpace(vs)
-
-        eig_solver.solve()
-        nconv = eig_solver.getConverged()
-        if nconv == 0:
-            # Failed to converge with default settings.
-            # Decrease required accuracy and try again.
-            eig_solver.setTolerances(max(eigenValueTol, 1e-4), PETSc.DECIDE)
-            eig_solver.solve()
-            nconv = eig_solver.getConverged()
-        if nconv == 0:
-            raise RuntimeError(f"SLEPc EPS failed to converge!")
-        es = np.empty((nconv), dtype=float, order="C")
-        vecs = np.empty((h_local.shape[0], nconv), dtype=complex, order="F")
-        vr, wr = M.getVecs()
-        vi, wi = M.getVecs()
-        for i in range(nconv):
-            es[i] = eig_solver.getEigenpair(i, vr, vi).real
-            offsets = vr.owner_ranges[:-1]
-            counts = np.diff(vr.owner_ranges)
-            if comm is not None:
-                comm.Gatherv(vr.array_r, [vecs[:, i], counts, offsets, MPI.DOUBLE_COMPLEX], root=0)
-        if comm is not None:
-            vecs = comm.bcast(vecs, root=0)
-        eig_solver.destroy()
-        M.destroy()
+            es, vecs = scipy_eigensystem(h_local, e_max, k, v0, eigenValueTol, return_eigvecs, comm)
     else:
-        h = scipy.sparse.linalg.LinearOperator(
-            (h_local.shape[0], h_local.shape[0]),
-            matvec=mpi_matmul(h_local, comm),
-            rmatvec=mpi_matmul(h_local, comm),
-            matmat=mpi_matmul(h_local, comm),
-            rmatmat=mpi_matmul(h_local, comm),
-            dtype=h_local.dtype,
-        )
-
-        es = [0]
-        rng = np.random.default_rng()
-        if v0 is None:
-            v0 = rng.uniform(size=(h.shape[0], k)) + 1j * rng.uniform(size=(h.shape[0], k))
-            if comm is not None:
-                comm.Allreduce(MPI.IN_PLACE, v0, op=MPI.SUM)
-            v0, _ = np.linalg.qr(v0, mode="reduced")
-
-        vecs = v0
-        ncv = None
-        conv_fail = False
-        k = min(max(k, 5), h.shape[1] - 2)
-        # We don't know the degeneracies of the eigenstates, so as long as all found
-        # states are within e0 + e_max, keep looking for more eigenstates
-        while np.sum(es - np.min(es) <= e_max) == len(es) and len(es) < h.shape[0] - 2:
-            try:
-                es, vecs = eigsh(
-                    h,
-                    k=min(vecs.shape[1] + k, h.shape[0] - 2),
-                    which="SA",
-                    v0=vecs[:, [0]] if len(vecs.shape) > 1 else vecs.resahpe((vecs.shape[0], 1)),
-                    ncv=ncv,
-                    tol=eigenValueTol if conv_fail else 0,
-                )
-            except ArpackNoConvergence as e:
-                es = e.eigenvalues
-                vecs = e.eigenvectors
-                if vecs.size == 0:
-                    vecs = rng.uniform(size=(h.shape[0], k)) + 1j * rng.uniform(size=(h.shape[0], k))
-                    if comm is not None:
-                        comm.Allreduce(MPI.IN_PLACE, vecs, op=MPI.SUM)
-                    vecs, _ = np.linalg.qr(vecs, mode="reduced")
-                eigenValueTol = max(eigenValueTol, np.finfo(float).eps) if not conv_fail else eigenValueTol * 10
-                conv_fail = True
-            except ArpackError:
-                ncv = min(h.shape[0], max(2 * k + 3, 20)) if ncv is None else min(ncv * 2, h.shape[0])
-                es = [0]
-                vecs = rng.uniform(size=(h.shape[0], k)) + 1j * rng.uniform(size=(h.shape[0], k))
-                if comm is not None:
-                    comm.Allreduce(MPI.IN_PLACE, vecs, op=MPI.SUM)
-                vecs, _ = np.linalg.qr(vecs, mode="reduced")
-            if es is None or len(es) == 0:
-                es = [0]
-        # eigsh does not guarantee that the eigenvectors are orthonormal. therefore we do a QR decomposition on them.
-        vecs, _ = np.linalg.qr(vecs, mode="reduced")
-
-        # In principle, lobpcg should be able to correct some errors in the eigenvectors ad eigenvalues found by eigsh (which uses ARPACK behind the scenes).
-        # eigsh struggles with degenerate or nearly degenerate eigenstates, so do one round of lobpcg to correct any errors.
-        # lobpcg is robust as long as the preconditioner is very good (is this what robust means?). We don't have a good preconditioner, so we ignore any warnings from lobpcg instead.
-        with warnings.catch_warnings():
-            warnings.simplefilter("ignore")
-            es, vecs = scipy.sparse.linalg.lobpcg(h, vecs, largest=False, maxiter=10 * vecs.shape[1])
-            vecs = np.ascontiguousarray(vecs)
+        if dense:
+            es = dense_eigensystem(h_local, return_eigvecs, comm)
+        elif USE_PETSc:
+            es = petsc_eigensystem(h_local, e_max, k, v0, eigenValueTol, return_eigvecs, comm)
+        elif USE_PRIMME:
+            es = primme_eigensystem(h_local, e_max, k, v0, eigenValueTol, return_eigvecs, comm)
+        else:
+            es = scipy_eigensystem(h_local, e_max, k, v0, eigenValueTol, return_eigvecs, comm)
 
     indices = np.argsort(es)
     es = es[indices]
-    vecs = vecs[:, indices]
+    if return_eigvecs:
+        vecs = vecs[:, indices]
     mask = es - np.min(es) <= e_max
-    t0 = time.perf_counter() - t0
 
-    if not return_eigvecs:
-        return es[: sum(mask)]
-
-    t0 = time.perf_counter() - t0
-
-    return es[: sum(mask)], vecs[:, : sum(mask)]
+    if return_eigvecs:
+        return es[mask], vecs[:, mask]
+    return es[mask]
 
 
 def eigensystem(
@@ -2209,7 +2298,7 @@ def applyOp_new(n_spin_orbitals: int, op: dict, psi: dict, slaterWeightMin=0, re
         state_bits_new = psr.bytes2bitarray(state, n_spin_orbitals)
         # state_bits_new = state_bits.copy()
         signTot = 1
-        for i, action in process[-1::-1]:
+        for i, action in process[::-1]:
             if action == "a":
                 sign = remove.ubitarray(i, state_bits_new)
             elif action == "c":
