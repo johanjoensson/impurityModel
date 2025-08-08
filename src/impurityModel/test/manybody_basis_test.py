@@ -1,5 +1,4 @@
 import pytest
-import pickle
 from mpi4py import MPI
 import numpy as np
 from impurityModel.ed.manybody_basis import Basis, CIPSI_Basis
@@ -1389,6 +1388,7 @@ def test_eg_t2g_CIPSI_basis_expand():
     #            00000
     states = [b"\x80\x00"]
     basis = CIPSI_Basis(
+        H=Hop,
         impurity_orbitals={2: [list(range(10))]},
         bath_states=(
             {2: [[]]},
@@ -1428,6 +1428,7 @@ def test_eg_t2g_CIPSI_basis_expand_mpi():
     #            00000
     states = [b"\x80\x00"]
     basis = CIPSI_Basis(
+        H=Hop,
         impurity_orbitals={2: [list(range(10))]},
         bath_states=(
             {2: [[]]},
@@ -1503,3 +1504,26 @@ def test_distributed_vector_mpi():
     assert v.shape == (len(basis.local_basis),)
     if n > 0:
         assert np.allclose(v, v_exact[basis.index_bounds[comm.rank] - n : basis.index_bounds[comm.rank]])
+
+
+@pytest.mark.mpi
+def test_two_sets_of_imp_orbs():
+    comm = MPI.COMM_WORLD
+    impurity_orbitals = {0: [list(range(3))], 1: [list(range(3, 8))]}
+    bath_states = ({0: [[]], 1: [list(range(8, 13))]}, {0: [[]], 1: [list(range(13, 15))]})
+    nominal_impurity_occ = {0: 3, 1: 4}
+    delta_impurity_occ = {0: 0, 1: 0}
+    delta_valence_occ = {0: 0, 1: 0}
+    delta_conduction_occ = {0: 0, 1: 0}
+
+    basis = Basis(
+        impurity_orbitals=impurity_orbitals,
+        bath_states=bath_states,
+        nominal_impurity_occ=nominal_impurity_occ,
+        delta_valence_occ=delta_valence_occ,
+        delta_conduction_occ=delta_conduction_occ,
+        delta_impurity_occ=delta_impurity_occ,
+        verbose=True,
+        comm=comm,
+    )
+    assert len(basis) == 5

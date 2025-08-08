@@ -3,6 +3,7 @@ from time import perf_counter
 import sys
 from typing import Optional, Union
 from os import environ
+from bisect import bisect_left
 
 try:
     from collections.abc import Sequence, Iterable
@@ -30,13 +31,10 @@ from impurityModel.ed.finite import (
     thermal_average_scale_indep,
 )
 
+from impurityModel.ed.ManyBodyUtils import ManyBodyState, ManyBodyOperator, applyOp as applyOp_test
+
 
 from impurityModel.ed.finite import applyOp_new as applyOp
-
-# if int(environ.get("OMP_NUM_THREADS", 1)) > 1:
-#     from impurityModel.ed.finite import applyOp_threadpool as applyOp
-# else:
-#     from impurityModel.ed.finite import applyOp_new as applyOp
 
 
 def batched(iterable: Iterable, n: int) -> Iterable:
@@ -137,6 +135,7 @@ class Basis:
             delta_impurity_occ = dict.fromkeys(impurity_orbitals.keys(), 0)
 
         total_impurity_orbitals = {i: sum(len(orbs) for orbs in impurity_orbitals[i]) for i in impurity_orbitals}
+        total_configurations = {}
         for i in valence_baths:
             valid_configurations = []
             impurity_electron_indices = [orb for imp_orbs in impurity_orbitals[i] for orb in imp_orbs]
@@ -149,6 +148,7 @@ class Basis:
                         abs(delta_impurity) <= abs(delta_impurity_occ[i])
                         and nominal_impurity_occ[i] + delta_impurity <= total_impurity_orbitals[i]
                         and nominal_impurity_occ[i] + delta_impurity >= 0
+                        and delta_valence <= len(valence_electron_indices)
                     ):
                         impurity_occupation = nominal_impurity_occ[i] + delta_impurity
                         valence_occupation = len(valence_electron_indices) - delta_valence
@@ -159,19 +159,28 @@ class Basis:
                             conduction_electron_indices, conduction_occupation
                         )
                         if verbose:
-                            print("Partition occupations")
+                            print(f"Partition {i} occupations")
                             print(f"Impurity occupation:   {impurity_occupation:d}")
                             print(f"Valence occupation:   {valence_occupation:d}")
                             print(f"Conduction occupation: {conduction_occupation:d}")
                         valid_configurations.append(
-                            (impurity_configurations, valence_configurations, conduction_configurations)
+                            itertools.product(
+                                impurity_configurations,
+                                valence_configurations,
+                                conduction_configurations,
+                            )
                         )
+            total_configurations[i] = valid_configurations
         num_spin_orbitals = sum(total_impurity_orbitals[i] + total_baths[i] for i in total_baths)
         basis = []
         # Combine all valid configurations for all l-subconfigurations (ex. p-states and d-states)
-        for config in valid_configurations:
-            for imp, val, con in itertools.product(*config):
-                basis.append(psr.tuple2bytes(imp + val + con, num_spin_orbitals))
+        for config in itertools.product(*total_configurations.values()):
+            for set_bits in itertools.product(*config):
+                basis.append(
+                    psr.tuple2bytes(
+                        tuple(idx for subset in set_bits for part in subset for idx in part), num_spin_orbitals
+                    )
+                )
 
         return basis, num_spin_orbitals
 
@@ -262,8 +271,15 @@ class Basis:
                 restrictions[conduction_indices] = (min_con, max_con)
         return restrictions
 
-    def _build_full_empty_bath_states(self, bath_rhos, bath_indices, occ_cutoff):
+    def _build_full_empty_bath_states(self, psis, occ_cutoff):
 
+        valence_baths, conduction_baths = self.bath_states
+        bath_indices = {
+            i: [sorted(val_b + cond_b) for val_b, cond_b in zip(valence_baths[i], conduction_baths[i])]
+            for i in valence_baths
+        }
+        _, bath_rhos = self.build_density_matrices(psis)
+        bath_rhos = {i: [rho[0] for rho in br] for i, br in bath_rhos.items()}
         bath_occupations = {i: [np.diag(bath_rho) for bath_rho in brs] for i, brs in bath_rhos.items()}
         full_bath_states = {}
         empty_bath_states = {}
@@ -293,29 +309,17 @@ class Basis:
                 empty_bath_states[i].append(empty_baths[1:])
         return full_bath_states, empty_bath_states
 
-    def build_excited_restrictions(
-        self, bath_rhos, bath_indices, imp_change, val_change, con_change, occ_cutoff, collapse_chains=True
-    ):
-        if bath_rhos is not None:
-            if bath_indices is None:
-                raise RuntimeError(
-                    "When supplying bath_rhos for calculating excited state restrictions you MUST also supply the corresponding bath_indices."
-                )
-            full_bath_states, empty_bath_states = self._build_full_empty_bath_states(
-                bath_rhos, bath_indices, occ_cutoff
-            )
+    def build_excited_restrictions(self, psis, imp_change, val_change, con_change, occ_cutoff=1e-6):
+        occ_restrict = imp_change is not None or val_change is not None or con_change is not None
+        if not (occ_restrict or self.chain_restrict):
+            return None
+
+        valence_baths, conduction_baths = self.bath_states
+        if self.chain_restrict:
+            full_bath_states, empty_bath_states = self._build_full_empty_bath_states(psis, occ_cutoff)
         else:
             full_bath_states = {i: [] for i in self.impurity_orbitals.keys()}
             empty_bath_states = {i: [] for i in self.impurity_orbitals.keys()}
-
-        valence_baths, conduction_baths = self.bath_states
-
-        if imp_change is not None:
-            imp_reduce, imp_increase = imp_change
-        if val_change is not None:
-            val_reduce, _ = val_change
-        if con_change is not None:
-            _, con_increase = con_change
 
         new_valence_baths = {
             i: [
@@ -351,8 +355,10 @@ class Basis:
             impurity_indices = frozenset(ind for imp_ind in self.impurity_orbitals[i] for ind in imp_ind)
             if len(impurity_indices) > 0 and imp_change is not None:
                 r_min_imp, r_max_imp = restrictions[impurity_indices]
-                min_imp = max(r_min_imp - imp_reduce, 0)
-                max_imp = min(r_max_imp + imp_increase, sum(len(orbs) for orbs in self.impurity_orbitals[i]))
+                min_imp = max(r_min_imp - imp_change.get(i, (0, 0))[0], 0)
+                max_imp = min(
+                    r_max_imp + imp_change.get(i, (0, 0))[1], sum(len(orbs) for orbs in self.impurity_orbitals[i])
+                )
                 excited_restrictions[impurity_indices] = (min_imp, max_imp)
 
             min_val = 0
@@ -364,7 +370,7 @@ class Basis:
                 max_val = len(new_valence_indices)
                 if len(valence_indices) > 0:
                     r_min_val, _ = restrictions[valence_indices]
-                    min_val = max(r_min_val - val_diff[i] - val_reduce, 0)
+                    min_val = max(r_min_val - val_diff[i] - val_change.get(i, (0, 0))[0], 0)
 
             max_cond = 0
             new_conduction_indices = frozenset()
@@ -373,12 +379,17 @@ class Basis:
                 new_conduction_indices = frozenset(ind for con_ind in new_conduction_baths[i] for ind in con_ind)
                 if len(conduction_indices) > 0:
                     _, r_max_cond = restrictions[conduction_indices]
-                    max_cond = min(r_max_cond + con_increase, sum(len(orbs) for orbs in new_conduction_baths[i]))
+                    max_cond = min(
+                        r_max_cond + con_change.get(i, (0, 0))[1], sum(len(orbs) for orbs in new_conduction_baths[i])
+                    )
 
             if val_change is not None or con_change is not None:
-                excited_restrictions[new_valence_indices.union(new_conduction_indices)] = (min_val, max_val + max_cond)
+                new_fluctuating_indices = new_valence_indices.union(new_conduction_indices)
+                if len(new_fluctuating_indices) == 0:
+                    continue
+                excited_restrictions[new_fluctuating_indices] = (min_val, max_val + max_cond)
 
-            if collapse_chains:
+            if self.collapse_chains:
                 full_indices = frozenset(orb for full_indices in full_bath_states[i] for orb in full_indices)
                 if len(full_indices) > 0:
                     excited_restrictions[full_indices] = (
@@ -407,16 +418,18 @@ class Basis:
     def __init__(
         self,
         impurity_orbitals,
+        bath_states,
+        nominal_impurity_occ=None,
         initial_basis=None,
         restrictions=None,
-        bath_states=None,
         delta_valence_occ=None,
         delta_conduction_occ=None,
         delta_impurity_occ=None,
-        nominal_impurity_occ=None,
         truncation_threshold=np.inf,
         spin_flip_dj=False,
         tau=0,
+        chain_restrict=False,
+        collapse_chains=False,
         comm=None,
         verbose=True,
         debug=False,
@@ -432,6 +445,7 @@ class Basis:
             assert delta_conduction_occ is None
             assert delta_impurity_occ is None
         else:
+            assert nominal_impurity_occ is not None
             initial_basis, num_spin_orbitals = self._get_initial_basis(
                 impurity_orbitals=impurity_orbitals,
                 bath_states=bath_states,
@@ -441,20 +455,13 @@ class Basis:
                 nominal_impurity_occ=nominal_impurity_occ,
                 verbose=verbose,
             )
-            # restrictions = self._get_restrictions(
-            #     impurity_orbitals=impurity_orbitals,
-            #     bath_states=bath_states,
-            #     delta_valence_occ=delta_valence_occ,
-            #     delta_conduction_occ=delta_conduction_occ,
-            #     delta_impurity_occ=delta_impurity_occ,
-            #     nominal_impurity_occ=nominal_impurity_occ,
-            #     verbose=verbose,
-            # )
         t0 = perf_counter() - t0
         t0 = perf_counter()
         self.impurity_orbitals = impurity_orbitals
         self.bath_states = bath_states
         self.spin_flip_dj = spin_flip_dj
+        self.chain_restrict = chain_restrict
+        self.collapse_chains = collapse_chains
         self.verbose = verbose
         self.debug = debug
         self.comm = comm
@@ -518,7 +525,7 @@ class Basis:
         self.state_bounds = self.state_container.state_bounds
         self.local_basis = self.state_container.local_basis
 
-    def redistribute_psis(self, psis: list[dict[bytes, complex]]):
+    def redistribute_psis(self, psis: list[ManyBodyState]):
         if not self.is_distributed:
             return psis
 
@@ -544,13 +551,13 @@ class Basis:
                         for send_n, psi_n in zip(send_list, psis):
                             send_n[state] = psi_n.get(state, 0)
             if send_to == self.comm.rank:
-                res = send_list
+                received = send_list
             else:
                 received = self.comm.sendrecv(send_list, dest=send_to, source=receive_from)
-                for res_n, psi_n in zip(res, received):
-                    for state, amp in psi_n.items():
-                        res_n[state] = amp + res_n.get(state, 0)
-        return res
+            for res_n, psi_n in zip(res, received):
+                for state, amp in psi_n.items():
+                    res_n[state] = amp + res_n.get(state, 0)
+        return [ManyBodyState(p) for p in res]
 
     def redistribute_psis_old(self, psis: Iterable[dict]):
         if not self.is_distributed:
@@ -695,47 +702,34 @@ class Basis:
 
         return spin_flip
 
-    def expand(self, op, op_dict=None, dense_cutoff=None, slaterWeightMin=0):
+    def expand(self, op, dense_cutoff=None, slaterWeightMin=0):
+        if isinstance(op, dict):
+            op = ManyBodyOperator(op)
         old_size = self.size - 1
-        t0 = perf_counter()
-        t_apply = 0
-        t_filter = 0
-        t_add = 0
-        t_keys = 0
-        # states_to_check = set(self.local_basis)
-        new_states = set()
-        # checked_states = set()
         while old_size != self.size and self.size < self.truncation_threshold:
-            # while len(states_to_check) > 0:
-            # checked_states |= states_to_check
-            # for state in states_to_check:
-            for state in self.local_basis:
-                t_tmp = perf_counter()
-                res = applyOp(
-                    self.num_spin_orbitals,
-                    op,
-                    {state: 1},
-                    restrictions=self.restrictions,
-                    slaterWeightMin=slaterWeightMin,
-                    opResult=op_dict,
-                )
-                t_apply += perf_counter() - t_tmp
-                t_tmp = perf_counter()
-                new_states |= set(res.keys())  #  - set(self.local_basis)
-                t_keys += perf_counter() - t_tmp
-                # if a state appears in op_dict it means it has already been evaluted
-            t_tmp = perf_counter()
-            filtered_states = new_states
-            t_filter += perf_counter() - t_tmp
+            new_states = set()
+            local_states = set(self.local_basis)
+            for i in range(5):
+                new_local_states = set()
+                for state in local_states:
+                    res = applyOp_test(
+                        op,
+                        ManyBodyState({state: 1}),
+                        cutoff=slaterWeightMin,
+                        restrictions=self.restrictions,
+                    )
+                    new_local_states |= set(res.keys())
+                if len(new_local_states) == len(local_states):
+                    break
+                local_states |= new_local_states
+            new_states = local_states - set(self.local_basis)
             if self.spin_flip_dj:
-                filtered_states = self._generate_spin_flipped_determinants(filtered_states)
-            t_tmp = perf_counter()
+                new_states = self._generate_spin_flipped_determinants(new_states)
             old_size = self.size
-            self.add_states(filtered_states)
-            t_add += perf_counter() - t_tmp
+            self.add_states(new_states)
         if self.verbose:
             print(f"After expansion, the basis contains {self.size} elements.")
-        return self.build_operator_dict(op, op_dict=op_dict)
+        return self.build_operator_dict(op)
 
     def index(self, val):
         return self.state_container.index(val)
@@ -758,11 +752,13 @@ class Basis:
 
     def copy(self):
         return Basis(
-            impurity_orbitals=self.impurity_orbitals,
-            bath_states=self.bath_states,
+            self.impurity_orbitals,
+            self.bath_states,
             initial_basis=self.local_basis,
             restrictions=self.restrictions,
             spin_flip_dj=self.spin_flip_dj,
+            chain_restrict=self.chain_restrict,
+            collapse_chains=self.collapse_chains,
             comm=self.comm,
             truncation_threshold=self.truncation_threshold,
             verbose=self.verbose,
@@ -772,17 +768,17 @@ class Basis:
         self.state_container.clear()
         self.add_states([])
 
-    def build_vector(self, psis: list[dict], root: Optional[int] = None) -> np.ndarray:
+    def build_vector(self, psis: list[ManyBodyState], root: Optional[int] = None) -> np.ndarray:
         v = np.zeros((len(psis), self.size), dtype=complex, order="C")
         psis = self.redistribute_psis(psis)
         # row_states_in_basis: list[bytes] = []
         # row_dict = {state: self._index_dict[state] for state in self.local_basis}
-        col_dict = dict(zip(self.local_basis, range(self.local_indices.start, self.local_indices.stop)))
+        # col_dict = dict(zip(self.local_basis, range(self.local_indices.start, self.local_indices.stop)))
         for row, psi in enumerate(psis):
             for state, val in psi.items():
-                if state not in col_dict:
+                if state not in self._index_dict:
                     continue
-                v[row, col_dict[state]] = val
+                v[row, self._index_dict[state]] = val
 
         if self.is_distributed and root is None:
             self.comm.Allreduce(MPI.IN_PLACE, v, op=MPI.SUM)
@@ -790,15 +786,11 @@ class Basis:
             self.comm.Reduce(MPI.IN_PLACE if self.comm.rank == root else v, v, op=MPI.SUM, root=root)
         return v
 
-    def build_distributed_vector(self, psis: list[dict], dtype=complex) -> np.ndarray:
-        v = np.zeros((len(psis), len(self.local_basis)), dtype=dtype, order="C")
-        psis_new = self.redistribute_psis(psis)
-        for row, psi in enumerate(psis_new):
-            for state in psi:
-                if state not in self.local_basis:
-                    continue
-                local_idx = self.local_basis.index(state)
-                v[row, local_idx] = psi[state]
+    def build_distributed_vector(self, psis: list[ManyBodyState], dtype=complex) -> np.ndarray:
+        psis = self.redistribute_psis(psis)
+        v = np.empty((len(psis), len(self.local_basis)), dtype=dtype, order="C")
+        for (row, psi), (col, state) in itertools.product(enumerate(psis), enumerate(self.local_basis)):
+            v[row, col] = psi.get(state, 0)
         return v
 
     def build_state(self, vs: Union[list[np.ndarray], np.ndarray], slaterWeightMin=0) -> list[dict]:
@@ -828,81 +820,62 @@ class Basis:
             raise RuntimeError(
                 f"The dimensions of the input dense vector does not match a distributed, or full vector.\n{vs.shape} != ({vs.shape[0]}, {self.size}) || ({vs.shape[0]}, {len(self.local_basis)})"
             )
-        return res
+        return [ManyBodyState(p) for p in res]
 
-    def build_operator_dict(self, op, op_dict=None, slaterWeightMin=1e-16):
+    def build_operator_dict(self, op, slaterWeightMin=1e-16):
         """
         Express the operator, op, in the current basis. Do not expand the basis.
         Return a dict containing the results of applying op to the different basis states
         """
-        if op_dict is None:
-            op_dict = {}
+        if isinstance(op, dict):
+            op = ManyBodyOperator(op)
 
-        for state in self.local_basis:
-            _ = applyOp(
-                self.num_spin_orbitals,
-                op,
-                {state: 1},
-                restrictions=self.restrictions,
-                slaterWeightMin=slaterWeightMin,
-                opResult=op_dict,
-            )
-        # op_dict.clear()
-        # op_dict.update(new_op_dict)
-        # return {state: op_dict[state] for state in self.local_basis}
-        return op_dict.copy()
+        # for state in self.local_basis:
+        _ = applyOp_test(
+            op,
+            ManyBodyState({state: 1 for state in self.local_basis}),
+            cutoff=slaterWeightMin,
+            restrictions=self.restrictions,
+        )
+        return op.memory()
 
-    def build_dense_matrix(self, op, op_dict=None, distribute=True):
+    def build_dense_matrix(self, op, distribute=True):
         """
         Get the operator as a dense matrix in the current basis.
         by default the dense matrix is distributed to all ranks.
         """
-        h_local = self.build_sparse_matrix(op, op_dict)
-        local_dok = h_local.todok()
+        h_local = self.build_sparse_matrix(op)
         if self.is_distributed:
-            reduced_dok = self.comm.reduce(local_dok, op=MPI.SUM, root=0)
-            if self.comm.rank == 0:
-                h = reduced_dok.todense()
-            h = self.comm.bcast(h if self.comm.rank == 0 else None, root=0)
+            h = np.empty(h_local.shape, dtype=h_local.dtype)
+            self.comm.Allreduce(h_local.todense(), h, op=MPI.SUM)
         else:
             h = h_local.todense()
         return h
 
-    def build_sparse_matrix(self, op, op_dict: Optional[dict[bytes, dict[bytes, complex]]] = None):
+    def build_sparse_matrix(self, op):
         """
         Get the operator as a sparse matrix in the current basis.
         The sparse matrix is distributed over all ranks.
         """
+        expanded_dict = self.build_operator_dict(op)
 
-        expanded_dict = self.build_operator_dict(op, op_dict)
-        rows: list[int] = []
-        columns: list[int] = []
-        values: list[complex] = []
-        if not self.is_distributed:
-            for local_col_idx, column in enumerate(self.local_basis):
-                for row in expanded_dict[column]:
-                    if row not in self.local_basis:
-                        continue
-                    local_row_idx = self.local_basis.index(row)
-                    columns.append(local_col_idx)
-                    rows.append(local_row_idx)
-                    values.append(expanded_dict[column][row])
-        else:
-            rows_in_basis: set[bytes] = {row for column in self.local_basis for row in expanded_dict[column].keys()}
-            row_dict = {
-                state: index
-                for state, index in zip(rows_in_basis, self.state_container._index_sequence(rows_in_basis))
-                if index != self.size
-            }
+        res_dok = sp.sparse.dok_array((len(self), len(self)), dtype=complex)
+        bras = []
+        columns = []
+        values = []
+        for ket, ket_dict in expanded_dict.items():
+            if ket not in self._index_dict:
+                continue
+            columns.extend([self._index_dict[ket]] * len(ket_dict))
+            for bra, val in ket_dict.items():
+                bras.append(bra)
+                values.append(val)
+        for row, col, val in zip(self.state_container._index_sequence(bras), columns, values):
+            if row == self.size:
+                continue
+            res_dok[row, col] = val
 
-            for local_col_idx, column in enumerate(self.local_basis):
-                for row in expanded_dict[column]:
-                    if row not in row_dict:
-                        continue
-                    columns.append(local_col_idx + self.offset)
-                    rows.append(row_dict[row])
-                    values.append(expanded_dict[column][row])
-        return sp.sparse.csc_matrix((values, (rows, columns)), shape=(self.size, self.size), dtype=complex)
+        return res_dok.tocsc()
 
     def _state_statistics(self, psi, impurity_indices, valence_indices, conduction_indices, num_spin_orbitals):
         stat = {}
@@ -937,7 +910,7 @@ class Basis:
 
     def build_density_matrices(self, psis):
         local_psis = [{} for _ in psis]
-        all_psis = self.comm.allgather(psis)
+        all_psis = self.comm.allgather([p.to_dict() for p in psis])
         for i, psi in enumerate(local_psis):
             for psis_r in all_psis:
                 for state, amp in psis_r[i].items():
@@ -969,57 +942,19 @@ class Basis:
             ]
             for i in valence
         }
-        bath_indices = {
-            i: [list(sorted(val_b + cond_b)) for val_b, cond_b in zip(valence[i], conduction[i])] for i in valence
-        }
 
-        return rho_imps, rho_baths, bath_indices
+        return rho_imps, rho_baths
 
 
 class CIPSI_Basis(Basis):
-    def __init__(
-        self,
-        impurity_orbitals,
-        bath_states,
-        delta_valence_occ=None,
-        delta_conduction_occ=None,
-        delta_impurity_occ=None,
-        nominal_impurity_occ=None,
-        initial_basis=None,
-        restrictions=None,
-        truncation_threshold=np.inf,
-        spin_flip_dj=False,
-        verbose=False,
-        H=None,
-        tau=0,
-        comm=None,
-    ):
-        # (valence_baths, conduction_baths) = bath_states
-        if initial_basis is None:
-            assert nominal_impurity_occ is not None
-            initial_basis, num_spin_orbitals = self._get_initial_basis(
-                impurity_orbitals,
-                bath_states,
-                delta_valence_occ,
-                delta_conduction_occ,
-                delta_impurity_occ,
-                nominal_impurity_occ,
-                verbose,
-            )
-        super(CIPSI_Basis, self).__init__(
-            impurity_orbitals=impurity_orbitals,
-            bath_states=bath_states,
-            # delta_valence_occ=delta_valence_occ,
-            # delta_conduction_occ=delta_conduction_occ,
-            # delta_impurity_occ=delta_impurity_occ,
-            # nominal_impurity_occ=nominal_impurity_occ,
-            initial_basis=initial_basis,
-            restrictions=restrictions,
-            truncation_threshold=truncation_threshold,
-            spin_flip_dj=spin_flip_dj,
-            tau=tau,
-            verbose=verbose,
-            comm=comm,
+    def __init__(self, H, impurity_orbitals, bath_states, nominal_impurity_occ=None, initial_basis=None, **kwargs):
+        assert nominal_impurity_occ is not None or initial_basis is not None
+        super().__init__(
+            impurity_orbitals,
+            bath_states,
+            nominal_impurity_occ,
+            initial_basis,
+            **kwargs,
         )
 
         if self.size > self.truncation_threshold and H is not None:
@@ -1028,10 +963,9 @@ class CIPSI_Basis(Basis):
             H_sparse = self.build_sparse_matrix(H)
             e_ref, psi_ref = eigensystem_new(
                 H_sparse,
-                e_max=1e-12,
-                k=len(self.impurity_orbitals[0]),
+                e_max=-self.tau * np.log(1e-4),
+                k=1,
                 eigenValueTol=0,
-                verbose=self.verbose,
                 comm=self.comm,
                 dense=False,
             )
@@ -1049,144 +983,109 @@ class CIPSI_Basis(Basis):
         self.add_states(state for psi in psis for state in psi)
         return self.redistribute_psis(psis)
 
-    def _calc_de2(self, Djs: Basis, H: dict, H_dict: dict, Hpsi_ref: dict, e_ref: float, slaterWeightMin: float = 0):
+    def _calc_de2(self, H, Hpsi_ref, e_ref: float, slaterWeightMin: float = 0):
         """
         calculate second variational energy contribution of the Slater determinants in states.
         """
 
-        overlaps = np.empty((len(Djs.local_basis)), dtype=complex)
-        e_Dj = np.empty((len(Djs.local_basis)), dtype=float)
-        for j, (Dj, overlap) in enumerate((d, Hpsi_ref[d]) for d in Djs.local_basis):
-            overlaps[j] = overlap
-            HDj = applyOp(
-                self.num_spin_orbitals,
-                H,
-                {Dj: 1},
-                restrictions=self.restrictions,
-                slaterWeightMin=slaterWeightMin,
-                opResult=H_dict,
-            )
-            # <Dj|H|Dj>
-            e_Dj[j] = np.real(HDj.get(Dj, 0))
-        de = e_ref - e_Dj
+        if isinstance(H, dict):
+            H = ManyBodyOperator(H)
+        local_Djs = [[state for state in hp if state not in self._index_dict] for hp in Hpsi_ref]
+        overlaps = np.zeros((len(Hpsi_ref), max(len(Dj_row) for Dj_row in local_Djs)), dtype=complex)
+        e_Dj = np.zeros((len(Hpsi_ref), max(len(Dj_row) for Dj_row in local_Djs)), dtype=float)
+        # for i in range(len(Hpsi_ref)):
+        for i, (Hpsi, Ds) in enumerate(zip(Hpsi_ref, local_Djs)):
+            for j, (Dj, overlap) in enumerate((d, Hpsi[d]) for d in Ds):
+                overlaps[i, j] = overlap
+                HDj = applyOp_test(
+                    H,
+                    ManyBodyState({Dj: 1}),
+                    cutoff=slaterWeightMin,
+                    restrictions=self.restrictions,
+                )
+                # <Dj|H|Dj>
+                e_Dj[i, j] = np.real(HDj[Dj])
+        de = e_ref[:, None] - e_Dj
         de[np.abs(de) < np.finfo(float).eps] = np.finfo(float).eps
 
         # <Dj|H|Psi_ref>^2 / (E_ref - <Dj|H|Dj>)
-        return np.square(np.abs(overlaps)) / de
+        return local_Djs, np.square(np.abs(overlaps)) / de
 
-    def determine_new_Dj(self, e_ref, psi_ref, H, H_dict, de2_min, return_Hpsi_ref=False):
-        if H_dict is None:
-            H_dict = {}
+    def determine_new_Dj(self, e_ref, psi_ref, H, de2_min, return_Hpsi_ref=False):
+        if isinstance(H, dict):
+            H = ManyBodyOperator(H)
         new_Dj = set()
-        Hpsi_ref = []
-        for e_i, psi_i in zip(e_ref, psi_ref):
-            Hpsi_i = applyOp(
-                self.num_spin_orbitals,
+        Hpsi_ref = [None for _ in psi_ref]
+        for i, (e_i, psi_i) in enumerate(zip(e_ref, psi_ref)):
+            Hpsi_ref[i] = applyOp_test(
                 H,
                 psi_i,
                 restrictions=self.restrictions,
-                opResult=H_dict,
             )
-            Dj_candidates = Hpsi_i.keys()
-            Dj_basis_mask = (not x for x in self.contains(Dj_candidates))
-            Dj_basis = Basis(
-                impurity_orbitals=self.impurity_orbitals,
-                bath_states=self.bath_states,
-                initial_basis=itertools.compress(Dj_candidates, Dj_basis_mask),
-                restrictions=None,
-                comm=self.comm,
-                verbose=False,
-            )
-            Hpsi_i = Dj_basis.redistribute_psis([Hpsi_i])[0]
-            de2 = self._calc_de2(Dj_basis, H, H_dict, Hpsi_i, e_i)
-            de2_mask = np.abs(de2) >= de2_min
-            Dji = {Dj_basis.local_basis[i] for i, mask in enumerate(de2_mask) if mask}
-            new_Dj |= Dji
-            Hpsi_ref.append(Hpsi_i)
+        Hpsi_ref = self.redistribute_psis(Hpsi_ref)
+        local_Djs, de2 = self._calc_de2(H, Hpsi_ref, e_ref)
+        de2_mask = np.abs(de2) >= de2_min
+        new_Dj = {Dj for i in range(len(Hpsi_ref)) for Dj, mask in zip(local_Djs[i], de2_mask[i]) if mask}
         if return_Hpsi_ref:
             return new_Dj, Hpsi_ref
 
         return new_Dj
 
-    def expand(self, H, H_dict=None, de2_min=1e-10, dense_cutoff=1e3, slaterWeightMin=0):
+    def expand(self, H, de2_min=1e-10, dense_cutoff=1e3, slaterWeightMin=0):
         """
         Use the CIPSI method to expand the basis. Keep adding Slater determinants until the CIPSI energy is converged.
         """
-        t0 = perf_counter()
-        t_build_dict = 0
-        t_build_mat = 0
-        t_build_vec = 0
-        t_build_state = 0
-        t_eigen = 0
-        t_Dj = 0
-        t_add = 0
         psi_ref = None
         converge_count = 0
         de0_max = max(1e-6, -self.tau * np.log(1e-4))
         psi_ref = None
-        t_tmp = perf_counter()
-        if H_dict is None:
-            H_dict = {}
-        _ = self.build_operator_dict(H, H_dict)
-        t_build_dict += perf_counter() - t_tmp
+
+        if isinstance(H, dict):
+            H = ManyBodyOperator(H)
+
+        i = 1
         while converge_count < 1:
-            t_tmp = perf_counter()
-            H_mat = self.build_sparse_matrix(H, op_dict=H_dict)
-            t_build_mat += perf_counter() - t_tmp
-            t_tmp = perf_counter()
-            if psi_ref is not None:
-                v0 = self.build_vector(psi_ref).T
-            t_build_vec += perf_counter() - t_tmp
-            t_tmp = perf_counter()
+            H_mat = self.build_sparse_matrix(H)
             e_ref, psi_ref_dense = eigensystem_new(
                 H_mat,
                 e_max=de0_max,
-                k=v0.shape[1] if psi_ref is not None else 2,
-                v0=v0 if psi_ref is not None else None,
+                k=len(psi_ref) if psi_ref is not None else 2,
+                v0=self.build_vector(psi_ref).T if psi_ref is not None else None,
                 eigenValueTol=de2_min,
                 comm=self.comm,
                 dense=self.size < dense_cutoff,
             )
 
-            t_eigen += perf_counter() - t_tmp
-            t_tmp = perf_counter()
             psi_ref = self.build_state(psi_ref_dense.T)
             if self.size > self.truncation_threshold:
                 psi_ref = self.truncate(psi_ref)
+                print(f"----->After truncation, the basis contains {self.size} elements.")
 
-            t_build_state += perf_counter() - t_tmp
-            t_tmp = perf_counter()
-            new_Dj = self.determine_new_Dj(e_ref, psi_ref, H, {}, de2_min)
-            t_Dj += perf_counter() - t_tmp
+            new_Dj = self.determine_new_Dj(e_ref, psi_ref, H, de2_min)
             old_size = self.size
             if self.spin_flip_dj:
                 new_Dj = self._generate_spin_flipped_determinants(new_Dj)
-            t_tmp = perf_counter()
             self.add_states(new_Dj)
             psi_ref = self.redistribute_psis(psi_ref)
-            t_add += perf_counter() - t_tmp
-            if self.verbose:
-                print(f"----->After truncation, the basis contains {self.size} elements.")
 
             if old_size == self.size:
                 converge_count += 1
             else:
                 converge_count = 0
+            i += 1
 
         if self.verbose:
             print(f"After expansion, the basis contains {self.size} elements.")
 
-        return self.build_operator_dict(H, op_dict=H_dict)
+        return self.build_operator_dict(H)
 
-    def expand_at(self, w, psi_ref, H, H_dict=None, de2_min=1e-3):
-        if H_dict is None:
-            H_dict = {}
+    def expand_at(self, w, psi_ref, H, de2_min=1e-3):
 
+        if isinstance(H, dict):
+            H = ManyBodyOperator(H)
         old_size = self.size - 1
         while old_size != self.size:
-            new_Dj, Hpsi_ref = self.determine_new_Dj(
-                [w] * len(psi_ref), psi_ref, H, H_dict, de2_min, return_Hpsi_ref=True
-            )
+            new_Dj, Hpsi_ref = self.determine_new_Dj([w] * len(psi_ref), psi_ref, H, de2_min, return_Hpsi_ref=True)
 
             old_size = self.size
             self.add_states(new_Dj)
@@ -1201,17 +1100,19 @@ class CIPSI_Basis(Basis):
                 self.comm.Allreduce(MPI.IN_PLACE, N2s, op=MPI.SUM)
             psi_ref = [{state: psi[state] / np.sqrt(N2s[i]) for state in psi} for i, psi in enumerate(psi_ref)]
 
-        _ = self.build_operator_dict(H, op_dict=H_dict)
-        return H_dict.copy()
+        return self.build_operator_dict(H)
 
     def copy(self):
         new_basis = CIPSI_Basis(
-            impurity_orbitals=self.impurity_orbitals,
-            bath_states=self.bath_states,
+            None,
+            self.impurity_orbitals,
+            self.bath_states,
             initial_basis=self.local_basis,
             restrictions=self.restrictions,
             comm=self.comm,
             truncation_threshold=self.truncation_threshold,
+            chain_restrict=self.chain_restrict,
+            collapse_chains=self.collapse_chains,
             spin_flip_dj=self.spin_flip_dj,
             tau=self.tau,
             verbose=self.verbose,

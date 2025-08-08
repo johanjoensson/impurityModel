@@ -41,6 +41,12 @@ Issues = "https://github.com/johanjoensson/impurityModel//issues"
 requires = ["setuptools >= 77.0.3", "setuptools-scm"]
 build-backend = "setuptools.build_meta"
 
+[tool.setuptools]
+ext-modules = [
+{name = "impurityModel.ed.ManyBodyUtils", sources=["src/cython/ManyBodyUtils.pyx"], language="c++"}
+]
+
+
 [tool.black]
 line-length = 120
 

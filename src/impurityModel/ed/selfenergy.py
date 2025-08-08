@@ -7,14 +7,16 @@ import h5py as h5
 from mpi4py import MPI
 import numpy as np
 import scipy as sp
-from impurityModel.ed.get_spectra import get_noninteracting_hamiltonian_operator
+
+# from impurityModel.ed.get_spectra import get_noninteracting_hamiltonian_operator
 from impurityModel.ed import finite
 from impurityModel.ed.average import thermal_average_scale_indep
-from impurityModel.ed.manybody_basis import CIPSI_Basis
+from impurityModel.ed.manybody_basis import CIPSI_Basis, Basis
 import impurityModel.ed.product_state_representation as psr
 
 from impurityModel.ed.greens_function import get_Greens_function, save_Greens_function
 from impurityModel.ed.block_structure import print_block_structure
+from impurityModel.ed.ManyBodyUtils import ManyBodyOperator
 
 EV_TO_RY = 1 / 13.605693122994
 
@@ -55,52 +57,62 @@ def fixed_peak_dc(
     verbose,
     dense_cutoff,
 ):
+    n_orb = sum(len(block) for imp_orbs in impurity_orbitals.values() for block in imp_orbs)
+    assert n_orb == dc_guess.shape[0]
     peak_position = max(peak_position, 4 * tau)
     valence_baths, conduction_baths = bath_states
     u = finite.getUop_from_rspt_u4(u4)
+    h_op_i = ManyBodyOperator(finite.addOps([h0_op, u]))
     dc_trial = dc_guess
 
     Np = {l: N0[l] + 1 for l in N0}
     Nm = {l: N0[l] - 1 for l in N0}
     if peak_position >= 0:
         basis_upper = CIPSI_Basis(
-            impurity_orbitals=impurity_orbitals,
-            bath_states=bath_states,
+            h_op_i,
+            impurity_orbitals,
+            bath_states,
             nominal_impurity_occ=Np,
             truncation_threshold=1e5,
             verbose=False,
             comm=MPI.COMM_WORLD,
             spin_flip_dj=spin_flip_dj,
+            tau=tau,
         )
         basis_lower = CIPSI_Basis(
-            impurity_orbitals=impurity_orbitals,
-            bath_states=bath_states,
+            h_op_i,
+            impurity_orbitals,
+            bath_states,
             nominal_impurity_occ=N0,
             truncation_threshold=1e5,
             verbose=False,
             comm=MPI.COMM_WORLD,
             spin_flip_dj=spin_flip_dj,
+            tau=tau,
         )
     else:
         basis_upper = CIPSI_Basis(
-            impurity_orbitals=impurity_orbitals,
-            bath_states=bath_states,
+            h_op_i,
+            impurity_orbitals,
+            bath_states,
             nominal_impurity_occ=N0,
             truncation_threshold=1e5,
             verbose=False,
             comm=MPI.COMM_WORLD,
             spin_flip_dj=spin_flip_dj,
+            tau=tau,
         )
         basis_lower = CIPSI_Basis(
-            impurity_orbitals=impurity_orbitals,
-            bath_states=bath_states,
+            h_op_i,
+            impurity_orbitals,
+            bath_states,
             nominal_impurity_occ=Nm,
             truncation_threshold=1e5,
             verbose=False,
             comm=MPI.COMM_WORLD,
             spin_flip_dj=spin_flip_dj,
+            tau=tau,
         )
-    h_op_i = finite.addOps([h0_op, u])
 
     dc_op_i = {
         ((i, "c"), (j, "a")): -dc_trial[i, j] + 0j
@@ -108,9 +120,11 @@ def fixed_peak_dc(
         for j in range(dc_trial.shape[1])
         if abs(dc_trial[i, j]) > 0
     }
-    h_op = finite.addOps([h_op_i, dc_op_i])
+    h_op = h_op_i + ManyBodyOperator(dc_op_i)
     _ = basis_upper.expand(h_op, dense_cutoff=dense_cutoff, de2_min=1e-3)
     _ = basis_lower.expand(h_op, dense_cutoff=dense_cutoff, de2_min=1e-3)
+
+    energy_cut = -tau * np.log(1e-4)
 
     def F(dc_fac):
         dc = dc_fac * dc_trial
@@ -120,15 +134,15 @@ def fixed_peak_dc(
             for j in range(dc_trial.shape[1])
             if abs(dc_trial[i, j]) > 0
         }
-        h_op = finite.addOps([h_op_i, dc_op_i])
-        _ = basis_upper.expand(h_op, dense_cutoff=dense_cutoff, de2_min=1e-3)
-        _ = basis_lower.expand(h_op, dense_cutoff=dense_cutoff, de2_min=1e-3)
+        h_op = h_op_i + ManyBodyOperator(dc_op_i)
+        # _ = basis_upper.expand(h_op, dense_cutoff=dense_cutoff, de2_min=1e-3)
+        # _ = basis_lower.expand(h_op, dense_cutoff=dense_cutoff, de2_min=1e-3)
 
         h = basis_upper.build_sparse_matrix(h_op)
         e_upper, psi_upper = finite.eigensystem_new(
             h,
-            e_max=0,
-            k=2,
+            e_max=energy_cut,
+            k=1,
             eigenValueTol=1e-6,
             return_eigvecs=True,
             comm=basis_upper.comm,
@@ -137,34 +151,28 @@ def fixed_peak_dc(
         h = basis_lower.build_sparse_matrix(h_op)
         e_lower, psi_lower = finite.eigensystem_new(
             h,
-            e_max=0,
-            k=2,
+            e_max=energy_cut,
+            k=1,
             eigenValueTol=1e-6,
             return_eigvecs=True,
             comm=basis_upper.comm,
             dense=basis_lower.size < dense_cutoff,
         )
-        psi_lower_local = basis_lower.build_state(psi_lower[:, 0].T)[0]
-        psi_upper_local = basis_upper.build_state(psi_upper[:, 0].T)[0]
-        psi_lowers = basis_lower.comm.allgather(psi_lower_local)
-        psi_uppers = basis_upper.comm.allgather(psi_upper_local)
-        psi_lower = {}
-        psi_upper = {}
-        for psi_lower_local, psi_upper_local in zip(psi_lowers, psi_uppers):
-            for state in psi_lower_local:
-                psi_lower[state] = psi_lower_local[state] + psi_lower.get(state, 0)
-            for state in psi_upper_local:
-                psi_upper[state] = psi_upper_local[state] + psi_upper.get(state, 0)
-        rho_lower = finite.build_density_matrix(
-            sorted([orb for blocks in basis_lower.impurity_orbitals.values() for block in blocks for orb in block]),
-            psi_lower,
-            basis_lower.num_spin_orbitals,
-        )
-        rho_upper = finite.build_density_matrix(
-            sorted([orb for blocks in basis_upper.impurity_orbitals.values() for block in blocks for orb in block]),
-            psi_upper,
-            basis_upper.num_spin_orbitals,
-        )
+        rho_lower_imps, _ = basis_lower.build_density_matrices(basis_lower.build_state(psi_lower.T))
+        rho_upper_imps, _ = basis_upper.build_density_matrices(basis_upper.build_state(psi_upper.T))
+        rho_lower = np.zeros((psi_lower.shape[1], n_orb, n_orb), dtype=complex)
+        rho_upper = np.zeros((psi_upper.shape[1], n_orb, n_orb), dtype=complex)
+        for i, i_blocks in impurity_orbitals.items():
+            for k in range(psi_lower.shape[1]):
+                for j, block_orbs in enumerate(i_blocks):
+                    idx = np.ix_([k], block_orbs, block_orbs)
+                    rho_lower[idx] = rho_lower_imps[i][j][k]
+            for k in range(psi_upper.shape[1]):
+                for j, block_orbs in enumerate(i_blocks):
+                    idx = np.ix_([k], block_orbs, block_orbs)
+                    rho_upper[idx] = rho_upper[i][j][k]
+        rho_lower = finite.thermal_average_scale_indep(e_lower, rho_lower, basis_lower.tau)
+        rho_upper = finite.thermal_average_scale_indep(e_upper, rho_upper, basis_upper.tau)
         avg_dc_lower = np.real(np.trace(rho_lower @ dc))
         avg_dc_upper = np.real(np.trace(rho_upper @ dc))
         if abs(avg_dc_upper - avg_dc_lower) < min(tau, 1e-2):
@@ -185,9 +193,11 @@ def fixed_peak_dc(
 
 def calc_occ_e(
     h_op,
-    N0,
-    N_imp,
+    impurity_indices,
     bath_states,
+    N0,
+    tau,
+    chain_restrict,
     spin_flip_dj,
     dense_cutoff,
     comm,
@@ -195,25 +205,30 @@ def calc_occ_e(
     truncation_threshold,
 ):
     basis = CIPSI_Basis(
-        impurity_orbitals=N_imp,
-        H=h_op,
-        bath_states=bath_states,
+        h_op,
+        impurity_indices,
+        bath_states,
         delta_impurity_occ={i: 0 for i in N0},
         delta_valence_occ={i: 0 for i in N0},
         delta_conduction_occ={i: 0 for i in N0},
         nominal_impurity_occ=N0,
+        tau=tau,
+        chain_restrict=chain_restrict,
         truncation_threshold=truncation_threshold,
-        verbose=verbose,
+        verbose=False,  # verbose,
         spin_flip_dj=spin_flip_dj,
         comm=comm,
     )
-    h_dict = basis.expand(h_op, dense_cutoff=dense_cutoff, de2_min=1e-4)
-    h = basis.build_sparse_matrix(h_op, h_dict)
+    if len(basis) == 0:
+        return np.inf, basis, {}
+    h_dict = basis.expand(h_op, dense_cutoff=dense_cutoff, de2_min=1e-3)
+    h = basis.build_sparse_matrix(h_op)
 
+    energy_cut = -tau * np.log(1e-4)
     e_trial = finite.eigensystem_new(
         h,
-        e_max=0,
-        k=2,
+        e_max=energy_cut,
+        k=5,
         eigenValueTol=0,
         return_eigvecs=False,
         comm=basis.comm,
@@ -224,9 +239,11 @@ def calc_occ_e(
 
 def find_gs(
     h_op,
-    N0,
-    bath_states,
     impurity_orbitals,
+    bath_states,
+    N0,
+    tau,
+    chain_restrict,
     rank,
     dense_cutoff,
     spin_flip_dj,
@@ -248,30 +265,33 @@ def find_gs(
     basis_gs = None
     gs_impurity_occ = N0.copy()
     dN_gs = dict.fromkeys(N0.keys(), 0)
-    for i in N0:
-        if verbose >= 2:
-            print(f"{i=}")
-        e_gs = np.inf
-        for dN in [0, -1, 1]:
-            e_trial, basis, h_dict = calc_occ_e(
-                h_op,
-                {j: N0[j] + dN for j in N0},
-                impurity_orbitals,
-                bath_states,
-                spin_flip_dj,
-                dense_cutoff,
-                comm=comm,
-                verbose=False,
-                truncation_threshold=truncation_threshold,
-            )
-            if e_trial < e_gs:
-                if verbose >= 2:
-                    print(f"N0 {N0[i] + dN:^5d}: E = {e_trial:^7.4f} ")
-                e_gs = e_trial
-                basis_gs = basis
-                h_dict_gs = h_dict.copy()
-                dN_gs[i] = dN
-                gs_impurity_occ[i] = N0[i] + dN
+
+    keys = list(N0.keys())
+    dN_trials = [{keys[i]: dN[i] for i in range(len(keys))} for dN in itertools.product([0, -1, 1], repeat=len(keys))]
+    e_gs = np.inf
+    for dN in dN_trials:
+        e_trial, basis, h_dict = calc_occ_e(
+            h_op,
+            impurity_orbitals,
+            bath_states,
+            {i: N0[i] + dN[i] for i in N0},
+            tau,
+            chain_restrict,
+            spin_flip_dj,
+            dense_cutoff,
+            comm=comm,
+            verbose=verbose >= 2,
+            truncation_threshold=truncation_threshold,
+        )
+        if e_trial < e_gs:
+            if verbose >= 2:
+                for i in keys:
+                    print(f"N0[{i}] {N0[i] + dN[i]:^5d}: E = {e_trial:^7.4f} ")
+            e_gs = e_trial
+            basis_gs = basis.copy()
+            h_dict_gs = h_dict
+            dN_gs = dN
+            gs_impurity_occ = {i: N0[i] + dN[i] for i in N0}
     for i in N0:
         while (
             dN_gs[i] != 0
@@ -281,11 +301,14 @@ def find_gs(
                 for j, imp_occ in gs_impurity_occ.items()
             )
         ):
+            gs_impurity_occ[i] += dN_gs[i]
             e_trial, basis, h_dict = calc_occ_e(
                 h_op,
-                {j: gs_impurity_occ[j] + dN_gs[j] for j in gs_impurity_occ},
                 impurity_orbitals,
                 bath_states,
+                gs_impurity_occ,
+                tau,
+                chain_restrict,
                 spin_flip_dj,
                 dense_cutoff,
                 comm=comm,
@@ -295,11 +318,10 @@ def find_gs(
             if e_trial >= e_gs:
                 break
             e_gs = e_trial
-            basis_gs = basis
-            h_dict_gs = h_dict.copy()
-            gs_impurity_occ[i] += dN_gs[i]
+            basis_gs = basis.copy()
+            h_dict_gs = h_dict
             if verbose >= 2:
-                print(f"N0 {gs_impurity_occ[i]:^5d}: E = {e_gs:^7.4f} ")
+                print(f"{i} ---> {gs_impurity_occ[i]:^5d}: E = {e_gs:^7.4f} ")
     if verbose >= 1:
         print("Ground state occupation")
         print("\n".join((f"{i:^3d}: {gs_impurity_occ[i]: ^5d}" for i in gs_impurity_occ)))
@@ -326,7 +348,6 @@ def calc_selfenergy(
     dense_cutoff,
     spin_flip_dj,
     comm,
-    occ_restrict,
     chain_restrict,
     occ_cutoff,
     truncation_threshold,
@@ -348,13 +369,16 @@ def calc_selfenergy(
 
     # construct local, interacting, hamiltonian
     u = finite.getUop_from_rspt_u4(u4)
-    h = finite.addOps([h0, u])
+    h = ManyBodyOperator(h0) + ManyBodyOperator(u)
+    # h = finite.addOps([h0, u])
 
     gs_impurity_occ, basis, h_dict = find_gs(
         h,
-        nominal_occ,
-        bath_states,
         impurity_orbitals,
+        bath_states,
+        nominal_occ,
+        tau,
+        chain_restrict,
         rank=rank,
         dense_cutoff=dense_cutoff,
         spin_flip_dj=spin_flip_dj,
@@ -371,9 +395,8 @@ def calc_selfenergy(
 
     energy_cut = -tau * np.log(1e-4)
 
-    basis.tau = tau
-    h_dict = basis.expand(h, H_dict=h_dict, dense_cutoff=dense_cutoff, de2_min=1e-6)
-    h_gs = basis.build_sparse_matrix(h, h_dict)
+    _ = basis.expand(h, dense_cutoff=dense_cutoff, de2_min=1e-6)
+    h_gs = basis.build_sparse_matrix(h)
     es, psis_dense = finite.eigensystem_new(
         h_gs,
         e_max=energy_cut,
@@ -383,6 +406,15 @@ def calc_selfenergy(
         dense=basis.size < dense_cutoff,
     )
     psis = basis.build_state(psis_dense.T)
+    effective_restrictions = basis.get_effective_restrictions()
+    if verbosity >= 1:
+        print("Effective GS restrictions:")
+        for indices, occupations in effective_restrictions.items():
+            print(f"---> {sorted(indices)} : {occupations}")
+        print("=" * 80)
+        print()
+        print(f"Consider {len(es):d} eigenstates for the spectra \n")
+        print("Calculate Interacting Green's function...", flush=verbosity >= 2)
     if verbosity >= 1:
         print(f"{len(basis)} Slater determinants in the basis.")
     gs_stats = basis.get_state_statistics(psis)
@@ -390,7 +422,7 @@ def calc_selfenergy(
         i: sum(len(orbs) for orbs in valence_baths[i]) + sum(len(orbs) for orbs in conduction_baths[i])
         for i in valence_baths
     }
-    rho_imps, rho_baths, _ = basis.build_density_matrices(psis)
+    rho_imps, rho_baths = basis.build_density_matrices(psis)
     n_orb = sum(len(block) for blocks in basis.impurity_orbitals.values() for block in blocks)
     full_rho_imps = np.zeros((len(psis), n_orb, n_orb), dtype=complex)
     for i, i_blocks in basis.impurity_orbitals.items():
@@ -429,16 +461,6 @@ def calc_selfenergy(
                 print("=" * 80)
             print("", flush=verbosity >= 2)
 
-    effective_restrictions = basis.get_effective_restrictions()
-    if verbosity >= 1:
-        print("Effective GS restrictions:")
-        for indices, occupations in effective_restrictions.items():
-            print(f"---> {sorted(indices)} : {occupations}")
-        print("=" * 80)
-        print()
-        print(f"Consider {len(es):d} eigenstates for the spectra \n")
-        print("Calculate Interacting Green's function...", flush=verbosity >= 2)
-
     gs_matsubara, gs_realaxis = get_Greens_function(
         matsubara_mesh=iw,
         omega_mesh=w,
@@ -452,11 +474,9 @@ def calc_selfenergy(
         verbose=verbosity >= 1,
         verbose_extra=verbosity >= 2,
         reort=reort,
-        occ_restrict=occ_restrict,
-        chain_restrict=chain_restrict,
+        dN=dN,
         occ_cutoff=occ_cutoff,
         slaterWeightMin=slaterWeightMin,
-        dN=dN,
     )
     if gs_matsubara is not None:
         try:

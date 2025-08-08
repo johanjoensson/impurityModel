@@ -16,7 +16,7 @@ from impurityModel.ed.average import thermal_average
 # Local imports
 from impurityModel.ed.finite import (
     add,
-    applyOp,
+    applyOp_new as applyOp,
     c2i,
     daggerOp,
     expand_basis_and_hamiltonian,
@@ -30,6 +30,11 @@ from impurityModel.ed.finite import (
     combineOp,
     addOps,
 )
+import impurityModel.ed.selfenergy as se
+import impurityModel.ed.greens_function as gf
+from impurityModel.ed.lanczos import Reort
+from impurityModel.ed.manybody_basis import Basis
+from impurityModel.ed.ManyBodyUtils import ManyBodyOperator, ManyBodyState, applyOp as applyOp_test
 
 # MPI variables
 comm = MPI.COMM_WORLD
@@ -41,7 +46,7 @@ def simulate_spectra(
     es,
     psis,
     hOp,
-    T,
+    tau,
     w,
     delta,
     epsilons,
@@ -62,6 +67,11 @@ def simulate_spectra(
     nBaths,
     XAS_projectors,
     RIXS_projectors,
+    basis,
+    occ_cutoff,
+    dN,
+    slaterWeightMin,
+    verbose,
 ):
     """
     Simulate various spectra.
@@ -128,9 +138,6 @@ def simulate_spectra(
     if rank == 0:
         t0 = time.perf_counter()
 
-    # Total number of spin-orbitals in the system
-    n_spin_orbitals = sum(2 * (2 * ang + 1) + nBath for ang, nBath in nBaths.items())
-
     if rank == 0:
         print("Create 3d inverse photoemission and photoemission spectra...")
     # Transition operators
@@ -138,29 +145,61 @@ def simulate_spectra(
     tOpsPS = getPhotoEmissionOperators(nBaths, l=2)
     if rank == 0:
         print("Inverse photoemission Green's function..")
-    gsIPS = getSpectra(n_spin_orbitals, hOp, tOpsIPS, psis, es, w, delta, restrictions)
+    assert isinstance(hOp, ManyBodyOperator)
+    gsIPS = getSpectra_new(
+        hOp,
+        [ManyBodyOperator(t) for t in tOpsIPS],
+        psis,
+        es,
+        tau,
+        w,
+        basis,
+        delta,
+        slaterWeightMin,
+        verbose,
+        occ_cutoff,
+        dN_imp={1: (0, 0), 2: (0, 1)},
+        dN_val={1: (0, 0), 2: (1, 0)},
+        dN_con={1: (0, 0), 2: (0, 1)},
+    )
     if rank == 0:
         print("Photoemission Green's function..")
-    gsPS = getSpectra(n_spin_orbitals, hOp, tOpsPS, psis, es, -w, -delta, restrictions)
+    gsPS = getSpectra_new(
+        hOp,
+        [ManyBodyOperator(t) for t in tOpsPS],
+        psis,
+        es,
+        tau,
+        -w,
+        basis,
+        -delta,
+        slaterWeightMin,
+        verbose,
+        occ_cutoff,
+        dN_imp={1: (0, 0), 2: (1, 0)},
+        dN_val={1: (0, 0), 2: (1, 0)},
+        dN_con={1: (0, 0), 2: (0, 1)},
+    )
+    # gsPS = getSpectra(n_spin_orbitals, hOp, tOpsPS, psis, es, -w, -delta, restrictions)
     gsPS *= -1
     gs = gsPS + gsIPS
     if rank == 0:
-        print("#eigenstates = {:d}".format(np.shape(gs)[0]))
-        print("#spin orbitals = {:d}".format(np.shape(gs)[1]))
-        print("#mesh points = {:d}".format(np.shape(gs)[2]))
+        # print("#eigenstates = {:d}".format(np.shape(gs)[0]))
+        print("#spin orbitals = {:d}".format(np.shape(gs)[0]))
+        print("#mesh points = {:d}".format(np.shape(gs)[1]))
     # Thermal average
-    a = thermal_average(es[: np.shape(gs)[0]], -gs.imag, T=T)
+    # a = thermal_average(es[: np.shape(gs)[0]], -gs.imag, T=T)
     if rank == 0 and h5f:
-        h5f.create_dataset("PS", data=-gs.imag)
-        h5f.create_dataset("PSthermal", data=a)
+        # h5f.create_dataset("PS", data=-gs.imag)
+        h5f.create_dataset("PSthermal", data=-gs.imag)
     # Sum over transition operators
-    aSum = np.sum(a, axis=0)
+    aSum = np.sum(-gs.imag, axis=0)
     # Save spectra to disk
     if rank == 0:
         tmp = [w, aSum]
         # Each transition operator seperatly
-        for i in range(np.shape(a)[0]):
-            tmp.append(a[i, :])
+        for i in range(np.shape(gs)[0]):
+            tmp.append(-gs.imag[i, :])
         print("Save spectra to disk...\n")
         np.savetxt("PS.dat", np.array(tmp).T, fmt="%8.4f", header="E  sum  T1  T2  T3 ...")
     if rank == 0:
@@ -172,25 +211,41 @@ def simulate_spectra(
     # Transition operators
     tOpsPS = getPhotoEmissionOperators(nBaths, l=1)
     # Photoemission Green's function
-    gs = getSpectra(n_spin_orbitals, hOp, tOpsPS, psis, es, -w, -delta, restrictions)
+    gs = getSpectra_new(
+        hOp,
+        [ManyBodyOperator(t) for t in tOpsPS],
+        psis,
+        es,
+        tau,
+        -w,
+        basis,
+        -delta,
+        slaterWeightMin,
+        verbose,
+        occ_cutoff,
+        dN_imp={1: (1, 0), 2: (1, 1)},
+        dN_val={1: (0, 0), 2: (1, 0)},
+        dN_con={1: (0, 0), 2: (0, 1)},
+    )
+    # gs = getSpectra(n_spin_orbitals, hOp, tOpsPS, psis, es, -w, -delta, restrictions)
     gs *= -1
     if rank == 0:
-        print("#eigenstates = {:d}".format(np.shape(gs)[0]))
-        print("#spin orbitals = {:d}".format(np.shape(gs)[1]))
-        print("#mesh points = {:d}".format(np.shape(gs)[2]))
+        # print("#eigenstates = {:d}".format(np.shape(gs)[0]))
+        print("#spin orbitals = {:d}".format(np.shape(gs)[0]))
+        print("#mesh points = {:d}".format(np.shape(gs)[1]))
     # Thermal average
-    a = thermal_average(es[: np.shape(gs)[0]], -gs.imag, T=T)
+    # a = thermal_average(es[: np.shape(gs)[0]], -gs.imag, T=T)
     if rank == 0 and h5f:
-        h5f.create_dataset("XPS", data=-gs.imag)
-        h5f.create_dataset("XPSthermal", data=a)
+        # h5f.create_dataset("XPS", data=-gs.imag)
+        h5f.create_dataset("XPSthermal", data=-gs.imag)
     # Sum over transition operators
-    aSum = np.sum(a, axis=0)
+    aSum = np.sum(-gs.imag, axis=0)
     # Save spectra to disk
     if rank == 0:
         tmp = [w, aSum]
         # Each transition operator seperatly
-        for i in range(np.shape(a)[0]):
-            tmp.append(a[i, :])
+        for i in range(np.shape(gs)[0]):
+            tmp.append(-gs.imag[i, :])
         print("Save spectra to disk...\n")
         np.savetxt("XPS.dat", np.array(tmp).T, fmt="%8.4f", header="E  sum  T1  T2  T3 ...")
     if rank == 0:
@@ -202,24 +257,40 @@ def simulate_spectra(
     # Transition operator: exp(iq*r)
     tOps = getNIXSOperators(nBaths, qsNIXS, liNIXS, ljNIXS, RiNIXS, RjNIXS, radialMesh)
     # Green's function
-    gs = getSpectra(n_spin_orbitals, hOp, tOps, psis, es, wLoss, deltaNIXS, restrictions)
+    gs = getSpectra_new(
+        hOp,
+        [ManyBodyOperator(t) for t in tOps],
+        psis,
+        es,
+        tau,
+        wLoss,
+        basis,
+        deltaNIXS,
+        slaterWeightMin,
+        verbose,
+        occ_cutoff,
+        dN_imp={liNIXS: (1, 1), ljNIXS: (1, 1)},
+        dN_val={liNIXS: (1, 0), ljNIXS: (1, 0)},
+        dN_con={liNIXS: (0, 1), ljNIXS: (0, 1)},
+    )
+    # gs = getSpectra(n_spin_orbitals, hOp, tOps, psis, es, wLoss, deltaNIXS, restrictions)
     if rank == 0:
-        print("#eigenstates = {:d}".format(np.shape(gs)[0]))
-        print("#q-points = {:d}".format(np.shape(gs)[1]))
-        print("#mesh points = {:d}".format(np.shape(gs)[2]))
+        # print("#eigenstates = {:d}".format(np.shape(gs)[0]))
+        print("#q-points = {:d}".format(np.shape(gs)[0]))
+        print("#mesh points = {:d}".format(np.shape(gs)[1]))
     # Thermal average
-    a = thermal_average(es[: np.shape(gs)[0]], -gs.imag, T=T)
+    # a = thermal_average(es[: np.shape(gs)[0]], -gs.imag, T=T)
     if rank == 0 and h5f:
-        h5f.create_dataset("NIXS", data=-gs.imag)
-        h5f.create_dataset("NIXSthermal", data=a)
+        # h5f.create_dataset("NIXS", data=-gs.imag)
+        h5f.create_dataset("NIXSthermal", data=-gs.imag)
     # Sum over q-points
-    aSum = np.sum(a, axis=0)
+    aSum = np.sum(-gs.imag, axis=0)
     # Save spectra to disk
     if rank == 0:
         tmp = [wLoss, aSum]
         # Each q-point seperatly
-        for i in range(np.shape(a)[0]):
-            tmp.append(a[i, :])
+        for i in range(np.shape(gs)[0]):
+            tmp.append(-gs.imag[i, :])
         print("Save spectra to disk...\n")
         np.savetxt("NIXS.dat", np.array(tmp).T, fmt="%8.4f", header="E  sum  T1  T2  T3 ...")
 
@@ -240,24 +311,40 @@ def simulate_spectra(
         tOps = projectedTOps
 
     # Green's function
-    gs = getSpectra(n_spin_orbitals, hOp, tOps, psis, es, w, delta, restrictions)
+    gs = getSpectra_new(
+        hOp,
+        [ManyBodyOperator(t) for t in tOps],
+        psis,
+        es,
+        tau,
+        w,
+        basis,
+        delta,
+        slaterWeightMin,
+        verbose,
+        occ_cutoff,
+        dN_imp={1: (1, 0), 2: (0, 1)},
+        dN_val={1: (0, 0), 2: (1, 0)},
+        dN_con={1: (0, 0), 2: (0, 1)},
+    )
+    # gs = getSpectra(n_spin_orbitals, hOp, tOps, psis, es, w, delta, restrictions)
     if rank == 0:
-        print("#eigenstates = {:d}".format(np.shape(gs)[0]))
-        print("#polarizations = {:d}".format(np.shape(gs)[1]))
-        print("#mesh points = {:d}".format(np.shape(gs)[2]))
+        # print("#eigenstates = {:d}".format(np.shape(gs)[0]))
+        print("#polarizations = {:d}".format(np.shape(gs)[0]))
+        print("#mesh points = {:d}".format(np.shape(gs)[1]))
     # Thermal average
-    a = thermal_average(es[: np.shape(gs)[0]], -gs.imag, T=T)
+    # a = thermal_average(es[: np.shape(gs)[0]], -gs.imag, T=T)
     if rank == 0 and h5f:
-        h5f.create_dataset("XAS", data=-gs.imag)
-        h5f.create_dataset("XASthermal", data=a)
+        # h5f.create_dataset("XAS", data=-gs.imag)
+        h5f.create_dataset("XASthermal", data=-gs.imag)
     # Sum over transition operators
-    aSum = np.sum(a, axis=0)
+    aSum = np.sum(-gs.imag, axis=0)
     # Save spectra to disk
     if rank == 0:
         tmp = [w, aSum]
         # Each transition operator seperatly
-        for i in range(np.shape(a)[0]):
-            tmp.append(a[i, :])
+        for i in range(np.shape(gs)[0]):
+            tmp.append(-gs.imag[i, :])
         print("Save spectra to disk...\n")
         np.savetxt("XAS.dat", np.array(tmp).T, fmt="%8.4f", header="E  sum  T1  T2  T3 ...")
     if rank == 0:
@@ -284,46 +371,47 @@ def simulate_spectra(
             tOpsIn = projectedTOpsIn
             tOpsOut = projectedTOpsOut
 
-        gs = getRIXSmap(
-            n_spin_orbitals,
+        gs = getRIXSmap_new(
             hOp,
-            tOpsIn,
-            tOpsOut,
+            [ManyBodyOperator(t) for t in tOpsIn],
+            [ManyBodyOperator(t) for t in tOpsOut],
             psis,
             es,
+            tau,
             wIn,
             wLoss,
             delta,
             deltaRIXS,
-            restrictions,
-            parallelization_mode="H_build_wIn",
+            basis,
+            verbose,
+            slaterWeightMin=slaterWeightMin,
         )
 
         if rank == 0:
-            print("#eigenstates = {:d}".format(np.shape(gs)[0]))
+            # print("#eigenstates = {:d}".format(np.shape(gs)[0]))
             if RIXS_projectors:
                 print("RIXS projectors = {}".format(RIXS_projectors.keys()))
             print(f"shape(gs) = {np.shape(gs)}")
-            print("#in-polarizations = {:d}".format(np.shape(gs)[1]))
-            print("#out-polarizations = {:d}".format(np.shape(gs)[2]))
-            print("#mesh points of input energy = {:d}".format(np.shape(gs)[3]))
-            print("#mesh points of energy loss = {:d}".format(np.shape(gs)[4]))
+            print("#in-polarizations = {:d}".format(np.shape(gs)[0]))
+            print("#out-polarizations = {:d}".format(np.shape(gs)[1]))
+            print("#mesh points of input energy = {:d}".format(np.shape(gs)[2]))
+            print("#mesh points of energy loss = {:d}".format(np.shape(gs)[3]))
         # Thermal average
-        a = thermal_average(es[: np.shape(gs)[0]], -gs.imag, T=T)
+        # a = thermal_average(es[: np.shape(gs)[0]], -gs.imag, T=T)
         if rank == 0 and h5f:
-            h5f.create_dataset("RIXS", data=-gs.imag)
-            h5f.create_dataset("RIXSthermal", data=a)
+            # h5f.create_dataset("RIXS", data=-gs.imag)
+            h5f.create_dataset("RIXSthermal", data=-gs.imag)
             if RIXS_projectors:
                 g = h5f.create_group("RIXSprojectors")
                 for key, proj in RIXS_projectors:
                     g.create_dataset(key, data=str(proj))
         # Sum over transition operators
-        aSum = np.sum(a, axis=(0, 1))
+        aSum = np.sum(-gs.imag, axis=(0, 1))
         # Save spectra to disk
         if rank == 0:
             print("Save spectra to disk...\n")
             # I[wLoss,wIn], with wLoss on first column and wIn on first row.
-            tmp = np.zeros((len(wLoss) + 1, len(wIn) + 1), dtype=float)
+            tmp = np.empty((len(wLoss) + 1, len(wIn) + 1), dtype=np.float32)
             tmp[0, 0] = len(wIn)
             tmp[0, 1:] = wIn
             tmp[1:, 0] = wLoss
@@ -710,6 +798,67 @@ def getGreen(
     return g
 
 
+def getSpectra_new(
+    hOp,
+    tOps,
+    psis,
+    es,
+    tau,
+    w,
+    basis,
+    delta,
+    slaterWeightMin,
+    verbose,
+    occ_cutoff,
+    dN_imp,
+    dN_val,
+    dN_con,
+):
+
+    rank == basis.comm.rank
+    (
+        tOps_indices,
+        tOps_roots,
+        color,
+        tOps_per_color,
+        tOp_basis,
+        psis,
+    ) = gf.split_comm_and_redistribute_basis([1] * len(tOps), basis, psis)
+
+    gs_realaxis_local = np.empty((len(range(tOps_indices.start, tOps_indices.stop)), len(w)), dtype=complex)
+    for tOp_i, tOp in enumerate(tOps[tOps_indices]):
+        assert isinstance(hOp, ManyBodyOperator)
+        _, gs_realaxis_local[tOp_i, :, None, None], basis_size = gf.calc_Greens_function_with_offdiag(
+            hOp,
+            [tOp],
+            psis,
+            es,
+            tau,
+            tOp_basis,
+            None,
+            w,
+            delta,
+            Reort.NONE,
+            dN_imp,
+            dN_val,
+            dN_con,
+            slaterWeightMin,
+            verbose and False,
+            occ_cutoff,
+        )
+    if basis.comm.rank == 0:
+        gs_realaxis = np.empty((len(tOps), len(w)), dtype=complex)
+        gs_realaxis[tOps_indices] = gs_realaxis_local
+        for color, sender in enumerate(tOps_roots):
+            if sender == basis.comm.rank:
+                continue
+            basis.comm.Recv(gs_realaxis[sum(tOps_per_color[:color]) : sum(tOps_per_color[: color + 1])], source=sender)
+    elif rank in tOps_roots:
+        basis.comm.Send(gs_realaxis_local, dest=0)
+    hOp.clear_memory()
+    return gs_realaxis if rank == 0 else np.empty((0, 0), dtype=complex)
+
+
 def getSpectra(
     n_spin_orbitals,
     hOp,
@@ -833,6 +982,225 @@ def getSpectra(
     else:
         raise Exception("Incorrect value of variable parallelization_mode.")
     return gs
+
+
+def getRIXSmap_new(
+    hOp,
+    tOpsIn,
+    tOpsOut,
+    psis,
+    Es,
+    tau,
+    wIns,
+    wLoss,
+    delta1,
+    delta2,
+    basis,
+    verbose,
+    slaterWeightMin,
+):
+    r"""
+    Return RIXS Green's function for states.
+
+    For states :math:`|psi \rangle`, calculate:
+
+    :math:`g(w+1j*delta)
+    = \langle psi| ROp^\dagger ((wLoss+1j*delta2+e)*\hat{1} - hOp)^{-1} ROp
+    |psi \rangle`,
+
+    where :math:`e = \langle psi| hOp |psi \rangle`, and
+
+    :math:`Rop = tOpOut ((wIns+1j*delta1+e)*\hat{1} - hOp)^{-1} tOpIn`.
+
+    Calculations are performed according to:
+
+    1) Calculate state `|psi1> = tOpIn |psi>`.
+    2) Calculate state `|psi2> = ((wIns+1j*delta1+e)*\hat{1} - hOp)^{-1}|psi1>`
+        This is done by introducing operator:
+        `A = (wIns+1j*delta1+e)*\hat{1} - hOp`.
+        By applying A from the left on `|psi2> = A^{-1}|psi1>` gives
+        the inverse problem: `A|psi2> = |psi1>`.
+        This equation can be solved by guessing `|psi2>` and iteratively
+        improving it.
+    3) Calculate state `|psi3> = tOpOut |psi2>`
+    4) Calculate `normalization = sqrt(<psi3|psi3>)`
+    5) Normalize psi3 according to: `psi3 /= normalization`
+    6) Now the Green's function is given by:
+        :math:`g(wLoss+1j*delta2) = normalization^2
+        * \langle psi3| ((wLoss+1j*delta2+e)*\hat{1} - hOp)^{-1} |psi3 \rangle`,
+        which can efficiently be evaluation using Lanczos.
+
+    Parameters
+    ----------
+    n_spin_orbitals : int
+        Total number of spin-orbitals in the system.
+    hOp : dict
+        Operator
+    tOpsIn : list
+        List of dict operators, describing core-hole excitation.
+    tOpsOut : list
+        List of dict operators, describing filling of the core-hole.
+    psis : list
+        List of Multi state dictionaries
+    es : list
+        Total energies
+    wIns : list
+        Real axis energy mesh for incoming photon energy
+    wLoss : list
+        Real axis energy mesh for photon energy loss, i.e.
+        wLoss = wIns - wOut
+    delta1 : float
+        Deviation from real axis.
+        Broadening/resolution parameter.
+    delta2 : float
+        Deviation from real axis.
+        Broadening/resolution parameter.
+    restrictions : dict
+        Restriction the occupation of generated
+        product states.
+    krylovSize : int
+        Size of the Krylov space
+    slaterWeightMin : float
+        Restrict the number of product states by
+        looking at `|amplitudes|^2`.
+    h_dict_ground : dict
+        Stores the result of the (Hamiltonian) operator hOp acting
+        on individual product states. Information is stored according to:
+        `|product state> : H|product state>`, where
+        each product state is represented by an integer, and the result is
+        a dictionary (of the format int : complex).
+        Only product states without a core hole are stored in this variable.
+        If present, it may also be updated by this function.
+    parallelization_mode : str
+        "serial", "H_build", "wIn" or "H_build_wIn"
+
+    """
+    if True:
+        excited_restrictions = basis.build_excited_restrictions(
+            psis,
+            imp_change={1: (1, 0), 2: (1, 1)},
+            val_change={1: (0, 0), 2: (1, 0)},
+            con_change={1: (0, 0), 2: (0, 1)},
+        )
+        relaxed_restrictions = basis.build_excited_restrictions(
+            psis,
+            imp_change={1: (0, 0), 2: (1, 1)},
+            val_change={1: (0, 0), 2: (1, 0)},
+            con_change={1: (0, 0), 2: (0, 1)},
+        )
+    else:
+        excited_restrictions = None
+
+    E0 = min(Es)
+    Z = np.sum(np.exp(-(Es - E0) / tau))
+    (
+        eigen_indices,
+        eigen_roots,
+        color,
+        eigen_per_color,
+        eigen_basis,
+        psis,
+    ) = gf.split_comm_and_redistribute_basis([1 for _ in Es], basis, psis)
+    eigen_basis.restrictions = relaxed_restrictions
+    if eigen_basis.comm.rank == 0:
+        gs = np.zeros((len(tOpsIn), len(wIns), len(tOpsOut), len(wLoss)), dtype=complex)
+    for e, psi_e, E_e in zip(range(eigen_indices.start, eigen_indices.stop), psis[eigen_indices], Es[eigen_indices]):
+        for i, tin in enumerate(tOpsIn):
+            psi1 = applyOp_test(tin, psi_e)
+
+            basis_final = Basis(
+                impurity_orbitals=eigen_basis.impurity_orbitals,
+                bath_states=eigen_basis.bath_states,
+                initial_basis=[],
+                restrictions=excited_restrictions,
+                comm=eigen_basis.comm.Clone(),
+                verbose=verbose,
+                truncation_threshold=eigen_basis.truncation_threshold,
+                tau=eigen_basis.tau,
+                spin_flip_dj=eigen_basis.spin_flip_dj,
+            )
+            (
+                wIn_indices,
+                wIn_roots,
+                _,
+                wIn_per_color,
+                wIn_basis,
+                psi1_arr,
+            ) = gf.split_comm_and_redistribute_basis([1 for _ in wIns], basis_final, [psi1])
+            if eigen_basis.comm.rank != 0:
+                gs = np.empty(
+                    (len(tOpsIn), wIn_indices.stop - wIn_indices.start, len(tOpsOut), len(wLoss)), dtype=complex
+                )
+            basis_tmp = Basis(
+                impurity_orbitals=eigen_basis.impurity_orbitals,
+                bath_states=eigen_basis.bath_states,
+                initial_basis=[],
+                restrictions=excited_restrictions,
+                comm=wIn_basis.comm.Clone(),
+                verbose=verbose,
+                truncation_threshold=eigen_basis.truncation_threshold,
+                tau=eigen_basis.tau,
+                spin_flip_dj=eigen_basis.spin_flip_dj,
+            )
+            psi1 = psi1_arr[0]
+            basis_tmp.add_states(psi1.keys())
+            psi1 = basis_tmp.redistribute_psis([psi1])[0]
+            basis_tmp.expand(hOp)
+            h = basis_tmp.build_sparse_matrix(hOp)
+            y = basis_tmp.build_vector([psi1])[0]
+            n = h.shape[0]
+            for k, win in enumerate(wIns[wIn_indices]):
+                diagonal = np.zeros((n), dtype=complex)
+                diagonal[basis_tmp.local_indices] = win + delta1 * 1j + E_e
+                w = scipy.sparse.diags(diagonal, offsets=0, format="csc", dtype=complex)
+
+                a = w - h
+
+                def matmat(m):
+                    res = a @ m
+                    basis_tmp.comm.Allreduce(MPI.IN_PLACE, res, op=MPI.SUM)
+                    return res
+
+                lop = scipy.sparse.linalg.LinearOperator(shape=(n, n), matvec=matmat, matmat=matmat, dtype=a.dtype)
+                x, info = scipy.sparse.linalg.bicgstab(lop, y)
+                psi2 = basis_tmp.build_state(x)[0]
+                for j, tout in enumerate(tOpsOut):
+                    psi3 = applyOp_test(tout, psi2)
+                    wIn_basis.add_states(psi3.keys())
+                    psi3 = wIn_basis.redistribute_psis([psi3])[0]
+                    _, gs_eijk = gf.block_Green(
+                        hOp,
+                        [psi3],
+                        wIn_basis,
+                        E_e,
+                        None,
+                        wLoss,
+                        delta2,
+                        Reort.NONE,
+                        slaterWeightMin=slaterWeightMin,
+                        verbose=verbose and False,
+                    )
+                    if gs_eijk is not None:
+                        gs[i, k, j, :, None, None] += np.exp(-(E_e - E0) / tau) * gs_eijk
+            if eigen_basis.comm.rank == 0:
+                for c, sender in enumerate(wIn_roots):
+                    if sender == eigen_basis.comm.rank:
+                        continue
+                    start = sum(wIn_per_color[:c])
+                    stop = start + wIn_per_color[c]
+                    eigen_basis.comm.Recv(gs[i, start:stop, :, :], source=sender)
+            elif eigen_basis.comm.rank in wIn_roots:
+                eigen_basis.comm.Send(gs[i, :, :, :], dest=0)
+
+    if basis.comm.rank == 0:
+        basis.comm.Reduce(MPI.IN_PLACE, gs, op=MPI.SUM, root=0)
+    elif basis.comm.rank in eigen_roots:
+        basis.comm.Reduce(gs, None, op=MPI.SUM, root=0)
+    else:
+        basis.comm.Reduce(
+            np.zeros((len(tOpsIn), len(wIns), len(tOpsOut), len(wLoss)), dtype=complex), None, op=MPI.SUM, root=0
+        )
+    return np.transpose(gs, (0, 2, 1, 3)).copy() / Z
 
 
 def getRIXSmap(
