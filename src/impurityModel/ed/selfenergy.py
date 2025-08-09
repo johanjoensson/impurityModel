@@ -221,15 +221,15 @@ def calc_occ_e(
     )
     if len(basis) == 0:
         return np.inf, basis, {}
-    h_dict = basis.expand(h_op, dense_cutoff=dense_cutoff, de2_min=1e-6)
+    h_dict = basis.expand(h_op, dense_cutoff=dense_cutoff, de2_min=1e-5)
     h = basis.build_sparse_matrix(h_op)
 
     energy_cut = -tau * np.log(1e-4)
     e_trial = finite.eigensystem_new(
         h,
         e_max=energy_cut,
-        k=5,
-        eigenValueTol=0,
+        k=sum(len(block) for block in basis.impurity_orbitals[0]),
+        eigenValueTol=1e-5,
         return_eigvecs=False,
         comm=basis.comm,
         dense=basis.size < dense_cutoff,
