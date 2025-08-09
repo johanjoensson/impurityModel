@@ -221,7 +221,7 @@ def calc_occ_e(
     )
     if len(basis) == 0:
         return np.inf, basis, {}
-    h_dict = basis.expand(h_op, dense_cutoff=dense_cutoff, de2_min=1e-3)
+    h_dict = basis.expand(h_op, dense_cutoff=dense_cutoff, de2_min=1e-6)
     h = basis.build_sparse_matrix(h_op)
 
     energy_cut = -tau * np.log(1e-4)
