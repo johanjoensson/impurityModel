@@ -196,9 +196,9 @@ def petsc_eigensystem(h_local, e_max, k=10, v0=None, eigenValueTol=0, return_eig
 
 
 def dense_eigensystem(h_local, return_eigvecs=True, comm=None):
-    h = np.empty(h_local.shape, dtype=h_local.dtype)
+    h = np.empty(h_local.shape, dtype=h_local.dtype) if comm is None or comm.rank == 0 else None
     if comm is not None:
-        comm.Reduce(h_local.todense(), h, root=0, op=MPI.SUM)
+        comm.Reduce(h_local.todense(order="C"), h, root=0, op=MPI.SUM)
     else:
         h[:] = h_local.todense()
     if return_eigvecs:
@@ -210,8 +210,8 @@ def dense_eigensystem(h_local, return_eigvecs=True, comm=None):
             vecs = np.ascontiguousarray(vecs)
             es = np.ascontiguousarray(es)
         else:
-            es = np.empty((h.shape[0]), dtype=float, order="C")
-            vecs = np.empty_like(h, order="C")
+            es = np.empty((h_local.shape[0]), dtype=float, order="C")
+            vecs = np.empty_like(h_local, order="C")
         if comm is not None:
             comm.Bcast(es, root=0)
             comm.Bcast(vecs, root=0)
@@ -220,7 +220,7 @@ def dense_eigensystem(h_local, return_eigvecs=True, comm=None):
         es = np.linalg.eigvalsh(h, UPLO="L")
         es = np.ascontiguousarray(es)
     else:
-        es = np.empty((h.shape[0]), dtype=float, order="C")
+        es = np.empty((h_local.shape[0]), dtype=float, order="C")
     if comm is not None:
         comm.Bcast(es, root=0)
     return es
