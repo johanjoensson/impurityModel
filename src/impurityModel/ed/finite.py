@@ -211,7 +211,7 @@ def dense_eigensystem(h_local, return_eigvecs=True, comm=None):
             es = np.ascontiguousarray(es)
         else:
             es = np.empty((h_local.shape[0]), dtype=float, order="C")
-            vecs = np.empty_like(h_local, order="C")
+            vecs = np.empty(h_local.shape, dtype=h_local.dtype, order="C")
         if comm is not None:
             comm.Bcast(es, root=0)
             comm.Bcast(vecs, root=0)
