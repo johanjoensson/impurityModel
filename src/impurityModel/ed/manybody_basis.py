@@ -1048,7 +1048,7 @@ class CIPSI_Basis(Basis):
             H_mat = self.build_sparse_matrix(H)
             e_ref, psi_ref_dense = eigensystem_new(
                 H_mat,
-                e_max=de0_max,
+                e_max=max(de2_min, de0_max),
                 k=len(psi_ref) if psi_ref is not None else 2,
                 v0=self.build_vector(psi_ref).T if psi_ref is not None else None,
                 eigenValueTol=de2_min,
