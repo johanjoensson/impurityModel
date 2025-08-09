@@ -285,33 +285,33 @@ def scipy_eigensystem(h_local, e_max, k=10, v0=None, eigenValueTol=0, return_eig
     ncv = None
     conv_fail = False
     k = min(k, h.shape[1] - 2)
-    while np.sum(es - np.min(es) <= e_max) == len(es) and len(es) < h.shape[0] - 2:
+    while len(es) - np.sum(es - np.min(es) <= e_max) < k and len(es) < h.shape[0] - 2:
         try:
-            if return_eigvecs:
-                es, vecs = eigsh(
-                    h,
-                    k=min(vecs.shape[1] + k, h.shape[0] - 2),
-                    which="SA",
-                    v0=vecs[:, 0] if len(vecs.shape) > 1 else vecs,
-                    ncv=ncv,
-                    tol=eigenValueTol if conv_fail else 0,
-                )
-            else:
-                es = eigsh(
-                    h,
-                    k=min(vecs.shape[1] + k, h.shape[0] - 2),
-                    which="SA",
-                    v0=vecs[:, 0] if len(vecs.shape) > 1 else vecs,
-                    ncv=ncv,
-                    tol=eigenValueTol if conv_fail else 0,
-                    return_eigenvectors=False,
-                )
-                k *= 2
+            es, vecs = eigsh(
+                h,
+                k=min(vecs.shape[1] + k, h.shape[0] - 2),
+                which="SA",
+                v0=vecs[:, 0] if len(vecs.shape) > 1 else vecs,
+                ncv=ncv,
+                tol=eigenValueTol if conv_fail else 0,
+            )
+            # eigsh does not guarantee that the eigenvectors are orthonormal. therefore we do a QR decomposition on them.
+            vecs, _ = np.linalg.qr(vecs, mode="reduced")
+
+            if 5 * vecs.shape[1] < h.shape[0]:
+                # In principle, lobpcg should be able to correct some errors in the eigenvectors ad eigenvalues found by eigsh (which uses ARPACK behind the scenes).
+                # eigsh struggles with degenerate or nearly degenerate eigenstates, so do one round of lobpcg to correct any errors.
+                # lobpcg is robust as long as the preconditioner is very good (is this what robust means?). We don't have a good preconditioner, so we ignore any warnings from lobpcg instead.
+                # if comm.rank == 0:
+                with warnings.catch_warnings():
+                    warnings.simplefilter("ignore")
+                    es, vecs = scipy.sparse.linalg.lobpcg(h, vecs, largest=False)
+                    vecs = np.ascontiguousarray(vecs)
         except ArpackNoConvergence as e:
             es = e.eigenvalues
             vecs = e.eigenvectors
             if vecs.size == 0:
-                vecs = rng.uniform(size=(h.shape[0], k)) + 1j * rng.uniform(size=(h.shape[0], k))
+                vecs = rng.uniform(size=(h.shape[0], 1)) + 1j * rng.uniform(size=(h.shape[0], 1))
                 if comm is not None:
                     comm.Allreduce(MPI.IN_PLACE, vecs, op=MPI.SUM)
                 vecs, _ = np.linalg.qr(vecs, mode="reduced")
@@ -320,7 +320,7 @@ def scipy_eigensystem(h_local, e_max, k=10, v0=None, eigenValueTol=0, return_eig
         except ArpackError:
             ncv = min(h.shape[0], max(2 * k + 3, 20)) if ncv is None else min(ncv * 2, h.shape[0])
             es = [0]
-            vecs = rng.uniform(size=(h.shape[0], k)) + 1j * rng.uniform(size=(h.shape[0], k))
+            vecs = rng.uniform(size=(h.shape[0], 1)) + 1j * rng.uniform(size=(h.shape[0], 1))
             if comm is not None:
                 comm.Allreduce(MPI.IN_PLACE, vecs, op=MPI.SUM)
             vecs, _ = np.linalg.qr(vecs, mode="reduced")
@@ -330,19 +330,7 @@ def scipy_eigensystem(h_local, e_max, k=10, v0=None, eigenValueTol=0, return_eig
     es = es[indices]
     if return_eigvecs:
         vecs = vecs[:, indices]
-        # eigsh does not guarantee that the eigenvectors are orthonormal. therefore we do a QR decomposition on them.
-        vecs, _ = np.linalg.qr(vecs, mode="reduced")
-
-        if 5 * vecs.shape[1] < h.shape[0]:
-            # In principle, lobpcg should be able to correct some errors in the eigenvectors ad eigenvalues found by eigsh (which uses ARPACK behind the scenes).
-            # eigsh struggles with degenerate or nearly degenerate eigenstates, so do one round of lobpcg to correct any errors.
-            # lobpcg is robust as long as the preconditioner is very good (is this what robust means?). We don't have a good preconditioner, so we ignore any warnings from lobpcg instead.
-            # if comm.rank == 0:
-            with warnings.catch_warnings():
-                warnings.simplefilter("ignore")
-                es, vecs = scipy.sparse.linalg.lobpcg(h, vecs, largest=False)
-                vecs = np.ascontiguousarray(vecs)
-        return es, vecs
+        return es, np.ascontiguousarray(vecs)
     return es
 
 
