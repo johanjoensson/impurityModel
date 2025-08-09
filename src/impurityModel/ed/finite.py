@@ -196,9 +196,11 @@ def petsc_eigensystem(h_local, e_max, k=10, v0=None, eigenValueTol=0, return_eig
 
 
 def dense_eigensystem(h_local, return_eigvecs=True, comm=None):
-    h = h_local.toarray()
+    h = np.empty(h_local.shape, dtype=h_local.dtype)
     if comm is not None:
-        comm.Reduce(MPI.IN_PLACE if comm.rank == 0 else h, h, root=0, op=MPI.SUM)
+        comm.Reduce(h_local.todense(), h, root=0, op=MPI.SUM)
+    else:
+        h[:] = h_local.todense()
     if return_eigvecs:
         if comm is None or comm.rank == 0:
             es, vecs = np.linalg.eigh(h, UPLO="L")
@@ -206,6 +208,7 @@ def dense_eigensystem(h_local, return_eigvecs=True, comm=None):
             # This is needed for the upper case MPI communication (vecs has to have
             # consistent layout between MPI ranks, I choose 'C' layout).
             vecs = np.ascontiguousarray(vecs)
+            es = np.ascontiguousarray(es)
         else:
             es = np.empty((h.shape[0]), dtype=float, order="C")
             vecs = np.empty_like(h, order="C")
@@ -215,6 +218,7 @@ def dense_eigensystem(h_local, return_eigvecs=True, comm=None):
         return es, vecs
     if comm is None or comm.rank == 0:
         es = np.linalg.eigvalsh(h, UPLO="L")
+        es = np.ascontiguousarray(es)
     else:
         es = np.empty((h.shape[0]), dtype=float, order="C")
     if comm is not None:
