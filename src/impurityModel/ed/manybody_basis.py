@@ -1051,7 +1051,7 @@ class CIPSI_Basis(Basis):
                 e_max=de0_max,
                 k=len(psi_ref) if psi_ref is not None else 2,
                 v0=self.build_vector(psi_ref).T if psi_ref is not None else None,
-                eigenValueTol=1e-12,
+                eigenValueTol=max(de2_min / 10, np.sqrt(np.finfo(float).eps)),
                 comm=self.comm,
                 dense=self.size < dense_cutoff,
             )
