@@ -327,9 +327,10 @@ def scipy_eigensystem(h_local, e_max, k=10, v0=None, eigenValueTol=0, return_eig
         # lobpcg is robust as long as the preconditioner is very good (is this what robust means?). We don't have a good preconditioner, so we ignore any warnings from lobpcg instead.
         # if comm.rank == 0:
         with warnings.catch_warnings():
-            # warnings.simplefilter("ignore")
-            es, vecs = scipy.sparse.linalg.lobpcg(h, vecs, largest=False, maxiter=50, tol=eigenValueTol)
-            # vecs = np.ascontiguousarray(vecs)
+            warnings.simplefilter("ignore")
+            es, vecs = scipy.sparse.linalg.lobpcg(
+                h, vecs, largest=False, maxiter=h_local.shape[0] // vecs.shape[1], tol=np.finfo(float).eps
+            )
     indices = np.argsort(es)
     es = es[indices]
     if return_eigvecs:
