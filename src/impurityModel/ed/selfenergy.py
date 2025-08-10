@@ -397,7 +397,7 @@ def calc_selfenergy(
 
     # We need very accurate  eigenstates.
     # This means we need an almost insane energy accuracy
-    _ = basis.expand(h, dense_cutoff=dense_cutoff, de2_min=1e-8)
+    _ = basis.expand(h, dense_cutoff=dense_cutoff, de2_min=1e-6)
     h_gs = basis.build_sparse_matrix(h)
     es, psis_dense = finite.eigensystem_new(
         h_gs,
