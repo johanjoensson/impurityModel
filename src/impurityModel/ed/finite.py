@@ -289,11 +289,15 @@ def scipy_eigensystem(h_local, e_max, k=10, v0=None, eigenValueTol=0, return_eig
     ncv = None
     conv_fail = False
     k = min(k, h.shape[1] - 2)
-    while len(es) - np.sum(es - np.min(es) <= e_max) < k and len(es) < h.shape[0] - 2:
+
+    def done(energies):
+        return len(energies) > np.sum(energies - np.min(energies) <= e_max)
+
+    while not done(es) and len(es) < h.shape[0] - 2:
         try:
             es, vecs = eigsh(
                 h,
-                k=min(vecs.shape[1] + k, h.shape[0] - 2),
+                k=min(2 * vecs.shape[1], h.shape[0] - 2),
                 which="SA",
                 v0=vecs[:, 0] if len(vecs.shape) > 1 else vecs,
                 ncv=ncv,
@@ -325,7 +329,7 @@ def scipy_eigensystem(h_local, e_max, k=10, v0=None, eigenValueTol=0, return_eig
         if es is None or len(es) == 0:
             es = [0]
 
-        if len(es) >= np.sum(es - np.min(es) <= e_max) + k and 5 * vecs.shape[1] < h.shape[0]:
+        if done(es) and 5 * vecs.shape[1] < h.shape[0]:
             # In principle, lobpcg should be able to correct some errors in the eigenvectors ad eigenvalues found by eigsh (which uses ARPACK behind the scenes).
             # eigsh struggles with degenerate or nearly degenerate eigenstates, so do one round of lobpcg to correct any errors.
             # lobpcg is robust as long as the preconditioner is very good (is this what robust means?). We don't have a good preconditioner, so we ignore any warnings from lobpcg instead.
