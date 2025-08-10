@@ -1043,15 +1043,14 @@ class CIPSI_Basis(Basis):
         if isinstance(H, dict):
             H = ManyBodyOperator(H)
 
-        i = 1
         while converge_count < 1:
             H_mat = self.build_sparse_matrix(H)
             e_ref, psi_ref_dense = eigensystem_new(
                 H_mat,
                 e_max=de0_max,
-                k=len(psi_ref) if psi_ref is not None else 2,
+                k=2 * len(psi_ref) if psi_ref is not None else 5,
                 v0=self.build_vector(psi_ref).T if psi_ref is not None else None,
-                eigenValueTol=max(de2_min / 10, np.sqrt(np.finfo(float).eps)),
+                eigenValueTol=0,  # max(de2_min**2, np.finfo(float).eps),
                 comm=self.comm,
                 dense=self.size < dense_cutoff,
             )
@@ -1072,7 +1071,6 @@ class CIPSI_Basis(Basis):
                 converge_count += 1
             else:
                 converge_count = 0
-            i += 1
 
         if self.verbose:
             print(f"After expansion, the basis contains {self.size} elements.")

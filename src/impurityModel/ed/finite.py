@@ -327,9 +327,9 @@ def scipy_eigensystem(h_local, e_max, k=10, v0=None, eigenValueTol=0, return_eig
         # lobpcg is robust as long as the preconditioner is very good (is this what robust means?). We don't have a good preconditioner, so we ignore any warnings from lobpcg instead.
         # if comm.rank == 0:
         with warnings.catch_warnings():
-            warnings.simplefilter("ignore")
+            # warnings.simplefilter("ignore")
             es, vecs = scipy.sparse.linalg.lobpcg(h, vecs, largest=False, maxiter=50, tol=eigenValueTol)
-            vecs = np.ascontiguousarray(vecs)
+            # vecs = np.ascontiguousarray(vecs)
     indices = np.argsort(es)
     es = es[indices]
     if return_eigvecs:
@@ -362,22 +362,24 @@ def eigensystem_new(h_local, e_max, k=10, v0=None, eigenValueTol=0, return_eigve
     if not scipy.sparse.issparse(h_local):
         raise RuntimeError(f"eigensystem can't handle a matrix of type {type(h_local)}")
 
-    if return_eigvecs:
-        if dense:
+    if dense:
+        if return_eigvecs:
             es, vecs = dense_eigensystem(h_local, return_eigvecs, comm)
-        elif USE_PETSc:
+        else:
+            es = dense_eigensystem(h_local, return_eigvecs, comm)
+    elif USE_PETSc:
+        if return_eigvecs:
             es, vecs = petsc_eigensystem(h_local, e_max, k, v0, eigenValueTol, return_eigvecs, comm)
-        elif USE_PRIMME:
+        else:
+            es = petsc_eigensystem(h_local, e_max, k, v0, eigenValueTol, return_eigvecs, comm)
+    elif USE_PRIMME:
+        if return_eigvecs:
             es, vecs = primme_eigensystem(h_local, e_max, k, v0, eigenValueTol, return_eigvecs, comm)
         else:
-            es, vecs = scipy_eigensystem(h_local, e_max, k, v0, eigenValueTol, return_eigvecs, comm)
-    else:
-        if dense:
-            es = dense_eigensystem(h_local, return_eigvecs, comm)
-        elif USE_PETSc:
-            es = petsc_eigensystem(h_local, e_max, k, v0, eigenValueTol, return_eigvecs, comm)
-        elif USE_PRIMME:
             es = primme_eigensystem(h_local, e_max, k, v0, eigenValueTol, return_eigvecs, comm)
+    else:
+        if return_eigvecs:
+            es, vecs = scipy_eigensystem(h_local, e_max, k, v0, eigenValueTol, return_eigvecs, comm)
         else:
             es = scipy_eigensystem(h_local, e_max, k, v0, eigenValueTol, return_eigvecs, comm)
 
