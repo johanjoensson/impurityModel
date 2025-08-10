@@ -221,7 +221,7 @@ def calc_occ_e(
     )
     if len(basis) == 0:
         return np.inf, basis, {}
-    h_dict = basis.expand(h_op, dense_cutoff=dense_cutoff, de2_min=1e-6)
+    h_dict = basis.expand(h_op, dense_cutoff=dense_cutoff, de2_min=1e-4)
     h = basis.build_sparse_matrix(h_op)
 
     energy_cut = -tau * np.log(1e-4)
@@ -397,7 +397,7 @@ def calc_selfenergy(
 
     # We need very accurate  eigenstates.
     # This means we need an almost insane energy accuracy
-    _ = basis.expand(h, dense_cutoff=dense_cutoff, de2_min=1e-12)
+    _ = basis.expand(h, dense_cutoff=dense_cutoff, de2_min=1e-8)
     h_gs = basis.build_sparse_matrix(h)
     es, psis_dense = finite.eigensystem_new(
         h_gs,

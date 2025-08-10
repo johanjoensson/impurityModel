@@ -318,8 +318,9 @@ def scipy_eigensystem(h_local, e_max, k=10, v0=None, eigenValueTol=0, return_eig
             vecs, _ = np.linalg.qr(vecs, mode="reduced")
         if es is None or len(es) == 0:
             es = [0]
+    n = np.sum(es - np.min(es) <= e_max)
     # eigsh does not guarantee that the eigenvectors are orthonormal. therefore we do a QR decomposition on them.
-    vecs, _ = np.linalg.qr(vecs, mode="reduced")
+    vecs, _ = np.linalg.qr(vecs[:, : 2 * n], mode="reduced")
 
     if 5 * vecs.shape[1] < h.shape[0]:
         # In principle, lobpcg should be able to correct some errors in the eigenvectors ad eigenvalues found by eigsh (which uses ARPACK behind the scenes).
@@ -329,7 +330,7 @@ def scipy_eigensystem(h_local, e_max, k=10, v0=None, eigenValueTol=0, return_eig
         with warnings.catch_warnings():
             warnings.simplefilter("ignore")
             es, vecs = scipy.sparse.linalg.lobpcg(
-                h, vecs, largest=False, maxiter=h_local.shape[0] // vecs.shape[1], tol=np.finfo(float).eps
+                h, vecs, largest=False, maxiter=h_local.shape[1], tol=max(eigenValueTol, 1e-12)
             )
     indices = np.argsort(es)
     es = es[indices]
