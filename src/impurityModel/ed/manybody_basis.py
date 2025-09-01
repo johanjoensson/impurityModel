@@ -1035,15 +1035,13 @@ class CIPSI_Basis(Basis):
         """
         Use the CIPSI method to expand the basis. Keep adding Slater determinants until the CIPSI energy is converged.
         """
-        psi_ref = None
-        converge_count = 0
         de0_max = max(1e-6, -self.tau * np.log(1e-4))
         psi_ref = None
 
         if isinstance(H, dict):
             H = ManyBodyOperator(H)
 
-        while converge_count < 1:
+        while old_size != self.size:
             H_mat = self.build_sparse_matrix(H)
             e_ref, psi_ref_dense = eigensystem_new(
                 H_mat,
@@ -1062,41 +1060,30 @@ class CIPSI_Basis(Basis):
 
             new_Dj = self.determine_new_Dj(e_ref, psi_ref, H, de2_min)
             old_size = self.size
-            if self.spin_flip_dj:
-                new_Dj = self._generate_spin_flipped_determinants(new_Dj)
             self.add_states(new_Dj)
             psi_ref = self.redistribute_psis(psi_ref)
-
-            if old_size == self.size:
-                converge_count += 1
-            else:
-                converge_count = 0
 
         if self.verbose:
             print(f"After expansion, the basis contains {self.size} elements.")
 
         return self.build_operator_dict(H)
 
-    def expand_at(self, w, psi_ref, H, de2_min=1e-3):
+    def expand_at(self, w, psi_ref, H, de2_min=1e-5):
 
         if isinstance(H, dict):
             H = ManyBodyOperator(H)
         old_size = self.size - 1
         while old_size != self.size:
-            new_Dj, Hpsi_ref = self.determine_new_Dj([w] * len(psi_ref), psi_ref, H, de2_min, return_Hpsi_ref=True)
+            new_Dj, psi_ref = self.determine_new_Dj([w] * len(psi_ref), psi_ref, H, de2_min, return_Hpsi_ref=True)
 
             old_size = self.size
             self.add_states(new_Dj)
 
-            Hpsi_keys = {state for psi in Hpsi_ref for state in psi}
-            mask = list(self.contains(Hpsi_keys))
-            psi_ref = [
-                {state: psi[state] for state in itertools.compress(Hpsi_keys, mask) if state in psi} for psi in Hpsi_ref
-            ]
-            N2s = np.array([norm2(psi) for psi in psi_ref], dtype=float)
+            psi_ref = self.redistribute_psis(psi_ref)
+            N2s = np.array([psi.norm2() for psi in psi_ref], dtype=float)
             if self.is_distributed:
                 self.comm.Allreduce(MPI.IN_PLACE, N2s, op=MPI.SUM)
-            psi_ref = [{state: psi[state] / np.sqrt(N2s[i]) for state in psi} for i, psi in enumerate(psi_ref)]
+            psi_ref = [psi / np.sqrt(N2s[i]) for i, psi in enumerate(psi_ref)]
 
         return self.build_operator_dict(H)
 
