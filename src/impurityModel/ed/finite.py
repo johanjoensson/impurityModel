@@ -278,7 +278,7 @@ def scipy_eigensystem(h_local, e_max, k=10, v0=None, eigenValueTol=0, return_eig
         dtype=h_local.dtype,
     )
 
-    es = [0]
+    es = np.array([0])
     rng = np.random.default_rng()
     if v0 is None:
         v0 = rng.uniform(size=(h.shape[0], 1)) + 1j * rng.uniform(size=(h.shape[0], 1))
@@ -321,13 +321,13 @@ def scipy_eigensystem(h_local, e_max, k=10, v0=None, eigenValueTol=0, return_eig
             # Something went horribly wrong
             # Increase ncv and generate new random starting vectors
             ncv = min(h.shape[0], max(2 * k + 3, 20)) if ncv is None else min(ncv * 2, h.shape[0])
-            es = [0]
+            es = np.array([0])
             vecs = rng.uniform(size=(h.shape[0], 1)) + 1j * rng.uniform(size=(h.shape[0], 1))
             if comm is not None:
                 comm.Allreduce(MPI.IN_PLACE, vecs, op=MPI.SUM)
             vecs, _ = np.linalg.qr(vecs, mode="reduced")
         if es is None or len(es) == 0:
-            es = [0]
+            es = np.array([0])
 
         if done(es) and 5 * vecs.shape[1] < h.shape[0]:
             # In principle, lobpcg should be able to correct some errors in the eigenvectors ad eigenvalues found by eigsh (which uses ARPACK behind the scenes).

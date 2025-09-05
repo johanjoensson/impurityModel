@@ -46,6 +46,7 @@ class UnphysicalGreensFunctionError(Exception):
 def fixed_peak_dc(
     h0_op,
     N0,
+    mixed_valence,
     impurity_orbitals,
     bath_states,
     u4,
@@ -69,10 +70,11 @@ def fixed_peak_dc(
     Nm = {l: N0[l] - 1 for l in N0}
     if peak_position >= 0:
         basis_upper = CIPSI_Basis(
-            h_op_i,
             impurity_orbitals,
             bath_states,
+            H=h_op_i,
             nominal_impurity_occ=Np,
+            mixed_valence=mixed_valence,
             truncation_threshold=1e5,
             verbose=False,
             comm=MPI.COMM_WORLD,
@@ -80,10 +82,11 @@ def fixed_peak_dc(
             tau=tau,
         )
         basis_lower = CIPSI_Basis(
-            h_op_i,
             impurity_orbitals,
             bath_states,
+            H=h_op_i,
             nominal_impurity_occ=N0,
+            mixed_valence=mixed_valence,
             truncation_threshold=1e5,
             verbose=False,
             comm=MPI.COMM_WORLD,
@@ -92,10 +95,11 @@ def fixed_peak_dc(
         )
     else:
         basis_upper = CIPSI_Basis(
-            h_op_i,
             impurity_orbitals,
             bath_states,
+            H=h_op_i,
             nominal_impurity_occ=N0,
+            mixed_valence=mixed_valence,
             truncation_threshold=1e5,
             verbose=False,
             comm=MPI.COMM_WORLD,
@@ -103,10 +107,11 @@ def fixed_peak_dc(
             tau=tau,
         )
         basis_lower = CIPSI_Basis(
-            h_op_i,
             impurity_orbitals,
             bath_states,
+            H=h_op_i,
             nominal_impurity_occ=Nm,
+            mixed_valence=mixed_valence,
             truncation_threshold=1e5,
             verbose=False,
             comm=MPI.COMM_WORLD,
@@ -196,6 +201,7 @@ def calc_occ_e(
     impurity_indices,
     bath_states,
     N0,
+    mixed_valence,
     tau,
     chain_restrict,
     spin_flip_dj,
@@ -205,13 +211,14 @@ def calc_occ_e(
     truncation_threshold,
 ):
     basis = CIPSI_Basis(
-        h_op,
         impurity_indices,
         bath_states,
+        H=h_op,
         delta_impurity_occ={i: 0 for i in N0},
         delta_valence_occ={i: 0 for i in N0},
         delta_conduction_occ={i: 0 for i in N0},
         nominal_impurity_occ=N0,
+        mixed_valence=mixed_valence,
         tau=tau,
         chain_restrict=chain_restrict,
         truncation_threshold=truncation_threshold,
@@ -222,19 +229,29 @@ def calc_occ_e(
     if len(basis) == 0:
         return np.inf, basis, {}
     h_dict = basis.expand(h_op, dense_cutoff=dense_cutoff, de2_min=1e-4)
-    h = basis.build_sparse_matrix(h_op)
 
     energy_cut = -tau * np.log(1e-4)
-    e_trial = finite.eigensystem_new(
-        h,
-        e_max=energy_cut,
-        k=sum(len(block) for block in basis.impurity_orbitals[0]),
-        eigenValueTol=0,
-        return_eigvecs=False,
-        comm=basis.comm,
-        dense=basis.size < dense_cutoff,
-    )
-    return e_trial[0], basis, h_dict
+    blocks = basis.determine_blocks(h_op)
+    e_trial = np.inf
+    for block in blocks:
+        block_basis = CIPSI_Basis(
+            basis.impurity_orbitals,
+            basis.bath_states,
+            initial_basis=[basis.local_basis[idx - basis.offset] for idx in block],
+            comm=basis.comm,
+        )
+        h = block_basis.build_sparse_matrix(h_op)
+        e_block = finite.eigensystem_new(
+            h,
+            e_max=energy_cut,
+            k=sum(len(block) for block in basis.impurity_orbitals[0]),
+            eigenValueTol=0,
+            return_eigvecs=False,
+            comm=basis.comm,
+            dense=basis.size < dense_cutoff,
+        )
+        e_trial = min(e_trial, np.min(e_block))
+    return e_trial, basis, h_dict
 
 
 def find_gs(
@@ -242,6 +259,7 @@ def find_gs(
     impurity_orbitals,
     bath_states,
     N0,
+    mixed_valence,
     tau,
     chain_restrict,
     rank,
@@ -275,6 +293,7 @@ def find_gs(
             impurity_orbitals,
             bath_states,
             {i: N0[i] + dN[i] for i in N0},
+            mixed_valence,
             tau,
             chain_restrict,
             spin_flip_dj,
@@ -306,6 +325,7 @@ def find_gs(
                 impurity_orbitals,
                 bath_states,
                 {j: n + dN_gs[i] if i == j else n for j, n in gs_impurity_occ.items()},
+                mixed_valence,
                 tau,
                 chain_restrict,
                 spin_flip_dj,
@@ -337,6 +357,7 @@ def calc_selfenergy(
     w,
     delta,
     nominal_occ,
+    mixed_valence,
     impurity_orbitals,
     bath_states,
     tau,
@@ -377,6 +398,7 @@ def calc_selfenergy(
         impurity_orbitals,
         bath_states,
         nominal_occ,
+        mixed_valence,
         tau,
         chain_restrict,
         rank=rank,
@@ -395,28 +417,46 @@ def calc_selfenergy(
 
     energy_cut = -tau * np.log(1e-4)
 
-    # We need very accurate  eigenstates.
-    # This means we need an almost insane energy accuracy
     _ = basis.expand(h, dense_cutoff=dense_cutoff, de2_min=1e-6)
-    h_gs = basis.build_sparse_matrix(h)
-    es, psis_dense = finite.eigensystem_new(
-        h_gs,
-        e_max=energy_cut,
-        k=2 * total_impurity_orbitals[0],
-        eigenValueTol=0,
-        comm=basis.comm,
-        dense=basis.size < dense_cutoff,
-    )
-    psis = basis.build_state(psis_dense.T)
+    blocks = basis.determine_blocks(h)
+    if verbosity >= 1:
+        print(f"Size of blocks in the GS Hamiltonian:\n{[len(block) for block in blocks]}")
+
+    es = np.zeros((0), dtype=float)
+    psis = []
+    for block in blocks:
+        block_basis = CIPSI_Basis(
+            basis.impurity_orbitals,
+            basis.bath_states,
+            initial_basis=[basis.local_basis[idx - basis.offset] for idx in block],
+            comm=basis.comm,
+        )
+        if len(block_basis) == 0:
+            continue
+
+        h_gs = block_basis.build_sparse_matrix(h)
+        block_es, block_psis_dense = finite.eigensystem_new(
+            h_gs,
+            e_max=energy_cut,
+            k=2 * total_impurity_orbitals[0],
+            eigenValueTol=0,
+            comm=basis.comm,
+            dense=basis.size < dense_cutoff,
+        )
+        psis.extend(block_basis.build_state(block_psis_dense.T))
+        es = np.append(es, block_es)
+    sorted_idx = np.argsort(es)
+    es = es[sorted_idx]
+    mask = es <= es[0] + energy_cut
+    es = es[mask]
+    psis = [psis[idx] for idx in itertools.compress(sorted_idx, mask)]
+
     effective_restrictions = basis.get_effective_restrictions()
     if verbosity >= 1:
         print("Effective GS restrictions:")
         for indices, occupations in effective_restrictions.items():
             print(f"---> {sorted(indices)} : {occupations}")
         print("=" * 80)
-        print()
-        print(f"Consider {len(es):d} eigenstates for the spectra \n")
-        print("Calculate Interacting Green's function...", flush=verbosity >= 2)
     if verbosity >= 1:
         print(f"{len(basis)} Slater determinants in the basis.")
     gs_stats = basis.get_state_statistics(psis)
@@ -462,6 +502,9 @@ def calc_selfenergy(
                 matrix_print(bath_rho, "Bath density matrix:")
                 print("=" * 80)
             print("", flush=verbosity >= 2)
+        print()
+        print(f"Consider {len(es):d} eigenstates for the spectra \n")
+        print("Calculate Interacting Green's function...", flush=verbosity >= 2)
 
     gs_matsubara, gs_realaxis = get_Greens_function(
         matsubara_mesh=iw,

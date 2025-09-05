@@ -13,6 +13,7 @@ import itertools
 from heapq import merge
 import numpy as np
 import scipy as sp
+from scipy.cluster.hierarchy import DisjointSet
 from mpi4py import MPI
 from impurityModel.ed.manybody_state_containers import (
     DistributedStateContainer,
@@ -57,6 +58,18 @@ def reduce_states(a: list[dict], b: list[dict], _):
 
 
 reduce_states_op = MPI.Op.Create(reduce_states, commute=True)
+
+
+def reduce_disjoint_set(a: DisjointSet, b: DisjointSet, _):
+    for subset in b.subsets():
+        items = list(subset)
+        root = items[0]
+        for item in items[1:]:
+            a.merge(item, root)
+    return a
+
+
+reduce_disjoint_set_op = MPI.Op.Create(reduce_disjoint_set, commute=True)
 
 
 def combine_sets(set_1, set_2, _):
@@ -119,6 +132,7 @@ class Basis:
         delta_conduction_occ,
         delta_impurity_occ,
         nominal_impurity_occ,
+        mixed_valence,
         verbose,
     ):
         valence_baths, conduction_baths = bath_states
@@ -141,35 +155,45 @@ class Basis:
             impurity_electron_indices = [orb for imp_orbs in impurity_orbitals[i] for orb in imp_orbs]
             valence_electron_indices = [orb for val_orbs in valence_baths[i] for orb in val_orbs]
             conduction_electron_indices = [orb for con_orbs in conduction_baths[i] for orb in con_orbs]
-            for delta_valence in range(delta_valence_occ[i] + 1):
-                for delta_conduction in range(delta_conduction_occ[i] + 1):
-                    delta_impurity = delta_valence - delta_conduction
-                    if (
-                        abs(delta_impurity) <= abs(delta_impurity_occ[i])
-                        and nominal_impurity_occ[i] + delta_impurity <= total_impurity_orbitals[i]
-                        and nominal_impurity_occ[i] + delta_impurity >= 0
-                        and delta_valence <= len(valence_electron_indices)
-                    ):
-                        impurity_occupation = nominal_impurity_occ[i] + delta_impurity
-                        valence_occupation = len(valence_electron_indices) - delta_valence
-                        conduction_occupation = delta_conduction
-                        impurity_configurations = itertools.combinations(impurity_electron_indices, impurity_occupation)
-                        valence_configurations = itertools.combinations(valence_electron_indices, valence_occupation)
-                        conduction_configurations = itertools.combinations(
-                            conduction_electron_indices, conduction_occupation
-                        )
-                        if verbose:
-                            print(f"Partition {i} occupations")
-                            print(f"Impurity occupation:   {impurity_occupation:d}")
-                            print(f"Valence occupation:   {valence_occupation:d}")
-                            print(f"Conduction occupation: {conduction_occupation:d}")
-                        valid_configurations.append(
-                            itertools.product(
-                                impurity_configurations,
-                                valence_configurations,
-                                conduction_configurations,
+            print(f"Mixed valence occupation: {mixed_valence[i]}")
+            for nominal_occ in range(
+                max(0, nominal_impurity_occ[i] - abs(mixed_valence[i])),
+                min(total_impurity_orbitals[i], nominal_impurity_occ[i] + abs(mixed_valence[i])) + 1,
+            ):
+                print(f"Nominal impurity occupation: {nominal_occ}")
+                for delta_valence in range(delta_valence_occ[i] + 1):
+                    for delta_conduction in range(delta_conduction_occ[i] + 1):
+                        delta_impurity = delta_valence - delta_conduction
+                        if (
+                            abs(delta_impurity) <= abs(delta_impurity_occ[i])
+                            and nominal_occ + delta_impurity <= total_impurity_orbitals[i]
+                            and nominal_occ + delta_impurity >= 0
+                            and delta_valence <= len(valence_electron_indices)
+                        ):
+                            impurity_occupation = nominal_occ + delta_impurity
+                            valence_occupation = len(valence_electron_indices) - delta_valence
+                            conduction_occupation = delta_conduction
+                            impurity_configurations = itertools.combinations(
+                                impurity_electron_indices, impurity_occupation
                             )
-                        )
+                            valence_configurations = itertools.combinations(
+                                valence_electron_indices, valence_occupation
+                            )
+                            conduction_configurations = itertools.combinations(
+                                conduction_electron_indices, conduction_occupation
+                            )
+                            if verbose:
+                                print(f"Partition {i} occupations")
+                                print(f"Impurity occupation:   {impurity_occupation:d}")
+                                print(f"Valence occupation:   {valence_occupation:d}")
+                                print(f"Conduction occupation: {conduction_occupation:d}")
+                            valid_configurations.append(
+                                itertools.product(
+                                    impurity_configurations,
+                                    valence_configurations,
+                                    conduction_configurations,
+                                )
+                            )
             total_configurations[i] = valid_configurations
         num_spin_orbitals = sum(total_impurity_orbitals[i] + total_baths[i] for i in total_baths)
         basis = []
@@ -420,6 +444,7 @@ class Basis:
         impurity_orbitals,
         bath_states,
         nominal_impurity_occ=None,
+        mixed_valence=None,
         initial_basis=None,
         restrictions=None,
         delta_valence_occ=None,
@@ -453,6 +478,7 @@ class Basis:
                 delta_conduction_occ=delta_conduction_occ,
                 delta_impurity_occ=delta_impurity_occ,
                 nominal_impurity_occ=nominal_impurity_occ,
+                mixed_valence=mixed_valence if mixed_valence is not None else {i: 0 for i in nominal_impurity_occ},
                 verbose=verbose,
             )
         t0 = perf_counter() - t0
@@ -726,6 +752,13 @@ class Basis:
             if self.spin_flip_dj:
                 new_states = self._generate_spin_flipped_determinants(new_states)
             old_size = self.size
+
+            n_new_states = len(new_states)
+            if self.is_distributed:
+                n_new_states = self.comm.allreduce(n_new_states, op=MPI.SUM)
+            if self.size + n_new_states > self.truncation_threshold:
+                break
+
             self.add_states(new_states)
         if self.verbose:
             print(f"After expansion, the basis contains {self.size} elements.")
@@ -945,15 +978,122 @@ class Basis:
 
         return rho_imps, rho_baths
 
+    def determine_blocks(self, op, slaterWeightMin=0):
+        disjoint_sets = DisjointSet(list(range(self.size)))
+        tmps = [None for _ in range(len(self.local_basis))]
+        states = set()
+        for i, state in enumerate(self.local_basis):
+            tmps[i] = set(
+                applyOp_test(
+                    op, ManyBodyState({state: 1.0}), restrictions=self.restrictions, cutoff=slaterWeightMin
+                ).keys()
+            )
+            states |= tmps[i]
+
+        indices = self.state_container._index_sequence(states)
+        idx_map = {state: idx for state, idx in zip(states, indices) if idx != self.size}
+        for root, connected_states in enumerate(tmps):
+            for state in connected_states:
+                if state not in idx_map:
+                    continue
+                disjoint_sets.merge(root + self.offset, idx_map[state])
+        if self.is_distributed:
+            disjoint_sets = self.comm.allreduce(disjoint_sets, op=reduce_disjoint_set_op)
+
+        return [subset.intersection(self.local_indices) for subset in disjoint_sets.subsets()]
+
+    def split_and_redistribute_psi_and_basis(self, priorities, psis):
+
+        comm = self.comm
+        normalized_priorities = np.array([p for p in priorities], dtype=float)
+        normalized_priorities /= np.sum(normalized_priorities)
+        n_colors = min(comm.size, len(normalized_priorities))
+        if len(normalized_priorities) < comm.size:
+            procs_per_color = np.array([max(1, n) for n in comm.size * normalized_priorities], dtype=int)
+        else:
+            procs_per_color = np.array([1] * n_colors, dtype=int)
+        diff = np.sum(procs_per_color) - comm.size
+        sorted_indices = np.argsort(normalized_priorities)[::-1]
+        if diff != 0:
+            for _ in range(1 + (abs(diff) // n_colors)):
+                if diff > 0:
+                    mask = sorted_indices[procs_per_color > 1]
+                    procs_per_color[mask[-(diff % n_colors) :]] -= 1
+                    diff = np.sum(procs_per_color) - comm.size
+                else:
+                    procs_per_color[sorted_indices[: abs(diff) % n_colors]] += 1
+                    diff = np.sum(procs_per_color) - comm.size
+        assert sum(procs_per_color) == comm.size
+        proc_cutoffs = np.cumsum(procs_per_color)
+        color = np.argmax(comm.rank < proc_cutoffs)
+        split_comm = comm.Split(color=color, key=0)
+        split_roots = [0] + proc_cutoffs[:-1].tolist()
+        items_per_color = np.array([len(priorities) // n_colors] * n_colors, dtype=int)
+        items_per_color[: len(priorities) % n_colors] += 1
+        indices_start = sum(items_per_color[:color])
+        indices_end = sum(items_per_color[: color + 1])
+
+        if split_comm.rank == 0:
+            assert comm.rank in split_roots
+
+        new_states = set(self.local_basis)
+        for c, c_root in enumerate(split_roots):
+            if color != c:
+                comm.send(self.local_basis, dest=c_root + (comm.rank % procs_per_color[c]))
+            else:
+                for sender in range(comm.size):
+                    if (
+                        sum(procs_per_color[:c]) <= sender < sum(procs_per_color[: c + 1])
+                        or sender % procs_per_color[c] != split_comm.rank
+                    ):
+                        continue
+                    new_states |= set(comm.recv(source=sender))
+
+        split_basis = Basis(
+            self.impurity_orbitals,
+            self.bath_states,
+            initial_basis=list(new_states),
+            restrictions=self.restrictions,
+            chain_restrict=self.chain_restrict,
+            collapse_chains=self.collapse_chains,
+            comm=split_comm,
+            verbose=self.verbose,
+            truncation_threshold=self.truncation_threshold,
+            tau=self.tau,
+            spin_flip_dj=self.spin_flip_dj,
+        )
+
+        new_psis = [p.copy() for p in psis]
+        for c, c_root in enumerate(split_roots):
+            if color != c:
+                comm.send([p.to_dict() for p in psis], dest=c_root + (comm.rank % procs_per_color[c]))
+            else:
+                for sender in range(comm.size):
+                    if (
+                        sum(procs_per_color[:c]) <= sender < sum(procs_per_color[: c + 1])
+                        or sender % procs_per_color[c] != split_comm.rank
+                    ):
+                        continue
+                    received_psis = comm.recv(source=sender)
+                    for i, received_psi in enumerate(received_psis):
+                        new_psis[i] += ManyBodyState(received_psi)
+
+        psis = split_basis.redistribute_psis(new_psis)
+        return slice(indices_start, indices_end), split_roots, color, items_per_color, split_basis, psis
+
 
 class CIPSI_Basis(Basis):
-    def __init__(self, H, impurity_orbitals, bath_states, nominal_impurity_occ=None, initial_basis=None, **kwargs):
+    def __init__(self, impurity_orbitals, bath_states, H=None, nominal_impurity_occ=None, initial_basis=None, **kwargs):
+        if H is None:
+            H = ManyBodyOperator({})
+        if not isinstance(H, ManyBodyOperator):
+            H = ManyBodyOperator(H)
         assert nominal_impurity_occ is not None or initial_basis is not None
         super().__init__(
             impurity_orbitals,
             bath_states,
-            nominal_impurity_occ,
-            initial_basis,
+            nominal_impurity_occ=nominal_impurity_occ,
+            initial_basis=initial_basis,
             **kwargs,
         )
 
@@ -1041,19 +1181,56 @@ class CIPSI_Basis(Basis):
         if isinstance(H, dict):
             H = ManyBodyOperator(H)
 
+        old_size = self.size - 1
         while old_size != self.size:
-            H_mat = self.build_sparse_matrix(H)
-            e_ref, psi_ref_dense = eigensystem_new(
-                H_mat,
-                e_max=de0_max,
-                k=2 * len(psi_ref) if psi_ref is not None else 5,
-                v0=self.build_vector(psi_ref).T if psi_ref is not None else None,
-                eigenValueTol=0,
-                comm=self.comm,
-                dense=self.size < dense_cutoff,
-            )
+            if self.size > dense_cutoff or True:
+                blocks = self.determine_blocks(H)
+                block_psi_refs = []
+                e_ref = np.array([], dtype=float)
+                for i, block in enumerate(blocks):
+                    block_basis = CIPSI_Basis(
+                        self.impurity_orbitals,
+                        self.bath_states,
+                        initial_basis=[self.local_basis[idx - self.offset] for idx in block],
+                        comm=self.comm,
+                    )
+                    assert len(block_basis) == self.comm.allreduce(
+                        len(block)
+                    ), f"{len(block_basis)=} {self.comm.allreduce(len(block))=}"
+                    if len(block_basis) == 0:
+                        continue
+                    H_mat = block_basis.build_sparse_matrix(H)
+                    if psi_ref is not None:
+                        psi_ref = block_basis.redistribute_psis(psi_ref)
+                    e_ref_block, psi_ref_dense = eigensystem_new(
+                        H_mat,
+                        e_max=de0_max,
+                        k=2 * len(psi_ref) if psi_ref is not None else 5,
+                        # v0=block_basis.build_vector(psi_ref).T if psi_ref is not None else None,
+                        eigenValueTol=0,
+                        comm=self.comm,
+                        dense=self.size < dense_cutoff,
+                    )
+                    block_psi_refs.extend(block_basis.build_state(psi_ref_dense.T))
+                    e_ref = np.append(e_ref, e_ref_block)
+                sort_idx = np.argsort(e_ref)
+                e_ref = e_ref[sort_idx]
+                mask = e_ref <= e_ref[0] + de0_max
+                e_ref = e_ref[mask]
+                psi_ref = [block_psi_refs[idx] for idx in itertools.compress(sort_idx, mask)]
+            else:
+                H_mat = self.build_sparse_matrix(H)
+                e_ref, psi_ref_dense = eigensystem_new(
+                    H_mat,
+                    e_max=de0_max,
+                    k=2 * len(psi_ref) if psi_ref is not None else 5,
+                    v0=self.build_vector(psi_ref).T if psi_ref is not None else None,
+                    eigenValueTol=0,
+                    comm=self.comm,
+                    dense=self.size < dense_cutoff,
+                )
 
-            psi_ref = self.build_state(psi_ref_dense.T)
+                psi_ref = self.build_state(psi_ref_dense.T)
             if self.size > self.truncation_threshold:
                 psi_ref = self.truncate(psi_ref)
                 print(f"----->After truncation, the basis contains {self.size} elements.")
@@ -1089,7 +1266,6 @@ class CIPSI_Basis(Basis):
 
     def copy(self):
         new_basis = CIPSI_Basis(
-            None,
             self.impurity_orbitals,
             self.bath_states,
             initial_basis=self.local_basis,
@@ -1102,4 +1278,26 @@ class CIPSI_Basis(Basis):
             tau=self.tau,
             verbose=self.verbose,
         )
+        assert len(new_basis) == len(self)
         return new_basis
+
+    def split_and_redistribute_psi_and_basis(self, priorities, psis):
+
+        indices_slice, split_roots, color, items_per_color, split_basis, psis = (
+            super().split_and_redistribute_psi_and_basis(priorities, psis)
+        )
+
+        split_basis = CIPSI_Basis(
+            split_basis.impurity_orbitals,
+            split_basis.bath_states,
+            initial_basis=split_basis.local_basis,
+            restrictions=split_basis.restrictions,
+            comm=split_basis.comm,
+            truncation_threshold=split_basis.truncation_threshold,
+            chain_restrict=split_basis.chain_restrict,
+            collapse_chains=split_basis.collapse_chains,
+            spin_flip_dj=split_basis.spin_flip_dj,
+            tau=split_basis.tau,
+            verbose=split_basis.verbose,
+        )
+        return indices_slice, split_roots, color, items_per_color, split_basis, psis
