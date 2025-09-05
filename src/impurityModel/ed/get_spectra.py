@@ -3,6 +3,7 @@ Script for calculating various spectra.
 
 """
 
+import itertools
 import numpy as np
 import scipy.sparse.linalg
 from collections import OrderedDict
@@ -276,16 +277,34 @@ def main(
 
     energy_cut = -tau * np.log(1e-4)
 
-    h_gs = basis.build_sparse_matrix(hOp)
-    es, psis_dense = finite.eigensystem_new(
-        h_gs,
-        e_max=energy_cut,
-        k=5,
-        eigenValueTol=0,
-        comm=basis.comm,
-        dense=basis.size < dense_cutoff,
-    )
-    psis = basis.build_state(psis_dense.T)
+    blocks = basis.determine_blocks(h)
+    es = np.zeros((0), dtype=float)
+    psis = []
+    for block in blocks:
+        block_basis = CIPSI_Basis(
+            basis.impurity_orbitals,
+            basis.bath_states,
+            initial_basis=[basis.local_basis[idx - basis.offset] for idx in block],
+            comm=basis.comm,
+        )
+        if len(block_basis) == 0:
+            continue
+        h_gs = block_basis.build_sparse_matrix(h)
+        block_es, block_psis_dense = finite.eigensystem_new(
+            h_gs,
+            e_max=energy_cut,
+            k=2 * impurity_orbitals[0],
+            eigenValueTol=0,
+            comm=basis.comm,
+            dense=basis.size < dense_cutoff,
+        )
+        psis.extend(block_basis.build_state(block_psis_dense.T))
+        es = np.append(es, block_es)
+    sorted_idx = np.argsort(es)
+    es = es[sorted_idx]
+    mask = es <= es[0] + energy_cut
+    es = es[mask]
+    psis = [psis[idx] for idx in itertools.compress(sorted_idx, mask)]
     effective_restrictions = basis.get_effective_restrictions()
     if verbosity >= 1:
         print("Effective GS restrictions:")

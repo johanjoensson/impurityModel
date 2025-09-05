@@ -823,7 +823,7 @@ def getSpectra_new(
         tOps_per_color,
         tOp_basis,
         psis,
-    ) = gf.split_comm_and_redistribute_basis([1] * len(tOps), basis, psis)
+    ) = basis.split_and_redistribute_psi_and_basis([1] * len(tOps), psis)
 
     gs_realaxis_local = np.empty((len(range(tOps_indices.start, tOps_indices.stop)), len(w)), dtype=complex)
     for tOp_i, tOp in enumerate(tOps[tOps_indices]):
@@ -1075,21 +1075,18 @@ def getRIXSmap_new(
         "serial", "H_build", "wIn" or "H_build_wIn"
 
     """
-    if True:
-        excited_restrictions = basis.build_excited_restrictions(
-            psis,
-            imp_change={1: (1, 0), 2: (1, 1)},
-            val_change={1: (0, 0), 2: (1, 0)},
-            con_change={1: (0, 0), 2: (0, 1)},
-        )
-        relaxed_restrictions = basis.build_excited_restrictions(
-            psis,
-            imp_change={1: (0, 0), 2: (1, 1)},
-            val_change={1: (0, 0), 2: (1, 0)},
-            con_change={1: (0, 0), 2: (0, 1)},
-        )
-    else:
-        excited_restrictions = None
+    excited_restrictions = basis.build_excited_restrictions(
+        psis,
+        imp_change={1: (1, 0), 2: (1, 1)},
+        val_change={1: (0, 0), 2: (1, 0)},
+        con_change={1: (0, 0), 2: (0, 1)},
+    )
+    relaxed_restrictions = basis.build_excited_restrictions(
+        psis,
+        imp_change={1: (0, 0), 2: (1, 1)},
+        val_change={1: (0, 0), 2: (1, 0)},
+        con_change={1: (0, 0), 2: (0, 1)},
+    )
 
     E0 = min(Es)
     Z = np.sum(np.exp(-(Es - E0) / tau))
@@ -1100,7 +1097,7 @@ def getRIXSmap_new(
         eigen_per_color,
         eigen_basis,
         psis,
-    ) = gf.split_comm_and_redistribute_basis([1 for _ in Es], basis, psis)
+    ) = basis.split_and_redistribute_psi_and_basis([1 for _ in Es], psis)
     eigen_basis.restrictions = relaxed_restrictions
     if eigen_basis.comm.rank == 0:
         gs = np.zeros((len(tOpsIn), len(wIns), len(tOpsOut), len(wLoss)), dtype=complex)
@@ -1126,7 +1123,7 @@ def getRIXSmap_new(
                 wIn_per_color,
                 wIn_basis,
                 psi1_arr,
-            ) = gf.split_comm_and_redistribute_basis([1 for _ in wIns], basis_final, [psi1])
+            ) = basis_final.split_and_redistribute_psi_and_basis([1 for _ in wIns], [psi1])
             if eigen_basis.comm.rank != 0:
                 gs = np.empty(
                     (len(tOpsIn), wIn_indices.stop - wIn_indices.start, len(tOpsOut), len(wLoss)), dtype=complex
