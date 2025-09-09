@@ -175,7 +175,7 @@ def fixed_peak_dc(
             for k in range(psi_upper.shape[1]):
                 for j, block_orbs in enumerate(i_blocks):
                     idx = np.ix_([k], block_orbs, block_orbs)
-                    rho_upper[idx] = rho_upper[i][j][k]
+                    rho_upper[idx] = rho_upper_imps[i][j][k]
         rho_lower = finite.thermal_average_scale_indep(e_lower, rho_lower, basis_lower.tau)
         rho_upper = finite.thermal_average_scale_indep(e_upper, rho_upper, basis_upper.tau)
         avg_dc_lower = np.real(np.trace(rho_lower @ dc))
