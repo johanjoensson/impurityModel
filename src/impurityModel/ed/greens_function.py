@@ -14,7 +14,7 @@ from impurityModel.ed.lanczos import (
 )
 from impurityModel.ed.manybody_basis import CIPSI_Basis, Basis
 from impurityModel.ed.cg import bicgstab
-from impurityModel.ed.block_structure import BlockStructure, get_block_structure
+from impurityModel.ed.block_structure import BlockStructure, get_blocks
 from impurityModel.ed.ManyBodyUtils import ManyBodyState, ManyBodyOperator, applyOp as applyOp_test
 
 from mpi4py import MPI
@@ -1273,7 +1273,7 @@ def rotate_matrix(M, T):
 
 def block_diagonalize_hyb(hyb):
     hyb_herm = 1 / 2 * (hyb + np.conj(np.transpose(hyb, (0, 2, 1))))
-    blocks = get_block_structure(hyb_herm)
+    blocks = get_blocks(hyb_herm)
     Q_full = np.zeros((hyb.shape[1], hyb.shape[2]), dtype=complex)
     treated_orbitals = 0
     for block in blocks:
