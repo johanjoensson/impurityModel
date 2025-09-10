@@ -459,7 +459,6 @@ class Basis:
         verbose=True,
         debug=False,
     ):
-        t0 = perf_counter()
         assert (
             impurity_orbitals is not None
         ), "You need to supply the number of impurity orbitals in each set in impurity_orbitals"
@@ -481,8 +480,6 @@ class Basis:
                 mixed_valence=mixed_valence if mixed_valence is not None else {i: 0 for i in nominal_impurity_occ},
                 verbose=verbose,
             )
-        t0 = perf_counter() - t0
-        t0 = perf_counter()
         self.impurity_orbitals = impurity_orbitals
         self.bath_states = bath_states
         self.spin_flip_dj = spin_flip_dj
@@ -502,8 +499,6 @@ class Basis:
         self.n_bytes = int(ceil(self.num_spin_orbitals / 8))
         self.truncation_threshold = truncation_threshold
         self.is_distributed = comm is not None and comm.size > 1
-        t0 = perf_counter() - t0
-        t0 = perf_counter()
         if comm is not None:
             seed_sequences = None
             if self.comm.rank == 0:
@@ -513,10 +508,7 @@ class Basis:
             self.rng = np.random.default_rng(seed_sequence)
         else:
             self.rng = np.random.default_rng()
-        t0 = perf_counter() - t0
         self.tau = tau
-
-        t0 = perf_counter()
 
         # self.state_container = CentralizedStateContainer(
         self.state_container = SimpleDistributedStateContainer(
@@ -744,8 +736,8 @@ class Basis:
                         cutoff=slaterWeightMin,
                         restrictions=self.restrictions,
                     )
-                    new_local_states |= set(res.keys())
-                if len(new_local_states) == len(local_states):
+                    new_local_states |= set(res.keys()) - local_states
+                if len(new_local_states) == 0:
                     break
                 local_states |= new_local_states
             new_states = local_states - set(self.local_basis)
