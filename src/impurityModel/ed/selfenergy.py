@@ -417,10 +417,13 @@ def calc_selfenergy(
 
     energy_cut = -tau * np.log(1e-4)
 
-    _ = basis.expand(h, dense_cutoff=dense_cutoff, de2_min=1e-6)
+    _ = basis.expand(h, dense_cutoff=dense_cutoff, de2_min=1e-8)
     blocks = basis.determine_blocks(h)
+    block_lengths = np.array([len(block) for block in blocks], dtype=int)
+    if basis.is_distributed:
+        basis.comm.Allreduce(MPI.IN_PLACE, block_lengths, op=MPI.SUM)
     if verbosity >= 1:
-        print(f"Size of blocks in the GS Hamiltonian:\n{[len(block) for block in blocks]}")
+        print(f"Size of blocks in the GS Hamiltonian:\n{block_lengths}")
 
     es = np.zeros((0), dtype=float)
     psis = []

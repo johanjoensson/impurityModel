@@ -169,8 +169,12 @@ def get_Greens_function(
         blocks_per_color,
         block_basis,
         psis,
-    ) = basis.split_and_redistribute_psi_and_basis([len(block) ** 2 for block in blocks], psis)
-    bis = list(range(block_indices.start, block_indices.stop))
+    ) = basis.split_basis_and_redistribute_psi([len(block) ** 3 for block in blocks], psis)
+    if verbose:
+        print(f"New block roots: {block_roots}")
+        print(f"Blocks per color: {blocks_per_color}")
+        print("=" * 80)
+    bis = block_indices  # list(range(block_indices.start, block_indices.stop))
     gs_matsubara = [None for _ in blocks]
     gs_realaxis = [None for _ in blocks]
     excited_basis_sizes_IPS = [[] for _ in blocks]
@@ -180,7 +184,7 @@ def get_Greens_function(
             [{((orb, "c"),): 1} for orb in block],
             [{((orb, "a"),): 1} for orb in block],
         )
-        for block in blocks[block_indices]
+        for block in (blocks[bi] for bi in block_indices)
     ):
         gsIPS_matsubara, gsIPS_realaxis, excited_basis_sizes_IPS[bis[block_i]] = calc_Greens_function_with_offdiag(
             hOp,
@@ -210,9 +214,9 @@ def get_Greens_function(
             -matsubara_mesh if matsubara_mesh is not None else None,
             -omega_mesh if omega_mesh is not None else None,
             -delta,
-            dN_imp={i: (dN, 0) for i in basis.impurity_orbitals} if not basis.chain_restrict else None,
-            dN_val={i: (dN, 0) for i in basis.impurity_orbitals} if not basis.chain_restrict else None,
-            dN_con={i: (0, dN) for i in basis.impurity_orbitals} if not basis.chain_restrict else None,
+            dN_imp={i: (dN, 0) for i in basis.impurity_orbitals} if dN is not None else None,
+            dN_val={i: (dN, 0) for i in basis.impurity_orbitals} if dN is not None else None,
+            dN_con={i: (0, dN) for i in basis.impurity_orbitals} if dN is not None else None,
             slaterWeightMin=slaterWeightMin,
             verbose=verbose_extra,
             reort=reort,
@@ -359,11 +363,15 @@ def calc_Greens_function_with_offdiag(
         eigen_per_color,
         eigen_basis,
         psis,
-    ) = basis.split_and_redistribute_psi_and_basis([1 for _ in es], psis)
+    ) = basis.split_basis_and_redistribute_psi([1 for _ in es], psis)
+    if verbose:
+        print(f"New eigenstate roots: {eigen_roots}")
+        print(f"Eigenstates  per color: {eigen_per_color}")
+        print("=" * 80)
     e0 = min(es)
     Z = np.sum(np.exp(-(es - e0) / tau))
 
-    for ei, psi, e in zip(range(eigen_indices.start, eigen_indices.stop), psis[eigen_indices], es[eigen_indices]):
+    for ei, psi, e in zip(eigen_indices, (psis[ei] for ei in eigen_indices), (es[ei] for ei in eigen_indices)):
         excited_restrictions = eigen_basis.build_excited_restrictions(
             psis=psis,
             imp_change=dN_imp,
@@ -652,8 +660,11 @@ def block_Green(
 
     basis.expand(op=hOp, slaterWeightMin=slaterWeightMin)
     blocks = basis.determine_blocks(hOp, slaterWeightMin=slaterWeightMin)
+    block_lengths = np.array([len(block) for block in blocks], dtype=int)
+    if basis.is_distributed:
+        basis.comm.Allreduce(MPI.IN_PLACE, block_lengths, op=MPI.SUM)
     if verbose:
-        print(f"Manybody Hamiltonian block sizes:\n{[len(block) for block in blocks]}")
+        print(f"Manybody Hamiltonian block sizes:\n{block_lengths}")
 
     impurity_orbitals = basis.impurity_orbitals
     bath_states = basis.bath_states
@@ -700,7 +711,6 @@ def block_Green(
                 verbose=verbose,
             )
         else:
-
             h_local = block_basis.build_sparse_matrix(hOp)[:, block_basis.local_indices]
 
             def matmat(v):

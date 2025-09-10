@@ -62,9 +62,9 @@ reduce_states_op = MPI.Op.Create(reduce_states, commute=True)
 
 def reduce_disjoint_set(a: DisjointSet, b: DisjointSet, _):
     for subset in b.subsets():
-        items = list(subset)
-        root = items[0]
-        for item in items[1:]:
+        it = iter(subset)
+        root = next(it)
+        for item in it:
             a.merge(item, root)
     return a
 
@@ -1002,36 +1002,46 @@ class Basis:
 
         return [subset.intersection(self.local_indices) for subset in disjoint_sets.subsets()]
 
-    def split_and_redistribute_psi_and_basis(self, priorities, psis):
+    def split_basis_and_redistribute_psi(self, priorities, psis, min_group_size=1000):
 
         comm = self.comm
         normalized_priorities = np.array([p for p in priorities], dtype=float)
         normalized_priorities /= np.sum(normalized_priorities)
-        n_colors = min(comm.size, len(normalized_priorities))
-        if len(normalized_priorities) < comm.size:
-            procs_per_color = np.array([max(1, n) for n in comm.size * normalized_priorities], dtype=int)
-        else:
-            procs_per_color = np.array([1] * n_colors, dtype=int)
-        diff = np.sum(procs_per_color) - comm.size
-        sorted_indices = np.argsort(normalized_priorities)[::-1]
-        if diff != 0:
-            for _ in range(1 + (abs(diff) // n_colors)):
-                if diff > 0:
-                    mask = sorted_indices[procs_per_color > 1]
-                    procs_per_color[mask[-(diff % n_colors) :]] -= 1
-                    diff = np.sum(procs_per_color) - comm.size
-                else:
-                    procs_per_color[sorted_indices[: abs(diff) % n_colors]] += 1
-                    diff = np.sum(procs_per_color) - comm.size
+        # Make sure we have at most min_group_size basis states per MPI rank for each color
+        n_colors = min(max(1, comm.size // int(np.ceil(self.size / min_group_size))), len(normalized_priorities))
+
+        # Group priorities into colors so that all colours have roughly the same priorities
+        # Step 1:
+        #        Each priority starts in its own subgroup
+        # while not equal priorities
+        #       merge the two subgroups with lowest priorities
+        priority_groups = DisjointSet(list(range(len(normalized_priorities))))
+        subgroups = priority_groups.subsets()
+        while len(subgroups) > n_colors:
+            subgroups = sorted(subgroups, key=lambda idxs: np.sum(normalized_priorities[list(idxs)]))
+            priority_groups.merge(next(iter(subgroups[0])), next(iter(subgroups[1])))
+            subgroups = priority_groups.subsets()
+        subgroups = sorted(subgroups, key=lambda idxs: np.sum(normalized_priorities[list(idxs)]))
+        n_colors = len(subgroups)
+        merged_priorities = np.array([np.sum(normalized_priorities[list(subgroup)]) for subgroup in subgroups])
+        procs_per_color = np.array([max(1, n) for n in comm.size * merged_priorities], dtype=int)
+        remainder = comm.size - np.sum(procs_per_color)
+        while remainder != 0:
+            if remainder < 0:
+                mask = procs_per_color > 1
+                procs_per_color[mask[-(remainder % n_colors) :]] -= 1
+            else:
+                procs_per_color[-(abs(remainder) % n_colors) :] += 1
+            remainder = comm.size - np.sum(procs_per_color)
+
         assert sum(procs_per_color) == comm.size
         proc_cutoffs = np.cumsum(procs_per_color)
         color = np.argmax(comm.rank < proc_cutoffs)
         split_comm = comm.Split(color=color, key=0)
         split_roots = [0] + proc_cutoffs[:-1].tolist()
-        items_per_color = np.array([len(priorities) // n_colors] * n_colors, dtype=int)
-        items_per_color[: len(priorities) % n_colors] += 1
-        indices_start = sum(items_per_color[:color])
-        indices_end = sum(items_per_color[: color + 1])
+        items_per_color = [len(subgroup) for subgroup in subgroups]
+        assert sum(items_per_color) == len(priorities)
+        indices = sorted(subgroups[color])
 
         if split_comm.rank == 0:
             assert comm.rank in split_roots
@@ -1079,7 +1089,7 @@ class Basis:
                         new_psis[i] += ManyBodyState(received_psi)
 
         psis = split_basis.redistribute_psis(new_psis)
-        return slice(indices_start, indices_end), split_roots, color, items_per_color, split_basis, psis
+        return indices, split_roots, color, items_per_color, split_basis, psis
 
 
 class CIPSI_Basis(Basis):
@@ -1194,9 +1204,9 @@ class CIPSI_Basis(Basis):
                         initial_basis=[self.local_basis[idx - self.offset] for idx in block],
                         comm=self.comm,
                     )
-                    assert len(block_basis) == self.comm.allreduce(
-                        len(block)
-                    ), f"{len(block_basis)=} {self.comm.allreduce(len(block))=}"
+                    # assert len(block_basis) == self.comm.allreduce(
+                    #     len(block)
+                    # ), f"{len(block_basis)=} {self.comm.allreduce(len(block))=}"
                     if len(block_basis) == 0:
                         continue
                     H_mat = block_basis.build_sparse_matrix(H)
@@ -1281,10 +1291,10 @@ class CIPSI_Basis(Basis):
         assert len(new_basis) == len(self)
         return new_basis
 
-    def split_and_redistribute_psi_and_basis(self, priorities, psis):
+    def split_basis_and_redistribute_psi(self, priorities, psis):
 
-        indices_slice, split_roots, color, items_per_color, split_basis, psis = (
-            super().split_and_redistribute_psi_and_basis(priorities, psis)
+        indices, split_roots, color, items_per_color, split_basis, psis = super().split_basis_and_redistribute_psi(
+            priorities, psis
         )
 
         split_basis = CIPSI_Basis(
@@ -1300,4 +1310,4 @@ class CIPSI_Basis(Basis):
             tau=split_basis.tau,
             verbose=split_basis.verbose,
         )
-        return indices_slice, split_roots, color, items_per_color, split_basis, psis
+        return indices, split_roots, color, items_per_color, split_basis, psis

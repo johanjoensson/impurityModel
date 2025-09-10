@@ -823,10 +823,10 @@ def getSpectra_new(
         tOps_per_color,
         tOp_basis,
         psis,
-    ) = basis.split_and_redistribute_psi_and_basis([1] * len(tOps), psis)
+    ) = basis.split_basis_and_redistribute_psi([1] * len(tOps), psis)
 
-    gs_realaxis_local = np.empty((len(range(tOps_indices.start, tOps_indices.stop)), len(w)), dtype=complex)
-    for tOp_i, tOp in enumerate(tOps[tOps_indices]):
+    gs_realaxis_local = np.empty((len(tOps_indices), len(w)), dtype=complex)
+    for tOp_i, tOp in enumerate(tOps[ti] for ti in tOps_indices):
         assert isinstance(hOp, ManyBodyOperator)
         _, gs_realaxis_local[tOp_i, :, None, None], basis_size = gf.calc_Greens_function_with_offdiag(
             hOp,
@@ -1097,11 +1097,11 @@ def getRIXSmap_new(
         eigen_per_color,
         eigen_basis,
         psis,
-    ) = basis.split_and_redistribute_psi_and_basis([1 for _ in Es], psis)
+    ) = basis.split_basis_and_redistribute_psi([1 for _ in Es], psis)
     eigen_basis.restrictions = relaxed_restrictions
     if eigen_basis.comm.rank == 0:
         gs = np.zeros((len(tOpsIn), len(wIns), len(tOpsOut), len(wLoss)), dtype=complex)
-    for e, psi_e, E_e in zip(range(eigen_indices.start, eigen_indices.stop), psis[eigen_indices], Es[eigen_indices]):
+    for e, psi_e, E_e in zip(eigen_indices, (psis[ei] for ei in eigen_indices), (Es[ei] for ei in eigen_indices)):
         for i, tin in enumerate(tOpsIn):
             psi1 = applyOp_test(tin, psi_e)
 
@@ -1123,7 +1123,7 @@ def getRIXSmap_new(
                 wIn_per_color,
                 wIn_basis,
                 psi1_arr,
-            ) = basis_final.split_and_redistribute_psi_and_basis([1 for _ in wIns], [psi1])
+            ) = basis_final.split_basis_and_redistribute_psi([1 for _ in wIns], [psi1])
             if eigen_basis.comm.rank != 0:
                 gs = np.empty(
                     (len(tOpsIn), wIn_indices.stop - wIn_indices.start, len(tOpsOut), len(wLoss)), dtype=complex
