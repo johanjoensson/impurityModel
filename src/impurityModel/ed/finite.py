@@ -514,23 +514,23 @@ def printExpValues(rhos, es, rot_to_spherical, block_structure):
     for i, Ns in enumerate(block_N_string):
         block_N_string_formatted[i] = " " * max(8 - len(Ns), 0) + Ns
     print(
-        f"{'i':>3s} {'E-E0':>11s} {'N':>8s} {'N(Dn)':>8s} {'N(Up)':>8s} {' '.join(block_N_string_formatted)} {'Lz':>8s} {'Sz':>8s}"
+        f"{'i':>3s}  {'E-E0':>11s}  {'N':>8s}  {'N(Dn)':>8s}  {'N(Up)':>8s}  {'  '.join(block_N_string_formatted)}  {'Lz':>8s}  {'Sz':>8s}"
     )
     for i, (e, rho) in enumerate(zip(es - es[0], rhos)):
         block_occs = [
             np.sum(np.diag(rho)[list(orb - orb_offset for block in blocks for orb in block_structure.blocks[block])])
             for blocks in equivalent_blocks
         ]
-        block_occ_string = [f"{occ.real: 8.5f}" for occ in block_occs]
-        block_occ_string_formatted = ["" for _ in block_occ_string]
-        for ib, bs in enumerate(block_occ_string):
-            block_occ_string_formatted[ib] = " " * (len(block_N_string[ib]) - 8) + bs
+        # block_occ_string = [f"{occ.real:^ 8.5f}" for occ in block_occs]
+        block_occ_string_formatted = ["" for _ in block_occs]
+        for ib, b_occ in enumerate(block_occs):
+            block_occ_string_formatted[ib] = f"{np.real(b_occ):^ {len(block_N_string[ib])}.5f}"
         rho_spherical = rotate_matrix(rho, rot_to_spherical)
         N, Ndn, Nup = get_occupations_from_rho_spherical(rho_spherical)
         Lz = get_Lz_from_rho_spherical(rho_spherical)
         Sz = get_Sz_from_rho_spherical(rho_spherical)
         print(
-            f"{i:^3d} {e:11.8f} {N:8.5f} {Ndn:8.5f} {Nup:8.5f} {' '.join(block_occ_string_formatted)} {Lz: 8.6f} {Sz: 8.6f}"
+            f"{i:^3d}  {e:11.8f}  {N:8.5f}  {Ndn:8.5f}  {Nup:8.5f}  {'  '.join(block_occ_string_formatted)}  {Lz: 8.6f}  {Sz: 8.6f}"
         )
     print("\n")
 
