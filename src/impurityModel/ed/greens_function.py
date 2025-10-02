@@ -429,7 +429,7 @@ def calc_Greens_function_with_offdiag(
             if w is not None:
                 gs_realaxis_block += np.exp(-(e - e0) / tau) * gs_realaxis_block_i
         excited_basis_sizes[ei] = excited_basis.size
-        # excited_basis.clear()
+        hOp.clear_memory()
 
     # Send calculated Greens functions to root
     if iw is not None:
