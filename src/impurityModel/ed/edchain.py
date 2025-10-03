@@ -17,6 +17,85 @@ def matrix_print(m, label=None):
     )
 
 
+def build_imp_bath_blocks(H, n_orb):
+    block_structure = build_block_structure(H)
+    impurity_indices = [None] * len(block_structure.blocks)
+    occupied_indices = [None] * len(block_structure.blocks)
+    unoccupied_indices = [None] * len(block_structure.blocks)
+    for block_i, orbs in enumerate(block_structure.blocks):
+        bath_orbs = {orb for orb in orbs if orb >= n_orb}
+        impurity_orbs = set(orbs) - bath_orbs
+        impurity_indices[block_i] = sorted(impurity_orbs)
+        occupied_indices[block_i] = {orb for orb in bath_orbs if H[orb, orb] < 0}
+        unoccupied_indices[block_i] = sorted(bath_orbs - occupied_indices[block_i])
+        occupied_indices[block_i] = sorted(occupied_indices[block_i])
+        orbs[:] = impurity_indices[block_i]
+    return impurity_indices, occupied_indices, unoccupied_indices, block_structure
+
+
+def build_H_bath_v(
+    H_dft,
+    ebs_star,
+    vs_star,
+    bath_geometry,
+    block_structure,
+    verbose,
+):
+
+    H_baths = []
+    vs = []
+    if bath_geometry == "chain":
+        for v, ebs in zip(vs_star, ebs_star):
+            if len(ebs) <= 1:
+                H_baths.append(np.diag(ebs))
+                vs.append(v)
+                continue
+            (H_bath_occ, v_occ), (H_bath_unocc, v_unocc) = edchains(v, ebs)
+            H_baths.append(sp.linalg.block_diag(H_bath_occ, H_bath_unocc))
+            vs.append(np.vstack((v_occ, v_unocc)))
+        if verbose:
+            for bi, (Hb, vb) in enumerate(zip(H_baths, vs)):
+                print(
+                    f"Block {bi} (impurity orbitals {block_structure.blocks[block_structure.inequivalent_blocks[bi]]})"
+                )
+                matrix_print(Hb, "Chain bath")
+                matrix_print(vb, "Chain hopping")
+                print("")
+            print("=" * 80)
+    elif bath_geometry == "haver":
+        for i_b, (v, ebs) in enumerate(zip(vs_star, ebs_star)):
+            if len(ebs) == 0:
+                H_baths.append(np.array([], dtype=complex))
+                vs.append(v)
+                continue
+            if len(ebs) == 1:
+                H_baths.append(np.diag(ebs))
+                vs.append(v)
+                continue
+
+            ebs_chain, tns_chain, v0 = tridiagonalize(ebs, v)
+            block_ix = block_structure.inequivalent_blocks[i_b]
+            block_orbs = block_structure.blocks[block_ix]
+            b_ix = np.ix_(block_orbs, block_orbs)
+            vh, Hh = haverkort_chain(H_dft[b_ix], np.append(v0, tns_chain[:-1]), ebs_chain)
+            H_baths.append(Hh)
+            vs.append(vh)
+        if verbose:
+            for bi, (Hb, vb) in enumerate(zip(H_baths, vs)):
+                print(
+                    f"Block {bi} (impurity orbitals {block_structure.blocks[block_structure.inequivalent_blocks[bi]]})"
+                )
+                matrix_print(Hb, "Haverkort bath")
+                matrix_print(vb, "Haverkort hopping")
+                print("")
+            print("=" * 80)
+    # Star geometry is the fallback
+    else:  # bath_geometry == "star"
+        H_baths = [np.diag(eb) for eb in ebs_star]
+        vs = vs_star
+    return H_baths, vs
+
+
 def tridiagonalize(eb, tns):
     assert len(eb) == tns.shape[0]
     block_size = tns.shape[1]
