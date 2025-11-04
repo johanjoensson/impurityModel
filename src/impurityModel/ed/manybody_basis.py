@@ -720,11 +720,17 @@ class Basis:
 
         return spin_flip
 
-    def expand(self, op, dense_cutoff=None, slaterWeightMin=0):
+    def expand(self, op, dense_cutoff=None, slaterWeightMin=0, max_it=None):
         if isinstance(op, dict):
             op = ManyBodyOperator(op)
         old_size = self.size - 1
-        while old_size != self.size and self.size < self.truncation_threshold:
+
+        it = 0
+
+        def converged(old_size, it):
+            return old_size == self.size or (it >= max_it if max_it is not None else False )
+
+        while not converged(old_size, it):
             new_states = set()
             local_states = set(self.local_basis)
             for i in range(5):
@@ -748,10 +754,8 @@ class Basis:
             n_new_states = len(new_states)
             if self.is_distributed:
                 n_new_states = self.comm.allreduce(n_new_states, op=MPI.SUM)
-            if self.size + n_new_states > self.truncation_threshold:
-                break
-
             self.add_states(new_states)
+            it += 1
         if self.verbose:
             print(f"After expansion, the basis contains {self.size} elements.")
         return self.build_operator_dict(op)
@@ -1185,7 +1189,7 @@ class CIPSI_Basis(Basis):
 
         old_size = self.size - 1
         while old_size != self.size:
-            if self.size > dense_cutoff or True:
+            if self.size > dense_cutoff:
                 blocks = self.determine_blocks(H)
                 block_psi_refs = []
                 e_ref = np.array([], dtype=float)
@@ -1208,7 +1212,7 @@ class CIPSI_Basis(Basis):
                         H_mat,
                         e_max=de0_max,
                         k=2 * len(psi_ref) if psi_ref is not None else 5,
-                        # v0=block_basis.build_vector(psi_ref).T if psi_ref is not None else None,
+                        v0=block_basis.build_vector(psi_ref).T if psi_ref is not None else None,
                         eigenValueTol=0,
                         comm=self.comm,
                         dense=self.size < dense_cutoff,
@@ -1217,7 +1221,7 @@ class CIPSI_Basis(Basis):
                     e_ref = np.append(e_ref, e_ref_block)
                 sort_idx = np.argsort(e_ref)
                 e_ref = e_ref[sort_idx]
-                mask = e_ref <= e_ref[0] + de0_max
+                mask = e_ref <= (e_ref[0] + de0_max)
                 e_ref = e_ref[mask]
                 psi_ref = [block_psi_refs[idx] for idx in itertools.compress(sort_idx, mask)]
             else:
@@ -1229,7 +1233,7 @@ class CIPSI_Basis(Basis):
                     v0=self.build_vector(psi_ref).T if psi_ref is not None else None,
                     eigenValueTol=0,
                     comm=self.comm,
-                    dense=self.size < dense_cutoff,
+                    dense=True,
                 )
 
                 psi_ref = self.build_state(psi_ref_dense.T)

@@ -966,3 +966,27 @@ def block_lanczos_fixed_basis(
         print(f"=> time(get_block_Lanczons_matrices) = {perf_counter() - t_tot:.4f} seconds.")
         print("=" * 80)
     return alphas, betas, Q if build_krylov_basis else None
+
+def get_Lanczos_vectors(A, alphas, betas, v0, comm):
+    mpi = comm is not None
+    rank = comm.rank if mpi else 0
+    counts = np.array([v0.size], dtype=int)
+    offsets = np.array([0], dtype=int)
+    if mpi:
+        counts = np.empty((comm.size), dtype=int)
+        comm.Allgather(np.array([v0.size], dtype=int), counts)
+        offsets = np.array([np.sum(counts[:r]) for r in range(comm.size)], dtype=int)
+    N = v0.shape[0]
+    n = v0.shape[1]
+    Q = np.empty((N, alphas.shape[0]*n), dtype=complex)
+    Q[:, :n] = v0
+    # betas = betas.append(betas, np.zeros((1, n, n), dtype=betas.dtype), axis=0)
+    for i, (alpha, beta) in enumerate(zip(alphas, betas)):
+        if i > 0:
+            q_tmp = A @ Q[:, n*i: n*(i+1)] - Q[:, n*i:n*(i+1)] @ alphas[i] - Q[: ,n*(i-1): n*i] @ np.conj(betas[i-1].T)
+        else:
+            q_tmp = A @ Q[:, n*i: n*(i+1)] - Q[:, n*i:n*(i+1)] @ alphas[i]
+        q_tmp, _ = sp.linalg.qr(q_tmp, mode="economic", overwrite_a=True, check_finite=False)
+        Q[:, n*(i+1): n*(i+2)] =  q_tmp[offsets[rank]:offsets[rank] + counts[rank]]
+    return Q
+

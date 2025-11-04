@@ -1,20 +1,31 @@
 import numpy as np
 import scipy as sp
 from impurityModel.ed.lanczos import eigsh
+from impurityModel.ed.block_structure import build_block_structure, BlockStructure
 
 
 def matrix_print(m, label=None):
     if label is not None:
         print(label)
-    print(
-        "\n".join(
-            [
-                " ".join([f"{np.real(el): .12f}" for el in row])
-                # " ".join([f"{np.real(el): .3f} {np.imag(el):+.3f}j" for el in row])
-                for row in m
-            ]
+    m_is_complex = np.any(np.abs(m.imag) > 1e-6)
+    if m_is_complex:
+        print(
+            "\n".join(
+                [
+                    " ".join([f"{np.real(el): .6f} {np.imag(el):+.6f}j" for el in row])
+                    for row in m
+                ]
+            )
         )
-    )
+    else:
+        print(
+            "\n".join(
+                [
+                    " ".join([f"{np.real(el): .6f}" for el in row])
+                    for row in m
+                ]
+            )
+        )
 
 
 def build_imp_bath_blocks(H, n_orb):
@@ -95,6 +106,42 @@ def build_H_bath_v(
         vs = vs_star
     return H_baths, vs
 
+def build_full_bath(H_bath_inequiv, v_inequiv, block_structure: BlockStructure):
+    (
+        blocks,
+        identical_blocks,
+        transposed_blocks,
+        particle_hole_blocks,
+        particle_hole_and_transposed_blocks,
+        inequivalent_blocks,
+    ) = block_structure
+    n_orb = sum(len(b) for b in blocks)
+    H_baths = [None] * len(blocks)
+    vs = [None] * len(blocks)
+    for i, block_i in enumerate(inequivalent_blocks):
+        H_bath = H_bath_inequiv[i]
+        v = v_inequiv[i]
+        for b in identical_blocks[block_i]:
+            v_tmp = np.zeros((v.shape[0], n_orb), dtype=complex)
+            H_baths[b] = H_bath.copy()
+            v_tmp[:, blocks[b]] = v
+            vs[b] = v_tmp
+        for b in transposed_blocks[block_i]:
+            v_tmp = np.zeros((v.shape[0], n_orb), dtype=complex)
+            H_baths[b] = H_bath.copy().T
+            v_tmp[:, blocks[b]] = v
+            vs[b] = v_tmp
+        for b in particle_hole_blocks[block_i]:
+            v_tmp = np.zeros((v.shape[0], n_orb), dtype=complex)
+            H_baths[b] = H_bath.copy() @ (-np.identity(H_bath.shape[0]))
+            v_tmp[:, blocks[b]] = v
+            vs[b] = v_tmp
+        for b in particle_hole_and_transposed_blocks[block_i]:
+            v_tmp = np.zeros((v.shape[0], n_orb), dtype=complex)
+            H_baths[b] = H_bath.copy().T @ (-np.identity(H_bath.shape[0]))
+            v_tmp[:, blocks[b]] = v
+            vs[b] = v_tmp
+    return sp.linalg.block_diag(*H_baths), np.vstack(vs)
 
 def tridiagonalize(eb, tns):
     assert len(eb) == tns.shape[0]

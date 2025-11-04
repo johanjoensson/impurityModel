@@ -228,7 +228,7 @@ def calc_occ_e(
     )
     if len(basis) == 0:
         return np.inf, basis, {}
-    h_dict = basis.expand(h_op, dense_cutoff=dense_cutoff, de2_min=1e-4)
+    h_dict = basis.expand(h_op, dense_cutoff=dense_cutoff, de2_min=1e-6)
 
     energy_cut = -tau * np.log(1e-4)
     blocks = basis.determine_blocks(h_op)

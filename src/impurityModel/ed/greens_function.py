@@ -11,6 +11,7 @@ from impurityModel.ed.lanczos import (
     block_lanczos_sparse,
     get_block_Lanczos_matrices,
     get_block_Lanczos_matrices_dense,
+    get_Lanczos_vectors,
 )
 from impurityModel.ed.manybody_basis import CIPSI_Basis, Basis
 from impurityModel.ed.cg import bicgstab
@@ -398,14 +399,18 @@ def calc_Greens_function_with_offdiag(
         block_v = []
         local_excited_basis = set()
         for i_tOp, tOp in enumerate(tOps):
+            for state in eigen_basis.local_basis:
+                v = applyOp_test(tOp,ManyBodyState({state: 1.0}),cutoff=slaterWeightMin, restrictions=None)
+                local_excited_basis |= set(v.keys())
             v = applyOp_test(
                 tOp,
                 psi,
                 cutoff=slaterWeightMin,  # 0,
                 restrictions=None,
             )
-            local_excited_basis |= set(v.keys())
+            # local_excited_basis |= set(v.keys())
             block_v.append(v)
+
 
         excited_basis.add_states(local_excited_basis)
         block_v = excited_basis.redistribute_psis(block_v)
@@ -478,7 +483,7 @@ def get_block_Green(
 
     if verbose:
         t0 = time.perf_counter()
-    h_mem = basis.expand(hOp, slaterWeightMin=slaterWeightMin)
+    # h_mem = basis.expand(hOp, slaterWeightMin=slaterWeightMin)
     h = basis.build_sparse_matrix(hOp, h_mem)
 
     N = len(basis)
@@ -599,9 +604,11 @@ def block_Green(
     calculate  one block of the Greens function. This function builds the many body basis iteratively. Reducing memory requrements.
     """
     comm = basis.comm
-    rank = comm.rank
+    rank = comm.rank if comm is not None else 0
     matsubara = iws is not None
     realaxis = ws is not None
+    if not realaxis:
+        ws = np.linspace(-0.5, 0.5, num=int(2/delta))
 
     if not matsubara and not realaxis:
         if rank == 0:
@@ -616,64 +623,56 @@ def block_Green(
             np.zeros((len(ws), n, n), dtype=complex) if realaxis else None
         )
 
-    # If we have a realaxis mesh, prefer to check convergence on that
-    # if not, use the Matsubara mesh
-    if realaxis:
-        conv_w = ws
-    else:
-        conv_w = np.linspace(start=-0.5, stop=0.5, num=501)
-    n_samples = max(len(conv_w) // 20, min(len(conv_w), 10))
 
-    def converged(alphas, betas, verbose=False):
-        if alphas.shape[0] == 1:
-            return False
+    impurity_orbitals = basis.impurity_orbitals
+    bath_states = basis.bath_states
 
-        if np.any(np.abs(betas[-1]) > 1e6):
-            return True
-        if alphas.shape[0] % 10 != 0:
-            return False
+    # Calculate initial guess for Green's function
+    gs_matsubara, gs_realaxis, last_state = block_green_impl(basis, hOp, psi_arr, iws, ws, e, delta, slaterWeightMin, verbose)
+    done = False
+    while not done:
+        old_size = basis.size
+        # Add states connected to the last Krylov vector(s) calculated
+        # new_states = {}
+        for state in last_state:
+            new_state = applyOp_test(hOp, state, cutoff=slaterWeightMin, restrictions=basis.restrictions)
+            basis.add_states(new_state.keys())
+        if basis.size == old_size:
+            break
+        gs_realaxis_prev = gs_realaxis
+        gs_matsubara, gs_realaxis, last_state = block_green_impl(basis, hOp, psi_arr, iws, ws, e, delta, slaterWeightMin, verbose)
+        if rank == 0:
+            done = np.max(np.abs(gs_realaxis - gs_realaxis_prev)) < 1e-6
+        if comm is not None:
+            done = comm.bcast(done)
 
-        w = np.zeros((n_samples), dtype=conv_w.dtype)
-        intervals = np.linspace(start=conv_w[0], stop=conv_w[-1], num=n_samples + 1)
-        for i in range(n_samples):
-            w[i] = basis.rng.uniform(
-                low=min(intervals[i], intervals[i + 1]), high=max(intervals[i], intervals[i + 1]), size=None
-            )
-        wIs = (w + 1j * delta + e)[:, np.newaxis, np.newaxis] * np.identity(alphas.shape[1], dtype=complex)[
-            np.newaxis, :, :
-        ]
-        gs_new = wIs - alphas[-1]
-        gs_new = (
-            wIs
-            - alphas[-2]
-            - np.conj(betas[-2].T)[np.newaxis, :, :] @ np.linalg.solve(gs_new, betas[-2][np.newaxis, :, :])
-        )
-        gs_prev = wIs - alphas[-2]
-        for alpha, beta in zip(alphas[-3::-1], betas[-3::-1]):
-            gs_new = wIs - alpha - np.conj(beta.T)[np.newaxis, :, :] @ np.linalg.solve(gs_new, beta[np.newaxis, :, :])
-            gs_prev = wIs - alpha - np.conj(beta.T)[np.newaxis, :, :] @ np.linalg.solve(gs_prev, beta[np.newaxis, :, :])
+    return gs_matsubara, gs_realaxis
 
-        d_gs = np.max(np.abs(gs_new - gs_prev))
-        if verbose:
-            print(rf"$\delta$ = {d_gs}")
-        return d_gs < max(slaterWeightMin, 1e-6)
 
-    basis.expand(op=hOp, slaterWeightMin=slaterWeightMin)
+def block_green_impl(basis, hOp, psi_arr, iws, ws, e, delta, slaterWeightMin, verbose ):
+    comm = basis.comm
+    rank = 0
+    if comm is not None:
+        rank = comm.rank
+    matsubara = iws is not None
+    realaxis = ws is not None
+    N = len(basis)
+    n = len(psi_arr)
+
+    gs_realaxis = np.zeros((len(ws), n, n), dtype=complex) if realaxis else None
+    gs_matsubara = np.zeros((len(iws), n, n), dtype=complex) if matsubara else None
     blocks = basis.determine_blocks(hOp, slaterWeightMin=slaterWeightMin)
     block_lengths = np.array([len(block) for block in blocks], dtype=int)
     if basis.is_distributed:
         basis.comm.Allreduce(MPI.IN_PLACE, block_lengths, op=MPI.SUM)
     if verbose:
+        print(f"Basis size:\n{len(basis)}")
         print(f"Manybody Hamiltonian block sizes:\n{block_lengths}")
-
-    impurity_orbitals = basis.impurity_orbitals
-    bath_states = basis.bath_states
-    gs_matsubara = np.zeros((len(iws), n, n), dtype=complex) if matsubara else None
-    gs_realaxis = np.zeros((len(ws), n, n), dtype=complex) if realaxis else None
-    for block in [[basis.local_basis[idx - basis.offset] for idx in block] for block in blocks]:
-        block_basis = CIPSI_Basis(
-            impurity_orbitals,
-            bath_states,
+    last_state = [None for _ in psi_arr]
+    for block in [[basis.local_basis[idx - basis.offset] for idx in block_idxs] for block_idxs in blocks]:
+        block_basis = Basis(
+            basis.impurity_orbitals,
+            basis.bath_states,
             initial_basis=block,
             comm=comm,
         )
@@ -703,10 +702,57 @@ def block_Green(
         if psi_dense_local.shape[1] == 0:
             return np.zeros((len(iws), n, n), dtype=complex), np.zeros((len(ws), n, n), dtype=complex)
 
+        it_max = block_basis.size // n
+        if block_basis.size % n != 0:
+            it_max += 1
+        it_max = max(1, it_max)
+        # If we have a realaxis mesh, prefer to check convergence on that
+        # if not, use the Matsubara mesh
+        if realaxis:
+            conv_w = ws
+        else:
+            conv_w = np.linspace(start=-0.5, stop=0.5, num=501)
+        n_samples = max(len(conv_w) // 20, min(len(conv_w), 10))
+        def converged(alphas, betas, verbose=False):
+            if alphas.shape[0] == 1:
+                return False
+
+            # delta_guess = np.linalg.norm(np.conj(betas[-1].T) @ betas[-1])
+            if np.any(np.abs(betas[-1]) > 1e6):
+                return True
+            if it_max >= 10 and alphas.shape[0] % (it_max//10) != 0:
+                return False
+
+            w = np.zeros((n_samples), dtype=conv_w.dtype)
+            intervals = np.linspace(start=conv_w[0], stop=conv_w[-1], num=n_samples + 1)
+            for i in range(n_samples):
+                w[i] = basis.rng.uniform(
+                    low=min(intervals[i], intervals[i + 1]), high=max(intervals[i], intervals[i + 1]), size=None
+                )
+            wIs = (w + 1j * delta + e)[:, np.newaxis, np.newaxis] * np.identity(alphas.shape[1], dtype=complex)[
+                np.newaxis, :, :
+            ]
+            gs_new = wIs - alphas[-1]
+            gs_new = (
+                wIs
+                - alphas[-2]
+                - np.conj(betas[-2].T)[np.newaxis, :, :] @ np.linalg.solve(gs_new, betas[-2][np.newaxis, :, :])
+            )
+            gs_prev = wIs - alphas[-2]
+            for alpha, beta in zip(alphas[-3::-1], betas[-3::-1]):
+                gs_new = wIs - alpha - np.conj(beta.T)[np.newaxis, :, :] @ np.linalg.solve(gs_new, beta[np.newaxis, :, :])
+                gs_prev = wIs - alpha - np.conj(beta.T)[np.newaxis, :, :] @ np.linalg.solve(gs_prev, beta[np.newaxis, :, :])
+
+            d_gs = np.max(np.abs(gs_new - gs_prev))
+            if verbose:
+                print(rf"$\delta$ = {d_gs}")
+            return d_gs < max(slaterWeightMin, 1e-6)
+
         if dense:
+            H = block_basis.build_dense_matrix(hOp)
             alphas, betas = get_block_Lanczos_matrices_dense(
                 psi0=psi_dense_local,
-                h=block_basis.build_dense_matrix(hOp),
+                h=H,
                 converged=converged,
                 verbose=verbose,
             )
@@ -718,33 +764,43 @@ def block_Green(
                 if comm is not None:
                     comm.Reduce(MPI.IN_PLACE if comm.rank == 0 else res, res, op=MPI.SUM, root=0)
                 return res.reshape(h_local.shape[0], v.shape[1])
-
-            # Run Lanczos on psi0^T* [wI - j*delta - H]^-1 psi0
-            alphas, betas = get_block_Lanczos_matrices(
-                psi0=psi_dense_local,
-                h=sp.sparse.linalg.LinearOperator(
+            H = sp.sparse.linalg.LinearOperator(
                     (len(block_basis), len(block_basis.local_indices)),
                     matvec=matmat,
                     rmatvec=matmat,
                     matmat=matmat,
                     rmatmat=matmat,
                     dtype=complex,
-                ),
+                )
+
+            # Run Lanczos on psi0^T* [wI - j*delta - H]^-1 psi0
+            alphas, betas = get_block_Lanczos_matrices(
+                psi0=psi_dense_local,
+                h=H,
                 converged=converged,
                 verbose=verbose,
-                comm=block_basis.comm,
+                comm=comm,
             )
+        Q = get_Lanczos_vectors(H, alphas, betas, psi_dense_local, comm=comm)
+        ns = block_basis.build_state(Q[:, -n].T)
+        # print(f"{ns=}")
+        for i in range(len(psi_arr)):
+            if last_state[i] is None:
+                last_state[i] = ns[i]
+            else:
+                last_state[i] = last_state[i] + ns[i]
+        # for ls, qs in zip(last_state, block_basis.build_state(qn.T)):
+        #     ls += qs
 
         block_gs_matsubara, block_gs_realaxis = calc_mpi_Greens_function_from_alpha_beta(
             alphas, betas, iws, ws, e, delta, r, verbose, comm=comm
         )
+
         if matsubara and rank == 0:
             gs_matsubara += block_gs_matsubara
         if realaxis and rank == 0:
             gs_realaxis += block_gs_realaxis
-
-    return gs_matsubara, gs_realaxis
-
+    return gs_matsubara, gs_realaxis, last_state
 
 def block_Green_freq_2(
     n_spin_orbitals,
