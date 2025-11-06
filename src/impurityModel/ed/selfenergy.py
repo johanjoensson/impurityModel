@@ -16,7 +16,7 @@ import impurityModel.ed.product_state_representation as psr
 
 from impurityModel.ed.greens_function import get_Greens_function, save_Greens_function
 from impurityModel.ed.block_structure import print_block_structure
-from impurityModel.ed.ManyBodyUtils import ManyBodyOperator
+from impurityModel.ed.ManyBodyUtils import ManyBodyOperator, ManyBodyState
 
 EV_TO_RY = 1 / 13.605693122994
 
@@ -148,7 +148,7 @@ def fixed_peak_dc(
             h,
             e_max=energy_cut,
             k=1,
-            eigenValueTol=0,
+            eigenValueTol=np.sqrt(np.finfo(float).eps),
             return_eigvecs=True,
             comm=basis_upper.comm,
             dense=basis_upper.size < dense_cutoff,
@@ -158,7 +158,7 @@ def fixed_peak_dc(
             h,
             e_max=energy_cut,
             k=1,
-            eigenValueTol=0,
+            eigenValueTol=np.sqrt(np.finfo(float).eps),
             return_eigvecs=True,
             comm=basis_upper.comm,
             dense=basis_lower.size < dense_cutoff,
@@ -231,26 +231,19 @@ def calc_occ_e(
     h_dict = basis.expand(h_op, dense_cutoff=dense_cutoff, de2_min=1e-6)
 
     energy_cut = -tau * np.log(1e-4)
-    blocks = basis.determine_blocks(h_op)
-    e_trial = np.inf
-    for block in blocks:
-        block_basis = CIPSI_Basis(
-            basis.impurity_orbitals,
-            basis.bath_states,
-            initial_basis=[basis.local_basis[idx - basis.offset] for idx in block],
-            comm=basis.comm,
-        )
-        h = block_basis.build_sparse_matrix(h_op)
-        e_block = finite.eigensystem_new(
-            h,
-            e_max=energy_cut,
-            k=sum(len(block) for block in basis.impurity_orbitals[0]),
-            eigenValueTol=0,
-            return_eigvecs=False,
-            comm=basis.comm,
-            dense=basis.size < dense_cutoff,
-        )
-        e_trial = min(e_trial, np.min(e_block))
+
+    block_roots, block_basis, _ = basis.split_into_block_basis_and_redistribute_psi(h_op, None)
+    h = block_basis.build_sparse_matrix(h_op)
+    e_block = finite.eigensystem_new(
+        h,
+        e_max=energy_cut,
+        k=2*sum(len(block) for block in block_basis.impurity_orbitals[0]),
+        eigenValueTol=np.sqrt(np.finfo(float).eps),
+        return_eigvecs=False,
+        comm=block_basis.comm,
+        dense=block_basis.size < dense_cutoff,
+    )
+    e_trial = basis.comm.allreduce(np.min(e_block), op=MPI.MIN)
     return e_trial, basis, h_dict
 
 
@@ -303,9 +296,6 @@ def find_gs(
             truncation_threshold=truncation_threshold,
         )
         if e_trial < e_gs:
-            if verbose >= 2:
-                for i in keys:
-                    print(f"N0[{i}] {N0[i] + dN[i]:^5d}: E = {e_trial:^7.4f} ")
             e_gs = e_trial
             basis_gs = basis.copy()
             h_dict_gs = h_dict
@@ -340,13 +330,11 @@ def find_gs(
             e_gs = e_trial
             basis_gs = basis.copy()
             h_dict_gs = h_dict
-            if verbose >= 2:
-                print(f"{i} ---> {gs_impurity_occ[i]:^5d}: E = {e_gs:^7.4f} ")
     if verbose >= 1:
         print("Ground state occupation")
         print("\n".join((f"{i:^3d}: {gs_impurity_occ[i]: ^5d}" for i in gs_impurity_occ)))
         print(rf"E$_{{GS}}$ = {e_gs:^7.4f}")
-        print("=" * 80)
+        print("=" * 80, flush=True)
     return gs_impurity_occ, basis_gs, h_dict_gs
 
 
@@ -418,41 +406,35 @@ def calc_selfenergy(
     energy_cut = -tau * np.log(1e-4)
 
     _ = basis.expand(h, dense_cutoff=dense_cutoff, de2_min=1e-8)
-    blocks = basis.determine_blocks(h)
-    block_lengths = np.array([len(block) for block in blocks], dtype=int)
-    if basis.is_distributed:
-        basis.comm.Allreduce(MPI.IN_PLACE, block_lengths, op=MPI.SUM)
-    if verbosity >= 1:
-        print(f"Size of blocks in the GS Hamiltonian:\n{block_lengths}")
-
-    es = np.zeros((0), dtype=float)
+    block_roots, block_basis, _ = basis.split_into_block_basis_and_redistribute_psi(h, None)
+    h_gs = block_basis.build_sparse_matrix(h)
+    block_es, block_psis_dense = finite.eigensystem_new(
+        h_gs,
+        e_max=energy_cut,
+        k=2 * total_impurity_orbitals[0],
+        eigenValueTol=np.sqrt(np.finfo(float).eps),
+        comm=block_basis.comm,
+        dense=block_basis.size < dense_cutoff,
+    )
     psis = []
-    for block in blocks:
-        block_basis = CIPSI_Basis(
-            basis.impurity_orbitals,
-            basis.bath_states,
-            initial_basis=[basis.local_basis[idx - basis.offset] for idx in block],
-            comm=basis.comm,
-        )
-        if len(block_basis) == 0:
-            continue
+    es = np.array([], dtype=float)
+    proc_cutoff = np.array(block_roots[1:] + [basis.comm.size])
+    block_color = np.argmax(basis.comm.rank < proc_cutoff)
+    for c, c_root in enumerate(block_roots):
+        es_c =basis.comm.bcast(block_es, root=c_root) 
+        es = np.append(es, es_c)
+        if c != block_color:
+            psi_c = basis.redistribute_psis([ManyBodyState() for _ in es_c])
+        else:
+            psi_c = basis.redistribute_psis(block_basis.build_state(block_psis_dense.T))
+        psis.extend(psi_c)
 
-        h_gs = block_basis.build_sparse_matrix(h)
-        block_es, block_psis_dense = finite.eigensystem_new(
-            h_gs,
-            e_max=energy_cut,
-            k=2 * total_impurity_orbitals[0],
-            eigenValueTol=0,
-            comm=basis.comm,
-            dense=basis.size < dense_cutoff,
-        )
-        psis.extend(block_basis.build_state(block_psis_dense.T))
-        es = np.append(es, block_es)
-    sorted_idx = np.argsort(es)
-    es = es[sorted_idx]
-    mask = es <= es[0] + energy_cut
+
+    sort_idx = np.argsort(es)
+    es = es[sort_idx]
+    mask = es <= (es[0] + energy_cut)
     es = es[mask]
-    psis = [psis[idx] for idx in itertools.compress(sorted_idx, mask)]
+    psis = [psis[idx] for idx in itertools.compress(sort_idx, mask)]
 
     effective_restrictions = basis.get_effective_restrictions()
     if verbosity >= 1:

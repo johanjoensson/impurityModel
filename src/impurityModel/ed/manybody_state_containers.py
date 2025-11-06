@@ -855,9 +855,9 @@ class CentralizedStateContainer(StateContainer):
             if self.is_distributed
             else [None]
         )
-        assert self.full_basis == self._index_dict.states
-        assert len(self.full_basis) == len(self._index_dict.states)
-        assert id(self.full_basis) == id(self._index_dict.states)
+        assert self._full_basis == self._index_dict.states
+        assert len(self._full_basis) == len(self._index_dict.states)
+        assert id(self._full_basis) == id(self._index_dict.states)
 
     def _getitem_sequence(self, l: Iterable[int]) -> Iterable[bytes]:
         return (self._full_basis[i] for i in l)

@@ -151,12 +151,17 @@ def petsc_eigensystem(h_local, e_max, k=10, v0=None, eigenValueTol=0, return_eig
 
     # set initial vectors
     if v0 is not None:
-        vs = [M.createVecRight() for _ in range(v0.shape[1])]
-        for i, v in enumerate(vs):
+        vs = []
+        for i in range(v0.shape[1]):
+            v = M.createVecRight()
             start, end = v.getOwnershipRange()
             v[start:end] = v0[start:end, i]
             v.assemble()
-        eig_solver.setInitialSpace(vs)
+            if v.norm() < np.sqrt(np.finfo(float).eps):
+                continue
+            vs.append(v)
+        if len(vs) > 0:
+            eig_solver.setInitialSpace(vs)
     es = [0]
     nconv = 0
     while np.sum(es - np.min(es) <= e_max) == len(es) and len(es) < h_local.shape[0] - 2:
@@ -238,6 +243,11 @@ def primme_eigensystem(h_local, e_max, k=10, v0=None, eigenValueTol=0, return_ei
     )
     es = [0]
     rng = np.random.default_rng()
+    if v0 is not None:
+        norm_mask = np.linalg.norm(v0, axis=0) > np.sqrt(np.finfo(float).eps)
+        v0 = v0[:, norm_mask]
+        if v0.shape[1] == 0:
+            v0 = None
     if v0 is None:
         v0 = rng.uniform(size=(h.shape[0], 1)) + 1j * rng.uniform(size=(h.shape[0], 1))
         if comm is not None:
@@ -280,6 +290,11 @@ def scipy_eigensystem(h_local, e_max, k=10, v0=None, eigenValueTol=0, return_eig
 
     es = np.array([0])
     rng = np.random.default_rng()
+    if v0 is not None:
+        norm_mask = np.linalg.norm(v0, axis=0) > np.sqrt(np.finfo(float).eps)
+        v0 = v0[:, norm_mask]
+        if v0.shape[1] == 0:
+            v0 = None
     if v0 is None:
         v0 = rng.uniform(size=(h.shape[0], 1)) + 1j * rng.uniform(size=(h.shape[0], 1))
         if comm is not None:

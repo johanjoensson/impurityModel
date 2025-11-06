@@ -155,12 +155,10 @@ class Basis:
             impurity_electron_indices = [orb for imp_orbs in impurity_orbitals[i] for orb in imp_orbs]
             valence_electron_indices = [orb for val_orbs in valence_baths[i] for orb in val_orbs]
             conduction_electron_indices = [orb for con_orbs in conduction_baths[i] for orb in con_orbs]
-            print(f"Mixed valence occupation: {mixed_valence[i]}")
             for nominal_occ in range(
                 max(0, nominal_impurity_occ[i] - abs(mixed_valence[i])),
                 min(total_impurity_orbitals[i], nominal_impurity_occ[i] + abs(mixed_valence[i])) + 1,
             ):
-                print(f"Nominal impurity occupation: {nominal_occ}")
                 for delta_valence in range(delta_valence_occ[i] + 1):
                     for delta_conduction in range(delta_conduction_occ[i] + 1):
                         delta_impurity = delta_valence - delta_conduction
@@ -512,7 +510,7 @@ class Basis:
 
         # self.state_container = CentralizedStateContainer(
         self.state_container = SimpleDistributedStateContainer(
-            # self.state_container = DistributedStateContainer(
+        # self.state_container = DistributedStateContainer(
             initial_basis,
             bytes_per_state=self.n_bytes,
             comm=self.comm,
@@ -975,6 +973,18 @@ class Basis:
         return rho_imps, rho_baths
 
     def determine_blocks(self, op, slaterWeightMin=0):
+        """
+        Determine the blockstructure of op in the ManyBodyBasis
+        Return a list of lists containing the (MPI-)local basis states belonging to each block
+        NB. The lists of local basis states for each block may be empty, but the block is not!
+        Arguments:
+        ==========
+        op: ManyBodyOperator to determine the block structure of
+        slaterWeightMin: float ignore matrix elements with magnitude < slaterWeightMin (|{op}_ij| < slaterWeightMin)
+        Returns:
+        ========
+        list[list[slater determinants]] the (MPI-)local manybody basis states belonging to each block.
+        """
         disjoint_sets = DisjointSet(list(range(self.size)))
         tmps = [None for _ in range(len(self.local_basis))]
         states = set()
@@ -1003,8 +1013,11 @@ class Basis:
         comm = self.comm
         normalized_priorities = np.array([p for p in priorities], dtype=float)
         normalized_priorities /= np.sum(normalized_priorities)
-        # Make sure we have at most min_group_size basis states per MPI rank for each color
-        n_colors = min(max(1, comm.size // int(np.ceil(self.size / min_group_size))), len(normalized_priorities))
+        if self.size == 0: 
+            n_colors = min(comm.size, len(normalized_priorities))
+        else:
+            # Make sure we have at most min_group_size basis states per MPI rank for each color
+            n_colors = min(max(1, comm.size // int(np.ceil(self.size / min_group_size))), len(normalized_priorities))
 
         # Group priorities into colors so that all colours have roughly the same priorities
         # Step 1:
@@ -1020,12 +1033,13 @@ class Basis:
         subgroups = sorted(subgroups, key=lambda idxs: np.sum(normalized_priorities[list(idxs)]))
         n_colors = len(subgroups)
         merged_priorities = np.array([np.sum(normalized_priorities[list(subgroup)]) for subgroup in subgroups])
-        procs_per_color = np.array([max(1, n) for n in comm.size * merged_priorities], dtype=int)
+        procs_per_color = np.array([max(1, n) for n in np.floor(comm.size * merged_priorities)], dtype=int)
         remainder = comm.size - np.sum(procs_per_color)
         while remainder != 0:
             if remainder < 0:
-                mask = procs_per_color > 1
-                procs_per_color[mask[-(remainder % n_colors) :]] -= 1
+                mask = np.nonzero(procs_per_color > 1)
+
+                procs_per_color[mask[-(abs(remainder) % n_colors) :]] -= 1
             else:
                 procs_per_color[-(abs(remainder) % n_colors) :] += 1
             remainder = comm.size - np.sum(procs_per_color)
@@ -1033,7 +1047,7 @@ class Basis:
         assert sum(procs_per_color) == comm.size
         proc_cutoffs = np.cumsum(procs_per_color)
         color = np.argmax(comm.rank < proc_cutoffs)
-        split_comm = comm.Split(color=color, key=0)
+        split_comm = comm.Split(color=color, key=comm.rank)
         split_roots = [0] + proc_cutoffs[:-1].tolist()
         items_per_color = [len(subgroup) for subgroup in subgroups]
         assert sum(items_per_color) == len(priorities)
@@ -1069,24 +1083,108 @@ class Basis:
             spin_flip_dj=self.spin_flip_dj,
         )
 
-        new_psis = [p.copy() for p in psis]
-        for c, c_root in enumerate(split_roots):
-            if color != c:
-                comm.send([p.to_dict() for p in psis], dest=c_root + (comm.rank % procs_per_color[c]))
-            else:
-                for sender in range(comm.size):
-                    if (
-                        sum(procs_per_color[:c]) <= sender < sum(procs_per_color[: c + 1])
-                        or sender % procs_per_color[c] != split_comm.rank
-                    ):
-                        continue
-                    received_psis = comm.recv(source=sender)
-                    for i, received_psi in enumerate(received_psis):
-                        new_psis[i] += ManyBodyState(received_psi)
+        if psis is not None:
+            new_psis = [p.copy() for p in psis]
+            for c, c_root in enumerate(split_roots):
+                if color != c:
+                    comm.send([p.to_dict() for p in psis], dest=c_root + (comm.rank % procs_per_color[c]))
+                else:
+                    for sender in range(comm.size):
+                        if (
+                            sum(procs_per_color[:c]) <= sender < sum(procs_per_color[: c + 1])
+                            or sender % procs_per_color[c] != split_comm.rank
+                        ):
+                            continue
+                        received_psis = comm.recv(source=sender)
+                        for i, received_psi in enumerate(received_psis):
+                            new_psis[i] += ManyBodyState(received_psi)
 
-        psis = split_basis.redistribute_psis(new_psis)
+            psis = split_basis.redistribute_psis(new_psis)
         return indices, split_roots, color, items_per_color, split_basis, psis
 
+
+    def split_into_block_basis_and_redistribute_psi(self, op, psis, min_group_size=1000,slaterWeightMin=0, verbose=False):
+        """
+        Split the basis into blocks determined by op. Also split psis into these blocks.
+        """
+
+        blocks = self.determine_blocks(op, slaterWeightMin)
+        block_lengths = np.array([len(block) for block in blocks], dtype=int)
+        if self.is_distributed:
+            self.comm.Allreduce(MPI.IN_PLACE, block_lengths)
+
+        tmp_basis = Basis(
+            self.impurity_orbitals,
+            self.bath_states,
+            initial_basis=[],
+            restrictions=self.restrictions,
+            spin_flip_dj=self.spin_flip_dj,
+            chain_restrict=self.chain_restrict,
+            collapse_chains=self.collapse_chains,
+            comm=self.comm,
+            truncation_threshold=self.truncation_threshold,
+            verbose=self.verbose,
+        )
+
+        block_indices, block_roots, block_color, blocks_per_color, block_basis, _ = tmp_basis.split_basis_and_redistribute_psi(block_lengths**2, None, min_group_size=np.min(block_lengths))
+
+        blocks_for_each_rank = self.comm.allgather(block_indices)
+
+        procs_per_color = np.diff(block_roots)
+        procs_per_color = np.append(procs_per_color, [self.comm.size - np.sum(procs_per_color)])
+
+        blocks_per_color = [None for _ in block_roots]
+        for c, c_r in enumerate(block_roots):
+            blocks_per_color[c] = blocks_for_each_rank[c_r]
+            for c_i in range(1, procs_per_color[c]):
+                assert all(bi in blocks_per_color[c] for bi in blocks_for_each_rank[c_r+c_i]), f"{blocks_per_color[c]=} != {blocks_for_each_rank[c_r + c_i]=}"
+                assert all(bi in blocks_for_each_rank[c_r+c_i] for bi in blocks_per_color[c]), f"{blocks_per_color[c]=} != {blocks_for_each_rank[c_r + c_i]=}"
+
+        block_states = {self.local_basis[idx - self.offset] for bi in block_indices for idx in blocks[bi]}
+        # Treat each "color" separately
+        for c, c_root in enumerate(block_roots):
+            # We need to send states to other ranks
+            if c != block_color:
+                destination = c_root + (self.comm.rank % procs_per_color[c])
+                send_states = {self.local_basis[idx - self.offset] for bi in blocks_per_color[c] for idx in blocks[bi]}
+                self.comm.send(send_states, dest=destination)
+            # We will be receivving states from other ranks
+            else:
+                for sender in range(self.comm.size):
+                    if (
+                        sum(procs_per_color[:c]) <= sender < sum(procs_per_color[: c + 1])
+                        or sender % procs_per_color[c] != block_basis.comm.rank
+                    ):
+                        continue
+                    block_states |= self.comm.recv(source=sender)
+        block_basis.add_states(block_states)
+
+        if psis is not None:
+            block_psis = [ManyBodyState({state: psi[state] for state in block_basis.local_basis if state in psi}) for psi in psis]
+            for c, c_root in enumerate(block_roots):
+                if c != block_color:
+                    destination = c_root + ( self.comm.rank % procs_per_color[c])
+                    send_blocks = blocks_per_color[c]
+                    idxs = [idx for block in send_blocks for idx in blocks[block]]
+                    send_states = [self.local_basis[idx - self.offset] for bi in blocks_per_color[c] for idx in blocks[bi]]
+                    send_dicts = [{state: psi[state] for state in send_states if state in psi} for psi in psis]
+                    self.comm.send(send_dicts, dest=destination)
+                else:
+                    for sender in range(self.comm.size):
+                        if (
+                            sum(procs_per_color[:c]) <= sender < sum(procs_per_color[: c + 1])
+                            or sender % procs_per_color[c] != block_basis.comm.rank
+                        ):
+                            continue
+                        received_dicts = self.comm.recv(source = sender)
+                        for bpsi, rdict in zip(block_psis, received_dicts):
+                            bpsi += ManyBodyState(rdict)
+            psis = block_basis.redistribute_psis(block_psis)
+
+
+        return block_roots, block_basis, psis
+
+            
 
 class CIPSI_Basis(Basis):
     def __init__(self, impurity_orbitals, bath_states, H=None, nominal_impurity_occ=None, initial_basis=None, **kwargs):
@@ -1111,7 +1209,7 @@ class CIPSI_Basis(Basis):
                 H_sparse,
                 e_max=-self.tau * np.log(1e-4),
                 k=1,
-                eigenValueTol=0,
+                eigenValueTol=np.sqrt(np.finfo(float).eps),
                 comm=self.comm,
                 dense=False,
             )
@@ -1187,67 +1285,56 @@ class CIPSI_Basis(Basis):
         if isinstance(H, dict):
             H = ManyBodyOperator(H)
 
+        
         old_size = self.size - 1
         while old_size != self.size:
-            if self.size > dense_cutoff:
-                blocks = self.determine_blocks(H)
-                block_psi_refs = []
-                e_ref = np.array([], dtype=float)
-                for i, block in enumerate(blocks):
-                    block_basis = CIPSI_Basis(
-                        self.impurity_orbitals,
-                        self.bath_states,
-                        initial_basis=[self.local_basis[idx - self.offset] for idx in block],
-                        comm=self.comm,
-                    )
-                    # assert len(block_basis) == self.comm.allreduce(
-                    #     len(block)
-                    # ), f"{len(block_basis)=} {self.comm.allreduce(len(block))=}"
-                    if len(block_basis) == 0:
-                        continue
-                    H_mat = block_basis.build_sparse_matrix(H)
-                    if psi_ref is not None:
-                        psi_ref = block_basis.redistribute_psis(psi_ref)
-                    e_ref_block, psi_ref_dense = eigensystem_new(
-                        H_mat,
-                        e_max=de0_max,
-                        k=2 * len(psi_ref) if psi_ref is not None else 5,
-                        v0=block_basis.build_vector(psi_ref).T if psi_ref is not None else None,
-                        eigenValueTol=0,
-                        comm=self.comm,
-                        dense=self.size < dense_cutoff,
-                    )
-                    block_psi_refs.extend(block_basis.build_state(psi_ref_dense.T))
-                    e_ref = np.append(e_ref, e_ref_block)
-                sort_idx = np.argsort(e_ref)
-                e_ref = e_ref[sort_idx]
-                mask = e_ref <= (e_ref[0] + de0_max)
-                e_ref = e_ref[mask]
-                psi_ref = [block_psi_refs[idx] for idx in itertools.compress(sort_idx, mask)]
-            else:
-                H_mat = self.build_sparse_matrix(H)
-                e_ref, psi_ref_dense = eigensystem_new(
-                    H_mat,
-                    e_max=de0_max,
-                    k=2 * len(psi_ref) if psi_ref is not None else 5,
-                    v0=self.build_vector(psi_ref).T if psi_ref is not None else None,
-                    eigenValueTol=0,
-                    comm=self.comm,
-                    dense=True,
-                )
 
-                psi_ref = self.build_state(psi_ref_dense.T)
-            if self.size > self.truncation_threshold:
-                psi_ref = self.truncate(psi_ref)
-                print(f"----->After truncation, the basis contains {self.size} elements.")
+            block_roots, block_basis, block_psi_refs = self.split_into_block_basis_and_redistribute_psi(H, psi_ref, slaterWeightMin)
+            H_mat = block_basis.build_sparse_matrix(H)
+            e_ref = np.array([], dtype=float)
+            new_psi_ref = []
+
+            e_ref_block, psi_ref_dense = eigensystem_new(
+                H_mat,
+                e_max=de0_max,
+                k=2 * len(block_psi_refs) if block_psi_refs is not None else 10,
+                v0=block_basis.build_vector(block_psi_refs).T if block_psi_refs is not None else None,
+                eigenValueTol=np.sqrt(np.finfo(float).eps),
+                comm=block_basis.comm,
+                dense=self.size < dense_cutoff,
+            )
+            assert e_ref_block.shape[0] == psi_ref_dense.shape[1], f"{e_ref_block.shape[0]=} != {psi_ref_dense.shape[1]=}"
+            psi_ref = []
+            e_ref = np.array([], dtype=float)
+            proc_cutoff = np.array(block_roots[1:] + [self.comm.size])
+            block_color = np.argmax(self.comm.rank < proc_cutoff)
+            for c, c_root in enumerate(block_roots):
+                e_ref_c =self.comm.bcast(e_ref_block, root=c_root) 
+                e_ref = np.append(e_ref, e_ref_c, axis=0)
+                if c != block_color:
+                    psi_ref_c = self.redistribute_psis([ManyBodyState() for _ in range(e_ref_c.shape[0])])
+                else:
+                    psi_ref_c = self.redistribute_psis(block_basis.build_state(psi_ref_dense.T))
+                psi_ref.extend(psi_ref_c)
+
+            assert len(e_ref) == len(psi_ref), f"{len(e_ref)=}, {len(psi_ref)=}"
+            sort_idx = np.argsort(e_ref)
+            e_ref = e_ref[sort_idx]
+            mask = e_ref <= (e_ref[0] + de0_max)
+            e_ref = e_ref[mask]
+            psi_ref = [psi_ref[idx] for idx in itertools.compress(sort_idx, mask)]
 
             new_Dj = self.determine_new_Dj(e_ref, psi_ref, H, de2_min)
             old_size = self.size
             self.add_states(new_Dj)
             psi_ref = self.redistribute_psis(psi_ref)
+            if self.size > self.truncation_threshold:
+                psi_ref = self.truncate(psi_ref)
+                print(f"-----> Basis truncated!")
+                break
 
         if self.verbose:
-            print(f"After expansion, the basis contains {self.size} elements.")
+            print(f"After expansion, the basis contains {self.size} elements.", flush=True)
 
         return self.build_operator_dict(H)
 
@@ -1287,10 +1374,10 @@ class CIPSI_Basis(Basis):
         assert len(new_basis) == len(self)
         return new_basis
 
-    def split_basis_and_redistribute_psi(self, priorities, psis):
+    def split_basis_and_redistribute_psi(self, priorities, psis, min_group_size=1000):
 
         indices, split_roots, color, items_per_color, split_basis, psis = super().split_basis_and_redistribute_psi(
-            priorities, psis
+            priorities, psis, min_group_size
         )
 
         split_basis = CIPSI_Basis(

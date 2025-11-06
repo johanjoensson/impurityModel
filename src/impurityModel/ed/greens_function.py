@@ -633,16 +633,27 @@ def block_Green(
     while not done:
         old_size = basis.size
         # Add states connected to the last Krylov vector(s) calculated
-        # new_states = {}
+        new_states = set()
         for state in last_state:
-            new_state = applyOp_test(hOp, state, cutoff=slaterWeightMin, restrictions=basis.restrictions)
-            basis.add_states(new_state.keys())
+            new_state = applyOp_test(hOp, state, restrictions=basis.restrictions, cutoff=slaterWeightMin)
+            new_states |= set(new_state.keys())
+        basis.add_states(new_states)
         if basis.size == old_size:
             break
+        while basis.size > basis.truncation_threshold:
+            cutoff = np.max(10*slaterWeightMin, np.finfo(float).eps)
+            last_state = basis.redistribute_psis(last_state)
+            basis.clear()
+            new_states = set()
+            for psi in last_state:
+                Hpsi = applyOp_test(hOp, psi, restrictions=basis.restrictions, cutoff=cutoff)
+                new_states |= set(Hpsi.keys())
+            basis.add_states(new_states)
+        psi_arr = basis.redistribute_psis(psi_arr)
         gs_realaxis_prev = gs_realaxis
         gs_matsubara, gs_realaxis, last_state = block_green_impl(basis, hOp, psi_arr, iws, ws, e, delta, slaterWeightMin, verbose)
         if rank == 0:
-            done = np.max(np.abs(gs_realaxis - gs_realaxis_prev)) < 1e-6
+            done = np.max(np.abs(gs_realaxis - gs_realaxis_prev)) < 1e-8
         if comm is not None:
             done = comm.bcast(done)
 
@@ -659,148 +670,146 @@ def block_green_impl(basis, hOp, psi_arr, iws, ws, e, delta, slaterWeightMin, ve
     N = len(basis)
     n = len(psi_arr)
 
-    gs_realaxis = np.zeros((len(ws), n, n), dtype=complex) if realaxis else None
-    gs_matsubara = np.zeros((len(iws), n, n), dtype=complex) if matsubara else None
-    blocks = basis.determine_blocks(hOp, slaterWeightMin=slaterWeightMin)
-    block_lengths = np.array([len(block) for block in blocks], dtype=int)
-    if basis.is_distributed:
-        basis.comm.Allreduce(MPI.IN_PLACE, block_lengths, op=MPI.SUM)
-    if verbose:
-        print(f"Basis size:\n{len(basis)}")
-        print(f"Manybody Hamiltonian block sizes:\n{block_lengths}")
-    last_state = [None for _ in psi_arr]
-    for block in [[basis.local_basis[idx - basis.offset] for idx in block_idxs] for block_idxs in blocks]:
-        block_basis = Basis(
-            basis.impurity_orbitals,
-            basis.bath_states,
-            initial_basis=block,
-            comm=comm,
+    # Parallelization over blocks
+    block_roots, block_basis, block_psis = basis.split_into_block_basis_and_redistribute_psi(hOp, psi_arr, slaterWeightMin=slaterWeightMin, verbose=verbose)
+    bcomm = block_basis.comm
+    
+    brank = bcomm.rank if bcomm is not None else 0
+
+    last_state = [ManyBodyState() for _ in block_psis]
+    dense = len(block_basis) < 100
+    if dense:
+        psi_dense = block_basis.build_vector(block_psis).T
+        psi_dense_local, r = build_qr(psi_dense)
+    else:
+        psi_dense = block_basis.build_vector(block_psis, root=0).T
+        if brank == 0:
+            psi_dense, r = build_qr(psi_dense)
+        r = bcomm.bcast(r if brank == 0 else None, root=0)
+        rows, columns = bcomm.bcast(psi_dense.shape if brank == 0 else None, root=0)
+        assert rows == block_basis.size
+        psi_dense_local = np.empty((len(block_basis.local_basis), columns), dtype=complex, order="C")
+        send_counts = np.empty((bcomm.size), dtype=int) if brank == 0 else None
+        bcomm.Gather(np.array([psi_dense_local.size]), send_counts, root=0)
+        offsets = np.array([np.sum(send_counts[:r]) for r in range(bcomm.size)], dtype=int) if brank == 0 else None
+        bcomm.Scatterv(
+            [np.ascontiguousarray(psi_dense), send_counts, offsets, MPI.C_DOUBLE_COMPLEX] if brank == 0 else None,
+            psi_dense_local,
+            root=0,
         )
 
-        psi_arr = block_basis.redistribute_psis(psi_arr)
-        dense = len(block_basis) < 1000
-        if dense:
-            psi_dense = block_basis.build_vector(psi_arr).T
-            psi_dense_local, r = build_qr(psi_dense)
-        else:
-            psi_dense = block_basis.build_vector(psi_arr, root=0).T
-            if rank == 0:
-                psi_dense, r = build_qr(psi_dense)
-            r = block_basis.comm.bcast(r if rank == 0 else None, root=0)
-            rows, columns = block_basis.comm.bcast(psi_dense.shape if rank == 0 else None, root=0)
-            assert rows == block_basis.size
-            psi_dense_local = np.empty((len(block_basis.local_basis), columns), dtype=complex, order="C")
-            send_counts = np.empty((block_basis.comm.size), dtype=int) if rank == 0 else None
-            block_basis.comm.Gather(np.array([psi_dense_local.size]), send_counts if rank == 0 else None)
-            offsets = np.array([np.sum(send_counts[:r]) for r in range(comm.size)], dtype=int) if rank == 0 else None
-            comm.Scatterv(
-                [np.ascontiguousarray(psi_dense), send_counts, offsets, MPI.C_DOUBLE_COMPLEX] if rank == 0 else None,
-                psi_dense_local,
-                root=0,
+    if psi_dense_local.shape[1] == 0:
+        return np.zeros((len(iws), n, n), dtype=complex), np.zeros((len(ws), n, n), dtype=complex)
+
+    it_max = block_basis.size // n
+    if block_basis.size % n != 0:
+        it_max += 1
+    it_max = max(1, it_max)
+    # If we have a realaxis mesh, prefer to check convergence on that
+    # if not, use the Matsubara mesh
+    if realaxis:
+        conv_w = ws
+    else:
+        conv_w = np.linspace(start=-0.5, stop=0.5, num=501)
+    n_samples = max(len(conv_w) // 20, min(len(conv_w), 10))
+    def converged(alphas, betas, verbose=False):
+        if alphas.shape[0] == 1:
+            return False
+
+        # delta_guess = np.linalg.norm(np.conj(betas[-1].T) @ betas[-1])
+        if np.any(np.abs(betas[-1]) > 1e6):
+            return True
+        if it_max >= 10 and alphas.shape[0] % (it_max//10) != 0:
+            return False
+
+        w = np.zeros((n_samples), dtype=conv_w.dtype)
+        intervals = np.linspace(start=conv_w[0], stop=conv_w[-1], num=n_samples + 1)
+        for i in range(n_samples):
+            w[i] = basis.rng.uniform(
+                low=min(intervals[i], intervals[i + 1]), high=max(intervals[i], intervals[i + 1]), size=None
+            )
+        wIs = (w + 1j * delta + e)[:, np.newaxis, np.newaxis] * np.identity(alphas.shape[1], dtype=complex)[
+            np.newaxis, :, :
+        ]
+        gs_new = wIs - alphas[-1]
+        gs_new = (
+            wIs
+            - alphas[-2]
+            - np.conj(betas[-2].T)[np.newaxis, :, :] @ np.linalg.solve(gs_new, betas[-2][np.newaxis, :, :])
+        )
+        gs_prev = wIs - alphas[-2]
+        for alpha, beta in zip(alphas[-3::-1], betas[-3::-1]):
+            gs_new = wIs - alpha - np.conj(beta.T)[np.newaxis, :, :] @ np.linalg.solve(gs_new, beta[np.newaxis, :, :])
+            gs_prev = wIs - alpha - np.conj(beta.T)[np.newaxis, :, :] @ np.linalg.solve(gs_prev, beta[np.newaxis, :, :])
+
+        d_gs = np.max(np.abs(gs_new - gs_prev))
+        if verbose:
+            print(rf"$\delta$ = {d_gs}")
+        return d_gs < max(slaterWeightMin, 1e-8)
+
+    if dense:
+        H = block_basis.build_dense_matrix(hOp)
+        alphas, betas = get_block_Lanczos_matrices_dense(
+            psi0=psi_dense_local,
+            h=H,
+            converged=converged,
+            verbose=verbose,
+        )
+    else:
+        h_local = block_basis.build_sparse_matrix(hOp)[:, block_basis.local_indices]
+
+        def matmat(v):
+            res = h_local @ v
+            if bcomm is not None:
+                bcomm.Reduce(MPI.IN_PLACE if brank == 0 else res, res, op=MPI.SUM, root=0)
+            return res.reshape(h_local.shape[0], v.shape[1])
+        H = sp.sparse.linalg.LinearOperator(
+                (len(block_basis), len(block_basis.local_indices)),
+                matvec=matmat,
+                rmatvec=matmat,
+                matmat=matmat,
+                rmatmat=matmat,
+                dtype=complex,
             )
 
-        if psi_dense_local.shape[1] == 0:
-            return np.zeros((len(iws), n, n), dtype=complex), np.zeros((len(ws), n, n), dtype=complex)
+        # Run Lanczos on psi0^T* [wI - j*delta - H]^-1 psi0
+        alphas, betas = get_block_Lanczos_matrices(
+            psi0=psi_dense_local,
+            h=H,
+            converged=converged,
+            verbose=verbose,
+            comm=bcomm,
+        )
 
-        it_max = block_basis.size // n
-        if block_basis.size % n != 0:
-            it_max += 1
-        it_max = max(1, it_max)
-        # If we have a realaxis mesh, prefer to check convergence on that
-        # if not, use the Matsubara mesh
+    gs_matsubara, gs_realaxis = calc_mpi_Greens_function_from_alpha_beta(
+        alphas, betas, iws, ws, e, delta, r, verbose, comm=bcomm
+    )
+
+    Q = get_Lanczos_vectors(H, alphas, betas, psi_dense_local, comm=bcomm)
+    for lsi, lbsi in zip(last_state, block_basis.build_state(Q[:, -n:].T)):
+        lsi += lbsi
+
+    # Combine the results from every block
+    last_state = basis.redistribute_psis(last_state)
+    if rank == 0:
+        tmp_gs_matsubara = np.empty_like(gs_matsubara)
+        tmp_gs_realaxis = np.empty_like(gs_realaxis)
+        for sender in block_roots:
+            if sender == rank:
+                continue
+            if matsubara:
+                comm.Recv(tmp_gs_matsubara, source=sender)
+                gs_matsubara += tmp_gs_matsubara
+            if realaxis:
+                comm.Recv(tmp_gs_realaxis, source=sender)
+                gs_realaxis += tmp_gs_realaxis
+    elif brank == 0:
+        if matsubara:
+            comm.Send(gs_matsubara, dest=0)
         if realaxis:
-            conv_w = ws
-        else:
-            conv_w = np.linspace(start=-0.5, stop=0.5, num=501)
-        n_samples = max(len(conv_w) // 20, min(len(conv_w), 10))
-        def converged(alphas, betas, verbose=False):
-            if alphas.shape[0] == 1:
-                return False
-
-            # delta_guess = np.linalg.norm(np.conj(betas[-1].T) @ betas[-1])
-            if np.any(np.abs(betas[-1]) > 1e6):
-                return True
-            if it_max >= 10 and alphas.shape[0] % (it_max//10) != 0:
-                return False
-
-            w = np.zeros((n_samples), dtype=conv_w.dtype)
-            intervals = np.linspace(start=conv_w[0], stop=conv_w[-1], num=n_samples + 1)
-            for i in range(n_samples):
-                w[i] = basis.rng.uniform(
-                    low=min(intervals[i], intervals[i + 1]), high=max(intervals[i], intervals[i + 1]), size=None
-                )
-            wIs = (w + 1j * delta + e)[:, np.newaxis, np.newaxis] * np.identity(alphas.shape[1], dtype=complex)[
-                np.newaxis, :, :
-            ]
-            gs_new = wIs - alphas[-1]
-            gs_new = (
-                wIs
-                - alphas[-2]
-                - np.conj(betas[-2].T)[np.newaxis, :, :] @ np.linalg.solve(gs_new, betas[-2][np.newaxis, :, :])
-            )
-            gs_prev = wIs - alphas[-2]
-            for alpha, beta in zip(alphas[-3::-1], betas[-3::-1]):
-                gs_new = wIs - alpha - np.conj(beta.T)[np.newaxis, :, :] @ np.linalg.solve(gs_new, beta[np.newaxis, :, :])
-                gs_prev = wIs - alpha - np.conj(beta.T)[np.newaxis, :, :] @ np.linalg.solve(gs_prev, beta[np.newaxis, :, :])
-
-            d_gs = np.max(np.abs(gs_new - gs_prev))
-            if verbose:
-                print(rf"$\delta$ = {d_gs}")
-            return d_gs < max(slaterWeightMin, 1e-6)
-
-        if dense:
-            H = block_basis.build_dense_matrix(hOp)
-            alphas, betas = get_block_Lanczos_matrices_dense(
-                psi0=psi_dense_local,
-                h=H,
-                converged=converged,
-                verbose=verbose,
-            )
-        else:
-            h_local = block_basis.build_sparse_matrix(hOp)[:, block_basis.local_indices]
-
-            def matmat(v):
-                res = h_local @ v
-                if comm is not None:
-                    comm.Reduce(MPI.IN_PLACE if comm.rank == 0 else res, res, op=MPI.SUM, root=0)
-                return res.reshape(h_local.shape[0], v.shape[1])
-            H = sp.sparse.linalg.LinearOperator(
-                    (len(block_basis), len(block_basis.local_indices)),
-                    matvec=matmat,
-                    rmatvec=matmat,
-                    matmat=matmat,
-                    rmatmat=matmat,
-                    dtype=complex,
-                )
-
-            # Run Lanczos on psi0^T* [wI - j*delta - H]^-1 psi0
-            alphas, betas = get_block_Lanczos_matrices(
-                psi0=psi_dense_local,
-                h=H,
-                converged=converged,
-                verbose=verbose,
-                comm=comm,
-            )
-        Q = get_Lanczos_vectors(H, alphas, betas, psi_dense_local, comm=comm)
-        ns = block_basis.build_state(Q[:, -n].T)
-        # print(f"{ns=}")
-        for i in range(len(psi_arr)):
-            if last_state[i] is None:
-                last_state[i] = ns[i]
-            else:
-                last_state[i] = last_state[i] + ns[i]
-        # for ls, qs in zip(last_state, block_basis.build_state(qn.T)):
-        #     ls += qs
-
-        block_gs_matsubara, block_gs_realaxis = calc_mpi_Greens_function_from_alpha_beta(
-            alphas, betas, iws, ws, e, delta, r, verbose, comm=comm
-        )
-
-        if matsubara and rank == 0:
-            gs_matsubara += block_gs_matsubara
-        if realaxis and rank == 0:
-            gs_realaxis += block_gs_realaxis
+            comm.Send(gs_realaxis, dest=0)
     return gs_matsubara, gs_realaxis, last_state
+
 
 def block_Green_freq_2(
     n_spin_orbitals,
