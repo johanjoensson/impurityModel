@@ -47,6 +47,11 @@ cdef extern from "ManyBodyOperator.h":
 
         void clear_memory()
 
+    
+        # ManyBodyOperator operator+=(const ManyBodyOperator&)
+        # ManyBodyOperator operator-=(const ManyBodyOperator&)
+        # ManyBodyOperator operator*=(const cython.doublecomplex&)
+        # ManyBodyOperator operator/=(const cython.doublecomplex&)
         ManyBodyOperator operator-()
         ManyBodyOperator operator+(const ManyBodyOperator&)
         ManyBodyOperator operator-(const ManyBodyOperator&)

@@ -51,15 +51,28 @@ cdef class ManyBodyState:
         res.v = self.v + other.v
         return res
 
+    def __iadd__(self, ManyBodyState other) -> ManyBodyState:
+        self.v = self.v + other.v
+        return self
+
+
     def __sub__(self, ManyBodyState other):
         res = ManyBodyState()
         res.v = self.v - other.v
         return res
 
+    def __isub__(self, ManyBodyState other):
+        self.v = self.v - other.v
+        return self
+
     def __mul__(self, double complex s):
         res = ManyBodyState()
         res.v = self.v*  s
         return res
+
+    def __imul__(self, double complex s):
+        self.v = self.v*  s
+        return self
 
     def __rmul__(self, double complex s):
         res = ManyBodyState()
@@ -70,6 +83,10 @@ cdef class ManyBodyState:
         res = ManyBodyState()
         res.v = self.v /  s
         return res
+
+    def __itruediv__(self, double complex s):
+        self.v = self.v /  s
+        return self
 
     def __getitem__(self, bytes key):
         return self.v[bytes_to_key(key)]
@@ -185,15 +202,27 @@ cdef class ManyBodyOperator:
         res.o = self.o + other.o
         return res
 
+    def __iadd__(self, ManyBodyOperator other) ->ManyBodyOperator:
+        self.o = self.o + other.o
+        return self
+
     def __sub__(self, ManyBodyOperator other) -> ManyBodyOperator:
         res = ManyBodyOperator()
         res.o = self.o - other.o
         return res
 
+    def __isub__(self, ManyBodyOperator other) -> ManyBodyOperator:
+        self.o = self.o - other.o
+        return self
+
     def __mul__(self, complex s) ->ManyBodyOperator:
         res = ManyBodyOperator()
         res.o = self.o*s
         return res
+
+    def __imul__(self, complex s) ->ManyBodyOperator:
+        self.o = self.o*s
+        return self
 
     def __rmul__(self, complex s) -> ManyBodyOperator:
         return self*s
@@ -202,6 +231,10 @@ cdef class ManyBodyOperator:
         res = ManyBodyOperator()
         res.o = self.o/s
         return res
+
+    def __itruediv__(self, complex s) -> ManyBodyOperator:
+        self.o = self.o/s
+        return self
 
     def __len__(self):
         return self.o.size()

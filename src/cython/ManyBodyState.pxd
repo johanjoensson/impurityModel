@@ -42,6 +42,10 @@ cdef extern from "ManyBodyState.h":
         double complex& operator[](const key_type&)
         double complex& at(const key_type&)
 
+        # ManyBodyState operator+=(const ManyBodyState&)
+        # ManyBodyState operator-=(const ManyBodyState&)
+        # ManyBodyState operator*=(const ManyBodyState&)
+        # ManyBodyState operator/=(const ManyBodyState&)
         ManyBodyState operator+(const ManyBodyState&)
         ManyBodyState operator-(const ManyBodyState&)
         ManyBodyState operator-()
