@@ -199,7 +199,6 @@ def estimate_orthonormality(W, alphas, betas, eps=np.finfo(float).eps, N=1, rng=
 
 
 def qr_decomp_new(basis, psi):
-    print(f"{len(psi)=}")
 
     if basis.size <= len(psi):
         v = basis.build_vector(psi, root=0)
@@ -621,7 +620,6 @@ def block_lanczos(
         cutoff = eps
         n_trunc = 0
         while np.max(wp_size) > basis.truncation_threshold:
-            print(f"{wp_size=}")
             for psi in wp:
                 psi.prune(cutoff)
             comm.Allreduce(np.array([len(psi) for psi in wp]), wp_size, op=MPI.SUM)
@@ -979,7 +977,7 @@ def get_Lanczos_vectors(A, alphas, betas, v0, comm):
     N = v0.shape[0]
     n_it = alphas.shape[0]
     n = alphas.shape[1]
-    Q = np.empty((N, n_it*n), dtype=complex)
+    Q = np.empty((N, (n_it+1)*n), dtype=complex)
     Q[:, :n] = v0
     receive_q = np.empty_like(v0)
     for i in range(n_it):

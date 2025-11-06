@@ -630,18 +630,23 @@ def block_Green(
     # Calculate initial guess for Green's function
     gs_matsubara, gs_realaxis, last_state = block_green_impl(basis, hOp, psi_arr, iws, ws, e, delta, slaterWeightMin, verbose)
     done = False
+    if rank == 0:
+        causal = np.all(np.diagonal(gs_realaxis, axis1=1, axis2=2).imag < 0)
+    if comm is not None:
+        causal = comm.bcast(causal, root=0)
+    cutoff = slaterWeightMin
     while not done:
         old_size = basis.size
         # Add states connected to the last Krylov vector(s) calculated
         new_states = set()
         for state in last_state:
-            new_state = applyOp_test(hOp, state, restrictions=basis.restrictions, cutoff=slaterWeightMin)
+            new_state = applyOp_test(hOp, state, restrictions=basis.restrictions, cutoff=cutoff)
             new_states |= set(new_state.keys())
         basis.add_states(new_states)
         if basis.size == old_size:
             break
         while basis.size > basis.truncation_threshold:
-            cutoff = np.max(10*slaterWeightMin, np.finfo(float).eps)
+            cutoff = max(10*cutoff, np.finfo(float).eps)
             last_state = basis.redistribute_psis(last_state)
             basis.clear()
             new_states = set()
@@ -653,9 +658,15 @@ def block_Green(
         gs_realaxis_prev = gs_realaxis
         gs_matsubara, gs_realaxis, last_state = block_green_impl(basis, hOp, psi_arr, iws, ws, e, delta, slaterWeightMin, verbose)
         if rank == 0:
-            done = np.max(np.abs(gs_realaxis - gs_realaxis_prev)) < 1e-8
+            done = np.max(np.abs(gs_realaxis - gs_realaxis_prev)) < 1e-6
+            causal =  np.all(np.diagonal(gs_realaxis, axis1=1, axis2=2).imag) < 0
         if comm is not None:
             done = comm.bcast(done)
+            causal = comm.bcast(causal)
+        if not causal:
+            # Probably we are ignoring important determinants
+            # -> decrease the cutoff
+            cutoff = max(cutoff/10, np.finfo(float).eps)
 
     return gs_matsubara, gs_realaxis
 
