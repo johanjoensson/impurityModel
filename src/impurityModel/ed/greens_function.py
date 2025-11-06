@@ -630,6 +630,7 @@ def block_Green(
     # Calculate initial guess for Green's function
     gs_matsubara, gs_realaxis, last_state = block_green_impl(basis, hOp, psi_arr, iws, ws, e, delta, slaterWeightMin, verbose)
     done = False
+    causal = False
     if rank == 0:
         causal = np.all(np.diagonal(gs_realaxis, axis1=1, axis2=2).imag < 0)
     if comm is not None:
