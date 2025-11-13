@@ -42,7 +42,7 @@ requires = ["setuptools >= 77.0.3", "setuptools-scm"]
 build-backend = "setuptools.build_meta"
 
 [project.scripts]
-build_h0="impurityModel.scripts.plot_RIXS:main"
+plot_RIXS="impurityModel.scripts.plot_RIXS:main"
 build_h0="impurityModel.scripts.build_h0:main"
 [tool.setuptools]
 ext-modules = [
