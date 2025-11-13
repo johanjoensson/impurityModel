@@ -41,6 +41,7 @@ public:
   using allocator_type = Map::allocator_type;
   using reference = Map::reference;
   using const_reference = Map::const_reference;
+  using compare_type = Comparer;
   using pointer = Map::pointer;
   using const_pointer = Map::const_pointer;
   using iterator = Map::iterator;
@@ -211,10 +212,6 @@ public:
   template <class K> inline const_iterator upper_bound(const K &key) const {
     return m_map.upper_bound(key);
   }
-
-  inline key_compare key_comp() const { return m_map.key_comp(); }
-
-  inline value_compare value_comp() const { return m_map.value_comp(); }
 
   inline iterator begin() { return m_map.begin(); }
   inline const_iterator begin() const { return m_map.begin(); }

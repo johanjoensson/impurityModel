@@ -33,60 +33,60 @@ cdef extern from "ManyBodyOperator.h":
         ctypedef vector[pair[vector[size_t], pair[size_t, size_t]]] restrictions
         ctypedef map[ManyBodyState.key_type, ManyBodyState, ManyBodyState.key_compare] Memory
 
-        ManyBodyOperator()
-        ManyBodyOperator(const ManyBodyOperator&)
-        ManyBodyOperator& operator=(const ManyBodyOperator&)
-        ManyBodyOperator(const vector[value_type]&)
-        ManyBodyOperator(const OPS_VEC&, const SCALAR_VEC&)
+        ManyBodyOperator() nogil
+        ManyBodyOperator(const ManyBodyOperator&) nogil
+        ManyBodyOperator& operator=(const ManyBodyOperator&) nogil
+        ManyBodyOperator(const vector[value_type]&) nogil
+        ManyBodyOperator(const OPS_VEC&, const SCALAR_VEC&) nogil
 
-        cython.doublecomplex& operator[](const key_type&)
-        cython.doublecomplex& at(const key_type&)
-        ManyBodyState operator()(const ManyBodyState&, double, const restrictions&)
+        cython.doublecomplex& operator[](const key_type&) nogil
+        cython.doublecomplex& at(const key_type&) nogil
+        ManyBodyState operator()(const ManyBodyState&, double, const restrictions&) nogil
 
-        Memory memory()
+        Memory memory() nogil
 
-        void clear_memory()
+        void clear_memory() nogil
 
     
         # ManyBodyOperator operator+=(const ManyBodyOperator&)
         # ManyBodyOperator operator-=(const ManyBodyOperator&)
         # ManyBodyOperator operator*=(const cython.doublecomplex&)
         # ManyBodyOperator operator/=(const cython.doublecomplex&)
-        ManyBodyOperator operator-()
-        ManyBodyOperator operator+(const ManyBodyOperator&)
-        ManyBodyOperator operator-(const ManyBodyOperator&)
-        ManyBodyOperator operator*(const cython.doublecomplex&)
-        ManyBodyOperator operator/(const cython.doublecomplex&)
+        ManyBodyOperator operator-() nogil
+        ManyBodyOperator operator+(const ManyBodyOperator&) nogil
+        ManyBodyOperator operator-(const ManyBodyOperator&) nogil
+        ManyBodyOperator operator*(const cython.doublecomplex&) nogil
+        ManyBodyOperator operator/(const cython.doublecomplex&) nogil
 
-        bint empty()
-        size_type size()
-        size_type max_size()
-        void clear()
+        bint empty() nogil
+        size_type size() nogil
+        size_type max_size() nogil
+        void clear() nogil
 
-        bint operator==(const ManyBodyOperator&)
-        bint operator!=(const ManyBodyOperator&)
-        iterator begin()
-        iterator end()
-        const_iterator cbegin()
-        const_iterator cend()
-        reverse_iterator rbegin()
-        reverse_iterator rend()
-        const_reverse_iterator crbegin()
-        const_reverse_iterator crend()
+        bint operator==(const ManyBodyOperator&) nogil
+        bint operator!=(const ManyBodyOperator&) nogil
+        iterator begin() nogil
+        iterator end() nogil
+        const_iterator cbegin() nogil
+        const_iterator cend() nogil
+        reverse_iterator rbegin() nogil
+        reverse_iterator rend() nogil
+        const_reverse_iterator crbegin() nogil
+        const_reverse_iterator crend() nogil
 
-        pair[iterator, bint] insert(const value_type&)
-        iterator insert(iterator, const value_type&)
-        void insert[InputIt](InputIt, InputIt)
+        pair[iterator, bint] insert(const value_type&) nogil
+        iterator insert(iterator, const value_type&) nogil
+        void insert[InputIt](InputIt, InputIt) nogil
 
-        iterator erase(iterator)
-        iterator erase(const_iterator, const_iterator)
-        size_t erase(const key_type&)
+        iterator erase(iterator) nogil
+        iterator erase(const_iterator, const_iterator) nogil
+        size_t erase(const key_type&) nogil
 
-        void swap(ManyBodyOperator&)
+        void swap(ManyBodyOperator&) nogil
 
-        iterator find[K](const K&)
-        iterator find[K](iterator, iterator, const K &);
+        iterator find[K](const K&) nogil
+        iterator find[K](iterator, iterator, const K &) nogil
 
-        iterator lower_bound[K](const K&)
+        iterator lower_bound[K](const K&) nogil
 
-        iterator upper_bound[K](const K&)
+        iterator upper_bound[K](const K&) nogil

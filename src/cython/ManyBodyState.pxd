@@ -25,62 +25,62 @@ cdef extern from "ManyBodyState.h":
         ctypedef Map.const_reverse_iterator const_reverse_iterator
         ctypedef Map.key_compare key_compare
 
-        ManyBodyState()
-        ManyBodyState(const ManyBodyState&)
-        ManyBodyState& operator=(const ManyBodyState&)
+        ManyBodyState() nogil
+        ManyBodyState(const ManyBodyState&) nogil
+        ManyBodyState& operator=(const ManyBodyState&) nogil
         ManyBodyState(const vector[key_type]&,
-                      const vector[doublecomplex]&)
+                      const vector[doublecomplex]&) nogil
 
-        bint empty()
-        size_type size()
-        size_type max_size()
-        void clear()
-        void prune(double)
-        double norm2()
-        double norm()
+        bint empty() nogil
+        size_type size() nogil
+        size_type max_size() nogil
+        void clear() nogil
+        void prune(double) nogil
+        double norm2() nogil
+        double norm() nogil
 
-        double complex& operator[](const key_type&)
-        double complex& at(const key_type&)
+        double complex& operator[](const key_type&) nogil
+        double complex& at(const key_type&) nogil
 
         # ManyBodyState operator+=(const ManyBodyState&)
         # ManyBodyState operator-=(const ManyBodyState&)
         # ManyBodyState operator*=(const ManyBodyState&)
         # ManyBodyState operator/=(const ManyBodyState&)
-        ManyBodyState operator+(const ManyBodyState&)
-        ManyBodyState operator-(const ManyBodyState&)
-        ManyBodyState operator-()
-        ManyBodyState operator*(double complex)
-        ManyBodyState operator/(double complex)
-        bint operator==(const ManyBodyState&)
-        bint operator!=(const ManyBodyState&)
-        iterator begin()
-        iterator end()
-        const_iterator cbegin()
-        const_iterator cend()
-        reverse_iterator rbegin()
-        reverse_iterator rend()
-        const_reverse_iterator crbegin()
-        const_reverse_iterator crend()
+        ManyBodyState operator+(const ManyBodyState&) nogil
+        ManyBodyState operator-(const ManyBodyState&) nogil
+        ManyBodyState operator-() nogil
+        ManyBodyState operator*(double complex) nogil
+        ManyBodyState operator/(double complex) nogil
+        bint operator==(const ManyBodyState&) nogil
+        bint operator!=(const ManyBodyState&) nogil
+        iterator begin() nogil
+        iterator end() nogil
+        const_iterator cbegin() nogil
+        const_iterator cend() nogil
+        reverse_iterator rbegin() nogil
+        reverse_iterator rend() nogil
+        const_reverse_iterator crbegin() nogil
+        const_reverse_iterator crend() nogil
 
-        pair[iterator, bint] insert(const value_type&)
-        iterator insert(iterator, const value_type&)
-        void insert[InputIt](InputIt, InputIt)
+        pair[iterator, bint] insert(const value_type&) nogil
+        iterator insert(iterator, const value_type&) nogil
+        void insert[InputIt](InputIt, InputIt) nogil
 
 
-        iterator erase(iterator)
-        iterator erase(const_iterator)
-        iterator erase(const_iterator, const_iterator)
-        size_type erase(const key_type&)
+        iterator erase(iterator) nogil
+        iterator erase(const_iterator) nogil
+        iterator erase(const_iterator, const_iterator) nogil
+        size_type erase(const key_type&) nogil
 
-        void swap(ManyBodyState&)
+        void swap(ManyBodyState&) nogil
 
-        size_type count[K](const K&)
+        size_type count[K](const K&) nogil
 
-        iterator find[K](const K&)
+        iterator find[K](const K&) nogil
 
-        iterator lower_bound[K](const K&)
+        iterator lower_bound[K](const K&) nogil
 
-        iterator upper_bound[K](const K&)
+        iterator upper_bound[K](const K&) nogil
 
-    cdef cython.doublecomplex inner(const ManyBodyState&, const ManyBodyState&)
-    cdef ManyBodyState operator*(cython.doublecomplex, const ManyBodyState&)
+    cdef cython.doublecomplex inner(const ManyBodyState&, const ManyBodyState&) nogil
+    cdef ManyBodyState operator*(cython.doublecomplex, const ManyBodyState&) nogil

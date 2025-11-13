@@ -38,7 +38,8 @@ cdef class ManyBodyState:
         for b, val in psi.items():
             keys.push_back(bytes_to_key(b))
             amplitudes.push_back(val)
-        self.v = ManyBodyState_cpp(keys, amplitudes)
+        with nogil:
+            self.v = ManyBodyState_cpp(keys, amplitudes)
 
     def __repr__(self):
         return "ManyBodyState({ " + ", ".join([f"{key_to_bytes(key)}: {amp}" for (key, amp) in self.v]) + "})"
@@ -48,48 +49,58 @@ cdef class ManyBodyState:
 
     def __add__(self, ManyBodyState other):
         res = ManyBodyState()
-        res.v = self.v + other.v
+        with nogil:
+            res.v = self.v + other.v
         return res
 
     def __iadd__(self, ManyBodyState other) -> ManyBodyState:
-        self.v = self.v + other.v
+        with nogil:
+            self.v = self.v + other.v
         return self
 
 
     def __sub__(self, ManyBodyState other):
         res = ManyBodyState()
-        res.v = self.v - other.v
+        with nogil:
+            res.v = self.v - other.v
         return res
 
     def __isub__(self, ManyBodyState other):
-        self.v = self.v - other.v
+        with nogil:
+            self.v = self.v - other.v
         return self
 
     def __mul__(self, double complex s):
         res = ManyBodyState()
-        res.v = self.v*  s
+        with nogil:
+            res.v = self.v*  s
         return res
 
     def __imul__(self, double complex s):
-        self.v = self.v*  s
+        with nogil:
+            self.v = self.v*  s
         return self
 
     def __rmul__(self, double complex s):
         res = ManyBodyState()
-        res.v = self.v*s
+        with nogil:
+            res.v = self.v*s
         return res
 
     def __truediv__(self, double complex s):
         res = ManyBodyState()
-        res.v = self.v /  s
+        with nogil:
+            res.v = self.v /  s
         return res
 
     def __itruediv__(self, double complex s):
-        self.v = self.v /  s
+        with nogil:
+            self.v = self.v /  s
         return self
 
     def __getitem__(self, bytes key):
-        return self.v[bytes_to_key(key)]
+        res= self.v[bytes_to_key(key)]
+        return res
 
     def __setitem__(self, bytes key, double complex value):
         self.v[bytes_to_key(key)] = value
@@ -102,25 +113,34 @@ cdef class ManyBodyState:
 
 
     def norm2(self):
-        return self.v.norm2()
+        with nogil:
+            res = self.v.norm2()
+        return res
 
     def norm(self):
-        return self.v.norm()
+        with nogil:
+            res= self.v.norm()
+        return res
 
     def __len__(self):
-        return self.v.size()
+        with nogil:
+            res = self.v.size()
+        return res
 
     def size(self):
         return len(self)
 
     def max_size(self):
-        return self.v.max_size()
+        with nogil:
+            res = self.v.max_size()
+        return res
 
     def erase(self, bytes key):
         self.v.erase(bytes_to_key(key))
 
     def __contains__(self, bytes key):
-        return self.v.find(bytes_to_key(key)) != self.v.end()
+        res = self.v.find(bytes_to_key(key)) != self.v.end()
+        return res
 
     def __iter__(self):
         for p in self.v:
@@ -136,7 +156,8 @@ cdef class ManyBodyState:
         return ((key_to_bytes(p.first), p.second) for p in self.v)
 
     def prune(self, double cutoff):
-        self.v.prune(cutoff)
+        with nogil:
+            self.v.prune(cutoff)
 
     def to_dict(self):
         return dict((key_to_bytes(p.first), p.second) for p in self.v)
@@ -145,7 +166,9 @@ cdef class ManyBodyState:
         return ManyBodyState(self.to_dict())
 
 def inner(ManyBodyState a, ManyBodyState b):
-    return inner_cpp(a.v, b.v)
+    with nogil:
+        res = inner_cpp(a.v, b.v)
+    return res
 
 cdef ManyBodyOperator_cpp.value_type.first_type processes_to_ints(tuple[tuple[int, str]] processes):
     cdef tuple[int, str] process
@@ -181,7 +204,8 @@ cdef class ManyBodyOperator:
             new_ops.emplace_back(processes_to_ints(processes), amp)
 
 
-        self.o = ManyBodyOperator_cpp(new_ops)
+        with nogil:
+            self.o = ManyBodyOperator_cpp(new_ops)
 
     def __repr__(self):
         cdef ManyBodyOperator_cpp.value_type p
@@ -199,29 +223,35 @@ cdef class ManyBodyOperator:
 
     def __add__(self, ManyBodyOperator other) ->ManyBodyOperator:
         res = ManyBodyOperator()
-        res.o = self.o + other.o
+        with nogil:
+            res.o = self.o + other.o
         return res
 
     def __iadd__(self, ManyBodyOperator other) ->ManyBodyOperator:
-        self.o = self.o + other.o
+        with nogil:
+            self.o = self.o + other.o
         return self
 
     def __sub__(self, ManyBodyOperator other) -> ManyBodyOperator:
         res = ManyBodyOperator()
-        res.o = self.o - other.o
+        with nogil:
+            res.o = self.o - other.o
         return res
 
     def __isub__(self, ManyBodyOperator other) -> ManyBodyOperator:
-        self.o = self.o - other.o
+        with nogil:
+            self.o = self.o - other.o
         return self
 
     def __mul__(self, complex s) ->ManyBodyOperator:
         res = ManyBodyOperator()
-        res.o = self.o*s
+        with nogil:
+            res.o = self.o*s
         return res
 
     def __imul__(self, complex s) ->ManyBodyOperator:
-        self.o = self.o*s
+        with nogil:
+            self.o = self.o*s
         return self
 
     def __rmul__(self, complex s) -> ManyBodyOperator:
@@ -229,15 +259,19 @@ cdef class ManyBodyOperator:
 
     def __truediv__(self, complex s) -> ManyBodyOperator:
         res = ManyBodyOperator()
-        res.o = self.o/s
+        with nogil:
+            res.o = self.o/s
         return res
 
     def __itruediv__(self, complex s) -> ManyBodyOperator:
-        self.o = self.o/s
+        with nogil:
+            self.o = self.o/s
         return self
 
     def __len__(self):
-        return self.o.size()
+        with nogil:
+            res = self.o.size()
+        return res
 
     def size(self):
         return len(self)
@@ -255,7 +289,8 @@ cdef class ManyBodyOperator:
             if len(indices) == 0:
                 continue
             rest.push_back(pair[vector[size_t], pair[size_t, size_t]](sorted(indices),pair[size_t, size_t](limits.first, limits.second)))
-        res.v = self.o(psi.v, cutoff, rest)
+        with nogil:
+            res.v = self.o(psi.v, cutoff, rest)
         return res
 
     def erase(self, tuple[tuple[int, str]]key):
@@ -283,11 +318,12 @@ cdef class ManyBodyOperator:
         return res
     
     def clear_memory(self):
-        self.o.clear_memory()
+        with nogil:
+            self.o.clear_memory()
 
     def to_dict(self):
         return dict((ints_to_processes(p.first), p.second) for p in self.o)
 
 
 def applyOp(ManyBodyOperator op, ManyBodyState psi, double cutoff=0, dict[vector[size_t], pair[size_t, size_t]] restrictions=None) ->ManyBodyState :
-    return op(psi, cutoff, restrictions)    
+    return op(psi, cutoff, restrictions)

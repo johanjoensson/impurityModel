@@ -724,14 +724,15 @@ class Basis:
         old_size = self.size - 1
 
         it = 0
+        max_inner_loops = 1
 
         def converged(old_size, it):
-            return old_size == self.size or (it >= max_it if max_it is not None else False )
+            return old_size == self.size or (it >= max_it if max_it is not None else False)
 
         while not converged(old_size, it):
             new_states = set()
             local_states = set(self.local_basis)
-            for i in range(5):
+            for _ in range(max_inner_loops):
                 new_local_states = set()
                 for state in local_states:
                     res = applyOp_test(
@@ -752,6 +753,8 @@ class Basis:
             n_new_states = len(new_states)
             if self.is_distributed:
                 n_new_states = self.comm.allreduce(n_new_states, op=MPI.SUM)
+            if self.size + n_new_states > self.truncation_threshold:
+                break
             self.add_states(new_states)
             it += 1
         if self.verbose:
@@ -1112,6 +1115,9 @@ class Basis:
         block_lengths = np.array([len(block) for block in blocks], dtype=int)
         if self.is_distributed:
             self.comm.Allreduce(MPI.IN_PLACE, block_lengths)
+        if verbose:
+            print("Found block sizes:")
+            print(block_lengths)
 
         tmp_basis = Basis(
             self.impurity_orbitals,
@@ -1234,25 +1240,26 @@ class CIPSI_Basis(Basis):
 
         if isinstance(H, dict):
             H = ManyBodyOperator(H)
-        local_Djs = [[state for state in hp if state not in self._index_dict] for hp in Hpsi_ref]
-        overlaps = np.zeros((len(Hpsi_ref), max(len(Dj_row) for Dj_row in local_Djs)), dtype=complex)
-        e_Dj = np.zeros((len(Hpsi_ref), max(len(Dj_row) for Dj_row in local_Djs)), dtype=float)
-        # for i in range(len(Hpsi_ref)):
-        for i, (Hpsi, Ds) in enumerate(zip(Hpsi_ref, local_Djs)):
-            for j, (Dj, overlap) in enumerate((d, Hpsi[d]) for d in Ds):
-                overlaps[i, j] = overlap
-                HDj = applyOp_test(
-                    H,
-                    ManyBodyState({Dj: 1}),
-                    cutoff=slaterWeightMin,
-                    restrictions=self.restrictions,
-                )
-                # <Dj|H|Dj>
-                e_Dj[i, j] = np.real(HDj[Dj])
+        local_Djs = sorted({state for hp in Hpsi_ref for state in hp if state not in self._index_dict})
+        overlaps = np.zeros((len(Hpsi_ref), len(local_Djs)), dtype=complex)
+        e_Dj = np.zeros((len(Hpsi_ref), len(local_Djs)), dtype=float)
+        for (j, Dj), (i, Hpsi_i) in itertools.product(enumerate(local_Djs), enumerate(Hpsi_ref)):
+            if Dj not in Hpsi_i:
+                continue
+            # <Dj|H|Psi_i>
+            overlaps[i, j] = Hpsi_i[Dj]
+            # <Dj|H|Dj>
+            HDj = applyOp_test(
+                H,
+                ManyBodyState({Dj: 1}),
+                cutoff=slaterWeightMin,
+                restrictions=self.restrictions,
+            )
+            e_Dj[i, j] = np.real(HDj[Dj])
+        # E_i - <Dj|H|Dj>
         de = e_ref[:, None] - e_Dj
-        de[np.abs(de) < np.finfo(float).eps] = np.finfo(float).eps
 
-        # <Dj|H|Psi_ref>^2 / (E_ref - <Dj|H|Dj>)
+        #      {Dj},      <Dj|H|Psi_i>^2 / (E_i - <Dj|H|Dj>)
         return local_Djs, np.square(np.abs(overlaps)) / de
 
     def determine_new_Dj(self, e_ref, psi_ref, H, de2_min, return_Hpsi_ref=False):
@@ -1268,8 +1275,8 @@ class CIPSI_Basis(Basis):
             )
         Hpsi_ref = self.redistribute_psis(Hpsi_ref)
         local_Djs, de2 = self._calc_de2(H, Hpsi_ref, e_ref)
-        de2_mask = np.abs(de2) >= de2_min
-        new_Dj = {Dj for i in range(len(Hpsi_ref)) for Dj, mask in zip(local_Djs[i], de2_mask[i]) if mask}
+        de2_mask = np.any(np.abs(de2) >= de2_min, axis=0)
+        new_Dj = {Dj for Dj in itertools.compress(local_Djs, de2_mask)}
         if return_Hpsi_ref:
             return new_Dj, Hpsi_ref
 

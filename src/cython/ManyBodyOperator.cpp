@@ -337,30 +337,44 @@ ManyBodyState ManyBodyOperator::operator()(
       continue;
     }
     ManyBodyState::Map tmp;
-    for (const auto &ops_scalar : m_ops) {
-      new_state = key_amp.first;
-      sign = 1;
-      for (const int64_t idx : ops_scalar.first) {
-        if (idx >= 0) {
-          sign *= create(new_state, static_cast<size_t>(idx));
-        } else {
-          sign *= annihilate(new_state, static_cast<size_t>(-(idx + 1)));
+#pragma omp parallel
+    {
+      ManyBodyState::Map tmp_local;
+      ManyBodyOperator::Memory local_memory;
+#pragma omp for schedule(dynamic)
+      // Use iterator loop construct for OpenMP parallelization
+      for (auto it = m_ops.cbegin(); it != m_ops.cend(); it++) {
+        const auto &ops_scalar = *it;
+        new_state = key_amp.first;
+        sign = 1;
+        for (const int64_t idx : ops_scalar.first) {
+          if (idx >= 0) {
+            sign *= create(new_state, static_cast<size_t>(idx));
+          } else {
+            sign *= annihilate(new_state, static_cast<size_t>(-(idx + 1)));
+          }
+          if (sign == 0) {
+            break;
+          }
         }
         if (sign == 0) {
-          break;
+          local_memory.insert({key_amp.first, ManyBodyState()});
+          continue;
         }
+        if (!state_is_within_restrictions(new_state, restrictions)) {
+          continue;
+        }
+        tmp_local[new_state] += static_cast<double>(sign) * ops_scalar.second;
       }
-      if (sign == 0) {
-        m_memory.insert({key_amp.first, ManyBodyState()});
-        continue;
+#pragma omp critical
+      for (const auto &state_amp : tmp_local) {
+        tmp[state_amp.first] += state_amp.second;
       }
-      if (!state_is_within_restrictions(new_state, restrictions)) {
-        continue;
+      for (const auto &state_res : local_memory) {
+        m_memory[state_res.first] += state_res.second;
       }
-      tmp[new_state] += static_cast<double>(sign) * ops_scalar.second;
     }
     m_memory[key_amp.first] += ManyBodyState(tmp);
-    // tmp *= key_amp.second;
     res += ManyBodyState(tmp) * key_amp.second;
   }
 

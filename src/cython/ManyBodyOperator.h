@@ -167,7 +167,7 @@ public:
   template <class K> iterator upper_bound(const K &);
   template <class K> const_iterator upper_bound(const K &) const;
 
-  inline compare_type key_comp() const { return compare_type(); }
+  // inline compare_type key_comp() const { return compare_type(); }
 
   inline iterator begin() { return m_ops.begin(); }
   inline const_iterator begin() const { return m_ops.begin(); }

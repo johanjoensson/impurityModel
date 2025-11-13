@@ -627,25 +627,23 @@ def block_Green(
     impurity_orbitals = basis.impurity_orbitals
     bath_states = basis.bath_states
 
+    basis.expand(hOp, slaterWeightMin=0, max_it=1)
+    # psi_arr = basis.redistribute_psis(psi_arr)
     # Calculate initial guess for Green's function
     gs_matsubara, gs_realaxis, last_state = block_green_impl(basis, hOp, psi_arr, iws, ws, e, delta, slaterWeightMin, verbose)
     done = False
     causal = False
-    if rank == 0:
-        causal = np.all(np.diagonal(gs_realaxis, axis1=1, axis2=2).imag < 0)
-    if comm is not None:
-        causal = comm.bcast(causal, root=0)
     cutoff = slaterWeightMin
     while not done:
         old_size = basis.size
-        # Add states connected to the last Krylov vector(s) calculated
+        # Add states connected to the first and last Krylov vector(s)
         new_states = set()
-        for state in last_state:
-            new_state = applyOp_test(hOp, state, restrictions=basis.restrictions, cutoff=cutoff)
-            new_states |= set(new_state.keys())
+        for psi in itertools.chain(psi_arr, last_state):
+            Hpsi = applyOp_test(hOp, psi, restrictions=basis.restrictions, cutoff=cutoff)
+            new_states |= set(Hpsi.keys())
         basis.add_states(new_states)
         if basis.size == old_size:
-            break
+           break 
         while basis.size > basis.truncation_threshold:
             cutoff = max(10*cutoff, np.finfo(float).eps)
             last_state = basis.redistribute_psis(last_state)
@@ -655,19 +653,18 @@ def block_Green(
                 Hpsi = applyOp_test(hOp, psi, restrictions=basis.restrictions, cutoff=cutoff)
                 new_states |= set(Hpsi.keys())
             basis.add_states(new_states)
-        psi_arr = basis.redistribute_psis(psi_arr)
+        if verbose:
+            print(f"Expanded basis contains {basis.size} states")
+        # psi_arr = basis.redistribute_psis(psi_arr)
         gs_realaxis_prev = gs_realaxis
         gs_matsubara, gs_realaxis, last_state = block_green_impl(basis, hOp, psi_arr, iws, ws, e, delta, slaterWeightMin, verbose)
         if rank == 0:
-            done = np.max(np.abs(gs_realaxis - gs_realaxis_prev)) < 1e-6
+            done = np.max(np.abs(gs_realaxis - gs_realaxis_prev)) < np.finfo(float).eps
             causal =  np.all(np.diagonal(gs_realaxis, axis1=1, axis2=2).imag) < 0
+            done = done and causal
         if comm is not None:
-            done = comm.bcast(done)
-            causal = comm.bcast(causal)
-        if not causal:
-            # Probably we are ignoring important determinants
-            # -> decrease the cutoff
-            cutoff = max(cutoff/10, np.finfo(float).eps)
+            done = comm.bcast(done, root=0)
+            causal = comm.bcast(causal, root=0)
 
     return gs_matsubara, gs_realaxis
 
@@ -682,6 +679,7 @@ def block_green_impl(basis, hOp, psi_arr, iws, ws, e, delta, slaterWeightMin, ve
     N = len(basis)
     n = len(psi_arr)
 
+    psi_arr = basis.redistribute_psis(psi_arr)
     # Parallelization over blocks
     block_roots, block_basis, block_psis = basis.split_into_block_basis_and_redistribute_psi(hOp, psi_arr, slaterWeightMin=slaterWeightMin, verbose=verbose)
     bcomm = block_basis.comm
@@ -689,7 +687,7 @@ def block_green_impl(basis, hOp, psi_arr, iws, ws, e, delta, slaterWeightMin, ve
     brank = bcomm.rank if bcomm is not None else 0
 
     last_state = [ManyBodyState() for _ in block_psis]
-    dense = len(block_basis) < 100
+    dense = len(block_basis) < 500
     if dense:
         psi_dense = block_basis.build_vector(block_psis).T
         psi_dense_local, r = build_qr(psi_dense)
@@ -757,7 +755,7 @@ def block_green_impl(basis, hOp, psi_arr, iws, ws, e, delta, slaterWeightMin, ve
         d_gs = np.max(np.abs(gs_new - gs_prev))
         if verbose:
             print(rf"$\delta$ = {d_gs}")
-        return d_gs < max(slaterWeightMin, 1e-8)
+        return d_gs < max(slaterWeightMin, 1e-6)
 
     if dense:
         H = block_basis.build_dense_matrix(hOp)
@@ -789,7 +787,7 @@ def block_green_impl(basis, hOp, psi_arr, iws, ws, e, delta, slaterWeightMin, ve
             psi0=psi_dense_local,
             h=H,
             converged=converged,
-            verbose=verbose,
+            verbose=False and verbose,
             comm=bcomm,
         )
 
@@ -797,11 +795,10 @@ def block_green_impl(basis, hOp, psi_arr, iws, ws, e, delta, slaterWeightMin, ve
         alphas, betas, iws, ws, e, delta, r, verbose, comm=bcomm
     )
 
-    Q = get_Lanczos_vectors(H, alphas, betas, psi_dense_local, comm=bcomm)
-    for lsi, lbsi in zip(last_state, block_basis.build_state(Q[:, -n:].T)):
-        lsi += lbsi
-
+    Q = get_Lanczos_vectors(H, alphas, betas, psi_dense_local, comm=bcomm if not dense else None, which=-1)
     # Combine the results from every block
+    for lsi, lbsi in zip(last_state, block_basis.build_state(Q.T)):
+        lsi += lbsi
     last_state = basis.redistribute_psis(last_state)
     if rank == 0:
         tmp_gs_matsubara = np.empty_like(gs_matsubara)

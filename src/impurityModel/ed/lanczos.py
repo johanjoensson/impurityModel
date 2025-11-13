@@ -965,38 +965,57 @@ def block_lanczos_fixed_basis(
         print("=" * 80)
     return alphas, betas, Q if build_krylov_basis else None
 
-def get_Lanczos_vectors(A, alphas, betas, v0, comm):
+def get_Lanczos_vectors(A, alphas, betas, v0, comm, which='all'):
     mpi = comm is not None
     rank = comm.rank if mpi else 0
     counts = np.array([v0.size], dtype=int)
     offsets = np.array([0], dtype=int)
+    n_it = alphas.shape[0]
+    N = v0.shape[0]
+    n = alphas.shape[1]
+    if rank == 0:
+        q = np.zeros((2, A.shape[0], n), dtype=complex, order="C")
+    else:
+        q = np.empty((2, 0, 0), dtype=complex)
     if mpi:
         counts = np.empty((comm.size), dtype=int)
         comm.Allgather(np.array([v0.size], dtype=int), counts)
         offsets = np.array([np.sum(counts[:r]) for r in range(comm.size)], dtype=int)
-    N = v0.shape[0]
-    n_it = alphas.shape[0]
-    n = alphas.shape[1]
-    Q = np.empty((N, (n_it+1)*n), dtype=complex)
-    Q[:, :n] = v0
-    receive_q = np.empty_like(v0)
-    for i in range(n_it):
-    # for i, (alpha, beta) in enumerate(zip(alphas, betas)):
-        if i > 0:
-            q_tmp = A @ Q[:, n*i: n*(i+1)] - Q[:, n*i:n*(i+1)] @ alphas[i] - Q[: ,n*(i-1): n*i] @ np.conj(betas[i-1].T)
+        comm.Gatherv(v0, (q[1] if rank == 0 else None, counts, offsets, MPI.DOUBLE_COMPLEX))
+    else:
+        q[1] = v0
+    assert (n_it+1)*n == (alphas.shape[0]+1)*alphas.shape[1]
+    if which == 'all':
+        which = list(range(n_it))
+    elif isinstance(which, int):
+        if which < 0:
+            which = [n_it - which]
         else:
-            q_tmp = A @ Q[:, n*i: n*(i+1)] - Q[:, n*i:n*(i+1)] @ alphas[i]
+            which = [which]
+    elif isinstance(which, list[int]):
+        which = [w if w >= 0 else n_it - w for w in which]
+    else:
+        raise RuntimeError(f"Unknown value for which: {which}")
+
+    Q = np.empty((N, len(which)*n), dtype=int)
+    qi = v0
+    for i in range(n_it):
+        q_tmp = A @ qi
         if rank == 0:
-            q_tmp, _ = sp.linalg.qr(q_tmp, mode="economic", overwrite_a=True, check_finite=False)
+            q_tmp -=  q[1] @ alphas[i] + q[0] @ np.conj(betas[i-1].T)
+            q[0] = q[1]
+            q[1], _ = sp.linalg.qr(q_tmp, mode="economic", overwrite_a=True, check_finite=False)
         if mpi:
             comm.Scatterv(
-                (q_tmp, counts, offsets, MPI.C_DOUBLE_COMPLEX),
-                receive_q,
+                (q[1], counts, offsets, MPI.C_DOUBLE_COMPLEX),
+                qi,
                 root=0,
             )
         else:
-            receive_q = q_tmp
-        Q[:, n*(i+1): n*(i+2)] = receive_q
+            qi = q[1]
+        if i in which:
+            idx = which.index(i)
+            Q[:, idx*n:(idx+1)*n] = qi
 
     return Q
 
