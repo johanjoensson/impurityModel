@@ -457,12 +457,31 @@ def calc_Greens_function_with_offdiag(
         excited_basis_sizes[ei] = excited_basis.size
         hOp.clear_memory()
 
+    if basis.comm.rank == 0:
+        if iw is not None:
+            gs_iw_tmp = np.empty_like(gs_matsubara_block)
+            for sender in eigen_roots:
+                if sender == 0:
+                    continue
+                basis.comm.Recv(gs_iw_tmp, source=sender)
+                gs_matsubara_block += gs_iw_tmp
+        if w is not None:
+            gs_w_tmp = np.empty_like(gs_realaxis_block)
+            for sender in eigen_roots:
+                if sender == 0:
+                    continue
+                basis.comm.Recv(gs_w_tmp, source=sender)
+                gs_realaxis_block += gs_w_tmp
+    elif eigen_basis.comm.rank == 0:
+        if iw is not None:
+            basis.comm.Send(gs_matsubara_block, dest=0)
+        if w is not None:
+            basis.comm.Send(gs_realaxis_block, dest=0)
+
     # Send calculated Greens functions to root
     if iw is not None:
-        basis.comm.Reduce(MPI.IN_PLACE if basis.comm.rank == 0 else gs_matsubara_block, gs_matsubara_block, root=0)
         gs_matsubara_block /= Z
     if w is not None:
-        basis.comm.Reduce(MPI.IN_PLACE if basis.comm.rank == 0 else gs_realaxis_block, gs_realaxis_block, root=0)
         gs_realaxis_block /= Z
     basis.comm.Allreduce(MPI.IN_PLACE, excited_basis_sizes, op=MPI.MAX)
     return gs_matsubara_block, gs_realaxis_block, excited_basis_sizes

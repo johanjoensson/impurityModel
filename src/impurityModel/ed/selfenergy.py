@@ -659,12 +659,11 @@ def get_sigma(
     """
     hcorr, v_full, _, h_bath = get_hcorr_v_hbath(h0op, impurity_orbitals, nBaths)
 
-    wIs = (omega_mesh + 1j * delta)[:, np.newaxis, np.newaxis] * np.eye(hcorr.shape[0])[np.newaxis, :, :]
-    g0_inv = wIs - hcorr - hyb(omega_mesh, v_full, h_bath, delta)
     res = []
     for block, g in zip(blocks, gs):
-        block_idx = np.ix_(range(len(omega_mesh)), block, block)
-        res.append(g0_inv[block_idx] - np.linalg.inv(g))
+        wIs = (omega_mesh + 1j * delta)[:, np.newaxis, np.newaxis] * np.eye(len(block))[np.newaxis, :, :]
+        g0_inv = wIs - hcorr[block, block] - hyb(omega_mesh, v_full[:, block], h_bath, delta)
+        res.append(g0_inv - np.linalg.inv(g))
 
     return res
 
