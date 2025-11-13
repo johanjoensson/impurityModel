@@ -237,7 +237,7 @@ def calc_occ_e(
     e_block = finite.eigensystem_new(
         h,
         e_max=energy_cut,
-        k=2*sum(len(block) for block in block_basis.impurity_orbitals[0]),
+        k=2 * sum(len(block) for block in block_basis.impurity_orbitals[0]),
         eigenValueTol=np.sqrt(np.finfo(float).eps),
         return_eigvecs=False,
         comm=block_basis.comm,
@@ -387,7 +387,7 @@ def calc_selfenergy(
         bath_states,
         nominal_occ,
         mixed_valence,
-        tau,
+        0,  # tau,
         chain_restrict,
         rank=rank,
         dense_cutoff=dense_cutoff,
@@ -405,6 +405,7 @@ def calc_selfenergy(
 
     energy_cut = -tau * np.log(1e-4)
 
+    basis.tau = tau
     _ = basis.expand(h, dense_cutoff=dense_cutoff, de2_min=1e-8)
     block_roots, block_basis, _ = basis.split_into_block_basis_and_redistribute_psi(h, None)
     h_gs = block_basis.build_sparse_matrix(h)
@@ -421,14 +422,13 @@ def calc_selfenergy(
     proc_cutoff = np.array(block_roots[1:] + [basis.comm.size])
     block_color = np.argmax(basis.comm.rank < proc_cutoff)
     for c, c_root in enumerate(block_roots):
-        es_c =basis.comm.bcast(block_es, root=c_root) 
+        es_c = basis.comm.bcast(block_es, root=c_root)
         es = np.append(es, es_c)
         if c != block_color:
             psi_c = basis.redistribute_psis([ManyBodyState() for _ in es_c])
         else:
             psi_c = basis.redistribute_psis(block_basis.build_state(block_psis_dense.T))
         psis.extend(psi_c)
-
 
     sort_idx = np.argsort(es)
     es = es[sort_idx]
