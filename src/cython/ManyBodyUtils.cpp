@@ -15,7 +15,7 @@
         "language": "c++",
         "name": "ManyBodyUtils",
         "sources": [
-            "/home/johan/Programming/impurityModel/src/cython/ManyBodyUtils.pyx"
+            "src/cython/ManyBodyUtils.pyx"
         ]
     },
     "module_name": "ManyBodyUtils"
