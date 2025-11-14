@@ -292,6 +292,8 @@ def get_Greens_function(
         assert not any(
             gs is None for gs in gs_realaxis
         ), "Receiving realaxis block GF failed {[i for i, gs in enumerate(gs_realaxis) if gs is None]} "
+        assert not np.any(np.isnan(gs_matsubara)), "NaN in matsubara GF"
+        assert not np.any(np.isnan(gs_realaxis)), "NaN in realaxis GF"
     elif block_basis.comm.rank == 0:
         for gsm, gsr in zip(local_gs_matsubara, local_gs_realaxis):
             basis.comm.Send(gsm, dest=0)
@@ -313,8 +315,6 @@ def get_Greens_function(
             print(f"   inequivalen  block {block_i}:")
             for ei, eb in enumerate(ebs):
                 print(f"   ---> Excited basis for eigenstate {ei} contains {eb} states")
-    assert not np.any(np.isnan(gs_matsubara)), "NaN in matsubara GF"
-    assert not np.any(np.isnan(gs_realaxis)), "NaN in realaxis GF"
     return (gs_matsubara, gs_realaxis) if basis.comm.rank == 0 else (None, None)
 
 
