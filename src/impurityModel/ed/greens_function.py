@@ -170,6 +170,7 @@ def get_Greens_function(
         blocks_per_color,
         block_basis,
         psis,
+        block_intercomms,
     ) = basis.split_basis_and_redistribute_psi([len(block) ** 3 for block in blocks], psis)
     if verbose:
         print(f"New block roots: {block_roots}")
@@ -402,6 +403,7 @@ def calc_Greens_function_with_offdiag(
         eigen_per_color,
         eigen_basis,
         psis,
+        eigen_intercomms,
     ) = basis.split_basis_and_redistribute_psi([1 for _ in es], psis)
     if verbose:
         print(f"New eigenstate roots: {eigen_roots}")
@@ -739,11 +741,14 @@ def block_green_impl(basis, hOp, psi_arr, iws, ws, e, delta, slaterWeightMin, ve
 
     psi_arr = basis.redistribute_psis(psi_arr)
     # Parallelization over blocks
-    block_roots, block_basis, block_psis = basis.split_into_block_basis_and_redistribute_psi(
+    _, block_roots, _, _, block_basis, block_psis, block_intercomms = basis.split_into_block_basis_and_redistribute_psi(
         hOp, psi_arr, slaterWeightMin=slaterWeightMin, verbose=verbose
     )
-    bcomm = block_basis.comm
+    # block_roots = [0]
+    # block_basis = basis
+    # block_psis = psi_arr
 
+    bcomm = block_basis.comm
     brank = bcomm.rank if bcomm is not None else 0
 
     last_state = [ManyBodyState() for _ in block_psis]
@@ -865,22 +870,23 @@ def block_green_impl(basis, hOp, psi_arr, iws, ws, e, delta, slaterWeightMin, ve
     if rank == 0:
         tmp_gs_matsubara = np.empty_like(gs_matsubara)
         tmp_gs_realaxis = np.empty_like(gs_realaxis)
-        for sender in block_roots:
-            if sender == rank:
+        for send_color in range(len(block_roots)):
+            if send_color == 0:
                 continue
             if matsubara:
-                comm.Recv(tmp_gs_matsubara, source=sender)
+                block_intercomms[send_color].Recv(tmp_gs_matsubara, source=0)
                 gs_matsubara += tmp_gs_matsubara
             if realaxis:
-                comm.Recv(tmp_gs_realaxis, source=sender)
+                block_intercomms[send_color].Recv(tmp_gs_realaxis, source=0)
                 gs_realaxis += tmp_gs_realaxis
         assert not np.any(np.isnan(gs_matsubara)), "NaN in matsubara GF"
         assert not np.any(np.isnan(gs_realaxis)), "NaN in realaxis GF"
     elif brank == 0:
         if matsubara:
-            comm.Send(gs_matsubara, dest=0)
+            block_intercomms[0].Send(gs_matsubara, dest=0)
         if realaxis:
-            comm.Send(gs_realaxis, dest=0)
+            block_intercomms[0].Send(gs_realaxis, dest=0)
+    comm.barrier()
     return gs_matsubara, gs_realaxis, last_state
 
 

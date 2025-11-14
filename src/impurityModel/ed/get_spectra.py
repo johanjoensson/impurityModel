@@ -277,29 +277,26 @@ def main(
 
     energy_cut = -tau * np.log(1e-4)
 
-    block_roots, block_basis, _ = basis.split_into_block_basis_and_redistribute_psi(hOp, None)
+    _, block_roots, block_color, _, block_basis, _, _ = basis.split_into_block_basis_and_redistribute_psi(hOp, None)
     h_gs = block_basis.build_sparse_matrix(hOp)
     block_es, block_psis_dense = finite.eigensystem_new(
         h_gs,
         e_max=energy_cut,
-        k=2 * sum(len(imp_orbs) for imp_orbs in impurity_orbitals.values()), 
+        k=2 * sum(len(imp_orbs) for imp_orbs in impurity_orbitals.values()),
         eigenValueTol=np.sqrt(np.finfo(float).eps),
         comm=block_basis.comm,
         dense=block_basis.size < dense_cutoff,
     )
     psis = []
     es = np.array([], dtype=float)
-    proc_cutoff = np.array(block_roots[1:] + [basis.comm.size])
-    block_color = np.argmax(basis.comm.rank < proc_cutoff)
     for c, c_root in enumerate(block_roots):
-        es_c =basis.comm.bcast(block_es, root=c_root) 
+        es_c = basis.comm.bcast(block_es, root=c_root)
         es = np.append(es, es_c)
         if c != block_color:
             psi_c = basis.redistribute_psis([ManyBodyState() for _ in es_c])
         else:
             psi_c = basis.redistribute_psis(block_basis.build_state(block_psis_dense.T))
         psis.extend(psi_c)
-
 
     sort_idx = np.argsort(es)
     es = es[sort_idx]

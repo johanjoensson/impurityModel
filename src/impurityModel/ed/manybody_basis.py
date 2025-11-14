@@ -510,7 +510,7 @@ class Basis:
 
         # self.state_container = CentralizedStateContainer(
         self.state_container = SimpleDistributedStateContainer(
-        # self.state_container = DistributedStateContainer(
+            # self.state_container = DistributedStateContainer(
             initial_basis,
             bytes_per_state=self.n_bytes,
             comm=self.comm,
@@ -1013,10 +1013,14 @@ class Basis:
 
     def split_basis_and_redistribute_psi(self, priorities, psis, min_group_size=1000):
 
+        if not self.is_distributed:
+            return range(len(priorities)), [0], 0, [len(priorities)], self, psis, [None]
+
         comm = self.comm
+        rank = comm.rank
         normalized_priorities = np.array([p for p in priorities], dtype=float)
         normalized_priorities /= np.sum(normalized_priorities)
-        if self.size == 0: 
+        if self.size == 0:
             n_colors = min(comm.size, len(normalized_priorities))
         else:
             # Make sure we have at most min_group_size basis states per MPI rank for each color
@@ -1050,27 +1054,42 @@ class Basis:
         assert sum(procs_per_color) == comm.size
         proc_cutoffs = np.cumsum(procs_per_color)
         color = np.argmax(comm.rank < proc_cutoffs)
+
         split_comm = comm.Split(color=color, key=comm.rank)
         split_roots = [0] + proc_cutoffs[:-1].tolist()
         items_per_color = [len(subgroup) for subgroup in subgroups]
         assert sum(items_per_color) == len(priorities)
+
+        assert comm.is_intra
+        assert not comm.is_inter
+        assert split_comm.is_intra
+        assert not split_comm.is_inter
+        intercomms = []
+        for c, c_root in enumerate(split_roots):
+            if c == color:
+                intercomms.append(None)
+                continue
+            intercomms.append(split_comm.Create_intercomm(0, comm, c_root))
         indices = sorted(subgroups[color])
 
         if split_comm.rank == 0:
             assert comm.rank in split_roots
 
         new_states = set(self.local_basis)
+        # Distribute my local basis states among all other colors
         for c, c_root in enumerate(split_roots):
+            # I will send  states to this color
             if color != c:
-                comm.send(self.local_basis, dest=c_root + (comm.rank % procs_per_color[c]))
+                intercomms[c].send(self.local_basis, dest=split_comm.rank % procs_per_color[c])
+            # I will receive states from all other colors
             else:
-                for sender in range(comm.size):
-                    if (
-                        sum(procs_per_color[:c]) <= sender < sum(procs_per_color[: c + 1])
-                        or sender % procs_per_color[c] != split_comm.rank
-                    ):
+                for send_color in range(len(split_roots)):
+                    if send_color == color:
                         continue
-                    new_states |= set(comm.recv(source=sender))
+                    for sender in range(procs_per_color[send_color]):
+                        if sender % procs_per_color[c] != split_comm.rank:
+                            continue
+                        new_states |= set(intercomms[send_color].recv(source=sender))
 
         split_basis = Basis(
             self.impurity_orbitals,
@@ -1090,26 +1109,32 @@ class Basis:
             new_psis = [p.copy() for p in psis]
             for c, c_root in enumerate(split_roots):
                 if color != c:
-                    comm.send([p.to_dict() for p in psis], dest=c_root + (comm.rank % procs_per_color[c]))
+                    intercomms[c].send([p.to_dict() for p in psis], dest=split_comm.rank % procs_per_color[c])
                 else:
-                    for sender in range(comm.size):
-                        if (
-                            sum(procs_per_color[:c]) <= sender < sum(procs_per_color[: c + 1])
-                            or sender % procs_per_color[c] != split_comm.rank
-                        ):
+                    for send_color in range(len(split_roots)):
+                        if send_color == color:
                             continue
-                        received_psis = comm.recv(source=sender)
-                        for i, received_psi in enumerate(received_psis):
-                            new_psis[i] += ManyBodyState(received_psi)
-
+                        for sender in range(procs_per_color[send_color]):
+                            if sender % procs_per_color[color] != split_comm.rank:
+                                continue
+                            received_psis = intercomms[send_color].recv(source=sender)
+                            for i, received_psi in enumerate(received_psis):
+                                new_psis[i] += ManyBodyState(received_psi)
             psis = split_basis.redistribute_psis(new_psis)
-        return indices, split_roots, color, items_per_color, split_basis, psis
+        return indices, split_roots, color, items_per_color, split_basis, psis, intercomms
 
-
-    def split_into_block_basis_and_redistribute_psi(self, op, psis, min_group_size=1000,slaterWeightMin=0, verbose=False):
+    def split_into_block_basis_and_redistribute_psi(
+        self, op, psis, min_group_size=1000, slaterWeightMin=0, verbose=False
+    ):
         """
         Split the basis into blocks determined by op. Also split psis into these blocks.
         """
+
+        if not self.is_distributed:
+            return [0], [0], 0, [1], self, psis, [None]
+
+        comm = self.comm
+        rank = comm.rank
 
         blocks = self.determine_blocks(op, slaterWeightMin)
         block_lengths = np.array([len(block) for block in blocks], dtype=int)
@@ -1132,65 +1157,107 @@ class Basis:
             verbose=self.verbose,
         )
 
-        block_indices, block_roots, block_color, blocks_per_color, block_basis, _ = tmp_basis.split_basis_and_redistribute_psi(block_lengths**2, None, min_group_size=np.min(block_lengths))
+        block_indices, block_roots, block_color, blocks_per_color, block_basis, _, block_intercomms = (
+            tmp_basis.split_basis_and_redistribute_psi(block_lengths**2, None, min_group_size=np.min(block_lengths))
+        )
+        block_roots = np.array(block_roots, dtype=int)
+        procs_per_color = block_roots[1:] - block_roots[:-1]
+        procs_per_color = np.append(procs_per_color, [comm.size - np.sum(procs_per_color)])
 
-        blocks_for_each_rank = self.comm.allgather(block_indices)
-
-        procs_per_color = np.diff(block_roots)
-        procs_per_color = np.append(procs_per_color, [self.comm.size - np.sum(procs_per_color)])
-
-        blocks_per_color = [None for _ in block_roots]
-        for c, c_r in enumerate(block_roots):
-            blocks_per_color[c] = blocks_for_each_rank[c_r]
-            for c_i in range(1, procs_per_color[c]):
-                assert all(bi in blocks_per_color[c] for bi in blocks_for_each_rank[c_r+c_i]), f"{blocks_per_color[c]=} != {blocks_for_each_rank[c_r + c_i]=}"
-                assert all(bi in blocks_for_each_rank[c_r+c_i] for bi in blocks_per_color[c]), f"{blocks_per_color[c]=} != {blocks_for_each_rank[c_r + c_i]=}"
-
-        block_states = {self.local_basis[idx - self.offset] for bi in block_indices for idx in blocks[bi]}
-        # Treat each "color" separately
+        num_block_indices_per_color = np.empty((len(block_roots)), dtype=int)
         for c, c_root in enumerate(block_roots):
-            # We need to send states to other ranks
-            if c != block_color:
-                destination = c_root + (self.comm.rank % procs_per_color[c])
-                send_states = {self.local_basis[idx - self.offset] for bi in blocks_per_color[c] for idx in blocks[bi]}
-                self.comm.send(send_states, dest=destination)
-            # We will be receivving states from other ranks
-            else:
-                for sender in range(self.comm.size):
-                    if (
-                        sum(procs_per_color[:c]) <= sender < sum(procs_per_color[: c + 1])
-                        or sender % procs_per_color[c] != block_basis.comm.rank
-                    ):
+            if c == block_color and rank == 0:
+                for send_color in range(len(block_roots)):
+                    if send_color == c:
+                        num_block_indices_per_color[c] = len(block_indices)
                         continue
-                    block_states |= self.comm.recv(source=sender)
-        block_basis.add_states(block_states)
+                    block_intercomms[send_color].Recv(
+                        num_block_indices_per_color[send_color : send_color + 1], source=0
+                    )
+            elif rank == c_root:
+                block_intercomms[0].Send(np.array([len(block_indices)], dtype=int), dest=0)
+        comm.Bcast(num_block_indices_per_color, root=0)
+
+        block_index_color_offsets = [np.sum(num_block_indices_per_color[:c]) for c in range(len(block_roots))]
+        block_indices_per_color = np.empty((np.sum(num_block_indices_per_color)), dtype=int)
+        for c, c_root in enumerate(block_roots):
+            if c == block_color and rank == 0:
+                for send_color in range(len(block_roots)):
+                    start = block_index_color_offsets[send_color]
+                    stop = start + num_block_indices_per_color[send_color]
+                    if send_color == c:
+                        block_indices_per_color[start:stop] = block_indices
+                        continue
+                    block_intercomms[send_color].Recv(
+                        block_indices_per_color[start:stop],
+                        source=0,
+                    )
+            elif rank == c_root:
+                block_intercomms[0].Send(np.array(block_indices, dtype=int), dest=0)
+        comm.Bcast(block_indices_per_color, root=0)
+        print(f"{block_indices_per_color=}")
+
+        new_states = {
+            self.local_basis[local_idx - self.offset] for block_idx in block_indices for local_idx in blocks[block_idx]
+        }
+        for c, c_root in enumerate(block_roots):
+            # We will receive states from everyone else
+            if c == block_color:
+                for send_color in range(len(block_roots)):
+                    if send_color == block_color:
+                        continue
+                    for sender in range(procs_per_color[send_color]):
+                        if sender % procs_per_color[c] != block_basis.comm.rank:
+                            continue
+                        new_states |= block_intercomms[send_color].recv(source=sender)
+                        print(f"{new_states=}")
+            else:
+                start = block_index_color_offsets[c]
+                stop = start + num_block_indices_per_color[c]
+                print(f"{start=} {stop=}")
+                print(f"{block_indices_per_color.shape=}")
+                block_intercomms[c].send(
+                    {
+                        self.local_basis[local_idx - self.offset]
+                        for block_idx in block_indices_per_color[start:stop]
+                        for local_idx in blocks[block_idx]
+                    },
+                    dest=block_basis.comm.rank % procs_per_color[c],
+                )
+        block_basis.add_states(new_states)
 
         if psis is not None:
-            block_psis = [ManyBodyState({state: psi[state] for state in block_basis.local_basis if state in psi}) for psi in psis]
-            for c, c_root in enumerate(block_roots):
-                if c != block_color:
-                    destination = c_root + ( self.comm.rank % procs_per_color[c])
-                    send_blocks = blocks_per_color[c]
-                    idxs = [idx for block in send_blocks for idx in blocks[block]]
-                    send_states = [self.local_basis[idx - self.offset] for bi in blocks_per_color[c] for idx in blocks[bi]]
-                    send_dicts = [{state: psi[state] for state in send_states if state in psi} for psi in psis]
-                    self.comm.send(send_dicts, dest=destination)
-                else:
-                    for sender in range(self.comm.size):
-                        if (
-                            sum(procs_per_color[:c]) <= sender < sum(procs_per_color[: c + 1])
-                            or sender % procs_per_color[c] != block_basis.comm.rank
-                        ):
+            new_psis = [
+                ManyBodyState({state: amp for state, amp in psi.items() if state in block_basis._index_dict})
+                for psi in psis
+            ]
+            for c, c_roor in enumerate(block_roots):
+                if c == block_color:
+                    for send_color in range(len(block_roots)):
+                        if send_color == block_color:
                             continue
-                        received_dicts = self.comm.recv(source = sender)
-                        for bpsi, rdict in zip(block_psis, received_dicts):
-                            bpsi += ManyBodyState(rdict)
-            psis = block_basis.redistribute_psis(block_psis)
+                        for sender in range(procs_per_color[send_color]):
+                            if sender % procs_per_color[c] != block_basis.comm.rank:
+                                continue
+                            received_psi_dict = block_intercomms[send_color].recv(source=sender)
+                            for n_psi, r_psi_dict in zip(new_psis, received_psi_dict):
+                                n_psi += ManyBodyState(r_psi_dict)
+                else:
+                    start = block_index_color_offsets[c]
+                    stop = start + num_block_indices_per_color[c]
+                    send_states = {
+                        self.local_basis[local_idx - self.offset]
+                        for block_idx in block_indices_per_color[start:stop]
+                        for local_idx in blocks[block_idx]
+                    }
+                    block_intercomms[c].send(
+                        [{state: amp for state, amp in psi.items() if state in send_states} for psi in psis],
+                        dest=block_basis.comm.rank % procs_per_color[c],
+                    )
+            psis = block_basis.redistribute_psis(new_psis)
 
+        return block_indices, block_roots, block_color, blocks_per_color, block_basis, psis, block_intercomms
 
-        return block_roots, block_basis, psis
-
-            
 
 class CIPSI_Basis(Basis):
     def __init__(self, impurity_orbitals, bath_states, H=None, nominal_impurity_occ=None, initial_basis=None, **kwargs):
@@ -1292,16 +1359,17 @@ class CIPSI_Basis(Basis):
         if isinstance(H, dict):
             H = ManyBodyOperator(H)
 
-        
         old_size = self.size - 1
         while old_size != self.size:
 
-            block_roots, block_basis, block_psi_refs = self.split_into_block_basis_and_redistribute_psi(H, psi_ref, slaterWeightMin)
+            _, block_roots, block_color, _, block_basis, block_psi_refs, _ = (
+                self.split_into_block_basis_and_redistribute_psi(H, psi_ref, slaterWeightMin)
+            )
             H_mat = block_basis.build_sparse_matrix(H)
             e_ref = np.array([], dtype=float)
             new_psi_ref = []
 
-            e_ref_block, psi_ref_dense = eigensystem_new(
+            e_ref_block, psi_ref_block = eigensystem_new(
                 H_mat,
                 e_max=de0_max,
                 k=2 * len(block_psi_refs) if block_psi_refs is not None else 10,
@@ -1310,18 +1378,18 @@ class CIPSI_Basis(Basis):
                 comm=block_basis.comm,
                 dense=self.size < dense_cutoff,
             )
-            assert e_ref_block.shape[0] == psi_ref_dense.shape[1], f"{e_ref_block.shape[0]=} != {psi_ref_dense.shape[1]=}"
+            assert (
+                e_ref_block.shape[0] == psi_ref_block.shape[1]
+            ), f"{e_ref_block.shape[0]=} != {psi_ref_block.shape[1]=}"
             psi_ref = []
             e_ref = np.array([], dtype=float)
-            proc_cutoff = np.array(block_roots[1:] + [self.comm.size])
-            block_color = np.argmax(self.comm.rank < proc_cutoff)
             for c, c_root in enumerate(block_roots):
-                e_ref_c =self.comm.bcast(e_ref_block, root=c_root) 
+                e_ref_c = self.comm.bcast(e_ref_block, root=c_root)
                 e_ref = np.append(e_ref, e_ref_c, axis=0)
                 if c != block_color:
                     psi_ref_c = self.redistribute_psis([ManyBodyState() for _ in range(e_ref_c.shape[0])])
                 else:
-                    psi_ref_c = self.redistribute_psis(block_basis.build_state(psi_ref_dense.T))
+                    psi_ref_c = self.redistribute_psis(block_basis.build_state(psi_ref_block.T))
                 psi_ref.extend(psi_ref_c)
 
             assert len(e_ref) == len(psi_ref), f"{len(e_ref)=}, {len(psi_ref)=}"
@@ -1383,8 +1451,8 @@ class CIPSI_Basis(Basis):
 
     def split_basis_and_redistribute_psi(self, priorities, psis, min_group_size=1000):
 
-        indices, split_roots, color, items_per_color, split_basis, psis = super().split_basis_and_redistribute_psi(
-            priorities, psis, min_group_size
+        indices, split_roots, color, items_per_color, split_basis, psis, intercomms = (
+            super().split_basis_and_redistribute_psi(priorities, psis, min_group_size)
         )
 
         split_basis = CIPSI_Basis(
@@ -1400,4 +1468,4 @@ class CIPSI_Basis(Basis):
             tau=split_basis.tau,
             verbose=split_basis.verbose,
         )
-        return indices, split_roots, color, items_per_color, split_basis, psis
+        return indices, split_roots, color, items_per_color, split_basis, psis, intercomms

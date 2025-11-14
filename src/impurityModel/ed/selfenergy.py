@@ -232,7 +232,7 @@ def calc_occ_e(
 
     energy_cut = -tau * np.log(1e-4)
 
-    block_roots, block_basis, _ = basis.split_into_block_basis_and_redistribute_psi(h_op, None)
+    _, block_roots, _, _, block_basis, _, _ = basis.split_into_block_basis_and_redistribute_psi(h_op, None)
     h = block_basis.build_sparse_matrix(h_op)
     e_block = finite.eigensystem_new(
         h,
@@ -407,7 +407,7 @@ def calc_selfenergy(
 
     basis.tau = tau
     _ = basis.expand(h, dense_cutoff=dense_cutoff, de2_min=1e-8)
-    block_roots, block_basis, _ = basis.split_into_block_basis_and_redistribute_psi(h, None)
+    _, block_roots, block_color, _, block_basis, _, _ = basis.split_into_block_basis_and_redistribute_psi(h, None)
     h_gs = block_basis.build_sparse_matrix(h)
     block_es, block_psis_dense = finite.eigensystem_new(
         h_gs,
@@ -419,8 +419,7 @@ def calc_selfenergy(
     )
     psis = []
     es = np.array([], dtype=float)
-    proc_cutoff = np.array(block_roots[1:] + [basis.comm.size])
-    block_color = np.argmax(basis.comm.rank < proc_cutoff)
+    print(f"{block_roots=}")
     for c, c_root in enumerate(block_roots):
         es_c = basis.comm.bcast(block_es, root=c_root)
         es = np.append(es, es_c)
