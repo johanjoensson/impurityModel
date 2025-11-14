@@ -277,12 +277,21 @@ def get_Greens_function(
                 continue
             for block_idx in indices_for_colors[offsets[col] : offsets[col] + blocks_per_color[col]]:
                 block = blocks[block_idx]
+
                 gs_matsubara[block_idx] = np.empty((len(matsubara_mesh), len(block), len(block)), dtype=complex)
                 basis.comm.Recv(gs_matsubara[block_idx], source=sender)
+
                 gs_realaxis[block_idx] = np.empty((len(omega_mesh), len(block), len(block)), dtype=complex)
                 basis.comm.Recv(gs_realaxis[block_idx], source=sender)
-                basis.comm.Recv(excited_basis_sizes_IPS[block_idx])
-                basis.comm.Recv(excited_basis_sizes_PS[block_idx])
+
+                basis.comm.Recv(excited_basis_sizes_IPS[block_idx], source=sender)
+                basis.comm.Recv(excited_basis_sizes_PS[block_idx], source=sender)
+        assert not any(
+            gs is None for gs in gs_matsubara
+        ), "Receiving Matsubara block GF failed {[i for i, gs in enumerate(gs_matsubara) if gs is None]} "
+        assert not any(
+            gs is None for gs in gs_realaxis
+        ), "Receiving realaxis block GF failed {[i for i, gs in enumerate(gs_realaxis) if gs is None]} "
     elif block_basis.comm.rank == 0:
         for gsm, gsr in zip(local_gs_matsubara, local_gs_realaxis):
             basis.comm.Send(gsm, dest=0)
@@ -304,6 +313,8 @@ def get_Greens_function(
             print(f"   inequivalen  block {block_i}:")
             for ei, eb in enumerate(ebs):
                 print(f"   ---> Excited basis for eigenstate {ei} contains {eb} states")
+    assert not any(np.isnan(gs_matsubara)), "NaN in matsubara GF"
+    assert not any(np.isnan(gs_realaxis)), "NaN in realaxis GF"
     return (gs_matsubara, gs_realaxis) if basis.comm.rank == 0 else (None, None)
 
 
@@ -481,6 +492,8 @@ def calc_Greens_function_with_offdiag(
     if w is not None:
         gs_realaxis_block /= Z
     basis.comm.Allreduce(MPI.IN_PLACE, excited_basis_sizes, op=MPI.MAX)
+    assert not any(np.isnan(gs_matsubara_block)), "NaN in matsubara GF"
+    assert not any(np.isnan(gs_realaxis_block)), "NaN in realaxis GF"
     return gs_matsubara_block, gs_realaxis_block, excited_basis_sizes
 
 
@@ -706,6 +719,8 @@ def block_Green(
             done = comm.bcast(done, root=0)
             causal = comm.bcast(causal, root=0)
 
+    assert not any(np.isnan(gs_matsubara)), "NaN in matsubara GF"
+    assert not any(np.isnan(gs_realaxis)), "NaN in realaxis GF"
     return gs_matsubara, gs_realaxis
 
 
@@ -854,6 +869,8 @@ def block_green_impl(basis, hOp, psi_arr, iws, ws, e, delta, slaterWeightMin, ve
             if realaxis:
                 comm.Recv(tmp_gs_realaxis, source=sender)
                 gs_realaxis += tmp_gs_realaxis
+        assert not any(np.isnan(gs_matsubara)), "NaN in matsubara GF"
+        assert not any(np.isnan(gs_realaxis)), "NaN in realaxis GF"
     elif brank == 0:
         if matsubara:
             comm.Send(gs_matsubara, dest=0)
