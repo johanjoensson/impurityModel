@@ -666,6 +666,7 @@ def get_sigma(
         g0_inv = wIs - hcorr[block_ix] - hyb(omega_mesh, v_full[:, block], h_bath, delta)
         res.append(g0_inv - np.linalg.inv(g))
 
+    assert not any(np.any(np.isnan(s)) for s in res)
     return res
 
 
