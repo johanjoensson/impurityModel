@@ -661,8 +661,9 @@ def get_sigma(
 
     res = []
     for block, g in zip(blocks, gs):
+        block_ix = np.ix_(block, block)
         wIs = (omega_mesh + 1j * delta)[:, np.newaxis, np.newaxis] * np.eye(len(block))[np.newaxis, :, :]
-        g0_inv = wIs - hcorr[block, block] - hyb(omega_mesh, v_full[:, block], h_bath, delta)
+        g0_inv = wIs - hcorr[block_ix] - hyb(omega_mesh, v_full[:, block], h_bath, delta)
         res.append(g0_inv - np.linalg.inv(g))
 
     return res
