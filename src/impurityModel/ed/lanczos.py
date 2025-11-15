@@ -307,7 +307,6 @@ def get_block_Lanczos_matrices_dense(
         if converged(alphas, betas):
             break
 
-    # Distribute Lanczos matrices to all ranks
     return alphas, betas
 
 
@@ -349,7 +348,7 @@ def get_block_Lanczos_matrices(
         comm.Gatherv(psi0, (q[1], counts, offsets, MPI.C_DOUBLE_COMPLEX), root=0)
     else:
         q[1] = psi0
-    qi = psi0
+    qi = np.ascontiguousarray(psi0)
 
     done = False
     # Run at least 1 iteration (to generate $\alpha_0$).
@@ -376,7 +375,7 @@ def get_block_Lanczos_matrices(
         if mpi:
             done = comm.bcast(done, root=0)
             comm.Scatterv(
-                (np.ascontiguousarray(q[1]), counts, offsets, MPI.C_DOUBLE_COMPLEX),
+                (q[1], counts, offsets, MPI.C_DOUBLE_COMPLEX),
                 qi,
                 root=0,
             )
@@ -673,13 +672,12 @@ def block_lanczos(
 
         qip = np.empty((basis.size, n), dtype=complex, order="C") if rank == 0 else None
         if mpi:
-            comm.Gatherv(np.ascontiguousarray(psip), [qip, send_counts, offsets, MPI.C_DOUBLE_COMPLEX], root=0)
+            comm.Gatherv(psip, [qip, send_counts, offsets, MPI.C_DOUBLE_COMPLEX], root=0)
         else:
             qip = psip
 
         if rank == 0:
             qip, betas[-1], _ = qr_decomp(qip)
-            qip = np.ascontiguousarray(qip)
             assert columns == qip.shape[1]
             _, columns = qip.shape
         if mpi:
@@ -708,12 +706,11 @@ def block_lanczos(
 
                 qip = np.empty((basis.size, n), dtype=complex, order="C") if rank == 0 else None
                 if mpi:
-                    comm.Gatherv(np.ascontiguousarray(psip), [qip, send_counts, offsets, MPI.C_DOUBLE_COMPLEX], root=0)
+                    comm.Gatherv(psip, [qip, send_counts, offsets, MPI.C_DOUBLE_COMPLEX], root=0)
                 else:
                     qip = psip
                 if rank == 0:
                     qip, betas[-1], _ = qr_decomp(qip)
-                    qip = np.ascontiguousarray(qip)
                     _, columns = qip.shape
                 if mpi:
                     comm.Bcast(betas[-1], root=0)
@@ -999,7 +996,7 @@ def get_Lanczos_vectors(A, alphas, betas, v0, comm, which="all"):
         raise RuntimeError(f"Unknown value for which: {which}")
 
     Q = np.empty((N, len(which) * n), dtype=int)
-    qi = v0
+    qi = np.ascontiguousarray(v0)
     for i in range(n_it):
         q_tmp = A @ qi
         if rank == 0:
@@ -1008,7 +1005,7 @@ def get_Lanczos_vectors(A, alphas, betas, v0, comm, which="all"):
             q[1], _ = sp.linalg.qr(q_tmp, mode="economic", overwrite_a=True, check_finite=False)
         if mpi:
             comm.Scatterv(
-                (np.ascontiguousarray(q[1]), counts, offsets, MPI.C_DOUBLE_COMPLEX),
+                (q[1], counts, offsets, MPI.C_DOUBLE_COMPLEX),
                 qi,
                 root=0,
             )

@@ -879,7 +879,7 @@ class Basis:
             h = np.empty(h_local.shape, dtype=h_local.dtype)
             self.comm.Allreduce(h_local.todense(), h, op=MPI.SUM)
         else:
-            h = h_local.todense()
+            h = h_local.todense(order="C")
         return h
 
     def build_sparse_matrix(self, op):
@@ -1227,9 +1227,13 @@ class Basis:
         block_basis.add_states(new_states)
 
         if psis is not None:
+            states_in_blocks = {
+                self.local_basis[state_idx - self.offset]
+                for block_idx in block_indices
+                for state_idx in blocks[block_idx]
+            }
             new_psis = [
-                ManyBodyState({state: amp for state, amp in psi.items() if state in block_basis._index_dict})
-                for psi in psis
+                ManyBodyState({state: amp for state, amp in psi.items() if state in states_in_blocks}) for psi in psis
             ]
             for c, c_roor in enumerate(block_roots):
                 if c == block_color:
@@ -1240,8 +1244,8 @@ class Basis:
                             if sender % procs_per_color[c] != block_basis.comm.rank:
                                 continue
                             received_psi_dict = block_intercomms[send_color].recv(source=sender)
-                            for n_psi, r_psi_dict in zip(new_psis, received_psi_dict):
-                                n_psi += ManyBodyState(r_psi_dict)
+                            for i, r_psi_dict in enumerate(received_psi_dict):
+                                new_psis[i] += ManyBodyState(r_psi_dict)
                 else:
                     start = block_index_color_offsets[c]
                     stop = start + num_block_indices_per_color[c]

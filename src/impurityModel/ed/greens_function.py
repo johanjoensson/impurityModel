@@ -439,16 +439,16 @@ def calc_Greens_function_with_offdiag(
         block_v = []
         local_excited_basis = set()
         for i_tOp, tOp in enumerate(tOps):
-            for state in eigen_basis.local_basis:
-                v = applyOp_test(tOp, ManyBodyState({state: 1.0}), cutoff=slaterWeightMin, restrictions=None)
-                local_excited_basis |= set(v.keys())
+            # for state in eigen_basis.local_basis:
+            #     v = applyOp_test(tOp, ManyBodyState({state: 1.0}), cutoff=0, restrictions=None)
+            #     local_excited_basis |= set(v.keys())
             v = applyOp_test(
                 tOp,
                 psi,
-                cutoff=slaterWeightMin,  # 0,
+                cutoff=0,
                 restrictions=None,
             )
-            # local_excited_basis |= set(v.keys())
+            local_excited_basis |= set(v.keys())
             block_v.append(v)
 
         excited_basis.add_states(local_excited_basis)
@@ -682,7 +682,7 @@ def block_Green(
     impurity_orbitals = basis.impurity_orbitals
     bath_states = basis.bath_states
 
-    basis.expand(hOp, slaterWeightMin=0, max_it=1)
+    basis.expand(hOp, slaterWeightMin=slaterWeightMin, max_it=1)
     # psi_arr = basis.redistribute_psis(psi_arr)
     # Calculate initial guess for Green's function
     gs_matsubara, gs_realaxis, last_state = block_green_impl(
@@ -741,8 +741,8 @@ def block_green_impl(basis, hOp, psi_arr, iws, ws, e, delta, slaterWeightMin, ve
 
     psi_arr = basis.redistribute_psis(psi_arr)
     # Parallelization over blocks
-    _, block_roots, _, _, block_basis, block_psis, block_intercomms = basis.split_into_block_basis_and_redistribute_psi(
-        hOp, psi_arr, slaterWeightMin=slaterWeightMin, verbose=verbose
+    _, block_roots, block_color, _, block_basis, block_psis, block_intercomms = (
+        basis.split_into_block_basis_and_redistribute_psi(hOp, psi_arr, verbose=verbose)
     )
     # block_roots = [0]
     # block_basis = basis
@@ -768,7 +768,7 @@ def block_green_impl(basis, hOp, psi_arr, iws, ws, e, delta, slaterWeightMin, ve
         bcomm.Gather(np.array([psi_dense_local.size]), send_counts, root=0)
         offsets = np.array([np.sum(send_counts[:r]) for r in range(bcomm.size)], dtype=int) if brank == 0 else None
         bcomm.Scatterv(
-            [np.ascontiguousarray(psi_dense), send_counts, offsets, MPI.C_DOUBLE_COMPLEX] if brank == 0 else None,
+            [psi_dense, send_counts, offsets, MPI.C_DOUBLE_COMPLEX] if brank == 0 else None,
             psi_dense_local,
             root=0,
         )
@@ -864,8 +864,8 @@ def block_green_impl(basis, hOp, psi_arr, iws, ws, e, delta, slaterWeightMin, ve
 
     Q = get_Lanczos_vectors(H, alphas, betas, psi_dense_local, comm=bcomm if not dense else None, which=-1)
     # Combine the results from every block
-    for lsi, lbsi in zip(last_state, block_basis.build_state(Q.T)):
-        lsi += lbsi
+    for i, qi in enumerate(block_basis.build_state(Q.T)):
+        last_state[i] += qi
     last_state = basis.redistribute_psis(last_state)
     if rank == 0:
         tmp_gs_matsubara = np.empty_like(gs_matsubara)
@@ -886,7 +886,6 @@ def block_green_impl(basis, hOp, psi_arr, iws, ws, e, delta, slaterWeightMin, ve
             block_intercomms[0].Send(gs_matsubara, dest=0)
         if realaxis:
             block_intercomms[0].Send(gs_realaxis, dest=0)
-    comm.barrier()
     return gs_matsubara, gs_realaxis, last_state
 
 
@@ -1156,9 +1155,7 @@ def calc_mpi_Greens_function_from_alpha_beta(alphas, betas, iws, ws, e, delta, r
         gs_matsubara = (
             np.empty((len(iws), r.shape[1], r.shape[1]), dtype=complex, order="C") if comm.rank == 0 else None
         )
-        comm.Gatherv(
-            np.ascontiguousarray(gs_matsubara_local), (gs_matsubara, counts, offsets, MPI.C_DOUBLE_COMPLEX), root=0
-        )
+        comm.Gatherv(gs_matsubara_local, (gs_matsubara, counts, offsets, MPI.C_DOUBLE_COMPLEX), root=0)
     else:
         gs_matsubara = None
     if realaxis:
@@ -1167,9 +1164,7 @@ def calc_mpi_Greens_function_from_alpha_beta(alphas, betas, iws, ws, e, delta, r
         comm.Gather(np.array([gs_realaxis_local.size], dtype=int), counts)
         offsets = [sum(counts[:rank]) for rank in range(len(counts))] if comm.rank == 0 else None
         gs_realaxis = np.empty((len(ws), r.shape[1], r.shape[1]), dtype=complex, order="C") if comm.rank == 0 else None
-        comm.Gatherv(
-            np.ascontiguousarray(gs_realaxis_local), (gs_realaxis, counts, offsets, MPI.C_DOUBLE_COMPLEX), root=0
-        )
+        comm.Gatherv(gs_realaxis_local, (gs_realaxis, counts, offsets, MPI.C_DOUBLE_COMPLEX), root=0)
     else:
         gs_realaxis = None
     return gs_matsubara, gs_realaxis
