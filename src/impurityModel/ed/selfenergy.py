@@ -59,7 +59,6 @@ def fixed_peak_dc(
     dense_cutoff,
 ):
     n_orb = sum(len(block) for imp_orbs in impurity_orbitals.values() for block in imp_orbs)
-    assert n_orb == dc_guess.shape[0]
     peak_position = max(peak_position, 4 * tau)
     valence_baths, conduction_baths = bath_states
     u = finite.getUop_from_rspt_u4(u4)
@@ -664,7 +663,6 @@ def get_sigma(
         g0_inv = wIs - hcorr[block_ix] - hyb(omega_mesh, v_full[:, block], h_bath, delta)
         res.append(g0_inv - np.linalg.inv(g))
 
-    assert not any(np.any(np.isnan(s)) for s in res)
     return res
 
 

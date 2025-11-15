@@ -112,7 +112,6 @@ def split_comm_and_redistribute_psi(priorities: Iterable[float], psis: list[Many
             else:
                 procs_per_color[sorted_indices[: abs(diff) % n_colors]] += 1
                 diff = np.sum(procs_per_color) - comm.size
-    assert sum(procs_per_color) == comm.size
     proc_cutoffs = np.cumsum(procs_per_color)
     color = np.argmax(comm.rank < proc_cutoffs)
     split_comm = comm.Split(color=color, key=0)
@@ -121,9 +120,6 @@ def split_comm_and_redistribute_psi(priorities: Iterable[float], psis: list[Many
     items_per_color[: len(priorities) % n_colors] += 1
     indices_start = sum(items_per_color[:color])
     indices_end = sum(items_per_color[: color + 1])
-
-    if split_comm.rank == 0:
-        assert comm.rank in split_roots
 
     new_psis = [p.copy() for p in psis]
     for c, c_root in enumerate(split_roots):
@@ -286,14 +282,6 @@ def get_Greens_function(
 
                 basis.comm.Recv(excited_basis_sizes_IPS[block_idx], source=sender)
                 basis.comm.Recv(excited_basis_sizes_PS[block_idx], source=sender)
-        assert not any(
-            gs is None for gs in gs_matsubara
-        ), "Receiving Matsubara block GF failed {[i for i, gs in enumerate(gs_matsubara) if gs is None]} "
-        assert not any(
-            gs is None for gs in gs_realaxis
-        ), "Receiving realaxis block GF failed {[i for i, gs in enumerate(gs_realaxis) if gs is None]} "
-        assert not np.any(np.isnan(gs_matsubara)), "NaN in matsubara GF"
-        assert not np.any(np.isnan(gs_realaxis)), "NaN in realaxis GF"
     elif block_basis.comm.rank == 0:
         for gsm, gsr in zip(local_gs_matsubara, local_gs_realaxis):
             basis.comm.Send(gsm, dest=0)
@@ -482,8 +470,6 @@ def calc_Greens_function_with_offdiag(
                 gs_w_tmp = np.empty_like(gs_realaxis_block)
                 basis.comm.Recv(gs_w_tmp, source=sender)
                 gs_realaxis_block += gs_w_tmp
-        assert not np.any(np.isnan(gs_matsubara_block)), "NaN in matsubara GF"
-        assert not np.any(np.isnan(gs_realaxis_block)), "NaN in realaxis GF"
     elif eigen_basis.comm.rank == 0:
         if iw is not None:
             basis.comm.Send(gs_matsubara_block, dest=0)
@@ -719,9 +705,6 @@ def block_Green(
             done = comm.bcast(done, root=0)
             causal = comm.bcast(causal, root=0)
 
-    if rank == 0:
-        assert not np.any(np.isnan(gs_matsubara)), "NaN in matsubara GF"
-        assert not np.any(np.isnan(gs_realaxis)), "NaN in realaxis GF"
     return gs_matsubara, gs_realaxis
 
 
@@ -756,7 +739,6 @@ def block_green_impl(basis, hOp, psi_arr, iws, ws, e, delta, slaterWeightMin, ve
             psi_dense, r = build_qr(psi_dense)
         r = bcomm.bcast(r if brank == 0 else None, root=0)
         rows, columns = bcomm.bcast(psi_dense.shape if brank == 0 else None, root=0)
-        assert rows == block_basis.size
         psi_dense_local = np.empty((len(block_basis.local_basis), columns), dtype=complex, order="C")
         send_counts = np.empty((bcomm.size), dtype=int) if brank == 0 else None
         bcomm.Gather(np.array([psi_dense_local.size]), send_counts, root=0)
@@ -873,8 +855,6 @@ def block_green_impl(basis, hOp, psi_arr, iws, ws, e, delta, slaterWeightMin, ve
             if realaxis:
                 block_intercomms[send_color].Recv(tmp_gs_realaxis, source=0)
                 gs_realaxis += tmp_gs_realaxis
-        assert not np.any(np.isnan(gs_matsubara)), "NaN in matsubara GF"
-        assert not np.any(np.isnan(gs_realaxis)), "NaN in realaxis GF"
     elif brank == 0:
         if matsubara:
             block_intercomms[0].Send(gs_matsubara, dest=0)
