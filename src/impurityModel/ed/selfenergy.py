@@ -419,7 +419,6 @@ def calc_selfenergy(
     )
     psis = []
     es = np.array([], dtype=float)
-    print(f"{block_roots=}")
     for c, c_root in enumerate(block_roots):
         es_c = basis.comm.bcast(block_es, root=c_root)
         es = np.append(es, es_c)
@@ -660,7 +659,6 @@ def get_sigma(
 
     res = []
     for block, g in zip(blocks, gs):
-        print(f"{block=}")
         block_ix = np.ix_(block, block)
         wIs = (omega_mesh + 1j * delta)[:, np.newaxis, np.newaxis] * np.eye(len(block))[np.newaxis, :, :]
         g0_inv = wIs - hcorr[block_ix] - hyb(omega_mesh, v_full[:, block], h_bath, delta)
@@ -728,7 +726,7 @@ def get_selfenergy(
     num_bath_states = ({ls: nValBaths[ls]}, {ls: sum_baths[ls] - nValBaths[ls]})
 
     # Hamiltonian
-    if rank == 0:
+    if rank == 0 and verbose:
         print("Construct the Hamiltonian operator...")
     hOp = get_noninteracting_hamiltonian_operator(
         sum_baths,

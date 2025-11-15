@@ -1195,7 +1195,6 @@ class Basis:
             elif rank == c_root:
                 block_intercomms[0].Send(np.array(block_indices, dtype=int), dest=0)
         comm.Bcast(block_indices_per_color, root=0)
-        print(f"{block_indices_per_color=}")
 
         new_states = {
             self.local_basis[local_idx - self.offset] for block_idx in block_indices for local_idx in blocks[block_idx]
@@ -1210,12 +1209,9 @@ class Basis:
                         if sender % procs_per_color[c] != block_basis.comm.rank:
                             continue
                         new_states |= block_intercomms[send_color].recv(source=sender)
-                        print(f"{new_states=}")
             else:
                 start = block_index_color_offsets[c]
                 stop = start + num_block_indices_per_color[c]
-                print(f"{start=} {stop=}")
-                print(f"{block_indices_per_color.shape=}")
                 block_intercomms[c].send(
                     {
                         self.local_basis[local_idx - self.offset]

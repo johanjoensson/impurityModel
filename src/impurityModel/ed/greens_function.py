@@ -184,7 +184,6 @@ def get_Greens_function(
                 indices_for_colors[offsets[color] : offsets[color] + blocks_per_color[color]] = block_indices
                 continue
             basis.comm.Recv(indices_for_colors[offsets[col] : offsets[col] + blocks_per_color[col]], source=sender)
-        print(f"{indices_for_colors=}")
     elif block_basis.comm.rank == 0:
         basis.comm.Send(np.array(block_indices), dest=0)
 
@@ -269,7 +268,6 @@ def get_Greens_function(
         gs_matsubara = [None for _ in blocks]
         gs_realaxis = [None for _ in blocks]
         for i, block_i in enumerate(block_indices):
-            print(f"{block_indices=}")
             gs_matsubara[block_i] = local_gs_matsubara[i]
             gs_realaxis[block_i] = local_gs_realaxis[i]
             excited_basis_sizes_IPS[block_i] = np.array(local_excited_basis_sizes_IPS[i])
@@ -277,11 +275,8 @@ def get_Greens_function(
         for col, sender in enumerate(block_roots):
             if sender == 0:
                 continue
-            print(f"{sender=} : ", end="")
             for block_idx in indices_for_colors[offsets[col] : offsets[col] + blocks_per_color[col]]:
-                print(f"{block_idx=}, ", end="")
                 block = blocks[block_idx]
-                print(f"{blocks[block_idx]=}, ", end="")
 
                 gs_matsubara[block_idx] = np.empty((len(matsubara_mesh), len(block), len(block)), dtype=complex)
                 basis.comm.Recv(gs_matsubara[block_idx], source=sender)
@@ -291,7 +286,6 @@ def get_Greens_function(
 
                 basis.comm.Recv(excited_basis_sizes_IPS[block_idx], source=sender)
                 basis.comm.Recv(excited_basis_sizes_PS[block_idx], source=sender)
-            print()
         assert not any(
             gs is None for gs in gs_matsubara
         ), "Receiving Matsubara block GF failed {[i for i, gs in enumerate(gs_matsubara) if gs is None]} "
