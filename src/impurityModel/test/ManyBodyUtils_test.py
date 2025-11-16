@@ -83,6 +83,13 @@ def test_ManyBodyState_arithmetic():
     for state in scale:
         assert scale[state] == psi[state]
 
+def test_ManyBodyState_pickle():
+    import pickle
+    psi = ManyBodyState({b"\xa0": 1.0, b"\xbf": 1.0j})
+    pickled_psi = pickle.dumps(psi)
+    new_psi = pickle.loads(pickled_psi)
+    assert psi == new_psi
+
 
 def test_ManyBodyOperator():
     d = {((1, "c"),): 1.0, ((0, "a"),): 1j}
@@ -154,3 +161,13 @@ def test_ManyBodyOperator_apply():
     res = ManyBodyState({b"\x30": 1.0, b"\xa0": 1.0j, b"\xbf": -1.0})
 
     assert res == op(psi, 0)
+
+
+def test_ManyBodyOperator_pickle():
+    import pickle
+
+    op = ManyBodyOperator({((0, "a"), (3, "c")): 1.0, ((1, "a"), (1, "c")): 1.0j})
+    pickled_op = pickle.dumps(op)
+    new_op = pickle.loads(pickled_op)
+
+    assert op == new_op

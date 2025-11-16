@@ -29,7 +29,7 @@ cdef class ManyBodyState:
 
     cdef ManyBodyState_cpp v
 
-    def __init__(self, dict[bytes, complex] psi={}):
+    def __cinit__(self, dict[bytes, complex] psi={}):
         cdef vector[ManyBodyState_cpp.key_type] keys
         cdef vector[double complex] amplitudes
         cdef ManyBodyState_cpp.key_type key
@@ -40,6 +40,9 @@ cdef class ManyBodyState:
             amplitudes.push_back(val)
         with nogil:
             self.v = ManyBodyState_cpp(keys, amplitudes)
+
+    def __reduce__(self):
+        return (self.__class__, (self.to_dict(), ))
 
     def __repr__(self):
         return "ManyBodyState({ " + ", ".join([f"{key_to_bytes(key)}: {amp}" for (key, amp) in self.v]) + "})"
@@ -189,12 +192,12 @@ cdef tuple[tuple[int, str]] ints_to_processes(ManyBodyOperator_cpp.value_type.fi
             processes.append((-i-1, 'a'))
         else:
             processes.append((i, 'c'))
-    return  tuple(processes)
+    return  tuple(processes[::-1])
 
 cdef class ManyBodyOperator:
     cdef ManyBodyOperator_cpp o
 
-    def __init__(self, dict[tuple[tuple[int, str]], complex] op={}):
+    def __cinit__(self, dict[tuple[tuple[int, str]], complex] op={}):
         cdef double complex amp 
         cdef tuple[int, str] processes
         cdef str action
@@ -206,6 +209,9 @@ cdef class ManyBodyOperator:
 
         with nogil:
             self.o = ManyBodyOperator_cpp(new_ops)
+
+    def __reduce__(self):
+        return (self.__class__, (self.to_dict(), ))
 
     def __repr__(self):
         cdef ManyBodyOperator_cpp.value_type p

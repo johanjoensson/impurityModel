@@ -124,7 +124,7 @@ ManyBodyOperator::operator[](const key_type &key) {
   if (it == m_ops.end() || it->first != key) {
     it = m_ops.emplace(it, key, mapped_type());
   }
-  return (*it).second;
+  return it->second;
 }
 
 ManyBodyOperator::mapped_type &ManyBodyOperator::operator[](key_type &&key) {
@@ -132,7 +132,7 @@ ManyBodyOperator::mapped_type &ManyBodyOperator::operator[](key_type &&key) {
   if (it == m_ops.end() || it->first != key) {
     it = m_ops.emplace(it, std::move(key), mapped_type());
   }
-  return (*it).second;
+  return it->second;
 }
 
 ManyBodyOperator::mapped_type &ManyBodyOperator::at(const key_type &key) {
