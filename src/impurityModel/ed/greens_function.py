@@ -124,7 +124,8 @@ def split_comm_and_redistribute_psi(priorities: Iterable[float], psis: list[Many
     new_psis = [p.copy() for p in psis]
     for c, c_root in enumerate(split_roots):
         if color != c:
-            comm.send([p.to_dict() for p in psis], dest=c_root + (comm.rank % procs_per_color[c]))
+            comm.send(psis, dest=c_root + (comm.rank % procs_per_color[c]))
+            # comm.send([p.to_dict() for p in psis], dest=c_root + (comm.rank % procs_per_color[c]))
         else:
             for sender in range(comm.size):
                 if (
@@ -421,16 +422,16 @@ def calc_Greens_function_with_offdiag(
         block_v = []
         local_excited_basis = set()
         for i_tOp, tOp in enumerate(tOps):
-            # for state in eigen_basis.local_basis:
-            #     v = applyOp_test(tOp, ManyBodyState({state: 1.0}), cutoff=0, restrictions=None)
-            #     local_excited_basis |= set(v.keys())
+            for state in eigen_basis.local_basis:
+                v = applyOp_test(tOp, ManyBodyState({state: 1.0}), cutoff=0, restrictions=None)
+                local_excited_basis |= set(v.keys())
             v = applyOp_test(
                 tOp,
                 psi,
                 cutoff=0,
                 restrictions=None,
             )
-            local_excited_basis |= set(v.keys())
+            # local_excited_basis |= set(v.keys())
             block_v.append(v)
 
         excited_basis.add_states(local_excited_basis)
@@ -663,7 +664,7 @@ def block_Green(
     bath_states = basis.bath_states
 
     basis.expand(hOp, slaterWeightMin=slaterWeightMin, max_it=1)
-    # psi_arr = basis.redistribute_psis(psi_arr)
+    psi_arr = basis.redistribute_psis(psi_arr)
     # Calculate initial guess for Green's function
     gs_matsubara, gs_realaxis, last_state = block_green_impl(
         basis, hOp, psi_arr, iws, ws, e, delta, slaterWeightMin, verbose
@@ -692,7 +693,7 @@ def block_Green(
             basis.add_states(new_states)
         if verbose:
             print(f"Expanded basis contains {basis.size} states")
-        # psi_arr = basis.redistribute_psis(psi_arr)
+        psi_arr = basis.redistribute_psis(psi_arr)
         gs_realaxis_prev = gs_realaxis
         gs_matsubara, gs_realaxis, last_state = block_green_impl(
             basis, hOp, psi_arr, iws, ws, e, delta, slaterWeightMin, verbose
@@ -716,14 +717,10 @@ def block_green_impl(basis, hOp, psi_arr, iws, ws, e, delta, slaterWeightMin, ve
     N = len(basis)
     n = len(psi_arr)
 
-    psi_arr = basis.redistribute_psis(psi_arr)
     # Parallelization over blocks
     _, block_roots, block_color, _, block_basis, block_psis, block_intercomms = (
         basis.split_into_block_basis_and_redistribute_psi(hOp, psi_arr, verbose=verbose)
     )
-    # block_roots = [0]
-    # block_basis = basis
-    # block_psis = psi_arr
 
     bcomm = block_basis.comm
     brank = bcomm.rank if bcomm is not None else 0
@@ -797,7 +794,7 @@ def block_green_impl(basis, hOp, psi_arr, iws, ws, e, delta, slaterWeightMin, ve
         d_gs = np.max(np.abs(gs_new - gs_prev))
         if verbose:
             print(rf"$\delta$ = {d_gs}")
-        return d_gs < max(slaterWeightMin, 1e-6)
+        return d_gs < max(slaterWeightMin, 1e-12)
 
     if dense:
         H = block_basis.build_dense_matrix(hOp)

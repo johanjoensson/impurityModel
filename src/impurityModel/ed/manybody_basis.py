@@ -940,7 +940,8 @@ class Basis:
 
     def build_density_matrices(self, psis):
         local_psis = [{} for _ in psis]
-        all_psis = self.comm.allgather([p.to_dict() for p in psis])
+        all_psis = self.comm.allgather(psis)
+        # all_psis = self.comm.allgather([p.to_dict() for p in psis])
         for i, psi in enumerate(local_psis):
             for psis_r in all_psis:
                 for state, amp in psis_r[i].items():
@@ -1109,7 +1110,8 @@ class Basis:
             new_psis = [p.copy() for p in psis]
             for c, c_root in enumerate(split_roots):
                 if color != c:
-                    intercomms[c].send([p.to_dict() for p in psis], dest=split_comm.rank % procs_per_color[c])
+                    intercomms[c].send(psis, dest=split_comm.rank % procs_per_color[c])
+                    # intercomms[c].send([p.to_dict() for p in psis], dest=split_comm.rank % procs_per_color[c])
                 else:
                     for send_color in range(len(split_roots)):
                         if send_color == color:
@@ -1119,7 +1121,8 @@ class Basis:
                                 continue
                             received_psis = intercomms[send_color].recv(source=sender)
                             for i, received_psi in enumerate(received_psis):
-                                new_psis[i] += ManyBodyState(received_psi)
+                                new_psis[i] += received_psi
+                                # new_psis[i] += ManyBodyState(received_psi)
             psis = split_basis.redistribute_psis(new_psis)
         return indices, split_roots, color, items_per_color, split_basis, psis, intercomms
 
@@ -1241,7 +1244,8 @@ class Basis:
                                 continue
                             received_psi_dict = block_intercomms[send_color].recv(source=sender)
                             for i, r_psi_dict in enumerate(received_psi_dict):
-                                new_psis[i] += ManyBodyState(r_psi_dict)
+                                new_psis[i] += r_psi_dict
+                                # new_psis[i] += ManyBodyState(r_psi_dict)
                 else:
                     start = block_index_color_offsets[c]
                     stop = start + num_block_indices_per_color[c]
@@ -1251,7 +1255,10 @@ class Basis:
                         for local_idx in blocks[block_idx]
                     }
                     block_intercomms[c].send(
-                        [{state: amp for state, amp in psi.items() if state in send_states} for psi in psis],
+                        [
+                            ManyBodyState({state: amp for state, amp in psi.items() if state in send_states})
+                            for psi in psis
+                        ],
                         dest=block_basis.comm.rank % procs_per_color[c],
                     )
             psis = block_basis.redistribute_psis(new_psis)
@@ -1327,7 +1334,11 @@ class CIPSI_Basis(Basis):
         de = e_ref[:, None] - e_Dj
 
         #      {Dj},      <Dj|H|Psi_i>^2 / (E_i - <Dj|H|Dj>)
-        return local_Djs, np.square(np.abs(overlaps)) / de
+        de = np.maximum(de, 1e-12)
+        de2 = np.zeros_like(overlaps)
+        mask = np.abs(overlaps) > 1e-12
+        de2[mask] = np.square(np.abs(overlaps[mask])) / de[mask]
+        return local_Djs, de2
 
     def determine_new_Dj(self, e_ref, psi_ref, H, de2_min, return_Hpsi_ref=False):
         if isinstance(H, dict):
@@ -1381,16 +1392,20 @@ class CIPSI_Basis(Basis):
             assert (
                 e_ref_block.shape[0] == psi_ref_block.shape[1]
             ), f"{e_ref_block.shape[0]=} != {psi_ref_block.shape[1]=}"
-            psi_ref = []
-            e_ref = np.array([], dtype=float)
-            for c, c_root in enumerate(block_roots):
-                e_ref_c = self.comm.bcast(e_ref_block, root=c_root)
-                e_ref = np.append(e_ref, e_ref_c, axis=0)
-                if c != block_color:
-                    psi_ref_c = self.redistribute_psis([ManyBodyState() for _ in range(e_ref_c.shape[0])])
-                else:
-                    psi_ref_c = self.redistribute_psis(block_basis.build_state(psi_ref_block.T))
-                psi_ref.extend(psi_ref_c)
+            if self.is_distributed:
+                psi_ref = []
+                e_ref = np.array([], dtype=float)
+                for c, c_root in enumerate(block_roots):
+                    e_ref_c = self.comm.bcast(e_ref_block, root=c_root)
+                    e_ref = np.append(e_ref, e_ref_c, axis=0)
+                    if c != block_color:
+                        psi_ref_c = self.redistribute_psis([ManyBodyState() for _ in range(e_ref_c.shape[0])])
+                    else:
+                        psi_ref_c = self.redistribute_psis(block_basis.build_state(psi_ref_block.T))
+                    psi_ref.extend(psi_ref_c)
+            else:
+                psi_ref = self.build_state(psi_ref_block.T)
+                e_ref = e_ref_block
 
             assert len(e_ref) == len(psi_ref), f"{len(e_ref)=}, {len(psi_ref)=}"
             sort_idx = np.argsort(e_ref)
