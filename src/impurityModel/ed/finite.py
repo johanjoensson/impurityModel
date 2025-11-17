@@ -15,7 +15,7 @@ try:
     from primme import eigsh as primme_eigsh
     from os import environ
 
-    USE_PRIMME = False  # primme tends to hang randomly, so disable it for now
+    USE_PRIMME = True  # primme tends to hang randomly, so disable it for now
 
 except ModuleNotFoundError:
     USE_PRIMME = False
