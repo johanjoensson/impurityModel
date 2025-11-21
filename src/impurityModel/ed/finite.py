@@ -517,7 +517,7 @@ def printSlaterDeterminantsAndWeights(psis, nPrintSlaterWeights):
             print("")
 
 
-def printExpValues(rhos, es, rot_to_spherical, block_structure):
+def print_expectation_values(rhos, es, rot_to_spherical, block_structure):
     """
     print several expectation values, e.g. E, N, L^2.
     """
@@ -536,7 +536,6 @@ def printExpValues(rhos, es, rot_to_spherical, block_structure):
             np.sum(np.diag(rho)[list(orb - orb_offset for block in blocks for orb in block_structure.blocks[block])])
             for blocks in equivalent_blocks
         ]
-        # block_occ_string = [f"{occ.real:^ 8.5f}" for occ in block_occs]
         block_occ_string_formatted = ["" for _ in block_occs]
         for ib, b_occ in enumerate(block_occs):
             block_occ_string_formatted[ib] = f"{np.real(b_occ):^ {len(block_N_string[ib])}.5f}"
@@ -692,18 +691,14 @@ def get_S2_from_rho_spherical(rho):
     return np.trace(rho @ Sz2) + 2 * Sz + np.trace(rho @ Splus @ Sminus)
 
 
-def printThermalExpValues_new(rhos, es, tau, rot_to_spherical, block_structure):
+def print_thermal_expectation_values(rho_thermal, e_thermal, rot_to_spherical, block_structure):
     """
     print several thermal expectation values, e.g. E, N, Sz, Lz.
 
-    cutOff - float. Energies more than cutOff*kB*T above the
-            lowest energy is not considered in the average.
     """
     orb_offset = min(orb for block in block_structure.blocks for orb in block)
     equivalent_blocks = get_equivalent_blocks(block_structure)
-    e = es - es[0]
-    print(f"<E-E0>  = {thermal_average_scale_indep(e, e, tau=tau):8.7f}")
-    rho_thermal = thermal_average_scale_indep(es, rhos, tau)
+    print(f"<E-E0>  = {e_thermal:8.7f}")
     rho_thermal_spherical = rotate_matrix(rho_thermal, rot_to_spherical)
     N, Ndn, Nup = get_occupations_from_rho_spherical(rho_thermal_spherical)
     print(f"<N>     = {N:8.7f}")
@@ -716,34 +711,6 @@ def printThermalExpValues_new(rhos, es, tau, rot_to_spherical, block_structure):
         print(f"<N({','.join(str(orb) for orb in blocks)})> = {occ:8.7f}")
     print(f"<Lz> = {get_Lz_from_rho_spherical(rho_thermal_spherical): 8.7f}")
     print(f"<Sz> = {get_Sz_from_rho_spherical(rho_thermal_spherical): 8.7f}")
-    # print("<L> = {:8.7f}".format(get_L_from_rho_spherical(rho_thermal_spherical)))
-    # print("<S> = {:8.7f}".format(get_S_from_rho_spherical(rho_thermal_spherical)))
-
-
-def printThermalExpValues(nBaths, es, psis, T=300, cutOff=10):
-    """
-    print several thermal expectation values, e.g. E, N, L^2.
-
-    cutOff - float. Energies more than cutOff*kB*T above the
-            lowest energy is not considered in the average.
-    """
-    e = es - es[0]
-    # Select relevant energies
-    mask = e < cutOff * k_B * T
-    e = e[mask]
-    psis = np.array(psis)[mask]
-    occs = thermal_average(e, np.array([getEgT2gOccupation(nBaths, psi) for psi in psis]), T=T)
-    print("<E-E0> = {:8.7f}".format(thermal_average(e, e, T=T)))
-    print("<N(3d)> = {:8.7f}".format(thermal_average(e, [getTraceDensityMatrix(nBaths, psi) for psi in psis], T=T)))
-    print("<N(egDn)> = {:8.7f}".format(occs[0]))
-    print("<N(egUp)> = {:8.7f}".format(occs[1]))
-    print("<N(t2gDn)> = {:8.7f}".format(occs[2]))
-    print("<N(t2gUp)> = {:8.7f}".format(occs[3]))
-    print("<Lz(3d)> = {:8.7f}".format(thermal_average(e, [getLz3d(nBaths, psi) for psi in psis], T=T)))
-    print("<Sz(3d)> = {:8.7f}".format(thermal_average(e, [getSz3d(nBaths, psi) for psi in psis], T=T)))
-    # print("<L^2(3d)> = {:8.7f}".format(thermal_average(e, [getLsqr3d(nBaths, psi) for psi in psis], T=T)))
-    # print("<S^2(3d)> = {:8.7f}".format(thermal_average(e, [getSsqr3d(nBaths, psi) for psi in psis], T=T)))
-    # print("<S^2(3d)> = {:4.3f}".format(thermal_average(e, [getSsqr3d(nBaths, psi) for psi in psis], T=T)))
 
 
 def dc_MLFT(n3d_i, c, Fdd, n2p_i=None, Fpd=None, Gpd=None):

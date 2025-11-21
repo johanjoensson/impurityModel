@@ -14,6 +14,7 @@ from impurityModel.ed.average import thermal_average_scale_indep
 from impurityModel.ed.manybody_basis import CIPSI_Basis, Basis
 import impurityModel.ed.product_state_representation as psr
 
+from impurityModel.ed.groundstate import calc_gs
 from impurityModel.ed.greens_function import get_Greens_function, save_Greens_function
 from impurityModel.ed.block_structure import print_block_structure
 from impurityModel.ed.ManyBodyUtils import ManyBodyOperator, ManyBodyState
@@ -130,6 +131,9 @@ def fixed_peak_dc(
 
     energy_cut = -tau * np.log(1e-4)
 
+    impurity_indices = [orb for orb_blocks in impurity_orbitals.values() for block in orb_blocks for orb in block]
+    impurity_ix = np.ix_(impurity_indices, impurity_indices)
+
     def F(dc_fac):
         dc = dc_fac * dc_trial
         dc_op_i = {
@@ -162,23 +166,12 @@ def fixed_peak_dc(
             comm=basis_upper.comm,
             dense=basis_lower.size < dense_cutoff,
         )
-        rho_lower_imps, _ = basis_lower.build_density_matrices(basis_lower.build_state(psi_lower.T))
-        rho_upper_imps, _ = basis_upper.build_density_matrices(basis_upper.build_state(psi_upper.T))
-        rho_lower = np.zeros((psi_lower.shape[1], n_orb, n_orb), dtype=complex)
-        rho_upper = np.zeros((psi_upper.shape[1], n_orb, n_orb), dtype=complex)
-        for i, i_blocks in impurity_orbitals.items():
-            for k in range(psi_lower.shape[1]):
-                for j, block_orbs in enumerate(i_blocks):
-                    idx = np.ix_([k], block_orbs, block_orbs)
-                    rho_lower[idx] = rho_lower_imps[i][j][k]
-            for k in range(psi_upper.shape[1]):
-                for j, block_orbs in enumerate(i_blocks):
-                    idx = np.ix_([k], block_orbs, block_orbs)
-                    rho_upper[idx] = rho_upper_imps[i][j][k]
+        rho_lower = basis_lower.build_density_matrices(basis_lower.build_state(psi_lower.T))
+        rho_upper = basis_upper.build_density_matrices(basis_upper.build_state(psi_upper.T))
         rho_lower = finite.thermal_average_scale_indep(e_lower, rho_lower, basis_lower.tau)
         rho_upper = finite.thermal_average_scale_indep(e_upper, rho_upper, basis_upper.tau)
-        avg_dc_lower = np.real(np.trace(rho_lower @ dc))
-        avg_dc_upper = np.real(np.trace(rho_upper @ dc))
+        avg_dc_lower = np.real(np.trace(rho_lower[impurity_ix] @ dc))
+        avg_dc_upper = np.real(np.trace(rho_upper[impurity_ix] @ dc))
         if abs(avg_dc_upper - avg_dc_lower) < min(tau, 1e-2):
             return 0
         return (e_upper[0] - e_lower[0] - peak_position) / (avg_dc_upper - avg_dc_lower)
@@ -193,148 +186,6 @@ def fixed_peak_dc(
         print("=" * 80)
 
     return dc_fac * dc_trial
-
-
-def calc_occ_e(
-    h_op,
-    impurity_indices,
-    bath_states,
-    N0,
-    mixed_valence,
-    tau,
-    chain_restrict,
-    spin_flip_dj,
-    dense_cutoff,
-    comm,
-    verbose,
-    truncation_threshold,
-):
-    basis = CIPSI_Basis(
-        impurity_indices,
-        bath_states,
-        H=h_op,
-        delta_impurity_occ={i: 0 for i in N0},
-        delta_valence_occ={i: 0 for i in N0},
-        delta_conduction_occ={i: 0 for i in N0},
-        nominal_impurity_occ=N0,
-        mixed_valence=mixed_valence,
-        tau=tau,
-        chain_restrict=chain_restrict,
-        truncation_threshold=truncation_threshold,
-        verbose=False,  # verbose,
-        spin_flip_dj=spin_flip_dj,
-        comm=comm,
-    )
-    if len(basis) == 0:
-        return np.inf, basis, {}
-    h_dict = basis.expand(h_op, dense_cutoff=dense_cutoff, de2_min=1e-6)
-
-    energy_cut = -tau * np.log(1e-4)
-
-    _, block_roots, _, _, block_basis, _, _ = basis.split_into_block_basis_and_redistribute_psi(h_op, None)
-    h = block_basis.build_sparse_matrix(h_op)
-    e_block = finite.eigensystem_new(
-        h,
-        e_max=energy_cut,
-        k=2 * sum(len(block) for block in block_basis.impurity_orbitals[0]),
-        eigenValueTol=np.sqrt(np.finfo(float).eps),
-        return_eigvecs=False,
-        comm=block_basis.comm,
-        dense=block_basis.size < dense_cutoff,
-    )
-    e_trial = basis.comm.allreduce(np.min(e_block), op=MPI.MIN)
-    return e_trial, basis, h_dict
-
-
-def find_gs(
-    h_op,
-    impurity_orbitals,
-    bath_states,
-    N0,
-    mixed_valence,
-    tau,
-    chain_restrict,
-    rank,
-    dense_cutoff,
-    spin_flip_dj,
-    comm,
-    truncation_threshold,
-    verbose,
-):
-    """
-    Find the occupation corresponding to the lowest energy, compare N0 - 1, N0 and N0 + 1
-    Returns:
-    gs_impurity_occ, dict: Impurity occupation corresponding to the lowest energy.
-    basis_gs, ManybodyBasis: Initial basis for the ground state
-    h_dict_gs, dict: Memoized states for the hamiltonian operator.
-    """
-    (
-        num_val_baths,
-        num_cond_baths,
-    ) = bath_states
-    basis_gs = None
-    gs_impurity_occ = N0.copy()
-    dN_gs = dict.fromkeys(N0.keys(), 0)
-
-    keys = list(N0.keys())
-    dN_trials = [{keys[i]: dN[i] for i in range(len(keys))} for dN in itertools.product([0, -1, 1], repeat=len(keys))]
-    e_gs = np.inf
-    for dN in dN_trials:
-        e_trial, basis, h_dict = calc_occ_e(
-            h_op,
-            impurity_orbitals,
-            bath_states,
-            {i: N0[i] + dN[i] for i in N0},
-            mixed_valence,
-            tau,
-            chain_restrict,
-            spin_flip_dj,
-            dense_cutoff,
-            comm=comm,
-            verbose=verbose >= 2,
-            truncation_threshold=truncation_threshold,
-        )
-        if e_trial < e_gs:
-            e_gs = e_trial
-            basis_gs = basis.copy()
-            h_dict_gs = h_dict
-            dN_gs = dN
-            gs_impurity_occ = {i: N0[i] + dN[i] for i in N0}
-    for i in N0:
-        while (
-            dN_gs[i] != 0
-            and all(imp_occ + dN_gs[j] > 0 for j, imp_occ in gs_impurity_occ.items())
-            and all(
-                imp_occ + dN_gs[j] <= sum(len(block) for block in impurity_orbitals[j])
-                for j, imp_occ in gs_impurity_occ.items()
-            )
-        ):
-            e_trial, basis, h_dict = calc_occ_e(
-                h_op,
-                impurity_orbitals,
-                bath_states,
-                {j: n + dN_gs[i] if i == j else n for j, n in gs_impurity_occ.items()},
-                mixed_valence,
-                tau,
-                chain_restrict,
-                spin_flip_dj,
-                dense_cutoff,
-                comm=comm,
-                verbose=False,
-                truncation_threshold=truncation_threshold,
-            )
-            if e_trial >= e_gs:
-                break
-            gs_impurity_occ[i] += dN_gs[i]
-            e_gs = e_trial
-            basis_gs = basis.copy()
-            h_dict_gs = h_dict
-    if verbose >= 1:
-        print("Ground state occupation")
-        print("\n".join((f"{i:^3d}: {gs_impurity_occ[i]: ^5d}" for i in gs_impurity_occ)))
-        print(rf"E$_{{GS}}$ = {e_gs:^7.4f}")
-        print("=" * 80, flush=True)
-    return gs_impurity_occ, basis_gs, h_dict_gs
 
 
 def calc_selfenergy(
@@ -366,7 +217,7 @@ def calc_selfenergy(
     Calculate the self energy of the impurity.
     """
     # MPI variables
-    rank = comm.rank
+    rank = comm.rank if comm is not None else 0
 
     valence_baths, conduction_baths = bath_states
     total_impurity_orbitals = {i: sum(len(orbs) for orbs in impurity_orbitals[i]) for i in impurity_orbitals}
@@ -379,112 +230,30 @@ def calc_selfenergy(
     u = finite.getUop_from_rspt_u4(u4)
     h = ManyBodyOperator(h0) + ManyBodyOperator(u)
     # h = finite.addOps([h0, u])
-
-    gs_impurity_occ, basis, h_dict = find_gs(
-        h,
-        impurity_orbitals,
-        bath_states,
-        nominal_occ,
-        mixed_valence,
-        0,  # tau,
-        chain_restrict,
-        rank=rank,
-        dense_cutoff=dense_cutoff,
-        spin_flip_dj=spin_flip_dj,
-        comm=comm,
-        truncation_threshold=truncation_threshold,
-        verbose=verbosity,
+    basis_information = {
+        "impurity_orbitals": impurity_orbitals,
+        "bath_states": bath_states,
+        "N0": nominal_occ,
+        "mixed_valence": mixed_valence,
+        "tau": 0,
+        "chain_restrict": chain_restrict,
+        "dense_cutoff": dense_cutoff,
+        "spin_flip_dj": spin_flip_dj,
+        "rank": rank,
+        "comm": comm,
+        "truncation_threshold": truncation_threshold,
+    }
+    psis, es, ground_state_basis, thermal_rho, gs_info = calc_gs(
+        h, basis_information, tau, block_structure, rot_to_spherical, verbosity >= 1
     )
-    restrictions = basis.restrictions
+    restrictions = ground_state_basis.restrictions
 
     if restrictions is not None and verbosity >= 2:
         print("Restrictions GS on occupation")
         for indices, limits in restrictions.items():
             print(f"---> {sorted(indices)} : {limits}", flush=True)
 
-    energy_cut = -tau * np.log(1e-4)
-
-    basis.tau = tau
-    _ = basis.expand(h, dense_cutoff=dense_cutoff, de2_min=1e-8)
-    _, block_roots, block_color, _, block_basis, _, _ = basis.split_into_block_basis_and_redistribute_psi(h, None)
-    h_gs = block_basis.build_sparse_matrix(h)
-    block_es, block_psis_dense = finite.eigensystem_new(
-        h_gs,
-        e_max=energy_cut,
-        k=2 * total_impurity_orbitals[0],
-        eigenValueTol=np.sqrt(np.finfo(float).eps),
-        comm=block_basis.comm,
-        dense=block_basis.size < dense_cutoff,
-    )
-    psis = []
-    es = np.array([], dtype=float)
-    for c, c_root in enumerate(block_roots):
-        es_c = basis.comm.bcast(block_es, root=c_root)
-        es = np.append(es, es_c)
-        if c != block_color:
-            psi_c = basis.redistribute_psis([ManyBodyState() for _ in es_c])
-        else:
-            psi_c = basis.redistribute_psis(block_basis.build_state(block_psis_dense.T))
-        psis.extend(psi_c)
-
-    sort_idx = np.argsort(es)
-    es = es[sort_idx]
-    mask = es <= (es[0] + energy_cut)
-    es = es[mask]
-    psis = [psis[idx] for idx in itertools.compress(sort_idx, mask)]
-
-    effective_restrictions = basis.get_effective_restrictions()
     if verbosity >= 1:
-        print("Effective GS restrictions:")
-        for indices, occupations in effective_restrictions.items():
-            print(f"---> {sorted(indices)} : {occupations}")
-        print("=" * 80)
-    if verbosity >= 1:
-        print(f"{len(basis)} Slater determinants in the basis.")
-    gs_stats = basis.get_state_statistics(psis)
-    sum_bath_states = {
-        i: sum(len(orbs) for orbs in valence_baths[i]) + sum(len(orbs) for orbs in conduction_baths[i])
-        for i in valence_baths
-    }
-    rho_imps, rho_baths = basis.build_density_matrices(psis)
-    n_orb = sum(len(block) for blocks in basis.impurity_orbitals.values() for block in blocks)
-    full_rho_imps = np.zeros((len(psis), n_orb, n_orb), dtype=complex)
-    for i, i_blocks in basis.impurity_orbitals.items():
-        for k in range(len(psis)):
-            for j, block_orbs in enumerate(i_blocks):
-                idx = np.ix_([k], block_orbs, block_orbs)
-                full_rho_imps[idx] = rho_imps[i][j][k]
-    thermal_rho_imps = {
-        i: [finite.thermal_average_scale_indep(es, block_rhos, tau) for block_rhos in rho_imps[i]]
-        for i in basis.impurity_orbitals.keys()
-    }
-    thermal_rho_baths = {
-        i: [finite.thermal_average_scale_indep(es, block_rhos, tau) for block_rhos in rho_baths[i]]
-        for i in basis.impurity_orbitals.keys()
-    }
-    if verbosity >= 1:
-        print("Block structure")
-        print_block_structure(block_structure)
-        finite.printThermalExpValues_new(full_rho_imps, es, tau, rot_to_spherical, block_structure)
-        finite.printExpValues(full_rho_imps, es, rot_to_spherical, block_structure)
-        print("Occupation statistics for each eigenstate in the thermal ground state")
-        print("Impurity, Valence, Conduction: Weight (|amp|^2)")
-        for i, psi_stats in enumerate(gs_stats):
-            print(f"{i}:")
-            for imp_occ, val_occ, con_occ in sorted(psi_stats.keys()):
-                print(f"{imp_occ:^8d},{val_occ:^8d},{con_occ:^11d}: {psi_stats[(imp_occ, val_occ, con_occ)]}")
-            print("=" * 80)
-            print()
-        print("Ground state bath occupation statistics:")
-        for i in basis.impurity_orbitals.keys():
-            print(f"orbital set {i}:")
-            for block_i, (imp_rho, bath_rho) in enumerate(zip(thermal_rho_imps[i], thermal_rho_baths[i])):
-                print(f"Block {block_i} (impurity orbitals {basis.impurity_orbitals[i][block_i]})")
-                matrix_print(imp_rho, "Impurity density matrix:")
-                matrix_print(bath_rho, "Bath density matrix:")
-                print("=" * 80)
-            print("", flush=verbosity >= 2)
-        print()
         print(f"Consider {len(es):d} eigenstates for the spectra \n")
         print("Calculate Interacting Green's function...", flush=verbosity >= 2)
 
@@ -494,7 +263,7 @@ def calc_selfenergy(
         psis=psis,
         es=es,
         tau=tau,
-        basis=basis,
+        basis=ground_state_basis,
         hOp=h,
         delta=delta,
         blocks=[block_structure.blocks[block_i] for block_i in block_structure.inequivalent_blocks],
@@ -565,7 +334,15 @@ def calc_selfenergy(
         sigma = None
     if verbosity >= 1:
         print("Calculating sig_static.")
-    sigma_static = get_Sigma_static(u4, full_rho_imps, es, tau)
+    impurity_indices = [
+        orb
+        for impurity_blocks in ground_state_basis.impurity_orbitals.values()
+        for block in impurity_blocks
+        for orb in block
+    ]
+    print(f"{impurity_indices=}")
+    impurity_ix = np.ix_(impurity_indices, impurity_indices)
+    sigma_static = get_Sigma_static(u4, thermal_rho[impurity_ix])
 
     return {
         "sigma": sigma,
@@ -573,10 +350,8 @@ def calc_selfenergy(
         "sigma_static": sigma_static,
         "gs_matsubara": gs_matsubara,
         "gs_realaxis": gs_realaxis,
-        "rho_imps": rho_imps,
-        "rho_baths": rho_baths,
-        "thermal_rho_imps": thermal_rho_imps,
-        "thermal_rho_baths": thermal_rho_baths,
+        "thermal_rho": thermal_rho,
+        "rhos": gs_info["rhos"],
     }
 
 
@@ -666,11 +441,10 @@ def get_sigma(
     return res
 
 
-def get_Sigma_static(U4, rho_imps, es, tau):
+def get_Sigma_static(U4, rho):
     """
     Calculate the static (Hartree-Fock) self-energy.
     """
-    rho = finite.thermal_average_scale_indep(es, rho_imps, tau)
     sigma_static = np.zeros_like(rho)
     for i, j in itertools.product(range(rho.shape[0]), range(rho.shape[1])):
         sigma_static += (U4[j, :, :, i] - U4[j, :, i, :]) * rho[i, j]

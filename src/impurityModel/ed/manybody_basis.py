@@ -32,7 +32,7 @@ from impurityModel.ed.finite import (
     thermal_average_scale_indep,
 )
 
-from impurityModel.ed.ManyBodyUtils import ManyBodyState, ManyBodyOperator, applyOp as applyOp_test
+from impurityModel.ed.ManyBodyUtils import ManyBodyState, ManyBodyOperator, applyOp as applyOp_test, inner
 
 
 from impurityModel.ed.finite import applyOp_new as applyOp
@@ -293,148 +293,137 @@ class Basis:
                 restrictions[conduction_indices] = (min_con, max_con)
         return restrictions
 
-    def _build_full_empty_bath_states(self, psis, occ_cutoff):
-
-        valence_baths, conduction_baths = self.bath_states
-        bath_indices = {
-            i: [sorted(val_b + cond_b) for val_b, cond_b in zip(valence_baths[i], conduction_baths[i])]
-            for i in valence_baths
-        }
-        _, bath_rhos = self.build_density_matrices(psis)
-        bath_rhos = {i: [rho[0] for rho in br] for i, br in bath_rhos.items()}
-        bath_occupations = {i: [np.diag(bath_rho) for bath_rho in brs] for i, brs in bath_rhos.items()}
-        full_bath_states = {}
-        empty_bath_states = {}
-        for i in bath_occupations.keys():
-            full_bath_states[i] = []
-            empty_bath_states[i] = []
-            for block_i, (block_orbs, block_occs) in enumerate(zip(bath_indices[i], bath_occupations[i])):
-                filled_baths = [
-                    orb
-                    for orbs, occs in zip(
-                        batched(block_orbs, len(self.impurity_orbitals[i][block_i])),
-                        batched(block_occs, len(self.impurity_orbitals[i][block_i])),
-                    )
-                    for orb in orbs
-                    if sum(occs) / len(orbs) >= 1 - occ_cutoff
-                ]
-                empty_baths = [
-                    orb
-                    for orbs, occs in zip(
-                        batched(block_orbs, len(self.impurity_orbitals[i][block_i])),
-                        batched(block_occs, len(self.impurity_orbitals[i][block_i])),
-                    )
-                    for orb in orbs
-                    if sum(occs) / len(orbs) <= occ_cutoff
-                ]
-                full_bath_states[i].append(filled_baths[:-1])
-                empty_bath_states[i].append(empty_baths[1:])
-        return full_bath_states, empty_bath_states
-
-    def build_excited_restrictions(self, psis, imp_change, val_change, con_change, occ_cutoff=1e-6):
-        occ_restrict = imp_change is not None or val_change is not None or con_change is not None
-        if not (occ_restrict or self.chain_restrict):
-            return None
-
-        valence_baths, conduction_baths = self.bath_states
-        if self.chain_restrict:
-            full_bath_states, empty_bath_states = self._build_full_empty_bath_states(psis, occ_cutoff)
+    def _get_updated_occ_restrictions(
+        self, restrictions: dict[frozenset[int], tuple[int, int]], orbs: tuple[int, int], dN: Optional[tuple[int, int]]
+    ):
+        orbs = orbs
+        if orbs in restrictions:
+            min_occ, max_occ = restrictions[orbs]
         else:
-            full_bath_states = {i: [] for i in self.impurity_orbitals.keys()}
-            empty_bath_states = {i: [] for i in self.impurity_orbitals.keys()}
+            min_occ, max_occ = (0, len(orbs))
+        if dN is not None:
+            occ_dec, occ_inc = dN
+        else:
+            occ_dec, occ_inc = (0, 0)
+        return max(min_occ - occ_dec, 0), min(max_occ + occ_inc, len(orbs))
 
-        new_valence_baths = {
-            i: [
-                [
-                    orb
-                    for orb in block_orbs
-                    if not any(orb in full_block for full_block in full_bath_states[i])
-                    and not any(orb in empty_block for empty_block in empty_bath_states[i])
-                ]
-                for block_orbs in valence_baths[i]
-            ]
-            for i in valence_baths.keys()
-        }
-        new_conduction_baths = {
-            i: [
-                [
-                    orb
-                    for orb in block_orbs
-                    if not any(orb in full_block for full_block in full_bath_states[i])
-                    and not any(orb in empty_block for empty_block in empty_bath_states[i])
-                ]
-                for block_orbs in conduction_baths[i]
-            ]
-            for i in conduction_baths.keys()
-        }
-        val_diff = {
-            i: sum(len(orbs) for orbs in valence_baths[i]) - sum(len(orbs) for orbs in new_valence_baths[i])
-            for i in valence_baths.keys()
-        }
-        restrictions = self.get_effective_restrictions()
+    def build_excited_restrictions(
+        self,
+        psis: list[ManyBodyState] | ManyBodyState,
+        imp_change: Optional[tuple[int, int]],
+        val_change: Optional[tuple[int, int]],
+        con_change: Optional[tuple[int, int]],
+        occ_cutoff: float = 1e-6,
+    ):
+        """
+        Construct restrictions for impurity occupation, valence bath occupation, and conduction bath occupation.
+        Restrictions are formed by identifying which bath states are filled, empty, and partially filled, using the density matrices of states psis.
+        Filled states are restricted to containing a maximum of one hole. Empty states can have a maximum of one electron. Partially filled states can be empty or filled.
+        The total occupations of the impurity, valence band, and conduction band is limited by the ground state occupations with an optional occupation change.
+        Arguments:
+        =========
+        psis: list[ManyBodyState] | ManyBodyState - Eigenstates used to calculate the density matrices.
+        imp_change: Optional[tuple[int, int]] - Tuple containing the maximum deviation of the impurity occupation from the ground state occupations, (max_decrease, max_increasess). Default = None
+        val_change: Optional[tuple[int, int]] - Tuple containing the maximum deviation of the valence bath occupation from the ground state occupations, (max_decrease, max_increasess). Default = None
+        con_change: Optional[tuple[int, int]] - Tuple containing the maximum deviation of the conduction occupation from the ground state occupations, (max_decrease, max_increasess). Default = None
+        occ_cutoff: float - Cutoff separating filled, partially filled, and empty states. Filled stated have occupation > 1-occ_cutoff, empty states have occupation < occ_cutoff, partially filled states lie in between
+        Returns:
+        ========
+        excited restrictions: Optional[dict[frozenset[int], tuple[int, int]]] - The occupation restrictions of various orbital indices, or None if no restrictions are generated
+        """
+        occ_restrict = imp_change is not None or val_change is not None or con_change is not None
+        if isinstance(psis, ManyBodyState):
+            psis = [psis]
+        if not (occ_restrict):
+            return {}
+        elif len(psis) == 0:
+            return {}
+
+        ground_state_restrictions = self.get_effective_restrictions()
         excited_restrictions = {}
-        for i in self.impurity_orbitals.keys():
-            impurity_indices = frozenset(ind for imp_ind in self.impurity_orbitals[i] for ind in imp_ind)
-            if len(impurity_indices) > 0 and imp_change is not None:
-                r_min_imp, r_max_imp = restrictions[impurity_indices]
-                min_imp = max(r_min_imp - imp_change.get(i, (0, 0))[0], 0)
-                max_imp = min(
-                    r_max_imp + imp_change.get(i, (0, 0))[1], sum(len(orbs) for orbs in self.impurity_orbitals[i])
-                )
-                excited_restrictions[impurity_indices] = (min_imp, max_imp)
 
-            min_val = 0
-            max_val = 0
-            new_valence_indices = frozenset()
-            if val_change is not None:
-                valence_indices = frozenset(ind for val_ind in valence_baths[i] for ind in val_ind)
-                new_valence_indices = frozenset(ind for val_ind in new_valence_baths[i] for ind in val_ind)
-                max_val = len(new_valence_indices)
-                if len(valence_indices) > 0:
-                    r_min_val, _ = restrictions[valence_indices]
-                    min_val = max(r_min_val - val_diff[i] - val_change.get(i, (0, 0))[0], 0)
+        valence_baths, conduction_baths = self.bath_states
+        full_rhos = self.build_density_matrices(psis)
 
-            max_cond = 0
-            new_conduction_indices = frozenset()
-            if con_change is not None:
-                conduction_indices = frozenset(ind for con_ind in conduction_baths[i] for ind in con_ind)
-                new_conduction_indices = frozenset(ind for con_ind in new_conduction_baths[i] for ind in con_ind)
-                if len(conduction_indices) > 0:
-                    _, r_max_cond = restrictions[conduction_indices]
-                    max_cond = min(
-                        r_max_cond + con_change.get(i, (0, 0))[1], sum(len(orbs) for orbs in new_conduction_baths[i])
-                    )
+        def connected(orbs_a, orbs_b):
+            """
+            Return True if orbs_a are connected to orbs_b in any density matrix
+            """
+            idx = np.ix_(np.arange(len(psis)), orbs_a, orbs_b)
+            return np.any(np.abs(full_rhos[idx]) > occ_cutoff)
 
-            if val_change is not None or con_change is not None:
-                new_fluctuating_indices = new_valence_indices.union(new_conduction_indices)
-                if len(new_fluctuating_indices) == 0:
-                    continue
-                excited_restrictions[new_fluctuating_indices] = (min_val, max_val + max_cond)
+        filled_bath_states = []
+        empty_bath_states = []
+        valence_orbitals = []
+        conduction_orbitals = []
+        for i, impurity_orbitals in self.impurity_orbitals.items():
+            imp_orbs = sorted(orb for block in impurity_orbitals for orb in block)
+            min_imp, max_imp = self._get_updated_occ_restrictions(ground_state_restrictions, imp_orbs, imp_change)
+            val_orbs = sorted(orb for block in valence_orbitals[i] for orb in block)
+            min_val, max_val = self._get_updated_occ_restrictions(ground_state_restrictions, val_orbs, val_change)
+            con_orbs = sorted(orb for block in conduction_orbitals[i] for orb in block)
+            min_val, max_con = self._get_updated_occ_restrictions(ground_state_restrictions, con_orbs, con_change)
+
+            for imp_orb_block, val_orb_block, con_orb_block in zip(
+                impurity_orbitals[i], valence_baths[i], conduction_baths[i]
+            ):
+                valence_idx = np.ix_(np.arange(len(psis)), val_orb_block, val_orb_block)
+                conduction_idx = np.ix_(np.arange(len(psis), con_orb_block, con_orb_block))
+
+                valence_occupations = np.diag(np.max(full_rhos[valence_idx], axis=0))
+                conduction_occupations = np.diag(np.max(full_rhos[conduction_idx], axis=0))
+
+                # Identify filled and empty bath states
+                # Ignore states that are not directly coupled to the impurity
+                filled_valence_states = [
+                    val_orb_block[orb]
+                    for orb in np.argwhere(valence_occupations > 1 - occ_cutoff)
+                    if not connected(val_orb_block[orb], imp_orb_block)
+                ]
+                filled_conduction_states = [
+                    con_orb_block[orb]
+                    for orb in np.argwhere(conduction_occupations > 1 - occ_cutoff)
+                    if not connected(con_orb_block[orb], imp_orb_block)
+                ]
+                filled_states = frozenset(sorted(filled_valence_states + filled_conduction_states))
+                empty_valence_states = [
+                    val_orb_block[orb]
+                    for orb in np.argwhere(valence_occupations < occ_cutoff)
+                    if not connected(val_orb_block[orb], imp_orb_block)
+                ]
+                empty_conduction_states = [
+                    con_orb_block[orb]
+                    for orb in np.argwhere(conduction_occupations < occ_cutoff)
+                    if not connected(orb, imp_orb_block)
+                ]
+                min_val = max(min_val - len(filled_valence_states) - len(empty_valence_states), 0)
+                max_con = max(max_con - len(empty_conduction_states) - len(filled_conduction_states), 0)
+                empty_states = frozenset(sorted(empty_valence_states + empty_conduction_states))
+                filled_bath_states.append(filled_states)
+                empty_bath_states.append(empty_states)
 
             if self.collapse_chains:
-                full_indices = frozenset(orb for full_indices in full_bath_states[i] for orb in full_indices)
-                if len(full_indices) > 0:
-                    excited_restrictions[full_indices] = (
-                        len(full_indices) - 1,
-                        len(full_indices),
-                    )
-                empty_indices = frozenset(orb for empty_indices in empty_bath_states[i] for orb in empty_indices)
-                if len(empty_indices) > 0:
-                    excited_restrictions[empty_indices] = (0, 1)
-            else:
-                for full_indices in full_bath_states.values():
-                    for idx in full_indices:
-                        if len(idx) == 0:
-                            continue
-                        excited_restrictions[frozenset(idx)] = (
-                            len(idx) - 1,
-                            len(idx),
-                        )
-                for empty_indices in empty_bath_states.values():
-                    for idx in empty_indices:
-                        if len(idx) == 0:
-                            continue
-                        excited_restrictions[frozenset(idx)] = (0, 1)
+                filled_bath_states = [
+                    frozenset(sorted(orbs for filled_orbs in filled_bath_states for orbs in filled_orbs))
+                ]
+                empty_bath_states = [frozenset(sorted(orbs for empty_orbs in empty_bath_states for orbs in empty_orbs))]
+            new_valence_indices = sorted(
+                orb for orb in val_orbs if not any(orb in s for s in filled_bath_states + empty_bath_states)
+            )
+            new_conduction_indices = sorted(
+                orb for orb in con_orbs if not any(orb in s for s in filled_bath_states + empty_bath_states)
+            )
+            if len(imp_orbs) > 0:
+                excited_restrictions[imp_orbs] = (min_imp, max_imp)
+            if len(new_valence_indices) > 0:
+                excited_restrictions[new_valence_indices] = (min_val, len(new_valence_indices))
+            if len(new_conduction_indices) > 0:
+                excited_restrictions[new_conduction_indices] = (0, max_con)
+            for filled_orbitals, empty_orbitals in zip(filled_states, empty_states):
+                if len(filled_orbitals) > 0:
+                    excited_restrictions[filled_orbitals] = (len(filled_orbitals) - 1, len(filled_orbitals))
+                if len(empty_orbitals) > 0:
+                    excited_restrictions[empty_orbitals] = (0, 1)
         return excited_restrictions
 
     def __init__(
@@ -939,42 +928,25 @@ class Basis:
         return psi_stats
 
     def build_density_matrices(self, psis):
-        local_psis = [{} for _ in psis]
-        all_psis = self.comm.allgather(psis)
-        # all_psis = self.comm.allgather([p.to_dict() for p in psis])
-        for i, psi in enumerate(local_psis):
-            for psis_r in all_psis:
-                for state, amp in psis_r[i].items():
-                    psi[state] = amp + psi.get(state, 0)
-        rho_imps = {
-            i: [
-                np.array(
-                    [
-                        build_density_matrix(
-                            sorted(block),
-                            psi,
-                            self.num_spin_orbitals,
-                        )
-                        for psi in local_psis
-                    ]
-                )
-                for block in self.impurity_orbitals[i]
-            ]
-            for i in self.impurity_orbitals
-        }
-        valence, conduction = self.bath_states
-        rho_baths = {
-            i: [
-                np.array(
-                    [build_density_matrix(sorted(val_b + cond_b), psi, self.num_spin_orbitals) for psi in local_psis],
-                    dtype=complex,
-                )
-                for val_b, cond_b in zip(valence[i], conduction[i])
-            ]
-            for i in valence
-        }
+        orbital_indices = list(range(self.num_spin_orbitals))
+        n_orb = len(orbital_indices)
+        rhos = np.zeros((len(psis), n_orb, n_orb), dtype=complex)
+        for n, psi_n in enumerate(psis):
 
-        return rho_imps, rho_baths
+            psi_ps = [ManyBodyState() for _ in range(n_orb**2)]
+            for (i, orb_i), (j, orb_j) in itertools.product(enumerate(orbital_indices), repeat=2):
+                op = ManyBodyOperator({((orb_i, "c"), (orb_j, "a")): 1.0})
+                psi_ps.append(op(psi_n))
+            if self.is_distributed:
+                psi_ps = self.redistribute_psis(psi_ps)
+            for (i, j), psi_p in zip(itertools.product(enumerate(orbital_indices), repeat=2), psi_ps):
+                amp = inner(psi_n, psi_p)
+                if abs(amp) > np.finfo(float).eps:
+                    rhos[n, i, j] = amp
+        if self.is_distributed:
+            self.comm.Allreduce(MPI.IN_PLACE, rhos, op=MPI.SUM)
+
+        return rhos
 
     def determine_blocks(self, op, slaterWeightMin=0):
         """

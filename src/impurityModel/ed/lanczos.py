@@ -992,12 +992,17 @@ def get_Lanczos_vectors(A, alphas, betas, v0, comm, which="all"):
             which = [which]
     elif isinstance(which, list[int]):
         which = [w if w >= 0 else n_it - w for w in which]
+    elif isinstance(which, tuple[int, int]):
+        which = list(range(which[0], which[1]))
     else:
         raise RuntimeError(f"Unknown value for which: {which}")
 
     Q = np.empty((N, len(which) * n), dtype=int)
     qi = np.ascontiguousarray(v0)
     for i in range(n_it):
+        if i in which:
+            idx = which.index(i)
+            Q[:, idx * n : (idx + 1) * n] = qi
         q_tmp = A @ qi
         if rank == 0:
             q_tmp -= q[1] @ alphas[i] + q[0] @ np.conj(betas[i - 1].T)
@@ -1011,8 +1016,5 @@ def get_Lanczos_vectors(A, alphas, betas, v0, comm, which="all"):
             )
         else:
             qi = q[1]
-        if i in which:
-            idx = which.index(i)
-            Q[:, idx * n : (idx + 1) * n] = qi
 
     return Q
