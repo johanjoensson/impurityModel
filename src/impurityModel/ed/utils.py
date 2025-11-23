@@ -31,7 +31,7 @@ def matrix_to_string(m: np.ndarray, n_prec: int = 15):
     return "\n".join([vector_to_string(row, realvalue, n_prec) for row in m])
 
 
-def matrix_print(m: np.ndarray, label: Optional[str] = None, n_prec=15):
+def matrix_print(m: np.ndarray, label: Optional[str] = None, n_prec=15, **kwargs):
     """
     Pretty print the matrix m
     Arguments
@@ -43,9 +43,9 @@ def matrix_print(m: np.ndarray, label: Optional[str] = None, n_prec=15):
     if label is not None:
         print(label)
     if len(m.shape) == 1:
-        print(vector_to_string(m, n_prec))
+        print(vector_to_string(m, n_prec), **kwargs)
         return
-    print(matrix_to_string(m, n_prec))
+    print(matrix_to_string(m, n_prec), **kwargs)
 
 
 def matrix_connectivity_print(m: np.ndarray, block_size: int = 1, label: Optional[str] = None):

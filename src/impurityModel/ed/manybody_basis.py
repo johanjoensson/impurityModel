@@ -296,7 +296,6 @@ class Basis:
     def _get_updated_occ_restrictions(
         self, restrictions: dict[frozenset[int], tuple[int, int]], orbs: tuple[int, int], dN: Optional[tuple[int, int]]
     ):
-        orbs = orbs
         if orbs in restrictions:
             min_occ, max_occ = restrictions[orbs]
         else:
@@ -310,9 +309,9 @@ class Basis:
     def build_excited_restrictions(
         self,
         psis: list[ManyBodyState] | ManyBodyState,
-        imp_change: Optional[tuple[int, int]],
-        val_change: Optional[tuple[int, int]],
-        con_change: Optional[tuple[int, int]],
+        imp_change: Optional[dict[int, tuple[int, int]]],
+        val_change: Optional[dict[int, tuple[int, int]]],
+        con_change: Optional[dict[int, tuple[int, int]]],
         occ_cutoff: float = 1e-6,
     ):
         """
@@ -357,18 +356,18 @@ class Basis:
         valence_orbitals = []
         conduction_orbitals = []
         for i, impurity_orbitals in self.impurity_orbitals.items():
-            imp_orbs = sorted(orb for block in impurity_orbitals for orb in block)
-            min_imp, max_imp = self._get_updated_occ_restrictions(ground_state_restrictions, imp_orbs, imp_change)
-            val_orbs = sorted(orb for block in valence_orbitals[i] for orb in block)
-            min_val, max_val = self._get_updated_occ_restrictions(ground_state_restrictions, val_orbs, val_change)
-            con_orbs = sorted(orb for block in conduction_orbitals[i] for orb in block)
-            min_val, max_con = self._get_updated_occ_restrictions(ground_state_restrictions, con_orbs, con_change)
+            imp_orbs = frozenset(sorted(orb for block in impurity_orbitals for orb in block))
+            min_imp, max_imp = self._get_updated_occ_restrictions(ground_state_restrictions, imp_orbs, imp_change[i])
+            val_orbs = frozenset(sorted(orb for block in valence_baths[i] for orb in block))
+            min_val, max_val = self._get_updated_occ_restrictions(ground_state_restrictions, val_orbs, val_change[i])
+            con_orbs = frozenset(sorted(orb for block in conduction_baths[i] for orb in block))
+            min_val, max_con = self._get_updated_occ_restrictions(ground_state_restrictions, con_orbs, con_change[i])
 
             for imp_orb_block, val_orb_block, con_orb_block in zip(
-                impurity_orbitals[i], valence_baths[i], conduction_baths[i]
+                impurity_orbitals, valence_baths[i], conduction_baths[i]
             ):
                 valence_idx = np.ix_(np.arange(len(psis)), val_orb_block, val_orb_block)
-                conduction_idx = np.ix_(np.arange(len(psis), con_orb_block, con_orb_block))
+                conduction_idx = np.ix_(np.arange(len(psis)), con_orb_block, con_orb_block)
 
                 valence_occupations = np.diag(np.max(full_rhos[valence_idx], axis=0))
                 conduction_occupations = np.diag(np.max(full_rhos[conduction_idx], axis=0))
@@ -377,24 +376,24 @@ class Basis:
                 # Ignore states that are not directly coupled to the impurity
                 filled_valence_states = [
                     val_orb_block[orb]
-                    for orb in np.argwhere(valence_occupations > 1 - occ_cutoff)
-                    if not connected(val_orb_block[orb], imp_orb_block)
+                    for orb in np.nonzero(valence_occupations > 1 - occ_cutoff)[0]
+                    if not connected([val_orb_block[orb]], imp_orb_block)
                 ]
                 filled_conduction_states = [
                     con_orb_block[orb]
-                    for orb in np.argwhere(conduction_occupations > 1 - occ_cutoff)
-                    if not connected(con_orb_block[orb], imp_orb_block)
+                    for orb in np.nonzero(conduction_occupations > 1 - occ_cutoff)[0]
+                    if not connected([con_orb_block[orb]], imp_orb_block)
                 ]
                 filled_states = frozenset(sorted(filled_valence_states + filled_conduction_states))
                 empty_valence_states = [
                     val_orb_block[orb]
-                    for orb in np.argwhere(valence_occupations < occ_cutoff)
-                    if not connected(val_orb_block[orb], imp_orb_block)
+                    for orb in np.nonzero(valence_occupations < occ_cutoff)[0]
+                    if not connected([val_orb_block[orb]], imp_orb_block)
                 ]
                 empty_conduction_states = [
                     con_orb_block[orb]
-                    for orb in np.argwhere(conduction_occupations < occ_cutoff)
-                    if not connected(orb, imp_orb_block)
+                    for orb in np.nonzero(conduction_occupations < occ_cutoff)[0]
+                    if not connected([con_orb_block[orb]], imp_orb_block)
                 ]
                 min_val = max(min_val - len(filled_valence_states) - len(empty_valence_states), 0)
                 max_con = max(max_con - len(empty_conduction_states) - len(filled_conduction_states), 0)

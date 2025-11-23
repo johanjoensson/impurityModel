@@ -226,7 +226,7 @@ def calc_selfenergy(
         "bath_states": bath_states,
         "N0": nominal_occ,
         "mixed_valence": mixed_valence,
-        "tau": 0,
+        "tau": tau,
         "chain_restrict": chain_restrict,
         "dense_cutoff": dense_cutoff,
         "spin_flip_dj": spin_flip_dj,
@@ -235,7 +235,7 @@ def calc_selfenergy(
         "truncation_threshold": truncation_threshold,
     }
     psis, es, ground_state_basis, thermal_rho, gs_info = calc_gs(
-        h, basis_information, tau, block_structure, rot_to_spherical, verbosity >= 1
+        h, basis_information, block_structure, rot_to_spherical, verbosity >= 1
     )
     restrictions = ground_state_basis.restrictions
 

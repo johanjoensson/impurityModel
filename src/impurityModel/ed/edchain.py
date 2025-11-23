@@ -49,7 +49,9 @@ def build_H_bath_v(H_dft, ebs_star, vs_star, bath_geometry, block_structure, ver
             print("=" * 80)
     elif bath_geometry == "haver":
         for i_b, (v, ebs) in enumerate(zip(vs_star, ebs_star)):
-            if len(ebs) <= 1:
+            # For the linked double chains to make sense we need at least 3 bath states,
+            # otherwise we might as well just use a star geometry
+            if len(ebs) <= 2:
                 H_baths.append(np.diag(ebs))
                 vs.append(v)
                 continue
@@ -213,7 +215,8 @@ def tridiagonalize(H, v0):
     assert H.shape[0] == v0.shape[0]
     block_size = v0.shape[1]
 
-    v0, v0_tilde = sp.linalg.qr(v0, mode="economic")
+    v0, v0_tilde = sp.linalg.qr(v0, mode="economic", overwrite_a=True, check_finite=False)
+
     if v0.shape[0] == 0:
         return (
             np.empty((0, block_size, block_size), dtype=H.dtype),
@@ -263,9 +266,14 @@ def double_chains(vs: np.ndarray, ebs: np.ndarray, verbose: bool):
     ebs[:n_occ] = ebs[:n_occ][::-1]
     vs[:n_occ] = vs[:n_occ][::-1]
     H_occ = build_star_geometry_hamiltonian(np.zeros((n_imp, n_imp), dtype=vs.dtype), vs[:n_occ], ebs[:n_occ])
+    if verbose:
+        matrix_print(H_occ, "Original hamiltonian for occupied part")
+        print("", flush=True)
     H_occ[:] = transform_to_lanczos_tridagonal_matrix(H_occ, n_imp)
 
     H_unocc = build_star_geometry_hamiltonian(np.zeros((n_imp, n_imp), dtype=vs.dtype), vs[n_occ:], ebs[n_occ:])
+    if verbose:
+        matrix_print(H_unocc, "Original hamiltonian for unoccupied part")
     H_unocc[:] = transform_to_lanczos_tridagonal_matrix(H_unocc, n_imp)
     V = np.vstack((H_occ[n_imp:, :n_imp], H_unocc[n_imp:, :n_imp]))
     Hb = sp.linalg.block_diag(H_occ[n_imp:, n_imp:], H_unocc[n_imp:, n_imp:])
@@ -378,7 +386,7 @@ def transform_to_lanczos_tridagonal_matrix(H, n_imp):
 
     assert np.allclose(
         np.linalg.eigvalsh(H), np.linalg.eigvalsh(res)
-    ), f"{np.linalg.eigvalsh(H)}\n{np.linalg.eigvalsh(res)}"
+    ), f"{np.linalg.eigvalsh(H)=}\n{np.linalg.eigvalsh(res)=}"
     return res
 
 
@@ -438,7 +446,9 @@ def linked_double_chain(H_imp, vs, es, verbose=True, extremely_verbose=False):
         return np.empty((0, n_imp), dtype=H_imp.dtype), np.empty((0, 0), dtype=complex)
     H_star = build_star_geometry_hamiltonian(H_imp, vs, es)
     if extremely_verbose:
-        matrix_print(H_star, "Original Hamiltonian (star geometry), the impurity sits in the top left corner")
+        matrix_print(
+            H_star, "Original Hamiltonian (star geometry), the impurity sits in the top left corner", flush=True
+        )
 
     H_decoupled, imp_index, Q_decoupled = create_decoupled_hamiltonian(H_star, n_imp)
     if extremely_verbose:

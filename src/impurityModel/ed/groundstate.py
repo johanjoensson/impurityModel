@@ -46,7 +46,7 @@ def calc_energy(
     )
     if len(basis) == 0:
         return np.inf, basis, {}
-    _ = basis.expand(h_op, dense_cutoff=dense_cutoff, de2_min=1e-3)
+    _ = basis.expand(h_op, dense_cutoff=dense_cutoff, de2_min=1e-4)
 
     energy_cut = -tau * np.log(1e-4)
 
@@ -55,8 +55,8 @@ def calc_energy(
     e_block = eigensystem(
         h,
         e_max=energy_cut,
-        k=2 * sum(len(block) for block in block_basis.impurity_orbitals[0]),
-        eigenValueTol=np.sqrt(np.finfo(float).eps),
+        k=2,
+        eigenValueTol=np.finfo(float).eps,
         return_eigvecs=False,
         comm=block_basis.comm,
         dense=block_basis.size < dense_cutoff,
@@ -155,7 +155,6 @@ def find_ground_state_basis(
 def calc_gs(
     Hop: ManyBodyOperator,
     basis_setup: dict,
-    tau: float,
     block_structure: BlockStructure,
     rot_to_spherical: np.ndarray,
     verbose: bool,
@@ -170,8 +169,8 @@ def calc_gs(
         **basis_setup,
     )
 
+    tau = ground_state_basis.tau
     energy_cut = -tau * np.log(1e-4)
-    ground_state_basis.tau = tau
     _ = ground_state_basis.expand(Hop, dense_cutoff=dense_cutoff, de2_min=1e-6)
     _, block_roots, block_color, _, block_basis, _, _ = ground_state_basis.split_into_block_basis_and_redistribute_psi(
         Hop, None
