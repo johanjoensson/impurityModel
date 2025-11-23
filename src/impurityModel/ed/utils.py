@@ -2,7 +2,7 @@ import numpy as np
 from typing import Optional
 
 
-def vector_to_string(v: np.ndarray, n_prec: int = 15):
+def vector_to_string(v: np.ndarray, realvalue=None, n_prec: int = 15):
     """
     Pretty string representation of a (row) vector
     Arguments:
@@ -10,11 +10,13 @@ def vector_to_string(v: np.ndarray, n_prec: int = 15):
     v: np.ndarray - vector to print
     n_prec: int - number of decimal places to print (default=15)
     """
+    if realvalue is None:
+        realvalue = not np.any(np.abs(v.imag) > float(f"1e-{n_prec}"))
     real_format = f" .{n_prec}f"
+    if realvalue:
+        return " ".join([f"{np.real(el):{real_format}}" for el in v])
     imag_format = f">+.{n_prec}f"
-    if np.any(np.abs(v.imag)) > float(f"1e{-n_prec}"):
-        return " ".join([f"{np.real(el):{real_format}} {np.imag(el):{imag_format}}j" for el in v])
-    return " ".join([f"{np.real(el):{real_format}}" for el in v])
+    return " ".join([f"{np.real(el):{real_format}} {np.imag(el):{imag_format}}j" for el in v])
 
 
 def matrix_to_string(m: np.ndarray, n_prec: int = 15):
@@ -25,7 +27,8 @@ def matrix_to_string(m: np.ndarray, n_prec: int = 15):
     m: np.ndarray - matrix to print
     n_prec: int - number of decimal places to print (default=15)
     """
-    return "\n".join([vector_to_string(row, n_prec) for row in m])
+    realvalue = not np.any(np.abs(m.imag) > float(f"1e-{n_prec}"))
+    return "\n".join([vector_to_string(row, realvalue, n_prec) for row in m])
 
 
 def matrix_print(m: np.ndarray, label: Optional[str] = None, n_prec=15):

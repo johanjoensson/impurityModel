@@ -46,7 +46,7 @@ def calc_energy(
     )
     if len(basis) == 0:
         return np.inf, basis, {}
-    _ = basis.expand(h_op, dense_cutoff=dense_cutoff, de2_min=1e-5)
+    _ = basis.expand(h_op, dense_cutoff=dense_cutoff, de2_min=1e-3)
 
     energy_cut = -tau * np.log(1e-4)
 
@@ -172,7 +172,7 @@ def calc_gs(
 
     energy_cut = -tau * np.log(1e-4)
     ground_state_basis.tau = tau
-    _ = ground_state_basis.expand(Hop, dense_cutoff=dense_cutoff, de2_min=1e-8)
+    _ = ground_state_basis.expand(Hop, dense_cutoff=dense_cutoff, de2_min=1e-6)
     _, block_roots, block_color, _, block_basis, _, _ = ground_state_basis.split_into_block_basis_and_redistribute_psi(
         Hop, None
     )

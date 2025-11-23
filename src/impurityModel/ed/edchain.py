@@ -1,6 +1,8 @@
 import numpy as np
 import scipy as sp
 from impurityModel.ed.block_structure import build_block_structure, BlockStructure
+
+# from .utils import matrix_print, matrix_connectivity_print
 from impurityModel.ed.utils import matrix_print, matrix_connectivity_print
 from typing import Optional
 
@@ -389,12 +391,15 @@ def create_decoupled_hamiltonian(H, n_imp):
     eigvals[:] = eigvals[sort_idx]
     eigvecs[:] = eigvecs[:, sort_idx]
 
-    pivot = n_imp * (np.argmin(np.abs(eigvals)) // n_imp)
+    # Put the pivot point at the eigenstate with energy closest to 0
+    # In order to ensure we always get two decoupled blocks, the pivot will never
+    # be placed at the last eigenstate (unless there is only one eigenstate block.)
+    pivot = n_imp * (min(np.argmin(np.abs(eigvals)), max(len(eigvals) - 2 * n_imp, 0)) // n_imp)
 
-    #          [ v_0, . . ., v_nimp-1, v_nimp, ..., v_m-1 ]
+    #          [ v_0, . . ., v_pivot-1, v_pivot, ..., v_m-1 ]
     # eigvecs  |                                         |
     #          [                                         ]
-    # e_0 <= e_1 <= ... <= e_nimp-1 <= e_nimp <= ... <= e_m-1
+    # e_0 <= e_1 <= ... <= e_pivot-1 <= e_pivot <= ... <= e_m-1
     # Put highest energy occupied state first
     Q_occ_orig = eigvecs[:, : pivot + n_imp][:, ::-1]
     # Put lowest energy unoccupied state first
@@ -499,7 +504,7 @@ def linked_double_chain(H_imp, vs, es, verbose=True, extremely_verbose=False):
 
 if __name__ == "__main__":
     test_householder()
-    n_orb = 4
+    n_orb = 1
     n_b = 8 * n_orb
     n = n_orb + n_b
     H_start = np.random.rand(n, n) + 1j * np.random.rand(n, n)
@@ -507,8 +512,8 @@ if __name__ == "__main__":
 
     h_imp = H_start[:n_orb, :n_orb]
     v = H_start[n_orb:, :n_orb]
-    # eb = np.linspace(-0.1, 5, num=n_b)
-    eb = np.linalg.eigvals(H_start[n_orb:, n_orb:])
+    eb = -np.linspace(1, 5, num=n_b)
+    # eb = np.linalg.eigvals(H_start[n_orb:, n_orb:])
 
     v, hb = linked_double_chain(h_imp, v, eb, extremely_verbose=True)
     matrix_print(hb, "bath hamiltonian")

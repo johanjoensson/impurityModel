@@ -30,9 +30,13 @@ def thermal_average(energies, observable, T=300):
 
 
 def thermal_average_scale_indep(energies, observable, tau):
-    if len(energies) != np.shape(observable)[0]:
-        raise ValueError("Passed array is not of the right shape")
+    if isinstance(energies, float):
+        energies = np.array(energies)
+    elif not isinstance(energies, np.ndarray):
+        energies = np.array(energies)
+    if energies.shape[0] != observable.shape[0]:
+        raise RuntimeError("Passed array is not of the right shape")
     e0 = np.min(energies)
     weights = np.exp(-(energies - e0) / tau)
-    o_average = np.sum([w * o for w, o in zip(weights, observable)], axis=0)
+    o_average = np.sum(np.expand_dims(weights, tuple(range(1, observable.ndim))) * observable, axis=0)
     return o_average / np.sum(weights)

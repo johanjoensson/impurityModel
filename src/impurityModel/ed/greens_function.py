@@ -699,7 +699,7 @@ def block_Green(
             basis, hOp, psi_arr, iws, ws, e, delta, slaterWeightMin, verbose
         )
         if rank == 0:
-            done = np.max(np.abs(gs_realaxis - gs_realaxis_prev)) < np.finfo(float).eps
+            done = np.max(np.abs(gs_realaxis - gs_realaxis_prev)) < 1e-6
             causal = np.all(np.diagonal(gs_realaxis, axis1=1, axis2=2).imag) < 0
             done = done and causal
         if comm is not None:

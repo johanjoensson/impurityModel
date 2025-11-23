@@ -15,7 +15,7 @@ try:
     from primme import eigsh as primme_eigsh
     from os import environ
 
-    USE_PRIMME = True  # primme tends to hang randomly, so disable it for now
+    USE_PRIMME = False  # primme tends to hang randomly, so disable it for now
 
 except ModuleNotFoundError:
     USE_PRIMME = False
@@ -201,38 +201,31 @@ def petsc_eigensystem(h_local, e_max, k=10, v0=None, eigenValueTol=0, return_eig
 
 
 def dense_eigensystem(h_local, return_eigvecs=True, comm=None):
-    h = np.empty(h_local.shape, dtype=h_local.dtype) if comm is None or comm.rank == 0 else None
+    rank = comm.rank if comm is not None else 0
+    h = h_local.todense()
     if comm is not None:
-        comm.Reduce(h_local.todense(order="C"), h, root=0, op=MPI.SUM)
-    else:
-        h[:] = h_local.todense()
+        comm.Reduce(h if rank != 0 else MPI.IN_PLACE, h, root=0, op=MPI.SUM)
     if return_eigvecs:
-        if comm is None or comm.rank == 0:
+        if rank == 0:
             es, vecs = np.linalg.eigh(h, UPLO="L")
-            # Make sure the eigenvectors are laid out in 'C'/'row major'order
-            # This is needed for the upper case MPI communication (vecs has to have
-            # consistent layout between MPI ranks, I choose 'C' layout).
-            vecs = np.ascontiguousarray(vecs)
-            es = np.ascontiguousarray(es)
         else:
             es = np.empty((h_local.shape[0]), dtype=float, order="C")
             vecs = np.empty(h_local.shape, dtype=h_local.dtype, order="C")
-        if comm is not None:
-            comm.Bcast(es, root=0)
-            comm.Bcast(vecs, root=0)
-        return es, vecs
-    if comm is None or comm.rank == 0:
-        es = np.linalg.eigvalsh(h, UPLO="L")
-        es = np.ascontiguousarray(es)
     else:
-        es = np.empty((h_local.shape[0]), dtype=float, order="C")
+        if rank == 0:
+            es = np.linalg.eigvalsh(h, UPLO="L")
+        else:
+            es = np.empty((h_local.shape[0]), dtype=float)
     if comm is not None:
         comm.Bcast(es, root=0)
+        if return_eigvecs:
+            comm.Bcast(vecs, root=0)
+    if return_eigvecs:
+        return es, vecs
     return es
 
 
 def primme_eigensystem(h_local, e_max, k=10, v0=None, eigenValueTol=0, return_eigvecs=True, comm=None):
-    print(f"PRIMME")
     h = scipy.sparse.linalg.LinearOperator(
         h_local.shape,
         matvec=mpi_matmat(h_local, comm),
@@ -383,6 +376,8 @@ def eigensystem_new(h_local, e_max, k=10, v0=None, eigenValueTol=0, return_eigve
     dende : Convert h_local to dense form and use standard np.linalg.eigh to calculate the full spectra
     """
 
+    # e_max is limited by the accuracy of the calculated eigenvalues and machine precision
+    e_max = max(e_max, eigenValueTol, np.finfo(float).eps)
     if not scipy.sparse.issparse(h_local):
         raise RuntimeError(f"eigensystem can't handle a matrix of type {type(h_local)}")
 

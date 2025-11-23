@@ -18,18 +18,9 @@ from impurityModel.ed.groundstate import calc_gs
 from impurityModel.ed.greens_function import get_Greens_function, save_Greens_function
 from impurityModel.ed.block_structure import print_block_structure
 from impurityModel.ed.ManyBodyUtils import ManyBodyOperator, ManyBodyState
+from impurityModel.ed.utils import matrix_print
 
 EV_TO_RY = 1 / 13.605693122994
-
-
-def matrix_print(matrix: np.ndarray, label: str = None) -> None:
-    """
-    Pretty print the matrix, with optional label.
-    """
-    ms = "\n".join([" ".join([f"{np.real(val): .4f}{np.imag(val):+.4f}j" for val in row]) for row in matrix])
-    if label is not None:
-        print(label)
-    print(ms)
 
 
 class UnphysicalSelfenergyError(Exception):
@@ -119,17 +110,19 @@ def fixed_peak_dc(
             tau=tau,
         )
 
-    dc_op_i = {
-        ((i, "c"), (j, "a")): -dc_trial[i, j] + 0j
-        for i in range(dc_trial.shape[0])
-        for j in range(dc_trial.shape[1])
-        if abs(dc_trial[i, j]) > 0
-    }
-    h_op = h_op_i + ManyBodyOperator(dc_op_i)
-    _ = basis_upper.expand(h_op, dense_cutoff=dense_cutoff, de2_min=1e-3)
-    _ = basis_lower.expand(h_op, dense_cutoff=dense_cutoff, de2_min=1e-3)
+    dc_op_i = ManyBodyOperator(
+        {
+            ((i, "c"), (j, "a")): -dc_trial[i, j] + 0j
+            for i in range(dc_trial.shape[0])
+            for j in range(dc_trial.shape[1])
+            if abs(dc_trial[i, j]) > 0
+        }
+    )
+    h_op = h_op_i + dc_op_i
+    _ = basis_upper.expand(h_op, dense_cutoff=dense_cutoff, de2_min=1e-2)
+    _ = basis_lower.expand(h_op, dense_cutoff=dense_cutoff, de2_min=1e-2)
 
-    energy_cut = -tau * np.log(1e-4)
+    energy_cut = 0  # -tau * np.log(1e-4)
 
     impurity_indices = [orb for orb_blocks in impurity_orbitals.values() for block in orb_blocks for orb in block]
     impurity_ix = np.ix_(impurity_indices, impurity_indices)
@@ -143,8 +136,6 @@ def fixed_peak_dc(
             if abs(dc_trial[i, j]) > 0
         }
         h_op = h_op_i + ManyBodyOperator(dc_op_i)
-        # _ = basis_upper.expand(h_op, dense_cutoff=dense_cutoff, de2_min=1e-3)
-        # _ = basis_lower.expand(h_op, dense_cutoff=dense_cutoff, de2_min=1e-3)
 
         h = basis_upper.build_sparse_matrix(h_op)
         e_upper, psi_upper = finite.eigensystem_new(
@@ -172,7 +163,7 @@ def fixed_peak_dc(
         rho_upper = finite.thermal_average_scale_indep(e_upper, rho_upper, basis_upper.tau)
         avg_dc_lower = np.real(np.trace(rho_lower[impurity_ix] @ dc))
         avg_dc_upper = np.real(np.trace(rho_upper[impurity_ix] @ dc))
-        if abs(avg_dc_upper - avg_dc_lower) < min(tau, 1e-2):
+        if abs(avg_dc_upper - avg_dc_lower) < max(tau, 1e-2):
             return 0
         return (e_upper[0] - e_lower[0] - peak_position) / (avg_dc_upper - avg_dc_lower)
 
