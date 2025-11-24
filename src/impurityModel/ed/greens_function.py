@@ -154,8 +154,8 @@ def get_Greens_function(
     verbose_extra,
     reort,
     dN,
-    occ_cutoff=5e-2,
-    slaterWeightMin=np.finfo(float).eps,
+    occ_cutoff,
+    slaterWeightMin,
 ):
     """
     Calculate interacting Greens function.
@@ -321,9 +321,9 @@ def calc_Greens_function_with_offdiag(
     dN_imp: Optional[dict[int, tuple[int, int]]],
     dN_val: Optional[dict[int, tuple[int, int]]],
     dN_con: Optional[dict[int, tuple[int, int]]],
-    slaterWeightMin: float = 0,
-    verbose: bool = True,
-    occ_cutoff: float = 5e-2,
+    slaterWeightMin: float,
+    verbose: bool,
+    occ_cutoff: float,
 ):
     r"""
         Return Green's function for states with low enough energy.
@@ -369,7 +369,7 @@ def calc_Greens_function_with_offdiag(
     """
     n = len(tOps)
 
-    excited_basis_sizes = np.array([0] * len(es))
+    excited_basis_sizes = np.zeros((len(es)), dtype=int)
     if iw is not None:
         gs_matsubara_block = np.zeros((len(iw), n, n), dtype=complex, order="C")
     else:

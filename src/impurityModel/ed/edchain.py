@@ -72,7 +72,7 @@ def build_H_bath_v(H_dft, ebs_star, vs_star, bath_geometry, block_structure, ver
                 print("")
             print("=" * 80)
     # Star geometry is the fallback
-    else:  # bath_geometry == "star"
+    else:
         H_baths = [np.diag(eb) for eb in ebs_star]
         vs = vs_star
     return H_baths, vs
