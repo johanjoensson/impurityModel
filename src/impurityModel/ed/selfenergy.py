@@ -67,7 +67,7 @@ def fixed_peak_dc(
             nominal_impurity_occ=Np,
             mixed_valence=mixed_valence,
             truncation_threshold=1e5,
-            verbose=False,
+            verbose=verbose,
             comm=MPI.COMM_WORLD,
             spin_flip_dj=spin_flip_dj,
             tau=tau,
@@ -79,7 +79,7 @@ def fixed_peak_dc(
             nominal_impurity_occ=N0,
             mixed_valence=mixed_valence,
             truncation_threshold=1e5,
-            verbose=False,
+            verbose=verbose,
             comm=MPI.COMM_WORLD,
             spin_flip_dj=spin_flip_dj,
             tau=tau,
@@ -92,7 +92,7 @@ def fixed_peak_dc(
             nominal_impurity_occ=N0,
             mixed_valence=mixed_valence,
             truncation_threshold=1e5,
-            verbose=False,
+            verbose=verbose,
             comm=MPI.COMM_WORLD,
             spin_flip_dj=spin_flip_dj,
             tau=tau,
@@ -104,7 +104,7 @@ def fixed_peak_dc(
             nominal_impurity_occ=Nm,
             mixed_valence=mixed_valence,
             truncation_threshold=1e5,
-            verbose=False,
+            verbose=verbose,
             comm=MPI.COMM_WORLD,
             spin_flip_dj=spin_flip_dj,
             tau=tau,
@@ -157,12 +157,16 @@ def fixed_peak_dc(
             comm=basis_upper.comm,
             dense=basis_lower.size < dense_cutoff,
         )
-        rho_lower = basis_lower.build_density_matrices(basis_lower.build_state(psi_lower.T))
-        rho_upper = basis_upper.build_density_matrices(basis_upper.build_state(psi_upper.T))
+        rho_lower = basis_lower.build_density_matrices(
+            basis_lower.build_state(psi_lower.T), orbital_indices=impurity_indices
+        )
+        rho_upper = basis_upper.build_density_matrices(
+            basis_upper.build_state(psi_upper.T), orbital_indices=impurity_indices
+        )
         rho_lower = finite.thermal_average_scale_indep(e_lower, rho_lower, basis_lower.tau)
         rho_upper = finite.thermal_average_scale_indep(e_upper, rho_upper, basis_upper.tau)
-        avg_dc_lower = np.real(np.trace(rho_lower[impurity_ix] @ dc))
-        avg_dc_upper = np.real(np.trace(rho_upper[impurity_ix] @ dc))
+        avg_dc_lower = np.real(np.trace(rho_lower @ dc))
+        avg_dc_upper = np.real(np.trace(rho_upper @ dc))
         if abs(avg_dc_upper - avg_dc_lower) < max(tau, 1e-2):
             return 0
         return (e_upper[0] - e_lower[0] - peak_position) / (avg_dc_upper - avg_dc_lower)

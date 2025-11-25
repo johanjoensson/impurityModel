@@ -377,7 +377,7 @@ def eigensystem_new(h_local, e_max, k=10, v0=None, eigenValueTol=0, return_eigve
     """
 
     # e_max is limited by the accuracy of the calculated eigenvalues and machine precision
-    e_max = max(e_max, eigenValueTol, np.finfo(float).eps)
+    e_max = max(e_max, 10 * eigenValueTol, 10 * np.finfo(float).eps)
     if not scipy.sparse.issparse(h_local):
         raise RuntimeError(f"eigensystem can't handle a matrix of type {type(h_local)}")
 

@@ -2,7 +2,7 @@ import numpy as np
 from typing import Optional
 
 
-def vector_to_string(v: np.ndarray, realvalue=None, n_prec: int = 15):
+def vector_to_string(v: np.ndarray, realvalue: Optional[bool] = None, n_prec: int = 15):
     """
     Pretty string representation of a (row) vector
     Arguments:
@@ -43,7 +43,7 @@ def matrix_print(m: np.ndarray, label: Optional[str] = None, n_prec=15, **kwargs
     if label is not None:
         print(label)
     if len(m.shape) == 1:
-        print(vector_to_string(m, n_prec), **kwargs)
+        print(vector_to_string(m, n_prec=n_prec), **kwargs)
         return
     print(matrix_to_string(m, n_prec), **kwargs)
 

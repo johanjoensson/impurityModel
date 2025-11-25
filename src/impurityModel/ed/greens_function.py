@@ -184,23 +184,16 @@ def get_Greens_function(
     elif block_basis.comm.rank == 0:
         basis.comm.Send(np.array(block_indices), dest=0)
 
-    bis = block_indices  # list(range(block_indices.start, block_indices.stop))
-    excited_basis_sizes_IPS = np.empty((len(blocks), len(es)), dtype=int)
-    excited_basis_sizes_PS = np.empty((len(blocks), len(es)), dtype=int)
-    local_excited_basis_sizes_IPS = []
-    local_excited_basis_sizes_PS = []
+    excited_basis_sizes_IPS = np.zeros((len(blocks), len(es)), dtype=int)
+    excited_basis_sizes_PS = np.zeros((len(blocks), len(es)), dtype=int)
     local_gs_matsubara = []
     local_gs_realaxis = []
-    for block_i, (opIPS, opPS) in enumerate(
-        (
-            [{((orb, "c"),): 1} for orb in block],
-            [{((orb, "a"),): 1} for orb in block],
-        )
-        for block in (blocks[bi] for bi in block_indices)
-    ):
-        gsIPS_matsubara, gsIPS_realaxis, excited_basis_sizes = calc_Greens_function_with_offdiag(
+    IPS_ops = ([ManyBodyOperator({((orb, "c"),): 1}) for orb in blocks[bi]] for bi in block_indices)
+    PS_ops = ([ManyBodyOperator({((orb, "a"),): 1}) for orb in blocks[bi]] for bi in block_indices)
+    for block_i, IPS_op, PS_op in zip(block_indices, IPS_ops, PS_ops):
+        gsIPS_matsubara, gsIPS_realaxis, excited_basis_sizes_IPS[block_i] = calc_Greens_function_with_offdiag(
             hOp,
-            [ManyBodyOperator(o) for o in opIPS],
+            IPS_op,
             psis,
             es,
             tau,
@@ -216,10 +209,9 @@ def get_Greens_function(
             verbose=verbose_extra,
             occ_cutoff=occ_cutoff,
         )
-        local_excited_basis_sizes_IPS.append(excited_basis_sizes)
-        gsPS_matsubara, gsPS_realaxis, excited_basis_sizes = calc_Greens_function_with_offdiag(
+        gsPS_matsubara, gsPS_realaxis, excited_basis_sizes_PS[block_i] = calc_Greens_function_with_offdiag(
             hOp,
-            [ManyBodyOperator(o) for o in opPS],
+            PS_op,
             psis,
             es,
             tau,
@@ -235,7 +227,6 @@ def get_Greens_function(
             reort=reort,
             occ_cutoff=occ_cutoff,
         )
-        local_excited_basis_sizes_PS.append(excited_basis_sizes)
 
         if matsubara_mesh is not None and block_basis.comm.rank == 0:
             local_gs_matsubara.append(
@@ -262,35 +253,27 @@ def get_Greens_function(
                 )
             )
     if basis.comm.rank == 0:
-        gs_matsubara = [None for _ in blocks]
-        gs_realaxis = [None for _ in blocks]
-        for i, block_i in enumerate(block_indices):
-            gs_matsubara[block_i] = local_gs_matsubara[i]
-            gs_realaxis[block_i] = local_gs_realaxis[i]
-            excited_basis_sizes_IPS[block_i] = np.array(local_excited_basis_sizes_IPS[i])
-            excited_basis_sizes_PS[block_i] = np.array(local_excited_basis_sizes_PS[i])
+        gs_matsubara = [np.empty((len(matsubara_mesh), len(block), len(block)), dtype=complex) for block in blocks]
+        gs_realaxis = [np.empty((len(omega_mesh), len(block), len(block)), dtype=complex) for block in blocks]
         for col, sender in enumerate(block_roots):
             if sender == 0:
+                for i, block_i in enumerate(block_indices):
+                    gs_matsubara[block_i][:] = local_gs_matsubara[i]
+                    gs_realaxis[block_i][:] = local_gs_realaxis[i]
                 continue
             for block_idx in indices_for_colors[offsets[col] : offsets[col] + blocks_per_color[col]]:
                 block = blocks[block_idx]
 
-                gs_matsubara[block_idx] = np.empty((len(matsubara_mesh), len(block), len(block)), dtype=complex)
                 basis.comm.Recv(gs_matsubara[block_idx], source=sender)
 
-                gs_realaxis[block_idx] = np.empty((len(omega_mesh), len(block), len(block)), dtype=complex)
                 basis.comm.Recv(gs_realaxis[block_idx], source=sender)
 
-                basis.comm.Recv(excited_basis_sizes_IPS[block_idx], source=sender)
-                basis.comm.Recv(excited_basis_sizes_PS[block_idx], source=sender)
     elif block_basis.comm.rank == 0:
-        for gsm, gsr in zip(local_gs_matsubara, local_gs_realaxis):
+        for block_i, (gsm, gsr) in enumerate(zip(local_gs_matsubara, local_gs_realaxis)):
             basis.comm.Send(gsm, dest=0)
             basis.comm.Send(gsr, dest=0)
-            basis.comm.Send(np.array(local_excited_basis_sizes_IPS, dtype=int), dest=0)
-            basis.comm.Send(np.array(local_excited_basis_sizes_PS, dtype=int), dest=0)
-    basis.comm.Bcast(excited_basis_sizes_IPS, root=0)
-    basis.comm.Bcast(excited_basis_sizes_PS, root=0)
+    basis.comm.Allreduce(MPI.IN_PLACE, excited_basis_sizes_IPS, op=MPI.MAX)
+    basis.comm.Allreduce(MPI.IN_PLACE, excited_basis_sizes_PS, op=MPI.MAX)
 
     if verbose:
         print("=" * 80)
@@ -395,49 +378,47 @@ def calc_Greens_function_with_offdiag(
     e0 = min(es)
     Z = np.sum(np.exp(-(es - e0) / tau))
 
+    excited_basis = Basis(
+        eigen_basis.impurity_orbitals,
+        eigen_basis.bath_states,
+        initial_basis=[],
+        restrictions=None,
+        comm=eigen_basis.comm.Clone(),
+        verbose=verbose,
+        truncation_threshold=eigen_basis.truncation_threshold,
+        tau=eigen_basis.tau,
+        spin_flip_dj=eigen_basis.spin_flip_dj,
+    )
     for ei, psi, e in zip(eigen_indices, (psis[ei] for ei in eigen_indices), (es[ei] for ei in eigen_indices)):
+        excited_basis.clear()
         excited_restrictions = eigen_basis.build_excited_restrictions(
-            psis=psis,
+            psis=psi,
             imp_change=dN_imp,
             val_change=dN_val,
             con_change=dN_con,
             occ_cutoff=occ_cutoff,
         )
-        excited_basis = Basis(
-            eigen_basis.impurity_orbitals,
-            eigen_basis.bath_states,
-            initial_basis=[],
-            restrictions=excited_restrictions,
-            comm=eigen_basis.comm.Clone(),
-            verbose=verbose,
-            truncation_threshold=eigen_basis.truncation_threshold,
-            tau=eigen_basis.tau,
-            spin_flip_dj=eigen_basis.spin_flip_dj,
-        )
         if verbose and excited_restrictions is not None:
             print("Excited state restrictions:")
             for indices, occupations in excited_restrictions.items():
                 print(f"---> {sorted(indices)} : {occupations}", flush=True)
+        excited_basis.restrictions = excited_restrictions
 
         block_v = []
         local_excited_basis = set()
         for i_tOp, tOp in enumerate(tOps):
-            for state in eigen_basis.local_basis:
-                v = applyOp_test(tOp, ManyBodyState({state: 1.0}), cutoff=0, restrictions=None)
-                local_excited_basis |= set(v.keys())
             v = applyOp_test(
                 tOp,
                 psi,
                 cutoff=0,
                 restrictions=None,
             )
-            # local_excited_basis |= set(v.keys())
+            local_excited_basis |= set(v.keys())
             block_v.append(v)
 
         excited_basis.add_states(local_excited_basis)
         block_v = excited_basis.redistribute_psis(block_v)
 
-        # gs_matsubara_block_i, gs_realaxis_block_i = block_Green_freq(
         gs_matsubara_block_i, gs_realaxis_block_i = block_Green(
             hOp=hOp,
             psi_arr=block_v,
@@ -456,7 +437,7 @@ def calc_Greens_function_with_offdiag(
             if w is not None:
                 gs_realaxis_block += np.exp(-(e - e0) / tau) * gs_realaxis_block_i
         excited_basis_sizes[ei] = excited_basis.size
-        hOp.clear_memory()
+    hOp.clear_memory()
 
     # Send calculated Greens functions to root
     if basis.comm.rank == 0:
@@ -480,7 +461,7 @@ def calc_Greens_function_with_offdiag(
         gs_matsubara_block /= Z
     if w is not None:
         gs_realaxis_block /= Z
-    basis.comm.Allreduce(MPI.IN_PLACE, excited_basis_sizes, op=MPI.MAX)
+    # basis.comm.Allreduce(MPI.IN_PLACE, excited_basis_sizes, op=MPI.MAX)
     return gs_matsubara_block, gs_realaxis_block, excited_basis_sizes
 
 
@@ -674,12 +655,12 @@ def block_Green(
     cutoff = slaterWeightMin
     while not done:
         old_size = basis.size
-        # Add states connected to the first and last Krylov vector(s)
+        # Add states connected to the last Krylov vector(s)
         new_states = set()
-        for psi in itertools.chain(psi_arr, last_state):
+        for psi in last_state:  # itertools.chain(psi_arr, last_state):
             Hpsi = applyOp_test(hOp, psi, restrictions=basis.restrictions, cutoff=cutoff)
             new_states |= set(Hpsi.keys())
-        basis.add_states(new_states)
+        basis.add_states(new_states - set(basis.local_basis))
         if basis.size == old_size:
             break
         while basis.size > basis.truncation_threshold:
@@ -794,7 +775,7 @@ def block_green_impl(basis, hOp, psi_arr, iws, ws, e, delta, slaterWeightMin, ve
         d_gs = np.max(np.abs(gs_new - gs_prev))
         if verbose:
             print(rf"$\delta$ = {d_gs}")
-        return d_gs < max(slaterWeightMin, 1e-12)
+        return d_gs < max(slaterWeightMin, 1e-8)
 
     if dense:
         H = block_basis.build_dense_matrix(hOp)

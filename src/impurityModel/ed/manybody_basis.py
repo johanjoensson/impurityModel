@@ -406,11 +406,11 @@ class Basis:
                     frozenset(sorted(orbs for filled_orbs in filled_bath_states for orbs in filled_orbs))
                 ]
                 empty_bath_states = [frozenset(sorted(orbs for empty_orbs in empty_bath_states for orbs in empty_orbs))]
-            new_valence_indices = sorted(
-                orb for orb in val_orbs if not any(orb in s for s in filled_bath_states + empty_bath_states)
+            new_valence_indices = frozenset(
+                sorted(orb for orb in val_orbs if not any(orb in s for s in filled_bath_states + empty_bath_states))
             )
-            new_conduction_indices = sorted(
-                orb for orb in con_orbs if not any(orb in s for s in filled_bath_states + empty_bath_states)
+            new_conduction_indices = frozenset(
+                sorted(orb for orb in con_orbs if not any(orb in s for s in filled_bath_states + empty_bath_states))
             )
             if len(imp_orbs) > 0:
                 excited_restrictions[imp_orbs] = (min_imp, max_imp)
@@ -926,13 +926,14 @@ class Basis:
             psi_stats = self.comm.bcast(psi_stats)
         return psi_stats
 
-    def build_density_matrices(self, psis):
-        orbital_indices = list(range(self.num_spin_orbitals))
+    def build_density_matrices(self, psis, orbital_indices=None):
+        if orbital_indices is None:
+            orbital_indices = list(range(self.num_spin_orbitals))
         n_orb = len(orbital_indices)
         rhos = np.zeros((len(psis), n_orb, n_orb), dtype=complex)
         for n, psi_n in enumerate(psis):
 
-            psi_ps = [ManyBodyState() for _ in range(n_orb**2)]
+            psi_ps = []
             for (i, orb_i), (j, orb_j) in itertools.product(enumerate(orbital_indices), repeat=2):
                 op = ManyBodyOperator({((orb_i, "c"), (orb_j, "a")): 1.0})
                 psi_ps.append(op(psi_n))

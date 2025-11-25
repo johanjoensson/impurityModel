@@ -46,7 +46,7 @@ def calc_energy(
     )
     if len(basis) == 0:
         return np.inf, basis, {}
-    _ = basis.expand(h_op, dense_cutoff=dense_cutoff, de2_min=1e-4)
+    _ = basis.expand(h_op, dense_cutoff=dense_cutoff, de2_min=5e-4)
 
     energy_cut = -tau * np.log(1e-4)
 
@@ -111,6 +111,11 @@ def find_ground_state_basis(
             verbose=verbose >= 2,
             truncation_threshold=truncation_threshold,
         )
+        if verbose:
+            print("{", end="")
+            for i in dN:
+                print(f" {i} : {N0[i] + dN[i]}", end="")
+            print(f"}} ~ {e_trial}")
         if e_trial < e_gs:
             e_gs = e_trial
             basis_gs = basis.copy()
@@ -139,6 +144,8 @@ def find_ground_state_basis(
                 verbose=False,
                 truncation_threshold=truncation_threshold,
             )
+            if verbose:
+                print("{" + " ".join(f" {i} : {gs_impurity_occ[i] + dN_gs[i]}" for i in dN_gs) + f"}} ~ {e_trial}")
             if e_trial >= e_gs:
                 break
             gs_impurity_occ[i] += dN_gs[i]
