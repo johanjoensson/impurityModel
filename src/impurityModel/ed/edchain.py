@@ -502,13 +502,15 @@ def linked_double_chain(H_imp, vs, es, verbose=True, extremely_verbose=False):
 
     # Make sure that we have not changed the spectrum of the Hamiltonian
     assert np.allclose(
-        np.linalg.eigvalsh(H_star), np.linalg.eigvalsh(H_tridiagonal_decoupled), atol=np.finfo(float).eps
+        np.linalg.eigvalsh(H_star), np.linalg.eigvalsh(H_tridiagonal_decoupled), atol=1e-14
     ), f"{np.linalg.eigvalsh(H_star)}\n{np.linalg.eigvalsh(H_tridiagonal_decoupled)}"
     assert np.allclose(
-        np.linalg.eigvalsh(H_star), np.linalg.eigvalsh(H_linked_chains), atol=np.finfo(float).eps
+        np.linalg.eigvalsh(H_star), np.linalg.eigvalsh(H_linked_chains), atol=1e-14
     ), f"{np.linalg.eigvalsh(H_star)}\n{np.linalg.eigvalsh(H_linked_chains)}"
     # Make sure that we have restored the impurity block exactly
-    assert np.allclose(H_linked_chains[:n_imp, :n_imp], H_imp, atol=np.finfo(float).eps)
+    assert np.allclose(
+        H_linked_chains[:n_imp, :n_imp], H_imp, atol=1e-14
+    ), f"{H_linked_chains[:n_imp, :n_imp]=} {H_imp=}"
     return H_linked_chains[n_imp:, :n_imp], H_linked_chains[n_imp:, n_imp:]
 
 

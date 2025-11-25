@@ -158,10 +158,14 @@ def fixed_peak_dc(
             dense=basis_lower.size < dense_cutoff,
         )
         rho_lower = basis_lower.build_density_matrices(
-            basis_lower.build_state(psi_lower.T), orbital_indices=impurity_indices
+            basis_lower.build_state(psi_lower.T),
+            orbital_indices_left=impurity_indices,
+            orbital_indices_right=impurity_indices,
         )
         rho_upper = basis_upper.build_density_matrices(
-            basis_upper.build_state(psi_upper.T), orbital_indices=impurity_indices
+            basis_upper.build_state(psi_upper.T),
+            orbital_indices_left=impurity_indices,
+            orbital_indices_right=impurity_indices,
         )
         rho_lower = finite.thermal_average_scale_indep(e_lower, rho_lower, basis_lower.tau)
         rho_upper = finite.thermal_average_scale_indep(e_upper, rho_upper, basis_upper.tau)
