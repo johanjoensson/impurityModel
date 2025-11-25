@@ -369,9 +369,6 @@ class Basis:
 
                 valence_occupations = np.diag(np.max(val_rhos.real, axis=0))
                 conduction_occupations = np.diag(np.max(con_rhos.real, axis=0))
-
-                matrix_print(np.max(np.abs(imp_val_rho), axis=0), "Imp <-> val")
-                matrix_print(np.max(np.abs(imp_con_rho), axis=0), "Imp <-> con")
                 # Identify filled and empty bath states
                 # Ignore states that are not directly coupled to the impurity
                 filled_valence_states = [
