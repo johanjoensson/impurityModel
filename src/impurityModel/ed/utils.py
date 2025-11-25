@@ -10,6 +10,7 @@ def vector_to_string(v: np.ndarray, realvalue: Optional[bool] = None, n_prec: in
     v: np.ndarray - vector to print
     n_prec: int - number of decimal places to print (default=15)
     """
+    assert v.ndim == 1
     if realvalue is None:
         realvalue = not np.any(np.abs(v.imag) > float(f"1e-{n_prec}"))
     real_format = f" .{n_prec}f"

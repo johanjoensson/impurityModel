@@ -342,58 +342,54 @@ class Basis:
         excited_restrictions = {}
 
         valence_baths, conduction_baths = self.bath_states
-        full_rhos = self.build_density_matrices(psis)
-
-        def connected(orbs_a, orbs_b):
-            """
-            Return True if orbs_a are connected to orbs_b in any density matrix
-            """
-            idx = np.ix_(np.arange(len(psis)), orbs_a, orbs_b)
-            return np.any(np.abs(full_rhos[idx]) > occ_cutoff)
 
         filled_bath_states = []
         empty_bath_states = []
         valence_orbitals = []
         conduction_orbitals = []
+
+        full_rhos = self.build_density_matrices(psis)
         for i, impurity_orbitals in self.impurity_orbitals.items():
             imp_orbs = frozenset(sorted(orb for block in impurity_orbitals for orb in block))
             min_imp, max_imp = self._get_updated_occ_restrictions(ground_state_restrictions, imp_orbs, imp_change[i])
             val_orbs = frozenset(sorted(orb for block in valence_baths[i] for orb in block))
             min_val, max_val = self._get_updated_occ_restrictions(ground_state_restrictions, val_orbs, val_change[i])
             con_orbs = frozenset(sorted(orb for block in conduction_baths[i] for orb in block))
-            min_val, max_con = self._get_updated_occ_restrictions(ground_state_restrictions, con_orbs, con_change[i])
+            min_con, max_con = self._get_updated_occ_restrictions(ground_state_restrictions, con_orbs, con_change[i])
 
             for imp_orb_block, val_orb_block, con_orb_block in zip(
                 impurity_orbitals, valence_baths[i], conduction_baths[i]
             ):
-                valence_idx = np.ix_(np.arange(len(psis)), val_orb_block, val_orb_block)
-                conduction_idx = np.ix_(np.arange(len(psis)), con_orb_block, con_orb_block)
+                imp_val_rho = self.build_density_matrices(psis, imp_orb_block, val_orb_block)
+                val_rhos = self.build_density_matrices(psis, val_orb_block, val_orb_block)
+                imp_con_rho = self.build_density_matrices(psis, imp_orb_block, con_orb_block)
+                con_rhos = self.build_density_matrices(psis, con_orb_block, con_orb_block)
 
-                valence_occupations = np.diag(np.max(full_rhos[valence_idx], axis=0))
-                conduction_occupations = np.diag(np.max(full_rhos[conduction_idx], axis=0))
+                valence_occupations = np.diag(np.max(val_rhos, axis=0))
+                conduction_occupations = np.diag(np.max(con_rhos, axis=0))
 
                 # Identify filled and empty bath states
                 # Ignore states that are not directly coupled to the impurity
                 filled_valence_states = [
                     val_orb_block[orb]
                     for orb in np.nonzero(valence_occupations > 1 - occ_cutoff)[0]
-                    if not connected([val_orb_block[orb]], imp_orb_block)
+                    if not np.any(np.abs(imp_val_rho[:, :, orb]) > occ_cutoff)
                 ]
                 filled_conduction_states = [
                     con_orb_block[orb]
                     for orb in np.nonzero(conduction_occupations > 1 - occ_cutoff)[0]
-                    if not connected([con_orb_block[orb]], imp_orb_block)
+                    if not np.any(np.abs(imp_con_rho[:, :, orb]) > occ_cutoff)
                 ]
                 filled_states = frozenset(sorted(filled_valence_states + filled_conduction_states))
                 empty_valence_states = [
                     val_orb_block[orb]
                     for orb in np.nonzero(valence_occupations < occ_cutoff)[0]
-                    if not connected([val_orb_block[orb]], imp_orb_block)
+                    if not np.any(np.abs(imp_val_rho[:, :, orb]) > occ_cutoff)
                 ]
                 empty_conduction_states = [
                     con_orb_block[orb]
                     for orb in np.nonzero(conduction_occupations < occ_cutoff)[0]
-                    if not connected([con_orb_block[orb]], imp_orb_block)
+                    if not np.any(np.abs(imp_con_rho[:, :, orb]) > occ_cutoff)
                 ]
                 min_val = max(min_val - len(filled_valence_states) - len(empty_valence_states), 0)
                 max_con = max(max_con - len(empty_conduction_states) - len(filled_conduction_states), 0)
@@ -418,7 +414,7 @@ class Basis:
                 excited_restrictions[new_valence_indices] = (min_val, len(new_valence_indices))
             if len(new_conduction_indices) > 0:
                 excited_restrictions[new_conduction_indices] = (0, max_con)
-            for filled_orbitals, empty_orbitals in zip(filled_states, empty_states):
+            for filled_orbitals, empty_orbitals in zip(filled_bath_states, empty_bath_states):
                 if len(filled_orbitals) > 0:
                     excited_restrictions[filled_orbitals] = (len(filled_orbitals) - 1, len(filled_orbitals))
                 if len(empty_orbitals) > 0:
@@ -926,20 +922,24 @@ class Basis:
             psi_stats = self.comm.bcast(psi_stats)
         return psi_stats
 
-    def build_density_matrices(self, psis, orbital_indices=None):
-        if orbital_indices is None:
-            orbital_indices = list(range(self.num_spin_orbitals))
-        n_orb = len(orbital_indices)
-        rhos = np.zeros((len(psis), n_orb, n_orb), dtype=complex)
+    def build_density_matrices(self, psis, orbital_indices_left=None, orbital_indices_right=None):
+        if orbital_indices_left is None:
+            orbital_indices_left = list(range(self.num_spin_orbitals))
+        if orbital_indices_right is None:
+            orbital_indices_right = list(range(self.num_spin_orbitals))
+        n_left, n_right = (len(orbital_indices_left), len(orbital_indices_right))
+        rhos = np.zeros((len(psis), n_left, n_right), dtype=complex)
         for n, psi_n in enumerate(psis):
 
             psi_ps = []
-            for (i, orb_i), (j, orb_j) in itertools.product(enumerate(orbital_indices), repeat=2):
+            for (i, orb_i), (j, orb_j) in itertools.product(
+                enumerate(orbital_indices_left), enumerate(orbital_indices_right)
+            ):
                 op = ManyBodyOperator({((orb_i, "c"), (orb_j, "a")): 1.0})
                 psi_ps.append(op(psi_n))
             if self.is_distributed:
                 psi_ps = self.redistribute_psis(psi_ps)
-            for (i, j), psi_p in zip(itertools.product(enumerate(orbital_indices), repeat=2), psi_ps):
+            for (i, j), psi_p in zip(itertools.product(range(n_left), range(n_right)), psi_ps):
                 amp = inner(psi_n, psi_p)
                 if abs(amp) > np.finfo(float).eps:
                     rhos[n, i, j] = amp
