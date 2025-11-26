@@ -308,6 +308,7 @@ class Basis:
     def build_excited_restrictions(
         self,
         psis: list[ManyBodyState] | ManyBodyState,
+        op: ManyBodyOperator,
         imp_change: Optional[dict[int, tuple[int, int]]],
         val_change: Optional[dict[int, tuple[int, int]]],
         con_change: Optional[dict[int, tuple[int, int]]],
@@ -347,10 +348,16 @@ class Basis:
 
         filled_bath_states = []
         empty_bath_states = []
-        valence_orbitals = []
-        conduction_orbitals = []
 
-        full_rhos = self.build_density_matrices(psis)
+        def connected(orbs_i, orbs_j):
+            for orb_i, orb_j in itertools.product(orbs_i, orbs_j):
+                if ((orb_i, "c"), (orb_j, "a")) in op:
+                    return abs(op[((orb_i, "c"), (orb_j, "a"))]) > occ_cutoff
+                if ((orb_j, "c"), (orb_i, "a")) in op:
+                    return abs(op[((orb_j, "c"), (orb_i, "a"))]) > occ_cutoff
+
+            return False
+
         for i, impurity_orbitals in self.impurity_orbitals.items():
             imp_orbs = frozenset(sorted(orb for block in impurity_orbitals for orb in block))
             min_imp, max_imp = self._get_updated_occ_restrictions(ground_state_restrictions, imp_orbs, imp_change[i])
@@ -374,23 +381,27 @@ class Basis:
                 filled_valence_states = [
                     val_orb_block[orb]
                     for orb in np.nonzero(valence_occupations > 1 - occ_cutoff)[0]
-                    if not np.any(np.abs(imp_val_rho[:, :, orb]) > np.sqrt(occ_cutoff))
+                    if not connected([val_orb_block[orb]], imp_orb_block)
+                    # if not np.any(np.abs(imp_val_rho[:, :, orb]) > np.sqrt(occ_cutoff))
                 ]
                 filled_conduction_states = [
                     con_orb_block[orb]
                     for orb in np.nonzero(conduction_occupations > 1 - occ_cutoff)[0]
-                    if not np.any(np.abs(imp_con_rho[:, :, orb]) > np.sqrt(occ_cutoff))
+                    if not connected([con_orb_block[orb]], imp_orb_block)
+                    # if not np.any(np.abs(imp_con_rho[:, :, orb]) > np.sqrt(occ_cutoff))
                 ]
                 filled_states = frozenset(sorted(filled_valence_states + filled_conduction_states))
                 empty_valence_states = [
                     val_orb_block[orb]
                     for orb in np.nonzero(valence_occupations < occ_cutoff)[0]
-                    if not np.any(np.abs(imp_val_rho[:, :, orb]) > np.sqrt(occ_cutoff))
+                    if not connected([val_orb_block[orb]], imp_orb_block)
+                    # if not np.any(np.abs(imp_val_rho[:, :, orb]) > np.sqrt(occ_cutoff))
                 ]
                 empty_conduction_states = [
                     con_orb_block[orb]
                     for orb in np.nonzero(conduction_occupations < occ_cutoff)[0]
-                    if not np.any(np.abs(imp_con_rho[:, :, orb]) > np.sqrt(occ_cutoff))
+                    if not connected([con_orb_block[orb]], imp_orb_block)
+                    # if not np.any(np.abs(imp_con_rho[:, :, orb]) > np.sqrt(occ_cutoff))
                 ]
                 min_val = max(min_val - len(filled_valence_states) - len(empty_valence_states), 0)
                 max_con = max(max_con - len(empty_conduction_states) - len(filled_conduction_states), 0)
@@ -409,7 +420,7 @@ class Basis:
             new_conduction_indices = frozenset(
                 sorted(orb for orb in con_orbs if not any(orb in s for s in filled_bath_states + empty_bath_states))
             )
-            if len(imp_orbs) > 1 and min_imp > 0 and max_imp < len(imp_orbs):
+            if len(imp_orbs) > 0:
                 excited_restrictions[imp_orbs] = (min_imp, max_imp)
             if len(new_valence_indices) > 0 and min_val > 0:
                 excited_restrictions[new_valence_indices] = (min_val, len(new_valence_indices))

@@ -168,7 +168,8 @@ def calc_gs(
     **kwargs,
 ):
 
-    basis = None
+    tau = basis_setup["tau"]
+    basis_setup["tau"] = 0
     dense_cutoff = basis_setup["dense_cutoff"]
     ground_state_basis = find_ground_state_basis(
         Hop,
@@ -176,7 +177,7 @@ def calc_gs(
         **basis_setup,
     )
 
-    tau = ground_state_basis.tau
+    ground_state_basis.tau = tau
     energy_cut = -tau * np.log(1e-4)
     _ = ground_state_basis.expand(Hop, dense_cutoff=dense_cutoff, de2_min=1e-6)
     _, block_roots, block_color, _, block_basis, _, _ = ground_state_basis.split_into_block_basis_and_redistribute_psi(

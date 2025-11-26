@@ -393,6 +393,7 @@ def calc_Greens_function_with_offdiag(
         excited_basis.clear()
         excited_restrictions = eigen_basis.build_excited_restrictions(
             psis=psi,
+            op=hOp,
             imp_change=dN_imp,
             val_change=dN_val,
             con_change=dN_con,
