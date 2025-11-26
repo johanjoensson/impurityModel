@@ -124,10 +124,10 @@ def householder_reflector(A):
     W, s, V = np.linalg.svd(X[:r], full_matrices=True)
     Vh = np.conj(V.T)
 
-    beta = -W @ V @ Z
-    Y = X + np.eye(X.shape[0], r) @ W @ V
+    beta = np.linalg.multi_dot((-W, V, Z))
+    Y = X + np.linalg.multi_dot((np.eye(X.shape[0], r), W, V))
 
-    U = Y @ (Vh @ np.diag(1 / (np.sqrt(2 + 2 * s))))
+    U = np.linalg.multi_dot((Y, Vh, np.diag(1 / np.sqrt(2 + 2 * s))))
     return U
 
 
@@ -225,11 +225,11 @@ def tridiagonalize(H, v0):
         )
 
     N = H.shape[0]
-    Q = np.zeros((N, N), dtype=complex)
-    q = np.zeros((2, N, block_size), dtype=complex)
+    Q = np.zeros((N, N), dtype=v0.dtype)
+    q = np.zeros((2, N, block_size), dtype=v0.dtype)
     q[1, :, :block_size] = v0
-    alphas = np.empty((N // block_size, block_size, block_size), dtype=complex)
-    betas = np.zeros((N // block_size, block_size, block_size), dtype=complex)
+    alphas = np.empty((N // block_size, block_size, block_size), dtype=H.dtype)
+    betas = np.zeros((N // block_size, block_size, block_size), dtype=v0.dtype)
 
     for i in range(N // block_size):
         wp = H @ q[1]
@@ -443,7 +443,7 @@ def linked_double_chain(H_imp, vs, es, verbose=True, extremely_verbose=False):
     n_imp = H_imp.shape[0]
     n_bath = es.shape[0]
     if n_bath == 0:
-        return np.empty((0, n_imp), dtype=H_imp.dtype), np.empty((0, 0), dtype=complex)
+        return np.empty((0, n_imp), dtype=H_imp.dtype), np.empty((0, 0), dtype=H_imp.dtype)
     H_star = build_star_geometry_hamiltonian(H_imp, vs, es)
     if extremely_verbose:
         matrix_print(
@@ -481,7 +481,7 @@ def linked_double_chain(H_imp, vs, es, verbose=True, extremely_verbose=False):
             H_decoupled[top_left:, top_left:], n_imp
         )
 
-    H_linked_chains = np.conj(R_couple.T) @ H_tridiagonal_decoupled @ R_couple
+    H_linked_chains = np.linalg.multi_dot((np.conj(R_couple.T), H_tridiagonal_decoupled, R_couple))
     if extremely_verbose:
         matrix_print(H_tridiagonal_decoupled, "Decoupled Hamiltonian with tridiagonal blocks")
         matrix_print(H_linked_chains, "Hamiltonian with coupled tridiagonal blocks")
