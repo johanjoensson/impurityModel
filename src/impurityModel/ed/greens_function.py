@@ -417,8 +417,8 @@ def calc_Greens_function_with_offdiag(
         excited_basis.add_states(local_excited_basis)
         block_v = excited_basis.redistribute_psis(block_v)
 
-        # gs_matsubara_block_i, gs_realaxis_block_i = block_Green_freq(
-        gs_matsubara_block_i, gs_realaxis_block_i = block_Green(
+        gs_matsubara_block_i, gs_realaxis_block_i = block_Green_freq(
+            # gs_matsubara_block_i, gs_realaxis_block_i = block_Green(
             hOp=hOp,
             psi_arr=block_v,
             basis=excited_basis,
