@@ -30,12 +30,15 @@ def build_H_bath_v(H_dft, ebs_star, vs_star, bath_geometry, block_structure, ver
     H_baths = []
     vs = []
     if bath_geometry == "chain":
-        for v, ebs in zip(vs_star, ebs_star):
+        for i_b, (v, ebs) in enumerate(zip(vs_star, ebs_star)):
+            block_ix = block_structure.inequivalent_blocks[i_b]
+            block_orbs = block_structure.blocks[block_ix]
+            b_ix = np.ix_(block_orbs, block_orbs)
             if len(ebs) <= 1:
                 H_baths.append(np.diag(ebs))
                 vs.append(v)
                 continue
-            vc, hc = double_chains(v, ebs, verbose)
+            vc, hc = double_chains(H_dft[b_ix], v, ebs, verbose)
             H_baths.append(hc)
             vs.append(vc)
         if verbose:
@@ -161,6 +164,12 @@ def test_householder():
     assert np.allclose(Q @ R, M)
     assert np.allclose(np.conj(Q.T) @ Q, np.conj(Q_np).T @ Q_np)
 
+    M = np.ones((150, 150), dtype=float)
+    Q, R = block_qr(M, 1)
+    Q_np, R_np = np.linalg.qr(M)
+    assert np.allclose(Q @ R, M)
+    assert np.allclose(np.conj(Q.T) @ Q, np.conj(Q_np).T @ Q_np)
+
 
 def block_qr(A, block_size=1, overwrite_A=False):
     m, n = A.shape
@@ -244,12 +253,13 @@ def tridiagonalize(H, v0):
     return alphas, betas, v0_tilde
 
 
-def double_chains(vs: np.ndarray, ebs: np.ndarray, verbose: bool):
+def double_chains(H_imp: np.ndarray, vs: np.ndarray, ebs: np.ndarray, verbose: bool):
     """
     Transform the bath geometry from a star into one or two auxilliary chains.
     The two chains correspond to the occupied and unoccupied parts of the spectra respectively.
     Returns the Hopping term from the impurity onto the chains and the chain bath Hamiltonian.
     Parameters:
+    H_imp: np.ndarray((block_size, block_size)) - Impurity hamiltonian
     vs: np.ndarray((Neb, block_size)) - Hopping parameters for star geometry.
     ebs: np.ndarray((Neb)) - Bath energies for star geometry
     Returns:
@@ -257,28 +267,28 @@ def double_chains(vs: np.ndarray, ebs: np.ndarray, verbose: bool):
     chain_v: np.ndarray((Neb_chain, block_size)) - Hopping parameters for chain geometry.
     H_bath_chain: np.ndarray((Neb_chain, Neb_chain)) - Hamiltonian describind the bath in chain geometry.
     """
-    sort_idx = np.argsort(ebs)
+    sort_idx = np.argsort(ebs, stable=True)
     ebs = ebs[sort_idx]
-    vs = vs[sort_idx, :]
-    n_imp = vs.shape[1]
+    vs = vs[sort_idx]
+    n_imp = H_imp.shape[1]
 
     n_occ = sum(ebs < 0)
-    ebs[:n_occ] = ebs[:n_occ][::-1]
-    vs[:n_occ] = vs[:n_occ][::-1]
-    H_occ = build_star_geometry_hamiltonian(np.zeros((n_imp, n_imp), dtype=vs.dtype), vs[:n_occ], ebs[:n_occ])
+    print(f"{n_occ=}")
+    # ebs[:n_occ] = ebs[:n_occ][::-1]
+    # vs[:n_occ] = vs[:n_occ][::-1, :]
+    H_occ = build_star_geometry_hamiltonian(H_imp, np.flip(vs[:n_occ], axis=0), np.flip(ebs[:n_occ], axis=0))
     if verbose:
         matrix_print(H_occ, "Original hamiltonian for occupied part")
         print("", flush=True)
     H_occ[:] = transform_to_lanczos_tridagonal_matrix(H_occ, n_imp)
 
-    H_unocc = build_star_geometry_hamiltonian(np.zeros((n_imp, n_imp), dtype=vs.dtype), vs[n_occ:], ebs[n_occ:])
+    H_unocc = build_star_geometry_hamiltonian(H_imp, vs[n_occ:], ebs[n_occ:])
     if verbose:
         matrix_print(H_unocc, "Original hamiltonian for unoccupied part")
     H_unocc[:] = transform_to_lanczos_tridagonal_matrix(H_unocc, n_imp)
     V = np.vstack((H_occ[n_imp:, :n_imp], H_unocc[n_imp:, :n_imp]))
     Hb = sp.linalg.block_diag(H_occ[n_imp:, n_imp:], H_unocc[n_imp:, n_imp:])
     if verbose:
-        H_imp = np.ones((n_imp, n_imp))
         H_tmp = np.block([[H_imp, V.T], [V, Hb]])
         matrix_print(H_tmp)
         matrix_connectivity_print(H_tmp, n_imp, "Block structure of double chain geometry Hamiltonian")
@@ -343,8 +353,8 @@ def haverkort_chain(eloc, tns, ens):
 
 
 def build_star_geometry_hamiltonian(H_imp, vs, es):
-    n_imp = vs.shape[1]
-    n_bath = len(es)
+    n_imp = H_imp.shape[1]
+    n_bath = es.shape[0]
     H_star = np.empty((n_imp + n_bath, n_imp + n_bath), dtype=H_imp.dtype)
     H_star[:n_imp, :n_imp] = H_imp
     H_star[n_imp:, :n_imp] = vs
@@ -385,7 +395,7 @@ def transform_to_lanczos_tridagonal_matrix(H, n_imp):
     res[n_imp:, n_imp:] = H_tridiagonal
 
     assert np.allclose(
-        np.linalg.eigvalsh(H), np.linalg.eigvalsh(res)
+        np.linalg.eigvalsh(H), np.linalg.eigvalsh(res), atol=1e-12
     ), f"{np.linalg.eigvalsh(H)=}\n{np.linalg.eigvalsh(res)=}"
     return res
 

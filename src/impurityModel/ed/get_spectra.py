@@ -26,6 +26,7 @@ from impurityModel.ed import op_parser
 from impurityModel.ed.manybody_basis import CIPSI_Basis, Basis
 from impurityModel.ed.block_structure import BlockStructure, print_block_structure
 from impurityModel.ed.ManyBodyUtils import ManyBodyOperator, ManyBodyState
+from impurityModel.ed.groundstate import calc_gs
 
 
 def matrix_print(matrix: np.ndarray, label: str = None) -> None:
@@ -258,109 +259,21 @@ def main(
     if rank == 0:
         print("Create basis...")
     tau = k_B * T
-    basis = CIPSI_Basis(
-        H=hOp,
-        impurity_orbitals=impurity_orbitals,
-        bath_states=(valence_baths, conduction_baths),
-        nominal_impurity_occ=n0imps,
-        truncation_threshold=1e9,
-        tau=tau,
-        comm=comm,
-    )
-    basis.expand(hOp, de2_min=1e-4)
-    restrictions = basis.restrictions
-
-    if restrictions is not None and verbosity >= 2:
-        print("Restrictions GS on occupation")
-        for indices, limits in restrictions.items():
-            print(f"---> {sorted(indices)} : {limits}", flush=True)
-
-    energy_cut = -tau * np.log(1e-4)
-
-    _, block_roots, block_color, _, block_basis, _, _ = basis.split_into_block_basis_and_redistribute_psi(hOp, None)
-    h_gs = block_basis.build_sparse_matrix(hOp)
-    block_es, block_psis_dense = finite.eigensystem_new(
-        h_gs,
-        e_max=energy_cut,
-        k=2 * sum(len(imp_orbs) for imp_orbs in impurity_orbitals.values()),
-        eigenValueTol=np.sqrt(np.finfo(float).eps),
-        comm=block_basis.comm,
-        dense=block_basis.size < dense_cutoff,
-    )
-    psis = []
-    es = np.array([], dtype=float)
-    for c, c_root in enumerate(block_roots):
-        es_c = basis.comm.bcast(block_es, root=c_root)
-        es = np.append(es, es_c)
-        if c != block_color:
-            psi_c = basis.redistribute_psis([ManyBodyState() for _ in es_c])
-        else:
-            psi_c = basis.redistribute_psis(block_basis.build_state(block_psis_dense.T))
-        psis.extend(psi_c)
-
-    sort_idx = np.argsort(es)
-    es = es[sort_idx]
-    mask = es <= (es[0] + energy_cut)
-    es = es[mask]
-    psis = [psis[idx] for idx in itertools.compress(sort_idx, mask)]
-    effective_restrictions = basis.get_effective_restrictions()
-    if verbosity >= 1:
-        print("Effective GS restrictions:")
-        for indices, occupations in effective_restrictions.items():
-            print(f"---> {sorted(indices)} : {occupations}")
-        print("=" * 80)
-    if verbosity >= 1:
-        print(f"{len(basis)} Slater determinants in the basis.")
-    gs_stats = basis.get_state_statistics(psis)
-    rho_imps, rho_baths = basis.build_density_matrices(psis)
-    n_orb = {i: sum(len(block) for block in basis.impurity_orbitals[i]) for i in basis.impurity_orbitals}
-    full_rho_imps = {i: np.zeros((len(psis), n_orb[i], n_orb[i]), dtype=complex) for i in basis.impurity_orbitals}
-    for i, i_blocks in basis.impurity_orbitals.items():
-        orb_offset = min(orb for block in i_blocks for orb in block)
-        for k in range(len(psis)):
-            for j, block_orbs in enumerate(i_blocks):
-                idx = np.ix_([k], [orb - orb_offset for orb in block_orbs], [orb - orb_offset for orb in block_orbs])
-                full_rho_imps[i][idx] = rho_imps[i][j][k]
-    thermal_rho_imps = {
-        i: [finite.thermal_average_scale_indep(es, block_rhos, tau) for block_rhos in rho_imps[i]]
-        for i in basis.impurity_orbitals.keys()
+    basis_setup = {
+        "impurity_orbital": impurity_orbitals,
+        "bath_states": (valence_baths, conduction_baths),
+        "nominal_impurity_occ": n0imps,
+        "truncation_threshold": 1e7,
+        "tau": tau,
+        "comm": comm,
     }
-    thermal_rho_baths = {
-        i: [finite.thermal_average_scale_indep(es, block_rhos, tau) for block_rhos in rho_baths[i]]
-        for i in basis.impurity_orbitals.keys()
-    }
-    if verbosity >= 1:
-        print("Block structure")
-        print_block_structure(block_structure)
-        for i, blocks in basis.impurity_orbitals.items():
-            print(f"Impurity orbital set {i}")
-            subset_block_structuce = BlockStructure(
-                blocks=blocks,
-                identical_blocks=[[i] for i in range(len(blocks))],
-                transposed_blocks=[[] for _ in range(len(blocks))],
-                particle_hole_blocks=[[] for _ in range(len(blocks))],
-                particle_hole_transposed_blocks=[[] for _ in range(len(blocks))],
-                inequivalent_blocks=[j for j in range(len(blocks))],
-            )
-            finite.printThermalExpValues_new(full_rho_imps[i], es, tau, rot_to_spherical[i], subset_block_structuce)
-            finite.printExpValues(full_rho_imps[i], es, rot_to_spherical[i], subset_block_structuce)
-        print("Occupation statistics for each eigenstate in the thermal ground state")
-        print("Impurity, Valence, Conduction: Weight (|amp|^2)")
-        for i, psi_stats in enumerate(gs_stats):
-            print(f"{i}:")
-            for imp_occ, val_occ, con_occ in sorted(psi_stats.keys()):
-                print(f"{imp_occ:^8d},{val_occ:^8d},{con_occ:^11d}: {psi_stats[(imp_occ, val_occ, con_occ)]}")
-            print("=" * 80)
-            print()
-        print("Ground state bath occupation statistics:")
-        for i in basis.impurity_orbitals.keys():
-            print(f"orbital set {i}:")
-            for block_i, (imp_rho, bath_rho) in enumerate(zip(thermal_rho_imps[i], thermal_rho_baths[i])):
-                print(f"Block {block_i} (impurity orbitals {basis.impurity_orbitals[i][block_i]})")
-                matrix_print(imp_rho, "Impurity density matrix:")
-                matrix_print(bath_rho, "Bath density matrix:")
-                print("=" * 80)
-            print("", flush=verbosity >= 2)
+    psis, es, basis, rho, _ = calc_gs(
+        hOp,
+        basis_setup,
+        block_structure,
+        rot_to_spherical,
+        verbosity > 0,
+    )
 
     # Save some information to disk
     h5f = None
@@ -388,7 +301,7 @@ def main(
             T=T,
             energy_cut=energy_cut,
             delta=delta,
-            restrictions=restrictions,
+            restrictions=basis.restrictions,
             epsilons=epsilons,
             epsilonsRIXSin=epsilonsRIXSin,
             epsilonsRIXSout=epsilonsRIXSout,

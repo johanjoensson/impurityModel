@@ -308,6 +308,7 @@ class Basis:
     def build_excited_restrictions(
         self,
         psis: list[ManyBodyState] | ManyBodyState,
+        es: list[float],
         op: ManyBodyOperator,
         imp_change: Optional[dict[int, tuple[int, int]]],
         val_change: Optional[dict[int, tuple[int, int]]],
@@ -366,54 +367,61 @@ class Basis:
             con_orbs = frozenset(sorted(orb for block in conduction_baths[i] for orb in block))
             min_con, max_con = self._get_updated_occ_restrictions(ground_state_restrictions, con_orbs, con_change[i])
 
-            for imp_orb_block, val_orb_block, con_orb_block in zip(
-                impurity_orbitals, valence_baths[i], conduction_baths[i]
-            ):
-                imp_val_rho = self.build_density_matrices(psis, imp_orb_block, val_orb_block)
-                val_rhos = self.build_density_matrices(psis, val_orb_block, val_orb_block)
-                imp_con_rho = self.build_density_matrices(psis, imp_orb_block, con_orb_block)
-                con_rhos = self.build_density_matrices(psis, con_orb_block, con_orb_block)
+            if self.chain_restrict:
+                for imp_orb_block, val_orb_block, con_orb_block in zip(
+                    impurity_orbitals, valence_baths[i], conduction_baths[i]
+                ):
+                    # print(f"{imp_orb_block=}{val_orb_block=}{con_orb_block=}")
+                    imp_val_rho = self.build_density_matrices(psis, imp_orb_block, val_orb_block)
+                    val_rhos = self.build_density_matrices(psis, val_orb_block, val_orb_block)
+                    imp_con_rho = self.build_density_matrices(psis, imp_orb_block, con_orb_block)
+                    con_rhos = self.build_density_matrices(psis, con_orb_block, con_orb_block)
 
-                valence_occupations = np.diag(np.max(val_rhos.real, axis=0))
-                conduction_occupations = np.diag(np.max(con_rhos.real, axis=0))
-                # Identify filled and empty bath states
-                # Ignore states that are not directly coupled to the impurity
-                filled_valence_states = [
-                    val_orb_block[orb]
-                    for orb in np.nonzero(valence_occupations > 1 - occ_cutoff)[0]
-                    if not connected([val_orb_block[orb]], imp_orb_block)
-                    # if not np.any(np.abs(imp_val_rho[:, :, orb]) > np.sqrt(occ_cutoff))
-                ]
-                filled_conduction_states = [
-                    con_orb_block[orb]
-                    for orb in np.nonzero(conduction_occupations > 1 - occ_cutoff)[0]
-                    if not connected([con_orb_block[orb]], imp_orb_block)
-                    # if not np.any(np.abs(imp_con_rho[:, :, orb]) > np.sqrt(occ_cutoff))
-                ]
-                filled_states = frozenset(sorted(filled_valence_states + filled_conduction_states))
-                empty_valence_states = [
-                    val_orb_block[orb]
-                    for orb in np.nonzero(valence_occupations < occ_cutoff)[0]
-                    if not connected([val_orb_block[orb]], imp_orb_block)
-                    # if not np.any(np.abs(imp_val_rho[:, :, orb]) > np.sqrt(occ_cutoff))
-                ]
-                empty_conduction_states = [
-                    con_orb_block[orb]
-                    for orb in np.nonzero(conduction_occupations < occ_cutoff)[0]
-                    if not connected([con_orb_block[orb]], imp_orb_block)
-                    # if not np.any(np.abs(imp_con_rho[:, :, orb]) > np.sqrt(occ_cutoff))
-                ]
-                min_val = max(min_val - len(filled_valence_states) - len(empty_valence_states), 0)
-                max_con = max(max_con - len(empty_conduction_states) - len(filled_conduction_states), 0)
-                empty_states = frozenset(sorted(empty_valence_states + empty_conduction_states))
-                filled_bath_states.append(filled_states)
-                empty_bath_states.append(empty_states)
+                    valence_occupations = thermal_average_scale_indep(
+                        es, np.diagonal(val_rhos.real, axis1=1, axis2=2), self.tau
+                    )
+                    conduction_occupations = thermal_average_scale_indep(
+                        es, np.diagonal(con_rhos.real, axis1=1, axis2=2), self.tau
+                    )
+                    # Identify filled and empty bath states
+                    # Ignore states that are not directly coupled to the impurity
+                    filled_valence_states = [
+                        val_orb_block[orb]
+                        for orb in np.nonzero(valence_occupations > 1 - occ_cutoff)[0]
+                        if not connected([val_orb_block[orb]], imp_orb_block)
+                    ]
+                    filled_conduction_states = [
+                        con_orb_block[orb]
+                        for orb in np.nonzero(conduction_occupations > 1 - occ_cutoff)[0]
+                        if not connected([con_orb_block[orb]], imp_orb_block)
+                    ]
+                    filled_states = frozenset(sorted(filled_valence_states + filled_conduction_states))
+                    empty_valence_states = [
+                        val_orb_block[orb]
+                        for orb in np.nonzero(valence_occupations < occ_cutoff)[0]
+                        if not connected([val_orb_block[orb]], imp_orb_block)
+                    ]
+                    empty_conduction_states = [
+                        con_orb_block[orb]
+                        for orb in np.nonzero(conduction_occupations < occ_cutoff)[0]
+                        if not connected([con_orb_block[orb]], imp_orb_block)
+                    ]
+                    min_val = max(min_val - len(filled_valence_states) - len(empty_valence_states), 0)
+                    max_con = max(max_con - len(empty_conduction_states) - len(filled_conduction_states), 0)
+                    empty_states = frozenset(sorted(empty_valence_states + empty_conduction_states))
+                    filled_bath_states.append(filled_states)
+                    empty_bath_states.append(empty_states)
 
-            if self.collapse_chains:
-                filled_bath_states = [
-                    frozenset(sorted(orbs for filled_orbs in filled_bath_states for orbs in filled_orbs))
-                ]
-                empty_bath_states = [frozenset(sorted(orbs for empty_orbs in empty_bath_states for orbs in empty_orbs))]
+                if self.collapse_chains:
+                    filled_bath_states = [
+                        frozenset(sorted(orbs for filled_orbs in filled_bath_states for orbs in filled_orbs))
+                    ]
+                    empty_bath_states = [
+                        frozenset(sorted(orbs for empty_orbs in empty_bath_states for orbs in empty_orbs))
+                    ]
+            else:
+                empty_bath_states = [frozenset()]
+                filled_bath_states = [frozenset()]
             new_valence_indices = frozenset(
                 sorted(orb for orb in val_orbs if not any(orb in s for s in filled_bath_states + empty_bath_states))
             )
@@ -538,6 +546,12 @@ class Basis:
         self.local_basis = self.state_container.local_basis
 
     def redistribute_psis(self, psis: list[ManyBodyState]):
+        if isinstance(psis, ManyBodyState):
+            print("WARNING in redistribute_psi:")
+            print(
+                f"Expetced a list of ManyBodyStates, received a single ManyBodyState. Remaking into list of one ManyBodyState"
+            )
+            psis = [ManyBodyState]
         if not self.is_distributed:
             return psis
 
@@ -1273,7 +1287,7 @@ class CIPSI_Basis(Basis):
                 H_sparse,
                 e_max=-self.tau * np.log(1e-4),
                 k=1,
-                eigenValueTol=np.sqrt(np.finfo(float).eps),
+                eigenValueTol=0,  # np.sqrt(np.finfo(float).eps),
                 comm=self.comm,
                 dense=False,
             )
@@ -1348,7 +1362,7 @@ class CIPSI_Basis(Basis):
         """
         Use the CIPSI method to expand the basis. Keep adding Slater determinants until the CIPSI energy is converged.
         """
-        de0_max = max(1e-6, -self.tau * np.log(1e-4))
+        de0_max = -self.tau * np.log(1e-4)
         psi_ref = None
 
         if isinstance(H, dict):
@@ -1358,7 +1372,7 @@ class CIPSI_Basis(Basis):
         while old_size != self.size:
 
             _, block_roots, block_color, _, block_basis, block_psi_refs, _ = (
-                self.split_into_block_basis_and_redistribute_psi(H, psi_ref, slaterWeightMin)
+                self.split_into_block_basis_and_redistribute_psi(H, psi_ref, 0)
             )
             H_mat = block_basis.build_sparse_matrix(H)
             e_ref = np.array([], dtype=float)
@@ -1368,8 +1382,8 @@ class CIPSI_Basis(Basis):
                 H_mat,
                 e_max=de0_max,
                 k=2 * len(block_psi_refs) if block_psi_refs is not None else 10,
-                v0=block_basis.build_vector(block_psi_refs).T if block_psi_refs is not None else None,
-                eigenValueTol=np.sqrt(np.finfo(float).eps),
+                # v0=block_basis.build_vector(block_psi_refs).T if block_psi_refs is not None else None,
+                eigenValueTol=0,
                 comm=block_basis.comm,
                 dense=self.size < dense_cutoff,
             )
@@ -1412,13 +1426,13 @@ class CIPSI_Basis(Basis):
 
         return self.build_operator_dict(H)
 
-    def expand_at(self, w, psi_ref, H, de2_min=1e-5):
+    def expand_at(self, E_ref, psi_ref, H, de2_min=1e-5):
 
         if isinstance(H, dict):
             H = ManyBodyOperator(H)
         old_size = self.size - 1
         while old_size != self.size:
-            new_Dj, psi_ref = self.determine_new_Dj([w] * len(psi_ref), psi_ref, H, de2_min, return_Hpsi_ref=True)
+            new_Dj, psi_ref = self.determine_new_Dj(E_ref, psi_ref, H, de2_min, return_Hpsi_ref=True)
 
             old_size = self.size
             self.add_states(new_Dj)

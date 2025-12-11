@@ -14,9 +14,9 @@ from impurityModel.ed.lanczos import (
     get_Lanczos_vectors,
 )
 from impurityModel.ed.manybody_basis import CIPSI_Basis, Basis
-from impurityModel.ed.cg import bicgstab
+from impurityModel.ed.cg import bicgstab, block_bicgstab
 from impurityModel.ed.block_structure import BlockStructure, get_blocks
-from impurityModel.ed.ManyBodyUtils import ManyBodyState, ManyBodyOperator, applyOp as applyOp_test
+from impurityModel.ed.ManyBodyUtils import ManyBodyState, ManyBodyOperator, applyOp as applyOp_test, inner
 
 from mpi4py import MPI
 
@@ -202,9 +202,7 @@ def get_Greens_function(
             omega_mesh if omega_mesh is not None else None,
             delta,
             reort=reort,
-            dN_imp={i: (dN, dN) for i in basis.impurity_orbitals} if dN is not None else None,
-            dN_val={i: (dN, dN) for i in basis.impurity_orbitals} if dN is not None else None,
-            dN_con={i: (dN, dN) for i in basis.impurity_orbitals} if dN is not None else None,
+            dN=dN,
             slaterWeightMin=slaterWeightMin,
             verbose=verbose_extra,
             occ_cutoff=occ_cutoff,
@@ -219,9 +217,7 @@ def get_Greens_function(
             -matsubara_mesh if matsubara_mesh is not None else None,
             -omega_mesh if omega_mesh is not None else None,
             -delta,
-            dN_imp={i: (dN, 0) for i in basis.impurity_orbitals} if dN is not None else None,
-            dN_val={i: (dN, 0) for i in basis.impurity_orbitals} if dN is not None else None,
-            dN_con={i: (0, dN) for i in basis.impurity_orbitals} if dN is not None else None,
+            dN=dN,
             slaterWeightMin=slaterWeightMin,
             verbose=verbose_extra,
             reort=reort,
@@ -301,9 +297,7 @@ def calc_Greens_function_with_offdiag(
     w,
     delta,
     reort,
-    dN_imp: Optional[dict[int, tuple[int, int]]],
-    dN_val: Optional[dict[int, tuple[int, int]]],
-    dN_con: Optional[dict[int, tuple[int, int]]],
+    dN: Optional[int],
     slaterWeightMin: float,
     verbose: bool,
     occ_cutoff: float,
@@ -378,11 +372,27 @@ def calc_Greens_function_with_offdiag(
     e0 = min(es)
     Z = np.sum(np.exp(-(es - e0) / tau))
 
+    if dN is not None:
+        excited_restrictions = eigen_basis.build_excited_restrictions(
+            psis,
+            es,
+            hOp,
+            imp_change={i: (dN, dN) for i in eigen_basis.impurity_orbitals},
+            val_change={i: (dN, 0) for i in eigen_basis.impurity_orbitals},
+            con_change={i: (0, dN) for i in eigen_basis.impurity_orbitals},
+            occ_cutoff=occ_cutoff,
+        )
+        if verbose and excited_restrictions is not None:
+            print("Excited state restrictions:")
+            for indices, occupations in excited_restrictions.items():
+                print(f"---> {sorted(indices)} : {occupations}", flush=True)
+    else:
+        excited_restrictions = None
     excited_basis = Basis(
         eigen_basis.impurity_orbitals,
         eigen_basis.bath_states,
         initial_basis=[],
-        restrictions=None,
+        restrictions=excited_restrictions,
         comm=eigen_basis.comm.Clone(),
         verbose=verbose,
         truncation_threshold=eigen_basis.truncation_threshold,
@@ -391,19 +401,6 @@ def calc_Greens_function_with_offdiag(
     )
     for ei, psi, e in zip(eigen_indices, (psis[ei] for ei in eigen_indices), (es[ei] for ei in eigen_indices)):
         excited_basis.clear()
-        excited_restrictions = eigen_basis.build_excited_restrictions(
-            psis=psi,
-            op=hOp,
-            imp_change=dN_imp,
-            val_change=dN_val,
-            con_change=dN_con,
-            occ_cutoff=occ_cutoff,
-        )
-        if verbose and excited_restrictions is not None:
-            print("Excited state restrictions:")
-            for indices, occupations in excited_restrictions.items():
-                print(f"---> {sorted(indices)} : {occupations}", flush=True)
-        excited_basis.restrictions = excited_restrictions
 
         block_v = []
         local_excited_basis = set()
@@ -420,6 +417,7 @@ def calc_Greens_function_with_offdiag(
         excited_basis.add_states(local_excited_basis)
         block_v = excited_basis.redistribute_psis(block_v)
 
+        # gs_matsubara_block_i, gs_realaxis_block_i = block_Green_freq(
         gs_matsubara_block_i, gs_realaxis_block_i = block_Green(
             hOp=hOp,
             psi_arr=block_v,
@@ -645,7 +643,13 @@ def block_Green(
     impurity_orbitals = basis.impurity_orbitals
     bath_states = basis.bath_states
 
-    basis.expand(hOp, slaterWeightMin=slaterWeightMin, max_it=1)
+    Hpsi = [ManyBodyState() for _ in psi_arr]
+    for hps, ps in zip(Hpsi, psi_arr):
+        hps += applyOp_test(hOp, ps, restrictions=basis.restrictions, cutoff=slaterWeightMin)
+    E_psi = np.empty((len(psi_arr)), dtype=float)
+    for i, (ps, hps) in enumerate(zip(psi_arr, Hpsi)):
+        E_psi[i] = inner(ps, hps).real
+    basis.expand(hOp, slaterWeightMin=slaterWeightMin, max_it=3)
     psi_arr = basis.redistribute_psis(psi_arr)
     # Calculate initial guess for Green's function
     gs_matsubara, gs_realaxis, last_state = block_green_impl(
@@ -658,9 +662,9 @@ def block_Green(
         old_size = basis.size
         # Add states connected to the last Krylov vector(s)
         new_states = set()
-        for psi in last_state:  # itertools.chain(psi_arr, last_state):
-            Hpsi = applyOp_test(hOp, psi, restrictions=basis.restrictions, cutoff=cutoff)
-            new_states |= set(Hpsi.keys())
+        for psi in last_state:
+            hpsi = applyOp_test(hOp, psi, restrictions=basis.restrictions, cutoff=cutoff)
+            new_states |= set(hpsi.keys())
         basis.add_states(new_states - set(basis.local_basis))
         if basis.size == old_size:
             break
@@ -686,7 +690,6 @@ def block_Green(
             done = done and causal
         if comm is not None:
             done = comm.bcast(done, root=0)
-            causal = comm.bcast(causal, root=0)
 
     return gs_matsubara, gs_realaxis
 
@@ -931,11 +934,18 @@ def block_Green_freq_2(
             comm=split_basis.comm.Clone(),
         )
 
+        # Hpsi = [ManyBodyState() for _ in psi]
+        # for Hps, ps in zip(Hpsi, psi):
+        #     Hps += applyOp_test(hOp, ps, cutoff=slaterWeightMin, restrictions=freq_basis.restrictions)
+        # E_psi = np.empty((len(psi)), dtype=float)
+        # for i, (ps, Hps) in enumerate(zip(psi, Hpsi)):
+        #     E_psi[i] = inner(psi, Hpsi).real
+
         for w_i, w in itertools.islice(
             zip(range(len(w_mesh)), w_mesh), w_indices.start, w_indices.stop, w_indices.step
         ):
 
-            freq_basis.expand_at(w + e, psi, hOp, de2_min=1e-12)
+            freq_basis.expand_at(np.zeros((len(psi))) - (w + e), psi, hOp, de2_min=1e-5)
 
             if True:
                 # Use fully sparse implementation
@@ -977,8 +987,127 @@ def block_Green_freq_2(
     return gs_matsubara, gs_realaxis
 
 
+def Green_freq_bicgstab_fixed_basis(w_mesh, hOp, psi, e, basis, slaterWeightMin):
+    _, freq_roots, color, freq_per_color, split_basis, psi, _ = basis.split_basis_and_redistribute_psi(
+        [1] * len(w_mesh), psi
+    )
+    offsets = [np.sum(freq_per_color[:c], dtype=int) for c in range(len(freq_roots))]
+    w_indices = slice(int(offsets[color]), int(offsets[color] + freq_per_color[color]), 1)
+    freq_basis = CIPSI_Basis(
+        split_basis.impurity_orbitals,
+        split_basis.bath_states,
+        initial_basis=[],  # sorted(set(state for p in psi for state in p.keys())),
+        restrictions=None,  # split_basis.restrictions,
+        truncation_threshold=split_basis.truncation_threshold,
+        spin_flip_dj=split_basis.spin_flip_dj,
+        tau=split_basis.tau,
+        verbose=False,
+        comm=split_basis.comm,
+    )
+    # psi = freq_basis.redistribute_psis(psi)
+
+    gs = np.zeros((len(w_mesh), len(psi), len(psi)), dtype=complex)
+    max_basis_size = 0
+    freq = None
+    A_inv_psi = [ManyBodyState() for _ in psi]
+    for w_i, w in zip(range(w_indices.start, w_indices.stop, w_indices.step), w_mesh[w_indices]):
+
+        for aip in A_inv_psi:
+            aip.prune(slaterWeightMin)
+        freq_basis.clear()
+        freq_basis.add_states(sorted(set(state for p in itertools.chain(psi, A_inv_psi) for state in p.keys())))
+        psi = freq_basis.redistribute_psis(psi)
+
+        freq_basis.expand_at(np.array([w.real + e] * len(psi), dtype=float), psi, hOp, de2_min=slaterWeightMin / 10)
+
+        # A_op = ManyBodyOperator({processes: w.real + e - amp for processes, amp in hOp.items()})
+
+        diag = np.zeros((len(freq_basis)), dtype=complex)
+        diag[freq_basis.local_indices] = w + e
+        A_local = sp.sparse.diags(diag) - freq_basis.build_sparse_matrix(hOp)
+        A = sp.sparse.linalg.LinearOperator(
+            dtype=A_local.dtype,
+            shape=A_local.shape,
+            matvec=finite.mpi_matmat(A_local, freq_basis.comm),
+            matmat=finite.mpi_matmat(A_local, freq_basis.comm),
+        )
+        psi_dense = freq_basis.build_vector(freq_basis.redistribute_psis(psi)).T
+        A_inv_psi_dense = np.empty_like(psi_dense)
+        for i in range(len(psi)):
+            A_inv_psi_dense[:, i], info = sp.sparse.linalg.bicgstab(
+                A=A,
+                b=psi_dense[:, i],
+                x0=freq_basis.build_vector(freq_basis.redistribute_psis([A_inv_psi[i]])).T,
+                atol=1e-5,
+            )
+            if info < 0:
+                raise RuntimeError(f"Breakdown in bicgstab! {info}")
+            elif info > 0:
+                raise RuntimeError(f"bicgstab did not converge after {info} iterations.")
+        gs[w_i] = np.conj(psi_dense.T) @ A_inv_psi_dense
+        A_inv_psi = freq_basis.build_state(A_inv_psi_dense.T)
+        if len(freq_basis) > max_basis_size:
+            max_basis_size = len(freq_basis)
+            freq = w
+
+    print(f"Maximum basis size: {max_basis_size} at frequency {freq}")
+    basis.comm.Allreduce(MPI.IN_PLACE, gs, op=MPI.SUM)
+    return gs
+
+
+def Green_freq_bicgstab(w_mesh, hOp, psi, e, basis, slaterWeightMin):
+    _, freq_roots, color, freq_per_color, split_basis, psi, _ = basis.split_basis_and_redistribute_psi(
+        [1] * len(w_mesh), psi
+    )
+    offsets = [np.sum(freq_per_color[:c], dtype=int) for c in range(len(freq_roots))]
+    w_indices = slice(int(offsets[color]), int(offsets[color] + freq_per_color[color]), 1)
+    freq_basis = CIPSI_Basis(
+        split_basis.impurity_orbitals,
+        split_basis.bath_states,
+        initial_basis=[],  # sorted(set(state for p in psi for state in p.keys())),
+        restrictions=None,  # split_basis.restrictions,
+        truncation_threshold=split_basis.truncation_threshold,
+        spin_flip_dj=split_basis.spin_flip_dj,
+        tau=split_basis.tau,
+        verbose=False,
+        comm=split_basis.comm,
+    )
+    psi = freq_basis.redistribute_psis(psi)
+
+    gs = np.zeros((len(w_mesh), len(psi), len(psi)), dtype=complex)
+    max_basis_size = 0
+    freq = None
+    A_inv_psi = [ManyBodyState() for _ in psi]
+    for w_i, w in zip(range(w_indices.start, w_indices.stop, w_indices.step), w_mesh[w_indices]):
+
+        for aip in A_inv_psi:
+            aip.prune(slaterWeightMin)
+        freq_basis.clear()
+        freq_basis.add_states(sorted(set(state for p in itertools.chain(psi, A_inv_psi) for state in p.keys())))
+
+        A_op = ManyBodyOperator({((0, "c"), (0, "a")): w + e, ((0, "a"), (0, "c")): w + e}) - hOp
+        A_inv_psi = block_bicgstab(
+            A=A_op,
+            x0=freq_basis.redistribute_psis(A_inv_psi),
+            y=freq_basis.redistribute_psis(psi),
+            basis=freq_basis,
+            slaterWeightMin=slaterWeightMin,
+            atol=1e-5,
+        )
+        for (i, psi_i), (j, Ainvpsi_j) in itertools.product(
+            enumerate(freq_basis.redistribute_psis(psi)), enumerate(A_inv_psi)
+        ):
+            gs[w_i, i, j] = inner(psi_i, Ainvpsi_j)
+        if len(freq_basis) > max_basis_size:
+            max_basis_size = len(freq_basis)
+            freq = w
+
+    print(f"Maximum basis size: {max_basis_size} at frequency {freq}")
+    basis.comm.Reduce(MPI.IN_PLACE if basis.comm.rank == 0 else gs, gs, op=MPI.SUM, root=0)
+    return gs
+
+
 def block_Green_freq(
-    n_spin_orbitals,
     hOp,
     psi_arr,
     basis,
@@ -987,7 +1116,6 @@ def block_Green_freq(
     ws,
     delta,
     reort,
-    h_mem=None,
     slaterWeightMin=0,
     verbose=True,
 ):
@@ -1000,8 +1128,8 @@ def block_Green_freq(
             (len(ws), len(psi_arr), len(psi_arr)), dtype=complex
         )
 
-    # psi_orig, r, p = build_qrp(psi_arr, basis, slaterWeightMin)
-    psi_orig = psi_arr
+    psi_dense, r = build_qr(basis.build_vector(psi_arr).T)
+    psi_orig = basis.build_state(psi_dense.T)
     n_orb = len(psi_orig)
 
     if n_orb == 0:
@@ -1009,70 +1137,13 @@ def block_Green_freq(
             (len(ws), len(psi_arr), len(psi_arr)), dtype=complex
         )
 
-    gs_matsubara = np.zeros((len(iws), n_orb, n_orb), dtype=complex, order="C")
-    gs_realaxis = np.zeros((len(ws), n_orb, n_orb), dtype=complex, order="C")
-    for w_mesh, gs in zip((iws, ws + 1j * delta), (gs_matsubara, gs_realaxis)):
-        if w_mesh is None:
-            continue
-        _, freq_roots, color, _, split_basis, psi = basis.split_and_redistribute_basis([1] * len(w_mesh), psi_orig)
-        w_indices = slice(color, len(w_mesh), len(freq_roots))
-        freq_basis = CIPSI_Basis(
-            split_basis.impurity_orbitals,
-            split_basis.bath_states,
-            initial_basis=split_basis.local_basis,
-            restrictions=split_basis.restrictions,
-            truncation_threshold=split_basis.truncation_threshold,
-            spin_flip_dj=split_basis.spin_flip_dj,
-            tau=split_basis.tau,
-            verbose=verbose,
-            comm=split_basis.comm.Clone(),
-        )
+    gs_matsubara = Green_freq_bicgstab_fixed_basis(iws, hOp, psi_orig, e, basis, slaterWeightMin)
+    gs_realaxis = Green_freq_bicgstab_fixed_basis(ws + 1j * delta, hOp, psi_orig, e, basis, slaterWeightMin)
 
-        A_inv_psi = [{} for _ in psi]
-        for w_i, w in itertools.islice(
-            zip(range(len(w_mesh)), w_mesh), w_indices.start, w_indices.stop, w_indices.step
-        ):
-
-            freq_basis.expand_at(w + e, psi, hOp, H_dict=h_mem, de2_min=1e-12)
-            A_op = finite.subtractOps({((0, "i"),): w + e}, hOp)
-            if True:
-                A_inv_psi = bicgstab(
-                    A_op=A_op,
-                    A_op_dict={},
-                    x_0=A_inv_psi,
-                    y=psi,
-                    basis=freq_basis,
-                    slaterWeightMin=slaterWeightMin,
-                    atol=max(slaterWeightMin, 1e-5),
-                )
-                for (i, psi_i), (j, Ainvpsi_j) in itertools.product(enumerate(psi), enumerate(A_inv_psi)):
-                    gs[w_i, i, j] = finite.inner(psi_i, Ainvpsi_j)
-            else:
-                A = freq_basis.build_sparse_matrix(A_op)
-                A = finite.create_linear_operator(A, freq_basis.comm)
-                psi_i = freq_basis.build_vector(psi)
-                A_inv_psi_v = freq_basis.build_vector(A_inv_psi).T
-
-                for j, psi_j in enumerate(psi_i):
-                    if np.linalg.norm(psi_j) < np.finfo(float).eps:
-                        continue
-                    info = -1
-
-                    while info != 0:
-                        A_inv_psi_v[:, j], info = sp.sparse.linalg.gmres(
-                            A, psi_j, x0=A_inv_psi_v[:, j], atol=slaterWeightMin
-                        )
-                        if info < 0:
-                            raise RuntimeError("Parameter breakdown in bicgstab!")
-                gs[w_i, :, :] = np.conj(psi_i) @ A_inv_psi_v
-                A_inv_psi = freq_basis.build_state(A_inv_psi_v.T)
-        freq_basis.comm.Free()
-
-    basis.comm.Reduce(MPI.IN_PLACE if basis.comm.rank == 0 else gs_matsubara, gs_matsubara, op=MPI.SUM, root=0)
-    basis.comm.Reduce(MPI.IN_PLACE if basis.comm.rank == 0 else gs_realaxis, gs_realaxis, op=MPI.SUM, root=0)
-    # basis.comm.barrier()
-
-    return gs_matsubara, gs_realaxis
+    return (
+        np.conj(r.T)[np.newaxis] @ gs_matsubara @ r[np.newaxis],
+        np.conj(r.T)[np.newaxis] @ gs_realaxis @ r[np.newaxis],
+    )
 
 
 def calc_mpi_Greens_function_from_alpha_beta(alphas, betas, iws, ws, e, delta, r, verbose, comm):

@@ -299,7 +299,7 @@ def scipy_eigensystem(h_local, e_max, k=10, v0=None, eigenValueTol=0, return_eig
     k = min(k, h.shape[1] - 2)
 
     def done(energies):
-        return len(energies) > np.sum(energies - np.min(energies) <= e_max)
+        return len(energies) > 2 * np.sum(energies - np.min(energies) <= e_max)
 
     while not done(es) and len(es) < h.shape[0] - 2:
         try:
@@ -377,7 +377,7 @@ def eigensystem_new(h_local, e_max, k=10, v0=None, eigenValueTol=0, return_eigve
     """
 
     # e_max is limited by the accuracy of the calculated eigenvalues and machine precision
-    e_max = max(e_max, eigenValueTol, 1e-12)
+    e_max = max(e_max, eigenValueTol, np.finfo(float).eps * 100)
     if not scipy.sparse.issparse(h_local):
         raise RuntimeError(f"eigensystem can't handle a matrix of type {type(h_local)}")
 
@@ -398,9 +398,9 @@ def eigensystem_new(h_local, e_max, k=10, v0=None, eigenValueTol=0, return_eigve
             es = primme_eigensystem(h_local, e_max, k, v0, eigenValueTol, return_eigvecs, comm)
     else:
         if return_eigvecs:
-            es, vecs = scipy_eigensystem(h_local, e_max, k, v0, eigenValueTol, return_eigvecs, comm)
+            es, vecs = scipy_eigensystem(h_local, e_max, k, v0, 0, return_eigvecs, comm)
         else:
-            es = scipy_eigensystem(h_local, e_max, k, v0, eigenValueTol, return_eigvecs, comm)
+            es = scipy_eigensystem(h_local, e_max, k, v0, 0, return_eigvecs, comm)
 
     indices = np.argsort(es)
     es = es[indices]

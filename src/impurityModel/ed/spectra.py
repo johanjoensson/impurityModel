@@ -185,21 +185,21 @@ def simulate_spectra(
     gs = gsPS + gsIPS
     if rank == 0:
         # print("#eigenstates = {:d}".format(np.shape(gs)[0]))
-        print("#spin orbitals = {:d}".format(np.shape(gs)[0]))
-        print("#mesh points = {:d}".format(np.shape(gs)[1]))
+        print("#spin orbitals = {:d}".format(np.shape(gs)[1]))
+        print("#mesh points = {:d}".format(np.shape(gs)[0]))
     # Thermal average
     # a = thermal_average(es[: np.shape(gs)[0]], -gs.imag, T=T)
     if rank == 0 and h5f:
         # h5f.create_dataset("PS", data=-gs.imag)
         h5f.create_dataset("PSthermal", data=-gs.imag)
     # Sum over transition operators
-    aSum = np.sum(-gs.imag, axis=0)
+    aSum = np.sum(-gs.imag, axis=1)
     # Save spectra to disk
     if rank == 0:
         tmp = [w, aSum]
         # Each transition operator seperatly
         for i in range(np.shape(gs)[0]):
-            tmp.append(-gs.imag[i, :])
+            tmp.append(-gs.imag[:, i])
         print("Save spectra to disk...\n")
         np.savetxt("PS.dat", np.array(tmp).T, fmt="%8.4f", header="E  sum  T1  T2  T3 ...")
     if rank == 0:
@@ -231,8 +231,8 @@ def simulate_spectra(
     gs *= -1
     if rank == 0:
         # print("#eigenstates = {:d}".format(np.shape(gs)[0]))
-        print("#spin orbitals = {:d}".format(np.shape(gs)[0]))
-        print("#mesh points = {:d}".format(np.shape(gs)[1]))
+        print("#spin orbitals = {:d}".format(np.shape(gs)[1]))
+        print("#mesh points = {:d}".format(np.shape(gs)[0]))
     # Thermal average
     # a = thermal_average(es[: np.shape(gs)[0]], -gs.imag, T=T)
     if rank == 0 and h5f:
@@ -244,8 +244,8 @@ def simulate_spectra(
     if rank == 0:
         tmp = [w, aSum]
         # Each transition operator seperatly
-        for i in range(np.shape(gs)[0]):
-            tmp.append(-gs.imag[i, :])
+        for i in range(np.shape(gs)[1]):
+            tmp.append(-gs.imag[:, i])
         print("Save spectra to disk...\n")
         np.savetxt("XPS.dat", np.array(tmp).T, fmt="%8.4f", header="E  sum  T1  T2  T3 ...")
     if rank == 0:
@@ -276,21 +276,21 @@ def simulate_spectra(
     # gs = getSpectra(n_spin_orbitals, hOp, tOps, psis, es, wLoss, deltaNIXS, restrictions)
     if rank == 0:
         # print("#eigenstates = {:d}".format(np.shape(gs)[0]))
-        print("#q-points = {:d}".format(np.shape(gs)[0]))
-        print("#mesh points = {:d}".format(np.shape(gs)[1]))
+        print("#q-points = {:d}".format(np.shape(gs)[1]))
+        print("#mesh points = {:d}".format(np.shape(gs)[0]))
     # Thermal average
     # a = thermal_average(es[: np.shape(gs)[0]], -gs.imag, T=T)
     if rank == 0 and h5f:
         # h5f.create_dataset("NIXS", data=-gs.imag)
         h5f.create_dataset("NIXSthermal", data=-gs.imag)
     # Sum over q-points
-    aSum = np.sum(-gs.imag, axis=0)
+    aSum = np.sum(-gs.imag, axis=1)
     # Save spectra to disk
     if rank == 0:
         tmp = [wLoss, aSum]
         # Each q-point seperatly
-        for i in range(np.shape(gs)[0]):
-            tmp.append(-gs.imag[i, :])
+        for i in range(np.shape(gs)[1]):
+            tmp.append(-gs.imag[:, i])
         print("Save spectra to disk...\n")
         np.savetxt("NIXS.dat", np.array(tmp).T, fmt="%8.4f", header="E  sum  T1  T2  T3 ...")
 
@@ -330,21 +330,21 @@ def simulate_spectra(
     # gs = getSpectra(n_spin_orbitals, hOp, tOps, psis, es, w, delta, restrictions)
     if rank == 0:
         # print("#eigenstates = {:d}".format(np.shape(gs)[0]))
-        print("#polarizations = {:d}".format(np.shape(gs)[0]))
-        print("#mesh points = {:d}".format(np.shape(gs)[1]))
+        print("#polarizations = {:d}".format(np.shape(gs)[1]))
+        print("#mesh points = {:d}".format(np.shape(gs)[0]))
     # Thermal average
     # a = thermal_average(es[: np.shape(gs)[0]], -gs.imag, T=T)
     if rank == 0 and h5f:
         # h5f.create_dataset("XAS", data=-gs.imag)
         h5f.create_dataset("XASthermal", data=-gs.imag)
     # Sum over transition operators
-    aSum = np.sum(-gs.imag, axis=0)
+    aSum = np.sum(-gs.imag, axis=1)
     # Save spectra to disk
     if rank == 0:
         tmp = [w, aSum]
         # Each transition operator seperatly
-        for i in range(np.shape(gs)[0]):
-            tmp.append(-gs.imag[i, :])
+        for i in range(np.shape(gs)[1]):
+            tmp.append(-gs.imag[:, i])
         print("Save spectra to disk...\n")
         np.savetxt("XAS.dat", np.array(tmp).T, fmt="%8.4f", header="E  sum  T1  T2  T3 ...")
     if rank == 0:
@@ -824,11 +824,21 @@ def getSpectra_new(
         tOp_basis,
         psis,
     ) = basis.split_basis_and_redistribute_psi([1] * len(tOps), psis)
+    if basis.comm.rank == 0:
+        indices_for_colors = np.empty((sum(tOps_per_color)), dtype=int)
+        offsets = np.array([sum(tOps_per_color[:r]) for r in range(len(tOps_roots))], dtype=int)
+        for col, sender in enumerate(block_roots):
+            if sender == 0:
+                indices_for_colors[offsets[color] : offsets[color] + tOps_per_color[color]] = block_indices
+                continue
+            basis.comm.Recv(indices_for_colors[offsets[col] : offsets[col] + tOps_per_color[col]], source=sender)
+    elif tOp_basis.comm.rank == 0:
+        basis.comm.Send(np.array(tOps_indices), dest=0)
 
-    gs_realaxis_local = np.empty((len(tOps_indices), len(w)), dtype=complex)
+    gs_realaxis_local = np.empty((len(w), len(tOps_indices)), dtype=complex)
     for tOp_i, tOp in enumerate(tOps[ti] for ti in tOps_indices):
         assert isinstance(hOp, ManyBodyOperator)
-        _, gs_realaxis_local[tOp_i, :, None, None], basis_size = gf.calc_Greens_function_with_offdiag(
+        _, gs_realaxis_local[:, tOp_i, None, None], basis_size = gf.calc_Greens_function_with_offdiag(
             hOp,
             [tOp],
             psis,
@@ -848,13 +858,15 @@ def getSpectra_new(
         )
     if basis.comm.rank == 0:
         gs_realaxis = np.empty((len(tOps), len(w)), dtype=complex)
-        gs_realaxis[tOps_indices] = gs_realaxis_local
+        gs_realaxis[:, tOps_indices] = gs_realaxis_local
         for color, sender in enumerate(tOps_roots):
             if sender == basis.comm.rank:
                 continue
-            basis.comm.Recv(gs_realaxis[sum(tOps_per_color[:color]) : sum(tOps_per_color[: color + 1])], source=sender)
+            for tOp_idx in indices_for_colors[offsets[colour] : offsets[colour] + tOps_per_color[colour]]:
+                basis.comm.Recv(gs_realaxis[:, tOp_idx], source=sender)
     elif rank in tOps_roots:
-        basis.comm.Send(gs_realaxis_local, dest=0)
+        for tOp_idx in tOps_indices:
+            basis.comm.Send(gs_realaxis_local[:, tOp_idx], dest=0)
     hOp.clear_memory()
     return gs_realaxis if rank == 0 else np.empty((0, 0), dtype=complex)
 
@@ -1124,6 +1136,16 @@ def getRIXSmap_new(
                 wIn_basis,
                 psi1_arr,
             ) = basis_final.split_basis_and_redistribute_psi([1 for _ in wIns], [psi1])
+            if basis.comm.rank == 0:
+                indices_for_colors = np.empty((sum(wIn_per_color)), dtype=int)
+                offsets = np.array([sum(wIn_per_color[:r]) for r in range(len(wIn_roots))], dtype=int)
+                for col, sender in enumerate(wIn_roots):
+                    if sender == 0:
+                        indices_for_colors[offsets[color] : offsets[color] + wIn_per_color[color]] = wIn_indices
+                        continue
+                    basis.comm.Recv(indices_for_colors[offsets[col] : offsets[col] + wIn_per_color[col]], source=sender)
+            elif wIn_basis.comm.rank == 0:
+                basis.comm.Send(np.array(wIn_indices), dest=0)
             if eigen_basis.comm.rank != 0:
                 gs = np.empty(
                     (len(tOpsIn), wIn_indices.stop - wIn_indices.start, len(tOpsOut), len(wLoss)), dtype=complex

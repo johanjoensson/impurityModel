@@ -55,8 +55,8 @@ def calc_energy(
     e_block = eigensystem(
         h,
         e_max=energy_cut,
-        k=2,
-        eigenValueTol=np.finfo(float).eps,
+        k=10,
+        eigenValueTol=0,  # np.finfo(float).eps,
         return_eigvecs=False,
         comm=block_basis.comm,
         dense=block_basis.size < dense_cutoff,
@@ -169,7 +169,7 @@ def calc_gs(
 ):
 
     tau = basis_setup["tau"]
-    basis_setup["tau"] = 0
+    basis_setup["tau"] /= 100
     dense_cutoff = basis_setup["dense_cutoff"]
     ground_state_basis = find_ground_state_basis(
         Hop,
@@ -187,8 +187,8 @@ def calc_gs(
     block_es, block_psis_dense = eigensystem(
         h_gs,
         e_max=energy_cut,
-        k=2,
-        eigenValueTol=np.sqrt(np.finfo(float).eps),
+        k=10,
+        eigenValueTol=0,
         comm=block_basis.comm,
         dense=block_basis.size < dense_cutoff,
     )
