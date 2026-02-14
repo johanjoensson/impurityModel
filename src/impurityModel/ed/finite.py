@@ -280,6 +280,16 @@ def scipy_eigensystem(h_local, e_max, k=10, v0=None, eigenValueTol=0, return_eig
         rmatvec=mpi_matmat(h_local, comm),
         dtype=h_local.dtype,
     )
+    h_diag_inv = h_local.diagonal()
+    nonzeros = np.nonzero(h_diag_inv)
+    h_diag_inv[nonzeros] = 1.0 / h_diag_inv[nonzeros]
+    diag_h_inv = scipy.sparse.diags_array(h_diag_inv, shape=h_local.shape)
+    OPinv = scipy.sparse.linalg.LinearOperator(
+        h_local.shape,
+        matvec=mpi_matmat(diag_h_inv, comm),
+        rmatvec=mpi_matmat(diag_h_inv, comm),
+        dtype=h_local.dtype,
+    )
 
     es = np.array([0])
     rng = np.random.default_rng()
@@ -299,13 +309,14 @@ def scipy_eigensystem(h_local, e_max, k=10, v0=None, eigenValueTol=0, return_eig
     k = min(k, h.shape[1] - 2)
 
     def done(energies):
-        return len(energies) > 2 * np.sum(energies - np.min(energies) <= e_max)
+        return len(energies) > 2 + np.sum(energies - np.min(energies) <= e_max)
 
     while not done(es) and len(es) < h.shape[0] - 2:
+        t0 = time.perf_counter()
         try:
             es, vecs = eigsh(
                 h,
-                k=min(2 * vecs.shape[1], h.shape[0] - 2),
+                k=min(k, h.shape[1] - 2),
                 which="SA",
                 v0=vecs[:, 0] if len(vecs.shape) > 1 else vecs,
                 ncv=ncv,
@@ -313,6 +324,7 @@ def scipy_eigensystem(h_local, e_max, k=10, v0=None, eigenValueTol=0, return_eig
             )
             # eigsh does not guarantee that the eigenvectors are orthonormal. therefore we do a QR decomposition on them.
             vecs, _ = np.linalg.qr(vecs, mode="reduced")
+            k *= 2
         except ArpackNoConvergence as e:
             # Reqested accuracy was not reached
             # increase eigenvalueTol and try again, starting from the already obtained eigenvectors
@@ -337,15 +349,27 @@ def scipy_eigensystem(h_local, e_max, k=10, v0=None, eigenValueTol=0, return_eig
         if es is None or len(es) == 0:
             es = np.array([0])
 
+        if comm is not None:
+            comm.barrier()
+
+        indices = np.argsort(es)
+        es = es[indices]
+        vecs = vecs[:, indices]
         if done(es) and 5 * vecs.shape[1] < h.shape[0]:
             # In principle, lobpcg should be able to correct some errors in the eigenvectors ad eigenvalues found by eigsh (which uses ARPACK behind the scenes).
             # eigsh struggles with degenerate or nearly degenerate eigenstates, so do one round of lobpcg to correct any errors.
             # lobpcg is robust as long as the preconditioner is very good (is this what robust means?). We don't have a good preconditioner, so we ignore any warnings from lobpcg instead.
             # if comm.rank == 0:
+            t0 = time.perf_counter()
             with warnings.catch_warnings():
                 warnings.simplefilter("ignore")
                 es, vecs = scipy.sparse.linalg.lobpcg(
-                    h, vecs, largest=False, maxiter=h_local.shape[1], tol=max(eigenValueTol, 1e-12)
+                    h,
+                    vecs,
+                    # vecs[:, : min(2 * (2 + sum(es - np.min(es) <= e_max)), vecs.shape[1])],
+                    # M=OPinv,
+                    largest=False,
+                    tol=max(eigenValueTol, 1e-12),
                 )
     indices = np.argsort(es)
     es = es[indices]
@@ -355,7 +379,9 @@ def scipy_eigensystem(h_local, e_max, k=10, v0=None, eigenValueTol=0, return_eig
     return es
 
 
-def eigensystem_new(h_local, e_max, k=10, v0=None, eigenValueTol=0, return_eigvecs=True, comm=None, dense=False):
+def eigensystem_new(
+    h_local, e_max, k=10, e0=None, v0=None, eigenValueTol=0, return_eigvecs=True, comm=None, dense=False
+):
     """
     Return eigen-energies and eigenstates.
 
@@ -1412,7 +1438,6 @@ def c2i(nBaths, spinOrb):
             if (lp, b) == spinOrb:
                 return i
             i += 1
-    print(spinOrb)
     raise Exception("Can not find index corresponding to spin-orbital state")
 
 
@@ -1472,7 +1497,6 @@ def i2c(nBaths, i):
             # The index "b" will have a value between 0 and nBath-1
             return (lp, b)
         k += nBath
-    print(i)
     raise Exception("Can not find spin-orbital state corresponding to index.")
 
 
@@ -2200,7 +2224,6 @@ def applyOp(n_spin_orbitals, op, psi, slaterWeightMin=0, restrictions=None, opRe
     for state, amp in list(psiNew.items()):
         if abs(amp) < slaterWeightMin:
             psiNew.pop(state)
-    # print (f"op: psiNew\n\t{op}: {psiNew}")
     return psiNew
 
 
