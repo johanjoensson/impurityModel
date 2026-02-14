@@ -253,7 +253,7 @@ def tridiagonalize(H, v0):
     return alphas, betas, v0_tilde
 
 
-def double_chains(H_imp: np.ndarray, vs: np.ndarray, ebs: np.ndarray, verbose: bool):
+def double_chains(H_imp: np.ndarray, vs: np.ndarray, ebs: np.ndarray, verbose: bool = True, extremely_verbose=False):
     """
     Transform the bath geometry from a star into one or two auxilliary chains.
     The two chains correspond to the occupied and unoccupied parts of the spectra respectively.
@@ -267,23 +267,25 @@ def double_chains(H_imp: np.ndarray, vs: np.ndarray, ebs: np.ndarray, verbose: b
     chain_v: np.ndarray((Neb_chain, block_size)) - Hopping parameters for chain geometry.
     H_bath_chain: np.ndarray((Neb_chain, Neb_chain)) - Hamiltonian describind the bath in chain geometry.
     """
+    verbose = verbose or extremely_verbose
+    if isinstance(H_imp, (int, float, complex)):
+        H_imp = np.array([[H_imp]])
+    if len(vs.shape) == 1:
+        vs = vs.reshape((vs.shape[0], 1))
     sort_idx = np.argsort(ebs, stable=True)
     ebs = ebs[sort_idx]
     vs = vs[sort_idx]
     n_imp = H_imp.shape[1]
 
     n_occ = sum(ebs < 0)
-    print(f"{n_occ=}")
-    # ebs[:n_occ] = ebs[:n_occ][::-1]
-    # vs[:n_occ] = vs[:n_occ][::-1, :]
     H_occ = build_star_geometry_hamiltonian(H_imp, np.flip(vs[:n_occ], axis=0), np.flip(ebs[:n_occ], axis=0))
-    if verbose:
+    if extremely_verbose:
         matrix_print(H_occ, "Original hamiltonian for occupied part")
         print("", flush=True)
     H_occ[:] = transform_to_lanczos_tridagonal_matrix(H_occ, n_imp)
 
     H_unocc = build_star_geometry_hamiltonian(H_imp, vs[n_occ:], ebs[n_occ:])
-    if verbose:
+    if extremely_verbose:
         matrix_print(H_unocc, "Original hamiltonian for unoccupied part")
     H_unocc[:] = transform_to_lanczos_tridagonal_matrix(H_unocc, n_imp)
     V = np.vstack((H_occ[n_imp:, :n_imp], H_unocc[n_imp:, :n_imp]))
@@ -295,64 +297,11 @@ def double_chains(H_imp: np.ndarray, vs: np.ndarray, ebs: np.ndarray, verbose: b
     return V, Hb
 
 
-def haverkort_chain(eloc, tns, ens):
-    block_size = eloc.shape[0]
-    assert (
-        block_size == 1
-    ), f"The current implementation does not support offdiagonal elements in the hybridization!\n{block_size=}"
-    hsize = len(ens) + 1
-    H = np.zeros((hsize, hsize), dtype=complex)
-    H[0, 0] = eloc
-    for i in range(len(ens)):
-        H[i + 1, i + 1] = ens[i]
-        H[i, i + 1] = np.conj(tns[i].T)
-        H[i + 1, i] = tns[i]
-
-    w, v = np.linalg.eigh(H)
-
-    n = np.argmin(np.abs(w))
-
-    prevtocc = v[:, n - 1 :: -1].transpose()
-    prevtunocc = v[:, n:].transpose()
-    qocc, vtocc = sp.linalg.qr(prevtocc, check_finite=False, overwrite_a=True)
-    qunocc, vtunocc = sp.linalg.qr(prevtunocc, check_finite=False, overwrite_a=True)
-
-    vtot = np.zeros((hsize, hsize), dtype=complex)
-    vtot[:, 0:n] = vtocc[::-1, :].transpose()
-    vtot[:, n:hsize] = vtunocc.transpose()
-
-    matrix_print(vtot, "Hopping before rotating impurity")
-    # Get the tridiagonal terms
-    for i in range(hsize - 1):
-        tmp = np.conj(vtot[:, i].T) @ H @ vtot[:, i + 1]
-        if np.real(tmp) < 0:  # Adjust the phase of the eigenvectors
-            vtot[:, i + 1] = -vtot[:, i + 1]
-
-    # Get the final transform to extract the impurity orbital (It goes into element n-1)
-    cs = vtot[0, n - 1 : n + 1]
-    r = np.linalg.norm(cs)
-    R = np.empty((2, 2), dtype=complex)
-    R[0, 0] = np.conj(cs[0]) / r
-    R[1, 0] = -np.conj(cs[1]) / r
-    R[0, 1] = cs[1] / r
-    R[1, 1] = cs[0] / r
-    matrix_print(R, "R")
-
-    vtot[:, n - 1 : n + 1] = vtot[:, n - 1 : n + 1] @ np.conj(R.T)
-    matrix_print(vtot, "Hopping after rotating impurity")
-
-    indices = np.append(np.roll(np.arange(0, n), 1), np.arange(n, hsize))
-    idx = np.ix_(indices, indices)
-    Hnew = np.conj(vtot.T) @ H @ vtot
-    matrix_print(Hnew, "linked double chain Hamiltonian")
-    Hnew = Hnew[idx]
-
-    assert np.allclose(np.linalg.eigvalsh(H), np.linalg.eigvalsh(Hnew))
-
-    return Hnew[block_size:, :block_size].copy(), Hnew[block_size:, block_size:].copy()
-
-
 def build_star_geometry_hamiltonian(H_imp, vs, es):
+    if isinstance(H_imp, (float, complex)):
+        H_imp = np.array([[H_imp]])
+    if len(vs.shape) == 1:
+        vs = vs.reshape((vs.shape[0], 1))
     n_imp = H_imp.shape[1]
     n_bath = es.shape[0]
     H_star = np.empty((n_imp + n_bath, n_imp + n_bath), dtype=H_imp.dtype)
@@ -422,15 +371,15 @@ def create_decoupled_hamiltonian(H, n_imp):
     Q_occ_orig = eigvecs[:, : pivot + n_imp][:, ::-1]
     # Put lowest energy unoccupied state first
     Q_unocc_orig = eigvecs[:, pivot + n_imp :]
-    Q_coupled = np.empty_like(eigvecs)
-    Q_coupled[:, : pivot + n_imp] = Q_occ_orig
-    Q_coupled[:, pivot + n_imp :] = Q_unocc_orig
 
+    # Eigenstates closest to the impurity have been places first (by column) in each matrix
     _, Q_occ = block_qr(Q_occ_orig.T, n_imp)
     _, Q_unocc = block_qr(Q_unocc_orig.T, n_imp)
     Q_decoupled = np.empty_like(H)
 
+    # We need to reverse the order of the columns for the transformation of the occupied part, because the pivot sits last in this part
     Q_decoupled[:, : pivot + n_imp] = Q_occ.T[:, ::-1]
+    # The unoccupied part does not need to be reversed, since the coupling bath state already sits first in this part
     Q_decoupled[:, pivot + n_imp :] = Q_unocc.T
 
     return np.linalg.multi_dot((np.conj(Q_decoupled.T), H, Q_decoupled)), pivot, Q_decoupled
@@ -445,8 +394,10 @@ def separate_orbital_character(q):
 
 def linked_double_chain(H_imp, vs, es, verbose=True, extremely_verbose=False):
     verbose = verbose or extremely_verbose
-    if isinstance(H_imp, (float, complex)):
-        H_imp = np.array([H_imp])
+    if isinstance(H_imp, int):
+        H_imp = np.array([[H_imp]], dtype=float)
+    elif isinstance(H_imp, (float, complex)):
+        H_imp = np.array([[H_imp]])
     if len(vs.shape) == 1:
         vs = vs.reshape((vs.shape[0], 1))
 
