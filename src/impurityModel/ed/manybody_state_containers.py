@@ -63,7 +63,7 @@ class StateContainer:
         self._index_dict = StateContainer.IndexDict(self.local_basis, self.offset)
         self.type = state_type
         self.n_bytes = bytes_per_state
-        self.is_distributed = comm is not None
+        self.is_distributed = comm is not None and comm.size > 1
         self.index_bounds = [None] * comm.size if self.is_distributed else [None]
         self.state_bounds = [None] * comm.size if self.is_distributed else [None]
         self.add_states(states)
@@ -150,7 +150,7 @@ class StateContainer:
         return None
 
     def __contains__(self, item):
-        if self.comm is None:
+        if not self.is_distributed:
             return item in self._index_dict
         return next(self._index_sequence([item])) != self.size
 
@@ -315,14 +315,15 @@ class DistributedStateContainer(StateContainer):
         local_sizes = np.empty((self.comm.size,), dtype=int)
         self.comm.Allgather(np.array([len(self.local_basis)], dtype=int), local_sizes)
 
-        send_list: list[list[bytes]] = [[] for _ in range(self.comm.size)]
-        treated_states = [False] * len(local_states)
-        for (i, state), (r, state_bounds) in itertools.product(enumerate(local_states), enumerate(self.state_bounds)):
-            if treated_states[i]:
-                continue
-            if state_bounds is None or state < state_bounds:
-                send_list[r].append(state)
-                treated_states[i] = True
+        def find_owner(state):
+            for r, bound in enumerate(self.state_bounds):
+                if bound is None or state < bound:
+                    return r
+            return -1
+
+        send_list = [[] for _ in range(self.comm.size)]
+        for r, g in itertools.groupby(sorted(set(new_states)), key=find_owner):
+            send_list[r].extend(g)
 
         recv_counts = np.empty((self.comm.size), dtype=np.int64)
         request = self.comm.Ialltoall(
@@ -407,12 +408,13 @@ class DistributedStateContainer(StateContainer):
             )
             for r in range(self.comm.size)
         ]
+        assert all(self.local_basis[i] < self.local_basis[i + 1] for i in range(len(self.local_basis) - 1))
         assert self.local_basis == self._index_dict.states
         assert len(self.local_basis) == len(self._index_dict.states)
         assert id(self.local_basis) == id(self._index_dict.states)
 
     def _getitem_sequence(self, l: Iterable[int]) -> Iterable[bytes]:
-        if self.comm is None:
+        if not self.is_distributed:
             return (self.local_basis[i] for i in l)
 
         l = np.fromiter((i if i >= 0 else self.size + i for i in l), dtype=int)
@@ -470,7 +472,7 @@ class DistributedStateContainer(StateContainer):
         return (bytes(result[i * self.n_bytes : (i + 1) * self.n_bytes]) for i in np.argsort(send_order))
 
     def _index_sequence(self, s: Iterable[bytes]) -> Iterable[int]:
-        if self.comm is None:
+        if not self.is_distributed:
             return (self._index_dict.get(val, self.size) for val in s)
 
         send_list: list[list[bytes]] = [[] for _ in range(self.comm.size)]
@@ -532,7 +534,7 @@ class DistributedStateContainer(StateContainer):
         return (res for res in result[np.argsort(send_order)])
 
     def _contains_sequence(self, items) -> Iterable[bool]:
-        if self.comm is None:
+        if not self.is_distributed:
             return (item in self._index_dict for item in items)
         return (index < self.size for index in self._index_sequence(items))
 
@@ -641,39 +643,36 @@ class SimpleDistributedStateContainer(StateContainer):
             self.size = len(self.local_basis)
             self.offset = 0
             self.local_indices = range(0, len(self.local_basis))
-            self._index_dict = StateContainer.IndexDict(
-                self.local_basis, self.offset
-            )  # {state: i for i, state in enumerate(self.local_basis)}
+            self._index_dict = StateContainer.IndexDict(self.local_basis, self.offset)
             self.local_index_bounds = [(0, len(self.local_basis))]
             if len(self.local_basis) > 0:
                 self.state_bounds: Optional[bytes] = [None]
             else:
                 self.state_bounds = [None]
+            assert all(self.local_basis[i] < self.local_basis[i + 1] for i in range(len(self.local_basis) - 1))
             return
 
-        local_states = sorted(set(new_states))
+        def find_owner(state):
+            for r, bound in enumerate(self.state_bounds):
+                if bound is None or state < bound:
+                    return r
+            return -1
+
+        send_list = [[] for _ in range(self.comm.size)]
+        for r, g in itertools.groupby(sorted(set(new_states)), key=find_owner):
+            send_list[r].extend(g)
+
         for r_offset in range(self.comm.size):
+
             send_to = (self.comm.rank + r_offset) % self.comm.size
             receive_from = (self.comm.rank + self.comm.size - r_offset) % self.comm.size
 
-            if send_to > 0:
-                lower_bound = self.state_bounds[send_to - 1]
-            else:
-                lower_bound = bytes(self.n_bytes)
-
-            upper_bound = self.state_bounds[send_to]
-            if upper_bound is None:
-                upper_bound = bytes([0xFF] * (self.n_bytes + 1))
-
-            send_list = []
-            if lower_bound is not None:
-                for state in local_states:
-                    if lower_bound <= state < upper_bound:
-                        send_list.append(state)
             if send_to == self.comm.rank:
-                self.local_basis = [state for state, _ in itertools.groupby(merge(self.local_basis, send_list))]
+                self.local_basis = [
+                    state for state, _ in itertools.groupby(merge(self.local_basis, send_list[self.comm.rank]))
+                ]
             else:
-                received = self.comm.sendrecv(send_list, dest=send_to, source=receive_from)
+                received = self.comm.sendrecv(list(send_list[send_to]), dest=send_to, source=receive_from)
                 self.local_basis = [state for state, _ in itertools.groupby(merge(self.local_basis, received))]
         size_arr = np.empty((self.comm.size,), dtype=int)
         local_length = len(self.local_basis)
@@ -713,12 +712,10 @@ class SimpleDistributedStateContainer(StateContainer):
             )
             for r in range(self.comm.size)
         ]
-        assert self.local_basis == self._index_dict.states
-        assert len(self.local_basis) == len(self._index_dict.states)
-        assert id(self.local_basis) == id(self._index_dict.states)
+        assert all(self.local_basis[i] < self.local_basis[i + 1] for i in range(len(self.local_basis) - 1))
 
     def _getitem_sequence(self, l: Iterable[int]) -> Iterable[bytes]:
-        if self.comm is None:
+        if not self.is_distributed:
             return (self.local_basis[i] for i in l)
 
         l = np.fromiter((i if i >= 0 else self.size + i for i in l), dtype=int)
@@ -751,7 +748,7 @@ class SimpleDistributedStateContainer(StateContainer):
         return (result[i] for i in np.argsort(send_order))
 
     def _index_sequence(self, s: Iterable[bytes]) -> Iterable[int]:
-        if self.comm is None:
+        if not self.is_distributed:
             return (self._index_dict.get(val, self.size) for val in s)
             # return (self._index_dict[val] if val in self._index_dict else self.size for val in s)
 
@@ -785,7 +782,7 @@ class SimpleDistributedStateContainer(StateContainer):
         return (res for res in result[np.argsort(send_order)])
 
     def _contains_sequence(self, items) -> Iterable[bool]:
-        if self.comm is None:
+        if not self.is_distributed:
             return (item in self._index_dict for item in items)
         return (index < self.size for index in self._index_sequence(items))
 
@@ -799,8 +796,10 @@ class SimpleDistributedStateContainer(StateContainer):
 class CentralizedStateContainer(StateContainer):
     def __init__(self, states: Iterable, bytes_per_state, state_type=bytes, comm=None, verbose=True):
         self._full_basis = []
-        super(CentralizedStateContainer, self).__init__(states, bytes_per_state, state_type, comm)
+        super(CentralizedStateContainer, self).__init__([], bytes_per_state, state_type, comm)
+        # super(CentralizedStateContainer, self).__init__(states, bytes_per_state, state_type, comm)
         self._index_dict = StateContainer.IndexDict(self._full_basis, 0)
+        self.add_states(states)
 
     def _set_state_bounds(self, local_states) -> list[Optional[bytes]]:
         local_sizes = (
@@ -816,14 +815,13 @@ class CentralizedStateContainer(StateContainer):
 
     def add_states(self, new_states) -> None:
         new_states = sorted(set(new_states))
-        states_to_add = sorted(itertools.compress(new_states, (not b for b in self._contains_sequence(new_states))))
+        states_to_add = itertools.filterfalse(lambda s: s in self, new_states)
+
         if self.is_distributed:
-            states_from_ranks = self.comm.allgather(states_to_add)
+            states_from_ranks = self.comm.allgather(list(states_to_add))
             merged_states_from_ranks = merge(*states_from_ranks)
-            states_to_add = [state for state, _ in itertools.groupby(merged_states_from_ranks)]
-        new_full_basis = merge(self._full_basis, states_to_add)
-        # Remove duplicates from new_full_basis
-        self._full_basis = [state for state, _ in itertools.groupby(new_full_basis)]
+            states_to_add = (state for state, _ in itertools.groupby(merged_states_from_ranks))
+        self._full_basis = [state for state, _ in itertools.groupby(merge(self._full_basis, states_to_add))]
         self.size = len(self._full_basis)
         local_sizes = (
             [self.size // self.comm.size + (1 if r < self.size % self.comm.size else 0) for r in range(self.comm.size)]
@@ -842,7 +840,6 @@ class CentralizedStateContainer(StateContainer):
             else range(0, self.size)
         )
         self._index_dict = StateContainer.IndexDict(self._full_basis, 0)
-        # self._index_dict = {state: self.offset + i for i, state in enumerate(self.local_basis)}
         self.index_bounds = (
             [np.sum(local_sizes[: r + 1]) for r in range(self.comm.size)] if self.is_distributed else [self.size]
         )
@@ -855,8 +852,7 @@ class CentralizedStateContainer(StateContainer):
             if self.is_distributed
             else [None]
         )
-        assert self._full_basis == self._index_dict.states
-        assert len(self._full_basis) == len(self._index_dict.states)
+        assert all(self.local_basis[i] < self.local_basis[i + 1] for i in range(len(self.local_basis) - 1))
         assert id(self._full_basis) == id(self._index_dict.states)
 
     def _getitem_sequence(self, l: Iterable[int]) -> Iterable[bytes]:

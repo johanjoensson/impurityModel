@@ -6,13 +6,13 @@ from os import environ
 from bisect import bisect_left
 
 try:
-    from collections.abc import Sequence, Iterable
+    from collections.abc import Iterable
 except ModuleNotFoundError:
-    from collections import Sequence, Iterable
+    from collections import Iterable
 import itertools
-from heapq import merge
 import numpy as np
 import scipy as sp
+from heapq import merge
 from scipy.cluster.hierarchy import DisjointSet
 from mpi4py import MPI
 from impurityModel.ed.manybody_state_containers import (
@@ -200,9 +200,12 @@ class Basis:
         for config in itertools.product(*total_configurations.values()):
             for set_bits in itertools.product(*config):
                 basis.append(
-                    psr.tuple2bytes(
-                        tuple(idx for subset in set_bits for part in subset for idx in part), num_spin_orbitals
-                    )
+                    int.from_bytes(
+                        psr.tuple2bytes(
+                            tuple(idx for subset in set_bits for part in subset for idx in part), num_spin_orbitals
+                        ),
+                        byteorder="little",
+                    ).to_bytes(self.n_bytes, "little")
                 )
 
         return basis, num_spin_orbitals
@@ -313,7 +316,8 @@ class Basis:
         imp_change: Optional[dict[int, tuple[int, int]]],
         val_change: Optional[dict[int, tuple[int, int]]],
         con_change: Optional[dict[int, tuple[int, int]]],
-        occ_cutoff: float = 1e-6,
+        cutoff: float = 1e-6,
+        min_dist=4,
     ):
         """
         Construct restrictions for impurity occupation, valence bath occupation, and conduction bath occupation.
@@ -331,10 +335,10 @@ class Basis:
         ========
         excited restrictions: Optional[dict[frozenset[int], tuple[int, int]]] - The occupation restrictions of various orbital indices, or None if no restrictions are generated
         """
-        if len(psis) == 0:
-            return {}
         if isinstance(psis, ManyBodyState):
             psis = [psis]
+        if len(psis) == 0:
+            return None
         if imp_change is None:
             imp_change = {i: None for i in self.impurity_orbitals}
         if val_change is None:
@@ -350,14 +354,27 @@ class Basis:
         filled_bath_states = []
         empty_bath_states = []
 
-        def connected(orbs_i, orbs_j):
-            for orb_i, orb_j in itertools.product(orbs_i, orbs_j):
-                if ((orb_i, "c"), (orb_j, "a")) in op:
-                    return abs(op[((orb_i, "c"), (orb_j, "a"))]) > occ_cutoff
-                if ((orb_j, "c"), (orb_i, "a")) in op:
-                    return abs(op[((orb_j, "c"), (orb_i, "a"))]) > occ_cutoff
+        all_impurity_orbitals = [
+            orb for orb_blocks in self.impurity_orbitals.values() for orb_block in orb_blocks for orb in orb_block
+        ]
+        all_valence_orbitals = [
+            orb for orb_blocks in valence_baths.values() for orb_block in orb_blocks for orb in orb_block
+        ]
+        all_conduction_orbitals = [
+            orb for orb_blocks in conduction_baths.values() for orb_block in orb_blocks for orb in orb_block
+        ]
+        tot_orb = len(all_impurity_orbitals) + len(all_valence_orbitals) + len(all_conduction_orbitals)
+        graph = np.zeros((tot_orb, tot_orb), dtype=bool)
 
-            return False
+        for i, j in itertools.product(range(tot_orb), repeat=2):
+            if ((i, "c"), (j, "a")) in op:
+                graph[i, j] = abs(op[((i, "c"), (j, "a"))]) > 1e-8
+
+        dist_matrix = sp.sparse.csgraph.shortest_path(
+            graph, directed=False, unweighted=True, indices=all_impurity_orbitals
+        )
+        if self.verbose:
+            matrix_print(dist_matrix[:, :], "Orbital distance matrix", flush=True)
 
         for i, impurity_orbitals in self.impurity_orbitals.items():
             imp_orbs = frozenset(sorted(orb for block in impurity_orbitals for orb in block))
@@ -371,7 +388,6 @@ class Basis:
                 for imp_orb_block, val_orb_block, con_orb_block in zip(
                     impurity_orbitals, valence_baths[i], conduction_baths[i]
                 ):
-                    # print(f"{imp_orb_block=}{val_orb_block=}{con_orb_block=}")
                     imp_val_rho = self.build_density_matrices(psis, imp_orb_block, val_orb_block)
                     val_rhos = self.build_density_matrices(psis, val_orb_block, val_orb_block)
                     imp_con_rho = self.build_density_matrices(psis, imp_orb_block, con_orb_block)
@@ -384,27 +400,27 @@ class Basis:
                         es, np.diagonal(con_rhos.real, axis1=1, axis2=2), self.tau
                     )
                     # Identify filled and empty bath states
-                    # Ignore states that are not directly coupled to the impurity
+                    # Ignore states that are too close to the impurity
                     filled_valence_states = [
                         val_orb_block[orb]
-                        for orb in np.nonzero(valence_occupations > 1 - occ_cutoff)[0]
-                        if not connected([val_orb_block[orb]], imp_orb_block)
+                        for orb in np.nonzero(valence_occupations > 1 - cutoff)[0]
+                        if np.min(dist_matrix[np.ix_(imp_orb_block, [val_orb_block[orb]])]) > min_dist
                     ]
                     filled_conduction_states = [
                         con_orb_block[orb]
-                        for orb in np.nonzero(conduction_occupations > 1 - occ_cutoff)[0]
-                        if not connected([con_orb_block[orb]], imp_orb_block)
+                        for orb in np.nonzero(conduction_occupations > 1 - cutoff)[0]
+                        if np.min(dist_matrix[np.ix_(imp_orb_block, con_orb_block[orb])]) > min_dist
                     ]
                     filled_states = frozenset(sorted(filled_valence_states + filled_conduction_states))
                     empty_valence_states = [
                         val_orb_block[orb]
-                        for orb in np.nonzero(valence_occupations < occ_cutoff)[0]
-                        if not connected([val_orb_block[orb]], imp_orb_block)
+                        for orb in np.nonzero(valence_occupations < cutoff)[0]
+                        if np.min(dist_matrix[np.ix_(imp_orb_block, val_orb_block[orb])]) > min_dist
                     ]
                     empty_conduction_states = [
                         con_orb_block[orb]
-                        for orb in np.nonzero(conduction_occupations < occ_cutoff)[0]
-                        if not connected([con_orb_block[orb]], imp_orb_block)
+                        for orb in np.nonzero(conduction_occupations < cutoff)[0]
+                        if np.min(dist_matrix[np.ix_(imp_orb_block, con_orb_block[orb])]) > min_dist
                     ]
                     min_val = max(min_val - len(filled_valence_states) - len(empty_valence_states), 0)
                     max_con = max(max_con - len(empty_conduction_states) - len(filled_conduction_states), 0)
@@ -428,17 +444,19 @@ class Basis:
             new_conduction_indices = frozenset(
                 sorted(orb for orb in con_orbs if not any(orb in s for s in filled_bath_states + empty_bath_states))
             )
-            if len(imp_orbs) > 0:
-                excited_restrictions[imp_orbs] = (min_imp, max_imp)
+            if len(imp_orbs) > 0 and (min_imp > 0 or max_imp < len(imp_orbs)):
+                excited_restrictions[frozenset(sorted(imp_orbs))] = (min_imp, max_imp)
             if len(new_valence_indices) > 0 and min_val > 0:
                 excited_restrictions[new_valence_indices] = (min_val, len(new_valence_indices))
             if len(new_conduction_indices) > 0 and max_con < len(new_conduction_indices):
                 excited_restrictions[new_conduction_indices] = (0, max_con)
             for filled_orbitals, empty_orbitals in zip(filled_bath_states, empty_bath_states):
-                if len(filled_orbitals) > 0:
+                if len(filled_orbitals) > 1:
                     excited_restrictions[filled_orbitals] = (len(filled_orbitals) - 1, len(filled_orbitals))
-                if len(empty_orbitals) > 0:
+                if len(empty_orbitals) > 1:
                     excited_restrictions[empty_orbitals] = (0, 1)
+        if sum(len(rest) for rest in excited_restrictions.keys()) == 0:
+            return None
         return excited_restrictions
 
     def __init__(
@@ -465,6 +483,17 @@ class Basis:
             impurity_orbitals is not None
         ), "You need to supply the number of impurity orbitals in each set in impurity_orbitals"
         assert bath_states is not None, "You need to supply the number of bath states for each l quantum number"
+
+        test = ManyBodyState({b"\x00": 1.0})
+        slater_det = list(test.keys())[0]
+        self.type = type(slater_det)
+        # self.type = type(psr.int2bytes(0, self.num_spin_orbitals))
+        self.n_bytes = len(slater_det)
+        # self.n_bytes = int(ceil(self.num_spin_orbitals / 8))
+        self.truncation_threshold = truncation_threshold
+        self.is_distributed = comm is not None and comm.size > 1
+        self.tau = tau
+        
         if initial_basis is not None:
             assert nominal_impurity_occ is None
             assert delta_valence_occ is None
@@ -497,20 +526,6 @@ class Basis:
             for i in bath_states[0]
         )
         self.restrictions = restrictions
-        self.type = type(psr.int2bytes(0, self.num_spin_orbitals))
-        self.n_bytes = int(ceil(self.num_spin_orbitals / 8))
-        self.truncation_threshold = truncation_threshold
-        self.is_distributed = comm is not None and comm.size > 1
-        if comm is not None:
-            seed_sequences = None
-            if self.comm.rank == 0:
-                seed_parent = np.random.SeedSequence()
-                seed_sequences = seed_parent.spawn(comm.size)
-            seed_sequence = comm.scatter(seed_sequences, root=0)
-            self.rng = np.random.default_rng(seed_sequence)
-        else:
-            self.rng = np.random.default_rng()
-        self.tau = tau
 
         # self.state_container = CentralizedStateContainer(
         self.state_container = SimpleDistributedStateContainer(
@@ -555,35 +570,49 @@ class Basis:
         if not self.is_distributed:
             return psis
 
-        res = [{} for _ in psis]
-        states = sorted({state for psi in psis for state in psi})
+        def find_owner(state):
+            for r, bound in enumerate(self.state_bounds):
+                if bound is None or state < bound:
+                    return r
+            return -1
+
+        # for psi in psis:
+        #     l = list(psi.keys())
+        #     assert all(l[i] < l[i + 1] for i in range(len(psi) - 1)), f'{l}'
+        send_list = [[ManyBodyState({}) for _ in psis] for _ in range(self.comm.size)]
+        t0 = perf_counter()
+        # for state, _ in itertools.groupby(merge(*tuple((state for state in psi.keys()) for psi in psis))):
+        for state in sorted({state for psi in psis for state in psi}):
+
+            send_to = find_owner(state)
+
+            for s_psi, l_psi in zip(send_list[send_to], psis):
+                if state not in l_psi:
+                    continue
+                s_psi[state] += l_psi[state]
+
+        t0 = perf_counter()
+        received_list = [None for _ in range(self.comm.size)]
         for r_offset in range(self.comm.size):
             send_to = (self.comm.rank + r_offset) % self.comm.size
             receive_from = (self.comm.rank + self.comm.size - r_offset) % self.comm.size
 
-            if send_to > 0:
-                lower_bound = self.state_bounds[send_to - 1]
-            else:
-                lower_bound = bytes(self.n_bytes)
-
-            upper_bound = self.state_bounds[send_to]
-            if upper_bound is None:
-                upper_bound = bytes([0xFF] * (self.n_bytes + 1))
-
-            send_list = [{} for _ in psis]
-            if lower_bound is not None:
-                for state in states:
-                    if lower_bound <= state < upper_bound:
-                        for send_n, psi_n in zip(send_list, psis):
-                            send_n[state] = psi_n.get(state, 0)
             if send_to == self.comm.rank:
-                received = send_list
+                received_list[receive_from] = send_list[send_to]
+                # received_list[receive_from] = [psi.to_dict() for psi in send_list[send_to]]
             else:
-                received = self.comm.sendrecv(send_list, dest=send_to, source=receive_from)
-            for res_n, psi_n in zip(res, received):
-                for state, amp in psi_n.items():
-                    res_n[state] = amp + res_n.get(state, 0)
-        return [ManyBodyState(p) for p in res]
+                received_list[receive_from] = self.comm.sendrecv(
+                    send_list[send_to],
+                    # [psi.to_dict() for psi in send_list[send_to]],
+                    dest=send_to,
+                    source=receive_from,
+                )
+        res = [ManyBodyState({}) for _ in psis]
+        for received_psis in received_list:
+            for res_n, psi_n in zip(res, received_psis):
+                res_n += psi_n
+                # res_n += ManyBodyState(psi_n)
+        return res
 
     def redistribute_psis_old(self, psis: Iterable[dict]):
         if not self.is_distributed:
@@ -728,23 +757,20 @@ class Basis:
 
         return spin_flip
 
-    def expand(self, op, dense_cutoff=None, slaterWeightMin=0, max_it=None):
+    def expand(self, op, dense_cutoff=None, slaterWeightMin=0, max_it=5):
         if isinstance(op, dict):
             op = ManyBodyOperator(op)
         old_size = self.size - 1
 
         it = 0
-        max_inner_loops = 1
+        max_inner_loops = 2
 
-        def converged(old_size, it):
-            return old_size == self.size or (it >= max_it if max_it is not None else False)
-
-        while not converged(old_size, it):
-            new_states = set()
-            local_states = set(self.local_basis)
+        local_states = set(self.local_basis)
+        apply_h_to_these = local_states
+        while old_size < self.size and it < max(max_it // max_inner_loops, 1):
             for _ in range(max_inner_loops):
                 new_local_states = set()
-                for state in local_states:
+                for state in apply_h_to_these:
                     res = applyOp_test(
                         op,
                         ManyBodyState({state: 1}),
@@ -754,6 +780,7 @@ class Basis:
                     new_local_states |= set(res.keys()) - local_states
                 if len(new_local_states) == 0:
                     break
+                apply_h_to_these = new_local_states
                 local_states |= new_local_states
             new_states = local_states - set(self.local_basis)
             if self.spin_flip_dj:
@@ -766,6 +793,7 @@ class Basis:
             if self.size + n_new_states > self.truncation_threshold:
                 break
             self.add_states(new_states)
+            apply_h_to_these = apply_h_to_these ^ (set(self.local_basis) - local_states)
             it += 1
         if self.verbose:
             print(f"After expansion, the basis contains {self.size} elements.")
@@ -840,27 +868,18 @@ class Basis:
             vs = vs.reshape((1, vs.shape[0]))
         if isinstance(vs, list):
             vs = np.array(vs)
-        res = [{} for _ in range(vs.shape[0])]
+        res = [ManyBodyState({}) for _ in range(vs.shape[0])]
         if vs.shape[1] == self.size:
-            # vs = vs[:, self.local_indices]
             for j, i in np.argwhere(np.abs(vs[:, self.local_indices]) > slaterWeightMin):
                 res[j][self.local_basis[i]] = vs[j, i + self.offset]
-            # for row, (i, state) in itertools.product(range(vs.shape[0]), zip(self.local_indices, self.local_basis)):
-            #     psi = res[row]
-            #     if abs(vs[row, i]) > slaterWeightMin:
-            #         psi[state] = vs[row, i]
         elif vs.shape[1] == len(self.local_basis):
             for j, i in np.argwhere(np.abs(vs) > slaterWeightMin):
                 res[j][self.local_basis[i]] = vs[j, i]
-            # for row, (i, state) in itertools.product(range(vs.shape[0]), enumerate(self.local_basis)):
-            #     psi = res[row]
-            #     if abs(vs[row, i]) > slaterWeightMin:
-            #         psi[state] = vs[row, i]
         else:
             raise RuntimeError(
                 f"The dimensions of the input dense vector does not match a distributed, or full vector.\n{vs.shape} != ({vs.shape[0]}, {self.size}) || ({vs.shape[0]}, {len(self.local_basis)})"
             )
-        return [ManyBodyState(p) for p in res]
+        return res
 
     def build_operator_dict(self, op, slaterWeightMin=1e-16):
         """
@@ -869,15 +888,19 @@ class Basis:
         """
         if isinstance(op, dict):
             op = ManyBodyOperator(op)
+        res = dict()
 
-        # for state in self.local_basis:
-        _ = applyOp_test(
-            op,
-            ManyBodyState({state: 1 for state in self.local_basis}),
-            cutoff=slaterWeightMin,
-            restrictions=self.restrictions,
-        )
-        return op.memory()
+        t0 = perf_counter()
+        for state in self.local_basis:
+            res[state] = applyOp_test(
+                op,
+                ManyBodyState({state: 1}),
+                cutoff=slaterWeightMin,
+                restrictions=self.restrictions,
+            )
+        print(f"Applying the Hamiltonian took {perf_counter() - t0} seconds")
+        assert len(res) == len(self.local_basis)
+        return res
 
     def build_dense_matrix(self, op, distribute=True):
         """
@@ -1010,20 +1033,16 @@ class Basis:
 
         return [subset.intersection(self.local_indices) for subset in disjoint_sets.subsets()]
 
-    def split_basis_and_redistribute_psi(self, priorities, psis, min_group_size=1000):
+    def split_basis_and_redistribute_psi(self, priorities, psis, max_stddev=0.3):
 
-        if not self.is_distributed:
+        if (not self.is_distributed) or len(priorities) <= 1:
             return range(len(priorities)), [0], 0, [len(priorities)], self, psis, [None]
 
         comm = self.comm
         rank = comm.rank
         normalized_priorities = np.array([p for p in priorities], dtype=float)
-        normalized_priorities /= np.sum(normalized_priorities)
-        if self.size == 0:
-            n_colors = min(comm.size, len(normalized_priorities))
-        else:
-            # Make sure we have at most min_group_size basis states per MPI rank for each color
-            n_colors = min(max(1, comm.size // int(np.ceil(self.size / min_group_size))), len(normalized_priorities))
+        normalized_priorities /= np.sum(np.abs(normalized_priorities))
+        n_colors = min(comm.size, len(normalized_priorities))
 
         # Group priorities into colors so that all colours have roughly the same priorities
         # Step 1:
@@ -1032,10 +1051,18 @@ class Basis:
         #       merge the two subgroups with lowest priorities
         priority_groups = DisjointSet(list(range(len(normalized_priorities))))
         subgroups = priority_groups.subsets()
-        while len(subgroups) > n_colors:
+        weights = np.array([np.sum(normalized_priorities[list(idxs)]) for idxs in subgroups])
+        avg_weight = np.sum(weights) / len(weights)
+        stddev = np.sqrt(np.sum((weights - avg_weight) ** 2) / (len(subgroups) - 1))
+        while len(subgroups) > n_colors or stddev > max_stddev:
             subgroups = sorted(subgroups, key=lambda idxs: np.sum(normalized_priorities[list(idxs)]))
             priority_groups.merge(next(iter(subgroups[0])), next(iter(subgroups[1])))
             subgroups = priority_groups.subsets()
+            if len(subgroups) <= 1:
+                break
+            weights = np.array([np.sum(normalized_priorities[list(idxs)]) for idxs in subgroups])
+            avg_weight = np.sum(weights) / len(weights)
+            stddev = np.sqrt(np.sum((weights - avg_weight) ** 2) / (len(subgroups) - 1))
         subgroups = sorted(subgroups, key=lambda idxs: np.sum(normalized_priorities[list(idxs)]))
         n_colors = len(subgroups)
         merged_priorities = np.array([np.sum(normalized_priorities[list(subgroup)]) for subgroup in subgroups])
@@ -1159,7 +1186,7 @@ class Basis:
         )
 
         block_indices, block_roots, block_color, blocks_per_color, block_basis, _, block_intercomms = (
-            tmp_basis.split_basis_and_redistribute_psi(block_lengths**2, None, min_group_size=np.min(block_lengths))
+            tmp_basis.split_basis_and_redistribute_psi(block_lengths**2, None)
         )
         block_roots = np.array(block_roots, dtype=int)
         procs_per_color = block_roots[1:] - block_roots[:-1]
@@ -1338,7 +1365,7 @@ class CIPSI_Basis(Basis):
         de2[mask] = np.square(np.abs(overlaps[mask])) / de[mask]
         return local_Djs, de2
 
-    def determine_new_Dj(self, e_ref, psi_ref, H, de2_min, return_Hpsi_ref=False):
+    def determine_new_Dj(self, e_ref, psi_ref, H, de2_min, slater_cutoff=0, return_Hpsi_ref=False):
         if isinstance(H, dict):
             H = ManyBodyOperator(H)
         new_Dj = set()
@@ -1347,6 +1374,7 @@ class CIPSI_Basis(Basis):
             Hpsi_ref[i] = applyOp_test(
                 H,
                 psi_i,
+                slater_cutoff,
                 restrictions=self.restrictions,
             )
         Hpsi_ref = self.redistribute_psis(Hpsi_ref)
@@ -1363,7 +1391,8 @@ class CIPSI_Basis(Basis):
         Use the CIPSI method to expand the basis. Keep adding Slater determinants until the CIPSI energy is converged.
         """
         de0_max = -self.tau * np.log(1e-4)
-        psi_ref = None
+        psi_refs = None
+        e_ref = None
 
         if isinstance(H, dict):
             H = ManyBodyOperator(H)
@@ -1371,53 +1400,29 @@ class CIPSI_Basis(Basis):
         old_size = self.size - 1
         while old_size != self.size:
 
-            _, block_roots, block_color, _, block_basis, block_psi_refs, _ = (
-                self.split_into_block_basis_and_redistribute_psi(H, psi_ref, 0)
-            )
-            H_mat = block_basis.build_sparse_matrix(H)
-            e_ref = np.array([], dtype=float)
-            new_psi_ref = []
+            H_mat = self.build_sparse_matrix(H)
+            # e_ref = np.array([], dtype=float)
+            # new_psi_refs = []
 
-            e_ref_block, psi_ref_block = eigensystem_new(
+            e_ref, psi_ref_dense = eigensystem_new(
                 H_mat,
                 e_max=de0_max,
-                k=2 * len(block_psi_refs) if block_psi_refs is not None else 10,
-                # v0=block_basis.build_vector(block_psi_refs).T if block_psi_refs is not None else None,
+                k=2 * len(psi_refs) if psi_refs is not None else 10,
+                e0=None,
+                v0=self.build_vector(psi_refs).T if psi_refs is not None and self.size >= dense_cutoff else None,
                 eigenValueTol=0,
-                comm=block_basis.comm,
+                comm=self.comm,
                 dense=self.size < dense_cutoff,
             )
-            assert (
-                e_ref_block.shape[0] == psi_ref_block.shape[1]
-            ), f"{e_ref_block.shape[0]=} != {psi_ref_block.shape[1]=}"
-            if self.is_distributed:
-                psi_ref = []
-                e_ref = np.array([], dtype=float)
-                for c, c_root in enumerate(block_roots):
-                    e_ref_c = self.comm.bcast(e_ref_block, root=c_root)
-                    e_ref = np.append(e_ref, e_ref_c, axis=0)
-                    if c != block_color:
-                        psi_ref_c = self.redistribute_psis([ManyBodyState() for _ in range(e_ref_c.shape[0])])
-                    else:
-                        psi_ref_c = self.redistribute_psis(block_basis.build_state(psi_ref_block.T))
-                    psi_ref.extend(psi_ref_c)
-            else:
-                psi_ref = self.build_state(psi_ref_block.T)
-                e_ref = e_ref_block
 
-            assert len(e_ref) == len(psi_ref), f"{len(e_ref)=}, {len(psi_ref)=}"
-            sort_idx = np.argsort(e_ref)
-            e_ref = e_ref[sort_idx]
-            mask = e_ref <= (e_ref[0] + de0_max)
-            e_ref = e_ref[mask]
-            psi_ref = [psi_ref[idx] for idx in itertools.compress(sort_idx, mask)]
+            psi_refs = self.build_state(psi_ref_dense.T)
 
-            new_Dj = self.determine_new_Dj(e_ref, psi_ref, H, de2_min)
+            new_Dj = self.determine_new_Dj(e_ref, psi_refs, H, de2_min, slater_cutoff=slaterWeightMin)
             old_size = self.size
             self.add_states(new_Dj)
-            psi_ref = self.redistribute_psis(psi_ref)
+            psi_refs = self.redistribute_psis(psi_refs)
             if self.size > self.truncation_threshold:
-                psi_ref = self.truncate(psi_ref)
+                psi_refs = self.truncate(psi_refs)
                 print(f"-----> Basis truncated!")
                 break
 
@@ -1462,10 +1467,10 @@ class CIPSI_Basis(Basis):
         assert len(new_basis) == len(self)
         return new_basis
 
-    def split_basis_and_redistribute_psi(self, priorities, psis, min_group_size=1000):
+    def split_basis_and_redistribute_psi(self, priorities, psis, max_stddev=0.3):
 
         indices, split_roots, color, items_per_color, split_basis, psis, intercomms = (
-            super().split_basis_and_redistribute_psi(priorities, psis, min_group_size)
+            super().split_basis_and_redistribute_psi(priorities, psis, max_stddev)
         )
 
         split_basis = CIPSI_Basis(
