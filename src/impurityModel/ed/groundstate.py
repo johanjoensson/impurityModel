@@ -40,29 +40,29 @@ def calc_energy(
         tau=tau,
         chain_restrict=chain_restrict,
         truncation_threshold=truncation_threshold,
-        verbose=False,  # verbose,
+        verbose=verbose,
         spin_flip_dj=spin_flip_dj,
         comm=comm,
     )
     if len(basis) == 0:
         return np.inf, basis, {}
-    _ = basis.expand(h_op, dense_cutoff=dense_cutoff, de2_min=5e-4)
+    _ = basis.expand(h_op, dense_cutoff=dense_cutoff, de2_min=1e-4, slaterWeightMin=np.sqrt(np.finfo(float).eps))
 
     energy_cut = -tau * np.log(1e-4)
 
-    _, block_roots, _, _, block_basis, _, _ = basis.split_into_block_basis_and_redistribute_psi(h_op, None)
-    h = block_basis.build_sparse_matrix(h_op)
-    e_block = eigensystem(
+    # _, block_roots, _, _, block_basis, _, _ = basis.split_into_block_basis_and_redistribute_psi(h_op, None)
+    h = basis.build_sparse_matrix(h_op)
+    es = eigensystem(
         h,
         e_max=energy_cut,
         k=10,
         eigenValueTol=0,  # np.finfo(float).eps,
         return_eigvecs=False,
-        comm=block_basis.comm,
-        dense=block_basis.size < dense_cutoff,
+        comm=basis.comm,
+        dense=basis.size < dense_cutoff,
     )
-    e_trial = basis.comm.allreduce(np.min(e_block), op=MPI.MIN)
-    return e_trial, basis
+    # e_trial = basis.comm.allreduce(np.min(e_block), op=MPI.MIN)
+    return np.min(es), basis
 
 
 def find_ground_state_basis(
@@ -108,14 +108,11 @@ def find_ground_state_basis(
             spin_flip_dj,
             dense_cutoff,
             comm=comm,
-            verbose=verbose >= 2,
+            verbose=verbose,
             truncation_threshold=truncation_threshold,
         )
         if verbose:
-            print("{", end="")
-            for i in dN:
-                print(f" {i} : {N0[i] + dN[i]}", end="")
-            print(f"}} ~ {e_trial}")
+            print("{" + " ".join(f" {i} : {N0[i] + dN[i]}" for i in dN) + f"}} ~ {e_trial}")
         if e_trial < e_gs:
             e_gs = e_trial
             basis_gs = basis.copy()
@@ -141,11 +138,13 @@ def find_ground_state_basis(
                 spin_flip_dj,
                 dense_cutoff,
                 comm=comm,
-                verbose=False,
+                verbose=True,
                 truncation_threshold=truncation_threshold,
             )
             if verbose:
-                print("{" + " ".join(f" {i} : {gs_impurity_occ[i] + dN_gs[i]}" for i in dN_gs) + f"}} ~ {e_trial}")
+                print(
+                    "{" + " ".join(f" {i} : {gs_impurity_occ[i] + dN_gs[i]}" for i in dN_gs) + f"}} ~ {e_trial}",
+                )
             if e_trial >= e_gs:
                 break
             gs_impurity_occ[i] += dN_gs[i]
@@ -155,7 +154,7 @@ def find_ground_state_basis(
         print("Ground state occupation")
         print("\n".join((f"{i:^3d}: {gs_impurity_occ[i]: ^5d}" for i in gs_impurity_occ)))
         print(rf"E$_{{GS}}$ = {e_gs:^7.4f}")
-        print("=" * 80, flush=True)
+        print("=" * 80)
     return basis_gs
 
 
@@ -179,7 +178,7 @@ def calc_gs(
 
     ground_state_basis.tau = tau
     energy_cut = -tau * np.log(1e-4)
-    _ = ground_state_basis.expand(Hop, dense_cutoff=dense_cutoff, de2_min=1e-6)
+    _ = ground_state_basis.expand(Hop, dense_cutoff=dense_cutoff, de2_min=1e-6, slaterWeightMin=np.finfo(float).eps)
     _, block_roots, block_color, _, block_basis, _, _ = ground_state_basis.split_into_block_basis_and_redistribute_psi(
         Hop, None
     )
@@ -200,7 +199,7 @@ def calc_gs(
         if c != block_color:
             psi_c = ground_state_basis.redistribute_psis([ManyBodyState() for _ in es_c])
         else:
-            psi_c = ground_state_basis.redistribute_psis(block_basis.build_state(block_psis_dense.T))
+            psi_c = ground_state_basis.redistribute_psis(block_basis.build_state(block_psis_dense.T, slaterWeightMin=0))
         psis.extend(psi_c)
 
     sort_idx = np.argsort(es)
