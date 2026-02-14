@@ -867,7 +867,6 @@ def getSpectra_new(
     elif rank in tOps_roots:
         for tOp_idx in tOps_indices:
             basis.comm.Send(gs_realaxis_local[:, tOp_idx], dest=0)
-    hOp.clear_memory()
     return gs_realaxis if rank == 0 else np.empty((0, 0), dtype=complex)
 
 
