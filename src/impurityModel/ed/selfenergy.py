@@ -23,12 +23,6 @@ from impurityModel.ed.utils import matrix_print
 EV_TO_RY = 1 / 13.605693122994
 
 
-class UnphysicalSelfenergyError(Exception):
-    """
-    Excpetion signalling an unphysical self-energy, i.e. the imaginary part is positive for some frequencies.
-    """
-
-
 class UnphysicalGreensFunctionError(Exception):
     """
     Excpetion signalling an unphysical Greens function, i.e. the imaginary part is positive for some frequencies.
@@ -250,7 +244,7 @@ def calc_selfenergy(
     if restrictions is not None and verbosity >= 2:
         print("Restrictions GS on occupation")
         for indices, limits in restrictions.items():
-            print(f"---> {sorted(indices)} : {limits}", flush=True)
+            print(f"---> {sorted(indices)} : {limits}")
 
     if verbosity >= 1:
         print(f"Consider {len(es):d} eigenstates for the spectra \n")
@@ -280,8 +274,7 @@ def calc_selfenergy(
                     continue
                 check_greens_function(gs)
         except UnphysicalGreensFunctionError as err:
-            if rank == 0:
-                print(f"WARNING! Unphysical Matsubara-axis Greens function:\n\t{err}")
+            raise UnphysicalGreensFunctionError("Matsubara interacting Greens function:\n" + str(err)) from None
     if gs_realaxis is not None:
         try:
             for gs in gs_realaxis:
@@ -289,8 +282,8 @@ def calc_selfenergy(
                     continue
                 check_greens_function(gs)
         except UnphysicalGreensFunctionError as err:
-            if rank == 0:
-                print(f"WARNING! Unphysical real-axis Greens function:\n\t{err}")
+            raise UnphysicalGreensFunctionError("Real frequency interacting Greens function:\n" + str(err)) from None
+
     if verbosity >= 1:
         print("Calculate self-energy...")
     if gs_realaxis is not None:
@@ -306,10 +299,9 @@ def calc_selfenergy(
         )
         try:
             for sig in sigma_real:
-                check_sigma(sig)
-        except UnphysicalSelfenergyError as err:
-            if rank == 0:
-                print(f"WARNING! Unphysical realaxis selfenergy:\n\t{err}")
+                check_greens_function(sig)
+        except UnphysicalGreensFunctionError as err:
+            raise UnphysicalGreensFunctionError("Real frequency self-energy:\n" + str(err)) from None
     else:
         sigma_real = None
     if gs_matsubara is not None:
@@ -325,10 +317,9 @@ def calc_selfenergy(
         )
         try:
             for sig in sigma:
-                check_sigma(sig)
-        except UnphysicalSelfenergyError as err:
-            if rank == 0:
-                print(f"WARNING! Unphysical Matsubara axis selfenergy:\n\t{err}")
+                check_greens_function(sig)
+        except UnphysicalGreensFunctionError as err:
+            raise UnphysicalGreensFunctionError("Matsubara self-energy:\n" + str(err)) from None
     else:
         sigma = None
     if verbosity >= 1:
@@ -339,7 +330,6 @@ def calc_selfenergy(
         for block in impurity_blocks
         for orb in block
     ]
-    print(f"{impurity_indices=}")
     impurity_ix = np.ix_(impurity_indices, impurity_indices)
     sigma_static = get_Sigma_static(u4, thermal_rho[impurity_ix])
 
@@ -354,21 +344,11 @@ def calc_selfenergy(
     }
 
 
-def check_sigma(sigma: np.ndarray):
-    """
-    Verify that sigma makes physical sense.
-    """
-    diagonals = (np.diag(sigma[i, :, :]) for i in range(sigma.shape[0]))
-    if np.any(np.imag(diagonals) > 0):
-        raise UnphysicalSelfenergyError("Diagonal term has positive imaginary part.")
-
-
 def check_greens_function(G):
     """
     Verify that G makes physical sense.
     """
-    diagonals = (np.diag(G[i, :, :]) for i in range(G.shape[0]))
-    if np.any(np.imag(diagonals) > 0):
+    if np.any(np.diagonal(G, axis1=1, axis2=2).imag > 0):
         raise UnphysicalGreensFunctionError("Diagonal term has positive imaginary part.")
 
 

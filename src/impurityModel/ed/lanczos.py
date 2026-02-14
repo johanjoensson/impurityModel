@@ -11,7 +11,7 @@ from impurityModel.ed.manybody_basis import Basis
 from impurityModel.ed.krylovBasis import KrylovBasis
 from impurityModel.ed.finite import (
     applyOp_new as applyOp,
-    inner,
+    # inner,
     matmul,
     removeFromFirst,
     addOps,
@@ -20,7 +20,7 @@ from impurityModel.ed.finite import (
     norm2,
 )
 from cmath import phase, rect
-from impurityModel.ed.ManyBodyUtils import ManyBodyState, ManyBodyOperator, applyOp as applyOp_test
+from impurityModel.ed.ManyBodyUtils import ManyBodyState, ManyBodyOperator, applyOp as applyOp_test, inner
 
 
 class Reort(Enum):
@@ -405,114 +405,97 @@ def get_block_Lanczos_matrices(
 
 
 def block_lanczos_sparse(
-    psi0: list[dict],
-    h_op: dict,
+    psi0: list[ManyBodyState],
+    h_op: ManyBodyOperator,
     basis: Basis,
     converged: Callable[[np.ndarray, np.ndarray], bool],
-    h_mem: Optional[dict] = None,
     verbose: bool = False,
     reort: Reort = Reort.NONE,
     slaterWeightMin: float = 0,
 ) -> (np.ndarray, np.ndarray, Optional[list[dict]]):
-    if h_mem is None:
-        h_mem = {}
     mpi = basis.comm is not None
     comm = basis.comm if mpi else MPI.COMM_SELF
+    rank = comm.rank if mpi else 0
     build_krylov_basis = reort != Reort.NONE
     n = len(psi0)
     N_max = basis.size
-    if mpi:
-        psi_len = basis.comm.allreduce(sum(len(psi) for psi in psi0), op=MPI.SUM)
-    else:
-        psi_len = sum(len(psi) for psi in psi0)
-    if psi_len == 0:
-        return (
-            np.zeros((1, n, n), dtype=complex),
-            np.zeros((1, n, n), dtype=complex),
-            psi0 if build_krylov_basis else None,
-        )
 
     alphas = np.empty((0, n, n), dtype=complex)
     betas = np.empty((0, n, n), dtype=complex)
-    q = [[{}] * n, psi0]
+    q = [[ManyBodyState({}) for _ in range(n)], psi0]
     if build_krylov_basis:
         Q = list(psi0)
 
-    eps = max(slaterWeightMin, np.finfo(float).eps)
-
+    it_max = max(200, basis.size // n + 1)
     it = 0
-    done = False
     converge_count = 0
-    wp = [None] * n
-    while (it + 1) * n < basis.size or it == 0:
+    expand_basis = True
+    while it < it_max:
+        t0 = perf_counter()
         wp = [
-            applyOp(
-                basis.num_spin_orbitals,
+            applyOp_test(
                 h_op,
                 psi_i,
-                slaterWeightMin=slaterWeightMin,
+                cutoff=slaterWeightMin,
                 restrictions=basis.restrictions,
-                opResult=h_mem,
             )
             for psi_i in q[1]
         ]
-        # wp = basis.redistribute_psis(wp)
-
-        wp_size = np.array([len(psi) for psi in wp], dtype=int)
-        comm.Allreduce(MPI.IN_PLACE, wp_size, op=MPI.SUM)
-        cutoff = eps
-        n_trunc = 0
-        while np.max(wp_size) > basis.truncation_threshold:
-            wp = [{state: w for state, w in psi.items() if abs(w) >= cutoff} for psi in wp]
-            comm.Allreduce(np.array([len(psi) for psi in wp]), wp_size, op=MPI.SUM)
-            cutoff *= 5
-            n_trunc += 1
-
-        if n_trunc > 0:
-            basis.clear()
-
-        basis.add_states(
-            state
-            for psi in wp
-            for state in psi
-            for state_idx in [bisect_left(basis.local_basis, state)]
-            if state_idx == len(basis.local_basis) or basis.local_basis[state_idx] != state
-        )
-        N_max = max(N_max, basis.size)
-        tmp = basis.redistribute_psis(itertools.chain(q[0], q[1], wp))
-        q[0] = tmp[0:n]
-        q[1] = tmp[n : 2 * n]
-        wp = tmp[2 * n :]
-        alpha = np.empty((n, n), dtype=complex)
-        for i, j in itertools.product(range(n), repeat=2):
-            alpha[i, j] = inner(q[1][i], wp[j])
-        alphas = np.append(alphas, np.empty((1, n, n), dtype=complex), axis=0)
-        if mpi:
-            request = comm.Iallreduce(alpha, alphas[-1], op=MPI.SUM)
+        t_apply = perf_counter() - t0
+        if verbose:
+            print(f"Iteration {it+1}: ", end="" if expand_basis else "\n")
+        if expand_basis:
+            old_basis_size = basis.size
+            t0 = perf_counter()
+            basis.add_states([state for p in wp for state in p if state not in basis.local_basis])
+            t_add = perf_counter() - t0
+            if old_basis_size == basis.size:
+                it_max = basis.size // n
+                expand_basis = False
+            if verbose:
+                print(f"Added {basis.size - old_basis_size} states to the basis.")
+                print(f"                : Adding new states took {t_add} seconds.")
+        if verbose:
+            print(f"                : Currently the basis contains {basis.size} states.")
+            print(f"                : Applying the hamiltonian took {t_apply} seconds.", flush=True)
+        tmp = basis.redistribute_psis(list(itertools.chain(q[0], q[1], wp)))
+        v_dense = basis.build_vector(tmp, root=0).T
+        if rank == 0:
+            q0_dense = v_dense[:, :n]
+            q1_dense = v_dense[:, n : 2 * n]
+            wp_dense = v_dense[:, 2 * n :]
+            alphas = np.append(alphas, [np.conj(q1_dense.T) @ wp_dense], axis=0)
+            betas = np.append(betas, np.zeros((1, n, n), dtype=complex), axis=0)
+            wp_dense -= q1_dense @ alphas[it] + q0_dense @ np.conj(betas[it - 1].T)
+            q0_dense[:] = q1_dense
+            q1_dense[:], betas[-1] = sp.linalg.qr(wp_dense, mode="economic", overwrite_a=False, check_finite=False)
         else:
-            alphas[-1, :, :] = alpha
-
-        betas = np.append(betas, np.zeros((1, n, n), dtype=complex, order="C"), axis=0)
-
+            alphas = np.append(
+                alphas,
+                np.empty(
+                    (1, n, n),
+                    dtype=alphas.dtype,
+                ),
+                axis=0,
+            )
+            betas = np.append(
+                betas,
+                np.empty(
+                    (1, n, n),
+                    dtype=betas.dtype,
+                ),
+                axis=0,
+            )
         if mpi:
-            request.wait()
-        tmp = [{} for _ in wp]
-        for i, j in itertools.product(range(n), repeat=2):
-            tmp[i] = addOps((tmp[i], scale(q[1][j], alpha[j, i])))
-            tmp[i] = addOps((tmp[i], scale(q[0][j], np.conj(betas[it - 1, i, j]))))
-        for i in range(n):
-            wp[i] = subtractOps(wp[i], tmp[i])
-
-        if True:
-            wp, betas[-1] = qr_decomp_new(basis, wp)
-        else:
-            psip = basis.build_vector(wp, root=0)
-            if basis.comm.rank == 0:
-                psip, betas[-1], _ = qr_decomp(psip.T)
-            comm.bcast(betas[-1], root=0)
-            psip_local = np.empty((len(basis.local_basis), betas.shape[-1]), dtype=complex, order="C")
+            basis.comm.Bcast(alphas[-1], root=0)
+            basis.comm.Bcast(betas[-1], root=0)
+        converge_count = 1 + converge_count if converged(alphas, betas, verbose=verbose) else 0
+        if converge_count > 3:
+            break
+        if mpi:
+            q1_local = np.empty((len(basis.local_basis), n), dtype=complex)
             send_counts = np.empty((basis.comm.size), dtype=int) if basis.comm.rank == 0 else None
-            basis.comm.Gather(np.array([psip_local.size]), send_counts if basis.comm.rank == 0 else None)
+            basis.comm.Gather(np.array([q1_local.size]), send_counts if basis.comm.rank == 0 else None)
             offsets = (
                 np.array([np.sum(send_counts[:r]) for r in range(comm.size)], dtype=int)
                 if basis.comm.rank == 0
@@ -520,31 +503,23 @@ def block_lanczos_sparse(
             )
             comm.Scatterv(
                 (
-                    [np.ascontiguousarray(psip), send_counts, offsets, MPI.C_DOUBLE_COMPLEX]
-                    if basis.comm.rank == 0
+                    [np.ascontiguousarray(q1_dense), send_counts, offsets, MPI.C_DOUBLE_COMPLEX]
+                    if comm.rank == 0
                     else None
                 ),
-                psip_local,
+                q1_local,
                 root=0,
             )
-            wp = basis.build_state(psip_local.T, slaterWeightMin=np.finfo(float).eps)
-
-        done = converged(alphas, betas, verbose=reort == Reort.PARTIAL)
-
-        if mpi:
-            done = comm.allreduce(done, op=MPI.LAND)
-
-        converge_count = (1 + converge_count) if done else 0
-        if converge_count > 0:
-            break
-
-        q[0] = q[1]
-        q[1] = wp
-
+        else:
+            q1_local = q1_dense
+        q[0] = tmp[n : 2 * n]
+        q[1] = basis.build_state(q1_local.T, slaterWeightMin=0)
         if build_krylov_basis:
             Q.extend(q[1])
         it += 1
-    return alphas, betas, Q if build_krylov_basis else None
+    if verbose:
+        print(f"Coverged at iteration {it+1} out of a maximum of {basis.size//n}")
+    return alphas, betas
 
 
 def block_lanczos(
@@ -610,7 +585,6 @@ def block_lanczos(
     t_tot = perf_counter()
     while (it + 1) * n < basis.size or it == 0:
         t0 = perf_counter()
-        # wp = [applyOp_test(h_op, psi_i, cutoff=slaterWeightMin, restrictions=basis.restrictions) for psi_i in q[1]]
         wp = [applyOp_test(h_op, psi_i, cutoff=slaterWeightMin) for psi_i in q[1]]
         t_op += perf_counter() - t0
 
@@ -990,14 +964,14 @@ def get_Lanczos_vectors(A, alphas, betas, v0, comm, which="all"):
             which = [n_it - which]
         else:
             which = [which]
-    elif isinstance(which, list[int]):
+    elif isinstance(which, list):
         which = [w if w >= 0 else n_it - w for w in which]
-    elif isinstance(which, tuple[int, int]):
+    elif isinstance(which, tuple):
         which = list(range(which[0], which[1]))
     else:
         raise RuntimeError(f"Unknown value for which: {which}")
 
-    Q = np.empty((N, len(which) * n), dtype=int)
+    Q = np.empty((N, len(which) * n), dtype=alphas.dtype)
     qi = np.ascontiguousarray(v0)
     for i in range(n_it):
         if i in which:
