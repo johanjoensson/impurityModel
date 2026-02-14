@@ -838,35 +838,34 @@ def getSpectra_new(
     gs_realaxis_local = np.empty((len(w), len(tOps_indices)), dtype=complex)
     for tOp_i, tOp in enumerate(tOps[ti] for ti in tOps_indices):
         assert isinstance(hOp, ManyBodyOperator)
-        _, gs_realaxis_local[:, tOp_i, None, None], basis_size = gf.calc_Greens_function_with_offdiag(
+        alphas, betas, r = calc_Greens_function_with_offdiag(
             hOp,
             [tOp],
             psis,
             es,
-            tau,
             tOp_basis,
-            None,
-            w,
             delta,
-            Reort.NONE,
-            dN_imp,
-            dN_val,
-            dN_con,
-            slaterWeightMin,
-            verbose and False,
-            occ_cutoff,
+            dN=dN,
+            occ_cutoff=occ_cutoff,
+            slaterWeightMin=slaterWeightMin,
+            verbose=verbose_extra,
         )
+        e0 = np.min(es)
+        Z = np.sum(np.exp(-(es - e0) / tau))
+        local_gs_realaxis = np.zeros((len(w), 1), dtype=complex)
+        for e, alphas_e, betas_e, r_e in zip(es, alphas, betas, r):
+            local_gs_realaxis += calc_G(alphas_e, betas_e, r_e, omega_mesh, e, delta) * np.exp(-(e - e0) / tau)[:, :, 0]
     if basis.comm.rank == 0:
-        gs_realaxis = np.empty((len(tOps), len(w)), dtype=complex)
-        gs_realaxis[:, tOps_indices] = gs_realaxis_local
-        for color, sender in enumerate(tOps_roots):
-            if sender == basis.comm.rank:
+        gs_realaxis = np.empty((len(w), len(tOps)), dtype=complex)
+        for col, sender in enumerate(tOps_roots):
+            if sender == 0:
+                for i, block_i in enumerate(tOps_indices):
+                    gs_realaxis[block_i][:] = local_gs_realaxis[i]
                 continue
-            for tOp_idx in indices_for_colors[offsets[colour] : offsets[colour] + tOps_per_color[colour]]:
-                basis.comm.Recv(gs_realaxis[:, tOp_idx], source=sender)
-    elif rank in tOps_roots:
-        for tOp_idx in tOps_indices:
-            basis.comm.Send(gs_realaxis_local[:, tOp_idx], dest=0)
+            for tOps_idx in indices_for_color[offsets[col] : offsets[col] + indices_for_color[col]]:
+                basis.comm.Recv(gs_realaxis[tOps_idx], source=sender)
+    elif tOp_basis.comm.rank == 0:
+        basis.comm.Send(local_gs_realaxis, dest=0)
     return gs_realaxis if rank == 0 else np.empty((0, 0), dtype=complex)
 
 
@@ -1186,20 +1185,18 @@ def getRIXSmap_new(
                     psi3 = applyOp_test(tout, psi2)
                     wIn_basis.add_states(psi3.keys())
                     psi3 = wIn_basis.redistribute_psis([psi3])[0]
-                    _, gs_eijk = gf.block_Green(
+                    alphas, betas, r = gf.block_Green(
                         hOp,
                         [psi3],
                         wIn_basis,
-                        E_e,
-                        None,
-                        wLoss,
                         delta2,
                         Reort.NONE,
                         slaterWeightMin=slaterWeightMin,
-                        verbose=verbose and False,
+                        verbose=verbose,
                     )
-                    if gs_eijk is not None:
-                        gs[i, k, j, :, None, None] += np.exp(-(E_e - E0) / tau) * gs_eijk
+                    gs[i, k, j, :, None, None] += gf.calc_G(alphas, betas, r, wLoss, E_e, delta2) * np.exp(
+                        -(E_e - E0) / tau
+                    )
             if eigen_basis.comm.rank == 0:
                 for c, sender in enumerate(wIn_roots):
                     if sender == eigen_basis.comm.rank:
