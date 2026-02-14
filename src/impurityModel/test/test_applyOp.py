@@ -1,5 +1,7 @@
 from impurityModel.ed import product_state_representation as psr
-from impurityModel.ed.finite import applyOp
+from impurityModel.ed.ManyBodyUtils import applyOp
+
+# from impurityModel.ed.finite import applyOp
 
 
 def test_applyOp_create_one_electron_from_vacuum():

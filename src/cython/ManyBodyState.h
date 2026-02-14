@@ -1,68 +1,297 @@
 #ifndef MANYBODY_STATE_H
 #define MANYBODY_STATE_H
 
+#include <algorithm>
 #include <complex>
+#include <cstddef>
 #include <cstdint>
-#include <iostream>
+#include <deque>
+#include <iterator>
 #include <map>
+#include <stdexcept>
+#include <string>
 #include <utility>
 #include <vector>
 
 class ManyBodyState {
 
 public:
-  using Key = std::vector<uint8_t>;
+  using Key = std::vector<uint64_t>;
   using Value = std::complex<double>;
-  struct Comparer {
-    inline bool operator()(const Key &a, const Key &b) const noexcept {
+  struct KeyComparer {
+    bool operator()(const Key &a, const Key &b) const noexcept {
       for (size_t i = 0; i < a.size(); i++) {
         if (a[i] < b[i]) {
           return true;
-        } else if (a[i] > b[i]) {
+        }
+        if (a[i] > b[i]) {
           return false;
         }
       }
       return false;
     }
   };
-  using Map = std::map<Key, Value, Comparer>;
+  struct ValueComparer {
+    bool operator()(const Value &a, const Value &b) const noexcept {
+      if (std::abs(a) < std::abs(b)) {
+        return true;
+      }
+      if (std::abs(b) < std::abs(a)) {
+        return false;
+      }
+      return std::arg(a) < std::arg(b);
+    }
+  };
+  using Map = std::map<Key, Value, KeyComparer>;
+  // using Values = std::deque<Value>;
+  // using Keys = std::deque<Key>;
+  using Values = std::vector<Value>;
+  using Keys = std::vector<Key>;
 
 private:
-  Map m_map;
+  // Map m_map;
+  Keys m_keys;
+  Values m_values;
 
 public:
-  using key_type = Map::key_type;
-  using mapped_type = Map::mapped_type;
-  using value_type = Map::value_type;
-  using size_type = Map::size_type;
+  using key_type = Key;
+  using mapped_type = Value;
+  using value_type = std::pair<Key, Value>;
+  using size_type = Keys::size_type;
   using difference_type = Map::difference_type;
-  using key_compare = Map::key_compare;
-  using value_compare = Map::value_compare;
-  using allocator_type = Map::allocator_type;
-  using reference = Map::reference;
-  using const_reference = Map::const_reference;
-  using compare_type = Comparer;
-  using pointer = Map::pointer;
-  using const_pointer = Map::const_pointer;
-  using iterator = Map::iterator;
-  using const_iterator = Map::const_iterator;
-  using reverse_iterator = Map::reverse_iterator;
-  using const_reverse_iterator = Map::const_reverse_iterator;
+  using key_compare = KeyComparer;
+  using value_compare = ValueComparer;
+  using pointer = std::pair<Keys::pointer, Values::pointer>;
+  using const_pointer = std::pair<Keys::const_pointer, Values::const_pointer>;
+  using reference = std::pair<Key &, Value &>;
+  using const_reference = std::pair<const Key &, const Value &>;
+  using compare_type = KeyComparer;
 
-  ManyBodyState() = default;
+  struct iterator {
+    using iterator_category = std::random_access_iterator_tag;
+    using difference_type = std::ptrdiff_t;
+    using value_type = ManyBodyState::value_type;
+    using pointer = ManyBodyState::pointer;
+    using const_pointer = ManyBodyState::const_pointer;
+    using reference = ManyBodyState::reference;
+    using const_referece = ManyBodyState::const_reference;
+
+    iterator() : m_it() {}
+    iterator(const Keys::iterator &k_it, const Values::iterator &v_it)
+        : m_it(k_it, v_it) {}
+
+    reference operator*() const {
+      return {*this->m_it.first, *this->m_it.second};
+    }
+    std::pair<Keys::iterator, Values::iterator> *operator->() {
+      return &this->m_it;
+    };
+
+    iterator &operator++() {
+      this->m_it.first++;
+      this->m_it.second++;
+      return *this;
+    }
+
+    iterator operator++(int) {
+      iterator tmp = *this;
+      ++(*this);
+      return tmp;
+    }
+
+    iterator &operator+=(difference_type n) {
+      this->m_it.first += n;
+      this->m_it.second += n;
+      return *this;
+    }
+    friend iterator operator+(const iterator &a, ptrdiff_t n) {
+      iterator tmp = a;
+      return tmp += n;
+    }
+
+    friend iterator operator+(ptrdiff_t n, const iterator &a) {
+      iterator tmp = a;
+      return tmp += n;
+    }
+
+    iterator &operator--() {
+      this->m_it.first--;
+      this->m_it.second--;
+      return *this;
+    }
+
+    iterator operator--(int) {
+      iterator tmp = *this;
+      --(*this);
+      return tmp;
+    }
+
+    iterator &operator-=(difference_type n) {
+      this->m_it.first -= n;
+      this->m_it.second -= n;
+      return *this;
+    }
+
+    friend iterator operator-(const iterator &a, ptrdiff_t n) {
+      iterator tmp = a;
+      return tmp -= n;
+    }
+
+    difference_type operator-(const iterator &other) const {
+      return this->m_it.first - other.m_it.first;
+    }
+
+    reference operator[](ptrdiff_t n) const { return *(*this + n); }
+
+    friend bool operator==(const iterator &a, const iterator &b) {
+      return a.m_it == b.m_it;
+    }
+
+    friend bool operator!=(const iterator &a, const iterator &b) {
+      return !(a == b);
+    }
+
+    friend bool operator<(const iterator &a, const iterator &b) {
+      return a.m_it.first < b.m_it.first;
+    }
+    friend bool operator>=(const iterator &a, const iterator &b) {
+      return !(a.m_it.first < b.m_it.first);
+    }
+    friend bool operator>(const iterator &a, const iterator &b) {
+      return a.m_it.first > b.m_it.first;
+    }
+    friend bool operator<=(const iterator &a, const iterator &b) {
+      return !(a.m_it.first > b.m_it.first);
+    }
+    std::pair<Keys::iterator, Values::iterator> m_it;
+  };
+
+  struct const_iterator {
+    using iterator_category = std::random_access_iterator_tag;
+    using difference_type = std::ptrdiff_t;
+    // using value_type = ManyBodyState::value_type;
+    using value_type = std::pair<const Key, const Value>;
+    using pointer = ManyBodyState::const_pointer;
+    using const_pointer = ManyBodyState::const_pointer;
+    using reference = ManyBodyState::const_reference;
+    using const_referece = ManyBodyState::const_reference;
+
+    explicit const_iterator() : m_it() {}
+    explicit const_iterator(const Keys::iterator &k_it,
+                            const Values::iterator &v_it)
+        : m_it(Keys::const_iterator{k_it}, Values::const_iterator{v_it}) {}
+
+    explicit const_iterator(const Keys::const_iterator &k_it,
+                            const Values::const_iterator &v_it)
+        : m_it(k_it, v_it) {}
+
+    reference operator*() const {
+      return {*this->m_it.first, *this->m_it.second};
+    }
+    const std::pair<Keys::const_iterator, Values::const_iterator> *
+    operator->() {
+      return &this->m_it;
+    };
+
+    const_iterator &operator++() {
+      this->m_it.first++;
+      this->m_it.second++;
+      return *this;
+    }
+
+    const_iterator operator++(int) {
+      const_iterator tmp = *this;
+      ++(*this);
+      return tmp;
+    }
+
+    const_iterator &operator+=(difference_type n) {
+      this->m_it.first += n;
+      this->m_it.second += n;
+      return *this;
+    }
+    friend const_iterator operator+(const const_iterator &a, ptrdiff_t n) {
+      const_iterator tmp = a;
+      return tmp += n;
+    }
+
+    friend const_iterator operator+(ptrdiff_t n, const const_iterator &a) {
+      const_iterator tmp = a;
+      return tmp += n;
+    }
+
+    const_iterator &operator--() {
+      this->m_it.first--;
+      this->m_it.second--;
+      return *this;
+    }
+
+    const_iterator operator--(int) {
+      const_iterator tmp = *this;
+      --(*this);
+      return tmp;
+    }
+
+    const_iterator &operator-=(difference_type n) {
+      this->m_it.first -= n;
+      this->m_it.second -= n;
+      return *this;
+    }
+
+    friend const_iterator operator-(const const_iterator &a, ptrdiff_t n) {
+      const_iterator tmp = a;
+      return tmp -= n;
+    }
+
+    difference_type operator-(const const_iterator &other) const {
+      return this->m_it.first - other.m_it.first;
+    }
+
+    reference operator[](ptrdiff_t n) const { return *(*this + n); }
+
+    friend bool operator==(const const_iterator &a, const const_iterator &b) {
+      return a.m_it == b.m_it;
+    }
+
+    friend bool operator!=(const const_iterator &a, const const_iterator &b) {
+      return !(a == b);
+    }
+
+    friend bool operator<(const const_iterator &a, const const_iterator &b) {
+      return a.m_it.first < b.m_it.first;
+    }
+    friend bool operator>=(const const_iterator &a, const const_iterator &b) {
+      return !(a.m_it.first < b.m_it.first);
+    }
+    friend bool operator>(const const_iterator &a, const const_iterator &b) {
+      return a.m_it.first > b.m_it.first;
+    }
+    friend bool operator<=(const const_iterator &a, const const_iterator &b) {
+      return !(a.m_it.first > b.m_it.first);
+    }
+    std::pair<Keys::const_iterator, Values::const_iterator> m_it;
+  };
+
+  using reverse_iterator = std::reverse_iterator<iterator>;
+  using const_reverse_iterator = std::reverse_iterator<const_iterator>;
+
+  explicit ManyBodyState() : m_keys(), m_values() {
+    m_keys.reserve(1000);
+    m_values.reserve(1000);
+  };
+  // ManyBodyState() = default;
   ManyBodyState(const ManyBodyState &) = default;
-  ManyBodyState(ManyBodyState &&other) = default;
+  ManyBodyState(ManyBodyState &&) noexcept = default;
   ManyBodyState &operator=(const ManyBodyState &) = default;
   ManyBodyState &operator=(ManyBodyState &&) = default;
   ~ManyBodyState() = default;
 
-  ManyBodyState(const Map &);
-  ManyBodyState(Map &&);
-
-  ManyBodyState(const std::vector<key_type> &keys,
-                const std::vector<mapped_type> &values);
-  ManyBodyState(const std::vector<key_type> &&keys,
-                const std::vector<mapped_type> &&values);
+  explicit ManyBodyState(const std::vector<value_type> &);
+  explicit ManyBodyState(std::vector<value_type> &&);
+  explicit ManyBodyState(const std::vector<key_type> &keys,
+                         const std::vector<mapped_type> &values);
+  explicit ManyBodyState(std::vector<key_type> &&keys,
+                         std::vector<mapped_type> &&values);
 
   double norm2() const;
   double norm() const;
@@ -72,164 +301,338 @@ public:
   ManyBodyState &operator*=(const std::complex<double> &);
   ManyBodyState &operator/=(const std::complex<double> &);
   ManyBodyState operator-() const;
-  inline ManyBodyState operator+(const ManyBodyState &b) const {
-    ManyBodyState res(*this);
-    res += b;
-    return res;
+  friend ManyBodyState operator+(const ManyBodyState &a,
+                                 const ManyBodyState &b) {
+    return (ManyBodyState{a} += b);
   }
-  inline ManyBodyState operator-(const ManyBodyState &b) const {
-    ManyBodyState res(*this);
-    return res -= b;
+
+  friend ManyBodyState operator-(const ManyBodyState &a,
+                                 const ManyBodyState &b) {
+    return (ManyBodyState{a} -= b);
   }
-  friend inline ManyBodyState operator*(const std::complex<double> &s,
-                                        const ManyBodyState &a) {
-    return a * s;
+  friend ManyBodyState operator*(const std::complex<double> &s,
+                                 const ManyBodyState &a) {
+    return (ManyBodyState{a} *= s);
   }
-  inline ManyBodyState operator*(const std::complex<double> &s) const {
-    ManyBodyState res(*this);
-    return res *= s;
+  friend ManyBodyState operator*(auto &&a, const std::complex<double> &s) {
+    return (ManyBodyState{a} *= s);
   }
-  inline ManyBodyState operator/(const std::complex<double> &s) const {
-    ManyBodyState res(*this);
-    return res /= s;
+  friend ManyBodyState operator/(auto &&a, const std::complex<double> &s) {
+    return (ManyBodyState{a} /= s);
   }
 
   friend std::complex<double> inner(const ManyBodyState &,
                                     const ManyBodyState &);
 
   // Wrap the member functions from std::map
-  inline bool operator==(const ManyBodyState &other) {
-    return this->m_map == other.m_map;
+  friend bool operator==(const ManyBodyState &self,
+                         const ManyBodyState &other) {
+    // return this->m_map == other.m_map;
+    return self.m_keys == other.m_keys && self.m_values == other.m_values;
   }
-  inline bool operator!=(const ManyBodyState &other) {
-    return this->m_map != other.m_map;
+  friend bool operator!=(const ManyBodyState &self,
+                         const ManyBodyState &other) {
+    return !(self == other);
   }
-  inline allocator_type get_allocator() const { return m_map.get_allocator(); }
-  inline Value &operator[](const Key &key) { return m_map[key]; }
-  inline Value &operator[](Key &&key) { return m_map[std::forward<Key>(key)]; }
-  inline Value &at(const Key &key) { return m_map.at(key); }
-  inline const Value &at(const Key &key) const { return m_map.at(key); }
+  //  allocator_type get_allocator() const { return m_map.get_allocator();
+  // }
+  Values::reference operator[](const Key &key) {
+    auto it = this->lower_bound(key);
+    if (it == this->end() || (*it).first != key) {
+      it = this->insert(it, {key, Value{}});
+    }
+    return (*it).second;
+  }
+  Values::reference operator[](Key &&key) {
+    auto it = this->lower_bound(key);
+    if ((*it).first != key) {
+      it = this->insert(it, {std::move(key), Value{}});
+    }
+    return (*it).second;
+  }
+  Values::reference at(const Key &key) {
+    auto it = this->lower_bound(key);
+    if ((*it).first != key) {
+      throw std::out_of_range("Key not present in ManyBodyState");
+    }
+    return (*it).second;
+  }
+  Values::const_reference at(const Key &key) const {
+    auto it = this->lower_bound(key);
+    if ((*it).first != key) {
+      throw std::out_of_range("Key not present in ManyBodyState");
+    }
+    return (*it).second;
+  }
 
-  inline bool empty() const { return m_map.empty(); }
-  inline size_type size() const { return m_map.size(); }
-  inline size_type max_size() const { return m_map.max_size(); }
+  bool empty() const { return m_values.empty(); }
+  size_type size() const { return m_values.size(); }
+  size_type max_size() const { return m_values.max_size(); }
 
-  inline void clear() { m_map.clear(); }
+  void clear() {
+    m_values.clear();
+    m_keys.clear();
+  }
   void prune(double cutoff);
+  void reserve(size_t capacity);
 
-  inline std::pair<iterator, bool> insert(const value_type &val) {
-    return m_map.insert(val);
+  iterator begin() {
+    return iterator{this->m_keys.begin(), this->m_values.begin()};
   }
-  inline std::pair<iterator, bool> insert(value_type &&val) {
-    return m_map.insert(std::forward<value_type>(val));
+  const_iterator begin() const {
+    return const_iterator(this->m_keys.begin(), this->m_values.begin());
   }
-  inline iterator insert(iterator pos, const value_type &val) {
-    return m_map.insert(pos, val);
-  }
-  inline iterator insert(iterator pos, value_type &&val) {
-    return m_map.insert(pos, std::forward<value_type>(val));
-  }
-  template <class InputIt> inline void insert(InputIt first, InputIt last) {
-    return m_map.insert(first, last);
-  }
-  inline void insert(std::initializer_list<value_type> l) {
-    return m_map.insert(l);
+  const_iterator cbegin() const noexcept {
+    return const_iterator{this->m_keys.cbegin(), this->m_values.cbegin()};
   }
 
-  template <class... Args>
-  std::pair<iterator, bool> inline emplace(Args &&...args) {
-    return m_map.emplace(std::forward<Args>(args)...);
+  iterator end() { return iterator{this->m_keys.end(), this->m_values.end()}; }
+  const_iterator end() const {
+    return const_iterator{this->m_keys.end(), this->m_values.end()};
   }
-  template <class... Args>
-  inline iterator emplace_hint(const_iterator hint, Args &&...args) {
-    return m_map.emplace_hint(hint, std::forward<Args>(args)...);
-  }
-
-  inline iterator erase(iterator pos) { return m_map.erase(pos); }
-  inline iterator erase(const_iterator pos) { return m_map.erase(pos); }
-  inline iterator erase(const_iterator first, const_iterator last) {
-    return m_map.erase(first, last);
-  }
-  inline size_type erase(const key_type &key) { return m_map.erase(key); }
-
-  inline void swap(ManyBodyState &other) { m_map.swap(other.m_map); }
-
-  inline size_type count(const key_type &key) const { return m_map.count(key); }
-  template <class K> inline size_type count(const K &key) const {
-    return m_map.count(key);
+  const_iterator cend() const noexcept {
+    return const_iterator{this->m_keys.cend(), this->m_values.cend()};
   }
 
-  inline iterator find(const key_type &key) { return m_map.find(key); }
-  inline const_iterator find(const key_type &key) const {
-    return m_map.find(key);
-  }
-  template <class K> inline iterator find(const K &key) {
-    return m_map.find(key);
-  }
-  template <class K> inline const_iterator find(const K &x) const {
-    return m_map.find(x);
+  reverse_iterator rbegin() { return reverse_iterator{this->end()}; }
+  const_reverse_iterator rbegin() const {
+    return const_reverse_iterator(this->end());
   }
 
-  inline std::pair<iterator, iterator> equal_range(const key_type &key) {
-    return m_map.equal_range(key);
-  }
-  inline std::pair<const_iterator, const_iterator>
-  equal_range(const Key &key) const {
-    return m_map.equal_range(key);
-  }
-  template <class K>
-  inline std::pair<iterator, iterator> equal_range(const K &key) {
-    return m_map.equal_range(key);
-  }
-  template <class K>
-  inline std::pair<const_iterator, const_iterator>
-  equal_range(const K &key) const {
-    return m_map.equal_range(key);
+  const_reverse_iterator crbegin() const noexcept {
+    return const_reverse_iterator(this->cend());
   }
 
-  inline iterator lower_bound(const key_type &key) {
-    return m_map.lower_bound(key);
-  }
-  inline const_iterator lower_bound(const key_type &key) const {
-    return m_map.lower_bound(key);
-  }
-  template <class K> inline iterator lower_bound(const K &key) {
-    return m_map.lower_bound(key);
-  }
-  template <class K> inline const_iterator lower_bound(const K &key) const {
-    return m_map.lower_bound(key);
+  reverse_iterator rend() { return reverse_iterator(this->begin()); }
+
+  const_reverse_iterator rend() const {
+    return const_reverse_iterator(this->begin());
   }
 
-  inline iterator upper_bound(const key_type &key) {
-    return m_map.upper_bound(key);
+  const_reverse_iterator crend() const noexcept {
+    return const_reverse_iterator(this->cbegin());
   }
-  inline const_iterator upper_bound(const key_type &key) const {
-    return m_map.upper_bound(key);
-  }
-  template <class K> inline iterator upper_bound(const K &key) {
-    return m_map.upper_bound(key);
-  }
-  template <class K> inline const_iterator upper_bound(const K &key) const {
-    return m_map.upper_bound(key);
+  std::pair<iterator, bool> insert(const value_type &val) {
+    auto key_insert_it = std::lower_bound(
+        this->m_keys.begin(), this->m_keys.end(), val.first, KeyComparer{});
+    auto val_insert_it =
+        this->m_values.begin() + (key_insert_it - this->m_keys.begin());
+    if (*key_insert_it == val.first) {
+      return std::pair<iterator, bool>{iterator{key_insert_it, val_insert_it},
+                                       false};
+    }
+
+    key_insert_it = this->m_keys.insert(key_insert_it, val.first);
+    val_insert_it = this->m_values.insert(val_insert_it, val.second);
+    return std::pair<iterator, bool>{iterator{key_insert_it, val_insert_it},
+                                     true};
   }
 
-  inline iterator begin() { return m_map.begin(); }
-  inline const_iterator begin() const { return m_map.begin(); }
-  inline const_iterator cbegin() const noexcept { return m_map.cbegin(); }
-  inline iterator end() { return m_map.end(); }
-  inline const_iterator end() const { return m_map.end(); }
-  inline const_iterator cend() const noexcept { return m_map.cend(); }
-  inline reverse_iterator rbegin() { return m_map.rbegin(); }
-  inline const_reverse_iterator rbegin() const { return m_map.rbegin(); }
-  inline const_reverse_iterator crbegin() const noexcept {
-    return m_map.crbegin();
+  std::pair<iterator, bool> insert(value_type &&val) {
+    auto key_insert_it = std::lower_bound(
+        this->m_keys.begin(), this->m_keys.end(), val.first, KeyComparer{});
+    auto val_insert_it =
+        this->m_values.begin() + (key_insert_it - this->m_keys.begin());
+    if (*key_insert_it == val.first) {
+      return std::pair<iterator, bool>{iterator{key_insert_it, val_insert_it},
+                                       false};
+    }
+
+    key_insert_it = this->m_keys.insert(key_insert_it, std::move(val.first));
+    val_insert_it = this->m_values.insert(val_insert_it, std::move(val.second));
+    return std::pair<iterator, bool>{iterator{key_insert_it, val_insert_it},
+                                     true};
   }
-  inline reverse_iterator rend() { return m_map.rend(); }
-  inline const_reverse_iterator rend() const { return m_map.rend(); }
-  inline const_reverse_iterator crend() const noexcept { return m_map.crend(); }
+
+  iterator insert(iterator pos, const value_type &val) {
+    return iterator{this->m_keys.insert(pos->first, val.first),
+                    this->m_values.insert(pos->second, val.second)};
+  }
+  iterator insert(iterator pos, value_type &&val) {
+    return iterator{this->m_keys.insert(pos->first, std::move(val.first)),
+                    this->m_values.insert(pos->second, std::move(val.second))};
+  }
+
+  template <class InputIt>
+  iterator insert(const_iterator pos, InputIt first, InputIt last) {
+    return iterator{
+        this->m_keys.insert(pos.m_it.first, first.m_it.first, last.m_it.first),
+        this->m_values.insert(pos.m_it.second, first.m_it.second,
+                              last.m_it.second)};
+  }
+  // iterator insert(const_iterator pos, std::initializer_list<value_type> l) {
+  //   Values values = Values(l.size());
+  //   Keys keys = Values(keys.size());
+  //   for (auto &val : l) {
+  //   }
+  //   this->m_values.insert(pos.m_it.first, values.begin(), values.end());
+  // }
+
+  template <class... Args> std::pair<iterator, bool> emplace(Args &&...args) {
+    return this->insert(value_type{std::forward<Args>(args)...});
+  }
+  iterator erase(iterator pos) {
+    return iterator{this->m_keys.erase(pos->first),
+                    this->m_values.erase(pos->second)};
+  }
+  iterator erase(const_iterator pos) {
+    return iterator{this->m_keys.erase(pos->first),
+                    this->m_values.erase(pos->second)};
+  }
+
+  iterator erase(iterator first, iterator last) {
+    return iterator{this->m_keys.erase(first.m_it.first, last.m_it.first),
+                    this->m_values.erase(first.m_it.second, last.m_it.second)};
+  }
+
+  const_iterator erase(const_iterator first, const_iterator last) {
+    return const_iterator{
+        this->m_keys.erase(first.m_it.first, last.m_it.first),
+        this->m_values.erase(first.m_it.second, last.m_it.second)};
+  }
+  iterator erase(const key_type &key) {
+    auto key_insert_it = std::lower_bound(
+        this->m_keys.begin(), this->m_keys.end(), key, KeyComparer{});
+    auto val_insert_it =
+        this->m_values.begin() + (key_insert_it - this->m_keys.begin());
+    if (*key_insert_it == key) {
+      return this->erase(iterator({key_insert_it, val_insert_it}));
+    }
+    return this->end();
+  }
+
+  void swap(ManyBodyState &other) noexcept {
+    this->m_keys.swap(other.m_keys);
+    this->m_values.swap(other.m_values);
+  }
+
+  iterator find(const key_type &key) {
+    auto key_insert_it = std::lower_bound(
+        this->m_keys.begin(), this->m_keys.end(), key, KeyComparer{});
+    auto val_insert_it =
+        this->m_values.begin() + (key_insert_it - this->m_keys.begin());
+    if (key_insert_it == this->m_keys.end()) {
+      return this->end();
+    }
+    if (*key_insert_it == key) {
+      return iterator({key_insert_it, val_insert_it});
+    }
+    return this->end();
+  }
+
+  const_iterator find(const key_type &key) const {
+    auto key_insert_it = std::lower_bound(
+        this->m_keys.cbegin(), this->m_keys.cend(), key, KeyComparer{});
+    auto val_insert_it =
+        this->m_values.cbegin() + (key_insert_it - this->m_keys.cbegin());
+    if (key_insert_it == this->m_keys.end()) {
+      return this->end();
+    }
+    if (*key_insert_it == key) {
+      return const_iterator{key_insert_it, val_insert_it};
+    }
+    return this->cend();
+  }
+
+  template <class K> iterator find(const K &key) {
+    auto key_insert_it = std::lower_bound(
+        this->m_keys.begin(), this->m_keys.end(), key, KeyComparer{});
+    auto val_insert_it =
+        this->m_values.begin() + (key_insert_it - this->m_keys.begin());
+    if (key_insert_it == this->m_keys.end()) {
+      return this->end();
+    }
+    if (*key_insert_it == key) {
+      return iterator({key_insert_it, val_insert_it});
+    }
+    return this->end();
+  }
+
+  template <class K> const_iterator find(const K &key) const {
+    auto key_insert_it = std::lower_bound(
+        this->m_keys.cbegin(), this->m_keys.cend(), key, KeyComparer{});
+    auto val_insert_it =
+        this->m_values.cbegin() + (key_insert_it - this->m_keys.cbegin());
+    if (key_insert_it == this->m_keys.end()) {
+      return this->end();
+    }
+    if (*key_insert_it == key) {
+      return const_iterator({key_insert_it, val_insert_it});
+    }
+    return this->cend();
+  }
+
+  iterator lower_bound(const key_type &key) {
+    auto key_insert_it = std::lower_bound(
+        this->m_keys.begin(), this->m_keys.end(), key, KeyComparer{});
+    return this->begin() + (key_insert_it - this->m_keys.begin());
+  }
+
+  const_iterator lower_bound(const key_type &key) const {
+    auto key_insert_it = std::lower_bound(
+        this->m_keys.cbegin(), this->m_keys.cend(), key, KeyComparer{});
+    return this->cbegin() + (key_insert_it - this->m_keys.cbegin());
+  }
+
+  template <class K> iterator lower_bound(const K &key) {
+    auto key_insert_it = std::lower_bound(
+        this->m_keys.begin(), this->m_keys.end(), key, KeyComparer{});
+    return this->begin() + (key_insert_it - this->m_keys.begin());
+  }
+  template <class K> const_iterator lower_bound(const K &key) const {
+    auto key_insert_it = std::lower_bound(
+        this->m_keys.cbegin(), this->m_keys.cend(), key, KeyComparer{});
+    return this->cbegin() + (key_insert_it - this->m_keys.cbegin());
+  }
+
+  iterator upper_bound(const key_type &key) {
+    auto key_insert_it = std::upper_bound(
+        this->m_keys.begin(), this->m_keys.end(), key, KeyComparer{});
+    auto val_insert_it =
+        this->m_values.begin() + (key_insert_it - this->m_keys.begin());
+    return iterator({key_insert_it, val_insert_it});
+  }
+
+  const_iterator upper_bound(const key_type &key) const {
+    auto key_insert_it = std::upper_bound(
+        this->m_keys.begin(), this->m_keys.end(), key, KeyComparer{});
+    auto val_insert_it =
+        this->m_values.begin() + (key_insert_it - this->m_keys.cbegin());
+    return const_iterator(key_insert_it, val_insert_it);
+  }
+
+  template <class K> iterator upper_bound(const K &key) {
+    auto key_insert_it = std::upper_bound(
+        this->m_keys.begin(), this->m_keys.end(), key, KeyComparer{});
+    auto val_insert_it =
+        this->m_values.begin() + (key_insert_it - this->m_keys.begin());
+    return iterator({key_insert_it, val_insert_it});
+  }
+
+  template <class K> const_iterator upper_bound(const K &key) const {
+    auto key_insert_it = std::upper_bound(
+        this->m_keys.cbegin(), this->m_keys.cend(), key, KeyComparer{});
+    auto val_insert_it =
+        this->m_values.cbegin() + (key_insert_it - this->m_keys.cbegin());
+    return const_iterator({key_insert_it, val_insert_it});
+  }
+  std::string to_string() const;
 };
 
 namespace std {
-inline void swap(ManyBodyState &a, ManyBodyState &b) { a.swap(b); }
+inline void swap(ManyBodyState &a, ManyBodyState &b) noexcept { a.swap(b); }
+#if __cplusplus >= 202302L
+template <template <class> class TQual, template <class> class UQual>
+struct basic_common_reference<ManyBodyState::const_reference,
+                              ManyBodyState::value_type, TQual, UQual> {
+  using type = ManyBodyState::value_type;
+};
+
+template <template <class> class TQual, template <class> class UQual>
+struct basic_common_reference<ManyBodyState::value_type,
+                              ManyBodyState::const_reference, TQual, UQual> {
+  using type = ManyBodyState::value_type;
+};
+#endif
 }; // namespace std
 #endif // MANYBODY_STATE_H

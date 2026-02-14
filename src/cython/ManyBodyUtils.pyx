@@ -3,26 +3,33 @@
 
 from ManyBodyState cimport ManyBodyState as ManyBodyState_cpp, inner as inner_cpp
 from ManyBodyOperator cimport ManyBodyOperator as ManyBodyOperator_cpp
+import struct
 from libcpp.pair cimport pair
 from libcpp.vector cimport vector
 from libcpp.map cimport map
 from libcpp.string cimport string
-from libc.stdint cimport uint8_t, int64_t
 
 cdef bytes key_to_bytes(const ManyBodyState_cpp.key_type& key):
-    cdef bytearray res = bytearray(key.size())
+    cdef n_bytes = sizeof(ManyBodyState_cpp.key_type.value_type)
+    cdef bytearray res = bytearray(n_bytes*key.size())
     cdef size_t i
     for i in range(key.size()):
-        res[i] = key[i]
+        res[i*n_bytes: (i+1)*n_bytes] = key[i].to_bytes(n_bytes)
+        # res[i*n_bytes: (i+1)*n_bytes] = key[i].to_bytes(n_bytes, byteorder='little')
 
     return bytes(res)
 
 cdef ManyBodyState_cpp.key_type bytes_to_key(bytes b):
+    cdef n_bytes = sizeof(ManyBodyState_cpp.key_type.value_type)
     cdef ManyBodyState_cpp.key_type key 
-    cdef ManyBodyState_cpp.key_type.value_type byte
-    key.reserve(len(b))
-    for byte in b:
-        key.push_back(byte)
+    cdef size_t i = 0
+    key.reserve(len(b)//n_bytes)
+    for i in range(0, len(b)//n_bytes, n_bytes):
+        key.push_back(int.from_bytes(b[i*n_bytes:(i+1)*n_bytes]))
+    if len(b) % n_bytes:
+
+        # key.push_back(int.from_bytes(b[i*n_bytes:]))
+        key.push_back(int.from_bytes(b[i*n_bytes:len(b)] + b'\x00'*(n_bytes - (len(b)%n_bytes))))
     return key
 
 cdef class ManyBodyState:
@@ -166,6 +173,8 @@ cdef class ManyBodyState:
         return dict((key_to_bytes(p.first), p.second) for p in self.v)
 
     def copy(self):
+        d = self.to_dict()
+        # return ManyBodyState(list(d.keys()),list(d.values()) )
         return ManyBodyState(self.to_dict())
 
 def inner(ManyBodyState a, ManyBodyState b):
@@ -225,7 +234,6 @@ cdef class ManyBodyOperator:
 
     def __setitem__(self, tuple[tuple[int, str]]key, double complex value):
         self.o[processes_to_ints(key)] = value
-        self.o.clear_memory()
 
     def __add__(self, ManyBodyOperator other) ->ManyBodyOperator:
         res = ManyBodyOperator()
@@ -290,6 +298,8 @@ cdef class ManyBodyOperator:
         cdef frozenset[int] indices
         cdef pair[size_t, size_t] limits
         cdef vector[pair[vector[size_t], pair[size_t, size_t]]] rest
+        cdef vector[ManyBodyState_cpp] v
+
         rest.reserve(len(restrictions))
         for indices, limits in restrictions.items():
             if len(indices) == 0:
@@ -301,7 +311,6 @@ cdef class ManyBodyOperator:
 
     def erase(self, tuple[tuple[int, str]]key):
         self.op.erase(processes_to_ints(key))
-        self.o.clear_memory()
 
     def __contains__(self, tuple[tuple[int, str]]key):
         return self.o.find(processes_to_ints(key)) != self.o.end()
@@ -319,14 +328,7 @@ cdef class ManyBodyOperator:
     def items(self):
         return ((ints_to_processes(p.first), p.second) for p in self.o)
 
-    def memory(self):
-        res = dict((key_to_bytes(p.first), dict((key_to_bytes(s.first), s.second) for s in p.second)) for p in self.o.memory())
-        return res
     
-    def clear_memory(self):
-        with nogil:
-            self.o.clear_memory()
-
     def to_dict(self):
         return dict((ints_to_processes(p.first), p.second) for p in self.o)
 

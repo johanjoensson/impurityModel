@@ -31,7 +31,6 @@ cdef extern from "ManyBodyOperator.h":
         ctypedef vector[value_type].reverse_iterator reverse_iterator
         ctypedef vector[value_type].const_reverse_iterator const_reverse_iterator
         ctypedef vector[pair[vector[size_t], pair[size_t, size_t]]] restrictions
-        ctypedef map[ManyBodyState.key_type, ManyBodyState, ManyBodyState.key_compare] Memory
 
         ManyBodyOperator() nogil
         ManyBodyOperator(const ManyBodyOperator&) nogil
@@ -42,10 +41,11 @@ cdef extern from "ManyBodyOperator.h":
         cython.doublecomplex& operator[](const key_type&) nogil
         cython.doublecomplex& at(const key_type&) nogil
         ManyBodyState operator()(const ManyBodyState&, double, const restrictions&) nogil
+        ManyBodyState operator()(const vector[ManyBodyState]&, double, const restrictions&) nogil
+        ManyBodyState apply(const ManyBodyState&, double, const restrictions&) nogil
+        ManyBodyState apply(const vector[ManyBodyState]&, double, const restrictions&) nogil
 
-        Memory memory() nogil
 
-        void clear_memory() nogil
 
     
         # ManyBodyOperator operator+=(const ManyBodyOperator&)

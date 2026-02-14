@@ -5,9 +5,18 @@ from impurityModel.ed.manybody_basis import Basis, CIPSI_Basis
 from math import ceil
 
 
+def build_states(states: list[bytes]):
+    b = Basis(
+        impurity_orbitals={},
+        bath_states=({}, {}),
+        initial_basis=[],
+    )
+    return [int.from_bytes(state, byteorder="little").to_bytes(b.n_bytes, "little") for state in states]
+
+
 def test_Basis_states():
     # 10000000  01000000 00100000 00010000 00001000
-    exact = [b"\x80", b"\x40", b"\x20", b"\x10", b"\x08"]
+    exact = build_states([b"\x80", b"\x40", b"\x20", b"\x10", b"\x08"])
     basis = Basis(
         impurity_orbitals={0: [list(range(5))]},
         bath_states=(
@@ -26,7 +35,7 @@ def test_Basis_states():
 
 def test_Basis_states_val():
     # 1000 0111 1100 0000  0100 0111 1100 0000  0010 0111 1100 0000  0001 0111 1100 0000  0000 1111 1100 0000
-    exact = [b"\x87\xc0", b"\x47\xc0", b"\x27\xc0", b"\x17\xc0", b"\x0f\xc0"]
+    exact = build_states([b"\x87\xc0", b"\x47\xc0", b"\x27\xc0", b"\x17\xc0", b"\x0f\xc0"])
     basis = Basis(
         impurity_orbitals={0: [list(range(5))]},
         bath_states=(
@@ -364,7 +373,7 @@ def test_CIPSI_Basis_len_mpi(
 
 @pytest.mark.mpi
 def test_contains_2():
-    states = [b"\x00\x1a\x2b", b"\xff\x00\x1a"]
+    states = build_states([b"\x00\x1a\x2b", b"\xff\x00\x1a"])
     basis = Basis(
         impurity_orbitals={0: [list(range(24))]},
         bath_states=(
@@ -375,8 +384,8 @@ def test_contains_2():
         verbose=True,
         comm=MPI.COMM_WORLD,
     )
-    assert basis.contains(bytes(b"\x00\x1a\x2b"))
-    assert not basis.contains(bytes(b"\xff\x1a\x2b"))
+    assert basis.contains(build_states([b"\x00\x1a\x2b"])[0])
+    assert not basis.contains(build_states([b"\xff\x1a\x2b"])[0])
     assert all(basis.contains(states))
     assert basis.index(states[0]) == 0
     assert basis.index(states[1]) == 1
@@ -537,17 +546,25 @@ def test_operator_dict_simple():
         ((1, "c"), (1, "a")): 1,
         ((3, "c"), (3, "a")): 1,
     }
-    states = [b"\x78"]
+    # 0111 1000
     basis = Basis(
         impurity_orbitals={0: [list(range(5))]},
         bath_states=({0: [[]]}, {0: [[]]}),
-        initial_basis=states,
+        initial_basis=[],
         verbose=True,
         comm=None,
     )
+    states = [int.from_bytes(b"\x78").to_bytes(basis.n_bytes, "little")]
+    basis.add_states(states)
 
     op_dict = basis.build_operator_dict(operator)
-    correct = {b"\x78": {b"\xf0": -1 / 2, b"\x78": 9 / 2}}
+    correct = {
+        int.from_bytes(b"\x78").to_bytes(basis.n_bytes, "little"): {
+            int.from_bytes(b"\xf0").to_bytes(basis.n_bytes, "little"): -1 / 2,
+            int.from_bytes(b"\x78").to_bytes(basis.n_bytes, "little"): 9 / 2,
+        }
+    }
+    # correct = {b"\x78": {b"\xf0": -1 / 2, b"\x78": 9 / 2}}
     assert all(fk in correct for fk in op_dict.keys())
     for key in states:
         assert all(fk in correct[key] for fk in op_dict[key].keys())
@@ -566,17 +583,24 @@ def test_operator_dict_simple_mpi():
         ((1, "c"), (1, "a")): 1,
         ((3, "c"), (3, "a")): 1,
     }
-    states = [b"\x78"]
     basis = Basis(
         impurity_orbitals={0: [list(range(5))]},
         bath_states=({0: [[]]}, {0: [[]]}),
-        initial_basis=states,
+        initial_basis=[],
         verbose=True,
         comm=MPI.COMM_WORLD,
     )
+    states = [int.from_bytes(b"\x78").to_bytes(basis.n_bytes, "little")]
+    basis.add_states(states)
 
     op_dict = basis.build_operator_dict(operator)
-    correct = {b"\x78": {b"\xf0": -1 / 2, b"\x78": 9 / 2}}
+    correct = {
+        int.from_bytes(b"\x78").to_bytes(basis.n_bytes, "little"): {
+            int.from_bytes(b"\xf0").to_bytes(basis.n_bytes, "little"): -1 / 2,
+            int.from_bytes(b"\x78").to_bytes(basis.n_bytes, "little"): 9 / 2,
+        }
+    }
+    # correct = {b"\x78": {b"\xf0": -1 / 2, b"\x78": 9 / 2}}
     all_dicts = MPI.COMM_WORLD.allgather(op_dict)
     full_dict = {}
     for d in all_dicts:
@@ -603,20 +627,29 @@ def test_operator_dict_simple_with_extra_states():
         ((3, "c"), (3, "a")): 1,
         ((0, "c"),): 500,
     }
-    states = [b"\x78"]
     basis = Basis(
         impurity_orbitals={0: [list(range(5))]},
         bath_states=(
             {0: [[]]},
             {0: [[]]},
         ),
-        initial_basis=states,
+        initial_basis=[],
         verbose=True,
         comm=None,
     )
+    states = [int.from_bytes(b"\x78").to_bytes(basis.n_bytes, "little")]
+    basis.add_states(states)
+    # states = [b"\x78"]
 
     op_dict = basis.build_operator_dict(operator)
-    correct = {b"\x78": {b"\xf0": -1 / 2, b"\x78": 9 / 2, b"\xf8": 500}}
+    correct = {
+        int.from_bytes(b"\x78").to_bytes(basis.n_bytes, "little"): {
+            int.from_bytes(b"\xf0").to_bytes(basis.n_bytes, "little"): -1 / 2,
+            int.from_bytes(b"\x78").to_bytes(basis.n_bytes, "little"): 9 / 2,
+            int.from_bytes(b"\xf8").to_bytes(basis.n_bytes, "little"): 500,
+        }
+    }
+    # correct = {b"\x78": {b"\xf0": -1 / 2, b"\x78": 9 / 2, b"\xf8": 500}}
     assert all(fk in correct for fk in op_dict.keys())
     for key in states:
         assert all(fk in correct[key] for fk in op_dict[key].keys())
@@ -636,20 +669,28 @@ def test_operator_dict_simple_with_extra_states_mpi():
         ((3, "c"), (3, "a")): 1,
         ((0, "c"),): 500,
     }
-    states = [b"\x78"]
     basis = Basis(
         impurity_orbitals={0: [list(range(5))]},
         bath_states=(
             {0: [[]]},
             {0: [[]]},
         ),
-        initial_basis=states,
+        initial_basis=[],
         verbose=True,
         comm=MPI.COMM_WORLD,
     )
+    states = [int.from_bytes(b"\x78").to_bytes(basis.n_bytes, "little")]
+    basis.add_states(states)
 
     op_dict = basis.build_operator_dict(operator)
-    correct = {b"\x78": {b"\xf0": -1 / 2, b"\x78": 9 / 2, b"\xf8": 500}}
+    correct = {
+        int.from_bytes(b"\x78").to_bytes(basis.n_bytes, "little"): {
+            int.from_bytes(b"\xf0").to_bytes(basis.n_bytes, "little"): -1 / 2,
+            int.from_bytes(b"\x78").to_bytes(basis.n_bytes, "little"): 9 / 2,
+            int.from_bytes(b"\xf8").to_bytes(basis.n_bytes, "little"): 500,
+        }
+    }
+    # correct = {b"\x78": {b"\xf0": -1 / 2, b"\x78": 9 / 2, b"\xf8": 500}}
     all_dicts = MPI.COMM_WORLD.allgather(op_dict)
     full_dict = {}
     for d in all_dicts:
@@ -675,25 +716,44 @@ def test_operator_dict_eg_t2g():
         ((1, "c"), (1, "a")): 1,
         ((3, "c"), (3, "a")): 1,
     }
-    states = [b"\x78", b"\xb8", b"\xd8", b"\xe8", b"\xf0"]
     basis = Basis(
         impurity_orbitals={0: [list(range(5))]},
         bath_states=(
             {0: [[]]},
             {0: [[]]},
         ),
-        initial_basis=states,
+        initial_basis=[],
         verbose=True,
         comm=None,
     )
+    states = [
+        int.from_bytes(b"\x78").to_bytes(basis.n_bytes, "little"),
+        int.from_bytes(b"\xb8").to_bytes(basis.n_bytes, "little"),
+        int.from_bytes(b"\xd8").to_bytes(basis.n_bytes, "little"),
+        int.from_bytes(b"\xe8").to_bytes(basis.n_bytes, "little"),
+        int.from_bytes(b"\xf0").to_bytes(basis.n_bytes, "little"),
+    ]
+    basis.add_states(states)
 
     op_dict = basis.build_operator_dict(operator)
     correct = {
-        b"\x78": {b"\xf0": -1 / 2, b"\x78": 9 / 2},
-        b"\xb8": {b"\xb8": 9 / 2},
-        b"\xd8": {b"\xd8": 4},
-        b"\xe8": {b"\xe8": 9 / 2},
-        b"\xf0": {b"\x78": -1 / 2, b"\xf0": 9 / 2},
+        int.from_bytes(b"\x78").to_bytes(basis.n_bytes, "little"): {
+            int.from_bytes(b"\xf0").to_bytes(basis.n_bytes, "little"): -1 / 2,
+            int.from_bytes(b"\x78").to_bytes(basis.n_bytes, "little"): 9 / 2,
+        },
+        int.from_bytes(b"\xb8").to_bytes(basis.n_bytes, "little"): {
+            int.from_bytes(b"\xb8").to_bytes(basis.n_bytes, "little"): 9 / 2
+        },
+        int.from_bytes(b"\xd8").to_bytes(basis.n_bytes, "little"): {
+            int.from_bytes(b"\xd8").to_bytes(basis.n_bytes, "little"): 4
+        },
+        int.from_bytes(b"\xe8").to_bytes(basis.n_bytes, "little"): {
+            int.from_bytes(b"\xe8").to_bytes(basis.n_bytes, "little"): 9 / 2
+        },
+        int.from_bytes(b"\xf0").to_bytes(basis.n_bytes, "little"): {
+            int.from_bytes(b"\x78").to_bytes(basis.n_bytes, "little"): -1 / 2,
+            int.from_bytes(b"\xf0").to_bytes(basis.n_bytes, "little"): 9 / 2,
+        },
     }
 
     assert all(fk in correct for fk in op_dict.keys())
@@ -714,26 +774,52 @@ def test_operator_dict_eg_t2g_mpi():
         ((1, "c"), (1, "a")): 1,
         ((3, "c"), (3, "a")): 1,
     }
-    states = [b"\x78", b"\xb8", b"\xd8", b"\xe8", b"\xf0"]
     basis = Basis(
         impurity_orbitals={0: [list(range(5))]},
         bath_states=(
             {0: [[]]},
             {0: [[]]},
         ),
-        initial_basis=states,
+        initial_basis=[],
         verbose=True,
         comm=MPI.COMM_WORLD,
     )
+    states = [
+        int.from_bytes(b"\x78").to_bytes(basis.n_bytes, "little"),
+        int.from_bytes(b"\xb8").to_bytes(basis.n_bytes, "little"),
+        int.from_bytes(b"\xd8").to_bytes(basis.n_bytes, "little"),
+        int.from_bytes(b"\xe8").to_bytes(basis.n_bytes, "little"),
+        int.from_bytes(b"\xf0").to_bytes(basis.n_bytes, "little"),
+    ]
+    basis.add_states(states)
 
     op_dict = basis.build_operator_dict(operator)
     correct = {
-        b"\x78": {b"\xf0": -1 / 2, b"\x78": 9 / 2},
-        b"\xb8": {b"\xb8": 9 / 2},
-        b"\xd8": {b"\xd8": 4},
-        b"\xe8": {b"\xe8": 9 / 2},
-        b"\xf0": {b"\x78": -1 / 2, b"\xf0": 9 / 2},
+        int.from_bytes(b"\x78").to_bytes(basis.n_bytes, "little"): {
+            int.from_bytes(b"\xf0").to_bytes(basis.n_bytes, "little"): -1 / 2,
+            int.from_bytes(b"\x78").to_bytes(basis.n_bytes, "little"): 9 / 2,
+        },
+        int.from_bytes(b"\xb8").to_bytes(basis.n_bytes, "little"): {
+            int.from_bytes(b"\xb8").to_bytes(basis.n_bytes, "little"): 9 / 2
+        },
+        int.from_bytes(b"\xd8").to_bytes(basis.n_bytes, "little"): {
+            int.from_bytes(b"\xd8").to_bytes(basis.n_bytes, "little"): 4
+        },
+        int.from_bytes(b"\xe8").to_bytes(basis.n_bytes, "little"): {
+            int.from_bytes(b"\xe8").to_bytes(basis.n_bytes, "little"): 9 / 2
+        },
+        int.from_bytes(b"\xf0").to_bytes(basis.n_bytes, "little"): {
+            int.from_bytes(b"\x78").to_bytes(basis.n_bytes, "little"): -1 / 2,
+            int.from_bytes(b"\xf0").to_bytes(basis.n_bytes, "little"): 9 / 2,
+        },
     }
+    # correct = {
+    #     b"\x78": {b"\xf0": -1 / 2, b"\x78": 9 / 2},
+    #     b"\xb8": {b"\xb8": 9 / 2},
+    #     b"\xd8": {b"\xd8": 4},
+    #     b"\xe8": {b"\xe8": 9 / 2},
+    #     b"\xf0": {b"\x78": -1 / 2, b"\xf0": 9 / 2},
+    # }
     all_dicts = MPI.COMM_WORLD.allgather(op_dict)
     full_dict = {}
     for d in all_dicts:
@@ -761,26 +847,54 @@ def test_operator_dict_eg_t2g_with_extra_states():
         ((3, "c"), (3, "a")): 1,
         ((0, "c"),): 500,
     }
-    states = [b"\x78", b"\xb8", b"\xd8", b"\xe8", b"\xf0"]
+    # states = [b"\x78", b"\xb8", b"\xd8", b"\xe8", b"\xf0"]
     basis = Basis(
         impurity_orbitals={0: [list(range(5))]},
         bath_states=(
             {0: [[]]},
             {0: [[]]},
         ),
-        initial_basis=states,
+        initial_basis=[],
         verbose=True,
         comm=None,
     )
+    states = [
+        int.from_bytes(b"\x78").to_bytes(basis.n_bytes, "little"),
+        int.from_bytes(b"\xb8").to_bytes(basis.n_bytes, "little"),
+        int.from_bytes(b"\xd8").to_bytes(basis.n_bytes, "little"),
+        int.from_bytes(b"\xe8").to_bytes(basis.n_bytes, "little"),
+        int.from_bytes(b"\xf0").to_bytes(basis.n_bytes, "little"),
+    ]
+    basis.add_states(states)
 
     op_dict = basis.build_operator_dict(operator)
     correct = {
-        b"\x78": {b"\xf0": -1 / 2, b"\x78": 9 / 2, b"\xf8": 500},
-        b"\xb8": {b"\xb8": 9 / 2},
-        b"\xd8": {b"\xd8": 4},
-        b"\xe8": {b"\xe8": 9 / 2},
-        b"\xf0": {b"\x78": -1 / 2, b"\xf0": 9 / 2},
+        int.from_bytes(b"\x78").to_bytes(basis.n_bytes, "little"): {
+            int.from_bytes(b"\xf0").to_bytes(basis.n_bytes, "little"): -1 / 2,
+            int.from_bytes(b"\x78").to_bytes(basis.n_bytes, "little"): 9 / 2,
+            int.from_bytes(b"\xf8").to_bytes(basis.n_bytes, "little"): 500,
+        },
+        int.from_bytes(b"\xb8").to_bytes(basis.n_bytes, "little"): {
+            int.from_bytes(b"\xb8").to_bytes(basis.n_bytes, "little"): 9 / 2
+        },
+        int.from_bytes(b"\xd8").to_bytes(basis.n_bytes, "little"): {
+            int.from_bytes(b"\xd8").to_bytes(basis.n_bytes, "little"): 4
+        },
+        int.from_bytes(b"\xe8").to_bytes(basis.n_bytes, "little"): {
+            int.from_bytes(b"\xe8").to_bytes(basis.n_bytes, "little"): 9 / 2
+        },
+        int.from_bytes(b"\xf0").to_bytes(basis.n_bytes, "little"): {
+            int.from_bytes(b"\x78").to_bytes(basis.n_bytes, "little"): -1 / 2,
+            int.from_bytes(b"\xf0").to_bytes(basis.n_bytes, "little"): 9 / 2,
+        },
     }
+    # correct = {
+    #     b"\x78": {b"\xf0": -1 / 2, b"\x78": 9 / 2, b"\xf8": 500},
+    #     b"\xb8": {b"\xb8": 9 / 2},
+    #     b"\xd8": {b"\xd8": 4},
+    #     b"\xe8": {b"\xe8": 9 / 2},
+    #     b"\xf0": {b"\x78": -1 / 2, b"\xf0": 9 / 2},
+    # }
 
     assert all(fk in correct for fk in op_dict.keys())
     for key in states:
@@ -803,26 +917,53 @@ def test_operator_dict_eg_t2g_with_extra_states_mpi():
         ((3, "c"), (3, "a")): 1,
         ((0, "c"),): 500,
     }
-    states = [b"\x78", b"\xb8", b"\xd8", b"\xe8", b"\xf0"]
     basis = Basis(
         impurity_orbitals={0: [list(range(5))]},
         bath_states=(
             {0: [[]]},
             {0: [[]]},
         ),
-        initial_basis=states,
+        initial_basis=[],
         verbose=True,
         comm=MPI.COMM_WORLD,
     )
+    states = [
+        int.from_bytes(b"\x78").to_bytes(basis.n_bytes, "little"),
+        int.from_bytes(b"\xb8").to_bytes(basis.n_bytes, "little"),
+        int.from_bytes(b"\xd8").to_bytes(basis.n_bytes, "little"),
+        int.from_bytes(b"\xe8").to_bytes(basis.n_bytes, "little"),
+        int.from_bytes(b"\xf0").to_bytes(basis.n_bytes, "little"),
+    ]
+    basis.add_states(states)
 
     op_dict = basis.build_operator_dict(operator)
     correct = {
-        b"\x78": {b"\xf0": -1 / 2, b"\x78": 9 / 2, b"\xf8": 500},
-        b"\xb8": {b"\xb8": 9 / 2},
-        b"\xd8": {b"\xd8": 4},
-        b"\xe8": {b"\xe8": 9 / 2},
-        b"\xf0": {b"\x78": -1 / 2, b"\xf0": 9 / 2},
+        int.from_bytes(b"\x78").to_bytes(basis.n_bytes, "little"): {
+            int.from_bytes(b"\xf0").to_bytes(basis.n_bytes, "little"): -1 / 2,
+            int.from_bytes(b"\x78").to_bytes(basis.n_bytes, "little"): 9 / 2,
+            int.from_bytes(b"\xf8").to_bytes(basis.n_bytes, "little"): 500,
+        },
+        int.from_bytes(b"\xb8").to_bytes(basis.n_bytes, "little"): {
+            int.from_bytes(b"\xb8").to_bytes(basis.n_bytes, "little"): 9 / 2
+        },
+        int.from_bytes(b"\xd8").to_bytes(basis.n_bytes, "little"): {
+            int.from_bytes(b"\xd8").to_bytes(basis.n_bytes, "little"): 4
+        },
+        int.from_bytes(b"\xe8").to_bytes(basis.n_bytes, "little"): {
+            int.from_bytes(b"\xe8").to_bytes(basis.n_bytes, "little"): 9 / 2
+        },
+        int.from_bytes(b"\xf0").to_bytes(basis.n_bytes, "little"): {
+            int.from_bytes(b"\x78").to_bytes(basis.n_bytes, "little"): -1 / 2,
+            int.from_bytes(b"\xf0").to_bytes(basis.n_bytes, "little"): 9 / 2,
+        },
     }
+    # correct = {
+    #     b"\x78": {b"\xf0": -1 / 2, b"\x78": 9 / 2, b"\xf8": 500},
+    #     b"\xb8": {b"\xb8": 9 / 2},
+    #     b"\xd8": {b"\xd8": 4},
+    #     b"\xe8": {b"\xe8": 9 / 2},
+    #     b"\xf0": {b"\x78": -1 / 2, b"\xf0": 9 / 2},
+    # }
     all_dicts = MPI.COMM_WORLD.allgather(op_dict)
     full_dict = {}
     for d in all_dicts:
@@ -851,17 +992,18 @@ def test_simple_dense_matrix():
         ((1, "c"), (1, "a")): 1,
         ((3, "c"), (3, "a")): 1,
     }
-    states = [b"\x78"]
     basis = Basis(
         impurity_orbitals={0: [list(range(5))]},
         bath_states=(
             {0: [[]]},
             {0: [[]]},
         ),
-        initial_basis=states,
+        initial_basis=[],
         verbose=True,
         comm=None,
     )
+    states = [int.from_bytes(b"\x78").to_bytes(basis.n_bytes, "little")]
+    basis.add_states(states)
 
     op_dict = basis.build_operator_dict(operator)
     dense_mat = basis.build_dense_matrix(operator, op_dict)
@@ -880,7 +1022,7 @@ def test_simple_dense_matrix_mpi():
         ((1, "c"), (1, "a")): 1,
         ((3, "c"), (3, "a")): 1,
     }
-    states = [b"\x78"]
+    states = build_states([b"\x78"])
     basis = Basis(
         impurity_orbitals={0: [list(range(5))]},
         bath_states=(
@@ -908,7 +1050,7 @@ def test_eg_t2g_dense_matrix():
         ((1, "c"), (1, "a")): 1,
         ((3, "c"), (3, "a")): 1,
     }
-    states = [b"\x78", b"\xb8", b"\xd8", b"\xe8", b"\xf0"]
+    states = build_states([b"\x78", b"\xb8", b"\xd8", b"\xe8", b"\xf0"])
     basis = Basis(
         impurity_orbitals={0: [list(range(5))]},
         bath_states=(
@@ -949,7 +1091,7 @@ def test_eg_t2g_dense_matrix_mpi():
         ((1, "c"), (1, "a")): 1,
         ((3, "c"), (3, "a")): 1,
     }
-    states = [b"\x78", b"\xb8", b"\xd8", b"\xe8", b"\xf0"]
+    states = build_states([b"\x78", b"\xb8", b"\xd8", b"\xe8", b"\xf0"])
     basis = Basis(
         impurity_orbitals={0: [list(range(5))]},
         bath_states=(
@@ -980,7 +1122,8 @@ def test_eg_t2g_dense_matrix_mpi():
 
 
 def test_simple_vector():
-    states = [b"\x00\x1a\x2b", b"\xff\x00\x1a"]
+    states = build_states([b"\x00\x1a\x2b", b"\xff\x00\x1a"])
+    print(f"{states=}")
     basis = Basis(
         impurity_orbitals={0: [list(range(24))]},
         bath_states=(
@@ -991,6 +1134,7 @@ def test_simple_vector():
         verbose=True,
         comm=None,
     )
+    print(f"{basis.local_basis=}")
     state = {}
     if states[0] in basis._index_dict:
         state[states[0]] = 0.25 + 0.2j
@@ -1002,12 +1146,12 @@ def test_simple_vector():
 
     assert v.shape == (len(basis),)
     assert v.shape == v_exact.shape
-    assert np.allclose(v, v_exact)
+    assert np.allclose(v, v_exact), f"{v=} ~= {v_exact}"
 
 
 @pytest.mark.mpi
 def test_simple_vector_mpi():
-    states = [b"\x00\x1a\x2b", b"\xff\x00\x1a"]
+    states = build_states([b"\x00\x1a\x2b", b"\xff\x00\x1a"])
     basis = Basis(
         impurity_orbitals={0: [list(range(24))]},
         bath_states=(
@@ -1034,7 +1178,7 @@ def test_simple_vector_mpi():
 
 def test_vector():
     comm = None
-    states = [b"\x78", b"\xb8", b"\xd8", b"\xe8", b"\xf0"]
+    states = build_states([b"\x78", b"\xb8", b"\xd8", b"\xe8", b"\xf0"])
     basis = Basis(
         impurity_orbitals={0: [list(range(5))]},
         bath_states=(
@@ -1060,7 +1204,7 @@ def test_vector():
 @pytest.mark.mpi
 def test_vector_mpi():
     comm = MPI.COMM_WORLD
-    states = [b"\x78", b"\xb8", b"\xd8", b"\xe8", b"\xf0"]
+    states = build_states([b"\x78", b"\xb8", b"\xd8", b"\xe8", b"\xf0"])
     basis = Basis(
         impurity_orbitals={0: [list(range(5))]},
         bath_states=(
@@ -1084,7 +1228,7 @@ def test_vector_mpi():
 
 
 def test_simple_state():
-    states = [b"\x00\x1a\x2b", b"\xff\x00\x1a"]
+    states = build_states([b"\x00\x1a\x2b", b"\xff\x00\x1a"])
     basis = Basis(
         impurity_orbitals={0: [list(range(5))]},
         bath_states=(
@@ -1106,7 +1250,7 @@ def test_simple_state():
 
 @pytest.mark.mpi
 def test_simple_state_mpi():
-    states = [b"\x2b", b"\x1a"]
+    states = build_states([b"\x2b", b"\x1a"])
     basis = Basis(
         impurity_orbitals={0: [list(range(5))]},
         bath_states=(
@@ -1133,7 +1277,7 @@ def test_simple_state_mpi():
 
 def test_state_mpi():
     comm = None
-    states = [b"\x78", b"\xb8", b"\xd8", b"\xe8", b"\xf0"]
+    states = build_states([b"\x78", b"\xb8", b"\xd8", b"\xe8", b"\xf0"])
     basis = Basis(
         impurity_orbitals={0: [list(range(5))]},
         bath_states=(
@@ -1158,7 +1302,7 @@ def test_state_mpi():
 @pytest.mark.mpi
 def test_state_mpi():
     comm = MPI.COMM_WORLD
-    states = [b"\x78", b"\xb8", b"\xd8", b"\xe8", b"\xf0"]
+    states = build_states([b"\x78", b"\xb8", b"\xd8", b"\xe8", b"\xf0"])
     basis = Basis(
         impurity_orbitals={0: [list(range(5))]},
         bath_states=(
@@ -1245,8 +1389,6 @@ def test_state_mpi():
 def test_alltoall_states_mpi():
     comm = MPI.COMM_WORLD
     num_spin_orbitals = comm.size
-    bytes_per_state = int(ceil(num_spin_orbitals / 8))
-    send_states = [[r.to_bytes(bytes_per_state, "big")] for r in range(comm.size)]
     basis = Basis(
         impurity_orbitals={0: [list(range(num_spin_orbitals))]},
         bath_states=(
@@ -1257,9 +1399,10 @@ def test_alltoall_states_mpi():
         verbose=True,
         comm=comm,
     )
+    send_states = [[r.to_bytes(basis.n_bytes, "big")] for r in range(comm.size)]
     received_states = basis.alltoall_states(send_states)
     assert all(
-        state == comm.rank.to_bytes(bytes_per_state, "big") for rs in received_states for state in rs
+        state == comm.rank.to_bytes(basis.n_bytes, "big") for rs in received_states for state in rs
     ), f"{comm.rank=} {received_states=} {basis.local_basis=}"
 
 
@@ -1267,8 +1410,6 @@ def test_alltoall_states_mpi():
 def test_alltoall_states_with_empty_mpi():
     comm = MPI.COMM_WORLD
     num_spin_orbitals = comm.size
-    bytes_per_state = ceil(num_spin_orbitals / 8)
-    send_states = [[r.to_bytes(bytes_per_state, "big")] if r < comm.rank else [] for r in range(comm.size)]
     basis = Basis(
         impurity_orbitals={0: [list(range(num_spin_orbitals))]},
         bath_states=(
@@ -1279,10 +1420,11 @@ def test_alltoall_states_with_empty_mpi():
         verbose=True,
         comm=comm,
     )
-    basis.add_states([comm.rank.to_bytes(bytes_per_state, "big")])
+    send_states = [[r.to_bytes(basis.n_bytes, "big")] if r < comm.rank else [] for r in range(comm.size)]
+    basis.add_states([comm.rank.to_bytes(basis.n_bytes, "big")])
     received_states = basis.alltoall_states(send_states)
     assert all(
-        state == comm.rank.to_bytes(bytes_per_state, "big") for rs in received_states for state in list(rs)
+        state == comm.rank.to_bytes(basis.n_bytes, "big") for rs in received_states for state in list(rs)
     ), f"{comm.rank=} {received_states=} {basis.local_basis=}"
 
 
@@ -1305,7 +1447,7 @@ def test_eg_t2g_basis_expand():
     }
     # Start with 10000  01000
     #            00000  00000
-    states = [b"\x80\x00", b"\x40\x00"]
+    states = build_states([b"\x80\x00", b"\x40\x00"])
     basis = Basis(
         impurity_orbitals={0: [list(range(10))]},
         bath_states=(
@@ -1321,7 +1463,7 @@ def test_eg_t2g_basis_expand():
     # expect 10000  01000  00001  00000  00000  00000
     #        00000  00000  00000  10000  01000  00001
 
-    expected = [b"\x80\x00", b"\x40\x00", b"\x08\x00"]  # , b"\x04\x00", b"\x02\x00", b"\x00\x40"]
+    expected = build_states([b"\x80\x00", b"\x40\x00", b"\x08\x00"])  # , b"\x04\x00", b"\x02\x00", b"\x00\x40"]
     assert all(state in expected for state in basis), f"{expected=} {list(basis)=}"
     assert all(state in basis for state in expected), f"{expected=} {list(basis)=}"
 
@@ -1346,7 +1488,7 @@ def test_eg_t2g_basis_expand_mpi():
     }
     # Start with 10000  01000
     #            00000  00000
-    states = [b"\x80\x00", b"\x40\x00"]
+    states = build_states([b"\x80\x00", b"\x40\x00"])
     basis = Basis(
         impurity_orbitals={2: [list(range(10))]},
         bath_states=(
@@ -1362,7 +1504,7 @@ def test_eg_t2g_basis_expand_mpi():
     # expect 10000  01000  00001  00000  00000  00000
     #        00000  00000  00000  10000  01000  00001
 
-    expected = [b"\x80\x00", b"\x40\x00", b"\x08\x00"]  # , b"\x04\x00", b"\x02\x00", b"\x00\x40"]
+    expected = build_states([b"\x80\x00", b"\x40\x00", b"\x08\x00"])  # , b"\x04\x00", b"\x02\x00", b"\x00\x40"]
     assert all(state in expected for state in basis), f"{expected=} {list(basis)=}"
     assert all(state in basis for state in expected), f"{expected=} {list(basis)=}"
 
@@ -1386,7 +1528,7 @@ def test_eg_t2g_CIPSI_basis_expand():
     }
     # Start with 10000
     #            00000
-    states = [b"\x80\x00"]
+    states = build_states([b"\x80\x00"])
     basis = CIPSI_Basis(
         H=Hop,
         impurity_orbitals={2: [list(range(10))]},
@@ -1401,7 +1543,7 @@ def test_eg_t2g_CIPSI_basis_expand():
 
     basis.expand(Hop)
 
-    expected = [b"\x80\x00", b"\x08\x00"]
+    expected = build_states([b"\x80\x00", b"\x08\x00"])
     assert all(state in expected for state in basis), f"{expected=} {list(basis)=}"
     assert all(state in basis for state in expected), f"{expected=} {list(basis)=}"
 
@@ -1426,7 +1568,7 @@ def test_eg_t2g_CIPSI_basis_expand_mpi():
     }
     # Start with 10000
     #            00000
-    states = [b"\x80\x00"]
+    states = build_states([b"\x80\x00"])
     basis = CIPSI_Basis(
         H=Hop,
         impurity_orbitals={2: [list(range(10))]},
@@ -1443,14 +1585,14 @@ def test_eg_t2g_CIPSI_basis_expand_mpi():
     # expect 10000  00001  00000  00000
     #        00000  00000  10000  00001
 
-    expected = [b"\x80\x00", b"\x08\x00"]
+    expected = build_states([b"\x80\x00", b"\x08\x00"])
     assert all(state in expected for state in basis), f"{expected=} {list(basis)=}"
     assert all(state in basis for state in expected), f"{expected=} {list(basis)=}"
 
 
 @pytest.mark.mpi
 def test_distributed_simple_vector():
-    states = (b"\x00\x1a\x2b", b"\xff\x00\x1a")
+    states = build_states((b"\x00\x1a\x2b", b"\xff\x00\x1a"))
     basis = Basis(
         impurity_orbitals={2: [list(range(24))]},
         bath_states=(
@@ -1482,7 +1624,7 @@ def test_distributed_simple_vector():
 @pytest.mark.mpi
 def test_distributed_vector_mpi():
     comm = MPI.COMM_WORLD
-    states = [b"\x78", b"\xb8", b"\xd8", b"\xe8", b"\xf0"]
+    states = build_states([b"\x78", b"\xb8", b"\xd8", b"\xe8", b"\xf0"])
     basis = Basis(
         impurity_orbitals={0: [list(range(5))]},
         bath_states=(
@@ -1502,8 +1644,11 @@ def test_distributed_vector_mpi():
 
     n = len(basis.local_basis)
     assert v.shape == (len(basis.local_basis),)
+    end = basis.index_bounds[comm.rank]
+    if end is None:
+        end = len(basis)
     if n > 0:
-        assert np.allclose(v, v_exact[basis.index_bounds[comm.rank] - n : basis.index_bounds[comm.rank]])
+        assert np.allclose(v, v_exact[end - n : end])
 
 
 @pytest.mark.mpi

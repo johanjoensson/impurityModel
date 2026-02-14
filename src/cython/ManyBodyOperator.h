@@ -1,10 +1,9 @@
 #ifndef MANYBODYOPERATOR_H
 #define MANYBODYOPERATOR_H
+
 #include "ManyBodyState.h"
 #include <complex>
 #include <cstdint>
-#include <map>
-#include <stdexcept>
 #include <utility>
 #include <vector>
 
@@ -12,8 +11,8 @@ class ManyBodyOperator {
 
 public:
   template <typename T> struct Comparer {
-    inline bool operator()(const std::vector<T> &a,
-                           const std::vector<T> &b) const noexcept {
+    bool operator()(const std::vector<T> &a,
+                    const std::vector<T> &b) const noexcept {
       for (size_t i = 0; i < std::min(a.size(), b.size()); i++) {
         if (i >= a.size()) {
           return true;
@@ -33,18 +32,27 @@ public:
   using OPS = std::vector<int64_t>;
   using OPS_VEC = std::vector<OPS>;
   using SCALAR_VEC = std::vector<SCALAR>;
-  // using Map = std::map<OPS, SCALAR, Comparer<int64_t>>;
-  using Memory = std::map<ManyBodyState::key_type, ManyBodyState,
-                          ManyBodyState::key_compare>;
+  using SLATER = ManyBodyState::key_type;
   using Restrictions =
       std::vector<std::pair<std::vector<size_t>, std::pair<size_t, size_t>>>;
 
 private:
-  // Map m_ops;
   std::vector<std::pair<OPS, SCALAR>> m_ops;
-  Memory m_memory;
-  static bool state_is_within_restrictions(const ManyBodyState::key_type &,
-                                           const Restrictions &);
+
+  [[nodiscard]] std::tuple<std::vector<ManyBodyState::key_type>,
+                           std::vector<size_t>, std::vector<size_t>>
+  build_restriction_mask(const Restrictions &restrictions) const noexcept;
+
+  [[nodiscard]] static bool state_is_within_restrictions(
+      const ManyBodyState::key_type &,
+      const std::tuple<std::vector<ManyBodyState::key_type>,
+                       std::vector<size_t>, std::vector<size_t>> &) noexcept;
+
+  [[nodiscard]] ManyBodyState apply_op_determinant(
+      const ManyBodyState::Key &slater_determinant,
+      const std::tuple<std::vector<ManyBodyState::key_type>,
+                       std::vector<size_t>, std::vector<size_t>> &)
+      const noexcept;
 
 public:
   using key_type = const OPS;
@@ -73,55 +81,71 @@ public:
   ManyBodyOperator(const OPS_VEC &, const SCALAR_VEC &);
   ManyBodyOperator(OPS_VEC &&, SCALAR_VEC &&);
 
-  ManyBodyState operator()(const ManyBodyState &, double, const Restrictions &);
+  [[nodiscard]] ManyBodyState operator()(
+      const ManyBodyState &psi, double cutoff = 0,
+      const ManyBodyOperator::Restrictions &restrictions = {}) const noexcept {
+    return apply(psi, cutoff, restrictions);
+  }
 
-  Memory memory() const;
+  [[nodiscard]] std::vector<ManyBodyState> operator()(
+      const std::vector<ManyBodyState> &psis, double cutoff = 0,
+      const ManyBodyOperator::Restrictions &restrictions = {}) const noexcept {
+    return apply(psis, cutoff, restrictions);
+  }
 
-  size_type size() const;
-  bool empty() const;
+  [[nodiscard]] ManyBodyState
+  apply(const ManyBodyState &, double cutoff = 0,
+        const ManyBodyOperator::Restrictions &restrictions = {}) const noexcept;
+
+  [[nodiscard]] std::vector<ManyBodyState>
+  apply(const std::vector<ManyBodyState> &, double cutoff = 0,
+        const ManyBodyOperator::Restrictions &restrictions = {}) const noexcept;
+
+  [[nodiscard]] size_type size() const noexcept;
+  [[nodiscard]] bool empty() const noexcept;
   bool clear();
 
-  void clear_memory() noexcept;
+  ManyBodyOperator &operator+=(const ManyBodyOperator &) noexcept;
+  ManyBodyOperator &operator-=(const ManyBodyOperator &) noexcept;
+  ManyBodyOperator &operator*=(const mapped_type &) noexcept;
+  ManyBodyOperator &operator/=(const mapped_type &) noexcept;
+  [[nodiscard]] ManyBodyOperator operator-() const noexcept;
 
-  ManyBodyOperator &operator+=(const ManyBodyOperator &);
-  ManyBodyOperator &operator-=(const ManyBodyOperator &);
-  ManyBodyOperator &operator*=(const mapped_type &);
-  ManyBodyOperator &operator/=(const mapped_type &);
-  ManyBodyOperator operator-() const;
-
-  inline ManyBodyOperator operator+(const ManyBodyOperator &other) const {
+  [[nodiscard]] ManyBodyOperator
+  operator+(const ManyBodyOperator &other) const {
     ManyBodyOperator res(*this);
     return res += other;
   }
 
-  inline ManyBodyOperator operator-(const ManyBodyOperator &other) const {
+  [[nodiscard]] ManyBodyOperator
+  operator-(const ManyBodyOperator &other) const {
     ManyBodyOperator res(*this);
     return res -= other;
   }
 
-  inline ManyBodyOperator operator*(const mapped_type &s) const {
+  [[nodiscard]] ManyBodyOperator operator*(const mapped_type &s) const {
     ManyBodyOperator res(*this);
     return res *= s;
   }
 
-  friend inline ManyBodyOperator operator*(const mapped_type &s,
-                                           const ManyBodyOperator &o) {
+  [[nodiscard]] friend ManyBodyOperator operator*(const mapped_type &s,
+                                                  const ManyBodyOperator &o) {
     return o * s;
   }
 
-  inline ManyBodyOperator operator/(const mapped_type &s) const {
+  [[nodiscard]] ManyBodyOperator operator/(const mapped_type &s) const {
     ManyBodyOperator res(*this);
     return res /= s;
   }
 
-  inline bool operator==(const ManyBodyOperator &other) {
+  [[nodiscard]] bool operator==(const ManyBodyOperator &other) const {
     return this->m_ops == other.m_ops;
   }
-  inline bool operator!=(const ManyBodyOperator &other) {
-    return this->m_ops != other.m_ops;
+  [[nodiscard]] bool operator!=(const ManyBodyOperator &other) const {
+    return !(*this == other);
   }
-  mapped_type &operator[](const key_type &key);
-  mapped_type &operator[](key_type &&key);
+  mapped_type &operator[](const key_type &key) noexcept;
+  mapped_type &operator[](key_type &&key) noexcept;
 
   mapped_type &at(const key_type &key);
   const mapped_type &at(const key_type &key) const;
@@ -142,46 +166,49 @@ public:
   iterator erase(const_iterator first, const_iterator last);
   size_type erase(const key_type &key);
 
-  inline void swap(ManyBodyOperator &other) {
-    m_ops.swap(other.m_ops);
-    m_memory.swap(other.m_memory);
-  }
+  void swap(ManyBodyOperator &other) noexcept { m_ops.swap(other.m_ops); }
 
-  iterator find(const key_type &);
-  iterator find(iterator, iterator, const key_type &);
-  const_iterator find(const key_type &key) const;
-  const_iterator find(const_iterator, const_iterator, const key_type &) const;
-  template <class K> iterator find(const K &);
-  template <class K> iterator find(iterator, iterator, const K &);
-  template <class K> const_iterator find(const K &) const;
+  [[nodiscard]] iterator find(const key_type &);
+  [[nodiscard]] iterator find(iterator, iterator, const key_type &);
+  [[nodiscard]] const_iterator find(const key_type &key) const;
+  [[nodiscard]] const_iterator find(const_iterator, const_iterator,
+                                    const key_type &) const;
+  template <class K> [[nodiscard]] iterator find(const K &);
+  template <class K> [[nodiscard]] iterator find(iterator, iterator, const K &);
+  template <class K> [[nodiscard]] const_iterator find(const K &) const;
   template <class K>
-  const_iterator find(const_iterator, const_iterator, const K &) const;
+  [[nodiscard]] const_iterator find(const_iterator, const_iterator,
+                                    const K &) const;
 
-  iterator lower_bound(const key_type &);
-  const_iterator lower_bound(const key_type &) const;
-  template <class K> iterator lower_bound(const K &);
-  template <class K> const_iterator lower_bound(const K &) const;
+  [[nodiscard]] iterator lower_bound(const key_type &);
+  [[nodiscard]] const_iterator lower_bound(const key_type &) const;
+  template <class K> [[nodiscard]] iterator lower_bound(const K &);
+  template <class K> [[nodiscard]] const_iterator lower_bound(const K &) const;
 
-  iterator upper_bound(const key_type &ey);
-  const_iterator upper_bound(const key_type &ey) const;
-  template <class K> iterator upper_bound(const K &);
-  template <class K> const_iterator upper_bound(const K &) const;
+  [[nodiscard]] iterator upper_bound(const key_type &ey);
+  [[nodiscard]] const_iterator upper_bound(const key_type &ey) const;
+  template <class K> [[nodiscard]] iterator upper_bound(const K &);
+  template <class K> [[nodiscard]] const_iterator upper_bound(const K &) const;
 
-  // inline compare_type key_comp() const { return compare_type(); }
+  //  compare_type key_comp() const { return compare_type(); }
 
-  inline iterator begin() { return m_ops.begin(); }
-  inline const_iterator begin() const { return m_ops.begin(); }
-  inline const_iterator cbegin() const noexcept { return m_ops.cbegin(); }
-  inline iterator end() { return m_ops.end(); }
-  inline const_iterator end() const { return m_ops.end(); }
-  inline const_iterator cend() const noexcept { return m_ops.cend(); }
-  inline reverse_iterator rbegin() { return m_ops.rbegin(); }
-  inline const_reverse_iterator rbegin() const { return m_ops.rbegin(); }
-  inline const_reverse_iterator crbegin() const noexcept {
+  [[nodiscard]] iterator begin() { return m_ops.begin(); }
+  [[nodiscard]] const_iterator begin() const { return m_ops.begin(); }
+  [[nodiscard]] const_iterator cbegin() const noexcept {
+    return m_ops.cbegin();
+  }
+  [[nodiscard]] iterator end() { return m_ops.end(); }
+  [[nodiscard]] const_iterator end() const { return m_ops.end(); }
+  [[nodiscard]] const_iterator cend() const noexcept { return m_ops.cend(); }
+  [[nodiscard]] reverse_iterator rbegin() { return m_ops.rbegin(); }
+  [[nodiscard]] const_reverse_iterator rbegin() const { return m_ops.rbegin(); }
+  [[nodiscard]] const_reverse_iterator crbegin() const noexcept {
     return m_ops.crbegin();
   }
-  inline reverse_iterator rend() { return m_ops.rend(); }
-  inline const_reverse_iterator rend() const { return m_ops.rend(); }
-  inline const_reverse_iterator crend() const noexcept { return m_ops.crend(); }
+  [[nodiscard]] reverse_iterator rend() { return m_ops.rend(); }
+  [[nodiscard]] const_reverse_iterator rend() const { return m_ops.rend(); }
+  [[nodiscard]] const_reverse_iterator crend() const noexcept {
+    return m_ops.crend();
+  }
 };
 #endif // MANYBODYOPERATOR_H

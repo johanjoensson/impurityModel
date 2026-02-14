@@ -1,35 +1,103 @@
 # distutils: language = c++
 
-cimport cython
 from libcpp.map cimport map
 from libcpp.vector cimport vector
 from libcpp.pair cimport pair
-from libc.stdint cimport uint8_t
+from libc.stdint cimport uint8_t, uint16_t, uint64_t
+cimport cython
 
 cdef extern from "ManyBodyState.cpp":
     pass
 
 cdef extern from "ManyBodyState.h":
     cdef cppclass ManyBodyState:
-        cppclass Comparer:
-            bint operator()(const vector[uint8_t]&, const vector[uint8_t]&)
-        ctypedef map[vector[uint8_t], cython.doublecomplex, Comparer] Map
-        ctypedef Map.key_type key_type
-        ctypedef Map.value_type value_type
-        ctypedef Map.size_type size_type 
-        ctypedef Map.value_type& reference
-        ctypedef const Map.value_type& const_reference
-        ctypedef Map.iterator iterator
-        ctypedef Map.const_iterator const_iterator
-        ctypedef Map.reverse_iterator reverse_iterator
-        ctypedef Map.const_reverse_iterator const_reverse_iterator
-        ctypedef Map.key_compare key_compare
+
+        ctypedef vector[uint64_t] Key
+        # ctypedef vector[uint8_t] Key
+        ctypedef vector[Key] Keys
+        ctypedef vector[cython.doublecomplex] Values 
+
+        cppclass KeyComparer:
+            bint operator()(const Key&, const Key&)
+        cppclass ValueComparer:
+            bint operator()(const cython.doublecomplex&, const cython.doublecomplex&)
+        cppclass iterator:
+            iterator() 
+            iterator(pair[Keys.iterator, Values.iterator])
+            iterator operator++()
+            # iterator operator+=(int)
+            iterator operator--()
+            # iterator operator-=(int)
+            iterator operator+(int)
+            iterator operator-(int)
+            int operator-(iterator)
+            bint operator==(iterator)
+            bint operator!=(iterator)
+            bint operator<(iterator)
+            bint operator>(iterator)
+            bint operator<=(iterator)
+            bint operator>=(iterator)
+            pair[Key , cython.doublecomplex] operator*()
+        cppclass const_iterator:
+            const_iterator()
+            const_iterator(pair[Keys.const_iterator, Values.const_iterator])
+            const_iterator operator++()
+            # const_iterator operator+=(int)
+            const_iterator operator--()
+            # const_iterator operator-=(int)
+            const_iterator operator+(int)
+            const_iterator operator-(int)
+            int operator-(const_iterator)
+            bint operator==(const_iterator)
+            bint operator!=(const_iterator)
+            bint operator<(const_iterator)
+            bint operator>(const_iterator)
+            bint operator<=(const_iterator)
+            bint operator>=(const_iterator)
+            pair[const Key , const cython.doublecomplex] operator*()
+        cppclass reverse_iterator:
+            reverse_iterator()
+            reverse_iterator(pair[Keys.reverse_iterator, Values.reverse_iterator])
+            reverse_iterator operator++()
+            # reverse_iterator operator+=(int)
+            reverse_iterator operator--()
+            # reverse_iterator operator-=(int)
+            reverse_iterator operator+(int)
+            reverse_iterator operator-(int)
+            int operator-(reverse_iterator)
+            bint operator==(reverse_iterator)
+            bint operator!=(reverse_iterator)
+            bint operator<(reverse_iterator)
+            bint operator>(reverse_iterator)
+            bint operator<=(reverse_iterator)
+            bint operator>=(reverse_iterator)
+            pair[Key , cython.doublecomplex] operator*()
+        cppclass const_reverse_iterator:
+            const_reverse_iterator()
+            const_reverse_iterator(pair[Keys.const_reverse_iterator, Values.const_reverse_iterator])
+            const_reverse_iterator operator++()
+            # const_reverse_iterator operator+=(int)
+            const_reverse_iterator operator--()
+            # const_reverse_iterator operator-=(int)
+            const_reverse_iterator operator+(int)
+            const_reverse_iterator operator-(int)
+            int operator-(const_reverse_iterator)
+            bint operator==(const_reverse_iterator)
+            bint operator!=(const_reverse_iterator)
+            bint operator<(const_reverse_iterator)
+            bint operator>(const_reverse_iterator)
+            bint operator<=(const_reverse_iterator)
+            bint operator>=(const_reverse_iterator)
+            pair[const Key , const cython.doublecomplex] operator*()
+        ctypedef Keys.size_type size_type 
+        ctypedef pair[const Key, cython.doublecomplex] value_type;
+        ctypedef Key key_type;
 
         ManyBodyState() nogil
         ManyBodyState(const ManyBodyState&) nogil
         ManyBodyState& operator=(const ManyBodyState&) nogil
-        ManyBodyState(const vector[key_type]&,
-                      const vector[doublecomplex]&) nogil
+        ManyBodyState(const Keys&,
+                      const Values&) nogil
 
         bint empty() nogil
         size_type size() nogil
@@ -39,8 +107,8 @@ cdef extern from "ManyBodyState.h":
         double norm2() nogil
         double norm() nogil
 
-        double complex& operator[](const key_type&) nogil
-        double complex& at(const key_type&) nogil
+        cython.doublecomplex& operator[](const key_type&) nogil
+        cython.doublecomplex& at(const key_type&) nogil
 
         # ManyBodyState operator+=(const ManyBodyState&)
         # ManyBodyState operator-=(const ManyBodyState&)
@@ -49,8 +117,8 @@ cdef extern from "ManyBodyState.h":
         ManyBodyState operator+(const ManyBodyState&) nogil
         ManyBodyState operator-(const ManyBodyState&) nogil
         ManyBodyState operator-() nogil
-        ManyBodyState operator*(double complex) nogil
-        ManyBodyState operator/(double complex) nogil
+        ManyBodyState operator*(cython.doublecomplex) nogil
+        ManyBodyState operator/(cython.doublecomplex) nogil
         bint operator==(const ManyBodyState&) nogil
         bint operator!=(const ManyBodyState&) nogil
         iterator begin() nogil
@@ -70,11 +138,9 @@ cdef extern from "ManyBodyState.h":
         iterator erase(iterator) nogil
         iterator erase(const_iterator) nogil
         iterator erase(const_iterator, const_iterator) nogil
-        size_type erase(const key_type&) nogil
+        iterator erase(const key_type&) nogil
 
         void swap(ManyBodyState&) nogil
-
-        size_type count[K](const K&) nogil
 
         iterator find[K](const K&) nogil
 
