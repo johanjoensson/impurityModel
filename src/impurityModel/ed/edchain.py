@@ -35,8 +35,8 @@ def build_H_bath_v(H_dft, ebs_star, vs_star, bath_geometry, block_structure, ver
             block_orbs = block_structure.blocks[block_ix]
             b_ix = np.ix_(block_orbs, block_orbs)
             if len(ebs) <= 1:
-                H_baths.append(np.diag(ebs))
-                vs.append(v)
+                H_baths.append(np.diag(np.repeat(ebs, v.shape[1])))
+                vs.append(v.reshape((v.shape[0] * v.shape[1], v.shape[2])))
                 continue
             vc, hc = double_chains(H_dft[b_ix], v, ebs, verbose)
             H_baths.append(hc)
@@ -52,16 +52,16 @@ def build_H_bath_v(H_dft, ebs_star, vs_star, bath_geometry, block_structure, ver
             print("=" * 80)
     elif bath_geometry == "haver":
         for i_b, (v, ebs) in enumerate(zip(vs_star, ebs_star)):
-            # For the linked double chains to make sense we need at least 3 bath states,
-            # otherwise we might as well just use a star geometry
-            if len(ebs) <= 2:
-                H_baths.append(np.diag(ebs))
-                vs.append(v)
-                continue
-
             block_ix = block_structure.inequivalent_blocks[i_b]
             block_orbs = block_structure.blocks[block_ix]
             b_ix = np.ix_(block_orbs, block_orbs)
+            # For the linked double chains to make sense we need at least 3 bath states,
+            # otherwise we might as well just use a star geometry
+            if len(ebs) <= 2:
+                H_baths.append(np.diag(np.repeat(ebs, len(block_orbs))))
+                vs.append(v.reshape(v.shape[0] * len(block_orbs), len(block_orbs)))
+                continue
+
             vh, Hh = linked_double_chain(H_dft[b_ix], v, ebs, verbose=verbose, extremely_verbose=extra_verbose)
             H_baths.append(Hh)
             vs.append(vh)
@@ -76,8 +76,9 @@ def build_H_bath_v(H_dft, ebs_star, vs_star, bath_geometry, block_structure, ver
             print("=" * 80)
     # Star geometry is the fallback
     else:
-        H_baths = [np.diag(eb) for eb in ebs_star]
-        vs = vs_star
+        for i_b, (v, ebs) in enumerate(zip(vs_star, ebs_star)):
+            H_baths.append(np.diag(np.repeat(ebs, v.shape[1])))
+            vs.append(v.reshape(v.shape[0] * v.shape[1], v.shape[2]))
     return H_baths, vs
 
 
@@ -304,11 +305,11 @@ def build_star_geometry_hamiltonian(H_imp, vs, es):
         vs = vs.reshape((vs.shape[0], 1))
     n_imp = H_imp.shape[1]
     n_bath = es.shape[0]
-    H_star = np.empty((n_imp + n_bath, n_imp + n_bath), dtype=H_imp.dtype)
+    H_star = np.empty((n_imp + n_bath * n_imp, n_imp + n_bath * n_imp), dtype=H_imp.dtype)
     H_star[:n_imp, :n_imp] = H_imp
-    H_star[n_imp:, :n_imp] = vs
-    H_star[:n_imp, n_imp:] = np.conj(vs.T)
-    H_star[n_imp:, n_imp:] = np.diag(es)
+    H_star[n_imp:, :n_imp] = vs.reshape((n_imp * n_bath, n_imp))
+    H_star[:n_imp, n_imp:] = np.conj(vs.reshape((n_imp * n_bath, n_imp)).T)
+    H_star[n_imp:, n_imp:] = np.diag(np.repeat(es, n_imp))
     return H_star
 
 
@@ -475,19 +476,46 @@ def linked_double_chain(H_imp, vs, es, verbose=True, extremely_verbose=False):
     return H_linked_chains[n_imp:, :n_imp], H_linked_chains[n_imp:, n_imp:]
 
 
+def basil_linked_double_chain(H_imp, vs, es, verbose=True, extremely_verbose=False):
+    from impurityModel.ed.double_chain_haverkort.double_chains import get_double_chain_transform_multi
+
+    n_imp = H_imp.shape[0]
+    H_star = build_star_geometry_hamiltonian(H_imp, vs, es)
+    eigvals = np.linalg.eigvalsh(H_star)
+    sort_idx = np.argsort(eigvals)
+    eigvals[:] = eigvals[sort_idx]
+
+    # Put the pivot point at the eigenstate with energy closest to 0
+    # In order to ensure we always get two decoupled blocks, the pivot will never
+    # be placed at the last eigenstate (unless there is only one eigenstate block.)
+    n_elec = n_imp * (min(np.argmin(np.abs(eigvals)), max(len(eigvals) - 2 * n_imp, 0)) // n_imp)
+
+    h_linked_double_chain, Q, info = get_double_chain_transform_multi(H_star, H_imp.shape[0], n_elec)
+
+    matrix_print(h_linked_double_chain, "Basile's Linked double chain")
+
+    h_linked_2 = np.conj(Q.T) @ H_star @ Q
+
+    print(f"{np.linalg.eigvalsh(H_star)=}")
+    print(f"{np.linalg.eigvalsh(h_linked_double_chain)=}")
+    print(f"{np.linalg.eigvalsh(h_linked_2)=}")
+    return h_linked_double_chain[n_imp:, :n_imp], h_linked_double_chain[n_imp:, n_imp:]
+
+
 if __name__ == "__main__":
     test_householder()
-    n_orb = 1
+    n_orb = 2
     n_b = 8 * n_orb
     n = n_orb + n_b
     H_start = np.random.rand(n, n) + 1j * np.random.rand(n, n)
     H_start = 1 / 2 * (H_start + np.conj(H_start.T))
 
-    h_imp = H_start[:n_orb, :n_orb]
+    h_imp = H_start[:n_orb, :n_orb] * 0
     v = H_start[n_orb:, :n_orb]
-    eb = -np.linspace(1, 5, num=n_b)
+    eb = np.linspace(-1, 1, num=n_b)
     # eb = np.linalg.eigvals(H_start[n_orb:, n_orb:])
 
     v, hb = linked_double_chain(h_imp, v, eb, extremely_verbose=True)
-    matrix_print(hb, "bath hamiltonian")
-    matrix_print(v, "Hopping term")
+    basil_linked_double_chain(h_imp, v, eb, extremely_verbose=True)
+    # matrix_print(hb, "bath hamiltonian")
+    # matrix_print(v, "Hopping term")
