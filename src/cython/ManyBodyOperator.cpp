@@ -440,15 +440,13 @@ ManyBodyState ManyBodyOperator::apply_op_determinant(
     const ManyBodyState &state, double cutoff,
     const ManyBodyOperator::Restrictions &restrictions) const noexcept {
   const auto restriction_mask = build_restriction_mask(restrictions);
-  ManyBodyState initial{};
-  initial.reserve(state.size());
+  // ManyBodyState initial{};
+  // initial.reserve(state.size());
   ManyBodyState res = std::transform_reduce(
-      PAR state.cbegin(), state.cend(), std::move(initial),
+      PAR state.cbegin(), state.cend(), ManyBodyState{},
       [](auto &&a, const auto &b) { return std::forward<decltype(a)>(a += b); },
       [this, &restriction_mask,
-       &cutoff](const ManyBodyState::const_reference state_amp) {
-        // return apply_op_determinant(state_it.first, restriction_mask) *
-        //        state_it.second;
+       cutoff](ManyBodyState::const_reference state_amp) {
         ManyBodyState tmp{};
         for (auto op_it = m_ops.cbegin(); op_it != m_ops.cend(); op_it++) {
           ManyBodyState::key_type out_slater_determinant{state_amp.first};
@@ -468,7 +466,7 @@ ManyBodyState ManyBodyOperator::apply_op_determinant(
             }
           }
           if (abs(sign * op_it->second * state_amp.second) > cutoff) {
-            tmp[out_slater_determinant] +=
+            tmp[std::move(out_slater_determinant)] +=
                 sign * op_it->second * state_amp.second;
           }
         }
