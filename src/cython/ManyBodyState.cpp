@@ -87,7 +87,7 @@ ManyBodyState &ManyBodyState::operator+=(auto &&other) {
     } else if (my_it->first > other_it->first) {
       auto other_end = other.lower_bound(my_it->first);
       this->insert(other_it, other_end);
-      my_it += std::distance(other_it, other_end);
+      std::advance(my_it, std::distance(other_it, other_end));
       other_it = other_end;
 
     } else if (my_it->first == other_it->first) {
