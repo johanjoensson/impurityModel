@@ -25,11 +25,10 @@ cdef ManyBodyState_cpp.key_type bytes_to_key(bytes b):
     cdef size_t i = 0
     key.reserve(len(b)//n_bytes)
     for i in range(0, len(b)//n_bytes, n_bytes):
-        key.push_back(int.from_bytes(b[i*n_bytes:(i+1)*n_bytes]))
+        key.push_back(int.from_bytes(b[i*n_bytes:(i+1)*n_bytes], byteorder='big'))
     if len(b) % n_bytes:
 
-        # key.push_back(int.from_bytes(b[i*n_bytes:]))
-        key.push_back(int.from_bytes(b[i*n_bytes:len(b)] + b'\x00'*(n_bytes - (len(b)%n_bytes))))
+        key.push_back(int.from_bytes(b[i*n_bytes:len(b)] + b'\x00'*(n_bytes - (len(b)%n_bytes)), byteorder='big'))
     return key
 
 cdef class ManyBodyState:
