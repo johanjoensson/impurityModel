@@ -1614,7 +1614,7 @@ struct __pyx_obj_13ManyBodyUtils___pyx_scope_struct_7_genexpr;
 struct __pyx_obj_13ManyBodyUtils___pyx_scope_struct_8_genexpr;
 struct __pyx_obj_13ManyBodyUtils___pyx_scope_struct_9_genexpr;
 
-/* "ManyBodyUtils.pyx":35
+/* "ManyBodyUtils.pyx":34
  *     return key
  * 
  * cdef class ManyBodyState:             # <<<<<<<<<<<<<<
@@ -1627,7 +1627,7 @@ struct __pyx_obj_13ManyBodyUtils_ManyBodyState {
 };
 
 
-/* "ManyBodyUtils.pyx":206
+/* "ManyBodyUtils.pyx":205
  *     return  tuple(processes[::-1])
  * 
  * cdef class ManyBodyOperator:             # <<<<<<<<<<<<<<
@@ -1640,7 +1640,7 @@ struct __pyx_obj_13ManyBodyUtils_ManyBodyOperator {
 };
 
 
-/* "ManyBodyUtils.pyx":155
+/* "ManyBodyUtils.pyx":154
  *         return res
  * 
  *     def __iter__(self):             # <<<<<<<<<<<<<<
@@ -1655,7 +1655,7 @@ struct __pyx_obj_13ManyBodyUtils___pyx_scope_struct____iter__ {
 };
 
 
-/* "ManyBodyUtils.pyx":160
+/* "ManyBodyUtils.pyx":159
  * 
  *     def keys(self):
  *         return (key_to_bytes(p.first) for p in self.v)             # <<<<<<<<<<<<<<
@@ -1670,7 +1670,7 @@ struct __pyx_obj_13ManyBodyUtils___pyx_scope_struct_1_genexpr {
 };
 
 
-/* "ManyBodyUtils.pyx":163
+/* "ManyBodyUtils.pyx":162
  * 
  *     def values(self):
  *         return (p.second for p in self.v)             # <<<<<<<<<<<<<<
@@ -1685,7 +1685,7 @@ struct __pyx_obj_13ManyBodyUtils___pyx_scope_struct_2_genexpr {
 };
 
 
-/* "ManyBodyUtils.pyx":166
+/* "ManyBodyUtils.pyx":165
  * 
  *     def items(self):
  *         return ((key_to_bytes(p.first), p.second) for p in self.v)             # <<<<<<<<<<<<<<
@@ -1700,7 +1700,7 @@ struct __pyx_obj_13ManyBodyUtils___pyx_scope_struct_3_genexpr {
 };
 
 
-/* "ManyBodyUtils.pyx":173
+/* "ManyBodyUtils.pyx":172
  * 
  *     def to_dict(self):
  *         return dict((key_to_bytes(p.first), p.second) for p in self.v)             # <<<<<<<<<<<<<<
@@ -1714,7 +1714,7 @@ struct __pyx_obj_13ManyBodyUtils___pyx_scope_struct_4_genexpr {
 };
 
 
-/* "ManyBodyUtils.pyx":318
+/* "ManyBodyUtils.pyx":317
  *         return self.o.find(processes_to_ints(key)) != self.o.end()
  * 
  *     def __iter__(self):             # <<<<<<<<<<<<<<
@@ -1729,7 +1729,7 @@ struct __pyx_obj_13ManyBodyUtils___pyx_scope_struct_5___iter__ {
 };
 
 
-/* "ManyBodyUtils.pyx":323
+/* "ManyBodyUtils.pyx":322
  * 
  *     def keys(self):
  *         return (ints_to_processes(p.first) for p in self.o)             # <<<<<<<<<<<<<<
@@ -1744,7 +1744,7 @@ struct __pyx_obj_13ManyBodyUtils___pyx_scope_struct_6_genexpr {
 };
 
 
-/* "ManyBodyUtils.pyx":326
+/* "ManyBodyUtils.pyx":325
  * 
  *     def values(self):
  *         return (p.second for p in self.o)             # <<<<<<<<<<<<<<
@@ -1759,7 +1759,7 @@ struct __pyx_obj_13ManyBodyUtils___pyx_scope_struct_7_genexpr {
 };
 
 
-/* "ManyBodyUtils.pyx":329
+/* "ManyBodyUtils.pyx":328
  * 
  *     def items(self):
  *         return ((ints_to_processes(p.first), p.second) for p in self.o)             # <<<<<<<<<<<<<<
@@ -1774,7 +1774,7 @@ struct __pyx_obj_13ManyBodyUtils___pyx_scope_struct_8_genexpr {
 };
 
 
-/* "ManyBodyUtils.pyx":333
+/* "ManyBodyUtils.pyx":332
  * 
  *     def to_dict(self):
  *         return dict((ints_to_processes(p.first), p.second) for p in self.o)             # <<<<<<<<<<<<<<
@@ -1998,6 +1998,31 @@ static CYTHON_INLINE int __Pyx_PyObject_SetSlice(
         PyObject* obj, PyObject* value, Py_ssize_t cstart, Py_ssize_t cstop,
         PyObject** py_start, PyObject** py_stop, PyObject** py_slice,
         int has_cstart, int has_cstop, int wraparound);
+
+/* PyObjectVectorCallKwBuilder.proto */
+CYTHON_UNUSED static int __Pyx_VectorcallBuilder_AddArg_Check(PyObject *key, PyObject *value, PyObject *builder, PyObject **args, int n);
+#if CYTHON_VECTORCALL
+#if PY_VERSION_HEX >= 0x03090000
+#define __Pyx_Object_Vectorcall_CallFromBuilder PyObject_Vectorcall
+#else
+#define __Pyx_Object_Vectorcall_CallFromBuilder _PyObject_Vectorcall
+#endif
+#define __Pyx_MakeVectorcallBuilderKwds(n) PyTuple_New(n)
+static int __Pyx_VectorcallBuilder_AddArg(PyObject *key, PyObject *value, PyObject *builder, PyObject **args, int n);
+static int __Pyx_VectorcallBuilder_AddArgStr(const char *key, PyObject *value, PyObject *builder, PyObject **args, int n);
+#else
+#define __Pyx_Object_Vectorcall_CallFromBuilder __Pyx_PyObject_FastCallDict
+#define __Pyx_MakeVectorcallBuilderKwds(n) __Pyx_PyDict_NewPresized(n)
+#define __Pyx_VectorcallBuilder_AddArg(key, value, builder, args, n) PyDict_SetItem(builder, key, value)
+#define __Pyx_VectorcallBuilder_AddArgStr(key, value, builder, args, n) PyDict_SetItemString(builder, key, value)
+#endif
+
+/* PyObjectVectorCallMethodKwBuilder.proto */
+#if CYTHON_VECTORCALL && PY_VERSION_HEX >= 0x03090000
+#define __Pyx_Object_VectorcallMethod_CallFromBuilder PyObject_VectorcallMethod
+#else
+static PyObject *__Pyx_Object_VectorcallMethod_CallFromBuilder(PyObject *name, PyObject *const *args, size_t nargsf, PyObject *kwnames);
+#endif
 
 /* TupleAndListFromArray.proto */
 #if CYTHON_COMPILING_IN_CPYTHON
@@ -2652,24 +2677,6 @@ static void __Pyx_CppExn2PyErr() {
 /* CIntFromPy.proto */
 static CYTHON_INLINE size_t __Pyx_PyLong_As_size_t(PyObject *);
 
-/* PyObjectVectorCallKwBuilder.proto */
-CYTHON_UNUSED static int __Pyx_VectorcallBuilder_AddArg_Check(PyObject *key, PyObject *value, PyObject *builder, PyObject **args, int n);
-#if CYTHON_VECTORCALL
-#if PY_VERSION_HEX >= 0x03090000
-#define __Pyx_Object_Vectorcall_CallFromBuilder PyObject_Vectorcall
-#else
-#define __Pyx_Object_Vectorcall_CallFromBuilder _PyObject_Vectorcall
-#endif
-#define __Pyx_MakeVectorcallBuilderKwds(n) PyTuple_New(n)
-static int __Pyx_VectorcallBuilder_AddArg(PyObject *key, PyObject *value, PyObject *builder, PyObject **args, int n);
-static int __Pyx_VectorcallBuilder_AddArgStr(const char *key, PyObject *value, PyObject *builder, PyObject **args, int n);
-#else
-#define __Pyx_Object_Vectorcall_CallFromBuilder __Pyx_PyObject_FastCallDict
-#define __Pyx_MakeVectorcallBuilderKwds(n) __Pyx_PyDict_NewPresized(n)
-#define __Pyx_VectorcallBuilder_AddArg(key, value, builder, args, n) PyDict_SetItem(builder, key, value)
-#define __Pyx_VectorcallBuilder_AddArgStr(key, value, builder, args, n) PyDict_SetItemString(builder, key, value)
-#endif
-
 /* CIntToPy.proto */
 static CYTHON_INLINE PyObject* __Pyx_PyLong_From_uint64_t(uint64_t value);
 
@@ -2980,6 +2987,7 @@ static const char __pyx_k_A_4[] = "\200A\330\r\016\330\014\020\220\002\220&\230\
 static const char __pyx_k_A_5[] = "\200A\330\010!\240\021";
 static const char __pyx_k_A_A[] = "\200A\330\010\034\230A";
 static const char __pyx_k__10[] = "\240\021";
+static const char __pyx_k_big[] = "big";
 static const char __pyx_k_get[] = "get";
 static const char __pyx_k_key[] = "key";
 static const char __pyx_k_pop[] = "pop";
@@ -3035,6 +3043,7 @@ static const char __pyx_k_max_size[] = "max_size";
 static const char __pyx_k_qualname[] = "__qualname__";
 static const char __pyx_k_set_name[] = "__set_name__";
 static const char __pyx_k_to_bytes[] = "to_bytes";
+static const char __pyx_k_byteorder[] = "byteorder";
 static const char __pyx_k_isenabled[] = "isenabled";
 static const char __pyx_k_6a_4s_4q_q[] = "\320\0046\260a\330\010\013\2104\210s\220!\330\014\023\2204\220q\230\001\330\010\017\210q";
 static const char __pyx_k_from_bytes[] = "from_bytes";
@@ -3225,7 +3234,7 @@ typedef struct {
   PyObject *__pyx_k__7;
   PyObject *__pyx_slice[1];
   PyObject *__pyx_codeobj_tab[32];
-  PyObject *__pyx_string_tab[99];
+  PyObject *__pyx_string_tab[101];
   PyObject *__pyx_int_0;
   PyObject *__pyx_int_1;
   PyObject *__pyx_int_neg_1;
@@ -3361,65 +3370,67 @@ static __pyx_mstatetype * const __pyx_mstate_global = &__pyx_mstate_global_stati
 #define __pyx_n_u_applyOp __pyx_string_tab[37]
 #define __pyx_n_u_asyncio_coroutines __pyx_string_tab[38]
 #define __pyx_n_u_b __pyx_string_tab[39]
-#define __pyx_n_u_c __pyx_string_tab[40]
-#define __pyx_n_u_class __pyx_string_tab[41]
-#define __pyx_n_u_class_getitem __pyx_string_tab[42]
-#define __pyx_n_u_cline_in_traceback __pyx_string_tab[43]
-#define __pyx_n_u_close __pyx_string_tab[44]
-#define __pyx_n_u_copy __pyx_string_tab[45]
-#define __pyx_n_u_cutoff __pyx_string_tab[46]
-#define __pyx_n_u_d __pyx_string_tab[47]
-#define __pyx_n_u_default __pyx_string_tab[48]
-#define __pyx_kp_u_disable __pyx_string_tab[49]
-#define __pyx_kp_u_enable __pyx_string_tab[50]
-#define __pyx_n_u_erase __pyx_string_tab[51]
-#define __pyx_n_u_from_bytes __pyx_string_tab[52]
-#define __pyx_n_u_func __pyx_string_tab[53]
-#define __pyx_kp_u_gc __pyx_string_tab[54]
-#define __pyx_n_u_genexpr __pyx_string_tab[55]
-#define __pyx_n_u_get __pyx_string_tab[56]
-#define __pyx_n_u_initializing __pyx_string_tab[57]
-#define __pyx_n_u_inner __pyx_string_tab[58]
-#define __pyx_n_u_is_coroutine __pyx_string_tab[59]
-#define __pyx_kp_u_isenabled __pyx_string_tab[60]
-#define __pyx_n_u_items __pyx_string_tab[61]
-#define __pyx_n_u_items_locals_genexpr __pyx_string_tab[62]
-#define __pyx_n_u_iter __pyx_string_tab[63]
-#define __pyx_n_u_key __pyx_string_tab[64]
-#define __pyx_n_u_keys __pyx_string_tab[65]
-#define __pyx_n_u_keys_locals_genexpr __pyx_string_tab[66]
-#define __pyx_n_u_main __pyx_string_tab[67]
-#define __pyx_n_u_max_size __pyx_string_tab[68]
-#define __pyx_n_u_module __pyx_string_tab[69]
-#define __pyx_n_u_name __pyx_string_tab[70]
-#define __pyx_n_u_next __pyx_string_tab[71]
-#define __pyx_n_u_norm __pyx_string_tab[72]
-#define __pyx_n_u_norm2 __pyx_string_tab[73]
-#define __pyx_n_u_op __pyx_string_tab[74]
-#define __pyx_n_u_p __pyx_string_tab[75]
-#define __pyx_n_u_pop __pyx_string_tab[76]
-#define __pyx_n_u_prune __pyx_string_tab[77]
-#define __pyx_n_u_psi __pyx_string_tab[78]
-#define __pyx_n_u_qualname __pyx_string_tab[79]
-#define __pyx_n_u_range __pyx_string_tab[80]
-#define __pyx_n_u_reduce __pyx_string_tab[81]
-#define __pyx_n_u_res __pyx_string_tab[82]
-#define __pyx_n_u_restrictions __pyx_string_tab[83]
-#define __pyx_n_u_return __pyx_string_tab[84]
-#define __pyx_n_u_self __pyx_string_tab[85]
-#define __pyx_n_u_send __pyx_string_tab[86]
-#define __pyx_n_u_set_name __pyx_string_tab[87]
-#define __pyx_n_u_size __pyx_string_tab[88]
-#define __pyx_n_u_spec __pyx_string_tab[89]
-#define __pyx_n_u_struct __pyx_string_tab[90]
-#define __pyx_n_u_test __pyx_string_tab[91]
-#define __pyx_n_u_throw __pyx_string_tab[92]
-#define __pyx_n_u_to_bytes __pyx_string_tab[93]
-#define __pyx_n_u_to_dict __pyx_string_tab[94]
-#define __pyx_n_u_to_dict_locals_genexpr __pyx_string_tab[95]
-#define __pyx_n_u_value __pyx_string_tab[96]
-#define __pyx_n_u_values __pyx_string_tab[97]
-#define __pyx_n_u_values_locals_genexpr __pyx_string_tab[98]
+#define __pyx_n_u_big __pyx_string_tab[40]
+#define __pyx_n_u_byteorder __pyx_string_tab[41]
+#define __pyx_n_u_c __pyx_string_tab[42]
+#define __pyx_n_u_class __pyx_string_tab[43]
+#define __pyx_n_u_class_getitem __pyx_string_tab[44]
+#define __pyx_n_u_cline_in_traceback __pyx_string_tab[45]
+#define __pyx_n_u_close __pyx_string_tab[46]
+#define __pyx_n_u_copy __pyx_string_tab[47]
+#define __pyx_n_u_cutoff __pyx_string_tab[48]
+#define __pyx_n_u_d __pyx_string_tab[49]
+#define __pyx_n_u_default __pyx_string_tab[50]
+#define __pyx_kp_u_disable __pyx_string_tab[51]
+#define __pyx_kp_u_enable __pyx_string_tab[52]
+#define __pyx_n_u_erase __pyx_string_tab[53]
+#define __pyx_n_u_from_bytes __pyx_string_tab[54]
+#define __pyx_n_u_func __pyx_string_tab[55]
+#define __pyx_kp_u_gc __pyx_string_tab[56]
+#define __pyx_n_u_genexpr __pyx_string_tab[57]
+#define __pyx_n_u_get __pyx_string_tab[58]
+#define __pyx_n_u_initializing __pyx_string_tab[59]
+#define __pyx_n_u_inner __pyx_string_tab[60]
+#define __pyx_n_u_is_coroutine __pyx_string_tab[61]
+#define __pyx_kp_u_isenabled __pyx_string_tab[62]
+#define __pyx_n_u_items __pyx_string_tab[63]
+#define __pyx_n_u_items_locals_genexpr __pyx_string_tab[64]
+#define __pyx_n_u_iter __pyx_string_tab[65]
+#define __pyx_n_u_key __pyx_string_tab[66]
+#define __pyx_n_u_keys __pyx_string_tab[67]
+#define __pyx_n_u_keys_locals_genexpr __pyx_string_tab[68]
+#define __pyx_n_u_main __pyx_string_tab[69]
+#define __pyx_n_u_max_size __pyx_string_tab[70]
+#define __pyx_n_u_module __pyx_string_tab[71]
+#define __pyx_n_u_name __pyx_string_tab[72]
+#define __pyx_n_u_next __pyx_string_tab[73]
+#define __pyx_n_u_norm __pyx_string_tab[74]
+#define __pyx_n_u_norm2 __pyx_string_tab[75]
+#define __pyx_n_u_op __pyx_string_tab[76]
+#define __pyx_n_u_p __pyx_string_tab[77]
+#define __pyx_n_u_pop __pyx_string_tab[78]
+#define __pyx_n_u_prune __pyx_string_tab[79]
+#define __pyx_n_u_psi __pyx_string_tab[80]
+#define __pyx_n_u_qualname __pyx_string_tab[81]
+#define __pyx_n_u_range __pyx_string_tab[82]
+#define __pyx_n_u_reduce __pyx_string_tab[83]
+#define __pyx_n_u_res __pyx_string_tab[84]
+#define __pyx_n_u_restrictions __pyx_string_tab[85]
+#define __pyx_n_u_return __pyx_string_tab[86]
+#define __pyx_n_u_self __pyx_string_tab[87]
+#define __pyx_n_u_send __pyx_string_tab[88]
+#define __pyx_n_u_set_name __pyx_string_tab[89]
+#define __pyx_n_u_size __pyx_string_tab[90]
+#define __pyx_n_u_spec __pyx_string_tab[91]
+#define __pyx_n_u_struct __pyx_string_tab[92]
+#define __pyx_n_u_test __pyx_string_tab[93]
+#define __pyx_n_u_throw __pyx_string_tab[94]
+#define __pyx_n_u_to_bytes __pyx_string_tab[95]
+#define __pyx_n_u_to_dict __pyx_string_tab[96]
+#define __pyx_n_u_to_dict_locals_genexpr __pyx_string_tab[97]
+#define __pyx_n_u_value __pyx_string_tab[98]
+#define __pyx_n_u_values __pyx_string_tab[99]
+#define __pyx_n_u_values_locals_genexpr __pyx_string_tab[100]
 /* #### Code section: module_state_clear ### */
 #if CYTHON_USE_MODULE_STATE
 static CYTHON_SMALL_CODE int __pyx_m_clear(PyObject *m) {
@@ -3468,7 +3479,7 @@ static CYTHON_SMALL_CODE int __pyx_m_clear(PyObject *m) {
   Py_CLEAR(clear_module_state->__pyx_k__7);
   for (int i=0; i<1; ++i) { Py_CLEAR(clear_module_state->__pyx_slice[i]); }
   for (int i=0; i<32; ++i) { Py_CLEAR(clear_module_state->__pyx_codeobj_tab[i]); }
-  for (int i=0; i<99; ++i) { Py_CLEAR(clear_module_state->__pyx_string_tab[i]); }
+  for (int i=0; i<101; ++i) { Py_CLEAR(clear_module_state->__pyx_string_tab[i]); }
   Py_CLEAR(clear_module_state->__pyx_int_0);
   Py_CLEAR(clear_module_state->__pyx_int_1);
   Py_CLEAR(clear_module_state->__pyx_int_neg_1);
@@ -3520,7 +3531,7 @@ static CYTHON_SMALL_CODE int __pyx_m_traverse(PyObject *m, visitproc visit, void
   Py_VISIT(traverse_module_state->__pyx_k__7);
   for (int i=0; i<1; ++i) { __Pyx_VISIT_CONST(traverse_module_state->__pyx_slice[i]); }
   for (int i=0; i<32; ++i) { __Pyx_VISIT_CONST(traverse_module_state->__pyx_codeobj_tab[i]); }
-  for (int i=0; i<99; ++i) { __Pyx_VISIT_CONST(traverse_module_state->__pyx_string_tab[i]); }
+  for (int i=0; i<101; ++i) { __Pyx_VISIT_CONST(traverse_module_state->__pyx_string_tab[i]); }
   __Pyx_VISIT_CONST(traverse_module_state->__pyx_int_0);
   __Pyx_VISIT_CONST(traverse_module_state->__pyx_int_1);
   __Pyx_VISIT_CONST(traverse_module_state->__pyx_int_neg_1);
@@ -4616,7 +4627,7 @@ static ManyBodyState::key_type __pyx_f_13ManyBodyUtils_bytes_to_key(PyObject *__
  *     cdef size_t i = 0
  *     key.reserve(len(b)//n_bytes)             # <<<<<<<<<<<<<<
  *     for i in range(0, len(b)//n_bytes, n_bytes):
- *         key.push_back(int.from_bytes(b[i*n_bytes:(i+1)*n_bytes]))
+ *         key.push_back(int.from_bytes(b[i*n_bytes:(i+1)*n_bytes], byteorder='big'))
 */
   if (unlikely(__pyx_v_b == Py_None)) {
     PyErr_SetString(PyExc_TypeError, "object of type 'NoneType' has no len()");
@@ -4641,7 +4652,7 @@ static ManyBodyState::key_type __pyx_f_13ManyBodyUtils_bytes_to_key(PyObject *__
  *     cdef size_t i = 0
  *     key.reserve(len(b)//n_bytes)
  *     for i in range(0, len(b)//n_bytes, n_bytes):             # <<<<<<<<<<<<<<
- *         key.push_back(int.from_bytes(b[i*n_bytes:(i+1)*n_bytes]))
+ *         key.push_back(int.from_bytes(b[i*n_bytes:(i+1)*n_bytes], byteorder='big'))
  *     if len(b) % n_bytes:
 */
   __pyx_t_1 = NULL;
@@ -4724,7 +4735,7 @@ static ManyBodyState::key_type __pyx_f_13ManyBodyUtils_bytes_to_key(PyObject *__
     /* "ManyBodyUtils.pyx":28
  *     key.reserve(len(b)//n_bytes)
  *     for i in range(0, len(b)//n_bytes, n_bytes):
- *         key.push_back(int.from_bytes(b[i*n_bytes:(i+1)*n_bytes]))             # <<<<<<<<<<<<<<
+ *         key.push_back(int.from_bytes(b[i*n_bytes:(i+1)*n_bytes], byteorder='big'))             # <<<<<<<<<<<<<<
  *     if len(b) % n_bytes:
  * 
 */
@@ -4764,10 +4775,14 @@ static ManyBodyState::key_type __pyx_f_13ManyBodyUtils_bytes_to_key(PyObject *__
     __Pyx_GOTREF(__pyx_t_1);
     __pyx_t_8 = 0;
     {
-      PyObject *__pyx_callargs[2] = {__pyx_t_7, __pyx_t_1};
-      __pyx_t_3 = __Pyx_PyObject_FastCallMethod(__pyx_mstate_global->__pyx_n_u_from_bytes, __pyx_callargs+__pyx_t_8, (2-__pyx_t_8) | (1*__Pyx_PY_VECTORCALL_ARGUMENTS_OFFSET));
+      PyObject *__pyx_callargs[2 + ((CYTHON_VECTORCALL) ? 1 : 0)] = {__pyx_t_7, __pyx_t_1};
+      __pyx_t_6 = __Pyx_MakeVectorcallBuilderKwds(1); if (unlikely(!__pyx_t_6)) __PYX_ERR(0, 28, __pyx_L1_error)
+      __Pyx_GOTREF(__pyx_t_6);
+      if (__Pyx_VectorcallBuilder_AddArg(__pyx_mstate_global->__pyx_n_u_byteorder, __pyx_mstate_global->__pyx_n_u_big, __pyx_t_6, __pyx_callargs+2, 0) < 0) __PYX_ERR(0, 28, __pyx_L1_error)
+      __pyx_t_3 = __Pyx_Object_VectorcallMethod_CallFromBuilder(__pyx_mstate_global->__pyx_n_u_from_bytes, __pyx_callargs+__pyx_t_8, (2-__pyx_t_8) | (1*__Pyx_PY_VECTORCALL_ARGUMENTS_OFFSET), __pyx_t_6);
       __Pyx_XDECREF(__pyx_t_7); __pyx_t_7 = 0;
       __Pyx_DECREF(__pyx_t_1); __pyx_t_1 = 0;
+      __Pyx_DECREF(__pyx_t_6); __pyx_t_6 = 0;
       if (unlikely(!__pyx_t_3)) __PYX_ERR(0, 28, __pyx_L1_error)
       __Pyx_GOTREF(__pyx_t_3);
     }
@@ -4784,7 +4799,7 @@ static ManyBodyState::key_type __pyx_f_13ManyBodyUtils_bytes_to_key(PyObject *__
  *     cdef size_t i = 0
  *     key.reserve(len(b)//n_bytes)
  *     for i in range(0, len(b)//n_bytes, n_bytes):             # <<<<<<<<<<<<<<
- *         key.push_back(int.from_bytes(b[i*n_bytes:(i+1)*n_bytes]))
+ *         key.push_back(int.from_bytes(b[i*n_bytes:(i+1)*n_bytes], byteorder='big'))
  *     if len(b) % n_bytes:
 */
   }
@@ -4792,10 +4807,10 @@ static ManyBodyState::key_type __pyx_f_13ManyBodyUtils_bytes_to_key(PyObject *__
 
   /* "ManyBodyUtils.pyx":29
  *     for i in range(0, len(b)//n_bytes, n_bytes):
- *         key.push_back(int.from_bytes(b[i*n_bytes:(i+1)*n_bytes]))
+ *         key.push_back(int.from_bytes(b[i*n_bytes:(i+1)*n_bytes], byteorder='big'))
  *     if len(b) % n_bytes:             # <<<<<<<<<<<<<<
  * 
- *         # key.push_back(int.from_bytes(b[i*n_bytes:]))
+ *         key.push_back(int.from_bytes(b[i*n_bytes:len(b)] + b'\x00'*(n_bytes - (len(b)%n_bytes)), byteorder='big'))
 */
   if (unlikely(__pyx_v_b == Py_None)) {
     PyErr_SetString(PyExc_TypeError, "object of type 'NoneType' has no len()");
@@ -4811,10 +4826,10 @@ static ManyBodyState::key_type __pyx_f_13ManyBodyUtils_bytes_to_key(PyObject *__
   __Pyx_DECREF(__pyx_t_3); __pyx_t_3 = 0;
   if (__pyx_t_11) {
 
-    /* "ManyBodyUtils.pyx":32
+    /* "ManyBodyUtils.pyx":31
+ *     if len(b) % n_bytes:
  * 
- *         # key.push_back(int.from_bytes(b[i*n_bytes:]))
- *         key.push_back(int.from_bytes(b[i*n_bytes:len(b)] + b'\x00'*(n_bytes - (len(b)%n_bytes))))             # <<<<<<<<<<<<<<
+ *         key.push_back(int.from_bytes(b[i*n_bytes:len(b)] + b'\x00'*(n_bytes - (len(b)%n_bytes)), byteorder='big'))             # <<<<<<<<<<<<<<
  *     return key
  * 
 */
@@ -4822,78 +4837,82 @@ static ManyBodyState::key_type __pyx_f_13ManyBodyUtils_bytes_to_key(PyObject *__
     __Pyx_INCREF(__pyx_t_5);
     if (unlikely(__pyx_v_b == Py_None)) {
       PyErr_SetString(PyExc_TypeError, "'NoneType' object is not subscriptable");
-      __PYX_ERR(0, 32, __pyx_L1_error)
+      __PYX_ERR(0, 31, __pyx_L1_error)
     }
-    __pyx_t_1 = __Pyx_PyLong_FromSize_t(__pyx_v_i); if (unlikely(!__pyx_t_1)) __PYX_ERR(0, 32, __pyx_L1_error)
+    __pyx_t_6 = __Pyx_PyLong_FromSize_t(__pyx_v_i); if (unlikely(!__pyx_t_6)) __PYX_ERR(0, 31, __pyx_L1_error)
+    __Pyx_GOTREF(__pyx_t_6);
+    __pyx_t_1 = PyNumber_Multiply(__pyx_t_6, __pyx_v_n_bytes); if (unlikely(!__pyx_t_1)) __PYX_ERR(0, 31, __pyx_L1_error)
     __Pyx_GOTREF(__pyx_t_1);
-    __pyx_t_7 = PyNumber_Multiply(__pyx_t_1, __pyx_v_n_bytes); if (unlikely(!__pyx_t_7)) __PYX_ERR(0, 32, __pyx_L1_error)
-    __Pyx_GOTREF(__pyx_t_7);
-    __Pyx_DECREF(__pyx_t_1); __pyx_t_1 = 0;
-    __pyx_t_11 = (__pyx_t_7 == Py_None);
+    __Pyx_DECREF(__pyx_t_6); __pyx_t_6 = 0;
+    __pyx_t_11 = (__pyx_t_1 == Py_None);
     if (__pyx_t_11) {
       __pyx_t_2 = 0;
     } else {
-      __pyx_t_12 = __Pyx_PyIndex_AsSsize_t(__pyx_t_7); if (unlikely((__pyx_t_12 == (Py_ssize_t)-1) && PyErr_Occurred())) __PYX_ERR(0, 32, __pyx_L1_error)
+      __pyx_t_12 = __Pyx_PyIndex_AsSsize_t(__pyx_t_1); if (unlikely((__pyx_t_12 == (Py_ssize_t)-1) && PyErr_Occurred())) __PYX_ERR(0, 31, __pyx_L1_error)
       __pyx_t_2 = __pyx_t_12;
     }
-    __Pyx_DECREF(__pyx_t_7); __pyx_t_7 = 0;
+    __Pyx_DECREF(__pyx_t_1); __pyx_t_1 = 0;
     if (unlikely(__pyx_v_b == Py_None)) {
       PyErr_SetString(PyExc_TypeError, "object of type 'NoneType' has no len()");
-      __PYX_ERR(0, 32, __pyx_L1_error)
+      __PYX_ERR(0, 31, __pyx_L1_error)
     }
-    __pyx_t_12 = __Pyx_PyBytes_GET_SIZE(__pyx_v_b); if (unlikely(__pyx_t_12 == ((Py_ssize_t)-1))) __PYX_ERR(0, 32, __pyx_L1_error)
-    __pyx_t_7 = PySequence_GetSlice(__pyx_v_b, __pyx_t_2, __pyx_t_12); if (unlikely(!__pyx_t_7)) __PYX_ERR(0, 32, __pyx_L1_error)
+    __pyx_t_12 = __Pyx_PyBytes_GET_SIZE(__pyx_v_b); if (unlikely(__pyx_t_12 == ((Py_ssize_t)-1))) __PYX_ERR(0, 31, __pyx_L1_error)
+    __pyx_t_1 = PySequence_GetSlice(__pyx_v_b, __pyx_t_2, __pyx_t_12); if (unlikely(!__pyx_t_1)) __PYX_ERR(0, 31, __pyx_L1_error)
+    __Pyx_GOTREF(__pyx_t_1);
+    if (unlikely(__pyx_v_b == Py_None)) {
+      PyErr_SetString(PyExc_TypeError, "object of type 'NoneType' has no len()");
+      __PYX_ERR(0, 31, __pyx_L1_error)
+    }
+    __pyx_t_12 = __Pyx_PyBytes_GET_SIZE(__pyx_v_b); if (unlikely(__pyx_t_12 == ((Py_ssize_t)-1))) __PYX_ERR(0, 31, __pyx_L1_error)
+    __pyx_t_6 = PyLong_FromSsize_t(__pyx_t_12); if (unlikely(!__pyx_t_6)) __PYX_ERR(0, 31, __pyx_L1_error)
+    __Pyx_GOTREF(__pyx_t_6);
+    __pyx_t_7 = PyNumber_Remainder(__pyx_t_6, __pyx_v_n_bytes); if (unlikely(!__pyx_t_7)) __PYX_ERR(0, 31, __pyx_L1_error)
     __Pyx_GOTREF(__pyx_t_7);
-    if (unlikely(__pyx_v_b == Py_None)) {
-      PyErr_SetString(PyExc_TypeError, "object of type 'NoneType' has no len()");
-      __PYX_ERR(0, 32, __pyx_L1_error)
-    }
-    __pyx_t_12 = __Pyx_PyBytes_GET_SIZE(__pyx_v_b); if (unlikely(__pyx_t_12 == ((Py_ssize_t)-1))) __PYX_ERR(0, 32, __pyx_L1_error)
-    __pyx_t_1 = PyLong_FromSsize_t(__pyx_t_12); if (unlikely(!__pyx_t_1)) __PYX_ERR(0, 32, __pyx_L1_error)
-    __Pyx_GOTREF(__pyx_t_1);
-    __pyx_t_6 = PyNumber_Remainder(__pyx_t_1, __pyx_v_n_bytes); if (unlikely(!__pyx_t_6)) __PYX_ERR(0, 32, __pyx_L1_error)
-    __Pyx_GOTREF(__pyx_t_6);
-    __Pyx_DECREF(__pyx_t_1); __pyx_t_1 = 0;
-    __pyx_t_1 = PyNumber_Subtract(__pyx_v_n_bytes, __pyx_t_6); if (unlikely(!__pyx_t_1)) __PYX_ERR(0, 32, __pyx_L1_error)
-    __Pyx_GOTREF(__pyx_t_1);
     __Pyx_DECREF(__pyx_t_6); __pyx_t_6 = 0;
-    __pyx_t_6 = PyNumber_Multiply(__pyx_mstate_global->__pyx_kp_b_, __pyx_t_1); if (unlikely(!__pyx_t_6)) __PYX_ERR(0, 32, __pyx_L1_error)
+    __pyx_t_6 = PyNumber_Subtract(__pyx_v_n_bytes, __pyx_t_7); if (unlikely(!__pyx_t_6)) __PYX_ERR(0, 31, __pyx_L1_error)
     __Pyx_GOTREF(__pyx_t_6);
-    __Pyx_DECREF(__pyx_t_1); __pyx_t_1 = 0;
-    __pyx_t_1 = PyNumber_Add(__pyx_t_7, __pyx_t_6); if (unlikely(!__pyx_t_1)) __PYX_ERR(0, 32, __pyx_L1_error)
-    __Pyx_GOTREF(__pyx_t_1);
     __Pyx_DECREF(__pyx_t_7); __pyx_t_7 = 0;
+    __pyx_t_7 = PyNumber_Multiply(__pyx_mstate_global->__pyx_kp_b_, __pyx_t_6); if (unlikely(!__pyx_t_7)) __PYX_ERR(0, 31, __pyx_L1_error)
+    __Pyx_GOTREF(__pyx_t_7);
     __Pyx_DECREF(__pyx_t_6); __pyx_t_6 = 0;
+    __pyx_t_6 = PyNumber_Add(__pyx_t_1, __pyx_t_7); if (unlikely(!__pyx_t_6)) __PYX_ERR(0, 31, __pyx_L1_error)
+    __Pyx_GOTREF(__pyx_t_6);
+    __Pyx_DECREF(__pyx_t_1); __pyx_t_1 = 0;
+    __Pyx_DECREF(__pyx_t_7); __pyx_t_7 = 0;
     __pyx_t_8 = 0;
     {
-      PyObject *__pyx_callargs[2] = {__pyx_t_5, __pyx_t_1};
-      __pyx_t_3 = __Pyx_PyObject_FastCallMethod(__pyx_mstate_global->__pyx_n_u_from_bytes, __pyx_callargs+__pyx_t_8, (2-__pyx_t_8) | (1*__Pyx_PY_VECTORCALL_ARGUMENTS_OFFSET));
+      PyObject *__pyx_callargs[2 + ((CYTHON_VECTORCALL) ? 1 : 0)] = {__pyx_t_5, __pyx_t_6};
+      __pyx_t_7 = __Pyx_MakeVectorcallBuilderKwds(1); if (unlikely(!__pyx_t_7)) __PYX_ERR(0, 31, __pyx_L1_error)
+      __Pyx_GOTREF(__pyx_t_7);
+      if (__Pyx_VectorcallBuilder_AddArg(__pyx_mstate_global->__pyx_n_u_byteorder, __pyx_mstate_global->__pyx_n_u_big, __pyx_t_7, __pyx_callargs+2, 0) < 0) __PYX_ERR(0, 31, __pyx_L1_error)
+      __pyx_t_3 = __Pyx_Object_VectorcallMethod_CallFromBuilder(__pyx_mstate_global->__pyx_n_u_from_bytes, __pyx_callargs+__pyx_t_8, (2-__pyx_t_8) | (1*__Pyx_PY_VECTORCALL_ARGUMENTS_OFFSET), __pyx_t_7);
       __Pyx_XDECREF(__pyx_t_5); __pyx_t_5 = 0;
-      __Pyx_DECREF(__pyx_t_1); __pyx_t_1 = 0;
-      if (unlikely(!__pyx_t_3)) __PYX_ERR(0, 32, __pyx_L1_error)
+      __Pyx_DECREF(__pyx_t_6); __pyx_t_6 = 0;
+      __Pyx_DECREF(__pyx_t_7); __pyx_t_7 = 0;
+      if (unlikely(!__pyx_t_3)) __PYX_ERR(0, 31, __pyx_L1_error)
       __Pyx_GOTREF(__pyx_t_3);
     }
-    __pyx_t_14 = __Pyx_PyLong_As_uint64_t(__pyx_t_3); if (unlikely((__pyx_t_14 == ((uint64_t)-1)) && PyErr_Occurred())) __PYX_ERR(0, 32, __pyx_L1_error)
+    __pyx_t_14 = __Pyx_PyLong_As_uint64_t(__pyx_t_3); if (unlikely((__pyx_t_14 == ((uint64_t)-1)) && PyErr_Occurred())) __PYX_ERR(0, 31, __pyx_L1_error)
     __Pyx_DECREF(__pyx_t_3); __pyx_t_3 = 0;
     try {
       __pyx_v_key.push_back(__pyx_t_14);
     } catch(...) {
       __Pyx_CppExn2PyErr();
-      __PYX_ERR(0, 32, __pyx_L1_error)
+      __PYX_ERR(0, 31, __pyx_L1_error)
     }
 
     /* "ManyBodyUtils.pyx":29
  *     for i in range(0, len(b)//n_bytes, n_bytes):
- *         key.push_back(int.from_bytes(b[i*n_bytes:(i+1)*n_bytes]))
+ *         key.push_back(int.from_bytes(b[i*n_bytes:(i+1)*n_bytes], byteorder='big'))
  *     if len(b) % n_bytes:             # <<<<<<<<<<<<<<
  * 
- *         # key.push_back(int.from_bytes(b[i*n_bytes:]))
+ *         key.push_back(int.from_bytes(b[i*n_bytes:len(b)] + b'\x00'*(n_bytes - (len(b)%n_bytes)), byteorder='big'))
 */
   }
 
-  /* "ManyBodyUtils.pyx":33
- *         # key.push_back(int.from_bytes(b[i*n_bytes:]))
- *         key.push_back(int.from_bytes(b[i*n_bytes:len(b)] + b'\x00'*(n_bytes - (len(b)%n_bytes))))
+  /* "ManyBodyUtils.pyx":32
+ * 
+ *         key.push_back(int.from_bytes(b[i*n_bytes:len(b)] + b'\x00'*(n_bytes - (len(b)%n_bytes)), byteorder='big'))
  *     return key             # <<<<<<<<<<<<<<
  * 
  * cdef class ManyBodyState:
@@ -4924,7 +4943,7 @@ static ManyBodyState::key_type __pyx_f_13ManyBodyUtils_bytes_to_key(PyObject *__
   return __pyx_r;
 }
 
-/* "ManyBodyUtils.pyx":39
+/* "ManyBodyUtils.pyx":38
  *     cdef ManyBodyState_cpp v
  * 
  *     def __cinit__(self, dict[bytes, complex] psi={}):             # <<<<<<<<<<<<<<
@@ -4954,24 +4973,24 @@ static int __pyx_pw_13ManyBodyUtils_13ManyBodyState_1__cinit__(PyObject *__pyx_v
   {
     PyObject ** const __pyx_pyargnames[] = {&__pyx_mstate_global->__pyx_n_u_psi,0};
     const Py_ssize_t __pyx_kwds_len = (__pyx_kwds) ? __Pyx_NumKwargs_VARARGS(__pyx_kwds) : 0;
-    if (unlikely(__pyx_kwds_len) < 0) __PYX_ERR(0, 39, __pyx_L3_error)
+    if (unlikely(__pyx_kwds_len) < 0) __PYX_ERR(0, 38, __pyx_L3_error)
     if (__pyx_kwds_len > 0) {
       switch (__pyx_nargs) {
         case  1:
         values[0] = __Pyx_ArgRef_VARARGS(__pyx_args, 0);
-        if (!CYTHON_ASSUME_SAFE_MACROS && unlikely(!values[0])) __PYX_ERR(0, 39, __pyx_L3_error)
+        if (!CYTHON_ASSUME_SAFE_MACROS && unlikely(!values[0])) __PYX_ERR(0, 38, __pyx_L3_error)
         CYTHON_FALLTHROUGH;
         case  0: break;
         default: goto __pyx_L5_argtuple_error;
       }
       const Py_ssize_t kwd_pos_args = __pyx_nargs;
-      if (__Pyx_ParseKeywords(__pyx_kwds, __pyx_kwvalues, __pyx_pyargnames, 0, values, kwd_pos_args, __pyx_kwds_len, "__cinit__", 0) < 0) __PYX_ERR(0, 39, __pyx_L3_error)
+      if (__Pyx_ParseKeywords(__pyx_kwds, __pyx_kwvalues, __pyx_pyargnames, 0, values, kwd_pos_args, __pyx_kwds_len, "__cinit__", 0) < 0) __PYX_ERR(0, 38, __pyx_L3_error)
       if (!values[0]) values[0] = __Pyx_NewRef(__pyx_mstate_global->__pyx_k__2);
     } else {
       switch (__pyx_nargs) {
         case  1:
         values[0] = __Pyx_ArgRef_VARARGS(__pyx_args, 0);
-        if (!CYTHON_ASSUME_SAFE_MACROS && unlikely(!values[0])) __PYX_ERR(0, 39, __pyx_L3_error)
+        if (!CYTHON_ASSUME_SAFE_MACROS && unlikely(!values[0])) __PYX_ERR(0, 38, __pyx_L3_error)
         CYTHON_FALLTHROUGH;
         case  0: break;
         default: goto __pyx_L5_argtuple_error;
@@ -4982,7 +5001,7 @@ static int __pyx_pw_13ManyBodyUtils_13ManyBodyState_1__cinit__(PyObject *__pyx_v
   }
   goto __pyx_L6_skip;
   __pyx_L5_argtuple_error:;
-  __Pyx_RaiseArgtupleInvalid("__cinit__", 0, 0, 1, __pyx_nargs); __PYX_ERR(0, 39, __pyx_L3_error)
+  __Pyx_RaiseArgtupleInvalid("__cinit__", 0, 0, 1, __pyx_nargs); __PYX_ERR(0, 38, __pyx_L3_error)
   __pyx_L6_skip:;
   goto __pyx_L4_argument_unpacking_done;
   __pyx_L3_error:;
@@ -4993,7 +5012,7 @@ static int __pyx_pw_13ManyBodyUtils_13ManyBodyState_1__cinit__(PyObject *__pyx_v
   __Pyx_RefNannyFinishContext();
   return -1;
   __pyx_L4_argument_unpacking_done:;
-  if (unlikely(!__Pyx_ArgTypeTest(((PyObject *)__pyx_v_psi), (&PyDict_Type), 1, "psi", 1))) __PYX_ERR(0, 39, __pyx_L1_error)
+  if (unlikely(!__Pyx_ArgTypeTest(((PyObject *)__pyx_v_psi), (&PyDict_Type), 1, "psi", 1))) __PYX_ERR(0, 38, __pyx_L1_error)
   __pyx_r = __pyx_pf_13ManyBodyUtils_13ManyBodyState___cinit__(((struct __pyx_obj_13ManyBodyUtils_ManyBodyState *)__pyx_v_self), __pyx_v_psi);
 
   /* function exit code */
@@ -5034,7 +5053,7 @@ static int __pyx_pf_13ManyBodyUtils_13ManyBodyState___cinit__(struct __pyx_obj_1
   int __pyx_clineno = 0;
   __Pyx_RefNannySetupContext("__cinit__", 0);
 
-  /* "ManyBodyUtils.pyx":45
+  /* "ManyBodyUtils.pyx":44
  *         cdef double complex val
  *         cdef bytes b
  *         for b, val in psi.items():             # <<<<<<<<<<<<<<
@@ -5044,9 +5063,9 @@ static int __pyx_pf_13ManyBodyUtils_13ManyBodyState___cinit__(struct __pyx_obj_1
   __pyx_t_2 = 0;
   if (unlikely(__pyx_v_psi == Py_None)) {
     PyErr_Format(PyExc_AttributeError, "'NoneType' object has no attribute '%.30s'", "items");
-    __PYX_ERR(0, 45, __pyx_L1_error)
+    __PYX_ERR(0, 44, __pyx_L1_error)
   }
-  __pyx_t_5 = __Pyx_dict_iterator(__pyx_v_psi, 1, __pyx_mstate_global->__pyx_n_u_items, (&__pyx_t_3), (&__pyx_t_4)); if (unlikely(!__pyx_t_5)) __PYX_ERR(0, 45, __pyx_L1_error)
+  __pyx_t_5 = __Pyx_dict_iterator(__pyx_v_psi, 1, __pyx_mstate_global->__pyx_n_u_items, (&__pyx_t_3), (&__pyx_t_4)); if (unlikely(!__pyx_t_5)) __PYX_ERR(0, 44, __pyx_L1_error)
   __Pyx_GOTREF(__pyx_t_5);
   __Pyx_XDECREF(__pyx_t_1);
   __pyx_t_1 = __pyx_t_5;
@@ -5054,32 +5073,32 @@ static int __pyx_pf_13ManyBodyUtils_13ManyBodyState___cinit__(struct __pyx_obj_1
   while (1) {
     __pyx_t_7 = __Pyx_dict_iter_next(__pyx_t_1, __pyx_t_3, &__pyx_t_2, &__pyx_t_5, &__pyx_t_6, NULL, __pyx_t_4);
     if (unlikely(__pyx_t_7 == 0)) break;
-    if (unlikely(__pyx_t_7 == -1)) __PYX_ERR(0, 45, __pyx_L1_error)
+    if (unlikely(__pyx_t_7 == -1)) __PYX_ERR(0, 44, __pyx_L1_error)
     __Pyx_GOTREF(__pyx_t_5);
     __Pyx_GOTREF(__pyx_t_6);
-    if (!(likely(PyBytes_CheckExact(__pyx_t_5))||((__pyx_t_5) == Py_None) || __Pyx_RaiseUnexpectedTypeError("bytes", __pyx_t_5))) __PYX_ERR(0, 45, __pyx_L1_error)
-    __pyx_t_8 = __Pyx_PyComplex_As___pyx_t_double_complex(__pyx_t_6); if (unlikely(PyErr_Occurred())) __PYX_ERR(0, 45, __pyx_L1_error)
+    if (!(likely(PyBytes_CheckExact(__pyx_t_5))||((__pyx_t_5) == Py_None) || __Pyx_RaiseUnexpectedTypeError("bytes", __pyx_t_5))) __PYX_ERR(0, 44, __pyx_L1_error)
+    __pyx_t_8 = __Pyx_PyComplex_As___pyx_t_double_complex(__pyx_t_6); if (unlikely(PyErr_Occurred())) __PYX_ERR(0, 44, __pyx_L1_error)
     __Pyx_DECREF(__pyx_t_6); __pyx_t_6 = 0;
     __Pyx_XDECREF_SET(__pyx_v_b, ((PyObject*)__pyx_t_5));
     __pyx_t_5 = 0;
     __pyx_v_val = __pyx_t_8;
 
-    /* "ManyBodyUtils.pyx":46
+    /* "ManyBodyUtils.pyx":45
  *         cdef bytes b
  *         for b, val in psi.items():
  *             keys.push_back(bytes_to_key(b))             # <<<<<<<<<<<<<<
  *             amplitudes.push_back(val)
  *         with nogil:
 */
-    __pyx_t_9 = __pyx_f_13ManyBodyUtils_bytes_to_key(__pyx_v_b); if (unlikely(PyErr_Occurred())) __PYX_ERR(0, 46, __pyx_L1_error)
+    __pyx_t_9 = __pyx_f_13ManyBodyUtils_bytes_to_key(__pyx_v_b); if (unlikely(PyErr_Occurred())) __PYX_ERR(0, 45, __pyx_L1_error)
     try {
       __pyx_v_keys.push_back(__pyx_t_9);
     } catch(...) {
       __Pyx_CppExn2PyErr();
-      __PYX_ERR(0, 46, __pyx_L1_error)
+      __PYX_ERR(0, 45, __pyx_L1_error)
     }
 
-    /* "ManyBodyUtils.pyx":47
+    /* "ManyBodyUtils.pyx":46
  *         for b, val in psi.items():
  *             keys.push_back(bytes_to_key(b))
  *             amplitudes.push_back(val)             # <<<<<<<<<<<<<<
@@ -5090,12 +5109,12 @@ static int __pyx_pf_13ManyBodyUtils_13ManyBodyState___cinit__(struct __pyx_obj_1
       __pyx_v_amplitudes.push_back(__pyx_t_double_complex_from_parts(__Pyx_CREAL(__pyx_v_val), __Pyx_CIMAG(__pyx_v_val)));
     } catch(...) {
       __Pyx_CppExn2PyErr();
-      __PYX_ERR(0, 47, __pyx_L1_error)
+      __PYX_ERR(0, 46, __pyx_L1_error)
     }
   }
   __Pyx_DECREF(__pyx_t_1); __pyx_t_1 = 0;
 
-  /* "ManyBodyUtils.pyx":48
+  /* "ManyBodyUtils.pyx":47
  *             keys.push_back(bytes_to_key(b))
  *             amplitudes.push_back(val)
  *         with nogil:             # <<<<<<<<<<<<<<
@@ -5109,7 +5128,7 @@ static int __pyx_pf_13ManyBodyUtils_13ManyBodyState___cinit__(struct __pyx_obj_1
       __Pyx_FastGIL_Remember();
       /*try:*/ {
 
-        /* "ManyBodyUtils.pyx":49
+        /* "ManyBodyUtils.pyx":48
  *             amplitudes.push_back(val)
  *         with nogil:
  *             self.v = ManyBodyState_cpp(keys, amplitudes)             # <<<<<<<<<<<<<<
@@ -5119,7 +5138,7 @@ static int __pyx_pf_13ManyBodyUtils_13ManyBodyState___cinit__(struct __pyx_obj_1
         __pyx_v_self->v = ManyBodyState(__pyx_v_keys, __pyx_v_amplitudes);
       }
 
-      /* "ManyBodyUtils.pyx":48
+      /* "ManyBodyUtils.pyx":47
  *             keys.push_back(bytes_to_key(b))
  *             amplitudes.push_back(val)
  *         with nogil:             # <<<<<<<<<<<<<<
@@ -5136,7 +5155,7 @@ static int __pyx_pf_13ManyBodyUtils_13ManyBodyState___cinit__(struct __pyx_obj_1
       }
   }
 
-  /* "ManyBodyUtils.pyx":39
+  /* "ManyBodyUtils.pyx":38
  *     cdef ManyBodyState_cpp v
  * 
  *     def __cinit__(self, dict[bytes, complex] psi={}):             # <<<<<<<<<<<<<<
@@ -5159,7 +5178,7 @@ static int __pyx_pf_13ManyBodyUtils_13ManyBodyState___cinit__(struct __pyx_obj_1
   return __pyx_r;
 }
 
-/* "ManyBodyUtils.pyx":51
+/* "ManyBodyUtils.pyx":50
  *             self.v = ManyBodyState_cpp(keys, amplitudes)
  * 
  *     def __reduce__(self):             # <<<<<<<<<<<<<<
@@ -5221,7 +5240,7 @@ static PyObject *__pyx_pf_13ManyBodyUtils_13ManyBodyState_2__reduce__(struct __p
   int __pyx_clineno = 0;
   __Pyx_RefNannySetupContext("__reduce__", 0);
 
-  /* "ManyBodyUtils.pyx":52
+  /* "ManyBodyUtils.pyx":51
  * 
  *     def __reduce__(self):
  *         return (self.__class__, (self.to_dict(), ))             # <<<<<<<<<<<<<<
@@ -5229,7 +5248,7 @@ static PyObject *__pyx_pf_13ManyBodyUtils_13ManyBodyState_2__reduce__(struct __p
  *     def __repr__(self):
 */
   __Pyx_XDECREF(__pyx_r);
-  __pyx_t_1 = __Pyx_PyObject_GetAttrStr(((PyObject *)__pyx_v_self), __pyx_mstate_global->__pyx_n_u_class); if (unlikely(!__pyx_t_1)) __PYX_ERR(0, 52, __pyx_L1_error)
+  __pyx_t_1 = __Pyx_PyObject_GetAttrStr(((PyObject *)__pyx_v_self), __pyx_mstate_global->__pyx_n_u_class); if (unlikely(!__pyx_t_1)) __PYX_ERR(0, 51, __pyx_L1_error)
   __Pyx_GOTREF(__pyx_t_1);
   __pyx_t_3 = ((PyObject *)__pyx_v_self);
   __Pyx_INCREF(__pyx_t_3);
@@ -5238,27 +5257,27 @@ static PyObject *__pyx_pf_13ManyBodyUtils_13ManyBodyState_2__reduce__(struct __p
     PyObject *__pyx_callargs[2] = {__pyx_t_3, NULL};
     __pyx_t_2 = __Pyx_PyObject_FastCallMethod(__pyx_mstate_global->__pyx_n_u_to_dict, __pyx_callargs+__pyx_t_4, (1-__pyx_t_4) | (1*__Pyx_PY_VECTORCALL_ARGUMENTS_OFFSET));
     __Pyx_XDECREF(__pyx_t_3); __pyx_t_3 = 0;
-    if (unlikely(!__pyx_t_2)) __PYX_ERR(0, 52, __pyx_L1_error)
+    if (unlikely(!__pyx_t_2)) __PYX_ERR(0, 51, __pyx_L1_error)
     __Pyx_GOTREF(__pyx_t_2);
   }
-  __pyx_t_3 = PyTuple_New(1); if (unlikely(!__pyx_t_3)) __PYX_ERR(0, 52, __pyx_L1_error)
+  __pyx_t_3 = PyTuple_New(1); if (unlikely(!__pyx_t_3)) __PYX_ERR(0, 51, __pyx_L1_error)
   __Pyx_GOTREF(__pyx_t_3);
   __Pyx_GIVEREF(__pyx_t_2);
-  if (__Pyx_PyTuple_SET_ITEM(__pyx_t_3, 0, __pyx_t_2) != (0)) __PYX_ERR(0, 52, __pyx_L1_error);
+  if (__Pyx_PyTuple_SET_ITEM(__pyx_t_3, 0, __pyx_t_2) != (0)) __PYX_ERR(0, 51, __pyx_L1_error);
   __pyx_t_2 = 0;
-  __pyx_t_2 = PyTuple_New(2); if (unlikely(!__pyx_t_2)) __PYX_ERR(0, 52, __pyx_L1_error)
+  __pyx_t_2 = PyTuple_New(2); if (unlikely(!__pyx_t_2)) __PYX_ERR(0, 51, __pyx_L1_error)
   __Pyx_GOTREF(__pyx_t_2);
   __Pyx_GIVEREF(__pyx_t_1);
-  if (__Pyx_PyTuple_SET_ITEM(__pyx_t_2, 0, __pyx_t_1) != (0)) __PYX_ERR(0, 52, __pyx_L1_error);
+  if (__Pyx_PyTuple_SET_ITEM(__pyx_t_2, 0, __pyx_t_1) != (0)) __PYX_ERR(0, 51, __pyx_L1_error);
   __Pyx_GIVEREF(__pyx_t_3);
-  if (__Pyx_PyTuple_SET_ITEM(__pyx_t_2, 1, __pyx_t_3) != (0)) __PYX_ERR(0, 52, __pyx_L1_error);
+  if (__Pyx_PyTuple_SET_ITEM(__pyx_t_2, 1, __pyx_t_3) != (0)) __PYX_ERR(0, 51, __pyx_L1_error);
   __pyx_t_1 = 0;
   __pyx_t_3 = 0;
   __pyx_r = __pyx_t_2;
   __pyx_t_2 = 0;
   goto __pyx_L0;
 
-  /* "ManyBodyUtils.pyx":51
+  /* "ManyBodyUtils.pyx":50
  *             self.v = ManyBodyState_cpp(keys, amplitudes)
  * 
  *     def __reduce__(self):             # <<<<<<<<<<<<<<
@@ -5279,7 +5298,7 @@ static PyObject *__pyx_pf_13ManyBodyUtils_13ManyBodyState_2__reduce__(struct __p
   return __pyx_r;
 }
 
-/* "ManyBodyUtils.pyx":54
+/* "ManyBodyUtils.pyx":53
  *         return (self.__class__, (self.to_dict(), ))
  * 
  *     def __repr__(self):             # <<<<<<<<<<<<<<
@@ -5322,7 +5341,7 @@ static PyObject *__pyx_pf_13ManyBodyUtils_13ManyBodyState_4__repr__(struct __pyx
   int __pyx_clineno = 0;
   __Pyx_RefNannySetupContext("__repr__", 0);
 
-  /* "ManyBodyUtils.pyx":55
+  /* "ManyBodyUtils.pyx":54
  * 
  *     def __repr__(self):
  *         return "ManyBodyState({ " + ", ".join([f"{key_to_bytes(key)}: {amp}" for (key, amp) in self.v]) + "})"             # <<<<<<<<<<<<<<
@@ -5331,12 +5350,12 @@ static PyObject *__pyx_pf_13ManyBodyUtils_13ManyBodyState_4__repr__(struct __pyx
 */
   __Pyx_XDECREF(__pyx_r);
   { /* enter inner scope */
-    __pyx_t_1 = PyList_New(0); if (unlikely(!__pyx_t_1)) __PYX_ERR(0, 55, __pyx_L5_error)
+    __pyx_t_1 = PyList_New(0); if (unlikely(!__pyx_t_1)) __PYX_ERR(0, 54, __pyx_L5_error)
     __Pyx_GOTREF(__pyx_t_1);
     __pyx_t_2 = __pyx_v_self->v.begin();
     for (; __pyx_t_2 != __pyx_v_self->v.end(); ++__pyx_t_2) {
       __pyx_t_3 = *__pyx_t_2;
-      __pyx_t_4 = __pyx_convert_pair_to_py_ManyBodyState_3a__3a_Key______pyx_t_double_complex(__pyx_t_3); if (unlikely(!__pyx_t_4)) __PYX_ERR(0, 55, __pyx_L5_error)
+      __pyx_t_4 = __pyx_convert_pair_to_py_ManyBodyState_3a__3a_Key______pyx_t_double_complex(__pyx_t_3); if (unlikely(!__pyx_t_4)) __PYX_ERR(0, 54, __pyx_L5_error)
       __Pyx_GOTREF(__pyx_t_4);
       if ((likely(PyTuple_CheckExact(__pyx_t_4))) || (PyList_CheckExact(__pyx_t_4))) {
         PyObject* sequence = __pyx_t_4;
@@ -5344,7 +5363,7 @@ static PyObject *__pyx_pf_13ManyBodyUtils_13ManyBodyState_4__repr__(struct __pyx
         if (unlikely(size != 2)) {
           if (size > 2) __Pyx_RaiseTooManyValuesError(2);
           else if (size >= 0) __Pyx_RaiseNeedMoreValuesError(size);
-          __PYX_ERR(0, 55, __pyx_L5_error)
+          __PYX_ERR(0, 54, __pyx_L5_error)
         }
         #if CYTHON_ASSUME_SAFE_MACROS && !CYTHON_AVOID_BORROWED_REFS
         if (likely(PyTuple_CheckExact(sequence))) {
@@ -5354,22 +5373,22 @@ static PyObject *__pyx_pf_13ManyBodyUtils_13ManyBodyState_4__repr__(struct __pyx
           __Pyx_INCREF(__pyx_t_6);
         } else {
           __pyx_t_5 = __Pyx_PyList_GetItemRef(sequence, 0);
-          if (unlikely(!__pyx_t_5)) __PYX_ERR(0, 55, __pyx_L5_error)
+          if (unlikely(!__pyx_t_5)) __PYX_ERR(0, 54, __pyx_L5_error)
           __Pyx_XGOTREF(__pyx_t_5);
           __pyx_t_6 = __Pyx_PyList_GetItemRef(sequence, 1);
-          if (unlikely(!__pyx_t_6)) __PYX_ERR(0, 55, __pyx_L5_error)
+          if (unlikely(!__pyx_t_6)) __PYX_ERR(0, 54, __pyx_L5_error)
           __Pyx_XGOTREF(__pyx_t_6);
         }
         #else
-        __pyx_t_5 = __Pyx_PySequence_ITEM(sequence, 0); if (unlikely(!__pyx_t_5)) __PYX_ERR(0, 55, __pyx_L5_error)
+        __pyx_t_5 = __Pyx_PySequence_ITEM(sequence, 0); if (unlikely(!__pyx_t_5)) __PYX_ERR(0, 54, __pyx_L5_error)
         __Pyx_GOTREF(__pyx_t_5);
-        __pyx_t_6 = __Pyx_PySequence_ITEM(sequence, 1); if (unlikely(!__pyx_t_6)) __PYX_ERR(0, 55, __pyx_L5_error)
+        __pyx_t_6 = __Pyx_PySequence_ITEM(sequence, 1); if (unlikely(!__pyx_t_6)) __PYX_ERR(0, 54, __pyx_L5_error)
         __Pyx_GOTREF(__pyx_t_6);
         #endif
         __Pyx_DECREF(__pyx_t_4); __pyx_t_4 = 0;
       } else {
         Py_ssize_t index = -1;
-        __pyx_t_7 = PyObject_GetIter(__pyx_t_4); if (unlikely(!__pyx_t_7)) __PYX_ERR(0, 55, __pyx_L5_error)
+        __pyx_t_7 = PyObject_GetIter(__pyx_t_4); if (unlikely(!__pyx_t_7)) __PYX_ERR(0, 54, __pyx_L5_error)
         __Pyx_GOTREF(__pyx_t_7);
         __Pyx_DECREF(__pyx_t_4); __pyx_t_4 = 0;
         __pyx_t_8 = (CYTHON_COMPILING_IN_LIMITED_API) ? PyIter_Next : __Pyx_PyObject_GetIterNextFunc(__pyx_t_7);
@@ -5377,7 +5396,7 @@ static PyObject *__pyx_pf_13ManyBodyUtils_13ManyBodyState_4__repr__(struct __pyx
         __Pyx_GOTREF(__pyx_t_5);
         index = 1; __pyx_t_6 = __pyx_t_8(__pyx_t_7); if (unlikely(!__pyx_t_6)) goto __pyx_L8_unpacking_failed;
         __Pyx_GOTREF(__pyx_t_6);
-        if (__Pyx_IternextUnpackEndCheck(__pyx_t_8(__pyx_t_7), 2) < 0) __PYX_ERR(0, 55, __pyx_L5_error)
+        if (__Pyx_IternextUnpackEndCheck(__pyx_t_8(__pyx_t_7), 2) < 0) __PYX_ERR(0, 54, __pyx_L5_error)
         __pyx_t_8 = NULL;
         __Pyx_DECREF(__pyx_t_7); __pyx_t_7 = 0;
         goto __pyx_L9_unpacking_done;
@@ -5385,30 +5404,30 @@ static PyObject *__pyx_pf_13ManyBodyUtils_13ManyBodyState_4__repr__(struct __pyx
         __Pyx_DECREF(__pyx_t_7); __pyx_t_7 = 0;
         __pyx_t_8 = NULL;
         if (__Pyx_IterFinish() == 0) __Pyx_RaiseNeedMoreValuesError(index);
-        __PYX_ERR(0, 55, __pyx_L5_error)
+        __PYX_ERR(0, 54, __pyx_L5_error)
         __pyx_L9_unpacking_done:;
       }
       __Pyx_XDECREF_SET(__pyx_7genexpr__pyx_v_key, __pyx_t_5);
       __pyx_t_5 = 0;
       __Pyx_XDECREF_SET(__pyx_7genexpr__pyx_v_amp, __pyx_t_6);
       __pyx_t_6 = 0;
-      __pyx_t_9 = __pyx_convert_vector_from_py_uint64_t(__pyx_7genexpr__pyx_v_key); if (unlikely(PyErr_Occurred())) __PYX_ERR(0, 55, __pyx_L5_error)
-      __pyx_t_4 = __pyx_f_13ManyBodyUtils_key_to_bytes(__pyx_t_9); if (unlikely(!__pyx_t_4)) __PYX_ERR(0, 55, __pyx_L5_error)
+      __pyx_t_9 = __pyx_convert_vector_from_py_uint64_t(__pyx_7genexpr__pyx_v_key); if (unlikely(PyErr_Occurred())) __PYX_ERR(0, 54, __pyx_L5_error)
+      __pyx_t_4 = __pyx_f_13ManyBodyUtils_key_to_bytes(__pyx_t_9); if (unlikely(!__pyx_t_4)) __PYX_ERR(0, 54, __pyx_L5_error)
       __Pyx_GOTREF(__pyx_t_4);
-      __pyx_t_6 = __Pyx_PyObject_FormatSimple(__pyx_t_4, __pyx_mstate_global->__pyx_empty_unicode); if (unlikely(!__pyx_t_6)) __PYX_ERR(0, 55, __pyx_L5_error)
+      __pyx_t_6 = __Pyx_PyObject_FormatSimple(__pyx_t_4, __pyx_mstate_global->__pyx_empty_unicode); if (unlikely(!__pyx_t_6)) __PYX_ERR(0, 54, __pyx_L5_error)
       __Pyx_GOTREF(__pyx_t_6);
       __Pyx_DECREF(__pyx_t_4); __pyx_t_4 = 0;
-      __pyx_t_4 = __Pyx_PyObject_FormatSimple(__pyx_7genexpr__pyx_v_amp, __pyx_mstate_global->__pyx_empty_unicode); if (unlikely(!__pyx_t_4)) __PYX_ERR(0, 55, __pyx_L5_error)
+      __pyx_t_4 = __Pyx_PyObject_FormatSimple(__pyx_7genexpr__pyx_v_amp, __pyx_mstate_global->__pyx_empty_unicode); if (unlikely(!__pyx_t_4)) __PYX_ERR(0, 54, __pyx_L5_error)
       __Pyx_GOTREF(__pyx_t_4);
       __pyx_t_10[0] = __pyx_t_6;
       __pyx_t_10[1] = __pyx_mstate_global->__pyx_kp_u__4;
       __pyx_t_10[2] = __pyx_t_4;
       __pyx_t_5 = __Pyx_PyUnicode_Join(__pyx_t_10, 3, __Pyx_PyUnicode_GET_LENGTH(__pyx_t_6) + 2 + __Pyx_PyUnicode_GET_LENGTH(__pyx_t_4), 127 | __Pyx_PyUnicode_MAX_CHAR_VALUE(__pyx_t_6) | __Pyx_PyUnicode_MAX_CHAR_VALUE(__pyx_t_4));
-      if (unlikely(!__pyx_t_5)) __PYX_ERR(0, 55, __pyx_L5_error)
+      if (unlikely(!__pyx_t_5)) __PYX_ERR(0, 54, __pyx_L5_error)
       __Pyx_GOTREF(__pyx_t_5);
       __Pyx_DECREF(__pyx_t_6); __pyx_t_6 = 0;
       __Pyx_DECREF(__pyx_t_4); __pyx_t_4 = 0;
-      if (unlikely(__Pyx_ListComp_Append(__pyx_t_1, (PyObject*)__pyx_t_5))) __PYX_ERR(0, 55, __pyx_L5_error)
+      if (unlikely(__Pyx_ListComp_Append(__pyx_t_1, (PyObject*)__pyx_t_5))) __PYX_ERR(0, 54, __pyx_L5_error)
       __Pyx_DECREF(__pyx_t_5); __pyx_t_5 = 0;
     }
     __Pyx_XDECREF(__pyx_7genexpr__pyx_v_amp); __pyx_7genexpr__pyx_v_amp = 0;
@@ -5420,20 +5439,20 @@ static PyObject *__pyx_pf_13ManyBodyUtils_13ManyBodyState_4__repr__(struct __pyx
     goto __pyx_L1_error;
     __pyx_L11_exit_scope:;
   } /* exit inner scope */
-  __pyx_t_5 = PyUnicode_Join(__pyx_mstate_global->__pyx_kp_u__3, __pyx_t_1); if (unlikely(!__pyx_t_5)) __PYX_ERR(0, 55, __pyx_L1_error)
+  __pyx_t_5 = PyUnicode_Join(__pyx_mstate_global->__pyx_kp_u__3, __pyx_t_1); if (unlikely(!__pyx_t_5)) __PYX_ERR(0, 54, __pyx_L1_error)
   __Pyx_GOTREF(__pyx_t_5);
   __Pyx_DECREF(__pyx_t_1); __pyx_t_1 = 0;
-  __pyx_t_1 = __Pyx_PyUnicode_Concat(__pyx_mstate_global->__pyx_kp_u_ManyBodyState, __pyx_t_5); if (unlikely(!__pyx_t_1)) __PYX_ERR(0, 55, __pyx_L1_error)
+  __pyx_t_1 = __Pyx_PyUnicode_Concat(__pyx_mstate_global->__pyx_kp_u_ManyBodyState, __pyx_t_5); if (unlikely(!__pyx_t_1)) __PYX_ERR(0, 54, __pyx_L1_error)
   __Pyx_GOTREF(__pyx_t_1);
   __Pyx_DECREF(__pyx_t_5); __pyx_t_5 = 0;
-  __pyx_t_5 = __Pyx_PyUnicode_ConcatInPlace(__pyx_t_1, __pyx_mstate_global->__pyx_kp_u__5); if (unlikely(!__pyx_t_5)) __PYX_ERR(0, 55, __pyx_L1_error)
+  __pyx_t_5 = __Pyx_PyUnicode_ConcatInPlace(__pyx_t_1, __pyx_mstate_global->__pyx_kp_u__5); if (unlikely(!__pyx_t_5)) __PYX_ERR(0, 54, __pyx_L1_error)
   __Pyx_GOTREF(__pyx_t_5);
   __Pyx_DECREF(__pyx_t_1); __pyx_t_1 = 0;
   __pyx_r = __pyx_t_5;
   __pyx_t_5 = 0;
   goto __pyx_L0;
 
-  /* "ManyBodyUtils.pyx":54
+  /* "ManyBodyUtils.pyx":53
  *         return (self.__class__, (self.to_dict(), ))
  * 
  *     def __repr__(self):             # <<<<<<<<<<<<<<
@@ -5458,7 +5477,7 @@ static PyObject *__pyx_pf_13ManyBodyUtils_13ManyBodyState_4__repr__(struct __pyx
   return __pyx_r;
 }
 
-/* "ManyBodyUtils.pyx":57
+/* "ManyBodyUtils.pyx":56
  *         return "ManyBodyState({ " + ", ".join([f"{key_to_bytes(key)}: {amp}" for (key, amp) in self.v]) + "})"
  * 
  *     def __eq__(self, ManyBodyState other):             # <<<<<<<<<<<<<<
@@ -5477,7 +5496,7 @@ static PyObject *__pyx_pw_13ManyBodyUtils_13ManyBodyState_7__eq__(PyObject *__py
   __Pyx_RefNannyDeclarations
   __Pyx_RefNannySetupContext("__eq__ (wrapper)", 0);
   __pyx_kwvalues = __Pyx_KwValues_VARARGS(__pyx_args, __pyx_nargs);
-  if (unlikely(!__Pyx_ArgTypeTest(((PyObject *)__pyx_v_other), __pyx_mstate_global->__pyx_ptype_13ManyBodyUtils_ManyBodyState, 1, "other", 0))) __PYX_ERR(0, 57, __pyx_L1_error)
+  if (unlikely(!__Pyx_ArgTypeTest(((PyObject *)__pyx_v_other), __pyx_mstate_global->__pyx_ptype_13ManyBodyUtils_ManyBodyState, 1, "other", 0))) __PYX_ERR(0, 56, __pyx_L1_error)
   __pyx_r = __pyx_pf_13ManyBodyUtils_13ManyBodyState_6__eq__(((struct __pyx_obj_13ManyBodyUtils_ManyBodyState *)__pyx_v_self), ((struct __pyx_obj_13ManyBodyUtils_ManyBodyState *)__pyx_v_other));
 
   /* function exit code */
@@ -5500,7 +5519,7 @@ static PyObject *__pyx_pf_13ManyBodyUtils_13ManyBodyState_6__eq__(struct __pyx_o
   int __pyx_clineno = 0;
   __Pyx_RefNannySetupContext("__eq__", 0);
 
-  /* "ManyBodyUtils.pyx":58
+  /* "ManyBodyUtils.pyx":57
  * 
  *     def __eq__(self, ManyBodyState other):
  *         return self.v == other.v             # <<<<<<<<<<<<<<
@@ -5508,13 +5527,13 @@ static PyObject *__pyx_pf_13ManyBodyUtils_13ManyBodyState_6__eq__(struct __pyx_o
  *     def __add__(self, ManyBodyState other):
 */
   __Pyx_XDECREF(__pyx_r);
-  __pyx_t_1 = __Pyx_PyBool_FromLong((__pyx_v_self->v == __pyx_v_other->v)); if (unlikely(!__pyx_t_1)) __PYX_ERR(0, 58, __pyx_L1_error)
+  __pyx_t_1 = __Pyx_PyBool_FromLong((__pyx_v_self->v == __pyx_v_other->v)); if (unlikely(!__pyx_t_1)) __PYX_ERR(0, 57, __pyx_L1_error)
   __Pyx_GOTREF(__pyx_t_1);
   __pyx_r = __pyx_t_1;
   __pyx_t_1 = 0;
   goto __pyx_L0;
 
-  /* "ManyBodyUtils.pyx":57
+  /* "ManyBodyUtils.pyx":56
  *         return "ManyBodyState({ " + ", ".join([f"{key_to_bytes(key)}: {amp}" for (key, amp) in self.v]) + "})"
  * 
  *     def __eq__(self, ManyBodyState other):             # <<<<<<<<<<<<<<
@@ -5533,7 +5552,7 @@ static PyObject *__pyx_pf_13ManyBodyUtils_13ManyBodyState_6__eq__(struct __pyx_o
   return __pyx_r;
 }
 
-/* "ManyBodyUtils.pyx":60
+/* "ManyBodyUtils.pyx":59
  *         return self.v == other.v
  * 
  *     def __add__(self, ManyBodyState other):             # <<<<<<<<<<<<<<
@@ -5552,7 +5571,7 @@ static PyObject *__pyx_pw_13ManyBodyUtils_13ManyBodyState_9__add__(PyObject *__p
   __Pyx_RefNannyDeclarations
   __Pyx_RefNannySetupContext("__add__ (wrapper)", 0);
   __pyx_kwvalues = __Pyx_KwValues_VARARGS(__pyx_args, __pyx_nargs);
-  if (unlikely(!__Pyx_ArgTypeTest(((PyObject *)__pyx_v_other), __pyx_mstate_global->__pyx_ptype_13ManyBodyUtils_ManyBodyState, 1, "other", 0))) __PYX_ERR(0, 60, __pyx_L1_error)
+  if (unlikely(!__Pyx_ArgTypeTest(((PyObject *)__pyx_v_other), __pyx_mstate_global->__pyx_ptype_13ManyBodyUtils_ManyBodyState, 1, "other", 0))) __PYX_ERR(0, 59, __pyx_L1_error)
   __pyx_r = __pyx_pf_13ManyBodyUtils_13ManyBodyState_8__add__(((struct __pyx_obj_13ManyBodyUtils_ManyBodyState *)__pyx_v_self), ((struct __pyx_obj_13ManyBodyUtils_ManyBodyState *)__pyx_v_other));
 
   /* function exit code */
@@ -5579,7 +5598,7 @@ static PyObject *__pyx_pf_13ManyBodyUtils_13ManyBodyState_8__add__(struct __pyx_
   int __pyx_clineno = 0;
   __Pyx_RefNannySetupContext("__add__", 0);
 
-  /* "ManyBodyUtils.pyx":61
+  /* "ManyBodyUtils.pyx":60
  * 
  *     def __add__(self, ManyBodyState other):
  *         res = ManyBodyState()             # <<<<<<<<<<<<<<
@@ -5595,13 +5614,13 @@ static PyObject *__pyx_pf_13ManyBodyUtils_13ManyBodyState_8__add__(struct __pyx_
     __pyx_t_1 = __Pyx_PyObject_FastCall(__pyx_t_3, __pyx_callargs+__pyx_t_4, (1-__pyx_t_4) | (__pyx_t_4*__Pyx_PY_VECTORCALL_ARGUMENTS_OFFSET));
     __Pyx_XDECREF(__pyx_t_2); __pyx_t_2 = 0;
     __Pyx_DECREF(__pyx_t_3); __pyx_t_3 = 0;
-    if (unlikely(!__pyx_t_1)) __PYX_ERR(0, 61, __pyx_L1_error)
+    if (unlikely(!__pyx_t_1)) __PYX_ERR(0, 60, __pyx_L1_error)
     __Pyx_GOTREF((PyObject *)__pyx_t_1);
   }
   __pyx_v_res = ((struct __pyx_obj_13ManyBodyUtils_ManyBodyState *)__pyx_t_1);
   __pyx_t_1 = 0;
 
-  /* "ManyBodyUtils.pyx":62
+  /* "ManyBodyUtils.pyx":61
  *     def __add__(self, ManyBodyState other):
  *         res = ManyBodyState()
  *         with nogil:             # <<<<<<<<<<<<<<
@@ -5615,7 +5634,7 @@ static PyObject *__pyx_pf_13ManyBodyUtils_13ManyBodyState_8__add__(struct __pyx_
       __Pyx_FastGIL_Remember();
       /*try:*/ {
 
-        /* "ManyBodyUtils.pyx":63
+        /* "ManyBodyUtils.pyx":62
  *         res = ManyBodyState()
  *         with nogil:
  *             res.v = self.v + other.v             # <<<<<<<<<<<<<<
@@ -5625,7 +5644,7 @@ static PyObject *__pyx_pf_13ManyBodyUtils_13ManyBodyState_8__add__(struct __pyx_
         __pyx_v_res->v = (__pyx_v_self->v + __pyx_v_other->v);
       }
 
-      /* "ManyBodyUtils.pyx":62
+      /* "ManyBodyUtils.pyx":61
  *     def __add__(self, ManyBodyState other):
  *         res = ManyBodyState()
  *         with nogil:             # <<<<<<<<<<<<<<
@@ -5642,7 +5661,7 @@ static PyObject *__pyx_pf_13ManyBodyUtils_13ManyBodyState_8__add__(struct __pyx_
       }
   }
 
-  /* "ManyBodyUtils.pyx":64
+  /* "ManyBodyUtils.pyx":63
  *         with nogil:
  *             res.v = self.v + other.v
  *         return res             # <<<<<<<<<<<<<<
@@ -5654,7 +5673,7 @@ static PyObject *__pyx_pf_13ManyBodyUtils_13ManyBodyState_8__add__(struct __pyx_
   __pyx_r = ((PyObject *)__pyx_v_res);
   goto __pyx_L0;
 
-  /* "ManyBodyUtils.pyx":60
+  /* "ManyBodyUtils.pyx":59
  *         return self.v == other.v
  * 
  *     def __add__(self, ManyBodyState other):             # <<<<<<<<<<<<<<
@@ -5676,7 +5695,7 @@ static PyObject *__pyx_pf_13ManyBodyUtils_13ManyBodyState_8__add__(struct __pyx_
   return __pyx_r;
 }
 
-/* "ManyBodyUtils.pyx":66
+/* "ManyBodyUtils.pyx":65
  *         return res
  * 
  *     def __iadd__(self, ManyBodyState other) -> ManyBodyState:             # <<<<<<<<<<<<<<
@@ -5695,7 +5714,7 @@ static PyObject *__pyx_pw_13ManyBodyUtils_13ManyBodyState_11__iadd__(PyObject *_
   __Pyx_RefNannyDeclarations
   __Pyx_RefNannySetupContext("__iadd__ (wrapper)", 0);
   __pyx_kwvalues = __Pyx_KwValues_VARARGS(__pyx_args, __pyx_nargs);
-  if (unlikely(!__Pyx_ArgTypeTest(((PyObject *)__pyx_v_other), __pyx_mstate_global->__pyx_ptype_13ManyBodyUtils_ManyBodyState, 1, "other", 0))) __PYX_ERR(0, 66, __pyx_L1_error)
+  if (unlikely(!__Pyx_ArgTypeTest(((PyObject *)__pyx_v_other), __pyx_mstate_global->__pyx_ptype_13ManyBodyUtils_ManyBodyState, 1, "other", 0))) __PYX_ERR(0, 65, __pyx_L1_error)
   __pyx_r = __pyx_pf_13ManyBodyUtils_13ManyBodyState_10__iadd__(((struct __pyx_obj_13ManyBodyUtils_ManyBodyState *)__pyx_v_self), ((struct __pyx_obj_13ManyBodyUtils_ManyBodyState *)__pyx_v_other));
 
   /* function exit code */
@@ -5714,7 +5733,7 @@ static PyObject *__pyx_pf_13ManyBodyUtils_13ManyBodyState_10__iadd__(struct __py
   __Pyx_RefNannyDeclarations
   __Pyx_RefNannySetupContext("__iadd__", 0);
 
-  /* "ManyBodyUtils.pyx":67
+  /* "ManyBodyUtils.pyx":66
  * 
  *     def __iadd__(self, ManyBodyState other) -> ManyBodyState:
  *         with nogil:             # <<<<<<<<<<<<<<
@@ -5728,7 +5747,7 @@ static PyObject *__pyx_pf_13ManyBodyUtils_13ManyBodyState_10__iadd__(struct __py
       __Pyx_FastGIL_Remember();
       /*try:*/ {
 
-        /* "ManyBodyUtils.pyx":68
+        /* "ManyBodyUtils.pyx":67
  *     def __iadd__(self, ManyBodyState other) -> ManyBodyState:
  *         with nogil:
  *             self.v = self.v + other.v             # <<<<<<<<<<<<<<
@@ -5738,7 +5757,7 @@ static PyObject *__pyx_pf_13ManyBodyUtils_13ManyBodyState_10__iadd__(struct __py
         __pyx_v_self->v = (__pyx_v_self->v + __pyx_v_other->v);
       }
 
-      /* "ManyBodyUtils.pyx":67
+      /* "ManyBodyUtils.pyx":66
  * 
  *     def __iadd__(self, ManyBodyState other) -> ManyBodyState:
  *         with nogil:             # <<<<<<<<<<<<<<
@@ -5755,7 +5774,7 @@ static PyObject *__pyx_pf_13ManyBodyUtils_13ManyBodyState_10__iadd__(struct __py
       }
   }
 
-  /* "ManyBodyUtils.pyx":69
+  /* "ManyBodyUtils.pyx":68
  *         with nogil:
  *             self.v = self.v + other.v
  *         return self             # <<<<<<<<<<<<<<
@@ -5767,7 +5786,7 @@ static PyObject *__pyx_pf_13ManyBodyUtils_13ManyBodyState_10__iadd__(struct __py
   __pyx_r = ((PyObject *)__pyx_v_self);
   goto __pyx_L0;
 
-  /* "ManyBodyUtils.pyx":66
+  /* "ManyBodyUtils.pyx":65
  *         return res
  * 
  *     def __iadd__(self, ManyBodyState other) -> ManyBodyState:             # <<<<<<<<<<<<<<
@@ -5782,7 +5801,7 @@ static PyObject *__pyx_pf_13ManyBodyUtils_13ManyBodyState_10__iadd__(struct __py
   return __pyx_r;
 }
 
-/* "ManyBodyUtils.pyx":72
+/* "ManyBodyUtils.pyx":71
  * 
  * 
  *     def __sub__(self, ManyBodyState other):             # <<<<<<<<<<<<<<
@@ -5801,7 +5820,7 @@ static PyObject *__pyx_pw_13ManyBodyUtils_13ManyBodyState_13__sub__(PyObject *__
   __Pyx_RefNannyDeclarations
   __Pyx_RefNannySetupContext("__sub__ (wrapper)", 0);
   __pyx_kwvalues = __Pyx_KwValues_VARARGS(__pyx_args, __pyx_nargs);
-  if (unlikely(!__Pyx_ArgTypeTest(((PyObject *)__pyx_v_other), __pyx_mstate_global->__pyx_ptype_13ManyBodyUtils_ManyBodyState, 1, "other", 0))) __PYX_ERR(0, 72, __pyx_L1_error)
+  if (unlikely(!__Pyx_ArgTypeTest(((PyObject *)__pyx_v_other), __pyx_mstate_global->__pyx_ptype_13ManyBodyUtils_ManyBodyState, 1, "other", 0))) __PYX_ERR(0, 71, __pyx_L1_error)
   __pyx_r = __pyx_pf_13ManyBodyUtils_13ManyBodyState_12__sub__(((struct __pyx_obj_13ManyBodyUtils_ManyBodyState *)__pyx_v_self), ((struct __pyx_obj_13ManyBodyUtils_ManyBodyState *)__pyx_v_other));
 
   /* function exit code */
@@ -5828,7 +5847,7 @@ static PyObject *__pyx_pf_13ManyBodyUtils_13ManyBodyState_12__sub__(struct __pyx
   int __pyx_clineno = 0;
   __Pyx_RefNannySetupContext("__sub__", 0);
 
-  /* "ManyBodyUtils.pyx":73
+  /* "ManyBodyUtils.pyx":72
  * 
  *     def __sub__(self, ManyBodyState other):
  *         res = ManyBodyState()             # <<<<<<<<<<<<<<
@@ -5844,13 +5863,13 @@ static PyObject *__pyx_pf_13ManyBodyUtils_13ManyBodyState_12__sub__(struct __pyx
     __pyx_t_1 = __Pyx_PyObject_FastCall(__pyx_t_3, __pyx_callargs+__pyx_t_4, (1-__pyx_t_4) | (__pyx_t_4*__Pyx_PY_VECTORCALL_ARGUMENTS_OFFSET));
     __Pyx_XDECREF(__pyx_t_2); __pyx_t_2 = 0;
     __Pyx_DECREF(__pyx_t_3); __pyx_t_3 = 0;
-    if (unlikely(!__pyx_t_1)) __PYX_ERR(0, 73, __pyx_L1_error)
+    if (unlikely(!__pyx_t_1)) __PYX_ERR(0, 72, __pyx_L1_error)
     __Pyx_GOTREF((PyObject *)__pyx_t_1);
   }
   __pyx_v_res = ((struct __pyx_obj_13ManyBodyUtils_ManyBodyState *)__pyx_t_1);
   __pyx_t_1 = 0;
 
-  /* "ManyBodyUtils.pyx":74
+  /* "ManyBodyUtils.pyx":73
  *     def __sub__(self, ManyBodyState other):
  *         res = ManyBodyState()
  *         with nogil:             # <<<<<<<<<<<<<<
@@ -5864,7 +5883,7 @@ static PyObject *__pyx_pf_13ManyBodyUtils_13ManyBodyState_12__sub__(struct __pyx
       __Pyx_FastGIL_Remember();
       /*try:*/ {
 
-        /* "ManyBodyUtils.pyx":75
+        /* "ManyBodyUtils.pyx":74
  *         res = ManyBodyState()
  *         with nogil:
  *             res.v = self.v - other.v             # <<<<<<<<<<<<<<
@@ -5874,7 +5893,7 @@ static PyObject *__pyx_pf_13ManyBodyUtils_13ManyBodyState_12__sub__(struct __pyx
         __pyx_v_res->v = (__pyx_v_self->v - __pyx_v_other->v);
       }
 
-      /* "ManyBodyUtils.pyx":74
+      /* "ManyBodyUtils.pyx":73
  *     def __sub__(self, ManyBodyState other):
  *         res = ManyBodyState()
  *         with nogil:             # <<<<<<<<<<<<<<
@@ -5891,7 +5910,7 @@ static PyObject *__pyx_pf_13ManyBodyUtils_13ManyBodyState_12__sub__(struct __pyx
       }
   }
 
-  /* "ManyBodyUtils.pyx":76
+  /* "ManyBodyUtils.pyx":75
  *         with nogil:
  *             res.v = self.v - other.v
  *         return res             # <<<<<<<<<<<<<<
@@ -5903,7 +5922,7 @@ static PyObject *__pyx_pf_13ManyBodyUtils_13ManyBodyState_12__sub__(struct __pyx
   __pyx_r = ((PyObject *)__pyx_v_res);
   goto __pyx_L0;
 
-  /* "ManyBodyUtils.pyx":72
+  /* "ManyBodyUtils.pyx":71
  * 
  * 
  *     def __sub__(self, ManyBodyState other):             # <<<<<<<<<<<<<<
@@ -5925,7 +5944,7 @@ static PyObject *__pyx_pf_13ManyBodyUtils_13ManyBodyState_12__sub__(struct __pyx
   return __pyx_r;
 }
 
-/* "ManyBodyUtils.pyx":78
+/* "ManyBodyUtils.pyx":77
  *         return res
  * 
  *     def __isub__(self, ManyBodyState other):             # <<<<<<<<<<<<<<
@@ -5944,7 +5963,7 @@ static PyObject *__pyx_pw_13ManyBodyUtils_13ManyBodyState_15__isub__(PyObject *_
   __Pyx_RefNannyDeclarations
   __Pyx_RefNannySetupContext("__isub__ (wrapper)", 0);
   __pyx_kwvalues = __Pyx_KwValues_VARARGS(__pyx_args, __pyx_nargs);
-  if (unlikely(!__Pyx_ArgTypeTest(((PyObject *)__pyx_v_other), __pyx_mstate_global->__pyx_ptype_13ManyBodyUtils_ManyBodyState, 1, "other", 0))) __PYX_ERR(0, 78, __pyx_L1_error)
+  if (unlikely(!__Pyx_ArgTypeTest(((PyObject *)__pyx_v_other), __pyx_mstate_global->__pyx_ptype_13ManyBodyUtils_ManyBodyState, 1, "other", 0))) __PYX_ERR(0, 77, __pyx_L1_error)
   __pyx_r = __pyx_pf_13ManyBodyUtils_13ManyBodyState_14__isub__(((struct __pyx_obj_13ManyBodyUtils_ManyBodyState *)__pyx_v_self), ((struct __pyx_obj_13ManyBodyUtils_ManyBodyState *)__pyx_v_other));
 
   /* function exit code */
@@ -5963,7 +5982,7 @@ static PyObject *__pyx_pf_13ManyBodyUtils_13ManyBodyState_14__isub__(struct __py
   __Pyx_RefNannyDeclarations
   __Pyx_RefNannySetupContext("__isub__", 0);
 
-  /* "ManyBodyUtils.pyx":79
+  /* "ManyBodyUtils.pyx":78
  * 
  *     def __isub__(self, ManyBodyState other):
  *         with nogil:             # <<<<<<<<<<<<<<
@@ -5977,7 +5996,7 @@ static PyObject *__pyx_pf_13ManyBodyUtils_13ManyBodyState_14__isub__(struct __py
       __Pyx_FastGIL_Remember();
       /*try:*/ {
 
-        /* "ManyBodyUtils.pyx":80
+        /* "ManyBodyUtils.pyx":79
  *     def __isub__(self, ManyBodyState other):
  *         with nogil:
  *             self.v = self.v - other.v             # <<<<<<<<<<<<<<
@@ -5987,7 +6006,7 @@ static PyObject *__pyx_pf_13ManyBodyUtils_13ManyBodyState_14__isub__(struct __py
         __pyx_v_self->v = (__pyx_v_self->v - __pyx_v_other->v);
       }
 
-      /* "ManyBodyUtils.pyx":79
+      /* "ManyBodyUtils.pyx":78
  * 
  *     def __isub__(self, ManyBodyState other):
  *         with nogil:             # <<<<<<<<<<<<<<
@@ -6004,7 +6023,7 @@ static PyObject *__pyx_pf_13ManyBodyUtils_13ManyBodyState_14__isub__(struct __py
       }
   }
 
-  /* "ManyBodyUtils.pyx":81
+  /* "ManyBodyUtils.pyx":80
  *         with nogil:
  *             self.v = self.v - other.v
  *         return self             # <<<<<<<<<<<<<<
@@ -6016,7 +6035,7 @@ static PyObject *__pyx_pf_13ManyBodyUtils_13ManyBodyState_14__isub__(struct __py
   __pyx_r = ((PyObject *)__pyx_v_self);
   goto __pyx_L0;
 
-  /* "ManyBodyUtils.pyx":78
+  /* "ManyBodyUtils.pyx":77
  *         return res
  * 
  *     def __isub__(self, ManyBodyState other):             # <<<<<<<<<<<<<<
@@ -6031,7 +6050,7 @@ static PyObject *__pyx_pf_13ManyBodyUtils_13ManyBodyState_14__isub__(struct __py
   return __pyx_r;
 }
 
-/* "ManyBodyUtils.pyx":83
+/* "ManyBodyUtils.pyx":82
  *         return self
  * 
  *     def __mul__(self, double complex s):             # <<<<<<<<<<<<<<
@@ -6052,7 +6071,7 @@ static PyObject *__pyx_pw_13ManyBodyUtils_13ManyBodyState_17__mul__(PyObject *__
   __Pyx_RefNannySetupContext("__mul__ (wrapper)", 0);
   __pyx_kwvalues = __Pyx_KwValues_VARARGS(__pyx_args, __pyx_nargs);
   assert(__pyx_arg_s); {
-    __pyx_v_s = __Pyx_PyComplex_As___pyx_t_double_complex(__pyx_arg_s); if (unlikely(PyErr_Occurred())) __PYX_ERR(0, 83, __pyx_L3_error)
+    __pyx_v_s = __Pyx_PyComplex_As___pyx_t_double_complex(__pyx_arg_s); if (unlikely(PyErr_Occurred())) __PYX_ERR(0, 82, __pyx_L3_error)
   }
   goto __pyx_L4_argument_unpacking_done;
   __pyx_L3_error:;
@@ -6080,7 +6099,7 @@ static PyObject *__pyx_pf_13ManyBodyUtils_13ManyBodyState_16__mul__(struct __pyx
   int __pyx_clineno = 0;
   __Pyx_RefNannySetupContext("__mul__", 0);
 
-  /* "ManyBodyUtils.pyx":84
+  /* "ManyBodyUtils.pyx":83
  * 
  *     def __mul__(self, double complex s):
  *         res = ManyBodyState()             # <<<<<<<<<<<<<<
@@ -6096,13 +6115,13 @@ static PyObject *__pyx_pf_13ManyBodyUtils_13ManyBodyState_16__mul__(struct __pyx
     __pyx_t_1 = __Pyx_PyObject_FastCall(__pyx_t_3, __pyx_callargs+__pyx_t_4, (1-__pyx_t_4) | (__pyx_t_4*__Pyx_PY_VECTORCALL_ARGUMENTS_OFFSET));
     __Pyx_XDECREF(__pyx_t_2); __pyx_t_2 = 0;
     __Pyx_DECREF(__pyx_t_3); __pyx_t_3 = 0;
-    if (unlikely(!__pyx_t_1)) __PYX_ERR(0, 84, __pyx_L1_error)
+    if (unlikely(!__pyx_t_1)) __PYX_ERR(0, 83, __pyx_L1_error)
     __Pyx_GOTREF((PyObject *)__pyx_t_1);
   }
   __pyx_v_res = ((struct __pyx_obj_13ManyBodyUtils_ManyBodyState *)__pyx_t_1);
   __pyx_t_1 = 0;
 
-  /* "ManyBodyUtils.pyx":85
+  /* "ManyBodyUtils.pyx":84
  *     def __mul__(self, double complex s):
  *         res = ManyBodyState()
  *         with nogil:             # <<<<<<<<<<<<<<
@@ -6116,7 +6135,7 @@ static PyObject *__pyx_pf_13ManyBodyUtils_13ManyBodyState_16__mul__(struct __pyx
       __Pyx_FastGIL_Remember();
       /*try:*/ {
 
-        /* "ManyBodyUtils.pyx":86
+        /* "ManyBodyUtils.pyx":85
  *         res = ManyBodyState()
  *         with nogil:
  *             res.v = self.v*  s             # <<<<<<<<<<<<<<
@@ -6126,7 +6145,7 @@ static PyObject *__pyx_pf_13ManyBodyUtils_13ManyBodyState_16__mul__(struct __pyx
         __pyx_v_res->v = (__pyx_v_self->v * __pyx_v_s);
       }
 
-      /* "ManyBodyUtils.pyx":85
+      /* "ManyBodyUtils.pyx":84
  *     def __mul__(self, double complex s):
  *         res = ManyBodyState()
  *         with nogil:             # <<<<<<<<<<<<<<
@@ -6143,7 +6162,7 @@ static PyObject *__pyx_pf_13ManyBodyUtils_13ManyBodyState_16__mul__(struct __pyx
       }
   }
 
-  /* "ManyBodyUtils.pyx":87
+  /* "ManyBodyUtils.pyx":86
  *         with nogil:
  *             res.v = self.v*  s
  *         return res             # <<<<<<<<<<<<<<
@@ -6155,7 +6174,7 @@ static PyObject *__pyx_pf_13ManyBodyUtils_13ManyBodyState_16__mul__(struct __pyx
   __pyx_r = ((PyObject *)__pyx_v_res);
   goto __pyx_L0;
 
-  /* "ManyBodyUtils.pyx":83
+  /* "ManyBodyUtils.pyx":82
  *         return self
  * 
  *     def __mul__(self, double complex s):             # <<<<<<<<<<<<<<
@@ -6177,7 +6196,7 @@ static PyObject *__pyx_pf_13ManyBodyUtils_13ManyBodyState_16__mul__(struct __pyx
   return __pyx_r;
 }
 
-/* "ManyBodyUtils.pyx":89
+/* "ManyBodyUtils.pyx":88
  *         return res
  * 
  *     def __imul__(self, double complex s):             # <<<<<<<<<<<<<<
@@ -6198,7 +6217,7 @@ static PyObject *__pyx_pw_13ManyBodyUtils_13ManyBodyState_19__imul__(PyObject *_
   __Pyx_RefNannySetupContext("__imul__ (wrapper)", 0);
   __pyx_kwvalues = __Pyx_KwValues_VARARGS(__pyx_args, __pyx_nargs);
   assert(__pyx_arg_s); {
-    __pyx_v_s = __Pyx_PyComplex_As___pyx_t_double_complex(__pyx_arg_s); if (unlikely(PyErr_Occurred())) __PYX_ERR(0, 89, __pyx_L3_error)
+    __pyx_v_s = __Pyx_PyComplex_As___pyx_t_double_complex(__pyx_arg_s); if (unlikely(PyErr_Occurred())) __PYX_ERR(0, 88, __pyx_L3_error)
   }
   goto __pyx_L4_argument_unpacking_done;
   __pyx_L3_error:;
@@ -6218,7 +6237,7 @@ static PyObject *__pyx_pf_13ManyBodyUtils_13ManyBodyState_18__imul__(struct __py
   __Pyx_RefNannyDeclarations
   __Pyx_RefNannySetupContext("__imul__", 0);
 
-  /* "ManyBodyUtils.pyx":90
+  /* "ManyBodyUtils.pyx":89
  * 
  *     def __imul__(self, double complex s):
  *         with nogil:             # <<<<<<<<<<<<<<
@@ -6232,7 +6251,7 @@ static PyObject *__pyx_pf_13ManyBodyUtils_13ManyBodyState_18__imul__(struct __py
       __Pyx_FastGIL_Remember();
       /*try:*/ {
 
-        /* "ManyBodyUtils.pyx":91
+        /* "ManyBodyUtils.pyx":90
  *     def __imul__(self, double complex s):
  *         with nogil:
  *             self.v = self.v*  s             # <<<<<<<<<<<<<<
@@ -6242,7 +6261,7 @@ static PyObject *__pyx_pf_13ManyBodyUtils_13ManyBodyState_18__imul__(struct __py
         __pyx_v_self->v = (__pyx_v_self->v * __pyx_v_s);
       }
 
-      /* "ManyBodyUtils.pyx":90
+      /* "ManyBodyUtils.pyx":89
  * 
  *     def __imul__(self, double complex s):
  *         with nogil:             # <<<<<<<<<<<<<<
@@ -6259,7 +6278,7 @@ static PyObject *__pyx_pf_13ManyBodyUtils_13ManyBodyState_18__imul__(struct __py
       }
   }
 
-  /* "ManyBodyUtils.pyx":92
+  /* "ManyBodyUtils.pyx":91
  *         with nogil:
  *             self.v = self.v*  s
  *         return self             # <<<<<<<<<<<<<<
@@ -6271,7 +6290,7 @@ static PyObject *__pyx_pf_13ManyBodyUtils_13ManyBodyState_18__imul__(struct __py
   __pyx_r = ((PyObject *)__pyx_v_self);
   goto __pyx_L0;
 
-  /* "ManyBodyUtils.pyx":89
+  /* "ManyBodyUtils.pyx":88
  *         return res
  * 
  *     def __imul__(self, double complex s):             # <<<<<<<<<<<<<<
@@ -6286,7 +6305,7 @@ static PyObject *__pyx_pf_13ManyBodyUtils_13ManyBodyState_18__imul__(struct __py
   return __pyx_r;
 }
 
-/* "ManyBodyUtils.pyx":94
+/* "ManyBodyUtils.pyx":93
  *         return self
  * 
  *     def __rmul__(self, double complex s):             # <<<<<<<<<<<<<<
@@ -6307,7 +6326,7 @@ static PyObject *__pyx_pw_13ManyBodyUtils_13ManyBodyState_21__rmul__(PyObject *_
   __Pyx_RefNannySetupContext("__rmul__ (wrapper)", 0);
   __pyx_kwvalues = __Pyx_KwValues_VARARGS(__pyx_args, __pyx_nargs);
   assert(__pyx_arg_s); {
-    __pyx_v_s = __Pyx_PyComplex_As___pyx_t_double_complex(__pyx_arg_s); if (unlikely(PyErr_Occurred())) __PYX_ERR(0, 94, __pyx_L3_error)
+    __pyx_v_s = __Pyx_PyComplex_As___pyx_t_double_complex(__pyx_arg_s); if (unlikely(PyErr_Occurred())) __PYX_ERR(0, 93, __pyx_L3_error)
   }
   goto __pyx_L4_argument_unpacking_done;
   __pyx_L3_error:;
@@ -6335,7 +6354,7 @@ static PyObject *__pyx_pf_13ManyBodyUtils_13ManyBodyState_20__rmul__(struct __py
   int __pyx_clineno = 0;
   __Pyx_RefNannySetupContext("__rmul__", 0);
 
-  /* "ManyBodyUtils.pyx":95
+  /* "ManyBodyUtils.pyx":94
  * 
  *     def __rmul__(self, double complex s):
  *         res = ManyBodyState()             # <<<<<<<<<<<<<<
@@ -6351,13 +6370,13 @@ static PyObject *__pyx_pf_13ManyBodyUtils_13ManyBodyState_20__rmul__(struct __py
     __pyx_t_1 = __Pyx_PyObject_FastCall(__pyx_t_3, __pyx_callargs+__pyx_t_4, (1-__pyx_t_4) | (__pyx_t_4*__Pyx_PY_VECTORCALL_ARGUMENTS_OFFSET));
     __Pyx_XDECREF(__pyx_t_2); __pyx_t_2 = 0;
     __Pyx_DECREF(__pyx_t_3); __pyx_t_3 = 0;
-    if (unlikely(!__pyx_t_1)) __PYX_ERR(0, 95, __pyx_L1_error)
+    if (unlikely(!__pyx_t_1)) __PYX_ERR(0, 94, __pyx_L1_error)
     __Pyx_GOTREF((PyObject *)__pyx_t_1);
   }
   __pyx_v_res = ((struct __pyx_obj_13ManyBodyUtils_ManyBodyState *)__pyx_t_1);
   __pyx_t_1 = 0;
 
-  /* "ManyBodyUtils.pyx":96
+  /* "ManyBodyUtils.pyx":95
  *     def __rmul__(self, double complex s):
  *         res = ManyBodyState()
  *         with nogil:             # <<<<<<<<<<<<<<
@@ -6371,7 +6390,7 @@ static PyObject *__pyx_pf_13ManyBodyUtils_13ManyBodyState_20__rmul__(struct __py
       __Pyx_FastGIL_Remember();
       /*try:*/ {
 
-        /* "ManyBodyUtils.pyx":97
+        /* "ManyBodyUtils.pyx":96
  *         res = ManyBodyState()
  *         with nogil:
  *             res.v = self.v*s             # <<<<<<<<<<<<<<
@@ -6381,7 +6400,7 @@ static PyObject *__pyx_pf_13ManyBodyUtils_13ManyBodyState_20__rmul__(struct __py
         __pyx_v_res->v = (__pyx_v_self->v * __pyx_v_s);
       }
 
-      /* "ManyBodyUtils.pyx":96
+      /* "ManyBodyUtils.pyx":95
  *     def __rmul__(self, double complex s):
  *         res = ManyBodyState()
  *         with nogil:             # <<<<<<<<<<<<<<
@@ -6398,7 +6417,7 @@ static PyObject *__pyx_pf_13ManyBodyUtils_13ManyBodyState_20__rmul__(struct __py
       }
   }
 
-  /* "ManyBodyUtils.pyx":98
+  /* "ManyBodyUtils.pyx":97
  *         with nogil:
  *             res.v = self.v*s
  *         return res             # <<<<<<<<<<<<<<
@@ -6410,7 +6429,7 @@ static PyObject *__pyx_pf_13ManyBodyUtils_13ManyBodyState_20__rmul__(struct __py
   __pyx_r = ((PyObject *)__pyx_v_res);
   goto __pyx_L0;
 
-  /* "ManyBodyUtils.pyx":94
+  /* "ManyBodyUtils.pyx":93
  *         return self
  * 
  *     def __rmul__(self, double complex s):             # <<<<<<<<<<<<<<
@@ -6432,7 +6451,7 @@ static PyObject *__pyx_pf_13ManyBodyUtils_13ManyBodyState_20__rmul__(struct __py
   return __pyx_r;
 }
 
-/* "ManyBodyUtils.pyx":100
+/* "ManyBodyUtils.pyx":99
  *         return res
  * 
  *     def __truediv__(self, double complex s):             # <<<<<<<<<<<<<<
@@ -6453,7 +6472,7 @@ static PyObject *__pyx_pw_13ManyBodyUtils_13ManyBodyState_23__truediv__(PyObject
   __Pyx_RefNannySetupContext("__truediv__ (wrapper)", 0);
   __pyx_kwvalues = __Pyx_KwValues_VARARGS(__pyx_args, __pyx_nargs);
   assert(__pyx_arg_s); {
-    __pyx_v_s = __Pyx_PyComplex_As___pyx_t_double_complex(__pyx_arg_s); if (unlikely(PyErr_Occurred())) __PYX_ERR(0, 100, __pyx_L3_error)
+    __pyx_v_s = __Pyx_PyComplex_As___pyx_t_double_complex(__pyx_arg_s); if (unlikely(PyErr_Occurred())) __PYX_ERR(0, 99, __pyx_L3_error)
   }
   goto __pyx_L4_argument_unpacking_done;
   __pyx_L3_error:;
@@ -6481,7 +6500,7 @@ static PyObject *__pyx_pf_13ManyBodyUtils_13ManyBodyState_22__truediv__(struct _
   int __pyx_clineno = 0;
   __Pyx_RefNannySetupContext("__truediv__", 0);
 
-  /* "ManyBodyUtils.pyx":101
+  /* "ManyBodyUtils.pyx":100
  * 
  *     def __truediv__(self, double complex s):
  *         res = ManyBodyState()             # <<<<<<<<<<<<<<
@@ -6497,13 +6516,13 @@ static PyObject *__pyx_pf_13ManyBodyUtils_13ManyBodyState_22__truediv__(struct _
     __pyx_t_1 = __Pyx_PyObject_FastCall(__pyx_t_3, __pyx_callargs+__pyx_t_4, (1-__pyx_t_4) | (__pyx_t_4*__Pyx_PY_VECTORCALL_ARGUMENTS_OFFSET));
     __Pyx_XDECREF(__pyx_t_2); __pyx_t_2 = 0;
     __Pyx_DECREF(__pyx_t_3); __pyx_t_3 = 0;
-    if (unlikely(!__pyx_t_1)) __PYX_ERR(0, 101, __pyx_L1_error)
+    if (unlikely(!__pyx_t_1)) __PYX_ERR(0, 100, __pyx_L1_error)
     __Pyx_GOTREF((PyObject *)__pyx_t_1);
   }
   __pyx_v_res = ((struct __pyx_obj_13ManyBodyUtils_ManyBodyState *)__pyx_t_1);
   __pyx_t_1 = 0;
 
-  /* "ManyBodyUtils.pyx":102
+  /* "ManyBodyUtils.pyx":101
  *     def __truediv__(self, double complex s):
  *         res = ManyBodyState()
  *         with nogil:             # <<<<<<<<<<<<<<
@@ -6517,7 +6536,7 @@ static PyObject *__pyx_pf_13ManyBodyUtils_13ManyBodyState_22__truediv__(struct _
       __Pyx_FastGIL_Remember();
       /*try:*/ {
 
-        /* "ManyBodyUtils.pyx":103
+        /* "ManyBodyUtils.pyx":102
  *         res = ManyBodyState()
  *         with nogil:
  *             res.v = self.v /  s             # <<<<<<<<<<<<<<
@@ -6527,7 +6546,7 @@ static PyObject *__pyx_pf_13ManyBodyUtils_13ManyBodyState_22__truediv__(struct _
         __pyx_v_res->v = (__pyx_v_self->v / __pyx_v_s);
       }
 
-      /* "ManyBodyUtils.pyx":102
+      /* "ManyBodyUtils.pyx":101
  *     def __truediv__(self, double complex s):
  *         res = ManyBodyState()
  *         with nogil:             # <<<<<<<<<<<<<<
@@ -6544,7 +6563,7 @@ static PyObject *__pyx_pf_13ManyBodyUtils_13ManyBodyState_22__truediv__(struct _
       }
   }
 
-  /* "ManyBodyUtils.pyx":104
+  /* "ManyBodyUtils.pyx":103
  *         with nogil:
  *             res.v = self.v /  s
  *         return res             # <<<<<<<<<<<<<<
@@ -6556,7 +6575,7 @@ static PyObject *__pyx_pf_13ManyBodyUtils_13ManyBodyState_22__truediv__(struct _
   __pyx_r = ((PyObject *)__pyx_v_res);
   goto __pyx_L0;
 
-  /* "ManyBodyUtils.pyx":100
+  /* "ManyBodyUtils.pyx":99
  *         return res
  * 
  *     def __truediv__(self, double complex s):             # <<<<<<<<<<<<<<
@@ -6578,7 +6597,7 @@ static PyObject *__pyx_pf_13ManyBodyUtils_13ManyBodyState_22__truediv__(struct _
   return __pyx_r;
 }
 
-/* "ManyBodyUtils.pyx":106
+/* "ManyBodyUtils.pyx":105
  *         return res
  * 
  *     def __itruediv__(self, double complex s):             # <<<<<<<<<<<<<<
@@ -6599,7 +6618,7 @@ static PyObject *__pyx_pw_13ManyBodyUtils_13ManyBodyState_25__itruediv__(PyObjec
   __Pyx_RefNannySetupContext("__itruediv__ (wrapper)", 0);
   __pyx_kwvalues = __Pyx_KwValues_VARARGS(__pyx_args, __pyx_nargs);
   assert(__pyx_arg_s); {
-    __pyx_v_s = __Pyx_PyComplex_As___pyx_t_double_complex(__pyx_arg_s); if (unlikely(PyErr_Occurred())) __PYX_ERR(0, 106, __pyx_L3_error)
+    __pyx_v_s = __Pyx_PyComplex_As___pyx_t_double_complex(__pyx_arg_s); if (unlikely(PyErr_Occurred())) __PYX_ERR(0, 105, __pyx_L3_error)
   }
   goto __pyx_L4_argument_unpacking_done;
   __pyx_L3_error:;
@@ -6619,7 +6638,7 @@ static PyObject *__pyx_pf_13ManyBodyUtils_13ManyBodyState_24__itruediv__(struct 
   __Pyx_RefNannyDeclarations
   __Pyx_RefNannySetupContext("__itruediv__", 0);
 
-  /* "ManyBodyUtils.pyx":107
+  /* "ManyBodyUtils.pyx":106
  * 
  *     def __itruediv__(self, double complex s):
  *         with nogil:             # <<<<<<<<<<<<<<
@@ -6633,7 +6652,7 @@ static PyObject *__pyx_pf_13ManyBodyUtils_13ManyBodyState_24__itruediv__(struct 
       __Pyx_FastGIL_Remember();
       /*try:*/ {
 
-        /* "ManyBodyUtils.pyx":108
+        /* "ManyBodyUtils.pyx":107
  *     def __itruediv__(self, double complex s):
  *         with nogil:
  *             self.v = self.v /  s             # <<<<<<<<<<<<<<
@@ -6643,7 +6662,7 @@ static PyObject *__pyx_pf_13ManyBodyUtils_13ManyBodyState_24__itruediv__(struct 
         __pyx_v_self->v = (__pyx_v_self->v / __pyx_v_s);
       }
 
-      /* "ManyBodyUtils.pyx":107
+      /* "ManyBodyUtils.pyx":106
  * 
  *     def __itruediv__(self, double complex s):
  *         with nogil:             # <<<<<<<<<<<<<<
@@ -6660,7 +6679,7 @@ static PyObject *__pyx_pf_13ManyBodyUtils_13ManyBodyState_24__itruediv__(struct 
       }
   }
 
-  /* "ManyBodyUtils.pyx":109
+  /* "ManyBodyUtils.pyx":108
  *         with nogil:
  *             self.v = self.v /  s
  *         return self             # <<<<<<<<<<<<<<
@@ -6672,7 +6691,7 @@ static PyObject *__pyx_pf_13ManyBodyUtils_13ManyBodyState_24__itruediv__(struct 
   __pyx_r = ((PyObject *)__pyx_v_self);
   goto __pyx_L0;
 
-  /* "ManyBodyUtils.pyx":106
+  /* "ManyBodyUtils.pyx":105
  *         return res
  * 
  *     def __itruediv__(self, double complex s):             # <<<<<<<<<<<<<<
@@ -6687,7 +6706,7 @@ static PyObject *__pyx_pf_13ManyBodyUtils_13ManyBodyState_24__itruediv__(struct 
   return __pyx_r;
 }
 
-/* "ManyBodyUtils.pyx":111
+/* "ManyBodyUtils.pyx":110
  *         return self
  * 
  *     def __getitem__(self, bytes key):             # <<<<<<<<<<<<<<
@@ -6706,7 +6725,7 @@ static PyObject *__pyx_pw_13ManyBodyUtils_13ManyBodyState_27__getitem__(PyObject
   __Pyx_RefNannyDeclarations
   __Pyx_RefNannySetupContext("__getitem__ (wrapper)", 0);
   __pyx_kwvalues = __Pyx_KwValues_VARARGS(__pyx_args, __pyx_nargs);
-  if (unlikely(!__Pyx_ArgTypeTest(((PyObject *)__pyx_v_key), (&PyBytes_Type), 1, "key", 1))) __PYX_ERR(0, 111, __pyx_L1_error)
+  if (unlikely(!__Pyx_ArgTypeTest(((PyObject *)__pyx_v_key), (&PyBytes_Type), 1, "key", 1))) __PYX_ERR(0, 110, __pyx_L1_error)
   __pyx_r = __pyx_pf_13ManyBodyUtils_13ManyBodyState_26__getitem__(((struct __pyx_obj_13ManyBodyUtils_ManyBodyState *)__pyx_v_self), ((PyObject*)__pyx_v_key));
 
   /* function exit code */
@@ -6732,18 +6751,18 @@ static PyObject *__pyx_pf_13ManyBodyUtils_13ManyBodyState_26__getitem__(struct _
   int __pyx_clineno = 0;
   __Pyx_RefNannySetupContext("__getitem__", 0);
 
-  /* "ManyBodyUtils.pyx":112
+  /* "ManyBodyUtils.pyx":111
  * 
  *     def __getitem__(self, bytes key):
  *         res= self.v[bytes_to_key(key)]             # <<<<<<<<<<<<<<
  *         return res
  * 
 */
-  __pyx_t_1 = __pyx_f_13ManyBodyUtils_bytes_to_key(__pyx_v_key); if (unlikely(PyErr_Occurred())) __PYX_ERR(0, 112, __pyx_L1_error)
+  __pyx_t_1 = __pyx_f_13ManyBodyUtils_bytes_to_key(__pyx_v_key); if (unlikely(PyErr_Occurred())) __PYX_ERR(0, 111, __pyx_L1_error)
   __pyx_t_2 = (__pyx_v_self->v[__pyx_t_1]);
   __pyx_v_res = __pyx_t_double_complex_from_parts(__Pyx_CREAL(__pyx_t_2), __Pyx_CIMAG(__pyx_t_2));
 
-  /* "ManyBodyUtils.pyx":113
+  /* "ManyBodyUtils.pyx":112
  *     def __getitem__(self, bytes key):
  *         res= self.v[bytes_to_key(key)]
  *         return res             # <<<<<<<<<<<<<<
@@ -6751,13 +6770,13 @@ static PyObject *__pyx_pf_13ManyBodyUtils_13ManyBodyState_26__getitem__(struct _
  *     def __setitem__(self, bytes key, double complex value):
 */
   __Pyx_XDECREF(__pyx_r);
-  __pyx_t_3 = __pyx_PyComplex_FromComplex(__pyx_v_res); if (unlikely(!__pyx_t_3)) __PYX_ERR(0, 113, __pyx_L1_error)
+  __pyx_t_3 = __pyx_PyComplex_FromComplex(__pyx_v_res); if (unlikely(!__pyx_t_3)) __PYX_ERR(0, 112, __pyx_L1_error)
   __Pyx_GOTREF(__pyx_t_3);
   __pyx_r = __pyx_t_3;
   __pyx_t_3 = 0;
   goto __pyx_L0;
 
-  /* "ManyBodyUtils.pyx":111
+  /* "ManyBodyUtils.pyx":110
  *         return self
  * 
  *     def __getitem__(self, bytes key):             # <<<<<<<<<<<<<<
@@ -6776,7 +6795,7 @@ static PyObject *__pyx_pf_13ManyBodyUtils_13ManyBodyState_26__getitem__(struct _
   return __pyx_r;
 }
 
-/* "ManyBodyUtils.pyx":115
+/* "ManyBodyUtils.pyx":114
  *         return res
  * 
  *     def __setitem__(self, bytes key, double complex value):             # <<<<<<<<<<<<<<
@@ -6797,7 +6816,7 @@ static int __pyx_pw_13ManyBodyUtils_13ManyBodyState_29__setitem__(PyObject *__py
   __Pyx_RefNannySetupContext("__setitem__ (wrapper)", 0);
   __pyx_kwvalues = __Pyx_KwValues_VARARGS(__pyx_args, __pyx_nargs);
   assert(__pyx_arg_value); {
-    __pyx_v_value = __Pyx_PyComplex_As___pyx_t_double_complex(__pyx_arg_value); if (unlikely(PyErr_Occurred())) __PYX_ERR(0, 115, __pyx_L3_error)
+    __pyx_v_value = __Pyx_PyComplex_As___pyx_t_double_complex(__pyx_arg_value); if (unlikely(PyErr_Occurred())) __PYX_ERR(0, 114, __pyx_L3_error)
   }
   goto __pyx_L4_argument_unpacking_done;
   __pyx_L3_error:;
@@ -6805,7 +6824,7 @@ static int __pyx_pw_13ManyBodyUtils_13ManyBodyState_29__setitem__(PyObject *__py
   __Pyx_RefNannyFinishContext();
   return -1;
   __pyx_L4_argument_unpacking_done:;
-  if (unlikely(!__Pyx_ArgTypeTest(((PyObject *)__pyx_v_key), (&PyBytes_Type), 1, "key", 1))) __PYX_ERR(0, 115, __pyx_L1_error)
+  if (unlikely(!__Pyx_ArgTypeTest(((PyObject *)__pyx_v_key), (&PyBytes_Type), 1, "key", 1))) __PYX_ERR(0, 114, __pyx_L1_error)
   __pyx_r = __pyx_pf_13ManyBodyUtils_13ManyBodyState_28__setitem__(((struct __pyx_obj_13ManyBodyUtils_ManyBodyState *)__pyx_v_self), ((PyObject*)__pyx_v_key), __pyx_v_value);
 
   /* function exit code */
@@ -6826,17 +6845,17 @@ static int __pyx_pf_13ManyBodyUtils_13ManyBodyState_28__setitem__(struct __pyx_o
   const char *__pyx_filename = NULL;
   int __pyx_clineno = 0;
 
-  /* "ManyBodyUtils.pyx":116
+  /* "ManyBodyUtils.pyx":115
  * 
  *     def __setitem__(self, bytes key, double complex value):
  *         self.v[bytes_to_key(key)] = value             # <<<<<<<<<<<<<<
  * 
  *     def get(self, bytes key, double complex default = 0):
 */
-  __pyx_t_1 = __pyx_f_13ManyBodyUtils_bytes_to_key(__pyx_v_key); if (unlikely(PyErr_Occurred())) __PYX_ERR(0, 116, __pyx_L1_error)
+  __pyx_t_1 = __pyx_f_13ManyBodyUtils_bytes_to_key(__pyx_v_key); if (unlikely(PyErr_Occurred())) __PYX_ERR(0, 115, __pyx_L1_error)
   (__pyx_v_self->v[__pyx_t_1]) = __pyx_v_value;
 
-  /* "ManyBodyUtils.pyx":115
+  /* "ManyBodyUtils.pyx":114
  *         return res
  * 
  *     def __setitem__(self, bytes key, double complex value):             # <<<<<<<<<<<<<<
@@ -6854,7 +6873,7 @@ static int __pyx_pf_13ManyBodyUtils_13ManyBodyState_28__setitem__(struct __pyx_o
   return __pyx_r;
 }
 
-/* "ManyBodyUtils.pyx":118
+/* "ManyBodyUtils.pyx":117
  *         self.v[bytes_to_key(key)] = value
  * 
  *     def get(self, bytes key, double complex default = 0):             # <<<<<<<<<<<<<<
@@ -6902,48 +6921,48 @@ PyObject *__pyx_args, PyObject *__pyx_kwds
   {
     PyObject ** const __pyx_pyargnames[] = {&__pyx_mstate_global->__pyx_n_u_key,&__pyx_mstate_global->__pyx_n_u_default,0};
     const Py_ssize_t __pyx_kwds_len = (__pyx_kwds) ? __Pyx_NumKwargs_FASTCALL(__pyx_kwds) : 0;
-    if (unlikely(__pyx_kwds_len) < 0) __PYX_ERR(0, 118, __pyx_L3_error)
+    if (unlikely(__pyx_kwds_len) < 0) __PYX_ERR(0, 117, __pyx_L3_error)
     if (__pyx_kwds_len > 0) {
       switch (__pyx_nargs) {
         case  2:
         values[1] = __Pyx_ArgRef_FASTCALL(__pyx_args, 1);
-        if (!CYTHON_ASSUME_SAFE_MACROS && unlikely(!values[1])) __PYX_ERR(0, 118, __pyx_L3_error)
+        if (!CYTHON_ASSUME_SAFE_MACROS && unlikely(!values[1])) __PYX_ERR(0, 117, __pyx_L3_error)
         CYTHON_FALLTHROUGH;
         case  1:
         values[0] = __Pyx_ArgRef_FASTCALL(__pyx_args, 0);
-        if (!CYTHON_ASSUME_SAFE_MACROS && unlikely(!values[0])) __PYX_ERR(0, 118, __pyx_L3_error)
+        if (!CYTHON_ASSUME_SAFE_MACROS && unlikely(!values[0])) __PYX_ERR(0, 117, __pyx_L3_error)
         CYTHON_FALLTHROUGH;
         case  0: break;
         default: goto __pyx_L5_argtuple_error;
       }
       const Py_ssize_t kwd_pos_args = __pyx_nargs;
-      if (__Pyx_ParseKeywords(__pyx_kwds, __pyx_kwvalues, __pyx_pyargnames, 0, values, kwd_pos_args, __pyx_kwds_len, "get", 0) < 0) __PYX_ERR(0, 118, __pyx_L3_error)
+      if (__Pyx_ParseKeywords(__pyx_kwds, __pyx_kwvalues, __pyx_pyargnames, 0, values, kwd_pos_args, __pyx_kwds_len, "get", 0) < 0) __PYX_ERR(0, 117, __pyx_L3_error)
       for (Py_ssize_t i = __pyx_nargs; i < 1; i++) {
-        if (unlikely(!values[i])) { __Pyx_RaiseArgtupleInvalid("get", 0, 1, 2, i); __PYX_ERR(0, 118, __pyx_L3_error) }
+        if (unlikely(!values[i])) { __Pyx_RaiseArgtupleInvalid("get", 0, 1, 2, i); __PYX_ERR(0, 117, __pyx_L3_error) }
       }
     } else {
       switch (__pyx_nargs) {
         case  2:
         values[1] = __Pyx_ArgRef_FASTCALL(__pyx_args, 1);
-        if (!CYTHON_ASSUME_SAFE_MACROS && unlikely(!values[1])) __PYX_ERR(0, 118, __pyx_L3_error)
+        if (!CYTHON_ASSUME_SAFE_MACROS && unlikely(!values[1])) __PYX_ERR(0, 117, __pyx_L3_error)
         CYTHON_FALLTHROUGH;
         case  1:
         values[0] = __Pyx_ArgRef_FASTCALL(__pyx_args, 0);
-        if (!CYTHON_ASSUME_SAFE_MACROS && unlikely(!values[0])) __PYX_ERR(0, 118, __pyx_L3_error)
+        if (!CYTHON_ASSUME_SAFE_MACROS && unlikely(!values[0])) __PYX_ERR(0, 117, __pyx_L3_error)
         break;
         default: goto __pyx_L5_argtuple_error;
       }
     }
     __pyx_v_key = ((PyObject*)values[0]);
     if (values[1]) {
-      __pyx_v_default = __Pyx_PyComplex_As___pyx_t_double_complex(values[1]); if (unlikely(PyErr_Occurred())) __PYX_ERR(0, 118, __pyx_L3_error)
+      __pyx_v_default = __Pyx_PyComplex_As___pyx_t_double_complex(values[1]); if (unlikely(PyErr_Occurred())) __PYX_ERR(0, 117, __pyx_L3_error)
     } else {
       __pyx_v_default = __pyx_mstate_global->__pyx_k__6;
     }
   }
   goto __pyx_L6_skip;
   __pyx_L5_argtuple_error:;
-  __Pyx_RaiseArgtupleInvalid("get", 0, 1, 2, __pyx_nargs); __PYX_ERR(0, 118, __pyx_L3_error)
+  __Pyx_RaiseArgtupleInvalid("get", 0, 1, 2, __pyx_nargs); __PYX_ERR(0, 117, __pyx_L3_error)
   __pyx_L6_skip:;
   goto __pyx_L4_argument_unpacking_done;
   __pyx_L3_error:;
@@ -6954,7 +6973,7 @@ PyObject *__pyx_args, PyObject *__pyx_kwds
   __Pyx_RefNannyFinishContext();
   return NULL;
   __pyx_L4_argument_unpacking_done:;
-  if (unlikely(!__Pyx_ArgTypeTest(((PyObject *)__pyx_v_key), (&PyBytes_Type), 1, "key", 1))) __PYX_ERR(0, 118, __pyx_L1_error)
+  if (unlikely(!__Pyx_ArgTypeTest(((PyObject *)__pyx_v_key), (&PyBytes_Type), 1, "key", 1))) __PYX_ERR(0, 117, __pyx_L1_error)
   __pyx_r = __pyx_pf_13ManyBodyUtils_13ManyBodyState_30get(((struct __pyx_obj_13ManyBodyUtils_ManyBodyState *)__pyx_v_self), __pyx_v_key, __pyx_v_default);
 
   /* function exit code */
@@ -6984,17 +7003,17 @@ static PyObject *__pyx_pf_13ManyBodyUtils_13ManyBodyState_30get(struct __pyx_obj
   int __pyx_clineno = 0;
   __Pyx_RefNannySetupContext("get", 0);
 
-  /* "ManyBodyUtils.pyx":119
+  /* "ManyBodyUtils.pyx":118
  * 
  *     def get(self, bytes key, double complex default = 0):
  *         if key in self:             # <<<<<<<<<<<<<<
  *             return self[key]
  *         return default
 */
-  __pyx_t_1 = (__Pyx_PySequence_ContainsTF(__pyx_v_key, ((PyObject *)__pyx_v_self), Py_EQ)); if (unlikely((__pyx_t_1 < 0))) __PYX_ERR(0, 119, __pyx_L1_error)
+  __pyx_t_1 = (__Pyx_PySequence_ContainsTF(__pyx_v_key, ((PyObject *)__pyx_v_self), Py_EQ)); if (unlikely((__pyx_t_1 < 0))) __PYX_ERR(0, 118, __pyx_L1_error)
   if (__pyx_t_1) {
 
-    /* "ManyBodyUtils.pyx":120
+    /* "ManyBodyUtils.pyx":119
  *     def get(self, bytes key, double complex default = 0):
  *         if key in self:
  *             return self[key]             # <<<<<<<<<<<<<<
@@ -7002,13 +7021,13 @@ static PyObject *__pyx_pf_13ManyBodyUtils_13ManyBodyState_30get(struct __pyx_obj
  * 
 */
     __Pyx_XDECREF(__pyx_r);
-    __pyx_t_2 = __Pyx_PyObject_GetItem(((PyObject *)__pyx_v_self), __pyx_v_key); if (unlikely(!__pyx_t_2)) __PYX_ERR(0, 120, __pyx_L1_error)
+    __pyx_t_2 = __Pyx_PyObject_GetItem(((PyObject *)__pyx_v_self), __pyx_v_key); if (unlikely(!__pyx_t_2)) __PYX_ERR(0, 119, __pyx_L1_error)
     __Pyx_GOTREF(__pyx_t_2);
     __pyx_r = __pyx_t_2;
     __pyx_t_2 = 0;
     goto __pyx_L0;
 
-    /* "ManyBodyUtils.pyx":119
+    /* "ManyBodyUtils.pyx":118
  * 
  *     def get(self, bytes key, double complex default = 0):
  *         if key in self:             # <<<<<<<<<<<<<<
@@ -7017,7 +7036,7 @@ static PyObject *__pyx_pf_13ManyBodyUtils_13ManyBodyState_30get(struct __pyx_obj
 */
   }
 
-  /* "ManyBodyUtils.pyx":121
+  /* "ManyBodyUtils.pyx":120
  *         if key in self:
  *             return self[key]
  *         return default             # <<<<<<<<<<<<<<
@@ -7025,13 +7044,13 @@ static PyObject *__pyx_pf_13ManyBodyUtils_13ManyBodyState_30get(struct __pyx_obj
  * 
 */
   __Pyx_XDECREF(__pyx_r);
-  __pyx_t_2 = __pyx_PyComplex_FromComplex(__pyx_v_default); if (unlikely(!__pyx_t_2)) __PYX_ERR(0, 121, __pyx_L1_error)
+  __pyx_t_2 = __pyx_PyComplex_FromComplex(__pyx_v_default); if (unlikely(!__pyx_t_2)) __PYX_ERR(0, 120, __pyx_L1_error)
   __Pyx_GOTREF(__pyx_t_2);
   __pyx_r = __pyx_t_2;
   __pyx_t_2 = 0;
   goto __pyx_L0;
 
-  /* "ManyBodyUtils.pyx":118
+  /* "ManyBodyUtils.pyx":117
  *         self.v[bytes_to_key(key)] = value
  * 
  *     def get(self, bytes key, double complex default = 0):             # <<<<<<<<<<<<<<
@@ -7050,7 +7069,7 @@ static PyObject *__pyx_pf_13ManyBodyUtils_13ManyBodyState_30get(struct __pyx_obj
   return __pyx_r;
 }
 
-/* "ManyBodyUtils.pyx":125
+/* "ManyBodyUtils.pyx":124
  * 
  * 
  *     def norm2(self):             # <<<<<<<<<<<<<<
@@ -7110,7 +7129,7 @@ static PyObject *__pyx_pf_13ManyBodyUtils_13ManyBodyState_32norm2(struct __pyx_o
   int __pyx_clineno = 0;
   __Pyx_RefNannySetupContext("norm2", 0);
 
-  /* "ManyBodyUtils.pyx":126
+  /* "ManyBodyUtils.pyx":125
  * 
  *     def norm2(self):
  *         with nogil:             # <<<<<<<<<<<<<<
@@ -7124,7 +7143,7 @@ static PyObject *__pyx_pf_13ManyBodyUtils_13ManyBodyState_32norm2(struct __pyx_o
       __Pyx_FastGIL_Remember();
       /*try:*/ {
 
-        /* "ManyBodyUtils.pyx":127
+        /* "ManyBodyUtils.pyx":126
  *     def norm2(self):
  *         with nogil:
  *             res = self.v.norm2()             # <<<<<<<<<<<<<<
@@ -7134,7 +7153,7 @@ static PyObject *__pyx_pf_13ManyBodyUtils_13ManyBodyState_32norm2(struct __pyx_o
         __pyx_v_res = __pyx_v_self->v.norm2();
       }
 
-      /* "ManyBodyUtils.pyx":126
+      /* "ManyBodyUtils.pyx":125
  * 
  *     def norm2(self):
  *         with nogil:             # <<<<<<<<<<<<<<
@@ -7151,7 +7170,7 @@ static PyObject *__pyx_pf_13ManyBodyUtils_13ManyBodyState_32norm2(struct __pyx_o
       }
   }
 
-  /* "ManyBodyUtils.pyx":128
+  /* "ManyBodyUtils.pyx":127
  *         with nogil:
  *             res = self.v.norm2()
  *         return res             # <<<<<<<<<<<<<<
@@ -7159,13 +7178,13 @@ static PyObject *__pyx_pf_13ManyBodyUtils_13ManyBodyState_32norm2(struct __pyx_o
  *     def norm(self):
 */
   __Pyx_XDECREF(__pyx_r);
-  __pyx_t_1 = PyFloat_FromDouble(__pyx_v_res); if (unlikely(!__pyx_t_1)) __PYX_ERR(0, 128, __pyx_L1_error)
+  __pyx_t_1 = PyFloat_FromDouble(__pyx_v_res); if (unlikely(!__pyx_t_1)) __PYX_ERR(0, 127, __pyx_L1_error)
   __Pyx_GOTREF(__pyx_t_1);
   __pyx_r = __pyx_t_1;
   __pyx_t_1 = 0;
   goto __pyx_L0;
 
-  /* "ManyBodyUtils.pyx":125
+  /* "ManyBodyUtils.pyx":124
  * 
  * 
  *     def norm2(self):             # <<<<<<<<<<<<<<
@@ -7184,7 +7203,7 @@ static PyObject *__pyx_pf_13ManyBodyUtils_13ManyBodyState_32norm2(struct __pyx_o
   return __pyx_r;
 }
 
-/* "ManyBodyUtils.pyx":130
+/* "ManyBodyUtils.pyx":129
  *         return res
  * 
  *     def norm(self):             # <<<<<<<<<<<<<<
@@ -7244,7 +7263,7 @@ static PyObject *__pyx_pf_13ManyBodyUtils_13ManyBodyState_34norm(struct __pyx_ob
   int __pyx_clineno = 0;
   __Pyx_RefNannySetupContext("norm", 0);
 
-  /* "ManyBodyUtils.pyx":131
+  /* "ManyBodyUtils.pyx":130
  * 
  *     def norm(self):
  *         with nogil:             # <<<<<<<<<<<<<<
@@ -7258,7 +7277,7 @@ static PyObject *__pyx_pf_13ManyBodyUtils_13ManyBodyState_34norm(struct __pyx_ob
       __Pyx_FastGIL_Remember();
       /*try:*/ {
 
-        /* "ManyBodyUtils.pyx":132
+        /* "ManyBodyUtils.pyx":131
  *     def norm(self):
  *         with nogil:
  *             res= self.v.norm()             # <<<<<<<<<<<<<<
@@ -7268,7 +7287,7 @@ static PyObject *__pyx_pf_13ManyBodyUtils_13ManyBodyState_34norm(struct __pyx_ob
         __pyx_v_res = __pyx_v_self->v.norm();
       }
 
-      /* "ManyBodyUtils.pyx":131
+      /* "ManyBodyUtils.pyx":130
  * 
  *     def norm(self):
  *         with nogil:             # <<<<<<<<<<<<<<
@@ -7285,7 +7304,7 @@ static PyObject *__pyx_pf_13ManyBodyUtils_13ManyBodyState_34norm(struct __pyx_ob
       }
   }
 
-  /* "ManyBodyUtils.pyx":133
+  /* "ManyBodyUtils.pyx":132
  *         with nogil:
  *             res= self.v.norm()
  *         return res             # <<<<<<<<<<<<<<
@@ -7293,13 +7312,13 @@ static PyObject *__pyx_pf_13ManyBodyUtils_13ManyBodyState_34norm(struct __pyx_ob
  *     def __len__(self):
 */
   __Pyx_XDECREF(__pyx_r);
-  __pyx_t_1 = PyFloat_FromDouble(__pyx_v_res); if (unlikely(!__pyx_t_1)) __PYX_ERR(0, 133, __pyx_L1_error)
+  __pyx_t_1 = PyFloat_FromDouble(__pyx_v_res); if (unlikely(!__pyx_t_1)) __PYX_ERR(0, 132, __pyx_L1_error)
   __Pyx_GOTREF(__pyx_t_1);
   __pyx_r = __pyx_t_1;
   __pyx_t_1 = 0;
   goto __pyx_L0;
 
-  /* "ManyBodyUtils.pyx":130
+  /* "ManyBodyUtils.pyx":129
  *         return res
  * 
  *     def norm(self):             # <<<<<<<<<<<<<<
@@ -7318,7 +7337,7 @@ static PyObject *__pyx_pf_13ManyBodyUtils_13ManyBodyState_34norm(struct __pyx_ob
   return __pyx_r;
 }
 
-/* "ManyBodyUtils.pyx":135
+/* "ManyBodyUtils.pyx":134
  *         return res
  * 
  *     def __len__(self):             # <<<<<<<<<<<<<<
@@ -7345,7 +7364,7 @@ static Py_ssize_t __pyx_pf_13ManyBodyUtils_13ManyBodyState_36__len__(struct __py
   ManyBodyState::size_type __pyx_v_res;
   Py_ssize_t __pyx_r;
 
-  /* "ManyBodyUtils.pyx":136
+  /* "ManyBodyUtils.pyx":135
  * 
  *     def __len__(self):
  *         with nogil:             # <<<<<<<<<<<<<<
@@ -7359,7 +7378,7 @@ static Py_ssize_t __pyx_pf_13ManyBodyUtils_13ManyBodyState_36__len__(struct __py
       __Pyx_FastGIL_Remember();
       /*try:*/ {
 
-        /* "ManyBodyUtils.pyx":137
+        /* "ManyBodyUtils.pyx":136
  *     def __len__(self):
  *         with nogil:
  *             res = self.v.size()             # <<<<<<<<<<<<<<
@@ -7369,7 +7388,7 @@ static Py_ssize_t __pyx_pf_13ManyBodyUtils_13ManyBodyState_36__len__(struct __py
         __pyx_v_res = __pyx_v_self->v.size();
       }
 
-      /* "ManyBodyUtils.pyx":136
+      /* "ManyBodyUtils.pyx":135
  * 
  *     def __len__(self):
  *         with nogil:             # <<<<<<<<<<<<<<
@@ -7386,7 +7405,7 @@ static Py_ssize_t __pyx_pf_13ManyBodyUtils_13ManyBodyState_36__len__(struct __py
       }
   }
 
-  /* "ManyBodyUtils.pyx":138
+  /* "ManyBodyUtils.pyx":137
  *         with nogil:
  *             res = self.v.size()
  *         return res             # <<<<<<<<<<<<<<
@@ -7396,7 +7415,7 @@ static Py_ssize_t __pyx_pf_13ManyBodyUtils_13ManyBodyState_36__len__(struct __py
   __pyx_r = __pyx_v_res;
   goto __pyx_L0;
 
-  /* "ManyBodyUtils.pyx":135
+  /* "ManyBodyUtils.pyx":134
  *         return res
  * 
  *     def __len__(self):             # <<<<<<<<<<<<<<
@@ -7409,7 +7428,7 @@ static Py_ssize_t __pyx_pf_13ManyBodyUtils_13ManyBodyState_36__len__(struct __py
   return __pyx_r;
 }
 
-/* "ManyBodyUtils.pyx":140
+/* "ManyBodyUtils.pyx":139
  *         return res
  * 
  *     def size(self):             # <<<<<<<<<<<<<<
@@ -7469,7 +7488,7 @@ static PyObject *__pyx_pf_13ManyBodyUtils_13ManyBodyState_38size(struct __pyx_ob
   int __pyx_clineno = 0;
   __Pyx_RefNannySetupContext("size", 0);
 
-  /* "ManyBodyUtils.pyx":141
+  /* "ManyBodyUtils.pyx":140
  * 
  *     def size(self):
  *         return len(self)             # <<<<<<<<<<<<<<
@@ -7477,14 +7496,14 @@ static PyObject *__pyx_pf_13ManyBodyUtils_13ManyBodyState_38size(struct __pyx_ob
  *     def max_size(self):
 */
   __Pyx_XDECREF(__pyx_r);
-  __pyx_t_1 = PyObject_Length(((PyObject *)__pyx_v_self)); if (unlikely(__pyx_t_1 == ((Py_ssize_t)-1))) __PYX_ERR(0, 141, __pyx_L1_error)
-  __pyx_t_2 = PyLong_FromSsize_t(__pyx_t_1); if (unlikely(!__pyx_t_2)) __PYX_ERR(0, 141, __pyx_L1_error)
+  __pyx_t_1 = PyObject_Length(((PyObject *)__pyx_v_self)); if (unlikely(__pyx_t_1 == ((Py_ssize_t)-1))) __PYX_ERR(0, 140, __pyx_L1_error)
+  __pyx_t_2 = PyLong_FromSsize_t(__pyx_t_1); if (unlikely(!__pyx_t_2)) __PYX_ERR(0, 140, __pyx_L1_error)
   __Pyx_GOTREF(__pyx_t_2);
   __pyx_r = __pyx_t_2;
   __pyx_t_2 = 0;
   goto __pyx_L0;
 
-  /* "ManyBodyUtils.pyx":140
+  /* "ManyBodyUtils.pyx":139
  *         return res
  * 
  *     def size(self):             # <<<<<<<<<<<<<<
@@ -7503,7 +7522,7 @@ static PyObject *__pyx_pf_13ManyBodyUtils_13ManyBodyState_38size(struct __pyx_ob
   return __pyx_r;
 }
 
-/* "ManyBodyUtils.pyx":143
+/* "ManyBodyUtils.pyx":142
  *         return len(self)
  * 
  *     def max_size(self):             # <<<<<<<<<<<<<<
@@ -7563,7 +7582,7 @@ static PyObject *__pyx_pf_13ManyBodyUtils_13ManyBodyState_40max_size(struct __py
   int __pyx_clineno = 0;
   __Pyx_RefNannySetupContext("max_size", 0);
 
-  /* "ManyBodyUtils.pyx":144
+  /* "ManyBodyUtils.pyx":143
  * 
  *     def max_size(self):
  *         with nogil:             # <<<<<<<<<<<<<<
@@ -7577,7 +7596,7 @@ static PyObject *__pyx_pf_13ManyBodyUtils_13ManyBodyState_40max_size(struct __py
       __Pyx_FastGIL_Remember();
       /*try:*/ {
 
-        /* "ManyBodyUtils.pyx":145
+        /* "ManyBodyUtils.pyx":144
  *     def max_size(self):
  *         with nogil:
  *             res = self.v.max_size()             # <<<<<<<<<<<<<<
@@ -7587,7 +7606,7 @@ static PyObject *__pyx_pf_13ManyBodyUtils_13ManyBodyState_40max_size(struct __py
         __pyx_v_res = __pyx_v_self->v.max_size();
       }
 
-      /* "ManyBodyUtils.pyx":144
+      /* "ManyBodyUtils.pyx":143
  * 
  *     def max_size(self):
  *         with nogil:             # <<<<<<<<<<<<<<
@@ -7604,7 +7623,7 @@ static PyObject *__pyx_pf_13ManyBodyUtils_13ManyBodyState_40max_size(struct __py
       }
   }
 
-  /* "ManyBodyUtils.pyx":146
+  /* "ManyBodyUtils.pyx":145
  *         with nogil:
  *             res = self.v.max_size()
  *         return res             # <<<<<<<<<<<<<<
@@ -7612,13 +7631,13 @@ static PyObject *__pyx_pf_13ManyBodyUtils_13ManyBodyState_40max_size(struct __py
  *     def erase(self, bytes key):
 */
   __Pyx_XDECREF(__pyx_r);
-  __pyx_t_1 = __Pyx_PyLong_FromSize_t(__pyx_v_res); if (unlikely(!__pyx_t_1)) __PYX_ERR(0, 146, __pyx_L1_error)
+  __pyx_t_1 = __Pyx_PyLong_FromSize_t(__pyx_v_res); if (unlikely(!__pyx_t_1)) __PYX_ERR(0, 145, __pyx_L1_error)
   __Pyx_GOTREF(__pyx_t_1);
   __pyx_r = __pyx_t_1;
   __pyx_t_1 = 0;
   goto __pyx_L0;
 
-  /* "ManyBodyUtils.pyx":143
+  /* "ManyBodyUtils.pyx":142
  *         return len(self)
  * 
  *     def max_size(self):             # <<<<<<<<<<<<<<
@@ -7637,7 +7656,7 @@ static PyObject *__pyx_pf_13ManyBodyUtils_13ManyBodyState_40max_size(struct __py
   return __pyx_r;
 }
 
-/* "ManyBodyUtils.pyx":148
+/* "ManyBodyUtils.pyx":147
  *         return res
  * 
  *     def erase(self, bytes key):             # <<<<<<<<<<<<<<
@@ -7684,32 +7703,32 @@ PyObject *__pyx_args, PyObject *__pyx_kwds
   {
     PyObject ** const __pyx_pyargnames[] = {&__pyx_mstate_global->__pyx_n_u_key,0};
     const Py_ssize_t __pyx_kwds_len = (__pyx_kwds) ? __Pyx_NumKwargs_FASTCALL(__pyx_kwds) : 0;
-    if (unlikely(__pyx_kwds_len) < 0) __PYX_ERR(0, 148, __pyx_L3_error)
+    if (unlikely(__pyx_kwds_len) < 0) __PYX_ERR(0, 147, __pyx_L3_error)
     if (__pyx_kwds_len > 0) {
       switch (__pyx_nargs) {
         case  1:
         values[0] = __Pyx_ArgRef_FASTCALL(__pyx_args, 0);
-        if (!CYTHON_ASSUME_SAFE_MACROS && unlikely(!values[0])) __PYX_ERR(0, 148, __pyx_L3_error)
+        if (!CYTHON_ASSUME_SAFE_MACROS && unlikely(!values[0])) __PYX_ERR(0, 147, __pyx_L3_error)
         CYTHON_FALLTHROUGH;
         case  0: break;
         default: goto __pyx_L5_argtuple_error;
       }
       const Py_ssize_t kwd_pos_args = __pyx_nargs;
-      if (__Pyx_ParseKeywords(__pyx_kwds, __pyx_kwvalues, __pyx_pyargnames, 0, values, kwd_pos_args, __pyx_kwds_len, "erase", 0) < 0) __PYX_ERR(0, 148, __pyx_L3_error)
+      if (__Pyx_ParseKeywords(__pyx_kwds, __pyx_kwvalues, __pyx_pyargnames, 0, values, kwd_pos_args, __pyx_kwds_len, "erase", 0) < 0) __PYX_ERR(0, 147, __pyx_L3_error)
       for (Py_ssize_t i = __pyx_nargs; i < 1; i++) {
-        if (unlikely(!values[i])) { __Pyx_RaiseArgtupleInvalid("erase", 1, 1, 1, i); __PYX_ERR(0, 148, __pyx_L3_error) }
+        if (unlikely(!values[i])) { __Pyx_RaiseArgtupleInvalid("erase", 1, 1, 1, i); __PYX_ERR(0, 147, __pyx_L3_error) }
       }
     } else if (unlikely(__pyx_nargs != 1)) {
       goto __pyx_L5_argtuple_error;
     } else {
       values[0] = __Pyx_ArgRef_FASTCALL(__pyx_args, 0);
-      if (!CYTHON_ASSUME_SAFE_MACROS && unlikely(!values[0])) __PYX_ERR(0, 148, __pyx_L3_error)
+      if (!CYTHON_ASSUME_SAFE_MACROS && unlikely(!values[0])) __PYX_ERR(0, 147, __pyx_L3_error)
     }
     __pyx_v_key = ((PyObject*)values[0]);
   }
   goto __pyx_L6_skip;
   __pyx_L5_argtuple_error:;
-  __Pyx_RaiseArgtupleInvalid("erase", 1, 1, 1, __pyx_nargs); __PYX_ERR(0, 148, __pyx_L3_error)
+  __Pyx_RaiseArgtupleInvalid("erase", 1, 1, 1, __pyx_nargs); __PYX_ERR(0, 147, __pyx_L3_error)
   __pyx_L6_skip:;
   goto __pyx_L4_argument_unpacking_done;
   __pyx_L3_error:;
@@ -7720,7 +7739,7 @@ PyObject *__pyx_args, PyObject *__pyx_kwds
   __Pyx_RefNannyFinishContext();
   return NULL;
   __pyx_L4_argument_unpacking_done:;
-  if (unlikely(!__Pyx_ArgTypeTest(((PyObject *)__pyx_v_key), (&PyBytes_Type), 1, "key", 1))) __PYX_ERR(0, 148, __pyx_L1_error)
+  if (unlikely(!__Pyx_ArgTypeTest(((PyObject *)__pyx_v_key), (&PyBytes_Type), 1, "key", 1))) __PYX_ERR(0, 147, __pyx_L1_error)
   __pyx_r = __pyx_pf_13ManyBodyUtils_13ManyBodyState_42erase(((struct __pyx_obj_13ManyBodyUtils_ManyBodyState *)__pyx_v_self), __pyx_v_key);
 
   /* function exit code */
@@ -7749,17 +7768,17 @@ static PyObject *__pyx_pf_13ManyBodyUtils_13ManyBodyState_42erase(struct __pyx_o
   int __pyx_clineno = 0;
   __Pyx_RefNannySetupContext("erase", 0);
 
-  /* "ManyBodyUtils.pyx":149
+  /* "ManyBodyUtils.pyx":148
  * 
  *     def erase(self, bytes key):
  *         self.v.erase(bytes_to_key(key))             # <<<<<<<<<<<<<<
  * 
  *     def __contains__(self, bytes key):
 */
-  __pyx_t_1 = __pyx_f_13ManyBodyUtils_bytes_to_key(__pyx_v_key); if (unlikely(PyErr_Occurred())) __PYX_ERR(0, 149, __pyx_L1_error)
+  __pyx_t_1 = __pyx_f_13ManyBodyUtils_bytes_to_key(__pyx_v_key); if (unlikely(PyErr_Occurred())) __PYX_ERR(0, 148, __pyx_L1_error)
   (void)(__pyx_v_self->v.erase(__pyx_t_1));
 
-  /* "ManyBodyUtils.pyx":148
+  /* "ManyBodyUtils.pyx":147
  *         return res
  * 
  *     def erase(self, bytes key):             # <<<<<<<<<<<<<<
@@ -7779,7 +7798,7 @@ static PyObject *__pyx_pf_13ManyBodyUtils_13ManyBodyState_42erase(struct __pyx_o
   return __pyx_r;
 }
 
-/* "ManyBodyUtils.pyx":151
+/* "ManyBodyUtils.pyx":150
  *         self.v.erase(bytes_to_key(key))
  * 
  *     def __contains__(self, bytes key):             # <<<<<<<<<<<<<<
@@ -7798,7 +7817,7 @@ static int __pyx_pw_13ManyBodyUtils_13ManyBodyState_45__contains__(PyObject *__p
   __Pyx_RefNannyDeclarations
   __Pyx_RefNannySetupContext("__contains__ (wrapper)", 0);
   __pyx_kwvalues = __Pyx_KwValues_VARARGS(__pyx_args, __pyx_nargs);
-  if (unlikely(!__Pyx_ArgTypeTest(((PyObject *)__pyx_v_key), (&PyBytes_Type), 1, "key", 1))) __PYX_ERR(0, 151, __pyx_L1_error)
+  if (unlikely(!__Pyx_ArgTypeTest(((PyObject *)__pyx_v_key), (&PyBytes_Type), 1, "key", 1))) __PYX_ERR(0, 150, __pyx_L1_error)
   __pyx_r = __pyx_pf_13ManyBodyUtils_13ManyBodyState_44__contains__(((struct __pyx_obj_13ManyBodyUtils_ManyBodyState *)__pyx_v_self), ((PyObject*)__pyx_v_key));
 
   /* function exit code */
@@ -7824,31 +7843,31 @@ static int __pyx_pf_13ManyBodyUtils_13ManyBodyState_44__contains__(struct __pyx_
   int __pyx_clineno = 0;
   __Pyx_RefNannySetupContext("__contains__", 0);
 
-  /* "ManyBodyUtils.pyx":152
+  /* "ManyBodyUtils.pyx":151
  * 
  *     def __contains__(self, bytes key):
  *         res = self.v.find(bytes_to_key(key)) != self.v.end()             # <<<<<<<<<<<<<<
  *         return res
  * 
 */
-  __pyx_t_1 = __pyx_f_13ManyBodyUtils_bytes_to_key(__pyx_v_key); if (unlikely(PyErr_Occurred())) __PYX_ERR(0, 152, __pyx_L1_error)
-  __pyx_t_2 = __Pyx_PyBool_FromLong((__pyx_v_self->v.find(__pyx_t_1) != __pyx_v_self->v.end())); if (unlikely(!__pyx_t_2)) __PYX_ERR(0, 152, __pyx_L1_error)
+  __pyx_t_1 = __pyx_f_13ManyBodyUtils_bytes_to_key(__pyx_v_key); if (unlikely(PyErr_Occurred())) __PYX_ERR(0, 151, __pyx_L1_error)
+  __pyx_t_2 = __Pyx_PyBool_FromLong((__pyx_v_self->v.find(__pyx_t_1) != __pyx_v_self->v.end())); if (unlikely(!__pyx_t_2)) __PYX_ERR(0, 151, __pyx_L1_error)
   __Pyx_GOTREF(__pyx_t_2);
   __pyx_v_res = __pyx_t_2;
   __pyx_t_2 = 0;
 
-  /* "ManyBodyUtils.pyx":153
+  /* "ManyBodyUtils.pyx":152
  *     def __contains__(self, bytes key):
  *         res = self.v.find(bytes_to_key(key)) != self.v.end()
  *         return res             # <<<<<<<<<<<<<<
  * 
  *     def __iter__(self):
 */
-  __pyx_t_3 = __Pyx_PyLong_As_int(__pyx_v_res); if (unlikely((__pyx_t_3 == (int)-1) && PyErr_Occurred())) __PYX_ERR(0, 153, __pyx_L1_error)
+  __pyx_t_3 = __Pyx_PyLong_As_int(__pyx_v_res); if (unlikely((__pyx_t_3 == (int)-1) && PyErr_Occurred())) __PYX_ERR(0, 152, __pyx_L1_error)
   __pyx_r = __pyx_t_3;
   goto __pyx_L0;
 
-  /* "ManyBodyUtils.pyx":151
+  /* "ManyBodyUtils.pyx":150
  *         self.v.erase(bytes_to_key(key))
  * 
  *     def __contains__(self, bytes key):             # <<<<<<<<<<<<<<
@@ -7868,7 +7887,7 @@ static int __pyx_pf_13ManyBodyUtils_13ManyBodyState_44__contains__(struct __pyx_
 }
 static PyObject *__pyx_gb_13ManyBodyUtils_13ManyBodyState_48generator(__pyx_CoroutineObject *__pyx_generator, CYTHON_UNUSED PyThreadState *__pyx_tstate, PyObject *__pyx_sent_value); /* proto */
 
-/* "ManyBodyUtils.pyx":155
+/* "ManyBodyUtils.pyx":154
  *         return res
  * 
  *     def __iter__(self):             # <<<<<<<<<<<<<<
@@ -7903,7 +7922,7 @@ static PyObject *__pyx_pf_13ManyBodyUtils_13ManyBodyState_46__iter__(struct __py
   if (unlikely(!__pyx_cur_scope)) {
     __pyx_cur_scope = ((struct __pyx_obj_13ManyBodyUtils___pyx_scope_struct____iter__ *)Py_None);
     __Pyx_INCREF(Py_None);
-    __PYX_ERR(0, 155, __pyx_L1_error)
+    __PYX_ERR(0, 154, __pyx_L1_error)
   } else {
     __Pyx_GOTREF((PyObject *)__pyx_cur_scope);
   }
@@ -7911,7 +7930,7 @@ static PyObject *__pyx_pf_13ManyBodyUtils_13ManyBodyState_46__iter__(struct __py
   __Pyx_INCREF((PyObject *)__pyx_cur_scope->__pyx_v_self);
   __Pyx_GIVEREF((PyObject *)__pyx_cur_scope->__pyx_v_self);
   {
-    __pyx_CoroutineObject *gen = __Pyx_Generator_New((__pyx_coroutine_body_t) __pyx_gb_13ManyBodyUtils_13ManyBodyState_48generator, ((PyObject *)__pyx_mstate_global->__pyx_codeobj_tab[0]), (PyObject *) __pyx_cur_scope, __pyx_mstate_global->__pyx_n_u_iter, __pyx_mstate_global->__pyx_n_u_ManyBodyState___iter, __pyx_mstate_global->__pyx_n_u_ManyBodyUtils); if (unlikely(!gen)) __PYX_ERR(0, 155, __pyx_L1_error)
+    __pyx_CoroutineObject *gen = __Pyx_Generator_New((__pyx_coroutine_body_t) __pyx_gb_13ManyBodyUtils_13ManyBodyState_48generator, ((PyObject *)__pyx_mstate_global->__pyx_codeobj_tab[0]), (PyObject *) __pyx_cur_scope, __pyx_mstate_global->__pyx_n_u_iter, __pyx_mstate_global->__pyx_n_u_ManyBodyState___iter, __pyx_mstate_global->__pyx_n_u_ManyBodyUtils); if (unlikely(!gen)) __PYX_ERR(0, 154, __pyx_L1_error)
     __Pyx_DECREF(__pyx_cur_scope);
     __Pyx_RefNannyFinishContext();
     return (PyObject *) gen;
@@ -7949,10 +7968,10 @@ static PyObject *__pyx_gb_13ManyBodyUtils_13ManyBodyState_48generator(__pyx_Coro
   __pyx_L3_first_run:;
   if (unlikely(__pyx_sent_value != Py_None)) {
     if (unlikely(__pyx_sent_value)) PyErr_SetString(PyExc_TypeError, "can't send non-None value to a just-started generator");
-    __PYX_ERR(0, 155, __pyx_L1_error)
+    __PYX_ERR(0, 154, __pyx_L1_error)
   }
 
-  /* "ManyBodyUtils.pyx":156
+  /* "ManyBodyUtils.pyx":155
  * 
  *     def __iter__(self):
  *         for p in self.v:             # <<<<<<<<<<<<<<
@@ -7964,14 +7983,14 @@ static PyObject *__pyx_gb_13ManyBodyUtils_13ManyBodyState_48generator(__pyx_Coro
     __pyx_t_2 = *__pyx_t_1;
     __pyx_cur_scope->__pyx_v_p = __PYX_STD_MOVE_IF_SUPPORTED(__pyx_t_2);
 
-    /* "ManyBodyUtils.pyx":157
+    /* "ManyBodyUtils.pyx":156
  *     def __iter__(self):
  *         for p in self.v:
  *             yield key_to_bytes(p.first)             # <<<<<<<<<<<<<<
  * 
  *     def keys(self):
 */
-    __pyx_t_3 = __pyx_f_13ManyBodyUtils_key_to_bytes(__pyx_cur_scope->__pyx_v_p.first); if (unlikely(!__pyx_t_3)) __PYX_ERR(0, 157, __pyx_L1_error)
+    __pyx_t_3 = __pyx_f_13ManyBodyUtils_key_to_bytes(__pyx_cur_scope->__pyx_v_p.first); if (unlikely(!__pyx_t_3)) __PYX_ERR(0, 156, __pyx_L1_error)
     __Pyx_GOTREF(__pyx_t_3);
     __pyx_r = __pyx_t_3;
     __pyx_t_3 = 0;
@@ -7984,9 +8003,9 @@ static PyObject *__pyx_gb_13ManyBodyUtils_13ManyBodyState_48generator(__pyx_Coro
     return __pyx_r;
     __pyx_L6_resume_from_yield:;
     __pyx_t_1 = __PYX_STD_MOVE_IF_SUPPORTED(__pyx_cur_scope->__pyx_t_0);
-    if (unlikely(!__pyx_sent_value)) __PYX_ERR(0, 157, __pyx_L1_error)
+    if (unlikely(!__pyx_sent_value)) __PYX_ERR(0, 156, __pyx_L1_error)
 
-    /* "ManyBodyUtils.pyx":156
+    /* "ManyBodyUtils.pyx":155
  * 
  *     def __iter__(self):
  *         for p in self.v:             # <<<<<<<<<<<<<<
@@ -7996,7 +8015,7 @@ static PyObject *__pyx_gb_13ManyBodyUtils_13ManyBodyState_48generator(__pyx_Coro
   }
   CYTHON_MAYBE_UNUSED_VAR(__pyx_cur_scope);
 
-  /* "ManyBodyUtils.pyx":155
+  /* "ManyBodyUtils.pyx":154
  *         return res
  * 
  *     def __iter__(self):             # <<<<<<<<<<<<<<
@@ -8024,7 +8043,7 @@ static PyObject *__pyx_gb_13ManyBodyUtils_13ManyBodyState_48generator(__pyx_Coro
   return __pyx_r;
 }
 
-/* "ManyBodyUtils.pyx":159
+/* "ManyBodyUtils.pyx":158
  *             yield key_to_bytes(p.first)
  * 
  *     def keys(self):             # <<<<<<<<<<<<<<
@@ -8075,7 +8094,7 @@ PyObject *__pyx_args, PyObject *__pyx_kwds
 }
 static PyObject *__pyx_gb_13ManyBodyUtils_13ManyBodyState_4keys_2generator2(__pyx_CoroutineObject *__pyx_generator, CYTHON_UNUSED PyThreadState *__pyx_tstate, PyObject *__pyx_sent_value); /* proto */
 
-/* "ManyBodyUtils.pyx":160
+/* "ManyBodyUtils.pyx":159
  * 
  *     def keys(self):
  *         return (key_to_bytes(p.first) for p in self.v)             # <<<<<<<<<<<<<<
@@ -8095,13 +8114,13 @@ static PyObject *__pyx_pf_13ManyBodyUtils_13ManyBodyState_4keys_genexpr(CYTHON_U
   if (unlikely(!__pyx_cur_scope)) {
     __pyx_cur_scope = ((struct __pyx_obj_13ManyBodyUtils___pyx_scope_struct_1_genexpr *)Py_None);
     __Pyx_INCREF(Py_None);
-    __PYX_ERR(0, 160, __pyx_L1_error)
+    __PYX_ERR(0, 159, __pyx_L1_error)
   } else {
     __Pyx_GOTREF((PyObject *)__pyx_cur_scope);
   }
   __pyx_cur_scope->__pyx_genexpr_arg_0 = __pyx_genexpr_arg_0;
   {
-    __pyx_CoroutineObject *gen = __Pyx_Generator_New((__pyx_coroutine_body_t) __pyx_gb_13ManyBodyUtils_13ManyBodyState_4keys_2generator2, ((PyObject *)__pyx_mstate_global->__pyx_codeobj_tab[1]), (PyObject *) __pyx_cur_scope, __pyx_mstate_global->__pyx_n_u_genexpr, __pyx_mstate_global->__pyx_n_u_keys_locals_genexpr, __pyx_mstate_global->__pyx_n_u_ManyBodyUtils); if (unlikely(!gen)) __PYX_ERR(0, 160, __pyx_L1_error)
+    __pyx_CoroutineObject *gen = __Pyx_Generator_New((__pyx_coroutine_body_t) __pyx_gb_13ManyBodyUtils_13ManyBodyState_4keys_2generator2, ((PyObject *)__pyx_mstate_global->__pyx_codeobj_tab[1]), (PyObject *) __pyx_cur_scope, __pyx_mstate_global->__pyx_n_u_genexpr, __pyx_mstate_global->__pyx_n_u_keys_locals_genexpr, __pyx_mstate_global->__pyx_n_u_ManyBodyUtils); if (unlikely(!gen)) __PYX_ERR(0, 159, __pyx_L1_error)
     __Pyx_DECREF(__pyx_cur_scope);
     __Pyx_RefNannyFinishContext();
     return (PyObject *) gen;
@@ -8139,13 +8158,13 @@ static PyObject *__pyx_gb_13ManyBodyUtils_13ManyBodyState_4keys_2generator2(__py
   __pyx_L3_first_run:;
   if (unlikely(__pyx_sent_value != Py_None)) {
     if (unlikely(__pyx_sent_value)) PyErr_SetString(PyExc_TypeError, "can't send non-None value to a just-started generator");
-    __PYX_ERR(0, 160, __pyx_L1_error)
+    __PYX_ERR(0, 159, __pyx_L1_error)
   }
   __pyx_t_1 = __pyx_cur_scope->__pyx_genexpr_arg_0.begin();
   for (; __pyx_t_1 != __pyx_cur_scope->__pyx_genexpr_arg_0.end(); ++__pyx_t_1) {
     __pyx_t_2 = *__pyx_t_1;
     __pyx_cur_scope->__pyx_v_p = __PYX_STD_MOVE_IF_SUPPORTED(__pyx_t_2);
-    __pyx_t_3 = __pyx_f_13ManyBodyUtils_key_to_bytes(__pyx_cur_scope->__pyx_v_p.first); if (unlikely(!__pyx_t_3)) __PYX_ERR(0, 160, __pyx_L1_error)
+    __pyx_t_3 = __pyx_f_13ManyBodyUtils_key_to_bytes(__pyx_cur_scope->__pyx_v_p.first); if (unlikely(!__pyx_t_3)) __PYX_ERR(0, 159, __pyx_L1_error)
     __Pyx_GOTREF(__pyx_t_3);
     __pyx_r = __pyx_t_3;
     __pyx_t_3 = 0;
@@ -8158,7 +8177,7 @@ static PyObject *__pyx_gb_13ManyBodyUtils_13ManyBodyState_4keys_2generator2(__py
     return __pyx_r;
     __pyx_L6_resume_from_yield:;
     __pyx_t_1 = __PYX_STD_MOVE_IF_SUPPORTED(__pyx_cur_scope->__pyx_t_0);
-    if (unlikely(!__pyx_sent_value)) __PYX_ERR(0, 160, __pyx_L1_error)
+    if (unlikely(!__pyx_sent_value)) __PYX_ERR(0, 159, __pyx_L1_error)
   }
   CYTHON_MAYBE_UNUSED_VAR(__pyx_cur_scope);
 
@@ -8182,7 +8201,7 @@ static PyObject *__pyx_gb_13ManyBodyUtils_13ManyBodyState_4keys_2generator2(__py
   return __pyx_r;
 }
 
-/* "ManyBodyUtils.pyx":159
+/* "ManyBodyUtils.pyx":158
  *             yield key_to_bytes(p.first)
  * 
  *     def keys(self):             # <<<<<<<<<<<<<<
@@ -8200,7 +8219,7 @@ static PyObject *__pyx_pf_13ManyBodyUtils_13ManyBodyState_49keys(struct __pyx_ob
   int __pyx_clineno = 0;
   __Pyx_RefNannySetupContext("keys", 0);
 
-  /* "ManyBodyUtils.pyx":160
+  /* "ManyBodyUtils.pyx":159
  * 
  *     def keys(self):
  *         return (key_to_bytes(p.first) for p in self.v)             # <<<<<<<<<<<<<<
@@ -8208,13 +8227,13 @@ static PyObject *__pyx_pf_13ManyBodyUtils_13ManyBodyState_49keys(struct __pyx_ob
  *     def values(self):
 */
   __Pyx_XDECREF(__pyx_r);
-  __pyx_t_1 = __pyx_pf_13ManyBodyUtils_13ManyBodyState_4keys_genexpr(NULL, __pyx_v_self->v); if (unlikely(!__pyx_t_1)) __PYX_ERR(0, 160, __pyx_L1_error)
+  __pyx_t_1 = __pyx_pf_13ManyBodyUtils_13ManyBodyState_4keys_genexpr(NULL, __pyx_v_self->v); if (unlikely(!__pyx_t_1)) __PYX_ERR(0, 159, __pyx_L1_error)
   __Pyx_GOTREF(__pyx_t_1);
   __pyx_r = __pyx_t_1;
   __pyx_t_1 = 0;
   goto __pyx_L0;
 
-  /* "ManyBodyUtils.pyx":159
+  /* "ManyBodyUtils.pyx":158
  *             yield key_to_bytes(p.first)
  * 
  *     def keys(self):             # <<<<<<<<<<<<<<
@@ -8234,7 +8253,7 @@ static PyObject *__pyx_pf_13ManyBodyUtils_13ManyBodyState_49keys(struct __pyx_ob
   return __pyx_r;
 }
 
-/* "ManyBodyUtils.pyx":162
+/* "ManyBodyUtils.pyx":161
  *         return (key_to_bytes(p.first) for p in self.v)
  * 
  *     def values(self):             # <<<<<<<<<<<<<<
@@ -8285,7 +8304,7 @@ PyObject *__pyx_args, PyObject *__pyx_kwds
 }
 static PyObject *__pyx_gb_13ManyBodyUtils_13ManyBodyState_6values_2generator3(__pyx_CoroutineObject *__pyx_generator, CYTHON_UNUSED PyThreadState *__pyx_tstate, PyObject *__pyx_sent_value); /* proto */
 
-/* "ManyBodyUtils.pyx":163
+/* "ManyBodyUtils.pyx":162
  * 
  *     def values(self):
  *         return (p.second for p in self.v)             # <<<<<<<<<<<<<<
@@ -8305,13 +8324,13 @@ static PyObject *__pyx_pf_13ManyBodyUtils_13ManyBodyState_6values_genexpr(CYTHON
   if (unlikely(!__pyx_cur_scope)) {
     __pyx_cur_scope = ((struct __pyx_obj_13ManyBodyUtils___pyx_scope_struct_2_genexpr *)Py_None);
     __Pyx_INCREF(Py_None);
-    __PYX_ERR(0, 163, __pyx_L1_error)
+    __PYX_ERR(0, 162, __pyx_L1_error)
   } else {
     __Pyx_GOTREF((PyObject *)__pyx_cur_scope);
   }
   __pyx_cur_scope->__pyx_genexpr_arg_0 = __pyx_genexpr_arg_0;
   {
-    __pyx_CoroutineObject *gen = __Pyx_Generator_New((__pyx_coroutine_body_t) __pyx_gb_13ManyBodyUtils_13ManyBodyState_6values_2generator3, ((PyObject *)__pyx_mstate_global->__pyx_codeobj_tab[2]), (PyObject *) __pyx_cur_scope, __pyx_mstate_global->__pyx_n_u_genexpr, __pyx_mstate_global->__pyx_n_u_values_locals_genexpr, __pyx_mstate_global->__pyx_n_u_ManyBodyUtils); if (unlikely(!gen)) __PYX_ERR(0, 163, __pyx_L1_error)
+    __pyx_CoroutineObject *gen = __Pyx_Generator_New((__pyx_coroutine_body_t) __pyx_gb_13ManyBodyUtils_13ManyBodyState_6values_2generator3, ((PyObject *)__pyx_mstate_global->__pyx_codeobj_tab[2]), (PyObject *) __pyx_cur_scope, __pyx_mstate_global->__pyx_n_u_genexpr, __pyx_mstate_global->__pyx_n_u_values_locals_genexpr, __pyx_mstate_global->__pyx_n_u_ManyBodyUtils); if (unlikely(!gen)) __PYX_ERR(0, 162, __pyx_L1_error)
     __Pyx_DECREF(__pyx_cur_scope);
     __Pyx_RefNannyFinishContext();
     return (PyObject *) gen;
@@ -8349,13 +8368,13 @@ static PyObject *__pyx_gb_13ManyBodyUtils_13ManyBodyState_6values_2generator3(__
   __pyx_L3_first_run:;
   if (unlikely(__pyx_sent_value != Py_None)) {
     if (unlikely(__pyx_sent_value)) PyErr_SetString(PyExc_TypeError, "can't send non-None value to a just-started generator");
-    __PYX_ERR(0, 163, __pyx_L1_error)
+    __PYX_ERR(0, 162, __pyx_L1_error)
   }
   __pyx_t_1 = __pyx_cur_scope->__pyx_genexpr_arg_0.begin();
   for (; __pyx_t_1 != __pyx_cur_scope->__pyx_genexpr_arg_0.end(); ++__pyx_t_1) {
     __pyx_t_2 = *__pyx_t_1;
     __pyx_cur_scope->__pyx_v_p = __PYX_STD_MOVE_IF_SUPPORTED(__pyx_t_2);
-    __pyx_t_3 = __pyx_PyComplex_FromComplex(__pyx_cur_scope->__pyx_v_p.second); if (unlikely(!__pyx_t_3)) __PYX_ERR(0, 163, __pyx_L1_error)
+    __pyx_t_3 = __pyx_PyComplex_FromComplex(__pyx_cur_scope->__pyx_v_p.second); if (unlikely(!__pyx_t_3)) __PYX_ERR(0, 162, __pyx_L1_error)
     __Pyx_GOTREF(__pyx_t_3);
     __pyx_r = __pyx_t_3;
     __pyx_t_3 = 0;
@@ -8368,7 +8387,7 @@ static PyObject *__pyx_gb_13ManyBodyUtils_13ManyBodyState_6values_2generator3(__
     return __pyx_r;
     __pyx_L6_resume_from_yield:;
     __pyx_t_1 = __PYX_STD_MOVE_IF_SUPPORTED(__pyx_cur_scope->__pyx_t_0);
-    if (unlikely(!__pyx_sent_value)) __PYX_ERR(0, 163, __pyx_L1_error)
+    if (unlikely(!__pyx_sent_value)) __PYX_ERR(0, 162, __pyx_L1_error)
   }
   CYTHON_MAYBE_UNUSED_VAR(__pyx_cur_scope);
 
@@ -8392,7 +8411,7 @@ static PyObject *__pyx_gb_13ManyBodyUtils_13ManyBodyState_6values_2generator3(__
   return __pyx_r;
 }
 
-/* "ManyBodyUtils.pyx":162
+/* "ManyBodyUtils.pyx":161
  *         return (key_to_bytes(p.first) for p in self.v)
  * 
  *     def values(self):             # <<<<<<<<<<<<<<
@@ -8410,7 +8429,7 @@ static PyObject *__pyx_pf_13ManyBodyUtils_13ManyBodyState_51values(struct __pyx_
   int __pyx_clineno = 0;
   __Pyx_RefNannySetupContext("values", 0);
 
-  /* "ManyBodyUtils.pyx":163
+  /* "ManyBodyUtils.pyx":162
  * 
  *     def values(self):
  *         return (p.second for p in self.v)             # <<<<<<<<<<<<<<
@@ -8418,13 +8437,13 @@ static PyObject *__pyx_pf_13ManyBodyUtils_13ManyBodyState_51values(struct __pyx_
  *     def items(self):
 */
   __Pyx_XDECREF(__pyx_r);
-  __pyx_t_1 = __pyx_pf_13ManyBodyUtils_13ManyBodyState_6values_genexpr(NULL, __pyx_v_self->v); if (unlikely(!__pyx_t_1)) __PYX_ERR(0, 163, __pyx_L1_error)
+  __pyx_t_1 = __pyx_pf_13ManyBodyUtils_13ManyBodyState_6values_genexpr(NULL, __pyx_v_self->v); if (unlikely(!__pyx_t_1)) __PYX_ERR(0, 162, __pyx_L1_error)
   __Pyx_GOTREF(__pyx_t_1);
   __pyx_r = __pyx_t_1;
   __pyx_t_1 = 0;
   goto __pyx_L0;
 
-  /* "ManyBodyUtils.pyx":162
+  /* "ManyBodyUtils.pyx":161
  *         return (key_to_bytes(p.first) for p in self.v)
  * 
  *     def values(self):             # <<<<<<<<<<<<<<
@@ -8444,7 +8463,7 @@ static PyObject *__pyx_pf_13ManyBodyUtils_13ManyBodyState_51values(struct __pyx_
   return __pyx_r;
 }
 
-/* "ManyBodyUtils.pyx":165
+/* "ManyBodyUtils.pyx":164
  *         return (p.second for p in self.v)
  * 
  *     def items(self):             # <<<<<<<<<<<<<<
@@ -8495,7 +8514,7 @@ PyObject *__pyx_args, PyObject *__pyx_kwds
 }
 static PyObject *__pyx_gb_13ManyBodyUtils_13ManyBodyState_5items_2generator4(__pyx_CoroutineObject *__pyx_generator, CYTHON_UNUSED PyThreadState *__pyx_tstate, PyObject *__pyx_sent_value); /* proto */
 
-/* "ManyBodyUtils.pyx":166
+/* "ManyBodyUtils.pyx":165
  * 
  *     def items(self):
  *         return ((key_to_bytes(p.first), p.second) for p in self.v)             # <<<<<<<<<<<<<<
@@ -8515,13 +8534,13 @@ static PyObject *__pyx_pf_13ManyBodyUtils_13ManyBodyState_5items_genexpr(CYTHON_
   if (unlikely(!__pyx_cur_scope)) {
     __pyx_cur_scope = ((struct __pyx_obj_13ManyBodyUtils___pyx_scope_struct_3_genexpr *)Py_None);
     __Pyx_INCREF(Py_None);
-    __PYX_ERR(0, 166, __pyx_L1_error)
+    __PYX_ERR(0, 165, __pyx_L1_error)
   } else {
     __Pyx_GOTREF((PyObject *)__pyx_cur_scope);
   }
   __pyx_cur_scope->__pyx_genexpr_arg_0 = __pyx_genexpr_arg_0;
   {
-    __pyx_CoroutineObject *gen = __Pyx_Generator_New((__pyx_coroutine_body_t) __pyx_gb_13ManyBodyUtils_13ManyBodyState_5items_2generator4, ((PyObject *)__pyx_mstate_global->__pyx_codeobj_tab[3]), (PyObject *) __pyx_cur_scope, __pyx_mstate_global->__pyx_n_u_genexpr, __pyx_mstate_global->__pyx_n_u_items_locals_genexpr, __pyx_mstate_global->__pyx_n_u_ManyBodyUtils); if (unlikely(!gen)) __PYX_ERR(0, 166, __pyx_L1_error)
+    __pyx_CoroutineObject *gen = __Pyx_Generator_New((__pyx_coroutine_body_t) __pyx_gb_13ManyBodyUtils_13ManyBodyState_5items_2generator4, ((PyObject *)__pyx_mstate_global->__pyx_codeobj_tab[3]), (PyObject *) __pyx_cur_scope, __pyx_mstate_global->__pyx_n_u_genexpr, __pyx_mstate_global->__pyx_n_u_items_locals_genexpr, __pyx_mstate_global->__pyx_n_u_ManyBodyUtils); if (unlikely(!gen)) __PYX_ERR(0, 165, __pyx_L1_error)
     __Pyx_DECREF(__pyx_cur_scope);
     __Pyx_RefNannyFinishContext();
     return (PyObject *) gen;
@@ -8561,22 +8580,22 @@ static PyObject *__pyx_gb_13ManyBodyUtils_13ManyBodyState_5items_2generator4(__p
   __pyx_L3_first_run:;
   if (unlikely(__pyx_sent_value != Py_None)) {
     if (unlikely(__pyx_sent_value)) PyErr_SetString(PyExc_TypeError, "can't send non-None value to a just-started generator");
-    __PYX_ERR(0, 166, __pyx_L1_error)
+    __PYX_ERR(0, 165, __pyx_L1_error)
   }
   __pyx_t_1 = __pyx_cur_scope->__pyx_genexpr_arg_0.begin();
   for (; __pyx_t_1 != __pyx_cur_scope->__pyx_genexpr_arg_0.end(); ++__pyx_t_1) {
     __pyx_t_2 = *__pyx_t_1;
     __pyx_cur_scope->__pyx_v_p = __PYX_STD_MOVE_IF_SUPPORTED(__pyx_t_2);
-    __pyx_t_3 = __pyx_f_13ManyBodyUtils_key_to_bytes(__pyx_cur_scope->__pyx_v_p.first); if (unlikely(!__pyx_t_3)) __PYX_ERR(0, 166, __pyx_L1_error)
+    __pyx_t_3 = __pyx_f_13ManyBodyUtils_key_to_bytes(__pyx_cur_scope->__pyx_v_p.first); if (unlikely(!__pyx_t_3)) __PYX_ERR(0, 165, __pyx_L1_error)
     __Pyx_GOTREF(__pyx_t_3);
-    __pyx_t_4 = __pyx_PyComplex_FromComplex(__pyx_cur_scope->__pyx_v_p.second); if (unlikely(!__pyx_t_4)) __PYX_ERR(0, 166, __pyx_L1_error)
+    __pyx_t_4 = __pyx_PyComplex_FromComplex(__pyx_cur_scope->__pyx_v_p.second); if (unlikely(!__pyx_t_4)) __PYX_ERR(0, 165, __pyx_L1_error)
     __Pyx_GOTREF(__pyx_t_4);
-    __pyx_t_5 = PyTuple_New(2); if (unlikely(!__pyx_t_5)) __PYX_ERR(0, 166, __pyx_L1_error)
+    __pyx_t_5 = PyTuple_New(2); if (unlikely(!__pyx_t_5)) __PYX_ERR(0, 165, __pyx_L1_error)
     __Pyx_GOTREF(__pyx_t_5);
     __Pyx_GIVEREF(__pyx_t_3);
-    if (__Pyx_PyTuple_SET_ITEM(__pyx_t_5, 0, __pyx_t_3) != (0)) __PYX_ERR(0, 166, __pyx_L1_error);
+    if (__Pyx_PyTuple_SET_ITEM(__pyx_t_5, 0, __pyx_t_3) != (0)) __PYX_ERR(0, 165, __pyx_L1_error);
     __Pyx_GIVEREF(__pyx_t_4);
-    if (__Pyx_PyTuple_SET_ITEM(__pyx_t_5, 1, __pyx_t_4) != (0)) __PYX_ERR(0, 166, __pyx_L1_error);
+    if (__Pyx_PyTuple_SET_ITEM(__pyx_t_5, 1, __pyx_t_4) != (0)) __PYX_ERR(0, 165, __pyx_L1_error);
     __pyx_t_3 = 0;
     __pyx_t_4 = 0;
     __pyx_r = __pyx_t_5;
@@ -8590,7 +8609,7 @@ static PyObject *__pyx_gb_13ManyBodyUtils_13ManyBodyState_5items_2generator4(__p
     return __pyx_r;
     __pyx_L6_resume_from_yield:;
     __pyx_t_1 = __PYX_STD_MOVE_IF_SUPPORTED(__pyx_cur_scope->__pyx_t_0);
-    if (unlikely(!__pyx_sent_value)) __PYX_ERR(0, 166, __pyx_L1_error)
+    if (unlikely(!__pyx_sent_value)) __PYX_ERR(0, 165, __pyx_L1_error)
   }
   CYTHON_MAYBE_UNUSED_VAR(__pyx_cur_scope);
 
@@ -8616,7 +8635,7 @@ static PyObject *__pyx_gb_13ManyBodyUtils_13ManyBodyState_5items_2generator4(__p
   return __pyx_r;
 }
 
-/* "ManyBodyUtils.pyx":165
+/* "ManyBodyUtils.pyx":164
  *         return (p.second for p in self.v)
  * 
  *     def items(self):             # <<<<<<<<<<<<<<
@@ -8634,7 +8653,7 @@ static PyObject *__pyx_pf_13ManyBodyUtils_13ManyBodyState_53items(struct __pyx_o
   int __pyx_clineno = 0;
   __Pyx_RefNannySetupContext("items", 0);
 
-  /* "ManyBodyUtils.pyx":166
+  /* "ManyBodyUtils.pyx":165
  * 
  *     def items(self):
  *         return ((key_to_bytes(p.first), p.second) for p in self.v)             # <<<<<<<<<<<<<<
@@ -8642,13 +8661,13 @@ static PyObject *__pyx_pf_13ManyBodyUtils_13ManyBodyState_53items(struct __pyx_o
  *     def prune(self, double cutoff):
 */
   __Pyx_XDECREF(__pyx_r);
-  __pyx_t_1 = __pyx_pf_13ManyBodyUtils_13ManyBodyState_5items_genexpr(NULL, __pyx_v_self->v); if (unlikely(!__pyx_t_1)) __PYX_ERR(0, 166, __pyx_L1_error)
+  __pyx_t_1 = __pyx_pf_13ManyBodyUtils_13ManyBodyState_5items_genexpr(NULL, __pyx_v_self->v); if (unlikely(!__pyx_t_1)) __PYX_ERR(0, 165, __pyx_L1_error)
   __Pyx_GOTREF(__pyx_t_1);
   __pyx_r = __pyx_t_1;
   __pyx_t_1 = 0;
   goto __pyx_L0;
 
-  /* "ManyBodyUtils.pyx":165
+  /* "ManyBodyUtils.pyx":164
  *         return (p.second for p in self.v)
  * 
  *     def items(self):             # <<<<<<<<<<<<<<
@@ -8668,7 +8687,7 @@ static PyObject *__pyx_pf_13ManyBodyUtils_13ManyBodyState_53items(struct __pyx_o
   return __pyx_r;
 }
 
-/* "ManyBodyUtils.pyx":168
+/* "ManyBodyUtils.pyx":167
  *         return ((key_to_bytes(p.first), p.second) for p in self.v)
  * 
  *     def prune(self, double cutoff):             # <<<<<<<<<<<<<<
@@ -8715,32 +8734,32 @@ PyObject *__pyx_args, PyObject *__pyx_kwds
   {
     PyObject ** const __pyx_pyargnames[] = {&__pyx_mstate_global->__pyx_n_u_cutoff,0};
     const Py_ssize_t __pyx_kwds_len = (__pyx_kwds) ? __Pyx_NumKwargs_FASTCALL(__pyx_kwds) : 0;
-    if (unlikely(__pyx_kwds_len) < 0) __PYX_ERR(0, 168, __pyx_L3_error)
+    if (unlikely(__pyx_kwds_len) < 0) __PYX_ERR(0, 167, __pyx_L3_error)
     if (__pyx_kwds_len > 0) {
       switch (__pyx_nargs) {
         case  1:
         values[0] = __Pyx_ArgRef_FASTCALL(__pyx_args, 0);
-        if (!CYTHON_ASSUME_SAFE_MACROS && unlikely(!values[0])) __PYX_ERR(0, 168, __pyx_L3_error)
+        if (!CYTHON_ASSUME_SAFE_MACROS && unlikely(!values[0])) __PYX_ERR(0, 167, __pyx_L3_error)
         CYTHON_FALLTHROUGH;
         case  0: break;
         default: goto __pyx_L5_argtuple_error;
       }
       const Py_ssize_t kwd_pos_args = __pyx_nargs;
-      if (__Pyx_ParseKeywords(__pyx_kwds, __pyx_kwvalues, __pyx_pyargnames, 0, values, kwd_pos_args, __pyx_kwds_len, "prune", 0) < 0) __PYX_ERR(0, 168, __pyx_L3_error)
+      if (__Pyx_ParseKeywords(__pyx_kwds, __pyx_kwvalues, __pyx_pyargnames, 0, values, kwd_pos_args, __pyx_kwds_len, "prune", 0) < 0) __PYX_ERR(0, 167, __pyx_L3_error)
       for (Py_ssize_t i = __pyx_nargs; i < 1; i++) {
-        if (unlikely(!values[i])) { __Pyx_RaiseArgtupleInvalid("prune", 1, 1, 1, i); __PYX_ERR(0, 168, __pyx_L3_error) }
+        if (unlikely(!values[i])) { __Pyx_RaiseArgtupleInvalid("prune", 1, 1, 1, i); __PYX_ERR(0, 167, __pyx_L3_error) }
       }
     } else if (unlikely(__pyx_nargs != 1)) {
       goto __pyx_L5_argtuple_error;
     } else {
       values[0] = __Pyx_ArgRef_FASTCALL(__pyx_args, 0);
-      if (!CYTHON_ASSUME_SAFE_MACROS && unlikely(!values[0])) __PYX_ERR(0, 168, __pyx_L3_error)
+      if (!CYTHON_ASSUME_SAFE_MACROS && unlikely(!values[0])) __PYX_ERR(0, 167, __pyx_L3_error)
     }
-    __pyx_v_cutoff = __Pyx_PyFloat_AsDouble(values[0]); if (unlikely((__pyx_v_cutoff == (double)-1) && PyErr_Occurred())) __PYX_ERR(0, 168, __pyx_L3_error)
+    __pyx_v_cutoff = __Pyx_PyFloat_AsDouble(values[0]); if (unlikely((__pyx_v_cutoff == (double)-1) && PyErr_Occurred())) __PYX_ERR(0, 167, __pyx_L3_error)
   }
   goto __pyx_L6_skip;
   __pyx_L5_argtuple_error:;
-  __Pyx_RaiseArgtupleInvalid("prune", 1, 1, 1, __pyx_nargs); __PYX_ERR(0, 168, __pyx_L3_error)
+  __Pyx_RaiseArgtupleInvalid("prune", 1, 1, 1, __pyx_nargs); __PYX_ERR(0, 167, __pyx_L3_error)
   __pyx_L6_skip:;
   goto __pyx_L4_argument_unpacking_done;
   __pyx_L3_error:;
@@ -8766,7 +8785,7 @@ static PyObject *__pyx_pf_13ManyBodyUtils_13ManyBodyState_55prune(struct __pyx_o
   __Pyx_RefNannyDeclarations
   __Pyx_RefNannySetupContext("prune", 0);
 
-  /* "ManyBodyUtils.pyx":169
+  /* "ManyBodyUtils.pyx":168
  * 
  *     def prune(self, double cutoff):
  *         with nogil:             # <<<<<<<<<<<<<<
@@ -8780,7 +8799,7 @@ static PyObject *__pyx_pf_13ManyBodyUtils_13ManyBodyState_55prune(struct __pyx_o
       __Pyx_FastGIL_Remember();
       /*try:*/ {
 
-        /* "ManyBodyUtils.pyx":170
+        /* "ManyBodyUtils.pyx":169
  *     def prune(self, double cutoff):
  *         with nogil:
  *             self.v.prune(cutoff)             # <<<<<<<<<<<<<<
@@ -8790,7 +8809,7 @@ static PyObject *__pyx_pf_13ManyBodyUtils_13ManyBodyState_55prune(struct __pyx_o
         __pyx_v_self->v.prune(__pyx_v_cutoff);
       }
 
-      /* "ManyBodyUtils.pyx":169
+      /* "ManyBodyUtils.pyx":168
  * 
  *     def prune(self, double cutoff):
  *         with nogil:             # <<<<<<<<<<<<<<
@@ -8807,7 +8826,7 @@ static PyObject *__pyx_pf_13ManyBodyUtils_13ManyBodyState_55prune(struct __pyx_o
       }
   }
 
-  /* "ManyBodyUtils.pyx":168
+  /* "ManyBodyUtils.pyx":167
  *         return ((key_to_bytes(p.first), p.second) for p in self.v)
  * 
  *     def prune(self, double cutoff):             # <<<<<<<<<<<<<<
@@ -8822,7 +8841,7 @@ static PyObject *__pyx_pf_13ManyBodyUtils_13ManyBodyState_55prune(struct __pyx_o
   return __pyx_r;
 }
 
-/* "ManyBodyUtils.pyx":172
+/* "ManyBodyUtils.pyx":171
  *             self.v.prune(cutoff)
  * 
  *     def to_dict(self):             # <<<<<<<<<<<<<<
@@ -8873,7 +8892,7 @@ PyObject *__pyx_args, PyObject *__pyx_kwds
 }
 static PyObject *__pyx_gb_13ManyBodyUtils_13ManyBodyState_7to_dict_2generator5(__pyx_CoroutineObject *__pyx_generator, CYTHON_UNUSED PyThreadState *__pyx_tstate, PyObject *__pyx_sent_value); /* proto */
 
-/* "ManyBodyUtils.pyx":173
+/* "ManyBodyUtils.pyx":172
  * 
  *     def to_dict(self):
  *         return dict((key_to_bytes(p.first), p.second) for p in self.v)             # <<<<<<<<<<<<<<
@@ -8893,13 +8912,13 @@ static PyObject *__pyx_pf_13ManyBodyUtils_13ManyBodyState_7to_dict_genexpr(CYTHO
   if (unlikely(!__pyx_cur_scope)) {
     __pyx_cur_scope = ((struct __pyx_obj_13ManyBodyUtils___pyx_scope_struct_4_genexpr *)Py_None);
     __Pyx_INCREF(Py_None);
-    __PYX_ERR(0, 173, __pyx_L1_error)
+    __PYX_ERR(0, 172, __pyx_L1_error)
   } else {
     __Pyx_GOTREF((PyObject *)__pyx_cur_scope);
   }
   __pyx_cur_scope->__pyx_genexpr_arg_0 = __pyx_genexpr_arg_0;
   {
-    __pyx_CoroutineObject *gen = __Pyx_Generator_New((__pyx_coroutine_body_t) __pyx_gb_13ManyBodyUtils_13ManyBodyState_7to_dict_2generator5, ((PyObject *)__pyx_mstate_global->__pyx_codeobj_tab[4]), (PyObject *) __pyx_cur_scope, __pyx_mstate_global->__pyx_n_u_genexpr, __pyx_mstate_global->__pyx_n_u_to_dict_locals_genexpr, __pyx_mstate_global->__pyx_n_u_ManyBodyUtils); if (unlikely(!gen)) __PYX_ERR(0, 173, __pyx_L1_error)
+    __pyx_CoroutineObject *gen = __Pyx_Generator_New((__pyx_coroutine_body_t) __pyx_gb_13ManyBodyUtils_13ManyBodyState_7to_dict_2generator5, ((PyObject *)__pyx_mstate_global->__pyx_codeobj_tab[4]), (PyObject *) __pyx_cur_scope, __pyx_mstate_global->__pyx_n_u_genexpr, __pyx_mstate_global->__pyx_n_u_to_dict_locals_genexpr, __pyx_mstate_global->__pyx_n_u_ManyBodyUtils); if (unlikely(!gen)) __PYX_ERR(0, 172, __pyx_L1_error)
     __Pyx_DECREF(__pyx_cur_scope);
     __Pyx_RefNannyFinishContext();
     return (PyObject *) gen;
@@ -8935,18 +8954,18 @@ static PyObject *__pyx_gb_13ManyBodyUtils_13ManyBodyState_7to_dict_2generator5(_
     return NULL;
   }
   __pyx_L3_first_run:;
-  if (unlikely(!__pyx_sent_value)) __PYX_ERR(0, 173, __pyx_L1_error)
-  __pyx_r = PyDict_New(); if (unlikely(!__pyx_r)) __PYX_ERR(0, 173, __pyx_L1_error)
+  if (unlikely(!__pyx_sent_value)) __PYX_ERR(0, 172, __pyx_L1_error)
+  __pyx_r = PyDict_New(); if (unlikely(!__pyx_r)) __PYX_ERR(0, 172, __pyx_L1_error)
   __Pyx_GOTREF(__pyx_r);
   __pyx_t_1 = __pyx_cur_scope->__pyx_genexpr_arg_0.begin();
   for (; __pyx_t_1 != __pyx_cur_scope->__pyx_genexpr_arg_0.end(); ++__pyx_t_1) {
     __pyx_t_2 = *__pyx_t_1;
     __pyx_cur_scope->__pyx_v_p = __PYX_STD_MOVE_IF_SUPPORTED(__pyx_t_2);
-    __pyx_t_3 = __pyx_f_13ManyBodyUtils_key_to_bytes(__pyx_cur_scope->__pyx_v_p.first); if (unlikely(!__pyx_t_3)) __PYX_ERR(0, 173, __pyx_L1_error)
+    __pyx_t_3 = __pyx_f_13ManyBodyUtils_key_to_bytes(__pyx_cur_scope->__pyx_v_p.first); if (unlikely(!__pyx_t_3)) __PYX_ERR(0, 172, __pyx_L1_error)
     __Pyx_GOTREF(__pyx_t_3);
-    __pyx_t_4 = __pyx_PyComplex_FromComplex(__pyx_cur_scope->__pyx_v_p.second); if (unlikely(!__pyx_t_4)) __PYX_ERR(0, 173, __pyx_L1_error)
+    __pyx_t_4 = __pyx_PyComplex_FromComplex(__pyx_cur_scope->__pyx_v_p.second); if (unlikely(!__pyx_t_4)) __PYX_ERR(0, 172, __pyx_L1_error)
     __Pyx_GOTREF(__pyx_t_4);
-    if (unlikely(PyDict_SetItem(__pyx_r, (PyObject*)__pyx_t_3, (PyObject*)__pyx_t_4))) __PYX_ERR(0, 173, __pyx_L1_error)
+    if (unlikely(PyDict_SetItem(__pyx_r, (PyObject*)__pyx_t_3, (PyObject*)__pyx_t_4))) __PYX_ERR(0, 172, __pyx_L1_error)
     __Pyx_DECREF(__pyx_t_3); __pyx_t_3 = 0;
     __Pyx_DECREF(__pyx_t_4); __pyx_t_4 = 0;
   }
@@ -8973,7 +8992,7 @@ static PyObject *__pyx_gb_13ManyBodyUtils_13ManyBodyState_7to_dict_2generator5(_
   return __pyx_r;
 }
 
-/* "ManyBodyUtils.pyx":172
+/* "ManyBodyUtils.pyx":171
  *             self.v.prune(cutoff)
  * 
  *     def to_dict(self):             # <<<<<<<<<<<<<<
@@ -8992,7 +9011,7 @@ static PyObject *__pyx_pf_13ManyBodyUtils_13ManyBodyState_57to_dict(struct __pyx
   int __pyx_clineno = 0;
   __Pyx_RefNannySetupContext("to_dict", 0);
 
-  /* "ManyBodyUtils.pyx":173
+  /* "ManyBodyUtils.pyx":172
  * 
  *     def to_dict(self):
  *         return dict((key_to_bytes(p.first), p.second) for p in self.v)             # <<<<<<<<<<<<<<
@@ -9000,16 +9019,16 @@ static PyObject *__pyx_pf_13ManyBodyUtils_13ManyBodyState_57to_dict(struct __pyx
  *     def copy(self):
 */
   __Pyx_XDECREF(__pyx_r);
-  __pyx_t_1 = __pyx_pf_13ManyBodyUtils_13ManyBodyState_7to_dict_genexpr(NULL, __pyx_v_self->v); if (unlikely(!__pyx_t_1)) __PYX_ERR(0, 173, __pyx_L1_error)
+  __pyx_t_1 = __pyx_pf_13ManyBodyUtils_13ManyBodyState_7to_dict_genexpr(NULL, __pyx_v_self->v); if (unlikely(!__pyx_t_1)) __PYX_ERR(0, 172, __pyx_L1_error)
   __Pyx_GOTREF(__pyx_t_1);
-  __pyx_t_2 = __Pyx_Generator_GetInlinedResult(__pyx_t_1); if (unlikely(!__pyx_t_2)) __PYX_ERR(0, 173, __pyx_L1_error)
+  __pyx_t_2 = __Pyx_Generator_GetInlinedResult(__pyx_t_1); if (unlikely(!__pyx_t_2)) __PYX_ERR(0, 172, __pyx_L1_error)
   __Pyx_GOTREF(__pyx_t_2);
   __Pyx_DECREF(__pyx_t_1); __pyx_t_1 = 0;
   __pyx_r = __pyx_t_2;
   __pyx_t_2 = 0;
   goto __pyx_L0;
 
-  /* "ManyBodyUtils.pyx":172
+  /* "ManyBodyUtils.pyx":171
  *             self.v.prune(cutoff)
  * 
  *     def to_dict(self):             # <<<<<<<<<<<<<<
@@ -9030,7 +9049,7 @@ static PyObject *__pyx_pf_13ManyBodyUtils_13ManyBodyState_57to_dict(struct __pyx
   return __pyx_r;
 }
 
-/* "ManyBodyUtils.pyx":175
+/* "ManyBodyUtils.pyx":174
  *         return dict((key_to_bytes(p.first), p.second) for p in self.v)
  * 
  *     def copy(self):             # <<<<<<<<<<<<<<
@@ -9095,7 +9114,7 @@ static PyObject *__pyx_pf_13ManyBodyUtils_13ManyBodyState_59copy(struct __pyx_ob
   int __pyx_clineno = 0;
   __Pyx_RefNannySetupContext("copy", 0);
 
-  /* "ManyBodyUtils.pyx":176
+  /* "ManyBodyUtils.pyx":175
  * 
  *     def copy(self):
  *         d = self.to_dict()             # <<<<<<<<<<<<<<
@@ -9109,13 +9128,13 @@ static PyObject *__pyx_pf_13ManyBodyUtils_13ManyBodyState_59copy(struct __pyx_ob
     PyObject *__pyx_callargs[2] = {__pyx_t_2, NULL};
     __pyx_t_1 = __Pyx_PyObject_FastCallMethod(__pyx_mstate_global->__pyx_n_u_to_dict, __pyx_callargs+__pyx_t_3, (1-__pyx_t_3) | (1*__Pyx_PY_VECTORCALL_ARGUMENTS_OFFSET));
     __Pyx_XDECREF(__pyx_t_2); __pyx_t_2 = 0;
-    if (unlikely(!__pyx_t_1)) __PYX_ERR(0, 176, __pyx_L1_error)
+    if (unlikely(!__pyx_t_1)) __PYX_ERR(0, 175, __pyx_L1_error)
     __Pyx_GOTREF(__pyx_t_1);
   }
   __pyx_v_d = __pyx_t_1;
   __pyx_t_1 = 0;
 
-  /* "ManyBodyUtils.pyx":178
+  /* "ManyBodyUtils.pyx":177
  *         d = self.to_dict()
  *         # return ManyBodyState(list(d.keys()),list(d.values()) )
  *         return ManyBodyState(self.to_dict())             # <<<<<<<<<<<<<<
@@ -9133,7 +9152,7 @@ static PyObject *__pyx_pf_13ManyBodyUtils_13ManyBodyState_59copy(struct __pyx_ob
     PyObject *__pyx_callargs[2] = {__pyx_t_6, NULL};
     __pyx_t_5 = __Pyx_PyObject_FastCallMethod(__pyx_mstate_global->__pyx_n_u_to_dict, __pyx_callargs+__pyx_t_3, (1-__pyx_t_3) | (1*__Pyx_PY_VECTORCALL_ARGUMENTS_OFFSET));
     __Pyx_XDECREF(__pyx_t_6); __pyx_t_6 = 0;
-    if (unlikely(!__pyx_t_5)) __PYX_ERR(0, 178, __pyx_L1_error)
+    if (unlikely(!__pyx_t_5)) __PYX_ERR(0, 177, __pyx_L1_error)
     __Pyx_GOTREF(__pyx_t_5);
   }
   __pyx_t_3 = 1;
@@ -9143,14 +9162,14 @@ static PyObject *__pyx_pf_13ManyBodyUtils_13ManyBodyState_59copy(struct __pyx_ob
     __Pyx_XDECREF(__pyx_t_2); __pyx_t_2 = 0;
     __Pyx_DECREF(__pyx_t_5); __pyx_t_5 = 0;
     __Pyx_DECREF(__pyx_t_4); __pyx_t_4 = 0;
-    if (unlikely(!__pyx_t_1)) __PYX_ERR(0, 178, __pyx_L1_error)
+    if (unlikely(!__pyx_t_1)) __PYX_ERR(0, 177, __pyx_L1_error)
     __Pyx_GOTREF((PyObject *)__pyx_t_1);
   }
   __pyx_r = ((PyObject *)__pyx_t_1);
   __pyx_t_1 = 0;
   goto __pyx_L0;
 
-  /* "ManyBodyUtils.pyx":175
+  /* "ManyBodyUtils.pyx":174
  *         return dict((key_to_bytes(p.first), p.second) for p in self.v)
  * 
  *     def copy(self):             # <<<<<<<<<<<<<<
@@ -9174,7 +9193,7 @@ static PyObject *__pyx_pf_13ManyBodyUtils_13ManyBodyState_59copy(struct __pyx_ob
   return __pyx_r;
 }
 
-/* "ManyBodyUtils.pyx":180
+/* "ManyBodyUtils.pyx":179
  *         return ManyBodyState(self.to_dict())
  * 
  * def inner(ManyBodyState a, ManyBodyState b):             # <<<<<<<<<<<<<<
@@ -9222,39 +9241,39 @@ PyObject *__pyx_args, PyObject *__pyx_kwds
   {
     PyObject ** const __pyx_pyargnames[] = {&__pyx_mstate_global->__pyx_n_u_a,&__pyx_mstate_global->__pyx_n_u_b,0};
     const Py_ssize_t __pyx_kwds_len = (__pyx_kwds) ? __Pyx_NumKwargs_FASTCALL(__pyx_kwds) : 0;
-    if (unlikely(__pyx_kwds_len) < 0) __PYX_ERR(0, 180, __pyx_L3_error)
+    if (unlikely(__pyx_kwds_len) < 0) __PYX_ERR(0, 179, __pyx_L3_error)
     if (__pyx_kwds_len > 0) {
       switch (__pyx_nargs) {
         case  2:
         values[1] = __Pyx_ArgRef_FASTCALL(__pyx_args, 1);
-        if (!CYTHON_ASSUME_SAFE_MACROS && unlikely(!values[1])) __PYX_ERR(0, 180, __pyx_L3_error)
+        if (!CYTHON_ASSUME_SAFE_MACROS && unlikely(!values[1])) __PYX_ERR(0, 179, __pyx_L3_error)
         CYTHON_FALLTHROUGH;
         case  1:
         values[0] = __Pyx_ArgRef_FASTCALL(__pyx_args, 0);
-        if (!CYTHON_ASSUME_SAFE_MACROS && unlikely(!values[0])) __PYX_ERR(0, 180, __pyx_L3_error)
+        if (!CYTHON_ASSUME_SAFE_MACROS && unlikely(!values[0])) __PYX_ERR(0, 179, __pyx_L3_error)
         CYTHON_FALLTHROUGH;
         case  0: break;
         default: goto __pyx_L5_argtuple_error;
       }
       const Py_ssize_t kwd_pos_args = __pyx_nargs;
-      if (__Pyx_ParseKeywords(__pyx_kwds, __pyx_kwvalues, __pyx_pyargnames, 0, values, kwd_pos_args, __pyx_kwds_len, "inner", 0) < 0) __PYX_ERR(0, 180, __pyx_L3_error)
+      if (__Pyx_ParseKeywords(__pyx_kwds, __pyx_kwvalues, __pyx_pyargnames, 0, values, kwd_pos_args, __pyx_kwds_len, "inner", 0) < 0) __PYX_ERR(0, 179, __pyx_L3_error)
       for (Py_ssize_t i = __pyx_nargs; i < 2; i++) {
-        if (unlikely(!values[i])) { __Pyx_RaiseArgtupleInvalid("inner", 1, 2, 2, i); __PYX_ERR(0, 180, __pyx_L3_error) }
+        if (unlikely(!values[i])) { __Pyx_RaiseArgtupleInvalid("inner", 1, 2, 2, i); __PYX_ERR(0, 179, __pyx_L3_error) }
       }
     } else if (unlikely(__pyx_nargs != 2)) {
       goto __pyx_L5_argtuple_error;
     } else {
       values[0] = __Pyx_ArgRef_FASTCALL(__pyx_args, 0);
-      if (!CYTHON_ASSUME_SAFE_MACROS && unlikely(!values[0])) __PYX_ERR(0, 180, __pyx_L3_error)
+      if (!CYTHON_ASSUME_SAFE_MACROS && unlikely(!values[0])) __PYX_ERR(0, 179, __pyx_L3_error)
       values[1] = __Pyx_ArgRef_FASTCALL(__pyx_args, 1);
-      if (!CYTHON_ASSUME_SAFE_MACROS && unlikely(!values[1])) __PYX_ERR(0, 180, __pyx_L3_error)
+      if (!CYTHON_ASSUME_SAFE_MACROS && unlikely(!values[1])) __PYX_ERR(0, 179, __pyx_L3_error)
     }
     __pyx_v_a = ((struct __pyx_obj_13ManyBodyUtils_ManyBodyState *)values[0]);
     __pyx_v_b = ((struct __pyx_obj_13ManyBodyUtils_ManyBodyState *)values[1]);
   }
   goto __pyx_L6_skip;
   __pyx_L5_argtuple_error:;
-  __Pyx_RaiseArgtupleInvalid("inner", 1, 2, 2, __pyx_nargs); __PYX_ERR(0, 180, __pyx_L3_error)
+  __Pyx_RaiseArgtupleInvalid("inner", 1, 2, 2, __pyx_nargs); __PYX_ERR(0, 179, __pyx_L3_error)
   __pyx_L6_skip:;
   goto __pyx_L4_argument_unpacking_done;
   __pyx_L3_error:;
@@ -9265,8 +9284,8 @@ PyObject *__pyx_args, PyObject *__pyx_kwds
   __Pyx_RefNannyFinishContext();
   return NULL;
   __pyx_L4_argument_unpacking_done:;
-  if (unlikely(!__Pyx_ArgTypeTest(((PyObject *)__pyx_v_a), __pyx_mstate_global->__pyx_ptype_13ManyBodyUtils_ManyBodyState, 1, "a", 0))) __PYX_ERR(0, 180, __pyx_L1_error)
-  if (unlikely(!__Pyx_ArgTypeTest(((PyObject *)__pyx_v_b), __pyx_mstate_global->__pyx_ptype_13ManyBodyUtils_ManyBodyState, 1, "b", 0))) __PYX_ERR(0, 180, __pyx_L1_error)
+  if (unlikely(!__Pyx_ArgTypeTest(((PyObject *)__pyx_v_a), __pyx_mstate_global->__pyx_ptype_13ManyBodyUtils_ManyBodyState, 1, "a", 0))) __PYX_ERR(0, 179, __pyx_L1_error)
+  if (unlikely(!__Pyx_ArgTypeTest(((PyObject *)__pyx_v_b), __pyx_mstate_global->__pyx_ptype_13ManyBodyUtils_ManyBodyState, 1, "b", 0))) __PYX_ERR(0, 179, __pyx_L1_error)
   __pyx_r = __pyx_pf_13ManyBodyUtils_inner(__pyx_self, __pyx_v_a, __pyx_v_b);
 
   /* function exit code */
@@ -9296,7 +9315,7 @@ static PyObject *__pyx_pf_13ManyBodyUtils_inner(CYTHON_UNUSED PyObject *__pyx_se
   int __pyx_clineno = 0;
   __Pyx_RefNannySetupContext("inner", 0);
 
-  /* "ManyBodyUtils.pyx":181
+  /* "ManyBodyUtils.pyx":180
  * 
  * def inner(ManyBodyState a, ManyBodyState b):
  *     with nogil:             # <<<<<<<<<<<<<<
@@ -9310,7 +9329,7 @@ static PyObject *__pyx_pf_13ManyBodyUtils_inner(CYTHON_UNUSED PyObject *__pyx_se
       __Pyx_FastGIL_Remember();
       /*try:*/ {
 
-        /* "ManyBodyUtils.pyx":182
+        /* "ManyBodyUtils.pyx":181
  * def inner(ManyBodyState a, ManyBodyState b):
  *     with nogil:
  *         res = inner_cpp(a.v, b.v)             # <<<<<<<<<<<<<<
@@ -9320,7 +9339,7 @@ static PyObject *__pyx_pf_13ManyBodyUtils_inner(CYTHON_UNUSED PyObject *__pyx_se
         __pyx_v_res = inner(__pyx_v_a->v, __pyx_v_b->v);
       }
 
-      /* "ManyBodyUtils.pyx":181
+      /* "ManyBodyUtils.pyx":180
  * 
  * def inner(ManyBodyState a, ManyBodyState b):
  *     with nogil:             # <<<<<<<<<<<<<<
@@ -9337,7 +9356,7 @@ static PyObject *__pyx_pf_13ManyBodyUtils_inner(CYTHON_UNUSED PyObject *__pyx_se
       }
   }
 
-  /* "ManyBodyUtils.pyx":183
+  /* "ManyBodyUtils.pyx":182
  *     with nogil:
  *         res = inner_cpp(a.v, b.v)
  *     return res             # <<<<<<<<<<<<<<
@@ -9345,13 +9364,13 @@ static PyObject *__pyx_pf_13ManyBodyUtils_inner(CYTHON_UNUSED PyObject *__pyx_se
  * cdef ManyBodyOperator_cpp.value_type.first_type processes_to_ints(tuple[tuple[int, str]] processes):
 */
   __Pyx_XDECREF(__pyx_r);
-  __pyx_t_1 = __pyx_PyComplex_FromComplex(__pyx_v_res); if (unlikely(!__pyx_t_1)) __PYX_ERR(0, 183, __pyx_L1_error)
+  __pyx_t_1 = __pyx_PyComplex_FromComplex(__pyx_v_res); if (unlikely(!__pyx_t_1)) __PYX_ERR(0, 182, __pyx_L1_error)
   __Pyx_GOTREF(__pyx_t_1);
   __pyx_r = __pyx_t_1;
   __pyx_t_1 = 0;
   goto __pyx_L0;
 
-  /* "ManyBodyUtils.pyx":180
+  /* "ManyBodyUtils.pyx":179
  *         return ManyBodyState(self.to_dict())
  * 
  * def inner(ManyBodyState a, ManyBodyState b):             # <<<<<<<<<<<<<<
@@ -9370,7 +9389,7 @@ static PyObject *__pyx_pf_13ManyBodyUtils_inner(CYTHON_UNUSED PyObject *__pyx_se
   return __pyx_r;
 }
 
-/* "ManyBodyUtils.pyx":185
+/* "ManyBodyUtils.pyx":184
  *     return res
  * 
  * cdef ManyBodyOperator_cpp.value_type.first_type processes_to_ints(tuple[tuple[int, str]] processes):             # <<<<<<<<<<<<<<
@@ -9394,7 +9413,7 @@ static std::pair<std::vector<int64_t> ,__pyx_t_double_complex> ::first_type __py
   int __pyx_clineno = 0;
   __Pyx_RefNannySetupContext("processes_to_ints", 0);
 
-  /* "ManyBodyUtils.pyx":188
+  /* "ManyBodyUtils.pyx":187
  *     cdef tuple[int, str] process
  *     cdef ManyBodyOperator_cpp.value_type.first_type ints
  *     ints.reserve(len(processes))             # <<<<<<<<<<<<<<
@@ -9403,24 +9422,24 @@ static std::pair<std::vector<int64_t> ,__pyx_t_double_complex> ::first_type __py
 */
   if (unlikely(__pyx_v_processes == Py_None)) {
     PyErr_SetString(PyExc_TypeError, "object of type 'NoneType' has no len()");
-    __PYX_ERR(0, 188, __pyx_L1_error)
+    __PYX_ERR(0, 187, __pyx_L1_error)
   }
-  __pyx_t_1 = __Pyx_PyTuple_GET_SIZE(__pyx_v_processes); if (unlikely(__pyx_t_1 == ((Py_ssize_t)-1))) __PYX_ERR(0, 188, __pyx_L1_error)
+  __pyx_t_1 = __Pyx_PyTuple_GET_SIZE(__pyx_v_processes); if (unlikely(__pyx_t_1 == ((Py_ssize_t)-1))) __PYX_ERR(0, 187, __pyx_L1_error)
   try {
     __pyx_v_ints.reserve(__pyx_t_1);
   } catch(...) {
     __Pyx_CppExn2PyErr();
-    __PYX_ERR(0, 188, __pyx_L1_error)
+    __PYX_ERR(0, 187, __pyx_L1_error)
   }
 
-  /* "ManyBodyUtils.pyx":189
+  /* "ManyBodyUtils.pyx":188
  *     cdef ManyBodyOperator_cpp.value_type.first_type ints
  *     ints.reserve(len(processes))
  *     for process in processes[::-1]:             # <<<<<<<<<<<<<<
  *         if process[1] == 'a':
  *             ints.push_back(-process[0] -1)
 */
-  __pyx_t_2 = __Pyx_PyObject_GetItem(__pyx_v_processes, __pyx_mstate_global->__pyx_slice[0]); if (unlikely(!__pyx_t_2)) __PYX_ERR(0, 189, __pyx_L1_error)
+  __pyx_t_2 = __Pyx_PyObject_GetItem(__pyx_v_processes, __pyx_mstate_global->__pyx_slice[0]); if (unlikely(!__pyx_t_2)) __PYX_ERR(0, 188, __pyx_L1_error)
   __Pyx_GOTREF(__pyx_t_2);
   __pyx_t_3 = __pyx_t_2; __Pyx_INCREF(__pyx_t_3);
   __pyx_t_1 = 0;
@@ -9429,7 +9448,7 @@ static std::pair<std::vector<int64_t> ,__pyx_t_double_complex> ::first_type __py
     {
       Py_ssize_t __pyx_temp = __Pyx_PyTuple_GET_SIZE(__pyx_t_3);
       #if !CYTHON_ASSUME_SAFE_SIZE
-      if (unlikely((__pyx_temp < 0))) __PYX_ERR(0, 189, __pyx_L1_error)
+      if (unlikely((__pyx_temp < 0))) __PYX_ERR(0, 188, __pyx_L1_error)
       #endif
       if (__pyx_t_1 >= __pyx_temp) break;
     }
@@ -9439,13 +9458,13 @@ static std::pair<std::vector<int64_t> ,__pyx_t_double_complex> ::first_type __py
     __pyx_t_2 = __Pyx_PySequence_ITEM(__pyx_t_3, __pyx_t_1);
     #endif
     ++__pyx_t_1;
-    if (unlikely(!__pyx_t_2)) __PYX_ERR(0, 189, __pyx_L1_error)
+    if (unlikely(!__pyx_t_2)) __PYX_ERR(0, 188, __pyx_L1_error)
     __Pyx_GOTREF(__pyx_t_2);
-    if (!(likely(PyTuple_CheckExact(__pyx_t_2))||((__pyx_t_2) == Py_None) || __Pyx_RaiseUnexpectedTypeError("tuple", __pyx_t_2))) __PYX_ERR(0, 189, __pyx_L1_error)
+    if (!(likely(PyTuple_CheckExact(__pyx_t_2))||((__pyx_t_2) == Py_None) || __Pyx_RaiseUnexpectedTypeError("tuple", __pyx_t_2))) __PYX_ERR(0, 188, __pyx_L1_error)
     __Pyx_XDECREF_SET(__pyx_v_process, ((PyObject*)__pyx_t_2));
     __pyx_t_2 = 0;
 
-    /* "ManyBodyUtils.pyx":190
+    /* "ManyBodyUtils.pyx":189
  *     ints.reserve(len(processes))
  *     for process in processes[::-1]:
  *         if process[1] == 'a':             # <<<<<<<<<<<<<<
@@ -9454,12 +9473,12 @@ static std::pair<std::vector<int64_t> ,__pyx_t_double_complex> ::first_type __py
 */
     if (unlikely(__pyx_v_process == Py_None)) {
       PyErr_SetString(PyExc_TypeError, "'NoneType' object is not subscriptable");
-      __PYX_ERR(0, 190, __pyx_L1_error)
+      __PYX_ERR(0, 189, __pyx_L1_error)
     }
-    __pyx_t_4 = (__Pyx_PyUnicode_Equals(__Pyx_PyTuple_GET_ITEM(__pyx_v_process, 1), __pyx_mstate_global->__pyx_n_u_a, Py_EQ)); if (unlikely((__pyx_t_4 < 0))) __PYX_ERR(0, 190, __pyx_L1_error)
+    __pyx_t_4 = (__Pyx_PyUnicode_Equals(__Pyx_PyTuple_GET_ITEM(__pyx_v_process, 1), __pyx_mstate_global->__pyx_n_u_a, Py_EQ)); if (unlikely((__pyx_t_4 < 0))) __PYX_ERR(0, 189, __pyx_L1_error)
     if (__pyx_t_4) {
 
-      /* "ManyBodyUtils.pyx":191
+      /* "ManyBodyUtils.pyx":190
  *     for process in processes[::-1]:
  *         if process[1] == 'a':
  *             ints.push_back(-process[0] -1)             # <<<<<<<<<<<<<<
@@ -9468,23 +9487,23 @@ static std::pair<std::vector<int64_t> ,__pyx_t_double_complex> ::first_type __py
 */
       if (unlikely(__pyx_v_process == Py_None)) {
         PyErr_SetString(PyExc_TypeError, "'NoneType' object is not subscriptable");
-        __PYX_ERR(0, 191, __pyx_L1_error)
+        __PYX_ERR(0, 190, __pyx_L1_error)
       }
-      __pyx_t_2 = PyNumber_Negative(__Pyx_PyTuple_GET_ITEM(__pyx_v_process, 0)); if (unlikely(!__pyx_t_2)) __PYX_ERR(0, 191, __pyx_L1_error)
+      __pyx_t_2 = PyNumber_Negative(__Pyx_PyTuple_GET_ITEM(__pyx_v_process, 0)); if (unlikely(!__pyx_t_2)) __PYX_ERR(0, 190, __pyx_L1_error)
       __Pyx_GOTREF(__pyx_t_2);
-      __pyx_t_5 = __Pyx_PyLong_SubtractObjC(__pyx_t_2, __pyx_mstate_global->__pyx_int_1, 1, 0, 0); if (unlikely(!__pyx_t_5)) __PYX_ERR(0, 191, __pyx_L1_error)
+      __pyx_t_5 = __Pyx_PyLong_SubtractObjC(__pyx_t_2, __pyx_mstate_global->__pyx_int_1, 1, 0, 0); if (unlikely(!__pyx_t_5)) __PYX_ERR(0, 190, __pyx_L1_error)
       __Pyx_GOTREF(__pyx_t_5);
       __Pyx_DECREF(__pyx_t_2); __pyx_t_2 = 0;
-      __pyx_t_6 = __Pyx_PyLong_As_int64_t(__pyx_t_5); if (unlikely((__pyx_t_6 == ((int64_t)-1)) && PyErr_Occurred())) __PYX_ERR(0, 191, __pyx_L1_error)
+      __pyx_t_6 = __Pyx_PyLong_As_int64_t(__pyx_t_5); if (unlikely((__pyx_t_6 == ((int64_t)-1)) && PyErr_Occurred())) __PYX_ERR(0, 190, __pyx_L1_error)
       __Pyx_DECREF(__pyx_t_5); __pyx_t_5 = 0;
       try {
         __pyx_v_ints.push_back(__pyx_t_6);
       } catch(...) {
         __Pyx_CppExn2PyErr();
-        __PYX_ERR(0, 191, __pyx_L1_error)
+        __PYX_ERR(0, 190, __pyx_L1_error)
       }
 
-      /* "ManyBodyUtils.pyx":190
+      /* "ManyBodyUtils.pyx":189
  *     ints.reserve(len(processes))
  *     for process in processes[::-1]:
  *         if process[1] == 'a':             # <<<<<<<<<<<<<<
@@ -9494,7 +9513,7 @@ static std::pair<std::vector<int64_t> ,__pyx_t_double_complex> ::first_type __py
       goto __pyx_L5;
     }
 
-    /* "ManyBodyUtils.pyx":193
+    /* "ManyBodyUtils.pyx":192
  *             ints.push_back(-process[0] -1)
  *         else:
  *             ints.push_back(process[0])             # <<<<<<<<<<<<<<
@@ -9504,19 +9523,19 @@ static std::pair<std::vector<int64_t> ,__pyx_t_double_complex> ::first_type __py
     /*else*/ {
       if (unlikely(__pyx_v_process == Py_None)) {
         PyErr_SetString(PyExc_TypeError, "'NoneType' object is not subscriptable");
-        __PYX_ERR(0, 193, __pyx_L1_error)
+        __PYX_ERR(0, 192, __pyx_L1_error)
       }
-      __pyx_t_6 = __Pyx_PyLong_As_int64_t(__Pyx_PyTuple_GET_ITEM(__pyx_v_process, 0)); if (unlikely((__pyx_t_6 == ((int64_t)-1)) && PyErr_Occurred())) __PYX_ERR(0, 193, __pyx_L1_error)
+      __pyx_t_6 = __Pyx_PyLong_As_int64_t(__Pyx_PyTuple_GET_ITEM(__pyx_v_process, 0)); if (unlikely((__pyx_t_6 == ((int64_t)-1)) && PyErr_Occurred())) __PYX_ERR(0, 192, __pyx_L1_error)
       try {
         __pyx_v_ints.push_back(__pyx_t_6);
       } catch(...) {
         __Pyx_CppExn2PyErr();
-        __PYX_ERR(0, 193, __pyx_L1_error)
+        __PYX_ERR(0, 192, __pyx_L1_error)
       }
     }
     __pyx_L5:;
 
-    /* "ManyBodyUtils.pyx":189
+    /* "ManyBodyUtils.pyx":188
  *     cdef ManyBodyOperator_cpp.value_type.first_type ints
  *     ints.reserve(len(processes))
  *     for process in processes[::-1]:             # <<<<<<<<<<<<<<
@@ -9526,7 +9545,7 @@ static std::pair<std::vector<int64_t> ,__pyx_t_double_complex> ::first_type __py
   }
   __Pyx_DECREF(__pyx_t_3); __pyx_t_3 = 0;
 
-  /* "ManyBodyUtils.pyx":194
+  /* "ManyBodyUtils.pyx":193
  *         else:
  *             ints.push_back(process[0])
  *     return ints             # <<<<<<<<<<<<<<
@@ -9536,7 +9555,7 @@ static std::pair<std::vector<int64_t> ,__pyx_t_double_complex> ::first_type __py
   __pyx_r = __pyx_v_ints;
   goto __pyx_L0;
 
-  /* "ManyBodyUtils.pyx":185
+  /* "ManyBodyUtils.pyx":184
  *     return res
  * 
  * cdef ManyBodyOperator_cpp.value_type.first_type processes_to_ints(tuple[tuple[int, str]] processes):             # <<<<<<<<<<<<<<
@@ -9557,7 +9576,7 @@ static std::pair<std::vector<int64_t> ,__pyx_t_double_complex> ::first_type __py
   return __pyx_r;
 }
 
-/* "ManyBodyUtils.pyx":196
+/* "ManyBodyUtils.pyx":195
  *     return ints
  * 
  * cdef tuple[tuple[int, str]] ints_to_processes(ManyBodyOperator_cpp.value_type.first_type& ints):             # <<<<<<<<<<<<<<
@@ -9581,19 +9600,19 @@ static PyObject *__pyx_f_13ManyBodyUtils_ints_to_processes(std::pair<std::vector
   int __pyx_clineno = 0;
   __Pyx_RefNannySetupContext("ints_to_processes", 0);
 
-  /* "ManyBodyUtils.pyx":197
+  /* "ManyBodyUtils.pyx":196
  * 
  * cdef tuple[tuple[int, str]] ints_to_processes(ManyBodyOperator_cpp.value_type.first_type& ints):
  *     cdef  list[tuple[int, str]] processes = []             # <<<<<<<<<<<<<<
  *     cdef ManyBodyOperator_cpp.value_type.first_type.value_type i
  *     for i in ints:
 */
-  __pyx_t_1 = PyList_New(0); if (unlikely(!__pyx_t_1)) __PYX_ERR(0, 197, __pyx_L1_error)
+  __pyx_t_1 = PyList_New(0); if (unlikely(!__pyx_t_1)) __PYX_ERR(0, 196, __pyx_L1_error)
   __Pyx_GOTREF(__pyx_t_1);
   __pyx_v_processes = ((PyObject*)__pyx_t_1);
   __pyx_t_1 = 0;
 
-  /* "ManyBodyUtils.pyx":199
+  /* "ManyBodyUtils.pyx":198
  *     cdef  list[tuple[int, str]] processes = []
  *     cdef ManyBodyOperator_cpp.value_type.first_type.value_type i
  *     for i in ints:             # <<<<<<<<<<<<<<
@@ -9605,7 +9624,7 @@ static PyObject *__pyx_f_13ManyBodyUtils_ints_to_processes(std::pair<std::vector
     __pyx_t_3 = *__pyx_t_2;
     __pyx_v_i = __pyx_t_3;
 
-    /* "ManyBodyUtils.pyx":200
+    /* "ManyBodyUtils.pyx":199
  *     cdef ManyBodyOperator_cpp.value_type.first_type.value_type i
  *     for i in ints:
  *         if i < 0:             # <<<<<<<<<<<<<<
@@ -9615,27 +9634,27 @@ static PyObject *__pyx_f_13ManyBodyUtils_ints_to_processes(std::pair<std::vector
     __pyx_t_4 = (__pyx_v_i < 0);
     if (__pyx_t_4) {
 
-      /* "ManyBodyUtils.pyx":201
+      /* "ManyBodyUtils.pyx":200
  *     for i in ints:
  *         if i < 0:
  *             processes.append((-i-1, 'a'))             # <<<<<<<<<<<<<<
  *         else:
  *             processes.append((i, 'c'))
 */
-      __pyx_t_1 = __Pyx_PyLong_From_int64_t(((-__pyx_v_i) - 1)); if (unlikely(!__pyx_t_1)) __PYX_ERR(0, 201, __pyx_L1_error)
+      __pyx_t_1 = __Pyx_PyLong_From_int64_t(((-__pyx_v_i) - 1)); if (unlikely(!__pyx_t_1)) __PYX_ERR(0, 200, __pyx_L1_error)
       __Pyx_GOTREF(__pyx_t_1);
-      __pyx_t_5 = PyTuple_New(2); if (unlikely(!__pyx_t_5)) __PYX_ERR(0, 201, __pyx_L1_error)
+      __pyx_t_5 = PyTuple_New(2); if (unlikely(!__pyx_t_5)) __PYX_ERR(0, 200, __pyx_L1_error)
       __Pyx_GOTREF(__pyx_t_5);
       __Pyx_GIVEREF(__pyx_t_1);
-      if (__Pyx_PyTuple_SET_ITEM(__pyx_t_5, 0, __pyx_t_1) != (0)) __PYX_ERR(0, 201, __pyx_L1_error);
+      if (__Pyx_PyTuple_SET_ITEM(__pyx_t_5, 0, __pyx_t_1) != (0)) __PYX_ERR(0, 200, __pyx_L1_error);
       __Pyx_INCREF(__pyx_mstate_global->__pyx_n_u_a);
       __Pyx_GIVEREF(__pyx_mstate_global->__pyx_n_u_a);
-      if (__Pyx_PyTuple_SET_ITEM(__pyx_t_5, 1, __pyx_mstate_global->__pyx_n_u_a) != (0)) __PYX_ERR(0, 201, __pyx_L1_error);
+      if (__Pyx_PyTuple_SET_ITEM(__pyx_t_5, 1, __pyx_mstate_global->__pyx_n_u_a) != (0)) __PYX_ERR(0, 200, __pyx_L1_error);
       __pyx_t_1 = 0;
-      __pyx_t_6 = __Pyx_PyList_Append(__pyx_v_processes, __pyx_t_5); if (unlikely(__pyx_t_6 == ((int)-1))) __PYX_ERR(0, 201, __pyx_L1_error)
+      __pyx_t_6 = __Pyx_PyList_Append(__pyx_v_processes, __pyx_t_5); if (unlikely(__pyx_t_6 == ((int)-1))) __PYX_ERR(0, 200, __pyx_L1_error)
       __Pyx_DECREF(__pyx_t_5); __pyx_t_5 = 0;
 
-      /* "ManyBodyUtils.pyx":200
+      /* "ManyBodyUtils.pyx":199
  *     cdef ManyBodyOperator_cpp.value_type.first_type.value_type i
  *     for i in ints:
  *         if i < 0:             # <<<<<<<<<<<<<<
@@ -9645,7 +9664,7 @@ static PyObject *__pyx_f_13ManyBodyUtils_ints_to_processes(std::pair<std::vector
       goto __pyx_L5;
     }
 
-    /* "ManyBodyUtils.pyx":203
+    /* "ManyBodyUtils.pyx":202
  *             processes.append((-i-1, 'a'))
  *         else:
  *             processes.append((i, 'c'))             # <<<<<<<<<<<<<<
@@ -9653,22 +9672,22 @@ static PyObject *__pyx_f_13ManyBodyUtils_ints_to_processes(std::pair<std::vector
  * 
 */
     /*else*/ {
-      __pyx_t_5 = __Pyx_PyLong_From_int64_t(__pyx_v_i); if (unlikely(!__pyx_t_5)) __PYX_ERR(0, 203, __pyx_L1_error)
+      __pyx_t_5 = __Pyx_PyLong_From_int64_t(__pyx_v_i); if (unlikely(!__pyx_t_5)) __PYX_ERR(0, 202, __pyx_L1_error)
       __Pyx_GOTREF(__pyx_t_5);
-      __pyx_t_1 = PyTuple_New(2); if (unlikely(!__pyx_t_1)) __PYX_ERR(0, 203, __pyx_L1_error)
+      __pyx_t_1 = PyTuple_New(2); if (unlikely(!__pyx_t_1)) __PYX_ERR(0, 202, __pyx_L1_error)
       __Pyx_GOTREF(__pyx_t_1);
       __Pyx_GIVEREF(__pyx_t_5);
-      if (__Pyx_PyTuple_SET_ITEM(__pyx_t_1, 0, __pyx_t_5) != (0)) __PYX_ERR(0, 203, __pyx_L1_error);
+      if (__Pyx_PyTuple_SET_ITEM(__pyx_t_1, 0, __pyx_t_5) != (0)) __PYX_ERR(0, 202, __pyx_L1_error);
       __Pyx_INCREF(__pyx_mstate_global->__pyx_n_u_c);
       __Pyx_GIVEREF(__pyx_mstate_global->__pyx_n_u_c);
-      if (__Pyx_PyTuple_SET_ITEM(__pyx_t_1, 1, __pyx_mstate_global->__pyx_n_u_c) != (0)) __PYX_ERR(0, 203, __pyx_L1_error);
+      if (__Pyx_PyTuple_SET_ITEM(__pyx_t_1, 1, __pyx_mstate_global->__pyx_n_u_c) != (0)) __PYX_ERR(0, 202, __pyx_L1_error);
       __pyx_t_5 = 0;
-      __pyx_t_6 = __Pyx_PyList_Append(__pyx_v_processes, __pyx_t_1); if (unlikely(__pyx_t_6 == ((int)-1))) __PYX_ERR(0, 203, __pyx_L1_error)
+      __pyx_t_6 = __Pyx_PyList_Append(__pyx_v_processes, __pyx_t_1); if (unlikely(__pyx_t_6 == ((int)-1))) __PYX_ERR(0, 202, __pyx_L1_error)
       __Pyx_DECREF(__pyx_t_1); __pyx_t_1 = 0;
     }
     __pyx_L5:;
 
-    /* "ManyBodyUtils.pyx":199
+    /* "ManyBodyUtils.pyx":198
  *     cdef  list[tuple[int, str]] processes = []
  *     cdef ManyBodyOperator_cpp.value_type.first_type.value_type i
  *     for i in ints:             # <<<<<<<<<<<<<<
@@ -9677,7 +9696,7 @@ static PyObject *__pyx_f_13ManyBodyUtils_ints_to_processes(std::pair<std::vector
 */
   }
 
-  /* "ManyBodyUtils.pyx":204
+  /* "ManyBodyUtils.pyx":203
  *         else:
  *             processes.append((i, 'c'))
  *     return  tuple(processes[::-1])             # <<<<<<<<<<<<<<
@@ -9685,16 +9704,16 @@ static PyObject *__pyx_f_13ManyBodyUtils_ints_to_processes(std::pair<std::vector
  * cdef class ManyBodyOperator:
 */
   __Pyx_XDECREF(__pyx_r);
-  __pyx_t_1 = __Pyx_PyObject_GetItem(__pyx_v_processes, __pyx_mstate_global->__pyx_slice[0]); if (unlikely(!__pyx_t_1)) __PYX_ERR(0, 204, __pyx_L1_error)
+  __pyx_t_1 = __Pyx_PyObject_GetItem(__pyx_v_processes, __pyx_mstate_global->__pyx_slice[0]); if (unlikely(!__pyx_t_1)) __PYX_ERR(0, 203, __pyx_L1_error)
   __Pyx_GOTREF(__pyx_t_1);
-  __pyx_t_5 = PyList_AsTuple(((PyObject*)__pyx_t_1)); if (unlikely(!__pyx_t_5)) __PYX_ERR(0, 204, __pyx_L1_error)
+  __pyx_t_5 = PyList_AsTuple(((PyObject*)__pyx_t_1)); if (unlikely(!__pyx_t_5)) __PYX_ERR(0, 203, __pyx_L1_error)
   __Pyx_GOTREF(__pyx_t_5);
   __Pyx_DECREF(__pyx_t_1); __pyx_t_1 = 0;
   __pyx_r = ((PyObject*)__pyx_t_5);
   __pyx_t_5 = 0;
   goto __pyx_L0;
 
-  /* "ManyBodyUtils.pyx":196
+  /* "ManyBodyUtils.pyx":195
  *     return ints
  * 
  * cdef tuple[tuple[int, str]] ints_to_processes(ManyBodyOperator_cpp.value_type.first_type& ints):             # <<<<<<<<<<<<<<
@@ -9715,7 +9734,7 @@ static PyObject *__pyx_f_13ManyBodyUtils_ints_to_processes(std::pair<std::vector
   return __pyx_r;
 }
 
-/* "ManyBodyUtils.pyx":209
+/* "ManyBodyUtils.pyx":208
  *     cdef ManyBodyOperator_cpp o
  * 
  *     def __cinit__(self, dict[tuple[tuple[int, str]], complex] op={}):             # <<<<<<<<<<<<<<
@@ -9745,24 +9764,24 @@ static int __pyx_pw_13ManyBodyUtils_16ManyBodyOperator_1__cinit__(PyObject *__py
   {
     PyObject ** const __pyx_pyargnames[] = {&__pyx_mstate_global->__pyx_n_u_op,0};
     const Py_ssize_t __pyx_kwds_len = (__pyx_kwds) ? __Pyx_NumKwargs_VARARGS(__pyx_kwds) : 0;
-    if (unlikely(__pyx_kwds_len) < 0) __PYX_ERR(0, 209, __pyx_L3_error)
+    if (unlikely(__pyx_kwds_len) < 0) __PYX_ERR(0, 208, __pyx_L3_error)
     if (__pyx_kwds_len > 0) {
       switch (__pyx_nargs) {
         case  1:
         values[0] = __Pyx_ArgRef_VARARGS(__pyx_args, 0);
-        if (!CYTHON_ASSUME_SAFE_MACROS && unlikely(!values[0])) __PYX_ERR(0, 209, __pyx_L3_error)
+        if (!CYTHON_ASSUME_SAFE_MACROS && unlikely(!values[0])) __PYX_ERR(0, 208, __pyx_L3_error)
         CYTHON_FALLTHROUGH;
         case  0: break;
         default: goto __pyx_L5_argtuple_error;
       }
       const Py_ssize_t kwd_pos_args = __pyx_nargs;
-      if (__Pyx_ParseKeywords(__pyx_kwds, __pyx_kwvalues, __pyx_pyargnames, 0, values, kwd_pos_args, __pyx_kwds_len, "__cinit__", 0) < 0) __PYX_ERR(0, 209, __pyx_L3_error)
+      if (__Pyx_ParseKeywords(__pyx_kwds, __pyx_kwvalues, __pyx_pyargnames, 0, values, kwd_pos_args, __pyx_kwds_len, "__cinit__", 0) < 0) __PYX_ERR(0, 208, __pyx_L3_error)
       if (!values[0]) values[0] = __Pyx_NewRef(__pyx_mstate_global->__pyx_k__7);
     } else {
       switch (__pyx_nargs) {
         case  1:
         values[0] = __Pyx_ArgRef_VARARGS(__pyx_args, 0);
-        if (!CYTHON_ASSUME_SAFE_MACROS && unlikely(!values[0])) __PYX_ERR(0, 209, __pyx_L3_error)
+        if (!CYTHON_ASSUME_SAFE_MACROS && unlikely(!values[0])) __PYX_ERR(0, 208, __pyx_L3_error)
         CYTHON_FALLTHROUGH;
         case  0: break;
         default: goto __pyx_L5_argtuple_error;
@@ -9773,7 +9792,7 @@ static int __pyx_pw_13ManyBodyUtils_16ManyBodyOperator_1__cinit__(PyObject *__py
   }
   goto __pyx_L6_skip;
   __pyx_L5_argtuple_error:;
-  __Pyx_RaiseArgtupleInvalid("__cinit__", 0, 0, 1, __pyx_nargs); __PYX_ERR(0, 209, __pyx_L3_error)
+  __Pyx_RaiseArgtupleInvalid("__cinit__", 0, 0, 1, __pyx_nargs); __PYX_ERR(0, 208, __pyx_L3_error)
   __pyx_L6_skip:;
   goto __pyx_L4_argument_unpacking_done;
   __pyx_L3_error:;
@@ -9784,7 +9803,7 @@ static int __pyx_pw_13ManyBodyUtils_16ManyBodyOperator_1__cinit__(PyObject *__py
   __Pyx_RefNannyFinishContext();
   return -1;
   __pyx_L4_argument_unpacking_done:;
-  if (unlikely(!__Pyx_ArgTypeTest(((PyObject *)__pyx_v_op), (&PyDict_Type), 1, "op", 1))) __PYX_ERR(0, 209, __pyx_L1_error)
+  if (unlikely(!__Pyx_ArgTypeTest(((PyObject *)__pyx_v_op), (&PyDict_Type), 1, "op", 1))) __PYX_ERR(0, 208, __pyx_L1_error)
   __pyx_r = __pyx_pf_13ManyBodyUtils_16ManyBodyOperator___cinit__(((struct __pyx_obj_13ManyBodyUtils_ManyBodyOperator *)__pyx_v_self), __pyx_v_op);
 
   /* function exit code */
@@ -9824,7 +9843,7 @@ static int __pyx_pf_13ManyBodyUtils_16ManyBodyOperator___cinit__(struct __pyx_ob
   int __pyx_clineno = 0;
   __Pyx_RefNannySetupContext("__cinit__", 0);
 
-  /* "ManyBodyUtils.pyx":215
+  /* "ManyBodyUtils.pyx":214
  *         cdef ManyBodyOperator_cpp.value_type.first_type.value_type  i
  *         cdef vector[ManyBodyOperator_cpp.value_type] new_ops
  *         for processes, amp in op.items():             # <<<<<<<<<<<<<<
@@ -9834,9 +9853,9 @@ static int __pyx_pf_13ManyBodyUtils_16ManyBodyOperator___cinit__(struct __pyx_ob
   __pyx_t_2 = 0;
   if (unlikely(__pyx_v_op == Py_None)) {
     PyErr_Format(PyExc_AttributeError, "'NoneType' object has no attribute '%.30s'", "items");
-    __PYX_ERR(0, 215, __pyx_L1_error)
+    __PYX_ERR(0, 214, __pyx_L1_error)
   }
-  __pyx_t_5 = __Pyx_dict_iterator(__pyx_v_op, 1, __pyx_mstate_global->__pyx_n_u_items, (&__pyx_t_3), (&__pyx_t_4)); if (unlikely(!__pyx_t_5)) __PYX_ERR(0, 215, __pyx_L1_error)
+  __pyx_t_5 = __Pyx_dict_iterator(__pyx_v_op, 1, __pyx_mstate_global->__pyx_n_u_items, (&__pyx_t_3), (&__pyx_t_4)); if (unlikely(!__pyx_t_5)) __PYX_ERR(0, 214, __pyx_L1_error)
   __Pyx_GOTREF(__pyx_t_5);
   __Pyx_XDECREF(__pyx_t_1);
   __pyx_t_1 = __pyx_t_5;
@@ -9844,34 +9863,34 @@ static int __pyx_pf_13ManyBodyUtils_16ManyBodyOperator___cinit__(struct __pyx_ob
   while (1) {
     __pyx_t_7 = __Pyx_dict_iter_next(__pyx_t_1, __pyx_t_3, &__pyx_t_2, &__pyx_t_5, &__pyx_t_6, NULL, __pyx_t_4);
     if (unlikely(__pyx_t_7 == 0)) break;
-    if (unlikely(__pyx_t_7 == -1)) __PYX_ERR(0, 215, __pyx_L1_error)
+    if (unlikely(__pyx_t_7 == -1)) __PYX_ERR(0, 214, __pyx_L1_error)
     __Pyx_GOTREF(__pyx_t_5);
     __Pyx_GOTREF(__pyx_t_6);
-    if (!(likely(PyTuple_CheckExact(__pyx_t_5))||((__pyx_t_5) == Py_None) || __Pyx_RaiseUnexpectedTypeError("tuple", __pyx_t_5))) __PYX_ERR(0, 215, __pyx_L1_error)
-    __pyx_t_8 = __Pyx_PyComplex_As___pyx_t_double_complex(__pyx_t_6); if (unlikely(PyErr_Occurred())) __PYX_ERR(0, 215, __pyx_L1_error)
+    if (!(likely(PyTuple_CheckExact(__pyx_t_5))||((__pyx_t_5) == Py_None) || __Pyx_RaiseUnexpectedTypeError("tuple", __pyx_t_5))) __PYX_ERR(0, 214, __pyx_L1_error)
+    __pyx_t_8 = __Pyx_PyComplex_As___pyx_t_double_complex(__pyx_t_6); if (unlikely(PyErr_Occurred())) __PYX_ERR(0, 214, __pyx_L1_error)
     __Pyx_DECREF(__pyx_t_6); __pyx_t_6 = 0;
     __Pyx_XDECREF_SET(__pyx_v_processes, ((PyObject*)__pyx_t_5));
     __pyx_t_5 = 0;
     __pyx_v_amp = __pyx_t_8;
 
-    /* "ManyBodyUtils.pyx":216
+    /* "ManyBodyUtils.pyx":215
  *         cdef vector[ManyBodyOperator_cpp.value_type] new_ops
  *         for processes, amp in op.items():
  *             new_ops.emplace_back(processes_to_ints(processes), amp)             # <<<<<<<<<<<<<<
  * 
  * 
 */
-    __pyx_t_9 = __pyx_f_13ManyBodyUtils_processes_to_ints(__pyx_v_processes); if (unlikely(PyErr_Occurred())) __PYX_ERR(0, 216, __pyx_L1_error)
+    __pyx_t_9 = __pyx_f_13ManyBodyUtils_processes_to_ints(__pyx_v_processes); if (unlikely(PyErr_Occurred())) __PYX_ERR(0, 215, __pyx_L1_error)
     try {
       __pyx_v_new_ops.emplace_back(__PYX_STD_MOVE_IF_SUPPORTED(__pyx_t_9), __pyx_v_amp);
     } catch(...) {
       __Pyx_CppExn2PyErr();
-      __PYX_ERR(0, 216, __pyx_L1_error)
+      __PYX_ERR(0, 215, __pyx_L1_error)
     }
   }
   __Pyx_DECREF(__pyx_t_1); __pyx_t_1 = 0;
 
-  /* "ManyBodyUtils.pyx":219
+  /* "ManyBodyUtils.pyx":218
  * 
  * 
  *         with nogil:             # <<<<<<<<<<<<<<
@@ -9885,7 +9904,7 @@ static int __pyx_pf_13ManyBodyUtils_16ManyBodyOperator___cinit__(struct __pyx_ob
       __Pyx_FastGIL_Remember();
       /*try:*/ {
 
-        /* "ManyBodyUtils.pyx":220
+        /* "ManyBodyUtils.pyx":219
  * 
  *         with nogil:
  *             self.o = ManyBodyOperator_cpp(new_ops)             # <<<<<<<<<<<<<<
@@ -9895,7 +9914,7 @@ static int __pyx_pf_13ManyBodyUtils_16ManyBodyOperator___cinit__(struct __pyx_ob
         __pyx_v_self->o = ManyBodyOperator(__pyx_v_new_ops);
       }
 
-      /* "ManyBodyUtils.pyx":219
+      /* "ManyBodyUtils.pyx":218
  * 
  * 
  *         with nogil:             # <<<<<<<<<<<<<<
@@ -9912,7 +9931,7 @@ static int __pyx_pf_13ManyBodyUtils_16ManyBodyOperator___cinit__(struct __pyx_ob
       }
   }
 
-  /* "ManyBodyUtils.pyx":209
+  /* "ManyBodyUtils.pyx":208
  *     cdef ManyBodyOperator_cpp o
  * 
  *     def __cinit__(self, dict[tuple[tuple[int, str]], complex] op={}):             # <<<<<<<<<<<<<<
@@ -9935,7 +9954,7 @@ static int __pyx_pf_13ManyBodyUtils_16ManyBodyOperator___cinit__(struct __pyx_ob
   return __pyx_r;
 }
 
-/* "ManyBodyUtils.pyx":222
+/* "ManyBodyUtils.pyx":221
  *             self.o = ManyBodyOperator_cpp(new_ops)
  * 
  *     def __reduce__(self):             # <<<<<<<<<<<<<<
@@ -9997,7 +10016,7 @@ static PyObject *__pyx_pf_13ManyBodyUtils_16ManyBodyOperator_2__reduce__(struct 
   int __pyx_clineno = 0;
   __Pyx_RefNannySetupContext("__reduce__", 0);
 
-  /* "ManyBodyUtils.pyx":223
+  /* "ManyBodyUtils.pyx":222
  * 
  *     def __reduce__(self):
  *         return (self.__class__, (self.to_dict(), ))             # <<<<<<<<<<<<<<
@@ -10005,7 +10024,7 @@ static PyObject *__pyx_pf_13ManyBodyUtils_16ManyBodyOperator_2__reduce__(struct 
  *     def __repr__(self):
 */
   __Pyx_XDECREF(__pyx_r);
-  __pyx_t_1 = __Pyx_PyObject_GetAttrStr(((PyObject *)__pyx_v_self), __pyx_mstate_global->__pyx_n_u_class); if (unlikely(!__pyx_t_1)) __PYX_ERR(0, 223, __pyx_L1_error)
+  __pyx_t_1 = __Pyx_PyObject_GetAttrStr(((PyObject *)__pyx_v_self), __pyx_mstate_global->__pyx_n_u_class); if (unlikely(!__pyx_t_1)) __PYX_ERR(0, 222, __pyx_L1_error)
   __Pyx_GOTREF(__pyx_t_1);
   __pyx_t_3 = ((PyObject *)__pyx_v_self);
   __Pyx_INCREF(__pyx_t_3);
@@ -10014,27 +10033,27 @@ static PyObject *__pyx_pf_13ManyBodyUtils_16ManyBodyOperator_2__reduce__(struct 
     PyObject *__pyx_callargs[2] = {__pyx_t_3, NULL};
     __pyx_t_2 = __Pyx_PyObject_FastCallMethod(__pyx_mstate_global->__pyx_n_u_to_dict, __pyx_callargs+__pyx_t_4, (1-__pyx_t_4) | (1*__Pyx_PY_VECTORCALL_ARGUMENTS_OFFSET));
     __Pyx_XDECREF(__pyx_t_3); __pyx_t_3 = 0;
-    if (unlikely(!__pyx_t_2)) __PYX_ERR(0, 223, __pyx_L1_error)
+    if (unlikely(!__pyx_t_2)) __PYX_ERR(0, 222, __pyx_L1_error)
     __Pyx_GOTREF(__pyx_t_2);
   }
-  __pyx_t_3 = PyTuple_New(1); if (unlikely(!__pyx_t_3)) __PYX_ERR(0, 223, __pyx_L1_error)
+  __pyx_t_3 = PyTuple_New(1); if (unlikely(!__pyx_t_3)) __PYX_ERR(0, 222, __pyx_L1_error)
   __Pyx_GOTREF(__pyx_t_3);
   __Pyx_GIVEREF(__pyx_t_2);
-  if (__Pyx_PyTuple_SET_ITEM(__pyx_t_3, 0, __pyx_t_2) != (0)) __PYX_ERR(0, 223, __pyx_L1_error);
+  if (__Pyx_PyTuple_SET_ITEM(__pyx_t_3, 0, __pyx_t_2) != (0)) __PYX_ERR(0, 222, __pyx_L1_error);
   __pyx_t_2 = 0;
-  __pyx_t_2 = PyTuple_New(2); if (unlikely(!__pyx_t_2)) __PYX_ERR(0, 223, __pyx_L1_error)
+  __pyx_t_2 = PyTuple_New(2); if (unlikely(!__pyx_t_2)) __PYX_ERR(0, 222, __pyx_L1_error)
   __Pyx_GOTREF(__pyx_t_2);
   __Pyx_GIVEREF(__pyx_t_1);
-  if (__Pyx_PyTuple_SET_ITEM(__pyx_t_2, 0, __pyx_t_1) != (0)) __PYX_ERR(0, 223, __pyx_L1_error);
+  if (__Pyx_PyTuple_SET_ITEM(__pyx_t_2, 0, __pyx_t_1) != (0)) __PYX_ERR(0, 222, __pyx_L1_error);
   __Pyx_GIVEREF(__pyx_t_3);
-  if (__Pyx_PyTuple_SET_ITEM(__pyx_t_2, 1, __pyx_t_3) != (0)) __PYX_ERR(0, 223, __pyx_L1_error);
+  if (__Pyx_PyTuple_SET_ITEM(__pyx_t_2, 1, __pyx_t_3) != (0)) __PYX_ERR(0, 222, __pyx_L1_error);
   __pyx_t_1 = 0;
   __pyx_t_3 = 0;
   __pyx_r = __pyx_t_2;
   __pyx_t_2 = 0;
   goto __pyx_L0;
 
-  /* "ManyBodyUtils.pyx":222
+  /* "ManyBodyUtils.pyx":221
  *             self.o = ManyBodyOperator_cpp(new_ops)
  * 
  *     def __reduce__(self):             # <<<<<<<<<<<<<<
@@ -10055,7 +10074,7 @@ static PyObject *__pyx_pf_13ManyBodyUtils_16ManyBodyOperator_2__reduce__(struct 
   return __pyx_r;
 }
 
-/* "ManyBodyUtils.pyx":225
+/* "ManyBodyUtils.pyx":224
  *         return (self.__class__, (self.to_dict(), ))
  * 
  *     def __repr__(self):             # <<<<<<<<<<<<<<
@@ -10094,7 +10113,7 @@ static PyObject *__pyx_pf_13ManyBodyUtils_16ManyBodyOperator_4__repr__(struct __
   int __pyx_clineno = 0;
   __Pyx_RefNannySetupContext("__repr__", 0);
 
-  /* "ManyBodyUtils.pyx":227
+  /* "ManyBodyUtils.pyx":226
  *     def __repr__(self):
  *         cdef ManyBodyOperator_cpp.value_type p
  *         return "ManyBodyOperator({" + ", ".join([f"{ints_to_processes(p.first)}: {p.second}" for p in self.o]) + "})"             # <<<<<<<<<<<<<<
@@ -10103,48 +10122,48 @@ static PyObject *__pyx_pf_13ManyBodyUtils_16ManyBodyOperator_4__repr__(struct __
 */
   __Pyx_XDECREF(__pyx_r);
   { /* enter inner scope */
-    __pyx_t_1 = PyList_New(0); if (unlikely(!__pyx_t_1)) __PYX_ERR(0, 227, __pyx_L1_error)
+    __pyx_t_1 = PyList_New(0); if (unlikely(!__pyx_t_1)) __PYX_ERR(0, 226, __pyx_L1_error)
     __Pyx_GOTREF(__pyx_t_1);
     __pyx_t_2 = __pyx_v_self->o.begin();
     for (; __pyx_t_2 != __pyx_v_self->o.end(); ++__pyx_t_2) {
       __pyx_t_3 = *__pyx_t_2;
       __pyx_8genexpr5__pyx_v_p = __PYX_STD_MOVE_IF_SUPPORTED(__pyx_t_3);
-      __pyx_t_4 = __pyx_f_13ManyBodyUtils_ints_to_processes(__pyx_8genexpr5__pyx_v_p.first); if (unlikely(!__pyx_t_4)) __PYX_ERR(0, 227, __pyx_L1_error)
+      __pyx_t_4 = __pyx_f_13ManyBodyUtils_ints_to_processes(__pyx_8genexpr5__pyx_v_p.first); if (unlikely(!__pyx_t_4)) __PYX_ERR(0, 226, __pyx_L1_error)
       __Pyx_GOTREF(__pyx_t_4);
-      __pyx_t_5 = __Pyx_PyObject_FormatSimple(__pyx_t_4, __pyx_mstate_global->__pyx_empty_unicode); if (unlikely(!__pyx_t_5)) __PYX_ERR(0, 227, __pyx_L1_error)
+      __pyx_t_5 = __Pyx_PyObject_FormatSimple(__pyx_t_4, __pyx_mstate_global->__pyx_empty_unicode); if (unlikely(!__pyx_t_5)) __PYX_ERR(0, 226, __pyx_L1_error)
       __Pyx_GOTREF(__pyx_t_5);
       __Pyx_DECREF(__pyx_t_4); __pyx_t_4 = 0;
-      __pyx_t_4 = __pyx_PyComplex_FromComplex(__pyx_8genexpr5__pyx_v_p.second); if (unlikely(!__pyx_t_4)) __PYX_ERR(0, 227, __pyx_L1_error)
+      __pyx_t_4 = __pyx_PyComplex_FromComplex(__pyx_8genexpr5__pyx_v_p.second); if (unlikely(!__pyx_t_4)) __PYX_ERR(0, 226, __pyx_L1_error)
       __Pyx_GOTREF(__pyx_t_4);
-      __pyx_t_6 = __Pyx_PyObject_FormatSimple(__pyx_t_4, __pyx_mstate_global->__pyx_empty_unicode); if (unlikely(!__pyx_t_6)) __PYX_ERR(0, 227, __pyx_L1_error)
+      __pyx_t_6 = __Pyx_PyObject_FormatSimple(__pyx_t_4, __pyx_mstate_global->__pyx_empty_unicode); if (unlikely(!__pyx_t_6)) __PYX_ERR(0, 226, __pyx_L1_error)
       __Pyx_GOTREF(__pyx_t_6);
       __Pyx_DECREF(__pyx_t_4); __pyx_t_4 = 0;
       __pyx_t_7[0] = __pyx_t_5;
       __pyx_t_7[1] = __pyx_mstate_global->__pyx_kp_u__4;
       __pyx_t_7[2] = __pyx_t_6;
       __pyx_t_4 = __Pyx_PyUnicode_Join(__pyx_t_7, 3, __Pyx_PyUnicode_GET_LENGTH(__pyx_t_5) + 2 + __Pyx_PyUnicode_GET_LENGTH(__pyx_t_6), 127 | __Pyx_PyUnicode_MAX_CHAR_VALUE(__pyx_t_5) | __Pyx_PyUnicode_MAX_CHAR_VALUE(__pyx_t_6));
-      if (unlikely(!__pyx_t_4)) __PYX_ERR(0, 227, __pyx_L1_error)
+      if (unlikely(!__pyx_t_4)) __PYX_ERR(0, 226, __pyx_L1_error)
       __Pyx_GOTREF(__pyx_t_4);
       __Pyx_DECREF(__pyx_t_5); __pyx_t_5 = 0;
       __Pyx_DECREF(__pyx_t_6); __pyx_t_6 = 0;
-      if (unlikely(__Pyx_ListComp_Append(__pyx_t_1, (PyObject*)__pyx_t_4))) __PYX_ERR(0, 227, __pyx_L1_error)
+      if (unlikely(__Pyx_ListComp_Append(__pyx_t_1, (PyObject*)__pyx_t_4))) __PYX_ERR(0, 226, __pyx_L1_error)
       __Pyx_DECREF(__pyx_t_4); __pyx_t_4 = 0;
     }
   } /* exit inner scope */
-  __pyx_t_4 = PyUnicode_Join(__pyx_mstate_global->__pyx_kp_u__3, __pyx_t_1); if (unlikely(!__pyx_t_4)) __PYX_ERR(0, 227, __pyx_L1_error)
+  __pyx_t_4 = PyUnicode_Join(__pyx_mstate_global->__pyx_kp_u__3, __pyx_t_1); if (unlikely(!__pyx_t_4)) __PYX_ERR(0, 226, __pyx_L1_error)
   __Pyx_GOTREF(__pyx_t_4);
   __Pyx_DECREF(__pyx_t_1); __pyx_t_1 = 0;
-  __pyx_t_1 = __Pyx_PyUnicode_Concat(__pyx_mstate_global->__pyx_kp_u_ManyBodyOperator, __pyx_t_4); if (unlikely(!__pyx_t_1)) __PYX_ERR(0, 227, __pyx_L1_error)
+  __pyx_t_1 = __Pyx_PyUnicode_Concat(__pyx_mstate_global->__pyx_kp_u_ManyBodyOperator, __pyx_t_4); if (unlikely(!__pyx_t_1)) __PYX_ERR(0, 226, __pyx_L1_error)
   __Pyx_GOTREF(__pyx_t_1);
   __Pyx_DECREF(__pyx_t_4); __pyx_t_4 = 0;
-  __pyx_t_4 = __Pyx_PyUnicode_ConcatInPlace(__pyx_t_1, __pyx_mstate_global->__pyx_kp_u__5); if (unlikely(!__pyx_t_4)) __PYX_ERR(0, 227, __pyx_L1_error)
+  __pyx_t_4 = __Pyx_PyUnicode_ConcatInPlace(__pyx_t_1, __pyx_mstate_global->__pyx_kp_u__5); if (unlikely(!__pyx_t_4)) __PYX_ERR(0, 226, __pyx_L1_error)
   __Pyx_GOTREF(__pyx_t_4);
   __Pyx_DECREF(__pyx_t_1); __pyx_t_1 = 0;
   __pyx_r = __pyx_t_4;
   __pyx_t_4 = 0;
   goto __pyx_L0;
 
-  /* "ManyBodyUtils.pyx":225
+  /* "ManyBodyUtils.pyx":224
  *         return (self.__class__, (self.to_dict(), ))
  * 
  *     def __repr__(self):             # <<<<<<<<<<<<<<
@@ -10166,7 +10185,7 @@ static PyObject *__pyx_pf_13ManyBodyUtils_16ManyBodyOperator_4__repr__(struct __
   return __pyx_r;
 }
 
-/* "ManyBodyUtils.pyx":229
+/* "ManyBodyUtils.pyx":228
  *         return "ManyBodyOperator({" + ", ".join([f"{ints_to_processes(p.first)}: {p.second}" for p in self.o]) + "})"
  * 
  *     def __eq__(self, ManyBodyOperator other):             # <<<<<<<<<<<<<<
@@ -10185,7 +10204,7 @@ static PyObject *__pyx_pw_13ManyBodyUtils_16ManyBodyOperator_7__eq__(PyObject *_
   __Pyx_RefNannyDeclarations
   __Pyx_RefNannySetupContext("__eq__ (wrapper)", 0);
   __pyx_kwvalues = __Pyx_KwValues_VARARGS(__pyx_args, __pyx_nargs);
-  if (unlikely(!__Pyx_ArgTypeTest(((PyObject *)__pyx_v_other), __pyx_mstate_global->__pyx_ptype_13ManyBodyUtils_ManyBodyOperator, 1, "other", 0))) __PYX_ERR(0, 229, __pyx_L1_error)
+  if (unlikely(!__Pyx_ArgTypeTest(((PyObject *)__pyx_v_other), __pyx_mstate_global->__pyx_ptype_13ManyBodyUtils_ManyBodyOperator, 1, "other", 0))) __PYX_ERR(0, 228, __pyx_L1_error)
   __pyx_r = __pyx_pf_13ManyBodyUtils_16ManyBodyOperator_6__eq__(((struct __pyx_obj_13ManyBodyUtils_ManyBodyOperator *)__pyx_v_self), ((struct __pyx_obj_13ManyBodyUtils_ManyBodyOperator *)__pyx_v_other));
 
   /* function exit code */
@@ -10208,7 +10227,7 @@ static PyObject *__pyx_pf_13ManyBodyUtils_16ManyBodyOperator_6__eq__(struct __py
   int __pyx_clineno = 0;
   __Pyx_RefNannySetupContext("__eq__", 0);
 
-  /* "ManyBodyUtils.pyx":230
+  /* "ManyBodyUtils.pyx":229
  * 
  *     def __eq__(self, ManyBodyOperator other):
  *         return self.o == other.o             # <<<<<<<<<<<<<<
@@ -10216,13 +10235,13 @@ static PyObject *__pyx_pf_13ManyBodyUtils_16ManyBodyOperator_6__eq__(struct __py
  *     def __getitem__(self, tuple[tuple[int, str]] key):
 */
   __Pyx_XDECREF(__pyx_r);
-  __pyx_t_1 = __Pyx_PyBool_FromLong((__pyx_v_self->o == __pyx_v_other->o)); if (unlikely(!__pyx_t_1)) __PYX_ERR(0, 230, __pyx_L1_error)
+  __pyx_t_1 = __Pyx_PyBool_FromLong((__pyx_v_self->o == __pyx_v_other->o)); if (unlikely(!__pyx_t_1)) __PYX_ERR(0, 229, __pyx_L1_error)
   __Pyx_GOTREF(__pyx_t_1);
   __pyx_r = __pyx_t_1;
   __pyx_t_1 = 0;
   goto __pyx_L0;
 
-  /* "ManyBodyUtils.pyx":229
+  /* "ManyBodyUtils.pyx":228
  *         return "ManyBodyOperator({" + ", ".join([f"{ints_to_processes(p.first)}: {p.second}" for p in self.o]) + "})"
  * 
  *     def __eq__(self, ManyBodyOperator other):             # <<<<<<<<<<<<<<
@@ -10241,7 +10260,7 @@ static PyObject *__pyx_pf_13ManyBodyUtils_16ManyBodyOperator_6__eq__(struct __py
   return __pyx_r;
 }
 
-/* "ManyBodyUtils.pyx":232
+/* "ManyBodyUtils.pyx":231
  *         return self.o == other.o
  * 
  *     def __getitem__(self, tuple[tuple[int, str]] key):             # <<<<<<<<<<<<<<
@@ -10260,7 +10279,7 @@ static PyObject *__pyx_pw_13ManyBodyUtils_16ManyBodyOperator_9__getitem__(PyObje
   __Pyx_RefNannyDeclarations
   __Pyx_RefNannySetupContext("__getitem__ (wrapper)", 0);
   __pyx_kwvalues = __Pyx_KwValues_VARARGS(__pyx_args, __pyx_nargs);
-  if (unlikely(!__Pyx_ArgTypeTest(((PyObject *)__pyx_v_key), (&PyTuple_Type), 1, "key", 1))) __PYX_ERR(0, 232, __pyx_L1_error)
+  if (unlikely(!__Pyx_ArgTypeTest(((PyObject *)__pyx_v_key), (&PyTuple_Type), 1, "key", 1))) __PYX_ERR(0, 231, __pyx_L1_error)
   __pyx_r = __pyx_pf_13ManyBodyUtils_16ManyBodyOperator_8__getitem__(((struct __pyx_obj_13ManyBodyUtils_ManyBodyOperator *)__pyx_v_self), ((PyObject*)__pyx_v_key));
 
   /* function exit code */
@@ -10285,7 +10304,7 @@ static PyObject *__pyx_pf_13ManyBodyUtils_16ManyBodyOperator_8__getitem__(struct
   int __pyx_clineno = 0;
   __Pyx_RefNannySetupContext("__getitem__", 0);
 
-  /* "ManyBodyUtils.pyx":233
+  /* "ManyBodyUtils.pyx":232
  * 
  *     def __getitem__(self, tuple[tuple[int, str]] key):
  *         return self.o[processes_to_ints(key)]             # <<<<<<<<<<<<<<
@@ -10293,15 +10312,15 @@ static PyObject *__pyx_pf_13ManyBodyUtils_16ManyBodyOperator_8__getitem__(struct
  *     def __setitem__(self, tuple[tuple[int, str]]key, double complex value):
 */
   __Pyx_XDECREF(__pyx_r);
-  __pyx_t_1 = __pyx_f_13ManyBodyUtils_processes_to_ints(__pyx_v_key); if (unlikely(PyErr_Occurred())) __PYX_ERR(0, 233, __pyx_L1_error)
+  __pyx_t_1 = __pyx_f_13ManyBodyUtils_processes_to_ints(__pyx_v_key); if (unlikely(PyErr_Occurred())) __PYX_ERR(0, 232, __pyx_L1_error)
   __pyx_t_2 = (__pyx_v_self->o[__pyx_t_1]);
-  __pyx_t_3 = __pyx_PyComplex_FromComplex(__pyx_t_2); if (unlikely(!__pyx_t_3)) __PYX_ERR(0, 233, __pyx_L1_error)
+  __pyx_t_3 = __pyx_PyComplex_FromComplex(__pyx_t_2); if (unlikely(!__pyx_t_3)) __PYX_ERR(0, 232, __pyx_L1_error)
   __Pyx_GOTREF(__pyx_t_3);
   __pyx_r = __pyx_t_3;
   __pyx_t_3 = 0;
   goto __pyx_L0;
 
-  /* "ManyBodyUtils.pyx":232
+  /* "ManyBodyUtils.pyx":231
  *         return self.o == other.o
  * 
  *     def __getitem__(self, tuple[tuple[int, str]] key):             # <<<<<<<<<<<<<<
@@ -10320,7 +10339,7 @@ static PyObject *__pyx_pf_13ManyBodyUtils_16ManyBodyOperator_8__getitem__(struct
   return __pyx_r;
 }
 
-/* "ManyBodyUtils.pyx":235
+/* "ManyBodyUtils.pyx":234
  *         return self.o[processes_to_ints(key)]
  * 
  *     def __setitem__(self, tuple[tuple[int, str]]key, double complex value):             # <<<<<<<<<<<<<<
@@ -10341,7 +10360,7 @@ static int __pyx_pw_13ManyBodyUtils_16ManyBodyOperator_11__setitem__(PyObject *_
   __Pyx_RefNannySetupContext("__setitem__ (wrapper)", 0);
   __pyx_kwvalues = __Pyx_KwValues_VARARGS(__pyx_args, __pyx_nargs);
   assert(__pyx_arg_value); {
-    __pyx_v_value = __Pyx_PyComplex_As___pyx_t_double_complex(__pyx_arg_value); if (unlikely(PyErr_Occurred())) __PYX_ERR(0, 235, __pyx_L3_error)
+    __pyx_v_value = __Pyx_PyComplex_As___pyx_t_double_complex(__pyx_arg_value); if (unlikely(PyErr_Occurred())) __PYX_ERR(0, 234, __pyx_L3_error)
   }
   goto __pyx_L4_argument_unpacking_done;
   __pyx_L3_error:;
@@ -10349,7 +10368,7 @@ static int __pyx_pw_13ManyBodyUtils_16ManyBodyOperator_11__setitem__(PyObject *_
   __Pyx_RefNannyFinishContext();
   return -1;
   __pyx_L4_argument_unpacking_done:;
-  if (unlikely(!__Pyx_ArgTypeTest(((PyObject *)__pyx_v_key), (&PyTuple_Type), 1, "key", 1))) __PYX_ERR(0, 235, __pyx_L1_error)
+  if (unlikely(!__Pyx_ArgTypeTest(((PyObject *)__pyx_v_key), (&PyTuple_Type), 1, "key", 1))) __PYX_ERR(0, 234, __pyx_L1_error)
   __pyx_r = __pyx_pf_13ManyBodyUtils_16ManyBodyOperator_10__setitem__(((struct __pyx_obj_13ManyBodyUtils_ManyBodyOperator *)__pyx_v_self), ((PyObject*)__pyx_v_key), __pyx_v_value);
 
   /* function exit code */
@@ -10370,17 +10389,17 @@ static int __pyx_pf_13ManyBodyUtils_16ManyBodyOperator_10__setitem__(struct __py
   const char *__pyx_filename = NULL;
   int __pyx_clineno = 0;
 
-  /* "ManyBodyUtils.pyx":236
+  /* "ManyBodyUtils.pyx":235
  * 
  *     def __setitem__(self, tuple[tuple[int, str]]key, double complex value):
  *         self.o[processes_to_ints(key)] = value             # <<<<<<<<<<<<<<
  * 
  *     def __add__(self, ManyBodyOperator other) ->ManyBodyOperator:
 */
-  __pyx_t_1 = __pyx_f_13ManyBodyUtils_processes_to_ints(__pyx_v_key); if (unlikely(PyErr_Occurred())) __PYX_ERR(0, 236, __pyx_L1_error)
+  __pyx_t_1 = __pyx_f_13ManyBodyUtils_processes_to_ints(__pyx_v_key); if (unlikely(PyErr_Occurred())) __PYX_ERR(0, 235, __pyx_L1_error)
   (__pyx_v_self->o[__pyx_t_1]) = __pyx_v_value;
 
-  /* "ManyBodyUtils.pyx":235
+  /* "ManyBodyUtils.pyx":234
  *         return self.o[processes_to_ints(key)]
  * 
  *     def __setitem__(self, tuple[tuple[int, str]]key, double complex value):             # <<<<<<<<<<<<<<
@@ -10398,7 +10417,7 @@ static int __pyx_pf_13ManyBodyUtils_16ManyBodyOperator_10__setitem__(struct __py
   return __pyx_r;
 }
 
-/* "ManyBodyUtils.pyx":238
+/* "ManyBodyUtils.pyx":237
  *         self.o[processes_to_ints(key)] = value
  * 
  *     def __add__(self, ManyBodyOperator other) ->ManyBodyOperator:             # <<<<<<<<<<<<<<
@@ -10417,7 +10436,7 @@ static PyObject *__pyx_pw_13ManyBodyUtils_16ManyBodyOperator_13__add__(PyObject 
   __Pyx_RefNannyDeclarations
   __Pyx_RefNannySetupContext("__add__ (wrapper)", 0);
   __pyx_kwvalues = __Pyx_KwValues_VARARGS(__pyx_args, __pyx_nargs);
-  if (unlikely(!__Pyx_ArgTypeTest(((PyObject *)__pyx_v_other), __pyx_mstate_global->__pyx_ptype_13ManyBodyUtils_ManyBodyOperator, 1, "other", 0))) __PYX_ERR(0, 238, __pyx_L1_error)
+  if (unlikely(!__Pyx_ArgTypeTest(((PyObject *)__pyx_v_other), __pyx_mstate_global->__pyx_ptype_13ManyBodyUtils_ManyBodyOperator, 1, "other", 0))) __PYX_ERR(0, 237, __pyx_L1_error)
   __pyx_r = __pyx_pf_13ManyBodyUtils_16ManyBodyOperator_12__add__(((struct __pyx_obj_13ManyBodyUtils_ManyBodyOperator *)__pyx_v_self), ((struct __pyx_obj_13ManyBodyUtils_ManyBodyOperator *)__pyx_v_other));
 
   /* function exit code */
@@ -10444,7 +10463,7 @@ static PyObject *__pyx_pf_13ManyBodyUtils_16ManyBodyOperator_12__add__(struct __
   int __pyx_clineno = 0;
   __Pyx_RefNannySetupContext("__add__", 0);
 
-  /* "ManyBodyUtils.pyx":239
+  /* "ManyBodyUtils.pyx":238
  * 
  *     def __add__(self, ManyBodyOperator other) ->ManyBodyOperator:
  *         res = ManyBodyOperator()             # <<<<<<<<<<<<<<
@@ -10460,13 +10479,13 @@ static PyObject *__pyx_pf_13ManyBodyUtils_16ManyBodyOperator_12__add__(struct __
     __pyx_t_1 = __Pyx_PyObject_FastCall(__pyx_t_3, __pyx_callargs+__pyx_t_4, (1-__pyx_t_4) | (__pyx_t_4*__Pyx_PY_VECTORCALL_ARGUMENTS_OFFSET));
     __Pyx_XDECREF(__pyx_t_2); __pyx_t_2 = 0;
     __Pyx_DECREF(__pyx_t_3); __pyx_t_3 = 0;
-    if (unlikely(!__pyx_t_1)) __PYX_ERR(0, 239, __pyx_L1_error)
+    if (unlikely(!__pyx_t_1)) __PYX_ERR(0, 238, __pyx_L1_error)
     __Pyx_GOTREF((PyObject *)__pyx_t_1);
   }
   __pyx_v_res = ((struct __pyx_obj_13ManyBodyUtils_ManyBodyOperator *)__pyx_t_1);
   __pyx_t_1 = 0;
 
-  /* "ManyBodyUtils.pyx":240
+  /* "ManyBodyUtils.pyx":239
  *     def __add__(self, ManyBodyOperator other) ->ManyBodyOperator:
  *         res = ManyBodyOperator()
  *         with nogil:             # <<<<<<<<<<<<<<
@@ -10480,7 +10499,7 @@ static PyObject *__pyx_pf_13ManyBodyUtils_16ManyBodyOperator_12__add__(struct __
       __Pyx_FastGIL_Remember();
       /*try:*/ {
 
-        /* "ManyBodyUtils.pyx":241
+        /* "ManyBodyUtils.pyx":240
  *         res = ManyBodyOperator()
  *         with nogil:
  *             res.o = self.o + other.o             # <<<<<<<<<<<<<<
@@ -10490,7 +10509,7 @@ static PyObject *__pyx_pf_13ManyBodyUtils_16ManyBodyOperator_12__add__(struct __
         __pyx_v_res->o = (__pyx_v_self->o + __pyx_v_other->o);
       }
 
-      /* "ManyBodyUtils.pyx":240
+      /* "ManyBodyUtils.pyx":239
  *     def __add__(self, ManyBodyOperator other) ->ManyBodyOperator:
  *         res = ManyBodyOperator()
  *         with nogil:             # <<<<<<<<<<<<<<
@@ -10507,7 +10526,7 @@ static PyObject *__pyx_pf_13ManyBodyUtils_16ManyBodyOperator_12__add__(struct __
       }
   }
 
-  /* "ManyBodyUtils.pyx":242
+  /* "ManyBodyUtils.pyx":241
  *         with nogil:
  *             res.o = self.o + other.o
  *         return res             # <<<<<<<<<<<<<<
@@ -10519,7 +10538,7 @@ static PyObject *__pyx_pf_13ManyBodyUtils_16ManyBodyOperator_12__add__(struct __
   __pyx_r = ((PyObject *)__pyx_v_res);
   goto __pyx_L0;
 
-  /* "ManyBodyUtils.pyx":238
+  /* "ManyBodyUtils.pyx":237
  *         self.o[processes_to_ints(key)] = value
  * 
  *     def __add__(self, ManyBodyOperator other) ->ManyBodyOperator:             # <<<<<<<<<<<<<<
@@ -10541,7 +10560,7 @@ static PyObject *__pyx_pf_13ManyBodyUtils_16ManyBodyOperator_12__add__(struct __
   return __pyx_r;
 }
 
-/* "ManyBodyUtils.pyx":244
+/* "ManyBodyUtils.pyx":243
  *         return res
  * 
  *     def __iadd__(self, ManyBodyOperator other) ->ManyBodyOperator:             # <<<<<<<<<<<<<<
@@ -10560,7 +10579,7 @@ static PyObject *__pyx_pw_13ManyBodyUtils_16ManyBodyOperator_15__iadd__(PyObject
   __Pyx_RefNannyDeclarations
   __Pyx_RefNannySetupContext("__iadd__ (wrapper)", 0);
   __pyx_kwvalues = __Pyx_KwValues_VARARGS(__pyx_args, __pyx_nargs);
-  if (unlikely(!__Pyx_ArgTypeTest(((PyObject *)__pyx_v_other), __pyx_mstate_global->__pyx_ptype_13ManyBodyUtils_ManyBodyOperator, 1, "other", 0))) __PYX_ERR(0, 244, __pyx_L1_error)
+  if (unlikely(!__Pyx_ArgTypeTest(((PyObject *)__pyx_v_other), __pyx_mstate_global->__pyx_ptype_13ManyBodyUtils_ManyBodyOperator, 1, "other", 0))) __PYX_ERR(0, 243, __pyx_L1_error)
   __pyx_r = __pyx_pf_13ManyBodyUtils_16ManyBodyOperator_14__iadd__(((struct __pyx_obj_13ManyBodyUtils_ManyBodyOperator *)__pyx_v_self), ((struct __pyx_obj_13ManyBodyUtils_ManyBodyOperator *)__pyx_v_other));
 
   /* function exit code */
@@ -10579,7 +10598,7 @@ static PyObject *__pyx_pf_13ManyBodyUtils_16ManyBodyOperator_14__iadd__(struct _
   __Pyx_RefNannyDeclarations
   __Pyx_RefNannySetupContext("__iadd__", 0);
 
-  /* "ManyBodyUtils.pyx":245
+  /* "ManyBodyUtils.pyx":244
  * 
  *     def __iadd__(self, ManyBodyOperator other) ->ManyBodyOperator:
  *         with nogil:             # <<<<<<<<<<<<<<
@@ -10593,7 +10612,7 @@ static PyObject *__pyx_pf_13ManyBodyUtils_16ManyBodyOperator_14__iadd__(struct _
       __Pyx_FastGIL_Remember();
       /*try:*/ {
 
-        /* "ManyBodyUtils.pyx":246
+        /* "ManyBodyUtils.pyx":245
  *     def __iadd__(self, ManyBodyOperator other) ->ManyBodyOperator:
  *         with nogil:
  *             self.o = self.o + other.o             # <<<<<<<<<<<<<<
@@ -10603,7 +10622,7 @@ static PyObject *__pyx_pf_13ManyBodyUtils_16ManyBodyOperator_14__iadd__(struct _
         __pyx_v_self->o = (__pyx_v_self->o + __pyx_v_other->o);
       }
 
-      /* "ManyBodyUtils.pyx":245
+      /* "ManyBodyUtils.pyx":244
  * 
  *     def __iadd__(self, ManyBodyOperator other) ->ManyBodyOperator:
  *         with nogil:             # <<<<<<<<<<<<<<
@@ -10620,7 +10639,7 @@ static PyObject *__pyx_pf_13ManyBodyUtils_16ManyBodyOperator_14__iadd__(struct _
       }
   }
 
-  /* "ManyBodyUtils.pyx":247
+  /* "ManyBodyUtils.pyx":246
  *         with nogil:
  *             self.o = self.o + other.o
  *         return self             # <<<<<<<<<<<<<<
@@ -10632,7 +10651,7 @@ static PyObject *__pyx_pf_13ManyBodyUtils_16ManyBodyOperator_14__iadd__(struct _
   __pyx_r = ((PyObject *)__pyx_v_self);
   goto __pyx_L0;
 
-  /* "ManyBodyUtils.pyx":244
+  /* "ManyBodyUtils.pyx":243
  *         return res
  * 
  *     def __iadd__(self, ManyBodyOperator other) ->ManyBodyOperator:             # <<<<<<<<<<<<<<
@@ -10647,7 +10666,7 @@ static PyObject *__pyx_pf_13ManyBodyUtils_16ManyBodyOperator_14__iadd__(struct _
   return __pyx_r;
 }
 
-/* "ManyBodyUtils.pyx":249
+/* "ManyBodyUtils.pyx":248
  *         return self
  * 
  *     def __sub__(self, ManyBodyOperator other) -> ManyBodyOperator:             # <<<<<<<<<<<<<<
@@ -10666,7 +10685,7 @@ static PyObject *__pyx_pw_13ManyBodyUtils_16ManyBodyOperator_17__sub__(PyObject 
   __Pyx_RefNannyDeclarations
   __Pyx_RefNannySetupContext("__sub__ (wrapper)", 0);
   __pyx_kwvalues = __Pyx_KwValues_VARARGS(__pyx_args, __pyx_nargs);
-  if (unlikely(!__Pyx_ArgTypeTest(((PyObject *)__pyx_v_other), __pyx_mstate_global->__pyx_ptype_13ManyBodyUtils_ManyBodyOperator, 1, "other", 0))) __PYX_ERR(0, 249, __pyx_L1_error)
+  if (unlikely(!__Pyx_ArgTypeTest(((PyObject *)__pyx_v_other), __pyx_mstate_global->__pyx_ptype_13ManyBodyUtils_ManyBodyOperator, 1, "other", 0))) __PYX_ERR(0, 248, __pyx_L1_error)
   __pyx_r = __pyx_pf_13ManyBodyUtils_16ManyBodyOperator_16__sub__(((struct __pyx_obj_13ManyBodyUtils_ManyBodyOperator *)__pyx_v_self), ((struct __pyx_obj_13ManyBodyUtils_ManyBodyOperator *)__pyx_v_other));
 
   /* function exit code */
@@ -10693,7 +10712,7 @@ static PyObject *__pyx_pf_13ManyBodyUtils_16ManyBodyOperator_16__sub__(struct __
   int __pyx_clineno = 0;
   __Pyx_RefNannySetupContext("__sub__", 0);
 
-  /* "ManyBodyUtils.pyx":250
+  /* "ManyBodyUtils.pyx":249
  * 
  *     def __sub__(self, ManyBodyOperator other) -> ManyBodyOperator:
  *         res = ManyBodyOperator()             # <<<<<<<<<<<<<<
@@ -10709,13 +10728,13 @@ static PyObject *__pyx_pf_13ManyBodyUtils_16ManyBodyOperator_16__sub__(struct __
     __pyx_t_1 = __Pyx_PyObject_FastCall(__pyx_t_3, __pyx_callargs+__pyx_t_4, (1-__pyx_t_4) | (__pyx_t_4*__Pyx_PY_VECTORCALL_ARGUMENTS_OFFSET));
     __Pyx_XDECREF(__pyx_t_2); __pyx_t_2 = 0;
     __Pyx_DECREF(__pyx_t_3); __pyx_t_3 = 0;
-    if (unlikely(!__pyx_t_1)) __PYX_ERR(0, 250, __pyx_L1_error)
+    if (unlikely(!__pyx_t_1)) __PYX_ERR(0, 249, __pyx_L1_error)
     __Pyx_GOTREF((PyObject *)__pyx_t_1);
   }
   __pyx_v_res = ((struct __pyx_obj_13ManyBodyUtils_ManyBodyOperator *)__pyx_t_1);
   __pyx_t_1 = 0;
 
-  /* "ManyBodyUtils.pyx":251
+  /* "ManyBodyUtils.pyx":250
  *     def __sub__(self, ManyBodyOperator other) -> ManyBodyOperator:
  *         res = ManyBodyOperator()
  *         with nogil:             # <<<<<<<<<<<<<<
@@ -10729,7 +10748,7 @@ static PyObject *__pyx_pf_13ManyBodyUtils_16ManyBodyOperator_16__sub__(struct __
       __Pyx_FastGIL_Remember();
       /*try:*/ {
 
-        /* "ManyBodyUtils.pyx":252
+        /* "ManyBodyUtils.pyx":251
  *         res = ManyBodyOperator()
  *         with nogil:
  *             res.o = self.o - other.o             # <<<<<<<<<<<<<<
@@ -10739,7 +10758,7 @@ static PyObject *__pyx_pf_13ManyBodyUtils_16ManyBodyOperator_16__sub__(struct __
         __pyx_v_res->o = (__pyx_v_self->o - __pyx_v_other->o);
       }
 
-      /* "ManyBodyUtils.pyx":251
+      /* "ManyBodyUtils.pyx":250
  *     def __sub__(self, ManyBodyOperator other) -> ManyBodyOperator:
  *         res = ManyBodyOperator()
  *         with nogil:             # <<<<<<<<<<<<<<
@@ -10756,7 +10775,7 @@ static PyObject *__pyx_pf_13ManyBodyUtils_16ManyBodyOperator_16__sub__(struct __
       }
   }
 
-  /* "ManyBodyUtils.pyx":253
+  /* "ManyBodyUtils.pyx":252
  *         with nogil:
  *             res.o = self.o - other.o
  *         return res             # <<<<<<<<<<<<<<
@@ -10768,7 +10787,7 @@ static PyObject *__pyx_pf_13ManyBodyUtils_16ManyBodyOperator_16__sub__(struct __
   __pyx_r = ((PyObject *)__pyx_v_res);
   goto __pyx_L0;
 
-  /* "ManyBodyUtils.pyx":249
+  /* "ManyBodyUtils.pyx":248
  *         return self
  * 
  *     def __sub__(self, ManyBodyOperator other) -> ManyBodyOperator:             # <<<<<<<<<<<<<<
@@ -10790,7 +10809,7 @@ static PyObject *__pyx_pf_13ManyBodyUtils_16ManyBodyOperator_16__sub__(struct __
   return __pyx_r;
 }
 
-/* "ManyBodyUtils.pyx":255
+/* "ManyBodyUtils.pyx":254
  *         return res
  * 
  *     def __isub__(self, ManyBodyOperator other) -> ManyBodyOperator:             # <<<<<<<<<<<<<<
@@ -10809,7 +10828,7 @@ static PyObject *__pyx_pw_13ManyBodyUtils_16ManyBodyOperator_19__isub__(PyObject
   __Pyx_RefNannyDeclarations
   __Pyx_RefNannySetupContext("__isub__ (wrapper)", 0);
   __pyx_kwvalues = __Pyx_KwValues_VARARGS(__pyx_args, __pyx_nargs);
-  if (unlikely(!__Pyx_ArgTypeTest(((PyObject *)__pyx_v_other), __pyx_mstate_global->__pyx_ptype_13ManyBodyUtils_ManyBodyOperator, 1, "other", 0))) __PYX_ERR(0, 255, __pyx_L1_error)
+  if (unlikely(!__Pyx_ArgTypeTest(((PyObject *)__pyx_v_other), __pyx_mstate_global->__pyx_ptype_13ManyBodyUtils_ManyBodyOperator, 1, "other", 0))) __PYX_ERR(0, 254, __pyx_L1_error)
   __pyx_r = __pyx_pf_13ManyBodyUtils_16ManyBodyOperator_18__isub__(((struct __pyx_obj_13ManyBodyUtils_ManyBodyOperator *)__pyx_v_self), ((struct __pyx_obj_13ManyBodyUtils_ManyBodyOperator *)__pyx_v_other));
 
   /* function exit code */
@@ -10828,7 +10847,7 @@ static PyObject *__pyx_pf_13ManyBodyUtils_16ManyBodyOperator_18__isub__(struct _
   __Pyx_RefNannyDeclarations
   __Pyx_RefNannySetupContext("__isub__", 0);
 
-  /* "ManyBodyUtils.pyx":256
+  /* "ManyBodyUtils.pyx":255
  * 
  *     def __isub__(self, ManyBodyOperator other) -> ManyBodyOperator:
  *         with nogil:             # <<<<<<<<<<<<<<
@@ -10842,7 +10861,7 @@ static PyObject *__pyx_pf_13ManyBodyUtils_16ManyBodyOperator_18__isub__(struct _
       __Pyx_FastGIL_Remember();
       /*try:*/ {
 
-        /* "ManyBodyUtils.pyx":257
+        /* "ManyBodyUtils.pyx":256
  *     def __isub__(self, ManyBodyOperator other) -> ManyBodyOperator:
  *         with nogil:
  *             self.o = self.o - other.o             # <<<<<<<<<<<<<<
@@ -10852,7 +10871,7 @@ static PyObject *__pyx_pf_13ManyBodyUtils_16ManyBodyOperator_18__isub__(struct _
         __pyx_v_self->o = (__pyx_v_self->o - __pyx_v_other->o);
       }
 
-      /* "ManyBodyUtils.pyx":256
+      /* "ManyBodyUtils.pyx":255
  * 
  *     def __isub__(self, ManyBodyOperator other) -> ManyBodyOperator:
  *         with nogil:             # <<<<<<<<<<<<<<
@@ -10869,7 +10888,7 @@ static PyObject *__pyx_pf_13ManyBodyUtils_16ManyBodyOperator_18__isub__(struct _
       }
   }
 
-  /* "ManyBodyUtils.pyx":258
+  /* "ManyBodyUtils.pyx":257
  *         with nogil:
  *             self.o = self.o - other.o
  *         return self             # <<<<<<<<<<<<<<
@@ -10881,7 +10900,7 @@ static PyObject *__pyx_pf_13ManyBodyUtils_16ManyBodyOperator_18__isub__(struct _
   __pyx_r = ((PyObject *)__pyx_v_self);
   goto __pyx_L0;
 
-  /* "ManyBodyUtils.pyx":255
+  /* "ManyBodyUtils.pyx":254
  *         return res
  * 
  *     def __isub__(self, ManyBodyOperator other) -> ManyBodyOperator:             # <<<<<<<<<<<<<<
@@ -10896,7 +10915,7 @@ static PyObject *__pyx_pf_13ManyBodyUtils_16ManyBodyOperator_18__isub__(struct _
   return __pyx_r;
 }
 
-/* "ManyBodyUtils.pyx":260
+/* "ManyBodyUtils.pyx":259
  *         return self
  * 
  *     def __mul__(self, complex s) ->ManyBodyOperator:             # <<<<<<<<<<<<<<
@@ -10917,7 +10936,7 @@ static PyObject *__pyx_pw_13ManyBodyUtils_16ManyBodyOperator_21__mul__(PyObject 
   __Pyx_RefNannySetupContext("__mul__ (wrapper)", 0);
   __pyx_kwvalues = __Pyx_KwValues_VARARGS(__pyx_args, __pyx_nargs);
   assert(__pyx_arg_s); {
-    __pyx_v_s = __Pyx_PyComplex_As___pyx_t_double_complex(__pyx_arg_s); if (unlikely(PyErr_Occurred())) __PYX_ERR(0, 260, __pyx_L3_error)
+    __pyx_v_s = __Pyx_PyComplex_As___pyx_t_double_complex(__pyx_arg_s); if (unlikely(PyErr_Occurred())) __PYX_ERR(0, 259, __pyx_L3_error)
   }
   goto __pyx_L4_argument_unpacking_done;
   __pyx_L3_error:;
@@ -10945,7 +10964,7 @@ static PyObject *__pyx_pf_13ManyBodyUtils_16ManyBodyOperator_20__mul__(struct __
   int __pyx_clineno = 0;
   __Pyx_RefNannySetupContext("__mul__", 0);
 
-  /* "ManyBodyUtils.pyx":261
+  /* "ManyBodyUtils.pyx":260
  * 
  *     def __mul__(self, complex s) ->ManyBodyOperator:
  *         res = ManyBodyOperator()             # <<<<<<<<<<<<<<
@@ -10961,13 +10980,13 @@ static PyObject *__pyx_pf_13ManyBodyUtils_16ManyBodyOperator_20__mul__(struct __
     __pyx_t_1 = __Pyx_PyObject_FastCall(__pyx_t_3, __pyx_callargs+__pyx_t_4, (1-__pyx_t_4) | (__pyx_t_4*__Pyx_PY_VECTORCALL_ARGUMENTS_OFFSET));
     __Pyx_XDECREF(__pyx_t_2); __pyx_t_2 = 0;
     __Pyx_DECREF(__pyx_t_3); __pyx_t_3 = 0;
-    if (unlikely(!__pyx_t_1)) __PYX_ERR(0, 261, __pyx_L1_error)
+    if (unlikely(!__pyx_t_1)) __PYX_ERR(0, 260, __pyx_L1_error)
     __Pyx_GOTREF((PyObject *)__pyx_t_1);
   }
   __pyx_v_res = ((struct __pyx_obj_13ManyBodyUtils_ManyBodyOperator *)__pyx_t_1);
   __pyx_t_1 = 0;
 
-  /* "ManyBodyUtils.pyx":262
+  /* "ManyBodyUtils.pyx":261
  *     def __mul__(self, complex s) ->ManyBodyOperator:
  *         res = ManyBodyOperator()
  *         with nogil:             # <<<<<<<<<<<<<<
@@ -10981,7 +11000,7 @@ static PyObject *__pyx_pf_13ManyBodyUtils_16ManyBodyOperator_20__mul__(struct __
       __Pyx_FastGIL_Remember();
       /*try:*/ {
 
-        /* "ManyBodyUtils.pyx":263
+        /* "ManyBodyUtils.pyx":262
  *         res = ManyBodyOperator()
  *         with nogil:
  *             res.o = self.o*s             # <<<<<<<<<<<<<<
@@ -10991,7 +11010,7 @@ static PyObject *__pyx_pf_13ManyBodyUtils_16ManyBodyOperator_20__mul__(struct __
         __pyx_v_res->o = (__pyx_v_self->o * __pyx_t_double_complex_from_parts(__Pyx_CREAL(__pyx_v_s), __Pyx_CIMAG(__pyx_v_s)));
       }
 
-      /* "ManyBodyUtils.pyx":262
+      /* "ManyBodyUtils.pyx":261
  *     def __mul__(self, complex s) ->ManyBodyOperator:
  *         res = ManyBodyOperator()
  *         with nogil:             # <<<<<<<<<<<<<<
@@ -11008,7 +11027,7 @@ static PyObject *__pyx_pf_13ManyBodyUtils_16ManyBodyOperator_20__mul__(struct __
       }
   }
 
-  /* "ManyBodyUtils.pyx":264
+  /* "ManyBodyUtils.pyx":263
  *         with nogil:
  *             res.o = self.o*s
  *         return res             # <<<<<<<<<<<<<<
@@ -11020,7 +11039,7 @@ static PyObject *__pyx_pf_13ManyBodyUtils_16ManyBodyOperator_20__mul__(struct __
   __pyx_r = ((PyObject *)__pyx_v_res);
   goto __pyx_L0;
 
-  /* "ManyBodyUtils.pyx":260
+  /* "ManyBodyUtils.pyx":259
  *         return self
  * 
  *     def __mul__(self, complex s) ->ManyBodyOperator:             # <<<<<<<<<<<<<<
@@ -11042,7 +11061,7 @@ static PyObject *__pyx_pf_13ManyBodyUtils_16ManyBodyOperator_20__mul__(struct __
   return __pyx_r;
 }
 
-/* "ManyBodyUtils.pyx":266
+/* "ManyBodyUtils.pyx":265
  *         return res
  * 
  *     def __imul__(self, complex s) ->ManyBodyOperator:             # <<<<<<<<<<<<<<
@@ -11063,7 +11082,7 @@ static PyObject *__pyx_pw_13ManyBodyUtils_16ManyBodyOperator_23__imul__(PyObject
   __Pyx_RefNannySetupContext("__imul__ (wrapper)", 0);
   __pyx_kwvalues = __Pyx_KwValues_VARARGS(__pyx_args, __pyx_nargs);
   assert(__pyx_arg_s); {
-    __pyx_v_s = __Pyx_PyComplex_As___pyx_t_double_complex(__pyx_arg_s); if (unlikely(PyErr_Occurred())) __PYX_ERR(0, 266, __pyx_L3_error)
+    __pyx_v_s = __Pyx_PyComplex_As___pyx_t_double_complex(__pyx_arg_s); if (unlikely(PyErr_Occurred())) __PYX_ERR(0, 265, __pyx_L3_error)
   }
   goto __pyx_L4_argument_unpacking_done;
   __pyx_L3_error:;
@@ -11083,7 +11102,7 @@ static PyObject *__pyx_pf_13ManyBodyUtils_16ManyBodyOperator_22__imul__(struct _
   __Pyx_RefNannyDeclarations
   __Pyx_RefNannySetupContext("__imul__", 0);
 
-  /* "ManyBodyUtils.pyx":267
+  /* "ManyBodyUtils.pyx":266
  * 
  *     def __imul__(self, complex s) ->ManyBodyOperator:
  *         with nogil:             # <<<<<<<<<<<<<<
@@ -11097,7 +11116,7 @@ static PyObject *__pyx_pf_13ManyBodyUtils_16ManyBodyOperator_22__imul__(struct _
       __Pyx_FastGIL_Remember();
       /*try:*/ {
 
-        /* "ManyBodyUtils.pyx":268
+        /* "ManyBodyUtils.pyx":267
  *     def __imul__(self, complex s) ->ManyBodyOperator:
  *         with nogil:
  *             self.o = self.o*s             # <<<<<<<<<<<<<<
@@ -11107,7 +11126,7 @@ static PyObject *__pyx_pf_13ManyBodyUtils_16ManyBodyOperator_22__imul__(struct _
         __pyx_v_self->o = (__pyx_v_self->o * __pyx_t_double_complex_from_parts(__Pyx_CREAL(__pyx_v_s), __Pyx_CIMAG(__pyx_v_s)));
       }
 
-      /* "ManyBodyUtils.pyx":267
+      /* "ManyBodyUtils.pyx":266
  * 
  *     def __imul__(self, complex s) ->ManyBodyOperator:
  *         with nogil:             # <<<<<<<<<<<<<<
@@ -11124,7 +11143,7 @@ static PyObject *__pyx_pf_13ManyBodyUtils_16ManyBodyOperator_22__imul__(struct _
       }
   }
 
-  /* "ManyBodyUtils.pyx":269
+  /* "ManyBodyUtils.pyx":268
  *         with nogil:
  *             self.o = self.o*s
  *         return self             # <<<<<<<<<<<<<<
@@ -11136,7 +11155,7 @@ static PyObject *__pyx_pf_13ManyBodyUtils_16ManyBodyOperator_22__imul__(struct _
   __pyx_r = ((PyObject *)__pyx_v_self);
   goto __pyx_L0;
 
-  /* "ManyBodyUtils.pyx":266
+  /* "ManyBodyUtils.pyx":265
  *         return res
  * 
  *     def __imul__(self, complex s) ->ManyBodyOperator:             # <<<<<<<<<<<<<<
@@ -11151,7 +11170,7 @@ static PyObject *__pyx_pf_13ManyBodyUtils_16ManyBodyOperator_22__imul__(struct _
   return __pyx_r;
 }
 
-/* "ManyBodyUtils.pyx":271
+/* "ManyBodyUtils.pyx":270
  *         return self
  * 
  *     def __rmul__(self, complex s) -> ManyBodyOperator:             # <<<<<<<<<<<<<<
@@ -11172,7 +11191,7 @@ static PyObject *__pyx_pw_13ManyBodyUtils_16ManyBodyOperator_25__rmul__(PyObject
   __Pyx_RefNannySetupContext("__rmul__ (wrapper)", 0);
   __pyx_kwvalues = __Pyx_KwValues_VARARGS(__pyx_args, __pyx_nargs);
   assert(__pyx_arg_s); {
-    __pyx_v_s = __Pyx_PyComplex_As___pyx_t_double_complex(__pyx_arg_s); if (unlikely(PyErr_Occurred())) __PYX_ERR(0, 271, __pyx_L3_error)
+    __pyx_v_s = __Pyx_PyComplex_As___pyx_t_double_complex(__pyx_arg_s); if (unlikely(PyErr_Occurred())) __PYX_ERR(0, 270, __pyx_L3_error)
   }
   goto __pyx_L4_argument_unpacking_done;
   __pyx_L3_error:;
@@ -11197,7 +11216,7 @@ static PyObject *__pyx_pf_13ManyBodyUtils_16ManyBodyOperator_24__rmul__(struct _
   int __pyx_clineno = 0;
   __Pyx_RefNannySetupContext("__rmul__", 0);
 
-  /* "ManyBodyUtils.pyx":272
+  /* "ManyBodyUtils.pyx":271
  * 
  *     def __rmul__(self, complex s) -> ManyBodyOperator:
  *         return self*s             # <<<<<<<<<<<<<<
@@ -11205,16 +11224,16 @@ static PyObject *__pyx_pf_13ManyBodyUtils_16ManyBodyOperator_24__rmul__(struct _
  *     def __truediv__(self, complex s) -> ManyBodyOperator:
 */
   __Pyx_XDECREF(__pyx_r);
-  __pyx_t_1 = __pyx_PyComplex_FromComplex(__pyx_v_s); if (unlikely(!__pyx_t_1)) __PYX_ERR(0, 272, __pyx_L1_error)
+  __pyx_t_1 = __pyx_PyComplex_FromComplex(__pyx_v_s); if (unlikely(!__pyx_t_1)) __PYX_ERR(0, 271, __pyx_L1_error)
   __Pyx_GOTREF(__pyx_t_1);
-  __pyx_t_2 = PyNumber_Multiply(((PyObject *)__pyx_v_self), __pyx_t_1); if (unlikely(!__pyx_t_2)) __PYX_ERR(0, 272, __pyx_L1_error)
+  __pyx_t_2 = PyNumber_Multiply(((PyObject *)__pyx_v_self), __pyx_t_1); if (unlikely(!__pyx_t_2)) __PYX_ERR(0, 271, __pyx_L1_error)
   __Pyx_GOTREF(__pyx_t_2);
   __Pyx_DECREF(__pyx_t_1); __pyx_t_1 = 0;
   __pyx_r = __pyx_t_2;
   __pyx_t_2 = 0;
   goto __pyx_L0;
 
-  /* "ManyBodyUtils.pyx":271
+  /* "ManyBodyUtils.pyx":270
  *         return self
  * 
  *     def __rmul__(self, complex s) -> ManyBodyOperator:             # <<<<<<<<<<<<<<
@@ -11234,7 +11253,7 @@ static PyObject *__pyx_pf_13ManyBodyUtils_16ManyBodyOperator_24__rmul__(struct _
   return __pyx_r;
 }
 
-/* "ManyBodyUtils.pyx":274
+/* "ManyBodyUtils.pyx":273
  *         return self*s
  * 
  *     def __truediv__(self, complex s) -> ManyBodyOperator:             # <<<<<<<<<<<<<<
@@ -11255,7 +11274,7 @@ static PyObject *__pyx_pw_13ManyBodyUtils_16ManyBodyOperator_27__truediv__(PyObj
   __Pyx_RefNannySetupContext("__truediv__ (wrapper)", 0);
   __pyx_kwvalues = __Pyx_KwValues_VARARGS(__pyx_args, __pyx_nargs);
   assert(__pyx_arg_s); {
-    __pyx_v_s = __Pyx_PyComplex_As___pyx_t_double_complex(__pyx_arg_s); if (unlikely(PyErr_Occurred())) __PYX_ERR(0, 274, __pyx_L3_error)
+    __pyx_v_s = __Pyx_PyComplex_As___pyx_t_double_complex(__pyx_arg_s); if (unlikely(PyErr_Occurred())) __PYX_ERR(0, 273, __pyx_L3_error)
   }
   goto __pyx_L4_argument_unpacking_done;
   __pyx_L3_error:;
@@ -11283,7 +11302,7 @@ static PyObject *__pyx_pf_13ManyBodyUtils_16ManyBodyOperator_26__truediv__(struc
   int __pyx_clineno = 0;
   __Pyx_RefNannySetupContext("__truediv__", 0);
 
-  /* "ManyBodyUtils.pyx":275
+  /* "ManyBodyUtils.pyx":274
  * 
  *     def __truediv__(self, complex s) -> ManyBodyOperator:
  *         res = ManyBodyOperator()             # <<<<<<<<<<<<<<
@@ -11299,13 +11318,13 @@ static PyObject *__pyx_pf_13ManyBodyUtils_16ManyBodyOperator_26__truediv__(struc
     __pyx_t_1 = __Pyx_PyObject_FastCall(__pyx_t_3, __pyx_callargs+__pyx_t_4, (1-__pyx_t_4) | (__pyx_t_4*__Pyx_PY_VECTORCALL_ARGUMENTS_OFFSET));
     __Pyx_XDECREF(__pyx_t_2); __pyx_t_2 = 0;
     __Pyx_DECREF(__pyx_t_3); __pyx_t_3 = 0;
-    if (unlikely(!__pyx_t_1)) __PYX_ERR(0, 275, __pyx_L1_error)
+    if (unlikely(!__pyx_t_1)) __PYX_ERR(0, 274, __pyx_L1_error)
     __Pyx_GOTREF((PyObject *)__pyx_t_1);
   }
   __pyx_v_res = ((struct __pyx_obj_13ManyBodyUtils_ManyBodyOperator *)__pyx_t_1);
   __pyx_t_1 = 0;
 
-  /* "ManyBodyUtils.pyx":276
+  /* "ManyBodyUtils.pyx":275
  *     def __truediv__(self, complex s) -> ManyBodyOperator:
  *         res = ManyBodyOperator()
  *         with nogil:             # <<<<<<<<<<<<<<
@@ -11319,7 +11338,7 @@ static PyObject *__pyx_pf_13ManyBodyUtils_16ManyBodyOperator_26__truediv__(struc
       __Pyx_FastGIL_Remember();
       /*try:*/ {
 
-        /* "ManyBodyUtils.pyx":277
+        /* "ManyBodyUtils.pyx":276
  *         res = ManyBodyOperator()
  *         with nogil:
  *             res.o = self.o/s             # <<<<<<<<<<<<<<
@@ -11329,7 +11348,7 @@ static PyObject *__pyx_pf_13ManyBodyUtils_16ManyBodyOperator_26__truediv__(struc
         __pyx_v_res->o = (__pyx_v_self->o / __pyx_t_double_complex_from_parts(__Pyx_CREAL(__pyx_v_s), __Pyx_CIMAG(__pyx_v_s)));
       }
 
-      /* "ManyBodyUtils.pyx":276
+      /* "ManyBodyUtils.pyx":275
  *     def __truediv__(self, complex s) -> ManyBodyOperator:
  *         res = ManyBodyOperator()
  *         with nogil:             # <<<<<<<<<<<<<<
@@ -11346,7 +11365,7 @@ static PyObject *__pyx_pf_13ManyBodyUtils_16ManyBodyOperator_26__truediv__(struc
       }
   }
 
-  /* "ManyBodyUtils.pyx":278
+  /* "ManyBodyUtils.pyx":277
  *         with nogil:
  *             res.o = self.o/s
  *         return res             # <<<<<<<<<<<<<<
@@ -11358,7 +11377,7 @@ static PyObject *__pyx_pf_13ManyBodyUtils_16ManyBodyOperator_26__truediv__(struc
   __pyx_r = ((PyObject *)__pyx_v_res);
   goto __pyx_L0;
 
-  /* "ManyBodyUtils.pyx":274
+  /* "ManyBodyUtils.pyx":273
  *         return self*s
  * 
  *     def __truediv__(self, complex s) -> ManyBodyOperator:             # <<<<<<<<<<<<<<
@@ -11380,7 +11399,7 @@ static PyObject *__pyx_pf_13ManyBodyUtils_16ManyBodyOperator_26__truediv__(struc
   return __pyx_r;
 }
 
-/* "ManyBodyUtils.pyx":280
+/* "ManyBodyUtils.pyx":279
  *         return res
  * 
  *     def __itruediv__(self, complex s) -> ManyBodyOperator:             # <<<<<<<<<<<<<<
@@ -11401,7 +11420,7 @@ static PyObject *__pyx_pw_13ManyBodyUtils_16ManyBodyOperator_29__itruediv__(PyOb
   __Pyx_RefNannySetupContext("__itruediv__ (wrapper)", 0);
   __pyx_kwvalues = __Pyx_KwValues_VARARGS(__pyx_args, __pyx_nargs);
   assert(__pyx_arg_s); {
-    __pyx_v_s = __Pyx_PyComplex_As___pyx_t_double_complex(__pyx_arg_s); if (unlikely(PyErr_Occurred())) __PYX_ERR(0, 280, __pyx_L3_error)
+    __pyx_v_s = __Pyx_PyComplex_As___pyx_t_double_complex(__pyx_arg_s); if (unlikely(PyErr_Occurred())) __PYX_ERR(0, 279, __pyx_L3_error)
   }
   goto __pyx_L4_argument_unpacking_done;
   __pyx_L3_error:;
@@ -11421,7 +11440,7 @@ static PyObject *__pyx_pf_13ManyBodyUtils_16ManyBodyOperator_28__itruediv__(stru
   __Pyx_RefNannyDeclarations
   __Pyx_RefNannySetupContext("__itruediv__", 0);
 
-  /* "ManyBodyUtils.pyx":281
+  /* "ManyBodyUtils.pyx":280
  * 
  *     def __itruediv__(self, complex s) -> ManyBodyOperator:
  *         with nogil:             # <<<<<<<<<<<<<<
@@ -11435,7 +11454,7 @@ static PyObject *__pyx_pf_13ManyBodyUtils_16ManyBodyOperator_28__itruediv__(stru
       __Pyx_FastGIL_Remember();
       /*try:*/ {
 
-        /* "ManyBodyUtils.pyx":282
+        /* "ManyBodyUtils.pyx":281
  *     def __itruediv__(self, complex s) -> ManyBodyOperator:
  *         with nogil:
  *             self.o = self.o/s             # <<<<<<<<<<<<<<
@@ -11445,7 +11464,7 @@ static PyObject *__pyx_pf_13ManyBodyUtils_16ManyBodyOperator_28__itruediv__(stru
         __pyx_v_self->o = (__pyx_v_self->o / __pyx_t_double_complex_from_parts(__Pyx_CREAL(__pyx_v_s), __Pyx_CIMAG(__pyx_v_s)));
       }
 
-      /* "ManyBodyUtils.pyx":281
+      /* "ManyBodyUtils.pyx":280
  * 
  *     def __itruediv__(self, complex s) -> ManyBodyOperator:
  *         with nogil:             # <<<<<<<<<<<<<<
@@ -11462,7 +11481,7 @@ static PyObject *__pyx_pf_13ManyBodyUtils_16ManyBodyOperator_28__itruediv__(stru
       }
   }
 
-  /* "ManyBodyUtils.pyx":283
+  /* "ManyBodyUtils.pyx":282
  *         with nogil:
  *             self.o = self.o/s
  *         return self             # <<<<<<<<<<<<<<
@@ -11474,7 +11493,7 @@ static PyObject *__pyx_pf_13ManyBodyUtils_16ManyBodyOperator_28__itruediv__(stru
   __pyx_r = ((PyObject *)__pyx_v_self);
   goto __pyx_L0;
 
-  /* "ManyBodyUtils.pyx":280
+  /* "ManyBodyUtils.pyx":279
  *         return res
  * 
  *     def __itruediv__(self, complex s) -> ManyBodyOperator:             # <<<<<<<<<<<<<<
@@ -11489,7 +11508,7 @@ static PyObject *__pyx_pf_13ManyBodyUtils_16ManyBodyOperator_28__itruediv__(stru
   return __pyx_r;
 }
 
-/* "ManyBodyUtils.pyx":285
+/* "ManyBodyUtils.pyx":284
  *         return self
  * 
  *     def __len__(self):             # <<<<<<<<<<<<<<
@@ -11516,7 +11535,7 @@ static Py_ssize_t __pyx_pf_13ManyBodyUtils_16ManyBodyOperator_30__len__(struct _
   ManyBodyOperator::size_type __pyx_v_res;
   Py_ssize_t __pyx_r;
 
-  /* "ManyBodyUtils.pyx":286
+  /* "ManyBodyUtils.pyx":285
  * 
  *     def __len__(self):
  *         with nogil:             # <<<<<<<<<<<<<<
@@ -11530,7 +11549,7 @@ static Py_ssize_t __pyx_pf_13ManyBodyUtils_16ManyBodyOperator_30__len__(struct _
       __Pyx_FastGIL_Remember();
       /*try:*/ {
 
-        /* "ManyBodyUtils.pyx":287
+        /* "ManyBodyUtils.pyx":286
  *     def __len__(self):
  *         with nogil:
  *             res = self.o.size()             # <<<<<<<<<<<<<<
@@ -11540,7 +11559,7 @@ static Py_ssize_t __pyx_pf_13ManyBodyUtils_16ManyBodyOperator_30__len__(struct _
         __pyx_v_res = __pyx_v_self->o.size();
       }
 
-      /* "ManyBodyUtils.pyx":286
+      /* "ManyBodyUtils.pyx":285
  * 
  *     def __len__(self):
  *         with nogil:             # <<<<<<<<<<<<<<
@@ -11557,7 +11576,7 @@ static Py_ssize_t __pyx_pf_13ManyBodyUtils_16ManyBodyOperator_30__len__(struct _
       }
   }
 
-  /* "ManyBodyUtils.pyx":288
+  /* "ManyBodyUtils.pyx":287
  *         with nogil:
  *             res = self.o.size()
  *         return res             # <<<<<<<<<<<<<<
@@ -11567,7 +11586,7 @@ static Py_ssize_t __pyx_pf_13ManyBodyUtils_16ManyBodyOperator_30__len__(struct _
   __pyx_r = __pyx_v_res;
   goto __pyx_L0;
 
-  /* "ManyBodyUtils.pyx":285
+  /* "ManyBodyUtils.pyx":284
  *         return self
  * 
  *     def __len__(self):             # <<<<<<<<<<<<<<
@@ -11580,7 +11599,7 @@ static Py_ssize_t __pyx_pf_13ManyBodyUtils_16ManyBodyOperator_30__len__(struct _
   return __pyx_r;
 }
 
-/* "ManyBodyUtils.pyx":290
+/* "ManyBodyUtils.pyx":289
  *         return res
  * 
  *     def size(self):             # <<<<<<<<<<<<<<
@@ -11640,7 +11659,7 @@ static PyObject *__pyx_pf_13ManyBodyUtils_16ManyBodyOperator_32size(struct __pyx
   int __pyx_clineno = 0;
   __Pyx_RefNannySetupContext("size", 0);
 
-  /* "ManyBodyUtils.pyx":291
+  /* "ManyBodyUtils.pyx":290
  * 
  *     def size(self):
  *         return len(self)             # <<<<<<<<<<<<<<
@@ -11648,14 +11667,14 @@ static PyObject *__pyx_pf_13ManyBodyUtils_16ManyBodyOperator_32size(struct __pyx
  *     def  __call__(self, ManyBodyState psi, double cutoff = 0, dict[frozenset[int], pair[int, int]] restrictions=None) -> ManyBodyState:
 */
   __Pyx_XDECREF(__pyx_r);
-  __pyx_t_1 = PyObject_Length(((PyObject *)__pyx_v_self)); if (unlikely(__pyx_t_1 == ((Py_ssize_t)-1))) __PYX_ERR(0, 291, __pyx_L1_error)
-  __pyx_t_2 = PyLong_FromSsize_t(__pyx_t_1); if (unlikely(!__pyx_t_2)) __PYX_ERR(0, 291, __pyx_L1_error)
+  __pyx_t_1 = PyObject_Length(((PyObject *)__pyx_v_self)); if (unlikely(__pyx_t_1 == ((Py_ssize_t)-1))) __PYX_ERR(0, 290, __pyx_L1_error)
+  __pyx_t_2 = PyLong_FromSsize_t(__pyx_t_1); if (unlikely(!__pyx_t_2)) __PYX_ERR(0, 290, __pyx_L1_error)
   __Pyx_GOTREF(__pyx_t_2);
   __pyx_r = __pyx_t_2;
   __pyx_t_2 = 0;
   goto __pyx_L0;
 
-  /* "ManyBodyUtils.pyx":290
+  /* "ManyBodyUtils.pyx":289
  *         return res
  * 
  *     def size(self):             # <<<<<<<<<<<<<<
@@ -11674,7 +11693,7 @@ static PyObject *__pyx_pf_13ManyBodyUtils_16ManyBodyOperator_32size(struct __pyx
   return __pyx_r;
 }
 
-/* "ManyBodyUtils.pyx":293
+/* "ManyBodyUtils.pyx":292
  *         return len(self)
  * 
  *     def  __call__(self, ManyBodyState psi, double cutoff = 0, dict[frozenset[int], pair[int, int]] restrictions=None) -> ManyBodyState:             # <<<<<<<<<<<<<<
@@ -11706,43 +11725,43 @@ static PyObject *__pyx_pw_13ManyBodyUtils_16ManyBodyOperator_35__call__(PyObject
   {
     PyObject ** const __pyx_pyargnames[] = {&__pyx_mstate_global->__pyx_n_u_psi,&__pyx_mstate_global->__pyx_n_u_cutoff,&__pyx_mstate_global->__pyx_n_u_restrictions,0};
     const Py_ssize_t __pyx_kwds_len = (__pyx_kwds) ? __Pyx_NumKwargs_VARARGS(__pyx_kwds) : 0;
-    if (unlikely(__pyx_kwds_len) < 0) __PYX_ERR(0, 293, __pyx_L3_error)
+    if (unlikely(__pyx_kwds_len) < 0) __PYX_ERR(0, 292, __pyx_L3_error)
     if (__pyx_kwds_len > 0) {
       switch (__pyx_nargs) {
         case  3:
         values[2] = __Pyx_ArgRef_VARARGS(__pyx_args, 2);
-        if (!CYTHON_ASSUME_SAFE_MACROS && unlikely(!values[2])) __PYX_ERR(0, 293, __pyx_L3_error)
+        if (!CYTHON_ASSUME_SAFE_MACROS && unlikely(!values[2])) __PYX_ERR(0, 292, __pyx_L3_error)
         CYTHON_FALLTHROUGH;
         case  2:
         values[1] = __Pyx_ArgRef_VARARGS(__pyx_args, 1);
-        if (!CYTHON_ASSUME_SAFE_MACROS && unlikely(!values[1])) __PYX_ERR(0, 293, __pyx_L3_error)
+        if (!CYTHON_ASSUME_SAFE_MACROS && unlikely(!values[1])) __PYX_ERR(0, 292, __pyx_L3_error)
         CYTHON_FALLTHROUGH;
         case  1:
         values[0] = __Pyx_ArgRef_VARARGS(__pyx_args, 0);
-        if (!CYTHON_ASSUME_SAFE_MACROS && unlikely(!values[0])) __PYX_ERR(0, 293, __pyx_L3_error)
+        if (!CYTHON_ASSUME_SAFE_MACROS && unlikely(!values[0])) __PYX_ERR(0, 292, __pyx_L3_error)
         CYTHON_FALLTHROUGH;
         case  0: break;
         default: goto __pyx_L5_argtuple_error;
       }
       const Py_ssize_t kwd_pos_args = __pyx_nargs;
-      if (__Pyx_ParseKeywords(__pyx_kwds, __pyx_kwvalues, __pyx_pyargnames, 0, values, kwd_pos_args, __pyx_kwds_len, "__call__", 0) < 0) __PYX_ERR(0, 293, __pyx_L3_error)
+      if (__Pyx_ParseKeywords(__pyx_kwds, __pyx_kwvalues, __pyx_pyargnames, 0, values, kwd_pos_args, __pyx_kwds_len, "__call__", 0) < 0) __PYX_ERR(0, 292, __pyx_L3_error)
       if (!values[2]) values[2] = __Pyx_NewRef(((PyObject*)Py_None));
       for (Py_ssize_t i = __pyx_nargs; i < 1; i++) {
-        if (unlikely(!values[i])) { __Pyx_RaiseArgtupleInvalid("__call__", 0, 1, 3, i); __PYX_ERR(0, 293, __pyx_L3_error) }
+        if (unlikely(!values[i])) { __Pyx_RaiseArgtupleInvalid("__call__", 0, 1, 3, i); __PYX_ERR(0, 292, __pyx_L3_error) }
       }
     } else {
       switch (__pyx_nargs) {
         case  3:
         values[2] = __Pyx_ArgRef_VARARGS(__pyx_args, 2);
-        if (!CYTHON_ASSUME_SAFE_MACROS && unlikely(!values[2])) __PYX_ERR(0, 293, __pyx_L3_error)
+        if (!CYTHON_ASSUME_SAFE_MACROS && unlikely(!values[2])) __PYX_ERR(0, 292, __pyx_L3_error)
         CYTHON_FALLTHROUGH;
         case  2:
         values[1] = __Pyx_ArgRef_VARARGS(__pyx_args, 1);
-        if (!CYTHON_ASSUME_SAFE_MACROS && unlikely(!values[1])) __PYX_ERR(0, 293, __pyx_L3_error)
+        if (!CYTHON_ASSUME_SAFE_MACROS && unlikely(!values[1])) __PYX_ERR(0, 292, __pyx_L3_error)
         CYTHON_FALLTHROUGH;
         case  1:
         values[0] = __Pyx_ArgRef_VARARGS(__pyx_args, 0);
-        if (!CYTHON_ASSUME_SAFE_MACROS && unlikely(!values[0])) __PYX_ERR(0, 293, __pyx_L3_error)
+        if (!CYTHON_ASSUME_SAFE_MACROS && unlikely(!values[0])) __PYX_ERR(0, 292, __pyx_L3_error)
         break;
         default: goto __pyx_L5_argtuple_error;
       }
@@ -11750,7 +11769,7 @@ static PyObject *__pyx_pw_13ManyBodyUtils_16ManyBodyOperator_35__call__(PyObject
     }
     __pyx_v_psi = ((struct __pyx_obj_13ManyBodyUtils_ManyBodyState *)values[0]);
     if (values[1]) {
-      __pyx_v_cutoff = __Pyx_PyFloat_AsDouble(values[1]); if (unlikely((__pyx_v_cutoff == (double)-1) && PyErr_Occurred())) __PYX_ERR(0, 293, __pyx_L3_error)
+      __pyx_v_cutoff = __Pyx_PyFloat_AsDouble(values[1]); if (unlikely((__pyx_v_cutoff == (double)-1) && PyErr_Occurred())) __PYX_ERR(0, 292, __pyx_L3_error)
     } else {
       __pyx_v_cutoff = ((double)0.0);
     }
@@ -11758,7 +11777,7 @@ static PyObject *__pyx_pw_13ManyBodyUtils_16ManyBodyOperator_35__call__(PyObject
   }
   goto __pyx_L6_skip;
   __pyx_L5_argtuple_error:;
-  __Pyx_RaiseArgtupleInvalid("__call__", 0, 1, 3, __pyx_nargs); __PYX_ERR(0, 293, __pyx_L3_error)
+  __Pyx_RaiseArgtupleInvalid("__call__", 0, 1, 3, __pyx_nargs); __PYX_ERR(0, 292, __pyx_L3_error)
   __pyx_L6_skip:;
   goto __pyx_L4_argument_unpacking_done;
   __pyx_L3_error:;
@@ -11769,8 +11788,8 @@ static PyObject *__pyx_pw_13ManyBodyUtils_16ManyBodyOperator_35__call__(PyObject
   __Pyx_RefNannyFinishContext();
   return NULL;
   __pyx_L4_argument_unpacking_done:;
-  if (unlikely(!__Pyx_ArgTypeTest(((PyObject *)__pyx_v_psi), __pyx_mstate_global->__pyx_ptype_13ManyBodyUtils_ManyBodyState, 1, "psi", 0))) __PYX_ERR(0, 293, __pyx_L1_error)
-  if (unlikely(!__Pyx_ArgTypeTest(((PyObject *)__pyx_v_restrictions), (&PyDict_Type), 1, "restrictions", 1))) __PYX_ERR(0, 293, __pyx_L1_error)
+  if (unlikely(!__Pyx_ArgTypeTest(((PyObject *)__pyx_v_psi), __pyx_mstate_global->__pyx_ptype_13ManyBodyUtils_ManyBodyState, 1, "psi", 0))) __PYX_ERR(0, 292, __pyx_L1_error)
+  if (unlikely(!__Pyx_ArgTypeTest(((PyObject *)__pyx_v_restrictions), (&PyDict_Type), 1, "restrictions", 1))) __PYX_ERR(0, 292, __pyx_L1_error)
   __pyx_r = __pyx_pf_13ManyBodyUtils_16ManyBodyOperator_34__call__(((struct __pyx_obj_13ManyBodyUtils_ManyBodyOperator *)__pyx_v_self), __pyx_v_psi, __pyx_v_cutoff, __pyx_v_restrictions);
 
   /* function exit code */
@@ -11816,7 +11835,7 @@ static PyObject *__pyx_pf_13ManyBodyUtils_16ManyBodyOperator_34__call__(struct _
   __Pyx_RefNannySetupContext("__call__", 0);
   __Pyx_INCREF(__pyx_v_restrictions);
 
-  /* "ManyBodyUtils.pyx":294
+  /* "ManyBodyUtils.pyx":293
  * 
  *     def  __call__(self, ManyBodyState psi, double cutoff = 0, dict[frozenset[int], pair[int, int]] restrictions=None) -> ManyBodyState:
  *         res = ManyBodyState()             # <<<<<<<<<<<<<<
@@ -11832,13 +11851,13 @@ static PyObject *__pyx_pf_13ManyBodyUtils_16ManyBodyOperator_34__call__(struct _
     __pyx_t_1 = __Pyx_PyObject_FastCall(__pyx_t_3, __pyx_callargs+__pyx_t_4, (1-__pyx_t_4) | (__pyx_t_4*__Pyx_PY_VECTORCALL_ARGUMENTS_OFFSET));
     __Pyx_XDECREF(__pyx_t_2); __pyx_t_2 = 0;
     __Pyx_DECREF(__pyx_t_3); __pyx_t_3 = 0;
-    if (unlikely(!__pyx_t_1)) __PYX_ERR(0, 294, __pyx_L1_error)
+    if (unlikely(!__pyx_t_1)) __PYX_ERR(0, 293, __pyx_L1_error)
     __Pyx_GOTREF((PyObject *)__pyx_t_1);
   }
   __pyx_v_res = ((struct __pyx_obj_13ManyBodyUtils_ManyBodyState *)__pyx_t_1);
   __pyx_t_1 = 0;
 
-  /* "ManyBodyUtils.pyx":295
+  /* "ManyBodyUtils.pyx":294
  *     def  __call__(self, ManyBodyState psi, double cutoff = 0, dict[frozenset[int], pair[int, int]] restrictions=None) -> ManyBodyState:
  *         res = ManyBodyState()
  *         if restrictions is None:             # <<<<<<<<<<<<<<
@@ -11848,19 +11867,19 @@ static PyObject *__pyx_pf_13ManyBodyUtils_16ManyBodyOperator_34__call__(struct _
   __pyx_t_5 = (__pyx_v_restrictions == ((PyObject*)Py_None));
   if (__pyx_t_5) {
 
-    /* "ManyBodyUtils.pyx":296
+    /* "ManyBodyUtils.pyx":295
  *         res = ManyBodyState()
  *         if restrictions is None:
  *             restrictions = {}             # <<<<<<<<<<<<<<
  *         # For some reason using ManyBodyOpeartor_cpp.restrictions does not work
  *         cdef frozenset[int] indices
 */
-    __pyx_t_1 = __Pyx_PyDict_NewPresized(0); if (unlikely(!__pyx_t_1)) __PYX_ERR(0, 296, __pyx_L1_error)
+    __pyx_t_1 = __Pyx_PyDict_NewPresized(0); if (unlikely(!__pyx_t_1)) __PYX_ERR(0, 295, __pyx_L1_error)
     __Pyx_GOTREF(__pyx_t_1);
     __Pyx_DECREF_SET(__pyx_v_restrictions, ((PyObject*)__pyx_t_1));
     __pyx_t_1 = 0;
 
-    /* "ManyBodyUtils.pyx":295
+    /* "ManyBodyUtils.pyx":294
  *     def  __call__(self, ManyBodyState psi, double cutoff = 0, dict[frozenset[int], pair[int, int]] restrictions=None) -> ManyBodyState:
  *         res = ManyBodyState()
  *         if restrictions is None:             # <<<<<<<<<<<<<<
@@ -11869,7 +11888,7 @@ static PyObject *__pyx_pf_13ManyBodyUtils_16ManyBodyOperator_34__call__(struct _
 */
   }
 
-  /* "ManyBodyUtils.pyx":303
+  /* "ManyBodyUtils.pyx":302
  *         cdef vector[ManyBodyState_cpp] v
  * 
  *         rest.reserve(len(restrictions))             # <<<<<<<<<<<<<<
@@ -11878,17 +11897,17 @@ static PyObject *__pyx_pf_13ManyBodyUtils_16ManyBodyOperator_34__call__(struct _
 */
   if (unlikely(__pyx_v_restrictions == Py_None)) {
     PyErr_SetString(PyExc_TypeError, "object of type 'NoneType' has no len()");
-    __PYX_ERR(0, 303, __pyx_L1_error)
+    __PYX_ERR(0, 302, __pyx_L1_error)
   }
-  __pyx_t_6 = PyDict_Size(__pyx_v_restrictions); if (unlikely(__pyx_t_6 == ((Py_ssize_t)-1))) __PYX_ERR(0, 303, __pyx_L1_error)
+  __pyx_t_6 = PyDict_Size(__pyx_v_restrictions); if (unlikely(__pyx_t_6 == ((Py_ssize_t)-1))) __PYX_ERR(0, 302, __pyx_L1_error)
   try {
     __pyx_v_rest.reserve(__pyx_t_6);
   } catch(...) {
     __Pyx_CppExn2PyErr();
-    __PYX_ERR(0, 303, __pyx_L1_error)
+    __PYX_ERR(0, 302, __pyx_L1_error)
   }
 
-  /* "ManyBodyUtils.pyx":304
+  /* "ManyBodyUtils.pyx":303
  * 
  *         rest.reserve(len(restrictions))
  *         for indices, limits in restrictions.items():             # <<<<<<<<<<<<<<
@@ -11898,9 +11917,9 @@ static PyObject *__pyx_pf_13ManyBodyUtils_16ManyBodyOperator_34__call__(struct _
   __pyx_t_6 = 0;
   if (unlikely(__pyx_v_restrictions == Py_None)) {
     PyErr_Format(PyExc_AttributeError, "'NoneType' object has no attribute '%.30s'", "items");
-    __PYX_ERR(0, 304, __pyx_L1_error)
+    __PYX_ERR(0, 303, __pyx_L1_error)
   }
-  __pyx_t_3 = __Pyx_dict_iterator(__pyx_v_restrictions, 1, __pyx_mstate_global->__pyx_n_u_items, (&__pyx_t_7), (&__pyx_t_8)); if (unlikely(!__pyx_t_3)) __PYX_ERR(0, 304, __pyx_L1_error)
+  __pyx_t_3 = __Pyx_dict_iterator(__pyx_v_restrictions, 1, __pyx_mstate_global->__pyx_n_u_items, (&__pyx_t_7), (&__pyx_t_8)); if (unlikely(!__pyx_t_3)) __PYX_ERR(0, 303, __pyx_L1_error)
   __Pyx_GOTREF(__pyx_t_3);
   __Pyx_XDECREF(__pyx_t_1);
   __pyx_t_1 = __pyx_t_3;
@@ -11908,17 +11927,17 @@ static PyObject *__pyx_pf_13ManyBodyUtils_16ManyBodyOperator_34__call__(struct _
   while (1) {
     __pyx_t_9 = __Pyx_dict_iter_next(__pyx_t_1, __pyx_t_7, &__pyx_t_6, &__pyx_t_3, &__pyx_t_2, NULL, __pyx_t_8);
     if (unlikely(__pyx_t_9 == 0)) break;
-    if (unlikely(__pyx_t_9 == -1)) __PYX_ERR(0, 304, __pyx_L1_error)
+    if (unlikely(__pyx_t_9 == -1)) __PYX_ERR(0, 303, __pyx_L1_error)
     __Pyx_GOTREF(__pyx_t_3);
     __Pyx_GOTREF(__pyx_t_2);
-    if (!(likely(PyFrozenSet_CheckExact(__pyx_t_3))||((__pyx_t_3) == Py_None) || __Pyx_RaiseUnexpectedTypeError("frozenset", __pyx_t_3))) __PYX_ERR(0, 304, __pyx_L1_error)
-    __pyx_t_10 = __pyx_convert_pair_from_py_size_t__and_size_t(__pyx_t_2); if (unlikely(PyErr_Occurred())) __PYX_ERR(0, 304, __pyx_L1_error)
+    if (!(likely(PyFrozenSet_CheckExact(__pyx_t_3))||((__pyx_t_3) == Py_None) || __Pyx_RaiseUnexpectedTypeError("frozenset", __pyx_t_3))) __PYX_ERR(0, 303, __pyx_L1_error)
+    __pyx_t_10 = __pyx_convert_pair_from_py_size_t__and_size_t(__pyx_t_2); if (unlikely(PyErr_Occurred())) __PYX_ERR(0, 303, __pyx_L1_error)
     __Pyx_DECREF(__pyx_t_2); __pyx_t_2 = 0;
     __Pyx_XDECREF_SET(__pyx_v_indices, ((PyObject*)__pyx_t_3));
     __pyx_t_3 = 0;
     __pyx_v_limits = __PYX_STD_MOVE_IF_SUPPORTED(__pyx_t_10);
 
-    /* "ManyBodyUtils.pyx":305
+    /* "ManyBodyUtils.pyx":304
  *         rest.reserve(len(restrictions))
  *         for indices, limits in restrictions.items():
  *             if len(indices) == 0:             # <<<<<<<<<<<<<<
@@ -11927,13 +11946,13 @@ static PyObject *__pyx_pf_13ManyBodyUtils_16ManyBodyOperator_34__call__(struct _
 */
     if (unlikely(__pyx_v_indices == Py_None)) {
       PyErr_SetString(PyExc_TypeError, "object of type 'NoneType' has no len()");
-      __PYX_ERR(0, 305, __pyx_L1_error)
+      __PYX_ERR(0, 304, __pyx_L1_error)
     }
-    __pyx_t_11 = __Pyx_PySet_GET_SIZE(__pyx_v_indices); if (unlikely(__pyx_t_11 == ((Py_ssize_t)-1))) __PYX_ERR(0, 305, __pyx_L1_error)
+    __pyx_t_11 = __Pyx_PySet_GET_SIZE(__pyx_v_indices); if (unlikely(__pyx_t_11 == ((Py_ssize_t)-1))) __PYX_ERR(0, 304, __pyx_L1_error)
     __pyx_t_5 = (__pyx_t_11 == 0);
     if (__pyx_t_5) {
 
-      /* "ManyBodyUtils.pyx":306
+      /* "ManyBodyUtils.pyx":305
  *         for indices, limits in restrictions.items():
  *             if len(indices) == 0:
  *                 continue             # <<<<<<<<<<<<<<
@@ -11942,7 +11961,7 @@ static PyObject *__pyx_pf_13ManyBodyUtils_16ManyBodyOperator_34__call__(struct _
 */
       goto __pyx_L4_continue;
 
-      /* "ManyBodyUtils.pyx":305
+      /* "ManyBodyUtils.pyx":304
  *         rest.reserve(len(restrictions))
  *         for indices, limits in restrictions.items():
  *             if len(indices) == 0:             # <<<<<<<<<<<<<<
@@ -11951,41 +11970,41 @@ static PyObject *__pyx_pf_13ManyBodyUtils_16ManyBodyOperator_34__call__(struct _
 */
     }
 
-    /* "ManyBodyUtils.pyx":307
+    /* "ManyBodyUtils.pyx":306
  *             if len(indices) == 0:
  *                 continue
  *             rest.push_back(pair[vector[size_t], pair[size_t, size_t]](sorted(indices),pair[size_t, size_t](limits.first, limits.second)))             # <<<<<<<<<<<<<<
  *         with nogil:
  *             res.v = self.o(psi.v, cutoff, rest)
 */
-    __pyx_t_2 = PySequence_List(__pyx_v_indices); if (unlikely(!__pyx_t_2)) __PYX_ERR(0, 307, __pyx_L1_error)
+    __pyx_t_2 = PySequence_List(__pyx_v_indices); if (unlikely(!__pyx_t_2)) __PYX_ERR(0, 306, __pyx_L1_error)
     __Pyx_GOTREF(__pyx_t_2);
-    if (unlikely((PyList_Sort(__pyx_t_2) < 0))) __PYX_ERR(0, 307, __pyx_L1_error)
-    __pyx_t_12 = __pyx_convert_vector_from_py_size_t(__pyx_t_2); if (unlikely(PyErr_Occurred())) __PYX_ERR(0, 307, __pyx_L1_error)
+    if (unlikely((PyList_Sort(__pyx_t_2) < 0))) __PYX_ERR(0, 306, __pyx_L1_error)
+    __pyx_t_12 = __pyx_convert_vector_from_py_size_t(__pyx_t_2); if (unlikely(PyErr_Occurred())) __PYX_ERR(0, 306, __pyx_L1_error)
     __Pyx_DECREF(__pyx_t_2); __pyx_t_2 = 0;
     try {
       __pyx_t_10 = std::pair<size_t,size_t> (__pyx_v_limits.first, __pyx_v_limits.second);
     } catch(...) {
       __Pyx_CppExn2PyErr();
-      __PYX_ERR(0, 307, __pyx_L1_error)
+      __PYX_ERR(0, 306, __pyx_L1_error)
     }
     try {
       __pyx_t_13 = std::pair<std::vector<size_t> ,std::pair<size_t,size_t> > (__pyx_t_12, __pyx_t_10);
     } catch(...) {
       __Pyx_CppExn2PyErr();
-      __PYX_ERR(0, 307, __pyx_L1_error)
+      __PYX_ERR(0, 306, __pyx_L1_error)
     }
     try {
       __pyx_v_rest.push_back(__pyx_t_13);
     } catch(...) {
       __Pyx_CppExn2PyErr();
-      __PYX_ERR(0, 307, __pyx_L1_error)
+      __PYX_ERR(0, 306, __pyx_L1_error)
     }
     __pyx_L4_continue:;
   }
   __Pyx_DECREF(__pyx_t_1); __pyx_t_1 = 0;
 
-  /* "ManyBodyUtils.pyx":308
+  /* "ManyBodyUtils.pyx":307
  *                 continue
  *             rest.push_back(pair[vector[size_t], pair[size_t, size_t]](sorted(indices),pair[size_t, size_t](limits.first, limits.second)))
  *         with nogil:             # <<<<<<<<<<<<<<
@@ -11999,7 +12018,7 @@ static PyObject *__pyx_pf_13ManyBodyUtils_16ManyBodyOperator_34__call__(struct _
       __Pyx_FastGIL_Remember();
       /*try:*/ {
 
-        /* "ManyBodyUtils.pyx":309
+        /* "ManyBodyUtils.pyx":308
  *             rest.push_back(pair[vector[size_t], pair[size_t, size_t]](sorted(indices),pair[size_t, size_t](limits.first, limits.second)))
  *         with nogil:
  *             res.v = self.o(psi.v, cutoff, rest)             # <<<<<<<<<<<<<<
@@ -12009,7 +12028,7 @@ static PyObject *__pyx_pf_13ManyBodyUtils_16ManyBodyOperator_34__call__(struct _
         __pyx_v_res->v = __pyx_v_self->o(__pyx_v_psi->v, __pyx_v_cutoff, __pyx_v_rest);
       }
 
-      /* "ManyBodyUtils.pyx":308
+      /* "ManyBodyUtils.pyx":307
  *                 continue
  *             rest.push_back(pair[vector[size_t], pair[size_t, size_t]](sorted(indices),pair[size_t, size_t](limits.first, limits.second)))
  *         with nogil:             # <<<<<<<<<<<<<<
@@ -12026,7 +12045,7 @@ static PyObject *__pyx_pf_13ManyBodyUtils_16ManyBodyOperator_34__call__(struct _
       }
   }
 
-  /* "ManyBodyUtils.pyx":310
+  /* "ManyBodyUtils.pyx":309
  *         with nogil:
  *             res.v = self.o(psi.v, cutoff, rest)
  *         return res             # <<<<<<<<<<<<<<
@@ -12038,7 +12057,7 @@ static PyObject *__pyx_pf_13ManyBodyUtils_16ManyBodyOperator_34__call__(struct _
   __pyx_r = ((PyObject *)__pyx_v_res);
   goto __pyx_L0;
 
-  /* "ManyBodyUtils.pyx":293
+  /* "ManyBodyUtils.pyx":292
  *         return len(self)
  * 
  *     def  __call__(self, ManyBodyState psi, double cutoff = 0, dict[frozenset[int], pair[int, int]] restrictions=None) -> ManyBodyState:             # <<<<<<<<<<<<<<
@@ -12062,7 +12081,7 @@ static PyObject *__pyx_pf_13ManyBodyUtils_16ManyBodyOperator_34__call__(struct _
   return __pyx_r;
 }
 
-/* "ManyBodyUtils.pyx":312
+/* "ManyBodyUtils.pyx":311
  *         return res
  * 
  *     def erase(self, tuple[tuple[int, str]]key):             # <<<<<<<<<<<<<<
@@ -12109,32 +12128,32 @@ PyObject *__pyx_args, PyObject *__pyx_kwds
   {
     PyObject ** const __pyx_pyargnames[] = {&__pyx_mstate_global->__pyx_n_u_key,0};
     const Py_ssize_t __pyx_kwds_len = (__pyx_kwds) ? __Pyx_NumKwargs_FASTCALL(__pyx_kwds) : 0;
-    if (unlikely(__pyx_kwds_len) < 0) __PYX_ERR(0, 312, __pyx_L3_error)
+    if (unlikely(__pyx_kwds_len) < 0) __PYX_ERR(0, 311, __pyx_L3_error)
     if (__pyx_kwds_len > 0) {
       switch (__pyx_nargs) {
         case  1:
         values[0] = __Pyx_ArgRef_FASTCALL(__pyx_args, 0);
-        if (!CYTHON_ASSUME_SAFE_MACROS && unlikely(!values[0])) __PYX_ERR(0, 312, __pyx_L3_error)
+        if (!CYTHON_ASSUME_SAFE_MACROS && unlikely(!values[0])) __PYX_ERR(0, 311, __pyx_L3_error)
         CYTHON_FALLTHROUGH;
         case  0: break;
         default: goto __pyx_L5_argtuple_error;
       }
       const Py_ssize_t kwd_pos_args = __pyx_nargs;
-      if (__Pyx_ParseKeywords(__pyx_kwds, __pyx_kwvalues, __pyx_pyargnames, 0, values, kwd_pos_args, __pyx_kwds_len, "erase", 0) < 0) __PYX_ERR(0, 312, __pyx_L3_error)
+      if (__Pyx_ParseKeywords(__pyx_kwds, __pyx_kwvalues, __pyx_pyargnames, 0, values, kwd_pos_args, __pyx_kwds_len, "erase", 0) < 0) __PYX_ERR(0, 311, __pyx_L3_error)
       for (Py_ssize_t i = __pyx_nargs; i < 1; i++) {
-        if (unlikely(!values[i])) { __Pyx_RaiseArgtupleInvalid("erase", 1, 1, 1, i); __PYX_ERR(0, 312, __pyx_L3_error) }
+        if (unlikely(!values[i])) { __Pyx_RaiseArgtupleInvalid("erase", 1, 1, 1, i); __PYX_ERR(0, 311, __pyx_L3_error) }
       }
     } else if (unlikely(__pyx_nargs != 1)) {
       goto __pyx_L5_argtuple_error;
     } else {
       values[0] = __Pyx_ArgRef_FASTCALL(__pyx_args, 0);
-      if (!CYTHON_ASSUME_SAFE_MACROS && unlikely(!values[0])) __PYX_ERR(0, 312, __pyx_L3_error)
+      if (!CYTHON_ASSUME_SAFE_MACROS && unlikely(!values[0])) __PYX_ERR(0, 311, __pyx_L3_error)
     }
     __pyx_v_key = ((PyObject*)values[0]);
   }
   goto __pyx_L6_skip;
   __pyx_L5_argtuple_error:;
-  __Pyx_RaiseArgtupleInvalid("erase", 1, 1, 1, __pyx_nargs); __PYX_ERR(0, 312, __pyx_L3_error)
+  __Pyx_RaiseArgtupleInvalid("erase", 1, 1, 1, __pyx_nargs); __PYX_ERR(0, 311, __pyx_L3_error)
   __pyx_L6_skip:;
   goto __pyx_L4_argument_unpacking_done;
   __pyx_L3_error:;
@@ -12145,7 +12164,7 @@ PyObject *__pyx_args, PyObject *__pyx_kwds
   __Pyx_RefNannyFinishContext();
   return NULL;
   __pyx_L4_argument_unpacking_done:;
-  if (unlikely(!__Pyx_ArgTypeTest(((PyObject *)__pyx_v_key), (&PyTuple_Type), 1, "key", 1))) __PYX_ERR(0, 312, __pyx_L1_error)
+  if (unlikely(!__Pyx_ArgTypeTest(((PyObject *)__pyx_v_key), (&PyTuple_Type), 1, "key", 1))) __PYX_ERR(0, 311, __pyx_L1_error)
   __pyx_r = __pyx_pf_13ManyBodyUtils_16ManyBodyOperator_36erase(((struct __pyx_obj_13ManyBodyUtils_ManyBodyOperator *)__pyx_v_self), __pyx_v_key);
 
   /* function exit code */
@@ -12179,19 +12198,19 @@ static PyObject *__pyx_pf_13ManyBodyUtils_16ManyBodyOperator_36erase(struct __py
   int __pyx_clineno = 0;
   __Pyx_RefNannySetupContext("erase", 0);
 
-  /* "ManyBodyUtils.pyx":313
+  /* "ManyBodyUtils.pyx":312
  * 
  *     def erase(self, tuple[tuple[int, str]]key):
  *         self.op.erase(processes_to_ints(key))             # <<<<<<<<<<<<<<
  * 
  *     def __contains__(self, tuple[tuple[int, str]]key):
 */
-  __pyx_t_3 = __Pyx_PyObject_GetAttrStr(((PyObject *)__pyx_v_self), __pyx_mstate_global->__pyx_n_u_op); if (unlikely(!__pyx_t_3)) __PYX_ERR(0, 313, __pyx_L1_error)
+  __pyx_t_3 = __Pyx_PyObject_GetAttrStr(((PyObject *)__pyx_v_self), __pyx_mstate_global->__pyx_n_u_op); if (unlikely(!__pyx_t_3)) __PYX_ERR(0, 312, __pyx_L1_error)
   __Pyx_GOTREF(__pyx_t_3);
   __pyx_t_2 = __pyx_t_3;
   __Pyx_INCREF(__pyx_t_2);
-  __pyx_t_4 = __pyx_f_13ManyBodyUtils_processes_to_ints(__pyx_v_key); if (unlikely(PyErr_Occurred())) __PYX_ERR(0, 313, __pyx_L1_error)
-  __pyx_t_5 = __pyx_convert_vector_to_py_int64_t(__pyx_t_4); if (unlikely(!__pyx_t_5)) __PYX_ERR(0, 313, __pyx_L1_error)
+  __pyx_t_4 = __pyx_f_13ManyBodyUtils_processes_to_ints(__pyx_v_key); if (unlikely(PyErr_Occurred())) __PYX_ERR(0, 312, __pyx_L1_error)
+  __pyx_t_5 = __pyx_convert_vector_to_py_int64_t(__pyx_t_4); if (unlikely(!__pyx_t_5)) __PYX_ERR(0, 312, __pyx_L1_error)
   __Pyx_GOTREF(__pyx_t_5);
   __pyx_t_6 = 0;
   {
@@ -12200,12 +12219,12 @@ static PyObject *__pyx_pf_13ManyBodyUtils_16ManyBodyOperator_36erase(struct __py
     __Pyx_XDECREF(__pyx_t_2); __pyx_t_2 = 0;
     __Pyx_DECREF(__pyx_t_5); __pyx_t_5 = 0;
     __Pyx_DECREF(__pyx_t_3); __pyx_t_3 = 0;
-    if (unlikely(!__pyx_t_1)) __PYX_ERR(0, 313, __pyx_L1_error)
+    if (unlikely(!__pyx_t_1)) __PYX_ERR(0, 312, __pyx_L1_error)
     __Pyx_GOTREF(__pyx_t_1);
   }
   __Pyx_DECREF(__pyx_t_1); __pyx_t_1 = 0;
 
-  /* "ManyBodyUtils.pyx":312
+  /* "ManyBodyUtils.pyx":311
  *         return res
  * 
  *     def erase(self, tuple[tuple[int, str]]key):             # <<<<<<<<<<<<<<
@@ -12229,7 +12248,7 @@ static PyObject *__pyx_pf_13ManyBodyUtils_16ManyBodyOperator_36erase(struct __py
   return __pyx_r;
 }
 
-/* "ManyBodyUtils.pyx":315
+/* "ManyBodyUtils.pyx":314
  *         self.op.erase(processes_to_ints(key))
  * 
  *     def __contains__(self, tuple[tuple[int, str]]key):             # <<<<<<<<<<<<<<
@@ -12248,7 +12267,7 @@ static int __pyx_pw_13ManyBodyUtils_16ManyBodyOperator_39__contains__(PyObject *
   __Pyx_RefNannyDeclarations
   __Pyx_RefNannySetupContext("__contains__ (wrapper)", 0);
   __pyx_kwvalues = __Pyx_KwValues_VARARGS(__pyx_args, __pyx_nargs);
-  if (unlikely(!__Pyx_ArgTypeTest(((PyObject *)__pyx_v_key), (&PyTuple_Type), 1, "key", 1))) __PYX_ERR(0, 315, __pyx_L1_error)
+  if (unlikely(!__Pyx_ArgTypeTest(((PyObject *)__pyx_v_key), (&PyTuple_Type), 1, "key", 1))) __PYX_ERR(0, 314, __pyx_L1_error)
   __pyx_r = __pyx_pf_13ManyBodyUtils_16ManyBodyOperator_38__contains__(((struct __pyx_obj_13ManyBodyUtils_ManyBodyOperator *)__pyx_v_self), ((PyObject*)__pyx_v_key));
 
   /* function exit code */
@@ -12269,18 +12288,18 @@ static int __pyx_pf_13ManyBodyUtils_16ManyBodyOperator_38__contains__(struct __p
   const char *__pyx_filename = NULL;
   int __pyx_clineno = 0;
 
-  /* "ManyBodyUtils.pyx":316
+  /* "ManyBodyUtils.pyx":315
  * 
  *     def __contains__(self, tuple[tuple[int, str]]key):
  *         return self.o.find(processes_to_ints(key)) != self.o.end()             # <<<<<<<<<<<<<<
  * 
  *     def __iter__(self):
 */
-  __pyx_t_1 = __pyx_f_13ManyBodyUtils_processes_to_ints(__pyx_v_key); if (unlikely(PyErr_Occurred())) __PYX_ERR(0, 316, __pyx_L1_error)
+  __pyx_t_1 = __pyx_f_13ManyBodyUtils_processes_to_ints(__pyx_v_key); if (unlikely(PyErr_Occurred())) __PYX_ERR(0, 315, __pyx_L1_error)
   __pyx_r = (__pyx_v_self->o.find(__pyx_t_1) != __pyx_v_self->o.end());
   goto __pyx_L0;
 
-  /* "ManyBodyUtils.pyx":315
+  /* "ManyBodyUtils.pyx":314
  *         self.op.erase(processes_to_ints(key))
  * 
  *     def __contains__(self, tuple[tuple[int, str]]key):             # <<<<<<<<<<<<<<
@@ -12297,7 +12316,7 @@ static int __pyx_pf_13ManyBodyUtils_16ManyBodyOperator_38__contains__(struct __p
 }
 static PyObject *__pyx_gb_13ManyBodyUtils_16ManyBodyOperator_42generator1(__pyx_CoroutineObject *__pyx_generator, CYTHON_UNUSED PyThreadState *__pyx_tstate, PyObject *__pyx_sent_value); /* proto */
 
-/* "ManyBodyUtils.pyx":318
+/* "ManyBodyUtils.pyx":317
  *         return self.o.find(processes_to_ints(key)) != self.o.end()
  * 
  *     def __iter__(self):             # <<<<<<<<<<<<<<
@@ -12332,7 +12351,7 @@ static PyObject *__pyx_pf_13ManyBodyUtils_16ManyBodyOperator_40__iter__(struct _
   if (unlikely(!__pyx_cur_scope)) {
     __pyx_cur_scope = ((struct __pyx_obj_13ManyBodyUtils___pyx_scope_struct_5___iter__ *)Py_None);
     __Pyx_INCREF(Py_None);
-    __PYX_ERR(0, 318, __pyx_L1_error)
+    __PYX_ERR(0, 317, __pyx_L1_error)
   } else {
     __Pyx_GOTREF((PyObject *)__pyx_cur_scope);
   }
@@ -12340,7 +12359,7 @@ static PyObject *__pyx_pf_13ManyBodyUtils_16ManyBodyOperator_40__iter__(struct _
   __Pyx_INCREF((PyObject *)__pyx_cur_scope->__pyx_v_self);
   __Pyx_GIVEREF((PyObject *)__pyx_cur_scope->__pyx_v_self);
   {
-    __pyx_CoroutineObject *gen = __Pyx_Generator_New((__pyx_coroutine_body_t) __pyx_gb_13ManyBodyUtils_16ManyBodyOperator_42generator1, ((PyObject *)__pyx_mstate_global->__pyx_codeobj_tab[5]), (PyObject *) __pyx_cur_scope, __pyx_mstate_global->__pyx_n_u_iter, __pyx_mstate_global->__pyx_n_u_ManyBodyOperator___iter, __pyx_mstate_global->__pyx_n_u_ManyBodyUtils); if (unlikely(!gen)) __PYX_ERR(0, 318, __pyx_L1_error)
+    __pyx_CoroutineObject *gen = __Pyx_Generator_New((__pyx_coroutine_body_t) __pyx_gb_13ManyBodyUtils_16ManyBodyOperator_42generator1, ((PyObject *)__pyx_mstate_global->__pyx_codeobj_tab[5]), (PyObject *) __pyx_cur_scope, __pyx_mstate_global->__pyx_n_u_iter, __pyx_mstate_global->__pyx_n_u_ManyBodyOperator___iter, __pyx_mstate_global->__pyx_n_u_ManyBodyUtils); if (unlikely(!gen)) __PYX_ERR(0, 317, __pyx_L1_error)
     __Pyx_DECREF(__pyx_cur_scope);
     __Pyx_RefNannyFinishContext();
     return (PyObject *) gen;
@@ -12378,10 +12397,10 @@ static PyObject *__pyx_gb_13ManyBodyUtils_16ManyBodyOperator_42generator1(__pyx_
   __pyx_L3_first_run:;
   if (unlikely(__pyx_sent_value != Py_None)) {
     if (unlikely(__pyx_sent_value)) PyErr_SetString(PyExc_TypeError, "can't send non-None value to a just-started generator");
-    __PYX_ERR(0, 318, __pyx_L1_error)
+    __PYX_ERR(0, 317, __pyx_L1_error)
   }
 
-  /* "ManyBodyUtils.pyx":319
+  /* "ManyBodyUtils.pyx":318
  * 
  *     def __iter__(self):
  *         for p in self.o:             # <<<<<<<<<<<<<<
@@ -12393,14 +12412,14 @@ static PyObject *__pyx_gb_13ManyBodyUtils_16ManyBodyOperator_42generator1(__pyx_
     __pyx_t_2 = *__pyx_t_1;
     __pyx_cur_scope->__pyx_v_p = __PYX_STD_MOVE_IF_SUPPORTED(__pyx_t_2);
 
-    /* "ManyBodyUtils.pyx":320
+    /* "ManyBodyUtils.pyx":319
  *     def __iter__(self):
  *         for p in self.o:
  *             yield ints_to_processes(p.first)             # <<<<<<<<<<<<<<
  * 
  *     def keys(self):
 */
-    __pyx_t_3 = __pyx_f_13ManyBodyUtils_ints_to_processes(__pyx_cur_scope->__pyx_v_p.first); if (unlikely(!__pyx_t_3)) __PYX_ERR(0, 320, __pyx_L1_error)
+    __pyx_t_3 = __pyx_f_13ManyBodyUtils_ints_to_processes(__pyx_cur_scope->__pyx_v_p.first); if (unlikely(!__pyx_t_3)) __PYX_ERR(0, 319, __pyx_L1_error)
     __Pyx_GOTREF(__pyx_t_3);
     __pyx_r = __pyx_t_3;
     __pyx_t_3 = 0;
@@ -12413,9 +12432,9 @@ static PyObject *__pyx_gb_13ManyBodyUtils_16ManyBodyOperator_42generator1(__pyx_
     return __pyx_r;
     __pyx_L6_resume_from_yield:;
     __pyx_t_1 = __PYX_STD_MOVE_IF_SUPPORTED(__pyx_cur_scope->__pyx_t_0);
-    if (unlikely(!__pyx_sent_value)) __PYX_ERR(0, 320, __pyx_L1_error)
+    if (unlikely(!__pyx_sent_value)) __PYX_ERR(0, 319, __pyx_L1_error)
 
-    /* "ManyBodyUtils.pyx":319
+    /* "ManyBodyUtils.pyx":318
  * 
  *     def __iter__(self):
  *         for p in self.o:             # <<<<<<<<<<<<<<
@@ -12425,7 +12444,7 @@ static PyObject *__pyx_gb_13ManyBodyUtils_16ManyBodyOperator_42generator1(__pyx_
   }
   CYTHON_MAYBE_UNUSED_VAR(__pyx_cur_scope);
 
-  /* "ManyBodyUtils.pyx":318
+  /* "ManyBodyUtils.pyx":317
  *         return self.o.find(processes_to_ints(key)) != self.o.end()
  * 
  *     def __iter__(self):             # <<<<<<<<<<<<<<
@@ -12453,7 +12472,7 @@ static PyObject *__pyx_gb_13ManyBodyUtils_16ManyBodyOperator_42generator1(__pyx_
   return __pyx_r;
 }
 
-/* "ManyBodyUtils.pyx":322
+/* "ManyBodyUtils.pyx":321
  *             yield ints_to_processes(p.first)
  * 
  *     def keys(self):             # <<<<<<<<<<<<<<
@@ -12504,7 +12523,7 @@ PyObject *__pyx_args, PyObject *__pyx_kwds
 }
 static PyObject *__pyx_gb_13ManyBodyUtils_16ManyBodyOperator_4keys_2generator6(__pyx_CoroutineObject *__pyx_generator, CYTHON_UNUSED PyThreadState *__pyx_tstate, PyObject *__pyx_sent_value); /* proto */
 
-/* "ManyBodyUtils.pyx":323
+/* "ManyBodyUtils.pyx":322
  * 
  *     def keys(self):
  *         return (ints_to_processes(p.first) for p in self.o)             # <<<<<<<<<<<<<<
@@ -12524,13 +12543,13 @@ static PyObject *__pyx_pf_13ManyBodyUtils_16ManyBodyOperator_4keys_genexpr(CYTHO
   if (unlikely(!__pyx_cur_scope)) {
     __pyx_cur_scope = ((struct __pyx_obj_13ManyBodyUtils___pyx_scope_struct_6_genexpr *)Py_None);
     __Pyx_INCREF(Py_None);
-    __PYX_ERR(0, 323, __pyx_L1_error)
+    __PYX_ERR(0, 322, __pyx_L1_error)
   } else {
     __Pyx_GOTREF((PyObject *)__pyx_cur_scope);
   }
   __pyx_cur_scope->__pyx_genexpr_arg_0 = __pyx_genexpr_arg_0;
   {
-    __pyx_CoroutineObject *gen = __Pyx_Generator_New((__pyx_coroutine_body_t) __pyx_gb_13ManyBodyUtils_16ManyBodyOperator_4keys_2generator6, ((PyObject *)__pyx_mstate_global->__pyx_codeobj_tab[6]), (PyObject *) __pyx_cur_scope, __pyx_mstate_global->__pyx_n_u_genexpr, __pyx_mstate_global->__pyx_n_u_keys_locals_genexpr, __pyx_mstate_global->__pyx_n_u_ManyBodyUtils); if (unlikely(!gen)) __PYX_ERR(0, 323, __pyx_L1_error)
+    __pyx_CoroutineObject *gen = __Pyx_Generator_New((__pyx_coroutine_body_t) __pyx_gb_13ManyBodyUtils_16ManyBodyOperator_4keys_2generator6, ((PyObject *)__pyx_mstate_global->__pyx_codeobj_tab[6]), (PyObject *) __pyx_cur_scope, __pyx_mstate_global->__pyx_n_u_genexpr, __pyx_mstate_global->__pyx_n_u_keys_locals_genexpr, __pyx_mstate_global->__pyx_n_u_ManyBodyUtils); if (unlikely(!gen)) __PYX_ERR(0, 322, __pyx_L1_error)
     __Pyx_DECREF(__pyx_cur_scope);
     __Pyx_RefNannyFinishContext();
     return (PyObject *) gen;
@@ -12568,13 +12587,13 @@ static PyObject *__pyx_gb_13ManyBodyUtils_16ManyBodyOperator_4keys_2generator6(_
   __pyx_L3_first_run:;
   if (unlikely(__pyx_sent_value != Py_None)) {
     if (unlikely(__pyx_sent_value)) PyErr_SetString(PyExc_TypeError, "can't send non-None value to a just-started generator");
-    __PYX_ERR(0, 323, __pyx_L1_error)
+    __PYX_ERR(0, 322, __pyx_L1_error)
   }
   __pyx_t_1 = __pyx_cur_scope->__pyx_genexpr_arg_0.begin();
   for (; __pyx_t_1 != __pyx_cur_scope->__pyx_genexpr_arg_0.end(); ++__pyx_t_1) {
     __pyx_t_2 = *__pyx_t_1;
     __pyx_cur_scope->__pyx_v_p = __PYX_STD_MOVE_IF_SUPPORTED(__pyx_t_2);
-    __pyx_t_3 = __pyx_f_13ManyBodyUtils_ints_to_processes(__pyx_cur_scope->__pyx_v_p.first); if (unlikely(!__pyx_t_3)) __PYX_ERR(0, 323, __pyx_L1_error)
+    __pyx_t_3 = __pyx_f_13ManyBodyUtils_ints_to_processes(__pyx_cur_scope->__pyx_v_p.first); if (unlikely(!__pyx_t_3)) __PYX_ERR(0, 322, __pyx_L1_error)
     __Pyx_GOTREF(__pyx_t_3);
     __pyx_r = __pyx_t_3;
     __pyx_t_3 = 0;
@@ -12587,7 +12606,7 @@ static PyObject *__pyx_gb_13ManyBodyUtils_16ManyBodyOperator_4keys_2generator6(_
     return __pyx_r;
     __pyx_L6_resume_from_yield:;
     __pyx_t_1 = __PYX_STD_MOVE_IF_SUPPORTED(__pyx_cur_scope->__pyx_t_0);
-    if (unlikely(!__pyx_sent_value)) __PYX_ERR(0, 323, __pyx_L1_error)
+    if (unlikely(!__pyx_sent_value)) __PYX_ERR(0, 322, __pyx_L1_error)
   }
   CYTHON_MAYBE_UNUSED_VAR(__pyx_cur_scope);
 
@@ -12611,7 +12630,7 @@ static PyObject *__pyx_gb_13ManyBodyUtils_16ManyBodyOperator_4keys_2generator6(_
   return __pyx_r;
 }
 
-/* "ManyBodyUtils.pyx":322
+/* "ManyBodyUtils.pyx":321
  *             yield ints_to_processes(p.first)
  * 
  *     def keys(self):             # <<<<<<<<<<<<<<
@@ -12629,7 +12648,7 @@ static PyObject *__pyx_pf_13ManyBodyUtils_16ManyBodyOperator_43keys(struct __pyx
   int __pyx_clineno = 0;
   __Pyx_RefNannySetupContext("keys", 0);
 
-  /* "ManyBodyUtils.pyx":323
+  /* "ManyBodyUtils.pyx":322
  * 
  *     def keys(self):
  *         return (ints_to_processes(p.first) for p in self.o)             # <<<<<<<<<<<<<<
@@ -12637,13 +12656,13 @@ static PyObject *__pyx_pf_13ManyBodyUtils_16ManyBodyOperator_43keys(struct __pyx
  *     def values(self):
 */
   __Pyx_XDECREF(__pyx_r);
-  __pyx_t_1 = __pyx_pf_13ManyBodyUtils_16ManyBodyOperator_4keys_genexpr(NULL, __pyx_v_self->o); if (unlikely(!__pyx_t_1)) __PYX_ERR(0, 323, __pyx_L1_error)
+  __pyx_t_1 = __pyx_pf_13ManyBodyUtils_16ManyBodyOperator_4keys_genexpr(NULL, __pyx_v_self->o); if (unlikely(!__pyx_t_1)) __PYX_ERR(0, 322, __pyx_L1_error)
   __Pyx_GOTREF(__pyx_t_1);
   __pyx_r = __pyx_t_1;
   __pyx_t_1 = 0;
   goto __pyx_L0;
 
-  /* "ManyBodyUtils.pyx":322
+  /* "ManyBodyUtils.pyx":321
  *             yield ints_to_processes(p.first)
  * 
  *     def keys(self):             # <<<<<<<<<<<<<<
@@ -12663,7 +12682,7 @@ static PyObject *__pyx_pf_13ManyBodyUtils_16ManyBodyOperator_43keys(struct __pyx
   return __pyx_r;
 }
 
-/* "ManyBodyUtils.pyx":325
+/* "ManyBodyUtils.pyx":324
  *         return (ints_to_processes(p.first) for p in self.o)
  * 
  *     def values(self):             # <<<<<<<<<<<<<<
@@ -12714,7 +12733,7 @@ PyObject *__pyx_args, PyObject *__pyx_kwds
 }
 static PyObject *__pyx_gb_13ManyBodyUtils_16ManyBodyOperator_6values_2generator7(__pyx_CoroutineObject *__pyx_generator, CYTHON_UNUSED PyThreadState *__pyx_tstate, PyObject *__pyx_sent_value); /* proto */
 
-/* "ManyBodyUtils.pyx":326
+/* "ManyBodyUtils.pyx":325
  * 
  *     def values(self):
  *         return (p.second for p in self.o)             # <<<<<<<<<<<<<<
@@ -12734,13 +12753,13 @@ static PyObject *__pyx_pf_13ManyBodyUtils_16ManyBodyOperator_6values_genexpr(CYT
   if (unlikely(!__pyx_cur_scope)) {
     __pyx_cur_scope = ((struct __pyx_obj_13ManyBodyUtils___pyx_scope_struct_7_genexpr *)Py_None);
     __Pyx_INCREF(Py_None);
-    __PYX_ERR(0, 326, __pyx_L1_error)
+    __PYX_ERR(0, 325, __pyx_L1_error)
   } else {
     __Pyx_GOTREF((PyObject *)__pyx_cur_scope);
   }
   __pyx_cur_scope->__pyx_genexpr_arg_0 = __pyx_genexpr_arg_0;
   {
-    __pyx_CoroutineObject *gen = __Pyx_Generator_New((__pyx_coroutine_body_t) __pyx_gb_13ManyBodyUtils_16ManyBodyOperator_6values_2generator7, ((PyObject *)__pyx_mstate_global->__pyx_codeobj_tab[7]), (PyObject *) __pyx_cur_scope, __pyx_mstate_global->__pyx_n_u_genexpr, __pyx_mstate_global->__pyx_n_u_values_locals_genexpr, __pyx_mstate_global->__pyx_n_u_ManyBodyUtils); if (unlikely(!gen)) __PYX_ERR(0, 326, __pyx_L1_error)
+    __pyx_CoroutineObject *gen = __Pyx_Generator_New((__pyx_coroutine_body_t) __pyx_gb_13ManyBodyUtils_16ManyBodyOperator_6values_2generator7, ((PyObject *)__pyx_mstate_global->__pyx_codeobj_tab[7]), (PyObject *) __pyx_cur_scope, __pyx_mstate_global->__pyx_n_u_genexpr, __pyx_mstate_global->__pyx_n_u_values_locals_genexpr, __pyx_mstate_global->__pyx_n_u_ManyBodyUtils); if (unlikely(!gen)) __PYX_ERR(0, 325, __pyx_L1_error)
     __Pyx_DECREF(__pyx_cur_scope);
     __Pyx_RefNannyFinishContext();
     return (PyObject *) gen;
@@ -12778,13 +12797,13 @@ static PyObject *__pyx_gb_13ManyBodyUtils_16ManyBodyOperator_6values_2generator7
   __pyx_L3_first_run:;
   if (unlikely(__pyx_sent_value != Py_None)) {
     if (unlikely(__pyx_sent_value)) PyErr_SetString(PyExc_TypeError, "can't send non-None value to a just-started generator");
-    __PYX_ERR(0, 326, __pyx_L1_error)
+    __PYX_ERR(0, 325, __pyx_L1_error)
   }
   __pyx_t_1 = __pyx_cur_scope->__pyx_genexpr_arg_0.begin();
   for (; __pyx_t_1 != __pyx_cur_scope->__pyx_genexpr_arg_0.end(); ++__pyx_t_1) {
     __pyx_t_2 = *__pyx_t_1;
     __pyx_cur_scope->__pyx_v_p = __PYX_STD_MOVE_IF_SUPPORTED(__pyx_t_2);
-    __pyx_t_3 = __pyx_PyComplex_FromComplex(__pyx_cur_scope->__pyx_v_p.second); if (unlikely(!__pyx_t_3)) __PYX_ERR(0, 326, __pyx_L1_error)
+    __pyx_t_3 = __pyx_PyComplex_FromComplex(__pyx_cur_scope->__pyx_v_p.second); if (unlikely(!__pyx_t_3)) __PYX_ERR(0, 325, __pyx_L1_error)
     __Pyx_GOTREF(__pyx_t_3);
     __pyx_r = __pyx_t_3;
     __pyx_t_3 = 0;
@@ -12797,7 +12816,7 @@ static PyObject *__pyx_gb_13ManyBodyUtils_16ManyBodyOperator_6values_2generator7
     return __pyx_r;
     __pyx_L6_resume_from_yield:;
     __pyx_t_1 = __PYX_STD_MOVE_IF_SUPPORTED(__pyx_cur_scope->__pyx_t_0);
-    if (unlikely(!__pyx_sent_value)) __PYX_ERR(0, 326, __pyx_L1_error)
+    if (unlikely(!__pyx_sent_value)) __PYX_ERR(0, 325, __pyx_L1_error)
   }
   CYTHON_MAYBE_UNUSED_VAR(__pyx_cur_scope);
 
@@ -12821,7 +12840,7 @@ static PyObject *__pyx_gb_13ManyBodyUtils_16ManyBodyOperator_6values_2generator7
   return __pyx_r;
 }
 
-/* "ManyBodyUtils.pyx":325
+/* "ManyBodyUtils.pyx":324
  *         return (ints_to_processes(p.first) for p in self.o)
  * 
  *     def values(self):             # <<<<<<<<<<<<<<
@@ -12839,7 +12858,7 @@ static PyObject *__pyx_pf_13ManyBodyUtils_16ManyBodyOperator_45values(struct __p
   int __pyx_clineno = 0;
   __Pyx_RefNannySetupContext("values", 0);
 
-  /* "ManyBodyUtils.pyx":326
+  /* "ManyBodyUtils.pyx":325
  * 
  *     def values(self):
  *         return (p.second for p in self.o)             # <<<<<<<<<<<<<<
@@ -12847,13 +12866,13 @@ static PyObject *__pyx_pf_13ManyBodyUtils_16ManyBodyOperator_45values(struct __p
  *     def items(self):
 */
   __Pyx_XDECREF(__pyx_r);
-  __pyx_t_1 = __pyx_pf_13ManyBodyUtils_16ManyBodyOperator_6values_genexpr(NULL, __pyx_v_self->o); if (unlikely(!__pyx_t_1)) __PYX_ERR(0, 326, __pyx_L1_error)
+  __pyx_t_1 = __pyx_pf_13ManyBodyUtils_16ManyBodyOperator_6values_genexpr(NULL, __pyx_v_self->o); if (unlikely(!__pyx_t_1)) __PYX_ERR(0, 325, __pyx_L1_error)
   __Pyx_GOTREF(__pyx_t_1);
   __pyx_r = __pyx_t_1;
   __pyx_t_1 = 0;
   goto __pyx_L0;
 
-  /* "ManyBodyUtils.pyx":325
+  /* "ManyBodyUtils.pyx":324
  *         return (ints_to_processes(p.first) for p in self.o)
  * 
  *     def values(self):             # <<<<<<<<<<<<<<
@@ -12873,7 +12892,7 @@ static PyObject *__pyx_pf_13ManyBodyUtils_16ManyBodyOperator_45values(struct __p
   return __pyx_r;
 }
 
-/* "ManyBodyUtils.pyx":328
+/* "ManyBodyUtils.pyx":327
  *         return (p.second for p in self.o)
  * 
  *     def items(self):             # <<<<<<<<<<<<<<
@@ -12924,7 +12943,7 @@ PyObject *__pyx_args, PyObject *__pyx_kwds
 }
 static PyObject *__pyx_gb_13ManyBodyUtils_16ManyBodyOperator_5items_2generator8(__pyx_CoroutineObject *__pyx_generator, CYTHON_UNUSED PyThreadState *__pyx_tstate, PyObject *__pyx_sent_value); /* proto */
 
-/* "ManyBodyUtils.pyx":329
+/* "ManyBodyUtils.pyx":328
  * 
  *     def items(self):
  *         return ((ints_to_processes(p.first), p.second) for p in self.o)             # <<<<<<<<<<<<<<
@@ -12944,13 +12963,13 @@ static PyObject *__pyx_pf_13ManyBodyUtils_16ManyBodyOperator_5items_genexpr(CYTH
   if (unlikely(!__pyx_cur_scope)) {
     __pyx_cur_scope = ((struct __pyx_obj_13ManyBodyUtils___pyx_scope_struct_8_genexpr *)Py_None);
     __Pyx_INCREF(Py_None);
-    __PYX_ERR(0, 329, __pyx_L1_error)
+    __PYX_ERR(0, 328, __pyx_L1_error)
   } else {
     __Pyx_GOTREF((PyObject *)__pyx_cur_scope);
   }
   __pyx_cur_scope->__pyx_genexpr_arg_0 = __pyx_genexpr_arg_0;
   {
-    __pyx_CoroutineObject *gen = __Pyx_Generator_New((__pyx_coroutine_body_t) __pyx_gb_13ManyBodyUtils_16ManyBodyOperator_5items_2generator8, ((PyObject *)__pyx_mstate_global->__pyx_codeobj_tab[8]), (PyObject *) __pyx_cur_scope, __pyx_mstate_global->__pyx_n_u_genexpr, __pyx_mstate_global->__pyx_n_u_items_locals_genexpr, __pyx_mstate_global->__pyx_n_u_ManyBodyUtils); if (unlikely(!gen)) __PYX_ERR(0, 329, __pyx_L1_error)
+    __pyx_CoroutineObject *gen = __Pyx_Generator_New((__pyx_coroutine_body_t) __pyx_gb_13ManyBodyUtils_16ManyBodyOperator_5items_2generator8, ((PyObject *)__pyx_mstate_global->__pyx_codeobj_tab[8]), (PyObject *) __pyx_cur_scope, __pyx_mstate_global->__pyx_n_u_genexpr, __pyx_mstate_global->__pyx_n_u_items_locals_genexpr, __pyx_mstate_global->__pyx_n_u_ManyBodyUtils); if (unlikely(!gen)) __PYX_ERR(0, 328, __pyx_L1_error)
     __Pyx_DECREF(__pyx_cur_scope);
     __Pyx_RefNannyFinishContext();
     return (PyObject *) gen;
@@ -12990,22 +13009,22 @@ static PyObject *__pyx_gb_13ManyBodyUtils_16ManyBodyOperator_5items_2generator8(
   __pyx_L3_first_run:;
   if (unlikely(__pyx_sent_value != Py_None)) {
     if (unlikely(__pyx_sent_value)) PyErr_SetString(PyExc_TypeError, "can't send non-None value to a just-started generator");
-    __PYX_ERR(0, 329, __pyx_L1_error)
+    __PYX_ERR(0, 328, __pyx_L1_error)
   }
   __pyx_t_1 = __pyx_cur_scope->__pyx_genexpr_arg_0.begin();
   for (; __pyx_t_1 != __pyx_cur_scope->__pyx_genexpr_arg_0.end(); ++__pyx_t_1) {
     __pyx_t_2 = *__pyx_t_1;
     __pyx_cur_scope->__pyx_v_p = __PYX_STD_MOVE_IF_SUPPORTED(__pyx_t_2);
-    __pyx_t_3 = __pyx_f_13ManyBodyUtils_ints_to_processes(__pyx_cur_scope->__pyx_v_p.first); if (unlikely(!__pyx_t_3)) __PYX_ERR(0, 329, __pyx_L1_error)
+    __pyx_t_3 = __pyx_f_13ManyBodyUtils_ints_to_processes(__pyx_cur_scope->__pyx_v_p.first); if (unlikely(!__pyx_t_3)) __PYX_ERR(0, 328, __pyx_L1_error)
     __Pyx_GOTREF(__pyx_t_3);
-    __pyx_t_4 = __pyx_PyComplex_FromComplex(__pyx_cur_scope->__pyx_v_p.second); if (unlikely(!__pyx_t_4)) __PYX_ERR(0, 329, __pyx_L1_error)
+    __pyx_t_4 = __pyx_PyComplex_FromComplex(__pyx_cur_scope->__pyx_v_p.second); if (unlikely(!__pyx_t_4)) __PYX_ERR(0, 328, __pyx_L1_error)
     __Pyx_GOTREF(__pyx_t_4);
-    __pyx_t_5 = PyTuple_New(2); if (unlikely(!__pyx_t_5)) __PYX_ERR(0, 329, __pyx_L1_error)
+    __pyx_t_5 = PyTuple_New(2); if (unlikely(!__pyx_t_5)) __PYX_ERR(0, 328, __pyx_L1_error)
     __Pyx_GOTREF(__pyx_t_5);
     __Pyx_GIVEREF(__pyx_t_3);
-    if (__Pyx_PyTuple_SET_ITEM(__pyx_t_5, 0, __pyx_t_3) != (0)) __PYX_ERR(0, 329, __pyx_L1_error);
+    if (__Pyx_PyTuple_SET_ITEM(__pyx_t_5, 0, __pyx_t_3) != (0)) __PYX_ERR(0, 328, __pyx_L1_error);
     __Pyx_GIVEREF(__pyx_t_4);
-    if (__Pyx_PyTuple_SET_ITEM(__pyx_t_5, 1, __pyx_t_4) != (0)) __PYX_ERR(0, 329, __pyx_L1_error);
+    if (__Pyx_PyTuple_SET_ITEM(__pyx_t_5, 1, __pyx_t_4) != (0)) __PYX_ERR(0, 328, __pyx_L1_error);
     __pyx_t_3 = 0;
     __pyx_t_4 = 0;
     __pyx_r = __pyx_t_5;
@@ -13019,7 +13038,7 @@ static PyObject *__pyx_gb_13ManyBodyUtils_16ManyBodyOperator_5items_2generator8(
     return __pyx_r;
     __pyx_L6_resume_from_yield:;
     __pyx_t_1 = __PYX_STD_MOVE_IF_SUPPORTED(__pyx_cur_scope->__pyx_t_0);
-    if (unlikely(!__pyx_sent_value)) __PYX_ERR(0, 329, __pyx_L1_error)
+    if (unlikely(!__pyx_sent_value)) __PYX_ERR(0, 328, __pyx_L1_error)
   }
   CYTHON_MAYBE_UNUSED_VAR(__pyx_cur_scope);
 
@@ -13045,7 +13064,7 @@ static PyObject *__pyx_gb_13ManyBodyUtils_16ManyBodyOperator_5items_2generator8(
   return __pyx_r;
 }
 
-/* "ManyBodyUtils.pyx":328
+/* "ManyBodyUtils.pyx":327
  *         return (p.second for p in self.o)
  * 
  *     def items(self):             # <<<<<<<<<<<<<<
@@ -13063,7 +13082,7 @@ static PyObject *__pyx_pf_13ManyBodyUtils_16ManyBodyOperator_47items(struct __py
   int __pyx_clineno = 0;
   __Pyx_RefNannySetupContext("items", 0);
 
-  /* "ManyBodyUtils.pyx":329
+  /* "ManyBodyUtils.pyx":328
  * 
  *     def items(self):
  *         return ((ints_to_processes(p.first), p.second) for p in self.o)             # <<<<<<<<<<<<<<
@@ -13071,13 +13090,13 @@ static PyObject *__pyx_pf_13ManyBodyUtils_16ManyBodyOperator_47items(struct __py
  * 
 */
   __Pyx_XDECREF(__pyx_r);
-  __pyx_t_1 = __pyx_pf_13ManyBodyUtils_16ManyBodyOperator_5items_genexpr(NULL, __pyx_v_self->o); if (unlikely(!__pyx_t_1)) __PYX_ERR(0, 329, __pyx_L1_error)
+  __pyx_t_1 = __pyx_pf_13ManyBodyUtils_16ManyBodyOperator_5items_genexpr(NULL, __pyx_v_self->o); if (unlikely(!__pyx_t_1)) __PYX_ERR(0, 328, __pyx_L1_error)
   __Pyx_GOTREF(__pyx_t_1);
   __pyx_r = __pyx_t_1;
   __pyx_t_1 = 0;
   goto __pyx_L0;
 
-  /* "ManyBodyUtils.pyx":328
+  /* "ManyBodyUtils.pyx":327
  *         return (p.second for p in self.o)
  * 
  *     def items(self):             # <<<<<<<<<<<<<<
@@ -13097,7 +13116,7 @@ static PyObject *__pyx_pf_13ManyBodyUtils_16ManyBodyOperator_47items(struct __py
   return __pyx_r;
 }
 
-/* "ManyBodyUtils.pyx":332
+/* "ManyBodyUtils.pyx":331
  * 
  * 
  *     def to_dict(self):             # <<<<<<<<<<<<<<
@@ -13148,7 +13167,7 @@ PyObject *__pyx_args, PyObject *__pyx_kwds
 }
 static PyObject *__pyx_gb_13ManyBodyUtils_16ManyBodyOperator_7to_dict_2generator9(__pyx_CoroutineObject *__pyx_generator, CYTHON_UNUSED PyThreadState *__pyx_tstate, PyObject *__pyx_sent_value); /* proto */
 
-/* "ManyBodyUtils.pyx":333
+/* "ManyBodyUtils.pyx":332
  * 
  *     def to_dict(self):
  *         return dict((ints_to_processes(p.first), p.second) for p in self.o)             # <<<<<<<<<<<<<<
@@ -13168,13 +13187,13 @@ static PyObject *__pyx_pf_13ManyBodyUtils_16ManyBodyOperator_7to_dict_genexpr(CY
   if (unlikely(!__pyx_cur_scope)) {
     __pyx_cur_scope = ((struct __pyx_obj_13ManyBodyUtils___pyx_scope_struct_9_genexpr *)Py_None);
     __Pyx_INCREF(Py_None);
-    __PYX_ERR(0, 333, __pyx_L1_error)
+    __PYX_ERR(0, 332, __pyx_L1_error)
   } else {
     __Pyx_GOTREF((PyObject *)__pyx_cur_scope);
   }
   __pyx_cur_scope->__pyx_genexpr_arg_0 = __pyx_genexpr_arg_0;
   {
-    __pyx_CoroutineObject *gen = __Pyx_Generator_New((__pyx_coroutine_body_t) __pyx_gb_13ManyBodyUtils_16ManyBodyOperator_7to_dict_2generator9, ((PyObject *)__pyx_mstate_global->__pyx_codeobj_tab[9]), (PyObject *) __pyx_cur_scope, __pyx_mstate_global->__pyx_n_u_genexpr, __pyx_mstate_global->__pyx_n_u_to_dict_locals_genexpr, __pyx_mstate_global->__pyx_n_u_ManyBodyUtils); if (unlikely(!gen)) __PYX_ERR(0, 333, __pyx_L1_error)
+    __pyx_CoroutineObject *gen = __Pyx_Generator_New((__pyx_coroutine_body_t) __pyx_gb_13ManyBodyUtils_16ManyBodyOperator_7to_dict_2generator9, ((PyObject *)__pyx_mstate_global->__pyx_codeobj_tab[9]), (PyObject *) __pyx_cur_scope, __pyx_mstate_global->__pyx_n_u_genexpr, __pyx_mstate_global->__pyx_n_u_to_dict_locals_genexpr, __pyx_mstate_global->__pyx_n_u_ManyBodyUtils); if (unlikely(!gen)) __PYX_ERR(0, 332, __pyx_L1_error)
     __Pyx_DECREF(__pyx_cur_scope);
     __Pyx_RefNannyFinishContext();
     return (PyObject *) gen;
@@ -13210,18 +13229,18 @@ static PyObject *__pyx_gb_13ManyBodyUtils_16ManyBodyOperator_7to_dict_2generator
     return NULL;
   }
   __pyx_L3_first_run:;
-  if (unlikely(!__pyx_sent_value)) __PYX_ERR(0, 333, __pyx_L1_error)
-  __pyx_r = PyDict_New(); if (unlikely(!__pyx_r)) __PYX_ERR(0, 333, __pyx_L1_error)
+  if (unlikely(!__pyx_sent_value)) __PYX_ERR(0, 332, __pyx_L1_error)
+  __pyx_r = PyDict_New(); if (unlikely(!__pyx_r)) __PYX_ERR(0, 332, __pyx_L1_error)
   __Pyx_GOTREF(__pyx_r);
   __pyx_t_1 = __pyx_cur_scope->__pyx_genexpr_arg_0.begin();
   for (; __pyx_t_1 != __pyx_cur_scope->__pyx_genexpr_arg_0.end(); ++__pyx_t_1) {
     __pyx_t_2 = *__pyx_t_1;
     __pyx_cur_scope->__pyx_v_p = __PYX_STD_MOVE_IF_SUPPORTED(__pyx_t_2);
-    __pyx_t_3 = __pyx_f_13ManyBodyUtils_ints_to_processes(__pyx_cur_scope->__pyx_v_p.first); if (unlikely(!__pyx_t_3)) __PYX_ERR(0, 333, __pyx_L1_error)
+    __pyx_t_3 = __pyx_f_13ManyBodyUtils_ints_to_processes(__pyx_cur_scope->__pyx_v_p.first); if (unlikely(!__pyx_t_3)) __PYX_ERR(0, 332, __pyx_L1_error)
     __Pyx_GOTREF(__pyx_t_3);
-    __pyx_t_4 = __pyx_PyComplex_FromComplex(__pyx_cur_scope->__pyx_v_p.second); if (unlikely(!__pyx_t_4)) __PYX_ERR(0, 333, __pyx_L1_error)
+    __pyx_t_4 = __pyx_PyComplex_FromComplex(__pyx_cur_scope->__pyx_v_p.second); if (unlikely(!__pyx_t_4)) __PYX_ERR(0, 332, __pyx_L1_error)
     __Pyx_GOTREF(__pyx_t_4);
-    if (unlikely(PyDict_SetItem(__pyx_r, (PyObject*)__pyx_t_3, (PyObject*)__pyx_t_4))) __PYX_ERR(0, 333, __pyx_L1_error)
+    if (unlikely(PyDict_SetItem(__pyx_r, (PyObject*)__pyx_t_3, (PyObject*)__pyx_t_4))) __PYX_ERR(0, 332, __pyx_L1_error)
     __Pyx_DECREF(__pyx_t_3); __pyx_t_3 = 0;
     __Pyx_DECREF(__pyx_t_4); __pyx_t_4 = 0;
   }
@@ -13248,7 +13267,7 @@ static PyObject *__pyx_gb_13ManyBodyUtils_16ManyBodyOperator_7to_dict_2generator
   return __pyx_r;
 }
 
-/* "ManyBodyUtils.pyx":332
+/* "ManyBodyUtils.pyx":331
  * 
  * 
  *     def to_dict(self):             # <<<<<<<<<<<<<<
@@ -13267,7 +13286,7 @@ static PyObject *__pyx_pf_13ManyBodyUtils_16ManyBodyOperator_49to_dict(struct __
   int __pyx_clineno = 0;
   __Pyx_RefNannySetupContext("to_dict", 0);
 
-  /* "ManyBodyUtils.pyx":333
+  /* "ManyBodyUtils.pyx":332
  * 
  *     def to_dict(self):
  *         return dict((ints_to_processes(p.first), p.second) for p in self.o)             # <<<<<<<<<<<<<<
@@ -13275,16 +13294,16 @@ static PyObject *__pyx_pf_13ManyBodyUtils_16ManyBodyOperator_49to_dict(struct __
  * 
 */
   __Pyx_XDECREF(__pyx_r);
-  __pyx_t_1 = __pyx_pf_13ManyBodyUtils_16ManyBodyOperator_7to_dict_genexpr(NULL, __pyx_v_self->o); if (unlikely(!__pyx_t_1)) __PYX_ERR(0, 333, __pyx_L1_error)
+  __pyx_t_1 = __pyx_pf_13ManyBodyUtils_16ManyBodyOperator_7to_dict_genexpr(NULL, __pyx_v_self->o); if (unlikely(!__pyx_t_1)) __PYX_ERR(0, 332, __pyx_L1_error)
   __Pyx_GOTREF(__pyx_t_1);
-  __pyx_t_2 = __Pyx_Generator_GetInlinedResult(__pyx_t_1); if (unlikely(!__pyx_t_2)) __PYX_ERR(0, 333, __pyx_L1_error)
+  __pyx_t_2 = __Pyx_Generator_GetInlinedResult(__pyx_t_1); if (unlikely(!__pyx_t_2)) __PYX_ERR(0, 332, __pyx_L1_error)
   __Pyx_GOTREF(__pyx_t_2);
   __Pyx_DECREF(__pyx_t_1); __pyx_t_1 = 0;
   __pyx_r = __pyx_t_2;
   __pyx_t_2 = 0;
   goto __pyx_L0;
 
-  /* "ManyBodyUtils.pyx":332
+  /* "ManyBodyUtils.pyx":331
  * 
  * 
  *     def to_dict(self):             # <<<<<<<<<<<<<<
@@ -13305,7 +13324,7 @@ static PyObject *__pyx_pf_13ManyBodyUtils_16ManyBodyOperator_49to_dict(struct __
   return __pyx_r;
 }
 
-/* "ManyBodyUtils.pyx":336
+/* "ManyBodyUtils.pyx":335
  * 
  * 
  * def applyOp(ManyBodyOperator op, ManyBodyState psi, double cutoff=0, dict[vector[size_t], pair[size_t, size_t]] restrictions=None) ->ManyBodyState :             # <<<<<<<<<<<<<<
@@ -13354,49 +13373,49 @@ PyObject *__pyx_args, PyObject *__pyx_kwds
   {
     PyObject ** const __pyx_pyargnames[] = {&__pyx_mstate_global->__pyx_n_u_op,&__pyx_mstate_global->__pyx_n_u_psi,&__pyx_mstate_global->__pyx_n_u_cutoff,&__pyx_mstate_global->__pyx_n_u_restrictions,0};
     const Py_ssize_t __pyx_kwds_len = (__pyx_kwds) ? __Pyx_NumKwargs_FASTCALL(__pyx_kwds) : 0;
-    if (unlikely(__pyx_kwds_len) < 0) __PYX_ERR(0, 336, __pyx_L3_error)
+    if (unlikely(__pyx_kwds_len) < 0) __PYX_ERR(0, 335, __pyx_L3_error)
     if (__pyx_kwds_len > 0) {
       switch (__pyx_nargs) {
         case  4:
         values[3] = __Pyx_ArgRef_FASTCALL(__pyx_args, 3);
-        if (!CYTHON_ASSUME_SAFE_MACROS && unlikely(!values[3])) __PYX_ERR(0, 336, __pyx_L3_error)
+        if (!CYTHON_ASSUME_SAFE_MACROS && unlikely(!values[3])) __PYX_ERR(0, 335, __pyx_L3_error)
         CYTHON_FALLTHROUGH;
         case  3:
         values[2] = __Pyx_ArgRef_FASTCALL(__pyx_args, 2);
-        if (!CYTHON_ASSUME_SAFE_MACROS && unlikely(!values[2])) __PYX_ERR(0, 336, __pyx_L3_error)
+        if (!CYTHON_ASSUME_SAFE_MACROS && unlikely(!values[2])) __PYX_ERR(0, 335, __pyx_L3_error)
         CYTHON_FALLTHROUGH;
         case  2:
         values[1] = __Pyx_ArgRef_FASTCALL(__pyx_args, 1);
-        if (!CYTHON_ASSUME_SAFE_MACROS && unlikely(!values[1])) __PYX_ERR(0, 336, __pyx_L3_error)
+        if (!CYTHON_ASSUME_SAFE_MACROS && unlikely(!values[1])) __PYX_ERR(0, 335, __pyx_L3_error)
         CYTHON_FALLTHROUGH;
         case  1:
         values[0] = __Pyx_ArgRef_FASTCALL(__pyx_args, 0);
-        if (!CYTHON_ASSUME_SAFE_MACROS && unlikely(!values[0])) __PYX_ERR(0, 336, __pyx_L3_error)
+        if (!CYTHON_ASSUME_SAFE_MACROS && unlikely(!values[0])) __PYX_ERR(0, 335, __pyx_L3_error)
         CYTHON_FALLTHROUGH;
         case  0: break;
         default: goto __pyx_L5_argtuple_error;
       }
       const Py_ssize_t kwd_pos_args = __pyx_nargs;
-      if (__Pyx_ParseKeywords(__pyx_kwds, __pyx_kwvalues, __pyx_pyargnames, 0, values, kwd_pos_args, __pyx_kwds_len, "applyOp", 0) < 0) __PYX_ERR(0, 336, __pyx_L3_error)
+      if (__Pyx_ParseKeywords(__pyx_kwds, __pyx_kwvalues, __pyx_pyargnames, 0, values, kwd_pos_args, __pyx_kwds_len, "applyOp", 0) < 0) __PYX_ERR(0, 335, __pyx_L3_error)
       if (!values[3]) values[3] = __Pyx_NewRef(((PyObject*)Py_None));
       for (Py_ssize_t i = __pyx_nargs; i < 2; i++) {
-        if (unlikely(!values[i])) { __Pyx_RaiseArgtupleInvalid("applyOp", 0, 2, 4, i); __PYX_ERR(0, 336, __pyx_L3_error) }
+        if (unlikely(!values[i])) { __Pyx_RaiseArgtupleInvalid("applyOp", 0, 2, 4, i); __PYX_ERR(0, 335, __pyx_L3_error) }
       }
     } else {
       switch (__pyx_nargs) {
         case  4:
         values[3] = __Pyx_ArgRef_FASTCALL(__pyx_args, 3);
-        if (!CYTHON_ASSUME_SAFE_MACROS && unlikely(!values[3])) __PYX_ERR(0, 336, __pyx_L3_error)
+        if (!CYTHON_ASSUME_SAFE_MACROS && unlikely(!values[3])) __PYX_ERR(0, 335, __pyx_L3_error)
         CYTHON_FALLTHROUGH;
         case  3:
         values[2] = __Pyx_ArgRef_FASTCALL(__pyx_args, 2);
-        if (!CYTHON_ASSUME_SAFE_MACROS && unlikely(!values[2])) __PYX_ERR(0, 336, __pyx_L3_error)
+        if (!CYTHON_ASSUME_SAFE_MACROS && unlikely(!values[2])) __PYX_ERR(0, 335, __pyx_L3_error)
         CYTHON_FALLTHROUGH;
         case  2:
         values[1] = __Pyx_ArgRef_FASTCALL(__pyx_args, 1);
-        if (!CYTHON_ASSUME_SAFE_MACROS && unlikely(!values[1])) __PYX_ERR(0, 336, __pyx_L3_error)
+        if (!CYTHON_ASSUME_SAFE_MACROS && unlikely(!values[1])) __PYX_ERR(0, 335, __pyx_L3_error)
         values[0] = __Pyx_ArgRef_FASTCALL(__pyx_args, 0);
-        if (!CYTHON_ASSUME_SAFE_MACROS && unlikely(!values[0])) __PYX_ERR(0, 336, __pyx_L3_error)
+        if (!CYTHON_ASSUME_SAFE_MACROS && unlikely(!values[0])) __PYX_ERR(0, 335, __pyx_L3_error)
         break;
         default: goto __pyx_L5_argtuple_error;
       }
@@ -13405,7 +13424,7 @@ PyObject *__pyx_args, PyObject *__pyx_kwds
     __pyx_v_op = ((struct __pyx_obj_13ManyBodyUtils_ManyBodyOperator *)values[0]);
     __pyx_v_psi = ((struct __pyx_obj_13ManyBodyUtils_ManyBodyState *)values[1]);
     if (values[2]) {
-      __pyx_v_cutoff = __Pyx_PyFloat_AsDouble(values[2]); if (unlikely((__pyx_v_cutoff == (double)-1) && PyErr_Occurred())) __PYX_ERR(0, 336, __pyx_L3_error)
+      __pyx_v_cutoff = __Pyx_PyFloat_AsDouble(values[2]); if (unlikely((__pyx_v_cutoff == (double)-1) && PyErr_Occurred())) __PYX_ERR(0, 335, __pyx_L3_error)
     } else {
       __pyx_v_cutoff = ((double)((double)0.0));
     }
@@ -13413,7 +13432,7 @@ PyObject *__pyx_args, PyObject *__pyx_kwds
   }
   goto __pyx_L6_skip;
   __pyx_L5_argtuple_error:;
-  __Pyx_RaiseArgtupleInvalid("applyOp", 0, 2, 4, __pyx_nargs); __PYX_ERR(0, 336, __pyx_L3_error)
+  __Pyx_RaiseArgtupleInvalid("applyOp", 0, 2, 4, __pyx_nargs); __PYX_ERR(0, 335, __pyx_L3_error)
   __pyx_L6_skip:;
   goto __pyx_L4_argument_unpacking_done;
   __pyx_L3_error:;
@@ -13424,9 +13443,9 @@ PyObject *__pyx_args, PyObject *__pyx_kwds
   __Pyx_RefNannyFinishContext();
   return NULL;
   __pyx_L4_argument_unpacking_done:;
-  if (unlikely(!__Pyx_ArgTypeTest(((PyObject *)__pyx_v_op), __pyx_mstate_global->__pyx_ptype_13ManyBodyUtils_ManyBodyOperator, 1, "op", 0))) __PYX_ERR(0, 336, __pyx_L1_error)
-  if (unlikely(!__Pyx_ArgTypeTest(((PyObject *)__pyx_v_psi), __pyx_mstate_global->__pyx_ptype_13ManyBodyUtils_ManyBodyState, 1, "psi", 0))) __PYX_ERR(0, 336, __pyx_L1_error)
-  if (unlikely(!__Pyx_ArgTypeTest(((PyObject *)__pyx_v_restrictions), (&PyDict_Type), 1, "restrictions", 1))) __PYX_ERR(0, 336, __pyx_L1_error)
+  if (unlikely(!__Pyx_ArgTypeTest(((PyObject *)__pyx_v_op), __pyx_mstate_global->__pyx_ptype_13ManyBodyUtils_ManyBodyOperator, 1, "op", 0))) __PYX_ERR(0, 335, __pyx_L1_error)
+  if (unlikely(!__Pyx_ArgTypeTest(((PyObject *)__pyx_v_psi), __pyx_mstate_global->__pyx_ptype_13ManyBodyUtils_ManyBodyState, 1, "psi", 0))) __PYX_ERR(0, 335, __pyx_L1_error)
+  if (unlikely(!__Pyx_ArgTypeTest(((PyObject *)__pyx_v_restrictions), (&PyDict_Type), 1, "restrictions", 1))) __PYX_ERR(0, 335, __pyx_L1_error)
   __pyx_r = __pyx_pf_13ManyBodyUtils_2applyOp(__pyx_self, __pyx_v_op, __pyx_v_psi, __pyx_v_cutoff, __pyx_v_restrictions);
 
   /* function exit code */
@@ -13459,7 +13478,7 @@ static struct __pyx_obj_13ManyBodyUtils_ManyBodyState *__pyx_pf_13ManyBodyUtils_
   int __pyx_clineno = 0;
   __Pyx_RefNannySetupContext("applyOp", 0);
 
-  /* "ManyBodyUtils.pyx":337
+  /* "ManyBodyUtils.pyx":336
  * 
  * def applyOp(ManyBodyOperator op, ManyBodyState psi, double cutoff=0, dict[vector[size_t], pair[size_t, size_t]] restrictions=None) ->ManyBodyState :
  *     return op(psi, cutoff, restrictions)             # <<<<<<<<<<<<<<
@@ -13468,7 +13487,7 @@ static struct __pyx_obj_13ManyBodyUtils_ManyBodyState *__pyx_pf_13ManyBodyUtils_
   __pyx_t_2 = NULL;
   __Pyx_INCREF((PyObject *)__pyx_v_op);
   __pyx_t_3 = ((PyObject *)__pyx_v_op); 
-  __pyx_t_4 = PyFloat_FromDouble(__pyx_v_cutoff); if (unlikely(!__pyx_t_4)) __PYX_ERR(0, 337, __pyx_L1_error)
+  __pyx_t_4 = PyFloat_FromDouble(__pyx_v_cutoff); if (unlikely(!__pyx_t_4)) __PYX_ERR(0, 336, __pyx_L1_error)
   __Pyx_GOTREF(__pyx_t_4);
   __pyx_t_5 = 1;
   #if CYTHON_UNPACK_METHODS
@@ -13488,15 +13507,15 @@ static struct __pyx_obj_13ManyBodyUtils_ManyBodyState *__pyx_pf_13ManyBodyUtils_
     __Pyx_XDECREF(__pyx_t_2); __pyx_t_2 = 0;
     __Pyx_DECREF(__pyx_t_4); __pyx_t_4 = 0;
     __Pyx_DECREF(__pyx_t_3); __pyx_t_3 = 0;
-    if (unlikely(!__pyx_t_1)) __PYX_ERR(0, 337, __pyx_L1_error)
+    if (unlikely(!__pyx_t_1)) __PYX_ERR(0, 336, __pyx_L1_error)
     __Pyx_GOTREF(__pyx_t_1);
   }
-  if (!(likely(((__pyx_t_1) == Py_None) || likely(__Pyx_TypeTest(__pyx_t_1, __pyx_mstate_global->__pyx_ptype_13ManyBodyUtils_ManyBodyState))))) __PYX_ERR(0, 337, __pyx_L1_error)
+  if (!(likely(((__pyx_t_1) == Py_None) || likely(__Pyx_TypeTest(__pyx_t_1, __pyx_mstate_global->__pyx_ptype_13ManyBodyUtils_ManyBodyState))))) __PYX_ERR(0, 336, __pyx_L1_error)
   __pyx_r = ((struct __pyx_obj_13ManyBodyUtils_ManyBodyState *)__pyx_t_1);
   __pyx_t_1 = 0;
   goto __pyx_L0;
 
-  /* "ManyBodyUtils.pyx":336
+  /* "ManyBodyUtils.pyx":335
  * 
  * 
  * def applyOp(ManyBodyOperator op, ManyBodyState psi, double cutoff=0, dict[vector[size_t], pair[size_t, size_t]] restrictions=None) ->ManyBodyState :             # <<<<<<<<<<<<<<
@@ -15907,49 +15926,49 @@ static int __Pyx_modinit_type_init_code(__pyx_mstatetype *__pyx_mstate) {
   __Pyx_RefNannySetupContext("__Pyx_modinit_type_init_code", 0);
   /*--- Type init code ---*/
   #if CYTHON_USE_TYPE_SPECS
-  __pyx_mstate->__pyx_ptype_13ManyBodyUtils_ManyBodyState = (PyTypeObject *) __Pyx_PyType_FromModuleAndSpec(__pyx_m, &__pyx_type_13ManyBodyUtils_ManyBodyState_spec, NULL); if (unlikely(!__pyx_mstate->__pyx_ptype_13ManyBodyUtils_ManyBodyState)) __PYX_ERR(0, 35, __pyx_L1_error)
-  if (__Pyx_fix_up_extension_type_from_spec(&__pyx_type_13ManyBodyUtils_ManyBodyState_spec, __pyx_mstate->__pyx_ptype_13ManyBodyUtils_ManyBodyState) < 0) __PYX_ERR(0, 35, __pyx_L1_error)
+  __pyx_mstate->__pyx_ptype_13ManyBodyUtils_ManyBodyState = (PyTypeObject *) __Pyx_PyType_FromModuleAndSpec(__pyx_m, &__pyx_type_13ManyBodyUtils_ManyBodyState_spec, NULL); if (unlikely(!__pyx_mstate->__pyx_ptype_13ManyBodyUtils_ManyBodyState)) __PYX_ERR(0, 34, __pyx_L1_error)
+  if (__Pyx_fix_up_extension_type_from_spec(&__pyx_type_13ManyBodyUtils_ManyBodyState_spec, __pyx_mstate->__pyx_ptype_13ManyBodyUtils_ManyBodyState) < 0) __PYX_ERR(0, 34, __pyx_L1_error)
   #else
   __pyx_mstate->__pyx_ptype_13ManyBodyUtils_ManyBodyState = &__pyx_type_13ManyBodyUtils_ManyBodyState;
   #endif
   #if !CYTHON_COMPILING_IN_LIMITED_API
   #endif
   #if !CYTHON_USE_TYPE_SPECS
-  if (__Pyx_PyType_Ready(__pyx_mstate->__pyx_ptype_13ManyBodyUtils_ManyBodyState) < 0) __PYX_ERR(0, 35, __pyx_L1_error)
+  if (__Pyx_PyType_Ready(__pyx_mstate->__pyx_ptype_13ManyBodyUtils_ManyBodyState) < 0) __PYX_ERR(0, 34, __pyx_L1_error)
   #endif
   #if !CYTHON_COMPILING_IN_LIMITED_API
   if ((CYTHON_USE_TYPE_SLOTS && CYTHON_USE_PYTYPE_LOOKUP) && likely(!__pyx_mstate->__pyx_ptype_13ManyBodyUtils_ManyBodyState->tp_dictoffset && __pyx_mstate->__pyx_ptype_13ManyBodyUtils_ManyBodyState->tp_getattro == PyObject_GenericGetAttr)) {
     __pyx_mstate->__pyx_ptype_13ManyBodyUtils_ManyBodyState->tp_getattro = PyObject_GenericGetAttr;
   }
   #endif
-  if (PyObject_SetAttr(__pyx_m, __pyx_mstate_global->__pyx_n_u_ManyBodyState_2, (PyObject *) __pyx_mstate->__pyx_ptype_13ManyBodyUtils_ManyBodyState) < 0) __PYX_ERR(0, 35, __pyx_L1_error)
+  if (PyObject_SetAttr(__pyx_m, __pyx_mstate_global->__pyx_n_u_ManyBodyState_2, (PyObject *) __pyx_mstate->__pyx_ptype_13ManyBodyUtils_ManyBodyState) < 0) __PYX_ERR(0, 34, __pyx_L1_error)
   #if CYTHON_USE_TYPE_SPECS
-  __pyx_mstate->__pyx_ptype_13ManyBodyUtils_ManyBodyOperator = (PyTypeObject *) __Pyx_PyType_FromModuleAndSpec(__pyx_m, &__pyx_type_13ManyBodyUtils_ManyBodyOperator_spec, NULL); if (unlikely(!__pyx_mstate->__pyx_ptype_13ManyBodyUtils_ManyBodyOperator)) __PYX_ERR(0, 206, __pyx_L1_error)
-  if (__Pyx_fix_up_extension_type_from_spec(&__pyx_type_13ManyBodyUtils_ManyBodyOperator_spec, __pyx_mstate->__pyx_ptype_13ManyBodyUtils_ManyBodyOperator) < 0) __PYX_ERR(0, 206, __pyx_L1_error)
+  __pyx_mstate->__pyx_ptype_13ManyBodyUtils_ManyBodyOperator = (PyTypeObject *) __Pyx_PyType_FromModuleAndSpec(__pyx_m, &__pyx_type_13ManyBodyUtils_ManyBodyOperator_spec, NULL); if (unlikely(!__pyx_mstate->__pyx_ptype_13ManyBodyUtils_ManyBodyOperator)) __PYX_ERR(0, 205, __pyx_L1_error)
+  if (__Pyx_fix_up_extension_type_from_spec(&__pyx_type_13ManyBodyUtils_ManyBodyOperator_spec, __pyx_mstate->__pyx_ptype_13ManyBodyUtils_ManyBodyOperator) < 0) __PYX_ERR(0, 205, __pyx_L1_error)
   #else
   __pyx_mstate->__pyx_ptype_13ManyBodyUtils_ManyBodyOperator = &__pyx_type_13ManyBodyUtils_ManyBodyOperator;
   #endif
   #if !CYTHON_COMPILING_IN_LIMITED_API
   #endif
   #if !CYTHON_USE_TYPE_SPECS
-  if (__Pyx_PyType_Ready(__pyx_mstate->__pyx_ptype_13ManyBodyUtils_ManyBodyOperator) < 0) __PYX_ERR(0, 206, __pyx_L1_error)
+  if (__Pyx_PyType_Ready(__pyx_mstate->__pyx_ptype_13ManyBodyUtils_ManyBodyOperator) < 0) __PYX_ERR(0, 205, __pyx_L1_error)
   #endif
   #if !CYTHON_COMPILING_IN_LIMITED_API
   if ((CYTHON_USE_TYPE_SLOTS && CYTHON_USE_PYTYPE_LOOKUP) && likely(!__pyx_mstate->__pyx_ptype_13ManyBodyUtils_ManyBodyOperator->tp_dictoffset && __pyx_mstate->__pyx_ptype_13ManyBodyUtils_ManyBodyOperator->tp_getattro == PyObject_GenericGetAttr)) {
     __pyx_mstate->__pyx_ptype_13ManyBodyUtils_ManyBodyOperator->tp_getattro = PyObject_GenericGetAttr;
   }
   #endif
-  if (PyObject_SetAttr(__pyx_m, __pyx_mstate_global->__pyx_n_u_ManyBodyOperator_2, (PyObject *) __pyx_mstate->__pyx_ptype_13ManyBodyUtils_ManyBodyOperator) < 0) __PYX_ERR(0, 206, __pyx_L1_error)
+  if (PyObject_SetAttr(__pyx_m, __pyx_mstate_global->__pyx_n_u_ManyBodyOperator_2, (PyObject *) __pyx_mstate->__pyx_ptype_13ManyBodyUtils_ManyBodyOperator) < 0) __PYX_ERR(0, 205, __pyx_L1_error)
   #if CYTHON_USE_TYPE_SPECS
-  __pyx_mstate->__pyx_ptype_13ManyBodyUtils___pyx_scope_struct____iter__ = (PyTypeObject *) __Pyx_PyType_FromModuleAndSpec(__pyx_m, &__pyx_type_13ManyBodyUtils___pyx_scope_struct____iter___spec, NULL); if (unlikely(!__pyx_mstate->__pyx_ptype_13ManyBodyUtils___pyx_scope_struct____iter__)) __PYX_ERR(0, 155, __pyx_L1_error)
-  if (__Pyx_fix_up_extension_type_from_spec(&__pyx_type_13ManyBodyUtils___pyx_scope_struct____iter___spec, __pyx_mstate->__pyx_ptype_13ManyBodyUtils___pyx_scope_struct____iter__) < 0) __PYX_ERR(0, 155, __pyx_L1_error)
+  __pyx_mstate->__pyx_ptype_13ManyBodyUtils___pyx_scope_struct____iter__ = (PyTypeObject *) __Pyx_PyType_FromModuleAndSpec(__pyx_m, &__pyx_type_13ManyBodyUtils___pyx_scope_struct____iter___spec, NULL); if (unlikely(!__pyx_mstate->__pyx_ptype_13ManyBodyUtils___pyx_scope_struct____iter__)) __PYX_ERR(0, 154, __pyx_L1_error)
+  if (__Pyx_fix_up_extension_type_from_spec(&__pyx_type_13ManyBodyUtils___pyx_scope_struct____iter___spec, __pyx_mstate->__pyx_ptype_13ManyBodyUtils___pyx_scope_struct____iter__) < 0) __PYX_ERR(0, 154, __pyx_L1_error)
   #else
   __pyx_mstate->__pyx_ptype_13ManyBodyUtils___pyx_scope_struct____iter__ = &__pyx_type_13ManyBodyUtils___pyx_scope_struct____iter__;
   #endif
   #if !CYTHON_COMPILING_IN_LIMITED_API
   #endif
   #if !CYTHON_USE_TYPE_SPECS
-  if (__Pyx_PyType_Ready(__pyx_mstate->__pyx_ptype_13ManyBodyUtils___pyx_scope_struct____iter__) < 0) __PYX_ERR(0, 155, __pyx_L1_error)
+  if (__Pyx_PyType_Ready(__pyx_mstate->__pyx_ptype_13ManyBodyUtils___pyx_scope_struct____iter__) < 0) __PYX_ERR(0, 154, __pyx_L1_error)
   #endif
   #if !CYTHON_COMPILING_IN_LIMITED_API
   if ((CYTHON_USE_TYPE_SLOTS && CYTHON_USE_PYTYPE_LOOKUP) && likely(!__pyx_mstate->__pyx_ptype_13ManyBodyUtils___pyx_scope_struct____iter__->tp_dictoffset && __pyx_mstate->__pyx_ptype_13ManyBodyUtils___pyx_scope_struct____iter__->tp_getattro == PyObject_GenericGetAttr)) {
@@ -15957,15 +15976,15 @@ static int __Pyx_modinit_type_init_code(__pyx_mstatetype *__pyx_mstate) {
   }
   #endif
   #if CYTHON_USE_TYPE_SPECS
-  __pyx_mstate->__pyx_ptype_13ManyBodyUtils___pyx_scope_struct_1_genexpr = (PyTypeObject *) __Pyx_PyType_FromModuleAndSpec(__pyx_m, &__pyx_type_13ManyBodyUtils___pyx_scope_struct_1_genexpr_spec, NULL); if (unlikely(!__pyx_mstate->__pyx_ptype_13ManyBodyUtils___pyx_scope_struct_1_genexpr)) __PYX_ERR(0, 160, __pyx_L1_error)
-  if (__Pyx_fix_up_extension_type_from_spec(&__pyx_type_13ManyBodyUtils___pyx_scope_struct_1_genexpr_spec, __pyx_mstate->__pyx_ptype_13ManyBodyUtils___pyx_scope_struct_1_genexpr) < 0) __PYX_ERR(0, 160, __pyx_L1_error)
+  __pyx_mstate->__pyx_ptype_13ManyBodyUtils___pyx_scope_struct_1_genexpr = (PyTypeObject *) __Pyx_PyType_FromModuleAndSpec(__pyx_m, &__pyx_type_13ManyBodyUtils___pyx_scope_struct_1_genexpr_spec, NULL); if (unlikely(!__pyx_mstate->__pyx_ptype_13ManyBodyUtils___pyx_scope_struct_1_genexpr)) __PYX_ERR(0, 159, __pyx_L1_error)
+  if (__Pyx_fix_up_extension_type_from_spec(&__pyx_type_13ManyBodyUtils___pyx_scope_struct_1_genexpr_spec, __pyx_mstate->__pyx_ptype_13ManyBodyUtils___pyx_scope_struct_1_genexpr) < 0) __PYX_ERR(0, 159, __pyx_L1_error)
   #else
   __pyx_mstate->__pyx_ptype_13ManyBodyUtils___pyx_scope_struct_1_genexpr = &__pyx_type_13ManyBodyUtils___pyx_scope_struct_1_genexpr;
   #endif
   #if !CYTHON_COMPILING_IN_LIMITED_API
   #endif
   #if !CYTHON_USE_TYPE_SPECS
-  if (__Pyx_PyType_Ready(__pyx_mstate->__pyx_ptype_13ManyBodyUtils___pyx_scope_struct_1_genexpr) < 0) __PYX_ERR(0, 160, __pyx_L1_error)
+  if (__Pyx_PyType_Ready(__pyx_mstate->__pyx_ptype_13ManyBodyUtils___pyx_scope_struct_1_genexpr) < 0) __PYX_ERR(0, 159, __pyx_L1_error)
   #endif
   #if !CYTHON_COMPILING_IN_LIMITED_API
   if ((CYTHON_USE_TYPE_SLOTS && CYTHON_USE_PYTYPE_LOOKUP) && likely(!__pyx_mstate->__pyx_ptype_13ManyBodyUtils___pyx_scope_struct_1_genexpr->tp_dictoffset && __pyx_mstate->__pyx_ptype_13ManyBodyUtils___pyx_scope_struct_1_genexpr->tp_getattro == PyObject_GenericGetAttr)) {
@@ -15973,15 +15992,15 @@ static int __Pyx_modinit_type_init_code(__pyx_mstatetype *__pyx_mstate) {
   }
   #endif
   #if CYTHON_USE_TYPE_SPECS
-  __pyx_mstate->__pyx_ptype_13ManyBodyUtils___pyx_scope_struct_2_genexpr = (PyTypeObject *) __Pyx_PyType_FromModuleAndSpec(__pyx_m, &__pyx_type_13ManyBodyUtils___pyx_scope_struct_2_genexpr_spec, NULL); if (unlikely(!__pyx_mstate->__pyx_ptype_13ManyBodyUtils___pyx_scope_struct_2_genexpr)) __PYX_ERR(0, 163, __pyx_L1_error)
-  if (__Pyx_fix_up_extension_type_from_spec(&__pyx_type_13ManyBodyUtils___pyx_scope_struct_2_genexpr_spec, __pyx_mstate->__pyx_ptype_13ManyBodyUtils___pyx_scope_struct_2_genexpr) < 0) __PYX_ERR(0, 163, __pyx_L1_error)
+  __pyx_mstate->__pyx_ptype_13ManyBodyUtils___pyx_scope_struct_2_genexpr = (PyTypeObject *) __Pyx_PyType_FromModuleAndSpec(__pyx_m, &__pyx_type_13ManyBodyUtils___pyx_scope_struct_2_genexpr_spec, NULL); if (unlikely(!__pyx_mstate->__pyx_ptype_13ManyBodyUtils___pyx_scope_struct_2_genexpr)) __PYX_ERR(0, 162, __pyx_L1_error)
+  if (__Pyx_fix_up_extension_type_from_spec(&__pyx_type_13ManyBodyUtils___pyx_scope_struct_2_genexpr_spec, __pyx_mstate->__pyx_ptype_13ManyBodyUtils___pyx_scope_struct_2_genexpr) < 0) __PYX_ERR(0, 162, __pyx_L1_error)
   #else
   __pyx_mstate->__pyx_ptype_13ManyBodyUtils___pyx_scope_struct_2_genexpr = &__pyx_type_13ManyBodyUtils___pyx_scope_struct_2_genexpr;
   #endif
   #if !CYTHON_COMPILING_IN_LIMITED_API
   #endif
   #if !CYTHON_USE_TYPE_SPECS
-  if (__Pyx_PyType_Ready(__pyx_mstate->__pyx_ptype_13ManyBodyUtils___pyx_scope_struct_2_genexpr) < 0) __PYX_ERR(0, 163, __pyx_L1_error)
+  if (__Pyx_PyType_Ready(__pyx_mstate->__pyx_ptype_13ManyBodyUtils___pyx_scope_struct_2_genexpr) < 0) __PYX_ERR(0, 162, __pyx_L1_error)
   #endif
   #if !CYTHON_COMPILING_IN_LIMITED_API
   if ((CYTHON_USE_TYPE_SLOTS && CYTHON_USE_PYTYPE_LOOKUP) && likely(!__pyx_mstate->__pyx_ptype_13ManyBodyUtils___pyx_scope_struct_2_genexpr->tp_dictoffset && __pyx_mstate->__pyx_ptype_13ManyBodyUtils___pyx_scope_struct_2_genexpr->tp_getattro == PyObject_GenericGetAttr)) {
@@ -15989,15 +16008,15 @@ static int __Pyx_modinit_type_init_code(__pyx_mstatetype *__pyx_mstate) {
   }
   #endif
   #if CYTHON_USE_TYPE_SPECS
-  __pyx_mstate->__pyx_ptype_13ManyBodyUtils___pyx_scope_struct_3_genexpr = (PyTypeObject *) __Pyx_PyType_FromModuleAndSpec(__pyx_m, &__pyx_type_13ManyBodyUtils___pyx_scope_struct_3_genexpr_spec, NULL); if (unlikely(!__pyx_mstate->__pyx_ptype_13ManyBodyUtils___pyx_scope_struct_3_genexpr)) __PYX_ERR(0, 166, __pyx_L1_error)
-  if (__Pyx_fix_up_extension_type_from_spec(&__pyx_type_13ManyBodyUtils___pyx_scope_struct_3_genexpr_spec, __pyx_mstate->__pyx_ptype_13ManyBodyUtils___pyx_scope_struct_3_genexpr) < 0) __PYX_ERR(0, 166, __pyx_L1_error)
+  __pyx_mstate->__pyx_ptype_13ManyBodyUtils___pyx_scope_struct_3_genexpr = (PyTypeObject *) __Pyx_PyType_FromModuleAndSpec(__pyx_m, &__pyx_type_13ManyBodyUtils___pyx_scope_struct_3_genexpr_spec, NULL); if (unlikely(!__pyx_mstate->__pyx_ptype_13ManyBodyUtils___pyx_scope_struct_3_genexpr)) __PYX_ERR(0, 165, __pyx_L1_error)
+  if (__Pyx_fix_up_extension_type_from_spec(&__pyx_type_13ManyBodyUtils___pyx_scope_struct_3_genexpr_spec, __pyx_mstate->__pyx_ptype_13ManyBodyUtils___pyx_scope_struct_3_genexpr) < 0) __PYX_ERR(0, 165, __pyx_L1_error)
   #else
   __pyx_mstate->__pyx_ptype_13ManyBodyUtils___pyx_scope_struct_3_genexpr = &__pyx_type_13ManyBodyUtils___pyx_scope_struct_3_genexpr;
   #endif
   #if !CYTHON_COMPILING_IN_LIMITED_API
   #endif
   #if !CYTHON_USE_TYPE_SPECS
-  if (__Pyx_PyType_Ready(__pyx_mstate->__pyx_ptype_13ManyBodyUtils___pyx_scope_struct_3_genexpr) < 0) __PYX_ERR(0, 166, __pyx_L1_error)
+  if (__Pyx_PyType_Ready(__pyx_mstate->__pyx_ptype_13ManyBodyUtils___pyx_scope_struct_3_genexpr) < 0) __PYX_ERR(0, 165, __pyx_L1_error)
   #endif
   #if !CYTHON_COMPILING_IN_LIMITED_API
   if ((CYTHON_USE_TYPE_SLOTS && CYTHON_USE_PYTYPE_LOOKUP) && likely(!__pyx_mstate->__pyx_ptype_13ManyBodyUtils___pyx_scope_struct_3_genexpr->tp_dictoffset && __pyx_mstate->__pyx_ptype_13ManyBodyUtils___pyx_scope_struct_3_genexpr->tp_getattro == PyObject_GenericGetAttr)) {
@@ -16005,15 +16024,15 @@ static int __Pyx_modinit_type_init_code(__pyx_mstatetype *__pyx_mstate) {
   }
   #endif
   #if CYTHON_USE_TYPE_SPECS
-  __pyx_mstate->__pyx_ptype_13ManyBodyUtils___pyx_scope_struct_4_genexpr = (PyTypeObject *) __Pyx_PyType_FromModuleAndSpec(__pyx_m, &__pyx_type_13ManyBodyUtils___pyx_scope_struct_4_genexpr_spec, NULL); if (unlikely(!__pyx_mstate->__pyx_ptype_13ManyBodyUtils___pyx_scope_struct_4_genexpr)) __PYX_ERR(0, 173, __pyx_L1_error)
-  if (__Pyx_fix_up_extension_type_from_spec(&__pyx_type_13ManyBodyUtils___pyx_scope_struct_4_genexpr_spec, __pyx_mstate->__pyx_ptype_13ManyBodyUtils___pyx_scope_struct_4_genexpr) < 0) __PYX_ERR(0, 173, __pyx_L1_error)
+  __pyx_mstate->__pyx_ptype_13ManyBodyUtils___pyx_scope_struct_4_genexpr = (PyTypeObject *) __Pyx_PyType_FromModuleAndSpec(__pyx_m, &__pyx_type_13ManyBodyUtils___pyx_scope_struct_4_genexpr_spec, NULL); if (unlikely(!__pyx_mstate->__pyx_ptype_13ManyBodyUtils___pyx_scope_struct_4_genexpr)) __PYX_ERR(0, 172, __pyx_L1_error)
+  if (__Pyx_fix_up_extension_type_from_spec(&__pyx_type_13ManyBodyUtils___pyx_scope_struct_4_genexpr_spec, __pyx_mstate->__pyx_ptype_13ManyBodyUtils___pyx_scope_struct_4_genexpr) < 0) __PYX_ERR(0, 172, __pyx_L1_error)
   #else
   __pyx_mstate->__pyx_ptype_13ManyBodyUtils___pyx_scope_struct_4_genexpr = &__pyx_type_13ManyBodyUtils___pyx_scope_struct_4_genexpr;
   #endif
   #if !CYTHON_COMPILING_IN_LIMITED_API
   #endif
   #if !CYTHON_USE_TYPE_SPECS
-  if (__Pyx_PyType_Ready(__pyx_mstate->__pyx_ptype_13ManyBodyUtils___pyx_scope_struct_4_genexpr) < 0) __PYX_ERR(0, 173, __pyx_L1_error)
+  if (__Pyx_PyType_Ready(__pyx_mstate->__pyx_ptype_13ManyBodyUtils___pyx_scope_struct_4_genexpr) < 0) __PYX_ERR(0, 172, __pyx_L1_error)
   #endif
   #if !CYTHON_COMPILING_IN_LIMITED_API
   if ((CYTHON_USE_TYPE_SLOTS && CYTHON_USE_PYTYPE_LOOKUP) && likely(!__pyx_mstate->__pyx_ptype_13ManyBodyUtils___pyx_scope_struct_4_genexpr->tp_dictoffset && __pyx_mstate->__pyx_ptype_13ManyBodyUtils___pyx_scope_struct_4_genexpr->tp_getattro == PyObject_GenericGetAttr)) {
@@ -16021,15 +16040,15 @@ static int __Pyx_modinit_type_init_code(__pyx_mstatetype *__pyx_mstate) {
   }
   #endif
   #if CYTHON_USE_TYPE_SPECS
-  __pyx_mstate->__pyx_ptype_13ManyBodyUtils___pyx_scope_struct_5___iter__ = (PyTypeObject *) __Pyx_PyType_FromModuleAndSpec(__pyx_m, &__pyx_type_13ManyBodyUtils___pyx_scope_struct_5___iter___spec, NULL); if (unlikely(!__pyx_mstate->__pyx_ptype_13ManyBodyUtils___pyx_scope_struct_5___iter__)) __PYX_ERR(0, 318, __pyx_L1_error)
-  if (__Pyx_fix_up_extension_type_from_spec(&__pyx_type_13ManyBodyUtils___pyx_scope_struct_5___iter___spec, __pyx_mstate->__pyx_ptype_13ManyBodyUtils___pyx_scope_struct_5___iter__) < 0) __PYX_ERR(0, 318, __pyx_L1_error)
+  __pyx_mstate->__pyx_ptype_13ManyBodyUtils___pyx_scope_struct_5___iter__ = (PyTypeObject *) __Pyx_PyType_FromModuleAndSpec(__pyx_m, &__pyx_type_13ManyBodyUtils___pyx_scope_struct_5___iter___spec, NULL); if (unlikely(!__pyx_mstate->__pyx_ptype_13ManyBodyUtils___pyx_scope_struct_5___iter__)) __PYX_ERR(0, 317, __pyx_L1_error)
+  if (__Pyx_fix_up_extension_type_from_spec(&__pyx_type_13ManyBodyUtils___pyx_scope_struct_5___iter___spec, __pyx_mstate->__pyx_ptype_13ManyBodyUtils___pyx_scope_struct_5___iter__) < 0) __PYX_ERR(0, 317, __pyx_L1_error)
   #else
   __pyx_mstate->__pyx_ptype_13ManyBodyUtils___pyx_scope_struct_5___iter__ = &__pyx_type_13ManyBodyUtils___pyx_scope_struct_5___iter__;
   #endif
   #if !CYTHON_COMPILING_IN_LIMITED_API
   #endif
   #if !CYTHON_USE_TYPE_SPECS
-  if (__Pyx_PyType_Ready(__pyx_mstate->__pyx_ptype_13ManyBodyUtils___pyx_scope_struct_5___iter__) < 0) __PYX_ERR(0, 318, __pyx_L1_error)
+  if (__Pyx_PyType_Ready(__pyx_mstate->__pyx_ptype_13ManyBodyUtils___pyx_scope_struct_5___iter__) < 0) __PYX_ERR(0, 317, __pyx_L1_error)
   #endif
   #if !CYTHON_COMPILING_IN_LIMITED_API
   if ((CYTHON_USE_TYPE_SLOTS && CYTHON_USE_PYTYPE_LOOKUP) && likely(!__pyx_mstate->__pyx_ptype_13ManyBodyUtils___pyx_scope_struct_5___iter__->tp_dictoffset && __pyx_mstate->__pyx_ptype_13ManyBodyUtils___pyx_scope_struct_5___iter__->tp_getattro == PyObject_GenericGetAttr)) {
@@ -16037,15 +16056,15 @@ static int __Pyx_modinit_type_init_code(__pyx_mstatetype *__pyx_mstate) {
   }
   #endif
   #if CYTHON_USE_TYPE_SPECS
-  __pyx_mstate->__pyx_ptype_13ManyBodyUtils___pyx_scope_struct_6_genexpr = (PyTypeObject *) __Pyx_PyType_FromModuleAndSpec(__pyx_m, &__pyx_type_13ManyBodyUtils___pyx_scope_struct_6_genexpr_spec, NULL); if (unlikely(!__pyx_mstate->__pyx_ptype_13ManyBodyUtils___pyx_scope_struct_6_genexpr)) __PYX_ERR(0, 323, __pyx_L1_error)
-  if (__Pyx_fix_up_extension_type_from_spec(&__pyx_type_13ManyBodyUtils___pyx_scope_struct_6_genexpr_spec, __pyx_mstate->__pyx_ptype_13ManyBodyUtils___pyx_scope_struct_6_genexpr) < 0) __PYX_ERR(0, 323, __pyx_L1_error)
+  __pyx_mstate->__pyx_ptype_13ManyBodyUtils___pyx_scope_struct_6_genexpr = (PyTypeObject *) __Pyx_PyType_FromModuleAndSpec(__pyx_m, &__pyx_type_13ManyBodyUtils___pyx_scope_struct_6_genexpr_spec, NULL); if (unlikely(!__pyx_mstate->__pyx_ptype_13ManyBodyUtils___pyx_scope_struct_6_genexpr)) __PYX_ERR(0, 322, __pyx_L1_error)
+  if (__Pyx_fix_up_extension_type_from_spec(&__pyx_type_13ManyBodyUtils___pyx_scope_struct_6_genexpr_spec, __pyx_mstate->__pyx_ptype_13ManyBodyUtils___pyx_scope_struct_6_genexpr) < 0) __PYX_ERR(0, 322, __pyx_L1_error)
   #else
   __pyx_mstate->__pyx_ptype_13ManyBodyUtils___pyx_scope_struct_6_genexpr = &__pyx_type_13ManyBodyUtils___pyx_scope_struct_6_genexpr;
   #endif
   #if !CYTHON_COMPILING_IN_LIMITED_API
   #endif
   #if !CYTHON_USE_TYPE_SPECS
-  if (__Pyx_PyType_Ready(__pyx_mstate->__pyx_ptype_13ManyBodyUtils___pyx_scope_struct_6_genexpr) < 0) __PYX_ERR(0, 323, __pyx_L1_error)
+  if (__Pyx_PyType_Ready(__pyx_mstate->__pyx_ptype_13ManyBodyUtils___pyx_scope_struct_6_genexpr) < 0) __PYX_ERR(0, 322, __pyx_L1_error)
   #endif
   #if !CYTHON_COMPILING_IN_LIMITED_API
   if ((CYTHON_USE_TYPE_SLOTS && CYTHON_USE_PYTYPE_LOOKUP) && likely(!__pyx_mstate->__pyx_ptype_13ManyBodyUtils___pyx_scope_struct_6_genexpr->tp_dictoffset && __pyx_mstate->__pyx_ptype_13ManyBodyUtils___pyx_scope_struct_6_genexpr->tp_getattro == PyObject_GenericGetAttr)) {
@@ -16053,15 +16072,15 @@ static int __Pyx_modinit_type_init_code(__pyx_mstatetype *__pyx_mstate) {
   }
   #endif
   #if CYTHON_USE_TYPE_SPECS
-  __pyx_mstate->__pyx_ptype_13ManyBodyUtils___pyx_scope_struct_7_genexpr = (PyTypeObject *) __Pyx_PyType_FromModuleAndSpec(__pyx_m, &__pyx_type_13ManyBodyUtils___pyx_scope_struct_7_genexpr_spec, NULL); if (unlikely(!__pyx_mstate->__pyx_ptype_13ManyBodyUtils___pyx_scope_struct_7_genexpr)) __PYX_ERR(0, 326, __pyx_L1_error)
-  if (__Pyx_fix_up_extension_type_from_spec(&__pyx_type_13ManyBodyUtils___pyx_scope_struct_7_genexpr_spec, __pyx_mstate->__pyx_ptype_13ManyBodyUtils___pyx_scope_struct_7_genexpr) < 0) __PYX_ERR(0, 326, __pyx_L1_error)
+  __pyx_mstate->__pyx_ptype_13ManyBodyUtils___pyx_scope_struct_7_genexpr = (PyTypeObject *) __Pyx_PyType_FromModuleAndSpec(__pyx_m, &__pyx_type_13ManyBodyUtils___pyx_scope_struct_7_genexpr_spec, NULL); if (unlikely(!__pyx_mstate->__pyx_ptype_13ManyBodyUtils___pyx_scope_struct_7_genexpr)) __PYX_ERR(0, 325, __pyx_L1_error)
+  if (__Pyx_fix_up_extension_type_from_spec(&__pyx_type_13ManyBodyUtils___pyx_scope_struct_7_genexpr_spec, __pyx_mstate->__pyx_ptype_13ManyBodyUtils___pyx_scope_struct_7_genexpr) < 0) __PYX_ERR(0, 325, __pyx_L1_error)
   #else
   __pyx_mstate->__pyx_ptype_13ManyBodyUtils___pyx_scope_struct_7_genexpr = &__pyx_type_13ManyBodyUtils___pyx_scope_struct_7_genexpr;
   #endif
   #if !CYTHON_COMPILING_IN_LIMITED_API
   #endif
   #if !CYTHON_USE_TYPE_SPECS
-  if (__Pyx_PyType_Ready(__pyx_mstate->__pyx_ptype_13ManyBodyUtils___pyx_scope_struct_7_genexpr) < 0) __PYX_ERR(0, 326, __pyx_L1_error)
+  if (__Pyx_PyType_Ready(__pyx_mstate->__pyx_ptype_13ManyBodyUtils___pyx_scope_struct_7_genexpr) < 0) __PYX_ERR(0, 325, __pyx_L1_error)
   #endif
   #if !CYTHON_COMPILING_IN_LIMITED_API
   if ((CYTHON_USE_TYPE_SLOTS && CYTHON_USE_PYTYPE_LOOKUP) && likely(!__pyx_mstate->__pyx_ptype_13ManyBodyUtils___pyx_scope_struct_7_genexpr->tp_dictoffset && __pyx_mstate->__pyx_ptype_13ManyBodyUtils___pyx_scope_struct_7_genexpr->tp_getattro == PyObject_GenericGetAttr)) {
@@ -16069,15 +16088,15 @@ static int __Pyx_modinit_type_init_code(__pyx_mstatetype *__pyx_mstate) {
   }
   #endif
   #if CYTHON_USE_TYPE_SPECS
-  __pyx_mstate->__pyx_ptype_13ManyBodyUtils___pyx_scope_struct_8_genexpr = (PyTypeObject *) __Pyx_PyType_FromModuleAndSpec(__pyx_m, &__pyx_type_13ManyBodyUtils___pyx_scope_struct_8_genexpr_spec, NULL); if (unlikely(!__pyx_mstate->__pyx_ptype_13ManyBodyUtils___pyx_scope_struct_8_genexpr)) __PYX_ERR(0, 329, __pyx_L1_error)
-  if (__Pyx_fix_up_extension_type_from_spec(&__pyx_type_13ManyBodyUtils___pyx_scope_struct_8_genexpr_spec, __pyx_mstate->__pyx_ptype_13ManyBodyUtils___pyx_scope_struct_8_genexpr) < 0) __PYX_ERR(0, 329, __pyx_L1_error)
+  __pyx_mstate->__pyx_ptype_13ManyBodyUtils___pyx_scope_struct_8_genexpr = (PyTypeObject *) __Pyx_PyType_FromModuleAndSpec(__pyx_m, &__pyx_type_13ManyBodyUtils___pyx_scope_struct_8_genexpr_spec, NULL); if (unlikely(!__pyx_mstate->__pyx_ptype_13ManyBodyUtils___pyx_scope_struct_8_genexpr)) __PYX_ERR(0, 328, __pyx_L1_error)
+  if (__Pyx_fix_up_extension_type_from_spec(&__pyx_type_13ManyBodyUtils___pyx_scope_struct_8_genexpr_spec, __pyx_mstate->__pyx_ptype_13ManyBodyUtils___pyx_scope_struct_8_genexpr) < 0) __PYX_ERR(0, 328, __pyx_L1_error)
   #else
   __pyx_mstate->__pyx_ptype_13ManyBodyUtils___pyx_scope_struct_8_genexpr = &__pyx_type_13ManyBodyUtils___pyx_scope_struct_8_genexpr;
   #endif
   #if !CYTHON_COMPILING_IN_LIMITED_API
   #endif
   #if !CYTHON_USE_TYPE_SPECS
-  if (__Pyx_PyType_Ready(__pyx_mstate->__pyx_ptype_13ManyBodyUtils___pyx_scope_struct_8_genexpr) < 0) __PYX_ERR(0, 329, __pyx_L1_error)
+  if (__Pyx_PyType_Ready(__pyx_mstate->__pyx_ptype_13ManyBodyUtils___pyx_scope_struct_8_genexpr) < 0) __PYX_ERR(0, 328, __pyx_L1_error)
   #endif
   #if !CYTHON_COMPILING_IN_LIMITED_API
   if ((CYTHON_USE_TYPE_SLOTS && CYTHON_USE_PYTYPE_LOOKUP) && likely(!__pyx_mstate->__pyx_ptype_13ManyBodyUtils___pyx_scope_struct_8_genexpr->tp_dictoffset && __pyx_mstate->__pyx_ptype_13ManyBodyUtils___pyx_scope_struct_8_genexpr->tp_getattro == PyObject_GenericGetAttr)) {
@@ -16085,15 +16104,15 @@ static int __Pyx_modinit_type_init_code(__pyx_mstatetype *__pyx_mstate) {
   }
   #endif
   #if CYTHON_USE_TYPE_SPECS
-  __pyx_mstate->__pyx_ptype_13ManyBodyUtils___pyx_scope_struct_9_genexpr = (PyTypeObject *) __Pyx_PyType_FromModuleAndSpec(__pyx_m, &__pyx_type_13ManyBodyUtils___pyx_scope_struct_9_genexpr_spec, NULL); if (unlikely(!__pyx_mstate->__pyx_ptype_13ManyBodyUtils___pyx_scope_struct_9_genexpr)) __PYX_ERR(0, 333, __pyx_L1_error)
-  if (__Pyx_fix_up_extension_type_from_spec(&__pyx_type_13ManyBodyUtils___pyx_scope_struct_9_genexpr_spec, __pyx_mstate->__pyx_ptype_13ManyBodyUtils___pyx_scope_struct_9_genexpr) < 0) __PYX_ERR(0, 333, __pyx_L1_error)
+  __pyx_mstate->__pyx_ptype_13ManyBodyUtils___pyx_scope_struct_9_genexpr = (PyTypeObject *) __Pyx_PyType_FromModuleAndSpec(__pyx_m, &__pyx_type_13ManyBodyUtils___pyx_scope_struct_9_genexpr_spec, NULL); if (unlikely(!__pyx_mstate->__pyx_ptype_13ManyBodyUtils___pyx_scope_struct_9_genexpr)) __PYX_ERR(0, 332, __pyx_L1_error)
+  if (__Pyx_fix_up_extension_type_from_spec(&__pyx_type_13ManyBodyUtils___pyx_scope_struct_9_genexpr_spec, __pyx_mstate->__pyx_ptype_13ManyBodyUtils___pyx_scope_struct_9_genexpr) < 0) __PYX_ERR(0, 332, __pyx_L1_error)
   #else
   __pyx_mstate->__pyx_ptype_13ManyBodyUtils___pyx_scope_struct_9_genexpr = &__pyx_type_13ManyBodyUtils___pyx_scope_struct_9_genexpr;
   #endif
   #if !CYTHON_COMPILING_IN_LIMITED_API
   #endif
   #if !CYTHON_USE_TYPE_SPECS
-  if (__Pyx_PyType_Ready(__pyx_mstate->__pyx_ptype_13ManyBodyUtils___pyx_scope_struct_9_genexpr) < 0) __PYX_ERR(0, 333, __pyx_L1_error)
+  if (__Pyx_PyType_Ready(__pyx_mstate->__pyx_ptype_13ManyBodyUtils___pyx_scope_struct_9_genexpr) < 0) __PYX_ERR(0, 332, __pyx_L1_error)
   #endif
   #if !CYTHON_COMPILING_IN_LIMITED_API
   if ((CYTHON_USE_TYPE_SLOTS && CYTHON_USE_PYTYPE_LOOKUP) && likely(!__pyx_mstate->__pyx_ptype_13ManyBodyUtils___pyx_scope_struct_9_genexpr->tp_dictoffset && __pyx_mstate->__pyx_ptype_13ManyBodyUtils___pyx_scope_struct_9_genexpr->tp_getattro == PyObject_GenericGetAttr)) {
@@ -16431,32 +16450,32 @@ __Pyx_RefNannySetupContext("PyInit_ManyBodyUtils", 0);
   if (PyDict_SetItem(__pyx_mstate_global->__pyx_d, __pyx_mstate_global->__pyx_n_u_struct, __pyx_t_2) < 0) __PYX_ERR(0, 6, __pyx_L1_error)
   __Pyx_DECREF(__pyx_t_2); __pyx_t_2 = 0;
 
-  /* "ManyBodyUtils.pyx":39
+  /* "ManyBodyUtils.pyx":38
  *     cdef ManyBodyState_cpp v
  * 
  *     def __cinit__(self, dict[bytes, complex] psi={}):             # <<<<<<<<<<<<<<
  *         cdef vector[ManyBodyState_cpp.key_type] keys
  *         cdef vector[double complex] amplitudes
 */
-  __pyx_t_2 = __Pyx_PyDict_NewPresized(0); if (unlikely(!__pyx_t_2)) __PYX_ERR(0, 39, __pyx_L1_error)
+  __pyx_t_2 = __Pyx_PyDict_NewPresized(0); if (unlikely(!__pyx_t_2)) __PYX_ERR(0, 38, __pyx_L1_error)
   __Pyx_GOTREF(__pyx_t_2);
   __pyx_mstate_global->__pyx_k__2 = ((PyObject*)__pyx_t_2);
   __Pyx_GIVEREF(__pyx_t_2);
   __pyx_t_2 = 0;
 
-  /* "ManyBodyUtils.pyx":51
+  /* "ManyBodyUtils.pyx":50
  *             self.v = ManyBodyState_cpp(keys, amplitudes)
  * 
  *     def __reduce__(self):             # <<<<<<<<<<<<<<
  *         return (self.__class__, (self.to_dict(), ))
  * 
 */
-  __pyx_t_2 = __Pyx_CyFunction_New(&__pyx_mdef_13ManyBodyUtils_13ManyBodyState_3__reduce__, __Pyx_CYFUNCTION_CCLASS, __pyx_mstate_global->__pyx_n_u_ManyBodyState___reduce, NULL, __pyx_mstate_global->__pyx_n_u_ManyBodyUtils, __pyx_mstate_global->__pyx_d, ((PyObject *)__pyx_mstate_global->__pyx_codeobj_tab[10])); if (unlikely(!__pyx_t_2)) __PYX_ERR(0, 51, __pyx_L1_error)
+  __pyx_t_2 = __Pyx_CyFunction_New(&__pyx_mdef_13ManyBodyUtils_13ManyBodyState_3__reduce__, __Pyx_CYFUNCTION_CCLASS, __pyx_mstate_global->__pyx_n_u_ManyBodyState___reduce, NULL, __pyx_mstate_global->__pyx_n_u_ManyBodyUtils, __pyx_mstate_global->__pyx_d, ((PyObject *)__pyx_mstate_global->__pyx_codeobj_tab[10])); if (unlikely(!__pyx_t_2)) __PYX_ERR(0, 50, __pyx_L1_error)
   __Pyx_GOTREF(__pyx_t_2);
-  if (__Pyx_SetItemOnTypeDict(__pyx_mstate_global->__pyx_ptype_13ManyBodyUtils_ManyBodyState, __pyx_mstate_global->__pyx_n_u_reduce, __pyx_t_2) < 0) __PYX_ERR(0, 51, __pyx_L1_error)
+  if (__Pyx_SetItemOnTypeDict(__pyx_mstate_global->__pyx_ptype_13ManyBodyUtils_ManyBodyState, __pyx_mstate_global->__pyx_n_u_reduce, __pyx_t_2) < 0) __PYX_ERR(0, 50, __pyx_L1_error)
   __Pyx_DECREF(__pyx_t_2); __pyx_t_2 = 0;
 
-  /* "ManyBodyUtils.pyx":118
+  /* "ManyBodyUtils.pyx":117
  *         self.v[bytes_to_key(key)] = value
  * 
  *     def get(self, bytes key, double complex default = 0):             # <<<<<<<<<<<<<<
@@ -16465,280 +16484,280 @@ __Pyx_RefNannySetupContext("PyInit_ManyBodyUtils", 0);
 */
   __pyx_mstate_global->__pyx_k__6 = __pyx_t_double_complex_from_parts(0, 0);
   __pyx_t_3 = __pyx_t_double_complex_from_parts(0, 0);
-  __pyx_t_2 = __pyx_PyComplex_FromComplex(__pyx_t_3); if (unlikely(!__pyx_t_2)) __PYX_ERR(0, 118, __pyx_L1_error)
+  __pyx_t_2 = __pyx_PyComplex_FromComplex(__pyx_t_3); if (unlikely(!__pyx_t_2)) __PYX_ERR(0, 117, __pyx_L1_error)
   __Pyx_GOTREF(__pyx_t_2);
-  __pyx_t_4 = PyTuple_Pack(1, __pyx_t_2); if (unlikely(!__pyx_t_4)) __PYX_ERR(0, 118, __pyx_L1_error)
+  __pyx_t_4 = PyTuple_Pack(1, __pyx_t_2); if (unlikely(!__pyx_t_4)) __PYX_ERR(0, 117, __pyx_L1_error)
   __Pyx_GOTREF(__pyx_t_4);
   __Pyx_DECREF(__pyx_t_2); __pyx_t_2 = 0;
-  __pyx_t_2 = __Pyx_CyFunction_New(&__pyx_mdef_13ManyBodyUtils_13ManyBodyState_31get, __Pyx_CYFUNCTION_CCLASS, __pyx_mstate_global->__pyx_n_u_ManyBodyState_get, NULL, __pyx_mstate_global->__pyx_n_u_ManyBodyUtils, __pyx_mstate_global->__pyx_d, ((PyObject *)__pyx_mstate_global->__pyx_codeobj_tab[11])); if (unlikely(!__pyx_t_2)) __PYX_ERR(0, 118, __pyx_L1_error)
+  __pyx_t_2 = __Pyx_CyFunction_New(&__pyx_mdef_13ManyBodyUtils_13ManyBodyState_31get, __Pyx_CYFUNCTION_CCLASS, __pyx_mstate_global->__pyx_n_u_ManyBodyState_get, NULL, __pyx_mstate_global->__pyx_n_u_ManyBodyUtils, __pyx_mstate_global->__pyx_d, ((PyObject *)__pyx_mstate_global->__pyx_codeobj_tab[11])); if (unlikely(!__pyx_t_2)) __PYX_ERR(0, 117, __pyx_L1_error)
   __Pyx_GOTREF(__pyx_t_2);
   __Pyx_CyFunction_SetDefaultsTuple(__pyx_t_2, __pyx_t_4);
   __Pyx_DECREF(__pyx_t_4); __pyx_t_4 = 0;
-  if (__Pyx_SetItemOnTypeDict(__pyx_mstate_global->__pyx_ptype_13ManyBodyUtils_ManyBodyState, __pyx_mstate_global->__pyx_n_u_get, __pyx_t_2) < 0) __PYX_ERR(0, 118, __pyx_L1_error)
+  if (__Pyx_SetItemOnTypeDict(__pyx_mstate_global->__pyx_ptype_13ManyBodyUtils_ManyBodyState, __pyx_mstate_global->__pyx_n_u_get, __pyx_t_2) < 0) __PYX_ERR(0, 117, __pyx_L1_error)
   __Pyx_DECREF(__pyx_t_2); __pyx_t_2 = 0;
 
-  /* "ManyBodyUtils.pyx":125
+  /* "ManyBodyUtils.pyx":124
  * 
  * 
  *     def norm2(self):             # <<<<<<<<<<<<<<
  *         with nogil:
  *             res = self.v.norm2()
 */
-  __pyx_t_2 = __Pyx_CyFunction_New(&__pyx_mdef_13ManyBodyUtils_13ManyBodyState_33norm2, __Pyx_CYFUNCTION_CCLASS, __pyx_mstate_global->__pyx_n_u_ManyBodyState_norm2, NULL, __pyx_mstate_global->__pyx_n_u_ManyBodyUtils, __pyx_mstate_global->__pyx_d, ((PyObject *)__pyx_mstate_global->__pyx_codeobj_tab[12])); if (unlikely(!__pyx_t_2)) __PYX_ERR(0, 125, __pyx_L1_error)
+  __pyx_t_2 = __Pyx_CyFunction_New(&__pyx_mdef_13ManyBodyUtils_13ManyBodyState_33norm2, __Pyx_CYFUNCTION_CCLASS, __pyx_mstate_global->__pyx_n_u_ManyBodyState_norm2, NULL, __pyx_mstate_global->__pyx_n_u_ManyBodyUtils, __pyx_mstate_global->__pyx_d, ((PyObject *)__pyx_mstate_global->__pyx_codeobj_tab[12])); if (unlikely(!__pyx_t_2)) __PYX_ERR(0, 124, __pyx_L1_error)
   __Pyx_GOTREF(__pyx_t_2);
-  if (__Pyx_SetItemOnTypeDict(__pyx_mstate_global->__pyx_ptype_13ManyBodyUtils_ManyBodyState, __pyx_mstate_global->__pyx_n_u_norm2, __pyx_t_2) < 0) __PYX_ERR(0, 125, __pyx_L1_error)
+  if (__Pyx_SetItemOnTypeDict(__pyx_mstate_global->__pyx_ptype_13ManyBodyUtils_ManyBodyState, __pyx_mstate_global->__pyx_n_u_norm2, __pyx_t_2) < 0) __PYX_ERR(0, 124, __pyx_L1_error)
   __Pyx_DECREF(__pyx_t_2); __pyx_t_2 = 0;
 
-  /* "ManyBodyUtils.pyx":130
+  /* "ManyBodyUtils.pyx":129
  *         return res
  * 
  *     def norm(self):             # <<<<<<<<<<<<<<
  *         with nogil:
  *             res= self.v.norm()
 */
-  __pyx_t_2 = __Pyx_CyFunction_New(&__pyx_mdef_13ManyBodyUtils_13ManyBodyState_35norm, __Pyx_CYFUNCTION_CCLASS, __pyx_mstate_global->__pyx_n_u_ManyBodyState_norm, NULL, __pyx_mstate_global->__pyx_n_u_ManyBodyUtils, __pyx_mstate_global->__pyx_d, ((PyObject *)__pyx_mstate_global->__pyx_codeobj_tab[13])); if (unlikely(!__pyx_t_2)) __PYX_ERR(0, 130, __pyx_L1_error)
+  __pyx_t_2 = __Pyx_CyFunction_New(&__pyx_mdef_13ManyBodyUtils_13ManyBodyState_35norm, __Pyx_CYFUNCTION_CCLASS, __pyx_mstate_global->__pyx_n_u_ManyBodyState_norm, NULL, __pyx_mstate_global->__pyx_n_u_ManyBodyUtils, __pyx_mstate_global->__pyx_d, ((PyObject *)__pyx_mstate_global->__pyx_codeobj_tab[13])); if (unlikely(!__pyx_t_2)) __PYX_ERR(0, 129, __pyx_L1_error)
   __Pyx_GOTREF(__pyx_t_2);
-  if (__Pyx_SetItemOnTypeDict(__pyx_mstate_global->__pyx_ptype_13ManyBodyUtils_ManyBodyState, __pyx_mstate_global->__pyx_n_u_norm, __pyx_t_2) < 0) __PYX_ERR(0, 130, __pyx_L1_error)
+  if (__Pyx_SetItemOnTypeDict(__pyx_mstate_global->__pyx_ptype_13ManyBodyUtils_ManyBodyState, __pyx_mstate_global->__pyx_n_u_norm, __pyx_t_2) < 0) __PYX_ERR(0, 129, __pyx_L1_error)
   __Pyx_DECREF(__pyx_t_2); __pyx_t_2 = 0;
 
-  /* "ManyBodyUtils.pyx":140
+  /* "ManyBodyUtils.pyx":139
  *         return res
  * 
  *     def size(self):             # <<<<<<<<<<<<<<
  *         return len(self)
  * 
 */
-  __pyx_t_2 = __Pyx_CyFunction_New(&__pyx_mdef_13ManyBodyUtils_13ManyBodyState_39size, __Pyx_CYFUNCTION_CCLASS, __pyx_mstate_global->__pyx_n_u_ManyBodyState_size, NULL, __pyx_mstate_global->__pyx_n_u_ManyBodyUtils, __pyx_mstate_global->__pyx_d, ((PyObject *)__pyx_mstate_global->__pyx_codeobj_tab[14])); if (unlikely(!__pyx_t_2)) __PYX_ERR(0, 140, __pyx_L1_error)
+  __pyx_t_2 = __Pyx_CyFunction_New(&__pyx_mdef_13ManyBodyUtils_13ManyBodyState_39size, __Pyx_CYFUNCTION_CCLASS, __pyx_mstate_global->__pyx_n_u_ManyBodyState_size, NULL, __pyx_mstate_global->__pyx_n_u_ManyBodyUtils, __pyx_mstate_global->__pyx_d, ((PyObject *)__pyx_mstate_global->__pyx_codeobj_tab[14])); if (unlikely(!__pyx_t_2)) __PYX_ERR(0, 139, __pyx_L1_error)
   __Pyx_GOTREF(__pyx_t_2);
-  if (__Pyx_SetItemOnTypeDict(__pyx_mstate_global->__pyx_ptype_13ManyBodyUtils_ManyBodyState, __pyx_mstate_global->__pyx_n_u_size, __pyx_t_2) < 0) __PYX_ERR(0, 140, __pyx_L1_error)
+  if (__Pyx_SetItemOnTypeDict(__pyx_mstate_global->__pyx_ptype_13ManyBodyUtils_ManyBodyState, __pyx_mstate_global->__pyx_n_u_size, __pyx_t_2) < 0) __PYX_ERR(0, 139, __pyx_L1_error)
   __Pyx_DECREF(__pyx_t_2); __pyx_t_2 = 0;
 
-  /* "ManyBodyUtils.pyx":143
+  /* "ManyBodyUtils.pyx":142
  *         return len(self)
  * 
  *     def max_size(self):             # <<<<<<<<<<<<<<
  *         with nogil:
  *             res = self.v.max_size()
 */
-  __pyx_t_2 = __Pyx_CyFunction_New(&__pyx_mdef_13ManyBodyUtils_13ManyBodyState_41max_size, __Pyx_CYFUNCTION_CCLASS, __pyx_mstate_global->__pyx_n_u_ManyBodyState_max_size, NULL, __pyx_mstate_global->__pyx_n_u_ManyBodyUtils, __pyx_mstate_global->__pyx_d, ((PyObject *)__pyx_mstate_global->__pyx_codeobj_tab[15])); if (unlikely(!__pyx_t_2)) __PYX_ERR(0, 143, __pyx_L1_error)
+  __pyx_t_2 = __Pyx_CyFunction_New(&__pyx_mdef_13ManyBodyUtils_13ManyBodyState_41max_size, __Pyx_CYFUNCTION_CCLASS, __pyx_mstate_global->__pyx_n_u_ManyBodyState_max_size, NULL, __pyx_mstate_global->__pyx_n_u_ManyBodyUtils, __pyx_mstate_global->__pyx_d, ((PyObject *)__pyx_mstate_global->__pyx_codeobj_tab[15])); if (unlikely(!__pyx_t_2)) __PYX_ERR(0, 142, __pyx_L1_error)
   __Pyx_GOTREF(__pyx_t_2);
-  if (__Pyx_SetItemOnTypeDict(__pyx_mstate_global->__pyx_ptype_13ManyBodyUtils_ManyBodyState, __pyx_mstate_global->__pyx_n_u_max_size, __pyx_t_2) < 0) __PYX_ERR(0, 143, __pyx_L1_error)
+  if (__Pyx_SetItemOnTypeDict(__pyx_mstate_global->__pyx_ptype_13ManyBodyUtils_ManyBodyState, __pyx_mstate_global->__pyx_n_u_max_size, __pyx_t_2) < 0) __PYX_ERR(0, 142, __pyx_L1_error)
   __Pyx_DECREF(__pyx_t_2); __pyx_t_2 = 0;
 
-  /* "ManyBodyUtils.pyx":148
+  /* "ManyBodyUtils.pyx":147
  *         return res
  * 
  *     def erase(self, bytes key):             # <<<<<<<<<<<<<<
  *         self.v.erase(bytes_to_key(key))
  * 
 */
-  __pyx_t_2 = __Pyx_CyFunction_New(&__pyx_mdef_13ManyBodyUtils_13ManyBodyState_43erase, __Pyx_CYFUNCTION_CCLASS, __pyx_mstate_global->__pyx_n_u_ManyBodyState_erase, NULL, __pyx_mstate_global->__pyx_n_u_ManyBodyUtils, __pyx_mstate_global->__pyx_d, ((PyObject *)__pyx_mstate_global->__pyx_codeobj_tab[16])); if (unlikely(!__pyx_t_2)) __PYX_ERR(0, 148, __pyx_L1_error)
+  __pyx_t_2 = __Pyx_CyFunction_New(&__pyx_mdef_13ManyBodyUtils_13ManyBodyState_43erase, __Pyx_CYFUNCTION_CCLASS, __pyx_mstate_global->__pyx_n_u_ManyBodyState_erase, NULL, __pyx_mstate_global->__pyx_n_u_ManyBodyUtils, __pyx_mstate_global->__pyx_d, ((PyObject *)__pyx_mstate_global->__pyx_codeobj_tab[16])); if (unlikely(!__pyx_t_2)) __PYX_ERR(0, 147, __pyx_L1_error)
   __Pyx_GOTREF(__pyx_t_2);
-  if (__Pyx_SetItemOnTypeDict(__pyx_mstate_global->__pyx_ptype_13ManyBodyUtils_ManyBodyState, __pyx_mstate_global->__pyx_n_u_erase, __pyx_t_2) < 0) __PYX_ERR(0, 148, __pyx_L1_error)
+  if (__Pyx_SetItemOnTypeDict(__pyx_mstate_global->__pyx_ptype_13ManyBodyUtils_ManyBodyState, __pyx_mstate_global->__pyx_n_u_erase, __pyx_t_2) < 0) __PYX_ERR(0, 147, __pyx_L1_error)
   __Pyx_DECREF(__pyx_t_2); __pyx_t_2 = 0;
 
-  /* "ManyBodyUtils.pyx":159
+  /* "ManyBodyUtils.pyx":158
  *             yield key_to_bytes(p.first)
  * 
  *     def keys(self):             # <<<<<<<<<<<<<<
  *         return (key_to_bytes(p.first) for p in self.v)
  * 
 */
-  __pyx_t_2 = __Pyx_CyFunction_New(&__pyx_mdef_13ManyBodyUtils_13ManyBodyState_50keys, __Pyx_CYFUNCTION_CCLASS, __pyx_mstate_global->__pyx_n_u_ManyBodyState_keys, NULL, __pyx_mstate_global->__pyx_n_u_ManyBodyUtils, __pyx_mstate_global->__pyx_d, ((PyObject *)__pyx_mstate_global->__pyx_codeobj_tab[17])); if (unlikely(!__pyx_t_2)) __PYX_ERR(0, 159, __pyx_L1_error)
+  __pyx_t_2 = __Pyx_CyFunction_New(&__pyx_mdef_13ManyBodyUtils_13ManyBodyState_50keys, __Pyx_CYFUNCTION_CCLASS, __pyx_mstate_global->__pyx_n_u_ManyBodyState_keys, NULL, __pyx_mstate_global->__pyx_n_u_ManyBodyUtils, __pyx_mstate_global->__pyx_d, ((PyObject *)__pyx_mstate_global->__pyx_codeobj_tab[17])); if (unlikely(!__pyx_t_2)) __PYX_ERR(0, 158, __pyx_L1_error)
   __Pyx_GOTREF(__pyx_t_2);
-  if (__Pyx_SetItemOnTypeDict(__pyx_mstate_global->__pyx_ptype_13ManyBodyUtils_ManyBodyState, __pyx_mstate_global->__pyx_n_u_keys, __pyx_t_2) < 0) __PYX_ERR(0, 159, __pyx_L1_error)
+  if (__Pyx_SetItemOnTypeDict(__pyx_mstate_global->__pyx_ptype_13ManyBodyUtils_ManyBodyState, __pyx_mstate_global->__pyx_n_u_keys, __pyx_t_2) < 0) __PYX_ERR(0, 158, __pyx_L1_error)
   __Pyx_DECREF(__pyx_t_2); __pyx_t_2 = 0;
 
-  /* "ManyBodyUtils.pyx":162
+  /* "ManyBodyUtils.pyx":161
  *         return (key_to_bytes(p.first) for p in self.v)
  * 
  *     def values(self):             # <<<<<<<<<<<<<<
  *         return (p.second for p in self.v)
  * 
 */
-  __pyx_t_2 = __Pyx_CyFunction_New(&__pyx_mdef_13ManyBodyUtils_13ManyBodyState_52values, __Pyx_CYFUNCTION_CCLASS, __pyx_mstate_global->__pyx_n_u_ManyBodyState_values, NULL, __pyx_mstate_global->__pyx_n_u_ManyBodyUtils, __pyx_mstate_global->__pyx_d, ((PyObject *)__pyx_mstate_global->__pyx_codeobj_tab[18])); if (unlikely(!__pyx_t_2)) __PYX_ERR(0, 162, __pyx_L1_error)
+  __pyx_t_2 = __Pyx_CyFunction_New(&__pyx_mdef_13ManyBodyUtils_13ManyBodyState_52values, __Pyx_CYFUNCTION_CCLASS, __pyx_mstate_global->__pyx_n_u_ManyBodyState_values, NULL, __pyx_mstate_global->__pyx_n_u_ManyBodyUtils, __pyx_mstate_global->__pyx_d, ((PyObject *)__pyx_mstate_global->__pyx_codeobj_tab[18])); if (unlikely(!__pyx_t_2)) __PYX_ERR(0, 161, __pyx_L1_error)
   __Pyx_GOTREF(__pyx_t_2);
-  if (__Pyx_SetItemOnTypeDict(__pyx_mstate_global->__pyx_ptype_13ManyBodyUtils_ManyBodyState, __pyx_mstate_global->__pyx_n_u_values, __pyx_t_2) < 0) __PYX_ERR(0, 162, __pyx_L1_error)
+  if (__Pyx_SetItemOnTypeDict(__pyx_mstate_global->__pyx_ptype_13ManyBodyUtils_ManyBodyState, __pyx_mstate_global->__pyx_n_u_values, __pyx_t_2) < 0) __PYX_ERR(0, 161, __pyx_L1_error)
   __Pyx_DECREF(__pyx_t_2); __pyx_t_2 = 0;
 
-  /* "ManyBodyUtils.pyx":165
+  /* "ManyBodyUtils.pyx":164
  *         return (p.second for p in self.v)
  * 
  *     def items(self):             # <<<<<<<<<<<<<<
  *         return ((key_to_bytes(p.first), p.second) for p in self.v)
  * 
 */
-  __pyx_t_2 = __Pyx_CyFunction_New(&__pyx_mdef_13ManyBodyUtils_13ManyBodyState_54items, __Pyx_CYFUNCTION_CCLASS, __pyx_mstate_global->__pyx_n_u_ManyBodyState_items, NULL, __pyx_mstate_global->__pyx_n_u_ManyBodyUtils, __pyx_mstate_global->__pyx_d, ((PyObject *)__pyx_mstate_global->__pyx_codeobj_tab[19])); if (unlikely(!__pyx_t_2)) __PYX_ERR(0, 165, __pyx_L1_error)
+  __pyx_t_2 = __Pyx_CyFunction_New(&__pyx_mdef_13ManyBodyUtils_13ManyBodyState_54items, __Pyx_CYFUNCTION_CCLASS, __pyx_mstate_global->__pyx_n_u_ManyBodyState_items, NULL, __pyx_mstate_global->__pyx_n_u_ManyBodyUtils, __pyx_mstate_global->__pyx_d, ((PyObject *)__pyx_mstate_global->__pyx_codeobj_tab[19])); if (unlikely(!__pyx_t_2)) __PYX_ERR(0, 164, __pyx_L1_error)
   __Pyx_GOTREF(__pyx_t_2);
-  if (__Pyx_SetItemOnTypeDict(__pyx_mstate_global->__pyx_ptype_13ManyBodyUtils_ManyBodyState, __pyx_mstate_global->__pyx_n_u_items, __pyx_t_2) < 0) __PYX_ERR(0, 165, __pyx_L1_error)
+  if (__Pyx_SetItemOnTypeDict(__pyx_mstate_global->__pyx_ptype_13ManyBodyUtils_ManyBodyState, __pyx_mstate_global->__pyx_n_u_items, __pyx_t_2) < 0) __PYX_ERR(0, 164, __pyx_L1_error)
   __Pyx_DECREF(__pyx_t_2); __pyx_t_2 = 0;
 
-  /* "ManyBodyUtils.pyx":168
+  /* "ManyBodyUtils.pyx":167
  *         return ((key_to_bytes(p.first), p.second) for p in self.v)
  * 
  *     def prune(self, double cutoff):             # <<<<<<<<<<<<<<
  *         with nogil:
  *             self.v.prune(cutoff)
 */
-  __pyx_t_2 = __Pyx_CyFunction_New(&__pyx_mdef_13ManyBodyUtils_13ManyBodyState_56prune, __Pyx_CYFUNCTION_CCLASS, __pyx_mstate_global->__pyx_n_u_ManyBodyState_prune, NULL, __pyx_mstate_global->__pyx_n_u_ManyBodyUtils, __pyx_mstate_global->__pyx_d, ((PyObject *)__pyx_mstate_global->__pyx_codeobj_tab[20])); if (unlikely(!__pyx_t_2)) __PYX_ERR(0, 168, __pyx_L1_error)
+  __pyx_t_2 = __Pyx_CyFunction_New(&__pyx_mdef_13ManyBodyUtils_13ManyBodyState_56prune, __Pyx_CYFUNCTION_CCLASS, __pyx_mstate_global->__pyx_n_u_ManyBodyState_prune, NULL, __pyx_mstate_global->__pyx_n_u_ManyBodyUtils, __pyx_mstate_global->__pyx_d, ((PyObject *)__pyx_mstate_global->__pyx_codeobj_tab[20])); if (unlikely(!__pyx_t_2)) __PYX_ERR(0, 167, __pyx_L1_error)
   __Pyx_GOTREF(__pyx_t_2);
-  if (__Pyx_SetItemOnTypeDict(__pyx_mstate_global->__pyx_ptype_13ManyBodyUtils_ManyBodyState, __pyx_mstate_global->__pyx_n_u_prune, __pyx_t_2) < 0) __PYX_ERR(0, 168, __pyx_L1_error)
+  if (__Pyx_SetItemOnTypeDict(__pyx_mstate_global->__pyx_ptype_13ManyBodyUtils_ManyBodyState, __pyx_mstate_global->__pyx_n_u_prune, __pyx_t_2) < 0) __PYX_ERR(0, 167, __pyx_L1_error)
   __Pyx_DECREF(__pyx_t_2); __pyx_t_2 = 0;
 
-  /* "ManyBodyUtils.pyx":172
+  /* "ManyBodyUtils.pyx":171
  *             self.v.prune(cutoff)
  * 
  *     def to_dict(self):             # <<<<<<<<<<<<<<
  *         return dict((key_to_bytes(p.first), p.second) for p in self.v)
  * 
 */
-  __pyx_t_2 = __Pyx_CyFunction_New(&__pyx_mdef_13ManyBodyUtils_13ManyBodyState_58to_dict, __Pyx_CYFUNCTION_CCLASS, __pyx_mstate_global->__pyx_n_u_ManyBodyState_to_dict, NULL, __pyx_mstate_global->__pyx_n_u_ManyBodyUtils, __pyx_mstate_global->__pyx_d, ((PyObject *)__pyx_mstate_global->__pyx_codeobj_tab[21])); if (unlikely(!__pyx_t_2)) __PYX_ERR(0, 172, __pyx_L1_error)
+  __pyx_t_2 = __Pyx_CyFunction_New(&__pyx_mdef_13ManyBodyUtils_13ManyBodyState_58to_dict, __Pyx_CYFUNCTION_CCLASS, __pyx_mstate_global->__pyx_n_u_ManyBodyState_to_dict, NULL, __pyx_mstate_global->__pyx_n_u_ManyBodyUtils, __pyx_mstate_global->__pyx_d, ((PyObject *)__pyx_mstate_global->__pyx_codeobj_tab[21])); if (unlikely(!__pyx_t_2)) __PYX_ERR(0, 171, __pyx_L1_error)
   __Pyx_GOTREF(__pyx_t_2);
-  if (__Pyx_SetItemOnTypeDict(__pyx_mstate_global->__pyx_ptype_13ManyBodyUtils_ManyBodyState, __pyx_mstate_global->__pyx_n_u_to_dict, __pyx_t_2) < 0) __PYX_ERR(0, 172, __pyx_L1_error)
+  if (__Pyx_SetItemOnTypeDict(__pyx_mstate_global->__pyx_ptype_13ManyBodyUtils_ManyBodyState, __pyx_mstate_global->__pyx_n_u_to_dict, __pyx_t_2) < 0) __PYX_ERR(0, 171, __pyx_L1_error)
   __Pyx_DECREF(__pyx_t_2); __pyx_t_2 = 0;
 
-  /* "ManyBodyUtils.pyx":175
+  /* "ManyBodyUtils.pyx":174
  *         return dict((key_to_bytes(p.first), p.second) for p in self.v)
  * 
  *     def copy(self):             # <<<<<<<<<<<<<<
  *         d = self.to_dict()
  *         # return ManyBodyState(list(d.keys()),list(d.values()) )
 */
-  __pyx_t_2 = __Pyx_CyFunction_New(&__pyx_mdef_13ManyBodyUtils_13ManyBodyState_60copy, __Pyx_CYFUNCTION_CCLASS, __pyx_mstate_global->__pyx_n_u_ManyBodyState_copy, NULL, __pyx_mstate_global->__pyx_n_u_ManyBodyUtils, __pyx_mstate_global->__pyx_d, ((PyObject *)__pyx_mstate_global->__pyx_codeobj_tab[22])); if (unlikely(!__pyx_t_2)) __PYX_ERR(0, 175, __pyx_L1_error)
+  __pyx_t_2 = __Pyx_CyFunction_New(&__pyx_mdef_13ManyBodyUtils_13ManyBodyState_60copy, __Pyx_CYFUNCTION_CCLASS, __pyx_mstate_global->__pyx_n_u_ManyBodyState_copy, NULL, __pyx_mstate_global->__pyx_n_u_ManyBodyUtils, __pyx_mstate_global->__pyx_d, ((PyObject *)__pyx_mstate_global->__pyx_codeobj_tab[22])); if (unlikely(!__pyx_t_2)) __PYX_ERR(0, 174, __pyx_L1_error)
   __Pyx_GOTREF(__pyx_t_2);
-  if (__Pyx_SetItemOnTypeDict(__pyx_mstate_global->__pyx_ptype_13ManyBodyUtils_ManyBodyState, __pyx_mstate_global->__pyx_n_u_copy, __pyx_t_2) < 0) __PYX_ERR(0, 175, __pyx_L1_error)
+  if (__Pyx_SetItemOnTypeDict(__pyx_mstate_global->__pyx_ptype_13ManyBodyUtils_ManyBodyState, __pyx_mstate_global->__pyx_n_u_copy, __pyx_t_2) < 0) __PYX_ERR(0, 174, __pyx_L1_error)
   __Pyx_DECREF(__pyx_t_2); __pyx_t_2 = 0;
 
-  /* "ManyBodyUtils.pyx":180
+  /* "ManyBodyUtils.pyx":179
  *         return ManyBodyState(self.to_dict())
  * 
  * def inner(ManyBodyState a, ManyBodyState b):             # <<<<<<<<<<<<<<
  *     with nogil:
  *         res = inner_cpp(a.v, b.v)
 */
-  __pyx_t_2 = __Pyx_CyFunction_New(&__pyx_mdef_13ManyBodyUtils_1inner, 0, __pyx_mstate_global->__pyx_n_u_inner, NULL, __pyx_mstate_global->__pyx_n_u_ManyBodyUtils, __pyx_mstate_global->__pyx_d, ((PyObject *)__pyx_mstate_global->__pyx_codeobj_tab[23])); if (unlikely(!__pyx_t_2)) __PYX_ERR(0, 180, __pyx_L1_error)
+  __pyx_t_2 = __Pyx_CyFunction_New(&__pyx_mdef_13ManyBodyUtils_1inner, 0, __pyx_mstate_global->__pyx_n_u_inner, NULL, __pyx_mstate_global->__pyx_n_u_ManyBodyUtils, __pyx_mstate_global->__pyx_d, ((PyObject *)__pyx_mstate_global->__pyx_codeobj_tab[23])); if (unlikely(!__pyx_t_2)) __PYX_ERR(0, 179, __pyx_L1_error)
   __Pyx_GOTREF(__pyx_t_2);
-  if (PyDict_SetItem(__pyx_mstate_global->__pyx_d, __pyx_mstate_global->__pyx_n_u_inner, __pyx_t_2) < 0) __PYX_ERR(0, 180, __pyx_L1_error)
+  if (PyDict_SetItem(__pyx_mstate_global->__pyx_d, __pyx_mstate_global->__pyx_n_u_inner, __pyx_t_2) < 0) __PYX_ERR(0, 179, __pyx_L1_error)
   __Pyx_DECREF(__pyx_t_2); __pyx_t_2 = 0;
 
-  /* "ManyBodyUtils.pyx":209
+  /* "ManyBodyUtils.pyx":208
  *     cdef ManyBodyOperator_cpp o
  * 
  *     def __cinit__(self, dict[tuple[tuple[int, str]], complex] op={}):             # <<<<<<<<<<<<<<
  *         cdef double complex amp
  *         cdef tuple[int, str] processes
 */
-  __pyx_t_2 = __Pyx_PyDict_NewPresized(0); if (unlikely(!__pyx_t_2)) __PYX_ERR(0, 209, __pyx_L1_error)
+  __pyx_t_2 = __Pyx_PyDict_NewPresized(0); if (unlikely(!__pyx_t_2)) __PYX_ERR(0, 208, __pyx_L1_error)
   __Pyx_GOTREF(__pyx_t_2);
   __pyx_mstate_global->__pyx_k__7 = ((PyObject*)__pyx_t_2);
   __Pyx_GIVEREF(__pyx_t_2);
   __pyx_t_2 = 0;
 
-  /* "ManyBodyUtils.pyx":222
+  /* "ManyBodyUtils.pyx":221
  *             self.o = ManyBodyOperator_cpp(new_ops)
  * 
  *     def __reduce__(self):             # <<<<<<<<<<<<<<
  *         return (self.__class__, (self.to_dict(), ))
  * 
 */
-  __pyx_t_2 = __Pyx_CyFunction_New(&__pyx_mdef_13ManyBodyUtils_16ManyBodyOperator_3__reduce__, __Pyx_CYFUNCTION_CCLASS, __pyx_mstate_global->__pyx_n_u_ManyBodyOperator___reduce, NULL, __pyx_mstate_global->__pyx_n_u_ManyBodyUtils, __pyx_mstate_global->__pyx_d, ((PyObject *)__pyx_mstate_global->__pyx_codeobj_tab[24])); if (unlikely(!__pyx_t_2)) __PYX_ERR(0, 222, __pyx_L1_error)
+  __pyx_t_2 = __Pyx_CyFunction_New(&__pyx_mdef_13ManyBodyUtils_16ManyBodyOperator_3__reduce__, __Pyx_CYFUNCTION_CCLASS, __pyx_mstate_global->__pyx_n_u_ManyBodyOperator___reduce, NULL, __pyx_mstate_global->__pyx_n_u_ManyBodyUtils, __pyx_mstate_global->__pyx_d, ((PyObject *)__pyx_mstate_global->__pyx_codeobj_tab[24])); if (unlikely(!__pyx_t_2)) __PYX_ERR(0, 221, __pyx_L1_error)
   __Pyx_GOTREF(__pyx_t_2);
-  if (__Pyx_SetItemOnTypeDict(__pyx_mstate_global->__pyx_ptype_13ManyBodyUtils_ManyBodyOperator, __pyx_mstate_global->__pyx_n_u_reduce, __pyx_t_2) < 0) __PYX_ERR(0, 222, __pyx_L1_error)
+  if (__Pyx_SetItemOnTypeDict(__pyx_mstate_global->__pyx_ptype_13ManyBodyUtils_ManyBodyOperator, __pyx_mstate_global->__pyx_n_u_reduce, __pyx_t_2) < 0) __PYX_ERR(0, 221, __pyx_L1_error)
   __Pyx_DECREF(__pyx_t_2); __pyx_t_2 = 0;
 
-  /* "ManyBodyUtils.pyx":290
+  /* "ManyBodyUtils.pyx":289
  *         return res
  * 
  *     def size(self):             # <<<<<<<<<<<<<<
  *         return len(self)
  * 
 */
-  __pyx_t_2 = __Pyx_CyFunction_New(&__pyx_mdef_13ManyBodyUtils_16ManyBodyOperator_33size, __Pyx_CYFUNCTION_CCLASS, __pyx_mstate_global->__pyx_n_u_ManyBodyOperator_size, NULL, __pyx_mstate_global->__pyx_n_u_ManyBodyUtils, __pyx_mstate_global->__pyx_d, ((PyObject *)__pyx_mstate_global->__pyx_codeobj_tab[25])); if (unlikely(!__pyx_t_2)) __PYX_ERR(0, 290, __pyx_L1_error)
+  __pyx_t_2 = __Pyx_CyFunction_New(&__pyx_mdef_13ManyBodyUtils_16ManyBodyOperator_33size, __Pyx_CYFUNCTION_CCLASS, __pyx_mstate_global->__pyx_n_u_ManyBodyOperator_size, NULL, __pyx_mstate_global->__pyx_n_u_ManyBodyUtils, __pyx_mstate_global->__pyx_d, ((PyObject *)__pyx_mstate_global->__pyx_codeobj_tab[25])); if (unlikely(!__pyx_t_2)) __PYX_ERR(0, 289, __pyx_L1_error)
   __Pyx_GOTREF(__pyx_t_2);
-  if (__Pyx_SetItemOnTypeDict(__pyx_mstate_global->__pyx_ptype_13ManyBodyUtils_ManyBodyOperator, __pyx_mstate_global->__pyx_n_u_size, __pyx_t_2) < 0) __PYX_ERR(0, 290, __pyx_L1_error)
+  if (__Pyx_SetItemOnTypeDict(__pyx_mstate_global->__pyx_ptype_13ManyBodyUtils_ManyBodyOperator, __pyx_mstate_global->__pyx_n_u_size, __pyx_t_2) < 0) __PYX_ERR(0, 289, __pyx_L1_error)
   __Pyx_DECREF(__pyx_t_2); __pyx_t_2 = 0;
 
-  /* "ManyBodyUtils.pyx":312
+  /* "ManyBodyUtils.pyx":311
  *         return res
  * 
  *     def erase(self, tuple[tuple[int, str]]key):             # <<<<<<<<<<<<<<
  *         self.op.erase(processes_to_ints(key))
  * 
 */
-  __pyx_t_2 = __Pyx_CyFunction_New(&__pyx_mdef_13ManyBodyUtils_16ManyBodyOperator_37erase, __Pyx_CYFUNCTION_CCLASS, __pyx_mstate_global->__pyx_n_u_ManyBodyOperator_erase, NULL, __pyx_mstate_global->__pyx_n_u_ManyBodyUtils, __pyx_mstate_global->__pyx_d, ((PyObject *)__pyx_mstate_global->__pyx_codeobj_tab[26])); if (unlikely(!__pyx_t_2)) __PYX_ERR(0, 312, __pyx_L1_error)
+  __pyx_t_2 = __Pyx_CyFunction_New(&__pyx_mdef_13ManyBodyUtils_16ManyBodyOperator_37erase, __Pyx_CYFUNCTION_CCLASS, __pyx_mstate_global->__pyx_n_u_ManyBodyOperator_erase, NULL, __pyx_mstate_global->__pyx_n_u_ManyBodyUtils, __pyx_mstate_global->__pyx_d, ((PyObject *)__pyx_mstate_global->__pyx_codeobj_tab[26])); if (unlikely(!__pyx_t_2)) __PYX_ERR(0, 311, __pyx_L1_error)
   __Pyx_GOTREF(__pyx_t_2);
-  if (__Pyx_SetItemOnTypeDict(__pyx_mstate_global->__pyx_ptype_13ManyBodyUtils_ManyBodyOperator, __pyx_mstate_global->__pyx_n_u_erase, __pyx_t_2) < 0) __PYX_ERR(0, 312, __pyx_L1_error)
+  if (__Pyx_SetItemOnTypeDict(__pyx_mstate_global->__pyx_ptype_13ManyBodyUtils_ManyBodyOperator, __pyx_mstate_global->__pyx_n_u_erase, __pyx_t_2) < 0) __PYX_ERR(0, 311, __pyx_L1_error)
   __Pyx_DECREF(__pyx_t_2); __pyx_t_2 = 0;
 
-  /* "ManyBodyUtils.pyx":322
+  /* "ManyBodyUtils.pyx":321
  *             yield ints_to_processes(p.first)
  * 
  *     def keys(self):             # <<<<<<<<<<<<<<
  *         return (ints_to_processes(p.first) for p in self.o)
  * 
 */
-  __pyx_t_2 = __Pyx_CyFunction_New(&__pyx_mdef_13ManyBodyUtils_16ManyBodyOperator_44keys, __Pyx_CYFUNCTION_CCLASS, __pyx_mstate_global->__pyx_n_u_ManyBodyOperator_keys, NULL, __pyx_mstate_global->__pyx_n_u_ManyBodyUtils, __pyx_mstate_global->__pyx_d, ((PyObject *)__pyx_mstate_global->__pyx_codeobj_tab[27])); if (unlikely(!__pyx_t_2)) __PYX_ERR(0, 322, __pyx_L1_error)
+  __pyx_t_2 = __Pyx_CyFunction_New(&__pyx_mdef_13ManyBodyUtils_16ManyBodyOperator_44keys, __Pyx_CYFUNCTION_CCLASS, __pyx_mstate_global->__pyx_n_u_ManyBodyOperator_keys, NULL, __pyx_mstate_global->__pyx_n_u_ManyBodyUtils, __pyx_mstate_global->__pyx_d, ((PyObject *)__pyx_mstate_global->__pyx_codeobj_tab[27])); if (unlikely(!__pyx_t_2)) __PYX_ERR(0, 321, __pyx_L1_error)
   __Pyx_GOTREF(__pyx_t_2);
-  if (__Pyx_SetItemOnTypeDict(__pyx_mstate_global->__pyx_ptype_13ManyBodyUtils_ManyBodyOperator, __pyx_mstate_global->__pyx_n_u_keys, __pyx_t_2) < 0) __PYX_ERR(0, 322, __pyx_L1_error)
+  if (__Pyx_SetItemOnTypeDict(__pyx_mstate_global->__pyx_ptype_13ManyBodyUtils_ManyBodyOperator, __pyx_mstate_global->__pyx_n_u_keys, __pyx_t_2) < 0) __PYX_ERR(0, 321, __pyx_L1_error)
   __Pyx_DECREF(__pyx_t_2); __pyx_t_2 = 0;
 
-  /* "ManyBodyUtils.pyx":325
+  /* "ManyBodyUtils.pyx":324
  *         return (ints_to_processes(p.first) for p in self.o)
  * 
  *     def values(self):             # <<<<<<<<<<<<<<
  *         return (p.second for p in self.o)
  * 
 */
-  __pyx_t_2 = __Pyx_CyFunction_New(&__pyx_mdef_13ManyBodyUtils_16ManyBodyOperator_46values, __Pyx_CYFUNCTION_CCLASS, __pyx_mstate_global->__pyx_n_u_ManyBodyOperator_values, NULL, __pyx_mstate_global->__pyx_n_u_ManyBodyUtils, __pyx_mstate_global->__pyx_d, ((PyObject *)__pyx_mstate_global->__pyx_codeobj_tab[28])); if (unlikely(!__pyx_t_2)) __PYX_ERR(0, 325, __pyx_L1_error)
+  __pyx_t_2 = __Pyx_CyFunction_New(&__pyx_mdef_13ManyBodyUtils_16ManyBodyOperator_46values, __Pyx_CYFUNCTION_CCLASS, __pyx_mstate_global->__pyx_n_u_ManyBodyOperator_values, NULL, __pyx_mstate_global->__pyx_n_u_ManyBodyUtils, __pyx_mstate_global->__pyx_d, ((PyObject *)__pyx_mstate_global->__pyx_codeobj_tab[28])); if (unlikely(!__pyx_t_2)) __PYX_ERR(0, 324, __pyx_L1_error)
   __Pyx_GOTREF(__pyx_t_2);
-  if (__Pyx_SetItemOnTypeDict(__pyx_mstate_global->__pyx_ptype_13ManyBodyUtils_ManyBodyOperator, __pyx_mstate_global->__pyx_n_u_values, __pyx_t_2) < 0) __PYX_ERR(0, 325, __pyx_L1_error)
+  if (__Pyx_SetItemOnTypeDict(__pyx_mstate_global->__pyx_ptype_13ManyBodyUtils_ManyBodyOperator, __pyx_mstate_global->__pyx_n_u_values, __pyx_t_2) < 0) __PYX_ERR(0, 324, __pyx_L1_error)
   __Pyx_DECREF(__pyx_t_2); __pyx_t_2 = 0;
 
-  /* "ManyBodyUtils.pyx":328
+  /* "ManyBodyUtils.pyx":327
  *         return (p.second for p in self.o)
  * 
  *     def items(self):             # <<<<<<<<<<<<<<
  *         return ((ints_to_processes(p.first), p.second) for p in self.o)
  * 
 */
-  __pyx_t_2 = __Pyx_CyFunction_New(&__pyx_mdef_13ManyBodyUtils_16ManyBodyOperator_48items, __Pyx_CYFUNCTION_CCLASS, __pyx_mstate_global->__pyx_n_u_ManyBodyOperator_items, NULL, __pyx_mstate_global->__pyx_n_u_ManyBodyUtils, __pyx_mstate_global->__pyx_d, ((PyObject *)__pyx_mstate_global->__pyx_codeobj_tab[29])); if (unlikely(!__pyx_t_2)) __PYX_ERR(0, 328, __pyx_L1_error)
+  __pyx_t_2 = __Pyx_CyFunction_New(&__pyx_mdef_13ManyBodyUtils_16ManyBodyOperator_48items, __Pyx_CYFUNCTION_CCLASS, __pyx_mstate_global->__pyx_n_u_ManyBodyOperator_items, NULL, __pyx_mstate_global->__pyx_n_u_ManyBodyUtils, __pyx_mstate_global->__pyx_d, ((PyObject *)__pyx_mstate_global->__pyx_codeobj_tab[29])); if (unlikely(!__pyx_t_2)) __PYX_ERR(0, 327, __pyx_L1_error)
   __Pyx_GOTREF(__pyx_t_2);
-  if (__Pyx_SetItemOnTypeDict(__pyx_mstate_global->__pyx_ptype_13ManyBodyUtils_ManyBodyOperator, __pyx_mstate_global->__pyx_n_u_items, __pyx_t_2) < 0) __PYX_ERR(0, 328, __pyx_L1_error)
+  if (__Pyx_SetItemOnTypeDict(__pyx_mstate_global->__pyx_ptype_13ManyBodyUtils_ManyBodyOperator, __pyx_mstate_global->__pyx_n_u_items, __pyx_t_2) < 0) __PYX_ERR(0, 327, __pyx_L1_error)
   __Pyx_DECREF(__pyx_t_2); __pyx_t_2 = 0;
 
-  /* "ManyBodyUtils.pyx":332
+  /* "ManyBodyUtils.pyx":331
  * 
  * 
  *     def to_dict(self):             # <<<<<<<<<<<<<<
  *         return dict((ints_to_processes(p.first), p.second) for p in self.o)
  * 
 */
-  __pyx_t_2 = __Pyx_CyFunction_New(&__pyx_mdef_13ManyBodyUtils_16ManyBodyOperator_50to_dict, __Pyx_CYFUNCTION_CCLASS, __pyx_mstate_global->__pyx_n_u_ManyBodyOperator_to_dict, NULL, __pyx_mstate_global->__pyx_n_u_ManyBodyUtils, __pyx_mstate_global->__pyx_d, ((PyObject *)__pyx_mstate_global->__pyx_codeobj_tab[30])); if (unlikely(!__pyx_t_2)) __PYX_ERR(0, 332, __pyx_L1_error)
+  __pyx_t_2 = __Pyx_CyFunction_New(&__pyx_mdef_13ManyBodyUtils_16ManyBodyOperator_50to_dict, __Pyx_CYFUNCTION_CCLASS, __pyx_mstate_global->__pyx_n_u_ManyBodyOperator_to_dict, NULL, __pyx_mstate_global->__pyx_n_u_ManyBodyUtils, __pyx_mstate_global->__pyx_d, ((PyObject *)__pyx_mstate_global->__pyx_codeobj_tab[30])); if (unlikely(!__pyx_t_2)) __PYX_ERR(0, 331, __pyx_L1_error)
   __Pyx_GOTREF(__pyx_t_2);
-  if (__Pyx_SetItemOnTypeDict(__pyx_mstate_global->__pyx_ptype_13ManyBodyUtils_ManyBodyOperator, __pyx_mstate_global->__pyx_n_u_to_dict, __pyx_t_2) < 0) __PYX_ERR(0, 332, __pyx_L1_error)
+  if (__Pyx_SetItemOnTypeDict(__pyx_mstate_global->__pyx_ptype_13ManyBodyUtils_ManyBodyOperator, __pyx_mstate_global->__pyx_n_u_to_dict, __pyx_t_2) < 0) __PYX_ERR(0, 331, __pyx_L1_error)
   __Pyx_DECREF(__pyx_t_2); __pyx_t_2 = 0;
 
-  /* "ManyBodyUtils.pyx":336
+  /* "ManyBodyUtils.pyx":335
  * 
  * 
  * def applyOp(ManyBodyOperator op, ManyBodyState psi, double cutoff=0, dict[vector[size_t], pair[size_t, size_t]] restrictions=None) ->ManyBodyState :             # <<<<<<<<<<<<<<
  *     return op(psi, cutoff, restrictions)
 */
-  __pyx_t_2 = PyFloat_FromDouble(((double)0.0)); if (unlikely(!__pyx_t_2)) __PYX_ERR(0, 336, __pyx_L1_error)
+  __pyx_t_2 = PyFloat_FromDouble(((double)0.0)); if (unlikely(!__pyx_t_2)) __PYX_ERR(0, 335, __pyx_L1_error)
   __Pyx_GOTREF(__pyx_t_2);
-  __pyx_t_4 = PyTuple_Pack(2, __pyx_t_2, Py_None); if (unlikely(!__pyx_t_4)) __PYX_ERR(0, 336, __pyx_L1_error)
+  __pyx_t_4 = PyTuple_Pack(2, __pyx_t_2, Py_None); if (unlikely(!__pyx_t_4)) __PYX_ERR(0, 335, __pyx_L1_error)
   __Pyx_GOTREF(__pyx_t_4);
   __Pyx_DECREF(__pyx_t_2); __pyx_t_2 = 0;
-  __pyx_t_2 = __Pyx_PyDict_NewPresized(1); if (unlikely(!__pyx_t_2)) __PYX_ERR(0, 336, __pyx_L1_error)
+  __pyx_t_2 = __Pyx_PyDict_NewPresized(1); if (unlikely(!__pyx_t_2)) __PYX_ERR(0, 335, __pyx_L1_error)
   __Pyx_GOTREF(__pyx_t_2);
-  if (PyDict_SetItem(__pyx_t_2, __pyx_mstate_global->__pyx_n_u_return, __pyx_mstate_global->__pyx_n_u_ManyBodyState_2) < 0) __PYX_ERR(0, 336, __pyx_L1_error)
-  __pyx_t_5 = __Pyx_CyFunction_New(&__pyx_mdef_13ManyBodyUtils_3applyOp, 0, __pyx_mstate_global->__pyx_n_u_applyOp, NULL, __pyx_mstate_global->__pyx_n_u_ManyBodyUtils, __pyx_mstate_global->__pyx_d, ((PyObject *)__pyx_mstate_global->__pyx_codeobj_tab[31])); if (unlikely(!__pyx_t_5)) __PYX_ERR(0, 336, __pyx_L1_error)
+  if (PyDict_SetItem(__pyx_t_2, __pyx_mstate_global->__pyx_n_u_return, __pyx_mstate_global->__pyx_n_u_ManyBodyState_2) < 0) __PYX_ERR(0, 335, __pyx_L1_error)
+  __pyx_t_5 = __Pyx_CyFunction_New(&__pyx_mdef_13ManyBodyUtils_3applyOp, 0, __pyx_mstate_global->__pyx_n_u_applyOp, NULL, __pyx_mstate_global->__pyx_n_u_ManyBodyUtils, __pyx_mstate_global->__pyx_d, ((PyObject *)__pyx_mstate_global->__pyx_codeobj_tab[31])); if (unlikely(!__pyx_t_5)) __PYX_ERR(0, 335, __pyx_L1_error)
   __Pyx_GOTREF(__pyx_t_5);
   __Pyx_CyFunction_SetDefaultsTuple(__pyx_t_5, __pyx_t_4);
   __Pyx_CyFunction_SetAnnotationsDict(__pyx_t_5, __pyx_t_2);
   __Pyx_DECREF(__pyx_t_4); __pyx_t_4 = 0;
   __Pyx_DECREF(__pyx_t_2); __pyx_t_2 = 0;
-  if (PyDict_SetItem(__pyx_mstate_global->__pyx_d, __pyx_mstate_global->__pyx_n_u_applyOp, __pyx_t_5) < 0) __PYX_ERR(0, 336, __pyx_L1_error)
+  if (PyDict_SetItem(__pyx_mstate_global->__pyx_d, __pyx_mstate_global->__pyx_n_u_applyOp, __pyx_t_5) < 0) __PYX_ERR(0, 335, __pyx_L1_error)
   __Pyx_DECREF(__pyx_t_5); __pyx_t_5 = 0;
 
   /* "ManyBodyUtils.pyx":1
@@ -16851,6 +16870,8 @@ static const __Pyx_StringTabEntry __pyx_string_tab[] = {
   {__pyx_k_applyOp, sizeof(__pyx_k_applyOp), 0, 1, 1}, /* PyObject cname: __pyx_n_u_applyOp */
   {__pyx_k_asyncio_coroutines, sizeof(__pyx_k_asyncio_coroutines), 0, 1, 1}, /* PyObject cname: __pyx_n_u_asyncio_coroutines */
   {__pyx_k_b, sizeof(__pyx_k_b), 0, 1, 1}, /* PyObject cname: __pyx_n_u_b */
+  {__pyx_k_big, sizeof(__pyx_k_big), 0, 1, 1}, /* PyObject cname: __pyx_n_u_big */
+  {__pyx_k_byteorder, sizeof(__pyx_k_byteorder), 0, 1, 1}, /* PyObject cname: __pyx_n_u_byteorder */
   {__pyx_k_c, sizeof(__pyx_k_c), 0, 1, 1}, /* PyObject cname: __pyx_n_u_c */
   {__pyx_k_class, sizeof(__pyx_k_class), 0, 1, 1}, /* PyObject cname: __pyx_n_u_class */
   {__pyx_k_class_getitem, sizeof(__pyx_k_class_getitem), 0, 1, 1}, /* PyObject cname: __pyx_n_u_class_getitem */
@@ -16932,14 +16953,14 @@ static int __Pyx_InitCachedConstants(__pyx_mstatetype *__pyx_mstate) {
   CYTHON_UNUSED_VAR(__pyx_mstate);
   __Pyx_RefNannySetupContext("__Pyx_InitCachedConstants", 0);
 
-  /* "ManyBodyUtils.pyx":189
+  /* "ManyBodyUtils.pyx":188
  *     cdef ManyBodyOperator_cpp.value_type.first_type ints
  *     ints.reserve(len(processes))
  *     for process in processes[::-1]:             # <<<<<<<<<<<<<<
  *         if process[1] == 'a':
  *             ints.push_back(-process[0] -1)
 */
-  __pyx_mstate_global->__pyx_slice[0] = PySlice_New(Py_None, Py_None, __pyx_mstate_global->__pyx_int_neg_1); if (unlikely(!__pyx_mstate_global->__pyx_slice[0])) __PYX_ERR(0, 189, __pyx_L1_error)
+  __pyx_mstate_global->__pyx_slice[0] = PySlice_New(Py_None, Py_None, __pyx_mstate_global->__pyx_int_neg_1); if (unlikely(!__pyx_mstate_global->__pyx_slice[0])) __PYX_ERR(0, 188, __pyx_L1_error)
   __Pyx_GOTREF(__pyx_mstate_global->__pyx_slice[0]);
   __Pyx_GIVEREF(__pyx_mstate_global->__pyx_slice[0]);
   __Pyx_RefNannyFinishContext();
@@ -16988,162 +17009,162 @@ static int __Pyx_CreateCodeObjects(__pyx_mstatetype *__pyx_mstate) {
   PyObject* tuple_dedup_map = PyDict_New();
   if (unlikely(!tuple_dedup_map)) return -1;
   {
-    const __Pyx_PyCode_New_function_description descr = {1, 0, 0, 2, (unsigned int)(CO_OPTIMIZED|CO_NEWLOCALS|CO_GENERATOR), 155, 2};
+    const __Pyx_PyCode_New_function_description descr = {1, 0, 0, 2, (unsigned int)(CO_OPTIMIZED|CO_NEWLOCALS|CO_GENERATOR), 154, 2};
     PyObject* const varnames[] = {__pyx_mstate->__pyx_n_u_self, __pyx_mstate->__pyx_n_u_p};
     __pyx_mstate_global->__pyx_codeobj_tab[0] = __Pyx_PyCode_New(descr, varnames, __pyx_mstate->__pyx_kp_u_ManyBodyUtils_pyx, __pyx_mstate->__pyx_n_u_iter, __pyx_k_A, tuple_dedup_map); if (unlikely(!__pyx_mstate_global->__pyx_codeobj_tab[0])) goto bad;
   }
   {
-    const __Pyx_PyCode_New_function_description descr = {0, 0, 0, 1, (unsigned int)(CO_OPTIMIZED|CO_NEWLOCALS|CO_GENERATOR), 160, 2};
+    const __Pyx_PyCode_New_function_description descr = {0, 0, 0, 1, (unsigned int)(CO_OPTIMIZED|CO_NEWLOCALS|CO_GENERATOR), 159, 2};
     PyObject* const varnames[] = {__pyx_mstate->__pyx_n_u_p};
     __pyx_mstate_global->__pyx_codeobj_tab[1] = __Pyx_PyCode_New(descr, varnames, __pyx_mstate->__pyx_kp_u_ManyBodyUtils_pyx, __pyx_mstate->__pyx_n_u_genexpr, __pyx_k_A_2, tuple_dedup_map); if (unlikely(!__pyx_mstate_global->__pyx_codeobj_tab[1])) goto bad;
   }
   {
-    const __Pyx_PyCode_New_function_description descr = {0, 0, 0, 1, (unsigned int)(CO_OPTIMIZED|CO_NEWLOCALS|CO_GENERATOR), 163, 2};
+    const __Pyx_PyCode_New_function_description descr = {0, 0, 0, 1, (unsigned int)(CO_OPTIMIZED|CO_NEWLOCALS|CO_GENERATOR), 162, 2};
     PyObject* const varnames[] = {__pyx_mstate->__pyx_n_u_p};
     __pyx_mstate_global->__pyx_codeobj_tab[2] = __Pyx_PyCode_New(descr, varnames, __pyx_mstate->__pyx_kp_u_ManyBodyUtils_pyx, __pyx_mstate->__pyx_n_u_genexpr, __pyx_k__9, tuple_dedup_map); if (unlikely(!__pyx_mstate_global->__pyx_codeobj_tab[2])) goto bad;
   }
   {
-    const __Pyx_PyCode_New_function_description descr = {0, 0, 0, 1, (unsigned int)(CO_OPTIMIZED|CO_NEWLOCALS|CO_GENERATOR), 166, 2};
+    const __Pyx_PyCode_New_function_description descr = {0, 0, 0, 1, (unsigned int)(CO_OPTIMIZED|CO_NEWLOCALS|CO_GENERATOR), 165, 2};
     PyObject* const varnames[] = {__pyx_mstate->__pyx_n_u_p};
     __pyx_mstate_global->__pyx_codeobj_tab[3] = __Pyx_PyCode_New(descr, varnames, __pyx_mstate->__pyx_kp_u_ManyBodyUtils_pyx, __pyx_mstate->__pyx_n_u_genexpr, __pyx_k__9, tuple_dedup_map); if (unlikely(!__pyx_mstate_global->__pyx_codeobj_tab[3])) goto bad;
   }
   {
-    const __Pyx_PyCode_New_function_description descr = {0, 0, 0, 1, (unsigned int)(CO_OPTIMIZED|CO_NEWLOCALS|CO_GENERATOR), 173, 2};
+    const __Pyx_PyCode_New_function_description descr = {0, 0, 0, 1, (unsigned int)(CO_OPTIMIZED|CO_NEWLOCALS|CO_GENERATOR), 172, 2};
     PyObject* const varnames[] = {__pyx_mstate->__pyx_n_u_p};
     __pyx_mstate_global->__pyx_codeobj_tab[4] = __Pyx_PyCode_New(descr, varnames, __pyx_mstate->__pyx_kp_u_ManyBodyUtils_pyx, __pyx_mstate->__pyx_n_u_genexpr, __pyx_k_Q, tuple_dedup_map); if (unlikely(!__pyx_mstate_global->__pyx_codeobj_tab[4])) goto bad;
   }
   {
-    const __Pyx_PyCode_New_function_description descr = {1, 0, 0, 2, (unsigned int)(CO_OPTIMIZED|CO_NEWLOCALS|CO_GENERATOR), 318, 2};
+    const __Pyx_PyCode_New_function_description descr = {1, 0, 0, 2, (unsigned int)(CO_OPTIMIZED|CO_NEWLOCALS|CO_GENERATOR), 317, 2};
     PyObject* const varnames[] = {__pyx_mstate->__pyx_n_u_self, __pyx_mstate->__pyx_n_u_p};
     __pyx_mstate_global->__pyx_codeobj_tab[5] = __Pyx_PyCode_New(descr, varnames, __pyx_mstate->__pyx_kp_u_ManyBodyUtils_pyx, __pyx_mstate->__pyx_n_u_iter, __pyx_k_A, tuple_dedup_map); if (unlikely(!__pyx_mstate_global->__pyx_codeobj_tab[5])) goto bad;
   }
   {
-    const __Pyx_PyCode_New_function_description descr = {0, 0, 0, 1, (unsigned int)(CO_OPTIMIZED|CO_NEWLOCALS|CO_GENERATOR), 323, 2};
+    const __Pyx_PyCode_New_function_description descr = {0, 0, 0, 1, (unsigned int)(CO_OPTIMIZED|CO_NEWLOCALS|CO_GENERATOR), 322, 2};
     PyObject* const varnames[] = {__pyx_mstate->__pyx_n_u_p};
     __pyx_mstate_global->__pyx_codeobj_tab[6] = __Pyx_PyCode_New(descr, varnames, __pyx_mstate->__pyx_kp_u_ManyBodyUtils_pyx, __pyx_mstate->__pyx_n_u_genexpr, __pyx_k__10, tuple_dedup_map); if (unlikely(!__pyx_mstate_global->__pyx_codeobj_tab[6])) goto bad;
   }
   {
-    const __Pyx_PyCode_New_function_description descr = {0, 0, 0, 1, (unsigned int)(CO_OPTIMIZED|CO_NEWLOCALS|CO_GENERATOR), 326, 2};
+    const __Pyx_PyCode_New_function_description descr = {0, 0, 0, 1, (unsigned int)(CO_OPTIMIZED|CO_NEWLOCALS|CO_GENERATOR), 325, 2};
     PyObject* const varnames[] = {__pyx_mstate->__pyx_n_u_p};
     __pyx_mstate_global->__pyx_codeobj_tab[7] = __Pyx_PyCode_New(descr, varnames, __pyx_mstate->__pyx_kp_u_ManyBodyUtils_pyx, __pyx_mstate->__pyx_n_u_genexpr, __pyx_k__9, tuple_dedup_map); if (unlikely(!__pyx_mstate_global->__pyx_codeobj_tab[7])) goto bad;
   }
   {
-    const __Pyx_PyCode_New_function_description descr = {0, 0, 0, 1, (unsigned int)(CO_OPTIMIZED|CO_NEWLOCALS|CO_GENERATOR), 329, 2};
+    const __Pyx_PyCode_New_function_description descr = {0, 0, 0, 1, (unsigned int)(CO_OPTIMIZED|CO_NEWLOCALS|CO_GENERATOR), 328, 2};
     PyObject* const varnames[] = {__pyx_mstate->__pyx_n_u_p};
     __pyx_mstate_global->__pyx_codeobj_tab[8] = __Pyx_PyCode_New(descr, varnames, __pyx_mstate->__pyx_kp_u_ManyBodyUtils_pyx, __pyx_mstate->__pyx_n_u_genexpr, __pyx_k__9, tuple_dedup_map); if (unlikely(!__pyx_mstate_global->__pyx_codeobj_tab[8])) goto bad;
   }
   {
-    const __Pyx_PyCode_New_function_description descr = {0, 0, 0, 1, (unsigned int)(CO_OPTIMIZED|CO_NEWLOCALS|CO_GENERATOR), 333, 2};
+    const __Pyx_PyCode_New_function_description descr = {0, 0, 0, 1, (unsigned int)(CO_OPTIMIZED|CO_NEWLOCALS|CO_GENERATOR), 332, 2};
     PyObject* const varnames[] = {__pyx_mstate->__pyx_n_u_p};
     __pyx_mstate_global->__pyx_codeobj_tab[9] = __Pyx_PyCode_New(descr, varnames, __pyx_mstate->__pyx_kp_u_ManyBodyUtils_pyx, __pyx_mstate->__pyx_n_u_genexpr, __pyx_k_Q, tuple_dedup_map); if (unlikely(!__pyx_mstate_global->__pyx_codeobj_tab[9])) goto bad;
   }
   {
-    const __Pyx_PyCode_New_function_description descr = {1, 0, 0, 1, (unsigned int)(CO_OPTIMIZED|CO_NEWLOCALS), 51, 15};
+    const __Pyx_PyCode_New_function_description descr = {1, 0, 0, 1, (unsigned int)(CO_OPTIMIZED|CO_NEWLOCALS), 50, 15};
     PyObject* const varnames[] = {__pyx_mstate->__pyx_n_u_self};
     __pyx_mstate_global->__pyx_codeobj_tab[10] = __Pyx_PyCode_New(descr, varnames, __pyx_mstate->__pyx_kp_u_ManyBodyUtils_pyx, __pyx_mstate->__pyx_n_u_reduce, __pyx_k_A_M_XQ, tuple_dedup_map); if (unlikely(!__pyx_mstate_global->__pyx_codeobj_tab[10])) goto bad;
   }
   {
-    const __Pyx_PyCode_New_function_description descr = {3, 0, 0, 3, (unsigned int)(CO_OPTIMIZED|CO_NEWLOCALS), 118, 28};
+    const __Pyx_PyCode_New_function_description descr = {3, 0, 0, 3, (unsigned int)(CO_OPTIMIZED|CO_NEWLOCALS), 117, 28};
     PyObject* const varnames[] = {__pyx_mstate->__pyx_n_u_self, __pyx_mstate->__pyx_n_u_key, __pyx_mstate->__pyx_n_u_default};
     __pyx_mstate_global->__pyx_codeobj_tab[11] = __Pyx_PyCode_New(descr, varnames, __pyx_mstate->__pyx_kp_u_ManyBodyUtils_pyx, __pyx_mstate->__pyx_n_u_get, __pyx_k_6a_4s_4q_q, tuple_dedup_map); if (unlikely(!__pyx_mstate_global->__pyx_codeobj_tab[11])) goto bad;
   }
   {
-    const __Pyx_PyCode_New_function_description descr = {1, 0, 0, 2, (unsigned int)(CO_OPTIMIZED|CO_NEWLOCALS), 125, 21};
+    const __Pyx_PyCode_New_function_description descr = {1, 0, 0, 2, (unsigned int)(CO_OPTIMIZED|CO_NEWLOCALS), 124, 21};
     PyObject* const varnames[] = {__pyx_mstate->__pyx_n_u_self, __pyx_mstate->__pyx_n_u_res};
     __pyx_mstate_global->__pyx_codeobj_tab[12] = __Pyx_PyCode_New(descr, varnames, __pyx_mstate->__pyx_kp_u_ManyBodyUtils_pyx, __pyx_mstate->__pyx_n_u_norm2, __pyx_k_A_b_a_q, tuple_dedup_map); if (unlikely(!__pyx_mstate_global->__pyx_codeobj_tab[12])) goto bad;
   }
   {
-    const __Pyx_PyCode_New_function_description descr = {1, 0, 0, 2, (unsigned int)(CO_OPTIMIZED|CO_NEWLOCALS), 130, 21};
+    const __Pyx_PyCode_New_function_description descr = {1, 0, 0, 2, (unsigned int)(CO_OPTIMIZED|CO_NEWLOCALS), 129, 21};
     PyObject* const varnames[] = {__pyx_mstate->__pyx_n_u_self, __pyx_mstate->__pyx_n_u_res};
     __pyx_mstate_global->__pyx_codeobj_tab[13] = __Pyx_PyCode_New(descr, varnames, __pyx_mstate->__pyx_kp_u_ManyBodyUtils_pyx, __pyx_mstate->__pyx_n_u_norm, __pyx_k_A_RuA_q, tuple_dedup_map); if (unlikely(!__pyx_mstate_global->__pyx_codeobj_tab[13])) goto bad;
   }
   {
-    const __Pyx_PyCode_New_function_description descr = {1, 0, 0, 1, (unsigned int)(CO_OPTIMIZED|CO_NEWLOCALS), 140, 11};
+    const __Pyx_PyCode_New_function_description descr = {1, 0, 0, 1, (unsigned int)(CO_OPTIMIZED|CO_NEWLOCALS), 139, 11};
     PyObject* const varnames[] = {__pyx_mstate->__pyx_n_u_self};
     __pyx_mstate_global->__pyx_codeobj_tab[14] = __Pyx_PyCode_New(descr, varnames, __pyx_mstate->__pyx_kp_u_ManyBodyUtils_pyx, __pyx_mstate->__pyx_n_u_size, __pyx_k_A_s_1, tuple_dedup_map); if (unlikely(!__pyx_mstate_global->__pyx_codeobj_tab[14])) goto bad;
   }
   {
-    const __Pyx_PyCode_New_function_description descr = {1, 0, 0, 2, (unsigned int)(CO_OPTIMIZED|CO_NEWLOCALS), 143, 21};
+    const __Pyx_PyCode_New_function_description descr = {1, 0, 0, 2, (unsigned int)(CO_OPTIMIZED|CO_NEWLOCALS), 142, 21};
     PyObject* const varnames[] = {__pyx_mstate->__pyx_n_u_self, __pyx_mstate->__pyx_n_u_res};
     __pyx_mstate_global->__pyx_codeobj_tab[15] = __Pyx_PyCode_New(descr, varnames, __pyx_mstate->__pyx_kp_u_ManyBodyUtils_pyx, __pyx_mstate->__pyx_n_u_max_size, __pyx_k_A_b_q, tuple_dedup_map); if (unlikely(!__pyx_mstate_global->__pyx_codeobj_tab[15])) goto bad;
   }
   {
-    const __Pyx_PyCode_New_function_description descr = {2, 0, 0, 2, (unsigned int)(CO_OPTIMIZED|CO_NEWLOCALS), 148, 17};
+    const __Pyx_PyCode_New_function_description descr = {2, 0, 0, 2, (unsigned int)(CO_OPTIMIZED|CO_NEWLOCALS), 147, 17};
     PyObject* const varnames[] = {__pyx_mstate->__pyx_n_u_self, __pyx_mstate->__pyx_n_u_key};
     __pyx_mstate_global->__pyx_codeobj_tab[16] = __Pyx_PyCode_New(descr, varnames, __pyx_mstate->__pyx_kp_u_ManyBodyUtils_pyx, __pyx_mstate->__pyx_n_u_erase, __pyx_k_A_BfA, tuple_dedup_map); if (unlikely(!__pyx_mstate_global->__pyx_codeobj_tab[16])) goto bad;
   }
   {
-    const __Pyx_PyCode_New_function_description descr = {1, 0, 0, 3, (unsigned int)(CO_OPTIMIZED|CO_NEWLOCALS), 159, 7};
+    const __Pyx_PyCode_New_function_description descr = {1, 0, 0, 3, (unsigned int)(CO_OPTIMIZED|CO_NEWLOCALS), 158, 7};
     PyObject* const varnames[] = {__pyx_mstate->__pyx_n_u_self, __pyx_mstate->__pyx_n_u_genexpr, __pyx_mstate->__pyx_n_u_genexpr};
     __pyx_mstate_global->__pyx_codeobj_tab[17] = __Pyx_PyCode_New(descr, varnames, __pyx_mstate->__pyx_kp_u_ManyBodyUtils_pyx, __pyx_mstate->__pyx_n_u_keys, __pyx_k_A_A, tuple_dedup_map); if (unlikely(!__pyx_mstate_global->__pyx_codeobj_tab[17])) goto bad;
   }
   {
-    const __Pyx_PyCode_New_function_description descr = {1, 0, 0, 3, (unsigned int)(CO_OPTIMIZED|CO_NEWLOCALS), 162, 7};
+    const __Pyx_PyCode_New_function_description descr = {1, 0, 0, 3, (unsigned int)(CO_OPTIMIZED|CO_NEWLOCALS), 161, 7};
     PyObject* const varnames[] = {__pyx_mstate->__pyx_n_u_self, __pyx_mstate->__pyx_n_u_genexpr, __pyx_mstate->__pyx_n_u_genexpr};
     __pyx_mstate_global->__pyx_codeobj_tab[18] = __Pyx_PyCode_New(descr, varnames, __pyx_mstate->__pyx_kp_u_ManyBodyUtils_pyx, __pyx_mstate->__pyx_n_u_values, __pyx_k_A_3, tuple_dedup_map); if (unlikely(!__pyx_mstate_global->__pyx_codeobj_tab[18])) goto bad;
   }
   {
-    const __Pyx_PyCode_New_function_description descr = {1, 0, 0, 3, (unsigned int)(CO_OPTIMIZED|CO_NEWLOCALS), 165, 7};
+    const __Pyx_PyCode_New_function_description descr = {1, 0, 0, 3, (unsigned int)(CO_OPTIMIZED|CO_NEWLOCALS), 164, 7};
     PyObject* const varnames[] = {__pyx_mstate->__pyx_n_u_self, __pyx_mstate->__pyx_n_u_genexpr, __pyx_mstate->__pyx_n_u_genexpr};
     __pyx_mstate_global->__pyx_codeobj_tab[19] = __Pyx_PyCode_New(descr, varnames, __pyx_mstate->__pyx_kp_u_ManyBodyUtils_pyx, __pyx_mstate->__pyx_n_u_items, __pyx_k_A_3, tuple_dedup_map); if (unlikely(!__pyx_mstate_global->__pyx_codeobj_tab[19])) goto bad;
   }
   {
-    const __Pyx_PyCode_New_function_description descr = {2, 0, 0, 2, (unsigned int)(CO_OPTIMIZED|CO_NEWLOCALS), 168, 16};
+    const __Pyx_PyCode_New_function_description descr = {2, 0, 0, 2, (unsigned int)(CO_OPTIMIZED|CO_NEWLOCALS), 167, 16};
     PyObject* const varnames[] = {__pyx_mstate->__pyx_n_u_self, __pyx_mstate->__pyx_n_u_cutoff};
     __pyx_mstate_global->__pyx_codeobj_tab[20] = __Pyx_PyCode_New(descr, varnames, __pyx_mstate->__pyx_kp_u_ManyBodyUtils_pyx, __pyx_mstate->__pyx_n_u_prune, __pyx_k_A_4, tuple_dedup_map); if (unlikely(!__pyx_mstate_global->__pyx_codeobj_tab[20])) goto bad;
   }
   {
-    const __Pyx_PyCode_New_function_description descr = {1, 0, 0, 3, (unsigned int)(CO_OPTIMIZED|CO_NEWLOCALS), 172, 9};
+    const __Pyx_PyCode_New_function_description descr = {1, 0, 0, 3, (unsigned int)(CO_OPTIMIZED|CO_NEWLOCALS), 171, 9};
     PyObject* const varnames[] = {__pyx_mstate->__pyx_n_u_self, __pyx_mstate->__pyx_n_u_genexpr, __pyx_mstate->__pyx_n_u_genexpr};
     __pyx_mstate_global->__pyx_codeobj_tab[21] = __Pyx_PyCode_New(descr, varnames, __pyx_mstate->__pyx_kp_u_ManyBodyUtils_pyx, __pyx_mstate->__pyx_n_u_to_dict, __pyx_k_A_2Q, tuple_dedup_map); if (unlikely(!__pyx_mstate_global->__pyx_codeobj_tab[21])) goto bad;
   }
   {
-    const __Pyx_PyCode_New_function_description descr = {1, 0, 0, 2, (unsigned int)(CO_OPTIMIZED|CO_NEWLOCALS), 175, 24};
+    const __Pyx_PyCode_New_function_description descr = {1, 0, 0, 2, (unsigned int)(CO_OPTIMIZED|CO_NEWLOCALS), 174, 24};
     PyObject* const varnames[] = {__pyx_mstate->__pyx_n_u_self, __pyx_mstate->__pyx_n_u_d};
     __pyx_mstate_global->__pyx_codeobj_tab[22] = __Pyx_PyCode_New(descr, varnames, __pyx_mstate->__pyx_kp_u_ManyBodyUtils_pyx, __pyx_mstate->__pyx_n_u_copy, __pyx_k_A_D_AT, tuple_dedup_map); if (unlikely(!__pyx_mstate_global->__pyx_codeobj_tab[22])) goto bad;
   }
   {
-    const __Pyx_PyCode_New_function_description descr = {2, 0, 0, 3, (unsigned int)(CO_OPTIMIZED|CO_NEWLOCALS), 180, 25};
+    const __Pyx_PyCode_New_function_description descr = {2, 0, 0, 3, (unsigned int)(CO_OPTIMIZED|CO_NEWLOCALS), 179, 25};
     PyObject* const varnames[] = {__pyx_mstate->__pyx_n_u_a, __pyx_mstate->__pyx_n_u_b, __pyx_mstate->__pyx_n_u_res};
     __pyx_mstate_global->__pyx_codeobj_tab[23] = __Pyx_PyCode_New(descr, varnames, __pyx_mstate->__pyx_kp_u_ManyBodyUtils_pyx, __pyx_mstate->__pyx_n_u_inner, __pyx_k_iq_Qa_1, tuple_dedup_map); if (unlikely(!__pyx_mstate_global->__pyx_codeobj_tab[23])) goto bad;
   }
   {
-    const __Pyx_PyCode_New_function_description descr = {1, 0, 0, 1, (unsigned int)(CO_OPTIMIZED|CO_NEWLOCALS), 222, 15};
+    const __Pyx_PyCode_New_function_description descr = {1, 0, 0, 1, (unsigned int)(CO_OPTIMIZED|CO_NEWLOCALS), 221, 15};
     PyObject* const varnames[] = {__pyx_mstate->__pyx_n_u_self};
     __pyx_mstate_global->__pyx_codeobj_tab[24] = __Pyx_PyCode_New(descr, varnames, __pyx_mstate->__pyx_kp_u_ManyBodyUtils_pyx, __pyx_mstate->__pyx_n_u_reduce, __pyx_k_A_M_XQ, tuple_dedup_map); if (unlikely(!__pyx_mstate_global->__pyx_codeobj_tab[24])) goto bad;
   }
   {
-    const __Pyx_PyCode_New_function_description descr = {1, 0, 0, 1, (unsigned int)(CO_OPTIMIZED|CO_NEWLOCALS), 290, 11};
+    const __Pyx_PyCode_New_function_description descr = {1, 0, 0, 1, (unsigned int)(CO_OPTIMIZED|CO_NEWLOCALS), 289, 11};
     PyObject* const varnames[] = {__pyx_mstate->__pyx_n_u_self};
     __pyx_mstate_global->__pyx_codeobj_tab[25] = __Pyx_PyCode_New(descr, varnames, __pyx_mstate->__pyx_kp_u_ManyBodyUtils_pyx, __pyx_mstate->__pyx_n_u_size, __pyx_k_A_s_1, tuple_dedup_map); if (unlikely(!__pyx_mstate_global->__pyx_codeobj_tab[25])) goto bad;
   }
   {
-    const __Pyx_PyCode_New_function_description descr = {2, 0, 0, 2, (unsigned int)(CO_OPTIMIZED|CO_NEWLOCALS), 312, 18};
+    const __Pyx_PyCode_New_function_description descr = {2, 0, 0, 2, (unsigned int)(CO_OPTIMIZED|CO_NEWLOCALS), 311, 18};
     PyObject* const varnames[] = {__pyx_mstate->__pyx_n_u_self, __pyx_mstate->__pyx_n_u_key};
     __pyx_mstate_global->__pyx_codeobj_tab[26] = __Pyx_PyCode_New(descr, varnames, __pyx_mstate->__pyx_kp_u_ManyBodyUtils_pyx, __pyx_mstate->__pyx_n_u_erase, __pyx_k_A_CvQ_q, tuple_dedup_map); if (unlikely(!__pyx_mstate_global->__pyx_codeobj_tab[26])) goto bad;
   }
   {
-    const __Pyx_PyCode_New_function_description descr = {1, 0, 0, 3, (unsigned int)(CO_OPTIMIZED|CO_NEWLOCALS), 322, 7};
+    const __Pyx_PyCode_New_function_description descr = {1, 0, 0, 3, (unsigned int)(CO_OPTIMIZED|CO_NEWLOCALS), 321, 7};
     PyObject* const varnames[] = {__pyx_mstate->__pyx_n_u_self, __pyx_mstate->__pyx_n_u_genexpr, __pyx_mstate->__pyx_n_u_genexpr};
     __pyx_mstate_global->__pyx_codeobj_tab[27] = __Pyx_PyCode_New(descr, varnames, __pyx_mstate->__pyx_kp_u_ManyBodyUtils_pyx, __pyx_mstate->__pyx_n_u_keys, __pyx_k_A_5, tuple_dedup_map); if (unlikely(!__pyx_mstate_global->__pyx_codeobj_tab[27])) goto bad;
   }
   {
-    const __Pyx_PyCode_New_function_description descr = {1, 0, 0, 3, (unsigned int)(CO_OPTIMIZED|CO_NEWLOCALS), 325, 7};
+    const __Pyx_PyCode_New_function_description descr = {1, 0, 0, 3, (unsigned int)(CO_OPTIMIZED|CO_NEWLOCALS), 324, 7};
     PyObject* const varnames[] = {__pyx_mstate->__pyx_n_u_self, __pyx_mstate->__pyx_n_u_genexpr, __pyx_mstate->__pyx_n_u_genexpr};
     __pyx_mstate_global->__pyx_codeobj_tab[28] = __Pyx_PyCode_New(descr, varnames, __pyx_mstate->__pyx_kp_u_ManyBodyUtils_pyx, __pyx_mstate->__pyx_n_u_values, __pyx_k_A_3, tuple_dedup_map); if (unlikely(!__pyx_mstate_global->__pyx_codeobj_tab[28])) goto bad;
   }
   {
-    const __Pyx_PyCode_New_function_description descr = {1, 0, 0, 3, (unsigned int)(CO_OPTIMIZED|CO_NEWLOCALS), 328, 7};
+    const __Pyx_PyCode_New_function_description descr = {1, 0, 0, 3, (unsigned int)(CO_OPTIMIZED|CO_NEWLOCALS), 327, 7};
     PyObject* const varnames[] = {__pyx_mstate->__pyx_n_u_self, __pyx_mstate->__pyx_n_u_genexpr, __pyx_mstate->__pyx_n_u_genexpr};
     __pyx_mstate_global->__pyx_codeobj_tab[29] = __Pyx_PyCode_New(descr, varnames, __pyx_mstate->__pyx_kp_u_ManyBodyUtils_pyx, __pyx_mstate->__pyx_n_u_items, __pyx_k_A_3, tuple_dedup_map); if (unlikely(!__pyx_mstate_global->__pyx_codeobj_tab[29])) goto bad;
   }
   {
-    const __Pyx_PyCode_New_function_description descr = {1, 0, 0, 3, (unsigned int)(CO_OPTIMIZED|CO_NEWLOCALS), 332, 9};
+    const __Pyx_PyCode_New_function_description descr = {1, 0, 0, 3, (unsigned int)(CO_OPTIMIZED|CO_NEWLOCALS), 331, 9};
     PyObject* const varnames[] = {__pyx_mstate->__pyx_n_u_self, __pyx_mstate->__pyx_n_u_genexpr, __pyx_mstate->__pyx_n_u_genexpr};
     __pyx_mstate_global->__pyx_codeobj_tab[30] = __Pyx_PyCode_New(descr, varnames, __pyx_mstate->__pyx_kp_u_ManyBodyUtils_pyx, __pyx_mstate->__pyx_n_u_to_dict, __pyx_k_A_2Q, tuple_dedup_map); if (unlikely(!__pyx_mstate_global->__pyx_codeobj_tab[30])) goto bad;
   }
   {
-    const __Pyx_PyCode_New_function_description descr = {4, 0, 0, 4, (unsigned int)(CO_OPTIMIZED|CO_NEWLOCALS), 336, 33};
+    const __Pyx_PyCode_New_function_description descr = {4, 0, 0, 4, (unsigned int)(CO_OPTIMIZED|CO_NEWLOCALS), 335, 33};
     PyObject* const varnames[] = {__pyx_mstate->__pyx_n_u_op, __pyx_mstate->__pyx_n_u_psi, __pyx_mstate->__pyx_n_u_cutoff, __pyx_mstate->__pyx_n_u_restrictions};
     __pyx_mstate_global->__pyx_codeobj_tab[31] = __Pyx_PyCode_New(descr, varnames, __pyx_mstate->__pyx_kp_u_ManyBodyUtils_pyx, __pyx_mstate->__pyx_n_u_applyOp, __pyx_k_44E_F_F_F_G_2Qe81, tuple_dedup_map); if (unlikely(!__pyx_mstate_global->__pyx_codeobj_tab[31])) goto bad;
   }
@@ -17719,6 +17740,51 @@ static CYTHON_INLINE int __Pyx_PyObject_SetSlice(PyObject* obj, PyObject* value,
 bad:
     return -1;
 }
+
+/* PyObjectVectorCallKwBuilder */
+#if CYTHON_VECTORCALL
+static int __Pyx_VectorcallBuilder_AddArg(PyObject *key, PyObject *value, PyObject *builder, PyObject **args, int n) {
+    (void)__Pyx_PyObject_FastCallDict;
+    if (__Pyx_PyTuple_SET_ITEM(builder, n, key) != (0)) return -1;
+    Py_INCREF(key);
+    args[n] = value;
+    return 0;
+}
+CYTHON_UNUSED static int __Pyx_VectorcallBuilder_AddArg_Check(PyObject *key, PyObject *value, PyObject *builder, PyObject **args, int n) {
+    (void)__Pyx_VectorcallBuilder_AddArgStr;
+    if (unlikely(!PyUnicode_Check(key))) {
+        PyErr_SetString(PyExc_TypeError, "keywords must be strings");
+        return -1;
+    }
+    return __Pyx_VectorcallBuilder_AddArg(key, value, builder, args, n);
+}
+static int __Pyx_VectorcallBuilder_AddArgStr(const char *key, PyObject *value, PyObject *builder, PyObject **args, int n) {
+    PyObject *pyKey = PyUnicode_FromString(key);
+    if (!pyKey) return -1;
+    return __Pyx_VectorcallBuilder_AddArg(pyKey, value, builder, args, n);
+}
+#else // CYTHON_VECTORCALL
+CYTHON_UNUSED static int __Pyx_VectorcallBuilder_AddArg_Check(PyObject *key, PyObject *value, PyObject *builder, CYTHON_UNUSED PyObject **args, CYTHON_UNUSED int n) {
+    if (unlikely(!PyUnicode_Check(key))) {
+        PyErr_SetString(PyExc_TypeError, "keywords must be strings");
+        return -1;
+    }
+    return PyDict_SetItem(builder, key, value);
+}
+#endif
+
+/* PyObjectVectorCallMethodKwBuilder */
+#if !CYTHON_VECTORCALL || PY_VERSION_HEX < 0x03090000
+static PyObject *__Pyx_Object_VectorcallMethod_CallFromBuilder(PyObject *name, PyObject *const *args, size_t nargsf, PyObject *kwnames) {
+    PyObject *result;
+    PyObject *obj = PyObject_GetAttr(args[0], name);
+    if (unlikely(!obj))
+        return NULL;
+    result = __Pyx_Object_Vectorcall_CallFromBuilder(obj, args+1, nargsf-1, kwnames);
+    Py_DECREF(obj);
+    return result;
+}
+#endif
 
 /* TupleAndListFromArray */
 #if !CYTHON_COMPILING_IN_CPYTHON && CYTHON_METH_FASTCALL
@@ -22117,38 +22183,6 @@ raise_neg_overflow:
         "can't convert negative value to size_t");
     return (size_t) -1;
 }
-
-/* PyObjectVectorCallKwBuilder */
-#if CYTHON_VECTORCALL
-static int __Pyx_VectorcallBuilder_AddArg(PyObject *key, PyObject *value, PyObject *builder, PyObject **args, int n) {
-    (void)__Pyx_PyObject_FastCallDict;
-    if (__Pyx_PyTuple_SET_ITEM(builder, n, key) != (0)) return -1;
-    Py_INCREF(key);
-    args[n] = value;
-    return 0;
-}
-CYTHON_UNUSED static int __Pyx_VectorcallBuilder_AddArg_Check(PyObject *key, PyObject *value, PyObject *builder, PyObject **args, int n) {
-    (void)__Pyx_VectorcallBuilder_AddArgStr;
-    if (unlikely(!PyUnicode_Check(key))) {
-        PyErr_SetString(PyExc_TypeError, "keywords must be strings");
-        return -1;
-    }
-    return __Pyx_VectorcallBuilder_AddArg(key, value, builder, args, n);
-}
-static int __Pyx_VectorcallBuilder_AddArgStr(const char *key, PyObject *value, PyObject *builder, PyObject **args, int n) {
-    PyObject *pyKey = PyUnicode_FromString(key);
-    if (!pyKey) return -1;
-    return __Pyx_VectorcallBuilder_AddArg(pyKey, value, builder, args, n);
-}
-#else // CYTHON_VECTORCALL
-CYTHON_UNUSED static int __Pyx_VectorcallBuilder_AddArg_Check(PyObject *key, PyObject *value, PyObject *builder, CYTHON_UNUSED PyObject **args, CYTHON_UNUSED int n) {
-    if (unlikely(!PyUnicode_Check(key))) {
-        PyErr_SetString(PyExc_TypeError, "keywords must be strings");
-        return -1;
-    }
-    return PyDict_SetItem(builder, key, value);
-}
-#endif
 
 /* CIntToPy */
 static CYTHON_INLINE PyObject* __Pyx_PyLong_From_uint64_t(uint64_t value) {
