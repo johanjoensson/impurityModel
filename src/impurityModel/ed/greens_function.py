@@ -745,13 +745,14 @@ def block_green_impl(basis, hOp, psi_arr, delta, slaterWeightMin, verbose):
         if np.any(np.abs(np.conj(betas[-1].T) @ betas[-1]) > 1e6):
             return True
         # For scalar valued Lanczos, calculate convergents to check for convergence.
-        if False and n == 1:
+        if n == 1:
             An, Bn = calc_continuants(np.diag(np.diag(alphas[-1]) + 1j * delta)[None] - alphas, betas)
-            with np.errstate(all="warn"):
-                d_g = np.abs(An[-2] / Bn[-2] - An[-1] / Bn[-1])
             if verbose:
-                print(f"delta = {d_g}")
-            return d_g < delta_min
+                print(f"delta = {np.abs(An[-2] / Bn[-2] - An[-1] / Bn[-1])}")
+            if abs(Bn[-1]) < 1e-6:
+                return abs(Bn[-1] * An[-2] - An[-1] * Bn[-2]) <= abs(delta_min * Bn[-1] * Bn[-2])
+
+            return np.abs(An[-2] / Bn[-2] - An[-1] / Bn[-1]) < delta_min
 
         # For matrix valued (block) Lanczos, continued fractions are harder to estimate convergence for
         wIs = ((delta * 1j) * np.identity(alphas.shape[1], dtype=complex) + np.diag(np.diag(alphas[-1])))[np.newaxis]
@@ -861,9 +862,11 @@ def block_Green_sparse(
             An, Bn = calc_continuants(np.diag(np.diag(alphas[-1]) + 1j * delta)[None] - alphas, betas)
             if verbose:
                 print(f"delta = {An[-2]/Bn[-2] - An[-1]/Bn[-1]}")
-            # The An and Bn can become ridiculously tiny, in which case division becomes very unreliable
-            # delta >= |A2/B2 - A1/Ba| = |(A2*B1 - A1*B2)/(B1*B2)| <=? |delta*B1*B2| >= |A2*B1 - A1*B2|
-            return abs(Bn[-1] * An[-2] - An[-1] * Bn[-2]) <= abs(delta_min * Bn[-1] * Bn[-2])
+            if abs(Bn[-1]) < 1e-6:
+                # The An and Bn can become ridiculously tiny, in which case division becomes very unreliable
+                # delta >= |A2/B2 - A1/Ba| = |(A2*B1 - A1*B2)/(B1*B2)| <=? |delta*B1*B2| >= |A2*B1 - A1*B2|
+                return abs(Bn[-1] * An[-2] - An[-1] * Bn[-2]) <= abs(delta_min * Bn[-1] * Bn[-2])
+            return abs(An[-2] / Bn[-2] - An[-1] / Bn[-1]) <= delta_min
 
         # For matrix valued (block) Lanczos, continued fractions are harder to estimate convergence for
         wIs = ((delta * 1j) * np.identity(alphas.shape[1], dtype=complex) + np.diag(np.diag(alphas[-1])))[np.newaxis]
