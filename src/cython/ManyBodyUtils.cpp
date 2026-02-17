@@ -1156,6 +1156,7 @@ static CYTHON_INLINE float __PYX_NAN() {
 #include "new"
 #include "stdexcept"
 #include "typeinfo"
+#include <vector>
 #include <utility>
 
     #if __cplusplus >= 201103L || (defined(_MSC_VER) && _MSC_VER >= 1600)
@@ -1169,8 +1170,6 @@ static CYTHON_INLINE float __PYX_NAN() {
 
     #endif
     
-#include <flat_map>
-#include <vector>
 #include <map>
 #include <stdint.h>
 #include "ManyBodyState.cpp"
@@ -2920,15 +2919,13 @@ static int __Pyx_State_RemoveModule(void*);
 #define __PYX_TYPE_MODULE_PREFIX __PYX_ABI_MODULE_NAME "."
 
 
-/* Module declarations from "libcpp.utility" */
-
-/* Module declarations from "libcpp.pair" */
-
-/* Module declarations from "flat_map" */
-
 /* Module declarations from "libcpp.vector" */
 
+/* Module declarations from "libcpp.utility" */
+
 /* Module declarations from "libcpp.map" */
+
+/* Module declarations from "libcpp.pair" */
 
 /* Module declarations from "libc.stdint" */
 
