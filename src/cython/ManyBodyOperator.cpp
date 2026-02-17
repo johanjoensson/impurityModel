@@ -485,7 +485,7 @@ ManyBodyState ManyBodyOperator::apply_op_determinant(
         [](auto &&a, const ManyBodyState &b) {
           return std::forward<ManyBodyState>(a += b);
         },
-        [&](const ManyBodyState::const_reference state_it) {
+        [&](ManyBodyState::const_reference state_it) {
           ManyBodyState tmp;
           for (auto op_it = m_ops.cbegin(); op_it != m_ops.cend(); op_it++) {
             ManyBodyState::key_type out_slater_determinant{state_it.first};
