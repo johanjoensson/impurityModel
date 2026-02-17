@@ -1169,8 +1169,9 @@ static CYTHON_INLINE float __PYX_NAN() {
 
     #endif
     
-#include <map>
+#include <flat_map>
 #include <vector>
+#include <map>
 #include <stdint.h>
 #include "ManyBodyState.cpp"
 #include "ManyBodyState.h"
@@ -2914,11 +2915,13 @@ static int __Pyx_State_RemoveModule(void*);
 
 /* Module declarations from "libcpp.utility" */
 
-/* Module declarations from "libcpp.map" */
+/* Module declarations from "libcpp.pair" */
+
+/* Module declarations from "flat_map" */
 
 /* Module declarations from "libcpp.vector" */
 
-/* Module declarations from "libcpp.pair" */
+/* Module declarations from "libcpp.map" */
 
 /* Module declarations from "libc.stdint" */
 
