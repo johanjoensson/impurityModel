@@ -19,7 +19,7 @@ dependencies = [
 "h5py",
 "matplotlib",
 "mpi4py",
-"numpy",
+"numpy>2.0.0",
 "numpydoc",
 "pytest",
 "sympy",

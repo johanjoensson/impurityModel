@@ -607,7 +607,7 @@ def getNIXSOperator(nBaths, q, li, lj, Ri, Rj, r, kmin=1):
     tOp = {}
     for k in range(kmin, abs(li + lj) + 1):
         if (li + lj + k) % 2 == 0:
-            Rintegral = np.trapz(np.conj(Ri) * spherical_jn(k, qNorm * r) * Rj * r**2, r)
+            Rintegral = np.trapezoid(np.conj(Ri) * spherical_jn(k, qNorm * r) * Rj * r**2, r)
             if rank == 0:
                 print("Rintegral(k=", k, ") =", Rintegral)
             for mi in range(-li, li + 1):
