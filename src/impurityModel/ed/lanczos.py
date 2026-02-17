@@ -487,8 +487,8 @@ def block_lanczos_sparse(
                 axis=0,
             )
         if mpi:
-            basis.comm.Bcast(alphas[-1], root=0)
-            basis.comm.Bcast(betas[-1], root=0)
+            comm.Bcast(alphas[-1], root=0)
+            comm.Bcast(betas[-1], root=0)
         converge_count = 1 + converge_count if converged(alphas, betas, verbose=verbose) else 0
         if converge_count > 3:
             break

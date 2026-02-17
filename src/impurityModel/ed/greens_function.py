@@ -860,12 +860,14 @@ def block_Green_sparse(
         # For scalar valued Lanczos, calculate convergents to check for convergence.
         if n == 1:
             An, Bn = calc_continuants(np.diag(np.diag(alphas[-1]) + 1j * delta)[None] - alphas, betas)
-            if verbose:
-                print(f"delta = {An[-2]/Bn[-2] - An[-1]/Bn[-1]}")
             if abs(Bn[-1]) < 1e-6:
                 # The An and Bn can become ridiculously tiny, in which case division becomes very unreliable
                 # delta >= |A2/B2 - A1/Ba| = |(A2*B1 - A1*B2)/(B1*B2)| <=? |delta*B1*B2| >= |A2*B1 - A1*B2|
+                if verbose:
+                    print(f"delta = {Bn[-1] * An[-2] - An[-1] * Bn[-2]}/{Bn[-1] * Bn[-2]}")
                 return abs(Bn[-1] * An[-2] - An[-1] * Bn[-2]) <= abs(delta_min * Bn[-1] * Bn[-2])
+            if verbose:
+                print(f"delta = {An[-2]/Bn[-2] - An[-1]/Bn[-1]}")
             return abs(An[-2] / Bn[-2] - An[-1] / Bn[-1]) <= delta_min
 
         # For matrix valued (block) Lanczos, continued fractions are harder to estimate convergence for
