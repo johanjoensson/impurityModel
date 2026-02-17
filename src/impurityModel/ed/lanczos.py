@@ -420,8 +420,8 @@ def block_lanczos_sparse(
     n = len(psi0)
     N_max = basis.size
 
-    alphas = np.empty((0, n, n), dtype=complex)
-    betas = np.empty((0, n, n), dtype=complex)
+    alphas = np.empty((0, n, n), dtype=complex, order="C")
+    betas = np.empty((0, n, n), dtype=complex, order="C")
     q = [[ManyBodyState({}) for _ in range(n)], psi0]
     if build_krylov_basis:
         Q = list(psi0)
@@ -487,8 +487,8 @@ def block_lanczos_sparse(
                 axis=0,
             )
         if mpi:
-            comm.Bcast(alphas[-1], root=0)
-            comm.Bcast(betas[-1], root=0)
+            comm.Bcast(alphas, root=0)
+            comm.Bcast(betas, root=0)
         converge_count = 1 + converge_count if converged(alphas, betas, verbose=verbose) else 0
         if converge_count > 3:
             break
