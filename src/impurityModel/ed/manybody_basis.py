@@ -1076,13 +1076,17 @@ class Basis:
             else:
                 procs_per_color[-(abs(remainder) % n_colors) :] += 1
             remainder = comm.size - np.sum(procs_per_color)
+        # comm.Bcast(procs_per_color, root=0)
 
         assert sum(procs_per_color) == comm.size
         proc_cutoffs = np.cumsum(procs_per_color)
+        print(f"{proc_cutoffs=}")
         color = np.argmax(comm.rank < proc_cutoffs)
+        print(f"{color=}")
 
         split_comm = comm.Split(color=color, key=comm.rank)
         split_roots = [0] + proc_cutoffs[:-1].tolist()
+        print(f"{split_roots=}")
         items_per_color = [len(subgroup) for subgroup in subgroups]
         assert sum(items_per_color) == len(priorities)
 
