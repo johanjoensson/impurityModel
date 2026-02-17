@@ -14,7 +14,7 @@ cdef bytes key_to_bytes(const ManyBodyState_cpp.key_type& key):
     cdef bytearray res = bytearray(n_bytes*key.size())
     cdef size_t i
     for i in range(key.size()):
-        res[i*n_bytes: (i+1)*n_bytes] = key[i].to_bytes(n_bytes)
+        res[i*n_bytes: (i+1)*n_bytes] = key[i].to_bytes(n_bytes, byteorder='big')
         # res[i*n_bytes: (i+1)*n_bytes] = key[i].to_bytes(n_bytes, byteorder='little')
 
     return bytes(res)
