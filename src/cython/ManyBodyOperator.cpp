@@ -16,11 +16,7 @@
 #include <bitset>
 #include <climits>
 #endif
-#include <chrono>
 #include <cstddef>
-#include <iostream>
-// #include <cmath>
-// #include <iomanip>
 
 constexpr int set_bits(ManyBodyState::key_type::value_type byte) noexcept {
 #if __cplusplus >= 202002L
