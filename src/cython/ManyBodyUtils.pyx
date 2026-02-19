@@ -3,7 +3,6 @@
 
 from ManyBodyState cimport ManyBodyState as ManyBodyState_cpp, inner as inner_cpp
 from ManyBodyOperator cimport ManyBodyOperator as ManyBodyOperator_cpp
-import struct
 from libcpp.pair cimport pair
 from libcpp.vector cimport vector
 from libcpp.map cimport map
@@ -297,7 +296,6 @@ cdef class ManyBodyOperator:
         cdef frozenset[int] indices
         cdef pair[size_t, size_t] limits
         cdef vector[pair[vector[size_t], pair[size_t, size_t]]] rest
-        cdef vector[ManyBodyState_cpp] v
 
         rest.reserve(len(restrictions))
         for indices, limits in restrictions.items():
@@ -307,6 +305,30 @@ cdef class ManyBodyOperator:
         with nogil:
             res.v = self.o(psi.v, cutoff, rest)
         return res
+
+    # def  __call__(self, list[ManyBodyState] psi, double cutoff = 0, dict[frozenset[int], pair[int, int]] restrictions=None) -> list[ManyBodyState]:
+    #     if restrictions is None:
+    #         restrictions = {}
+    #     # For some reason using ManyBodyOpeartor_cpp.restrictions does not work
+    #     cdef frozenset[int] indices
+    #     cdef pair[size_t, size_t] limits
+    #     cdef vector[pair[vector[size_t], pair[size_t, size_t]]] rest
+    #     cdef vector[ManyBodyState_cpp] v
+    #     cdef list[ManyBodyState] res
+    #     cdef int i
+    #     res = [ManyBodyState() for _ in psi]
+    #     v = vector[ManyBodyState_cpp](p.v for p in psi)
+
+    #     rest.reserve(len(restrictions))
+    #     for indices, limits in restrictions.items():
+    #         if len(indices) == 0:
+    #             continue
+    #         rest.push_back(pair[vector[size_t], pair[size_t, size_t]](sorted(indices),pair[size_t, size_t](limits.first, limits.second)))
+    #     with nogil:
+    #             v = self.o(v, cutoff, rest)
+    #     for i in range(len(res)):
+    #         res[i].v = v[i]
+    #     return res
 
     def erase(self, tuple[tuple[int, str]]key):
         self.op.erase(processes_to_ints(key))

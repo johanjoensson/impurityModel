@@ -512,9 +512,9 @@ ManyBodyState ManyBodyOperator::apply_op_determinant(
           return tmp;
         }));
   }
-  for (auto &psi : res) {
-    psi.prune(cutoff);
-  }
+  // for (auto &psi : res) {
+  //   psi.prune(cutoff);
+  // }
 
   return res;
 }
