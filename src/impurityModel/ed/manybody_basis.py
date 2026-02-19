@@ -493,7 +493,7 @@ class Basis:
         self.truncation_threshold = truncation_threshold
         self.is_distributed = comm is not None and comm.size > 1
         self.tau = tau
-        
+
         if initial_basis is not None:
             assert nominal_impurity_occ is None
             assert delta_valence_occ is None
@@ -560,7 +560,7 @@ class Basis:
         self.state_bounds = self.state_container.state_bounds
         self.local_basis = self.state_container.local_basis
 
-    def redistribute_psis(self, psis: list[ManyBodyState]):
+    def redistribute_psis(self, psis: list[ManyBodyState]) -> list[ManyBodyState]:
         if isinstance(psis, ManyBodyState):
             print("WARNING in redistribute_psi:")
             print(
@@ -836,15 +836,17 @@ class Basis:
         self.state_container.clear()
         self.add_states([])
 
-    def build_vector(self, psis: list[ManyBodyState], root: Optional[int] = None) -> np.ndarray:
+    def build_vector(
+        self, psis: list[ManyBodyState], root: Optional[int] = None, slaterWeightMin: float = 0
+    ) -> np.ndarray:
         v = np.zeros((len(psis), self.size), dtype=complex, order="C")
-        psis = self.redistribute_psis(psis)
+        # psis = self.redistribute_psis(psis)
         # row_states_in_basis: list[bytes] = []
         # row_dict = {state: self._index_dict[state] for state in self.local_basis}
         # col_dict = dict(zip(self.local_basis, range(self.local_indices.start, self.local_indices.stop)))
         for row, psi in enumerate(psis):
             for state, val in psi.items():
-                if state not in self._index_dict:
+                if state not in self._index_dict or abs(psi[state]) < slaterWeightMin:
                     continue
                 v[row, self._index_dict[state]] = val
 

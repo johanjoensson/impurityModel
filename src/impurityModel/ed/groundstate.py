@@ -199,7 +199,9 @@ def calc_gs(
         if c != block_color:
             psi_c = ground_state_basis.redistribute_psis([ManyBodyState() for _ in es_c])
         else:
-            psi_c = ground_state_basis.redistribute_psis(block_basis.build_state(block_psis_dense.T, slaterWeightMin=0))
+            psi_c = ground_state_basis.redistribute_psis(
+                block_basis.build_state(block_psis_dense.T, slaterWeightMin=np.finfo(float).eps)
+            )
         psis.extend(psi_c)
 
     sort_idx = np.argsort(es)

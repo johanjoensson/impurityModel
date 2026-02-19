@@ -113,8 +113,8 @@ def fixed_peak_dc(
         }
     )
     h_op = h_op_i + dc_op_i
-    _ = basis_upper.expand(h_op, dense_cutoff=dense_cutoff, de2_min=1e-2)
-    _ = basis_lower.expand(h_op, dense_cutoff=dense_cutoff, de2_min=1e-2)
+    _ = basis_upper.expand(h_op, dense_cutoff=dense_cutoff, de2_min=1e-2, slaterWeightMin=1e-8)
+    _ = basis_lower.expand(h_op, dense_cutoff=dense_cutoff, de2_min=1e-2, slaterWeightMin=1e-8)
 
     energy_cut = 0  # -tau * np.log(1e-4)
 
@@ -205,6 +205,7 @@ def calc_selfenergy(
     truncation_threshold,
     slaterWeightMin,
     dN,
+    sparse_green,
 ):
     """
     Calculate the self energy of the impurity.
@@ -266,6 +267,7 @@ def calc_selfenergy(
         dN=dN,
         occ_cutoff=occ_cutoff,
         slaterWeightMin=slaterWeightMin,
+        sparse=sparse_green,
     )
     if gs_matsubara is not None:
         try:

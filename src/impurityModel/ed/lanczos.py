@@ -365,7 +365,7 @@ def get_block_Lanczos_matrices(
             wp -= q[1] @ alphas[i] + q[0] @ np.conj(betas[i - 1].T)
             q[0] = q[1]
             t_qr_fact = perf_counter()
-            q[1], betas[i] = sp.linalg.qr(wp, mode="economic", overwrite_a=True, check_finite=False)
+            q[1], betas[i] = sp.linalg.qr(wp, mode="economic", overwrite_a=False, check_finite=False)
             t_qr += perf_counter() - t_qr_fact
             t_converged = perf_counter()
 
@@ -430,7 +430,7 @@ def block_lanczos_sparse(
     it = 0
     converge_count = 0
     expand_basis = True
-    while it < it_max:
+    while it * n < basis.size:
         t0 = perf_counter()
         wp = [
             applyOp_test(
@@ -442,23 +442,25 @@ def block_lanczos_sparse(
             for psi_i in q[1]
         ]
         t_apply = perf_counter() - t0
+        old_basis_size = basis.size
+        # basis.add_states([state for p in wp for state in p if state not in basis.local_basis])
         if verbose:
             print(f"Iteration {it+1}: ", end="" if expand_basis else "\n")
         if expand_basis:
-            old_basis_size = basis.size
             t0 = perf_counter()
             basis.add_states([state for p in wp for state in p if state not in basis.local_basis])
             t_add = perf_counter() - t0
             if old_basis_size == basis.size:
                 it_max = basis.size // n
                 expand_basis = False
-            if verbose:
-                print(f"Added {basis.size - old_basis_size} states to the basis.")
-                print(f"                : Adding new states took {t_add} seconds.")
         if verbose:
+            print(f"Added {basis.size - old_basis_size} states to the basis.")
             print(f"                : Currently the basis contains {basis.size} states.")
             print(f"                : Applying the hamiltonian took {t_apply} seconds.", flush=True)
-        tmp = basis.redistribute_psis(list(itertools.chain(q[0], q[1], wp)))
+        # q[0] = basis.redistribute_psis(q[0])
+        # q[1] = basis.redistribute_psis(q[1])
+        # wp = basis.redistribute_psis(wp)
+        tmp = basis.redistribute_psis(q[0] + q[1] + wp)
         v_dense = basis.build_vector(tmp, root=0).T
         if rank == 0:
             q0_dense = v_dense[:, :n]
@@ -467,8 +469,7 @@ def block_lanczos_sparse(
             alphas = np.append(alphas, [np.conj(q1_dense.T) @ wp_dense], axis=0)
             betas = np.append(betas, np.zeros((1, n, n), dtype=complex), axis=0)
             wp_dense -= q1_dense @ alphas[it] + q0_dense @ np.conj(betas[it - 1].T)
-            q0_dense[:] = q1_dense
-            q1_dense[:], betas[-1] = sp.linalg.qr(wp_dense, mode="economic", overwrite_a=False, check_finite=False)
+            q1_dense, betas[it] = sp.linalg.qr(wp_dense, mode="economic", overwrite_a=True, check_finite=False)
         else:
             alphas = np.append(
                 alphas,
@@ -487,13 +488,13 @@ def block_lanczos_sparse(
                 axis=0,
             )
         if mpi:
-            comm.Bcast(alphas, root=0)
-            comm.Bcast(betas, root=0)
+            comm.Bcast(alphas[-1], root=0)
+            comm.Bcast(betas[-1], root=0)
         converge_count = 1 + converge_count if converged(alphas, betas, verbose=verbose) else 0
-        if converge_count > 3:
+        if converge_count > 0:
             break
         if mpi:
-            q1_local = np.empty((len(basis.local_basis), n), dtype=complex)
+            q1_local = np.empty((len(basis.local_basis), n), dtype=complex, order="C")
             send_counts = np.empty((basis.comm.size), dtype=int) if basis.comm.rank == 0 else None
             basis.comm.Gather(np.array([q1_local.size]), send_counts if basis.comm.rank == 0 else None)
             offsets = (
@@ -511,8 +512,9 @@ def block_lanczos_sparse(
                 root=0,
             )
         else:
-            q1_local = q1_dense
+            q1_local = np.ascontiguousarray(q1_dense)
         q[0] = tmp[n : 2 * n]
+        # q[0] = q[1]
         q[1] = basis.build_state(q1_local.T, slaterWeightMin=0)
         if build_krylov_basis:
             Q.extend(q[1])

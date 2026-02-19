@@ -141,21 +141,22 @@ def split_comm_and_redistribute_psi(priorities: Iterable[float], psis: list[Many
 
 
 def get_Greens_function(
-    matsubara_mesh,
-    omega_mesh,
-    psis,
-    es,
-    tau,
-    basis,
-    hOp,
-    delta,
-    blocks,
-    verbose,
-    verbose_extra,
-    reort,
-    dN,
-    occ_cutoff,
-    slaterWeightMin,
+    matsubara_mesh: np.ndarray,
+    omega_mesh: np.ndarray,
+    psis: list[ManyBodyState],
+    es: list[float],
+    tau: float,
+    basis: ManyBodyBasis,
+    hOp: ManyBodyOperator,
+    delta: float,
+    blocks: list[list[int]],
+    verbose: bool,
+    verbose_extra: bool,
+    reort: Optional,
+    dN: Optional[int],
+    occ_cutoff: float,
+    slaterWeightMin: float,
+    sparse: bool,
 ):
     """
     Calculate interacting Greens function.
@@ -204,6 +205,7 @@ def get_Greens_function(
             occ_cutoff=occ_cutoff,
             slaterWeightMin=slaterWeightMin,
             verbose=verbose_extra,
+            sparse=sparse,
         )
         alphas_PS, betas_PS, r_PS = calc_Greens_function_with_offdiag(
             hOp,
@@ -216,6 +218,7 @@ def get_Greens_function(
             occ_cutoff=occ_cutoff,
             slaterWeightMin=slaterWeightMin,
             verbose=verbose_extra,
+            sparse=sparse,
         )
 
         e0 = np.min(es)
@@ -299,6 +302,7 @@ def calc_Greens_function_with_offdiag(
     occ_cutoff: float,
     slaterWeightMin: float,
     verbose: bool,
+    sparse: bool,
 ):
     r"""
         Return Green's function for states with low enough energy.
@@ -421,15 +425,25 @@ def calc_Greens_function_with_offdiag(
         )
         excited_psis = excited_basis.redistribute_psis(excited_psis)
 
-        # alphas, betas, r = block_Green(
-        alphas, betas, r = block_Green_sparse(
-            hOp=hOp,
-            psi_arr=excited_psis,
-            basis=excited_basis,
-            delta=delta,
-            slaterWeightMin=slaterWeightMin,
-            verbose=verbose,
-        )
+        if sparse:
+            alphas, betas, r = block_Green_sparse(
+                hOp=hOp,
+                psi_arr=excited_psis,
+                basis=excited_basis,
+                delta=delta,
+                slaterWeightMin=slaterWeightMin,
+                verbose=verbose,
+            )
+        else:
+            alphas, betas, r = block_Green(
+                reort=None,
+                hOp=hOp,
+                psi_arr=excited_psis,
+                basis=excited_basis,
+                delta=delta,
+                slaterWeightMin=slaterWeightMin,
+                verbose=verbose,
+            )
         local_alphas.append(alphas)
         local_betas.append(betas)
         local_r.append(r)
@@ -681,8 +695,8 @@ def block_Green(
             An, Bn = calc_continuants(np.diag(np.diag(alphas[-1]) + 1j * delta)[None] - alphas, betas_prev)
             done = np.abs(An_prev[-1] / Bn_prev[-1] - An[-1] / Bn[-1]) < 1e-12
         else:
-            G_prev = calc_G(alphas_prev, betas_prev, np.identity(n), [np.diag(np.diag(alphas[-1]))], 0, delta)
-            G = calc_G(alphas, betas, np.identity(n), [np.diag(np.diag(alphas[-1]))], 0, delta)
+            G_prev = calc_G(alphas_prev, betas_prev, np.identity(n), np.diag(np.diag(alphas[-1])), 0, delta)
+            G = calc_G(alphas, betas, np.identity(n), np.diag(np.diag(alphas[-1])), 0, delta)
             done = np.max(np.abs(G - G_prev)) < 1e-12
 
     return alphas, betas, r
@@ -710,10 +724,10 @@ def block_green_impl(basis, hOp, psi_arr, delta, slaterWeightMin, verbose):
     last_state = [ManyBodyState() for _ in block_psis]
     dense = len(block_basis) < 500
     if dense:
-        psi_dense = block_basis.build_vector(block_psis).T
+        psi_dense = block_basis.build_vector(block_psis, slaterWeightMin=slaterWeightMin).T
         psi_dense_local, r = build_qr(psi_dense)
     else:
-        psi_dense = block_basis.build_vector(block_psis, root=0).T
+        psi_dense = block_basis.build_vector(block_psis, root=0, slaterWeightMin=slaterWeightMin).T
         if brank == 0:
             psi_dense, r = build_qr(psi_dense)
         r = bcomm.bcast(r if brank == 0 else None, root=0)
@@ -736,14 +750,13 @@ def block_green_impl(basis, hOp, psi_arr, delta, slaterWeightMin, verbose):
         it_max += 1
     it_max = max(1, it_max)
 
-    delta_min = max(slaterWeightMin**2, np.finfo(float))
+    # delta_min = max(slaterWeightMin**2, np.finfo(float).eps)
+    delta_min = max(slaterWeightMin**2, 1e-12)
 
     def converged(alphas, betas, verbose=False):
         if alphas.shape[0] <= 1:
             return False
 
-        if np.any(np.abs(np.conj(betas[-1].T) @ betas[-1]) > 1e6):
-            return True
         # For scalar valued Lanczos, calculate convergents to check for convergence.
         if n == 1:
             An, Bn = calc_continuants(np.diag(np.diag(alphas[-1]) + 1j * delta)[None] - alphas, betas)
@@ -829,12 +842,12 @@ def block_Green_sparse(
 
     if N == 0 or n == 0:
         return np.empty((0, n, n), dtype=complex), np.empty((0, n, n), dtype=complex), np.zeros((n, n), dtype=complex)
-    psi_dense = basis.build_vector(basis.redistribute_psis(psi_arr), root=0).T
-    r = np.empty((psi_dense.shape[1]), dtype=complex)
+    psi_arr = basis.redistribute_psis(psi_arr)
+    psi_dense = basis.build_vector(psi_arr, root=0, slaterWeightMin=slaterWeightMin).T
     if rank == 0:
         psi_dense, r = build_qr(psi_dense)
     if mpi:
-        comm.Bcast(r, root=0)
+        r = comm.bcast(r if rank == 0 else None, root=0)
         rows, columns = comm.bcast(psi_dense.shape if rank == 0 else None, root=0)
         psi_dense_local = np.empty((len(basis.local_basis), columns), dtype=complex, order="C")
         send_counts = np.empty((comm.size), dtype=int) if rank == 0 else None

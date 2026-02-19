@@ -1,6 +1,6 @@
 from itertools import product
 import numpy as np
-from impurityModel.ed.ManyBodyUtils import ManyBodyState, ManyBodyOperator, applyOp, inner
+from impurityModel.ed.ManyBodyUtils import ManyBodyState, ManyBodyOperator, inner
 from impurityModel.ed.finite import thermal_average_scale_indep as thermal_average
 
 
