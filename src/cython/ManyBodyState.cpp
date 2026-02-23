@@ -72,98 +72,74 @@ double ManyBodyState::norm2() const {
 
 double ManyBodyState::norm() const { return sqrt(norm2()); }
 
-ManyBodyState &ManyBodyState::operator+=(auto &&other) {
-  if (other.size() == 0) {
-    return *this;
+ManyBodyState &ManyBodyState::operator+=(const ManyBodyState &other) {
+  for (const auto &state_amp : other) {
+    (*this)[state_amp.first] += state_amp.second;
   }
+  // if (other.size() == 0) {
+  //   return *this;
+  // }
 
-  auto other_it = other.begin();
-  iterator my_it = this->begin();
-  my_it = this->lower_bound(other_it->first);
-  while (other_it != other.end()) {
-    if (my_it == this->end()) {
-      this->insert(other_it, other.end());
-      other_it = other.end();
-    } else if (my_it->first > other_it->first) {
-      auto other_end = other.lower_bound(my_it->first);
-      this->insert(other_it, other_end);
-      std::advance(my_it, std::distance(other_it, other_end));
-      other_it = other_end;
+  // auto other_it = other.begin();
+  // iterator my_it = this->begin();
+  // my_it = this->lower_bound(other_it->first);
+  // while (other_it != other.end()) {
+  //   if (my_it == this->end()) {
+  //     this->insert(other_it, other.end());
+  //     other_it = other.end();
+  //   } else if (my_it->first > other_it->first) {
+  //     auto other_end = other.lower_bound(my_it->first);
+  //     this->insert(other_it, other_end);
+  //     std::advance(my_it, std::distance(other_it, other_end));
+  //     other_it = other_end;
 
-    } else if (my_it->first == other_it->first) {
-      while (my_it != this->end() && other_it != other.end() &&
-             my_it->first == other_it->first) {
-        (my_it++)->second += (other_it++)->second;
-      }
-    } else {
-      my_it = this->lower_bound(other_it->first);
-    }
-  }
+  //   } else if (my_it->first == other_it->first) {
+  //     while (my_it != this->end() && other_it != other.end() &&
+  //            my_it->first == other_it->first) {
+  //       (my_it++)->second += (other_it++)->second;
+  //     }
+  //   } else {
+  //     my_it = this->lower_bound(other_it->first);
+  //   }
+  // }
   return *this;
 }
 
-// ManyBodyState &ManyBodyState::operator+=(const ManyBodyState &other) {
-//   if (other.size() == 0) {
-//     return *this;
-//   }
-
-//   auto other_it = other.begin();
-//   iterator my_it = this->begin();
-//   my_it = this->lower_bound(other_it->first);
-//   while (other_it != other.end()) {
-//     if (my_it == this->end()) {
-//       this->insert(other_it, other.end());
-//       other_it = other.end();
-//     } else if (my_it->first > other_it->first) {
-//       auto other_end = other.lower_bound(my_it->first);
-//       this->insert(other_it, other_end);
-//       my_it += other_end - other_it;
-//       other_it = other_end;
-
-//     } else if (my_it->first == other_it->first) {
-//       while (my_it != this->end() && other_it != other.end() &&
-//              my_it->first == other_it->first) {
-//         (my_it++)->second += (other_it++)->second;
-//       }
-//     } else {
-//       my_it = this->lower_bound(other_it->first);
-//     }
-//   }
-//   return *this;
-// }
-
 ManyBodyState &ManyBodyState::operator-=(auto &&other) {
-  if (other.size() == 0) {
-    return *this;
+  for (const auto &state_amp : other) {
+    (*this)[state_amp.first] -= state_amp.second;
   }
 
-  auto other_it = other.begin();
-  iterator my_it = this->begin();
-  my_it = this->lower_bound(other_it->first);
-  while (other_it != other.end()) {
-    if (my_it == this->end()) {
-      for (auto it = other_it; it != other.end(); it++) {
-        this->insert({it->first, -it->second});
-      }
-      other_it = other.end();
-    } else if (my_it->first > other_it->first) {
-      auto other_end = other.lower_bound(my_it->first);
-      std::pair<iterator, bool> tmp;
-      for (auto it = other_it; it != other_end; it++) {
-        tmp = this->insert({it->first, -it->second});
-      }
-      my_it = tmp.first;
-      other_it = other_end;
+  // if (other.size() == 0) {
+  //   return *this;
+  // }
+  // auto other_it = other.begin();
+  // iterator my_it = this->begin();
+  // my_it = this->lower_bound(other_it->first);
+  // while (other_it != other.end()) {
+  //   if (my_it == this->end()) {
+  //     for (auto it = other_it; it != other.end(); it++) {
+  //       this->insert({it->first, -it->second});
+  //     }
+  //     other_it = other.end();
+  //   } else if (my_it->first > other_it->first) {
+  //     auto other_end = other.lower_bound(my_it->first);
+  //     std::pair<iterator, bool> tmp;
+  //     for (auto it = other_it; it != other_end; it++) {
+  //       tmp = this->insert({it->first, -it->second});
+  //     }
+  //     my_it = tmp.first;
+  //     other_it = other_end;
 
-    } else if (my_it->first == other_it->first) {
-      while (my_it != this->end() && other_it != other.end() &&
-             my_it->first == other_it->first) {
-        (my_it++)->second -= (other_it++)->second;
-      }
-    } else {
-      my_it = this->lower_bound(other_it->first);
-    }
-  }
+  //   } else if (my_it->first == other_it->first) {
+  //     while (my_it != this->end() && other_it != other.end() &&
+  //            my_it->first == other_it->first) {
+  //       (my_it++)->second -= (other_it++)->second;
+  //     }
+  //   } else {
+  //     my_it = this->lower_bound(other_it->first);
+  //   }
+  // }
   return *this;
 }
 
@@ -202,9 +178,16 @@ std::complex<double> inner(const ManyBodyState &a, const ManyBodyState &b) {
 }
 
 void ManyBodyState::prune(double cutoff) {
+#ifdef USE_BOOST
+  boost::unordered::erase_if(m_map,
+                             [cutoff](ManyBodyState::const_reference pair) {
+                               return abs(pair.second) <= cutoff;
+                             });
+#else
   std::erase_if(m_map, [cutoff](ManyBodyState::const_reference pair) {
     return abs(pair.second) <= cutoff;
   });
+#endif
 }
 
 std::string ManyBodyState::to_string() const {

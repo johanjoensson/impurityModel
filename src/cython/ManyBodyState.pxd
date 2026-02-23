@@ -2,7 +2,7 @@
 
 # from flat_map cimport flat_map as map
 from libcpp.vector cimport vector
-from libcpp.map cimport map
+from libcpp.unordered_map cimport unordered_map
 from libcpp.pair cimport pair
 from libc.stdint cimport uint8_t, uint16_t, uint64_t
 cimport cython
@@ -21,6 +21,8 @@ cdef extern from "ManyBodyState.h" nogil:
             bint operator()(const Key&, const Key&)
         cppclass ValueComparer:
             bint operator()(const cython.doublecomplex&, const cython.doublecomplex&)
+        cppclass KeyHash:
+            unsigned long  operator()(const Key&)
         # ctypedef Map.iterator iterator
         # ctypedef Map.const_iterator const_iterator
         # ctypedef Map.reverse_iterator reverse_iterator
@@ -29,8 +31,8 @@ cdef extern from "ManyBodyState.h" nogil:
         ctypedef pair[const Key, cython.doublecomplex] value_type
         ctypedef Key key_type
 
-        ctypedef map[Key, cython.doublecomplex].iterator iterator
-        ctypedef map[Key, cython.doublecomplex].const_iterator const_iterator
+        ctypedef unordered_map[Key, cython.doublecomplex, KeyHash].iterator iterator
+        ctypedef unordered_map[Key, cython.doublecomplex, KeyHash].const_iterator const_iterator
 
         ManyBodyState()
         ManyBodyState(const ManyBodyState&)

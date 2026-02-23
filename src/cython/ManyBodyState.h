@@ -5,12 +5,10 @@
 #include <complex>
 #include <cstddef>
 #include <cstdint>
-#if __cplusplus >= 202302L
-#include <flat_map>
-#define SORTED_UNIQUE std::sorted_unique,
+#ifdef USE_BOOST
+#include <boost/unordered/unordered_flat_map.hpp>
 #else
-#define SORTED_UNIQUE
-#include <map>
+#include <unordered_map>
 #endif
 #include <string>
 #include <utility>
@@ -46,10 +44,10 @@ public:
       return std::arg(a) < std::arg(b);
     }
   };
-#if __cplusplus >= 202302L
-  using Map = std::flat_map<Key, Value>;
+#ifdef USE_BOOST
+  using Map = boost::unordered_flat_map<Key, Value, KeyHash>;
 #else
-  using Map = std::map<Key, Value>;
+  using Map = std::unordered_map<Key, Value, KeyHash>;
 #endif
 
 private:
@@ -86,8 +84,8 @@ public:
   double norm2() const;
   double norm() const;
 
-  ManyBodyState &operator+=(auto &&);
-  // ManyBodyState &operator+=(const ManyBodyState &);
+  // ManyBodyState &operator+=(auto &&);
+  ManyBodyState &operator+=(const ManyBodyState &);
   ManyBodyState &operator-=(auto &&);
   // ManyBodyState &operator-=(const ManyBodyState &);
   ManyBodyState &operator*=(const std::complex<double> &);
@@ -161,7 +159,7 @@ public:
   }
 
   template <class InputIt> void insert(InputIt first, InputIt last) {
-    m_map.insert(SORTED_UNIQUE first, last);
+    m_map.insert(first, last);
   }
   iterator erase(iterator pos) { return m_map.erase(pos); }
   iterator erase(const_iterator pos) { return m_map.erase(pos); }
@@ -189,32 +187,34 @@ public:
     return m_map.contains(k);
   }
 
-  iterator lower_bound(const key_type &key) { return m_map.lower_bound(key); }
+  // iterator lower_bound(const key_type &key) { return m_map.lower_bound(key);
+  // }
 
-  const_iterator lower_bound(const key_type &key) const {
-    return m_map.lower_bound(key);
-  }
+  // const_iterator lower_bound(const key_type &key) const {
+  //   return m_map.lower_bound(key);
+  // }
 
-  template <class K> iterator lower_bound(const K &key) {
-    return m_map.lower_bound(key);
-  }
-  template <class K> const_iterator lower_bound(const K &key) const {
-    return m_map.lower_bound(key);
-  }
+  // template <class K> iterator lower_bound(const K &key) {
+  //   return m_map.lower_bound(key);
+  // }
+  // template <class K> const_iterator lower_bound(const K &key) const {
+  //   return m_map.lower_bound(key);
+  // }
 
-  iterator upper_bound(const key_type &key) { return m_map.upper_bound(key); }
+  // iterator upper_bound(const key_type &key) { return m_map.upper_bound(key);
+  // }
 
-  const_iterator upper_bound(const key_type &key) const {
-    return m_map.upper_bound(key);
-  }
+  // const_iterator upper_bound(const key_type &key) const {
+  //   return m_map.upper_bound(key);
+  // }
 
-  template <class K> iterator upper_bound(const K &key) {
-    return m_map.upper_bound(key);
-  }
+  // template <class K> iterator upper_bound(const K &key) {
+  //   return m_map.upper_bound(key);
+  // }
 
-  template <class K> const_iterator upper_bound(const K &key) const {
-    return m_map.upper_bound(key);
-  }
+  // template <class K> const_iterator upper_bound(const K &key) const {
+  //   return m_map.upper_bound(key);
+  // }
   std::string to_string() const;
 };
 

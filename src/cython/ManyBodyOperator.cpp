@@ -1,6 +1,6 @@
 #ifdef PARALLEL_STL
 #include <execution>
-#define PAR std::execution::par,
+#define PAR std::execution::par_unseq,
 #else
 #define PAR
 #endif
@@ -315,10 +315,8 @@ ManyBodyOperator::size() const noexcept {
   return m_ops.size();
 }
 
-std::tuple<std::vector<ManyBodyState::key_type>, std::vector<size_t>,
-           std::vector<size_t>>
-ManyBodyOperator::build_restriction_mask(
-    const Restrictions &restrictions) const noexcept {
+void ManyBodyOperator::build_restriction_mask(
+    const Restrictions &restrictions) noexcept {
   const size_t num_bits = 8 * sizeof(ManyBodyState::key_type::value_type);
 
   std::vector<ManyBodyState::key_type> masks;
@@ -350,18 +348,17 @@ ManyBodyOperator::build_restriction_mask(
     max_vals.push_back(restriction.second.second);
   }
 
-  return std::tuple<std::vector<ManyBodyState::key_type>, std::vector<size_t>,
-                    std::vector<size_t>>{masks, min_vals, max_vals};
+  this->m_restrictions_mask =
+      std::tuple<std::vector<ManyBodyState::key_type>, std::vector<size_t>,
+                 std::vector<size_t>>{masks, min_vals, max_vals};
 }
 
 bool ManyBodyOperator::state_is_within_restrictions(
-    const ManyBodyState::key_type &state,
-    const std::tuple<std::vector<ManyBodyState::key_type>, std::vector<size_t>,
-                     std::vector<size_t>> &restrictions) noexcept {
+    const ManyBodyState::key_type &state) const noexcept {
 
-  const auto &masks = std::get<0>(restrictions);
-  const auto &min_vals = std::get<1>(restrictions);
-  const auto &max_vals = std::get<2>(restrictions);
+  const auto &masks = std::get<0>(m_restrictions_mask);
+  const auto &min_vals = std::get<1>(m_restrictions_mask);
+  const auto &max_vals = std::get<2>(m_restrictions_mask);
   for (size_t i = 0; i < masks.size(); i++) {
     size_t bit_count = 0;
     for (size_t j = 0; j < masks[i].size(); j++) {
@@ -375,9 +372,7 @@ bool ManyBodyOperator::state_is_within_restrictions(
 }
 
 ManyBodyState ManyBodyOperator::apply_op_determinant(
-    const ManyBodyState::key_type &in_slater_determinant,
-    const std::tuple<std::vector<ManyBodyState::key_type>, std::vector<size_t>,
-                     std::vector<size_t>> &restrictions) const noexcept {
+    const ManyBodyState::key_type &in_slater_determinant) const noexcept {
   // std::chrono::microseconds t_create{0}, t_annihilate{0}, t_increment{0},
   //     t_copy{0};
   ManyBodyState tmp;
@@ -402,8 +397,7 @@ ManyBodyState ManyBodyOperator::apply_op_determinant(
         // (std::chrono::duration_cast<std::chrono::microseconds>(
         //     std::chrono::high_resolution_clock::now() - t0));
       }
-      if (sign == 0 ||
-          !state_is_within_restrictions(out_slater_determinant, restrictions)) {
+      if (sign == 0 || !state_is_within_restrictions(out_slater_determinant)) {
         sign = 0;
         break;
       }
@@ -432,22 +426,62 @@ ManyBodyState ManyBodyOperator::apply_op_determinant(
   return tmp;
 }
 
-[[nodiscard]] ManyBodyState ManyBodyOperator::apply(
-    const ManyBodyState &state, double cutoff,
-    const ManyBodyOperator::Restrictions &restrictions) const noexcept {
-  const auto restriction_mask = build_restriction_mask(restrictions);
-  // ManyBodyState initial{};
-  // initial.reserve(state.size());
+// [[nodiscard]] ManyBodyState ManyBodyOperator::apply(
+//     const ManyBodyState &state, double cutoff,
+//     const ManyBodyOperator::Restrictions &restrictions) const noexcept {
+//   const auto restriction_mask = build_restriction_mask(restrictions);
+//   // ManyBodyState initial{};
+//   // initial.reserve(state.size());
+//   ManyBodyState res = std::transform_reduce(
+//       PAR state.cbegin(), state.cend(), ManyBodyState{},
+//       [](auto &&a, const auto &b) { return std::forward<decltype(a)>(a += b);
+//       }, [this, &restriction_mask,
+//        cutoff](ManyBodyState::const_reference state_amp) {
+//         ManyBodyState tmp{};
+//         for (auto op_it = m_ops.cbegin(); op_it != m_ops.cend(); op_it++) {
+//           ManyBodyState::key_type out_slater_determinant{state_amp.first};
+//           double sign = 1;
+//           for (const int64_t idx : (*op_it).first) {
+//             if (idx >= 0) {
+//               sign *= create(out_slater_determinant,
+//               static_cast<size_t>(idx));
+//             } else {
+//               sign *= annihilate(out_slater_determinant,
+//                                  static_cast<size_t>(-(idx + 1)));
+//             }
+
+//             if (sign == 0 || !state_is_within_restrictions(
+//                                  out_slater_determinant, restriction_mask)) {
+//               sign = 0;
+//               break;
+//             }
+//           }
+//           if (abs(sign * op_it->second * state_amp.second) > cutoff) {
+//             tmp[std::move(out_slater_determinant)] +=
+//                 sign * op_it->second * state_amp.second;
+//           }
+//         }
+//         return tmp;
+//       });
+
+//   // res.prune(cutoff);
+//   return res;
+// }
+
+[[nodiscard]] ManyBodyState
+ManyBodyOperator::apply(const ManyBodyState &state,
+                        double cutoff) const noexcept {
   ManyBodyState res = std::transform_reduce(
-      PAR state.cbegin(), state.cend(), ManyBodyState{},
-      [](auto &&a, const auto &b) { return std::forward<decltype(a)>(a += b); },
-      [this, &restriction_mask,
-       cutoff](ManyBodyState::const_reference state_amp) {
+      PAR m_ops.begin(), m_ops.end(), ManyBodyState{},
+      [](auto &&a, auto &&b) { return std::forward<ManyBodyState>(a += b); },
+      [this, &state, cutoff](const ManyBodyOperator::value_type &op_amp) {
         ManyBodyState tmp{};
-        for (auto op_it = m_ops.cbegin(); op_it != m_ops.cend(); op_it++) {
+        for (auto state_it = state.cbegin(); state_it != state.cend();
+             state_it++) {
+          ManyBodyState::const_reference state_amp{*state_it};
           ManyBodyState::key_type out_slater_determinant{state_amp.first};
           double sign = 1;
-          for (const int64_t idx : (*op_it).first) {
+          for (const int64_t idx : op_amp.first) {
             if (idx >= 0) {
               sign *= create(out_slater_determinant, static_cast<size_t>(idx));
             } else {
@@ -455,69 +489,110 @@ ManyBodyState ManyBodyOperator::apply_op_determinant(
                                  static_cast<size_t>(-(idx + 1)));
             }
 
-            if (sign == 0 || !state_is_within_restrictions(
-                                 out_slater_determinant, restriction_mask)) {
+            if (sign == 0 ||
+                !state_is_within_restrictions(out_slater_determinant)) {
               sign = 0;
               break;
             }
           }
-          if (abs(sign * op_it->second * state_amp.second) > cutoff) {
+          if (abs(sign * op_amp.second * state_amp.second) > cutoff) {
             tmp[std::move(out_slater_determinant)] +=
-                sign * op_it->second * state_amp.second;
+                sign * op_amp.second * state_amp.second;
           }
         }
         return tmp;
       });
+  // std::vector<ManyBodyState> transformed{m_ops.size(), ManyBodyState{}};
+  // std::transform(
+  //     PAR m_ops.cbegin(), m_ops.cend(), transformed.begin(),
+  //     [this, &state, cutoff](const ManyBodyOperator::value_type &op_amp) {
+  //       ManyBodyState tmp{};
+  //       for (auto state_it = state.cbegin(); state_it != state.cend();
+  //            state_it++) {
+  //         ManyBodyState::const_reference state_amp{*state_it};
+  //         ManyBodyState::key_type out_slater_determinant{state_amp.first};
+  //         double sign = 1;
+  //         for (const int64_t idx : op_amp.first) {
+  //           if (idx >= 0) {
+  //             sign *= create(out_slater_determinant,
+  //             static_cast<size_t>(idx));
+  //           } else {
+  //             sign *= annihilate(out_slater_determinant,
+  //                                static_cast<size_t>(-(idx + 1)));
+  //           }
 
-  // res.prune(cutoff);
-  return res;
-}
-
-[[nodiscard]] std::vector<ManyBodyState> ManyBodyOperator::apply(
-    const std::vector<ManyBodyState> &psis, double cutoff,
-    const ManyBodyOperator::Restrictions &restrictions) const noexcept {
-  const auto restriction_mask = build_restriction_mask(restrictions);
-  std::vector<ManyBodyState> res;
-  res.reserve(psis.size());
-  for (const ManyBodyState &psi : psis) {
-    res.push_back(std::transform_reduce(
-        PAR psi.begin(), psi.end(), ManyBodyState{},
-        [](auto &&a, const ManyBodyState &b) {
-          return std::forward<ManyBodyState>(a += b);
-        },
-        [&](ManyBodyState::const_reference state_it) {
-          ManyBodyState tmp;
-          for (auto op_it = m_ops.cbegin(); op_it != m_ops.cend(); op_it++) {
-            ManyBodyState::key_type out_slater_determinant{state_it.first};
-            double sign = 1;
-            for (const int64_t idx : (*op_it).first) {
-              if (idx >= 0) {
-                sign *=
-                    create(out_slater_determinant, static_cast<size_t>(idx));
-              } else {
-                sign *= annihilate(out_slater_determinant,
-                                   static_cast<size_t>(-(idx + 1)));
-              }
-              if (sign == 0 || !state_is_within_restrictions(
-                                   out_slater_determinant, restriction_mask)) {
-                sign = 0;
-                break;
-              }
-            }
-            if (sign != 0 && abs(op_it->second * state_it.second) > cutoff) {
-              tmp[out_slater_determinant] +=
-                  static_cast<double>(sign) * op_it->second * state_it.second;
-            }
-          }
-          return tmp;
-        }));
-  }
-  // for (auto &psi : res) {
-  //   psi.prune(cutoff);
-  // }
+  //           if (sign == 0 ||
+  //               !state_is_within_restrictions(out_slater_determinant)) {
+  //             sign = 0;
+  //             break;
+  //           }
+  //         }
+  //         if (abs(sign * op_amp.second * state_amp.second) > cutoff) {
+  //           tmp[std::move(out_slater_determinant)] +=
+  //               sign * op_amp.second * state_amp.second;
+  //         }
+  //       }
+  //       return tmp;
+  //     });
+  // ManyBodyState initial = transformed.back();
+  // transformed.pop_back();
+  // ManyBodyState res =
+  //     std::reduce(PAR
+  //     std::vector<ManyBodyState>::iterator(transformed.begin()),
+  //                 transformed.end(), initial, [](auto &&a, auto &&b) {
+  //                   return std::forward<ManyBodyState>(a += b);
+  //                 });
 
   return res;
 }
+
+// [[nodiscard]] std::vector<ManyBodyState> ManyBodyOperator::apply(
+//     const std::vector<ManyBodyState> &psis, double cutoff,
+//     const ManyBodyOperator::Restrictions &restrictions) const noexcept {
+//   const auto restriction_mask = build_restriction_mask(restrictions);
+//   std::vector<ManyBodyState> res;
+//   res.reserve(psis.size());
+//   for (const ManyBodyState &psi : psis) {
+//     res.push_back(std::transform_reduce(
+//         PAR psi.begin(), psi.end(), ManyBodyState{},
+//         [](auto &&a, const ManyBodyState &b) {
+//           return std::forward<ManyBodyState>(a += b);
+//         },
+//         [&](ManyBodyState::const_reference state_it) {
+//           ManyBodyState tmp;
+//           for (auto op_it = m_ops.cbegin(); op_it != m_ops.cend(); op_it++) {
+//             ManyBodyState::key_type out_slater_determinant{state_it.first};
+//             double sign = 1;
+//             for (const int64_t idx : (*op_it).first) {
+//               if (idx >= 0) {
+//                 sign *=
+//                     create(out_slater_determinant, static_cast<size_t>(idx));
+//               } else {
+//                 sign *= annihilate(out_slater_determinant,
+//                                    static_cast<size_t>(-(idx + 1)));
+//               }
+//               if (sign == 0 || !state_is_within_restrictions(
+//                                    out_slater_determinant, restriction_mask))
+//                                    {
+//                 sign = 0;
+//                 break;
+//               }
+//             }
+//             if (sign != 0 && abs(op_it->second * state_it.second) > cutoff) {
+//               tmp[out_slater_determinant] +=
+//                   static_cast<double>(sign) * op_it->second *
+//                   state_it.second;
+//             }
+//           }
+//           return tmp;
+//         }));
+//   }
+//   // for (auto &psi : res) {
+//   //   psi.prune(cutoff);
+//   // }
+
+//   return res;
+// }
 
 ManyBodyOperator &
 ManyBodyOperator::operator+=(const ManyBodyOperator &other) noexcept {

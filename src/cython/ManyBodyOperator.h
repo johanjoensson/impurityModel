@@ -39,20 +39,15 @@ public:
 private:
   std::vector<std::pair<OPS, SCALAR>> m_ops;
 
-  [[nodiscard]] std::tuple<std::vector<ManyBodyState::key_type>,
-                           std::vector<size_t>, std::vector<size_t>>
-  build_restriction_mask(const Restrictions &restrictions) const noexcept;
+  std::tuple<std::vector<ManyBodyState::key_type>, std::vector<size_t>,
+             std::vector<size_t>>
+      m_restrictions_mask;
 
-  [[nodiscard]] static bool state_is_within_restrictions(
-      const ManyBodyState::key_type &,
-      const std::tuple<std::vector<ManyBodyState::key_type>,
-                       std::vector<size_t>, std::vector<size_t>> &) noexcept;
+  [[nodiscard]] bool
+  state_is_within_restrictions(const ManyBodyState::key_type &) const noexcept;
 
   [[nodiscard]] ManyBodyState apply_op_determinant(
-      const ManyBodyState::Key &slater_determinant,
-      const std::tuple<std::vector<ManyBodyState::key_type>,
-                       std::vector<size_t>, std::vector<size_t>> &)
-      const noexcept;
+      const ManyBodyState::Key &slater_determinant) const noexcept;
 
 public:
   using key_type = const OPS;
@@ -81,25 +76,26 @@ public:
   ManyBodyOperator(const OPS_VEC &, const SCALAR_VEC &);
   ManyBodyOperator(OPS_VEC &&, SCALAR_VEC &&);
 
-  [[nodiscard]] ManyBodyState operator()(
-      const ManyBodyState &psi, double cutoff = 0,
-      const ManyBodyOperator::Restrictions &restrictions = {}) const noexcept {
-    return apply(psi, cutoff, restrictions);
+  [[nodiscard]] ManyBodyState operator()(const ManyBodyState &psi,
+                                         double cutoff = 0) const noexcept {
+    return apply(psi, cutoff);
   }
 
-  [[nodiscard]] std::vector<ManyBodyState> operator()(
-      const std::vector<ManyBodyState> &psis, double cutoff = 0,
-      const ManyBodyOperator::Restrictions &restrictions = {}) const noexcept {
-    return apply(psis, cutoff, restrictions);
-  }
+  // [[nodiscard]] std::vector<ManyBodyState> operator()(
+  //     const std::vector<ManyBodyState> &psis, double cutoff = 0,
+  //     const ManyBodyOperator::Restrictions &restrictions = {}) const noexcept
+  //     {
+  //   return apply(psis, cutoff, restrictions);
+  // }
 
-  [[nodiscard]] ManyBodyState
-  apply(const ManyBodyState &, double cutoff = 0,
-        const ManyBodyOperator::Restrictions &restrictions = {}) const noexcept;
+  void build_restriction_mask(const Restrictions &restrictions) noexcept;
+  [[nodiscard]] ManyBodyState apply(const ManyBodyState &,
+                                    double cutoff = 0) const noexcept;
 
-  [[nodiscard]] std::vector<ManyBodyState>
-  apply(const std::vector<ManyBodyState> &, double cutoff = 0,
-        const ManyBodyOperator::Restrictions &restrictions = {}) const noexcept;
+  // [[nodiscard]] std::vector<ManyBodyState>
+  // apply(const std::vector<ManyBodyState> &, double cutoff = 0,
+  //       const ManyBodyOperator::Restrictions &restrictions = {}) const
+  //       noexcept;
 
   [[nodiscard]] size_type size() const noexcept;
   [[nodiscard]] bool empty() const noexcept;
