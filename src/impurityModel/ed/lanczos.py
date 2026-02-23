@@ -304,7 +304,8 @@ def get_block_Lanczos_matrices_dense(
         q[0] = q[1]
         q[1], betas[i] = sp.linalg.qr(wp, mode="economic", overwrite_a=True, check_finite=False)
 
-        if converged(alphas, betas):
+        converge_count = 1 + converge_count if converged(alphas, betas, verbose=verbose) else 0
+        if converge_count > 2:
             break
 
     return alphas, betas
@@ -369,7 +370,8 @@ def get_block_Lanczos_matrices(
             t_qr += perf_counter() - t_qr_fact
             t_converged = perf_counter()
 
-            done = converged(alphas, betas)
+            converge_count = 1 + converge_count if converged(alphas, betas, verbose=verbose) else 0
+            done = converge_count > 2
             t_conv += perf_counter() - t_converged
 
         if mpi:
@@ -437,7 +439,6 @@ def block_lanczos_sparse(
                 h_op,
                 psi_i,
                 cutoff=slaterWeightMin,
-                restrictions=basis.restrictions,
             )
             for psi_i in q[1]
         ]
@@ -491,7 +492,7 @@ def block_lanczos_sparse(
             comm.Bcast(alphas[-1], root=0)
             comm.Bcast(betas[-1], root=0)
         converge_count = 1 + converge_count if converged(alphas, betas, verbose=verbose) else 0
-        if converge_count > 0:
+        if converge_count > 2:
             break
         if mpi:
             q1_local = np.empty((len(basis.local_basis), n), dtype=complex, order="C")

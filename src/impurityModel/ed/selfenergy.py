@@ -43,6 +43,8 @@ def fixed_peak_dc(
     rank,
     verbose,
     dense_cutoff,
+    slaterWeightMin,
+    truncation_threshold,
 ):
     n_orb = sum(len(block) for imp_orbs in impurity_orbitals.values() for block in imp_orbs)
     peak_position = max(peak_position, 4 * tau)
@@ -60,7 +62,7 @@ def fixed_peak_dc(
             H=h_op_i,
             nominal_impurity_occ=Np,
             mixed_valence=mixed_valence,
-            truncation_threshold=1e5,
+            truncation_threshold=truncation_threshold,
             verbose=verbose,
             comm=MPI.COMM_WORLD,
             spin_flip_dj=spin_flip_dj,
@@ -72,7 +74,7 @@ def fixed_peak_dc(
             H=h_op_i,
             nominal_impurity_occ=N0,
             mixed_valence=mixed_valence,
-            truncation_threshold=1e5,
+            truncation_threshold=truncation_threshold,
             verbose=verbose,
             comm=MPI.COMM_WORLD,
             spin_flip_dj=spin_flip_dj,
@@ -85,7 +87,7 @@ def fixed_peak_dc(
             H=h_op_i,
             nominal_impurity_occ=N0,
             mixed_valence=mixed_valence,
-            truncation_threshold=1e5,
+            truncation_threshold=truncation_threshold,
             verbose=verbose,
             comm=MPI.COMM_WORLD,
             spin_flip_dj=spin_flip_dj,
@@ -97,7 +99,7 @@ def fixed_peak_dc(
             H=h_op_i,
             nominal_impurity_occ=Nm,
             mixed_valence=mixed_valence,
-            truncation_threshold=1e5,
+            truncation_threshold=truncation_threshold,
             verbose=verbose,
             comm=MPI.COMM_WORLD,
             spin_flip_dj=spin_flip_dj,
@@ -113,8 +115,8 @@ def fixed_peak_dc(
         }
     )
     h_op = h_op_i + dc_op_i
-    _ = basis_upper.expand(h_op, dense_cutoff=dense_cutoff, de2_min=1e-2, slaterWeightMin=1e-8)
-    _ = basis_lower.expand(h_op, dense_cutoff=dense_cutoff, de2_min=1e-2, slaterWeightMin=1e-8)
+    _ = basis_upper.expand(h_op, dense_cutoff=dense_cutoff, de2_min=1e-3, slaterWeightMin=slaterWeightMin)
+    _ = basis_lower.expand(h_op, dense_cutoff=dense_cutoff, de2_min=1e-3, slaterWeightMin=slaterWeightMin)
 
     energy_cut = 0  # -tau * np.log(1e-4)
 
@@ -136,7 +138,7 @@ def fixed_peak_dc(
             h,
             e_max=energy_cut,
             k=1,
-            eigenValueTol=np.sqrt(np.finfo(float).eps),
+            eigenValueTol=slaterWeightMin,
             return_eigvecs=True,
             comm=basis_upper.comm,
             dense=basis_upper.size < dense_cutoff,
@@ -146,7 +148,7 @@ def fixed_peak_dc(
             h,
             e_max=energy_cut,
             k=1,
-            eigenValueTol=np.sqrt(np.finfo(float).eps),
+            eigenValueTol=slaterWeightMin,
             return_eigvecs=True,
             comm=basis_upper.comm,
             dense=basis_lower.size < dense_cutoff,
@@ -238,7 +240,7 @@ def calc_selfenergy(
         "truncation_threshold": truncation_threshold,
     }
     psis, es, ground_state_basis, thermal_rho, gs_info = calc_gs(
-        h, basis_information, block_structure, rot_to_spherical, verbosity >= 1
+        h, basis_information, block_structure, rot_to_spherical, verbosity >= 1, slaterWeightMin=slaterWeightMin
     )
     restrictions = ground_state_basis.restrictions
 

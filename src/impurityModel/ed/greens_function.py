@@ -360,11 +360,13 @@ def calc_Greens_function_with_offdiag(
         )
     block_v = [[ManyBodyState({}) for _ in tOps] for _ in psis]
     for (i_tOp, tOp), (j_psi, psi) in itertools.product(enumerate(tOps), enumerate(psis)):
+
+        if excited_restrictions[j_psi] is not None:
+            tOp.set_restrictions(excited_restrictions[j_psi])
         block_v[j_psi][i_tOp] += applyOp_test(
             tOp,
             psi,
             cutoff=slaterWeightMin,
-            restrictions=excited_restrictions[j_psi],
         )
     block_v_lengths = np.array([sum(len(t_psi) for t_psi in t_psis) for t_psis in block_v])
     block_basis.comm.Allreduce(MPI.IN_PLACE, block_v_lengths, op=MPI.SUM)
@@ -425,6 +427,8 @@ def calc_Greens_function_with_offdiag(
         )
         excited_psis = excited_basis.redistribute_psis(excited_psis)
 
+        if excited_basis.restrictions is not None:
+            hOp.set_restrictions(excited_basis.restrictions)
         if sparse:
             alphas, betas, r = block_Green_sparse(
                 hOp=hOp,
@@ -692,12 +696,19 @@ def block_Green(
             An_prev, Bn_prev = calc_continuants(
                 np.diag(np.diag(alphas[-1]) + 1j * delta)[None] - alphas_prev, betas_prev
             )
-            An, Bn = calc_continuants(np.diag(np.diag(alphas[-1]) + 1j * delta)[None] - alphas, betas_prev)
-            done = np.abs(An_prev[-1] / Bn_prev[-1] - An[-1] / Bn[-1]) < 1e-12
+            An, Bn = calc_continuants(np.diag(np.diag(alphas[-1]) + 1j * delta)[None] - alphas, betas)
+            if abs(Bn[-1]) < 1e-6:
+                done = abs(Bn_prev[-1] * An[-1] - An_prev[-1] * Bn[-1]) < abs(1e-12 * Bn[-1] * Bn_prev[-1])
+            else:
+                done = np.abs(An_prev[-1] / Bn_prev[-1] - An[-1] / Bn[-1]) < 1e-12
+            if An[-1].imag * Bn[-1].real - An[-1].real * Bn[-1].imag > 0:
+                done = False
         else:
             G_prev = calc_G(alphas_prev, betas_prev, np.identity(n), np.diag(np.diag(alphas[-1])), 0, delta)
             G = calc_G(alphas, betas, np.identity(n), np.diag(np.diag(alphas[-1])), 0, delta)
             done = np.max(np.abs(G - G_prev)) < 1e-12
+            if np.any(np.diagonal(G.imag, axis1=1, axis2=2) > 0):
+                done = False
 
     return alphas, betas, r
 
@@ -762,10 +773,12 @@ def block_green_impl(basis, hOp, psi_arr, delta, slaterWeightMin, verbose):
             An, Bn = calc_continuants(np.diag(np.diag(alphas[-1]) + 1j * delta)[None] - alphas, betas)
             if verbose:
                 print(f"delta = {np.abs(An[-2] / Bn[-2] - An[-1] / Bn[-1])}")
+            if An[-1].imag * Bn[-1].real - An[-1].real * Bn[-1].imag > 0:
+                return False
             if abs(Bn[-1]) < 1e-6:
                 return abs(Bn[-1] * An[-2] - An[-1] * Bn[-2]) <= abs(delta_min * Bn[-1] * Bn[-2])
 
-            return np.abs(An[-2] / Bn[-2] - An[-1] / Bn[-1]) < delta_min
+            return abs(An[-2] / Bn[-2] - An[-1] / Bn[-1]) < delta_min
 
         # For matrix valued (block) Lanczos, continued fractions are harder to estimate convergence for
         wIs = ((delta * 1j) * np.identity(alphas.shape[1], dtype=complex) + np.diag(np.diag(alphas[-1])))[np.newaxis]
@@ -780,6 +793,8 @@ def block_green_impl(basis, hOp, psi_arr, delta, slaterWeightMin, verbose):
             gs_new = wIs - alpha - np.conj(beta.T)[np.newaxis, :, :] @ np.linalg.solve(gs_new, beta[np.newaxis, :, :])
             gs_prev = wIs - alpha - np.conj(beta.T)[np.newaxis, :, :] @ np.linalg.solve(gs_prev, beta[np.newaxis, :, :])
 
+        if np.any(np.diagonal(gs_new.imag, axis1=1, axis2=2) > 0):
+            return False
         d_g = np.max(np.abs(gs_new - gs_prev))
         if verbose:
             print(f"delta = {d_g}")
@@ -896,6 +911,8 @@ def block_Green_sparse(
             gs_new = wIs - alpha - np.conj(beta.T)[np.newaxis, :, :] @ np.linalg.solve(gs_new, beta[np.newaxis, :, :])
             gs_prev = wIs - alpha - np.conj(beta.T)[np.newaxis, :, :] @ np.linalg.solve(gs_prev, beta[np.newaxis, :, :])
 
+        if np.any(np.diagonal(gs_new.imag, axis1=1, axis2=2) > 0):
+            return False
         d_g = np.max(np.abs(gs_new - gs_prev))
         if verbose:
             print(f"delta = {d_g}", flush=True)

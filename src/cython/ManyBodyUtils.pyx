@@ -288,11 +288,7 @@ cdef class ManyBodyOperator:
     def size(self):
         return len(self)
 
-    def  __call__(self, ManyBodyState psi, double cutoff = 0, dict[frozenset[int], pair[int, int]] restrictions=None) -> ManyBodyState:
-        res = ManyBodyState()
-        if restrictions is None:
-            restrictions = {}
-        # For some reason using ManyBodyOpeartor_cpp.restrictions does not work
+    def set_restrictions(self,  dict[frozenset[int], pair[int, int]] restrictions=None):
         cdef frozenset[int] indices
         cdef pair[size_t, size_t] limits
         cdef vector[pair[vector[size_t], pair[size_t, size_t]]] rest
@@ -303,7 +299,12 @@ cdef class ManyBodyOperator:
                 continue
             rest.push_back(pair[vector[size_t], pair[size_t, size_t]](sorted(indices),pair[size_t, size_t](limits.first, limits.second)))
         with nogil:
-            res.v = self.o(psi.v, cutoff, rest)
+            self.o.build_restriction_mask(rest)
+
+    def  __call__(self, ManyBodyState psi, double cutoff = 0) -> ManyBodyState:
+        res = ManyBodyState()
+        with nogil:
+            res.v = self.o(psi.v, cutoff)
         return res
 
     # def  __call__(self, list[ManyBodyState] psi, double cutoff = 0, dict[frozenset[int], pair[int, int]] restrictions=None) -> list[ManyBodyState]:
@@ -354,5 +355,5 @@ cdef class ManyBodyOperator:
         return dict((ints_to_processes(p.first), p.second) for p in self.o)
 
 
-def applyOp(ManyBodyOperator op, ManyBodyState psi, double cutoff=0, dict[vector[size_t], pair[size_t, size_t]] restrictions=None) ->ManyBodyState :
-    return op(psi, cutoff, restrictions)
+def applyOp(ManyBodyOperator op, ManyBodyState psi, double cutoff=0) ->ManyBodyState :
+    return op(psi, cutoff)

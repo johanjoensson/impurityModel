@@ -193,8 +193,9 @@ def test_ManyBodyOperator_apply3():
     #                      1010
     res = ManyBodyState({b"\xa0": 1.0j})
 
-    print(f"{op(psi, 0, {frozenset([2, 3]): (1, 1)})}", flush=True)
-    assert res == op(psi, 0, {frozenset([2, 3]): (1, 1)})
+    op.set_restrictions({frozenset([2, 3]): (1, 1)})
+    print(f"{op(psi, 0 )}", flush=True)
+    assert res == op(psi, 0)
 
 
 def test_ManyBodyOperator_pickle():

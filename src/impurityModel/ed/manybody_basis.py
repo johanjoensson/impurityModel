@@ -200,12 +200,10 @@ class Basis:
         for config in itertools.product(*total_configurations.values()):
             for set_bits in itertools.product(*config):
                 basis.append(
-                    int.from_bytes(
-                        psr.tuple2bytes(
-                            tuple(idx for subset in set_bits for part in subset for idx in part), num_spin_orbitals
-                        ),
-                        byteorder="little",
-                    ).to_bytes(self.n_bytes, "little")
+                    # int.from_bytes(
+                    psr.tuple2bytes(tuple(idx for subset in set_bits for part in subset for idx in part), self.n_bytes),
+                    # byteorder="little",
+                    # ).to_bytes(self.n_bytes, "little")
                 )
 
         return basis, num_spin_orbitals
@@ -775,7 +773,6 @@ class Basis:
                         op,
                         ManyBodyState({state: 1}),
                         cutoff=slaterWeightMin,
-                        restrictions=self.restrictions,
                     )
                     new_local_states |= set(res.keys()) - local_states
                 if len(new_local_states) == 0:
@@ -898,7 +895,6 @@ class Basis:
                 op,
                 ManyBodyState({state: 1}),
                 cutoff=slaterWeightMin,
-                restrictions=self.restrictions,
             )
         print(f"Applying the Hamiltonian took {perf_counter() - t0} seconds")
         assert len(res) == len(self.local_basis)
@@ -1016,11 +1012,7 @@ class Basis:
         tmps = [None for _ in range(len(self.local_basis))]
         states = set()
         for i, state in enumerate(self.local_basis):
-            tmps[i] = set(
-                applyOp_test(
-                    op, ManyBodyState({state: 1.0}), restrictions=self.restrictions, cutoff=slaterWeightMin
-                ).keys()
-            )
+            tmps[i] = set(applyOp_test(op, ManyBodyState({state: 1.0}), cutoff=slaterWeightMin).keys())
             states |= tmps[i]
 
         indices = self.state_container._index_sequence(states)
@@ -1358,7 +1350,6 @@ class CIPSI_Basis(Basis):
                 H,
                 ManyBodyState({Dj: 1}),
                 cutoff=slaterWeightMin,
-                restrictions=self.restrictions,
             )
             e_Dj[i, j] = np.real(HDj[Dj])
         # E_i - <Dj|H|Dj>
@@ -1372,16 +1363,13 @@ class CIPSI_Basis(Basis):
         return local_Djs, de2
 
     def determine_new_Dj(self, e_ref, psi_ref, H, de2_min, slater_cutoff=0, return_Hpsi_ref=False):
-        if isinstance(H, dict):
-            H = ManyBodyOperator(H)
         new_Dj = set()
         Hpsi_ref = [None for _ in psi_ref]
         for i, (e_i, psi_i) in enumerate(zip(e_ref, psi_ref)):
             Hpsi_ref[i] = applyOp_test(
                 H,
                 psi_i,
-                slater_cutoff,
-                restrictions=self.restrictions,
+                cutoff=slater_cutoff,
             )
         Hpsi_ref = self.redistribute_psis(Hpsi_ref)
         local_Djs, de2 = self._calc_de2(H, Hpsi_ref, e_ref)
@@ -1439,8 +1427,6 @@ class CIPSI_Basis(Basis):
 
     def expand_at(self, E_ref, psi_ref, H, de2_min=1e-5):
 
-        if isinstance(H, dict):
-            H = ManyBodyOperator(H)
         old_size = self.size - 1
         while old_size != self.size:
             new_Dj, psi_ref = self.determine_new_Dj(E_ref, psi_ref, H, de2_min, return_Hpsi_ref=True)

@@ -27,6 +27,7 @@ def calc_energy(
     comm,
     verbose,
     truncation_threshold,
+    slaterWeightMin,
 ):
     basis = CIPSI_Basis(
         impurity_indices,
@@ -46,7 +47,7 @@ def calc_energy(
     )
     if len(basis) == 0:
         return np.inf, basis, {}
-    _ = basis.expand(h_op, dense_cutoff=dense_cutoff, de2_min=1e-4, slaterWeightMin=np.sqrt(np.finfo(float).eps))
+    _ = basis.expand(h_op, dense_cutoff=dense_cutoff, de2_min=1e-6, slaterWeightMin=slaterWeightMin)
 
     energy_cut = -tau * np.log(1e-4)
 
@@ -79,6 +80,7 @@ def find_ground_state_basis(
     comm,
     truncation_threshold,
     verbose,
+    slaterWeightMin,
 ):
     """
     Find the occupation corresponding to the lowest energy, compare N0 - 1, N0 and N0 + 1
@@ -110,6 +112,7 @@ def find_ground_state_basis(
             comm=comm,
             verbose=verbose,
             truncation_threshold=truncation_threshold,
+            slaterWeightMin=slaterWeightMin,
         )
         if verbose:
             print("{" + " ".join(f" {i} : {N0[i] + dN[i]}" for i in dN) + f"}} ~ {e_trial}")
@@ -140,6 +143,7 @@ def find_ground_state_basis(
                 comm=comm,
                 verbose=True,
                 truncation_threshold=truncation_threshold,
+                slaterWeightMin=slaterWeightMin,
             )
             if verbose:
                 print(
@@ -164,6 +168,7 @@ def calc_gs(
     block_structure: BlockStructure,
     rot_to_spherical: np.ndarray,
     verbose: bool,
+    slaterWeightMin,
     **kwargs,
 ):
 
@@ -173,12 +178,15 @@ def calc_gs(
     ground_state_basis = find_ground_state_basis(
         Hop,
         verbose=verbose,
+        slaterWeightMin=np.sqrt(slaterWeightMin),
         **basis_setup,
     )
 
+    if ground_state_basis.restrictions is not None:
+        Hop.set_restrictions(ground_state_basis.restrictions)
     ground_state_basis.tau = tau
     energy_cut = -tau * np.log(1e-4)
-    _ = ground_state_basis.expand(Hop, dense_cutoff=dense_cutoff, de2_min=1e-6, slaterWeightMin=np.finfo(float).eps)
+    _ = ground_state_basis.expand(Hop, dense_cutoff=dense_cutoff, de2_min=1e-6, slaterWeightMin=slaterWeightMin)
     _, block_roots, block_color, _, block_basis, _, _ = ground_state_basis.split_into_block_basis_and_redistribute_psi(
         Hop, None
     )
@@ -200,7 +208,7 @@ def calc_gs(
             psi_c = ground_state_basis.redistribute_psis([ManyBodyState() for _ in es_c])
         else:
             psi_c = ground_state_basis.redistribute_psis(
-                block_basis.build_state(block_psis_dense.T, slaterWeightMin=np.finfo(float).eps)
+                block_basis.build_state(block_psis_dense.T, slaterWeightMin=slaterWeightMin)
             )
         psis.extend(psi_c)
 
