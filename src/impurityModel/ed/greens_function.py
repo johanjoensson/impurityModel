@@ -146,7 +146,7 @@ def get_Greens_function(
     psis: list[ManyBodyState],
     es: list[float],
     tau: float,
-    basis: ManyBodyBasis,
+    basis: Basis,
     hOp: ManyBodyOperator,
     delta: float,
     blocks: list[list[int]],
