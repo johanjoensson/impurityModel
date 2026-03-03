@@ -45,9 +45,10 @@ def calc_energy(
         spin_flip_dj=spin_flip_dj,
         comm=comm,
     )
+    basis.restrictions = basis.build_initial_restrictions(h_op)
     if len(basis) == 0:
         return np.inf, basis, {}
-    _ = basis.expand(h_op, dense_cutoff=dense_cutoff, de2_min=1e-6, slaterWeightMin=slaterWeightMin)
+    basis.expand(h_op, dense_cutoff=dense_cutoff, de2_min=1e-6, slaterWeightMin=slaterWeightMin)
 
     energy_cut = -tau * np.log(1e-4)
 
@@ -186,7 +187,7 @@ def calc_gs(
         Hop.set_restrictions(ground_state_basis.restrictions)
     ground_state_basis.tau = tau
     energy_cut = -tau * np.log(1e-4)
-    _ = ground_state_basis.expand(Hop, dense_cutoff=dense_cutoff, de2_min=1e-6, slaterWeightMin=slaterWeightMin)
+    ground_state_basis.expand(Hop, dense_cutoff=dense_cutoff, de2_min=1e-6, slaterWeightMin=slaterWeightMin)
     _, block_roots, block_color, _, block_basis, _, _ = ground_state_basis.split_into_block_basis_and_redistribute_psi(
         Hop, None
     )

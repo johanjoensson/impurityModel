@@ -347,22 +347,31 @@ def calc_Greens_function_with_offdiag(
 
     """
 
-    excited_restrictions = [None for _ in psis]
-    for ei, psi in enumerate(psis):
-        excited_restrictions[ei] = block_basis.build_excited_restrictions(
-            psi,
-            [1],
-            hOp,
-            imp_change={i: (dN, dN) for i in block_basis.impurity_orbitals} if dN is not None else None,
-            val_change={i: (dN, 0) for i in block_basis.impurity_orbitals} if dN is not None else None,
-            con_change={i: (0, dN) for i in block_basis.impurity_orbitals} if dN is not None else None,
-            cutoff=occ_cutoff,
-        )
+    excited_restrictions = block_basis.build_excited_restrictions(
+        psis,
+        es,
+        hOp,
+        imp_change={i: (dN, dN) for i in block_basis.impurity_orbitals} if dN is not None else None,
+        val_change={i: (dN, 0) for i in block_basis.impurity_orbitals} if dN is not None else None,
+        con_change={i: (0, dN) for i in block_basis.impurity_orbitals} if dN is not None else None,
+        cutoff=occ_cutoff,
+    )
+    # excited_restrictions = [None for _ in psis]
+    # for ei, psi in enumerate(psis):
+    #     excited_restrictions[ei] = block_basis.build_excited_restrictions(
+    #         psi,
+    #         [1],
+    #         hOp,
+    #         imp_change={i: (dN, dN) for i in block_basis.impurity_orbitals} if dN is not None else None,
+    #         val_change={i: (dN, 0) for i in block_basis.impurity_orbitals} if dN is not None else None,
+    #         con_change={i: (0, dN) for i in block_basis.impurity_orbitals} if dN is not None else None,
+    #         cutoff=occ_cutoff,
+    #     )
     block_v = [[ManyBodyState({}) for _ in tOps] for _ in psis]
     for (i_tOp, tOp), (j_psi, psi) in itertools.product(enumerate(tOps), enumerate(psis)):
 
-        if excited_restrictions[j_psi] is not None:
-            tOp.set_restrictions(excited_restrictions[j_psi])
+        tOp.set_restrictions(excited_restrictions)
+        # tOp.set_restrictions(excited_restrictions[j_psi])
         block_v[j_psi][i_tOp] += applyOp_test(
             tOp,
             psi,
@@ -409,16 +418,22 @@ def calc_Greens_function_with_offdiag(
     local_alphas = []
     local_betas = []
     local_r = []
-    for excited_psis, er in ((excited_block_psis[ei], excited_restrictions[ei]) for ei in excited_indices):
-        if verbose and er is not None:
-            print("Excited state restrictions:")
-            for indices, occupations in er.items():
-                print(f"---> {sorted(indices)} : {occupations}")
+    if verbose and excited_restrictions is not None:
+        print("Excited state restrictions:")
+        for indices, occupations in excited_restrictions.items():
+            print(f"---> {sorted(indices)} : {occupations}")
+    for excited_psis in (excited_block_psis[ei] for ei in excited_indices):
+        # for excited_psis, er in ((excited_block_psis[ei], excited_restrictions[ei]) for ei in excited_indices):
+        # if verbose and er is not None:
+        #     print("Excited state restrictions:")
+        #     for indices, occupations in er.items():
+        #         print(f"---> {sorted(indices)} : {occupations}")
         excited_basis = Basis(
             original_excited_basis.impurity_orbitals,
             original_excited_basis.bath_states,
             initial_basis=set(state for psi in excited_psis for state in psi),
-            restrictions=er,
+            restrictions=excited_restrictions,
+            # restrictions=er,
             comm=original_excited_basis.comm,
             verbose=verbose,
             truncation_threshold=original_excited_basis.truncation_threshold,
@@ -427,9 +442,9 @@ def calc_Greens_function_with_offdiag(
         )
         excited_psis = excited_basis.redistribute_psis(excited_psis)
 
-        if excited_basis.restrictions is not None:
-            hOp.set_restrictions(excited_basis.restrictions)
         if sparse:
+            if excited_basis.restrictions is not None:
+                hOp.set_restrictions(excited_basis.restrictions)
             alphas, betas, r = block_Green_sparse(
                 hOp=hOp,
                 psi_arr=excited_psis,
@@ -681,7 +696,7 @@ def block_Green(
             basis.clear()
             new_states = set()
             for psi in last_state:
-                Hpsi = applyOp_test(hOp, psi, restrictions=basis.restrictions, cutoff=cutoff)
+                Hpsi = applyOp_test(hOp, psi, cutoff=cutoff)
                 new_states |= set(Hpsi.keys())
             basis.add_states(new_states)
             last_state = Hpsi
@@ -806,7 +821,7 @@ def block_green_impl(basis, hOp, psi_arr, delta, slaterWeightMin, verbose):
             psi0=psi_dense_local,
             h=H,
             converged=converged,
-            verbose=verbose,
+            verbose=False and verbose,
         )
     else:
         h_local = block_basis.build_sparse_matrix(hOp)[:, block_basis.local_indices]
@@ -831,7 +846,7 @@ def block_green_impl(basis, hOp, psi_arr, delta, slaterWeightMin, verbose):
             psi0=psi_dense_local,
             h=H,
             converged=converged,
-            verbose=verbose,
+            verbose=False and verbose,
             comm=bcomm,
         )
     return alphas, betas, r
@@ -886,7 +901,7 @@ def block_Green_sparse(
             return False
 
         # For scalar valued Lanczos, calculate convergents to check for convergence.
-        if n == 1:
+        if False and n == 1:
             An, Bn = calc_continuants(np.diag(np.diag(alphas[-1]) + 1j * delta)[None] - alphas, betas)
             if abs(Bn[-1]) < 1e-6:
                 # The An and Bn can become ridiculously tiny, in which case division becomes very unreliable
@@ -918,7 +933,7 @@ def block_Green_sparse(
             print(f"delta = {d_g}", flush=True)
         return d_g < delta_min
 
-    alphas, betas = block_lanczos_sparse(psi_arr, hOp, basis, converged, verbose=verbose)
+    alphas, betas = block_lanczos_sparse(psi_arr, hOp, basis, converged, verbose=False and verbose)
 
     return alphas, betas, r
 

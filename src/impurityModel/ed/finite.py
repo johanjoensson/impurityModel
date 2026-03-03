@@ -370,6 +370,7 @@ def scipy_eigensystem(h_local, e_max, k=10, v0=None, eigenValueTol=0, return_eig
                     # M=OPinv,
                     largest=False,
                     tol=max(eigenValueTol, 1e-12),
+                    maxiter=500,
                 )
     indices = np.argsort(es)
     es = es[indices]

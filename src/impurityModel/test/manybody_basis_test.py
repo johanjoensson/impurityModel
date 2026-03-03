@@ -7,11 +7,14 @@ from math import ceil
 
 def build_states(states: list[bytes]):
     b = Basis(
-        impurity_orbitals={},
-        bath_states=({}, {}),
+        impurity_orbitals={0: [list(range(8 * len(states[0])))]},
+        bath_states=({0: []}, {0: []}),
         initial_basis=[],
     )
-    return [int.from_bytes(state, byteorder="little").to_bytes(b.n_bytes, "little") for state in states]
+    print(f"{b.num_spin_orbitals=}")
+    print(f"{b.n_bytes=}")
+    print(f"{len(states[0])=}")
+    return [state + b"\x00" * (b.n_bytes - len(state)) for state in states]
 
 
 def test_Basis_states():
@@ -29,7 +32,7 @@ def test_Basis_states():
         nominal_impurity_occ={0: 1},
         verbose=True,
     )
-    assert all(state in basis for state in exact), basis.local_basis
+    assert all(state in basis for state in exact), f"{basis.local_basis=}\n{exact=}"
     assert all(state in exact for state in basis)
 
 

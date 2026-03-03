@@ -106,6 +106,8 @@ def fixed_peak_dc(
             tau=tau,
         )
 
+    # basis_upper.restrictions = basis_upper.build_initial_restrictions(h_op_i)
+    # basis_lower.restrictions = basis_lower.build_initial_restrictions(h_op_i)
     dc_op_i = ManyBodyOperator(
         {
             ((i, "c"), (j, "a")): -dc_trial[i, j] + 0j
@@ -115,8 +117,8 @@ def fixed_peak_dc(
         }
     )
     h_op = h_op_i + dc_op_i
-    _ = basis_upper.expand(h_op, dense_cutoff=dense_cutoff, de2_min=1e-3, slaterWeightMin=slaterWeightMin)
-    _ = basis_lower.expand(h_op, dense_cutoff=dense_cutoff, de2_min=1e-3, slaterWeightMin=slaterWeightMin)
+    basis_upper.expand(h_op, dense_cutoff=dense_cutoff, de2_min=1e-3, slaterWeightMin=slaterWeightMin)
+    basis_lower.expand(h_op, dense_cutoff=dense_cutoff, de2_min=1e-3, slaterWeightMin=slaterWeightMin)
 
     energy_cut = 0  # -tau * np.log(1e-4)
 
@@ -245,7 +247,7 @@ def calc_selfenergy(
     restrictions = ground_state_basis.restrictions
 
     if restrictions is not None and verbosity >= 2:
-        print("Restrictions GS on occupation")
+        print("Restrictions on GS occupation")
         for indices, limits in restrictions.items():
             print(f"---> {sorted(indices)} : {limits}")
 
@@ -305,6 +307,8 @@ def calc_selfenergy(
             for sig in sigma_real:
                 check_greens_function(sig)
         except UnphysicalGreensFunctionError as err:
+            for i, sig in enumerate(sigma_real):
+                save_Greens_function(sig, w, f"sig+dc-realaxis-{i}", cluster_label)
             raise UnphysicalGreensFunctionError("Real frequency self-energy:\n" + str(err)) from None
     else:
         sigma_real = None
@@ -323,6 +327,8 @@ def calc_selfenergy(
             for sig in sigma:
                 check_greens_function(sig)
         except UnphysicalGreensFunctionError as err:
+            for i, sig in enumerate(sigma_real):
+                save_Greens_function(sig, w, f"sig+dc-Matsubara-{i}", cluster_label)
             raise UnphysicalGreensFunctionError("Matsubara self-energy:\n" + str(err)) from None
     else:
         sigma = None
