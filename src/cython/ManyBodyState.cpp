@@ -1,4 +1,10 @@
 // #include <bits/utility.h>
+#include "ManyBodyState.h"
+#include <bits/utility.h>
+#include <bitset>
+#include <iostream>
+#include <iterator>
+#include <numeric>
 #ifdef PARALLEL_STL
 #include <execution>
 #define STATE_PAR std::execution::par_unseq,
@@ -6,9 +12,9 @@
 #define STATE_PAR
 #endif // PAR
 
-#include "ManyBodyState.h"
-#include <bitset>
-#include <numeric>
+#ifndef SORTED_UNIQUE
+#define SORTED_UNIQUE std::sorted_unique,
+#endif
 
 ManyBodyState::ManyBodyState(const std::vector<value_type> &values) : m_map() {
   std::vector<size_t> indices(values.size());
@@ -64,82 +70,43 @@ ManyBodyState::ManyBodyState(std::vector<key_type> &&keys,
 }
 
 double ManyBodyState::norm2() const {
-  return std::accumulate(this->cbegin(), this->cend(), 0.,
-                         [](double acc, const_reference a) {
-                           return acc + std::pow(abs(a.second), 2);
-                         });
+  return std::transform_reduce(
+      STATE_PAR this->cbegin(), this->cend(), 0.,
+      [](double a, double b) { return a + b; },
+      [](const_reference a) { return std::pow(abs(a.second), 2); });
 }
 
 double ManyBodyState::norm() const { return sqrt(norm2()); }
 
+// ManyBodyState &ManyBodyState::operator+=(ManyBodyState &&other) {
+//   if (other.size() > this->size()) {
+//     m_map.reserve(other.size());
+//   }
+//   for (auto it = std::make_move_iterator(other.begin());
+//        it != std::make_move_iterator(other.end()); it++) {
+//     (*this)[it->first] += it->second;
+//   }
+//   return *this;
+// }
+
 ManyBodyState &ManyBodyState::operator+=(const ManyBodyState &other) {
-  for (const auto &state_amp : other) {
-    (*this)[state_amp.first] += state_amp.second;
+  if (other.size() > this->size()) {
+    m_map.reserve(other.size());
   }
-  // if (other.size() == 0) {
-  //   return *this;
-  // }
-
-  // auto other_it = other.begin();
-  // iterator my_it = this->begin();
-  // my_it = this->lower_bound(other_it->first);
-  // while (other_it != other.end()) {
-  //   if (my_it == this->end()) {
-  //     this->insert(other_it, other.end());
-  //     other_it = other.end();
-  //   } else if (my_it->first > other_it->first) {
-  //     auto other_end = other.lower_bound(my_it->first);
-  //     this->insert(other_it, other_end);
-  //     std::advance(my_it, std::distance(other_it, other_end));
-  //     other_it = other_end;
-
-  //   } else if (my_it->first == other_it->first) {
-  //     while (my_it != this->end() && other_it != other.end() &&
-  //            my_it->first == other_it->first) {
-  //       (my_it++)->second += (other_it++)->second;
-  //     }
-  //   } else {
-  //     my_it = this->lower_bound(other_it->first);
-  //   }
-  // }
+  for (const auto &val : other) {
+    (*this)[val.first] += val.second;
+  }
   return *this;
 }
 
-ManyBodyState &ManyBodyState::operator-=(auto &&other) {
+ManyBodyState &ManyBodyState::operator-=(const ManyBodyState &other) {
+  if (other.size() > this->size()) {
+    m_map.reserve(other.size());
+  }
   for (const auto &state_amp : other) {
     (*this)[state_amp.first] -= state_amp.second;
   }
 
-  // if (other.size() == 0) {
-  //   return *this;
-  // }
-  // auto other_it = other.begin();
-  // iterator my_it = this->begin();
-  // my_it = this->lower_bound(other_it->first);
-  // while (other_it != other.end()) {
-  //   if (my_it == this->end()) {
-  //     for (auto it = other_it; it != other.end(); it++) {
-  //       this->insert({it->first, -it->second});
-  //     }
-  //     other_it = other.end();
-  //   } else if (my_it->first > other_it->first) {
-  //     auto other_end = other.lower_bound(my_it->first);
-  //     std::pair<iterator, bool> tmp;
-  //     for (auto it = other_it; it != other_end; it++) {
-  //       tmp = this->insert({it->first, -it->second});
-  //     }
-  //     my_it = tmp.first;
-  //     other_it = other_end;
-
-  //   } else if (my_it->first == other_it->first) {
-  //     while (my_it != this->end() && other_it != other.end() &&
-  //            my_it->first == other_it->first) {
-  //       (my_it++)->second -= (other_it++)->second;
-  //     }
-  //   } else {
-  //     my_it = this->lower_bound(other_it->first);
-  //   }
-  // }
   return *this;
 }
 
@@ -177,8 +144,8 @@ std::complex<double> inner(const ManyBodyState &a, const ManyBodyState &b) {
   return res;
 }
 
-void ManyBodyState::prune(double cutoff) {
-#ifdef USE_BOOST
+ManyBodyState &ManyBodyState::prune(double cutoff) {
+#ifdef BOOST
   boost::unordered::erase_if(m_map,
                              [cutoff](ManyBodyState::const_reference pair) {
                                return abs(pair.second) <= cutoff;
@@ -188,6 +155,7 @@ void ManyBodyState::prune(double cutoff) {
     return abs(pair.second) <= cutoff;
   });
 #endif
+  return *this;
 }
 
 std::string ManyBodyState::to_string() const {

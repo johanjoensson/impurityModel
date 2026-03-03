@@ -47,7 +47,7 @@ private:
   state_is_within_restrictions(const ManyBodyState::key_type &) const noexcept;
 
   [[nodiscard]] ManyBodyState apply_op_determinant(
-      const ManyBodyState::Key &slater_determinant) const noexcept;
+      const ManyBodyState::key_type &slater_determinant) const noexcept;
 
 public:
   using key_type = const OPS;
@@ -80,6 +80,11 @@ public:
                                          double cutoff = 0) const noexcept {
     return apply(psi, cutoff);
   }
+  [[nodiscard]] std::vector<ManyBodyState>
+  operator()(const std::vector<ManyBodyState> &psis,
+             double cutoff = 0) const noexcept {
+    return apply(psis, cutoff);
+  }
 
   // [[nodiscard]] std::vector<ManyBodyState> operator()(
   //     const std::vector<ManyBodyState> &psis, double cutoff = 0,
@@ -91,6 +96,15 @@ public:
   void build_restriction_mask(const Restrictions &restrictions) noexcept;
   [[nodiscard]] ManyBodyState apply(const ManyBodyState &,
                                     double cutoff = 0) const noexcept;
+  [[nodiscard]] std::vector<ManyBodyState>
+  apply(const std::vector<ManyBodyState> &psis, double cutoff) const noexcept {
+    std::vector<ManyBodyState> res;
+    res.reserve(psis.size());
+    for (const ManyBodyState &psi : psis) {
+      res.push_back(this->apply(psi, cutoff));
+    }
+    return res;
+  }
 
   // [[nodiscard]] std::vector<ManyBodyState>
   // apply(const std::vector<ManyBodyState> &, double cutoff = 0,

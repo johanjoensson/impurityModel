@@ -1,12 +1,14 @@
 # distutils: language = c++
-# cython: language_level=3, boundscheck=False, initializedcheck=False, wraparound=False, freethreading_compatible=True, cdivision=True, cpow=True 
+# cython: language_level=3, boundscheck=False, initializedcheck=False, wraparound=False, freethreading_compatible=True, cdivision=True, cpow=True
 
 from ManyBodyState cimport ManyBodyState as ManyBodyState_cpp, inner as inner_cpp
 from ManyBodyOperator cimport ManyBodyOperator as ManyBodyOperator_cpp
 from libcpp.pair cimport pair
 from libcpp.vector cimport vector
-from libcpp.map cimport map
-from libcpp.string cimport string
+from cython.operator cimport dereference, address
+
+cdef extern from "<utility>" namespace "std" nogil:
+    ManyBodyState_cpp& move(ManyBodyState_cpp)
 
 cdef bytes key_to_bytes(const ManyBodyState_cpp.key_type& key):
     cdef n_bytes = sizeof(ManyBodyState_cpp.key_type.value_type)
@@ -14,37 +16,47 @@ cdef bytes key_to_bytes(const ManyBodyState_cpp.key_type& key):
     cdef size_t i
     for i in range(key.size()):
         res[i*n_bytes: (i+1)*n_bytes] = key[i].to_bytes(n_bytes, byteorder='big')
-        # res[i*n_bytes: (i+1)*n_bytes] = key[i].to_bytes(n_bytes, byteorder='little')
 
     return bytes(res)
 
 cdef ManyBodyState_cpp.key_type bytes_to_key(bytes b):
     cdef n_bytes = sizeof(ManyBodyState_cpp.key_type.value_type)
-    cdef ManyBodyState_cpp.key_type key 
-    cdef size_t i = 0
+    cdef ManyBodyState_cpp.key_type key
+    cdef Py_ssize_t i = 0
     key.reserve(len(b)//n_bytes)
-    for i in range(0, len(b)//n_bytes, n_bytes):
+    for i in range(0, len(b)//n_bytes):
         key.push_back(int.from_bytes(b[i*n_bytes:(i+1)*n_bytes], byteorder='big'))
     if len(b) % n_bytes:
-
-        key.push_back(int.from_bytes(b[i*n_bytes:len(b)] + b'\x00'*(n_bytes - (len(b)%n_bytes)), byteorder='big'))
+        key.push_back(int.from_bytes(b[(len(b)//n_bytes)*n_bytes:len(b)] + b'\x00'*(n_bytes - (len(b)%n_bytes)), byteorder='big'))
     return key
 
 cdef class ManyBodyState:
 
     cdef ManyBodyState_cpp v
 
-    def __cinit__(self, dict[bytes, complex] psi={}):
+    def __cinit__(self, dict[bytes, complex] psi=None):
+        if psi is None:
+            psi = {}
         cdef vector[ManyBodyState_cpp.key_type] keys
         cdef vector[double complex] amplitudes
-        cdef ManyBodyState_cpp.key_type key
         cdef double complex val
         cdef bytes b
         for b, val in psi.items():
             keys.push_back(bytes_to_key(b))
             amplitudes.push_back(val)
-        with nogil:
-            self.v = ManyBodyState_cpp(keys, amplitudes)
+        self.v = ManyBodyState_cpp(keys, amplitudes)
+
+    # def __init__(self, dict[bytes, complex] psi={}):
+    #     cdef vector[ManyBodyState_cpp.key_type] keys
+    #     cdef vector[double complex] amplitudes
+    #     cdef ManyBodyState_cpp.key_type key
+    #     cdef double complex val
+    #     cdef bytes b
+    #     for b, val in psi.items():
+    #         keys.push_back(bytes_to_key(b))
+    #         amplitudes.push_back(val)
+    #     with nogil:
+    #         self.v[0] = ManyBodyState_cpp(keys, amplitudes)
 
     def __reduce__(self):
         return (self.__class__, (self.to_dict(), ))
@@ -66,7 +78,6 @@ cdef class ManyBodyState:
             self.v = self.v + other.v
         return self
 
-
     def __sub__(self, ManyBodyState other):
         res = ManyBodyState()
         with nogil:
@@ -81,29 +92,29 @@ cdef class ManyBodyState:
     def __mul__(self, double complex s):
         res = ManyBodyState()
         with nogil:
-            res.v = self.v*  s
+            res.v = self.v * s
         return res
 
     def __imul__(self, double complex s):
         with nogil:
-            self.v = self.v*  s
+            self.v = self.v * s
         return self
 
     def __rmul__(self, double complex s):
         res = ManyBodyState()
         with nogil:
-            res.v = self.v*s
+            res.v = self.v * s
         return res
 
     def __truediv__(self, double complex s):
         res = ManyBodyState()
         with nogil:
-            res.v = self.v /  s
+            res.v = self.v / s
         return res
 
     def __itruediv__(self, double complex s):
         with nogil:
-            self.v = self.v /  s
+            self.v = self.v / s
         return self
 
     def __getitem__(self, bytes key):
@@ -117,8 +128,6 @@ cdef class ManyBodyState:
         if key in self:
             return self[key]
         return default
-
-
 
     def norm2(self):
         with nogil:
@@ -171,14 +180,14 @@ cdef class ManyBodyState:
         return dict((key_to_bytes(p.first), p.second) for p in self.v)
 
     def copy(self):
-        d = self.to_dict()
-        # return ManyBodyState(list(d.keys()),list(d.values()) )
         return ManyBodyState(self.to_dict())
+
 
 def inner(ManyBodyState a, ManyBodyState b):
     with nogil:
         res = inner_cpp(a.v, b.v)
     return res
+
 
 cdef ManyBodyOperator_cpp.value_type.first_type processes_to_ints(tuple[tuple[int, str]] processes):
     cdef tuple[int, str] process
@@ -204,15 +213,14 @@ cdef tuple[tuple[int, str]] ints_to_processes(ManyBodyOperator_cpp.value_type.fi
 cdef class ManyBodyOperator:
     cdef ManyBodyOperator_cpp o
 
-    def __cinit__(self, dict[tuple[tuple[int, str]], complex] op={}):
-        cdef double complex amp 
+    def __cinit__(self, dict[tuple[tuple[int, str]], complex] op=None):
+        if op is None:
+            op = {}
+        cdef double complex amp
         cdef tuple[int, str] processes
-        cdef str action
-        cdef ManyBodyOperator_cpp.value_type.first_type.value_type  i
         cdef vector[ManyBodyOperator_cpp.value_type] new_ops
         for processes, amp in op.items():
             new_ops.emplace_back(processes_to_ints(processes), amp)
-
 
         with nogil:
             self.o = ManyBodyOperator_cpp(new_ops)
@@ -293,43 +301,22 @@ cdef class ManyBodyOperator:
         cdef pair[size_t, size_t] limits
         cdef vector[pair[vector[size_t], pair[size_t, size_t]]] rest
 
+        if restrictions is None:
+            restrictions = dict()
         rest.reserve(len(restrictions))
         for indices, limits in restrictions.items():
             if len(indices) == 0:
                 continue
-            rest.push_back(pair[vector[size_t], pair[size_t, size_t]](sorted(indices),pair[size_t, size_t](limits.first, limits.second)))
+            rest.push_back(pair[vector[size_t], pair[size_t, size_t]](sorted(indices), pair[size_t, size_t](limits.first, limits.second)))
         with nogil:
             self.o.build_restriction_mask(rest)
 
     def  __call__(self, ManyBodyState psi, double cutoff = 0) -> ManyBodyState:
+        cdef ManyBodyState res
         res = ManyBodyState()
         with nogil:
             res.v = self.o(psi.v, cutoff)
         return res
-
-    # def  __call__(self, list[ManyBodyState] psi, double cutoff = 0, dict[frozenset[int], pair[int, int]] restrictions=None) -> list[ManyBodyState]:
-    #     if restrictions is None:
-    #         restrictions = {}
-    #     # For some reason using ManyBodyOpeartor_cpp.restrictions does not work
-    #     cdef frozenset[int] indices
-    #     cdef pair[size_t, size_t] limits
-    #     cdef vector[pair[vector[size_t], pair[size_t, size_t]]] rest
-    #     cdef vector[ManyBodyState_cpp] v
-    #     cdef list[ManyBodyState] res
-    #     cdef int i
-    #     res = [ManyBodyState() for _ in psi]
-    #     v = vector[ManyBodyState_cpp](p.v for p in psi)
-
-    #     rest.reserve(len(restrictions))
-    #     for indices, limits in restrictions.items():
-    #         if len(indices) == 0:
-    #             continue
-    #         rest.push_back(pair[vector[size_t], pair[size_t, size_t]](sorted(indices),pair[size_t, size_t](limits.first, limits.second)))
-    #     with nogil:
-    #             v = self.o(v, cutoff, rest)
-    #     for i in range(len(res)):
-    #         res[i].v = v[i]
-    #     return res
 
     def erase(self, tuple[tuple[int, str]]key):
         self.op.erase(processes_to_ints(key))
@@ -350,7 +337,6 @@ cdef class ManyBodyOperator:
     def items(self):
         return ((ints_to_processes(p.first), p.second) for p in self.o)
 
-    
     def to_dict(self):
         return dict((ints_to_processes(p.first), p.second) for p in self.o)
 

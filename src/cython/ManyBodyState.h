@@ -3,25 +3,23 @@
 
 #include <algorithm>
 #include <complex>
-#include <cstddef>
+// #include <cstddef>
 #include <cstdint>
-#ifdef USE_BOOST
+#include <string>
+#ifdef BOOST
 #include <boost/unordered/unordered_flat_map.hpp>
 #else
 #include <unordered_map>
 #endif
-#include <string>
 #include <utility>
 #include <vector>
 
 class ManyBodyState {
 
 public:
+  // using Key = std::vector<uint8_t>;
   using Key = std::vector<uint64_t>;
   using Value = std::complex<double>;
-  struct KeyComparer {
-    bool operator()(const Key &a, const Key &b) const noexcept { return a < b; }
-  };
   struct KeyHash {
     std::size_t operator()(const Key &key) const {
       std::size_t res = 0;
@@ -33,18 +31,7 @@ public:
       return res;
     }
   };
-  struct ValueComparer {
-    bool operator()(const Value &a, const Value &b) const noexcept {
-      if (std::abs(a) < std::abs(b)) {
-        return true;
-      }
-      if (std::abs(b) < std::abs(a)) {
-        return false;
-      }
-      return std::arg(a) < std::arg(b);
-    }
-  };
-#ifdef USE_BOOST
+#ifdef BOOST
   using Map = boost::unordered_flat_map<Key, Value, KeyHash>;
 #else
   using Map = std::unordered_map<Key, Value, KeyHash>;
@@ -59,8 +46,8 @@ public:
   using value_type = Map::value_type;
   using size_type = Map::size_type;
   using difference_type = Map::difference_type;
-  using key_compare = KeyComparer;
-  using value_compare = ValueComparer;
+  using key_equal = Map::key_equal;
+  using hasher = Map::hasher;
   using reference = Map::reference;
   using const_reference = Map::const_reference;
 
@@ -84,10 +71,13 @@ public:
   double norm2() const;
   double norm() const;
 
-  // ManyBodyState &operator+=(auto &&);
+  // The expensive part of this code is creating copies of
+  // keys, to insert into the new state. We cannot move the keys
+  // into the result since value_type is pair<const Key, Amplitude>,
+  // and we cant move a const value.
+  // ManyBodyState &operator+=(ManyBodyState &&);
   ManyBodyState &operator+=(const ManyBodyState &);
-  ManyBodyState &operator-=(auto &&);
-  // ManyBodyState &operator-=(const ManyBodyState &);
+  ManyBodyState &operator-=(const ManyBodyState &);
   ManyBodyState &operator*=(const std::complex<double> &);
   ManyBodyState &operator/=(const std::complex<double> &);
   ManyBodyState operator-() const;
@@ -133,7 +123,7 @@ public:
   size_type max_size() const { return m_map.max_size(); }
 
   void clear() { m_map.clear(); }
-  void prune(double cutoff);
+  ManyBodyState &prune(double cutoff);
 
   iterator begin() { return m_map.begin(); }
   const_iterator begin() const { return m_map.begin(); }
@@ -216,6 +206,10 @@ public:
   //   return m_map.upper_bound(key);
   // }
   std::string to_string() const;
+  void reserve(size_type count) { m_map.reserve(count); }
+
+  // value_compare value_comp() const { return m_map.value_comp(); }
+  // key_compare key_comp() const { return m_map.key_comp(); }
 };
 
 namespace std {
