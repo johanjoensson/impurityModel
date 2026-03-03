@@ -28,14 +28,16 @@ constexpr int set_bits(ManyBodyState::key_type::value_type byte) noexcept {
 #endif
 }
 
-[[nodiscard]] int create(ManyBodyState::key_type &state, size_t idx) noexcept {
+[[nodiscard]] std::pair<int, ManyBodyState::key_type>
+create(const ManyBodyState::key_type &in_state, size_t idx) noexcept {
+  ManyBodyState::key_type state = in_state;
   const size_t num_bits{8 * sizeof(ManyBodyState::key_type::value_type)};
   const size_t state_idx = idx / num_bits;
   const size_t bit_idx = num_bits - 1 - (idx % num_bits);
   const ManyBodyState::key_type::value_type mask =
       static_cast<ManyBodyState::key_type::value_type>(1) << bit_idx;
   if (state[state_idx] & mask) {
-    return 0;
+    return {0, state};
   }
   size_t sign = 0;
   for (size_t i = 0; i < state_idx; i++) {
@@ -43,18 +45,19 @@ constexpr int set_bits(ManyBodyState::key_type::value_type byte) noexcept {
   }
   sign += set_bits(state[state_idx] >> bit_idx) % 2;
   state[state_idx] ^= mask;
-  return sign % 2 ? -1 : 1;
+  return {sign % 2 ? -1 : 1, state};
 }
 
-[[nodiscard]] int annihilate(ManyBodyState::key_type &state,
-                             size_t idx) noexcept {
+[[nodiscard]] std::pair<int, ManyBodyState::key_type>
+annihilate(const ManyBodyState::key_type &in_state, size_t idx) noexcept {
+  ManyBodyState::key_type state = in_state;
   const size_t num_bits = 8 * sizeof(ManyBodyState::key_type::value_type);
   const size_t state_idx = idx / num_bits;
   const size_t bit_idx = num_bits - 1 - (idx % num_bits);
   const ManyBodyState::key_type::value_type mask =
       static_cast<ManyBodyState::key_type::value_type>(1) << bit_idx;
   if (!(state[state_idx] & mask)) {
-    return 0;
+    return {0, state};
   }
   int sign = 0;
   for (size_t i = 0; i < state_idx; i++) {
@@ -62,7 +65,7 @@ constexpr int set_bits(ManyBodyState::key_type::value_type byte) noexcept {
   }
   state[state_idx] ^= mask;
   sign += set_bits(state[state_idx] >> bit_idx) % 2;
-  return sign % 2 ? -1 : 1;
+  return {sign % 2 ? -1 : 1, state};
 }
 
 ManyBodyOperator::ManyBodyOperator(const std::vector<value_type> &ops)
@@ -375,6 +378,7 @@ ManyBodyState ManyBodyOperator::apply_op_determinant(
   // std::chrono::microseconds t_create{0}, t_annihilate{0}, t_increment{0},
   //     t_copy{0};
   ManyBodyState tmp;
+  std::pair<int, ManyBodyState::key_type> ac_res;
   // auto t0 = std::chrono::high_resolution_clock::now();
   // auto t_total = std::chrono::high_resolution_clock::now();
   for (auto op_it = m_ops.cbegin(); op_it != m_ops.cend(); op_it++) {
@@ -386,16 +390,18 @@ ManyBodyState ManyBodyOperator::apply_op_determinant(
     for (const int64_t idx : (*op_it).first) {
       // auto t0 = std::chrono::high_resolution_clock::now();
       if (idx >= 0) {
-        sign *= create(out_slater_determinant, static_cast<size_t>(idx));
+        ac_res = create(out_slater_determinant, static_cast<size_t>(idx));
         // t_create += (std::chrono::duration_cast<std::chrono::microseconds>(
         //     std::chrono::high_resolution_clock::now() - t0));
       } else {
-        sign *=
+        ac_res =
             annihilate(out_slater_determinant, static_cast<size_t>(-(idx + 1)));
         // t_annihilate +=
         // (std::chrono::duration_cast<std::chrono::microseconds>(
         //     std::chrono::high_resolution_clock::now() - t0));
       }
+      sign *= ac_res.first;
+      out_slater_determinant = std::move(ac_res.second);
       if (sign == 0 || !state_is_within_restrictions(out_slater_determinant)) {
         sign = 0;
         break;
@@ -476,6 +482,7 @@ ManyBodyOperator::apply(const ManyBodyState &state,
         return std::forward<decltype(a)>(a += std::forward<decltype(b)>(b));
       },
       [this, &state, cutoff](ManyBodyOperator::const_reference op_amp) {
+        std::pair<int, ManyBodyState::key_type> ac_res;
         ManyBodyState tmp{};
         tmp.reserve(this->size());
         for (ManyBodyState::const_reference state_amp : state) {
@@ -484,11 +491,13 @@ ManyBodyOperator::apply(const ManyBodyState &state,
           double sign = 1;
           for (const int64_t idx : op_amp.first) {
             if (idx >= 0) {
-              sign *= create(out_slater_determinant, static_cast<size_t>(idx));
+              ac_res = create(out_slater_determinant, static_cast<size_t>(idx));
             } else {
-              sign *= annihilate(out_slater_determinant,
-                                 static_cast<size_t>(-(idx + 1)));
+              ac_res = annihilate(out_slater_determinant,
+                                  static_cast<size_t>(-(idx + 1)));
             }
+            sign *= ac_res.first;
+            out_slater_determinant = std::move(ac_res.second);
 
             if (sign == 0 ||
                 !state_is_within_restrictions(out_slater_determinant)) {
