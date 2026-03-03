@@ -188,36 +188,17 @@ def calc_gs(
     ground_state_basis.tau = tau
     energy_cut = -tau * np.log(1e-4)
     ground_state_basis.expand(Hop, dense_cutoff=dense_cutoff, de2_min=1e-6, slaterWeightMin=slaterWeightMin)
-    _, block_roots, block_color, _, block_basis, _, _ = ground_state_basis.split_into_block_basis_and_redistribute_psi(
-        Hop, None
-    )
-    h_gs = block_basis.build_sparse_matrix(Hop)
-    block_es, block_psis_dense = eigensystem(
+    h_gs = ground_state_basis.build_sparse_matrix(Hop)
+    es, psis_dense = eigensystem(
         h_gs,
         e_max=energy_cut,
         k=10,
         eigenValueTol=0,
-        comm=block_basis.comm,
-        dense=block_basis.size < dense_cutoff,
+        comm=ground_state_basis.comm,
+        dense=ground_state_basis.size < dense_cutoff,
     )
-    psis = []
-    es = np.array([], dtype=float)
-    for c, c_root in enumerate(block_roots):
-        es_c = ground_state_basis.comm.bcast(block_es, root=c_root)
-        es = np.append(es, es_c)
-        if c != block_color:
-            psi_c = ground_state_basis.redistribute_psis([ManyBodyState() for _ in es_c])
-        else:
-            psi_c = ground_state_basis.redistribute_psis(
-                block_basis.build_state(block_psis_dense.T, slaterWeightMin=slaterWeightMin)
-            )
-        psis.extend(psi_c)
 
-    sort_idx = np.argsort(es)
-    es = es[sort_idx]
-    mask = es <= (es[0] + energy_cut)
-    es = es[mask]
-    psis = [psis[idx] for idx in compress(sort_idx, mask)]
+    psis = ground_state_basis.build_state(psis_dense.T, slaterWeightMin=slaterWeightMin)
 
     effective_restrictions = ground_state_basis.get_effective_restrictions()
     if verbose:
