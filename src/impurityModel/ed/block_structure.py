@@ -363,3 +363,49 @@ def get_particle_hole_and_transpose_blocks(blocks, G=None, mat=None, tol=1e-6):
     if mat is None:
         mat = np.zeros((G.shape[1], G.shape[2]))
     return _particle_hole_transpose_blocks(blocks, G, mat, tol)
+
+
+def build_matrix(inequivalent_parts: list[np.ndarray], block_structure: BlockStructure):
+    assert len(inequivalent_parts) != 0
+    assert len(inequivalent_parts[0].shape) == 2
+    n_orb = sum(len(block) for block in block_structure.blocks)
+    M = np.zeros((n_orb, n_orb), dtype=inequivalent_parts[0].dtype)
+    for i, m in enumerate(inequivalent_parts):
+        i_block = block_structure.inequivalent_blocks[i]
+        for block in block_structure.identical_blocks[i_block]:
+            orbs = np.ix_(block_structure.blocks[block], block_structure.blocks[block])
+            M[orbs] = m
+        for block in block_structure.transposed_blocks[i_block]:
+            orbs = np.ix_(block_structure.blocks[block], block_structure.blocks[block])
+            M[orbs] = m.T
+        for block in block_structure.particle_hole_blocks[i_block]:
+            orbs = np.ix_(block_structure.blocks[block], block_structure.blocks[block])
+            M[orbs] = m
+        for block in block_structure.particle_hole_transposed_blocks[i_block]:
+            orbs = np.ix_(block_structure.blocks[block], block_structure.blocks[block])
+            M[orbs] = m.T
+    return M
+
+
+def build_greens_function(inequivalent_parts: list[np.ndarray], block_structure: BlockStructure):
+    assert len(inequivalent_parts) != 0
+    assert len(inequivalent_parts[0].shape) > 2
+    n_orb = sum(len(block) for block in block_structure.blocks)
+    initial_shape = inequivalent_parts[0].shape[:-2]
+    G = np.zeros(initial_shape + (n_orb, n_orb), dtype=inequivalent_parts[0].dtype)
+    for i, m in enumerate(inequivalent_parts):
+        i_block = block_structure.inequivalent_blocks[i]
+        for block in block_structure.identical_blocks[i_block]:
+            orbs = np.ix_(block_structure.blocks[block], block_structure.blocks[block])
+            G[..., *orbs] = m
+        for block in block_structure.transposed_blocks[i_block]:
+            orbs = np.ix_(block_structure.blocks[block], block_structure.blocks[block])
+            G[..., *orbs] = np.transpose(tuple(range(len(initial_shape)) + (m.ndim - 2, m.ndim - 1)))
+        for block in block_structure.particle_hole_blocks[i_block]:
+            orbs = np.ix_(block_structure.blocks[block], block_structure.blocks[block])
+            G[..., ::-1, *orbs] = m
+        for block in block_structure.particle_hole_transposed_blocks[i_block]:
+            orbs = np.ix_(block_structure.blocks[block], block_structure.blocks[block])
+            G[..., ::-1, *orbs] = np.transpose(tuple(range(len(initial_shape)) + (m.ndim - 2, m.ndim - 1)))
+
+    return G

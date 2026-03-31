@@ -3,6 +3,7 @@ from rspt2spectra.readfile import parse_matrices
 from rspt2spectra.h2imp import write_to_file
 from rspt2spectra.hyb_fit import fit_hyb
 from rspt2spectra.energies import get_mu
+from rspt2spectra.weight_functions import weight_functions
 import matplotlib.pyplot as plt
 import numpy as np
 from argparse import ArgumentParser
@@ -11,7 +12,7 @@ from impurityModel.ed.finite import matrixToIOp
 from impurityModel.ed.greens_function import (
     block_diagonalize_hyb,
 )
-from impurityModel.ed.block_structure import build_block_structure, get_blocks
+from impurityModel.ed.block_structure import build_block_structure, get_blocks, build_matrix
 from impurityModel.ed.edchain import (
     build_H_bath_v,
     build_full_bath,
@@ -32,6 +33,20 @@ def partition_index(l: Iterable, pred=bool):
         else:
             no.append(idx)
     return yes, no
+
+
+def filter_and_shift(ebs, vs, w_min, w_max, block_structure):
+    filtered_ebs_star, filtered_vs_star = ([], [])
+    shifts = [
+        np.zeros((len(block_structure.blocks[i_block]), len(block_structure.blocks[i_block])), dtype=complex)
+        for i_block in block_structure.inequivalent_blocks
+    ]
+    for ebs, vs, shift in zip(ebs, vs, shifts):
+        f = np.logical_or(ebs < w_min, ebs > w_max)
+        shift += np.sum(np.conj(np.transpose(vs[f], (0, 2, 1))) @ vs[f] / ebs[f, None, None], axis=0)
+        filtered_ebs_star.append(ebs[np.logical_not(f)].copy())
+        filtered_vs_star.append(vs[np.logical_not(f)].copy())
+    return build_matrix(shifts, block_structure), filtered_ebs_star, filtered_vs_star
 
 
 def run(
@@ -88,6 +103,8 @@ def run(
         (w[0], 0) if not fit_unocc else None,
         verbose,
         comm,
+        regularization="L2",
+        weight_fun=weight_functions["sqrtgauss"](0, 2.0),
     )
     for ebss, vss in zip(ebs_star, vs_star):
         if len(ebss) == 0:
@@ -98,48 +115,36 @@ def run(
     if verbose:
         print("Star bath energies and hopping parameters:")
         for bi, (eb, vb) in enumerate(zip(ebs_star, vs_star)):
-            print(
-                f"Energy   :  Hopping  (impurity orbitals {block_structure.blocks[block_structure.inequivalent_blocks[bi]]})"
-            )
             for eb_i, vb_i in zip(eb, vb):
-                print(f"{eb_i: 9.6f} :")
-                matrix_print(vb_i)
-                # print(f"{eb_i: 9.6f}:  ", "  ".join(f"{val: 9.6f}" for val in vb_i))
-            print("")
+                matrix_print(vb_i, f"Energy {eb_i: 9.6f} :")
+            print()
         print("=" * 80)
 
     w_min = w[0]
     w_max = w[-1]
     if not fit_unocc:
         w_max = 0
-    filtered_ebs_star, filtered_vs_star = ([], [])
-    shifts = []
-    for ebs, vs in zip(ebs_star, vs_star):
-        shift = 0
-        filtered_ebs = np.empty((0,), dtype=float)
-        filtered_vs = np.empty((0, vs.shape[1], vs.shape[2]), dtype=vs.dtype)
-        for i in range(ebs.shape[0]):
-            eb = ebs[i]
-            v = vs[i]
-            if w_min <= eb <= w_max:
-                filtered_ebs = np.append(filtered_ebs, eb)
-                filtered_vs = np.append(filtered_vs, [v], axis=0)
-                continue
-            shift += np.conj(v.T) @ v / eb
-        filtered_ebs_star.append(filtered_ebs)
-        filtered_vs_star.append(filtered_vs)
-        shifts.append(shift)
-    ebs_star = filtered_ebs_star
-    vs_star = filtered_vs_star
-
-    H_shift = np.zeros_like(H_dft)
-    for inequiv_block_i, shift in zip(block_structure.inequivalent_blocks, shifts):
-        for block_i in block_structure.identical_blocks[inequiv_block_i]:
-            orbs = block_structure.blocks[block_i]
-            H_shift[np.ix_(orbs, orbs)] = shift
+    original_ebs_star = ebs_star
+    original_vs_star = vs_star
+    H_shift, ebs_star, vs_star = filter_and_shift(ebs_star, vs_star, w_min, w_max, block_structure)
     if verbose:
         matrix_print(H_shift, r"Shift of $\Delta(\omega=0)$")
 
+    original_H_baths, original_vs_star = build_H_bath_v(
+        np.conj(Q.T) @ H_dft @ Q - H_shift,
+        original_ebs_star,
+        original_vs_star,
+        bath_geometry.lower(),
+        block_structure,
+        verbose,
+        False,
+    )
+    original_H_bath, original_v = build_full_bath(original_H_baths, original_vs_star, block_structure)
+    if comm is not None:
+        comm.Allreduce(MPI.IN_PLACE, original_H_bath, op=MPI.SUM)
+        original_H_bath /= comm.size
+        comm.Allreduce(MPI.IN_PLACE, original_v, op=MPI.SUM)
+        original_v /= comm.size
     H_baths, vs = build_H_bath_v(
         np.conj(Q.T) @ H_dft @ Q - H_shift,
         ebs_star,
@@ -160,10 +165,15 @@ def run(
         from itertools import product
         import matplotlib.pyplot as plt
 
-        # iwn = np.array([np.pi / beta * (2 * n - 1) * 1j for n in iwn])
         wn = w + 1j * eim
+        I = np.eye(original_H_bath.shape[0])
+        original_hyb = (
+            Q[None]
+            @ np.conj(original_v.T)[None, ...]
+            @ np.linalg.solve(I[None, ...] * wn[:, None, None] - original_H_bath[None, ...], original_v[None, ...])
+            @ np.conj(Q.T)[None]
+        )
         I = np.eye(H_bath.shape[0])
-        # V = v  # @ np.conj(Q.T)
         hyb = (
             Q[None]
             @ np.conj(v.T)[None, ...]
@@ -174,7 +184,7 @@ def run(
         blocks = get_blocks(hyb, tol=0)
         # blocks = [list(range(10))]
         for block in blocks:
-            fig, ax = plt.subplots(nrows=len(block), ncols=len(block), squeeze=False)
+            fig, ax = plt.subplots(nrows=len(block), ncols=len(block), squeeze=False, sharex="all", sharey="all")
             for (i, orb_i), (j, orb_j) in product(enumerate(block), repeat=2):
                 ax[i, j].fill_between(
                     wn.real,
@@ -183,9 +193,25 @@ def run(
                     alpha=0.3,
                     color="tab:blue",
                 )
-                ax[i, j].plot(wn.real, hyb[:, orb_i, orb_j].real, color="tab:blue")
+                ax[i, j].plot(
+                    wn.real,
+                    original_hyb[:, orb_i, orb_j].real,
+                    color="tab:orange",
+                    linestyle="--",
+                    alpha=0.5,
+                    label="Full fit",
+                )
+                ax[i, j].axhline(
+                    H_shift[orb_i, orb_j].real,
+                    color="black",
+                    linestyle="--",
+                    alpha=0.5,
+                    label=r"$\Delta(\omega=0)$ shift",
+                )
+                ax[i, j].plot(wn.real, hyb[:, orb_i, orb_j].real, color="tab:blue", label="Resulting fit")
+            ax[0, 0].set_ylim(bottom=np.min(phase_hyb.real), top=np.max(phase_hyb.real))
             fig.suptitle(r"Re$\left\{\Delta_{fit}(\omega)\right\}$")
-            fig, ax = plt.subplots(nrows=len(block), ncols=len(block), squeeze=False)
+            fig, ax = plt.subplots(nrows=len(block), ncols=len(block), squeeze=False, sharex="all", sharey="all")
             for (i, orb_i), (j, orb_j) in product(enumerate(block), repeat=2):
                 ax[i, j].fill_between(
                     wn.real,
@@ -194,7 +220,23 @@ def run(
                     alpha=0.3,
                     color="tab:blue",
                 )
-                ax[i, j].plot(wn.real, hyb[:, orb_i, orb_j].imag, color="tab:blue")
+                ax[i, j].plot(
+                    wn.real,
+                    original_hyb[:, orb_i, orb_j].imag,
+                    color="tab:orange",
+                    linestyle="--",
+                    alpha=0.8,
+                    label="Full fit",
+                )
+                ax[i, j].axhline(
+                    H_shift[orb_i, orb_j].imag,
+                    color="black",
+                    linestyle="--",
+                    alpha=0.5,
+                    label=r"$\Delta(\omega=0)$ shift",
+                )
+                ax[i, j].plot(wn.real, hyb[:, orb_i, orb_j].imag, color="tab:blue", label="Resulting fit")
+            ax[0, 0].set_ylim(bottom=np.min(phase_hyb.imag), top=np.max(phase_hyb.imag))
             fig.suptitle(r"Im$\left\{\Delta_{fit}(\omega)\right\}$")
         plt.show()
 
