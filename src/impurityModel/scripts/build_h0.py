@@ -60,6 +60,10 @@ def run(
     prefix: str,
     verbose: bool,
     plot: bool,
+    regularization: str,
+    weight_function: str,
+    weight_factor: float,
+    fit_center: float,
     *kwargs,
 ):
     comm = MPI.COMM_WORLD
@@ -103,8 +107,8 @@ def run(
         (w[0], 0) if not fit_unocc else None,
         verbose,
         comm,
-        regularization="L2",
-        weight_fun=weight_functions["sqrtgauss"](0, 2.0),
+        regularization=regularization,
+        weight_fun=weight_functions[weight_function](fit_center, weight_factor),
     )
     for ebss, vss in zip(ebs_star, vs_star):
         if len(ebss) == 0:
@@ -277,6 +281,10 @@ def main():
     parser.add_argument("-d", "--directory", type=str, default=".", dest="prefix")
     parser.add_argument("-v", "--verbose", action="store_true")
     parser.add_argument("-p", "--plot", action="store_true")
+    parser.add_argument("--regularization", type=str, default="l2")
+    parser.add_argument("--weight-function", type=str, default="unit")
+    parser.add_argument("--weight-factor", type=float, default=2.0)
+    parser.add_argument("--fit-center", type=float, default=0)
     args = parser.parse_args()
     run(**vars(args))
 
