@@ -20,7 +20,7 @@ def vector_to_string(v: np.ndarray, realvalue: Optional[bool] = None, n_prec: in
     return " ".join([f"{np.real(el):{real_format}} {np.imag(el):{imag_format}}j" for el in v])
 
 
-def matrix_to_string(m: np.ndarray, n_prec: int = 15):
+def matrix_to_string(m: np.ndarray, n_prec: int = 15, offset=0):
     """
     Pretty string representation of matrix
     Arguments:
@@ -29,7 +29,8 @@ def matrix_to_string(m: np.ndarray, n_prec: int = 15):
     n_prec: int - number of decimal places to print (default=15)
     """
     realvalue = not np.any(np.abs(m.imag) > float(f"1e-{n_prec}"))
-    return "\n".join([vector_to_string(row, realvalue, n_prec) for row in m])
+    print(" " * offset, end="")
+    return ("\n" + " " * offset).join([vector_to_string(row, realvalue, n_prec) for row in m])
 
 
 def matrix_print(m: np.ndarray, label: Optional[str] = None, n_prec=15, **kwargs):
@@ -46,7 +47,7 @@ def matrix_print(m: np.ndarray, label: Optional[str] = None, n_prec=15, **kwargs
     if len(m.shape) == 1:
         print(vector_to_string(m, n_prec=n_prec), **kwargs)
         return
-    print(matrix_to_string(m, n_prec), **kwargs)
+    print(matrix_to_string(m, n_prec, len(label) if label is not None else 0), **kwargs)
 
 
 def matrix_connectivity_print(m: np.ndarray, block_size: int = 1, label: Optional[str] = None):
@@ -68,9 +69,10 @@ def matrix_connectivity_print(m: np.ndarray, block_size: int = 1, label: Optiona
 
     if label is not None:
         print(label)
+        print(" " * len(label), end="")
 
     print(
-        "\n".join(
+        ("\n" + " " * (len(label) if label is not None else 0)).join(
             [
                 " ".join([get_char(el, i // block_size, j // block_size) for j, el in enumerate(row)])
                 for i, row in enumerate(m)

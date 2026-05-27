@@ -459,9 +459,6 @@ def block_lanczos_sparse(
             print(f"Added {basis.size - old_basis_size} states to the basis.")
             print(f"                : Currently the basis contains {basis.size} states.")
             print(f"                : Applying the hamiltonian took {t_apply} seconds.", flush=True)
-        # q[0] = basis.redistribute_psis(q[0])
-        # q[1] = basis.redistribute_psis(q[1])
-        # wp = basis.redistribute_psis(wp)
         tmp = basis.redistribute_psis(q[0] + q[1] + wp)
         v_dense = basis.build_vector(tmp, root=0).T
         if rank == 0:
@@ -492,9 +489,14 @@ def block_lanczos_sparse(
         if mpi:
             comm.Bcast(alphas[-1], root=0)
             comm.Bcast(betas[-1], root=0)
-        converge_count = 1 + converge_count if converged(alphas, betas, verbose=verbose) else 0
+
+        if converged(alphas, betas, verbose=verbose):
+            converge_count += 1
+        else:
+            converge_count = 0
         if converge_count > 2:
             break
+
         if mpi:
             q1_local = np.empty((len(basis.local_basis), n), dtype=complex, order="C")
             send_counts = np.empty((basis.comm.size), dtype=int) if basis.comm.rank == 0 else None
@@ -516,7 +518,6 @@ def block_lanczos_sparse(
         else:
             q1_local = np.ascontiguousarray(q1_dense)
         q[0] = tmp[n : 2 * n]
-        # q[0] = q[1]
         q[1] = basis.build_state(q1_local.T, slaterWeightMin=0)
         if build_krylov_basis:
             Q.extend(q[1])

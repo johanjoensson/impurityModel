@@ -4,21 +4,21 @@
 {
     "distutils": {
         "depends": [
-            "/home/johan/Programming/impurityModel/src/cython/ManyBodyOperator.cpp",
-            "/home/johan/Programming/impurityModel/src/cython/ManyBodyOperator.h",
-            "/home/johan/Programming/impurityModel/src/cython/ManyBodyState.cpp",
-            "/home/johan/Programming/impurityModel/src/cython/ManyBodyState.h"
+            "src/cython/ManyBodyOperator.cpp",
+            "src/cython/ManyBodyOperator.h",
+            "src/cython/ManyBodyState.cpp",
+            "src/cython/ManyBodyState.h"
         ],
         "include_dirs": [
-            "/home/johan/Programming/impurityModel/src/cython"
+            "src/cython"
         ],
         "language": "c++",
-        "name": "ManyBodyUtils",
+        "name": "impurityModel.ed.ManyBodyUtils",
         "sources": [
-            "/home/johan/Programming/impurityModel/src/cython/ManyBodyUtils.pyx"
+            "src/cython/ManyBodyUtils.pyx"
         ]
     },
-    "module_name": "ManyBodyUtils"
+    "module_name": "impurityModel.ed.ManyBodyUtils"
 }
 END: Cython Metadata */
 

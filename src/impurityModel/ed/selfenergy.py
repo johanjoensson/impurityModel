@@ -120,7 +120,7 @@ def fixed_peak_dc(
     basis_upper.expand(h_op, dense_cutoff=dense_cutoff, de2_min=1e-3, slaterWeightMin=slaterWeightMin)
     basis_lower.expand(h_op, dense_cutoff=dense_cutoff, de2_min=1e-3, slaterWeightMin=slaterWeightMin)
 
-    energy_cut = 0  # -tau * np.log(1e-4)
+    energy_cut = -tau * np.log(1e-4)
 
     impurity_indices = [orb for orb_blocks in impurity_orbitals.values() for block in orb_blocks for orb in block]
     impurity_ix = np.ix_(impurity_indices, impurity_indices)
@@ -176,6 +176,8 @@ def fixed_peak_dc(
     dc_fac = 1
     for _ in range(5):
         dc_fac += F(dc_fac)
+    if not 0.1 < abs(dc_fac) < 2:
+        dc_fac = 1
     if verbose:
         print(f"Peak position {peak_position}")
         matrix_print(dc_guess, label="DC guess")
@@ -308,7 +310,7 @@ def calc_selfenergy(
                 check_greens_function(sig)
         except UnphysicalGreensFunctionError as err:
             for i, sig in enumerate(sigma_real):
-                save_Greens_function(sig, w, f"sig+dc-realaxis-{i}", cluster_label)
+                save_Greens_function(sig, w, f"sig+dc-{i}", cluster_label)
             raise UnphysicalGreensFunctionError("Real frequency self-energy:\n" + str(err)) from None
     else:
         sigma_real = None
@@ -328,7 +330,7 @@ def calc_selfenergy(
                 check_greens_function(sig)
         except UnphysicalGreensFunctionError as err:
             for i, sig in enumerate(sigma_real):
-                save_Greens_function(sig, w, f"sig+dc-Matsubara-{i}", cluster_label)
+                save_Greens_function(sig, w, f"sig+dc-{i}", cluster_label)
             raise UnphysicalGreensFunctionError("Matsubara self-energy:\n" + str(err)) from None
     else:
         sigma = None
