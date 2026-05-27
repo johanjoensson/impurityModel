@@ -477,6 +477,8 @@ def calc_Greens_function_with_offdiag(
         excited_r = [None for _ in psis]
         for col, sender in enumerate(excited_roots):
             if sender == 0:
+                # print(f"{excited_indices=}")
+                # print(f"{len(local_alphas)=}, {len(excited_alphas)=}", flush=True)
                 for i, excited_i in enumerate(excited_indices):
                     excited_alphas[excited_i] = local_alphas[i]
                     excited_betas[excited_i] = local_betas[i]
