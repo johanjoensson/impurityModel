@@ -443,7 +443,7 @@ def calc_Greens_function_with_offdiag(
         )
         excited_psis = excited_basis.redistribute_psis(excited_psis)
 
-        if sparse and len(excited_basis) > 1000:
+        if sparse:
             if excited_basis.restrictions is not None:
                 hOp.set_restrictions(excited_basis.restrictions)
             alphas, betas, r = block_Green_sparse(
@@ -938,7 +938,9 @@ def block_Green_sparse(
             print(f"delta = {d_g}")
         return d_g < delta_min
 
-    alphas, betas = block_lanczos_sparse(psi_arr, hOp, basis, converged, verbose=False and verbose)
+    alphas, betas = block_lanczos_sparse(
+        psi_arr, hOp, basis, converged, verbose=verbose, slaterWeightMin=slaterWeightMin
+    )
 
     return alphas, betas, r
 
