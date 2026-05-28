@@ -47,7 +47,7 @@ def matrix_print(m: np.ndarray, label: Optional[str] = None, n_prec=15, **kwargs
     if len(m.shape) == 1:
         print(vector_to_string(m, n_prec=n_prec), **kwargs)
         return
-    print(matrix_to_string(m, n_prec, len(label) if label is not None else 0), **kwargs)
+    print(matrix_to_string(m, n_prec, 4 + (len(label) - len(label.lstrip())) if label is not None else 0), **kwargs)
 
 
 def matrix_connectivity_print(m: np.ndarray, block_size: int = 1, label: Optional[str] = None):
@@ -67,12 +67,13 @@ def matrix_connectivity_print(m: np.ndarray, block_size: int = 1, label: Optiona
             return "O"
         return "X"
 
+    offset = 4 + (len(label) - len(label.lstrip())) if label is not None else 0
     if label is not None:
         print(label)
-        print(" " * len(label), end="")
+        print(" " * offset, end="")
 
     print(
-        ("\n" + " " * (len(label) if label is not None else 0)).join(
+        ("\n" + " " * offset).join(
             [
                 " ".join([get_char(el, i // block_size, j // block_size) for j, el in enumerate(row)])
                 for i, row in enumerate(m)
