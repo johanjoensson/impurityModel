@@ -77,12 +77,12 @@ public:
   ManyBodyOperator(OPS_VEC &&, SCALAR_VEC &&);
 
   [[nodiscard]] ManyBodyState operator()(const ManyBodyState &psi,
-                                         double cutoff = 0) const noexcept {
+                                         double cutoff = 0) const /*noexcept*/ {
     return apply(psi, cutoff);
   }
   [[nodiscard]] std::vector<ManyBodyState>
   operator()(const std::vector<ManyBodyState> &psis,
-             double cutoff = 0) const noexcept {
+             double cutoff = 0) const /*noexcept*/ {
     return apply(psis, cutoff);
   }
 
@@ -95,9 +95,9 @@ public:
 
   void build_restriction_mask(const Restrictions &restrictions) noexcept;
   [[nodiscard]] ManyBodyState apply(const ManyBodyState &,
-                                    double cutoff = 0) const noexcept;
+                                    double cutoff = 0) const /*noexcept*/;
   [[nodiscard]] std::vector<ManyBodyState>
-  apply(const std::vector<ManyBodyState> &psis, double cutoff) const noexcept {
+  apply(const std::vector<ManyBodyState> &psis, double cutoff) const /*noexcept*/ {
     std::vector<ManyBodyState> res;
     res.reserve(psis.size());
     for (const ManyBodyState &psi : psis) {

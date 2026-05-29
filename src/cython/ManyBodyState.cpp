@@ -16,30 +16,45 @@
 #define SORTED_UNIQUE std::sorted_unique,
 #endif
 
-ManyBodyState::ManyBodyState(const std::vector<value_type> &values) : m_map() {
-  std::vector<size_t> indices(values.size());
-  std::iota(indices.begin(), indices.end(), 0);
+// ManyBodyState::ManyBodyState(std::initializer_list<value_type> &&values)
+//     : m_map(values) {
+//   // std::vector<size_t> indices(values.size());
+//   // std::iota(indices.begin(), indices.end(), 0);
 
-  std::stable_sort(indices.begin(), indices.end(),
-                   [&values](const size_t &a, const size_t &b) {
-                     return values[a].first < values[b].first;
-                   });
-  for (size_t idx : indices) {
-    m_map.insert(values[idx]);
-  }
-}
+//   // std::stable_sort(indices.begin(), indices.end(),
+//   //                  [&values](const size_t &a, const size_t &b) {
+//   //                    return values[a].first < values[b].first;
+//   //                  });
+//   // for (size_t idx : indices) {
+//   //   m_map.insert(values[idx]);
+//   // }
+// }
 
-ManyBodyState::ManyBodyState(std::vector<value_type> &&values) : m_map() {
-  std::vector<size_t> indices(values.size());
-  std::iota(indices.begin(), indices.end(), 0);
-  std::stable_sort(indices.begin(), indices.end(),
-                   [&values](const size_t &a, const size_t &b) {
-                     return values[a].first < values[b].first;
-                   });
-  for (size_t idx : indices) {
-    m_map.insert(std::move(values[idx]));
-  }
-}
+// ManyBodyState::ManyBodyState(const std::vector<value_type> &values) : m_map()
+// {
+//   std::vector<size_t> indices(values.size());
+//   std::iota(indices.begin(), indices.end(), 0);
+
+//   std::stable_sort(indices.begin(), indices.end(),
+//                    [&values](const size_t &a, const size_t &b) {
+//                      return values[a].first < values[b].first;
+//                    });
+//   for (size_t idx : indices) {
+//     m_map.insert(values[idx]);
+//   }
+// }
+
+// ManyBodyState::ManyBodyState(std::vector<value_type> &&values) : m_map() {
+//   std::vector<size_t> indices(values.size());
+//   std::iota(indices.begin(), indices.end(), 0);
+//   std::stable_sort(indices.begin(), indices.end(),
+//                    [&values](const size_t &a, const size_t &b) {
+//                      return values[a].first < values[b].first;
+//                    });
+//   for (size_t idx : indices) {
+//     m_map.insert(std::move(values[idx]));
+//   }
+// }
 
 ManyBodyState::ManyBodyState(const std::vector<key_type> &keys,
                              const std::vector<mapped_type> &values)
@@ -78,45 +93,53 @@ double ManyBodyState::norm2() const {
 
 double ManyBodyState::norm() const { return sqrt(norm2()); }
 
-// ManyBodyState &ManyBodyState::operator+=(ManyBodyState &&other) {
-//   if (other.size() > this->size()) {
-//     m_map.reserve(other.size());
-//   }
-//   for (auto it = std::make_move_iterator(other.begin());
-//        it != std::make_move_iterator(other.end()); it++) {
-//     (*this)[it->first] += it->second;
-//   }
-//   return *this;
-// }
+ManyBodyState &ManyBodyState::operator+=(ManyBodyState &&other) {
+  for (auto &&[key, amp] : other) {
+    auto [it, inserted] = m_map.try_emplace(key, amp);
+    if (!inserted) {
+      it->second += amp;
+    }
+  }
+  return *this;
+}
 
 ManyBodyState &ManyBodyState::operator+=(const ManyBodyState &other) {
-  if (other.size() > this->size()) {
-    m_map.reserve(other.size());
+  for (auto &&[key, amp] : other) {
+    auto [it, inserted] = m_map.try_emplace(key, amp);
+    if (!inserted) {
+      it->second += amp;
+    }
   }
-  for (const auto &val : other) {
-    (*this)[val.first] += val.second;
+  return *this;
+}
+
+ManyBodyState &ManyBodyState::operator-=(ManyBodyState &&other) {
+  for (auto &&[key, amp] : other) {
+    auto [it, inserted] = m_map.try_emplace(key, -amp);
+    if (!inserted) {
+      it->second -= amp;
+    }
   }
   return *this;
 }
 
 ManyBodyState &ManyBodyState::operator-=(const ManyBodyState &other) {
-  if (other.size() > this->size()) {
-    m_map.reserve(other.size());
+  for (auto &&[key, amp] : other) {
+    auto [it, inserted] = m_map.try_emplace(key, -amp);
+    if (!inserted) {
+      it->second -= amp;
+    }
   }
-  for (const auto &state_amp : other) {
-    (*this)[state_amp.first] -= state_amp.second;
-  }
-
   return *this;
 }
 
-ManyBodyState &ManyBodyState::operator*=(const mapped_type &s) {
+ManyBodyState &ManyBodyState::operator*=(mapped_type s) {
   for (reference p : *this) {
     p.second *= s;
   }
   return *this;
 }
-ManyBodyState &ManyBodyState::operator/=(const mapped_type &s) {
+ManyBodyState &ManyBodyState::operator/=(mapped_type s) {
   for (reference p : *this) {
     p.second /= s;
   }
@@ -134,11 +157,11 @@ ManyBodyState ManyBodyState::operator-() const {
 std::complex<double> inner(const ManyBodyState &a, const ManyBodyState &b) {
   std::complex<double> res = 0;
 
-  for (ManyBodyState::const_reference p : b) {
-    if (!a.contains(p.first)) {
+  for (auto &&[key, amp] : b) {
+    if (!a.contains(key)) {
       continue;
     }
-    res += conj(a.at(p.first)) * p.second;
+    res += conj(a.at(key)) * amp;
   }
 
   return res;

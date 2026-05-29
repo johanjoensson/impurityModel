@@ -61,8 +61,7 @@ public:
   ManyBodyState &operator=(ManyBodyState &&) = default;
   ~ManyBodyState() = default;
 
-  explicit ManyBodyState(const std::vector<value_type> &);
-  explicit ManyBodyState(std::vector<value_type> &&);
+  explicit ManyBodyState(std::initializer_list<value_type> l) : m_map(l) {}
   explicit ManyBodyState(const std::vector<key_type> &keys,
                          const std::vector<mapped_type> &values);
   explicit ManyBodyState(std::vector<key_type> &&keys,
@@ -75,11 +74,12 @@ public:
   // keys, to insert into the new state. We cannot move the keys
   // into the result since value_type is pair<const Key, Amplitude>,
   // and we cant move a const value.
-  // ManyBodyState &operator+=(ManyBodyState &&);
+  ManyBodyState &operator+=(ManyBodyState &&);
   ManyBodyState &operator+=(const ManyBodyState &);
   ManyBodyState &operator-=(const ManyBodyState &);
-  ManyBodyState &operator*=(const std::complex<double> &);
-  ManyBodyState &operator/=(const std::complex<double> &);
+  ManyBodyState &operator-=(ManyBodyState &&);
+  ManyBodyState &operator*=(mapped_type);
+  ManyBodyState &operator/=(mapped_type);
   ManyBodyState operator-() const;
   friend ManyBodyState operator+(const ManyBodyState &a,
                                  const ManyBodyState &b) {
@@ -150,6 +150,18 @@ public:
 
   template <class InputIt> void insert(InputIt first, InputIt last) {
     m_map.insert(first, last);
+  }
+
+  template <class... Arg> std::pair<iterator, bool> emplace(Arg &&...args) {
+    return m_map.emplace(std::forward<Arg>(args)...);
+  }
+
+  std::pair<iterator, bool> try_emplace(const Key &key, Value value) {
+    return m_map.try_emplace(key, value);
+  }
+
+  std::pair<iterator, bool> try_emplace(Key &&key, Value value) {
+    return m_map.try_emplace(std::move(key), value);
   }
   iterator erase(iterator pos) { return m_map.erase(pos); }
   iterator erase(const_iterator pos) { return m_map.erase(pos); }

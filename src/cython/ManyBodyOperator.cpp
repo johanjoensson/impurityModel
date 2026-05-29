@@ -29,7 +29,7 @@ constexpr int set_bits(ManyBodyState::key_type::value_type byte) noexcept {
 }
 
 [[nodiscard]] std::pair<int, ManyBodyState::key_type>
-create(const ManyBodyState::key_type &in_state, size_t idx) noexcept {
+create(const ManyBodyState::key_type &in_state, size_t idx) /*noexcept*/ {
   ManyBodyState::key_type state = in_state;
   const size_t num_bits{8 * sizeof(ManyBodyState::key_type::value_type)};
   const size_t state_idx = idx / num_bits;
@@ -49,7 +49,7 @@ create(const ManyBodyState::key_type &in_state, size_t idx) noexcept {
 }
 
 [[nodiscard]] std::pair<int, ManyBodyState::key_type>
-annihilate(const ManyBodyState::key_type &in_state, size_t idx) noexcept {
+annihilate(const ManyBodyState::key_type &in_state, size_t idx) /*noexcept*/ {
   ManyBodyState::key_type state = in_state;
   const size_t num_bits = 8 * sizeof(ManyBodyState::key_type::value_type);
   const size_t state_idx = idx / num_bits;
@@ -473,9 +473,9 @@ ManyBodyState ManyBodyOperator::apply_op_determinant(
 //   return res;
 // }
 
-[[nodiscard]] ManyBodyState
-ManyBodyOperator::apply(const ManyBodyState &state,
-                        double cutoff) const noexcept {
+[[nodiscard]] ManyBodyState ManyBodyOperator::apply(const ManyBodyState &state,
+                                                    double cutoff) const
+/*noexcept*/ {
   return std::transform_reduce(
       PAR m_ops.begin(), m_ops.end(), ManyBodyState{},
       [](auto &&a, auto &&b) {
@@ -485,9 +485,9 @@ ManyBodyOperator::apply(const ManyBodyState &state,
         std::pair<int, ManyBodyState::key_type> ac_res;
         ManyBodyState tmp{};
         tmp.reserve(this->size());
-        for (ManyBodyState::const_reference state_amp : state) {
-          // ManyBodyState::const_reference state_amp{*state_it};
-          ManyBodyState::key_type out_slater_determinant{state_amp.first};
+        for (auto &&[state, amp] : state) {
+          // for (ManyBodyState::const_reference state_amp : state) {
+          ManyBodyState::key_type out_slater_determinant{state};
           double sign = 1;
           for (const int64_t idx : op_amp.first) {
             if (idx >= 0) {
@@ -505,9 +505,9 @@ ManyBodyOperator::apply(const ManyBodyState &state,
               break;
             }
           }
-          if (sign != 0 && abs(op_amp.second * state_amp.second) > cutoff) {
+          if (sign != 0 && abs(op_amp.second * amp) > cutoff) {
             tmp[std::move(out_slater_determinant)] +=
-                sign * op_amp.second * state_amp.second;
+                sign * op_amp.second * amp;
           }
         }
         return tmp;
