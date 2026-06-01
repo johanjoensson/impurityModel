@@ -1,10 +1,13 @@
 #ifndef MANYBODY_STATE_H
 #define MANYBODY_STATE_H
 
-#include <algorithm>
 #include <complex>
 #include <cstdint>
+#if __cplusplus >= 202302L
 #include <flat_map>
+#else
+#include <boost/container/flat_map.hpp>
+#endif
 #include <string>
 #include <utility>
 #include <vector>
@@ -26,7 +29,11 @@ public:
       return res;
     }
   };
+#if __cplusplus >= 202302L
   using Map = std::flat_map<Key, Value>;
+#else
+  using Map = boost::container::flat_map<Key, Value>;
+#endif
 
 private:
   Map m_map;
@@ -208,10 +215,15 @@ public:
   }
   std::string to_string() const;
   void reserve(size_type count) {
+
+#if __cplusplus >= 202302L
     auto [keys, values] = std::move(m_map).extract();
     keys.reserve(count);
     values.reserve(count);
     m_map = Map(std::move(keys), std::move(values));
+#else
+    m_map.reserve(count);
+#endif
   }
 
   key_compare key_comp() const { return m_map.key_comp(); }
