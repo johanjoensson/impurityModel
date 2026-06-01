@@ -3,14 +3,9 @@
 
 #include <algorithm>
 #include <complex>
-// #include <cstddef>
 #include <cstdint>
+#include <flat_map>
 #include <string>
-#ifdef BOOST
-#include <boost/unordered/unordered_flat_map.hpp>
-#else
-#include <unordered_map>
-#endif
 #include <utility>
 #include <vector>
 
@@ -31,11 +26,7 @@ public:
       return res;
     }
   };
-#ifdef BOOST
-  using Map = boost::unordered_flat_map<Key, Value, KeyHash>;
-#else
-  using Map = std::unordered_map<Key, Value, KeyHash>;
-#endif
+  using Map = std::flat_map<Key, Value>;
 
 private:
   Map m_map;
@@ -46,8 +37,8 @@ public:
   using value_type = Map::value_type;
   using size_type = Map::size_type;
   using difference_type = Map::difference_type;
-  using key_equal = Map::key_equal;
-  using hasher = Map::hasher;
+  using key_compare = Map::key_compare;
+  using hasher = KeyHash;
   using reference = Map::reference;
   using const_reference = Map::const_reference;
 
@@ -76,8 +67,8 @@ public:
   // and we cant move a const value.
   ManyBodyState &operator+=(ManyBodyState &&);
   ManyBodyState &operator+=(const ManyBodyState &);
-  ManyBodyState &operator-=(const ManyBodyState &);
   ManyBodyState &operator-=(ManyBodyState &&);
+  ManyBodyState &operator-=(const ManyBodyState &);
   ManyBodyState &operator*=(mapped_type);
   ManyBodyState &operator/=(mapped_type);
   ManyBodyState operator-() const;
@@ -189,56 +180,44 @@ public:
     return m_map.contains(k);
   }
 
-  // iterator lower_bound(const key_type &key) { return m_map.lower_bound(key);
-  // }
+  iterator lower_bound(const key_type &key) { return m_map.lower_bound(key); }
 
-  // const_iterator lower_bound(const key_type &key) const {
-  //   return m_map.lower_bound(key);
-  // }
+  const_iterator lower_bound(const key_type &key) const {
+    return m_map.lower_bound(key);
+  }
 
-  // template <class K> iterator lower_bound(const K &key) {
-  //   return m_map.lower_bound(key);
-  // }
-  // template <class K> const_iterator lower_bound(const K &key) const {
-  //   return m_map.lower_bound(key);
-  // }
+  template <class K> iterator lower_bound(const K &key) {
+    return m_map.lower_bound(key);
+  }
+  template <class K> const_iterator lower_bound(const K &key) const {
+    return m_map.lower_bound(key);
+  }
 
-  // iterator upper_bound(const key_type &key) { return m_map.upper_bound(key);
-  // }
+  iterator upper_bound(const key_type &key) { return m_map.upper_bound(key); }
 
-  // const_iterator upper_bound(const key_type &key) const {
-  //   return m_map.upper_bound(key);
-  // }
+  const_iterator upper_bound(const key_type &key) const {
+    return m_map.upper_bound(key);
+  }
 
-  // template <class K> iterator upper_bound(const K &key) {
-  //   return m_map.upper_bound(key);
-  // }
+  template <class K> iterator upper_bound(const K &key) {
+    return m_map.upper_bound(key);
+  }
 
-  // template <class K> const_iterator upper_bound(const K &key) const {
-  //   return m_map.upper_bound(key);
-  // }
+  template <class K> const_iterator upper_bound(const K &key) const {
+    return m_map.upper_bound(key);
+  }
   std::string to_string() const;
-  void reserve(size_type count) { m_map.reserve(count); }
+  void reserve(size_type count) {
+    auto [keys, values] = std::move(m_map).extract();
+    keys.reserve(count);
+    values.reserve(count);
+    m_map = Map(std::move(keys), std::move(values));
+  }
 
-  // value_compare value_comp() const { return m_map.value_comp(); }
-  // key_compare key_comp() const { return m_map.key_comp(); }
+  key_compare key_comp() const { return m_map.key_comp(); }
 };
 
 namespace std {
 inline void swap(ManyBodyState &a, ManyBodyState &b) noexcept { a.swap(b); }
-// #if __cplusplus >= 202302L
-// template <template <class> class TQual, template <class> class UQual>
-// struct basic_common_reference<ManyBodyState::const_reference,
-//                               ManyBodyState::value_type, TQual, UQual> {
-//   using type = ManyBodyState::value_type;
-// };
-
-// template <template <class> class TQual, template <class> class UQual>
-// struct basic_common_reference<ManyBodyState::value_type,
-//                               ManyBodyState::const_reference, TQual, UQual>
-//                               {
-//   using type = ManyBodyState::value_type;
-// };
-// #endif
 }; // namespace std
 #endif // MANYBODY_STATE_H

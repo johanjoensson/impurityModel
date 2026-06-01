@@ -1,6 +1,6 @@
 #ifdef PARALLEL_STL
 #include <execution>
-#define PAR std::execution::par,
+#define PAR std::execution::par_unseq,
 #else
 #define PAR
 #endif
@@ -484,9 +484,8 @@ ManyBodyState ManyBodyOperator::apply_op_determinant(
       [this, &state, cutoff](ManyBodyOperator::const_reference op_amp) {
         std::pair<int, ManyBodyState::key_type> ac_res;
         ManyBodyState tmp{};
-        tmp.reserve(this->size());
+        tmp.reserve(this->size() * state.size());
         for (auto &&[state, amp] : state) {
-          // for (ManyBodyState::const_reference state_amp : state) {
           ManyBodyState::key_type out_slater_determinant{state};
           double sign = 1;
           for (const int64_t idx : op_amp.first) {
@@ -506,8 +505,11 @@ ManyBodyState ManyBodyOperator::apply_op_determinant(
             }
           }
           if (sign != 0 && abs(op_amp.second * amp) > cutoff) {
-            tmp[std::move(out_slater_determinant)] +=
-                sign * op_amp.second * amp;
+            auto [it, inserted] = tmp.try_emplace(
+                std::move(out_slater_determinant), sign * op_amp.second * amp);
+            if (!inserted) {
+              it->second += sign * op_amp.second * amp;
+            }
           }
         }
         return tmp;

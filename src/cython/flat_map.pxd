@@ -1,12 +1,11 @@
 from libcpp.pair cimport pair
 
 cdef extern from "<flat_map>" namespace "std" nogil:
-    cdef cppclass flat_map[T, U, COMPARE=*, ALLOCATOR=*]:
+    cdef cppclass flat_map[T, U, COMPARE=*, KEYCONTAINER=*, MAPPEDCONTAINER=*]:
         ctypedef T key_type
         ctypedef U mapped_type
-        ctypedef pair[const T, U] value_type
+        ctypedef pair[T, U] value_type
         ctypedef COMPARE key_compare
-        ctypedef ALLOCATOR allocator_type
 
         # these should really be allocator_type.size_type and
         # allocator_type.difference_type to be true to the C++ definition
@@ -79,9 +78,7 @@ cdef extern from "<flat_map>" namespace "std" nogil:
 
         flat_map() except +
         flat_map(flat_map&) except +
-        #flat_map(key_compare&)
         U& operator[](const T&)
-        #flat_map& operator=(map&)
         bint operator==(flat_map&, flat_map&)
         bint operator!=(flat_map&, flat_map&)
         bint operator<(flat_map&, flat_map&)
@@ -110,7 +107,6 @@ cdef extern from "<flat_map>" namespace "std" nogil:
         pair[iterator, bint] insert(const pair[T, U]&) except +
         iterator insert(const_iterator, const pair[T, U]&) except +
         void insert[InputIt](InputIt, InputIt) except +
-        #key_compare key_comp()
         iterator lower_bound(const T&)
         const_iterator const_lower_bound "lower_bound"(const T&)
         size_t max_size()
@@ -124,7 +120,5 @@ cdef extern from "<flat_map>" namespace "std" nogil:
         void swap(flat_map&)
         iterator upper_bound(const T&)
         const_iterator const_upper_bound "upper_bound"(const T&)
-        #value_compare value_comp()
         # C++20
         bint contains(const T&)
-
