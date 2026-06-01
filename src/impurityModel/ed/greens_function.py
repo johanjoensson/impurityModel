@@ -173,7 +173,7 @@ def get_Greens_function(
     if verbose:
         print(f"New block roots: {block_roots}")
         print(f"Blocks per color: {blocks_per_color}")
-        print("=" * 80, flush=True)
+        print("=" * 80)
     if basis.comm.rank == 0:
         block_indices_per_color = np.empty((sum(blocks_per_color)), dtype=int)
         block_offsets = np.array([sum(blocks_per_color[:r]) for r in range(len(block_roots))], dtype=int)
@@ -394,7 +394,7 @@ def calc_Greens_function_with_offdiag(
     if verbose:
         print(f"New excited state roots: {excited_roots}")
         print(f"excited states per color: {excited_states_per_color}")
-        print("=" * 80, flush=True)
+        print("=" * 80)
     if block_basis.comm.rank == 0:
         excited_indices_per_color = np.empty((sum(excited_states_per_color)), dtype=int)
         excited_offsets = np.array([sum(excited_states_per_color[:r]) for r in range(len(excited_roots))], dtype=int)
@@ -477,8 +477,6 @@ def calc_Greens_function_with_offdiag(
         excited_r = [None for _ in psis]
         for col, sender in enumerate(excited_roots):
             if sender == 0:
-                # print(f"{excited_indices=}")
-                # print(f"{len(local_alphas)=}, {len(excited_alphas)=}", flush=True)
                 for i, excited_i in enumerate(excited_indices):
                     excited_alphas[excited_i] = local_alphas[i]
                     excited_betas[excited_i] = local_betas[i]
@@ -710,7 +708,7 @@ def block_Green(
         #     basis.add_states(new_states)
         #     last_state = Hpsi
         if verbose:
-            print(f"    expanded basis contains {basis.size} states", flush=True)
+            print(f"    expanded basis contains {basis.size} states")
         alphas_prev = alphas
         betas_prev = betas
         alphas, betas, r, last_q = block_green_impl(
@@ -875,6 +873,8 @@ def block_Green_sparse(
     N = len(basis)
     n = len(psi_arr)
 
+    if verbose:
+        print(f"Initial basis contains {len(basis)} states")
     if N == 0 or n == 0:
         return np.empty((0, n, n), dtype=complex), np.empty((0, n, n), dtype=complex), np.zeros((n, n), dtype=complex)
     psi_arr = basis.redistribute_psis(psi_arr)
@@ -899,7 +899,8 @@ def block_Green_sparse(
     if len(psi_arr) == 0:
         return np.empty((0, n, n), dtype=complex), np.empty((0, n, n), dtype=complex), r
 
-    delta_min = max(slaterWeightMin**2, 1e-12)
+    delta_min = max(slaterWeightMin**2, 1e-8)
+    # delta_min = max(slaterWeightMin**2, 1e-12)
 
     def converged(alphas, betas, verbose=False):
         if alphas.shape[0] <= 1:
@@ -919,7 +920,9 @@ def block_Green_sparse(
             return abs(An[-2] / Bn[-2] - An[-1] / Bn[-1]) < delta_min and (An[-1] / Bn[-1]).imag <= 0
 
         # For matrix valued (block) Lanczos, continued fractions are harder to estimate convergence for
-        wIs = ((delta * 1j) * np.identity(alphas.shape[1], dtype=complex) + np.diag(np.diag(alphas[-1])))[np.newaxis]
+        wIs = (np.diagonal(alphas, axis1=1, axis2=2).flat[: 15 * alphas.shape[1]] + delta * 1j)[
+            :, None, None
+        ] * np.identity(alphas.shape[1], dtype=complex)[np.newaxis]
         gs_new = wIs - alphas[-1]
         gs_new = (
             wIs

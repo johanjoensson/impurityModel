@@ -598,11 +598,11 @@ class Basis:
     def alltoall_states(self, send_list: list[list[bytes]], flatten=False):
         return self.state_container.alltoall_states(send_list, flatten)
 
-    def add_states(self, new_states: Iterable[bytes]) -> None:
+    def add_states(self, new_states: Iterable[bytes], unique_sorted=False) -> None:
         """
         Extend the current basis by adding the new_states to it.
         """
-        self.state_container.add_states(new_states)
+        self.state_container.add_states(new_states, unique_sorted)
 
         self.offset = self.state_container.offset
         self.size = self.state_container.size
@@ -633,8 +633,9 @@ class Basis:
         #     assert all(l[i] < l[i + 1] for i in range(len(psi) - 1)), f'{l}'
         send_list = [[ManyBodyState({}) for _ in psis] for _ in range(self.comm.size)]
         t0 = perf_counter()
-        # for state, _ in itertools.groupby(merge(*tuple((state for state in psi.keys()) for psi in psis))):
-        for state in sorted({state for psi in psis for state in psi}):
+        for state, _ in itertools.groupby(merge(*tuple((state for state in psi.keys()) for psi in psis))):
+            # for state in sorted({state for psi in psis for state in psi}):
+            # for state in sorted({state for psi in psis for state in psi}):
 
             send_to = find_owner(state)
 

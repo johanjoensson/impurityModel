@@ -1,8 +1,7 @@
 # distutils: language = c++
 
-# from flat_map cimport flat_map as map
 from libcpp.vector cimport vector
-from libcpp.flat_map cimport flat_map
+from flat_map cimport flat_map
 from libcpp.map cimport map
 from libcpp.pair cimport pair
 from libc.stdint cimport uint8_t, uint16_t, uint64_t

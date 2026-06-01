@@ -632,14 +632,21 @@ class SimpleDistributedStateContainer(StateContainer):
             for r in range(self.comm.size)
         ]
 
-    def add_states(self, new_states: Iterable[bytes]) -> None:
+    def add_states(self, new_states: Iterable[bytes], unique_sorted=False) -> None:
         """
         Extend the current basis by adding the new_states to it.
         """
         if not self.is_distributed:
-            self.local_basis = [
-                state for state, _ in itertools.groupby(merge(self.local_basis, sorted(set(new_states))))
-            ]
+            if unique_sorted:
+                self.local_basis = [
+                    state
+                    for state, _ in itertools.groupby(merge(self.local_basis, new_states))
+                    # state for state, _ in itertools.groupby(merge(self.local_basis, sorted(set(new_states))))
+                ]
+            else:
+                self.local_basis = [
+                    state for state, _ in itertools.groupby(merge(self.local_basis, sorted(set(new_states))))
+                ]
             self.size = len(self.local_basis)
             self.offset = 0
             self.local_indices = range(0, len(self.local_basis))
@@ -659,8 +666,12 @@ class SimpleDistributedStateContainer(StateContainer):
             return -1
 
         send_list = [[] for _ in range(self.comm.size)]
-        for r, g in itertools.groupby(sorted(set(new_states)), key=find_owner):
-            send_list[r].extend(g)
+        if unique_sorted:
+            for r, g in itertools.groupby(new_states, key=find_owner):
+                send_list[r].extend(g)
+        else:
+            for r, g in itertools.groupby(sorted(set(new_states)), key=find_owner):
+                send_list[r].extend(g)
 
         for r_offset in range(self.comm.size):
 
