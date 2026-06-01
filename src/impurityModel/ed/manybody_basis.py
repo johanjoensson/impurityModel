@@ -1121,47 +1121,23 @@ class Basis:
         normalized_priorities = np.array([abs(p) for p in priorities], dtype=float)
         normalized_priorities /= np.sum(np.abs(normalized_priorities))
         # normalized_priorities[::-1].sort()
-        sorted_idxs = np.argsort(normalized_priorities)[::-1]
+        sorted_idxs = np.argsort(normalized_priorities, kind="stable")[::-1]
         n_colors = min(comm.size, len(normalized_priorities))
 
-        # Group priorities into colors so that all colours have roughly the same priorities
-        # Step 1:
-        #        Each priority starts in its own subgroup
-        # while not equal priorities
-        #       merge the two subgroups with lowest priorities
-        # priority_groups = DisjointSet(list(range(len(normalized_priorities))))
-        # subgroups = priority_groups.subsets()
-        # weights = np.array([np.sum(normalized_priorities[list(idxs)]) for idxs in subgroups])
-        # avg_weight = np.sum(weights) / len(weights)
-        # stddev = np.sqrt(np.sum((weights - avg_weight) ** 2) / (len(subgroups) - 1))
-        # while len(subgroups) > n_colors or stddev > max_stddev:
-        #     subgroups = sorted(subgroups, key=lambda idxs: np.sum(normalized_priorities[list(idxs)]))
-        #     print(f"{subgroups=} {[np.sum(normalized_priorities[list(idxs)]) for idxs in subgroups]}")
-        #     priority_groups.merge(next(iter(subgroups[0])), next(iter(subgroups[1])))
-        #     subgroups = priority_groups.subsets()
-        #     if len(subgroups) <= 1:
-        #         break
-        #     weights = np.array([np.sum(normalized_priorities[list(idxs)]) for idxs in subgroups])
-        #     avg_weight = np.sum(weights) / len(weights)
-        #     stddev = np.sqrt(np.sum((weights - avg_weight) ** 2) / (len(subgroups) - 1))
-        # subgroups = sorted(subgroups, key=lambda idxs: np.sum(normalized_priorities[list(idxs)]))
-        # n_colors = len(subgroups)
         subgroups = [tuple() for _ in range(n_colors)]
         for i in range(0, len(normalized_priorities), n_colors):
             for j in range(n_colors):
                 subgroups[j] += (sorted_idxs[i + j],)
         merged_priorities = np.array([np.sum(normalized_priorities[list(subgroup)]) for subgroup in subgroups])
-        print(f"{normalized_priorities=}")
-        print(f"{subgroups=} {merged_priorities=}")
         procs_per_color = np.array([max(1, n) for n in np.floor(comm.size * merged_priorities)], dtype=int)
         remainder = comm.size - np.sum(procs_per_color)
         while remainder != 0:
             if remainder < 0:
                 mask = np.nonzero(procs_per_color > 1)
 
-                procs_per_color[mask[: abs(remainder) % n_colors + 1]] -= 1
+                procs_per_color[mask][-abs(remainder) % n_colors :] -= 1
             else:
-                procs_per_color[: remainder % n_colors + 1] += 1
+                procs_per_color[-remainder % n_colors :] += 1
             remainder = comm.size - np.sum(procs_per_color)
 
         assert sum(procs_per_color) == comm.size
