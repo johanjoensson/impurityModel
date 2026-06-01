@@ -1,6 +1,6 @@
 from libcpp.pair cimport pair
 
-cdef extern from "<flat_map>" namespace "std" nogil:
+cdef extern from "<boost/container/flat_map.hpp>" namespace "std" nogil:
     cdef cppclass flat_map[T, U, COMPARE=*, KEYCONTAINER=*, MAPPEDCONTAINER=*]:
         ctypedef T key_type
         ctypedef U mapped_type
