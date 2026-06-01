@@ -162,25 +162,26 @@ ManyBodyState::Map merge_flat_maps(ManyBodyState::Map &&map1,
     auto [k2, v2] = *it2;
 
     if (k1 < k2) {
-      merged_elements.emplace_back(k1, op(v1, V{}));
+      merged_elements.emplace_back(std::move(k1), op(std::move(v1), V{}));
       it1++;
     } else if (k2 < k1) {
-      merged_elements.emplace_back(k2, op(V{}, v2));
+      merged_elements.emplace_back(std::move(k2), op(V{}, std::move(v2)));
       it2++;
     } else {
-      merged_elements.emplace_back(k1, op(v1, v2));
+      merged_elements.emplace_back(std::move(k1),
+                                   op(std::move(v1), std::move(v2)));
       it1++;
       it2++;
     }
   }
   while (it1 < std::move_iterator(map1.end())) {
     auto [k1, v1] = *it1;
-    merged_elements.emplace_back(k1, op(v1, V{}));
+    merged_elements.emplace_back(std::move(k1), op(std::move(v1), V{}));
     it1++;
   }
   while (it2 < std::move_iterator(map2.end())) {
     auto [k2, v2] = *it2;
-    merged_elements.emplace_back(k2, op(V{}, v2));
+    merged_elements.emplace_back(std::move(k2), op(V{}, std::move(v2)));
     it2++;
   }
 
@@ -205,20 +206,20 @@ ManyBodyState::Map merge_flat_maps(ManyBodyState::Map &&map1,
     auto [k2, v2] = *it2;
 
     if (k1 < k2) {
-      merged_elements.emplace_back(k1, op(v1, V{}));
+      merged_elements.emplace_back(std::move(k1), op(std::move(v1), V{}));
       it1++;
     } else if (k2 < k1) {
       merged_elements.emplace_back(k2, op(V{}, v2));
       it2++;
     } else {
-      merged_elements.emplace_back(k1, op(v1, v2));
+      merged_elements.emplace_back(std::move(k1), op(std::move(v1), v2));
       it1++;
       it2++;
     }
   }
   while (it1 < std::move_iterator(map1.end())) {
     auto [k1, v1] = *it1;
-    merged_elements.emplace_back(k1, op(v1, V{}));
+    merged_elements.emplace_back(std::move(k1), op(std::move(v1), V{}));
     it1++;
   }
   while (it2 < map2.end()) {
