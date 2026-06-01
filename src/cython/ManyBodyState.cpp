@@ -146,17 +146,18 @@ ManyBodyState::ManyBodyState(std::vector<key_type> &&keys,
 
 #else
 
-ManyBodyState::Map merge_flat_maps(const ManyBodyState::Map &map1,
-                                   const ManyBodyState::Map &map2, auto &&op) {
+ManyBodyState::Map merge_flat_maps(ManyBodyState::Map &&map1,
+                                   ManyBodyState::Map &&map2, auto &&op) {
   using V = ManyBodyState::Value;
   // 1. Prepare an output vector for the merged elements
   std::vector<ManyBodyState::Map::value_type> merged_elements;
   merged_elements.reserve(map1.size() + map2.size());
 
-  auto it1 = map1.begin();
-  auto it2 = map2.begin();
+  auto it1 = std::move_iterator(map1.begin());
+  auto it2 = std::move_iterator(map2.begin());
 
-  while (it1 < map1.end() && it2 < map2.end()) {
+  while (it1 < std::move_iterator(map1.end()) &&
+         it2 < std::move_iterator(map2.end())) {
     auto [k1, v1] = *it1;
     auto [k2, v2] = *it2;
 
@@ -172,7 +173,50 @@ ManyBodyState::Map merge_flat_maps(const ManyBodyState::Map &map1,
       it2++;
     }
   }
-  while (it1 < map1.end()) {
+  while (it1 < std::move_iterator(map1.end())) {
+    auto [k1, v1] = *it1;
+    merged_elements.emplace_back(k1, op(v1, V{}));
+    it1++;
+  }
+  while (it2 < std::move_iterator(map2.end())) {
+    auto [k2, v2] = *it2;
+    merged_elements.emplace_back(k2, op(V{}, v2));
+    it2++;
+  }
+
+  // 4. Construct the final flat_map from the summed vector
+  return ManyBodyState::Map(
+      SORTED_UNIQUE std::move_iterator(merged_elements.begin()),
+      std::move_iterator(merged_elements.end()));
+}
+
+ManyBodyState::Map merge_flat_maps(ManyBodyState::Map &&map1,
+                                   const ManyBodyState::Map &map2, auto &&op) {
+  using V = ManyBodyState::Value;
+  // 1. Prepare an output vector for the merged elements
+  std::vector<ManyBodyState::Map::value_type> merged_elements;
+  merged_elements.reserve(map1.size() + map2.size());
+
+  auto it1 = std::move_iterator(map1.begin());
+  auto it2 = map2.begin();
+
+  while (it1 < std::move_iterator(map1.end()) && it2 < map2.end()) {
+    auto [k1, v1] = *it1;
+    auto [k2, v2] = *it2;
+
+    if (k1 < k2) {
+      merged_elements.emplace_back(k1, op(v1, V{}));
+      it1++;
+    } else if (k2 < k1) {
+      merged_elements.emplace_back(k2, op(V{}, v2));
+      it2++;
+    } else {
+      merged_elements.emplace_back(k1, op(v1, v2));
+      it1++;
+      it2++;
+    }
+  }
+  while (it1 < std::move_iterator(map1.end())) {
     auto [k1, v1] = *it1;
     merged_elements.emplace_back(k1, op(v1, V{}));
     it1++;
