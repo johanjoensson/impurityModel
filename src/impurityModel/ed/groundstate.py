@@ -116,7 +116,7 @@ def find_ground_state_basis(
             slaterWeightMin=slaterWeightMin,
         )
         if verbose:
-            print("{" + " ".join(f" {i} : {N0[i] + dN[i]}" for i in dN) + f"}} ~ {e_trial}")
+            print("{" + " ".join(f" {i} : {N0[i] + dN[i]}" for i in dN) + f"}} ~ {e_trial:6.3f}")
         if e_trial < e_gs:
             e_gs = e_trial
             basis_gs = basis.copy()
@@ -148,7 +148,7 @@ def find_ground_state_basis(
             )
             if verbose:
                 print(
-                    "{" + " ".join(f" {i} : {gs_impurity_occ[i] + dN_gs[i]}" for i in dN_gs) + f"}} ~ {e_trial}",
+                    "{" + " ".join(f" {i} : {gs_impurity_occ[i] + dN_gs[i]}" for i in dN_gs) + f"}} ~ {e_trial:6.3f}",
                 )
             if e_trial >= e_gs:
                 break

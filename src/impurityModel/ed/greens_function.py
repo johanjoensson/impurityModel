@@ -682,7 +682,7 @@ def block_Green(
     N = len(basis)
     n = len(psi_arr)
 
-    basis.expand(hOp, slaterWeightMin=slaterWeightMin, max_it=1)
+    # basis.expand(hOp, slaterWeightMin=slaterWeightMin, max_it=1)
     # psi_arr = basis.redistribute_psis(psi_arr)
     alphas, betas, r, last_q = block_green_impl(
         basis, hOp, basis.redistribute_psis(psi_arr), delta, slaterWeightMin, verbose

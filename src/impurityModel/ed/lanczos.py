@@ -452,15 +452,16 @@ def block_lanczos_sparse(
             t0 = perf_counter()
             basis.add_states([state for p in wp for state in p if state not in basis.local_basis])
             t_add = perf_counter() - t0
-            if old_basis_size == basis.size:
-                it_max = basis.size // n
-                expand_basis = False
+            # if old_basis_size == basis.size:
+            #     it_max = basis.size // n
+            #     expand_basis = False
         if verbose:
             print(f"Added {basis.size - old_basis_size} states to the basis.")
             print(f"                : Currently the basis contains {basis.size} states.")
             print(f"                : Applying the hamiltonian took {t_apply} seconds.", flush=True)
         tmp = basis.redistribute_psis(q[0] + q[1] + wp)
-        v_dense = basis.build_vector(tmp, root=0).T
+        v_dense = basis.build_vector(tmp, slaterWeightMin=0, root=0).T
+        # v_dense = basis.build_vector(tmp, slaterWeightMin=slaterWeightMin, root=0).T
         if rank == 0:
             q0_dense = v_dense[:, :n]
             q1_dense = v_dense[:, n : 2 * n]

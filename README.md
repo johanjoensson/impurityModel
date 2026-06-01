@@ -1,6 +1,5 @@
 # Impurity model
 
-![CI](https://github.com/JohanSchott/impurityModel/actions/workflows/buildci.yml/badge.svg?branch=master)
 [![Code style: black](https://img.shields.io/badge/code%20style-black-000000.svg)](https://github.com/psf/black)
 
 
@@ -22,25 +21,20 @@ Calculate many-body states of an impurity Anderson model and a various spectra, 
 </figure>
 
 ### Get started
-- Execute the bash-script `install_setup.sh`:
+If you have downloaded the github archive, install using pip
 ```bash
-./install_setup.sh
-```
-This will create a Python virtual environment, install the required Python packages, and run the unit-tests.
-
-- Activate the virtual environment and set the PYTHONPATH:
-```bash
-source env.sh
+pip install .
 ```
 
-- To run the unit-tests, type
+If you are a developer, you can do an editable installation
 ```bash
-pytest
+pip install -e .
 ```
+this way you can make changes to the code, and they will immediately be included in your Python environment.
 
-- To check linting and static type checking, type
+You can also use pip to install directly from github, without cloning the repository (and without being able to edit the code)
 ```bash
-make check
+pip install git+https://github.com/johanjoensson/impurityModel
 ```
 
 - To perform a simulation, first create a directory somewhere on your computer.
@@ -89,36 +83,25 @@ path/to/folder/impurityModel/impurityModel/plotScripts/plotRIXS.plt
 
 ### Optimization notes
 
-#### Computational speed
-MPI is used.
-For finding the ground states and calculating the spectra (except for RIXS), parallelization is done over the product states in the many-body basis.
-For the RIXS simulations, parallelization is by default first done over product states of the core-hole excited system and then over the in-coming photon energies.
+#### Computational cost and memory usage
+The exact diagonalization method scales poorly with the number of manybody basis states included in the calculations, and the number of manybodybasis states included in the calculation scales exponentially with the number of single particle (impurity and bath) orbitals included in the calculation.
+In order to maintain the manybody basis as small as possible we use the CIPSI method for determining the ground state, and the minimal basis required.
+When calculating spectra we need excited states (typically electrons added to or removed from the valence band). The description of these excited states is much harder, and generally requires a significantly larger basis than the groundstate does. In order to keep the basis size from exploding the
+code ignores basis states with small weights, and it tries to build the basis and converge the excited state Greens functions at the same time. This increases computational time, but usually keeps the memory usage as low as possible.
 
-#### RAM memory usage
-The memory goes primarly to storing the Hamiltonian in a basis of product states.
-This Hamiltonian is stored as a dictionary, with product states, |ps>, as dictionary-keys
-and the Hamiltonian acting of each product state, H|ps>, as dictionary-values.
-When several ranks are used, the information is distributed over the MPI ranks, such that one rank only stores
-some of all the product-state keys. This reduces memory usage for each MPI rank.
+The major bottleneck of the method is the repeated application of the Hamiltonian to manybody states, this is done in the CIPSI method, as well as when calculating the Greens functions for the excited states. This code uses Cython to implement ManyBodyOperator and ManyBoddyState, in order to
+speed up the application of the Hamiltonian. The Cython code can use threads, by means of a parallel C++ standard library.
 
-A sparse matrix format of the Hamiltonian is used when generating a spectrum.
-This sparse matrix variable is also distributed in memory over the MPI ranks.
-This is done to reduce memory usage per MPI rank.
+To specify a specific C++ compiler, and compiler flags, to use when building the Cython code use the environment variables CXX and CXXFLAGS.
 
-A product state with electrons in spin-orbitals with indices e.g. 2 and 5 can be described by the tuple: (2,5).
-If the system has 7 spin-orbitals in total, the product state can also be described by the binary-string "0010010".
-The product state can also be translated into the base-2 integer 2^(7-1-2) + 2^(7-1-5) = 2^4 + 2^1 = 16+2 = 18.
-With many electrons the integer representation is a more memory efficient format.
-Bitarray is a class which also can be used to represent a product state.
-It is mutable which enables fast modifications (adding and removing electrons), and is used in the current version.
-To keep the memory usage down, an imutable bytes class is also used in the current version.
+In addition the code uses MPI to divide the computational cost over many CPUs. The code splits the work over the inequivalent block it identifies and the number of eigenstates included in the thermal ground state. In addition the manybody basis states are divided evenly over the MPI ranks.
 
 ### Tests
 Type
 ```bash
 pytest
-``` 
-and 
+```
+and
 ```bash
 pytest impurityModel/test/test_comparison_with_reference.py
 ```
@@ -159,3 +142,5 @@ Please note that the list and the contribution information are incomplete.
 
 [Re-Dichalcogenides: Resolving Conflicts of TheirStructure–Property Relationship](https://onlinelibrary.wiley.com/doi/epdf/10.1002/apxr.202200010)
 
+### Note
+Please note that this fork has diverged significantly from the original version of the code. The two versions are not compatible, or interchangeable.
