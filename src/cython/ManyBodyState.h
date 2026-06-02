@@ -4,7 +4,9 @@
 #include <boost/container/flat_map.hpp>
 #include <complex>
 #include <cstdint>
+#if __cplusplus >= 202302L
 #include <flat_map>
+#endif
 #include <string>
 #include <utility>
 #include <vector>
