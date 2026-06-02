@@ -1,13 +1,10 @@
 #ifndef MANYBODY_STATE_H
 #define MANYBODY_STATE_H
 
+#include <boost/container/flat_map.hpp>
 #include <complex>
 #include <cstdint>
-#if __cplusplus >= 202302L
 #include <flat_map>
-#else
-#include <boost/container/flat_map.hpp>
-#endif
 #include <string>
 #include <utility>
 #include <vector>

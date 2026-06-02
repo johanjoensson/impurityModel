@@ -397,9 +397,7 @@ ManyBodyState ManyBodyOperator::apply_op_determinant(
                                                     double cutoff) const {
   return std::transform_reduce(
       PAR m_ops.begin(), m_ops.end(), ManyBodyState{},
-      [](auto &&a, auto &&b) {
-        return std::forward<decltype(a)>(a) += std::forward<decltype(b)>(b);
-      },
+      [](auto &&a, auto &&b) { return a += std::forward<decltype(b)>(b); },
       [this, &state, cutoff](ManyBodyOperator::const_reference op_amp) {
         const auto &[indices, coeff] = op_amp;
         std::pair<int, ManyBodyState::key_type> ac_res;

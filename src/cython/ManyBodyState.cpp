@@ -13,22 +13,109 @@
 #define STATE_PAR
 #endif // PAR
 
-#if not(defined SORTED_UNIQUE) && __cplusplus >= 202302L
-#define SORTED_UNIQUE std::sorted_unique,
-#else
-#define SORTED_UNIQUE boost::container::ordered_unique_range_t(),
-#endif
+template <typename K, typename V, typename OP>
+boost::container::flat_map<K, V>
+merge_flat_maps(boost::container::flat_map<K, V> &&map1,
+                const boost::container::flat_map<K, V> &map2, OP &&op) {
 
+  using Sequence = typename boost::container::flat_map<K, V>::sequence_type;
+  Sequence data1 = map1.extract_sequence();
+  Sequence merged_data;
+  merged_data.reserve(data1.size() + map2.size());
+
+  auto it1 = data1.begin();
+  auto it2 = map2.begin();
+  while (it1 < data1.end() && it2 < map2.end()) {
+    if (it1->first < it2->first) {
+      merged_data.emplace_back(
+          std::move(it1->first),
+          std::forward<OP>(op)(std::move(it1->second), V{}));
+      it1++;
+    } else if (it1->first > it2->first) {
+      merged_data.emplace_back(it2->first,
+                               std::forward<OP>(op)(V{}, it2->second));
+      it2++;
+    } else {
+      merged_data.emplace_back(
+          std::move(it1->first),
+          std::forward<OP>(op)(std::move(it1->second), it2->second));
+      it1++;
+      it2++;
+    }
+  }
+  for (; it1 < data1.end(); it1++) {
+    merged_data.emplace_back(std::move(it1->first),
+                             std::forward<OP>(op)(std::move(it1->second), V{}));
+  }
+  for (; it2 < map2.end(); it2++) {
+    merged_data.emplace_back(it2->first,
+                             std::forward<OP>(op)(V{}, it2->second));
+  }
+  merged_data.shrink_to_fit();
+  boost::container::flat_map<K, V> merged_map;
+  merged_map.adopt_sequence(boost::container::ordered_unique_range,
+                            std::move(merged_data));
+  return merged_map;
+}
+
+template <typename K, typename V, typename OP>
+boost::container::flat_map<K, V>
+merge_flat_maps(boost::container::flat_map<K, V> &&map1,
+                boost::container::flat_map<K, V> &&map2, OP &&op) {
+
+  using Sequence = typename boost::container::flat_map<K, V>::sequence_type;
+  Sequence data1 = map1.extract_sequence();
+  Sequence data2 = map2.extract_sequence();
+  Sequence merged_data;
+  merged_data.reserve(map1.size() + map2.size());
+
+  auto it1 = data1.begin();
+  auto it2 = data2.begin();
+  while (it1 < data1.end() && it2 < data2.end()) {
+    if (it1->first < it2->first) {
+      merged_data.emplace_back(
+          std::move(it1->first),
+          std::forward<OP>(op)(std::move(it1->second), V{}));
+      it1++;
+    } else if (it1->first > it2->first) {
+      merged_data.emplace_back(
+          std::move(it2->first),
+          std::forward<OP>(op)(V{}, std::move(it2->second)));
+      it2++;
+    } else {
+      merged_data.emplace_back(
+          std::move(it1->first),
+          std::forward<OP>(op)(std::move(it1->second), std::move(it2->second)));
+      it1++;
+      it2++;
+    }
+  }
+
+  for (; it1 < data1.end(); it1++) {
+    merged_data.emplace_back(std::move(it1->first),
+                             std::forward<OP>(op)(std::move(it1->second), V{}));
+  }
+  for (; it2 < data2.end(); it2++) {
+    merged_data.emplace_back(std::move(it2->first),
+                             std::forward<OP>(op)(V{}, std::move(it2->second)));
+  }
+  merged_data.shrink_to_fit();
+  boost::container::flat_map<K, V> merged_map;
+  merged_map.adopt_sequence(boost::container::ordered_unique_range,
+                            std::move(merged_data));
+  return merged_map;
+}
+
+// If we have access to c++23 or later, prefer to use std::flat_map instead of
+// boost::container::flat_map
 #if __cplusplus >= 202302L
-template <typename OP>
-ManyBodyState::Map merge_flat_maps(ManyBodyState::Map &&map1,
-                                   ManyBodyState::Map &&map2, OP &&op) {
+template <typename K, typename V, typename OP>
+std::flat_map<K, V> merge_flat_maps(std::flat_map<K, V> &&map1,
+                                    std::flat_map<K, V> &&map2, OP &&op) {
 
-  using K = ManyBodyState::Key;
-  using V = ManyBodyState::Value;
   // 1. Extract the underlying sorted vectors
   auto [k1, v1] = std::move(map1).extract();
-  auto k2, v2 = std::move(map2).extract();
+  auto [k2, v2] = std::move(map2).extract();
 
   // 2. Pre-allocate maximum possible size
   std::vector<K> res_keys;
@@ -42,15 +129,16 @@ ManyBodyState::Map merge_flat_maps(ManyBodyState::Map &&map1,
   while (i < k1.size() && j < k2.size()) {
     if (k1[i] < k2[j]) {
       res_keys.push_back(std::move(k1[i]));
-      res_values.push_back(op(std::move(v1[i]), V{}));
+      res_values.push_back(std::forward<OP>(op)(std::move(v1[i]), V{}));
       i++;
     } else if (k2[j] < k1[i]) {
       res_keys.push_back(std::move(k2[j]));
-      res_values.push_back(op(V{}, std::move(v2[j])));
+      res_values.push_back(std::forward<OP>(op)(V{}, std::move(v2[j])));
       j++;
     } else { // Duplicate key found: Sum the values
       res_keys.push_back(std::move(k1[i]));
-      res_values.push_back(op(std::move(v1[i]), std::move(v2[j])));
+      res_values.push_back(
+          std::forward<OP>(op)(std::move(v1[i]), std::move(v2[j])));
       i++;
       j++;
     }
@@ -59,12 +147,12 @@ ManyBodyState::Map merge_flat_maps(ManyBodyState::Map &&map1,
   // 4. Append remaining elements
   while (i < k1.size()) {
     res_keys.push_back(std::move(k1[i]));
-    res_values.push_back(op(std::move(v1[i]), V{}));
+    res_values.push_back(std::forward<OP>(op)(std::move(v1[i]), V{}));
     i++;
   }
   while (j < k2.size()) {
     res_keys.push_back(std::move(k2[j]));
-    res_values.push_back(op(V{}, std::move(v2[j])));
+    res_values.push_back(std::forward<OP>(op)(V{}, std::move(v2[j])));
     j++;
   }
 
@@ -74,17 +162,15 @@ ManyBodyState::Map merge_flat_maps(ManyBodyState::Map &&map1,
 
   // 5. Rebuild flat_map using the sorted_unique tag (guaranteed sorted and
   // unique)
-  return ManyBodyState::Map(SORTED_UNIQUE std::move(res_keys),
+  return ManyBodyState::Map(std::sorted_unique, std::move(res_keys),
                             std::move(res_values));
 }
 
-template <typename OP>
-ManyBodyState::Map merge_flat_maps(
-    ManyBodyState::Map &&map1,      // Flattened/moved (non-const)
-    const ManyBodyState::Map &map2, // Supports both const and non-const
+template <typename K, typename V, typename OP>
+std::flat_map<K, V> merge_flat_maps(
+    std::flat_map<K, V> &&map1,      // Flattened/moved (non-const)
+    const std::flat_map<K, V> &map2, // Supports both const and non-const
     OP &&op) {
-  using K = ManyBodyState::Key;
-  using V = ManyBodyState::Value;
   // 1. Extract underlying vectors from the first map (zero-copy)
   auto [k1, v1] = std::move(map1).extract();
 
@@ -104,15 +190,16 @@ ManyBodyState::Map merge_flat_maps(
   while (i < k1.size() && j < k2.size()) {
     if (k1[i] < k2[j]) {
       res_keys.push_back(std::move(k1[i]));
-      res_values.push_back(op(std::move(v1[i]), V{}));
+      res_values.push_back(std::forward<OP>(op)(std::move(v1[i]), V{}));
       i++;
     } else if (k2[j] < k1[i]) {
-      res_keys.push_back(k2[j]);            // Copy from const map
-      res_values.push_back(op(V{}, v2[j])); // Copy from const map
+      res_keys.push_back(k2[j]); // Copy from const map
+      res_values.push_back(
+          std::forward<OP>(op)(V{}, v2[j])); // Copy from const map
       j++;
     } else { // Duplicate key: Sum values
       res_keys.push_back(std::move(k1[i]));
-      res_values.push_back(op(std::move(v1[i]), v2[j]));
+      res_values.push_back(std::forward<OP>(op)(std::move(v1[i]), v2[j]));
       i++;
       j++;
     }
@@ -121,12 +208,12 @@ ManyBodyState::Map merge_flat_maps(
   // 5. Append remaining elements
   while (i < k1.size()) {
     res_keys.push_back(std::move(k1[i]));
-    res_values.push_back(op(std::move(v1[i]), V{}));
+    res_values.push_back(std::forward<OP>(op)(std::move(v1[i]), V{}));
     i++;
   }
   while (j < k2.size()) {
     res_keys.push_back(k2[j]);
-    res_values.push_back(op(V{}, v2[j]));
+    res_values.push_back(std::forward<OP>(op)(V{}, v2[j]));
     j++;
   }
 
@@ -134,127 +221,34 @@ ManyBodyState::Map merge_flat_maps(
   res_values.shrink_to_fit();
 
   // 6. Rebuild using sorted_unique
-  return ManyBodyState::Map(SORTED_UNIQUE std::move(res_keys),
+  return ManyBodyState::Map(std::sorted_unique, std::move(res_keys),
                             std::move(res_values));
 }
-
-ManyBodyState::ManyBodyState(const std::vector<key_type> &keys,
-                             const std::vector<mapped_type> &values)
-    : m_map(keys, values) {}
-
-ManyBodyState::ManyBodyState(std::vector<key_type> &&keys,
-                             std::vector<mapped_type> &&values)
-    : m_map(std::move(keys), std::move(values)) {}
-
-#else
-
-template <typename OP>
-ManyBodyState::Map merge_flat_maps(ManyBodyState::Map &&map1,
-                                   ManyBodyState::Map &&map2, OP &&op) {
-  using V = ManyBodyState::Value;
-  // 1. Prepare an output vector for the merged elements
-  std::vector<ManyBodyState::Map::value_type> merged_elements;
-  merged_elements.reserve(map1.size() + map2.size());
-
-  auto it1 = map1.begin();
-  auto it2 = map2.begin();
-
-  while (it1 < map1.end() && it2 < map2.end()) {
-    if (it1->first < it2->first) {
-      merged_elements.emplace_back(std::move(it1->first),
-                                   op(std::move(it1->second), V{}));
-      it1++;
-    } else if (it2->first < it1->first) {
-      merged_elements.emplace_back(std::move(it2->first),
-                                   op(V{}, std::move(it2->second)));
-      it2++;
-    } else {
-      merged_elements.emplace_back(
-          std::move(it1->first),
-          op(std::move(it1->second), std::move(it2->second)));
-      it1++;
-      it2++;
-    }
-  }
-  while (it1 < map1.end()) {
-    merged_elements.emplace_back(std::move(it1->first),
-                                 op(std::move(it1->second), V{}));
-    it1++;
-  }
-  while (it2 < map2.end()) {
-    merged_elements.emplace_back(std::move(it2->first),
-                                 op(V{}, std::move(it2->second)));
-    it2++;
-  }
-
-  // 4. Construct the final flat_map from the summed vector
-  return ManyBodyState::Map(
-      SORTED_UNIQUE std::move_iterator(merged_elements.begin()),
-      std::move_iterator(merged_elements.end()));
-}
-
-template <typename OP>
-ManyBodyState::Map merge_flat_maps(ManyBodyState::Map &&map1,
-                                   const ManyBodyState::Map &map2, OP &&op) {
-  using V = ManyBodyState::Value;
-  // 1. Prepare an output vector for the merged elements
-  std::vector<ManyBodyState::Map::value_type> merged_elements;
-  merged_elements.reserve(map1.size() + map2.size());
-
-  auto it1 = map1.begin();
-  auto it2 = map2.begin();
-
-  while (it1 < map1.end() && it2 < map2.end()) {
-
-    if (it1->first < it2->first) {
-      merged_elements.emplace_back(std::move(it1->first),
-                                   op(std::move(it1->second), V{}));
-      it1++;
-    } else if (it2->first < it1->first) {
-      merged_elements.emplace_back(it2->first, op(V{}, it2->second));
-      it2++;
-    } else {
-      merged_elements.emplace_back(std::move(it1->first),
-                                   op(std::move(it1->second), it2->second));
-      it1++;
-      it2++;
-    }
-  }
-  while (it1 < map1.end()) {
-    merged_elements.emplace_back(std::move(it1->first),
-                                 op(std::move(it1->second), V{}));
-    it1++;
-  }
-  while (it2 < map2.end()) {
-    merged_elements.emplace_back(it2->first, op(V{}, it2->second));
-    it2++;
-  }
-
-  // 4. Construct the final flat_map from the summed vector
-  return ManyBodyState::Map(
-      SORTED_UNIQUE std::move_iterator(merged_elements.begin()),
-      std::move_iterator(merged_elements.end()));
-}
-
-ManyBodyState::ManyBodyState(const std::vector<key_type> &keys,
-                             const std::vector<mapped_type> &values)
-    : m_map() {
-  m_map.reserve(keys.size());
-  for (size_t i = 0; i < keys.size(); i++) {
-    m_map.emplace(keys[i], values[i]);
-  }
-}
-
-ManyBodyState::ManyBodyState(std::vector<key_type> &&keys,
-                             std::vector<mapped_type> &&values)
-    : m_map() {
-  m_map.reserve(keys.size());
-  for (size_t i = 0; i < keys.size(); i++) {
-    m_map.emplace(std::move(keys[i]), std::move(values[i]));
-  }
-}
-
 #endif
+
+ManyBodyState::ManyBodyState(const std::vector<key_type> &keys,
+                             const std::vector<mapped_type> &values)
+    : m_map() {
+  std::vector<value_type> data;
+  data.reserve(keys.size());
+  for (size_t i = 0; i < keys.size(); i++) {
+    data.push_back({keys[i], values[i]});
+  }
+  m_map = ManyBodyState::Map(std::move_iterator(data.begin()),
+                             std::move_iterator(data.end()));
+}
+
+ManyBodyState::ManyBodyState(std::vector<key_type> &&keys,
+                             std::vector<mapped_type> &&values)
+    : m_map() {
+  std::vector<value_type> data;
+  data.reserve(keys.size());
+  for (size_t i = 0; i < keys.size(); i++) {
+    data.push_back({std::move(keys[i]), std::move(values[i])});
+  }
+  m_map = ManyBodyState::Map(std::move_iterator(data.begin()),
+                             std::move_iterator(data.end()));
+}
 
 double ManyBodyState::norm2() const {
   return std::transform_reduce(
@@ -288,13 +282,13 @@ ManyBodyState &ManyBodyState::operator-=(const ManyBodyState &other) {
 }
 
 ManyBodyState &ManyBodyState::operator*=(mapped_type s) {
-  for (auto &[k, v] : *this) {
+  for (auto &&[k, v] : m_map) {
     v *= s;
   }
   return *this;
 }
 ManyBodyState &ManyBodyState::operator/=(mapped_type s) {
-  for (auto &[k, v] : *this) {
+  for (auto &&[k, v] : m_map) {
     v /= s;
   }
   return *this;
@@ -302,7 +296,7 @@ ManyBodyState &ManyBodyState::operator/=(mapped_type s) {
 
 ManyBodyState ManyBodyState::operator-() const {
   ManyBodyState res(*this);
-  for (auto &[k, v] : res) {
+  for (auto &&[k, v] : res.m_map) {
     v = -v;
   }
   return res;
@@ -330,11 +324,17 @@ std::complex<double> inner(const ManyBodyState &a, const ManyBodyState &b) {
 }
 
 ManyBodyState &ManyBodyState::prune(double cutoff) {
+#if __cplusplus >= 202302L
+  erase_if(m_map, [cutoff](ManyBodyState::const_reference pair) {
+    return abs(pair.second) <= cutoff;
+  });
+#else
   auto new_end = std::remove_if(m_map.begin(), m_map.end(),
                                 [cutoff](ManyBodyState::const_reference pair) {
                                   return abs(pair.second) <= cutoff;
                                 });
   m_map.erase(new_end, m_map.end());
+#endif
   return *this;
 }
 
