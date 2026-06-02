@@ -71,15 +71,15 @@ annihilate(const ManyBodyState::key_type &in_state, size_t idx) /*noexcept*/ {
 ManyBodyOperator::ManyBodyOperator(const std::vector<value_type> &ops)
     : m_ops() {
   m_ops.reserve(ops.size());
-  for (const auto &p : ops) {
-    insert(p);
+  for (const auto &val : ops) {
+    insert(val);
   }
 }
 
 ManyBodyOperator::ManyBodyOperator(std::vector<value_type> &&ops) : m_ops() {
   m_ops.reserve(ops.size());
-  for (auto &p : ops) {
-    insert(std::move(p));
+  for (auto &&val : ops) {
+    insert(std::move(val));
   }
 }
 
@@ -99,10 +99,9 @@ ManyBodyOperator::ManyBodyOperator(OPS_VEC &&ops, SCALAR_VEC &&amps) : m_ops() {
 
 ManyBodyOperator::iterator ManyBodyOperator::find(iterator first, iterator last,
                                                   const key_type &key) {
-  return std::lower_bound(first, last, key,
-                          [](const value_type &a, const key_type &b) {
-                            return compare_type{}(a.first, b);
-                          });
+  return std::lower_bound(
+      first, last, key,
+      [](const value_type &a, const key_type &b) { return a.first < b; });
 }
 
 ManyBodyOperator::iterator ManyBodyOperator::find(const key_type &key) {
@@ -112,10 +111,9 @@ ManyBodyOperator::iterator ManyBodyOperator::find(const key_type &key) {
 ManyBodyOperator::const_iterator
 ManyBodyOperator::find(const_iterator first, const_iterator last,
                        const key_type &key) const {
-  return std::lower_bound(first, last, key,
-                          [](const value_type &a, const key_type &b) {
-                            return compare_type{}(a.first, b);
-                          });
+  return std::lower_bound(
+      first, last, key,
+      [](const value_type &a, const key_type &b) { return a.first < b; });
 }
 
 ManyBodyOperator::const_iterator
@@ -137,7 +135,7 @@ ManyBodyOperator::mapped_type &
 ManyBodyOperator::operator[](const key_type &key) noexcept {
   auto it = find(key);
   if (it == m_ops.end() || it->first != key) {
-    it = m_ops.emplace(it, key, mapped_type());
+    it = m_ops.emplace(it, key, mapped_type{});
   }
   return it->second;
 }
@@ -146,7 +144,7 @@ ManyBodyOperator::mapped_type &
 ManyBodyOperator::operator[](key_type &&key) noexcept {
   auto it = find(key);
   if (it == m_ops.end() || it->first != key) {
-    it = m_ops.emplace(it, std::move(key), mapped_type());
+    it = m_ops.emplace(it, std::move(key), mapped_type{});
   }
   return it->second;
 }
@@ -205,7 +203,7 @@ void ManyBodyOperator::insert(InputIt first, InputIt last) {
 }
 
 void ManyBodyOperator::insert(std::initializer_list<value_type> l) {
-  for (auto &&val : l) {
+  for (auto val : l) {
     insert(std::move(val));
   }
 }
@@ -255,61 +253,53 @@ ManyBodyOperator::size_type ManyBodyOperator::erase(const key_type &key) {
 }
 
 ManyBodyOperator::iterator ManyBodyOperator::lower_bound(const key_type &key) {
-  return std::lower_bound(m_ops.begin(), m_ops.end(), key,
-                          [](const value_type &a, const key_type &b) {
-                            return compare_type()(a.first, b);
-                          });
+  return std::lower_bound(
+      m_ops.begin(), m_ops.end(), key,
+      [](const value_type &a, const key_type &b) { return a.first < b; });
 }
 ManyBodyOperator::const_iterator
 ManyBodyOperator::lower_bound(const key_type &key) const {
-  return std::lower_bound(m_ops.cbegin(), m_ops.cend(), key,
-                          [](const value_type &a, const key_type &b) {
-                            return compare_type()(a.first, b);
-                          });
+  return std::lower_bound(
+      m_ops.cbegin(), m_ops.cend(), key,
+      [](const value_type &a, const key_type &b) { return a.first < b; });
 }
 template <class K>
 ManyBodyOperator::iterator ManyBodyOperator::lower_bound(const K &key) {
-  return std::lower_bound(m_ops.begin(), m_ops.end(), key,
-                          [](const value_type &a, const key_type &b) {
-                            return compare_type()(a.first, b);
-                          });
+  return std::lower_bound(
+      m_ops.begin(), m_ops.end(), key,
+      [](const value_type &a, const key_type &b) { return a.first < b; });
 }
 template <class K>
 ManyBodyOperator::const_iterator
 ManyBodyOperator::lower_bound(const K &key) const {
-  return std::lower_bound(m_ops.cbegin(), m_ops.cend(), key,
-                          [](const value_type &a, const key_type &b) {
-                            return compare_type()(a.first, b);
-                          });
+  return std::lower_bound(
+      m_ops.cbegin(), m_ops.cend(), key,
+      [](const value_type &a, const key_type &b) { return a.first < b; });
 }
 
 ManyBodyOperator::iterator ManyBodyOperator::upper_bound(const key_type &key) {
-  return std::upper_bound(m_ops.begin(), m_ops.end(), key,
-                          [](const key_type &a, const value_type &b) {
-                            return compare_type()(a, b.first);
-                          });
+  return std::upper_bound(
+      m_ops.begin(), m_ops.end(), key,
+      [](const key_type &a, const value_type &b) { return a < b.first; });
 }
 ManyBodyOperator::const_iterator
 ManyBodyOperator::upper_bound(const key_type &key) const {
-  return std::upper_bound(m_ops.cbegin(), m_ops.cend(), key,
-                          [](const key_type &a, const value_type &b) {
-                            return compare_type()(a, b.first);
-                          });
+  return std::upper_bound(
+      m_ops.cbegin(), m_ops.cend(), key,
+      [](const key_type &a, const value_type &b) { return a < b.first; });
 }
 template <class K>
 ManyBodyOperator::iterator ManyBodyOperator::upper_bound(const K &key) {
-  return std::upper_bound(m_ops.begin(), m_ops.end(), key,
-                          [](const key_type &a, const value_type &b) {
-                            return compare_type()(a, b.first);
-                          });
+  return std::upper_bound(
+      m_ops.begin(), m_ops.end(), key,
+      [](const key_type &a, const value_type &b) { return a < b.first; });
 }
 template <class K>
 ManyBodyOperator::const_iterator
 ManyBodyOperator::upper_bound(const K &key) const {
-  return std::upper_bound(m_ops.cbegin(), m_ops.cend(), key,
-                          [](const key_type &a, const value_type &b) {
-                            return compare_type()(a, b.first);
-                          });
+  return std::upper_bound(
+      m_ops.cbegin(), m_ops.cend(), key,
+      [](const key_type &a, const value_type &b) { return a < b.first; });
 }
 
 [[nodiscard]] ManyBodyOperator::size_type
@@ -375,30 +365,18 @@ bool ManyBodyOperator::state_is_within_restrictions(
 
 ManyBodyState ManyBodyOperator::apply_op_determinant(
     const ManyBodyState::key_type &in_slater_determinant) const noexcept {
-  // std::chrono::microseconds t_create{0}, t_annihilate{0}, t_increment{0},
-  //     t_copy{0};
   ManyBodyState tmp;
   std::pair<int, ManyBodyState::key_type> ac_res;
-  // auto t0 = std::chrono::high_resolution_clock::now();
-  // auto t_total = std::chrono::high_resolution_clock::now();
-  for (auto op_it = m_ops.cbegin(); op_it != m_ops.cend(); op_it++) {
-    // t0 = std::chrono::high_resolution_clock::now();
+  for (auto [indices, coeff] : m_ops) {
+    // for (auto op_it = m_ops.cbegin(); op_it != m_ops.cend(); op_it++) {
     ManyBodyState::key_type out_slater_determinant{in_slater_determinant};
-    // t_copy += (std::chrono::duration_cast<std::chrono::microseconds>(
-    //     std::chrono::high_resolution_clock::now() - t0));
     int sign = 1;
-    for (const int64_t idx : (*op_it).first) {
-      // auto t0 = std::chrono::high_resolution_clock::now();
+    for (const int64_t idx : indices) {
       if (idx >= 0) {
         ac_res = create(out_slater_determinant, static_cast<size_t>(idx));
-        // t_create += (std::chrono::duration_cast<std::chrono::microseconds>(
-        //     std::chrono::high_resolution_clock::now() - t0));
       } else {
         ac_res =
             annihilate(out_slater_determinant, static_cast<size_t>(-(idx + 1)));
-        // t_annihilate +=
-        // (std::chrono::duration_cast<std::chrono::microseconds>(
-        //     std::chrono::high_resolution_clock::now() - t0));
       }
       sign *= ac_res.first;
       out_slater_determinant = std::move(ac_res.second);
@@ -407,88 +385,30 @@ ManyBodyState ManyBodyOperator::apply_op_determinant(
         break;
       }
     }
-    // t0 = std::chrono::high_resolution_clock::now();
     if (sign != 0) {
-      tmp[out_slater_determinant] +=
-          static_cast<double>(sign) * (*op_it).second;
+      tmp[std::move(out_slater_determinant)] +=
+          static_cast<double>(sign) * coeff;
     }
-    // t_increment += (std::chrono::duration_cast<std::chrono::microseconds>(
-    //     std::chrono::high_resolution_clock::now() - t0));
   }
-  // auto duration = std::chrono::duration_cast<std::chrono::microseconds>(
-  //     std::chrono::high_resolution_clock::now() - t_total);
-  // if (duration.count() > 1000) {
-  //   std::cout << "apply_op_determinant took " << duration.count()
-  //             << " micros\n";
-  //   std::cout << "---> copying slater_in took " << t_copy.count()
-  //             << " micros\n";
-  //   std::cout << "---> create took " << t_create.count() << " micros\n";
-  //   std::cout << "---> annihilate took " << t_annihilate.count() << "
-  //   micros\n"; std::cout << "---> incrementing psi took " <<
-  //   t_increment.count()
-  //             << " micros\n";
-  // }
   return tmp;
 }
 
-// [[nodiscard]] ManyBodyState ManyBodyOperator::apply(
-//     const ManyBodyState &state, double cutoff,
-//     const ManyBodyOperator::Restrictions &restrictions) const noexcept {
-//   const auto restriction_mask = build_restriction_mask(restrictions);
-//   // ManyBodyState initial{};
-//   // initial.reserve(state.size());
-//   ManyBodyState res = std::transform_reduce(
-//       PAR state.cbegin(), state.cend(), ManyBodyState{},
-//       [](auto &&a, const auto &b) { return std::forward<decltype(a)>(a += b);
-//       }, [this, &restriction_mask,
-//        cutoff](ManyBodyState::const_reference state_amp) {
-//         ManyBodyState tmp{};
-//         for (auto op_it = m_ops.cbegin(); op_it != m_ops.cend(); op_it++) {
-//           ManyBodyState::key_type out_slater_determinant{state_amp.first};
-//           double sign = 1;
-//           for (const int64_t idx : (*op_it).first) {
-//             if (idx >= 0) {
-//               sign *= create(out_slater_determinant,
-//               static_cast<size_t>(idx));
-//             } else {
-//               sign *= annihilate(out_slater_determinant,
-//                                  static_cast<size_t>(-(idx + 1)));
-//             }
-
-//             if (sign == 0 || !state_is_within_restrictions(
-//                                  out_slater_determinant, restriction_mask)) {
-//               sign = 0;
-//               break;
-//             }
-//           }
-//           if (abs(sign * op_it->second * state_amp.second) > cutoff) {
-//             tmp[std::move(out_slater_determinant)] +=
-//                 sign * op_it->second * state_amp.second;
-//           }
-//         }
-//         return tmp;
-//       });
-
-//   // res.prune(cutoff);
-//   return res;
-// }
-
 [[nodiscard]] ManyBodyState ManyBodyOperator::apply(const ManyBodyState &state,
-                                                    double cutoff) const
-/*noexcept*/ {
+                                                    double cutoff) const {
   return std::transform_reduce(
       PAR m_ops.begin(), m_ops.end(), ManyBodyState{},
       [](auto &&a, auto &&b) {
-        return std::forward<decltype(a)>(a += std::forward<decltype(b)>(b));
+        return std::forward<decltype(a)>(a) += std::forward<decltype(b)>(b);
       },
       [this, &state, cutoff](ManyBodyOperator::const_reference op_amp) {
+        const auto &[indices, coeff] = op_amp;
         std::pair<int, ManyBodyState::key_type> ac_res;
         ManyBodyState tmp{};
-        tmp.reserve(this->size() * state.size());
-        for (auto &&[state, amp] : state) {
-          ManyBodyState::key_type out_slater_determinant{state};
+        tmp.reserve(indices.size() * state.size());
+        for (const auto &[slater, amp] : state) {
+          ManyBodyState::key_type out_slater_determinant{slater};
           double sign = 1;
-          for (const int64_t idx : op_amp.first) {
+          for (const int64_t idx : indices) {
             if (idx >= 0) {
               ac_res = create(out_slater_determinant, static_cast<size_t>(idx));
             } else {
@@ -504,11 +424,11 @@ ManyBodyState ManyBodyOperator::apply_op_determinant(
               break;
             }
           }
-          if (sign != 0 && abs(op_amp.second * amp) > cutoff) {
-            auto [it, inserted] = tmp.try_emplace(
-                std::move(out_slater_determinant), sign * op_amp.second * amp);
-            if (!inserted) {
-              it->second += sign * op_amp.second * amp;
+          if (sign != 0 && abs(coeff * amp) > cutoff) {
+            auto p = tmp.try_emplace(std::move(out_slater_determinant),
+                                     sign * coeff * amp);
+            if (!p.second) {
+              p.first->second += sign * coeff * amp;
             }
           }
         }

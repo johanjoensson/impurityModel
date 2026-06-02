@@ -92,11 +92,13 @@ public:
                                  const ManyBodyState &a) {
     return (ManyBodyState{a} *= s);
   }
-  friend ManyBodyState operator*(auto &&a, const std::complex<double> &s) {
-    return (ManyBodyState{a} *= s);
+  template <typename A>
+  friend ManyBodyState operator*(A &&a, const std::complex<double> &s) {
+    return (ManyBodyState{std::forward<decltype(a)>(a)} *= s);
   }
-  friend ManyBodyState operator/(auto &&a, const std::complex<double> &s) {
-    return (ManyBodyState{a} /= s);
+  template <typename A>
+  friend ManyBodyState operator/(A &&a, const std::complex<double> &s) {
+    return (ManyBodyState{std::forward<decltype(a)>(a)} /= s);
   }
 
   friend std::complex<double> inner(const ManyBodyState &,

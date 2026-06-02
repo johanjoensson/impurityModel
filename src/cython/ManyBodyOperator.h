@@ -13,19 +13,15 @@ public:
   template <typename T> struct Comparer {
     bool operator()(const std::vector<T> &a,
                     const std::vector<T> &b) const noexcept {
-      for (size_t i = 0; i < std::min(a.size(), b.size()); i++) {
-        if (i >= a.size()) {
-          return true;
-        } else if (i >= b.size()) {
-          return false;
-        }
+      size_t i;
+      for (i = 0; i < std::min(a.size(), b.size()); i++) {
         if (a[i] < b[i]) {
           return true;
         } else if (a[i] > b[i]) {
           return false;
         }
       }
-      return false;
+      return i >= a.size();
     }
   };
   using SCALAR = std::complex<double>;
@@ -81,8 +77,8 @@ public:
     return apply(psi, cutoff);
   }
   [[nodiscard]] std::vector<ManyBodyState>
-  operator()(const std::vector<ManyBodyState> &psis,
-             double cutoff = 0) const /*noexcept*/ {
+  operator()(const std::vector<ManyBodyState> &psis, double cutoff = 0) const
+  /*noexcept*/ {
     return apply(psis, cutoff);
   }
 
@@ -97,7 +93,8 @@ public:
   [[nodiscard]] ManyBodyState apply(const ManyBodyState &,
                                     double cutoff = 0) const /*noexcept*/;
   [[nodiscard]] std::vector<ManyBodyState>
-  apply(const std::vector<ManyBodyState> &psis, double cutoff) const /*noexcept*/ {
+  apply(const std::vector<ManyBodyState> &psis, double cutoff) const
+  /*noexcept*/ {
     std::vector<ManyBodyState> res;
     res.reserve(psis.size());
     for (const ManyBodyState &psi : psis) {
@@ -199,8 +196,6 @@ public:
   [[nodiscard]] const_iterator upper_bound(const key_type &ey) const;
   template <class K> [[nodiscard]] iterator upper_bound(const K &);
   template <class K> [[nodiscard]] const_iterator upper_bound(const K &) const;
-
-  //  compare_type key_comp() const { return compare_type(); }
 
   [[nodiscard]] iterator begin() { return m_ops.begin(); }
   [[nodiscard]] const_iterator begin() const { return m_ops.begin(); }

@@ -20,14 +20,15 @@
 #endif
 
 #if __cplusplus >= 202302L
+template <typename OP>
 ManyBodyState::Map merge_flat_maps(ManyBodyState::Map &&map1,
-                                   ManyBodyState::Map &&map2, auto &&op) {
+                                   ManyBodyState::Map &&map2, OP &&op) {
 
   using K = ManyBodyState::Key;
   using V = ManyBodyState::Value;
   // 1. Extract the underlying sorted vectors
   auto [k1, v1] = std::move(map1).extract();
-  auto [k2, v2] = std::move(map2).extract();
+  auto k2, v2 = std::move(map2).extract();
 
   // 2. Pre-allocate maximum possible size
   std::vector<K> res_keys;
@@ -77,10 +78,11 @@ ManyBodyState::Map merge_flat_maps(ManyBodyState::Map &&map1,
                             std::move(res_values));
 }
 
+template <typename OP>
 ManyBodyState::Map merge_flat_maps(
     ManyBodyState::Map &&map1,      // Flattened/moved (non-const)
     const ManyBodyState::Map &map2, // Supports both const and non-const
-    auto &&op) {
+    OP &&op) {
   using K = ManyBodyState::Key;
   using V = ManyBodyState::Value;
   // 1. Extract underlying vectors from the first map (zero-copy)
@@ -146,42 +148,42 @@ ManyBodyState::ManyBodyState(std::vector<key_type> &&keys,
 
 #else
 
+template <typename OP>
 ManyBodyState::Map merge_flat_maps(ManyBodyState::Map &&map1,
-                                   ManyBodyState::Map &&map2, auto &&op) {
+                                   ManyBodyState::Map &&map2, OP &&op) {
   using V = ManyBodyState::Value;
   // 1. Prepare an output vector for the merged elements
   std::vector<ManyBodyState::Map::value_type> merged_elements;
   merged_elements.reserve(map1.size() + map2.size());
 
-  auto it1 = std::move_iterator(map1.begin());
-  auto it2 = std::move_iterator(map2.begin());
+  auto it1 = map1.begin();
+  auto it2 = map2.begin();
 
-  while (it1 < std::move_iterator(map1.end()) &&
-         it2 < std::move_iterator(map2.end())) {
-    auto [k1, v1] = *it1;
-    auto [k2, v2] = *it2;
-
-    if (k1 < k2) {
-      merged_elements.emplace_back(std::move(k1), op(std::move(v1), V{}));
+  while (it1 < map1.end() && it2 < map2.end()) {
+    if (it1->first < it2->first) {
+      merged_elements.emplace_back(std::move(it1->first),
+                                   op(std::move(it1->second), V{}));
       it1++;
-    } else if (k2 < k1) {
-      merged_elements.emplace_back(std::move(k2), op(V{}, std::move(v2)));
+    } else if (it2->first < it1->first) {
+      merged_elements.emplace_back(std::move(it2->first),
+                                   op(V{}, std::move(it2->second)));
       it2++;
     } else {
-      merged_elements.emplace_back(std::move(k1),
-                                   op(std::move(v1), std::move(v2)));
+      merged_elements.emplace_back(
+          std::move(it1->first),
+          op(std::move(it1->second), std::move(it2->second)));
       it1++;
       it2++;
     }
   }
-  while (it1 < std::move_iterator(map1.end())) {
-    auto [k1, v1] = *it1;
-    merged_elements.emplace_back(std::move(k1), op(std::move(v1), V{}));
+  while (it1 < map1.end()) {
+    merged_elements.emplace_back(std::move(it1->first),
+                                 op(std::move(it1->second), V{}));
     it1++;
   }
-  while (it2 < std::move_iterator(map2.end())) {
-    auto [k2, v2] = *it2;
-    merged_elements.emplace_back(std::move(k2), op(V{}, std::move(v2)));
+  while (it2 < map2.end()) {
+    merged_elements.emplace_back(std::move(it2->first),
+                                 op(V{}, std::move(it2->second)));
     it2++;
   }
 
@@ -191,40 +193,40 @@ ManyBodyState::Map merge_flat_maps(ManyBodyState::Map &&map1,
       std::move_iterator(merged_elements.end()));
 }
 
+template <typename OP>
 ManyBodyState::Map merge_flat_maps(ManyBodyState::Map &&map1,
-                                   const ManyBodyState::Map &map2, auto &&op) {
+                                   const ManyBodyState::Map &map2, OP &&op) {
   using V = ManyBodyState::Value;
   // 1. Prepare an output vector for the merged elements
   std::vector<ManyBodyState::Map::value_type> merged_elements;
   merged_elements.reserve(map1.size() + map2.size());
 
-  auto it1 = std::move_iterator(map1.begin());
+  auto it1 = map1.begin();
   auto it2 = map2.begin();
 
-  while (it1 < std::move_iterator(map1.end()) && it2 < map2.end()) {
-    auto [k1, v1] = *it1;
-    auto [k2, v2] = *it2;
+  while (it1 < map1.end() && it2 < map2.end()) {
 
-    if (k1 < k2) {
-      merged_elements.emplace_back(std::move(k1), op(std::move(v1), V{}));
+    if (it1->first < it2->first) {
+      merged_elements.emplace_back(std::move(it1->first),
+                                   op(std::move(it1->second), V{}));
       it1++;
-    } else if (k2 < k1) {
-      merged_elements.emplace_back(k2, op(V{}, v2));
+    } else if (it2->first < it1->first) {
+      merged_elements.emplace_back(it2->first, op(V{}, it2->second));
       it2++;
     } else {
-      merged_elements.emplace_back(std::move(k1), op(std::move(v1), v2));
+      merged_elements.emplace_back(std::move(it1->first),
+                                   op(std::move(it1->second), it2->second));
       it1++;
       it2++;
     }
   }
-  while (it1 < std::move_iterator(map1.end())) {
-    auto [k1, v1] = *it1;
-    merged_elements.emplace_back(std::move(k1), op(std::move(v1), V{}));
+  while (it1 < map1.end()) {
+    merged_elements.emplace_back(std::move(it1->first),
+                                 op(std::move(it1->second), V{}));
     it1++;
   }
   while (it2 < map2.end()) {
-    auto [k2, v2] = *it2;
-    merged_elements.emplace_back(k2, op(V{}, v2));
+    merged_elements.emplace_back(it2->first, op(V{}, it2->second));
     it2++;
   }
 
@@ -286,22 +288,22 @@ ManyBodyState &ManyBodyState::operator-=(const ManyBodyState &other) {
 }
 
 ManyBodyState &ManyBodyState::operator*=(mapped_type s) {
-  for (reference p : *this) {
-    p.second *= s;
+  for (auto &[k, v] : *this) {
+    v *= s;
   }
   return *this;
 }
 ManyBodyState &ManyBodyState::operator/=(mapped_type s) {
-  for (reference p : *this) {
-    p.second /= s;
+  for (auto &[k, v] : *this) {
+    v /= s;
   }
   return *this;
 }
 
 ManyBodyState ManyBodyState::operator-() const {
   ManyBodyState res(*this);
-  for (reference p : res) {
-    p.second = -p.second;
+  for (auto &[k, v] : res) {
+    v = -v;
   }
   return res;
 }
