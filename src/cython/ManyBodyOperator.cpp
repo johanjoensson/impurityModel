@@ -18,7 +18,7 @@
 #endif
 #include <cstddef>
 
-constexpr int set_bits(ManyBodyState::key_type::value_type byte) noexcept {
+int set_bits(ManyBodyState::key_type::value_type byte) noexcept {
 #if __cplusplus >= 202002L
   return std::popcount<ManyBodyState::key_type::value_type>(byte);
 #else
@@ -29,8 +29,8 @@ constexpr int set_bits(ManyBodyState::key_type::value_type byte) noexcept {
 }
 
 [[nodiscard]] std::pair<int, ManyBodyState::key_type>
-create(const ManyBodyState::key_type &in_state, size_t idx) /*noexcept*/ {
-  ManyBodyState::key_type state = in_state;
+create(ManyBodyState::key_type &&in_state, size_t idx) /*noexcept*/ {
+  ManyBodyState::key_type state = std::move(in_state);
   const size_t num_bits{8 * sizeof(ManyBodyState::key_type::value_type)};
   const size_t state_idx = idx / num_bits;
   const size_t bit_idx = num_bits - 1 - (idx % num_bits);
@@ -45,12 +45,12 @@ create(const ManyBodyState::key_type &in_state, size_t idx) /*noexcept*/ {
   }
   sign += set_bits(state[state_idx] >> bit_idx) % 2;
   state[state_idx] ^= mask;
-  return {sign % 2 ? -1 : 1, state};
+  return {sign % 2 ? -1 : 1, std::move(state)};
 }
 
 [[nodiscard]] std::pair<int, ManyBodyState::key_type>
-annihilate(const ManyBodyState::key_type &in_state, size_t idx) /*noexcept*/ {
-  ManyBodyState::key_type state = in_state;
+annihilate(ManyBodyState::key_type &&in_state, size_t idx) /*noexcept*/ {
+  ManyBodyState::key_type state = std::move(in_state);
   const size_t num_bits = 8 * sizeof(ManyBodyState::key_type::value_type);
   const size_t state_idx = idx / num_bits;
   const size_t bit_idx = num_bits - 1 - (idx % num_bits);
@@ -65,7 +65,7 @@ annihilate(const ManyBodyState::key_type &in_state, size_t idx) /*noexcept*/ {
   }
   state[state_idx] ^= mask;
   sign += set_bits(state[state_idx] >> bit_idx) % 2;
-  return {sign % 2 ? -1 : 1, state};
+  return {sign % 2 ? -1 : 1, std::move(state)};
 }
 
 ManyBodyOperator::ManyBodyOperator(const std::vector<value_type> &ops)
@@ -373,10 +373,11 @@ ManyBodyState ManyBodyOperator::apply_op_determinant(
     int sign = 1;
     for (const int64_t idx : indices) {
       if (idx >= 0) {
-        ac_res = create(out_slater_determinant, static_cast<size_t>(idx));
-      } else {
         ac_res =
-            annihilate(out_slater_determinant, static_cast<size_t>(-(idx + 1)));
+            create(std::move(out_slater_determinant), static_cast<size_t>(idx));
+      } else {
+        ac_res = annihilate(std::move(out_slater_determinant),
+                            static_cast<size_t>(-(idx + 1)));
       }
       sign *= ac_res.first;
       out_slater_determinant = std::move(ac_res.second);
@@ -395,22 +396,32 @@ ManyBodyState ManyBodyOperator::apply_op_determinant(
 
 [[nodiscard]] ManyBodyState ManyBodyOperator::apply(const ManyBodyState &state,
                                                     double cutoff) const {
+#ifdef PARALLEL_STL
   return std::transform_reduce(
       PAR m_ops.begin(), m_ops.end(), ManyBodyState{},
-      [](auto &&a, auto &&b) { return a += std::forward<decltype(b)>(b); },
-      [this, &state, cutoff](ManyBodyOperator::const_reference op_amp) {
+      [](auto &&a, auto &&b) -> decltype(auto) {
+        if (a.size() < b.size()) {
+          std::swap(a, b);
+        }
+        return a += std::forward<decltype(b)>(b);
+      },
+      [this, &state, cutoff](ManyBodyOperator::const_reference op_amp) -> auto {
         const auto &[indices, coeff] = op_amp;
+        std::vector<ManyBodyState::key_type> res_keys;
+        std::vector<ManyBodyState::mapped_type> res_values;
+        res_keys.reserve(state.size());
+        res_values.reserve(state.size());
         std::pair<int, ManyBodyState::key_type> ac_res;
-        ManyBodyState tmp{};
-        tmp.reserve(indices.size() * state.size());
+        ManyBodyState::key_type out_slater_determinant;
         for (const auto &[slater, amp] : state) {
-          ManyBodyState::key_type out_slater_determinant{slater};
+          out_slater_determinant = slater;
           double sign = 1;
           for (const int64_t idx : indices) {
             if (idx >= 0) {
-              ac_res = create(out_slater_determinant, static_cast<size_t>(idx));
+              ac_res = create(std::move(out_slater_determinant),
+                              static_cast<size_t>(idx));
             } else {
-              ac_res = annihilate(out_slater_determinant,
+              ac_res = annihilate(std::move(out_slater_determinant),
                                   static_cast<size_t>(-(idx + 1)));
             }
             sign *= ac_res.first;
@@ -423,15 +434,48 @@ ManyBodyState ManyBodyOperator::apply_op_determinant(
             }
           }
           if (sign != 0 && abs(coeff * amp) > cutoff) {
-            auto p = tmp.try_emplace(std::move(out_slater_determinant),
-                                     sign * coeff * amp);
-            if (!p.second) {
-              p.first->second += sign * coeff * amp;
-            }
+            res_keys.push_back(std::move(out_slater_determinant));
+            res_values.push_back(sign * coeff * amp);
           }
         }
-        return tmp;
+        return ManyBodyState{std::move(res_keys), std::move(res_values)};
       });
+#else
+  std::vector<ManyBodyState::key_type> res_keys;
+  std::vector<ManyBodyState::mapped_type> res_values;
+  res_keys.reserve(state.size() * m_ops.size());
+  res_values.reserve(state.size() * m_ops.size());
+  std::pair<int, ManyBodyState::key_type> ac_res;
+  ManyBodyState::key_type out_slater_determinant;
+  for (const auto &[indices, coeff] : m_ops) {
+    for (const auto &[slater, amp] : state) {
+      out_slater_determinant = slater;
+      double sign = 1;
+      for (const int64_t idx : indices) {
+        if (idx >= 0) {
+          ac_res = create(std::move(out_slater_determinant),
+                          static_cast<size_t>(idx));
+        } else {
+          ac_res = annihilate(std::move(out_slater_determinant),
+                              static_cast<size_t>(-(idx + 1)));
+        }
+        sign *= ac_res.first;
+        out_slater_determinant = std::move(ac_res.second);
+
+        if (sign == 0 ||
+            !state_is_within_restrictions(out_slater_determinant)) {
+          sign = 0;
+          break;
+        }
+      }
+      if (sign != 0 && abs(coeff * amp) > cutoff) {
+        res_keys.push_back(std::move(out_slater_determinant));
+        res_values.push_back(sign * coeff * amp);
+      }
+    }
+  }
+  return ManyBodyState{std::move(res_keys), std::move(res_values)};
+#endif
 }
 
 ManyBodyOperator &
