@@ -50,6 +50,8 @@ public:
 
   using iterator = Map::iterator;
   using const_iterator = Map::const_iterator;
+  using reverse_iterator = Map::reverse_iterator;
+  using const_reverse_iterator = Map::const_reverse_iterator;
 
   ManyBodyState() = default;
   ManyBodyState(const ManyBodyState &) = default;
@@ -132,6 +134,14 @@ public:
   const_iterator end() const { return m_map.end(); }
   const_iterator cend() const noexcept { return m_map.cend(); }
 
+  reverse_iterator rbegin() { return m_map.rbegin(); }
+  const_reverse_iterator rbegin() const { return m_map.rbegin(); }
+  const_reverse_iterator crbegin() const noexcept { return m_map.crbegin(); }
+
+  reverse_iterator rend() { return m_map.rend(); }
+  const_reverse_iterator rend() const { return m_map.rend(); }
+  const_reverse_iterator crend() const noexcept { return m_map.crend(); }
+
   std::pair<iterator, bool> insert(const value_type &val) {
     return m_map.insert(val);
   }
@@ -153,6 +163,11 @@ public:
 
   template <class... Arg> std::pair<iterator, bool> emplace(Arg &&...args) {
     return m_map.emplace(std::forward<Arg>(args)...);
+  }
+
+  template <class... Args>
+  iterator emplace_hint(const_iterator hint, Args &&...args) {
+    return m_map.emplace_hint(hint, std::forward<Args>(args)...);
   }
 
   std::pair<iterator, bool> try_emplace(const Key &key, Value value) {

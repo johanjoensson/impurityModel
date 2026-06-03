@@ -229,25 +229,39 @@ std::flat_map<K, V> merge_flat_maps(
 ManyBodyState::ManyBodyState(const std::vector<key_type> &keys,
                              const std::vector<mapped_type> &values)
     : m_map() {
-  std::vector<value_type> data;
-  data.reserve(keys.size());
-  for (size_t i = 0; i < keys.size(); i++) {
-    data.push_back({keys[i], values[i]});
+  if (!keys.empty()) {
+    reserve(keys.size());
+    std::vector<size_t> indices(keys.size());
+    std::iota(indices.begin(), indices.end(), 0);
+    std::sort(indices.begin(), indices.end(),
+              [&keys](size_t i, size_t j) { return keys[i] < keys[j]; });
+    for (size_t idx : indices) {
+      if (m_map.size() > 0 && m_map.rbegin()->first == keys[idx]) {
+        m_map.rbegin()->second += values[idx];
+      } else {
+        m_map.emplace_hint(m_map.end(), keys[idx], values[idx]);
+      }
+    }
   }
-  m_map = ManyBodyState::Map(std::move_iterator(data.begin()),
-                             std::move_iterator(data.end()));
 }
 
 ManyBodyState::ManyBodyState(std::vector<key_type> &&keys,
                              std::vector<mapped_type> &&values)
     : m_map() {
-  std::vector<value_type> data;
-  data.reserve(keys.size());
-  for (size_t i = 0; i < keys.size(); i++) {
-    data.push_back({std::move(keys[i]), std::move(values[i])});
+  if (!keys.empty()) {
+    reserve(keys.size());
+    std::vector<size_t> indices(keys.size());
+    std::iota(indices.begin(), indices.end(), 0);
+    std::sort(indices.begin(), indices.end(),
+              [&keys](size_t i, size_t j) { return keys[i] < keys[j]; });
+    for (size_t idx : indices) {
+      if (m_map.size() > 0 && m_map.rbegin()->first == keys[idx]) {
+        m_map.rbegin()->second += values[idx];
+      } else {
+        m_map.emplace_hint(m_map.end(), std::move(keys[idx]), values[idx]);
+      }
+    }
   }
-  m_map = ManyBodyState::Map(std::move_iterator(data.begin()),
-                             std::move_iterator(data.end()));
 }
 
 double ManyBodyState::norm2() const {
