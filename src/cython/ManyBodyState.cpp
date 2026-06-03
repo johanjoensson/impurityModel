@@ -113,19 +113,17 @@ template <typename K, typename V, typename OP>
 std::flat_map<K, V> merge_flat_maps(std::flat_map<K, V> &&map1,
                                     std::flat_map<K, V> &&map2, OP &&op) {
 
-  // 1. Extract the underlying sorted vectors
+  // Extract data from maps
   auto [k1, v1] = std::move(map1).extract();
   auto [k2, v2] = std::move(map2).extract();
 
-  // 2. Pre-allocate maximum possible size
   std::vector<K> res_keys;
   std::vector<V> res_values;
   res_keys.reserve(k1.size() + k2.size());
   res_values.reserve(v1.size() + v2.size());
 
+  // Merge by iterating through both maps simultaneously
   size_t i = 0, j = 0;
-
-  // 3. Two-pointer linear merge
   while (i < k1.size() && j < k2.size()) {
     if (k1[i] < k2[j]) {
       res_keys.push_back(std::move(k1[i]));
@@ -135,7 +133,7 @@ std::flat_map<K, V> merge_flat_maps(std::flat_map<K, V> &&map1,
       res_keys.push_back(std::move(k2[j]));
       res_values.push_back(std::forward<OP>(op)(V{}, std::move(v2[j])));
       j++;
-    } else { // Duplicate key found: Sum the values
+    } else {
       res_keys.push_back(std::move(k1[i]));
       res_values.push_back(
           std::forward<OP>(op)(std::move(v1[i]), std::move(v2[j])));
@@ -144,7 +142,7 @@ std::flat_map<K, V> merge_flat_maps(std::flat_map<K, V> &&map1,
     }
   }
 
-  // 4. Append remaining elements
+  // Treat leftover items
   while (i < k1.size()) {
     res_keys.push_back(std::move(k1[i]));
     res_values.push_back(std::forward<OP>(op)(std::move(v1[i]), V{}));
@@ -156,12 +154,9 @@ std::flat_map<K, V> merge_flat_maps(std::flat_map<K, V> &&map1,
     j++;
   }
 
-  // Shrink to fit actual size after duplicates are removed
   res_keys.shrink_to_fit();
   res_values.shrink_to_fit();
 
-  // 5. Rebuild flat_map using the sorted_unique tag (guaranteed sorted and
-  // unique)
   return ManyBodyState::Map(std::sorted_unique, std::move(res_keys),
                             std::move(res_values));
 }
@@ -171,22 +166,19 @@ std::flat_map<K, V> merge_flat_maps(
     std::flat_map<K, V> &&map1,      // Flattened/moved (non-const)
     const std::flat_map<K, V> &map2, // Supports both const and non-const
     OP &&op) {
-  // 1. Extract underlying vectors from the first map (zero-copy)
+  // Extract data from map1
   auto [k1, v1] = std::move(map1).extract();
 
-  // 2. Access underlying containers of the const map via keys() and values()
   const auto &k2 = map2.keys();
   const auto &v2 = map2.values();
 
-  // 3. Pre-allocate maximum possible size
   std::vector<K> res_keys;
   std::vector<V> res_values;
   res_keys.reserve(k1.size() + k2.size());
   res_values.reserve(v1.size() + v2.size());
 
+  // Merge the two maps by iterating through them simultaneously
   size_t i = 0, j = 0;
-
-  // 4. Two-pointer linear merge
   while (i < k1.size() && j < k2.size()) {
     if (k1[i] < k2[j]) {
       res_keys.push_back(std::move(k1[i]));
@@ -205,7 +197,7 @@ std::flat_map<K, V> merge_flat_maps(
     }
   }
 
-  // 5. Append remaining elements
+  // Treat leftover items
   while (i < k1.size()) {
     res_keys.push_back(std::move(k1[i]));
     res_values.push_back(std::forward<OP>(op)(std::move(v1[i]), V{}));
@@ -220,7 +212,6 @@ std::flat_map<K, V> merge_flat_maps(
   res_keys.shrink_to_fit();
   res_values.shrink_to_fit();
 
-  // 6. Rebuild using sorted_unique
   return ManyBodyState::Map(std::sorted_unique, std::move(res_keys),
                             std::move(res_values));
 }
