@@ -11,9 +11,6 @@ def build_states(states: list[bytes]):
         bath_states=({0: []}, {0: []}),
         initial_basis=[],
     )
-    print(f"{b.num_spin_orbitals=}")
-    print(f"{b.n_bytes=}")
-    print(f"{len(states[0])=}")
     return [state + b"\x00" * (b.n_bytes - len(state)) for state in states]
 
 
@@ -84,7 +81,6 @@ def test_Basis_len(
         nominal_impurity_occ={0: nominal_impurity_occ},
         verbose=True,
     )
-    print(f"{basis.num_spin_orbitals=} {basis.n_bytes=}")
     assert len(basis) == expected
 
 
@@ -316,62 +312,6 @@ def test_CIPSI_Basis_len_mpi(
         comm=MPI.COMM_WORLD,
     )
     assert len(basis) == expected
-
-
-# @pytest.mark.mpi
-# def test_Basis_alltoall_states():
-#     basis = Basis(
-#         valence_baths={2: 10},
-#         conduction_baths={2: 0},
-#         delta_valence_occ={2: 1},
-#         delta_conduction_occ={2: 0},
-#         delta_impurity_occ={2: 2},
-#         nominal_impurity_occ={2: 1},
-#         verbose=True,
-#         comm=MPI.COMM_WORLD,
-#     )
-#     states = list(basis)
-#     offset = 0
-#     send_list = []
-#     ranks = MPI.COMM_WORLD.size
-#     for rank in range(ranks):
-#         n_states = len(states) // ranks + (1 if rank < len(states)%ranks else 0)
-#         send_list.append(states[offset:offset + n_states])
-#         offset += n_states
-#     print(f"rank {MPI.COMM_WORLD.rank}: {send_list=}", flush=True)
-#     received_states = basis.alltoall_states(send_list)
-#     n_states = len(states) // ranks + (1 if MPI.COMM_WORLD.rank < len(states)%ranks else 0)
-#     offset = MPI.COMM_WORLD.scan(n_states, op=MPI.SUM)
-#     assert np.all(states[offset:offset + n_states] == received_states)
-
-
-# @pytest.mark.mpi
-# def test_Basis_dense_matrix():
-#     basis = Basis(
-# ls=[2],
-#         valence_baths={2: 10},
-#         conduction_baths={2: 0},
-#         delta_valence_occ={2: 1},
-#         delta_conduction_occ={2: 0},
-#         delta_impurity_occ={2: 2},
-#         nominal_impurity_occ={2: 8},
-#         verbose=True,
-#         comm=MPI.COMM_WORLD,
-#     )
-#     print(f"{len(basis)=}", flush=True)
-#     with open("Ni_hamiltonian.pickle", "rb") as f:
-#         h_op = pickle.load(f)
-
-#     h_dict = basis.expand(h_op, {})
-#     print(f"h_dict contains {len(h_dict)} elements.", flush=True)
-#     h_matrix = basis.build_dense_matrix(h_op, h_dict)
-#     print(f"{h_matrix.shape=}", flush=True)
-#     eigvals = np.linalg.eigvalsh(h_matrix, UPLO="L")
-#     # eigvals = np.sort(eigvals)
-
-#     print(f"{eigvals - eigvals[0]=}")
-#     assert eigvals[0] != 0
-#     assert np.all(np.abs(eigvals[:9] - eigvals[0]) <= 1e-12)
 
 
 @pytest.mark.mpi
@@ -1126,7 +1066,6 @@ def test_eg_t2g_dense_matrix_mpi():
 
 def test_simple_vector():
     states = build_states([b"\x00\x1a\x2b", b"\xff\x00\x1a"])
-    print(f"{states=}")
     basis = Basis(
         impurity_orbitals={0: [list(range(24))]},
         bath_states=(
@@ -1137,7 +1076,6 @@ def test_simple_vector():
         verbose=True,
         comm=None,
     )
-    print(f"{basis.local_basis=}")
     state = {}
     if states[0] in basis._index_dict:
         state[states[0]] = 0.25 + 0.2j
@@ -1223,7 +1161,7 @@ def test_vector_mpi():
     if states[1] in basis.local_basis:
         state[states[1]] = 0.33 + 0.15j
     v = basis.build_vector([state])[0]
-    v_exact = np.array([0.25 * comm.size + 0.2j * comm.size, 0.33 + 0.15j, 0, 0], dtype=complex)
+    v_exact = np.array([0.25 + 0.2j, 0.33 + 0.15j, 0, 0], dtype=complex)
 
     assert v.shape == (len(basis),)
     assert v.shape == v_exact.shape
@@ -1272,8 +1210,6 @@ def test_simple_state_mpi():
     s = basis.build_state(v)
     s_exact = [{states[0]: v[0, basis.index(states[0])], states[1]: v[0, basis.index(states[1])]}]
 
-    print(f"{basis[0]=}, {basis[1]=}")
-    print(f"{s=}")
     for i in range(len(s)):
         assert all(s[i][state] == s_exact[i][state] for state in basis.local_basis), f"{s=} {s_exact=}"
 
@@ -1325,67 +1261,6 @@ def test_state_mpi():
 
     for i in range(len(s)):
         assert all(s[i][state] == s_exact[i][state] for state in s[i])
-
-
-# def test_spin_flip():
-#     comm = None
-#     # dn 11001 -> n_dn = 3
-#     # up 00101 -> n_up = 2
-#     states = [b"\xC9\x40"]
-#     basis = Basis(
-#         impurity_orbitals={0: [list(range(10))]},
-#         bath_states=({0: [[]]}, {0: [[]]}, {0: [[]]}),
-#         initial_basis=[],
-#         verbose=True,
-#         comm=comm,
-#     )
-#     spin_flipped = basis._generate_spin_flipped_determinants(states)
-#     # flips:
-#     # dn 11001  01001  10001  11101  00001  10101  01101  00101
-#     # up 00101  10101  01101  00001  11101  01001  10001  11001
-#     spin_flipped_check = [
-#         b"\xC9\x40",
-#         b"\x4D\x40",
-#         b"\x8B\x40",
-#         # b"\xE8\x40",
-#         # b"\x0F\x40",
-#         b"\xAA\x40",
-#         b"\x6C\x40",
-#         b"\x2E\x40",
-#     ]
-#     assert all(state in spin_flipped for state in spin_flipped_check), f"{spin_flipped_check=} {spin_flipped=}"
-#     assert all(state in spin_flipped_check for state in spin_flipped), f"{spin_flipped_check=} {spin_flipped=}"
-
-
-# @pytest.mark.mpi
-# def test_spin_flip_mpi():
-#     comm = MPI.COMM_WORLD
-#     # dn 11001 -> n_dn = 3
-#     # up 00101 -> n_up = 2
-#     states = [b"\xC9\x40"]
-#     basis = Basis(
-#         impurity_orbitals={0: [list(range(10))]},
-#         bath_states=({0: [[]]}, {0: [[]]}, {0: [[]]}),
-#         initial_basis=[],
-#         verbose=True,
-#         comm=comm,
-#     )
-#     spin_flipped = basis._generate_spin_flipped_determinants(states)
-#     # flips:
-#     # dn 11001  01001  10001  11101  00001  10101  01101  00101
-#     # up 00101  10101  01101  00001  11101  01001  10001  11001
-#     spin_flipped_check = [
-#         b"\xC9\x40",
-#         b"\x4D\x40",
-#         b"\x8B\x40",
-#         # b"\xE8\x40",
-#         # b"\x0F\x40",
-#         b"\xAA\x40",
-#         b"\x6C\x40",
-#         b"\x2E\x40",
-#     ]
-#     assert all(state in spin_flipped for state in spin_flipped_check), f"{spin_flipped_check=} {spin_flipped=}"
-#     assert all(state in spin_flipped_check for state in spin_flipped), f"{spin_flipped_check=} {spin_flipped=}"
 
 
 @pytest.mark.mpi
