@@ -290,26 +290,28 @@ def get_block_Lanczos_matrices_dense(
     q = np.zeros((2, N, n), dtype=complex, order="C")
     wp = np.empty((N, n), dtype=complex, order="C")
     q[1] = psi0
-    alphas = np.empty((0, n, n), dtype=complex)
-    betas = np.empty((0, n, n), dtype=complex)
+
+    it_max = int(np.ceil(krylovSize / N))
+    alphas = np.empty((it_max, n, n), dtype=complex)
+    betas = np.empty((it_max, n, n), dtype=complex)
+    betas[-1] = 0
 
     # Run at least 1 iteration (to generate $\alpha_0$).
     # We can also not generate more than N Lanczos vectors, meaning we can
     # take at most N/n steps in total
-    for i in range(int(np.ceil(krylovSize / n))):
+    for i in range(it_max):
         wp = h @ q[1]
 
-        alphas = np.append(alphas, [np.conj(q[1].T) @ wp], axis=0)
-        betas = np.append(betas, np.zeros((1, n, n), dtype=complex), axis=0)
+        alphas[i] = np.conj(q[1].T) @ wp
         wp -= q[1] @ alphas[i] + q[0] @ np.conj(betas[i - 1].T)
         q[0] = q[1]
         q[1], betas[i] = sp.linalg.qr(wp, mode="economic", overwrite_a=True, check_finite=False)
 
-        converge_count = 1 + converge_count if converged(alphas, betas, verbose=verbose) else 0
+        converge_count = 1 + converge_count if converged(alphas[: i + 1], betas[: i + 1], verbose=verbose) else 0
         if converge_count > 2:
             break
 
-    return alphas, betas
+    return alphas[: i + 1], betas[: i + 1]
 
 
 def get_block_Lanczos_matrices(
@@ -336,13 +338,15 @@ def get_block_Lanczos_matrices(
 
     N = h.shape[0]
     n = psi0.shape[1] if len(psi0.shape) == 2 else 1
+    it_max = int(np.ceil(krylovSize / n))
 
     n_reort = 0
     if rank == 0:
         q = np.zeros((2, N, n), dtype=complex, order="C")
         wp = np.empty((N, n), dtype=complex, order="C")
-        alphas = np.empty((0, n, n), dtype=complex)
-        betas = np.empty((0, n, n), dtype=complex)
+        alphas = np.empty((it_max, n, n), dtype=complex, order="C")
+        betas = np.empty((it_max, n, n), dtype=complex, order="C")
+        betas[-1] = 0
     else:
         q = np.empty((2, 0, 0))
         wp = None
@@ -352,18 +356,18 @@ def get_block_Lanczos_matrices(
         q[1] = psi0
     qi = np.ascontiguousarray(psi0)
 
+    converge_count = 0
     done = False
     # Run at least 1 iteration (to generate $\alpha_0$).
     # We can also not generate more than N Lanczos vectors, meaning we can
     # take at most N/n steps in total
-    for i in range(int(np.ceil(krylovSize / n))):
+    for i in range(it_max):
         t_h = perf_counter()
         wp = h @ qi
         t_matmul += perf_counter() - t_h
 
-        if comm.rank == 0:
-            alphas = np.append(alphas, [np.conj(q[1].T) @ wp], axis=0)
-            betas = np.append(betas, np.zeros((1, n, n), dtype=complex), axis=0)
+        if rank == 0:
+            alphas[i] = np.conj(q[1].T) @ wp
             wp -= q[1] @ alphas[i] + q[0] @ np.conj(betas[i - 1].T)
             q[0] = q[1]
             t_qr_fact = perf_counter()
@@ -371,7 +375,7 @@ def get_block_Lanczos_matrices(
             t_qr += perf_counter() - t_qr_fact
             t_converged = perf_counter()
 
-            converge_count = 1 + converge_count if converged(alphas, betas, verbose=verbose) else 0
+            converge_count = 1 + converge_count if converged(alphas[: i + 1], betas[: i + 1], verbose=verbose) else 0
             done = converge_count > 2
             t_conv += perf_counter() - t_converged
 
@@ -386,10 +390,13 @@ def get_block_Lanczos_matrices(
             break
 
     # Distribute Lanczos matrices to all ranks
-    if mpi and rank != 0:
-        alphas = np.empty((i + 1, n, n), dtype=complex)
-        betas = np.empty((i + 1, n, n), dtype=complex)
     if mpi:
+        if rank != 0:
+            alphas = np.empty((i + 1, n, n), dtype=complex, order="C")
+            betas = np.empty((i + 1, n, n), dtype=complex, order="C")
+        else:
+            alphas = alphas[: i + 1].copy()
+            betas = betas[: i + 1].copy()
         comm.Bcast(alphas, root=0)
         comm.Bcast(betas, root=0)
 
@@ -429,7 +436,7 @@ def block_lanczos_sparse(
     if build_krylov_basis:
         Q = list(psi0)
 
-    it_max = max(200, basis.size // n + 1)
+    it_max = basis.size // n + 1
     it = 0
     converge_count = 0
     expand_basis = True
@@ -445,29 +452,26 @@ def block_lanczos_sparse(
         ]
         t_apply = perf_counter() - t0
         old_basis_size = basis.size
-        # basis.add_states([state for p in wp for state in p if state not in basis.local_basis])
-        if verbose:
-            print(f"Iteration {it+1}: ", end="" if expand_basis else "\n")
         t0 = perf_counter()
         if expand_basis:
             basis.add_states(
                 [
                     state
-                    for state, _ in itertools.groupby(merge(*tuple((state for state in p.keys()) for p in wp)))
-                    if state not in basis.local_basis
+                    for state, _ in itertools.groupby(
+                        merge(*tuple((slater for slater in p.keys() if slater not in basis.local_basis) for p in wp))
+                    )
                 ],
                 unique_sorted=True,
             )
-            # basis.add_states([state for p in wp for state in p if state not in basis.local_basis])
         t_add = perf_counter() - t0
-        # if old_basis_size == basis.size:
-        #     it_max = basis.size // n
-        #     expand_basis = False
+        if old_basis_size == basis.size:
+            it_max = basis.size // n
+            expand_basis = False
         if verbose:
             print(f"Added {basis.size - old_basis_size} states to the basis.")
             print(f"----> Currently the basis contains {basis.size} states.")
             print(f"----> Applying the hamiltonian took {t_apply} seconds.")
-            print(f"----> Adding new states took {t_add} seconds.")
+            print(f"----> Adding new states took {t_add} seconds.", flush=True)
         tmp = basis.redistribute_psis(q[0] + q[1] + wp)
         v_dense = basis.build_vector(tmp, slaterWeightMin=0, root=0).T
         if rank == 0:
@@ -503,7 +507,7 @@ def block_lanczos_sparse(
             converge_count += 1
         else:
             converge_count = 0
-        if converge_count > 2:
+        if converge_count > 2 or it > it_max:
             break
 
         if mpi:
@@ -959,10 +963,9 @@ def get_Lanczos_vectors(A, alphas, betas, v0, comm, which="all"):
     n_it = alphas.shape[0]
     N = v0.shape[0]
     n = alphas.shape[1]
+    q = np.empty((2, 0, 0), dtype=complex)
     if rank == 0:
         q = np.zeros((2, A.shape[0], n), dtype=complex, order="C")
-    else:
-        q = np.empty((2, 0, 0), dtype=complex)
     if mpi:
         counts = np.empty((comm.size), dtype=int)
         comm.Allgather(np.array([v0.size], dtype=int), counts)
@@ -986,7 +989,7 @@ def get_Lanczos_vectors(A, alphas, betas, v0, comm, which="all"):
         raise RuntimeError(f"Unknown value for which: {which}")
 
     Q = np.empty((N, len(which) * n), dtype=alphas.dtype)
-    qi = np.ascontiguousarray(v0)
+    qi = v0.copy()
     for i in range(n_it):
         if i in which:
             idx = which.index(i)

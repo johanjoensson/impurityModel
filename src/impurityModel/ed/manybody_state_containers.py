@@ -641,7 +641,6 @@ class SimpleDistributedStateContainer(StateContainer):
                 self.local_basis = [
                     state
                     for state, _ in itertools.groupby(merge(self.local_basis, new_states))
-                    # state for state, _ in itertools.groupby(merge(self.local_basis, sorted(set(new_states))))
                 ]
             else:
                 self.local_basis = [

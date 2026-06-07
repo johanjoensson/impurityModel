@@ -45,25 +45,26 @@ def calc_energy(
         spin_flip_dj=spin_flip_dj,
         comm=comm,
     )
-    basis.restrictions = basis.build_initial_restrictions(h_op)
+    basis.restrictions = basis.build_excited_restrictions(h_op, psis=None, es=None)
     if len(basis) == 0:
         return np.inf, basis, {}
-    basis.expand(h_op, dense_cutoff=dense_cutoff, de2_min=1e-6, slaterWeightMin=slaterWeightMin)
+    basis.expand(h_op, dense_cutoff=dense_cutoff, de2_min=1e-4, slaterWeightMin=slaterWeightMin)
 
     energy_cut = -tau * np.log(1e-4)
 
-    # _, block_roots, _, _, block_basis, _, _ = basis.split_into_block_basis_and_redistribute_psi(h_op, None)
     h = basis.build_sparse_matrix(h_op)
-    es = eigensystem(
+    es, eigvecs = eigensystem(
         h,
         e_max=energy_cut,
         k=10,
-        eigenValueTol=0,  # np.finfo(float).eps,
-        return_eigvecs=False,
+        eigenValueTol=np.finfo(float).eps,
+        return_eigvecs=True,
         comm=basis.comm,
         dense=basis.size < dense_cutoff,
     )
-    # e_trial = basis.comm.allreduce(np.min(e_block), op=MPI.MIN)
+    eigen_psis = basis.build_state(eigvecs.T, slaterWeightMin=slaterWeightMin)
+    basis.clear()
+    basis.add_states(set(state for psi in eigen_psis for state in psi))
     return np.min(es), basis
 
 

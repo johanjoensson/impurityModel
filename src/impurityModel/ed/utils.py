@@ -1,5 +1,6 @@
 import numpy as np
 from typing import Optional
+from typing import Iterable
 
 
 def vector_to_string(v: np.ndarray, realvalue: Optional[bool] = None, n_prec: int = 15):
@@ -80,3 +81,14 @@ def matrix_connectivity_print(m: np.ndarray, block_size: int = 1, label: Optiona
             ]
         )
     )
+
+
+def partition(l: Iterable, predicate=lambda a: bool(a)):
+    passed = []
+    failed = []
+    for item in l:
+        if predicate(item):
+            passed.append(item)
+        else:
+            failed.append(item)
+    return passed, failed

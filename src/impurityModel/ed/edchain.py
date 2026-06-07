@@ -345,7 +345,7 @@ def transform_to_lanczos_tridagonal_matrix(H, n_imp):
     res[n_imp:, n_imp:] = H_tridiagonal
 
     assert np.allclose(
-        np.linalg.eigvalsh(H), np.linalg.eigvalsh(res), atol=1e-12
+        np.linalg.eigvalsh(H), np.linalg.eigvalsh(res), atol=1e-15
     ), f"{np.linalg.eigvalsh(H)=}\n{np.linalg.eigvalsh(res)=}"
     return res
 
@@ -464,15 +464,17 @@ def linked_double_chain(H_imp, vs, es, verbose=True, extremely_verbose=False):
 
     # Make sure that we have not changed the spectrum of the Hamiltonian
     assert np.allclose(
-        np.linalg.eigvalsh(H_star), np.linalg.eigvalsh(H_tridiagonal_decoupled), atol=1e-14
+        np.linalg.eigvalsh(H_star), np.linalg.eigvalsh(H_tridiagonal_decoupled), atol=1e-15
     ), f"{np.linalg.eigvalsh(H_star)}\n{np.linalg.eigvalsh(H_tridiagonal_decoupled)}"
     assert np.allclose(
-        np.linalg.eigvalsh(H_star), np.linalg.eigvalsh(H_linked_chains), atol=1e-14
+        np.linalg.eigvalsh(H_star), np.linalg.eigvalsh(H_linked_chains), atol=1e-15
     ), f"{np.linalg.eigvalsh(H_star)}\n{np.linalg.eigvalsh(H_linked_chains)}"
     # Make sure that we have restored the impurity block exactly
     assert np.allclose(
-        H_linked_chains[:n_imp, :n_imp], H_imp, atol=1e-14
+        H_linked_chains[:n_imp, :n_imp], H_imp, atol=1e-15
     ), f"{H_linked_chains[:n_imp, :n_imp]=} {H_imp=}"
+
+
     return H_linked_chains[n_imp:, :n_imp], H_linked_chains[n_imp:, n_imp:]
 
 

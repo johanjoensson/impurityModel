@@ -1087,13 +1087,17 @@ def getRIXSmap_new(
 
     """
     excited_restrictions = basis.build_excited_restrictions(
+            hOp,
         psis,
+        Es,
         imp_change={1: (1, 0), 2: (1, 1)},
         val_change={1: (0, 0), 2: (1, 0)},
         con_change={1: (0, 0), 2: (0, 1)},
     )
     relaxed_restrictions = basis.build_excited_restrictions(
+            hOp,
         psis,
+        Es,
         imp_change={1: (0, 0), 2: (1, 1)},
         val_change={1: (0, 0), 2: (1, 0)},
         con_change={1: (0, 0), 2: (0, 1)},

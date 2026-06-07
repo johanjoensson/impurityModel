@@ -361,12 +361,12 @@ class Basis:
 
     def build_excited_restrictions(
         self,
-        psis: list[ManyBodyState] | ManyBodyState,
-        es: list[float],
         op: ManyBodyOperator,
-        imp_change: Optional[dict[int, tuple[int, int]]],
-        val_change: Optional[dict[int, tuple[int, int]]],
-        con_change: Optional[dict[int, tuple[int, int]]],
+        psis: Optional[list[ManyBodyState] | ManyBodyState] = None,
+        es: Optional[list[float]] = None,
+        imp_change: Optional[dict[int, tuple[int, int]]] = None,
+        val_change: Optional[dict[int, tuple[int, int]]] = None,
+        con_change: Optional[dict[int, tuple[int, int]]] = None,
         cutoff: float = 1e-6,
         min_dist=4,
     ):
@@ -388,7 +388,7 @@ class Basis:
         """
         if isinstance(psis, ManyBodyState):
             psis = [psis]
-        if len(psis) == 0:
+        if psis is not None and len(psis) == 0:
             return None
         if imp_change is None:
             imp_change = {i: None for i in self.impurity_orbitals}
@@ -439,17 +439,19 @@ class Basis:
                 for imp_orb_block, val_orb_block, con_orb_block in zip(
                     impurity_orbitals, valence_baths[i], conduction_baths[i]
                 ):
-                    imp_val_rho = self.build_density_matrices(psis, imp_orb_block, val_orb_block)
-                    val_rhos = self.build_density_matrices(psis, val_orb_block, val_orb_block)
-                    imp_con_rho = self.build_density_matrices(psis, imp_orb_block, con_orb_block)
-                    con_rhos = self.build_density_matrices(psis, con_orb_block, con_orb_block)
+                    if psis is not None:
+                        val_rhos = self.build_density_matrices(psis, val_orb_block, val_orb_block)
+                        con_rhos = self.build_density_matrices(psis, con_orb_block, con_orb_block)
+                        valence_occupations = thermal_average_scale_indep(
+                            es, np.diagonal(val_rhos.real, axis1=1, axis2=2), self.tau
+                        )
+                        conduction_occupations = thermal_average_scale_indep(
+                            es, np.diagonal(con_rhos.real, axis1=1, axis2=2), self.tau
+                        )
+                    else:
+                        valence_occupations = np.ones(len(val_orb_block))
+                        conduction_occupations = np.zeros(len(con_orb_block))
 
-                    valence_occupations = thermal_average_scale_indep(
-                        es, np.diagonal(val_rhos.real, axis1=1, axis2=2), self.tau
-                    )
-                    conduction_occupations = thermal_average_scale_indep(
-                        es, np.diagonal(con_rhos.real, axis1=1, axis2=2), self.tau
-                    )
                     # Identify filled and empty bath states
                     # Ignore states that are too close to the impurity
                     filled_valence_states = [
@@ -847,7 +849,7 @@ class Basis:
                         ManyBodyState({state: 1}),
                         cutoff=slaterWeightMin,
                     )
-                    new_local_states |= set(res.keys()) - local_states
+                    new_local_states |= set(state for state in res.keys()) - local_states
                 if len(new_local_states) == 0:
                     break
                 apply_h_to_these = new_local_states
@@ -1112,7 +1114,7 @@ class Basis:
 
         return [subset.intersection(self.local_indices) for subset in disjoint_sets.subsets()]
 
-    def split_basis_and_redistribute_psi(self, priorities, psis, max_stddev=0.1):
+    def split_basis_and_redistribute_psi(self, priorities, psis):
 
         if (not self.is_distributed) or len(priorities) <= 1:
             return range(len(priorities)), [0], 0, [len(priorities)], self, psis, [None]
@@ -1150,10 +1152,6 @@ class Basis:
         items_per_color = [len(subgroup) for subgroup in subgroups]
         assert sum(items_per_color) == len(priorities)
 
-        # assert comm.is_intra
-        # assert not comm.is_inter
-        # assert split_comm.is_intra
-        # assert not split_comm.is_inter
         intercomms = []
         for c, c_root in enumerate(split_roots):
             if c == color:
@@ -1200,7 +1198,6 @@ class Basis:
             for c, c_root in enumerate(split_roots):
                 if color != c:
                     intercomms[c].send(psis, dest=split_comm.rank % procs_per_color[c])
-                    # intercomms[c].send([p.to_dict() for p in psis], dest=split_comm.rank % procs_per_color[c])
                 else:
                     for send_color in range(len(split_roots)):
                         if send_color == color:
@@ -1211,7 +1208,6 @@ class Basis:
                             received_psis = intercomms[send_color].recv(source=sender)
                             for i, received_psi in enumerate(received_psis):
                                 new_psis[i] += received_psi
-                                # new_psis[i] += ManyBodyState(received_psi)
             psis = split_basis.redistribute_psis(new_psis)
         return indices, split_roots, color, items_per_color, split_basis, psis, intercomms
 
@@ -1522,10 +1518,10 @@ class CIPSI_Basis(Basis):
         assert len(new_basis) == len(self)
         return new_basis
 
-    def split_basis_and_redistribute_psi(self, priorities, psis, max_stddev=0.3):
+    def split_basis_and_redistribute_psi(self, priorities, psis):
 
         indices, split_roots, color, items_per_color, split_basis, psis, intercomms = (
-            super().split_basis_and_redistribute_psi(priorities, psis, max_stddev)
+            super().split_basis_and_redistribute_psi(priorities, psis)
         )
 
         split_basis = CIPSI_Basis(

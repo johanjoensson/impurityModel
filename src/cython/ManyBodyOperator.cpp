@@ -36,8 +36,9 @@ create(ManyBodyState::key_type &&in_state, size_t idx) /*noexcept*/ {
   const size_t bit_idx = num_bits - 1 - (idx % num_bits);
   const ManyBodyState::key_type::value_type mask =
       static_cast<ManyBodyState::key_type::value_type>(1) << bit_idx;
-  if (state[state_idx] & mask) {
-    return {0, state};
+  if (state.at(state_idx) & mask) {
+    // if (state[state_idx] & mask) {
+    return {0, std::move(state)};
   }
   size_t sign = 0;
   for (size_t i = 0; i < state_idx; i++) {
@@ -342,7 +343,8 @@ void ManyBodyOperator::build_restriction_mask(
 
   this->m_restrictions_mask =
       std::tuple<std::vector<ManyBodyState::key_type>, std::vector<size_t>,
-                 std::vector<size_t>>{masks, min_vals, max_vals};
+                 std::vector<size_t>>{std::move(masks), std::move(min_vals),
+                                      std::move(max_vals)};
 }
 
 bool ManyBodyOperator::state_is_within_restrictions(
@@ -425,13 +427,13 @@ ManyBodyState ManyBodyOperator::apply_op_determinant(
                                   static_cast<size_t>(-(idx + 1)));
             }
             sign *= ac_res.first;
-            out_slater_determinant = std::move(ac_res.second);
 
             if (sign == 0 ||
                 !state_is_within_restrictions(out_slater_determinant)) {
               sign = 0;
               break;
             }
+            out_slater_determinant = std::move(ac_res.second);
           }
           if (sign != 0 && abs(coeff * amp) > cutoff) {
             res_keys.push_back(std::move(out_slater_determinant));

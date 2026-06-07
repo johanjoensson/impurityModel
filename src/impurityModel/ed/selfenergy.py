@@ -374,10 +374,7 @@ def get_hcorr_v_hbath(h0op, impurity_orbitals, sum_bath_states):
           - V/V^+ is the hopping between impurity and bath orbitals.
           - hbath is the hamiltonian for the non-interacting, bath, orbitals.
     """
-    # h0_i = finite.c2i_op(sum_bath_states, h0op)
-    # h0Matrix = finite.iOpToMatrix(sum_bath_states, h0op)
 
-    # n_corr = sum([2 * (2 * l + 1) for l in sum_bath_states.keys()])
     num_spin_orbitals = sum(impurity_orbitals[i] + sum_bath_states[i] for i in impurity_orbitals)
     n_corr = sum(ni for ni in impurity_orbitals.values())
     h0Matrix = np.zeros((num_spin_orbitals, num_spin_orbitals), dtype=complex)
