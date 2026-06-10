@@ -73,22 +73,24 @@ def find_ground_state_basis(
     impurity_orbitals,
     bath_states,
     N0,
-    mixed_valence,
-    tau,
-    chain_restrict,
-    rank,
-    dense_cutoff,
-    spin_flip_dj,
-    comm,
-    truncation_threshold,
-    verbose,
-    slaterWeightMin,
+    mixed_valence=False,
+    tau=0.01,
+    chain_restrict=False,
+    rank=0,
+    dense_cutoff=1000,
+    spin_flip_dj=True,
+    comm=None,
+    truncation_threshold=1000000,
+    verbose=True,
+    slaterWeightMin=0,
 ):
     """
     Find the occupation corresponding to the lowest energy, compare N0 - 1, N0 and N0 + 1
     Returns:
     basis_gs, ManybodyBasis: Initial basis for the ground state
     """
+    if mixed_valence is None or mixed_valence is False:
+        mixed_valence = {i: 0 for i in N0}
     (
         num_val_baths,
         num_cond_baths,
@@ -170,13 +172,19 @@ def calc_gs(
     block_structure: BlockStructure,
     rot_to_spherical: np.ndarray,
     verbose: bool,
-    slaterWeightMin,
+    slaterWeightMin=0,
     **kwargs,
 ):
 
+    basis_setup = dict(basis_setup)
+    if "impurity_orbital" in basis_setup:
+        basis_setup["impurity_orbitals"] = basis_setup.pop("impurity_orbital")
+    if "nominal_impurity_occ" in basis_setup:
+        basis_setup["N0"] = basis_setup.pop("nominal_impurity_occ")
+
     tau = basis_setup["tau"]
     basis_setup["tau"] /= 100
-    dense_cutoff = basis_setup["dense_cutoff"]
+    dense_cutoff = basis_setup.get("dense_cutoff", 1000)
     ground_state_basis = find_ground_state_basis(
         Hop,
         verbose=verbose,

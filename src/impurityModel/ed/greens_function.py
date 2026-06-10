@@ -300,11 +300,14 @@ def calc_Greens_function_with_offdiag(
     es,
     block_basis,
     delta,
-    dN: Optional[int],
-    occ_cutoff: float,
-    slaterWeightMin: float,
-    verbose: bool,
-    sparse: bool,
+    dN: Optional[int] = None,
+    occ_cutoff: float = 1e-6,
+    slaterWeightMin: float = 0,
+    verbose: bool = True,
+    sparse: bool = False,
+    dN_imp=None,
+    dN_val=None,
+    dN_con=None,
 ):
     r"""
         Return Green's function for states with low enough energy.
@@ -349,13 +352,21 @@ def calc_Greens_function_with_offdiag(
 
     """
 
+    if dN is not None:
+        if dN_imp is None:
+            dN_imp = {i: (dN, dN) for i in block_basis.impurity_orbitals}
+        if dN_val is None:
+            dN_val = {i: (dN, 0) for i in block_basis.impurity_orbitals}
+        if dN_con is None:
+            dN_con = {i: (0, dN) for i in block_basis.impurity_orbitals}
+
     excited_restrictions = block_basis.build_excited_restrictions(
         hOp,
         psis,
         es,
-        imp_change={i: (dN, dN) for i in block_basis.impurity_orbitals} if dN is not None else None,
-        val_change={i: (dN, 0) for i in block_basis.impurity_orbitals} if dN is not None else None,
-        con_change={i: (0, dN) for i in block_basis.impurity_orbitals} if dN is not None else None,
+        imp_change=dN_imp,
+        val_change=dN_val,
+        con_change=dN_con,
         cutoff=occ_cutoff,
     )
     block_v = [[ManyBodyState({}) for _ in tOps] for _ in psis]
@@ -572,7 +583,7 @@ def get_block_Green(
     # centered on (value) 0.
     n_samples = max(len(conv_w) // 10, 1)
 
-    def converged(alphas, betas):
+    def converged(alphas, betas, *args, **kwargs):
         if np.any(np.linalg.norm(betas[-1], axis=1) < slaterWeightMin):
             return True
 
@@ -698,7 +709,9 @@ def block_Green(
         ws = np.diagonal(alphas, axis1=1, axis2=2).flat[: n_test * alphas.shape[1]]
         G_prev = calc_G(alphas_prev, betas_prev, np.identity(n), ws, 0, delta)
         G = calc_G(alphas, betas, np.identity(n), ws, 0, delta)
-        done = np.all(np.diagonal(G.imag, axis1=1, axis2=2) <= 0) and np.max(np.abs(G - G_prev)) < 1e-12
+        done = (
+            np.all(np.diagonal(G.imag, axis1=1, axis2=2) * np.sign(delta) <= 0) and np.max(np.abs(G - G_prev)) < 1e-12
+        )
     return alphas, betas, r
 
 
@@ -766,7 +779,7 @@ def block_green_impl(basis, hOp, psi_arr, delta, slaterWeightMin, verbose):
             gs_new = wIs - alpha - np.conj(beta.T)[np.newaxis, :, :] @ np.linalg.solve(gs_new, beta[np.newaxis, :, :])
             gs_prev = wIs - alpha - np.conj(beta.T)[np.newaxis, :, :] @ np.linalg.solve(gs_prev, beta[np.newaxis, :, :])
 
-        if np.any(np.diagonal(gs_new.imag, axis1=1, axis2=2) > 0):
+        if np.any(np.diagonal(gs_new.imag, axis1=1, axis2=2) * np.sign(delta) < 0):
             return False
         d_g = np.max(np.abs(gs_new - gs_prev))
         if verbose:
@@ -887,7 +900,7 @@ def block_Green_sparse(
             gs_new = wIs - alpha - np.conj(beta.T)[np.newaxis, :, :] @ np.linalg.solve(gs_new, beta[np.newaxis, :, :])
             gs_prev = wIs - alpha - np.conj(beta.T)[np.newaxis, :, :] @ np.linalg.solve(gs_prev, beta[np.newaxis, :, :])
 
-        if np.any(np.diagonal(gs_new.imag, axis1=1, axis2=2) > 0):
+        if np.any(np.diagonal(gs_new.imag, axis1=1, axis2=2) * np.sign(delta) < 0):
             return False
         d_g = np.max(np.abs(gs_new - gs_prev))
         if verbose:
@@ -939,7 +952,7 @@ def block_Green_freq_2(
         return np.zeros((len(iws), n, n), dtype=complex), np.zeros((len(ws), n, n), dtype=complex)
 
     def build_converged(w, delta):
-        def converged(alphas, betas):
+        def converged(alphas, betas, *args, **kwargs):
             if np.any(np.linalg.norm(betas[-1], axis=1) < max(slaterWeightMin, 1e-8)):
                 return True
 

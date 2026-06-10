@@ -153,6 +153,8 @@ def bytes2bitarray(bytestr, n):
         Total number of spin-orbitals in the system.
 
     """
+    if not isinstance(bytestr, (bytes, bytearray)) and hasattr(bytestr, "to_bytearray"):
+        bytestr = bytes(bytestr.to_bytearray())
     # Generate a empty bitarray
     bits = bitarray(endian="big")
     # Load this bitarray with the information stored in the byte string.

@@ -564,6 +564,10 @@ class Basis:
             assert delta_valence_occ is None
             assert delta_conduction_occ is None
             assert delta_impurity_occ is None
+            initial_basis = [
+                self.type.from_bytes(state) if isinstance(state, bytes) else state
+                for state in initial_basis
+            ]
         else:
             assert nominal_impurity_occ is not None
             initial_basis, num_spin_orbitals = self._get_initial_basis(
@@ -626,6 +630,7 @@ class Basis:
                 f"Expetced a list of ManyBodyStates, received a single ManyBodyState. Remaking into list of one ManyBodyState"
             )
             psis = [psis]
+        psis = list(psis)
         if not self.is_distributed:
             return psis
 

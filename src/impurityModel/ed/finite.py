@@ -202,7 +202,12 @@ def petsc_eigensystem(h_local, e_max, k=10, v0=None, eigenValueTol=0, return_eig
 
 def dense_eigensystem(h_local, return_eigvecs=True, comm=None):
     rank = comm.rank if comm is not None else 0
-    h = h_local.todense()
+    if hasattr(h_local, "toarray"):
+        h = h_local.toarray()
+    elif hasattr(h_local, "todense"):
+        h = h_local.todense()
+    else:
+        h = h_local
     if comm is not None:
         comm.Reduce(h if rank != 0 else MPI.IN_PLACE, h, root=0, op=MPI.SUM)
     if return_eigvecs:
@@ -405,7 +410,9 @@ def eigensystem_new(
 
     # e_max is limited by the accuracy of the calculated eigenvalues and machine precision
     e_max = max(e_max, eigenValueTol, np.finfo(float).eps * 100)
-    if not scipy.sparse.issparse(h_local):
+    if isinstance(h_local, np.ndarray):
+        dense = True
+    elif not scipy.sparse.issparse(h_local):
         raise RuntimeError(f"eigensystem can't handle a matrix of type {type(h_local)}")
 
     if dense:
@@ -2295,12 +2302,13 @@ def applyOp_new(n_spin_orbitals: int, op: dict, psi: dict, slaterWeightMin=0, re
     psiNew = dict()
     if opResult is None:
         opResult = dict()
-    solved_states = psi.keys() & opResult.keys()
+    psi_keys = set(psi.keys())
+    solved_states = psi_keys & opResult.keys()
     for state in solved_states:
         addToFirst(psiNew, opResult[state], psi[state])
 
     newResults = dict()
-    for state, (process, h) in itertools.product(psi.keys() - solved_states, op.items()):
+    for state, (process, h) in itertools.product(psi_keys - solved_states, op.items()):
         amp = psi[state]
         state_bits_new = psr.bytes2bitarray(state, n_spin_orbitals)
         # state_bits_new = state_bits.copy()

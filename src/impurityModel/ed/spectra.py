@@ -9,8 +9,11 @@ import numpy as np
 import scipy.sparse
 import scipy.sparse.linalg
 from mpi4py import MPI
-from scipy.special import sph_harm, spherical_jn
-from scipy import scipy.integral as si
+from scipy.special import sph_harm_y, spherical_jn
+import scipy.integrate as si
+
+def sph_harm(m, n, theta, phi):
+    return sph_harm_y(n, m, phi, theta)
 
 from impurityModel.ed.average import thermal_average
 
@@ -815,8 +818,7 @@ def getSpectra_new(
     dN_val,
     dN_con,
 ):
-
-    rank == basis.comm.rank
+    rank = basis.comm.rank if basis.comm is not None else 0
     (
         tOps_indices,
         tOps_roots,
@@ -828,45 +830,56 @@ def getSpectra_new(
     if basis.comm.rank == 0:
         indices_for_colors = np.empty((sum(tOps_per_color)), dtype=int)
         offsets = np.array([sum(tOps_per_color[:r]) for r in range(len(tOps_roots))], dtype=int)
-        for col, sender in enumerate(block_roots):
+        for col, sender in enumerate(tOps_roots):
             if sender == 0:
-                indices_for_colors[offsets[color] : offsets[color] + tOps_per_color[color]] = block_indices
+                indices_for_colors[offsets[color] : offsets[color] + tOps_per_color[color]] = tOps_indices
                 continue
             basis.comm.Recv(indices_for_colors[offsets[col] : offsets[col] + tOps_per_color[col]], source=sender)
     elif tOp_basis.comm.rank == 0:
         basis.comm.Send(np.array(tOps_indices), dest=0)
 
     gs_realaxis_local = np.empty((len(w), len(tOps_indices)), dtype=complex)
-    for tOp_i, tOp in enumerate(tOps[ti] for ti in tOps_indices):
+    for local_idx, tOp_idx in enumerate(tOps_indices):
+        tOp = tOps[tOp_idx]
         assert isinstance(hOp, ManyBodyOperator)
-        alphas, betas, r = calc_Greens_function_with_offdiag(
+        alphas, betas, r = gf.calc_Greens_function_with_offdiag(
             hOp,
             [tOp],
             psis,
             es,
             tOp_basis,
             delta,
-            dN=dN,
             occ_cutoff=occ_cutoff,
             slaterWeightMin=slaterWeightMin,
-            verbose=verbose_extra,
+            verbose=verbose,
+            sparse=True,
+            dN_imp=dN_imp,
+            dN_val=dN_val,
+            dN_con=dN_con,
         )
         e0 = np.min(es)
         Z = np.sum(np.exp(-(es - e0) / tau))
-        local_gs_realaxis = np.zeros((len(w), 1), dtype=complex)
+        G_tOp = np.zeros((len(w), 1, 1), dtype=complex)
         for e, alphas_e, betas_e, r_e in zip(es, alphas, betas, r):
-            local_gs_realaxis += calc_G(alphas_e, betas_e, r_e, omega_mesh, e, delta) * np.exp(-(e - e0) / tau)[:, :, 0]
+            G_tOp += gf.calc_G(alphas_e, betas_e, r_e, w, e, delta) * np.exp(-(e - e0) / tau)
+        G_tOp /= Z
+        gs_realaxis_local[:, local_idx] = G_tOp[:, 0, 0]
+
     if basis.comm.rank == 0:
         gs_realaxis = np.empty((len(w), len(tOps)), dtype=complex)
         for col, sender in enumerate(tOps_roots):
             if sender == 0:
                 for i, block_i in enumerate(tOps_indices):
-                    gs_realaxis[block_i][:] = local_gs_realaxis[i]
+                    gs_realaxis[:, block_i] = gs_realaxis_local[:, i]
                 continue
-            for tOps_idx in indices_for_color[offsets[col] : offsets[col] + indices_for_color[col]]:
-                basis.comm.Recv(gs_realaxis[tOps_idx], source=sender)
+            received_gs = np.empty((len(w), tOps_per_color[col]), dtype=complex)
+            basis.comm.Recv(received_gs, source=sender)
+            for i, tOps_idx in enumerate(
+                indices_for_colors[offsets[col] : offsets[col] + tOps_per_color[col]]
+            ):
+                gs_realaxis[:, tOps_idx] = received_gs[:, i]
     elif tOp_basis.comm.rank == 0:
-        basis.comm.Send(local_gs_realaxis, dest=0)
+        basis.comm.Send(gs_realaxis_local, dest=0)
     return gs_realaxis if rank == 0 else np.empty((0, 0), dtype=complex)
 
 

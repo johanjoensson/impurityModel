@@ -25,6 +25,11 @@ def batched(iterable: Iterable, n: int) -> Iterable:
         yield batch
 
 
+def hash_key(state):
+    """Hash function for consistent state comparison across ranks."""
+    return hash(state)
+
+
 class StateContainer:
     class IndexDict:
         def __init__(self, states, offset):
@@ -32,6 +37,8 @@ class StateContainer:
             self.offset = offset
 
         def _search_sorted(self, key):
+            if isinstance(key, bytes) and len(self.states) > 0:
+                key = type(self.states[0]).from_bytes(key)
             idx = bisect_left(self.states, key)
             if idx != len(self.states) and self.states[idx] == key:
                 return idx
@@ -123,34 +130,40 @@ class StateContainer:
         return self.size
 
     def index(self, val):
+        if isinstance(val, bytes):
+            val = self.type.from_bytes(val)
         if isinstance(val, self.type):
             res = next(self._index_sequence([val]))
             if res == self.size:
                 raise ValueError(f"Could not find {val} in basis!")
             return res
         elif isinstance(val, Sequence) or isinstance(val, Iterable):
-            res = list(self._index_sequence(val))
+            converted = [self.type.from_bytes(x) if isinstance(x, bytes) else x for x in val]
+            res = list(self._index_sequence(converted))
             for i, v in enumerate(res):
                 if v >= self.size:
                     raise ValueError(f"Could not find {list(val)[i]} in basis!")
             return (i for i in res)
         else:
-            raise TypeError(f"Invalid query type {type(val)}! Valid types are {self.dtype} and sequences thereof.")
+            raise TypeError(f"Invalid query type {type(val)}! Valid types are {self.type} and sequences thereof.")
         return None
 
     def _index_sequence(self, s: Iterable[SlaterDeterminant]) -> Iterable[int]:
         pass
 
     def contains(self, item) -> Iterable[bool]:
+        if isinstance(item, bytes):
+            item = self.type.from_bytes(item)
         if isinstance(item, self.type):
             return next(self._contains_sequence([item]))
-        elif isinstance(item, Sequence):
-            return self._contains_sequence(item)
-        elif isinstance(item, Iterable):
-            return self._contains_sequence(item)
+        elif isinstance(item, Sequence) or isinstance(item, Iterable):
+            converted = [self.type.from_bytes(x) if isinstance(x, bytes) else x for x in item]
+            return self._contains_sequence(converted)
         return None
 
     def __contains__(self, item):
+        if isinstance(item, bytes):
+            item = self.type.from_bytes(item)
         if not self.is_distributed:
             return item in self._index_dict
         return next(self._index_sequence([item])) != self.size
@@ -583,15 +596,16 @@ class SimpleDistributedStateContainer(StateContainer):
         return result
 
     def __init__(self, states: Iterable, bytes_per_state, state_type=SlaterDeterminant, comm=None, verbose=True):
+        self.rng = np.random.default_rng()
         super(SimpleDistributedStateContainer, self).__init__(states, bytes_per_state, state_type, comm)
 
     def _set_state_bounds(self, local_states) -> list[Optional[SlaterDeterminant]]:
-        local_states_list = local_states
+        local_states_list = list(local_states)
         total_local_states_len = self.comm.allreduce(len(local_states_list), op=MPI.SUM)
         samples = []
-        if len(local_states) > 1:
-            n_samples = min(len(local_states), int(self.comm.size * np.log10(total_local_states_len) / 0.05**2))
-            for interval in batched(local_states, len(local_states) // n_samples):
+        if len(local_states_list) > 1:
+            n_samples = min(len(local_states_list), int(self.comm.size * np.log10(total_local_states_len) / 0.05**2))
+            for interval in batched(local_states_list, len(local_states_list) // n_samples):
                 samples.append(self.rng.choice(list(interval)))
         else:
             samples = local_states_list
@@ -608,11 +622,11 @@ class SimpleDistributedStateContainer(StateContainer):
             sizes[: len(all_states) % self.comm.size] += 1
 
             bounds = (sum(sizes[: i + 1]) for i in range(self.comm.size))
-            state_bounds = (all_states[bound] if bound < len(all_states) else all_states[-1] for bound in bounds)
+            state_bounds = [all_states[bound] if bound < len(all_states) else all_states[-1] for bound in bounds]
         else:
-            state_bounds = None
+            state_bounds = [None] * self.comm.size
 
-        state_bounds = self.comm.bcast(state_bounds)
+        state_bounds = self.comm.bcast(state_bounds, root=0)
         return [
             state_bounds[r] if r < self.comm.size - 1 and state_bounds[r] != state_bounds[r + 1] else None
             for r in range(self.comm.size)
@@ -622,6 +636,7 @@ class SimpleDistributedStateContainer(StateContainer):
         """
         Extend the current basis by adding the new_states to it.
         """
+        new_states = [self.type.from_bytes(state) if isinstance(state, bytes) else state for state in new_states]
         if not self.is_distributed:
             self.local_basis = [
                 state
@@ -744,9 +759,16 @@ class SimpleDistributedStateContainer(StateContainer):
             [i for r_i in SimpleDistributedStateContainer._point2point(results, self.comm) for i in r_i], dtype=int
         )
         if len(result) > 0:
-            while np.any(np.logical_or(result > self.size, result < 0)):
+            max_retries = 3
+            retry_count = 0
+            while np.any(np.logical_or(result > self.size, result < 0)) and retry_count < max_retries:
                 mask = np.logical_or(result > self.size, result < 0)
                 result[mask] = np.from_iter(self._index_sequence(itertools.compress(s, mask)), dtype=int)
+                retry_count += 1
+
+            if retry_count >= max_retries:
+                import warnings
+                warnings.warn(f"Failed to resolve all indices after {max_retries} retries")
 
         return (res for res in result[np.argsort(send_order)])
 
@@ -783,6 +805,7 @@ class CentralizedStateContainer(StateContainer):
         )
 
     def add_states(self, new_states) -> None:
+        new_states = [self.type.from_bytes(state) if isinstance(state, bytes) else state for state in new_states]
         new_states = sorted(set(new_states), key=lambda state: hash_key(state))
         states_to_add = itertools.filterfalse(lambda s: s in self, new_states)
 
