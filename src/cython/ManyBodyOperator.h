@@ -32,27 +32,14 @@ public:
   using Restrictions =
       std::vector<std::pair<std::vector<size_t>, std::pair<size_t, size_t>>>;
 
-private:
-  std::vector<std::pair<OPS, SCALAR>> m_ops;
-
-  std::tuple<std::vector<ManyBodyState::key_type>, std::vector<size_t>,
-             std::vector<size_t>>
-      m_restrictions_mask;
-
-  [[nodiscard]] bool
-  state_is_within_restrictions(const ManyBodyState::key_type &) const noexcept;
-
-  [[nodiscard]] ManyBodyState apply_op_determinant(
-      const ManyBodyState::key_type &slater_determinant) const noexcept;
-
 public:
-  using key_type = const OPS;
+  using key_type = OPS;
   using mapped_type = SCALAR;
-  using value_type = std::pair<OPS, mapped_type>;
+  using value_type = std::pair<key_type, mapped_type>;
   using size_type = std::vector<value_type>::size_type;
   using difference_type = std::vector<std::pair<OPS, SCALAR>>::difference_type;
-  using reference = value_type &;
-  using const_reference = const value_type &;
+  using reference = std::pair<const key_type &, mapped_type &>;
+  using const_reference = std::pair<const key_type &, const mapped_type &>;
   using compare_type = Comparer<OPS::value_type>;
   using iterator = std::vector<value_type>::iterator;
   using const_iterator = std::vector<value_type>::const_iterator;
@@ -82,13 +69,6 @@ public:
     return apply(psis, cutoff);
   }
 
-  // [[nodiscard]] std::vector<ManyBodyState> operator()(
-  //     const std::vector<ManyBodyState> &psis, double cutoff = 0,
-  //     const ManyBodyOperator::Restrictions &restrictions = {}) const noexcept
-  //     {
-  //   return apply(psis, cutoff, restrictions);
-  // }
-
   void build_restriction_mask(const Restrictions &restrictions) noexcept;
   [[nodiscard]] ManyBodyState apply(const ManyBodyState &,
                                     double cutoff = 0) const /*noexcept*/;
@@ -103,46 +83,39 @@ public:
     return res;
   }
 
-  // [[nodiscard]] std::vector<ManyBodyState>
-  // apply(const std::vector<ManyBodyState> &, double cutoff = 0,
-  //       const ManyBodyOperator::Restrictions &restrictions = {}) const
-  //       noexcept;
-
   [[nodiscard]] size_type size() const noexcept;
   [[nodiscard]] bool empty() const noexcept;
   bool clear();
 
   ManyBodyOperator &operator+=(const ManyBodyOperator &) noexcept;
   ManyBodyOperator &operator-=(const ManyBodyOperator &) noexcept;
-  ManyBodyOperator &operator*=(const mapped_type &) noexcept;
-  ManyBodyOperator &operator/=(const mapped_type &) noexcept;
+  ManyBodyOperator &operator*=(mapped_type) noexcept;
+  ManyBodyOperator &operator/=(mapped_type) noexcept;
   [[nodiscard]] ManyBodyOperator operator-() const noexcept;
 
-  [[nodiscard]] ManyBodyOperator
-  operator+(const ManyBodyOperator &other) const {
-    ManyBodyOperator res(*this);
-    return res += other;
+  [[nodiscard]] friend ManyBodyOperator
+  operator+(const ManyBodyOperator &self, const ManyBodyOperator &other) {
+    return ManyBodyOperator{self} += other;
   }
 
-  [[nodiscard]] ManyBodyOperator
-  operator-(const ManyBodyOperator &other) const {
-    ManyBodyOperator res(*this);
-    return res -= other;
+  [[nodiscard]] friend ManyBodyOperator
+  operator-(const ManyBodyOperator &self, const ManyBodyOperator &other) {
+    return ManyBodyOperator{self} -= other;
   }
 
-  [[nodiscard]] ManyBodyOperator operator*(const mapped_type &s) const {
-    ManyBodyOperator res(*this);
-    return res *= s;
+  [[nodiscard]] friend ManyBodyOperator operator*(const ManyBodyOperator &self,
+                                                  mapped_type s) {
+    return ManyBodyOperator{self} *= s;
   }
 
-  [[nodiscard]] friend ManyBodyOperator operator*(const mapped_type &s,
+  [[nodiscard]] friend ManyBodyOperator operator*(mapped_type s,
                                                   const ManyBodyOperator &o) {
     return o * s;
   }
 
-  [[nodiscard]] ManyBodyOperator operator/(const mapped_type &s) const {
-    ManyBodyOperator res(*this);
-    return res /= s;
+  [[nodiscard]] friend ManyBodyOperator operator/(const ManyBodyOperator &self,
+                                                  mapped_type s) {
+    return ManyBodyOperator{self} /= s;
   }
 
   [[nodiscard]] bool operator==(const ManyBodyOperator &other) const {
@@ -151,8 +124,8 @@ public:
   [[nodiscard]] bool operator!=(const ManyBodyOperator &other) const {
     return !(*this == other);
   }
-  mapped_type &operator[](const key_type &key) noexcept;
-  mapped_type &operator[](key_type &&key) noexcept;
+  mapped_type &operator[](const key_type &key);
+  mapped_type &operator[](key_type &&key);
 
   mapped_type &at(const key_type &key);
   const mapped_type &at(const key_type &key) const;
@@ -215,5 +188,15 @@ public:
   [[nodiscard]] const_reverse_iterator crend() const noexcept {
     return m_ops.crend();
   }
+
+private:
+  std::vector<std::pair<key_type, mapped_type>> m_ops;
+
+  std::tuple<std::vector<ManyBodyState::key_type>, std::vector<size_t>,
+             std::vector<size_t>>
+      m_restrictions_mask;
+
+  [[nodiscard]] bool
+  state_is_within_restrictions(const ManyBodyState::key_type &) const noexcept;
 };
 #endif // MANYBODYOPERATOR_H

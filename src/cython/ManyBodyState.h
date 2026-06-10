@@ -1,37 +1,26 @@
 #ifndef MANYBODY_STATE_H
 #define MANYBODY_STATE_H
 
-#include <boost/container/flat_map.hpp>
-#include <complex>
-#include <cstdint>
-#if __cplusplus >= 202302L
-#include <flat_map>
+#ifdef BOOST
+#include <boost/unordered/unordered_flat_map.hpp>
 #endif
+#include "SlaterDeterminant.h"
+
+#include <complex>
 #include <string>
+#include <unordered_map>
 #include <utility>
 #include <vector>
 
 class ManyBodyState {
 
 public:
-  // using Key = std::vector<uint8_t>;
-  using Key = std::vector<uint64_t>;
+  using Key = SlaterDeterminant<>;
   using Value = std::complex<double>;
-  struct KeyHash {
-    std::size_t operator()(const Key &key) const {
-      std::size_t res = 0;
-      const std::size_t MAGIC = 0x9e3779b9;
-      std::hash<Key::value_type> hasher{};
-      for (const Key::value_type &k : key) {
-        res ^= hasher(k) + MAGIC + (res << 6) + (res >> 2);
-      }
-      return res;
-    }
-  };
-#if __cplusplus >= 202302L
-  using Map = std::flat_map<Key, Value>;
+#ifndef BOOST
+  using Map = std::unordered_map<Key, Value, std::hash<Key>>;
 #else
-  using Map = boost::container::flat_map<Key, Value>;
+  using Map = boost::unordered::unordered_flat_map<Key, Value, std::hash<Key>>;
 #endif
 
 private:
@@ -43,15 +32,17 @@ public:
   using value_type = Map::value_type;
   using size_type = Map::size_type;
   using difference_type = Map::difference_type;
-  using key_compare = Map::key_compare;
-  using hasher = KeyHash;
+  using key_equal = Map::key_equal;
+  using hasher = std::hash<key_type>;
   using reference = Map::reference;
   using const_reference = Map::const_reference;
 
   using iterator = Map::iterator;
   using const_iterator = Map::const_iterator;
-  using reverse_iterator = Map::reverse_iterator;
-  using const_reverse_iterator = Map::const_reverse_iterator;
+#ifndef BOOST
+  using local_iterator = Map::local_iterator;
+  using const_local_iterator = Map::const_local_iterator;
+#endif
 
   ManyBodyState() = default;
   ManyBodyState(const ManyBodyState &) = default;
@@ -69,10 +60,6 @@ public:
   double norm2() const;
   double norm() const;
 
-  // The expensive part of this code is creating copies of
-  // keys, to insert into the new state. We cannot move the keys
-  // into the result since value_type is pair<const Key, Amplitude>,
-  // and we cant move a const value.
   ManyBodyState &operator+=(ManyBodyState &&);
   ManyBodyState &operator+=(const ManyBodyState &);
   ManyBodyState &operator-=(ManyBodyState &&);
@@ -114,10 +101,10 @@ public:
                          const ManyBodyState &other) {
     return !(self == other);
   }
-  mapped_type &operator[](const Key &key) { return m_map[key]; }
-  mapped_type &operator[](Key &&key) { return m_map[std::move(key)]; }
-  mapped_type &at(const Key &key) { return m_map.at(key); }
-  const mapped_type &at(const Key &key) const { return m_map.at(key); }
+  mapped_type &operator[](const key_type &key) { return m_map[key]; }
+  mapped_type &operator[](key_type &&key) { return m_map[std::move(key)]; }
+  mapped_type &at(const key_type &key) { return m_map.at(key); }
+  const mapped_type &at(const key_type &key) const { return m_map.at(key); }
 
   bool empty() const { return m_map.empty(); }
   size_type size() const { return m_map.size(); }
@@ -126,6 +113,10 @@ public:
   void clear() { m_map.clear(); }
   ManyBodyState &prune(double cutoff);
 
+  size_type bucket_count() const { return m_map.bucket_count(); }
+  float load_factor() const { return m_map.load_factor(); }
+  float max_load_factor() const { return m_map.max_load_factor(); }
+  void max_load_factor(float ml) { m_map.max_load_factor(ml); }
   iterator begin() { return m_map.begin(); }
   const_iterator begin() const { return m_map.begin(); }
   const_iterator cbegin() const noexcept { return m_map.cbegin(); }
@@ -134,13 +125,18 @@ public:
   const_iterator end() const { return m_map.end(); }
   const_iterator cend() const noexcept { return m_map.cend(); }
 
-  reverse_iterator rbegin() { return m_map.rbegin(); }
-  const_reverse_iterator rbegin() const { return m_map.rbegin(); }
-  const_reverse_iterator crbegin() const noexcept { return m_map.crbegin(); }
+#ifndef BOOST
+  // Local iterators (over buckets)
+  local_iterator begin(size_t n) { return m_map.begin(n); }
+  const_local_iterator begin(size_t n) const { return m_map.begin(n); }
+  const_local_iterator cbegin(size_t n) const noexcept {
+    return m_map.cbegin(n);
+  }
 
-  reverse_iterator rend() { return m_map.rend(); }
-  const_reverse_iterator rend() const { return m_map.rend(); }
-  const_reverse_iterator crend() const noexcept { return m_map.crend(); }
+  local_iterator end(size_t n) { return m_map.end(n); }
+  const_local_iterator end(size_t n) const { return m_map.end(n); }
+  const_local_iterator cend(size_t n) const noexcept { return m_map.cend(n); }
+#endif
 
   std::pair<iterator, bool> insert(const value_type &val) {
     return m_map.insert(val);
@@ -170,11 +166,12 @@ public:
     return m_map.emplace_hint(hint, std::forward<Args>(args)...);
   }
 
-  std::pair<iterator, bool> try_emplace(const Key &key, Value value) {
+  std::pair<iterator, bool> try_emplace(const key_type &key,
+                                        mapped_type value) {
     return m_map.try_emplace(key, value);
   }
 
-  std::pair<iterator, bool> try_emplace(Key &&key, Value value) {
+  std::pair<iterator, bool> try_emplace(key_type &&key, mapped_type value) {
     return m_map.try_emplace(std::move(key), value);
   }
   iterator erase(iterator pos) { return m_map.erase(pos); }
@@ -198,51 +195,25 @@ public:
     return m_map.find(key);
   }
 
-  bool contains(const key_type &k) const { return m_map.contains(k); }
-  template <typename K> bool contains(const K &k) const {
+  bool contains(const key_type &k) const {
+#if __cpluplus >= 202002L
     return m_map.contains(k);
-  }
-
-  iterator lower_bound(const key_type &key) { return m_map.lower_bound(key); }
-
-  const_iterator lower_bound(const key_type &key) const {
-    return m_map.lower_bound(key);
-  }
-
-  template <class K> iterator lower_bound(const K &key) {
-    return m_map.lower_bound(key);
-  }
-  template <class K> const_iterator lower_bound(const K &key) const {
-    return m_map.lower_bound(key);
-  }
-
-  iterator upper_bound(const key_type &key) { return m_map.upper_bound(key); }
-
-  const_iterator upper_bound(const key_type &key) const {
-    return m_map.upper_bound(key);
-  }
-
-  template <class K> iterator upper_bound(const K &key) {
-    return m_map.upper_bound(key);
-  }
-
-  template <class K> const_iterator upper_bound(const K &key) const {
-    return m_map.upper_bound(key);
-  }
-  std::string to_string() const;
-  void reserve(size_type count) {
-
-#if __cplusplus >= 202302L
-    auto [keys, values] = std::move(m_map).extract();
-    keys.reserve(count);
-    values.reserve(count);
-    m_map = Map(std::move(keys), std::move(values));
 #else
-    m_map.reserve(count);
+    auto it = m_map.find(k);
+    return it != m_map.end();
+#endif
+  }
+  template <typename K> bool contains(const K &k) const {
+#if __cpluplus >= 202002L
+    return m_map.contains(k);
+#else
+    auto it = m_map.find(k);
+    return it != m_map.end();
 #endif
   }
 
-  key_compare key_comp() const { return m_map.key_comp(); }
+  std::string to_string() const;
+  void reserve(size_type count) { m_map.reserve(count); }
 };
 
 namespace std {

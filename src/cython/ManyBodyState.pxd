@@ -1,9 +1,11 @@
 # distutils: language = c++
 
+from SlaterDeterminant cimport SlaterDeterminant
 from libcpp.vector cimport vector
-from flat_map cimport flat_map
+from libcpp.unordered_map cimport unordered_map
 from libcpp.map cimport map
 from libcpp.pair cimport pair
+from libcpp.complex cimport complex
 from libc.stdint cimport uint8_t, uint16_t, uint64_t
 cimport cython
 
@@ -13,35 +15,21 @@ cdef extern from "ManyBodyState.cpp" nogil:
 cdef extern from "ManyBodyState.h" nogil:
     cdef cppclass ManyBodyState:
 
-        # ctypedef vector[uint8_t] Key
-        ctypedef vector[uint64_t] Key
-        ctypedef vector[Key] Keys
-        ctypedef vector[cython.doublecomplex] Values
-
-        cppclass KeyComparer:
-            bint operator()(const Key&, const Key&)
-        cppclass ValueComparer:
-            bint operator()(const cython.doublecomplex&, const cython.doublecomplex&)
-        cppclass KeyHash:
-            unsigned long  operator()(const Key&)
-        # ctypedef Map.iterator iterator
-        # ctypedef Map.const_iterator const_iterator
-        # ctypedef Map.reverse_iterator reverse_iterator
-        # ctypedef Map.const_reverse_iterator const_reverse_iterator
-        ctypedef size_t size_type
-        ctypedef pair[const Key, cython.doublecomplex] value_type
-        ctypedef Key key_type
-
-        ctypedef flat_map[Key, cython.doublecomplex].iterator iterator
-        ctypedef flat_map[Key, cython.doublecomplex].const_iterator const_iterator
+        ctypedef unordered_map[SlaterDeterminant[uint64_t], complex[double]] Map
+        ctypedef Map.key_type key_type
+        ctypedef complex[double] mapped_type
+        ctypedef pair[SlaterDeterminant[uint64_t], complex[double]] value_type
+        # ctypedef Map.value_type value_type
+        ctypedef Map.size_type size_type
+        ctypedef Map.difference_type difference_type
+        ctypedef Map.iterator iterator
+        ctypedef Map.const_iterator const_iterator
 
         ManyBodyState()
         ManyBodyState(const ManyBodyState&)
-        # ManyBodyState(ManyBodyState)
         ManyBodyState& operator=(const ManyBodyState&)
-        # ManyBodyState& operator=(ManyBodyState&&)
-        ManyBodyState(const Keys&,
-                      const Values&)
+        ManyBodyState(const vector[key_type]&,
+                      const vector[mapped_type]&)
 
         bint empty()
         size_type size()
@@ -54,10 +42,6 @@ cdef extern from "ManyBodyState.h" nogil:
         cython.doublecomplex& operator[](const key_type&)
         cython.doublecomplex& at(const key_type&)
 
-        # ManyBodyState operator+=(const ManyBodyState&)
-        # ManyBodyState operator-=(const ManyBodyState&)
-        # ManyBodyState operator*=(const ManyBodyState&)
-        # ManyBodyState operator/=(const ManyBodyState&)
         ManyBodyState operator-()
         bint operator==(const ManyBodyState&)
         bint operator!=(const ManyBodyState&)
@@ -79,13 +63,10 @@ cdef extern from "ManyBodyState.h" nogil:
 
         iterator find[K](const K&)
 
-        iterator lower_bound[K](const K&)
-
-        iterator upper_bound[K](const K&)
-        ManyBodyState operator*(cython.doublecomplex, const ManyBodyState&)
+        ManyBodyState operator*(mapped_type, const ManyBodyState&)
         ManyBodyState operator+(const ManyBodyState&, const ManyBodyState&)
         ManyBodyState operator-(const ManyBodyState&, const ManyBodyState&)
-        ManyBodyState operator*(const ManyBodyState&, cython.doublecomplex)
-        ManyBodyState operator/(const ManyBodyState&, cython.doublecomplex)
+        ManyBodyState operator*(const ManyBodyState&, mapped_type)
+        ManyBodyState operator/(const ManyBodyState&, mapped_type)
 
     cdef cython.doublecomplex inner(const ManyBodyState&, const ManyBodyState&) nogil

@@ -4,6 +4,7 @@ from libcpp.map cimport map
 from libcpp.vector cimport vector
 from libcpp.pair cimport pair
 from libc.stdint cimport int64_t, uint8_t
+from libcpp.complex cimport complex
 cimport cython
 
 from ManyBodyState cimport ManyBodyState
@@ -16,16 +17,10 @@ cdef extern from "ManyBodyOperator.h" nogil:
         cppclass Comparer[T]:
             bint operator()(const vector[T]&, const vector[T]&)
 
-        ctypedef vector[int64_t] OPS
-        ctypedef vector[OPS] OPS_VEC
-        ctypedef vector[cython.doublecomplex] SCALAR_VEC
-        ctypedef const vector[int64_t] key_type
-        ctypedef pair[vector[int64_t], cython.doublecomplex] value_type
+        ctypedef vector[int64_t] key_type
+        ctypedef complex[double] mapped_type
+        ctypedef pair[key_type, mapped_type] value_type
         ctypedef vector[value_type].size_type size_type
-        ctypedef value_type& reference_type
-        ctypedef const value_type& const_reference_type
-        ctypedef value_type& reference
-        ctypedef const value_type& const_reference
         ctypedef vector[value_type].iterator iterator
         ctypedef vector[value_type].const_iterator const_iterator
         ctypedef vector[value_type].reverse_iterator reverse_iterator
@@ -36,29 +31,23 @@ cdef extern from "ManyBodyOperator.h" nogil:
         ManyBodyOperator(const ManyBodyOperator&)
         ManyBodyOperator& operator=(const ManyBodyOperator&)
         ManyBodyOperator(const vector[value_type]&)
-        ManyBodyOperator(const OPS_VEC&, const SCALAR_VEC&)
+        ManyBodyOperator(const vector[key_type]&, const vector[mapped_type]&)
 
         cython.doublecomplex& operator[](const key_type&)
         cython.doublecomplex& at(const key_type&)
         ManyBodyState operator()(const ManyBodyState&, double)
-        # vector[ManyBodyState] operator()(const vector[ManyBodyState]&, double)
         ManyBodyState build_restriction_mask(const restrictions&)
         ManyBodyState apply(const ManyBodyState&, double)
-        # vector[ManyBodyState] apply(const vector[ManyBodyState]&, double)
-        # ManyBodyState apply(const vector[ManyBodyState]&, double, const restrictions&)
 
 
 
 
-        # ManyBodyOperator operator+=(const ManyBodyOperator&)
-        # ManyBodyOperator operator-=(const ManyBodyOperator&)
-        # ManyBodyOperator operator*=(const cython.doublecomplex&)
-        # ManyBodyOperator operator/=(const cython.doublecomplex&)
         ManyBodyOperator operator-()
-        ManyBodyOperator operator+(const ManyBodyOperator&)
-        ManyBodyOperator operator-(const ManyBodyOperator&)
-        ManyBodyOperator operator*(const cython.doublecomplex&)
-        ManyBodyOperator operator/(const cython.doublecomplex&)
+        ManyBodyOperator operator+(const ManyBodyOperator&, const ManyBodyOperator&)
+        ManyBodyOperator operator-(const ManyBodyOperator&, const ManyBodyOperator&)
+        ManyBodyOperator operator*(const ManyBodyOperator&, mapped_type)
+        ManyBodyOperator operator*(mapped_type, const ManyBodyOperator&)
+        ManyBodyOperator operator/(const ManyBodyOperator&, mapped_type)
 
         bint empty()
         size_type size()

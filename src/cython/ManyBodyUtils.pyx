@@ -1,68 +1,143 @@
 # distutils: language = c++
 # cython: language_level=3, boundscheck=False, initializedcheck=False, wraparound=False, freethreading_compatible=True, cdivision=True, cpow=True
 
+
 from ManyBodyState cimport ManyBodyState as ManyBodyState_cpp, inner as inner_cpp
 from ManyBodyOperator cimport ManyBodyOperator as ManyBodyOperator_cpp
+from SlaterDeterminant cimport SlaterDeterminant as SlaterDeterminant_cpp
 from libcpp.pair cimport pair
 from libcpp.vector cimport vector
-from cython.operator cimport dereference, address
+from cython.operator cimport dereference, preincrement
+from libc.stdint cimport uint8_t, uint16_t, uint64_t
+from libcpp.complex cimport complex
+
+from copy import copy, deepcopy
+from bitarray import bitarray
 
 cdef extern from "<utility>" namespace "std" nogil:
     ManyBodyState_cpp& move(ManyBodyState_cpp)
+    SlaterDeterminant_cpp& move(SlaterDeterminant_cpp)
 
-cdef bytes key_to_bytes(const ManyBodyState_cpp.key_type& key):
-    cdef n_bytes = sizeof(ManyBodyState_cpp.key_type.value_type)
-    cdef bytearray res = bytearray(n_bytes*key.size())
-    cdef size_t i
-    for i in range(key.size()):
-        res[i*n_bytes: (i+1)*n_bytes] = key[i].to_bytes(n_bytes, byteorder='big')
 
-    return bytes(res)
+cdef class SlaterDeterminant:
+    cdef SlaterDeterminant_cpp[uint64_t] s
 
-cdef ManyBodyState_cpp.key_type bytes_to_key(bytes b):
-    cdef n_bytes = sizeof(ManyBodyState_cpp.key_type.value_type)
-    cdef ManyBodyState_cpp.key_type key
-    cdef Py_ssize_t i = 0
-    key.reserve(len(b)//n_bytes)
-    for i in range(0, len(b)//n_bytes):
-        key.push_back(int.from_bytes(b[i*n_bytes:(i+1)*n_bytes], byteorder='big'))
-    if len(b) % n_bytes:
-        key.push_back(int.from_bytes(b[(len(b)//n_bytes)*n_bytes:len(b)] + b'\x00'*(n_bytes - (len(b)%n_bytes)), byteorder='big'))
-    return key
+    def __cinit__(self, chunks: tuple[uint64_t] = None):
+        if chunks is None:
+            return
+        cdef uint64_t chunk
+        self.s.reserve(len(chunks))
+        for chunk in chunks:
+            self.s.push_back(chunk)
+
+    @classmethod
+    def from_bytes(cls, bytes b):
+        cdef SlaterDeterminant_cpp[uint64_t] s
+        cdef size_t n_bytes = sizeof(SlaterDeterminant_cpp[uint64_t].value_type)
+        cdef size_t n_chunks = len(b) // n_bytes
+        if len(b) % n_bytes:
+            n_chunks += 1
+        cdef bytes padded_b = int.from_bytes(b, byteorder='little').to_bytes(n_bytes*n_chunks)[::-1]
+
+        return cls(tuple(int.from_bytes(padded_b[i:i+n_bytes]) for i in range(0, len(padded_b), n_bytes)))
+
+    def to_bytearray(self):
+        cdef size_t n_bytes = sizeof(SlaterDeterminant_cpp[uint64_t].value_type)
+        res = bytearray(8*n_bytes*len(self))
+        for i in range(len(self)):
+            res[i*n_bytes:(i+1)*n_bytes] = self[i].to_bytes(n_bytes)
+        return res
+
+
+    def __getitem__(self, index: int):
+        if index < 0:
+            index = self.s.size() + index
+        return self.s[index]
+
+    def __setitem__(self, index: int, val: uint64_t):
+        if index < 0:
+            index = self.s.size() + index
+        self.s[index] = val
+
+    def __reduce__(self):
+        return (self.__class__, (tuple(chunk for chunk in self.s),))
+
+
+    def __len__(self):
+        return self.s.size()
+
+    def __repr__(self):
+        return f"{self.s.to_string()}"
+
+    def __eq__(self, SlaterDeterminant other):
+        return self.s == other.s
+
+    def __ne__(self, SlaterDeterminant other):
+        return self.s != other.s
+
+    def __lt__(self, SlaterDeterminant other):
+        return self.s < other.s
+
+    def __le__(self, SlaterDeterminant other):
+        return self.s <= other.s
+
+    def __gt__(self, SlaterDeterminant other):
+        return self.s > other.s
+
+    def __ge__(self, SlaterDeterminant other):
+        return self.s >= other.s
+
+    def __iter__(self):
+        it = self.s.begin()
+        while it != self.s.end():
+            yield dereference(it)
+            preincrement(it)
+
+    def __copy__(self):
+        cls = self.__class__
+        cdef SlaterDeterminant result = cls.__new__(cls)
+        result.s = self.s
+        return result
+
+    def __deepcopy__(self):
+        cls = self.__class__
+        cdef uint64_t val
+        cdef SlaterDeterminant result = SlaterDeterminant(tuple(val for val in self.s))
+        return result
+
+    def __hash__(self):
+        return self.s.hash()
+
+    def copy(self, deep: bool = False):
+        if deep:
+            return deepcopy(self)
+        return copy(self)
+
+
 
 cdef class ManyBodyState:
 
     cdef ManyBodyState_cpp v
 
-    def __cinit__(self, dict[bytes, complex] psi=None):
+    def __cinit__(self, dict[SlaterDeterminant, ManyBodyState_cpp.mapped_type] psi=None):
         if psi is None:
-            psi = {}
+            return
         cdef vector[ManyBodyState_cpp.key_type] keys
-        cdef vector[double complex] amplitudes
-        cdef double complex val
-        cdef bytes b
+        cdef vector[ManyBodyState_cpp.mapped_type] amplitudes
+        cdef SlaterDeterminant b
+        cdef ManyBodyState_cpp.mapped_type val
         for b, val in psi.items():
-            keys.push_back(bytes_to_key(b))
+            keys.push_back(b.s)
             amplitudes.push_back(val)
         self.v = ManyBodyState_cpp(keys, amplitudes)
 
-    # def __init__(self, dict[bytes, complex] psi={}):
-    #     cdef vector[ManyBodyState_cpp.key_type] keys
-    #     cdef vector[double complex] amplitudes
-    #     cdef ManyBodyState_cpp.key_type key
-    #     cdef double complex val
-    #     cdef bytes b
-    #     for b, val in psi.items():
-    #         keys.push_back(bytes_to_key(b))
-    #         amplitudes.push_back(val)
-    #     with nogil:
-    #         self.v[0] = ManyBodyState_cpp(keys, amplitudes)
 
     def __reduce__(self):
         return (self.__class__, (self.to_dict(), ))
 
     def __repr__(self):
-        return "ManyBodyState({ " + ", ".join([f"{key_to_bytes(key)}: {amp}" for (key, amp) in self.v]) + "})"
+        cdef pair[SlaterDeterminant_cpp[uint64_t], complex[double]] p
+        return "ManyBodyState({ " + ", ".join([f"{p.first.to_string()}: {p.second}" for p in self.v]) + "})"
 
     def __eq__(self, ManyBodyState other):
         return self.v == other.v
@@ -89,42 +164,42 @@ cdef class ManyBodyState:
             self.v = self.v - other.v
         return self
 
-    def __mul__(self, double complex s):
+    def __mul__(self, ManyBodyState_cpp.mapped_type s):
         res = ManyBodyState()
         with nogil:
             res.v = self.v * s
         return res
 
-    def __imul__(self, double complex s):
+    def __imul__(self, ManyBodyState_cpp.mapped_type  s):
         with nogil:
             self.v = self.v * s
         return self
 
-    def __rmul__(self, double complex s):
+    def __rmul__(self, ManyBodyState_cpp.mapped_type  s):
         res = ManyBodyState()
         with nogil:
             res.v = self.v * s
         return res
 
-    def __truediv__(self, double complex s):
+    def __truediv__(self, ManyBodyState_cpp.mapped_type  s):
         res = ManyBodyState()
         with nogil:
             res.v = self.v / s
         return res
 
-    def __itruediv__(self, double complex s):
+    def __itruediv__(self, ManyBodyState_cpp.mapped_type s):
         with nogil:
             self.v = self.v / s
         return self
 
-    def __getitem__(self, bytes key):
-        res= self.v[bytes_to_key(key)]
+    def __getitem__(self, SlaterDeterminant key):
+        res= self.v[key.s]
         return res
 
-    def __setitem__(self, bytes key, double complex value):
-        self.v[bytes_to_key(key)] = value
+    def __setitem__(self, SlaterDeterminant key, double complex value):
+        self.v[key.s] = value
 
-    def get(self, bytes key, double complex default = 0):
+    def get(self, SlaterDeterminant key, double complex default = 0):
         if key in self:
             return self[key]
         return default
@@ -152,36 +227,39 @@ cdef class ManyBodyState:
             res = self.v.max_size()
         return res
 
-    def erase(self, bytes key):
-        self.v.erase(bytes_to_key(key))
+    def erase(self, SlaterDeterminant key):
+        self.v.erase(key.s)
 
-    def __contains__(self, bytes key):
-        res = self.v.find(bytes_to_key(key)) != self.v.end()
-        return res
+    def __contains__(self, SlaterDeterminant key):
+        return self.v.find(key.s) != self.v.end()
 
     def __iter__(self):
-        for p in self.v:
-            yield key_to_bytes(p.first)
+        cdef SlaterDeterminant res
+        it = self.v.begin()
+        while it != self.v.end():
+            res = SlaterDeterminant()
+            res.s = dereference(it).first
+            yield res
+            preincrement(it)
 
     def keys(self):
-        return (key_to_bytes(p.first) for p in self.v)
+        return (SlaterDeterminant(tuple(chunk for chunk in p.first)) for p in self.v)
 
     def values(self):
         return (p.second for p in self.v)
 
     def items(self):
-        return ((key_to_bytes(p.first), p.second) for p in self.v)
+        return ((SlaterDeterminant(tuple(chunk for chunk in p.first)), p.second) for p in self.v)
 
     def prune(self, double cutoff):
         with nogil:
             self.v.prune(cutoff)
 
     def to_dict(self):
-        return dict((key_to_bytes(p.first), p.second) for p in self.v)
+        return dict((SlaterDeterminant(tuple(chunk for chunk in p.first)), p.second) for p in self.v)
 
     def copy(self):
         return ManyBodyState(self.to_dict())
-
 
 def inner(ManyBodyState a, ManyBodyState b):
     with nogil:
@@ -191,7 +269,7 @@ def inner(ManyBodyState a, ManyBodyState b):
 
 cdef ManyBodyOperator_cpp.value_type.first_type processes_to_ints(tuple[tuple[int, str]] processes):
     cdef tuple[int, str] process
-    cdef ManyBodyOperator_cpp.value_type.first_type ints
+    cdef ManyBodyOperator_cpp.key_type ints
     ints.reserve(len(processes))
     for process in processes[::-1]:
         if process[1] == 'a':
@@ -263,29 +341,29 @@ cdef class ManyBodyOperator:
             self.o = self.o - other.o
         return self
 
-    def __mul__(self, complex s) ->ManyBodyOperator:
+    def __mul__(self, ManyBodyOperator_cpp.mapped_type s) ->ManyBodyOperator:
         res = ManyBodyOperator()
         with nogil:
             res.o = self.o*s
         return res
 
-    def __imul__(self, complex s) ->ManyBodyOperator:
+    def __imul__(self, ManyBodyOperator_cpp.mapped_type s) ->ManyBodyOperator:
         with nogil:
             self.o = self.o*s
         return self
 
-    def __rmul__(self, complex s) -> ManyBodyOperator:
+    def __rmul__(self, ManyBodyOperator_cpp.mapped_type s) -> ManyBodyOperator:
         return self*s
 
-    def __truediv__(self, complex s) -> ManyBodyOperator:
+    def __truediv__(self, ManyBodyOperator_cpp.mapped_type s) -> ManyBodyOperator:
         res = ManyBodyOperator()
         with nogil:
-            res.o = self.o/s
+            res.o = self.o / s
         return res
 
-    def __itruediv__(self, complex s) -> ManyBodyOperator:
+    def __itruediv__(self, ManyBodyOperator_cpp.mapped_type s) -> ManyBodyOperator:
         with nogil:
-            self.o = self.o/s
+            self.o = self.o / s
         return self
 
     def __len__(self):
@@ -325,8 +403,10 @@ cdef class ManyBodyOperator:
         return self.o.find(processes_to_ints(key)) != self.o.end()
 
     def __iter__(self):
-        for p in self.o:
-            yield ints_to_processes(p.first)
+        it = self.o.begin()
+        while it != self.o.end():
+            yield ints_to_processes(dereference(it).first)
+            preincrement(it)
 
     def keys(self):
         return (ints_to_processes(p.first) for p in self.o)
