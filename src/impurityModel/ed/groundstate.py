@@ -47,7 +47,7 @@ def calc_energy(
     )
     basis.restrictions = basis.build_excited_restrictions(h_op, psis=None, es=None)
     if len(basis) == 0:
-        return np.inf, basis, {}
+        return np.inf, basis
     basis.expand(h_op, dense_cutoff=dense_cutoff, de2_min=1e-4, slaterWeightMin=0)  # slaterWeightMin)
 
     energy_cut = -tau * np.log(1e-4)

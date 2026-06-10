@@ -630,7 +630,13 @@ class Basis:
                 f"Expetced a list of ManyBodyStates, received a single ManyBodyState. Remaking into list of one ManyBodyState"
             )
             psis = [psis]
-        psis = list(psis)
+        psis = [
+            psi if isinstance(psi, ManyBodyState) else ManyBodyState({
+                (SlaterDeterminant.from_bytes(k) if isinstance(k, bytes) else k): v
+                for k, v in psi.items()
+            })
+            for psi in psis
+        ]
         if not self.is_distributed:
             return psis
 
@@ -641,14 +647,15 @@ class Basis:
 
         send_list = [[ManyBodyState({}) for _ in psis] for _ in range(self.comm.size)]
         t0 = perf_counter()
-        for state, _ in itertools.groupby(merge(*tuple((state for state in psi.keys()) for psi in psis))):
-
+        unique_states = set()
+        for psi in psis:
+            unique_states.update(psi.keys())
+        for state in unique_states:
             send_to = find_owner(state)
-
             for s_psi, l_psi in zip(send_list[send_to], psis):
                 if state not in l_psi:
                     continue
-                s_psi[state] += l_psi[state]
+                s_psi[state] = l_psi[state]
 
         t0 = perf_counter()
         received_list = [None for _ in range(self.comm.size)]

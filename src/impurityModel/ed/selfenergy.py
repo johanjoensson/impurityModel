@@ -467,6 +467,7 @@ def get_selfenergy(
     # MPI variables
     comm = MPI.COMM_WORLD
     rank = comm.rank
+    from impurityModel.ed.get_spectra import get_noninteracting_hamiltonian_operator
 
     # omega_mesh = np.linspace(-25, 25, 2000)
     omega_mesh = np.linspace(-1.83, 1.83, 2000)
@@ -485,32 +486,86 @@ def get_selfenergy(
 
     num_bath_states = ({ls: nValBaths[ls]}, {ls: sum_baths[ls] - nValBaths[ls]})
 
+    # Construct u4 and rot_to_spherical, mixed_valence, block_structure, bath_states, etc.
+    n_imp_spin_orbitals = 2 * (2 * ls + 1)
+    u4 = np.zeros((n_imp_spin_orbitals, n_imp_spin_orbitals, n_imp_spin_orbitals, n_imp_spin_orbitals), dtype=complex)
+    uOp = finite.getUop(l1=ls, l2=ls, l3=ls, l4=ls, R=Fdd)
+    nBaths_for_c2i = OrderedDict({ls: 0})
+    for process, val in uOp.items():
+        i = finite.c2i(nBaths_for_c2i, process[0][0])
+        j = finite.c2i(nBaths_for_c2i, process[1][0])
+        k = finite.c2i(nBaths_for_c2i, process[2][0])
+        l = finite.c2i(nBaths_for_c2i, process[3][0])
+        u4[i, j, k, l] = 2.0 * val
+
+    impurity_orbitals = {ls: [[i for i in range(n_imp_spin_orbitals)]]}
+    offset = n_imp_spin_orbitals
+    valence_baths = {ls: [[offset + i for i in range(nValBaths[ls])]]}
+    offset += nValBaths[ls]
+    conduction_baths = {ls: [[offset + i for i in range(sum_baths[ls] - nValBaths[ls])]]}
+    bath_states = (valence_baths, conduction_baths)
+    mixed_valence = {ls: 0}
+
+    from impurityModel.ed.block_structure import BlockStructure
+    block_structure = BlockStructure(
+        blocks=[list(range(n_imp_spin_orbitals))],
+        identical_blocks=[[0]],
+        transposed_blocks=[[]],
+        particle_hole_blocks=[[]],
+        particle_hole_transposed_blocks=[[]],
+        inequivalent_blocks=[0],
+    )
+    rot_to_spherical = np.eye(n_imp_spin_orbitals, dtype=complex)
+
     # Hamiltonian
     if rank == 0 and verbose:
         print("Construct the Hamiltonian operator...")
     hOp = get_noninteracting_hamiltonian_operator(
         sum_baths,
-        [Fdd, None, None, None],
         [0, xi],
-        [n0imps, chargeTransferCorrection],
         hField,
         h0_filename,
-        rank=rank,
-        verbose=verbose,
+        rank,
+        verbose,
     )
+    # Convert spin-orbital and bath state indices to a single index notation.
+    hOp_new = {}
+    for process, value in hOp.items():
+        new_process = []
+        for spinOrb, action in process:
+            try:
+                new_process.append((finite.c2i(sum_baths, spinOrb), action))
+            except Exception as e:
+                print(f"FAILED on spinOrb: {spinOrb} in process {process}", flush=True)
+                raise e
+        hOp_new[tuple(new_process)] = value
+    hOp = hOp_new
 
     sigma, sigma_real, sigma_static = calc_selfenergy(
         h0=hOp,
+        u4=u4,
         iw=None,
         w=omega_mesh,
         delta=delta,
         nominal_occ=nominal_occ,
-        bath_states=num_bath_states,
+        mixed_valence=mixed_valence,
+        impurity_orbitals=impurity_orbitals,
+        bath_states=bath_states,
         tau=tau,
-        energy_cut=energy_cut,
-        nPrintSlaterWeights=nPrintSlaterWeights,
         verbosity=2 if verbose else 0,
+        block_structure=block_structure,
+        rot_to_spherical=rot_to_spherical,
         cluster_label=clustername,
+        reort=None,
+        dense_cutoff=500,
+        spin_flip_dj=False,
+        comm=comm,
+        chain_restrict=False,
+        occ_cutoff=1e-12,
+        truncation_threshold=1000,
+        slaterWeightMin=1e-12,
+        dN=None,
+        sparse_green=True,
     )
 
     # if rank == 0:

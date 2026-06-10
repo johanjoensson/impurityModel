@@ -137,7 +137,10 @@ def split_comm_and_redistribute_psi(priorities: Iterable[float], psis: list[Many
                     continue
                 received_psis = comm.recv(source=sender)
                 for i, received_psi in enumerate(received_psis):
-                    new_psis[i] += ManyBodyState(received_psi)
+                    if isinstance(received_psi, ManyBodyState):
+                        new_psis[i] += received_psi
+                    else:
+                        new_psis[i] += ManyBodyState(received_psi)
 
     return slice(indices_start, indices_end), split_roots, color, items_per_color, split_comm, psis
 

@@ -818,7 +818,34 @@ def getSpectra_new(
     dN_val,
     dN_con,
 ):
-    rank = basis.comm.rank if basis.comm is not None else 0
+    comm = basis.comm
+    if comm is None or comm.size <= 1:
+        gs_realaxis = np.empty((len(w), len(tOps)), dtype=complex)
+        for i, tOp in enumerate(tOps):
+            alphas, betas, r = gf.calc_Greens_function_with_offdiag(
+                hOp,
+                [tOp],
+                psis,
+                es,
+                basis,
+                delta,
+                occ_cutoff=occ_cutoff,
+                slaterWeightMin=slaterWeightMin,
+                verbose=verbose,
+                sparse=True,
+                dN_imp=dN_imp,
+                dN_val=dN_val,
+                dN_con=dN_con,
+            )
+            e0 = np.min(es)
+            Z = np.sum(np.exp(-(es - e0) / tau))
+            G_tOp = np.zeros((len(w), 1, 1), dtype=complex)
+            for e, alphas_e, betas_e, r_e in zip(es, alphas, betas, r):
+                G_tOp += gf.calc_G(alphas_e, betas_e, r_e, w, e, delta) * np.exp(-(e - e0) / tau)
+            G_tOp /= Z
+            gs_realaxis[:, i] = G_tOp[:, 0, 0]
+        return gs_realaxis
+
     (
         tOps_indices,
         tOps_roots,
@@ -880,7 +907,7 @@ def getSpectra_new(
                 gs_realaxis[:, tOps_idx] = received_gs[:, i]
     elif tOp_basis.comm.rank == 0:
         basis.comm.Send(gs_realaxis_local, dest=0)
-    return gs_realaxis if rank == 0 else np.empty((0, 0), dtype=complex)
+    return gs_realaxis if basis.comm.rank == 0 else np.empty((0, 0), dtype=complex)
 
 
 def getSpectra(
