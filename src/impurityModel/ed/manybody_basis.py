@@ -1298,79 +1298,130 @@ class CIPSI_Basis(Basis):
 
     def _calc_de2(self, H, Hpsi_ref, e_ref: float, slaterWeightMin: float = 0):
         """
-        calculate second variational energy contribution of the Slater determinants in states.
+        Calculate the second-order variational energy contribution for each
+        candidate Slater determinant Dj not yet in the basis.
+
+        For each Dj and each reference state |Psi_i> with energy E_i this
+        computes the perturbative correction
+
+            de2[i, j] = |<Dj|H|Psi_i>|^2 / max(E_i - <Dj|H|Dj>, 1e-12)
+
+        The diagonal expectation value <Dj|H|Dj> is evaluated by applying the
+        *full* operator H to a uniform superposition of all candidate states and
+        reading the diagonal amplitudes.  This is correct for arbitrary N-body
+        operators (single-, double-, ... electron terms) because for any
+        determinant |Dj> with amplitude 1 the result of H|Dj> contains the
+        coefficient <Dj|H|Dj> at position Dj.
         """
 
         if isinstance(H, dict):
             H = ManyBodyOperator(H)
-        local_Djs = sorted({state for hp in Hpsi_ref for state in hp if state not in self._index_dict})
-        overlaps = np.zeros((len(Hpsi_ref), len(local_Djs)), dtype=complex)
-        e_Dj = np.zeros((len(Hpsi_ref), len(local_Djs)), dtype=float)
-        for (j, Dj), (i, Hpsi_i) in itertools.product(enumerate(local_Djs), enumerate(Hpsi_ref)):
-            if Dj not in Hpsi_i:
-                continue
-            # <Dj|H|Psi_i>
-            overlaps[i, j] = Hpsi_i[Dj]
-            # <Dj|H|Dj>
-            HDj = applyOp_test(
-                H,
-                ManyBodyState({Dj: 1}),
-                cutoff=slaterWeightMin,
-            )
-            e_Dj[i, j] = np.real(HDj[Dj])
-        # E_i - <Dj|H|Dj>
-        de = e_ref[:, None] - e_Dj
 
-        #      {Dj},      <Dj|H|Psi_i>^2 / (E_i - <Dj|H|Dj>)
+        # Collect candidate determinants: states touched by H|Psi_i> that are
+        # not already in the current basis.
+        local_Djs = sorted(
+            {state for hp in Hpsi_ref for state in hp if state not in self._index_dict}
+        )
+
+        if not local_Djs:
+            return local_Djs, np.zeros((len(Hpsi_ref), 0), dtype=complex)
+
+        # --- overlaps: <Dj|H|Psi_i> for all i, j ---
+        # Build a (n_ref, n_Dj) matrix by reading amplitudes directly from
+        # the already-computed H|Psi_i> dictionaries.
+        Dj_index = {Dj: j for j, Dj in enumerate(local_Djs)}
+        overlaps = np.zeros((len(Hpsi_ref), len(local_Djs)), dtype=complex)
+        for i, Hpsi_i in enumerate(Hpsi_ref):
+            for state, amp in Hpsi_i.items():
+                j = Dj_index.get(state)
+                if j is not None:
+                    overlaps[i, j] = amp
+
+        # --- diagonal elements: <Dj|H|Dj> for each candidate Dj ---
+        # Apply H once to the uniform superposition |S> = sum_j |Dj>.  For a
+        # general N-body operator the diagonal element <Dj|H|Dj> equals the
+        # amplitude at Dj in H|Dj>, and since all |Dj> are orthogonal
+        # determinants the contribution from |Dk> (k != j) to position Dj is
+        # zero.  Reading H|S> at Dj therefore gives <Dj|H|Dj> correctly for
+        # arbitrary operator rank.
+        psi_all_Dj = ManyBodyState({Dj: 1.0 for Dj in local_Djs})
+        H_psi_all = applyOp_test(H, psi_all_Dj, cutoff=slaterWeightMin)
+        e_Dj = np.array(
+            [np.real(H_psi_all.get(Dj, 0.0)) for Dj in local_Djs], dtype=float
+        )
+
+        # --- perturbative energy denominators ---
+        # de[i, j] = E_i - <Dj|H|Dj>  (broadcast e_ref over j)
+        de = e_ref[:, None] - e_Dj[None, :]
         de = np.maximum(de, 1e-12)
+
+        # de2[i, j] = |<Dj|H|Psi_i>|^2 / (E_i - <Dj|H|Dj>)
         de2 = np.zeros_like(overlaps)
         mask = np.abs(overlaps) > 1e-12
         de2[mask] = np.square(np.abs(overlaps[mask])) / de[mask]
         return local_Djs, de2
 
     def determine_new_Dj(self, e_ref, psi_ref, H, de2_min, slater_cutoff=0, return_Hpsi_ref=False):
-        new_Dj = set()
-        Hpsi_ref = [None for _ in psi_ref]
-        for i, (e_i, psi_i) in enumerate(zip(e_ref, psi_ref)):
-            Hpsi_ref[i] = applyOp_test(
-                H,
-                psi_i,
-                cutoff=slater_cutoff,
-            )
+        """Apply H to each reference state, then select candidate determinants
+        whose perturbative energy contribution exceeds *de2_min*."""
+        Hpsi_ref = [
+            applyOp_test(H, psi_i, cutoff=slater_cutoff)
+            for psi_i in psi_ref
+        ]
         Hpsi_ref = self.redistribute_psis(Hpsi_ref)
         local_Djs, de2 = self._calc_de2(H, Hpsi_ref, e_ref)
         de2_mask = np.any(np.abs(de2) >= de2_min, axis=0)
-        new_Dj = {Dj for Dj in itertools.compress(local_Djs, de2_mask)}
+        new_Dj = set(itertools.compress(local_Djs, de2_mask))
         if return_Hpsi_ref:
             return new_Dj, Hpsi_ref
-
         return new_Dj
 
     def expand(self, H, de2_min=1e-10, dense_cutoff=1e3, slaterWeightMin=0):
         """
-        Use the CIPSI method to expand the basis. Keep adding Slater determinants until the CIPSI energy is converged.
+        Use the CIPSI method to expand the basis.
+
+        Iteratively diagonalises H in the current basis, computes the
+        second-order perturbative contribution of every Slater determinant
+        outside the basis, and adds those whose contribution exceeds *de2_min*.
+        Stops when no new determinants are added (convergence).
+
+        Parameters
+        ----------
+        H : dict or ManyBodyOperator
+            The many-body Hamiltonian.  Can contain single-, double-, or
+            higher-body terms.
+        de2_min : float
+            Threshold for the perturbative energy contribution. Determinants
+            with |de2| >= de2_min (for any reference state) are added.
+        dense_cutoff : int
+            Basis size below which dense diagonalisation is used.
+        slaterWeightMin : float
+            Amplitude cutoff passed to applyOp during H|Psi> evaluations.
         """
         de0_max = -self.tau * np.log(1e-4)
         psi_refs = None
-        e_ref = None
 
         if isinstance(H, dict):
             H = ManyBodyOperator(H)
 
-        # H.set_restrictions(self.restrictions)
         old_size = self.size - 1
         while old_size != self.size:
 
             H_mat = self.build_sparse_matrix(H)
-            # e_ref = np.array([], dtype=float)
-            # new_psi_refs = []
 
+            # Use previous eigenvectors as initial guess when doing sparse
+            # diagonalisation (size >= dense_cutoff) to accelerate convergence.
+            v0 = (
+                self.build_vector(psi_refs).T
+                if psi_refs is not None and self.size >= dense_cutoff
+                else None
+            )
             e_ref, psi_ref_dense = eigensystem_new(
                 H_mat,
                 e_max=de0_max,
                 k=2 * len(psi_refs) if psi_refs is not None else 10,
                 e0=None,
-                v0=self.build_vector(psi_refs).T if psi_refs is not None and self.size >= dense_cutoff else None,
+                v0=v0,
                 eigenValueTol=0,
                 comm=self.comm,
                 dense=self.size < dense_cutoff,
@@ -1378,13 +1429,15 @@ class CIPSI_Basis(Basis):
 
             psi_refs = self.build_state(psi_ref_dense.T)
 
-            new_Dj = self.determine_new_Dj(e_ref, psi_refs, H, de2_min, slater_cutoff=slaterWeightMin)
+            new_Dj = self.determine_new_Dj(
+                e_ref, psi_refs, H, de2_min, slater_cutoff=slaterWeightMin
+            )
             old_size = self.size
             self.add_states(new_Dj)
             psi_refs = self.redistribute_psis(psi_refs)
             if self.size > self.truncation_threshold:
                 psi_refs = self.truncate(psi_refs)
-                print(f"-----> Basis truncated!")
+                print("------> Basis truncated!")
                 break
 
         if self.verbose:
