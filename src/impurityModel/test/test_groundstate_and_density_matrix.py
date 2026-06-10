@@ -2,7 +2,7 @@ import pytest
 import numpy as np
 from mpi4py import MPI
 from impurityModel.ed.ManyBodyUtils import ManyBodyOperator, ManyBodyState, SlaterDeterminant
-from impurityModel.ed.groundstate import calc_gs
+from impurityModel.ed.groundstate import calc_gs, calc_energy, find_ground_state_basis
 from impurityModel.ed.block_structure import BlockStructure
 from impurityModel.ed.density_matrix import calc_density_matrices
 
@@ -62,6 +62,9 @@ def test_groundstate_and_density_matrix_mpi():
     # Gather parallel wavefunction to Rank 0
     gathered_psis = comm.gather(psis_mpi, root=0)
 
+    # Also test the general rectangular case of build_density_matrices
+    rect_rho_mpi = basis_mpi.build_density_matrices(psis_mpi, [0, 1, 2], [3, 4, 5])
+
     if rank == 0:
         full_psi_mpi = ManyBodyState()
         for r_psis in gathered_psis:
@@ -114,7 +117,6 @@ def test_groundstate_and_density_matrix_mpi():
                 np.testing.assert_allclose(r, first_ratio, atol=1e-8)
 
         # Also test the general rectangular case of build_density_matrices
-        rect_rho_mpi = basis_mpi.build_density_matrices(psis_mpi, [0, 1, 2], [3, 4, 5])
         rect_rho_seq = basis_seq.build_density_matrices(psis_seq, [0, 1, 2], [3, 4, 5])
         np.testing.assert_allclose(rect_rho_mpi, rect_rho_seq, rtol=1e-10, atol=1e-10)
 
@@ -178,3 +180,178 @@ def test_groundstate_and_density_matrix_serial():
     # Test build_density_matrices
     rho_basis = basis.build_density_matrices(psis, list(range(10)), list(range(10)))
     np.testing.assert_allclose(rho_basis[0], rho, rtol=1e-10, atol=1e-10)
+
+
+def test_calc_energy_serial():
+    eigvals = np.array([0.5, 1.0, 1.5, 2.0, 2.5])
+    hop = {((i, "c"), (i, "a")): val for i, val in enumerate(eigvals)}
+    Hop = ManyBodyOperator(hop)
+    
+    energy, basis = calc_energy(
+        h_op=Hop,
+        impurity_indices={0: [[0, 1, 2, 3, 4]]},
+        bath_states=({0: [[]]}, {0: [[]]}),
+        N0={0: 2},
+        mixed_valence={0: 0},
+        tau=0.01,
+        chain_restrict=False,
+        spin_flip_dj=False,
+        dense_cutoff=10,
+        comm=None,
+        verbose=False,
+        truncation_threshold=1000,
+        slaterWeightMin=1e-12,
+    )
+    assert isinstance(energy, float)
+    assert basis is not None
+    assert len(basis) > 0
+
+
+@pytest.mark.mpi
+def test_calc_energy_mpi():
+    comm = MPI.COMM_WORLD
+    eigvals = np.array([0.5, 1.0, 1.5, 2.0, 2.5])
+    hop = {((i, "c"), (i, "a")): val for i, val in enumerate(eigvals)}
+    Hop = ManyBodyOperator(hop)
+    
+    energy, basis = calc_energy(
+        h_op=Hop,
+        impurity_indices={0: [[0, 1, 2, 3, 4]]},
+        bath_states=({0: [[]]}, {0: [[]]}),
+        N0={0: 2},
+        mixed_valence={0: 0},
+        tau=0.01,
+        chain_restrict=False,
+        spin_flip_dj=False,
+        dense_cutoff=10,
+        comm=comm,
+        verbose=False,
+        truncation_threshold=1000,
+        slaterWeightMin=1e-12,
+    )
+    assert isinstance(energy, float)
+    assert basis is not None
+    assert len(basis) > 0
+
+
+def test_find_ground_state_basis_serial():
+    eigvals = np.array([0.5, 1.0, 1.5, 2.0, 2.5])
+    hop = {((i, "c"), (i, "a")): val for i, val in enumerate(eigvals)}
+    Hop = ManyBodyOperator(hop)
+    
+    basis = find_ground_state_basis(
+        h_op=Hop,
+        impurity_orbitals={0: [[0, 1, 2, 3, 4]]},
+        bath_states=({0: [[]]}, {0: [[]]}),
+        N0={0: 2},
+        mixed_valence=None,
+        tau=0.01,
+        chain_restrict=False,
+        dense_cutoff=10,
+        spin_flip_dj=False,
+        comm=None,
+        verbose=False,
+        truncation_threshold=1000,
+        slaterWeightMin=1e-12,
+    )
+    assert basis is not None
+    assert len(basis) > 0
+
+
+@pytest.mark.mpi
+def test_find_ground_state_basis_mpi():
+    comm = MPI.COMM_WORLD
+    eigvals = np.array([0.5, 1.0, 1.5, 2.0, 2.5])
+    hop = {((i, "c"), (i, "a")): val for i, val in enumerate(eigvals)}
+    Hop = ManyBodyOperator(hop)
+    
+    basis = find_ground_state_basis(
+        h_op=Hop,
+        impurity_orbitals={0: [[0, 1, 2, 3, 4]]},
+        bath_states=({0: [[]]}, {0: [[]]}),
+        N0={0: 2},
+        mixed_valence=None,
+        tau=0.01,
+        chain_restrict=False,
+        dense_cutoff=10,
+        spin_flip_dj=False,
+        comm=comm,
+        verbose=False,
+        truncation_threshold=1000,
+        slaterWeightMin=1e-12,
+    )
+    assert basis is not None
+    assert len(basis) > 0
+
+
+def test_calc_gs_options_serial():
+    # Test with mixed_valence and spin_flip_dj options enabled in serial
+    eigvals = np.array([0.5, 1.0, 1.5, 2.0, 2.5])
+    hop = {((i, "c"), (i, "a")): val for i, val in enumerate(eigvals)}
+    Hop = ManyBodyOperator(hop)
+    
+    basis_setup = {
+        "impurity_orbitals": {0: [[0, 1, 2, 3, 4]]},
+        "bath_states": ({0: [[]]}, {0: [[]]}),
+        "nominal_impurity_occ": {0: 2},
+        "mixed_valence": {0: 1},  # Enable mixed valence
+        "tau": 0.01,
+        "chain_restrict": True,  # Enable chain restriction
+        "dense_cutoff": 10,
+        "spin_flip_dj": True,  # Enable spin flip DJ
+        "comm": None,
+        "truncation_threshold": 1000,
+    }
+    block_structure = BlockStructure(
+        blocks=[[0, 1, 2, 3, 4]],
+        identical_blocks=[[0]],
+        transposed_blocks=[[]],
+        particle_hole_blocks=[[]],
+        particle_hole_transposed_blocks=[[]],
+        inequivalent_blocks=[0],
+    )
+    rot_to_spherical = np.eye(5, dtype=complex)
+    
+    psis, es, basis, thermal_rho, gs_info = calc_gs(
+        Hop, basis_setup, block_structure, rot_to_spherical, verbose=False, slaterWeightMin=1e-12
+    )
+    assert len(es) > 0
+    assert len(psis) > 0
+    assert thermal_rho.shape == (5, 5)
+
+
+@pytest.mark.mpi
+def test_calc_gs_options_mpi():
+    comm = MPI.COMM_WORLD
+    eigvals = np.array([0.5, 1.0, 1.5, 2.0, 2.5])
+    hop = {((i, "c"), (i, "a")): val for i, val in enumerate(eigvals)}
+    Hop = ManyBodyOperator(hop)
+    
+    basis_setup = {
+        "impurity_orbitals": {0: [[0, 1, 2, 3, 4]]},
+        "bath_states": ({0: [[]]}, {0: [[]]}),
+        "nominal_impurity_occ": {0: 2},
+        "mixed_valence": {0: 1},
+        "tau": 0.01,
+        "chain_restrict": True,
+        "dense_cutoff": 10,
+        "spin_flip_dj": True,
+        "comm": comm,
+        "truncation_threshold": 1000,
+    }
+    block_structure = BlockStructure(
+        blocks=[[0, 1, 2, 3, 4]],
+        identical_blocks=[[0]],
+        transposed_blocks=[[]],
+        particle_hole_blocks=[[]],
+        particle_hole_transposed_blocks=[[]],
+        inequivalent_blocks=[0],
+    )
+    rot_to_spherical = np.eye(5, dtype=complex)
+    
+    psis, es, basis, thermal_rho, gs_info = calc_gs(
+        Hop, basis_setup, block_structure, rot_to_spherical, verbose=False, slaterWeightMin=1e-12
+    )
+    assert len(es) > 0
+    assert len(psis) > 0
+    assert thermal_rho.shape == (5, 5)

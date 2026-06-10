@@ -645,17 +645,18 @@ class Basis:
         def find_owner(state: SlaterDeterminant):
             return hash(state) % comm.size
 
-        send_list = [[ManyBodyState({}) for _ in psis] for _ in range(self.comm.size)]
+        send_list = [[{} for _ in psis] for _ in range(self.comm.size)]
         t0 = perf_counter()
         unique_states = set()
         for psi in psis:
             unique_states.update(psi.keys())
         for state in unique_states:
             send_to = find_owner(state)
+            state_bytes = bytes(state.to_bytearray()[:self.n_bytes])
             for s_psi, l_psi in zip(send_list[send_to], psis):
                 if state not in l_psi:
                     continue
-                s_psi[state] = l_psi[state]
+                s_psi[state_bytes] = l_psi[state]
 
         received_list = [None for _ in range(self.comm.size)]
         for r_offset in range(self.comm.size):
@@ -672,8 +673,12 @@ class Basis:
                 )
         res = [ManyBodyState({}) for _ in psis]
         for received_psis in received_list:
-            for res_n, psi_n in zip(res, received_psis):
-                res_n += psi_n
+            for res_n, psi_dict in zip(res, received_psis):
+                if psi_dict:
+                    res_n += ManyBodyState({
+                        self.type.from_bytes(k): v
+                        for k, v in psi_dict.items()
+                    })
         return res
 
     def _generate_spin_flipped_determinants(self, determinants):
@@ -1127,7 +1132,8 @@ class Basis:
         for c, c_root in enumerate(split_roots):
             # I will send  states to this color
             if color != c:
-                intercomms[c].send(self.local_basis, dest=split_comm.rank % procs_per_color[c])
+                serialized_local_basis = bytearray().join(state.to_bytearray()[:self.n_bytes] for state in self.local_basis)
+                intercomms[c].send(serialized_local_basis, dest=split_comm.rank % procs_per_color[c])
             # I will receive states from all other colors
             else:
                 for send_color in range(len(split_roots)):
@@ -1136,7 +1142,11 @@ class Basis:
                     for sender in range(procs_per_color[send_color]):
                         if sender % procs_per_color[c] != split_comm.rank:
                             continue
-                        new_states |= set(intercomms[send_color].recv(source=sender))
+                        received_bytes = intercomms[send_color].recv(source=sender)
+                        new_states.update(
+                            self.type.from_bytes(bytes(received_bytes[i : i + self.n_bytes]))
+                            for i in range(0, len(received_bytes), self.n_bytes)
+                        )
 
         split_basis = Basis(
             self.impurity_orbitals,
@@ -1156,7 +1166,11 @@ class Basis:
             new_psis = [p.copy() for p in psis]
             for c, c_root in enumerate(split_roots):
                 if color != c:
-                    intercomms[c].send(psis, dest=split_comm.rank % procs_per_color[c])
+                    serialized_psis = [
+                        {bytes(k.to_bytearray()[:self.n_bytes]): v for k, v in p.items()}
+                        for p in psis
+                    ]
+                    intercomms[c].send(serialized_psis, dest=split_comm.rank % procs_per_color[c])
                 else:
                     for send_color in range(len(split_roots)):
                         if send_color == color:
@@ -1166,7 +1180,10 @@ class Basis:
                                 continue
                             received_psis = intercomms[send_color].recv(source=sender)
                             for i, received_psi in enumerate(received_psis):
-                                new_psis[i] += received_psi
+                                new_psis[i] += ManyBodyState({
+                                    self.type.from_bytes(k): v
+                                    for k, v in received_psi.items()
+                                })
             psis = split_basis.redistribute_psis(new_psis)
         return indices, split_roots, color, items_per_color, split_basis, psis, intercomms
 
@@ -1255,16 +1272,22 @@ class Basis:
                     for sender in range(procs_per_color[send_color]):
                         if sender % procs_per_color[c] != block_basis.comm.rank:
                             continue
-                        new_states |= block_intercomms[send_color].recv(source=sender)
+                        received_bytes = block_intercomms[send_color].recv(source=sender)
+                        new_states.update(
+                            self.type.from_bytes(bytes(received_bytes[i : i + self.n_bytes]))
+                            for i in range(0, len(received_bytes), self.n_bytes)
+                        )
             else:
                 start = block_index_color_offsets[c]
                 stop = start + num_block_indices_per_color[c]
+                states_to_send = {
+                    self.local_basis[local_idx - self.offset]
+                    for block_idx in block_indices_per_color[start:stop]
+                    for local_idx in blocks[block_idx]
+                }
+                serialized_states = bytearray().join(state.to_bytearray()[:self.n_bytes] for state in states_to_send)
                 block_intercomms[c].send(
-                    {
-                        self.local_basis[local_idx - self.offset]
-                        for block_idx in block_indices_per_color[start:stop]
-                        for local_idx in blocks[block_idx]
-                    },
+                    serialized_states,
                     dest=block_basis.comm.rank % procs_per_color[c],
                 )
         block_basis.add_states(new_states)
@@ -1288,8 +1311,11 @@ class Basis:
                                 continue
                             received_psi_dict = block_intercomms[send_color].recv(source=sender)
                             for i, r_psi_dict in enumerate(received_psi_dict):
-                                new_psis[i] += r_psi_dict
-                                # new_psis[i] += ManyBodyState(r_psi_dict)
+                                psi_state = ManyBodyState({
+                                    self.type.from_bytes(k): v
+                                    for k, v in r_psi_dict.items()
+                                })
+                                new_psis[i] += psi_state
                 else:
                     start = block_index_color_offsets[c]
                     stop = start + num_block_indices_per_color[c]
@@ -1298,11 +1324,12 @@ class Basis:
                         for block_idx in block_indices_per_color[start:stop]
                         for local_idx in blocks[block_idx]
                     }
+                    serialized_send_psis = [
+                        {bytes(state.to_bytearray()[:self.n_bytes]): amp for state, amp in psi.items() if state in send_states}
+                        for psi in psis
+                    ]
                     block_intercomms[c].send(
-                        [
-                            ManyBodyState({state: amp for state, amp in psi.items() if state in send_states})
-                            for psi in psis
-                        ],
+                        serialized_send_psis,
                         dest=block_basis.comm.rank % procs_per_color[c],
                     )
             psis = block_basis.redistribute_psis(new_psis)

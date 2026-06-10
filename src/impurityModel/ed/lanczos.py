@@ -32,19 +32,31 @@ class Reort(Enum):
 
 
 def calculate_thermal_gs(h, block_size, e_max, v0=None, reort=Reort.FULL, comm=None):
+    mpi = comm is not None
+    rank = comm.rank if mpi else 0
+    size = comm.size if mpi else 1
+
     def converged(alphas, betas, *args, **kwargs):
         e, s = eigsh(alphas, betas, de=e_max, select="m")
         sorted_indices = np.argsort(e)
         e = e[sorted_indices]
-        s[:, sorted_indices]
+        s = s[:, sorted_indices]
         mask = e - np.min(e) <= e_max
-        return np.linalg.norm(betas[-1] @ s[-block_size:, mask], ord=2)
+        return np.linalg.norm(betas[-1] @ s[-block_size:, mask], ord=2) < 1e-6
 
     if v0 is None:
-        v0 = np.random.rand(h.shape[0], block_size) + 1j * np.random.rand(h.shape[0], block_size)
-        # v0 = np.ones((h.shape[0], block_size), dtype = complex)
-        v0, _ = sp.linalg.qr(v0, mode="economic", overwrite_a=True, check_finite=False)
-        # v0, _ = np.linalg.qr(v0, mode="reduced")
+        v0 = np.random.rand(h.shape[1], block_size) + 1j * np.random.rand(h.shape[1], block_size)
+        if mpi:
+            counts = np.empty((size), dtype=int)
+            comm.Allgather(np.array([v0.size], dtype=int), counts)
+            offsets = np.array([np.sum(counts[:r]) for r in range(size)], dtype=int)
+            v0_full = np.empty((h.shape[0], block_size), dtype=complex, order="C") if rank == 0 else None
+            comm.Gatherv(v0, (v0_full, counts, offsets, MPI.C_DOUBLE_COMPLEX), root=0)
+            if rank == 0:
+                v0_full, _ = sp.linalg.qr(v0_full, mode="economic", overwrite_a=True, check_finite=False)
+            comm.Scatterv((v0_full, counts, offsets, MPI.C_DOUBLE_COMPLEX), v0, root=0)
+        else:
+            v0, _ = sp.linalg.qr(v0, mode="economic", overwrite_a=True, check_finite=False)
     elif v0.shape[1] < block_size:
         new_v0 = np.random.rand(v0.shape[0], block_size - v0.shape[1]) + 1j * np.random.rand(
             v0.shape[0], block_size - v0.shape[1]
@@ -59,17 +71,18 @@ def calculate_thermal_gs(h, block_size, e_max, v0=None, reort=Reort.FULL, comm=N
         psi0=v0,
         h=h,
         converged=converged,
-        h_local=True,
         verbose=True,
         reort_mode=reort,
+        comm=comm,
     )
-    if comm.rank == 0:
+    if rank == 0:
         eigvals, eigvecs = eigsh(alphas, betas, de=e_max, Q=Q[:, : alphas.shape[0] * alphas.shape[1]], select="m")
     else:
         eigvals = None
         eigvecs = None
-    eigvals = comm.bcast(eigvals, root=0)
-    eigvecs = comm.bcast(eigvecs, root=0)
+    if mpi:
+        eigvals = comm.bcast(eigvals, root=0)
+        eigvecs = comm.bcast(eigvecs, root=0)
     return eigvals, eigvecs
 
 
@@ -255,6 +268,9 @@ def get_block_Lanczos_matrices(
     converged: Callable[[np.ndarray, np.ndarray], bool],
     verbose: bool = True,
     comm=None,
+    reort_mode=Reort.NONE,
+    build_krylov_basis=True,
+    **kwargs,
 ):
     mpi = comm is not None
     rank = comm.rank if mpi else 0
@@ -278,9 +294,12 @@ def get_block_Lanczos_matrices(
         q = np.empty((2, 0, 0))
         wp = None
     if mpi:
-        comm.Gatherv(psi0, (q[1], counts, offsets, MPI.C_DOUBLE_COMPLEX), root=0)
+        comm.Gatherv(psi0, (q[1] if rank == 0 else None, counts, offsets, MPI.C_DOUBLE_COMPLEX), root=0)
+        if rank == 0:
+            Q_list = [q[1].copy()]
     else:
         q[1] = psi0.copy()
+        Q_list = [q[1].copy()]
     qi = np.ascontiguousarray(psi0).copy()
 
     converge_count = 0
@@ -290,6 +309,8 @@ def get_block_Lanczos_matrices(
     # take at most N/n steps in total
     for i in range(it_max):
         wp = h @ qi
+        if mpi and not isinstance(h, sp.sparse.linalg.LinearOperator):
+            comm.Reduce(MPI.IN_PLACE if rank == 0 else wp, wp, op=MPI.SUM, root=0)
 
         if rank == 0:
             alphas[i] = np.conj(q[1].T) @ wp
@@ -300,7 +321,11 @@ def get_block_Lanczos_matrices(
             q[0] = q[1].copy()
             q[1], betas[i] = sp.linalg.qr(wp, mode="economic", overwrite_a=False, check_finite=False)
             q[1] = np.ascontiguousarray(q[1])
-            qi[:] = q[1, : counts[0] // n]
+            Q_list.append(q[1].copy())
+            if mpi:
+                qi[:] = q[1, : counts[0] // n]
+            else:
+                qi[:] = q[1]
 
             converge_count = 1 + converge_count if converged(alphas[: i + 1], betas[: i + 1], verbose=verbose) else 0
             done = converge_count > 2
@@ -321,6 +346,9 @@ def get_block_Lanczos_matrices(
     if rank == 0:
         alphas = alphas[: i + 1]
         betas = betas[: i + 1]
+        Q = np.concatenate(Q_list[: i + 1], axis=1) if build_krylov_basis else None
+    else:
+        Q = None
     # Distribute Lanczos matrices to all ranks
     if mpi:
         if rank != 0:
@@ -329,7 +357,7 @@ def get_block_Lanczos_matrices(
         comm.Bcast(alphas, root=0)
         comm.Bcast(betas, root=0)
 
-    return alphas, betas
+    return alphas, betas, Q
 
 
 def block_lanczos_sparse(
@@ -341,6 +369,14 @@ def block_lanczos_sparse(
     reort: Reort = Reort.NONE,
     slaterWeightMin: float = 0,
 ) -> (np.ndarray, np.ndarray, Optional[list[dict]]):
+    if not isinstance(h_op, ManyBodyOperator):
+        h_op = ManyBodyOperator(h_op)
+    psi0 = [
+        ManyBodyState({basis.type.from_bytes(k) if isinstance(k, bytes) else k: v for k, v in psi.items()})
+        if isinstance(psi, dict) else psi
+        for psi in psi0
+    ]
+
     mpi = basis.comm is not None
     comm = basis.comm if mpi else MPI.COMM_SELF
     rank = comm.rank if mpi else 0
@@ -376,7 +412,7 @@ def block_lanczos_sparse(
         t0 = perf_counter()
         if expand_basis:
             basis.add_states(
-                set(state for p in wp for state in p if state not in basis.local_basis),
+                set(state for p in wp for state in p if state not in basis._index_dict),
             )
             local_rows = len(basis.local_basis)
             q1_local = np.empty((local_rows, n), dtype=complex, order="C")
@@ -463,7 +499,7 @@ def block_lanczos_sparse(
         it += 1
     if verbose:
         print(f"Coverged at iteration {it+1} out of a maximum of {basis.size//n}")
-    return alphas, betas
+    return alphas, betas, Q if build_krylov_basis else None
 
 
 def block_lanczos(
@@ -577,8 +613,7 @@ def block_lanczos(
             state
             for psi in wp
             for state in psi
-            for state_idx in [bisect_left(basis.local_basis, state)]
-            if state_idx == len(basis.local_basis) or basis.local_basis[state_idx] != state
+            if state not in basis._index_dict
         )
         t_add += perf_counter() - t0
         N_max = max(N_max, basis.size)
@@ -733,12 +768,15 @@ def get_Lanczos_vectors(A, alphas, betas, v0, comm, which="all"):
         raise RuntimeError(f"Unknown value for which: {which}")
 
     Q = np.empty((N, len(which) * n), dtype=alphas.dtype)
+    which_dict = {val: idx for idx, val in enumerate(which)}
     qi = v0.copy()
     for i in range(n_it):
-        if i in which:
-            idx = which.index(i)
+        if i in which_dict:
+            idx = which_dict[i]
             Q[:, idx * n : (idx + 1) * n] = qi
         q_tmp = A @ qi
+        if mpi and not isinstance(A, sp.sparse.linalg.LinearOperator):
+            comm.Reduce(MPI.IN_PLACE if rank == 0 else q_tmp, q_tmp, op=MPI.SUM, root=0)
         if rank == 0:
             if i == 0:
                 q_tmp -= q[1] @ alphas[i]
@@ -754,8 +792,8 @@ def get_Lanczos_vectors(A, alphas, betas, v0, comm, which="all"):
             )
         else:
             qi = q[1]
-    if n_it in which:
-        idx = which.index(n_it)
+    if n_it in which_dict:
+        idx = which_dict[n_it]
         Q[:, idx * n : (idx + 1) * n] = qi
 
     return Q

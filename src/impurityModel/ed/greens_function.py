@@ -15,7 +15,7 @@ from impurityModel.ed.lanczos import (
 from impurityModel.ed.manybody_basis import CIPSI_Basis, Basis
 from impurityModel.ed.cg import bicgstab, block_bicgstab
 from impurityModel.ed.block_structure import BlockStructure, get_blocks
-from impurityModel.ed.ManyBodyUtils import ManyBodyState, ManyBodyOperator, applyOp as applyOp_test, inner
+from impurityModel.ed.ManyBodyUtils import ManyBodyState, ManyBodyOperator, SlaterDeterminant, applyOp as applyOp_test, inner
 from heapq import merge
 
 from mpi4py import MPI
@@ -126,8 +126,11 @@ def split_comm_and_redistribute_psi(priorities: Iterable[float], psis: list[Many
     new_psis = [p.copy() for p in psis]
     for c, c_root in enumerate(split_roots):
         if color != c:
-            comm.send(psis, dest=c_root + (comm.rank % procs_per_color[c]))
-            # comm.send([p.to_dict() for p in psis], dest=c_root + (comm.rank % procs_per_color[c]))
+            serialized_psis = [
+                {tuple(k): v for k, v in p.items()}
+                for p in psis
+            ]
+            comm.send(serialized_psis, dest=c_root + (comm.rank % procs_per_color[c]))
         else:
             for sender in range(comm.size):
                 if (
@@ -140,9 +143,13 @@ def split_comm_and_redistribute_psi(priorities: Iterable[float], psis: list[Many
                     if isinstance(received_psi, ManyBodyState):
                         new_psis[i] += received_psi
                     else:
-                        new_psis[i] += ManyBodyState(received_psi)
+                        psi_state = ManyBodyState({
+                            SlaterDeterminant(k): v
+                            for k, v in received_psi.items()
+                        })
+                        new_psis[i] += psi_state
 
-    return slice(indices_start, indices_end), split_roots, color, items_per_color, split_comm, psis
+    return slice(indices_start, indices_end), split_roots, color, items_per_color, split_comm, new_psis
 
 
 def get_Greens_function(
@@ -427,10 +434,13 @@ def calc_Greens_function_with_offdiag(
         for indices, occupations in excited_restrictions.items():
             print(f"---> {sorted(indices)} : {occupations}")
     for excited_psis in (excited_block_psis[ei] for ei in excited_indices):
+        excited_states = set()
+        for p in excited_psis:
+            excited_states.update(p)
         excited_basis = Basis(
             split_original_basis.impurity_orbitals,
             split_original_basis.bath_states,
-            initial_basis=set(state for p in excited_psis for state in p),
+            initial_basis=excited_states,
             # restrictions=excited_restrictions,
             comm=split_original_basis.comm,
             verbose=verbose,
@@ -816,7 +826,7 @@ def block_green_impl(basis, hOp, psi_arr, delta, slaterWeightMin, verbose):
         )
 
         # Run Lanczos on psi0^T* [wI - j*delta - H]^-1 psi0
-        alphas, betas = get_block_Lanczos_matrices(
+        alphas, betas, _ = get_block_Lanczos_matrices(
             psi0=psi_dense_local,
             h=H,
             converged=converged,
@@ -909,7 +919,7 @@ def block_Green_sparse(
             print(f"delta = {d_g}", flush=True)
         return d_g < delta_min
 
-    alphas, betas = block_lanczos_sparse(
+    alphas, betas, _ = block_lanczos_sparse(
         psi_arr, hOp, basis, converged, verbose=verbose, slaterWeightMin=slaterWeightMin
     )
 
