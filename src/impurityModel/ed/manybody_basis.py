@@ -15,9 +15,8 @@ import scipy as sp
 from heapq import merge
 from scipy.cluster.hierarchy import DisjointSet
 from mpi4py import MPI
+from bitarray import bitarray
 from impurityModel.ed.manybody_state_containers import (
-    DistributedStateContainer,
-    CentralizedStateContainer,
     SimpleDistributedStateContainer,
 )
 
@@ -32,7 +31,13 @@ from impurityModel.ed.finite import (
     thermal_average_scale_indep,
 )
 
-from impurityModel.ed.ManyBodyUtils import ManyBodyState, ManyBodyOperator, applyOp as applyOp_test, inner
+from impurityModel.ed.ManyBodyUtils import (
+    ManyBodyState,
+    ManyBodyOperator,
+    SlaterDeterminant,
+    applyOp as applyOp_test,
+    inner,
+)
 
 
 from impurityModel.ed.finite import applyOp_new as applyOp
@@ -205,7 +210,7 @@ class Basis:
                     ),
                 )
 
-        return basis, num_spin_orbitals
+        return [SlaterDeterminant.from_bytes(bytestring) for bytestring in basis], num_spin_orbitals
 
     def _get_restrictions(
         self,
@@ -269,7 +274,7 @@ class Basis:
             valence_indices = frozenset(sorted(ind for val_ind in valence_baths[i] for ind in val_ind))
             conduction_indices = frozenset(sorted(ind for con_ind in conduction_baths[i] for ind in con_ind))
             for state in self.local_basis:
-                bits = psr.bytes2bitarray(state, self.num_spin_orbitals)
+                bits = psr.bytes2bitarray(bytes(state.to_bytearray()), self.num_spin_orbitals)
                 n_imp = sum(bits[i] for i in impurity_indices)
                 n_val = sum(bits[i] for i in valence_indices)
                 n_con = sum(bits[i] for i in conduction_indices)
@@ -305,7 +310,7 @@ class Basis:
         min_occ, max_occ = restrictions[orbs]
         return max(min_occ - occ_dec, 0), min(max_occ + occ_inc, len(orbs))
 
-    def build_initial_restrictions(self, op: ManyBodyOperator, min_dist=3):
+    def build_initial_restrictions(self, op: ManyBodyOperator, min_dist=4):
         ground_state_restrictions = {}
         valence_baths, conduction_baths = self.bath_states
 
@@ -545,7 +550,7 @@ class Basis:
             + sum(len(orbs) for orbs in bath_states[1][i])
             for i in bath_states[0]
         )
-        test = ManyBodyState({b"\x00": 1.0})
+        test = ManyBodyState({SlaterDeterminant.from_bytes(b"\x00"): 1.0})
         slater_det = list(test.keys())[0]
         self.type = type(slater_det)
         self.n_bytes = int(ceil(ceil(self.num_spin_orbitals / 8) / len(slater_det)) * len(slater_det))
@@ -624,20 +629,14 @@ class Basis:
         if not self.is_distributed:
             return psis
 
-        def find_owner(state):
-            for r, bound in enumerate(self.state_bounds):
-                if bound is None or state < bound:
-                    return r
-            return -1
+        comm = self.comm
 
-        # for psi in psis:
-        #     l = list(psi.keys())
-        #     assert all(l[i] < l[i + 1] for i in range(len(psi) - 1)), f'{l}'
+        def find_owner(state: SlaterDeterminant):
+            return hash(state) % comm.size
+
         send_list = [[ManyBodyState({}) for _ in psis] for _ in range(self.comm.size)]
         t0 = perf_counter()
         for state, _ in itertools.groupby(merge(*tuple((state for state in psi.keys()) for psi in psis))):
-            # for state in sorted({state for psi in psis for state in psi}):
-            # for state in sorted({state for psi in psis for state in psi}):
 
             send_to = find_owner(state)
 
@@ -654,11 +653,9 @@ class Basis:
 
             if send_to == self.comm.rank:
                 received_list[receive_from] = send_list[send_to]
-                # received_list[receive_from] = [psi.to_dict() for psi in send_list[send_to]]
             else:
                 received_list[receive_from] = self.comm.sendrecv(
                     send_list[send_to],
-                    # [psi.to_dict() for psi in send_list[send_to]],
                     dest=send_to,
                     source=receive_from,
                 )
@@ -666,111 +663,6 @@ class Basis:
         for received_psis in received_list:
             for res_n, psi_n in zip(res, received_psis):
                 res_n += psi_n
-                # res_n += ManyBodyState(psi_n)
-        return res
-
-    def redistribute_psis_old(self, psis: Iterable[dict]):
-        if not self.is_distributed:
-            return list(psis)
-
-        res = []
-        send_to_rank = [[] for _ in range(self.comm.size)]
-        send_states = [[] for _ in range(self.comm.size)]
-        send_amps = [[] for _ in range(self.comm.size)]
-        n_psis = 0
-        for n, psi in enumerate(psis):
-            n_psis += 1
-            for state, amp in psi.items():
-                for r, state_bound in enumerate(self.state_bounds):
-                    if state_bound is None or state < state_bound:
-                        send_states[r].append(state)
-                        send_amps[r].append(amp)
-                        send_to_rank[r].append(n)
-                        break
-        send_counts = np.array([len(send_amps[r]) for r in range(self.comm.size)], dtype=np.int64)
-        send_offsets = np.array([sum(send_counts[:r]) for r in range(self.comm.size)], dtype=np.int64)
-        receive_counts = np.empty((self.comm.size), dtype=np.int64)
-        self.comm.Alltoall(np.array(send_counts, dtype=np.int64), receive_counts)
-        receive_offsets = np.array([sum(receive_counts[:r]) for r in range(self.comm.size)], dtype=np.int64)
-        received_bytes = bytearray(sum(receive_counts) * self.n_bytes)
-        received_amps = np.empty(sum(receive_counts), dtype=np.complex128)
-        received_splits = np.empty(sum(receive_counts), dtype=np.int64)
-
-        # numpy arrays of bytes do not play very nicely with MPI, sometimes data corruotion happens.
-        # MPI4PYs Ialltoallv does not play nice with bytearrays, the call just freezes.
-        # The solution to both these issues is to use bytes for sending and bytearrays for receiving.
-        received_bytes = bytearray(sum(receive_counts) * self.n_bytes)
-        state_request = self.comm.Ialltoallv(
-            (
-                bytes(byte for state_list in send_states for state in state_list for byte in state),
-                send_counts * self.n_bytes,
-                send_offsets * self.n_bytes,
-                MPI.BYTE,
-            ),
-            (received_bytes, receive_counts * self.n_bytes, receive_offsets * self.n_bytes, MPI.BYTE),
-        )
-
-        received_amps_arr = np.empty((sum(receive_counts),), dtype=complex)
-        amps_request = self.comm.Ialltoallv(
-            (
-                np.array(
-                    [amp for amps in send_amps for amp in amps],
-                    dtype=np.complex128,
-                ),
-                send_counts,
-                send_offsets,
-                MPI.C_DOUBLE_COMPLEX,
-            ),
-            (received_amps_arr, receive_counts, receive_offsets, MPI.C_DOUBLE_COMPLEX),
-        )
-        received_splits_arr = np.empty((sum(receive_counts),), dtype=int)
-        splits_request = self.comm.Ialltoallv(
-            (
-                np.array([split for splits in send_to_rank for split in splits], dtype=np.int64),
-                send_counts,
-                send_offsets,
-                MPI.LONG,
-                # MPI.INT64_T,
-            ),
-            (received_splits_arr, receive_counts, receive_offsets, MPI.LONG),
-            # (received_splits_arr, receive_counts, receive_offsets, MPI.INT64_T),
-        )
-
-        received_states: list[Iterable[bytes]] = [[] for _ in send_states]
-        state_request.Wait()
-        state_request.free()
-        received_states = [
-            (
-                bytes(r_bytes)
-                for r_bytes in batched(
-                    received_bytes[
-                        receive_offsets[r] * self.n_bytes : (receive_offsets[r] + receive_counts[r]) * self.n_bytes
-                    ],
-                    self.n_bytes,
-                )
-            )
-            for r in range(self.comm.size)
-        ]
-        amps_request.Wait()
-        amps_request.free()
-        received_amps: list[Iterable[complex]] = [
-            received_amps_arr[receive_offsets[r] : receive_offsets[r] + receive_counts[r]]
-            for r in range(self.comm.size)
-        ]
-        splits_request.Wait()
-        splits_request.free()
-        received_splits: list[Iterable[int]] = [
-            received_splits_arr[receive_offsets[r] : receive_offsets[r] + receive_counts[r]]
-            for r in range(self.comm.size)
-        ]
-        res = [{} for _ in range(n_psis)]
-        for n, state, amp in zip(
-            itertools.chain.from_iterable(received_splits),
-            itertools.chain.from_iterable(received_states),
-            itertools.chain.from_iterable(received_amps),
-        ):
-            # if state in self.local_basis:
-            res[n][state] = amp + res[n].get(state, 0)
         return res
 
     def _generate_spin_flipped_determinants(self, determinants):
@@ -832,7 +724,7 @@ class Basis:
         """
         if isinstance(op, dict):
             op = ManyBodyOperator(op)
-        op.set_restrictions(self.restrictions)
+        # op.set_restrictions(self.restrictions)
         old_size = self.size - 1
 
         it = 0
@@ -1038,7 +930,7 @@ class Basis:
         psi_stats = [{} for _ in psis]
         for i, psi in enumerate(psis):
             for state, amp in psi.items():
-                bits = psr.bytes2bitarray(state, self.num_spin_orbitals)
+                bits = psr.bytes2bitarray(bytes(state.to_bytearray()), self.num_spin_orbitals)
                 n_imp = bits[impurity_indices].count()
                 n_valence = bits[valence_indices].count()
                 n_cond = bits[conduction_indices].count()
@@ -1129,7 +1021,7 @@ class Basis:
 
         subgroups = [tuple() for _ in range(n_colors)]
         for i in range(0, len(normalized_priorities), n_colors):
-            for j in range(n_colors):
+            for j in range(min(n_colors, len(normalized_priorities) - i)):
                 subgroups[j] += (sorted_idxs[i + j],)
         merged_priorities = np.array([np.sum(normalized_priorities[list(subgroup)]) for subgroup in subgroups])
         procs_per_color = np.array([max(1, n) for n in np.floor(comm.size * merged_priorities)], dtype=int)
@@ -1453,7 +1345,7 @@ class CIPSI_Basis(Basis):
         if isinstance(H, dict):
             H = ManyBodyOperator(H)
 
-        H.set_restrictions(self.restrictions)
+        # H.set_restrictions(self.restrictions)
         old_size = self.size - 1
         while old_size != self.size:
 

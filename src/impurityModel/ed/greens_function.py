@@ -360,11 +360,11 @@ def calc_Greens_function_with_offdiag(
     block_v = [[ManyBodyState({}) for _ in tOps] for _ in psis]
     for (i_tOp, tOp), (j_psi, psi) in itertools.product(enumerate(tOps), enumerate(psis)):
 
-        tOp.set_restrictions(excited_restrictions)
+        # tOp.set_restrictions(excited_restrictions)
         block_v[j_psi][i_tOp] += applyOp_test(
             tOp,
             psi,
-            cutoff=slaterWeightMin,
+            cutoff=0,  # slaterWeightMin,
         )
     block_v_lengths = np.array([sum(len(t_psi) for t_psi in t_psis) for t_psis in block_v])
     block_basis.comm.Allreduce(MPI.IN_PLACE, block_v_lengths, op=MPI.SUM)
@@ -415,11 +415,8 @@ def calc_Greens_function_with_offdiag(
         excited_basis = Basis(
             split_original_basis.impurity_orbitals,
             split_original_basis.bath_states,
-            initial_basis=[
-                state
-                for state, _ in itertools.groupby(merge(*tuple((slater for slater in p.keys()) for p in excited_psis)))
-            ],
-            restrictions=excited_restrictions,
+            initial_basis=set(state for p in excited_psis for state in p),
+            # restrictions=excited_restrictions,
             comm=split_original_basis.comm,
             verbose=verbose,
             truncation_threshold=split_original_basis.truncation_threshold,
@@ -427,8 +424,8 @@ def calc_Greens_function_with_offdiag(
             spin_flip_dj=split_original_basis.spin_flip_dj,
         )
 
-        if excited_basis.restrictions is not None:
-            hOp.set_restrictions(excited_basis.restrictions)
+        # if excited_basis.restrictions is not None:
+        #     hOp.set_restrictions(excited_basis.restrictions)
         if sparse:
             alphas, betas, r = block_Green_sparse(
                 hOp=hOp,
@@ -676,15 +673,7 @@ def block_Green(
             for i, psi in enumerate(new_psis):
                 new_psis[i] = applyOp_test(hOp, psi, cutoff=slaterWeightMin)
             basis.add_states(
-                [
-                    state
-                    for state, _ in itertools.groupby(
-                        merge(
-                            *tuple((slater for slater in p.keys() if slater not in basis.local_basis) for p in new_psis)
-                        )
-                    )
-                ],
-                sorted_unique=True,
+                set(state for p in new_psis for state in p if state not in basis.local_basis),
             )
         if basis.size == old_size or basis.size > basis.truncation_threshold:
             break

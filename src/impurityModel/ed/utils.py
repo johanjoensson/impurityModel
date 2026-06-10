@@ -14,7 +14,7 @@ def vector_to_string(v: np.ndarray, realvalue: Optional[bool] = None, n_prec: in
     assert v.ndim == 1, f"{v.shape=}"
     if realvalue is None:
         realvalue = not np.any(np.abs(v.imag) > float(f"1e-{n_prec}"))
-    real_format = f" .{n_prec}f"
+    real_format = f">{n_prec+2}.{n_prec}f"
     if realvalue:
         return " ".join([f"{np.real(el):{real_format}}" for el in v])
     imag_format = f">+.{n_prec}f"

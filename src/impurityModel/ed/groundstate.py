@@ -48,7 +48,7 @@ def calc_energy(
     basis.restrictions = basis.build_excited_restrictions(h_op, psis=None, es=None)
     if len(basis) == 0:
         return np.inf, basis, {}
-    basis.expand(h_op, dense_cutoff=dense_cutoff, de2_min=1e-4, slaterWeightMin=slaterWeightMin)
+    basis.expand(h_op, dense_cutoff=dense_cutoff, de2_min=1e-4, slaterWeightMin=0)  # slaterWeightMin)
 
     energy_cut = -tau * np.log(1e-4)
 
@@ -57,7 +57,7 @@ def calc_energy(
         h,
         e_max=energy_cut,
         k=10,
-        eigenValueTol=np.finfo(float).eps,
+        eigenValueTol=slaterWeightMin,  # np.finfo(float).eps,
         return_eigvecs=True,
         comm=basis.comm,
         dense=basis.size < dense_cutoff,
@@ -184,11 +184,11 @@ def calc_gs(
         **basis_setup,
     )
 
-    if ground_state_basis.restrictions is not None:
-        Hop.set_restrictions(ground_state_basis.restrictions)
+    # if ground_state_basis.restrictions is not None:
+    # Hop.set_restrictions(ground_state_basis.restrictions)
     ground_state_basis.tau = tau
     energy_cut = -tau * np.log(1e-4)
-    ground_state_basis.expand(Hop, dense_cutoff=dense_cutoff, de2_min=1e-6, slaterWeightMin=slaterWeightMin)
+    ground_state_basis.expand(Hop, dense_cutoff=dense_cutoff, de2_min=1e-6, slaterWeightMin=0)  # slaterWeightMin)
     h_gs = ground_state_basis.build_sparse_matrix(Hop)
     es, psis_dense = eigensystem(
         h_gs,
@@ -200,6 +200,9 @@ def calc_gs(
     )
 
     psis = ground_state_basis.build_state(psis_dense.T, slaterWeightMin=slaterWeightMin)
+    ground_state_basis.clear()
+    ground_state_basis.add_states(set(state for p in psis for state in p))
+    psis = ground_state_basis.redistribute_psis(psis)
 
     effective_restrictions = ground_state_basis.get_effective_restrictions()
     if verbose:

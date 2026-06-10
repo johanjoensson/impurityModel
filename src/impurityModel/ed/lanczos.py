@@ -455,18 +455,12 @@ def block_lanczos_sparse(
         t0 = perf_counter()
         if expand_basis:
             basis.add_states(
-                [
-                    state
-                    for state, _ in itertools.groupby(
-                        merge(*tuple((slater for slater in p.keys() if slater not in basis.local_basis) for p in wp))
-                    )
-                ],
-                unique_sorted=True,
+                set(state for p in wp for state in p if state not in basis.local_basis),
             )
         t_add = perf_counter() - t0
         if old_basis_size == basis.size:
             it_max = basis.size // n
-            expand_basis = False
+            # expand_basis = False
         if verbose:
             print(f"Added {basis.size - old_basis_size} states to the basis.")
             print(f"----> Currently the basis contains {basis.size} states.")

@@ -1,18 +1,28 @@
 import pytest
 import numpy as np
-from impurityModel.ed.ManyBodyUtils import ManyBodyState, ManyBodyOperator
+from impurityModel.ed.ManyBodyUtils import (
+    ManyBodyState,
+    ManyBodyOperator,
+    SlaterDeterminant,
+)
 from math import isclose
 
 
 def all_isclose(dict1, dict2, **kwargs):
-    return all(pytest.approx(val1) == val2 for val1, val2 in zip(dict1.values(), dict2.values()))
+    return all(pytest.approx(dict1[key]) == dict2[key] for key in dict1.keys()) and all(
+        pytest.approx(dict1[key]) == dict2[key] for key in dict2.keys()
+    )
 
 
 def test_ManyBodyState():
     d = {
-        b"\xff\xac": 1.0,
-        b"\xac\xff": 1j,
+        SlaterDeterminant.from_bytes(b"\xff\xac"): 1.0,
+        SlaterDeterminant.from_bytes(b"\xac\xff"): 1j,
     }
+    for sd in d.keys():
+        for chunk in sd:
+            print(f"{chunk.to_bytes(8)}", end=" ")
+        print()
     psi = ManyBodyState(d)
     for state in d:
         assert d[state] == psi[state]
@@ -24,7 +34,10 @@ def test_ManyBodyState():
 
 
 def test_ManyBodyState_2():
-    d = {b"\xff\xac": 1.0, b"\xac\xff": 1j}
+    d = {
+        SlaterDeterminant.from_bytes(b"\xff\xac"): 1.0,
+        SlaterDeterminant.from_bytes(b"\xac\xff"): 1j,
+    }
     psi = ManyBodyState()
     for state, amp in d.items():
         psi[state] = amp
@@ -38,25 +51,26 @@ def test_ManyBodyState_2():
 
 
 def test_ManyBodyState_prune():
-    d = {b"\xff\xac": 1.0, b"\xac\xff": 2j}
+    d = {SlaterDeterminant.from_bytes(b"\xff\xac"): 1.0, SlaterDeterminant.from_bytes(b"\xac\xff"): 2j}
     psi = ManyBodyState(d)
     for state in d:
         assert d[state] == psi[state]
     # for state in psi:
     #     assert d[state] == psi[state]
 
+    print(f"{psi=}")
     psi.prune(1)
-    assert b"\xff\xac" not in psi
-    assert psi[b"\xac\xff"] == 2j
+    assert SlaterDeterminant.from_bytes(b"\xff\xac") not in psi
+    assert psi[SlaterDeterminant.from_bytes(b"\xac\xff")] == 2j
 
     assert pytest.approx(psi.norm2()) == 4
     assert pytest.approx(psi.norm()) == np.sqrt(4)
 
 
 def test_ManyBodyState_arithmetic():
-    add = ManyBodyState({b"\xff\xac": 1.0, b"\xac\xff": 2j})
-    a = ManyBodyState({b"\xff\xac": 1.0})
-    b = ManyBodyState({b"\xac\xff": 2j})
+    add = ManyBodyState({SlaterDeterminant.from_bytes(b"\xff\xac"): 1.0, SlaterDeterminant.from_bytes(b"\xac\xff"): 2j})
+    a = ManyBodyState({SlaterDeterminant.from_bytes(b"\xff\xac"): 1.0})
+    b = ManyBodyState({SlaterDeterminant.from_bytes(b"\xac\xff"): 2j})
 
     psi = a + b
     for state in add:
@@ -64,14 +78,18 @@ def test_ManyBodyState_arithmetic():
     # for state in psi:
     #     assert add[state] == psi[state]
 
-    sub = ManyBodyState({b"\xff\xac": 1.0, b"\xac\xff": -2j})
+    sub = ManyBodyState(
+        {SlaterDeterminant.from_bytes(b"\xff\xac"): 1.0, SlaterDeterminant.from_bytes(b"\xac\xff"): -2j}
+    )
     psi = a - b
     for state in sub:
         assert pytest.approx(sub[state]) == psi[state], f"{sub=}, {psi=}"
     # for state in psi:
     #     assert sub[state] == psi[state]
 
-    scale = ManyBodyState({b"\xff\xac": 2.5, b"\xac\xff": 5.0j})
+    scale = ManyBodyState(
+        {SlaterDeterminant.from_bytes(b"\xff\xac"): 2.5, SlaterDeterminant.from_bytes(b"\xac\xff"): 5.0j}
+    )
     psi = (a + b) * 2.5
     for state in scale:
         assert pytest.approx(scale[state]) == psi[state]
@@ -94,7 +112,7 @@ def test_ManyBodyState_arithmetic():
 def test_ManyBodyState_pickle():
     import pickle
 
-    psi = ManyBodyState({b"\xa0": 1.0, b"\xbf": 1.0j})
+    psi = ManyBodyState({SlaterDeterminant.from_bytes(b"\xa0"): 1.0, SlaterDeterminant.from_bytes(b"\xbf"): 1.0j})
     pickled_psi = pickle.dumps(psi)
     new_psi = pickle.loads(pickled_psi)
     assert psi == new_psi
@@ -163,33 +181,51 @@ def test_ManyBodyOperator_arithmetic():
 
 def test_ManyBodyOperator_apply():
     #                      1010          1011
-    psi = ManyBodyState({b"\xa0\x00": 1.0, b"\xbf": 1.0j})
+    psi = ManyBodyState({SlaterDeterminant.from_bytes(b"\xa0\x00"): 1.0, SlaterDeterminant.from_bytes(b"\xbf"): 1.0j})
 
     op = ManyBodyOperator({((0, "a"), (3, "c")): 1.0, ((1, "a"), (1, "c")): 1.0j})
     #                      0011          1010           1011
-    res = ManyBodyState({b"\x30": 1.0, b"\xa0": 1.0j, b"\xbf": -1.0})
+    res = ManyBodyState(
+        {
+            SlaterDeterminant.from_bytes(b"\x30"): 1.0,
+            SlaterDeterminant.from_bytes(b"\xa0"): 1.0j,
+            SlaterDeterminant.from_bytes(b"\xbf"): -1.0,
+        }
+    )
 
     assert all_isclose(res, op(psi, 0))
 
 
 def test_ManyBodyOperator_apply2():
     #                      1010          1011           1110
-    psi = ManyBodyState({b"\xa0": 1.0, b"\xbf": 1.0j, b"\xe0": 1e-13})
+    psi = ManyBodyState(
+        {
+            SlaterDeterminant.from_bytes(b"\xa0"): 1.0,
+            SlaterDeterminant.from_bytes(b"\xbf"): 1.0j,
+            SlaterDeterminant.from_bytes(b"\xe0"): 1e-13,
+        }
+    )
 
     op = ManyBodyOperator({((0, "a"), (3, "c")): 1.0, ((1, "a"), (1, "c")): 1.0j})
     #                      0011
-    res = ManyBodyState({b"\x30": 1.0, b"\xa0": 1.0j, b"\xbf": -1.0})
+    res = ManyBodyState(
+        {
+            SlaterDeterminant.from_bytes(b"\x30"): 1.0,
+            SlaterDeterminant.from_bytes(b"\xa0"): 1.0j,
+            SlaterDeterminant.from_bytes(b"\xbf"): -1.0,
+        }
+    )
 
     assert all_isclose(res, op(psi, 1e-12))
 
 
 def test_ManyBodyOperator_apply3():
     #                      1010          1011
-    psi = ManyBodyState({b"\xa0": 1.0, b"\xbf": 1.0j})
+    psi = ManyBodyState({SlaterDeterminant.from_bytes(b"\xa0"): 1.0, SlaterDeterminant.from_bytes(b"\xbf"): 1.0j})
 
     op = ManyBodyOperator({((0, "a"), (3, "c")): 1.0, ((1, "a"), (1, "c")): 1.0j})
     #                      1010
-    res = ManyBodyState({b"\xa0": 1.0j})
+    res = ManyBodyState({SlaterDeterminant.from_bytes(b"\xa0"): 1.0j})
 
     op.set_restrictions({frozenset([2, 3]): (1, 1)})
     assert all_isclose(res, op(psi, 0))
