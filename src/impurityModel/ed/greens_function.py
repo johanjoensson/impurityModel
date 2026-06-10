@@ -7,7 +7,6 @@ from typing import Optional, Iterable
 # from impurityModel.ed import spectra
 from impurityModel.ed import finite
 from impurityModel.ed.lanczos import (
-    block_lanczos,
     block_lanczos_sparse,
     get_block_Lanczos_matrices,
     get_block_Lanczos_matrices_dense,
@@ -20,6 +19,8 @@ from impurityModel.ed.ManyBodyUtils import ManyBodyState, ManyBodyOperator, appl
 from heapq import merge
 
 from mpi4py import MPI
+
+import pickle
 
 
 def build_full_greens_function(block_gf, block_structure: BlockStructure):
@@ -383,7 +384,7 @@ def calc_Greens_function_with_offdiag(
     if verbose:
         print(f"New excited state roots: {excited_roots}")
         print(f"excited states per color: {excited_states_per_color}")
-        print("=" * 80)
+        print("=" * 80, flush=True)
     if block_basis.comm.rank == 0:
         excited_indices_per_color = np.empty((sum(excited_states_per_color)), dtype=int)
         excited_offsets = np.array([sum(excited_states_per_color[:r]) for r in range(len(excited_roots))], dtype=int)
@@ -890,7 +891,7 @@ def block_Green_sparse(
             return False
         d_g = np.max(np.abs(gs_new - gs_prev))
         if verbose:
-            print(f"delta = {d_g}")
+            print(f"delta = {d_g}", flush=True)
         return d_g < delta_min
 
     alphas, betas = block_lanczos_sparse(

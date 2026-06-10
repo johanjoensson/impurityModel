@@ -1,7 +1,7 @@
 import pytest
-from manybody_basis import Basis
-from finite import eigensystem_new as eigensystem, applyOp_new as applyOp, norm2
-from lanczos import block_lanczos, eigsh, Reort
+from impurityModel.ed.manybody_basis import Basis
+from impurityModel.ed.finite import eigensystem_new as eigensystem, applyOp_new as applyOp, norm2
+from impurityModel.ed.lanczos import block_lanczos, eigsh, Reort
 import numpy as np
 from mpi4py import MPI
 
@@ -16,9 +16,8 @@ def test_lancos():
         ((4, "c"), (4, "a")): 1 + Delta,
     }
     basis = Basis(
-        impurity_orbitals={2: 5},
-        valence_baths={2: 0},
-        conduction_baths={2: 0},
+        impurity_orbitals={2: [[0, 1, 2, 3, 4]]},
+        bath_states=({2: [[]]}, {2: [[]]}),
         initial_basis=[b"\xF0", b"\xE8", b"\xD8", b"\xB8", b"\x78"],
         verbose=True,
     )
@@ -35,7 +34,7 @@ def test_lancos():
     alphas = {"t2g": [], "eg": []}
     betas = {"t2g": [], "eg": []}
 
-    def converged(alphas, betas):
+    def converged(alphas, betas, *args, **kwargs):
         return alphas.shape[0] * alphas.shape[1] >= len(basis)
 
     for irrep in electron_removal_ops:
@@ -45,9 +44,8 @@ def test_lancos():
             N = np.sqrt(norm2(psi))
             psi = {state: amp / N for state, amp in psi.items()}
             excited_basis = Basis(
-                impurity_orbitals={2: 5},
-                valence_baths={2: 0},
-                conduction_baths={2: 0},
+                impurity_orbitals={2: [[0, 1, 2, 3, 4]]},
+                bath_states=({2: [[]]}, {2: [[]]}),
                 initial_basis=list(psi.keys()),
                 verbose=True,
             )
@@ -68,9 +66,8 @@ def test_lancos_mpi():
         ((4, "c"), (4, "a")): 1 + Delta,
     }
     basis = Basis(
-        impurity_orbitals={2: 5},
-        valence_baths={2: 0},
-        conduction_baths={2: 0},
+        impurity_orbitals={2: [[0, 1, 2, 3, 4]]},
+        bath_states=({2: [[]]}, {2: [[]]}),
         initial_basis=[b"\xF0", b"\xE8", b"\xD8", b"\xB8", b"\x78"],
         verbose=True,
         comm=MPI.COMM_WORLD,
@@ -88,7 +85,7 @@ def test_lancos_mpi():
     alphas = {"t2g": [], "eg": []}
     betas = {"t2g": [], "eg": []}
 
-    def converged(alphas, betas):
+    def converged(alphas, betas, *args, **kwargs):
         return alphas.shape[0] * alphas.shape[1] >= len(basis)
 
     for irrep in electron_removal_ops:
@@ -99,9 +96,8 @@ def test_lancos_mpi():
             MPI.COMM_WORLD.allreduce(N2, op=MPI.SUM)
             psi = {state: amp / np.sqrt(N2) for state, amp in psi.items()}
             excited_basis = Basis(
-                impurity_orbitals={2: 5},
-                valence_baths={2: 0},
-                conduction_baths={2: 0},
+                impurity_orbitals={2: [[0, 1, 2, 3, 4]]},
+                bath_states=({2: [[]]}, {2: [[]]}),
                 initial_basis=list(psi.keys()),
                 verbose=True,
                 comm=MPI.COMM_WORLD,
@@ -117,15 +113,14 @@ def test_eigsh():
     states = [b"\x80", b"\x40", b"\x20", b"\x10", b"\x08", b"\x04"]
     hop = {((i, "c"), (i, "a")): val for i, val in enumerate(eigvals)}
     basis = Basis(
-        impurity_orbitals={0: 6},
-        valence_baths={0: 0},
-        conduction_baths={0: 0},
+        impurity_orbitals={0: [[0, 1, 2, 3, 4, 5]]},
+        bath_states=({0: [[]]}, {0: [[]]}),
         initial_basis=states,
         verbose=True,
         comm=None,
     )
 
-    def converged(alphas, betas):
+    def converged(alphas, betas, *args, **kwargs):
         print(f"{alphas.shape=}")
         return alphas.shape[0] > 5
 
@@ -141,15 +136,14 @@ def test_eigsh_mpi():
     states = [b"\x80", b"\x40", b"\x20", b"\x10", b"\x08", b"\x04"]
     hop = {((i, "c"), (i, "a")): val for i, val in enumerate(eigvals)}
     basis = Basis(
-        impurity_orbitals={0: 6},
-        valence_baths={0: 0},
-        conduction_baths={0: 0},
+        impurity_orbitals={0: [[0, 1, 2, 3, 4, 5]]},
+        bath_states=({0: [[]]}, {0: [[]]}),
         initial_basis=states,
         verbose=True,
         comm=MPI.COMM_WORLD,
     )
 
-    def converged(alphas, betas):
+    def converged(alphas, betas, *args, **kwargs):
         print(f"{alphas.shape=}")
         return alphas.shape[0] > 5
 
@@ -164,15 +158,14 @@ def test_block_eigsh():
     states = [b"\x80", b"\x40", b"\x20", b"\x10", b"\x08", b"\x04"]
     hop = {((i, "c"), (i, "a")): val for i, val in enumerate(eigvals)}
     basis = Basis(
-        impurity_orbitals={0: 6},
-        valence_baths={0: 0},
-        conduction_baths={0: 0},
+        impurity_orbitals={0: [[0, 1, 2, 3, 4, 5]]},
+        bath_states=({0: [[]]}, {0: [[]]}),
         initial_basis=states,
         verbose=True,
         comm=None,
     )
 
-    def converged(alphas, betas):
+    def converged(alphas, betas, *args, **kwargs):
         print(f"{alphas.shape=}")
         return alphas.shape[0] > 2
 
@@ -191,15 +184,14 @@ def test_block_eigsh_mpi():
     states = [b"\x80", b"\x40", b"\x20", b"\x10", b"\x08", b"\x04"]
     hop = {((i, "c"), (i, "a")): val for i, val in enumerate(eigvals)}
     basis = Basis(
-        impurity_orbitals={0: 6},
-        valence_baths={0: 0},
-        conduction_baths={0: 0},
+        impurity_orbitals={0: [[0, 1, 2, 3, 4, 5]]},
+        bath_states=({0: [[]]}, {0: [[]]}),
         initial_basis=states,
         verbose=True,
         comm=MPI.COMM_WORLD,
     )
 
-    def converged(alphas, betas):
+    def converged(alphas, betas, *args, **kwargs):
         print(f"{alphas.shape=}")
         return alphas.shape[0] > 2
 

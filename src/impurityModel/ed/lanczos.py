@@ -109,11 +109,11 @@ def eigsh(alphas, betas, de=None, Q=None, eigvals_only=False, select="a", select
     betas - (block) off-diagnal terms of the Matrix in the Krylov basis.[beta_0
             ,beta_1, ..., beta_n]
     """
-    whithin_gs = False
+    within_gs = False
     if select == "m":
         assert de is not None
         select = "a"
-        whithin_gs = True
+        within_gs = True
 
     Tm = build_banded_matrix(alphas, betas)
     if eigvals_only:
@@ -139,14 +139,15 @@ def eigsh(alphas, betas, de=None, Q=None, eigvals_only=False, select="a", select
         select_range=select_range,
         max_ev=max_ev,
     )
-    if whithin_gs:
+    if within_gs:
         mask = eigvals - np.min(eigvals) <= de
     else:
-        mask = [True] * len(eigvals)
+        mask = np.ones(len(eigvals), dtype=bool)
     if Q is not None:
         eigvecs = Q @ eigvecs
     sort_indices = np.argsort(eigvals[mask])
-    return eigvals[mask][sort_indices], eigvecs[:, mask][:, sort_indices]
+    mask_indices = np.where(mask)[0]
+    return eigvals[mask_indices][sort_indices], eigvecs[:, mask_indices][:, sort_indices]
 
 
 def estimate_orthonormality(W, alphas, betas, eps=np.finfo(float).eps, N=1, rng=np.random.default_rng()):
@@ -199,75 +200,6 @@ def estimate_orthonormality(W, alphas, betas, eps=np.finfo(float).eps, N=1, rng=
     return W_out
 
 
-def qr_decomp_new(basis, psi):
-
-    if basis.size <= len(psi):
-        v = basis.build_vector(psi, root=0)
-        if basis.comm.rank == 0:
-            q, r, _ = qr_decomp(v.T)
-        q = basis.comm.bcast(q if basis.comm.rank == 0 else None, root=0)
-        r = basis.comm.bcast(r if basis.comm.rank == 0 else None, root=0)
-        return basis.build_state(q.T), r
-
-    v = basis.build_vector(psi, root=0)
-    if basis.comm.rank == 0:
-        q, r, _ = qr_decomp(v.T)
-    q_check = basis.comm.bcast(q if basis.comm.rank == 0 else None, root=0)
-    r_check = basis.comm.bcast(r if basis.comm.rank == 0 else None, root=0)
-    q_check = basis.build_state(q_check.T)
-
-    def reflect(v, x):
-        p = inner(v, x)
-        p = basis.comm.allreduce(p, op=MPI.SUM)
-        return subtractOps(x, scale(v, 2 * p))
-
-    k_max = min(len(psi), basis.size - 1)
-    selected_states = list(basis[range(k_max)])
-    A = psi.copy()
-    vs = [None for _ in range(k_max)]
-    for i, state in enumerate(selected_states):
-        Ap = [{s: amp for s, amp in A[j].items() if s not in selected_states[:i]} for j in range(i, len(A))]
-        x = Ap[0]
-        x_norm = np.sqrt(basis.comm.allreduce(norm2(x)))
-        if state in basis.local_basis:
-            xi = x[state]
-            alpha = -rect(x_norm, phase(xi))
-        else:
-            alpha = 0
-        alpha = basis.comm.allreduce(alpha)
-        u = subtractOps(x, scale({state: 1} if state in basis.local_basis else {}, alpha))
-        u_norm = np.sqrt(basis.comm.allreduce(norm2(u)))
-        v = scale(u, 1 / u_norm)
-        # Q = lambda x: reflect(v, x)
-        vs[i] = v
-        # for j, y in enumerate(tmp):
-        for j, y in enumerate(Ap):
-            Ap[j] = reflect(v, y)
-        for j in range(i, len(A)):
-            for s, amp in Ap[j - i].items():
-                A[j][s] = amp
-    Q = [{} for _ in psi]
-    for (i, state_i), (j, state_j) in itertools.product(enumerate(basis.local_basis), enumerate(selected_states)):
-        x = {state_j: 1}
-        for v in vs:
-            p = np.conj(v.get(state_j, 0))
-            x = subtractOps(x, scale(v, 2 * p))
-        if state_i in x:
-            Q[j][state_i] = x[state_i] + Q[j].get(state_i, 0)
-
-    R = basis.build_vector(A)
-    print(f"Q = {[{state: amp for state, amp in q.items() if abs(amp) > np.finfo(float).eps} for q in Q]}")
-    print(f"Q_check = {[{state: amp for state, amp in q.items() if abs(amp) > np.finfo(float).eps} for q in q_check]}")
-    print(f"R = {R[:k_max, :k_max]}")
-    print(f"R_check = {r_check}")
-    for (i, qi), (j, qj) in itertools.product(enumerate(Q), repeat=2):
-        if i == j:
-            assert abs(1 - basis.comm.allreduce(inner(qi, qj))) < 1e-12, f"{i=} {j=}: {inner(qi,qj)=}"
-        else:
-            assert abs(-basis.comm.allreduce(inner(qi, qj))) < 1e-12, f"{i=} {j=}: {inner(qi, qj)=}"
-    return [{state: amp for state, amp in q.items() if abs(amp) > np.finfo(float).eps} for q in Q], R[:k_max, :k_max]
-
-
 def qr_decomp(psi, pivoting=False):
     if pivoting:
         psi, beta, p = sp.linalg.qr(psi, mode="economic", overwrite_a=True, check_finite=False, pivoting=True)
@@ -294,16 +226,19 @@ def get_block_Lanczos_matrices_dense(
     it_max = int(np.ceil(krylovSize / N))
     alphas = np.empty((it_max, n, n), dtype=complex)
     betas = np.empty((it_max, n, n), dtype=complex)
-    betas[-1] = 0
 
     # Run at least 1 iteration (to generate $\alpha_0$).
     # We can also not generate more than N Lanczos vectors, meaning we can
     # take at most N/n steps in total
+    converege_count = 0
     for i in range(it_max):
         wp = h @ q[1]
 
         alphas[i] = np.conj(q[1].T) @ wp
-        wp -= q[1] @ alphas[i] + q[0] @ np.conj(betas[i - 1].T)
+        if i == 0:
+            wp = wp - q[1] @ alphas[i]
+        else:
+            wp -= q[1] @ alphas[i] + q[0] @ np.conj(betas[i - 1].T)
         q[0] = q[1]
         q[1], betas[i] = sp.linalg.qr(wp, mode="economic", overwrite_a=True, check_finite=False)
 
@@ -324,17 +259,10 @@ def get_block_Lanczos_matrices(
     mpi = comm is not None
     rank = comm.rank if mpi else 0
     krylovSize = h.shape[0]
-    t0 = perf_counter()
     if mpi:
         counts = np.empty((comm.size), dtype=int)
         comm.Allgather(np.array([psi0.size], dtype=int), counts)
         offsets = np.array([np.sum(counts[:r]) for r in range(comm.size)], dtype=int)
-
-    t_reorth = 0.0
-    t_estimate = 0.0
-    t_matmul = 0.0
-    t_conv = 0.0
-    t_qr = 0.0
 
     N = h.shape[0]
     n = psi0.shape[1] if len(psi0.shape) == 2 else 1
@@ -346,15 +274,14 @@ def get_block_Lanczos_matrices(
         wp = np.empty((N, n), dtype=complex, order="C")
         alphas = np.empty((it_max, n, n), dtype=complex, order="C")
         betas = np.empty((it_max, n, n), dtype=complex, order="C")
-        betas[-1] = 0
     else:
         q = np.empty((2, 0, 0))
         wp = None
     if mpi:
         comm.Gatherv(psi0, (q[1], counts, offsets, MPI.C_DOUBLE_COMPLEX), root=0)
     else:
-        q[1] = psi0
-    qi = np.ascontiguousarray(psi0)
+        q[1] = psi0.copy()
+    qi = np.ascontiguousarray(psi0).copy()
 
     converge_count = 0
     done = False
@@ -362,22 +289,21 @@ def get_block_Lanczos_matrices(
     # We can also not generate more than N Lanczos vectors, meaning we can
     # take at most N/n steps in total
     for i in range(it_max):
-        t_h = perf_counter()
         wp = h @ qi
-        t_matmul += perf_counter() - t_h
 
         if rank == 0:
             alphas[i] = np.conj(q[1].T) @ wp
-            wp -= q[1] @ alphas[i] + q[0] @ np.conj(betas[i - 1].T)
-            q[0] = q[1]
-            t_qr_fact = perf_counter()
+            if i == 0:
+                wp -= q[1] @ alphas[i]
+            else:
+                wp -= q[1] @ alphas[i] + q[0] @ np.conj(betas[i - 1].T)
+            q[0] = q[1].copy()
             q[1], betas[i] = sp.linalg.qr(wp, mode="economic", overwrite_a=False, check_finite=False)
-            t_qr += perf_counter() - t_qr_fact
-            t_converged = perf_counter()
+            q[1] = np.ascontiguousarray(q[1])
+            qi[:] = q[1, : counts[0] // n]
 
             converge_count = 1 + converge_count if converged(alphas[: i + 1], betas[: i + 1], verbose=verbose) else 0
             done = converge_count > 2
-            t_conv += perf_counter() - t_converged
 
         if mpi:
             done = comm.bcast(done, root=0)
@@ -386,31 +312,23 @@ def get_block_Lanczos_matrices(
                 qi,
                 root=0,
             )
+
+        else:
+            qi = q[1].copy()
         if done:
             break
 
+    if rank == 0:
+        alphas = alphas[: i + 1]
+        betas = betas[: i + 1]
     # Distribute Lanczos matrices to all ranks
     if mpi:
         if rank != 0:
             alphas = np.empty((i + 1, n, n), dtype=complex, order="C")
             betas = np.empty((i + 1, n, n), dtype=complex, order="C")
-        else:
-            alphas = alphas[: i + 1].copy()
-            betas = betas[: i + 1].copy()
         comm.Bcast(alphas, root=0)
         comm.Bcast(betas, root=0)
 
-    if verbose:
-        print()
-        print(f"Breaking after iteration {i+1}, blocksize = {n}")
-        print(f"===> Matrix vector multiplication took {t_matmul:.4f} seconds")
-        print(f"===> Estimating overlap took {t_estimate:.4f} seconds")
-        print(f"===> Estimating convergence took {t_conv:.4f} seconds")
-        print(f"===> QR factorization took {t_qr:.4f} seconds")
-        print(f"===> Reorthogonalized {n_reort} times")
-        print(f"===> Reorthogonalizing took {t_reorth:.4f} seconds")
-        print(f"=> time(get_block_Lanczons_matrices) = {perf_counter() - t0:.4f} seconds.")
-        print("=" * 80)
     return alphas, betas
 
 

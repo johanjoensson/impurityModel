@@ -15,7 +15,7 @@ import numpy as np
 
 DIR_PATH = os.path.dirname(os.path.realpath(__file__))
 
-SCRIPT_PATH = os.path.join(DIR_PATH, "../../scripts/run_Ni_NiO_Xbath.sh")
+SCRIPT_PATH = os.path.join(DIR_PATH, "../../../scripts/run_Ni_NiO_Xbath.sh")
 REFERENCE_SPECTRA_PATH = os.path.join(DIR_PATH, "referenceOutput/Ni_NiO_50bath/spectra.h5")
 
 
