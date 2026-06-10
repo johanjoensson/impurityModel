@@ -822,9 +822,10 @@ class Basis:
         # col_dict = dict(zip(self.local_basis, range(self.local_indices.start, self.local_indices.stop)))
         for row, psi in enumerate(psis):
             for state, val in psi.items():
-                if state not in self._index_dict or abs(psi[state]) < slaterWeightMin:
+                idx = self._index_dict.get(state)
+                if idx is None or abs(val) < slaterWeightMin:
                     continue
-                v[row, self._index_dict[state]] = val
+                v[row, idx] = val
 
         if self.is_distributed and root is None:
             self.comm.Allreduce(MPI.IN_PLACE, v, op=MPI.SUM)
@@ -961,26 +962,62 @@ class Basis:
         return psi_stats
 
     def build_density_matrices(self, psis, orbital_indices_left=None, orbital_indices_right=None):
+        r"""Compute single-particle density matrices for a list of many-body states.
+
+        rho[n, i, j] = <psi_n| c_{orb_j}^dagger c_{orb_i} |psi_n>
+
+        For the square case (orbital_indices_left == orbital_indices_right) the
+        identity rho[i, j] = <phi_j | phi_i>  (where |phi_k> = c_{orb_k}|psi>)
+        is exploited, cutting operator applications from O(n^2) to O(n) and
+        halving inner products via Hermitian symmetry.
+
+        For the general rectangular case we fall back to the direct approach.
+        """
         if orbital_indices_left is None:
             orbital_indices_left = list(range(self.num_spin_orbitals))
         if orbital_indices_right is None:
             orbital_indices_right = list(range(self.num_spin_orbitals))
-        n_left, n_right = (len(orbital_indices_left), len(orbital_indices_right))
+        n_left, n_right = len(orbital_indices_left), len(orbital_indices_right)
         rhos = np.zeros((len(psis), n_left, n_right), dtype=complex)
-        for n, psi_n in enumerate(psis):
 
-            psi_ps = []
-            for (i, orb_i), (j, orb_j) in itertools.product(
-                enumerate(orbital_indices_left), enumerate(orbital_indices_right)
-            ):
-                op = ManyBodyOperator({((orb_i, "c"), (orb_j, "a")): 1.0})
-                psi_ps.append(op(psi_n))
-            if self.is_distributed:
-                psi_ps = self.redistribute_psis(psi_ps)
-            for (i, j), psi_p in zip(itertools.product(range(n_left), range(n_right)), psi_ps):
-                amp = inner(psi_n, psi_p)
-                if abs(amp) > np.finfo(float).eps:
-                    rhos[n, i, j] = amp
+        square = orbital_indices_left == orbital_indices_right
+
+        for n, psi_n in enumerate(psis):
+            if square:
+                # Precompute |phi_k> = c_{orb_k} |psi_n> once per orbital.
+                # rho[i, j] = <phi_j | phi_i>, exploit rho[j, i] = conj(rho[i, j]).
+                annihilated = [
+                    ManyBodyOperator({((orb, "a"),): 1.0})(psi_n, 0)
+                    for orb in orbital_indices_left
+                ]
+                if self.is_distributed:
+                    annihilated = self.redistribute_psis(annihilated)
+                for i in range(n_left):
+                    amp = inner(annihilated[i], annihilated[i])
+                    if abs(amp) > 0:
+                        rhos[n, i, i] = amp
+                    for j in range(i + 1, n_left):
+                        amp = inner(annihilated[j], annihilated[i])
+                        if abs(amp) > 0:
+                            rhos[n, i, j] = amp
+                            rhos[n, j, i] = amp.conjugate()
+            else:
+                # General rectangular case: apply c_j^dag c_i directly.
+                psi_ps = [
+                    ManyBodyOperator({((orb_i, "c"), (orb_j, "a")): 1.0})(psi_n)
+                    for (i, orb_i), (j, orb_j) in itertools.product(
+                        enumerate(orbital_indices_left), enumerate(orbital_indices_right)
+                    )
+                ]
+                if self.is_distributed:
+                    psi_ps = self.redistribute_psis(psi_ps)
+                for (i, j), psi_p in zip(
+                    itertools.product(range(n_left), range(n_right)), psi_ps
+                ):
+                    amp = inner(psi_n, psi_p)
+                    if abs(amp) > np.finfo(float).eps:
+                        rhos[n, i, j] = amp
+
         if self.is_distributed:
             self.comm.Allreduce(MPI.IN_PLACE, rhos, op=MPI.SUM)
 

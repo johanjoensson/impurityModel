@@ -32,35 +32,47 @@ def hash_key(state):
 
 class StateContainer:
     class IndexDict:
-        def __init__(self, states, offset):
+        """O(1) state → index mapping backed by a plain dict.
+
+        Replaces the previous bisect-based implementation which was
+        O(log n) per lookup and paid Python-level comparison overhead on
+        every call.  SlaterDeterminant already implements __hash__ and
+        __eq__ via the Cython layer, so dict lookup is safe and fast.
+
+        The ``states`` list and ``offset`` attributes are kept for
+        compatibility with code that inspects them directly.
+        """
+
+        def __init__(self, states: list, offset: int):
             self.states = states
             self.offset = offset
+            # Build the O(1) lookup table from the sorted list.
+            self._map: dict = {state: offset + i for i, state in enumerate(states)}
 
-        def _search_sorted(self, key):
-            if isinstance(key, bytes) and len(self.states) > 0:
-                key = type(self.states[0]).from_bytes(key)
-            idx = bisect_left(self.states, key)
-            if idx != len(self.states) and self.states[idx] == key:
-                return idx
-            return len(self.states)
+        def _rebuild(self):
+            """Rebuild _map from self.states (call after mutating self.states)."""
+            self._map = {state: self.offset + i for i, state in enumerate(self.states)}
 
         def __contains__(self, key):
-            return self._search_sorted(key) != len(self.states)
+            if isinstance(key, bytes) and self.states:
+                key = type(self.states[0]).from_bytes(key)
+            return key in self._map
 
         def __getitem__(self, key):
-            idx = self._search_sorted(key)
-            if idx == len(self.states):
+            if isinstance(key, bytes) and self.states:
+                key = type(self.states[0]).from_bytes(key)
+            try:
+                return self._map[key]
+            except KeyError:
                 raise ValueError
-            return idx + self.offset
 
         def get(self, key, default=None):
-            idx = self._search_sorted(key)
-            if idx == len(self.states):
-                return default
-            return idx + self.offset
+            if isinstance(key, bytes) and self.states:
+                key = type(self.states[0]).from_bytes(key)
+            return self._map.get(key, default)
 
         def __len__(self):
-            return len(self.states)
+            return len(self._map)
 
     def __init__(self, states, bytes_per_state, state_type, comm):
         self.local_basis = []
@@ -201,7 +213,7 @@ class StateContainer:
         # Do not use Ialltoallv with bytearrays though, the call seems to simply freeze
         self.comm.Alltoallv(
             (
-                bytearray(byte for state_list in send_list for state in state_list for byte in state),
+                bytearray().join(state.to_bytearray() for state_list in send_list for state in state_list),
                 send_counts * self.n_bytes,
                 send_offsets * self.n_bytes,
                 MPI.BYTE,
@@ -653,7 +665,8 @@ class SimpleDistributedStateContainer(StateContainer):
                 self.state_bounds: Optional[SlaterDeterminant] = [None]
             else:
                 self.state_bounds = [None]
-            assert all(self.local_basis[i] < self.local_basis[i + 1] for i in range(len(self.local_basis) - 1))
+            if __debug__:
+                assert all(self.local_basis[i] < self.local_basis[i + 1] for i in range(len(self.local_basis) - 1))
             return
 
         def find_owner(state):
@@ -693,7 +706,8 @@ class SimpleDistributedStateContainer(StateContainer):
             )
             for r in range(self.comm.size)
         ]
-        assert all(self.local_basis[i] < self.local_basis[i + 1] for i in range(len(self.local_basis) - 1))
+        if __debug__:
+            assert all(self.local_basis[i] < self.local_basis[i + 1] for i in range(len(self.local_basis) - 1))
 
     def _getitem_sequence(self, l: Iterable[int]) -> Iterable[SlaterDeterminant]:
         if not self.is_distributed:
@@ -763,7 +777,7 @@ class SimpleDistributedStateContainer(StateContainer):
             retry_count = 0
             while np.any(np.logical_or(result > self.size, result < 0)) and retry_count < max_retries:
                 mask = np.logical_or(result > self.size, result < 0)
-                result[mask] = np.from_iter(self._index_sequence(itertools.compress(s, mask)), dtype=int)
+                result[mask] = np.fromiter(self._index_sequence(itertools.compress(s, mask)), dtype=int, count=int(np.sum(mask)))
                 retry_count += 1
 
             if retry_count >= max_retries:
