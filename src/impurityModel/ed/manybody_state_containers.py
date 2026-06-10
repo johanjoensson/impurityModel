@@ -188,9 +188,9 @@ class StateContainer:
         self.offset = 0
         self.size = 0
         self.local_indices = range(0, 0)
-        # self._index_dict = StateContainer.IndexDict(self.local_basis)
-        self.index_bounds = [None] * self.comm.size if self.is_distributed else None
-        self.state_bounds = [None] * self.comm.size if self.is_distributed else None
+        self._index_dict = StateContainer.IndexDict(self.local_basis, self.offset)
+        self.index_bounds = [None] * self.comm.size if self.is_distributed else [None]
+        self.state_bounds = [None] * self.comm.size if self.is_distributed else [None]
 
     def alltoall_states(self, send_list: list[list[SlaterDeterminant]], flatten=False):
         recv_counts = np.empty((self.comm.size), dtype=int)
@@ -650,23 +650,21 @@ class SimpleDistributedStateContainer(StateContainer):
         """
         new_states = [self.type.from_bytes(state) if isinstance(state, bytes) else state for state in new_states]
         if not self.is_distributed:
-            self.local_basis = [
-                state
-                for state, _ in itertools.groupby(
-                    merge(self.local_basis, sorted(set(new_states))),
-                )
-            ]
-            self.size = len(self.local_basis)
-            self.offset = 0
-            self.local_indices = range(0, len(self.local_basis))
-            self._index_dict = StateContainer.IndexDict(self.local_basis, self.offset)
-            self.local_index_bounds = [(0, len(self.local_basis))]
-            if len(self.local_basis) > 0:
-                self.state_bounds: Optional[SlaterDeterminant] = [None]
-            else:
-                self.state_bounds = [None]
-            if __debug__:
-                assert all(self.local_basis[i] < self.local_basis[i + 1] for i in range(len(self.local_basis) - 1))
+            existing_set = self._index_dict._map
+            unique_new = [s for s in sorted(set(new_states)) if s not in existing_set]
+            if unique_new:
+                self.local_basis = list(merge(self.local_basis, unique_new))
+                self.size = len(self.local_basis)
+                self.offset = 0
+                self.local_indices = range(0, len(self.local_basis))
+                self._index_dict = StateContainer.IndexDict(self.local_basis, self.offset)
+                self.local_index_bounds = [(0, len(self.local_basis))]
+                if len(self.local_basis) > 0:
+                    self.state_bounds: Optional[SlaterDeterminant] = [None]
+                else:
+                    self.state_bounds = [None]
+                if __debug__:
+                    assert all(self.local_basis[i] < self.local_basis[i + 1] for i in range(len(self.local_basis) - 1))
             return
 
         def find_owner(state):
@@ -676,18 +674,29 @@ class SimpleDistributedStateContainer(StateContainer):
         for r, g in itertools.groupby(sorted(set(new_states), key=find_owner), key=find_owner):
             send_list[r].extend(sorted(g))
 
+        all_received = []
         for r_offset in range(self.comm.size):
-
             send_to = (self.comm.rank + r_offset) % self.comm.size
             receive_from = (self.comm.rank + self.comm.size - r_offset) % self.comm.size
 
             if send_to == self.comm.rank:
-                self.local_basis = [
-                    state for state, _ in itertools.groupby(merge(self.local_basis, send_list[self.comm.rank]))
-                ]
+                all_received.extend(send_list[self.comm.rank])
             else:
                 received = self.comm.sendrecv(list(send_list[send_to]), dest=send_to, source=receive_from)
-                self.local_basis = [state for state, _ in itertools.groupby(merge(self.local_basis, received))]
+                all_received.extend(received)
+
+        existing_set = self._index_dict._map
+        unique_received = sorted(set(all_received))
+        unique_new = [s for s in unique_received if s not in existing_set]
+
+        local_added = len(unique_new)
+        any_added = self.comm.allreduce(local_added, op=MPI.SUM)
+        if any_added == 0:
+            return
+
+        if unique_new:
+            self.local_basis = list(merge(self.local_basis, unique_new))
+
         size_arr = np.empty((self.comm.size,), dtype=int)
         local_length = len(self.local_basis)
         size_arr = np.array(self.comm.allgather(local_length), dtype=int)

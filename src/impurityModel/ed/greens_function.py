@@ -804,8 +804,7 @@ def block_green_impl(basis, hOp, psi_arr, delta, slaterWeightMin, verbose):
             res = h_local @ v
             if comm is not None:
                 comm.Reduce(MPI.IN_PLACE if rank == 0 else res, res, op=MPI.SUM, root=0)
-            return res.reshape(v.shape)
-            # return res.reshape(h_local.shape[0], v.shape[1])
+            return res.reshape(h_local.shape[0], v.shape[1])
 
         H = sp.sparse.linalg.LinearOperator(
             (len(basis), len(basis.local_indices)),

@@ -657,7 +657,6 @@ class Basis:
                     continue
                 s_psi[state] = l_psi[state]
 
-        t0 = perf_counter()
         received_list = [None for _ in range(self.comm.size)]
         for r_offset in range(self.comm.size):
             send_to = (self.comm.rank + r_offset) % self.comm.size
@@ -866,16 +865,11 @@ class Basis:
         Return the results in a list.
         """
         res = []
-
-        t0 = perf_counter()
+        unit_state = ManyBodyState()
         for state in self.local_basis:
-            res.append(
-                applyOp_test(
-                    op,
-                    ManyBodyState({state: 1}),
-                    cutoff=slaterWeightMin,
-                )
-            )
+            unit_state[state] = 1.0
+            res.append(applyOp_test(op, unit_state, cutoff=slaterWeightMin))
+            unit_state.erase(state)
         return res
 
     def build_operator_dict(self, op, slaterWeightMin=0):
@@ -905,26 +899,47 @@ class Basis:
         Get the operator as a sparse matrix in the current basis.
         The sparse matrix is distributed over all ranks.
         """
-
         if isinstance(op, dict):
             op = ManyBodyOperator(op)
-        res = sp.sparse.dok_array((len(self), len(self)), dtype=complex)
-        bras = []
-        columns = []
-        values = []
-        for ket, ket_state in zip(self.local_basis, self.build_local_operator_list(op, 0)):
-            columns.extend([self._index_dict[ket]] * len(ket_state))
-            for bra, val in ket_state.items():
-                bras.append(bra)
-                values.append(val)
 
-        for row, col, val in (
-            (ri, ci, vi)
-            for ri, ci, vi in zip(self.state_container._index_sequence(bras), columns, values)
-            if ri != self.size and ci != self.size
-        ):
-            res[row, col] = val
-        return res.tocsc()
+        rows = []
+        cols = []
+        vals = []
+        if not self.is_distributed:
+            for ket, ket_state in zip(self.local_basis, self.build_local_operator_list(op, 0)):
+                col = self._index_dict[ket]
+                for bra, val in ket_state.items():
+                    row = self._index_dict.get(bra)
+                    if row is not None:
+                        rows.append(row)
+                        cols.append(col)
+                        vals.append(val)
+        else:
+            columns = []
+            bras = []
+            values = []
+            for ket, ket_state in zip(self.local_basis, self.build_local_operator_list(op, 0)):
+                col = self._index_dict[ket]
+                for bra, val in ket_state.items():
+                    columns.append(col)
+                    bras.append(bra)
+                    values.append(val)
+
+            global_rows = list(self.state_container._index_sequence(bras))
+            for row, col, val in zip(global_rows, columns, values):
+                if row != self.size:
+                    rows.append(row)
+                    cols.append(col)
+                    vals.append(val)
+
+        n = len(self)
+        if rows:
+            res = sp.sparse.csc_array(
+                (vals, (rows, cols)), shape=(n, n), dtype=complex
+            )
+        else:
+            res = sp.sparse.csc_array((n, n), dtype=complex)
+        return res
 
     def get_state_statistics(self, psis):
         """
@@ -971,7 +986,9 @@ class Basis:
         is exploited, cutting operator applications from O(n^2) to O(n) and
         halving inner products via Hermitian symmetry.
 
-        For the general rectangular case we fall back to the direct approach.
+        For the general rectangular case we also exploit this decomposition
+        rho[i, j] = <chi_j | phi_i> (where |chi_k> = c_{orb_k}|psi> and
+        |phi_k> = c_{orb_k}|psi>), reducing operator applications to O(n).
         """
         if orbital_indices_left is None:
             orbital_indices_left = list(range(self.num_spin_orbitals))
@@ -983,40 +1000,41 @@ class Basis:
         square = orbital_indices_left == orbital_indices_right
 
         for n, psi_n in enumerate(psis):
+            phi = [
+                ManyBodyOperator({((orb, "a"),): 1.0})(psi_n, 0)
+                for orb in orbital_indices_left
+            ]
             if square:
-                # Precompute |phi_k> = c_{orb_k} |psi_n> once per orbital.
-                # rho[i, j] = <phi_j | phi_i>, exploit rho[j, i] = conj(rho[i, j]).
-                annihilated = [
+                chi = phi
+            else:
+                chi = [
                     ManyBodyOperator({((orb, "a"),): 1.0})(psi_n, 0)
-                    for orb in orbital_indices_left
+                    for orb in orbital_indices_right
                 ]
-                if self.is_distributed:
-                    annihilated = self.redistribute_psis(annihilated)
+
+            if self.is_distributed:
+                phi = self.redistribute_psis(phi)
+                if square:
+                    chi = phi
+                else:
+                    chi = self.redistribute_psis(chi)
+
+            if square:
                 for i in range(n_left):
-                    amp = inner(annihilated[i], annihilated[i])
+                    amp = inner(chi[i], phi[i])
                     if abs(amp) > 0:
                         rhos[n, i, i] = amp
                     for j in range(i + 1, n_left):
-                        amp = inner(annihilated[j], annihilated[i])
+                        amp = inner(chi[j], phi[i])
                         if abs(amp) > 0:
                             rhos[n, i, j] = amp
                             rhos[n, j, i] = amp.conjugate()
             else:
-                # General rectangular case: apply c_j^dag c_i directly.
-                psi_ps = [
-                    ManyBodyOperator({((orb_i, "c"), (orb_j, "a")): 1.0})(psi_n)
-                    for (i, orb_i), (j, orb_j) in itertools.product(
-                        enumerate(orbital_indices_left), enumerate(orbital_indices_right)
-                    )
-                ]
-                if self.is_distributed:
-                    psi_ps = self.redistribute_psis(psi_ps)
-                for (i, j), psi_p in zip(
-                    itertools.product(range(n_left), range(n_right)), psi_ps
-                ):
-                    amp = inner(psi_n, psi_p)
-                    if abs(amp) > np.finfo(float).eps:
-                        rhos[n, i, j] = amp
+                for i in range(n_left):
+                    for j in range(n_right):
+                        amp = inner(chi[j], phi[i])
+                        if abs(amp) > 0:
+                            rhos[n, i, j] = amp
 
         if self.is_distributed:
             self.comm.Allreduce(MPI.IN_PLACE, rhos, op=MPI.SUM)

@@ -99,15 +99,26 @@ def find_ground_state_basis(
     gs_impurity_occ = N0.copy()
     dN_gs = dict.fromkeys(N0.keys(), 0)
 
-    keys = list(N0.keys())
-    dN_trials = [{keys[i]: dN[i] for i in range(len(keys))} for dN in product([0, -1, 1], repeat=len(keys))]
-    e_gs = np.inf
-    for dN in dN_trials:
+    energy_cache = {}
+
+    def get_energy(trial_N0):
+        key = tuple(sorted(trial_N0.items()))
+        if key in energy_cache:
+            e_trial, basis = energy_cache[key]
+            return e_trial, (basis.copy() if basis is not None else None)
+
+        # Check bounds: 0 <= occupation <= max possible orbitals
+        for orbital_idx, occ in trial_N0.items():
+            max_occ = sum(len(block) for block in impurity_orbitals[orbital_idx])
+            if occ < 0 or occ > max_occ:
+                energy_cache[key] = (np.inf, None)
+                return np.inf, None
+
         e_trial, basis = calc_energy(
             h_op,
             impurity_orbitals,
             bath_states,
-            {i: N0[i] + dN[i] for i in N0},
+            trial_N0,
             mixed_valence,
             tau,
             chain_restrict,
@@ -118,13 +129,22 @@ def find_ground_state_basis(
             truncation_threshold=truncation_threshold,
             slaterWeightMin=slaterWeightMin,
         )
+        energy_cache[key] = (e_trial, basis.copy() if basis is not None else None)
+        return e_trial, basis
+
+    keys = list(N0.keys())
+    dN_trials = [{keys[i]: dN[i] for i in range(len(keys))} for dN in product([0, -1, 1], repeat=len(keys))]
+    e_gs = np.inf
+    for dN in dN_trials:
+        trial_N0 = {i: N0[i] + dN[i] for i in N0}
+        e_trial, basis = get_energy(trial_N0)
         if verbose:
-            print("{" + " ".join(f" {i} : {N0[i] + dN[i]}" for i in dN) + f"}} ~ {e_trial:6.3f}")
+            print("{" + " ".join(f" {i} : {trial_N0[i]}" for i in dN) + f"}} ~ {e_trial:6.3f}")
         if e_trial < e_gs:
             e_gs = e_trial
             basis_gs = basis.copy()
             dN_gs = dN
-            gs_impurity_occ = {i: N0[i] + dN[i] for i in N0}
+            gs_impurity_occ = trial_N0
     for i in N0:
         while (
             dN_gs[i] != 0
@@ -134,24 +154,11 @@ def find_ground_state_basis(
                 for j, imp_occ in gs_impurity_occ.items()
             )
         ):
-            e_trial, basis = calc_energy(
-                h_op,
-                impurity_orbitals,
-                bath_states,
-                {j: n + dN_gs[i] if i == j else n for j, n in gs_impurity_occ.items()},
-                mixed_valence,
-                tau,
-                chain_restrict,
-                spin_flip_dj,
-                dense_cutoff,
-                comm=comm,
-                verbose=True,
-                truncation_threshold=truncation_threshold,
-                slaterWeightMin=slaterWeightMin,
-            )
+            trial_N0 = {j: n + dN_gs[i] if i == j else n for j, n in gs_impurity_occ.items()}
+            e_trial, basis = get_energy(trial_N0)
             if verbose:
                 print(
-                    "{" + " ".join(f" {i} : {gs_impurity_occ[i] + dN_gs[i]}" for i in dN_gs) + f"}} ~ {e_trial:6.3f}",
+                    "{" + " ".join(f" {j} : {trial_N0[j]}" for j in dN_gs) + f"}} ~ {e_trial:6.3f}",
                 )
             if e_trial >= e_gs:
                 break
