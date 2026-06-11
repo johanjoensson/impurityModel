@@ -303,6 +303,13 @@ def test_SlaterDeterminant_extra():
     # test to_bytearray
     ba = sd.to_bytearray()
     assert isinstance(ba, bytearray)
+    assert ba[0] == 1
+    assert ba[1] == 2
+    assert ba[7] == 1
+    assert all(x == 0 for x in ba[2:7])
+    assert all(x == 0 for x in ba[8:])
+
+
 
 
 def test_ManyBodyState_extra():

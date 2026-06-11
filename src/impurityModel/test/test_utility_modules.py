@@ -54,10 +54,16 @@ def test_average():
     
     # Large temperature or scale should average them closer
     avg_scale = thermal_average_scale_indep(energies, observables, 1.0)
-    assert isinstance(avg_scale, float) or (isinstance(avg_scale, np.ndarray) and avg_scale.ndim == 0)
+    w_scale = np.exp(-energies)
+    expected_scale = np.sum(w_scale * observables) / np.sum(w_scale)
+    np.testing.assert_allclose(avg_scale, expected_scale, atol=1e-12)
     
     avg_temp = thermal_average(energies, observables, T=300)
-    assert avg_temp > 0
+    import scipy as sp
+    k_B = sp.constants.physical_constants["Boltzmann constant in eV/K"][0]
+    expected_temp = thermal_average_scale_indep(energies, observables, k_B * 300)
+    np.testing.assert_allclose(avg_temp, expected_temp, atol=1e-12)
+
 
 
 def test_op_parser():

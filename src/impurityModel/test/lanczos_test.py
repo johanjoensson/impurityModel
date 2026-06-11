@@ -42,17 +42,26 @@ def test_lancos():
             gs_i = basis.build_state(gs_psis.T)
             psi = applyOp(5, op, gs_i[0])
             N = np.sqrt(norm2(psi))
-            psi = {state: amp / N for state, amp in psi.items()}
-            excited_basis = Basis(
-                impurity_orbitals={2: [[0, 1, 2, 3, 4]]},
-                bath_states=({2: [[]]}, {2: [[]]}),
-                initial_basis=list(psi.keys()),
-                verbose=True,
-            )
-            alpha, beta, _ = block_lanczos([psi], Hop, excited_basis, converged)
-            alphas[irrep].append(alpha)
-            betas[irrep].append(beta)
+            if N > 1e-12:
+                psi = {state: amp / N for state, amp in psi.items()}
+                excited_basis = Basis(
+                    impurity_orbitals={2: [[0, 1, 2, 3, 4]]},
+                    bath_states=({2: [[]]}, {2: [[]]}),
+                    initial_basis=list(psi.keys()),
+                    verbose=True,
+                )
+                alpha, beta, _ = block_lanczos([psi], Hop, excited_basis, converged)
+                alphas[irrep].append(alpha)
+                betas[irrep].append(beta)
+                
+                # Assert that the eigenvalues of the Lanczos tridiagonal matrix
+                # match the direct eigenvalues of Hop on the excited basis
+                ev = eigsh(alpha, beta, eigvals_only=True, de=10)
+                h_excited = excited_basis.build_dense_matrix(Hop)
+                es_direct, _ = eigensystem(h_excited, 0)
+                np.testing.assert_allclose(ev, es_direct, atol=1e-12)
     print(f"{alphas=}\n{betas=}")
+
 
 
 @pytest.mark.mpi
@@ -93,19 +102,31 @@ def test_lancos_mpi():
             gs_i = basis.build_state(gs_psis.T)
             psi = applyOp(5, op, gs_i[0])
             N2 = norm2(psi)
-            MPI.COMM_WORLD.allreduce(N2, op=MPI.SUM)
-            psi = {state: amp / np.sqrt(N2) for state, amp in psi.items()}
-            excited_basis = Basis(
-                impurity_orbitals={2: [[0, 1, 2, 3, 4]]},
-                bath_states=({2: [[]]}, {2: [[]]}),
-                initial_basis=list(psi.keys()),
-                verbose=True,
-                comm=MPI.COMM_WORLD,
-            )
-            alpha, beta, _ = block_lanczos([psi], Hop, excited_basis, converged)
-            alphas[irrep].append(alpha)
-            betas[irrep].append(beta)
+            if MPI.COMM_WORLD is not None:
+                N2 = MPI.COMM_WORLD.allreduce(N2, op=MPI.SUM)
+            N = np.sqrt(N2)
+            if N > 1e-12:
+                psi = {state: amp / N for state, amp in psi.items()}
+                excited_basis = Basis(
+                    impurity_orbitals={2: [[0, 1, 2, 3, 4]]},
+                    bath_states=({2: [[]]}, {2: [[]]}),
+                    initial_basis=list(psi.keys()),
+                    verbose=True,
+                    comm=MPI.COMM_WORLD,
+                )
+                alpha, beta, _ = block_lanczos([psi], Hop, excited_basis, converged)
+                alphas[irrep].append(alpha)
+                betas[irrep].append(beta)
+                
+                # Assert that the eigenvalues of the Lanczos tridiagonal matrix
+                # match the direct eigenvalues of Hop on the excited basis
+                h_excited = excited_basis.build_dense_matrix(Hop)
+                es_direct, _ = eigensystem(h_excited, 0)
+                if MPI.COMM_WORLD.rank == 0:
+                    ev = eigsh(alpha, beta, eigvals_only=True, de=10)
+                    np.testing.assert_allclose(ev, es_direct, atol=1e-12)
     print(f"{alphas=}\n{betas=}")
+
 
 
 def test_eigsh():

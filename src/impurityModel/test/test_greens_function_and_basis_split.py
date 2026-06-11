@@ -163,6 +163,10 @@ def test_calc_Greens_function_with_offdiag_serial():
     assert len(alphas) == 1
     assert alphas[0].shape == (1, 1, 1)
     assert betas[0].shape == (1, 1, 1)
+    np.testing.assert_allclose(alphas[0], [[[0.0]]], atol=1e-12)
+    np.testing.assert_allclose(betas[0], [[[0.0]]], atol=1e-12)
+    np.testing.assert_allclose(r[0], [[1.0]], atol=1e-12)
+
 
 @pytest.mark.mpi
 def test_calc_Greens_function_with_offdiag_mpi():
@@ -182,7 +186,10 @@ def test_calc_Greens_function_with_offdiag_mpi():
     )
     
     # Ground state
-    psi = ManyBodyState({SlaterDeterminant.from_bytes(states[0]): 1.0})
+    if comm.rank == 0:
+        psi = ManyBodyState({SlaterDeterminant.from_bytes(states[0]): 1.0})
+    else:
+        psi = ManyBodyState({})
     psi = basis.redistribute_psis([psi])[0]
     
     # tOp
@@ -206,4 +213,163 @@ def test_calc_Greens_function_with_offdiag_mpi():
         assert len(alphas) == 1
         assert alphas[0].shape == (1, 1, 1)
         assert betas[0].shape == (1, 1, 1)
+        np.testing.assert_allclose(alphas[0], [[[0.0]]], atol=1e-12)
+        np.testing.assert_allclose(betas[0], [[[0.0]]], atol=1e-12)
+        np.testing.assert_allclose(r[0], [[1.0]], atol=1e-12)
+
     basis = None
+
+
+@pytest.mark.mpi
+def test_calc_Greens_function_with_offdiag_mpi_sparse():
+    comm = MPI.COMM_WORLD
+    # Setup simple Hamiltonian H = 0.5 * c_0^\dagger c_0
+    eigvals = np.array([0.5])
+    hop = {((0, "c"), (0, "a")): 0.5}
+    hOp = ManyBodyOperator(hop)
+    
+    # Basis
+    states = [b"\x80", b"\x00"]
+    basis = Basis(
+        impurity_orbitals={0: [[0]]},
+        bath_states=({0: [[]]}, {0: [[]]}),
+        initial_basis=states,
+        comm=comm,
+    )
+    
+    # Ground state
+    if comm.rank == 0:
+        psi = ManyBodyState({SlaterDeterminant.from_bytes(states[0]): 1.0})
+    else:
+        psi = ManyBodyState({})
+    psi = basis.redistribute_psis([psi])[0]
+    
+    # tOp
+    tOp = ManyBodyOperator({((0, "a"),): 1.0})
+    
+    alphas, betas, r = calc_Greens_function_with_offdiag(
+        hOp=hOp,
+        tOps=[tOp],
+        psis=[psi],
+        es=[0.5],
+        block_basis=basis,
+        delta=0.01,
+        dN=1,
+        occ_cutoff=1e-6,
+        slaterWeightMin=0.0,
+        verbose=False,
+        sparse=True,
+    )
+    
+    if comm.rank == 0:
+        assert len(alphas) == 1
+        assert alphas[0].shape == (1, 1, 1)
+        assert betas[0].shape == (1, 1, 1)
+        np.testing.assert_allclose(alphas[0], [[[0.0]]], atol=1e-12)
+        np.testing.assert_allclose(betas[0], [[[0.0]]], atol=1e-6)
+        np.testing.assert_allclose(r[0], [[1.0]], atol=1e-12)
+
+    basis = None
+
+
+@pytest.mark.mpi
+def test_Green_freq_bicgstab_mpi():
+    comm = MPI.COMM_WORLD
+    # Setup simple Hamiltonian H = 0.5 * c_0^\dagger c_0
+    eigvals = np.array([0.5])
+    hop = {((0, "c"), (0, "a")): 0.5}
+    hOp = ManyBodyOperator(hop)
+    
+    # Basis
+    states = [b"\x80", b"\x00"]
+    basis = Basis(
+        impurity_orbitals={0: [[0]]},
+        bath_states=({0: [[]]}, {0: [[]]}),
+        initial_basis=states,
+        comm=comm,
+    )
+    
+    # Ground state
+    if comm.rank == 0:
+        psi = ManyBodyState({SlaterDeterminant.from_bytes(states[0]): 1.0})
+    else:
+        psi = ManyBodyState({})
+    psi = basis.redistribute_psis([psi])[0]
+    
+    # w_mesh
+    w_mesh = np.array([0.1, 0.2])
+    
+    from impurityModel.ed.greens_function import Green_freq_bicgstab
+    gs = Green_freq_bicgstab(w_mesh, hOp, [psi], 0.5, basis, 0.0)
+    
+    # Check shape
+    if comm.rank == 0:
+        assert gs.shape == (2, 1, 1)
+
+    basis = None
+
+
+@pytest.mark.mpi
+def test_getRIXSmap_new_mpi():
+    comm = MPI.COMM_WORLD
+    # Setup simple Hamiltonian H = 0.5 * c_0^\dagger c_0 + 0.3 * c_1^\dagger c_1
+    hop = {
+        ((0, "c"), (0, "a")): 0.5,
+        ((1, "c"), (1, "a")): 0.3,
+    }
+    hOp = ManyBodyOperator(hop)
+    
+    # Basis
+    states = [b"\x80", b"\x40", b"\x20", b"\x10", b"\x00"]
+    basis = Basis(
+        impurity_orbitals={1: [[0]], 2: [[1]]},
+        bath_states=(
+            {1: [[]], 2: [[]]},
+            {1: [[]], 2: [[]]},
+        ),
+        initial_basis=states,
+        comm=comm,
+    )
+    
+    # Ground state psi
+    if comm.rank == 0:
+        psi = ManyBodyState({SlaterDeterminant.from_bytes(states[0]): 1.0})
+    else:
+        psi = ManyBodyState({})
+    psi = basis.redistribute_psis([psi])[0]
+    
+    # wIns, wLoss, delta
+    wIns = np.array([0.1])
+    wLoss = np.array([0.0])
+    delta1 = 0.1
+    delta2 = 0.1
+    tau = 1.0
+    
+    # transition operators
+    tOpsIn = [ManyBodyOperator({((0, "a"),): 1.0})]
+    tOpsOut = [ManyBodyOperator({((0, "c"),): 1.0})]
+    
+    from impurityModel.ed.spectra import getRIXSmap_new
+    gs = getRIXSmap_new(
+        hOp=hOp,
+        tOpsIn=tOpsIn,
+        tOpsOut=tOpsOut,
+        psis=[psi],
+        Es=np.array([0.5]),
+        tau=tau,
+        wIns=wIns,
+        wLoss=wLoss,
+        delta1=delta1,
+        delta2=delta2,
+        basis=basis,
+        verbose=False,
+        slaterWeightMin=0.0,
+    )
+    
+    if comm.rank == 0:
+        assert gs.shape == (1, 1, 1, 1)
+
+    basis = None
+
+
+

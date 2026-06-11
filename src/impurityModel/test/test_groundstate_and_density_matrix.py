@@ -202,9 +202,10 @@ def test_calc_energy_serial():
         truncation_threshold=1000,
         slaterWeightMin=1e-12,
     )
-    assert isinstance(energy, float)
+    np.testing.assert_allclose(energy, 1.5, rtol=1e-10, atol=1e-10)
     assert basis is not None
     assert len(basis) > 0
+
 
 
 @pytest.mark.mpi
@@ -229,9 +230,10 @@ def test_calc_energy_mpi():
         truncation_threshold=1000,
         slaterWeightMin=1e-12,
     )
-    assert isinstance(energy, float)
+    np.testing.assert_allclose(energy, 1.5, rtol=1e-10, atol=1e-10)
     assert basis is not None
     assert len(basis) > 0
+
 
 
 def test_find_ground_state_basis_serial():
@@ -254,8 +256,12 @@ def test_find_ground_state_basis_serial():
         truncation_threshold=1000,
         slaterWeightMin=1e-12,
     )
+    import impurityModel.ed.product_state_representation as psr
     assert basis is not None
-    assert len(basis) > 0
+    assert len(basis) == 1
+    state = list(basis)[0]
+    np.testing.assert_equal(psr.bytes2tuple(bytes(state.to_bytearray())[:8], 64), (0,))
+
 
 
 @pytest.mark.mpi
@@ -280,8 +286,12 @@ def test_find_ground_state_basis_mpi():
         truncation_threshold=1000,
         slaterWeightMin=1e-12,
     )
+    import impurityModel.ed.product_state_representation as psr
     assert basis is not None
-    assert len(basis) > 0
+    assert len(basis) == 1
+    state = list(basis)[0]
+    np.testing.assert_equal(psr.bytes2tuple(bytes(state.to_bytearray())[:8], 64), (0,))
+
 
 
 def test_calc_gs_options_serial():
@@ -318,6 +328,9 @@ def test_calc_gs_options_serial():
     assert len(es) > 0
     assert len(psis) > 0
     assert thermal_rho.shape == (5, 5)
+    np.testing.assert_allclose(es, [0.0], atol=1e-10)
+    np.testing.assert_allclose(thermal_rho, np.zeros((5, 5)), atol=1e-10)
+
 
 
 @pytest.mark.mpi
@@ -355,3 +368,6 @@ def test_calc_gs_options_mpi():
     assert len(es) > 0
     assert len(psis) > 0
     assert thermal_rho.shape == (5, 5)
+    np.testing.assert_allclose(es, [0.0], atol=1e-10)
+    np.testing.assert_allclose(thermal_rho, np.zeros((5, 5)), atol=1e-10)
+
