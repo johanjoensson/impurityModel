@@ -95,7 +95,20 @@ def allgather_dict(data, total, chunk_maxsize=1 * 10**6):
 
 def is_empty(x):
     """
-    Documentation for is_empty.
+    Check if a structure is empty.
+
+    A structure is considered empty if it is None, a zero-length list,
+    dict, or set, or a list containing only empty lists, dicts, or sets.
+
+    Parameters
+    ----------
+    x : Any
+        The object to check.
+
+    Returns
+    -------
+    bool
+        True if the object is empty, False otherwise.
     """
     if x is None:
         return True
@@ -112,7 +125,19 @@ def is_empty(x):
 
 def empty_clone(x):
     """
-    Documentation for empty_clone.
+    Create an empty clone of the given data structure.
+
+    Preserves the nested list/dict/set structure but strips the values.
+
+    Parameters
+    ----------
+    x : Any
+        The structure to clone.
+
+    Returns
+    -------
+    Any
+        An empty structure matching the container type of `x`.
     """
     if x is None:
         return None

@@ -10,8 +10,25 @@ from typing import Optional
 def build_imp_bath_blocks(
     H: np.ndarray, n_orb: int
 ) -> tuple[list[list[int]], list[list[int]], list[list[int]], list[list[int]]]:
-    """
-    Documentation for build_imp_bath_blocks.
+    """Build impurity and bath blocks based on the block structure of Hamiltonian H.
+
+    Parameters
+    ----------
+    H : np.ndarray
+        The Hamiltonian matrix.
+    n_orb : int
+        The number of impurity orbitals.
+
+    Returns
+    -------
+    impurity_indices : list of list of int
+        Impurity orbital indices for each block.
+    occupied_indices : list of list of int
+        Occupied bath orbital indices for each block.
+    unoccupied_indices : list of list of int
+        Unoccupied bath orbital indices for each block.
+    block_structure : BlockStructure
+        The block structure representation of the Hamiltonian.
     """
     block_structure = build_block_structure(H)
     impurity_indices = [None] * len(block_structure.blocks)
@@ -29,8 +46,31 @@ def build_imp_bath_blocks(
 
 
 def build_H_bath_v(H_dft, ebs_star, vs_star, bath_geometry, block_structure, verbose, extra_verbose):
-    """
-    Documentation for build_H_bath_v.
+    """Transform bath parameters from star to chain or Haverkort geometry.
+
+    Parameters
+    ----------
+    H_dft : np.ndarray
+        DFT Hamiltonian matrix.
+    ebs_star : list of np.ndarray
+        Bath energies for each block in star geometry.
+    vs_star : list of np.ndarray
+        Hopping parameters for each block in star geometry.
+    bath_geometry : str
+        The geometry of the bath: "chain", "haver" (Haverkort), or others (fallback to star).
+    block_structure : BlockStructure
+        The block structure.
+    verbose : bool
+        Whether to print verbose output.
+    extra_verbose : bool
+        Whether to print extremely verbose output.
+
+    Returns
+    -------
+    H_baths : list of np.ndarray
+        The bath Hamiltonians for each block.
+    vs : list of np.ndarray
+        The hopping terms from the impurity to the bath for each block.
     """
 
     H_baths = []
@@ -91,8 +131,23 @@ def build_H_bath_v(H_dft, ebs_star, vs_star, bath_geometry, block_structure, ver
 def build_full_bath(
     H_bath_inequiv: list[np.ndarray], v_inequiv: list[np.ndarray], block_structure: BlockStructure
 ) -> np.ndarray:
-    """
-    Documentation for build_full_bath.
+    """Build the full bath Hamiltonian and hopping matrices from block components.
+
+    Parameters
+    ----------
+    H_bath_inequiv : list of np.ndarray
+        List of bath Hamiltonians for inequivalent blocks.
+    v_inequiv : list of np.ndarray
+        List of hopping matrices for inequivalent blocks.
+    block_structure : BlockStructure
+        The block structure.
+
+    Returns
+    -------
+    H_bath_full : np.ndarray
+        The block-diagonalized full bath Hamiltonian matrix.
+    v_full : np.ndarray
+        The stacked full hopping matrix.
     """
     (
         blocks,
@@ -132,8 +187,17 @@ def build_full_bath(
 
 
 def householder_reflector(A):
-    """
-    Documentation for householder_reflector.
+    """Compute the Householder reflector matrix for a matrix A.
+
+    Parameters
+    ----------
+    A : np.ndarray
+        The input matrix.
+
+    Returns
+    -------
+    np.ndarray
+        The Householder reflector matrix.
     """
     r = A.shape[1]
     X, Z = np.linalg.qr(A, mode="reduced")
@@ -148,15 +212,27 @@ def householder_reflector(A):
 
 
 def householder_matrix(v):
-    """
-    Documentation for householder_matrix.
+    """Compute the Householder transformation matrix from a reflector vector.
+
+    Parameters
+    ----------
+    v : np.ndarray
+        Householder reflector vector/matrix.
+
+    Returns
+    -------
+    np.ndarray
+        The Householder transformation matrix.
     """
     return np.eye(v.shape[0], dtype=v.dtype) - 2 * v @ np.conj(v.T)
 
 
 def test_householder():
-    """
-    Documentation for test_householder.
+    """Test function for Householder reflector and block QR decomposition.
+
+    Returns
+    -------
+    None
     """
     M = np.ones((4, 4))
     M[[1, 1, 2, 2, 3, 3, 3], [1, 3, 2, 3, 1, 2, 3]] = -1
@@ -191,8 +267,23 @@ def test_householder():
 
 
 def block_qr(A, block_size=1, overwrite_A=False):
-    """
-    Documentation for block_qr.
+    """Perform block QR decomposition on matrix A.
+
+    Parameters
+    ----------
+    A : np.ndarray
+        Matrix to decompose.
+    block_size : int, default 1
+        Block size for Householder reflections.
+    overwrite_A : bool, default False
+        If True, overwrite `A` during decomposition.
+
+    Returns
+    -------
+    Q : np.ndarray
+        Unitary matrix Q.
+    R : np.ndarray
+        Upper triangular block matrix R.
     """
     m, n = A.shape
     R = A.copy()
@@ -220,8 +311,23 @@ def block_qr(A, block_size=1, overwrite_A=False):
 
 
 def get_lanczos_vectors(H, v0, alphas, betas):
-    """
-    Documentation for get_lanczos_vectors.
+    """Generate Lanczos vectors from Hamiltonian and coefficients.
+
+    Parameters
+    ----------
+    H : np.ndarray
+        Hamiltonian matrix.
+    v0 : np.ndarray
+        Starting vectors.
+    alphas : np.ndarray
+        On-diagonal blocks of the tridiagonalized Hamiltonian.
+    betas : np.ndarray
+        Off-diagonal blocks of the tridiagonalized Hamiltonian.
+
+    Returns
+    -------
+    np.ndarray
+        Orthonormal Lanczos vectors matrix.
     """
     v0, _ = sp.linalg.qr(v0, mode="economic")
     n_imp = v0.shape[1]
@@ -246,8 +352,23 @@ def get_lanczos_vectors(H, v0, alphas, betas):
 
 
 def tridiagonalize(H, v0):
-    """
-    Documentation for tridiagonalize.
+    """Perform block tridiagonalization (block Lanczos method) on Hamiltonian H.
+
+    Parameters
+    ----------
+    H : np.ndarray
+        Hamiltonian matrix.
+    v0 : np.ndarray
+        Initial starting vectors.
+
+    Returns
+    -------
+    alphas : np.ndarray
+        Diagonal blocks of the tridiagonal matrix.
+    betas : np.ndarray
+        Off-diagonal blocks of the tridiagonal matrix.
+    v0_tilde : np.ndarray
+        The upper-triangular matrix R from the economic QR decomposition of `v0`.
     """
     assert H.shape[0] == v0.shape[0]
     block_size = v0.shape[1]
@@ -326,8 +447,21 @@ def double_chains(H_imp: np.ndarray, vs: np.ndarray, ebs: np.ndarray, verbose: b
 
 
 def build_star_geometry_hamiltonian(H_imp, vs, es):
-    """
-    Documentation for build_star_geometry_hamiltonian.
+    """Construct a Hamiltonian matrix in star geometry.
+
+    Parameters
+    ----------
+    H_imp : np.ndarray or float or complex
+        Impurity Hamiltonian block.
+    vs : np.ndarray
+        Hopping parameters.
+    es : np.ndarray
+        Bath energies.
+
+    Returns
+    -------
+    np.ndarray
+        The constructed star geometry Hamiltonian matrix.
     """
     if isinstance(H_imp, (float, complex)):
         H_imp = np.array([[H_imp]])
@@ -344,8 +478,19 @@ def build_star_geometry_hamiltonian(H_imp, vs, es):
 
 
 def build_block_tridiagonal_hermitian_matrix(diagonals, offdiagonals):
-    """
-    Documentation for build_block_tridiagonal_hermitian_matrix.
+    """Assemble a block tridiagonal Hermitian matrix from diagonal and off-diagonal blocks.
+
+    Parameters
+    ----------
+    diagonals : np.ndarray
+        Diagonal blocks.
+    offdiagonals : np.ndarray
+        Off-diagonal blocks.
+
+    Returns
+    -------
+    np.ndarray
+        The assembled block tridiagonal Hamiltonian.
     """
     num_blocks = diagonals.shape[0]
     block_size = diagonals.shape[1]
@@ -355,8 +500,17 @@ def build_block_tridiagonal_hermitian_matrix(diagonals, offdiagonals):
         return H
 
     def idx_(j):
-        """
-        Documentation for idx_.
+        """Slice generator for block index j.
+
+        Parameters
+        ----------
+        j : int
+            Block index.
+
+        Returns
+        -------
+        slice
+            Slice object for index range.
         """
         return slice(j * block_size, (j + 1) * block_size)
 
@@ -370,8 +524,19 @@ def build_block_tridiagonal_hermitian_matrix(diagonals, offdiagonals):
 
 
 def transform_to_lanczos_tridagonal_matrix(H, n_imp):
-    """
-    Documentation for transform_to_lanczos_tridagonal_matrix.
+    """Transform a Hamiltonian to Lanczos tridiagonal form.
+
+    Parameters
+    ----------
+    H : np.ndarray
+        The Hamiltonian matrix.
+    n_imp : int
+        The number of impurity orbitals.
+
+    Returns
+    -------
+    np.ndarray
+        The transformed tridiagonal Hamiltonian matrix.
     """
     Hb = H[n_imp:, n_imp:]
     V0 = H[n_imp:, :n_imp]
@@ -426,8 +591,17 @@ def create_decoupled_hamiltonian(H, n_imp):
 
 
 def separate_orbital_character(q):
-    """
-    Documentation for separate_orbital_character.
+    """Perform SVD decomposition to separate orbital characters.
+
+    Parameters
+    ----------
+    q : np.ndarray
+        The input matrix containing mixed orbital states.
+
+    Returns
+    -------
+    np.ndarray
+        Unitary transformation matrix to restore orbital character.
     """
     U, s, Vh = np.linalg.svd(q, full_matrices=True)
     Um = np.eye(Vh.shape[0], dtype=q.dtype)
@@ -436,8 +610,27 @@ def separate_orbital_character(q):
 
 
 def linked_double_chain(H_imp, vs, es, verbose=True, extremely_verbose=False):
-    """
-    Documentation for linked_double_chain.
+    """Transform the bath geometry from star to a linked double chain geometry.
+
+    Parameters
+    ----------
+    H_imp : np.ndarray or float or complex
+        Impurity Hamiltonian block.
+    vs : np.ndarray
+        Hopping parameters.
+    es : np.ndarray
+        Bath energies.
+    verbose : bool, default True
+        Whether to print verbose output.
+    extremely_verbose : bool, default False
+        Whether to print extremely verbose output.
+
+    Returns
+    -------
+    v_chain : np.ndarray
+        Hopping terms from impurity to the linked double chain.
+    H_chain : np.ndarray
+        The bath Hamiltonian of the linked double chain.
     """
     verbose = verbose or extremely_verbose
     if isinstance(H_imp, int):
@@ -500,8 +693,19 @@ def linked_double_chain(H_imp, vs, es, verbose=True, extremely_verbose=False):
     H_linked_chains = H_linked_chains[idx]
 
     def delta(m1, m2):
-        """
-        Documentation for delta.
+        """Calculate the maximum absolute difference between two matrices.
+
+        Parameters
+        ----------
+        m1 : np.ndarray
+            First matrix.
+        m2 : np.ndarray
+            Second matrix.
+
+        Returns
+        -------
+        float
+            The maximum absolute difference.
         """
         return np.max(np.abs(m2 - m1))
 
@@ -526,8 +730,27 @@ def linked_double_chain(H_imp, vs, es, verbose=True, extremely_verbose=False):
 
 
 def basil_linked_double_chain(H_imp, vs, es, verbose=True, extremely_verbose=False):
-    """
-    Documentation for basil_linked_double_chain.
+    """Alternative linked double chain transformation using Basile's algorithm.
+
+    Parameters
+    ----------
+    H_imp : np.ndarray
+        Impurity Hamiltonian block.
+    vs : np.ndarray
+        Hopping parameters.
+    es : np.ndarray
+        Bath energies.
+    verbose : bool, default True
+        Whether to print verbose output.
+    extremely_verbose : bool, default False
+        Whether to print extremely verbose output.
+
+    Returns
+    -------
+    v_chain : np.ndarray
+        Hopping terms from impurity to the linked double chain.
+    H_chain : np.ndarray
+        The bath Hamiltonian of the linked double chain.
     """
     from impurityModel.ed.double_chain_haverkort.double_chains import get_double_chain_transform_multi
 

@@ -235,8 +235,24 @@ def block_bicgstab(A, x0, y, basis: Basis, slaterWeightMin: float, atol=1e-8, rt
 
     def block_inner(B1, B2):
         """
-        Documentation for block_inner.
+        Compute the block inner product matrix between two state blocks B1 and B2.
+
+        M[i, j] = <B1[i] | B2[j]>. If the basis is distributed, the inner products
+        are reduced across all MPI ranks.
+
+        Parameters
+        ----------
+        B1 : list of ManyBodyState
+            First block of states.
+        B2 : list of ManyBodyState
+            Second block of states.
+
+        Returns
+        -------
+        M : ndarray
+            The complex matrix of inner products.
         """
+
         M = np.zeros((n, n), dtype=complex)
         for i in range(n):
             for j in range(n):
@@ -247,7 +263,17 @@ def block_bicgstab(A, x0, y, basis: Basis, slaterWeightMin: float, atol=1e-8, rt
 
     def matmat(v):
         """
-        Documentation for matmat.
+        Apply the operator A to each state in block v and redistribute.
+
+        Parameters
+        ----------
+        v : list of ManyBodyState
+            Input block of states.
+
+        Returns
+        -------
+        mv : list of ManyBodyState
+            Output block of states after applying operator and redistributing.
         """
         mv = [applyOp(A, vi, cutoff=slaterWeightMin, restrictions=basis.restrictions) for vi in v]
         return basis.redistribute_psis(mv)
@@ -264,8 +290,22 @@ def block_bicgstab(A, x0, y, basis: Basis, slaterWeightMin: float, atol=1e-8, rt
     
     def block_norm(v):
         """
-        Documentation for block_norm.
+        Calculate the norm of the state block v.
+
+        Computes the maximum L2 norm of the individual states in the block,
+        reducing across all MPI ranks if the basis is distributed.
+
+        Parameters
+        ----------
+        v : list of ManyBodyState
+            Input block of states.
+
+        Returns
+        -------
+        norm : float
+            The square root of the maximum norm in the block.
         """
+
         norms = np.array([inner(vi, vi).real for vi in v])
         if basis.is_distributed:
             basis.comm.Allreduce(MPI.IN_PLACE, norms, op=MPI.SUM)

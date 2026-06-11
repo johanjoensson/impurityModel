@@ -14,7 +14,26 @@ import scipy.integrate as si
 
 def sph_harm(m, n, theta, phi):
     """
-    Documentation for sph_harm.
+    Compute the spherical harmonics.
+
+    This function wraps scipy's `sph_harm_y` to compute the spherical harmonic of
+    degree `n` and order `m` at polar angle `theta` and azimuthal angle `phi`.
+
+    Parameters
+    ----------
+    m : int
+        Order of the harmonic (often denoted `m`).
+    n : int
+        Degree of the harmonic (often denoted `l` or `n`).
+    theta : float
+        Polar (colatitudinal) coordinate in radians.
+    phi : float
+        Azimuthal (longitudinal) coordinate in radians.
+
+    Returns
+    -------
+    complex
+        The value of the spherical harmonic.
     """
     return sph_harm_y(n, m, phi, theta)
 
@@ -822,7 +841,47 @@ def getSpectra_new(
     dN_con,
 ):
     """
-    Documentation for getSpectra_new.
+    Calculate the Green's function spectra for a list of transition operators.
+
+    Supports both single-process and distributed parallel calculations over MPI.
+
+    Parameters
+    ----------
+    hOp : ManyBodyOperator
+        The Hamiltonian operator.
+    tOps : list of ManyBodyOperator
+        List of transition operators.
+    psis : list of ManyBodyState
+        List of many-body eigenstates.
+    es : list of float
+        Total energies of the eigenstates.
+    tau : float
+        Temperature parameter for Boltzmann averaging.
+    w : ndarray
+        Real energy mesh points.
+    basis : Basis
+        The basis container.
+    delta : float
+        Broadening/resolution parameter (distance from the real axis).
+    slaterWeightMin : float
+        Minimum weight of Slater determinants to retain in basis expansion.
+    verbose : bool
+        If True, prints progress and diagnostic messages.
+    occ_cutoff : float
+        Occupation cutoff for state pruning.
+    dN_imp : dict
+        Restrictions on particle number change in the impurity shell.
+    dN_val : dict
+        Restrictions on particle number change in the valence shell.
+    dN_con : dict
+        Restrictions on particle number change in the conduction shell.
+
+    Returns
+    -------
+    ndarray
+        A 2D array of shape `(len(w), len(tOps))` containing the complex-valued
+        spectra on the real axis. Only returned on root process rank 0; other ranks
+        return an empty array.
     """
     comm = basis.comm
     if comm is None or comm.size <= 1:

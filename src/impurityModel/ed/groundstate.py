@@ -30,8 +30,51 @@ def calc_energy(
     slaterWeightMin,
 ):
     """
-    Documentation for calc_energy.
+    Calculate the ground-state energy of the system for a given charge sector.
+
+    This function initializes a CIPSI basis for a nominal occupation config `N0`,
+    expands the basis variationally using the Hamiltonian `h_op`, constructs the
+    sparse Hamiltonian matrix, solves the eigensystem to obtain the lowest
+    eigen-energies and states within a threshold of the ground state, and returns
+    the minimum eigenvalue along with the optimized basis.
+
+    Parameters
+    ----------
+    h_op : ManyBodyOperator
+        The Hamiltonian operator of the system.
+    impurity_indices : dict
+        Mapping of orbital set indices to impurity orbital indices.
+    bath_states : tuple of dicts
+        Valence and conduction bath states coupled to the impurity.
+    N0 : dict
+        Nominal impurity orbital occupations.
+    mixed_valence : dict
+        The mixed valence occupation bounds per orbital set.
+    tau : float
+        Characteristic energy scale used for basis selection (temperature scale).
+    chain_restrict : bool
+        If True, restricts the basis to states generated along hopping chains.
+    spin_flip_dj : bool
+        If True, enables spin flip basis excitation configurations.
+    dense_cutoff : int
+        Dimension threshold below which a dense eigensolver is used.
+    comm : MPI.Comm or None
+        MPI communicator for distributed calculation.
+    verbose : bool
+        If True, prints progress details.
+    truncation_threshold : int
+        Maximum basis size allowed during initialization and expansion.
+    slaterWeightMin : float
+        Minimum weight (|amplitude|^2) below which Slater determinants are pruned.
+
+    Returns
+    -------
+    energy : float
+        The lowest eigenvalue (ground state energy) found for this charge sector.
+    basis : CIPSI_Basis
+        The optimized many-body basis.
     """
+
     basis = CIPSI_Basis(
         impurity_indices,
         bath_states,
@@ -106,8 +149,21 @@ def find_ground_state_basis(
 
     def get_energy(trial_N0):
         """
-        Documentation for get_energy.
+        Helper function to calculate, cache, and return the energy and basis for a trial N0.
+
+        Parameters
+        ----------
+        trial_N0 : dict
+            The trial nominal occupations for each orbital set.
+
+        Returns
+        -------
+        energy : float
+            The ground state energy.
+        basis : CIPSI_Basis
+            The optimized many-body basis.
         """
+
         key = tuple(sorted(trial_N0.items()))
         if key in energy_cache:
             e_trial, basis = energy_cache[key]
@@ -198,7 +254,41 @@ def calc_gs(
     **kwargs,
 ):
     """
-    Documentation for calc_gs.
+    Calculate the ground-state wavefunction, eigen-energies, and density matrices.
+
+    This function determines the ground-state charge sector, optimizes the
+    variational many-body basis, solves the eigensystem for the low-energy
+    states, and computes the thermally-averaged density matrix and expectation
+    values.
+
+    Parameters
+    ----------
+    Hop : ManyBodyOperator
+        The Hamiltonian operator.
+    basis_setup : dict
+        Configuration dictionary containing parameters for the basis setup,
+        such as 'impurity_orbitals', 'bath_states', 'nominal_impurity_occ', etc.
+    block_structure : BlockStructure
+        The block structure defining mapping and symmetry relationships.
+    rot_to_spherical : ndarray
+        Transformation matrix from local to spherical harmonics.
+    verbose : bool
+        If True, prints detailed statistics and expectation values.
+    slaterWeightMin : float
+        Minimum weight threshold for determinants in the basis.
+
+    Returns
+    -------
+    psis : list of ManyBodyState
+        The low-energy eigenstates.
+    es : ndarray
+        The corresponding eigen-energies.
+    ground_state_basis : CIPSI_Basis
+        The optimized many-body basis.
+    thermal_rho : ndarray
+        The thermally-averaged density matrix.
+    gs_info : dict
+        A dictionary containing additional ground-state info (e.g. 'rhos' list).
     """
 
     basis_setup = dict(basis_setup)

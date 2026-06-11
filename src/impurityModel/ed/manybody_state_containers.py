@@ -34,7 +34,11 @@ def hash_key(state):
 
 class StateContainer:
     """
-    Documentation for StateContainer.
+    Base class for managing and mapping a collection of many-body states.
+
+    This container supports indexing, iteration, and membership checks for
+    many-body states (such as Slater determinants), with support for
+    parallel execution and distributed storage across MPI ranks.
     """
     class IndexDict:
         """O(1) state → index mapping backed by a plain dict.
@@ -50,7 +54,14 @@ class StateContainer:
 
         def __init__(self, states: list, offset: int):
             """
-            Documentation for __init__.
+            Initialize the IndexDict mapping.
+
+            Parameters
+            ----------
+            states : list of SlaterDeterminant
+                Sorted list of local states.
+            offset : int
+                Global index offset for the local states on this MPI rank.
             """
             self.states = states
             self.offset = offset
@@ -63,7 +74,17 @@ class StateContainer:
 
         def __contains__(self, key):
             """
-            Documentation for __contains__.
+            Check if the state is contained in the mapping.
+
+            Parameters
+            ----------
+            key : SlaterDeterminant or bytes
+                The state to search for.
+
+            Returns
+            -------
+            bool
+                True if the state is in the mapping, False otherwise.
             """
             if isinstance(key, bytes) and self.states:
                 key = type(self.states[0]).from_bytes(key)
@@ -71,7 +92,22 @@ class StateContainer:
 
         def __getitem__(self, key):
             """
-            Documentation for __getitem__.
+            Get the global index of a state.
+
+            Parameters
+            ----------
+            key : SlaterDeterminant or bytes
+                The state whose index is retrieved.
+
+            Returns
+            -------
+            int
+                The global index of the state.
+
+            Raises
+            ------
+            ValueError
+                If the state is not found in the mapping.
             """
             if isinstance(key, bytes) and self.states:
                 key = type(self.states[0]).from_bytes(key)
@@ -82,7 +118,19 @@ class StateContainer:
 
         def get(self, key, default=None):
             """
-            Documentation for get.
+            Get the global index of a state, or return a default value if not found.
+
+            Parameters
+            ----------
+            key : SlaterDeterminant or bytes
+                The state whose index is retrieved.
+            default : Any, optional
+                The default value to return if the state is not found. Default is None.
+
+            Returns
+            -------
+            int or Any
+                The global index of the state, or the default value.
             """
             if isinstance(key, bytes) and self.states:
                 key = type(self.states[0]).from_bytes(key)
@@ -90,13 +138,29 @@ class StateContainer:
 
         def __len__(self):
             """
-            Documentation for __len__.
+            Return the number of mapped states in the dictionary.
+
+            Returns
+            -------
+            int
+                Number of states.
             """
             return len(self._map)
 
     def __init__(self, states, bytes_per_state, state_type, comm):
         """
-        Documentation for __init__.
+        Initialize the StateContainer.
+
+        Parameters
+        ----------
+        states : Iterable
+            Initial collection of states to add.
+        bytes_per_state : int
+            Number of bytes representing a single state.
+        state_type : type
+            The class/type representing each state (e.g., SlaterDeterminant).
+        comm : MPI.Comm or None
+            MPI communicator for distributed parallel runs.
         """
         self.local_basis = []
         self.comm = comm
@@ -115,20 +179,50 @@ class StateContainer:
 
     def __iter__(self):
         """
-        Documentation for __iter__.
+        Iterate over all states in the container.
+
+        Yields
+        ------
+        SlaterDeterminant
+            Each state stored in the container in order of their global index.
         """
         for i in range(self.size):
             yield self.__getitem__(i)
 
     def add_states(self, new_states: Iterable[SlaterDeterminant]) -> None:
         """
-        Documentation for add_states.
+        Add new states to the container.
+
+        This method must be implemented by subclasses.
+
+        Parameters
+        ----------
+        new_states : Iterable[SlaterDeterminant]
+            States to be added to the container.
         """
         pass
 
     def __getitem__(self, key) -> Iterable[SlaterDeterminant]:
         """
-        Documentation for __getitem__.
+        Retrieve state(s) from the container by index, slice, or sequence of indices.
+
+        Parameters
+        ----------
+        key : int, slice, Sequence[int], or Iterable[int]
+            The index, slice, or collection of indices to retrieve.
+
+        Returns
+        -------
+        SlaterDeterminant or Iterable[SlaterDeterminant]
+            The state at the specified index, or an iterator yielding the states
+            for the specified indices or slice.
+
+        Raises
+        ------
+        IndexError
+            If the index is out of bounds or the state cannot be found.
+        TypeError
+            If the index type is invalid.
         """
         if isinstance(key, slice):
             start = key.start
@@ -172,13 +266,36 @@ class StateContainer:
 
     def __len__(self):
         """
-        Documentation for __len__.
+        Get the total number of states in the container across all ranks.
+
+        Returns
+        -------
+        int
+            The global size of the container.
         """
         return self.size
 
     def index(self, val):
         """
-        Documentation for index.
+        Get the global index or indices of the given state(s).
+
+        Parameters
+        ----------
+        val : SlaterDeterminant, bytes, or Sequence/Iterable of them
+            The state or collection of states to search for.
+
+        Returns
+        -------
+        int or Iterable[int]
+            The global index of the state, or an iterator of global indices
+            if a sequence of states is queried.
+
+        Raises
+        ------
+        ValueError
+            If any state is not found in the container.
+        TypeError
+            If the query type is invalid.
         """
         if isinstance(val, bytes):
             val = self.type.from_bytes(val)
@@ -200,13 +317,36 @@ class StateContainer:
 
     def _index_sequence(self, s: Iterable[SlaterDeterminant]) -> Iterable[int]:
         """
-        Documentation for _index_sequence.
+        Look up the global indices for a sequence of states.
+
+        This method must be implemented by subclasses.
+
+        Parameters
+        ----------
+        s : Iterable[SlaterDeterminant]
+            The states to look up.
+
+        Returns
+        -------
+        Iterable[int]
+            The global indices corresponding to each state.
         """
         pass
 
     def contains(self, item) -> Iterable[bool]:
         """
-        Documentation for contains.
+        Check membership for a state or sequence of states.
+
+        Parameters
+        ----------
+        item : SlaterDeterminant, bytes, or Sequence/Iterable of them
+            The state or states to check for containment.
+
+        Returns
+        -------
+        bool or Iterable[bool]
+            True/False for a single state, or an iterable of booleans for a
+            sequence of states.
         """
         if isinstance(item, bytes):
             item = self.type.from_bytes(item)
@@ -219,7 +359,17 @@ class StateContainer:
 
     def __contains__(self, item):
         """
-        Documentation for __contains__.
+        Check if a single state is in the container.
+
+        Parameters
+        ----------
+        item : SlaterDeterminant or bytes
+            The state to search for.
+
+        Returns
+        -------
+        bool
+            True if the state is in the container, False otherwise.
         """
         if isinstance(item, bytes):
             item = self.type.from_bytes(item)
@@ -229,13 +379,25 @@ class StateContainer:
 
     def _contains_sequence(self, items):
         """
-        Documentation for _contains_sequence.
+        Check membership for a sequence of states.
+
+        This method must be implemented by subclasses.
+
+        Parameters
+        ----------
+        items : Iterable[SlaterDeterminant]
+            The states to check.
+
+        Returns
+        -------
+        Iterable[bool]
+            An iterable of booleans indicating if each state is present.
         """
         pass
 
     def clear(self):
         """
-        Documentation for clear.
+        Clear all states and reset the container.
         """
         self.local_basis.clear()
         self.offset = 0
@@ -247,7 +409,22 @@ class StateContainer:
 
     def alltoall_states(self, send_list: list[list[SlaterDeterminant]], flatten=False):
         """
-        Documentation for alltoall_states.
+        Perform an MPI all-to-all exchange of many-body states.
+
+        Parameters
+        ----------
+        send_list : list of list of SlaterDeterminant
+            Outer list of size comm.size, where element `r` is a list of
+            states to send to rank `r`.
+        flatten : bool, optional
+            If True, the received states are flattened into a single list.
+            If False, returns a list of iterables of states, one per rank.
+            Default is False.
+
+        Returns
+        -------
+        list of Iterable of SlaterDeterminant or Iterable of SlaterDeterminant
+            The received states.
         """
         recv_counts = np.empty((self.comm.size), dtype=int)
         request = self.comm.Ialltoall(
@@ -652,25 +829,63 @@ class StateContainer:
 
 class SimpleDistributedStateContainer(StateContainer):
     """
-    Documentation for SimpleDistributedStateContainer.
+    A distributed state container that uses sparse point-to-point communication.
+
+    This container distributes states across MPI ranks based on their hash value,
+    using point-to-point MPI communication for index lookups and retrieval.
     """
 
     def _point2point(send_list, comm):
         """
-        Documentation for _point2point.
+        Perform point-to-point MPI exchange of data.
+
+        Parameters
+        ----------
+        send_list : list of list
+            Data lists to send to each MPI rank.
+        comm : MPI.Comm
+            MPI communicator.
+
+        Returns
+        -------
+        list of list
+            Data lists received from each MPI rank.
         """
         return graph_alltoall(send_list, comm)
 
     def __init__(self, states: Iterable, bytes_per_state, state_type=SlaterDeterminant, comm=None, verbose=True):
         """
-        Documentation for __init__.
+        Initialize the SimpleDistributedStateContainer.
+
+        Parameters
+        ----------
+        states : Iterable
+            Initial collection of states.
+        bytes_per_state : int
+            Number of bytes representing a single state.
+        state_type : type, optional
+            The class representing the state. Default is SlaterDeterminant.
+        comm : MPI.Comm or None, optional
+            MPI communicator. Default is None.
+        verbose : bool, optional
+            If True, print verbose messages. Default is True.
         """
         self.rng = np.random.default_rng()
         super(SimpleDistributedStateContainer, self).__init__(states, bytes_per_state, state_type, comm)
 
     def _set_state_bounds(self, local_states) -> list[Optional[SlaterDeterminant]]:
         """
-        Documentation for _set_state_bounds.
+        Determine state boundaries for partitioning states across ranks.
+
+        Parameters
+        ----------
+        local_states : Iterable
+            The local states on this rank.
+
+        Returns
+        -------
+        list of SlaterDeterminant or None
+            A list containing boundary states for each rank.
         """
         local_states_list = list(local_states)
         total_local_states_len = self.comm.allreduce(len(local_states_list), op=MPI.SUM)
@@ -729,7 +944,17 @@ class SimpleDistributedStateContainer(StateContainer):
 
         def find_owner(state):
             """
-            Documentation for find_owner.
+            Determine the owner rank for a given state using hash partitioning.
+
+            Parameters
+            ----------
+            state : SlaterDeterminant
+                The state to query.
+
+            Returns
+            -------
+            int
+                The MPI rank that owns the state.
             """
             return hash(state) % self.comm.size
 
@@ -778,7 +1003,17 @@ class SimpleDistributedStateContainer(StateContainer):
 
     def _getitem_sequence(self, l: Iterable[int]) -> Iterable[SlaterDeterminant]:
         """
-        Documentation for _getitem_sequence.
+        Retrieve states corresponding to a sequence of global indices.
+
+        Parameters
+        ----------
+        l : Iterable[int]
+            The global indices to retrieve.
+
+        Returns
+        -------
+        Iterable[SlaterDeterminant]
+            The states corresponding to the requested indices.
         """
         if not self.is_distributed:
             return (self.local_basis[i] for i in l)
@@ -814,7 +1049,17 @@ class SimpleDistributedStateContainer(StateContainer):
 
     def _index_sequence(self, s: Iterable[SlaterDeterminant]) -> Iterable[int]:
         """
-        Documentation for _index_sequence.
+        Find global indices for a sequence of states.
+
+        Parameters
+        ----------
+        s : Iterable[SlaterDeterminant]
+            The states to look up.
+
+        Returns
+        -------
+        Iterable[int]
+            The global indices corresponding to each state.
         """
         if not self.is_distributed:
             return (self._index_dict.get(val, self.size) for val in s)
@@ -861,7 +1106,17 @@ class SimpleDistributedStateContainer(StateContainer):
 
     def _contains_sequence(self, items) -> Iterable[bool]:
         """
-        Documentation for _contains_sequence.
+        Check membership for a sequence of states.
+
+        Parameters
+        ----------
+        items : Iterable[SlaterDeterminant]
+            The states to check.
+
+        Returns
+        -------
+        Iterable[bool]
+            An iterable of booleans indicating if each state is present.
         """
         if not self.is_distributed:
             return (item in self._index_dict for item in items)
@@ -869,7 +1124,22 @@ class SimpleDistributedStateContainer(StateContainer):
 
     def alltoall_states(self, send_list: list[list[SlaterDeterminant]], flatten=False):
         """
-        Documentation for alltoall_states.
+        Exchange states using sparse point-to-point all-to-all communication.
+
+        Parameters
+        ----------
+        send_list : list of list of SlaterDeterminant
+            Outer list of size comm.size, where element `r` is a list of
+            states to send to rank `r`.
+        flatten : bool, optional
+            If True, the received states are flattened into a single list.
+            If False, returns a list of iterables of states, one per rank.
+            Default is False.
+
+        Returns
+        -------
+        list of list of SlaterDeterminant or list of SlaterDeterminant
+            The received states.
         """
         states = SimpleDistributedStateContainer._point2point(send_list, self.comm)
         if flatten:
@@ -879,11 +1149,28 @@ class SimpleDistributedStateContainer(StateContainer):
 
 class CentralizedStateContainer(StateContainer):
     """
-    Documentation for CentralizedStateContainer.
+    A state container where all ranks keep a full copy of the entire basis.
+
+    The global basis is stored locally on each rank in `self._full_basis`,
+    while local slices are also tracked. Lookups can be resolved locally without
+    MPI communication.
     """
     def __init__(self, states: Iterable, bytes_per_state, state_type=SlaterDeterminant, comm=None, verbose=True):
         """
-        Documentation for __init__.
+        Initialize the CentralizedStateContainer.
+
+        Parameters
+        ----------
+        states : Iterable
+            Initial collection of states.
+        bytes_per_state : int
+            Number of bytes representing a single state.
+        state_type : type, optional
+            The class representing the state. Default is SlaterDeterminant.
+        comm : MPI.Comm or None, optional
+            MPI communicator. Default is None.
+        verbose : bool, optional
+            If True, print verbose messages. Default is True.
         """
         self._full_basis = []
         super(CentralizedStateContainer, self).__init__([], bytes_per_state, state_type, comm)
@@ -893,7 +1180,17 @@ class CentralizedStateContainer(StateContainer):
 
     def _set_state_bounds(self, local_states) -> list[Optional[bytes]]:
         """
-        Documentation for _set_state_bounds.
+        Determine state boundaries for partitioning states across ranks.
+
+        Parameters
+        ----------
+        local_states : Iterable
+            The local states on this rank.
+
+        Returns
+        -------
+        list of bytes or None
+            A list containing boundary states for each rank.
         """
         local_sizes = (
             [self.size // self.comm.size + (1 if r < self.size % self.comm.size else 0) for r in range(self.comm.size)]
@@ -908,7 +1205,12 @@ class CentralizedStateContainer(StateContainer):
 
     def add_states(self, new_states) -> None:
         """
-        Documentation for add_states.
+        Extend the basis by adding new states across all ranks.
+
+        Parameters
+        ----------
+        new_states : Iterable
+            The states to add.
         """
         new_states = [self.type.from_bytes(state) if isinstance(state, bytes) else state for state in new_states]
         new_states = sorted(set(new_states), key=lambda state: hash_key(state))
@@ -959,19 +1261,49 @@ class CentralizedStateContainer(StateContainer):
 
     def _getitem_sequence(self, l: Iterable[int]) -> Iterable[bytes]:
         """
-        Documentation for _getitem_sequence.
+        Retrieve states corresponding to a sequence of global indices.
+
+        Parameters
+        ----------
+        l : Iterable[int]
+            The global indices to retrieve.
+
+        Returns
+        -------
+        Iterable[bytes]
+            The states corresponding to the requested indices.
         """
         return (self._full_basis[i] for i in l)
 
     def _search_sorted(self, key):
         """
-        Documentation for _search_sorted.
+        Binary search for the index of a state in the full basis.
+
+        Parameters
+        ----------
+        key : SlaterDeterminant or bytes
+            The state to search for.
+
+        Returns
+        -------
+        int
+            The index where the state would be inserted to maintain sorted order.
         """
         return bisect_left(self._full_basis, key, key=lambda state: hash_key(state))
 
     def _index_sequence(self, key: Iterable[bytes]) -> Iterable[int]:
         """
-        Documentation for _index_sequence.
+        Find global indices for a sequence of states.
+
+        Parameters
+        ----------
+        key : Iterable[bytes]
+            The states to look up.
+
+        Returns
+        -------
+        Iterable[int]
+            The global indices corresponding to each state.
         """
         # return (
         #     idx if idx != len(self._full_basis) and self._full_basis[idx] == k else len(self._full_basis)
@@ -982,7 +1314,17 @@ class CentralizedStateContainer(StateContainer):
 
     def _contains_sequence(self, items) -> Iterable[bool]:
         """
-        Documentation for _contains_sequence.
+        Check membership for a sequence of states.
+
+        Parameters
+        ----------
+        items : Iterable
+            The states to check.
+
+        Returns
+        -------
+        Iterable[bool]
+            An iterable of booleans indicating if each state is present.
         """
         return (i in self._index_dict for i in items)
         # return (idx != len(self._full_basis) for idx in self._index_sequence(items))
