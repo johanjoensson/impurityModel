@@ -1276,33 +1276,30 @@ def getRIXSmap_new(
                 spin_flip_dj=eigen_basis.spin_flip_dj,
             )
             psi1 = psi1_arr[0]
-            basis_tmp.add_states(psi1.keys())
-            psi1 = basis_tmp.redistribute_psis([psi1])[0]
-            basis_tmp.expand(hOp)
-            h = basis_tmp.build_sparse_matrix(hOp)
-            y = basis_tmp.build_vector([psi1])[0]
-            n = h.shape[0]
+            psi2 = ManyBodyState()
+            
+            from impurityModel.ed.cg import block_bicgstab
+            
             for k, win in enumerate(wIns[wIn_indices]):
-                diagonal = np.zeros((n), dtype=complex)
-                diagonal[basis_tmp.local_indices] = win + delta1 * 1j + E_e
-                w = scipy.sparse.diags(diagonal, offsets=0, format="csc", dtype=complex)
-
-                a = w - h
-
-                def matmat(m):
-                    """
-                    Documentation for matmat.
-                    """
-                    res = a @ m
-                    basis_tmp.comm.Allreduce(MPI.IN_PLACE, res, op=MPI.SUM)
-                    return res
-
-                lop = scipy.sparse.linalg.LinearOperator(shape=(n, n), matvec=matmat, matmat=matmat, dtype=a.dtype)
-                if k == 0:
-                    x, info = scipy.sparse.linalg.bicgstab(lop, y, rtol=1e-7)
-                else:
-                    x, info = scipy.sparse.linalg.bicgstab(lop, y, x0=x, rtol=1e-7)
-                psi2 = basis_tmp.build_state(x)[0]
+                psi2.prune(slaterWeightMin)
+                basis_tmp.clear()
+                basis_tmp.add_states(sorted(set(state for p in (psi1, psi2) for state in p.keys())))
+                
+                A_op = ManyBodyOperator({
+                    ((0, "c"), (0, "a")): win + delta1 * 1j + E_e,
+                    ((0, "a"), (0, "c")): win + delta1 * 1j + E_e
+                }) - hOp
+                
+                psi2_list = block_bicgstab(
+                    A=A_op,
+                    x0=[psi2],
+                    y=[psi1],
+                    basis=basis_tmp,
+                    slaterWeightMin=slaterWeightMin,
+                    atol=1e-5,
+                    rtol=1e-7,
+                )
+                psi2 = psi2_list[0]
                 for j, tout in enumerate(tOpsOut):
                     psi3 = applyOp_test(tout, psi2)
                     wIn_basis.add_states(psi3.keys())

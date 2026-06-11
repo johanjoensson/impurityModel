@@ -117,12 +117,13 @@ def bicgstab(A_op, x_0, y, basis, slaterWeightMin, atol=1e-8):
     """
 
     n = len(x_0)
+    if hasattr(A_op, "set_restrictions"):
+        A_op.set_restrictions(basis.restrictions)
     Ax = [
         applyOp(
             A_op,
             xi,
             cutoff=slaterWeightMin,
-            restrictions=basis.restrictions,
         )
         for xi in x_0
     ]
@@ -144,7 +145,6 @@ def bicgstab(A_op, x_0, y, basis, slaterWeightMin, atol=1e-8):
                 A_op,
                 pi,
                 cutoff=slaterWeightMin,
-                restrictions=basis.restrictions,
             )
             for pi in p_i
         ]
@@ -166,7 +166,6 @@ def bicgstab(A_op, x_0, y, basis, slaterWeightMin, atol=1e-8):
                 A_op,
                 si,
                 cutoff=slaterWeightMin,
-                restrictions=basis.restrictions,
             )
             for si in s
         ]
@@ -232,6 +231,8 @@ def block_bicgstab(A, x0, y, basis: Basis, slaterWeightMin: float, atol=1e-8, rt
         The solved solution states.
     """
     n = len(x0)
+    if hasattr(A, "set_restrictions"):
+        A.set_restrictions(basis.restrictions)
 
     def block_inner(B1, B2):
         """
@@ -275,7 +276,8 @@ def block_bicgstab(A, x0, y, basis: Basis, slaterWeightMin: float, atol=1e-8, rt
         mv : list of ManyBodyState
             Output block of states after applying operator and redistributing.
         """
-        mv = [applyOp(A, vi, cutoff=slaterWeightMin, restrictions=basis.restrictions) for vi in v]
+
+        mv = [applyOp(A, vi, cutoff=slaterWeightMin) for vi in v]
         return basis.redistribute_psis(mv)
 
     xi = [st.copy() for st in x0]

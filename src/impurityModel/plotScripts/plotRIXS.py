@@ -9,9 +9,11 @@ import matplotlib.pyplot as plt
 import numpy as np
 
 
-def main():
-    """
-    Documentation for main.
+def main() -> None:
+    """Plot RIXS spectra from a binary file.
+
+    Reads data from RIXS.bin (or a user-supplied file path) and generates a 2D color
+    plot showing energy loss versus incident photon energy.
     """
     # Figure out which files to read from.
     if len(sys.argv) == 1:

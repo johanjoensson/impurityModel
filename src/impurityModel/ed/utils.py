@@ -153,3 +153,4 @@ def partition(l: Iterable[Any], predicate: Callable[[Any], bool] = lambda a: boo
         else:
             failed.append(item)
     return passed, failed
+

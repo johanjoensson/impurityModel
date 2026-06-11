@@ -589,6 +589,11 @@ def block_lanczos_sparse(
             )
             for vi in v
         ]
+        return basis.redistribute_psis(mv)
+
+    while it * n < basis.size:
+        t0 = perf_counter()
+        wp = matmat(q[1])
         t_apply = perf_counter() - t0
         
         old_basis_size = basis.size
@@ -606,11 +611,6 @@ def block_lanczos_sparse(
             print(f"----> Currently the basis contains {basis.size} states.")
             print(f"----> Applying the hamiltonian took {t_apply} seconds.")
             print(f"----> Adding new states took {t_add} seconds.", flush=True)
-
-        tmp = basis.redistribute_psis(q[0] + q[1] + wp)
-        q[0] = tmp[:n]
-        q[1] = tmp[n:2*n]
-        wp = tmp[2*n:]
 
         alpha_i = np.zeros((n, n), dtype=complex)
         for i in range(n):

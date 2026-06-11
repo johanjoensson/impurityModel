@@ -164,9 +164,18 @@ def mpi_matmat(m: Any, comm: Optional[MPI.Comm]) -> Callable[[np.ndarray], np.nd
     f : callable
         A function that takes a vector/matrix `v` and returns `m @ v` reduced across ranks.
     """
-    def f(v):
-        """
-        Documentation for f.
+    def f(v: np.ndarray) -> np.ndarray:
+        """Perform the local matrix product and MPI reduction.
+
+        Parameters
+        ----------
+        v : np.ndarray
+            The input vector or matrix.
+
+        Returns
+        -------
+        np.ndarray
+            The result of the multiplication.
         """
         res = m @ v
         if comm is not None:

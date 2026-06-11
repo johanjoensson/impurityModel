@@ -264,6 +264,7 @@ def main(
         "impurity_orbital": impurity_orbitals,
         "bath_states": (valence_baths, conduction_baths),
         "nominal_impurity_occ": n0imps,
+        "frozen_occupations": set(i for i in nBaths if nBaths[i] == 0),
         "truncation_threshold": 1e7,
         "tau": tau,
         "comm": comm,
@@ -642,7 +643,9 @@ def get_hamiltonian_operator_new(
     Fdd, Fpp, Fpd, Gpd = slaterCondon
     n0imps, chargeTransferCorrection = DCinfo
 
-    h_non_interacting = get_noninteracting_hamiltonian_operator(nBaths, nValBaths, SOCs, hField, h0_filename, rank, verbose)
+    h_non_interacting = get_noninteracting_hamiltonian_operator(
+        nBaths, nValBaths, SOCs, hField, h0_filename, rank, verbose
+    )
     # Calculate the U operator, in spherical harmonics basis.
     uOperator = finite.get2p3dSlaterCondonUop(Fdd=Fdd, Fpp=Fpp, Fpd=Fpd, Gpd=Gpd)
     dc = finite.dc_MLFT(n3d_i=n0imps[2], c=chargeTransferCorrection, Fdd=Fdd, n2p_i=n0imps[1], Fpd=Fpd, Gpd=Gpd)

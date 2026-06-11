@@ -119,6 +119,7 @@ def find_ground_state_basis(
     impurity_orbitals,
     bath_states,
     N0,
+    frozen_occupations=None,
     mixed_valence=False,
     tau=0.01,
     chain_restrict=False,
@@ -141,6 +142,8 @@ def find_ground_state_basis(
         num_val_baths,
         num_cond_baths,
     ) = bath_states
+    if frozen_occupations is None:
+        frozen_occupations = set()
     basis_gs = None
     gs_impurity_occ = N0.copy()
     dN_gs = dict.fromkeys(N0.keys(), 0)
@@ -195,7 +198,10 @@ def find_ground_state_basis(
         return e_trial, basis
 
     keys = list(N0.keys())
-    dN_trials = [{keys[i]: dN[i] for i in range(len(keys))} for dN in product([0, -1, 1], repeat=len(keys))]
+    dN_trials = [
+        {keys[i]: dN[i] if keys[i] not in frozen_occupations else 0 for i in range(len(keys))}
+        for dN in product([0, -1, 1], repeat=len(keys))
+    ]
     e_gs = np.inf
     for dN in dN_trials:
         trial_N0 = {i: N0[i] + dN[i] for i in N0}
