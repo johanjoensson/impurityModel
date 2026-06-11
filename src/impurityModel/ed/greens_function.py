@@ -180,7 +180,7 @@ def get_Greens_function(
         blocks_per_color,
         block_basis,
         psis,
-        _,  # block_intercomms,
+        _,  # block_intercomms — freed collectively by gc after barrier in conftest
     ) = basis.split_basis_and_redistribute_psi([len(block) ** 2 for block in blocks], psis)
     if verbose:
         print(f"New block roots: {block_roots}")
@@ -295,10 +295,17 @@ def get_Greens_function(
 
                 basis.comm.Recv(gs_realaxis[block_idx], source=sender)
 
-    elif block_basis.comm.rank == 0:
+    elif block_basis.comm is not None and block_basis.comm.rank == 0:
         for block_i, (gsm, gsr) in enumerate(zip(local_gs_matsubara, local_gs_realaxis)):
             basis.comm.Send(gsm, dest=0)
             basis.comm.Send(gsr, dest=0)
+
+    # Free the split communicator collectively before returning.
+    # block_basis.comm is a split comm created by split_basis_and_redistribute_psi.
+    # MPI_Comm_free is collective — it must be called by all ranks in the comm
+    # at the same time.  Leaving it for Python gc risks non-collective freeing.
+    if block_basis is not None and block_basis.comm != basis.comm:
+        block_basis.free_comm()
 
     return (gs_matsubara, gs_realaxis) if basis.comm.rank == 0 else (None, None)
 
@@ -398,7 +405,7 @@ def calc_Greens_function_with_offdiag(
         excited_states_per_color,
         split_original_basis,
         split_original_psis,
-        _,  # excited_intercomms,
+        _,  # excited_intercomms — freed collectively by gc after barrier in conftest
     ) = block_basis.split_basis_and_redistribute_psi(
         np.log10(block_v_lengths + 1) + 1, [t_psi for t_psis in block_v for t_psi in t_psis]
     )
@@ -507,6 +514,10 @@ def calc_Greens_function_with_offdiag(
         block_basis.comm.send(local_alphas, dest=0)
         block_basis.comm.send(local_betas, dest=0)
         block_basis.comm.send(local_r, dest=0)
+
+    # Free the split communicator collectively before returning.
+    if split_original_basis is not None and split_original_basis.comm != block_basis.comm:
+        split_original_basis.free_comm()
 
     return excited_alphas, excited_betas, excited_r
 
@@ -833,7 +844,7 @@ def block_green_impl(basis, hOp, psi_arr, delta, slaterWeightMin, verbose):
             verbose=False and verbose,
             comm=comm,
         )
-    q_last = get_Lanczos_vectors(H, alphas, betas, psi_dense_local, comm=comm, which=-1)
+    q_last = get_Lanczos_vectors(H, alphas, betas, psi_dense_local, comm=None if dense else comm, which=-1)
     return alphas, betas, r, basis.build_state(q_last.T, slaterWeightMin=slaterWeightMin)
 
 
@@ -1133,6 +1144,8 @@ def Green_freq_bicgstab_fixed_basis(w_mesh, hOp, psi, e, basis, slaterWeightMin)
 
     print(f"Maximum basis size: {max_basis_size} at frequency {freq}")
     basis.comm.Allreduce(MPI.IN_PLACE, gs, op=MPI.SUM)
+    if split_basis is not None and split_basis.comm != basis.comm:
+        split_basis.free_comm()
     return gs
 
 
@@ -1185,6 +1198,10 @@ def Green_freq_bicgstab(w_mesh, hOp, psi, e, basis, slaterWeightMin):
 
     print(f"Maximum basis size: {max_basis_size} at frequency {freq}")
     basis.comm.Reduce(MPI.IN_PLACE if basis.comm.rank == 0 else gs, gs, op=MPI.SUM, root=0)
+
+    if split_basis is not None and split_basis.comm != basis.comm:
+        split_basis.free_comm()
+
     return gs
 
 

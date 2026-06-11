@@ -170,6 +170,15 @@ def find_ground_state_basis(
         print("\n".join((f"{i:^3d}: {gs_impurity_occ[i]: ^5d}" for i in gs_impurity_occ)))
         print(rf"E$_{{GS}}$ = {e_gs:^7.4f}")
         print("=" * 80)
+    # Explicitly clear the energy_cache to break the closure reference cycle.
+    # get_energy captures energy_cache (closure), which holds Basis objects whose
+    # .comm may be a split MPI communicator.  Without this, the cycle cannot be
+    # freed by CPython's reference-counting and survives until Python shutdown,
+    # where MPI has already been finalised -> segfault.
+    for _cached_e, _cached_basis in energy_cache.values():
+        if _cached_basis is not None:
+            _cached_basis.comm = None
+    energy_cache.clear()
     return basis_gs
 
 

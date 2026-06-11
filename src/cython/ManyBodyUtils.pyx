@@ -67,7 +67,7 @@ cdef class SlaterDeterminant:
         return self.s.size()
 
     def __repr__(self):
-        return f"{self.s.to_string()}"
+        return self.s.to_string().decode('utf-8')
 
     def __eq__(self, SlaterDeterminant other):
         return self.s == other.s
@@ -99,7 +99,7 @@ cdef class SlaterDeterminant:
         result.s = self.s
         return result
 
-    def __deepcopy__(self):
+    def __deepcopy__(self, memo=None):
         cls = self.__class__
         cdef uint64_t val
         cdef SlaterDeterminant result = SlaterDeterminant(tuple(val for val in self.s))
@@ -137,7 +137,7 @@ cdef class ManyBodyState:
 
     def __repr__(self):
         cdef pair[SlaterDeterminant_cpp[uint64_t], complex[double]] p
-        return "ManyBodyState({ " + ", ".join([f"{p.first.to_string()}: {p.second}" for p in self.v]) + "})"
+        return "ManyBodyState({ " + ", ".join([f"{p.first.to_string().decode('utf-8')}: {p.second}" for p in self.v]) + "})"
 
     def __eq__(self, ManyBodyState other):
         return self.v == other.v
@@ -163,6 +163,12 @@ cdef class ManyBodyState:
         with nogil:
             self.v = self.v - other.v
         return self
+
+    def __neg__(self):
+        res = ManyBodyState()
+        with nogil:
+            res.v = -self.v
+        return res
 
     def __mul__(self, ManyBodyState_cpp.mapped_type s):
         res = ManyBodyState()
@@ -341,6 +347,12 @@ cdef class ManyBodyOperator:
             self.o = self.o - other.o
         return self
 
+    def __neg__(self) -> ManyBodyOperator:
+        res = ManyBodyOperator()
+        with nogil:
+            res.o = -self.o
+        return res
+
     def __mul__(self, ManyBodyOperator_cpp.mapped_type s) ->ManyBodyOperator:
         res = ManyBodyOperator()
         with nogil:
@@ -397,10 +409,12 @@ cdef class ManyBodyOperator:
         return res
 
     def erase(self, tuple[tuple[int, str]]key):
-        self.op.erase(processes_to_ints(key))
+        self.o.erase(processes_to_ints(key))
 
     def __contains__(self, tuple[tuple[int, str]]key):
-        return self.o.find(processes_to_ints(key)) != self.o.end()
+        cdef ManyBodyOperator_cpp.key_type k = processes_to_ints(key)
+        cdef ManyBodyOperator_cpp.iterator it = self.o.find(k)
+        return it != self.o.end() and dereference(it).first == k
 
     def __iter__(self):
         it = self.o.begin()

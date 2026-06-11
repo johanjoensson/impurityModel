@@ -606,6 +606,17 @@ class Basis:
         self.state_bounds = self.state_container.state_bounds
         self.local_basis = self.state_container.local_basis
 
+    def free_comm(self):
+        """
+        Free the split/custom MPI communicator associated with this Basis.
+        This must be called collectively by all ranks sharing the communicator.
+        """
+        if self.comm is not None and self.comm != MPI.COMM_NULL:
+            self.comm.Free()
+            self.comm = None
+        if hasattr(self, "state_container") and self.state_container is not None:
+            self.state_container.comm = None
+
     def alltoall_states(self, send_list: list[list[bytes]], flatten=False):
         return self.state_container.alltoall_states(send_list, flatten)
 
@@ -1185,7 +1196,17 @@ class Basis:
                                     for k, v in received_psi.items()
                                 })
             psis = split_basis.redistribute_psis(new_psis)
-        return indices, split_roots, color, items_per_color, split_basis, psis, intercomms
+
+        # Free the intercommunicators collectively while all ranks are still
+        # synchronised here.  MPI_Comm_free is collective — leaving the objects
+        # for Python gc means they may be freed at different times on different
+        # ranks, causing crashes.  The split_comm itself (split_basis.comm) must
+        # NOT be freed here because the caller still needs split_basis.
+        for ic in intercomms:
+            if ic is not None and ic != MPI.COMM_NULL:
+                ic.Free()
+
+        return indices, split_roots, color, items_per_color, split_basis, psis, [None] * len(intercomms)
 
     def split_into_block_basis_and_redistribute_psi(
         self, op, psis, min_group_size=1000, slaterWeightMin=0, verbose=False
@@ -1221,12 +1242,24 @@ class Basis:
             verbose=self.verbose,
         )
 
-        block_indices, block_roots, block_color, blocks_per_color, block_basis, _, block_intercomms = (
+        block_indices, block_roots, block_color, blocks_per_color, block_basis, _, _ = (
             tmp_basis.split_basis_and_redistribute_psi(block_lengths**2, None)
         )
         block_roots = np.array(block_roots, dtype=int)
         procs_per_color = block_roots[1:] - block_roots[:-1]
         procs_per_color = np.append(procs_per_color, [comm.size - np.sum(procs_per_color)])
+
+        # Recreate the intercommunicators between color groups.
+        # split_basis_and_redistribute_psi frees them before returning (to avoid
+        # non-collective gc freeing).  We need them for the communication below,
+        # so we rebuild them here using the same split_comm (block_basis.comm).
+        split_comm = block_basis.comm
+        block_intercomms = []
+        for c, c_root in enumerate(block_roots.tolist()):
+            if c == block_color:
+                block_intercomms.append(None)
+            else:
+                block_intercomms.append(split_comm.Create_intercomm(0, comm, int(c_root)))
 
         num_block_indices_per_color = np.empty((len(block_roots)), dtype=int)
         for c, c_root in enumerate(block_roots):
@@ -1334,7 +1367,17 @@ class Basis:
                     )
             psis = block_basis.redistribute_psis(new_psis)
 
-        return block_indices, block_roots, block_color, blocks_per_color, block_basis, psis, block_intercomms
+        # Free the intercommunicators and the split communicator collectively
+        # before returning.  MPI_Comm_free is a collective operation — all ranks
+        # in a communicator must call it at the same time.  Leaving these for
+        # Python gc risks non-collective freeing (crash / protocol violation).
+        for ic in block_intercomms:
+            if ic is not None and ic != MPI.COMM_NULL:
+                ic.Free()
+        if block_basis is not None and block_basis.comm != comm:
+            block_basis.free_comm()
+
+        return block_indices, block_roots, block_color, blocks_per_color, block_basis, psis, [None] * len(block_intercomms)
 
 
 class CIPSI_Basis(Basis):

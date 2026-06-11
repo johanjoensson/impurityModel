@@ -907,6 +907,8 @@ def getSpectra_new(
                 gs_realaxis[:, tOps_idx] = received_gs[:, i]
     elif tOp_basis.comm.rank == 0:
         basis.comm.Send(gs_realaxis_local, dest=0)
+    if tOp_basis is not None and tOp_basis.comm != basis.comm:
+        tOp_basis.free_comm()
     return gs_realaxis if basis.comm.rank == 0 else np.empty((0, 0), dtype=complex)
 
 
@@ -1251,6 +1253,17 @@ def getRIXSmap_new(
                     eigen_basis.comm.Recv(gs[i, start:stop, :, :], source=sender)
             elif eigen_basis.comm.rank in wIn_roots:
                 eigen_basis.comm.Send(gs[i, :, :, :], dest=0)
+
+            # Free loop-local split/cloned communicators collectively
+            if basis_tmp is not None and basis_tmp.comm != eigen_basis.comm:
+                basis_tmp.free_comm()
+            if wIn_basis is not None and wIn_basis.comm != basis_final.comm:
+                wIn_basis.free_comm()
+            if basis_final is not None and basis_final.comm != eigen_basis.comm:
+                basis_final.free_comm()
+
+    if eigen_basis is not None and eigen_basis.comm != basis.comm:
+        eigen_basis.free_comm()
 
     if basis.comm.rank == 0:
         basis.comm.Reduce(MPI.IN_PLACE, gs, op=MPI.SUM, root=0)

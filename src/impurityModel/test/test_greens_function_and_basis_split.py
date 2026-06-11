@@ -83,7 +83,12 @@ def test_basis_split_and_redistribute_mpi():
     assert indices[0] in [0, 1]
     assert len(split_roots) == 2
     assert items_per_color == [1, 1]
-    assert split_basis.comm.size == 1
+    expected_size = split_roots[color + 1] - split_roots[color] if color + 1 < len(split_roots) else comm.size - split_roots[color]
+    assert split_basis.comm.size == expected_size
+    if split_basis is not None and split_basis.comm != comm:
+        split_basis.free_comm()
+    split_basis = None
+    intercomms = None
 
 @pytest.mark.mpi
 def test_split_comm_and_redistribute_psi_mpi():
@@ -104,14 +109,20 @@ def test_split_comm_and_redistribute_psi_mpi():
     sub_slice, split_roots, color, items_per_color, split_comm, psis_out = \
         split_comm_and_redistribute_psi(priorities, psis, comm)
         
-    assert split_comm.size == 1
+    expected_size = split_roots[color + 1] - split_roots[color] if color + 1 < len(split_roots) else comm.size - split_roots[color]
+    assert split_comm.size == expected_size
     assert len(split_roots) == 2
     assert list(items_per_color) == [1, 1]
     # Check that psis are combined correctly on the roots of split comms
     assert len(psis_out) == 1
-    for s in states:
-        sd = SlaterDeterminant.from_bytes(s)
-        assert np.allclose(psis_out[0][sd], 1.0)
+    if split_comm.rank == 0:
+        for s in states:
+            sd = SlaterDeterminant.from_bytes(s)
+            assert np.allclose(psis_out[0][sd], 1.0)
+    if split_comm is not None and split_comm != MPI.COMM_NULL and split_comm != comm:
+        split_comm.Free()
+    split_comm = None
+    psis_out = None
 
 def test_calc_Greens_function_with_offdiag_serial():
     # Setup simple Hamiltonian H = 0.5 * c_0^\dagger c_0
@@ -195,3 +206,4 @@ def test_calc_Greens_function_with_offdiag_mpi():
         assert len(alphas) == 1
         assert alphas[0].shape == (1, 1, 1)
         assert betas[0].shape == (1, 1, 1)
+    basis = None

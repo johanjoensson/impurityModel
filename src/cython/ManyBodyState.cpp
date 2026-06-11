@@ -36,6 +36,7 @@ ManyBodyState::ManyBodyState(const std::vector<key_type> &keys,
                              const std::vector<mapped_type> &values)
     : m_map() {
   if (!keys.empty()) {
+    m_map.reserve(keys.size());
     for (size_t idx = 0; idx < keys.size(); idx++) {
       m_map.emplace(keys[idx], values[idx]);
     }
@@ -46,6 +47,7 @@ ManyBodyState::ManyBodyState(std::vector<key_type> &&keys,
                              std::vector<mapped_type> &&values)
     : m_map() {
   if (!keys.empty()) {
+    m_map.reserve(keys.size());
     for (size_t idx = 0; idx < keys.size(); idx++) {
       m_map.emplace(std::move(keys[idx]), std::move(values[idx]));
     }
@@ -56,27 +58,49 @@ double ManyBodyState::norm2() const {
   return std::transform_reduce(
       this->cbegin(), this->cend(), 0.,
       [](double a, double b) { return a + b; },
-      [](const_reference a) { return std::pow(abs(a.second), 2); });
+      [](const_reference a) { return std::norm(a.second); });
 }
 
 double ManyBodyState::norm() const { return sqrt(norm2()); }
 
 ManyBodyState &ManyBodyState::operator+=(ManyBodyState &&other) {
+  if (this->m_map.empty()) {
+    this->m_map = std::move(other.m_map);
+    return *this;
+  }
   merge_maps(this->m_map, std::move(other.m_map), std::plus());
   return *this;
 }
 
 ManyBodyState &ManyBodyState::operator+=(const ManyBodyState &other) {
+  if (this->m_map.empty()) {
+    this->m_map = other.m_map;
+    return *this;
+  }
   merge_maps(this->m_map, other.m_map, std::plus());
   return *this;
 }
 
 ManyBodyState &ManyBodyState::operator-=(ManyBodyState &&other) {
+  if (this->m_map.empty()) {
+    this->m_map = std::move(other.m_map);
+    for (auto &&[k, v] : this->m_map) {
+      v = -v;
+    }
+    return *this;
+  }
   merge_maps(this->m_map, std::move(other.m_map), std::minus());
   return *this;
 }
 
 ManyBodyState &ManyBodyState::operator-=(const ManyBodyState &other) {
+  if (this->m_map.empty()) {
+    this->m_map = other.m_map;
+    for (auto &&[k, v] : this->m_map) {
+      v = -v;
+    }
+    return *this;
+  }
   merge_maps(this->m_map, other.m_map, std::minus());
   return *this;
 }
@@ -105,10 +129,19 @@ ManyBodyState ManyBodyState::operator-() const {
 std::complex<double> inner(const ManyBodyState &a, const ManyBodyState &b) {
   std::complex<double> res = 0;
 
-  for (const auto &[key, value] : a) {
-    auto it = b.find(key);
-    if (it != b.end()) {
-      res += conj(value) * it->second;
+  if (a.size() <= b.size()) {
+    for (const auto &[key, value] : a) {
+      auto it = b.find(key);
+      if (it != b.end()) {
+        res += conj(value) * it->second;
+      }
+    }
+  } else {
+    for (const auto &[key, value] : b) {
+      auto it = a.find(key);
+      if (it != a.end()) {
+        res += conj(it->second) * value;
+      }
     }
   }
 
@@ -116,13 +149,14 @@ std::complex<double> inner(const ManyBodyState &a, const ManyBodyState &b) {
 }
 
 ManyBodyState &ManyBodyState::prune(double cutoff) {
+  double cutoff2 = cutoff * cutoff;
 #if __cplusplus >= 202002L || defined(BOOST)
-  erase_if(m_map, [cutoff](ManyBodyState::const_reference pair) {
-    return abs(pair.second) <= cutoff;
+  erase_if(m_map, [cutoff2](ManyBodyState::const_reference pair) {
+    return std::norm(pair.second) <= cutoff2;
   });
 #else
   for (auto first = m_map.begin(), last = m_map.end(); first != last;) {
-    if (abs(first->second) <= cutoff) {
+    if (std::norm(first->second) <= cutoff2) {
       first = m_map.erase(first);
     } else {
       ++first;
