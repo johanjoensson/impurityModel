@@ -12,6 +12,7 @@ from mpi4py import MPI
 from scipy.special import sph_harm_y, spherical_jn
 import scipy.integrate as si
 
+
 def sph_harm(m, n, theta, phi):
     """
     Compute the spherical harmonics.
@@ -36,6 +37,7 @@ def sph_harm(m, n, theta, phi):
         The value of the spherical harmonic.
     """
     return sph_harm_y(n, m, phi, theta)
+
 
 from impurityModel.ed.average import thermal_average
 
@@ -206,7 +208,6 @@ def simulate_spectra(
         dN_val={1: (0, 0), 2: (1, 0)},
         dN_con={1: (0, 0), 2: (0, 1)},
     )
-    # gsPS = getSpectra(n_spin_orbitals, hOp, tOpsPS, psis, es, -w, -delta, restrictions)
     gsPS *= -1
     gs = gsPS + gsIPS
     if rank == 0:
@@ -253,7 +254,6 @@ def simulate_spectra(
         dN_val={1: (0, 0), 2: (1, 0)},
         dN_con={1: (0, 0), 2: (0, 1)},
     )
-    # gs = getSpectra(n_spin_orbitals, hOp, tOpsPS, psis, es, -w, -delta, restrictions)
     gs *= -1
     if rank == 0:
         # print("#eigenstates = {:d}".format(np.shape(gs)[0]))
@@ -968,9 +968,7 @@ def getSpectra_new(
                 continue
             received_gs = np.empty((len(w), tOps_per_color[col]), dtype=complex)
             basis.comm.Recv(received_gs, source=sender)
-            for i, tOps_idx in enumerate(
-                indices_for_colors[offsets[col] : offsets[col] + tOps_per_color[col]]
-            ):
+            for i, tOps_idx in enumerate(indices_for_colors[offsets[col] : offsets[col] + tOps_per_color[col]]):
                 gs_realaxis[:, tOps_idx] = received_gs[:, i]
     elif tOp_basis.comm.rank == 0:
         basis.comm.Send(gs_realaxis_local, dest=0)
@@ -1196,7 +1194,7 @@ def getRIXSmap_new(
 
     """
     excited_restrictions = basis.build_excited_restrictions(
-            hOp,
+        hOp,
         psis,
         Es,
         imp_change={1: (1, 0), 2: (1, 1)},
@@ -1204,7 +1202,7 @@ def getRIXSmap_new(
         con_change={1: (0, 0), 2: (0, 1)},
     )
     relaxed_restrictions = basis.build_excited_restrictions(
-            hOp,
+        hOp,
         psis,
         Es,
         imp_change={1: (0, 0), 2: (1, 1)},
@@ -1250,20 +1248,18 @@ def getRIXSmap_new(
                 psi1_arr,
                 _,
             ) = basis_final.split_basis_and_redistribute_psi([1 for _ in wIns], [psi1])
-            if basis.comm.rank == 0:
+            if eigen_basis.comm.rank == 0:
                 indices_for_colors = np.empty((sum(wIn_per_color)), dtype=int)
                 offsets = np.array([sum(wIn_per_color[:r]) for r in range(len(wIn_roots))], dtype=int)
                 for col, sender in enumerate(wIn_roots):
                     if sender == 0:
-                        indices_for_colors[offsets[color] : offsets[color] + wIn_per_color[color]] = wIn_indices
+                        indices_for_colors[offsets[col] : offsets[col] + wIn_per_color[col]] = wIn_indices
                         continue
-                    basis.comm.Recv(indices_for_colors[offsets[col] : offsets[col] + wIn_per_color[col]], source=sender)
+                    eigen_basis.comm.Recv(indices_for_colors[offsets[col] : offsets[col] + wIn_per_color[col]], source=sender)
             elif wIn_basis.comm.rank == 0:
-                basis.comm.Send(np.array(wIn_indices), dest=0)
+                eigen_basis.comm.Send(np.array(wIn_indices), dest=0)
             if eigen_basis.comm.rank != 0:
-                gs = np.empty(
-                    (len(tOpsIn), len(wIn_indices), len(tOpsOut), len(wLoss)), dtype=complex
-                )
+                gs = np.zeros((len(tOpsIn), len(wIn_indices), len(tOpsOut), len(wLoss)), dtype=complex)
             basis_tmp = Basis(
                 impurity_orbitals=eigen_basis.impurity_orbitals,
                 bath_states=eigen_basis.bath_states,
@@ -1277,19 +1273,21 @@ def getRIXSmap_new(
             )
             psi1 = psi1_arr[0]
             psi2 = ManyBodyState()
-            
+
             from impurityModel.ed.cg import block_bicgstab
-            
+
             for k, win in enumerate(wIns[wIn_indices]):
                 psi2.prune(slaterWeightMin)
                 basis_tmp.clear()
                 basis_tmp.add_states(sorted(set(state for p in (psi1, psi2) for state in p.keys())))
-                
-                A_op = ManyBodyOperator({
-                    ((0, "c"), (0, "a")): win + delta1 * 1j + E_e,
-                    ((0, "a"), (0, "c")): win + delta1 * 1j + E_e
-                }) - hOp
-                
+
+                A_op = (
+                    ManyBodyOperator(
+                        {((0, "c"), (0, "a")): win + delta1 * 1j + E_e, ((0, "a"), (0, "c")): win + delta1 * 1j + E_e}
+                    )
+                    - hOp
+                )
+
                 psi2_list = block_bicgstab(
                     A=A_op,
                     x0=[psi2],
@@ -1313,16 +1311,24 @@ def getRIXSmap_new(
                         slaterWeightMin=slaterWeightMin,
                         verbose=verbose,
                     )
-                    gs[i, k, j, :, None, None] += gf.calc_G(alphas, betas, r, wLoss, E_e, delta2) * np.exp(
-                        -(E_e - E0) / tau
-                    )
+                    if eigen_basis.comm.rank == 0:
+                        gs[i, wIn_indices[k], j, :, None, None] += gf.calc_G(alphas, betas, r, wLoss, E_e, delta2) * np.exp(
+                            -(E_e - E0) / tau
+                        )
+                    else:
+                        gs[i, k, j, :, None, None] += gf.calc_G(alphas, betas, r, wLoss, E_e, delta2) * np.exp(
+                            -(E_e - E0) / tau
+                        )
             if eigen_basis.comm.rank == 0:
                 for c, sender in enumerate(wIn_roots):
-                    if sender == eigen_basis.comm.rank:
+                    if sender == 0:
                         continue
-                    start = sum(wIn_per_color[:c])
+                    start = offsets[c]
                     stop = start + wIn_per_color[c]
-                    eigen_basis.comm.Recv(gs[i, start:stop, :, :], source=sender)
+                    recv_buffer = np.empty((wIn_per_color[c], len(tOpsOut), len(wLoss)), dtype=complex)
+                    eigen_basis.comm.Recv(recv_buffer, source=sender)
+                    for idx_local, idx_global in enumerate(indices_for_colors[start:stop]):
+                        gs[i, idx_global, :, :] += recv_buffer[idx_local, :, :]
             elif eigen_basis.comm.rank in wIn_roots:
                 eigen_basis.comm.Send(gs[i, :, :, :], dest=0)
 

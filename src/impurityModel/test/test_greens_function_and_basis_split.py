@@ -333,13 +333,16 @@ def test_getRIXSmap_new_mpi():
     
     # Ground state psi
     if comm.rank == 0:
-        psi = ManyBodyState({SlaterDeterminant.from_bytes(states[0]): 1.0})
+        psi1 = ManyBodyState({SlaterDeterminant.from_bytes(states[0]): 1.0})
+        psi2 = ManyBodyState({SlaterDeterminant.from_bytes(states[1]): 1.0})
     else:
-        psi = ManyBodyState({})
-    psi = basis.redistribute_psis([psi])[0]
+        psi1 = ManyBodyState({})
+        psi2 = ManyBodyState({})
+    psis = basis.redistribute_psis([psi1, psi2])
     
     # wIns, wLoss, delta
-    wIns = np.array([0.1])
+    # Use multiple wIns and Es to ensure MPI distribution works correctly and does not overwrite intermediate results
+    wIns = np.array([0.1, 0.2, 0.3, 0.4])
     wLoss = np.array([0.0])
     delta1 = 0.1
     delta2 = 0.1
@@ -354,8 +357,8 @@ def test_getRIXSmap_new_mpi():
         hOp=hOp,
         tOpsIn=tOpsIn,
         tOpsOut=tOpsOut,
-        psis=[psi],
-        Es=np.array([0.5]),
+        psis=psis,
+        Es=np.array([0.5, 0.6]),
         tau=tau,
         wIns=wIns,
         wLoss=wLoss,
@@ -367,7 +370,10 @@ def test_getRIXSmap_new_mpi():
     )
     
     if comm.rank == 0:
-        assert gs.shape == (1, 1, 1, 1)
+        assert gs.shape == (1, 1, 4, 1)
+        expected_gs = np.array([-3.15050801e-14-14.18862669j,  1.74853194e-14-10.49958375j,
+                               -8.96683048e-15 -8.07660288j,  0.00000000e+00 -6.40218521j])
+        np.testing.assert_allclose(gs.flatten(), expected_gs, atol=1e-13)
 
     basis = None
 
