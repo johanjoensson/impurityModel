@@ -62,6 +62,9 @@ def matrix_connectivity_print(m: np.ndarray, block_size: int = 1, label: Optiona
     """
 
     def get_char(el: float | complex, i: int, j: int):
+        """
+        Documentation for get_char.
+        """
         if np.abs(el) <= np.finfo(float).eps:
             return " "
         if i == j:
@@ -84,6 +87,9 @@ def matrix_connectivity_print(m: np.ndarray, block_size: int = 1, label: Optiona
 
 
 def partition(l: Iterable, predicate=lambda a: bool(a)):
+    """
+    Documentation for partition.
+    """
     passed = []
     failed = []
     for item in l:

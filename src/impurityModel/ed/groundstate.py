@@ -29,6 +29,9 @@ def calc_energy(
     truncation_threshold,
     slaterWeightMin,
 ):
+    """
+    Documentation for calc_energy.
+    """
     basis = CIPSI_Basis(
         impurity_indices,
         bath_states,
@@ -102,6 +105,9 @@ def find_ground_state_basis(
     energy_cache = {}
 
     def get_energy(trial_N0):
+        """
+        Documentation for get_energy.
+        """
         key = tuple(sorted(trial_N0.items()))
         if key in energy_cache:
             e_trial, basis = energy_cache[key]
@@ -191,6 +197,9 @@ def calc_gs(
     slaterWeightMin=0,
     **kwargs,
 ):
+    """
+    Documentation for calc_gs.
+    """
 
     basis_setup = dict(basis_setup)
     if "impurity_orbital" in basis_setup:

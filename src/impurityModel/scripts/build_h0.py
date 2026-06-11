@@ -25,6 +25,9 @@ from mpi4py import MPI
 
 
 def partition_index(l: Iterable, pred=bool):
+    """
+    Documentation for partition_index.
+    """
     yes, no = [], []
 
     for idx, item in enumerate(l):
@@ -36,6 +39,9 @@ def partition_index(l: Iterable, pred=bool):
 
 
 def filter_and_shift(ebs, vs, w_min, w_max, block_structure):
+    """
+    Documentation for filter_and_shift.
+    """
     filtered_ebs_star, filtered_vs_star = ([], [])
     shifts = [
         np.zeros((len(block_structure.blocks[i_block]), len(block_structure.blocks[i_block])), dtype=complex)
@@ -66,6 +72,9 @@ def run(
     fit_center: float,
     *kwargs,
 ):
+    """
+    Documentation for run.
+    """
     comm = MPI.COMM_WORLD
 
     if comm is not None and comm.rank != 0:
@@ -267,6 +276,9 @@ def run(
 
 
 def main():
+    """
+    Documentation for main.
+    """
     parser = ArgumentParser(
         prog="build_h0",
         description="Create local hamiltonians by reading RSPt out files and fitting hybridization functions.",

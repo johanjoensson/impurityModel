@@ -81,11 +81,16 @@ def rotate_matrix(M, T):
     Parameters
     ==========
     M : NDArray - Matrix to rotate
-    T : NDArray - Rotation matrix to use
+    T : NDArray or dict - Rotation matrix to use, or dict of rotation matrices for blocks.
     Returns
     =======
     M' : NDArray - The rotated matrix
     """
+    if isinstance(T, dict):
+        from scipy.linalg import block_diag
+        sorted_keys = sorted(T.keys())
+        T_matrix = block_diag(*(T[k] for k in sorted_keys))
+        return np.conj(T_matrix.T) @ M @ T_matrix
     return np.conj(T.T) @ M @ T
 
 
@@ -96,6 +101,9 @@ def setup_hamiltonian(
     verbose=False,
     mode="sparse",
 ):
+    """
+    Documentation for setup_hamiltonian.
+    """
     if verbose:
         print("Create Hamiltonian matrix...")
     if mode != "sparse":
@@ -121,7 +129,13 @@ def setup_hamiltonian(
 
 
 def mpi_matmat(m, comm):
+    """
+    Documentation for mpi_matmat.
+    """
     def f(v):
+        """
+        Documentation for f.
+        """
         res = m @ v
         if comm is not None:
             comm.Allreduce(MPI.IN_PLACE, res)
@@ -131,6 +145,9 @@ def mpi_matmat(m, comm):
 
 
 def petsc_eigensystem(h_local, e_max, k=10, v0=None, eigenValueTol=0, return_eigvecs=True, comm=None):
+    """
+    Documentation for petsc_eigensystem.
+    """
     # Set up the distributed matrix
     M = PETSc.Mat()
     M.create(comm=comm)
@@ -201,6 +218,9 @@ def petsc_eigensystem(h_local, e_max, k=10, v0=None, eigenValueTol=0, return_eig
 
 
 def dense_eigensystem(h_local, return_eigvecs=True, comm=None):
+    """
+    Documentation for dense_eigensystem.
+    """
     rank = comm.rank if comm is not None else 0
     if hasattr(h_local, "toarray"):
         h = h_local.toarray()
@@ -231,6 +251,9 @@ def dense_eigensystem(h_local, return_eigvecs=True, comm=None):
 
 
 def primme_eigensystem(h_local, e_max, k=10, v0=None, eigenValueTol=0, return_eigvecs=True, comm=None):
+    """
+    Documentation for primme_eigensystem.
+    """
     h = scipy.sparse.linalg.LinearOperator(
         h_local.shape,
         matvec=mpi_matmat(h_local, comm),
@@ -279,6 +302,9 @@ def primme_eigensystem(h_local, e_max, k=10, v0=None, eigenValueTol=0, return_ei
 
 
 def scipy_eigensystem(h_local, e_max, k=10, v0=None, eigenValueTol=0, return_eigvecs=True, comm=None):
+    """
+    Documentation for scipy_eigensystem.
+    """
     h = scipy.sparse.linalg.LinearOperator(
         h_local.shape,
         matvec=mpi_matmat(h_local, comm),
@@ -314,6 +340,9 @@ def scipy_eigensystem(h_local, e_max, k=10, v0=None, eigenValueTol=0, return_eig
     k = min(k, h.shape[1] - 2)
 
     def done(energies):
+        """
+        Documentation for done.
+        """
         return len(energies) > 2 + np.sum(energies - np.min(energies) <= e_max)
 
     while not done(es) and len(es) < h.shape[0] - 2:
@@ -527,6 +556,9 @@ def eigensystem(
 
 
 def printSlaterDeterminantsAndWeights(psis, nPrintSlaterWeights):
+    """
+    Documentation for printSlaterDeterminantsAndWeights.
+    """
     print("Slater determinants/product states and correspoinding weights")
     weights = []
     for i, psi in enumerate(psis):
@@ -591,6 +623,9 @@ def get_occupations_from_rho_spherical(rho):
 
 
 def get_Lz_from_rho_spherical(rho):
+    """
+    Documentation for get_Lz_from_rho_spherical.
+    """
     l = (rho.shape[0] // 2 - 1) // 2
     return np.real(
         sum(ml * (rho[i, i] + rho[i + (2 * l + 1), i + (2 * l + 1)]) for i, ml in enumerate(range(-l, l + 1)))
@@ -598,6 +633,9 @@ def get_Lz_from_rho_spherical(rho):
 
 
 def get_Lplus_from_rho_spherical(rho, l):
+    """
+    Documentation for get_Lplus_from_rho_spherical.
+    """
     # L+ |l, ml> = sqrt(l*(l+1) - ml*(ml+1))|l, ml+1>
     llp1 = l * (l + 1)
     #   L+    |2, -2>,  |2, -1>, |2,  0>, |2,  1>, |2,  2>
@@ -613,6 +651,9 @@ def get_Lplus_from_rho_spherical(rho, l):
 
 
 def get_Sminus_from_rho_spherical(rho, l, s=1 / 2):
+    """
+    Documentation for get_Sminus_from_rho_spherical.
+    """
     # S+ |s, ms> = sqrt(s*(s+1) - ms*(ms+1))|s, ms+1>
     ssp1 = s * (s + 1)
     ms = +1 / 2
@@ -634,6 +675,9 @@ def get_Sminus_from_rho_spherical(rho, l, s=1 / 2):
 
 
 def get_Lminus_from_rho_spherical(rho, l):
+    """
+    Documentation for get_Lminus_from_rho_spherical.
+    """
     # L- |l, ml> = sqrt(l*(l+1) - ml*(ml-1))|l, ml-1>
     llp1 = l * (l + 1)
     #   L+    |2, -2>,  |2, -1>, |2,  0>, |2,  1>, |2,  2>
@@ -649,6 +693,9 @@ def get_Lminus_from_rho_spherical(rho, l):
 
 
 def get_Splus_from_rho_spherical(rho, l, s=1 / 2):
+    """
+    Documentation for get_Splus_from_rho_spherical.
+    """
     # S+ |s, ms> = sqrt(s*(s+1) - ms*(ms+1))|s, ms+1>
     ssp1 = s * (s + 1)
     ms = -1 / 2
@@ -670,6 +717,9 @@ def get_Splus_from_rho_spherical(rho, l, s=1 / 2):
 
 
 def get_L_from_rho_spherical(rho, l):
+    """
+    Documentation for get_L_from_rho_spherical.
+    """
     return np.sqrt(
         (0.5 * (get_Lplus_from_rho_spherical(rho, l) + get_Lminus_from_rho_spherical(rho, l))) ** 2
         + (-1j / 2 * (get_Lplus_from_rho_spherical(rho, l) - get_Lminus_from_rho_spherical(rho, l))) ** 2
@@ -678,6 +728,9 @@ def get_L_from_rho_spherical(rho, l):
 
 
 def get_S_from_rho_spherical(rho, l, s):
+    """
+    Documentation for get_S_from_rho_spherical.
+    """
     return np.sqrt(
         (0.5 * (get_Splus_from_rho_spherical(rho, l, s=s) + get_Sminus_from_rho_spherical(rho, l, s=s)) ** 2)
         + (-1j / 2 * (get_Splus_from_rho_spherical(rho, l, s=s) - get_Sminus_from_rho_spherical(rho, l, s=s)) ** 2)
@@ -686,6 +739,9 @@ def get_S_from_rho_spherical(rho, l, s):
 
 
 def get_L2_from_rho_spherical(rho):
+    """
+    Documentation for get_L2_from_rho_spherical.
+    """
     l = (rho.shape[0] // 2 - 1) // 2
     llp1 = l * (l + 1)
     Lz = get_Lz_from_rho_spherical(rho)
@@ -702,11 +758,17 @@ def get_L2_from_rho_spherical(rho):
 
 
 def get_Sz_from_rho_spherical(rho):
+    """
+    Documentation for get_Sz_from_rho_spherical.
+    """
     l = (rho.shape[0] // 2 - 1) // 2
     return 1 / 2 * np.real(sum(-rho[i, i] + rho[i + (2 * l + 1), i + (2 * l + 1)] for i in range(2 * l + 1)))
 
 
 def get_S2_from_rho_spherical(rho):
+    """
+    Documentation for get_S2_from_rho_spherical.
+    """
     l = (rho.shape[0] // 2 - 1) // 2
     ssp1 = 3 / 4
     Sz = get_Sz_from_rho_spherical(rho)
@@ -859,6 +921,9 @@ def daggerOp(op):
 
 
 def assert_hermitian(op: dict[tuple, int | float | complex]):
+    """
+    Documentation for assert_hermitian.
+    """
     assert daggerOp(op) == op
 
 
@@ -943,6 +1008,9 @@ def get_basis(nBaths, valBaths, dnValBaths, dnConBaths, dnTol, n0imp, verbose=Tr
 
 
 def printOp(nBaths, pOp, printstr):
+    """
+    Documentation for printOp.
+    """
     print(printstr)
     a = arrayOp(nBaths, pOp)
     print(np.array2string(a, max_line_width=2000, threshold=1000, precision=3, suppress_small=True))
@@ -971,6 +1039,9 @@ def inner(a: dict, b: dict) -> complex:
 
 
 def matmul(psis: list[dict], mat: np.ndarray) -> list[dict]:
+    """
+    Documentation for matmul.
+    """
     n = len(psis)
     assert mat.shape == (n, n)
     res = [{} for _ in psis]
@@ -1083,6 +1154,9 @@ def c(n_spin_orbitals, i, psi):
 
 
 def identity(n_spin_orbitals, i, psi):
+    """
+    Documentation for identity.
+    """
     return psi
 
 
@@ -1197,6 +1271,9 @@ def getNoSpinUop(l1, l2, l3, l4, R):
 
 
 def getUop_from_rspt_u4(u4):
+    """
+    Documentation for getUop_from_rspt_u4.
+    """
     l1, l2, l3, l4 = u4.shape
     l1 = ((l1 // 2) - 1) // 2
     l2 = ((l2 // 2) - 1) // 2
@@ -1633,6 +1710,9 @@ def getTraceDensityMatrix(nBaths, psi, l=2):
 
 
 def build_density_matrix(orbital_indices, psi, n_spin_orbitals):
+    """
+    Documentation for build_density_matrix.
+    """
     rho = np.zeros((len(orbital_indices), len(orbital_indices)), dtype=complex)
     for i, j in itertools.product(range(len(orbital_indices)), range(len(orbital_indices))):
         psi_new = a(n_spin_orbitals, orbital_indices[i], psi)
@@ -1644,11 +1724,17 @@ def build_density_matrix(orbital_indices, psi, n_spin_orbitals):
 
 
 def build_impurity_density_matrix(n_imp_orbitals, n_bath_orbitals, psi):
+    """
+    Documentation for build_impurity_density_matrix.
+    """
     n_spin_orbitals = n_imp_orbitals + n_bath_orbitals
     return build_density_matrix(range(n_imp_orbitals), psi, n_spin_orbitals)
 
 
 def build_bath_density_matrix(n_imp_orbitals, n_bath_orbitals, psi):
+    """
+    Documentation for build_bath_density_matrix.
+    """
     n_spin_orbitals = n_imp_orbitals + n_bath_orbitals
     return build_density_matrix(range(n_imp_orbitals, n_spin_orbitals), psi, n_spin_orbitals)
 
@@ -1751,6 +1837,9 @@ def getDensityMatrixCubic(nBaths, psi):
 
 
 def printDensityMatrixCubic(nBaths, psis, tolPrintOccupation):
+    """
+    Documentation for printDensityMatrixCubic.
+    """
     # Calculate density matrix
     print("Density matrix (in cubic harmonics basis):")
     for i, psi in enumerate(psis):
@@ -2339,6 +2428,9 @@ def applyOp_new(n_spin_orbitals: int, op: dict, psi: dict, slaterWeightMin=0, re
 
 
 def applyOp_thread_worker(op, psi, n_spin_orbitals, restrictions):
+    """
+    Documentation for applyOp_thread_worker.
+    """
     opResult = dict()
     psiNew = dict()
     for (process, h), (state, amp) in itertools.product(op.items(), psi.items()):
@@ -2453,6 +2545,9 @@ def applyOp_threadpool(n_spin_orbitals: int, op: dict, psi: dict, slaterWeightMi
 
 
 def applyOp_worker(output, op, psi, n_spin_orbitals, restrictions):
+    """
+    Documentation for applyOp_worker.
+    """
     opResult = dict()
     psiNew = dict()
     for (process, h), (state, amp) in itertools.product(op, psi.items()):
@@ -3101,6 +3196,9 @@ def expand_basis(n_spin_orbitals, h_dict, hOp, basis0, restrictions, paralleliza
 
 
 def combine_sets(set_1, set_2, datatype):
+    """
+    Documentation for combine_sets.
+    """
     return set_1 | set_2
 
 
@@ -3794,6 +3892,9 @@ def matrixToIOp(mat):
 
 
 def c2i_op(nBaths, c_op):
+    """
+    Documentation for c2i_op.
+    """
     i_op = {}
     for process, value in c_op.items():
         i_op[tuple((c2i(nBaths, spinOrb), action) for spinOrb, action in process)] = value
@@ -3801,6 +3902,9 @@ def c2i_op(nBaths, c_op):
 
 
 def i2c_op(nBaths, i_op):
+    """
+    Documentation for i2c_op.
+    """
     c_op = {}
     for ((i, opi), (j, opj)), val in iDict.items():
         c_op[((i2c(nBaths, i), opi), (i2c(nBaths, j), opj))] = val
@@ -3808,6 +3912,9 @@ def i2c_op(nBaths, i_op):
 
 
 def i2cDict2Array(nBaths, i_ops):
+    """
+    Documentation for i2cDict2Array.
+    """
     res = []
     for i_op in i_ops:
         res.append(i2c_op(nBaths, i_op))

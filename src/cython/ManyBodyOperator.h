@@ -7,6 +7,15 @@
 #include <utility>
 #include <vector>
 
+/**
+ * @class ManyBodyOperator
+ * @brief Represents a quantum many-body operator in second quantization.
+ *
+ * This class stores a collection of creation and annihilation operator sequences
+ * along with their corresponding complex amplitudes. It provides functionality
+ * to apply the operator to a ManyBodyState, with support for multithreading
+ * (when PARALLEL is defined) and restriction masks to filter allowed states.
+ */
 class ManyBodyOperator {
 
 public:
@@ -69,9 +78,21 @@ public:
     return apply(psis, cutoff);
   }
 
+  /**
+   * @brief Configure orbital occupation constraints.
+   */
   void build_restriction_mask(const Restrictions &restrictions) noexcept;
+
+  /**
+   * @brief Apply this operator to a ManyBodyState.
+   *
+   * @param psi The input many-body state.
+   * @param cutoff Threshold for pruning components with negligible amplitudes.
+   * @return ManyBodyState The resulting many-body state.
+   */
   [[nodiscard]] ManyBodyState apply(const ManyBodyState &,
                                     double cutoff = 0) const /*noexcept*/;
+
   [[nodiscard]] std::vector<ManyBodyState>
   apply(const std::vector<ManyBodyState> &psis, double cutoff) const
   /*noexcept*/ {

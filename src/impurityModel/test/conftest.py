@@ -1,4 +1,7 @@
 import gc
+import faulthandler
+import sys
+
 try:
     from mpi4py import MPI
     _has_mpi = True
@@ -6,15 +9,14 @@ except ImportError:
     _has_mpi = False
 
 
-def pytest_runtest_teardown(item, nextitem):
-    """Synchronise all MPI ranks before garbage-collecting.
+def pytest_runtest_setup(item):
+    # Dump traceback to stderr if any test hangs for more than 15 seconds
+    faulthandler.dump_traceback_later(15, file=sys.stderr)
 
-    MPI_Comm_free is a collective operation: every rank in a communicator must
-    call it simultaneously.  Without the barrier, one rank may be inside
-    gc.collect() (calling MPI_Comm_free on a split communicator) while another
-    rank has already moved on to the next test — leading to protocol violations
-    and segmentation faults.
-    """
+
+def pytest_runtest_teardown(item, nextitem):
+    faulthandler.cancel_dump_traceback_later()
     if _has_mpi and MPI.Is_initialized() and not MPI.Is_finalized():
         MPI.COMM_WORLD.Barrier()
     gc.collect()
+

@@ -10,6 +10,9 @@ import numpy as np
 
 
 def main():
+    """
+    Documentation for main.
+    """
     # Figure out which files to read from.
     if len(sys.argv) == 1:
         filename = "RIXS.bin"

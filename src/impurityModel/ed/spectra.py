@@ -13,6 +13,9 @@ from scipy.special import sph_harm_y, spherical_jn
 import scipy.integrate as si
 
 def sph_harm(m, n, theta, phi):
+    """
+    Documentation for sph_harm.
+    """
     return sph_harm_y(n, m, phi, theta)
 
 from impurityModel.ed.average import thermal_average
@@ -202,7 +205,7 @@ def simulate_spectra(
     if rank == 0:
         tmp = [w, aSum]
         # Each transition operator seperatly
-        for i in range(np.shape(gs)[0]):
+        for i in range(np.shape(gs)[1]):
             tmp.append(-gs.imag[:, i])
         print("Save spectra to disk...\n")
         np.savetxt("PS.dat", np.array(tmp).T, fmt="%8.4f", header="E  sum  T1  T2  T3 ...")
@@ -243,7 +246,7 @@ def simulate_spectra(
         # h5f.create_dataset("XPS", data=-gs.imag)
         h5f.create_dataset("XPSthermal", data=-gs.imag)
     # Sum over transition operators
-    aSum = np.sum(-gs.imag, axis=0)
+    aSum = np.sum(-gs.imag, axis=1)
     # Save spectra to disk
     if rank == 0:
         tmp = [w, aSum]
@@ -818,6 +821,9 @@ def getSpectra_new(
     dN_val,
     dN_con,
 ):
+    """
+    Documentation for getSpectra_new.
+    """
     comm = basis.comm
     if comm is None or comm.size <= 1:
         gs_realaxis = np.empty((len(w), len(tOps)), dtype=complex)
@@ -853,6 +859,7 @@ def getSpectra_new(
         tOps_per_color,
         tOp_basis,
         psis,
+        _,
     ) = basis.split_basis_and_redistribute_psi([1] * len(tOps), psis)
     if basis.comm.rank == 0:
         indices_for_colors = np.empty((sum(tOps_per_color)), dtype=int)
@@ -884,13 +891,14 @@ def getSpectra_new(
             dN_val=dN_val,
             dN_con=dN_con,
         )
-        e0 = np.min(es)
-        Z = np.sum(np.exp(-(es - e0) / tau))
-        G_tOp = np.zeros((len(w), 1, 1), dtype=complex)
-        for e, alphas_e, betas_e, r_e in zip(es, alphas, betas, r):
-            G_tOp += gf.calc_G(alphas_e, betas_e, r_e, w, e, delta) * np.exp(-(e - e0) / tau)
-        G_tOp /= Z
-        gs_realaxis_local[:, local_idx] = G_tOp[:, 0, 0]
+        if tOp_basis.comm.rank == 0:
+            e0 = np.min(es)
+            Z = np.sum(np.exp(-(es - e0) / tau))
+            G_tOp = np.zeros((len(w), 1, 1), dtype=complex)
+            for e, alphas_e, betas_e, r_e in zip(es, alphas, betas, r):
+                G_tOp += gf.calc_G(alphas_e, betas_e, r_e, w, e, delta) * np.exp(-(e - e0) / tau)
+            G_tOp /= Z
+            gs_realaxis_local[:, local_idx] = G_tOp[:, 0, 0]
 
     if basis.comm.rank == 0:
         gs_realaxis = np.empty((len(w), len(tOps)), dtype=complex)
@@ -1154,6 +1162,7 @@ def getRIXSmap_new(
         eigen_per_color,
         eigen_basis,
         psis,
+        _,
     ) = basis.split_basis_and_redistribute_psi([1 for _ in Es], psis)
     eigen_basis.restrictions = relaxed_restrictions
     if eigen_basis.comm.rank == 0:
@@ -1180,6 +1189,7 @@ def getRIXSmap_new(
                 wIn_per_color,
                 wIn_basis,
                 psi1_arr,
+                _,
             ) = basis_final.split_basis_and_redistribute_psi([1 for _ in wIns], [psi1])
             if basis.comm.rank == 0:
                 indices_for_colors = np.empty((sum(wIn_per_color)), dtype=int)
@@ -1193,7 +1203,7 @@ def getRIXSmap_new(
                 basis.comm.Send(np.array(wIn_indices), dest=0)
             if eigen_basis.comm.rank != 0:
                 gs = np.empty(
-                    (len(tOpsIn), wIn_indices.stop - wIn_indices.start, len(tOpsOut), len(wLoss)), dtype=complex
+                    (len(tOpsIn), len(wIn_indices), len(tOpsOut), len(wLoss)), dtype=complex
                 )
             basis_tmp = Basis(
                 impurity_orbitals=eigen_basis.impurity_orbitals,
@@ -1221,12 +1231,18 @@ def getRIXSmap_new(
                 a = w - h
 
                 def matmat(m):
+                    """
+                    Documentation for matmat.
+                    """
                     res = a @ m
                     basis_tmp.comm.Allreduce(MPI.IN_PLACE, res, op=MPI.SUM)
                     return res
 
                 lop = scipy.sparse.linalg.LinearOperator(shape=(n, n), matvec=matmat, matmat=matmat, dtype=a.dtype)
-                x, info = scipy.sparse.linalg.bicgstab(lop, y)
+                if k == 0:
+                    x, info = scipy.sparse.linalg.bicgstab(lop, y, rtol=1e-7)
+                else:
+                    x, info = scipy.sparse.linalg.bicgstab(lop, y, x0=x, rtol=1e-7)
                 psi2 = basis_tmp.build_state(x)[0]
                 for j, tout in enumerate(tOpsOut):
                     psi3 = applyOp_test(tout, psi2)
@@ -1423,7 +1439,10 @@ def getRIXSmap(
                     # Biconjugate gradient stabilized method.
                     # Pure conjugate gradient does not apply since
                     # it requires a Hermitian matrix.
-                    x, info = scipy.sparse.linalg.bicgstab(a, y)
+                    if iwIn == 0:
+                        x, info = scipy.sparse.linalg.bicgstab(a, y, rtol=1e-7)
+                    else:
+                        x, info = scipy.sparse.linalg.bicgstab(a, y, x0=x, rtol=1e-7)
                     if info > 0:
                         print("Rank ", rank, ": Convergence to tolerance not achieved")
                         print("#iterations = ", info)
@@ -1524,7 +1543,10 @@ def getRIXSmap(
                     # Biconjugate gradient stabilized method.
                     # Pure conjugate gradient does not apply since
                     # it requires a Hermitian matrix.
-                    x, info = scipy.sparse.linalg.bicgstab(a, y)
+                    if iwIn == 0:
+                        x, info = scipy.sparse.linalg.bicgstab(a, y, rtol=1e-7)
+                    else:
+                        x, info = scipy.sparse.linalg.bicgstab(a, y, x0=x, rtol=1e-7)
                     if info > 0:
                         print("convergence to tolerance not achieved")
                         print("#iterations = ", info)

@@ -16,6 +16,9 @@ BlockStructure = namedtuple(
 
 
 def print_block_structure(block_structure):
+    """
+    Documentation for print_block_structure.
+    """
     orb_offset = min(orb for block in block_structure.blocks for orb in block)
     n_orb = sum(len(block) for block in block_structure.blocks)
     mat = np.empty((n_orb, n_orb), dtype=int)
@@ -27,6 +30,9 @@ def print_block_structure(block_structure):
 
 
 def get_equivalent_orbs(block_structure):
+    """
+    Documentation for get_equivalent_orbs.
+    """
     (blocks, ident_blocks, transp_blocks, ph_blocks, phtransp_blocks, ineq_blocks) = block_structure
     eq_orbs = [[] for _ in ineq_blocks]
     for ib, i_eq_orbs in zip(ineq_blocks, eq_orbs):
@@ -42,6 +48,9 @@ def get_equivalent_orbs(block_structure):
 
 
 def get_equivalent_blocks(block_structure):
+    """
+    Documentation for get_equivalent_blocks.
+    """
     (blocks, ident_blocks, transp_blocks, ph_blocks, phtransp_blocks, ineq_blocks) = block_structure
     eq_blocks = [[] for _ in ineq_blocks]
     for ib, i_eq_blocks in zip(ineq_blocks, eq_blocks):
@@ -57,6 +66,9 @@ def get_equivalent_blocks(block_structure):
 
 
 def build_block_structure(G, mat=None, tol=1e-6):
+    """
+    Documentation for build_block_structure.
+    """
     assert G is not None or mat is not None, "You must supply at least one of G or mat"
     if len(G.shape) == 2:
         G = G.reshape((1, G.shape[0], G.shape[1]))
@@ -88,6 +100,9 @@ def get_inequivalent_blocks(
     particle_hole_blocks,
     particle_hole_and_transpose_blocks,
 ):
+    """
+    Documentation for get_inequivalent_blocks.
+    """
     inequivalent_blocks = []
     for blocks in identical_blocks:
         if len(blocks) == 0:
@@ -111,11 +126,17 @@ def get_inequivalent_blocks(
 
 
 def get_n_blocks_block_indices_mask_matrix(mat: np.ndarray, tol=1e-6):
+    """
+    Documentation for get_n_blocks_block_indices_mask_matrix.
+    """
     mask = np.abs(mat) > tol
     return sp.sparse.csgraph.connected_components(mask, directed=False, return_labels=True)
 
 
 def get_n_blocks_block_indices_mask(G: np.ndarray = None, mat: np.ndarray = None, tol=1e-6):
+    """
+    Documentation for get_n_blocks_block_indices_mask.
+    """
     assert G is not None or mat is not None
     if G is not None:
         if len(G.shape) == 2:
@@ -130,6 +151,9 @@ def get_n_blocks_block_indices_mask(G: np.ndarray = None, mat: np.ndarray = None
 
 
 def get_blocks(G: np.ndarray = None, mat=None, tol=1e-6):
+    """
+    Documentation for get_blocks.
+    """
     assert G is not None or mat is not None, "Must supply at least on of hamiltonian or G"
     if G is not None:
         if len(G.shape) == 2:
@@ -146,6 +170,9 @@ def get_blocks(G: np.ndarray = None, mat=None, tol=1e-6):
 
 
 def _identical_blocks_mat(blocks, mat, tol):
+    """
+    Documentation for _identical_blocks_mat.
+    """
     identical_blocks = [[] for _ in blocks]
     for i, block_i in enumerate(blocks):
         if np.any([i in b for b in identical_blocks]):
@@ -166,6 +193,9 @@ def _identical_blocks_mat(blocks, mat, tol):
 
 
 def _identical_blocks(blocks, G, mat, tol):
+    """
+    Documentation for _identical_blocks.
+    """
     identical_blocks = [[] for _ in blocks]
     for i, block_i in enumerate(blocks):
         if np.any([i in b for b in identical_blocks]):
@@ -186,6 +216,9 @@ def _identical_blocks(blocks, G, mat, tol):
 
 
 def get_identical_blocks(blocks, G=None, mat=None, tol=1e-6):
+    """
+    Documentation for get_identical_blocks.
+    """
     assert G is not None or mat is not None
     if G is None:
         return _identical_blocks_mat(blocks, mat, tol)
@@ -197,6 +230,9 @@ def get_identical_blocks(blocks, G=None, mat=None, tol=1e-6):
 
 
 def _transposed_blocks_matrix(blocks, mat, tol):
+    """
+    Documentation for _transposed_blocks_matrix.
+    """
     transposed_blocks = [[] for _ in blocks]
     for i, block_i in enumerate(blocks):
         if len(block_i) == 1 or np.any([i in b for b in transposed_blocks]):
@@ -217,6 +253,9 @@ def _transposed_blocks_matrix(blocks, mat, tol):
 
 
 def _transposed_blocks(blocks, G, mat, tol):
+    """
+    Documentation for _transposed_blocks.
+    """
     transposed_blocks = [[] for _ in blocks]
     for i, block_i in enumerate(blocks):
         if len(block_i) == 1 or np.any([i in b for b in transposed_blocks]):
@@ -239,6 +278,9 @@ def _transposed_blocks(blocks, G, mat, tol):
 
 
 def get_transposed_blocks(blocks, G=None, mat=None, tol=1e-6):
+    """
+    Documentation for get_transposed_blocks.
+    """
     assert G is not None or mat is not None
     if G is None:
         return _transposed_blocks_matrix(blocks, mat, tol)
@@ -250,6 +292,9 @@ def get_transposed_blocks(blocks, G=None, mat=None, tol=1e-6):
 
 
 def _particle_hole_blocks_matrix(blocks, mat, tol):
+    """
+    Documentation for _particle_hole_blocks_matrix.
+    """
     particle_hole_blocks = []
     for i, block_i in enumerate(blocks):
         if np.any([i in b for b in particle_hole_blocks]):
@@ -272,6 +317,9 @@ def _particle_hole_blocks_matrix(blocks, mat, tol):
 
 
 def _particle_hole_blocks(blocks, G, mat, tol):
+    """
+    Documentation for _particle_hole_blocks.
+    """
     particle_hole_blocks = []
     for i, block_i in enumerate(blocks):
         if np.any([i in b for b in particle_hole_blocks]):
@@ -297,6 +345,9 @@ def _particle_hole_blocks(blocks, G, mat, tol):
 
 
 def get_particle_hole_blocks(blocks, G=None, mat=None, tol=1e-6):
+    """
+    Documentation for get_particle_hole_blocks.
+    """
     assert G is not None or mat is not None
     if G is None:
         return _particle_hole_blocks_matrix(blocks, mat, tol)
@@ -308,6 +359,9 @@ def get_particle_hole_blocks(blocks, G=None, mat=None, tol=1e-6):
 
 
 def _particle_hole_transpose_blocks_matrix(blocks, mat, tol):
+    """
+    Documentation for _particle_hole_transpose_blocks_matrix.
+    """
     patricle_hole_and_transpose_blocks = []
     for i, block_i in enumerate(blocks):
         if np.any([i in b for b in patricle_hole_and_transpose_blocks]):
@@ -330,6 +384,9 @@ def _particle_hole_transpose_blocks_matrix(blocks, mat, tol):
 
 
 def _particle_hole_transpose_blocks(blocks, G, mat, tol):
+    """
+    Documentation for _particle_hole_transpose_blocks.
+    """
     patricle_hole_and_transpose_blocks = []
     for i, block_i in enumerate(blocks):
         if np.any([i in b for b in patricle_hole_and_transpose_blocks]):
@@ -355,6 +412,9 @@ def _particle_hole_transpose_blocks(blocks, G, mat, tol):
 
 
 def get_particle_hole_and_transpose_blocks(blocks, G=None, mat=None, tol=1e-6):
+    """
+    Documentation for get_particle_hole_and_transpose_blocks.
+    """
     assert G is not None or mat is not None
     if G is None:
         return _particle_hole_transpose_blocks_matrix(blocks, mat, tol)
@@ -366,6 +426,9 @@ def get_particle_hole_and_transpose_blocks(blocks, G=None, mat=None, tol=1e-6):
 
 
 def build_matrix(inequivalent_parts: list[np.ndarray], block_structure: BlockStructure):
+    """
+    Documentation for build_matrix.
+    """
     assert len(inequivalent_parts) != 0
     assert len(inequivalent_parts[0].shape) == 2
     n_orb = sum(len(block) for block in block_structure.blocks)
@@ -388,6 +451,9 @@ def build_matrix(inequivalent_parts: list[np.ndarray], block_structure: BlockStr
 
 
 def build_greens_function(inequivalent_parts: list[np.ndarray], block_structure: BlockStructure):
+    """
+    Documentation for build_greens_function.
+    """
     assert len(inequivalent_parts) != 0
     assert len(inequivalent_parts[0].shape) > 2
     n_orb = sum(len(block) for block in block_structure.blocks)

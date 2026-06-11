@@ -20,6 +20,12 @@ cdef extern from "<utility>" namespace "std" nogil:
 
 
 cdef class SlaterDeterminant:
+    """
+    Cython wrapper class for C++ SlaterDeterminant.
+
+    Represents a many-body Slater determinant using 64-bit integer chunks
+    to track spin-orbital occupations.
+    """
     cdef SlaterDeterminant_cpp[uint64_t] s
 
     def __cinit__(self, chunks: tuple[uint64_t] = None):
@@ -32,6 +38,9 @@ cdef class SlaterDeterminant:
 
     @classmethod
     def from_bytes(cls, bytes b):
+        """
+        Create a SlaterDeterminant from bytes representation.
+        """
         cdef SlaterDeterminant_cpp[uint64_t] s
         cdef size_t n_bytes = sizeof(SlaterDeterminant_cpp[uint64_t].value_type)
         cdef size_t n_chunks = len(b) // n_bytes
@@ -42,12 +51,14 @@ cdef class SlaterDeterminant:
         return cls(tuple(int.from_bytes(padded_b[i:i+n_bytes]) for i in range(0, len(padded_b), n_bytes)))
 
     def to_bytearray(self):
+        """
+        Convert SlaterDeterminant to bytearray.
+        """
         cdef size_t n_bytes = sizeof(SlaterDeterminant_cpp[uint64_t].value_type)
         res = bytearray(8*n_bytes*len(self))
         for i in range(len(self)):
             res[i*n_bytes:(i+1)*n_bytes] = self[i].to_bytes(n_bytes)
         return res
-
 
     def __getitem__(self, index: int):
         if index < 0:
@@ -61,7 +72,6 @@ cdef class SlaterDeterminant:
 
     def __reduce__(self):
         return (self.__class__, (tuple(chunk for chunk in self.s),))
-
 
     def __len__(self):
         return self.s.size()
@@ -109,14 +119,21 @@ cdef class SlaterDeterminant:
         return self.s.hash()
 
     def copy(self, deep: bool = False):
+        """
+        Return a copy of the Slater determinant.
+        """
         if deep:
             return deepcopy(self)
         return copy(self)
 
 
-
 cdef class ManyBodyState:
+    """
+    Cython wrapper class for C++ ManyBodyState.
 
+    Represents a quantum many-body state as a map from SlaterDeterminants
+    to complex amplitudes.
+    """
     cdef ManyBodyState_cpp v
 
     def __cinit__(self, dict[SlaterDeterminant, ManyBodyState_cpp.mapped_type] psi=None):
@@ -130,7 +147,6 @@ cdef class ManyBodyState:
             keys.push_back(b.s)
             amplitudes.push_back(val)
         self.v = ManyBodyState_cpp(keys, amplitudes)
-
 
     def __reduce__(self):
         return (self.__class__, (self.to_dict(), ))
@@ -206,16 +222,25 @@ cdef class ManyBodyState:
         self.v[key.s] = value
 
     def get(self, SlaterDeterminant key, double complex default = 0):
+        """
+        Get the amplitude of a SlaterDeterminant key, or return the default.
+        """
         if key in self:
             return self[key]
         return default
 
     def norm2(self):
+        """
+        Compute squared L2 norm of the state.
+        """
         with nogil:
             res = self.v.norm2()
         return res
 
     def norm(self):
+        """
+        Compute L2 norm of the state.
+        """
         with nogil:
             res= self.v.norm()
         return res
@@ -226,14 +251,23 @@ cdef class ManyBodyState:
         return res
 
     def size(self):
+        """
+        Return the number of configurations in the state.
+        """
         return len(self)
 
     def max_size(self):
+        """
+        Return the maximum potential size of the state.
+        """
         with nogil:
             res = self.v.max_size()
         return res
 
     def erase(self, SlaterDeterminant key):
+        """
+        Remove a SlaterDeterminant configuration from the state.
+        """
         self.v.erase(key.s)
 
     def __contains__(self, SlaterDeterminant key):
@@ -249,25 +283,46 @@ cdef class ManyBodyState:
             preincrement(it)
 
     def keys(self):
+        """
+        Yield all SlaterDeterminant configurations in the state.
+        """
         return (SlaterDeterminant(tuple(chunk for chunk in p.first)) for p in self.v)
 
     def values(self):
+        """
+        Yield all amplitudes in the state.
+        """
         return (p.second for p in self.v)
 
     def items(self):
+        """
+        Yield pairs of (SlaterDeterminant, amplitude).
+        """
         return ((SlaterDeterminant(tuple(chunk for chunk in p.first)), p.second) for p in self.v)
 
     def prune(self, double cutoff):
+        """
+        Prune amplitudes with norm below cutoff.
+        """
         with nogil:
             self.v.prune(cutoff)
 
     def to_dict(self):
+        """
+        Convert the ManyBodyState to a python dict.
+        """
         return dict((SlaterDeterminant(tuple(chunk for chunk in p.first)), p.second) for p in self.v)
 
     def copy(self):
+        """
+        Return a copy of the many-body state.
+        """
         return ManyBodyState(self.to_dict())
 
 def inner(ManyBodyState a, ManyBodyState b):
+    """
+    Compute the inner product of many-body states: <a|b>.
+    """
     with nogil:
         res = inner_cpp(a.v, b.v)
     return res
@@ -295,6 +350,12 @@ cdef tuple[tuple[int, str]] ints_to_processes(ManyBodyOperator_cpp.value_type.fi
     return  tuple(processes[::-1])
 
 cdef class ManyBodyOperator:
+    """
+    Cython wrapper class for C++ ManyBodyOperator.
+
+    Represents a quantum many-body operator composed of creation
+    and annihilation process sequences with corresponding amplitudes.
+    """
     cdef ManyBodyOperator_cpp o
 
     def __cinit__(self, dict[tuple[tuple[int, str]], complex] op=None):
@@ -384,9 +445,15 @@ cdef class ManyBodyOperator:
         return res
 
     def size(self):
+        """
+        Return the number of operator terms.
+        """
         return len(self)
 
     def set_restrictions(self,  dict[frozenset[int], pair[int, int]] restrictions=None):
+        """
+        Configure orbital restrictions for operator application.
+        """
         cdef frozenset[int] indices
         cdef pair[size_t, size_t] limits
         cdef vector[pair[vector[size_t], pair[size_t, size_t]]] rest
@@ -409,6 +476,9 @@ cdef class ManyBodyOperator:
         return res
 
     def erase(self, tuple[tuple[int, str]]key):
+        """
+        Remove a term from the operator.
+        """
         self.o.erase(processes_to_ints(key))
 
     def __contains__(self, tuple[tuple[int, str]]key):
@@ -423,17 +493,32 @@ cdef class ManyBodyOperator:
             preincrement(it)
 
     def keys(self):
+        """
+        Yield all operator terms.
+        """
         return (ints_to_processes(p.first) for p in self.o)
 
     def values(self):
+        """
+        Yield all operator amplitudes.
+        """
         return (p.second for p in self.o)
 
     def items(self):
+        """
+        Yield pairs of (operator_term, amplitude).
+        """
         return ((ints_to_processes(p.first), p.second) for p in self.o)
 
     def to_dict(self):
+        """
+        Convert operator terms to a python dict.
+        """
         return dict((ints_to_processes(p.first), p.second) for p in self.o)
 
 
 def applyOp(ManyBodyOperator op, ManyBodyState psi, double cutoff=0) ->ManyBodyState :
+    """
+    Apply a ManyBodyOperator to a ManyBodyState.
+    """
     return op(psi, cutoff)

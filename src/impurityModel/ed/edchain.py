@@ -10,6 +10,9 @@ from typing import Optional
 def build_imp_bath_blocks(
     H: np.ndarray, n_orb: int
 ) -> tuple[list[list[int]], list[list[int]], list[list[int]], list[list[int]]]:
+    """
+    Documentation for build_imp_bath_blocks.
+    """
     block_structure = build_block_structure(H)
     impurity_indices = [None] * len(block_structure.blocks)
     occupied_indices = [None] * len(block_structure.blocks)
@@ -26,6 +29,9 @@ def build_imp_bath_blocks(
 
 
 def build_H_bath_v(H_dft, ebs_star, vs_star, bath_geometry, block_structure, verbose, extra_verbose):
+    """
+    Documentation for build_H_bath_v.
+    """
 
     H_baths = []
     vs = []
@@ -85,6 +91,9 @@ def build_H_bath_v(H_dft, ebs_star, vs_star, bath_geometry, block_structure, ver
 def build_full_bath(
     H_bath_inequiv: list[np.ndarray], v_inequiv: list[np.ndarray], block_structure: BlockStructure
 ) -> np.ndarray:
+    """
+    Documentation for build_full_bath.
+    """
     (
         blocks,
         identical_blocks,
@@ -123,6 +132,9 @@ def build_full_bath(
 
 
 def householder_reflector(A):
+    """
+    Documentation for householder_reflector.
+    """
     r = A.shape[1]
     X, Z = np.linalg.qr(A, mode="reduced")
     W, s, V = np.linalg.svd(X[:r], full_matrices=True)
@@ -136,10 +148,16 @@ def householder_reflector(A):
 
 
 def householder_matrix(v):
+    """
+    Documentation for householder_matrix.
+    """
     return np.eye(v.shape[0], dtype=v.dtype) - 2 * v @ np.conj(v.T)
 
 
 def test_householder():
+    """
+    Documentation for test_householder.
+    """
     M = np.ones((4, 4))
     M[[1, 1, 2, 2, 3, 3, 3], [1, 3, 2, 3, 1, 2, 3]] = -1
     a1 = householder_reflector(M[:, 0:2])
@@ -173,6 +191,9 @@ def test_householder():
 
 
 def block_qr(A, block_size=1, overwrite_A=False):
+    """
+    Documentation for block_qr.
+    """
     m, n = A.shape
     R = A.copy()
     if not overwrite_A:
@@ -199,6 +220,9 @@ def block_qr(A, block_size=1, overwrite_A=False):
 
 
 def get_lanczos_vectors(H, v0, alphas, betas):
+    """
+    Documentation for get_lanczos_vectors.
+    """
     v0, _ = sp.linalg.qr(v0, mode="economic")
     n_imp = v0.shape[1]
     n_it = alphas.shape[0]
@@ -222,6 +246,9 @@ def get_lanczos_vectors(H, v0, alphas, betas):
 
 
 def tridiagonalize(H, v0):
+    """
+    Documentation for tridiagonalize.
+    """
     assert H.shape[0] == v0.shape[0]
     block_size = v0.shape[1]
 
@@ -299,6 +326,9 @@ def double_chains(H_imp: np.ndarray, vs: np.ndarray, ebs: np.ndarray, verbose: b
 
 
 def build_star_geometry_hamiltonian(H_imp, vs, es):
+    """
+    Documentation for build_star_geometry_hamiltonian.
+    """
     if isinstance(H_imp, (float, complex)):
         H_imp = np.array([[H_imp]])
     if len(vs.shape) == 1:
@@ -314,6 +344,9 @@ def build_star_geometry_hamiltonian(H_imp, vs, es):
 
 
 def build_block_tridiagonal_hermitian_matrix(diagonals, offdiagonals):
+    """
+    Documentation for build_block_tridiagonal_hermitian_matrix.
+    """
     num_blocks = diagonals.shape[0]
     block_size = diagonals.shape[1]
     num_orbs = num_blocks * block_size
@@ -322,6 +355,9 @@ def build_block_tridiagonal_hermitian_matrix(diagonals, offdiagonals):
         return H
 
     def idx_(j):
+        """
+        Documentation for idx_.
+        """
         return slice(j * block_size, (j + 1) * block_size)
 
     for i in range(num_blocks - 1):
@@ -334,6 +370,9 @@ def build_block_tridiagonal_hermitian_matrix(diagonals, offdiagonals):
 
 
 def transform_to_lanczos_tridagonal_matrix(H, n_imp):
+    """
+    Documentation for transform_to_lanczos_tridagonal_matrix.
+    """
     Hb = H[n_imp:, n_imp:]
     V0 = H[n_imp:, :n_imp]
     alphas, betas, V0 = tridiagonalize(Hb, V0)
@@ -387,6 +426,9 @@ def create_decoupled_hamiltonian(H, n_imp):
 
 
 def separate_orbital_character(q):
+    """
+    Documentation for separate_orbital_character.
+    """
     U, s, Vh = np.linalg.svd(q, full_matrices=True)
     Um = np.eye(Vh.shape[0], dtype=q.dtype)
     Um[: q.shape[0], : q.shape[0]] = U
@@ -394,6 +436,9 @@ def separate_orbital_character(q):
 
 
 def linked_double_chain(H_imp, vs, es, verbose=True, extremely_verbose=False):
+    """
+    Documentation for linked_double_chain.
+    """
     verbose = verbose or extremely_verbose
     if isinstance(H_imp, int):
         H_imp = np.array([[H_imp]], dtype=float)
@@ -455,6 +500,9 @@ def linked_double_chain(H_imp, vs, es, verbose=True, extremely_verbose=False):
     H_linked_chains = H_linked_chains[idx]
 
     def delta(m1, m2):
+        """
+        Documentation for delta.
+        """
         return np.max(np.abs(m2 - m1))
 
     if verbose:
@@ -474,11 +522,13 @@ def linked_double_chain(H_imp, vs, es, verbose=True, extremely_verbose=False):
         H_linked_chains[:n_imp, :n_imp], H_imp, atol=1e-15
     ), f"{H_linked_chains[:n_imp, :n_imp]=} {H_imp=}"
 
-
     return H_linked_chains[n_imp:, :n_imp], H_linked_chains[n_imp:, n_imp:]
 
 
 def basil_linked_double_chain(H_imp, vs, es, verbose=True, extremely_verbose=False):
+    """
+    Documentation for basil_linked_double_chain.
+    """
     from impurityModel.ed.double_chain_haverkort.double_chains import get_double_chain_transform_multi
 
     n_imp = H_imp.shape[0]

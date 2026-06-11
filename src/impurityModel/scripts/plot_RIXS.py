@@ -6,6 +6,9 @@ from argparse import ArgumentParser
 
 
 def run(prefix: str, *kwargs):
+    """
+    Documentation for run.
+    """
     RIXS = None
     wIn = None
     wLoss = None
@@ -46,6 +49,9 @@ def run(prefix: str, *kwargs):
 
 
 def main():
+    """
+    Documentation for main.
+    """
     parser = ArgumentParser(
         prog="Plot RIXS",
         description="Plot RIXS spectra calculated using impurityModel.",

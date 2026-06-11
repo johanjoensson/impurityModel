@@ -1,5 +1,4 @@
 from math import ceil
-from time import perf_counter
 import sys
 from typing import Optional, Union
 from os import environ
@@ -19,6 +18,8 @@ from bitarray import bitarray
 from impurityModel.ed.manybody_state_containers import (
     SimpleDistributedStateContainer,
 )
+from impurityModel.ed.mpi_comm import graph_alltoall, graph_alltoall_psis
+
 
 
 from impurityModel.ed import product_state_representation as psr
@@ -56,6 +57,9 @@ def batched(iterable: Iterable, n: int) -> Iterable:
 
 
 def reduce_states(a: list[dict], b: list[dict], _):
+    """
+    Documentation for reduce_states.
+    """
     res = a.copy()
     for sa, sb in zip(res, b):
         for state, amp in sb.items():
@@ -67,6 +71,9 @@ reduce_states_op = MPI.Op.Create(reduce_states, commute=True)
 
 
 def reduce_disjoint_set(a: DisjointSet, b: DisjointSet, _):
+    """
+    Documentation for reduce_disjoint_set.
+    """
     for subset in b.subsets():
         it = iter(subset)
         root = next(it)
@@ -79,6 +86,9 @@ reduce_disjoint_set_op = MPI.Op.Create(reduce_disjoint_set, commute=True)
 
 
 def combine_sets(set_1, set_2, _):
+    """
+    Documentation for combine_sets.
+    """
     return set_1 | set_2
 
 
@@ -86,6 +96,9 @@ combine_sets_op = MPI.Op.Create(combine_sets, commute=True)
 
 
 def reduce_subscript(a, b, datatype):
+    """
+    Documentation for reduce_subscript.
+    """
     res = np.empty_like(a)
     for i in range(a.shape[0]):
         for j in range(a.shape[1]):
@@ -100,6 +113,9 @@ reduce_subscript_op = MPI.Op.Create(reduce_subscript, commute=True)
 
 
 def getitem_reduce(a, b, datatype):
+    """
+    Documentation for getitem_reduce.
+    """
     return [max(val_a, val_b) for val_a, val_b in zip(a, b)]
 
 
@@ -107,6 +123,9 @@ getitem_reduce_op = MPI.Op.Create(getitem_reduce, commute=True)
 
 
 def getitem_reduce_matrix(a, b, datatype):
+    """
+    Documentation for getitem_reduce_matrix.
+    """
     res = [[None for _ in row] for row in a]
     for i in range(len(a)):
         for j in range(len(a[i])):
@@ -118,7 +137,13 @@ getitem_reduce_matrix_op = MPI.Op.Create(getitem_reduce_matrix, commute=True)
 
 
 class Basis:
+    """
+    Documentation for Basis.
+    """
     def _get_offsets_and_local_lengths(self, total_length):
+        """
+        Documentation for _get_offsets_and_local_lengths.
+        """
         offset = 0
         local_len = total_length
         if self.comm is not None:
@@ -141,6 +166,9 @@ class Basis:
         mixed_valence,
         verbose,
     ):
+        """
+        Documentation for _get_initial_basis.
+        """
         valence_baths, conduction_baths = bath_states
         total_baths = {
             i: sum(len(orbs) for orbs in valence_baths[i]) + sum(len(orbs) for orbs in conduction_baths[i])
@@ -222,6 +250,9 @@ class Basis:
         nominal_impurity_occ,
         verbose,
     ):
+        """
+        Documentation for _get_restrictions.
+        """
         valence_baths, conduction_baths = bath_states
         restrictions = {}
         total_baths = {
@@ -252,6 +283,9 @@ class Basis:
         return restrictions
 
     def get_effective_restrictions(self):
+        """
+        Documentation for get_effective_restrictions.
+        """
         valence_baths, conduction_baths = self.bath_states
 
         total_baths = {
@@ -302,6 +336,9 @@ class Basis:
     def _get_updated_occ_restrictions(
         self, restrictions: dict[frozenset[int], tuple[int, int]], orbs: frozenset[int], dN: Optional[tuple[int, int]]
     ):
+        """
+        Documentation for _get_updated_occ_restrictions.
+        """
         if dN is None:
             return 0, len(orbs)
         elif orbs not in restrictions:
@@ -311,6 +348,9 @@ class Basis:
         return max(min_occ - occ_dec, 0), min(max_occ + occ_inc, len(orbs))
 
     def build_initial_restrictions(self, op: ManyBodyOperator, min_dist=4):
+        """
+        Documentation for build_initial_restrictions.
+        """
         ground_state_restrictions = {}
         valence_baths, conduction_baths = self.bath_states
 
@@ -539,6 +579,9 @@ class Basis:
         verbose=True,
         debug=False,
     ):
+        """
+        Documentation for __init__.
+        """
         assert (
             impurity_orbitals is not None
         ), "You need to supply the number of impurity orbitals in each set in impurity_orbitals"
@@ -618,6 +661,9 @@ class Basis:
             self.state_container.comm = None
 
     def alltoall_states(self, send_list: list[list[bytes]], flatten=False):
+        """
+        Documentation for alltoall_states.
+        """
         return self.state_container.alltoall_states(send_list, flatten)
 
     def add_states(self, new_states: Iterable[bytes], unique_sorted=False) -> None:
@@ -635,6 +681,9 @@ class Basis:
         self.local_basis = self.state_container.local_basis
 
     def redistribute_psis(self, psis: list[ManyBodyState]) -> list[ManyBodyState]:
+        """
+        Documentation for redistribute_psis.
+        """
         if isinstance(psis, ManyBodyState):
             print("WARNING in redistribute_psi:")
             print(
@@ -654,10 +703,14 @@ class Basis:
         comm = self.comm
 
         def find_owner(state: SlaterDeterminant):
+            """
+            Documentation for find_owner.
+            """
             return hash(state) % comm.size
 
-        send_list = [[{} for _ in psis] for _ in range(self.comm.size)]
-        t0 = perf_counter()
+        # Build a send list: for each target rank r, a list of dicts
+        # (one dict per psi), mapping state_bytes -> amplitude.
+        send_list = [[{} for _ in psis] for _ in range(comm.size)]
         unique_states = set()
         for psi in psis:
             unique_states.update(psi.keys())
@@ -669,19 +722,9 @@ class Basis:
                     continue
                 s_psi[state_bytes] = l_psi[state]
 
-        received_list = [None for _ in range(self.comm.size)]
-        for r_offset in range(self.comm.size):
-            send_to = (self.comm.rank + r_offset) % self.comm.size
-            receive_from = (self.comm.rank + self.comm.size - r_offset) % self.comm.size
-
-            if send_to == self.comm.rank:
-                received_list[receive_from] = send_list[send_to]
-            else:
-                received_list[receive_from] = self.comm.sendrecv(
-                    send_list[send_to],
-                    dest=send_to,
-                    source=receive_from,
-                )
+        # Use the specialised zero-pickle path: raw bytes + complex128
+        # arrays exchanged via Neighbor_alltoallv on a sparse graph comm.
+        received_list = graph_alltoall_psis(send_list, self.n_bytes, comm)
         res = [ManyBodyState({}) for _ in psis]
         for received_psis in received_list:
             for res_n, psi_dict in zip(res, received_psis):
@@ -693,8 +736,10 @@ class Basis:
         return res
 
     def _generate_spin_flipped_determinants(self, determinants):
+        """
+        Documentation for _generate_spin_flipped_determinants.
+        """
         valence_baths, conduction_baths = self.bath_states
-        n_imp_orbs = sum()
         n_dn_op = {
             ((i, "c"), (i, "a")): 1.0
             for l in self.impurity_orbitals
@@ -703,7 +748,10 @@ class Basis:
         n_up_op = {
             ((i, "c"), (i, "a")): 1.0
             for l in self.impurity_orbitals
-            for i in range(self.impurity_orbitals[l] // 2, self.impurity_orbitals[l])
+            for i in range(
+                sum(len(orbs) for orbs in self.impurity_orbitals[l]) // 2,
+                sum(len(orbs) for orbs in self.impurity_orbitals[l]),
+            )
         }
         spin_flip = set()
         for det in determinants:
@@ -712,7 +760,7 @@ class Basis:
             spin_flip.add(det)
             to_flip = {det}
             for l in self.impurity_orbitals:
-                n_orb = self.impurity_orbitals[l]
+                n_orb = sum(len(orbs) for orbs in self.impurity_orbitals[l])
                 for i in range(n_orb // 2):
                     spin_flip_op = {
                         ((i + n_orb // 2, "c"), (i, "a")): 1.0,
@@ -724,8 +772,8 @@ class Basis:
                         if len(flipped) == 0:
                             continue
                         flipped_state = list(flipped.keys())[0]
-                        new_n_dn = int(applyOp(self.num_spin_orbitals, n_dn, {flipped_state: 1}).get(flipped_state, 0))
-                        new_n_up = int(applyOp(self.num_spin_orbitals, n_up, {flipped_state: 1}).get(flipped_state, 0))
+                        new_n_dn = int(applyOp(self.num_spin_orbitals, n_dn_op, {flipped_state: 1}).get(flipped_state, 0))
+                        new_n_up = int(applyOp(self.num_spin_orbitals, n_up_op, {flipped_state: 1}).get(flipped_state, 0))
                         if (new_n_dn == n_dn and new_n_up == n_up) or (new_n_dn == n_up and new_n_up == n_dn):
                             spin_flip.update(flipped.keys())
 
@@ -791,25 +839,46 @@ class Basis:
         # return self.build_operator_dict(op)
 
     def index(self, val):
+        """
+        Documentation for index.
+        """
         return self.state_container.index(val)
 
     def __getitem__(self, key) -> Iterable:
+        """
+        Documentation for __getitem__.
+        """
         return self.state_container[key]
 
     def __len__(self):
+        """
+        Documentation for __len__.
+        """
         return self.state_container.size
 
     def __contains__(self, item):
+        """
+        Documentation for __contains__.
+        """
         return item in self.state_container
 
     def contains(self, item) -> Iterable[bool]:
+        """
+        Documentation for contains.
+        """
         return self.state_container.contains(item)
 
     def __iter__(self):
+        """
+        Documentation for __iter__.
+        """
         for state in self.state_container:
             yield state
 
     def copy(self):
+        """
+        Documentation for copy.
+        """
         return Basis(
             self.impurity_orbitals,
             self.bath_states,
@@ -824,12 +893,18 @@ class Basis:
         )
 
     def clear(self):
+        """
+        Documentation for clear.
+        """
         self.state_container.clear()
         self.add_states([])
 
     def build_vector(
         self, psis: list[ManyBodyState], root: Optional[int] = None, slaterWeightMin: float = 0
     ) -> np.ndarray:
+        """
+        Documentation for build_vector.
+        """
         v = np.zeros((len(psis), self.size), dtype=complex, order="C")
         # psis = self.redistribute_psis(psis)
         # row_states_in_basis: list[bytes] = []
@@ -849,6 +924,9 @@ class Basis:
         return v
 
     def build_distributed_vector(self, psis: list[ManyBodyState], dtype=complex) -> np.ndarray:
+        """
+        Documentation for build_distributed_vector.
+        """
         psis = self.redistribute_psis(psis)
         v = np.empty((len(psis), len(self.local_basis)), dtype=dtype, order="C")
         for (row, psi), (col, state) in itertools.product(enumerate(psis), enumerate(self.local_basis)):
@@ -856,6 +934,9 @@ class Basis:
         return v
 
     def build_state(self, vs: Union[list[np.ndarray], np.ndarray], slaterWeightMin=0) -> list[dict]:
+        """
+        Documentation for build_state.
+        """
         if isinstance(vs, np.matrix):
             vs = vs.A
         if isinstance(vs, np.ndarray) and len(vs.shape) == 1:
@@ -1090,6 +1171,9 @@ class Basis:
         return [subset.intersection(self.local_indices) for subset in disjoint_sets.subsets()]
 
     def split_basis_and_redistribute_psi(self, priorities, psis):
+        """
+        Documentation for split_basis_and_redistribute_psi.
+        """
 
         if (not self.is_distributed) or len(priorities) <= 1:
             return range(len(priorities)), [0], 0, [len(priorities)], self, psis, [None]
@@ -1381,7 +1465,13 @@ class Basis:
 
 
 class CIPSI_Basis(Basis):
+    """
+    Documentation for CIPSI_Basis.
+    """
     def __init__(self, impurity_orbitals, bath_states, H=None, nominal_impurity_occ=None, initial_basis=None, **kwargs):
+        """
+        Documentation for __init__.
+        """
         if H is None:
             H = ManyBodyOperator({})
         if not isinstance(H, ManyBodyOperator):
@@ -1410,6 +1500,9 @@ class CIPSI_Basis(Basis):
             self.truncate(self.build_state(psi_ref))
 
     def truncate(self, psis):
+        """
+        Documentation for truncate.
+        """
         cutoff = np.finfo(float).eps
 
         self.local_basis.clear()
@@ -1569,6 +1662,9 @@ class CIPSI_Basis(Basis):
             print(f"After expansion, the basis contains {self.size} elements.", flush=True)
 
     def expand_at(self, E_ref, psi_ref, H, de2_min=1e-5):
+        """
+        Documentation for expand_at.
+        """
 
         old_size = self.size - 1
         while old_size != self.size:
@@ -1584,6 +1680,9 @@ class CIPSI_Basis(Basis):
             psi_ref = [psi / np.sqrt(N2s[i]) for i, psi in enumerate(psi_ref)]
 
     def copy(self):
+        """
+        Documentation for copy.
+        """
         new_basis = CIPSI_Basis(
             self.impurity_orbitals,
             self.bath_states,
@@ -1601,6 +1700,9 @@ class CIPSI_Basis(Basis):
         return new_basis
 
     def split_basis_and_redistribute_psi(self, priorities, psis):
+        """
+        Documentation for split_basis_and_redistribute_psi.
+        """
 
         indices, split_roots, color, items_per_color, split_basis, psis, intercomms = (
             super().split_basis_and_redistribute_psi(priorities, psis)

@@ -25,6 +25,9 @@ from impurityModel.ed.utils import matrix_print
 
 
 class Reort(Enum):
+    """
+    Documentation for Reort.
+    """
     NONE = 0
     PARTIAL = 1
     FULL = 2
@@ -32,11 +35,17 @@ class Reort(Enum):
 
 
 def calculate_thermal_gs(h, block_size, e_max, v0=None, reort=Reort.FULL, comm=None):
+    """
+    Documentation for calculate_thermal_gs.
+    """
     mpi = comm is not None
     rank = comm.rank if mpi else 0
     size = comm.size if mpi else 1
 
     def converged(alphas, betas, *args, **kwargs):
+        """
+        Documentation for converged.
+        """
         e, s = eigsh(alphas, betas, de=e_max, select="m")
         sorted_indices = np.argsort(e)
         e = e[sorted_indices]
@@ -87,6 +96,9 @@ def calculate_thermal_gs(h, block_size, e_max, v0=None, reort=Reort.FULL, comm=N
 
 
 def build_banded_matrix(alphas, betas):
+    """
+    Documentation for build_banded_matrix.
+    """
     k = alphas.shape[0]
     p = alphas.shape[1]
     bands = np.zeros((p + 1, k * p), dtype=alphas.dtype)
@@ -214,6 +226,9 @@ def estimate_orthonormality(W, alphas, betas, eps=np.finfo(float).eps, N=1, rng=
 
 
 def qr_decomp(psi, pivoting=False):
+    """
+    Documentation for qr_decomp.
+    """
     if pivoting:
         psi, beta, p = sp.linalg.qr(psi, mode="economic", overwrite_a=True, check_finite=False, pivoting=True)
         return np.ascontiguousarray(psi), beta, p
@@ -227,6 +242,9 @@ def get_block_Lanczos_matrices_dense(
     converged: Callable[[np.ndarray, np.ndarray], bool],
     verbose: bool = True,
 ):
+    """
+    Documentation for get_block_Lanczos_matrices_dense.
+    """
     krylovSize = h.shape[0]
 
     N = h.shape[0]
@@ -272,6 +290,9 @@ def get_block_Lanczos_matrices(
     build_krylov_basis=True,
     **kwargs,
 ):
+    """
+    Documentation for get_block_Lanczos_matrices.
+    """
     mpi = comm is not None
     rank = comm.rank if mpi else 0
     krylovSize = h.shape[0]
@@ -369,6 +390,9 @@ def block_lanczos_sparse(
     reort: Reort = Reort.NONE,
     slaterWeightMin: float = 0,
 ) -> (np.ndarray, np.ndarray, Optional[list[dict]]):
+    """
+    Documentation for block_lanczos_sparse.
+    """
     if not isinstance(h_op, ManyBodyOperator):
         h_op = ManyBodyOperator(h_op)
     psi0 = [
@@ -382,21 +406,20 @@ def block_lanczos_sparse(
     rank = comm.rank if mpi else 0
     build_krylov_basis = reort != Reort.NONE
     n = len(psi0)
-    N_max = basis.size
-
+    
     alphas = np.empty((0, n, n), dtype=complex, order="C")
     betas = np.empty((0, n, n), dtype=complex, order="C")
-    q = [[ManyBodyState({}) for _ in range(n)], psi0]
+    
+    psi0 = basis.redistribute_psis(psi0)
+    
+    q = [[ManyBodyState() for _ in range(n)], psi0]
     if build_krylov_basis:
-        Q = list(psi0)
+        Q = [st.copy() for st in psi0]
 
     it_max = basis.size // n + 1
     it = 0
     converge_count = 0
-    expand_basis = True
 
-    local_rows = len(basis.local_basis)
-    q1_local = np.empty((local_rows, n), dtype=complex, order="C")
     while it * n < basis.size:
         t0 = perf_counter()
         wp = [
@@ -408,95 +431,87 @@ def block_lanczos_sparse(
             for psi_i in q[1]
         ]
         t_apply = perf_counter() - t0
+        
         old_basis_size = basis.size
         t0 = perf_counter()
-        if expand_basis:
-            basis.add_states(
-                set(state for p in wp for state in p if state not in basis._index_dict),
-            )
-            local_rows = len(basis.local_basis)
-            q1_local = np.empty((local_rows, n), dtype=complex, order="C")
+        basis.add_states(
+            set(state for p in wp for state, amp in p.items() if abs(amp) > slaterWeightMin and state not in basis._index_dict),
+        )
         t_add = perf_counter() - t0
+        
         if old_basis_size == basis.size:
             it_max = basis.size // n
-            # expand_basis = False
+
         if verbose:
             print(f"Added {basis.size - old_basis_size} states to the basis.")
             print(f"----> Currently the basis contains {basis.size} states.")
             print(f"----> Applying the hamiltonian took {t_apply} seconds.")
             print(f"----> Adding new states took {t_add} seconds.", flush=True)
+
         tmp = basis.redistribute_psis(q[0] + q[1] + wp)
-        v_dense = basis.build_vector(tmp, slaterWeightMin=0, root=0).T
-        if rank == 0:
-            q0_dense = v_dense[:, :n]
-            q1_dense = v_dense[:, n : 2 * n]
-            wp_dense = v_dense[:, 2 * n :]
-            alphas = np.append(alphas, [np.conj(q1_dense.T) @ wp_dense], axis=0)
-            betas = np.append(betas, np.zeros((1, n, n), dtype=complex), axis=0)
-            if it == 0:
-                wp_dense -= q1_dense @ alphas[it]
-            else:
-                wp_dense -= q1_dense @ alphas[it] + q0_dense @ np.conj(betas[it - 1].T)
-            q1_dense, betas[it] = sp.linalg.qr(wp_dense, mode="economic", overwrite_a=True, check_finite=False)
-            q1_dense = np.ascontiguousarray(q1_dense)
-            q1_local[:] = q1_dense[basis.local_indices]
-        else:
-            alphas = np.append(
-                alphas,
-                np.empty(
-                    (1, n, n),
-                    dtype=alphas.dtype,
-                ),
-                axis=0,
-            )
-            betas = np.append(
-                betas,
-                np.empty(
-                    (1, n, n),
-                    dtype=betas.dtype,
-                ),
-                axis=0,
-            )
+        q[0] = tmp[:n]
+        q[1] = tmp[n:2*n]
+        wp = tmp[2*n:]
+
+        alpha_i = np.zeros((n, n), dtype=complex)
+        for i in range(n):
+            for j in range(n):
+                alpha_i[i, j] = inner(q[1][i], wp[j])
         if mpi:
-            comm.Bcast(alphas[-1], root=0)
-            comm.Bcast(betas[-1], root=0)
+            comm.Allreduce(MPI.IN_PLACE, alpha_i, op=MPI.SUM)
+            
+        alphas = np.append(alphas, [alpha_i], axis=0)
+        betas = np.append(betas, np.zeros((1, n, n), dtype=complex), axis=0)
+
+        for j in range(n):
+            for k in range(n):
+                wp[j] -= q[1][k] * alpha_i[k, j]
+                
+        if it > 0:
+            beta_prev_dag = np.conj(betas[it - 1].T)
+            for j in range(n):
+                for k in range(n):
+                    wp[j] -= q[0][k] * beta_prev_dag[k, j]
+                    
+        M = np.zeros((n, n), dtype=complex)
+        for i in range(n):
+            for j in range(n):
+                M[i, j] = inner(wp[i], wp[j])
+        if mpi:
+            comm.Allreduce(MPI.IN_PLACE, M, op=MPI.SUM)
+            
+        try:
+            L = sp.linalg.cholesky(M, lower=True)
+        except sp.linalg.LinAlgError:
+            L = sp.linalg.cholesky(M + np.eye(n) * 1e-14, lower=True)
+            
+        beta_i = np.conj(L.T)
+        betas[it] = beta_i
+        
+        beta_inv = sp.linalg.inv(beta_i)
+        
+        q_next = [ManyBodyState() for _ in range(n)]
+        for j in range(n):
+            for k in range(n):
+                q_next[j] += wp[k] * beta_inv[k, j]
+                
+        for st in q_next:
+            st.prune(slaterWeightMin)
 
         if converged(alphas, betas, verbose=verbose):
             converge_count += 1
         else:
             converge_count = 0
-        if converge_count > 2 or it > it_max:
+            
+        if converge_count > 2 or it >= it_max:
             break
-
-        if mpi:
-
-            # Gather local row counts from all ranks on rank 0
-            send_counts = np.empty((comm.size), dtype=int) if rank == 0 else None
-            comm.Gather(np.array([local_rows], dtype=int), send_counts if rank == 0 else None, root=0)
-
-            # Calculate correct offsets based on physical matrix rows
-            offsets = np.array([np.sum(send_counts[:r]) for r in range(comm.size)], dtype=int) if rank == 0 else None
-
-            # Multiply counts/offsets by block-width n to scatter full contiguous blocks
-            if rank == 0:
-                send_counts *= n
-                offsets *= n
-                q1_dense_flat = np.ascontiguousarray(q1_dense).reshape(-1)
-            else:
-                q1_dense_flat = None
-
-            comm.Scatterv(
-                [q1_dense_flat, send_counts, offsets, MPI.C_DOUBLE_COMPLEX] if rank == 0 else None,
-                q1_local,
-                root=0,
-            )
-        else:
-            q1_local = np.ascontiguousarray(q1_dense)
-        q[0] = tmp[n : 2 * n]
-        q[1] = basis.build_state(q1_local.T, slaterWeightMin=0)
+            
+        q[0] = q[1]
+        q[1] = q_next
         if build_krylov_basis:
-            Q.extend(q[1])
+            Q.extend([st.copy() for st in q_next])
         it += 1
+        
     if verbose:
         print(f"Coverged at iteration {it+1} out of a maximum of {basis.size//n}")
     return alphas, betas, Q if build_krylov_basis else None
@@ -512,6 +527,9 @@ def block_lanczos(
     reort: Reort = Reort.NONE,
     slaterWeightMin: float = 0,
 ) -> (np.ndarray, np.ndarray, Optional[list[dict]]):
+    """
+    Documentation for block_lanczos.
+    """
     CYTHON = isinstance(h_op, ManyBodyOperator)
     if h_mem is None and not CYTHON:
         h_mem = {}
@@ -735,6 +753,9 @@ def block_lanczos(
 
 
 def get_Lanczos_vectors(A, alphas, betas, v0, comm, which="all"):
+    """
+    Documentation for get_Lanczos_vectors.
+    """
     mpi = comm is not None
     rank = comm.rank if mpi else 0
     counts = np.array([v0.size], dtype=int)

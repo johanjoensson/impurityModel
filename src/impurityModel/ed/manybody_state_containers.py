@@ -12,6 +12,8 @@ import scipy as sp
 from mpi4py import MPI
 from impurityModel.ed import product_state_representation as psr
 from impurityModel.ed.ManyBodyUtils import SlaterDeterminant
+from impurityModel.ed.mpi_comm import graph_alltoall
+
 
 
 def batched(iterable: Iterable, n: int) -> Iterable:
@@ -31,6 +33,9 @@ def hash_key(state):
 
 
 class StateContainer:
+    """
+    Documentation for StateContainer.
+    """
     class IndexDict:
         """O(1) state → index mapping backed by a plain dict.
 
@@ -44,6 +49,9 @@ class StateContainer:
         """
 
         def __init__(self, states: list, offset: int):
+            """
+            Documentation for __init__.
+            """
             self.states = states
             self.offset = offset
             # Build the O(1) lookup table from the sorted list.
@@ -54,11 +62,17 @@ class StateContainer:
             self._map = {state: self.offset + i for i, state in enumerate(self.states)}
 
         def __contains__(self, key):
+            """
+            Documentation for __contains__.
+            """
             if isinstance(key, bytes) and self.states:
                 key = type(self.states[0]).from_bytes(key)
             return key in self._map
 
         def __getitem__(self, key):
+            """
+            Documentation for __getitem__.
+            """
             if isinstance(key, bytes) and self.states:
                 key = type(self.states[0]).from_bytes(key)
             try:
@@ -67,14 +81,23 @@ class StateContainer:
                 raise ValueError
 
         def get(self, key, default=None):
+            """
+            Documentation for get.
+            """
             if isinstance(key, bytes) and self.states:
                 key = type(self.states[0]).from_bytes(key)
             return self._map.get(key, default)
 
         def __len__(self):
+            """
+            Documentation for __len__.
+            """
             return len(self._map)
 
     def __init__(self, states, bytes_per_state, state_type, comm):
+        """
+        Documentation for __init__.
+        """
         self.local_basis = []
         self.comm = comm
         self.offset = 0
@@ -91,13 +114,22 @@ class StateContainer:
             self.type = type(self[0])
 
     def __iter__(self):
+        """
+        Documentation for __iter__.
+        """
         for i in range(self.size):
             yield self.__getitem__(i)
 
     def add_states(self, new_states: Iterable[SlaterDeterminant]) -> None:
+        """
+        Documentation for add_states.
+        """
         pass
 
     def __getitem__(self, key) -> Iterable[SlaterDeterminant]:
+        """
+        Documentation for __getitem__.
+        """
         if isinstance(key, slice):
             start = key.start
             if start is None:
@@ -139,9 +171,15 @@ class StateContainer:
         return None
 
     def __len__(self):
+        """
+        Documentation for __len__.
+        """
         return self.size
 
     def index(self, val):
+        """
+        Documentation for index.
+        """
         if isinstance(val, bytes):
             val = self.type.from_bytes(val)
         if isinstance(val, self.type):
@@ -161,9 +199,15 @@ class StateContainer:
         return None
 
     def _index_sequence(self, s: Iterable[SlaterDeterminant]) -> Iterable[int]:
+        """
+        Documentation for _index_sequence.
+        """
         pass
 
     def contains(self, item) -> Iterable[bool]:
+        """
+        Documentation for contains.
+        """
         if isinstance(item, bytes):
             item = self.type.from_bytes(item)
         if isinstance(item, self.type):
@@ -174,6 +218,9 @@ class StateContainer:
         return None
 
     def __contains__(self, item):
+        """
+        Documentation for __contains__.
+        """
         if isinstance(item, bytes):
             item = self.type.from_bytes(item)
         if not self.is_distributed:
@@ -181,9 +228,15 @@ class StateContainer:
         return next(self._index_sequence([item])) != self.size
 
     def _contains_sequence(self, items):
+        """
+        Documentation for _contains_sequence.
+        """
         pass
 
     def clear(self):
+        """
+        Documentation for clear.
+        """
         self.local_basis.clear()
         self.offset = 0
         self.size = 0
@@ -193,6 +246,9 @@ class StateContainer:
         self.state_bounds = [None] * self.comm.size if self.is_distributed else [None]
 
     def alltoall_states(self, send_list: list[list[SlaterDeterminant]], flatten=False):
+        """
+        Documentation for alltoall_states.
+        """
         recv_counts = np.empty((self.comm.size), dtype=int)
         request = self.comm.Ialltoall(
             (np.fromiter((len(l) for l in send_list), dtype=int, count=len(send_list)), MPI.LONG), recv_counts
@@ -595,23 +651,27 @@ class StateContainer:
 
 
 class SimpleDistributedStateContainer(StateContainer):
+    """
+    Documentation for SimpleDistributedStateContainer.
+    """
 
     def _point2point(send_list, comm):
-        result = [None for _ in range(comm.size)]
-        for r_offset in range(comm.size):
-            send_to = (comm.rank + r_offset) % comm.size
-            receive_from = (comm.rank + comm.size - r_offset) % comm.size
-            if r_offset == 0:
-                result[receive_from] = send_list[send_to]
-            else:
-                result[receive_from] = comm.sendrecv(send_list[send_to], dest=send_to, source=receive_from)
-        return result
+        """
+        Documentation for _point2point.
+        """
+        return graph_alltoall(send_list, comm)
 
     def __init__(self, states: Iterable, bytes_per_state, state_type=SlaterDeterminant, comm=None, verbose=True):
+        """
+        Documentation for __init__.
+        """
         self.rng = np.random.default_rng()
         super(SimpleDistributedStateContainer, self).__init__(states, bytes_per_state, state_type, comm)
 
     def _set_state_bounds(self, local_states) -> list[Optional[SlaterDeterminant]]:
+        """
+        Documentation for _set_state_bounds.
+        """
         local_states_list = list(local_states)
         total_local_states_len = self.comm.allreduce(len(local_states_list), op=MPI.SUM)
         samples = []
@@ -668,22 +728,20 @@ class SimpleDistributedStateContainer(StateContainer):
             return
 
         def find_owner(state):
+            """
+            Documentation for find_owner.
+            """
             return hash(state) % self.comm.size
 
         send_list = [[] for _ in range(self.comm.size)]
         for r, g in itertools.groupby(sorted(set(new_states), key=find_owner), key=find_owner):
             send_list[r].extend(sorted(g))
 
+        received_list = graph_alltoall(send_list, self.comm)
         all_received = []
-        for r_offset in range(self.comm.size):
-            send_to = (self.comm.rank + r_offset) % self.comm.size
-            receive_from = (self.comm.rank + self.comm.size - r_offset) % self.comm.size
-
-            if send_to == self.comm.rank:
-                all_received.extend(send_list[self.comm.rank])
-            else:
-                received = self.comm.sendrecv(list(send_list[send_to]), dest=send_to, source=receive_from)
-                all_received.extend(received)
+        for r_data in received_list:
+            if r_data:
+                all_received.extend(r_data)
 
         existing_set = self._index_dict._map
         unique_received = sorted(set(all_received))
@@ -719,6 +777,9 @@ class SimpleDistributedStateContainer(StateContainer):
             assert all(self.local_basis[i] < self.local_basis[i + 1] for i in range(len(self.local_basis) - 1))
 
     def _getitem_sequence(self, l: Iterable[int]) -> Iterable[SlaterDeterminant]:
+        """
+        Documentation for _getitem_sequence.
+        """
         if not self.is_distributed:
             return (self.local_basis[i] for i in l)
 
@@ -752,6 +813,9 @@ class SimpleDistributedStateContainer(StateContainer):
         return (result[i] for i in np.argsort(send_order))
 
     def _index_sequence(self, s: Iterable[SlaterDeterminant]) -> Iterable[int]:
+        """
+        Documentation for _index_sequence.
+        """
         if not self.is_distributed:
             return (self._index_dict.get(val, self.size) for val in s)
             # return (self._index_dict[val] if val in self._index_dict else self.size for val in s)
@@ -796,11 +860,17 @@ class SimpleDistributedStateContainer(StateContainer):
         return (res for res in result[np.argsort(send_order)])
 
     def _contains_sequence(self, items) -> Iterable[bool]:
+        """
+        Documentation for _contains_sequence.
+        """
         if not self.is_distributed:
             return (item in self._index_dict for item in items)
         return (index < self.size for index in self._index_sequence(items))
 
     def alltoall_states(self, send_list: list[list[SlaterDeterminant]], flatten=False):
+        """
+        Documentation for alltoall_states.
+        """
         states = SimpleDistributedStateContainer._point2point(send_list, self.comm)
         if flatten:
             states = [state for r_states in states for state in r_states]
@@ -808,7 +878,13 @@ class SimpleDistributedStateContainer(StateContainer):
 
 
 class CentralizedStateContainer(StateContainer):
+    """
+    Documentation for CentralizedStateContainer.
+    """
     def __init__(self, states: Iterable, bytes_per_state, state_type=SlaterDeterminant, comm=None, verbose=True):
+        """
+        Documentation for __init__.
+        """
         self._full_basis = []
         super(CentralizedStateContainer, self).__init__([], bytes_per_state, state_type, comm)
         # super(CentralizedStateContainer, self).__init__(states, bytes_per_state, state_type, comm)
@@ -816,6 +892,9 @@ class CentralizedStateContainer(StateContainer):
         self.add_states(states)
 
     def _set_state_bounds(self, local_states) -> list[Optional[bytes]]:
+        """
+        Documentation for _set_state_bounds.
+        """
         local_sizes = (
             [self.size // self.comm.size + (1 if r < self.size % self.comm.size else 0) for r in range(self.comm.size)]
             if self.is_distributed
@@ -828,6 +907,9 @@ class CentralizedStateContainer(StateContainer):
         )
 
     def add_states(self, new_states) -> None:
+        """
+        Documentation for add_states.
+        """
         new_states = [self.type.from_bytes(state) if isinstance(state, bytes) else state for state in new_states]
         new_states = sorted(set(new_states), key=lambda state: hash_key(state))
         states_to_add = itertools.filterfalse(lambda s: s in self, new_states)
@@ -876,12 +958,21 @@ class CentralizedStateContainer(StateContainer):
         assert id(self._full_basis) == id(self._index_dict.states)
 
     def _getitem_sequence(self, l: Iterable[int]) -> Iterable[bytes]:
+        """
+        Documentation for _getitem_sequence.
+        """
         return (self._full_basis[i] for i in l)
 
     def _search_sorted(self, key):
+        """
+        Documentation for _search_sorted.
+        """
         return bisect_left(self._full_basis, key, key=lambda state: hash_key(state))
 
     def _index_sequence(self, key: Iterable[bytes]) -> Iterable[int]:
+        """
+        Documentation for _index_sequence.
+        """
         # return (
         #     idx if idx != len(self._full_basis) and self._full_basis[idx] == k else len(self._full_basis)
         #     for k in key
@@ -890,5 +981,8 @@ class CentralizedStateContainer(StateContainer):
         return (self._index_dict.get(k, self.size) for k in key)
 
     def _contains_sequence(self, items) -> Iterable[bool]:
+        """
+        Documentation for _contains_sequence.
+        """
         return (i in self._index_dict for i in items)
         # return (idx != len(self._full_basis) for idx in self._index_sequence(items))

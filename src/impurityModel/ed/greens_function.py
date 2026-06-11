@@ -24,6 +24,21 @@ import pickle
 
 
 def build_full_greens_function(block_gf, block_structure: BlockStructure):
+    """
+    Assemble the full Green's function from individual blocks and block symmetries.
+
+    Parameters
+    ----------
+    block_gf : list of ndarray
+        Green's functions for each inequivalent block.
+    block_structure : BlockStructure
+        The block structure defining mapping and symmetry relationships.
+
+    Returns
+    -------
+    res : ndarray
+        The full Green's function matrix.
+    """
     (
         blocks,
         identical_blocks,
@@ -369,13 +384,29 @@ def calc_Greens_function_with_offdiag(
 
     """
 
-    if dN is not None:
-        if dN_imp is None:
+    if dN_imp is None:
+        if dN is not None:
             dN_imp = {i: (dN, dN) for i in block_basis.impurity_orbitals}
-        if dN_val is None:
+        else:
+            dN_imp = {i: (0, 0) for i in block_basis.impurity_orbitals}
+    else:
+        dN_imp = {i: dN_imp.get(i, (0, 0)) for i in block_basis.impurity_orbitals}
+
+    if dN_val is None:
+        if dN is not None:
             dN_val = {i: (dN, 0) for i in block_basis.impurity_orbitals}
-        if dN_con is None:
+        else:
+            dN_val = {i: (0, 0) for i in block_basis.impurity_orbitals}
+    else:
+        dN_val = {i: dN_val.get(i, (0, 0)) for i in block_basis.impurity_orbitals}
+
+    if dN_con is None:
+        if dN is not None:
             dN_con = {i: (0, dN) for i in block_basis.impurity_orbitals}
+        else:
+            dN_con = {i: (0, 0) for i in block_basis.impurity_orbitals}
+    else:
+        dN_con = {i: dN_con.get(i, (0, 0)) for i in block_basis.impurity_orbitals}
 
     excited_restrictions = block_basis.build_excited_restrictions(
         hOp,
@@ -608,6 +639,9 @@ def get_block_Green(
     n_samples = max(len(conv_w) // 10, 1)
 
     def converged(alphas, betas, *args, **kwargs):
+        """
+        Documentation for converged.
+        """
         if np.any(np.linalg.norm(betas[-1], axis=1) < slaterWeightMin):
             return True
 
@@ -656,6 +690,21 @@ def get_block_Green(
 
 
 def build_qr(psi):
+    """
+    Perform an economic QR decomposition of a state matrix.
+
+    Parameters
+    ----------
+    psi : ndarray
+        The input state matrix.
+
+    Returns
+    -------
+    psi_orthogonal : ndarray
+        The orthogonalized matrix Q.
+    r : ndarray
+        The upper triangular matrix R.
+    """
     # Do a QR decomposition of the starting block.
     # Later on, use r to restore the psi block
     psi, r = sp.linalg.qr(psi.copy(), mode="economic", overwrite_a=True, check_finite=False, pivoting=False)
@@ -740,6 +789,35 @@ def block_Green(
 
 
 def block_green_impl(basis, hOp, psi_arr, delta, slaterWeightMin, verbose):
+    """
+    Internal block Green's function implementation.
+
+    Parameters
+    ----------
+    basis : Basis
+        The many-body basis.
+    hOp : dict
+        Hamiltonian operator.
+    psi_arr : list of ManyBodyState
+        Input state vectors.
+    delta : float or ndarray
+        Imaginary part/mesh info.
+    slaterWeightMin : float
+        Slater determinant cutoff weight.
+    verbose : bool
+        Whether to print verbose output.
+
+    Returns
+    -------
+    gs_matsubara : ndarray
+        Matsubara Green's function.
+    gs_realaxis : ndarray
+        Real axis Green's function.
+    r : ndarray
+        R matrix from QR.
+    psi_arr : list
+        Resulting states.
+    """
     N = len(basis)
     n = len(psi_arr)
 
@@ -772,6 +850,9 @@ def block_green_impl(basis, hOp, psi_arr, delta, slaterWeightMin, verbose):
     delta_min = max(slaterWeightMin**2, 1e-8)
 
     def converged(alphas, betas, verbose=False):
+        """
+        Documentation for converged.
+        """
         if alphas.shape[0] <= 1:
             return False
 
@@ -822,6 +903,9 @@ def block_green_impl(basis, hOp, psi_arr, delta, slaterWeightMin, verbose):
         h_local = basis.build_sparse_matrix(hOp)[:, basis.local_indices]
 
         def matmat(v):
+            """
+            Documentation for matmat.
+            """
             res = h_local @ v
             if comm is not None:
                 comm.Reduce(MPI.IN_PLACE if rank == 0 else res, res, op=MPI.SUM, root=0)
@@ -892,6 +976,9 @@ def block_Green_sparse(
     delta_min = max(slaterWeightMin**2, 1e-8)
 
     def converged(alphas, betas, verbose=False):
+        """
+        Documentation for converged.
+        """
         if alphas.shape[0] <= 1:
             return False
 
@@ -975,7 +1062,13 @@ def block_Green_freq_2(
         return np.zeros((len(iws), n, n), dtype=complex), np.zeros((len(ws), n, n), dtype=complex)
 
     def build_converged(w, delta):
+        """
+        Documentation for build_converged.
+        """
         def converged(alphas, betas, *args, **kwargs):
+            """
+            Documentation for converged.
+            """
             if np.any(np.linalg.norm(betas[-1], axis=1) < max(slaterWeightMin, 1e-8)):
                 return True
 
@@ -1080,6 +1173,31 @@ def block_Green_freq_2(
 
 
 def Green_freq_bicgstab_fixed_basis(w_mesh, hOp, psi, e, basis, slaterWeightMin):
+    """
+    Compute Green's function on a frequency mesh using BiCGSTAB with a fixed basis.
+
+    Parameters
+    ----------
+    w_mesh : ndarray
+        Frequency mesh.
+    hOp : dict
+        Hamiltonian operator.
+    psi : list of ManyBodyState
+        Input state vectors.
+    e : float
+        Energy offset.
+    basis : Basis
+        The many-body basis.
+    slaterWeightMin : float
+        Slater determinant cutoff.
+
+    Returns
+    -------
+    gs_matsubara : ndarray
+        Matsubara Green's function.
+    gs_realaxis : ndarray
+        Real axis Green's function.
+    """
     _, freq_roots, color, freq_per_color, split_basis, psi, _ = basis.split_basis_and_redistribute_psi(
         [1] * len(w_mesh), psi
     )
@@ -1150,6 +1268,29 @@ def Green_freq_bicgstab_fixed_basis(w_mesh, hOp, psi, e, basis, slaterWeightMin)
 
 
 def Green_freq_bicgstab(w_mesh, hOp, psi, e, basis, slaterWeightMin):
+    """
+    Compute Green's function on a frequency mesh using BiCGSTAB.
+
+    Parameters
+    ----------
+    w_mesh : ndarray
+        Frequency mesh.
+    hOp : dict
+        Hamiltonian operator.
+    psi : list of ManyBodyState
+        Input state vectors.
+    e : float
+        Energy offset.
+    basis : Basis
+        The many-body basis.
+    slaterWeightMin : float
+        Slater determinant cutoff.
+
+    Returns
+    -------
+    gs : ndarray
+        The computed Green's function.
+    """
     _, freq_roots, color, freq_per_color, split_basis, psi, _ = basis.split_basis_and_redistribute_psi(
         [1] * len(w_mesh), psi
     )
@@ -1331,6 +1472,29 @@ def calc_local_Greens_function_from_alpha_beta(alphas, betas, iws, ws, e, delta,
 
 
 def calc_G(alphas, betas, r, omega, e, delta):
+    """
+    Calculate the Green's function using continued fraction parameters.
+
+    Parameters
+    ----------
+    alphas : ndarray
+        Alpha continued fraction coefficients.
+    betas : ndarray
+        Beta continued fraction coefficients.
+    r : ndarray
+        R matrix projection.
+    omega : ndarray
+        Frequency mesh.
+    e : float
+        Energy offset.
+    delta : float
+        Broadening factor.
+
+    Returns
+    -------
+    G : ndarray
+        Calculated Green's function.
+    """
     if alphas.shape[0] == 0:
         return np.zeros((len(omega), alphas.shape[1], alphas.shape[1]), dtype=complex)
     I = np.identity(alphas.shape[1], dtype=complex)
@@ -1551,15 +1715,33 @@ def rotate_matrix(M, T):
     Parameters
     ==========
     M : NDArray - Matrix to rotate
-    T : NDArray - Rotation matrix to use
+    T : NDArray or dict - Rotation matrix to use, or dict of rotation matrices for blocks.
     Returns
     =======
     M' : NDArray - The rotated matrix
     """
+    if isinstance(T, dict):
+        from scipy.linalg import block_diag
+        sorted_keys = sorted(T.keys())
+        T_matrix = block_diag(*(T[k] for k in sorted_keys))
+        return np.conj(T_matrix.T) @ M @ T_matrix
     return np.conj(T.T) @ M @ T
 
 
 def block_diagonalize_hyb(hyb):
+    """
+    Block diagonalize the hybridization function matrix.
+
+    Parameters
+    ----------
+    hyb : ndarray of shape (n_freq, n_orb, n_orb)
+        The hybridization matrix.
+
+    Returns
+    -------
+    Q_full : ndarray of shape (n_orb, n_orb)
+        The transformation matrix.
+    """
     hyb_herm = 1 / 2 * (hyb + np.conj(np.transpose(hyb, (0, 2, 1))))
     blocks = get_blocks(hyb_herm)
     Q_full = np.zeros((hyb.shape[1], hyb.shape[2]), dtype=complex)
