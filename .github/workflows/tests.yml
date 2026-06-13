@@ -15,18 +15,18 @@ jobs:
       fail-fast: false
       matrix:
         compiler: [gcc-9, clang-11, gcc-12, clang-15, intel]
-        cxx_std: ["-std=c++17", "-std=c++20", "-std=c++23"]
+        cxx_std: ["-std=c++17", "-std=c++20", "-std=c++2b"]
         boost: ["-DBOOST", ""]
         parallel: ["-DPARALLEL", ""]
         exclude:
           - compiler: gcc-9
             cxx_std: "-std=c++20"
           - compiler: gcc-9
-            cxx_std: "-std=c++23"
+            cxx_std: "-std=c++2b"
           - compiler: clang-11
             cxx_std: "-std=c++20"
           - compiler: clang-11
-            cxx_std: "-std=c++23"
+            cxx_std: "-std=c++2b"
 
     steps:
       - name: Checkout code
