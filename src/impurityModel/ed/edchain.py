@@ -31,14 +31,14 @@ def build_imp_bath_blocks(
         The block structure representation of the Hamiltonian.
     """
     block_structure = build_block_structure(H)
-    impurity_indices = [None] * len(block_structure.blocks)
-    occupied_indices = [None] * len(block_structure.blocks)
-    unoccupied_indices = [None] * len(block_structure.blocks)
+    impurity_indices = [None for _ in range(len(block_structure.blocks))]
+    occupied_indices = [None for _ in range(len(block_structure.blocks))]
+    unoccupied_indices = [None for _ in range(len(block_structure.blocks))]
     for block_i, orbs in enumerate(block_structure.blocks):
-        bath_orbs = {orb for orb in orbs if orb >= n_orb}
+        bath_orbs = set(orb for orb in orbs if orb >= n_orb)
         impurity_orbs = set(orbs) - bath_orbs
         impurity_indices[block_i] = sorted(impurity_orbs)
-        occupied_indices[block_i] = {orb for orb in bath_orbs if H[orb, orb] < 0}
+        occupied_indices[block_i] = set(orb for orb in bath_orbs if H[orb, orb] < 0)
         unoccupied_indices[block_i] = sorted(bath_orbs - occupied_indices[block_i])
         occupied_indices[block_i] = sorted(occupied_indices[block_i])
         orbs[:] = impurity_indices[block_i]
@@ -352,7 +352,7 @@ def get_lanczos_vectors(H, v0, alphas, betas):
 
 
 def tridiagonalize(H, v0):
-    """Perform block tridiagonalization (block Lanczos method) on Hamiltonian H.
+    """Perform block tridiagonalization (block Lanczos method with full reorthogonalization) on Hamiltonian H.
 
     Parameters
     ----------
@@ -373,7 +373,8 @@ def tridiagonalize(H, v0):
     assert H.shape[0] == v0.shape[0]
     block_size = v0.shape[1]
 
-    v0, v0_tilde = sp.linalg.qr(v0, mode="economic", overwrite_a=True, check_finite=False)
+    #  V0 could be a view into a larger matrix, so we do not put overwrite_a=True, that could be disastrous.
+    v0, v0_tilde = sp.linalg.qr(v0, mode="economic", overwrite_a=False, check_finite=True)
 
     if v0.shape[0] == 0:
         return (
@@ -392,12 +393,17 @@ def tridiagonalize(H, v0):
     for i in range(N // block_size):
         wp = H @ q[1]
         alphas[i] = np.conj(q[1].T) @ wp
+        # For i == 0, betas[i-1] == betas[-1] == np.zeros(n, n)
+        # No if i > 0 needed.
         wp -= q[1] @ alphas[i] + q[0] @ np.conj(betas[i - 1].T)
         for _ in range(2):
-            wp -= Q @ np.conj(Q.T) @ wp
+            wp -= Q @ (np.conj(Q.T) @ wp)
         Q[:, i * block_size : (i + 1) * block_size] = q[1]
         q[0] = q[1]
         q[1], betas[i] = np.linalg.qr(wp)
+        # Make sure we stop the Lanczos method if beta becomes to small
+        if np.linalg.norm(betas[i]) < 1e-14:
+            break
 
     return alphas, betas, v0_tilde
 
@@ -538,6 +544,9 @@ def transform_to_lanczos_tridagonal_matrix(H, n_imp):
     np.ndarray
         The transformed tridiagonal Hamiltonian matrix.
     """
+    matrix_print(H, "Matrix to tridiagonalize")
+    if H.shape[0] <= 2:
+        return H
     Hb = H[n_imp:, n_imp:]
     V0 = H[n_imp:, :n_imp]
     alphas, betas, V0 = tridiagonalize(Hb, V0)
@@ -656,7 +665,7 @@ def linked_double_chain(H_imp, vs, es, verbose=True, extremely_verbose=False):
             f"After reshuffling the orbitals, the impurity sits at indices {np.arange(imp_index, imp_index+n_imp)} and the coupling bath state at indices {np.arange(imp_index + n_imp, imp_index+2*n_imp)}"
         )
         matrix_print(Q_decoupled, "Orbital character for states")
-        matrix_print(H_decoupled, "Hamiltonian transformed into decoupled occupied and unoccupied blocks")
+        matrix_print(H_decoupled, "Hamiltonian transformed into decoupled occupied and unoccupied blocks", flush=True)
     # Undo the mixing of impurity and bath states
     R_couple = np.eye(Q_decoupled.shape[0], dtype=Q_decoupled.dtype)
     R_couple[imp_index : imp_index + 2 * n_imp, imp_index : imp_index + 2 * n_imp] = separate_orbital_character(
@@ -668,19 +677,20 @@ def linked_double_chain(H_imp, vs, es, verbose=True, extremely_verbose=False):
         matrix_print(
             np.conj(R_couple.T) @ H_decoupled @ R_couple,
             "Hamiltonian transformed into coupled occupied and unoccupied blocks",
+            flush=True,
         )
 
     H_tridiagonal_decoupled = np.zeros_like(H_decoupled)
     H_tridiagonal_decoupled[: imp_index + n_imp, : imp_index + n_imp] = transform_to_lanczos_tridagonal_matrix(
         H_decoupled[: imp_index + n_imp, : imp_index + n_imp][::-1, ::-1], n_imp
     )[::-1, ::-1]
-    if imp_index < H_star.shape[0]:
-        # The coupling bath state sits in the top left corner of this block
+    # The coupling state sits just after the impurity (i.e. imp_index + n_imp)
+    # Check that we have unoccupied states, beyond just the impurity.
+    if imp_index + n_imp < H_star.shape[0]:
         top_left = imp_index + n_imp
         H_tridiagonal_decoupled[top_left:, top_left:] = transform_to_lanczos_tridagonal_matrix(
             H_decoupled[top_left:, top_left:], n_imp
         )
-
     H_linked_chains = np.linalg.multi_dot((np.conj(R_couple.T), H_tridiagonal_decoupled, R_couple))
     if extremely_verbose:
         matrix_print(H_tridiagonal_decoupled, "Decoupled Hamiltonian with tridiagonal blocks")

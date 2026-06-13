@@ -46,7 +46,7 @@ plot_RIXS="impurityModel.scripts.plot_RIXS:main"
 build_h0="impurityModel.scripts.build_h0:main"
 [tool.setuptools]
 ext-modules = [
-{name = "impurityModel.ed.ManyBodyUtils", sources=["src/cython/ManyBodyUtils.pyx"], language="c++"}
+{name = "impurityModel.ed.ManyBodyUtils", sources=["src/cython/ManyBodyUtils.pyx", "src/cython/MpiUtils.cpp"], language="c++"}
 ]
 
 

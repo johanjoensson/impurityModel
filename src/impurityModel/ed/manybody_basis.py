@@ -21,7 +21,6 @@ from impurityModel.ed.manybody_state_containers import (
 from impurityModel.ed.mpi_comm import graph_alltoall, graph_alltoall_psis
 
 
-
 from impurityModel.ed import product_state_representation as psr
 from impurityModel.ed.finite import (
     c2i,
@@ -222,6 +221,7 @@ class Basis:
     This class manages the Slater determinant basis states for exact diagonalization,
     supporting distributed states over MPI, restrictions, and basis extensions.
     """
+
     def _get_offsets_and_local_lengths(self, total_length: int) -> tuple[int, int]:
         """Compute the MPI rank offsets and local lengths for distributing a total size.
 
@@ -505,7 +505,9 @@ class Basis:
         min_occ, max_occ = restrictions[orbs]
         return max(min_occ - occ_dec, 0), min(max_occ + occ_inc, len(orbs))
 
-    def build_initial_restrictions(self, op: ManyBodyOperator, min_dist: int = 4) -> Optional[dict[frozenset[int], tuple[int, int]]]:
+    def build_initial_restrictions(
+        self, op: ManyBodyOperator, min_dist: int = 4
+    ) -> Optional[dict[frozenset[int], tuple[int, int]]]:
         """Construct the initial occupation restrictions based on Hamiltonian connectivity.
 
         Parameters
@@ -676,18 +678,18 @@ class Basis:
                     filled_conduction_states = [
                         con_orb_block[orb]
                         for orb in np.nonzero(conduction_occupations > 1 - cutoff)[0]
-                        if np.min(dist_matrix[np.ix_(imp_orb_block, con_orb_block[orb])]) > min_dist
+                        if np.min(dist_matrix[np.ix_(imp_orb_block, [con_orb_block[orb]])]) > min_dist
                     ]
                     filled_states = frozenset(sorted(filled_valence_states + filled_conduction_states))
                     empty_valence_states = [
                         val_orb_block[orb]
                         for orb in np.nonzero(valence_occupations < cutoff)[0]
-                        if np.min(dist_matrix[np.ix_(imp_orb_block, val_orb_block[orb])]) > min_dist
+                        if np.min(dist_matrix[np.ix_(imp_orb_block, [val_orb_block[orb]])]) > min_dist
                     ]
                     empty_conduction_states = [
                         con_orb_block[orb]
                         for orb in np.nonzero(conduction_occupations < cutoff)[0]
-                        if np.min(dist_matrix[np.ix_(imp_orb_block, con_orb_block[orb])]) > min_dist
+                        if np.min(dist_matrix[np.ix_(imp_orb_block, [con_orb_block[orb]])]) > min_dist
                     ]
                     min_val = max(min_val - len(filled_valence_states) - len(empty_valence_states), 0)
                     max_con = max(max_con - len(empty_conduction_states) - len(filled_conduction_states), 0)
@@ -813,8 +815,7 @@ class Basis:
             assert delta_conduction_occ is None
             assert delta_impurity_occ is None
             initial_basis = [
-                self.type.from_bytes(state) if isinstance(state, bytes) else state
-                for state in initial_basis
+                self.type.from_bytes(state) if isinstance(state, bytes) else state for state in initial_basis
             ]
         else:
             assert nominal_impurity_occ is not None
@@ -916,10 +917,13 @@ class Basis:
             )
             psis = [psis]
         psis = [
-            psi if isinstance(psi, ManyBodyState) else ManyBodyState({
-                (SlaterDeterminant.from_bytes(k) if isinstance(k, bytes) else k): v
-                for k, v in psi.items()
-            })
+            (
+                psi
+                if isinstance(psi, ManyBodyState)
+                else ManyBodyState(
+                    {(SlaterDeterminant.from_bytes(k) if isinstance(k, bytes) else k): v for k, v in psi.items()}
+                )
+            )
             for psi in psis
         ]
         if not self.is_distributed:
@@ -927,46 +931,7 @@ class Basis:
 
         comm = self.comm
 
-        def find_owner(state: SlaterDeterminant) -> int:
-            """Determine the rank owning the state using a hash function.
-
-            Parameters
-            ----------
-            state : SlaterDeterminant
-                The state to locate.
-
-            Returns
-            -------
-            int
-                The MPI rank index.
-            """
-            return hash(state) % comm.size
-
-        # Build a send list: for each target rank r, a list of dicts
-        # (one dict per psi), mapping state_bytes -> amplitude.
-        send_list = [[{} for _ in psis] for _ in range(comm.size)]
-        unique_states = set()
-        for psi in psis:
-            unique_states.update(psi.keys())
-        for state in unique_states:
-            send_to = find_owner(state)
-            state_bytes = bytes(state.to_bytearray()[:self.n_bytes])
-            for s_psi, l_psi in zip(send_list[send_to], psis):
-                if state not in l_psi:
-                    continue
-                s_psi[state_bytes] = l_psi[state]
-
-        # Use the specialised zero-pickle path: raw bytes + complex128
-        # arrays exchanged via Neighbor_alltoallv on a sparse graph comm.
-        received_list = graph_alltoall_psis(send_list, self.n_bytes, comm)
-        res = [ManyBodyState({}) for _ in psis]
-        for received_psis in received_list:
-            for res_n, psi_dict in zip(res, received_psis):
-                if psi_dict:
-                    res_n += ManyBodyState({
-                        self.type.from_bytes(k): v
-                        for k, v in psi_dict.items()
-                    })
+        res = graph_alltoall_psis(psis, self.n_bytes, comm)
         return res
 
     def _generate_spin_flipped_determinants(self, determinants: Iterable[SlaterDeterminant]) -> set[SlaterDeterminant]:
@@ -1015,8 +980,12 @@ class Basis:
                         if len(flipped) == 0:
                             continue
                         flipped_state = list(flipped.keys())[0]
-                        new_n_dn = int(applyOp(self.num_spin_orbitals, n_dn_op, {flipped_state: 1}).get(flipped_state, 0))
-                        new_n_up = int(applyOp(self.num_spin_orbitals, n_up_op, {flipped_state: 1}).get(flipped_state, 0))
+                        new_n_dn = int(
+                            applyOp(self.num_spin_orbitals, n_dn_op, {flipped_state: 1}).get(flipped_state, 0)
+                        )
+                        new_n_up = int(
+                            applyOp(self.num_spin_orbitals, n_up_op, {flipped_state: 1}).get(flipped_state, 0)
+                        )
                         if (new_n_dn == n_dn and new_n_up == n_up) or (new_n_dn == n_up and new_n_up == n_dn):
                             spin_flip.update(flipped.keys())
 
@@ -1042,7 +1011,7 @@ class Basis:
         """
         if isinstance(op, dict):
             op = ManyBodyOperator(op)
-        # op.set_restrictions(self.restrictions)
+        op.set_restrictions(self.restrictions)
         old_size = self.size - 1
 
         it = 0
@@ -1162,7 +1131,7 @@ class Basis:
         for state in self.state_container:
             yield state
 
-    def copy(self) -> 'Basis':
+    def copy(self) -> "Basis":
         """Create a copy of this Basis.
 
         Returns
@@ -1355,9 +1324,7 @@ class Basis:
 
         n = len(self)
         if rows:
-            res = sp.sparse.csc_array(
-                (vals, (rows, cols)), shape=(n, n), dtype=complex
-            )
+            res = sp.sparse.csc_array((vals, (rows, cols)), shape=(n, n), dtype=complex)
         else:
             res = sp.sparse.csc_array((n, n), dtype=complex)
         return res
@@ -1372,7 +1339,7 @@ class Basis:
         stats: dict - Occupation statistics
         """
         impurity_indices = self.impurity_orbitals
-        (valence_indices, conduction_indices) = self.bath_states
+        valence_indices, conduction_indices = self.bath_states
         impurity_indices = [orb for blocks in impurity_indices.values() for block in blocks for orb in block]
         valence_indices = [orb for i, blocks in valence_indices.items() for block in blocks for orb in block]
         conduction_indices = [orb for blocks in conduction_indices.values() for block in blocks for orb in block]
@@ -1421,17 +1388,11 @@ class Basis:
         square = orbital_indices_left == orbital_indices_right
 
         for n, psi_n in enumerate(psis):
-            phi = [
-                ManyBodyOperator({((orb, "a"),): 1.0})(psi_n, 0)
-                for orb in orbital_indices_left
-            ]
+            phi = [ManyBodyOperator({((orb, "a"),): 1.0})(psi_n, 0) for orb in orbital_indices_left]
             if square:
                 chi = phi
             else:
-                chi = [
-                    ManyBodyOperator({((orb, "a"),): 1.0})(psi_n, 0)
-                    for orb in orbital_indices_right
-                ]
+                chi = [ManyBodyOperator({((orb, "a"),): 1.0})(psi_n, 0) for orb in orbital_indices_right]
 
             if self.is_distributed:
                 phi = self.redistribute_psis(phi)
@@ -1496,7 +1457,9 @@ class Basis:
 
     def split_basis_and_redistribute_psi(
         self, priorities: list[float], psis: Optional[list[ManyBodyState]]
-    ) -> tuple[list[int], list[int], int, list[int], 'Basis', Optional[list[ManyBodyState]], list[Optional[MPI.Intercomm]]]:
+    ) -> tuple[
+        list[int], list[int], int, list[int], "Basis", Optional[list[ManyBodyState]], list[Optional[MPI.Intercomm]]
+    ]:
         """Split the basis and redistribute wavefunctions over a split communicator.
 
         Parameters
@@ -1576,7 +1539,9 @@ class Basis:
         for c, c_root in enumerate(split_roots):
             # I will send  states to this color
             if color != c:
-                serialized_local_basis = bytearray().join(state.to_bytearray()[:self.n_bytes] for state in self.local_basis)
+                serialized_local_basis = bytearray().join(
+                    state.to_bytearray()[: self.n_bytes] for state in self.local_basis
+                )
                 intercomms[c].send(serialized_local_basis, dest=split_comm.rank % procs_per_color[c])
             # I will receive states from all other colors
             else:
@@ -1610,10 +1575,7 @@ class Basis:
             new_psis = [p.copy() for p in psis]
             for c, c_root in enumerate(split_roots):
                 if color != c:
-                    serialized_psis = [
-                        {bytes(k.to_bytearray()[:self.n_bytes]): v for k, v in p.items()}
-                        for p in psis
-                    ]
+                    serialized_psis = [{bytes(k.to_bytearray()[: self.n_bytes]): v for k, v in p.items()} for p in psis]
                     intercomms[c].send(serialized_psis, dest=split_comm.rank % procs_per_color[c])
                 else:
                     for send_color in range(len(split_roots)):
@@ -1624,10 +1586,9 @@ class Basis:
                                 continue
                             received_psis = intercomms[send_color].recv(source=sender)
                             for i, received_psi in enumerate(received_psis):
-                                new_psis[i] += ManyBodyState({
-                                    self.type.from_bytes(k): v
-                                    for k, v in received_psi.items()
-                                })
+                                new_psis[i] += ManyBodyState(
+                                    {self.type.from_bytes(k): v for k, v in received_psi.items()}
+                                )
             psis = split_basis.redistribute_psis(new_psis)
 
         # Free the intercommunicators collectively while all ranks are still
@@ -1751,7 +1712,7 @@ class Basis:
                     for block_idx in block_indices_per_color[start:stop]
                     for local_idx in blocks[block_idx]
                 }
-                serialized_states = bytearray().join(state.to_bytearray()[:self.n_bytes] for state in states_to_send)
+                serialized_states = bytearray().join(state.to_bytearray()[: self.n_bytes] for state in states_to_send)
                 block_intercomms[c].send(
                     serialized_states,
                     dest=block_basis.comm.rank % procs_per_color[c],
@@ -1777,10 +1738,7 @@ class Basis:
                                 continue
                             received_psi_dict = block_intercomms[send_color].recv(source=sender)
                             for i, r_psi_dict in enumerate(received_psi_dict):
-                                psi_state = ManyBodyState({
-                                    self.type.from_bytes(k): v
-                                    for k, v in r_psi_dict.items()
-                                })
+                                psi_state = ManyBodyState({self.type.from_bytes(k): v for k, v in r_psi_dict.items()})
                                 new_psis[i] += psi_state
                 else:
                     start = block_index_color_offsets[c]
@@ -1791,7 +1749,11 @@ class Basis:
                         for local_idx in blocks[block_idx]
                     }
                     serialized_send_psis = [
-                        {bytes(state.to_bytearray()[:self.n_bytes]): amp for state, amp in psi.items() if state in send_states}
+                        {
+                            bytes(state.to_bytearray()[: self.n_bytes]): amp
+                            for state, amp in psi.items()
+                            if state in send_states
+                        }
                         for psi in psis
                     ]
                     block_intercomms[c].send(
@@ -1810,7 +1772,15 @@ class Basis:
         if block_basis is not None and block_basis.comm != comm:
             block_basis.free_comm()
 
-        return block_indices, block_roots, block_color, blocks_per_color, block_basis, psis, [None] * len(block_intercomms)
+        return (
+            block_indices,
+            block_roots,
+            block_color,
+            blocks_per_color,
+            block_basis,
+            psis,
+            [None] * len(block_intercomms),
+        )
 
 
 class CIPSI_Basis(Basis):
@@ -1820,6 +1790,7 @@ class CIPSI_Basis(Basis):
     Reference Selected by Perturbation) iteratively expands the basis by selecting
     important configuration determinants based on second-order perturbation theory.
     """
+
     def __init__(
         self,
         impurity_orbitals: dict[int, list[list[int]]],
@@ -1920,9 +1891,7 @@ class CIPSI_Basis(Basis):
 
         # Collect candidate determinants: states touched by H|Psi_i> that are
         # not already in the current basis.
-        local_Djs = sorted(
-            {state for hp in Hpsi_ref for state in hp if state not in self._index_dict}
-        )
+        local_Djs = sorted({state for hp in Hpsi_ref for state in hp if state not in self._index_dict})
 
         if not local_Djs:
             return local_Djs, np.zeros((len(Hpsi_ref), 0), dtype=complex)
@@ -1947,9 +1916,7 @@ class CIPSI_Basis(Basis):
         # arbitrary operator rank.
         psi_all_Dj = ManyBodyState({Dj: 1.0 for Dj in local_Djs})
         H_psi_all = applyOp_test(H, psi_all_Dj, cutoff=slaterWeightMin)
-        e_Dj = np.array(
-            [np.real(H_psi_all.get(Dj, 0.0)) for Dj in local_Djs], dtype=float
-        )
+        e_Dj = np.array([np.real(H_psi_all.get(Dj, 0.0)) for Dj in local_Djs], dtype=float)
 
         # --- perturbative energy denominators ---
         # de[i, j] = E_i - <Dj|H|Dj>  (broadcast e_ref over j)
@@ -1965,10 +1932,7 @@ class CIPSI_Basis(Basis):
     def determine_new_Dj(self, e_ref, psi_ref, H, de2_min, slater_cutoff=0, return_Hpsi_ref=False):
         """Apply H to each reference state, then select candidate determinants
         whose perturbative energy contribution exceeds *de2_min*."""
-        Hpsi_ref = [
-            applyOp_test(H, psi_i, cutoff=slater_cutoff)
-            for psi_i in psi_ref
-        ]
+        Hpsi_ref = [applyOp_test(H, psi_i, cutoff=slater_cutoff) for psi_i in psi_ref]
         Hpsi_ref = self.redistribute_psis(Hpsi_ref)
         local_Djs, de2 = self._calc_de2(H, Hpsi_ref, e_ref)
         de2_mask = np.any(np.abs(de2) >= de2_min, axis=0)
@@ -1999,6 +1963,8 @@ class CIPSI_Basis(Basis):
         slaterWeightMin : float
             Amplitude cutoff passed to applyOp during H|Psi> evaluations.
         """
+        if self.restrictions is not None:
+            H.set_restrictions(self.restrictions)
         de0_max = -self.tau * np.log(1e-4)
         psi_refs = None
 
@@ -2012,11 +1978,7 @@ class CIPSI_Basis(Basis):
 
             # Use previous eigenvectors as initial guess when doing sparse
             # diagonalisation (size >= dense_cutoff) to accelerate convergence.
-            v0 = (
-                self.build_vector(psi_refs).T
-                if psi_refs is not None and self.size >= dense_cutoff
-                else None
-            )
+            v0 = self.build_vector(psi_refs).T if psi_refs is not None and self.size >= dense_cutoff else None
             e_ref, psi_ref_dense = eigensystem_new(
                 H_mat,
                 e_max=de0_max,
@@ -2030,9 +1992,7 @@ class CIPSI_Basis(Basis):
 
             psi_refs = self.build_state(psi_ref_dense.T)
 
-            new_Dj = self.determine_new_Dj(
-                e_ref, psi_refs, H, de2_min, slater_cutoff=slaterWeightMin
-            )
+            new_Dj = self.determine_new_Dj(e_ref, psi_refs, H, de2_min, slater_cutoff=slaterWeightMin)
             old_size = self.size
             self.add_states(new_Dj)
             psi_refs = self.redistribute_psis(psi_refs)
@@ -2044,7 +2004,9 @@ class CIPSI_Basis(Basis):
         if self.verbose:
             print(f"After expansion, the basis contains {self.size} elements.", flush=True)
 
-    def expand_at(self, E_ref: np.ndarray, psi_ref: list[ManyBodyState], H: ManyBodyOperator, de2_min: float = 1e-5) -> None:
+    def expand_at(
+        self, E_ref: np.ndarray, psi_ref: list[ManyBodyState], H: ManyBodyOperator, de2_min: float = 1e-5
+    ) -> None:
         """Expand the basis at a specific reference energy and wavefunction.
 
         Parameters
@@ -2071,7 +2033,7 @@ class CIPSI_Basis(Basis):
                 self.comm.Allreduce(MPI.IN_PLACE, N2s, op=MPI.SUM)
             psi_ref = [psi / np.sqrt(N2s[i]) for i, psi in enumerate(psi_ref)]
 
-    def copy(self) -> 'CIPSI_Basis':
+    def copy(self) -> "CIPSI_Basis":
         """Create a copy of this CIPSI_Basis.
 
         Returns
@@ -2095,9 +2057,15 @@ class CIPSI_Basis(Basis):
         assert len(new_basis) == len(self)
         return new_basis
 
-    def split_basis_and_redistribute_psi(
-        self, priorities: list[float], psis: Optional[list[ManyBodyState]]
-    ) -> tuple[list[int], list[int], int, list[int], 'CIPSI_Basis', Optional[list[ManyBodyState]], list[Optional[MPI.Intercomm]]]:
+    def split_basis_and_redistribute_psi(self, priorities: list[float], psis: Optional[list[ManyBodyState]]) -> tuple[
+        list[int],
+        list[int],
+        int,
+        list[int],
+        "CIPSI_Basis",
+        Optional[list[ManyBodyState]],
+        list[Optional[MPI.Intercomm]],
+    ]:
         """Split the CIPSI basis and redistribute wavefunctions.
 
         Parameters

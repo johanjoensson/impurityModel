@@ -94,7 +94,7 @@ def calc_energy(
     basis.restrictions = basis.build_excited_restrictions(h_op, psis=None, es=None)
     if len(basis) == 0:
         return np.inf, basis
-    basis.expand(h_op, dense_cutoff=dense_cutoff, de2_min=1e-4, slaterWeightMin=0)  # slaterWeightMin)
+    basis.expand(h_op, dense_cutoff=dense_cutoff, de2_min=1e-4, slaterWeightMin=slaterWeightMin)
 
     energy_cut = -tau * np.log(1e-4)
 
@@ -103,7 +103,7 @@ def calc_energy(
         h,
         e_max=energy_cut,
         k=10,
-        eigenValueTol=slaterWeightMin,  # np.finfo(float).eps,
+        eigenValueTol=slaterWeightMin,
         return_eigvecs=True,
         comm=basis.comm,
         dense=basis.size < dense_cutoff,
@@ -194,7 +194,7 @@ def find_ground_state_basis(
             truncation_threshold=truncation_threshold,
             slaterWeightMin=slaterWeightMin,
         )
-        energy_cache[key] = (e_trial, basis.copy() if basis is not None else None)
+        # energy_cache[key] = (e_trial, basis.copy() if basis is not None else None)
         return e_trial, basis
 
     keys = list(N0.keys())
@@ -317,7 +317,7 @@ def calc_gs(
     # Hop.set_restrictions(ground_state_basis.restrictions)
     ground_state_basis.tau = tau
     energy_cut = -tau * np.log(1e-4)
-    ground_state_basis.expand(Hop, dense_cutoff=dense_cutoff, de2_min=1e-6, slaterWeightMin=0)  # slaterWeightMin)
+    ground_state_basis.expand(Hop, dense_cutoff=dense_cutoff, de2_min=1e-6, slaterWeightMin=slaterWeightMin)
     h_gs = ground_state_basis.build_sparse_matrix(Hop)
     es, psis_dense = eigensystem(
         h_gs,

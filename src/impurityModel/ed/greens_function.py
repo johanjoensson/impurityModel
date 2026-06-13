@@ -15,7 +15,13 @@ from impurityModel.ed.lanczos import (
 from impurityModel.ed.manybody_basis import CIPSI_Basis, Basis
 from impurityModel.ed.cg import bicgstab, block_bicgstab
 from impurityModel.ed.block_structure import BlockStructure, get_blocks
-from impurityModel.ed.ManyBodyUtils import ManyBodyState, ManyBodyOperator, SlaterDeterminant, applyOp as applyOp_test, inner
+from impurityModel.ed.ManyBodyUtils import (
+    ManyBodyState,
+    ManyBodyOperator,
+    SlaterDeterminant,
+    applyOp as applyOp_test,
+    inner,
+)
 from heapq import merge
 
 from mpi4py import MPI
@@ -141,10 +147,7 @@ def split_comm_and_redistribute_psi(priorities: Iterable[float], psis: list[Many
     new_psis = [p.copy() for p in psis]
     for c, c_root in enumerate(split_roots):
         if color != c:
-            serialized_psis = [
-                {tuple(k): v for k, v in p.items()}
-                for p in psis
-            ]
+            serialized_psis = [{tuple(k): v for k, v in p.items()} for p in psis]
             comm.send(serialized_psis, dest=c_root + (comm.rank % procs_per_color[c]))
         else:
             for sender in range(comm.size):
@@ -158,10 +161,7 @@ def split_comm_and_redistribute_psi(priorities: Iterable[float], psis: list[Many
                     if isinstance(received_psi, ManyBodyState):
                         new_psis[i] += received_psi
                     else:
-                        psi_state = ManyBodyState({
-                            SlaterDeterminant(k): v
-                            for k, v in received_psi.items()
-                        })
+                        psi_state = ManyBodyState({SlaterDeterminant(k): v for k, v in received_psi.items()})
                         new_psis[i] += psi_state
 
     return slice(indices_start, indices_end), split_roots, color, items_per_color, split_comm, new_psis
@@ -384,29 +384,26 @@ def calc_Greens_function_with_offdiag(
 
     """
 
+    # Set limits for change occupation, if any.
+    # limits are pairs of integers (max_holes, max_el)
+    # These limits are imposed on top of the (effective) ground state limitations.
     if dN_imp is None:
         if dN is not None:
             dN_imp = {i: (dN, dN) for i in block_basis.impurity_orbitals}
-        else:
-            dN_imp = {i: (0, 0) for i in block_basis.impurity_orbitals}
     else:
-        dN_imp = {i: dN_imp.get(i, (0, 0)) for i in block_basis.impurity_orbitals}
+        dN_imp = {i: dN_imp.get(i, None) for i in block_basis.impurity_orbitals}
 
     if dN_val is None:
         if dN is not None:
             dN_val = {i: (dN, 0) for i in block_basis.impurity_orbitals}
-        else:
-            dN_val = {i: (0, 0) for i in block_basis.impurity_orbitals}
     else:
-        dN_val = {i: dN_val.get(i, (0, 0)) for i in block_basis.impurity_orbitals}
+        dN_val = {i: dN_val.get(i, None) for i in block_basis.impurity_orbitals}
 
     if dN_con is None:
         if dN is not None:
             dN_con = {i: (0, dN) for i in block_basis.impurity_orbitals}
-        else:
-            dN_con = {i: (0, 0) for i in block_basis.impurity_orbitals}
     else:
-        dN_con = {i: dN_con.get(i, (0, 0)) for i in block_basis.impurity_orbitals}
+        dN_con = {i: dN_con.get(i, None) for i in block_basis.impurity_orbitals}
 
     excited_restrictions = block_basis.build_excited_restrictions(
         hOp,
@@ -420,11 +417,11 @@ def calc_Greens_function_with_offdiag(
     block_v = [[ManyBodyState({}) for _ in tOps] for _ in psis]
     for (i_tOp, tOp), (j_psi, psi) in itertools.product(enumerate(tOps), enumerate(psis)):
 
-        # tOp.set_restrictions(excited_restrictions)
+        tOp.set_restrictions(excited_restrictions)
         block_v[j_psi][i_tOp] += applyOp_test(
             tOp,
             psi,
-            cutoff=0,  # slaterWeightMin,
+            cutoff=slaterWeightMin,
         )
     block_v_lengths = np.array([sum(len(t_psi) for t_psi in t_psis) for t_psis in block_v])
     block_basis.comm.Allreduce(MPI.IN_PLACE, block_v_lengths, op=MPI.SUM)
@@ -436,7 +433,7 @@ def calc_Greens_function_with_offdiag(
         excited_states_per_color,
         split_original_basis,
         split_original_psis,
-        _,  # excited_intercomms — freed collectively by gc after barrier in conftest
+        _,
     ) = block_basis.split_basis_and_redistribute_psi(
         np.log10(block_v_lengths + 1) + 1, [t_psi for t_psis in block_v for t_psi in t_psis]
     )
@@ -478,8 +475,9 @@ def calc_Greens_function_with_offdiag(
         excited_basis = Basis(
             split_original_basis.impurity_orbitals,
             split_original_basis.bath_states,
-            initial_basis=excited_states,
-            # restrictions=excited_restrictions,
+            initial_basis=set(state for p in excited_psis for state in p),
+            # initial_basis=excited_states,
+            restrictions=excited_restrictions,
             comm=split_original_basis.comm,
             verbose=verbose,
             truncation_threshold=split_original_basis.truncation_threshold,
@@ -487,8 +485,8 @@ def calc_Greens_function_with_offdiag(
             spin_flip_dj=split_original_basis.spin_flip_dj,
         )
 
-        # if excited_basis.restrictions is not None:
-        #     hOp.set_restrictions(excited_basis.restrictions)
+        if excited_basis.restrictions is not None:
+            hOp.set_restrictions(excited_basis.restrictions)
         if sparse:
             alphas, betas, r = block_Green_sparse(
                 hOp=hOp,
@@ -1003,7 +1001,7 @@ def block_Green_sparse(
 
     if N == 0 or n == 0:
         return np.empty((0, n, n), dtype=complex), np.empty((0, n, n), dtype=complex), np.zeros((n, n), dtype=complex)
-    psi_dense = basis.build_vector(psi_arr, root=0, slaterWeightMin=0).T
+    psi_dense = basis.build_vector(psi_arr, root=0, slaterWeightMin=slaterWeightMin).T
     if rank == 0:
         psi_dense, r = build_qr(psi_dense)
     if mpi:
@@ -1146,6 +1144,7 @@ def block_Green_freq_2(
         converged : function
             A function that evaluates block Lanczos convergence at frequency `w`.
         """
+
         def converged(alphas, betas, *args, **kwargs):
             """
             Evaluate block Lanczos convergence for the outer frequency `w` and broadening `delta`.
@@ -1232,13 +1231,12 @@ def block_Green_freq_2(
             if True:
                 # Use fully sparse implementation
                 # Build basis for each frequency
-                h_local = freq_basis.build_sparse_matrix(hOp)
-                alphas, betas, _ = block_lanczos(
-                    psi0=psi,
+                alphas, betas, _ = block_lanczos_sparse(
+                    psi,
+                    hOp,
                     basis=basis,
                     converged=build_converged(w, delta),
-                    h_mem=h_mem,
-                    verbose=False and verbose,
+                    verbose=verbose,
                     slaterWeightMin=slaterWeightMin,
                     reort=reort,
                 )
@@ -1819,6 +1817,7 @@ def rotate_matrix(M, T):
     """
     if isinstance(T, dict):
         from scipy.linalg import block_diag
+
         sorted_keys = sorted(T.keys())
         T_matrix = block_diag(*(T[k] for k in sorted_keys))
         return np.conj(T_matrix.T) @ M @ T_matrix

@@ -39,10 +39,12 @@ class Reort(Enum):
     PERIODIC : int
         Periodic reorthogonalization.
     """
+
     NONE = 0
     PARTIAL = 1
     FULL = 2
     PERIODIC = 3
+    SELECTIVE = 4
 
 
 def calculate_thermal_gs(h, block_size, e_max, v0=None, reort=Reort.FULL, comm=None):
@@ -553,8 +555,11 @@ def block_lanczos_sparse(
     if not isinstance(h_op, ManyBodyOperator):
         h_op = ManyBodyOperator(h_op)
     psi0 = [
-        ManyBodyState({basis.type.from_bytes(k) if isinstance(k, bytes) else k: v for k, v in psi.items()})
-        if isinstance(psi, dict) else psi
+        (
+            ManyBodyState({basis.type.from_bytes(k) if isinstance(k, bytes) else k: v for k, v in psi.items()})
+            if isinstance(psi, dict)
+            else psi
+        )
         for psi in psi0
     ]
 
@@ -563,12 +568,12 @@ def block_lanczos_sparse(
     rank = comm.rank if mpi else 0
     build_krylov_basis = reort != Reort.NONE
     n = len(psi0)
-    
+
     alphas = np.empty((0, n, n), dtype=complex, order="C")
     betas = np.empty((0, n, n), dtype=complex, order="C")
-    
+
     psi0 = basis.redistribute_psis(psi0)
-    
+
     q = [[ManyBodyState() for _ in range(n)], psi0]
     if build_krylov_basis:
         Q = [st.copy() for st in psi0]
@@ -595,14 +600,14 @@ def block_lanczos_sparse(
         t0 = perf_counter()
         wp = matmat(q[1])
         t_apply = perf_counter() - t0
-        
+
         old_basis_size = basis.size
         t0 = perf_counter()
         basis.add_states(
-            set(state for p in wp for state, amp in p.items() if abs(amp) > slaterWeightMin and state not in basis._index_dict),
+            set(state for p in wp for state, amp in p.items() if state not in basis._index_dict),
         )
         t_add = perf_counter() - t0
-        
+
         if old_basis_size == basis.size:
             it_max = basis.size // n
 
@@ -618,42 +623,42 @@ def block_lanczos_sparse(
                 alpha_i[i, j] = inner(q[1][i], wp[j])
         if mpi:
             comm.Allreduce(MPI.IN_PLACE, alpha_i, op=MPI.SUM)
-            
+
         alphas = np.append(alphas, [alpha_i], axis=0)
         betas = np.append(betas, np.zeros((1, n, n), dtype=complex), axis=0)
 
         for j in range(n):
             for k in range(n):
                 wp[j] -= q[1][k] * alpha_i[k, j]
-                
+
         if it > 0:
             beta_prev_dag = np.conj(betas[it - 1].T)
             for j in range(n):
                 for k in range(n):
                     wp[j] -= q[0][k] * beta_prev_dag[k, j]
-                    
+
         M = np.zeros((n, n), dtype=complex)
         for i in range(n):
             for j in range(n):
                 M[i, j] = inner(wp[i], wp[j])
         if mpi:
             comm.Allreduce(MPI.IN_PLACE, M, op=MPI.SUM)
-            
+
         try:
             L = sp.linalg.cholesky(M, lower=True)
         except sp.linalg.LinAlgError:
             L = sp.linalg.cholesky(M + np.eye(n) * 1e-14, lower=True)
-            
+
         beta_i = np.conj(L.T)
         betas[it] = beta_i
-        
+
         beta_inv = sp.linalg.inv(beta_i)
-        
+
         q_next = [ManyBodyState() for _ in range(n)]
         for j in range(n):
             for k in range(n):
                 q_next[j] += wp[k] * beta_inv[k, j]
-                
+
         for st in q_next:
             st.prune(slaterWeightMin)
 
@@ -661,281 +666,18 @@ def block_lanczos_sparse(
             converge_count += 1
         else:
             converge_count = 0
-            
+
         if converge_count > 2 or it >= it_max:
             break
-            
+
         q[0] = q[1]
         q[1] = q_next
         if build_krylov_basis:
             Q.extend([st.copy() for st in q_next])
         it += 1
-        
+
     if verbose:
         print(f"Coverged at iteration {it+1} out of a maximum of {basis.size//n}")
-    return alphas, betas, Q if build_krylov_basis else None
-
-
-def block_lanczos(
-    psi0: list[ManyBodyState],
-    h_op: ManyBodyOperator,
-    basis: Basis,
-    converged: Callable[[np.ndarray, np.ndarray], bool],
-    h_mem: Optional[dict] = None,
-    verbose: bool = False,
-    reort: Reort = Reort.NONE,
-    slaterWeightMin: float = 0,
-) -> (np.ndarray, np.ndarray, Optional[list[dict]]):
-    """
-    Perform block Lanczos algorithm to build and solve Krylov space projection.
-
-    Parameters
-    ----------
-    psi0 : list of ManyBodyState
-        Initial starting block of states.
-    h_op : ManyBodyOperator
-        Hamiltonian operator.
-    basis : Basis
-        The many-body basis.
-    converged : callable
-        Convergence check function.
-    h_mem : dict, optional
-        Cache for Hamiltonian matrix elements. Default is None.
-    verbose : bool, optional
-        Verbosity flag. Default is False.
-    reort : Reort, optional
-        Reorthogonalization strategy. Default is `Reort.NONE`.
-    slaterWeightMin : float, optional
-        Slater determinant cutoff weight. Default is 0.
-
-    Returns
-    -------
-    alphas : ndarray
-        Diagonal block matrices (alpha).
-    betas : ndarray
-        Off-diagonal block matrices (beta).
-    Q : list of ManyBodyState or None
-        Krylov basis states list if `reort != Reort.NONE`, else None.
-    """
-    CYTHON = isinstance(h_op, ManyBodyOperator)
-    if h_mem is None and not CYTHON:
-        h_mem = {}
-    mpi = basis.comm is not None
-    comm = basis.comm if mpi else MPI.COMM_SELF
-    rank = basis.comm.rank if mpi else 0
-    build_krylov_basis = reort != Reort.NONE
-
-    # Convert psi0 keys to SlaterDeterminant if they are bytes
-    psi0 = [
-        {basis.type.from_bytes(k) if isinstance(k, bytes) else k: v for k, v in psi.items()}
-        for psi in psi0
-    ]
-
-    n = len(psi0)
-    columns = n
-    N_max = basis.size
-    if mpi:
-        psi_len = basis.comm.allreduce(sum(len(psi) for psi in psi0), op=MPI.SUM)
-    else:
-        psi_len = sum(len(psi) for psi in psi0)
-    if psi_len == 0:
-        return (
-            np.zeros((1, n, n), dtype=complex),
-            np.zeros((1, n, n), dtype=complex),
-            psi0 if build_krylov_basis else None,
-        )
-
-    q = None
-    if CYTHON:
-        q = [[ManyBodyState() for _ in range(n)], [ManyBodyState(psi) for psi in psi0]]
-    else:
-        q = [[{} for _ in range(n)], psi0]
-    alphas = np.empty((0, n, n), dtype=complex)
-    betas = np.empty((0, n, n), dtype=complex)
-    if build_krylov_basis:
-        Q = list(psi0)
-
-    orth_loss = False
-    force_reort = False
-    perform_reort = False
-    mask = []  # [False] * n
-    if reort == Reort.PARTIAL:
-        W = np.zeros((2, 1, n, n), dtype=complex)
-        W[1, 0, :, :] = np.identity(n, dtype=complex)
-    eps = max(slaterWeightMin, np.finfo(float).eps)
-
-    it = 0
-    done = False
-    converge_count = 0
-    wp = [None] * n
-    t_op = 0
-    t_add = 0
-    t_build = 0
-    t_algo = 0
-    t_conv = 0
-    t_dist = 0
-    t_tot = perf_counter()
-    while it * n < basis.size or it == 0:
-        t0 = perf_counter()
-        if CYTHON:
-            wp = [applyOp_test(h_op, psi_i, cutoff=slaterWeightMin) for psi_i in q[1]]
-        else:
-            wp = []
-            for psi_i in q[1]:
-                psi_i_bytes = {
-                    bytes(k.to_bytearray()) if hasattr(k, "to_bytearray") else k: v
-                    for k, v in psi_i.items()
-                }
-                wp_i_bytes = applyOp(basis.num_spin_orbitals, h_op, psi_i_bytes, slaterWeightMin=slaterWeightMin)
-                wp_i = {
-                    basis.type.from_bytes(k) if isinstance(k, bytes) else k: v
-                    for k, v in wp_i_bytes.items()
-                }
-                wp.append(wp_i)
-        t_op += perf_counter() - t0
-
-        wp_size = np.array([len(psi) for psi in wp], dtype=int)
-        comm.Allreduce(MPI.IN_PLACE, wp_size, op=MPI.SUM)
-        cutoff = eps
-        n_trunc = 0
-        while np.max(wp_size) > basis.truncation_threshold:
-            for psi in wp:
-                if CYTHON:
-                    psi.prune(cutoff)
-                else:
-                    for state in list(psi.keys()):
-                        if np.abs(psi[state]) < cutoff:
-                            del psi[state]
-            comm.Allreduce(np.array([len(psi) for psi in wp]), wp_size, op=MPI.SUM)
-            cutoff *= 5
-            n_trunc += 1
-
-        if n_trunc > 0:
-            basis.clear()
-
-        t0 = perf_counter()
-        basis.add_states(
-            state
-            for psi in wp
-            for state in psi
-            if state not in basis._index_dict
-        )
-        t_add += perf_counter() - t0
-        N_max = max(N_max, basis.size)
-        t0 = perf_counter()
-        psim = basis.build_distributed_vector(q[0]).T
-        psi = basis.build_distributed_vector(q[1]).T
-        psip = basis.build_distributed_vector(wp).T
-        t_build += perf_counter() - t0
-
-        t0 = perf_counter()
-        alpha = np.conj(psi.T) @ psip
-        alphas = np.append(alphas, np.empty((1, n, n), dtype=complex), axis=0)
-        if mpi:
-            request = comm.Iallreduce(alpha, alphas[-1], op=MPI.SUM)
-        else:
-            alphas[-1, :, :] = alpha
-
-        betas = np.append(betas, np.zeros((1, n, n), dtype=complex, order="C"), axis=0)
-        if mpi:
-            send_counts = np.empty((comm.size), dtype=int)
-            request.wait()
-            comm.Gather(np.array([n * len(basis.local_basis)]), send_counts)
-
-        psip -= psi @ alphas[it] + psim @ np.conj(betas[it - 1].T)
-        psip = np.ascontiguousarray(psip)
-        if mpi:
-            offsets = np.fromiter((np.sum(send_counts[:i]) for i in range(comm.size)), dtype=int, count=comm.size)
-        if reort == Reort.FULL or reort == Reort.PERIODIC and it % 5 < 2:
-            Qt = basis.redistribute_psis(Q)
-            Qm = basis.build_distributed_vector(Qt).T
-            tmp = np.conj(Qm.T) @ psip
-            if mpi:
-                comm.Allreduce(MPI.IN_PLACE, tmp, op=MPI.SUM)
-            psip -= Qm @ tmp
-
-        qip = np.empty((basis.size, n), dtype=complex, order="C") if rank == 0 else None
-        if mpi:
-            comm.Gatherv(psip, [qip, send_counts, offsets, MPI.C_DOUBLE_COMPLEX], root=0)
-        else:
-            qip = psip
-
-        if rank == 0:
-            qip, betas[-1], _ = qr_decomp(qip)
-            assert columns == qip.shape[1]
-            _, columns = qip.shape
-        if mpi:
-            comm.Bcast(betas[-1], root=0)
-
-        if reort == Reort.PARTIAL:
-            W = estimate_orthonormality(W, alphas, betas, N=max(basis.size, 100), eps=eps)
-
-            mask = np.append(mask, [False] * n)
-            orth_loss = np.any(np.abs(W[1, :-1]) > np.sqrt(eps))
-
-            if orth_loss:
-                block_mask = np.abs(W[1, :-1]) > eps ** (3 / 4)
-                mask = np.logical_or(mask, np.any(block_mask, axis=2).flatten())
-            perform_reort = orth_loss or force_reort
-            force_reort = orth_loss
-            if perform_reort:
-                W[1, np.argwhere(block_mask)] = eps
-                Qt = basis.redistribute_psis(itertools.compress(Q, mask))
-                Qm = basis.build_distributed_vector(Qt).T
-                tmp = np.conj(Qm.T) @ psip
-                if mpi:
-                    comm.Allreduce(MPI.IN_PLACE, tmp, op=MPI.SUM)
-                psip -= Qm @ tmp
-                perform_reort = False
-
-                qip = np.empty((basis.size, n), dtype=complex, order="C") if rank == 0 else None
-                if mpi:
-                    comm.Gatherv(psip, [qip, send_counts, offsets, MPI.C_DOUBLE_COMPLEX], root=0)
-                else:
-                    qip = psip
-                if rank == 0:
-                    qip, betas[-1], _ = qr_decomp(qip)
-                    _, columns = qip.shape
-                if mpi:
-                    comm.Bcast(betas[-1], root=0)
-        if mpi:
-            columns = comm.bcast(columns if rank == 0 else None)
-            request = comm.Iscatterv([qip, send_counts, offsets, MPI.C_DOUBLE_COMPLEX], psip, root=0)
-        else:
-            psip = qip
-        t_algo += perf_counter() - t0
-
-        t0 = perf_counter()
-        done = converged(alphas, betas, verbose=reort == Reort.PARTIAL)
-        t_conv += perf_counter() - t0
-        if mpi:
-            request.wait()
-            done = comm.allreduce(done, op=MPI.LAND)
-
-        converge_count = (1 + converge_count) if done else 0
-        if converge_count > 0:
-            break
-
-        t0 = perf_counter()
-        q[0] = q[1]
-        q[1] = basis.build_state(psip.T, slaterWeightMin=np.finfo(float).eps)
-        t_dist += perf_counter() - t0
-
-        if build_krylov_basis:
-            Q.extend(q[1])
-        it += 1
-    t_tot = perf_counter() - t_tot
-    if rank == 0:
-        print(f"Basis size:        {N_max} determinants")
-        print(f"block_lanczos took {t_tot} seconds")
-        print(f"--> applyOp took   {t_op} seconds")
-        print(f"--> add states     {t_add} seconds")
-        print(f"--> build vecs     {t_build} seconds")
-        print(f"--> algorithm took {t_algo} seconds")
-        print(f"--> convergence    {t_conv} seconds")
-        print(f"--> distribute     {t_dist} seconds")
-        print(f"--> applyOp took   {t_op/(it+1)} seconds per iteration")
-        print(f"--> add states     {t_add/(it+1)} second per iterations")
     return alphas, betas, Q if build_krylov_basis else None
 
 

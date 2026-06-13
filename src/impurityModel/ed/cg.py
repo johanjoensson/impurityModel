@@ -281,15 +281,17 @@ def block_bicgstab(A, x0, y, basis: Basis, slaterWeightMin: float, atol=1e-8, rt
         return basis.redistribute_psis(mv)
 
     xi = [st.copy() for st in x0]
-    
+
     Axi = matmat(xi)
     ri = [yi - axi for yi, axi in zip(y, Axi)]
-    
-    basis.add_states(state for r in ri for state, amp in r.items() if abs(amp) > slaterWeightMin and state not in basis.local_basis)
+
+    basis.add_states(
+        state for r in ri for state, amp in r.items() if abs(amp) > slaterWeightMin and state not in basis.local_basis
+    )
 
     r0_t = [st.copy() for st in ri]
     pi = [st.copy() for st in ri]
-    
+
     def block_norm(v):
         """
         Calculate the norm of the state block v.
@@ -321,33 +323,38 @@ def block_bicgstab(A, x0, y, basis: Basis, slaterWeightMin: float, atol=1e-8, rt
         r_norm = block_norm(ri)
         if r_norm < atol or r_norm / r0_norm < rtol:
             break
-            
+
         vi = matmat(pi)
-        
-        basis.add_states(state for v in vi for state, amp in v.items() if abs(amp) > slaterWeightMin and state not in basis.local_basis)
+
+        basis.add_states(
+            state
+            for v in vi
+            for state, amp in v.items()
+            if abs(amp) > slaterWeightMin and state not in basis.local_basis
+        )
 
         R0_V = block_inner(r0_t, vi)
         R0_R = block_inner(r0_t, ri)
-        
+
         if np.linalg.cond(R0_V) > 1 / np.finfo(float).eps:
             print("Breakdown in Block BICGSTAB")
             break
-            
+
         ai = np.linalg.solve(R0_V, R0_R)
-        
+
         si = [ri[j].copy() for j in range(n)]
         for j in range(n):
             for k in range(n):
                 si[j] -= vi[k] * ai[k, j]
-                
+
         if block_norm(si) < atol:
             for j in range(n):
                 for k in range(n):
                     xi[j] += pi[k] * ai[k, j]
             break
-            
+
         ti = matmat(si)
-        basis.add_states(state for t in ti for state, amp in t.items() if abs(amp) > slaterWeightMin and state not in basis.local_basis)
+        basis.add_states(state for t in ti for state in t if state not in basis.local_basis)
 
         ts = sum(inner(ti[j], si[j]) for j in range(n))
         tt = sum(inner(ti[j], ti[j]) for j in range(n))
@@ -358,32 +365,32 @@ def block_bicgstab(A, x0, y, basis: Basis, slaterWeightMin: float, atol=1e-8, rt
             basis.comm.Allreduce(MPI.IN_PLACE, tt_arr, op=MPI.SUM)
             ts = ts_arr.item()
             tt = tt_arr.item()
-        
+
         wi = ts / tt
-        
+
         xip = [xi[j] + wi * si[j] for j in range(n)]
         for j in range(n):
             for k in range(n):
                 xip[j] += pi[k] * ai[k, j]
-                
+
         rip = [si[j] - wi * ti[j] for j in range(n)]
-        
+
         R0_T = block_inner(r0_t, ti)
         bi = np.linalg.solve(R0_V, -R0_T)
-        
+
         pip = [rip[j].copy() for j in range(n)]
         for j in range(n):
             for k in range(n):
                 pip[j] += (pi[k] - wi * vi[k]) * bi[k, j]
-                
+
         xi = xip
         ri = rip
         pi = pip
-        
+
         for v in (xi, ri, pi):
             for st in v:
                 st.prune(slaterWeightMin)
-                
+
     return xi
 
 

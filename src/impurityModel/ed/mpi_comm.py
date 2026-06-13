@@ -264,159 +264,120 @@ def graph_alltoall(send_list, comm):
 
     return result
 
-
-def graph_alltoall_psis(
-    send_list: "list[list[dict]]",
+def distribute_determinants(
+    dets: "list[SlaterDeterminant]",
     n_bytes: int,
     comm: "MPI.Comm",
-) -> "list[list[dict]]":
+) -> "list[list[SlaterDeterminant]]":
     """
-    Efficiently redistribute many-body state amplitudes across MPI ranks.
-
-    This is a specialised version of :func:`graph_alltoall` tuned for the
-    ``redistribute_psis`` hot-path.  Instead of pickling Python dicts it
-    packs everything into two contiguous byte arrays:
-
-    * a flat ``bytearray`` of fixed-length state keys
-      (``n_bytes`` bytes each)
-    * a flat ``complex128`` numpy array of the corresponding amplitudes
-
-    Both buffers are exchanged with a single
-    ``MPI_Neighbor_alltoallv`` call over the sparse distributed-graph
-    communicator built from the non-empty communication partners, so
-    only the actual sender/receiver pairs pay communication cost.
-
-    Parameters
-    ----------
-    send_list :
-        List of length ``comm.size``.  Element *r* is a list of dicts,
-        one dict per "psi".  Each dict maps ``state_bytes`` (``bytes``,
-        length ``n_bytes``) to a complex amplitude.
-    n_bytes :
-        Fixed byte-width of every state key.
-    comm :
-        MPI communicator.  Returned unchanged when ``size <= 1``.
-
-    Returns
-    -------
-    list[list[dict]]
-        Same shape as *send_list*.  Element *r* is the list of dicts
-        received from rank *r*.
+    Partition and distribute SlaterDeterminants across MPI ranks.
     """
     if comm is None or comm.size <= 1:
-        return send_list
+        return [dets]
 
+    from impurityModel.ed.ManyBodyUtils import pack_determinants_cy, unpack_determinants_cy
+    
     size = comm.size
-    n_psis = len(send_list[0])
+    chunks_per_state = (n_bytes + 7) // 8
 
-    # ------------------------------------------------------------------
-    # Step 1 – count states going to each destination (one counter per
-    #           psi is unnecessary; we send all psis together and store
-    #           a psi-index alongside each entry).
-    # ------------------------------------------------------------------
-    # Flatten: one entry = (psi_index, state_bytes, amplitude)
-    # For each destination r we track how many (state, amp) pairs to send
-    # across ALL psis (psi_index is packed into a separate int array).
-    send_counts = np.zeros(size, dtype=np.int64)  # #entries per dest
-    for r in range(size):
-        for psi_dict in send_list[r]:
-            send_counts[r] += len(psi_dict)
+    # 1. Pack in Cython (handles hash partitioning)
+    send_counts, state_send = pack_determinants_cy(dets, size)
 
-    # ------------------------------------------------------------------
-    # Step 2 – exchange counts with Alltoall.
-    # ------------------------------------------------------------------
+    # 2. Exchange counts
     recv_counts = np.empty(size, dtype=np.int64)
     comm.Alltoall(send_counts, recv_counts)
 
-    # ------------------------------------------------------------------
-    # Step 3 – build the distributed-graph communicator.
-    # ------------------------------------------------------------------
+    # 3. Build graph
     destinations = [r for r in range(size) if send_counts[r] > 0]
     sources = [r for r in range(size) if recv_counts[r] > 0]
+    graph_comm = comm.Create_dist_graph_adjacent(sources, destinations, reorder=False)
 
-    graph_comm = comm.Create_dist_graph_adjacent(
-        sources,
-        destinations,
-        reorder=False,
-    )
-
-    # ------------------------------------------------------------------
-    # Step 4 – pack send buffers.
-    #
-    #   state_buf : flat bytearray, n_bytes per entry
-    #   amp_buf   : flat complex128 array, 1 entry per state
-    #   psi_buf   : flat int32 array, psi-index per state
-    # ------------------------------------------------------------------
-    total_send = int(np.sum(send_counts))
-    state_send = bytearray(total_send * n_bytes)
-    amp_send   = np.empty(total_send, dtype=np.complex128)
-    psi_send   = np.empty(total_send, dtype=np.int32)
-
-    pos = 0
-    for r in range(size):
-        for pi, psi_dict in enumerate(send_list[r]):
-            for state_bytes, amp in psi_dict.items():
-                state_send[pos * n_bytes: (pos + 1) * n_bytes] = state_bytes
-                amp_send[pos] = amp
-                psi_send[pos] = pi
-                pos += 1
-
+    # 4. Buffers
     s_counts_nb = np.array([send_counts[r] for r in destinations], dtype=np.int64)
     s_displs_nb = np.concatenate(([0], np.cumsum(s_counts_nb[:-1]))) if len(s_counts_nb) else np.array([], dtype=np.int64)
 
-    # ------------------------------------------------------------------
-    # Step 5 – allocate receive buffers.
-    # ------------------------------------------------------------------
     total_recv = int(np.sum(recv_counts))
-    state_recv = bytearray(total_recv * n_bytes)
-    amp_recv   = np.empty(total_recv, dtype=np.complex128)
-    psi_recv   = np.empty(total_recv, dtype=np.int32)
+    state_recv = np.empty(total_recv * chunks_per_state, dtype=np.uint64)
 
     r_counts_nb = np.array([recv_counts[r] for r in sources], dtype=np.int64)
     r_displs_nb = np.concatenate(([0], np.cumsum(r_counts_nb[:-1]))) if len(r_counts_nb) else np.array([], dtype=np.int64)
 
-    # ------------------------------------------------------------------
-    # Step 6 – neighbourhood all-to-all-v (three separate calls for
-    #           state bytes, amplitudes, and psi indices).
-    # ------------------------------------------------------------------
-    # 6a. State bytes
+    # 5. Exchange
     graph_comm.Neighbor_alltoallv(
-        [state_send, s_counts_nb * n_bytes, s_displs_nb * n_bytes, MPI.BYTE],
-        [state_recv, r_counts_nb * n_bytes, r_displs_nb * n_bytes, MPI.BYTE],
+        [state_send, s_counts_nb * chunks_per_state * 8, s_displs_nb * chunks_per_state * 8, MPI.BYTE],
+        [state_recv, r_counts_nb * chunks_per_state * 8, r_displs_nb * chunks_per_state * 8, MPI.BYTE],
     )
-    # 6b. Amplitudes (complex128 = 2×float64)
+    graph_comm.Free()
+
+    # 6. Unpack
+    if total_recv > 0:
+        return unpack_determinants_cy(size, recv_counts, state_recv, chunks_per_state)
+    else:
+        return [[] for _ in range(size)]
+
+
+
+
+def graph_alltoall_psis(
+    psis: "list[ManyBodyState]",
+    n_bytes: int,
+    comm: "MPI.Comm",
+) -> "list[ManyBodyState]":
+    """
+    Efficiently redistribute many-body state amplitudes across MPI ranks.
+    """
+    if comm is None or comm.size <= 1:
+        return [psi.copy() for psi in psis]
+
+    from impurityModel.ed.ManyBodyUtils import pack_psis_cy, unpack_psis_cy, ManyBodyState
+    
+    size = comm.size
+    chunks_per_state = (n_bytes + 7) // 8
+
+    # 1 & 4. Cython packing (counts, states, amplitudes, psi indices)
+    send_counts, state_send, amp_send, psi_send = pack_psis_cy(psis, size)
+
+    # 2. Exchange counts
+    recv_counts = np.empty(size, dtype=np.int64)
+    comm.Alltoall(send_counts, recv_counts)
+
+    # 3. Build graph communicator
+    destinations = [r for r in range(size) if send_counts[r] > 0]
+    sources = [r for r in range(size) if recv_counts[r] > 0]
+    graph_comm = comm.Create_dist_graph_adjacent(sources, destinations, reorder=False)
+
+    s_counts_nb = np.array([send_counts[r] for r in destinations], dtype=np.int64)
+    s_displs_nb = np.concatenate(([0], np.cumsum(s_counts_nb[:-1]))) if len(s_counts_nb) else np.array([], dtype=np.int64)
+
+    # 5. Allocate receive buffers
+    total_recv = int(np.sum(recv_counts))
+    state_recv = np.empty(total_recv * chunks_per_state, dtype=np.uint64)
+    amp_recv = np.empty(total_recv, dtype=np.complex128)
+    psi_recv = np.empty(total_recv, dtype=np.int32)
+
+    r_counts_nb = np.array([recv_counts[r] for r in sources], dtype=np.int64)
+    r_displs_nb = np.concatenate(([0], np.cumsum(r_counts_nb[:-1]))) if len(r_counts_nb) else np.array([], dtype=np.int64)
+
+    # 6. Exchange data
+    graph_comm.Neighbor_alltoallv(
+        [state_send, s_counts_nb * chunks_per_state * 8, s_displs_nb * chunks_per_state * 8, MPI.BYTE],
+        [state_recv, r_counts_nb * chunks_per_state * 8, r_displs_nb * chunks_per_state * 8, MPI.BYTE],
+    )
     graph_comm.Neighbor_alltoallv(
         [amp_send, s_counts_nb, s_displs_nb, MPI.C_DOUBLE_COMPLEX],
         [amp_recv, r_counts_nb, r_displs_nb, MPI.C_DOUBLE_COMPLEX],
     )
-    # 6c. Psi indices (int32)
     graph_comm.Neighbor_alltoallv(
         [psi_send, s_counts_nb, s_displs_nb, MPI.INT],
         [psi_recv, r_counts_nb, r_displs_nb, MPI.INT],
     )
 
-    # ------------------------------------------------------------------
-    # Step 7 – free the neighbourhood communicator.
-    # ------------------------------------------------------------------
+    # 7. Free communicator
     graph_comm.Free()
 
-    # ------------------------------------------------------------------
-    # Step 8 – unpack into result structure.
-    # ------------------------------------------------------------------
-    result: "list[list[dict]]" = [[{} for _ in range(n_psis)] for _ in range(size)]
-    offset = 0
-    for r, cnt in zip(sources, r_counts_nb):
-        for k in range(int(cnt)):
-            idx = offset + k
-            sb = bytes(state_recv[idx * n_bytes: (idx + 1) * n_bytes])
-            amp = complex(amp_recv[idx])
-            pi = int(psi_recv[idx])
-            result[r][pi][sb] = result[r][pi].get(sb, 0) + amp
-        offset += int(cnt)
+    # 8. Unpack into result
+    res = [ManyBodyState() for _ in psis]
+    if total_recv > 0:
+        unpack_psis_cy(res, size, recv_counts, state_recv, amp_recv, psi_recv, chunks_per_state)
 
-    # Fill empty slots with empty-list-of-dicts for ranks we got nothing from
-    for r in range(size):
-        if not any(result[r]):
-            result[r] = [{} for _ in range(n_psis)]
-
-    return result
+    return res

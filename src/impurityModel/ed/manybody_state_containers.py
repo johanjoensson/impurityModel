@@ -942,27 +942,11 @@ class SimpleDistributedStateContainer(StateContainer):
                     assert all(self.local_basis[i] < self.local_basis[i + 1] for i in range(len(self.local_basis) - 1))
             return
 
-        def find_owner(state):
-            """
-            Determine the owner rank for a given state using hash partitioning.
+        from impurityModel.ed.mpi_comm import distribute_determinants
+        
+        unique_new_states = list(set(new_states))
+        received_list = distribute_determinants(unique_new_states, self.n_bytes, self.comm)
 
-            Parameters
-            ----------
-            state : SlaterDeterminant
-                The state to query.
-
-            Returns
-            -------
-            int
-                The MPI rank that owns the state.
-            """
-            return hash(state) % self.comm.size
-
-        send_list = [[] for _ in range(self.comm.size)]
-        for r, g in itertools.groupby(sorted(set(new_states), key=find_owner), key=find_owner):
-            send_list[r].extend(sorted(g))
-
-        received_list = graph_alltoall(send_list, self.comm)
         all_received = []
         for r_data in received_list:
             if r_data:
@@ -1070,7 +1054,7 @@ class SimpleDistributedStateContainer(StateContainer):
         send_to_ranks = np.empty((len(s)), dtype=int)
         send_to_ranks[:] = self.size
         for i, val in enumerate(s):
-            r = hash(val) % self.comm.size
+            r = val.get_hash() % self.comm.size
             send_list[r].append(val)
             send_to_ranks[i] = r
             # for r in range(self.comm.size):

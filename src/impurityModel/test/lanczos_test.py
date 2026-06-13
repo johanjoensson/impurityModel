@@ -1,7 +1,8 @@
 import pytest
 from impurityModel.ed.manybody_basis import Basis
-from impurityModel.ed.finite import eigensystem_new as eigensystem, applyOp_new as applyOp, norm2
-from impurityModel.ed.lanczos import block_lanczos, block_lanczos_sparse, eigsh, Reort
+from impurityModel.ed.finite import eigensystem_new as eigensystem, norm2
+from impurityModel.ed.lanczos import block_lanczos_sparse, eigsh, Reort
+from impurityModel.ed.ManyBodyUtils import applyOp, ManyBodyOperator
 import numpy as np
 from mpi4py import MPI
 
@@ -39,8 +40,9 @@ def test_lancos():
 
     for irrep in electron_removal_ops:
         for op in electron_removal_ops[irrep]:
+            op_mbo = ManyBodyOperator(op)
             gs_i = basis.build_state(gs_psis.T)
-            psi = applyOp(5, op, gs_i[0])
+            psi = applyOp(op_mbo, gs_i[0])
             N = np.sqrt(norm2(psi))
             if N > 1e-12:
                 psi = {state: amp / N for state, amp in psi.items()}
@@ -50,7 +52,7 @@ def test_lancos():
                     initial_basis=list(psi.keys()),
                     verbose=True,
                 )
-                alpha, beta, _ = block_lanczos([psi], Hop, excited_basis, converged)
+                alpha, beta, _ = block_lanczos_sparse([psi], Hop, excited_basis, converged)
                 alphas[irrep].append(alpha)
                 betas[irrep].append(beta)
                 
@@ -99,11 +101,17 @@ def test_lancos_mpi():
 
     for irrep in electron_removal_ops:
         for op in electron_removal_ops[irrep]:
+            op_mbo = ManyBodyOperator(op)
+            print(f"Rank {MPI.COMM_WORLD.rank if MPI.COMM_WORLD else 'no MPI'} before build_state for op {op}", flush=True)
             gs_i = basis.build_state(gs_psis.T)
-            psi = applyOp(5, op, gs_i[0])
+            print(f"Rank {MPI.COMM_WORLD.rank if MPI.COMM_WORLD else 'no MPI'} before applyOp for op {op}", flush=True)
+            psi = applyOp(op_mbo, gs_i[0])
+            print(f"Rank {MPI.COMM_WORLD.rank if MPI.COMM_WORLD else 'no MPI'} before norm2 for op {op}", flush=True)
             N2 = norm2(psi)
+            print(f"Rank {MPI.COMM_WORLD.rank if MPI.COMM_WORLD else 'no MPI'} at allreduce for N2", flush=True)
             if MPI.COMM_WORLD is not None:
                 N2 = MPI.COMM_WORLD.allreduce(N2, op=MPI.SUM)
+            print(f"Rank {MPI.COMM_WORLD.rank if MPI.COMM_WORLD else 'no MPI'} passed allreduce for N2", flush=True)
             N = np.sqrt(N2)
             if N > 1e-12:
                 psi = {state: amp / N for state, amp in psi.items()}
@@ -114,7 +122,7 @@ def test_lancos_mpi():
                     verbose=True,
                     comm=MPI.COMM_WORLD,
                 )
-                alpha, beta, _ = block_lanczos([psi], Hop, excited_basis, converged)
+                alpha, beta, _ = block_lanczos_sparse([psi], Hop, excited_basis, converged)
                 alphas[irrep].append(alpha)
                 betas[irrep].append(beta)
                 
@@ -123,8 +131,12 @@ def test_lancos_mpi():
                 h_excited = excited_basis.build_dense_matrix(Hop)
                 es_direct, _ = eigensystem(h_excited, 0)
                 if MPI.COMM_WORLD.rank == 0:
-                    ev = eigsh(alpha, beta, eigvals_only=True, de=10)
-                    np.testing.assert_allclose(ev, es_direct, atol=1e-12)
+                    try:
+                        ev = eigsh(alpha, beta, eigvals_only=True, de=10)
+                        np.testing.assert_allclose(ev, es_direct, atol=1e-12)
+                    except Exception as e:
+                        print(f"Rank 0 Exception: {e}", flush=True)
+                        MPI.COMM_WORLD.Abort(1)
     print(f"{alphas=}\n{betas=}")
 
 
@@ -146,7 +158,7 @@ def test_eigsh():
         return alphas.shape[0] > 5
 
     psi0 = [{state: 1 / np.sqrt(len(states)) for state in states}]
-    alphas, betas, _ = block_lanczos(psi0, hop, basis, converged, reort=Reort.FULL)
+    alphas, betas, _ = block_lanczos_sparse(psi0, hop, basis, converged, reort=Reort.FULL)
     ev = eigsh(alphas, betas, eigvals_only=True, de=10)
     assert np.allclose(ev, eigvals[: len(ev)])
 
@@ -169,7 +181,7 @@ def test_eigsh_mpi():
         return alphas.shape[0] > 5
 
     psi0 = [{state: 1 / np.sqrt(len(states)) for state in basis.local_basis}]
-    alphas, betas, _ = block_lanczos(psi0, hop, basis, converged, reort=Reort.PARTIAL)
+    alphas, betas, _ = block_lanczos_sparse(psi0, hop, basis, converged, reort=Reort.PARTIAL)
     ev = eigsh(alphas, betas, eigvals_only=True, de=10)
     assert np.allclose(ev, eigvals[: len(ev)])
 
@@ -194,7 +206,7 @@ def test_block_eigsh():
         {state: 1 / np.sqrt(len(states) / 2) for state in states[:3]},
         {state: 1 / np.sqrt(len(states) / 2) for state in states[3:]},
     ]
-    alphas, betas, _ = block_lanczos(psi0, hop, basis, converged)
+    alphas, betas, _ = block_lanczos_sparse(psi0, hop, basis, converged)
     ev = eigsh(alphas, betas, eigvals_only=True, de=10)
     assert np.allclose(ev, eigvals[: len(ev)])
 
@@ -225,7 +237,7 @@ def test_block_eigsh_mpi():
         psi0 = [{}, {}]
     psi0 = list(basis.redistribute_psis(psi0))
     print(f"RANK {basis.comm.rank} psi0: {psi0}", flush=True)
-    alphas, betas, _ = block_lanczos(psi0, hop, basis, converged)
+    alphas, betas, _ = block_lanczos_sparse(psi0, hop, basis, converged)
     ev = eigsh(alphas, betas, eigvals_only=True, de=10)
     assert np.allclose(ev, eigvals[: len(ev)])
 

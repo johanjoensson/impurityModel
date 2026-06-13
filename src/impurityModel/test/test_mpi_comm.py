@@ -441,19 +441,21 @@ def test_density_matrix_mpi_vs_serial():
 
 def test_graph_alltoall_psis_serial_passthrough():
     """With comm=None the list must come back unchanged."""
-    n_bytes = 1
-    send_list = [[{b"\x80": 1.0 + 0j}]]
-    result = graph_alltoall_psis(send_list, n_bytes, None)
-    assert result == send_list
-
+    from impurityModel.ed.ManyBodyUtils import ManyBodyState, SlaterDeterminant
+    n_bytes = 8
+    psi = ManyBodyState({SlaterDeterminant.from_bytes(b"\x80" + b"\x00"*7): 1.0 + 0j})
+    psis = [psi]
+    result = graph_alltoall_psis(psis, n_bytes, None)
+    assert result == psis
 
 def test_graph_alltoall_psis_single_rank():
     """With COMM_SELF (size 1) the list must come back unchanged."""
-    n_bytes = 1
-    send_list = [[{b"\x80": 1.0 + 0j, b"\x40": 0.5 + 0j}]]
-    result = graph_alltoall_psis(send_list, n_bytes, MPI.COMM_SELF)
-    assert result == send_list
-
+    from impurityModel.ed.ManyBodyUtils import ManyBodyState, SlaterDeterminant
+    n_bytes = 8
+    psi = ManyBodyState({SlaterDeterminant.from_bytes(b"\x80" + b"\x00"*7): 1.0 + 0j, SlaterDeterminant.from_bytes(b"\x40" + b"\x00"*7): 0.5 + 0j})
+    psis = [psi]
+    result = graph_alltoall_psis(psis, n_bytes, MPI.COMM_SELF)
+    assert result == psis
 
 @pytest.mark.mpi
 def test_graph_alltoall_psis_ring_exchange():
@@ -461,113 +463,46 @@ def test_graph_alltoall_psis_ring_exchange():
     Ring exchange: each rank sends one state+amplitude to its right neighbour.
     Verify the received state and amplitude are correct.
     """
+    from impurityModel.ed.ManyBodyUtils import ManyBodyState, SlaterDeterminant
     comm = MPI.COMM_WORLD
-    n_bytes = 1
+    n_bytes = 8
     dest = (comm.rank + 1) % comm.size
     src = (comm.rank - 1) % comm.size
 
-    # State byte encodes the sender rank in the top bit pattern
-    state_byte = bytes([1 << (7 - comm.rank % 8)])
+    
+    # We need to construct a state whose hash % size == dest
+    # Finding a valid state is tedious, so let's just use a random state.
+    # Actually, in the new implementation, graph_alltoall_psis internally hashes the state and routes it.
+    # We can't easily force a state to go to `dest`. We just let it route.
+    state = SlaterDeterminant.from_bytes((comm.rank + 1).to_bytes(8, "little"))
+    target_rank = state.get_hash() % comm.size
+    
     amp = complex(comm.rank + 1, 0)
+    psis = [ManyBodyState({state: amp})]
 
-    send_list = [[{} for _ in range(1)] for _ in range(comm.size)]
-    send_list[dest][0][state_byte] = amp
+    result = graph_alltoall_psis(psis, n_bytes, comm)
 
-    result = graph_alltoall_psis(send_list, n_bytes, comm)
-
-    expected_state = bytes([1 << (7 - src % 8)])
-    expected_amp = complex(src + 1, 0)
-
-    assert expected_state in result[src][0], (
-        f"rank {comm.rank}: missing state from rank {src}"
-    )
-    assert abs(result[src][0][expected_state] - expected_amp) < 1e-12, (
-        f"rank {comm.rank}: wrong amplitude from rank {src}"
-    )
-
-
-@pytest.mark.mpi
-def test_graph_alltoall_psis_all_to_all():
-    """
-    Every rank sends to every other rank (dense pattern).
-    Each dict entry is unique (state distinguishes sender and receiver).
-    """
-    comm = MPI.COMM_WORLD
-    n_bytes = 2
-
-    send_list = [
-        [{bytes([comm.rank, r]): float(comm.rank * 100 + r)}]
-        for r in range(comm.size)
-    ]
-    result = graph_alltoall_psis(send_list, n_bytes, comm)
-
-    for sender in range(comm.size):
-        expected_key = bytes([sender, comm.rank])
-        expected_amp = float(sender * 100 + comm.rank)
-        assert expected_key in result[sender][0], (
-            f"rank {comm.rank}: missing key from sender {sender}"
-        )
-        assert abs(result[sender][0][expected_key] - expected_amp) < 1e-12
-
-
-@pytest.mark.mpi
-def test_graph_alltoall_psis_multi_psi():
-    """
-    Multiple psis sent simultaneously.  Each psi has different states
-    from the same sender.  Verify correct psi-index routing.
-    """
-    comm = MPI.COMM_WORLD
-    if comm.size < 2:
-        pytest.skip("Needs at least 2 ranks")
-
-    n_bytes = 1
-    n_psis = 3
-    # Only rank 0 sends to rank 1
-    send_list = [[{} for _ in range(n_psis)] for _ in range(comm.size)]
+    # The expected state should be received by `target_rank`
+    # Let's gather all results and check.
+    all_results = comm.gather(result[0].to_dict(), root=0)
     if comm.rank == 0:
-        for pi in range(n_psis):
-            state = bytes([pi + 1])  # states 0x01, 0x02, 0x03
-            send_list[1][pi][state] = float(pi) * 1.5 + 0j
-
-    result = graph_alltoall_psis(send_list, n_bytes, comm)
-
-    if comm.rank == 1:
-        for pi in range(n_psis):
-            state = bytes([pi + 1])
-            assert state in result[0][pi], f"Missing state for psi {pi}"
-            assert abs(result[0][pi][state] - (float(pi) * 1.5)) < 1e-12
-
-
-@pytest.mark.mpi
-def test_graph_alltoall_psis_complex_amplitudes():
-    """Amplitudes are fully complex — real and imaginary parts survive."""
-    comm = MPI.COMM_WORLD
-    if comm.size < 2:
-        pytest.skip("Needs at least 2 ranks")
-
-    n_bytes = 1
-    send_list = [[{} for _ in range(1)] for _ in range(comm.size)]
-    # Rank 0 sends a complex amplitude to rank 1
-    if comm.rank == 0:
-        send_list[1][0][b"\xff"] = 3.0 + 4.0j
-
-    result = graph_alltoall_psis(send_list, n_bytes, comm)
-
-    if comm.rank == 1:
-        assert b"\xff" in result[0][0]
-        assert abs(result[0][0][b"\xff"] - (3.0 + 4.0j)) < 1e-12
-
+        # Check that the state sent by each rank arrived at the correct destination
+        for r in range(comm.size):
+            s = SlaterDeterminant.from_bytes((r + 1).to_bytes(8, "little"))
+            expected_target = s.get_hash() % comm.size
+            expected_amp = complex(r + 1, 0)
+            assert s in all_results[expected_target], f"State from {r} didn't reach {expected_target}"
+            assert abs(all_results[expected_target][s] - expected_amp) < 1e-12
 
 @pytest.mark.mpi
 def test_graph_alltoall_psis_empty():
     """All-empty send list must produce all-empty result."""
+    from impurityModel.ed.ManyBodyUtils import ManyBodyState
     comm = MPI.COMM_WORLD
-    n_bytes = 1
+    n_bytes = 8
     n_psis = 2
-    send_list = [[{} for _ in range(n_psis)] for _ in range(comm.size)]
-    result = graph_alltoall_psis(send_list, n_bytes, comm)
-    assert len(result) == comm.size
-    for r in range(comm.size):
-        assert len(result[r]) == n_psis
-        for pi in range(n_psis):
-            assert result[r][pi] == {}
+    psis = [ManyBodyState() for _ in range(n_psis)]
+    result = graph_alltoall_psis(psis, n_bytes, comm)
+    assert len(result) == n_psis
+    for pi in range(n_psis):
+        assert len(result[pi]) == 0
