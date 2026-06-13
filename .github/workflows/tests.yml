@@ -59,6 +59,7 @@ jobs:
           sudo apt-get install -y intel-oneapi-compiler-dpcpp-cpp
 
       - name: Install Boost
+        if: matrix.boost == '-DBOOST'
         uses: MarkusJx/install-boost@v2.4.5
         id: install-boost
         with:
@@ -88,8 +89,9 @@ jobs:
             export CXXFLAGS="$CXXFLAGS -ltbb"
           fi
           if [ "${{ matrix.boost }}" = "-DBOOST" ]; then
-            export CXXFLAGS="$CXXFLAGS -I${BOOST_ROOT}/include -I${BOOST_ROOT}"
-            export CPLUS_INCLUDE_PATH="${BOOST_ROOT}/include:${BOOST_ROOT}"
+            BOOST_DIR="${{ steps.install-boost.outputs.BOOST_ROOT }}"
+            export CXXFLAGS="$CXXFLAGS -I$BOOST_DIR/include -I$BOOST_DIR"
+            export CFLAGS="$CFLAGS -I$BOOST_DIR/include -I$BOOST_DIR"
           fi
 
           pip install -e .
