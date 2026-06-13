@@ -1,0 +1,81 @@
+name: Tests
+
+on:
+  push:
+    branches:
+      - master
+  pull_request:
+    branches:
+      - master
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        compiler: [gcc, clang, intel]
+        cxx_std: ["-std=c++17", "-std=c++20", "-std=c++23"]
+        boost: ["-DBOOST", ""]
+        parallel: ["-DPARALLEL", ""]
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Install dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y mpich libmpich-dev libboost-all-dev libtbb-dev
+
+      - name: Install Intel Compiler
+        if: matrix.compiler == 'intel'
+        run: |
+          wget -O- https://apt.repos.intel.com/intel-gpg-keys/GPG-PUB-KEY-INTEL-SW-PRODUCTS.PUB | gpg --dearmor | sudo tee /usr/share/keyrings/oneapi-archive-keyring.gpg > /dev/null
+          echo "deb [signed-by=/usr/share/keyrings/oneapi-archive-keyring.gpg] https://apt.repos.intel.com/oneapi all main" | sudo tee /etc/apt/sources.list.d/oneAPI.list
+          sudo apt-get update
+          sudo apt-get install -y intel-oneapi-compiler-dpcpp-cpp
+
+      - name: Install Python dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install mpi4py pytest pytest-mpi cython setuptools build
+
+      - name: Build and install impurityModel
+        run: |
+          if [ "${{ matrix.compiler }}" = "gcc" ]; then
+            export CXX="g++"
+          elif [ "${{ matrix.compiler }}" = "clang" ]; then
+            export CXX="clang++"
+          elif [ "${{ matrix.compiler }}" = "intel" ]; then
+            source /opt/intel/oneapi/setvars.sh
+            export CXX="icpx"
+          fi
+
+          export CXXFLAGS="${{ matrix.cxx_std }} ${{ matrix.boost }} ${{ matrix.parallel }}"
+          if [ "${{ matrix.parallel }}" = "-DPARALLEL" ]; then
+            export CXXFLAGS="$CXXFLAGS -ltbb"
+          fi
+
+          pip install -e .
+
+      - name: Run serial tests
+        run: |
+          pytest
+
+      - name: Run MPI tests (1 rank)
+        run: |
+          mpiexec -n 1 python -m pytest --with-mpi
+
+      - name: Run MPI tests (2 ranks)
+        run: |
+          mpiexec -n 2 python -m pytest --with-mpi
+
+      - name: Run MPI tests (3 ranks)
+        run: |
+          mpiexec -n 3 python -m pytest --with-mpi
