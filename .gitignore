@@ -2,9 +2,12 @@
 doc/sphinx/generated_doc/*
 doc/sphinx/_doc_build/*
 
+# Cython generated sources
+ManyBodyUtils.cpp
 # Compiled Modules
 *.pyc
 *.so
 
 # VIM files
 .*~
+.*.swp
