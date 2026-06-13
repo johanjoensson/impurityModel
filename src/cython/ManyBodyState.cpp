@@ -1,6 +1,5 @@
 #include "ManyBodyState.h"
 #include <algorithm>
-#include <bits/utility.h>
 #include <bitset>
 #include <functional>
 #include <numeric>
