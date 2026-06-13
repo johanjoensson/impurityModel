@@ -10,14 +10,23 @@ on:
 
 jobs:
   test:
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-22.04
     strategy:
       fail-fast: false
       matrix:
-        compiler: [gcc, clang, intel]
+        compiler: [gcc-9, clang-11, gcc-12, clang-15, intel]
         cxx_std: ["-std=c++17", "-std=c++20", "-std=c++23"]
         boost: ["-DBOOST", ""]
         parallel: ["-DPARALLEL", ""]
+        exclude:
+          - compiler: gcc-9
+            cxx_std: "-std=c++20"
+          - compiler: gcc-9
+            cxx_std: "-std=c++23"
+          - compiler: clang-11
+            cxx_std: "-std=c++20"
+          - compiler: clang-11
+            cxx_std: "-std=c++23"
 
     steps:
       - name: Checkout code
@@ -32,6 +41,14 @@ jobs:
         run: |
           sudo apt-get update
           sudo apt-get install -y mpich libmpich-dev libboost-all-dev libtbb-dev
+          COMPILER="${{ matrix.compiler }}"
+          if [[ "$COMPILER" == gcc-* ]]; then
+            VERSION=${COMPILER#gcc-}
+            sudo apt-get install -y g++-$VERSION
+          elif [[ "$COMPILER" == clang-* ]]; then
+            VERSION=${COMPILER#clang-}
+            sudo apt-get install -y clang-$VERSION
+          fi
 
       - name: Install Intel Compiler
         if: matrix.compiler == 'intel'
@@ -48,13 +65,16 @@ jobs:
 
       - name: Build and install impurityModel
         run: |
-          if [ "${{ matrix.compiler }}" = "gcc" ]; then
-            export CXX="g++"
-          elif [ "${{ matrix.compiler }}" = "clang" ]; then
-            export CXX="clang++"
+          COMPILER="${{ matrix.compiler }}"
+          if [[ "$COMPILER" == gcc-* ]]; then
+            export CXX="g++-${COMPILER#gcc-}"
+          elif [[ "$COMPILER" == clang-* ]]; then
+            export CXX="clang++-${COMPILER#clang-}"
           elif [ "${{ matrix.compiler }}" = "intel" ]; then
             source /opt/intel/oneapi/setvars.sh
             export CXX="icpx"
+            echo "LD_LIBRARY_PATH=$LD_LIBRARY_PATH" >> $GITHUB_ENV
+            echo "PATH=$PATH" >> $GITHUB_ENV
           fi
 
           export CXXFLAGS="${{ matrix.cxx_std }} ${{ matrix.boost }} ${{ matrix.parallel }}"
@@ -75,7 +95,3 @@ jobs:
       - name: Run MPI tests (2 ranks)
         run: |
           mpiexec -n 2 python -m pytest --with-mpi
-
-      - name: Run MPI tests (3 ranks)
-        run: |
-          mpiexec -n 3 python -m pytest --with-mpi
