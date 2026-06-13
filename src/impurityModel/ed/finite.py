@@ -34,13 +34,13 @@ import scipy.sparse
 from scipy.sparse.linalg import ArpackNoConvergence, ArpackError, eigsh
 from mpi4py import MPI
 
-
 # Local imports
 from impurityModel.ed import product_state_representation as psr
 from impurityModel.ed import create
 from impurityModel.ed import remove
 from impurityModel.ed.average import k_B, thermal_average, thermal_average_scale_indep
 from impurityModel.ed.block_structure import get_equivalent_blocks
+from impurityModel.ed.ManyBodyUtils import ManyBodyOperator, ManyBodyState
 
 
 def get_job_tasks(rank, ranks, tasks_tot):
@@ -88,6 +88,7 @@ def rotate_matrix(M, T):
     """
     if isinstance(T, dict):
         from scipy.linalg import block_diag
+
         sorted_keys = sorted(T.keys())
         T_matrix = block_diag(*(T[k] for k in sorted_keys))
         return np.conj(T_matrix.T) @ M @ T_matrix
@@ -97,10 +98,10 @@ def rotate_matrix(M, T):
 def setup_hamiltonian(
     n_spin_orbitals: int,
     hOp: dict | ManyBodyOperator,
-    basis: 'Basis',
+    basis: "Basis",
     verbose: bool = False,
     mode: str = "sparse",
-) -> tuple['Basis', dict, Any]:
+) -> tuple["Basis", dict, Any]:
     """Create the Hamiltonian matrix in the given basis.
 
     Parameters
@@ -164,6 +165,7 @@ def mpi_matmat(m: Any, comm: Optional[MPI.Comm]) -> Callable[[np.ndarray], np.nd
     f : callable
         A function that takes a vector/matrix `v` and returns `m @ v` reduced across ranks.
     """
+
     def f(v: np.ndarray) -> np.ndarray:
         """Perform the local matrix product and MPI reduction.
 
