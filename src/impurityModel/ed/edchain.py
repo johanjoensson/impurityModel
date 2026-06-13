@@ -10,15 +10,35 @@ from typing import Optional
 def build_imp_bath_blocks(
     H: np.ndarray, n_orb: int
 ) -> tuple[list[list[int]], list[list[int]], list[list[int]], list[list[int]]]:
+    """Build impurity and bath blocks based on the block structure of Hamiltonian H.
+
+    Parameters
+    ----------
+    H : np.ndarray
+        The Hamiltonian matrix.
+    n_orb : int
+        The number of impurity orbitals.
+
+    Returns
+    -------
+    impurity_indices : list of list of int
+        Impurity orbital indices for each block.
+    occupied_indices : list of list of int
+        Occupied bath orbital indices for each block.
+    unoccupied_indices : list of list of int
+        Unoccupied bath orbital indices for each block.
+    block_structure : BlockStructure
+        The block structure representation of the Hamiltonian.
+    """
     block_structure = build_block_structure(H)
-    impurity_indices = [None] * len(block_structure.blocks)
-    occupied_indices = [None] * len(block_structure.blocks)
-    unoccupied_indices = [None] * len(block_structure.blocks)
+    impurity_indices = [None for _ in range(len(block_structure.blocks))]
+    occupied_indices = [None for _ in range(len(block_structure.blocks))]
+    unoccupied_indices = [None for _ in range(len(block_structure.blocks))]
     for block_i, orbs in enumerate(block_structure.blocks):
-        bath_orbs = {orb for orb in orbs if orb >= n_orb}
+        bath_orbs = set(orb for orb in orbs if orb >= n_orb)
         impurity_orbs = set(orbs) - bath_orbs
         impurity_indices[block_i] = sorted(impurity_orbs)
-        occupied_indices[block_i] = {orb for orb in bath_orbs if H[orb, orb] < 0}
+        occupied_indices[block_i] = set(orb for orb in bath_orbs if H[orb, orb] < 0)
         unoccupied_indices[block_i] = sorted(bath_orbs - occupied_indices[block_i])
         occupied_indices[block_i] = sorted(occupied_indices[block_i])
         orbs[:] = impurity_indices[block_i]
@@ -26,6 +46,32 @@ def build_imp_bath_blocks(
 
 
 def build_H_bath_v(H_dft, ebs_star, vs_star, bath_geometry, block_structure, verbose, extra_verbose):
+    """Transform bath parameters from star to chain or Haverkort geometry.
+
+    Parameters
+    ----------
+    H_dft : np.ndarray
+        DFT Hamiltonian matrix.
+    ebs_star : list of np.ndarray
+        Bath energies for each block in star geometry.
+    vs_star : list of np.ndarray
+        Hopping parameters for each block in star geometry.
+    bath_geometry : str
+        The geometry of the bath: "chain", "haver" (Haverkort), or others (fallback to star).
+    block_structure : BlockStructure
+        The block structure.
+    verbose : bool
+        Whether to print verbose output.
+    extra_verbose : bool
+        Whether to print extremely verbose output.
+
+    Returns
+    -------
+    H_baths : list of np.ndarray
+        The bath Hamiltonians for each block.
+    vs : list of np.ndarray
+        The hopping terms from the impurity to the bath for each block.
+    """
 
     H_baths = []
     vs = []
@@ -85,6 +131,24 @@ def build_H_bath_v(H_dft, ebs_star, vs_star, bath_geometry, block_structure, ver
 def build_full_bath(
     H_bath_inequiv: list[np.ndarray], v_inequiv: list[np.ndarray], block_structure: BlockStructure
 ) -> np.ndarray:
+    """Build the full bath Hamiltonian and hopping matrices from block components.
+
+    Parameters
+    ----------
+    H_bath_inequiv : list of np.ndarray
+        List of bath Hamiltonians for inequivalent blocks.
+    v_inequiv : list of np.ndarray
+        List of hopping matrices for inequivalent blocks.
+    block_structure : BlockStructure
+        The block structure.
+
+    Returns
+    -------
+    H_bath_full : np.ndarray
+        The block-diagonalized full bath Hamiltonian matrix.
+    v_full : np.ndarray
+        The stacked full hopping matrix.
+    """
     (
         blocks,
         identical_blocks,
@@ -123,6 +187,18 @@ def build_full_bath(
 
 
 def householder_reflector(A):
+    """Compute the Householder reflector matrix for a matrix A.
+
+    Parameters
+    ----------
+    A : np.ndarray
+        The input matrix.
+
+    Returns
+    -------
+    np.ndarray
+        The Householder reflector matrix.
+    """
     r = A.shape[1]
     X, Z = np.linalg.qr(A, mode="reduced")
     W, s, V = np.linalg.svd(X[:r], full_matrices=True)
@@ -136,10 +212,28 @@ def householder_reflector(A):
 
 
 def householder_matrix(v):
+    """Compute the Householder transformation matrix from a reflector vector.
+
+    Parameters
+    ----------
+    v : np.ndarray
+        Householder reflector vector/matrix.
+
+    Returns
+    -------
+    np.ndarray
+        The Householder transformation matrix.
+    """
     return np.eye(v.shape[0], dtype=v.dtype) - 2 * v @ np.conj(v.T)
 
 
 def test_householder():
+    """Test function for Householder reflector and block QR decomposition.
+
+    Returns
+    -------
+    None
+    """
     M = np.ones((4, 4))
     M[[1, 1, 2, 2, 3, 3, 3], [1, 3, 2, 3, 1, 2, 3]] = -1
     a1 = householder_reflector(M[:, 0:2])
@@ -173,6 +267,24 @@ def test_householder():
 
 
 def block_qr(A, block_size=1, overwrite_A=False):
+    """Perform block QR decomposition on matrix A.
+
+    Parameters
+    ----------
+    A : np.ndarray
+        Matrix to decompose.
+    block_size : int, default 1
+        Block size for Householder reflections.
+    overwrite_A : bool, default False
+        If True, overwrite `A` during decomposition.
+
+    Returns
+    -------
+    Q : np.ndarray
+        Unitary matrix Q.
+    R : np.ndarray
+        Upper triangular block matrix R.
+    """
     m, n = A.shape
     R = A.copy()
     if not overwrite_A:
@@ -199,6 +311,24 @@ def block_qr(A, block_size=1, overwrite_A=False):
 
 
 def get_lanczos_vectors(H, v0, alphas, betas):
+    """Generate Lanczos vectors from Hamiltonian and coefficients.
+
+    Parameters
+    ----------
+    H : np.ndarray
+        Hamiltonian matrix.
+    v0 : np.ndarray
+        Starting vectors.
+    alphas : np.ndarray
+        On-diagonal blocks of the tridiagonalized Hamiltonian.
+    betas : np.ndarray
+        Off-diagonal blocks of the tridiagonalized Hamiltonian.
+
+    Returns
+    -------
+    np.ndarray
+        Orthonormal Lanczos vectors matrix.
+    """
     v0, _ = sp.linalg.qr(v0, mode="economic")
     n_imp = v0.shape[1]
     n_it = alphas.shape[0]
@@ -222,10 +352,29 @@ def get_lanczos_vectors(H, v0, alphas, betas):
 
 
 def tridiagonalize(H, v0):
+    """Perform block tridiagonalization (block Lanczos method with full reorthogonalization) on Hamiltonian H.
+
+    Parameters
+    ----------
+    H : np.ndarray
+        Hamiltonian matrix.
+    v0 : np.ndarray
+        Initial starting vectors.
+
+    Returns
+    -------
+    alphas : np.ndarray
+        Diagonal blocks of the tridiagonal matrix.
+    betas : np.ndarray
+        Off-diagonal blocks of the tridiagonal matrix.
+    v0_tilde : np.ndarray
+        The upper-triangular matrix R from the economic QR decomposition of `v0`.
+    """
     assert H.shape[0] == v0.shape[0]
     block_size = v0.shape[1]
 
-    v0, v0_tilde = sp.linalg.qr(v0, mode="economic", overwrite_a=True, check_finite=False)
+    #  V0 could be a view into a larger matrix, so we do not put overwrite_a=True, that could be disastrous.
+    v0, v0_tilde = sp.linalg.qr(v0, mode="economic", overwrite_a=False, check_finite=True)
 
     if v0.shape[0] == 0:
         return (
@@ -244,12 +393,17 @@ def tridiagonalize(H, v0):
     for i in range(N // block_size):
         wp = H @ q[1]
         alphas[i] = np.conj(q[1].T) @ wp
+        # For i == 0, betas[i-1] == betas[-1] == np.zeros(n, n)
+        # No if i > 0 needed.
         wp -= q[1] @ alphas[i] + q[0] @ np.conj(betas[i - 1].T)
         for _ in range(2):
-            wp -= Q @ np.conj(Q.T) @ wp
+            wp -= Q @ (np.conj(Q.T) @ wp)
         Q[:, i * block_size : (i + 1) * block_size] = q[1]
         q[0] = q[1]
         q[1], betas[i] = np.linalg.qr(wp)
+        # Make sure we stop the Lanczos method if beta becomes to small
+        if np.linalg.norm(betas[i]) < 1e-14:
+            break
 
     return alphas, betas, v0_tilde
 
@@ -299,6 +453,22 @@ def double_chains(H_imp: np.ndarray, vs: np.ndarray, ebs: np.ndarray, verbose: b
 
 
 def build_star_geometry_hamiltonian(H_imp, vs, es):
+    """Construct a Hamiltonian matrix in star geometry.
+
+    Parameters
+    ----------
+    H_imp : np.ndarray or float or complex
+        Impurity Hamiltonian block.
+    vs : np.ndarray
+        Hopping parameters.
+    es : np.ndarray
+        Bath energies.
+
+    Returns
+    -------
+    np.ndarray
+        The constructed star geometry Hamiltonian matrix.
+    """
     if isinstance(H_imp, (float, complex)):
         H_imp = np.array([[H_imp]])
     if len(vs.shape) == 1:
@@ -314,6 +484,20 @@ def build_star_geometry_hamiltonian(H_imp, vs, es):
 
 
 def build_block_tridiagonal_hermitian_matrix(diagonals, offdiagonals):
+    """Assemble a block tridiagonal Hermitian matrix from diagonal and off-diagonal blocks.
+
+    Parameters
+    ----------
+    diagonals : np.ndarray
+        Diagonal blocks.
+    offdiagonals : np.ndarray
+        Off-diagonal blocks.
+
+    Returns
+    -------
+    np.ndarray
+        The assembled block tridiagonal Hamiltonian.
+    """
     num_blocks = diagonals.shape[0]
     block_size = diagonals.shape[1]
     num_orbs = num_blocks * block_size
@@ -322,6 +506,18 @@ def build_block_tridiagonal_hermitian_matrix(diagonals, offdiagonals):
         return H
 
     def idx_(j):
+        """Slice generator for block index j.
+
+        Parameters
+        ----------
+        j : int
+            Block index.
+
+        Returns
+        -------
+        slice
+            Slice object for index range.
+        """
         return slice(j * block_size, (j + 1) * block_size)
 
     for i in range(num_blocks - 1):
@@ -334,6 +530,23 @@ def build_block_tridiagonal_hermitian_matrix(diagonals, offdiagonals):
 
 
 def transform_to_lanczos_tridagonal_matrix(H, n_imp):
+    """Transform a Hamiltonian to Lanczos tridiagonal form.
+
+    Parameters
+    ----------
+    H : np.ndarray
+        The Hamiltonian matrix.
+    n_imp : int
+        The number of impurity orbitals.
+
+    Returns
+    -------
+    np.ndarray
+        The transformed tridiagonal Hamiltonian matrix.
+    """
+    matrix_print(H, "Matrix to tridiagonalize")
+    if H.shape[0] <= 2:
+        return H
     Hb = H[n_imp:, n_imp:]
     V0 = H[n_imp:, :n_imp]
     alphas, betas, V0 = tridiagonalize(Hb, V0)
@@ -387,6 +600,18 @@ def create_decoupled_hamiltonian(H, n_imp):
 
 
 def separate_orbital_character(q):
+    """Perform SVD decomposition to separate orbital characters.
+
+    Parameters
+    ----------
+    q : np.ndarray
+        The input matrix containing mixed orbital states.
+
+    Returns
+    -------
+    np.ndarray
+        Unitary transformation matrix to restore orbital character.
+    """
     U, s, Vh = np.linalg.svd(q, full_matrices=True)
     Um = np.eye(Vh.shape[0], dtype=q.dtype)
     Um[: q.shape[0], : q.shape[0]] = U
@@ -394,6 +619,28 @@ def separate_orbital_character(q):
 
 
 def linked_double_chain(H_imp, vs, es, verbose=True, extremely_verbose=False):
+    """Transform the bath geometry from star to a linked double chain geometry.
+
+    Parameters
+    ----------
+    H_imp : np.ndarray or float or complex
+        Impurity Hamiltonian block.
+    vs : np.ndarray
+        Hopping parameters.
+    es : np.ndarray
+        Bath energies.
+    verbose : bool, default True
+        Whether to print verbose output.
+    extremely_verbose : bool, default False
+        Whether to print extremely verbose output.
+
+    Returns
+    -------
+    v_chain : np.ndarray
+        Hopping terms from impurity to the linked double chain.
+    H_chain : np.ndarray
+        The bath Hamiltonian of the linked double chain.
+    """
     verbose = verbose or extremely_verbose
     if isinstance(H_imp, int):
         H_imp = np.array([[H_imp]], dtype=float)
@@ -418,7 +665,7 @@ def linked_double_chain(H_imp, vs, es, verbose=True, extremely_verbose=False):
             f"After reshuffling the orbitals, the impurity sits at indices {np.arange(imp_index, imp_index+n_imp)} and the coupling bath state at indices {np.arange(imp_index + n_imp, imp_index+2*n_imp)}"
         )
         matrix_print(Q_decoupled, "Orbital character for states")
-        matrix_print(H_decoupled, "Hamiltonian transformed into decoupled occupied and unoccupied blocks")
+        matrix_print(H_decoupled, "Hamiltonian transformed into decoupled occupied and unoccupied blocks", flush=True)
     # Undo the mixing of impurity and bath states
     R_couple = np.eye(Q_decoupled.shape[0], dtype=Q_decoupled.dtype)
     R_couple[imp_index : imp_index + 2 * n_imp, imp_index : imp_index + 2 * n_imp] = separate_orbital_character(
@@ -430,19 +677,20 @@ def linked_double_chain(H_imp, vs, es, verbose=True, extremely_verbose=False):
         matrix_print(
             np.conj(R_couple.T) @ H_decoupled @ R_couple,
             "Hamiltonian transformed into coupled occupied and unoccupied blocks",
+            flush=True,
         )
 
     H_tridiagonal_decoupled = np.zeros_like(H_decoupled)
     H_tridiagonal_decoupled[: imp_index + n_imp, : imp_index + n_imp] = transform_to_lanczos_tridagonal_matrix(
         H_decoupled[: imp_index + n_imp, : imp_index + n_imp][::-1, ::-1], n_imp
     )[::-1, ::-1]
-    if imp_index < H_star.shape[0]:
-        # The coupling bath state sits in the top left corner of this block
+    # The coupling state sits just after the impurity (i.e. imp_index + n_imp)
+    # Check that we have unoccupied states, beyond just the impurity.
+    if imp_index + n_imp < H_star.shape[0]:
         top_left = imp_index + n_imp
         H_tridiagonal_decoupled[top_left:, top_left:] = transform_to_lanczos_tridagonal_matrix(
             H_decoupled[top_left:, top_left:], n_imp
         )
-
     H_linked_chains = np.linalg.multi_dot((np.conj(R_couple.T), H_tridiagonal_decoupled, R_couple))
     if extremely_verbose:
         matrix_print(H_tridiagonal_decoupled, "Decoupled Hamiltonian with tridiagonal blocks")
@@ -455,6 +703,20 @@ def linked_double_chain(H_imp, vs, es, verbose=True, extremely_verbose=False):
     H_linked_chains = H_linked_chains[idx]
 
     def delta(m1, m2):
+        """Calculate the maximum absolute difference between two matrices.
+
+        Parameters
+        ----------
+        m1 : np.ndarray
+            First matrix.
+        m2 : np.ndarray
+            Second matrix.
+
+        Returns
+        -------
+        float
+            The maximum absolute difference.
+        """
         return np.max(np.abs(m2 - m1))
 
     if verbose:
@@ -474,11 +736,32 @@ def linked_double_chain(H_imp, vs, es, verbose=True, extremely_verbose=False):
         H_linked_chains[:n_imp, :n_imp], H_imp, atol=1e-15
     ), f"{H_linked_chains[:n_imp, :n_imp]=} {H_imp=}"
 
-
     return H_linked_chains[n_imp:, :n_imp], H_linked_chains[n_imp:, n_imp:]
 
 
 def basil_linked_double_chain(H_imp, vs, es, verbose=True, extremely_verbose=False):
+    """Alternative linked double chain transformation using Basile's algorithm.
+
+    Parameters
+    ----------
+    H_imp : np.ndarray
+        Impurity Hamiltonian block.
+    vs : np.ndarray
+        Hopping parameters.
+    es : np.ndarray
+        Bath energies.
+    verbose : bool, default True
+        Whether to print verbose output.
+    extremely_verbose : bool, default False
+        Whether to print extremely verbose output.
+
+    Returns
+    -------
+    v_chain : np.ndarray
+        Hopping terms from impurity to the linked double chain.
+    H_chain : np.ndarray
+        The bath Hamiltonian of the linked double chain.
+    """
     from impurityModel.ed.double_chain_haverkort.double_chains import get_double_chain_transform_multi
 
     n_imp = H_imp.shape[0]

@@ -81,21 +81,50 @@ def rotate_matrix(M, T):
     Parameters
     ==========
     M : NDArray - Matrix to rotate
-    T : NDArray - Rotation matrix to use
+    T : NDArray or dict - Rotation matrix to use, or dict of rotation matrices for blocks.
     Returns
     =======
     M' : NDArray - The rotated matrix
     """
+    if isinstance(T, dict):
+        from scipy.linalg import block_diag
+        sorted_keys = sorted(T.keys())
+        T_matrix = block_diag(*(T[k] for k in sorted_keys))
+        return np.conj(T_matrix.T) @ M @ T_matrix
     return np.conj(T.T) @ M @ T
 
 
 def setup_hamiltonian(
-    n_spin_orbitals,
-    hOp,
-    basis,
-    verbose=False,
-    mode="sparse",
-):
+    n_spin_orbitals: int,
+    hOp: dict | ManyBodyOperator,
+    basis: 'Basis',
+    verbose: bool = False,
+    mode: str = "sparse",
+) -> tuple['Basis', dict, Any]:
+    """Create the Hamiltonian matrix in the given basis.
+
+    Parameters
+    ----------
+    n_spin_orbitals : int
+        The total number of spin orbitals.
+    hOp : dict or ManyBodyOperator
+        The Hamiltonian operator.
+    basis : Basis
+        The many-body basis.
+    verbose : bool, default False
+        If True, print progress and statistics.
+    mode : str, default "sparse"
+        Matrix mode: "sparse" or "dense".
+
+    Returns
+    -------
+    expanded_basis : Basis
+        The basis after any potential expansion/restructuring.
+    h_dict : dict
+        Dictionary of Hamiltonian elements.
+    h_local : scipy.sparse.csc_array or np.ndarray
+        The constructed Hamiltonian matrix.
+    """
     if verbose:
         print("Create Hamiltonian matrix...")
     if mode != "sparse":
@@ -120,8 +149,34 @@ def setup_hamiltonian(
     return expanded_basis, h_dict, h_local
 
 
-def mpi_matmat(m, comm):
-    def f(v):
+def mpi_matmat(m: Any, comm: Optional[MPI.Comm]) -> Callable[[np.ndarray], np.ndarray]:
+    """Create a parallel MPI matrix-matrix multiplication wrapper.
+
+    Parameters
+    ----------
+    m : Any
+        The local matrix operator (supporting matrix multiplication `@`).
+    comm : MPI.Comm, optional
+        The MPI communicator.
+
+    Returns
+    -------
+    f : callable
+        A function that takes a vector/matrix `v` and returns `m @ v` reduced across ranks.
+    """
+    def f(v: np.ndarray) -> np.ndarray:
+        """Perform the local matrix product and MPI reduction.
+
+        Parameters
+        ----------
+        v : np.ndarray
+            The input vector or matrix.
+
+        Returns
+        -------
+        np.ndarray
+            The result of the multiplication.
+        """
         res = m @ v
         if comm is not None:
             comm.Allreduce(MPI.IN_PLACE, res)
@@ -130,7 +185,41 @@ def mpi_matmat(m, comm):
     return f
 
 
-def petsc_eigensystem(h_local, e_max, k=10, v0=None, eigenValueTol=0, return_eigvecs=True, comm=None):
+def petsc_eigensystem(
+    h_local: Any,
+    e_max: float,
+    k: int = 10,
+    v0: Optional[np.ndarray] = None,
+    eigenValueTol: float = 0,
+    return_eigvecs: bool = True,
+    comm: Optional[MPI.Comm] = None,
+) -> np.ndarray | tuple[np.ndarray, np.ndarray]:
+    """Solve the eigenvalue problem using PETSc/SLEPc.
+
+    Parameters
+    ----------
+    h_local : Any
+        The local sparse matrix.
+    e_max : float
+        The maximum energy above the ground state to resolve.
+    k : int, default 10
+        Number of eigenvalues to request.
+    v0 : np.ndarray, optional
+        Initial guess eigenvectors.
+    eigenValueTol : float, default 0
+        Tolerance for eigenvalue convergence.
+    return_eigvecs : bool, default True
+        Whether to return eigenvectors.
+    comm : MPI.Comm, optional
+        MPI communicator.
+
+    Returns
+    -------
+    es : np.ndarray
+        Array of eigenvalues.
+    vecs : np.ndarray, optional
+        Array of eigenvectors, returned if return_eigvecs is True.
+    """
     # Set up the distributed matrix
     M = PETSc.Mat()
     M.create(comm=comm)
@@ -200,7 +289,27 @@ def petsc_eigensystem(h_local, e_max, k=10, v0=None, eigenValueTol=0, return_eig
     return es
 
 
-def dense_eigensystem(h_local, return_eigvecs=True, comm=None):
+def dense_eigensystem(
+    h_local: Any, return_eigvecs: bool = True, comm: Optional[MPI.Comm] = None
+) -> np.ndarray | tuple[np.ndarray, np.ndarray]:
+    """Solve the eigenvalue problem using dense matrix diagonalization.
+
+    Parameters
+    ----------
+    h_local : Any
+        The matrix to diagonalize.
+    return_eigvecs : bool, default True
+        Whether to return eigenvectors.
+    comm : MPI.Comm, optional
+        MPI communicator.
+
+    Returns
+    -------
+    es : np.ndarray
+        Array of eigenvalues.
+    vecs : np.ndarray, optional
+        Array of eigenvectors, returned if return_eigvecs is True.
+    """
     rank = comm.rank if comm is not None else 0
     if hasattr(h_local, "toarray"):
         h = h_local.toarray()
@@ -230,7 +339,41 @@ def dense_eigensystem(h_local, return_eigvecs=True, comm=None):
     return es
 
 
-def primme_eigensystem(h_local, e_max, k=10, v0=None, eigenValueTol=0, return_eigvecs=True, comm=None):
+def primme_eigensystem(
+    h_local: Any,
+    e_max: float,
+    k: int = 10,
+    v0: Optional[np.ndarray] = None,
+    eigenValueTol: float = 0,
+    return_eigvecs: bool = True,
+    comm: Optional[MPI.Comm] = None,
+) -> np.ndarray | tuple[np.ndarray, np.ndarray]:
+    """Solve the eigenvalue problem using PRIMME.
+
+    Parameters
+    ----------
+    h_local : Any
+        The local sparse matrix.
+    e_max : float
+        The maximum energy above the ground state to resolve.
+    k : int, default 10
+        Number of eigenvalues to request.
+    v0 : np.ndarray, optional
+        Initial guess eigenvectors.
+    eigenValueTol : float, default 0
+        Tolerance for eigenvalue convergence.
+    return_eigvecs : bool, default True
+        Whether to return eigenvectors.
+    comm : MPI.Comm, optional
+        MPI communicator.
+
+    Returns
+    -------
+    es : np.ndarray
+        Array of eigenvalues.
+    vecs : np.ndarray, optional
+        Array of eigenvectors, returned if return_eigvecs is True.
+    """
     h = scipy.sparse.linalg.LinearOperator(
         h_local.shape,
         matvec=mpi_matmat(h_local, comm),
@@ -278,7 +421,41 @@ def primme_eigensystem(h_local, e_max, k=10, v0=None, eigenValueTol=0, return_ei
     return es
 
 
-def scipy_eigensystem(h_local, e_max, k=10, v0=None, eigenValueTol=0, return_eigvecs=True, comm=None):
+def scipy_eigensystem(
+    h_local: Any,
+    e_max: float,
+    k: int = 10,
+    v0: Optional[np.ndarray] = None,
+    eigenValueTol: float = 0,
+    return_eigvecs: bool = True,
+    comm: Optional[MPI.Comm] = None,
+) -> np.ndarray | tuple[np.ndarray, np.ndarray]:
+    """Solve the eigenvalue problem using SciPy's sparse solver (ARPACK).
+
+    Parameters
+    ----------
+    h_local : Any
+        The local sparse matrix.
+    e_max : float
+        The maximum energy above the ground state to resolve.
+    k : int, default 10
+        Number of eigenvalues to request.
+    v0 : np.ndarray, optional
+        Initial guess eigenvectors.
+    eigenValueTol : float, default 0
+        Tolerance for eigenvalue convergence.
+    return_eigvecs : bool, default True
+        Whether to return eigenvectors.
+    comm : MPI.Comm, optional
+        MPI communicator.
+
+    Returns
+    -------
+    es : np.ndarray
+        Array of eigenvalues.
+    vecs : np.ndarray, optional
+        Array of eigenvectors, returned if return_eigvecs is True.
+    """
     h = scipy.sparse.linalg.LinearOperator(
         h_local.shape,
         matvec=mpi_matmat(h_local, comm),
@@ -313,7 +490,19 @@ def scipy_eigensystem(h_local, e_max, k=10, v0=None, eigenValueTol=0, return_eig
     conv_fail = False
     k = min(k, h.shape[1] - 2)
 
-    def done(energies):
+    def done(energies: np.ndarray) -> bool:
+        """Check if convergence criteria are met.
+
+        Parameters
+        ----------
+        energies : np.ndarray
+            Calculated energies.
+
+        Returns
+        -------
+        bool
+            True if target number of eigenvalues above e_max is resolved.
+        """
         return len(energies) > 2 + np.sum(energies - np.min(energies) <= e_max)
 
     while not done(es) and len(es) < h.shape[0] - 2:
@@ -526,7 +715,16 @@ def eigensystem(
     return es, psis
 
 
-def printSlaterDeterminantsAndWeights(psis, nPrintSlaterWeights):
+def printSlaterDeterminantsAndWeights(psis: list[ManyBodyState], nPrintSlaterWeights: int) -> None:
+    """Print the Slater determinants and their corresponding weights for wavefunctions.
+
+    Parameters
+    ----------
+    psis : list of ManyBodyState
+        The list of many-body states (wavefunctions).
+    nPrintSlaterWeights : int
+        The number of highest-weighted Slater determinants to print for each wavefunction.
+    """
     print("Slater determinants/product states and correspoinding weights")
     weights = []
     for i, psi in enumerate(psis):
@@ -590,14 +788,43 @@ def get_occupations_from_rho_spherical(rho):
     )
 
 
-def get_Lz_from_rho_spherical(rho):
-    l = (rho.shape[0] // 2 - 1) // 2
+def get_Lz_from_rho_spherical(rho: np.ndarray, l: Optional[int] = None) -> float:
+    """Calculate the expectation value of L_z from the density matrix in spherical basis.
+
+    Parameters
+    ----------
+    rho : np.ndarray
+        The density matrix.
+    l : int, optional
+        The orbital angular momentum quantum number. If None, it is calculated from rho's shape.
+
+    Returns
+    -------
+    float
+        The expectation value <L_z>.
+    """
+    if l is None:
+        l = (rho.shape[0] // 2 - 1) // 2
     return np.real(
         sum(ml * (rho[i, i] + rho[i + (2 * l + 1), i + (2 * l + 1)]) for i, ml in enumerate(range(-l, l + 1)))
     )
 
 
-def get_Lplus_from_rho_spherical(rho, l):
+def get_Lplus_from_rho_spherical(rho: np.ndarray, l: int) -> complex:
+    """Calculate the expectation value of L_+ from the density matrix in spherical basis.
+
+    Parameters
+    ----------
+    rho : np.ndarray
+        The density matrix.
+    l : int
+        The orbital angular momentum quantum number.
+
+    Returns
+    -------
+    complex
+        The expectation value <L_+>.
+    """
     # L+ |l, ml> = sqrt(l*(l+1) - ml*(ml+1))|l, ml+1>
     llp1 = l * (l + 1)
     #   L+    |2, -2>,  |2, -1>, |2,  0>, |2,  1>, |2,  2>
@@ -612,7 +839,23 @@ def get_Lplus_from_rho_spherical(rho, l):
     )
 
 
-def get_Sminus_from_rho_spherical(rho, l, s=1 / 2):
+def get_Sminus_from_rho_spherical(rho: np.ndarray, l: int, s: float = 0.5) -> complex:
+    """Calculate the expectation value of S_- from the density matrix in spherical basis.
+
+    Parameters
+    ----------
+    rho : np.ndarray
+        The density matrix.
+    l : int
+        The orbital angular momentum quantum number.
+    s : float, default 0.5
+        The spin quantum number.
+
+    Returns
+    -------
+    complex
+        The expectation value <S_->.
+    """
     # S+ |s, ms> = sqrt(s*(s+1) - ms*(ms+1))|s, ms+1>
     ssp1 = s * (s + 1)
     ms = +1 / 2
@@ -633,7 +876,21 @@ def get_Sminus_from_rho_spherical(rho, l, s=1 / 2):
     )
 
 
-def get_Lminus_from_rho_spherical(rho, l):
+def get_Lminus_from_rho_spherical(rho: np.ndarray, l: int) -> complex:
+    """Calculate the expectation value of L_- from the density matrix in spherical basis.
+
+    Parameters
+    ----------
+    rho : np.ndarray
+        The density matrix.
+    l : int
+        The orbital angular momentum quantum number.
+
+    Returns
+    -------
+    complex
+        The expectation value <L_->.
+    """
     # L- |l, ml> = sqrt(l*(l+1) - ml*(ml-1))|l, ml-1>
     llp1 = l * (l + 1)
     #   L+    |2, -2>,  |2, -1>, |2,  0>, |2,  1>, |2,  2>
@@ -648,7 +905,23 @@ def get_Lminus_from_rho_spherical(rho, l):
     )
 
 
-def get_Splus_from_rho_spherical(rho, l, s=1 / 2):
+def get_Splus_from_rho_spherical(rho: np.ndarray, l: int, s: float = 0.5) -> complex:
+    """Calculate the expectation value of S_+ from the density matrix in spherical basis.
+
+    Parameters
+    ----------
+    rho : np.ndarray
+        The density matrix.
+    l : int
+        The orbital angular momentum quantum number.
+    s : float, default 0.5
+        The spin quantum number.
+
+    Returns
+    -------
+    complex
+        The expectation value <S_+>.
+    """
     # S+ |s, ms> = sqrt(s*(s+1) - ms*(ms+1))|s, ms+1>
     ssp1 = s * (s + 1)
     ms = -1 / 2
@@ -669,7 +942,21 @@ def get_Splus_from_rho_spherical(rho, l, s=1 / 2):
     )
 
 
-def get_L_from_rho_spherical(rho, l):
+def get_L_from_rho_spherical(rho: np.ndarray, l: int) -> float:
+    """Calculate the expectation value of the L magnitude from the density matrix.
+
+    Parameters
+    ----------
+    rho : np.ndarray
+        The density matrix.
+    l : int
+        The orbital angular momentum quantum number.
+
+    Returns
+    -------
+    float
+        The expectation value of the magnitude of L.
+    """
     return np.sqrt(
         (0.5 * (get_Lplus_from_rho_spherical(rho, l) + get_Lminus_from_rho_spherical(rho, l))) ** 2
         + (-1j / 2 * (get_Lplus_from_rho_spherical(rho, l) - get_Lminus_from_rho_spherical(rho, l))) ** 2
@@ -677,7 +964,23 @@ def get_L_from_rho_spherical(rho, l):
     )
 
 
-def get_S_from_rho_spherical(rho, l, s):
+def get_S_from_rho_spherical(rho: np.ndarray, l: int, s: float) -> float:
+    """Calculate the expectation value of the S magnitude from the density matrix.
+
+    Parameters
+    ----------
+    rho : np.ndarray
+        The density matrix.
+    l : int
+        The orbital angular momentum quantum number.
+    s : float
+        The spin quantum number.
+
+    Returns
+    -------
+    float
+        The expectation value of the magnitude of S.
+    """
     return np.sqrt(
         (0.5 * (get_Splus_from_rho_spherical(rho, l, s=s) + get_Sminus_from_rho_spherical(rho, l, s=s)) ** 2)
         + (-1j / 2 * (get_Splus_from_rho_spherical(rho, l, s=s) - get_Sminus_from_rho_spherical(rho, l, s=s)) ** 2)
@@ -685,7 +988,19 @@ def get_S_from_rho_spherical(rho, l, s):
     )
 
 
-def get_L2_from_rho_spherical(rho):
+def get_L2_from_rho_spherical(rho: np.ndarray) -> float:
+    """Calculate the expectation value of L^2 from the density matrix in spherical basis.
+
+    Parameters
+    ----------
+    rho : np.ndarray
+        The density matrix.
+
+    Returns
+    -------
+    float
+        The expectation value <L^2>.
+    """
     l = (rho.shape[0] // 2 - 1) // 2
     llp1 = l * (l + 1)
     Lz = get_Lz_from_rho_spherical(rho)
@@ -701,12 +1016,39 @@ def get_L2_from_rho_spherical(rho):
     return np.trace(rho @ Lz2) + 2 * Lz + np.trace(rho @ Lplus @ Lminus)
 
 
-def get_Sz_from_rho_spherical(rho):
-    l = (rho.shape[0] // 2 - 1) // 2
+def get_Sz_from_rho_spherical(rho: np.ndarray, l: Optional[int] = None) -> float:
+    """Calculate the expectation value of S_z from the density matrix in spherical basis.
+
+    Parameters
+    ----------
+    rho : np.ndarray
+        The density matrix.
+    l : int, optional
+        The orbital angular momentum quantum number. If None, it is calculated from rho's shape.
+
+    Returns
+    -------
+    float
+        The expectation value <S_z>.
+    """
+    if l is None:
+        l = (rho.shape[0] // 2 - 1) // 2
     return 1 / 2 * np.real(sum(-rho[i, i] + rho[i + (2 * l + 1), i + (2 * l + 1)] for i in range(2 * l + 1)))
 
 
-def get_S2_from_rho_spherical(rho):
+def get_S2_from_rho_spherical(rho: np.ndarray) -> float:
+    """Calculate the expectation value of S^2 from the density matrix in spherical basis.
+
+    Parameters
+    ----------
+    rho : np.ndarray
+        The density matrix.
+
+    Returns
+    -------
+    float
+        The expectation value <S^2>.
+    """
     l = (rho.shape[0] // 2 - 1) // 2
     ssp1 = 3 / 4
     Sz = get_Sz_from_rho_spherical(rho)
@@ -858,7 +1200,14 @@ def daggerOp(op):
     return opDagger
 
 
-def assert_hermitian(op: dict[tuple, int | float | complex]):
+def assert_hermitian(op: dict[tuple, int | float | complex]) -> None:
+    """Assert that the operator is Hermitian (equal to its adjoint).
+
+    Parameters
+    ----------
+    op : dict
+        The operator representing a mapping from excitation tuples to amplitudes.
+    """
     assert daggerOp(op) == op
 
 
@@ -942,7 +1291,18 @@ def get_basis(nBaths, valBaths, dnValBaths, dnConBaths, dnTol, n0imp, verbose=Tr
     return list(sorted(basis))
 
 
-def printOp(nBaths, pOp, printstr):
+def printOp(nBaths: dict[int, int], pOp: dict, printstr: str) -> None:
+    """Print the operator as a dense matrix along with its eigenvalues.
+
+    Parameters
+    ----------
+    nBaths : dict
+        Number of bath states for each l quantum number.
+    pOp : dict
+        The operator to print.
+    printstr : str
+        Header string printed above the operator representation.
+    """
     print(printstr)
     a = arrayOp(nBaths, pOp)
     print(np.array2string(a, max_line_width=2000, threshold=1000, precision=3, suppress_small=True))
@@ -971,6 +1331,20 @@ def inner(a: dict, b: dict) -> complex:
 
 
 def matmul(psis: list[dict], mat: np.ndarray) -> list[dict]:
+    """Perform matrix multiplication on a list of wavefunctions.
+
+    Parameters
+    ----------
+    psis : list of dict
+        The list of wavefunctions, where each wavefunction is a dictionary mapping states to amplitudes.
+    mat : np.ndarray
+        The transformation matrix.
+
+    Returns
+    -------
+    list of dict
+        The transformed wavefunctions.
+    """
     n = len(psis)
     assert mat.shape == (n, n)
     res = [{} for _ in psis]
@@ -1082,7 +1456,23 @@ def c(n_spin_orbitals, i, psi):
     return ret
 
 
-def identity(n_spin_orbitals, i, psi):
+def identity(n_spin_orbitals: int, i: int, psi: dict) -> dict:
+    """Identity operation on a wavefunction.
+
+    Parameters
+    ----------
+    n_spin_orbitals : int
+        Total number of spin orbitals.
+    i : int
+        Target orbital index (ignored).
+    psi : dict
+        Wavefunction state.
+
+    Returns
+    -------
+    dict
+        The original wavefunction state unchanged.
+    """
     return psi
 
 
@@ -1196,7 +1586,19 @@ def getNoSpinUop(l1, l2, l3, l4, R):
     return uDict
 
 
-def getUop_from_rspt_u4(u4):
+def getUop_from_rspt_u4(u4: np.ndarray) -> dict:
+    """Convert a 4-index U matrix from RSPT format to an operator dictionary.
+
+    Parameters
+    ----------
+    u4 : np.ndarray
+        The 4D array representing the Hubbard U matrix.
+
+    Returns
+    -------
+    uDict : dict
+        The converted operator dictionary.
+    """
     l1, l2, l3, l4 = u4.shape
     l1 = ((l1 // 2) - 1) // 2
     l2 = ((l2 // 2) - 1) // 2
@@ -1632,7 +2034,23 @@ def getTraceDensityMatrix(nBaths, psi, l=2):
     return n
 
 
-def build_density_matrix(orbital_indices, psi, n_spin_orbitals):
+def build_density_matrix(orbital_indices: Iterable[int], psi: dict, n_spin_orbitals: int) -> np.ndarray:
+    """Build the single-particle density matrix for a subset of orbitals.
+
+    Parameters
+    ----------
+    orbital_indices : Iterable of int
+        Indices of orbitals to include in the density matrix.
+    psi : dict
+        The many-body state.
+    n_spin_orbitals : int
+        The total number of spin orbitals.
+
+    Returns
+    -------
+    np.ndarray
+        The constructed density matrix of shape (len(orbital_indices), len(orbital_indices)).
+    """
     rho = np.zeros((len(orbital_indices), len(orbital_indices)), dtype=complex)
     for i, j in itertools.product(range(len(orbital_indices)), range(len(orbital_indices))):
         psi_new = a(n_spin_orbitals, orbital_indices[i], psi)
@@ -1643,12 +2061,44 @@ def build_density_matrix(orbital_indices, psi, n_spin_orbitals):
     return rho
 
 
-def build_impurity_density_matrix(n_imp_orbitals, n_bath_orbitals, psi):
+def build_impurity_density_matrix(n_imp_orbitals: int, n_bath_orbitals: int, psi: dict) -> np.ndarray:
+    """Build the single-particle density matrix for the impurity orbitals.
+
+    Parameters
+    ----------
+    n_imp_orbitals : int
+        Number of impurity orbitals.
+    n_bath_orbitals : int
+        Number of bath orbitals.
+    psi : dict
+        The many-body state.
+
+    Returns
+    -------
+    np.ndarray
+        The density matrix of the impurity orbitals.
+    """
     n_spin_orbitals = n_imp_orbitals + n_bath_orbitals
     return build_density_matrix(range(n_imp_orbitals), psi, n_spin_orbitals)
 
 
-def build_bath_density_matrix(n_imp_orbitals, n_bath_orbitals, psi):
+def build_bath_density_matrix(n_imp_orbitals: int, n_bath_orbitals: int, psi: dict) -> np.ndarray:
+    """Build the single-particle density matrix for the bath orbitals.
+
+    Parameters
+    ----------
+    n_imp_orbitals : int
+        Number of impurity orbitals.
+    n_bath_orbitals : int
+        Number of bath orbitals.
+    psi : dict
+        The many-body state.
+
+    Returns
+    -------
+    np.ndarray
+        The density matrix of the bath orbitals.
+    """
     n_spin_orbitals = n_imp_orbitals + n_bath_orbitals
     return build_density_matrix(range(n_imp_orbitals, n_spin_orbitals), psi, n_spin_orbitals)
 
@@ -1750,7 +2200,18 @@ def getDensityMatrixCubic(nBaths, psi):
     return nCub
 
 
-def printDensityMatrixCubic(nBaths, psis, tolPrintOccupation):
+def printDensityMatrixCubic(nBaths: dict[int, int], psis: list[dict], tolPrintOccupation: float) -> None:
+    """Print the single-particle density matrix in the cubic harmonics basis.
+
+    Parameters
+    ----------
+    nBaths : dict
+        Number of bath states for each l quantum number.
+    psis : list of dict
+        The list of many-body states (wavefunctions).
+    tolPrintOccupation : float
+        The threshold above which density matrix elements are printed.
+    """
     # Calculate density matrix
     print("Density matrix (in cubic harmonics basis):")
     for i, psi in enumerate(psis):
@@ -2338,7 +2799,27 @@ def applyOp_new(n_spin_orbitals: int, op: dict, psi: dict, slaterWeightMin=0, re
     return {state: amp for state, amp in psiNew.items() if abs(amp) > slaterWeightMin}
 
 
-def applyOp_thread_worker(op, psi, n_spin_orbitals, restrictions):
+def applyOp_thread_worker(op: dict, psi: dict, n_spin_orbitals: int, restrictions: Any) -> tuple[dict, dict]:
+    """Helper thread worker to apply a subset of operator terms to a wavefunction.
+
+    Parameters
+    ----------
+    op : dict
+        A subset of the operator terms.
+    psi : dict
+        The multi-configurational wavefunction state.
+    n_spin_orbitals : int
+        Total number of spin orbitals.
+    restrictions : dict
+        Occupation restrictions for generated states.
+
+    Returns
+    -------
+    psiNew : dict
+        New wavefunction state components.
+    opResult : dict
+        Action mapping from input states to output states.
+    """
     opResult = dict()
     psiNew = dict()
     for (process, h), (state, amp) in itertools.product(op.items(), psi.items()):
@@ -2452,7 +2933,24 @@ def applyOp_threadpool(n_spin_orbitals: int, op: dict, psi: dict, slaterWeightMi
     return {state: amp for state, amp in psiNew.items() if abs(amp) > slaterWeightMin}
 
 
-def applyOp_worker(output, op, psi, n_spin_orbitals, restrictions):
+def applyOp_worker(output: Any, op: Any, psi: dict, n_spin_orbitals: int, restrictions: Any) -> None:
+    """Helper process worker to apply a subset of operator terms to a wavefunction.
+
+    The resulting new wavefunction and action mapping are put into the output queue.
+
+    Parameters
+    ----------
+    output : multiprocessing.Queue
+        Queue to store the resulting (psiNew, opResult) tuple.
+    op : dict
+        A subset of the operator terms.
+    psi : dict
+        The multi-configurational wavefunction state.
+    n_spin_orbitals : int
+        Total number of spin orbitals.
+    restrictions : dict
+        Occupation restrictions for generated states.
+    """
     opResult = dict()
     psiNew = dict()
     for (process, h), (state, amp) in itertools.product(op, psi.items()):
@@ -3100,7 +3598,23 @@ def expand_basis(n_spin_orbitals, h_dict, hOp, basis0, restrictions, paralleliza
     return list(sorted(basis))
 
 
-def combine_sets(set_1, set_2, datatype):
+def combine_sets(set_1: set, set_2: set, datatype: Any) -> set:
+    """MPI reduction operator to combine two sets using union.
+
+    Parameters
+    ----------
+    set_1 : set
+        First set.
+    set_2 : set
+        Second set.
+    datatype : Any
+        The MPI datatype.
+
+    Returns
+    -------
+    set
+        The union of the two sets.
+    """
     return set_1 | set_2
 
 
@@ -3793,21 +4307,63 @@ def matrixToIOp(mat):
     return res
 
 
-def c2i_op(nBaths, c_op):
+def c2i_op(nBaths: dict[int, int], c_op: dict) -> dict:
+    """Convert an operator dictionary from spin-orbital labels to flat indices.
+
+    Parameters
+    ----------
+    nBaths : dict
+        Number of bath states for each l quantum number.
+    c_op : dict
+        Operator dictionary with spin-orbital label keys.
+
+    Returns
+    -------
+    dict
+        Operator dictionary with flat index keys.
+    """
     i_op = {}
     for process, value in c_op.items():
         i_op[tuple((c2i(nBaths, spinOrb), action) for spinOrb, action in process)] = value
     return i_op
 
 
-def i2c_op(nBaths, i_op):
+def i2c_op(nBaths: dict[int, int], i_op: dict) -> dict:
+    """Convert an operator dictionary from flat indices to spin-orbital labels.
+
+    Parameters
+    ----------
+    nBaths : dict
+        Number of bath states for each l quantum number.
+    i_op : dict
+        Operator dictionary with flat index keys.
+
+    Returns
+    -------
+    dict
+        Operator dictionary with spin-orbital label keys.
+    """
     c_op = {}
-    for ((i, opi), (j, opj)), val in iDict.items():
+    for ((i, opi), (j, opj)), val in i_op.items():
         c_op[((i2c(nBaths, i), opi), (i2c(nBaths, j), opj))] = val
     return c_op
 
 
-def i2cDict2Array(nBaths, i_ops):
+def i2cDict2Array(nBaths: dict[int, int], i_ops: list[dict]) -> list[dict]:
+    """Convert a list of flat-indexed operator dictionaries to spin-orbital labeled ones.
+
+    Parameters
+    ----------
+    nBaths : dict
+        Number of bath states for each l quantum number.
+    i_ops : list of dict
+        List of operator dictionaries with flat index keys.
+
+    Returns
+    -------
+    list of dict
+        List of operator dictionaries with spin-orbital label keys.
+    """
     res = []
     for i_op in i_ops:
         res.append(i2c_op(nBaths, i_op))

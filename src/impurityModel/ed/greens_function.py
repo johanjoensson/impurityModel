@@ -15,7 +15,13 @@ from impurityModel.ed.lanczos import (
 from impurityModel.ed.manybody_basis import CIPSI_Basis, Basis
 from impurityModel.ed.cg import bicgstab, block_bicgstab
 from impurityModel.ed.block_structure import BlockStructure, get_blocks
-from impurityModel.ed.ManyBodyUtils import ManyBodyState, ManyBodyOperator, applyOp as applyOp_test, inner
+from impurityModel.ed.ManyBodyUtils import (
+    ManyBodyState,
+    ManyBodyOperator,
+    SlaterDeterminant,
+    applyOp as applyOp_test,
+    inner,
+)
 from heapq import merge
 
 from mpi4py import MPI
@@ -24,6 +30,21 @@ import pickle
 
 
 def build_full_greens_function(block_gf, block_structure: BlockStructure):
+    """
+    Assemble the full Green's function from individual blocks and block symmetries.
+
+    Parameters
+    ----------
+    block_gf : list of ndarray
+        Green's functions for each inequivalent block.
+    block_structure : BlockStructure
+        The block structure defining mapping and symmetry relationships.
+
+    Returns
+    -------
+    res : ndarray
+        The full Green's function matrix.
+    """
     (
         blocks,
         identical_blocks,
@@ -126,8 +147,8 @@ def split_comm_and_redistribute_psi(priorities: Iterable[float], psis: list[Many
     new_psis = [p.copy() for p in psis]
     for c, c_root in enumerate(split_roots):
         if color != c:
-            comm.send(psis, dest=c_root + (comm.rank % procs_per_color[c]))
-            # comm.send([p.to_dict() for p in psis], dest=c_root + (comm.rank % procs_per_color[c]))
+            serialized_psis = [{tuple(k): v for k, v in p.items()} for p in psis]
+            comm.send(serialized_psis, dest=c_root + (comm.rank % procs_per_color[c]))
         else:
             for sender in range(comm.size):
                 if (
@@ -140,9 +161,10 @@ def split_comm_and_redistribute_psi(priorities: Iterable[float], psis: list[Many
                     if isinstance(received_psi, ManyBodyState):
                         new_psis[i] += received_psi
                     else:
-                        new_psis[i] += ManyBodyState(received_psi)
+                        psi_state = ManyBodyState({SlaterDeterminant(k): v for k, v in received_psi.items()})
+                        new_psis[i] += psi_state
 
-    return slice(indices_start, indices_end), split_roots, color, items_per_color, split_comm, psis
+    return slice(indices_start, indices_end), split_roots, color, items_per_color, split_comm, new_psis
 
 
 def get_Greens_function(
@@ -173,7 +195,7 @@ def get_Greens_function(
         blocks_per_color,
         block_basis,
         psis,
-        _,  # block_intercomms,
+        _,  # block_intercomms — freed collectively by gc after barrier in conftest
     ) = basis.split_basis_and_redistribute_psi([len(block) ** 2 for block in blocks], psis)
     if verbose:
         print(f"New block roots: {block_roots}")
@@ -288,10 +310,17 @@ def get_Greens_function(
 
                 basis.comm.Recv(gs_realaxis[block_idx], source=sender)
 
-    elif block_basis.comm.rank == 0:
+    elif block_basis.comm is not None and block_basis.comm.rank == 0:
         for block_i, (gsm, gsr) in enumerate(zip(local_gs_matsubara, local_gs_realaxis)):
             basis.comm.Send(gsm, dest=0)
             basis.comm.Send(gsr, dest=0)
+
+    # Free the split communicator collectively before returning.
+    # block_basis.comm is a split comm created by split_basis_and_redistribute_psi.
+    # MPI_Comm_free is collective — it must be called by all ranks in the comm
+    # at the same time.  Leaving it for Python gc risks non-collective freeing.
+    if block_basis is not None and block_basis.comm != basis.comm:
+        block_basis.free_comm()
 
     return (gs_matsubara, gs_realaxis) if basis.comm.rank == 0 else (None, None)
 
@@ -355,13 +384,26 @@ def calc_Greens_function_with_offdiag(
 
     """
 
-    if dN is not None:
-        if dN_imp is None:
+    # Set limits for change occupation, if any.
+    # limits are pairs of integers (max_holes, max_el)
+    # These limits are imposed on top of the (effective) ground state limitations.
+    if dN_imp is None:
+        if dN is not None:
             dN_imp = {i: (dN, dN) for i in block_basis.impurity_orbitals}
-        if dN_val is None:
+    else:
+        dN_imp = {i: dN_imp.get(i, None) for i in block_basis.impurity_orbitals}
+
+    if dN_val is None:
+        if dN is not None:
             dN_val = {i: (dN, 0) for i in block_basis.impurity_orbitals}
-        if dN_con is None:
+    else:
+        dN_val = {i: dN_val.get(i, None) for i in block_basis.impurity_orbitals}
+
+    if dN_con is None:
+        if dN is not None:
             dN_con = {i: (0, dN) for i in block_basis.impurity_orbitals}
+    else:
+        dN_con = {i: dN_con.get(i, None) for i in block_basis.impurity_orbitals}
 
     excited_restrictions = block_basis.build_excited_restrictions(
         hOp,
@@ -375,11 +417,11 @@ def calc_Greens_function_with_offdiag(
     block_v = [[ManyBodyState({}) for _ in tOps] for _ in psis]
     for (i_tOp, tOp), (j_psi, psi) in itertools.product(enumerate(tOps), enumerate(psis)):
 
-        # tOp.set_restrictions(excited_restrictions)
+        tOp.set_restrictions(excited_restrictions)
         block_v[j_psi][i_tOp] += applyOp_test(
             tOp,
             psi,
-            cutoff=0,  # slaterWeightMin,
+            cutoff=slaterWeightMin,
         )
     block_v_lengths = np.array([sum(len(t_psi) for t_psi in t_psis) for t_psis in block_v])
     block_basis.comm.Allreduce(MPI.IN_PLACE, block_v_lengths, op=MPI.SUM)
@@ -391,7 +433,7 @@ def calc_Greens_function_with_offdiag(
         excited_states_per_color,
         split_original_basis,
         split_original_psis,
-        _,  # excited_intercomms,
+        _,
     ) = block_basis.split_basis_and_redistribute_psi(
         np.log10(block_v_lengths + 1) + 1, [t_psi for t_psis in block_v for t_psi in t_psis]
     )
@@ -427,11 +469,15 @@ def calc_Greens_function_with_offdiag(
         for indices, occupations in excited_restrictions.items():
             print(f"---> {sorted(indices)} : {occupations}")
     for excited_psis in (excited_block_psis[ei] for ei in excited_indices):
+        excited_states = set()
+        for p in excited_psis:
+            excited_states.update(p)
         excited_basis = Basis(
             split_original_basis.impurity_orbitals,
             split_original_basis.bath_states,
             initial_basis=set(state for p in excited_psis for state in p),
-            # restrictions=excited_restrictions,
+            # initial_basis=excited_states,
+            restrictions=excited_restrictions,
             comm=split_original_basis.comm,
             verbose=verbose,
             truncation_threshold=split_original_basis.truncation_threshold,
@@ -439,8 +485,8 @@ def calc_Greens_function_with_offdiag(
             spin_flip_dj=split_original_basis.spin_flip_dj,
         )
 
-        # if excited_basis.restrictions is not None:
-        #     hOp.set_restrictions(excited_basis.restrictions)
+        if excited_basis.restrictions is not None:
+            hOp.set_restrictions(excited_basis.restrictions)
         if sparse:
             alphas, betas, r = block_Green_sparse(
                 hOp=hOp,
@@ -497,6 +543,10 @@ def calc_Greens_function_with_offdiag(
         block_basis.comm.send(local_alphas, dest=0)
         block_basis.comm.send(local_betas, dest=0)
         block_basis.comm.send(local_r, dest=0)
+
+    # Free the split communicator collectively before returning.
+    if split_original_basis is not None and split_original_basis.comm != block_basis.comm:
+        split_original_basis.free_comm()
 
     return excited_alphas, excited_betas, excited_r
 
@@ -587,6 +637,29 @@ def get_block_Green(
     n_samples = max(len(conv_w) // 10, 1)
 
     def converged(alphas, betas, *args, **kwargs):
+        """
+        Check convergence of the block Lanczos algorithm.
+
+        It monitors convergence by estimating the Green's function at random frequency
+        samples and checking whether the difference between subsequent iterations
+        falls below a specified tolerance.
+
+        Parameters
+        ----------
+        alphas : ndarray
+            The diagonal block matrices (alpha) generated by block Lanczos.
+        betas : ndarray
+            The off-diagonal block matrices (beta) generated by block Lanczos.
+        *args : list
+            Additional positional arguments.
+        **kwargs : dict
+            Additional keyword arguments.
+
+        Returns
+        -------
+        converged : bool
+            True if the calculation has converged, False otherwise.
+        """
         if np.any(np.linalg.norm(betas[-1], axis=1) < slaterWeightMin):
             return True
 
@@ -635,6 +708,21 @@ def get_block_Green(
 
 
 def build_qr(psi):
+    """
+    Perform an economic QR decomposition of a state matrix.
+
+    Parameters
+    ----------
+    psi : ndarray
+        The input state matrix.
+
+    Returns
+    -------
+    psi_orthogonal : ndarray
+        The orthogonalized matrix Q.
+    r : ndarray
+        The upper triangular matrix R.
+    """
     # Do a QR decomposition of the starting block.
     # Later on, use r to restore the psi block
     psi, r = sp.linalg.qr(psi.copy(), mode="economic", overwrite_a=True, check_finite=False, pivoting=False)
@@ -719,6 +807,35 @@ def block_Green(
 
 
 def block_green_impl(basis, hOp, psi_arr, delta, slaterWeightMin, verbose):
+    """
+    Internal block Green's function implementation.
+
+    Parameters
+    ----------
+    basis : Basis
+        The many-body basis.
+    hOp : dict
+        Hamiltonian operator.
+    psi_arr : list of ManyBodyState
+        Input state vectors.
+    delta : float or ndarray
+        Imaginary part/mesh info.
+    slaterWeightMin : float
+        Slater determinant cutoff weight.
+    verbose : bool
+        Whether to print verbose output.
+
+    Returns
+    -------
+    gs_matsubara : ndarray
+        Matsubara Green's function.
+    gs_realaxis : ndarray
+        Real axis Green's function.
+    r : ndarray
+        R matrix from QR.
+    psi_arr : list
+        Resulting states.
+    """
     N = len(basis)
     n = len(psi_arr)
 
@@ -751,6 +868,27 @@ def block_green_impl(basis, hOp, psi_arr, delta, slaterWeightMin, verbose):
     delta_min = max(slaterWeightMin**2, 1e-8)
 
     def converged(alphas, betas, verbose=False):
+        """
+        Check convergence of the block Lanczos algorithm.
+
+        It monitors convergence by estimating the Green's function at selected
+        frequencies and checking whether the maximum change between subsequent
+        iterations is within a specified tolerance.
+
+        Parameters
+        ----------
+        alphas : ndarray
+            The diagonal block matrices (alpha) generated by block Lanczos.
+        betas : ndarray
+            The off-diagonal block matrices (beta) generated by block Lanczos.
+        verbose : bool, optional
+            If True, print the convergence difference at each step.
+
+        Returns
+        -------
+        converged : bool
+            True if the calculation has converged, False otherwise.
+        """
         if alphas.shape[0] <= 1:
             return False
 
@@ -801,11 +939,26 @@ def block_green_impl(basis, hOp, psi_arr, delta, slaterWeightMin, verbose):
         h_local = basis.build_sparse_matrix(hOp)[:, basis.local_indices]
 
         def matmat(v):
+            """
+            Perform matrix-matrix multiplication with the local Hamiltonian.
+
+            Applies the local Hamiltonian to a set of state vectors and performs
+            an MPI reduction across MPI processes to accumulate the results.
+
+            Parameters
+            ----------
+            v : ndarray
+                Input vectors to multiply.
+
+            Returns
+            -------
+            res : ndarray
+                The resulting matrix product after MPI reduction.
+            """
             res = h_local @ v
             if comm is not None:
                 comm.Reduce(MPI.IN_PLACE if rank == 0 else res, res, op=MPI.SUM, root=0)
-            return res.reshape(v.shape)
-            # return res.reshape(h_local.shape[0], v.shape[1])
+            return res.reshape(h_local.shape[0], v.shape[1])
 
         H = sp.sparse.linalg.LinearOperator(
             (len(basis), len(basis.local_indices)),
@@ -817,14 +970,14 @@ def block_green_impl(basis, hOp, psi_arr, delta, slaterWeightMin, verbose):
         )
 
         # Run Lanczos on psi0^T* [wI - j*delta - H]^-1 psi0
-        alphas, betas = get_block_Lanczos_matrices(
+        alphas, betas, _ = get_block_Lanczos_matrices(
             psi0=psi_dense_local,
             h=H,
             converged=converged,
             verbose=False and verbose,
             comm=comm,
         )
-    q_last = get_Lanczos_vectors(H, alphas, betas, psi_dense_local, comm=comm, which=-1)
+    q_last = get_Lanczos_vectors(H, alphas, betas, psi_dense_local, comm=None if dense else comm, which=-1)
     return alphas, betas, r, basis.build_state(q_last.T, slaterWeightMin=slaterWeightMin)
 
 
@@ -848,7 +1001,7 @@ def block_Green_sparse(
 
     if N == 0 or n == 0:
         return np.empty((0, n, n), dtype=complex), np.empty((0, n, n), dtype=complex), np.zeros((n, n), dtype=complex)
-    psi_dense = basis.build_vector(psi_arr, root=0, slaterWeightMin=0).T
+    psi_dense = basis.build_vector(psi_arr, root=0, slaterWeightMin=slaterWeightMin).T
     if rank == 0:
         psi_dense, r = build_qr(psi_dense)
     if mpi:
@@ -872,6 +1025,27 @@ def block_Green_sparse(
     delta_min = max(slaterWeightMin**2, 1e-8)
 
     def converged(alphas, betas, verbose=False):
+        """
+        Check convergence of the block Lanczos algorithm.
+
+        It monitors convergence by estimating the Green's function at selected
+        frequencies and checking whether the maximum change between subsequent
+        iterations is within a specified tolerance.
+
+        Parameters
+        ----------
+        alphas : ndarray
+            The diagonal block matrices (alpha) generated by block Lanczos.
+        betas : ndarray
+            The off-diagonal block matrices (beta) generated by block Lanczos.
+        verbose : bool, optional
+            If True, print the convergence difference at each step.
+
+        Returns
+        -------
+        converged : bool
+            True if the calculation has converged, False otherwise.
+        """
         if alphas.shape[0] <= 1:
             return False
 
@@ -910,7 +1084,7 @@ def block_Green_sparse(
             print(f"delta = {d_g}", flush=True)
         return d_g < delta_min
 
-    alphas, betas = block_lanczos_sparse(
+    alphas, betas, _ = block_lanczos_sparse(
         psi_arr, hOp, basis, converged, verbose=verbose, slaterWeightMin=slaterWeightMin
     )
 
@@ -955,7 +1129,42 @@ def block_Green_freq_2(
         return np.zeros((len(iws), n, n), dtype=complex), np.zeros((len(ws), n, n), dtype=complex)
 
     def build_converged(w, delta):
+        """
+        Build and return a convergence checking function for a specific frequency.
+
+        Parameters
+        ----------
+        w : complex or float
+            The target frequency.
+        delta : float
+            The imaginary broadening factor.
+
+        Returns
+        -------
+        converged : function
+            A function that evaluates block Lanczos convergence at frequency `w`.
+        """
+
         def converged(alphas, betas, *args, **kwargs):
+            """
+            Evaluate block Lanczos convergence for the outer frequency `w` and broadening `delta`.
+
+            Parameters
+            ----------
+            alphas : ndarray
+                The diagonal block matrices (alpha) generated by block Lanczos.
+            betas : ndarray
+                The off-diagonal block matrices (beta) generated by block Lanczos.
+            *args : list
+                Additional positional arguments.
+            **kwargs : dict
+                Additional keyword arguments.
+
+            Returns
+            -------
+            converged : bool
+                True if the calculation has converged at this frequency, False otherwise.
+            """
             if np.any(np.linalg.norm(betas[-1], axis=1) < max(slaterWeightMin, 1e-8)):
                 return True
 
@@ -1022,13 +1231,12 @@ def block_Green_freq_2(
             if True:
                 # Use fully sparse implementation
                 # Build basis for each frequency
-                h_local = freq_basis.build_sparse_matrix(hOp)
-                alphas, betas, _ = block_lanczos(
-                    psi0=psi,
+                alphas, betas, _ = block_lanczos_sparse(
+                    psi,
+                    hOp,
                     basis=basis,
                     converged=build_converged(w, delta),
-                    h_mem=h_mem,
-                    verbose=False and verbose,
+                    verbose=verbose,
                     slaterWeightMin=slaterWeightMin,
                     reort=reort,
                 )
@@ -1060,6 +1268,31 @@ def block_Green_freq_2(
 
 
 def Green_freq_bicgstab_fixed_basis(w_mesh, hOp, psi, e, basis, slaterWeightMin):
+    """
+    Compute Green's function on a frequency mesh using BiCGSTAB with a fixed basis.
+
+    Parameters
+    ----------
+    w_mesh : ndarray
+        Frequency mesh.
+    hOp : dict
+        Hamiltonian operator.
+    psi : list of ManyBodyState
+        Input state vectors.
+    e : float
+        Energy offset.
+    basis : Basis
+        The many-body basis.
+    slaterWeightMin : float
+        Slater determinant cutoff.
+
+    Returns
+    -------
+    gs_matsubara : ndarray
+        Matsubara Green's function.
+    gs_realaxis : ndarray
+        Real axis Green's function.
+    """
     _, freq_roots, color, freq_per_color, split_basis, psi, _ = basis.split_basis_and_redistribute_psi(
         [1] * len(w_mesh), psi
     )
@@ -1124,10 +1357,35 @@ def Green_freq_bicgstab_fixed_basis(w_mesh, hOp, psi, e, basis, slaterWeightMin)
 
     print(f"Maximum basis size: {max_basis_size} at frequency {freq}")
     basis.comm.Allreduce(MPI.IN_PLACE, gs, op=MPI.SUM)
+    if split_basis is not None and split_basis.comm != basis.comm:
+        split_basis.free_comm()
     return gs
 
 
 def Green_freq_bicgstab(w_mesh, hOp, psi, e, basis, slaterWeightMin):
+    """
+    Compute Green's function on a frequency mesh using BiCGSTAB.
+
+    Parameters
+    ----------
+    w_mesh : ndarray
+        Frequency mesh.
+    hOp : dict
+        Hamiltonian operator.
+    psi : list of ManyBodyState
+        Input state vectors.
+    e : float
+        Energy offset.
+    basis : Basis
+        The many-body basis.
+    slaterWeightMin : float
+        Slater determinant cutoff.
+
+    Returns
+    -------
+    gs : ndarray
+        The computed Green's function.
+    """
     _, freq_roots, color, freq_per_color, split_basis, psi, _ = basis.split_basis_and_redistribute_psi(
         [1] * len(w_mesh), psi
     )
@@ -1176,6 +1434,10 @@ def Green_freq_bicgstab(w_mesh, hOp, psi, e, basis, slaterWeightMin):
 
     print(f"Maximum basis size: {max_basis_size} at frequency {freq}")
     basis.comm.Reduce(MPI.IN_PLACE if basis.comm.rank == 0 else gs, gs, op=MPI.SUM, root=0)
+
+    if split_basis is not None and split_basis.comm != basis.comm:
+        split_basis.free_comm()
+
     return gs
 
 
@@ -1305,6 +1567,29 @@ def calc_local_Greens_function_from_alpha_beta(alphas, betas, iws, ws, e, delta,
 
 
 def calc_G(alphas, betas, r, omega, e, delta):
+    """
+    Calculate the Green's function using continued fraction parameters.
+
+    Parameters
+    ----------
+    alphas : ndarray
+        Alpha continued fraction coefficients.
+    betas : ndarray
+        Beta continued fraction coefficients.
+    r : ndarray
+        R matrix projection.
+    omega : ndarray
+        Frequency mesh.
+    e : float
+        Energy offset.
+    delta : float
+        Broadening factor.
+
+    Returns
+    -------
+    G : ndarray
+        Calculated Green's function.
+    """
     if alphas.shape[0] == 0:
         return np.zeros((len(omega), alphas.shape[1], alphas.shape[1]), dtype=complex)
     I = np.identity(alphas.shape[1], dtype=complex)
@@ -1525,15 +1810,34 @@ def rotate_matrix(M, T):
     Parameters
     ==========
     M : NDArray - Matrix to rotate
-    T : NDArray - Rotation matrix to use
+    T : NDArray or dict - Rotation matrix to use, or dict of rotation matrices for blocks.
     Returns
     =======
     M' : NDArray - The rotated matrix
     """
+    if isinstance(T, dict):
+        from scipy.linalg import block_diag
+
+        sorted_keys = sorted(T.keys())
+        T_matrix = block_diag(*(T[k] for k in sorted_keys))
+        return np.conj(T_matrix.T) @ M @ T_matrix
     return np.conj(T.T) @ M @ T
 
 
 def block_diagonalize_hyb(hyb):
+    """
+    Block diagonalize the hybridization function matrix.
+
+    Parameters
+    ----------
+    hyb : ndarray of shape (n_freq, n_orb, n_orb)
+        The hybridization matrix.
+
+    Returns
+    -------
+    Q_full : ndarray of shape (n_orb, n_orb)
+        The transformation matrix.
+    """
     hyb_herm = 1 / 2 * (hyb + np.conj(np.transpose(hyb, (0, 2, 1))))
     blocks = get_blocks(hyb_herm)
     Q_full = np.zeros((hyb.shape[1], hyb.shape[2]), dtype=complex)

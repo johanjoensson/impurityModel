@@ -12,8 +12,32 @@ from mpi4py import MPI
 from scipy.special import sph_harm_y, spherical_jn
 import scipy.integrate as si
 
+
 def sph_harm(m, n, theta, phi):
+    """
+    Compute the spherical harmonics.
+
+    This function wraps scipy's `sph_harm_y` to compute the spherical harmonic of
+    degree `n` and order `m` at polar angle `theta` and azimuthal angle `phi`.
+
+    Parameters
+    ----------
+    m : int
+        Order of the harmonic (often denoted `m`).
+    n : int
+        Degree of the harmonic (often denoted `l` or `n`).
+    theta : float
+        Polar (colatitudinal) coordinate in radians.
+    phi : float
+        Azimuthal (longitudinal) coordinate in radians.
+
+    Returns
+    -------
+    complex
+        The value of the spherical harmonic.
+    """
     return sph_harm_y(n, m, phi, theta)
+
 
 from impurityModel.ed.average import thermal_average
 
@@ -184,7 +208,6 @@ def simulate_spectra(
         dN_val={1: (0, 0), 2: (1, 0)},
         dN_con={1: (0, 0), 2: (0, 1)},
     )
-    # gsPS = getSpectra(n_spin_orbitals, hOp, tOpsPS, psis, es, -w, -delta, restrictions)
     gsPS *= -1
     gs = gsPS + gsIPS
     if rank == 0:
@@ -202,7 +225,7 @@ def simulate_spectra(
     if rank == 0:
         tmp = [w, aSum]
         # Each transition operator seperatly
-        for i in range(np.shape(gs)[0]):
+        for i in range(np.shape(gs)[1]):
             tmp.append(-gs.imag[:, i])
         print("Save spectra to disk...\n")
         np.savetxt("PS.dat", np.array(tmp).T, fmt="%8.4f", header="E  sum  T1  T2  T3 ...")
@@ -231,7 +254,6 @@ def simulate_spectra(
         dN_val={1: (0, 0), 2: (1, 0)},
         dN_con={1: (0, 0), 2: (0, 1)},
     )
-    # gs = getSpectra(n_spin_orbitals, hOp, tOpsPS, psis, es, -w, -delta, restrictions)
     gs *= -1
     if rank == 0:
         # print("#eigenstates = {:d}".format(np.shape(gs)[0]))
@@ -243,7 +265,7 @@ def simulate_spectra(
         # h5f.create_dataset("XPS", data=-gs.imag)
         h5f.create_dataset("XPSthermal", data=-gs.imag)
     # Sum over transition operators
-    aSum = np.sum(-gs.imag, axis=0)
+    aSum = np.sum(-gs.imag, axis=1)
     # Save spectra to disk
     if rank == 0:
         tmp = [w, aSum]
@@ -818,6 +840,49 @@ def getSpectra_new(
     dN_val,
     dN_con,
 ):
+    """
+    Calculate the Green's function spectra for a list of transition operators.
+
+    Supports both single-process and distributed parallel calculations over MPI.
+
+    Parameters
+    ----------
+    hOp : ManyBodyOperator
+        The Hamiltonian operator.
+    tOps : list of ManyBodyOperator
+        List of transition operators.
+    psis : list of ManyBodyState
+        List of many-body eigenstates.
+    es : list of float
+        Total energies of the eigenstates.
+    tau : float
+        Temperature parameter for Boltzmann averaging.
+    w : ndarray
+        Real energy mesh points.
+    basis : Basis
+        The basis container.
+    delta : float
+        Broadening/resolution parameter (distance from the real axis).
+    slaterWeightMin : float
+        Minimum weight of Slater determinants to retain in basis expansion.
+    verbose : bool
+        If True, prints progress and diagnostic messages.
+    occ_cutoff : float
+        Occupation cutoff for state pruning.
+    dN_imp : dict
+        Restrictions on particle number change in the impurity shell.
+    dN_val : dict
+        Restrictions on particle number change in the valence shell.
+    dN_con : dict
+        Restrictions on particle number change in the conduction shell.
+
+    Returns
+    -------
+    ndarray
+        A 2D array of shape `(len(w), len(tOps))` containing the complex-valued
+        spectra on the real axis. Only returned on root process rank 0; other ranks
+        return an empty array.
+    """
     comm = basis.comm
     if comm is None or comm.size <= 1:
         gs_realaxis = np.empty((len(w), len(tOps)), dtype=complex)
@@ -853,6 +918,7 @@ def getSpectra_new(
         tOps_per_color,
         tOp_basis,
         psis,
+        _,
     ) = basis.split_basis_and_redistribute_psi([1] * len(tOps), psis)
     if basis.comm.rank == 0:
         indices_for_colors = np.empty((sum(tOps_per_color)), dtype=int)
@@ -884,13 +950,14 @@ def getSpectra_new(
             dN_val=dN_val,
             dN_con=dN_con,
         )
-        e0 = np.min(es)
-        Z = np.sum(np.exp(-(es - e0) / tau))
-        G_tOp = np.zeros((len(w), 1, 1), dtype=complex)
-        for e, alphas_e, betas_e, r_e in zip(es, alphas, betas, r):
-            G_tOp += gf.calc_G(alphas_e, betas_e, r_e, w, e, delta) * np.exp(-(e - e0) / tau)
-        G_tOp /= Z
-        gs_realaxis_local[:, local_idx] = G_tOp[:, 0, 0]
+        if tOp_basis.comm.rank == 0:
+            e0 = np.min(es)
+            Z = np.sum(np.exp(-(es - e0) / tau))
+            G_tOp = np.zeros((len(w), 1, 1), dtype=complex)
+            for e, alphas_e, betas_e, r_e in zip(es, alphas, betas, r):
+                G_tOp += gf.calc_G(alphas_e, betas_e, r_e, w, e, delta) * np.exp(-(e - e0) / tau)
+            G_tOp /= Z
+            gs_realaxis_local[:, local_idx] = G_tOp[:, 0, 0]
 
     if basis.comm.rank == 0:
         gs_realaxis = np.empty((len(w), len(tOps)), dtype=complex)
@@ -901,12 +968,12 @@ def getSpectra_new(
                 continue
             received_gs = np.empty((len(w), tOps_per_color[col]), dtype=complex)
             basis.comm.Recv(received_gs, source=sender)
-            for i, tOps_idx in enumerate(
-                indices_for_colors[offsets[col] : offsets[col] + tOps_per_color[col]]
-            ):
+            for i, tOps_idx in enumerate(indices_for_colors[offsets[col] : offsets[col] + tOps_per_color[col]]):
                 gs_realaxis[:, tOps_idx] = received_gs[:, i]
     elif tOp_basis.comm.rank == 0:
         basis.comm.Send(gs_realaxis_local, dest=0)
+    if tOp_basis is not None and tOp_basis.comm != basis.comm:
+        tOp_basis.free_comm()
     return gs_realaxis if basis.comm.rank == 0 else np.empty((0, 0), dtype=complex)
 
 
@@ -1127,7 +1194,7 @@ def getRIXSmap_new(
 
     """
     excited_restrictions = basis.build_excited_restrictions(
-            hOp,
+        hOp,
         psis,
         Es,
         imp_change={1: (1, 0), 2: (1, 1)},
@@ -1135,7 +1202,7 @@ def getRIXSmap_new(
         con_change={1: (0, 0), 2: (0, 1)},
     )
     relaxed_restrictions = basis.build_excited_restrictions(
-            hOp,
+        hOp,
         psis,
         Es,
         imp_change={1: (0, 0), 2: (1, 1)},
@@ -1152,6 +1219,7 @@ def getRIXSmap_new(
         eigen_per_color,
         eigen_basis,
         psis,
+        _,
     ) = basis.split_basis_and_redistribute_psi([1 for _ in Es], psis)
     eigen_basis.restrictions = relaxed_restrictions
     if eigen_basis.comm.rank == 0:
@@ -1178,21 +1246,20 @@ def getRIXSmap_new(
                 wIn_per_color,
                 wIn_basis,
                 psi1_arr,
+                _,
             ) = basis_final.split_basis_and_redistribute_psi([1 for _ in wIns], [psi1])
-            if basis.comm.rank == 0:
+            if eigen_basis.comm.rank == 0:
                 indices_for_colors = np.empty((sum(wIn_per_color)), dtype=int)
                 offsets = np.array([sum(wIn_per_color[:r]) for r in range(len(wIn_roots))], dtype=int)
                 for col, sender in enumerate(wIn_roots):
                     if sender == 0:
-                        indices_for_colors[offsets[color] : offsets[color] + wIn_per_color[color]] = wIn_indices
+                        indices_for_colors[offsets[col] : offsets[col] + wIn_per_color[col]] = wIn_indices
                         continue
-                    basis.comm.Recv(indices_for_colors[offsets[col] : offsets[col] + wIn_per_color[col]], source=sender)
+                    eigen_basis.comm.Recv(indices_for_colors[offsets[col] : offsets[col] + wIn_per_color[col]], source=sender)
             elif wIn_basis.comm.rank == 0:
-                basis.comm.Send(np.array(wIn_indices), dest=0)
+                eigen_basis.comm.Send(np.array(wIn_indices), dest=0)
             if eigen_basis.comm.rank != 0:
-                gs = np.empty(
-                    (len(tOpsIn), wIn_indices.stop - wIn_indices.start, len(tOpsOut), len(wLoss)), dtype=complex
-                )
+                gs = np.zeros((len(tOpsIn), len(wIn_indices), len(tOpsOut), len(wLoss)), dtype=complex)
             basis_tmp = Basis(
                 impurity_orbitals=eigen_basis.impurity_orbitals,
                 bath_states=eigen_basis.bath_states,
@@ -1205,27 +1272,32 @@ def getRIXSmap_new(
                 spin_flip_dj=eigen_basis.spin_flip_dj,
             )
             psi1 = psi1_arr[0]
-            basis_tmp.add_states(psi1.keys())
-            psi1 = basis_tmp.redistribute_psis([psi1])[0]
-            basis_tmp.expand(hOp)
-            h = basis_tmp.build_sparse_matrix(hOp)
-            y = basis_tmp.build_vector([psi1])[0]
-            n = h.shape[0]
+            psi2 = ManyBodyState()
+
+            from impurityModel.ed.cg import block_bicgstab
+
             for k, win in enumerate(wIns[wIn_indices]):
-                diagonal = np.zeros((n), dtype=complex)
-                diagonal[basis_tmp.local_indices] = win + delta1 * 1j + E_e
-                w = scipy.sparse.diags(diagonal, offsets=0, format="csc", dtype=complex)
+                psi2.prune(slaterWeightMin)
+                basis_tmp.clear()
+                basis_tmp.add_states(sorted(set(state for p in (psi1, psi2) for state in p.keys())))
 
-                a = w - h
+                A_op = (
+                    ManyBodyOperator(
+                        {((0, "c"), (0, "a")): win + delta1 * 1j + E_e, ((0, "a"), (0, "c")): win + delta1 * 1j + E_e}
+                    )
+                    - hOp
+                )
 
-                def matmat(m):
-                    res = a @ m
-                    basis_tmp.comm.Allreduce(MPI.IN_PLACE, res, op=MPI.SUM)
-                    return res
-
-                lop = scipy.sparse.linalg.LinearOperator(shape=(n, n), matvec=matmat, matmat=matmat, dtype=a.dtype)
-                x, info = scipy.sparse.linalg.bicgstab(lop, y)
-                psi2 = basis_tmp.build_state(x)[0]
+                psi2_list = block_bicgstab(
+                    A=A_op,
+                    x0=[psi2],
+                    y=[psi1],
+                    basis=basis_tmp,
+                    slaterWeightMin=slaterWeightMin,
+                    atol=1e-5,
+                    rtol=1e-7,
+                )
+                psi2 = psi2_list[0]
                 for j, tout in enumerate(tOpsOut):
                     psi3 = applyOp_test(tout, psi2)
                     wIn_basis.add_states(psi3.keys())
@@ -1239,18 +1311,37 @@ def getRIXSmap_new(
                         slaterWeightMin=slaterWeightMin,
                         verbose=verbose,
                     )
-                    gs[i, k, j, :, None, None] += gf.calc_G(alphas, betas, r, wLoss, E_e, delta2) * np.exp(
-                        -(E_e - E0) / tau
-                    )
+                    if eigen_basis.comm.rank == 0:
+                        gs[i, wIn_indices[k], j, :, None, None] += gf.calc_G(alphas, betas, r, wLoss, E_e, delta2) * np.exp(
+                            -(E_e - E0) / tau
+                        )
+                    else:
+                        gs[i, k, j, :, None, None] += gf.calc_G(alphas, betas, r, wLoss, E_e, delta2) * np.exp(
+                            -(E_e - E0) / tau
+                        )
             if eigen_basis.comm.rank == 0:
                 for c, sender in enumerate(wIn_roots):
-                    if sender == eigen_basis.comm.rank:
+                    if sender == 0:
                         continue
-                    start = sum(wIn_per_color[:c])
+                    start = offsets[c]
                     stop = start + wIn_per_color[c]
-                    eigen_basis.comm.Recv(gs[i, start:stop, :, :], source=sender)
+                    recv_buffer = np.empty((wIn_per_color[c], len(tOpsOut), len(wLoss)), dtype=complex)
+                    eigen_basis.comm.Recv(recv_buffer, source=sender)
+                    for idx_local, idx_global in enumerate(indices_for_colors[start:stop]):
+                        gs[i, idx_global, :, :] += recv_buffer[idx_local, :, :]
             elif eigen_basis.comm.rank in wIn_roots:
                 eigen_basis.comm.Send(gs[i, :, :, :], dest=0)
+
+            # Free loop-local split/cloned communicators collectively
+            if basis_tmp is not None and basis_tmp.comm != eigen_basis.comm:
+                basis_tmp.free_comm()
+            if wIn_basis is not None and wIn_basis.comm != basis_final.comm:
+                wIn_basis.free_comm()
+            if basis_final is not None and basis_final.comm != eigen_basis.comm:
+                basis_final.free_comm()
+
+    if eigen_basis is not None and eigen_basis.comm != basis.comm:
+        eigen_basis.free_comm()
 
     if basis.comm.rank == 0:
         basis.comm.Reduce(MPI.IN_PLACE, gs, op=MPI.SUM, root=0)
@@ -1410,7 +1501,10 @@ def getRIXSmap(
                     # Biconjugate gradient stabilized method.
                     # Pure conjugate gradient does not apply since
                     # it requires a Hermitian matrix.
-                    x, info = scipy.sparse.linalg.bicgstab(a, y)
+                    if iwIn == 0:
+                        x, info = scipy.sparse.linalg.bicgstab(a, y, rtol=1e-7)
+                    else:
+                        x, info = scipy.sparse.linalg.bicgstab(a, y, x0=x, rtol=1e-7)
                     if info > 0:
                         print("Rank ", rank, ": Convergence to tolerance not achieved")
                         print("#iterations = ", info)
@@ -1511,7 +1605,10 @@ def getRIXSmap(
                     # Biconjugate gradient stabilized method.
                     # Pure conjugate gradient does not apply since
                     # it requires a Hermitian matrix.
-                    x, info = scipy.sparse.linalg.bicgstab(a, y)
+                    if iwIn == 0:
+                        x, info = scipy.sparse.linalg.bicgstab(a, y, rtol=1e-7)
+                    else:
+                        x, info = scipy.sparse.linalg.bicgstab(a, y, x0=x, rtol=1e-7)
                     if info > 0:
                         print("convergence to tolerance not achieved")
                         print("#iterations = ", info)

@@ -12,6 +12,17 @@
 #include <utility>
 #include <vector>
 
+/**
+ * @class ManyBodyState
+ * @brief Represents a quantum many-body state in a second-quantized Slater determinant basis.
+ *
+ * This class stores the coefficients (amplitudes) of a many-body wavefunction
+ * mapped from each SlaterDeterminant. It supports standard vector space operations
+ * (addition, scalar multiplication) and quantum mechanical operations like inner products.
+ *
+ * Compilation flags:
+ * - BOOST: switches the underlying hash map from std::unordered_map to boost::unordered_flat_map for improved performance.
+ */
 class ManyBodyState {
 
 public:
@@ -57,7 +68,14 @@ public:
   explicit ManyBodyState(std::vector<key_type> &&keys,
                          std::vector<mapped_type> &&values);
 
+  /**
+   * @brief Compute the squared norm (L2 norm) of the state.
+   */
   double norm2() const;
+
+  /**
+   * @brief Compute the norm (L2 norm) of the state.
+   */
   double norm() const;
 
   ManyBodyState &operator+=(ManyBodyState &&);
@@ -67,6 +85,7 @@ public:
   ManyBodyState &operator*=(mapped_type);
   ManyBodyState &operator/=(mapped_type);
   ManyBodyState operator-() const;
+
   friend ManyBodyState operator+(const ManyBodyState &a,
                                  const ManyBodyState &b) {
     return (ManyBodyState{a} += b);
@@ -89,10 +108,13 @@ public:
     return (ManyBodyState{std::forward<decltype(a)>(a)} /= s);
   }
 
+  /**
+   * @brief Compute the inner product (bra-ket) of two states: <a|b>.
+   */
   friend std::complex<double> inner(const ManyBodyState &,
                                     const ManyBodyState &);
 
-  // Wrap the member functions from std::map
+  // Wrap the member functions from std::map / boost::unordered_flat_map
   friend bool operator==(const ManyBodyState &self,
                          const ManyBodyState &other) {
     return self.m_map == other.m_map;
@@ -111,6 +133,10 @@ public:
   size_type max_size() const { return m_map.max_size(); }
 
   void clear() { m_map.clear(); }
+
+  /**
+   * @brief Prune the state by removing components with amplitudes squared <= cutoff.
+   */
   ManyBodyState &prune(double cutoff);
 
   size_type bucket_count() const { return m_map.bucket_count(); }
@@ -212,6 +238,9 @@ public:
 #endif
   }
 
+  /**
+   * @brief String representation of the state for debugging.
+   */
   std::string to_string() const;
   void reserve(size_type count) { m_map.reserve(count); }
 };

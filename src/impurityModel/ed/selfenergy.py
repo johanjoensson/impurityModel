@@ -46,6 +46,50 @@ def fixed_peak_dc(
     slaterWeightMin,
     truncation_threshold,
 ):
+    """
+    Calculate double counting correction using a fixed peak position criterion.
+
+    Adjusts the double counting potential to align the peak position of the
+    self-energy or Green's function.
+
+    Parameters
+    ----------
+    h0_op : ManyBodyOperator
+        The non-interacting Hamiltonian.
+    N0 : dict
+        Nominal impurity occupation.
+    mixed_valence : bool
+        Whether system is mixed valence.
+    impurity_orbitals : dict
+        Impurity orbital description.
+    bath_states : tuple
+        Valence and conduction bath states.
+    u4 : ndarray
+        Coulomb interaction U matrix.
+    peak_position : float
+        Target peak position to adjust to.
+    dc_guess : ndarray
+        Initial guess for double counting.
+    spin_flip_dj : bool
+        Whether to allow spin flips.
+    tau : float
+        Temperature scale/energy broadening.
+    rank : int
+        MPI process rank.
+    verbose : bool
+        Verbosity flag.
+    dense_cutoff : int
+        Cutoff dimension for dense solver.
+    slaterWeightMin : float
+        Minimum Slater determinant weight.
+    truncation_threshold : float
+        Truncation threshold.
+
+    Returns
+    -------
+    dc : ndarray
+        Calculated double counting correction matrix.
+    """
     n_orb = sum(len(block) for imp_orbs in impurity_orbitals.values() for block in imp_orbs)
     peak_position = max(peak_position, 4 * tau)
     valence_baths, conduction_baths = bath_states
@@ -126,6 +170,9 @@ def fixed_peak_dc(
     impurity_ix = np.ix_(impurity_indices, impurity_indices)
 
     def F(dc_fac):
+        """
+        Evaluate the peak shift function as a function of double counting factor.
+        """
         dc = dc_fac * dc_trial
         dc_op_i = {
             ((i, "c"), (j, "a")): -dc[i, j] + 0j

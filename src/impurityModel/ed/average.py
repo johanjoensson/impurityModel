@@ -30,6 +30,23 @@ def thermal_average(energies, observable, T=300):
 
 
 def thermal_average_scale_indep(energies, observable, tau):
+    """
+    Return the thermal average of an observable, using energy scale tau.
+
+    Parameters
+    ----------
+    energies : array_like of shape (N,)
+        The energies of the states.
+    observable : array_like of shape (N, ...)
+        The observable values for each state.
+    tau : float
+        The characteristic energy scale (e.g., k_B * T).
+
+    Returns
+    -------
+    o_average : ndarray
+        The thermally averaged observable.
+    """
     if isinstance(energies, float):
         energies = np.array(energies)
     elif not isinstance(energies, np.ndarray):

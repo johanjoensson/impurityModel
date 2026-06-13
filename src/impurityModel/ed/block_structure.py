@@ -16,6 +16,13 @@ BlockStructure = namedtuple(
 
 
 def print_block_structure(block_structure):
+    """Print a text representation of the block structure of the Hamiltonian.
+
+    Parameters
+    ----------
+    block_structure : BlockStructure
+        The block structure representation to print.
+    """
     orb_offset = min(orb for block in block_structure.blocks for orb in block)
     n_orb = sum(len(block) for block in block_structure.blocks)
     mat = np.empty((n_orb, n_orb), dtype=int)
@@ -27,6 +34,18 @@ def print_block_structure(block_structure):
 
 
 def get_equivalent_orbs(block_structure):
+    """Get lists of equivalent orbitals grouped by inequivalent blocks.
+
+    Parameters
+    ----------
+    block_structure : BlockStructure
+        The block structure representation containing blocks and their relationships.
+
+    Returns
+    -------
+    list of list of int
+        A list of lists of equivalent orbital indices for each inequivalent block.
+    """
     (blocks, ident_blocks, transp_blocks, ph_blocks, phtransp_blocks, ineq_blocks) = block_structure
     eq_orbs = [[] for _ in ineq_blocks]
     for ib, i_eq_orbs in zip(ineq_blocks, eq_orbs):
@@ -42,6 +61,18 @@ def get_equivalent_orbs(block_structure):
 
 
 def get_equivalent_blocks(block_structure):
+    """Get lists of equivalent blocks grouped by inequivalent blocks.
+
+    Parameters
+    ----------
+    block_structure : BlockStructure
+        The block structure representation containing blocks and their relationships.
+
+    Returns
+    -------
+    list of list of int
+        A list of lists of equivalent block indices for each inequivalent block.
+    """
     (blocks, ident_blocks, transp_blocks, ph_blocks, phtransp_blocks, ineq_blocks) = block_structure
     eq_blocks = [[] for _ in ineq_blocks]
     for ib, i_eq_blocks in zip(ineq_blocks, eq_blocks):
@@ -57,6 +88,23 @@ def get_equivalent_blocks(block_structure):
 
 
 def build_block_structure(G, mat=None, tol=1e-6):
+    """Analyze a Green's function or a matrix to build a BlockStructure object.
+
+    Parameters
+    ----------
+    G : np.ndarray, optional
+        Green's function array of shape `(n_orb, n_orb)` or `(n_omega, n_orb, n_orb)`.
+    mat : np.ndarray, optional
+        Hamiltonian or other matrix of shape `(n_orb, n_orb)`.
+    tol : float, default 1e-6
+        Tolerance threshold for considering matrix elements/Green's function values
+        as non-zero or identical.
+
+    Returns
+    -------
+    BlockStructure
+        The built block structure object.
+    """
     assert G is not None or mat is not None, "You must supply at least one of G or mat"
     if len(G.shape) == 2:
         G = G.reshape((1, G.shape[0], G.shape[1]))
@@ -88,6 +136,24 @@ def get_inequivalent_blocks(
     particle_hole_blocks,
     particle_hole_and_transpose_blocks,
 ):
+    """Determine the indices of inequivalent blocks based on relation mappings.
+
+    Parameters
+    ----------
+    identical_blocks : list of list of int
+        Mapping from a block index to indices of identical blocks.
+    transposed_blocks : list of list of int
+        Mapping from a block index to indices of transposed blocks.
+    particle_hole_blocks : list of list of int
+        Mapping from a block index to indices of particle-hole equivalent blocks.
+    particle_hole_and_transpose_blocks : list of list of int
+        Mapping from a block index to indices of particle-hole and transposed blocks.
+
+    Returns
+    -------
+    list of int
+        List of representative block indices for the inequivalent blocks.
+    """
     inequivalent_blocks = []
     for blocks in identical_blocks:
         if len(blocks) == 0:
@@ -111,11 +177,45 @@ def get_inequivalent_blocks(
 
 
 def get_n_blocks_block_indices_mask_matrix(mat: np.ndarray, tol=1e-6):
+    """Determine block components of a matrix using connected components analysis.
+
+    Parameters
+    ----------
+    mat : np.ndarray
+        The input matrix to analyze.
+    tol : float, default 1e-6
+        Tolerance threshold for connectedness.
+
+    Returns
+    -------
+    n_components : int
+        The number of connected components (blocks) found.
+    labels : np.ndarray of int
+        An array of component labels for each orbital.
+    """
     mask = np.abs(mat) > tol
     return sp.sparse.csgraph.connected_components(mask, directed=False, return_labels=True)
 
 
 def get_n_blocks_block_indices_mask(G: np.ndarray = None, mat: np.ndarray = None, tol=1e-6):
+    """Determine block components of a Green's function and/or a matrix.
+
+    Parameters
+    ----------
+    G : np.ndarray, optional
+        Green's function array of shape `(n_orb, n_orb)` or `(n_omega, n_orb, n_orb)`.
+    mat : np.ndarray, optional
+        The matrix to analyze.
+    tol : float, default 1e-6
+        Tolerance threshold for connection.
+
+    Returns
+    -------
+    n_components : int
+        The number of connected components (blocks) found.
+    labels : np.ndarray of int
+        An array of component labels for each orbital.
+    """
     assert G is not None or mat is not None
     if G is not None:
         if len(G.shape) == 2:
@@ -130,6 +230,22 @@ def get_n_blocks_block_indices_mask(G: np.ndarray = None, mat: np.ndarray = None
 
 
 def get_blocks(G: np.ndarray = None, mat=None, tol=1e-6):
+    """Group orbital indices into blocks based on connectedness in G and/or mat.
+
+    Parameters
+    ----------
+    G : np.ndarray, optional
+        Green's function array.
+    mat : np.ndarray, optional
+        The matrix.
+    tol : float, default 1e-6
+        Tolerance threshold.
+
+    Returns
+    -------
+    list of list of int
+        A list where each element is a list of orbital indices belonging to that block.
+    """
     assert G is not None or mat is not None, "Must supply at least on of hamiltonian or G"
     if G is not None:
         if len(G.shape) == 2:
@@ -146,6 +262,22 @@ def get_blocks(G: np.ndarray = None, mat=None, tol=1e-6):
 
 
 def _identical_blocks_mat(blocks, mat, tol):
+    """Helper function to find identical blocks based on matrix values.
+
+    Parameters
+    ----------
+    blocks : list of list of int
+        List of orbital indices for each block.
+    mat : np.ndarray
+        The matrix to check block identity against.
+    tol : float
+        Tolerance threshold for block comparison.
+
+    Returns
+    -------
+    list of list of int
+        List of lists where the i-th list contains the indices of blocks identical to block i.
+    """
     identical_blocks = [[] for _ in blocks]
     for i, block_i in enumerate(blocks):
         if np.any([i in b for b in identical_blocks]):
@@ -166,6 +298,24 @@ def _identical_blocks_mat(blocks, mat, tol):
 
 
 def _identical_blocks(blocks, G, mat, tol):
+    """Helper function to find identical blocks based on G and mat values.
+
+    Parameters
+    ----------
+    blocks : list of list of int
+        List of orbital indices for each block.
+    G : np.ndarray
+        The Green's function array.
+    mat : np.ndarray
+        The matrix.
+    tol : float
+        Tolerance threshold.
+
+    Returns
+    -------
+    list of list of int
+        List of lists where the i-th list contains the indices of blocks identical to block i.
+    """
     identical_blocks = [[] for _ in blocks]
     for i, block_i in enumerate(blocks):
         if np.any([i in b for b in identical_blocks]):
@@ -186,6 +336,24 @@ def _identical_blocks(blocks, G, mat, tol):
 
 
 def get_identical_blocks(blocks, G=None, mat=None, tol=1e-6):
+    """Find all identical blocks in the block structure.
+
+    Parameters
+    ----------
+    blocks : list of list of int
+        List of orbital indices for each block.
+    G : np.ndarray, optional
+        The Green's function array.
+    mat : np.ndarray, optional
+        The matrix.
+    tol : float, default 1e-6
+        Tolerance threshold.
+
+    Returns
+    -------
+    list of list of int
+        List of lists of identical block indices.
+    """
     assert G is not None or mat is not None
     if G is None:
         return _identical_blocks_mat(blocks, mat, tol)
@@ -197,6 +365,22 @@ def get_identical_blocks(blocks, G=None, mat=None, tol=1e-6):
 
 
 def _transposed_blocks_matrix(blocks, mat, tol):
+    """Helper function to find blocks that are transposes of each other based on mat.
+
+    Parameters
+    ----------
+    blocks : list of list of int
+        List of orbital indices for each block.
+    mat : np.ndarray
+        The matrix.
+    tol : float
+        Tolerance threshold.
+
+    Returns
+    -------
+    list of list of int
+        List of lists of transposed block indices.
+    """
     transposed_blocks = [[] for _ in blocks]
     for i, block_i in enumerate(blocks):
         if len(block_i) == 1 or np.any([i in b for b in transposed_blocks]):
@@ -217,6 +401,24 @@ def _transposed_blocks_matrix(blocks, mat, tol):
 
 
 def _transposed_blocks(blocks, G, mat, tol):
+    """Helper function to find blocks that are transposes of each other based on G and mat.
+
+    Parameters
+    ----------
+    blocks : list of list of int
+        List of orbital indices for each block.
+    G : np.ndarray
+        The Green's function array.
+    mat : np.ndarray
+        The matrix.
+    tol : float
+        Tolerance threshold.
+
+    Returns
+    -------
+    list of list of int
+        List of lists of transposed block indices.
+    """
     transposed_blocks = [[] for _ in blocks]
     for i, block_i in enumerate(blocks):
         if len(block_i) == 1 or np.any([i in b for b in transposed_blocks]):
@@ -239,6 +441,24 @@ def _transposed_blocks(blocks, G, mat, tol):
 
 
 def get_transposed_blocks(blocks, G=None, mat=None, tol=1e-6):
+    """Find all transposed blocks in the block structure.
+
+    Parameters
+    ----------
+    blocks : list of list of int
+        List of orbital indices for each block.
+    G : np.ndarray, optional
+        The Green's function array.
+    mat : np.ndarray, optional
+        The matrix.
+    tol : float, default 1e-6
+        Tolerance threshold.
+
+    Returns
+    -------
+    list of list of int
+        List of lists of transposed block indices.
+    """
     assert G is not None or mat is not None
     if G is None:
         return _transposed_blocks_matrix(blocks, mat, tol)
@@ -250,6 +470,22 @@ def get_transposed_blocks(blocks, G=None, mat=None, tol=1e-6):
 
 
 def _particle_hole_blocks_matrix(blocks, mat, tol):
+    """Helper function to find particle-hole equivalent blocks based on mat.
+
+    Parameters
+    ----------
+    blocks : list of list of int
+        List of orbital indices for each block.
+    mat : np.ndarray
+        The matrix.
+    tol : float
+        Tolerance threshold.
+
+    Returns
+    -------
+    list of list of int
+        List of lists of particle-hole equivalent block indices.
+    """
     particle_hole_blocks = []
     for i, block_i in enumerate(blocks):
         if np.any([i in b for b in particle_hole_blocks]):
@@ -272,6 +508,24 @@ def _particle_hole_blocks_matrix(blocks, mat, tol):
 
 
 def _particle_hole_blocks(blocks, G, mat, tol):
+    """Helper function to find particle-hole equivalent blocks based on G and mat.
+
+    Parameters
+    ----------
+    blocks : list of list of int
+        List of orbital indices for each block.
+    G : np.ndarray
+        The Green's function array.
+    mat : np.ndarray
+        The matrix.
+    tol : float
+        Tolerance threshold.
+
+    Returns
+    -------
+    list of list of int
+        List of lists of particle-hole equivalent block indices.
+    """
     particle_hole_blocks = []
     for i, block_i in enumerate(blocks):
         if np.any([i in b for b in particle_hole_blocks]):
@@ -297,6 +551,24 @@ def _particle_hole_blocks(blocks, G, mat, tol):
 
 
 def get_particle_hole_blocks(blocks, G=None, mat=None, tol=1e-6):
+    """Find all particle-hole equivalent blocks in the block structure.
+
+    Parameters
+    ----------
+    blocks : list of list of int
+        List of orbital indices for each block.
+    G : np.ndarray, optional
+        The Green's function array.
+    mat : np.ndarray, optional
+        The matrix.
+    tol : float, default 1e-6
+        Tolerance threshold.
+
+    Returns
+    -------
+    list of list of int
+        List of lists of particle-hole equivalent block indices.
+    """
     assert G is not None or mat is not None
     if G is None:
         return _particle_hole_blocks_matrix(blocks, mat, tol)
@@ -308,6 +580,22 @@ def get_particle_hole_blocks(blocks, G=None, mat=None, tol=1e-6):
 
 
 def _particle_hole_transpose_blocks_matrix(blocks, mat, tol):
+    """Helper function to find particle-hole and transposed equivalent blocks based on mat.
+
+    Parameters
+    ----------
+    blocks : list of list of int
+        List of orbital indices for each block.
+    mat : np.ndarray
+        The matrix.
+    tol : float
+        Tolerance threshold.
+
+    Returns
+    -------
+    list of list of int
+        List of lists of particle-hole and transposed equivalent block indices.
+    """
     patricle_hole_and_transpose_blocks = []
     for i, block_i in enumerate(blocks):
         if np.any([i in b for b in patricle_hole_and_transpose_blocks]):
@@ -330,6 +618,24 @@ def _particle_hole_transpose_blocks_matrix(blocks, mat, tol):
 
 
 def _particle_hole_transpose_blocks(blocks, G, mat, tol):
+    """Helper function to find particle-hole and transposed equivalent blocks based on G and mat.
+
+    Parameters
+    ----------
+    blocks : list of list of int
+        List of orbital indices for each block.
+    G : np.ndarray
+        The Green's function array.
+    mat : np.ndarray
+        The matrix.
+    tol : float
+        Tolerance threshold.
+
+    Returns
+    -------
+    list of list of int
+        List of lists of particle-hole and transposed equivalent block indices.
+    """
     patricle_hole_and_transpose_blocks = []
     for i, block_i in enumerate(blocks):
         if np.any([i in b for b in patricle_hole_and_transpose_blocks]):
@@ -355,6 +661,24 @@ def _particle_hole_transpose_blocks(blocks, G, mat, tol):
 
 
 def get_particle_hole_and_transpose_blocks(blocks, G=None, mat=None, tol=1e-6):
+    """Find all particle-hole and transposed equivalent blocks in the block structure.
+
+    Parameters
+    ----------
+    blocks : list of list of int
+        List of orbital indices for each block.
+    G : np.ndarray, optional
+        The Green's function array.
+    mat : np.ndarray, optional
+        The matrix.
+    tol : float, default 1e-6
+        Tolerance threshold.
+
+    Returns
+    -------
+    list of list of int
+        List of lists of particle-hole and transposed equivalent block indices.
+    """
     assert G is not None or mat is not None
     if G is None:
         return _particle_hole_transpose_blocks_matrix(blocks, mat, tol)
@@ -366,6 +690,20 @@ def get_particle_hole_and_transpose_blocks(blocks, G=None, mat=None, tol=1e-6):
 
 
 def build_matrix(inequivalent_parts: list[np.ndarray], block_structure: BlockStructure):
+    """Build a full matrix from its unique inequivalent block parts.
+
+    Parameters
+    ----------
+    inequivalent_parts : list of np.ndarray
+        List of arrays representing the unique, inequivalent block parts.
+    block_structure : BlockStructure
+        The block structure describing the block mappings.
+
+    Returns
+    -------
+    np.ndarray
+        The assembled full matrix.
+    """
     assert len(inequivalent_parts) != 0
     assert len(inequivalent_parts[0].shape) == 2
     n_orb = sum(len(block) for block in block_structure.blocks)
@@ -388,6 +726,20 @@ def build_matrix(inequivalent_parts: list[np.ndarray], block_structure: BlockStr
 
 
 def build_greens_function(inequivalent_parts: list[np.ndarray], block_structure: BlockStructure):
+    """Build a full Green's function from its unique inequivalent block parts.
+
+    Parameters
+    ----------
+    inequivalent_parts : list of np.ndarray
+        List of arrays representing the unique, inequivalent block parts.
+    block_structure : BlockStructure
+        The block structure describing the block mappings.
+
+    Returns
+    -------
+    np.ndarray
+        The assembled full Green's function.
+    """
     assert len(inequivalent_parts) != 0
     assert len(inequivalent_parts[0].shape) > 2
     n_orb = sum(len(block) for block in block_structure.blocks)

@@ -24,7 +24,25 @@ import pickle
 from mpi4py import MPI
 
 
-def partition_index(l: Iterable, pred=bool):
+from typing import Callable
+
+def partition_index(l: Iterable, pred: Callable = bool) -> tuple[list[int], list[int]]:
+    """Partition the indices of an iterable based on a predicate function.
+
+    Parameters
+    ----------
+    l : Iterable
+        The iterable collection of items.
+    pred : callable, default bool
+        The predicate function to test each item.
+
+    Returns
+    -------
+    yes : list of int
+        Indices for which pred(item) is True.
+    no : list of int
+        Indices for which pred(item) is False.
+    """
     yes, no = [], []
 
     for idx, item in enumerate(l):
@@ -35,7 +53,37 @@ def partition_index(l: Iterable, pred=bool):
     return yes, no
 
 
-def filter_and_shift(ebs, vs, w_min, w_max, block_structure):
+def filter_and_shift(
+    ebs: list[np.ndarray],
+    vs: list[np.ndarray],
+    w_min: float,
+    w_max: float,
+    block_structure: BlockStructure,
+) -> tuple[np.ndarray, list[np.ndarray], list[np.ndarray]]:
+    """Filter bath energies and shift hopping parameters based on an energy window.
+
+    Parameters
+    ----------
+    ebs : list of np.ndarray
+        List of bath energies.
+    vs : list of np.ndarray
+        List of hopping parameters.
+    w_min : float
+        Lower energy bound.
+    w_max : float
+        Upper energy bound.
+    block_structure : BlockStructure
+        The block structure mappings.
+
+    Returns
+    -------
+    shift_matrix : np.ndarray
+        The energy shift matrix.
+    filtered_ebs : list of np.ndarray
+        The filtered bath energies.
+    filtered_vs : list of np.ndarray
+        The filtered hopping parameters.
+    """
     filtered_ebs_star, filtered_vs_star = ([], [])
     shifts = [
         np.zeros((len(block_structure.blocks[i_block]), len(block_structure.blocks[i_block])), dtype=complex)
@@ -65,7 +113,13 @@ def run(
     weight_factor: float,
     fit_center: float,
     *kwargs,
-):
+) -> None:
+    """Execute the full non-interacting Hamiltonian (h0) building workflow.
+
+    Extracts hybridization and Hamiltonian data, runs fitters to obtain bath states,
+    transforms bath geometry (e.g. star to chain), builds the full bath/hopping matrices,
+    and writes the resulting Hamiltonian parameters (h0) to a pickle file.
+    """
     comm = MPI.COMM_WORLD
 
     if comm is not None and comm.rank != 0:
@@ -266,7 +320,11 @@ def run(
     write_to_file(h_op, f"{cluster}_h0_op", save_as_dict=True)
 
 
-def main():
+def main() -> None:
+    """Parse command line arguments and execute the non-interacting Hamiltonian builder.
+
+    Fits the hybridization function and constructs the non-interacting Hamiltonian.
+    """
     parser = ArgumentParser(
         prog="build_h0",
         description="Create local hamiltonians by reading RSPt out files and fitting hybridization functions.",

@@ -5,7 +5,16 @@ import itertools as it
 from argparse import ArgumentParser
 
 
-def run(prefix: str, *kwargs):
+def run(prefix: str, *kwargs) -> None:
+    """Read RIXS data from an HDF5 file and generate plots.
+
+    Parameters
+    ----------
+    prefix : str
+        Directory containing the spectra.h5 file.
+    *kwargs : tuple
+        Additional arguments.
+    """
     RIXS = None
     wIn = None
     wLoss = None
@@ -45,7 +54,11 @@ def run(prefix: str, *kwargs):
     plt.show()
 
 
-def main():
+def main() -> None:
+    """Parse command line arguments and execute the plot generator.
+
+    Reads incident photon energies and energy loss spectrum to plot the RIXS data.
+    """
     parser = ArgumentParser(
         prog="Plot RIXS",
         description="Plot RIXS spectra calculated using impurityModel.",

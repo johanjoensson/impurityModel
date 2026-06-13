@@ -9,6 +9,27 @@ from impurityModel.ed.ManyBodyUtils import ManyBodyState, applyOp, inner
 
 
 def cg(A, x, y, atol=1e-5):
+    """
+    Solve the linear system A * x = y using the Conjugate Gradient (CG) method.
+
+    Parameters
+    ----------
+    A : ndarray or sparse matrix
+        The linear operator/matrix of the system.
+    x : ndarray
+        Initial guess for the solution, updated in-place.
+    y : ndarray
+        Right-hand side vector.
+    atol : float, optional
+        Absolute tolerance for convergence. Default is 1e-5.
+
+    Returns
+    -------
+    x : ndarray
+        The solved solution vector.
+    info : int
+        Convergence status (0 for success, -1 if max iterations reached).
+    """
     info = -1
     n = A.shape[0]
     r = y - A @ x
@@ -29,6 +50,27 @@ def cg(A, x, y, atol=1e-5):
 
 
 def cg_2(A, x, y, atol=1e-5):
+    """
+    Alternative Conjugate Gradient solver formulation.
+
+    Parameters
+    ----------
+    A : ndarray or sparse matrix
+        The linear operator/matrix.
+    x : ndarray
+        Initial guess, updated in-place.
+    y : ndarray
+        Right-hand side vector.
+    atol : float, optional
+        Absolute tolerance. Default is 1e-5.
+
+    Returns
+    -------
+    x : ndarray
+        The solved solution vector.
+    info : int
+        Convergence status.
+    """
     info = 0
     n = A.shape[0]
     r = y - A @ x
@@ -50,14 +92,38 @@ def cg_2(A, x, y, atol=1e-5):
 
 
 def bicgstab(A_op, x_0, y, basis, slaterWeightMin, atol=1e-8):
+    """
+    Solve a linear system with BiCGSTAB using a many-body state representation.
+
+    Parameters
+    ----------
+    A_op : dict
+        Many-body operator defining the linear system.
+    x_0 : list[ManyBodyState]
+        Initial guess states.
+    y : list[ManyBodyState]
+        Right-hand side states.
+    basis : Basis
+        The many-body state basis object.
+    slaterWeightMin : float
+        Cutoff weight for Slater determinants.
+    atol : float, optional
+        Absolute tolerance. Default is 1e-8.
+
+    Returns
+    -------
+    x_i : list[ManyBodyState]
+        The solved solution states.
+    """
 
     n = len(x_0)
+    if hasattr(A_op, "set_restrictions"):
+        A_op.set_restrictions(basis.restrictions)
     Ax = [
         applyOp(
             A_op,
             xi,
             cutoff=slaterWeightMin,
-            restrictions=basis.restrictions,
         )
         for xi in x_0
     ]
@@ -79,7 +145,6 @@ def bicgstab(A_op, x_0, y, basis, slaterWeightMin, atol=1e-8):
                 A_op,
                 pi,
                 cutoff=slaterWeightMin,
-                restrictions=basis.restrictions,
             )
             for pi in p_i
         ]
@@ -101,7 +166,6 @@ def bicgstab(A_op, x_0, y, basis, slaterWeightMin, atol=1e-8):
                 A_op,
                 si,
                 cutoff=slaterWeightMin,
-                restrictions=basis.restrictions,
             )
             for si in s
         ]
@@ -141,82 +205,193 @@ def bicgstab(A_op, x_0, y, basis, slaterWeightMin, atol=1e-8):
 
 
 def block_bicgstab(A, x0, y, basis: Basis, slaterWeightMin: float, atol=1e-8, rtol=1e-12):
-    def matmat(M, v):
-        mv = [None for _ in v]
-        for i in range(len(v)):
-            mv[i] = applyOp(M, v[i], cutoff=slaterWeightMin, restrictions=basis.restrictions)
+    """
+    Solve a linear system with Block BiCGSTAB using fully sparse ManyBodyStates.
+
+    Parameters
+    ----------
+    A : dict
+        Many-body operator.
+    x0 : list
+        Initial guess states.
+    y : list
+        Right-hand side states.
+    basis : Basis
+        The many-body state basis object.
+    slaterWeightMin : float
+        Slater determinant cutoff weight.
+    atol : float, optional
+        Absolute tolerance. Default is 1e-8.
+    rtol : float, optional
+        Relative tolerance. Default is 1e-12.
+
+    Returns
+    -------
+    list
+        The solved solution states.
+    """
+    n = len(x0)
+    if hasattr(A, "set_restrictions"):
+        A.set_restrictions(basis.restrictions)
+
+    def block_inner(B1, B2):
+        """
+        Compute the block inner product matrix between two state blocks B1 and B2.
+
+        M[i, j] = <B1[i] | B2[j]>. If the basis is distributed, the inner products
+        are reduced across all MPI ranks.
+
+        Parameters
+        ----------
+        B1 : list of ManyBodyState
+            First block of states.
+        B2 : list of ManyBodyState
+            Second block of states.
+
+        Returns
+        -------
+        M : ndarray
+            The complex matrix of inner products.
+        """
+
+        M = np.zeros((n, n), dtype=complex)
+        for i in range(n):
+            for j in range(n):
+                M[i, j] = inner(B1[i], B2[j])
+        if basis.is_distributed:
+            basis.comm.Allreduce(MPI.IN_PLACE, M, op=MPI.SUM)
+        return M
+
+    def matmat(v):
+        """
+        Apply the operator A to each state in block v and redistribute.
+
+        Parameters
+        ----------
+        v : list of ManyBodyState
+            Input block of states.
+
+        Returns
+        -------
+        mv : list of ManyBodyState
+            Output block of states after applying operator and redistributing.
+        """
+
+        mv = [applyOp(A, vi, cutoff=slaterWeightMin) for vi in v]
         return basis.redistribute_psis(mv)
 
-    def matnorm(A, B):
-        return np.vdot(A, B)
+    xi = [st.copy() for st in x0]
 
-    n = len(x0)
-    xi_sparse = x0
-    ri_sparse = [yi - Ax0i for yi, Ax0i in zip(y, matmat(A, x0))]
-    basis.add_states(state for r in ri_sparse for state in r if state not in basis.local_basis)
+    Axi = matmat(xi)
+    ri = [yi - axi for yi, axi in zip(y, Axi)]
 
-    ri = basis.build_vector(basis.redistribute_psis(ri_sparse)).T
-    xi = basis.build_vector(basis.redistribute_psis(x0)).T
-    r0_t = ri
-    # r0_t = np.random.rand(ri.shape[0], n) + 1j * np.random.rand(ri.shape[0], n)  # or possibly ri
-    pi = ri
-    if np.max(np.linalg.norm(r0_t, axis=0)) < np.finfo(float).eps:
+    basis.add_states(
+        state for r in ri for state, amp in r.items() if abs(amp) > slaterWeightMin and state not in basis.local_basis
+    )
+
+    r0_t = [st.copy() for st in ri]
+    pi = [st.copy() for st in ri]
+
+    def block_norm(v):
+        """
+        Calculate the norm of the state block v.
+
+        Computes the maximum L2 norm of the individual states in the block,
+        reducing across all MPI ranks if the basis is distributed.
+
+        Parameters
+        ----------
+        v : list of ManyBodyState
+            Input block of states.
+
+        Returns
+        -------
+        norm : float
+            The square root of the maximum norm in the block.
+        """
+
+        norms = np.array([inner(vi, vi).real for vi in v])
+        if basis.is_distributed:
+            basis.comm.Allreduce(MPI.IN_PLACE, norms, op=MPI.SUM)
+        return np.sqrt(np.max(norms))
+
+    r0_norm = block_norm(r0_t)
+    if r0_norm < np.finfo(float).eps:
         return x0
 
     while True:
-        if (
-            np.max(np.linalg.norm(ri, axis=0)) < atol
-            or np.max(np.linalg.norm(ri, axis=0)) / np.max(np.linalg.norm(r0_t, axis=0)) < rtol
-        ):
-            # Converged, residuals are small
+        r_norm = block_norm(ri)
+        if r_norm < atol or r_norm / r0_norm < rtol:
             break
-        pi_sparse = basis.build_state(pi.T)
-        vi_sparse = matmat(A, pi_sparse)
 
-        r0_t_sparse = basis.build_state(r0_t.T)
-        ri_sparse = basis.build_state(ri.T)
-        xi_sparse = basis.build_state(xi.T)
-        basis.add_states(state for v in vi_sparse for state in v if state not in basis.local_basis)
-        r0_t = basis.build_vector(basis.redistribute_psis(r0_t_sparse)).T
-        ri = basis.build_vector(basis.redistribute_psis(ri_sparse)).T
-        pi = basis.build_vector(basis.redistribute_psis(pi_sparse)).T
-        xi = basis.build_vector(basis.redistribute_psis(xi_sparse)).T
+        vi = matmat(pi)
 
-        vi = basis.build_vector(basis.redistribute_psis(vi_sparse)).T
-        if np.linalg.cond(np.conj(r0_t.T) @ vi) > 1 / np.finfo(float).eps:
-            # BREAKDOWN, ill conditioned matrix!
+        basis.add_states(
+            state
+            for v in vi
+            for state, amp in v.items()
+            if abs(amp) > slaterWeightMin and state not in basis.local_basis
+        )
+
+        R0_V = block_inner(r0_t, vi)
+        R0_R = block_inner(r0_t, ri)
+
+        if np.linalg.cond(R0_V) > 1 / np.finfo(float).eps:
             print("Breakdown in Block BICGSTAB")
             break
-        ai = np.linalg.solve(np.conj(r0_t.T) @ vi, np.conj(r0_t.T) @ ri)
-        si = ri - vi @ ai
-        if np.max(np.linalg.norm(si, axis=0)) < atol:
-            # Converged, correction is small enough without further additions
-            xi = xi + pi @ ai
+
+        ai = np.linalg.solve(R0_V, R0_R)
+
+        si = [ri[j].copy() for j in range(n)]
+        for j in range(n):
+            for k in range(n):
+                si[j] -= vi[k] * ai[k, j]
+
+        if block_norm(si) < atol:
+            for j in range(n):
+                for k in range(n):
+                    xi[j] += pi[k] * ai[k, j]
             break
 
-        ti_sparse = matmat(A, basis.build_state(si.T))
-        si_sparse = basis.build_state(si.T)
+        ti = matmat(si)
+        basis.add_states(state for t in ti for state in t if state not in basis.local_basis)
 
-        basis.add_states(state for t in ti_sparse for state in t if state not in basis.local_basis)
+        ts = sum(inner(ti[j], si[j]) for j in range(n))
+        tt = sum(inner(ti[j], ti[j]) for j in range(n))
+        if basis.is_distributed:
+            ts_arr = np.array(ts, dtype=complex)
+            tt_arr = np.array(tt, dtype=complex)
+            basis.comm.Allreduce(MPI.IN_PLACE, ts_arr, op=MPI.SUM)
+            basis.comm.Allreduce(MPI.IN_PLACE, tt_arr, op=MPI.SUM)
+            ts = ts_arr.item()
+            tt = tt_arr.item()
 
-        r0_t = basis.build_vector(basis.redistribute_psis(r0_t_sparse)).T
-        ri = basis.build_vector(basis.redistribute_psis(ri_sparse)).T
-        pi = basis.build_vector(basis.redistribute_psis(pi_sparse)).T
-        xi = basis.build_vector(basis.redistribute_psis(xi_sparse)).T
-        ti = basis.build_vector(basis.redistribute_psis(ti_sparse)).T
-        si = basis.build_vector(basis.redistribute_psis(si_sparse)).T
-        vi = basis.build_vector(basis.redistribute_psis(vi_sparse)).T
+        wi = ts / tt
 
-        wi = np.vdot(ti, si) / np.vdot(ti, ti)
-        xip = xi + pi @ ai + wi * si
-        rip = si - wi * ti
-        bi = np.linalg.solve(np.conj(r0_t.T) @ vi, -np.conj(r0_t.T) @ ti)
-        pip = rip + (pi - wi * vi) @ bi
+        xip = [xi[j] + wi * si[j] for j in range(n)]
+        for j in range(n):
+            for k in range(n):
+                xip[j] += pi[k] * ai[k, j]
+
+        rip = [si[j] - wi * ti[j] for j in range(n)]
+
+        R0_T = block_inner(r0_t, ti)
+        bi = np.linalg.solve(R0_V, -R0_T)
+
+        pip = [rip[j].copy() for j in range(n)]
+        for j in range(n):
+            for k in range(n):
+                pip[j] += (pi[k] - wi * vi[k]) * bi[k, j]
 
         xi = xip
         ri = rip
         pi = pip
-    return basis.build_state(xi.T)
+
+        for v in (xi, ri, pi):
+            for st in v:
+                st.prune(slaterWeightMin)
+
+    return xi
 
 
 def cg_phys(A_op, A_dict, n_spin_orbitals, x_psi, y_psi, w, delta, basis, atol=1e-5):

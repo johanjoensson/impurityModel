@@ -4,6 +4,7 @@ from impurityModel.ed.ManyBodyUtils import (
     ManyBodyState,
     ManyBodyOperator,
     SlaterDeterminant,
+    inner,
 )
 from math import isclose
 
@@ -239,3 +240,149 @@ def test_ManyBodyOperator_pickle():
     new_op = pickle.loads(pickled_op)
 
     assert op == new_op
+
+
+def test_SlaterDeterminant_operators():
+    sd1 = SlaterDeterminant.from_bytes(b"\x01")
+    sd2 = SlaterDeterminant.from_bytes(b"\x02")
+    sd1_copy = SlaterDeterminant.from_bytes(b"\x01")
+    
+    assert sd1 < sd2
+    assert sd2 > sd1
+    assert sd1 == sd1_copy
+    assert sd1 != sd2
+    assert hash(sd1) == hash(sd1_copy)
+    assert len(sd1) > 0
+    assert repr(sd1).startswith("SlaterDeterminant")
+
+
+def test_ManyBodyState_inplace_operators():
+    psi1 = ManyBodyState({SlaterDeterminant.from_bytes(b"\x01"): 1.0})
+    psi2 = ManyBodyState({SlaterDeterminant.from_bytes(b"\x02"): 2j})
+    
+    psi1 += psi2
+    assert psi1[SlaterDeterminant.from_bytes(b"\x01")] == 1.0
+    assert psi1[SlaterDeterminant.from_bytes(b"\x02")] == 2j
+    
+    psi1 -= psi2
+    assert psi1[SlaterDeterminant.from_bytes(b"\x01")] == 1.0
+    assert SlaterDeterminant.from_bytes(b"\x02") not in psi1 or psi1[SlaterDeterminant.from_bytes(b"\x02")] == 0.0
+
+
+def test_ManyBodyState_erase():
+    psi = ManyBodyState({SlaterDeterminant.from_bytes(b"\x01"): 1.0, SlaterDeterminant.from_bytes(b"\x02"): 2.0})
+    assert len(psi) == 2
+    psi.erase(SlaterDeterminant.from_bytes(b"\x01"))
+    assert len(psi) == 1
+    assert SlaterDeterminant.from_bytes(b"\x01") not in psi
+
+
+def test_inner_product():
+    psi1 = ManyBodyState({SlaterDeterminant.from_bytes(b"\x01"): 1.0, SlaterDeterminant.from_bytes(b"\x02"): 2.0j})
+    psi2 = ManyBodyState({SlaterDeterminant.from_bytes(b"\x01"): 2.0, SlaterDeterminant.from_bytes(b"\x02"): 1.0j})
+    # Inner product: conj(1.0)*2.0 + conj(2.0j)*1.0j = 2.0 + (-2j)*j = 2.0 + 2.0 = 4.0
+    assert pytest.approx(inner(psi1, psi2)) == 4.0
+
+
+def test_SlaterDeterminant_extra():
+    sd = SlaterDeterminant.from_bytes(b"\x01\x02")
+    assert len(sd) > 0
+    # test __getitem__ and __setitem__
+    val = sd[0]
+    sd[0] = val + 1
+    assert sd[0] == val + 1
+    # test __iter__
+    chunks = list(sd)
+    assert len(chunks) == len(sd)
+    # test __copy__ and __deepcopy__
+    import copy
+    sd_copy = copy.copy(sd)
+    sd_deepcopy = copy.deepcopy(sd)
+    assert sd == sd_copy
+    assert sd == sd_deepcopy
+    # test to_bytearray
+    ba = sd.to_bytearray()
+    assert isinstance(ba, bytearray)
+    assert ba[0] == 1
+    assert ba[1] == 2
+    assert ba[7] == 1
+    assert all(x == 0 for x in ba[2:7])
+    assert all(x == 0 for x in ba[8:])
+
+
+
+
+def test_ManyBodyState_extra():
+    sd1 = SlaterDeterminant.from_bytes(b"\x01")
+    sd2 = SlaterDeterminant.from_bytes(b"\x02")
+    d = {sd1: 1.0, sd2: 2.0j}
+    psi = ManyBodyState(d)
+
+    # test __contains__
+    assert sd1 in psi
+    assert SlaterDeterminant.from_bytes(b"\x03") not in psi
+
+    # test keys(), values(), items(), to_dict()
+    assert set(psi.keys()) == {sd1, sd2}
+    assert set(psi.values()) == {1.0, 2.0j}
+    assert dict(psi.items()) == d
+    assert psi.to_dict() == d
+
+    # test copy()
+    psi_copy = psi.copy()
+    assert psi == psi_copy
+
+    # test get()
+    assert psi.get(sd1) == 1.0
+    assert psi.get(SlaterDeterminant.from_bytes(b"\x03"), 4.0) == 4.0
+
+    # test size() and max_size()
+    assert psi.size() == 2
+    assert psi.max_size() >= 2
+
+
+def test_ManyBodyOperator_extra():
+    key1 = ((1, "c"),)
+    key2 = ((0, "a"),)
+    d = {key1: 1.0, key2: 2.0j}
+    op = ManyBodyOperator(d)
+
+    # test __contains__
+    assert key1 in op
+    assert ((2, "a"),) not in op
+
+    # test keys(), values(), items(), to_dict()
+    assert set(op.keys()) == {key1, key2}
+    assert set(op.values()) == {1.0, 2.0j}
+    assert dict(op.items()) == d
+    assert op.to_dict() == d
+
+    # test operator *= and /=
+    op1 = ManyBodyOperator(d)
+    op1 *= 2.0
+    assert op1[key1] == 2.0
+    assert op1[key2] == 4.0j
+
+    op1 /= 2.0
+    assert op1[key1] == 1.0
+    assert op1[key2] == 2.0j
+
+    # test unary -
+    op_neg = -op
+    assert op_neg[key1] == -1.0
+    assert op_neg[key2] == -2.0j
+
+    # test __eq__ and __ne__
+    op2 = ManyBodyOperator(d)
+    assert op == op2
+    assert op != op_neg
+
+    # test size() and len()
+    assert op.size() == 2
+    assert len(op) == 2
+
+    # test erase
+    op.erase(key1)
+    assert key1 not in op
+    assert op.size() == 1
+

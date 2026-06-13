@@ -29,6 +29,52 @@ def calc_energy(
     truncation_threshold,
     slaterWeightMin,
 ):
+    """
+    Calculate the ground-state energy of the system for a given charge sector.
+
+    This function initializes a CIPSI basis for a nominal occupation config `N0`,
+    expands the basis variationally using the Hamiltonian `h_op`, constructs the
+    sparse Hamiltonian matrix, solves the eigensystem to obtain the lowest
+    eigen-energies and states within a threshold of the ground state, and returns
+    the minimum eigenvalue along with the optimized basis.
+
+    Parameters
+    ----------
+    h_op : ManyBodyOperator
+        The Hamiltonian operator of the system.
+    impurity_indices : dict
+        Mapping of orbital set indices to impurity orbital indices.
+    bath_states : tuple of dicts
+        Valence and conduction bath states coupled to the impurity.
+    N0 : dict
+        Nominal impurity orbital occupations.
+    mixed_valence : dict
+        The mixed valence occupation bounds per orbital set.
+    tau : float
+        Characteristic energy scale used for basis selection (temperature scale).
+    chain_restrict : bool
+        If True, restricts the basis to states generated along hopping chains.
+    spin_flip_dj : bool
+        If True, enables spin flip basis excitation configurations.
+    dense_cutoff : int
+        Dimension threshold below which a dense eigensolver is used.
+    comm : MPI.Comm or None
+        MPI communicator for distributed calculation.
+    verbose : bool
+        If True, prints progress details.
+    truncation_threshold : int
+        Maximum basis size allowed during initialization and expansion.
+    slaterWeightMin : float
+        Minimum weight (|amplitude|^2) below which Slater determinants are pruned.
+
+    Returns
+    -------
+    energy : float
+        The lowest eigenvalue (ground state energy) found for this charge sector.
+    basis : CIPSI_Basis
+        The optimized many-body basis.
+    """
+
     basis = CIPSI_Basis(
         impurity_indices,
         bath_states,
@@ -48,7 +94,7 @@ def calc_energy(
     basis.restrictions = basis.build_excited_restrictions(h_op, psis=None, es=None)
     if len(basis) == 0:
         return np.inf, basis
-    basis.expand(h_op, dense_cutoff=dense_cutoff, de2_min=1e-4, slaterWeightMin=0)  # slaterWeightMin)
+    basis.expand(h_op, dense_cutoff=dense_cutoff, de2_min=1e-4, slaterWeightMin=slaterWeightMin)
 
     energy_cut = -tau * np.log(1e-4)
 
@@ -57,7 +103,7 @@ def calc_energy(
         h,
         e_max=energy_cut,
         k=10,
-        eigenValueTol=slaterWeightMin,  # np.finfo(float).eps,
+        eigenValueTol=slaterWeightMin,
         return_eigvecs=True,
         comm=basis.comm,
         dense=basis.size < dense_cutoff,
@@ -73,6 +119,7 @@ def find_ground_state_basis(
     impurity_orbitals,
     bath_states,
     N0,
+    frozen_occupations=None,
     mixed_valence=False,
     tau=0.01,
     chain_restrict=False,
@@ -95,19 +142,48 @@ def find_ground_state_basis(
         num_val_baths,
         num_cond_baths,
     ) = bath_states
+    if frozen_occupations is None:
+        frozen_occupations = set()
     basis_gs = None
     gs_impurity_occ = N0.copy()
     dN_gs = dict.fromkeys(N0.keys(), 0)
 
-    keys = list(N0.keys())
-    dN_trials = [{keys[i]: dN[i] for i in range(len(keys))} for dN in product([0, -1, 1], repeat=len(keys))]
-    e_gs = np.inf
-    for dN in dN_trials:
+    energy_cache = {}
+
+    def get_energy(trial_N0):
+        """
+        Helper function to calculate, cache, and return the energy and basis for a trial N0.
+
+        Parameters
+        ----------
+        trial_N0 : dict
+            The trial nominal occupations for each orbital set.
+
+        Returns
+        -------
+        energy : float
+            The ground state energy.
+        basis : CIPSI_Basis
+            The optimized many-body basis.
+        """
+
+        key = tuple(sorted(trial_N0.items()))
+        if key in energy_cache:
+            e_trial, basis = energy_cache[key]
+            return e_trial, (basis.copy() if basis is not None else None)
+
+        # Check bounds: 0 <= occupation <= max possible orbitals
+        for orbital_idx, occ in trial_N0.items():
+            max_occ = sum(len(block) for block in impurity_orbitals[orbital_idx])
+            if occ < 0 or occ > max_occ:
+                energy_cache[key] = (np.inf, None)
+                return np.inf, None
+
         e_trial, basis = calc_energy(
             h_op,
             impurity_orbitals,
             bath_states,
-            {i: N0[i] + dN[i] for i in N0},
+            trial_N0,
             mixed_valence,
             tau,
             chain_restrict,
@@ -118,13 +194,25 @@ def find_ground_state_basis(
             truncation_threshold=truncation_threshold,
             slaterWeightMin=slaterWeightMin,
         )
+        # energy_cache[key] = (e_trial, basis.copy() if basis is not None else None)
+        return e_trial, basis
+
+    keys = list(N0.keys())
+    dN_trials = [
+        {keys[i]: dN[i] if keys[i] not in frozen_occupations else 0 for i in range(len(keys))}
+        for dN in product([0, -1, 1], repeat=len(keys))
+    ]
+    e_gs = np.inf
+    for dN in dN_trials:
+        trial_N0 = {i: N0[i] + dN[i] for i in N0}
+        e_trial, basis = get_energy(trial_N0)
         if verbose:
-            print("{" + " ".join(f" {i} : {N0[i] + dN[i]}" for i in dN) + f"}} ~ {e_trial:6.3f}")
+            print("{" + " ".join(f" {i} : {trial_N0[i]}" for i in dN) + f"}} ~ {e_trial:6.3f}")
         if e_trial < e_gs:
             e_gs = e_trial
             basis_gs = basis.copy()
             dN_gs = dN
-            gs_impurity_occ = {i: N0[i] + dN[i] for i in N0}
+            gs_impurity_occ = trial_N0
     for i in N0:
         while (
             dN_gs[i] != 0
@@ -134,24 +222,11 @@ def find_ground_state_basis(
                 for j, imp_occ in gs_impurity_occ.items()
             )
         ):
-            e_trial, basis = calc_energy(
-                h_op,
-                impurity_orbitals,
-                bath_states,
-                {j: n + dN_gs[i] if i == j else n for j, n in gs_impurity_occ.items()},
-                mixed_valence,
-                tau,
-                chain_restrict,
-                spin_flip_dj,
-                dense_cutoff,
-                comm=comm,
-                verbose=True,
-                truncation_threshold=truncation_threshold,
-                slaterWeightMin=slaterWeightMin,
-            )
+            trial_N0 = {j: n + dN_gs[i] if i == j else n for j, n in gs_impurity_occ.items()}
+            e_trial, basis = get_energy(trial_N0)
             if verbose:
                 print(
-                    "{" + " ".join(f" {i} : {gs_impurity_occ[i] + dN_gs[i]}" for i in dN_gs) + f"}} ~ {e_trial:6.3f}",
+                    "{" + " ".join(f" {j} : {trial_N0[j]}" for j in dN_gs) + f"}} ~ {e_trial:6.3f}",
                 )
             if e_trial >= e_gs:
                 break
@@ -163,6 +238,15 @@ def find_ground_state_basis(
         print("\n".join((f"{i:^3d}: {gs_impurity_occ[i]: ^5d}" for i in gs_impurity_occ)))
         print(rf"E$_{{GS}}$ = {e_gs:^7.4f}")
         print("=" * 80)
+    # Explicitly clear the energy_cache to break the closure reference cycle.
+    # get_energy captures energy_cache (closure), which holds Basis objects whose
+    # .comm may be a split MPI communicator.  Without this, the cycle cannot be
+    # freed by CPython's reference-counting and survives until Python shutdown,
+    # where MPI has already been finalised -> segfault.
+    for _cached_e, _cached_basis in energy_cache.values():
+        if _cached_basis is not None:
+            _cached_basis.comm = None
+    energy_cache.clear()
     return basis_gs
 
 
@@ -175,6 +259,43 @@ def calc_gs(
     slaterWeightMin=0,
     **kwargs,
 ):
+    """
+    Calculate the ground-state wavefunction, eigen-energies, and density matrices.
+
+    This function determines the ground-state charge sector, optimizes the
+    variational many-body basis, solves the eigensystem for the low-energy
+    states, and computes the thermally-averaged density matrix and expectation
+    values.
+
+    Parameters
+    ----------
+    Hop : ManyBodyOperator
+        The Hamiltonian operator.
+    basis_setup : dict
+        Configuration dictionary containing parameters for the basis setup,
+        such as 'impurity_orbitals', 'bath_states', 'nominal_impurity_occ', etc.
+    block_structure : BlockStructure
+        The block structure defining mapping and symmetry relationships.
+    rot_to_spherical : ndarray
+        Transformation matrix from local to spherical harmonics.
+    verbose : bool
+        If True, prints detailed statistics and expectation values.
+    slaterWeightMin : float
+        Minimum weight threshold for determinants in the basis.
+
+    Returns
+    -------
+    psis : list of ManyBodyState
+        The low-energy eigenstates.
+    es : ndarray
+        The corresponding eigen-energies.
+    ground_state_basis : CIPSI_Basis
+        The optimized many-body basis.
+    thermal_rho : ndarray
+        The thermally-averaged density matrix.
+    gs_info : dict
+        A dictionary containing additional ground-state info (e.g. 'rhos' list).
+    """
 
     basis_setup = dict(basis_setup)
     if "impurity_orbital" in basis_setup:
@@ -196,7 +317,7 @@ def calc_gs(
     # Hop.set_restrictions(ground_state_basis.restrictions)
     ground_state_basis.tau = tau
     energy_cut = -tau * np.log(1e-4)
-    ground_state_basis.expand(Hop, dense_cutoff=dense_cutoff, de2_min=1e-6, slaterWeightMin=0)  # slaterWeightMin)
+    ground_state_basis.expand(Hop, dense_cutoff=dense_cutoff, de2_min=1e-6, slaterWeightMin=slaterWeightMin)
     h_gs = ground_state_basis.build_sparse_matrix(Hop)
     es, psis_dense = eigensystem(
         h_gs,
