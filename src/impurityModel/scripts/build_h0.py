@@ -6,6 +6,8 @@ from rspt2spectra.energies import get_mu
 from rspt2spectra.weight_functions import weight_functions
 import matplotlib.pyplot as plt
 import numpy as np
+import h5py
+from impurityModel.ed.block_structure import BlockStructure
 from argparse import ArgumentParser
 from pyRSPthon.read import extract_dat
 from impurityModel.ed.finite import matrixToIOp

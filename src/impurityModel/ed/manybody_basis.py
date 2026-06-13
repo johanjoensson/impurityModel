@@ -1,6 +1,6 @@
 from math import ceil
 import sys
-from typing import Optional, Union
+from typing import Any, Optional, Union
 from os import environ
 from bisect import bisect_left
 

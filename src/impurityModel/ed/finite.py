@@ -33,6 +33,12 @@ from sympy.physics.wigner import gaunt
 import scipy.sparse
 from scipy.sparse.linalg import ArpackNoConvergence, ArpackError, eigsh
 from mpi4py import MPI
+from typing import Any, Callable, Iterable, Optional, TYPE_CHECKING
+
+comm = MPI.COMM_WORLD
+rank = comm.rank
+ranks = comm.size
+
 
 # Local imports
 from impurityModel.ed import product_state_representation as psr
@@ -41,6 +47,30 @@ from impurityModel.ed import remove
 from impurityModel.ed.average import k_B, thermal_average, thermal_average_scale_indep
 from impurityModel.ed.block_structure import get_equivalent_blocks
 from impurityModel.ed.ManyBodyUtils import ManyBodyOperator, ManyBodyState
+
+
+class HermitianOperator(scipy.sparse.linalg.LinearOperator):
+    def __init__(self, diagonal: np.ndarray, diagonal_indices: np.ndarray, triangular_part: scipy.sparse.csr_matrix):
+        self.shape = triangular_part.shape
+        self.diagonal = diagonal if len(diagonal.shape) == 1 else diagonal.reshape(-1)
+        self.diagonal_indices = diagonal_indices
+        self.triangular_part = triangular_part
+        self.dtype = triangular_part.dtype
+
+    def _matvec(self, v):
+        v = v.reshape(-1)
+        res = np.zeros(v.shape[0], dtype=v.dtype)
+        res[self.diagonal_indices] = self.diagonal * v[self.diagonal_indices]
+        return res + self.triangular_part @ v + self.triangular_part.getH() @ v
+
+    def _matmat(self, m):
+        res = np.zeros((self.shape[0], m.shape[1]), dtype=self.dtype)
+        for col in range(m.shape[1]):
+            res[self.diagonal_indices, col] = self.diagonal * m[self.diagonal_indices, col]
+        return res + self.triangular_part @ m + self.triangular_part.getH() @ m
+
+    def _adjoint(self):
+        return self
 
 
 def get_job_tasks(rank, ranks, tasks_tot):
@@ -93,61 +123,6 @@ def rotate_matrix(M, T):
         T_matrix = block_diag(*(T[k] for k in sorted_keys))
         return np.conj(T_matrix.T) @ M @ T_matrix
     return np.conj(T.T) @ M @ T
-
-
-def setup_hamiltonian(
-    n_spin_orbitals: int,
-    hOp: dict | ManyBodyOperator,
-    basis: "Basis",
-    verbose: bool = False,
-    mode: str = "sparse",
-) -> tuple["Basis", dict, Any]:
-    """Create the Hamiltonian matrix in the given basis.
-
-    Parameters
-    ----------
-    n_spin_orbitals : int
-        The total number of spin orbitals.
-    hOp : dict or ManyBodyOperator
-        The Hamiltonian operator.
-    basis : Basis
-        The many-body basis.
-    verbose : bool, default False
-        If True, print progress and statistics.
-    mode : str, default "sparse"
-        Matrix mode: "sparse" or "dense".
-
-    Returns
-    -------
-    expanded_basis : Basis
-        The basis after any potential expansion/restructuring.
-    h_dict : dict
-        Dictionary of Hamiltonian elements.
-    h_local : scipy.sparse.csc_array or np.ndarray
-        The constructed Hamiltonian matrix.
-    """
-    if verbose:
-        print("Create Hamiltonian matrix...")
-    if mode != "sparse":
-        h = get_hamiltonian_matrix(n_spin_orbitals, hOp, basis, verbose=verbose)
-        nonzero = len(h.nonzero()[0])
-    elif mode == "sparse":
-        h_local, h_dict, expanded_basis = expand_basis_and_build_hermitian_hamiltonian_new(
-            n_spin_orbitals,
-            {},
-            hOp,
-            basis,
-            restrictions=basis.restrictions,
-            verbose=verbose,
-            parallelization_mode="H_build",
-            return_h_local=True,
-        )
-
-        nonzero = comm.reduce(h_local.nnz, root=0, op=MPI.SUM)
-    if verbose:
-        print(f"h_local :\n{h_local}")
-        print(f"<#Hamiltonian elements/column> = {int(nonzero / len(expanded_basis))}")
-    return expanded_basis, h_dict, h_local
 
 
 def mpi_matmat(m: Any, comm: Optional[MPI.Comm]) -> Callable[[np.ndarray], np.ndarray]:
@@ -3232,7 +3207,7 @@ def get_hamiltonian_hermitian_operator_from_h_dict(h_dict, basis, parallelizatio
         diagonal = np.array(diagonal, dtype=float)
         diagonal_indices = np.array(diagonal_indices, dtype=np.ulonglong)
         sort_indices = np.argsort(diagonal_indices)
-        h = NewHermitianOperator(diagonal[sort_indices], diagonal_indices[sort_indices], h_triangular)
+        h = HermitianOperator(diagonal[sort_indices], diagonal_indices[sort_indices], h_triangular)
     elif parallelization_mode == "H_build":
         n = comm.allreduce(n, op=MPI.MAX)
         # Loop over product states from the basis
@@ -3257,7 +3232,7 @@ def get_hamiltonian_hermitian_operator_from_h_dict(h_dict, basis, parallelizatio
         diagonal = np.array(diagonal, dtype=float)
         diagonal_indices = np.array(diagonal_indices, dtype=np.ulonglong)
         sort_indices = np.argsort(diagonal_indices)
-        h_local = NewHermitianOperator(diagonal[sort_indices], diagonal_indices[sort_indices], h_triangular)
+        h_local = HermitianOperator(diagonal[sort_indices], diagonal_indices[sort_indices], h_triangular)
         if return_h_local:
             h = h_local
         else:
@@ -3397,7 +3372,7 @@ def get_hamiltonian_hermitian_operator_from_h_dict_new(h_dict, basis, return_h_l
             data = np.append(data, [val])
 
     h_triangular = scipy.sparse.csr_matrix((data, (rows, cols)), shape=(n, n), dtype=complex)
-    h_local = NewHermitianOperator(diagonal, diagonal_indices, h_triangular)
+    h_local = HermitianOperator(diagonal, diagonal_indices, h_triangular)
     if return_h_local:
         h = h_local
     else:

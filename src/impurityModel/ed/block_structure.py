@@ -749,15 +749,15 @@ def build_greens_function(inequivalent_parts: list[np.ndarray], block_structure:
         i_block = block_structure.inequivalent_blocks[i]
         for block in block_structure.identical_blocks[i_block]:
             orbs = np.ix_(block_structure.blocks[block], block_structure.blocks[block])
-            G[..., *orbs] = m
+            G[..., orbs[0], orbs[1]] = m
         for block in block_structure.transposed_blocks[i_block]:
             orbs = np.ix_(block_structure.blocks[block], block_structure.blocks[block])
-            G[..., *orbs] = np.transpose(tuple(range(len(initial_shape)) + (m.ndim - 2, m.ndim - 1)))
+            G[..., orbs[0], orbs[1]] = np.transpose(tuple(range(len(initial_shape)) + (m.ndim - 2, m.ndim - 1)))
         for block in block_structure.particle_hole_blocks[i_block]:
             orbs = np.ix_(block_structure.blocks[block], block_structure.blocks[block])
-            G[..., ::-1, *orbs] = m
+            G[..., ::-1, orbs[0], orbs[1]] = m
         for block in block_structure.particle_hole_transposed_blocks[i_block]:
             orbs = np.ix_(block_structure.blocks[block], block_structure.blocks[block])
-            G[..., ::-1, *orbs] = np.transpose(tuple(range(len(initial_shape)) + (m.ndim - 2, m.ndim - 1)))
+            G[..., ::-1, orbs[0], orbs[1]] = np.transpose(tuple(range(len(initial_shape)) + (m.ndim - 2, m.ndim - 1)))
 
     return G

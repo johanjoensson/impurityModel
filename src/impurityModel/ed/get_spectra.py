@@ -211,16 +211,16 @@ def main(
     # Read XAS and/or RIXS projectors from file
     XAS_projectors = None
     RIXS_projectors = None
-    if XAS_projectors_filename:
-        XAS_projectors = get_RIXS_projectors(XAS_projectors_filename)
-        if rank == 0:
-            print("XAS projectors")
-            print(XAS_projectors)
-    if RIXS_projectors_filename:
-        RIXS_projectors = get_RIXS_projectors(RIXS_projectors_filename)
-        if rank == 0:
-            print("RIXS projectors")
-            print(RIXS_projectors)
+    # if XAS_projectors_filename:
+    #     XAS_projectors = get_XAS_projectors(XAS_projectors_filename)
+    #     if rank == 0:
+    #         print("XAS projectors")
+    #         print(XAS_projectors)
+    # if RIXS_projectors_filename:
+    #     RIXS_projectors = get_XAS_projectors(RIXS_projectors_filename)
+    #     if rank == 0:
+    #         print("RIXS projectors")
+    #         print(RIXS_projectors)
 
     # NIXS parameters
     qsNIXS = [2 * np.array([1, 1, 1]) / np.sqrt(3), 7 * np.array([1, 1, 1]) / np.sqrt(3)]

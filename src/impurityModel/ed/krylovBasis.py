@@ -108,8 +108,8 @@ class KrylovBasis:
             if key >= self.size or key < -self.size:
                 raise IndexError(f"index {key} is out of bounds for basis contaning {self.size} vectors.")
         elif isinstance(key, Sequence):
-            for i in key or i < -self.size:
-                if i >= self.size:
+            for i in key:
+                if i < -self.size or i >= self.size:
                     raise IndexError(f"index {i} is out of bounds for basis contaning {self.size} vectors.")
 
         elif isinstance(key, slice):

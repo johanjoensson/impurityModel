@@ -25,6 +25,11 @@ from impurityModel.ed.ManyBodyUtils import (
 from heapq import merge
 
 from mpi4py import MPI
+from impurityModel.ed.cg import cg_phys
+
+comm = MPI.COMM_WORLD
+rank = comm.rank
+
 
 import pickle
 

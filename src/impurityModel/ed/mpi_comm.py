@@ -9,6 +9,7 @@ from itertools import islice
 
 import numpy as np
 from mpi4py import MPI
+from impurityModel.ed.ManyBodyUtils import ManyBodyState, SlaterDeterminant
 
 # MPI variables
 comm = MPI.COMM_WORLD
