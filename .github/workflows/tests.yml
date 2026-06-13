@@ -67,7 +67,7 @@ jobs:
       - name: Install Python dependencies
         run: |
           python -m pip install --upgrade pip
-          pip install mpi4py pytest pytest-mpi cython setuptools build
+          pip install --no-binary mpi4py mpi4py pytest pytest-mpi cython setuptools build
 
       - name: Build and install impurityModel
         run: |
@@ -88,7 +88,8 @@ jobs:
             export CXXFLAGS="$CXXFLAGS -ltbb"
           fi
           if [ "${{ matrix.boost }}" = "-DBOOST" ]; then
-            export CXXFLAGS="$CXXFLAGS -I${BOOST_ROOT}/include"
+            export CXXFLAGS="$CXXFLAGS -I${BOOST_ROOT}/include -I${BOOST_ROOT}"
+            export CPLUS_INCLUDE_PATH="${BOOST_ROOT}/include:${BOOST_ROOT}"
           fi
 
           pip install -e .
