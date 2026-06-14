@@ -1,8 +1,8 @@
 #ifndef MANYBODY_STATE_H
 #define MANYBODY_STATE_H
 
-#include "flat_map_wrapper.hpp"
 #include "SlaterDeterminant.h"
+#include "flat_map_wrapper.hpp"
 
 #include <complex>
 #include <string>
@@ -11,11 +11,13 @@
 
 /**
  * @class ManyBodyState
- * @brief Represents a quantum many-body state in a second-quantized Slater determinant basis.
+ * @brief Represents a quantum many-body state in a second-quantized Slater
+ * determinant basis.
  *
  * This class stores the coefficients (amplitudes) of a many-body wavefunction
- * mapped from each SlaterDeterminant. It supports standard vector space operations
- * (addition, scalar multiplication) and quantum mechanical operations like inner products.
+ * mapped from each SlaterDeterminant. It supports standard vector space
+ * operations (addition, scalar multiplication) and quantum mechanical
+ * operations like inner products.
  *
  * Compilation flags:
  * - PARALLEL: compiles with tbb parallel execution
@@ -124,11 +126,13 @@ public:
   bool empty() const { return m_map.empty(); }
   size_type size() const { return m_map.size(); }
   size_type max_size() const { return m_map.max_size(); }
+  void reserve(size_t n);
 
   void clear() { m_map.clear(); }
 
   /**
-   * @brief Prune the state by removing components with amplitudes squared <= cutoff.
+   * @brief Prune the state by removing components with amplitudes squared <=
+   * cutoff.
    */
   ManyBodyState &prune(double cutoff);
 
@@ -159,11 +163,14 @@ public:
     m_map.insert(first, last);
   }
 #if __cplusplus >= 202302L && __has_include(<flat_map>)
-  template <class InputIt> void insert(std::sorted_unique_t tag, InputIt first, InputIt last) {
+  template <class InputIt>
+  void insert(std::sorted_unique_t tag, InputIt first, InputIt last) {
     m_map.insert(tag, first, last);
   }
 #else
-  template <class InputIt> void insert(boost::container::ordered_unique_range_t tag, InputIt first, InputIt last) {
+  template <class InputIt>
+  void insert(boost::container::ordered_unique_range_t tag, InputIt first,
+              InputIt last) {
     m_map.insert(tag, first, last);
   }
 #endif
@@ -227,7 +234,6 @@ public:
    * @brief String representation of the state for debugging.
    */
   std::string to_string() const;
-
 };
 
 namespace std {

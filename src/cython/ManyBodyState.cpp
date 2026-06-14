@@ -71,6 +71,7 @@ ManyBodyState &ManyBodyState::operator+=(ManyBodyState &&other) {
     this->m_map = std::move(other.m_map);
     return *this;
   }
+  this->reserve(m_map.size() + other.m_map.size());
   merge_maps(this->m_map, std::move(other.m_map), std::plus());
   return *this;
 }
@@ -80,6 +81,7 @@ ManyBodyState &ManyBodyState::operator+=(const ManyBodyState &other) {
     this->m_map = other.m_map;
     return *this;
   }
+  this->reserve(m_map.size() + other.m_map.size());
   merge_maps(this->m_map, other.m_map, std::plus());
   return *this;
 }
@@ -92,6 +94,7 @@ ManyBodyState &ManyBodyState::operator-=(ManyBodyState &&other) {
     }
     return *this;
   }
+  this->reserve(m_map.size() + other.m_map.size());
   merge_maps(this->m_map, std::move(other.m_map), std::minus());
   return *this;
 }
@@ -104,6 +107,7 @@ ManyBodyState &ManyBodyState::operator-=(const ManyBodyState &other) {
     }
     return *this;
   }
+  this->reserve(m_map.size() + other.m_map.size());
   merge_maps(this->m_map, other.m_map, std::minus());
   return *this;
 }
@@ -128,6 +132,7 @@ void ManyBodyState::add_scaled(const ManyBodyState &other, mapped_type scale) {
   if (scale == mapped_type{0.}) {
     return;
   }
+  this->reserve(m_map.size() + other.m_map.size());
   for (auto &&[key, value] : other.m_map) {
     auto [it, inserted] = m_map.try_emplace(key, value * scale);
     if (!inserted) {
@@ -166,12 +171,24 @@ std::complex<double> inner(const ManyBodyState &a, const ManyBodyState &b) {
   return res;
 }
 
+void ManyBodyState::reserve(size_t n) {
+#if __cplusplus >= 202302L && __has_include(<flat_map>)
+  auto [keys, vals] = std::move(m_map).extract();
+  keys.reserve(n);
+  vals.reserve(n);
+  m_map.replace(std::move(keys), std::move(vals));
+#else
+  m_map.reserve(n);
+#endif
+}
+
 ManyBodyState &ManyBodyState::prune(double cutoff) {
   double cutoff2 = cutoff * cutoff;
 #if __cplusplus >= 202302L && __has_include(<flat_map>)
   std::erase_if(m_map, [cutoff2](ManyBodyState::const_reference pair) {
 #else
-  boost::container::erase_if(m_map, [cutoff2](ManyBodyState::const_reference pair) {
+  boost::container::erase_if(m_map,
+                             [cutoff2](ManyBodyState::const_reference pair) {
 #endif
     return std::norm(pair.second) <= cutoff2;
   });
