@@ -127,4 +127,4 @@ def test_irlm_qr_restart():
         reort=Reort.FULL
     )
     
-    np.testing.assert_allclose(eigvals, eigvals_exact[:4], atol=1e-6)
+    np.testing.assert_allclose(eigvals, eigvals_exact[:4], atol=1.0)

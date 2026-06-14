@@ -597,24 +597,31 @@ def eigensystem_new(
     num_wanted = k
     max_subspace_blocks = max(6, int(np.ceil(num_wanted * 2)))
     
-    try:
-        es, vecs = thick_restarted_block_lanczos(
-            psi0=psi0,
-            h_op=h_local,
-            basis=None,
-            num_wanted=num_wanted,
-            max_subspace_blocks=max_subspace_blocks,
-            tol=max(1e-8, eigenValueTol),
-            max_restarts=100,
-            verbose=False
-        )
-    except Exception as e:
-        # Fallback to scipy if TRLM fails
+    if dense or N <= 20:
         if return_eigvecs:
-            es, vecs = scipy_eigensystem(h_local, e_max, k, v0, 0, return_eigvecs, comm)
+            es, vecs = dense_eigensystem(h_local, return_eigvecs, comm)
         else:
-            es = scipy_eigensystem(h_local, e_max, k, v0, 0, return_eigvecs, comm)
+            es = dense_eigensystem(h_local, return_eigvecs, comm)
             vecs = None
+    else:
+        try:
+            es, vecs = thick_restarted_block_lanczos(
+                psi0=psi0,
+                h_op=h_local,
+                basis=None,
+                num_wanted=num_wanted,
+                max_subspace_blocks=max_subspace_blocks,
+                tol=max(1e-8, eigenValueTol),
+                max_restarts=100,
+                verbose=False
+            )
+        except Exception as e:
+            # Fallback to scipy if TRLM fails
+            if return_eigvecs:
+                es, vecs = scipy_eigensystem(h_local, e_max, k, v0, 0, return_eigvecs, comm)
+            else:
+                es = scipy_eigensystem(h_local, e_max, k, v0, 0, return_eigvecs, comm)
+                vecs = None
 
     indices = np.argsort(es)
     es = es[indices]

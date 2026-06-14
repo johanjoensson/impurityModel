@@ -7,6 +7,7 @@ from impurityModel.ed.ManyBodyUtils import ManyBodyOperator, ManyBodyState, appl
 from impurityModel.ed.manybody_basis import Basis
 from impurityModel.ed.finite import eigensystem_new
 
+
 class CIPSISolver:
     def __init__(self, basis: Basis):
         self.basis = basis
@@ -76,7 +77,7 @@ class CIPSISolver:
             return new_Dj, Hpsi_ref
         return new_Dj
 
-    def expand(self, H, de2_min=1e-10, dense_cutoff=1e3, slaterWeightMin=0, solver="eigensystem"):
+    def expand(self, H, de2_min=1e-10, dense_cutoff=1e3, slaterWeightMin=0, solver="trlm"):
         if self.basis.restrictions is not None:
             H.set_restrictions(self.basis.restrictions)
         de0_max = -self.basis.tau * np.log(1e-4)
@@ -87,8 +88,12 @@ class CIPSISolver:
 
         old_size = self.basis.size - 1
         while old_size != self.basis.size:
-            if solver == "irlm" and self.basis.size >= dense_cutoff:
-                from impurityModel.ed.trlm import thick_restarted_block_lanczos
+            if solver in ("irlm", "trlm") and self.basis.size >= dense_cutoff:
+                if solver == "trlm":
+                    from impurityModel.ed.trlm import thick_restarted_block_lanczos as restarted_lanczos
+                else:
+                    from impurityModel.ed.irlm import implicitly_restarted_block_lanczos as restarted_lanczos
+
                 if psi_refs is None:
                     local_states = list(self.basis.local_basis)
                     if len(local_states) > 0:
@@ -98,16 +103,22 @@ class CIPSISolver:
                     psi0 = self.basis.redistribute_psis(psi0)
                 else:
                     psi0 = psi_refs
-    
+
                 num_wanted = 2 * len(psi_refs) if psi_refs is not None else 10
                 max_subspace = max(2 * num_wanted, 20)
-    
-                e_ref, psi_refs = thick_restarted_block_lanczos(
-                    psi0=psi0, h_op=H, basis=self.basis, num_wanted=num_wanted,
-                    max_subspace_blocks=max_subspace // len(psi0), tol=1e-8, max_restarts=10,
-                    verbose=self.basis.verbose, slaterWeightMin=slaterWeightMin
+
+                e_ref, psi_refs = restarted_lanczos(
+                    psi0=psi0,
+                    h_op=H,
+                    basis=self.basis,
+                    num_wanted=num_wanted,
+                    max_subspace_blocks=max_subspace // len(psi0),
+                    tol=1e-8,
+                    max_restarts=10,
+                    verbose=self.basis.verbose,
+                    slaterWeightMin=slaterWeightMin,
                 )
-                
+
                 valid_idx = [i for i, e in enumerate(e_ref) if e < de0_max]
                 if not valid_idx:
                     if self.basis.verbose:
@@ -117,10 +128,20 @@ class CIPSISolver:
                 psi_refs = [psi_refs[i] for i in valid_idx]
             else:
                 H_mat = self.basis.build_sparse_matrix(H)
-                v0 = self.basis.build_vector(psi_refs).T if psi_refs is not None and self.basis.size >= dense_cutoff else None
+                v0 = (
+                    self.basis.build_vector(psi_refs).T
+                    if psi_refs is not None and self.basis.size >= dense_cutoff
+                    else None
+                )
                 e_ref, psi_ref_dense = eigensystem_new(
-                    H_mat, e_max=de0_max, k=2 * len(psi_refs) if psi_refs is not None else 10,
-                    e0=None, v0=v0, eigenValueTol=0, comm=self.basis.comm, dense=self.basis.size < dense_cutoff,
+                    H_mat,
+                    e_max=de0_max,
+                    k=2 * len(psi_refs) if psi_refs is not None else 10,
+                    e0=None,
+                    v0=v0,
+                    eigenValueTol=0,
+                    comm=self.basis.comm,
+                    dense=self.basis.size < dense_cutoff,
                 )
                 psi_refs = self.basis.build_state(psi_ref_dense.T)
 
@@ -137,7 +158,9 @@ class CIPSISolver:
         if self.basis.verbose:
             print(f"After expansion, the basis contains {self.basis.size} elements.", flush=True)
 
-    def expand_at(self, E_ref: np.ndarray, psi_ref: list[ManyBodyState], H: ManyBodyOperator, de2_min: float = 1e-5) -> None:
+    def expand_at(
+        self, E_ref: np.ndarray, psi_ref: list[ManyBodyState], H: ManyBodyOperator, de2_min: float = 1e-5
+    ) -> None:
         old_size = self.basis.size - 1
         while old_size != self.basis.size:
             new_Dj, psi_ref = self.determine_new_Dj(E_ref, psi_ref, H, de2_min, return_Hpsi_ref=True)

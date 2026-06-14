@@ -28,6 +28,7 @@ def calc_energy(
     verbose,
     truncation_threshold,
     slaterWeightMin,
+    cipsi_solver_method="trlm",
 ):
     """
     Calculate the ground-state energy of the system for a given charge sector.
@@ -99,7 +100,7 @@ def calc_energy(
     basis.restrictions = basis.build_excited_restrictions(h_op, psis=None, es=None)
     if len(basis) == 0:
         return np.inf, basis
-    solver.expand(h_op, dense_cutoff=dense_cutoff, de2_min=1e-4, slaterWeightMin=slaterWeightMin)
+    solver.expand(h_op, dense_cutoff=dense_cutoff, de2_min=1e-4, slaterWeightMin=slaterWeightMin, solver=cipsi_solver_method)
 
     energy_cut = -tau * np.log(1e-4)
 
@@ -134,7 +135,8 @@ def find_ground_state_basis(
     comm=None,
     truncation_threshold=1000000,
     verbose=True,
-    slaterWeightMin=0,
+    slaterWeightMin=1e-12,
+    cipsi_solver_method="trlm",
 ):
     """
     Find the occupation corresponding to the lowest energy, compare N0 - 1, N0 and N0 + 1
@@ -198,8 +200,9 @@ def find_ground_state_basis(
             verbose=verbose,
             truncation_threshold=truncation_threshold,
             slaterWeightMin=slaterWeightMin,
+            cipsi_solver_method=cipsi_solver_method,
         )
-        # energy_cache[key] = (e_trial, basis.copy() if basis is not None else None)
+        energy_cache[key] = (e_trial, basis.copy() if basis is not None else None)
         return e_trial, basis
 
     keys = list(N0.keys())
@@ -262,6 +265,7 @@ def calc_gs(
     rot_to_spherical: np.ndarray,
     verbose: bool,
     slaterWeightMin=0,
+    cipsi_solver_method="trlm",
     **kwargs,
 ):
     """
@@ -325,7 +329,7 @@ def calc_gs(
     from impurityModel.ed.cipsi_solver import CIPSISolver
 
     solver = CIPSISolver(ground_state_basis)
-    solver.expand(Hop, dense_cutoff=dense_cutoff, de2_min=1e-6, slaterWeightMin=slaterWeightMin)
+    solver.expand(Hop, dense_cutoff=dense_cutoff, de2_min=1e-6, slaterWeightMin=slaterWeightMin, solver=cipsi_solver_method)
     h_gs = ground_state_basis.build_sparse_matrix(Hop)
     es, psis_dense = eigensystem(
         h_gs,
