@@ -272,22 +272,22 @@ def estimate_orthonormality(W, alphas, betas, eps=np.finfo(float).eps, N=1, rng=
     # i is the index of the latest calculated vector
     i = alphas.shape[0] - 1
     n = alphas.shape[1]
-    
-    is_full = (W.shape[0] == i + 1)
-    
+
+    is_full = W.shape[0] == i + 1
+
     W_out = np.zeros((i + 2 if is_full else 2, i + 2, n, n), dtype=complex)
     w_bar = np.zeros((i + 2, n, n), dtype=complex)
     w_bar[i + 1, :, :] = np.identity(n)
     w_bar[i, :, :] = (
         eps * N * sp.linalg.solve_triangular(betas[i], betas[0], lower=False, trans="C", check_finite=False)
     )
-    
+
     W_prev = W[-1]
     W_prev_prev = W[-2] if i > 0 else W[-1]
-    
+
     if i == 0:
         if is_full:
-            W_out[:1, :i+1] = W
+            W_out[:1, : i + 1] = W
         else:
             W_out[0, : i + 1] = W[1]
         W_out[-1, : i + 2] = w_bar
@@ -305,9 +305,9 @@ def estimate_orthonormality(W, alphas, betas, eps=np.finfo(float).eps, N=1, rng=
     w_bar[1:i] = np.linalg.solve(np.conj(betas[i].T)[np.newaxis, :, :], w_bar[1:i])
 
     w_bar[:i] += eps * (betas[i] + betas[:i])
-    
+
     if is_full:
-        W_out[:-1, :i+1] = W
+        W_out[:-1, : i + 1] = W
     else:
         W_out[0, : i + 1] = W[1]
     W_out[-1, : i + 2] = w_bar
@@ -430,7 +430,6 @@ def get_block_Lanczos_matrices_dense(
     # Run at least 1 iteration (to generate $\alpha_0$).
     # We can also not generate more than N Lanczos vectors, meaning we can
     # take at most N/n steps in total
-    converge_count = 0
     for i in range(it_max):
         wp = h @ q[1]
 
@@ -476,8 +475,7 @@ def get_block_Lanczos_matrices_dense(
         q[1] = np.ascontiguousarray(q[1])
         Q_list.append(q[1].copy())
 
-        converge_count = 1 + converge_count if converged(alphas[: i + 1], betas[: i + 1], verbose=verbose) else 0
-        if converge_count > 2:
+        if converged(alphas[: i + 1], betas[: i + 1], verbose=verbose):
             break
 
     return alphas[: i + 1], betas[: i + 1]
@@ -554,7 +552,6 @@ def get_block_Lanczos_matrices(
         Q_list = [q[1].copy()]
     qi = np.ascontiguousarray(psi0).copy()
 
-    converge_count = 0
     done = False
 
     W = None
@@ -619,8 +616,7 @@ def get_block_Lanczos_matrices(
             else:
                 qi[:] = q[1]
 
-            converge_count = 1 + converge_count if converged(alphas[: i + 1], betas[: i + 1], verbose=verbose) else 0
-            done = converge_count > 2
+            done = converged(alphas[: i + 1], betas[: i + 1], verbose=verbose)
 
         if mpi:
             done = comm.bcast(done, root=0)
@@ -654,6 +650,7 @@ def get_block_Lanczos_matrices(
 
 from impurityModel.ed.ManyBodyUtils import inner_multi, add_scaled_multi
 
+
 def block_lanczos_array(
     psi0: np.ndarray,
     h_op,
@@ -679,27 +676,26 @@ def block_lanczos_array(
         start_it = len(alphas)
         alphas_arr = alphas
         betas_arr = betas
-        
+
         q0_fallback = psi0.copy() if psi0 is not None else Q[:, :n]
-        q = [Q[:, (start_it - 1)*n : start_it*n] if start_it > 0 else q0_fallback]
-        q.append(Q[:, start_it*n : (start_it+1)*n] if start_it > 0 else q0_fallback)
-        
+        q = [Q[:, (start_it - 1) * n : start_it * n] if start_it > 0 else q0_fallback]
+        q.append(Q[:, start_it * n : (start_it + 1) * n] if start_it > 0 else q0_fallback)
+
         Q_list = [Q]
     else:
         start_it = 0
         alphas_arr = np.empty((0, n, n), dtype=complex)
         betas_arr = np.empty((0, n, n), dtype=complex)
-        
+
         q = [np.zeros((N, n), dtype=complex)]
         q.append(psi0.copy() if len(psi0.shape) == 2 else psi0.reshape(-1, 1).copy())
-        
+
         Q_list = [q[1].copy()] if build_krylov_basis else None
 
     alphas = alphas_arr
     betas = betas_arr
-    
+
     it = start_it
-    converge_count = 0
     reort_eps = np.sqrt(np.finfo(float).eps)
     period = kwargs.get("reort_period", 5)
     max_iter = kwargs.get("max_iter", np.inf)
@@ -733,7 +729,7 @@ def block_lanczos_array(
             wp -= Q_list[0] @ overlap
 
         M = wp.conj().T @ wp
-        
+
         if np.any(np.isnan(M)) or np.any(np.isinf(M)):
             alphas = alphas[:-1]
             betas = betas[:-1]
@@ -765,21 +761,22 @@ def block_lanczos_array(
             elif W.shape[0] < it + 1 or W.shape[1] < it + 1:
                 if track_full_W:
                     W_new = np.zeros((it + 1, it + 1, n, n), dtype=complex)
-                    W_new[:W.shape[0], :W.shape[1]] = W
+                    W_new[: W.shape[0], : W.shape[1]] = W
                     W = W_new
                 else:
                     W_new = np.zeros((2, it + 1, n, n), dtype=complex)
-                    W_new[:, :W.shape[1]] = W
+                    W_new[:, : W.shape[1]] = W
                     W = W_new
-            
+
             W = estimate_orthonormality(W, alphas[: it + 1], betas[: it + 1], eps=np.finfo(float).eps)
             if it > 0 and np.max(np.abs(W[-1, : it + 1])) > reort_eps:
                 bad_block_indices = [j for j in range(it + 1) if np.max(np.abs(W[-1, j])) > reort_eps * 1e-2]
-                
+
                 if reort == Reort.PARTIAL:
-                    wp -= Q_list[0][:, :len(Q_list[0][0])-n] @ (Q_list[0][:, :len(Q_list[0][0])-n].conj().T @ wp)
+                    wp -= Q_list[0][:, : len(Q_list[0][0]) - n] @ (Q_list[0][:, : len(Q_list[0][0]) - n].conj().T @ wp)
                 elif reort == Reort.SELECTIVE:
                     from impurityModel.ed.lanczos import eigsh
+
                     eigvals, eigvecs = eigsh(alphas[: it + 1], betas[: it + 1], select="a", max_ev=0)
                     error_bounds = np.linalg.norm(betas[it], ord=2) * np.abs(eigvecs[-n:, :]).max(axis=0)
                     converged_mask = error_bounds < reort_eps
@@ -791,7 +788,7 @@ def block_lanczos_array(
                     wp -= Q_list[0] @ (Q_list[0].conj().T @ wp)
 
                 q[1][:] = Q_list[0][:, -n:]
-                
+
                 M = wp.conj().T @ wp
                 if np.any(np.isnan(M)) or np.any(np.isinf(M)):
                     alphas = alphas[:-1]
@@ -799,7 +796,7 @@ def block_lanczos_array(
                     if build_krylov_basis:
                         Q_list[0] = Q_list[0][:, :-n]
                     break
-                    
+
                 try:
                     if np.linalg.cond(M) > 1 / (100 * np.finfo(float).eps):
                         alphas = alphas[:-1]
@@ -816,7 +813,7 @@ def block_lanczos_array(
                     break
                 beta_i = np.conj(L.T)
                 betas[it] = beta_i
-                
+
                 bad_block_indices_prev = [j for j in bad_block_indices if j < it]
                 eps = np.finfo(float).eps
                 W[-1, bad_block_indices] = eps * np.eye(n)
@@ -826,6 +823,7 @@ def block_lanczos_array(
                     W[0, bad_block_indices_prev] = eps * np.eye(n)
 
         import warnings
+
         try:
             with warnings.catch_warnings():
                 warnings.simplefilter("error")
@@ -836,11 +834,6 @@ def block_lanczos_array(
         q_next = wp @ beta_inv
 
         if converged(alphas, betas, verbose=verbose):
-            converge_count += 1
-        else:
-            converge_count = 0
-
-        if converge_count > 2:
             break
 
         q[0] = q[1]
@@ -851,11 +844,12 @@ def block_lanczos_array(
 
     if verbose:
         print(f"Coverged at iteration {it+1}")
-        
+
     res_Q = Q_list[0] if build_krylov_basis else None
     if return_W:
         return alphas, betas, res_Q, W
     return alphas, betas, res_Q
+
 
 def block_lanczos_sparse(
     psi0: list[ManyBodyState],
@@ -932,27 +926,27 @@ def block_lanczos_sparse(
     comm = basis.comm if mpi else MPI.COMM_SELF
     rank = comm.rank if mpi else 0
     build_krylov_basis = reort != Reort.NONE or True
-    
+
     # Initialize from passed state if provided
     if alphas is not None and betas is not None and Q is not None:
         start_it = len(alphas)
         n = alphas[0].shape[0]
         alphas_arr = alphas
         betas_arr = betas
-        
+
         q0_fallback = psi0 if psi0 is not None else Q[:n]
-        q = [[Q[i] for i in range((start_it - 1)*n, start_it*n)] if start_it > 0 else q0_fallback]
-        q.append([Q[i] for i in range(start_it*n, (start_it+1)*n)] if start_it > 0 else q0_fallback)
-        
+        q = [[Q[i] for i in range((start_it - 1) * n, start_it * n)] if start_it > 0 else q0_fallback]
+        q.append([Q[i] for i in range(start_it * n, (start_it + 1) * n)] if start_it > 0 else q0_fallback)
+
         Q_list = Q
     else:
         start_it = 0
         n = len(psi0)
         alphas_arr = np.empty((0, n, n), dtype=complex)
         betas_arr = np.empty((0, n, n), dtype=complex)
-        
+
         q = [[ManyBodyState() for _ in range(n)]]
-        
+
         if not isinstance(psi0[0], ManyBodyState):
             psi0_mbs = []
             for p in psi0:
@@ -963,7 +957,7 @@ def block_lanczos_sparse(
             q.append(basis.redistribute_psis(psi0_mbs))
         else:
             q.append(basis.redistribute_psis(psi0))
-        
+
         Q_list = [st.copy() for st in q[1]] if build_krylov_basis else None
 
     # Redefine references inside the loop
@@ -972,7 +966,6 @@ def block_lanczos_sparse(
     Q = Q_list
 
     it = start_it
-    converge_count = 0
 
     reort_eps = np.sqrt(np.finfo(float).eps)
     period = kwargs.get("reort_period", 5)
@@ -1001,8 +994,6 @@ def block_lanczos_sparse(
         global_seen_size[0] = len(seen_states)
         if mpi:
             comm.Allreduce(MPI.IN_PLACE, global_seen_size, op=MPI.SUM)
-
-
 
         alpha_i = inner_multi(q[1], wp)
         if mpi:
@@ -1060,11 +1051,11 @@ def block_lanczos_sparse(
             elif W.shape[0] < it + 1 or W.shape[1] < it + 1:
                 if track_full_W:
                     W_new = np.zeros((it + 1, it + 1, n, n), dtype=complex)
-                    W_new[:W.shape[0], :W.shape[1]] = W
+                    W_new[: W.shape[0], : W.shape[1]] = W
                     W = W_new
                 else:
                     W_new = np.zeros((2, it + 1, n, n), dtype=complex)
-                    W_new[:, :W.shape[1]] = W
+                    W_new[:, : W.shape[1]] = W
                     W = W_new
             W = estimate_orthonormality(W, alphas[: it + 1], betas[: it + 1], eps=np.finfo(float).eps)
             if it > 0 and np.max(np.abs(W[-1, : it + 1])) > reort_eps:
@@ -1099,14 +1090,14 @@ def block_lanczos_sparse(
                 M = inner_multi(wp, wp)
                 if mpi:
                     comm.Allreduce(MPI.IN_PLACE, M, op=MPI.SUM)
-                
+
                 if np.any(np.isnan(M)) or np.any(np.isinf(M)):
                     alphas = alphas[:-1]
                     betas = betas[:-1]
                     if build_krylov_basis:
                         Q = Q[:-n]
                     break
-                    
+
                 try:
                     if np.linalg.cond(M) > 1 / (100 * np.finfo(float).eps):
                         alphas = alphas[:-1]
@@ -1133,6 +1124,7 @@ def block_lanczos_sparse(
                     W[0, bad_block_indices_prev] = eps * np.eye(n)
 
         import warnings
+
         try:
             with warnings.catch_warnings():
                 warnings.simplefilter("error")
@@ -1147,11 +1139,6 @@ def block_lanczos_sparse(
             st.prune(slaterWeightMin)
 
         if converged(alphas, betas, verbose=verbose):
-            converge_count += 1
-        else:
-            converge_count = 0
-
-        if converge_count > 2:
             break
 
         q[0] = q[1]

@@ -904,8 +904,6 @@ def block_green_impl(basis, hOp, psi_arr, delta, reort, slaterWeightMin, verbose
         # For scalar valued Lanczos, calculate convergents to check for convergence.
         if n == 1 and False:
             An, Bn = calc_continuants(alphas[-1] + 1j * delta - alphas, betas)
-            if verbose:
-                print(f"delta = {np.abs(An[-2] / Bn[-2] - An[-1] / Bn[-1])}")
             if abs(Bn[-1]) < 1e-6:
                 return (
                     abs(Bn[-1] * An[-2] - An[-1] * Bn[-2]) <= abs(delta_min * Bn[-1] * Bn[-2])
@@ -932,8 +930,6 @@ def block_green_impl(basis, hOp, psi_arr, delta, reort, slaterWeightMin, verbose
         if np.any(np.diagonal(gs_new.imag, axis1=1, axis2=2) * np.sign(delta) < 0):
             return False
         d_g = np.max(np.abs(gs_new - gs_prev))
-        if verbose:
-            print(f"delta = {d_g}", flush=True)
         return d_g < delta_min
 
     if dense:
@@ -1064,8 +1060,6 @@ def block_Green_sparse(
         # For scalar valued Lanczos, calculate convergents to check for convergence.
         if n == 1 and False:
             An, Bn = calc_continuants(alphas[-1] + 1j * delta - alphas, betas)
-            if verbose:
-                print(f"delta = {np.abs(An[-2] / Bn[-2] - An[-1] / Bn[-1])}")
             if abs(Bn[-1]) < 1e-6:
                 return (
                     abs(Bn[-1] * An[-2] - An[-1] * Bn[-2]) <= abs(delta_min * Bn[-1] * Bn[-2])
@@ -1092,8 +1086,6 @@ def block_Green_sparse(
         if np.any(np.diagonal(gs_new.imag, axis1=1, axis2=2) * np.sign(delta) < 0):
             return False
         d_g = np.max(np.abs(gs_new - gs_prev))
-        if verbose:
-            print(f"delta = {d_g}", flush=True)
         return d_g < delta_min
 
     alphas, betas, _ = block_lanczos_sparse(
@@ -1445,6 +1437,7 @@ def Green_freq_bicgstab(w_mesh, hOp, psi, e, basis, slaterWeightMin):
             atol=1e-5,
         )
         from impurityModel.ed.ManyBodyUtils import inner_multi
+
         gs[w_i] = inner_multi(freq_basis.redistribute_psis(psi), A_inv_psi)
         if len(freq_basis) > max_basis_size:
             max_basis_size = len(freq_basis)
