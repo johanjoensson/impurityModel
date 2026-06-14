@@ -8,7 +8,8 @@ template <typename OP>
 void merge_maps(ManyBodyState::Map &map1, const ManyBodyState::Map &map2,
                 OP &&op) {
 
-  // map1.reserve(map1.size() + map2.size()); // std::flat_map does not have reserve
+  // map1.reserve(map1.size() + map2.size()); // std::flat_map does not have
+  // reserve
   using V = ManyBodyState::Value;
   for (auto &&[key, value] : map2) {
     auto [it, inserted] = map1.try_emplace(key, op(V{}, value));
@@ -21,7 +22,8 @@ void merge_maps(ManyBodyState::Map &map1, const ManyBodyState::Map &map2,
 template <typename OP>
 void merge_maps(ManyBodyState::Map &map1, ManyBodyState::Map &&map2, OP &&op) {
 
-  // map1.reserve(map1.size() + map2.size()); // std::flat_map does not have reserve
+  // map1.reserve(map1.size() + map2.size()); // std::flat_map does not have
+  // reserve
   using V = ManyBodyState::Value;
   for (auto &&[key, value] : map2) {
     auto [it, inserted] = map1.try_emplace(std::move(key), op(V{}, value));

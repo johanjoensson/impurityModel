@@ -302,7 +302,11 @@ cdef class ManyBodyState:
         """
         Yield all SlaterDeterminant configurations in the state.
         """
-        return (SlaterDeterminant(tuple(chunk for chunk in p.first)) for p in self.v)
+        cdef SlaterDeterminant result
+        for p in self.v:
+            result = SlaterDeterminant.__new__(SlaterDeterminant)
+            result.s = p.first
+            yield result
 
     def values(self):
         """
@@ -314,7 +318,11 @@ cdef class ManyBodyState:
         """
         Yield pairs of (SlaterDeterminant, amplitude).
         """
-        return ((SlaterDeterminant(tuple(chunk for chunk in p.first)), p.second) for p in self.v)
+        cdef SlaterDeterminant result
+        for p in self.v:
+            result = SlaterDeterminant.__new__(SlaterDeterminant)
+            result.s = p.first
+            yield (result, p.second)
 
     def prune(self, double cutoff):
         """
@@ -327,7 +335,13 @@ cdef class ManyBodyState:
         """
         Convert the ManyBodyState to a python dict.
         """
-        return dict((SlaterDeterminant(tuple(chunk for chunk in p.first)), p.second) for p in self.v)
+        cdef dict res = {}
+        cdef SlaterDeterminant result
+        for p in self.v:
+            result = SlaterDeterminant.__new__(SlaterDeterminant)
+            result.s = p.first
+            res[result] = p.second
+        return res
 
     def copy(self):
         """
