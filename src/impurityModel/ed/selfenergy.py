@@ -11,7 +11,8 @@ import scipy as sp
 # from impurityModel.ed.get_spectra import get_noninteracting_hamiltonian_operator
 from impurityModel.ed import finite
 from impurityModel.ed.average import thermal_average_scale_indep
-from impurityModel.ed.manybody_basis import CIPSI_Basis, Basis
+from impurityModel.ed.manybody_basis import Basis
+from impurityModel.ed.cipsi_solver import CIPSISolver
 import impurityModel.ed.product_state_representation as psr
 
 from impurityModel.ed.groundstate import calc_gs
@@ -100,10 +101,9 @@ def fixed_peak_dc(
     Np = {l: N0[l] + 1 for l in N0}
     Nm = {l: N0[l] - 1 for l in N0}
     if peak_position >= 0:
-        basis_upper = CIPSI_Basis(
+        basis_upper = Basis(
             impurity_orbitals,
             bath_states,
-            H=h_op_i,
             nominal_impurity_occ=Np,
             mixed_valence=mixed_valence,
             truncation_threshold=truncation_threshold,
@@ -112,10 +112,12 @@ def fixed_peak_dc(
             spin_flip_dj=spin_flip_dj,
             tau=tau,
         )
-        basis_lower = CIPSI_Basis(
+        solver_upper = CIPSISolver(basis_upper)
+        solver_upper.truncate_initial(h_op_i)
+
+        basis_lower = Basis(
             impurity_orbitals,
             bath_states,
-            H=h_op_i,
             nominal_impurity_occ=N0,
             mixed_valence=mixed_valence,
             truncation_threshold=truncation_threshold,
@@ -124,11 +126,12 @@ def fixed_peak_dc(
             spin_flip_dj=spin_flip_dj,
             tau=tau,
         )
+        solver_lower = CIPSISolver(basis_lower)
+        solver_lower.truncate_initial(h_op_i)
     else:
-        basis_upper = CIPSI_Basis(
+        basis_upper = Basis(
             impurity_orbitals,
             bath_states,
-            H=h_op_i,
             nominal_impurity_occ=N0,
             mixed_valence=mixed_valence,
             truncation_threshold=truncation_threshold,
@@ -137,10 +140,12 @@ def fixed_peak_dc(
             spin_flip_dj=spin_flip_dj,
             tau=tau,
         )
-        basis_lower = CIPSI_Basis(
+        solver_upper = CIPSISolver(basis_upper)
+        solver_upper.truncate_initial(h_op_i)
+
+        basis_lower = Basis(
             impurity_orbitals,
             bath_states,
-            H=h_op_i,
             nominal_impurity_occ=Nm,
             mixed_valence=mixed_valence,
             truncation_threshold=truncation_threshold,
@@ -149,6 +154,8 @@ def fixed_peak_dc(
             spin_flip_dj=spin_flip_dj,
             tau=tau,
         )
+        solver_lower = CIPSISolver(basis_lower)
+        solver_lower.truncate_initial(h_op_i)
 
     # basis_upper.restrictions = basis_upper.build_initial_restrictions(h_op_i)
     # basis_lower.restrictions = basis_lower.build_initial_restrictions(h_op_i)
@@ -161,8 +168,8 @@ def fixed_peak_dc(
         }
     )
     h_op = h_op_i + dc_op_i
-    basis_upper.expand(h_op, dense_cutoff=dense_cutoff, de2_min=1e-3, slaterWeightMin=slaterWeightMin)
-    basis_lower.expand(h_op, dense_cutoff=dense_cutoff, de2_min=1e-3, slaterWeightMin=slaterWeightMin)
+    solver_upper.expand(h_op, dense_cutoff=dense_cutoff, de2_min=1e-3, slaterWeightMin=slaterWeightMin)
+    solver_lower.expand(h_op, dense_cutoff=dense_cutoff, de2_min=1e-3, slaterWeightMin=slaterWeightMin)
 
     energy_cut = -tau * np.log(1e-4)
 

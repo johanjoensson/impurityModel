@@ -24,7 +24,7 @@ from impurityModel.ed import finite, spectra
 from impurityModel.ed.finite import assert_hermitian, c2i
 from impurityModel.ed.average import k_B, thermal_average
 from impurityModel.ed import op_parser
-from impurityModel.ed.manybody_basis import CIPSI_Basis, Basis
+from impurityModel.ed.manybody_basis import Basis
 from impurityModel.ed.block_structure import BlockStructure, print_block_structure
 from impurityModel.ed.ManyBodyUtils import ManyBodyOperator, ManyBodyState
 from impurityModel.ed.groundstate import calc_gs

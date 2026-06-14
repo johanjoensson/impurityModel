@@ -2,7 +2,7 @@ from itertools import product, compress
 import numpy as np
 from mpi4py import MPI
 from impurityModel.ed.ManyBodyUtils import ManyBodyState, ManyBodyOperator
-from impurityModel.ed.manybody_basis import CIPSI_Basis
+from impurityModel.ed.manybody_basis import Basis
 from impurityModel.ed.finite import (
     eigensystem_new as eigensystem,
     thermal_average_scale_indep,
@@ -71,14 +71,16 @@ def calc_energy(
     -------
     energy : float
         The lowest eigenvalue (ground state energy) found for this charge sector.
-    basis : CIPSI_Basis
+    basis : Basis
         The optimized many-body basis.
     """
 
-    basis = CIPSI_Basis(
+    from impurityModel.ed.manybody_basis import Basis
+    from impurityModel.ed.cipsi_solver import CIPSISolver
+
+    basis = Basis(
         impurity_indices,
         bath_states,
-        H=h_op,
         delta_impurity_occ={i: 0 for i in N0},
         delta_valence_occ={i: 0 for i in N0},
         delta_conduction_occ={i: 0 for i in N0},
@@ -91,10 +93,13 @@ def calc_energy(
         spin_flip_dj=spin_flip_dj,
         comm=comm,
     )
+    solver = CIPSISolver(basis)
+    solver.truncate_initial(h_op)
+
     basis.restrictions = basis.build_excited_restrictions(h_op, psis=None, es=None)
     if len(basis) == 0:
         return np.inf, basis
-    basis.expand(h_op, dense_cutoff=dense_cutoff, de2_min=1e-4, slaterWeightMin=slaterWeightMin)
+    solver.expand(h_op, dense_cutoff=dense_cutoff, de2_min=1e-4, slaterWeightMin=slaterWeightMin)
 
     energy_cut = -tau * np.log(1e-4)
 
@@ -163,7 +168,7 @@ def find_ground_state_basis(
         -------
         energy : float
             The ground state energy.
-        basis : CIPSI_Basis
+        basis : Basis
             The optimized many-body basis.
         """
 
@@ -289,7 +294,7 @@ def calc_gs(
         The low-energy eigenstates.
     es : ndarray
         The corresponding eigen-energies.
-    ground_state_basis : CIPSI_Basis
+    ground_state_basis : Basis
         The optimized many-body basis.
     thermal_rho : ndarray
         The thermally-averaged density matrix.
@@ -317,7 +322,9 @@ def calc_gs(
     # Hop.set_restrictions(ground_state_basis.restrictions)
     ground_state_basis.tau = tau
     energy_cut = -tau * np.log(1e-4)
-    ground_state_basis.expand(Hop, dense_cutoff=dense_cutoff, de2_min=1e-6, slaterWeightMin=slaterWeightMin)
+    from impurityModel.ed.cipsi_solver import CIPSISolver
+    solver = CIPSISolver(ground_state_basis)
+    solver.expand(Hop, dense_cutoff=dense_cutoff, de2_min=1e-6, slaterWeightMin=slaterWeightMin)
     h_gs = ground_state_basis.build_sparse_matrix(Hop)
     es, psis_dense = eigensystem(
         h_gs,

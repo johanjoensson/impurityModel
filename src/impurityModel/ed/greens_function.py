@@ -13,7 +13,8 @@ from impurityModel.ed.lanczos import (
     get_Lanczos_vectors,
     Reort,
 )
-from impurityModel.ed.manybody_basis import CIPSI_Basis, Basis
+from impurityModel.ed.manybody_basis import Basis
+from impurityModel.ed.cipsi_solver import CIPSISolver
 from impurityModel.ed.cg import bicgstab, block_bicgstab
 from impurityModel.ed.block_structure import BlockStructure, get_blocks
 from impurityModel.ed.ManyBodyUtils import (
@@ -1220,7 +1221,7 @@ def block_Green_freq_2(
             continue
         _, freq_roots, color, _, split_basis, psi = basis.split_and_redistribute_basis([1] * len(w_mesh), psi_orig)
         w_indices = slice(color, len(w_mesh), len(freq_roots))
-        freq_basis = CIPSI_Basis(
+        freq_basis = Basis(
             split_basis.impurity_orbitals,
             split_basis.bath_states,
             initial_basis=split_basis.local_basis,
@@ -1231,6 +1232,7 @@ def block_Green_freq_2(
             verbose=verbose,
             comm=split_basis.comm.Clone(),
         )
+        freq_solver = CIPSISolver(freq_basis)
 
         # Hpsi = [ManyBodyState() for _ in psi]
         # for Hps, ps in zip(Hpsi, psi):
@@ -1243,7 +1245,7 @@ def block_Green_freq_2(
             zip(range(len(w_mesh)), w_mesh), w_indices.start, w_indices.stop, w_indices.step
         ):
 
-            freq_basis.expand_at(np.zeros((len(psi))) - (w + e), psi, hOp, de2_min=1e-5)
+            freq_solver.expand_at(np.zeros((len(psi))) - (w + e), psi, hOp, de2_min=1e-5)
 
             if True:
                 # Use fully sparse implementation
@@ -1315,7 +1317,7 @@ def Green_freq_bicgstab_fixed_basis(w_mesh, hOp, psi, e, basis, slaterWeightMin)
     )
     offsets = [np.sum(freq_per_color[:c], dtype=int) for c in range(len(freq_roots))]
     w_indices = slice(int(offsets[color]), int(offsets[color] + freq_per_color[color]), 1)
-    freq_basis = CIPSI_Basis(
+    freq_basis = Basis(
         split_basis.impurity_orbitals,
         split_basis.bath_states,
         initial_basis=[],  # sorted(set(state for p in psi for state in p.keys())),
@@ -1326,6 +1328,7 @@ def Green_freq_bicgstab_fixed_basis(w_mesh, hOp, psi, e, basis, slaterWeightMin)
         verbose=False,
         comm=split_basis.comm,
     )
+    freq_solver = CIPSISolver(freq_basis)
     # psi = freq_basis.redistribute_psis(psi)
 
     gs = np.zeros((len(w_mesh), len(psi), len(psi)), dtype=complex)
@@ -1340,7 +1343,7 @@ def Green_freq_bicgstab_fixed_basis(w_mesh, hOp, psi, e, basis, slaterWeightMin)
         freq_basis.add_states(sorted(set(state for p in itertools.chain(psi, A_inv_psi) for state in p.keys())))
         psi = freq_basis.redistribute_psis(psi)
 
-        freq_basis.expand_at(np.array([w.real + e] * len(psi), dtype=float), psi, hOp, de2_min=slaterWeightMin / 10)
+        freq_solver.expand_at(np.array([w.real + e] * len(psi), dtype=float), psi, hOp, de2_min=slaterWeightMin / 10)
 
         # A_op = ManyBodyOperator({processes: w.real + e - amp for processes, amp in hOp.items()})
 
@@ -1408,7 +1411,7 @@ def Green_freq_bicgstab(w_mesh, hOp, psi, e, basis, slaterWeightMin):
     )
     offsets = [np.sum(freq_per_color[:c], dtype=int) for c in range(len(freq_roots))]
     w_indices = slice(int(offsets[color]), int(offsets[color] + freq_per_color[color]), 1)
-    freq_basis = CIPSI_Basis(
+    freq_basis = Basis(
         split_basis.impurity_orbitals,
         split_basis.bath_states,
         initial_basis=[],  # sorted(set(state for p in psi for state in p.keys())),
@@ -1671,7 +1674,7 @@ def calc_Greens_function_with_offdiag_cg(
                     opResult=t_mems[i_tOp],
                 )
                 local_excited_basis |= res.keys()
-    excited_basis = CIPSI_Basis(
+    excited_basis = Basis(
         basis.impurity_orbitals,
         basis.bath_states,
         initial_basis=local_excited_basis,
@@ -1774,7 +1777,7 @@ def get_block_Green_cg(
     comm.Allgather(np.array([len(basis.local_basis)], dtype=int), local_basis_lens)
     if matsubara:
         gs_matsubara = np.zeros((len(iws), n, n), dtype=complex)
-        local_basis = CIPSI_Basis(
+        local_basis = Basis(
             basis.impurity_orbitals,
             basis.bath_states,
             initial_basis=basis.local_basis,

@@ -718,31 +718,17 @@ def block_lanczos_sparse(
         mv = h_op.apply_multi(v, cutoff=slaterWeightMin)
         return basis.redistribute_psis(mv)
 
-    it_max = basis.size // n + 1
     state_lengths = np.array([len(p) for p in q[1]], dtype=int)
     comm.Allreduce(MPI.IN_PLACE, state_lengths)
-    while it < it_max:
+    while it * n < np.max(state_lengths):
         t0 = perf_counter()
         wp = matmat(q[1])
         state_lengths = np.array([len(p) for p in q[1]], dtype=int)
         comm.Allreduce(MPI.IN_PLACE, state_lengths)
         t_apply = perf_counter() - t0
 
-        old_basis_size = basis.size
-        t0 = perf_counter()
-        basis.add_states(
-            set(state for p in wp for state, amp in p.items() if state not in basis._index_dict),
-        )
-        t_add = perf_counter() - t0
-
-        if old_basis_size == basis.size:
-            it_max = basis.size // n
-
         if verbose:
-            print(f"Added {basis.size - old_basis_size} states to the basis.")
-            print(f"----> Currently the basis contains {basis.size} states.")
             print(f"----> Applying the hamiltonian took {t_apply} seconds.")
-            print(f"----> Adding new states took {t_add} seconds.", flush=True)
 
         alpha_i = inner_multi(q[1], wp)
         if mpi:
@@ -849,7 +835,7 @@ def block_lanczos_sparse(
         it += 1
 
     if verbose:
-        print(f"Coverged at iteration {it+1} out of a maximum of {basis.size//n}")
+        print(f"Coverged at iteration {it+1} out of a maximum of {state_lengths//n + 1}")
     return alphas, betas, Q if build_krylov_basis else None
 
 
