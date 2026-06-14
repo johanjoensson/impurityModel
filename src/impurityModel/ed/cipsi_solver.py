@@ -95,12 +95,17 @@ class CIPSISolver:
                     from impurityModel.ed.irlm import implicitly_restarted_block_lanczos as restarted_lanczos
 
                 if psi_refs is None:
+                    import random
+                    random.seed(42)
                     local_states = list(self.basis.local_basis)
-                    if len(local_states) > 0:
-                        psi0 = [ManyBodyState({local_states[0]: 1.0})]
-                    else:
-                        psi0 = [ManyBodyState()]
+                    psi0_dict = {state: random.random() + 1j * random.random() for state in local_states}
+                    psi0 = [ManyBodyState(psi0_dict)] if psi0_dict else [ManyBodyState()]
                     psi0 = self.basis.redistribute_psis(psi0)
+                    
+                    N2s = np.array([psi.norm2() for psi in psi0], dtype=float)
+                    if self.basis.is_distributed:
+                        self.basis.comm.Allreduce(MPI.IN_PLACE, N2s, op=MPI.SUM)
+                    psi0 = [psi / np.sqrt(N2s[i]) if N2s[i] > 0 else psi for i, psi in enumerate(psi0)]
                 else:
                     psi0 = psi_refs
 
@@ -119,7 +124,11 @@ class CIPSISolver:
                     slaterWeightMin=slaterWeightMin,
                 )
 
-                valid_idx = [i for i, e in enumerate(e_ref) if e < de0_max]
+                if len(e_ref) > 0:
+                    e_min = np.min(e_ref)
+                    valid_idx = [i for i, e in enumerate(e_ref) if e - e_min <= de0_max]
+                else:
+                    valid_idx = []
                 if not valid_idx:
                     if self.basis.verbose:
                         print("No eigenvalues below energy threshold found.")
@@ -171,3 +180,61 @@ class CIPSISolver:
             if self.basis.is_distributed:
                 self.basis.comm.Allreduce(MPI.IN_PLACE, N2s, op=MPI.SUM)
             psi_ref = [psi / np.sqrt(N2s[i]) for i, psi in enumerate(psi_ref)]
+
+    def get_eigenvectors(self, H, num_wanted: int, max_energy=None, dense_cutoff=1e3, slaterWeightMin=0, solver="trlm"):
+        if self.basis.restrictions is not None:
+            H.set_restrictions(self.basis.restrictions)
+            
+        if solver in ("irlm", "trlm") and self.basis.size >= dense_cutoff:
+            if solver == "trlm":
+                from impurityModel.ed.trlm import thick_restarted_block_lanczos as restarted_lanczos
+            else:
+                from impurityModel.ed.irlm import implicitly_restarted_block_lanczos as restarted_lanczos
+
+            import random
+            random.seed(42)
+            local_states = list(self.basis.local_basis)
+            psi0_dict = {state: random.random() + 1j * random.random() for state in local_states}
+            psi0 = [ManyBodyState(psi0_dict)] if psi0_dict else [ManyBodyState()]
+            psi0 = self.basis.redistribute_psis(psi0)
+            
+            N2s = np.array([psi.norm2() for psi in psi0], dtype=float)
+            if self.basis.is_distributed:
+                self.basis.comm.Allreduce(MPI.IN_PLACE, N2s, op=MPI.SUM)
+            psi0 = [psi / np.sqrt(N2s[i]) if N2s[i] > 0 else psi for i, psi in enumerate(psi0)]
+            
+            max_subspace = max(2 * num_wanted, 20)
+            e_ref, psi_refs = restarted_lanczos(
+                psi0=psi0,
+                h_op=H,
+                basis=self.basis,
+                num_wanted=num_wanted,
+                max_subspace_blocks=max_subspace // len(psi0),
+                tol=1e-8,
+                max_restarts=10,
+                verbose=self.basis.verbose,
+                slaterWeightMin=slaterWeightMin,
+            )
+            
+            if max_energy is not None and len(e_ref) > 0:
+                e_min = np.min(e_ref)
+                valid_idx = [i for i, e in enumerate(e_ref) if e - e_min <= max_energy]
+                e_ref = e_ref[valid_idx]
+                psi_refs = [psi_refs[i] for i in valid_idx]
+                
+        else:
+            H_mat = self.basis.build_sparse_matrix(H)
+            e_ref, psi_ref_dense = eigensystem(
+                H_mat,
+                e_max=max_energy,
+                k=num_wanted,
+                e0=None,
+                v0=None,
+                eigenValueTol=0,
+                comm=self.basis.comm,
+                dense=self.basis.size < dense_cutoff,
+                return_eigvecs=True,
+            )
+            psi_refs = self.basis.build_state(psi_ref_dense.T, slaterWeightMin=slaterWeightMin)
+            
+        return e_ref, psi_refs

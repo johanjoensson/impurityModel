@@ -189,33 +189,29 @@ def fixed_peak_dc(
         }
         h_op = h_op_i + ManyBodyOperator(dc_op_i)
 
-        h = basis_upper.build_sparse_matrix(h_op)
-        e_upper, psi_upper = finite.eigensystem(
-            h,
-            e_max=energy_cut,
-            k=1,
-            eigenValueTol=slaterWeightMin,
-            return_eigvecs=True,
-            comm=basis_upper.comm,
-            dense=basis_upper.size < dense_cutoff,
+        e_upper, psi_upper = solver_upper.get_eigenvectors(
+            h_op,
+            num_wanted=1,
+            max_energy=energy_cut,
+            dense_cutoff=dense_cutoff,
+            slaterWeightMin=slaterWeightMin,
+            solver="trlm",
         )
-        h = basis_lower.build_sparse_matrix(h_op)
-        e_lower, psi_lower = finite.eigensystem(
-            h,
-            e_max=energy_cut,
-            k=1,
-            eigenValueTol=slaterWeightMin,
-            return_eigvecs=True,
-            comm=basis_upper.comm,
-            dense=basis_lower.size < dense_cutoff,
+        e_lower, psi_lower = solver_lower.get_eigenvectors(
+            h_op,
+            num_wanted=1,
+            max_energy=energy_cut,
+            dense_cutoff=dense_cutoff,
+            slaterWeightMin=slaterWeightMin,
+            solver="trlm",
         )
         rho_lower = basis_lower.build_density_matrices(
-            basis_lower.build_state(psi_lower.T),
+            psi_lower,
             orbital_indices_left=impurity_indices,
             orbital_indices_right=impurity_indices,
         )
         rho_upper = basis_upper.build_density_matrices(
-            basis_upper.build_state(psi_upper.T),
+            psi_upper,
             orbital_indices_left=impurity_indices,
             orbital_indices_right=impurity_indices,
         )

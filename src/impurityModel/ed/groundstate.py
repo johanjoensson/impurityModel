@@ -104,17 +104,14 @@ def calc_energy(
 
     energy_cut = -tau * np.log(1e-4)
 
-    h = basis.build_sparse_matrix(h_op)
-    es, eigvecs = eigensystem(
-        h,
-        e_max=energy_cut,
-        k=10,
-        eigenValueTol=slaterWeightMin,
-        return_eigvecs=True,
-        comm=basis.comm,
-        dense=basis.size < dense_cutoff,
+    es, eigen_psis = solver.get_eigenvectors(
+        h_op,
+        num_wanted=10,
+        max_energy=energy_cut,
+        dense_cutoff=dense_cutoff,
+        slaterWeightMin=slaterWeightMin,
+        solver=cipsi_solver_method,
     )
-    eigen_psis = basis.build_state(eigvecs.T, slaterWeightMin=slaterWeightMin)
     basis.clear()
     basis.add_states(set(state for psi in eigen_psis for state in psi))
     return np.min(es), basis
@@ -330,17 +327,14 @@ def calc_gs(
 
     solver = CIPSISolver(ground_state_basis)
     solver.expand(Hop, dense_cutoff=dense_cutoff, de2_min=1e-6, slaterWeightMin=slaterWeightMin, solver=cipsi_solver_method)
-    h_gs = ground_state_basis.build_sparse_matrix(Hop)
-    es, psis_dense = eigensystem(
-        h_gs,
-        e_max=energy_cut,
-        k=10,
-        eigenValueTol=0,
-        comm=ground_state_basis.comm,
-        dense=ground_state_basis.size < dense_cutoff,
+    es, psis = solver.get_eigenvectors(
+        Hop,
+        num_wanted=10,
+        max_energy=energy_cut,
+        dense_cutoff=dense_cutoff,
+        slaterWeightMin=slaterWeightMin,
+        solver=cipsi_solver_method,
     )
-
-    psis = ground_state_basis.build_state(psis_dense.T, slaterWeightMin=slaterWeightMin)
     ground_state_basis.clear()
     ground_state_basis.add_states(set(state for p in psis for state in p))
     psis = ground_state_basis.redistribute_psis(psis)
