@@ -177,6 +177,27 @@ def build_banded_matrix(alphas, betas):
         bands[i, :] = np.concatenate([alpha_diags, beta_diags], axis=1).flatten()
     return bands
 
+def _build_full_T(alphas, betas):
+    m = len(alphas)
+    if m == 0:
+        return np.zeros((0, 0), dtype=complex)
+    n = alphas[0].shape[0]
+    T = np.zeros((m * n, m * n), dtype=complex)
+    for i in range(m):
+        T[i * n : (i + 1) * n, i * n : (i + 1) * n] = alphas[i]
+        if i < m - 1 and i < len(betas):
+            T[(i + 1) * n : (i + 2) * n, i * n : (i + 1) * n] = betas[i]
+            T[i * n : (i + 1) * n, (i + 1) * n : (i + 2) * n] = np.conj(betas[i].T)
+    return T
+
+def _extract_blocks(T, m, n):
+    alphas = np.zeros((m, n, n), dtype=complex)
+    betas = np.zeros((m - 1, n, n), dtype=complex)
+    for i in range(m):
+        alphas[i] = T[i * n : (i + 1) * n, i * n : (i + 1) * n]
+        if i < m - 1:
+            betas[i] = T[(i + 1) * n : (i + 2) * n, i * n : (i + 1) * n]
+    return alphas, betas
 
 def eigsh(alphas, betas, de=None, Q=None, eigvals_only=False, select="a", select_range=None, max_ev=0, comm=None):
     """

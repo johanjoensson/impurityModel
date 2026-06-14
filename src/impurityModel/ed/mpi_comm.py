@@ -382,3 +382,73 @@ def graph_alltoall_psis(
         unpack_psis_cy(res, size, recv_counts, state_recv, amp_recv, psi_recv, chunks_per_state)
 
     return res
+
+def gather_distributed_results(comm, sub_comm_rank, roots, items_per_color, local_res, is_array=True, shape=None, dtype=None):
+    """
+    Gather results computed across sub-communicators into the root communicator (rank 0).
+    
+    Parameters
+    ----------
+    comm : MPI.Comm
+        The global communicator.
+    sub_comm_rank : int
+        The rank of the local process in its sub-communicator.
+    roots : list of int
+        The global rank of the root process for each sub-communicator color.
+    items_per_color : list of int
+        The number of items (e.g. frequencies) handled by each color.
+    local_res : ndarray or list
+        The local result to be sent.
+    is_array : bool, optional
+        True if the data is a numpy array (uses comm.Recv/Send), False if python list (uses comm.recv/send).
+    shape : tuple, optional
+        The shape of the array to gather (if is_array is True). If not provided, it will be inferred from local_res.
+    dtype : np.dtype, optional
+        The data type (if is_array is True). If not provided, it will be inferred from local_res.
+        
+    Returns
+    -------
+    all_res : ndarray or list or None
+        The gathered results on global rank 0, or None on other ranks.
+    """
+    if comm is None or comm.size <= 1:
+        return local_res
+
+    if comm.rank == 0:
+        if is_array:
+            if shape is None:
+                shape = local_res.shape[1:] if len(local_res.shape) > 1 else ()
+            if dtype is None:
+                dtype = local_res.dtype
+            total_items = sum(items_per_color)
+            all_res = np.empty((total_items,) + shape, dtype=dtype)
+        else:
+            all_res = []
+
+        offsets = [0] + list(np.cumsum(items_per_color))[:-1]
+        
+        for color, (count, root) in enumerate(zip(items_per_color, roots)):
+            if count == 0:
+                continue
+            
+            if root == 0:
+                if is_array:
+                    all_res[offsets[color] : offsets[color] + count] = local_res
+                else:
+                    all_res.extend(local_res)
+            else:
+                if is_array:
+                    buf = np.empty((count,) + shape, dtype=dtype)
+                    comm.Recv(buf, source=root)
+                    all_res[offsets[color] : offsets[color] + count] = buf
+                else:
+                    res = comm.recv(source=root)
+                    all_res.extend(res)
+        return all_res
+    else:
+        if sub_comm_rank == 0:
+            if is_array:
+                comm.Send(np.asarray(local_res), dest=0)
+            else:
+                comm.send(local_res, dest=0)
+        return None

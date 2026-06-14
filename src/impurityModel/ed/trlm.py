@@ -6,16 +6,12 @@ from impurityModel.ed.lanczos import block_lanczos_sparse, _reorthogonalize_spar
 from mpi4py import MPI
 import scipy.sparse
 
-def _build_full_T(alphas, betas):
-    m = len(alphas)
-    n = alphas[0].shape[0]
-    T = np.zeros((m * n, m * n), dtype=complex)
-    for i in range(m):
-        T[i * n : (i + 1) * n, i * n : (i + 1) * n] = alphas[i]
-        if i < m - 1 and i < len(betas):
-            T[(i + 1) * n : (i + 2) * n, i * n : (i + 1) * n] = betas[i]
-            T[i * n : (i + 1) * n, (i + 1) * n : (i + 2) * n] = np.conj(betas[i].T)
-    return T
+
+
+from impurityModel.ed.block_math import (
+    is_array, block_inner, block_apply, block_add_scaled, 
+    block_combine, block_orthogonalize, block_normalize
+)
 
 def thick_restarted_block_lanczos(
     psi0,
@@ -32,20 +28,16 @@ def thick_restarted_block_lanczos(
     mpi = basis is not None and getattr(basis, 'comm', None) is not None
     comm = basis.comm if mpi else None
     
-    is_array = isinstance(h_op, (np.ndarray, scipy.sparse.spmatrix))
-    if is_array:
-        n = psi0.shape[1] if len(psi0.shape) == 2 else 1
-        inner_func = lambda x, y: x.conj().T @ y
-    else:
-        n = len(psi0)
-        inner_func = inner_multi
+    is_arr = is_array(h_op)
+    n = psi0.shape[1] if is_arr and len(psi0.shape) == 2 else len(psi0)
+
         
     k_blocks = int(np.ceil(num_wanted / n))
     m = max_subspace_blocks
 
     track_W = reort in (Reort.PARTIAL, Reort.SELECTIVE)
     
-    if is_array:
+    if is_arr:
         from impurityModel.ed.lanczos import block_lanczos_array
         alphas, betas, Q_list, *W_res = block_lanczos_array(
             psi0, h_op, lambda a, b, **kw: False, max_iter=m, 
@@ -56,13 +48,13 @@ def thick_restarted_block_lanczos(
         from impurityModel.ed.lanczos import block_lanczos_sparse
         alphas, betas, Q_list, *W_res = block_lanczos_sparse(
             psi0, h_op, basis, lambda a, b, **kw: False, slaterWeightMin=slaterWeightMin, max_iter=m, 
-            reort=reort, verbose=verbose, inner_func=inner_func,
+            reort=reort, verbose=verbose, inner_func=inner_multi,
             orth_tol=1e-12, return_Q=True, track_full_W=track_W, return_W=True
         )
     W_full = W_res[0] if track_W and W_res else None
     
     m_actual = len(alphas)
-    if is_array:
+    if is_arr:
         if Q_list.shape[1] > m_actual * n:
             q_m = Q_list[:, m_actual * n : (m_actual + 1) * n].copy()
             Q_list = Q_list[:, :m_actual * n]
@@ -75,6 +67,7 @@ def thick_restarted_block_lanczos(
         else:
             q_m = None
         
+    from impurityModel.ed.lanczos import _build_full_T
     T_full = _build_full_T(alphas, betas[:-1] if len(betas) == m_actual else betas)
     
     if m_actual <= k_blocks:
@@ -84,11 +77,7 @@ def thick_restarted_block_lanczos(
         wanted_indices = np.argsort(eigvals)[:num_wanted]
         final_eigvals = eigvals[wanted_indices]
         
-        if is_array:
-            final_eigvecs = Q_list @ np.ascontiguousarray(eigvecs[:, wanted_indices], dtype=complex)
-        else:
-            final_eigvecs = [ManyBodyState() for _ in range(len(wanted_indices))]
-            add_scaled_multi(final_eigvecs, Q_list, np.ascontiguousarray(eigvecs[:, wanted_indices], dtype=complex))
+        final_eigvecs = block_combine(Q_list, eigvecs[:, wanted_indices], slaterWeightMin)
         return final_eigvals, final_eigvecs
         
     beta_res = betas[-1]
@@ -110,50 +99,29 @@ def thick_restarted_block_lanczos(
         Y_k = eigvecs[:, keep_indices]
         T_k = np.diag(eigvals[keep_indices])
         
-        if is_array:
-            Q_k_states = Q_list[:, :m_actual * n] @ np.ascontiguousarray(Y_k, dtype=complex)
-            Q_list = Q_k_states
+        if is_arr:
+            Q_list = Q_list[:, :m_actual * n]
         else:
-            Q_k_states = [ManyBodyState() for _ in range(k_blocks * n)]
-            add_scaled_multi(Q_k_states, Q_list[:m_actual * n], np.ascontiguousarray(Y_k, dtype=complex))
-            Q_list = Q_k_states
+            Q_list = Q_list[:m_actual * n]
+        Q_list = block_combine(Q_list, Y_k, slaterWeightMin)
         
         T_full = np.zeros((m * n, m * n), dtype=complex)
         T_full[:k_blocks * n, :k_blocks * n] = T_k
         
         # New basis block is exactly q_m
         if q_m is None:
-            if is_array:
+            if is_arr:
                 q_last = Q_list[:, (k_blocks-1)*n : k_blocks*n]
-                wp = h_op @ q_last
             else:
-                q_last = [Q_list[i] for i in range((k_blocks-1)*n, k_blocks*n)]
-                wp = [ManyBodyState() for _ in range(n)]
-                wp_tmp = h_op.apply_multi(q_last)
-                if mpi: wp_tmp = basis.redistribute_psis(wp_tmp)
-                for j in range(n): wp[j] += wp_tmp[j]
+                q_last = Q_list[(k_blocks-1)*n : k_blocks*n]
                 
-            if is_array:
-                overlaps = Q_list.conj().T @ wp
-                wp -= Q_list @ overlaps
-                overlaps2 = Q_list.conj().T @ wp
-                wp -= Q_list @ overlaps2
-            else:
-                _reorthogonalize_sparse(wp, Q_list, None, inner_func, mpi, comm, n)
-            M = inner_func(wp, wp)
-            if mpi and not is_array: comm.Allreduce(MPI.IN_PLACE, M, op=MPI.SUM)
-            L = sp.cholesky(M + np.eye(n)*1e-14, lower=True)
-            beta_inv = sp.inv(np.conj(L.T))
+            wp = block_apply(h_op, q_last, basis, mpi)
+            wp, _ = block_orthogonalize(wp, Q_list, mpi=mpi, comm=comm)
+            if is_arr: wp, _ = block_orthogonalize(wp, Q_list, mpi=mpi, comm=comm) # array does 2x for stability
             
-            if is_array:
-                q_m = wp @ beta_inv
-            else:
-                q_m = [ManyBodyState() for _ in range(n)]
-                add_scaled_multi(q_m, wp, beta_inv)
-                for st in q_m: st.prune(slaterWeightMin)
-            beta_res = np.conj(L.T)
+            q_m, beta_res = block_normalize(wp, mpi, comm, slaterWeightMin)
             
-        if is_array:
+        if is_arr:
             Q_list = np.concatenate([Q_list, q_m], axis=1)
         else:
             Q_list.extend([st.copy() for st in q_m])
@@ -166,70 +134,34 @@ def thick_restarted_block_lanczos(
         
         q1 = q_m
         for i in range(k_blocks, m):
-            if is_array:
-                wp = h_op @ q1
-                overlaps = inner_func(Q_list, wp)
-            else:
-                wp = [ManyBodyState() for _ in range(n)]
-                wp_tmp = h_op.apply_multi(q1)
-                if mpi: wp_tmp = basis.redistribute_psis(wp_tmp)
-                for j in range(n): wp[j] += wp_tmp[j]
-                overlaps = inner_func(Q_list, wp)
-                if mpi: comm.Allreduce(MPI.IN_PLACE, overlaps, op=MPI.SUM)
+            wp = block_apply(h_op, q1, basis, mpi)
+            overlaps = block_inner(Q_list, wp, mpi, comm)
             
             T_full[:(i+1)*n, i*n:(i+1)*n] = overlaps
             T_full[i*n:(i+1)*n, :(i+1)*n] = np.conj(overlaps.T)
             
-            if is_array:
-                wp -= Q_list @ overlaps
-                overlaps2 = Q_list.conj().T @ wp
-                wp -= Q_list @ overlaps2
-            else:
-                add_scaled_multi(wp, Q_list, -overlaps)
-                _reorthogonalize_sparse(wp, Q_list, None, inner_func, mpi, comm, n)
+            wp, _ = block_orthogonalize(wp, Q_list, overlaps=overlaps, mpi=mpi, comm=comm)
+            if is_arr: wp, _ = block_orthogonalize(wp, Q_list, mpi=mpi, comm=comm)
             
-            M = inner_func(wp, wp)
-            if mpi and not is_array: comm.Allreduce(MPI.IN_PLACE, M, op=MPI.SUM)
-            
-            try:
-                L = sp.cholesky(M, lower=True)
-            except sp.LinAlgError:
-                L = sp.cholesky(M + np.eye(n) * 1e-14, lower=True)
-            beta_i = np.conj(L.T)
+            q_next, beta_i = block_normalize(wp, mpi, comm, slaterWeightMin)
             
             if i < m - 1:
                 T_full[(i+1)*n:(i+2)*n, i*n:(i+1)*n] = beta_i
                 T_full[i*n:(i+1)*n, (i+1)*n:(i+2)*n] = np.conj(beta_i.T)
                 
-                beta_inv = sp.inv(beta_i)
-                if is_array:
-                    q_next = wp @ beta_inv
+                if is_arr:
                     Q_list = np.concatenate([Q_list, q_next], axis=1)
                 else:
-                    q_next = [ManyBodyState() for _ in range(n)]
-                    add_scaled_multi(q_next, wp, beta_inv)
-                    for st in q_next: st.prune(slaterWeightMin)
                     Q_list.extend([st.copy() for st in q_next])
                 q1 = q_next
             else:
                 beta_res = beta_i
-                beta_inv = sp.inv(beta_i)
-                if is_array:
-                    q_m = wp @ beta_inv
-                else:
-                    q_m = [ManyBodyState() for _ in range(n)]
-                    add_scaled_multi(q_m, wp, beta_inv)
-                    for st in q_m: st.prune(slaterWeightMin)
+                q_m = q_next
 
     eigvals, eigvecs = sp.eigh(T_full)
     wanted_indices = np.argsort(eigvals)[:num_wanted]
     final_eigvals = eigvals[wanted_indices]
     
-    if is_array:
-        final_eigvecs = Q_list @ np.ascontiguousarray(eigvecs[:, wanted_indices], dtype=complex)
-    else:
-        final_eigvecs = [ManyBodyState() for _ in range(len(wanted_indices))]
-        add_scaled_multi(final_eigvecs, Q_list, np.ascontiguousarray(eigvecs[:, wanted_indices], dtype=complex))
-        
+    final_eigvecs = block_combine(Q_list, eigvecs[:, wanted_indices], slaterWeightMin)
     return final_eigvals, final_eigvecs
 

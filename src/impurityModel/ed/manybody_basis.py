@@ -876,6 +876,27 @@ class Basis:
             verbose=verbose,
         )
 
+    def clone(self, initial_basis=None, restrictions=None, verbose=None):
+        """Create a new Basis instance, optionally overriding initial_basis and restrictions.
+        
+        If initial_basis is None, the new basis will start with self.local_basis.
+        If restrictions is None, the new basis will inherit self.restrictions.
+        """
+        return Basis(
+            impurity_orbitals=self.impurity_orbitals,
+            bath_states=self.bath_states,
+            initial_basis=initial_basis if initial_basis is not None else list(self.local_basis),
+            restrictions=restrictions if restrictions is not None else self.restrictions,
+            truncation_threshold=self.truncation_threshold,
+            spin_flip_dj=self.spin_flip_dj,
+            tau=self.tau,
+            chain_restrict=self.chain_restrict,
+            collapse_chains=self.collapse_chains,
+            comm=self.comm,
+            verbose=verbose if verbose is not None else self.verbose,
+            debug=self.debug
+        )
+
     def free_comm(self):
         """
         Free the split/custom MPI communicator associated with this Basis.
