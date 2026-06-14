@@ -1,14 +1,11 @@
 #ifndef MANYBODY_STATE_H
 #define MANYBODY_STATE_H
 
-#ifdef BOOST
-#include <boost/unordered/unordered_flat_map.hpp>
-#endif
+#include "flat_map_wrapper.hpp"
 #include "SlaterDeterminant.h"
 
 #include <complex>
 #include <string>
-#include <unordered_map>
 #include <utility>
 #include <vector>
 
@@ -21,18 +18,14 @@
  * (addition, scalar multiplication) and quantum mechanical operations like inner products.
  *
  * Compilation flags:
- * - BOOST: switches the underlying hash map from std::unordered_map to boost::unordered_flat_map for improved performance.
+ * - PARALLEL: compiles with tbb parallel execution
  */
 class ManyBodyState {
 
 public:
   using Key = SlaterDeterminant<>;
   using Value = std::complex<double>;
-#ifndef BOOST
-  using Map = std::unordered_map<Key, Value, std::hash<Key>>;
-#else
-  using Map = boost::unordered::unordered_flat_map<Key, Value, std::hash<Key>>;
-#endif
+  using Map = compat::flat_map<Key, Value>;
 
 private:
   Map m_map;
@@ -43,17 +36,12 @@ public:
   using value_type = Map::value_type;
   using size_type = Map::size_type;
   using difference_type = Map::difference_type;
-  using key_equal = Map::key_equal;
-  using hasher = std::hash<key_type>;
+
   using reference = Map::reference;
   using const_reference = Map::const_reference;
 
   using iterator = Map::iterator;
   using const_iterator = Map::const_iterator;
-#ifndef BOOST
-  using local_iterator = Map::local_iterator;
-  using const_local_iterator = Map::const_local_iterator;
-#endif
 
   ManyBodyState() = default;
   ManyBodyState(const ManyBodyState &) = default;
@@ -144,10 +132,6 @@ public:
    */
   ManyBodyState &prune(double cutoff);
 
-  size_type bucket_count() const { return m_map.bucket_count(); }
-  float load_factor() const { return m_map.load_factor(); }
-  float max_load_factor() const { return m_map.max_load_factor(); }
-  void max_load_factor(float ml) { m_map.max_load_factor(ml); }
   iterator begin() { return m_map.begin(); }
   const_iterator begin() const { return m_map.begin(); }
   const_iterator cbegin() const noexcept { return m_map.cbegin(); }
@@ -155,19 +139,6 @@ public:
   iterator end() { return m_map.end(); }
   const_iterator end() const { return m_map.end(); }
   const_iterator cend() const noexcept { return m_map.cend(); }
-
-#ifndef BOOST
-  // Local iterators (over buckets)
-  local_iterator begin(size_t n) { return m_map.begin(n); }
-  const_local_iterator begin(size_t n) const { return m_map.begin(n); }
-  const_local_iterator cbegin(size_t n) const noexcept {
-    return m_map.cbegin(n);
-  }
-
-  local_iterator end(size_t n) { return m_map.end(n); }
-  const_local_iterator end(size_t n) const { return m_map.end(n); }
-  const_local_iterator cend(size_t n) const noexcept { return m_map.cend(n); }
-#endif
 
   std::pair<iterator, bool> insert(const value_type &val) {
     return m_map.insert(val);
@@ -187,6 +158,15 @@ public:
   template <class InputIt> void insert(InputIt first, InputIt last) {
     m_map.insert(first, last);
   }
+#if __cplusplus >= 202302L && __has_include(<flat_map>)
+  template <class InputIt> void insert(std::sorted_unique_t tag, InputIt first, InputIt last) {
+    m_map.insert(tag, first, last);
+  }
+#else
+  template <class InputIt> void insert(boost::container::ordered_unique_range_t tag, InputIt first, InputIt last) {
+    m_map.insert(tag, first, last);
+  }
+#endif
 
   template <class... Arg> std::pair<iterator, bool> emplace(Arg &&...args) {
     return m_map.emplace(std::forward<Arg>(args)...);
@@ -247,7 +227,7 @@ public:
    * @brief String representation of the state for debugging.
    */
   std::string to_string() const;
-  void reserve(size_type count) { m_map.reserve(count); }
+
 };
 
 namespace std {

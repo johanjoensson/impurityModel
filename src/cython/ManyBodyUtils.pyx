@@ -335,6 +335,18 @@ cdef class ManyBodyState:
         """
         return ManyBodyState(self.to_dict())
 
+    def clear(self):
+        """
+        Clear the manybody state.
+        """
+        self.v.clear()
+
+    def is_empty(self):
+        """
+        Returns true if the ManyBodyState is empty (i.e. contains no SlaterDeterminants)
+        """
+        return self.v.empty()
+
 def inner(ManyBodyState a, ManyBodyState b):
     """
     Compute the inner product of many-body states: <a|b>.
@@ -499,24 +511,24 @@ cdef class ManyBodyOperator:
         cdef int n = len(psis)
         cdef vector[const ManyBodyState_cpp*] p_ptrs
         p_ptrs.reserve(n)
-        
+
         cdef ManyBodyState state
         for obj in psis:
             state = <ManyBodyState>obj
             p_ptrs.push_back(&state.v)
-            
+
         cdef vector[ManyBodyState_cpp] res_vec
-        
+
         with nogil:
             res_vec = self.o.apply(p_ptrs, cutoff)
-            
+
         cdef list res_list = []
         cdef ManyBodyState res_state
         for i in range(n):
             res_state = ManyBodyState()
             res_state.v = move(res_vec[i])
             res_list.append(res_state)
-                
+
         return res_list
 
     def erase(self, tuple[tuple[int, str]]key):
@@ -559,6 +571,19 @@ cdef class ManyBodyOperator:
         Convert operator terms to a python dict.
         """
         return dict((ints_to_processes(p.first), p.second) for p in self.o)
+
+    def is_empty(self):
+        """
+        Returns True if the ManyBodyOperator is empty (contains no processes).
+        """
+        return self.o.empty()
+
+    def clear(self):
+        """
+        Clears the operator (removes all processes)
+        """
+        self.o.clear()
+
 
 
 def applyOp(ManyBodyOperator op, ManyBodyState psi, double cutoff=0) ->ManyBodyState :

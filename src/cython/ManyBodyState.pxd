@@ -2,7 +2,7 @@
 
 from SlaterDeterminant cimport SlaterDeterminant
 from libcpp.vector cimport vector
-from libcpp.unordered_map cimport unordered_map
+from flat_map cimport flat_map
 from libcpp.map cimport map
 from libcpp.pair cimport pair
 from libcpp.complex cimport complex
@@ -15,7 +15,7 @@ cdef extern from "ManyBodyState.cpp" nogil:
 cdef extern from "ManyBodyState.h" nogil:
     cdef cppclass ManyBodyState:
 
-        ctypedef unordered_map[SlaterDeterminant[uint64_t], complex[double]] Map
+        ctypedef flat_map[SlaterDeterminant[uint64_t], complex[double]] Map
         ctypedef Map.key_type key_type
         ctypedef complex[double] mapped_type
         ctypedef pair[SlaterDeterminant[uint64_t], complex[double]] value_type

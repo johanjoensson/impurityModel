@@ -228,6 +228,13 @@ private:
              std::vector<size_t>>
       m_restrictions_mask;
 
+  mutable bool m_flat_dirty{true};
+  mutable std::vector<int64_t> m_flat_indices;
+  mutable std::vector<size_t> m_flat_offsets;
+  mutable std::vector<std::complex<double>> m_flat_coeffs;
+
+  void build_flat_representation() const;
+
   [[nodiscard]] bool
   state_is_within_restrictions(const ManyBodyState::key_type &) const noexcept;
 };
