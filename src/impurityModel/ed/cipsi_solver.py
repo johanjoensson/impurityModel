@@ -42,7 +42,8 @@ class CIPSISolver:
         if isinstance(H, dict):
             H = ManyBodyOperator(H)
 
-        local_Djs = sorted({state for hp in Hpsi_ref for state in hp if state not in self.basis._index_dict})
+        _index_dict = self.basis._index_dict
+        local_Djs = sorted({state for hp in Hpsi_ref for state in hp if state not in _index_dict})
         if not local_Djs:
             return local_Djs, np.zeros((len(Hpsi_ref), 0), dtype=complex)
 

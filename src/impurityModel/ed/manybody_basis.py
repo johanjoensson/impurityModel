@@ -1194,9 +1194,10 @@ class Basis:
         # row_states_in_basis: list[bytes] = []
         # row_dict = {state: self._index_dict[state] for state in self.local_basis}
         # col_dict = dict(zip(self.local_basis, range(self.local_indices.start, self.local_indices.stop)))
+        _index_dict = self._index_dict
         for row, psi in enumerate(psis):
             for state, val in psi.items():
-                idx = self._index_dict.get(state)
+                idx = _index_dict.get(state)
                 if idx is None or abs(val) < slaterWeightMin:
                     continue
                 v[row, idx] = val
@@ -1308,11 +1309,12 @@ class Basis:
         rows = []
         cols = []
         vals = []
+        _index_dict = self._index_dict
         if not self.is_distributed:
             for ket, ket_state in zip(self.local_basis, self.build_local_operator_list(op, 0)):
-                col = self._index_dict[ket]
+                col = _index_dict[ket]
                 for bra, val in ket_state.items():
-                    row = self._index_dict.get(bra)
+                    row = _index_dict.get(bra)
                     if row is not None:
                         rows.append(row)
                         cols.append(col)
@@ -1322,15 +1324,16 @@ class Basis:
             bras = []
             values = []
             for ket, ket_state in zip(self.local_basis, self.build_local_operator_list(op, 0)):
-                col = self._index_dict[ket]
+                col = _index_dict[ket]
                 for bra, val in ket_state.items():
                     columns.append(col)
                     bras.append(bra)
                     values.append(val)
 
             global_rows = list(self.state_container._index_sequence(bras))
+            _size = self.size
             for row, col, val in zip(global_rows, columns, values):
-                if row != self.size:
+                if row != _size:
                     rows.append(row)
                     cols.append(col)
                     vals.append(val)
@@ -1443,7 +1446,8 @@ class Basis:
             states |= tmps[i]
 
         indices = self.state_container._index_sequence(states)
-        idx_map = {state: idx for state, idx in zip(states, indices) if idx != self.size}
+        _size = self.size
+        idx_map = {state: idx for state, idx in zip(states, indices) if idx != _size}
         for root, connected_states in enumerate(tmps):
             for state in connected_states:
                 if state not in idx_map:

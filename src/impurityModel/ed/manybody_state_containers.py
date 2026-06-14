@@ -29,7 +29,7 @@ def batched(iterable: Iterable, n: int) -> Iterable:
 
 def hash_key(state):
     """Hash function for consistent state comparison across ranks."""
-    return hash(state)
+    return state.get_hash()
 
 
 class StateContainer:
