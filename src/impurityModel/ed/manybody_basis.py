@@ -1401,22 +1401,8 @@ class Basis:
                 else:
                     chi = self.redistribute_psis(chi)
 
-            if square:
-                for i in range(n_left):
-                    amp = inner(chi[i], phi[i])
-                    if abs(amp) > 0:
-                        rhos[n, i, i] = amp
-                    for j in range(i + 1, n_left):
-                        amp = inner(chi[j], phi[i])
-                        if abs(amp) > 0:
-                            rhos[n, i, j] = amp
-                            rhos[n, j, i] = amp.conjugate()
-            else:
-                for i in range(n_left):
-                    for j in range(n_right):
-                        amp = inner(chi[j], phi[i])
-                        if abs(amp) > 0:
-                            rhos[n, i, j] = amp
+            from impurityModel.ed.ManyBodyUtils import inner_multi
+            rhos[n] = inner_multi(chi, phi).T
 
         if self.is_distributed:
             self.comm.Allreduce(MPI.IN_PLACE, rhos, op=MPI.SUM)

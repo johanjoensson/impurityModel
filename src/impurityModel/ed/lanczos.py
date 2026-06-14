@@ -125,8 +125,7 @@ def calculate_thermal_gs(h, block_size, e_max, v0=None, reort=Reort.FULL, comm=N
             v0.shape[0], block_size - v0.shape[1]
         )
         new_v0 -= v0 @ np.conj(v0.T) @ new_v0
-        for col in range(new_v0.shape[1]):
-            new_v0[:, col] = new_v0[:, col] / np.linalg.norm(new_v0[:, col])
+        new_v0, _ = sp.linalg.qr(new_v0, mode="economic", overwrite_a=True, check_finite=False)
         v0 = np.append(v0, new_v0, axis=1)
     elif v0.shape[1] > block_size:
         v0 = v0[:, :block_size]
@@ -173,11 +172,9 @@ def build_banded_matrix(alphas, betas):
     bands = np.zeros((p + 1, k * p), dtype=alphas.dtype)
     bands[0, :] = np.diagonal(alphas, offset=0, axis1=1, axis2=2).flatten()
     for i in range(1, p + 1):
-        for j in range(k):
-            bands[i, j * p : (j + 1) * p] = np.append(
-                np.diagonal(alphas[j], offset=-i),
-                [np.diagonal(betas[j], offset=p - i)],
-            ).flatten()
+        alpha_diags = np.diagonal(alphas, offset=-i, axis1=1, axis2=2)
+        beta_diags = np.diagonal(betas, offset=p-i, axis1=1, axis2=2)
+        bands[i, :] = np.concatenate([alpha_diags, beta_diags], axis=1).flatten()
     return bands
 
 
@@ -222,7 +219,10 @@ def eigsh(alphas, betas, de=None, Q=None, eigvals_only=False, select="a", select
             max_ev=max_ev,
         )
         eigvals = np.sort(eigvals)
-        return eigvals[eigvals - eigvals[0] <= de]
+        if within_gs:
+            return eigvals[eigvals - eigvals[0] <= de]
+        return eigvals
+
     eigvals, eigvecs = sp.linalg.eig_banded(
         Tm,
         lower=True,
@@ -237,11 +237,18 @@ def eigsh(alphas, betas, de=None, Q=None, eigvals_only=False, select="a", select
         mask = eigvals - np.min(eigvals) <= de
     else:
         mask = np.ones(len(eigvals), dtype=bool)
+
+    mask_indices = np.where(mask)[0]
+    sort_indices = np.argsort(eigvals[mask_indices])
+    final_indices = mask_indices[sort_indices]
+
+    eigvals = eigvals[final_indices]
+    eigvecs = eigvecs[:, final_indices]
+
     if Q is not None:
         eigvecs = Q @ eigvecs
-    sort_indices = np.argsort(eigvals[mask])
-    mask_indices = np.where(mask)[0]
-    return eigvals[mask_indices][sort_indices], eigvecs[:, mask_indices][:, sort_indices]
+
+    return eigvals, eigvecs
 
 
 def estimate_orthonormality(W, alphas, betas, eps=np.finfo(float).eps, N=1, rng=np.random.default_rng()):
@@ -285,7 +292,7 @@ def estimate_orthonormality(W, alphas, betas, eps=np.finfo(float).eps, N=1, rng=
         + W[1, : i - 1] @ np.conj(np.transpose(betas[: i - 1], axes=[0, 2, 1]))
         - betas[i - 1][np.newaxis, :, :] @ W[0, 1:i]
     )
-    w_bar[1:i] = np.linalg.solve(betas[i][np.newaxis, :, :], w_bar[1:i])
+    w_bar[1:i] = np.linalg.solve(np.conj(betas[i].T)[np.newaxis, :, :], w_bar[1:i])
 
     w_bar[:i] += eps * (betas[i] + betas[:i])
     W_out[0, : i + 1] = W[1]
@@ -323,11 +330,45 @@ def qr_decomp(psi, pivoting=False):
     return np.ascontiguousarray(psi), beta, None
 
 
+def _reorthogonalize_dense(wp, basis_vectors, indices=None):
+    """
+    Project `wp` against a subset of `basis_vectors` using classical Gram-Schmidt.
+    """
+    if indices is None:
+        indices = range(len(basis_vectors))
+    for _ in range(2):
+        for j in indices:
+            overlap = np.conj(basis_vectors[j].T) @ wp
+            wp -= basis_vectors[j] @ overlap
+
+
+def _reorthogonalize_sparse(wp, Q_states, indices, inner_func, mpi, comm, n):
+    """
+    Project `wp` against a subset of `Q_states` using classical Gram-Schmidt in sparse format.
+    """
+    if indices is None:
+        indices = range(len(Q_states))
+    if not indices:
+        return
+        
+    Q_sub = [Q_states[i] for i in indices] if len(indices) < len(Q_states) else Q_states
+    
+    from impurityModel.ed.ManyBodyUtils import inner_multi, add_scaled_multi
+    
+    for _ in range(2):
+        overlaps = inner_multi(Q_sub, wp)
+        if mpi:
+            comm.Allreduce(MPI.IN_PLACE, overlaps, op=MPI.SUM)
+        add_scaled_multi(wp, Q_sub, -overlaps)
+
+
 def get_block_Lanczos_matrices_dense(
     psi0: np.ndarray,
     h,
     converged: Callable[[np.ndarray, np.ndarray], bool],
     verbose: bool = True,
+    reort_mode=Reort.NONE,
+    **kwargs,
 ):
     """
     Compute block Lanczos matrices for a dense Hamiltonian matrix.
@@ -342,6 +383,10 @@ def get_block_Lanczos_matrices_dense(
         Function `converged(alphas, betas, verbose=verbose)` returning True if converged.
     verbose : bool, optional
         Verbosity flag. Default is True.
+    reort_mode : Reort, optional
+        Reorthogonalization strategy. Default is `Reort.NONE`.
+    **kwargs : dict
+        Additional keyword arguments. `reort_period` can be provided for PERIODIC mode.
 
     Returns
     -------
@@ -358,10 +403,15 @@ def get_block_Lanczos_matrices_dense(
     q = np.zeros((2, N, n), dtype=complex, order="C")
     wp = np.empty((N, n), dtype=complex, order="C")
     q[1] = psi0
+    Q_list = [q[1].copy()]
 
     it_max = int(np.ceil(krylovSize / n))
     alphas = np.empty((it_max, n, n), dtype=complex)
     betas = np.empty((it_max, n, n), dtype=complex)
+
+    W = None
+    reort_eps = np.sqrt(np.finfo(float).eps)
+    period = kwargs.get("reort_period", 5)
 
     # Run at least 1 iteration (to generate $\alpha_0$).
     # We can also not generate more than N Lanczos vectors, meaning we can
@@ -375,8 +425,37 @@ def get_block_Lanczos_matrices_dense(
             wp = wp - q[1] @ alphas[i]
         else:
             wp -= q[1] @ alphas[i] + q[0] @ np.conj(betas[i - 1].T)
-        q[0] = q[1]
-        q[1], betas[i] = sp.linalg.qr(wp, mode="economic", overwrite_a=True, check_finite=False)
+
+        if reort_mode == Reort.FULL or (reort_mode == Reort.PERIODIC and i > 0 and i % period == 0):
+            _reorthogonalize_dense(wp, Q_list)
+
+        q[0] = q[1].copy()
+        q[1], betas[i] = sp.linalg.qr(wp, mode="economic", overwrite_a=False, check_finite=False)
+        
+        if reort_mode in (Reort.PARTIAL, Reort.SELECTIVE):
+            if W is None:
+                W = np.zeros((2, 1, n, n), dtype=complex)
+                W[1, 0] = np.eye(n)
+            W = estimate_orthonormality(W, alphas[: i + 1], betas[: i + 1], eps=np.finfo(float).eps)
+            if i > 0 and np.max(np.abs(W[1, : i + 1])) > reort_eps:
+                bad_indices = [j for j in range(len(Q_list)) if np.max(np.abs(W[1, j])) > reort_eps * 1e-2]
+                if reort_mode == Reort.PARTIAL:
+                    _reorthogonalize_dense(wp, Q_list, bad_indices)
+                elif reort_mode == Reort.SELECTIVE:
+                    eigvals, eigvecs = eigsh(alphas[: i + 1], betas[: i + 1], select="a", max_ev=0)
+                    error_bounds = np.linalg.norm(betas[i], ord=2) * np.abs(eigvecs[-n:, :]).max(axis=0)
+                    converged_mask = error_bounds < reort_eps
+                    if np.any(converged_mask):
+                        converged_Ritz = [np.concatenate(Q_list, axis=1) @ eigvecs[:, converged_mask]]
+                        _reorthogonalize_dense(wp, converged_Ritz)
+                    _reorthogonalize_dense(wp, Q_list, bad_indices)
+
+                q[1], betas[i] = sp.linalg.qr(wp, mode="economic", overwrite_a=False, check_finite=False)
+                W = np.zeros((2, i + 2, n, n), dtype=complex)
+                W[1, i + 1] = np.eye(n)
+
+        q[1] = np.ascontiguousarray(q[1])
+        Q_list.append(q[1].copy())
 
         converge_count = 1 + converge_count if converged(alphas[: i + 1], betas[: i + 1], verbose=verbose) else 0
         if converge_count > 2:
@@ -458,6 +537,11 @@ def get_block_Lanczos_matrices(
 
     converge_count = 0
     done = False
+    
+    W = None
+    reort_eps = np.sqrt(np.finfo(float).eps)
+    period = kwargs.get("reort_period", 5)
+
     # Run at least 1 iteration (to generate $\alpha_0$).
     # We can also not generate more than N Lanczos vectors, meaning we can
     # take at most N/n steps in total
@@ -472,8 +556,39 @@ def get_block_Lanczos_matrices(
                 wp -= q[1] @ alphas[i]
             else:
                 wp -= q[1] @ alphas[i] + q[0] @ np.conj(betas[i - 1].T)
+
+            if reort_mode == Reort.FULL or (reort_mode == Reort.PERIODIC and i > 0 and i % period == 0):
+                if not build_krylov_basis:
+                    raise RuntimeError("Krylov basis must be built for reorthogonalization")
+                _reorthogonalize_dense(wp, Q_list)
+
             q[0] = q[1].copy()
             q[1], betas[i] = sp.linalg.qr(wp, mode="economic", overwrite_a=False, check_finite=False)
+            
+            if reort_mode in (Reort.PARTIAL, Reort.SELECTIVE):
+                if not build_krylov_basis:
+                    raise RuntimeError("Krylov basis must be built for reorthogonalization")
+                if W is None:
+                    W = np.zeros((2, 1, n, n), dtype=complex)
+                    W[1, 0] = np.eye(n)
+                W = estimate_orthonormality(W, alphas[: i + 1], betas[: i + 1], eps=np.finfo(float).eps)
+                if i > 0 and np.max(np.abs(W[1, : i + 1])) > reort_eps:
+                    bad_indices = [j for j in range(len(Q_list)) if np.max(np.abs(W[1, j])) > reort_eps * 1e-2]
+                    if reort_mode == Reort.PARTIAL:
+                        _reorthogonalize_dense(wp, Q_list, bad_indices)
+                    elif reort_mode == Reort.SELECTIVE:
+                        eigvals, eigvecs = eigsh(alphas[: i + 1], betas[: i + 1], select="a", max_ev=0)
+                        error_bounds = np.linalg.norm(betas[i], ord=2) * np.abs(eigvecs[-n:, :]).max(axis=0)
+                        converged_mask = error_bounds < reort_eps
+                        if np.any(converged_mask):
+                            converged_Ritz = [np.concatenate(Q_list, axis=1) @ eigvecs[:, converged_mask]]
+                            _reorthogonalize_dense(wp, converged_Ritz)
+                        _reorthogonalize_dense(wp, Q_list, bad_indices)
+
+                    q[1], betas[i] = sp.linalg.qr(wp, mode="economic", overwrite_a=False, check_finite=False)
+                    W = np.zeros((2, i + 2, n, n), dtype=complex)
+                    W[1, i + 1] = np.eye(n)
+
             q[1] = np.ascontiguousarray(q[1])
             Q_list.append(q[1].copy())
             if mpi:
@@ -513,6 +628,7 @@ def get_block_Lanczos_matrices(
 
     return alphas, betas, Q
 
+from impurityModel.ed.ManyBodyUtils import inner_multi, add_scaled_multi
 
 def block_lanczos_sparse(
     psi0: list[ManyBodyState],
@@ -522,6 +638,7 @@ def block_lanczos_sparse(
     verbose: bool = False,
     reort: Reort = Reort.NONE,
     slaterWeightMin: float = 0,
+    **kwargs,
 ) -> (np.ndarray, np.ndarray, Optional[list[dict]]):
     """
     Perform block Lanczos algorithm using sparse state representation.
@@ -542,6 +659,8 @@ def block_lanczos_sparse(
         Reorthogonalization strategy. Default is `Reort.NONE`.
     slaterWeightMin : float, optional
         Slater determinant cutoff weight. Default is 0.
+    **kwargs : dict
+        Additional keyword arguments.
 
     Returns
     -------
@@ -581,19 +700,16 @@ def block_lanczos_sparse(
     it_max = basis.size // n + 1
     it = 0
     converge_count = 0
+    
+    W = None
+    reort_eps = np.sqrt(np.finfo(float).eps)
+    period = kwargs.get("reort_period", 5)
 
     def matmat(v):
         """
         Apply the operator h_op to each state in block v and redistribute.
         """
-        mv = [
-            applyOp_test(
-                h_op,
-                vi,
-                cutoff=slaterWeightMin,
-            )
-            for vi in v
-        ]
+        mv = h_op.apply_multi(v, cutoff=slaterWeightMin)
         return basis.redistribute_psis(mv)
 
     while it * n < basis.size:
@@ -602,10 +718,11 @@ def block_lanczos_sparse(
         t_apply = perf_counter() - t0
 
         old_basis_size = basis.size
+        from impurityModel.ed.ManyBodyUtils import extract_new_states
         t0 = perf_counter()
-        basis.add_states(
-            set(state for p in wp for state, amp in p.items() if state not in basis._index_dict),
-        )
+        new_states = extract_new_states(wp, basis._index_dict)
+        if len(new_states) > 0:
+            basis.add_states(new_states)
         t_add = perf_counter() - t0
 
         if old_basis_size == basis.size:
@@ -617,30 +734,25 @@ def block_lanczos_sparse(
             print(f"----> Applying the hamiltonian took {t_apply} seconds.")
             print(f"----> Adding new states took {t_add} seconds.", flush=True)
 
-        alpha_i = np.zeros((n, n), dtype=complex)
-        for i in range(n):
-            for j in range(n):
-                alpha_i[i, j] = inner(q[1][i], wp[j])
+        alpha_i = inner_multi(q[1], wp)
         if mpi:
             comm.Allreduce(MPI.IN_PLACE, alpha_i, op=MPI.SUM)
 
         alphas = np.append(alphas, [alpha_i], axis=0)
         betas = np.append(betas, np.zeros((1, n, n), dtype=complex), axis=0)
 
-        for j in range(n):
-            for k in range(n):
-                wp[j] -= q[1][k] * alpha_i[k, j]
+        add_scaled_multi(wp, q[1], -alpha_i)
 
         if it > 0:
             beta_prev_dag = np.conj(betas[it - 1].T)
-            for j in range(n):
-                for k in range(n):
-                    wp[j] -= q[0][k] * beta_prev_dag[k, j]
+            add_scaled_multi(wp, q[0], -beta_prev_dag)
 
-        M = np.zeros((n, n), dtype=complex)
-        for i in range(n):
-            for j in range(n):
-                M[i, j] = inner(wp[i], wp[j])
+        if reort == Reort.FULL or (reort == Reort.PERIODIC and it > 0 and it % period == 0):
+            if not build_krylov_basis:
+                raise RuntimeError("Krylov basis must be built for reorthogonalization")
+            _reorthogonalize_sparse(wp, Q, None, inner, mpi, comm, n)
+
+        M = inner_multi(wp, wp)
         if mpi:
             comm.Allreduce(MPI.IN_PLACE, M, op=MPI.SUM)
 
@@ -651,13 +763,49 @@ def block_lanczos_sparse(
 
         beta_i = np.conj(L.T)
         betas[it] = beta_i
+        
+        if reort in (Reort.PARTIAL, Reort.SELECTIVE):
+            if not build_krylov_basis:
+                raise RuntimeError("Krylov basis must be built for reorthogonalization")
+            if W is None:
+                W = np.zeros((2, 1, n, n), dtype=complex)
+                W[1, 0] = np.eye(n)
+            W = estimate_orthonormality(W, alphas[: it + 1], betas[: it + 1], eps=np.finfo(float).eps)
+            if it > 0 and np.max(np.abs(W[1, : it + 1])) > reort_eps:
+                bad_block_indices = [j for j in range(it + 1) if np.max(np.abs(W[1, j])) > reort_eps * 1e-2]
+                bad_state_indices = [j * n + k for j in bad_block_indices for k in range(n)]
+                if reort == Reort.PARTIAL:
+                    _reorthogonalize_sparse(wp, Q, bad_state_indices, inner, mpi, comm, n)
+                elif reort == Reort.SELECTIVE:
+                    eigvals, eigvecs = eigsh(alphas[: it + 1], betas[: it + 1], select="a", max_ev=0)
+                    error_bounds = np.linalg.norm(betas[it], ord=2) * np.abs(eigvecs[-n:, :]).max(axis=0)
+                    converged_mask = error_bounds < reort_eps
+                    if np.any(converged_mask):
+                        converged_Ritz = [ManyBodyState() for _ in range(np.sum(converged_mask))]
+                        converged_eigvecs = eigvecs[:, converged_mask]
+                        for ritz_idx in range(np.sum(converged_mask)):
+                            for q_idx, qq in enumerate(Q):
+                                converged_Ritz[ritz_idx] += qq * converged_eigvecs[q_idx, ritz_idx]
+                        _reorthogonalize_sparse(wp, converged_Ritz, None, inner, mpi, comm, n)
+                    _reorthogonalize_sparse(wp, Q, bad_state_indices, inner, mpi, comm, n)
+
+                # Recompute M, L, beta_i
+                M = inner_multi(wp, wp)
+                if mpi:
+                    comm.Allreduce(MPI.IN_PLACE, M, op=MPI.SUM)
+                try:
+                    L = sp.linalg.cholesky(M, lower=True)
+                except sp.linalg.LinAlgError:
+                    L = sp.linalg.cholesky(M + np.eye(n) * 1e-14, lower=True)
+                beta_i = np.conj(L.T)
+                betas[it] = beta_i
+                W = np.zeros((2, it + 2, n, n), dtype=complex)
+                W[1, it + 1] = np.eye(n)
 
         beta_inv = sp.linalg.inv(beta_i)
 
         q_next = [ManyBodyState() for _ in range(n)]
-        for j in range(n):
-            for k in range(n):
-                q_next[j] += wp[k] * beta_inv[k, j]
+        add_scaled_multi(q_next, wp, beta_inv)
 
         for st in q_next:
             st.prune(slaterWeightMin)

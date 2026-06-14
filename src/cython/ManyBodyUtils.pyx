@@ -492,6 +492,33 @@ cdef class ManyBodyOperator:
             res.v = self.o(psi.v, cutoff)
         return res
 
+    def apply_multi(self, list psis, double cutoff = 0) -> list:
+        """
+        Apply operator to a list of ManyBodyStates without python looping.
+        """
+        cdef int n = len(psis)
+        cdef vector[const ManyBodyState_cpp*] p_ptrs
+        p_ptrs.reserve(n)
+        
+        cdef ManyBodyState state
+        for obj in psis:
+            state = <ManyBodyState>obj
+            p_ptrs.push_back(&state.v)
+            
+        cdef vector[ManyBodyState_cpp] res_vec
+        
+        with nogil:
+            res_vec = self.o.apply(p_ptrs, cutoff)
+            
+        cdef list res_list = []
+        cdef ManyBodyState res_state
+        for i in range(n):
+            res_state = ManyBodyState()
+            res_state.v = move(res_vec[i])
+            res_list.append(res_state)
+                
+        return res_list
+
     def erase(self, tuple[tuple[int, str]]key):
         """
         Remove a term from the operator.

@@ -5,7 +5,7 @@ import itertools
 import impurityModel.ed.finite as finite
 from mpi4py import MPI
 from impurityModel.ed.manybody_basis import Basis
-from impurityModel.ed.ManyBodyUtils import ManyBodyState, applyOp, inner
+from impurityModel.ed.ManyBodyUtils import ManyBodyState, applyOp, inner, inner_multi, add_scaled_multi
 
 
 def cg(A, x, y, atol=1e-5):
@@ -119,14 +119,7 @@ def bicgstab(A_op, x_0, y, basis, slaterWeightMin, atol=1e-8):
     n = len(x_0)
     if hasattr(A_op, "set_restrictions"):
         A_op.set_restrictions(basis.restrictions)
-    Ax = [
-        applyOp(
-            A_op,
-            xi,
-            cutoff=slaterWeightMin,
-        )
-        for xi in x_0
-    ]
+    Ax = A_op.apply_multi(x_0, cutoff=slaterWeightMin)
     Ax = basis.redistribute_psis(Ax)
 
     r_0 = [yi - Axi for yi, Axi in zip(y, Ax)]
@@ -140,14 +133,7 @@ def bicgstab(A_op, x_0, y, basis, slaterWeightMin, atol=1e-8):
     it = 0
     while True:
         it += 1
-        nu = [
-            applyOp(
-                A_op,
-                pi,
-                cutoff=slaterWeightMin,
-            )
-            for pi in p_i
-        ]
+        nu = A_op.apply_multi(p_i, cutoff=slaterWeightMin)
         nu = basis.redistribute_psis(nu)
         rnui = np.array([inner(ri, nui) for ri, nui in zip(r_0, nu)], dtype=complex)
         if basis.is_distributed:
@@ -161,14 +147,7 @@ def bicgstab(A_op, x_0, y, basis, slaterWeightMin, atol=1e-8):
         if np.all(np.abs(s2) < atol**2):
             x_i = h
             break
-        t = [
-            applyOp(
-                A_op,
-                si,
-                cutoff=slaterWeightMin,
-            )
-            for si in s
-        ]
+        t = A_op.apply_multi(s, cutoff=slaterWeightMin)
         t = basis.redistribute_psis(t)
         ts = np.array([inner(ti, si) for ti, si in zip(t, s)], dtype=complex)
         t2 = np.array([ti.norm2() for ti in t])
@@ -254,10 +233,7 @@ def block_bicgstab(A, x0, y, basis: Basis, slaterWeightMin: float, atol=1e-8, rt
             The complex matrix of inner products.
         """
 
-        M = np.zeros((n, n), dtype=complex)
-        for i in range(n):
-            for j in range(n):
-                M[i, j] = inner(B1[i], B2[j])
+        M = inner_multi(B1, B2)
         if basis.is_distributed:
             basis.comm.Allreduce(MPI.IN_PLACE, M, op=MPI.SUM)
         return M
@@ -277,7 +253,7 @@ def block_bicgstab(A, x0, y, basis: Basis, slaterWeightMin: float, atol=1e-8, rt
             Output block of states after applying operator and redistributing.
         """
 
-        mv = [applyOp(A, vi, cutoff=slaterWeightMin) for vi in v]
+        mv = A.apply_multi(v, cutoff=slaterWeightMin)
         return basis.redistribute_psis(mv)
 
     xi = [st.copy() for st in x0]
@@ -342,15 +318,11 @@ def block_bicgstab(A, x0, y, basis: Basis, slaterWeightMin: float, atol=1e-8, rt
 
         ai = np.linalg.solve(R0_V, R0_R)
 
-        si = [ri[j].copy() for j in range(n)]
-        for j in range(n):
-            for k in range(n):
-                si[j] -= vi[k] * ai[k, j]
+        si = [r.copy() for r in ri]
+        add_scaled_multi(si, vi, -ai)
 
         if block_norm(si) < atol:
-            for j in range(n):
-                for k in range(n):
-                    xi[j] += pi[k] * ai[k, j]
+            add_scaled_multi(xi, pi, ai)
             break
 
         ti = matmat(si)
@@ -369,9 +341,7 @@ def block_bicgstab(A, x0, y, basis: Basis, slaterWeightMin: float, atol=1e-8, rt
         wi = ts / tt
 
         xip = [xi[j] + wi * si[j] for j in range(n)]
-        for j in range(n):
-            for k in range(n):
-                xip[j] += pi[k] * ai[k, j]
+        add_scaled_multi(xip, pi, ai)
 
         rip = [si[j] - wi * ti[j] for j in range(n)]
 
@@ -379,9 +349,8 @@ def block_bicgstab(A, x0, y, basis: Basis, slaterWeightMin: float, atol=1e-8, rt
         bi = np.linalg.solve(R0_V, -R0_T)
 
         pip = [rip[j].copy() for j in range(n)]
-        for j in range(n):
-            for k in range(n):
-                pip[j] += (pi[k] - wi * vi[k]) * bi[k, j]
+        p_v_diff = [pi[k] - wi * vi[k] for k in range(n)]
+        add_scaled_multi(pip, p_v_diff, bi)
 
         xi = xip
         ri = rip

@@ -11,6 +11,7 @@ from impurityModel.ed.lanczos import (
     get_block_Lanczos_matrices,
     get_block_Lanczos_matrices_dense,
     get_Lanczos_vectors,
+    Reort,
 )
 from impurityModel.ed.manybody_basis import CIPSI_Basis, Basis
 from impurityModel.ed.cg import bicgstab, block_bicgstab
@@ -233,6 +234,7 @@ def get_Greens_function(
             es,
             block_basis,
             delta,
+            reort=reort,
             dN=dN,
             occ_cutoff=occ_cutoff,
             slaterWeightMin=slaterWeightMin,
@@ -246,6 +248,7 @@ def get_Greens_function(
             es,
             block_basis,
             -delta,
+            reort=reort,
             dN=dN,
             occ_cutoff=occ_cutoff,
             slaterWeightMin=slaterWeightMin,
@@ -337,6 +340,7 @@ def calc_Greens_function_with_offdiag(
     es,
     block_basis,
     delta,
+    reort: Optional = None,
     dN: Optional[int] = None,
     occ_cutoff: float = 1e-6,
     slaterWeightMin: float = 0,
@@ -420,14 +424,11 @@ def calc_Greens_function_with_offdiag(
         cutoff=occ_cutoff,
     )
     block_v = [[ManyBodyState({}) for _ in tOps] for _ in psis]
-    for (i_tOp, tOp), (j_psi, psi) in itertools.product(enumerate(tOps), enumerate(psis)):
-
+    for i_tOp, tOp in enumerate(tOps):
         tOp.set_restrictions(excited_restrictions)
-        block_v[j_psi][i_tOp] += applyOp_test(
-            tOp,
-            psi,
-            cutoff=slaterWeightMin,
-        )
+        res_psis = tOp.apply_multi(psis, cutoff=slaterWeightMin)
+        for j_psi, res_psi in enumerate(res_psis):
+            block_v[j_psi][i_tOp] += res_psi
     block_v_lengths = np.array([sum(len(t_psi) for t_psi in t_psis) for t_psis in block_v])
     block_basis.comm.Allreduce(MPI.IN_PLACE, block_v_lengths, op=MPI.SUM)
 
@@ -494,6 +495,7 @@ def calc_Greens_function_with_offdiag(
             hOp.set_restrictions(excited_basis.restrictions)
         if sparse:
             alphas, betas, r = block_Green_sparse(
+                reort=reort,
                 hOp=hOp,
                 psi_arr=excited_basis.redistribute_psis(excited_psis),
                 basis=excited_basis,
@@ -503,7 +505,7 @@ def calc_Greens_function_with_offdiag(
             )
         else:
             alphas, betas, r = block_Green(
-                reort=None,
+                reort=reort,
                 hOp=hOp,
                 psi_arr=excited_basis.redistribute_psis(excited_psis),
                 basis=excited_basis,
@@ -771,15 +773,14 @@ def block_Green(
     n = len(psi_arr)
 
     alphas, betas, r, last_q = block_green_impl(
-        basis, hOp, basis.redistribute_psis(psi_arr), delta, slaterWeightMin, verbose
+        basis, hOp, basis.redistribute_psis(psi_arr), delta, reort, slaterWeightMin, verbose
     )
     done = False
     while not done:
         old_size = basis.size
         new_psis = last_q
         for i in range(5):
-            for i, psi in enumerate(new_psis):
-                new_psis[i] = applyOp_test(hOp, psi, cutoff=slaterWeightMin)
+            new_psis = hOp.apply_multi(new_psis, cutoff=slaterWeightMin)
             basis.add_states(
                 set(state for p in new_psis for state in p if state not in basis.local_basis),
             )
@@ -811,7 +812,7 @@ def block_Green(
     return alphas, betas, r
 
 
-def block_green_impl(basis, hOp, psi_arr, delta, slaterWeightMin, verbose):
+def block_green_impl(basis, hOp, psi_arr, delta, reort, slaterWeightMin, verbose):
     """
     Internal block Green's function implementation.
 
@@ -825,6 +826,8 @@ def block_green_impl(basis, hOp, psi_arr, delta, slaterWeightMin, verbose):
         Input state vectors.
     delta : float or ndarray
         Imaginary part/mesh info.
+    reort : Reort
+        Reorthogonalization method.
     slaterWeightMin : float
         Slater determinant cutoff weight.
     verbose : bool
@@ -939,6 +942,7 @@ def block_green_impl(basis, hOp, psi_arr, delta, slaterWeightMin, verbose):
             h=H,
             converged=converged,
             verbose=False and verbose,
+            reort_mode=reort if reort is not None else Reort.NONE,
         )
     else:
         h_local = basis.build_sparse_matrix(hOp)[:, basis.local_indices]
@@ -979,6 +983,7 @@ def block_green_impl(basis, hOp, psi_arr, delta, slaterWeightMin, verbose):
             psi0=psi_dense_local,
             h=H,
             converged=converged,
+            reort_mode=reort if reort is not None else Reort.NONE,
             verbose=False and verbose,
             comm=comm,
         )
@@ -991,6 +996,7 @@ def block_Green_sparse(
     psi_arr,
     basis,
     delta,
+    reort: Optional = None,
     slaterWeightMin=0,
     verbose=True,
 ):
@@ -1090,7 +1096,13 @@ def block_Green_sparse(
         return d_g < delta_min
 
     alphas, betas, _ = block_lanczos_sparse(
-        psi_arr, hOp, basis, converged, verbose=verbose, slaterWeightMin=slaterWeightMin
+        psi_arr,
+        hOp,
+        basis,
+        converged,
+        verbose=verbose,
+        reort=reort if reort is not None else Reort.NONE,
+        slaterWeightMin=slaterWeightMin,
     )
 
     return alphas, betas, r
@@ -1429,10 +1441,8 @@ def Green_freq_bicgstab(w_mesh, hOp, psi, e, basis, slaterWeightMin):
             slaterWeightMin=slaterWeightMin,
             atol=1e-5,
         )
-        for (i, psi_i), (j, Ainvpsi_j) in itertools.product(
-            enumerate(freq_basis.redistribute_psis(psi)), enumerate(A_inv_psi)
-        ):
-            gs[w_i, i, j] = inner(psi_i, Ainvpsi_j)
+        from impurityModel.ed.ManyBodyUtils import inner_multi
+        gs[w_i] = inner_multi(freq_basis.redistribute_psis(psi), A_inv_psi)
         if len(freq_basis) > max_basis_size:
             max_basis_size = len(freq_basis)
             freq = w
