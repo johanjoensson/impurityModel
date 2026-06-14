@@ -1,7 +1,7 @@
 import pytest
 from mpi4py import MPI
 import numpy as np
-from impurityModel.ed.manybody_basis import Basis, CIPSI_Basis
+from impurityModel.ed.manybody_basis import Basis
 from impurityModel.ed.ManyBodyUtils import SlaterDeterminant
 from math import ceil
 
@@ -257,7 +257,7 @@ def test_Basis_list_mpi(
         (10, 10, 2, 1, 3, 8, 10390),
     ],
 )
-def test_CIPSI_Basis_len(
+def test_Basis_len(
     valence_baths,
     conduction_baths,
     delta_valence_occ,
@@ -290,7 +290,7 @@ def test_CIPSI_Basis_len(
         (10, 10, 2, 1, 3, 8, 10390),
     ],
 )
-def test_CIPSI_Basis_len_mpi(
+def test_Basis_len_mpi(
     valence_baths,
     conduction_baths,
     delta_valence_occ,
@@ -1392,8 +1392,8 @@ def test_eg_t2g_CIPSI_basis_expand():
     # Start with 10000
     #            00000
     states = build_states([b"\x80\x00"])
-    basis = CIPSI_Basis(
-        H=Hop,
+    from impurityModel.ed.cipsi_solver import CIPSISolver
+    basis = Basis(
         impurity_orbitals={2: [list(range(10))]},
         bath_states=(
             {2: [[]]},
@@ -1403,8 +1403,10 @@ def test_eg_t2g_CIPSI_basis_expand():
         verbose=True,
         comm=None,
     )
+    solver = CIPSISolver(basis)
+    solver.truncate_initial(Hop)
 
-    basis.expand(Hop)
+    solver.expand(Hop)
 
     expected = build_states([b"\x80\x00", b"\x08\x00"])
     assert all(state in expected for state in basis), f"{expected=} {list(basis)=}"
@@ -1432,8 +1434,8 @@ def test_eg_t2g_CIPSI_basis_expand_mpi():
     # Start with 10000
     #            00000
     states = build_states([b"\x80\x00"])
-    basis = CIPSI_Basis(
-        H=Hop,
+    from impurityModel.ed.cipsi_solver import CIPSISolver
+    basis = Basis(
         impurity_orbitals={2: [list(range(10))]},
         bath_states=(
             {2: [[]]},
@@ -1443,8 +1445,10 @@ def test_eg_t2g_CIPSI_basis_expand_mpi():
         verbose=True,
         comm=MPI.COMM_WORLD,
     )
+    solver = CIPSISolver(basis)
+    solver.truncate_initial(Hop)
 
-    basis.expand(Hop)
+    solver.expand(Hop)
     # expect 10000  00001  00000  00000
     #        00000  00000  10000  00001
 
