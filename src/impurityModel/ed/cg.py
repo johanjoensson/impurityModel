@@ -1,6 +1,6 @@
 import numpy as np
 import scipy as sp
-from time import perf_counter
+
 import itertools
 import impurityModel.ed.finite as finite
 from mpi4py import MPI
@@ -83,7 +83,6 @@ def cg_2(A, x, y, atol=1e-5):
         r2 = abs(np.vdot(r, r))
         if r2 < atol:
             info = 0
-            print(f"breaking early r {it}")
             break
         dp = -np.vdot(p_i, r) / np.vdot(p, p_i)
         p = r + dp * p
@@ -411,7 +410,6 @@ def block_bicgstab(A, x0, y, basis: Basis, slaterWeightMin: float, atol=1e-8, rt
         R0_R[:, ~active_mask] = 0
 
         if np.linalg.cond(R0_V) > 1 / np.finfo(float).eps:
-            print(f"Breakdown in Block BICGSTAB at iteration {it}")
             break
 
         ai = np.linalg.solve(R0_V, R0_R)
@@ -487,7 +485,7 @@ def cg_phys(A_op, A_dict, n_spin_orbitals, x_psi, y_psi, w, delta, basis, atol=1
     (the sought after solution). This might allow for an approximation of x based on physics
     rather than pure numerics.
     """
-    t_cg = perf_counter()
+
     n = basis.size
     A = basis.build_sparse_matrix(A_op, A_dict)
     x, y = basis.build_vector([x_psi, y_psi])
@@ -498,32 +496,18 @@ def cg_phys(A_op, A_dict, n_spin_orbitals, x_psi, y_psi, w, delta, basis, atol=1
     p = r
     r_prev = r
     alpha_guess = (1 - delta * 1j) / (1 + delta**2)
-    t_expansion = 0
-    t_build_sparse_mat = 0
-    t_build_vectors_separate = 0
-    t_matrix_mul = 0
-    t_rest_of_cg = 0
     for it in range(10 * n):
         x += alpha_guess * p
 
         p_psi, r_prev_psi, x_psi = basis.build_state([p, r_prev, x], distribute=True)
 
-        t_expand = perf_counter()
         basis.expand_at(w, x_psi, A_op, A_dict)
-        t_expansion += perf_counter() - t_expand
-        t_build_sparse = perf_counter()
         A = basis.build_sparse_matrix(A_op, A_dict)
-        t_build_sparse_mat += perf_counter() - t_build_sparse
-        t_build_vectors = perf_counter()
         x, y, r_prev, p = basis.build_vector([x_psi, y_psi, r_prev_psi, p_psi])
-        t_build_vectors_separate += perf_counter() - t_build_vectors
 
-        t_matmul = perf_counter()
         Ax = A @ x
         if basis.is_distributed:
             basis.comm.Allreduce(MPI.IN_PLACE, Ax, op=MPI.SUM)
-        t_matrix_mul += perf_counter() - t_matmul
-        t_rest = perf_counter()
         r = y - Ax
 
         ad = (r_prev - r) / alpha_guess
@@ -543,13 +527,4 @@ def cg_phys(A_op, A_dict, n_spin_orbitals, x_psi, y_psi, w, delta, basis, atol=1
         dar = da @ r
         p = r - dar / dad * p
         r_prev = r
-        t_rest_of_cg = perf_counter() - t_rest
-    t_cg = perf_counter() - t_cg
-    print(f"Converged in {it+1} iterations!")
-    print(f"Took {t_cg:.3f} seconds")
-    print(f"--->Expanding the basis took {t_expansion:.4f} seconds")
-    print(f"--->Building the matrix took {t_build_sparse_mat:.4f} seconds")
-    print(f"--->Building the vectors took {t_build_vectors_separate:.4f} seconds")
-    print(f"--->Matrix multiplication took {t_matrix_mul:.4f} seconds")
-    print(f"--->The rest of the CG algorithm took {t_rest_of_cg:.4f} seconds")
     return x, {"rnorm2": np.conj(r) @ r, "it": it + 1}

@@ -2,7 +2,7 @@ from bisect import bisect_left
 import itertools
 from enum import Enum
 from heapq import merge
-from time import perf_counter
+
 import numpy as np
 import scipy as sp
 from typing import Optional, NamedTuple, Callable
@@ -792,7 +792,6 @@ def block_lanczos_sparse(
         comm.Allreduce(MPI.IN_PLACE, global_seen_size, op=MPI.SUM)
 
     while it * n < global_seen_size[0] and it < max_iter:
-        t0 = perf_counter()
         wp = matmat(q[1])
 
         for state in wp:
@@ -801,10 +800,7 @@ def block_lanczos_sparse(
         if mpi:
             comm.Allreduce(MPI.IN_PLACE, global_seen_size, op=MPI.SUM)
 
-        t_apply = perf_counter() - t0
 
-        if verbose:
-            print(f"----> Applying the hamiltonian took {t_apply} seconds.")
 
         alpha_i = inner_multi(q[1], wp)
         if mpi:
@@ -830,10 +826,6 @@ def block_lanczos_sparse(
             comm.Allreduce(MPI.IN_PLACE, M, op=MPI.SUM)
 
         if np.any(np.isnan(M)) or np.any(np.isinf(M)):
-            print(f"NaNs detected in M at iteration {it}!")
-            print(f"wp norm: {np.linalg.norm([list(st.values()) for st in wp])}")
-            print(f"alpha_i: {alpha_i}")
-            if it > 0: print(f"beta_prev: {betas[it - 1]}")
             break
 
         try:

@@ -93,11 +93,11 @@ def implicitly_restarted_block_lanczos(
         unwanted_indices = np.argsort(eigvals)[num_wanted:]
         
         max_wanted_res = np.max(res_norms[wanted_indices])
-        if verbose:
+        if verbose and (not mpi or basis.comm.rank == 0):
             print(f"Restart {restart:3d} | Min Eigval: {eigvals[0]:.6f} | Max Wanted Residual: {max_wanted_res:.2e}")
             
         if max_wanted_res < tol:
-            if verbose:
+            if verbose and (not mpi or basis.comm.rank == 0):
                 print("Converged!")
             break
             
@@ -107,13 +107,8 @@ def implicitly_restarted_block_lanczos(
         
         for shift in shifts:
             Q_step, _ = sp.qr(T_shifted - shift * np.eye(m_actual * n))
-            if np.any(np.isnan(Q_step)):
-                print(f"NaN in Q_step! shift={shift}")
             T_shifted = Q_step.conj().T @ T_shifted @ Q_step
             U_total = U_total @ Q_step
-            
-        if np.any(np.isnan(U_total)):
-            print("NaNs in U_total!")
             
         U_k = U_total[:, :k_blocks * n]
         T_k = T_shifted[:k_blocks * n, :k_blocks * n]
