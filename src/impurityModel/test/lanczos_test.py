@@ -1,6 +1,6 @@
 import pytest
 from impurityModel.ed.manybody_basis import Basis
-from impurityModel.ed.finite import eigensystem_new as eigensystem, norm2
+from impurityModel.ed.finite import eigensystem, norm2
 from impurityModel.ed.lanczos import block_lanczos_sparse, eigsh, Reort
 from impurityModel.ed.ManyBodyUtils import applyOp, ManyBodyOperator
 import numpy as np
@@ -311,7 +311,7 @@ def test_get_block_Lanczos_matrices_and_GS(reort_mode):
     psi0[:, 0] = 1 / np.sqrt(6)
     
     def converged(alphas, betas, *args, **kwargs):
-        return alphas.shape[0] > 4
+        return alphas.shape[0] > 5
 
     alphas, betas, Q = get_block_Lanczos_matrices(psi0, H_mat[:, basis.local_indices], converged, reort_mode=reort_mode)
     ev = eigsh(alphas, betas, eigvals_only=True, de=10)
@@ -342,7 +342,7 @@ def test_get_block_Lanczos_matrices_and_GS_mpi(reort_mode):
     psi0[:, 0] = 1 / np.sqrt(6)  # Distributed vector representation
 
     def converged(alphas, betas, *args, **kwargs):
-        return alphas.shape[0] > 4
+        return alphas.shape[0] > 5
 
     alphas, betas, Q = get_block_Lanczos_matrices(psi0, H_mat[:, basis.local_indices], converged, comm=MPI.COMM_WORLD, reort_mode=reort_mode)
     ev = eigsh(alphas, betas, eigvals_only=True, de=10)
@@ -371,7 +371,7 @@ def test_get_block_Lanczos_matrices_dense(reort_mode):
     psi0[:, 0] = 1 / np.sqrt(6)
     
     def converged(alphas, betas, *args, **kwargs):
-        return alphas.shape[0] > 4
+        return alphas.shape[0] > 5
 
     alphas, betas = get_block_Lanczos_matrices_dense(psi0, H_mat[:, basis.local_indices], converged, reort_mode=reort_mode)
     ev = eigsh(alphas, betas, eigvals_only=True, de=10)

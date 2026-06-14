@@ -25,7 +25,7 @@ from impurityModel.ed import product_state_representation as psr
 from impurityModel.ed.finite import (
     c2i,
     c2i_op,
-    eigensystem_new,
+    eigensystem,
     norm2,
     build_density_matrix,
     thermal_average_scale_indep,

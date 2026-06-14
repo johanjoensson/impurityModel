@@ -190,7 +190,7 @@ def fixed_peak_dc(
         h_op = h_op_i + ManyBodyOperator(dc_op_i)
 
         h = basis_upper.build_sparse_matrix(h_op)
-        e_upper, psi_upper = finite.eigensystem_new(
+        e_upper, psi_upper = finite.eigensystem(
             h,
             e_max=energy_cut,
             k=1,
@@ -200,7 +200,7 @@ def fixed_peak_dc(
             dense=basis_upper.size < dense_cutoff,
         )
         h = basis_lower.build_sparse_matrix(h_op)
-        e_lower, psi_lower = finite.eigensystem_new(
+        e_lower, psi_lower = finite.eigensystem(
             h,
             e_max=energy_cut,
             k=1,

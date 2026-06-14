@@ -4,7 +4,7 @@ from mpi4py import MPI
 from impurityModel.ed.ManyBodyUtils import ManyBodyState, ManyBodyOperator
 from impurityModel.ed.manybody_basis import Basis
 from impurityModel.ed.finite import (
-    eigensystem_new as eigensystem,
+    eigensystem,
     thermal_average_scale_indep,
     print_thermal_expectation_values,
     print_expectation_values,

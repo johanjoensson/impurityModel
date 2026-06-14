@@ -5,7 +5,7 @@ from typing import Optional
 
 from impurityModel.ed.ManyBodyUtils import ManyBodyOperator, ManyBodyState, applyOp as applyOp_test
 from impurityModel.ed.manybody_basis import Basis
-from impurityModel.ed.finite import eigensystem_new
+from impurityModel.ed.finite import eigensystem
 
 
 class CIPSISolver:
@@ -18,7 +18,7 @@ class CIPSISolver:
             if self.basis.verbose:
                 print("Truncating basis!")
             H_sparse = self.basis.build_sparse_matrix(H)
-            e_ref, psi_ref = eigensystem_new(
+            e_ref, psi_ref = eigensystem(
                 H_sparse,
                 e_max=-self.basis.tau * np.log(1e-4),
                 k=1,
@@ -133,7 +133,7 @@ class CIPSISolver:
                     if psi_refs is not None and self.basis.size >= dense_cutoff
                     else None
                 )
-                e_ref, psi_ref_dense = eigensystem_new(
+                e_ref, psi_ref_dense = eigensystem(
                     H_mat,
                     e_max=de0_max,
                     k=2 * len(psi_refs) if psi_refs is not None else 10,
