@@ -826,6 +826,15 @@ def block_lanczos_sparse(
             comm.Allreduce(MPI.IN_PLACE, M, op=MPI.SUM)
 
         if np.any(np.isnan(M)) or np.any(np.isinf(M)):
+            # If M is invalid, the previous block was bad. We must remove the last appended alpha and beta.
+            alphas = alphas[:-1]
+            betas = betas[:-1]
+            if build_krylov_basis:
+                Q = Q[:-n]
+            break
+
+        if np.linalg.cond(M) > 1 / (100 * np.finfo(float).eps):
+            # Breakdown: block is linearly dependent, stop expanding
             break
 
         try:
@@ -880,6 +889,8 @@ def block_lanczos_sparse(
                 if mpi:
                     comm.Allreduce(MPI.IN_PLACE, M, op=MPI.SUM)
                 try:
+                    if np.linalg.cond(M) > 1 / (100 * np.finfo(float).eps):
+                        break
                     L = sp.linalg.cholesky(M, lower=True)
                 except sp.linalg.LinAlgError:
                     break
