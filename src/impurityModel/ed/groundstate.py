@@ -323,6 +323,7 @@ def calc_gs(
     ground_state_basis.tau = tau
     energy_cut = -tau * np.log(1e-4)
     from impurityModel.ed.cipsi_solver import CIPSISolver
+
     solver = CIPSISolver(ground_state_basis)
     solver.expand(Hop, dense_cutoff=dense_cutoff, de2_min=1e-6, slaterWeightMin=slaterWeightMin)
     h_gs = ground_state_basis.build_sparse_matrix(Hop)

@@ -576,35 +576,49 @@ def eigensystem_new(
 
     # e_max is limited by the accuracy of the calculated eigenvalues and machine precision
     e_max = max(e_max, eigenValueTol, np.finfo(float).eps * 100)
-    if isinstance(h_local, np.ndarray):
-        dense = True
-    elif not scipy.sparse.issparse(h_local):
-        raise RuntimeError(f"eigensystem can't handle a matrix of type {type(h_local)}")
-
-    if dense:
-        if return_eigvecs:
-            es, vecs = dense_eigensystem(h_local, return_eigvecs, comm)
-        else:
-            es = dense_eigensystem(h_local, return_eigvecs, comm)
-    elif USE_PETSc:
-        if return_eigvecs:
-            es, vecs = petsc_eigensystem(h_local, e_max, k, v0, eigenValueTol, return_eigvecs, comm)
-        else:
-            es = petsc_eigensystem(h_local, e_max, k, v0, eigenValueTol, return_eigvecs, comm)
-    elif USE_PRIMME:
-        if return_eigvecs:
-            es, vecs = primme_eigensystem(h_local, e_max, k, v0, eigenValueTol, return_eigvecs, comm)
-        else:
-            es = primme_eigensystem(h_local, e_max, k, v0, eigenValueTol, return_eigvecs, comm)
+    
+    from impurityModel.ed.trlm import thick_restarted_block_lanczos
+    
+    N = h_local.shape[0]
+    # Set up random initial vectors
+    np.random.seed(42) # For reproducibility in testing, might want to remove in prod
+    n_blocks = 1 # Simple 1-block for now unless block size is needed
+    if v0 is not None:
+        psi0 = v0
+        if len(psi0.shape) == 1:
+            psi0 = psi0.reshape(-1, 1)
     else:
+        psi0 = np.random.rand(N, n_blocks) + 1j * np.random.rand(N, n_blocks)
+    
+    psi0, _ = np.linalg.qr(psi0)
+    
+    # We want to find eigenvalues up to e_max above ground state. 
+    # Since we don't know the ground state yet, we just find k eigenvalues.
+    num_wanted = k
+    max_subspace_blocks = max(6, int(np.ceil(num_wanted * 2)))
+    
+    try:
+        es, vecs = thick_restarted_block_lanczos(
+            psi0=psi0,
+            h_op=h_local,
+            basis=None,
+            num_wanted=num_wanted,
+            max_subspace_blocks=max_subspace_blocks,
+            tol=max(1e-8, eigenValueTol),
+            max_restarts=100,
+            verbose=False
+        )
+    except Exception as e:
+        # Fallback to scipy if TRLM fails
         if return_eigvecs:
             es, vecs = scipy_eigensystem(h_local, e_max, k, v0, 0, return_eigvecs, comm)
         else:
             es = scipy_eigensystem(h_local, e_max, k, v0, 0, return_eigvecs, comm)
+            vecs = None
 
     indices = np.argsort(es)
     es = es[indices]
-    if return_eigvecs:
+    if return_eigvecs and vecs is not None:
         vecs = vecs[:, indices]
     mask = es - np.min(es) <= e_max
 

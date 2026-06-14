@@ -654,6 +654,208 @@ def get_block_Lanczos_matrices(
 
 from impurityModel.ed.ManyBodyUtils import inner_multi, add_scaled_multi
 
+def block_lanczos_array(
+    psi0: np.ndarray,
+    h_op,
+    converged: Callable[[np.ndarray, np.ndarray], bool],
+    verbose: bool = False,
+    reort: Reort = Reort.NONE,
+    alphas: np.ndarray = None,
+    betas: np.ndarray = None,
+    Q: np.ndarray = None,
+    W: np.ndarray = None,
+    track_full_W: bool = False,
+    return_W: bool = False,
+    **kwargs,
+):
+    """
+    Perform block Lanczos algorithm using dense numpy arrays for vectors.
+    """
+    build_krylov_basis = reort != Reort.NONE or True
+    N = psi0.shape[0] if psi0 is not None else Q.shape[0]
+    n = (psi0.shape[1] if len(psi0.shape) == 2 else 1) if psi0 is not None else alphas[0].shape[0]
+
+    if alphas is not None and betas is not None and Q is not None:
+        start_it = len(alphas)
+        alphas_arr = alphas
+        betas_arr = betas
+        
+        q0_fallback = psi0.copy() if psi0 is not None else Q[:, :n]
+        q = [Q[:, (start_it - 1)*n : start_it*n] if start_it > 0 else q0_fallback]
+        q.append(Q[:, start_it*n : (start_it+1)*n] if start_it > 0 else q0_fallback)
+        
+        Q_list = [Q]
+    else:
+        start_it = 0
+        alphas_arr = np.empty((0, n, n), dtype=complex)
+        betas_arr = np.empty((0, n, n), dtype=complex)
+        
+        q = [np.zeros((N, n), dtype=complex)]
+        q.append(psi0.copy() if len(psi0.shape) == 2 else psi0.reshape(-1, 1).copy())
+        
+        Q_list = [q[1].copy()] if build_krylov_basis else None
+
+    alphas = alphas_arr
+    betas = betas_arr
+    
+    it = start_it
+    converge_count = 0
+    reort_eps = np.sqrt(np.finfo(float).eps)
+    period = kwargs.get("reort_period", 5)
+    max_iter = kwargs.get("max_iter", np.inf)
+
+    def matmat(v):
+        if hasattr(h_op, "dot"):
+            return np.asarray(h_op.dot(v), dtype=complex)
+        elif hasattr(h_op, "__matmul__"):
+            return np.asarray(h_op @ v, dtype=complex)
+        else:
+            return np.asarray(h_op(v), dtype=complex)
+
+    while it < max_iter:
+        wp = matmat(q[1])
+
+        alpha_i = q[1].conj().T @ wp
+        alphas = np.append(alphas, [alpha_i], axis=0)
+        betas = np.append(betas, np.zeros((1, n, n), dtype=complex), axis=0)
+
+        wp -= q[1] @ alpha_i
+
+        if it > 0:
+            beta_prev_dag = np.conj(betas[it - 1].T)
+            wp -= q[0] @ beta_prev_dag
+
+        if reort == Reort.FULL or (reort == Reort.PERIODIC and it > 0 and it % period == 0):
+            if not build_krylov_basis:
+                raise RuntimeError("Krylov basis must be built for reorthogonalization")
+            # Full reorthogonalization
+            overlap = Q_list[0].conj().T @ wp
+            wp -= Q_list[0] @ overlap
+
+        M = wp.conj().T @ wp
+        
+        if np.any(np.isnan(M)) or np.any(np.isinf(M)):
+            alphas = alphas[:-1]
+            betas = betas[:-1]
+            if build_krylov_basis:
+                Q_list[0] = Q_list[0][:, :-n]
+            break
+
+        if np.linalg.cond(M) > 1 / (100 * np.finfo(float).eps):
+            break
+
+        try:
+            L = sp.linalg.cholesky(M, lower=True)
+        except sp.linalg.LinAlgError:
+            break
+
+        beta_i = np.conj(L.T)
+        betas[it] = beta_i
+
+        if reort in (Reort.PARTIAL, Reort.SELECTIVE):
+            if not build_krylov_basis:
+                raise RuntimeError("Krylov basis must be built for reorthogonalization")
+            if W is None:
+                if track_full_W:
+                    W = np.zeros((1, 1, n, n), dtype=complex)
+                    W[0, 0] = np.eye(n)
+                else:
+                    W = np.zeros((2, 1, n, n), dtype=complex)
+                    W[1, 0] = np.eye(n)
+            elif W.shape[0] < it + 1 or W.shape[1] < it + 1:
+                if track_full_W:
+                    W_new = np.zeros((it + 1, it + 1, n, n), dtype=complex)
+                    W_new[:W.shape[0], :W.shape[1]] = W
+                    W = W_new
+                else:
+                    W_new = np.zeros((2, it + 1, n, n), dtype=complex)
+                    W_new[:, :W.shape[1]] = W
+                    W = W_new
+            
+            W = estimate_orthonormality(W, alphas[: it + 1], betas[: it + 1], eps=np.finfo(float).eps)
+            if it > 0 and np.max(np.abs(W[-1, : it + 1])) > reort_eps:
+                bad_block_indices = [j for j in range(it + 1) if np.max(np.abs(W[-1, j])) > reort_eps * 1e-2]
+                
+                if reort == Reort.PARTIAL:
+                    wp -= Q_list[0][:, :len(Q_list[0][0])-n] @ (Q_list[0][:, :len(Q_list[0][0])-n].conj().T @ wp)
+                elif reort == Reort.SELECTIVE:
+                    from impurityModel.ed.lanczos import eigsh
+                    eigvals, eigvecs = eigsh(alphas[: it + 1], betas[: it + 1], select="a", max_ev=0)
+                    error_bounds = np.linalg.norm(betas[it], ord=2) * np.abs(eigvecs[-n:, :]).max(axis=0)
+                    converged_mask = error_bounds < reort_eps
+                    if np.any(converged_mask):
+                        converged_Ritz = Q_list[0] @ eigvecs[:, converged_mask]
+                        Q_list[0][:, -n:] -= converged_Ritz @ (converged_Ritz.conj().T @ Q_list[0][:, -n:])
+                        wp -= converged_Ritz @ (converged_Ritz.conj().T @ wp)
+                    Q_list[0][:, -n:] -= Q_list[0][:, :-n] @ (Q_list[0][:, :-n].conj().T @ Q_list[0][:, -n:])
+                    wp -= Q_list[0] @ (Q_list[0].conj().T @ wp)
+
+                q[1][:] = Q_list[0][:, -n:]
+                
+                M = wp.conj().T @ wp
+                if np.any(np.isnan(M)) or np.any(np.isinf(M)):
+                    alphas = alphas[:-1]
+                    betas = betas[:-1]
+                    if build_krylov_basis:
+                        Q_list[0] = Q_list[0][:, :-n]
+                    break
+                    
+                try:
+                    if np.linalg.cond(M) > 1 / (100 * np.finfo(float).eps):
+                        alphas = alphas[:-1]
+                        betas = betas[:-1]
+                        if build_krylov_basis:
+                            Q_list[0] = Q_list[0][:, :-n]
+                        break
+                    L = sp.linalg.cholesky(M, lower=True)
+                except sp.linalg.LinAlgError:
+                    alphas = alphas[:-1]
+                    betas = betas[:-1]
+                    if build_krylov_basis:
+                        Q_list[0] = Q_list[0][:, :-n]
+                    break
+                beta_i = np.conj(L.T)
+                betas[it] = beta_i
+                
+                bad_block_indices_prev = [j for j in bad_block_indices if j < it]
+                eps = np.finfo(float).eps
+                W[-1, bad_block_indices] = eps * np.eye(n)
+                if track_full_W:
+                    W[-2, bad_block_indices_prev] = eps * np.eye(n)
+                else:
+                    W[0, bad_block_indices_prev] = eps * np.eye(n)
+
+        import warnings
+        try:
+            with warnings.catch_warnings():
+                warnings.simplefilter("error")
+                beta_inv = sp.linalg.inv(beta_i)
+        except Exception:
+            break
+
+        q_next = wp @ beta_inv
+
+        if converged(alphas, betas, verbose=verbose):
+            converge_count += 1
+        else:
+            converge_count = 0
+
+        if converge_count > 2:
+            break
+
+        q[0] = q[1]
+        q[1] = q_next
+        if build_krylov_basis:
+            Q_list[0] = np.concatenate([Q_list[0], q_next], axis=1)
+        it += 1
+
+    if verbose:
+        print(f"Coverged at iteration {it+1}")
+        
+    res_Q = Q_list[0] if build_krylov_basis else None
+    if return_W:
+        return alphas, betas, res_Q, W
+    return alphas, betas, res_Q
 
 def block_lanczos_sparse(
     psi0: list[ManyBodyState],
@@ -738,9 +940,9 @@ def block_lanczos_sparse(
         alphas_arr = alphas
         betas_arr = betas
         
-        # Q contains all past basis vectors. The last vector is q_curr
-        q = [[Q[i] for i in range((start_it - 1)*n, start_it*n)]] if start_it > 0 else [psi0]
-        q.append([Q[i] for i in range(start_it*n, (start_it+1)*n)] if start_it > 0 else psi0)
+        q0_fallback = psi0 if psi0 is not None else Q[:n]
+        q = [[Q[i] for i in range((start_it - 1)*n, start_it*n)] if start_it > 0 else q0_fallback]
+        q.append([Q[i] for i in range(start_it*n, (start_it+1)*n)] if start_it > 0 else q0_fallback)
         
         Q_list = Q
     else:
@@ -855,6 +1057,15 @@ def block_lanczos_sparse(
                 else:
                     W = np.zeros((2, 1, n, n), dtype=complex)
                     W[1, 0] = np.eye(n)
+            elif W.shape[0] < it + 1 or W.shape[1] < it + 1:
+                if track_full_W:
+                    W_new = np.zeros((it + 1, it + 1, n, n), dtype=complex)
+                    W_new[:W.shape[0], :W.shape[1]] = W
+                    W = W_new
+                else:
+                    W_new = np.zeros((2, it + 1, n, n), dtype=complex)
+                    W_new[:, :W.shape[1]] = W
+                    W = W_new
             W = estimate_orthonormality(W, alphas[: it + 1], betas[: it + 1], eps=np.finfo(float).eps)
             if it > 0 and np.max(np.abs(W[-1, : it + 1])) > reort_eps:
                 bad_block_indices = [j for j in range(it + 1) if np.max(np.abs(W[-1, j])) > reort_eps * 1e-2]
@@ -888,11 +1099,27 @@ def block_lanczos_sparse(
                 M = inner_multi(wp, wp)
                 if mpi:
                     comm.Allreduce(MPI.IN_PLACE, M, op=MPI.SUM)
+                
+                if np.any(np.isnan(M)) or np.any(np.isinf(M)):
+                    alphas = alphas[:-1]
+                    betas = betas[:-1]
+                    if build_krylov_basis:
+                        Q = Q[:-n]
+                    break
+                    
                 try:
                     if np.linalg.cond(M) > 1 / (100 * np.finfo(float).eps):
+                        alphas = alphas[:-1]
+                        betas = betas[:-1]
+                        if build_krylov_basis:
+                            Q = Q[:-n]
                         break
                     L = sp.linalg.cholesky(M, lower=True)
                 except sp.linalg.LinAlgError:
+                    alphas = alphas[:-1]
+                    betas = betas[:-1]
+                    if build_krylov_basis:
+                        Q = Q[:-n]
                     break
                 beta_i = np.conj(L.T)
                 betas[it] = beta_i

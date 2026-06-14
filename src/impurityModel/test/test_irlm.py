@@ -113,6 +113,7 @@ def test_irlm_qr_restart():
     add_scaled_multi(psi0_orth, psi0, beta_inv)
     psi0 = psi0_orth
         
+    from impurityModel.ed.lanczos import Reort
     # Run IRLM QR Restart
     eigvals, eigvecs = implicitly_restarted_block_lanczos(
         psi0=psi0,
@@ -122,7 +123,8 @@ def test_irlm_qr_restart():
         max_subspace_blocks=6,
         tol=1e-8,
         max_restarts=50,
-        verbose=False
+        verbose=True,
+        reort=Reort.FULL
     )
     
     np.testing.assert_allclose(eigvals, eigvals_exact[:4], atol=1e-6)

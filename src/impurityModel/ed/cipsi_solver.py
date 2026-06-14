@@ -88,7 +88,7 @@ class CIPSISolver:
         old_size = self.basis.size - 1
         while old_size != self.basis.size:
             if solver == "irlm" and self.basis.size >= dense_cutoff:
-                from impurityModel.ed.irlm import implicitly_restarted_block_lanczos
+                from impurityModel.ed.trlm import thick_restarted_block_lanczos
                 if psi_refs is None:
                     local_states = list(self.basis.local_basis)
                     if len(local_states) > 0:
@@ -98,14 +98,14 @@ class CIPSISolver:
                     psi0 = self.basis.redistribute_psis(psi0)
                 else:
                     psi0 = psi_refs
-                    
+    
                 num_wanted = 2 * len(psi_refs) if psi_refs is not None else 10
                 max_subspace = max(2 * num_wanted, 20)
-                
-                e_ref, psi_refs = implicitly_restarted_block_lanczos(
+    
+                e_ref, psi_refs = thick_restarted_block_lanczos(
                     psi0=psi0, h_op=H, basis=self.basis, num_wanted=num_wanted,
                     max_subspace_blocks=max_subspace // len(psi0), tol=1e-8, max_restarts=10,
-                    restart_method="thick", verbose=self.basis.verbose, slaterWeightMin=slaterWeightMin
+                    verbose=self.basis.verbose, slaterWeightMin=slaterWeightMin
                 )
                 
                 valid_idx = [i for i, e in enumerate(e_ref) if e < de0_max]

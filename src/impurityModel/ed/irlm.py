@@ -9,7 +9,7 @@ def _build_full_T(alphas, betas):
     T = np.zeros((m * n, m * n), dtype=complex)
     for i in range(m):
         T[i * n : (i + 1) * n, i * n : (i + 1) * n] = alphas[i]
-        if i < m - 1:
+        if i < m - 1 and i < len(betas):
             T[(i + 1) * n : (i + 2) * n, i * n : (i + 1) * n] = betas[i]
             T[i * n : (i + 1) * n, (i + 1) * n : (i + 2) * n] = np.conj(betas[i].T)
     return T
@@ -24,7 +24,7 @@ def _extract_blocks(T, m, n):
     return alphas, betas
 
 def implicitly_restarted_block_lanczos(
-    psi0: list,
+    psi0,
     h_op,
     basis,
     num_wanted: int,
@@ -35,52 +35,53 @@ def implicitly_restarted_block_lanczos(
     slaterWeightMin: float = 0,
     reort=None,
 ):
-    """
-    Computes eigenvalues and eigenvectors using Implicitly Restarted Block Lanczos.
-    
-    Uses standard Implicit QR shifting using exact shifts. 
-    Maintains full block-tridiagonal matrix using QR sweeps.
-    """
     from impurityModel.ed.lanczos import block_lanczos_sparse, _reorthogonalize_sparse, eigsh, Reort
     
     if reort is None:
         reort = Reort.PARTIAL
 
-    n = len(psi0)
+    n = len(psi0) if isinstance(psi0, list) else (psi0.shape[1] if len(psi0.shape) == 2 else 1)
     k_blocks = int(np.ceil(num_wanted / n))
     m = max_subspace_blocks
-    
+
     if m <= k_blocks:
         raise ValueError("max_subspace_blocks must be strictly greater than ceil(num_wanted / n)")
 
-    mpi = basis.comm is not None
+    mpi = basis is not None and getattr(basis, 'comm', None) is not None
     comm = basis.comm if mpi else None
 
     # Initial Lanczos run to build subspace
     track_W = reort in (Reort.PARTIAL, Reort.SELECTIVE)
     
-    alphas, betas, Q_list, *W_res = block_lanczos_sparse(
-        psi0, h_op, basis, lambda a,b,**kw: len(a) == m, slaterWeightMin=slaterWeightMin, 
-        reort=reort, verbose=verbose, inner_func=inner_multi,
-        orth_tol=1e-12, return_Q=True, track_full_W=track_W, return_W=True
-    )
-    W_full = W_res[0] if track_W and W_res else None
-    
-    m_actual = len(alphas)
-    if m_actual <= k_blocks:
-        if verbose:
-            print(f"Invariant subspace of size {m_actual} blocks found. Stopping early.")
-        T_final = _build_full_T(alphas, betas[:-1] if len(betas) == m_actual else betas)
-        eigvals, eigvecs = sp.eigh(T_final)
+    if isinstance(psi0, np.ndarray) or (isinstance(psi0, list) and isinstance(psi0[0], np.ndarray)):
+        from impurityModel.ed.lanczos import block_lanczos_array
+        if isinstance(psi0, list):
+            psi0_arr = np.concatenate(psi0, axis=1) if len(psi0[0].shape) == 2 else np.column_stack(psi0)
+        else:
+            psi0_arr = psi0
+        alphas, betas, Q_list, *W_res = block_lanczos_array(
+            psi0_arr, h_op, lambda a,b,**kw: False, max_iter=m,
+            reort=reort, verbose=verbose, return_W=True, track_full_W=track_W,
+            orth_tol=1e-12, return_Q=True
+        )
+        is_array = True
+    else:
+        alphas, betas, Q_list, *W_res = block_lanczos_sparse(
+            psi0, h_op, basis, lambda a,b,**kw: False, max_iter=m, slaterWeightMin=slaterWeightMin, 
+            reort=reort, verbose=verbose, inner_func=inner_multi,
+            orth_tol=1e-12, return_Q=True, track_full_W=track_W, return_W=True
+        )
+        is_array = False
         
-        wanted_indices = np.argsort(eigvals)[:num_wanted]
-        final_eigvals = eigvals[wanted_indices]
-        final_eigvecs = [ManyBodyState() for _ in range(len(wanted_indices))]
-        add_scaled_multi(final_eigvecs, Q_list, np.ascontiguousarray(eigvecs[:, wanted_indices], dtype=complex))
-        return final_eigvals, final_eigvecs
-    
+    W_full = W_res[0] if track_W and W_res else None
+
     for restart in range(max_restarts):
         m_actual = len(alphas)
+        
+        # Check if we hit invariant subspace before completing first loop
+        if m_actual <= k_blocks:
+            break
+            
         T = _build_full_T(alphas, betas[:-1])
         
         # Compute Ritz pairs
@@ -93,36 +94,36 @@ def implicitly_restarted_block_lanczos(
         unwanted_indices = np.argsort(eigvals)[num_wanted:]
         
         max_wanted_res = np.max(res_norms[wanted_indices])
-        if verbose and (not mpi or basis.comm.rank == 0):
+        if verbose and (not mpi or comm.rank == 0):
             print(f"Restart {restart:3d} | Min Eigval: {eigvals[0]:.6f} | Max Wanted Residual: {max_wanted_res:.2e}")
             
         if max_wanted_res < tol:
-            if verbose and (not mpi or basis.comm.rank == 0):
+            if verbose and (not mpi or comm.rank == 0):
                 print("Converged!")
             break
             
         shifts = eigvals[unwanted_indices]
+        from impurityModel.ed.givens_qr import implicit_qr_step_block
+        
         U_total = np.eye(m_actual * n, dtype=complex)
         T_shifted = T.copy()
-        
         for shift in shifts:
-            Q_step, _ = sp.qr(T_shifted - shift * np.eye(m_actual * n))
-            T_shifted = Q_step.conj().T @ T_shifted @ Q_step
-            U_total = U_total @ Q_step
+            T_shifted, U_total = implicit_qr_step_block(T_shifted, n, shift, U_total)
             
         U_k = U_total[:, :k_blocks * n]
-        T_k = T_shifted[:k_blocks * n, :k_blocks * n]
-        alphas_new, betas_new = _extract_blocks(T_k, k_blocks, n)
+        alphas_new, betas_new = _extract_blocks(T_shifted, k_blocks, n)
         
-        Q_k_states = [ManyBodyState() for _ in range(k_blocks * n)]
-        add_scaled_multi(Q_k_states, Q_list[:m_actual * n], np.ascontiguousarray(U_k, dtype=complex))
-            
-        Q_list = Q_k_states
-        alphas = list(alphas_new)
-        betas = list(betas_new)
+        if is_array:
+            Q_new = Q_list[:, :m_actual * n] @ np.ascontiguousarray(U_k, dtype=complex)
+        else:
+            Q_new = [ManyBodyState() for _ in range(k_blocks * n)]
+            add_scaled_multi(Q_new, Q_list[:m_actual * n], np.ascontiguousarray(U_k, dtype=complex))
+            for st in Q_new:
+                st.prune(slaterWeightMin)
         
-        q0 = [Q_list[i] for i in range((k_blocks-1)*n, k_blocks*n)] if k_blocks > 1 else [ManyBodyState() for _ in range(n)]
-        q1 = [Q_list[i] for i in range((k_blocks-1)*n, k_blocks*n)]
+        Q_list = Q_new
+        alphas = alphas_new
+        betas = betas_new
         
         if track_W and W_full is not None:
             W_full_2d = np.zeros((m_actual * n, m_actual * n), dtype=complex)
@@ -136,86 +137,88 @@ def implicitly_restarted_block_lanczos(
                     W_new[i_blk, j_blk] = W_new_2d[i_blk*n:(i_blk+1)*n, j_blk*n:(j_blk+1)*n]
             W_full = W_new
 
-        for i in range(k_blocks, m):
-            wp = [ManyBodyState() for _ in range(n)]
+        alphas_pass = alphas_new
+        
+        # We must manually compute q_k so that block_lanczos can start at it = k_blocks
+        # This preserves alpha_{k-1} exactly from the QR decomposition.
+        if is_array:
+            q1 = Q_new[:, -n:]
+            q_k_unorth = h_op.apply_multi(q1) if hasattr(h_op, 'apply_multi') else h_op @ q1
+            # Full orthogonalization against Q_new
+            q_k_unorth -= Q_new @ (Q_new.conj().T @ q_k_unorth)
+            # Second orthogonalization pass for stability
+            q_k_unorth -= Q_new @ (Q_new.conj().T @ q_k_unorth)
             
-            wp_tmp = h_op.apply_multi(q1)
-            if mpi:
-                wp_tmp = basis.redistribute_psis(wp_tmp)
-            for j in range(n):
-                wp[j] += wp_tmp[j]
+            beta_i = sp.cholesky(q_k_unorth.conj().T @ q_k_unorth, lower=True)
+            beta_inv = sp.inv(beta_i)
+            q_k = q_k_unorth @ beta_inv
+            Q_list = np.concatenate([Q_new, q_k], axis=1)
+            betas_pass = np.concatenate([betas_new, [np.conj(beta_i.T)]], axis=0) if len(betas_new) > 0 else np.array([np.conj(beta_i.T)])
             
-            _reorthogonalize_sparse(wp, Q_list, None, inner_multi, mpi, comm, n)
+            if track_W and W_full is not None:
+                W_pass = np.zeros((k_blocks + 1, k_blocks + 1, n, n), dtype=complex)
+                W_pass[:k_blocks, :k_blocks] = W_full[:k_blocks, :k_blocks]
+                W_pass[k_blocks, k_blocks] = np.eye(n)
+            else:
+                W_pass = None
+                
+            from impurityModel.ed.lanczos import block_lanczos_array
+            alphas, betas, Q_list, *W_res = block_lanczos_array(
+                None, h_op, lambda a,b,**kw: False, max_iter=m,
+                reort=reort, verbose=verbose, return_W=True, track_full_W=track_W,
+                alphas=alphas_pass, betas=betas_pass, Q=Q_list, W=W_pass,
+                orth_tol=1e-12, return_Q=True
+            )
+        else:
+            q1 = Q_new[-n:]
+            wp = h_op.apply_multi(q1)
+            if basis.comm is not None:
+                wp = basis.redistribute_psis(wp)
+            from impurityModel.ed.lanczos import _reorthogonalize_sparse
+            _reorthogonalize_sparse(wp, Q_new, None, inner_multi, basis.comm is not None, basis.comm if basis.comm is not None else None, n)
+            _reorthogonalize_sparse(wp, Q_new, None, inner_multi, basis.comm is not None, basis.comm if basis.comm is not None else None, n)
             
             M = inner_multi(wp, wp)
-            if mpi:
-                comm.Allreduce(MPI.IN_PLACE, M, op=MPI.SUM)
-            try:
-                L = sp.cholesky(M, lower=True)
-            except sp.LinAlgError:
-                L = sp.cholesky(M + np.eye(n) * 1e-14, lower=True)
+            if basis.comm is not None:
+                basis.comm.Allreduce(MPI.IN_PLACE, M, op=MPI.SUM)
+            L = sp.cholesky(M, lower=True)
             beta_i = np.conj(L.T)
-            
-            betas.append(beta_i)
-            
-            try:
-                import warnings
-                with warnings.catch_warnings():
-                    warnings.simplefilter("error")
-                    beta_inv = sp.inv(beta_i)
-            except Exception:
-                break
-            
+            beta_inv = sp.inv(beta_i)
             q_next = [ManyBodyState() for _ in range(n)]
             add_scaled_multi(q_next, wp, beta_inv)
             for st in q_next:
                 st.prune(slaterWeightMin)
-                
-            Q_list.extend([st.copy() for st in q_next])
-            
-            wp_next = h_op.apply_multi(q_next)
-            if mpi:
-                wp_next = basis.redistribute_psis(wp_next)
-            alpha_i = inner_multi(q_next, wp_next)
-            if mpi:
-                comm.Allreduce(MPI.IN_PLACE, alpha_i, op=MPI.SUM)
-            alphas.append(alpha_i)
+            Q_list = Q_new + q_next
+            betas_pass = list(betas_new) + [beta_i]
             
             if track_W and W_full is not None:
-                # Approximate tracking for expanded blocks
-                W_full[i, i] = np.eye(n, dtype=complex)
-                eps = np.finfo(float).eps
-                W_full[i, :i] = eps * np.eye(n, dtype=complex)
-                W_full[:i, i] = eps * np.eye(n, dtype=complex)
+                W_pass = np.zeros((k_blocks + 1, k_blocks + 1, n, n), dtype=complex)
+                W_pass[:k_blocks, :k_blocks] = W_full[:k_blocks, :k_blocks]
+                W_pass[k_blocks, k_blocks] = np.eye(n)
+            else:
+                W_pass = None
             
-            q0 = q1
-            q1 = q_next
-            
-        # Compute the final residual beta
-        wp_final = [ManyBodyState() for _ in range(n)]
-        wp_tmp = h_op.apply_multi(q1)
-        if mpi:
-            wp_tmp = basis.redistribute_psis(wp_tmp)
-        for j in range(n):
-            wp_final[j] += wp_tmp[j]
-        _reorthogonalize_sparse(wp_final, Q_list, None, inner_multi, mpi, comm, n)
-        
-        M_final = inner_multi(wp_final, wp_final)
-        if mpi:
-            comm.Allreduce(MPI.IN_PLACE, M_final, op=MPI.SUM)
-        try:
-            L = sp.cholesky(M_final, lower=True)
-        except sp.LinAlgError:
-            L = sp.cholesky(M_final + np.eye(n) * 1e-14, lower=True)
-        betas.append(np.conj(L.T))
-            
+            from impurityModel.ed.lanczos import block_lanczos_sparse
+            alphas, betas, Q_list, *W_res = block_lanczos_sparse(
+                None, h_op, basis, lambda a,b,**kw: False, max_iter=m, slaterWeightMin=slaterWeightMin, 
+                reort=reort, verbose=verbose, inner_func=inner_multi,
+                alphas=alphas_pass, betas=betas_pass, Q=Q_list, W=W_pass,
+                orth_tol=1e-12, return_Q=True, track_full_W=track_W, return_W=True
+            )
+        W_full = W_res[0] if track_W and W_res else None
+
+    # Final Ritz vectors
+    m_actual = len(alphas)
     T_final = _build_full_T(alphas, betas[:-1] if len(betas) == m_actual else betas)
     eigvals, eigvecs = sp.eigh(T_final)
     
     wanted_indices = np.argsort(eigvals)[:num_wanted]
     final_eigvals = eigvals[wanted_indices]
     
-    final_eigvecs = [ManyBodyState() for _ in range(len(wanted_indices))]
-    add_scaled_multi(final_eigvecs, Q_list, np.ascontiguousarray(eigvecs[:, wanted_indices], dtype=complex))
+    if is_array:
+        final_eigvecs = Q_list[:, :m_actual * n] @ np.ascontiguousarray(eigvecs[:, wanted_indices], dtype=complex)
+    else:
+        final_eigvecs = [ManyBodyState() for _ in range(len(wanted_indices))]
+        add_scaled_multi(final_eigvecs, Q_list[:m_actual * n], np.ascontiguousarray(eigvecs[:, wanted_indices], dtype=complex))
         
     return final_eigvals, final_eigvecs
