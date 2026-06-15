@@ -302,7 +302,7 @@ def tridiagonalize(H, v0):
     Q = np.zeros((N, N), dtype=v0.dtype)
     q = np.zeros((2, N, block_size), dtype=v0.dtype)
     q[1, :, :block_size] = v0
-    max_it = np.ceil(N / block_size)
+    max_it = int(np.ceil(N / block_size))
     alphas = np.empty((max_it, block_size, block_size), dtype=H.dtype)
     betas = np.zeros((max_it, block_size, block_size), dtype=v0.dtype)
 
@@ -312,13 +312,15 @@ def tridiagonalize(H, v0):
         # For i == 0, betas[i-1] == betas[-1] == np.zeros(n, n)
         # No if i > 0 needed.
         wp -= q[1] @ alphas[i] + q[0] @ np.conj(betas[i - 1].T)
+        Q[:, i * block_size : (i + 1) * block_size] = q[1]
         for _ in range(2):
             wp -= Q @ (np.conj(Q.T) @ wp)
-        Q[:, i * block_size : (i + 1) * block_size] = q[1]
         q[0] = q[1]
         q[1], betas[i] = np.linalg.qr(wp)
         # Make sure we stop the Lanczos method if beta becomes to small
         if np.linalg.norm(betas[i]) < 1e-14:
+            alphas = alphas[:i + 1]
+            betas = betas[:i + 1]
             break
 
     return alphas, betas, v0_tilde
