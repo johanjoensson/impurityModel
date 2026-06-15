@@ -368,18 +368,29 @@ def tridiagonalize(H, v0):
 
 
 def double_chains(H_imp: np.ndarray, vs: np.ndarray, ebs: np.ndarray, verbose: bool = True, extremely_verbose=False):
-    """
-    Transform the bath geometry from a star into one or two auxilliary chains.
+    """Transform the bath geometry from a star into one or two auxiliary chains.
+
     The two chains correspond to the occupied and unoccupied parts of the spectra respectively.
-    Returns the Hopping term from the impurity onto the chains and the chain bath Hamiltonian.
-    Parameters:
-    H_imp: np.ndarray((block_size, block_size)) - Impurity hamiltonian
-    vs: np.ndarray((Neb, block_size)) - Hopping parameters for star geometry.
-    ebs: np.ndarray((Neb)) - Bath energies for star geometry
-    Returns:
-    chain_v, H_bath_chain
-    chain_v: np.ndarray((Neb_chain, block_size)) - Hopping parameters for chain geometry.
-    H_bath_chain: np.ndarray((Neb_chain, Neb_chain)) - Hamiltonian describind the bath in chain geometry.
+
+    Parameters
+    ----------
+    H_imp : np.ndarray
+        Impurity Hamiltonian (block_size, block_size).
+    vs : np.ndarray
+        Hopping parameters for star geometry (Neb, block_size).
+    ebs : np.ndarray
+        Bath energies for star geometry (Neb).
+    verbose : bool, default True
+        Whether to print verbose output.
+    extremely_verbose : bool, default False
+        Whether to print extremely verbose output.
+
+    Returns
+    -------
+    chain_v : np.ndarray
+        Hopping parameters for chain geometry (Neb_chain, block_size).
+    H_bath_chain : np.ndarray
+        Hamiltonian describing the bath in chain geometry (Neb_chain, Neb_chain).
     """
     verbose = verbose or extremely_verbose
     if isinstance(H_imp, (int, float, complex)):
@@ -523,8 +534,23 @@ def transform_to_lanczos_tridagonal_matrix(H, n_imp):
 
 
 def create_decoupled_hamiltonian(H, n_imp):
-    """
-    Take any Hamiltonian, transform it to contain two separate decoupled blocks.
+    """Take any Hamiltonian, transform it to contain two separate decoupled blocks.
+
+    Parameters
+    ----------
+    H : np.ndarray
+        The input Hamiltonian matrix.
+    n_imp : int
+        The number of impurity orbitals.
+
+    Returns
+    -------
+    H_decoupled : np.ndarray
+        The decoupled Hamiltonian.
+    pivot : int
+        The pivot index separating the occupied and unoccupied blocks.
+    Q_decoupled : np.ndarray
+        The unitary transformation matrix.
     """
     eigvals, eigvecs = np.linalg.eigh(H)
     sort_idx = np.argsort(eigvals)

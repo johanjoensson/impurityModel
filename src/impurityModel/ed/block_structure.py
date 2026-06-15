@@ -107,7 +107,7 @@ def build_block_structure(G, mat=None, tol=1e-6):
         The built block structure object.
     """
     assert G is not None or mat is not None, "You must supply at least one of G or mat"
-    if len(G.shape) == 2:
+    if G is not None and len(G.shape) == 2:
         G = G.reshape((1, G.shape[0], G.shape[1]))
     blocks = get_blocks(G, mat, tol=tol)
     identical_blocks = get_identical_blocks(blocks, G, mat, tol=tol)
@@ -161,15 +161,15 @@ def get_inequivalent_blocks(
             continue
         unique = True
         for transpose in transposed_blocks:
-            if blocks[0] in transpose[1:]:
+            if blocks[0] in transpose:
                 unique = False
                 break
         for particle_hole in particle_hole_blocks:
-            if blocks[0] in particle_hole[1:]:
+            if blocks[0] in particle_hole:
                 unique = False
                 break
         for particle_hole_and_transpose in particle_hole_and_transpose_blocks:
-            if blocks[0] in particle_hole_and_transpose[1:]:
+            if blocks[0] in particle_hole_and_transpose:
                 unique = False
                 break
         if unique:
@@ -397,7 +397,7 @@ def _transposed_blocks_matrix(blocks, mat, tol):
             idx_j = np.ix_(block_j, block_j)
             if np.all(np.abs(mat[idx_i] - mat[idx_j].T) < tol):
                 transposed.append(j)
-        transposed_blocks.append(transposed)
+        transposed_blocks[i] = transposed
     return transposed_blocks
 
 
@@ -437,7 +437,7 @@ def _transposed_blocks(blocks, G, mat, tol):
                 np.abs(mat[idx_i[1:]] - mat[idx_j[1:]].T) < tol
             ):
                 transposed.append(j)
-        transposed_blocks.append(transposed)
+        transposed_blocks[i] = transposed
     return transposed_blocks
 
 
@@ -487,7 +487,7 @@ def _particle_hole_blocks_matrix(blocks, mat, tol):
     list of list of int
         List of lists of particle-hole equivalent block indices.
     """
-    particle_hole_blocks = []
+    particle_hole_blocks = [[] for _ in blocks]
     for i, block_i in enumerate(blocks):
         if np.any([i in b for b in particle_hole_blocks]):
             continue
@@ -504,7 +504,7 @@ def _particle_hole_blocks_matrix(blocks, mat, tol):
                 np.abs(np.imag(mat[idx_i] - mat[idx_j])) < tol
             ):
                 particle_hole.append(j)
-        particle_hole_blocks.append(particle_hole)
+        particle_hole_blocks[i] = particle_hole
     return particle_hole_blocks
 
 
@@ -527,7 +527,7 @@ def _particle_hole_blocks(blocks, G, mat, tol):
     list of list of int
         List of lists of particle-hole equivalent block indices.
     """
-    particle_hole_blocks = []
+    particle_hole_blocks = [[] for _ in blocks]
     for i, block_i in enumerate(blocks):
         if np.any([i in b for b in particle_hole_blocks]):
             continue
@@ -547,7 +547,7 @@ def _particle_hole_blocks(blocks, G, mat, tol):
                 and np.all(np.abs(np.imag(mat[idx_i[1:]] - mat[idx_j[1:]])) < tol)
             ):
                 particle_hole.append(j)
-        particle_hole_blocks.append(particle_hole)
+        particle_hole_blocks[i] = particle_hole
     return particle_hole_blocks
 
 
@@ -576,7 +576,7 @@ def get_particle_hole_blocks(blocks, G=None, mat=None, tol=1e-6):
     if len(G.shape) == 2:
         G = G.reshape((1, G.shape[0], G.shape[1]))
     if mat is None:
-        mat = np.zeros((G.shape[0], G.shape[1]))
+        mat = np.zeros((G.shape[1], G.shape[2]))
     return _particle_hole_blocks(blocks, G, mat, tol)
 
 
@@ -597,7 +597,7 @@ def _particle_hole_transpose_blocks_matrix(blocks, mat, tol):
     list of list of int
         List of lists of particle-hole and transposed equivalent block indices.
     """
-    patricle_hole_and_transpose_blocks = []
+    patricle_hole_and_transpose_blocks = [[] for _ in blocks]
     for i, block_i in enumerate(blocks):
         if np.any([i in b for b in patricle_hole_and_transpose_blocks]):
             continue
@@ -614,7 +614,7 @@ def _particle_hole_transpose_blocks_matrix(blocks, mat, tol):
                 np.abs(np.imag(mat[idx_i] - mat[idx_j].T)) < tol
             ):
                 patricle_hole_and_transpose.append(j)
-        patricle_hole_and_transpose_blocks.append(patricle_hole_and_transpose)
+        patricle_hole_and_transpose_blocks[i] = patricle_hole_and_transpose
     return patricle_hole_and_transpose_blocks
 
 
@@ -637,7 +637,7 @@ def _particle_hole_transpose_blocks(blocks, G, mat, tol):
     list of list of int
         List of lists of particle-hole and transposed equivalent block indices.
     """
-    patricle_hole_and_transpose_blocks = []
+    patricle_hole_and_transpose_blocks = [[] for _ in blocks]
     for i, block_i in enumerate(blocks):
         if np.any([i in b for b in patricle_hole_and_transpose_blocks]):
             continue
@@ -657,7 +657,7 @@ def _particle_hole_transpose_blocks(blocks, G, mat, tol):
                 and np.all(np.abs(np.imag(mat[idx_i[1:]] - mat[idx_j[1:]].T)) < tol)
             ):
                 patricle_hole_and_transpose.append(j)
-        patricle_hole_and_transpose_blocks.append(patricle_hole_and_transpose)
+        patricle_hole_and_transpose_blocks[i] = patricle_hole_and_transpose
     return patricle_hole_and_transpose_blocks
 
 

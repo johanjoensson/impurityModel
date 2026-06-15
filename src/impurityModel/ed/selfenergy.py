@@ -256,8 +256,63 @@ def calc_selfenergy(
     dN,
     sparse_green,
 ):
-    """
-    Calculate the self energy of the impurity.
+    """Calculate the self energy of the impurity.
+
+    Parameters
+    ----------
+    h0 : dict or ManyBodyOperator
+        The non-interacting Hamiltonian.
+    u4 : np.ndarray
+        The Coulomb interaction matrix.
+    iw : np.ndarray or None
+        Matsubara frequency mesh.
+    w : np.ndarray or None
+        Real frequency mesh.
+    delta : float
+        Smearing parameter for real frequencies.
+    nominal_occ : dict
+        Nominal occupation.
+    mixed_valence : bool
+        Whether to consider mixed valence.
+    impurity_orbitals : dict
+        Impurity orbitals mapping.
+    bath_states : tuple
+        Tuple of (valence_baths, conduction_baths).
+    tau : float
+        Temperature parameter.
+    verbosity : int
+        Verbosity level.
+    block_structure : BlockStructure
+        The block structure of the Hamiltonian.
+    rot_to_spherical : np.ndarray
+        Rotation matrix to spherical harmonics.
+    cluster_label : str
+        Label for the cluster.
+    reort : float or None
+        Reorthogonalization parameter.
+    dense_cutoff : int
+        Cutoff for dense matrix representation.
+    spin_flip_dj : bool
+        Whether to include spin-flip terms.
+    comm : MPI.Comm or None
+        MPI communicator.
+    chain_restrict : bool
+        Whether to restrict to chain geometry.
+    occ_cutoff : float
+        Cutoff for occupation numbers.
+    truncation_threshold : float
+        Threshold for truncating the basis.
+    slaterWeightMin : float
+        Minimum weight for Slater determinants.
+    dN : int or None
+        Particle number constraint.
+    sparse_green : bool
+        Whether to use sparse representation for Green's function.
+
+    Returns
+    -------
+    dict
+        Dictionary containing self-energy, Green's function, thermal density matrix, and ground state info.
     """
     # MPI variables
     rank = comm.rank if comm is not None else 0
@@ -372,8 +427,8 @@ def calc_selfenergy(
             for sig in sigma:
                 check_greens_function(sig)
         except UnphysicalGreensFunctionError as err:
-            for i, sig in enumerate(sigma_real):
-                save_Greens_function(sig, w, f"sig+dc-{i}", cluster_label)
+            for i, sig in enumerate(sigma):
+                save_Greens_function(sig, iw, f"sig+dc-{i}", cluster_label)
             raise UnphysicalGreensFunctionError("Matsubara self-energy:\n" + str(err)) from None
     else:
         sigma = None
@@ -400,22 +455,50 @@ def calc_selfenergy(
 
 
 def check_greens_function(G):
-    """
-    Verify that G makes physical sense.
+    """Verify that the Green's function makes physical sense.
+
+    Raises an exception if the diagonal elements of the imaginary part are positive.
+
+    Parameters
+    ----------
+    G : np.ndarray
+        The Green's function matrix.
+
+    Raises
+    ------
+    UnphysicalGreensFunctionError
+        If the diagonal term has a positive imaginary part.
     """
     if np.any(np.diagonal(G, axis1=1, axis2=2).imag > 0):
         raise UnphysicalGreensFunctionError("Diagonal term has positive imaginary part.")
 
 
 def get_hcorr_v_hbath(h0op, impurity_orbitals, sum_bath_states):
-    """
-    The matrix form of h0op can be written
+    """Extract the correlation Hamiltonian, hybridization, and bath Hamiltonian.
+
+    The matrix form of h0op can be written as:
       [  hcorr  V^+    ]
       [  V      hbath  ]
-    where:
-          - hcorr is the Hamiltonian for the correlated, impurity, orbitals.
-          - V/V^+ is the hopping between impurity and bath orbitals.
-          - hbath is the hamiltonian for the non-interacting, bath, orbitals.
+
+    Parameters
+    ----------
+    h0op : dict or ManyBodyOperator
+        The non-interacting Hamiltonian operator.
+    impurity_orbitals : dict
+        Dictionary of impurity orbitals.
+    sum_bath_states : dict
+        Dictionary of total bath states.
+
+    Returns
+    -------
+    hcorr : np.ndarray
+        Hamiltonian for the correlated impurity orbitals.
+    v : np.ndarray
+        Hopping from impurity to bath orbitals.
+    v_dagger : np.ndarray
+        Hopping from bath to impurity orbitals.
+    h_bath : np.ndarray
+        Hamiltonian for the non-interacting bath orbitals.
     """
 
     num_spin_orbitals = sum(impurity_orbitals[i] + sum_bath_states[i] for i in impurity_orbitals)
@@ -437,9 +520,25 @@ def get_hcorr_v_hbath(h0op, impurity_orbitals, sum_bath_states):
 
 
 def hyb(ws, v, hbath, delta):
-    """
-    Calculate hybridization function from hopping parameters and bath energies.
-    Δ = v^dag [(ws+i*delta)I - hbath]^-1 V
+    """Calculate hybridization function from hopping parameters and bath energies.
+
+    Δ(w) = V^dag [(w + i*delta)I - hbath]^-1 V
+
+    Parameters
+    ----------
+    ws : np.ndarray
+        Frequency mesh.
+    v : np.ndarray
+        Hopping matrix V.
+    hbath : np.ndarray
+        Bath Hamiltonian matrix.
+    delta : float
+        Smearing parameter.
+
+    Returns
+    -------
+    np.ndarray
+        The hybridization function.
     """
     return np.conj(v.T) @ np.linalg.solve(
         (ws + 1j * delta)[:, None, None] * np.identity(hbath.shape[0], dtype=complex)[None, :, :] - hbath[None, :, :],
@@ -457,8 +556,31 @@ def get_sigma(
     blocks,
     clustername="",
 ):
-    """
-    Calculate self-energy from interacting Greens function and local hamiltonian.
+    """Calculate self-energy from interacting Greens function and local hamiltonian.
+
+    Parameters
+    ----------
+    omega_mesh : np.ndarray
+        Frequency mesh.
+    impurity_orbitals : dict
+        Dictionary of impurity orbitals.
+    nBaths : dict
+        Dictionary of total bath states.
+    gs : list of np.ndarray
+        List of block Green's function matrices.
+    h0op : dict or ManyBodyOperator
+        The non-interacting Hamiltonian operator.
+    delta : float
+        Smearing parameter.
+    blocks : list of list of int
+        List of blocks.
+    clustername : str, optional
+        Label for the cluster.
+
+    Returns
+    -------
+    list of np.ndarray
+        The self-energy matrices for each block.
     """
     hcorr, v_full, _, h_bath = get_hcorr_v_hbath(h0op, impurity_orbitals, nBaths)
 
@@ -473,8 +595,19 @@ def get_sigma(
 
 
 def get_Sigma_static(U4, rho):
-    """
-    Calculate the static (Hartree-Fock) self-energy.
+    """Calculate the static (Hartree-Fock) self-energy.
+
+    Parameters
+    ----------
+    U4 : np.ndarray
+        Coulomb interaction tensor.
+    rho : np.ndarray
+        Density matrix.
+
+    Returns
+    -------
+    np.ndarray
+        The static self-energy.
     """
     sigma_static = np.zeros_like(rho)
     for i, j in itertools.product(range(rho.shape[0]), range(rho.shape[1])):
@@ -504,8 +637,48 @@ def get_selfenergy(
     delta,
     verbose,
 ):
-    """
-    Calculate the self energy starting from a large number of arguments.
+    """Calculate the self energy starting from a large number of arguments.
+
+    Parameters
+    ----------
+    clustername : str
+        Label for the cluster.
+    h0_filename : str
+        Filename of the non-interacting Hamiltonian.
+    ls : int
+        Angular momentum of correlated orbitals.
+    nBaths : int
+        Total number of bath states.
+    nValBaths : int
+        Number of valence bath states.
+    n0imps : int
+        Nominal impurity occupation.
+    dnTols : int
+        Max deviation from nominal impurity occupation.
+    dnValBaths : int
+        Max number of electrons to leave valence bath orbitals.
+    dnConBaths : int
+        Max number of electrons to enter conduction bath orbitals.
+    Fdd : list of float
+        Slater-Condon parameters.
+    xi : float
+        Spin-orbit coupling value.
+    chargeTransferCorrection : float
+        Double counting parameter.
+    hField : tuple of float
+        Magnetic field vector (hx, hy, hz).
+    nPsiMax : int
+        Maximum number of eigenstates to consider.
+    nPrintSlaterWeights : int
+        Printing parameter for Slater weights.
+    tau : float
+        Fundamental temperature.
+    energy_cut : float
+        Energy cutoff for eigenstates.
+    delta : float
+        Smearing parameter.
+    verbose : bool
+        Verbosity flag.
     """
     # MPI variables
     comm = MPI.COMM_WORLD

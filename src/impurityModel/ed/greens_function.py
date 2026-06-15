@@ -70,9 +70,10 @@ def build_full_greens_function(block_gf, block_structure: BlockStructure):
             for block_i in transposed_blocks[inequivalent_blocks[inequiv_i]]:
                 if len(gf_i.shape) == 2:
                     block_idx = np.ix_(blocks[block_i], blocks[block_i])
+                    res[block_idx] = np.transpose(gf_i, (1, 0))
                 elif len(gf_i.shape) == 3:
                     block_idx = np.ix_(range(gf_i.shape[0]), blocks[block_i], blocks[block_i])
-                res[block_idx] = np.transpose(gf_i, (0, 2, 1))
+                    res[block_idx] = np.transpose(gf_i, (0, 2, 1))
             for block_i in particle_hole_blocks[inequivalent_blocks[inequiv_i]]:
                 if len(gf_i.shape) == 2:
                     block_idx = np.ix_(blocks[block_i], blocks[block_i])
@@ -82,9 +83,10 @@ def build_full_greens_function(block_gf, block_structure: BlockStructure):
             for block_i in particle_hole_transposed_blocks[inequivalent_blocks[inequiv_i]]:
                 if len(gf_i.shape) == 2:
                     block_idx = np.ix_(blocks[block_i], blocks[block_i])
+                    res[block_idx] = -np.transpose(np.conj(gf_i), (1, 0))
                 elif len(gf_i.shape) == 3:
                     block_idx = np.ix_(range(gf_i.shape[0]), blocks[block_i], blocks[block_i])
-                res[block_idx] = -np.transpose(np.conj(gf_i), (0, 2, 1))
+                    res[block_idx] = -np.transpose(np.conj(gf_i), (0, 2, 1))
     elif len(block_gf) == len(blocks):
         # block_gf contains all blocks
         for block_i, gf_i in enumerate(block_gf):

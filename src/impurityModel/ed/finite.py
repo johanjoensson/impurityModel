@@ -20,6 +20,10 @@ from impurityModel.ed.block_structure import get_equivalent_blocks
 
 
 class HermitianOperator(scipy.sparse.linalg.LinearOperator):
+    """A LinearOperator representing a Hermitian operator defined by its diagonal and lower triangular part.
+    
+    This class enables efficient matrix-vector products without storing the full dense matrix.
+    """
     def __init__(self, diagonal: np.ndarray, diagonal_indices: np.ndarray, triangular_part: scipy.sparse.csr_matrix):
         self.shape = triangular_part.shape
         self.diagonal = diagonal if len(diagonal.shape) == 1 else diagonal.reshape(-1)
@@ -40,6 +44,7 @@ class HermitianOperator(scipy.sparse.linalg.LinearOperator):
         return res + self.triangular_part @ m + self.triangular_part.getH() @ m
 
     def _adjoint(self):
+        """Return the adjoint of the operator (which is itself)."""
         return self
 
 
@@ -337,7 +342,11 @@ def scipy_eigensystem(
 
 def eigensystem(h_local, e_max, k=10, e0=None, v0=None, eigenValueTol=0, return_eigvecs=True, comm=None, dense=False):
     """
-    Return eigen-energies and eigenstates.
+    Return eigen-energies and eigenstates of a Hamiltonian matrix.
+
+    This function automatically chooses between a dense eigensolver, SciPy's sparse solver (ARPACK),
+    and a custom thick-restarted block Lanczos solver based on the matrix size and options.
+
 
     Parameters
     ----------
@@ -987,13 +996,19 @@ def getSOCop(xi, l=2):
     """
     Return SOC operator for one l-shell.
 
+    Parameters
+    ----------
+    xi : float
+        Spin-orbit coupling constant.
+    l : int, default 2
+        Angular momentum quantum number.
+
     Returns
     -------
     uDict : dict
         Elements of the form:
-        ((sorb1,'c'), (sorb2,'a') : h_value
-        where sorb1 is a superindex of (l, s, m).
-
+        (((l, s1, m1),'c'), ((l, s2, m2),'a')) : h_value
+        where (l, s, m) is the state.
     """
     opDict = {}
     for m in range(-l, l + 1):
@@ -1011,13 +1026,22 @@ def gethHfieldop(hx, hy, hz, l=2):
     """
     Return magnetic field operator for one l-shell.
 
+    Parameters
+    ----------
+    hx : float
+        Magnetic field x-component.
+    hy : float
+        Magnetic field y-component.
+    hz : float
+        Magnetic field z-component.
+    l : int, default 2
+        Angular momentum quantum number.
+
     Returns
     -------
     hHfieldOperator : dict
         Elements of the form:
-        ((sorb1,'c'), (sorb2,'a') : h_value
-        where sorb1 is a superindex of (l, s, m).
-
+        (((l, s1, m1),'c'), ((l, s2, m2),'a')) : h_value
     """
     hHfieldOperator = {}
     for m in range(-l, l + 1):
@@ -1190,12 +1214,20 @@ def combineOp(nBaths, op1, op2):
     r"""
     Return a dict of the form {(i, j) : val, ...} corresponding to the
     operator op1*op2
+
     Parameters
     ----------
+    nBaths : dict
+        angular momentum : number of bath sets
     op1 : dict
-     (i, j) : val
+        Operator dictionary {(i, j) : val}
     op2 : dict
-     (i, j) : val
+        Operator dictionary {(i, j) : val}
+
+    Returns
+    -------
+    newOp : dict
+        Combined operator dictionary
     """
     mOp1 = iOpToMatrix(nBaths, op1)
     mOp2 = iOpToMatrix(nBaths, op2)
@@ -1208,12 +1240,18 @@ def combineOp(nBaths, op1, op2):
 def iOpToMatrix(nBaths, op):
     r"""
     Return the matrix representation of op
+
     Parameters
     ----------
     nBaths : dict
-     l : nb
+        angular momentum : number of bath sets
     op : dict
-     (i, j) : val
+        Operator dictionary {(i, j) : val}
+
+    Returns
+    -------
+    m : numpy.ndarray
+        Dense matrix representation of the operator
     """
     dsize = 0
     for l, nb in nBaths.items():
@@ -1233,9 +1271,16 @@ def iOpToMatrix(nBaths, op):
 def matrixToIOp(mat):
     r"""
     Return a dict containing the non-zero elements of the matrix mat
+
     Parameters
     ----------
-    mat : numpy matrix
+    mat : numpy.ndarray
+        Matrix representation of the operator
+
+    Returns
+    -------
+    res : dict
+        Operator dictionary {(i, j) : val}
     """
     rows, columns = mat.shape
     res = {}
