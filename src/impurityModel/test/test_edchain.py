@@ -129,6 +129,20 @@ def test_double_chains():
     assert v.shape[1] == 1
     assert hb.shape == (4, 4)
 
+def test_single_chain():
+    np.random.seed(42)
+    H_imp = np.array([[0.0]])
+    vs = np.random.rand(4, 1)
+    ebs = np.array([-2.0, -1.0, 1.0, 2.0])
+    v, hb = edchain.single_chain(H_imp, vs, ebs, verbose=False, extremely_verbose=False)
+    assert v.shape[1] == 1
+    assert hb.shape == (4, 4)
+    # The bath matrix hb should be symmetric tridiagonal
+    assert np.allclose(hb, hb.T)
+    # Ensure it's tridiagonal by checking that elements outside the tridiagonal band are zero
+    mask = ~np.tri(4, 4, 1, dtype=bool) | np.tri(4, 4, -2, dtype=bool)
+    assert np.allclose(hb[mask], 0.0)
+
 def test_transform_to_lanczos_tridagonal_matrix():
     np.random.seed(42)
     N = 10
@@ -165,3 +179,59 @@ def test_transform_to_lanczos_tridagonal_matrix_early_break():
     # Check that the eigenvalues of the tridiagonal matrix are present in the original
     for e in eig_tri:
         assert np.any(np.isclose(eig_orig, e, atol=1e-10))
+
+def test_build_H_bath_v():
+    from impurityModel.ed.block_structure import BlockStructure
+    
+    H_dft = np.array([[0.0]])
+    vs_star = [np.random.rand(4, 1, 1)]
+    ebs_star = [np.array([-2.0, -1.0, 1.0, 2.0])]
+    block_structure = BlockStructure(
+        blocks=[[0]], identical_blocks=[], transposed_blocks=[],
+        particle_hole_blocks=[], particle_hole_transposed_blocks=[], inequivalent_blocks=[0]
+    )
+    
+    for geom in ["chain", "single_chain", "haver", "star"]:
+        H_baths, vs = edchain.build_H_bath_v(
+            H_dft, ebs_star, vs_star, geom, block_structure, verbose=True, extra_verbose=False
+        )
+        assert len(H_baths) == 1
+        assert len(vs) == 1
+        assert H_baths[0].shape == (4, 4)
+        assert vs[0].shape[0] == 4
+
+    # Test early fallback branches
+    ebs_short = [np.array([-1.0])]
+    vs_short = [np.random.rand(1, 1, 1)]
+    for geom in ["chain", "single_chain", "haver"]:
+        H_baths, vs = edchain.build_H_bath_v(
+            H_dft, ebs_short, vs_short, geom, block_structure, verbose=False, extra_verbose=False
+        )
+        assert len(H_baths) == 1
+        assert len(vs) == 1
+
+def test_build_full_bath():
+    from impurityModel.ed.block_structure import BlockStructure
+    
+    H_bath_inequiv = [np.diag([1.0, 2.0]), np.diag([3.0, 4.0])]
+    v_inequiv = [np.array([[0.1], [0.2]]), np.array([[0.3], [0.4]])]
+    
+    block_structure = BlockStructure(
+        blocks=[[0], [1], [2], [3], [4]], # 5 orbitals total
+        identical_blocks=[[0, 1], [], [2], [], []], 
+        transposed_blocks=[[], [], [3], [], []],
+        particle_hole_blocks=[[4], [], [], [], []],
+        particle_hole_transposed_blocks=[[], [], [], [], []],
+        inequivalent_blocks=[0, 2] # 0 and 2 are the templates
+    )
+    
+    H_bath_full, vs_full = edchain.build_full_bath(H_bath_inequiv, v_inequiv, block_structure)
+    
+    # 5 orbitals * 2 bath states per orbital = 10 total bath states
+    assert H_bath_full.shape == (10, 10)
+    assert vs_full.shape == (10, 5)
+    
+    # Check that identical block 1 copied block 0
+    assert np.allclose(H_bath_full[0:2, 0:2], H_bath_inequiv[0])
+    assert np.allclose(H_bath_full[2:4, 2:4], H_bath_inequiv[0])
+    assert np.allclose(H_bath_full[4:6, 4:6], H_bath_inequiv[1])

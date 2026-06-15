@@ -1,4 +1,6 @@
 import numpy as np
+import scipy.linalg
+import scipy.integrate
 
 
 def get_huge_star(w, hyb, n_bins=1000, grid_type="linear"):
@@ -65,16 +67,16 @@ def get_huge_star(w, hyb, n_bins=1000, grid_type="linear"):
         A_bin = A[start:end]
 
         # Integrate A(w) over the bin
-        M_k = np.trapz(A_bin, w_bin, axis=0)
+        M_k = scipy.integrate.trapezoid(A_bin, w_bin, axis=0)
 
         # Integrate w * Tr(A(w)) to find center of mass energy
         tr_A = np.trace(A_bin, axis1=1, axis2=2)
-        norm = np.trapz(tr_A, w_bin)
+        norm = scipy.integrate.trapezoid(tr_A, w_bin)
 
         if norm < 1e-12:
             continue
 
-        E_k = np.trapz(w_bin * tr_A, w_bin) / norm
+        E_k = scipy.integrate.trapezoid(w_bin * tr_A, w_bin) / norm
 
         # Diagonalize M_k
         evals, evecs = np.linalg.eigh(M_k)

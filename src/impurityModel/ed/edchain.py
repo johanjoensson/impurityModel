@@ -418,13 +418,13 @@ def build_star_geometry_hamiltonian(H_imp, vs, es):
     n_imp = H_imp.shape[1]
     n_bath = es.shape[0]
     
-    if len(vs.shape) == 2:
+    if len(vs.shape) == 2 and vs.shape[0] == n_bath:
         H_star = np.empty((n_imp + n_bath, n_imp + n_bath), dtype=H_imp.dtype)
         H_star[:n_imp, :n_imp] = H_imp
         H_star[n_imp:, :n_imp] = vs
         H_star[:n_imp, n_imp:] = np.conj(vs.T)
         H_star[n_imp:, n_imp:] = np.diag(es)
-    elif len(vs.shape) == 3 and vs.shape[1] == 1:
+    elif len(vs.shape) == 3 and vs.shape[1] == 1 and vs.shape[0] == n_bath:
         # Non-degenerate bath packed as (N_bath, 1, n_imp)
         vs_2d = vs.reshape(n_bath, n_imp)
         H_star = np.empty((n_imp + n_bath, n_imp + n_bath), dtype=H_imp.dtype)
