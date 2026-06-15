@@ -22,6 +22,7 @@ dependencies = [
 "numpy>2.0.0",
 "numpydoc",
 "pytest",
+"pytest-mpi",
 "sympy",
 "scipy",
 "sphinx",
@@ -38,7 +39,7 @@ Issues = "https://github.com/johanjoensson/impurityModel//issues"
 
 
 [build-system]
-requires = ["setuptools >= 77.0.3", "setuptools-scm", "cython"]
+requires = ["setuptools >= 77.0.3", "setuptools-scm", "cython", "numpy"]
 build-backend = "setuptools.build_meta"
 
 [tool.setuptools_scm]
@@ -46,11 +47,6 @@ build-backend = "setuptools.build_meta"
 [project.scripts]
 plot_RIXS="impurityModel.scripts.plot_RIXS:main"
 build_h0="impurityModel.scripts.build_h0:main"
-[tool.setuptools]
-ext-modules = [
-{name = "impurityModel.ed.ManyBodyUtils", sources=["src/cython/ManyBodyUtils.pyx", "src/cython/MpiUtils.cpp"], language="c++"}
-]
-
 
 [tool.black]
 line-length = 120

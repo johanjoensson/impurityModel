@@ -188,12 +188,15 @@ ManyBodyState &ManyBodyState::prune(double cutoff) {
   double cutoff2 = cutoff * cutoff;
 #if __cplusplus >= 202302L && __has_include(<flat_map>)
   std::erase_if(m_map, [cutoff2](ManyBodyState::const_reference pair) {
-#else
-  boost::container::erase_if(m_map,
-                             [cutoff2](ManyBodyState::const_reference pair) {
-#endif
     return std::norm(pair.second) <= cutoff2;
   });
+#else
+  auto it = std::remove_if(m_map.begin(), m_map.end(),
+                           [cutoff2](ManyBodyState::const_reference pair) {
+                             return std::norm(pair.second) <= cutoff2;
+                           });
+  m_map.erase(it, m_map.end());
+#endif
   return *this;
 }
 
