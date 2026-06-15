@@ -155,6 +155,20 @@ def implicitly_restarted_block_lanczos(
 
         q_k, beta_i = block_normalize(wp, mpi, comm, slaterWeightMin)
 
+        if np.linalg.norm(beta_i) < 1e-5:
+            if verbose and (not mpi or comm.rank == 0):
+                print(f"Invariant subspace found during IRLM restart. Stopping early.")
+            
+            from impurityModel.ed.lanczos import _build_full_T
+            T_final = _build_full_T(alphas_new, betas_new)
+            eigvals, eigvecs = sp.eigh(T_final)
+            
+            wanted_indices = np.argsort(eigvals)[:num_wanted]
+            final_eigvals = eigvals[wanted_indices]
+            
+            final_eigvecs = block_combine(Q_new, eigvecs[:, wanted_indices], slaterWeightMin)
+            return final_eigvals, final_eigvecs
+
         if is_arr:
             Q_list = np.concatenate([Q_new, q_k], axis=1)
         else:
