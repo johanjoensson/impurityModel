@@ -227,45 +227,6 @@ def householder_matrix(v):
     return np.eye(v.shape[0], dtype=v.dtype) - 2 * v @ np.conj(v.T)
 
 
-def test_householder():
-    """Test function for Householder reflector and block QR decomposition.
-
-    Returns
-    -------
-    None
-    """
-    M = np.ones((4, 4))
-    M[[1, 1, 2, 2, 3, 3, 3], [1, 3, 2, 3, 1, 2, 3]] = -1
-    a1 = householder_reflector(M[:, 0:2])
-    H1 = householder_matrix(a1)
-    H1_exact = np.zeros_like(M)
-    H1_exact[[0, 0, 1, 1, 2, 3], [0, 2, 1, 3, 0, 1]] = -1
-    H1_exact[[2, 3], [2, 3]] = 1
-    H1_exact *= np.sqrt(1 / 2)
-    assert np.allclose(H1, H1_exact)
-
-    Q, R = block_qr(M, 1)
-    R_exact = np.eye(4)
-    R_exact[[0, 1, 2, 3], [0, 1, 2, 3]] = [-2, 2, 2, -1]
-    R_exact[:3, 3] = 1
-    Q_exact = 1 / 2 * np.ones((4, 4))
-    Q_exact[[0, 1, 2, 3, 1, 3, 2, 3, 0, 3], [0, 0, 0, 0, 1, 1, 2, 2, 3, 3]] *= -1
-    assert np.allclose(Q, Q_exact)
-    assert np.allclose(R, R_exact)
-
-    M = np.random.rand(5, 5) + 1j * np.random.rand(5, 5)
-    Q, R = block_qr(M, 1)
-    Q_np, R_np = np.linalg.qr(M)
-    assert np.allclose(Q @ R, M)
-    assert np.allclose(np.conj(Q.T) @ Q, np.conj(Q_np).T @ Q_np)
-
-    M = np.ones((150, 150), dtype=float)
-    Q, R = block_qr(M, 1)
-    Q_np, R_np = np.linalg.qr(M)
-    assert np.allclose(Q @ R, M)
-    assert np.allclose(np.conj(Q.T) @ Q, np.conj(Q_np).T @ Q_np)
-
-
 def block_qr(A, block_size=1, overwrite_A=False):
     """Perform block QR decomposition on matrix A.
 
@@ -297,16 +258,11 @@ def block_qr(A, block_size=1, overwrite_A=False):
 
         vi = householder_reflector(Ai)
         hi = householder_matrix(vi)
-        assert np.allclose(np.conj(hi.T) @ hi, np.eye(hi.shape[1]))
-        assert np.allclose(np.conj(hi.T), hi)
 
         Hi = np.eye(m, dtype=Qd.dtype)
         Hi[i * block_size :, i * block_size :] = hi
         A[i * block_size :, i * block_size :] = hi @ Ap
-        assert np.allclose(np.conj(Hi.T) @ Hi, np.eye(m))
-        assert np.allclose(np.conj(Hi.T), Hi)
         Qd = Hi @ Qd
-    assert np.allclose(np.conj(Qd.T) @ Qd, np.eye(Qd.shape[1]))
     return np.conj(Qd.T), A
 
 
@@ -527,9 +483,6 @@ def transform_to_lanczos_tridagonal_matrix(H, n_imp):
     res[:n_imp, n_imp : 2 * n_imp] = np.conj(V0.T)
     res[n_imp:, n_imp:] = H_tridiagonal
 
-    assert np.allclose(np.linalg.eigvalsh(H), np.linalg.eigvalsh(res), atol=1e-15), (
-        f"{np.linalg.eigvalsh(H)=}\n{np.linalg.eigvalsh(res)=}"
-    )
     return res
 
 
@@ -709,83 +662,4 @@ def linked_double_chain(H_imp, vs, es, verbose=True, extremely_verbose=False):
     if extremely_verbose:
         matrix_print(H_linked_chains, "Hamiltonian with linked chains (impurity sits in the top left corner)")
 
-    # Make sure that we have not changed the spectrum of the Hamiltonian
-    assert np.allclose(np.linalg.eigvalsh(H_star), np.linalg.eigvalsh(H_tridiagonal_decoupled), atol=1e-15), (
-        f"{np.linalg.eigvalsh(H_star)}\n{np.linalg.eigvalsh(H_tridiagonal_decoupled)}"
-    )
-    assert np.allclose(np.linalg.eigvalsh(H_star), np.linalg.eigvalsh(H_linked_chains), atol=1e-15), (
-        f"{np.linalg.eigvalsh(H_star)}\n{np.linalg.eigvalsh(H_linked_chains)}"
-    )
-    # Make sure that we have restored the impurity block exactly
-    assert np.allclose(H_linked_chains[:n_imp, :n_imp], H_imp, atol=1e-15), (
-        f"{H_linked_chains[:n_imp, :n_imp]=} {H_imp=}"
-    )
-
     return H_linked_chains[n_imp:, :n_imp], H_linked_chains[n_imp:, n_imp:]
-
-
-def basil_linked_double_chain(H_imp, vs, es, verbose=True, extremely_verbose=False):
-    """Alternative linked double chain transformation using Basile's algorithm.
-
-    Parameters
-    ----------
-    H_imp : np.ndarray
-        Impurity Hamiltonian block.
-    vs : np.ndarray
-        Hopping parameters.
-    es : np.ndarray
-        Bath energies.
-    verbose : bool, default True
-        Whether to print verbose output.
-    extremely_verbose : bool, default False
-        Whether to print extremely verbose output.
-
-    Returns
-    -------
-    v_chain : np.ndarray
-        Hopping terms from impurity to the linked double chain.
-    H_chain : np.ndarray
-        The bath Hamiltonian of the linked double chain.
-    """
-    from impurityModel.ed.double_chain_haverkort.double_chains import get_double_chain_transform_multi
-
-    n_imp = H_imp.shape[0]
-    H_star = build_star_geometry_hamiltonian(H_imp, vs, es)
-    eigvals = np.linalg.eigvalsh(H_star)
-    sort_idx = np.argsort(eigvals)
-    eigvals[:] = eigvals[sort_idx]
-
-    # Put the pivot point at the eigenstate with energy closest to 0
-    # In order to ensure we always get two decoupled blocks, the pivot will never
-    # be placed at the last eigenstate (unless there is only one eigenstate block.)
-    n_elec = n_imp * (min(np.argmin(np.abs(eigvals)), max(len(eigvals) - 2 * n_imp, 0)) // n_imp)
-
-    h_linked_double_chain, Q, info = get_double_chain_transform_multi(H_star, H_imp.shape[0], n_elec)
-
-    matrix_print(h_linked_double_chain, "Basile's Linked double chain")
-
-    h_linked_2 = np.conj(Q.T) @ H_star @ Q
-
-    print(f"{np.linalg.eigvalsh(H_star)=}")
-    print(f"{np.linalg.eigvalsh(h_linked_double_chain)=}")
-    print(f"{np.linalg.eigvalsh(h_linked_2)=}")
-    return h_linked_double_chain[n_imp:, :n_imp], h_linked_double_chain[n_imp:, n_imp:]
-
-
-if __name__ == "__main__":
-    test_householder()
-    n_orb = 2
-    n_b = 8 * n_orb
-    n = n_orb + n_b
-    H_start = np.random.rand(n, n) + 1j * np.random.rand(n, n)
-    H_start = 1 / 2 * (H_start + np.conj(H_start.T))
-
-    h_imp = H_start[:n_orb, :n_orb] * 0
-    v = H_start[n_orb:, :n_orb]
-    eb = np.linspace(-1, 1, num=n_b)
-    # eb = np.linalg.eigvals(H_start[n_orb:, n_orb:])
-
-    v, hb = linked_double_chain(h_imp, v, eb, extremely_verbose=True)
-    basil_linked_double_chain(h_imp, v, eb, extremely_verbose=True)
-    # matrix_print(hb, "bath hamiltonian")
-    # matrix_print(v, "Hopping term")

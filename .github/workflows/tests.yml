@@ -109,3 +109,9 @@ jobs:
       - name: Run MPI tests (2 ranks)
         run: |
           mpiexec -n 2 python -m pytest --with-mpi $PYTEST_COV_ARGS
+
+      - name: Upload coverage to Coveralls
+        if: matrix.compiler == 'gcc-12' && matrix.cxx_std == '-std=c++20' && matrix.parallel == ''
+        uses: coverallsapp/github-action@v2
+        with:
+          file: coverage.xml
