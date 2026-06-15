@@ -1,13 +1,13 @@
+import numpy as np
 import pytest
 from mpi4py import MPI
-import numpy as np
+
 from impurityModel.ed.manybody_basis import Basis
 from impurityModel.ed.ManyBodyUtils import SlaterDeterminant
-from math import ceil
 
 
 def build_states(states: list[bytes]):
-    b = Basis(
+    Basis(
         impurity_orbitals={0: [list(range(8 * len(states[0])))]},
         bath_states=({0: []}, {0: []}),
         initial_basis=[],
@@ -409,7 +409,7 @@ def test_contains_random_distributed(n_bytes, n_states):
     assert all(basis.contains(states))
     assert too_large_state not in basis
     assert not list(basis.contains(states + [too_large_state]))[-1]
-    sorted_indices = basis.index(sorted_states)
+    basis.index(sorted_states)
     # assert all(si == i for i, si in enumerate(sorted_indices))
     # for i in range(len(sorted_states)):
     #     assert basis.index(sorted_states[i]) == i
@@ -478,10 +478,10 @@ def test_index_random_distributed_random(n_bytes, n_states, n_sample_states):
     all_states = sorted({state for states in all_states for state in states})
     sample_bytes = np.random.randint(0, high=255, size=n_sample_states * n_bytes, dtype=np.ubyte)
     sample_states = [i.tobytes() for i in np.split(sample_bytes, n_sample_states)]
-    correct_indices = [all_states.index(state) for state in sample_states if state in all_states]
+    [all_states.index(state) for state in sample_states if state in all_states]
     basis_mask = list(basis.contains(sample_states))
     samples_in_basis = [sample_states[i] for i in range(len(sample_states)) if basis_mask[i]]
-    basis_indices = basis.index(samples_in_basis)
+    basis.index(samples_in_basis)
     # assert all(bi == ci for bi, ci in zip(basis_indices, correct_indices))
 
 
@@ -831,9 +831,9 @@ def test_operator_dict_eg_t2g_with_extra_states():
 
     assert all(fk in correct for fk in op_dict.keys())
     for key in states:
-        assert all(
-            fk in correct[key] for fk in op_dict[key].keys()
-        ), f"{list(op_dict[key].keys())=} {list(correct.keys())=} "
+        assert all(fk in correct[key] for fk in op_dict[key].keys()), (
+            f"{list(op_dict[key].keys())=} {list(correct.keys())=} "
+        )
         for row in correct[key].keys():
             assert correct[key][row] == op_dict[key][row], f"{key=} {row=}"
 
@@ -902,9 +902,9 @@ def test_operator_dict_eg_t2g_with_extra_states_mpi():
 
     assert all(fk in correct for fk in full_dict.keys())
     for key in states:
-        assert all(
-            fk in correct[key] for fk in full_dict[key].keys()
-        ), f"{list(full_dict[key].keys())=} {list(correct.keys())=} "
+        assert all(fk in correct[key] for fk in full_dict[key].keys()), (
+            f"{list(full_dict[key].keys())=} {list(correct.keys())=} "
+        )
         for row in correct[key].keys():
             assert correct[key][row] == full_dict[key][row], f"{key=} {row=}"
 
@@ -1102,7 +1102,6 @@ def test_simple_vector_mpi():
 
 
 def test_vector():
-    comm = None
     states = build_states([b"\x78", b"\xb8", b"\xd8", b"\xe8", b"\xf0"])
     basis = Basis(
         impurity_orbitals={0: [list(range(5))]},
@@ -1237,9 +1236,9 @@ def test_state_mpi():
         comm=comm,
     )
     v = np.array([[1.0, -2.5, 0, 0, 1.2], [0, 3, 1, 0, 0]])
-    s = basis.build_state(v)
+    basis.build_state(v)
     state_indices = list(basis.index(states))
-    s_exact = [
+    [
         {states[state_indices[0]]: v[0, 0], states[state_indices[1]]: v[0, 1], states[state_indices[4]]: v[0, 4]},
         {states[state_indices[1]]: v[1, 1], states[state_indices[2]]: v[1, 2]},
     ]
@@ -1264,9 +1263,9 @@ def test_alltoall_states_mpi():
     )
     send_states = [[r.to_bytes(basis.n_bytes, "big")] for r in range(comm.size)]
     received_states = basis.alltoall_states(send_states)
-    assert all(
-        state == comm.rank.to_bytes(basis.n_bytes, "big") for rs in received_states for state in rs
-    ), f"{comm.rank=} {received_states=} {basis.local_basis=}"
+    assert all(state == comm.rank.to_bytes(basis.n_bytes, "big") for rs in received_states for state in rs), (
+        f"{comm.rank=} {received_states=} {basis.local_basis=}"
+    )
 
 
 @pytest.mark.mpi
@@ -1286,9 +1285,9 @@ def test_alltoall_states_with_empty_mpi():
     send_states = [[r.to_bytes(basis.n_bytes, "big")] if r < comm.rank else [] for r in range(comm.size)]
     basis.add_states([comm.rank.to_bytes(basis.n_bytes, "big")])
     received_states = basis.alltoall_states(send_states)
-    assert all(
-        state == comm.rank.to_bytes(basis.n_bytes, "big") for rs in received_states for state in list(rs)
-    ), f"{comm.rank=} {received_states=} {basis.local_basis=}"
+    assert all(state == comm.rank.to_bytes(basis.n_bytes, "big") for rs in received_states for state in list(rs)), (
+        f"{comm.rank=} {received_states=} {basis.local_basis=}"
+    )
 
 
 def test_eg_t2g_basis_expand():
@@ -1393,6 +1392,7 @@ def test_eg_t2g_CIPSI_basis_expand():
     #            00000
     states = build_states([b"\x80\x00"])
     from impurityModel.ed.cipsi_solver import CIPSISolver
+
     basis = Basis(
         impurity_orbitals={2: [list(range(10))]},
         bath_states=(
@@ -1435,6 +1435,7 @@ def test_eg_t2g_CIPSI_basis_expand_mpi():
     #            00000
     states = build_states([b"\x80\x00"])
     from impurityModel.ed.cipsi_solver import CIPSISolver
+
     basis = Basis(
         impurity_orbitals={2: [list(range(10))]},
         bath_states=(
@@ -1507,9 +1508,9 @@ def test_distributed_vector_mpi():
     if states[1] in basis.local_basis:
         state[states[1]] = 0.33 + 0.15j
     v = basis.build_distributed_vector([state])[0]
-    v_exact = np.array([0.25 * comm.size + 0.2j * comm.size, 0.33 + 0.15j, 0, 0], dtype=complex)
+    np.array([0.25 * comm.size + 0.2j * comm.size, 0.33 + 0.15j, 0, 0], dtype=complex)
 
-    n = len(basis.local_basis)
+    len(basis.local_basis)
     assert v.shape == (len(basis.local_basis),)
     end = basis.index_bounds[comm.rank]
     if end is None:

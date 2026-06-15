@@ -1,16 +1,15 @@
-from itertools import product, compress
+from itertools import product
+
 import numpy as np
-from mpi4py import MPI
-from impurityModel.ed.ManyBodyUtils import ManyBodyState, ManyBodyOperator
-from impurityModel.ed.manybody_basis import Basis
-from impurityModel.ed.finite import (
-    eigensystem,
-    thermal_average_scale_indep,
-    print_thermal_expectation_values,
-    print_expectation_values,
-)
-from impurityModel.ed.density_matrix import calc_density_matrices
+
 from impurityModel.ed.block_structure import BlockStructure, print_block_structure
+from impurityModel.ed.density_matrix import calc_density_matrices
+from impurityModel.ed.finite import (
+    print_expectation_values,
+    print_thermal_expectation_values,
+    thermal_average_scale_indep,
+)
+from impurityModel.ed.ManyBodyUtils import ManyBodyOperator, ManyBodyState
 from impurityModel.ed.utils import matrix_print
 
 
@@ -76,15 +75,15 @@ def calc_energy(
         The optimized many-body basis.
     """
 
-    from impurityModel.ed.manybody_basis import Basis
     from impurityModel.ed.cipsi_solver import CIPSISolver
+    from impurityModel.ed.manybody_basis import Basis
 
     basis = Basis(
         impurity_indices,
         bath_states,
-        delta_impurity_occ={i: 0 for i in N0},
-        delta_valence_occ={i: 0 for i in N0},
-        delta_conduction_occ={i: 0 for i in N0},
+        delta_impurity_occ=dict.fromkeys(N0, 0),
+        delta_valence_occ=dict.fromkeys(N0, 0),
+        delta_conduction_occ=dict.fromkeys(N0, 0),
         nominal_impurity_occ=N0,
         mixed_valence=mixed_valence,
         tau=tau,
@@ -100,7 +99,9 @@ def calc_energy(
     basis.restrictions = basis.build_excited_restrictions(h_op, psis=None, es=None)
     if len(basis) == 0:
         return np.inf, basis
-    solver.expand(h_op, dense_cutoff=dense_cutoff, de2_min=1e-4, slaterWeightMin=slaterWeightMin, solver=cipsi_solver_method)
+    solver.expand(
+        h_op, dense_cutoff=dense_cutoff, de2_min=1e-4, slaterWeightMin=slaterWeightMin, solver=cipsi_solver_method
+    )
 
     energy_cut = -tau * np.log(1e-4)
 
@@ -141,7 +142,7 @@ def find_ground_state_basis(
     basis_gs, ManybodyBasis: Initial basis for the ground state
     """
     if mixed_valence is None or mixed_valence is False:
-        mixed_valence = {i: 0 for i in N0}
+        mixed_valence = dict.fromkeys(N0, 0)
     (
         num_val_baths,
         num_cond_baths,
@@ -326,7 +327,9 @@ def calc_gs(
     from impurityModel.ed.cipsi_solver import CIPSISolver
 
     solver = CIPSISolver(ground_state_basis)
-    solver.expand(Hop, dense_cutoff=dense_cutoff, de2_min=1e-6, slaterWeightMin=slaterWeightMin, solver=cipsi_solver_method)
+    solver.expand(
+        Hop, dense_cutoff=dense_cutoff, de2_min=1e-6, slaterWeightMin=slaterWeightMin, solver=cipsi_solver_method
+    )
     es, psis = solver.get_eigenvectors(
         Hop,
         num_wanted=10,

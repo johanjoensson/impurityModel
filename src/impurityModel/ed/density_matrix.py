@@ -1,6 +1,6 @@
 import numpy as np
-from impurityModel.ed.ManyBodyUtils import ManyBodyState, ManyBodyOperator, inner
-from impurityModel.ed.finite import thermal_average_scale_indep as thermal_average
+
+from impurityModel.ed.ManyBodyUtils import ManyBodyOperator, ManyBodyState
 
 
 def calc_density_matrix(psi: ManyBodyState, orbital_indices: list[int]):
@@ -36,6 +36,7 @@ def calc_density_matrix(psi: ManyBodyState, orbital_indices: list[int]):
         annihilated.append(op(psi, cutoff=0))
 
     from impurityModel.ed.ManyBodyUtils import inner_multi
+
     rho = inner_multi(annihilated, annihilated).T
     return rho
 

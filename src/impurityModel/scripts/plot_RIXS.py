@@ -1,8 +1,9 @@
-import numpy as np
-import h5py as h5
-import matplotlib.pyplot as plt
 import itertools as it
 from argparse import ArgumentParser
+
+import h5py as h5
+import matplotlib.pyplot as plt
+import numpy as np
 
 
 def run(prefix: str, *kwargs) -> None:
@@ -30,7 +31,7 @@ def run(prefix: str, *kwargs) -> None:
         data = RIXS[i, j]
         min_val, max_val = np.min(data), np.max(data)
 
-        im = ax[i, j].matshow(
+        ax[i, j].matshow(
             (data.T - min_val) / (max_val - min_val),
             extent=(wIn[0], wIn[-1], wLoss[0], wLoss[-1]),
             aspect="auto",

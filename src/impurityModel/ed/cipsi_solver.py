@@ -1,13 +1,14 @@
-import numpy as np
 import itertools
-from mpi4py import MPI
-from typing import Optional
 
-from impurityModel.ed.ManyBodyUtils import ManyBodyOperator, ManyBodyState, applyOp as applyOp_test
-from impurityModel.ed.manybody_basis import Basis
+import numpy as np
+from mpi4py import MPI
+
 from impurityModel.ed.finite import eigensystem
-from impurityModel.ed.trlm import thick_restarted_block_lanczos
 from impurityModel.ed.irlm import implicitly_restarted_block_lanczos
+from impurityModel.ed.manybody_basis import Basis
+from impurityModel.ed.ManyBodyUtils import ManyBodyOperator, ManyBodyState
+from impurityModel.ed.ManyBodyUtils import applyOp as applyOp_test
+from impurityModel.ed.trlm import thick_restarted_block_lanczos
 
 SOLVERS = {
     "trlm": thick_restarted_block_lanczos,
@@ -63,7 +64,7 @@ class CIPSISolver:
                 if j is not None:
                     overlaps[i, j] = amp
 
-        psi_all_Dj = ManyBodyState({Dj: 1.0 for Dj in local_Djs})
+        psi_all_Dj = ManyBodyState(dict.fromkeys(local_Djs, 1.0))
         H_psi_all = applyOp_test(H, psi_all_Dj, cutoff=slaterWeightMin)
         e_Dj = np.array([np.real(H_psi_all.get(Dj, 0.0)) for Dj in local_Djs], dtype=float)
 
@@ -100,12 +101,13 @@ class CIPSISolver:
 
                 if psi_refs is None:
                     import random
+
                     random.seed(42)
                     local_states = list(self.basis.local_basis)
                     psi0_dict = {state: random.random() + 1j * random.random() for state in local_states}
                     psi0 = [ManyBodyState(psi0_dict)] if psi0_dict else [ManyBodyState()]
                     psi0 = self.basis.redistribute_psis(psi0)
-                    
+
                     N2s = np.array([psi.norm2() for psi in psi0], dtype=float)
                     if self.basis.is_distributed:
                         self.basis.comm.Allreduce(MPI.IN_PLACE, N2s, op=MPI.SUM)
@@ -171,39 +173,26 @@ class CIPSISolver:
         if self.basis.verbose:
             print(f"After expansion, the basis contains {self.basis.size} elements.", flush=True)
 
-    def expand_at(
-        self, E_ref: np.ndarray, psi_ref: list[ManyBodyState], H: ManyBodyOperator, de2_min: float = 1e-5
-    ) -> None:
-        old_size = self.basis.size - 1
-        while old_size != self.basis.size:
-            new_Dj, psi_ref = self.determine_new_Dj(E_ref, psi_ref, H, de2_min, return_Hpsi_ref=True)
-            old_size = self.basis.size
-            self.basis.add_states(new_Dj)
-            psi_ref = self.basis.redistribute_psis(psi_ref)
-            N2s = np.array([psi.norm2() for psi in psi_ref], dtype=float)
-            if self.basis.is_distributed:
-                self.basis.comm.Allreduce(MPI.IN_PLACE, N2s, op=MPI.SUM)
-            psi_ref = [psi / np.sqrt(N2s[i]) for i, psi in enumerate(psi_ref)]
-
     def get_eigenvectors(self, H, num_wanted: int, max_energy=None, dense_cutoff=1e3, slaterWeightMin=0, solver="trlm"):
         if self.basis.restrictions is not None:
             H.set_restrictions(self.basis.restrictions)
-            
+
         if solver in SOLVERS and self.basis.size >= dense_cutoff:
             restarted_lanczos = SOLVERS[solver]
 
             import random
+
             random.seed(42)
             local_states = list(self.basis.local_basis)
             psi0_dict = {state: random.random() + 1j * random.random() for state in local_states}
             psi0 = [ManyBodyState(psi0_dict)] if psi0_dict else [ManyBodyState()]
             psi0 = self.basis.redistribute_psis(psi0)
-            
+
             N2s = np.array([psi.norm2() for psi in psi0], dtype=float)
             if self.basis.is_distributed:
                 self.basis.comm.Allreduce(MPI.IN_PLACE, N2s, op=MPI.SUM)
             psi0 = [psi / np.sqrt(N2s[i]) if N2s[i] > 0 else psi for i, psi in enumerate(psi0)]
-            
+
             max_subspace = max(2 * num_wanted, 20)
             e_ref, psi_refs = restarted_lanczos(
                 psi0=psi0,
@@ -216,13 +205,13 @@ class CIPSISolver:
                 verbose=self.basis.verbose,
                 slaterWeightMin=slaterWeightMin,
             )
-            
+
             if max_energy is not None and len(e_ref) > 0:
                 e_min = np.min(e_ref)
                 valid_idx = [i for i, e in enumerate(e_ref) if e - e_min <= max_energy]
                 e_ref = e_ref[valid_idx]
                 psi_refs = [psi_refs[i] for i in valid_idx]
-                
+
         else:
             H_mat = self.basis.build_sparse_matrix(H)
             e_ref, psi_ref_dense = eigensystem(
@@ -237,6 +226,5 @@ class CIPSISolver:
                 return_eigvecs=True,
             )
             psi_refs = self.basis.build_state(psi_ref_dense.T, slaterWeightMin=slaterWeightMin)
-            
-        return e_ref, psi_refs
 
+        return e_ref, psi_refs

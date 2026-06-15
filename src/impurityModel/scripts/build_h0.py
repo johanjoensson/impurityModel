@@ -1,32 +1,28 @@
+from argparse import ArgumentParser
 from collections.abc import Iterable
-from rspt2spectra.readfile import parse_matrices
+from typing import Callable
+
+import numpy as np
+from mpi4py import MPI
+from pyRSPthon.read import extract_dat
+from rspt2spectra.energies import get_mu
 from rspt2spectra.h2imp import write_to_file
 from rspt2spectra.hyb_fit import fit_hyb
-from rspt2spectra.energies import get_mu
+from rspt2spectra.readfile import parse_matrices
 from rspt2spectra.weight_functions import weight_functions
-import matplotlib.pyplot as plt
-import numpy as np
-import h5py
-from impurityModel.ed.block_structure import BlockStructure
-from argparse import ArgumentParser
-from pyRSPthon.read import extract_dat
+
+from impurityModel.ed.block_structure import BlockStructure, build_block_structure, build_matrix, get_blocks
+from impurityModel.ed.edchain import (
+    build_full_bath,
+    build_H_bath_v,
+    build_imp_bath_blocks,
+)
 from impurityModel.ed.finite import matrixToIOp
 from impurityModel.ed.greens_function import (
     block_diagonalize_hyb,
 )
-from impurityModel.ed.block_structure import build_block_structure, get_blocks, build_matrix
-from impurityModel.ed.edchain import (
-    build_H_bath_v,
-    build_full_bath,
-    build_imp_bath_blocks,
-)
 from impurityModel.ed.utils import matrix_print
-import pickle
 
-from mpi4py import MPI
-
-
-from typing import Callable
 
 def partition_index(l: Iterable, pred: Callable = bool) -> tuple[list[int], list[int]]:
     """Partition the indices of an iterable based on a predicate function.
@@ -129,7 +125,7 @@ def run(
 
     hyb_dat = extract_dat("hyb", cluster, prefix)
     hs = parse_matrices(out_file="out", search_phrase="Local hamiltonian", prefix=prefix)
-    ps = parse_matrices(out_file="out", search_phrase="Projection matrix", prefix=prefix)
+    parse_matrices(out_file="out", search_phrase="Projection matrix", prefix=prefix)
     qs = parse_matrices(
         out_file="out",
         search_phrase="Transformation to the local cf basis:",
@@ -138,7 +134,7 @@ def run(
     if cluster not in hs:
         raise RuntimeError(f"Could not extract local hamiltonian for cluster {cluster} from file {prefix}/out.")
     H_dft = hs[cluster]
-    mu = get_mu()
+    get_mu()
     hyb = hyb_dat.orbitals
     w = hyb_dat.w
 
@@ -223,6 +219,7 @@ def run(
 
     if plot:
         from itertools import product
+
         import matplotlib.pyplot as plt
 
         wn = w + 1j * eim

@@ -1,10 +1,10 @@
 import numpy as np
 import scipy as sp
-from impurityModel.ed.block_structure import build_block_structure, BlockStructure
+
+from impurityModel.ed.block_structure import BlockStructure, build_block_structure
 
 # from .utils import matrix_print, matrix_connectivity_print
-from impurityModel.ed.utils import matrix_print, matrix_connectivity_print
-from typing import Optional
+from impurityModel.ed.utils import matrix_connectivity_print, matrix_print
 
 
 def build_imp_bath_blocks(
@@ -204,7 +204,7 @@ def householder_reflector(A):
     W, s, V = np.linalg.svd(X[:r], full_matrices=True)
     Vh = np.conj(V.T)
 
-    beta = np.linalg.multi_dot((-W, V, Z))
+    np.linalg.multi_dot((-W, V, Z))
     Y = X + np.linalg.multi_dot((np.eye(X.shape[0], r), W, V))
 
     U = np.linalg.multi_dot((Y, Vh, np.diag(1 / np.sqrt(2 + 2 * s))))
@@ -286,7 +286,7 @@ def block_qr(A, block_size=1, overwrite_A=False):
         Upper triangular block matrix R.
     """
     m, n = A.shape
-    R = A.copy()
+    A.copy()
     if not overwrite_A:
         A = A.copy()
     n_steps = min(m // block_size, n // block_size)
@@ -308,47 +308,6 @@ def block_qr(A, block_size=1, overwrite_A=False):
         Qd = Hi @ Qd
     assert np.allclose(np.conj(Qd.T) @ Qd, np.eye(Qd.shape[1]))
     return np.conj(Qd.T), A
-
-
-def get_lanczos_vectors(H, v0, alphas, betas):
-    """Generate Lanczos vectors from Hamiltonian and coefficients.
-
-    Parameters
-    ----------
-    H : np.ndarray
-        Hamiltonian matrix.
-    v0 : np.ndarray
-        Starting vectors.
-    alphas : np.ndarray
-        On-diagonal blocks of the tridiagonalized Hamiltonian.
-    betas : np.ndarray
-        Off-diagonal blocks of the tridiagonalized Hamiltonian.
-
-    Returns
-    -------
-    np.ndarray
-        Orthonormal Lanczos vectors matrix.
-    """
-    v0, _ = sp.linalg.qr(v0, mode="economic")
-    n_imp = v0.shape[1]
-    n_it = alphas.shape[0]
-
-    Q = np.zeros((v0.shape[0], n_imp * n_it), dtype=complex)
-    Q[:, :n_imp] = v0
-
-    # betas = np.append(betas, np.zeros((1, n_imp, n_imp)), axis=0)
-    qim = np.zeros_like(v0)
-    for i in range(n_it - 1):
-        qi = Q[:, i * n_imp : (i + 1) * n_imp]
-        wp = H @ qi
-        wp -= qi @ alphas[i] + qim @ np.conj(betas[i - 1].T)
-        for _ in range(2):
-            wp -= Q[:, : i * n_imp] @ np.conj(Q[:, : i * n_imp].T) @ wp
-        qim = qi
-        tmp, _ = sp.linalg.qr(wp, mode="economic")
-        Q[:, (i + 1) * n_imp : (i + 2) * n_imp] = tmp
-
-    return Q
 
 
 def tridiagonalize(H, v0):
@@ -557,9 +516,9 @@ def transform_to_lanczos_tridagonal_matrix(H, n_imp):
     res[:n_imp, n_imp : 2 * n_imp] = np.conj(V0.T)
     res[n_imp:, n_imp:] = H_tridiagonal
 
-    assert np.allclose(
-        np.linalg.eigvalsh(H), np.linalg.eigvalsh(res), atol=1e-15
-    ), f"{np.linalg.eigvalsh(H)=}\n{np.linalg.eigvalsh(res)=}"
+    assert np.allclose(np.linalg.eigvalsh(H), np.linalg.eigvalsh(res), atol=1e-15), (
+        f"{np.linalg.eigvalsh(H)=}\n{np.linalg.eigvalsh(res)=}"
+    )
     return res
 
 
@@ -662,7 +621,7 @@ def linked_double_chain(H_imp, vs, es, verbose=True, extremely_verbose=False):
     H_decoupled, imp_index, Q_decoupled = create_decoupled_hamiltonian(H_star, n_imp)
     if extremely_verbose:
         print(
-            f"After reshuffling the orbitals, the impurity sits at indices {np.arange(imp_index, imp_index+n_imp)} and the coupling bath state at indices {np.arange(imp_index + n_imp, imp_index+2*n_imp)}"
+            f"After reshuffling the orbitals, the impurity sits at indices {np.arange(imp_index, imp_index + n_imp)} and the coupling bath state at indices {np.arange(imp_index + n_imp, imp_index + 2 * n_imp)}"
         )
         matrix_print(Q_decoupled, "Orbital character for states")
         matrix_print(H_decoupled, "Hamiltonian transformed into decoupled occupied and unoccupied blocks", flush=True)
@@ -725,16 +684,16 @@ def linked_double_chain(H_imp, vs, es, verbose=True, extremely_verbose=False):
         matrix_print(H_linked_chains, "Hamiltonian with linked chains (impurity sits in the top left corner)")
 
     # Make sure that we have not changed the spectrum of the Hamiltonian
-    assert np.allclose(
-        np.linalg.eigvalsh(H_star), np.linalg.eigvalsh(H_tridiagonal_decoupled), atol=1e-15
-    ), f"{np.linalg.eigvalsh(H_star)}\n{np.linalg.eigvalsh(H_tridiagonal_decoupled)}"
-    assert np.allclose(
-        np.linalg.eigvalsh(H_star), np.linalg.eigvalsh(H_linked_chains), atol=1e-15
-    ), f"{np.linalg.eigvalsh(H_star)}\n{np.linalg.eigvalsh(H_linked_chains)}"
+    assert np.allclose(np.linalg.eigvalsh(H_star), np.linalg.eigvalsh(H_tridiagonal_decoupled), atol=1e-15), (
+        f"{np.linalg.eigvalsh(H_star)}\n{np.linalg.eigvalsh(H_tridiagonal_decoupled)}"
+    )
+    assert np.allclose(np.linalg.eigvalsh(H_star), np.linalg.eigvalsh(H_linked_chains), atol=1e-15), (
+        f"{np.linalg.eigvalsh(H_star)}\n{np.linalg.eigvalsh(H_linked_chains)}"
+    )
     # Make sure that we have restored the impurity block exactly
-    assert np.allclose(
-        H_linked_chains[:n_imp, :n_imp], H_imp, atol=1e-15
-    ), f"{H_linked_chains[:n_imp, :n_imp]=} {H_imp=}"
+    assert np.allclose(H_linked_chains[:n_imp, :n_imp], H_imp, atol=1e-15), (
+        f"{H_linked_chains[:n_imp, :n_imp]=} {H_imp=}"
+    )
 
     return H_linked_chains[n_imp:, :n_imp], H_linked_chains[n_imp:, n_imp:]
 

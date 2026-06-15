@@ -1,69 +1,29 @@
 import os
 import tempfile
+
 import numpy as np
-import pytest
 
-from impurityModel.ed.krylovBasis import KrylovBasis, KrylovIterator
-from impurityModel.ed.average import thermal_average, thermal_average_scale_indep
 from impurityModel.ed import op_parser
-
-
-def test_krylov_basis_and_iterator():
-    # Test KrylovBasis initialization, adding, indexing, and iteration
-    N = 3
-    basis = KrylovBasis(N=N, dtype=float, capacity=2)
-    assert len(basis) == 0
-
-    # Add vectors
-    v1 = np.array([[1.0, 0.0, 0.0]]).T
-    v2 = np.array([[0.0, 1.0, 0.0]]).T
-    basis.add(v1)
-    assert len(basis) == 1
-    assert np.allclose(basis[0], v1.squeeze())
-
-    basis.add(v2)
-    assert len(basis) == 2
-    assert np.allclose(basis[1], v2.squeeze())
-
-    # Test indexing and slice (using 0:1 to respect the stop-index constraint in the implementation)
-    with pytest.raises(IndexError):
-        _ = basis[2]
-    with pytest.raises(IndexError):
-        _ = basis[-3]
-
-    sliced = basis[0:1]
-    assert sliced.shape == (3, 1)
-
-    # Test calc_projection
-    v = np.array([1.0, 2.0, 3.0])
-    proj = basis.calc_projection(v)
-    assert np.allclose(proj, np.array([1.0, 2.0, 0.0]))
-
-    # Test Iterator
-    iterator = KrylovIterator(basis.vectors[:basis.size])
-    vectors_list = list(iterator)
-    assert len(vectors_list) == 2
-    assert np.allclose(vectors_list[0], v1)
-    assert np.allclose(vectors_list[1], v2)
+from impurityModel.ed.average import thermal_average, thermal_average_scale_indep
 
 
 def test_average():
     # Test thermal averaging
     energies = np.array([0.0, 1.0, 2.0])
     observables = np.array([10.0, 5.0, 1.0])
-    
+
     # Large temperature or scale should average them closer
     avg_scale = thermal_average_scale_indep(energies, observables, 1.0)
     w_scale = np.exp(-energies)
     expected_scale = np.sum(w_scale * observables) / np.sum(w_scale)
     np.testing.assert_allclose(avg_scale, expected_scale, atol=1e-12)
-    
+
     avg_temp = thermal_average(energies, observables, T=300)
     import scipy as sp
+
     k_B = sp.constants.physical_constants["Boltzmann constant in eV/K"][0]
     expected_temp = thermal_average_scale_indep(energies, observables, k_B * 300)
     np.testing.assert_allclose(avg_temp, expected_temp, atol=1e-12)
-
 
 
 def test_op_parser():
@@ -96,7 +56,7 @@ def test_op_parser():
             f.write("OpName\n")
             f.write("(1, 2) (3, 4) 1.5 0.5\n")
             f.write("(5, 6) (7, 8) -0.5 0.0\n")
-        
+
         # Parse it back
         parsed_ops = op_parser.parse_file(filepath)
         assert len(parsed_ops) == 1

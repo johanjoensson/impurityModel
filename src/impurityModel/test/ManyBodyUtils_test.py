@@ -1,12 +1,12 @@
-import pytest
 import numpy as np
+import pytest
+
 from impurityModel.ed.ManyBodyUtils import (
-    ManyBodyState,
     ManyBodyOperator,
+    ManyBodyState,
     SlaterDeterminant,
     inner,
 )
-from math import isclose
 
 
 def all_isclose(dict1, dict2, **kwargs):
@@ -246,7 +246,7 @@ def test_SlaterDeterminant_operators():
     sd1 = SlaterDeterminant.from_bytes(b"\x01")
     sd2 = SlaterDeterminant.from_bytes(b"\x02")
     sd1_copy = SlaterDeterminant.from_bytes(b"\x01")
-    
+
     assert sd1 < sd2
     assert sd2 > sd1
     assert sd1 == sd1_copy
@@ -259,11 +259,11 @@ def test_SlaterDeterminant_operators():
 def test_ManyBodyState_inplace_operators():
     psi1 = ManyBodyState({SlaterDeterminant.from_bytes(b"\x01"): 1.0})
     psi2 = ManyBodyState({SlaterDeterminant.from_bytes(b"\x02"): 2j})
-    
+
     psi1 += psi2
     assert psi1[SlaterDeterminant.from_bytes(b"\x01")] == 1.0
     assert psi1[SlaterDeterminant.from_bytes(b"\x02")] == 2j
-    
+
     psi1 -= psi2
     assert psi1[SlaterDeterminant.from_bytes(b"\x01")] == 1.0
     assert SlaterDeterminant.from_bytes(b"\x02") not in psi1 or psi1[SlaterDeterminant.from_bytes(b"\x02")] == 0.0
@@ -296,6 +296,7 @@ def test_SlaterDeterminant_extra():
     assert len(chunks) == len(sd)
     # test __copy__ and __deepcopy__
     import copy
+
     sd_copy = copy.copy(sd)
     sd_deepcopy = copy.deepcopy(sd)
     assert sd == sd_copy
@@ -308,8 +309,6 @@ def test_SlaterDeterminant_extra():
     assert ba[7] == 1
     assert all(x == 0 for x in ba[2:7])
     assert all(x == 0 for x in ba[8:])
-
-
 
 
 def test_ManyBodyState_extra():
@@ -385,4 +384,3 @@ def test_ManyBodyOperator_extra():
     op.erase(key1)
     assert key1 not in op
     assert op.size() == 1
-

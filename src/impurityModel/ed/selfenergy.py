@@ -1,24 +1,17 @@
-from collections import OrderedDict
-import itertools
-import time
 import argparse
+import itertools
+from collections import OrderedDict
 
-import h5py as h5
-from mpi4py import MPI
 import numpy as np
-import scipy as sp
+from mpi4py import MPI
 
 # from impurityModel.ed.get_spectra import get_noninteracting_hamiltonian_operator
 from impurityModel.ed import finite
-from impurityModel.ed.average import thermal_average_scale_indep
-from impurityModel.ed.manybody_basis import Basis
 from impurityModel.ed.cipsi_solver import CIPSISolver
-import impurityModel.ed.product_state_representation as psr
-
-from impurityModel.ed.groundstate import calc_gs
 from impurityModel.ed.greens_function import get_Greens_function, save_Greens_function
-from impurityModel.ed.block_structure import print_block_structure
-from impurityModel.ed.ManyBodyUtils import ManyBodyOperator, ManyBodyState
+from impurityModel.ed.groundstate import calc_gs
+from impurityModel.ed.manybody_basis import Basis
+from impurityModel.ed.ManyBodyUtils import ManyBodyOperator
 from impurityModel.ed.utils import matrix_print
 
 EV_TO_RY = 1 / 13.605693122994
@@ -91,7 +84,7 @@ def fixed_peak_dc(
     dc : ndarray
         Calculated double counting correction matrix.
     """
-    n_orb = sum(len(block) for imp_orbs in impurity_orbitals.values() for block in imp_orbs)
+    sum(len(block) for imp_orbs in impurity_orbitals.values() for block in imp_orbs)
     peak_position = max(peak_position, 4 * tau)
     valence_baths, conduction_baths = bath_states
     u = finite.getUop_from_rspt_u4(u4)
@@ -174,7 +167,7 @@ def fixed_peak_dc(
     energy_cut = -tau * np.log(1e-4)
 
     impurity_indices = [orb for orb_blocks in impurity_orbitals.values() for block in orb_blocks for orb in block]
-    impurity_ix = np.ix_(impurity_indices, impurity_indices)
+    np.ix_(impurity_indices, impurity_indices)
 
     def F(dc_fac):
         """
@@ -534,7 +527,7 @@ def get_selfenergy(
     n0imps = OrderedDict({ls: n0imps})
     nominal_occ = (n0imps, {ls: nBaths}, {ls: 0})
 
-    num_bath_states = ({ls: nValBaths[ls]}, {ls: sum_baths[ls] - nValBaths[ls]})
+    ({ls: nValBaths[ls]}, {ls: sum_baths[ls] - nValBaths[ls]})
 
     # Construct u4 and rot_to_spherical, mixed_valence, block_structure, bath_states, etc.
     n_imp_spin_orbitals = 2 * (2 * ls + 1)
@@ -557,6 +550,7 @@ def get_selfenergy(
     mixed_valence = {ls: 0}
 
     from impurityModel.ed.block_structure import BlockStructure
+
     block_structure = BlockStructure(
         blocks=[list(range(n_imp_spin_orbitals))],
         identical_blocks=[[0]],
@@ -726,7 +720,7 @@ if __name__ == "__main__":
         "--delta",
         type=float,
         default=0.2,
-        help=("Smearing, half width half maximum (HWHM). " "Due to short core-hole lifetime."),
+        help=("Smearing, half width half maximum (HWHM). Due to short core-hole lifetime."),
     )
     parser.add_argument(
         "-v",

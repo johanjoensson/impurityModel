@@ -3,16 +3,11 @@ Script for calculating various spectra.
 
 """
 
-import itertools
-import numpy as np
-import scipy.sparse.linalg
-from collections import OrderedDict
-import sys, os
-from mpi4py import MPI
 import argparse
+import json
+import os
 import pickle
 import time
-import json
 from collections import OrderedDict
 
 import h5py
@@ -20,15 +15,12 @@ import numpy as np
 from mpi4py import MPI
 
 # Local stuff
-from impurityModel.ed import finite, spectra
+from impurityModel.ed import finite, op_parser, spectra
+from impurityModel.ed.average import k_B
+from impurityModel.ed.block_structure import BlockStructure
 from impurityModel.ed.finite import assert_hermitian, c2i
-from impurityModel.ed.average import k_B, thermal_average
-from impurityModel.ed import op_parser
-from impurityModel.ed.manybody_basis import Basis
-from impurityModel.ed.block_structure import BlockStructure, print_block_structure
-from impurityModel.ed.ManyBodyUtils import ManyBodyOperator, ManyBodyState
 from impurityModel.ed.groundstate import calc_gs
-
+from impurityModel.ed.ManyBodyUtils import ManyBodyOperator
 
 
 def main(
@@ -133,7 +125,7 @@ def main(
     rank = comm.rank
 
     verbosity = 2 if rank == 0 else 0
-    dense_cutoff = int(500)
+    500
     rot_to_spherical = {1: np.eye(6, dtype=complex), 2: np.eye(10, dtype=complex)}
     block_structure = BlockStructure(
         blocks=[list(range(6)), list(range(6, 16))],
@@ -145,7 +137,7 @@ def main(
     )
 
     if rank == 0:
-        t0 = time.perf_counter()
+        time.perf_counter()
 
     # -- System information --
     nBaths = OrderedDict(zip(ls, nBaths))
@@ -233,7 +225,7 @@ def main(
     # Hamiltonian
     if rank == 0:
         print("Construct the Hamiltonian operator...")
-    hOp = get_hamiltonian_operator_new(
+    hOp = get_hamiltonian_operator(
         nBaths,
         nValBaths,
         [Fdd, Fpp, Fpd, Gpd],
@@ -355,51 +347,6 @@ def main(
     print("Script finished for rank:", rank)
 
 
-def get_restrictions(l, n0imps, nBaths, nValBaths, dnTols, dnValBaths, dnConBaths):
-    """
-    Get basis occupation restrictions for a given orbital shell.
-
-    Parameters
-    ----------
-    l : int
-        Orbital angular momentum quantum number (e.g. 1 for p, 2 for d).
-    n0imps : dict
-        Nominal occupation of the impurity orbitals.
-    nBaths : dict
-        Number of bath orbitals.
-    nValBaths : dict
-        Number of valence bath orbitals.
-    dnTols : dict
-        Tolerance variation of impurity occupation.
-    dnValBaths : dict
-        Tolerance variation of valence bath occupation.
-    dnConBaths : dict
-        Tolerance variation of conduction bath occupation.
-
-    Returns
-    -------
-    restrictions : dict[frozenset[int], tuple[int, int]]
-        Occupation bounds for sets of spin-orbital indices.
-    """
-    restrictions = {}
-    # Restriction on impurity orbitals
-    indices = frozenset(c2i(nBaths, (l, s, m)) for s in range(2) for m in range(-l, l + 1))
-    # restrictions[indices] = (n0imps[l] - 1, n0imps[l] + dnTols[l] + 1)
-    restrictions[indices] = (n0imps[l] - dnTols[l], n0imps[l] + dnTols[l] + 1)
-    # Restriction on valence bath orbitals
-    indices = []
-    for b in range(nValBaths[l]):
-        indices.append(c2i(nBaths, (l, b)))
-    restrictions[frozenset(indices)] = (nValBaths[l] - dnValBaths[l], nValBaths[l] + 1)
-    # Restriction on conduction bath orbitals
-    indices = []
-    for b in range(nValBaths[l], nBaths[l]):
-        indices.append(c2i(nBaths, (l, b)))
-    restrictions[frozenset(indices)] = (0, dnConBaths[l] + 1)
-
-    return restrictions
-
-
 def get_noninteracting_hamiltonian_operator(nBaths, nValBaths, SOCs, hField, h0_filename, rank, verbose=True):
     """
     Build the non-interacting Hamiltonian operator.
@@ -507,98 +454,7 @@ def gethHfieldop(hx, hy, hz, l=2):
     return hHfieldOperator
 
 
-def get_hamiltonian_operator(nBaths, nValBaths, slaterCondon, SOCs, DCinfo, hField, h0_filename):
-    """
-    Return the Hamiltonian, in operator form.
-
-    Parameters
-    ----------
-    nBaths : dict
-        Number of bath states for each angular momentum.
-    nValBaths : dict
-        Number of valence bath states for each angular momentum.
-    slaterCondon : list
-        List of Slater-Condon parameters.
-    SOCs : list
-        List of SOC parameters.
-    DCinfo : list
-        Contains information needed for the double counting energy.
-    hField : list
-        External magnetic field.
-        Elements hx,hy,hz
-    h0_filename : str
-        Filename of non-interacting, non-relativistic operator.
-
-    Returns
-    -------
-    hOp : dict
-        The Hamiltonian in operator form.
-        tuple : complex,
-        where each tuple describes a process of several steps.
-        Each step is described by a tuple of the form: (i,'c') or (i,'a'),
-        where i is a spin-orbital index.
-
-    """
-    # Divide up input parameters to more concrete variables
-    Fdd, Fpp, Fpd, Gpd = slaterCondon
-    xi_2p, xi_3d = SOCs
-    n0imps, chargeTransferCorrection = DCinfo
-    hx, hy, hz = hField
-
-    # Calculate the U operator, in spherical harmonics basis.
-    uOperator = finite.get2p3dSlaterCondonUop(Fdd=Fdd, Fpp=Fpp, Fpd=Fpd, Gpd=Gpd)
-    # Add SOC, in spherical harmonics basis.
-    SOC2pOperator = finite.getSOCop(xi_2p, l=1)
-    SOC3dOperator = finite.getSOCop(xi_3d, l=2)
-
-    # Double counting (DC) correction values.
-    # MLFT DC
-    dc = finite.dc_MLFT(
-        n3d_i=n0imps[2],
-        c=chargeTransferCorrection,
-        Fdd=Fdd,
-        n2p_i=n0imps[1],
-        Fpd=Fpd,
-        Gpd=Gpd,
-    )
-    eDCOperator = {}
-    for il, l in enumerate([2, 1]):
-        for s in range(2):
-            for m in range(-l, l + 1):
-                eDCOperator[(((l, s, m), "c"), ((l, s, m), "a"))] = -dc[l]
-
-    # Magnetic field
-    hHfieldOperator = finite.gethHfieldop(hx, hy, hz, l=2)
-
-    # Read the non-relativistic non-interacting Hamiltonian operator from file.
-    h0_operator = read_pickled_file(h0_filename)
-
-    # Add Hamiltonian terms to one operator.
-    hOperator = finite.addOps(
-        [
-            uOperator,
-            hHfieldOperator,
-            SOC2pOperator,
-            SOC3dOperator,
-            eDCOperator,
-            h0_operator,
-        ]
-    )
-    if MPI.COMM_WORLD.rank == 0:
-        finite.printOp(nBaths, hOperator, "Local Hamiltonian")
-    # Convert spin-orbital and bath state indices to a single index notation.
-    hOp = {}
-    for process, value in hOperator.items():
-        hOp[tuple((c2i(nBaths, spinOrb), action) for spinOrb, action in process)] = value
-
-    assert_hermitian(hOp)
-
-    return hOp
-
-
-def get_hamiltonian_operator_new(
-    nBaths, nValBaths, slaterCondon, SOCs, DCinfo, hField, h0_filename, rank, verbose=True
-):
+def get_hamiltonian_operator(nBaths, nValBaths, slaterCondon, SOCs, DCinfo, hField, h0_filename, rank, verbose=True):
     """
     Return the Hamiltonian, in operator form.
 
@@ -649,8 +505,6 @@ def get_hamiltonian_operator_new(
 
     # Add Hamiltonian terms to one operator.
     hOperator = finite.addOps([uOperator, eDCOperator, h_non_interacting])
-    if rank == 0 and verbose:
-        finite.printOp(nBaths, hOperator, "Local Hamiltonian: ")
 
     # Convert spin-orbital and bath state indices to a single index notation.
     hOp = {}
@@ -696,37 +550,6 @@ def read_h0_dict(h0_filename):
             else:
                 h0_dict[key] = val
     return h0_dict
-
-
-def read_RIXS_projectors(filename):
-    r"""
-    Reads projectors for the RIXS calculations from file.
-    Parameters
-    ----------
-        filename : String
-        File containing the projectors. Projectors are separated by new lines.
-    """
-    return op_parser.parse_file(filename)
-
-
-def read_key_val(line):
-    r"""
-    Read key and value pair from a string.
-    Returns a tuple, (key, value).
-    Parameters
-    ----------
-        line : String
-        String of the form "key:value"
-    """
-    parts = line.split(":")
-    if len(parts) != 2:
-        print("Error reading key, value pair from file!")
-        print(line)
-        return {}
-    val = complex(parts[1])
-    keys = "".join(parts[0].split())
-    key = read_tuple(keys)
-    return (key, val)
 
 
 def read_tuple(line):
@@ -1003,21 +826,21 @@ if __name__ == "__main__":
         type=int,
         nargs="+",
         default=[0, 2],
-        help=("Max devation from initial impurity occupation, " "for each angular momentum."),
+        help=("Max devation from initial impurity occupation, for each angular momentum."),
     )
     parser.add_argument(
         "--dnValBaths",
         type=int,
         nargs="+",
         default=[0, 2],
-        help=("Max number of electrons to leave valence bath orbitals, " "for each angular momentum."),
+        help=("Max number of electrons to leave valence bath orbitals, for each angular momentum."),
     )
     parser.add_argument(
         "--dnConBaths",
         type=int,
         nargs="+",
         default=[0, 0],
-        help=("Max number of electrons to enter conduction bath orbitals, " "for each angular momentum."),
+        help=("Max number of electrons to enter conduction bath orbitals, for each angular momentum."),
     )
     parser.add_argument(
         "--Fdd",
@@ -1091,19 +914,19 @@ if __name__ == "__main__":
         "--delta",
         type=float,
         default=0.2,
-        help=("Smearing, half width half maximum (HWHM). " "Due to short core-hole lifetime."),
+        help=("Smearing, half width half maximum (HWHM). Due to short core-hole lifetime."),
     )
     parser.add_argument(
         "--deltaRIXS",
         type=float,
         default=0.050,
-        help=("Smearing, half width half maximum (HWHM). " "Due to finite lifetime of excited states."),
+        help=("Smearing, half width half maximum (HWHM). Due to finite lifetime of excited states."),
     )
     parser.add_argument(
         "--deltaNIXS",
         type=float,
         default=0.100,
-        help=("Smearing, half width half maximum (HWHM). " "Due to finite lifetime of excited states."),
+        help=("Smearing, half width half maximum (HWHM). Due to finite lifetime of excited states."),
     )
     parser.add_argument(
         "--XAS_projectors_filename",

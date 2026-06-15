@@ -47,9 +47,7 @@ def thermal_average_scale_indep(energies, observable, tau):
     o_average : ndarray
         The thermally averaged observable.
     """
-    if isinstance(energies, float):
-        energies = np.array(energies)
-    elif not isinstance(energies, np.ndarray):
+    if isinstance(energies, float) or not isinstance(energies, np.ndarray):
         energies = np.array(energies)
     if energies.shape[0] != observable.shape[0]:
         raise RuntimeError("Passed array is not of the right shape")

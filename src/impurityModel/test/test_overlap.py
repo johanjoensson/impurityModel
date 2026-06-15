@@ -1,4 +1,5 @@
 import numpy as np
+
 np.random.seed(42)
 n_blocks = 2
 states = [np.random.rand() + 1j * np.random.rand() for _ in range(70)]
