@@ -6,6 +6,13 @@ from typing import Optional
 from impurityModel.ed.ManyBodyUtils import ManyBodyOperator, ManyBodyState, applyOp as applyOp_test
 from impurityModel.ed.manybody_basis import Basis
 from impurityModel.ed.finite import eigensystem
+from impurityModel.ed.trlm import thick_restarted_block_lanczos
+from impurityModel.ed.irlm import implicitly_restarted_block_lanczos
+
+SOLVERS = {
+    "trlm": thick_restarted_block_lanczos,
+    "irlm": implicitly_restarted_block_lanczos,
+}
 
 
 class CIPSISolver:
@@ -88,11 +95,8 @@ class CIPSISolver:
 
         old_size = self.basis.size - 1
         while old_size != self.basis.size:
-            if solver in ("irlm", "trlm") and self.basis.size >= dense_cutoff:
-                if solver == "trlm":
-                    from impurityModel.ed.trlm import thick_restarted_block_lanczos as restarted_lanczos
-                else:
-                    from impurityModel.ed.irlm import implicitly_restarted_block_lanczos as restarted_lanczos
+            if solver in SOLVERS and self.basis.size >= dense_cutoff:
+                restarted_lanczos = SOLVERS[solver]
 
                 if psi_refs is None:
                     import random
@@ -185,11 +189,8 @@ class CIPSISolver:
         if self.basis.restrictions is not None:
             H.set_restrictions(self.basis.restrictions)
             
-        if solver in ("irlm", "trlm") and self.basis.size >= dense_cutoff:
-            if solver == "trlm":
-                from impurityModel.ed.trlm import thick_restarted_block_lanczos as restarted_lanczos
-            else:
-                from impurityModel.ed.irlm import implicitly_restarted_block_lanczos as restarted_lanczos
+        if solver in SOLVERS and self.basis.size >= dense_cutoff:
+            restarted_lanczos = SOLVERS[solver]
 
             import random
             random.seed(42)
@@ -238,3 +239,4 @@ class CIPSISolver:
             psi_refs = self.basis.build_state(psi_ref_dense.T, slaterWeightMin=slaterWeightMin)
             
         return e_ref, psi_refs
+

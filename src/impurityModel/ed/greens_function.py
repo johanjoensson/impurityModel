@@ -110,15 +110,6 @@ def build_full_greens_function(block_gf, block_structure: BlockStructure):
     return res
 
 
-def matrix_print(matrix: np.ndarray, label: str = None) -> None:
-    """
-    Pretty print the matrix, with optional label.
-    """
-    ms = "\n".join([" ".join([f"{np.real(val): .4f}{np.imag(val):+.4f}j" for val in row]) for row in matrix])
-    if label is not None:
-        print(label)
-    print(ms)
-
 
 def split_comm_and_redistribute_psi(priorities: Iterable[float], psis: list[ManyBodyState], comm):
     """

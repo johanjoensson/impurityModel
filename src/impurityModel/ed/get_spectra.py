@@ -30,15 +30,6 @@ from impurityModel.ed.ManyBodyUtils import ManyBodyOperator, ManyBodyState
 from impurityModel.ed.groundstate import calc_gs
 
 
-def matrix_print(matrix: np.ndarray, label: str = None) -> None:
-    """
-    Pretty print the matrix, with optional label.
-    """
-    ms = "\n".join([" ".join([f"{np.real(val): .4f}{np.imag(val):+.4f}j" for val in row]) for row in matrix])
-    if label is not None:
-        print(label)
-    print(ms)
-
 
 def main(
     h0_filename,
