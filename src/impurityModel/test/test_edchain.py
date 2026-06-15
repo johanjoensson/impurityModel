@@ -129,52 +129,39 @@ def test_double_chains():
     assert v.shape[1] == 1
     assert hb.shape == (4, 4)
 
-def test_tridiagonalize():
+def test_transform_to_lanczos_tridagonal_matrix():
     np.random.seed(42)
     N = 10
-    block_size = 2
+    n_imp = 2
     # Create a random symmetric matrix
     H = np.random.randn(N, N)
     H = H + H.T
     
-    # Create a random starting block
-    v0 = np.random.randn(N, block_size)
+    H_tri = edchain.transform_to_lanczos_tridagonal_matrix(H, n_imp)
     
-    alphas, betas, v0_tilde = edchain.tridiagonalize(H, v0)
-    
-    # Check dimensions
-    # For N=10, block_size=2, we expect max_it = 5
-    assert len(alphas) == 5
-    assert len(betas) == 5
-    assert alphas[0].shape == (2, 2)
-    assert betas[0].shape == (2, 2)
-    
-    # Construct the full block tridiagonal matrix
-    H_tri = edchain.build_block_tridiagonal_hermitian_matrix(alphas, betas)
     assert H_tri.shape == (N, N)
     
-    # To check the full orthogonalization, we could run the old and new logic, but since
-    # tridiagonalize doesn't return Q, we verify the tridiagonal matrix eigenvalues
-    # match the original Hamiltonian eigenvalues (since it's a full basis transformation)
     eig_orig = np.sort(np.linalg.eigvalsh(H))
     eig_tri = np.sort(np.linalg.eigvalsh(H_tri))
     assert np.allclose(eig_orig, eig_tri, atol=1e-10)
 
-def test_tridiagonalize_early_break():
+def test_transform_to_lanczos_tridagonal_matrix_early_break():
     np.random.seed(42)
     N = 10
-    block_size = 2
+    n_imp = 2
     
-    # Diagonal Hamiltonian with only 2 unique eigenvalues (it should break early)
     H = np.diag([1.0, 1.0, 1.0, 1.0, 1.0, 2.0, 2.0, 2.0, 2.0, 2.0])
-    v0 = np.zeros((N, block_size))
-    v0[0, 0] = 1.0
-    v0[5, 1] = 1.0
     
-    alphas, betas, v0_tilde = edchain.tridiagonalize(H, v0)
+    H_tri = edchain.transform_to_lanczos_tridagonal_matrix(H, n_imp)
     
-    # The Krylov subspace is of dimension 2 (just the starting vectors are already eigenvectors)
-    # It will break after 1 iteration, returning alphas of length 1 and betas of length 1
-    assert len(alphas) == 1
-    assert len(betas) == 1
-    assert np.linalg.norm(betas[0]) < 1e-14
+    # Due to early break, the subspace only covers the non-degenerate parts
+    # n_imp = 2, block_size = 2. It breaks after 1 iteration.
+    # So the total size is 2 (impurity) + 2 (bath) = 4
+    assert H_tri.shape == (4, 4)
+    
+    eig_orig = np.sort(np.linalg.eigvalsh(H))
+    eig_tri = np.sort(np.linalg.eigvalsh(H_tri))
+    
+    # Check that the eigenvalues of the tridiagonal matrix are present in the original
+    for e in eig_tri:
+        assert np.any(np.isclose(eig_orig, e, atol=1e-10))

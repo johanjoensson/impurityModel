@@ -266,64 +266,7 @@ def block_qr(A, block_size=1, overwrite_A=False):
     return np.conj(Qd.T), A
 
 
-def tridiagonalize(H, v0):
-    """Perform block tridiagonalization (block Lanczos method with full reorthogonalization) on Hamiltonian H.
 
-    Parameters
-    ----------
-    H : np.ndarray
-        Hamiltonian matrix.
-    v0 : np.ndarray
-        Initial starting vectors.
-
-    Returns
-    -------
-    alphas : np.ndarray
-        Diagonal blocks of the tridiagonal matrix.
-    betas : np.ndarray
-        Off-diagonal blocks of the tridiagonal matrix.
-    v0_tilde : np.ndarray
-        The upper-triangular matrix R from the economic QR decomposition of `v0`.
-    """
-    assert H.shape[0] == v0.shape[0]
-    block_size = v0.shape[1]
-
-    #  V0 could be a view into a larger matrix, so we do not put overwrite_a=True, that could be disastrous.
-    v0, v0_tilde = sp.linalg.qr(v0, mode="economic", overwrite_a=False, check_finite=True)
-
-    if v0.shape[0] == 0:
-        return (
-            np.empty((0, block_size, block_size), dtype=H.dtype),
-            np.empty((0, block_size, block_size), dtype=H.dtype),
-            v0_tilde,
-        )
-
-    N = H.shape[0]
-    Q = np.zeros((N, N), dtype=v0.dtype)
-    q = np.zeros((2, N, block_size), dtype=v0.dtype)
-    q[1, :, :block_size] = v0
-    max_it = int(np.ceil(N / block_size))
-    alphas = np.empty((max_it, block_size, block_size), dtype=H.dtype)
-    betas = np.zeros((max_it, block_size, block_size), dtype=v0.dtype)
-
-    for i in range(max_it):
-        wp = H @ q[1]
-        alphas[i] = np.conj(q[1].T) @ wp
-        # For i == 0, betas[i-1] == betas[-1] == np.zeros(n, n)
-        # No if i > 0 needed.
-        wp -= q[1] @ alphas[i] + q[0] @ np.conj(betas[i - 1].T)
-        Q[:, i * block_size : (i + 1) * block_size] = q[1]
-        for _ in range(2):
-            wp -= Q @ (np.conj(Q.T) @ wp)
-        q[0] = q[1]
-        q[1], betas[i] = np.linalg.qr(wp)
-        # Make sure we stop the Lanczos method if beta becomes to small
-        if np.linalg.norm(betas[i]) < 1e-14:
-            alphas = alphas[:i + 1]
-            betas = betas[:i + 1]
-            break
-
-    return alphas, betas, v0_tilde
 
 
 def double_chains(H_imp: np.ndarray, vs: np.ndarray, ebs: np.ndarray, verbose: bool = True, extremely_verbose=False):
@@ -478,12 +421,42 @@ def transform_to_lanczos_tridagonal_matrix(H, n_imp):
         return H
     Hb = H[n_imp:, n_imp:]
     V0 = H[n_imp:, :n_imp]
-    alphas, betas, V0 = tridiagonalize(Hb, V0)
+    
+    block_size = V0.shape[1]
+    V0_q, V0_r = sp.linalg.qr(V0, mode="economic", overwrite_a=False, check_finite=True)
+    
+    if V0_q.shape[0] == 0:
+        alphas = np.empty((0, block_size, block_size), dtype=H.dtype)
+        betas = np.empty((0, block_size, block_size), dtype=H.dtype)
+    else:
+        from impurityModel.ed.lanczos import block_lanczos_array, Reort
+
+        def converged(alphas, betas, **kwargs):
+            return len(betas) > 0 and np.linalg.norm(betas[-1]) < 1e-14
+
+        alphas, betas, _ = block_lanczos_array(
+            psi0=V0_q,
+            h_op=Hb,
+            converged=converged,
+            reort=Reort.FULL,
+            max_iter=int(np.ceil(Hb.shape[0] / block_size))
+        )
+
     H_tridiagonal = build_block_tridiagonal_hermitian_matrix(alphas, betas)
-    res = np.zeros_like(H)
+    
+    if np.isrealobj(H) and np.allclose(H_tridiagonal.imag, 0, atol=1e-12):
+        H_tridiagonal = H_tridiagonal.real
+        
+    new_N = n_imp + H_tridiagonal.shape[0]
+    res = np.zeros((new_N, new_N), dtype=np.result_type(H.dtype, H_tridiagonal.dtype))
+    
     res[:n_imp, :n_imp] = H[:n_imp, :n_imp]
-    res[n_imp : 2 * n_imp, :n_imp] = V0
-    res[:n_imp, n_imp : 2 * n_imp] = np.conj(V0.T)
+    
+    # Only place the coupling if the tridiagonal matrix has at least one block
+    if H_tridiagonal.shape[0] > 0:
+        res[n_imp : n_imp + block_size, :n_imp] = V0_r
+        res[:n_imp, n_imp : n_imp + block_size] = np.conj(V0_r.T)
+        
     res[n_imp:, n_imp:] = H_tridiagonal
 
     return res
