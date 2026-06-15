@@ -302,10 +302,11 @@ def tridiagonalize(H, v0):
     Q = np.zeros((N, N), dtype=v0.dtype)
     q = np.zeros((2, N, block_size), dtype=v0.dtype)
     q[1, :, :block_size] = v0
-    alphas = np.empty((N // block_size, block_size, block_size), dtype=H.dtype)
-    betas = np.zeros((N // block_size, block_size, block_size), dtype=v0.dtype)
+    max_it = np.ceil(N / block_size)
+    alphas = np.empty((max_it, block_size, block_size), dtype=H.dtype)
+    betas = np.zeros((max_it, block_size, block_size), dtype=v0.dtype)
 
-    for i in range(N // block_size):
+    for i in range(max_it):
         wp = H @ q[1]
         alphas[i] = np.conj(q[1].T) @ wp
         # For i == 0, betas[i-1] == betas[-1] == np.zeros(n, n)
