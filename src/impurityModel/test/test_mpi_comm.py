@@ -11,22 +11,22 @@ Tests marked @pytest.mark.mpi run under mpirun with --with-mpi and
 exercise the actual distributed code paths.
 """
 
-import pytest
 import numpy as np
+import pytest
 from mpi4py import MPI
 
-from impurityModel.ed.mpi_comm import graph_alltoall, graph_alltoall_psis, is_empty, empty_clone
 from impurityModel.ed.manybody_basis import Basis
 from impurityModel.ed.ManyBodyUtils import (
-    ManyBodyState,
     ManyBodyOperator,
+    ManyBodyState,
     SlaterDeterminant,
 )
-
+from impurityModel.ed.mpi_comm import empty_clone, graph_alltoall, graph_alltoall_psis, is_empty
 
 # ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
+
 
 def _make_basis(states_bytes, comm=None):
     """Create a small Basis from a list of byte strings."""
@@ -41,6 +41,7 @@ def _make_basis(states_bytes, comm=None):
 # ---------------------------------------------------------------------------
 # Serial utility tests (no MPI required)
 # ---------------------------------------------------------------------------
+
 
 def test_is_empty_none():
     assert is_empty(None)
@@ -94,6 +95,7 @@ def test_empty_clone_set():
 # Serial graph_alltoall (size == 1 fast-path)
 # ---------------------------------------------------------------------------
 
+
 def test_graph_alltoall_serial_passthrough():
     """With comm=None the list must come back unchanged."""
     payload = [{"hello": "world"}]
@@ -111,6 +113,7 @@ def test_graph_alltoall_single_rank_comm():
 # ---------------------------------------------------------------------------
 # MPI graph_alltoall tests
 # ---------------------------------------------------------------------------
+
 
 @pytest.mark.mpi
 def test_graph_alltoall_empty_sends():
@@ -131,17 +134,12 @@ def test_graph_alltoall_all_to_all_dicts():
     sent by each sender.
     """
     comm = MPI.COMM_WORLD
-    send_list = [
-        {f"key_from_{comm.rank}_to_{r}": comm.rank * 100 + r}
-        for r in range(comm.size)
-    ]
+    send_list = [{f"key_from_{comm.rank}_to_{r}": comm.rank * 100 + r} for r in range(comm.size)]
     result = graph_alltoall(send_list, comm)
     assert len(result) == comm.size
     for sender in range(comm.size):
         expected_key = f"key_from_{sender}_to_{comm.rank}"
-        assert expected_key in result[sender], (
-            f"rank {comm.rank}: missing key from sender {sender}: {result[sender]}"
-        )
+        assert expected_key in result[sender], f"rank {comm.rank}: missing key from sender {sender}: {result[sender]}"
         assert result[sender][expected_key] == sender * 100 + comm.rank
 
 
@@ -222,6 +220,7 @@ def test_graph_alltoall_self_send():
 # redistribute_psis MPI integration tests
 # ---------------------------------------------------------------------------
 
+
 @pytest.mark.mpi
 def test_redistribute_psis_roundtrip():
     """
@@ -234,10 +233,7 @@ def test_redistribute_psis_roundtrip():
 
     # All amplitude lives on rank 0 before redistribution
     if comm.rank == 0:
-        psi = ManyBodyState({
-            SlaterDeterminant.from_bytes(s): 1.0 / len(states_bytes)
-            for s in states_bytes
-        })
+        psi = ManyBodyState({SlaterDeterminant.from_bytes(s): 1.0 / len(states_bytes) for s in states_bytes})
     else:
         psi = ManyBodyState({})
 
@@ -267,10 +263,7 @@ def test_redistribute_psis_normalisation():
 
     norm_sq = 1.0 / len(states_bytes)
     if comm.rank == 0:
-        psi = ManyBodyState({
-            SlaterDeterminant.from_bytes(s): np.sqrt(norm_sq)
-            for s in states_bytes
-        })
+        psi = ManyBodyState({SlaterDeterminant.from_bytes(s): np.sqrt(norm_sq) for s in states_bytes})
     else:
         psi = ManyBodyState({})
 
@@ -300,14 +293,13 @@ def test_add_states_distributed():
     ]
     basis.add_states(new_states)
 
-    assert basis.size == initial_size + 2, (
-        f"rank {comm.rank}: expected {initial_size + 2} states, got {basis.size}"
-    )
+    assert basis.size == initial_size + 2, f"rank {comm.rank}: expected {initial_size + 2} states, got {basis.size}"
 
 
 # ---------------------------------------------------------------------------
 # Hamiltonian-level MPI integration: build_sparse_matrix consistency
 # ---------------------------------------------------------------------------
+
 
 @pytest.mark.mpi
 def test_sparse_matrix_consistent_with_serial():
@@ -321,12 +313,14 @@ def test_sparse_matrix_consistent_with_serial():
     comm = MPI.COMM_WORLD
 
     states_bytes = [b"\x80", b"\x40", b"\x20", b"\x10"]
-    hop = ManyBodyOperator({
-        ((0, "c"), (1, "a")): 1.0,
-        ((1, "c"), (0, "a")): 1.0,
-        ((2, "c"), (3, "a")): 0.5,
-        ((3, "c"), (2, "a")): 0.5,
-    })
+    hop = ManyBodyOperator(
+        {
+            ((0, "c"), (1, "a")): 1.0,
+            ((1, "c"), (0, "a")): 1.0,
+            ((2, "c"), (3, "a")): 0.5,
+            ((3, "c"), (2, "a")): 0.5,
+        }
+    )
 
     # MPI basis: collect (bra_bytes, ket_bytes, value) from all ranks
     basis_mpi = _make_basis(states_bytes, comm=comm)
@@ -337,7 +331,7 @@ def test_sparse_matrix_consistent_with_serial():
         for state in rank_basis:
             idx = basis_mpi.state_container._index_sequence([state])
             i = next(idx)
-            global_basis[i] = bytes(state.to_bytearray()[:basis_mpi.n_bytes])
+            global_basis[i] = bytes(state.to_bytearray()[: basis_mpi.n_bytes])
 
     # Build (bra_key, ket_key, val) tuples for local non-zeros
     local_triplets = set()
@@ -356,8 +350,7 @@ def test_sparse_matrix_consistent_with_serial():
         basis_s = _make_basis(states_bytes, comm=None)
         H_s = basis_s.build_sparse_matrix(hop).tocoo()
         serial_basis_map = {
-            i: bytes(state.to_bytearray()[:basis_s.n_bytes])
-            for i, state in enumerate(basis_s.local_basis)
+            i: bytes(state.to_bytearray()[: basis_s.n_bytes]) for i, state in enumerate(basis_s.local_basis)
         }
         all_triplets_serial = set()
         for row, col, val in zip(H_s.row, H_s.col, H_s.data):
@@ -381,6 +374,7 @@ def test_sparse_matrix_consistent_with_serial():
 # Many-body density matrix MPI vs serial
 # ---------------------------------------------------------------------------
 
+
 @pytest.mark.mpi
 def test_density_matrix_mpi_vs_serial():
     """
@@ -399,10 +393,7 @@ def test_density_matrix_mpi_vs_serial():
     # Serial reference
     if comm.rank == 0:
         basis_s = _make_basis(states_bytes, comm=None)
-        psi_s = ManyBodyState({
-            SlaterDeterminant.from_bytes(s): c
-            for s, c in zip(states_bytes, coeffs)
-        })
+        psi_s = ManyBodyState({SlaterDeterminant.from_bytes(s): c for s, c in zip(states_bytes, coeffs)})
         rho_serial = basis_s.build_density_matrices(
             [psi_s],
             orbital_indices_left=orbital_indices,
@@ -415,10 +406,7 @@ def test_density_matrix_mpi_vs_serial():
     # MPI version
     basis_m = _make_basis(states_bytes, comm=comm)
     if comm.rank == 0:
-        psi_m = ManyBodyState({
-            SlaterDeterminant.from_bytes(s): c
-            for s, c in zip(states_bytes, coeffs)
-        })
+        psi_m = ManyBodyState({SlaterDeterminant.from_bytes(s): c for s, c in zip(states_bytes, coeffs)})
     else:
         psi_m = ManyBodyState({})
     psi_m = basis_m.redistribute_psis([psi_m])[0]
@@ -430,8 +418,7 @@ def test_density_matrix_mpi_vs_serial():
     )[0]
 
     assert np.allclose(rho_mpi, rho_serial, atol=1e-12), (
-        f"rank {comm.rank}: density matrix mismatch.\n"
-        f"MPI:\n{rho_mpi}\nSerial:\n{rho_serial}"
+        f"rank {comm.rank}: density matrix mismatch.\nMPI:\n{rho_mpi}\nSerial:\n{rho_serial}"
     )
 
 
@@ -439,23 +426,33 @@ def test_density_matrix_mpi_vs_serial():
 # graph_alltoall_psis unit tests
 # ---------------------------------------------------------------------------
 
+
 def test_graph_alltoall_psis_serial_passthrough():
     """With comm=None the list must come back unchanged."""
     from impurityModel.ed.ManyBodyUtils import ManyBodyState, SlaterDeterminant
+
     n_bytes = 8
-    psi = ManyBodyState({SlaterDeterminant.from_bytes(b"\x80" + b"\x00"*7): 1.0 + 0j})
+    psi = ManyBodyState({SlaterDeterminant.from_bytes(b"\x80" + b"\x00" * 7): 1.0 + 0j})
     psis = [psi]
     result = graph_alltoall_psis(psis, n_bytes, None)
     assert result == psis
 
+
 def test_graph_alltoall_psis_single_rank():
     """With COMM_SELF (size 1) the list must come back unchanged."""
     from impurityModel.ed.ManyBodyUtils import ManyBodyState, SlaterDeterminant
+
     n_bytes = 8
-    psi = ManyBodyState({SlaterDeterminant.from_bytes(b"\x80" + b"\x00"*7): 1.0 + 0j, SlaterDeterminant.from_bytes(b"\x40" + b"\x00"*7): 0.5 + 0j})
+    psi = ManyBodyState(
+        {
+            SlaterDeterminant.from_bytes(b"\x80" + b"\x00" * 7): 1.0 + 0j,
+            SlaterDeterminant.from_bytes(b"\x40" + b"\x00" * 7): 0.5 + 0j,
+        }
+    )
     psis = [psi]
     result = graph_alltoall_psis(psis, n_bytes, MPI.COMM_SELF)
     assert result == psis
+
 
 @pytest.mark.mpi
 def test_graph_alltoall_psis_ring_exchange():
@@ -464,19 +461,19 @@ def test_graph_alltoall_psis_ring_exchange():
     Verify the received state and amplitude are correct.
     """
     from impurityModel.ed.ManyBodyUtils import ManyBodyState, SlaterDeterminant
+
     comm = MPI.COMM_WORLD
     n_bytes = 8
-    dest = (comm.rank + 1) % comm.size
-    src = (comm.rank - 1) % comm.size
+    (comm.rank + 1) % comm.size
+    (comm.rank - 1) % comm.size
 
-    
     # We need to construct a state whose hash % size == dest
     # Finding a valid state is tedious, so let's just use a random state.
     # Actually, in the new implementation, graph_alltoall_psis internally hashes the state and routes it.
     # We can't easily force a state to go to `dest`. We just let it route.
     state = SlaterDeterminant.from_bytes((comm.rank + 1).to_bytes(8, "little"))
-    target_rank = state.get_hash() % comm.size
-    
+    state.get_hash() % comm.size
+
     amp = complex(comm.rank + 1, 0)
     psis = [ManyBodyState({state: amp})]
 
@@ -494,10 +491,12 @@ def test_graph_alltoall_psis_ring_exchange():
             assert s in all_results[expected_target], f"State from {r} didn't reach {expected_target}"
             assert abs(all_results[expected_target][s] - expected_amp) < 1e-12
 
+
 @pytest.mark.mpi
 def test_graph_alltoall_psis_empty():
     """All-empty send list must produce all-empty result."""
     from impurityModel.ed.ManyBodyUtils import ManyBodyState
+
     comm = MPI.COMM_WORLD
     n_bytes = 8
     n_psis = 2

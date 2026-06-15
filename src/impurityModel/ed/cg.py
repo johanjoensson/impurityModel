@@ -1,252 +1,9 @@
 import numpy as np
-import scipy as sp
-
-import itertools
-import impurityModel.ed.finite as finite
 from mpi4py import MPI
+
+from impurityModel.ed.block_math import block_add_scaled, block_apply, block_inner, is_array
 from impurityModel.ed.manybody_basis import Basis
-from impurityModel.ed.ManyBodyUtils import ManyBodyState, applyOp, inner, inner_multi, add_scaled_multi
-from impurityModel.ed.block_math import (
-    is_array, block_inner, block_apply, block_add_scaled, block_combine
-)
-
-
-def cg(A, x, y, atol=1e-5):
-    """
-    Solve the linear system A * x = y using the Conjugate Gradient (CG) method.
-
-    Parameters
-    ----------
-    A : ndarray or sparse matrix
-        The linear operator/matrix of the system.
-    x : ndarray
-        Initial guess for the solution, updated in-place.
-    y : ndarray
-        Right-hand side vector.
-    atol : float, optional
-        Absolute tolerance for convergence. Default is 1e-5.
-
-    Returns
-    -------
-    x : ndarray
-        The solved solution vector.
-    info : int
-        Convergence status (0 for success, -1 if max iterations reached).
-    """
-    info = -1
-    n = A.shape[0]
-    r = y - A @ x
-    p = r.copy()
-    prev_r2 = abs(np.vdot(r, r))
-    for i in range(10 * n):
-        r_i = A @ r
-        dr = prev_r2**2 / (np.vdot(r, r_i))
-        x += dr * r
-        r -= dr * r_i
-        r2 = abs(np.vdot(r, r))
-        if r2 < atol**2:
-            info = 0
-            break
-        p = r + (r2 / prev_r2) * p
-        prev_r2 = r2
-    return x, info
-
-
-def cg_2(A, x, y, atol=1e-5):
-    """
-    Alternative Conjugate Gradient solver formulation.
-
-    Parameters
-    ----------
-    A : ndarray or sparse matrix
-        The linear operator/matrix.
-    x : ndarray
-        Initial guess, updated in-place.
-    y : ndarray
-        Right-hand side vector.
-    atol : float, optional
-        Absolute tolerance. Default is 1e-5.
-
-    Returns
-    -------
-    x : ndarray
-        The solved solution vector.
-    info : int
-        Convergence status.
-    """
-    info = 0
-    n = A.shape[0]
-    r = y - A @ x
-    p = r.copy()
-    for it in range(10 * n):
-        p_i = A @ p
-        dr = np.vdot(r, r) / np.vdot(r, p_i)
-        x += dr * p
-        r -= dr * p_i
-        r2 = abs(np.vdot(r, r))
-        if r2 < atol:
-            info = 0
-            break
-        dp = -np.vdot(p_i, r) / np.vdot(p, p_i)
-        p = r + dp * p
-
-    return x, info
-
-
-def bicgstab(A_op, x_0, y, basis, slaterWeightMin, atol=1e-8, **kwargs):
-    """
-    Solve a linear system with BiCGSTAB using a many-body state representation.
-
-    Parameters
-    ----------
-    A_op : dict
-        Many-body operator defining the linear system.
-    x_0 : list[ManyBodyState]
-        Initial guess states.
-    y : list[ManyBodyState]
-        Right-hand side states.
-    basis : Basis
-        The many-body state basis object.
-    slaterWeightMin : float
-        Cutoff weight for Slater determinants.
-    atol : float, optional
-        Absolute tolerance. Default is 1e-8.
-
-    Returns
-    -------
-    x_i : list[ManyBodyState]
-        The solved solution states.
-    """
-
-    n = len(x_0)
-    if hasattr(A_op, "set_restrictions"):
-        A_op.set_restrictions(basis.restrictions)
-    Ax = A_op.apply_multi(x_0, cutoff=slaterWeightMin)
-    Ax = basis.redistribute_psis(Ax)
-
-    r_0 = [yi.copy() for yi in y]
-    add_scaled_multi(r_0, Ax, -np.eye(n, dtype=complex))
-
-    x_i = [xi.copy() for xi in x_0]
-    r_i = [ri.copy() for ri in r_0]
-    rho_i = np.array([ri.norm2() for ri in r_i], dtype=complex)
-    if basis.is_distributed:
-        basis.comm.Allreduce(MPI.IN_PLACE, rho_i)
-    max_iter = kwargs.get("max_iter", np.inf)
-    seen_states = set()
-    for state in x_0:
-        seen_states.update(state.keys())
-    for state in y:
-        seen_states.update(state.keys())
-    global_seen_size = np.array([len(seen_states)], dtype=int)
-    if basis.is_distributed:
-        basis.comm.Allreduce(MPI.IN_PLACE, global_seen_size, op=MPI.SUM)
-
-    p_i = [ri.copy() for ri in r_i]
-    it = 0
-    
-    active_mask = np.ones(n, dtype=bool)
-
-    while it * n < global_seen_size[0] and it < max_iter:
-        it += 1
-        
-        r2 = np.array([ri.norm2() for ri in r_i], dtype=complex)
-        if basis.is_distributed:
-            basis.comm.Allreduce(MPI.IN_PLACE, r2)
-        active_mask = np.abs(r2) > atol**2
-        if not np.any(active_mask):
-            break
-            
-        nu = A_op.apply_multi(p_i, cutoff=slaterWeightMin)
-        nu = basis.redistribute_psis(nu)
-        rnui = np.array([inner(ri, nui) for ri, nui in zip(r_0, nu)], dtype=complex)
-        if basis.is_distributed:
-            basis.comm.Allreduce(MPI.IN_PLACE, rnui)
-            
-        # Prevent division by zero for inactive states
-        rnui[~active_mask] = 1.0
-        
-        if np.any(np.abs(rnui[active_mask]) < np.finfo(float).eps):
-            print(f"Breakdown in BICGSTAB at iteration {it}: rnui is zero for an active state")
-            break
-            
-        alpha = np.zeros(n, dtype=complex)
-        alpha[active_mask] = rho_i[active_mask] / rnui[active_mask]
-        
-        h = [xi.copy() for xi in x_i]
-        add_scaled_multi(h, p_i, np.diag(alpha))
-        
-        s = [ri.copy() for ri in r_i]
-        add_scaled_multi(s, nu, np.diag(-alpha))
-        
-        s2 = np.array([si.norm2() for si in s], dtype=complex)
-        if basis.is_distributed:
-            basis.comm.Allreduce(MPI.IN_PLACE, s2)
-        
-        active_mask_s = np.abs(s2) > atol**2
-        if not np.any(active_mask_s):
-            x_i = h
-            break
-            
-        t = A_op.apply_multi(s, cutoff=slaterWeightMin)
-        t = basis.redistribute_psis(t)
-        
-        ts = np.array([inner(ti, si) for ti, si in zip(t, s)], dtype=complex)
-        t2 = np.array([ti.norm2() for ti in t], dtype=complex)
-        if basis.is_distributed:
-            basis.comm.Allreduce(MPI.IN_PLACE, ts)
-            basis.comm.Allreduce(MPI.IN_PLACE, t2)
-            
-        # Prevent division by zero
-        t2[~active_mask_s] = 1.0
-        
-        omega = np.zeros(n, dtype=complex)
-        omega[active_mask_s] = ts[active_mask_s] / t2[active_mask_s]
-        
-        x_i = [hi.copy() for hi in h]
-        add_scaled_multi(x_i, s, np.diag(omega))
-        
-        r_i = [si.copy() for si in s]
-        add_scaled_multi(r_i, t, np.diag(-omega))
-
-        basis.add_states(state for xi in x_i for state, amp in xi.items() if abs(amp) > slaterWeightMin)
-        tmp = basis.redistribute_psis(r_0 + p_i + x_i + r_i)
-
-        for state in tmp:
-            seen_states.update(state.keys())
-        global_seen_size[0] = len(seen_states)
-        if basis.is_distributed:
-            basis.comm.Allreduce(MPI.IN_PLACE, global_seen_size, op=MPI.SUM)
-
-        r_0 = tmp[:n]
-        p_i = tmp[n : 2 * n]
-        x_i = tmp[2 * n : 3 * n]
-        r_i = tmp[3 * n : 4 * n]
-
-        r2_new = np.array([ri.norm2() for ri in r_i], dtype=complex)
-        if basis.is_distributed:
-            basis.comm.Allreduce(MPI.IN_PLACE, r2_new)
-        
-        active_mask_new = np.abs(r2_new) > atol**2
-        if not np.any(active_mask_new):
-            break
-
-        rho_ip = np.array([inner(r0i, ri) for r0i, ri in zip(r_0, r_i)], dtype=complex)
-        if basis.is_distributed:
-            basis.comm.Allreduce(MPI.IN_PLACE, rho_ip)
-            
-        beta = np.zeros(n, dtype=complex)
-        valid = active_mask_new & active_mask & (np.abs(omega) > 0)
-        beta[valid] = (rho_ip[valid] / rho_i[valid]) * (alpha[valid] / omega[valid])
-        
-        p_i_new = [ri.copy() for ri in r_i]
-        add_scaled_multi(p_i_new, p_i, np.diag(beta))
-        add_scaled_multi(p_i_new, nu, np.diag(-beta * omega))
-        p_i = p_i_new
-        
-        rho_i = rho_ip
-
-    return x_i
+from impurityModel.ed.ManyBodyUtils import inner
 
 
 def block_bicgstab(A, x0, y, basis: Basis, slaterWeightMin: float, atol=1e-8, rtol=1e-12, **kwargs):
@@ -277,9 +34,9 @@ def block_bicgstab(A, x0, y, basis: Basis, slaterWeightMin: float, atol=1e-8, rt
     """
     n = x0.shape[1] if is_array(x0) and len(x0.shape) == 2 else len(x0)
     is_arr = is_array(x0)
-    mpi = basis is not None and getattr(basis, 'is_distributed', False)
+    mpi = basis is not None and getattr(basis, "is_distributed", False)
     comm = basis.comm if mpi else None
-    
+
     if not is_arr and hasattr(A, "set_restrictions"):
         A.set_restrictions(basis.restrictions)
 
@@ -297,7 +54,10 @@ def block_bicgstab(A, x0, y, basis: Basis, slaterWeightMin: float, atol=1e-8, rt
 
     if not is_arr:
         basis.add_states(
-            state for r in ri for state, amp in r.items() if abs(amp) > slaterWeightMin and state not in basis.local_basis
+            state
+            for r in ri
+            for state, amp in r.items()
+            if abs(amp) > slaterWeightMin and state not in basis.local_basis
         )
 
     r0_t = ri.copy() if is_arr else [st.copy() for st in ri]
@@ -335,17 +95,17 @@ def block_bicgstab(A, x0, y, basis: Basis, slaterWeightMin: float, atol=1e-8, rt
 
     while it * n < global_seen_size[0] and it < max_iter:
         it += 1
-        
+
         if is_arr:
-            r_norms2 = np.linalg.norm(ri, axis=0)**2
+            r_norms2 = np.linalg.norm(ri, axis=0) ** 2
         else:
             r_norms2 = np.array([inner(vi, vi).real for vi in ri])
             if mpi:
                 comm.Allreduce(MPI.IN_PLACE, r_norms2, op=MPI.SUM)
         r_norms = np.sqrt(r_norms2)
-        
+
         active_mask = (r_norms >= atol) & (r_norms / r0_norm >= rtol)
-        
+
         if not np.any(active_mask):
             break
 
@@ -383,12 +143,12 @@ def block_bicgstab(A, x0, y, basis: Basis, slaterWeightMin: float, atol=1e-8, rt
         block_add_scaled(si, vi, -ai, slaterWeightMin=slaterWeightMin)
 
         if is_arr:
-            s_norms2 = np.linalg.norm(si, axis=0)**2
+            s_norms2 = np.linalg.norm(si, axis=0) ** 2
         else:
             s_norms2 = np.array([inner(vsi, vsi).real for vsi in si])
             if mpi:
                 comm.Allreduce(MPI.IN_PLACE, s_norms2, op=MPI.SUM)
-        
+
         active_mask_s = np.sqrt(s_norms2) >= atol
         if not np.any(active_mask_s):
             xip = xi.copy() if is_arr else [st.copy() for st in xi]
@@ -445,55 +205,3 @@ def block_bicgstab(A, x0, y, basis: Basis, slaterWeightMin: float, atol=1e-8, rt
         pi = pip
 
     return xi
-
-
-def cg_phys(A_op, A_dict, n_spin_orbitals, x_psi, y_psi, w, delta, basis, atol=1e-5):
-    """
-    delta is a small imaginary part added to the diagonal of H in order to form A.
-    CG algorithm, reformulated to only use matrix vector products of the form A.x
-    (the sought after solution). This might allow for an approximation of x based on physics
-    rather than pure numerics.
-    """
-
-    n = basis.size
-    A = basis.build_sparse_matrix(A_op, A_dict)
-    x, y = basis.build_vector([x_psi, y_psi])
-    Ax = A @ x
-    if basis.is_distributed:
-        basis.comm.Allreduce(MPI.IN_PLACE, Ax, op=MPI.SUM)
-    r = y - Ax
-    p = r
-    r_prev = r
-    alpha_guess = (1 - delta * 1j) / (1 + delta**2)
-    for it in range(10 * n):
-        x += alpha_guess * p
-
-        p_psi, r_prev_psi, x_psi = basis.build_state([p, r_prev, x], distribute=True)
-
-        basis.expand_at(w, x_psi, A_op, A_dict)
-        A = basis.build_sparse_matrix(A_op, A_dict)
-        x, y, r_prev, p = basis.build_vector([x_psi, y_psi, r_prev_psi, p_psi])
-
-        Ax = A @ x
-        if basis.is_distributed:
-            basis.comm.Allreduce(MPI.IN_PLACE, Ax, op=MPI.SUM)
-        r = y - Ax
-
-        ad = (r_prev - r) / alpha_guess
-        alpha = np.conj(r_prev) @ r_prev / (np.conj(r_prev) @ ad)
-
-        x += (alpha - alpha_guess) * p
-        r -= (alpha - alpha_guess) * ad
-        if it % 10 == 0:
-            Ax = A @ x
-            if basis.is_distributed:
-                basis.comm.Allreduce(MPI.IN_PLACE, Ax, op=MPI.SUM)
-            r = y - Ax
-        if (np.conj(r) @ r).real < atol**2:
-            break
-        dad = np.conj(p) @ ad
-        da = np.conj(ad - 2j * delta * p)
-        dar = da @ r
-        p = r - dar / dad * p
-        r_prev = r
-    return x, {"rnorm2": np.conj(r) @ r, "it": it + 1}

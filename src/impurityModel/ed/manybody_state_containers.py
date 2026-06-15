@@ -1,19 +1,17 @@
-from bisect import bisect_left
-from typing import Optional, Union
+from typing import Optional
 
 try:
-    from collections.abc import Sequence, Iterable
+    from collections.abc import Iterable, Sequence
 except ModuleNotFoundError:
-    from collections import Sequence, Iterable
+    from collections import Iterable, Sequence
 import itertools
 from heapq import merge
+
 import numpy as np
-import scipy as sp
 from mpi4py import MPI
-from impurityModel.ed import product_state_representation as psr
+
 from impurityModel.ed.ManyBodyUtils import SlaterDeterminant
 from impurityModel.ed.mpi_comm import graph_alltoall
-
 
 
 def batched(iterable: Iterable, n: int) -> Iterable:
@@ -40,6 +38,7 @@ class StateContainer:
     many-body states (such as Slater determinants), with support for
     parallel execution and distributed storage across MPI ranks.
     """
+
     class IndexDict:
         """O(1) state → index mapping backed by a plain dict.
 
@@ -594,7 +593,7 @@ class SimpleDistributedStateContainer(StateContainer):
             return
 
         from impurityModel.ed.mpi_comm import distribute_determinants
-        
+
         unique_new_states = list(set(new_states))
         received_list = distribute_determinants(unique_new_states, self.n_bytes, self.comm)
 
@@ -730,11 +729,14 @@ class SimpleDistributedStateContainer(StateContainer):
             retry_count = 0
             while np.any(np.logical_or(result > self.size, result < 0)) and retry_count < max_retries:
                 mask = np.logical_or(result > self.size, result < 0)
-                result[mask] = np.fromiter(self._index_sequence(itertools.compress(s, mask)), dtype=int, count=int(np.sum(mask)))
+                result[mask] = np.fromiter(
+                    self._index_sequence(itertools.compress(s, mask)), dtype=int, count=int(np.sum(mask))
+                )
                 retry_count += 1
 
             if retry_count >= max_retries:
                 import warnings
+
                 warnings.warn(f"Failed to resolve all indices after {max_retries} retries")
 
         return (res for res in result[np.argsort(send_order)])
@@ -780,7 +782,5 @@ class SimpleDistributedStateContainer(StateContainer):
         if flatten:
             states = [state for r_states in states for state in r_states]
         return states
-
-
 
         # return (idx != len(self._full_basis) for idx in self._index_sequence(items))

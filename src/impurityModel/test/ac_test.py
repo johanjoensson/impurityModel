@@ -1,8 +1,7 @@
 import pytest
-from impurityModel.ed import create
-from impurityModel.ed import remove
-from impurityModel.ed import ac
+
 import impurityModel.ed.product_state_representation as psr
+from impurityModel.ed import ac, create, remove
 
 
 @pytest.mark.parametrize(

@@ -1,27 +1,12 @@
-from bisect import bisect_left
-import itertools
 from enum import Enum
-from heapq import merge
+from typing import Callable
 
 import numpy as np
 import scipy as sp
-from typing import Optional, NamedTuple, Callable
 from mpi4py import MPI
+
 from impurityModel.ed.manybody_basis import Basis
-from impurityModel.ed.krylovBasis import KrylovBasis
-from impurityModel.ed.finite import (
-    applyOp_new as applyOp,
-    # inner,
-    matmul,
-    removeFromFirst,
-    addOps,
-    subtractOps,
-    scale,
-    norm2,
-)
-from cmath import phase, rect
-from impurityModel.ed.ManyBodyUtils import ManyBodyState, ManyBodyOperator, applyOp as applyOp_test, inner
-from impurityModel.ed.utils import matrix_print
+from impurityModel.ed.ManyBodyUtils import ManyBodyOperator, ManyBodyState, inner
 
 
 class Reort(Enum):
@@ -177,6 +162,7 @@ def build_banded_matrix(alphas, betas):
         bands[i, :] = np.concatenate([alpha_diags, beta_diags], axis=1).flatten()
     return bands
 
+
 def _build_full_T(alphas, betas):
     m = len(alphas)
     if m == 0:
@@ -190,6 +176,7 @@ def _build_full_T(alphas, betas):
             T[i * n : (i + 1) * n, (i + 1) * n : (i + 2) * n] = np.conj(betas[i].T)
     return T
 
+
 def _extract_blocks(T, m, n):
     alphas = np.zeros((m, n, n), dtype=complex)
     betas = np.zeros((m - 1, n, n), dtype=complex)
@@ -198,6 +185,7 @@ def _extract_blocks(T, m, n):
         if i < m - 1:
             betas[i] = T[(i + 1) * n : (i + 2) * n, i * n : (i + 1) * n]
     return alphas, betas
+
 
 def eigsh(alphas, betas, de=None, Q=None, eigvals_only=False, select="a", select_range=None, max_ev=0, comm=None):
     """
@@ -336,35 +324,6 @@ def estimate_orthonormality(W, alphas, betas, eps=np.finfo(float).eps, N=1, rng=
     return W_out
 
 
-def qr_decomp(psi, pivoting=False):
-    """
-    Perform an economic QR decomposition of a matrix.
-
-    Optionally performs pivoting during the decomposition.
-
-    Parameters
-    ----------
-    psi : ndarray
-        Matrix to decompose.
-    pivoting : bool, optional
-        Whether to perform QR decomposition with pivoting. Default is False.
-
-    Returns
-    -------
-    Q : ndarray
-        Orthonormal matrix Q.
-    R : ndarray
-        Upper triangular matrix R.
-    P : ndarray or None
-        Pivoting array if pivoting is True, else None.
-    """
-    if pivoting:
-        psi, beta, p = sp.linalg.qr(psi, mode="economic", overwrite_a=True, check_finite=False, pivoting=True)
-        return np.ascontiguousarray(psi), beta, p
-    psi, beta = sp.linalg.qr(psi, mode="economic", overwrite_a=True, check_finite=False, pivoting=False)
-    return np.ascontiguousarray(psi), beta, None
-
-
 def _reorthogonalize_dense(wp, basis_vectors, indices=None):
     """
     Project `wp` against a subset of `basis_vectors` using classical Gram-Schmidt.
@@ -388,7 +347,7 @@ def _reorthogonalize_sparse(wp, Q_states, indices, inner_func, mpi, comm, n):
 
     Q_sub = [Q_states[i] for i in indices] if len(indices) < len(Q_states) else Q_states
 
-    from impurityModel.ed.ManyBodyUtils import inner_multi, add_scaled_multi
+    from impurityModel.ed.ManyBodyUtils import add_scaled_multi, inner_multi
 
     for _ in range(2):
         overlaps = inner_multi(Q_sub, wp)
@@ -555,7 +514,6 @@ def get_block_Lanczos_matrices(
     n = psi0.shape[1] if len(psi0.shape) == 2 else 1
     it_max = int(np.ceil(krylovSize / n))
 
-    n_reort = 0
     if rank == 0:
         q = np.zeros((2, N, n), dtype=complex, order="C")
         wp = np.empty((N, n), dtype=complex, order="C")
@@ -669,7 +627,7 @@ def get_block_Lanczos_matrices(
     return alphas, betas, Q
 
 
-from impurityModel.ed.ManyBodyUtils import inner_multi, add_scaled_multi
+from impurityModel.ed.ManyBodyUtils import add_scaled_multi, inner_multi
 
 
 def block_lanczos_array(
@@ -864,7 +822,7 @@ def block_lanczos_array(
         it += 1
 
     if verbose:
-        print(f"Coverged at iteration {it+1}")
+        print(f"Coverged at iteration {it + 1}")
 
     res_Q = Q_list[0] if build_krylov_basis else None
     if return_W:
@@ -945,7 +903,6 @@ def block_lanczos_sparse(
 
     mpi = basis.comm is not None
     comm = basis.comm if mpi else MPI.COMM_SELF
-    rank = comm.rank if mpi else 0
     build_krylov_basis = reort != Reort.NONE or True
 
     # Initialize from passed state if provided
@@ -1029,7 +986,7 @@ def block_lanczos_sparse(
             beta_prev_dag = np.conj(betas[it - 1].T)
             add_scaled_multi(wp, q[0], -beta_prev_dag)
 
-        actual_orth = inner_multi(Q, wp)
+        inner_multi(Q, wp)
         if reort == Reort.FULL or (reort == Reort.PERIODIC and it > 0 and it % period == 0):
             if not build_krylov_basis:
                 raise RuntimeError("Krylov basis must be built for reorthogonalization")
@@ -1169,7 +1126,7 @@ def block_lanczos_sparse(
         it += 1
 
     if verbose:
-        print(f"Coverged at iteration {it+1} out of a maximum of {basis.size//n}")
+        print(f"Coverged at iteration {it + 1} out of a maximum of {basis.size // n}")
     if return_W:
         return alphas, betas, Q if build_krylov_basis else None, W
     return alphas, betas, Q if build_krylov_basis else None

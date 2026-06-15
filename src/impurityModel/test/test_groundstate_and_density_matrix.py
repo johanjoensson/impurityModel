@@ -1,10 +1,11 @@
-import pytest
 import numpy as np
+import pytest
 from mpi4py import MPI
-from impurityModel.ed.ManyBodyUtils import ManyBodyOperator, ManyBodyState, SlaterDeterminant
-from impurityModel.ed.groundstate import calc_gs, calc_energy, find_ground_state_basis
+
 from impurityModel.ed.block_structure import BlockStructure
-from impurityModel.ed.density_matrix import calc_density_matrices
+from impurityModel.ed.groundstate import calc_energy, calc_gs, find_ground_state_basis
+from impurityModel.ed.ManyBodyUtils import ManyBodyOperator, ManyBodyState
+
 
 @pytest.mark.mpi
 def test_groundstate_and_density_matrix_mpi():
@@ -83,7 +84,7 @@ def test_groundstate_and_density_matrix_mpi():
             "comm": None,  # Serial
             "truncation_threshold": 1000,
         }
-        
+
         psis_seq, es_seq, basis_seq, rho_seq, gs_info_seq = calc_gs(
             Hop, basis_setup_seq, block_structure, rot_to_spherical, verbose=False, slaterWeightMin=1e-12
         )
@@ -101,7 +102,7 @@ def test_groundstate_and_density_matrix_mpi():
         dict_seq = full_psi_seq.to_dict()
 
         assert set(dict_mpi.keys()) == set(dict_seq.keys())
-        
+
         ratios = []
         for k in dict_seq:
             val_mpi = dict_mpi[k]
@@ -173,7 +174,7 @@ def test_groundstate_and_density_matrix_serial():
     assert len(psis) > 0
     assert rho.shape == (10, 10)
     assert np.allclose(rho, rho.conj().T, atol=1e-12)
-    
+
     # Tr(rho) should equal number of electrons (5)
     np.testing.assert_allclose(rho.trace().real, 5.0, atol=1e-10)
 
@@ -186,7 +187,7 @@ def test_calc_energy_serial():
     eigvals = np.array([0.5, 1.0, 1.5, 2.0, 2.5])
     hop = {((i, "c"), (i, "a")): val for i, val in enumerate(eigvals)}
     Hop = ManyBodyOperator(hop)
-    
+
     energy, basis = calc_energy(
         h_op=Hop,
         impurity_indices={0: [[0, 1, 2, 3, 4]]},
@@ -205,7 +206,6 @@ def test_calc_energy_serial():
     np.testing.assert_allclose(energy, 1.5, rtol=1e-10, atol=1e-10)
     assert basis is not None
     assert len(basis) > 0
-
 
 
 @pytest.mark.mpi
@@ -214,7 +214,7 @@ def test_calc_energy_mpi():
     eigvals = np.array([0.5, 1.0, 1.5, 2.0, 2.5])
     hop = {((i, "c"), (i, "a")): val for i, val in enumerate(eigvals)}
     Hop = ManyBodyOperator(hop)
-    
+
     energy, basis = calc_energy(
         h_op=Hop,
         impurity_indices={0: [[0, 1, 2, 3, 4]]},
@@ -235,12 +235,11 @@ def test_calc_energy_mpi():
     assert len(basis) > 0
 
 
-
 def test_find_ground_state_basis_serial():
     eigvals = np.array([0.5, 1.0, 1.5, 2.0, 2.5])
     hop = {((i, "c"), (i, "a")): val for i, val in enumerate(eigvals)}
     Hop = ManyBodyOperator(hop)
-    
+
     basis = find_ground_state_basis(
         h_op=Hop,
         impurity_orbitals={0: [[0, 1, 2, 3, 4]]},
@@ -257,11 +256,11 @@ def test_find_ground_state_basis_serial():
         slaterWeightMin=1e-12,
     )
     import impurityModel.ed.product_state_representation as psr
+
     assert basis is not None
     assert len(basis) == 1
     state = list(basis)[0]
     np.testing.assert_equal(psr.bytes2tuple(bytes(state.to_bytearray())[:8], 64), (0,))
-
 
 
 @pytest.mark.mpi
@@ -270,7 +269,7 @@ def test_find_ground_state_basis_mpi():
     eigvals = np.array([0.5, 1.0, 1.5, 2.0, 2.5])
     hop = {((i, "c"), (i, "a")): val for i, val in enumerate(eigvals)}
     Hop = ManyBodyOperator(hop)
-    
+
     basis = find_ground_state_basis(
         h_op=Hop,
         impurity_orbitals={0: [[0, 1, 2, 3, 4]]},
@@ -287,11 +286,11 @@ def test_find_ground_state_basis_mpi():
         slaterWeightMin=1e-12,
     )
     import impurityModel.ed.product_state_representation as psr
+
     assert basis is not None
     assert len(basis) == 1
     state = list(basis)[0]
     np.testing.assert_equal(psr.bytes2tuple(bytes(state.to_bytearray())[:8], 64), (0,))
-
 
 
 def test_calc_gs_options_serial():
@@ -299,7 +298,7 @@ def test_calc_gs_options_serial():
     eigvals = np.array([0.5, 1.0, 1.5, 2.0, 2.5])
     hop = {((i, "c"), (i, "a")): val for i, val in enumerate(eigvals)}
     Hop = ManyBodyOperator(hop)
-    
+
     basis_setup = {
         "impurity_orbitals": {0: [[0, 1, 2, 3, 4]]},
         "bath_states": ({0: [[]]}, {0: [[]]}),
@@ -321,7 +320,7 @@ def test_calc_gs_options_serial():
         inequivalent_blocks=[0],
     )
     rot_to_spherical = np.eye(5, dtype=complex)
-    
+
     psis, es, basis, thermal_rho, gs_info = calc_gs(
         Hop, basis_setup, block_structure, rot_to_spherical, verbose=False, slaterWeightMin=1e-12
     )
@@ -332,14 +331,13 @@ def test_calc_gs_options_serial():
     np.testing.assert_allclose(thermal_rho, np.zeros((5, 5)), atol=1e-10)
 
 
-
 @pytest.mark.mpi
 def test_calc_gs_options_mpi():
     comm = MPI.COMM_WORLD
     eigvals = np.array([0.5, 1.0, 1.5, 2.0, 2.5])
     hop = {((i, "c"), (i, "a")): val for i, val in enumerate(eigvals)}
     Hop = ManyBodyOperator(hop)
-    
+
     basis_setup = {
         "impurity_orbitals": {0: [[0, 1, 2, 3, 4]]},
         "bath_states": ({0: [[]]}, {0: [[]]}),
@@ -361,7 +359,7 @@ def test_calc_gs_options_mpi():
         inequivalent_blocks=[0],
     )
     rot_to_spherical = np.eye(5, dtype=complex)
-    
+
     psis, es, basis, thermal_rho, gs_info = calc_gs(
         Hop, basis_setup, block_structure, rot_to_spherical, verbose=False, slaterWeightMin=1e-12
     )
@@ -370,4 +368,3 @@ def test_calc_gs_options_mpi():
     assert thermal_rho.shape == (5, 5)
     np.testing.assert_allclose(es, [0.0], atol=1e-10)
     np.testing.assert_allclose(thermal_rho, np.zeros((5, 5)), atol=1e-10)
-

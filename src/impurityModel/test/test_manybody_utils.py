@@ -1,6 +1,14 @@
-import pytest
 import numpy as np
-from impurityModel.ed.ManyBodyUtils import ManyBodyState, ManyBodyOperator, inner_multi, add_scaled_multi, inner, SlaterDeterminant
+
+from impurityModel.ed.ManyBodyUtils import (
+    ManyBodyOperator,
+    ManyBodyState,
+    SlaterDeterminant,
+    add_scaled_multi,
+    inner,
+    inner_multi,
+)
+
 
 def get_random_state(num_terms):
     s = ManyBodyState()
@@ -9,6 +17,7 @@ def get_random_state(num_terms):
         val = np.random.rand() + 1j * np.random.rand()
         s.add_scaled(ManyBodyState({SlaterDeterminant(key): 1.0}), val)
     return s
+
 
 def test_inner_multi():
     n_states_left = 5
@@ -28,6 +37,7 @@ def test_inner_multi():
             M_loop[i, j] = inner(s_l, s_r)
 
     np.testing.assert_allclose(M_multi, M_loop, atol=1e-12)
+
 
 def test_add_scaled_multi():
     n_states_base = 4
@@ -58,6 +68,7 @@ def test_add_scaled_multi():
             assert key in s2
             np.testing.assert_allclose(s1[key], s2[key], atol=1e-12)
 
+
 def test_apply_multi():
     n_states = 3
     num_terms_op = 10
@@ -68,12 +79,12 @@ def test_apply_multi():
     for _ in range(num_terms_op):
         num_c = np.random.randint(1, 3)
         num_a = np.random.randint(1, 3)
-        k_c = tuple((int(np.random.randint(0, 50)), 'c') for _ in range(num_c))
-        k_a = tuple((int(np.random.randint(0, 50)), 'a') for _ in range(num_a))
+        k_c = tuple((int(np.random.randint(0, 50)), "c") for _ in range(num_c))
+        k_a = tuple((int(np.random.randint(0, 50)), "a") for _ in range(num_a))
         op_dict[k_c + k_a] = np.random.rand() + 1j * np.random.rand()
 
     op = ManyBodyOperator(op_dict)
-    
+
     # Create random states
     states = [get_random_state(num_terms_state) for _ in range(n_states)]
 

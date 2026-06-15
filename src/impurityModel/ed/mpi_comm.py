@@ -9,6 +9,7 @@ from itertools import islice
 
 import numpy as np
 from mpi4py import MPI
+
 from impurityModel.ed.ManyBodyUtils import ManyBodyState, SlaterDeterminant
 
 # MPI variables
@@ -216,7 +217,7 @@ def graph_alltoall(send_list, comm):
     #           collective over this sparse neighbourhood.
     # ------------------------------------------------------------------
     graph_comm = comm.Create_dist_graph_adjacent(
-        sources,       # in-edges  (ranks that will send to me)
+        sources,  # in-edges  (ranks that will send to me)
         destinations,  # out-edges (ranks I will send to)
         reorder=False,
     )
@@ -224,9 +225,7 @@ def graph_alltoall(send_list, comm):
     # ------------------------------------------------------------------
     # Step 5 – pack send buffer (bytes for each destination in order).
     # ------------------------------------------------------------------
-    send_buf = bytearray().join(
-        send_bytes[r] for r in destinations if send_bytes[r] is not None
-    )
+    send_buf = bytearray().join(send_bytes[r] for r in destinations if send_bytes[r] is not None)
     s_counts = np.array([int(send_sizes[r]) for r in destinations], dtype=np.int64)
     s_displs = np.concatenate(([0], np.cumsum(s_counts[:-1]))) if len(s_counts) > 0 else np.array([], dtype=np.int64)
 
@@ -256,7 +255,7 @@ def graph_alltoall(send_list, comm):
     result = [None] * size
     offset = 0
     for r, cnt in zip(sources, r_counts):
-        result[r] = pickle.loads(recv_buf[offset: offset + cnt])
+        result[r] = pickle.loads(recv_buf[offset : offset + cnt])
         offset += cnt
 
     for r in range(size):
@@ -264,6 +263,7 @@ def graph_alltoall(send_list, comm):
             result[r] = empty_clone(send_list[r])
 
     return result
+
 
 def distribute_determinants(
     dets: "list[SlaterDeterminant]",
@@ -277,7 +277,7 @@ def distribute_determinants(
         return [dets]
 
     from impurityModel.ed.ManyBodyUtils import pack_determinants_cy, unpack_determinants_cy
-    
+
     size = comm.size
     chunks_per_state = (n_bytes + 7) // 8
 
@@ -295,13 +295,17 @@ def distribute_determinants(
 
     # 4. Buffers
     s_counts_nb = np.array([send_counts[r] for r in destinations], dtype=np.int64)
-    s_displs_nb = np.concatenate(([0], np.cumsum(s_counts_nb[:-1]))) if len(s_counts_nb) else np.array([], dtype=np.int64)
+    s_displs_nb = (
+        np.concatenate(([0], np.cumsum(s_counts_nb[:-1]))) if len(s_counts_nb) else np.array([], dtype=np.int64)
+    )
 
     total_recv = int(np.sum(recv_counts))
     state_recv = np.empty(total_recv * chunks_per_state, dtype=np.uint64)
 
     r_counts_nb = np.array([recv_counts[r] for r in sources], dtype=np.int64)
-    r_displs_nb = np.concatenate(([0], np.cumsum(r_counts_nb[:-1]))) if len(r_counts_nb) else np.array([], dtype=np.int64)
+    r_displs_nb = (
+        np.concatenate(([0], np.cumsum(r_counts_nb[:-1]))) if len(r_counts_nb) else np.array([], dtype=np.int64)
+    )
 
     # 5. Exchange
     graph_comm.Neighbor_alltoallv(
@@ -317,8 +321,6 @@ def distribute_determinants(
         return [[] for _ in range(size)]
 
 
-
-
 def graph_alltoall_psis(
     psis: "list[ManyBodyState]",
     n_bytes: int,
@@ -330,8 +332,8 @@ def graph_alltoall_psis(
     if comm is None or comm.size <= 1:
         return [psi.copy() for psi in psis]
 
-    from impurityModel.ed.ManyBodyUtils import pack_psis_cy, unpack_psis_cy, ManyBodyState
-    
+    from impurityModel.ed.ManyBodyUtils import ManyBodyState, pack_psis_cy, unpack_psis_cy
+
     size = comm.size
     chunks_per_state = (n_bytes + 7) // 8
 
@@ -348,7 +350,9 @@ def graph_alltoall_psis(
     graph_comm = comm.Create_dist_graph_adjacent(sources, destinations, reorder=False)
 
     s_counts_nb = np.array([send_counts[r] for r in destinations], dtype=np.int64)
-    s_displs_nb = np.concatenate(([0], np.cumsum(s_counts_nb[:-1]))) if len(s_counts_nb) else np.array([], dtype=np.int64)
+    s_displs_nb = (
+        np.concatenate(([0], np.cumsum(s_counts_nb[:-1]))) if len(s_counts_nb) else np.array([], dtype=np.int64)
+    )
 
     # 5. Allocate receive buffers
     total_recv = int(np.sum(recv_counts))
@@ -357,7 +361,9 @@ def graph_alltoall_psis(
     psi_recv = np.empty(total_recv, dtype=np.int32)
 
     r_counts_nb = np.array([recv_counts[r] for r in sources], dtype=np.int64)
-    r_displs_nb = np.concatenate(([0], np.cumsum(r_counts_nb[:-1]))) if len(r_counts_nb) else np.array([], dtype=np.int64)
+    r_displs_nb = (
+        np.concatenate(([0], np.cumsum(r_counts_nb[:-1]))) if len(r_counts_nb) else np.array([], dtype=np.int64)
+    )
 
     # 6. Exchange data
     graph_comm.Neighbor_alltoallv(
@@ -383,10 +389,13 @@ def graph_alltoall_psis(
 
     return res
 
-def gather_distributed_results(comm, sub_comm_rank, roots, items_per_color, local_res, is_array=True, shape=None, dtype=None):
+
+def gather_distributed_results(
+    comm, sub_comm_rank, roots, items_per_color, local_res, is_array=True, shape=None, dtype=None
+):
     """
     Gather results computed across sub-communicators into the root communicator (rank 0).
-    
+
     Parameters
     ----------
     comm : MPI.Comm
@@ -405,7 +414,7 @@ def gather_distributed_results(comm, sub_comm_rank, roots, items_per_color, loca
         The shape of the array to gather (if is_array is True). If not provided, it will be inferred from local_res.
     dtype : np.dtype, optional
         The data type (if is_array is True). If not provided, it will be inferred from local_res.
-        
+
     Returns
     -------
     all_res : ndarray or list or None
@@ -426,11 +435,11 @@ def gather_distributed_results(comm, sub_comm_rank, roots, items_per_color, loca
             all_res = []
 
         offsets = [0] + list(np.cumsum(items_per_color))[:-1]
-        
+
         for color, (count, root) in enumerate(zip(items_per_color, roots)):
             if count == 0:
                 continue
-            
+
             if root == 0:
                 if is_array:
                     all_res[offsets[color] : offsets[color] + count] = local_res

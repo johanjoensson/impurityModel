@@ -5,16 +5,17 @@ Verifies that calc_density_matrix returns the same result as the
 reference implementation using the full c_j^dag c_i operator construction.
 """
 
-import pytest
-import numpy as np
 from itertools import product as iproduct
-from impurityModel.ed.ManyBodyUtils import ManyBodyState, ManyBodyOperator, SlaterDeterminant, inner
-from impurityModel.ed.density_matrix import calc_density_matrix, calc_density_matrices
 
+import numpy as np
+
+from impurityModel.ed.density_matrix import calc_density_matrices, calc_density_matrix
+from impurityModel.ed.ManyBodyUtils import ManyBodyOperator, ManyBodyState, SlaterDeterminant, inner
 
 # ---------------------------------------------------------------------------
 # Reference (original) implementation for comparison
 # ---------------------------------------------------------------------------
+
 
 def _reference_calc_density_matrix(psi: ManyBodyState, orbital_indices: list):
     """Original O(n_orb^2) implementation."""
@@ -33,6 +34,7 @@ def _reference_calc_density_matrix(psi: ManyBodyState, orbital_indices: list):
 # Helper: build a simple Slater-determinant state
 # ---------------------------------------------------------------------------
 
+
 def _make_state(occupied_orbs: list[int], n_orbs: int = 16) -> ManyBodyState:
     """Return a single-Slater-determinant ManyBodyState with given occupied orbitals.
 
@@ -44,7 +46,7 @@ def _make_state(occupied_orbs: list[int], n_orbs: int = 16) -> ManyBodyState:
     for orb in occupied_orbs:
         byte_idx = orb // 8
         bit_pos = 7 - (orb % 8)  # MSB-first within each byte
-        data[byte_idx] |= (1 << bit_pos)
+        data[byte_idx] |= 1 << bit_pos
     sd = SlaterDeterminant.from_bytes(bytes(data))
     return ManyBodyState({sd: 1.0})
 
@@ -58,7 +60,7 @@ def _make_superposition(terms: list[tuple[list[int], complex]], n_orbs: int = 16
         for orb in occupied:
             byte_idx = orb // 8
             bit_pos = 7 - (orb % 8)  # MSB-first within each byte
-            data[byte_idx] |= (1 << bit_pos)
+            data[byte_idx] |= 1 << bit_pos
         sd = SlaterDeterminant.from_bytes(bytes(data))
         d[sd] = amp
     psi = ManyBodyState(d)
@@ -69,6 +71,7 @@ def _make_superposition(terms: list[tuple[list[int], complex]], n_orbs: int = 16
 # ---------------------------------------------------------------------------
 # Tests
 # ---------------------------------------------------------------------------
+
 
 class TestCalcDensityMatrix:
     def test_single_slater_determinant(self):
@@ -87,11 +90,13 @@ class TestCalcDensityMatrix:
 
     def test_hermitian(self):
         """Density matrix must be Hermitian for any state."""
-        psi = _make_superposition([
-            ([0, 2], 1.0 + 0j),
-            ([1, 3], 0.5 + 0.5j),
-            ([0, 3], -0.3 + 0.1j),
-        ])
+        psi = _make_superposition(
+            [
+                ([0, 2], 1.0 + 0j),
+                ([1, 3], 0.5 + 0.5j),
+                ([0, 3], -0.3 + 0.1j),
+            ]
+        )
         orbital_indices = [0, 1, 2, 3]
         rho = calc_density_matrix(psi, orbital_indices)
         np.testing.assert_allclose(rho, rho.conj().T, atol=1e-12)
@@ -99,10 +104,12 @@ class TestCalcDensityMatrix:
     def test_trace_equals_particle_number(self):
         """Tr(rho) should equal the expected particle number."""
         # Two particles in a superposition of 4-orbital states
-        psi = _make_superposition([
-            ([0, 1], 1.0),
-            ([2, 3], 1.0j),
-        ])
+        psi = _make_superposition(
+            [
+                ([0, 1], 1.0),
+                ([2, 3], 1.0j),
+            ]
+        )
         orbital_indices = [0, 1, 2, 3]
         rho = calc_density_matrix(psi, orbital_indices)
         # Each term has 2 particles -> Tr(rho) = 2
@@ -118,12 +125,14 @@ class TestCalcDensityMatrix:
 
     def test_agrees_with_reference_superposition(self):
         """Optimized implementation matches reference for a non-trivial superposition."""
-        psi = _make_superposition([
-            ([0, 2, 4], 1.0 + 0j),
-            ([1, 3, 5], 0.8 + 0.3j),
-            ([0, 1, 4], -0.5 + 0.2j),
-            ([2, 3, 4], 0.1 - 0.7j),
-        ])
+        psi = _make_superposition(
+            [
+                ([0, 2, 4], 1.0 + 0j),
+                ([1, 3, 5], 0.8 + 0.3j),
+                ([0, 1, 4], -0.5 + 0.2j),
+                ([2, 3, 4], 0.1 - 0.7j),
+            ]
+        )
         orbital_indices = list(range(6))
         rho = calc_density_matrix(psi, orbital_indices)
         rho_ref = _reference_calc_density_matrix(psi, orbital_indices)
@@ -144,11 +153,13 @@ class TestCalcDensityMatrix:
 
     def test_subset_of_orbitals(self):
         """Can request a strict subset of the total orbital space."""
-        psi = _make_superposition([
-            ([0, 2], 1.0),
-            ([1, 3], 1.0j),
-        ])
-        orbital_indices = [0, 1]   # only first two orbitals
+        psi = _make_superposition(
+            [
+                ([0, 2], 1.0),
+                ([1, 3], 1.0j),
+            ]
+        )
+        orbital_indices = [0, 1]  # only first two orbitals
         rho = calc_density_matrix(psi, orbital_indices)
         rho_ref = _reference_calc_density_matrix(psi, orbital_indices)
         np.testing.assert_allclose(rho, rho_ref, atol=1e-12)

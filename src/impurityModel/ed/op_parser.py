@@ -124,7 +124,6 @@ def read_real_imag(str):
     >>> read_real_imag(" 1.5 -2.0")
     (1.5-2j)
     """
-    num = ""
     real = 0
     imag = 0
     str = skip_whitespaces(str)
@@ -162,8 +161,6 @@ def extract_operator(line):
     >>> extract_operator("(2,) (1,) 1.5 0.0")
     ((((2,), 'c'), ((1,), 'a')), (1.5+0j))
     """
-    res = {}
-    states = []
     line, state1 = read_state_tuple(line)
     line = skip_whitespaces(line)
     line, state2 = read_state_tuple(line)

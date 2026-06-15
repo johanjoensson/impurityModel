@@ -1,46 +1,33 @@
 from math import ceil
-import sys
 from typing import Any, Optional, Union
-from os import environ
-from bisect import bisect_left
 
 try:
     from collections.abc import Iterable
 except ModuleNotFoundError:
     from collections import Iterable
 import itertools
+
 import numpy as np
 import scipy as sp
-from heapq import merge
-from scipy.cluster.hierarchy import DisjointSet
 from mpi4py import MPI
-from bitarray import bitarray
-from impurityModel.ed.manybody_state_containers import (
-    SimpleDistributedStateContainer,
-)
-from impurityModel.ed.mpi_comm import graph_alltoall, graph_alltoall_psis
-
+from scipy.cluster.hierarchy import DisjointSet
 
 from impurityModel.ed import product_state_representation as psr
 from impurityModel.ed.finite import (
-    c2i,
-    c2i_op,
-    eigensystem,
-    norm2,
-    build_density_matrix,
     thermal_average_scale_indep,
 )
-
-from impurityModel.ed.ManyBodyUtils import (
-    ManyBodyState,
-    ManyBodyOperator,
-    SlaterDeterminant,
-    applyOp as applyOp_test,
-    inner,
+from impurityModel.ed.manybody_state_containers import (
+    SimpleDistributedStateContainer,
 )
-
-
-from impurityModel.ed.finite import applyOp_new as applyOp
+from impurityModel.ed.ManyBodyUtils import (
+    ManyBodyOperator,
+    ManyBodyState,
+    SlaterDeterminant,
+)
+from impurityModel.ed.ManyBodyUtils import (
+    applyOp as applyOp_test,
+)
+from impurityModel.ed.mpi_comm import graph_alltoall_psis
 from impurityModel.ed.utils import matrix_print
 
 
@@ -250,32 +237,6 @@ class Basis:
     def local_basis(self):
         return self.state_container.local_basis
 
-    def _get_offsets_and_local_lengths(self, total_length: int) -> tuple[int, int]:
-        """Compute the MPI rank offsets and local lengths for distributing a total size.
-
-        Parameters
-        ----------
-        total_length : int
-            The total number of states/elements to distribute.
-
-        Returns
-        -------
-        offset : int
-            The global index offset for the local rank.
-        local_len : int
-            The number of states/elements assigned to the local rank.
-        """
-        offset = 0
-        local_len = total_length
-        if self.comm is not None:
-            local_len = total_length // self.comm.size
-            leftovers = total_length % self.comm.size
-            if leftovers != 0 and self.comm.rank < leftovers:
-                local_len += 1
-            scanned_length = np.empty((1,), dtype=int)
-            offset = self.comm.Scan(np.array([local_len], dtype=int), scanned_length, op=MPI.SUM)
-        return offset, scanned_length[0] - local_len
-
     def _get_initial_basis(
         self,
         impurity_orbitals: dict[int, list[list[int]]],
@@ -386,69 +347,6 @@ class Basis:
 
         return [SlaterDeterminant.from_bytes(bytestring) for bytestring in basis], num_spin_orbitals
 
-    def _get_restrictions(
-        self,
-        impurity_orbitals: dict[int, list[list[int]]],
-        bath_states: tuple[dict[int, list[list[int]]], dict[int, list[list[int]]]],
-        delta_valence_occ: dict[int, int],
-        delta_conduction_occ: dict[int, int],
-        delta_impurity_occ: dict[int, int],
-        nominal_impurity_occ: dict[int, int],
-        verbose: bool,
-    ) -> dict[frozenset[int], tuple[int, int]]:
-        """Determine the occupation restrictions for each orbital set.
-
-        Parameters
-        ----------
-        impurity_orbitals : dict
-            Impurity orbitals grouped by l quantum number.
-        bath_states : tuple of dict
-            Valence and conduction bath states grouped by l quantum number.
-        delta_valence_occ : dict
-            Allowed valence occupation variation.
-        delta_conduction_occ : dict
-            Allowed conduction occupation variation.
-        delta_impurity_occ : dict
-            Allowed impurity occupation variation.
-        nominal_impurity_occ : dict
-            Nominal impurity occupation.
-        verbose : bool
-            Whether to print restriction details.
-
-        Returns
-        -------
-        restrictions : dict of frozenset of int to (int, int)
-            A dictionary mapping sets of orbital indices to their (min, max) occupations.
-        """
-        valence_baths, conduction_baths = bath_states
-        restrictions = {}
-        total_baths = {
-            i: sum(len(orbs) for orbs in valence_baths[i]) + sum(len(orbs) for orbs in conduction_baths[i])
-            for i in valence_baths
-        }
-        total_impurity_orbitals = {i: sum(len(orbs) for orbs in impurity_orbitals[i]) for i in impurity_orbitals}
-        for i in total_baths:
-            impurity_indices = frozenset(orb for imp_orbs in impurity_orbitals[i] for orb in imp_orbs)
-            restrictions[impurity_indices] = (
-                max(nominal_impurity_occ[i] - delta_impurity_occ[i], 0),
-                min(nominal_impurity_occ[i] + delta_impurity_occ[i] + 1, total_impurity_orbitals[i] + 1),
-            )
-            valence_indices = frozenset(orb for val_orbs in valence_baths[i] for orb in val_orbs)
-            restrictions[valence_indices] = (
-                max(sum(len(orbs) for orbs in valence_baths[i]) - delta_valence_occ[i], 0),
-                sum(len(orbs) for orbs in valence_baths[i]) + 1,
-            )
-            conduction_indices = frozenset(orb for con_orbs in conduction_baths[i] for orb in con_orbs)
-            restrictions[conduction_indices] = (0, delta_conduction_occ[i] + 1)
-
-            if verbose:
-                print(f"l = {i}")
-                print(f"|---Restrictions on the impurity orbitals = {restrictions[impurity_indices]}")
-                print(f"|---Restrictions on the valence bath      = {restrictions[valence_indices]}")
-                print(f"----Restrictions on the conduction bath   = {restrictions[conduction_indices]}")
-
-        return restrictions
-
     def get_effective_restrictions(self) -> dict[frozenset[int], tuple[int, int]]:
         """Calculate the actual min/max occupations observed across the current basis.
 
@@ -525,9 +423,7 @@ class Basis:
         max_occ : int
             The new maximum occupation allowed.
         """
-        if dN is None:
-            return 0, len(orbs)
-        elif orbs not in restrictions:
+        if dN is None or orbs not in restrictions:
             return 0, len(orbs)
         occ_dec, occ_inc = dN
         min_occ, max_occ = restrictions[orbs]
@@ -598,7 +494,7 @@ class Basis:
         if sum(len(rest) for rest in ground_state_restrictions.keys()) == 0:
             return None
         if self.verbose:
-            print(f"Ground state restrictions:")
+            print("Ground state restrictions:")
             for indices, occupations in ground_state_restrictions.items():
                 print(f"---> {sorted(indices)} : {occupations}")
         return ground_state_restrictions
@@ -635,11 +531,11 @@ class Basis:
         if psis is not None and len(psis) == 0:
             return None
         if imp_change is None:
-            imp_change = {i: None for i in self.impurity_orbitals}
+            imp_change = dict.fromkeys(self.impurity_orbitals)
         if val_change is None:
-            val_change = {i: None for i in self.impurity_orbitals}
+            val_change = dict.fromkeys(self.impurity_orbitals)
         if con_change is None:
-            con_change = {i: None for i in self.impurity_orbitals}
+            con_change = dict.fromkeys(self.impurity_orbitals)
 
         ground_state_restrictions = self.get_effective_restrictions()
         excited_restrictions = {}
@@ -817,9 +713,9 @@ class Basis:
         debug : bool, default False
             Debug flag.
         """
-        assert (
-            impurity_orbitals is not None
-        ), "You need to supply the number of impurity orbitals in each set in impurity_orbitals"
+        assert impurity_orbitals is not None, (
+            "You need to supply the number of impurity orbitals in each set in impurity_orbitals"
+        )
         assert bath_states is not None, "You need to supply the number of bath states for each l quantum number"
 
         self.num_spin_orbitals = sum(
@@ -854,7 +750,7 @@ class Basis:
                 delta_conduction_occ=delta_conduction_occ,
                 delta_impurity_occ=delta_impurity_occ,
                 nominal_impurity_occ=nominal_impurity_occ,
-                mixed_valence=mixed_valence if mixed_valence is not None else {i: 0 for i in nominal_impurity_occ},
+                mixed_valence=mixed_valence if mixed_valence is not None else dict.fromkeys(nominal_impurity_occ, 0),
                 verbose=verbose,
             )
         self.impurity_orbitals = impurity_orbitals
@@ -878,7 +774,7 @@ class Basis:
 
     def clone(self, initial_basis=None, restrictions=None, verbose=None, comm=None):
         """Create a new Basis instance, optionally overriding initial_basis and restrictions.
-        
+
         If initial_basis is None, the new basis will start with self.local_basis.
         If restrictions is None, the new basis will inherit self.restrictions.
         If comm is None, the new basis will inherit self.comm.
@@ -895,7 +791,7 @@ class Basis:
             collapse_chains=self.collapse_chains,
             comm=comm if comm is not None else self.comm,
             verbose=verbose if verbose is not None else self.verbose,
-            debug=self.debug
+            debug=self.debug,
         )
 
     def free_comm(self):
@@ -948,7 +844,7 @@ class Basis:
         if isinstance(psis, ManyBodyState):
             print("WARNING in redistribute_psi:")
             print(
-                f"Expetced a list of ManyBodyStates, received a single ManyBodyState. Remaking into list of one ManyBodyState"
+                "Expetced a list of ManyBodyStates, received a single ManyBodyState. Remaking into list of one ManyBodyState"
             )
             psis = [psis]
         psis = [
@@ -996,10 +892,12 @@ class Basis:
                 sum(len(orbs) for orbs in self.impurity_orbitals[l]),
             )
         }
+        n_dn_mbo = ManyBodyOperator(n_dn_op)
+        n_up_mbo = ManyBodyOperator(n_up_op)
         spin_flip = set()
         for det in determinants:
-            n_dn = int(applyOp(self.num_spin_orbitals, n_dn_op, {det: 1}).get(det, 0))
-            n_up = int(applyOp(self.num_spin_orbitals, n_up_op, {det: 1}).get(det, 0))
+            n_dn = int(applyOp_test(n_dn_mbo, ManyBodyState({det: 1.0}), cutoff=0).get(det, 0).real)
+            n_up = int(applyOp_test(n_up_mbo, ManyBodyState({det: 1.0}), cutoff=0).get(det, 0).real)
             spin_flip.add(det)
             to_flip = {det}
             for l in self.impurity_orbitals:
@@ -1009,17 +907,22 @@ class Basis:
                         ((i + n_orb // 2, "c"), (i, "a")): 1.0,
                         ((i, "c"), (i + n_orb // 2, "a")): 1.0,
                     }
+                    spin_flip_mbo = ManyBodyOperator(spin_flip_op)
                     for state in list(to_flip):
-                        flipped = applyOp(self.num_spin_orbitals, spin_flip_op, {state: 1})
+                        flipped = applyOp_test(spin_flip_mbo, ManyBodyState({state: 1.0}), cutoff=0)
                         to_flip.update(flipped.keys())
                         if len(flipped) == 0:
                             continue
                         flipped_state = list(flipped.keys())[0]
                         new_n_dn = int(
-                            applyOp(self.num_spin_orbitals, n_dn_op, {flipped_state: 1}).get(flipped_state, 0)
+                            applyOp_test(n_dn_mbo, ManyBodyState({flipped_state: 1.0}), cutoff=0)
+                            .get(flipped_state, 0)
+                            .real
                         )
                         new_n_up = int(
-                            applyOp(self.num_spin_orbitals, n_up_op, {flipped_state: 1}).get(flipped_state, 0)
+                            applyOp_test(n_up_mbo, ManyBodyState({flipped_state: 1.0}), cutoff=0)
+                            .get(flipped_state, 0)
+                            .real
                         )
                         if (new_n_dn == n_dn and new_n_up == n_up) or (new_n_dn == n_up and new_n_up == n_dn):
                             spin_flip.update(flipped.keys())
@@ -1440,6 +1343,7 @@ class Basis:
                     chi = self.redistribute_psis(chi)
 
             from impurityModel.ed.ManyBodyUtils import inner_multi
+
             rhos[n] = inner_multi(chi, phi).T
 
         if self.is_distributed:
@@ -1516,7 +1420,6 @@ class Basis:
             return range(len(priorities)), [0], 0, [len(priorities)], self, psis, [None]
 
         comm = self.comm
-        rank = comm.rank
         normalized_priorities = np.array([abs(p) for p in priorities], dtype=float)
         normalized_priorities /= np.sum(np.abs(normalized_priorities))
         # normalized_priorities[::-1].sort()
@@ -1626,183 +1529,3 @@ class Basis:
                 ic.Free()
 
         return indices, split_roots, color, items_per_color, split_basis, psis, [None] * len(intercomms)
-
-    def split_into_block_basis_and_redistribute_psi(
-        self, op, psis, min_group_size=1000, slaterWeightMin=0, verbose=False
-    ):
-        """
-        Split the basis into blocks determined by op. Also split psis into these blocks.
-        """
-
-        if not self.is_distributed:
-            return [0], [0], 0, [1], self, psis, [None]
-
-        comm = self.comm
-        rank = comm.rank
-
-        blocks = self.determine_blocks(op, slaterWeightMin)
-        block_lengths = np.array([len(block) for block in blocks], dtype=int)
-        if self.is_distributed:
-            self.comm.Allreduce(MPI.IN_PLACE, block_lengths)
-        if verbose:
-            print("Found block sizes:")
-            print(block_lengths)
-
-        tmp_basis = Basis(
-            self.impurity_orbitals,
-            self.bath_states,
-            initial_basis=[],
-            restrictions=self.restrictions,
-            spin_flip_dj=self.spin_flip_dj,
-            chain_restrict=self.chain_restrict,
-            collapse_chains=self.collapse_chains,
-            comm=self.comm,
-            truncation_threshold=self.truncation_threshold,
-            verbose=self.verbose,
-        )
-
-        block_indices, block_roots, block_color, blocks_per_color, block_basis, _, _ = (
-            tmp_basis.split_basis_and_redistribute_psi(block_lengths**2, None)
-        )
-        block_roots = np.array(block_roots, dtype=int)
-        procs_per_color = block_roots[1:] - block_roots[:-1]
-        procs_per_color = np.append(procs_per_color, [comm.size - np.sum(procs_per_color)])
-
-        # Recreate the intercommunicators between color groups.
-        # split_basis_and_redistribute_psi frees them before returning (to avoid
-        # non-collective gc freeing).  We need them for the communication below,
-        # so we rebuild them here using the same split_comm (block_basis.comm).
-        split_comm = block_basis.comm
-        block_intercomms = []
-        for c, c_root in enumerate(block_roots.tolist()):
-            if c == block_color:
-                block_intercomms.append(None)
-            else:
-                block_intercomms.append(split_comm.Create_intercomm(0, comm, int(c_root)))
-
-        num_block_indices_per_color = np.empty((len(block_roots)), dtype=int)
-        for c, c_root in enumerate(block_roots):
-            if c == block_color and rank == 0:
-                for send_color in range(len(block_roots)):
-                    if send_color == c:
-                        num_block_indices_per_color[c] = len(block_indices)
-                        continue
-                    block_intercomms[send_color].Recv(
-                        num_block_indices_per_color[send_color : send_color + 1], source=0
-                    )
-            elif rank == c_root:
-                block_intercomms[0].Send(np.array([len(block_indices)], dtype=int), dest=0)
-        comm.Bcast(num_block_indices_per_color, root=0)
-
-        block_index_color_offsets = [np.sum(num_block_indices_per_color[:c]) for c in range(len(block_roots))]
-        block_indices_per_color = np.empty((np.sum(num_block_indices_per_color)), dtype=int)
-        for c, c_root in enumerate(block_roots):
-            if c == block_color and rank == 0:
-                for send_color in range(len(block_roots)):
-                    start = block_index_color_offsets[send_color]
-                    stop = start + num_block_indices_per_color[send_color]
-                    if send_color == c:
-                        block_indices_per_color[start:stop] = block_indices
-                        continue
-                    block_intercomms[send_color].Recv(
-                        block_indices_per_color[start:stop],
-                        source=0,
-                    )
-            elif rank == c_root:
-                block_intercomms[0].Send(np.array(block_indices, dtype=int), dest=0)
-        comm.Bcast(block_indices_per_color, root=0)
-
-        new_states = {
-            self.local_basis[local_idx - self.offset] for block_idx in block_indices for local_idx in blocks[block_idx]
-        }
-        for c, c_root in enumerate(block_roots):
-            # We will receive states from everyone else
-            if c == block_color:
-                for send_color in range(len(block_roots)):
-                    if send_color == block_color:
-                        continue
-                    for sender in range(procs_per_color[send_color]):
-                        if sender % procs_per_color[c] != block_basis.comm.rank:
-                            continue
-                        received_bytes = block_intercomms[send_color].recv(source=sender)
-                        new_states.update(
-                            self.type.from_bytes(bytes(received_bytes[i : i + self.n_bytes]))
-                            for i in range(0, len(received_bytes), self.n_bytes)
-                        )
-            else:
-                start = block_index_color_offsets[c]
-                stop = start + num_block_indices_per_color[c]
-                states_to_send = {
-                    self.local_basis[local_idx - self.offset]
-                    for block_idx in block_indices_per_color[start:stop]
-                    for local_idx in blocks[block_idx]
-                }
-                serialized_states = bytearray().join(state.to_bytearray()[: self.n_bytes] for state in states_to_send)
-                block_intercomms[c].send(
-                    serialized_states,
-                    dest=block_basis.comm.rank % procs_per_color[c],
-                )
-        block_basis.add_states(new_states)
-
-        if psis is not None:
-            states_in_blocks = {
-                self.local_basis[state_idx - self.offset]
-                for block_idx in block_indices
-                for state_idx in blocks[block_idx]
-            }
-            new_psis = [
-                ManyBodyState({state: amp for state, amp in psi.items() if state in states_in_blocks}) for psi in psis
-            ]
-            for c, c_roor in enumerate(block_roots):
-                if c == block_color:
-                    for send_color in range(len(block_roots)):
-                        if send_color == block_color:
-                            continue
-                        for sender in range(procs_per_color[send_color]):
-                            if sender % procs_per_color[c] != block_basis.comm.rank:
-                                continue
-                            received_psi_dict = block_intercomms[send_color].recv(source=sender)
-                            for i, r_psi_dict in enumerate(received_psi_dict):
-                                psi_state = ManyBodyState({self.type.from_bytes(k): v for k, v in r_psi_dict.items()})
-                                new_psis[i] += psi_state
-                else:
-                    start = block_index_color_offsets[c]
-                    stop = start + num_block_indices_per_color[c]
-                    send_states = {
-                        self.local_basis[local_idx - self.offset]
-                        for block_idx in block_indices_per_color[start:stop]
-                        for local_idx in blocks[block_idx]
-                    }
-                    serialized_send_psis = [
-                        {
-                            bytes(state.to_bytearray()[: self.n_bytes]): amp
-                            for state, amp in psi.items()
-                            if state in send_states
-                        }
-                        for psi in psis
-                    ]
-                    block_intercomms[c].send(
-                        serialized_send_psis,
-                        dest=block_basis.comm.rank % procs_per_color[c],
-                    )
-            psis = block_basis.redistribute_psis(new_psis)
-
-        # Free the intercommunicators and the split communicator collectively
-        # before returning.  MPI_Comm_free is a collective operation — all ranks
-        # in a communicator must call it at the same time.  Leaving these for
-        # Python gc risks non-collective freeing (crash / protocol violation).
-        for ic in block_intercomms:
-            if ic is not None and ic != MPI.COMM_NULL:
-                ic.Free()
-        if block_basis is not None and block_basis.comm != comm:
-            block_basis.free_comm()
-
-        return (
-            block_indices,
-            block_roots,
-            block_color,
-            blocks_per_color,
-            block_basis,
-            psis,
-            [None] * len(block_intercomms),
-        )
