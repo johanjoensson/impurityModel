@@ -12,6 +12,7 @@ from rspt2spectra.readfile import parse_matrices
 from rspt2spectra.weight_functions import weight_functions
 
 from impurityModel.ed.block_structure import BlockStructure, build_block_structure, build_matrix, get_blocks
+from impurityModel.ed.natural_orbitals import fit_hyb_natural_orbitals
 from impurityModel.ed.edchain import (
     build_full_bath,
     build_H_bath_v,
@@ -110,6 +111,8 @@ def run(
     weight_function: str,
     weight_factor: float,
     fit_center: float,
+    natural_orbitals: bool,
+    grid_type: str,
     *kwargs,
 ) -> None:
     """Execute the full non-interacting Hamiltonian (h0) building workflow.
@@ -149,19 +152,35 @@ def run(
 
     block_structure = build_block_structure(phase_hyb, tol=1e-15)
 
-    ebs_star, vs_star = fit_hyb(
-        w,
-        eim,
-        phase_hyb,
-        bath_states_per_orbital,
-        block_structure,
-        gamma,
-        (w[0], 0) if not fit_unocc else None,
-        verbose,
-        comm,
-        regularization=regularization,
-        weight_fun=weight_functions[weight_function](fit_center, weight_factor),
-    )
+    if natural_orbitals:
+        H_dft_block = np.conj(Q.T) @ H_dft @ Q
+        H_imp_blocks = [
+            H_dft_block[np.ix_(block_structure.blocks[b], block_structure.blocks[b])]
+            for b in block_structure.inequivalent_blocks
+        ]
+        ebs_star, vs_star = fit_hyb_natural_orbitals(
+            w,
+            phase_hyb,
+            H_imp_blocks,
+            bath_states_per_orbital,
+            block_structure,
+            n_bins=1000,
+            grid_type=grid_type,
+        )
+    else:
+        ebs_star, vs_star = fit_hyb(
+            w,
+            eim,
+            phase_hyb,
+            bath_states_per_orbital,
+            block_structure,
+            gamma,
+            (w[0], 0) if not fit_unocc else None,
+            verbose,
+            comm,
+            regularization=regularization,
+            weight_fun=weight_functions[weight_function](fit_center, weight_factor),
+        )
     for ebss, vss in zip(ebs_star, vs_star):
         if len(ebss) == 0:
             continue
@@ -342,6 +361,8 @@ def main() -> None:
     parser.add_argument("--weight-function", type=str, default="unit")
     parser.add_argument("--weight-factor", type=float, default=2.0)
     parser.add_argument("--fit-center", type=float, default=0)
+    parser.add_argument("--natural-orbitals", action="store_true", help="Use Natural Orbitals approach instead of non-linear fitting")
+    parser.add_argument("--grid-type", type=str, default="linear", choices=["linear", "logarithmic"], help="Grid type for Natural Orbitals (linear or logarithmic)")
     args = parser.parse_args()
     run(**vars(args))
 

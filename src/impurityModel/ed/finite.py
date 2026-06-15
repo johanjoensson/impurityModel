@@ -387,7 +387,7 @@ def eigensystem(h_local, e_max, k=10, e0=None, v0=None, eigenValueTol=0, return_
     # We want to find eigenvalues up to e_max above ground state.
     # Since we don't know the ground state yet, we just find k eigenvalues.
     num_wanted = k
-    max_subspace_blocks = max(6, int(np.ceil(num_wanted * 2)))
+    max_subspace_blocks = max(40, int(np.ceil(num_wanted * 2)))
 
     if dense or N <= 20:
         if return_eigvecs:
