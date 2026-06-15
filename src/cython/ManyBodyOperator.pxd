@@ -33,11 +33,12 @@ cdef extern from "ManyBodyOperator.h" nogil:
         ManyBodyOperator(const vector[value_type]&)
         ManyBodyOperator(const vector[key_type]&, const vector[mapped_type]&)
 
-        cython.doublecomplex& operator[](const key_type&)
-        cython.doublecomplex& at(const key_type&)
+        ManyBodyState.mapped_type& operator[](const key_type&)
+        ManyBodyState.mapped_type& at(const key_type&)
         ManyBodyState operator()(const ManyBodyState&, double)
         ManyBodyState build_restriction_mask(const restrictions&)
         ManyBodyState apply(const ManyBodyState&, double)
+        vector[ManyBodyState] apply(const vector[const ManyBodyState*]&, double)
 
 
 

@@ -10,10 +10,12 @@ from libcpp.vector cimport vector
 from cython.operator cimport dereference, preincrement
 from libc.stdint cimport uint8_t, uint16_t, uint64_t, int64_t, int32_t
 from libc.string cimport memcpy
-from libcpp.complex cimport complex
+from libcpp.complex cimport complex as complex_cpp
 
 from copy import copy, deepcopy
 from bitarray import bitarray
+
+import numpy as np
 
 cdef extern from "<utility>" namespace "std" nogil:
     ManyBodyState_cpp& move(ManyBodyState_cpp)
@@ -156,7 +158,7 @@ cdef class ManyBodyState:
         return (self.__class__, (self.to_dict(), ))
 
     def __repr__(self):
-        cdef pair[SlaterDeterminant_cpp[uint64_t], complex[double]] p
+        cdef pair[SlaterDeterminant_cpp[uint64_t], complex_cpp[double]] p
         return "ManyBodyState({ " + ", ".join([f"{p.first.to_string().decode('utf-8')}: {p.second}" for p in self.v]) + "})"
 
     def __eq__(self, ManyBodyState other):
@@ -218,14 +220,23 @@ cdef class ManyBodyState:
             self.v = self.v / s
         return self
 
+    def add_scaled(self, ManyBodyState other, ManyBodyState_cpp.mapped_type scalar):
+        """
+        In-place addition of another ManyBodyState scaled by a complex scalar.
+        Equivalent to: self += scalar * other, but avoids creating intermediate objects.
+        """
+        with nogil:
+            self.v.add_scaled(other.v, scalar)
+        return self
+
     def __getitem__(self, SlaterDeterminant key):
         res= self.v[key.s]
         return res
 
-    def __setitem__(self, SlaterDeterminant key, double complex value):
+    def __setitem__(self, SlaterDeterminant key, ManyBodyState_cpp.mapped_type value):
         self.v[key.s] = value
 
-    def get(self, SlaterDeterminant key, double complex default = 0):
+    def get(self, SlaterDeterminant key, ManyBodyState_cpp.mapped_type default=ManyBodyState_cpp.mapped_type(0., 0.)):
         """
         Get the amplitude of a SlaterDeterminant key, or return the default.
         """
@@ -248,6 +259,7 @@ cdef class ManyBodyState:
         with nogil:
             res= self.v.norm()
         return res
+
 
     def __len__(self):
         with nogil:
@@ -290,7 +302,11 @@ cdef class ManyBodyState:
         """
         Yield all SlaterDeterminant configurations in the state.
         """
-        return (SlaterDeterminant(tuple(chunk for chunk in p.first)) for p in self.v)
+        cdef SlaterDeterminant result
+        for p in self.v:
+            result = SlaterDeterminant.__new__(SlaterDeterminant)
+            result.s = p.first
+            yield result
 
     def values(self):
         """
@@ -302,7 +318,11 @@ cdef class ManyBodyState:
         """
         Yield pairs of (SlaterDeterminant, amplitude).
         """
-        return ((SlaterDeterminant(tuple(chunk for chunk in p.first)), p.second) for p in self.v)
+        cdef SlaterDeterminant result
+        for p in self.v:
+            result = SlaterDeterminant.__new__(SlaterDeterminant)
+            result.s = p.first
+            yield (result, p.second)
 
     def prune(self, double cutoff):
         """
@@ -315,7 +335,13 @@ cdef class ManyBodyState:
         """
         Convert the ManyBodyState to a python dict.
         """
-        return dict((SlaterDeterminant(tuple(chunk for chunk in p.first)), p.second) for p in self.v)
+        cdef dict res = {}
+        cdef SlaterDeterminant result
+        for p in self.v:
+            result = SlaterDeterminant.__new__(SlaterDeterminant)
+            result.s = p.first
+            res[result] = p.second
+        return res
 
     def copy(self):
         """
@@ -323,10 +349,23 @@ cdef class ManyBodyState:
         """
         return ManyBodyState(self.to_dict())
 
+    def clear(self):
+        """
+        Clear the manybody state.
+        """
+        self.v.clear()
+
+    def is_empty(self):
+        """
+        Returns true if the ManyBodyState is empty (i.e. contains no SlaterDeterminants)
+        """
+        return self.v.empty()
+
 def inner(ManyBodyState a, ManyBodyState b):
     """
     Compute the inner product of many-body states: <a|b>.
     """
+    cdef ManyBodyState_cpp.mapped_type res
     with nogil:
         res = inner_cpp(a.v, b.v)
     return res
@@ -362,10 +401,10 @@ cdef class ManyBodyOperator:
     """
     cdef ManyBodyOperator_cpp o
 
-    def __cinit__(self, dict[tuple[tuple[int, str]], complex] op=None):
+    def __cinit__(self, dict[tuple[tuple[int, str]], complex_cpp] op=None):
         if op is None:
             op = {}
-        cdef double complex amp
+        cdef ManyBodyState_cpp.mapped_type amp
         cdef tuple[int, str] processes
         cdef vector[ManyBodyOperator_cpp.value_type] new_ops
         for processes, amp in op.items():
@@ -387,7 +426,7 @@ cdef class ManyBodyOperator:
     def __getitem__(self, tuple[tuple[int, str]] key):
         return self.o[processes_to_ints(key)]
 
-    def __setitem__(self, tuple[tuple[int, str]]key, double complex value):
+    def __setitem__(self, tuple[tuple[int, str]]key, ManyBodyState_cpp.mapped_type value):
         self.o[processes_to_ints(key)] = value
 
     def __add__(self, ManyBodyOperator other) ->ManyBodyOperator:
@@ -479,6 +518,33 @@ cdef class ManyBodyOperator:
             res.v = self.o(psi.v, cutoff)
         return res
 
+    def apply_multi(self, list psis, double cutoff = 0) -> list:
+        """
+        Apply operator to a list of ManyBodyStates without python looping.
+        """
+        cdef int n = len(psis)
+        cdef vector[const ManyBodyState_cpp*] p_ptrs
+        p_ptrs.reserve(n)
+
+        cdef ManyBodyState state
+        for obj in psis:
+            state = <ManyBodyState>obj
+            p_ptrs.push_back(&state.v)
+
+        cdef vector[ManyBodyState_cpp] res_vec
+
+        with nogil:
+            res_vec = self.o.apply(p_ptrs, cutoff)
+
+        cdef list res_list = []
+        cdef ManyBodyState res_state
+        for i in range(n):
+            res_state = ManyBodyState()
+            res_state.v = move(res_vec[i])
+            res_list.append(res_state)
+
+        return res_list
+
     def erase(self, tuple[tuple[int, str]]key):
         """
         Remove a term from the operator.
@@ -520,6 +586,19 @@ cdef class ManyBodyOperator:
         """
         return dict((ints_to_processes(p.first), p.second) for p in self.o)
 
+    def is_empty(self):
+        """
+        Returns True if the ManyBodyOperator is empty (contains no processes).
+        """
+        return self.o.empty()
+
+    def clear(self):
+        """
+        Clears the operator (removes all processes)
+        """
+        self.o.clear()
+
+
 
 def applyOp(ManyBodyOperator op, ManyBodyState psi, double cutoff=0) ->ManyBodyState :
     """
@@ -544,7 +623,7 @@ def pack_determinants_cy(list dets, int comm_size):
         c_pack_determinants(c_dets, comm_size, send_counts, state_buf)
 
     cdef size_t total_states = state_buf.size()
-    
+
     send_counts_np = np.zeros(comm_size, dtype=np.int64)
     state_buf_np = np.zeros(total_states, dtype=np.uint64)
 
@@ -553,10 +632,10 @@ def pack_determinants_cy(list dets, int comm_size):
 
     if comm_size > 0:
         memcpy(&send_counts_view[0], <void*>send_counts.data(), comm_size * sizeof(int64_t))
-    
+
     if total_states > 0:
         memcpy(&state_buf_view[0], <void*>state_buf.data(), total_states * sizeof(uint64_t))
-        
+
     return send_counts_np, state_buf_np
 
 def unpack_determinants_cy(int comm_size, int64_t[:] recv_counts, uint64_t[:] state_buf, size_t chunks_per_state):
@@ -608,12 +687,12 @@ def pack_psis_cy(list psis, int comm_size):
 
     cdef int64_t[:] send_counts_view = send_counts_np
     cdef uint64_t[:] state_buf_view = state_buf_np
-    cdef double complex[:] amp_buf_view = amp_buf_np
+    cdef complex[:] amp_buf_view = amp_buf_np
     cdef int32_t[:] psi_buf_view = psi_buf_np
 
     if comm_size > 0:
         memcpy(&send_counts_view[0], <void*>send_counts.data(), comm_size * sizeof(int64_t))
-    
+
     if total_states > 0:
         memcpy(&state_buf_view[0], <void*>state_buf.data(), total_states * sizeof(uint64_t))
 
@@ -624,7 +703,7 @@ def pack_psis_cy(list psis, int comm_size):
     return send_counts_np, state_buf_np, amp_buf_np, psi_buf_np
 
 
-def unpack_psis_cy(list psis, int comm_size, int64_t[:] recv_counts, uint64_t[:] state_buf, double complex[:] amp_buf, int32_t[:] psi_buf, size_t chunks_per_state):
+def unpack_psis_cy(list psis, int comm_size, int64_t[:] recv_counts, uint64_t[:] state_buf, complex[:] amp_buf, int32_t[:] psi_buf, size_t chunks_per_state):
     """
     Unpacks vectors natively into ManyBodyState objects.
     """
@@ -652,3 +731,90 @@ def unpack_psis_cy(list psis, int comm_size, int64_t[:] recv_counts, uint64_t[:]
 
     with nogil:
         c_unpack_psis(c_psis, comm_size, c_recv_counts, c_state_buf, c_amp_buf_reim, c_psi_buf, chunks_per_state)
+
+def extract_new_states(list states, object existing_dict):
+    """
+    Extracts all unique SlaterDeterminant keys from a list of ManyBodyStates
+    that are not already present in existing_dict.
+    """
+    cdef set new_states = set()
+    cdef ManyBodyState s
+    cdef ManyBodyState_cpp.const_iterator it
+    cdef SlaterDeterminant key
+    for obj in states:
+        s = <ManyBodyState>obj
+        it = s.v.cbegin()
+        while it != s.v.cend():
+            key = SlaterDeterminant(tuple(chunk for chunk in dereference(it).first))
+            if key not in existing_dict and key not in new_states:
+                new_states.add(key)
+            preincrement(it)
+    return new_states
+
+def inner_multi(list states_a, list states_b):
+    """
+    Compute inner products between two lists of ManyBodyStates.
+    Returns a complex numpy array of shape (len(states_a), len(states_b)).
+    """
+    cdef int na = len(states_a)
+    cdef int nb = len(states_b)
+    cdef res = np.zeros((na, nb), dtype=complex)
+    cdef complex[:, :] res_view = res
+    cdef ManyBodyState_cpp.mapped_type val
+    cdef int i, j
+
+    cdef vector[ManyBodyState_cpp*] a_ptrs
+    cdef vector[ManyBodyState_cpp*] b_ptrs
+    cdef ManyBodyState state
+
+    a_ptrs.reserve(na)
+    for obj in states_a:
+        state = <ManyBodyState>obj
+        a_ptrs.push_back(&state.v)
+
+    b_ptrs.reserve(nb)
+    for obj in states_b:
+        state = <ManyBodyState>obj
+        b_ptrs.push_back(&state.v)
+
+    with nogil:
+        for i in range(na):
+            for j in range(nb):
+                val = inner_cpp(dereference(a_ptrs[i]), dereference(b_ptrs[j]))
+                res_view[i, j].real = val.real()
+                res_view[i, j].imag = val.imag()
+
+    return res
+
+def add_scaled_multi(list states_target, list states_source, complex[:, :] coeffs):
+    """
+    Add a scaled sum of states_source to each state in states_target.
+    For each j in range(len(states_target)):
+        for i in range(len(states_source)):
+            states_target[j] += coeffs[i, j] * states_source[i]
+    """
+    cdef int n_target = len(states_target)
+    cdef int n_source = len(states_source)
+
+    cdef vector[ManyBodyState_cpp*] t_ptrs
+    cdef vector[ManyBodyState_cpp*] s_ptrs
+    cdef ManyBodyState state
+
+    t_ptrs.reserve(n_target)
+    for obj in states_target:
+        state = <ManyBodyState>obj
+        t_ptrs.push_back(&state.v)
+
+    s_ptrs.reserve(n_source)
+    for obj in states_source:
+        state = <ManyBodyState>obj
+        s_ptrs.push_back(&state.v)
+
+    cdef int i, j
+    cdef double complex coeff
+    with nogil:
+        for j in range(n_target):
+            for i in range(n_source):
+                coeff = coeffs[i, j]
+                if coeff.real != 0 or coeff.imag != 0:
+                    dereference(t_ptrs[j]).add_scaled(dereference(s_ptrs[i]), ManyBodyState_cpp.mapped_type(coeff.real, coeff.imag))

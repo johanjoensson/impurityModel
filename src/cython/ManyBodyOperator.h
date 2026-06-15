@@ -104,6 +104,17 @@ public:
     return res;
   }
 
+  [[nodiscard]] std::vector<ManyBodyState>
+  apply(const std::vector<const ManyBodyState*> &psis, double cutoff) const
+  /*noexcept*/ {
+    std::vector<ManyBodyState> res;
+    res.reserve(psis.size());
+    for (const ManyBodyState* psi : psis) {
+      res.push_back(this->apply(*psi, cutoff));
+    }
+    return res;
+  }
+
   [[nodiscard]] size_type size() const noexcept;
   [[nodiscard]] bool empty() const noexcept;
   bool clear();
@@ -216,6 +227,13 @@ private:
   std::tuple<std::vector<ManyBodyState::key_type>, std::vector<size_t>,
              std::vector<size_t>>
       m_restrictions_mask;
+
+  mutable bool m_flat_dirty{true};
+  mutable std::vector<int64_t> m_flat_indices;
+  mutable std::vector<size_t> m_flat_offsets;
+  mutable std::vector<std::complex<double>> m_flat_coeffs;
+
+  void build_flat_representation() const;
 
   [[nodiscard]] bool
   state_is_within_restrictions(const ManyBodyState::key_type &) const noexcept;

@@ -11,10 +11,13 @@ from impurityModel.ed.lanczos import (
     get_block_Lanczos_matrices,
     get_block_Lanczos_matrices_dense,
     get_Lanczos_vectors,
+    Reort,
 )
-from impurityModel.ed.manybody_basis import CIPSI_Basis, Basis
+from impurityModel.ed.manybody_basis import Basis
+from impurityModel.ed.cipsi_solver import CIPSISolver
 from impurityModel.ed.cg import bicgstab, block_bicgstab
 from impurityModel.ed.block_structure import BlockStructure, get_blocks
+from impurityModel.ed.mpi_comm import gather_distributed_results
 from impurityModel.ed.ManyBodyUtils import (
     ManyBodyState,
     ManyBodyOperator,
@@ -107,15 +110,6 @@ def build_full_greens_function(block_gf, block_structure: BlockStructure):
     return res
 
 
-def matrix_print(matrix: np.ndarray, label: str = None) -> None:
-    """
-    Pretty print the matrix, with optional label.
-    """
-    ms = "\n".join([" ".join([f"{np.real(val): .4f}{np.imag(val):+.4f}j" for val in row]) for row in matrix])
-    if label is not None:
-        print(label)
-    print(ms)
-
 
 def split_comm_and_redistribute_psi(priorities: Iterable[float], psis: list[ManyBodyState], comm):
     """
@@ -206,20 +200,14 @@ def get_Greens_function(
         print(f"New block roots: {block_roots}")
         print(f"Blocks per color: {blocks_per_color}")
         print("=" * 80)
-    if basis.comm.rank == 0:
-        block_indices_per_color = np.empty((sum(blocks_per_color)), dtype=int)
-        block_offsets = np.array([sum(blocks_per_color[:r]) for r in range(len(block_roots))], dtype=int)
-        for col, sender in enumerate(block_roots):
-            if sender == 0:
-                block_indices_per_color[
-                    block_offsets[block_color] : block_offsets[block_color] + blocks_per_color[block_color]
-                ] = block_indices
-                continue
-            basis.comm.Recv(
-                block_indices_per_color[block_offsets[col] : block_offsets[col] + blocks_per_color[col]], source=sender
-            )
-    elif block_basis.comm.rank == 0:
-        basis.comm.Send(np.array(block_indices), dest=0)
+    block_indices_per_color = gather_distributed_results(
+        basis.comm,
+        block_basis.comm.rank if block_basis.comm is not None else 0,
+        block_roots,
+        blocks_per_color,
+        np.array(block_indices),
+        is_array=True
+    )
 
     local_gs_matsubara = []
     local_gs_realaxis = []
@@ -233,6 +221,7 @@ def get_Greens_function(
             es,
             block_basis,
             delta,
+            reort=reort,
             dN=dN,
             occ_cutoff=occ_cutoff,
             slaterWeightMin=slaterWeightMin,
@@ -246,6 +235,7 @@ def get_Greens_function(
             es,
             block_basis,
             -delta,
+            reort=reort,
             dN=dN,
             occ_cutoff=occ_cutoff,
             slaterWeightMin=slaterWeightMin,
@@ -256,13 +246,8 @@ def get_Greens_function(
         e0 = np.min(es)
         Z = np.sum(np.exp(-(es - e0) / tau))
         if matsubara_mesh is not None and block_basis.comm.rank == 0:
-            G_IPS = np.zeros((len(matsubara_mesh), len(IPS_ops), len(IPS_ops)), dtype=complex)
-            for e, alphas_e, betas_e, r_e in zip(es, alphas_IPS, betas_IPS, r_IPS):
-                G_IPS += calc_G(alphas_e, betas_e, r_e, matsubara_mesh, e, 0) * np.exp(-(e - e0) / tau)
-
-            G_PS = np.zeros((len(matsubara_mesh), len(PS_ops), len(PS_ops)), dtype=complex)
-            for e, alphas_e, betas_e, r_e in zip(es, alphas_PS, betas_PS, r_PS):
-                G_PS += calc_G(alphas_e, betas_e, r_e, -matsubara_mesh, e, 0) * np.exp(-(e - e0) / tau)
+            G_IPS = calc_thermally_averaged_G(alphas_IPS, betas_IPS, r_IPS, matsubara_mesh, es, e0, tau, 0)
+            G_PS = calc_thermally_averaged_G(alphas_PS, betas_PS, r_PS, -matsubara_mesh, es, e0, tau, 0)
             local_gs_matsubara.append(
                 (
                     G_IPS
@@ -278,13 +263,8 @@ def get_Greens_function(
                 / Z
             )
         if omega_mesh is not None and block_basis.comm.rank == 0:
-            G_IPS = np.zeros((len(omega_mesh), len(IPS_ops), len(IPS_ops)), dtype=complex)
-            for e, alphas_e, betas_e, r_e in zip(es, alphas_IPS, betas_IPS, r_IPS):
-                G_IPS += calc_G(alphas_e, betas_e, r_e, omega_mesh, e, delta) * np.exp(-(e - e0) / tau)
-
-            G_PS = np.zeros((len(omega_mesh), len(PS_ops), len(PS_ops)), dtype=complex)
-            for e, alphas_e, betas_e, r_e in zip(es, alphas_PS, betas_PS, r_PS):
-                G_PS += calc_G(alphas_e, betas_e, r_e, -omega_mesh, e, -delta) * np.exp(-(e - e0) / tau)
+            G_IPS = calc_thermally_averaged_G(alphas_IPS, betas_IPS, r_IPS, omega_mesh, es, e0, tau, delta)
+            G_PS = calc_thermally_averaged_G(alphas_PS, betas_PS, r_PS, -omega_mesh, es, e0, tau, -delta)
             local_gs_realaxis.append(
                 (
                     G_IPS
@@ -299,26 +279,28 @@ def get_Greens_function(
                 )
                 / Z
             )
+    gathered_matsubara = gather_distributed_results(
+        basis.comm,
+        block_basis.comm.rank if block_basis.comm is not None else 0,
+        block_roots,
+        blocks_per_color,
+        local_gs_matsubara,
+        is_array=False
+    )
+    gathered_realaxis = gather_distributed_results(
+        basis.comm,
+        block_basis.comm.rank if block_basis.comm is not None else 0,
+        block_roots,
+        blocks_per_color,
+        local_gs_realaxis,
+        is_array=False
+    )
     if basis.comm.rank == 0:
         gs_matsubara = [np.empty((len(matsubara_mesh), len(block), len(block)), dtype=complex) for block in blocks]
         gs_realaxis = [np.empty((len(omega_mesh), len(block), len(block)), dtype=complex) for block in blocks]
-        for col, sender in enumerate(block_roots):
-            if sender == 0:
-                for i, block_i in enumerate(block_indices):
-                    gs_matsubara[block_i][:] = local_gs_matsubara[i]
-                    gs_realaxis[block_i][:] = local_gs_realaxis[i]
-                continue
-            for block_idx in block_indices_per_color[block_offsets[col] : block_offsets[col] + blocks_per_color[col]]:
-                # block = blocks[block_idx]
-
-                basis.comm.Recv(gs_matsubara[block_idx], source=sender)
-
-                basis.comm.Recv(gs_realaxis[block_idx], source=sender)
-
-    elif block_basis.comm is not None and block_basis.comm.rank == 0:
-        for block_i, (gsm, gsr) in enumerate(zip(local_gs_matsubara, local_gs_realaxis)):
-            basis.comm.Send(gsm, dest=0)
-            basis.comm.Send(gsr, dest=0)
+        for i, block_idx in enumerate(block_indices_per_color):
+            gs_matsubara[block_idx][:] = gathered_matsubara[i]
+            gs_realaxis[block_idx][:] = gathered_realaxis[i]
 
     # Free the split communicator collectively before returning.
     # block_basis.comm is a split comm created by split_basis_and_redistribute_psi.
@@ -337,6 +319,7 @@ def calc_Greens_function_with_offdiag(
     es,
     block_basis,
     delta,
+    reort: Optional = None,
     dN: Optional[int] = None,
     occ_cutoff: float = 1e-6,
     slaterWeightMin: float = 0,
@@ -420,14 +403,11 @@ def calc_Greens_function_with_offdiag(
         cutoff=occ_cutoff,
     )
     block_v = [[ManyBodyState({}) for _ in tOps] for _ in psis]
-    for (i_tOp, tOp), (j_psi, psi) in itertools.product(enumerate(tOps), enumerate(psis)):
-
+    for i_tOp, tOp in enumerate(tOps):
         tOp.set_restrictions(excited_restrictions)
-        block_v[j_psi][i_tOp] += applyOp_test(
-            tOp,
-            psi,
-            cutoff=slaterWeightMin,
-        )
+        res_psis = tOp.apply_multi(psis, cutoff=slaterWeightMin)
+        for j_psi, res_psi in enumerate(res_psis):
+            block_v[j_psi][i_tOp] += res_psi
     block_v_lengths = np.array([sum(len(t_psi) for t_psi in t_psis) for t_psis in block_v])
     block_basis.comm.Allreduce(MPI.IN_PLACE, block_v_lengths, op=MPI.SUM)
 
@@ -446,22 +426,14 @@ def calc_Greens_function_with_offdiag(
         print(f"New excited state roots: {excited_roots}")
         print(f"excited states per color: {excited_states_per_color}")
         print("=" * 80, flush=True)
-    if block_basis.comm.rank == 0:
-        excited_indices_per_color = np.empty((sum(excited_states_per_color)), dtype=int)
-        excited_offsets = np.array([sum(excited_states_per_color[:r]) for r in range(len(excited_roots))], dtype=int)
-        for col, sender in enumerate(excited_roots):
-            if sender == 0:
-                excited_indices_per_color[
-                    excited_offsets[excited_color] : excited_offsets[excited_color]
-                    + excited_states_per_color[excited_color]
-                ] = excited_indices
-                continue
-            block_basis.comm.Recv(
-                excited_indices_per_color[excited_offsets[col] : excited_offsets[col] + excited_states_per_color[col]],
-                source=sender,
-            )
-    elif split_original_basis.comm.rank == 0:
-        block_basis.comm.Send(np.array(excited_indices), dest=0)
+    excited_indices_per_color = gather_distributed_results(
+        block_basis.comm,
+        split_original_basis.comm.rank if split_original_basis.comm is not None else 0,
+        excited_roots,
+        excited_states_per_color,
+        np.array(excited_indices),
+        is_array=True
+    )
 
     excited_block_psis = [[ManyBodyState({}) for _ in vs] for vs in block_v]
     for i, j in itertools.product(range(len(tOps)), range(len(psis))):
@@ -474,26 +446,17 @@ def calc_Greens_function_with_offdiag(
         for indices, occupations in excited_restrictions.items():
             print(f"---> {sorted(indices)} : {occupations}")
     for excited_psis in (excited_block_psis[ei] for ei in excited_indices):
-        excited_states = set()
-        for p in excited_psis:
-            excited_states.update(p)
-        excited_basis = Basis(
-            split_original_basis.impurity_orbitals,
-            split_original_basis.bath_states,
+        excited_basis = split_original_basis.clone(
             initial_basis=set(state for p in excited_psis for state in p),
-            # initial_basis=excited_states,
             restrictions=excited_restrictions,
-            comm=split_original_basis.comm,
-            verbose=verbose,
-            truncation_threshold=split_original_basis.truncation_threshold,
-            tau=split_original_basis.tau,
-            spin_flip_dj=split_original_basis.spin_flip_dj,
+            verbose=False,
         )
 
         if excited_basis.restrictions is not None:
             hOp.set_restrictions(excited_basis.restrictions)
         if sparse:
             alphas, betas, r = block_Green_sparse(
+                reort=reort,
                 hOp=hOp,
                 psi_arr=excited_basis.redistribute_psis(excited_psis),
                 basis=excited_basis,
@@ -503,7 +466,7 @@ def calc_Greens_function_with_offdiag(
             )
         else:
             alphas, betas, r = block_Green(
-                reort=None,
+                reort=reort,
                 hOp=hOp,
                 psi_arr=excited_basis.redistribute_psis(excited_psis),
                 basis=excited_basis,
@@ -517,6 +480,30 @@ def calc_Greens_function_with_offdiag(
         if verbose:
             print(f"Expanded excited state basis contains {len(excited_basis)} elements.")
 
+    gathered_alphas = gather_distributed_results(
+        block_basis.comm,
+        excited_basis.comm.rank if excited_basis.comm is not None else 0,
+        excited_roots,
+        excited_states_per_color,
+        local_alphas,
+        is_array=False
+    )
+    gathered_betas = gather_distributed_results(
+        block_basis.comm,
+        excited_basis.comm.rank if excited_basis.comm is not None else 0,
+        excited_roots,
+        excited_states_per_color,
+        local_betas,
+        is_array=False
+    )
+    gathered_r = gather_distributed_results(
+        block_basis.comm,
+        excited_basis.comm.rank if excited_basis.comm is not None else 0,
+        excited_roots,
+        excited_states_per_color,
+        local_r,
+        is_array=False
+    )
     excited_alphas = None
     excited_betas = None
     excited_r = None
@@ -524,30 +511,13 @@ def calc_Greens_function_with_offdiag(
         excited_alphas = [None for _ in psis]
         excited_betas = [None for _ in psis]
         excited_r = [None for _ in psis]
-        for col, sender in enumerate(excited_roots):
-            if sender == 0:
-                for i, excited_i in enumerate(excited_indices):
-                    excited_alphas[excited_i] = local_alphas[i]
-                    excited_betas[excited_i] = local_betas[i]
-                    excited_r[excited_i] = local_r[i]
-                continue
-            received_alphas = block_basis.comm.recv(source=sender)
-            received_betas = block_basis.comm.recv(source=sender)
-            received_r = block_basis.comm.recv(source=sender)
-            for i, excited_i in enumerate(
-                excited_indices_per_color[excited_offsets[col] : excited_offsets[col] + excited_states_per_color[col]]
-            ):
-                excited_alphas[excited_i] = received_alphas[i]
-                excited_betas[excited_i] = received_betas[i]
-                excited_r[excited_i] = received_r[i]
+        for i, excited_i in enumerate(excited_indices_per_color):
+            excited_alphas[excited_i] = gathered_alphas[i]
+            excited_betas[excited_i] = gathered_betas[i]
+            excited_r[excited_i] = gathered_r[i]
         assert not any(alpha is None for alpha in excited_alphas), f"{excited_alphas=}"
         assert not any(beta is None for beta in excited_betas), f"{excited_betas=}"
         assert not any(r is None for r in excited_r), f"{excited_r=}"
-
-    elif excited_basis.comm.rank == 0:
-        block_basis.comm.send(local_alphas, dest=0)
-        block_basis.comm.send(local_betas, dest=0)
-        block_basis.comm.send(local_r, dest=0)
 
     # Free the split communicator collectively before returning.
     if split_original_basis is not None and split_original_basis.comm != block_basis.comm:
@@ -603,7 +573,7 @@ def get_block_Green(
     if verbose:
         t0 = time.perf_counter()
     psi0 = np.array(basis.build_distributed_vector(psi_arr).T, copy=False, order="C")
-    counts = np.empty((comm.size,), dtype=int) if comm.rank == 0 else None
+    counts = np.empty((comm.size), dtype=int) if comm.rank == 0 else None
     comm.Gather(np.array([n * len(basis.local_basis)], dtype=int), counts, root=0)
     offsets = np.array([sum(counts[:r]) for r in range(len(counts))]) if comm.rank == 0 else None
     psi0_full = np.empty((N, n), dtype=complex, order="C") if comm.rank == 0 else None
@@ -771,15 +741,14 @@ def block_Green(
     n = len(psi_arr)
 
     alphas, betas, r, last_q = block_green_impl(
-        basis, hOp, basis.redistribute_psis(psi_arr), delta, slaterWeightMin, verbose
+        basis, hOp, basis.redistribute_psis(psi_arr), delta, reort, slaterWeightMin, verbose
     )
     done = False
     while not done:
         old_size = basis.size
         new_psis = last_q
         for i in range(5):
-            for i, psi in enumerate(new_psis):
-                new_psis[i] = applyOp_test(hOp, psi, cutoff=slaterWeightMin)
+            new_psis = hOp.apply_multi(new_psis, cutoff=slaterWeightMin)
             basis.add_states(
                 set(state for p in new_psis for state in p if state not in basis.local_basis),
             )
@@ -811,7 +780,7 @@ def block_Green(
     return alphas, betas, r
 
 
-def block_green_impl(basis, hOp, psi_arr, delta, slaterWeightMin, verbose):
+def block_green_impl(basis, hOp, psi_arr, delta, reort, slaterWeightMin, verbose):
     """
     Internal block Green's function implementation.
 
@@ -825,6 +794,8 @@ def block_green_impl(basis, hOp, psi_arr, delta, slaterWeightMin, verbose):
         Input state vectors.
     delta : float or ndarray
         Imaginary part/mesh info.
+    reort : Reort
+        Reorthogonalization method.
     slaterWeightMin : float
         Slater determinant cutoff weight.
     verbose : bool
@@ -900,8 +871,6 @@ def block_green_impl(basis, hOp, psi_arr, delta, slaterWeightMin, verbose):
         # For scalar valued Lanczos, calculate convergents to check for convergence.
         if n == 1 and False:
             An, Bn = calc_continuants(alphas[-1] + 1j * delta - alphas, betas)
-            if verbose:
-                print(f"delta = {np.abs(An[-2] / Bn[-2] - An[-1] / Bn[-1])}")
             if abs(Bn[-1]) < 1e-6:
                 return (
                     abs(Bn[-1] * An[-2] - An[-1] * Bn[-2]) <= abs(delta_min * Bn[-1] * Bn[-2])
@@ -928,8 +897,6 @@ def block_green_impl(basis, hOp, psi_arr, delta, slaterWeightMin, verbose):
         if np.any(np.diagonal(gs_new.imag, axis1=1, axis2=2) * np.sign(delta) < 0):
             return False
         d_g = np.max(np.abs(gs_new - gs_prev))
-        if verbose:
-            print(f"delta = {d_g}", flush=True)
         return d_g < delta_min
 
     if dense:
@@ -939,6 +906,7 @@ def block_green_impl(basis, hOp, psi_arr, delta, slaterWeightMin, verbose):
             h=H,
             converged=converged,
             verbose=False and verbose,
+            reort_mode=reort if reort is not None else Reort.NONE,
         )
     else:
         h_local = basis.build_sparse_matrix(hOp)[:, basis.local_indices]
@@ -979,6 +947,7 @@ def block_green_impl(basis, hOp, psi_arr, delta, slaterWeightMin, verbose):
             psi0=psi_dense_local,
             h=H,
             converged=converged,
+            reort_mode=reort if reort is not None else Reort.NONE,
             verbose=False and verbose,
             comm=comm,
         )
@@ -986,11 +955,44 @@ def block_green_impl(basis, hOp, psi_arr, delta, slaterWeightMin, verbose):
     return alphas, betas, r, basis.build_state(q_last.T, slaterWeightMin=slaterWeightMin)
 
 
+
+def calc_thermally_averaged_G(alphas, betas, r, mesh, es, e0, tau, delta):
+    """
+    Calculate the thermally averaged Green's function over multiple initial states.
+
+    Parameters
+    ----------
+    alphas : list of list of ndarray
+    betas : list of list of ndarray
+    r : list of ndarray
+    mesh : ndarray
+    es : list of float
+    e0 : float
+    tau : float
+    delta : float
+
+    Returns
+    -------
+    G_avg : ndarray
+    """
+    if len(alphas) == 0:
+        return np.zeros((len(mesh), 0, 0), dtype=complex)
+    
+    n_ops = r[0].shape[-1]
+    G_avg = np.zeros((len(mesh), n_ops, n_ops), dtype=complex)
+    
+    for e, alphas_e, betas_e, r_e in zip(es, alphas, betas, r):
+        G_avg += calc_G(alphas_e, betas_e, r_e, mesh, e, delta) * np.exp(-(e - e0) / tau)
+        
+    return G_avg
+
+
 def block_Green_sparse(
     hOp,
     psi_arr,
     basis,
     delta,
+    reort: Optional = None,
     slaterWeightMin=0,
     verbose=True,
 ):
@@ -1057,8 +1059,6 @@ def block_Green_sparse(
         # For scalar valued Lanczos, calculate convergents to check for convergence.
         if n == 1 and False:
             An, Bn = calc_continuants(alphas[-1] + 1j * delta - alphas, betas)
-            if verbose:
-                print(f"delta = {np.abs(An[-2] / Bn[-2] - An[-1] / Bn[-1])}")
             if abs(Bn[-1]) < 1e-6:
                 return (
                     abs(Bn[-1] * An[-2] - An[-1] * Bn[-2]) <= abs(delta_min * Bn[-1] * Bn[-2])
@@ -1085,12 +1085,16 @@ def block_Green_sparse(
         if np.any(np.diagonal(gs_new.imag, axis1=1, axis2=2) * np.sign(delta) < 0):
             return False
         d_g = np.max(np.abs(gs_new - gs_prev))
-        if verbose:
-            print(f"delta = {d_g}", flush=True)
         return d_g < delta_min
 
     alphas, betas, _ = block_lanczos_sparse(
-        psi_arr, hOp, basis, converged, verbose=verbose, slaterWeightMin=slaterWeightMin
+        psi_arr,
+        hOp,
+        basis,
+        converged,
+        verbose=verbose,
+        reort=reort if reort is not None else Reort.NONE,
+        slaterWeightMin=slaterWeightMin,
     )
 
     return alphas, betas, r
@@ -1208,17 +1212,10 @@ def block_Green_freq_2(
             continue
         _, freq_roots, color, _, split_basis, psi = basis.split_and_redistribute_basis([1] * len(w_mesh), psi_orig)
         w_indices = slice(color, len(w_mesh), len(freq_roots))
-        freq_basis = CIPSI_Basis(
-            split_basis.impurity_orbitals,
-            split_basis.bath_states,
-            initial_basis=split_basis.local_basis,
-            restrictions=split_basis.restrictions,
-            truncation_threshold=split_basis.truncation_threshold,
-            spin_flip_dj=split_basis.spin_flip_dj,
-            tau=split_basis.tau,
-            verbose=verbose,
-            comm=split_basis.comm.Clone(),
+        freq_basis = split_basis.clone(
+            verbose=False,
         )
+        freq_solver = CIPSISolver(freq_basis)
 
         # Hpsi = [ManyBodyState() for _ in psi]
         # for Hps, ps in zip(Hpsi, psi):
@@ -1231,7 +1228,7 @@ def block_Green_freq_2(
             zip(range(len(w_mesh)), w_mesh), w_indices.start, w_indices.stop, w_indices.step
         ):
 
-            freq_basis.expand_at(np.zeros((len(psi))) - (w + e), psi, hOp, de2_min=1e-5)
+            freq_solver.expand_at(np.zeros((len(psi))) - (w + e), psi, hOp, de2_min=1e-5)
 
             if True:
                 # Use fully sparse implementation
@@ -1303,17 +1300,12 @@ def Green_freq_bicgstab_fixed_basis(w_mesh, hOp, psi, e, basis, slaterWeightMin)
     )
     offsets = [np.sum(freq_per_color[:c], dtype=int) for c in range(len(freq_roots))]
     w_indices = slice(int(offsets[color]), int(offsets[color] + freq_per_color[color]), 1)
-    freq_basis = CIPSI_Basis(
-        split_basis.impurity_orbitals,
-        split_basis.bath_states,
-        initial_basis=[],  # sorted(set(state for p in psi for state in p.keys())),
-        restrictions=None,  # split_basis.restrictions,
-        truncation_threshold=split_basis.truncation_threshold,
-        spin_flip_dj=split_basis.spin_flip_dj,
-        tau=split_basis.tau,
+    freq_basis = split_basis.clone(
+        initial_basis=[],
+        restrictions=None,
         verbose=False,
-        comm=split_basis.comm,
     )
+    freq_solver = CIPSISolver(freq_basis)
     # psi = freq_basis.redistribute_psis(psi)
 
     gs = np.zeros((len(w_mesh), len(psi), len(psi)), dtype=complex)
@@ -1328,7 +1320,7 @@ def Green_freq_bicgstab_fixed_basis(w_mesh, hOp, psi, e, basis, slaterWeightMin)
         freq_basis.add_states(sorted(set(state for p in itertools.chain(psi, A_inv_psi) for state in p.keys())))
         psi = freq_basis.redistribute_psis(psi)
 
-        freq_basis.expand_at(np.array([w.real + e] * len(psi), dtype=float), psi, hOp, de2_min=slaterWeightMin / 10)
+        freq_solver.expand_at(np.array([w.real + e] * len(psi), dtype=float), psi, hOp, de2_min=slaterWeightMin / 10)
 
         # A_op = ManyBodyOperator({processes: w.real + e - amp for processes, amp in hOp.items()})
 
@@ -1396,16 +1388,10 @@ def Green_freq_bicgstab(w_mesh, hOp, psi, e, basis, slaterWeightMin):
     )
     offsets = [np.sum(freq_per_color[:c], dtype=int) for c in range(len(freq_roots))]
     w_indices = slice(int(offsets[color]), int(offsets[color] + freq_per_color[color]), 1)
-    freq_basis = CIPSI_Basis(
-        split_basis.impurity_orbitals,
-        split_basis.bath_states,
-        initial_basis=[],  # sorted(set(state for p in psi for state in p.keys())),
-        restrictions=None,  # split_basis.restrictions,
-        truncation_threshold=split_basis.truncation_threshold,
-        spin_flip_dj=split_basis.spin_flip_dj,
-        tau=split_basis.tau,
+    freq_basis = split_basis.clone(
+        initial_basis=[],
+        restrictions=None,
         verbose=False,
-        comm=split_basis.comm,
     )
     psi = freq_basis.redistribute_psis(psi)
 
@@ -1429,10 +1415,9 @@ def Green_freq_bicgstab(w_mesh, hOp, psi, e, basis, slaterWeightMin):
             slaterWeightMin=slaterWeightMin,
             atol=1e-5,
         )
-        for (i, psi_i), (j, Ainvpsi_j) in itertools.product(
-            enumerate(freq_basis.redistribute_psis(psi)), enumerate(A_inv_psi)
-        ):
-            gs[w_i, i, j] = inner(psi_i, Ainvpsi_j)
+        from impurityModel.ed.ManyBodyUtils import inner_multi
+
+        gs[w_i] = inner_multi(freq_basis.redistribute_psis(psi), A_inv_psi)
         if len(freq_basis) > max_basis_size:
             max_basis_size = len(freq_basis)
             freq = w
@@ -1661,16 +1646,9 @@ def calc_Greens_function_with_offdiag_cg(
                     opResult=t_mems[i_tOp],
                 )
                 local_excited_basis |= res.keys()
-    excited_basis = CIPSI_Basis(
-        basis.impurity_orbitals,
-        basis.bath_states,
+    excited_basis = basis.clone(
         initial_basis=local_excited_basis,
-        restrictions=basis.restrictions,
-        comm=basis.comm,
-        verbose=verbose,
-        truncation_threshold=basis.truncation_threshold,
-        tau=basis.tau,
-        spin_flip_dj=basis.spin_flip_dj,
+        verbose=False,
     )
     for i, (psi, e) in enumerate(zip(psis, es)):
         for block in blocks:
@@ -1764,16 +1742,9 @@ def get_block_Green_cg(
     comm.Allgather(np.array([len(basis.local_basis)], dtype=int), local_basis_lens)
     if matsubara:
         gs_matsubara = np.zeros((len(iws), n, n), dtype=complex)
-        local_basis = CIPSI_Basis(
-            basis.impurity_orbitals,
-            basis.bath_states,
-            initial_basis=basis.local_basis,
-            restrictions=basis.restrictions,
+        local_basis = basis.clone(
             comm=None,
-            verbose=verbose,
-            truncation_threshold=basis.truncation_threshold,
-            spin_flip_dj=basis.spin_flip_dj,
-            tau=basis.tau,
+            verbose=False,
         )
         for w_i, w in finite.get_job_tasks(comm.rank, comm.size, list(enumerate(iws))):
             shift = {((0, "i"),): w + e}

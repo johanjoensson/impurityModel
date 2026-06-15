@@ -2,9 +2,9 @@ from itertools import product, compress
 import numpy as np
 from mpi4py import MPI
 from impurityModel.ed.ManyBodyUtils import ManyBodyState, ManyBodyOperator
-from impurityModel.ed.manybody_basis import CIPSI_Basis
+from impurityModel.ed.manybody_basis import Basis
 from impurityModel.ed.finite import (
-    eigensystem_new as eigensystem,
+    eigensystem,
     thermal_average_scale_indep,
     print_thermal_expectation_values,
     print_expectation_values,
@@ -28,6 +28,7 @@ def calc_energy(
     verbose,
     truncation_threshold,
     slaterWeightMin,
+    cipsi_solver_method="trlm",
 ):
     """
     Calculate the ground-state energy of the system for a given charge sector.
@@ -71,14 +72,16 @@ def calc_energy(
     -------
     energy : float
         The lowest eigenvalue (ground state energy) found for this charge sector.
-    basis : CIPSI_Basis
+    basis : Basis
         The optimized many-body basis.
     """
 
-    basis = CIPSI_Basis(
+    from impurityModel.ed.manybody_basis import Basis
+    from impurityModel.ed.cipsi_solver import CIPSISolver
+
+    basis = Basis(
         impurity_indices,
         bath_states,
-        H=h_op,
         delta_impurity_occ={i: 0 for i in N0},
         delta_valence_occ={i: 0 for i in N0},
         delta_conduction_occ={i: 0 for i in N0},
@@ -91,24 +94,24 @@ def calc_energy(
         spin_flip_dj=spin_flip_dj,
         comm=comm,
     )
+    solver = CIPSISolver(basis)
+    solver.truncate_initial(h_op)
+
     basis.restrictions = basis.build_excited_restrictions(h_op, psis=None, es=None)
     if len(basis) == 0:
         return np.inf, basis
-    basis.expand(h_op, dense_cutoff=dense_cutoff, de2_min=1e-4, slaterWeightMin=slaterWeightMin)
+    solver.expand(h_op, dense_cutoff=dense_cutoff, de2_min=1e-4, slaterWeightMin=slaterWeightMin, solver=cipsi_solver_method)
 
     energy_cut = -tau * np.log(1e-4)
 
-    h = basis.build_sparse_matrix(h_op)
-    es, eigvecs = eigensystem(
-        h,
-        e_max=energy_cut,
-        k=10,
-        eigenValueTol=slaterWeightMin,
-        return_eigvecs=True,
-        comm=basis.comm,
-        dense=basis.size < dense_cutoff,
+    es, eigen_psis = solver.get_eigenvectors(
+        h_op,
+        num_wanted=10,
+        max_energy=energy_cut,
+        dense_cutoff=dense_cutoff,
+        slaterWeightMin=slaterWeightMin,
+        solver=cipsi_solver_method,
     )
-    eigen_psis = basis.build_state(eigvecs.T, slaterWeightMin=slaterWeightMin)
     basis.clear()
     basis.add_states(set(state for psi in eigen_psis for state in psi))
     return np.min(es), basis
@@ -129,7 +132,8 @@ def find_ground_state_basis(
     comm=None,
     truncation_threshold=1000000,
     verbose=True,
-    slaterWeightMin=0,
+    slaterWeightMin=1e-12,
+    cipsi_solver_method="trlm",
 ):
     """
     Find the occupation corresponding to the lowest energy, compare N0 - 1, N0 and N0 + 1
@@ -163,7 +167,7 @@ def find_ground_state_basis(
         -------
         energy : float
             The ground state energy.
-        basis : CIPSI_Basis
+        basis : Basis
             The optimized many-body basis.
         """
 
@@ -193,8 +197,9 @@ def find_ground_state_basis(
             verbose=verbose,
             truncation_threshold=truncation_threshold,
             slaterWeightMin=slaterWeightMin,
+            cipsi_solver_method=cipsi_solver_method,
         )
-        # energy_cache[key] = (e_trial, basis.copy() if basis is not None else None)
+        energy_cache[key] = (e_trial, basis.copy() if basis is not None else None)
         return e_trial, basis
 
     keys = list(N0.keys())
@@ -257,6 +262,7 @@ def calc_gs(
     rot_to_spherical: np.ndarray,
     verbose: bool,
     slaterWeightMin=0,
+    cipsi_solver_method="trlm",
     **kwargs,
 ):
     """
@@ -289,7 +295,7 @@ def calc_gs(
         The low-energy eigenstates.
     es : ndarray
         The corresponding eigen-energies.
-    ground_state_basis : CIPSI_Basis
+    ground_state_basis : Basis
         The optimized many-body basis.
     thermal_rho : ndarray
         The thermally-averaged density matrix.
@@ -317,18 +323,18 @@ def calc_gs(
     # Hop.set_restrictions(ground_state_basis.restrictions)
     ground_state_basis.tau = tau
     energy_cut = -tau * np.log(1e-4)
-    ground_state_basis.expand(Hop, dense_cutoff=dense_cutoff, de2_min=1e-6, slaterWeightMin=slaterWeightMin)
-    h_gs = ground_state_basis.build_sparse_matrix(Hop)
-    es, psis_dense = eigensystem(
-        h_gs,
-        e_max=energy_cut,
-        k=10,
-        eigenValueTol=0,
-        comm=ground_state_basis.comm,
-        dense=ground_state_basis.size < dense_cutoff,
-    )
+    from impurityModel.ed.cipsi_solver import CIPSISolver
 
-    psis = ground_state_basis.build_state(psis_dense.T, slaterWeightMin=slaterWeightMin)
+    solver = CIPSISolver(ground_state_basis)
+    solver.expand(Hop, dense_cutoff=dense_cutoff, de2_min=1e-6, slaterWeightMin=slaterWeightMin, solver=cipsi_solver_method)
+    es, psis = solver.get_eigenvectors(
+        Hop,
+        num_wanted=10,
+        max_energy=energy_cut,
+        dense_cutoff=dense_cutoff,
+        slaterWeightMin=slaterWeightMin,
+        solver=cipsi_solver_method,
+    )
     ground_state_basis.clear()
     ground_state_basis.add_states(set(state for p in psis for state in p))
     psis = ground_state_basis.redistribute_psis(psis)

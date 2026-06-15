@@ -35,20 +35,8 @@ def calc_density_matrix(psi: ManyBodyState, orbital_indices: list[int]):
         op = ManyBodyOperator({((orb, "a"),): 1.0})
         annihilated.append(op(psi, cutoff=0))
 
-    # rho[i, j] = <psi| c_j^dag c_i |psi> = <phi_j | phi_i>
-    # Exploit Hermitian symmetry: rho[j, i] = conj(rho[i, j])
-    for i in range(n_orb):
-        # Diagonal element (always real for a valid density matrix)
-        amp = inner(annihilated[i], annihilated[i])
-        if np.abs(amp) > 0:
-            rho[i, i] = amp
-        # Off-diagonal: compute upper triangle and mirror
-        for j in range(i + 1, n_orb):
-            amp = inner(annihilated[j], annihilated[i])
-            if np.abs(amp) > 0:
-                rho[i, j] = amp
-                rho[j, i] = amp.conjugate()
-
+    from impurityModel.ed.ManyBodyUtils import inner_multi
+    rho = inner_multi(annihilated, annihilated).T
     return rho
 
 

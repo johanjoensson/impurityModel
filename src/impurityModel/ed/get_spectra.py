@@ -24,20 +24,11 @@ from impurityModel.ed import finite, spectra
 from impurityModel.ed.finite import assert_hermitian, c2i
 from impurityModel.ed.average import k_B, thermal_average
 from impurityModel.ed import op_parser
-from impurityModel.ed.manybody_basis import CIPSI_Basis, Basis
+from impurityModel.ed.manybody_basis import Basis
 from impurityModel.ed.block_structure import BlockStructure, print_block_structure
 from impurityModel.ed.ManyBodyUtils import ManyBodyOperator, ManyBodyState
 from impurityModel.ed.groundstate import calc_gs
 
-
-def matrix_print(matrix: np.ndarray, label: str = None) -> None:
-    """
-    Pretty print the matrix, with optional label.
-    """
-    ms = "\n".join([" ".join([f"{np.real(val): .4f}{np.imag(val):+.4f}j" for val in row]) for row in matrix])
-    if label is not None:
-        print(label)
-    print(ms)
 
 
 def main(

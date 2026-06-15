@@ -2,7 +2,7 @@
 
 from SlaterDeterminant cimport SlaterDeterminant
 from libcpp.vector cimport vector
-from libcpp.unordered_map cimport unordered_map
+from flat_map cimport flat_map
 from libcpp.map cimport map
 from libcpp.pair cimport pair
 from libcpp.complex cimport complex
@@ -15,7 +15,7 @@ cdef extern from "ManyBodyState.cpp" nogil:
 cdef extern from "ManyBodyState.h" nogil:
     cdef cppclass ManyBodyState:
 
-        ctypedef unordered_map[SlaterDeterminant[uint64_t], complex[double]] Map
+        ctypedef flat_map[SlaterDeterminant[uint64_t], complex[double]] Map
         ctypedef Map.key_type key_type
         ctypedef complex[double] mapped_type
         ctypedef pair[SlaterDeterminant[uint64_t], complex[double]] value_type
@@ -39,9 +39,10 @@ cdef extern from "ManyBodyState.h" nogil:
         double norm2()
         double norm()
 
-        cython.doublecomplex& operator[](const key_type&)
-        cython.doublecomplex& at(const key_type&)
+        mapped_type& operator[](const key_type&)
+        mapped_type& at(const key_type&)
 
+        void add_scaled(const ManyBodyState&, mapped_type)
         ManyBodyState operator-()
         bint operator==(const ManyBodyState&)
         bint operator!=(const ManyBodyState&)
@@ -69,4 +70,4 @@ cdef extern from "ManyBodyState.h" nogil:
         ManyBodyState operator*(const ManyBodyState&, mapped_type)
         ManyBodyState operator/(const ManyBodyState&, mapped_type)
 
-    cdef cython.doublecomplex inner(const ManyBodyState&, const ManyBodyState&) nogil
+    cdef ManyBodyState.mapped_type inner(const ManyBodyState&, const ManyBodyState&) nogil

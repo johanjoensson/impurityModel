@@ -162,108 +162,6 @@ def mpi_matmat(m: Any, comm: Optional[MPI.Comm]) -> Callable[[np.ndarray], np.nd
     return f
 
 
-def petsc_eigensystem(
-    h_local: Any,
-    e_max: float,
-    k: int = 10,
-    v0: Optional[np.ndarray] = None,
-    eigenValueTol: float = 0,
-    return_eigvecs: bool = True,
-    comm: Optional[MPI.Comm] = None,
-) -> np.ndarray | tuple[np.ndarray, np.ndarray]:
-    """Solve the eigenvalue problem using PETSc/SLEPc.
-
-    Parameters
-    ----------
-    h_local : Any
-        The local sparse matrix.
-    e_max : float
-        The maximum energy above the ground state to resolve.
-    k : int, default 10
-        Number of eigenvalues to request.
-    v0 : np.ndarray, optional
-        Initial guess eigenvectors.
-    eigenValueTol : float, default 0
-        Tolerance for eigenvalue convergence.
-    return_eigvecs : bool, default True
-        Whether to return eigenvectors.
-    comm : MPI.Comm, optional
-        MPI communicator.
-
-    Returns
-    -------
-    es : np.ndarray
-        Array of eigenvalues.
-    vecs : np.ndarray, optional
-        Array of eigenvectors, returned if return_eigvecs is True.
-    """
-    # Set up the distributed matrix
-    M = PETSc.Mat()
-    M.create(comm=comm)
-    M.setSizes([h_local.shape[0], h_local.shape[0]])
-    M.setType(PETSc.Mat.Type.MPIAIJ)
-    M.setUp()
-    for i, j in zip(*h_local.nonzero()):
-        M[i, j] = h_local[i, j]
-    M.assemble()
-
-    # set up the eigenproblem solver
-    eig_solver = EPS()
-    eig_solver.create(comm=comm)
-    eig_solver.setOperators(M)
-    eig_solver.setProblemType(SLEPc.EPS.ProblemType.HEP)
-    eig_solver.setWhichEigenpairs(EPS.Which.SMALLEST_REAL)
-    eig_solver.setTolerances(PETSc.DECIDE, PETSc.DECIDE)
-
-    # set initial vectors
-    if v0 is not None:
-        vs = []
-        for i in range(v0.shape[1]):
-            v = M.createVecRight()
-            start, end = v.getOwnershipRange()
-            v[start:end] = v0[start:end, i]
-            v.assemble()
-            if v.norm() < np.sqrt(np.finfo(float).eps):
-                continue
-            vs.append(v)
-        if len(vs) > 0:
-            eig_solver.setInitialSpace(vs)
-    es = [0]
-    nconv = 0
-    while np.sum(es - np.min(es) <= e_max) == len(es) and len(es) < h_local.shape[0] - 2:
-        eig_solver.setDimensions(k + nconv, PETSc.DECIDE, PETSc.DECIDE)
-
-        eig_solver.solve()
-        nconv = eig_solver.getConverged()
-        if nconv == 0:
-            # Failed to converge with default settings.
-            # Decrease required accuracy and try again.
-            eig_solver.setTolerances(max(eigenValueTol, 1e-4), PETSc.DECIDE)
-            eig_solver.solve()
-            nconv = eig_solver.getConverged()
-        if nconv == 0:
-            raise RuntimeError("SLEPc EPS failed to converge!")
-        es = np.empty((nconv), dtype=float, order="C")
-        if return_eigvecs:
-            vecs = np.empty((h_local.shape[0], nconv), dtype=complex, order="F")
-            vr, wr = M.getVecs()
-            vi, wi = M.getVecs()
-            for i in range(nconv):
-                es[i] = eig_solver.getEigenpair(i, vr, vi).real
-                offsets = vr.owner_ranges[:-1]
-                counts = np.diff(vr.owner_ranges)
-                if comm is not None:
-                    comm.Gatherv(vr.array_r, [vecs[:, i], counts, offsets, MPI.DOUBLE_COMPLEX], root=0)
-        else:
-            for i in range(nconv):
-                es[i] = eig_solver.getEigenvalue(i).real
-    eig_solver.destroy()
-    M.destroy()
-
-    if return_eigvecs and comm is not None:
-        vecs = comm.bcast(vecs, root=0)
-        return es, vecs
-    return es
 
 
 def dense_eigensystem(
@@ -316,86 +214,6 @@ def dense_eigensystem(
     return es
 
 
-def primme_eigensystem(
-    h_local: Any,
-    e_max: float,
-    k: int = 10,
-    v0: Optional[np.ndarray] = None,
-    eigenValueTol: float = 0,
-    return_eigvecs: bool = True,
-    comm: Optional[MPI.Comm] = None,
-) -> np.ndarray | tuple[np.ndarray, np.ndarray]:
-    """Solve the eigenvalue problem using PRIMME.
-
-    Parameters
-    ----------
-    h_local : Any
-        The local sparse matrix.
-    e_max : float
-        The maximum energy above the ground state to resolve.
-    k : int, default 10
-        Number of eigenvalues to request.
-    v0 : np.ndarray, optional
-        Initial guess eigenvectors.
-    eigenValueTol : float, default 0
-        Tolerance for eigenvalue convergence.
-    return_eigvecs : bool, default True
-        Whether to return eigenvectors.
-    comm : MPI.Comm, optional
-        MPI communicator.
-
-    Returns
-    -------
-    es : np.ndarray
-        Array of eigenvalues.
-    vecs : np.ndarray, optional
-        Array of eigenvectors, returned if return_eigvecs is True.
-    """
-    h = scipy.sparse.linalg.LinearOperator(
-        h_local.shape,
-        matvec=mpi_matmat(h_local, comm),
-        rmatvec=mpi_matmat(h_local, comm),
-        matmat=mpi_matmat(h_local, comm),
-        rmatmat=mpi_matmat(h_local, comm),
-        dtype=h_local.dtype,
-    )
-    es = [0]
-    rng = np.random.default_rng()
-    if v0 is not None:
-        norm_mask = np.linalg.norm(v0, axis=0) > np.sqrt(np.finfo(float).eps)
-        v0 = v0[:, norm_mask]
-        if v0.shape[1] == 0:
-            v0 = None
-    if v0 is None:
-        v0 = rng.uniform(size=(h.shape[0], 1)) + 1j * rng.uniform(size=(h.shape[0], 1))
-        if comm is not None:
-            comm.Allreduce(MPI.IN_PLACE, v0, op=MPI.SUM)
-
-    vecs = v0 / np.linalg.norm(v0)
-    k = min(k, h.shape[1] - 2)
-    # We don't know the degeneracies of the eigenstates, so as long as all found
-    # states are within e0 + e_max, keep looking for more eigenstates
-    while np.sum(es - np.min(es) <= e_max) == len(es) and len(es) < h.shape[0] - 2:
-        if return_eigvecs:
-            es, vecs = primme_eigsh(
-                h,
-                k=min(vecs.shape[1] + k, h.shape[0] - 2),
-                which="SA",
-                v0=vecs,
-                tol=eigenValueTol,
-            )
-        else:
-            es = eigsh(
-                h,
-                k=min(vecs.shape[1] + k, h.shape[0] - 2),
-                which="SA",
-                v0=vecs,
-                tol=eigenValueTol,
-                return_eigenvectors=False,
-            )
-    if return_eigvecs:
-        return es, vecs
-    return es
 
 
 def scipy_eigensystem(
@@ -551,7 +369,7 @@ def scipy_eigensystem(
     return es
 
 
-def eigensystem_new(
+def eigensystem(
     h_local, e_max, k=10, e0=None, v0=None, eigenValueTol=0, return_eigvecs=True, comm=None, dense=False
 ):
     """
@@ -576,35 +394,56 @@ def eigensystem_new(
 
     # e_max is limited by the accuracy of the calculated eigenvalues and machine precision
     e_max = max(e_max, eigenValueTol, np.finfo(float).eps * 100)
-    if isinstance(h_local, np.ndarray):
-        dense = True
-    elif not scipy.sparse.issparse(h_local):
-        raise RuntimeError(f"eigensystem can't handle a matrix of type {type(h_local)}")
-
-    if dense:
+    
+    from impurityModel.ed.trlm import thick_restarted_block_lanczos
+    
+    N = h_local.shape[0]
+    # Set up random initial vectors
+    np.random.seed(42) # For reproducibility in testing, might want to remove in prod
+    n_blocks = 1 # Simple 1-block for now unless block size is needed
+    if v0 is not None:
+        psi0 = v0
+        if len(psi0.shape) == 1:
+            psi0 = psi0.reshape(-1, 1)
+    else:
+        psi0 = np.random.rand(N, n_blocks) + 1j * np.random.rand(N, n_blocks)
+    
+    psi0, _ = np.linalg.qr(psi0)
+    
+    # We want to find eigenvalues up to e_max above ground state. 
+    # Since we don't know the ground state yet, we just find k eigenvalues.
+    num_wanted = k
+    max_subspace_blocks = max(6, int(np.ceil(num_wanted * 2)))
+    
+    if dense or N <= 20:
         if return_eigvecs:
             es, vecs = dense_eigensystem(h_local, return_eigvecs, comm)
         else:
             es = dense_eigensystem(h_local, return_eigvecs, comm)
-    elif USE_PETSc:
-        if return_eigvecs:
-            es, vecs = petsc_eigensystem(h_local, e_max, k, v0, eigenValueTol, return_eigvecs, comm)
-        else:
-            es = petsc_eigensystem(h_local, e_max, k, v0, eigenValueTol, return_eigvecs, comm)
-    elif USE_PRIMME:
-        if return_eigvecs:
-            es, vecs = primme_eigensystem(h_local, e_max, k, v0, eigenValueTol, return_eigvecs, comm)
-        else:
-            es = primme_eigensystem(h_local, e_max, k, v0, eigenValueTol, return_eigvecs, comm)
+            vecs = None
     else:
-        if return_eigvecs:
-            es, vecs = scipy_eigensystem(h_local, e_max, k, v0, 0, return_eigvecs, comm)
-        else:
-            es = scipy_eigensystem(h_local, e_max, k, v0, 0, return_eigvecs, comm)
+        try:
+            es, vecs = thick_restarted_block_lanczos(
+                psi0=psi0,
+                h_op=h_local,
+                basis=None,
+                num_wanted=num_wanted,
+                max_subspace_blocks=max_subspace_blocks,
+                tol=max(1e-8, eigenValueTol),
+                max_restarts=100,
+                verbose=False
+            )
+        except Exception as e:
+            # Fallback to scipy if TRLM fails
+            if return_eigvecs:
+                es, vecs = scipy_eigensystem(h_local, e_max, k, v0, 0, return_eigvecs, comm)
+            else:
+                es = scipy_eigensystem(h_local, e_max, k, v0, 0, return_eigvecs, comm)
+                vecs = None
 
     indices = np.argsort(es)
     es = es[indices]
-    if return_eigvecs:
+    if return_eigvecs and vecs is not None:
         vecs = vecs[:, indices]
     mask = es - np.min(es) <= e_max
 
@@ -613,83 +452,6 @@ def eigensystem_new(
     return es[mask]
 
 
-def eigensystem(
-    n_spin_orbitals,
-    hOp,
-    basis,
-    nPsiMax,
-    groundDiagMode="Lanczos",
-    eigenValueTol=1e-12,
-    slaterWeightMin=1e-12,
-    verbose=True,
-    lock=None,
-):
-    """
-    Return eigen-energies and eigenstates.
-
-    Parameters
-    ----------
-    n_spin_orbitals : int
-        Total number of spin-orbitals in the system.
-    hOp : dict
-        tuple : float or complex
-        The Hamiltonian operator to diagonalize.
-        Each keyword contains ordered instructions
-        where to add or remove electrons.
-        Values indicate the strengths of
-        the corresponding processes.
-    basis : tuple
-        All product states included in the basis.
-    nPsiMax : int
-        Number of eigenvalues to find.
-    groundDiagMode : str
-        'Lanczos' or 'full' diagonalization.
-    eigenValueTol : float
-        The precision of the returned eigenvalues.
-    slaterWeightMin : float
-        Minimum product state weight for product states to be kept.
-
-    """
-    if rank == 0 and verbose:
-        print("Create Hamiltonian matrix...")
-    h = get_hamiltonian_matrix(n_spin_orbitals, hOp, basis, verbose=verbose)
-    if rank == 0 and verbose:
-        print("Checking if Hamiltonian is Hermitian!")
-        err_max = np.max(np.abs(np.conj(h.T) - h))
-        if err_max > 1e-12:
-            print(f"Warning! Hamiltonian matrix is not very Hermitian!\nLargest error = {err_max}")
-        else:
-            print("Hamiltonian matrix is Hermitian!")
-        print("<#Hamiltonian elements/column> = {:d}".format(int(len(np.nonzero(h)[0]) / len(basis))))
-        print("Diagonalize the Hamiltonian...")
-    if groundDiagMode == "full":
-        es, vecs = np.linalg.eigh(h.todense())
-        es = es[:nPsiMax]
-        vecs = vecs[:, :nPsiMax]
-    elif groundDiagMode == "Lanczos":
-        es, vecs = scipy.sparse.linalg.eigsh(h, k=nPsiMax, which="SA", tol=eigenValueTol)
-        # Sort the eigenvalues and eigenvectors in ascending order.
-        with warnings.catch_warnings():
-            warnings.simplefilter("ignore")
-            es, vecs = scipy.sparse.linalg.lobpcg(h, vecs, largest=False, maxiter=10 * vecs.shape[1])
-        indices = np.argsort(es)
-        es = np.array([es[i] for i in indices])
-        vecs = np.array([vecs[:, i] for i in indices]).T
-    else:
-        print(f"Unknown diagonalization mode: {groundDiagMode}")
-    if rank == 0 and verbose:
-        V = np.array([ev / np.linalg.norm(ev) for ev in vecs.T]).T
-        err_max = np.max(np.abs(np.conj(V.T) @ V - np.eye(V.shape[1])))
-        if err_max > 1e-12:
-            print(f"Warning! Obtained eigenvectors are not very orthogonal!\nMaximum overlap {err_max}")
-
-        print(f"Proceed with {len(es)} eigenstates.\n")
-
-    psis = [
-        ({basis[i]: vecs[i, vi] for i in range(len(basis)) if slaterWeightMin <= abs(vecs[i, vi])})
-        for vi in range(len(es))
-    ]
-    return es, psis
 
 
 def printSlaterDeterminantsAndWeights(psis: list[ManyBodyState], nPrintSlaterWeights: int) -> None:
