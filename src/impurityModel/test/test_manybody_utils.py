@@ -385,6 +385,7 @@ def test_ManyBodyOperator_extra():
     assert key1 not in op
     assert op.size() == 1
 
+
 def get_random_state(num_terms):
     s = ManyBodyState()
     for _ in range(num_terms):
@@ -396,6 +397,7 @@ def get_random_state(num_terms):
 
 def test_inner_multi():
     from impurityModel.ed.ManyBodyUtils import inner_multi
+
     n_states_left = 5
     n_states_right = 6
     num_terms = 20
@@ -417,6 +419,7 @@ def test_inner_multi():
 
 def test_add_scaled_multi():
     from impurityModel.ed.ManyBodyUtils import add_scaled_multi
+
     n_states_base = 4
     n_states_add = 5
     num_terms = 15

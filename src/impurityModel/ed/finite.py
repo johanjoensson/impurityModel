@@ -21,9 +21,10 @@ from impurityModel.ed.block_structure import get_equivalent_blocks
 
 class HermitianOperator(scipy.sparse.linalg.LinearOperator):
     """A LinearOperator representing a Hermitian operator defined by its diagonal and lower triangular part.
-    
+
     This class enables efficient matrix-vector products without storing the full dense matrix.
     """
+
     def __init__(self, diagonal: np.ndarray, diagonal_indices: np.ndarray, triangular_part: scipy.sparse.csr_matrix):
         self.shape = triangular_part.shape
         self.diagonal = diagonal if len(diagonal.shape) == 1 else diagonal.reshape(-1)

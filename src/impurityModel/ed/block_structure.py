@@ -47,7 +47,7 @@ def get_equivalent_orbs(block_structure):
     list of list of int
         A list of lists of equivalent orbital indices for each inequivalent block.
     """
-    (blocks, ident_blocks, transp_blocks, ph_blocks, phtransp_blocks, ineq_blocks) = block_structure
+    blocks, ident_blocks, transp_blocks, ph_blocks, phtransp_blocks, ineq_blocks = block_structure
     eq_orbs = [[] for _ in ineq_blocks]
     for ib, i_eq_orbs in zip(ineq_blocks, eq_orbs):
         for jb in ident_blocks[ib]:
@@ -74,7 +74,7 @@ def get_equivalent_blocks(block_structure):
     list of list of int
         A list of lists of equivalent block indices for each inequivalent block.
     """
-    (blocks, ident_blocks, transp_blocks, ph_blocks, phtransp_blocks, ineq_blocks) = block_structure
+    blocks, ident_blocks, transp_blocks, ph_blocks, phtransp_blocks, ineq_blocks = block_structure
     eq_blocks = [[] for _ in ineq_blocks]
     for ib, i_eq_blocks in zip(ineq_blocks, eq_blocks):
         for jb in ident_blocks[ib]:

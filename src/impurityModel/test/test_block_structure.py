@@ -10,22 +10,23 @@ from impurityModel.ed.block_structure import (
     print_block_structure,
 )
 
+
 def test_build_block_structure_matrix():
     mat = np.zeros((7, 7))
     b1 = np.array([[1.0, 0.5], [0.5, 2.0]])
     mat[0:2, 0:2] = b1
     # Identical
     mat[2:4, 2:4] = b1
-    
+
     b3 = np.array([[3.0]])
     mat[4:5, 4:5] = b3
-    
+
     # Negative identical (particle-hole without transpose)
     b4 = -b1
     mat[5:7, 5:7] = b4
 
     bs = build_block_structure(G=None, mat=mat)
-    
+
     assert len(bs.blocks) == 4
     assert bs.blocks[0] == [0, 1]
     assert bs.blocks[1] == [2, 3]
@@ -35,6 +36,7 @@ def test_build_block_structure_matrix():
     assert bs.identical_blocks[0] == [0, 1]
     assert bs.inequivalent_blocks == [0, 2]
 
+
 def test_get_equivalent_blocks():
     bs = BlockStructure(
         blocks=[[0, 1], [2, 3], [4]],
@@ -42,14 +44,15 @@ def test_get_equivalent_blocks():
         transposed_blocks=[[], [], []],
         particle_hole_blocks=[[], [], []],
         particle_hole_transposed_blocks=[[], [], []],
-        inequivalent_blocks=[0, 2]
+        inequivalent_blocks=[0, 2],
     )
-    
+
     eq_blocks = get_equivalent_blocks(bs)
     assert eq_blocks == [[0, 1], [2]]
-    
+
     eq_orbs = get_equivalent_orbs(bs)
     assert eq_orbs == [[0, 1, 2, 3], [4]]
+
 
 def test_build_matrix():
     bs = BlockStructure(
@@ -58,12 +61,13 @@ def test_build_matrix():
         transposed_blocks=[[], []],
         particle_hole_blocks=[[], []],
         particle_hole_transposed_blocks=[[], []],
-        inequivalent_blocks=[0]
+        inequivalent_blocks=[0],
     )
     b1 = np.array([[1.0, 0.5], [0.5, 2.0]])
     mat = build_matrix([b1], bs)
     assert np.allclose(mat[0:2, 0:2], b1)
     assert np.allclose(mat[2:4, 2:4], b1)
+
 
 def test_print_block_structure(capsys):
     bs = BlockStructure(
@@ -72,12 +76,13 @@ def test_print_block_structure(capsys):
         transposed_blocks=[[], []],
         particle_hole_blocks=[[], []],
         particle_hole_transposed_blocks=[[], []],
-        inequivalent_blocks=[0]
+        inequivalent_blocks=[0],
     )
     print_block_structure(bs)
     captured = capsys.readouterr()
     assert "0   0   +   +" in captured.out
     assert "+   +   1   1" in captured.out
+
 
 def test_build_block_structure_G():
     G = np.zeros((1, 7, 7), dtype=complex)
@@ -85,10 +90,10 @@ def test_build_block_structure_G():
     G[:, 0:2, 0:2] = b1
     # Identical
     G[:, 2:4, 2:4] = b1
-    
+
     b3 = np.array([[[3.0]]])
     G[:, 4:5, 4:5] = b3
-    
+
     # Particle-hole (minus and reverse freq, here shape is 1)
     b4 = -b1
     G[:, 5:7, 5:7] = b4
@@ -99,6 +104,7 @@ def test_build_block_structure_G():
     # Check that particle-hole blocks for block 0 include block 3
     assert 3 in bs.particle_hole_blocks[0] or 3 in bs.particle_hole_transposed_blocks[0]
 
+
 def test_build_greens_function():
     bs = BlockStructure(
         blocks=[[0, 1], [2, 3]],
@@ -106,11 +112,11 @@ def test_build_greens_function():
         transposed_blocks=[[], []],
         particle_hole_blocks=[[], []],
         particle_hole_transposed_blocks=[[], []],
-        inequivalent_blocks=[0]
+        inequivalent_blocks=[0],
     )
     b1 = np.array([[[1.0, 0.5], [0.5, 2.0]]])
     from impurityModel.ed.block_structure import build_greens_function
+
     G = build_greens_function([b1], bs)
     assert np.allclose(G[:, 0:2, 0:2], b1)
     assert np.allclose(G[:, 2:4, 2:4], b1)
-

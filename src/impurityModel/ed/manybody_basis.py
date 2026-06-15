@@ -713,9 +713,9 @@ class Basis:
         debug : bool, default False
             Debug flag.
         """
-        assert impurity_orbitals is not None, (
-            "You need to supply the number of impurity orbitals in each set in impurity_orbitals"
-        )
+        assert (
+            impurity_orbitals is not None
+        ), "You need to supply the number of impurity orbitals in each set in impurity_orbitals"
         assert bath_states is not None, "You need to supply the number of bath states for each l quantum number"
 
         self.num_spin_orbitals = sum(

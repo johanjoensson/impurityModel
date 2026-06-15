@@ -247,9 +247,9 @@ def test_redistribute_psis_roundtrip():
             combined += part
         for s in states_bytes:
             sd = SlaterDeterminant.from_bytes(s)
-            assert abs(combined[sd] - 1.0 / len(states_bytes)) < 1e-12, (
-                f"Missing or wrong amplitude for state {s.hex()}"
-            )
+            assert (
+                abs(combined[sd] - 1.0 / len(states_bytes)) < 1e-12
+            ), f"Missing or wrong amplitude for state {s.hex()}"
 
 
 @pytest.mark.mpi
@@ -417,9 +417,9 @@ def test_density_matrix_mpi_vs_serial():
         orbital_indices_right=orbital_indices,
     )[0]
 
-    assert np.allclose(rho_mpi, rho_serial, atol=1e-12), (
-        f"rank {comm.rank}: density matrix mismatch.\nMPI:\n{rho_mpi}\nSerial:\n{rho_serial}"
-    )
+    assert np.allclose(
+        rho_mpi, rho_serial, atol=1e-12
+    ), f"rank {comm.rank}: density matrix mismatch.\nMPI:\n{rho_mpi}\nSerial:\n{rho_serial}"
 
 
 # ---------------------------------------------------------------------------

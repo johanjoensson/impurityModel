@@ -6,6 +6,7 @@ from unittest.mock import patch
 from impurityModel.plotScripts.plotSpectra import plot_spectra_in_file
 from impurityModel.plotScripts.plotRIXS import main as plot_rixs_main
 
+
 @pytest.fixture
 def mock_h5_file(tmp_path):
     filepath = tmp_path / "mock_spectra.h5"
@@ -24,6 +25,7 @@ def mock_h5_file(tmp_path):
         f.create_dataset("NIXSthermal", data=np.random.rand(3, 8))
     return str(filepath)
 
+
 @pytest.fixture
 def mock_bin_file(tmp_path):
     filepath = tmp_path / "mock_rixs.bin"
@@ -35,10 +37,12 @@ def mock_bin_file(tmp_path):
     data.tofile(filepath)
     return str(filepath)
 
+
 @patch("matplotlib.pyplot.show")
 def test_plotSpectra(mock_show, mock_h5_file):
     plot_spectra_in_file(mock_h5_file)
     assert mock_show.called
+
 
 @patch("sys.argv", ["plotRIXS.py", "mock_rixs.bin"])
 @patch("matplotlib.pyplot.show")

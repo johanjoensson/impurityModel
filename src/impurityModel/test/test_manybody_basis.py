@@ -831,9 +831,9 @@ def test_operator_dict_eg_t2g_with_extra_states():
 
     assert all(fk in correct for fk in op_dict.keys())
     for key in states:
-        assert all(fk in correct[key] for fk in op_dict[key].keys()), (
-            f"{list(op_dict[key].keys())=} {list(correct.keys())=} "
-        )
+        assert all(
+            fk in correct[key] for fk in op_dict[key].keys()
+        ), f"{list(op_dict[key].keys())=} {list(correct.keys())=} "
         for row in correct[key].keys():
             assert correct[key][row] == op_dict[key][row], f"{key=} {row=}"
 
@@ -902,9 +902,9 @@ def test_operator_dict_eg_t2g_with_extra_states_mpi():
 
     assert all(fk in correct for fk in full_dict.keys())
     for key in states:
-        assert all(fk in correct[key] for fk in full_dict[key].keys()), (
-            f"{list(full_dict[key].keys())=} {list(correct.keys())=} "
-        )
+        assert all(
+            fk in correct[key] for fk in full_dict[key].keys()
+        ), f"{list(full_dict[key].keys())=} {list(correct.keys())=} "
         for row in correct[key].keys():
             assert correct[key][row] == full_dict[key][row], f"{key=} {row=}"
 
@@ -1263,9 +1263,9 @@ def test_alltoall_states_mpi():
     )
     send_states = [[r.to_bytes(basis.n_bytes, "big")] for r in range(comm.size)]
     received_states = basis.alltoall_states(send_states)
-    assert all(state == comm.rank.to_bytes(basis.n_bytes, "big") for rs in received_states for state in rs), (
-        f"{comm.rank=} {received_states=} {basis.local_basis=}"
-    )
+    assert all(
+        state == comm.rank.to_bytes(basis.n_bytes, "big") for rs in received_states for state in rs
+    ), f"{comm.rank=} {received_states=} {basis.local_basis=}"
 
 
 @pytest.mark.mpi
@@ -1285,9 +1285,9 @@ def test_alltoall_states_with_empty_mpi():
     send_states = [[r.to_bytes(basis.n_bytes, "big")] if r < comm.rank else [] for r in range(comm.size)]
     basis.add_states([comm.rank.to_bytes(basis.n_bytes, "big")])
     received_states = basis.alltoall_states(send_states)
-    assert all(state == comm.rank.to_bytes(basis.n_bytes, "big") for rs in received_states for state in list(rs)), (
-        f"{comm.rank=} {received_states=} {basis.local_basis=}"
-    )
+    assert all(
+        state == comm.rank.to_bytes(basis.n_bytes, "big") for rs in received_states for state in list(rs)
+    ), f"{comm.rank=} {received_states=} {basis.local_basis=}"
 
 
 def test_eg_t2g_basis_expand():
