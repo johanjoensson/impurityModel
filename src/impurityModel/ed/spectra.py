@@ -1227,8 +1227,8 @@ def getRIXSmap_new(
                 initial_basis=[],
                 restrictions=excited_restrictions,
                 verbose=False,
+                comm=eigen_basis.comm.Clone() if eigen_basis.comm is not None else None,
             )
-            basis_final.comm = eigen_basis.comm.Clone()
             (
                 wIn_indices,
                 wIn_roots,
@@ -1252,8 +1252,8 @@ def getRIXSmap_new(
                 initial_basis=[],
                 restrictions=excited_restrictions,
                 verbose=False,
+                comm=wIn_basis.comm.Clone() if wIn_basis.comm is not None else None,
             )
-            basis_tmp.comm = wIn_basis.comm.Clone()
             psi1 = psi1_arr[0]
             psi2 = ManyBodyState()
 

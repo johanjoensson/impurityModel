@@ -186,8 +186,12 @@ class StateContainer:
         SlaterDeterminant
             Each state stored in the container in order of their global index.
         """
-        for i in range(self.size):
-            yield self.__getitem__(i)
+        chunk_size = 10000
+        for i in range(0, self.size, chunk_size):
+            chunk_end = min(i + chunk_size, self.size)
+            chunk = self._getitem_sequence(range(i, chunk_end))
+            for state in chunk:
+                yield state
 
     def add_states(self, new_states: Iterable[SlaterDeterminant]) -> None:
         """

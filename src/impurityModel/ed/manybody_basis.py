@@ -876,11 +876,12 @@ class Basis:
             verbose=verbose,
         )
 
-    def clone(self, initial_basis=None, restrictions=None, verbose=None):
+    def clone(self, initial_basis=None, restrictions=None, verbose=None, comm=None):
         """Create a new Basis instance, optionally overriding initial_basis and restrictions.
         
         If initial_basis is None, the new basis will start with self.local_basis.
         If restrictions is None, the new basis will inherit self.restrictions.
+        If comm is None, the new basis will inherit self.comm.
         """
         return Basis(
             impurity_orbitals=self.impurity_orbitals,
@@ -892,7 +893,7 @@ class Basis:
             tau=self.tau,
             chain_restrict=self.chain_restrict,
             collapse_chains=self.collapse_chains,
-            comm=self.comm,
+            comm=comm if comm is not None else self.comm,
             verbose=verbose if verbose is not None else self.verbose,
             debug=self.debug
         )
