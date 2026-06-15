@@ -164,6 +164,8 @@ def dense_eigensystem(
         h = h_local.toarray()
     elif hasattr(h_local, "todense"):
         h = h_local.todense()
+    elif isinstance(h_local, scipy.sparse.linalg.LinearOperator):
+        h = h_local @ np.eye(h_local.shape[0], dtype=h_local.dtype)
     else:
         h = h_local
     if comm is not None:
@@ -229,7 +231,8 @@ def scipy_eigensystem(
         rmatvec=mpi_matmat(h_local, comm),
         dtype=h_local.dtype,
     )
-    h_diag_inv = h_local.diagonal()
+    h_diag = h_local.diagonal() if callable(getattr(h_local, "diagonal", None)) else h_local.diagonal
+    h_diag_inv = h_diag.copy()
     nonzeros = np.nonzero(h_diag_inv)
     h_diag_inv[nonzeros] = 1.0 / h_diag_inv[nonzeros]
     diag_h_inv = scipy.sparse.diags_array(h_diag_inv, shape=h_local.shape)

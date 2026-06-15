@@ -88,7 +88,7 @@ def thick_restarted_block_lanczos(
 
     T_full = _build_full_T(alphas, betas[:-1] if len(betas) == m_actual else betas)
 
-    if m_actual <= k_blocks:
+    if m_actual < m:
         if verbose:
             print(f"Invariant subspace of size {m_actual} blocks found. Stopping early.")
         eigvals, eigvecs = sp.eigh(T_full)
@@ -165,6 +165,16 @@ def thick_restarted_block_lanczos(
                 wp, _ = block_orthogonalize(wp, Q_list, mpi=mpi, comm=comm)
 
             q_next, beta_i = block_normalize(wp, mpi, comm, slaterWeightMin)
+
+            # Detect invariant subspace breakdown in inner loop
+            if np.linalg.norm(beta_i) < 1e-5:
+                if verbose:
+                    print(f"Invariant subspace found during restart at block {i}. Stopping early.")
+                eigvals, eigvecs = sp.eigh(T_full[:(i+1)*n, :(i+1)*n])
+                wanted_indices = np.argsort(eigvals)[:num_wanted]
+                final_eigvals = eigvals[wanted_indices]
+                final_eigvecs = block_combine(Q_list, eigvecs[:, wanted_indices], slaterWeightMin)
+                return final_eigvals, final_eigvecs
 
             if i < m - 1:
                 T_full[(i + 1) * n : (i + 2) * n, i * n : (i + 1) * n] = beta_i
