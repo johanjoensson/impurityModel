@@ -45,10 +45,7 @@ def block_apply(H, V, basis=None, mpi=False, slaterWeightMin=0.0):
             return res
         return H @ V
     else:
-        if slaterWeightMin > 0:
-            wp = H.apply_multi(V, cutoff=slaterWeightMin)
-        else:
-            wp = H.apply_multi(V)
+        wp = H.apply_multi(V, cutoff=slaterWeightMin)
         if mpi and basis is not None and basis.comm is not None:
             wp = basis.redistribute_psis(wp)
         return wp
@@ -85,17 +82,21 @@ def block_combine(Q, Y, slaterWeightMin=0.0):
 
 def block_orthogonalize(wp, Q, overlaps=None, mpi=False, comm=None):
     """Orthogonalizes wp against Q using Gram-Schmidt (wp = wp - Q @ Q^T wp)."""
+    if mpi and comm is not None:
+        from mpi4py import MPI
     if is_array(wp):
         if isinstance(Q, list):
             Q = np.column_stack(Q)
         if overlaps is None:
             overlaps = Q.conj().T @ wp
+            if mpi and comm is not None:
+
+                comm.Allreduce(MPI.IN_PLACE, overlaps, op=MPI.SUM)
         wp -= Q @ overlaps
     else:
         if overlaps is None:
             overlaps = inner_multi(Q, wp)
             if mpi and comm is not None:
-                from mpi4py import MPI
 
                 comm.Allreduce(MPI.IN_PLACE, overlaps, op=MPI.SUM)
         add_scaled_multi(wp, Q, -overlaps)

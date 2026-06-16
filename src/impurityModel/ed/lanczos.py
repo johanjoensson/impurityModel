@@ -7,6 +7,14 @@ from mpi4py import MPI
 
 from impurityModel.ed.manybody_basis import Basis
 from impurityModel.ed.ManyBodyUtils import ManyBodyOperator, ManyBodyState, inner
+from impurityModel.ed.block_math import (
+    block_normalize,
+    block_add_scaled,
+    block_apply,
+    block_combine,
+    block_inner,
+    block_orthogonalize,
+)
 
 
 class Reort(Enum):
@@ -677,7 +685,7 @@ def block_lanczos_array(
     it = start_it
     reort_eps = np.sqrt(np.finfo(float).eps)
     period = kwargs.get("reort_period", 5)
-    max_iter = kwargs.get("max_iter", np.inf)
+    max_iter = kwargs.get("max_iter", int(np.ceil(N / n)))
 
     def matmat(v):
         if hasattr(h_op, "dot"):
@@ -952,8 +960,10 @@ def block_lanczos_sparse(
         """
         Apply the operator h_op to each state in block v and redistribute.
         """
-        mv = h_op.apply_multi(v, cutoff=slaterWeightMin)
-        return basis.redistribute_psis(mv)
+        return block_apply(h_op, v, basis=basis, mpi=not basis.comm is None, slaterWeightMin=slaterWeightMin)
+
+        # mv = h_op.apply_multi(v, cutoff=slaterWeightMin)
+        # return basis.redistribute_psis(mv)
 
     max_iter = kwargs.get("max_iter", np.inf)
     seen_states = set()
@@ -986,11 +996,11 @@ def block_lanczos_sparse(
             beta_prev_dag = np.conj(betas[it - 1].T)
             add_scaled_multi(wp, q[0], -beta_prev_dag)
 
-        inner_multi(Q, wp)
         if reort == Reort.FULL or (reort == Reort.PERIODIC and it > 0 and it % period == 0):
             if not build_krylov_basis:
                 raise RuntimeError("Krylov basis must be built for reorthogonalization")
-            _reorthogonalize_sparse(wp, Q, None, inner, mpi, comm, n)
+            block_orthogonalize(wp, Q, None, mpi, comm)
+            # _reorthogonalize_sparse(wp, Q, None, inner, mpi, comm, n)
 
         M = inner_multi(wp, wp)
         if mpi:
@@ -1041,8 +1051,10 @@ def block_lanczos_sparse(
                 bad_state_indices = [j * n + k for j in bad_block_indices for k in range(n)]
                 bad_state_indices_prev = [idx for idx in bad_state_indices if idx < len(Q) - n]
                 if reort == Reort.PARTIAL:
-                    _reorthogonalize_sparse(Q[-n:], Q[:-n], bad_state_indices_prev, inner, mpi, comm, n)
-                    _reorthogonalize_sparse(wp, Q, bad_state_indices, inner, mpi, comm, n)
+                    block_orthogonalize(Q[-n:], [Q[i] for i in bad_state_indices_prev], None, mpi, comm)
+                    # _reorthogonalize_sparse(Q[-n:], Q[:-n], bad_state_indices_prev, inner, mpi, comm, n)
+                    block_orthogonalize(Q[-n:], [Q[i] for i in bad_state_indices], None, mpi, comm)
+                    # _reorthogonalize_sparse(wp, Q, bad_state_indices, inner, mpi, comm, n)
                 elif reort == Reort.SELECTIVE:
                     eigvals, eigvecs = eigsh(alphas[: it + 1], betas[: it + 1], select="a", max_ev=0)
                     error_bounds = np.linalg.norm(betas[it], ord=2) * np.abs(eigvecs[-n:, :]).max(axis=0)
@@ -1053,16 +1065,22 @@ def block_lanczos_sparse(
                         for ritz_idx in range(np.sum(converged_mask)):
                             for q_idx, qq in enumerate(Q):
                                 converged_Ritz[ritz_idx] += qq * converged_eigvecs[q_idx, ritz_idx]
-                        _reorthogonalize_sparse(Q[-n:], converged_Ritz, None, inner, mpi, comm, n)
-                        _reorthogonalize_sparse(wp, converged_Ritz, None, inner, mpi, comm, n)
-                    _reorthogonalize_sparse(Q[-n:], Q[:-n], bad_state_indices_prev, inner, mpi, comm, n)
-                    _reorthogonalize_sparse(wp, Q, bad_state_indices, inner, mpi, comm, n)
+                        block_orthogonalize(Q[-n:], converged_Ritz, None, mpi, comm)
+                        # _reorthogonalize_sparse(Q[-n:], converged_Ritz, None, inner, mpi, comm, n)
+                        block_orthogonalize(wp, converged_Ritz, None, mpi, comm)
+                        # _reorthogonalize_sparse(wp, converged_Ritz, None, inner, mpi, comm, n)
+                    block_orthogonalize(Q[-n:], [Q[i] for i in bad_state_indices_prev], None, mpi, comm)
+                    block_orthogonalize(Q[-n:], [Q[i] for i in bad_state_indices], None, mpi, comm)
+                    # _reorthogonalize_sparse(Q[-n:], Q[:-n], bad_state_indices_prev, inner, mpi, comm, n)
+                    # _reorthogonalize_sparse(wp, Q, bad_state_indices, inner, mpi, comm, n)
 
                 # Ensure the previous step vectors q[1] (which is a reference or copy of Q[-n:]) is updated
                 for st, q_st in zip(q[1], Q[-n:]):
-                    st.clear()
-                    for state, amp in q_st.items():
-                        st[state] = amp
+                    st = q_st.copy()
+                    # st.clear()
+                    # st += q_st
+                    # for state, amp in q_st.items():
+                    #     st[state] = amp
 
                 # Recompute M, L, beta_i
                 M = inner_multi(wp, wp)

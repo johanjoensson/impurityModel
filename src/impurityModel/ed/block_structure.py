@@ -49,15 +49,18 @@ def get_equivalent_orbs(block_structure):
     """
     blocks, ident_blocks, transp_blocks, ph_blocks, phtransp_blocks, ineq_blocks = block_structure
     eq_orbs = [[] for _ in ineq_blocks]
+    print(f"{blocks=}")
     for ib, i_eq_orbs in zip(ineq_blocks, eq_orbs):
+        tmp = set()
         for jb in ident_blocks[ib]:
-            i_eq_orbs.extend(blocks[jb])
+            tmp.update(blocks[jb])
         for jb in transp_blocks[ib]:
-            i_eq_orbs.extend(blocks[jb])
+            tmp.update(blocks[jb])
         for jb in ph_blocks[ib]:
-            i_eq_orbs.extend(blocks[jb])
+            tmp.update(blocks[jb])
         for jb in phtransp_blocks[ib]:
-            i_eq_orbs.extend(blocks[jb])
+            tmp.update(blocks[jb])
+        i_eq_orbs.extend(sorted(tmp))
     return eq_orbs
 
 
@@ -77,14 +80,16 @@ def get_equivalent_blocks(block_structure):
     blocks, ident_blocks, transp_blocks, ph_blocks, phtransp_blocks, ineq_blocks = block_structure
     eq_blocks = [[] for _ in ineq_blocks]
     for ib, i_eq_blocks in zip(ineq_blocks, eq_blocks):
+        tmp = set()
         for jb in ident_blocks[ib]:
-            i_eq_blocks.append(jb)
+            tmp.add(jb)
         for jb in transp_blocks[ib]:
-            i_eq_blocks.append(jb)
+            tmp.add(jb)
         for jb in ph_blocks[ib]:
-            i_eq_blocks.append(jb)
+            tmp.add(jb)
         for jb in phtransp_blocks[ib]:
-            i_eq_blocks.append(jb)
+            tmp.add(jb)
+        i_eq_blocks.extend(sorted(tmp))
     return eq_blocks
 
 

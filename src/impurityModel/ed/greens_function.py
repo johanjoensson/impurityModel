@@ -860,6 +860,7 @@ def block_Green_sparse(
         if np.any(np.diagonal(gs_new.imag, axis1=1, axis2=2) * np.sign(delta) < 0):
             return False
         d_g = np.max(np.abs(gs_new - gs_prev))
+        print(rf"$\delta$ = {d_g}", flush=True)
         return d_g < delta_min
 
     alphas, betas, _ = block_lanczos_sparse(
