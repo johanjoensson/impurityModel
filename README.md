@@ -4,7 +4,7 @@
 [![Tests](https://github.com/johanjoensson/impurityModel/actions/workflows/tests.yml/badge.svg?branch=master)](https://github.com/johanjoensson/impurityModel/actions/workflows/tests.yml)
 [![Coverage Status](https://coveralls.io/repos/github/johanjoensson/impurityModel/badge.svg)](https://coveralls.io/github/johanjoensson/impurityModel)
 
-### Introduction
+# Introduction
 
 Calculate many-body states of an impurity Anderson model and a various spectra, e.g. photoemission spectroscopy (PS), x-ray photoemission spectroscopy (XPS), x-ray absorption spectroscopy (XAS), non-resonant inelastic x-ray scattering (NIXS), and resonant inelastic x-ray scattering (RIXS), using the [Lanczos algorithm](https://en.wikipedia.org/wiki/Lanczos_algorithm).
 
@@ -21,7 +21,9 @@ Calculate many-body states of an impurity Anderson model and a various spectra, 
 <figcaption>Spectra of NiO. Simulated using 50 bath orbitals coupled to the Ni 3d orbitals.</figcaption>
 </figure>
 
-### Get started
+## Getting started
+
+### Installation
 If you have downloaded the github archive, install using pip
 ```bash
 pip install .
@@ -37,6 +39,36 @@ You can also use pip to install directly from github, without cloning the reposi
 ```bash
 pip install git+https://github.com/johanjoensson/impurityModel
 ```
+
+#### Cython & C++
+The performance critical part of this code is the (Block) Lanczos method. In order to make the simulations fast (or as fast as possible at least)
+this code uses classes and methods written in C++, this is then wrapped using Cython to make everything callable from within Python.
+The C++ code needs to be compiled, and you can pass compilation flags, your preferred C++ compiler, etc. to Cython.
+The compiler to use can be specified in the `CXX` environment variable (e.g. `export CXX=g++` for the GCC C++ compiler).
+Any compilation flags you want to specify can be passed using the `CXXFLAGS` environment variable. The C++ code depends on the Boost library, but only the headers.
+If your system has a Boost installation in any of the "standard" location, you probably don't need to do anything. If you have Boost installed in a custom location
+you can let the compiler know via the `BOOST_ROOT` environment variable (i.e. `export BOOST_ROOT="<PATH_TO_CUSTOM_BOOST>"`), or you can install
+the headers using `pip install boost-headers`. With all this set up, `pip install` will be able to compile the C++/Cython sources for you.
+
+##### Thread parallel execution
+The code can use multiple threads to speed up the C++ code further (the application of Hamiltonian to state mainly), to turn this on add `-DPARALLEL` to `CXXFLAGS`.
+For small systems this might actually hurt performance a bit, but larger systems can benefit greatly (if you have multiple threads available).
+
+##### C++ standards and their implications
+Also, you can specify what
+C++ standard you want to compile with (the code requires at least C++17), for the GCC and Clang compilers the flag is `-std=c++17` (set by default). C++20 includes some
+useful potential optimizations that are turned on if you specify `-std=c++20` (or whatever flag your compiler requires). Finally, if you have access to C++23 the code
+will try to use the `std::flat_map` container (by default it uses the boost flat_map implementation).
+
+For more detailed information of the code architecture please see [the architecture overiew](doc/architecture_overview.md)
+
+### Testing
+The code comes with a testsuite, to ensure that everything is running properly. To run the serial tests the command is simply `pytest`.
+The code also contains tests to verify that the MPI parallelization is working correctly, to run the MPI tests, as well as the serial ones
+use the command `mpirun -n 3 pytest --with-mpi` (please replace 3 with however many MPI ranks you wan to use, the tests will take longer the more ranks you use).
+
+
+# First X-ray spectra simulations
 
 - To perform a simulation, first create a directory somewhere on your computer.
 Move to that directory and then execute one of the example scripts in the `scripts` folder. E.g. type:
@@ -59,12 +91,6 @@ This is done for NiO by typing:
 ```bash
 path/to/folder/impurityModel/scripts/run_Ni_NiO_CFparam.sh
 ```
-Although using a crystal-field approach is a bigger approximation, it is convinient when doing fitting to experimental spectra.
-But for more accurate simulations it is better to read in a non-interacting Hamiltonian from file, that has been constructed from e.g. DFT or DFT+DMFT simulations.
-The non-interacting Hamiltonians read from file by the scripts `run_Ni_NiO_Xbath.sh` and `run_Ni_NiO_Xbath.sh` have been constructed using non-spin polarized DFT calculations.
-
-- The bash-scripts in the `scripts`-folder act as templates and can easily be modified. For example, to set the temperature to 10 Kelvin in `get_spectra.py`, add `--T 10` as input when calling the python-script.
-
 #### Output files
 The input parameters to the simulation are saved in `.npz` format.
 Calculated spectra are saved to the file `spectra.h5`.
@@ -82,31 +108,6 @@ Using Gnuplot, instead type:
 path/to/folder/impurityModel/impurityModel/plotScripts/plotRIXS.plt
 ```
 
-### Optimization notes
-
-#### Computational cost and memory usage
-The exact diagonalization method scales poorly with the number of manybody basis states included in the calculations, and the number of manybodybasis states included in the calculation scales exponentially with the number of single particle (impurity and bath) orbitals included in the calculation.
-In order to maintain the manybody basis as small as possible we use the CIPSI method for determining the ground state, and the minimal basis required.
-When calculating spectra we need excited states (typically electrons added to or removed from the valence band). The description of these excited states is much harder, and generally requires a significantly larger basis than the groundstate does. In order to keep the basis size from exploding the
-code ignores basis states with small weights, and it tries to build the basis and converge the excited state Greens functions at the same time. This increases computational time, but usually keeps the memory usage as low as possible.
-
-The major bottleneck of the method is the repeated application of the Hamiltonian to manybody states, this is done in the CIPSI method, as well as when calculating the Greens functions for the excited states. This code uses Cython to implement ManyBodyOperator and ManyBoddyState, in order to
-speed up the application of the Hamiltonian. The Cython code can use threads, by means of a parallel C++ standard library.
-
-To specify a specific C++ compiler, and compiler flags, to use when building the Cython code use the environment variables CXX and CXXFLAGS.
-
-In addition the code uses MPI to divide the computational cost over many CPUs. The code splits the work over the inequivalent block it identifies and the number of eigenstates included in the thermal ground state. In addition the manybody basis states are divided evenly over the MPI ranks.
-
-### Tests
-Type
-```bash
-pytest
-```
-and
-```bash
-pytest impurityModel/test/test_comparison_with_reference.py
-```
-to run all python unit tests in the repository.
 
 ### Documentation
 The documentation of this package is found in the directory `doc`.
@@ -123,9 +124,9 @@ Open the generated `doc/sphinx/generated_doc/html/index.html` in a web browser.
 
 Call for contributions: The impurityModel project welcomes your expertise and enthusiasm!
 
-Contributors:
+Contributors (from the original impurityModel repo):
 - Johan Schött (@JohanSchott): Implemented many of the functionalities needed to solve the impurity problem.
-- Johan Jönsson (@johanjoensson): Implementented the entire DMFT cycle in the fork https://github.com/johanjoensson/impurityModel. Also developed the related repo: https://github.com/johanjoensson/rspt2spectra
+- Johan Jönsson (@johanjoensson): Implementented the entire DMFT cycle in the fork https://github.com/johanjoensson/impurityModel (This repo). Also developed the related repo: https://github.com/johanjoensson/rspt2spectra
 - Felix Sorgenfrei (@fesorg): First author in [publication](https://journals.aps.org/prb/abstract/10.1103/PhysRevB.109.115126) using the impurityModel repo. Has also made the related repo: https://github.com/fesorg/Tutorial-X-ray-from-RSPt
 - Patrik Thunström (@patrikthunstrom): Involved in discussions about computational algorithms, reported bugs, and has provided theoretical knowledge and inspiration.
 - Petter Säterskog (@PetterSaterskog): Written some of the initial key functionalities.
@@ -135,13 +136,6 @@ Contributors:
 - Igor Di Marco (@igordimarco): Has provided theoretical knowledge and inspiration.
 
 Please note that the list and the contribution information are incomplete.
-
-
-### Publications using impurityModel
-
-[Theory of x-ray absorption spectroscopy for ferrites](https://journals.aps.org/prb/abstract/10.1103/PhysRevB.109.115126)
-
-[Re-Dichalcogenides: Resolving Conflicts of TheirStructure–Property Relationship](https://onlinelibrary.wiley.com/doi/epdf/10.1002/apxr.202200010)
 
 ### Note
 Please note that this fork has diverged significantly from the original version of the code. The two versions are not compatible, or interchangeable.

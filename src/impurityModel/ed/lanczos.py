@@ -290,9 +290,7 @@ def estimate_orthonormality(W, alphas, betas, eps=np.finfo(float).eps, N=1, rng=
     i = alphas.shape[0] - 1
     n = alphas.shape[1]
 
-    is_full = W.shape[0] == i + 1
-
-    W_out = np.zeros((i + 2 if is_full else 2, i + 2, n, n), dtype=complex)
+    W_out = np.zeros((2, i + 2, n, n), dtype=complex)
     w_bar = np.zeros((i + 2, n, n), dtype=complex)
     w_bar[i + 1, :, :] = np.identity(n)
     w_bar[i, :, :] = (
@@ -303,10 +301,7 @@ def estimate_orthonormality(W, alphas, betas, eps=np.finfo(float).eps, N=1, rng=
     W_prev_prev = W[-2] if i > 0 else W[-1]
 
     if i == 0:
-        if is_full:
-            W_out[:1, : i + 1] = W
-        else:
-            W_out[0, : i + 1] = W[1]
+        W_out[0, : i + 1] = W[1]
         W_out[-1, : i + 2] = w_bar
         return W_out
 
@@ -323,11 +318,8 @@ def estimate_orthonormality(W, alphas, betas, eps=np.finfo(float).eps, N=1, rng=
 
     w_bar[:i] += eps * (betas[i] + betas[:i])
 
-    if is_full:
-        W_out[:-1, : i + 1] = W
-    else:
-        W_out[0, : i + 1] = W[1]
-    W_out[-1, : i + 2] = w_bar
+    W_out[0, : i + 1] = W[1]
+    W_out[1, : i + 2] = w_bar
 
     return W_out
 
@@ -966,22 +958,9 @@ def block_lanczos_sparse(
         # return basis.redistribute_psis(mv)
 
     max_iter = kwargs.get("max_iter", np.inf)
-    seen_states = set()
-    for state in q[1]:
-        seen_states.update(state.keys())
 
-    global_seen_size = np.array([len(seen_states)], dtype=int)
-    if mpi:
-        comm.Allreduce(MPI.IN_PLACE, global_seen_size, op=MPI.SUM)
-
-    while it * n < global_seen_size[0] and it < max_iter:
+    while it < max_iter:
         wp = matmat(q[1])
-
-        for state in wp:
-            seen_states.update(state.keys())
-        global_seen_size[0] = len(seen_states)
-        if mpi:
-            comm.Allreduce(MPI.IN_PLACE, global_seen_size, op=MPI.SUM)
 
         alpha_i = inner_multi(q[1], wp)
         if mpi:
@@ -1000,7 +979,6 @@ def block_lanczos_sparse(
             if not build_krylov_basis:
                 raise RuntimeError("Krylov basis must be built for reorthogonalization")
             block_orthogonalize(wp, Q, None, mpi, comm)
-            # _reorthogonalize_sparse(wp, Q, None, inner, mpi, comm, n)
 
         M = inner_multi(wp, wp)
         if mpi:
@@ -1030,32 +1008,17 @@ def block_lanczos_sparse(
             if not build_krylov_basis:
                 raise RuntimeError("Krylov basis must be built for reorthogonalization")
             if W is None:
-                if track_full_W:
-                    W = np.zeros((1, 1, n, n), dtype=complex)
-                    W[0, 0] = np.eye(n)
-                else:
-                    W = np.zeros((2, 1, n, n), dtype=complex)
-                    W[1, 0] = np.eye(n)
-            elif W.shape[0] < it + 1 or W.shape[1] < it + 1:
-                if track_full_W:
-                    W_new = np.zeros((it + 1, it + 1, n, n), dtype=complex)
-                    W_new[: W.shape[0], : W.shape[1]] = W
-                    W = W_new
-                else:
-                    W_new = np.zeros((2, it + 1, n, n), dtype=complex)
-                    W_new[:, : W.shape[1]] = W
-                    W = W_new
+                W = np.zeros((2, 1, n, n), dtype=complex)
+                W[1, 0] = np.eye(n)
             W = estimate_orthonormality(W, alphas[: it + 1], betas[: it + 1], eps=np.finfo(float).eps)
-            if it > 0 and np.max(np.abs(W[-1, : it + 1])) > reort_eps:
+            actual_overlap = inner_multi(Q, wp)
+            print(f"{W.shape=} {W[1, -1]}")
+            print(f"{actual_overlap.shape=} {actual_overlap[-n:]=}")
+            # print(f"{W[1, :it+1] - inner_multi(Q, wp)=}")
+            if it > 0 and np.max(np.abs(W[1, : it + 1])) > reort_eps:
                 bad_block_indices = [j for j in range(it + 1) if np.max(np.abs(W[-1, j])) > reort_eps * 1e-2]
                 bad_state_indices = [j * n + k for j in bad_block_indices for k in range(n)]
-                bad_state_indices_prev = [idx for idx in bad_state_indices if idx < len(Q) - n]
-                if reort == Reort.PARTIAL:
-                    block_orthogonalize(Q[-n:], [Q[i] for i in bad_state_indices_prev], None, mpi, comm)
-                    # _reorthogonalize_sparse(Q[-n:], Q[:-n], bad_state_indices_prev, inner, mpi, comm, n)
-                    block_orthogonalize(Q[-n:], [Q[i] for i in bad_state_indices], None, mpi, comm)
-                    # _reorthogonalize_sparse(wp, Q, bad_state_indices, inner, mpi, comm, n)
-                elif reort == Reort.SELECTIVE:
+                if reort == Reort.SELECTIVE:
                     eigvals, eigvecs = eigsh(alphas[: it + 1], betas[: it + 1], select="a", max_ev=0)
                     error_bounds = np.linalg.norm(betas[it], ord=2) * np.abs(eigvecs[-n:, :]).max(axis=0)
                     converged_mask = error_bounds < reort_eps
@@ -1066,21 +1029,13 @@ def block_lanczos_sparse(
                             for q_idx, qq in enumerate(Q):
                                 converged_Ritz[ritz_idx] += qq * converged_eigvecs[q_idx, ritz_idx]
                         block_orthogonalize(Q[-n:], converged_Ritz, None, mpi, comm)
-                        # _reorthogonalize_sparse(Q[-n:], converged_Ritz, None, inner, mpi, comm, n)
                         block_orthogonalize(wp, converged_Ritz, None, mpi, comm)
-                        # _reorthogonalize_sparse(wp, converged_Ritz, None, inner, mpi, comm, n)
-                    block_orthogonalize(Q[-n:], [Q[i] for i in bad_state_indices_prev], None, mpi, comm)
-                    block_orthogonalize(Q[-n:], [Q[i] for i in bad_state_indices], None, mpi, comm)
-                    # _reorthogonalize_sparse(Q[-n:], Q[:-n], bad_state_indices_prev, inner, mpi, comm, n)
-                    # _reorthogonalize_sparse(wp, Q, bad_state_indices, inner, mpi, comm, n)
+                block_orthogonalize(Q[-n:], [Q[i] for i in bad_state_indices if i < len(Q) - n], None, mpi, comm)
+                block_orthogonalize(wp, [Q[i] for i in bad_state_indices], None, mpi, comm)
 
                 # Ensure the previous step vectors q[1] (which is a reference or copy of Q[-n:]) is updated
                 for st, q_st in zip(q[1], Q[-n:]):
                     st = q_st.copy()
-                    # st.clear()
-                    # st += q_st
-                    # for state, amp in q_st.items():
-                    #     st[state] = amp
 
                 # Recompute M, L, beta_i
                 M = inner_multi(wp, wp)
@@ -1113,11 +1068,8 @@ def block_lanczos_sparse(
                 # Reset the estimated overlaps for the current and past iteration
                 bad_block_indices_prev = [j for j in bad_block_indices if j < it]
                 eps = np.finfo(float).eps
-                W[-1, bad_block_indices] = eps * np.eye(n)
-                if track_full_W:
-                    W[-2, bad_block_indices_prev] = eps * np.eye(n)
-                else:
-                    W[0, bad_block_indices_prev] = eps * np.eye(n)
+                W[1, bad_block_indices] = eps * np.eye(n)
+                W[0, bad_block_indices_prev] = eps * np.eye(n)
 
         import warnings
 
