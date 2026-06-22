@@ -8,10 +8,12 @@ from impurityModel.ed.irlm import implicitly_restarted_block_lanczos
 from impurityModel.ed.manybody_basis import Basis
 from impurityModel.ed.ManyBodyUtils import ManyBodyOperator, ManyBodyState
 from impurityModel.ed.ManyBodyUtils import applyOp as applyOp_test
-from impurityModel.ed.trlm import thick_restarted_block_lanczos
+from impurityModel.ed.block_math import block_normalize
+from impurityModel.ed.lanczos import Reort
+from impurityModel.ed.trlm import thick_restart_block_lanczos
 
 SOLVERS = {
-    "trlm": thick_restarted_block_lanczos,
+    "trlm": thick_restart_block_lanczos,
     "irlm": implicitly_restarted_block_lanczos,
 }
 
@@ -85,7 +87,7 @@ class CIPSISolver:
             return new_Dj, Hpsi_ref
         return new_Dj
 
-    def expand(self, H, de2_min=1e-10, dense_cutoff=1e3, slaterWeightMin=0, solver="trlm"):
+    def expand(self, H, de2_min=1e-10, dense_cutoff=1e3, slaterWeightMin=0, solver="trlm", reort=Reort.PARTIAL):
         if self.basis.restrictions is not None:
             H.set_restrictions(self.basis.restrictions)
         de0_max = -self.basis.tau * np.log(1e-4)
@@ -102,7 +104,8 @@ class CIPSISolver:
                 if psi_refs is None:
                     import random
 
-                    random.seed(42)
+                    rank = self.basis.comm.rank if self.basis.comm is not None else 0
+                    random.seed(42 + rank)
                     local_states = list(self.basis.local_basis)
                     psi0_dict = {state: random.random() + 1j * random.random() for state in local_states}
                     psi0 = [ManyBodyState(psi0_dict)] if psi0_dict else [ManyBodyState()]
@@ -115,22 +118,42 @@ class CIPSISolver:
                 else:
                     psi0 = psi_refs
 
-                num_wanted = 2 * len(psi_refs) if psi_refs is not None else 10
-                max_subspace = max(2 * num_wanted, 20)
+                num_wanted = min(2 * len(psi_refs) if psi_refs is not None else 10, len(self.basis))
 
-                e_ref, psi_refs = restarted_lanczos(
-                    psi0=psi0,
-                    h_op=H,
+                max_subspace = min(max(2 * num_wanted, num_wanted + 10), len(self.basis))
+                if len(psi0) > 0:
+                    try:
+                        psi0, _ = block_normalize(psi0, self.basis.is_distributed, self.basis.comm, slaterWeightMin)
+                    except Exception as e:
+                        pass
+
+                max_subspace_blocks = 2 * int(np.ceil(max_subspace / max(1, len(psi0)))) + 20
+                if len(psi0) > 0:
+                    max_blocks = max(2, len(self.basis) // len(psi0) - 1)
+                    max_subspace_blocks = min(max_subspace_blocks, max_blocks)
+
+                num_wanted = min(num_wanted, (max_subspace_blocks - 1) * len(psi0))
+
+                H_mat = self.basis.build_sparse_matrix(H)
+                psi0_arr = (
+                    self.basis.build_vector(psi0).T if len(psi0) > 0 else np.zeros((self.basis.size, 1), dtype=complex)
+                )
+
+                e_ref, psi_refs_arr = restarted_lanczos(
+                    psi0=psi0_arr,
+                    h_op=H_mat,
                     basis=self.basis,
                     num_wanted=num_wanted,
-                    max_subspace_blocks=max_subspace // len(psi0),
-                    tol=1e-8,
+                    max_subspace_blocks=max_subspace_blocks,
+                    tol=de2_min / 10,
                     max_restarts=10,
                     verbose=self.basis.verbose,
                     slaterWeightMin=slaterWeightMin,
+                    reort=reort,
                 )
 
                 if len(e_ref) > 0:
+                    psi_refs = self.basis.build_state(psi_refs_arr.T, slaterWeightMin=slaterWeightMin)
                     e_min = np.min(e_ref)
                     valid_idx = [i for i, e in enumerate(e_ref) if e - e_min <= de0_max]
                 else:
@@ -169,11 +192,21 @@ class CIPSISolver:
                 if self.basis.verbose:
                     print("------> Basis truncated!")
                 break
+        self.psi_refs = psi_refs
 
         if self.basis.verbose:
             print(f"After expansion, the basis contains {self.basis.size} elements.", flush=True)
 
-    def get_eigenvectors(self, H, num_wanted: int, max_energy=None, dense_cutoff=1e3, slaterWeightMin=0, solver="trlm"):
+    def get_eigenvectors(
+        self,
+        H,
+        num_wanted: int,
+        max_energy=None,
+        dense_cutoff=1e3,
+        slaterWeightMin=0,
+        solver="trlm",
+        reort=Reort.PARTIAL,
+    ):
         if self.basis.restrictions is not None:
             H.set_restrictions(self.basis.restrictions)
 
@@ -182,30 +215,52 @@ class CIPSISolver:
 
             import random
 
-            random.seed(42)
+            rank = self.basis.comm.rank if self.basis.comm is not None else 0
+            random.seed(42 + rank)
             local_states = list(self.basis.local_basis)
-            psi0_dict = {state: random.random() + 1j * random.random() for state in local_states}
-            psi0 = [ManyBodyState(psi0_dict)] if psi0_dict else [ManyBodyState()]
-            psi0 = self.basis.redistribute_psis(psi0)
+            if hasattr(self, "psi_refs") and self.psi_refs is not None:
+                psi0 = self.psi_refs
+            else:
+                psi0 = [
+                    ManyBodyState({state: random.random() + 1j * random.random() for state in local_states})
+                    for _ in range(1)
+                ]
 
-            N2s = np.array([psi.norm2() for psi in psi0], dtype=float)
-            if self.basis.is_distributed:
-                self.basis.comm.Allreduce(MPI.IN_PLACE, N2s, op=MPI.SUM)
-            psi0 = [psi / np.sqrt(N2s[i]) if N2s[i] > 0 else psi for i, psi in enumerate(psi0)]
+            num_wanted = min(num_wanted + 10, len(self.basis))
 
-            max_subspace = max(2 * num_wanted, 20)
-            e_ref, psi_refs = restarted_lanczos(
-                psi0=psi0,
-                h_op=H,
-                basis=self.basis,
-                num_wanted=num_wanted,
-                max_subspace_blocks=max_subspace // len(psi0),
-                tol=1e-8,
-                max_restarts=10,
-                verbose=self.basis.verbose,
-                slaterWeightMin=slaterWeightMin,
+            max_subspace = min(max(2 * num_wanted, num_wanted + 10), len(self.basis))
+            if len(psi0) > 0:
+                try:
+                    psi0, _ = block_normalize(psi0, self.basis.is_distributed, self.basis.comm, slaterWeightMin)
+                except Exception as e:
+                    pass
+
+            max_subspace_blocks = 2 * int(np.ceil(max_subspace / max(1, len(psi0)))) + 20
+            if len(psi0) > 0:
+                max_blocks = max(2, len(self.basis) // len(psi0) - 1)
+                max_subspace_blocks = min(max_subspace_blocks, max_blocks)
+
+            num_wanted = min(num_wanted, (max_subspace_blocks - 1) * len(psi0))
+
+            H_mat = self.basis.build_sparse_matrix(H)
+            psi0_arr = (
+                self.basis.build_vector(psi0).T if len(psi0) > 0 else np.zeros((self.basis.size, 1), dtype=complex)
             )
 
+            e_ref, psi_refs_arr = restarted_lanczos(
+                psi0=psi0_arr,
+                h_op=H_mat,
+                basis=self.basis,
+                num_wanted=num_wanted,
+                max_subspace_blocks=max_subspace_blocks,
+                tol=1e-8,
+                max_restarts=100,
+                verbose=self.basis.verbose and (self.basis.comm is None or self.basis.comm.rank == 0),
+                slaterWeightMin=slaterWeightMin,
+                reort=reort,
+            )
+            if len(e_ref) > 0:
+                psi_refs = self.basis.build_state(psi_refs_arr.T, slaterWeightMin=slaterWeightMin)
             if max_energy is not None and len(e_ref) > 0:
                 e_min = np.min(e_ref)
                 valid_idx = [i for i, e in enumerate(e_ref) if e - e_min <= max_energy]

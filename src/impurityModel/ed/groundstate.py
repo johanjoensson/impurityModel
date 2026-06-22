@@ -28,6 +28,7 @@ def calc_energy(
     truncation_threshold,
     slaterWeightMin,
     cipsi_solver_method="trlm",
+    reort="full",
 ):
     """
     Calculate the ground-state energy of the system for a given charge sector.
@@ -100,7 +101,12 @@ def calc_energy(
     if len(basis) == 0:
         return np.inf, basis
     solver.expand(
-        h_op, dense_cutoff=dense_cutoff, de2_min=1e-4, slaterWeightMin=slaterWeightMin, solver=cipsi_solver_method
+        h_op,
+        dense_cutoff=dense_cutoff,
+        de2_min=1e-4,
+        slaterWeightMin=slaterWeightMin,
+        solver=cipsi_solver_method,
+        reort=reort,
     )
 
     energy_cut = -tau * np.log(1e-4)
@@ -112,6 +118,7 @@ def calc_energy(
         dense_cutoff=dense_cutoff,
         slaterWeightMin=slaterWeightMin,
         solver=cipsi_solver_method,
+        reort=reort,
     )
     basis.clear()
     basis.add_states(set(state for psi in eigen_psis for state in psi))
@@ -263,7 +270,7 @@ def calc_gs(
     rot_to_spherical: np.ndarray,
     verbose: bool,
     slaterWeightMin=0,
-    cipsi_solver_method="eigensystem",
+    cipsi_solver_method="trlm",
     **kwargs,
 ):
     """

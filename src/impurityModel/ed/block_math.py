@@ -1,15 +1,15 @@
 import numpy as np
 import scipy.linalg as sp
-import scipy.sparse
+import scipy.sparse as sps
 
 from impurityModel.ed.ManyBodyUtils import ManyBodyState, add_scaled_multi, inner_multi
 
 
 def is_array(V):
     """Check if the vector representation is a dense/sparse array (as opposed to ManyBodyState list)."""
-    if isinstance(V, (np.ndarray, scipy.sparse.spmatrix)):
+    if isinstance(V, (np.ndarray, sps.spmatrix, sps.sparray)):
         return True
-    if isinstance(V, list) and len(V) > 0 and isinstance(V[0], (np.ndarray, scipy.sparse.spmatrix)):
+    if isinstance(V, list) and len(V) > 0 and isinstance(V[0], (np.ndarray, sps.spmatrix, sps.sparray)):
         return True
     return False
 
@@ -37,7 +37,7 @@ def block_apply(H, V, basis=None, mpi=False, slaterWeightMin=0.0):
         is_array(V)
         or getattr(H, "is_array_operator", False)
         or isinstance(H, np.ndarray)
-        or isinstance(H, scipy.sparse.spmatrix)
+        or isinstance(H, sps.spmatrix)
     ):
         if isinstance(V, list) and isinstance(V[0], np.ndarray):
             V_arr = np.column_stack(V)
@@ -89,9 +89,6 @@ def block_orthogonalize(wp, Q, overlaps=None, mpi=False, comm=None):
             Q = np.column_stack(Q)
         if overlaps is None:
             overlaps = Q.conj().T @ wp
-            if mpi and comm is not None:
-
-                comm.Allreduce(MPI.IN_PLACE, overlaps, op=MPI.SUM)
         wp -= Q @ overlaps
     else:
         if overlaps is None:
@@ -107,10 +104,13 @@ def block_normalize(wp, mpi=False, comm=None, slaterWeightMin=0.0):
     r"""Computes M = wp^\dagger wp, then cholesky factorizes to find beta, and normalizes wp into q_next."""
     M = block_inner(wp, wp, mpi, comm)
     n = M.shape[0]
+    cond = np.linalg.cond(M)
+    if cond > 1.0 / (100.0 * np.finfo(float).eps):
+        raise sp.LinAlgError(f"Ill-conditioned matrix: cond={cond:.2e}")
     try:
         L = sp.cholesky(M, lower=True)
     except sp.LinAlgError:
-        L = sp.cholesky(M + np.eye(n) * 1e-14, lower=True)
+        raise sp.LinAlgError("Cholesky decomposition failed")
     beta = np.conj(L.T)
     beta_inv = sp.inv(beta)
 

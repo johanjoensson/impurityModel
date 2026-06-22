@@ -3,14 +3,35 @@ import scipy.linalg as sp
 
 
 def implicit_qr_step_block(T, n, shift, U_k=None):
-    """
-    Applies a single implicit QR shift to a block tridiagonal matrix T
-    using block bulge chasing.
-    T is modified in place.
-    If U_k is provided, the transformations are accumulated into it.
+    """Apply a single implicit QR shift to a block tridiagonal matrix T.
 
-    This avoids forming a full dense N x N QR decomposition, reducing
-    complexity from O((mn)^3) to O(m * n^3).
+    Applies a bulge-chasing implicit QR step with a given shift:
+
+    .. math::
+
+        T \\leftarrow U^\\dagger T U
+
+    where :math:`U` is the accumulated sequence of unitary block Givens
+    rotations. This avoids forming the full dense QR decomposition, reducing
+    complexity from :math:`\\mathcal{O}((mn)^3)` to :math:`\\mathcal{O}(m n^3)`.
+    The transformations are applied directly in-place to the block-tridiagonal
+    matrix ``T``.
+
+    If the transformation matrix ``U_k`` is provided, it is updated as
+    :math:`U_k \\leftarrow U_k U`.
+
+    Args:
+        T: The full block-tridiagonal matrix of shape ``(m*n, m*n)``. Modified
+            in-place.
+        n: The block size :math:`p`.
+        shift: The implicit shift (typically an unwanted Ritz value) to apply.
+        U_k: Optional transformation matrix of shape ``(m*n, m*n)`` to accumulate
+            the unitary rotations. Modified in-place.
+
+    Returns:
+        tuple[numpy.ndarray, numpy.ndarray | None]: A tuple ``(T, U_k)`` where:
+            * ``T`` is the updated block-tridiagonal matrix.
+            * ``U_k`` is the updated transformation matrix, or ``None``.
     """
     N = T.shape[0]
     m = N // n
@@ -26,16 +47,15 @@ def implicit_qr_step_block(T, n, shift, U_k=None):
     if U_k is not None:
         U_k[:, 0 : 2 * n] = U_k[:, 0 : 2 * n] @ q0
 
-    # 2. Chase the block bulges
-    for i in range(1, m - 1):
-        # The bulge is in T[ (i+1)n : (i+2)n, (i-1)n : i*n ]
-        # We zero it out using the diagonal block above it: T[ i*n : (i+1)n, (i-1)n : i*n ]
-        bulge_col = T[i * n : (i + 2) * n, (i - 1) * n : i * n].copy()
-        qi, ri = sp.qr(bulge_col)
+    # 2. Bulge chasing
+    for j in range(1, m - 1):
+        # We want to annihilate the subdiagonal block T[j+1, j-1]
+        x = T[j * n : (j + 2) * n, (j - 1) * n : j * n].copy()
+        q, r = sp.qr(x)
 
-        T[i * n : (i + 2) * n, :] = qi.conj().T @ T[i * n : (i + 2) * n, :]
-        T[:, i * n : (i + 2) * n] = T[:, i * n : (i + 2) * n] @ qi
+        T[j * n : (j + 2) * n, :] = q.conj().T @ T[j * n : (j + 2) * n, :]
+        T[:, j * n : (j + 2) * n] = T[:, j * n : (j + 2) * n] @ q
         if U_k is not None:
-            U_k[:, i * n : (i + 2) * n] = U_k[:, i * n : (i + 2) * n] @ qi
+            U_k[:, j * n : (j + 2) * n] = U_k[:, j * n : (j + 2) * n] @ q
 
     return T, U_k

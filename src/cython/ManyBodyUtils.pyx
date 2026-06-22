@@ -518,6 +518,14 @@ cdef class ManyBodyOperator:
             res.v = self.o(psi.v, cutoff)
         return res
 
+    def apply(self, ManyBodyState psi, double cutoff=0) -> ManyBodyState:
+        cdef ManyBodyState res
+        res = ManyBodyState()
+
+        with nogil:
+            res.v = self.o.apply(psi.v, cutoff)
+        return res
+
     def apply_multi(self, list psis, double cutoff = 0) -> list:
         """
         Apply operator to a list of ManyBodyStates without python looping.

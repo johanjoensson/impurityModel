@@ -15,19 +15,49 @@ try:
 except ImportError:
     pass
 
+try:
+    import mpi4py
+    include_dirs.append(mpi4py.get_include())
+except ImportError:
+    pass
+
 extra_compile_args = []
 cxxflags = os.environ.get("CXXFLAGS", "")
 if "-std=c++" not in cxxflags and "-std=gnu++" not in cxxflags:
     extra_compile_args.append("-std=c++17")
 
+_cython_src_dir = "src/cython"
+_mpi_utils_src = os.path.join(_cython_src_dir, "MpiUtils.cpp")
+
 ext_modules = [
     Extension(
         name="impurityModel.ed.ManyBodyUtils",
-        sources=["src/cython/ManyBodyUtils.pyx", "src/cython/MpiUtils.cpp"],
+        sources=[
+            os.path.join(_cython_src_dir, "ManyBodyUtils.pyx"),
+            _mpi_utils_src,
+        ],
         language="c++",
         include_dirs=include_dirs,
         extra_compile_args=extra_compile_args,
-    )
+    ),
+    Extension(
+        name="impurityModel.ed.BlockLanczos",
+        sources=[
+            os.path.join(_cython_src_dir, "BlockLanczos.pyx"),
+        ],
+        language="c++",
+        include_dirs=include_dirs,
+        extra_compile_args=extra_compile_args,
+    ),
+    Extension(
+        name="impurityModel.ed.BlockLanczosArray",
+        sources=[
+            os.path.join(_cython_src_dir, "BlockLanczosArray.pyx"),
+        ],
+        language="c++",
+        include_dirs=include_dirs,
+        extra_compile_args=extra_compile_args,
+    ),
 ]
 
 setuptools.setup(

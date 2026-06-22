@@ -9,11 +9,11 @@ from mpi4py import MPI
 from impurityModel.ed.block_structure import BlockStructure, get_blocks
 from impurityModel.ed.lanczos import (
     Reort,
-    block_lanczos_sparse,
     get_block_Lanczos_matrices,
     get_block_Lanczos_matrices_dense,
     get_Lanczos_vectors,
 )
+from impurityModel.ed.BlockLanczos import block_lanczos_cy
 from impurityModel.ed.manybody_basis import Basis
 from impurityModel.ed.ManyBodyUtils import (
     ManyBodyOperator,
@@ -863,7 +863,7 @@ def block_Green_sparse(
         print(rf"$\delta$ = {d_g}", flush=True)
         return d_g < delta_min
 
-    alphas, betas, _ = block_lanczos_sparse(
+    alphas, betas, _, _ = block_lanczos_cy(
         psi_arr,
         hOp,
         basis,

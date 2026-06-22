@@ -372,7 +372,7 @@ def eigensystem(h_local, e_max, k=10, e0=None, v0=None, eigenValueTol=0, return_
     # e_max is limited by the accuracy of the calculated eigenvalues and machine precision
     e_max = max(e_max, eigenValueTol, np.finfo(float).eps * 100)
 
-    from impurityModel.ed.trlm import thick_restarted_block_lanczos
+    from impurityModel.ed.trlm import thick_restart_block_lanczos
 
     N = h_local.shape[0]
     # Set up random initial vectors
