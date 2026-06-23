@@ -58,7 +58,15 @@ from mpi4py import MPI
 cimport numpy as np
 
 from impurityModel.ed.BlockLanczosArray import estimate_orthonormality, eigsh, _build_full_T, _extract_blocks
-from impurityModel.ed.BlockLanczosArray import Reort
+from impurityModel.ed.BlockLanczosArray import (
+    Reort,
+    EPS,
+    REORT_TOL,
+    BAD_BLOCK_TOL,
+    DEFLATE_TOL,
+    BREAKDOWN_TOL,
+    REORT_PERIOD,
+)
 
 cpdef list block_combine_sparse(list Q, np.ndarray Y, double slaterWeightMin=0.0):
     cdef int n_out = Y.shape[1]
@@ -84,15 +92,17 @@ cpdef tuple block_normalize_sparse(list wp, bint mpi=False, object comm=None, do
     if comm is not None:
         comm.Allreduce(MPI.IN_PLACE, M, op=MPI.SUM)
     cdef int n = M.shape[0]
-    cdef np.ndarray L = sp.cholesky(M, lower=True)
-    cdef np.ndarray beta = np.conj(L.T)
-    cdef np.ndarray beta_inv = sp.inv(beta)
-    cdef list q_next = [ManyBodyState() for _ in range(n)]
+    cdef np.ndarray beta_j, beta_inv
+    cdef int active_k
+    beta_j, beta_inv, active_k = _cholesky_or_deflate(M, n)
+    if active_k == 0:
+        raise ValueError("Block collapsed to zero rank")
+    cdef list q_next = [ManyBodyState() for _ in range(active_k)]
     add_scaled_multi(q_next, wp, beta_inv)
     if slaterWeightMin > 0:
         for st in q_next:
             st.prune(slaterWeightMin)
-    return q_next, beta
+    return q_next, beta_j
 
 # ---------------------------------------------------------------------------
 # Internal helpers
@@ -136,96 +146,28 @@ def _block_inner_mpi(states_a, states_b, mpi: bool, comm):
     return G
 
 
-def _cholesky_beta(M):
-    """Cholesky-factorize :math:`M = L L^\\dagger` and return :math:`\\beta = L^\\dagger`.
-
-    Performs the lower Cholesky decomposition
-
-    .. math::
-
-        M = L L^\\dagger, \\quad \\beta = L^\\dagger \\text{ (upper triangular)}
-
-    so that :math:`\\beta` is the Lanczos off-diagonal block and :math:`Q_{i+1} = W_p
-    \\beta^{-1}` is a well-conditioned next Krylov block.
-
-    **Numerical regularisation strategy**: if the first Cholesky attempt raises
-    ``scipy.linalg.LinAlgError`` (indicating a numerically indefinite :math:`M`), a
-    small diagonal shift :math:`\\delta = 10^{-14} \\|M\\|_F` is added before retrying:
-
-    .. math::
-
-        M_{\\text{reg}} = M + \\delta\\, I_p.
-
-    If the regularised factorisation also fails the exception is re-raised.
-
-    Note:
-        This function is *not* a collective MPI operation; it operates entirely on
-        replicated :math:`p \\times p` data that is identical on all ranks.
-
-    Args:
-        M: Hermitian positive-(semi)definite numpy array of shape ``(p, p)``.
-            Typically :math:`M = W_p^\\dagger W_p` from the current Lanczos step.
-
-    Returns:
-        tuple[numpy.ndarray, numpy.ndarray]: A 2-tuple ``(beta, beta_inv)`` where
-
-        * ``beta`` – upper-triangular complex array of shape ``(p, p)``
-          equal to :math:`L^\\dagger`.
-        * ``beta_inv`` – complex array of shape ``(p, p)`` equal to
-          :math:`(L^\\dagger)^{-1}`, used to normalise the next Krylov block.
-
-    Raises:
-        numpy.linalg.LinAlgError: If :math:`M` is singular even after the diagonal
-            regularisation :math:`+\delta I_p`.
-    """
-    cond = np.linalg.cond(M)
-    if cond > 1.0 / (100.0 * np.finfo(float).eps):
-        raise np.linalg.LinAlgError(f"Ill-conditioned matrix: cond={cond:.2e}")
+def _cholesky_or_deflate(M, p_in):
+    # Try Cholesky first (fast path)
     try:
         L = sp.cholesky(M, lower=True)
-    except sp.LinAlgError:
-        raise sp.LinAlgError("Cholesky decomposition failed")
-    beta = L.conj().T  # upper triangular
-    beta_inv = sp.inv(beta)
-    return beta, beta_inv
-
-
-def _cholesky_or_deflate(M, p, eps=1e-12):
-    """
-    Cholesky-factorize M if full rank, otherwise use eigendecomposition to deflate.
-    Returns beta_i, beta_inv, and active_k (number of non-converged vectors).
-    """
-    eigvals, eigvecs = np.linalg.eigh(M)
-    idx = np.argsort(eigvals)[::-1]
-    eigvals = eigvals[idx]
-    eigvecs = eigvecs[:, idx]
-    
-    max_eig = eigvals[0] if len(eigvals) > 0 else 0
-    thresh = max(eps, eps * max_eig)
-    
-    k = 0
-    for e in eigvals:
-        if e > thresh:
-            k += 1
-            
-    if k == p:
-        try:
-            L = sp.cholesky(M, lower=True, check_finite=False)
-            beta = np.conj(L.T)
-            beta_inv = sp.inv(beta, check_finite=False)
-            return beta, beta_inv, k
-        except Exception:
-            pass
-            
-    beta = np.zeros((p, p), dtype=complex)
-    beta_inv = np.zeros((p, p), dtype=complex)
-    
-    if k > 0:
-        L_sqrt = np.sqrt(eigvals[:k])
-        beta[:k, :] = L_sqrt[:, np.newaxis] * np.conj(eigvecs[:, :k].T)
-        beta_inv[:, :k] = eigvecs[:, :k] / L_sqrt[np.newaxis, :]
-        
-    return beta, beta_inv, k
+        if np.any(np.diag(L) < DEFLATE_TOL * np.max(np.diag(L))):
+            raise sp.LinAlgError("Numeric singularity in Cholesky diagonal")
+        beta_j = np.conj(L.T)
+        beta_inv = sp.inv(beta_j)
+        p_next = p_in
+        return beta_j, beta_inv, p_next
+    except (sp.LinAlgError, ValueError):
+        # Fall back to eigh
+        evals, evecs = sp.eigh(M)              # ascending
+        keep = evals > DEFLATE_TOL * max(evals[-1], 1.0) # boolean mask over p_in
+        p_next = int(keep.sum())
+        if p_next == 0:                                   # whole block collapsed
+            return None, None, 0
+        V = evecs[:, keep]                                # (p_in, p_next)
+        s = np.sqrt(evals[keep])                          # (p_next,)
+        beta_j   = (s[:, None] * np.conj(V.T))             # (p_next, p_in)   off-diag block
+        beta_inv = V / s[None, :]                         # (p_in,  p_next)
+        return beta_j, beta_inv, p_next
 
 
 def _reorthogonalize_sparse(wp, Q_states, indices, mpi, comm):
@@ -269,14 +211,6 @@ def _reorthogonalize_sparse(wp, Q_states, indices, mpi, comm):
         overlaps = inner_multi(Q_sub, wp)
         if mpi and comm is not None:
             comm.Allreduce(MPI.IN_PLACE, overlaps, op=MPI.SUM)
-        add_scaled_multi(wp, Q_sub, -overlaps)
-
-
-# ---------------------------------------------------------------------------
-# Core Block Lanczos step
-# ---------------------------------------------------------------------------
-
-
 def block_lanczos_step_cy(
     h_op,
     q_prev,
@@ -293,6 +227,7 @@ def block_lanczos_step_cy(
     slaterWeightMin: float = 0.0,
     reort_period: int = 5,
     start_it: int = 0,
+    block_widths=None,
 ):
     """Perform one step of the distributed block Lanczos iteration.
 
@@ -391,17 +326,23 @@ def block_lanczos_step_cy(
     alpha_i = inner_multi(q_curr, wp)
     if mpi and comm is not None:
         comm.Allreduce(MPI.IN_PLACE, alpha_i, op=MPI.SUM)
-    alphas[it] = alpha_i
+    alphas[it, :p, :p] = alpha_i
 
     # --- 3. Subtract: wp = wp - q_curr * alpha_i - q_prev * beta_{i-1}^† -
     add_scaled_multi(wp, q_curr, -alpha_i)
     if it > 0:
-        beta_prev_dag = np.conj(betas[it - 1].T)
+        n_prev = len(q_prev)
+        beta_prev_dag = np.conj(betas[it - 1, :p, :n_prev].T)
         add_scaled_multi(wp, q_prev, -beta_prev_dag)
 
     # --- 3b. Explicit orthogonalization against history blocks (resumed run) ---
     if reort_mode != Reort.NONE and start_it > 0:
-        _reorthogonalize_sparse(wp, Q_basis, list(range(start_it * p)), mpi, comm)
+        bad_cols_start = []
+        for j in range(start_it):
+            col_start = sum(block_widths[:j])
+            col_end = col_start + block_widths[j]
+            bad_cols_start.extend(range(col_start, col_end))
+        _reorthogonalize_sparse(wp, Q_basis, bad_cols_start, mpi, comm)
 
     # --- 4. Full / Periodic reorthogonalization -------------------------
     if reort_mode == Reort.FULL or (reort_mode == Reort.PERIODIC and it > 0 and it % reort_period == 0):
@@ -417,52 +358,69 @@ def block_lanczos_step_cy(
         comm.Allreduce(MPI.IN_PLACE, M, op=MPI.SUM)
 
     if np.any(np.isnan(M)) or np.any(np.isinf(M)):
-        return None, alpha_i, None, W, True
+        return None, alpha_i, None, W, 0, True
 
     # --- 6. Deflation / Cholesky QR -------------------------------------
     beta_i, beta_inv, active_k = _cholesky_or_deflate(M, p)
     if active_k == 0:
-        return None, alpha_i, None, W, True
+        return None, alpha_i, None, W, 0, True
 
-    betas[it] = beta_i
+    betas[it, :active_k, :p] = beta_i
 
-    q_next = [ManyBodyState() for _ in range(p)]
+    q_next = [ManyBodyState() for _ in range(active_k)]
     add_scaled_multi(q_next, wp, beta_inv)
 
     # --- 7. EA16 Selective Orthogonalization / Partial Reortho ---------
     if reort_mode in (Reort.PARTIAL, Reort.SELECTIVE):
         if W is None:
-            W = np.zeros((1, 1, p, p), dtype=complex)
-            W[0, 0] = np.eye(p)
+            if start_it > 0:
+                W = np.zeros((2, start_it + 1, alphas.shape[1], alphas.shape[1]), dtype=complex)
+                for j in range(start_it):
+                    w_j = block_widths[j]
+                    Q_j = Q_basis[sum(block_widths[:j]) : sum(block_widths[:j+1])]
+                    W[1, j, :w_j, :p] = inner_multi(Q_j, wp)
+                    if j < start_it - 1:
+                        W[0, j, :w_j, :n_prev] = inner_multi(Q_j, q_prev)
+                if mpi and comm is not None:
+                    comm.Allreduce(MPI.IN_PLACE, W, op=MPI.SUM)
+                W[1, start_it, :p, :p] = np.eye(p)
+                W[0, start_it - 1, :n_prev, :n_prev] = np.eye(n_prev)
+            else:
+                W = np.zeros((2, 1, p, p), dtype=complex)
+                W[1, 0] = np.eye(p)
 
         W = estimate_orthonormality(
             W,
             alphas[: it + 1],
             betas[: it + 1],
-            eps=np.finfo(float).eps,
+            block_widths=block_widths + [p, active_k],
+            eps=EPS,
         )
 
-        reort_eps = math.sqrt(np.finfo(float).eps)
+        reort_eps = REORT_TOL
 
         if reort_mode == Reort.SELECTIVE:
             if start_it == 0 or it > start_it:
                 import scipy.linalg as spla
 
-                T_full = _build_full_T(alphas[: it + 1], betas[: it + 1])
-                # T_full is replicated (built from replicated alphas/betas).
-                # Use deterministic dense eigh so all ranks see the same eigenvectors,
-                # then bcast rank-0's decision list so every rank enters/skips the
-                # subsequent Allreduce consistently (avoids MPI deadlock).
+                T_full = _build_full_T(alphas[: it + 1], betas[: it + 1], block_widths=block_widths + [p])
                 eigvals_T, conv_evec = spla.eigh(T_full)
                 ritz_to_project = []
                 if not mpi or comm is None or comm.rank == 0:
                     for k in range(len(eigvals_T)):
-                        err_bnd = np.linalg.norm(betas[it], ord=2) * np.abs(conv_evec[-1, k])
+                        err_bnd = np.linalg.norm(beta_i, ord=2) * np.abs(conv_evec[-1, k])
                         if err_bnd < reort_eps:
-                            s_k_blocks = conv_evec[:, k].reshape(it + 1, p)
+                            widths_list = list(block_widths) + [p]
+                            offsets = [0]
+                            off = 0
+                            for w_val in widths_list:
+                                off += int(w_val)
+                                offsets.append(off)
                             w_ritz_k = np.zeros(p, dtype=complex)
                             for j in range(it + 1):
-                                w_ritz_k += np.conj(s_k_blocks[j]) @ np.conj(W[-1, j].T)
+                                s_k_j = conv_evec[offsets[j] : offsets[j+1], k]
+                                w_j = widths_list[j]
+                                w_ritz_k += np.conj(s_k_j) @ np.conj(W[-1, j, :p, :w_j].T)
                             if np.max(np.abs(w_ritz_k)) > reort_eps:
                                 ritz_to_project.append(k)
                 if mpi and comm is not None:
@@ -470,7 +428,6 @@ def block_lanczos_step_cy(
 
                 for k in ritz_to_project:
                     s_k = conv_evec[:, k]
-                    s_k_blocks = s_k.reshape(it + 1, p)
                     ritz_vec = [ManyBodyState() for _ in range(p)]
                     add_scaled_multi(ritz_vec, Q_basis, s_k[:, np.newaxis])
                     for _ in range(2):
@@ -483,32 +440,28 @@ def block_lanczos_step_cy(
             n_blks = it + 1
             bad_block_idx = []
             if not mpi or comm is None or comm.rank == 0:
-                if np.max(np.abs(W[-1, :n_blks])) > reort_eps:
-                    bad_block_idx = [j for j in range(n_blks) if np.max(np.abs(W[-1, j])) > np.finfo(float).eps ** (3 / 4)]
+                if np.max(np.abs(W[-1, :n_blks])) > REORT_TOL:
+                    bad_block_idx = [j for j in range(n_blks) if np.max(np.abs(W[-1, j])) > BAD_BLOCK_TOL]
             
             if mpi and comm is not None:
                 bad_block_idx = comm.bcast(bad_block_idx, root=0)
 
             if len(bad_block_idx) > 0:
-                bad_state_idx = [j * p + k for j in bad_block_idx for k in range(p)]
+                bad_state_idx = []
+                for j in bad_block_idx:
+                    col_start = sum(block_widths[:j])
+                    col_end = col_start + block_widths[j]
+                    bad_state_idx.extend(range(col_start, col_end))
                 _reorthogonalize_sparse(q_next, Q_basis, bad_state_idx, mpi, comm)
                 for j in bad_block_idx:
-                    W[-1, j] = np.finfo(float).eps * np.eye(p, dtype=complex)
+                    w_j = block_widths[j]
+                    W[-1, j, :w_j, :active_k] = EPS * np.eye(w_j, active_k, dtype=complex)
 
-    # Zero out the parts that correspond to the deflated vectors
-    for i in range(active_k, p):
-        q_next[i] = q_next[i].__class__() # reinitialize to empty
-        
     if slaterWeightMin > 0:
-        for st in q_next[:active_k]:
+        for st in q_next:
             st.prune(slaterWeightMin)
 
-    return q_next, alpha_i, beta_i, W, False
-
-
-# ---------------------------------------------------------------------------
-# Full Block Lanczos iteration loop
-# ---------------------------------------------------------------------------
+    return q_next, alpha_i, beta_i, W, active_k, False
 
 
 def block_lanczos_cy(
@@ -526,6 +479,8 @@ def block_lanczos_cy(
     betas_init=None,
     Q_init=None,
     W_init=None,
+    return_widths=False,
+    block_widths_init=None,
 ):
     """Run the distributed block Lanczos iteration with ``ManyBodyState``.
 
@@ -626,13 +581,6 @@ def block_lanczos_cy(
           off-diagonal blocks :math:`\\beta_0, \\dots, \\beta_{k-1}`.
         * ``Q_basis`` – flat list of ``ManyBodyState`` of length
           ``(k + 1) * p``; the last ``p`` entries form the residual
-          direction :math:`Q_k` (not yet accepted as a full Lanczos block).
-        * ``W`` – Paige-Simon estimator array, or ``None`` when not tracked.
-
-    Raises:
-        ValueError: If the ``reort`` string argument is not one of
-            ``'none'``, ``'partial'``, ``'selective'``, ``'full'``,
-            ``'periodic'``.
     """
     from impurityModel.ed.ManyBodyUtils import ManyBodyOperator
 
@@ -662,9 +610,12 @@ def block_lanczos_cy(
     # --- Resume or start fresh? -----------------------------------------
     resuming = alphas_init is not None and betas_init is not None and Q_init is not None
 
+    cdef list block_widths = list(block_widths_init) if block_widths_init is not None else []
     if resuming:
         start_it = len(alphas_init)
         p = alphas_init[0].shape[0] if len(alphas_init) > 0 else len(Q_init[0] if Q_init else psi0)
+        if len(block_widths) == 0:
+            block_widths = [p] * start_it
         alphas_list = list(alphas_init)
         betas_list = list(betas_init)
         Q_basis = list(Q_init)
@@ -674,10 +625,12 @@ def block_lanczos_cy(
             q_prev = [ManyBodyState() for _ in range(p)]
             q_curr = [Q_basis[i] for i in range(p)]
         else:
-            q_prev_start = max(0, (start_it - 1) * p)
-            q_curr_start = start_it * p
-            q_prev = [Q_basis[i] for i in range(q_prev_start, q_prev_start + p)]
-            q_curr = [Q_basis[i] for i in range(q_curr_start, q_curr_start + p)]
+            q_prev_start = sum(block_widths[:start_it - 1])
+            q_prev_len = block_widths[start_it - 1]
+            q_curr_start = sum(block_widths[:start_it])
+            q_curr_len = len(Q_basis) - q_curr_start
+            q_prev = [Q_basis[i] for i in range(q_prev_start, q_prev_start + q_prev_len)]
+            q_curr = [Q_basis[i] for i in range(q_curr_start, q_curr_start + q_curr_len)]
     else:
         start_it = 0
         p = len(psi0)
@@ -709,21 +662,22 @@ def block_lanczos_cy(
         if start_it > 0:
             W = np.zeros((2, start_it + 1, p, p), dtype=complex)
             for j in range(start_it):
-                Q_j = Q_basis[j * p : (j + 1) * p]
+                w_j = block_widths[j]
+                Q_j = Q_basis[sum(block_widths[:j]) : sum(block_widths[:j+1])]
 
                 ov_curr = inner_multi(Q_j, q_curr)
                 if mpi:
                     comm.Allreduce(MPI.IN_PLACE, ov_curr, op=MPI.SUM)
-                W[1, j] = ov_curr
+                W[1, j, :w_j, :len(q_curr)] = ov_curr
 
                 if j < start_it - 1:
                     ov_prev = inner_multi(Q_j, q_prev)
                     if mpi:
                         comm.Allreduce(MPI.IN_PLACE, ov_prev, op=MPI.SUM)
-                    W[0, j] = ov_prev
+                    W[0, j, :w_j, :len(q_prev)] = ov_prev
 
-            W[1, start_it] = np.eye(p)
-            W[0, start_it - 1] = np.eye(p)
+            W[1, start_it, :len(q_curr), :len(q_curr)] = np.eye(len(q_curr))
+            W[0, start_it - 1, :len(q_prev), :len(q_prev)] = np.eye(len(q_prev))
         else:
             W = np.zeros((2, 1, p, p), dtype=complex)
             W[1, 0] = np.eye(p)
@@ -736,7 +690,8 @@ def block_lanczos_cy(
 
     while it < _buf_size:
         it_abs = start_it + it
-        q_next, alpha_i, beta_i, W, breakdown = block_lanczos_step_cy(
+        n_curr = len(q_curr)
+        q_next, alpha_i, beta_i, W, active_k, breakdown = block_lanczos_step_cy(
             h_op=h_op,
             q_prev=q_prev,
             q_curr=q_curr,
@@ -752,17 +707,18 @@ def block_lanczos_cy(
             slaterWeightMin=slaterWeightMin,
             reort_period=reort_period,
             start_it=start_it,
+            block_widths=block_widths,
         )
 
-        alphas_list.append(alphas_buf[it_abs].copy())
+        alphas_list.append(alphas_buf[it_abs, :n_curr, :n_curr].copy())
         if breakdown:
-            betas_list.append(np.zeros((p, p), dtype=complex))
+            betas_list.append(np.zeros((0, n_curr), dtype=complex))
             if verbose:
                 if comm is None or comm.Get_rank() == 0:
                     print(f"[BlockLanczos] Breakdown / invariant subspace " f"detected at iteration {it_abs}.")
             break
         else:
-            betas_list.append(betas_buf[it_abs].copy())
+            betas_list.append(betas_buf[it_abs, :active_k, :n_curr].copy())
 
         # Append q_next to the basis (last block = residual direction)
         Q_basis.extend([st.copy() for st in q_next])
@@ -774,17 +730,22 @@ def block_lanczos_cy(
             )
 
         # Convergence check
-        alphas_np = np.array(alphas_list)
-        betas_np = np.array(betas_list)
+        alphas_np = alphas_buf[:it_abs+1]
+        betas_np = betas_buf[:it_abs+1]
         if converged_fn(alphas_np, betas_np, verbose=verbose):
+            block_widths.append(n_curr)
+            it += 1
             break
 
         q_prev = q_curr
         q_curr = q_next
+        block_widths.append(n_curr)
         it += 1
 
-    alphas_out = np.array(alphas_list, dtype=complex)
-    betas_out = np.array(betas_list, dtype=complex)
+    alphas_out = alphas_buf[:start_it + it]
+    betas_out = betas_buf[:start_it + it]
+    if return_widths:
+        return alphas_out, betas_out, Q_basis, W, block_widths
     return alphas_out, betas_out, Q_basis, W
 
 
@@ -1349,19 +1310,13 @@ def implicitly_restarted_block_lanczos_cy(
                 print("[IRLM] Breakdown at restart -- returning current Ritz pairs.")
             break
 
-        try:
-            beta_k, beta_k_inv = _cholesky_beta(M)
-        except np.linalg.LinAlgError:
+        beta_k, beta_k_inv, active_k = _cholesky_or_deflate(M, p)
+        if active_k == 0:
             if verbose and (comm is None or comm.Get_rank() == 0):
-                print("[IRLM] Cholesky breakdown at restart.")
+                print("[IRLM] Cholesky breakdown / complete deflation at restart.")
             break
 
-        if np.linalg.norm(beta_k, ord=2) < 1e-5:
-            if verbose and (comm is None or comm.Get_rank() == 0):
-                print("[IRLM] Invariant subspace found during restart.")
-            break
-
-        q_k_next = [ManyBodyState() for _ in range(p)]
+        q_k_next = [ManyBodyState() for _ in range(active_k)]
         add_scaled_multi(q_k_next, wp, beta_k_inv)
         if slaterWeightMin > 0:
             for st in q_k_next:

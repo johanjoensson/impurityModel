@@ -21,6 +21,40 @@ class Reort(Enum):
     SELECTIVE = 4
 
 
+cdef double EPS_VAL = np.finfo(float).eps
+EPS = EPS_VAL          # ~2.22e-16
+REORT_TOL = np.sqrt(EPS_VAL)        # ~1.49e-8  : trigger — reorth when max|W| exceeds this
+BAD_BLOCK_TOL = EPS_VAL ** 0.75        # ~1.83e-12 : selection — reorth against blocks above this
+DEFLATE_TOL = EPS_VAL ** 0.5          # ~1.49e-8  : relative rank floor for eigenvalues of M
+BREAKDOWN_TOL = 1e-12              # absolute: ||beta||_2 below this ⇒ invariant subspace
+REORT_PERIOD = 5                   # PERIODIC cadence, and SELECTIVE Ritz-check cadence
+
+
+def _cholesky_or_deflate(M, p_in):
+    # Try Cholesky first (fast path)
+    try:
+        L = la.cholesky(M, lower=True)
+        if np.any(np.diag(L) < DEFLATE_TOL * np.max(np.diag(L))):
+            raise la.LinAlgError("Numeric singularity in Cholesky diagonal")
+        beta_j = np.conj(L.T)
+        beta_inv = la.inv(beta_j)
+        p_next = p_in
+        return beta_j, beta_inv, p_next
+    except (la.LinAlgError, ValueError):
+        # Fall back to eigh
+        evals, evecs = la.eigh(M)              # ascending
+        keep = evals > DEFLATE_TOL * max(evals[-1], 1.0) # boolean mask over p_in
+        p_next = int(keep.sum())
+        if p_next == 0:                                   # whole block collapsed
+            return None, None, 0
+        V = evecs[:, keep]                                # (p_in, p_next)
+        s = np.sqrt(evals[keep])                          # (p_next,)
+        beta_j   = (s[:, None] * np.conj(V.T))             # (p_next, p_in)   off-diag block
+        beta_inv = V / s[None, :]                         # (p_in,  p_next)
+        return beta_j, beta_inv, p_next
+
+
+
 def calculate_thermal_gs(h, block_size, e_max, v0=None, reort=Reort.FULL, comm=None):
     mpi = comm is not None
     rank = comm.rank if mpi else 0
@@ -80,6 +114,7 @@ cpdef np.ndarray estimate_orthonormality(
     np.ndarray[double complex, ndim=4] W,
     np.ndarray[double complex, ndim=3] alphas,
     np.ndarray[double complex, ndim=3] betas,
+    object block_widths=None,
     double eps=0.0,
     int N=1
 ):
@@ -88,31 +123,59 @@ cpdef np.ndarray estimate_orthonormality(
     if eps == 0.0:
         eps = np.finfo(float).eps
     
+    cdef list widths
+    if block_widths is None:
+        widths = [n] * (i + 2)
+    else:
+        widths = list(block_widths)
+        
+    cdef int w_curr = widths[i]
+    cdef int w_i = w_curr
+    cdef int w_next = widths[i+1]
+    cdef int w_i_next = w_next
+    cdef int w_0 = widths[0]
+    
     cdef np.ndarray[double complex, ndim=4] W_out = np.zeros((2, i + 2, n, n), dtype=complex)
     cdef np.ndarray[double complex, ndim=3] w_bar = np.zeros((i + 2, n, n), dtype=complex)
     
-    w_bar[i + 1, :, :] = np.identity(n)
-    w_bar[i, :, :] = eps * N * la.solve_triangular(betas[i], betas[0], lower=False, trans="C", check_finite=False)
+    w_bar[i + 1, :w_next, :w_next] = np.identity(w_next)
+    
+    cdef np.ndarray beta_i_dag_inv = np.conj(la.pinv(betas[i, :w_next, :w_curr]).T) # shape (w_next, w_curr)
+    w_bar[i, :w_next, :w_0] = eps * N * beta_i_dag_inv @ betas[0, :w_curr, :w_0]
     
     if i == 0:
         W_out[0, : i + 1] = W[1]
         W_out[1, : i + 2] = w_bar
         return W_out
 
-    w_bar[0] = W[1, 1] @ betas[0] + W[1, 0] @ alphas[0] - alphas[i] @ W[1, 0] - betas[i - 1] @ W[0, 0]
-    w_bar[0] = la.solve_triangular(betas[i], w_bar[0], lower=False, trans="C", check_finite=False)
+    # j = 0
+    cdef int w_j = widths[0]
+    cdef int w_j_next = widths[1]
+    cdef int w_i_prev = widths[i-1]
+    cdef np.ndarray term1 = W[1, 1, :w_i, :w_j_next] @ betas[0, :w_j_next, :w_j]
+    cdef np.ndarray term2 = W[1, 0, :w_i, :w_j] @ alphas[0, :w_j, :w_j]
+    cdef np.ndarray term3 = alphas[i, :w_i, :w_i] @ W[1, 0, :w_i, :w_j]
+    cdef np.ndarray term5 = betas[i-1, :w_i, :w_i_prev] @ W[0, 0, :w_i_prev, :w_j]
+    cdef np.ndarray RHS_0 = term1 + term2 - term3 - term5
+    w_bar[0, :w_next, :w_j] = beta_i_dag_inv @ RHS_0
     
-    cdef np.ndarray[double complex, ndim=3] betas_conj_T = np.conj(np.transpose(betas[: i - 1], axes=[0, 2, 1]))
-    
-    w_bar[1:i] = (
-        W[1, 2 : i + 1] @ betas[1:i]
-        + W[1, 1:i] @ alphas[1:i]
-        - alphas[i][np.newaxis, :, :] @ W[1, 1:i]
-        + W[1, : i - 1] @ betas_conj_T
-        - betas[i - 1][np.newaxis, :, :] @ W[0, 1:i]
-    )
-    
-    w_bar[1:i] = np.linalg.solve(betas[i][np.newaxis, :, :], w_bar[1:i])
+    cdef int j, w_j_prev
+    cdef np.ndarray term4
+    cdef np.ndarray RHS
+    for j in range(1, i):
+        w_j = widths[j]
+        w_j_prev = widths[j-1]
+        w_j_next = widths[j+1]
+        
+        term1 = W[1, j+1, :w_i, :w_j_next] @ betas[j, :w_j_next, :w_j]
+        term2 = W[1, j, :w_i, :w_j] @ alphas[j, :w_j, :w_j]
+        term3 = alphas[i, :w_i, :w_i] @ W[1, j, :w_i, :w_j]
+        term4 = W[1, j-1, :w_i, :w_j_prev] @ np.conj(betas[j-1, :w_j, :w_j_prev].T)
+        term5 = betas[i-1, :w_i, :w_i_prev] @ W[0, j, :w_i_prev, :w_j]
+        
+        RHS = term1 + term2 - term3 + term4 - term5
+        w_bar[j, :w_next, :w_j] = beta_i_dag_inv @ RHS
+        
     w_bar[:i] += eps * (betas[i] + betas[:i])
     
     W_out[0, : i + 1] = W[1]
@@ -134,19 +197,37 @@ cpdef np.ndarray build_banded_matrix(np.ndarray[double complex, ndim=3] alphas, 
     return bands
 
 
-cpdef np.ndarray _build_full_T(np.ndarray[double complex, ndim=3] alphas, np.ndarray[double complex, ndim=3] betas, comm=None):
+cpdef np.ndarray _build_full_T(np.ndarray[double complex, ndim=3] alphas, np.ndarray[double complex, ndim=3] betas, object block_widths=None, object comm=None):
     cdef int m = alphas.shape[0]
-    cdef int n
     if m == 0:
         return np.zeros((0, 0), dtype=complex)
-    n = alphas.shape[1]
-    cdef np.ndarray[double complex, ndim=2] T = np.zeros((m * n, m * n), dtype=complex)
-    cdef int i
+    
+    cdef list widths
+    if block_widths is None:
+        widths = [alphas.shape[1]] * m
+    else:
+        widths = list(block_widths)
+        
+    cdef int total_dim = sum(widths)
+    cdef np.ndarray[double complex, ndim=2] T = np.zeros((total_dim, total_dim), dtype=complex)
+    
+    cdef list offsets = [0]
+    cdef int off = 0
+    cdef object w_val
+    for w_val in widths:
+        off += int(w_val)
+        offsets.append(off)
+        
+    cdef int i, w_i, w_next, o_i, o_next
     for i in range(m):
-        T[i * n : (i + 1) * n, i * n : (i + 1) * n] = alphas[i]
+        w_i = int(widths[i])
+        o_i = offsets[i]
+        T[o_i : o_i + w_i, o_i : o_i + w_i] = alphas[i, :w_i, :w_i]
         if i < m - 1:
-            T[i * n : (i + 1) * n, (i + 1) * n : (i + 2) * n] = np.conj(betas[i].T)
-            T[(i + 1) * n : (i + 2) * n, i * n : (i + 1) * n] = betas[i]
+            w_next = int(widths[i+1])
+            o_next = offsets[i+1]
+            T[o_next : o_next + w_next, o_i : o_i + w_i] = betas[i, :w_next, :w_i]
+            T[o_i : o_i + w_i, o_next : o_next + w_next] = np.conj(betas[i, :w_next, :w_i].T)
     return T
 
 
@@ -245,11 +326,13 @@ cpdef tuple block_normalize_array(np.ndarray wp, object comm=None):
     cdef np.ndarray M = np.conj(wp.T) @ wp
     if comm is not None:
         comm.Allreduce(MPI.IN_PLACE, M, op=MPI.SUM)
-    cdef np.ndarray L = la.cholesky(M, lower=True)
-    cdef np.ndarray beta = np.conj(L.T)
-    cdef np.ndarray beta_inv = la.inv(beta)
+    cdef np.ndarray beta_j, beta_inv
+    cdef int active_k
+    beta_j, beta_inv, active_k = _cholesky_or_deflate(M, wp.shape[1])
+    if active_k == 0:
+        raise ValueError("Block collapsed to zero rank")
     cdef np.ndarray q_next = wp @ beta_inv
-    return q_next, beta
+    return q_next, beta_j
 
 cdef extern from "complex.h":
     double complex conj(double complex z) nogil
@@ -355,6 +438,7 @@ def block_lanczos_array_cy(
     W=None,
     return_W=False,
     comm=None,
+    return_widths=False,
     **kwargs
 ):
     cdef bint build_krylov_basis = (reort != Reort.NONE) or True
@@ -383,16 +467,20 @@ def block_lanczos_array_cy(
         q.append(np.ascontiguousarray(psi0 if psi0.ndim == 2 else psi0.reshape(-1, 1)))
         Q_list = [q[1].copy()] if build_krylov_basis else None
 
-    alphas = alphas_arr
-    betas = betas_arr
+    cdef int period = kwargs.get("reort_period", 5)
+    cdef int max_iter = kwargs.get("max_iter", int(np.ceil(h_op.shape[0] / n if sps.issparse(h_op) or isinstance(h_op, np.ndarray) else N / n)))
+    cdef int _buf_size = start_it + max_iter
+    cdef np.ndarray[double complex, ndim=3] alphas_buf = np.zeros((_buf_size, n, n), dtype=complex)
+    cdef np.ndarray[double complex, ndim=3] betas_buf = np.zeros((_buf_size, n, n), dtype=complex)
+    if start_it > 0:
+        alphas_buf[:start_it] = alphas_arr
+        betas_buf[:start_it] = betas_arr
 
     cdef bint is_sparse = sps.issparse(h_op)
     cdef bint is_dense = isinstance(h_op, np.ndarray)
 
     cdef int it = start_it
     cdef double reort_eps = np.sqrt(np.finfo(float).eps)
-    cdef int period = kwargs.get("reort_period", 5)
-    cdef int max_iter = kwargs.get("max_iter", int(np.ceil(h_op.shape[0] / n if is_sparse or is_dense else N / n)))
     
     cdef bint mpi = comm is not None
     cdef int rank = comm.rank if mpi else 0
@@ -414,11 +502,6 @@ def block_lanczos_array_cy(
     if is_sparse:
         h_op = h_op.tocsr()
         h_data = h_op.data
-        # scipy chooses int32 index arrays for small/empty matrices (e.g. a rank
-        # whose local column slice is empty) and int64 otherwise.  The typed
-        # memoryviews below are ``long`` (int64), so coerce to avoid a
-        # buffer-dtype-mismatch ValueError that would otherwise abort this rank
-        # only -- deadlocking the collectives in the iteration loop.
         h_indices = np.ascontiguousarray(h_op.indices, dtype=np.int64)
         h_indptr = np.ascontiguousarray(h_op.indptr, dtype=np.int64)
     elif is_dense:
@@ -426,25 +509,38 @@ def block_lanczos_array_cy(
 
     cdef np.ndarray wp_arr = np.empty((N, n), dtype=complex, order='C')
     cdef double complex[:, ::1] wp = wp_arr
-    cdef double complex[:, ::1] q1, q0
-    cdef double complex[:, ::1] alpha_i = np.empty((n, n), dtype=complex, order='C')
-    cdef double complex[:, ::1] beta_prev_dag = np.zeros((n, n), dtype=complex, order='C')
-
+    cdef double complex[:, ::1] q1, q0, beta_prev_dag_mv
+    cdef double complex[:, ::1] alpha_i
+    
     cdef np.ndarray wp_global = np.empty((global_N, n), dtype=complex, order='C') if mpi else None
     cdef double complex[:, ::1] wp_g = wp_global
 
-    while it < max_iter:
+    cdef list block_widths = list(kwargs.get("block_widths_init", [n] * start_it))
+    cdef int n_curr, n_prev, n_next, active_k
+    cdef list bad_block_idx
+    cdef np.ndarray Q_bad, overlap
+
+    while it < _buf_size:
         q1 = np.ascontiguousarray(q[1])
+        n_curr = q1.shape[1]
+
+        # Re-allocate wp buffers to match current active width for contiguous alignment
+        if wp_arr.shape[1] != n_curr:
+            wp_arr = np.empty((N, n_curr), dtype=complex, order='C')
+            wp = wp_arr
+            if mpi:
+                wp_global = np.empty((global_N, n_curr), dtype=complex, order='C')
+                wp_g = wp_global
 
         if is_sparse:
             with nogil:
-                apply_sparse_csr_nogil(global_N, N, n, h_data, h_indices, h_indptr, q1, wp_g if mpi else wp)
+                apply_sparse_csr_nogil(global_N, N, n_curr, h_data, h_indices, h_indptr, q1, wp_g if mpi else wp)
             if mpi:
                 comm.Allreduce(MPI.IN_PLACE, wp_global, op=MPI.SUM)
                 wp_arr[:] = wp_global[offsets[rank] : offsets[rank] + N, :]
         elif is_dense:
             with nogil:
-                apply_dense_nogil(global_N, N, n, h_dense, q1, wp_g if mpi else wp)
+                apply_dense_nogil(global_N, N, n_curr, h_dense, q1, wp_g if mpi else wp)
             if mpi:
                 comm.Allreduce(MPI.IN_PLACE, wp_global, op=MPI.SUM)
                 wp_arr[:] = wp_global[offsets[rank] : offsets[rank] + N, :]
@@ -455,27 +551,29 @@ def block_lanczos_array_cy(
                 wp_arr[:] = h_op @ q1
             else:
                 wp_arr[:] = h_op(q1)
-                
+
+        # Allocate alpha_i as a contiguous array
+        alpha_i_arr = np.empty((n_curr, n_curr), dtype=complex, order='C')
+        alpha_i = alpha_i_arr
         with nogil:
-            matmul_nogil(n, n, N, 1.0, q1, b'C', wp, b'N', 0.0, alpha_i)
-            
-        alpha_i_arr = np.asarray(alpha_i).copy()
+            matmul_nogil(n_curr, n_curr, N, 1.0, q1, b'C', wp, b'N', 0.0, alpha_i)
+
         if mpi:
             comm.Allreduce(MPI.IN_PLACE, alpha_i_arr, op=MPI.SUM)
-            np.asarray(alpha_i)[:] = alpha_i_arr
-        
-        alphas = np.append(alphas, [alpha_i_arr], axis=0)
-        betas = np.append(betas, np.zeros((1, n, n), dtype=complex), axis=0)
+
+        alphas_buf[it, :n_curr, :n_curr] = alpha_i_arr
 
         with nogil:
-            matmul_nogil(N, n, n, -1.0, q1, b'N', alpha_i, b'N', 1.0, wp)
+            matmul_nogil(N, n_curr, n_curr, -1.0, q1, b'N', alpha_i, b'N', 1.0, wp)
 
         if it > 0:
-            beta_prev_dag_arr = np.conj(betas[it - 1].T).copy()
-            beta_prev_dag = np.ascontiguousarray(beta_prev_dag_arr)
+            n_prev = q[0].shape[1]
+            beta_prev_dag_arr = np.conj(betas_buf[it - 1, :n_curr, :n_prev].T).copy()
+            beta_prev_dag_arr_c = np.ascontiguousarray(beta_prev_dag_arr)
+            beta_prev_dag_mv = beta_prev_dag_arr_c
             q0 = np.ascontiguousarray(q[0])
             with nogil:
-                matmul_nogil(N, n, n, -1.0, q0, b'N', beta_prev_dag, b'N', 1.0, wp)
+                matmul_nogil(N, n_curr, n_prev, -1.0, q0, b'N', beta_prev_dag_mv, b'N', 1.0, wp)
 
         if reort == Reort.FULL or (reort == Reort.PERIODIC and it > 0 and it % period == 0):
             if not build_krylov_basis:
@@ -484,6 +582,7 @@ def block_lanczos_array_cy(
             Q_mat = np.ascontiguousarray(Q_list[0])
             overlap = Q_mat.conj().T @ wp_arr
             if mpi:
+                overlap = np.ascontiguousarray(overlap, dtype=complex)
                 comm.Allreduce(MPI.IN_PLACE, overlap, op=MPI.SUM)
             wp_arr -= Q_mat @ overlap
 
@@ -492,60 +591,15 @@ def block_lanczos_array_cy(
             comm.Allreduce(MPI.IN_PLACE, M, op=MPI.SUM)
 
         if np.any(np.isnan(M)) or np.any(np.isinf(M)):
-            alphas = np.append(alphas, [np.asarray(alpha_i).copy()], axis=0)
             break
 
-        try:
-            eigvals, eigvecs = la.eigh(M)
-        except Exception:
-            alphas = np.append(alphas, [np.asarray(alpha_i).copy()], axis=0)
-            break
-        idx = np.argsort(eigvals)[::-1]
-        eigvals = eigvals[idx]
-        eigvecs = eigvecs[:, idx]
-
-        max_eig = eigvals[0] if len(eigvals) > 0 else 0
-        thresh = max(1e-12, 1e-12 * max_eig)
-
-        k = 0
-        for e in eigvals:
-            if e > thresh:
-                k += 1
-
-        if k == 0:
+        beta_i, beta_inv, active_k = _cholesky_or_deflate(M, n_curr)
+        if active_k == 0:
             break
 
-        beta_i = np.zeros((n, n), dtype=complex)
-        beta_inv = np.zeros((n, n), dtype=complex)
-
-        if k == n:
-            try:
-                L = la.cholesky(M, lower=True)
-                beta_i = np.conj(L.T)
-                beta_inv = la.inv(beta_i)
-            except la.LinAlgError:
-                L_sqrt = np.sqrt(eigvals[:k])
-                beta_i[:k, :] = L_sqrt[:, np.newaxis] * np.conj(eigvecs[:, :k].T)
-                beta_inv[:, :k] = eigvecs[:, :k] / L_sqrt[np.newaxis, :]
-        else:
-            L_sqrt = np.sqrt(eigvals[:k])
-            beta_i[:k, :] = L_sqrt[:, np.newaxis] * np.conj(eigvecs[:, :k].T)
-            beta_inv[:, :k] = eigvecs[:, :k] / L_sqrt[np.newaxis, :]
-            
-            # Since q_next = wp_arr @ beta_inv, vectors after k are 0.
-            # We want to re-orthogonalize the active k vectors against Q if needed,
-            # but to make sure they are orthonormal:
-            # The mathematical definition gives us orthonormal vectors in the range [0:k].
-            # However, wp_arr might have noise.
-
-        betas[it] = beta_i
+        betas_buf[it, :active_k, :n_curr] = beta_i
 
         q_next = wp_arr @ beta_inv
-        
-        # Zero out the parts that correspond to the deflated vectors
-        for i in range(k, n):
-            for j in range(N):
-                q_next[j, i] = 0.0
 
         if reort in (Reort.PARTIAL, Reort.SELECTIVE):
             if not build_krylov_basis:
@@ -554,79 +608,101 @@ def block_lanczos_array_cy(
                 if start_it > 0:
                     W = np.zeros((2, start_it + 1, n, n), dtype=complex)
                     for j in range(start_it):
-                        Q_j = Q_list[0][:, j * n : (j + 1) * n]
-                        W[1, j] = Q_j.conj().T @ wp_arr
+                        w_j = block_widths[j]
+                        Q_j = Q_list[0][:, sum(block_widths[:j]) : sum(block_widths[:j+1])]
+                        W[1, j, :w_j, :n_curr] = Q_j.conj().T @ wp_arr
                         if j < start_it - 1:
-                            W[0, j] = Q_j.conj().T @ q[0]
+                            W[0, j, :w_j, :n_prev] = Q_j.conj().T @ q[0]
                     if mpi:
                         comm.Allreduce(MPI.IN_PLACE, W, op=MPI.SUM)
-                    W[1, start_it] = np.eye(n)
-                    W[0, start_it - 1] = np.eye(n)
+                    W[1, start_it, :n_curr, :n_curr] = np.eye(n_curr)
+                    W[0, start_it - 1, :n_prev, :n_prev] = np.eye(n_prev)
                 else:
                     W = np.zeros((2, 1, n, n), dtype=complex)
-                    W[1, 0] = np.eye(n)
+                    W[1, 0, :n_curr, :n_curr] = np.eye(n_curr)
             elif W.shape[1] < it + 1:
                 W_new = np.zeros((2, it + 1, n, n), dtype=complex)
                 W_new[:, : W.shape[1]] = W
                 W = W_new
 
-            W = estimate_orthonormality(W, alphas[: it + 1], betas[: it + 1], eps=np.finfo(float).eps)
+            block_widths.append(n_curr)
+            block_widths.append(active_k)
+            W = estimate_orthonormality(W, alphas_buf[: it + 1], betas_buf[: it + 1], block_widths=block_widths, eps=EPS)
+            block_widths.pop()
+            block_widths.pop()
             
-            reort_eps = np.sqrt(np.finfo(float).eps)
+            reort_eps = REORT_TOL
 
             if reort == Reort.SELECTIVE:
                 if it > 0:
-                    T_full = _build_full_T(alphas[: it + 1], betas[: it + 1])
-                    # Use deterministic dense eigh (no ARPACK) so the convergence
-                    # decision is reproducible.  W has shape (2, k, n, n) where
-                    # axis 0 is (prev_row, current_row) — index as W[1, j], not
-                    # W[j, it+1] which confuses the two axes.
+                    T_full = _build_full_T(alphas_buf[: it + 1], betas_buf[: it + 1], block_widths=block_widths + [n_curr])
                     eigvals_T, conv_evec = la.eigh(T_full)
-                    for k in range(len(eigvals_T)):
-                        err_bnd = np.linalg.norm(betas[it], ord=2) * np.abs(conv_evec[-1, k])
+                    for k_idx in range(len(eigvals_T)):
+                        err_bnd = np.linalg.norm(beta_i, ord=2) * np.abs(conv_evec[-1, k_idx])
                         if err_bnd < reort_eps:
-                            s_k = conv_evec[:, k]
-                            s_k_blocks = s_k.reshape(it + 1, n)
-                            w_ritz_k = np.zeros(n, dtype=complex)
-                            for j in range(it + 1):
-                                w_ritz_k += np.conj(s_k_blocks[j]) @ W[1, j]
-                            if np.max(np.abs(w_ritz_k)) > reort_eps:
-                                ritz_vec = Q_list[0] @ s_k[:, np.newaxis]
-                                for _ in range(2):
-                                    overlap = ritz_vec.conj().T @ q_next
-                                    q_next -= ritz_vec @ overlap
+                            s_k = conv_evec[:, k_idx]
+                            ritz_vec = Q_list[0] @ s_k[:sum(block_widths), np.newaxis]
+                            ritz_vec += q1 @ s_k[sum(block_widths):, np.newaxis]
+                            for _ in range(2):
+                                overlap = ritz_vec.conj().T @ q_next
+                                if mpi and comm is not None:
+                                    overlap = np.ascontiguousarray(overlap, dtype=complex)
+                                    comm.Allreduce(MPI.IN_PLACE, overlap, op=MPI.SUM)
+                                q_next -= ritz_vec @ overlap
 
             if reort in (Reort.PARTIAL, Reort.SELECTIVE):
                 n_blks = it + 1
-                bad_block_idx = [j for j in range(n_blks) if np.max(np.abs(W[-1, j])) > reort_eps * 1e-2]
+                bad_block_idx = []
+                if not mpi or comm is None or comm.rank == 0:
+                    if np.max(np.abs(W[-1, :n_blks])) > REORT_TOL:
+                        bad_block_idx = [j for j in range(n_blks) if np.max(np.abs(W[-1, j])) > BAD_BLOCK_TOL]
+                
+                if mpi and comm is not None:
+                    bad_block_idx = comm.bcast(bad_block_idx, root=0)
+
                 if bad_block_idx:
                     bad_cols = []
                     for j in bad_block_idx:
-                        bad_cols.extend(range(j * n, (j + 1) * n))
+                        col_start = sum(block_widths[:j])
+                        col_end = col_start + block_widths[j]
+                        bad_cols.extend(range(col_start, col_end))
                     Q_bad = Q_list[0][:, bad_cols]
                     for _ in range(2):
                         overlap = Q_bad.conj().T @ q_next
+                        if mpi and comm is not None:
+                            overlap = np.ascontiguousarray(overlap, dtype=complex)
+                            comm.Allreduce(MPI.IN_PLACE, overlap, op=MPI.SUM)
                         q_next -= Q_bad @ overlap
                     for j in bad_block_idx:
-                        W[-1, j] = np.finfo(float).eps * np.eye(n, dtype=complex)
+                        w_j = block_widths[j]
+                        W[-1, j, :w_j, :active_k] = EPS * np.eye(w_j, active_k, dtype=complex)
 
-        if converged(alphas, betas, verbose=verbose):
+        if converged(alphas_buf[: it + 1], betas_buf[: it + 1], verbose=verbose):
+            block_widths.append(n_curr)
+            it += 1
             break
 
         q[0] = q[1]
         q[1] = q_next
         if build_krylov_basis:
             Q_list[0] = np.concatenate([Q_list[0], q_next], axis=1)
+        block_widths.append(n_curr)
         it += 1
 
-
     if verbose:
-        print(f"Coverged at iteration {it + 1}")
+        print(f"Converged at iteration {it}")
 
     res_Q = Q_list[0] if build_krylov_basis else None
-    if return_W:
-        return alphas, betas, res_Q, W
-    return alphas, betas, res_Q
+    res_alphas = alphas_buf[:it]
+    res_betas = betas_buf[:it]
+    if return_widths:
+        if return_W:
+            return res_alphas, res_betas, res_Q, W, block_widths
+        return res_alphas, res_betas, res_Q, block_widths
+    else:
+        if return_W:
+            return res_alphas, res_betas, res_Q, W
+        return res_alphas, res_betas, res_Q
 
 
 
