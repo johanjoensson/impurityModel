@@ -246,22 +246,6 @@ class CIPSISolver:
             H_mat = self.basis.build_sparse_matrix(H)
             if self.basis.is_distributed:
                 H_mat = H_mat[:, self.basis.local_indices]
-            
-            if self.basis.size == 252:
-                from mpi4py import MPI
-                rank = MPI.COMM_WORLD.Get_rank()
-                with open(f"H_mat_rank{rank}.txt", "w") as f:
-                    f.write(f"comm: {self.basis.comm}\n")
-                    f.write(f"is_distributed: {self.basis.is_distributed}\n")
-                    f.write(f"Shape: {H_mat.shape}\n")
-                    f.write(f"Non-zeros: {H_mat.nnz}\n")
-                    f.write(f"Min element: {H_mat.data.min() if H_mat.nnz > 0 else 0}\n")
-                    f.write(f"Max element: {H_mat.data.max() if H_mat.nnz > 0 else 0}\n")
-                    f.write(f"Sum element: {H_mat.data.sum() if H_mat.nnz > 0 else 0}\n")
-                    f.write(f"Has NaNs: {np.isnan(H_mat.data).any()}\n")
-                    # write out full matrix entries
-                    for i, j, v in zip(H_mat.tocoo().row, H_mat.tocoo().col, H_mat.tocoo().data):
-                        f.write(f"{i} {j} {v}\n")
 
             psi0_arr = (
                 self.basis.build_distributed_vector(psi0).T if len(psi0) > 0 else np.zeros((len(self.basis.local_basis), 1), dtype=complex)

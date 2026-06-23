@@ -1050,11 +1050,6 @@ def thick_restart_block_lanczos_cy(
         Y_last = Y_k[-p:, :]
         cross = beta_res @ Y_last
 
-        if np.max(np.abs(cross)) > 50:
-            print(f"BOGUS cross at restart={restart}: {np.max(np.abs(cross))}")
-        if np.max(np.abs(T_k)) > 50:
-            print(f"BOGUS T_k at restart={restart}: {np.max(np.abs(T_k))}")
-
         T_full[k_blocks * p : (k_blocks + 1) * p, : k_blocks * p] = cross
         T_full[: k_blocks * p, k_blocks * p : (k_blocks + 1) * p] = np.conj(cross.T)
 
