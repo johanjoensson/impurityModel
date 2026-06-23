@@ -123,8 +123,14 @@ def assert_orthonormal(eigvecs, path, comm=None):
 
 def get_xfail_marker(mode, path, solver, mpi):
     if solver == "IRLM" and path == "array":
-        return pytest.mark.xfail(strict=True, reason="IRLM does not support array path in the baseline")
-    return pytest.mark.xfail(strict=True, reason="Deflation and block collapse not supported in the baseline, leading to ghost bands and errors")
+        return pytest.mark.xfail(strict=True, reason="IRLM does not support the array path")
+    # NOTE: deflation itself works (see test_deflation_shrinking_block). These cells
+    # fail because the restarted solvers cannot resolve a high-multiplicity degeneracy
+    # (eigenvalue 2.0 has multiplicity 3) within the tight restart subspace
+    # (max_subspace_blocks=5, block size 2): T_full is left partially filled and
+    # spurious (e.g. zero) Ritz values appear. This is a real convergence limitation,
+    # not a reorthogonalization bug, and is tracked as future work.
+    return pytest.mark.xfail(strict=True, reason="restarted solver cannot resolve multiplicity-3 degeneracy in a tight subspace (partial T_full -> spurious Ritz values)")
 
 
 @pytest.mark.parametrize("mode", [Reort.NONE, Reort.PARTIAL, Reort.FULL, Reort.SELECTIVE, Reort.PERIODIC])
