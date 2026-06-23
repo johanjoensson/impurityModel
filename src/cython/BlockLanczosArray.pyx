@@ -34,7 +34,7 @@ def _cholesky_or_deflate(M, p_in):
     # Try Cholesky first (fast path)
     try:
         L = la.cholesky(M, lower=True)
-        if np.any(np.diag(L) < DEFLATE_TOL * np.max(np.diag(L))):
+        if np.any(np.diag(L) < DEFLATE_TOL * max(np.max(np.diag(L)), 1.0)):
             raise la.LinAlgError("Numeric singularity in Cholesky diagonal")
         beta_j = np.conj(L.T)
         beta_inv = la.inv(beta_j)
@@ -441,6 +441,21 @@ def block_lanczos_array_cy(
     return_widths=False,
     **kwargs
 ):
+    # Resolve a string reort (e.g. "full") to the Reort enum, mirroring
+    # block_lanczos_cy; otherwise the `reort == Reort.FULL` comparisons below never
+    # match a string and the build silently runs with no reorthogonalization.
+    if isinstance(reort, str):
+        _map = {
+            "none": Reort.NONE,
+            "partial": Reort.PARTIAL,
+            "selective": Reort.SELECTIVE,
+            "full": Reort.FULL,
+            "periodic": Reort.PERIODIC,
+        }
+        reort = _map.get(reort.lower())
+        if reort is None:
+            raise ValueError(f"Unknown reort string. Must be one of {list(_map.keys())}.")
+
     cdef bint build_krylov_basis = (reort != Reort.NONE) or True
     cdef int N = psi0.shape[0] if psi0 is not None else Q.shape[0]
     cdef int n = (psi0.shape[1] if psi0.ndim == 2 else 1) if psi0 is not None else alphas[0].shape[0]
@@ -578,23 +593,21 @@ def block_lanczos_array_cy(
         if reort == Reort.FULL or (reort == Reort.PERIODIC and it > 0 and it % period == 0):
             if not build_krylov_basis:
                 raise RuntimeError("Krylov basis must be built for reorthogonalization")
-            
-            Q_mat = np.ascontiguousarray(Q_list[0])
-            overlap = Q_mat.conj().T @ wp_arr
-            if mpi:
-                overlap = np.ascontiguousarray(overlap, dtype=complex)
-                comm.Allreduce(MPI.IN_PLACE, overlap, op=MPI.SUM)
-            wp_arr -= Q_mat @ overlap
+            wp_arr, _ = apply_reort(wp_arr, Q_list, None, Reort.FULL, mpi, comm, block_widths)
 
         M = wp_arr.conj().T @ wp_arr
         if mpi:
             comm.Allreduce(MPI.IN_PLACE, M, op=MPI.SUM)
 
         if np.any(np.isnan(M)) or np.any(np.isinf(M)):
+            block_widths.append(n_curr)
+            it += 1
             break
 
         beta_i, beta_inv, active_k = _cholesky_or_deflate(M, n_curr)
         if active_k == 0:
+            block_widths.append(n_curr)
+            it += 1
             break
 
         betas_buf[it, :active_k, :n_curr] = beta_i
@@ -651,31 +664,7 @@ def block_lanczos_array_cy(
                                 q_next -= ritz_vec @ overlap
 
             if reort in (Reort.PARTIAL, Reort.SELECTIVE):
-                n_blks = it + 1
-                bad_block_idx = []
-                if not mpi or comm is None or comm.rank == 0:
-                    if np.max(np.abs(W[-1, :n_blks])) > REORT_TOL:
-                        bad_block_idx = [j for j in range(n_blks) if np.max(np.abs(W[-1, j])) > BAD_BLOCK_TOL]
-                
-                if mpi and comm is not None:
-                    bad_block_idx = comm.bcast(bad_block_idx, root=0)
-
-                if bad_block_idx:
-                    bad_cols = []
-                    for j in bad_block_idx:
-                        col_start = sum(block_widths[:j])
-                        col_end = col_start + block_widths[j]
-                        bad_cols.extend(range(col_start, col_end))
-                    Q_bad = Q_list[0][:, bad_cols]
-                    for _ in range(2):
-                        overlap = Q_bad.conj().T @ q_next
-                        if mpi and comm is not None:
-                            overlap = np.ascontiguousarray(overlap, dtype=complex)
-                            comm.Allreduce(MPI.IN_PLACE, overlap, op=MPI.SUM)
-                        q_next -= Q_bad @ overlap
-                    for j in bad_block_idx:
-                        w_j = block_widths[j]
-                        W[-1, j, :w_j, :active_k] = EPS * np.eye(w_j, active_k, dtype=complex)
+                q_next, W = apply_reort(q_next, Q_list, W, reort, mpi, comm, block_widths)
 
         if converged(alphas_buf[: it + 1], betas_buf[: it + 1], verbose=verbose):
             block_widths.append(n_curr)
@@ -795,3 +784,51 @@ cpdef tuple block_normalize(object wp, bint mpi=False, object comm=None, double 
 def block_lanczos_array(*args, **kwargs):
     return block_lanczos_array_cy(*args, **kwargs)
 
+
+cpdef tuple apply_reort(object wp, object Q_list, object W, object reort, bint mpi, object comm, list block_widths):
+    from impurityModel.ed.BlockLanczosArray import Reort, REORT_TOL, BAD_BLOCK_TOL, EPS
+    cdef list bad_block_idx = []
+    cdef int j, col_start, col_end, w_j
+    cdef list bad_cols
+    cdef object Q_bad
+    cdef int active_k
+    
+    if is_array(wp):
+        active_k = wp.shape[1]
+    else:
+        active_k = len(wp)
+
+    if reort == Reort.FULL or reort == Reort.PERIODIC:
+        for _ in range(2):
+            wp, _ = block_orthogonalize(wp, Q_list, mpi=mpi, comm=comm)
+            
+    elif reort in (Reort.PARTIAL, Reort.SELECTIVE):
+        if W is not None:
+            n_blks = W.shape[1] - 1  # W[-1, :n_blks]
+            if not mpi or comm is None or comm.rank == 0:
+                if np.max(np.abs(W[-1, :n_blks])) > REORT_TOL:
+                    bad_block_idx = [j for j in range(n_blks) if np.max(np.abs(W[-1, j])) > BAD_BLOCK_TOL]
+            if mpi and comm is not None:
+                bad_block_idx = comm.bcast(bad_block_idx, root=0)
+
+            if bad_block_idx:
+                bad_cols = []
+                for j in bad_block_idx:
+                    col_start = sum(block_widths[:j])
+                    col_end = col_start + block_widths[j]
+                    bad_cols.extend(range(col_start, col_end))
+                
+                if is_array(Q_list):
+                    Q_mat = Q_list if not isinstance(Q_list, list) else Q_list[0]
+                    Q_bad = Q_mat[:, bad_cols]
+                else:
+                    Q_bad = [Q_list[col] for col in bad_cols]
+                    
+                for _ in range(2):
+                    wp, _ = block_orthogonalize(wp, Q_bad, mpi=mpi, comm=comm)
+                    
+                for j in bad_block_idx:
+                    w_j = block_widths[j]
+                    W[-1, j, :w_j, :active_k] = EPS * np.eye(w_j, active_k, dtype=complex)
+                    
+    return wp, W

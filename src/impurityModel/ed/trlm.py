@@ -29,6 +29,9 @@ def thick_restart_block_lanczos(
     mpi = basis is not None and getattr(basis, "comm", None) is not None
     comm = basis.comm if mpi else None
 
+    if isinstance(reort, str):
+        reort = Reort[reort.upper()]
+
     is_arr = is_array(h_op)
     n = psi0.shape[1] if is_arr and len(psi0.shape) == 2 else len(psi0)
 
@@ -61,11 +64,11 @@ def thick_restart_block_lanczos(
         converged=lambda a, b, **kw: False,
         max_iter=m,
         verbose=verbose,
-        reort=Reort.FULL,
-        return_W=False,
+        reort=reort,
+        return_W=track_W,
         comm=comm,
     )
-    W_res[0] if track_W and W_res else None
+    W = W_res[0] if track_W and W_res else None
 
     m_actual = len(alphas)
     if Q_list.shape[1] > m_actual * n:
@@ -121,8 +124,12 @@ def thick_restart_block_lanczos(
             q_last = Q_list[:, (k_blocks - 1) * n : k_blocks * n]
 
             wp = block_apply(h_op, q_last, basis, mpi)
+            # Thick-restart always full-reorthogonalizes the residual seed against the
+            # whole retained basis (all modes): the arrowhead T_full requires it, and
+            # the PRO W-recurrence is not maintained across restart. The continuation
+            # sweep below does the same. Restart-time PRO is a Phase-3 optimization.
             wp, _ = block_orthogonalize(wp, Q_list, mpi=mpi, comm=comm)
-            wp, _ = block_orthogonalize(wp, Q_list, mpi=mpi, comm=comm)  # array does 2x for stability
+            wp, _ = block_orthogonalize(wp, Q_list, mpi=mpi, comm=comm)
 
             q_m, beta_res = block_normalize(wp, mpi, comm, 0.0)
 

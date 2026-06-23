@@ -59,6 +59,7 @@ cimport numpy as np
 
 from impurityModel.ed.BlockLanczosArray import estimate_orthonormality, eigsh, _build_full_T, _extract_blocks
 from impurityModel.ed.BlockLanczosArray import (
+    apply_reort,
     Reort,
     EPS,
     REORT_TOL,
@@ -150,7 +151,7 @@ def _cholesky_or_deflate(M, p_in):
     # Try Cholesky first (fast path)
     try:
         L = sp.cholesky(M, lower=True)
-        if np.any(np.diag(L) < DEFLATE_TOL * np.max(np.diag(L))):
+        if np.any(np.diag(L) < DEFLATE_TOL * max(np.max(np.diag(L)), 1.0)):
             raise sp.LinAlgError("Numeric singularity in Cholesky diagonal")
         beta_j = np.conj(L.T)
         beta_inv = sp.inv(beta_j)
@@ -448,9 +449,10 @@ def block_lanczos_step_cy(
 
             if len(bad_block_idx) > 0:
                 bad_state_idx = []
+                temp_widths = block_widths + [p]
                 for j in bad_block_idx:
-                    col_start = sum(block_widths[:j])
-                    col_end = col_start + block_widths[j]
+                    col_start = sum(temp_widths[:j])
+                    col_end = col_start + temp_widths[j]
                     bad_state_idx.extend(range(col_start, col_end))
                 _reorthogonalize_sparse(q_next, Q_basis, bad_state_idx, mpi, comm)
                 for j in bad_block_idx:
@@ -649,14 +651,14 @@ def block_lanczos_cy(
 
     # Pre-allocate buffers to avoid allocation inside loop
     _buf_size = max(int(max_iter), 1)
-    if resuming:
-        alphas_buf = np.empty((start_it + _buf_size, p, p), dtype=complex)
-        betas_buf = np.empty((start_it + _buf_size, p, p), dtype=complex)
+    if start_it > 0:
+        alphas_buf = np.zeros((start_it + _buf_size, p, p), dtype=complex)
+        betas_buf = np.zeros((start_it + _buf_size, p, p), dtype=complex)
         alphas_buf[:start_it] = alphas_init
         betas_buf[:start_it] = betas_init
     else:
-        alphas_buf = np.empty((_buf_size, p, p), dtype=complex)
-        betas_buf = np.empty((_buf_size, p, p), dtype=complex)
+        alphas_buf = np.zeros((_buf_size, p, p), dtype=complex)
+        betas_buf = np.zeros((_buf_size, p, p), dtype=complex)
     # Seed W-estimator state
     if reort_mode in (Reort.PARTIAL, Reort.SELECTIVE) and W is None:
         if start_it > 0:
@@ -716,6 +718,8 @@ def block_lanczos_cy(
             if verbose:
                 if comm is None or comm.Get_rank() == 0:
                     print(f"[BlockLanczos] Breakdown / invariant subspace " f"detected at iteration {it_abs}.")
+            block_widths.append(n_curr)
+            it += 1
             break
         else:
             betas_list.append(betas_buf[it_abs, :active_k, :n_curr].copy())
@@ -979,6 +983,12 @@ def thick_restart_block_lanczos_cy(
             wp = h_op.apply_multi(q_last, slaterWeightMin)
             if mpi:
                 wp = basis.redistribute_psis(wp)
+            # TRLM thick-restart always re-orthogonalizes the continuation block
+            # against the entire retained basis (all modes, including NONE): the
+            # arrowhead T_full is only valid if the new vectors are orthogonal to the
+            # retained Ritz vectors, so this is a structural requirement of the
+            # restart, not the reort-mode knob (which governs the inner Lanczos loop).
+            # PRO across restart is a Phase-3 optimization; the basis here is small.
             for _ in range(2):
                 ov = inner_multi(Q_basis, wp)
                 if mpi:
@@ -987,7 +997,7 @@ def thick_restart_block_lanczos_cy(
             try:
                 q_m_new, beta_res = block_normalize_sparse(wp, mpi, comm, 0.0)
                 breakdown = np.linalg.norm(beta_res, ord=2) < 1e-5
-            except sp.LinAlgError:
+            except (sp.LinAlgError, ValueError):
                 breakdown = True
 
             if breakdown:
@@ -1027,7 +1037,9 @@ def thick_restart_block_lanczos_cy(
             alpha_i = overlaps[-p:, :]
             T_full[i * p : (i + 1) * p, i * p : (i + 1) * p] = alpha_i
 
-            # Double pass full reorthogonalization for TRLM arrowhead projection
+            # Full double-pass reorthogonalization against the whole basis to keep the
+            # arrowhead T_full valid (see note in the q_m recompute above). Applied in
+            # all modes, including NONE, because the restart structurally requires it.
             for _ in range(2):
                 ov2 = inner_multi(Q_basis, wp)
                 if mpi:
@@ -1037,7 +1049,7 @@ def thick_restart_block_lanczos_cy(
             try:
                 q_next, beta_i = block_normalize_sparse(wp, mpi, comm, 0.0)
                 breakdown = np.linalg.norm(beta_i, ord=2) < 1e-5
-            except sp.LinAlgError:
+            except (sp.LinAlgError, ValueError):
                 breakdown = True
 
             if breakdown:
