@@ -46,7 +46,7 @@ from impurityModel.ed.finite import (
     daggerOp,
     gauntC,
 )
-from impurityModel.ed.lanczos import Reort
+from impurityModel.ed.BlockLanczosArray import Reort
 from impurityModel.ed.ManyBodyUtils import ManyBodyOperator, ManyBodyState
 from impurityModel.ed.ManyBodyUtils import applyOp as applyOp_test
 from impurityModel.ed.mpi_comm import gather_distributed_results

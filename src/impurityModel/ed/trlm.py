@@ -1,7 +1,8 @@
 import numpy as np
 import scipy.linalg as sp
+from mpi4py import MPI
 
-from impurityModel.ed.block_math import (
+from impurityModel.ed.BlockLanczosArray import (
     block_apply,
     block_combine,
     block_inner,
@@ -9,7 +10,7 @@ from impurityModel.ed.block_math import (
     block_orthogonalize,
     is_array,
 )
-from impurityModel.ed.lanczos import Reort
+from impurityModel.ed.BlockLanczosArray import Reort
 from impurityModel.ed.ManyBodyUtils import inner_multi
 
 
@@ -36,54 +37,44 @@ def thick_restart_block_lanczos(
 
     track_W = reort in (Reort.PARTIAL, Reort.SELECTIVE)
 
-    if is_arr:
-        from impurityModel.ed.lanczos import block_lanczos_array
-
-        alphas, betas, Q_list, *W_res = block_lanczos_array(
+    if not is_arr:
+        from impurityModel.ed.BlockLanczos import thick_restart_block_lanczos_cy
+        return thick_restart_block_lanczos_cy(
             psi0=psi0,
             h_op=h_op,
-            converged=lambda a, b, **kw: False,
-            max_iter=m,
+            basis=basis,
+            num_wanted=num_wanted,
+            max_subspace_blocks=max_subspace_blocks,
+            tol=tol,
+            max_restarts=max_restarts,
             verbose=verbose,
-            reort=Reort.FULL,
-            return_W=False,
+            slaterWeightMin=slaterWeightMin,
+            reort=reort,
             comm=comm,
         )
-    else:
-        from impurityModel.ed.lanczos import block_lanczos_sparse
 
-        alphas, betas, Q_list, *W_res = block_lanczos_sparse(
-            psi0,
-            h_op,
-            basis,
-            lambda a, b, **kw: False,
-            slaterWeightMin=slaterWeightMin,
-            max_iter=m,
-            reort=reort,
-            verbose=verbose,
-            inner_func=inner_multi,
-            orth_tol=1e-12,
-            return_Q=True,
-            track_full_W=track_W,
-            return_W=True,
-        )
+    from impurityModel.ed.BlockLanczosArray import block_lanczos_array
+
+    alphas, betas, Q_list, *W_res = block_lanczos_array(
+        psi0=psi0,
+        h_op=h_op,
+        converged=lambda a, b, **kw: False,
+        max_iter=m,
+        verbose=verbose,
+        reort=Reort.FULL,
+        return_W=False,
+        comm=comm,
+    )
     W_res[0] if track_W and W_res else None
 
     m_actual = len(alphas)
-    if is_arr:
-        if Q_list.shape[1] > m_actual * n:
-            q_m = Q_list[:, m_actual * n : (m_actual + 1) * n].copy()
-            Q_list = Q_list[:, : m_actual * n]
-        else:
-            q_m = None
+    if Q_list.shape[1] > m_actual * n:
+        q_m = Q_list[:, m_actual * n : (m_actual + 1) * n].copy()
+        Q_list = Q_list[:, : m_actual * n]
     else:
-        if len(Q_list) > m_actual * n:
-            q_m = [Q_list[i].copy() for i in range(m_actual * n, (m_actual + 1) * n)]
-            Q_list = Q_list[: m_actual * n]
-        else:
-            q_m = None
+        q_m = None
 
-    from impurityModel.ed.lanczos import _build_full_T
+    from impurityModel.ed.BlockLanczosArray import _build_full_T
 
     T_full = _build_full_T(alphas, betas[:-1] if len(betas) == m_actual else betas)
 
@@ -117,36 +108,21 @@ def thick_restart_block_lanczos(
         Y_k = eigvecs[:, keep_indices]
         T_k = np.diag(eigvals[keep_indices])
 
-        if is_arr:
-            Q_list = Q_list[:, : m_actual * n]
-        else:
-            Q_list = Q_list[: m_actual * n]
+        Q_list = Q_list[:, : m_actual * n]
         Q_list = block_combine(Q_list, Y_k, 0.0)
 
-        if is_arr:
-            Q_list, _ = sp.qr(Q_list, mode="economic", overwrite_a=True, check_finite=False)
-        else:
-            for i in range(k_blocks):
-                q_i = [Q_list[i * n + j] for j in range(n)]
-                q_i, _ = block_orthogonalize(q_i, Q_list[: i * n], mpi=mpi, comm=comm)
-                q_i, _ = block_normalize(q_i, mpi, comm, 0.0)
-                for j in range(n):
-                    Q_list[i * n + j] = q_i[j]
+        Q_list, _ = block_normalize(Q_list, mpi, comm, 0.0)
 
         T_full = np.zeros((m * n, m * n), dtype=complex)
         T_full[: k_blocks * n, : k_blocks * n] = T_k
 
         # New basis block is exactly q_m
         if q_m is None:
-            if is_arr:
-                q_last = Q_list[:, (k_blocks - 1) * n : k_blocks * n]
-            else:
-                q_last = Q_list[(k_blocks - 1) * n : k_blocks * n]
+            q_last = Q_list[:, (k_blocks - 1) * n : k_blocks * n]
 
             wp = block_apply(h_op, q_last, basis, mpi)
             wp, _ = block_orthogonalize(wp, Q_list, mpi=mpi, comm=comm)
-            if is_arr:
-                wp, _ = block_orthogonalize(wp, Q_list, mpi=mpi, comm=comm)  # array does 2x for stability
+            wp, _ = block_orthogonalize(wp, Q_list, mpi=mpi, comm=comm)  # array does 2x for stability
 
             q_m, beta_res = block_normalize(wp, mpi, comm, 0.0)
             print(
@@ -154,10 +130,7 @@ def thick_restart_block_lanczos(
                 flush=True,
             )
 
-        if is_arr:
-            Q_list = np.concatenate([Q_list, q_m], axis=1)
-        else:
-            Q_list.extend([st.copy() for st in q_m])
+        Q_list = np.concatenate([Q_list, q_m], axis=1)
 
         Y_last = Y_k[-n:, :]
         cross_term = beta_res @ Y_last
@@ -184,8 +157,7 @@ def thick_restart_block_lanczos(
                 print(f"Restart {restart} | Diff between exact and analytic cross_term: {diff:.2e}")
 
             wp, _ = block_orthogonalize(wp, Q_list, overlaps=overlaps, mpi=mpi, comm=comm)
-            if is_arr:
-                wp, _ = block_orthogonalize(wp, Q_list, mpi=mpi, comm=comm)
+            wp, _ = block_orthogonalize(wp, Q_list, mpi=mpi, comm=comm)
 
             q_next, beta_i = block_normalize(wp, mpi, comm, 0.0)
 
@@ -208,10 +180,7 @@ def thick_restart_block_lanczos(
                 T_full[(i + 1) * n : (i + 2) * n, i * n : (i + 1) * n] = beta_i
                 T_full[i * n : (i + 1) * n, (i + 1) * n : (i + 2) * n] = np.conj(beta_i.T)
 
-                if is_arr:
-                    Q_list = np.concatenate([Q_list, q_next], axis=1)
-                else:
-                    Q_list.extend([st.copy() for st in q_next])
+                Q_list = np.concatenate([Q_list, q_next], axis=1)
                 q1 = q_next
             else:
                 beta_res = beta_i
@@ -229,31 +198,3 @@ def thick_restart_block_lanczos(
     return final_eigvals, final_eigvecs
 
 
-def thick_restart_block_lanczos_cy(
-    psi0,
-    h_op,
-    basis,
-    num_wanted: int,
-    max_subspace_blocks: int,
-    tol: float = 1e-8,
-    max_restarts: int = 100,
-    verbose: bool = True,
-    slaterWeightMin: float = 0.0,
-    reort="selective",
-    comm=None,
-):
-    from impurityModel.ed.BlockLanczos import thick_restart_block_lanczos_cy as _trlm_cy
-
-    return _trlm_cy(
-        psi0=psi0,
-        h_op=h_op,
-        basis=basis,
-        num_wanted=num_wanted,
-        max_subspace_blocks=max_subspace_blocks,
-        tol=tol,
-        max_restarts=max_restarts,
-        verbose=verbose,
-        slaterWeightMin=slaterWeightMin,
-        reort=reort,
-        comm=comm,
-    )

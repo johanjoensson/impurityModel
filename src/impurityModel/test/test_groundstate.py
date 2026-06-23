@@ -57,7 +57,7 @@ def test_groundstate_and_density_matrix_mpi():
     }
 
     psis_mpi, es_mpi, basis_mpi, rho_mpi, gs_info_mpi = calc_gs(
-        Hop, basis_setup_mpi, block_structure, rot_to_spherical, verbose=False, slaterWeightMin=1e-12
+        Hop, basis_setup_mpi, block_structure, rot_to_spherical, verbose=True, slaterWeightMin=1e-12
     )
 
     # Gather parallel wavefunction to Rank 0
@@ -86,7 +86,7 @@ def test_groundstate_and_density_matrix_mpi():
         }
 
         psis_seq, es_seq, basis_seq, rho_seq, gs_info_seq = calc_gs(
-            Hop, basis_setup_seq, block_structure, rot_to_spherical, verbose=False, slaterWeightMin=1e-12
+            Hop, basis_setup_seq, block_structure, rot_to_spherical, verbose=True, slaterWeightMin=1e-12
         )
         full_psi_seq = psis_seq[0]
 
@@ -166,7 +166,7 @@ def test_groundstate_and_density_matrix_serial():
     }
 
     psis, es, basis, rho, gs_info = calc_gs(
-        Hop, basis_setup, block_structure, rot_to_spherical, verbose=False, slaterWeightMin=1e-12
+        Hop, basis_setup, block_structure, rot_to_spherical, verbose=True, slaterWeightMin=1e-12
     )
 
     # Basic assertions
@@ -199,7 +199,7 @@ def test_calc_energy_serial():
         spin_flip_dj=False,
         dense_cutoff=10,
         comm=None,
-        verbose=False,
+        verbose=True,
         truncation_threshold=1000,
         slaterWeightMin=1e-12,
     )
@@ -226,7 +226,7 @@ def test_calc_energy_mpi():
         spin_flip_dj=False,
         dense_cutoff=10,
         comm=comm,
-        verbose=False,
+        verbose=True,
         truncation_threshold=1000,
         slaterWeightMin=1e-12,
     )
@@ -251,7 +251,7 @@ def test_find_ground_state_basis_serial():
         dense_cutoff=10,
         spin_flip_dj=False,
         comm=None,
-        verbose=False,
+        verbose=True,
         truncation_threshold=1000,
         slaterWeightMin=1e-12,
     )
@@ -281,7 +281,7 @@ def test_find_ground_state_basis_mpi():
         dense_cutoff=10,
         spin_flip_dj=False,
         comm=comm,
-        verbose=False,
+        verbose=True,
         truncation_threshold=1000,
         slaterWeightMin=1e-12,
     )
@@ -295,7 +295,9 @@ def test_find_ground_state_basis_mpi():
 
 def test_calc_gs_options_serial():
     # Test with mixed_valence and spin_flip_dj options enabled in serial
-    eigvals = np.array([0.5, 1.0, 1.5, 2.0, 2.5])
+    # We shift the eigenvalues so that N=2 is the true global ground state even when N can fluctuate.
+    # Energy of N=2 is -1.5 + -1.0 = -2.5. Energy of N=1 is -1.5. Energy of N=3 is -2.5 + 1.5 = -1.0.
+    eigvals = np.array([-1.5, -1.0, 1.5, 2.0, 2.5])
     hop = {((i, "c"), (i, "a")): val for i, val in enumerate(eigvals)}
     Hop = ManyBodyOperator(hop)
 
@@ -322,19 +324,23 @@ def test_calc_gs_options_serial():
     rot_to_spherical = np.eye(5, dtype=complex)
 
     psis, es, basis, thermal_rho, gs_info = calc_gs(
-        Hop, basis_setup, block_structure, rot_to_spherical, verbose=False, slaterWeightMin=1e-12
+        Hop, basis_setup, block_structure, rot_to_spherical, verbose=True, slaterWeightMin=1e-12, cipsi_solver_method="trlm"
     )
     assert len(es) > 0
     assert len(psis) > 0
     assert thermal_rho.shape == (5, 5)
-    np.testing.assert_allclose(es, [0.0], atol=1e-10)
-    np.testing.assert_allclose(thermal_rho, np.zeros((5, 5)), atol=1e-10)
+    np.testing.assert_allclose(es, [-2.5], atol=1e-10)
+    expected_rho = np.zeros((5, 5))
+    expected_rho[0, 0] = 1.0
+    expected_rho[1, 1] = 1.0
+    np.testing.assert_allclose(thermal_rho, expected_rho, atol=1e-10)
 
 
 @pytest.mark.mpi
 def test_calc_gs_options_mpi():
     comm = MPI.COMM_WORLD
-    eigvals = np.array([0.5, 1.0, 1.5, 2.0, 2.5])
+    # We shift the eigenvalues so that N=2 is the true global ground state even when N can fluctuate.
+    eigvals = np.array([-1.5, -1.0, 1.5, 2.0, 2.5])
     hop = {((i, "c"), (i, "a")): val for i, val in enumerate(eigvals)}
     Hop = ManyBodyOperator(hop)
 
@@ -361,10 +367,13 @@ def test_calc_gs_options_mpi():
     rot_to_spherical = np.eye(5, dtype=complex)
 
     psis, es, basis, thermal_rho, gs_info = calc_gs(
-        Hop, basis_setup, block_structure, rot_to_spherical, verbose=False, slaterWeightMin=1e-12
+        Hop, basis_setup, block_structure, rot_to_spherical, verbose=True, slaterWeightMin=1e-12
     )
     assert len(es) > 0
     assert len(psis) > 0
     assert thermal_rho.shape == (5, 5)
-    np.testing.assert_allclose(es, [0.0], atol=1e-10)
-    np.testing.assert_allclose(thermal_rho, np.zeros((5, 5)), atol=1e-10)
+    np.testing.assert_allclose(es, [-2.5], atol=1e-10)
+    expected_rho = np.zeros((5, 5))
+    expected_rho[0, 0] = 1.0
+    expected_rho[1, 1] = 1.0
+    np.testing.assert_allclose(thermal_rho, expected_rho, atol=1e-10)

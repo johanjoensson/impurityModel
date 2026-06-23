@@ -112,8 +112,8 @@ def test_build_imp_bath_blocks(mock_build_block_structure):
 
 def test_linked_double_chain():
     np.random.seed(42)
-    H_imp = np.array([[0.0]])
-    vs = np.random.rand(4, 1)
+    H_imp = np.array([[0.0]]) + 0j
+    vs = np.random.rand(4, 1) + 0j
     ebs = np.array([-2.0, -1.0, 1.0, 2.0])
     v, hb = edchain.linked_double_chain(H_imp, vs, ebs, verbose=False, extremely_verbose=False)
     assert v.shape[1] == 1
@@ -122,17 +122,18 @@ def test_linked_double_chain():
 
 def test_double_chains():
     np.random.seed(42)
-    H_imp = np.array([[0.0]])
-    vs = np.random.rand(4, 1)
+    H_imp = np.array([[0.0]]) + 0j
+    vs = np.random.rand(4, 1) + 0j
     ebs = np.array([-2.0, -1.0, 1.0, 2.0])
     v, hb = edchain.double_chains(H_imp, vs, ebs, verbose=False, extremely_verbose=False)
     assert v.shape[1] == 1
     assert hb.shape == (4, 4)
 
+
 def test_single_chain():
     np.random.seed(42)
-    H_imp = np.array([[0.0]])
-    vs = np.random.rand(4, 1)
+    H_imp = np.array([[0.0]]) + 0j
+    vs = np.random.rand(4, 1) + 0j
     ebs = np.array([-2.0, -1.0, 1.0, 2.0])
     v, hb = edchain.single_chain(H_imp, vs, ebs, verbose=False, extremely_verbose=False)
     assert v.shape[1] == 1
@@ -143,54 +144,61 @@ def test_single_chain():
     mask = ~np.tri(4, 4, 1, dtype=bool) | np.tri(4, 4, -2, dtype=bool)
     assert np.allclose(hb[mask], 0.0)
 
+
 def test_transform_to_lanczos_tridagonal_matrix():
     np.random.seed(42)
     N = 10
     n_imp = 2
     # Create a random symmetric matrix
-    H = np.random.randn(N, N)
-    H = H + H.T
-    
+    H = np.random.randn(N, N) + 0j
+    H = H + np.conj(H.T)
+
     H_tri = edchain.transform_to_lanczos_tridagonal_matrix(H, n_imp)
-    
+
     assert H_tri.shape == (N, N)
-    
+
     eig_orig = np.sort(np.linalg.eigvalsh(H))
     eig_tri = np.sort(np.linalg.eigvalsh(H_tri))
     assert np.allclose(eig_orig, eig_tri, atol=1e-10)
+
 
 def test_transform_to_lanczos_tridagonal_matrix_early_break():
     np.random.seed(42)
     N = 10
     n_imp = 2
-    
-    H = np.diag([1.0, 1.0, 1.0, 1.0, 1.0, 2.0, 2.0, 2.0, 2.0, 2.0])
-    
+
+    H = np.diag([1.0, 1.0, 1.0, 1.0, 1.0, 2.0, 2.0, 2.0, 2.0, 2.0]) + 0j
+
     H_tri = edchain.transform_to_lanczos_tridagonal_matrix(H, n_imp)
-    
+
     # Due to early break, the subspace only covers the non-degenerate parts
     # n_imp = 2, block_size = 2. It breaks after 1 iteration.
     # So the total size is 2 (impurity) + 2 (bath) = 4
     assert H_tri.shape == (4, 4)
-    
+
     eig_orig = np.sort(np.linalg.eigvalsh(H))
     eig_tri = np.sort(np.linalg.eigvalsh(H_tri))
-    
+
     # Check that the eigenvalues of the tridiagonal matrix are present in the original
     for e in eig_tri:
         assert np.any(np.isclose(eig_orig, e, atol=1e-10))
 
+
 def test_build_H_bath_v():
     from impurityModel.ed.block_structure import BlockStructure
-    
-    H_dft = np.array([[0.0]])
-    vs_star = [np.random.rand(4, 1, 1)]
+
+    H_dft = np.array([[0.0]]) + 0j
+    vs_star = [np.random.rand(4, 1, 1) + 0j]
     ebs_star = [np.array([-2.0, -1.0, 1.0, 2.0])]
     block_structure = BlockStructure(
-        blocks=[[0]], identical_blocks=[], transposed_blocks=[],
-        particle_hole_blocks=[], particle_hole_transposed_blocks=[], inequivalent_blocks=[0]
+        blocks=[[0]],
+        identical_blocks=[],
+        transposed_blocks=[],
+        particle_hole_blocks=[],
+        particle_hole_transposed_blocks=[],
+        inequivalent_blocks=[0],
     )
-    
+
     for geom in ["chain", "single_chain", "haver", "star"]:
         H_baths, vs = edchain.build_H_bath_v(
             H_dft, ebs_star, vs_star, geom, block_structure, verbose=True, extra_verbose=False
@@ -210,27 +218,28 @@ def test_build_H_bath_v():
         assert len(H_baths) == 1
         assert len(vs) == 1
 
+
 def test_build_full_bath():
     from impurityModel.ed.block_structure import BlockStructure
-    
+
     H_bath_inequiv = [np.diag([1.0, 2.0]), np.diag([3.0, 4.0])]
     v_inequiv = [np.array([[0.1], [0.2]]), np.array([[0.3], [0.4]])]
-    
+
     block_structure = BlockStructure(
-        blocks=[[0], [1], [2], [3], [4]], # 5 orbitals total
-        identical_blocks=[[0, 1], [], [2], [], []], 
+        blocks=[[0], [1], [2], [3], [4]],  # 5 orbitals total
+        identical_blocks=[[0, 1], [], [2], [], []],
         transposed_blocks=[[], [], [3], [], []],
         particle_hole_blocks=[[4], [], [], [], []],
         particle_hole_transposed_blocks=[[], [], [], [], []],
-        inequivalent_blocks=[0, 2] # 0 and 2 are the templates
+        inequivalent_blocks=[0, 2],  # 0 and 2 are the templates
     )
-    
+
     H_bath_full, vs_full = edchain.build_full_bath(H_bath_inequiv, v_inequiv, block_structure)
-    
+
     # 5 orbitals * 2 bath states per orbital = 10 total bath states
     assert H_bath_full.shape == (10, 10)
     assert vs_full.shape == (10, 5)
-    
+
     # Check that identical block 1 copied block 0
     assert np.allclose(H_bath_full[0:2, 0:2], H_bath_inequiv[0])
     assert np.allclose(H_bath_full[2:4, 2:4], H_bath_inequiv[0])

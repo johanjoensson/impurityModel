@@ -1,7 +1,7 @@
 import numpy as np
 import scipy.linalg as sp
 
-from impurityModel.ed.block_math import block_apply, block_combine, block_normalize, block_orthogonalize, is_array
+from impurityModel.ed.BlockLanczosArray import block_apply, block_combine, block_normalize, block_orthogonalize, is_array
 
 
 def implicitly_restarted_block_lanczos_cy(
@@ -44,7 +44,7 @@ def implicitly_restarted_block_lanczos_cy(
     from impurityModel.ed.BlockLanczos import (
         implicitly_restarted_block_lanczos_cy as _cy,
     )
-    from impurityModel.ed.lanczos import Reort
+    from impurityModel.ed.BlockLanczosArray import Reort
 
     if reort is None:
         _reort_str = "partial"

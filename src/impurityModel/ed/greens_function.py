@@ -7,11 +7,9 @@ from mpi4py import MPI
 
 # from impurityModel.ed import spectra
 from impurityModel.ed.block_structure import BlockStructure, get_blocks
-from impurityModel.ed.lanczos import (
+from impurityModel.ed.BlockLanczosArray import (
     Reort,
-    get_block_Lanczos_matrices,
-    get_block_Lanczos_matrices_dense,
-    get_Lanczos_vectors,
+    block_lanczos_array,
 )
 from impurityModel.ed.BlockLanczos import block_lanczos_cy
 from impurityModel.ed.manybody_basis import Basis
@@ -677,12 +675,12 @@ def block_green_impl(basis, hOp, psi_arr, delta, reort, slaterWeightMin, verbose
 
     if dense:
         H = basis.build_dense_matrix(hOp)
-        alphas, betas = get_block_Lanczos_matrices_dense(
+        alphas, betas, Q_list, *_ = block_lanczos_array(
             psi0=psi_dense_local,
-            h=H,
+            h_op=H,
             converged=converged,
             verbose=False and verbose,
-            reort_mode=reort if reort is not None else Reort.NONE,
+            reort=reort if reort is not None else Reort.NONE,
         )
     else:
         h_local = basis.build_sparse_matrix(hOp)[:, basis.local_indices]
@@ -719,15 +717,15 @@ def block_green_impl(basis, hOp, psi_arr, delta, reort, slaterWeightMin, verbose
         )
 
         # Run Lanczos on psi0^T* [wI - j*delta - H]^-1 psi0
-        alphas, betas, _ = get_block_Lanczos_matrices(
+        alphas, betas, Q_list, *_ = block_lanczos_array(
             psi0=psi_dense_local,
-            h=H,
+            h_op=H,
             converged=converged,
-            reort_mode=reort if reort is not None else Reort.NONE,
+            reort=reort if reort is not None else Reort.NONE,
             verbose=False and verbose,
             comm=comm,
         )
-    q_last = get_Lanczos_vectors(H, alphas, betas, psi_dense_local, comm=None if dense else comm, which=-1)
+    q_last = Q_list[:, -1:]
     return alphas, betas, r, basis.build_state(q_last.T, slaterWeightMin=slaterWeightMin)
 
 

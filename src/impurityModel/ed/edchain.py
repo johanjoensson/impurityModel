@@ -516,7 +516,7 @@ def transform_to_lanczos_tridagonal_matrix(H, n_imp):
         alphas = np.empty((0, block_size, block_size), dtype=H.dtype)
         betas = np.empty((0, block_size, block_size), dtype=H.dtype)
     else:
-        from impurityModel.ed.lanczos import block_lanczos_array, Reort
+        from impurityModel.ed.BlockLanczosArray import block_lanczos_array, Reort
 
         def converged(alphas, betas, **kwargs):
             return len(betas) > 0 and np.linalg.norm(betas[-1]) < 1e-14

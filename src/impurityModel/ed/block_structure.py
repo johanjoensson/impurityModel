@@ -758,12 +758,12 @@ def build_greens_function(inequivalent_parts: list[np.ndarray], block_structure:
             G[..., orbs[0], orbs[1]] = m
         for block in block_structure.transposed_blocks[i_block]:
             orbs = np.ix_(block_structure.blocks[block], block_structure.blocks[block])
-            G[..., orbs[0], orbs[1]] = np.transpose(tuple(range(len(initial_shape)) + (m.ndim - 2, m.ndim - 1)))
+            G[..., orbs[0], orbs[1]] = m.swapaxes(-2, -1)
         for block in block_structure.particle_hole_blocks[i_block]:
             orbs = np.ix_(block_structure.blocks[block], block_structure.blocks[block])
             G[..., ::-1, orbs[0], orbs[1]] = m
         for block in block_structure.particle_hole_transposed_blocks[i_block]:
             orbs = np.ix_(block_structure.blocks[block], block_structure.blocks[block])
-            G[..., ::-1, orbs[0], orbs[1]] = np.transpose(tuple(range(len(initial_shape)) + (m.ndim - 2, m.ndim - 1)))
+            G[..., ::-1, orbs[0], orbs[1]] = m.swapaxes(-2, -1)
 
     return G

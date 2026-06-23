@@ -4,17 +4,16 @@ import numpy as np
 from mpi4py import MPI
 
 from impurityModel.ed.finite import eigensystem
-from impurityModel.ed.irlm import implicitly_restarted_block_lanczos
+from impurityModel.ed.irlm import implicitly_restarted_block_lanczos_cy
 from impurityModel.ed.manybody_basis import Basis
 from impurityModel.ed.ManyBodyUtils import ManyBodyOperator, ManyBodyState
 from impurityModel.ed.ManyBodyUtils import applyOp as applyOp_test
-from impurityModel.ed.block_math import block_normalize
-from impurityModel.ed.lanczos import Reort
+from impurityModel.ed.BlockLanczosArray import Reort, block_normalize
 from impurityModel.ed.trlm import thick_restart_block_lanczos
 
 SOLVERS = {
     "trlm": thick_restart_block_lanczos,
-    "irlm": implicitly_restarted_block_lanczos,
+    "irlm": implicitly_restarted_block_lanczos_cy,
 }
 
 
@@ -135,8 +134,10 @@ class CIPSISolver:
                 num_wanted = min(num_wanted, (max_subspace_blocks - 1) * len(psi0))
 
                 H_mat = self.basis.build_sparse_matrix(H)
+                if self.basis.is_distributed:
+                    H_mat = H_mat[:, self.basis.local_indices]
                 psi0_arr = (
-                    self.basis.build_vector(psi0).T if len(psi0) > 0 else np.zeros((self.basis.size, 1), dtype=complex)
+                    self.basis.build_distributed_vector(psi0).T if len(psi0) > 0 else np.zeros((len(self.basis.local_basis), 1), dtype=complex)
                 )
 
                 e_ref, psi_refs_arr = restarted_lanczos(
@@ -243,8 +244,27 @@ class CIPSISolver:
             num_wanted = min(num_wanted, (max_subspace_blocks - 1) * len(psi0))
 
             H_mat = self.basis.build_sparse_matrix(H)
+            if self.basis.is_distributed:
+                H_mat = H_mat[:, self.basis.local_indices]
+            
+            if self.basis.size == 252:
+                from mpi4py import MPI
+                rank = MPI.COMM_WORLD.Get_rank()
+                with open(f"H_mat_rank{rank}.txt", "w") as f:
+                    f.write(f"comm: {self.basis.comm}\n")
+                    f.write(f"is_distributed: {self.basis.is_distributed}\n")
+                    f.write(f"Shape: {H_mat.shape}\n")
+                    f.write(f"Non-zeros: {H_mat.nnz}\n")
+                    f.write(f"Min element: {H_mat.data.min() if H_mat.nnz > 0 else 0}\n")
+                    f.write(f"Max element: {H_mat.data.max() if H_mat.nnz > 0 else 0}\n")
+                    f.write(f"Sum element: {H_mat.data.sum() if H_mat.nnz > 0 else 0}\n")
+                    f.write(f"Has NaNs: {np.isnan(H_mat.data).any()}\n")
+                    # write out full matrix entries
+                    for i, j, v in zip(H_mat.tocoo().row, H_mat.tocoo().col, H_mat.tocoo().data):
+                        f.write(f"{i} {j} {v}\n")
+
             psi0_arr = (
-                self.basis.build_vector(psi0).T if len(psi0) > 0 else np.zeros((self.basis.size, 1), dtype=complex)
+                self.basis.build_distributed_vector(psi0).T if len(psi0) > 0 else np.zeros((len(self.basis.local_basis), 1), dtype=complex)
             )
 
             e_ref, psi_refs_arr = restarted_lanczos(

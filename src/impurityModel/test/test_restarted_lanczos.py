@@ -6,7 +6,7 @@ import numpy as np
 from impurityModel.ed.ManyBodyUtils import ManyBodyOperator, ManyBodyState, SlaterDeterminant
 
 warnings.filterwarnings("ignore")
-from impurityModel.ed.irlm import implicitly_restarted_block_lanczos
+from impurityModel.ed.irlm import implicitly_restarted_block_lanczos_cy
 
 
 class MockBasis:
@@ -82,9 +82,9 @@ def test_irlm_thick_restart():
     add_scaled_multi(psi0_orth, psi0, beta_inv)
     psi0 = psi0_orth
 
-    from impurityModel.ed.trlm import thick_restarted_block_lanczos
+    from impurityModel.ed.trlm import thick_restart_block_lanczos
 
-    eigvals, eigvecs = thick_restarted_block_lanczos(
+    eigvals, eigvecs = thick_restart_block_lanczos(
         psi0=psi0, h_op=h_op, basis=basis, num_wanted=4, max_subspace_blocks=6, tol=1e-8, max_restarts=50, verbose=False
     )
 
@@ -116,10 +116,10 @@ def test_irlm_qr_restart():
     add_scaled_multi(psi0_orth, psi0, beta_inv)
     psi0 = psi0_orth
 
-    from impurityModel.ed.lanczos import Reort
+    from impurityModel.ed.BlockLanczosArray import Reort
 
     # Run IRLM QR Restart
-    eigvals, eigvecs = implicitly_restarted_block_lanczos(
+    eigvals, eigvecs = implicitly_restarted_block_lanczos_cy(
         psi0=psi0,
         h_op=h_op,
         basis=basis,
@@ -133,50 +133,176 @@ def test_irlm_qr_restart():
 
     np.testing.assert_allclose(eigvals, eigvals_exact[:4], atol=1.0)
 
+
 def test_trlm_invariant_subspace_breakdown():
-    from impurityModel.ed.trlm import thick_restarted_block_lanczos
+    from impurityModel.ed.trlm import thick_restart_block_lanczos
 
     # Small 4x4 matrix
-    H = np.diag([1.0, 2.0, 3.0, 4.0])
+    H = np.diag([1.0, 2.0, 3.0, 4.0]).astype(complex)
     np.random.seed(42)
-    psi0 = np.random.randn(4, 1)
+    psi0 = np.random.randn(4, 1).astype(complex)
     psi0, _ = np.linalg.qr(psi0)
 
     # Ask for 2 eigenvalues, but max_subspace_blocks = 4.
     # Since total dimension is 4, it will exhaust the Hilbert space and trigger breakdown.
-    eigvals, eigvecs = thick_restarted_block_lanczos(
-        psi0=psi0,
-        h_op=H,
-        basis=None,
-        num_wanted=2,
-        max_subspace_blocks=4,
-        tol=1e-8,
-        max_restarts=50,
-        verbose=True
+    eigvals, eigvecs = thick_restart_block_lanczos(
+        psi0=psi0, h_op=H, basis=None, num_wanted=2, max_subspace_blocks=4, tol=1e-8, max_restarts=50, verbose=True
     )
 
     np.testing.assert_allclose(eigvals, [1.0, 2.0], atol=1e-10)
+
 
 def test_irlm_invariant_subspace_breakdown():
-    from impurityModel.ed.irlm import implicitly_restarted_block_lanczos
+    from impurityModel.ed.irlm import implicitly_restarted_block_lanczos_cy
 
-    # Small 4x4 matrix
-    H = np.diag([1.0, 2.0, 3.0, 4.0])
+    # 4-site, 1-particle system -> 4 states total.
+    n_sites = 4
+    n_particles = 1
+
+    op_dict = {}
+    for i in range(n_sites - 1):
+        op_dict[((i, "c"), (i + 1, "a"))] = -1.0
+        op_dict[((i + 1, "c"), (i, "a"))] = -1.0
+    h_op = ManyBodyOperator(op_dict)
+
+    # Generate basis using creation operators applied to vacuum
+    vac = ManyBodyState({SlaterDeterminant((0,)): 1.0})
+    states = []
+    for i in range(n_sites):
+        op = ManyBodyOperator({((i, "c"),): 1.0})
+        st = op.apply(vac)
+        states.append(list(st.keys())[0])
+
+    basis = MockBasis(4)
+    basis.local_basis = states
+
     np.random.seed(42)
-    psi0 = np.random.randn(4, 1)
-    psi0, _ = np.linalg.qr(psi0)
+    psi0 = ManyBodyState()
+    for s in basis.local_basis:
+        psi0[s] = np.random.rand() + 1j * np.random.rand()
+    N = psi0.norm()
+    if N > 1e-12:
+        for s in psi0:
+            psi0[s] /= N
 
-    # Ask for 2 eigenvalues, but max_subspace_blocks = 4.
+    # Ask for 2 eigenvalues, but max_subspace_blocks = 5.
     # Since total dimension is 4, it will exhaust the Hilbert space and trigger breakdown.
-    eigvals, eigvecs = implicitly_restarted_block_lanczos(
+    eigvals_out, eigvecs = implicitly_restarted_block_lanczos_cy(
+        psi0=[psi0], h_op=h_op, basis=basis, num_wanted=2, max_subspace_blocks=5, tol=1e-8, max_restarts=50, verbose=True
+    )
+    
+    # Exact eigenvalues for 4-site tight-binding with 1 particle
+    # are -2*cos(k), where k = pi*j / 5 for j=1..4
+    # -1.61803399, -0.61803399,  0.61803399,  1.61803399
+    exact_eigvals = np.array([-1.6180339887, -0.6180339887])
+    np.testing.assert_allclose(eigvals_out, exact_eigvals, atol=1e-7)
+
+
+def test_trlm_reort_partial():
+    h_op, N, eigvals_exact, basis_states = get_test_system()
+    basis = MockBasis(N)
+
+    # Starting block
+    np.random.seed(42)
+    n_blocks = 2
+    psi0 = []
+    for _ in range(n_blocks):
+        state = ManyBodyState()
+        for b in basis_states:
+            state += b * (np.random.rand() + 1j * np.random.rand())
+        psi0.append(state)
+
+    import scipy.linalg as sp
+    from impurityModel.ed.ManyBodyUtils import add_scaled_multi, inner_multi
+    from impurityModel.ed.BlockLanczosArray import Reort
+
+    M = inner_multi(psi0, psi0)
+    L = sp.cholesky(M, lower=True)
+    beta_inv = sp.inv(np.conj(L.T))
+    psi0_orth = [ManyBodyState() for _ in range(n_blocks)]
+    add_scaled_multi(psi0_orth, psi0, beta_inv)
+    psi0 = psi0_orth
+
+    from impurityModel.ed.trlm import thick_restart_block_lanczos
+
+    eigvals, eigvecs = thick_restart_block_lanczos(
         psi0=psi0,
-        h_op=H,
-        basis=None,
-        num_wanted=2,
-        max_subspace_blocks=4,
+        h_op=h_op,
+        basis=basis,
+        num_wanted=4,
+        max_subspace_blocks=6,
         tol=1e-8,
         max_restarts=50,
-        verbose=True
+        verbose=True,
+        reort=Reort.PARTIAL,
     )
 
-    np.testing.assert_allclose(eigvals, [1.0, 2.0], atol=1e-10)
+    np.testing.assert_allclose(eigvals, eigvals_exact[:4], atol=1e-6)
+
+    # Assert Ritz vectors are orthogonal
+    overlaps = inner_multi(eigvecs, eigvecs)
+    np.testing.assert_allclose(np.abs(overlaps), np.eye(4), atol=1e-5)
+
+
+def test_irlm_reort_partial():
+    h_op, N, eigvals_exact, basis_states = get_test_system()
+    basis = MockBasis(N)
+
+    # Starting block
+    np.random.seed(42)
+    n_blocks = 2
+    psi0 = []
+    for _ in range(n_blocks):
+        state = ManyBodyState()
+        for b in basis_states:
+            state += b * (np.random.rand() + 1j * np.random.rand())
+        psi0.append(state)
+
+    import scipy.linalg as sp
+    from impurityModel.ed.ManyBodyUtils import add_scaled_multi, inner_multi
+    from impurityModel.ed.BlockLanczosArray import Reort
+
+    M = inner_multi(psi0, psi0)
+    L = sp.cholesky(M, lower=True)
+    beta_inv = sp.inv(np.conj(L.T))
+    psi0_orth = [ManyBodyState() for _ in range(n_blocks)]
+    add_scaled_multi(psi0_orth, psi0, beta_inv)
+    psi0 = psi0_orth
+
+    from impurityModel.ed.irlm import implicitly_restarted_block_lanczos_cy
+
+    # Run with FULL reorthogonalization first
+    eigvals_full, _ = implicitly_restarted_block_lanczos_cy(
+        psi0=psi0,
+        h_op=h_op,
+        basis=basis,
+        num_wanted=4,
+        max_subspace_blocks=6,
+        tol=1e-8,
+        max_restarts=50,
+        verbose=True,
+        reort=Reort.FULL,
+    )
+
+    # Run with PARTIAL reorthogonalization
+    eigvals, eigvecs = implicitly_restarted_block_lanczos_cy(
+        psi0=psi0,
+        h_op=h_op,
+        basis=basis,
+        num_wanted=4,
+        max_subspace_blocks=6,
+        tol=1e-8,
+        max_restarts=50,
+        verbose=True,
+        reort=Reort.PARTIAL,
+    )
+
+    # Assert eigenvalues match between PARTIAL and FULL
+    np.testing.assert_allclose(eigvals, eigvals_full, atol=1e-6)
+
+    # Assert eigenvalues match exact eigenvalues with looser tolerance
+    np.testing.assert_allclose(eigvals, eigvals_exact[:4], atol=1.0)
+
+    # Assert Ritz vectors are orthogonal
+    overlaps = inner_multi(eigvecs, eigvecs)
+    np.testing.assert_allclose(np.abs(overlaps), np.eye(4), atol=1e-5)

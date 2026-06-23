@@ -1,7 +1,7 @@
 import numpy as np
 from mpi4py import MPI
 
-from impurityModel.ed.block_math import block_add_scaled, block_apply, block_inner, is_array
+from impurityModel.ed.BlockLanczosArray import block_add_scaled, block_apply, block_inner, is_array
 from impurityModel.ed.manybody_basis import Basis
 from impurityModel.ed.ManyBodyUtils import inner
 
