@@ -259,7 +259,19 @@ top of a kernel that still loses orthogonality.
    the sparse item-3 fix. `apply_reort` import dropped from `trlm.py` (now unused).
    Verified: **full serial suite 261 passed / 0 failed**; **MPI `n={2,3,4}` 383 passed
    / 101 xfailed / 0 failed, no hangs**.
-5. **Un-xfail and fix `test_irlm_reort_partial`** once 1–4 land.
+5. ✅ **DONE (2026-06-23).** Fixed and un-xfailed `test_irlm_reort_partial`. Diagnosis:
+   IRLM with PARTIAL converged for restarts 0–2 (`MinEigval=-4.7577`) then a spurious
+   eigenvalue appeared at restart 3 (`-18`) and blew up to `-340`, oscillating forever —
+   loss of orthogonality across the implicit QR restart. The post-restart continuation
+   (`block_lanczos_cy` call in `implicitly_restarted_block_lanczos_cy`) ran with
+   `reort=reort` (PARTIAL) seeded by the `omega_max` `W_init` heuristic, but PRO's
+   W-recurrence is not reliably maintained across an implicit restart. Fix: the
+   continuation now always uses `reort=Reort.FULL` (with `W_init=None`), mirroring the
+   TRLM "always reorth in restart" decision; the *initial* Lanczos run still honors the
+   requested mode. This supersedes the item-1 `W_init` restoration (only PARTIAL needed
+   it). Removed Gemini's `@pytest.mark.xfail` + stray mid-file `import pytest`.
+   Verified: serial **262 passed / 0 failed / 50 xfailed**; MPI n=2 **384 passed / 0
+   failed / 100 xfailed**.
 6. Only then re-run the full matrix + `mpirun -n {2,3,4}` and re-check Phase-2 boxes.
 
 **Keep-green guard for the next iteration** (all were green at `489007c`):

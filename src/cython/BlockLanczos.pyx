@@ -1346,21 +1346,13 @@ def implicitly_restarted_block_lanczos_cy(
         betas_pass = np.array(betas_pass_list) if betas_pass_list else np.empty((0, p, p), dtype=complex)
         alphas_pass = np.array(alphas_new)
 
-        if reort_mode in (Reort.PARTIAL, Reort.SELECTIVE):
-            if W is not None:
-                omega_max = np.max(np.abs(W))
-            else:
-                omega_max = np.finfo(float).eps
-
-            W_init = np.full((2, k_blocks + 1, p, p), omega_max, dtype=complex)
-            for i in range(k_blocks):
-                W_init[1, i] = np.eye(p) * omega_max
-                W_init[0, i] = np.eye(p) * omega_max
-            W_init[1, k_blocks] = np.eye(p)
-            if k_blocks > 0:
-                W_init[0, k_blocks - 1] = np.eye(p)
-        else:
-            W_init = None
+        # The post-restart continuation always uses FULL reorthogonalization, mirroring
+        # the TRLM restart-sweep decision ("always reorth in restart"): the PRO
+        # W-recurrence is not reliably maintained across an implicit QR restart, so
+        # PARTIAL/SELECTIVE here breeds ghost eigenvalues (e.g. a spurious -340 that
+        # never converges). The *initial* Lanczos run above still honors the requested
+        # mode. FULL needs no W seed. (Phase-3: revisit cheaper restart-time PRO.)
+        W_init = None
 
         # Continue Lanczos from block k_blocks
         alphas, betas, Q_basis, W = block_lanczos_cy(
@@ -1369,7 +1361,7 @@ def implicitly_restarted_block_lanczos_cy(
             basis=basis,
             converged_fn=lambda a, b, **kw: False,
             verbose=verbose,
-            reort=reort,
+            reort=Reort.FULL,
             max_iter=m - k_blocks,
             slaterWeightMin=slaterWeightMin,
             comm=comm,
