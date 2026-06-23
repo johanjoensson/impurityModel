@@ -54,12 +54,33 @@ added for empty MPI ranks (`k==0` → `C = beta*C`; `m==0`/`n==0` → no-op).
       (W is bounded per restart cycle). Deferred.
 - [ ] Reuse `wp`, `alpha_i`, `M`, `beta_*` scratch across iterations (minor; deferred).
 
-## 3. Reduce the distributed memory footprint — **STRONG-MODEL ONLY (skip if you are a small model)**
+## 3. Reduce the distributed memory footprint — ❌ WON'T FIX (decided 2026-06-23)
 
-This is **not** a local edit and is deliberately out of weak-model scope: it changes
-the distribution model, not a kernel call. A small/fast model should leave it and move
-to Item 4.
+**Decision: do not implement halo exchange / a distribution redesign for the array
+kernel.** The `(global_N, p)` replication is real, but it optimizes a path the
+memory-bound case never takes:
 
+- The replication lives **only in the array kernel**. A massive basis runs through the
+  **sparse hash-distributed kernel** (`BlockLanczos.pyx`), which forms no dense global
+  vector at all (`apply_multi` on `ManyBodyState` + `redistribute_psis` by hash; only
+  `p×p` `Allreduce`s). It is already memory-scalable.
+- The array kernel can't even be forced onto a massive basis: its dense path forms the
+  `global_N²` matrix, which OOMs long before the `global_N·p` vector does. So the
+  `(global_N, p)` transient is never the binding constraint — either `global_N` is
+  small (fine) or the kernel is mis-selected and a larger object kills you first.
+- For the genuinely massive case (CIPSI ground-state basis), the binding constraint is
+  **basis size** itself (`global_N` Slater determinants split across ranks); no matvec
+  trick helps once the basis representation doesn't fit. And the **Green's function**
+  step that follows applies `c†/c`, leaving for the larger `N±1` sectors — so it needs
+  strictly *more* memory in a space not yet built. Haloing the ground-state matvec buys
+  nothing there.
+
+Net: the array kernel's per-rank memory model is appropriate for its small/dense remit;
+the real scaling frontier is upstream (shrink sectors via the symmetry/Casimir work; or
+a GF scheme that doesn't materialize the full `N±1` Krylov basis), not distributed-matvec
+plumbing. A lightweight guardrail comment was added at the `wp_global` allocation instead.
+
+Original analysis kept for reference:
 - Problem: the MPI branch allocates `wp_global` of shape `(global_N, p)` on **every**
   rank and `Allreduce`s it — the full vector is replicated (the Rank-0/all-rank OOM
   risk symmetry-plan Phase 5.2 worries about). Anchor:

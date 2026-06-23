@@ -564,6 +564,14 @@ def block_lanczos_array_cy(
     cdef double complex[:, ::1] q1, q0, beta_prev_dag_mv
     cdef double complex[:, ::1] alpha_i
     
+    # GUARDRAIL: the MPI matvec forms the full (global_N, n) partial product on *every*
+    # rank (column-distributed H -> Allreduce -> slice local rows), so per-rank memory
+    # here scales with global_N, not local_N. This is intentional: the array kernel is
+    # for small/dense sectors. For a large global_N use the sparse hash-distributed
+    # kernel (BlockLanczos.pyx / block_lanczos_cy), which never forms a dense global
+    # vector. We deliberately do NOT halo-exchange this (see blocklanczos_blas_
+    # acceleration.md §3, "WON'T FIX"): the dense path already OOMs on the global_N^2
+    # matrix first, and the memory-bound CIPSI/GF case runs on the sparse kernel anyway.
     cdef np.ndarray wp_global = np.empty((global_N, n), dtype=complex, order='C') if mpi else None
     cdef double complex[:, ::1] wp_g = wp_global
 

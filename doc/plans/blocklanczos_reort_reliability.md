@@ -571,10 +571,14 @@ matrix (incl. empty-rank MPI) is the regression oracle for all perf work.
 - [ ] **Bounded W** (BLAS plan Item 2, W part) — still deferred; needs
   `estimate_orthonormality` to write into a caller buffer (see Phase 3 note). Memory
   micro-opt, not a leak.
-- [ ] **Distributed memory footprint / `wp_global` replication** (BLAS plan Item 3) —
-  NOT done. Explicitly a distribution-model redesign needing a human/design decision
-  (each rank should compute only its owned rows; needs a row-distributed matvec), not
-  a local edit. Left for a dedicated effort.
+- [x] **Distributed memory footprint / `wp_global` replication** (BLAS plan Item 3) —
+  ❌ **WON'T FIX** (decided 2026-06-23, with the user). The `(global_N, p)` replication
+  is only in the array kernel, which the memory-bound case never uses: a massive basis
+  runs on the sparse hash-distributed kernel (no dense global vector), and the array
+  dense path OOMs on the `global_N²` matrix first anyway. The real wall for huge CIPSI
+  bases is basis size + the subsequent GF's `N±1` sector expansion, which haloing the
+  matvec doesn't touch. Added a guardrail comment at the `wp_global` allocation instead.
+  Full rationale in `blocklanczos_blas_acceleration.md` §3.
 
 ---
 
