@@ -99,7 +99,7 @@ def thick_restart_block_lanczos(
         wanted_indices = np.argsort(eigvals)[:num_wanted]
         max_wanted_res = np.max(res_norms[wanted_indices])
 
-        if verbose and (not mpi or comm.Get_rank() == 0):
+        if verbose and (not mpi or comm.rank == 0):
             print(f"Restart {restart:3d} | Min Eigval: {eigvals[0]:.6f} | Max Wanted Residual: {max_wanted_res:.2e}")
 
         if max_wanted_res < tol:
@@ -178,8 +178,7 @@ def thick_restart_block_lanczos(
     wanted_indices = np.argsort(eigvals)[:num_wanted]
     final_eigvals = eigvals[wanted_indices]
 
-    if verbose and (not mpi or comm.Get_rank() == 0):
-        print(f"Final T_full matrix:\n{T_full}")
+    if verbose and (not mpi or comm.rank == 0):
         print(f"Final eigvals:\n{final_eigvals}")
 
     final_eigvecs = block_combine(Q_list, eigvecs[:, wanted_indices], slaterWeightMin)

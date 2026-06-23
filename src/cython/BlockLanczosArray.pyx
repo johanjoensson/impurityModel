@@ -1,6 +1,42 @@
 # distutils: language = c++
 # cython: language_level=3, boundscheck=True, wraparound=True, initializedcheck=False, cdivision=True, freethreading_compatible=True
 
+"""Block Lanczos kernel for numpy arrays / scipy sparse operators (MPI row-block).
+
+This module is the numerical core shared with the ManyBodyState kernel in
+``BlockLanczos.pyx`` (which imports the constants, ``estimate_orthonormality``,
+``_build_full_T`` and ``apply_reort`` from here). Both build a block-tridiagonal
+``T`` (diagonal blocks ``alpha``, off-diagonal blocks ``beta``) whose eigenpairs
+approximate those of the operator; the TRLM/IRLM drivers restart it.
+
+Reorthogonalization modes (``Reort``), what each guarantees:
+
+* ``NONE``      — no reorthogonalization. Cheapest; orthogonality is allowed to
+  decay and ghost (spurious duplicate) eigenvalues may appear. Eigenvalues still
+  converge for well-separated spectra. The restart machinery in TRLM/IRLM
+  re-orthogonalizes regardless, so NONE only relaxes the *inner* recurrence.
+* ``FULL``      — double-pass Gram–Schmidt against the whole basis every step.
+  Most robust; ``‖QᴴQ − I‖`` stays at ~machine precision.
+* ``PERIODIC``  — FULL, but only every ``REORT_PERIOD`` iterations.
+* ``PARTIAL``   — partial reorthogonalization (PRO, Simon): the W-recurrence
+  ``estimate_orthonormality`` cheaply *estimates* loss of orthogonality; a full
+  reorth against the offending blocks fires only when an estimate exceeds
+  ``REORT_TOL``. Matches FULL accuracy at lower cost; the default.
+* ``SELECTIVE`` — PARTIAL plus periodic locking of converged Ritz vectors
+  (gated to a ``REORT_PERIOD`` cadence; see ``block_lanczos_array_cy``).
+
+Module thresholds (all derived from machine ``eps``; see definitions below):
+``REORT_TOL`` (loss-of-orthogonality trigger), ``BAD_BLOCK_TOL`` (which blocks to
+reorth against), ``DEFLATE_TOL`` (relative rank floor for the block Cholesky),
+``BREAKDOWN_TOL`` (invariant-subspace detection), ``REORT_PERIOD`` (cadence).
+
+Deflation policy: when a Lanczos block is rank-deficient (Cholesky of the block
+Gram matrix ``M`` hits the ``DEFLATE_TOL`` floor), the block size shrinks (EA16
+shrinking-block, Meerbergen & Scott, RAL-TR-2000-011) rather than zero-padding or
+terminating, so ``beta`` becomes rectangular and ``T`` carries variable-size
+blocks; the recurrence keeps converging.
+"""
+
 cimport cython
 import numpy as np
 cimport numpy as np
@@ -647,7 +683,11 @@ def block_lanczos_array_cy(
             reort_eps = REORT_TOL
 
             if reort == Reort.SELECTIVE:
-                if it > 0:
+                # Gate the O(m^3) Ritz-convergence check (build T_full + eigh) to a
+                # REORT_PERIOD cadence: the PARTIAL bad-block reorth below still runs
+                # every step to maintain orthogonality, so locking converged Ritz
+                # vectors less often is safe but much cheaper.
+                if it > 0 and it % REORT_PERIOD == 0:
                     T_full = _build_full_T(alphas_buf[: it + 1], betas_buf[: it + 1], block_widths=block_widths + [n_curr])
                     eigvals_T, conv_evec = la.eigh(T_full)
                     for k_idx in range(len(eigvals_T)):

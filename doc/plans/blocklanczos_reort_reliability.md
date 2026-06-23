@@ -466,31 +466,31 @@ Verification: full Phase-0 matrix green for all modes × paths × solvers, seria
 
 ## Phase 3 — Accuracy & robustness hardening
 
-- [ ] **Bounded W (pre-allocate, don't window).** Decision: do **not** implement a
-  sliding window — in the TRLM/IRLM restart paths `m ≤ max_subspace_blocks`, so W is
-  already bounded per restart cycle. The only growth is in the raw (non-restarted)
-  kernel. Fix it the same way `alphas`/`betas` are handled: **pre-allocate** W once to
-  `(2, max_iter + 1, n, n)` at the top of `block_lanczos_array_cy` and slice
-  `W[:, :it+2]` where needed, instead of reallocating each iteration. Anchor:
-  `grep -n "W_new = np.zeros\|W = np.zeros" src/cython/BlockLanczosArray.pyx`.
-  Checkpoint: rebuild, `pytest -q ...test_block_lanczos_reort_matrix.py -k PARTIAL`.
-- [ ] **Cheaper SELECTIVE (gated cadence, not incremental cache).** Decision: gate the
-  SELECTIVE Ritz-convergence check (the `_build_full_T` + `eigh`) to run only every
-  `REORT_PERIOD` iterations instead of every iteration; on the other iterations skip the
-  Ritz projection (PARTIAL bad-block reorth still runs every step). Anchor:
-  `grep -n "if reort == Reort.SELECTIVE" src/cython/BlockLanczosArray.pyx`; wrap its body
-  in `if it % REORT_PERIOD == 0:`. This removes the per-iteration O(m²n³) cost without a
-  caching scheme. Checkpoint: SELECTIVE cells of the Phase-0 matrix still match dense.
-- [ ] **No silent failure modes.** Replace remaining bare `try/except`/break paths
-  with explicit, verbose-gated rank-0 breakdown returns. Mechanical cleanups (safe for
-  a weak model), each with its grep anchor:
-  - remove/keep-debug-gated the `Final T_full matrix` dump —
-    `grep -n "Final T_full matrix" src/impurityModel/ed/trlm.py`;
-  - `comm.Get_rank()` → `comm.rank` — `grep -rn "Get_rank()" src/impurityModel/ed/trlm.py`;
-  - the "Coverged" typo — `grep -n "Coverged" src/cython/BlockLanczosArray.pyx`.
-  Checkpoint: `pytest -q src/impurityModel/test/test_restarted_lanczos.py`.
-- [ ] **Document the algorithm** in module docstrings: the EA16 reference, what each
-  mode guarantees, the threshold meanings, and the deflation policy.
+- [ ] **Bounded W (pre-allocate, don't window).** DEFERRED (2026-06-23) — the plan's
+  one-liner doesn't fit the code. The dominant per-iteration allocation is *inside*
+  `estimate_orthonormality`, which builds a fresh `W_out = np.zeros((2, i+2, n, n))`
+  every call and infers the block count from `alphas.shape[0]` (not `W.shape[1]`). The
+  caller-side realloc (`W_new = np.zeros…`) is secondary. So truly bounding it requires
+  refactoring `estimate_orthonormality` to write into a caller-provided buffer — a
+  riskier change to the just-stabilized PRO recurrence for a pure memory micro-opt.
+  Per "reliability-first, performance last," moved to Phase 5 (BLAS/workspace work),
+  where it belongs with the other pre-allocation changes. W is already bounded per
+  restart cycle (`m ≤ max_subspace_blocks`), so this is not a leak.
+- [x] **Cheaper SELECTIVE (gated cadence, not incremental cache).** DONE (2026-06-23).
+  The SELECTIVE Ritz-convergence check (`_build_full_T` + `eigh`, O(m³)) in
+  `block_lanczos_array_cy` is now gated `if it > 0 and it % REORT_PERIOD == 0:`; the
+  PARTIAL bad-block reorth still runs every step to hold orthogonality. Verified:
+  `test_selective_reort.py` + SELECTIVE oracle cells green, full serial 262/0/50 and
+  MPI n=2 384/0/100 unchanged.
+- [x] **No silent failure modes (mechanical cleanups).** DONE (2026-06-23). Removed the
+  leftover `Final T_full matrix` debug dump in `trlm.py` (kept the concise `Final
+  eigvals` under verbose); `comm.Get_rank()` → `comm.rank` in `trlm.py` (both sites);
+  the "Coverged" typo was already gone (not present in the current code). `pytest -q
+  test_restarted_lanczos.py` green. (The broader try/except → logged-breakdown audit in
+  the Cython kernels is left as optional polish; no silent-failure test currently red.)
+- [x] **Document the algorithm.** DONE (2026-06-23). Added a module docstring to
+  `BlockLanczosArray.pyx` covering the EA16 shrinking-block deflation reference, what
+  each `Reort` mode guarantees, the threshold meanings, and the restart-reorth note.
 
 ---
 
