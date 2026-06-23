@@ -557,6 +557,25 @@ Defer to / merge with `blocklanczos_blas_acceleration.md`: `zgemm` for the array
 kernel, pre-allocated workspaces, reduce-scatter memory footprint. The Phase-0
 matrix (incl. empty-rank MPI) is the regression oracle for all perf work.
 
+**Progress (2026-06-23):**
+- [x] **BLAS-3 `zgemm` in the array kernel** (BLAS plan Item 1). `matmul_nogil`'s
+  hand-written triple loop is replaced by a `scipy.linalg.cython_blas.zgemm` call
+  (same signature; row/col-major mapping validated against numpy for all 4 trans
+  combos in `test_zgemm_matmul.py`, with zero-dim guards for empty MPI ranks).
+  Benchmark (dense Hermitian, FULL reort): **p=1 2.6×, p=2 2.8×, p=4 4.0×, p=8 8.4×**
+  faster; no regression at p=1. Oracle green serial 262/0/50, MPI n=2 384/0/100.
+- [x] **Pre-allocated `alphas`/`betas`** (BLAS plan Item 2) — already done (the loop
+  uses `alphas_buf`/`betas_buf`, no `np.append` in the hot path).
+- [x] **Kernel selection rule documented** (BLAS plan Item 4) in
+  `doc/architecture_overview.md` (sparse hash-distributed vs array BLAS-friendly).
+- [ ] **Bounded W** (BLAS plan Item 2, W part) — still deferred; needs
+  `estimate_orthonormality` to write into a caller buffer (see Phase 3 note). Memory
+  micro-opt, not a leak.
+- [ ] **Distributed memory footprint / `wp_global` replication** (BLAS plan Item 3) —
+  NOT done. Explicitly a distribution-model redesign needing a human/design decision
+  (each rank should compute only its owned rows; needs a row-distributed matvec), not
+  a local edit. Left for a dedicated effort.
+
 ---
 
 ## Critical files

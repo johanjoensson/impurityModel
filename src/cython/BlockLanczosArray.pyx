@@ -44,6 +44,7 @@ import scipy.linalg as la
 import scipy.sparse as sps
 
 from libc.math cimport sqrt
+from scipy.linalg.cython_blas cimport zgemm
 
 from mpi4py import MPI
 from enum import Enum
@@ -385,46 +386,46 @@ cdef void matmul_nogil(
     double complex beta,
     double complex[:, ::1] C
 ) noexcept nogil:
-    cdef int i, j, l
-    cdef double complex val
-    
-    # Initialize C with beta * C
-    if beta == 0.0:
-        for i in range(m):
-            for j in range(n):
-                C[i, j] = 0.0
-    elif beta != 1.0:
-        for i in range(m):
-            for j in range(n):
-                C[i, j] = C[i, j] * beta
-                
-    # Compute C += alpha * A * B
-    if transA == b'N' and transB == b'N':
-        for i in range(m):
-            for l in range(k):
-                val = alpha * A[i, l]
-                for j in range(n):
-                    C[i, j] = C[i, j] + val * B[l, j]
-    elif transA == b'C' and transB == b'N':
-        for l in range(k):
+    # C (m x n, row-major) = beta*C + alpha * opA(A) (m x k) @ opB(B) (k x n),
+    # where op = conjugate-transpose when the trans flag is b'C'.
+    # Implemented with BLAS-3 zgemm. BLAS is column-major; our arrays are C-contiguous
+    # (row-major), so the row-major product C = opA(A) @ opB(B) is obtained by asking
+    # BLAS for the column-major Cᵀ = opB(B)ᵀ @ opA(A)ᵀ: swap the operands (B then A),
+    # swap (m, n) -> (n, m), keep the same trans flags, and use the physical row
+    # lengths (A.shape[1], B.shape[1], n) as the leading dimensions. Validated against
+    # numpy @ for all four trans combinations in test_zgemm_matmul (1e-13).
+    cdef int i, j
+    cdef int lda, ldb, ldc
+    if m <= 0 or n <= 0:
+        return
+    if k <= 0:
+        # No contraction: C = beta * C (zgemm with K=0 would still need valid A/B ptrs).
+        if beta == 0.0:
             for i in range(m):
-                val = alpha * conj(A[l, i])
                 for j in range(n):
-                    C[i, j] = C[i, j] + val * B[l, j]
-    elif transA == b'N' and transB == b'C':
-        for i in range(m):
-            for j in range(n):
-                val = 0.0
-                for l in range(k):
-                    val = val + A[i, l] * conj(B[j, l])
-                C[i, j] = C[i, j] + alpha * val
-    elif transA == b'C' and transB == b'C':
-        for i in range(m):
-            for j in range(n):
-                val = 0.0
-                for l in range(k):
-                    val = val + conj(A[l, i]) * conj(B[j, l])
-                C[i, j] = C[i, j] + alpha * val
+                    C[i, j] = 0.0
+        elif beta != 1.0:
+            for i in range(m):
+                for j in range(n):
+                    C[i, j] = C[i, j] * beta
+        return
+    lda = A.shape[1]
+    ldb = B.shape[1]
+    ldc = n
+    zgemm(&transB, &transA, &n, &m, &k, &alpha, &B[0, 0], &ldb, &A[0, 0], &lda, &beta, &C[0, 0], &ldc)
+
+
+def _matmul_nogil_test(A, int transA, B, int transB, alpha, beta, C, int m, int n, int k):
+    """Test-only Python wrapper around matmul_nogil (pass transA/transB as ord('N'/'C'))."""
+    cdef double complex[:, ::1] Av = np.ascontiguousarray(A, dtype=complex)
+    cdef double complex[:, ::1] Bv = np.ascontiguousarray(B, dtype=complex)
+    cdef double complex[:, ::1] Cv = np.ascontiguousarray(C, dtype=complex)
+    cdef char ta = transA
+    cdef char tb = transB
+    cdef double complex al = alpha
+    cdef double complex be = beta
+    matmul_nogil(m, n, k, al, Av, ta, Bv, tb, be, Cv)
+    return np.asarray(Cv)
 
 @cython.boundscheck(False)
 @cython.wraparound(False)
