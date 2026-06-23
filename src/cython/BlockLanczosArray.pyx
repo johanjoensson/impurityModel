@@ -414,8 +414,13 @@ def block_lanczos_array_cy(
     if is_sparse:
         h_op = h_op.tocsr()
         h_data = h_op.data
-        h_indices = h_op.indices
-        h_indptr = h_op.indptr
+        # scipy chooses int32 index arrays for small/empty matrices (e.g. a rank
+        # whose local column slice is empty) and int64 otherwise.  The typed
+        # memoryviews below are ``long`` (int64), so coerce to avoid a
+        # buffer-dtype-mismatch ValueError that would otherwise abort this rank
+        # only -- deadlocking the collectives in the iteration loop.
+        h_indices = np.ascontiguousarray(h_op.indices, dtype=np.int64)
+        h_indptr = np.ascontiguousarray(h_op.indptr, dtype=np.int64)
     elif is_dense:
         h_dense = np.ascontiguousarray(h_op)
 
@@ -430,7 +435,7 @@ def block_lanczos_array_cy(
 
     while it < max_iter:
         q1 = np.ascontiguousarray(q[1])
-        
+
         if is_sparse:
             with nogil:
                 apply_sparse_csr_nogil(global_N, N, n, h_data, h_indices, h_indptr, q1, wp_g if mpi else wp)

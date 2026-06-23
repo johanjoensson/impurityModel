@@ -125,20 +125,11 @@ def thick_restart_block_lanczos(
             wp, _ = block_orthogonalize(wp, Q_list, mpi=mpi, comm=comm)  # array does 2x for stability
 
             q_m, beta_res = block_normalize(wp, mpi, comm, 0.0)
-            print(
-                f"DEBUG rank {comm.rank if mpi else 0}: m_actual={m_actual}, k_blocks={k_blocks}, beta_res norm={np.linalg.norm(beta_res)}",
-                flush=True,
-            )
 
         Q_list = np.concatenate([Q_list, q_m], axis=1)
 
         Y_last = Y_k[-n:, :]
         cross_term = beta_res @ Y_last
-
-        if np.max(np.abs(cross_term)) > 50:
-            print(f"BOGUS cross_term at restart={restart}: {np.max(np.abs(cross_term))}")
-        if np.max(np.abs(T_k)) > 50:
-            print(f"BOGUS T_k at restart={restart}: {np.max(np.abs(T_k))}")
 
         T_full[k_blocks * n : (k_blocks + 1) * n, : k_blocks * n] = cross_term
         T_full[: k_blocks * n, k_blocks * n : (k_blocks + 1) * n] = np.conj(cross_term.T)
@@ -150,11 +141,6 @@ def thick_restart_block_lanczos(
             overlaps = block_inner(Q_list, wp, mpi, comm)
             alpha_i = overlaps[-n:, :]
             T_full[i * n : (i + 1) * n, i * n : (i + 1) * n] = alpha_i
-
-            if i == k_blocks:
-                exact_cross_term = np.conj(overlaps[:-n, :].T)
-                diff = np.max(np.abs(exact_cross_term - cross_term))
-                print(f"Restart {restart} | Diff between exact and analytic cross_term: {diff:.2e}")
 
             wp, _ = block_orthogonalize(wp, Q_list, overlaps=overlaps, mpi=mpi, comm=comm)
             wp, _ = block_orthogonalize(wp, Q_list, mpi=mpi, comm=comm)
@@ -170,11 +156,6 @@ def thick_restart_block_lanczos(
                 final_eigvals = eigvals[wanted_indices]
                 final_eigvecs = block_combine(Q_list, eigvecs[:, wanted_indices], slaterWeightMin)
                 return final_eigvals, final_eigvecs
-
-            if np.max(np.abs(beta_i)) > 50:
-                print(f"BOGUS beta_i at restart={restart}, i={i}: {np.max(np.abs(beta_i))}")
-            if np.max(np.abs(alpha_i)) > 50:
-                print(f"BOGUS alpha_i at restart={restart}, i={i}: {np.max(np.abs(alpha_i))}")
 
             if i < m - 1:
                 T_full[(i + 1) * n : (i + 2) * n, i * n : (i + 1) * n] = beta_i
