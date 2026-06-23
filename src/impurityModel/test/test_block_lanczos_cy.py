@@ -519,8 +519,54 @@ def test_trlm_cy_selective_reort_orthogonality():
         verbose=False,
         reort="selective",
     )
-    
+
     # Assert eigenvectors are orthogonal
     ov = inner_multi(eigvecs, eigvecs)
     err = np.linalg.norm(ov - np.eye(len(eigvecs)))
     assert err < 1e-10
+
+
+def test_converged_views_equivalence():
+    """block_lanczos_cy passes buffer *views* (alphas_buf[:it+1]) to converged_fn
+    instead of rebuilding lists->arrays each step. This pins that the data seen by
+    converged_fn at step k equals the first k+1 accumulated alpha/beta blocks (exactly
+    what the removed np.array(alphas_list) would have produced) and that convergence /
+    eigenvalues are unchanged.
+    """
+    from impurityModel.ed.BlockLanczosArray import _build_full_T
+
+    h_op, basis, states, eigvals = create_diagonal_h_and_basis(6)
+    st = ManyBodyState()
+    for i in range(6):
+        st[basis.type.from_bytes(states[i])] = 1.0 / np.sqrt(6)
+    psi0 = [st]
+
+    snapshots = []
+
+    def recording_converged(alphas, betas, **kw):
+        snapshots.append((np.array(alphas, copy=True), np.array(betas, copy=True)))
+        return False
+
+    alphas, betas, Q_basis, W = block_lanczos_cy(
+        psi0=psi0,
+        h_op=h_op,
+        basis=basis,
+        converged_fn=recording_converged,
+        reort="full",
+        max_iter=6,
+        verbose=False,
+    )
+
+    alphas = np.asarray(alphas)
+    betas = np.asarray(betas)
+
+    # converged_fn was called at least once, and each call k saw exactly the first
+    # k+1 accumulated blocks (a prefix view consistent with the final buffers).
+    assert len(snapshots) >= 1
+    for k, (a_snap, b_snap) in enumerate(snapshots):
+        np.testing.assert_array_equal(a_snap, alphas[: k + 1])
+        np.testing.assert_array_equal(b_snap, betas[: k + 1])
+
+    # Convergence/eigenvalues unchanged: T's spectrum matches the dense reference.
+    T = _build_full_T(alphas, betas[: len(alphas) - 1])
+    np.testing.assert_allclose(np.sort(np.linalg.eigvalsh(T)), np.sort(eigvals), atol=1e-10)

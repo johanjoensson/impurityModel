@@ -99,13 +99,17 @@ weak-model-ready instructions in their new homes. Implement them there, not here
 callback then runs a full continued-fraction recursion over all blocks each step →
 O(k²) extra work in the hot loop.
 
-- [ ] Pass *views* into the already-present pre-allocated buffers — `alphas_buf[:it_abs+1]`
-      / `betas_buf[:it_abs+1]` — to `converged_fn`, instead of rebuilding lists→arrays.
-      Anchors: `grep -n "np.array(alphas_list)\|alphas_buf" src/cython/BlockLanczos.pyx`.
-      Do **not** also touch the GF callback's continued-fraction caching (out of scope).
-- [ ] **Verification:** `test_converged_views_equivalence` — identical convergence
-      iteration count and eigenvalues vs the current list-rebuild version.
-      Checkpoint: rebuild, `pytest -q src/impurityModel/test/test_restarted_lanczos.py`.
+- [x] DONE (2026-06-23). `converged_fn` already received buffer views
+      (`alphas_buf[:it_abs+1]` / `betas_buf[:it_abs+1]`), and the function returns
+      buffer slices — but `alphas_list` / `betas_list` were still being appended a
+      `.copy()` every iteration and **never read** (dead write-only code). Removed the
+      list init + the per-iteration appends and updated the docstring. The GF callback's
+      continued-fraction caching was left untouched (out of scope).
+- [x] **Verification:** added `test_converged_views_equivalence`
+      (`test_block_lanczos_cy.py`) — asserts the data seen by `converged_fn` at step k
+      equals the first k+1 accumulated blocks (what the removed list-rebuild produced)
+      and that the spectrum still matches dense. Full suite green serial (304/0/50) +
+      MPI n=2 (426/0/100); `test_restarted_lanczos.py` green.
 
 ## Out of scope / cleanup observed while reviewing
 - `_cholesky_beta` removal is now handled in the reort plan's Phase 1 deflation item

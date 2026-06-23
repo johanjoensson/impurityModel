@@ -435,9 +435,9 @@ def block_lanczos_cy(
 
     **Pre-allocation**: ``alphas_buf`` and ``betas_buf`` of shape
     ``(max_iter, p, p)`` are allocated *once* before the main loop so that no
-    NumPy allocation occurs inside the Lanczos body.  Slices are copied to
-    Python lists (``alphas_list`` / ``betas_list``) after each accepted step and
-    the final output arrays are built with a single ``np.array()`` call.
+    NumPy allocation occurs inside the Lanczos body.  The convergence check and the
+    returned arrays are *views* into these buffers (``alphas_buf[:it_abs+1]``) — no
+    per-iteration list rebuild or ``np.array()`` copy.
 
     **Warm-start / resume protocol**: if ``alphas_init``, ``betas_init``, and
     ``Q_init`` are all provided the iteration resumes from block
@@ -548,8 +548,6 @@ def block_lanczos_cy(
         p = alphas_init[0].shape[0] if len(alphas_init) > 0 else len(Q_init[0] if Q_init else psi0)
         if len(block_widths) == 0:
             block_widths = [p] * start_it
-        alphas_list = list(alphas_init)
-        betas_list = list(betas_init)
         Q_basis = list(Q_init)
         W = W_init
 
@@ -566,8 +564,6 @@ def block_lanczos_cy(
     else:
         start_it = 0
         p = len(psi0)
-        alphas_list = []
-        betas_list = []
         W = None
 
         # Redistribute initial states across ranks
@@ -642,17 +638,13 @@ def block_lanczos_cy(
             block_widths=block_widths,
         )
 
-        alphas_list.append(alphas_buf[it_abs, :n_curr, :n_curr].copy())
         if breakdown:
-            betas_list.append(np.zeros((0, n_curr), dtype=complex))
             if verbose:
                 if comm is None or comm.Get_rank() == 0:
                     print(f"[BlockLanczos] Breakdown / invariant subspace " f"detected at iteration {it_abs}.")
             block_widths.append(n_curr)
             it += 1
             break
-        else:
-            betas_list.append(betas_buf[it_abs, :active_k, :n_curr].copy())
 
         # Append q_next to the basis (last block = residual direction)
         Q_basis.extend([st.copy() for st in q_next])
