@@ -57,7 +57,7 @@ from mpi4py import MPI
 
 cimport numpy as np
 
-from impurityModel.ed.BlockLanczosArray import estimate_orthonormality, eigsh, _build_full_T, _extract_blocks
+from impurityModel.ed.BlockLanczosArray import estimate_orthonormality, eigsh, _build_full_T, _extract_blocks, _cholesky_or_deflate
 from impurityModel.ed.BlockLanczosArray import (
     apply_reort,
     Reort,
@@ -147,28 +147,8 @@ def _block_inner_mpi(states_a, states_b, mpi: bool, comm):
     return G
 
 
-def _cholesky_or_deflate(M, p_in):
-    # Try Cholesky first (fast path)
-    try:
-        L = sp.cholesky(M, lower=True)
-        if np.any(np.diag(L) < DEFLATE_TOL * max(np.max(np.diag(L)), 1.0)):
-            raise sp.LinAlgError("Numeric singularity in Cholesky diagonal")
-        beta_j = np.conj(L.T)
-        beta_inv = sp.inv(beta_j)
-        p_next = p_in
-        return beta_j, beta_inv, p_next
-    except (sp.LinAlgError, ValueError):
-        # Fall back to eigh
-        evals, evecs = sp.eigh(M)              # ascending
-        keep = evals > DEFLATE_TOL * max(evals[-1], 1.0) # boolean mask over p_in
-        p_next = int(keep.sum())
-        if p_next == 0:                                   # whole block collapsed
-            return None, None, 0
-        V = evecs[:, keep]                                # (p_in, p_next)
-        s = np.sqrt(evals[keep])                          # (p_next,)
-        beta_j   = (s[:, None] * np.conj(V.T))             # (p_next, p_in)   off-diag block
-        beta_inv = V / s[None, :]                         # (p_in,  p_next)
-        return beta_j, beta_inv, p_next
+# _cholesky_or_deflate is shared: imported from BlockLanczosArray (identical logic,
+# single source of the EA16 shrinking-block deflation policy).
 
 
 def _reorthogonalize_sparse(wp, Q_states, indices, mpi, comm):
@@ -346,12 +326,12 @@ def block_lanczos_step_cy(
         _reorthogonalize_sparse(wp, Q_basis, bad_cols_start, mpi, comm)
 
     # --- 4. Full / Periodic reorthogonalization -------------------------
+    # The PERIODIC cadence gate stays in the caller; the reort action itself goes
+    # through the shared apply_reort (single FULL implementation for both kernels;
+    # bit-for-bit equal to the old 2x inner_multi/add_scaled_multi loop because
+    # block_orthogonalize_sparse does exactly that with comm=comm-if-mpi).
     if reort_mode == Reort.FULL or (reort_mode == Reort.PERIODIC and it > 0 and it % reort_period == 0):
-        for _ in range(2):
-            ov = inner_multi(Q_basis, wp)
-            if mpi and comm is not None:
-                comm.Allreduce(MPI.IN_PLACE, ov, op=MPI.SUM)
-            add_scaled_multi(wp, Q_basis, -ov)
+        wp, _ = apply_reort(wp, Q_basis, None, Reort.FULL, mpi, comm, block_widths or [])
 
     # --- 5. M = <wp|wp>, check breakdown --------------------------------
     M = inner_multi(wp, wp)
@@ -401,7 +381,10 @@ def block_lanczos_step_cy(
         reort_eps = REORT_TOL
 
         if reort_mode == Reort.SELECTIVE:
-            if start_it == 0 or it > start_it:
+            # Gate the O(m^3) Ritz-convergence check to the REORT_PERIOD cadence,
+            # matching block_lanczos_array_cy (the PARTIAL bad-block reorth above runs
+            # every step, so this is safe but much cheaper).
+            if it > 0 and it % reort_period == 0:
                 import scipy.linalg as spla
 
                 T_full = _build_full_T(alphas[: it + 1], betas[: it + 1], block_widths=block_widths + [p])
@@ -438,26 +421,12 @@ def block_lanczos_step_cy(
                         add_scaled_multi(q_next, ritz_vec, -overlap)
 
         if reort_mode in (Reort.PARTIAL, Reort.SELECTIVE):
-            n_blks = it + 1
-            bad_block_idx = []
-            if not mpi or comm is None or comm.rank == 0:
-                if np.max(np.abs(W[-1, :n_blks])) > REORT_TOL:
-                    bad_block_idx = [j for j in range(n_blks) if np.max(np.abs(W[-1, j])) > BAD_BLOCK_TOL]
-            
-            if mpi and comm is not None:
-                bad_block_idx = comm.bcast(bad_block_idx, root=0)
-
-            if len(bad_block_idx) > 0:
-                bad_state_idx = []
-                temp_widths = block_widths + [p]
-                for j in bad_block_idx:
-                    col_start = sum(temp_widths[:j])
-                    col_end = col_start + temp_widths[j]
-                    bad_state_idx.extend(range(col_start, col_end))
-                _reorthogonalize_sparse(q_next, Q_basis, bad_state_idx, mpi, comm)
-                for j in bad_block_idx:
-                    w_j = block_widths[j]
-                    W[-1, j, :w_j, :active_k] = EPS * np.eye(w_j, active_k, dtype=complex)
+            # Bad-block partial reorthogonalization via the shared apply_reort (single
+            # implementation for both kernels). This replaces an inline path that called
+            # _reorthogonalize_sparse, which computed the overlaps but never subtracted
+            # them — a latent no-op. Pass block_widths + [p] so the current block
+            # (index it) is included in the width table apply_reort indexes.
+            q_next, W = apply_reort(q_next, Q_basis, W, reort_mode, mpi, comm, block_widths + [p])
 
     if slaterWeightMin > 0:
         for st in q_next:

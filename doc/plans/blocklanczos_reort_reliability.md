@@ -498,16 +498,50 @@ Verification: full Phase-0 matrix green for all modes × paths × solvers, seria
 
 Only after Phases 0–3 pin behavior with a green matrix.
 
-- [ ] Extract a single mode-agnostic reorthogonalization/W-recurrence/deflation
-  engine that operates purely through the existing block abstraction already present
-  in `BlockLanczosArray.pyx` (`block_inner`, `block_apply`, `block_orthogonalize`,
-  `block_normalize`, `is_array`, `_build_full_T`) — these already dispatch array vs
-  ManyBodyState, so the engine can be path-agnostic. The engine must support
-  **variable block size** from the start (the EA16 shrinking-block deflation from
-  Phase 1 is part of the contract, not an add-on).
-- [ ] Re-point both kernels at the shared engine; delete the duplicated branch logic.
-- [ ] Verify the Phase-0 matrix is **bit-for-bit unchanged** (this phase is a pure
-  refactor; eigenvalues identical to pre-refactor to `1e-12`).
+**Progress (2026-06-23) — done incrementally, each step verified bit-for-bit
+(serial 262/0/50, MPI n=2 384/0/100 unchanged):**
+
+- [x] **Deflation single-source.** `_cholesky_or_deflate` was duplicated verbatim in
+  both kernels (only `sp.`/`la.` alias differed, both `scipy.linalg`). Removed the
+  sparse copy; `BlockLanczos.pyx` now imports it from `BlockLanczosArray`.
+- [x] **FULL/PERIODIC reort single-source.** The sparse step's hand-rolled 2×
+  `inner_multi`/`add_scaled_multi` loop now calls the shared `apply_reort(..., Reort.FULL,
+  ...)` (cadence gate kept in the caller). Proven bit-for-bit: `block_orthogonalize_sparse`
+  does exactly that loop with `comm=comm if mpi`. Both kernels now share the FULL path.
+- [x] **Already shared before Phase 4:** the W-recurrence (`estimate_orthonormality`),
+  `_build_full_T`, `_extract_blocks`, `eigsh`, the thresholds, and the `block_*`
+  dispatchers (`is_array`, `block_inner/apply/combine/orthogonalize/normalize`).
+
+So the *engine* (deflation + W-recurrence + FULL reort + dispatchers) is now
+single-source. **Remaining duplication — the harder, riskier part, NOT yet done:**
+
+- [x] **Unify the PARTIAL/SELECTIVE step logic.** DONE (2026-06-23), verified green
+  (serial 262/0/50, MPI n=2 384/0/100, oracle PARTIAL/SELECTIVE 1e-8 cells pass):
+  (a) the sparse SELECTIVE Ritz-check cadence gate is now `it > 0 and it %
+  reort_period == 0`, matching `block_lanczos_array_cy`;
+  (b) the sparse bad-block reorth now calls the shared `apply_reort` (passing
+  `block_widths + [p]` so the current block is in the width table) instead of inline
+  logic.
+  **Bug found & fixed in passing:** the old inline path called `_reorthogonalize_sparse`,
+  which computed the block overlaps but **never subtracted them** (`add_scaled_multi`
+  missing) — i.e. the sparse PARTIAL/SELECTIVE bad-block reorth was a silent **no-op**,
+  masked by the subsequent `W`-reset. Routing through `apply_reort` makes it actually
+  reorthogonalize; the suite stays green because the test systems were well-conditioned
+  enough not to need it, but this was a real latent defect.
+  **⚠ Remaining no-op landmine (NOT fixed — out of scope + risk):**
+  `_reorthogonalize_sparse` is still that no-op and is still called at two other sites:
+  `BlockLanczos.pyx:326` (resumed-run explicit reorth — a genuine latent bug) and
+  `:938` (TRLM Ritz re-orthonormalization — where a nearby comment warns that
+  reorthonormalizing the Ritz block "corrupts the relation to T_k", so the no-op may be
+  load-bearing there). These need case-by-case handling, not a blanket fix to the
+  helper. Tracked as future work.
+- [ ] **Unify the loop scaffolding** (`block_lanczos_step_cy` + `block_lanczos_cy` vs
+  inline `block_lanczos_array_cy`). CAVEAT: the array kernel deliberately uses raw
+  numpy + `nogil` (`matmul_nogil`, `apply_dense_nogil`, `apply_sparse_csr_nogil`) for
+  performance; routing it through the generic `block_*` dispatch would likely change
+  operation order (breaking bit-for-bit) and sacrifice that speed. A true single loop
+  may conflict with Phase 5 performance goals — decide scope before attempting.
+- [ ] Verify the Phase-0 matrix is **bit-for-bit unchanged** after any further step.
 
 ---
 
