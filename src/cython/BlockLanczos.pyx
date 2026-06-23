@@ -151,47 +151,6 @@ def _block_inner_mpi(states_a, states_b, mpi: bool, comm):
 # single source of the EA16 shrinking-block deflation policy).
 
 
-def _reorthogonalize_sparse(wp, Q_states, indices, mpi, comm):
-    """Classical double-pass Gram-Schmidt of ``wp`` against a *sparse* subset of Q.
-
-    Applies the Modified Gram-Schmidt correction twice (Kahan-Parlett double reorthogonalization)
-    for improved numerical stability:
-
-    .. math::
-
-        \\text{for } s = 1, 2: \\quad
-        w_p \\leftarrow w_p
-            - \\sum_{j \\in \\mathcal{I}} q_j \\langle q_j \\mid w_p \\rangle
-
-    where :math:`\\mathcal{I}` = ``indices`` selects a *sparse* subset of the accumulated
-    Krylov basis.  This is cheaper than projecting against all columns when only a few
-    blocks are contaminated.
-
-    Note:
-        This function itself is **not** a collective MPI operation in the sense that the
-        caller decides which ranks invoke it.  However, the ``inner_multi`` call inside
-        each pass is local, and the subsequent ``Allreduce`` (``MPI.SUM``) over the small
-        ``(|\\mathcal{I}|, p)`` overlap matrix **is** collective – all ranks that enter
-        this function must call it simultaneously.
-
-    Args:
-        wp: List of ``p`` ``ManyBodyState`` objects to reorthogonalize.  Modified
-            **in-place**; the caller's list is updated directly.
-        Q_states: Full flat list of ``ManyBodyState`` basis vectors (length
-            ``(current\_block + 1) * p``).
-        indices: Integer indices into ``Q_states`` identifying the vectors to project
-            against.  Pass an empty list (or ``[]``) to skip reorthogonalization (the
-            function returns immediately in that case).
-        mpi: ``True`` when running under MPI with more than one rank.
-        comm: Active ``mpi4py.MPI.Comm`` communicator, or ``None`` when running serially.
-    """
-    if not indices:
-        return
-    Q_sub = [Q_states[i] for i in indices]
-    for _ in range(2):
-        overlaps = inner_multi(Q_sub, wp)
-        if mpi and comm is not None:
-            comm.Allreduce(MPI.IN_PLACE, overlaps, op=MPI.SUM)
 def block_lanczos_step_cy(
     h_op,
     q_prev,
@@ -317,13 +276,17 @@ def block_lanczos_step_cy(
         add_scaled_multi(wp, q_prev, -beta_prev_dag)
 
     # --- 3b. Explicit orthogonalization against history blocks (resumed run) ---
+    # Full double-pass reorth of wp against the retained history blocks on a resumed
+    # run, via the shared apply_reort. Redundant for FULL (section 4 covers it) but the
+    # only history reorth for a resumed PARTIAL/SELECTIVE run.
     if reort_mode != Reort.NONE and start_it > 0:
         bad_cols_start = []
         for j in range(start_it):
             col_start = sum(block_widths[:j])
             col_end = col_start + block_widths[j]
             bad_cols_start.extend(range(col_start, col_end))
-        _reorthogonalize_sparse(wp, Q_basis, bad_cols_start, mpi, comm)
+        Q_hist = [Q_basis[i] for i in bad_cols_start]
+        wp, _ = apply_reort(wp, Q_hist, None, Reort.FULL, mpi, comm, [])
 
     # --- 4. Full / Periodic reorthogonalization -------------------------
     # The PERIODIC cadence gate stays in the caller; the reort action itself goes
@@ -422,10 +385,8 @@ def block_lanczos_step_cy(
 
         if reort_mode in (Reort.PARTIAL, Reort.SELECTIVE):
             # Bad-block partial reorthogonalization via the shared apply_reort (single
-            # implementation for both kernels). This replaces an inline path that called
-            # _reorthogonalize_sparse, which computed the overlaps but never subtracted
-            # them — a latent no-op. Pass block_widths + [p] so the current block
-            # (index it) is included in the width table apply_reort indexes.
+            # implementation for both kernels). Pass block_widths + [p] so the current
+            # block (index it) is included in the width table apply_reort indexes.
             q_next, W = apply_reort(q_next, Q_basis, W, reort_mode, mpi, comm, block_widths + [p])
 
     if slaterWeightMin > 0:
@@ -933,15 +894,14 @@ def thick_restart_block_lanczos_cy(
         Q_basis = Q_basis[: m_actual * p]
         Q_basis = block_combine_sparse(Q_basis, Y_k, 0.0)
 
+        # Re-normalize each retained Ritz block within itself. We deliberately do NOT
+        # reorthogonalize the Ritz blocks against each other: that corrupts the relation
+        # to T_k, and the subsequent TRLM steps reorthogonalize against this basis anyway.
         for i in range(k_blocks):
             q_i = [Q_basis[i * p + j] for j in range(p)]
-            _reorthogonalize_sparse(q_i, Q_basis, list(range(i * p)), mpi, comm)
             q_i, _ = block_normalize_sparse(q_i, mpi, comm, 0.0)
             for j in range(p):
                 Q_basis[i * p + j] = q_i[j]
-
-        # No explicit orthonormalization of Ritz vectors: it corrupts the relation to T_k.
-        # The TRLM subsequent steps will use full Gram-Schmidt against this basis anyway.
 
         T_full = np.zeros((m * p, m * p), dtype=complex)
         T_full[: k_blocks * p, : k_blocks * p] = T_k

@@ -528,13 +528,19 @@ single-source. **Remaining duplication — the harder, riskier part, NOT yet don
   masked by the subsequent `W`-reset. Routing through `apply_reort` makes it actually
   reorthogonalize; the suite stays green because the test systems were well-conditioned
   enough not to need it, but this was a real latent defect.
-  **⚠ Remaining no-op landmine (NOT fixed — out of scope + risk):**
-  `_reorthogonalize_sparse` is still that no-op and is still called at two other sites:
-  `BlockLanczos.pyx:326` (resumed-run explicit reorth — a genuine latent bug) and
-  `:938` (TRLM Ritz re-orthonormalization — where a nearby comment warns that
-  reorthonormalizing the Ritz block "corrupts the relation to T_k", so the no-op may be
-  load-bearing there). These need case-by-case handling, not a blanket fix to the
-  helper. Tracked as future work.
+  **Resume-path no-op FIXED (2026-06-23):** `BlockLanczos.pyx` §3b (resumed-run
+  explicit history reorth, `start_it > 0`) called the same no-op
+  `_reorthogonalize_sparse`; it now does a real double-pass reorth via
+  `apply_reort(..., Reort.FULL, ...)` against the history sub-basis. Redundant for FULL
+  (section 4 covers it) but the only history reorth for a resumed PARTIAL/SELECTIVE
+  run. Verified green serial + MPI n=2.
+  **No-op helper RETIRED (2026-06-23):** the last call to `_reorthogonalize_sparse`
+  (TRLM Ritz re-orthonormalization) did nothing, and reorthonormalizing the Ritz block
+  there would corrupt the relation to `T_k`, so the call was deleted (the loop now just
+  re-normalizes each retained Ritz block within itself, matching the existing comment)
+  and the misleadingly-named no-op function was removed entirely. Zero behavior change;
+  verified green serial 262/0/50 + MPI n=2 384/0/100. `_reorthogonalize_sparse` no
+  longer exists anywhere in the codebase.
 - [ ] **Unify the loop scaffolding** (`block_lanczos_step_cy` + `block_lanczos_cy` vs
   inline `block_lanczos_array_cy`). CAVEAT: the array kernel deliberately uses raw
   numpy + `nogil` (`matmul_nogil`, `apply_dense_nogil`, `apply_sparse_csr_nogil`) for
