@@ -446,49 +446,38 @@ def block_lanczos_step_cy(
 
         if reort_mode == Reort.SELECTIVE:
             if start_it == 0 or it > start_it:
-                try:
-                    import scipy.linalg as spla
-                    from scipy.sparse.linalg import eigsh
+                import scipy.linalg as spla
 
-                    T_full = _build_full_T(alphas[: it + 1], betas[: it + 1])
-                    N_T = T_full.shape[0]
-                    if N_T <= 10:
-                        eigvals_T, conv_evec = spla.eigh(T_full)
-                        # We want the smallest eigenvalues (which SA gives)
-                        # eigh returns them sorted ascending, so we take the first few
-                        k_eig = min(N_T, 6)
-                        eigvals_T = eigvals_T[:k_eig]
-                        conv_evec = conv_evec[:, :k_eig]
-                    else:
-                        eigvals_T, conv_evec = eigsh(T_full, k=min(N_T - 1, 6), which="SA")
+                T_full = _build_full_T(alphas[: it + 1], betas[: it + 1])
+                # T_full is replicated (built from replicated alphas/betas).
+                # Use deterministic dense eigh so all ranks see the same eigenvectors,
+                # then bcast rank-0's decision list so every rank enters/skips the
+                # subsequent Allreduce consistently (avoids MPI deadlock).
+                eigvals_T, conv_evec = spla.eigh(T_full)
+                ritz_to_project = []
+                if not mpi or comm is None or comm.rank == 0:
                     for k in range(len(eigvals_T)):
                         err_bnd = np.linalg.norm(betas[it], ord=2) * np.abs(conv_evec[-1, k])
                         if err_bnd < reort_eps:
-                            s_k = conv_evec[:, k]
-                            s_k_blocks = s_k.reshape(it + 1, p)
+                            s_k_blocks = conv_evec[:, k].reshape(it + 1, p)
                             w_ritz_k = np.zeros(p, dtype=complex)
                             for j in range(it + 1):
                                 w_ritz_k += np.conj(s_k_blocks[j]) @ np.conj(W[-1, j].T)
                             if np.max(np.abs(w_ritz_k)) > reort_eps:
-                                ritz_vec = [ManyBodyState() for _ in range(p)]
-                                add_scaled_multi(ritz_vec, Q_basis, s_k[:, np.newaxis])
-                                for _ in range(2):
-                                    overlap = inner_multi(ritz_vec, q_next)
-                                    if mpi and comm is not None:
-                                        comm.Allreduce(MPI.IN_PLACE, overlap, op=MPI.SUM)
-                                    add_scaled_multi(q_next, ritz_vec, -overlap)
-                                    W_sk = np.zeros((it + 2, p), dtype=complex)
-                                    for m in range(it + 2):
-                                        # Only compute if we have full W, else ignore update
-                                        if W.shape[0] > 2:
-                                            for j in range(it + 1):
-                                                W_sk[m] += W[m, j] @ s_k_blocks[j]
-                                    for m in range(it + 2):
-                                        if W.shape[0] > 2:
-                                            W[m, -1] -= np.outer(W_sk[m], overlap[0])
-                                            W[-1, m] = np.conj(W[m, -1].T)
-                except Exception:
-                    pass
+                                ritz_to_project.append(k)
+                if mpi and comm is not None:
+                    ritz_to_project = comm.bcast(ritz_to_project, root=0)
+
+                for k in ritz_to_project:
+                    s_k = conv_evec[:, k]
+                    s_k_blocks = s_k.reshape(it + 1, p)
+                    ritz_vec = [ManyBodyState() for _ in range(p)]
+                    add_scaled_multi(ritz_vec, Q_basis, s_k[:, np.newaxis])
+                    for _ in range(2):
+                        overlap = inner_multi(ritz_vec, q_next)
+                        if mpi and comm is not None:
+                            comm.Allreduce(MPI.IN_PLACE, overlap, op=MPI.SUM)
+                        add_scaled_multi(q_next, ritz_vec, -overlap)
 
         if reort_mode in (Reort.PARTIAL, Reort.SELECTIVE):
             n_blks = it + 1

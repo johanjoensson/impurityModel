@@ -571,39 +571,25 @@ def block_lanczos_array_cy(
 
             if reort == Reort.SELECTIVE:
                 if it > 0:
-                    try:
-                        from scipy.sparse.linalg import eigsh
-                        T_full = _build_full_T(alphas[: it + 1], betas[: it + 1])
-                        N_T = T_full.shape[0]
-                        if N_T <= 10:
-                            eigvals_T, conv_evec = la.eigh(T_full)
-                            k_eig = min(N_T, 6)
-                            eigvals_T = eigvals_T[:k_eig]
-                            conv_evec = conv_evec[:, :k_eig]
-                        else:
-                            eigvals_T, conv_evec = eigsh(T_full, k=min(N_T - 1, 6), which="SA")
-                        for k in range(len(eigvals_T)):
-                            err_bnd = np.linalg.norm(betas[it], ord=2) * np.abs(conv_evec[-1, k])
-                            if err_bnd < reort_eps:
-                                s_k = conv_evec[:, k]
-                                s_k_blocks = s_k.reshape(it + 1, n)
-                                w_ritz_k = np.zeros(n, dtype=complex)
-                                for j in range(it + 1):
-                                    w_ritz_k += np.conj(s_k_blocks[j]) @ W[j, it + 1]
-                                if np.max(np.abs(w_ritz_k)) > reort_eps:
-                                    ritz_vec = Q_list[0] @ s_k[:, np.newaxis]
-                                    for _ in range(2):
-                                        overlap = ritz_vec.conj().T @ q_next
-                                        q_next -= ritz_vec @ overlap
-                                        W_sk = np.zeros((it + 2, n), dtype=complex)
-                                        for m in range(it + 2):
-                                            for j in range(it + 1):
-                                                W_sk[m] += W[m, j] @ s_k_blocks[j]
-                                        for m in range(it + 2):
-                                            W[m, it + 1] -= np.outer(W_sk[m], overlap[0])
-                                            W[it + 1, m] = np.conj(W[m, it + 1].T)
-                    except Exception:
-                        pass
+                    T_full = _build_full_T(alphas[: it + 1], betas[: it + 1])
+                    # Use deterministic dense eigh (no ARPACK) so the convergence
+                    # decision is reproducible.  W has shape (2, k, n, n) where
+                    # axis 0 is (prev_row, current_row) — index as W[1, j], not
+                    # W[j, it+1] which confuses the two axes.
+                    eigvals_T, conv_evec = la.eigh(T_full)
+                    for k in range(len(eigvals_T)):
+                        err_bnd = np.linalg.norm(betas[it], ord=2) * np.abs(conv_evec[-1, k])
+                        if err_bnd < reort_eps:
+                            s_k = conv_evec[:, k]
+                            s_k_blocks = s_k.reshape(it + 1, n)
+                            w_ritz_k = np.zeros(n, dtype=complex)
+                            for j in range(it + 1):
+                                w_ritz_k += np.conj(s_k_blocks[j]) @ W[1, j]
+                            if np.max(np.abs(w_ritz_k)) > reort_eps:
+                                ritz_vec = Q_list[0] @ s_k[:, np.newaxis]
+                                for _ in range(2):
+                                    overlap = ritz_vec.conj().T @ q_next
+                                    q_next -= ritz_vec @ overlap
 
             if reort in (Reort.PARTIAL, Reort.SELECTIVE):
                 n_blks = it + 1
