@@ -10,6 +10,11 @@ from impurityModel.ed.finite import (
     thermal_average_scale_indep,
 )
 from impurityModel.ed.ManyBodyUtils import ManyBodyOperator, ManyBodyState
+from impurityModel.ed.symmetries import (
+    conserved_subset_charges,
+    measure_conserved_charges,
+    restrictions_from_charges,
+)
 from impurityModel.ed.utils import matrix_print
 
 
@@ -29,6 +34,7 @@ def calc_energy(
     slaterWeightMin,
     cipsi_solver_method="trlm",
     reort="full",
+    return_state=False,
 ):
     """
     Calculate the ground-state energy of the system for a given charge sector.
@@ -99,7 +105,7 @@ def calc_energy(
 
     basis.restrictions = basis.build_excited_restrictions(h_op, psis=None, es=None)
     if len(basis) == 0:
-        return np.inf, basis
+        return (np.inf, basis, None) if return_state else (np.inf, basis)
     solver.expand(
         h_op,
         dense_cutoff=dense_cutoff,
@@ -120,9 +126,95 @@ def calc_energy(
         solver=cipsi_solver_method,
         reort=reort,
     )
+    gs_state = eigen_psis[int(np.argmin(es))] if return_state and len(eigen_psis) > 0 else None
     basis.clear()
     basis.add_states(set(state for psi in eigen_psis for state in psi))
+    if return_state:
+        return np.min(es), basis, gs_state
     return np.min(es), basis
+
+
+def prescan_ground_state_sector(
+    h_op,
+    impurity_orbitals,
+    bath_states,
+    N0,
+    mixed_valence,
+    tau,
+    chain_restrict,
+    spin_flip_dj,
+    dense_cutoff,
+    comm,
+    truncation_threshold,
+    slaterWeightMin,
+    cipsi_solver_method="trlm",
+    scan_width=1,
+    verbose=False,
+):
+    """Rough CIPSI over a broad occupation window to locate the ground-state sector.
+
+    Instead of running a full accurate solve for every candidate impurity occupation
+    (the ``O(3^k)`` ``dN`` scan in :func:`find_ground_state_basis`), this runs **one**
+    rough solve over a window wide enough to span the candidates and then *measures*:
+
+    - the rough ground state's **impurity occupation** per orbital set
+      (:math:`\\langle N_{\\mathrm{imp}}\\rangle`, rounded) — the winning nominal ``N0``
+      to seed the accurate basis; and
+    - its **conserved-charge sector** (:func:`conserved_subset_charges` +
+      :func:`measure_conserved_charges`) — used to restrict the accurate refine to the
+      correct sector (Phase 3).
+
+    Parameters
+    ----------
+    h_op, impurity_orbitals, bath_states, N0, mixed_valence, tau, chain_restrict,
+    spin_flip_dj, dense_cutoff, comm, truncation_threshold, slaterWeightMin,
+    cipsi_solver_method
+        As for :func:`calc_energy` / :func:`find_ground_state_basis`.
+    scan_width : int, default 1
+        How far (in electrons per orbital set) to widen the valence window beyond
+        ``mixed_valence`` for the scan, so the candidate sectors are spanned.
+    verbose : bool, default False
+
+    Returns
+    -------
+    winning_N0 : dict
+        Nominal impurity occupation per orbital set (rounded rough-GS occupation).
+    restrictions : dict of frozenset to (int, int)
+        Conserved-charge sector restrictions for the accurate refine, or ``None`` if the
+        scan produced no state.
+    energy : float
+        The rough ground-state energy.
+    """
+    prescan_mixed_valence = {i: abs(mixed_valence.get(i, 0)) + scan_width for i in N0}
+    energy, basis, gs_state = calc_energy(
+        h_op,
+        impurity_orbitals,
+        bath_states,
+        N0,
+        prescan_mixed_valence,
+        tau,
+        chain_restrict,
+        spin_flip_dj,
+        dense_cutoff,
+        comm,
+        verbose,
+        truncation_threshold,
+        slaterWeightMin,
+        cipsi_solver_method=cipsi_solver_method,
+        return_state=True,
+    )
+    if gs_state is None:
+        return dict(N0), None, energy
+
+    n_orb = basis.num_spin_orbitals
+    impurity_subsets = [frozenset(orb for block in impurity_orbitals[i] for orb in block) for i in N0]
+    impurity_occ = measure_conserved_charges(gs_state, impurity_subsets, n_orb, comm=comm)
+    winning_N0 = {i: impurity_occ[k] for k, i in enumerate(N0)}
+
+    charges = conserved_subset_charges(h_op, n_orb)
+    charge_occ = measure_conserved_charges(gs_state, charges, n_orb, comm=comm)
+    restrictions = restrictions_from_charges(charges, charge_occ)
+    return winning_N0, restrictions, energy
 
 
 def find_ground_state_basis(
@@ -142,6 +234,7 @@ def find_ground_state_basis(
     verbose=True,
     slaterWeightMin=1e-12,
     cipsi_solver_method="trlm",
+    use_prescan=False,
 ):
     """
     Find the occupation corresponding to the lowest energy, compare N0 - 1, N0 and N0 + 1
@@ -211,41 +304,68 @@ def find_ground_state_basis(
         return e_trial, basis
 
     keys = list(N0.keys())
-    dN_trials = [
-        {keys[i]: dN[i] if keys[i] not in frozen_occupations else 0 for i in range(len(keys))}
-        for dN in product([0, -1, 1], repeat=len(keys))
-    ]
-    e_gs = np.inf
-    for dN in dN_trials:
-        trial_N0 = {i: N0[i] + dN[i] for i in N0}
-        e_trial, basis = get_energy(trial_N0)
-        if verbose:
-            print("{" + " ".join(f" {i} : {trial_N0[i]}" for i in dN) + f"}} ~ {e_trial:6.3f}")
-        if e_trial < e_gs:
-            e_gs = e_trial
-            basis_gs = basis.copy()
-            dN_gs = dN
-            gs_impurity_occ = trial_N0
-    for i in N0:
-        while (
-            dN_gs[i] != 0
-            and all(imp_occ + dN_gs[j] > 0 for j, imp_occ in gs_impurity_occ.items())
-            and all(
-                imp_occ + dN_gs[j] <= sum(len(block) for block in impurity_orbitals[j])
-                for j, imp_occ in gs_impurity_occ.items()
-            )
-        ):
-            trial_N0 = {j: n + dN_gs[i] if i == j else n for j, n in gs_impurity_occ.items()}
+    if use_prescan:
+        # One rough CIPSI over a broad window locates the GS sector by *measuring* the
+        # ground state's impurity occupation, replacing the O(3^k) dN scan; then a single
+        # accurate solve at that occupation refines it.
+        winning_N0, _restrictions, _e_rough = prescan_ground_state_sector(
+            h_op,
+            impurity_orbitals,
+            bath_states,
+            N0,
+            mixed_valence,
+            tau,
+            chain_restrict,
+            spin_flip_dj,
+            dense_cutoff,
+            comm,
+            truncation_threshold,
+            slaterWeightMin,
+            cipsi_solver_method=cipsi_solver_method,
+            verbose=verbose,
+        )
+        winning_N0 = {i: N0[i] if i in frozen_occupations else winning_N0[i] for i in N0}
+        e_gs, basis = get_energy(winning_N0)
+        gs_impurity_occ = winning_N0
+        basis_gs = basis.copy() if basis is not None else None
+        if verbose and (comm is None or comm.rank == 0):
+            print("Pre-scan ground state occupation:", gs_impurity_occ, f"~ {e_gs:6.3f}")
+    else:
+        dN_trials = [
+            {keys[i]: dN[i] if keys[i] not in frozen_occupations else 0 for i in range(len(keys))}
+            for dN in product([0, -1, 1], repeat=len(keys))
+        ]
+        e_gs = np.inf
+        for dN in dN_trials:
+            trial_N0 = {i: N0[i] + dN[i] for i in N0}
             e_trial, basis = get_energy(trial_N0)
             if verbose:
-                print(
-                    "{" + " ".join(f" {j} : {trial_N0[j]}" for j in dN_gs) + f"}} ~ {e_trial:6.3f}",
+                print("{" + " ".join(f" {i} : {trial_N0[i]}" for i in dN) + f"}} ~ {e_trial:6.3f}")
+            if e_trial < e_gs:
+                e_gs = e_trial
+                basis_gs = basis.copy()
+                dN_gs = dN
+                gs_impurity_occ = trial_N0
+        for i in N0:
+            while (
+                dN_gs[i] != 0
+                and all(imp_occ + dN_gs[j] > 0 for j, imp_occ in gs_impurity_occ.items())
+                and all(
+                    imp_occ + dN_gs[j] <= sum(len(block) for block in impurity_orbitals[j])
+                    for j, imp_occ in gs_impurity_occ.items()
                 )
-            if e_trial >= e_gs:
-                break
-            gs_impurity_occ[i] += dN_gs[i]
-            e_gs = e_trial
-            basis_gs = basis.copy()
+            ):
+                trial_N0 = {j: n + dN_gs[i] if i == j else n for j, n in gs_impurity_occ.items()}
+                e_trial, basis = get_energy(trial_N0)
+                if verbose:
+                    print(
+                        "{" + " ".join(f" {j} : {trial_N0[j]}" for j in dN_gs) + f"}} ~ {e_trial:6.3f}",
+                    )
+                if e_trial >= e_gs:
+                    break
+                gs_impurity_occ[i] += dN_gs[i]
+                e_gs = e_trial
+                basis_gs = basis.copy()
     if verbose:
         print("Ground state occupation")
         print("\n".join((f"{i:^3d}: {gs_impurity_occ[i]: ^5d}" for i in gs_impurity_occ)))

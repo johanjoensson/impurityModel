@@ -454,6 +454,22 @@ counts, point-group-disconnected orbital sets). Symmetries with fractional weigh
 
 ### 3.0. Target-sector selection (prerequisite — easy to overlook)
 
+> **DONE (2026-06-24).** `groundstate.prescan_ground_state_sector`: one rough CIPSI over
+> a broad valence window (`scan_width` beyond `mixed_valence`) replaces the `O(3^k)` `dN`
+> scan. The cleverness is that the rough ground state's **impurity occupation is
+> measured** (`measure_conserved_charges` on the impurity subsets → the winning nominal
+> `N0`) instead of guessed, and its **conserved-charge sector** is read off at the same
+> time for the restricted refine. `calc_energy` gained `return_state=True` to expose the
+> rough GS vector. Wired into `find_ground_state_basis(..., use_prescan=True)` (default
+> `False` ⇒ no regression). Tests (`test_sectorization.py`):
+> `test_prescan_finds_ground_state_sector` (rough scan hits the true global GS energy and
+> a valid sector — note the GS doublet's `S_z=±½` components are both correct;
+> restricting to the sector reproduces the energy with a smaller basis),
+> `test_prescan_matches_brute_force_loop` (the wired path equals the `dN` scan),
+> `test_measure_conserved_charges`. Verified serial + **MPI n=2** (the distributed
+> `Allreduce` measurement path), and the default `use_prescan=False` path is unchanged
+> (`test_groundstate.py` serial + MPI green).
+
 Sectorizing CIPSI only helps if you target the sector(s) that actually contain the
 ground state — and **you usually do not know that sector a priori** (mixed-valence and
 Kondo problems are the whole point of this package, and the relevant `N`/`S_z` is not
@@ -468,7 +484,7 @@ state.
   the alternative full window-sweep — the pre-scan is the chosen approach; a sweep is
   only a manual fallback if the pre-scan is ever ambiguous.
 - **Verification:**
-  - [ ] `test_target_sector_selection` — model whose ground state lives in a
+  - [x] `test_target_sector_selection` — model whose ground state lives in a
         non-obvious sector; assert the pre-scan identifies it and the sectorized run
         reproduces the unrestricted ground-state energy.
 

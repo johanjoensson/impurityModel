@@ -323,6 +323,54 @@ def subset_occupations(charges, occupied_orbitals):
     return [len(subset & occupied) for subset in charges]
 
 
+def measure_conserved_charges(psi, charges, n_orb, comm=None, round_to_int=True):
+    r"""Measure the conserved subset-charge occupations of a state, ``<psi|N_S|psi>``.
+
+    Because each ``N_S = Σ_{i∈S} n_i`` is **diagonal** in the determinant basis, this is
+    a weighted sum of determinant occupations — no operator application, so it is safe on
+    a hash-distributed ``ManyBodyState`` (sum locally, then ``Allreduce``). For a genuine
+    eigenstate each charge has a definite (integer) value; ``round_to_int`` rounds the
+    weighted average to that value.
+
+    Parameters
+    ----------
+    psi : ManyBodyState
+        The state. Its local determinants are summed; pass ``comm`` to combine ranks.
+    charges : sequence of frozenset of int
+        Conserved orbital subsets (e.g. from :func:`conserved_subset_charges`).
+    n_orb : int
+        Number of spin-orbitals (for decoding determinant bit patterns).
+    comm : MPI.Comm, optional
+        If given, the local sums are reduced across ranks.
+    round_to_int : bool, optional
+        Round each charge to the nearest integer (default True).
+
+    Returns
+    -------
+    list
+        ``<N_S>`` for each charge (ints if ``round_to_int``, else floats).
+    """
+    import impurityModel.ed.product_state_representation as psr
+
+    totals = np.zeros(len(charges))
+    norm2 = 0.0
+    for det, amp in psi.items():
+        weight = abs(amp) ** 2
+        norm2 += weight
+        occupied = {k for k, bit in enumerate(psr.bytes2bitarray(bytes(det.to_bytearray()), n_orb)) if bit}
+        for i, subset in enumerate(charges):
+            totals[i] += weight * len(subset & occupied)
+    if comm is not None:
+        totals = comm.allreduce(totals)
+        norm2 = comm.allreduce(norm2)
+    if norm2 == 0:
+        return [0 for _ in charges]
+    averages = totals / norm2
+    if round_to_int:
+        return [int(round(x)) for x in averages]
+    return list(averages)
+
+
 def symmetry_adapted_transformation(op, n_orb=None, seed=0):
     r"""Discover the symmetry and rotate the Hamiltonian into its symmetry-adapted basis.
 

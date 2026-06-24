@@ -225,3 +225,111 @@ def test_restrictions_refuse_out_of_sector_in_expand():
     free = Basis(initial_basis=list(seed), restrictions=None, **_BASIS_KW)
     free.expand(cross)
     assert any(not in_sector(bytes(d.to_bytearray())) for d in free.local_basis)
+
+
+# ---------------------------------------------------------------------------
+# Phase 3.0: rough-CIPSI pre-scan -> identify GS sector -> refine
+# ---------------------------------------------------------------------------
+
+
+def test_measure_conserved_charges():
+    """<N_S> on hand-built states rounds to the correct integer sector."""
+    from impurityModel.ed.symmetries import measure_conserved_charges
+
+    charges = [frozenset({0, 2}), frozenset({1, 3})]
+    psi = ManyBodyState({_sd(o, 4): 0.5 for o in ([0, 1], [0, 3], [2, 1], [2, 3])})
+    assert measure_conserved_charges(psi, charges, 4) == [1, 1]
+    assert measure_conserved_charges(ManyBodyState({_sd([0, 2], 4): 1.0}), charges, 4) == [2, 0]
+
+
+def _siam_6():
+    """Single-impurity Anderson model, 6 spin-orbitals.
+
+    0,1 = impurity (dn,up); 2,3 = valence bath (dn,up); 4,5 = conduction bath (dn,up).
+    """
+    ed, u, ev, ec, v = -1.0, 4.0, -3.0, 3.0, 0.5
+    terms = {}
+    for o in (0, 1):
+        terms[((o, "c"), (o, "a"))] = ed
+    for o in (2, 3):
+        terms[((o, "c"), (o, "a"))] = ev
+    for o in (4, 5):
+        terms[((o, "c"), (o, "a"))] = ec
+    terms[((0, "c"), (1, "c"), (1, "a"), (0, "a"))] = u  # U n_imp_dn n_imp_up
+    for a, b in ((0, 2), (1, 3), (0, 4), (1, 5)):
+        terms[((a, "c"), (b, "a"))] = v
+        terms[((b, "c"), (a, "a"))] = v
+    return ManyBodyOperator(terms)
+
+
+def test_prescan_finds_ground_state_sector():
+    """Rough pre-scan finds the true GS energy/sector; restricting to it reproduces the
+    ground state with a smaller basis."""
+    from impurityModel.ed.groundstate import prescan_ground_state_sector
+
+    op = _siam_6()
+    impurity_orbitals = {0: [[0, 1]]}
+    bath_states = ({0: [[2, 3]]}, {0: [[4, 5]]})
+
+    # Ground truth: diagonalize the full Fock space (64 determinants).
+    all_dets = [_bytes6(occ) for ne in range(7) for occ in combinations(range(6), ne)]
+    full = Basis(
+        impurity_orbitals={0: [[0, 1, 2, 3, 4, 5]]}, bath_states=({0: [[]]}, {0: [[]]}),
+        initial_basis=all_dets, verbose=False,
+    )
+    e_global = np.linalg.eigvalsh(np.asarray(full.build_dense_matrix(op)))[0]
+
+    # Pre-scan: one rough solve over a broad window.
+    winning_N0, restrictions, e_rough = prescan_ground_state_sector(
+        op, impurity_orbitals, bath_states, {0: 2},
+        mixed_valence={0: 1}, tau=0.01, chain_restrict=False, spin_flip_dj=False,
+        dense_cutoff=1000, comm=None, truncation_threshold=100000, slaterWeightMin=1e-12,
+    )
+    assert np.isclose(e_rough, e_global, atol=1e-6)  # rough scan found the true GS
+
+    # The identified sector has the right total electron number.
+    total_n = sum(hi for (lo, hi) in restrictions.values())
+    assert total_n == 3  # 2 (filled valence bath) + 1 (mixed-valence impurity)
+
+    # Refine: restricting the full Fock space to the pre-scan sector reproduces the GS
+    # with a strictly smaller basis.
+    sector_dets = [
+        d for d in all_dets if all(lo <= len(s & _occset6(d)) <= hi for s, (lo, hi) in restrictions.items())
+    ]
+    restricted = Basis(
+        impurity_orbitals={0: [[0, 1, 2, 3, 4, 5]]}, bath_states=({0: [[]]}, {0: [[]]}),
+        initial_basis=sector_dets, restrictions=restrictions, verbose=False,
+    )
+    e_refined = np.linalg.eigvalsh(np.asarray(restricted.build_dense_matrix(op)))[0]
+    assert np.isclose(e_refined, e_global, atol=1e-10)
+    assert len(sector_dets) < len(all_dets)
+
+
+def _bytes6(occ):
+    b = bytearray(1)
+    for o in occ:
+        b[0] |= 1 << (7 - o)
+    return bytes(b)
+
+
+def _occset6(det_bytes):
+    return {k for k, bit in enumerate(psr.bytes2bitarray(det_bytes, 6)) if bit}
+
+
+def test_prescan_matches_brute_force_loop():
+    """find_ground_state_basis with use_prescan=True matches the O(3^k) dN scan."""
+    from impurityModel.ed.groundstate import find_ground_state_basis
+
+    op = _siam_6()
+    kw = dict(
+        impurity_orbitals={0: [[0, 1]]}, bath_states=({0: [[2, 3]]}, {0: [[4, 5]]}), N0={0: 2},
+        mixed_valence={0: 1}, tau=0.01, chain_restrict=False, dense_cutoff=1000,
+        spin_flip_dj=False, comm=None, truncation_threshold=100000, verbose=False, slaterWeightMin=1e-12,
+    )
+
+    def gs_energy(basis):
+        return np.linalg.eigvalsh(np.asarray(basis.build_dense_matrix(op)))[0]
+
+    e_brute = gs_energy(find_ground_state_basis(op, **kw, use_prescan=False))
+    e_prescan = gs_energy(find_ground_state_basis(op, **kw, use_prescan=True))
+    assert np.isclose(e_brute, e_prescan, atol=1e-8)
