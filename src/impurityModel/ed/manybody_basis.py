@@ -663,6 +663,7 @@ class Basis:
         initial_basis=None,
         restrictions=None,
         weighted_restrictions=None,
+        split_threshold=1.0,
         delta_valence_occ=None,
         delta_conduction_occ=None,
         delta_impurity_occ=None,
@@ -766,6 +767,11 @@ class Basis:
         # Weighted-sum restrictions (e.g. S_z), list of (weights, (q_min, q_max)); see
         # ManyBodyOperator.set_weighted_restrictions. None = none.
         self.weighted_restrictions = weighted_restrictions
+        # Adaptive MPI split policy (Phase 7): cap the number of split colors near the
+        # participation ratio of the block costs, scaled by split_threshold. Larger =>
+        # split more aggressively; 0 => never split (unified communicator). 1.0 keeps the
+        # legacy max-split behaviour for equally-weighted blocks.
+        self.split_threshold = split_threshold
 
         # self.state_container = CentralizedStateContainer(
         self.state_container = SimpleDistributedStateContainer(
@@ -792,6 +798,7 @@ class Basis:
             weighted_restrictions=(
                 weighted_restrictions if weighted_restrictions is not None else self.weighted_restrictions
             ),
+            split_threshold=self.split_threshold,
             truncation_threshold=self.truncation_threshold,
             spin_flip_dj=self.spin_flip_dj,
             tau=self.tau,
@@ -1094,6 +1101,7 @@ class Basis:
             initial_basis=self.local_basis,
             restrictions=self.restrictions,
             weighted_restrictions=self.weighted_restrictions,
+            split_threshold=self.split_threshold,
             spin_flip_dj=self.spin_flip_dj,
             chain_restrict=self.chain_restrict,
             collapse_chains=self.collapse_chains,
@@ -1438,6 +1446,18 @@ class Basis:
         sorted_idxs = np.argsort(normalized_priorities, kind="stable")[::-1]
         n_colors = min(comm.size, len(normalized_priorities))
 
+        # Adaptive split policy (Phase 7). The participation ratio
+        # (Σp)²/Σp² = 1/Σ(normalized_p²) is the effective number of equally-weighted
+        # blocks; capping n_colors near it (scaled by split_threshold) avoids starving a
+        # few dominant blocks of ranks — better to run them on a larger sub-communicator
+        # (or unified). split_threshold=1 is the legacy max-split for equal blocks;
+        # split_threshold=0 forces a single unified communicator.
+        participation = 1.0 / np.sum(normalized_priorities**2)
+        n_colors = min(n_colors, max(1, int(np.ceil(participation * self.split_threshold))))
+        if n_colors <= 1:
+            # Unified: all ranks process every block together (no actual split).
+            return range(len(priorities)), [0], 0, [len(priorities)], self, psis, [None]
+
         subgroups = [tuple() for _ in range(n_colors)]
         for i in range(0, len(normalized_priorities), n_colors):
             for j in range(min(n_colors, len(normalized_priorities) - i)):
@@ -1503,6 +1523,7 @@ class Basis:
             initial_basis=list(new_states),
             restrictions=self.restrictions,
             weighted_restrictions=self.weighted_restrictions,
+            split_threshold=self.split_threshold,
             chain_restrict=self.chain_restrict,
             collapse_chains=self.collapse_chains,
             comm=split_comm,

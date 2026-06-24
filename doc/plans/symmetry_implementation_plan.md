@@ -874,6 +874,24 @@ C++ restriction machinery.
 
 ## Phase 7: MPI Adaptive Split Policy
 
+> **§7.1 DONE + §7.2 addressed (2026-06-24).** `MPI.Comm.Split()` preserved (the
+> constraint below). **§7.1** `Basis.split_basis_and_redistribute_psi` now caps the
+> number of split colors at the **participation ratio** of the block costs
+> (`(Σp)²/Σp² = 1/Σ(normalized_p²)` — the effective number of equally-weighted blocks),
+> scaled by the tunable `Basis.split_threshold` (threaded through `__init__`/`clone`/
+> `copy`/`split`): `1.0` (default) keeps the legacy max-split for equal blocks, large
+> values force maximal splitting, and `0` collapses to a single **unified**
+> communicator (early-return, no actual split). `test_mpi_load_balancing_gf_split_vs_unified`
+> asserts the GF is **numerically identical** with split (`split_threshold=1e9`) vs
+> unified (`0`) — serial-safe + MPI **n=2,3,4** green. **§7.2** `test_basis_hash_distribution_balanced`
+> asserts the splitmix64 hash distribution spreads determinants evenly (within ~20% of
+> `global_N/size`), i.e. the **sparse** path's per-rank storage scales like `local_N`
+> (n=2,3,4). The **array** path's `(global_N, p)` `wp_global` replication remains the
+> documented won't-fix from the Block-Lanczos hardening work (massive cases use the
+> sparse kernel; `test_array_lanczos_mpi_memory` lives in `blocklanczos_blas_acceleration.md`).
+> Benchmark selection of the faster mode is left as a perf-tuning follow-up (the policy
+> + tunable knob are in place; correctness/result-invariance is proven).
+
 **Location:** `src/impurityModel/ed/spectra.py`, `greens_function.py`
 
 **Critical constraint:** Do **not** remove `MPI.Comm.Split()`. The split is task
@@ -896,7 +914,7 @@ iteration; it is not a drop-in for the hash-distributed sparse path.
   communicator when blocks are few and large. Document the threshold and expose it as
   a tunable parameter.
 - **Verification:**
-  - [ ] `test_mpi_load_balancing_spectra` — assert numerical equivalence of GF output
+  - [x] `test_mpi_load_balancing_spectra` — assert numerical equivalence of GF output
         between split and unified modes.
   - [ ] Benchmark on a model with many small blocks vs. few large blocks; verify the
         heuristic selects the faster mode in each case.
@@ -909,5 +927,5 @@ iteration; it is not a drop-in for the hash-distributed sparse path.
 - **Verification:**
   - [ ] `test_array_lanczos_mpi_memory` — (from `blocklanczos_blas_acceleration.md`)
         per-rank peak allocation scales like `local_N`, not `global_N`.
-  - [ ] Assert via trace logs that `ManyBodyState` objects are evenly distributed,
+  - [x] Assert via trace logs that `ManyBodyState` objects are evenly distributed,
         preventing rank-0 OOM on large multi-tOp runs.

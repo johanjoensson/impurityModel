@@ -345,3 +345,78 @@ def test_dense_greens_function_basis_expansion():
     )
     assert len(alphas) == 1
     assert alphas[0].shape[1:] == (1, 1)
+
+
+@pytest.mark.mpi
+def test_mpi_load_balancing_gf_split_vs_unified():
+    """The Green's function is numerically identical with split vs unified MPI policy
+    (Phase 7: split_threshold only changes which ranks do which block, not the result)."""
+    comm = MPI.COMM_WORLD
+
+    def _sd(occ, n=2):
+        b = bytearray((n + 7) // 8)
+        for o in occ:
+            b[o // 8] |= 1 << (7 - o % 8)
+        return bytes(b)
+
+    hop = {((0, "c"), (1, "a")): -0.5, ((1, "c"), (0, "a")): -0.5}
+    hOp = ManyBodyOperator(hop)
+    tOps = [ManyBodyOperator({((0, "a"),): 1.0}), ManyBodyOperator({((1, "a"),): 1.0})]
+    states = [_sd([0]), _sd([1])]  # 1-electron basis
+
+    def run(split_threshold):
+        basis = Basis(
+            impurity_orbitals={0: [[0, 1]]}, bath_states=({0: [[]]}, {0: [[]]}),
+            initial_basis=states, comm=comm, split_threshold=split_threshold,
+        )
+        if comm.rank == 0:
+            psi = ManyBodyState({SlaterDeterminant.from_bytes(states[0]): 1.0,
+                                 SlaterDeterminant.from_bytes(states[1]): 1.0})
+            psi = psi / psi.norm()
+        else:
+            psi = ManyBodyState({})
+        psi = basis.redistribute_psis([psi])[0]
+        return calc_Greens_function_with_offdiag(
+            hOp=hOp, tOps=tOps, psis=[psi], es=[-0.5], block_basis=basis,
+            delta=0.01, dN=1, occ_cutoff=1e-6, slaterWeightMin=0.0, verbose=False, sparse=True,
+        )
+
+    a_split, b_split, r_split = run(1e9)   # force maximal split
+    a_uni, b_uni, r_uni = run(0.0)         # force unified communicator
+
+    if comm.rank == 0:
+        assert len(a_split) == len(a_uni)
+        for xs, xu in zip(a_split, a_uni):
+            np.testing.assert_allclose(xs, xu, atol=1e-10)
+        for ys, yu in zip(b_split, b_uni):
+            np.testing.assert_allclose(ys, yu, atol=1e-10)
+        for zs, zu in zip(r_split, r_uni):
+            np.testing.assert_allclose(zs, zu, atol=1e-10)
+
+
+@pytest.mark.mpi
+def test_basis_hash_distribution_balanced():
+    """The hash-distributed basis spreads determinants evenly across ranks, so per-rank
+    storage scales like local_N ~ global_N / size (Phase 7.2: no rank-0 OOM)."""
+    from itertools import combinations
+
+    comm = MPI.COMM_WORLD
+    # 252 distinct 10-orbital, 5-electron determinants.
+    n_orb = 10
+    dets = []
+    for occ in combinations(range(n_orb), 5):
+        b = bytearray((n_orb + 7) // 8)
+        for o in occ:
+            b[o // 8] |= 1 << (7 - o % 8)
+        dets.append(bytes(b))
+    basis = Basis(
+        impurity_orbitals={0: [list(range(n_orb))]}, bath_states=({0: [[]]}, {0: [[]]}),
+        initial_basis=dets, comm=comm,
+    )
+    sizes = comm.allgather(len(basis.local_basis))
+    total = sum(sizes)
+    assert total == len(dets)  # every determinant owned by exactly one rank
+    expected = total / comm.size
+    # Balanced: no rank deviates from the even share by more than ~20%.
+    assert max(sizes) <= 1.2 * expected + 5
+    assert min(sizes) >= 0.8 * expected - 5
