@@ -494,6 +494,13 @@ counts, point-group-disconnected orbital sets). Symmetries with fractional weigh
 > `Allreduce` measurement path), and the default `use_prescan=False` path is unchanged
 > (`test_groundstate.py` serial + MPI green).
 
+> **Default flipped ON (2026-06-24):** `find_ground_state_basis(use_prescan=True)` is now
+> the default — `calc_gs` locates the GS occupation via the rough-scan prescan instead of
+> the legacy `O(3^k)` `dN` scan. Validated: full serial suite (371 passed) + MPI n=2
+> `test_groundstate.py` green with the prescan path exercised everywhere;
+> `test_prescan_matches_brute_force_loop` still pins prescan == legacy. Pass
+> `use_prescan=False` (via `basis_setup`) for the old behaviour.
+
 Sectorizing CIPSI only helps if you target the sector(s) that actually contain the
 ground state — and **you usually do not know that sector a priori** (mixed-valence and
 Kondo problems are the whole point of this package, and the relevant `N`/`S_z` is not

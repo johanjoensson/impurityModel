@@ -248,11 +248,16 @@ def find_ground_state_basis(
     verbose=True,
     slaterWeightMin=1e-12,
     cipsi_solver_method="trlm",
-    use_prescan=False,
+    use_prescan=True,
     weighted_restrictions=None,
 ):
     """
     Find the occupation corresponding to the lowest energy, compare N0 - 1, N0 and N0 + 1
+
+    use_prescan (default True): locate the ground-state occupation with a single rough
+    CIPSI over a broad window and measure the impurity occupation, instead of the
+    O(3^k) accurate scan over every dN combination. Set False for the legacy scan.
+
     Returns:
     basis_gs, ManybodyBasis: Initial basis for the ground state
     """
