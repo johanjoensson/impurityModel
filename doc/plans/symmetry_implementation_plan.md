@@ -85,6 +85,23 @@ is the regression gate that proves the effort is safe to enable.
 - [ ] `test_discovery_reproduces_manual_block_structure` — for every model with a
       hand-coded `block_structure`, assert auto-discovery matches or refines it.
 
+> **Partial validation done (2026-06-24)** — discovery run on **real codebase
+> operators** (`finite.getSOCop`, `gethHfieldop`-style CF) in the `c2i` index basis,
+> `test_symmetries.py`:
+> - `test_discovery_real_dshell_no_soc_has_su2` — a real spin-independent d-shell
+>   crystal field: discovery recovers `N, S_x, S_y, S_z, L_z` (full spin SU(2) + axial
+>   orbital symmetry).
+> - `test_discovery_real_dshell_soc_breaks_su2` — add `getSOCop` (`l·s`): spin SU(2) is
+>   correctly **broken** — `N` and `J_z = L_z + S_z` survive, `S_z`/`S_x` no longer
+>   commute. (`l·s` is real in the spherical basis; complexity is a cubic-basis effect.)
+> - `test_discovery_basis_invariant_cubic` — rotate to the cubic basis (genuinely
+>   **complex** `H`): same generator count (basis-invariant), `N` still found, all
+>   generators commute. Exercises the engine on the complex Hamiltonians real runs use.
+>
+> Still TODO for the *formal* gate: map a discovered Cartan to an orbital block
+> decomposition and assert it matches/refines the hand-coded `BlockStructure` in
+> `get_spectra.py` (p/d) and `selfenergy.py`.
+
 ---
 
 ## Phase 1: Ground-State Observables & Sector Labeling
@@ -295,6 +312,27 @@ statistics (impurity/valence/conduction weights, `groundstate.py:398-404`).
 
 ## Phase 2: Symmetry Discovery Engine
 
+> **DONE (2026-06-24).** Implemented in new `src/impurityModel/ed/symmetries.py`,
+> tested in `src/impurityModel/test/test_symmetries.py` (9 tests, green):
+> - §2.1 `extract_tensors` / `tensors_to_operator` — 1-/2-body coefficient tensors
+>   (`h_ij`, `V_ijkl` matching the real `c†c†aa` Coulomb ordering), round-trip + reject
+>   3-body / non-number-conserving (`test_tensor_extraction*`).
+> - §2.2 `discover_one_body_symmetries` — null space of the commutator super-operator
+>   `A = I⊗h − hᵀ⊗I` (column-stacking `vec`, verified by `‖[h,G]‖<1e-10` per generator),
+>   documented `sigma_cut = ‖A‖·n·ε`. `in_span` helper. SU(2) Hubbard dimer finds
+>   N, S_z, **S_x, S_y** (8-dim commutant); count stable across cutoffs
+>   (`test_symmetry_null_space`, `test_null_space_threshold_stability`).
+> - §2.3 `hermitian_algebra_basis`, `cartan_subalgebra` (centralizer of a generic
+>   regular element — robust vs sequential diagonalisation), `joint_diagonalize`
+>   (random combination → common eigenbasis even with degenerate generators),
+>   `weights_are_01` (the {0,1}-occupation checkpoint: `N`→restriction-able,
+>   `S_z`→Phase 6). `test_cartan_subalgebra_and_joint_diagonalization`,
+>   `test_joint_diagonalization_degenerate`, `test_generator_weight_classification`.
+>
+> Anti-unitary (time-reversal/Kramers) limitation documented in the module docstring.
+> **Next:** Phase 3 (sectorized CIPSI) or Phase 5 (basis rotation, the observable-
+> reporting unlock). The `weights_are_01` split is the Phase 3 ↔ Phase 6 routing.
+
 **Location:** `src/impurityModel/ed/symmetries.py` (new file, Python + SciPy)
 
 **Scope:** One-body symmetry algebra only. The constraint `[H,O]=0` returns the full
@@ -323,9 +361,9 @@ theoretical aside; document it where the discovered symmetries are reported.
   2-body before extraction (raise on any token with >4 operators rather than silently
   dropping it).
 - **Verification:**
-  - [ ] `test_tensor_extraction` — round-trip: reconstruct a `ManyBodyOperator` from
+  - [x] `test_tensor_extraction` — round-trip: reconstruct a `ManyBodyOperator` from
         the extracted dense tensors and assert it matches the original.
-  - [ ] `test_tensor_extraction_rejects_3body` — operator with a 3-body term raises
+  - [x] `test_tensor_extraction_rejects_3body` — operator with a 3-body term raises
         or warns explicitly.
 
 ### 2.2. Linear constraint system & null space (SVD) **[strong-model]**
@@ -355,11 +393,11 @@ theoretical aside; document it where the discovered symmetries are reported.
   `σ_cut = ‖A‖ · max(n_orb) · ε`. Test sensitivity: the discovered count must be
   stable across a range of cutoffs around the default.
 - **Verification:**
-  - [ ] `test_symmetry_null_space` — SU(2)-invariant Hubbard dimer where the answer
+  - [x] `test_symmetry_null_space` — SU(2)-invariant Hubbard dimer where the answer
         is known by hand. Assert that `N̂`, `Ŝ_z`, **and** `S_x`, `S_y` (all one-body)
         appear in the null space; assert that `Ŝ²` does **not** (it is two-body and
         cannot appear here by construction).
-  - [ ] `test_null_space_threshold_stability` — discovered symmetry count is constant
+  - [x] `test_null_space_threshold_stability` — discovered symmetry count is constant
         across cutoffs spanning ~2 orders of magnitude around the default.
 
 ### 2.3. Cartan subalgebra & joint diagonalization **[strong-model]**
@@ -373,13 +411,13 @@ theoretical aside; document it where the discovered symmetries are reported.
   eigenvectors simultaneously diagonalize *all* the `Oₖ`. Then read off each
   generator's eigenvalues in that basis and verify off-diagonals vanish.
 - **Verification:**
-  - [ ] `test_joint_diagonalization` — commutators of all diagonalized generators are
+  - [x] `test_joint_diagonalization` — commutators of all diagonalized generators are
         zero (`‖[Oₐ, O_b]‖ < 1e-12`), and each `Oₖ` is diagonal in the common basis to
         the same tolerance.
-  - [ ] `test_joint_diagonalization_degenerate` — a case with a degenerate generator
+  - [x] `test_joint_diagonalization_degenerate` — a case with a degenerate generator
         spectrum; assert the random-combination method still yields a common
         eigenbasis (the sequential method would fail here).
-  - [ ] **Additional checkpoint:** assert that each resulting generator is
+  - [x] **Additional checkpoint:** assert that each resulting generator is
         integer-valued on the {0,1} occupation basis when possible. Flag any generator
         with non-{0,1} orbital weights — those cannot be expressed as restriction
         masks and require Phase 6 to use for sectorization.
