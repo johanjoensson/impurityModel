@@ -783,6 +783,93 @@ def discover_one_body_symmetries(h, sigma_cut=None):
     return [null_vecs[:, a].reshape(n, n, order="F") for a in range(null_vecs.shape[1])]
 
 
+def is_abelian(generators, tol=1e-9):
+    r"""Whether the one-body symmetry algebra is abelian (all commutators vanish).
+
+    A non-abelian algebra (some ``[O_a, O_b] != 0``) is the signature of a non-abelian
+    symmetry — e.g. SU(2) spin, whose three one-body generators ``S_x, S_y, S_z`` are all
+    in the commutant but do not mutually commute (companion plan
+    ``nonabelian_symmetry_casimir.md``, Phase A.1).
+    """
+    gens = [np.asarray(g, dtype=complex) for g in generators]
+    for a in range(len(gens)):
+        for b in range(a + 1, len(gens)):
+            if np.linalg.norm(gens[a] @ gens[b] - gens[b] @ gens[a]) > tol:
+                return False
+    return True
+
+
+def structure_constants(generators):
+    r"""Lie-algebra structure constants ``f_{abc}`` with ``[O_a, O_b] = Σ_c f_{abc} O_c``.
+
+    Assumes the ``generators`` are **mutually orthogonal** under the Frobenius inner
+    product ``<A, B> = Tr(A† B)`` (true for the SVD null-space basis from
+    :func:`discover_one_body_symmetries`, and for ``{S_x, S_y, S_z}``). For an su(2)
+    triplet these reproduce ``[S_a, S_b] = i ε_{abc} S_c`` (up to the generator
+    normalisation).
+
+    Parameters
+    ----------
+    generators : sequence of np.ndarray
+        Single-particle generator matrices (mutually Frobenius-orthogonal).
+
+    Returns
+    -------
+    np.ndarray, shape (n, n, n)
+        ``f[a, b, c]``.
+    """
+    gens = [np.asarray(g, dtype=complex) for g in generators]
+    n = len(gens)
+    norms = [np.vdot(g, g) for g in gens]
+    f = np.zeros((n, n, n), dtype=complex)
+    for a in range(n):
+        for b in range(n):
+            commutator = gens[a] @ gens[b] - gens[b] @ gens[a]
+            for c in range(n):
+                if abs(norms[c]) > 1e-15:
+                    f[a, b, c] = np.vdot(gens[c], commutator) / norms[c]
+    return f
+
+
+def apply_reconstructed_casimir(psi, generators):
+    r"""Apply a reconstructed Casimir ``Ĉ = Σ_a Ô_a²`` to a state.
+
+    Given a (sub)set of one-body symmetry generators ``{O_a}`` (single-particle
+    matrices, e.g. an su(2) spin triplet ``{S_x, S_y, S_z}``), each is promoted to a
+    one-body ``ManyBodyOperator`` ``Ô_a = Σ_ij (O_a)_ij c†_i c_j`` and the Casimir is
+    ``Ĉ = Σ_a Ô_a Ô_a``, applied by sequential one-body application (no explicit
+    two-body product is formed). For the spin triplet this is exactly ``Ŝ²`` (companion
+    plan Phase A.2).
+
+    Parameters
+    ----------
+    psi : ManyBodyState
+    generators : sequence of np.ndarray
+        Single-particle generator matrices spanning the sub-algebra.
+
+    Returns
+    -------
+    ManyBodyState
+        ``Ĉ |psi>``.
+    """
+    ops = [tensors_to_operator(np.asarray(g, dtype=complex)) for g in generators]
+    result = None
+    for op in ops:
+        term = op(op(psi, 0), 0)
+        result = term if result is None else result + term
+    return result
+
+
+def expect_reconstructed_casimir(psi, generators, comm=None):
+    r"""Return ``<psi|Ĉ|psi>`` for the reconstructed Casimir ``Ĉ = Σ_a Ô_a²``."""
+    from impurityModel.ed.ManyBodyUtils import inner
+
+    val = inner(psi, apply_reconstructed_casimir(psi, generators))
+    if comm is not None:
+        val = comm.allreduce(val)
+    return np.real(val)
+
+
 def hermitian_algebra_basis(generators, tol=1e-9):
     r"""Return an orthonormal **Hermitian** basis of the algebra spanned by ``generators``.
 

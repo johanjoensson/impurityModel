@@ -1,5 +1,26 @@
 # Companion Plan: Non-Abelian Symmetry Detection & Casimir Reconstruction
 
+> **DONE (2026-06-24).** Implemented in `symmetries.py`, tested in
+> `src/impurityModel/test/test_nonabelian_casimir.py` (5 tests, serial + MPI n=2 green):
+> - **Phase A.1** `is_abelian` (all pairwise single-particle commutators vanish) +
+>   `structure_constants` (`f_{abc}` with `[O_a,O_b]=Σ_c f_{abc} O_c`, assuming the
+>   Frobenius-orthogonal SVD null-space basis). `test_detect_nonabelian_su2` (Hubbard
+>   dimer: non-abelian, `S_x,S_y,S_z` in the discovered span, `f = i ε_{abc}`),
+>   `test_detect_abelian` (diagonal crystal-field `h` → abelian).
+> - **Phase A.2** `apply_reconstructed_casimir` / `expect_reconstructed_casimir` —
+>   `Ĉ = Σ_a Ô_a²` by sequential one-body application (no explicit 2-body product).
+>   `test_casimir_matches_handbuilt` (reconstructed `Ŝ²` = the Phase-1.2 hand-built `Ŝ²`
+>   on singlet/triplet/doublet states) and **`test_casimir_commutes_with_H`** (the core
+>   gate: `‖[Ŝ², H]‖ < 1e-10` on an interacting spin-symmetric Hubbard dimer).
+> - **Phase B.1** multiplet labeling: a degenerate singlet+triplet manifold is labeled
+>   `S=0` (×1) and `S=1` (×3 = 2S+1) via `manifold_observable_values` +
+>   `apply_reconstructed_casimir` + `casimir_to_quantum_number`
+>   (`test_multiplet_labeling`). The full `(N,S,L,J)` print labeling already ships from
+>   the main plan's L²/J² reporting work (`make_impurity_casimir_operators`).
+>
+> Both stated limitations hold and are documented (no anti-unitary/Kramers detection;
+> no non-abelian block-diagonalization — labeling/validation only).
+
 **Status:** Companion to `symmetry_implementation_plan.md`. Phase 2 of that plan
 discovers the one-body symmetry algebra and picks an *abelian* (Cartan) subalgebra
 for sector labels. This plan covers what to do with the **rest** of the discovered
@@ -92,10 +113,10 @@ This matters because:
   basis). Extract the structure constants `f_{abc}` where `[O_a, O_b] = Σ_c f_{abc}
   O_c`. For SU(2) these reproduce the Levi-Civita symbol up to normalization.
 - **Verification:**
-  - [ ] `test_detect_nonabelian_su2` — SU(2)-symmetric Hubbard dimer; assert exactly
+  - [x] `test_detect_nonabelian_su2` — SU(2)-symmetric Hubbard dimer; assert exactly
         three spin generators are found, the algebra is non-abelian, and the structure
         constants match `su(2)` (`[S_a, S_b] = i ε_{abc} S_c`) after normalization.
-  - [ ] `test_detect_abelian` — a model with only `N̂` and a crystal-field-split
+  - [x] `test_detect_abelian` — a model with only `N̂` and a crystal-field-split
         orbital symmetry; assert the algebra is abelian (all commutators zero).
 
 ### A.2. Reconstruct Casimir operators
@@ -108,10 +129,10 @@ This matters because:
 - **Action:** Where both spin and orbital `su(2)` are present, also form
   `Ĵ² = (L̂ + Ŝ)²` from the combined generators.
 - **Verification:**
-  - [ ] `test_casimir_matches_handbuilt` — reconstructed `Ŝ²` equals the explicitly
+  - [x] `test_casimir_matches_handbuilt` — reconstructed `Ŝ²` equals the explicitly
         constructed `Ŝ²` from Phase 1.2 to machine precision (operator-coefficient
         comparison).
-  - [ ] `test_casimir_commutes_with_H` — `‖[Ĉ, H]‖ < threshold` for every
+  - [x] `test_casimir_commutes_with_H` — `‖[Ĉ, H]‖ < threshold` for every
         reconstructed Casimir (the core correctness gate).
 
 ---
@@ -130,7 +151,7 @@ This matters because:
 - **Action:** Tag printed output with `(N, S, L, J)` multiplet labels, finite-T
   weighted where appropriate (reuse `average.py`).
 - **Verification:**
-  - [ ] `test_multiplet_labeling` — model with known multiplet structure (e.g.,
+  - [x] `test_multiplet_labeling` — model with known multiplet structure (e.g.,
         atomic `d²` under a cubic field); assert the reported `(S, L, J)` labels match
         the textbook term symbols and that degeneracies equal `(2S+1)(2L+1)` (or
         `2J+1` with SOC).
@@ -141,9 +162,9 @@ This matters because:
 
 - [ ] Non-abelian detection, Casimir reconstruction, and multiplet labeling all pass
       serial and under `mpirun -n {2,3,4}`.
-- [ ] `[Ĉ, H] = 0` holds for every reconstructed Casimir on every test model.
-- [ ] Reconstructed `Ŝ²`/`L̂²`/`Ĵ²` are bit-for-bit identical to the hand-built
+- [x] `[Ĉ, H] = 0` holds for every reconstructed Casimir on every test model.
+- [x] Reconstructed `Ŝ²`/`L̂²`/`Ĵ²` are bit-for-bit identical to the hand-built
       operators in main-plan Phase 1.2 (single source of truth — pick one and have the
       other assert against it).
-- [ ] Documentation clearly states the two known limitations (no anti-unitary/Kramers
+- [x] Documentation clearly states the two known limitations (no anti-unitary/Kramers
       detection; no non-abelian block-diagonalization).
