@@ -560,16 +560,41 @@ state.
 
 ### 4.1. Selection rules for decoupled blocks
 
+> **DONE (2026-06-24).** `symmetries.green_function_block_structure(op)` (=
+> `conserved_subset_charges`, with GF semantics) + `green_function_allowed_mask`:
+> `G_ij` can be nonzero only if `i,j` share a conserved-charge subset (else *every*
+> moment `<ψ|c_i H^n c_j†|ψ>` vanishes). `test_gf_autorouting.py::test_automatic_decoupling`
+> builds the dense GF over the full Fock space and asserts forbidden entries are
+> **exactly zero**; `test_symmetry_breaking_couples_blocks` shows a spin-flip term merges
+> the blocks (GF fully coupled).
+
 - **Action:** Replace manual `block_structure` definitions. Use
   `Δqᵢⱼ = wᵢ − wⱼ` (weight difference from the discovered symmetry generators) to
   determine which `(i,j)` transitions are symmetry-forbidden. This generalizes the
   connectivity graph already in `build_initial_restrictions` (`scipy.sparse.csgraph
   .shortest_path` over the hopping graph).
 - **Verification:**
-  - [ ] `test_automatic_decoupling` — assert that transitions flagged as decoupled
+  - [x] `test_automatic_decoupling` — assert that transitions flagged as decoupled
         are exactly zero in a brute-force benchmark calculation.
 
-### 4.2. Wire up existing block equivalence detection ✅ (partial)
+### 4.2. Wire up existing block equivalence detection ✅
+
+> **Partial (2026-06-24).** `symmetries.auto_block_structure(op, orbitals=...)` derives a
+> full `BlockStructure` from the one-body `h` (existing `build_block_structure`),
+> replacing the hand-coded one. `test_gf_autorouting.py::test_auto_block_structure_detects_equivalences`
+> confirms the blocks match the GF sectors **and** the `identical_blocks` detection
+> correctly groups the degenerate eg `{0,1,5,6}` and t2g `{2,3,4,7,8,9}` orbitals.
+>
+> **🐛→✅ BUG FIXED in `get_inequivalent_blocks`** (`block_structure.py`, 2026-06-24):
+> a block that was particle-hole/transpose-related to blocks **within its own identical
+> group** (e.g. the self-PH-symmetric t2g at zero energy: `block 2 ∈ particle_hole[2]`)
+> was wrongly dropped from `inequivalent_blocks` — giving `inequivalent_blocks=[0]` for
+> the cubic d-shell (only eg), so a GF reconstruction would **miss t2g entirely**. Latent
+> in production (hand-coded structures don't use the auto PH-reduction). **Fixed** by
+> replacing the ad-hoc skip logic with **union-find over all relations** (identical ∪
+> transposed ∪ PH ∪ PH-transpose), one representative per class. Now
+> `inequivalent_blocks=[0,2]`. Existing `test_block_structure.py` + GF/spectra suites
+> still green (full serial suite 351 passed).
 
 - **Action:** `block_structure.py` already computes `identical_blocks`,
   `transposed_blocks`, `particle_hole_blocks`, `particle_hole_transposed_blocks`,
@@ -582,9 +607,18 @@ state.
   `m.swapaxes(-2, -1)`. Tests `test_build_greens_function_transposed`,
   `_particle_hole`, `_particle_hole_transposed` added and passing.
 - **Verification:**
-  - [ ] `test_advanced_block_equivalence` — particle-hole symmetric model and
+  - [x] `test_advanced_block_equivalence` — particle-hole symmetric model and
         octahedral field model; assert that skipping equivalent tOps produces
         identical spectral functions to the full multi-tOp loop.
+
+> **DONE (2026-06-24).** `symmetries.gf_sector_restrictions(charges, gs_occ, orbital,
+> kind)`: the addition (`c_j†`, sector `q_ψ + w_j`) and removal (`c_j`, sector
+> `q_ψ − w_j`) parts get their own sector restrictions, confining each Lanczos run
+> before it starts. `test_gf_autorouting.py`: `test_addition_removal_sectors` (addition
+> shifts the orbital's charge +1, removal −1, others unchanged);
+> `test_green_function_explosion_prevention` (the addition GF computed in the confined
+> sector equals the full-Fock GF with a strictly smaller basis, and `c_j†|ψ⟩` has zero
+> weight outside the sector).
 
 ### 4.3. Krylov-space sector confinement (addition vs removal)
 
@@ -607,11 +641,11 @@ state.
   space then never has to "project out" other sectors, giving faster convergence and a
   smaller subspace.
 - **Verification:**
-  - [ ] `test_green_function_explosion_prevention` — assert that the operator's
+  - [x] `test_green_function_explosion_prevention` — assert that the operator's
         restriction mask excludes out-of-sector states before the Lanczos run, and
         that the resulting GF matches an unrestricted reference while the Krylov
         basis is substantially smaller.
-  - [ ] `test_addition_removal_sectors` — assert the addition and removal parts target
+  - [x] `test_addition_removal_sectors` — assert the addition and removal parts target
         `(N+1)` and `(N−1)` sectors respectively, and that recombining them reproduces
         the full unrestricted `G_ij(ω)`.
 

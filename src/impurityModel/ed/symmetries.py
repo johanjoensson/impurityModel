@@ -323,6 +323,124 @@ def subset_occupations(charges, occupied_orbitals):
     return [len(subset & occupied) for subset in charges]
 
 
+def auto_block_structure(op, n_orb=None, orbitals=None):
+    r"""Auto-derive a full ``BlockStructure`` from the one-body Hamiltonian.
+
+    Replaces a hand-coded ``block_structure``: extracts the one-body tensor and runs the
+    existing :func:`block_structure.build_block_structure` on it, which returns both the
+    orbital blocks (connectivity / symmetry sectors) **and** the equivalences
+    (``identical_blocks``, ``transposed_blocks``, ``particle_hole_blocks``, …) used to
+    skip redundant transition-operator evaluations in the spectra loop (Phase 4.2). The
+    blocks agree with :func:`green_function_block_structure` (both are the one-body
+    symmetry sectors); this adds the cross-block equivalence detection.
+
+    Parameters
+    ----------
+    op : ManyBodyOperator or dict
+        The Hamiltonian (only its one-body part is used).
+    n_orb : int, optional
+        Number of spin-orbitals (inferred if ``None``).
+    orbitals : sequence of int, optional
+        Restrict to this sub-block (e.g. the impurity orbitals) before analysing.
+
+    Returns
+    -------
+    BlockStructure
+    """
+    from impurityModel.ed.block_structure import build_block_structure
+
+    h, _, _ = extract_tensors(op, n_orb=n_orb)
+    if orbitals is not None:
+        h = h[np.ix_(list(orbitals), list(orbitals))]
+    return build_block_structure(None, mat=h)
+
+
+def gf_sector_restrictions(charges, gs_occupations, orbital, kind, slack=0):
+    r"""Conserved-charge restrictions for an addition/removal Green's-function run.
+
+    The GF :math:`G_{jj}(\omega)` has an **addition** part (``c_j^\dagger|\psi\rangle``,
+    sector ``q_ψ + w_j``) and a **removal** part (``c_j|\psi\rangle``, sector
+    ``q_ψ - w_j``). They live in *different* sectors, so each Lanczos run can be confined
+    to its own sector before it starts (`tOp.set_restrictions`), preventing
+    Hilbert-space explosion — Phase 4.3. The conserved charge containing ``orbital``
+    shifts by ``+1`` (addition) or ``-1`` (removal); all other charges stay at the
+    ground-state value.
+
+    Parameters
+    ----------
+    charges : sequence of frozenset of int
+        Conserved subset charges (from :func:`conserved_subset_charges`).
+    gs_occupations : sequence of int
+        Ground-state occupation of each charge (from :func:`measure_conserved_charges`).
+    orbital : int
+        The Green's-function orbital ``j``.
+    kind : {"addition", "removal"}
+        Whether ``c_j^\dagger`` (addition) or ``c_j`` (removal) acts.
+    slack : int, optional
+        Neighbour-sector slack passed to :func:`restrictions_from_charges`.
+
+    Returns
+    -------
+    dict of frozenset to (int, int)
+        ``Basis.restrictions`` confining the run to the target sector.
+    """
+    if kind not in ("addition", "removal"):
+        raise ValueError(f"kind must be 'addition' or 'removal', got {kind!r}")
+    delta = 1 if kind == "addition" else -1
+    occupations = list(gs_occupations)
+    for k, subset in enumerate(charges):
+        if orbital in subset:
+            occupations[k] += delta
+            break
+    else:
+        raise ValueError(f"orbital {orbital} is not in any conserved charge subset")
+    return restrictions_from_charges(charges, occupations, slack=slack)
+
+
+def green_function_block_structure(op, n_orb=None):
+    r"""Orbital blocks of the one-body Green's function implied by the symmetry of ``op``.
+
+    The retarded GF :math:`G_{ij}(\omega) = \langle\psi| c_i (\omega - H + E)^{-1}
+    c_j^\dagger |\psi\rangle + (\text{removal})` is **symmetry-forbidden** (zero for all
+    :math:`\omega`) unless orbitals ``i`` and ``j`` carry the same conserved-charge
+    signature: ``c_j^\dagger|\psi\rangle`` lives in the sector ``q_ψ + w_j`` and
+    ``c_i^\dagger|\psi\rangle`` in ``q_ψ + w_i``, and since :math:`H` preserves every
+    conserved charge, *every* moment ``<ψ|c_i H^n c_j†|ψ>`` vanishes when the sectors
+    differ. With subset charges that means ``i`` and ``j`` must lie in the same conserved
+    subset, so the GF block structure is exactly :func:`conserved_subset_charges`.
+
+    This replaces a hand-coded ``block_structure``: pairs across different returned blocks
+    need not be computed (Phase 4.1).
+
+    Parameters
+    ----------
+    op : ManyBodyOperator or dict
+        The Hamiltonian (1- and 2-body).
+    n_orb : int, optional
+        Number of spin-orbitals (inferred if ``None``).
+
+    Returns
+    -------
+    list of frozenset of int
+        The GF orbital blocks; ``G_ij`` can be nonzero only within a block.
+    """
+    return conserved_subset_charges(op, n_orb=n_orb)
+
+
+def green_function_allowed_mask(op, n_orb):
+    """Boolean ``(n_orb, n_orb)`` mask: ``True`` where ``G_ij`` is symmetry-allowed.
+
+    ``mask[i, j]`` is ``True`` iff ``i`` and ``j`` are in the same
+    :func:`green_function_block_structure` block.
+    """
+    blocks = green_function_block_structure(op, n_orb=n_orb)
+    label = np.full(n_orb, -1, dtype=int)
+    for b, block in enumerate(blocks):
+        for orb in block:
+            label[orb] = b
+    return label[:, None] == label[None, :]
+
+
 def discovered_orbital_blocks(op, n_orb=None):
     r"""Orbital block decomposition implied by the one-body symmetry of ``op``.
 

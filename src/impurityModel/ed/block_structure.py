@@ -160,26 +160,38 @@ def get_inequivalent_blocks(
     list of int
         List of representative block indices for the inequivalent blocks.
     """
-    inequivalent_blocks = []
-    for blocks in identical_blocks:
-        if len(blocks) == 0:
-            continue
-        unique = True
-        for transpose in transposed_blocks:
-            if blocks[0] in transpose:
-                unique = False
-                break
-        for particle_hole in particle_hole_blocks:
-            if blocks[0] in particle_hole:
-                unique = False
-                break
-        for particle_hole_and_transpose in particle_hole_and_transpose_blocks:
-            if blocks[0] in particle_hole_and_transpose:
-                unique = False
-                break
-        if unique:
-            inequivalent_blocks.append(blocks[0])
-    return inequivalent_blocks
+    # Two blocks are equivalent if one can be reconstructed from the other through
+    # *any* relation (identical / transposed / particle-hole / particle-hole+transpose).
+    # The inequivalent blocks are one representative per equivalence class, found by
+    # union-find over all relations. (The previous logic dropped a block whenever it
+    # appeared in *any* particle-hole / transpose list — including its own, e.g. a
+    # self-particle-hole-symmetric t2g block at zero energy — which incorrectly removed
+    # whole equivalence classes and would lose those blocks in GF reconstruction.)
+    n_blocks = len(identical_blocks)
+    parent = list(range(n_blocks))
+
+    def find(x):
+        while parent[x] != x:
+            parent[x] = parent[parent[x]]
+            x = parent[x]
+        return x
+
+    def union(a, b):
+        ra, rb = find(a), find(b)
+        if ra != rb:
+            parent[max(ra, rb)] = min(ra, rb)
+
+    for relations in (
+        identical_blocks,
+        transposed_blocks,
+        particle_hole_blocks,
+        particle_hole_and_transpose_blocks,
+    ):
+        for block, related in enumerate(relations):
+            for other in related:
+                union(block, other)
+
+    return sorted({find(block) for block in range(n_blocks)})
 
 
 def get_n_blocks_block_indices_mask_matrix(mat: np.ndarray, tol=1e-6):
