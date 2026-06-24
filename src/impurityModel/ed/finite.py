@@ -17,6 +17,7 @@ from sympy.physics.wigner import gaunt
 # Local imports
 from impurityModel.ed.average import k_B, thermal_average, thermal_average_scale_indep  # noqa: F401
 from impurityModel.ed.block_structure import get_equivalent_blocks
+from impurityModel.ed.ManyBodyUtils import ManyBodyOperator, ManyBodyState, inner
 
 
 class HermitianOperator(scipy.sparse.linalg.LinearOperator):
@@ -650,6 +651,321 @@ def get_Sz_from_rho_spherical(rho: np.ndarray, l: Optional[int] = None) -> float
     if l is None:
         l = (rho.shape[0] // 2 - 1) // 2
     return 1 / 2 * np.real(sum(-rho[i, i] + rho[i + (2 * l + 1), i + (2 * l + 1)] for i in range(2 * l + 1)))
+
+
+def get_LS_from_rho_spherical(rho: np.ndarray, l: Optional[int] = None) -> float:
+    r"""Calculate the expectation value of the one-body spin-orbit coupling
+    :math:`\langle \mathbf{L}\cdot\mathbf{S}\rangle` from the density matrix in the
+    spherical basis.
+
+    :math:`\mathbf{L}\cdot\mathbf{S}` is a one-body operator in the single-particle
+    space, so its expectation value is the contraction
+    :math:`\langle \mathbf{L}\cdot\mathbf{S}\rangle = \mathrm{Tr}(\rho\, (l\cdot s))`,
+    where :math:`l\cdot s = l_z s_z + \tfrac{1}{2}(l_+ s_- + l_- s_+)` is the
+    single-particle spin-orbit matrix. No many-body solver is required.
+
+    The spherical basis layout matches the other ``get_*_from_rho_spherical``
+    helpers: a ``2*(2l+1)`` matrix whose first ``2l+1`` rows/columns are the
+    spin-down (:math:`m_s=-1/2`) orbitals ``ml = -l..l`` and whose last ``2l+1``
+    are the spin-up (:math:`m_s=+1/2`) orbitals.
+
+    Parameters
+    ----------
+    rho : np.ndarray
+        The density matrix in the spherical basis.
+    l : int, optional
+        The orbital angular momentum quantum number. If None, it is calculated
+        from rho's shape.
+
+    Returns
+    -------
+    float
+        The expectation value :math:`\langle \mathbf{L}\cdot\mathbf{S}\rangle`.
+    """
+    if l is None:
+        l = (rho.shape[0] // 2 - 1) // 2
+    n = 2 * l + 1
+    mls = np.arange(-l, l + 1)
+    llp1 = l * (l + 1)
+    zeros = np.zeros((n, n))
+    eye = np.eye(n)
+
+    # Single-particle operator matrices in the [spin-down, spin-up] x [ml] layout.
+    # l_z and s_z are diagonal; the orbital/spin ladder operators couple states.
+    lz = np.diag(np.concatenate((mls, mls)).astype(float))
+    sz = np.diag(np.concatenate((-0.5 * np.ones(n), 0.5 * np.ones(n))))
+    # l_+ raises ml (|ml> -> |ml+1|), acting identically in both spin blocks.
+    lplus_block = np.diag([np.sqrt(llp1 - ml * (ml + 1)) for ml in mls[:-1]], k=-1)
+    lplus = np.block([[lplus_block, zeros], [zeros, lplus_block]])
+    lminus = lplus.conj().T
+    # s_+ raises ms (spin-down -> spin-up): maps block 0 -> block 1; coeff 1 for s=1/2.
+    splus = np.block([[zeros, zeros], [eye, zeros]])
+    sminus = splus.conj().T
+
+    ls = lz @ sz + 0.5 * (lplus @ sminus + lminus @ splus)
+    return np.real(np.trace(rho @ ls))
+
+
+def make_spin_operators(spin_pairs):
+    r"""Build the one-body spin ladder/Cartan operators for a set of spatial orbitals.
+
+    Each spatial orbital contributes a spin doublet; ``spin_pairs`` lists its
+    ``(dn_index, up_index)`` spin-orbital indices. The returned operators are
+
+    .. math::
+        \hat S_+ = \sum_a c^\dagger_{a\uparrow} c_{a\downarrow}, \quad
+        \hat S_- = \sum_a c^\dagger_{a\downarrow} c_{a\uparrow}, \quad
+        \hat S_z = \tfrac12 \sum_a (n_{a\uparrow} - n_{a\downarrow}).
+
+    Parameters
+    ----------
+    spin_pairs : iterable of (int, int)
+        ``(dn_index, up_index)`` spin-orbital index pairs, one per spatial orbital.
+
+    Returns
+    -------
+    (ManyBodyOperator, ManyBodyOperator, ManyBodyOperator)
+        The operators :math:`(\hat S_+, \hat S_-, \hat S_z)`.
+    """
+    s_plus, s_minus, s_z = {}, {}, {}
+    for dn, up in spin_pairs:
+        s_plus[((up, "c"), (dn, "a"))] = 1.0
+        s_minus[((dn, "c"), (up, "a"))] = 1.0
+        s_z[((up, "c"), (up, "a"))] = 0.5
+        s_z[((dn, "c"), (dn, "a"))] = -0.5
+    return ManyBodyOperator(s_plus), ManyBodyOperator(s_minus), ManyBodyOperator(s_z)
+
+
+def make_orbital_angular_momentum_operators(channels):
+    r"""Build the one-body orbital angular-momentum operators for a set of shells.
+
+    Each *channel* is one ``(l, spin)`` block: an ordered list of the orbital
+    indices for ``ml = -l, -l+1, ..., l`` at fixed spin. The returned operators are
+
+    .. math::
+        \hat L_+ = \sum c^\dagger_{m_l+1} c_{m_l}\,\sqrt{l(l+1)-m_l(m_l+1)}, \quad
+        \hat L_z = \sum m_l\, n_{m_l},
+
+    summed over every channel (both spins), and :math:`\hat L_- = \hat L_+^\dagger`.
+
+    Parameters
+    ----------
+    channels : iterable of sequence[int]
+        Each element lists the ``2l+1`` orbital indices ordered by ``ml`` from
+        ``-l`` to ``+l`` for one spin of one ``l``-shell. ``l`` is inferred from
+        the length.
+
+    Returns
+    -------
+    (ManyBodyOperator, ManyBodyOperator, ManyBodyOperator)
+        The operators :math:`(\hat L_+, \hat L_-, \hat L_z)`.
+    """
+    l_plus, l_minus, l_z = {}, {}, {}
+    for indices in channels:
+        indices = list(indices)
+        l = (len(indices) - 1) // 2
+        llp1 = l * (l + 1)
+        for a, ml in enumerate(range(-l, l + 1)):
+            l_z[((indices[a], "c"), (indices[a], "a"))] = float(ml)
+            if ml < l:
+                coeff = np.sqrt(llp1 - ml * (ml + 1))
+                l_plus[((indices[a + 1], "c"), (indices[a], "a"))] = coeff
+                l_minus[((indices[a], "c"), (indices[a + 1], "a"))] = coeff
+    return ManyBodyOperator(l_plus), ManyBodyOperator(l_minus), ManyBodyOperator(l_z)
+
+
+def apply_casimir(psi, j_plus, j_minus, j_z):
+    r"""Apply a su(2) Casimir operator to ``psi`` and return the resulting state.
+
+    Uses the ladder identity :math:`\hat J^2 = \hat J_- \hat J_+ + \hat J_z^2 +
+    \hat J_z` (with :math:`\hat J_- = \hat J_+^\dagger`), so only the one-body
+    ladder/Cartan operators are needed — no explicit two-body operator product is
+    constructed. Each factor is applied sequentially to the state.
+
+    Parameters
+    ----------
+    psi : ManyBodyState
+        The state to act on.
+    j_plus, j_minus, j_z : ManyBodyOperator
+        The raising, lowering, and Cartan operators of the su(2) algebra.
+
+    Returns
+    -------
+    ManyBodyState
+        :math:`\hat J^2 |\psi\rangle`.
+    """
+    jz_psi = j_z(psi, 0)
+    result = j_minus(j_plus(psi, 0), 0)
+    result += j_z(jz_psi, 0)
+    result += jz_psi
+    return result
+
+
+def apply_spin_correlation(psi, ops_a, ops_b):
+    r"""Apply the spin-correlation operator :math:`\hat{\mathbf S}_A\cdot\hat{\mathbf S}_B`.
+
+    For two **disjoint** orbital sets A and B the spin operators commute, so
+
+    .. math::
+        \hat{\mathbf S}_A\cdot\hat{\mathbf S}_B
+            = \hat S^A_z \hat S^B_z
+            + \tfrac12\left(\hat S^A_+ \hat S^B_- + \hat S^A_- \hat S^B_+\right),
+
+    with no normal-ordering correction. Each factor is applied sequentially.
+
+    Parameters
+    ----------
+    psi : ManyBodyState
+        The state to act on.
+    ops_a, ops_b : (ManyBodyOperator, ManyBodyOperator, ManyBodyOperator)
+        The ``(S_+, S_-, S_z)`` operators for set A and set B (see
+        :func:`make_spin_operators`). A and B must address disjoint orbitals.
+
+    Returns
+    -------
+    ManyBodyState
+        :math:`\hat{\mathbf S}_A\cdot\hat{\mathbf S}_B\,|\psi\rangle`.
+    """
+    a_plus, a_minus, a_z = ops_a
+    b_plus, b_minus, b_z = ops_b
+    result = a_z(b_z(psi, 0), 0)
+    result += 0.5 * a_plus(b_minus(psi, 0), 0)
+    result += 0.5 * a_minus(b_plus(psi, 0), 0)
+    return result
+
+
+def expect_spin_correlation(psi, ops_a, ops_b, comm=None):
+    r"""Return :math:`\langle\psi|\hat{\mathbf S}_A\cdot\hat{\mathbf S}_B|\psi\rangle`.
+
+    A negative value signals impurity-bath singlet (Kondo) screening. See
+    :func:`apply_spin_correlation` for the operator and disjointness requirement.
+    """
+    val = inner(psi, apply_spin_correlation(psi, ops_a, ops_b))
+    if comm is not None:
+        val = comm.allreduce(val)
+    return np.real(val)
+
+
+def expect_casimir(psi, j_plus, j_minus, j_z, comm=None):
+    r"""Return :math:`\langle\psi|\hat J^2|\psi\rangle` for a (possibly distributed) state.
+
+    Parameters
+    ----------
+    psi : ManyBodyState
+        The state. Assumed normalised (``inner(psi, psi) == 1``).
+    j_plus, j_minus, j_z : ManyBodyOperator
+        The su(2) ladder/Cartan operators (see :func:`make_spin_operators`).
+    comm : MPI.Comm, optional
+        If given, the local inner products are summed across ranks. The state must
+        be hash-distributed so that every basis determinant reachable by the
+        operators is owned by exactly one rank.
+
+    Returns
+    -------
+    float
+        The expectation value :math:`\langle \hat J^2\rangle`.
+    """
+    val = inner(psi, apply_casimir(psi, j_plus, j_minus, j_z))
+    if comm is not None:
+        val = comm.allreduce(val)
+    return np.real(val)
+
+
+def _group_degenerate(energies, tol):
+    """Group indices of (ascending-sorted) ``energies`` into near-degenerate blocks.
+
+    Returns a list of lists of indices into ``energies``; consecutive energies
+    within ``tol`` of the block's first energy share a block.
+    """
+    groups = []
+    current = [0]
+    for i in range(1, len(energies)):
+        if abs(energies[i] - energies[current[0]]) <= tol:
+            current.append(i)
+        else:
+            groups.append(current)
+            current = [i]
+    groups.append(current)
+    return groups
+
+
+def manifold_observable_values(eigenstates, energies, apply_op, degeneracy_tol=1e-6):
+    r"""Per-state physical values of an observable on a low-energy manifold.
+
+    Block Lanczos returns a *block* spanning a (near-)degenerate eigenspace; any
+    single returned vector is an arbitrary combination within a degenerate
+    manifold, so :math:`\langle\psi|\hat O|\psi\rangle` on it is not well defined
+    when :math:`[\hat O, H]\neq 0` inside the manifold. For each degenerate
+    subspace this builds the small matrix :math:`O_{mn}=\langle m|\hat O|n\rangle`
+    and diagonalises it; the eigenvalues are the physical observable values.
+
+    The ``eigenstates`` are assumed orthonormal and *full* (gathered to a single
+    rank, as the density-matrix path already does) — not distributed.
+
+    Parameters
+    ----------
+    eigenstates : sequence of ManyBodyState
+        Orthonormal manifold basis (e.g. a Lanczos block).
+    energies : array_like of shape (N,)
+        Energy of each eigenstate (used only to group degenerate subspaces).
+    apply_op : callable
+        ``apply_op(psi)`` returns :math:`\hat O|\psi\rangle` as a ManyBodyState.
+    degeneracy_tol : float, default 1e-6
+        Energies within this tolerance are treated as degenerate.
+
+    Returns
+    -------
+    np.ndarray of shape (N,)
+        Real observable values aligned with ``eigenstates``. States in the same
+        degenerate subspace receive that subspace's eigenvalues (their assignment
+        within the subspace is arbitrary, the values being physically interchangeable).
+    """
+    n = len(eigenstates)
+    energies = np.asarray(energies, dtype=float)
+    op_states = [apply_op(psi) for psi in eigenstates]
+    o_matrix = np.array(
+        [[inner(eigenstates[i], op_states[j]) for j in range(n)] for i in range(n)],
+        dtype=complex,
+    )
+    # Hermitise to kill rounding asymmetry before diagonalising.
+    o_matrix = 0.5 * (o_matrix + o_matrix.conj().T)
+
+    order = np.argsort(energies, kind="stable")
+    values = np.empty(n)
+    for block in _group_degenerate(energies[order], degeneracy_tol):
+        idx = order[block]
+        sub = o_matrix[np.ix_(idx, idx)]
+        evals = np.linalg.eigvalsh(sub)
+        for k, state_index in enumerate(idx):
+            values[state_index] = evals[k]
+    return values
+
+
+def thermal_observable_value(values, energies, tau):
+    r"""Boltzmann-weighted average of per-state observable ``values``.
+
+    :math:`\langle\hat O\rangle = \sum_n e^{-\beta E_n} o_n / Z`, evaluated with
+    the energy-scale convention of :func:`average.thermal_average_scale_indep`.
+    ``values`` should be the physical per-state values from
+    :func:`manifold_observable_values`, so degenerate manifolds contribute correctly.
+    """
+    return thermal_average_scale_indep(np.asarray(energies, dtype=float), np.asarray(values), tau)
+
+
+def casimir_to_quantum_number(jj_plus_1):
+    r"""Invert :math:`j(j+1)` to recover the angular-momentum quantum number ``j``.
+
+    Parameters
+    ----------
+    jj_plus_1 : float
+        The Casimir eigenvalue :math:`j(j+1)`.
+
+    Returns
+    -------
+    float
+        ``j = (-1 + sqrt(1 + 4 j(j+1))) / 2`` (clamped at 0 for tiny negatives).
+    """
+    return 0.5 * (-1.0 + np.sqrt(max(1.0 + 4.0 * np.real(jj_plus_1), 0.0)))
 
 
 def print_thermal_expectation_values(rho_thermal, e_thermal, rot_to_spherical, block_structure):

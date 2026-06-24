@@ -89,6 +89,32 @@ is the regression gate that proves the effort is safe to enable.
 
 ## Phase 1: Ground-State Observables & Sector Labeling
 
+> **Progress (2026-06-24): observable-computation core DONE; print/model wiring
+> remains.** Implemented and analytically tested in `finite.py` + new
+> `src/impurityModel/test/test_symmetry_observables.py` (7 tests, all green):
+> - §1.1 `get_LS_from_rho_spherical` — `test_spin_orbit_observable` ✅
+> - §1.2 `make_spin_operators`, `make_orbital_angular_momentum_operators`,
+>   `apply_casimir`, `expect_casimir`, `casimir_to_quantum_number` (Ŝ²/L̂²/Ĵ² via the
+>   ladder identity `J² = J₋J₊ + J_z² + J_z`, evaluated by sequential one-body
+>   application — no hand-built 4-fermion product strings) — `test_S2_observable`,
+>   `test_L2_J2_observable` ✅
+> - §1.4 `apply_spin_correlation`, `expect_spin_correlation` (⟨S_imp·S_bath⟩) —
+>   `test_kondo_correlation` ✅
+> - §1.5 `manifold_observable_values`, `thermal_observable_value` (degenerate-subspace
+>   diagonalisation + Boltzmann average) — `test_degenerate_manifold_observable`,
+>   `test_thermal_observable` ✅
+>
+> **Carry on from here:** (a) §1.3 impurity-restricted versions (reuse the builders
+> with impurity-orbital index pairs; needs a mixed-valence model for
+> `test_impurity_local_observables`); (b) §1.0/§1.3 wiring into
+> `print_thermal_expectation_values` / `print_expectation_values` + the per-eigenstate
+> table, plumbing the eigenstates/thermal ensemble through `groundstate.py` (the print
+> path currently receives only `rho`; two-body observables and ⟨S_imp·S_bath⟩ need the
+> actual states), with the column/line-preservation tests and
+> `test_kondo_correlation_reported`. The distributed path follows the existing
+> density-matrix pattern (gather full states to rank 0, evaluate serially), so the
+> manifold helper is intentionally serial.
+
 **Location:** `src/impurityModel/ed/groundstate.py` and `finite.py`
 
 **Rationale:** Completely independent of Phases 2–7. `build_density_matrices` already
@@ -159,7 +185,7 @@ statistics (impurity/valence/conduction weights, `groundstate.py:398-404`).
 - **Action:** Compute `⟨L·S⟩` as a 1-body contraction of the 1-RDM ρ from
   `build_density_matrices`. No new solver needed.
 - **Verification:**
-  - [ ] `test_spin_orbit_observable` — compute `L·S` on a known analytic test state,
+  - [x] `test_spin_orbit_observable` — compute `L·S` on a known analytic test state,
         assert match to analytic result.
 
 ### 1.2. Two-body observables (Ŝ², L̂², Ĵ²)
@@ -173,7 +199,7 @@ statistics (impurity/valence/conduction weights, `groundstate.py:398-404`).
   one-body generators that Phase 2 *does* find; the two constructions must agree
   bit-for-bit — pick one as the source of truth and assert the other against it.)
 - **Verification:**
-  - [ ] `test_S2_observable` — apply `Ŝ²` to prepared singlet/doublet/triplet states,
+  - [x] `test_S2_observable` — apply `Ŝ²` to prepared singlet/doublet/triplet states,
         assert eigenvalues `S(S+1)` exactly.
   - [ ] Update output to tag ground-state multiplets by exact `L`, `S`, `J`.
 
@@ -197,7 +223,7 @@ statistics (impurity/valence/conduction weights, `groundstate.py:398-404`).
   thermal ground state, and per-eigenstate in the table. A negative value signals
   Kondo-singlet formation (impurity spin antiferromagnetically screened by the bath).
 - **Verification:**
-  - [ ] `test_kondo_correlation` — minimal SIAM; assert `<Ŝ_imp·Ŝ_bath>` becomes
+  - [x] `test_kondo_correlation` — minimal SIAM; assert `<Ŝ_imp·Ŝ_bath>` becomes
         negative in the strongly interacting Kondo regime and ≈ 0 in the
         weakly-coupled / empty-impurity limit.
   - [ ] `test_kondo_correlation_reported` — assert `<S_imp·S_bath>` appears in both the
@@ -215,11 +241,11 @@ statistics (impurity/valence/conduction weights, `groundstate.py:398-404`).
      `⟨n|Ô|n⟩` is wrong when `[Ô,H]≠0` within the subspace.
   3. Combine across subspaces with Boltzmann weights via `average.py`.
 - **Verification:**
-  - [ ] `test_degenerate_manifold_observable` — a Hamiltonian with a deliberately
+  - [x] `test_degenerate_manifold_observable` — a Hamiltonian with a deliberately
         degenerate triplet ground state; assert that `Ŝ²` evaluated on each of three
         arbitrary linear combinations within the manifold gives the same `S(S+1)=2`,
         whereas the naive per-vector `⟨ψ|Ŝ²|ψ⟩` does not.
-  - [ ] `test_thermal_observable` — assert the finite-T average matches an independent
+  - [x] `test_thermal_observable` — assert the finite-T average matches an independent
         brute-force Boltzmann sum on a small model, and reduces to the T=0 value as
         `T→0`.
 
