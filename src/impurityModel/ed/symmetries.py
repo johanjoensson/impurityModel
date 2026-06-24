@@ -323,6 +323,59 @@ def subset_occupations(charges, occupied_orbitals):
     return [len(subset & occupied) for subset in charges]
 
 
+def discovered_orbital_blocks(op, n_orb=None):
+    r"""Orbital block decomposition implied by the one-body symmetry of ``op``.
+
+    Two orbitals lie in the same block iff the one-body Hamiltonian connects them
+    (the connected components of ``h``). Equivalently, this is the orbital partition
+    induced by the **diagonal part of the discovered Cartan**: orbitals in different
+    blocks carry distinct conserved one-body quantum numbers, so their Green's-function
+    cross terms are symmetry-forbidden. (A diagonal operator commutes with ``h`` iff it
+    is constant on each connected component, so the finest diagonal conserved charge is
+    exactly the component indicator.)
+
+    Implemented by extracting the one-body tensor and reusing
+    :func:`conserved_subset_charges` on the one-body operator.
+
+    Parameters
+    ----------
+    op : ManyBodyOperator or dict
+        The Hamiltonian (only its one-body part is used).
+    n_orb : int, optional
+        Number of spin-orbitals (inferred if ``None``).
+
+    Returns
+    -------
+    list of frozenset of int
+        The orbital blocks (a partition of ``range(n_orb)``).
+    """
+    h, _, _ = extract_tensors(op, n_orb=n_orb)
+    one_body = tensors_to_operator(h)
+    return conserved_subset_charges(one_body, n_orb=h.shape[0])
+
+
+def blocks_refine_or_match(discovered, reference):
+    r"""Whether ``discovered`` blocks **match or refine** the ``reference`` blocks.
+
+    True iff every discovered block is a subset of some reference block (the discovered
+    partition is at least as fine). This is the cross-phase acceptance condition: the
+    auto-discovered orbital structure must reproduce or strictly refine a hand-coded
+    ``BlockStructure`` — never coarsen it (which would merge orbitals the manual
+    structure keeps separate).
+
+    Parameters
+    ----------
+    discovered, reference : sequence of iterable of int
+        Orbital block partitions (e.g. ``frozenset``s, or ``BlockStructure.blocks``).
+
+    Returns
+    -------
+    bool
+    """
+    reference_sets = [set(block) for block in reference]
+    return all(any(set(block) <= ref for ref in reference_sets) for block in discovered)
+
+
 def measure_conserved_charges(psi, charges, n_orb, comm=None, round_to_int=True):
     r"""Measure the conserved subset-charge occupations of a state, ``<psi|N_S|psi>``.
 

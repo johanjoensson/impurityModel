@@ -299,3 +299,99 @@ def test_discovery_basis_invariant_cubic():
     assert in_span(gens_cub, np.eye(_N_D, dtype=complex))
     for g in gens_cub:
         assert np.linalg.norm(h_cub @ g - g @ h_cub) < 1e-9
+
+
+# ---------------------------------------------------------------------------
+# Formal acceptance gate: discovered orbital blocks match/refine hand-coded ones
+# ---------------------------------------------------------------------------
+
+_NB_PD = OrderedDict({1: 0, 2: 0})  # p (l=1) at indices 0..5, d (l=2) at 6..15
+
+
+def _soc_terms(xi, l):
+    d = {}
+    for term, val in getSOCop(xi, l).items():
+        (l1, s1, m1), _ = term[0]
+        (l2, s2, m2), _ = term[1]
+        d[((c2i(_NB_PD, (l1, s1, m1)), "c"), (c2i(_NB_PD, (l2, s2, m2)), "a"))] = val
+    return d
+
+
+def _shell_ml_chain(l):
+    """Couple consecutive ml within each spin of shell l (connects all ml of a spin)."""
+    d = {}
+    for s in (0, 1):
+        for m in range(-l, l):
+            i = c2i(_NB_PD, (l, s, m))
+            j = c2i(_NB_PD, (l, s, m + 1))
+            d[((i, "c"), (j, "a"))] = 0.2
+            d[((j, "c"), (i, "a"))] = 0.2
+    return d
+
+
+def test_acceptance_gate_discovery_refines_pd_block_structure():
+    """SOC p+d model: discovered orbital blocks refine the hand-coded [p, d] structure
+    (SOC conserves J_z, so each shell decouples into mj sub-blocks)."""
+    from impurityModel.ed.symmetries import (
+        discovered_orbital_blocks,
+        blocks_refine_or_match,
+        extract_tensors,
+    )
+    from impurityModel.ed.block_structure import build_block_structure
+
+    terms = {}
+    terms.update(_soc_terms(0.1, 1))  # p SOC
+    terms.update(_soc_terms(0.5, 2))  # d SOC
+    op = ManyBodyOperator(terms)
+
+    discovered = discovered_orbital_blocks(op, 16)
+    hand_coded = [list(range(6)), list(range(6, 16))]  # get_spectra.py p/d blocks
+
+    # Matches or refines the hand-coded structure (never coarsens it).
+    assert blocks_refine_or_match(discovered, hand_coded)
+    # Strictly finer here: SOC splits each shell into J_z sectors.
+    assert len(discovered) > len(hand_coded)
+    # Each discovered block stays within one shell.
+    for block in discovered:
+        assert block <= frozenset(range(6)) or block <= frozenset(range(6, 16))
+
+    # Cross-check: identical to the existing build_block_structure(mat=h) machinery.
+    h, _, _ = extract_tensors(op, 16)
+    bbs_blocks = build_block_structure(None, mat=h).blocks
+    assert blocks_refine_or_match(discovered, bbs_blocks)
+    assert blocks_refine_or_match(bbs_blocks, discovered)
+
+
+def test_acceptance_gate_fully_coupled_shells_match_exactly():
+    """With intra-shell ml coupling + SOC each shell is fully connected, so the
+    discovered blocks equal the hand-coded [p, d] structure exactly."""
+    from impurityModel.ed.symmetries import discovered_orbital_blocks, blocks_refine_or_match
+
+    terms = {}
+    terms.update(_soc_terms(0.1, 1))
+    terms.update(_soc_terms(0.5, 2))
+    terms.update(_shell_ml_chain(1))  # connect all ml within p
+    terms.update(_shell_ml_chain(2))  # connect all ml within d
+    op = ManyBodyOperator(terms)
+
+    discovered = discovered_orbital_blocks(op, 16)
+    hand_coded = [frozenset(range(6)), frozenset(range(6, 16))]
+
+    # Exact match: same partition both ways.
+    assert blocks_refine_or_match(discovered, hand_coded)
+    assert blocks_refine_or_match(hand_coded, discovered)
+    assert set(discovered) == set(hand_coded)
+
+
+def test_acceptance_gate_refines_single_impurity_block():
+    """selfenergy.py uses a single impurity block; any discovered partition refines it."""
+    from impurityModel.ed.symmetries import discovered_orbital_blocks, blocks_refine_or_match
+
+    terms = {}
+    terms.update(_soc_terms(0.5, 2))  # d shell only
+    terms.update(_shell_ml_chain(2))
+    # Re-index d to 0..9 for a standalone impurity.
+    op = ManyBodyOperator(terms)
+    discovered = discovered_orbital_blocks(op, 16)
+    single_block = [list(range(16))]
+    assert blocks_refine_or_match(discovered, single_block)

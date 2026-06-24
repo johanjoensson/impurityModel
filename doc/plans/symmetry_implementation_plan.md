@@ -82,8 +82,22 @@ each model that currently hand-codes a block structure and assert the auto-disco
 structure **matches or strictly refines** the manual one (same blocks, or finer). This
 is the regression gate that proves the effort is safe to enable.
 
-- [ ] `test_discovery_reproduces_manual_block_structure` — for every model with a
-      hand-coded `block_structure`, assert auto-discovery matches or refines it.
+- [x] `test_discovery_reproduces_manual_block_structure` — **DONE (2026-06-24).**
+      `symmetries.discovered_orbital_blocks(op)` maps the discovered one-body symmetry to
+      an orbital partition (the connected components of `h` = the partition induced by the
+      diagonal part of the Cartan: two orbitals carry distinct conserved one-body quantum
+      numbers ⟺ `h` can't connect them). `blocks_refine_or_match(discovered, reference)`
+      is the gate condition (every discovered block ⊆ some reference block — match or
+      strictly finer, never coarser). Tests in `test_symmetries.py`:
+      `test_acceptance_gate_discovery_refines_pd_block_structure` (SOC p+d model built
+      from the real `getSOCop` via `c2i`: discovered blocks **refine** the hand-coded
+      `get_spectra.py` `[range(6), range(6,16)]` — SOC conserves `J_z`, splitting each
+      shell into `mj` sub-blocks — and are **identical** to `build_block_structure(mat=h)`);
+      `test_acceptance_gate_fully_coupled_shells_match_exactly` (intra-shell `ml` coupling
+      + SOC → discovered partition **equals** `[p, d]` exactly);
+      `test_acceptance_gate_refines_single_impurity_block` (the `selfenergy.py`
+      single-block case is refined). The refinement is physically correct: under SOC the
+      GF is block-diagonal in `mj`, finer than the manual `p/d` split.
 
 > **Partial validation done (2026-06-24)** — discovery run on **real codebase
 > operators** (`finite.getSOCop`, `gethHfieldop`-style CF) in the `c2i` index basis,
@@ -98,9 +112,10 @@ is the regression gate that proves the effort is safe to enable.
 >   **complex** `H`): same generator count (basis-invariant), `N` still found, all
 >   generators commute. Exercises the engine on the complex Hamiltonians real runs use.
 >
-> Still TODO for the *formal* gate: map a discovered Cartan to an orbital block
-> decomposition and assert it matches/refines the hand-coded `BlockStructure` in
-> `get_spectra.py` (p/d) and `selfenergy.py`.
+> The *formal* gate (map a discovered Cartan to an orbital block decomposition and
+> assert it matches/refines the hand-coded `BlockStructure` in `get_spectra.py` and
+> `selfenergy.py`) is now **DONE** — see the checked
+> `test_discovery_reproduces_manual_block_structure` entry above.
 
 ---
 
