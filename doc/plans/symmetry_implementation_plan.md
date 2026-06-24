@@ -479,11 +479,26 @@ state.
   min/max electron counts. Generators with non-{0,1} weights are skipped in this
   phase (recorded for Phase 6).
 - **Verification:**
-  - [ ] `test_automatic_restrictions` — auto-generated restrictions on a model with
+  - [x] `test_automatic_restrictions` — auto-generated restrictions on a model with
         known symmetry sectors; assert `CIPSISolver` finds the same ground state as
         an unrestricted run but with a smaller basis.
 
 ### 3.2. Sectorized basis generation
+
+> **DONE (2026-06-24).** `test_sectorization.py`: the auto-generated restrictions
+> (`restrictions_from_charges`) wired into `Basis(restrictions=...)` work end-to-end on
+> a 4-orbital Anderson model.
+> - `test_automatic_restrictions` — full Fock space (16 dets) vs the auto-restricted GS
+>   sector (4 dets): **identical** ground-state energy with a **4× smaller** basis. The
+>   GS sector is read off the unrestricted GS via the conserved charges (a mini
+>   pre-scan; full §3.0 below).
+> - `test_restrictions_refuse_out_of_sector_in_expand` — restrictions **actively prune**:
+>   `Basis.expand` with a sector-leaving operator stays in-sector, while the same expand
+>   without restrictions leaks out-of-sector. This exercises the real
+>   `op.set_restrictions` + `build_restriction_mask` path.
+>
+> The "`H_mat` block-diagonal" property is the same fact as `[H, N_S]=0`, already proven
+> in §3.1 (`test_conserved_charges_actually_commute`).
 
 - **Action:** The existing `op.set_restrictions(basis.restrictions)` +
   `build_restriction_mask` machinery already causes `expand` and `determine_new_Dj`
@@ -492,10 +507,19 @@ state.
   connections within the basis — the block-diagonal structure is a consequence of
   correct basis generation, not a separate matrix transformation.
 - **Verification:**
-  - [ ] Assert the resulting `H_mat` is block-diagonal: no non-zero matrix elements
-        between states with different quantum numbers.
-  - [ ] Run existing MPI test suite (`pytest --with-mpi`); all tests pass with
-        reduced basis expansion.
+  - [x] `H_mat` block-diagonal: equivalent to `[H, N_S]=0`, proven in §3.1
+        (`test_conserved_charges_actually_commute`); the sectorized basis only spans one
+        sector (`test_automatic_restrictions`).
+  - [x] Auto-restrictions integrate with `Basis`/`expand` and reduce the basis while
+        preserving the ground state (`test_automatic_restrictions`,
+        `test_restrictions_refuse_out_of_sector_in_expand`). Broader serial + MPI suites
+        still green.
+
+> **§3.0 (target-sector pre-scan) remaining:** `test_automatic_restrictions` already
+> reads the GS sector off an unrestricted solve (a mini pre-scan). The full §3.0 is the
+> *cheap low-accuracy* unrestricted CIPSI/Lanczos pre-scan + lock-in (sector ± neighbour
+> via `slack`) wired into `cipsi_solver.py` / `groundstate.py` — a production-pipeline
+> piece, not needed to prove the sectorization itself.
 
 ---
 
