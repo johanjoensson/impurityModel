@@ -4,6 +4,14 @@ Design and implementation plans for in-progress and proposed work on the
 `impurityModel` ED/DMFT package. Each plan uses checkboxes so progress is verifiable
 at a glance.
 
+> **Status (2026-06-24):** the **symmetry program is complete** — the main
+> `symmetry_implementation_plan.md` (Phases 1–7 + the cross-phase acceptance gate) and
+> its `nonabelian_symmetry_casimir.md` companion are all implemented and tested (serial
+> + MPI), with `use_prescan` defaulted on and `auto_block_structure` available as a
+> validated opt-in. See each plan's top-of-file progress block for details. The
+> remaining open work is in the Block Lanczos plans (#1–#3) and a few explicitly-scoped
+> perf/won't-fix follow-ups noted inline.
+
 ## Reading order
 
 The plans have dependencies. Read and execute in this order:
@@ -33,17 +41,25 @@ The plans have dependencies. Read and execute in this order:
    footprint). *Prerequisite for using the array path as a multi-tOp engine (symmetry
    Phase 7); gated on the reort-reliability Phase-0 oracle (#2).*
 
-4. **[symmetry_implementation_plan.md](symmetry_implementation_plan.md)** — Automated
-   symmetry discovery & exploitation. Seven phases in recommended execution order:
-   observables (ship first) → discovery → sectorized CIPSI → GF auto-routing → basis
-   rotation → extended restrictions → MPI split policy. Contains the cross-phase
-   acceptance gate (reproduce every hand-coded `block_structure`).
+4. **[symmetry_implementation_plan.md](symmetry_implementation_plan.md)** — ✅ **DONE.**
+   Automated symmetry discovery & exploitation. Seven phases, all implemented (new
+   `symmetries.py` + wiring into `finite.py`/`groundstate.py`/`cipsi_solver.py`/
+   `greens_function.py`/`manybody_basis.py` and a C++ weighted-restriction extension):
+   observables (`<L.S>`/`<S²>`/`<L²>`/`<J²>`/`<S_imp·S_bath>` reporting) → discovery
+   (`[H,O]=0` null space, Cartan, joint diagonalisation) → sectorized CIPSI (subset
+   restrictions + rough-scan prescan, now default) → GF auto-routing (selection rules,
+   sector confinement, `auto_block_structure`) → basis rotation (`U†HU`, DMFT cache) →
+   extended restrictions (weighted-sum `S_z`/`L_z`, C++) → MPI adaptive split policy. The
+   cross-phase acceptance gate (auto-discovery matches/refines every hand-coded
+   `block_structure`) passes. Also fixed two latent bugs found along the way
+   (`get_inequivalent_blocks` PH-reduction, dense-GF `block_green_impl` signature).
 
-5. **[nonabelian_symmetry_casimir.md](nonabelian_symmetry_casimir.md)** — Companion to
-   the symmetry plan: detect non-abelian symmetry (the discovered one-body algebra
-   holds `S_x`, `S_y`, not just `S_z`) and reconstruct Casimir operators
-   (`Ŝ²`, `L̂²`, `Ĵ²`) for exact multiplet labeling. Builds on symmetry-plan Phase 2;
-   shares the observable construction of Phase 1.2.
+5. **[nonabelian_symmetry_casimir.md](nonabelian_symmetry_casimir.md)** — ✅ **DONE.**
+   Companion to the symmetry plan: detect non-abelian symmetry (`is_abelian`,
+   `structure_constants` → `f = iε_{abc}` for su(2)) and reconstruct Casimirs
+   (`apply_reconstructed_casimir`, `Ĉ = Σ_a Ô_a²`) for exact multiplet labeling, with
+   `[Ĉ,H]=0` as the correctness gate and the reconstructed `Ŝ²` proven identical to the
+   hand-built one. Builds on symmetry-plan Phase 2; shares the Phase-1.2 observables.
 
 ## Reference
 
@@ -64,9 +80,11 @@ The plans have dependencies. Read and execute in this order:
   every rank must reach the same collectives — an empty `(global_N, 0)` CSR slice
   silently picks int32 indices (vs int64 elsewhere), the class of bug fixed in hot-loop
   hardening §3b. Covered by `test_block_lanczos_array_empty_rank.py`.
-- **Restriction masks express only subset occupation bounds** ("orbital-subset S holds
-  between min and max electrons"), not weighted charges `Σ wᵢ nᵢ = q`. Lifting this is
-  symmetry-plan Phase 6.
+- **Restriction masks** now support both subset occupation bounds (`set_restrictions`,
+  "orbital-subset S holds between min and max electrons") **and** weighted charges
+  `Σ wᵢ nᵢ = q` (`set_weighted_restrictions`, e.g. `S_z`/`L_z`) — the latter added by
+  symmetry-plan Phase 6 (C++ `build_weighted_restriction_mask`). Both are checked
+  together in `state_is_within_restrictions` and threaded through `Basis`/CIPSI/GF.
 - **Unitary symmetries only.** Anti-unitary symmetries (time reversal / Kramers) are
   not detectable by the `[H,O]=0` null-space method.
 - **Reorthogonalization mode is a first-class knob.** Any `Reort` mode must work as
@@ -91,8 +109,10 @@ repeated per task.
    editing. Never trust a bare line number.
 3. **One checkbox = one small, self-contained change**, followed by a **checkpoint**:
    - After editing any `.pyx`/`.cpp`/`.h` (Cython/C++): rebuild with
-     `pip install -e .` (set `BOOST_ROOT` or `pip install boost-headers` first if Boost
-     headers are missing), then run the test named in that task.
+     `pip install -e . --no-build-isolation` (the `--no-build-isolation` flag is needed
+     so the env's scipy `cython_blas` is visible to `BlockLanczosArray.pyx`; set
+     `BOOST_ROOT` or `pip install boost-headers` first if Boost headers are missing),
+     then run the test named in that task.
    - After editing any `.py`: run the test named in that task (no rebuild needed).
    - Serial test: `pytest src/impurityModel/test/<file> -q`. MPI test:
      `mpirun -n 3 pytest --with-mpi src/impurityModel/test/<file>`.
