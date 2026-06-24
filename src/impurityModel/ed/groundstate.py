@@ -6,11 +6,16 @@ from impurityModel.ed.block_structure import BlockStructure, print_block_structu
 from impurityModel.ed.density_matrix import calc_density_matrices
 from impurityModel.ed.finite import (
     apply_casimir,
+    apply_spin_correlation,
+    bath_spin_pairs,
     casimir_to_quantum_number,
+    impurity_spin_pairs,
     make_impurity_casimir_operators,
+    make_spin_operators,
     manifold_observable_values,
     print_expectation_values,
     print_thermal_expectation_values,
+    spin_pairs_consistent_with_h,
     thermal_average_scale_indep,
     thermal_observable_value,
 )
@@ -547,14 +552,33 @@ def calc_gs(
                 s_values, s2_thermal = casimir["S"]
                 l_values, l2_thermal = casimir["L"]
                 j_values, j2_thermal = casimir["J"]
+        # Kondo impurity-bath spin correlation <S_imp . S_bath>. The bath spin pairing
+        # follows the down-then-up convention, but is only trusted if the induced global
+        # spin operators commute with the one-body Hamiltonian (so the spin assignment
+        # is consistent with the model's spin symmetry); otherwise (SOC, non-standard
+        # ordering) it is skipped rather than reported wrong.
+        sisb_values = None
+        sisb_thermal = None
+        if rank == 0:
+            imp_pairs = impurity_spin_pairs(ground_state_basis.impurity_orbitals)
+            bath_pairs = bath_spin_pairs(ground_state_basis.bath_states)
+            n_orb = ground_state_basis.num_spin_orbitals
+            if imp_pairs and bath_pairs and spin_pairs_consistent_with_h(Hop, imp_pairs + bath_pairs, n_orb):
+                ops_imp = make_spin_operators(imp_pairs)
+                ops_bath = make_spin_operators(bath_pairs)
+                sisb_raw = manifold_observable_values(
+                    full_psis, es, lambda psi: apply_spin_correlation(psi, ops_imp, ops_bath)
+                )
+                sisb_values = np.real(sisb_raw)
+                sisb_thermal = thermal_observable_value(sisb_raw, es, tau)
         print_thermal_expectation_values(
             thermal_rho[impurity_ix], e_avg, rot_to_spherical, block_structure,
-            s_thermal=s2_thermal, l_thermal=l2_thermal, j_thermal=j2_thermal,
+            s_thermal=s2_thermal, l_thermal=l2_thermal, j_thermal=j2_thermal, sisb_thermal=sisb_thermal,
         )
         impurity_ix = np.ix_(np.arange(len(rhos)), impurity_indices, impurity_indices)
         print_expectation_values(
             rhos[impurity_ix], es, rot_to_spherical, block_structure,
-            s_values=s_values, l_values=l_values, j_values=j_values,
+            s_values=s_values, l_values=l_values, j_values=j_values, sisb_values=sisb_values,
         )
         print("Occupation statistics for each eigenstate in the thermal ground state")
         print("Impurity, Valence, Conduction: Weight (|amp|^2)")

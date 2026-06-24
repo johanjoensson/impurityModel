@@ -158,9 +158,19 @@ is the regression gate that proves the effort is safe to enable.
 > `test_print_expectation_values_LJ_columns`, `test_print_thermal_LJ_lines`; serial + MPI
 > n=2 `test_groundstate.py` green. (`<L.S>` stays from the rho path.)
 >
-> **Still deferred:** the Kondo `<S_imp·S_bath>` (`test_kondo_correlation_reported`) — needs
-> the **bath** spin pairing, a separate piece — and the §1.3 mixed-valence
-> `test_impurity_local_observables`.
+> **Kondo `<S_imp·S_bath>` reporting DONE (2026-06-24).** `finite.bath_spin_pairs` (the
+> down-then-up bath convention) + `finite.spin_pairs_consistent_with_h` — a
+> **self-validating** guard: the bath/impurity spin operators are used only if the induced
+> global `S_z` and `S_+` commute with the one-body `h` (so the spin assignment matches the
+> model's spin symmetry); under SOC or a non-standard ordering it **skips** rather than
+> reporting wrong physics. Wired into `groundstate.py` (rank-0, via
+> `apply_spin_correlation` + `manifold_observable_values`); print functions gained
+> `sisb_values` (a `Si.Sb` column) and `sisb_thermal` (a `<S_imp.S_bath>` line). Tests:
+> `test_bath_spin_pairs_and_consistency` (consistent for spin-diagonal `h`, **not** for an
+> SOC term; singlet → −3/4) and `test_kondo_correlation_reported` (a SIAM with baths run
+> through `calc_gs` prints the line + column).
+>
+> **Still deferred:** the §1.3 mixed-valence `test_impurity_local_observables`.
 
 **Location:** `src/impurityModel/ed/groundstate.py` and `finite.py`
 
@@ -299,7 +309,7 @@ statistics (impurity/valence/conduction weights, `groundstate.py:398-404`).
   - [x] `test_kondo_correlation` — minimal SIAM; assert `<Ŝ_imp·Ŝ_bath>` becomes
         negative in the strongly interacting Kondo regime and ≈ 0 in the
         weakly-coupled / empty-impurity limit.
-  - [ ] `test_kondo_correlation_reported` — assert `<S_imp·S_bath>` appears in both the
+  - [x] `test_kondo_correlation_reported` — assert `<S_imp·S_bath>` appears in both the
         thermal and per-eigenstate output (ties into §1.0's column/line tests).
 
 ### 1.5. Degenerate-manifold and thermal evaluation (infrastructure for 1.1–1.4)

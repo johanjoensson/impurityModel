@@ -435,7 +435,9 @@ def eigensystem(h_local, e_max, k=10, e0=None, v0=None, eigenValueTol=0, return_
     return es[mask]
 
 
-def print_expectation_values(rhos, es, rot_to_spherical, block_structure, s_values=None, l_values=None, j_values=None):
+def print_expectation_values(
+    rhos, es, rot_to_spherical, block_structure, s_values=None, l_values=None, j_values=None, sisb_values=None
+):
     """
     print several expectation values, e.g. E, N, L^2.
 
@@ -453,7 +455,11 @@ def print_expectation_values(rhos, es, rot_to_spherical, block_structure, s_valu
     block_N_string_formatted = ["" for _ in block_N_string]
     for i, Ns in enumerate(block_N_string):
         block_N_string_formatted[i] = " " * max(8 - len(Ns), 0) + Ns
-    extra = [(name, vals) for name, vals in (("S", s_values), ("L", l_values), ("J", j_values)) if vals is not None]
+    extra = [
+        (name, vals)
+        for name, vals in (("S", s_values), ("L", l_values), ("J", j_values), ("Si.Sb", sisb_values))
+        if vals is not None
+    ]
     extra_header = "".join(f"  {name:>8s}" for name, _ in extra)
     print(
         f"{'i':>3s}  {'E-E0':>11s}  {'N':>8s}  {'N(Dn)':>8s}  {'N(Up)':>8s}  {'  '.join(block_N_string_formatted)}  {'Lz':>8s}  {'Sz':>8s}  {'L.S':>8s}{extra_header}"
@@ -1085,8 +1091,79 @@ def impurity_spin_pairs(impurity_orbitals):
     return pairs
 
 
+def bath_spin_pairs(bath_states):
+    r"""Return the ``(dn_index, up_index)`` bath spin-orbital pairs.
+
+    Same down-then-up convention as :func:`impurity_spin_pairs`, applied to each
+    valence and conduction bath block independently (the ``get_CF_hamiltonian`` /
+    ``c2i`` layout, where a bath block is ``[down(2l+1), up(2l+1)]``). Odd-sized blocks
+    are skipped. The result is only *trusted* after
+    :func:`spin_pairs_consistent_with_h` confirms the induced spin operators commute
+    with the one-body Hamiltonian.
+
+    Parameters
+    ----------
+    bath_states : tuple of dict
+        ``(valence_baths, conduction_baths)`` (``Basis.bath_states``).
+
+    Returns
+    -------
+    list of (int, int)
+    """
+    pairs = []
+    for baths in bath_states:
+        for blocks in baths.values():
+            for block in blocks:
+                n = len(block)
+                if n % 2 != 0:
+                    continue
+                for k in range(n // 2):
+                    pairs.append((block[k], block[k + n // 2]))
+    return pairs
+
+
+def spin_pairs_consistent_with_h(h_op, spin_pairs, n_orb, tol=1e-6):
+    r"""Whether the spin operators from ``spin_pairs`` commute with the one-body ``h``.
+
+    Builds the single-particle ``S_z`` and ``S_+`` matrices implied by the ``(dn, up)``
+    pairing and checks ``[h, S_z] = [h, S_+] = 0``. If both hold, the spin labelling
+    **and** the down↔up pairing are consistent with the Hamiltonian's spin symmetry, so
+    the spin operators are physically correct. If either fails (spin-orbit coupling, a
+    non-standard orbital ordering, …), the pairing is **not** trustworthy and spin-spin
+    observables built from it should be skipped rather than reported wrong.
+
+    Parameters
+    ----------
+    h_op : ManyBodyOperator or dict
+        The Hamiltonian (its one-body part is used).
+    spin_pairs : sequence of (int, int)
+        ``(dn, up)`` global spin-orbital pairs (impurity + bath).
+    n_orb : int
+        Total number of spin-orbitals.
+    tol : float, optional
+        Commutator norm tolerance.
+
+    Returns
+    -------
+    bool
+    """
+    from impurityModel.ed.symmetries import extract_tensors
+
+    h, _, _ = extract_tensors(h_op, n_orb=n_orb)
+    sz = np.zeros((n_orb, n_orb), dtype=complex)
+    splus = np.zeros((n_orb, n_orb), dtype=complex)
+    for dn, up in spin_pairs:
+        sz[up, up] += 0.5
+        sz[dn, dn] -= 0.5
+        splus[up, dn] += 1.0  # S_+ = c†_up c_dn
+    return bool(
+        np.linalg.norm(h @ sz - sz @ h) <= tol and np.linalg.norm(h @ splus - splus @ h) <= tol
+    )
+
+
 def print_thermal_expectation_values(
-    rho_thermal, e_thermal, rot_to_spherical, block_structure, s_thermal=None, l_thermal=None, j_thermal=None
+    rho_thermal, e_thermal, rot_to_spherical, block_structure,
+    s_thermal=None, l_thermal=None, j_thermal=None, sisb_thermal=None,
 ):
     """
     print several thermal expectation values, e.g. E, N, Sz, Lz.
@@ -1118,6 +1195,8 @@ def print_thermal_expectation_values(
                 f"<{label}^2> = {np.real(value): 8.7f}  "
                 f"({label} = {casimir_to_quantum_number(value): 6.4f})"
             )
+    if sisb_thermal is not None:
+        print(f"<S_imp.S_bath> = {np.real(sisb_thermal): 8.7f}")
 
 
 def dc_MLFT(n3d_i, c, Fdd, n2p_i=None, Fpd=None, Gpd=None):

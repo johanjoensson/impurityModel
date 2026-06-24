@@ -374,3 +374,75 @@ def test_print_thermal_LJ_lines(capsys):
     assert "L =  2.0000" in l_line  # L(L+1)=6 -> L=2
     j_line = next(line for line in out.splitlines() if line.startswith("<J^2>"))
     assert "J =  2.5000" in j_line  # J(J+1)=35/4 -> J=5/2
+
+
+def test_bath_spin_pairs_and_consistency():
+    """bath_spin_pairs + spin_pairs_consistent_with_h validate/skip the spin assignment."""
+    from impurityModel.ed.finite import (
+        bath_spin_pairs,
+        impurity_spin_pairs,
+        spin_pairs_consistent_with_h,
+        expect_spin_correlation,
+        make_spin_operators,
+    )
+    from impurityModel.ed.ManyBodyUtils import ManyBodyOperator
+
+    # 4-orbital Anderson: imp 0=dn,1=up ; bath 2=dn,3=up. Spin-diagonal hopping.
+    imp_orbitals = {0: [[0, 1]]}
+    bath = ({0: [[2, 3]]}, {0: [[]]})
+    assert impurity_spin_pairs(imp_orbitals) == [(0, 1)]
+    assert bath_spin_pairs(bath) == [(2, 3)]
+    pairs = impurity_spin_pairs(imp_orbitals) + bath_spin_pairs(bath)
+
+    terms = {((o, "c"), (o, "a")): -1.0 for o in (0, 1)}
+    for a, b in ((0, 2), (1, 3)):  # spin-diagonal hybridization
+        terms[((a, "c"), (b, "a"))] = 0.5
+        terms[((b, "c"), (a, "a"))] = 0.5
+    h_conserving = ManyBodyOperator(terms)
+    assert spin_pairs_consistent_with_h(h_conserving, pairs, 4)
+
+    # Add a spin-flip (SOC-like) term -> spin no longer conserved -> not consistent.
+    soc = dict(terms)
+    soc[((0, "c"), (3, "a"))] = 0.3
+    soc[((3, "c"), (0, "a"))] = 0.3
+    assert not spin_pairs_consistent_with_h(ManyBodyOperator(soc), pairs, 4)
+
+    # When consistent, the Kondo correlation is well-defined: singlet -> -3/4.
+    ops_imp = make_spin_operators(impurity_spin_pairs(imp_orbitals))
+    ops_bath = make_spin_operators(bath_spin_pairs(bath))
+    singlet = _state([([1, 2], 1.0), ([0, 3], -1.0)])  # imp-up bath-dn minus imp-dn bath-up
+    assert np.isclose(expect_spin_correlation(singlet, ops_imp, ops_bath), -0.75, atol=1e-12)
+
+
+def test_kondo_correlation_reported(capsys):
+    """calc_gs on a SIAM with baths reports <S_imp.S_bath> (thermal line + per-state column)."""
+    from impurityModel.ed.block_structure import BlockStructure
+    from impurityModel.ed.groundstate import calc_gs
+    from impurityModel.ed.ManyBodyUtils import ManyBodyOperator
+
+    ed, U, ev, ec, V = -2.0, 6.0, -4.0, 4.0, 1.0
+    terms = {((o, "c"), (o, "a")): ed for o in (0, 1)}
+    terms.update({((o, "c"), (o, "a")): ev for o in (2, 3)})
+    terms.update({((o, "c"), (o, "a")): ec for o in (4, 5)})
+    terms[((0, "c"), (1, "c"), (1, "a"), (0, "a"))] = U
+    for a, b in ((0, 2), (1, 3), (0, 4), (1, 5)):
+        terms[((a, "c"), (b, "a"))] = V
+        terms[((b, "c"), (a, "a"))] = V
+    Hop = ManyBodyOperator(terms)
+
+    bs = BlockStructure(
+        blocks=[[0, 1]], identical_blocks=[[0]], transposed_blocks=[[]],
+        particle_hole_blocks=[[]], particle_hole_transposed_blocks=[[]], inequivalent_blocks=[0],
+    )
+    basis_setup = dict(
+        impurity_orbitals={0: [[0, 1]]}, bath_states=({0: [[2, 3]]}, {0: [[4, 5]]}),
+        N0={0: 1}, mixed_valence={0: 1}, tau=0.01, dense_cutoff=1000, spin_flip_dj=False,
+        comm=None, truncation_threshold=100000,
+    )
+    calc_gs(Hop, basis_setup, bs, np.eye(2, dtype=complex), verbose=True, slaterWeightMin=1e-12)
+    out = capsys.readouterr().out
+
+    # Thermal line and per-eigenstate column both present.
+    assert any(line.startswith("<S_imp.S_bath>") for line in out.splitlines())
+    header = next(line for line in out.splitlines() if "E-E0" in line and "Sz" in line)
+    assert "Si.Sb" in header
