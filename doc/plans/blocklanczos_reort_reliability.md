@@ -234,7 +234,9 @@ top of a kernel that still loses orthogonality.
    double-pass full reorthogonalization against the whole retained basis, in **all**
    modes including NONE — this is a structural requirement of thick-restart, not the
    reort-mode knob (decision 2026-06-23: "always reorth in restart"; the inner
-   `block_lanczos_cy` loop still honors NONE). Restart-time PRO is deferred to Phase 3.
+   `block_lanczos_cy` loop still honors NONE). Restart-time PRO has since been done for
+   the IRLM kernel (Phase 3, 2026-06-24); the TRLM kernels still use the full-reort
+   restart sweep (extending the W-seed there is a tracked follow-up).
    Verified: all `test_trlm_cy_*` green, `TRLM-ManyBodyState-{NONE,PARTIAL,SELECTIVE}`
    green, `test_trlm_reort_partial` + `test_irlm_thick_restart` green. Full serial
    suite: **1 failed, 260 passed** (only item 4 remains). MPI also verified —
@@ -433,7 +435,9 @@ This is the change that delivers "specify whichever mode and it works."
   double-pass reorthogonalization against the retained basis, in all modes — the PRO
   W-recurrence is not reliably maintained across a restart, so PARTIAL/SELECTIVE there
   bred ghosts. The *initial* Lanczos run still honors the requested mode. Restart-time
-  PRO is deferred to Phase 3. (The earlier `apply_reort`-in-restart approach was
+  PRO has since been implemented for IRLM (Phase 3, 2026-06-24: uniform `REORT_TOL`
+  W-seed, validated against the FULL restart); TRLM is the remaining follow-up. (The
+  earlier `apply_reort`-in-restart approach was
   reverted as it regressed sparse TRLM/IRLM and the groundstate path.) Anchor
   the restart loop: `grep -n "for restart in range" src/impurityModel/ed/trlm.py`; the
   manual double reorth is `grep -n "array does 2x for stability" src/impurityModel/ed/trlm.py`.
@@ -448,16 +452,17 @@ This is the change that delivers "specify whichever mode and it works."
   verify their restart W-init (the EA16 `omega_max` heuristic, anchor
   `grep -n "omega_max" src/cython/BlockLanczos.pyx`) matches the cold-start init.
   Checkpoint: full Phase-0 matrix, serial + `mpirun -n 3 --with-mpi`.
-- [ ] **Restart re-orthogonality vs ghost bands.** On thick restart, the retained
-  Ritz block must be re-orthonormalized and W reset consistently (locked Ritz
-  vectors tracked) so converged copies don't reappear — this is the mechanism that
-  prevents PRO ghost bands across restarts. Validate against the Phase-0 ghost-band
-  suite specifically in the restart regime (small `max_subspace_blocks`, many
-  `max_restarts`).
-- [ ] **NONE must be honest.** `reort=NONE` should run with no reorth (and is allowed
-  to lose orthogonality / show ghost bands) — the test for NONE asserts eigenvalues
-  still converge for well-separated spectra but does **not** assert no-ghost-bands;
-  that gate applies to PARTIAL/FULL/SELECTIVE/PERIODIC.
+- [x] **Restart re-orthogonality vs ghost bands.** DONE — validated by the Phase-0
+  matrix `test_block_lanczos_reort_matrix.py` in a real restart regime
+  (`max_subspace_blocks=6, max_restarts=50`): the PARTIAL/SELECTIVE/FULL/PERIODIC ×
+  {array, ManyBodyState} × {TRLM, IRLM} cells pass (eigenvalues vs dense to 1e-8,
+  `‖QᴴQ−I‖ < √eps`, no ghost bands), serial + MPI. The only ghost-band xfail left is a
+  *separate* limit — "restarted solver can't resolve a multiplicity-3 degeneracy in a
+  tight subspace" — not a re-orthogonalization failure.
+- [x] **NONE must be honest.** DONE — `test_block_lanczos_reort_matrix.py` runs
+  `Reort.NONE` and asserts eigenvalue convergence for the well-separated test spectrum
+  while **skipping** the `‖QᴴQ−I‖` orthonormality gate for NONE (that gate applies only
+  to PARTIAL/FULL/SELECTIVE/PERIODIC).
 
 Verification: full Phase-0 matrix green for all modes × paths × solvers, serial and
 `mpirun -n {2,3,4}`. PARTIAL becomes the documented default in `trlm.py`/`irlm.py`.
@@ -466,6 +471,21 @@ Verification: full Phase-0 matrix green for all modes × paths × solvers, seria
 
 ## Phase 3 — Accuracy & robustness hardening
 
+- [x] **Restart-time PRO (cheaper restart, no full kept-block reort).** DONE
+  (2026-06-24). The IRLM restart (`implicitly_restarted_block_lanczos_cy`) previously
+  forced `reort=FULL, W_init=None` after every implicit-QR restart for *all* modes.
+  Now PARTIAL/SELECTIVE continue across the restart in the *requested* PRO mode,
+  seeding the Paige-Simon estimator `W` uniformly at `REORT_TOL` (= `sqrt(eps)`, the
+  semi-orthogonality level) instead of fully re-orthogonalizing the kept Ritz block.
+  Validated empirically (A/B against the old FULL restart): eigenvalue precision is
+  identical to FULL (ground state to `eps`, **no** drift to `sqrt(eps)`), no ghost
+  bands appear (the full reort-matrix + ghost suites are unchanged, serial + MPI), and
+  it is MPI-safe (the seed is deterministic and rank-identical). The deflated-restart
+  branch (`active_k < p`) uses an `active_k`-sized identity for the trailing
+  self-overlap and matches FULL bit-for-bit there too. NONE/PERIODIC/FULL keep the
+  full-reort restart. New regression: `test_restart_pro.py` (PARTIAL/SELECTIVE match
+  FULL and dense through forced restarts + restart-block deflation, serial + MPI).
+  This resolves the "Restart-time PRO deferred to Phase 3" notes left in the kernels.
 - [ ] **Bounded W (pre-allocate, don't window).** DEFERRED (2026-06-23) — the plan's
   one-liner doesn't fit the code. The dominant per-iteration allocation is *inside*
   `estimate_orthonormality`, which builds a fresh `W_out = np.zeros((2, i+2, n, n))`

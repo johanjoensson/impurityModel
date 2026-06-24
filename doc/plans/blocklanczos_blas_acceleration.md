@@ -15,9 +15,12 @@ blocksize > 1: "take advantage of BLAS 3 kernels").
 > edit); a small/fast model should implement Items 1, 2, 4 only.
 
 ## 0. Baseline & safety net (do first)
-- [ ] Add `test_array_lanczos_matches_dense` (eigenvalues to 1e-8) and
+- [x] Add `test_array_lanczos_matches_dense` (eigenvalues to 1e-8) and
       `test_array_lanczos_orthonormality` (‖Q†Q−I‖ < √eps), serial + MPI, before
-      touching the kernel. These are the regression oracle.
+      touching the kernel. These are the regression oracle. **DONE (2026-06-24):**
+      `test_array_lanczos_oracle.py` — `matches_dense` (p∈{1,2,3}, full Krylov on a
+      dense Hermitian) and `orthonormality` (column Gram `Q†Q`, serial + an MPI
+      row-block variant with the `Allreduce`'d partial Gram); serial + MPI n=2,3,4 green.
 - [x] **Already present:** `test_block_lanczos_array_empty_rank.py` exercises the
       MPI path with one rank owning **0 local basis states** (empty `(global_N, 0)`
       CSR slice) and asserts the distributed eigenvalues match dense. Any refactor

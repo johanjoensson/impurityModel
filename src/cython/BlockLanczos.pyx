@@ -1267,13 +1267,29 @@ def implicitly_restarted_block_lanczos_cy(
         betas_pass = np.array(betas_pass_list) if betas_pass_list else np.empty((0, p, p), dtype=complex)
         alphas_pass = np.array(alphas_new)
 
-        # The post-restart continuation always uses FULL reorthogonalization, mirroring
-        # the TRLM restart-sweep decision ("always reorth in restart"): the PRO
-        # W-recurrence is not reliably maintained across an implicit QR restart, so
-        # PARTIAL/SELECTIVE here breeds ghost eigenvalues (e.g. a spurious -340 that
-        # never converges). The *initial* Lanczos run above still honors the requested
-        # mode. FULL needs no W seed. (Phase-3: revisit cheaper restart-time PRO.)
-        W_init = None
+        # Post-restart continuation. For PARTIAL/SELECTIVE we continue in the *requested*
+        # PRO mode across the implicit-QR restart, seeding the Paige-Simon estimator W
+        # uniformly at REORT_TOL (= sqrt(eps), the semi-orthogonality level) rather than
+        # doing a full kept-block reorthogonalization. Validated to hold the same
+        # eigenvalue precision as a full-reort restart (ground state to eps, no drift to
+        # sqrt(eps)), produce no ghost bands, and stay MPI-safe (the seed is deterministic
+        # and rank-identical). The *initial* Lanczos run above already honors the mode.
+        #
+        # NONE/PERIODIC/FULL keep the full-reort restart (FULL needs no W seed). On a
+        # deflated restart block (active_k < p) the current/trailing block self-overlap is
+        # an active_k-sized identity; the unused tail columns are left untouched (the
+        # block_widths table drives the W-recurrence indexing in estimate_orthonormality).
+        if reort_mode in (Reort.PARTIAL, Reort.SELECTIVE):
+            W_init = np.zeros((2, k_blocks + 1, p, p), dtype=complex)
+            W_init[1, :k_blocks] = REORT_TOL                             # new block vs each kept block
+            if k_blocks >= 2:
+                W_init[0, : k_blocks - 1] = REORT_TOL                    # previous block vs kept blocks
+            W_init[1, k_blocks, :active_k, :active_k] = np.eye(active_k)  # trailing (current) self-overlap
+            W_init[0, k_blocks - 1] = np.eye(p)                          # previous kept-block self-overlap
+            reort_continuation = reort_mode
+        else:
+            W_init = None
+            reort_continuation = Reort.FULL
 
         # Continue Lanczos from block k_blocks
         alphas, betas, Q_basis, W = block_lanczos_cy(
@@ -1282,7 +1298,7 @@ def implicitly_restarted_block_lanczos_cy(
             basis=basis,
             converged_fn=lambda a, b, **kw: False,
             verbose=verbose,
-            reort=Reort.FULL,
+            reort=reort_continuation,
             max_iter=m - k_blocks,
             slaterWeightMin=slaterWeightMin,
             comm=comm,
