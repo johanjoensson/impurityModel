@@ -45,6 +45,7 @@ def calc_energy(
     cipsi_solver_method="trlm",
     reort="full",
     return_state=False,
+    weighted_restrictions=None,
 ):
     """
     Calculate the ground-state energy of the system for a given charge sector.
@@ -109,6 +110,7 @@ def calc_energy(
         verbose=verbose,
         spin_flip_dj=spin_flip_dj,
         comm=comm,
+        weighted_restrictions=weighted_restrictions,
     )
     solver = CIPSISolver(basis)
     solver.truncate_initial(h_op)
@@ -160,6 +162,7 @@ def prescan_ground_state_sector(
     cipsi_solver_method="trlm",
     scan_width=1,
     verbose=False,
+    weighted_restrictions=None,
 ):
     """Rough CIPSI over a broad occupation window to locate the ground-state sector.
 
@@ -211,6 +214,7 @@ def prescan_ground_state_sector(
         truncation_threshold,
         slaterWeightMin,
         cipsi_solver_method=cipsi_solver_method,
+        weighted_restrictions=weighted_restrictions,
         return_state=True,
     )
     if gs_state is None:
@@ -245,6 +249,7 @@ def find_ground_state_basis(
     slaterWeightMin=1e-12,
     cipsi_solver_method="trlm",
     use_prescan=False,
+    weighted_restrictions=None,
 ):
     """
     Find the occupation corresponding to the lowest energy, compare N0 - 1, N0 and N0 + 1
@@ -309,6 +314,7 @@ def find_ground_state_basis(
             truncation_threshold=truncation_threshold,
             slaterWeightMin=slaterWeightMin,
             cipsi_solver_method=cipsi_solver_method,
+            weighted_restrictions=weighted_restrictions,
         )
         energy_cache[key] = (e_trial, basis.copy() if basis is not None else None)
         return e_trial, basis
@@ -333,6 +339,7 @@ def find_ground_state_basis(
             slaterWeightMin,
             cipsi_solver_method=cipsi_solver_method,
             verbose=verbose,
+            weighted_restrictions=weighted_restrictions,
         )
         winning_N0 = {i: N0[i] if i in frozen_occupations else winning_N0[i] for i in N0}
         e_gs, basis = get_energy(winning_N0)

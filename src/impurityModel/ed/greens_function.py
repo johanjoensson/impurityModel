@@ -13,6 +13,7 @@ from impurityModel.ed.BlockLanczosArray import (
 )
 from impurityModel.ed.BlockLanczos import block_lanczos_cy
 from impurityModel.ed.manybody_basis import Basis
+from impurityModel.ed.symmetries import widen_weighted_restrictions
 from impurityModel.ed.ManyBodyUtils import (
     ManyBodyOperator,
     ManyBodyState,
@@ -334,9 +335,14 @@ def calc_Greens_function_with_offdiag(
         con_change=dN_con,
         cutoff=occ_cutoff,
     )
+    # Weighted (e.g. S_z) restriction for the excited sector: widen the ground-state
+    # bounds by one orbital weight so the addition (c_j†) / removal (c_j) sectors
+    # q_psi ± w_j are admitted while still confining the basis.
+    excited_weighted_restrictions = widen_weighted_restrictions(block_basis.weighted_restrictions)
     block_v = [[ManyBodyState({}) for _ in tOps] for _ in psis]
     for i_tOp, tOp in enumerate(tOps):
         tOp.set_restrictions(excited_restrictions)
+        tOp.set_weighted_restrictions(excited_weighted_restrictions)
         res_psis = tOp.apply_multi(psis, cutoff=slaterWeightMin)
         for j_psi, res_psi in enumerate(res_psis):
             block_v[j_psi][i_tOp] += res_psi
@@ -381,11 +387,14 @@ def calc_Greens_function_with_offdiag(
         excited_basis = split_original_basis.clone(
             initial_basis=set(state for p in excited_psis for state in p),
             restrictions=excited_restrictions,
+            weighted_restrictions=excited_weighted_restrictions,
             verbose=False,
         )
 
         if excited_basis.restrictions is not None:
             hOp.set_restrictions(excited_basis.restrictions)
+        if excited_basis.weighted_restrictions is not None:
+            hOp.set_weighted_restrictions(excited_basis.weighted_restrictions)
         if sparse:
             alphas, betas, r = block_Green_sparse(
                 reort=reort,

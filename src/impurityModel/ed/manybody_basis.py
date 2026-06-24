@@ -776,11 +776,12 @@ class Basis:
             verbose=verbose,
         )
 
-    def clone(self, initial_basis=None, restrictions=None, verbose=None, comm=None):
+    def clone(self, initial_basis=None, restrictions=None, weighted_restrictions=None, verbose=None, comm=None):
         """Create a new Basis instance, optionally overriding initial_basis and restrictions.
 
         If initial_basis is None, the new basis will start with self.local_basis.
         If restrictions is None, the new basis will inherit self.restrictions.
+        If weighted_restrictions is None, the new basis inherits self.weighted_restrictions.
         If comm is None, the new basis will inherit self.comm.
         """
         return Basis(
@@ -788,7 +789,9 @@ class Basis:
             bath_states=self.bath_states,
             initial_basis=initial_basis if initial_basis is not None else list(self.local_basis),
             restrictions=restrictions if restrictions is not None else self.restrictions,
-            weighted_restrictions=self.weighted_restrictions,
+            weighted_restrictions=(
+                weighted_restrictions if weighted_restrictions is not None else self.weighted_restrictions
+            ),
             truncation_threshold=self.truncation_threshold,
             spin_flip_dj=self.spin_flip_dj,
             tau=self.tau,

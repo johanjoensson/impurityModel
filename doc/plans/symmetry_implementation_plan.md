@@ -803,10 +803,24 @@ to Cython if profiling shows it dominates total run time.
 > is exercised by reusing the same operator across both). Full serial suite 363 passed +
 > MPI n=2 green.
 >
-> **Remaining (further layer):** thread `weighted_restrictions` through
-> `groundstate.calc_energy`/`find_ground_state_basis`/`calc_gs` (via `basis_setup`) so a
-> full top-level GS/GF run can target an `S_z`/`L_z` sector — the `Basis`/CIPSI layer it
-> sits on is now done.
+> **calc_gs + Green's-function threading DONE (2026-06-24).** `weighted_restrictions`
+> threaded through `groundstate.calc_energy` → `Basis`, and through
+> `find_ground_state_basis` / `prescan_ground_state_sector` (so `calc_gs` picks it up from
+> `basis_setup["weighted_restrictions"]` via `**basis_setup`). `test_calc_gs_weighted_sz_restriction`:
+> the whole ground state stays in the imposed `S_z` sector. **Green's function:**
+> `symmetries.widen_weighted_restrictions` widens the bounds by the max single-orbital
+> weight (the addition `c_j†` / removal `c_j` lands in `q_ψ ± w_j`, which the
+> ground-state-tight restriction would wrongly filter); `calc_Greens_function_with_offdiag`
+> applies the widened restriction to each `tOp`, to the cloned excited `Basis`
+> (`Basis.clone` gained a `weighted_restrictions` override), and to `hOp` during Lanczos.
+> `test_greens_function_weighted_restriction_unchanged`: the (correctly widened) S_z
+> restriction leaves the GF unchanged. Serial + MPI n=2 green; full suite 365 passed.
+>
+> **⚠ Pre-existing bug noticed (not from this work):** the *dense* GF expansion path calls
+> `block_green_impl(basis, hOp, psi_arr, delta, slaterWeightMin, verbose)` — missing the
+> `reort` argument (its signature is `(basis, hOp, psi_arr, delta, reort, slaterWeightMin,
+> verbose)`), so `verbose` is left unbound. Triggered by a dense GF that expands the basis
+> (the `sparse=True` path is unaffected). Flagged for a separate fix.
 
 **Location:** `src/cython/ManyBodyOperator.h`, `SlaterDeterminant.h`
 

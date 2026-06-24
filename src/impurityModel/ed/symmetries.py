@@ -351,6 +351,36 @@ def weighted_restriction(weights, target, slack=0):
     return (dict(weights), (int(target) - slack, int(target) + slack))
 
 
+def widen_weighted_restrictions(weighted_restrictions, extra=None):
+    r"""Widen weighted-restriction bounds so a single addition/removal stays in-bounds.
+
+    A Green's-function transition operator ``c_j^\dagger`` / ``c_j`` shifts a weighted
+    charge by ``±w_j``, so the excited sector is ``q_ψ ± w_j`` — the ground-state (tight)
+    weighted restriction would wrongly filter it out. This widens each restriction's
+    ``[q_min, q_max]`` by the maximum single-orbital weight magnitude (or ``extra``), so
+    every single-orbital excitation is admitted while still confining the basis.
+
+    Parameters
+    ----------
+    weighted_restrictions : list of (dict, (int, int)) or None
+        Weighted restrictions (see :func:`weighted_restriction`).
+    extra : int, optional
+        Amount to widen by. Default: ``max |weight|`` of each restriction.
+
+    Returns
+    -------
+    list of (dict, (int, int)) or None
+        Widened restrictions (or the input unchanged if ``None``/empty).
+    """
+    if not weighted_restrictions:
+        return weighted_restrictions
+    widened = []
+    for weights, (q_min, q_max) in weighted_restrictions:
+        by = extra if extra is not None else max((abs(w) for w in weights.values()), default=0)
+        widened.append((dict(weights), (q_min - by, q_max + by)))
+    return widened
+
+
 def sz_weighted_restriction(spin_pairs, two_sz_target, slack=0):
     r"""Auto-generate the ``S_z`` weighted restriction from ``(dn, up)`` spin pairs.
 

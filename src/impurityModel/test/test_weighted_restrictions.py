@@ -149,3 +149,90 @@ def test_weighted_restriction_in_basis_expand():
     free = Basis(initial_basis=list(seed), **kw)
     free.expand(op)
     assert any(two_sz(_occset(d)) != 0 for d in free.local_basis)  # spin-flip leaks out
+
+
+def test_calc_gs_weighted_sz_restriction():
+    """calc_gs with a weighted S_z restriction keeps the whole ground state in-sector."""
+    from impurityModel.ed.block_structure import BlockStructure
+    from impurityModel.ed.groundstate import calc_gs
+    from impurityModel.ed.finite import impurity_spin_pairs, bath_spin_pairs
+    from impurityModel.ed.symmetries import sz_weighted_restriction
+
+    # SIAM 6 orbitals: 0,1=imp(dn,up); 2,3=val bath(dn,up); 4,5=cond bath(dn,up).
+    ed, U, ev, ec, V = -2.0, 6.0, -4.0, 4.0, 1.0
+    terms = {((o, "c"), (o, "a")): ed for o in (0, 1)}
+    terms.update({((o, "c"), (o, "a")): ev for o in (2, 3)})
+    terms.update({((o, "c"), (o, "a")): ec for o in (4, 5)})
+    terms[((0, "c"), (1, "c"), (1, "a"), (0, "a"))] = U
+    for a, b in ((0, 2), (1, 3), (0, 4), (1, 5)):
+        terms[((a, "c"), (b, "a"))] = V
+        terms[((b, "c"), (a, "a"))] = V
+    Hop = ManyBodyOperator(terms)
+
+    imp = {0: [[0, 1]]}
+    bath = ({0: [[2, 3]]}, {0: [[4, 5]]})
+    pairs = impurity_spin_pairs(imp) + bath_spin_pairs(bath)  # up={1,3,5}, dn={0,2,4}
+    sz0 = sz_weighted_restriction(pairs, two_sz_target=0)
+
+    bs = BlockStructure(
+        blocks=[[0, 1]], identical_blocks=[[0]], transposed_blocks=[[]],
+        particle_hole_blocks=[[]], particle_hole_transposed_blocks=[[]], inequivalent_blocks=[0],
+    )
+    basis_setup = dict(
+        impurity_orbitals=imp, bath_states=bath, N0={0: 1}, mixed_valence={0: 1}, tau=0.01,
+        dense_cutoff=1000, spin_flip_dj=False, comm=None, truncation_threshold=100000,
+        weighted_restrictions=[sz0],
+    )
+    psis, es, basis, _, _ = calc_gs(Hop, basis_setup, bs, np.eye(2, dtype=complex), verbose=False, slaterWeightMin=1e-12)
+
+    up, dn = {1, 3, 5}, {0, 2, 4}
+    for det in psis[0]:
+        occ = _occset(det, 6)
+        assert len(occ & up) - len(occ & dn) == 0  # every determinant has 2*S_z = 0
+
+
+def test_greens_function_weighted_restriction_unchanged():
+    """A correctly-widened weighted S_z restriction does not change the Green's function."""
+    from mpi4py import MPI
+    from impurityModel.ed.manybody_basis import Basis
+    from impurityModel.ed.greens_function import calc_Greens_function_with_offdiag
+    from impurityModel.ed.symmetries import sz_weighted_restriction
+    from impurityModel.ed.finite import impurity_spin_pairs
+
+    # 4 orbitals (2 spatial): impurity_spin_pairs -> dn={0,1}, up={2,3}.
+    imp = {0: [[0, 1, 2, 3]]}
+    pairs = impurity_spin_pairs(imp)
+    # Spin-diagonal hopping: dn0<->dn1 (0<->1), up0<->up1 (2<->3).
+    hop = {}
+    for a, b in ((0, 1), (2, 3)):
+        hop[((a, "c"), (b, "a"))] = -0.5
+        hop[((b, "c"), (a, "a"))] = -0.5
+    hOp = ManyBodyOperator(hop)
+
+    # Ground state: a 2-electron S_z=0 state |0,3> (dn0 + up1).
+    psi = ManyBodyState({_sd([0, 3]): 1.0})
+    tOp = ManyBodyOperator({((0, "a"),): 1.0})  # remove dn0
+
+    def run(weighted):
+        basis = Basis(
+            impurity_orbitals=imp, bath_states=({0: [[]]}, {0: [[]]}),
+            initial_basis=[bytes(_sd([0, 3]).to_bytearray())], comm=MPI.COMM_SELF,
+            weighted_restrictions=weighted,
+        )
+        return calc_Greens_function_with_offdiag(
+            hOp=hOp, tOps=[tOp], psis=[psi], es=[0.0], block_basis=basis,
+            delta=0.01, dN=2, occ_cutoff=1e-6, slaterWeightMin=0.0, verbose=False, sparse=True,
+        )
+
+    # GS is in 2*S_z = 0 sector; restrict to it (the GF widens by one orbital weight).
+    sz0 = sz_weighted_restriction(pairs, two_sz_target=0)
+    a0, b0, r0 = run(None)
+    a1, b1, r1 = run([sz0])
+
+    assert len(a0) == len(a1)
+    for x0, x1 in zip(a0, a1):
+        np.testing.assert_allclose(x0, x1, atol=1e-10)
+    for y0, y1 in zip(b0, b1):
+        np.testing.assert_allclose(y0, y1, atol=1e-10)
+    for z0, z1 in zip(r0, r1):
+        np.testing.assert_allclose(z0, z1, atol=1e-10)
