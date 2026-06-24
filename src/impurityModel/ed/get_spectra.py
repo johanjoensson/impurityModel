@@ -51,6 +51,7 @@ def main(
     deltaNIXS,
     XAS_projectors_filename,
     RIXS_projectors_filename,
+    auto_block_structure=False,
 ):
     """
     First find the lowest eigenstates and then use them to calculate various spectra.
@@ -236,6 +237,17 @@ def main(
         rank,
     )
     hOp = ManyBodyOperator(hOp)
+    # Opt-in: replace the hand-coded block_structure with one auto-derived from the
+    # impurity sub-block of the one-body Hamiltonian (symmetry-plan Phase 4). It matches
+    # or strictly refines the manual structure (e.g. SOC splits each shell into m_j
+    # sub-blocks); enable to validate, then it can become the default.
+    if auto_block_structure:
+        from impurityModel.ed.symmetries import auto_block_structure as derive_block_structure
+
+        impurity_indices = sorted(orb for blocks in impurity_orbitals.values() for block in blocks for orb in block)
+        block_structure = derive_block_structure(hOp, orbitals=impurity_indices)
+        if rank == 0:
+            print(f"Auto-derived block structure: {len(block_structure.blocks)} blocks")
     # Measure how many physical processes the Hamiltonian contains.
     if rank == 0:
         print("{:d} processes in the Hamiltonian.".format(len(hOp)))

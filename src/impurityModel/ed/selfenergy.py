@@ -636,6 +636,7 @@ def get_selfenergy(
     energy_cut,
     delta,
     verbose,
+    auto_block_structure=False,
 ):
     """Calculate the self energy starting from a large number of arguments.
 
@@ -757,6 +758,16 @@ def get_selfenergy(
                 raise e
         hOp_new[tuple(new_process)] = value
     hOp = hOp_new
+
+    # Opt-in: auto-derive the block structure from the impurity sub-block of the
+    # one-body Hamiltonian (symmetry-plan Phase 4) instead of the hand-coded one.
+    if auto_block_structure:
+        from impurityModel.ed.symmetries import auto_block_structure as derive_block_structure
+
+        impurity_indices = sorted(orb for blocks in impurity_orbitals.values() for block in blocks for orb in block)
+        block_structure = derive_block_structure(hOp, orbitals=impurity_indices)
+        if rank == 0 and verbose:
+            print(f"Auto-derived block structure: {len(block_structure.blocks)} blocks")
 
     sigma, sigma_real, sigma_static = calc_selfenergy(
         h0=hOp,

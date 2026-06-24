@@ -601,6 +601,16 @@ state.
 > confirms the blocks match the GF sectors **and** the `identical_blocks` detection
 > correctly groups the degenerate eg `{0,1,5,6}` and t2g `{2,3,4,7,8,9}` orbitals.
 >
+> **Wired behind an opt-in flag (2026-06-24):** `get_spectra.main(..., auto_block_structure=False)`
+> and `selfenergy.get_selfenergy(..., auto_block_structure=False)` accept the flag; when
+> `True` they replace the hand-coded `BlockStructure` with
+> `auto_block_structure(hOp, orbitals=<impurity indices>)` (the impurity sub-block of the
+> one-body Hamiltonian). Default `False` ⇒ no behaviour change. **Not flipped to default**
+> because it can *refine* the GF blocks (mj sub-blocks under SOC), changing the GF
+> computation/assembly; that result-invariance needs validating on the real p/d and
+> self-energy models (data files) before flipping. Full serial suite 371 passed with the
+> flag added (default path unchanged).
+>
 > **🐛→✅ BUG FIXED in `get_inequivalent_blocks`** (`block_structure.py`, 2026-06-24):
 > a block that was particle-hole/transpose-related to blocks **within its own identical
 > group** (e.g. the self-PH-symmetric t2g at zero energy: `block 2 ∈ particle_hole[2]`)
