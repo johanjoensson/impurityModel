@@ -435,9 +435,15 @@ def eigensystem(h_local, e_max, k=10, e0=None, v0=None, eigenValueTol=0, return_
     return es[mask]
 
 
-def print_expectation_values(rhos, es, rot_to_spherical, block_structure):
+def print_expectation_values(rhos, es, rot_to_spherical, block_structure, s_values=None):
     """
     print several expectation values, e.g. E, N, L^2.
+
+    If ``s_values`` is given (one impurity spin quantum number ``S`` per
+    eigenstate, e.g. from :func:`manifold_observable_values` +
+    :func:`casimir_to_quantum_number`), an ``S`` column is appended. When it is
+    ``None`` the output is identical to before (used when the eigenstates are not
+    available, e.g. on non-root ranks).
     """
     orb_offset = min(orb for block in block_structure.blocks for orb in block)
     equivalent_blocks = get_equivalent_blocks(block_structure)
@@ -446,8 +452,9 @@ def print_expectation_values(rhos, es, rot_to_spherical, block_structure):
     block_N_string_formatted = ["" for _ in block_N_string]
     for i, Ns in enumerate(block_N_string):
         block_N_string_formatted[i] = " " * max(8 - len(Ns), 0) + Ns
+    s_header = f"  {'S':>8s}" if s_values is not None else ""
     print(
-        f"{'i':>3s}  {'E-E0':>11s}  {'N':>8s}  {'N(Dn)':>8s}  {'N(Up)':>8s}  {'  '.join(block_N_string_formatted)}  {'Lz':>8s}  {'Sz':>8s}"
+        f"{'i':>3s}  {'E-E0':>11s}  {'N':>8s}  {'N(Dn)':>8s}  {'N(Up)':>8s}  {'  '.join(block_N_string_formatted)}  {'Lz':>8s}  {'Sz':>8s}  {'L.S':>8s}{s_header}"
     )
     for i, (e, rho) in enumerate(zip(es - es[0], rhos)):
         block_occs = [
@@ -461,8 +468,10 @@ def print_expectation_values(rhos, es, rot_to_spherical, block_structure):
         N, Ndn, Nup = get_occupations_from_rho_spherical(rho_spherical)
         Lz = get_Lz_from_rho_spherical(rho_spherical)
         Sz = get_Sz_from_rho_spherical(rho_spherical)
+        LS = get_LS_from_rho_spherical(rho_spherical)
+        s_field = f"  {s_values[i]: 8.6f}" if s_values is not None else ""
         print(
-            f"{i:^3d}  {e:11.8f}  {N:8.5f}  {Ndn:8.5f}  {Nup:8.5f}  {'  '.join(block_occ_string_formatted)}  {Lz: 8.6f}  {Sz: 8.6f}"
+            f"{i:^3d}  {e:11.8f}  {N:8.5f}  {Ndn:8.5f}  {Nup:8.5f}  {'  '.join(block_occ_string_formatted)}  {Lz: 8.6f}  {Sz: 8.6f}  {LS: 8.6f}{s_field}"
         )
     print("\n")
 
@@ -685,6 +694,10 @@ def get_LS_from_rho_spherical(rho: np.ndarray, l: Optional[int] = None) -> float
     if l is None:
         l = (rho.shape[0] // 2 - 1) // 2
     n = 2 * l + 1
+    # Contract against the leading 2*(2l+1) sub-block, matching the index-based
+    # get_Lz/get_Sz helpers (robust when rho is not exactly spin-doubled, e.g. an
+    # odd-sized block).
+    rho = rho[: 2 * n, : 2 * n]
     mls = np.arange(-l, l + 1)
     llp1 = l * (l + 1)
     zeros = np.zeros((n, n))
@@ -968,10 +981,43 @@ def casimir_to_quantum_number(jj_plus_1):
     return 0.5 * (-1.0 + np.sqrt(max(1.0 + 4.0 * np.real(jj_plus_1), 0.0)))
 
 
-def print_thermal_expectation_values(rho_thermal, e_thermal, rot_to_spherical, block_structure):
+def impurity_spin_pairs(impurity_orbitals):
+    r"""Return the ``(dn_index, up_index)`` impurity spin-orbital pairs.
+
+    Within each angular-momentum partition of ``impurity_orbitals`` the first half
+    of the spin-orbitals are spin-down and the second half spin-up (the basis
+    layout, matching ``Basis._generate_spin_flipped_determinants``), so orbital
+    ``k`` pairs with orbital ``k + n//2``.
+
+    Parameters
+    ----------
+    impurity_orbitals : dict
+        Mapping ``partition -> list of orbital-index blocks`` (``Basis.impurity_orbitals``).
+
+    Returns
+    -------
+    list of (int, int)
+        ``(dn, up)`` global spin-orbital index pairs, suitable for
+        :func:`make_spin_operators`.
+    """
+    pairs = []
+    for orb_blocks in impurity_orbitals.values():
+        orbs = [orb for block in orb_blocks for orb in block]
+        n = len(orbs)
+        for k in range(n // 2):
+            pairs.append((orbs[k], orbs[k + n // 2]))
+    return pairs
+
+
+def print_thermal_expectation_values(
+    rho_thermal, e_thermal, rot_to_spherical, block_structure, s_thermal=None
+):
     """
     print several thermal expectation values, e.g. E, N, Sz, Lz.
 
+    If ``s_thermal`` is given (the thermally-averaged impurity ``S(S+1)``), an
+    ``<S^2>`` line and the corresponding ``S`` are appended. When it is ``None``
+    the output is identical to before.
     """
     orb_offset = min(orb for block in block_structure.blocks for orb in block)
     equivalent_blocks = get_equivalent_blocks(block_structure)
@@ -988,6 +1034,9 @@ def print_thermal_expectation_values(rho_thermal, e_thermal, rot_to_spherical, b
         print(f"<N({','.join(str(orb) for orb in blocks)})> = {occ:8.7f}")
     print(f"<Lz> = {get_Lz_from_rho_spherical(rho_thermal_spherical): 8.7f}")
     print(f"<Sz> = {get_Sz_from_rho_spherical(rho_thermal_spherical): 8.7f}")
+    print(f"<L.S> = {get_LS_from_rho_spherical(rho_thermal_spherical): 8.7f}")
+    if s_thermal is not None:
+        print(f"<S^2> = {np.real(s_thermal): 8.7f}  (S = {casimir_to_quantum_number(s_thermal): 6.4f})")
 
 
 def dc_MLFT(n3d_i, c, Fdd, n2p_i=None, Fpd=None, Gpd=None):

@@ -392,6 +392,12 @@ def calc_gs(
         impurity_ix = np.ix_(impurity_indices, impurity_indices)
         print("Block structure")
         print_block_structure(block_structure)
+        # NOTE: impurity total-spin <S^2>/S reporting is deferred to symmetry-plan
+        # Phase 5 (basis rotation). It needs the true index->(spatial orbital, spin)
+        # map; the (k, k+n/2) spin pairing only holds in the spherical basis, so it
+        # cannot be read off computational-basis indices in general. The operator
+        # primitives live in finite.py and the print functions already accept
+        # optional s_values / s_thermal for when Phase 5 supplies the correct map.
         print_thermal_expectation_values(thermal_rho[impurity_ix], e_avg, rot_to_spherical, block_structure)
         impurity_ix = np.ix_(np.arange(len(rhos)), impurity_indices, impurity_indices)
         print_expectation_values(rhos[impurity_ix], es, rot_to_spherical, block_structure)

@@ -104,16 +104,32 @@ is the regression gate that proves the effort is safe to enable.
 >   diagonalisation + Boltzmann average) — `test_degenerate_manifold_observable`,
 >   `test_thermal_observable` ✅
 >
-> **Carry on from here:** (a) §1.3 impurity-restricted versions (reuse the builders
-> with impurity-orbital index pairs; needs a mixed-valence model for
-> `test_impurity_local_observables`); (b) §1.0/§1.3 wiring into
-> `print_thermal_expectation_values` / `print_expectation_values` + the per-eigenstate
-> table, plumbing the eigenstates/thermal ensemble through `groundstate.py` (the print
-> path currently receives only `rho`; two-body observables and ⟨S_imp·S_bath⟩ need the
-> actual states), with the column/line-preservation tests and
-> `test_kondo_correlation_reported`. The distributed path follows the existing
-> density-matrix pattern (gather full states to rank 0, evaluate serially), so the
-> manifold helper is intentionally serial.
+> **§1.0 print wiring DONE (2026-06-24):** `<L.S>` wired into both print levels;
+> impurity `<S^2>`/`S` wired in via gathered full states + `manifold_observable_values`
+> (rank-0-only compute, optional `s_values`/`s_thermal` so old output is byte-identical
+> when absent). New: `impurity_spin_pairs`; `get_LS_from_rho_spherical` hardened for
+> odd impurity blocks. Tests `test_print_expectation_values_columns/_S_column`,
+> `test_print_thermal_expectation_values_lines`, `test_print_thermal_S2_line`; verified
+> serial + MPI n=2 on `test_groundstate.py` (d-shell triplet GS → `<S^2>=2, S=1`).
+>
+> **Carry on from here — DEFERRED TO PHASE 5 (decision 2026-06-24):** reporting of
+> `<L^2>`/`<J^2>`, the Kondo `<S_imp·S_bath>` (`test_kondo_correlation_reported`), and
+> the §1.3 mixed-valence `test_impurity_local_observables` all need the true
+> single-particle index→(spatial-orbital, spin) map. The "impurity is down-then-up,
+> spin partners at `(k, k+n/2)`" ordering holds **only in the spherical basis** (after
+> `rot_to_spherical`); in a cubic computational basis the layout must be read from the
+> one-body Hamiltonian (`build_block_structure` / `build_imp_bath_blocks`). Rather than
+> derive a separate bath spin-pairing now, **build Phase 5 (basis rotation) first and
+> reuse its machinery here** — that also lets us retire `build_imp_bath_blocks` (one
+> well-tested path). The Phase-1 observable *primitives* are all done and unit-tested;
+> only the reporting wiring waits. **The provisional impurity `<S^2>` print wiring was
+> reverted** (2026-06-24) to avoid silent errors in cubic-basis runs — it had used
+> `(k, k+n/2)` on computational indices, valid only for identity/spherical
+> `rot_to_spherical`. Kept: `<L.S>` reporting (correct, from the spherical-rotated
+> `rho`); all `finite.py` primitives; the print functions' optional `s_values`/
+> `s_thermal` params (default `None` ⇒ no output change) ready for Phase 5 to fill in
+> with the correct index→(orbital, spin) map; `impurity_spin_pairs` (documented
+> spherical-only).
 
 **Location:** `src/impurityModel/ed/groundstate.py` and `finite.py`
 
@@ -173,12 +189,38 @@ statistics (impurity/valence/conduction weights, `groundstate.py:398-404`).
   rule (§1.5): states within a degenerate manifold share the diagonalized-within-
   manifold eigenvalue, not a per-vector `⟨ψ|Ô|ψ⟩`.
 - **Verification:**
-  - [ ] `test_print_expectation_values_columns` — assert the existing columns
-        (`E-E0`, `N`, `N(Dn)`, `N(Up)`, block `N`, `Lz`, `Sz`) are still present and
-        unchanged, and the new observable columns are appended.
-  - [ ] `test_print_thermal_expectation_values_lines` — same for the thermal block:
-        existing lines unchanged, new lines added.
-  - [ ] Existing tests that exercise the `verbose` print path still pass.
+  - [x] `test_print_expectation_values_columns` — existing columns preserved; `L.S`
+        column appended (and `S` column when `s_values` is passed). Also
+        `test_print_expectation_values_S_column`.
+  - [x] `test_print_thermal_expectation_values_lines` — existing lines preserved;
+        `<L.S>` line added (and `<S^2>`/`S` when `s_thermal` is passed). Also
+        `test_print_thermal_S2_line`.
+  - [x] Existing verbose-path tests still pass (`test_groundstate.py` serial + MPI n=2,
+        full serial suite 315 passed / 172 skipped / 50 xfailed).
+
+  **Done (2026-06-24):** `<L.S>` (1-body, rho-spherical) wired into **both** print
+  levels. `get_LS_from_rho_spherical` made robust to non-spin-doubled (odd) impurity
+  blocks by contracting the leading `2(2l+1)` sub-block (matches the index-based
+  `get_Lz`/`get_Sz`). The print functions gained optional `s_values`/`s_thermal`
+  parameters (default `None` ⇒ byte-identical output) so an `S` column / `<S^2>` line
+  can be filled in later. An impurity `<S^2>` computation was briefly wired into
+  `groundstate.py` and then **reverted** (it used the spherical-only `(k, k+n/2)`
+  pairing on computational indices — see the deferral note above); it will be redone
+  on top of Phase 5's basis-rotation map. The `<S^2>`/`S` formatting path is still
+  covered by `test_print_thermal_S2_line` / `test_print_expectation_values_S_column`,
+  which pass the values in directly.
+
+  **Still open (needs a decision — STOP-AND-ASK):** `<L^2>`/`<J^2>` reporting and the
+  `<S_imp·S_bath>` (`test_kondo_correlation_reported`) and §1.3
+  `test_impurity_local_observables` reporting. `L^2`/`J^2` on the *states* need the
+  orbital (`ml`) structure, i.e. the single-particle basis rotation to spherical
+  harmonics applied to the many-body states — this couples to Phase 5 (basis
+  rotation), unlike `S^2` which is spin-only and basis-independent. `S_imp·S_bath`
+  needs the **bath** spin-orbital `(dn, up)` pairing convention, which is not pinned
+  down in the code the way the impurity one is (`_generate_spin_flipped_determinants`).
+  Both the unit-level operators already exist and are tested
+  (`apply_spin_correlation`/`expect_spin_correlation`, `make_orbital_angular_momentum_operators`);
+  only the *reporting wiring* is blocked on these conventions.
 
 ### 1.1. One-body observables (⟨L·S⟩)
 
