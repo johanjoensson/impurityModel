@@ -89,6 +89,8 @@ class CIPSISolver:
     def expand(self, H, de2_min=1e-10, dense_cutoff=1e3, slaterWeightMin=0, solver="trlm", reort=Reort.PARTIAL):
         if self.basis.restrictions is not None:
             H.set_restrictions(self.basis.restrictions)
+        if self.basis.weighted_restrictions is not None:
+            H.set_weighted_restrictions(self.basis.weighted_restrictions)
         de0_max = -self.basis.tau * np.log(1e-4)
         psi_refs = None
 
@@ -210,6 +212,8 @@ class CIPSISolver:
     ):
         if self.basis.restrictions is not None:
             H.set_restrictions(self.basis.restrictions)
+        if self.basis.weighted_restrictions is not None:
+            H.set_weighted_restrictions(self.basis.weighted_restrictions)
 
         if solver in SOLVERS and self.basis.size >= dense_cutoff:
             restarted_lanczos = SOLVERS[solver]

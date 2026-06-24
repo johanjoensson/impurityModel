@@ -115,3 +115,37 @@ def test_automatic_restrictions_Sz():
     survivors = {frozenset(_occset(d)) for d, _ in n_total(psi).items()}
     expected = {frozenset(occ) for occ in combinations(range(4), 2) if two_sz(set(occ)) == 0}
     assert survivors == expected
+
+
+def test_weighted_restriction_in_basis_expand():
+    """A Basis with a weighted S_z restriction keeps expand inside the S_z sector."""
+    from impurityModel.ed.manybody_basis import Basis
+    from impurityModel.ed.symmetries import sz_weighted_restriction
+    from impurityModel.ed.finite import impurity_spin_pairs
+
+    imp = {0: [[0, 1, 2, 3]]}  # dn = {0,1}, up = {2,3}
+    pairs = impurity_spin_pairs(imp)  # [(0,2),(1,3)]
+    sz = sz_weighted_restriction(pairs, two_sz_target=0)  # weights {2:1,3:1,0:-1,1:-1}
+
+    # Operator: a within-spin hop (dn0->dn1) and a spin-flip (dn0->up0, leaves S_z=0).
+    op = ManyBodyOperator(
+        {
+            ((1, "c"), (0, "a")): 1.0,
+            ((0, "c"), (1, "a")): 1.0,
+            ((2, "c"), (0, "a")): 1.0,
+            ((0, "c"), (2, "a")): 1.0,
+        }
+    )
+    seed = [_sd([0, 3])]  # dn0 + up1, 2*S_z = 0
+    kw = dict(impurity_orbitals=imp, bath_states=({0: [[]]}, {0: [[]]}), verbose=False)
+
+    def two_sz(occ):
+        return len(occ & {2, 3}) - len(occ & {0, 1})
+
+    restricted = Basis(initial_basis=list(seed), weighted_restrictions=[sz], **kw)
+    restricted.expand(op)
+    assert all(two_sz(_occset(d)) == 0 for d in restricted.local_basis)
+
+    free = Basis(initial_basis=list(seed), **kw)
+    free.expand(op)
+    assert any(two_sz(_occset(d)) != 0 for d in free.local_basis)  # spin-flip leaks out

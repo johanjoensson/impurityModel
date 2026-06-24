@@ -662,6 +662,7 @@ class Basis:
         mixed_valence=None,
         initial_basis=None,
         restrictions=None,
+        weighted_restrictions=None,
         delta_valence_occ=None,
         delta_conduction_occ=None,
         delta_impurity_occ=None,
@@ -762,6 +763,9 @@ class Basis:
         self.debug = debug
         self.comm = comm
         self.restrictions = restrictions
+        # Weighted-sum restrictions (e.g. S_z), list of (weights, (q_min, q_max)); see
+        # ManyBodyOperator.set_weighted_restrictions. None = none.
+        self.weighted_restrictions = weighted_restrictions
 
         # self.state_container = CentralizedStateContainer(
         self.state_container = SimpleDistributedStateContainer(
@@ -784,6 +788,7 @@ class Basis:
             bath_states=self.bath_states,
             initial_basis=initial_basis if initial_basis is not None else list(self.local_basis),
             restrictions=restrictions if restrictions is not None else self.restrictions,
+            weighted_restrictions=self.weighted_restrictions,
             truncation_threshold=self.truncation_threshold,
             spin_flip_dj=self.spin_flip_dj,
             tau=self.tau,
@@ -950,6 +955,9 @@ class Basis:
         if isinstance(op, dict):
             op = ManyBodyOperator(op)
         op.set_restrictions(self.restrictions)
+        # Unconditional (like set_restrictions): passing None clears any stale weighted
+        # mask left on a reused operator object.
+        op.set_weighted_restrictions(self.weighted_restrictions)
         old_size = self.size - 1
 
         it = 0
@@ -1082,6 +1090,7 @@ class Basis:
             self.bath_states,
             initial_basis=self.local_basis,
             restrictions=self.restrictions,
+            weighted_restrictions=self.weighted_restrictions,
             spin_flip_dj=self.spin_flip_dj,
             chain_restrict=self.chain_restrict,
             collapse_chains=self.collapse_chains,
@@ -1490,6 +1499,7 @@ class Basis:
             self.bath_states,
             initial_basis=list(new_states),
             restrictions=self.restrictions,
+            weighted_restrictions=self.weighted_restrictions,
             chain_restrict=self.chain_restrict,
             collapse_chains=self.collapse_chains,
             comm=split_comm,

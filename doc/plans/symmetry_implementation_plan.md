@@ -790,10 +790,23 @@ to Cython if profiling shows it dominates total run time.
 > `test_automatic_restrictions_Sz`. Rebuilt (`pip install -e . --no-build-isolation`),
 > full serial suite 362 passed + MPI n=2 green.
 >
-> **Remaining:** wire weighted restrictions into the `Basis`/CIPSI flow
-> (`Basis.weighted_restrictions` → `op.set_weighted_restrictions` in `expand`, alongside
-> the subset `set_restrictions`) so a sectorized run can target an `S_z`/`L_z` sector
-> end-to-end; the operator-level machinery is done and tested.
+> **Basis/CIPSI wiring DONE (2026-06-24).** `Basis` gained a `weighted_restrictions`
+> constructor arg + attribute, threaded through `clone`/`copy`/`split`.
+> `Basis.expand` calls `op.set_weighted_restrictions(self.weighted_restrictions)`
+> **unconditionally** (the op is already a `ManyBodyOperator` there, so `None` clears any
+> stale weighted mask on a reused operator). `CIPSISolver.expand`/`get_eigenvectors`
+> call it **guarded** by `weighted_restrictions is not None` (matching `set_restrictions`,
+> since `H` may still be a plain `dict` when no restrictions are set — an unconditional
+> call crashed `test_eg_t2g_CIPSI_basis_expand`). Test
+> `test_weighted_restriction_in_basis_expand`: a `Basis` with a weighted S_z restriction
+> keeps `expand` in-sector while the unrestricted expand leaks (and the stale-mask clear
+> is exercised by reusing the same operator across both). Full serial suite 363 passed +
+> MPI n=2 green.
+>
+> **Remaining (further layer):** thread `weighted_restrictions` through
+> `groundstate.calc_energy`/`find_ground_state_basis`/`calc_gs` (via `basis_setup`) so a
+> full top-level GS/GF run can target an `S_z`/`L_z` sector — the `Basis`/CIPSI layer it
+> sits on is now done.
 
 **Location:** `src/cython/ManyBodyOperator.h`, `SlaterDeterminant.h`
 
