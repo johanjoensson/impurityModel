@@ -323,6 +323,64 @@ def subset_occupations(charges, occupied_orbitals):
     return [len(subset & occupied) for subset in charges]
 
 
+def weighted_restriction(weights, target, slack=0):
+    r"""Build one weighted-sum restriction ``({orbital: int weight}, (q_min, q_max))``.
+
+    This is the format consumed by
+    ``ManyBodyOperator.set_weighted_restrictions``: a determinant passes iff
+    ``q_min <= sum_i weights[i] * n_i <= q_max``. Weights and ``target`` must be
+    integers (scale a fractional charge — e.g. ``S_z`` — to integers first; see
+    :func:`sz_weighted_restriction`). This is the Phase-6 counterpart of
+    :func:`restrictions_from_charges` for charges that are **not** ``{0,1}`` subset
+    occupations (``S_z``, ``L_z``, general ``Σ wᵢ nᵢ``).
+
+    Parameters
+    ----------
+    weights : dict
+        ``{orbital_index: integer weight}``.
+    target : int
+        The conserved weighted-sum value.
+    slack : int, optional
+        Allow ``target ± slack`` (default 0 = a strict sector).
+
+    Returns
+    -------
+    tuple
+        ``(weights, (target - slack, target + slack))``.
+    """
+    return (dict(weights), (int(target) - slack, int(target) + slack))
+
+
+def sz_weighted_restriction(spin_pairs, two_sz_target, slack=0):
+    r"""Auto-generate the ``S_z`` weighted restriction from ``(dn, up)`` spin pairs.
+
+    Uses the integer-weight form ``2 S_z = Σ (n_up − n_dn)`` (weight ``+1`` on each up
+    orbital, ``−1`` on each down orbital), so ``two_sz_target = 2 * S_z`` is an integer.
+    The spin pairs should come from
+    ``finite.impurity_spin_pairs`` / ``finite.bath_spin_pairs`` after
+    ``finite.spin_pairs_consistent_with_h`` validates them.
+
+    Parameters
+    ----------
+    spin_pairs : sequence of (int, int)
+        ``(dn, up)`` spin-orbital index pairs.
+    two_sz_target : int
+        Target value of ``2 S_z`` (``N_up − N_dn``).
+    slack : int, optional
+        Allow ``two_sz_target ± slack``.
+
+    Returns
+    -------
+    tuple
+        A weighted restriction (see :func:`weighted_restriction`).
+    """
+    weights = {}
+    for dn, up in spin_pairs:
+        weights[up] = 1
+        weights[dn] = -1
+    return weighted_restriction(weights, two_sz_target, slack)
+
+
 def auto_block_structure(op, n_orb=None, orbitals=None):
     r"""Auto-derive a full ``BlockStructure`` from the one-body Hamiltonian.
 

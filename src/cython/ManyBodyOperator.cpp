@@ -345,10 +345,37 @@ ManyBodyOperator::size() const noexcept {
   return m_ops.size();
 }
 
+namespace {
+// Build the bitmask (a SlaterDeterminant key) marking the given orbital indices.
+ManyBodyState::key_type
+build_orbital_mask(const std::vector<size_t> &orbitals) {
+  const size_t num_bits = 8 * sizeof(ManyBodyState::key_type::value_type);
+  std::vector<size_t> sorted_orbitals(orbitals);
+  std::sort(sorted_orbitals.begin(), sorted_orbitals.end());
+
+  ManyBodyState::key_type mask;
+  ManyBodyState::key_type::value_type current = 0;
+  size_t mask_i = 0;
+  for (auto idx : sorted_orbitals) {
+    size_t mask_j = idx / num_bits;
+    size_t local_idx = (num_bits - 1 - (idx % num_bits));
+    while (mask_j > mask_i) {
+      mask.push_back(current);
+      current = 0;
+      mask_i += 1;
+    }
+    current |=
+        (static_cast<ManyBodyState::key_type::value_type>(1) << local_idx);
+  }
+  if (current != 0) {
+    mask.push_back(current);
+  }
+  return mask;
+}
+} // namespace
+
 void ManyBodyOperator::build_restriction_mask(
     const Restrictions &restrictions) noexcept {
-  const size_t num_bits = 8 * sizeof(ManyBodyState::key_type::value_type);
-
   std::vector<ManyBodyState::key_type> masks;
   std::vector<size_t> min_vals;
   std::vector<size_t> max_vals;
@@ -356,24 +383,7 @@ void ManyBodyOperator::build_restriction_mask(
   min_vals.reserve(restrictions.size());
   max_vals.reserve(restrictions.size());
   for (const auto &restriction : restrictions) {
-    ManyBodyState::key_type mask;
-    ManyBodyState::key_type::value_type current = 0;
-    size_t mask_i = 0;
-    for (auto idx : restriction.first) {
-      size_t mask_j = idx / num_bits;
-      size_t local_idx = (num_bits - 1 - (idx % num_bits));
-      while (mask_j > mask_i) {
-        mask.push_back(current);
-        current = 0;
-        mask_i += 1;
-      }
-      current |=
-          (static_cast<ManyBodyState::key_type::value_type>(1) << local_idx);
-    }
-    if (current != 0) {
-      mask.push_back(current);
-    }
-    masks.push_back(mask);
+    masks.push_back(build_orbital_mask(restriction.first));
     min_vals.push_back(restriction.second.first);
     max_vals.push_back(restriction.second.second);
   }
@@ -382,6 +392,21 @@ void ManyBodyOperator::build_restriction_mask(
       std::tuple<std::vector<ManyBodyState::key_type>, std::vector<size_t>,
                  std::vector<size_t>>{std::move(masks), std::move(min_vals),
                                       std::move(max_vals)};
+}
+
+void ManyBodyOperator::build_weighted_restriction_mask(
+    const WeightedRestrictions &restrictions) noexcept {
+  m_weighted_restrictions_mask.clear();
+  m_weighted_restrictions_mask.reserve(restrictions.size());
+  for (const auto &restriction : restrictions) {
+    std::vector<std::pair<long, ManyBodyState::key_type>> groups;
+    groups.reserve(restriction.first.size());
+    for (const auto &[weight, orbitals] : restriction.first) {
+      groups.emplace_back(weight, build_orbital_mask(orbitals));
+    }
+    m_weighted_restrictions_mask.emplace_back(std::move(groups),
+                                              restriction.second);
+  }
 }
 
 bool ManyBodyOperator::state_is_within_restrictions(
@@ -395,6 +420,22 @@ bool ManyBodyOperator::state_is_within_restrictions(
       bit_count += set_bits(state[j] & masks[i][j]);
     }
     if (bit_count < min_vals[i] || bit_count > max_vals[i]) {
+      return false;
+    }
+  }
+
+  // Weighted-sum restrictions: sum_w  w * (#occupied orbitals in group w).
+  for (const auto &[groups, bounds] : m_weighted_restrictions_mask) {
+    long weighted_sum = 0;
+    for (const auto &[weight, mask] : groups) {
+      size_t bit_count = 0;
+      const size_t limit = std::min(mask.size(), state.size());
+      for (size_t j = 0; j < limit; j++) {
+        bit_count += set_bits(state[j] & mask[j]);
+      }
+      weighted_sum += weight * static_cast<long>(bit_count);
+    }
+    if (weighted_sum < bounds.first || weighted_sum > bounds.second) {
       return false;
     }
   }

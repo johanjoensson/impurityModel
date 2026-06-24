@@ -511,6 +511,39 @@ cdef class ManyBodyOperator:
         with nogil:
             self.o.build_restriction_mask(rest)
 
+    def set_weighted_restrictions(self, list restrictions=None):
+        """
+        Configure weighted-sum occupation constraints, e.g. S_z = sum +-1 n_i or
+        L_z = sum m_l n_i (after scaling weights to integers).
+
+        Each element of ``restrictions`` is ``(weights, (q_min, q_max))`` where
+        ``weights`` maps an orbital index to its (integer) weight; a Slater
+        determinant passes iff ``q_min <= sum_i weights[i] * n_i <= q_max``.
+        """
+        cdef vector[pair[vector[pair[long, vector[size_t]]], pair[long, long]]] rest
+        cdef vector[pair[long, vector[size_t]]] groups
+        cdef long w
+
+        if restrictions is None:
+            restrictions = []
+        rest.reserve(len(restrictions))
+        for weights, bounds in restrictions:
+            by_weight = {}
+            for orb, weight in weights.items():
+                by_weight.setdefault(int(weight), []).append(int(orb))
+            groups.clear()
+            for w, orbs in by_weight.items():
+                if w == 0:
+                    continue
+                groups.push_back(pair[long, vector[size_t]](w, sorted(orbs)))
+            rest.push_back(
+                pair[vector[pair[long, vector[size_t]]], pair[long, long]](
+                    groups, pair[long, long](<long>bounds[0], <long>bounds[1])
+                )
+            )
+        with nogil:
+            self.o.build_weighted_restriction_mask(rest)
+
     def  __call__(self, ManyBodyState psi, double cutoff = 0) -> ManyBodyState:
         cdef ManyBodyState res
         res = ManyBodyState()

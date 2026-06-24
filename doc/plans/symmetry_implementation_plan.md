@@ -776,6 +776,25 @@ to Cython if profiling shows it dominates total run time.
 
 ## Phase 6: Extended Restriction Machinery (weighted-sum charges)
 
+> **§6.1 + §6.2 core DONE (2026-06-24).** C++: `ManyBodyOperator` gained a
+> `WeightedRestrictions` type + `build_weighted_restriction_mask` + a second loop in
+> `state_is_within_restrictions` that computes `Σ_w w·popcount(state & mask_w)` (orbitals
+> grouped by integer weight) and bounds it by `[q_min, q_max]` — checked alongside the
+> existing subset restrictions. The subset mask-builder was refactored into a shared
+> `build_orbital_mask` helper (now sorts defensively). Cython:
+> `ManyBodyOperator.set_weighted_restrictions([(weights, (q_min, q_max)), ...])`
+> (`weights = {orbital: int}`). Python: `symmetries.weighted_restriction` and
+> `symmetries.sz_weighted_restriction` (auto-build `2 S_z = Σ(n_up−n_dn)` from validated
+> spin pairs). Tests in `test_weighted_restrictions.py`: `test_weighted_restriction_Sz`,
+> `test_weighted_restriction_roundtrip`, `test_weighted_and_subset_restrictions_combine`,
+> `test_automatic_restrictions_Sz`. Rebuilt (`pip install -e . --no-build-isolation`),
+> full serial suite 362 passed + MPI n=2 green.
+>
+> **Remaining:** wire weighted restrictions into the `Basis`/CIPSI flow
+> (`Basis.weighted_restrictions` → `op.set_weighted_restrictions` in `expand`, alongside
+> the subset `set_restrictions`) so a sectorized run can target an `S_z`/`L_z` sector
+> end-to-end; the operator-level machinery is done and tested.
+
 **Location:** `src/cython/ManyBodyOperator.h`, `SlaterDeterminant.h`
 
 **Rationale:** Phase 3 covers symmetries with `{0,1}` orbital weights. This phase
@@ -790,9 +809,9 @@ C++ restriction machinery.
   `state_is_within_restrictions`. Update `build_restriction_mask` and
   `apply`/`apply_multi` accordingly.
 - **Verification:**
-  - [ ] `test_weighted_restriction_Sz` — build `S_z` restriction; assert that only
+  - [x] `test_weighted_restriction_Sz` — build `S_z` restriction; assert that only
         states with the correct total `S_z` pass the mask.
-  - [ ] `test_weighted_restriction_roundtrip` — `ManyBodyOperator` with `S_z`
+  - [x] `test_weighted_restriction_roundtrip` — `ManyBodyOperator` with `S_z`
         restriction applied to a basis spanning multiple sectors; assert only the
         target sector survives.
 
@@ -801,7 +820,7 @@ C++ restriction machinery.
 - **Action:** Re-run Phase 3.1 with the extended mask; generators with fractional
   weights (skipped in Phase 3) can now be mapped.
 - **Verification:**
-  - [ ] `test_automatic_restrictions_Sz` — assert `S_z` restriction is auto-generated
+  - [x] `test_automatic_restrictions_Sz` — assert `S_z` restriction is auto-generated
         and produces correct sector isolation.
 
 ---

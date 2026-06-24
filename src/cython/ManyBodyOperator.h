@@ -40,6 +40,14 @@ public:
   using SLATER = ManyBodyState::key_type;
   using Restrictions =
       std::vector<std::pair<std::vector<size_t>, std::pair<size_t, size_t>>>;
+  // Weighted-sum restrictions: each entry is a list of (integer weight, orbital
+  // subset) groups together with an inclusive [q_min, q_max] bound on the weighted
+  // occupation sum  sum_w  w * (#occupied orbitals in that group).  Lets a charge
+  // like S_z = sum +-1 n_i (after scaling to integer weights) or L_z = sum m_l n_i
+  // be expressed, which a plain subset-occupation bound cannot.
+  using WeightedRestrictions = std::vector<
+      std::pair<std::vector<std::pair<long, std::vector<size_t>>>,
+                std::pair<long, long>>>;
 
 public:
   using key_type = OPS;
@@ -82,6 +90,12 @@ public:
    * @brief Configure orbital occupation constraints.
    */
   void build_restriction_mask(const Restrictions &restrictions) noexcept;
+
+  /**
+   * @brief Configure weighted-sum occupation constraints (e.g. S_z, L_z).
+   */
+  void build_weighted_restriction_mask(
+      const WeightedRestrictions &restrictions) noexcept;
 
   /**
    * @brief Apply this operator to a ManyBodyState.
@@ -227,6 +241,12 @@ private:
   std::tuple<std::vector<ManyBodyState::key_type>, std::vector<size_t>,
              std::vector<size_t>>
       m_restrictions_mask;
+
+  // For each weighted restriction: a list of (weight, precomputed bitmask) groups
+  // and the inclusive [q_min, q_max] bound on the weighted occupation sum.
+  std::vector<std::pair<std::vector<std::pair<long, ManyBodyState::key_type>>,
+                        std::pair<long, long>>>
+      m_weighted_restrictions_mask;
 
   mutable bool m_flat_dirty{true};
   mutable std::vector<int64_t> m_flat_indices;

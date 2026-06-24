@@ -26,6 +26,7 @@ cdef extern from "ManyBodyOperator.h" nogil:
         ctypedef vector[value_type].reverse_iterator reverse_iterator
         ctypedef vector[value_type].const_reverse_iterator const_reverse_iterator
         ctypedef vector[pair[vector[size_t], pair[size_t, size_t]]] restrictions
+        ctypedef vector[pair[vector[pair[long, vector[size_t]]], pair[long, long]]] weighted_restrictions
 
         ManyBodyOperator()
         ManyBodyOperator(const ManyBodyOperator&)
@@ -37,6 +38,7 @@ cdef extern from "ManyBodyOperator.h" nogil:
         ManyBodyState.mapped_type& at(const key_type&)
         ManyBodyState operator()(const ManyBodyState&, double)
         ManyBodyState build_restriction_mask(const restrictions&)
+        void build_weighted_restriction_mask(const weighted_restrictions&)
         ManyBodyState apply(const ManyBodyState&, double)
         vector[ManyBodyState] apply(const vector[const ManyBodyState*]&, double)
 
