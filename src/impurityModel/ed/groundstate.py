@@ -5,9 +5,14 @@ import numpy as np
 from impurityModel.ed.block_structure import BlockStructure, print_block_structure
 from impurityModel.ed.density_matrix import calc_density_matrices
 from impurityModel.ed.finite import (
+    apply_casimir,
+    casimir_to_quantum_number,
+    make_impurity_casimir_operators,
+    manifold_observable_values,
     print_expectation_values,
     print_thermal_expectation_values,
     thermal_average_scale_indep,
+    thermal_observable_value,
 )
 from impurityModel.ed.ManyBodyUtils import ManyBodyOperator, ManyBodyState
 from impurityModel.ed.symmetries import (
@@ -512,15 +517,45 @@ def calc_gs(
         impurity_ix = np.ix_(impurity_indices, impurity_indices)
         print("Block structure")
         print_block_structure(block_structure)
-        # NOTE: impurity total-spin <S^2>/S reporting is deferred to symmetry-plan
-        # Phase 5 (basis rotation). It needs the true index->(spatial orbital, spin)
-        # map; the (k, k+n/2) spin pairing only holds in the spherical basis, so it
-        # cannot be read off computational-basis indices in general. The operator
-        # primitives live in finite.py and the print functions already accept
-        # optional s_values / s_thermal for when Phase 5 supplies the correct map.
-        print_thermal_expectation_values(thermal_rho[impurity_ix], e_avg, rot_to_spherical, block_structure)
+        # Impurity S^2 / L^2 / J^2: two-body observables, so they need the actual
+        # eigenstates (gathered on rank 0). The L/S/J operators are built in the
+        # spherical basis and rotated to the computational basis via rot_to_spherical
+        # (symmetry-plan Phase 5), which makes the ml-dependence of L correct and is
+        # robust to the computational spin layout. Computed on rank 0 only and passed
+        # in; None on other ranks leaves the output unchanged there.
+        s_values = l_values = j_values = None
+        s2_thermal = l2_thermal = j2_thermal = None
+        if rank == 0:
+            try:
+                l_ops, s_ops, j_ops = make_impurity_casimir_operators(
+                    ground_state_basis.impurity_orbitals, rot_to_spherical
+                )
+            except ValueError:
+                # Impurity is not a clean spin-doubled l-shell: skip the Casimirs
+                # (the rho-based <L.S>/<Lz>/<Sz> etc. still print).
+                l_ops = None
+            if l_ops is not None:
+                casimir = {}
+                for name, ops in (("S", s_ops), ("L", l_ops), ("J", j_ops)):
+                    vals = manifold_observable_values(
+                        full_psis, es, lambda psi, _ops=ops: apply_casimir(psi, *_ops)
+                    )
+                    casimir[name] = (
+                        np.array([casimir_to_quantum_number(v) for v in vals]),
+                        thermal_observable_value(vals, es, tau),
+                    )
+                s_values, s2_thermal = casimir["S"]
+                l_values, l2_thermal = casimir["L"]
+                j_values, j2_thermal = casimir["J"]
+        print_thermal_expectation_values(
+            thermal_rho[impurity_ix], e_avg, rot_to_spherical, block_structure,
+            s_thermal=s2_thermal, l_thermal=l2_thermal, j_thermal=j2_thermal,
+        )
         impurity_ix = np.ix_(np.arange(len(rhos)), impurity_indices, impurity_indices)
-        print_expectation_values(rhos[impurity_ix], es, rot_to_spherical, block_structure)
+        print_expectation_values(
+            rhos[impurity_ix], es, rot_to_spherical, block_structure,
+            s_values=s_values, l_values=l_values, j_values=j_values,
+        )
         print("Occupation statistics for each eigenstate in the thermal ground state")
         print("Impurity, Valence, Conduction: Weight (|amp|^2)")
         for i, psi_stats in enumerate(gs_stats):

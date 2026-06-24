@@ -307,3 +307,70 @@ def test_print_thermal_S2_line(capsys):
     s2_line = next(line for line in out.splitlines() if line.startswith("<S^2>"))
     assert np.isclose(float(s2_line.split("=")[1].split()[0]), 2.0, atol=1e-6)
     assert "S =  1.0000" in s2_line  # S(S+1)=2 -> S=1
+
+
+def test_impurity_casimir_operators_rotated():
+    """make_impurity_casimir_operators gives correct, rotation-invariant <L^2>,<S^2>,<J^2>.
+
+    Stretched single d-electron |ml=2, up> = |j=5/2, mj=5/2>: L^2=6, S^2=3/4, J^2=35/4.
+    """
+    from impurityModel.ed.finite import make_impurity_casimir_operators, expect_casimir
+
+    imp = {0: [list(range(10))]}  # one d-shell, layout [down(ml=-2..2), up(ml=-2..2)]
+
+    # Identity rotation: the computational basis is already spherical.
+    L, S, J = make_impurity_casimir_operators(imp, np.eye(10, dtype=complex))
+    psi = _state([([9], 1.0)], n_orbs=10)  # |ml=2, up>
+    assert np.isclose(expect_casimir(psi, *L), 6.0, atol=1e-10)
+    assert np.isclose(expect_casimir(psi, *S), 0.75, atol=1e-10)
+    assert np.isclose(expect_casimir(psi, *J), 35.0 / 4, atol=1e-10)
+
+    # A non-trivial (random) spherical->computational rotation R: the same physical
+    # state has computational coordinates R[:, 9]; the Casimirs are unchanged.
+    rng = np.random.default_rng(0)
+    a = rng.standard_normal((10, 10)) + 1j * rng.standard_normal((10, 10))
+    rot, _ = np.linalg.qr(a)
+    coords = rot[:, 9]
+    psi_rot = _state([([a_], complex(coords[a_])) for a_ in range(10) if abs(coords[a_]) > 1e-12], n_orbs=10)
+    Lr, Sr, Jr = make_impurity_casimir_operators(imp, rot)
+    assert np.isclose(expect_casimir(psi_rot, *Lr), 6.0, atol=1e-9)
+    assert np.isclose(expect_casimir(psi_rot, *Sr), 0.75, atol=1e-9)
+    assert np.isclose(expect_casimir(psi_rot, *Jr), 35.0 / 4, atol=1e-9)
+
+
+def test_print_expectation_values_LJ_columns(capsys):
+    """Passing l_values / j_values appends 'L' and 'J' columns after 'S'."""
+    from impurityModel.ed.finite import print_expectation_values
+
+    n = 10
+    bs = _d_shell_block_structure()
+    rho = np.eye(n, dtype=complex)
+    es = np.array([0.0])
+    print_expectation_values(
+        np.array([rho]), es, np.eye(n), bs,
+        s_values=np.array([1.0]), l_values=np.array([2.0]), j_values=np.array([2.5]),
+    )
+    out = capsys.readouterr().out
+    header = next(line for line in out.splitlines() if "E-E0" in line)
+    assert header.split()[-3:] == ["S", "L", "J"]
+    row = next(ln for ln in out.splitlines() if ln.strip().startswith("0"))
+    s, l, j = (float(x) for x in row.split()[-3:])
+    assert (s, l, j) == (1.0, 2.0, 2.5)
+
+
+def test_print_thermal_LJ_lines(capsys):
+    """Passing l_thermal / j_thermal adds <L^2> and <J^2> lines with quantum numbers."""
+    from impurityModel.ed.finite import print_thermal_expectation_values
+
+    n = 10
+    bs = _d_shell_block_structure()
+    print_thermal_expectation_values(
+        np.eye(n, dtype=complex), 0.0, np.eye(n), bs,
+        s_thermal=2.0, l_thermal=6.0, j_thermal=35.0 / 4,
+    )
+    out = capsys.readouterr().out
+    assert "S = " in out and "<S^2>" in out
+    l_line = next(line for line in out.splitlines() if line.startswith("<L^2>"))
+    assert "L =  2.0000" in l_line  # L(L+1)=6 -> L=2
+    j_line = next(line for line in out.splitlines() if line.startswith("<J^2>"))
+    assert "J =  2.5000" in j_line  # J(J+1)=35/4 -> J=5/2

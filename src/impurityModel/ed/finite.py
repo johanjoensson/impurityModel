@@ -435,15 +435,16 @@ def eigensystem(h_local, e_max, k=10, e0=None, v0=None, eigenValueTol=0, return_
     return es[mask]
 
 
-def print_expectation_values(rhos, es, rot_to_spherical, block_structure, s_values=None):
+def print_expectation_values(rhos, es, rot_to_spherical, block_structure, s_values=None, l_values=None, j_values=None):
     """
     print several expectation values, e.g. E, N, L^2.
 
-    If ``s_values`` is given (one impurity spin quantum number ``S`` per
-    eigenstate, e.g. from :func:`manifold_observable_values` +
-    :func:`casimir_to_quantum_number`), an ``S`` column is appended. When it is
-    ``None`` the output is identical to before (used when the eigenstates are not
-    available, e.g. on non-root ranks).
+    If ``s_values`` / ``l_values`` / ``j_values`` are given (one impurity ``S`` / ``L``
+    / ``J`` quantum number per eigenstate, e.g. from :func:`manifold_observable_values`
+    with :func:`make_impurity_casimir_operators` + :func:`casimir_to_quantum_number`),
+    the corresponding columns are appended. When all are ``None`` the output is
+    identical to before (used when the eigenstates are not available, e.g. on non-root
+    ranks).
     """
     orb_offset = min(orb for block in block_structure.blocks for orb in block)
     equivalent_blocks = get_equivalent_blocks(block_structure)
@@ -452,9 +453,10 @@ def print_expectation_values(rhos, es, rot_to_spherical, block_structure, s_valu
     block_N_string_formatted = ["" for _ in block_N_string]
     for i, Ns in enumerate(block_N_string):
         block_N_string_formatted[i] = " " * max(8 - len(Ns), 0) + Ns
-    s_header = f"  {'S':>8s}" if s_values is not None else ""
+    extra = [(name, vals) for name, vals in (("S", s_values), ("L", l_values), ("J", j_values)) if vals is not None]
+    extra_header = "".join(f"  {name:>8s}" for name, _ in extra)
     print(
-        f"{'i':>3s}  {'E-E0':>11s}  {'N':>8s}  {'N(Dn)':>8s}  {'N(Up)':>8s}  {'  '.join(block_N_string_formatted)}  {'Lz':>8s}  {'Sz':>8s}  {'L.S':>8s}{s_header}"
+        f"{'i':>3s}  {'E-E0':>11s}  {'N':>8s}  {'N(Dn)':>8s}  {'N(Up)':>8s}  {'  '.join(block_N_string_formatted)}  {'Lz':>8s}  {'Sz':>8s}  {'L.S':>8s}{extra_header}"
     )
     for i, (e, rho) in enumerate(zip(es - es[0], rhos)):
         block_occs = [
@@ -469,9 +471,9 @@ def print_expectation_values(rhos, es, rot_to_spherical, block_structure, s_valu
         Lz = get_Lz_from_rho_spherical(rho_spherical)
         Sz = get_Sz_from_rho_spherical(rho_spherical)
         LS = get_LS_from_rho_spherical(rho_spherical)
-        s_field = f"  {s_values[i]: 8.6f}" if s_values is not None else ""
+        extra_fields = "".join(f"  {vals[i]: 8.6f}" for _, vals in extra)
         print(
-            f"{i:^3d}  {e:11.8f}  {N:8.5f}  {Ndn:8.5f}  {Nup:8.5f}  {'  '.join(block_occ_string_formatted)}  {Lz: 8.6f}  {Sz: 8.6f}  {LS: 8.6f}{s_field}"
+            f"{i:^3d}  {e:11.8f}  {N:8.5f}  {Ndn:8.5f}  {Nup:8.5f}  {'  '.join(block_occ_string_formatted)}  {Lz: 8.6f}  {Sz: 8.6f}  {LS: 8.6f}{extra_fields}"
         )
     print("\n")
 
@@ -662,6 +664,33 @@ def get_Sz_from_rho_spherical(rho: np.ndarray, l: Optional[int] = None) -> float
     return 1 / 2 * np.real(sum(-rho[i, i] + rho[i + (2 * l + 1), i + (2 * l + 1)] for i in range(2 * l + 1)))
 
 
+def _single_particle_lsj_matrices(l):
+    r"""Single-particle ``L`` and ``S`` operator matrices in the spherical basis.
+
+    Layout: a ``2*(2l+1)`` space whose first ``2l+1`` orbitals are spin-down
+    (:math:`m_s=-1/2`, ``ml=-l..l``) and the next ``2l+1`` are spin-up — matching the
+    ``get_*_from_rho_spherical`` helpers.
+
+    Returns
+    -------
+    (lz, lplus, lminus, sz, splus, sminus) : tuple of np.ndarray
+        Each of shape ``(2*(2l+1), 2*(2l+1))``.
+    """
+    n = 2 * l + 1
+    mls = np.arange(-l, l + 1)
+    llp1 = l * (l + 1)
+    zeros = np.zeros((n, n))
+    eye = np.eye(n)
+    lz = np.diag(np.concatenate((mls, mls)).astype(float)).astype(complex)
+    sz = np.diag(np.concatenate((-0.5 * np.ones(n), 0.5 * np.ones(n)))).astype(complex)
+    lplus_block = np.diag([np.sqrt(llp1 - ml * (ml + 1)) for ml in mls[:-1]], k=-1)
+    lplus = np.block([[lplus_block, zeros], [zeros, lplus_block]]).astype(complex)
+    lminus = lplus.conj().T
+    splus = np.block([[zeros, zeros], [eye, zeros]]).astype(complex)
+    sminus = splus.conj().T
+    return lz, lplus, lminus, sz, splus, sminus
+
+
 def get_LS_from_rho_spherical(rho: np.ndarray, l: Optional[int] = None) -> float:
     r"""Calculate the expectation value of the one-body spin-orbit coupling
     :math:`\langle \mathbf{L}\cdot\mathbf{S}\rangle` from the density matrix in the
@@ -698,23 +727,7 @@ def get_LS_from_rho_spherical(rho: np.ndarray, l: Optional[int] = None) -> float
     # get_Lz/get_Sz helpers (robust when rho is not exactly spin-doubled, e.g. an
     # odd-sized block).
     rho = rho[: 2 * n, : 2 * n]
-    mls = np.arange(-l, l + 1)
-    llp1 = l * (l + 1)
-    zeros = np.zeros((n, n))
-    eye = np.eye(n)
-
-    # Single-particle operator matrices in the [spin-down, spin-up] x [ml] layout.
-    # l_z and s_z are diagonal; the orbital/spin ladder operators couple states.
-    lz = np.diag(np.concatenate((mls, mls)).astype(float))
-    sz = np.diag(np.concatenate((-0.5 * np.ones(n), 0.5 * np.ones(n))))
-    # l_+ raises ml (|ml> -> |ml+1|), acting identically in both spin blocks.
-    lplus_block = np.diag([np.sqrt(llp1 - ml * (ml + 1)) for ml in mls[:-1]], k=-1)
-    lplus = np.block([[lplus_block, zeros], [zeros, lplus_block]])
-    lminus = lplus.conj().T
-    # s_+ raises ms (spin-down -> spin-up): maps block 0 -> block 1; coeff 1 for s=1/2.
-    splus = np.block([[zeros, zeros], [eye, zeros]])
-    sminus = splus.conj().T
-
+    lz, lplus, lminus, sz, splus, sminus = _single_particle_lsj_matrices(l)
     ls = lz @ sz + 0.5 * (lplus @ sminus + lminus @ splus)
     return np.real(np.trace(rho @ ls))
 
@@ -785,6 +798,69 @@ def make_orbital_angular_momentum_operators(channels):
                 l_plus[((indices[a + 1], "c"), (indices[a], "a"))] = coeff
                 l_minus[((indices[a], "c"), (indices[a + 1], "a"))] = coeff
     return ManyBodyOperator(l_plus), ManyBodyOperator(l_minus), ManyBodyOperator(l_z)
+
+
+def make_impurity_casimir_operators(impurity_orbitals, rot_to_spherical):
+    r"""Build the total impurity ``(L, S, J)`` ladder/Cartan operators in the
+    **computational** basis.
+
+    For each impurity ``l``-shell the single-particle ``L``/``S`` matrices are built in
+    the spherical basis (:func:`_single_particle_lsj_matrices`, where the ``ml``/spin
+    structure is explicit) and rotated to the computational basis via
+    ``rot_to_spherical`` (``O_comp = R\,O_sph\,R^\dagger`` with ``R`` the
+    spherical→computational rotation, matching :func:`rotate_matrix`), then summed over
+    shells. This makes ``L²``/``J²``/``S²`` evaluable on states stored in the
+    computational basis — the ``ml`` dependence of ``L`` is carried by the rotation, and
+    the construction is robust to whatever spin ordering the computational basis uses
+    (Phase 5 unblocks this for the deferred ``L²``/``J²`` reporting).
+
+    Parameters
+    ----------
+    impurity_orbitals : dict
+        ``Basis.impurity_orbitals`` (``partition -> list of orbital-index blocks``).
+        The shell's ``l`` is inferred from the orbital count ``2*(2l+1)``.
+    rot_to_spherical : np.ndarray or dict
+        The spherical→computational rotation: a single ``2(2l+1)`` matrix, or a dict
+        ``{partition: matrix}`` (as in ``get_spectra``).
+
+    Returns
+    -------
+    (L, S, J) : tuple
+        Each is ``(plus, minus, z)`` as ``ManyBodyOperator``s, ready for
+        :func:`apply_casimir` / :func:`expect_casimir`. ``J = L + S``.
+    """
+    l_plus, l_minus, l_z = {}, {}, {}
+    s_plus, s_minus, s_z = {}, {}, {}
+    for partition, blocks in impurity_orbitals.items():
+        orbs = [orb for block in blocks for orb in block]
+        n_so = len(orbs)
+        shell_l = (n_so // 2 - 1) // 2
+        if 2 * (2 * shell_l + 1) != n_so:
+            raise ValueError(
+                f"Impurity partition {partition} has {n_so} spin-orbitals, which is not a "
+                f"spin-doubled l-shell (2*(2l+1)); cannot build L/S/J operators for it."
+            )
+        lz_m, lp_m, lm_m, sz_m, sp_m, sm_m = _single_particle_lsj_matrices(shell_l)
+        rot = rot_to_spherical[partition] if isinstance(rot_to_spherical, dict) else rot_to_spherical
+        rot = np.asarray(rot, dtype=complex)
+        for target, matrix in (
+            (l_z, lz_m),
+            (l_plus, lp_m),
+            (l_minus, lm_m),
+            (s_z, sz_m),
+            (s_plus, sp_m),
+            (s_minus, sm_m),
+        ):
+            computational = rot @ matrix @ rot.conj().T
+            for i in range(n_so):
+                for j in range(n_so):
+                    if abs(computational[i, j]) > 1e-12:
+                        key = ((orbs[i], "c"), (orbs[j], "a"))
+                        target[key] = target.get(key, 0.0) + computational[i, j]
+    l_ops = (ManyBodyOperator(l_plus), ManyBodyOperator(l_minus), ManyBodyOperator(l_z))
+    s_ops = (ManyBodyOperator(s_plus), ManyBodyOperator(s_minus), ManyBodyOperator(s_z))
+    j_ops = (l_ops[0] + s_ops[0], l_ops[1] + s_ops[1], l_ops[2] + s_ops[2])
+    return l_ops, s_ops, j_ops
 
 
 def apply_casimir(psi, j_plus, j_minus, j_z):
@@ -1010,14 +1086,15 @@ def impurity_spin_pairs(impurity_orbitals):
 
 
 def print_thermal_expectation_values(
-    rho_thermal, e_thermal, rot_to_spherical, block_structure, s_thermal=None
+    rho_thermal, e_thermal, rot_to_spherical, block_structure, s_thermal=None, l_thermal=None, j_thermal=None
 ):
     """
     print several thermal expectation values, e.g. E, N, Sz, Lz.
 
-    If ``s_thermal`` is given (the thermally-averaged impurity ``S(S+1)``), an
-    ``<S^2>`` line and the corresponding ``S`` are appended. When it is ``None``
-    the output is identical to before.
+    If ``s_thermal`` / ``l_thermal`` / ``j_thermal`` are given (the thermally-averaged
+    impurity ``S(S+1)`` / ``L(L+1)`` / ``J(J+1)``), the corresponding ``<S^2>`` /
+    ``<L^2>`` / ``<J^2>`` lines (with the quantum number) are appended. When all are
+    ``None`` the output is identical to before.
     """
     orb_offset = min(orb for block in block_structure.blocks for orb in block)
     equivalent_blocks = get_equivalent_blocks(block_structure)
@@ -1035,8 +1112,12 @@ def print_thermal_expectation_values(
     print(f"<Lz> = {get_Lz_from_rho_spherical(rho_thermal_spherical): 8.7f}")
     print(f"<Sz> = {get_Sz_from_rho_spherical(rho_thermal_spherical): 8.7f}")
     print(f"<L.S> = {get_LS_from_rho_spherical(rho_thermal_spherical): 8.7f}")
-    if s_thermal is not None:
-        print(f"<S^2> = {np.real(s_thermal): 8.7f}  (S = {casimir_to_quantum_number(s_thermal): 6.4f})")
+    for label, value in (("S", s_thermal), ("L", l_thermal), ("J", j_thermal)):
+        if value is not None:
+            print(
+                f"<{label}^2> = {np.real(value): 8.7f}  "
+                f"({label} = {casimir_to_quantum_number(value): 6.4f})"
+            )
 
 
 def dc_MLFT(n3d_i, c, Fdd, n2p_i=None, Fpd=None, Gpd=None):

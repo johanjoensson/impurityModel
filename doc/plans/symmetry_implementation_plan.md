@@ -144,24 +144,23 @@ is the regression gate that proves the effort is safe to enable.
 > `test_print_thermal_expectation_values_lines`, `test_print_thermal_S2_line`; verified
 > serial + MPI n=2 on `test_groundstate.py` (d-shell triplet GS → `<S^2>=2, S=1`).
 >
-> **Carry on from here — DEFERRED TO PHASE 5 (decision 2026-06-24):** reporting of
-> `<L^2>`/`<J^2>`, the Kondo `<S_imp·S_bath>` (`test_kondo_correlation_reported`), and
-> the §1.3 mixed-valence `test_impurity_local_observables` all need the true
-> single-particle index→(spatial-orbital, spin) map. The "impurity is down-then-up,
-> spin partners at `(k, k+n/2)`" ordering holds **only in the spherical basis** (after
-> `rot_to_spherical`); in a cubic computational basis the layout must be read from the
-> one-body Hamiltonian (`build_block_structure` / `build_imp_bath_blocks`). Rather than
-> derive a separate bath spin-pairing now, **build Phase 5 (basis rotation) first and
-> reuse its machinery here** — that also lets us retire `build_imp_bath_blocks` (one
-> well-tested path). The Phase-1 observable *primitives* are all done and unit-tested;
-> only the reporting wiring waits. **The provisional impurity `<S^2>` print wiring was
-> reverted** (2026-06-24) to avoid silent errors in cubic-basis runs — it had used
-> `(k, k+n/2)` on computational indices, valid only for identity/spherical
-> `rot_to_spherical`. Kept: `<L.S>` reporting (correct, from the spherical-rotated
-> `rho`); all `finite.py` primitives; the print functions' optional `s_values`/
-> `s_thermal` params (default `None` ⇒ no output change) ready for Phase 5 to fill in
-> with the correct index→(orbital, spin) map; `impurity_spin_pairs` (documented
-> spherical-only).
+> **`<S^2>`/`<L^2>`/`<J^2>` reporting DONE (2026-06-24, after Phase 5).**
+> `finite.make_impurity_casimir_operators(impurity_orbitals, rot_to_spherical)` builds the
+> impurity L/S/J ladder/Cartan operators in the spherical basis and rotates them to the
+> computational basis (`O_comp = R\,O_sph\,R†`, reusing the Phase-5 rotation idea), so the
+> Casimirs are evaluable on the computational-basis eigenstates — the `ml`-dependence of
+> `L` is carried by the rotation, and it is robust to the computational spin layout (no
+> `(k, k+n/2)` assumption). Wired into `groundstate.py` verbose reporting (rank-0, gathered
+> states, via `manifold_observable_values`), guarded to skip non-spin-doubled impurity
+> blocks. Print functions gained `l_values`/`j_values` (per-eigenstate `L`/`J` columns) and
+> `l_thermal`/`j_thermal` (`<L^2>`/`<J^2>` lines). Tests: `test_impurity_casimir_operators_rotated`
+> (rotation-invariant `L²=6, S²=¾, J²=35/4` under a random unitary),
+> `test_print_expectation_values_LJ_columns`, `test_print_thermal_LJ_lines`; serial + MPI
+> n=2 `test_groundstate.py` green. (`<L.S>` stays from the rho path.)
+>
+> **Still deferred:** the Kondo `<S_imp·S_bath>` (`test_kondo_correlation_reported`) — needs
+> the **bath** spin pairing, a separate piece — and the §1.3 mixed-valence
+> `test_impurity_local_observables`.
 
 **Location:** `src/impurityModel/ed/groundstate.py` and `finite.py`
 
