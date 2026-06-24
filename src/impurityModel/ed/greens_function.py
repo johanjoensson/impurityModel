@@ -542,7 +542,7 @@ def block_Green(
         alphas_prev = alphas
         betas_prev = betas
         alphas, betas, r, last_q = block_green_impl(
-            basis, hOp, basis.redistribute_psis(psi_arr), delta, slaterWeightMin, verbose
+            basis, hOp, basis.redistribute_psis(psi_arr), delta, reort, slaterWeightMin, verbose
         )
 
         n_test = min(alphas.shape[0], alphas_prev.shape[0])

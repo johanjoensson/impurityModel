@@ -213,7 +213,7 @@ def test_greens_function_weighted_restriction_unchanged():
     psi = ManyBodyState({_sd([0, 3]): 1.0})
     tOp = ManyBodyOperator({((0, "a"),): 1.0})  # remove dn0
 
-    def run(weighted):
+    def run(weighted, sparse):
         basis = Basis(
             impurity_orbitals=imp, bath_states=({0: [[]]}, {0: [[]]}),
             initial_basis=[bytes(_sd([0, 3]).to_bytearray())], comm=MPI.COMM_SELF,
@@ -221,18 +221,20 @@ def test_greens_function_weighted_restriction_unchanged():
         )
         return calc_Greens_function_with_offdiag(
             hOp=hOp, tOps=[tOp], psis=[psi], es=[0.0], block_basis=basis,
-            delta=0.01, dN=2, occ_cutoff=1e-6, slaterWeightMin=0.0, verbose=False, sparse=True,
+            delta=0.01, dN=2, occ_cutoff=1e-6, slaterWeightMin=0.0, verbose=False, sparse=sparse,
         )
 
     # GS is in 2*S_z = 0 sector; restrict to it (the GF widens by one orbital weight).
     sz0 = sz_weighted_restriction(pairs, two_sz_target=0)
-    a0, b0, r0 = run(None)
-    a1, b1, r1 = run([sz0])
-
-    assert len(a0) == len(a1)
-    for x0, x1 in zip(a0, a1):
-        np.testing.assert_allclose(x0, x1, atol=1e-10)
-    for y0, y1 in zip(b0, b1):
-        np.testing.assert_allclose(y0, y1, atol=1e-10)
-    for z0, z1 in zip(r0, r1):
-        np.testing.assert_allclose(z0, z1, atol=1e-10)
+    # Both the sparse and the dense (basis-expanding) paths must be unchanged by the
+    # weighted restriction (the dense path also exercises the block_green_impl fix).
+    for sparse in (True, False):
+        a0, b0, r0 = run(None, sparse)
+        a1, b1, r1 = run([sz0], sparse)
+        assert len(a0) == len(a1)
+        for x0, x1 in zip(a0, a1):
+            np.testing.assert_allclose(x0, x1, atol=1e-10)
+        for y0, y1 in zip(b0, b1):
+            np.testing.assert_allclose(y0, y1, atol=1e-10)
+        for z0, z1 in zip(r0, r1):
+            np.testing.assert_allclose(z0, z1, atol=1e-10)

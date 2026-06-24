@@ -315,3 +315,33 @@ def test_getRIXSmap_new_mpi():
         np.testing.assert_allclose(gs.flatten(), expected_gs, atol=1e-13)
 
     basis = None
+
+
+def test_dense_greens_function_basis_expansion():
+    """The dense (non-sparse) GF path that expands the basis runs (regression for the
+    block_green_impl call that was missing its `reort` argument)."""
+
+    def _sd(occ, n=4):
+        b = bytearray((n + 7) // 8)
+        for o in occ:
+            b[o // 8] |= 1 << (7 - o % 8)
+        return SlaterDeterminant.from_bytes(bytes(b))
+
+    # Hopping that connects orbitals so the Krylov/basis expansion actually iterates.
+    hop = {}
+    for a, b in ((0, 1), (2, 3)):
+        hop[((a, "c"), (b, "a"))] = -0.5
+        hop[((b, "c"), (a, "a"))] = -0.5
+    hOp = ManyBodyOperator(hop)
+    psi = ManyBodyState({_sd([0, 3]): 1.0})
+    tOp = ManyBodyOperator({((0, "a"),): 1.0})
+    basis = Basis(
+        impurity_orbitals={0: [[0, 1, 2, 3]]}, bath_states=({0: [[]]}, {0: [[]]}),
+        initial_basis=[bytes(_sd([0, 3]).to_bytearray())], comm=MPI.COMM_SELF,
+    )
+    alphas, betas, r = calc_Greens_function_with_offdiag(
+        hOp=hOp, tOps=[tOp], psis=[psi], es=[0.0], block_basis=basis,
+        delta=0.01, dN=2, occ_cutoff=1e-6, slaterWeightMin=0.0, verbose=False, sparse=False,
+    )
+    assert len(alphas) == 1
+    assert alphas[0].shape[1:] == (1, 1)

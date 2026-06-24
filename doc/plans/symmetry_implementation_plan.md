@@ -816,11 +816,14 @@ to Cython if profiling shows it dominates total run time.
 > `test_greens_function_weighted_restriction_unchanged`: the (correctly widened) S_z
 > restriction leaves the GF unchanged. Serial + MPI n=2 green; full suite 365 passed.
 >
-> **⚠ Pre-existing bug noticed (not from this work):** the *dense* GF expansion path calls
+> **🐛→✅ Pre-existing dense-GF bug FIXED (2026-06-24).** The *dense* GF basis-expansion
+> loop in `green_block_iterative` called
 > `block_green_impl(basis, hOp, psi_arr, delta, slaterWeightMin, verbose)` — missing the
-> `reort` argument (its signature is `(basis, hOp, psi_arr, delta, reort, slaterWeightMin,
-> verbose)`), so `verbose` is left unbound. Triggered by a dense GF that expands the basis
-> (the `sparse=True` path is unaffected). Flagged for a separate fix.
+> `reort` argument (signature `(basis, hOp, psi_arr, delta, reort, slaterWeightMin,
+> verbose)`), so any dense GF that expanded the basis crashed with a `TypeError`. Added
+> `reort` to match the first (correct) call. Regression tests:
+> `test_dense_greens_function_basis_expansion` (GF test file) and the `sparse=False` branch
+> of `test_greens_function_weighted_restriction_unchanged`. Full suite 366 passed.
 
 **Location:** `src/cython/ManyBodyOperator.h`, `SlaterDeterminant.h`
 
