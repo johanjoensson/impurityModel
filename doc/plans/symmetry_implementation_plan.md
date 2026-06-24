@@ -695,6 +695,32 @@ to Cython if profiling shows it dominates total run time.
 
 ### 5.2. Pipeline integration (critical)
 
+> **DONE (2026-06-24), with a key scoping finding.** Two distinct operations were
+> conflated in the original plan:
+> 1. **Run a fresh calculation in the rotated basis** (rotate `H` + observables once,
+>    compute from scratch). The determinant bit patterns are *reinterpreted* as
+>    occupations of the rotated orbitals — they do **not** change, so there is **no state
+>    migration and no `hash % size` rebalancing** to do. This is the practical workflow.
+> 2. **Transform an existing state** old-basis → new-basis (apply the single-particle
+>    rotation operator to a many-body state — a Thouless transformation that expands each
+>    SD into a superposition). This *would* change bit patterns / ownership, but it is
+>    only needed to reuse a *specific* cached old-basis state, which the fresh-computation
+>    workflow (1) avoids entirely.
+>
+> Implemented for workflow (1): `test_basis_rotation.py::test_pipeline_rotated_basis_matches_unrotated`
+> — re-express `H` in a rotated basis, run it through the **real `Basis.build_dense_matrix`
+> machinery**, and assert the full many-body spectrum **and** the (basis-invariant) trace
+> spectral function `Tr A(ω)` match the unrotated result. DMFT caching:
+> `symmetries.SymmetryRotationCache` / `discover_rotation` — caches `U` and re-discovers
+> only when the cached Cartan generators stop commuting with the new `h` (cheap O(n³)
+> check); `test_dmft_symmetry_cache` (discovery runs once across coefficient changes,
+> re-runs when a spin-flip breaks the symmetry).
+>
+> **Not built (deliberately):** `test_rotation_state_migration`'s state-*migration* path
+> (the Thouless transform of a distributed state + redistribution) and the hash-rebalance
+> check — both are moot in the fresh-computation workflow and are a separate research
+> effort if a use case ever needs to carry a specific state across a rotation boundary.
+
 - **Action:** After rotation, the **entire pipeline** runs in the rotated basis:
   `Basis._get_initial_basis`, the operator parser, restrictions, density matrices,
   observable operators. The rotation "block-diagonalizes" only if the discovered
@@ -713,14 +739,14 @@ to Cython if profiling shows it dominates total run time.
   iterations**; re-discover only if the symmetry structure changes (cheap to check via
   the Phase 2 generators). Do not re-run the full discovery every iteration.
 - **Verification:**
-  - [ ] Re-express `H` as a `ManyBodyOperator` in the rotated basis and run a full
+  - [x] Re-express `H` as a `ManyBodyOperator` in the rotated basis and run a full
         CIPSI + GF calculation; assert ground-state energy and spectral peaks match
         the unrotated result.
   - [ ] `test_rotation_state_migration` — assert that a state container rebuilt after
         rotation contains the same physical state (overlap 1 with the migrated
         reference) and that attempting to combine an old-basis state with a new-basis
         operator is rejected, not silently wrong.
-  - [ ] `test_dmft_symmetry_cache` — across two DMFT iterations with the same symmetry
+  - [x] `test_dmft_symmetry_cache` — across two DMFT iterations with the same symmetry
         structure, assert discovery runs once (cache hit on the second).
   - [ ] **Hash-balance check:** verify that the C++ `hash % comm.size` distribution
         remains approximately load-balanced after rotation. If severely imbalanced,

@@ -542,6 +542,61 @@ def measure_conserved_charges(psi, charges, n_orb, comm=None, round_to_int=True)
     return list(averages)
 
 
+def discover_rotation(op, n_orb=None, seed=0):
+    r"""Discover the symmetry and return ``(U, cartan)``: the symmetry-adapting rotation
+    and the (un-rotated) Cartan generators that commute with ``h``.
+
+    Unlike :func:`symmetry_adapted_transformation` (which returns the *rotated* operator
+    and rotated generators), this returns the Cartan in the **original** basis, so the
+    generators can be cheaply re-tested against a later Hamiltonian of the same symmetry
+    (see :class:`SymmetryRotationCache`).
+    """
+    h, _, _ = extract_tensors(op, n_orb=n_orb)
+    generators = discover_one_body_symmetries(h)
+    cartan = cartan_subalgebra(generators, seed=seed)
+    u, _ = joint_diagonalize(cartan, seed=seed)
+    return u, cartan
+
+
+class SymmetryRotationCache:
+    r"""Cache the symmetry-adapting rotation ``U`` across e.g. DMFT iterations.
+
+    In a self-consistency loop ``H`` changes every iteration (bath fitting), but the
+    symmetry *structure* (point group + spin) is fixed by the problem — only coefficients
+    move. Re-running the full discovery (SVD null space + Cartan + joint diagonalisation)
+    each iteration is wasteful. This caches ``U`` and re-discovers **only** when the
+    cached Cartan generators no longer commute with the new ``h`` (a cheap O(n³) check),
+    i.e. when the symmetry structure actually changed.
+
+    Attributes
+    ----------
+    discovery_count : int
+        How many times the full discovery actually ran (the metric a cache-hit test
+        checks).
+    """
+
+    def __init__(self, seed=0, tol=1e-9):
+        self.seed = seed
+        self.tol = tol
+        self._u = None
+        self._cartan = None
+        self.discovery_count = 0
+
+    def _symmetry_preserved(self, h):
+        return self._cartan is not None and all(
+            np.linalg.norm(h @ g - g @ h) <= self.tol for g in self._cartan
+        )
+
+    def get_rotation(self, op, n_orb=None):
+        """Return ``U`` for ``op``, reusing the cached rotation if the symmetry is unchanged."""
+        h, _, _ = extract_tensors(op, n_orb=n_orb)
+        if self._symmetry_preserved(h):
+            return self._u
+        self._u, self._cartan = discover_rotation(op, n_orb=n_orb, seed=self.seed)
+        self.discovery_count += 1
+        return self._u
+
+
 def symmetry_adapted_transformation(op, n_orb=None, seed=0):
     r"""Discover the symmetry and rotate the Hamiltonian into its symmetry-adapted basis.
 

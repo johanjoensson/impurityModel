@@ -125,3 +125,104 @@ def test_symmetry_adapted_transformation_bridges_to_phase3():
     assert len(cartan_rotated) == 4  # dimer one-body commutant has rank 4
     for g_rot in cartan_rotated:
         assert np.linalg.norm(g_rot - np.diag(np.diag(g_rot))) < 1e-9
+
+
+# ---------------------------------------------------------------------------
+# Phase 5.2: pipeline runs in the rotated basis (same physics)
+# ---------------------------------------------------------------------------
+
+
+def _full_fock(n_orb):
+    return [_sd(occ, n_orb) for ne in range(n_orb + 1) for occ in combinations(range(n_orb), ne)]
+
+
+def _trace_spectral_function(op, n_orb, omegas):
+    """Tr A(omega) = -Im Tr G(omega) / pi over the full Fock space (basis-invariant)."""
+    dets = _full_fock(n_orb)
+    states = [ManyBodyState({d: 1.0}) for d in dets]
+    n = len(states)
+
+    def mat(o):
+        m = np.zeros((n, n), dtype=complex)
+        for j, sj in enumerate(states):
+            col = applyOp(o, sj)
+            for i, si in enumerate(states):
+                m[i, j] = inner(si, col)
+        return m
+
+    h = mat(op)
+    evals, evecs = np.linalg.eigh(h)
+    e0, psi = evals[0], evecs[:, 0]
+    c = [mat(ManyBodyOperator({((p, "a"),): 1.0})) for p in range(n_orb)]
+    cdag = [ci.conj().T for ci in c]
+    eye = np.eye(n)
+    out = []
+    for omega in omegas:
+        r_add = np.linalg.inv(omega * eye - (h - e0 * eye))
+        r_rem = np.linalg.inv(omega * eye + (h - e0 * eye))
+        tr_g = sum(
+            psi.conj() @ c[p] @ r_add @ cdag[p] @ psi + psi.conj() @ cdag[p] @ r_rem @ c[p] @ psi
+            for p in range(n_orb)
+        )
+        out.append(-np.imag(tr_g) / np.pi)
+    return np.array(out)
+
+
+def test_pipeline_rotated_basis_matches_unrotated():
+    """Re-expressing H in a rotated single-particle basis and running the real Basis
+    pipeline reproduces the ground-state spectrum and the (basis-invariant) spectral
+    function."""
+    from impurityModel.ed.manybody_basis import Basis
+
+    op = _hubbard_dimer_operator()
+    u = _random_unitary(4, seed=5)
+    op_rot = rotate_hamiltonian(op, u)
+
+    # Full many-body spectrum through the real Basis.build_dense_matrix machinery.
+    all_dets = _full_fock(4)
+    kw = dict(impurity_orbitals={0: [[0, 1, 2, 3]]}, bath_states=({0: [[]]}, {0: [[]]}), verbose=False)
+
+    def spectrum(o):
+        basis = Basis(initial_basis=all_dets, **kw)
+        return np.sort(np.linalg.eigvalsh(np.asarray(basis.build_dense_matrix(o))))
+
+    np.testing.assert_allclose(spectrum(op), spectrum(op_rot), atol=1e-10)
+
+    # The trace spectral function (GF poles) is invariant under the basis rotation.
+    omegas = np.array([0.3 + 0.1j, 1.0 + 0.1j, 2.5 + 0.1j, -1.5 + 0.1j])
+    np.testing.assert_allclose(
+        _trace_spectral_function(op, 4, omegas),
+        _trace_spectral_function(op_rot, 4, omegas),
+        atol=1e-9,
+    )
+
+
+def test_dmft_symmetry_cache():
+    """U is discovered once and reused while the symmetry structure is unchanged."""
+    from impurityModel.ed.symmetries import SymmetryRotationCache
+
+    def hubbard(t, u, extra=None):
+        terms = {}
+        for a, b in ((0, 1), (2, 3)):
+            terms[((a, "c"), (b, "a"))] = -t
+            terms[((b, "c"), (a, "a"))] = -t
+        for up, dn in ((0, 2), (1, 3)):
+            terms[((up, "c"), (dn, "c"), (dn, "a"), (up, "a"))] = u
+        if extra:
+            terms.update(extra)
+        return ManyBodyOperator(terms)
+
+    cache = SymmetryRotationCache()
+
+    # Iteration 1: discovery runs.
+    u1 = cache.get_rotation(hubbard(0.9, 2.3), 4)
+    assert cache.discovery_count == 1
+
+    # Iteration 2: same symmetry, different coefficients -> cache hit, no re-discovery.
+    u2 = cache.get_rotation(hubbard(1.5, 3.1), 4)
+    assert cache.discovery_count == 1
+    assert u2 is u1
+
+    # Iteration 3: a spin-flip term breaks the spin symmetry -> re-discovery.
+    cache.get_rotation(hubbard(0.9, 2.3, extra={((0, "c"), (2, "a")): 0.4, ((2, "c"), (0, "a")): 0.4}), 4)
+    assert cache.discovery_count == 2
