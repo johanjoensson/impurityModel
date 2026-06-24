@@ -204,6 +204,125 @@ def rotate_hamiltonian(op, u, tol=1e-12):
     return tensors_to_operator(h_rot, v_rot, const, tol=tol)
 
 
+def conserved_subset_charges(op, n_orb=None, tol=1e-9):
+    r"""Find the orbital subsets whose total occupation is conserved by the **full** ``op``.
+
+    A subset charge :math:`N_S = \sum_{i\in S} n_i` commutes with ``H`` iff every term
+    is *block-balanced* in ``S`` — i.e. each term creates as many electrons in ``S`` as
+    it annihilates. This returns the **finest** partition of the orbitals for which
+    every block is conserved, found by union-find:
+
+    - a one-body term ``c†_i c_j`` (``i≠j``) forces ``i`` and ``j`` into one block
+      (otherwise it moves one electron across the boundary);
+    - a two-body term is scanned for per-block imbalance; any blocks it imbalances are
+      merged, iterated to a fixed point.
+
+    Unlike the one-body commutant (Phase 2, which sees only ``h``), this accounts for
+    the two-body interaction, so the returned charges are conserved by the interacting
+    Hamiltonian. Each is a ``{0,1}``-weight (subset-occupation) charge directly mappable
+    to a ``Basis`` restriction (Phase 3).
+
+    Parameters
+    ----------
+    op : ManyBodyOperator or dict
+        The Hamiltonian (1- and 2-body, number-conserving).
+    n_orb : int, optional
+        Number of spin-orbitals (inferred from ``op`` if ``None``).
+    tol : float, optional
+        Terms with ``|amp| <= tol`` are ignored.
+
+    Returns
+    -------
+    list of frozenset of int
+        The conserved orbital subsets (a partition of ``range(n_orb)``), sorted by
+        smallest orbital.
+    """
+    from collections import Counter
+
+    terms = op.to_dict() if hasattr(op, "to_dict") else dict(op)
+    if n_orb is None:
+        n_orb = 1 + max((idx for factors in terms for (idx, _) in factors), default=-1)
+
+    parent = list(range(n_orb))
+
+    def find(x):
+        while parent[x] != x:
+            parent[x] = parent[parent[x]]
+            x = parent[x]
+        return x
+
+    def union(a, b):
+        ra, rb = find(a), find(b)
+        if ra != rb:
+            parent[ra] = rb
+            return True
+        return False
+
+    parsed = []
+    for factors, amp in terms.items():
+        if abs(amp) <= tol:
+            continue
+        ladder = tuple(c for (_, c) in factors)
+        idx = [i for (i, _) in factors]
+        if ladder == ("c", "a") and idx[0] != idx[1]:
+            union(idx[0], idx[1])
+        elif ladder == ("c", "c", "a", "a"):
+            parsed.append((idx[:2], idx[2:]))  # (creators, annihilators)
+
+    changed = True
+    while changed:
+        changed = False
+        for creators, annihilators in parsed:
+            balance = Counter()
+            for orb in creators:
+                balance[find(orb)] += 1
+            for orb in annihilators:
+                balance[find(orb)] -= 1
+            imbalanced = [block for block, net in balance.items() if net != 0]
+            for block in imbalanced[1:]:
+                if union(block, imbalanced[0]):
+                    changed = True
+
+    components = {}
+    for orb in range(n_orb):
+        components.setdefault(find(orb), []).append(orb)
+    return sorted((frozenset(orbs) for orbs in components.values()), key=min)
+
+
+def restrictions_from_charges(charges, occupations, slack=0):
+    r"""Map conserved subset charges + target occupations to a ``Basis`` restriction dict.
+
+    Parameters
+    ----------
+    charges : sequence of frozenset of int
+        Conserved orbital subsets (e.g. from :func:`conserved_subset_charges`).
+    occupations : sequence of int
+        Target electron count in each subset (e.g. counted on the ground state from the
+        Phase 3.0 pre-scan).
+    slack : int, optional
+        Allow ``occ ± slack`` electrons (default 0 = a strict sector). Use ``slack=1``
+        to also admit the immediate neighbour sectors (``N ± 1`` etc.).
+
+    Returns
+    -------
+    dict of frozenset of int to (int, int)
+        ``Basis.restrictions``-format mapping ``subset -> (min, max)``. Subsets of size
+        1 whose occupation is fully pinned still produce a valid bound.
+    """
+    restrictions = {}
+    for subset, occ in zip(charges, occupations):
+        lo = max(0, occ - slack)
+        hi = min(len(subset), occ + slack)
+        restrictions[frozenset(subset)] = (lo, hi)
+    return restrictions
+
+
+def subset_occupations(charges, occupied_orbitals):
+    """Count electrons of a Slater determinant (set of occupied orbitals) in each subset."""
+    occupied = set(occupied_orbitals)
+    return [len(subset & occupied) for subset in charges]
+
+
 def symmetry_adapted_transformation(op, n_orb=None, seed=0):
     r"""Discover the symmetry and rotate the Hamiltonian into its symmetry-adapted basis.
 

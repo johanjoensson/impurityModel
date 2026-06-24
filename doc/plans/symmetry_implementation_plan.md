@@ -426,6 +426,25 @@ theoretical aside; document it where the discovered symmetries are reported.
 
 ## Phase 3: Sectorized CIPSI (subset-only restrictions)
 
+> **§3.1 core DONE (2026-06-24).** `symmetries.py`: `conserved_subset_charges(op)`
+> finds the **finest** orbital partition whose per-block occupation commutes with the
+> **full** interacting `H` (union-find: one-body terms force-merge their orbitals,
+> two-body terms merge any block they imbalance, to a fixed point — so it respects the
+> 2-body interaction, unlike the Phase-2 one-body commutant). `restrictions_from_charges`
+> / `subset_occupations` map charges + a reference occupation to the
+> `Basis.restrictions` format (`{frozenset: (min,max)}`, optional `slack` for `N±1`
+> neighbour sectors). Tested in `test_sectorization.py` (6 tests): Hubbard dimer →
+> `N_up`/`N_down`; **many-body `[H, N_S]=0`** verified by brute-force ED on every
+> sector; spin-flip (1-body) and pair-hopping (2-body) correctly **merge** to total `N`;
+> density-density correctly does **not** merge; restriction-dict format.
+>
+> **Remaining:** §3.0 target-sector pre-scan and §3.2 CIPSI/Basis integration
+> (`test_automatic_restrictions`, `test_target_sector_selection`) — wire the
+> auto-charges into `Basis.restrictions` / `op.set_restrictions` and show the sectorized
+> `CIPSISolver` reproduces the unrestricted ground state with a smaller basis. The
+> many-body block-diagonal property is already proven (`[H, N_S]=0`); what remains is the
+> solver wiring + the "smaller basis, same energy" end-to-end test.
+
 **Location:** `src/impurityModel/ed/cipsi_solver.py` and `manybody_basis.py`
 
 **Scope:** This phase uses only the symmetries whose weights are `{0,1}` on an
