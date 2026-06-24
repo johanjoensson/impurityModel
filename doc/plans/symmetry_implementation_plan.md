@@ -545,6 +545,26 @@ state.
 
 ## Phase 5: Basis Rotation
 
+> **§5.1 DONE (2026-06-24).** Implemented in `symmetries.py`, tested in
+> `src/impurityModel/test/test_basis_rotation.py` (4 tests green):
+> `rotate_one_body` (`U† h U`), `rotate_two_body`
+> (`V'_ijkl = Σ U*_mi U*_nj V_mnpq U_pk U_ql`, matching `extract_tensors`' V), and
+> `rotate_hamiltonian` (extract → rotate → rebuild `ManyBodyOperator`). The 2-body
+> index convention is pinned by `test_python_basis_rotation_spectrum_invariant`, which
+> checks the **many-body** spectrum is invariant across the N=1,2,3 sectors (a brute-
+> force complete-sector ED) — this would fail for any V-convention mismatch.
+> `test_python_basis_rotation_roundtrip` (U then U† recovers the tensors to 1e-12) and
+> `test_rotation_diagonalizes_discovered_generators` (in the joint-eigenbasis the
+> Cartan generators are diagonal) cover the rest. Capstone
+> `symmetry_adapted_transformation(op)` = discover → Cartan → `U` → `H'`, the bridge to
+> Phase 3 (`test_symmetry_adapted_transformation_bridges_to_phase3`).
+>
+> **Not yet done:** §5.2 pipeline integration (data migration / rebuild+redistribute
+> distributed states across the rotation boundary, DMFT `U`-cache, hash-balance) and
+> §5.3 optional Cython. §5.2 is the heavy distributed-state piece; Phase 3
+> sectorization can proceed on `rotate_hamiltonian` + `symmetry_adapted_transformation`
+> without it (it builds fresh restricted bases rather than migrating existing states).
+
 **Location:** `src/impurityModel/ed/symmetries.py` (reference), optionally
 `src/cython/basis_rotation.pyx` (optimized, only if profiling proves necessary)
 
@@ -562,8 +582,8 @@ to Cython if profiling shows it dominates total run time.
   tensors. Re-express the result as a `ManyBodyOperator` in the rotated single-particle
   basis.
 - **Verification:**
-  - [ ] `test_python_basis_rotation` — eigenvalues of `H` and `H'` match to 1e-12.
-  - [ ] In `H'`, the discovered abelian symmetry generators are diagonal matrices.
+  - [x] `test_python_basis_rotation` — eigenvalues of `H` and `H'` match to 1e-12.
+  - [x] In `H'`, the discovered abelian symmetry generators are diagonal matrices.
 
 ### 5.2. Pipeline integration (critical)
 

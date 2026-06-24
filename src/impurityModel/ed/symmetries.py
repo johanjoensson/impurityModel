@@ -126,6 +126,125 @@ def tensors_to_operator(h, V=None, const=0.0, tol=0.0):
     return ManyBodyOperator(d)
 
 
+def rotate_one_body(h, u):
+    r"""Rotate the one-body tensor to a new single-particle basis: ``h' = U† h U``.
+
+    ``U``'s columns are the new basis vectors expressed in the old basis, i.e. the
+    new operators are ``c'_a = Σ_i U*_{ia} c_i``.
+
+    Parameters
+    ----------
+    h : np.ndarray, shape (n, n)
+    u : np.ndarray, shape (n, n)
+        Unitary single-particle transformation.
+
+    Returns
+    -------
+    np.ndarray, shape (n, n)
+    """
+    u = np.asarray(u, dtype=complex)
+    return np.einsum("mi,mn,nj->ij", u.conj(), np.asarray(h, dtype=complex), u, optimize=True)
+
+
+def rotate_two_body(v_tensor, u):
+    r"""Rotate the two-body tensor to a new single-particle basis.
+
+    With the :func:`extract_tensors` convention (:math:`V_{ijkl}` = coeff of
+    :math:`c^\dagger_i c^\dagger_j c_l c_k`) and ``c'_a = Σ_i U*_{ia} c_i``,
+
+    .. math:: V'_{ijkl} = \sum_{mnpq} U^*_{mi} U^*_{nj} V_{mnpq} U_{pk} U_{ql}.
+
+    Parameters
+    ----------
+    v_tensor : np.ndarray, shape (n, n, n, n)
+    u : np.ndarray, shape (n, n)
+
+    Returns
+    -------
+    np.ndarray, shape (n, n, n, n)
+    """
+    u = np.asarray(u, dtype=complex)
+    return np.einsum(
+        "mi,nj,mnpq,pk,ql->ijkl",
+        u.conj(),
+        u.conj(),
+        np.asarray(v_tensor, dtype=complex),
+        u,
+        u,
+        optimize=True,
+    )
+
+
+def rotate_hamiltonian(op, u, tol=1e-12):
+    r"""Express a ``ManyBodyOperator`` in a rotated single-particle basis (``H' = U† H U``).
+
+    Extracts the 1-/2-body tensors (:func:`extract_tensors`), rotates them
+    (:func:`rotate_one_body`, :func:`rotate_two_body`) and rebuilds the operator.
+    This is the one-time setup cost of symmetry-plan Phase 5 — a pure ``einsum``
+    contraction, no Lanczos hot loop involved.
+
+    Parameters
+    ----------
+    op : ManyBodyOperator or dict
+        The 1-/2-body operator to rotate.
+    u : np.ndarray, shape (n, n)
+        Unitary single-particle transformation (e.g. from :func:`joint_diagonalize`).
+    tol : float, optional
+        Drop rotated coefficients with magnitude ``<= tol`` (default 1e-12) to prune
+        numerical noise from the dense contraction.
+
+    Returns
+    -------
+    ManyBodyOperator
+    """
+    u = np.asarray(u, dtype=complex)
+    h, v_tensor, const = extract_tensors(op, n_orb=u.shape[0])
+    h_rot = rotate_one_body(h, u)
+    v_rot = rotate_two_body(v_tensor, u)
+    return tensors_to_operator(h_rot, v_rot, const, tol=tol)
+
+
+def symmetry_adapted_transformation(op, n_orb=None, seed=0):
+    r"""Discover the symmetry and rotate the Hamiltonian into its symmetry-adapted basis.
+
+    Ties the Phase-2 / Phase-5 pieces together: extract the one-body tensor, discover
+    the commutant, pick a Cartan subalgebra, build the single-particle ``U`` that
+    simultaneously diagonalises it, and return the rotated operator ``H' = U† H U``. In
+    this basis every Cartan generator is **diagonal** — those with ``{0,1}`` weights are
+    occupation numbers that map directly to subset-occupation restrictions (Phase 3),
+    the rest (e.g. ``S_z``) need the weighted-sum machinery (Phase 6). This is the
+    bridge that lets Phase 3 sectorize in a basis where the conserved charges are
+    manifest.
+
+    Parameters
+    ----------
+    op : ManyBodyOperator or dict
+        The Hamiltonian.
+    n_orb : int, optional
+        Number of spin-orbitals (inferred from ``op`` if ``None``).
+    seed : int, optional
+        Seed for the random regular element / joint-diagonalisation combination.
+
+    Returns
+    -------
+    u : np.ndarray
+        Single-particle transformation to the symmetry-adapted basis.
+    rotated_op : ManyBodyOperator
+        ``H'`` expressed in that basis.
+    cartan : list of np.ndarray
+        The Cartan generators, each **diagonal** in the new basis (``U† G U``). These
+        are the raw material Phase 3 maps to restrictions (after rescaling to integer
+        orbital weights and the ``{0,1}`` test); the mapping itself is left to Phase 3.
+    """
+    h, _, _ = extract_tensors(op, n_orb=n_orb)
+    generators = discover_one_body_symmetries(h)
+    cartan = cartan_subalgebra(generators, seed=seed)
+    u, _ = joint_diagonalize(cartan, seed=seed)
+    rotated_op = rotate_hamiltonian(op, u)
+    cartan_rotated = [rotate_one_body(g, u) for g in cartan]
+    return u, rotated_op, cartan_rotated
+
+
 def _commutator_superoperator(h):
     r"""Matrix ``A`` of the linear map ``O -> [h, O]`` acting on ``vec(O)``.
 
