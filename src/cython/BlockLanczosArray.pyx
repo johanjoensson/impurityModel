@@ -580,6 +580,18 @@ def block_lanczos_array_cy(
     cdef list bad_block_idx
     cdef np.ndarray Q_bad, overlap
 
+    # EA16 §2.6.2 locking deflation: keep every Lanczos vector orthogonal to the
+    # already-converged ("locked") Ritz vectors. Without this the matvec keeps
+    # amplifying the dominant locked directions back into the active subspace,
+    # which reintroduces locked eigenvalues (and their 2*theta harmonics) as
+    # spurious Ritz values *below* the true spectral minimum on restarted sweeps.
+    # `locked` is column-distributed exactly like the Krylov vectors (local rows).
+    cdef np.ndarray locked_arr = kwargs.get("locked", None)
+    cdef np.ndarray locked_ovl
+    cdef bint have_locked = locked_arr is not None and locked_arr.shape[1] > 0
+    if have_locked:
+        locked_arr = np.ascontiguousarray(locked_arr, dtype=complex)
+
     while it < _buf_size:
         q1 = np.ascontiguousarray(q[1])
         n_curr = q1.shape[1]
@@ -634,6 +646,17 @@ def block_lanczos_array_cy(
             q0 = np.ascontiguousarray(q[0])
             with nogil:
                 matmul_nogil(N, n_curr, n_prev, -1.0, q0, b'N', beta_prev_dag_mv, b'N', 1.0, wp)
+
+        # Deflate against the locked Ritz vectors (twice for numerical robustness).
+        # Applied for every reort mode, since locking is orthogonal to the Krylov
+        # reorthogonalization strategy and must hold even for Reort.NONE.
+        if have_locked:
+            for _ in range(2):
+                locked_ovl = np.ascontiguousarray(locked_arr.conj().T @ wp_arr)
+                if mpi:
+                    comm.Allreduce(MPI.IN_PLACE, locked_ovl, op=MPI.SUM)
+                wp_arr -= locked_arr @ locked_ovl
+            wp = wp_arr
 
         if reort == Reort.FULL or (reort == Reort.PERIODIC and it > 0 and it % period == 0):
             if not build_krylov_basis:

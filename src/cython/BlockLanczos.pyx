@@ -401,6 +401,7 @@ def block_lanczos_cy(
     W_init=None,
     return_widths=False,
     block_widths_init=None,
+    locked=None,
 ):
     """Run the distributed block Lanczos iteration with ``ManyBodyState``.
 
@@ -633,6 +634,17 @@ def block_lanczos_cy(
             block_widths.append(n_curr)
             it += 1
             break
+
+        # EA16 §2.6.2 locking deflation: keep each new Lanczos block orthogonal to the
+        # already-converged ("locked") Ritz vectors. The locked Ritz vectors are only
+        # approximate eigenvectors, so H q_curr leaks a small component along them that
+        # is otherwise amplified across iterations, reintroducing locked eigenvalues
+        # (and their 2*theta harmonics) as spurious Ritz values below the true spectral
+        # minimum on restarted sweeps. Projecting q_next here keeps the basis (hence the
+        # next alpha) clean. Twice for numerical robustness.
+        if locked:
+            for _ in range(2):
+                q_next, _ = block_orthogonalize_sparse(q_next, list(locked), None, comm if mpi else None)
 
         # Append q_next to the basis (last block = residual direction)
         Q_basis.extend([st.copy() for st in q_next])

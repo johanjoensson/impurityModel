@@ -139,7 +139,7 @@ def _implicitly_restarted_block_lanczos_array(
     psi0 = np.ascontiguousarray(psi0 if psi0.ndim == 2 else psi0.reshape(-1, 1), dtype=complex)
     psi0, _ = block_normalize(psi0, mpi, comm, 0.0)
 
-    def sweep(v0, max_iter, alphas=None, betas=None, Q=None, W=None, reort=None):
+    def sweep(v0, max_iter, alphas=None, betas=None, Q=None, W=None, reort=None, locked=None):
         res = block_lanczos_array(
             psi0=v0,
             h_op=h_op,
@@ -154,6 +154,7 @@ def _implicitly_restarted_block_lanczos_array(
             betas=betas,
             Q=Q,
             W=W,
+            locked=locked,
         )
         # (alphas, betas, Q, W, block_widths)
         return res[0], res[1], res[2], res[3], res[4]
@@ -200,7 +201,7 @@ def _implicitly_restarted_block_lanczos_manybody(
     psi0 = list(psi0) if isinstance(psi0, (list, tuple)) else psi0
     psi0, _ = block_normalize(psi0, mpi, comm, slaterWeightMin)
 
-    def sweep(v0, max_iter, alphas=None, betas=None, Q=None, W=None, reort=None):
+    def sweep(v0, max_iter, alphas=None, betas=None, Q=None, W=None, reort=None, locked=None):
         r = reort if reort is not None else reort_mode
         r = r.name.lower() if hasattr(r, "name") else r
         res = block_lanczos_cy(
@@ -218,6 +219,7 @@ def _implicitly_restarted_block_lanczos_manybody(
             Q_init=Q,
             W_init=W,
             return_widths=True,
+            locked=locked,
         )
         # (alphas, betas, Q, W, block_widths)
         return res[0], res[1], res[2], res[3], res[4]
@@ -356,8 +358,13 @@ def _irlm_core(
             n_locked_now += 1
         return n_locked_now
 
+    def _locked():
+        # Locked Ritz vectors to deflate the inner sweep against (EA16 §2.6.2). Empty
+        # locked set -> None so the kernel skips the projection entirely.
+        return Xl if _nlock() > 0 else None
+
     # --- Initial Lanczos run --------------------------------------------
-    alphas, betas, Q_basis, _W, widths = sweep(psi0, m)
+    alphas, betas, Q_basis, _W, widths = sweep(psi0, m, locked=_locked())
 
     for restart in range(max_restarts):
         n_need = num_wanted - len(theta_l)
@@ -430,7 +437,7 @@ def _irlm_core(
                 # every rank raises together and this break is MPI-collective-safe.
                 # Stop restarting and return what has been locked / found so far.
                 break
-            alphas, betas, Q_basis, _W, widths = sweep(v0, m)
+            alphas, betas, Q_basis, _W, widths = sweep(v0, m, locked=_locked())
             continue
 
         # --- Purge + restart in the Ritz basis (EA16 §2.2.1, eq. 6) ----
@@ -497,6 +504,7 @@ def _irlm_core(
             Q=Q_basis_new,
             W=W_init,
             reort=reort_continuation,
+            locked=_locked(),
         )
 
     # --- Final extraction -----------------------------------------------
@@ -533,11 +541,33 @@ def _assemble_results(
         if mpi:
             evals = comm.bcast(evals, root=0)
             Z = comm.bcast(Z, root=0)
-        wanted = np.argsort(evals.real)[:n_need]
-        X = block_combine(_q_slice(Q_basis, 0, total), Z[:, wanted], slater)
-        for j in range(_q_cols(X)):
-            eigvals_list.append(float(evals[wanted[j]].real))
-            eigvecs_cols.append(_q_slice(X, j, j + 1))
+        # Deflate active Ritz candidates against the locked set (and against each other)
+        # before accepting them. When the start space is exhausted by the locked set
+        # (e.g. IRLM seeded from already-converged eigenvectors, as in
+        # CIPSISolver.get_eigenvectors), the leftover active factorization still
+        # contains near-copies of the locked Ritz vectors; without this deflation they
+        # are accepted as spurious duplicate eigenpairs (each true eigenvalue returned
+        # twice), which double-counts states in the downstream thermal average.
+        accepted = Xl
+        Q_used = _q_slice(Q_basis, 0, total)
+        for k in np.argsort(evals.real):
+            if len(eigvals_list) >= num_wanted:
+                break
+            col = block_combine(Q_used, Z[:, k : k + 1], slater)
+            n_acc = accepted.shape[1] if is_arr else len(accepted)
+            if n_acc > 0:
+                for _ in range(2):
+                    col, _ = block_orthogonalize(col, accepted, mpi=mpi, comm=comm)
+            g = block_inner(col, col, mpi, comm)
+            if float(np.abs(g[0, 0])) < 1e-12:
+                continue
+            try:
+                col, _ = block_normalize(col, mpi, comm, slater)
+            except ValueError:
+                continue
+            eigvals_list.append(float(evals[k].real))
+            eigvecs_cols.append(col)
+            accepted = np.concatenate([accepted, col], axis=1) if is_arr else (list(accepted) + list(col))
 
     eigvals = np.array(eigvals_list[:num_wanted])
     order = np.argsort(eigvals)
