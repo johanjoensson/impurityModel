@@ -168,6 +168,7 @@ def block_lanczos_step_cy(
     reort_period: int = 5,
     start_it: int = 0,
     block_widths=None,
+    locked=None,
 ):
     """Perform one step of the distributed block Lanczos iteration.
 
@@ -275,6 +276,18 @@ def block_lanczos_step_cy(
         beta_prev_dag = np.conj(betas[it - 1, :p, :n_prev].T)
         add_scaled_multi(wp, q_prev, -beta_prev_dag)
 
+    # --- 3b. EA16 §2.6.2 locking deflation ------------------------------
+    # Keep the residual block orthogonal to the already-converged ("locked") Ritz
+    # vectors *before* forming M and beta, so the stored beta and the resulting
+    # q_next are consistent with the deflated vector (matching the array kernel).
+    # The locked Ritz vectors are only approximate eigenvectors, so H q_curr leaks
+    # a small component along them that is otherwise amplified across iterations,
+    # reintroducing locked eigenvalues (and their 2*theta harmonics) as spurious
+    # Ritz values below the true spectral minimum on restarted sweeps. Twice for
+    # numerical robustness.
+    if locked:
+        for _ in range(2):
+            wp, _ = block_orthogonalize_sparse(wp, list(locked), None, comm if mpi else None)
 
     # --- 4. Full / Periodic reorthogonalization -------------------------
     # The PERIODIC cadence gate stays in the caller; the reort action itself goes
@@ -625,6 +638,7 @@ def block_lanczos_cy(
             reort_period=reort_period,
             start_it=start_it,
             block_widths=block_widths,
+            locked=locked,
         )
 
         if breakdown:
@@ -635,18 +649,9 @@ def block_lanczos_cy(
             it += 1
             break
 
-        # EA16 §2.6.2 locking deflation: keep each new Lanczos block orthogonal to the
-        # already-converged ("locked") Ritz vectors. The locked Ritz vectors are only
-        # approximate eigenvectors, so H q_curr leaks a small component along them that
-        # is otherwise amplified across iterations, reintroducing locked eigenvalues
-        # (and their 2*theta harmonics) as spurious Ritz values below the true spectral
-        # minimum on restarted sweeps. Projecting q_next here keeps the basis (hence the
-        # next alpha) clean. Twice for numerical robustness.
-        if locked:
-            for _ in range(2):
-                q_next, _ = block_orthogonalize_sparse(q_next, list(locked), None, comm if mpi else None)
-
-        # Append q_next to the basis (last block = residual direction)
+        # Append q_next to the basis (last block = residual direction). The locking
+        # deflation is applied inside block_lanczos_step_cy (before M/beta), so q_next
+        # is already orthogonal to the locked set here.
         Q_basis.extend([st.copy() for st in q_next])
 
         if verbose:
@@ -678,6 +683,20 @@ def block_lanczos_cy(
 # ---------------------------------------------------------------------------
 # Thick-Restart Block Lanczos (TRLM)
 # ---------------------------------------------------------------------------
+
+
+def _trlm_extract_sparse(T_full, Q, dim, num_wanted, comm, slaterWeightMin):
+    """Diagonalize the leading ``dim`` x ``dim`` block of ``T_full`` and form the
+    ``num_wanted`` lowest Ritz vectors as ``ManyBodyState`` combinations of ``Q[:dim]``.
+    Shared by the TRLM early-exit / breakdown / final-extraction paths so they all honor
+    the true (possibly deflated) subspace dimension ``dim`` instead of a padded
+    ``m_actual * p``."""
+    eigvals_T, eigvecs_T = sp.eigh(T_full[:dim, :dim])
+    if comm is not None:
+        eigvals_T = comm.bcast(eigvals_T, root=0)
+        eigvecs_T = comm.bcast(eigvecs_T, root=0)
+    wanted = np.argsort(eigvals_T)[:num_wanted]
+    return eigvals_T[wanted], block_combine_sparse(Q[:dim], eigvecs_T[:, wanted], slaterWeightMin)
 
 
 def thick_restart_block_lanczos_cy(
@@ -809,7 +828,7 @@ def thick_restart_block_lanczos_cy(
     psi0, _ = block_normalize_sparse(psi0_list, mpi, comm, slaterWeightMin)
 
     # --- Initial Lanczos run --------------------------------------------
-    alphas, betas, Q_basis, W = block_lanczos_cy(
+    alphas, betas, Q_basis, W, widths = block_lanczos_cy(
         psi0=psi0,
         h_op=h_op,
         basis=basis,
@@ -819,23 +838,35 @@ def thick_restart_block_lanczos_cy(
         max_iter=m,
         slaterWeightMin=slaterWeightMin,
         comm=comm,
+        return_widths=True,
     )
 
     m_actual = len(alphas)
     if m_actual == 0:
         raise RuntimeError("Block Lanczos produced zero iterations.")
 
-    # Q_basis has length >= (m_actual+1)*p after the run (last p = residual)
-    q_m = [Q_basis[i].copy() for i in range(m_actual * p, len(Q_basis))]
-    Q_basis = Q_basis[: m_actual * p]
+    # The sweep can shrink blocks (rank-deficient beta -> deflation), so the true
+    # subspace dimension is sum(widths), not the padded m_actual * p. All slicing and
+    # T construction must use the real widths or they desynchronize from Q_basis.
+    total = int(sum(widths)) if widths is not None else m_actual * p
+    deflated = total < m_actual * p
+
+    # Q_basis has length >= total + p after the run (last p = residual)
+    q_m = [Q_basis[i].copy() for i in range(total, len(Q_basis))]
+    Q_basis = Q_basis[:total]
 
     _betas_for_T = betas[: len(betas) - 1] if len(betas) == m_actual else betas
-    T_full = _build_full_T(alphas, _betas_for_T)
+    T_full = _build_full_T(alphas, _betas_for_T, block_widths=widths)
 
-    # Early termination: invariant subspace found
-    if m_actual < m:
+    # Early termination: a genuine invariant subspace (fewer blocks than asked) or block
+    # deflation (rank-deficient residual). In both cases the spanned block-Krylov space is
+    # (near-)invariant, so its Ritz pairs are accurate eigenpairs and we extract directly
+    # -- this also avoids the uniform-width restart loop below, whose arrowhead/T_full
+    # bookkeeping assumes a constant block width p and is invalid once blocks have shrunk.
+    if m_actual < m or deflated:
         if verbose and (comm is None or comm.Get_rank() == 0):
-            print(f"[TRLM] Invariant subspace of {m_actual} blocks found. " "Stopping early.")
+            reason = "Invariant subspace" if m_actual < m else "Block deflation"
+            print(f"[TRLM] {reason} (dim {total}). Extracting directly.")
         eigvals_T, eigvecs_T = sp.eigh(T_full)
         if comm is not None:
             eigvals_T = comm.bcast(eigvals_T, root=0)
@@ -853,16 +884,29 @@ def thick_restart_block_lanczos_cy(
             print(T_full)
         return final_eigvals, final_eigvecs
 
-    beta_res = betas[len(betas) - 1]
+    # --- Width-aware thick restart -------------------------------------------------
+    # Mirrors the array path (impurityModel.ed.trlm). Blocks can shrink mid-restart
+    # (rank-deficient residual -> block_normalize_sparse returns a rectangular beta and a
+    # narrower q_next), so the loop tracks each block's actual width (``cur_widths``) and
+    # addresses T_full / Q_basis by cumulative offsets instead of the constant ``p``.
+    # nkeep = k_blocks * p is a *count* of retained Ritz vectors (one diagonal super-block
+    # coupled to the residual by the thick-restart spike), not a block width.
+    nkeep = k_blocks * p
+    p_resid = len(q_m) if q_m else p
+    # betas[-1] is the trailing coupling, padded to (p, p) by the kernel. The residual
+    # block can deflate (rank p_resid < p) even when the diagonal blocks do not, leaving
+    # total == m_actual*p (so we still reach here); slice off the phantom padded rows.
+    beta_res = betas[len(betas) - 1][:p_resid, :]
+    cur_widths = list(widths)
 
-    # --- Restart loop ---------------------------------------------------
     for restart in range(max_restarts):
-        eigvals_T, eigvecs_T = sp.eigh(T_full)
+        D = int(sum(cur_widths))
+        p_last = cur_widths[len(cur_widths) - 1]
+        eigvals_T, eigvecs_T = sp.eigh(T_full[:D, :D])
         if comm is not None:
             eigvals_T = comm.bcast(eigvals_T, root=0)
             eigvecs_T = comm.bcast(eigvecs_T, root=0)
-        _nrows_T = eigvecs_T.shape[0]
-        res_norms = np.linalg.norm(beta_res @ eigvecs_T[_nrows_T - p :, :], axis=0)
+        res_norms = np.linalg.norm(beta_res @ eigvecs_T[D - p_last : D, :], axis=0)
         wanted = np.argsort(eigvals_T)[:num_wanted]
         max_res = float(np.max(res_norms[wanted]))
 
@@ -878,74 +922,52 @@ def thick_restart_block_lanczos_cy(
                 print("[TRLM] Converged!")
             break
 
-        # Compress basis to k_blocks Ritz pairs
-        keep = np.argsort(eigvals_T)[: k_blocks * p]
+        keep = np.argsort(eigvals_T)[:nkeep]
         Y_k = eigvecs_T[:, keep]
+        Y_last = Y_k[D - p_last : D, :]  # last-block rows -> thick-restart spike
         T_k = np.diag(eigvals_T[keep])
 
-        Q_basis = Q_basis[: m_actual * p]
-        Q_basis = block_combine_sparse(Q_basis, Y_k, 0.0)
+        Q_ret = block_combine_sparse(Q_basis[:D], Y_k, 0.0)
+        Q_ret, _ = block_normalize_sparse(Q_ret, mpi, comm, 0.0)
 
-        # Re-normalize each retained Ritz block within itself. We deliberately do NOT
-        # reorthogonalize the Ritz blocks against each other: that corrupts the relation
-        # to T_k, and the subsequent TRLM steps reorthogonalize against this basis anyway.
-        for i in range(k_blocks):
-            q_i = [Q_basis[i * p + j] for j in range(p)]
-            q_i, _ = block_normalize_sparse(q_i, mpi, comm, 0.0)
-            for j in range(p):
-                Q_basis[i * p + j] = q_i[j]
+        # Worst case the continuation adds (m - k_blocks) full-width-p blocks.
+        T_full = np.zeros((nkeep + (m - k_blocks) * p, nkeep + (m - k_blocks) * p), dtype=complex)
+        T_full[:nkeep, :nkeep] = T_k
 
-        T_full = np.zeros((m * p, m * p), dtype=complex)
-        T_full[: k_blocks * p, : k_blocks * p] = T_k
-
-        # Residual block q_m from previous run (or compute fresh)
+        # Residual seed block (carried over as q_m, or recomputed if absent).
         if not q_m:
-            q_last = [Q_basis[(k_blocks - 1) * p + i] for i in range(p)]
-            wp = h_op.apply_multi(q_last, slaterWeightMin)
+            q_seed = [Q_ret[i] for i in range(max(0, nkeep - p), nkeep)]
+            wp = h_op.apply_multi(q_seed, slaterWeightMin)
             if mpi:
                 wp = basis.redistribute_psis(wp)
-            # TRLM thick-restart always re-orthogonalizes the continuation block
-            # against the entire retained basis (all modes, including NONE): the
-            # arrowhead T_full is only valid if the new vectors are orthogonal to the
-            # retained Ritz vectors, so this is a structural requirement of the
-            # restart, not the reort-mode knob (which governs the inner Lanczos loop).
-            # PRO across restart is a Phase-3 optimization; the basis here is small.
+            # Thick-restart always full-reorthogonalizes the residual seed against the
+            # whole retained basis (all modes): the arrowhead T_full requires it.
             for _ in range(2):
-                ov = inner_multi(Q_basis, wp)
+                ov = inner_multi(Q_ret, wp)
                 if mpi:
                     comm.Allreduce(MPI.IN_PLACE, ov, op=MPI.SUM)
-                add_scaled_multi(wp, Q_basis, -ov)
+                add_scaled_multi(wp, Q_ret, -ov)
             try:
-                q_m_new, beta_res = block_normalize_sparse(wp, mpi, comm, 0.0)
-                breakdown = np.linalg.norm(beta_res, ord=2) < 1e-5
+                q_m, beta_res = block_normalize_sparse(wp, mpi, comm, 0.0)
             except (sp.LinAlgError, ValueError):
-                breakdown = True
-
-            if breakdown:
+                q_m = None
+            if not q_m or np.linalg.norm(beta_res, ord=2) < 1e-5:
                 if verbose and (comm is None or comm.Get_rank() == 0):
                     print(f"[TRLM] Invariant subspace found at restart {restart}. Stopping early.")
-                    print("T_full at breakdown:")
-                    print(T_full[: k_blocks * p, : k_blocks * p])
-                eigvals_T2, eigvecs_T2 = sp.eigh(T_full[: k_blocks * p, : k_blocks * p])
-                if comm is not None:
-                    eigvals_T2 = comm.bcast(eigvals_T2, root=0)
-                    eigvecs_T2 = comm.bcast(eigvecs_T2, root=0)
-                wanted2 = np.argsort(eigvals_T2)[:num_wanted]
-                return eigvals_T2[wanted2], block_combine_sparse(
-                    Q_basis[: k_blocks * p], eigvecs_T2[:, wanted2], slaterWeightMin
-                )
+                return _trlm_extract_sparse(T_full, Q_ret, nkeep, num_wanted, comm, slaterWeightMin)
+            p_resid = len(q_m)
 
-            q_m = q_m_new
+        Q_basis = list(Q_ret) + [st.copy() for st in q_m]
+        cross = beta_res @ Y_last  # (p_resid, nkeep)
+        T_full[nkeep : nkeep + p_resid, :nkeep] = cross
+        T_full[:nkeep, nkeep : nkeep + p_resid] = np.conj(cross.T)
 
-        Q_basis.extend([st.copy() for st in q_m])
-
-        Y_last = Y_k[-p:, :]
-        cross = beta_res @ Y_last
-
-        T_full[k_blocks * p : (k_blocks + 1) * p, : k_blocks * p] = cross
-        T_full[: k_blocks * p, k_blocks * p : (k_blocks + 1) * p] = np.conj(cross.T)
-
+        cur_widths = [nkeep, p_resid]
+        off = nkeep  # column start of the current block q1
+        w1 = p_resid
         q1 = q_m
+        q_m = None  # consumed; the new trailing residual is set at the last inner step
+
         for i in range(k_blocks, m):
             wp = h_op.apply_multi(q1, slaterWeightMin)
             if mpi:
@@ -955,12 +977,9 @@ def thick_restart_block_lanczos_cy(
             if mpi:
                 comm.Allreduce(MPI.IN_PLACE, overlaps, op=MPI.SUM)
 
-            alpha_i = overlaps[-p:, :]
-            T_full[i * p : (i + 1) * p, i * p : (i + 1) * p] = alpha_i
+            alpha_i = overlaps[overlaps.shape[0] - w1 :, :]  # q1^H H q1  (w1, w1)
+            T_full[off : off + w1, off : off + w1] = alpha_i
 
-            # Full double-pass reorthogonalization against the whole basis to keep the
-            # arrowhead T_full valid (see note in the q_m recompute above). Applied in
-            # all modes, including NONE, because the restart structurally requires it.
             for _ in range(2):
                 ov2 = inner_multi(Q_basis, wp)
                 if mpi:
@@ -969,47 +988,32 @@ def thick_restart_block_lanczos_cy(
 
             try:
                 q_next, beta_i = block_normalize_sparse(wp, mpi, comm, 0.0)
-                breakdown = np.linalg.norm(beta_i, ord=2) < 1e-5
             except (sp.LinAlgError, ValueError):
-                breakdown = True
+                q_next = None
 
-            if breakdown:
+            if not q_next or np.linalg.norm(beta_i, ord=2) < 1e-5:
                 if verbose and (comm is None or comm.Get_rank() == 0):
                     print(f"[TRLM] Invariant subspace found during restart at block {i}. Stopping early.")
-                eigvals_T2, eigvecs_T2 = sp.eigh(T_full[: (i + 1) * p, : (i + 1) * p])
-                if comm is not None:
-                    eigvals_T2 = comm.bcast(eigvals_T2, root=0)
-                    eigvecs_T2 = comm.bcast(eigvecs_T2, root=0)
-                wanted2 = np.argsort(eigvals_T2)[:num_wanted]
-                return eigvals_T2[wanted2], block_combine_sparse(
-                    Q_basis[: (i + 1) * p], eigvecs_T2[:, wanted2], slaterWeightMin
-                )
+                return _trlm_extract_sparse(T_full, Q_basis, off + w1, num_wanted, comm, slaterWeightMin)
 
+            # Partial deflation shrinks the block: beta_i is (w_next, w1), q_next has
+            # w_next <= w1 states; place the arrowhead with those widths.
+            w_next = len(q_next)
             if i < m - 1:
-                T_full[(i + 1) * p : (i + 2) * p, i * p : (i + 1) * p] = beta_i
-                T_full[i * p : (i + 1) * p, (i + 1) * p : (i + 2) * p] = np.conj(beta_i.T)
+                T_full[off + w1 : off + w1 + w_next, off : off + w1] = beta_i
+                T_full[off : off + w1, off + w1 : off + w1 + w_next] = np.conj(beta_i.T)
                 Q_basis.extend([st.copy() for st in q_next])
+                cur_widths.append(w_next)
+                off += w1
+                w1 = w_next
                 q1 = q_next
             else:
                 beta_res = beta_i
                 q_m = q_next
-
-        m_actual = m
+                p_resid = w_next
 
     # --- Final extraction -----------------------------------------------
-    eigvals_T, eigvecs_T = sp.eigh(T_full)
-    if comm is not None:
-        eigvals_T = comm.bcast(eigvals_T, root=0)
-        eigvecs_T = comm.bcast(eigvecs_T, root=0)
-    wanted = np.argsort(eigvals_T)[:num_wanted]
-    final_eigvals = eigvals_T[wanted]
-    Q_final = Q_basis[: m_actual * p]
-    final_eigvecs = block_combine_sparse(Q_final, eigvecs_T[:, wanted], slaterWeightMin)
-    if verbose and (comm is None or comm.Get_rank() == 0):
-        print("T_full eigenvalues at the end:", eigvals_T)
-        print("T_full matrix:")
-        print(T_full)
-    return final_eigvals, final_eigvecs
+    return _trlm_extract_sparse(T_full, Q_basis, int(sum(cur_widths)), num_wanted, comm, slaterWeightMin)
 
 
 def implicitly_restarted_block_lanczos_cy(

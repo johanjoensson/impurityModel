@@ -68,7 +68,7 @@ def acceptance_tol(theta_i, tnorm, cntl2, cntl3, u=EPS):
     return u * tnorm + abs(cntl2) + abs(cntl3) * abs(theta_i)
 
 
-def select_restart_indices(theta, n_keep, locked_local, which="smallest"):
+def select_restart_indices(theta, n_keep, locked_local, which="smallest", locked_evals=None, ghost_tol=0.0):
     """Partition Ritz values into *kept* (retained) and *shifted* (purged) sets.
 
     Implements the locking-aware exact-shift selection of EA16 §2.2/§2.3.2: the
@@ -84,6 +84,25 @@ def select_restart_indices(theta, n_keep, locked_local, which="smallest"):
         locked_local: Indices (into ``theta``) of Ritz pairs converged/locked this
             restart; always shifted away.
         which: ``"smallest"`` (wanted = algebraically smallest) or ``"largest"``.
+        locked_evals: Optional eigenvalues of *all* previously-locked Ritz pairs
+            (``theta_l``). Any active Ritz value within ``ghost_tol`` of one of these is
+            treated as a ghost of an already-locked eigenvalue and shifted away instead
+            of retained — a *defense-in-depth* fallback for the case where the inner-sweep
+            locking deflation is unavailable. A ghost is only excluded while at least one
+            genuine (non-ghost, non-locked) candidate remains to fill its slot, so the
+            kept set never starves. Default ``None`` (only ``locked_local`` is excluded).
+
+            **Caveat — degeneracies.** This test is eigenvalue-based and therefore cannot
+            distinguish a genuine loss-of-orthogonality ghost (same eigenvalue *and*
+            eigenvector as a locked pair) from a true degeneracy (same eigenvalue, but an
+            *orthogonal* eigenvector that must be kept). The correct discriminator is the
+            eigenvector overlap with the locked set, which the primary fix already enforces
+            by deflating every Lanczos vector against the locked basis (EA16 §2.6.2,
+            ``locked=`` in the kernels). So the IRLM driver leaves this disabled
+            (``ghost_tol == 0``): it is provided for callers that cannot deflate the sweep
+            and accept the no-degeneracy assumption.
+        ghost_tol: Absolute match tolerance for the ``locked_evals`` ghost test. Default
+            ``0.0`` (no ghost filtering).
 
     Returns:
         tuple[numpy.ndarray, numpy.ndarray]: ``(kept_idx, shift_vals)`` where
@@ -95,6 +114,19 @@ def select_restart_indices(theta, n_keep, locked_local, which="smallest"):
         order = order[::-1]
     locked_set = set(int(i) for i in locked_local)
     ranked = [int(i) for i in order if int(i) not in locked_set]
+
+    if locked_evals is not None and len(locked_evals) and ghost_tol > 0:
+        lv = np.asarray(locked_evals, dtype=float)
+
+        def _is_ghost(i):
+            return bool(np.any(np.abs(float(theta[i].real) - lv) <= ghost_tol))
+
+        genuine = [i for i in ranked if not _is_ghost(i)]
+        ghosts = [i for i in ranked if _is_ghost(i)]
+        # Prefer genuine candidates; only fall back to ghosts if too few genuine ones
+        # remain to fill n_keep (keeps the kept set full and the factorization valid).
+        ranked = genuine + ghosts
+
     kept_idx = np.array(ranked[:n_keep], dtype=int)
     kept_set = set(kept_idx.tolist())
     shift_idx = np.array([int(i) for i in range(len(theta)) if int(i) not in kept_set], dtype=int)

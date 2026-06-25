@@ -441,6 +441,11 @@ def _irlm_core(
             continue
 
         # --- Purge + restart in the Ritz basis (EA16 §2.2.1, eq. 6) ----
+        # Ghost-of-locked filtering (locked_evals/ghost_tol) is intentionally left off:
+        # the inner sweep already deflates every Lanczos vector against the locked set
+        # (EA16 §2.6.2), which removes ghosts by *eigenvector* and so — unlike an
+        # eigenvalue match — does not endanger true degeneracies. See
+        # ea16.select_restart_indices for the disabled defense-in-depth fallback.
         kept_idx, _ = ea16.select_restart_indices(evals, n_keep, locked_local, which="smallest")
         C, beta_new, alphas_new, betas_new = ea16.purge_restart(evals, Z, beta_last, p, kept_idx)
         Q_used = _q_slice(Q_basis, 0, total)
@@ -526,6 +531,17 @@ def _assemble_results(
     (shrunk-block) factorization is diagonalized at its true dimension ``sum(widths)``
     rather than the padded ``m_act * p`` — keeping ``T``/``Z`` consistent with the
     stored ``Q_basis``.
+
+    Active Ritz candidates are deflated against the locked set (and each other) and any
+    that collapse are skipped, so the result never contains duplicate eigenpairs.
+
+    .. note::
+        The returned arrays may contain **fewer than ``num_wanted``** pairs. When the
+        reachable invariant subspace is smaller than ``num_wanted`` (e.g. IRLM seeded
+        from exact eigenvectors, or a small sector), there simply are not that many
+        distinct eigenpairs, and the deduplication drops the rest rather than returning
+        spurious copies. Callers must not assume exactly ``num_wanted`` results — use
+        ``len(eigvals)`` and filter by energy as appropriate.
     """
     eigvals_list = list(theta_l)
     nlock = Xl.shape[1] if is_arr else len(Xl)

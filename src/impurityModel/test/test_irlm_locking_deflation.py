@@ -199,6 +199,201 @@ def test_manybody_path_no_spurious_eigenvalue(mode):
     np.testing.assert_allclose(ev[0], eigvals[0], atol=1e-6)
 
 
+def test_select_restart_indices_ghost_filter():
+    """The optional ghost filter shifts away locked-eigenvalue copies; default keeps them.
+
+    Eigenvalue-based ghost filtering is a defense-in-depth fallback (the IRLM driver leaves
+    it off because the inner-sweep deflation removes ghosts by eigenvector, preserving true
+    degeneracies). This pins the API: (a) default behaviour is unchanged, (b) with a tol the
+    ghost of a locked eigenvalue is excluded from the kept set, and (c) the kept set never
+    starves below n_keep even when ghosts must be used to fill it.
+    """
+    from impurityModel.ed import ea16
+
+    # index 0 is a ghost of the locked value -5.0; indices 1-3 are genuine.
+    theta = np.array([-5.0, -4.0, -3.0, -2.0])
+    locked_evals = np.array([-5.0])
+
+    # Default: no ghost filtering -> the two lowest (incl. the -5.0 ghost) are kept.
+    kept_def, _ = ea16.select_restart_indices(theta, n_keep=2, locked_local=[])
+    assert set(kept_def.tolist()) == {0, 1}
+
+    # With a tol: the -5.0 ghost (index 0) is shifted away; genuine -3.0 (index 2) fills in.
+    kept_g, _ = ea16.select_restart_indices(
+        theta, n_keep=2, locked_local=[], locked_evals=locked_evals, ghost_tol=1e-3
+    )
+    assert 0 not in set(kept_g.tolist())
+    assert set(kept_g.tolist()) == {1, 2}
+
+    # Starvation guard: if everything is a ghost, the kept set is still filled to n_keep.
+    theta_all_ghost = np.array([-5.0, -5.0001, -4.9999])
+    kept_s, _ = ea16.select_restart_indices(
+        theta_all_ghost, n_keep=2, locked_local=[], locked_evals=np.array([-5.0]), ghost_tol=1e-2
+    )
+    assert len(kept_s) == 2
+
+
+@pytest.mark.parametrize("msb", [20, 60, 100])
+@pytest.mark.parametrize("mode", _MODES)
+def test_trlm_array_no_spurious_eigenvalue(msb, mode):
+    """Array thick-restart Lanczos: correct lowest eigenvalues, none below the minimum.
+
+    Regression for two TRLM bugs: (a) it crashed when the sweep deflated (shrinking
+    blocks) because it assumed a uniform block width ``m_actual * n``; and (b) it diverged
+    (T overflowing to ~1e150) because it did not normalize the start block before the
+    recurrence."""
+    import scipy.sparse as sps
+    from impurityModel.ed.trlm import thick_restart_block_lanczos
+
+    _, H, _, eigvals = _build_system()
+    N = H.shape[0]
+    rng = np.random.RandomState(1)
+    psi0 = rng.standard_normal((N, 2)) + 1j * rng.standard_normal((N, 2))
+
+    ev, _ = thick_restart_block_lanczos(
+        psi0=psi0,
+        h_op=sps.csr_matrix(H),
+        basis=None,
+        num_wanted=8,
+        max_subspace_blocks=msb,
+        tol=1e-8,
+        max_restarts=200,
+        verbose=False,
+        reort=mode,
+    )
+    ev = np.sort(np.asarray(ev).real)
+    assert np.all(np.isfinite(ev)), "TRLM diverged (non-finite eigenvalues)"
+    assert ev[0] >= eigvals[0] - 1e-6, f"spurious TRLM eigenvalue {ev[0]} < lambda_min {eigvals[0]}"
+    np.testing.assert_allclose(ev[:8], eigvals[:8], atol=1e-5)
+
+
+def test_trlm_array_unnormalized_start_is_stable():
+    """An unnormalized start block must not make TRLM diverge (it now normalizes psi0)."""
+    import scipy.sparse as sps
+    from impurityModel.ed.trlm import thick_restart_block_lanczos
+
+    _, H, _, eigvals = _build_system()
+    N = H.shape[0]
+    rng = np.random.RandomState(3)
+    # Deliberately large-norm, unnormalized start (norm ~ sqrt(N) per column).
+    psi0 = 5.0 * (rng.standard_normal((N, 2)) + 1j * rng.standard_normal((N, 2)))
+
+    ev, _ = thick_restart_block_lanczos(
+        psi0=psi0,
+        h_op=sps.csr_matrix(H),
+        basis=None,
+        num_wanted=5,
+        max_subspace_blocks=40,
+        tol=1e-8,
+        max_restarts=200,
+        verbose=False,
+        reort=Reort.FULL,
+    )
+    ev = np.sort(np.asarray(ev).real)
+    assert np.all(np.isfinite(ev))
+    np.testing.assert_allclose(ev[:5], eigvals[:5], atol=1e-5)
+
+
+@pytest.mark.parametrize("nstart", [1, 2, 3])
+@pytest.mark.parametrize("mode", _MODES)
+def test_trlm_array_restart_loop_width_agnostic(nstart, mode):
+    """The thick-restart continuation loop tracks variable block widths.
+
+    A random Hermitian matrix with ``num_wanted`` well below ``N`` and a small subspace
+    forces many real restarts (the block-Krylov does not saturate in one sweep). The
+    continuation must stay correct for block starts of width 1, 2, 3 and recover the
+    lowest eigenvalues with none below the spectral minimum."""
+    import scipy.sparse as sps
+    from impurityModel.ed.trlm import thick_restart_block_lanczos
+
+    rng = np.random.RandomState(17)
+    N = 40
+    M = rng.standard_normal((N, N)) + 1j * rng.standard_normal((N, N))
+    H = (M + M.conj().T) / 2
+    eigvals = np.linalg.eigvalsh(H)
+    psi0 = rng.standard_normal((N, nstart)) + 1j * rng.standard_normal((N, nstart))
+
+    ev, _ = thick_restart_block_lanczos(
+        psi0=psi0,
+        h_op=sps.csr_matrix(H),
+        basis=None,
+        num_wanted=4,
+        max_subspace_blocks=max(5, 4 // nstart + 3),
+        tol=1e-9,
+        max_restarts=500,
+        verbose=False,
+        reort=mode,
+    )
+    ev = np.sort(np.asarray(ev).real)
+    assert np.all(np.isfinite(ev))
+    assert ev[0] >= eigvals[0] - 1e-6
+    np.testing.assert_allclose(ev[:4], eigvals[:4], atol=1e-5)
+
+
+@pytest.mark.parametrize("N", [13, 14, 15])
+def test_trlm_array_block_deflation_in_restart(N):
+    """Block deflation that surfaces only in/after a restart must not crash or corrupt.
+
+    With a width-2 start on a modest odd/even ``N`` and a tight subspace, the *residual*
+    block can deflate while the diagonal blocks do not (so the run enters the restart
+    loop with a padded trailing ``beta``), and continuation blocks can shrink mid-restart.
+    Regression for the padded-``beta_res`` broadcast crash and the uniform-width arrowhead
+    assumption; the result must stay finite, above the minimum, and match the dense GS."""
+    import scipy.sparse as sps
+    from impurityModel.ed.trlm import thick_restart_block_lanczos
+
+    rng = np.random.RandomState(N * 13)
+    M = rng.standard_normal((N, N)) + 1j * rng.standard_normal((N, N))
+    H = (M + M.conj().T) / 2
+    eigvals = np.linalg.eigvalsh(H)
+    psi0 = rng.standard_normal((N, 2)) + 1j * rng.standard_normal((N, 2))
+
+    ev, _ = thick_restart_block_lanczos(
+        psi0=psi0,
+        h_op=sps.csr_matrix(H),
+        basis=None,
+        num_wanted=4,
+        max_subspace_blocks=6,
+        tol=1e-9,
+        max_restarts=800,
+        verbose=False,
+        reort=Reort.FULL,
+    )
+    ev = np.sort(np.asarray(ev).real)
+    assert np.all(np.isfinite(ev))
+    assert ev[0] >= eigvals[0] - 1e-6
+    np.testing.assert_allclose(ev[:4], eigvals[:4], atol=1e-5)
+
+
+@pytest.mark.parametrize("mode", ["full", "partial"])
+def test_trlm_manybody_no_spurious_eigenvalue(mode):
+    """ManyBodyState thick-restart Lanczos: deflation-aware, no spurious eigenvalue."""
+    from impurityModel.ed.trlm import thick_restart_block_lanczos
+
+    h_op, _, basis_states, eigvals = _build_system()
+    N = len(basis_states)
+    rng = np.random.RandomState(2)
+    coeffs = rng.standard_normal(N) + 1j * rng.standard_normal(N)
+    psi0 = [sum((b * c for b, c in zip(basis_states, coeffs)), ManyBodyState())]
+    psi0, _ = block_normalize(psi0, False, None, 0.0)
+
+    ev, _ = thick_restart_block_lanczos(
+        psi0=psi0,
+        h_op=h_op,
+        basis=MockBasis(N),
+        num_wanted=8,
+        max_subspace_blocks=60,
+        tol=1e-8,
+        max_restarts=200,
+        verbose=False,
+        reort=mode,
+    )
+    ev = np.sort(np.asarray(ev).real)
+    assert np.all(np.isfinite(ev))
+    assert ev[0] >= eigvals[0] - 1e-6, f"spurious MBS-TRLM eigenvalue {ev[0]} < {eigvals[0]}"
+    np.testing.assert_allclose(ev[:8], eigvals[:8], atol=1e-5)
+
+
 def _partition(n, size):
     return [n // size + (1 if r < n % size else 0) for r in range(size)]
 
@@ -246,3 +441,45 @@ def test_array_irlm_mpi_no_spurious_eigenvalue(mode):
     ev_mpi = np.sort(np.asarray(ev_mpi).real)
     assert ev_mpi[0] >= eigvals[0] - 1e-6, f"spurious MPI eigenvalue {ev_mpi[0]} < {eigvals[0]}"
     np.testing.assert_allclose(ev_mpi[0], eigvals[0], atol=1e-6)
+
+
+@pytest.mark.mpi
+@pytest.mark.parametrize("mode", [Reort.FULL, Reort.PARTIAL])
+def test_trlm_array_mpi_no_spurious_eigenvalue(mode):
+    """Row-block-distributed thick-restart Lanczos: correct GS, none below the minimum."""
+    from impurityModel.ed.trlm import thick_restart_block_lanczos
+
+    comm = MPI.COMM_WORLD
+    _, H, _, eigvals = _build_system()
+    N = H.shape[0]
+    rng = np.random.RandomState(1)
+    psi0_full = rng.standard_normal((N, 2)) + 1j * rng.standard_normal((N, 2))
+
+    counts = _partition(N, comm.size)
+    c0 = sum(counts[: comm.rank])
+    c1 = c0 + counts[comm.rank]
+
+    import scipy.sparse as sps
+
+    h_local = sps.csr_matrix(np.ascontiguousarray(H[:, c0:c1]))
+    psi0_local = np.ascontiguousarray(psi0_full[c0:c1, :], dtype=complex)
+
+    class _Basis:
+        def __init__(self, c):
+            self.comm = c
+
+    ev_mpi, _ = thick_restart_block_lanczos(
+        psi0=psi0_local,
+        h_op=h_local,
+        basis=_Basis(comm),
+        num_wanted=8,
+        max_subspace_blocks=60,
+        tol=1e-8,
+        max_restarts=200,
+        verbose=False,
+        reort=mode,
+    )
+    ev_mpi = np.sort(np.asarray(ev_mpi).real)
+    assert np.all(np.isfinite(ev_mpi))
+    assert ev_mpi[0] >= eigvals[0] - 1e-6, f"spurious MPI TRLM eigenvalue {ev_mpi[0]} < {eigvals[0]}"
+    np.testing.assert_allclose(ev_mpi[:8], eigvals[:8], atol=1e-5)

@@ -105,6 +105,12 @@ class CIPSISolver:
                 if psi_refs is None:
                     import random
 
+                    # Per-rank seed (42 + rank) gives a different local random start on each
+                    # rank. The *final energy* is reproducible across rank counts (it is what
+                    # the tests compare), but the adaptively-selected basis *trajectory* is
+                    # not bit-for-bit reproducible vs a different np, since the start vector
+                    # differs. If cross-np basis reproducibility is ever required, seed from a
+                    # single rank-independent global vector and scatter it instead.
                     rank = self.basis.comm.rank if self.basis.comm is not None else 0
                     random.seed(42 + rank)
                     local_states = list(self.basis.local_basis)
@@ -135,6 +141,13 @@ class CIPSISolver:
 
                 num_wanted = min(num_wanted, (max_subspace_blocks - 1) * len(psi0))
 
+                # Iterative CIPSI uses the *array* IRLM (sparse H_mat, column-distributed
+                # via local_indices). Memory note: the array MPI matvec forms the full
+                # (global_N, n) dense partial product on every rank before the Allreduce
+                # (see the guardrail in BlockLanczosArray.pyx), so per-rank memory scales
+                # with the *global* sector dimension, not the local partition. This path is
+                # for sectors small enough to also hold the sparse H_mat; very large sectors
+                # should use the hash-distributed ManyBodyState kernel instead.
                 H_mat = self.basis.build_sparse_matrix(H)
                 if self.basis.is_distributed:
                     H_mat = H_mat[:, self.basis.local_indices]

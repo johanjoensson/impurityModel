@@ -412,7 +412,7 @@ def calc_gs(
     rot_to_spherical: np.ndarray,
     verbose: bool,
     slaterWeightMin=0,
-    cipsi_solver_method="irlm",
+    cipsi_solver_method="trlm",
     **kwargs,
 ):
     """
@@ -554,9 +554,7 @@ def calc_gs(
             if l_ops is not None:
                 casimir = {}
                 for name, ops in (("S", s_ops), ("L", l_ops), ("J", j_ops)):
-                    vals = manifold_observable_values(
-                        full_psis, es, lambda psi, _ops=ops: apply_casimir(psi, *_ops)
-                    )
+                    vals = manifold_observable_values(full_psis, es, lambda psi, _ops=ops: apply_casimir(psi, *_ops))
                     casimir[name] = (
                         np.array([casimir_to_quantum_number(v) for v in vals]),
                         thermal_observable_value(vals, es, tau),
@@ -584,13 +582,25 @@ def calc_gs(
                 sisb_values = np.real(sisb_raw)
                 sisb_thermal = thermal_observable_value(sisb_raw, es, tau)
         print_thermal_expectation_values(
-            thermal_rho[impurity_ix], e_avg, rot_to_spherical, block_structure,
-            s_thermal=s2_thermal, l_thermal=l2_thermal, j_thermal=j2_thermal, sisb_thermal=sisb_thermal,
+            thermal_rho[impurity_ix],
+            e_avg,
+            rot_to_spherical,
+            block_structure,
+            s_thermal=s2_thermal,
+            l_thermal=l2_thermal,
+            j_thermal=j2_thermal,
+            sisb_thermal=sisb_thermal,
         )
         impurity_ix = np.ix_(np.arange(len(rhos)), impurity_indices, impurity_indices)
         print_expectation_values(
-            rhos[impurity_ix], es, rot_to_spherical, block_structure,
-            s_values=s_values, l_values=l_values, j_values=j_values, sisb_values=sisb_values,
+            rhos[impurity_ix],
+            es,
+            rot_to_spherical,
+            block_structure,
+            s_values=s_values,
+            l_values=l_values,
+            j_values=j_values,
+            sisb_values=sisb_values,
         )
         print("Occupation statistics for each eigenstate in the thermal ground state")
         print("Impurity, Valence, Conduction: Weight (|amp|^2)")
