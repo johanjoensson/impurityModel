@@ -703,8 +703,13 @@ def block_lanczos_array_cy(
                         err_bnd = np.linalg.norm(beta_i, ord=2) * np.abs(conv_evec[-1, k_idx])
                         if err_bnd < reort_eps:
                             s_k = conv_evec[:, k_idx]
-                            ritz_vec = Q_list[0] @ s_k[:sum(block_widths), np.newaxis]
-                            ritz_vec += q1 @ s_k[sum(block_widths):, np.newaxis]
+                            # Q_list[0] holds all it+1 completed blocks (the current
+                            # block q1 is already its last block), spanning the full
+                            # subspace s_k indexes. The earlier split that added q1
+                            # separately double-counted it and mismatched shapes whenever
+                            # a Ritz value locks on a resumed run (where the retained Ritz
+                            # pairs are already converged, so the lock fires immediately).
+                            ritz_vec = Q_list[0] @ s_k[:, np.newaxis]
                             for _ in range(2):
                                 overlap = ritz_vec.conj().T @ q_next
                                 if mpi and comm is not None:
@@ -713,9 +718,14 @@ def block_lanczos_array_cy(
                                 q_next -= ritz_vec @ overlap
 
             if reort in (Reort.PARTIAL, Reort.SELECTIVE):
-                q_next, W = apply_reort(q_next, Q_list, W, reort, mpi, comm, block_widths)
+                # Pass block_widths + [n_curr] so the current block (index it, already
+                # appended to Q_list) is in the width table apply_reort indexes — matching
+                # block_lanczos_cy. Without it the W-recurrence's bad-block columns are
+                # mis-mapped, which silently loses orthogonality when resuming on a
+                # restarted (e.g. IRLM-compressed) basis.
+                q_next, W = apply_reort(q_next, Q_list, W, reort, mpi, comm, block_widths + [n_curr])
 
-        if converged(alphas_buf[: it + 1], betas_buf[: it + 1], verbose=verbose):
+        if converged(alphas_buf[: it + 1], betas_buf[: it + 1], verbose=verbose, block_widths=block_widths + [n_curr]):
             block_widths.append(n_curr)
             it += 1
             break

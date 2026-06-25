@@ -128,12 +128,13 @@ def test_calc_Greens_function_with_offdiag_serial():
         sparse=False,
     )
 
-    # alphas should have shape (N, 1, 1) and betas (N-1, 1, 1)
+    # alphas/betas are now ragged: one entry per state, each a list of variable-dim
+    # blocks (padding stripped). Here block size 1, one Lanczos block.
     assert len(alphas) == 1
-    assert alphas[0].shape == (1, 1, 1)
-    assert betas[0].shape == (1, 1, 1)
-    np.testing.assert_allclose(alphas[0], [[[0.0]]], atol=1e-12)
-    np.testing.assert_allclose(betas[0], [[[0.0]]], atol=1e-12)
+    assert len(alphas[0]) == 1 and alphas[0][0].shape == (1, 1)
+    assert len(betas[0]) == 1 and betas[0][0].shape == (1, 1)
+    np.testing.assert_allclose(alphas[0][0], [[0.0]], atol=1e-12)
+    np.testing.assert_allclose(betas[0][0], [[0.0]], atol=1e-12)
     np.testing.assert_allclose(r[0], [[1.0]], atol=1e-12)
 
 
@@ -180,10 +181,10 @@ def test_calc_Greens_function_with_offdiag_mpi():
 
     if comm.rank == 0:
         assert len(alphas) == 1
-        assert alphas[0].shape == (1, 1, 1)
-        assert betas[0].shape == (1, 1, 1)
-        np.testing.assert_allclose(alphas[0], [[[0.0]]], atol=1e-12)
-        np.testing.assert_allclose(betas[0], [[[0.0]]], atol=1e-12)
+        assert len(alphas[0]) == 1 and alphas[0][0].shape == (1, 1)
+        assert len(betas[0]) == 1 and betas[0][0].shape == (1, 1)
+        np.testing.assert_allclose(alphas[0][0], [[0.0]], atol=1e-12)
+        np.testing.assert_allclose(betas[0][0], [[0.0]], atol=1e-12)
         np.testing.assert_allclose(r[0], [[1.0]], atol=1e-12)
 
     basis = None
@@ -232,10 +233,10 @@ def test_calc_Greens_function_with_offdiag_mpi_sparse():
 
     if comm.rank == 0:
         assert len(alphas) == 1
-        assert alphas[0].shape == (1, 1, 1)
-        assert betas[0].shape == (1, 1, 1)
-        np.testing.assert_allclose(alphas[0], [[[0.0]]], atol=1e-12)
-        np.testing.assert_allclose(betas[0], [[[0.0]]], atol=1e-6)
+        assert len(alphas[0]) == 1 and alphas[0][0].shape == (1, 1)
+        assert len(betas[0]) == 1 and betas[0][0].shape == (1, 1)
+        np.testing.assert_allclose(alphas[0][0], [[0.0]], atol=1e-12)
+        np.testing.assert_allclose(betas[0][0], [[0.0]], atol=1e-6)
         np.testing.assert_allclose(r[0], [[1.0]], atol=1e-12)
 
     basis = None
@@ -343,8 +344,9 @@ def test_dense_greens_function_basis_expansion():
         hOp=hOp, tOps=[tOp], psis=[psi], es=[0.0], block_basis=basis,
         delta=0.01, dN=2, occ_cutoff=1e-6, slaterWeightMin=0.0, verbose=False, sparse=False,
     )
+    # Ragged return: one entry per state, each a list of (block) 2D arrays.
     assert len(alphas) == 1
-    assert alphas[0].shape[1:] == (1, 1)
+    assert all(a.shape == (1, 1) for a in alphas[0])
 
 
 @pytest.mark.mpi

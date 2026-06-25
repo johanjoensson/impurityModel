@@ -486,6 +486,23 @@ Verification: full Phase-0 matrix green for all modes × paths × solvers, seria
   full-reort restart. New regression: `test_restart_pro.py` (PARTIAL/SELECTIVE match
   FULL and dense through forced restarts + restart-block deflation, serial + MPI).
   This resolves the "Restart-time PRO deferred to Phase 3" notes left in the kernels.
+- [x] **Array-path IRLM + array resumption hardening.** DONE (2026-06-24). Added a
+  row-block **array IRLM** driver (`impurityModel.ed.irlm` now dispatches on
+  `is_array(h_op)`: array → new Python driver over `block_*` helpers +
+  `block_lanczos_array` + `implicit_qr_step_block`; ManyBodyState → the Cython kernel),
+  closing the long-standing "IRLM array path" gap. It honors all reort modes and does
+  restart-PRO (W seeded at `REORT_TOL`) like the ManyBodyState kernel, validated
+  **bit-for-bit against it** (`test_array_irlm.py`: matches MBS to 3e-14 and dense in
+  the no-restart regime, all modes, serial + MPI). Fixed three latent `block_lanczos_
+  array_cy` bugs found en route: (1) the SELECTIVE Ritz-lock double-counted the current
+  block (`Q_list[0]` already holds `q1`) — masked in fresh runs, always fired on
+  resumption; (2) `apply_reort` was passed bare `block_widths` instead of
+  `block_widths + [n_curr]`, mis-mapping bad-block columns (cf. `block_lanczos_cy`); and
+  (3) the array kernel lacked `block_lanczos_cy`'s **"section 3b"** — the explicit reorth
+  of new vectors against the retained Ritz block on a resumed run, which contains the
+  restart-induced orthogonality loss the W-recurrence cannot model. Without (3),
+  array PARTIAL/SELECTIVE resumption silently lost orthogonality (~5e-3/step) and IRLM
+  diverged over restarts.
 - [ ] **Bounded W (pre-allocate, don't window).** DEFERRED (2026-06-23) — the plan's
   one-liner doesn't fit the code. The dominant per-iteration allocation is *inside*
   `estimate_orthonormality`, which builds a fresh `W_out = np.zeros((2, i+2, n, n))`

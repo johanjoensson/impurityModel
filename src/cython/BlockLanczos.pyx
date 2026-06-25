@@ -275,18 +275,6 @@ def block_lanczos_step_cy(
         beta_prev_dag = np.conj(betas[it - 1, :p, :n_prev].T)
         add_scaled_multi(wp, q_prev, -beta_prev_dag)
 
-    # --- 3b. Explicit orthogonalization against history blocks (resumed run) ---
-    # Full double-pass reorth of wp against the retained history blocks on a resumed
-    # run, via the shared apply_reort. Redundant for FULL (section 4 covers it) but the
-    # only history reorth for a resumed PARTIAL/SELECTIVE run.
-    if reort_mode != Reort.NONE and start_it > 0:
-        bad_cols_start = []
-        for j in range(start_it):
-            col_start = sum(block_widths[:j])
-            col_end = col_start + block_widths[j]
-            bad_cols_start.extend(range(col_start, col_end))
-        Q_hist = [Q_basis[i] for i in bad_cols_start]
-        wp, _ = apply_reort(wp, Q_hist, None, Reort.FULL, mpi, comm, [])
 
     # --- 4. Full / Periodic reorthogonalization -------------------------
     # The PERIODIC cadence gate stays in the caller; the reort action itself goes
@@ -658,7 +646,7 @@ def block_lanczos_cy(
         # Convergence check
         alphas_np = alphas_buf[:it_abs+1]
         betas_np = betas_buf[:it_abs+1]
-        if converged_fn(alphas_np, betas_np, verbose=verbose):
+        if converged_fn(alphas_np, betas_np, verbose=verbose, block_widths=block_widths + [n_curr]):
             block_widths.append(n_curr)
             it += 1
             break
@@ -1025,299 +1013,56 @@ def implicitly_restarted_block_lanczos_cy(
     reort="partial",
     comm=None,
 ):
-    """Implicitly-restarted block Lanczos (IRLM) eigensolver.
+    """Implicitly-restarted block Lanczos (IRLM) for the ManyBodyState path.
 
-    Implements the implicitly-restarted strategy from Lehoucq, Sorensen & Yang
-    (ARPACK Users' Guide, 1998) generalised to block vectors, finding the
-    ``num_wanted`` algebraically smallest eigenvalues and corresponding Ritz
-    vectors of :math:`H`.
+    Thin compatibility shim that delegates to the unified, path-agnostic EA16 driver
+    :func:`impurityModel.ed.irlm._implicitly_restarted_block_lanczos_manybody`, which
+    implements the Meerbergen & Scott (RAL-TR-2000-011) block Lanczos with **locking**
+    (\u00a72.2.2), **explicit purging** (\u00a72.2.1, eq. 6) as the restart compression,
+    partial reorthogonalization against locked Ritz vectors (\u00a72.6.2), and the
+    eq. (15) stopping criterion (\u00a73.2.4). The Lanczos sweeps reuse the Cython
+    ``block_lanczos_cy`` kernel in this module.
 
-    **Algorithm overview**:
-
-    1. Run ``block_lanczos_cy`` to build an :math:`m`-block Krylov factorisation
-       :math:`H Q_m = Q_m T_m + Q_{m+1} \\beta_{m-1}^\\dagger`.
-    2. Diagonalise :math:`T_m` via ``scipy.linalg.eigh``.
-    3. Apply :math:`(m - k) p` implicit QR scalar shifts – the *unwanted* Ritz
-       values – using the block bulge-chasing step in
-       ``givens_qr.implicit_qr_step_block``.  Each shift produces the update
-
-       .. math::
-
-           T_m \\leftarrow U^\\dagger T_m U, \\quad
-           Q_m \\leftarrow Q_m U
-
-       where :math:`U` is the accumulated Givens rotation matrix.  After all
-       shifts the leading :math:`k \\times k` sub-block of
-       the transformed :math:`T_m` contains the wanted Ritz information.
-    4. Extract the compressed :math:`k`-block factorisation
-       :math:`(\\alpha_0', \\dots, \\alpha_{k-1}', \\beta_0', \\dots, \\beta_{k-1}')`
-       via ``_extract_blocks``.
-    5. Transform the Krylov basis: :math:`Q_k = Q_m U_k` where :math:`U_k`
-       holds the first :math:`k p` columns of the accumulated rotation.
-    6. Compute the new trailing block :math:`\\beta_k` via a matvec of the
-       last column of :math:`Q_k` followed by double-pass orthogonalization
-       against :math:`Q_k` and Cholesky QR.
-    7. Resume ``block_lanczos_cy`` from block :math:`k` for up to
-       :math:`m - k` additional steps.
-    8. Repeat until convergence or ``max_restarts`` is exhausted.
-
-    **Convergence criterion** (computed on rank 0, broadcast to all):
-
-    .. math::
-
-        \\max_{i \\in \\text{wanted}}
-            \\left\\| \\beta_{m-1}\\, s_i[-p:] \\right\\|_2 < \\text{tol}
-
-    where :math:`s_i` is the :math:`i`-th Ritz vector of :math:`T_m` and
-    :math:`s_i[-p:]` denotes its last :math:`p` rows.
-
-    **Invariant subspace early termination**: if at any restart
-    ``m_actual <= k_blocks`` (Lanczos has exhausted the Krylov space), the
-    loop exits and the best available Ritz pairs are returned.
-
-    **MPI collective operations**:
-
-    * All ``MPI_Allreduce`` calls inside ``block_lanczos_cy`` (per-step for
-      :math:`\\alpha_i` and :math:`M`, plus reorthogonalization).
-    * One ``comm.bcast`` (root 0) per restart loop iteration to synchronize
-      the convergence flag ``done``.
-    * Two ``MPI_Allreduce`` calls per restart for the double-pass
-      orthogonalization of the new trailing block.
-
-    References:
-        * Lehoucq, R. B., Sorensen, D. C., & Yang, C. (1998).  *ARPACK Users'
-          Guide: Solution of Large-Scale Eigenvalue Problems with Implicitly
-          Restarted Arnoldi Methods*.  SIAM.
-        * Meerbergen, K., & Scott, J. (2000). The design of a block rational
-          Lanczos code with partial reorthogonalization and implicit restarting
-          (RAL-TR-2000-011).  This implementation utilizes the EA16 restart
-          orthogonality heuristic (Section 2.6.3), initializing the Paige-Simon
-          estimator W_k uniformly to the maximum pre-restart orthogonality loss
-          omega_max.
+    The previous standalone copy of the restart loop lived here and is retired to keep
+    a single source of the algorithm shared with the array path.
 
     Args:
-        psi0: Starting block of ``p`` ``ManyBodyState`` objects.
-        h_op: ``ManyBodyOperator`` Hamiltonian implementing
-            ``apply_multi(psis, cutoff)``.
-        basis: ``Basis`` object providing ``redistribute_psis`` and ``basis.comm``.
-        num_wanted: Number of wanted lowest eigenvalues.
-        max_subspace_blocks: Maximum Krylov subspace size in blocks (``m`` in the
-            algorithm).  Must satisfy
-            ``max_subspace_blocks > ceil(num_wanted / p)``.
-        tol: Convergence tolerance on the maximum residual norm over wanted Ritz
-            pairs.  Default ``1e-8``.
-        max_restarts: Maximum number of implicit restarts before returning the
-            best available Ritz pairs.  Default ``100``.
-        verbose: Print per-restart diagnostics including minimum eigenvalue and
-            maximum wanted residual.  Default ``True``.
-        slaterWeightMin: Amplitude cutoff for ``ManyBodyState.prune`` during
-            Lanczos and basis combination.  Default ``0.0``.
-        reort: Reorthogonalization mode.  Accepts a ``Reort`` enum member or one
-            of the strings ``'none'``, ``'partial'``, ``'selective'``, ``'full'``,
-            ``'periodic'``.  Default ``'partial'``.
-        comm: ``mpi4py`` communicator.  Falls back to ``basis.comm``, or serial
-            mode if ``None``.
+        psi0: Length-``p`` list of ``ManyBodyState`` starting block.
+        h_op: ``ManyBodyOperator`` Hamiltonian.
+        basis: ``Basis`` providing ``redistribute_psis`` and ``comm``.
+        num_wanted: Number of algebraically smallest eigenvalues wanted.
+        max_subspace_blocks: Maximum Krylov size in blocks (``> ceil(num_wanted/p)``).
+        tol: Convergence tolerance (maps onto EA16 ``CNTL(2)``). Default ``1e-8``.
+        max_restarts: Maximum implicit restarts. Default ``100``.
+        verbose: Per-restart diagnostics. Default ``True``.
+        slaterWeightMin: Amplitude cutoff for ``ManyBodyState.prune``. Default ``0.0``.
+        reort: Reorthogonalization mode (``Reort`` enum or string). Default ``"partial"``.
+        comm: ``mpi4py`` communicator. Falls back to ``basis.comm``.
 
     Returns:
-        tuple[numpy.ndarray, list]: A 2-tuple ``(eigvals, eigvecs)`` where
-
-        * ``eigvals`` – sorted numpy array of length ``num_wanted`` containing
-          the ``num_wanted`` smallest converged eigenvalues.
-        * ``eigvecs`` – list of ``num_wanted`` ``ManyBodyState`` Ritz vectors
-          corresponding to ``eigvals``.
-
-    Raises:
-        ValueError: If ``max_subspace_blocks <= ceil(num_wanted / p)``.
+        tuple[numpy.ndarray, list]: ``(eigvals, eigvecs)`` with ``num_wanted`` smallest
+        eigenvalues (ascending) and matching ``ManyBodyState`` Ritz vectors.
     """
-    from impurityModel.ed.givens_qr import implicit_qr_step_block
+    from impurityModel.ed.irlm import _implicitly_restarted_block_lanczos_manybody
+    from impurityModel.ed.BlockLanczosArray import Reort
 
     if comm is None:
         comm = getattr(basis, "comm", None)
-    mpi = comm is not None and comm.Get_size() > 1
-
     if isinstance(reort, str):
-        _map = {
-            "none": Reort.NONE,
-            "partial": Reort.PARTIAL,
-            "selective": Reort.SELECTIVE,
-            "full": Reort.FULL,
-            "periodic": Reort.PERIODIC,
-        }
-        reort_mode = _map.get(reort.lower())
-        if reort_mode is None:
-            raise ValueError(f"Unknown reort string '{reort}'. Must be one of {list(_map.keys())}.")
+        reort_mode = Reort[reort.upper()]
     else:
         reort_mode = reort
 
-    p = len(psi0)
-    k_blocks = math.ceil(num_wanted / p)
-    m = max_subspace_blocks
-
-    if m <= k_blocks:
-        raise ValueError("max_subspace_blocks must be strictly greater than " "ceil(num_wanted / p).")
-
-    psi0_list = list(psi0) if isinstance(psi0, (list, tuple)) else psi0
-    psi0, _ = block_normalize_sparse(psi0_list, mpi, comm, slaterWeightMin)
-
-    # --- Initial Lanczos run --------------------------------------------
-    alphas, betas, Q_basis, W = block_lanczos_cy(
+    return _implicitly_restarted_block_lanczos_manybody(
         psi0=psi0,
         h_op=h_op,
         basis=basis,
-        converged_fn=lambda a, b, **kw: False,
+        num_wanted=num_wanted,
+        max_subspace_blocks=max_subspace_blocks,
+        tol=tol,
+        max_restarts=max_restarts,
         verbose=verbose,
-        reort=reort,
-        max_iter=m,
-        slaterWeightMin=slaterWeightMin,
+        reort_mode=reort_mode,
         comm=comm,
+        slaterWeightMin=slaterWeightMin,
     )
-
-    for restart in range(max_restarts):
-        m_actual = len(alphas)
-
-        if m_actual <= k_blocks:
-            if verbose and (comm is None or comm.Get_rank() == 0):
-                print(f"[IRLM] Invariant subspace ({m_actual} <= {k_blocks} " "blocks). Stopping.")
-            break
-
-        _betas_for_T2 = betas[: len(betas) - 1] if len(betas) == m_actual else betas
-        T = _build_full_T(alphas, _betas_for_T2)
-        eigvals_T, eigvecs_T = sp.eigh(T)
-        if comm is not None:
-            eigvals_T = comm.bcast(eigvals_T, root=0)
-            eigvecs_T = comm.bcast(eigvecs_T, root=0)
-
-        # Convergence check
-        _betas_last = betas[len(betas) - 1]
-        _nrows_evec = eigvecs_T.shape[0]
-        res_norms = np.linalg.norm(_betas_last @ eigvecs_T[_nrows_evec - p :, :], axis=0)
-        wanted = np.argsort(eigvals_T)[:num_wanted]
-        max_res = float(np.max(res_norms[wanted]))
-
-        if verbose and (comm is None or comm.Get_rank() == 0):
-            print(f"[IRLM] Restart {restart:3d} | " f"MinEigval={eigvals_T[0]:.6f} | " f"MaxWantedRes={max_res:.2e}")
-
-        done = max_res < tol
-        if mpi:
-            done = comm.bcast(done, root=0)
-
-        if done:
-            if verbose and (comm is None or comm.Get_rank() == 0):
-                print("[IRLM] Converged!")
-            break
-
-        # Apply (m_actual - k_blocks) implicit QR shifts
-        unwanted_idx = np.argsort(eigvals_T)[num_wanted:]
-        shifts = eigvals_T[unwanted_idx]
-        U_total = np.eye(m_actual * p, dtype=complex)
-        T_shifted = T.copy()
-        for shift in shifts:
-            T_shifted, U_total = implicit_qr_step_block(T_shifted, p, shift, U_total)
-
-        U_k = U_total[:, : k_blocks * p]
-        alphas_new, betas_new = _extract_blocks(T_shifted, k_blocks, p)
-
-        # Transform basis Q_k = Q * U_k
-        Q_used = Q_basis[: m_actual * p]
-        Q_new = block_combine_sparse(Q_used, U_k, slaterWeightMin)
-
-        # Compute new trailing block and beta_k
-        q_k_last = [Q_new[(k_blocks - 1) * p + i] for i in range(p)]
-        wp = h_op.apply_multi(q_k_last, slaterWeightMin)
-        if mpi:
-            wp = basis.redistribute_psis(wp)
-
-        # Double-pass orthogonalization against Q_new
-        for _ in range(2):
-            ov = inner_multi(Q_new, wp)
-            if mpi:
-                comm.Allreduce(MPI.IN_PLACE, ov, op=MPI.SUM)
-            add_scaled_multi(wp, Q_new, -ov)
-
-        M = inner_multi(wp, wp)
-        if mpi:
-            comm.Allreduce(MPI.IN_PLACE, M, op=MPI.SUM)
-
-        if np.any(np.isnan(M)) or np.any(np.isinf(M)):
-            if verbose and (comm is None or comm.Get_rank() == 0):
-                print("[IRLM] Breakdown at restart -- returning current Ritz pairs.")
-            break
-
-        beta_k, beta_k_inv, active_k = _cholesky_or_deflate(M, p)
-        if active_k == 0:
-            if verbose and (comm is None or comm.Get_rank() == 0):
-                print("[IRLM] Cholesky breakdown / complete deflation at restart.")
-            break
-
-        q_k_next = [ManyBodyState() for _ in range(active_k)]
-        add_scaled_multi(q_k_next, wp, beta_k_inv)
-        if slaterWeightMin > 0:
-            for st in q_k_next:
-                st.prune(slaterWeightMin)
-
-        Q_basis_new = list(Q_new) + [st.copy() for st in q_k_next]
-
-        # betas_pass: k_blocks blocks from T_shifted + new beta_k
-        betas_pass_list = list(betas_new) if len(betas_new) > 0 else []
-        if len(betas_pass_list) < k_blocks:
-            betas_pass_list.append(beta_k)
-        else:
-            betas_pass_list[len(betas_pass_list) - 1] = beta_k
-
-        betas_pass = np.array(betas_pass_list) if betas_pass_list else np.empty((0, p, p), dtype=complex)
-        alphas_pass = np.array(alphas_new)
-
-        # Post-restart continuation. For PARTIAL/SELECTIVE we continue in the *requested*
-        # PRO mode across the implicit-QR restart, seeding the Paige-Simon estimator W
-        # uniformly at REORT_TOL (= sqrt(eps), the semi-orthogonality level) rather than
-        # doing a full kept-block reorthogonalization. Validated to hold the same
-        # eigenvalue precision as a full-reort restart (ground state to eps, no drift to
-        # sqrt(eps)), produce no ghost bands, and stay MPI-safe (the seed is deterministic
-        # and rank-identical). The *initial* Lanczos run above already honors the mode.
-        #
-        # NONE/PERIODIC/FULL keep the full-reort restart (FULL needs no W seed). On a
-        # deflated restart block (active_k < p) the current/trailing block self-overlap is
-        # an active_k-sized identity; the unused tail columns are left untouched (the
-        # block_widths table drives the W-recurrence indexing in estimate_orthonormality).
-        if reort_mode in (Reort.PARTIAL, Reort.SELECTIVE):
-            W_init = np.zeros((2, k_blocks + 1, p, p), dtype=complex)
-            W_init[1, :k_blocks] = REORT_TOL                             # new block vs each kept block
-            if k_blocks >= 2:
-                W_init[0, : k_blocks - 1] = REORT_TOL                    # previous block vs kept blocks
-            W_init[1, k_blocks, :active_k, :active_k] = np.eye(active_k)  # trailing (current) self-overlap
-            W_init[0, k_blocks - 1] = np.eye(p)                          # previous kept-block self-overlap
-            reort_continuation = reort_mode
-        else:
-            W_init = None
-            reort_continuation = Reort.FULL
-
-        # Continue Lanczos from block k_blocks
-        alphas, betas, Q_basis, W = block_lanczos_cy(
-            psi0=None,
-            h_op=h_op,
-            basis=basis,
-            converged_fn=lambda a, b, **kw: False,
-            verbose=verbose,
-            reort=reort_continuation,
-            max_iter=m - k_blocks,
-            slaterWeightMin=slaterWeightMin,
-            comm=comm,
-            alphas_init=alphas_pass,
-            betas_init=betas_pass,
-            Q_init=Q_basis_new,
-            W_init=W_init,
-        )
-
-    # --- Final extraction -----------------------------------------------
-    m_actual = len(alphas)
-    _betas_final = betas[: len(betas) - 1] if len(betas) == m_actual else betas
-    T_final = _build_full_T(alphas, _betas_final)
-    eigvals_T, eigvecs_T = sp.eigh(T_final)
-    if comm is not None:
-        eigvals_T = comm.bcast(eigvals_T, root=0)
-        eigvecs_T = comm.bcast(eigvecs_T, root=0)
-    wanted = np.argsort(eigvals_T)[:num_wanted]
-    final_eigvals = eigvals_T[wanted]
-    Q_final = Q_basis[: m_actual * p]
-    final_eigvecs = block_combine_sparse(Q_final, eigvecs_T[:, wanted], slaterWeightMin)
-    return final_eigvals, final_eigvecs

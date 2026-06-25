@@ -66,14 +66,10 @@ def assert_orthonormal(eigvecs, path, comm=None):
     np.testing.assert_allclose(overlaps, expected, atol=sqrt_eps)
 
 
-# We will list failing cells in the baseline using xfail markers
+# Both solvers now converge on both paths: IRLM gained EA16 locking + explicit purging
+# (Meerbergen & Scott, RAL-TR-2000-011), so it reaches 1e-8 on this tight-binding system
+# within the small subspace where it previously stalled. No cells are expected to fail.
 def get_xfail_marker(mode, path, solver, mpi):
-    # Determine if this cell is known to fail in current baseline
-    if solver == "IRLM":
-        if path == "array":
-            return pytest.mark.xfail(strict=True, reason="IRLM does not support array path in the baseline")
-        else:
-            return pytest.mark.xfail(strict=True, reason="IRLM eigenvalues do not match to 1e-8 in the baseline")
     return None
 
 

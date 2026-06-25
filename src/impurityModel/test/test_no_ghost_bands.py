@@ -122,8 +122,9 @@ def assert_orthonormal(eigvecs, path, comm=None):
 
 
 def get_xfail_marker(mode, path, solver, mpi):
-    if solver == "IRLM" and path == "array":
-        return pytest.mark.xfail(strict=True, reason="IRLM does not support the array path")
+    # The array IRLM path is now supported (impurityModel.ed.irlm; validated in
+    # test_array_irlm.py), so IRLM-array cells fall through to the same degeneracy
+    # limit as every other cell on this multiplicity-3 spectrum.
     # NOTE: deflation itself works (see test_deflation_shrinking_block). These cells
     # fail because the restarted solvers cannot resolve a high-multiplicity degeneracy
     # (eigenvalue 2.0 has multiplicity 3) within the tight restart subspace
