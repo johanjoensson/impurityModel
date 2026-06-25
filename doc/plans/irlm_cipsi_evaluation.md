@@ -22,6 +22,31 @@ seeded from converged eigenvectors. Both are fixed and pinned by
 spectrum to ~1e-6 for all `max_subspace_blocks` and both reort modes, with orthonormal
 eigenvectors and no duplicates.
 
+### Locking-reorthogonalization modes (`locked_reort`)
+
+`implicitly_restarted_block_lanczos_cy` exposes a `locked_reort` switch for *how* the
+inner sweep is kept orthogonal to the locked Ritz vectors:
+
+- **`"full"` (default)** — unconditionally project every Lanczos vector against the whole
+  locked set, every step. Simple and robust; the previous (and default) behaviour.
+- **`"partial"`** — the actual EA16 §2.6.2 scheme. Maintain a cheap per-pair overlap
+  estimate `xi_x` via the recurrence
+  `xi_{j+1} <= ||B_j^{-1}||(xi_j||λI - C_j|| + xi_{j-1}||B_{j-1}|| + ρ) + ε`
+  (no `O(N)` inner products; `ρ` = the convergence tol, a valid bound on every locked
+  residual). When **any** estimate exceeds the trigger tol `ω_TOL ~ √ε`, reorthogonalize
+  against **all** pairs above the tighter selection tol `~ε^0.75` and reset those to
+  `ω_min`. The two-threshold rule mirrors the Krylov PRO in `apply_reort`; flagging only
+  pairs above `ω_TOL` lets sub-threshold leaks accumulate over long sweeps and was a
+  real bug caught in testing.
+
+Both modes recover the ground state with nothing below the spectral minimum across all
+subspace sizes (array + MBS, pinned by `test_locked_reort_switch_*`). On the 252-dim
+sector at `msb=100`, `"partial"` fired the expensive projection on ~46% of steps vs 100%
+for `"full"` — the payoff grows with the number of locked pairs and the sweep length.
+The shared estimate lives in `ea16.locked_overlap_step`. (Earlier notes in this repo
+wrongly described §2.6.2 as unconditional; it is estimate-driven, and `"partial"` is the
+faithful implementation.)
+
 **Verified good.**
 - The distributed matvec is correct. The column-distributed `H_mat[:, local_indices]`,
   `apply_sparse_csr_nogil` -> `Allreduce` -> slice-local-rows path reproduces the serial

@@ -592,6 +592,27 @@ def block_lanczos_array_cy(
     if have_locked:
         locked_arr = np.ascontiguousarray(locked_arr, dtype=complex)
 
+    # Locking-deflation mode: "full" (default) unconditionally projects every Lanczos
+    # vector against the locked set each step; "partial" implements the estimate-driven
+    # EA16 §2.6.2 scheme — a cheap per-pair overlap recurrence (no O(N) inner products)
+    # that reorthogonalizes only the locked vectors whose estimated overlap exceeds
+    # omega_TOL. The default preserves the previous behaviour exactly.
+    cdef str locked_reort = kwargs.get("locked_reort", "full")
+    cdef bint partial_locked = have_locked and locked_reort == "partial"
+    cdef np.ndarray locked_evals_arr = kwargs.get("locked_evals", None)
+    cdef double locked_rho = float(kwargs.get("locked_res", REORT_TOL))
+    cdef double omega_min_l = EPS * n * np.sqrt(global_N)
+    cdef np.ndarray xi_l, xi_prev_l, xi_mask, q_next_ovl
+    cdef double bj_inv_norm, bjm1_norm
+    cdef int nlock = locked_arr.shape[1] if have_locked else 0
+    if partial_locked:
+        if locked_evals_arr is None:
+            raise ValueError("locked_reort='partial' requires 'locked_evals'")
+        locked_evals_arr = np.ascontiguousarray(np.real(locked_evals_arr), dtype=float)
+        xi_l = np.full(nlock, omega_min_l)
+        xi_prev_l = np.full(nlock, omega_min_l)
+    from impurityModel.ed import ea16 as _ea16
+
     while it < _buf_size:
         q1 = np.ascontiguousarray(q[1])
         n_curr = q1.shape[1]
@@ -647,10 +668,10 @@ def block_lanczos_array_cy(
             with nogil:
                 matmul_nogil(N, n_curr, n_prev, -1.0, q0, b'N', beta_prev_dag_mv, b'N', 1.0, wp)
 
-        # Deflate against the locked Ritz vectors (twice for numerical robustness).
-        # Applied for every reort mode, since locking is orthogonal to the Krylov
-        # reorthogonalization strategy and must hold even for Reort.NONE.
-        if have_locked:
+        # "full" locking deflation: unconditionally project against the locked set every
+        # step (twice for robustness), for every reort mode. The "partial" mode skips this
+        # and instead does the estimate-driven EA16 §2.6.2 reorth on q_next below.
+        if have_locked and not partial_locked:
             for _ in range(2):
                 locked_ovl = np.ascontiguousarray(locked_arr.conj().T @ wp_arr)
                 if mpi:
@@ -681,6 +702,30 @@ def block_lanczos_array_cy(
         betas_buf[it, :active_k, :n_curr] = beta_i
 
         q_next = wp_arr @ beta_inv
+
+        # EA16 §2.6.2 estimate-driven locking reorthogonalization. Propagate the cheap
+        # per-pair overlap estimate (no O(N) work) and reorthogonalize q_next only against
+        # the locked vectors whose estimate now exceeds omega_TOL, resetting those to
+        # omega_min. ||B_j^{-1}|| = ||beta_inv||_2, ||B_{j-1}|| = ||betas_buf[it-1]||_2.
+        if partial_locked:
+            bj_inv_norm = float(np.linalg.norm(beta_inv, 2))
+            bjm1_norm = float(np.linalg.norm(betas_buf[it - 1], 2)) if it > 0 else 0.0
+            xi_new_l, xi_trigger, xi_mask = _ea16.locked_overlap_step(
+                xi_l, xi_prev_l, locked_evals_arr, alpha_i_arr,
+                bj_inv_norm, bjm1_norm, locked_rho, REORT_TOL, BAD_BLOCK_TOL, EPS,
+            )
+            if xi_trigger:
+                idx_l = np.nonzero(xi_mask)[0]
+                Lm = np.ascontiguousarray(locked_arr[:, idx_l])
+                for _ in range(2):
+                    q_next_ovl = np.ascontiguousarray(Lm.conj().T @ q_next)
+                    if mpi:
+                        comm.Allreduce(MPI.IN_PLACE, q_next_ovl, op=MPI.SUM)
+                    q_next = q_next - Lm @ q_next_ovl
+                xi_new_l[idx_l] = omega_min_l
+                xi_l[idx_l] = omega_min_l
+            xi_prev_l = xi_l
+            xi_l = xi_new_l
 
         if reort in (Reort.PARTIAL, Reort.SELECTIVE):
             if not build_krylov_basis:

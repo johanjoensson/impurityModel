@@ -114,6 +114,62 @@ def test_no_eigenvalue_below_spectral_minimum(msb, mode):
     np.testing.assert_allclose(ev[0], eigvals[0], atol=1e-6)
 
 
+@pytest.mark.parametrize("msb", _MSB)
+@pytest.mark.parametrize("locked_reort", ["full", "partial"])
+def test_locked_reort_switch_no_spurious(msb, locked_reort):
+    """Both locking-reorth modes ('full' default, 'partial' = EA16 §2.6.2) recover the
+    ground state with nothing below the spectral minimum, across subspace sizes."""
+    import scipy.sparse as sps
+
+    _, H, _, eigvals = _build_system()
+    N = H.shape[0]
+    rng = np.random.RandomState(1)
+    psi0 = rng.standard_normal((N, 1)) + 1j * rng.standard_normal((N, 1))
+
+    ev, _ = implicitly_restarted_block_lanczos_cy(
+        psi0=psi0,
+        h_op=sps.csr_matrix(H),
+        basis=None,
+        num_wanted=20,
+        max_subspace_blocks=msb,
+        tol=1e-8,
+        max_restarts=100,
+        verbose=False,
+        reort=Reort.PARTIAL,
+        locked_reort=locked_reort,
+    )
+    ev = np.sort(np.asarray(ev).real)
+    assert ev[0] >= eigvals[0] - 1e-6, f"{locked_reort} spurious eigenvalue {ev[0]} < {eigvals[0]}"
+    np.testing.assert_allclose(ev[:20], eigvals[:20], atol=1e-6)
+
+
+@pytest.mark.parametrize("locked_reort", ["full", "partial"])
+def test_locked_reort_switch_manybody(locked_reort):
+    """The estimate-driven 'partial' locking reorth is wired through the MBS kernel too."""
+    h_op, _, basis_states, eigvals = _build_system()
+    N = len(basis_states)
+    rng = np.random.RandomState(2)
+    coeffs = rng.standard_normal(N) + 1j * rng.standard_normal(N)
+    psi0 = [sum((b * c for b, c in zip(basis_states, coeffs)), ManyBodyState())]
+    psi0, _ = block_normalize(psi0, False, None, 0.0)
+
+    ev, _ = implicitly_restarted_block_lanczos_cy(
+        psi0=psi0,
+        h_op=h_op,
+        basis=MockBasis(N),
+        num_wanted=12,
+        max_subspace_blocks=80,
+        tol=1e-8,
+        max_restarts=100,
+        verbose=False,
+        reort="partial",
+        locked_reort=locked_reort,
+    )
+    ev = np.sort(np.asarray(ev).real)
+    assert ev[0] >= eigvals[0] - 1e-6
+    np.testing.assert_allclose(ev[:12], eigvals[:12], atol=1e-6)
+
+
 @pytest.mark.parametrize("mode", _MODES)
 def test_lowest_eigenvalues_match_dense_no_duplicates(mode):
     """A random start recovers the distinct lowest eigenvalues with no duplicates."""
@@ -440,6 +496,51 @@ def test_array_irlm_mpi_no_spurious_eigenvalue(mode):
     )
     ev_mpi = np.sort(np.asarray(ev_mpi).real)
     assert ev_mpi[0] >= eigvals[0] - 1e-6, f"spurious MPI eigenvalue {ev_mpi[0]} < {eigvals[0]}"
+    np.testing.assert_allclose(ev_mpi[0], eigvals[0], atol=1e-6)
+
+
+@pytest.mark.mpi
+@pytest.mark.parametrize("locked_reort", ["full", "partial"])
+def test_locked_reort_switch_mpi(locked_reort):
+    """Both locking-reorth modes are MPI-collective-safe and stay above the minimum.
+
+    The §2.6.2 estimate is computed from Allreduced (replicated) band blocks, so the
+    trigger decision is identical on every rank and the reorthogonalization Allreduce
+    fires collectively — no deadlock and no spurious eigenvalue under distribution."""
+    comm = MPI.COMM_WORLD
+    _, H, _, eigvals = _build_system()
+    N = H.shape[0]
+    rng = np.random.RandomState(1)
+    psi0_full = rng.standard_normal((N, 1)) + 1j * rng.standard_normal((N, 1))
+
+    counts = _partition(N, comm.size)
+    c0 = sum(counts[: comm.rank])
+    c1 = c0 + counts[comm.rank]
+
+    import scipy.sparse as sps
+
+    h_local = sps.csr_matrix(np.ascontiguousarray(H[:, c0:c1]))
+    psi0_local = np.ascontiguousarray(psi0_full[c0:c1, :], dtype=complex)
+
+    class _Basis:
+        def __init__(self, c):
+            self.comm = c
+
+    ev_mpi, _ = implicitly_restarted_block_lanczos_cy(
+        psi0=psi0_local,
+        h_op=h_local,
+        basis=_Basis(comm),
+        num_wanted=20,
+        max_subspace_blocks=100,
+        tol=1e-8,
+        max_restarts=100,
+        verbose=False,
+        reort=Reort.PARTIAL,
+        locked_reort=locked_reort,
+        comm=comm,
+    )
+    ev_mpi = np.sort(np.asarray(ev_mpi).real)
+    assert ev_mpi[0] >= eigvals[0] - 1e-6, f"{locked_reort} spurious MPI eigenvalue {ev_mpi[0]}"
     np.testing.assert_allclose(ev_mpi[0], eigvals[0], atol=1e-6)
 
 

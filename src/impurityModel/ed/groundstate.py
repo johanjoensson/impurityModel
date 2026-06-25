@@ -412,7 +412,7 @@ def calc_gs(
     rot_to_spherical: np.ndarray,
     verbose: bool,
     slaterWeightMin=0,
-    cipsi_solver_method="trlm",
+    cipsi_solver_method="irlm",
     **kwargs,
 ):
     """

@@ -169,6 +169,7 @@ def block_lanczos_step_cy(
     start_it: int = 0,
     block_widths=None,
     locked=None,
+    locked_reort="full",
 ):
     """Perform one step of the distributed block Lanczos iteration.
 
@@ -284,8 +285,9 @@ def block_lanczos_step_cy(
     # a small component along them that is otherwise amplified across iterations,
     # reintroducing locked eigenvalues (and their 2*theta harmonics) as spurious
     # Ritz values below the true spectral minimum on restarted sweeps. Twice for
-    # numerical robustness.
-    if locked:
+    # numerical robustness. Skipped in the "partial" mode, where the estimate-driven
+    # EA16 §2.6.2 reorth is applied to q_next in block_lanczos_cy instead.
+    if locked and locked_reort != "partial":
         for _ in range(2):
             wp, _ = block_orthogonalize_sparse(wp, list(locked), None, comm if mpi else None)
 
@@ -415,6 +417,9 @@ def block_lanczos_cy(
     return_widths=False,
     block_widths_init=None,
     locked=None,
+    locked_evals=None,
+    locked_res=0.0,
+    locked_reort="full",
 ):
     """Run the distributed block Lanczos iteration with ``ManyBodyState``.
 
@@ -614,6 +619,20 @@ def block_lanczos_cy(
     elif reort_mode in (Reort.PARTIAL, Reort.SELECTIVE) and W is not None:
         pass  # W expands dynamically in estimate_orthonormality
 
+    # Estimate-driven locking reorthogonalization (EA16 §2.6.2) state. Only active when a
+    # locked set is supplied and locked_reort == "partial"; otherwise the step does the
+    # unconditional "full" projection. See ea16.locked_overlap_step for the recurrence.
+    partial_locked = bool(locked) and locked_reort == "partial"
+    nlock = len(locked) if locked else 0
+    if partial_locked:
+        from impurityModel.ed import ea16 as _ea16
+        locked_evals_arr = np.ascontiguousarray(np.real(np.asarray(locked_evals)), dtype=float)
+        _Ntot = getattr(basis, "size", 0) or 1
+        omega_min_l = EPS * p * math.sqrt(_Ntot)
+        xi_l = np.full(nlock, omega_min_l)
+        xi_prev_l = np.full(nlock, omega_min_l)
+        locked_rho = float(locked_res)
+
     # --- Main Lanczos loop ----------------------------------------------
     it = 0
     breakdown = False
@@ -639,6 +658,7 @@ def block_lanczos_cy(
             start_it=start_it,
             block_widths=block_widths,
             locked=locked,
+            locked_reort=locked_reort,
         )
 
         if breakdown:
@@ -649,9 +669,30 @@ def block_lanczos_cy(
             it += 1
             break
 
+        # EA16 §2.6.2 estimate-driven locking reorth: propagate the per-pair overlap
+        # estimate (cheap, no O(N) work) and reorthogonalize q_next only against the
+        # locked vectors whose estimate now exceeds omega_TOL.
+        if partial_locked:
+            _sv = np.linalg.svd(np.asarray(beta_i), compute_uv=False)
+            bj_inv_norm = 1.0 / max(float(_sv.min()), EPS)
+            bjm1_norm = float(np.linalg.norm(betas_buf[it_abs - 1], 2)) if it_abs > 0 else 0.0
+            xi_new_l, xi_trigger, xi_mask = _ea16.locked_overlap_step(
+                xi_l, xi_prev_l, locked_evals_arr, alpha_i,
+                bj_inv_norm, bjm1_norm, locked_rho, REORT_TOL, BAD_BLOCK_TOL, EPS,
+            )
+            if xi_trigger:
+                idx_l = np.nonzero(xi_mask)[0]
+                Lm = [locked[int(t)] for t in idx_l]
+                for _ in range(2):
+                    q_next, _ = block_orthogonalize_sparse(q_next, Lm, None, comm if mpi else None)
+                xi_new_l[idx_l] = omega_min_l
+                xi_l[idx_l] = omega_min_l
+            xi_prev_l = xi_l
+            xi_l = xi_new_l
+
         # Append q_next to the basis (last block = residual direction). The locking
-        # deflation is applied inside block_lanczos_step_cy (before M/beta), so q_next
-        # is already orthogonal to the locked set here.
+        # deflation is applied inside block_lanczos_step_cy (before M/beta) in "full"
+        # mode, or just above in "partial" mode, so q_next is orthogonal to the locked set.
         Q_basis.extend([st.copy() for st in q_next])
 
         if verbose:

@@ -22,6 +22,7 @@ def implicitly_restarted_block_lanczos_cy(
     slaterWeightMin: float = 0.0,
     reort=None,
     comm=None,
+    locked_reort: str = "full",
 ):
     """Implicitly-restarted block Lanczos (IRLM), dispatching on the operator type.
 
@@ -55,6 +56,13 @@ def implicitly_restarted_block_lanczos_cy(
         reort: Reorthogonalization mode (``Reort`` enum, string, or ``None`` →
             ``'partial'``).
         comm: ``mpi4py`` communicator; falls back to ``basis.comm`` or serial.
+        locked_reort: How the inner sweep is kept orthogonal to the locked Ritz vectors.
+            ``'full'`` (default) unconditionally projects every Lanczos vector against the
+            locked set each step. ``'partial'`` uses the estimate-driven EA16 §2.6.2
+            scheme: a cheap per-pair overlap recurrence (no ``O(N)`` inner products)
+            triggers reorthogonalization only against the locked vectors whose estimated
+            overlap exceeds ``omega_TOL``. Both keep the result above the spectral minimum;
+            ``'partial'`` does less work when many pairs are locked / sweeps are long.
 
     Returns:
         tuple[numpy.ndarray, list | numpy.ndarray]: ``(eigvals, eigvecs)``.
@@ -83,6 +91,7 @@ def implicitly_restarted_block_lanczos_cy(
             verbose=verbose,
             reort_mode=reort_mode,
             comm=comm,
+            locked_reort=locked_reort,
         )
 
     return _implicitly_restarted_block_lanczos_manybody(
@@ -97,6 +106,7 @@ def implicitly_restarted_block_lanczos_cy(
         reort_mode=reort_mode,
         comm=comm,
         slaterWeightMin=slaterWeightMin,
+        locked_reort=locked_reort,
     )
 
 
@@ -129,6 +139,7 @@ def _implicitly_restarted_block_lanczos_array(
     comm,
     cntl2=None,
     cntl3=0.0,
+    locked_reort="full",
 ):
     """Array-path entry point: prepares the ``(N, p)`` start block and the sweep
     callable, then delegates to the shared :func:`_irlm_core`. See that function for
@@ -139,7 +150,8 @@ def _implicitly_restarted_block_lanczos_array(
     psi0 = np.ascontiguousarray(psi0 if psi0.ndim == 2 else psi0.reshape(-1, 1), dtype=complex)
     psi0, _ = block_normalize(psi0, mpi, comm, 0.0)
 
-    def sweep(v0, max_iter, alphas=None, betas=None, Q=None, W=None, reort=None, locked=None):
+    def sweep(v0, max_iter, alphas=None, betas=None, Q=None, W=None, reort=None,
+              locked=None, locked_evals=None, locked_res=0.0):
         res = block_lanczos_array(
             psi0=v0,
             h_op=h_op,
@@ -155,6 +167,9 @@ def _implicitly_restarted_block_lanczos_array(
             Q=Q,
             W=W,
             locked=locked,
+            locked_evals=locked_evals,
+            locked_res=locked_res,
+            locked_reort=locked_reort,
         )
         # (alphas, betas, Q, W, block_widths)
         return res[0], res[1], res[2], res[3], res[4]
@@ -191,6 +206,7 @@ def _implicitly_restarted_block_lanczos_manybody(
     slaterWeightMin=0.0,
     cntl2=None,
     cntl3=0.0,
+    locked_reort="full",
 ):
     """ManyBodyState-path entry point: prepares the length-``p`` state block and the
     sweep callable (the Cython ``block_lanczos_cy`` kernel), then delegates to the
@@ -201,7 +217,8 @@ def _implicitly_restarted_block_lanczos_manybody(
     psi0 = list(psi0) if isinstance(psi0, (list, tuple)) else psi0
     psi0, _ = block_normalize(psi0, mpi, comm, slaterWeightMin)
 
-    def sweep(v0, max_iter, alphas=None, betas=None, Q=None, W=None, reort=None, locked=None):
+    def sweep(v0, max_iter, alphas=None, betas=None, Q=None, W=None, reort=None,
+              locked=None, locked_evals=None, locked_res=0.0):
         r = reort if reort is not None else reort_mode
         r = r.name.lower() if hasattr(r, "name") else r
         res = block_lanczos_cy(
@@ -220,6 +237,9 @@ def _implicitly_restarted_block_lanczos_manybody(
             W_init=W,
             return_widths=True,
             locked=locked,
+            locked_evals=locked_evals,
+            locked_res=locked_res,
+            locked_reort=locked_reort,
         )
         # (alphas, betas, Q, W, block_widths)
         return res[0], res[1], res[2], res[3], res[4]
@@ -358,13 +378,22 @@ def _irlm_core(
             n_locked_now += 1
         return n_locked_now
 
-    def _locked():
-        # Locked Ritz vectors to deflate the inner sweep against (EA16 §2.6.2). Empty
-        # locked set -> None so the kernel skips the projection entirely.
-        return Xl if _nlock() > 0 else None
+    def _locked_kwargs():
+        # Locked Ritz pairs to deflate the inner sweep against (EA16 §2.6.2). Empty locked
+        # set -> locked=None so the kernel skips it. ``locked_evals``/``locked_res`` feed
+        # the §2.6.2 overlap estimate (used only by the "partial" locked-reort mode);
+        # cntl2 is a valid uniform bound on the locked residual norms (all <= acceptance
+        # tol at lock time).
+        if _nlock() == 0:
+            return {"locked": None}
+        return {
+            "locked": Xl,
+            "locked_evals": np.asarray(theta_l, dtype=float),
+            "locked_res": float(cntl2),
+        }
 
     # --- Initial Lanczos run --------------------------------------------
-    alphas, betas, Q_basis, _W, widths = sweep(psi0, m, locked=_locked())
+    alphas, betas, Q_basis, _W, widths = sweep(psi0, m, **_locked_kwargs())
 
     for restart in range(max_restarts):
         n_need = num_wanted - len(theta_l)
@@ -437,7 +466,7 @@ def _irlm_core(
                 # every rank raises together and this break is MPI-collective-safe.
                 # Stop restarting and return what has been locked / found so far.
                 break
-            alphas, betas, Q_basis, _W, widths = sweep(v0, m, locked=_locked())
+            alphas, betas, Q_basis, _W, widths = sweep(v0, m, **_locked_kwargs())
             continue
 
         # --- Purge + restart in the Ritz basis (EA16 §2.2.1, eq. 6) ----
@@ -509,7 +538,7 @@ def _irlm_core(
             Q=Q_basis_new,
             W=W_init,
             reort=reort_continuation,
-            locked=_locked(),
+            **_locked_kwargs(),
         )
 
     # --- Final extraction -----------------------------------------------

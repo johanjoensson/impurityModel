@@ -28,6 +28,57 @@ import numpy as np
 EPS = np.finfo(float).eps
 
 
+def locked_overlap_step(xi, xi_prev, locked_evals, alpha_j, beta_j_inv_norm, beta_jm1_norm, rho, omega_tol, bad_tol, eps=EPS):
+    """One step of the EA16 §2.6.2 estimate of loss of orthogonality against locked pairs.
+
+    Maintains, for each locked Ritz pair ``(lambda_x, x)``, a running estimate
+    ``xi_x ~ ||<x, V_j>||`` of its overlap with the current Lanczos block, propagated by
+    the recurrence of §2.6.2 (no ``O(N)`` inner products — only the small band blocks and
+    the locked residual bound enter):
+
+    .. math::
+
+        \\xi_{j+1} \\le \\|B_j^{-1}\\| \\,\\big( \\xi_j\\,\\|\\lambda I - C_j\\|
+            + \\xi_{j-1}\\,\\|B_{j-1}\\| + \\rho \\big) + \\varepsilon ,
+
+    with ``C_j = alpha_j`` (current diagonal block), ``B_j``/``B_{j-1}`` the current and
+    previous off-diagonal blocks, and ``rho`` an upper bound on the locked residual norm
+    ``sqrt(<r, r>)`` (every locked pair satisfies ``||r|| <= acceptance tol``, so the
+    convergence tolerance is a valid conservative ``rho``). ``||lambda_x I - C_j||_2`` is
+    ``max_mu |lambda_x - mu|`` over the eigenvalues ``mu`` of the Hermitian ``C_j``.
+
+    Args:
+        xi: ``(nlock,)`` current estimates ``xi_j`` (real, >= 0).
+        xi_prev: ``(nlock,)`` previous estimates ``xi_{j-1}``.
+        locked_evals: ``(nlock,)`` locked Ritz values ``lambda_x``.
+        alpha_j: ``(b, b)`` current diagonal block ``C_j``.
+        beta_j_inv_norm: scalar ``||B_j^{-1}||_2`` (``1 / sigma_min(B_j)``).
+        beta_jm1_norm: scalar ``||B_{j-1}||_2`` (``0`` at the first step).
+        rho: scalar residual bound (or ``(nlock,)`` per-pair bound).
+        omega_tol: *trigger* threshold ``omega_TOL`` (``~sqrt(eps)``): if **any** pair's
+            estimate exceeds it, a reorthogonalization pass is done this step.
+        bad_tol: *selection* threshold (``~eps**0.75``, tighter than ``omega_tol``): when
+            triggered, every pair above this is reorthogonalized — including ones still
+            below ``omega_tol`` but already growing. This two-threshold scheme (mirroring
+            the Krylov PRO in ``apply_reort``) is what maintains semi-orthogonality over
+            long sweeps; flagging only pairs above ``omega_tol`` lets sub-threshold leaks
+            accumulate.
+        eps: machine-precision source term. Default :data:`EPS`.
+
+    Returns:
+        tuple[numpy.ndarray, bool, numpy.ndarray]: ``(xi_new, trigger, sel_mask)`` — the
+        updated estimates ``xi_{j+1}``, whether a reorthogonalization pass should fire
+        this step (any estimate above ``omega_tol``), and the boolean mask of pairs to
+        reorthogonalize against (estimate above ``bad_tol``).
+    """
+    cj = (np.asarray(alpha_j) + np.conj(np.asarray(alpha_j).T)) / 2
+    mu = np.linalg.eigvalsh(cj) if cj.size else np.zeros(1)
+    lam = np.asarray(locked_evals, dtype=float)
+    lam_term = np.maximum(np.abs(lam - mu[0]), np.abs(lam - mu[-1]))
+    xi_new = beta_j_inv_norm * (xi * lam_term + xi_prev * beta_jm1_norm + rho) + eps
+    return xi_new, bool(np.any(xi_new > omega_tol)), xi_new > bad_tol
+
+
 def ritz_residual_norms(beta_last, Z, p):
     """Residual norm ``||beta_last @ z_i[-p:]||_2`` for every Ritz vector column.
 
