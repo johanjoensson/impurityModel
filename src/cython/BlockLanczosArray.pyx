@@ -127,7 +127,7 @@ def calculate_thermal_gs(h, block_size, e_max, v0=None, reort=Reort.FULL, comm=N
         v0 = np.append(v0, new_v0, axis=1)
     elif v0.shape[1] > block_size:
         v0 = v0[:, :block_size]
-        
+
     alphas, betas, Q, *_ = block_lanczos_array_cy(
         psi0=v0,
         h_op=h,
@@ -159,27 +159,27 @@ cpdef np.ndarray estimate_orthonormality(
     cdef int n = alphas.shape[1]
     if eps == 0.0:
         eps = np.finfo(float).eps
-    
+
     cdef list widths
     if block_widths is None:
         widths = [n] * (i + 2)
     else:
         widths = list(block_widths)
-        
+
     cdef int w_curr = widths[i]
     cdef int w_i = w_curr
     cdef int w_next = widths[i+1]
     cdef int w_i_next = w_next
     cdef int w_0 = widths[0]
-    
+
     cdef np.ndarray[double complex, ndim=4] W_out = np.zeros((2, i + 2, n, n), dtype=complex)
     cdef np.ndarray[double complex, ndim=3] w_bar = np.zeros((i + 2, n, n), dtype=complex)
-    
+
     w_bar[i + 1, :w_next, :w_next] = np.identity(w_next)
-    
+
     cdef np.ndarray beta_i_dag_inv = np.conj(la.pinv(betas[i, :w_next, :w_curr]).T) # shape (w_next, w_curr)
     w_bar[i, :w_next, :w_0] = eps * N * beta_i_dag_inv @ betas[0, :w_curr, :w_0]
-    
+
     if i == 0:
         W_out[0, : i + 1] = W[1]
         W_out[1, : i + 2] = w_bar
@@ -195,7 +195,7 @@ cpdef np.ndarray estimate_orthonormality(
     cdef np.ndarray term5 = betas[i-1, :w_i, :w_i_prev] @ W[0, 0, :w_i_prev, :w_j]
     cdef np.ndarray RHS_0 = term1 + term2 - term3 - term5
     w_bar[0, :w_next, :w_j] = beta_i_dag_inv @ RHS_0
-    
+
     cdef int j, w_j_prev
     cdef np.ndarray term4
     cdef np.ndarray RHS
@@ -203,18 +203,18 @@ cpdef np.ndarray estimate_orthonormality(
         w_j = widths[j]
         w_j_prev = widths[j-1]
         w_j_next = widths[j+1]
-        
+
         term1 = W[1, j+1, :w_i, :w_j_next] @ betas[j, :w_j_next, :w_j]
         term2 = W[1, j, :w_i, :w_j] @ alphas[j, :w_j, :w_j]
         term3 = alphas[i, :w_i, :w_i] @ W[1, j, :w_i, :w_j]
         term4 = W[1, j-1, :w_i, :w_j_prev] @ np.conj(betas[j-1, :w_j, :w_j_prev].T)
         term5 = betas[i-1, :w_i, :w_i_prev] @ W[0, j, :w_i_prev, :w_j]
-        
+
         RHS = term1 + term2 - term3 + term4 - term5
         w_bar[j, :w_next, :w_j] = beta_i_dag_inv @ RHS
-        
+
     w_bar[:i] += eps * (betas[i] + betas[:i])
-    
+
     W_out[0, : i + 1] = W[1]
     W_out[1, : i + 2] = w_bar
 
@@ -238,23 +238,23 @@ cpdef np.ndarray _build_full_T(np.ndarray[double complex, ndim=3] alphas, np.nda
     cdef int m = alphas.shape[0]
     if m == 0:
         return np.zeros((0, 0), dtype=complex)
-    
+
     cdef list widths
     if block_widths is None:
         widths = [alphas.shape[1]] * m
     else:
         widths = list(block_widths)
-        
+
     cdef int total_dim = sum(widths)
     cdef np.ndarray[double complex, ndim=2] T = np.zeros((total_dim, total_dim), dtype=complex)
-    
+
     cdef list offsets = [0]
     cdef int off = 0
     cdef object w_val
     for w_val in widths:
         off += int(w_val)
         offsets.append(off)
-        
+
     cdef int i, w_i, w_next, o_i, o_next
     for i in range(m):
         w_i = int(widths[i])
@@ -326,7 +326,7 @@ cpdef tuple eigsh(
         select_range=select_range,
         max_ev=max_ev,
     )
-    
+
     cdef np.ndarray mask
     if within_gs:
         mask = eigvals - np.min(eigvals) <= de
@@ -500,7 +500,7 @@ def block_lanczos_array_cy(
     cdef int start_it = 0
     cdef np.ndarray alphas_arr, betas_arr
     cdef list Q_list
-    
+
     if alphas is not None and betas is not None and Q is not None:
         start_it = len(alphas)
         alphas_arr = alphas
@@ -533,24 +533,24 @@ def block_lanczos_array_cy(
 
     cdef int it = start_it
     cdef double reort_eps = np.sqrt(np.finfo(float).eps)
-    
+
     cdef bint mpi = comm is not None
     cdef int rank = comm.rank if mpi else 0
     cdef int size = comm.size if mpi else 1
     cdef np.ndarray counts, offsets
     cdef int global_N = N
-    
+
     if mpi:
         counts = np.empty((size), dtype=int)
         comm.Allgather(np.array([N], dtype=int), counts)
         offsets = np.array([np.sum(counts[:r]) for r in range(size)], dtype=int)
         global_N = np.sum(counts)
-    
+
     cdef double complex[:] h_data
     cdef long[:] h_indices
     cdef long[:] h_indptr
     cdef double complex[:, ::1] h_dense
-    
+
     if is_sparse:
         h_op = h_op.tocsr()
         h_data = h_op.data
@@ -563,7 +563,7 @@ def block_lanczos_array_cy(
     cdef double complex[:, ::1] wp = wp_arr
     cdef double complex[:, ::1] q1, q0, beta_prev_dag_mv
     cdef double complex[:, ::1] alpha_i
-    
+
     # GUARDRAIL: the MPI matvec forms the full (global_N, n) partial product on *every*
     # rank (column-distributed H -> Allreduce -> slice local rows), so per-rank memory
     # here scales with global_N, not local_N. This is intentional: the array kernel is
@@ -688,7 +688,7 @@ def block_lanczos_array_cy(
             W = estimate_orthonormality(W, alphas_buf[: it + 1], betas_buf[: it + 1], block_widths=block_widths, eps=EPS)
             block_widths.pop()
             block_widths.pop()
-            
+
             reort_eps = REORT_TOL
 
             if reort == Reort.SELECTIVE:
@@ -787,7 +787,7 @@ cpdef object block_apply(object H, object V, object basis=None, bint mpi=False, 
             res = H @ V_arr
         else:
             res = H @ V
-        
+
         if mpi and basis is not None and getattr(basis, 'comm', None) is not None:
             comm = basis.comm
             res_global = np.ascontiguousarray(res)
@@ -851,7 +851,7 @@ cpdef tuple apply_reort(object wp, object Q_list, object W, object reort, bint m
     cdef list bad_cols
     cdef object Q_bad
     cdef int active_k
-    
+
     if is_array(wp):
         active_k = wp.shape[1]
     else:
@@ -860,7 +860,7 @@ cpdef tuple apply_reort(object wp, object Q_list, object W, object reort, bint m
     if reort == Reort.FULL or reort == Reort.PERIODIC:
         for _ in range(2):
             wp, _ = block_orthogonalize(wp, Q_list, mpi=mpi, comm=comm)
-            
+
     elif reort in (Reort.PARTIAL, Reort.SELECTIVE):
         if W is not None:
             n_blks = W.shape[1] - 1  # W[-1, :n_blks]
@@ -876,18 +876,18 @@ cpdef tuple apply_reort(object wp, object Q_list, object W, object reort, bint m
                     col_start = sum(block_widths[:j])
                     col_end = col_start + block_widths[j]
                     bad_cols.extend(range(col_start, col_end))
-                
+
                 if is_array(Q_list):
                     Q_mat = Q_list if not isinstance(Q_list, list) else Q_list[0]
                     Q_bad = Q_mat[:, bad_cols]
                 else:
                     Q_bad = [Q_list[col] for col in bad_cols]
-                    
+
                 for _ in range(2):
                     wp, _ = block_orthogonalize(wp, Q_bad, mpi=mpi, comm=comm)
-                    
+
                 for j in bad_block_idx:
                     w_j = block_widths[j]
                     W[-1, j, :w_j, :active_k] = EPS * np.eye(w_j, active_k, dtype=complex)
-                    
+
     return wp, W
