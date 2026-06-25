@@ -96,7 +96,7 @@ jobs:
           export CXXFLAGS="$CXXFLAGS -I$BOOST_DIR/include -I$BOOST_DIR"
           export CFLAGS="$CFLAGS -I$BOOST_DIR/include -I$BOOST_DIR"
 
-          pip install -e .
+          pip install --no-build-isolation -e .
 
       - name: Run serial tests
         run: |
