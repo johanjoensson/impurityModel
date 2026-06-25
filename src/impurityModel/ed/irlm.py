@@ -482,6 +482,20 @@ def _irlm_core(
         if _nlock() > 0:
             Q_new = _orth_against_locked(Q_new)
 
+        # The trailing residual block can itself be rank-deficient when the sweep reached
+        # a (near-)invariant subspace without shrinking any *diagonal* block, so the
+        # alpha-width guard above (total < m_act * p) did not fire. Its stored width is
+        # then < p and the Sorensen residual rotation qres @ beta_new is undefined (it
+        # would raise a matmul shape error). This is the same near-invariant situation as
+        # the post-rotation deflation below, so lock the lowest wanted Ritz pairs and stop.
+        res_width = _q_cols(Q_basis) - total
+        if res_width < p:
+            X_rem = block_combine(_q_slice(Q_basis, 0, total), Z[:, order], slater)
+            _lock_block(X_rem, [evals[i].real for i in order])
+            if verbose and rank0:
+                print(f"[{tag}] Restart {restart:3d} | trailing residual block deflated (width {res_width}<{p}). Locking remaining & stopping.")
+            break
+
         # The trailing normalized residual block is always present after a sweep (the
         # recurrence stores m_act+1 blocks), so the Sorensen residual reduces to rotating
         # it by the re-banding coupling beta_new (EA16 §2.2.1).

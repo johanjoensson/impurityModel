@@ -69,10 +69,6 @@ def assert_orthonormal(eigvecs, path, comm=None):
 # Both solvers now converge on both paths: IRLM gained EA16 locking + explicit purging
 # (Meerbergen & Scott, RAL-TR-2000-011), so it reaches 1e-8 on this tight-binding system
 # within the small subspace where it previously stalled. No cells are expected to fail.
-def get_xfail_marker(mode, path, solver, mpi):
-    return None
-
-
 @pytest.mark.parametrize("mode", [Reort.NONE, Reort.PARTIAL, Reort.FULL, Reort.SELECTIVE, Reort.PERIODIC])
 @pytest.mark.parametrize("path", ["array", "ManyBodyState"])
 @pytest.mark.parametrize("solver", ["TRLM", "IRLM"])
@@ -81,11 +77,6 @@ def test_reort_matrix(mode, path, solver):
     num_wanted = 4
     max_subspace_blocks = 6
     n_blocks = 2
-    
-    # Check if we should xfail
-    marker = get_xfail_marker(mode, path, solver, mpi=False)
-    if marker is not None:
-        pytest.xfail(marker.kwargs.get("reason", ""))
 
     np.random.seed(42)
     
@@ -151,10 +142,6 @@ def test_reort_matrix_mpi(mode, path, solver):
     num_wanted = 4
     max_subspace_blocks = 6
     n_blocks = 2
-
-    marker = get_xfail_marker(mode, path, solver, mpi=True)
-    if marker is not None:
-        pytest.xfail(marker.kwargs.get("reason", ""))
 
     if path == "array":
         H_dense = build_dense_matrix_from_manybody(h_op_mb, basis_states)

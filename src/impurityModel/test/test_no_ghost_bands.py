@@ -121,27 +121,37 @@ def assert_orthonormal(eigvecs, path, comm=None):
     np.testing.assert_allclose(overlaps, expected, atol=sqrt_eps)
 
 
-def get_xfail_marker(mode, path, solver, mpi):
-    # The array IRLM path is now supported (impurityModel.ed.irlm; validated in
-    # test_array_irlm.py), so IRLM-array cells fall through to the same degeneracy
-    # limit as every other cell on this multiplicity-3 spectrum.
-    # NOTE: deflation itself works (see test_deflation_shrinking_block). These cells
-    # fail because the restarted solvers cannot resolve a high-multiplicity degeneracy
-    # (eigenvalue 2.0 has multiplicity 3) within the tight restart subspace
-    # (max_subspace_blocks=5, block size 2): T_full is left partially filled and
-    # spurious (e.g. zero) Ritz values appear. This is a real convergence limitation,
-    # not a reorthogonalization bug, and is tracked as future work.
-    return pytest.mark.xfail(strict=True, reason="restarted solver cannot resolve multiplicity-3 degeneracy in a tight subspace (partial T_full -> spurious Ritz values)")
+def get_xfail_marker(mode, path, solver, spectrum_type, mpi):
+    # On this 12-state spectrum with block size 2 and a tight restart subspace
+    # (max_subspace_blocks=5), only the array-path TRLM converges, and only when the
+    # degeneracies are *split* (near_degenerate): then each near-copy is a distinct Ritz
+    # value the block recurrence can resolve one block at a time, so it returns the six
+    # lowest cleanly. That combination runs for real (and guards against regressions).
+    #
+    # Every other cell hits a genuine restarted-block-Lanczos limitation, not a
+    # reorthogonalization bug: a high-multiplicity degeneracy (eigenvalue 2.0 has
+    # multiplicity 3, exceeding the block size 2) cannot be fully captured inside the
+    # tight restart subspace. T_full is left partially filled and spurious (e.g. zero)
+    # Ritz values appear. Deflation itself works (see test_deflation_shrinking_block);
+    # this is tracked as future work. strict=False so that if a solver later resolves a
+    # cell it surfaces as XPASS rather than failing the suite.
+    if path == "array" and solver == "TRLM" and spectrum_type == "near_degenerate":
+        return None
+    return pytest.mark.xfail(
+        strict=False,
+        reason="restarted block Lanczos cannot resolve a degeneracy exceeding the block "
+        "size within a tight restart subspace (partial T_full -> spurious Ritz values)",
+    )
 
 
 @pytest.mark.parametrize("mode", [Reort.NONE, Reort.PARTIAL, Reort.FULL, Reort.SELECTIVE, Reort.PERIODIC])
 @pytest.mark.parametrize("path", ["array", "ManyBodyState"])
 @pytest.mark.parametrize("solver", ["TRLM", "IRLM"])
 @pytest.mark.parametrize("spectrum_type", ["exact_degenerate", "near_degenerate"])
-def test_no_ghost_bands(mode, path, solver, spectrum_type):
-    marker = get_xfail_marker(mode, path, solver, mpi=False)
+def test_no_ghost_bands(mode, path, solver, spectrum_type, request):
+    marker = get_xfail_marker(mode, path, solver, spectrum_type, mpi=False)
     if marker is not None:
-        pytest.xfail(marker.kwargs.get("reason", ""))
+        request.node.add_marker(marker)
 
     if spectrum_type == "exact_degenerate":
         eigvals_exact = np.array([1.0, 1.0, 2.0, 2.0, 2.0, 3.0, 4.0, 5.0, 6.0, 7.0, 8.0, 9.0], dtype=float)
@@ -192,11 +202,11 @@ def test_no_ghost_bands(mode, path, solver, spectrum_type):
 @pytest.mark.parametrize("path", ["array", "ManyBodyState"])
 @pytest.mark.parametrize("solver", ["TRLM", "IRLM"])
 @pytest.mark.parametrize("spectrum_type", ["exact_degenerate", "near_degenerate"])
-def test_no_ghost_bands_mpi(mode, path, solver, spectrum_type):
+def test_no_ghost_bands_mpi(mode, path, solver, spectrum_type, request):
     comm = MPI.COMM_WORLD
-    marker = get_xfail_marker(mode, path, solver, mpi=True)
+    marker = get_xfail_marker(mode, path, solver, spectrum_type, mpi=True)
     if marker is not None:
-        pytest.xfail(marker.kwargs.get("reason", ""))
+        request.node.add_marker(marker)
 
     if spectrum_type == "exact_degenerate":
         eigvals_exact = np.array([1.0, 1.0, 2.0, 2.0, 2.0, 3.0, 4.0, 5.0, 6.0, 7.0, 8.0, 9.0], dtype=float)

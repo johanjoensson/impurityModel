@@ -1,8 +1,7 @@
 """Validation for the array-path IRLM driver (impurityModel.ed.irlm).
 
-The reort matrix imperatively xfails IRLM (it doesn't reach 1e-8 on the tight-binding
-system within the subspace size — a known IRLM limit), so these tests validate the new
-array driver directly: (a) it reproduces the dense spectrum when IRLM *can* converge
+These tests validate the new array driver directly: (a) it reproduces the dense
+spectrum when IRLM *can* converge
 (large subspace, no restart), and (b) it is a faithful port of the proven Cython
 ManyBodyState IRLM — bit-for-bit identical on the same Hamiltonian, all reort modes,
 serial + MPI.
