@@ -61,6 +61,16 @@ The plans have dependencies. Read and execute in this order:
    `[Ĉ,H]=0` as the correctness gate and the reconstructed `Ŝ²` proven identical to the
    hand-built one. Builds on symmetry-plan Phase 2; shares the Phase-1.2 observables.
 
+6. **[manybodyoperator_apply_performance.md](manybodyoperator_apply_performance.md)** —
+   Throughput of `ManyBodyOperator::apply` (`src/cython/ManyBodyOperator.cpp`), the
+   second-quantized matvec under every Block Lanczos sweep / CIPSI / GF build. Six
+   phases: oracle-first (Phase 0 ships a representative benchmark + golden-output
+   regression gate), then allocation/accumulator micro-opts → term classification with
+   a diagonal fast path and masked between-sign kernels → build-time normal ordering;
+   with MPI bucketed-return and threading as parallel tracks. **Independent** of plans
+   #1–#3 (different code: the C++ operator, not the Cython Lanczos drivers). `n_orbs` is
+   runtime-determined and unbounded; the hot path must not assume a fixed chunk count.
+
 ## Reference
 
 - **[symmetry_plan_review.md](symmetry_plan_review.md)** — Archived code-grounded
