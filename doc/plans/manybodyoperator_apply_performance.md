@@ -173,21 +173,39 @@ Phase-2 density fast path absorb `1 − n`-style contractions that it otherwise 
 
 ---
 
-## Phase 4 — MPI: `apply` returns per-rank bucketed states (parallel track; depends on Phase 0, co-design with 1b)
+## Phase 4 — MPI: efficient redistribute communication (RESCOPED for 100s–1000s of ranks)
 
-Today `apply_multi` builds one full local state, then `redistribute_psis` →
-`graph_alltoall_psis` **pickles whole `ManyBodyState`s** before `Neighbor_alltoallv`.
+**Why rescoped.** The original premise (avoid Python `pickle` by emitting per-rank
+buckets) was wrong on inspection: `redistribute_psis` → `graph_alltoall_psis` already
+packs via C++ (`pack_psis_cy`) into raw `uint64`/`complex`/`int32` buffers and exchanges
+them with `Neighbor_alltoallv` over a sparse `dist_graph` — **no pickle**. And the local
+pack pass is O(n_out per rank), *independent of rank count*, so it is not a scaling wall
+(~13% fixed local overhead; fusing it into apply would save ~6–7% single-process only).
 
-- [ ] **4a — Bucketed accumulator.** Make `apply` key each output SD into bucket
-  `det.get_hash() % comm.size` during accumulation and return a
-  `std::vector<ManyBodyState>` of length `size` (`result[rank]` = local keep). Serial
-  (`size==1`) → single bucket, no behavior change. *Checkpoint:* golden oracle green
-  serial.
-- [ ] **4b — Wire to C++ pack/unpack.** Replace the pickle round-trip in the
-  `apply_multi` → redistribute path with the existing `MpiUtils` `pack_psis` /
-  `unpack_psis` on the raw buckets + `Alltoallv`. *Checkpoint:*
-  `mpirun -n 3 pytest --with-mpi src/impurityModel/test/test_block_lanczos_cy_mpi.py`
-  green; per-rank ownership identical to before.
+The actual scaling limiter at 100s–1000s of ranks is the **communication pattern**: with
+hash ownership (`hash % size`) each rank's output scatters across *all* ranks, so the
+`dist_graph` neighbourhood is effectively **dense** and the exchange is a latency-bound
+personalized all-to-all of small messages, redone every matvec — plus a per-matvec
+`Create_dist_graph_adjacent`/`Free` and a dense size-`P` count `Alltoall`. So Phase 4 now
+targets the *message pattern*, not the local loop.
+
+- [x] **4a — Fuse the 3 `Neighbor_alltoallv` into 1.** New C++ `pack_psis_fused` /
+  `unpack_psis_fused` (`MpiUtils`) serialize each entry as one interleaved record
+  `[state | amp | psi_idx]` (`bytes_per_entry = chunks*8 + 20`) into a single rank-ordered
+  byte buffer; `graph_alltoall_psis` now does **one** `Neighbor_alltoallv(MPI.BYTE)`
+  instead of three. Same total bytes, **3× fewer latency-bound message rounds** — the
+  dominant cost of the dense small-message all-to-all at scale. *Checkpoint:* ✅ MPI
+  `test_mpi_comm` (round-trip, ownership, ring-exchange) + `test_block_lanczos_cy_mpi` +
+  `test_no_ghost_bands` green at **n=3/4/6**; serial regression green.
+- [ ] **4b — Reuse the `dist_graph` communicator** across matvecs instead of
+  `Create_dist_graph_adjacent` + `Free` every call. Cache keyed by the per-rank
+  `(sources, destinations)` neighbourhood; rebuild only when an `Allreduce(LOR, changed)`
+  says any rank's topology changed (so the collective stays consistent — no deadlock).
+  *Checkpoint:* MPI tests green at n=3/4/6; rebuild count drops across a Lanczos run.
+- [ ] **4c — Sparse count exchange (NBX).** Replace the dense size-`P` `Alltoall` of
+  `send_counts` with a nonblocking-consensus (NBX) sparse exchange so the count step is
+  O(neighbours) not O(P). Highest scaling value at 1000s of ranks, highest risk; gated on
+  4b. *Checkpoint:* MPI tests green; count-exchange volume per rank no longer scales with P.
 
 ---
 

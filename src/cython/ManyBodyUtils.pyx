@@ -663,7 +663,7 @@ def applyOp(ManyBodyOperator op, ManyBodyState psi, double cutoff=0) ->ManyBodyS
     """
     return op(psi, cutoff)
 
-from MpiUtils cimport pack_determinants as c_pack_determinants, unpack_determinants as c_unpack_determinants, pack_psis as c_pack_psis, unpack_psis as c_unpack_psis
+from MpiUtils cimport pack_determinants as c_pack_determinants, unpack_determinants as c_unpack_determinants, pack_psis as c_pack_psis, unpack_psis as c_unpack_psis, pack_psis_fused as c_pack_psis_fused, unpack_psis_fused as c_unpack_psis_fused
 import numpy as np
 
 def pack_determinants_cy(list dets, int comm_size):
@@ -788,6 +788,53 @@ def unpack_psis_cy(list psis, int comm_size, int64_t[:] recv_counts, uint64_t[:]
 
     with nogil:
         c_unpack_psis(c_psis, comm_size, c_recv_counts, c_state_buf, c_amp_buf_reim, c_psi_buf, chunks_per_state)
+
+def pack_psis_fused_cy(list psis, int comm_size, size_t chunks_per_state):
+    """Pack psis into a single interleaved byte buffer (state||amp||psi_idx per entry),
+    rank-ordered, for a one-shot Neighbor_alltoallv(MPI.BYTE) redistribute."""
+    cdef vector[const ManyBodyState_cpp*] c_psis
+    cdef ManyBodyState psi
+    for psi in psis:
+        c_psis.push_back(&(psi.v))
+
+    cdef vector[int64_t] send_counts
+    cdef vector[char] send_buf
+
+    with nogil:
+        c_pack_psis_fused(c_psis, comm_size, chunks_per_state, send_counts, send_buf)
+
+    cdef size_t nbytes = send_buf.size()
+    send_counts_np = np.zeros(comm_size, dtype=np.int64)
+    send_buf_np = np.zeros(nbytes, dtype=np.uint8)
+
+    cdef int64_t[:] send_counts_view = send_counts_np
+    cdef uint8_t[:] send_buf_view = send_buf_np
+    if comm_size > 0:
+        memcpy(&send_counts_view[0], <void*>send_counts.data(), comm_size * sizeof(int64_t))
+    if nbytes > 0:
+        memcpy(&send_buf_view[0], <void*>send_buf.data(), nbytes)
+
+    return send_counts_np, send_buf_np
+
+
+def unpack_psis_fused_cy(list psis, int comm_size, int64_t[:] recv_counts, uint8_t[:] recv_buf, size_t chunks_per_state):
+    """Unpack the interleaved byte buffer produced by pack_psis_fused_cy."""
+    cdef vector[ManyBodyState_cpp*] c_psis
+    cdef ManyBodyState psi
+    for psi in psis:
+        c_psis.push_back(&(psi.v))
+
+    cdef vector[int64_t] c_recv_counts
+    cdef vector[char] c_recv_buf
+
+    if comm_size > 0:
+        c_recv_counts.assign(<int64_t*> &recv_counts[0], <int64_t*> &recv_counts[0] + comm_size)
+    if recv_buf.shape[0] > 0:
+        c_recv_buf.assign(<char*> &recv_buf[0], <char*> &recv_buf[0] + recv_buf.shape[0])
+
+    with nogil:
+        c_unpack_psis_fused(c_psis, comm_size, c_recv_counts, c_recv_buf, chunks_per_state)
+
 
 def extract_new_states(list states, object existing_dict):
     """

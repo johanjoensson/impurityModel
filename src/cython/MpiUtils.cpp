@@ -1,8 +1,17 @@
 #include "MpiUtils.h"
 #include <unordered_set>
 #include <numeric>
+#include <cstring>
 
 namespace mpi_utils {
+
+namespace {
+// Per-entry byte layout shared by pack_psis_fused / unpack_psis_fused.
+inline size_t fused_bytes_per_entry(size_t chunks_per_state) {
+    return chunks_per_state * sizeof(uint64_t) + 2 * sizeof(double) +
+           sizeof(int32_t);
+}
+} // namespace
 
 void pack_determinants(
     const std::vector<SlaterDeterminant<uint64_t>>& dets,
@@ -142,6 +151,89 @@ void unpack_psis(
                 }
             }
             offset++;
+        }
+    }
+}
+
+void pack_psis_fused(
+    const std::vector<const ManyBodyState*>& psis,
+    int comm_size,
+    size_t chunks_per_state,
+    std::vector<int64_t>& send_counts,
+    std::vector<char>& send_buf) {
+
+    send_counts.assign(comm_size, 0);
+
+    struct Entry {
+        const SlaterDeterminant<uint64_t>* state;
+        std::complex<double> amp;
+        int32_t psi_idx;
+    };
+    std::vector<std::vector<Entry>> rank_entries(comm_size);
+
+    for (size_t pi = 0; pi < psis.size(); pi++) {
+        const auto* psi = psis[pi];
+        if (!psi) continue;
+        for (auto it = psi->begin(); it != psi->end(); ++it) {
+            const auto& state = it->first;
+            int rank = state.hash() % comm_size;
+            rank_entries[rank].push_back({&state, it->second, static_cast<int32_t>(pi)});
+            send_counts[rank]++;
+        }
+    }
+
+    size_t total_entries = 0;
+    for (int64_t c : send_counts) total_entries += c;
+
+    const size_t bpe = fused_bytes_per_entry(chunks_per_state);
+    const size_t state_bytes = chunks_per_state * sizeof(uint64_t);
+    send_buf.clear();
+    send_buf.resize(total_entries * bpe);
+
+    char* p = send_buf.data();
+    for (int r = 0; r < comm_size; r++) {
+        for (const auto& e : rank_entries[r]) {
+            std::memcpy(p, e.state->data(), state_bytes);
+            p += state_bytes;
+            const double re = e.amp.real();
+            const double im = e.amp.imag();
+            std::memcpy(p, &re, sizeof(double)); p += sizeof(double);
+            std::memcpy(p, &im, sizeof(double)); p += sizeof(double);
+            std::memcpy(p, &e.psi_idx, sizeof(int32_t)); p += sizeof(int32_t);
+        }
+    }
+}
+
+void unpack_psis_fused(
+    std::vector<ManyBodyState*>& psis,
+    int comm_size,
+    const std::vector<int64_t>& recv_counts,
+    const std::vector<char>& recv_buf,
+    size_t chunks_per_state) {
+
+    const size_t state_bytes = chunks_per_state * sizeof(uint64_t);
+    const char* p = recv_buf.data();
+    for (int r = 0; r < comm_size; r++) {
+        const int64_t count = recv_counts[r];
+        for (int64_t i = 0; i < count; i++) {
+            SlaterDeterminant<uint64_t> det;
+            det.resize(chunks_per_state);
+            std::memcpy(det.data(), p, state_bytes);
+            p += state_bytes;
+            double re;
+            double im;
+            std::memcpy(&re, p, sizeof(double)); p += sizeof(double);
+            std::memcpy(&im, p, sizeof(double)); p += sizeof(double);
+            int32_t pi;
+            std::memcpy(&pi, p, sizeof(int32_t)); p += sizeof(int32_t);
+
+            const std::complex<double> amp(re, im);
+            if (pi >= 0 && pi < static_cast<int32_t>(psis.size()) && psis[pi]) {
+                auto [it, inserted] = psis[pi]->try_emplace(det, amp);
+                if (!inserted) {
+                    it->second += amp;
+                }
+            }
         }
     }
 }

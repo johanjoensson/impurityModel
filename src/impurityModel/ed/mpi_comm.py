@@ -332,19 +332,21 @@ def graph_alltoall_psis(
     if comm is None or comm.size <= 1:
         return [psi.copy() for psi in psis]
 
-    from impurityModel.ed.ManyBodyUtils import ManyBodyState, pack_psis_cy, unpack_psis_cy
+    from impurityModel.ed.ManyBodyUtils import ManyBodyState, pack_psis_fused_cy, unpack_psis_fused_cy
 
     size = comm.size
     chunks_per_state = (n_bytes + 7) // 8
+    # One interleaved entry = state chunks + complex amp + int32 psi index.
+    bytes_per_entry = chunks_per_state * 8 + 2 * 8 + 4
 
-    # 1 & 4. Cython packing (counts, states, amplitudes, psi indices)
-    send_counts, state_send, amp_send, psi_send = pack_psis_cy(psis, size)
+    # 1. Cython packing into a single rank-ordered byte buffer (counts are entries/rank).
+    send_counts, send_buf = pack_psis_fused_cy(psis, size, chunks_per_state)
 
     # 2. Exchange counts
     recv_counts = np.empty(size, dtype=np.int64)
     comm.Alltoall(send_counts, recv_counts)
 
-    # 3. Build graph communicator
+    # 3. Build graph communicator over the (sparse) send/recv neighbourhood
     destinations = [r for r in range(size) if send_counts[r] > 0]
     sources = [r for r in range(size) if recv_counts[r] > 0]
     graph_comm = comm.Create_dist_graph_adjacent(sources, destinations, reorder=False)
@@ -354,38 +356,29 @@ def graph_alltoall_psis(
         np.concatenate(([0], np.cumsum(s_counts_nb[:-1]))) if len(s_counts_nb) else np.array([], dtype=np.int64)
     )
 
-    # 5. Allocate receive buffers
+    # 4. Allocate the single receive byte buffer
     total_recv = int(np.sum(recv_counts))
-    state_recv = np.empty(total_recv * chunks_per_state, dtype=np.uint64)
-    amp_recv = np.empty(total_recv, dtype=np.complex128)
-    psi_recv = np.empty(total_recv, dtype=np.int32)
+    recv_buf = np.empty(total_recv * bytes_per_entry, dtype=np.uint8)
 
     r_counts_nb = np.array([recv_counts[r] for r in sources], dtype=np.int64)
     r_displs_nb = (
         np.concatenate(([0], np.cumsum(r_counts_nb[:-1]))) if len(r_counts_nb) else np.array([], dtype=np.int64)
     )
 
-    # 6. Exchange data
+    # 5. One fused exchange (BYTE) instead of three -- 3x fewer latency-bound rounds, the
+    #    dominant cost of the dense small-message all-to-all at 100s-1000s of ranks.
     graph_comm.Neighbor_alltoallv(
-        [state_send, s_counts_nb * chunks_per_state * 8, s_displs_nb * chunks_per_state * 8, MPI.BYTE],
-        [state_recv, r_counts_nb * chunks_per_state * 8, r_displs_nb * chunks_per_state * 8, MPI.BYTE],
-    )
-    graph_comm.Neighbor_alltoallv(
-        [amp_send, s_counts_nb, s_displs_nb, MPI.C_DOUBLE_COMPLEX],
-        [amp_recv, r_counts_nb, r_displs_nb, MPI.C_DOUBLE_COMPLEX],
-    )
-    graph_comm.Neighbor_alltoallv(
-        [psi_send, s_counts_nb, s_displs_nb, MPI.INT],
-        [psi_recv, r_counts_nb, r_displs_nb, MPI.INT],
+        [send_buf, s_counts_nb * bytes_per_entry, s_displs_nb * bytes_per_entry, MPI.BYTE],
+        [recv_buf, r_counts_nb * bytes_per_entry, r_displs_nb * bytes_per_entry, MPI.BYTE],
     )
 
-    # 7. Free communicator
+    # 6. Free communicator
     graph_comm.Free()
 
-    # 8. Unpack into result
+    # 7. Unpack into result
     res = [ManyBodyState() for _ in psis]
     if total_recv > 0:
-        unpack_psis_cy(res, size, recv_counts, state_recv, amp_recv, psi_recv, chunks_per_state)
+        unpack_psis_fused_cy(res, size, recv_counts, recv_buf, chunks_per_state)
 
     return res
 
