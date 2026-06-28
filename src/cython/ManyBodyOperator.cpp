@@ -1,4 +1,4 @@
-#include <unordered_map>
+#include <boost/unordered/unordered_flat_map.hpp>
 #include "ManyBodyOperator.h"
 #include "ManyBodyState.h"
 #include <algorithm>
@@ -67,6 +67,20 @@ int set_bits(ManyBodyState::key_type::value_type byte) noexcept {
   state[state_idx] ^= mask;
   n_set += set_bits(state[state_idx] >> bit_idx);
   return n_set % 2 ? -1 : 1;
+}
+
+// Undo helper for the in-place apply (Phase 1a): toggle the occupation bit of orbital
+// `idx`. Only ever called on orbitals whose create/annihilate already succeeded, so
+// `state_idx` is in range. Bit-toggle is its own inverse and order-independent, so
+// re-toggling every successfully-applied operator restores the determinant to its
+// input value without copying it again per term.
+static inline void toggle_bit(ManyBodyState::key_type &state,
+                              size_t idx) noexcept {
+  const size_t num_bits = 8 * sizeof(ManyBodyState::key_type::value_type);
+  const size_t state_idx = idx / num_bits;
+  const size_t bit_idx = num_bits - 1 - (idx % num_bits);
+  state[state_idx] ^=
+      (static_cast<ManyBodyState::key_type::value_type>(1) << bit_idx);
 }
 
 static void initialize_from_ops(std::vector<ManyBodyOperator::value_type> &m_ops) {
@@ -442,10 +456,33 @@ bool ManyBodyOperator::state_is_within_restrictions(
   return true;
 }
 
+namespace {
+// boost::unordered_flat_map is an open-addressing (flat) hash map: contiguous storage,
+// no per-node allocation, far better cache behavior than std::unordered_map for the
+// apply accumulator. boost::hash does not pick up the std::hash<SlaterDeterminant>
+// specialization in SlaterDeterminant.h, so wrap it explicitly.
+struct SlaterKeyHash {
+  std::size_t operator()(const ManyBodyState::key_type &k) const noexcept {
+    return std::hash<ManyBodyState::key_type>{}(k);
+  }
+};
+using ResultMap =
+    boost::unordered_flat_map<ManyBodyState::key_type,
+                              ManyBodyState::mapped_type, SlaterKeyHash>;
+} // namespace
+
 [[nodiscard]] ManyBodyState ManyBodyOperator::apply(const ManyBodyState &state,
                                                     double cutoff) const {
   std::vector<std::pair<ManyBodyState::Key, ManyBodyState::Value>> local_res;
-  std::unordered_map<ManyBodyState::key_type, ManyBodyState::mapped_type> map_res;
+  ResultMap map_res;
+  map_res.reserve(state.size());
+
+  // Phase 1c: most operators carry no occupation restrictions, so hoist the emptiness
+  // test out of the per-output hot path and skip state_is_within_restrictions entirely
+  // when there is nothing to check.
+  const bool check_restrictions =
+      !std::get<0>(m_restrictions_mask).empty() ||
+      !m_weighted_restrictions_mask.empty();
 
 #if defined(PARALLEL)
   if (m_flat_dirty) {
@@ -453,8 +490,7 @@ bool ManyBodyOperator::state_is_within_restrictions(
   }
   unsigned int num_threads = std::thread::hardware_concurrency();
   std::vector<std::thread> threads;
-  std::vector<std::unordered_map<ManyBodyState::key_type, ManyBodyState::mapped_type>>
-      local_maps(num_threads);
+  std::vector<ResultMap> local_maps(num_threads);
   ManyBodyState::size_type num_slater = state.size();
   size_t chunk_size = (num_slater + num_threads - 1) / num_threads;
   for (unsigned int t = 0; t < num_threads; t++) {
@@ -473,29 +509,41 @@ bool ManyBodyOperator::state_is_within_restrictions(
       for (; it != end; it++) {
         const auto &[slater, amp] = *it;
 
+        // Copy the input determinant ONCE per SD; each term applies in place and
+        // undoes its operators afterwards (Phase 1a), instead of copying per term.
+        out_slater_determinant = slater;
         for (size_t op_idx = 0; op_idx < m_flat_coeffs.size(); op_idx++) {
-          out_slater_determinant = slater;
           double sign = 1;
           const size_t start_idx = m_flat_offsets[op_idx];
           const size_t end_idx = m_flat_offsets[op_idx + 1];
           const auto coeff = m_flat_coeffs[op_idx];
 
-          for (size_t i = start_idx; i < end_idx; i++) {
+          size_t i = start_idx;
+          for (; i < end_idx; i++) {
             const int64_t idx = m_flat_indices[i];
-            if (idx >= 0) {
-              sign *= create(out_slater_determinant, static_cast<size_t>(idx));
-            } else {
-              sign *= annihilate(out_slater_determinant,
+            const int s =
+                idx >= 0
+                    ? create(out_slater_determinant, static_cast<size_t>(idx))
+                    : annihilate(out_slater_determinant,
                                  static_cast<size_t>(-(idx + 1)));
-            }
-
-            if (sign == 0) {
+            if (s == 0) {
+              sign = 0;
               break;
             }
+            sign *= s;
           }
           if (sign != 0 &&
-              state_is_within_restrictions(out_slater_determinant)) {
+              (!check_restrictions ||
+               state_is_within_restrictions(out_slater_determinant))) {
             tmp_map[out_slater_determinant] += coeff * amp * sign;
+          }
+          // Restore out_slater_determinant to `slater`: undo the [start_idx, i)
+          // operators that actually toggled a bit.
+          for (size_t j = start_idx; j < i; j++) {
+            const int64_t idx = m_flat_indices[j];
+            toggle_bit(out_slater_determinant,
+                       idx >= 0 ? static_cast<size_t>(idx)
+                                : static_cast<size_t>(-(idx + 1)));
           }
         }
       }
@@ -519,28 +567,41 @@ bool ManyBodyOperator::state_is_within_restrictions(
   }
   ManyBodyState::key_type out_slater_determinant;
   for (const auto &[slater, amp] : state) {
+    // Copy the input determinant ONCE per SD; each term applies its operators in
+    // place and undoes them afterwards (Phase 1a), instead of copying per term.
+    out_slater_determinant = slater;
     for (size_t op_idx = 0; op_idx < m_flat_coeffs.size(); op_idx++) {
-      out_slater_determinant = slater;
       double sign = 1;
       const size_t start_idx = m_flat_offsets[op_idx];
       const size_t end_idx = m_flat_offsets[op_idx + 1];
       const auto coeff = m_flat_coeffs[op_idx];
 
-      for (size_t i = start_idx; i < end_idx; i++) {
+      size_t i = start_idx;
+      for (; i < end_idx; i++) {
         const int64_t idx = m_flat_indices[i];
-        if (idx >= 0) {
-          sign *= create(out_slater_determinant, static_cast<size_t>(idx));
-        } else {
-          sign *= annihilate(out_slater_determinant,
+        const int s =
+            idx >= 0
+                ? create(out_slater_determinant, static_cast<size_t>(idx))
+                : annihilate(out_slater_determinant,
                              static_cast<size_t>(-(idx + 1)));
-        }
-
-        if (sign == 0) {
+        if (s == 0) {
+          sign = 0;
           break;
         }
+        sign *= s;
       }
-      if (sign != 0 && state_is_within_restrictions(out_slater_determinant)) {
+      if (sign != 0 && (!check_restrictions ||
+                        state_is_within_restrictions(out_slater_determinant))) {
         map_res[out_slater_determinant] += coeff * amp * sign;
+      }
+      // Restore out_slater_determinant to `slater`: undo the [start_idx, i)
+      // operators that actually toggled a bit. A failing op (s == 0) at index i did
+      // not modify the determinant, so it is excluded.
+      for (size_t j = start_idx; j < i; j++) {
+        const int64_t idx = m_flat_indices[j];
+        toggle_bit(out_slater_determinant,
+                   idx >= 0 ? static_cast<size_t>(idx)
+                            : static_cast<size_t>(-(idx + 1)));
       }
     }
   }

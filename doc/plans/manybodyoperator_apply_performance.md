@@ -88,22 +88,24 @@ profiling.
 Low-risk, keep the generic kernel, attack (A)(B)(C)(D) directly. Each sub-task is one
 checkbox + golden-oracle re-run.
 
-- [ ] **1a — Remove the per-term SD copy (A).** Replace `out_slater_determinant =
-  slater` per term with a **single reused scratch key** sized once to
-  `state.begin()->first.size()`: apply the term's ops in place, accumulate, then
-  **undo** them (each `create`/`annihilate` toggles one bit, so re-applying the same
-  index restores the key). General over arbitrary `n_orbs`. *Checkpoint:* golden
-  oracle green; timing improves.
-- [ ] **1b — Faster accumulator (C).** Swap `std::unordered_map<key_type, mapped_type>`
-  for `boost::unordered_flat_map` (header via `flat_map_wrapper.hpp`'s boost dep) keyed
-  by `SlaterDeterminant::hash`, with a `reserve()` estimate. Both the serial and
-  `PARALLEL` `local_maps` paths. *Checkpoint:* golden oracle green; timing improves
-  (expected the largest single win).
-- [ ] **1c — Restriction fast-path (1d in notes).** Early-out in
-  `state_is_within_restrictions` (or at its call site) when both
-  `m_restrictions_mask` masks and `m_weighted_restrictions_mask` are empty.
-  *Checkpoint:* golden oracle green; no-restriction fixture faster, restricted path
-  unchanged.
+- [x] **1a — Remove the per-term SD copy (A).** `out_slater_determinant = slater` is now
+  done **once per input SD**; each term applies its operators in place and undoes the
+  `[start_idx, i)` bits afterward via a new `toggle_bit` helper (bit-toggle is its own
+  inverse, order-independent; a failing `s==0` op leaves the key untouched and is
+  excluded). Both serial and `PARALLEL` paths. *Checkpoint:* ✅ golden oracle + 29
+  tests green; C++ microbench serial 110.7→81.9 ms, PARALLEL 127.4→78.3 ms (combined
+  with 1b; PARALLEL now beats serial).
+- [x] **1b — Faster accumulator (C).** Swapped `std::unordered_map` for
+  `boost::unordered_flat_map` (Boost 1.90, `<boost/unordered/unordered_flat_map.hpp>`)
+  with a `SlaterKeyHash` wrapping the `std::hash<SlaterDeterminant>` specialization
+  (boost::hash does not pick it up), `reserve(state.size())`. Both serial `map_res` and
+  `PARALLEL` `local_maps`. *Checkpoint:* ✅ golden oracle green; **largest single win** —
+  Python `apply_multi`: hamiltonian 128→89 ms (−30%), transition 187→120 ms (−36%),
+  constant 0.71→0.28 ms.
+- [x] **1c — Restriction fast-path.** Hoisted a `check_restrictions` flag
+  (`!masks.empty() || !weighted.empty()`) out of the per-output loop; the no-restriction
+  case skips `state_is_within_restrictions` entirely. *Checkpoint:* ✅ golden oracle +
+  `test_weighted_restrictions` green (36 tests); restricted path unchanged.
 
 ---
 
