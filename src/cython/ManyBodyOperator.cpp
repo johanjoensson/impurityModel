@@ -99,6 +99,30 @@ static inline bool mask_occupied(const ManyBodyState::key_type &state,
   return true;
 }
 
+// Is orbital `idx` occupied in `state`? (chunks beyond the determinant are empty.)
+static inline bool bit_set(const ManyBodyState::key_type &state,
+                           size_t idx) noexcept {
+  const size_t num_bits = 8 * sizeof(ManyBodyState::key_type::value_type);
+  const size_t state_idx = idx / num_bits;
+  if (state_idx >= state.size()) {
+    return false;
+  }
+  const size_t bit_idx = num_bits - 1 - (idx % num_bits);
+  return (state[state_idx] >> bit_idx) & 1U;
+}
+
+// Parity (0/1) of the number of occupied orbitals selected by `mask` -- the one-body
+// fermion sign exponent. Loops over the actual key_size chunks.
+static inline int mask_parity(const ManyBodyState::key_type &state,
+                              const ManyBodyState::key_type &mask) noexcept {
+  int pc = 0;
+  const size_t lim = std::min(state.size(), mask.size());
+  for (size_t j = 0; j < lim; j++) {
+    pc += set_bits(state[j] & mask[j]);
+  }
+  return pc & 1;
+}
+
 static void initialize_from_ops(std::vector<ManyBodyOperator::value_type> &m_ops) {
   std::sort(m_ops.begin(), m_ops.end(),
             [](const ManyBodyOperator::value_type &a,
@@ -558,6 +582,25 @@ using ResultMap =
             }
             continue;
           }
+          // Phase 2c fast path: off-diagonal one-body hop c^d_i c_j -> bit tests + a
+          // masked-popcount sign, no create/annihilate.
+          if (m_flat_onebody[op_idx]) {
+            const size_t ob_i = m_onebody_i[op_idx];
+            const size_t ob_j = m_onebody_j[op_idx];
+            if (bit_set(slater, ob_j) && !bit_set(slater, ob_i)) {
+              const double sgn =
+                  mask_parity(slater, m_onebody_between[op_idx]) ? -1.0 : 1.0;
+              toggle_bit(out_slater_determinant, ob_j); // remove j
+              toggle_bit(out_slater_determinant, ob_i); // add i
+              if (!check_restrictions ||
+                  state_is_within_restrictions(out_slater_determinant)) {
+                emit(out_slater_determinant, m_flat_coeffs[op_idx] * amp * sgn);
+              }
+              toggle_bit(out_slater_determinant, ob_j); // restore scratch
+              toggle_bit(out_slater_determinant, ob_i);
+            }
+            continue;
+          }
           double sign = 1;
           const size_t start_idx = m_flat_offsets[op_idx];
           const size_t end_idx = m_flat_offsets[op_idx + 1];
@@ -669,6 +712,25 @@ using ResultMap =
         if (mask_occupied(slater, m_density_mask[op_idx]) &&
             (!check_restrictions || state_is_within_restrictions(slater))) {
           diag_accum += m_density_coeff[op_idx] * amp;
+        }
+        continue;
+      }
+      // Phase 2c fast path: off-diagonal one-body hop c^d_i c_j -> bit tests + a masked-
+      // popcount sign, no create/annihilate.
+      if (m_flat_onebody[op_idx]) {
+        const size_t ob_i = m_onebody_i[op_idx];
+        const size_t ob_j = m_onebody_j[op_idx];
+        if (bit_set(slater, ob_j) && !bit_set(slater, ob_i)) {
+          const double sgn =
+              mask_parity(slater, m_onebody_between[op_idx]) ? -1.0 : 1.0;
+          toggle_bit(out_slater_determinant, ob_j); // remove j
+          toggle_bit(out_slater_determinant, ob_i); // add i
+          if (!check_restrictions ||
+              state_is_within_restrictions(out_slater_determinant)) {
+            map_res[out_slater_determinant] += m_flat_coeffs[op_idx] * amp * sgn;
+          }
+          toggle_bit(out_slater_determinant, ob_j); // restore scratch
+          toggle_bit(out_slater_determinant, ob_i);
         }
         continue;
       }
@@ -928,6 +990,10 @@ void ManyBodyOperator::build_flat_representation() const {
   m_flat_density.clear();
   m_density_mask.clear();
   m_density_coeff.clear();
+  m_flat_onebody.clear();
+  m_onebody_i.clear();
+  m_onebody_j.clear();
+  m_onebody_between.clear();
 
   const std::vector<Term> terms = collect_flat_terms(m_ops, m_normal_order);
 
@@ -1003,6 +1069,35 @@ void ManyBodyOperator::build_flat_representation() const {
     m_flat_density.push_back(is_density ? 1 : 0);
     m_density_mask.push_back(std::move(mask));
     m_density_coeff.push_back(signed_coeff);
+
+    // Off-diagonal one-body hop c^d_i c_j (i != j): exactly one creator and one
+    // annihilator on different orbitals (Phase 2c). Precompute the between-mask so the
+    // fermion sign is one popcount at apply time.
+    const bool is_onebody = !diagonal && creators.size() == 1 &&
+                            annihilators.size() == 1 &&
+                            creators[0] != annihilators[0];
+    size_t ob_i = 0;
+    size_t ob_j = 0;
+    ManyBodyState::key_type between;
+    if (is_onebody) {
+      ob_i = static_cast<size_t>(creators[0]);     // created orbital
+      ob_j = static_cast<size_t>(annihilators[0]); // annihilated orbital
+      const size_t num_bits = 8 * sizeof(ManyBodyState::key_type::value_type);
+      const size_t lo = std::min(ob_i, ob_j);
+      const size_t hi = std::max(ob_i, ob_j);
+      for (size_t o = lo + 1; o < hi; o++) {
+        const size_t chunk = o / num_bits;
+        const size_t bit = num_bits - 1 - (o % num_bits);
+        if (chunk >= between.size()) {
+          between.resize(chunk + 1, 0);
+        }
+        between[chunk] |= static_cast<ManyBodyState::key_type::value_type>(1) << bit;
+      }
+    }
+    m_flat_onebody.push_back(is_onebody ? 1 : 0);
+    m_onebody_i.push_back(ob_i);
+    m_onebody_j.push_back(ob_j);
+    m_onebody_between.push_back(std::move(between));
   }
   m_flat_dirty = false;
 }

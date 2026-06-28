@@ -132,14 +132,24 @@ Classify each term **once** in `build_flat_representation()`; dispatch in `apply
   ever fires on provable pure-`n` products. *Checkpoint:* ✅ golden oracle +
   `test_diagonal_independent` (occupancy-only oracle, no fermion sign — a true
   cross-check) green; **diagonal fixture 29→12 ms (−59%)** vs the Phase-1 binary.
-- [x] **2c/2d — Off-diagonal + GENERAL.** Off-diagonal 1-/2-body and unpaired/transition
-  terms keep the Phase-1 in-place `create`/`annihilate` path (which already early-rejects
-  on the occupancy/vacancy bit test *before* any popcount). The standalone masked
-  between-sign kernel was **deferred**: with cheap early rejection already in place its
-  gain is marginal, and the 2-body closed-form sign is high-risk; the clean diagonal win
-  lives in 2b. The general path is the correctness fallback for any operator. *Checkpoint:*
-  ✅ transition + constant golden green; broader pipeline (`test_finite`, `test_h0`,
-  `test_density_matrix`, `test_selfenergy`, MPI `test_block_lanczos_cy_mpi`) green.
+- [x] **2c — Off-diagonal one-body masked sign (done; measured).** `c^d_i c_j` (i≠j) now
+  has its own kernel: occupancy/vacancy bit tests + the fermion sign as
+  `(-1)^popcount(state & between_mask(i,j))` with a precomputed between-mask, plus two
+  `toggle_bit`s for the output — no `create`/`annihilate`, no prefix scans. *Checkpoint:*
+  ✅ golden oracle green (the hamiltonian fixture's 300 hops cross-check the sign against
+  the general path) + broader pipeline. **A/B on the hopping microbench (½ one-body, ½
+  two-body terms): serial 83.5→79.6 ms (~4.6%), parallel 62.1→60.7 ms (~2.3%)** — a real
+  but modest win (one-body is half the terms; a hop-heavier H gains more).
+- [x] **2d — GENERAL fallback + two-body deferred.** Off-diagonal **two-body** and
+  unpaired/transition terms keep the Phase-1 in-place `create`/`annihilate` path (which
+  already early-rejects on the occupancy/vacancy bit test before any popcount). The
+  two-body masked sign is **deferred**: unlike the one-body case its sign is
+  occupancy-dependent and order-sensitive (each operator sees the state the previous one
+  modified), so a correct fused mask needs the incremental between-mask treatment — higher
+  risk for a gain bounded by the two-body *producing* fraction (~6% of applications on a
+  half-filled determinant). The general path is the correctness fallback for any operator.
+  *Checkpoint:* ✅ transition + constant golden green; `test_finite`/`h0`/`density_matrix`/
+  `selfenergy` + MPI `test_block_lanczos_cy_mpi` green.
 
 ---
 

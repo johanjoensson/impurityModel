@@ -283,6 +283,15 @@ private:
   mutable std::vector<uint8_t> m_flat_density;
   mutable std::vector<ManyBodyState::key_type> m_density_mask;
   mutable std::vector<std::complex<double>> m_density_coeff;
+  // Per-term flag (1 = off-diagonal one-body hop c^d_i c_j, i != j). These get a masked
+  // kernel: occupancy/vacancy bit tests + the fermion sign as
+  // (-1)^popcount(state & m_onebody_between), where the between-mask marks the orbitals
+  // strictly between i and j -- one popcount instead of the two prefix scans inside
+  // create/annihilate. m_onebody_i = created orbital, m_onebody_j = annihilated orbital.
+  mutable std::vector<uint8_t> m_flat_onebody;
+  mutable std::vector<size_t> m_onebody_i;
+  mutable std::vector<size_t> m_onebody_j;
+  mutable std::vector<ManyBodyState::key_type> m_onebody_between;
 
   void build_flat_representation() const;
 
