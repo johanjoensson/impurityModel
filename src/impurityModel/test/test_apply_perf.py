@@ -256,6 +256,58 @@ def test_diagonal_independent(oracle_fixtures):
         assert abs(ev - produced[key]) < TOL, f"diagonal amplitude mismatch at {key}"
 
 
+def _make_non_normal_ordered(rng, n):
+    """Contraction-heavy operator with annihilations left of creations (Phase 3 input)."""
+    op = {}
+    for _ in range(n):
+        a, b, c, d = (rng.randrange(N_ORBS) for _ in range(4))
+        key = ((a, "a"), (b, "c"), (c, "a"), (d, "c"))  # c_a c^d_b c_c c^d_d
+        op[key] = op.get(key, 0) + complex(rng.gauss(0, 1), rng.gauss(0, 1))
+    return ManyBodyOperator(op)
+
+
+def test_normal_ordering_contraction():
+    """c_i c^d_i = 1 - n_i: the build-time contraction must produce the constant + (-n_i)."""
+    i = 5
+    op = ManyBodyOperator({((i, "a"), (i, "c")): 1.0 + 0j})  # c_i c^d_i, product order
+    assert op.num_flat_terms() == 2  # constant (1) and -n_i
+    s_occ = _sd_from_orbitals([i, 7, 70])
+    s_emp = _sd_from_orbitals([7, 70])
+    out_occ = _apply(op, ManyBodyState({s_occ: 3.0 + 0j}))
+    out_emp = _apply(op, ManyBodyState({s_emp: 3.0 + 0j}))
+    assert abs(out_occ.get(s_occ, 0) - 0.0) < TOL  # 1 - n_i = 0 when occupied
+    assert abs(out_emp.get(s_emp, 0) - 3.0) < TOL  # 1 - n_i = 1 when empty
+
+
+def test_normal_ordering_ab_invariance(oracle_fixtures):
+    """Normal ordering is a representation change: apply() must be identical on/off,
+    including on a contraction-heavy non-normal-ordered operator."""
+    _, psi = oracle_fixtures["hamiltonian"]
+    op = _make_non_normal_ordered(random.Random(7), 60)
+
+    op.set_normal_ordering(True)
+    on = _serialize(_apply(op, psi))
+    op.set_normal_ordering(False)
+    off = _serialize(_apply(op, psi))
+    _assert_matches("non_normal_ordered", on, off)
+
+
+def test_normal_ordering_multiplier(oracle_fixtures, capsys):
+    """Report the term-count multiplier (Phase 3b). Already-normal-ordered Hamiltonian
+    fixtures must not expand (multiplier ~1); the report flags any blow-up."""
+    with capsys.disabled():
+        print()
+        for name in FIXTURE_NAMES:
+            op, _ = oracle_fixtures[name]
+            op.set_normal_ordering(False)
+            raw = op.num_flat_terms()
+            op.set_normal_ordering(True)
+            normal = op.num_flat_terms()
+            mult = normal / raw if raw else 1.0
+            print(f"[normal-order] {name:11s} raw={raw:4d} normal={normal:4d} mult={mult:.2f}")
+            assert mult <= 1.5, f"{name} normal-order expansion {mult:.2f} exceeds 1.5"
+
+
 @pytest.mark.parametrize("name", FIXTURE_NAMES)
 def test_apply_timing(name, timing_fixtures, capsys):
     """Phase 0.3 timing harness: print median ms/apply (no absolute-time assertion)."""

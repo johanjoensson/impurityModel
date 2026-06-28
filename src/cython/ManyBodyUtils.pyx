@@ -639,6 +639,22 @@ cdef class ManyBodyOperator:
         """
         self.o.clear()
 
+    def set_normal_ordering(self, bint enable):
+        """
+        Enable/disable build-time normal ordering of the apply() representation.
+
+        Representation change only; the operator's action is unchanged. Default enabled.
+        """
+        self.o.set_normal_ordering(enable)
+
+    def normal_ordering(self) -> bool:
+        """Return whether build-time normal ordering is enabled."""
+        return self.o.normal_ordering()
+
+    def num_flat_terms(self) -> int:
+        """Number of terms in the (possibly normal-ordered) apply() representation."""
+        return self.o.num_flat_terms()
+
 
 
 def applyOp(ManyBodyOperator op, ManyBodyState psi, double cutoff=0) ->ManyBodyState :

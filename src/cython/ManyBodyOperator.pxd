@@ -56,6 +56,9 @@ cdef extern from "ManyBodyOperator.h" nogil:
         size_type size()
         size_type max_size()
         void clear()
+        void set_normal_ordering(bint)
+        bint normal_ordering()
+        size_type num_flat_terms()
 
         bint operator==(const ManyBodyOperator&)
         bint operator!=(const ManyBodyOperator&)

@@ -133,6 +133,21 @@ public:
   [[nodiscard]] bool empty() const noexcept;
   bool clear();
 
+  /**
+   * @brief Enable/disable build-time normal ordering of the apply() representation.
+   *
+   * When enabled (default) each term is rewritten to canonical order (creations before
+   * annihilations, each group ascending in orbital) via the fermionic anticommutators,
+   * emitting contraction terms when a creation crosses an annihilation of the same
+   * orbital and dropping Pauli-vanishing terms. This is a representation change only:
+   * the operator's action on any state is unchanged. It lets the diagonal/density fast
+   * path absorb forms like c_i c^d_i = 1 - n_i and merges terms equal up to ordering.
+   */
+  void set_normal_ordering(bool enable) noexcept;
+  [[nodiscard]] bool normal_ordering() const noexcept;
+  /** @brief Number of terms in the (possibly normal-ordered) apply() representation. */
+  [[nodiscard]] size_type num_flat_terms() const;
+
   ManyBodyOperator &operator+=(const ManyBodyOperator &) noexcept;
   ManyBodyOperator &operator-=(const ManyBodyOperator &) noexcept;
   ManyBodyOperator &operator*=(mapped_type) noexcept;
@@ -248,6 +263,7 @@ private:
                         std::pair<long, long>>>
       m_weighted_restrictions_mask;
 
+  bool m_normal_order{true};
   mutable bool m_flat_dirty{true};
   mutable std::vector<int64_t> m_flat_indices;
   mutable std::vector<size_t> m_flat_offsets;

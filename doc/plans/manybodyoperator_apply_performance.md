@@ -145,17 +145,31 @@ Classify each term **once** in `build_flat_representation()`; dispatch in `apply
 
 ## Phase 3 — Build-time normal ordering (this is the Q2 idea; depends on Phase 2)
 
-- [ ] **3a — Canonicalize at build.** In `build_flat_representation`, reorder each
-  term's elementary operators to grouped (all creations, then all annihilations),
-  tracking the anticommutation sign; emit contraction terms when a creation crosses an
-  annihilation of the **same** orbital (`c_i c†_i = 1 − c†_i c_i`). Behind a flag
-  defaulting **on** (expansion is bounded for 1-/2-body). *Checkpoint:* golden oracle
-  green (canonical form is an identity transform on the operator's action); record the
-  term-count multiplier per fixture in the checkpoint note.
-- [ ] **3b — Confirm it feeds Phase 2.** Verify the canonical form makes diagonal-vs-hop
-  classification unambiguous and de-duplicates order-equal terms; if the expansion
-  multiplier on any fixture exceeds ~1.5, **stop and report** (plan bug — revisit the
-  no-shared-index-crossing variant). *Checkpoint:* oracle green; multipliers logged.
+- [x] **3a — Canonicalize at build.** `collect_flat_terms` rewrites each term to
+  canonical order (creations before annihilations, each group ascending) via a recursive
+  anticommutator expansion: `c_p c†_q = δ_pq − c†_q c_p` (emits a contraction term when
+  `p==q`), `c†_p c†_q = −c†_q c†_p` / `c_p c_q = −c_q c_p`, and drops Pauli-vanishing
+  equal-orbital pairs. The expansion is merged (sum equal terms, drop ~zero coeffs) and
+  feeds the flat arrays + Phase-2 classification. Gated by `m_normal_order` (default
+  **on**), exposed via `set_normal_ordering` / `normal_ordering` / `num_flat_terms` on the
+  Cython wrapper. *Checkpoint:* ✅ the Phase-2 golden (generated **without** normal
+  ordering) is reproduced with default-on within tolerance — i.e. normal ordering is a
+  true identity transform on every fixture's apply action.
+- [x] **3b — Confirm it feeds Phase 2 / measure expansion.** `test_normal_ordering_*`
+  cover: (i) the `c_i c†_i = 1 − n_i` contraction (2 terms; 0 occupied / 1 empty,
+  occupancy oracle); (ii) **A/B invariance** — apply identical with normal ordering on vs
+  off, max diff **0.0**, on a contraction-heavy non-normal-ordered operator; (iii) the
+  per-fixture **multiplier**, asserted ≤ 1.5. *Checkpoint:* ✅ multipliers on the
+  already-normal-ordered fixtures: hamiltonian **0.98** (a Pauli `i==j` term dropped),
+  transition / constant / diagonal **1.00** — no blow-up; contraction expansion occurs
+  only for genuinely non-normal-ordered input. Broader pipeline (`test_finite`, `h0`,
+  `density_matrix`, `selfenergy`, `natural_orbitals`, `greens_function`, `spectra`,
+  `gf_autorouting`) + MPI block-Lanczos all green with default-on.
+
+**Phase 3 ROI note:** real impurity Hamiltonians are already normal-ordered, so this is a
+performance no-op on them (build-time only, apply unchanged). Its value is (a) robustness
+— any operator input order now yields the same canonical apply path — and (b) it lets the
+Phase-2 density fast path absorb `1 − n`-style contractions that it otherwise defers.
 
 ---
 

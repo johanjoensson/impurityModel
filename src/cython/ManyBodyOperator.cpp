@@ -752,6 +752,120 @@ ManyBodyOperator ManyBodyOperator::operator-() const noexcept {
   return res;
 }
 
+void ManyBodyOperator::set_normal_ordering(bool enable) noexcept {
+  if (enable != m_normal_order) {
+    m_normal_order = enable;
+    m_flat_dirty = true;
+  }
+}
+
+bool ManyBodyOperator::normal_ordering() const noexcept { return m_normal_order; }
+
+ManyBodyOperator::size_type ManyBodyOperator::num_flat_terms() const {
+  if (m_flat_dirty) {
+    build_flat_representation();
+  }
+  return m_flat_coeffs.size();
+}
+
+namespace {
+using Term = std::pair<std::vector<int64_t>, std::complex<double>>;
+
+// Rewrite one operator string (in product / left-to-right reading order) into a list of
+// normal-ordered terms (creations before annihilations, each group ascending in orbital)
+// using the fermionic anticommutators:
+//   c_p c^d_q = delta_pq - c^d_q c_p   (contraction when p == q)
+//   c^d_p c^d_q = -c^d_q c^d_p,  c_p c_q = -c_q c_p   (p != q; equal-orbital pair = 0).
+// The recursion fixes the leftmost out-of-order adjacent pair and terminates because each
+// swap reduces the inversion count and each contraction shortens the term.
+void normal_order_recurse(std::vector<int64_t> ops, std::complex<double> coeff,
+                          std::vector<Term> &out) {
+  for (size_t k = 0; k + 1 < ops.size(); k++) {
+    const int64_t a = ops[k];
+    const int64_t b = ops[k + 1];
+    const bool a_create = a >= 0;
+    const bool b_create = b >= 0;
+    const int64_t a_orb = a_create ? a : -(a + 1);
+    const int64_t b_orb = b_create ? b : -(b + 1);
+
+    // Pauli: two adjacent same-type operators on the same orbital annihilate the term.
+    if (a_create == b_create && a_orb == b_orb) {
+      return;
+    }
+
+    const int rank_a = a_create ? 0 : 1; // creations sort before annihilations
+    const int rank_b = b_create ? 0 : 1;
+    bool inverted;
+    if (rank_a != rank_b) {
+      inverted = rank_a > rank_b; // annihilation sitting left of a creation
+    } else {
+      inverted = a_orb > b_orb; // same type, orbital out of ascending order
+    }
+    if (!inverted) {
+      continue;
+    }
+
+    if (rank_a == 1 && rank_b == 0) {
+      // c_{a_orb} c^d_{b_orb}: contraction (only if same orbital) + anticommuted term.
+      if (a_orb == b_orb) {
+        std::vector<int64_t> contracted;
+        contracted.reserve(ops.size() - 2);
+        for (size_t m = 0; m < ops.size(); m++) {
+          if (m != k && m != k + 1) {
+            contracted.push_back(ops[m]);
+          }
+        }
+        normal_order_recurse(std::move(contracted), coeff, out);
+      }
+    }
+    std::vector<int64_t> swapped = ops;
+    std::swap(swapped[k], swapped[k + 1]);
+    normal_order_recurse(std::move(swapped), -coeff, out);
+    return; // the recursive calls finish ordering the rest
+  }
+  out.emplace_back(std::move(ops), coeff);
+}
+
+// Build the list of terms apply() flattens: the raw operator terms, or their normal-
+// ordered expansion (merged, with zero/Pauli terms dropped) when normal ordering is on.
+std::vector<Term>
+collect_flat_terms(const std::vector<ManyBodyOperator::value_type> &m_ops,
+                   bool normal_order) {
+  std::vector<Term> terms;
+  if (!normal_order) {
+    terms.reserve(m_ops.size());
+    for (const auto &op : m_ops) {
+      terms.emplace_back(op.first, op.second);
+    }
+    return terms;
+  }
+
+  std::vector<Term> expanded;
+  for (const auto &op : m_ops) {
+    // m_ops stores operators rightmost-first (apply order); reverse to product order.
+    std::vector<int64_t> product(op.first.rbegin(), op.first.rend());
+    normal_order_recurse(std::move(product), op.second, expanded);
+  }
+  // Back to apply/stored order, then merge identical terms and drop ~zero coefficients.
+  for (auto &[ops, c] : expanded) {
+    std::reverse(ops.begin(), ops.end());
+  }
+  std::sort(expanded.begin(), expanded.end(),
+            [](const Term &x, const Term &y) { return x.first < y.first; });
+  for (auto &[ops, c] : expanded) {
+    if (!terms.empty() && terms.back().first == ops) {
+      terms.back().second += c;
+    } else {
+      terms.emplace_back(std::move(ops), c);
+    }
+  }
+  terms.erase(std::remove_if(terms.begin(), terms.end(),
+                             [](const Term &t) { return std::norm(t.second) < 1e-24; }),
+              terms.end());
+  return terms;
+}
+} // namespace
+
 void ManyBodyOperator::build_flat_representation() const {
   if (!m_flat_dirty) return;
   m_flat_indices.clear();
@@ -762,10 +876,12 @@ void ManyBodyOperator::build_flat_representation() const {
   m_density_mask.clear();
   m_density_coeff.clear();
 
+  const std::vector<Term> terms = collect_flat_terms(m_ops, m_normal_order);
+
   m_flat_offsets.push_back(0);
   std::vector<int64_t> creators;     // reused scratch
   std::vector<int64_t> annihilators; // reused scratch
-  for (const auto& op : m_ops) {
+  for (const auto& op : terms) {
     const auto& indices = op.first;
     m_flat_indices.insert(m_flat_indices.end(), indices.begin(), indices.end());
     m_flat_offsets.push_back(m_flat_indices.size());
