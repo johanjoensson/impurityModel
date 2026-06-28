@@ -197,11 +197,15 @@ targets the *message pattern*, not the local loop.
   dominant cost of the dense small-message all-to-all at scale. *Checkpoint:* ✅ MPI
   `test_mpi_comm` (round-trip, ownership, ring-exchange) + `test_block_lanczos_cy_mpi` +
   `test_no_ghost_bands` green at **n=3/4/6**; serial regression green.
-- [ ] **4b — Reuse the `dist_graph` communicator** across matvecs instead of
-  `Create_dist_graph_adjacent` + `Free` every call. Cache keyed by the per-rank
-  `(sources, destinations)` neighbourhood; rebuild only when an `Allreduce(LOR, changed)`
-  says any rank's topology changed (so the collective stays consistent — no deadlock).
-  *Checkpoint:* MPI tests green at n=3/4/6; rebuild count drops across a Lanczos run.
+- [x] **4b — Reuse the `dist_graph` communicator** across matvecs instead of
+  `Create_dist_graph_adjacent` + `Free` every call. `_cached_dist_graph` (in `mpi_comm.py`)
+  caches the graph comm keyed by `id(parent comm)` (parent pinned to keep the id valid) and
+  rebuilds only when an `Allreduce(LOR)` over each rank's
+  `(sources, destinations) != cached` says any rank's topology changed — so the collective
+  `Create_dist_graph_adjacent` stays consistent across ranks (deadlock-free by construction).
+  *Checkpoint:* ✅ MPI `test_mpi_comm` + `test_block_lanczos_cy_mpi` + `test_no_ghost_bands`
+  + `test_mpi_block_lanczos_cy` green at n=3/4/6; instrumented check confirms the graph comm
+  is built once and reused across repeated redistributes (1 cache entry, stable id).
 - [ ] **4c — Sparse count exchange (NBX).** Replace the dense size-`P` `Alltoall` of
   `send_counts` with a nonblocking-consensus (NBX) sparse exchange so the count step is
   O(neighbours) not O(P). Highest scaling value at 1000s of ranks, highest risk; gated on

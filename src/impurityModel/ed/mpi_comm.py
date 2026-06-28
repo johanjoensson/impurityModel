@@ -17,6 +17,37 @@ comm = MPI.COMM_WORLD
 rank = comm.rank
 ranks = comm.size
 
+# Cache of distributed-graph communicators for graph_alltoall_psis, keyed by id(parent
+# comm). Building a dist_graph is a collective with real setup cost; at 100s-1000s of
+# ranks rebuilding it every matvec dominates. We reuse it whenever the per-rank
+# (sources, destinations) neighbourhood is unchanged. The parent comm is pinned in the
+# cache value so its id stays valid while the entry lives.
+_graph_comm_cache: "dict[int, tuple]" = {}
+
+
+def _cached_dist_graph(comm, sources, destinations):
+    """Return a dist_graph communicator for this (sources, destinations) neighbourhood,
+    reusing a cached one when the topology is unchanged.
+
+    The rebuild decision is made **collectively** via ``Allreduce(LOR)``: if *any* rank's
+    neighbourhood changed, *all* ranks rebuild together. This keeps the collective
+    ``Create_dist_graph_adjacent`` call consistent across ranks (no deadlock), regardless
+    of how each rank's local topology shifted.
+    """
+    key = id(comm)
+    src_t = tuple(sources)
+    dst_t = tuple(destinations)
+    cached = _graph_comm_cache.get(key)
+    changed_local = cached is None or cached[0] != src_t or cached[1] != dst_t
+    changed = comm.allreduce(changed_local, op=MPI.LOR)
+    if changed:
+        if cached is not None:
+            cached[2].Free()
+        graph_comm = comm.Create_dist_graph_adjacent(sources, destinations, reorder=False)
+        _graph_comm_cache[key] = (src_t, dst_t, graph_comm, comm)
+        return graph_comm
+    return cached[2]
+
 
 def dict_chunks_from_one_MPI_rank(data, chunk_maxsize=1 * 10**6, root=0):
     """
@@ -346,10 +377,10 @@ def graph_alltoall_psis(
     recv_counts = np.empty(size, dtype=np.int64)
     comm.Alltoall(send_counts, recv_counts)
 
-    # 3. Build graph communicator over the (sparse) send/recv neighbourhood
+    # 3. Reuse (or build) the graph communicator over the send/recv neighbourhood.
     destinations = [r for r in range(size) if send_counts[r] > 0]
     sources = [r for r in range(size) if recv_counts[r] > 0]
-    graph_comm = comm.Create_dist_graph_adjacent(sources, destinations, reorder=False)
+    graph_comm = _cached_dist_graph(comm, sources, destinations)
 
     s_counts_nb = np.array([send_counts[r] for r in destinations], dtype=np.int64)
     s_displs_nb = (
@@ -372,8 +403,7 @@ def graph_alltoall_psis(
         [recv_buf, r_counts_nb * bytes_per_entry, r_displs_nb * bytes_per_entry, MPI.BYTE],
     )
 
-    # 6. Free communicator
-    graph_comm.Free()
+    # 6. graph_comm is cached for reuse (not freed here); see _cached_dist_graph.
 
     # 7. Unpack into result
     res = [ManyBodyState() for _ in psis]
