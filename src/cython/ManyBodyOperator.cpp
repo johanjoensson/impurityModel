@@ -83,6 +83,22 @@ static inline void toggle_bit(ManyBodyState::key_type &state,
       (static_cast<ManyBodyState::key_type::value_type>(1) << bit_idx);
 }
 
+// Phase 2b fast-path test: are all orbitals in `mask` occupied in `state`? Chunks of
+// `mask` beyond `state.size()` would require occupied orbitals the determinant cannot
+// hold, so they fail. Zero mask chunks (and the empty mask of a constant term) pass.
+static inline bool mask_occupied(const ManyBodyState::key_type &state,
+                                 const ManyBodyState::key_type &mask) noexcept {
+  for (size_t j = 0; j < mask.size(); j++) {
+    if (mask[j] == 0) {
+      continue;
+    }
+    if (j >= state.size() || (state[j] & mask[j]) != mask[j]) {
+      return false;
+    }
+  }
+  return true;
+}
+
 static void initialize_from_ops(std::vector<ManyBodyOperator::value_type> &m_ops) {
   std::sort(m_ops.begin(), m_ops.end(),
             [](const ManyBodyOperator::value_type &a,
@@ -512,7 +528,18 @@ using ResultMap =
         // Copy the input determinant ONCE per SD; each term applies in place and
         // undoes its operators afterwards (Phase 1a), instead of copying per term.
         out_slater_determinant = slater;
+        // Phase 2b: accumulate all diagonal terms into one scalar -> single insert.
+        ManyBodyState::mapped_type diag_accum{0.0, 0.0};
         for (size_t op_idx = 0; op_idx < m_flat_coeffs.size(); op_idx++) {
+          // Phase 2b fast path: pure number-operator product -> one occupancy AND-test
+          // and a constant-signed scalar add, no create/annihilate.
+          if (m_flat_density[op_idx]) {
+            if (mask_occupied(slater, m_density_mask[op_idx]) &&
+                (!check_restrictions || state_is_within_restrictions(slater))) {
+              diag_accum += m_density_coeff[op_idx] * amp;
+            }
+            continue;
+          }
           double sign = 1;
           const size_t start_idx = m_flat_offsets[op_idx];
           const size_t end_idx = m_flat_offsets[op_idx + 1];
@@ -535,7 +562,12 @@ using ResultMap =
           if (sign != 0 &&
               (!check_restrictions ||
                state_is_within_restrictions(out_slater_determinant))) {
-            tmp_map[out_slater_determinant] += coeff * amp * sign;
+            const auto contribution = coeff * amp * sign;
+            if (m_flat_diagonal[op_idx]) {
+              diag_accum += contribution; // out == slater
+            } else {
+              tmp_map[out_slater_determinant] += contribution;
+            }
           }
           // Restore out_slater_determinant to `slater`: undo the [start_idx, i)
           // operators that actually toggled a bit.
@@ -545,6 +577,9 @@ using ResultMap =
                        idx >= 0 ? static_cast<size_t>(idx)
                                 : static_cast<size_t>(-(idx + 1)));
           }
+        }
+        if (diag_accum != ManyBodyState::mapped_type(0.0, 0.0)) {
+          tmp_map[slater] += diag_accum;
         }
       }
     }));
@@ -570,7 +605,19 @@ using ResultMap =
     // Copy the input determinant ONCE per SD; each term applies its operators in
     // place and undoes them afterwards (Phase 1a), instead of copying per term.
     out_slater_determinant = slater;
+    // Phase 2b: sum every diagonal term's contribution (all map to `slater`) into one
+    // scalar and emit a single insert, instead of one colliding insert per term.
+    ManyBodyState::mapped_type diag_accum{0.0, 0.0};
     for (size_t op_idx = 0; op_idx < m_flat_coeffs.size(); op_idx++) {
+      // Phase 2b fast path: pure number-operator product -> one occupancy AND-test and a
+      // constant-signed scalar add, no create/annihilate.
+      if (m_flat_density[op_idx]) {
+        if (mask_occupied(slater, m_density_mask[op_idx]) &&
+            (!check_restrictions || state_is_within_restrictions(slater))) {
+          diag_accum += m_density_coeff[op_idx] * amp;
+        }
+        continue;
+      }
       double sign = 1;
       const size_t start_idx = m_flat_offsets[op_idx];
       const size_t end_idx = m_flat_offsets[op_idx + 1];
@@ -592,7 +639,13 @@ using ResultMap =
       }
       if (sign != 0 && (!check_restrictions ||
                         state_is_within_restrictions(out_slater_determinant))) {
-        map_res[out_slater_determinant] += coeff * amp * sign;
+        const auto contribution = coeff * amp * sign;
+        if (m_flat_diagonal[op_idx]) {
+          // out_slater_determinant == slater here (occupation conserved).
+          diag_accum += contribution;
+        } else {
+          map_res[out_slater_determinant] += contribution;
+        }
       }
       // Restore out_slater_determinant to `slater`: undo the [start_idx, i)
       // operators that actually toggled a bit. A failing op (s == 0) at index i did
@@ -603,6 +656,9 @@ using ResultMap =
                    idx >= 0 ? static_cast<size_t>(idx)
                             : static_cast<size_t>(-(idx + 1)));
       }
+    }
+    if (diag_accum != ManyBodyState::mapped_type(0.0, 0.0)) {
+      map_res[slater] += diag_accum;
     }
   }
 #endif
@@ -701,13 +757,83 @@ void ManyBodyOperator::build_flat_representation() const {
   m_flat_indices.clear();
   m_flat_offsets.clear();
   m_flat_coeffs.clear();
-  
+  m_flat_diagonal.clear();
+  m_flat_density.clear();
+  m_density_mask.clear();
+  m_density_coeff.clear();
+
   m_flat_offsets.push_back(0);
+  std::vector<int64_t> creators;     // reused scratch
+  std::vector<int64_t> annihilators; // reused scratch
   for (const auto& op : m_ops) {
     const auto& indices = op.first;
     m_flat_indices.insert(m_flat_indices.end(), indices.begin(), indices.end());
     m_flat_offsets.push_back(m_flat_indices.size());
     m_flat_coeffs.push_back(op.second);
+
+    // Diagonal classification (Phase 2a): equal created/annihilated orbital
+    // multisets <=> every orbital's occupation is conserved <=> diagonal. The empty
+    // (constant) term has both multisets empty, so it is diagonal.
+    creators.clear();
+    annihilators.clear();
+    for (int64_t idx : indices) {
+      if (idx >= 0) {
+        creators.push_back(idx);
+      } else {
+        annihilators.push_back(-(idx + 1));
+      }
+    }
+    std::sort(creators.begin(), creators.end());
+    std::sort(annihilators.begin(), annihilators.end());
+    const bool diagonal = (creators == annihilators);
+    m_flat_diagonal.push_back(diagonal ? 1 : 0);
+
+    // Pure-number-product fast path (Phase 2b). Require balanced (== diagonal) and
+    // all-distinct orbitals, then *probe*: apply the term to a determinant with exactly
+    // the involved orbitals occupied. A nonzero sign proves the term is a pure product of
+    // number operators (n_i, n_i n_j, ...) with an occupancy-independent constant sign;
+    // anything that needs an empty orbital (e.g. c_i c^d_i = 1 - n_i) fails the probe and
+    // is left to the general diagonal path. So correctness never depends on this firing.
+    bool all_distinct = true;
+    for (size_t k = 1; k < creators.size() && all_distinct; k++) {
+      if (creators[k] == creators[k - 1]) {
+        all_distinct = false;
+      }
+    }
+    bool is_density = diagonal && all_distinct;
+    ManyBodyState::key_type mask; // occupancy mask over the involved orbitals
+    std::complex<double> signed_coeff{0.0, 0.0};
+    if (is_density) {
+      const size_t num_bits = 8 * sizeof(ManyBodyState::key_type::value_type);
+      for (int64_t o : creators) {
+        const size_t chunk = static_cast<size_t>(o) / num_bits;
+        const size_t bit = num_bits - 1 - (static_cast<size_t>(o) % num_bits);
+        if (chunk >= mask.size()) {
+          mask.resize(chunk + 1, 0);
+        }
+        mask[chunk] |= static_cast<ManyBodyState::key_type::value_type>(1) << bit;
+      }
+      ManyBodyState::key_type probe = mask; // involved orbitals occupied
+      double sign = 1;
+      for (int64_t idx : indices) {
+        const int s = idx >= 0
+                          ? create(probe, static_cast<size_t>(idx))
+                          : annihilate(probe, static_cast<size_t>(-(idx + 1)));
+        if (s == 0) {
+          sign = 0;
+          break;
+        }
+        sign *= s;
+      }
+      if (sign == 0) {
+        is_density = false; // not a pure n-product; defer to general diagonal path
+      } else {
+        signed_coeff = op.second * sign;
+      }
+    }
+    m_flat_density.push_back(is_density ? 1 : 0);
+    m_density_mask.push_back(std::move(mask));
+    m_density_coeff.push_back(signed_coeff);
   }
   m_flat_dirty = false;
 }

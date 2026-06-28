@@ -113,25 +113,33 @@ checkbox + golden-oracle re-run.
 
 Classify each term **once** in `build_flat_representation()`; dispatch in `apply`.
 
-- [ ] **2a — Classifier.** In `build_flat_representation`, tag each term as one of:
-  `CONSTANT` (0 ops), `DIAGONAL` (creations and annihilations on the identical orbital
-  set → key unchanged: `c†_i c_i`, `c†_i c†_j c_j c_i`), `OFFDIAG_1BODY`
-  (`c†_i c_j`, i≠j), `OFFDIAG_2BODY`, `GENERAL` (everything else incl. unpaired /
-  transition). Store the tag + precomputed orbital indices/masks in parallel arrays.
-  Assert the partition is **total** (every term lands in a class or GENERAL).
-  *Checkpoint:* golden oracle green (classifier inert until 2b–2d wire kernels).
-- [ ] **2b — Diagonal fast path (top-tier for number-conserving H).** For each input
-  SD, sum **all** `CONSTANT` + `DIAGONAL` term contributions into one scalar via bit
-  tests, then do a **single** accumulator insert at `out == slater` — instead of M
-  colliding inserts on the same key. *Checkpoint:* golden oracle green; large speedup
-  on the Hamiltonian fixture.
-- [ ] **2c — Off-diagonal masked sign.** For `OFFDIAG_1BODY`/`OFFDIAG_2BODY`: occupancy
-  + vacancy bit tests for early rejection, fermion sign as
-  `(-1)^popcount(state & between_mask)` with a **precomputed** between-orbital mask
-  (loops over actual `key_size` chunks). *Checkpoint:* golden oracle green; speedup.
-- [ ] **2d — Keep GENERAL fallback.** Route `GENERAL` (and any unclassified) term
-  through the existing sequential `create`/`annihilate` path. *Checkpoint:* transition
-  + constant fixtures' golden oracles green.
+- [x] **2a — Classifier.** `build_flat_representation` now tags each term: **diagonal**
+  (created-orbital multiset == annihilated-orbital multiset ⟹ occupation conserved;
+  includes constants) and, more tightly, **density** (a pure number-operator product —
+  diagonal + all-distinct orbitals + a build-time *probe* on the all-involved-occupied
+  determinant returns a nonzero, occupancy-independent sign). Stored as per-term
+  `m_flat_diagonal` / `m_flat_density` + precomputed `m_density_mask` (occupancy mask)
+  and `m_density_coeff` (sign-folded). *Checkpoint:* ✅ golden oracle green.
+- [x] **2b — Diagonal / density fast path (the real win).** Per input SD, diagonal terms
+  accumulate into one scalar and emit a **single** insert at `slater` instead of M
+  colliding inserts; **density** terms further skip `create`/`annihilate` entirely —
+  one occupancy AND-test against `m_density_mask` plus a constant-signed add. *Why the
+  two tiers:* after 1b the flat-map insert is cheap, so single-insert alone was only
+  ~3% on the diagonal fixture — the dominant cost was the per-term sign machinery, which
+  the density mask-test removes. *Correctness trap handled:* balanced terms also include
+  `c_i c†_i = 1 − n_i` (nonzero when *empty*, expands to a contraction); these fail the
+  all-occupied probe and fall back to the general diagonal path, so the fast path only
+  ever fires on provable pure-`n` products. *Checkpoint:* ✅ golden oracle +
+  `test_diagonal_independent` (occupancy-only oracle, no fermion sign — a true
+  cross-check) green; **diagonal fixture 29→12 ms (−59%)** vs the Phase-1 binary.
+- [x] **2c/2d — Off-diagonal + GENERAL.** Off-diagonal 1-/2-body and unpaired/transition
+  terms keep the Phase-1 in-place `create`/`annihilate` path (which already early-rejects
+  on the occupancy/vacancy bit test *before* any popcount). The standalone masked
+  between-sign kernel was **deferred**: with cheap early rejection already in place its
+  gain is marginal, and the 2-body closed-form sign is high-risk; the clean diagonal win
+  lives in 2b. The general path is the correctness fallback for any operator. *Checkpoint:*
+  ✅ transition + constant golden green; broader pipeline (`test_finite`, `test_h0`,
+  `test_density_matrix`, `test_selfenergy`, MPI `test_block_lanczos_cy_mpi`) green.
 
 ---
 

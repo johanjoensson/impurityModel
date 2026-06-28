@@ -252,6 +252,21 @@ private:
   mutable std::vector<int64_t> m_flat_indices;
   mutable std::vector<size_t> m_flat_offsets;
   mutable std::vector<std::complex<double>> m_flat_coeffs;
+  // Per-term flag (1 = diagonal): the created-orbital multiset equals the
+  // annihilated-orbital multiset, so the term maps every occupation basis state to
+  // itself up to a scalar. Lets apply() accumulate all diagonal terms of one input SD
+  // into a single output insert. Constants (zero operators) are diagonal.
+  mutable std::vector<uint8_t> m_flat_diagonal;
+  // Per-term flag (1 = pure number-operator product, e.g. n_i, n_i n_j, or a constant):
+  // balanced + all-distinct orbitals AND the build-time all-occupied probe gives a
+  // nonzero (occupancy-independent) sign. These get the Phase 2b fast path: a single
+  // occupancy AND-test against m_density_mask instead of running create/annihilate, with
+  // the constant sign folded into m_density_coeff. Balanced terms that are NOT pure
+  // n-products (e.g. c_i c^d_i = 1 - n_i) fail the probe and fall back to the general
+  // diagonal path, so correctness never depends on this optimization firing.
+  mutable std::vector<uint8_t> m_flat_density;
+  mutable std::vector<ManyBodyState::key_type> m_density_mask;
+  mutable std::vector<std::complex<double>> m_density_coeff;
 
   void build_flat_representation() const;
 

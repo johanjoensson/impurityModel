@@ -100,15 +100,39 @@ def _make_constant(rng):
     return ManyBodyOperator({(): complex(rng.gauss(0, 1), rng.gauss(0, 1))})
 
 
+def _make_diagonal(rng, n):
+    """Density-density / number operators: c^d_i c^d_j c_j c_i (= n_i n_j) and c^d_i c_i.
+
+    Every term is diagonal (conserves each orbital's occupation), exercising the Phase 2b
+    single-insert fast path; the output is a subset of the input determinants.
+    """
+    op = {}
+    for _ in range(n):
+        i, j = rng.randrange(N_ORBS), rng.randrange(N_ORBS)
+        if i == j:
+            continue
+        key = ((i, "c"), (j, "c"), (j, "a"), (i, "a"))
+        op[key] = op.get(key, 0) + complex(rng.gauss(0, 1), rng.gauss(0, 1))
+    for _ in range(n):
+        i = rng.randrange(N_ORBS)
+        key = ((i, "c"), (i, "a"))
+        op[key] = op.get(key, 0) + complex(rng.gauss(0, 1), rng.gauss(0, 1))
+    return ManyBodyOperator(op)
+
+
 def build_fixtures(n_states, n1, n2):
-    """Return ``{name: (operator, state)}`` for all three fixtures, deterministically."""
+    """Return ``{name: (operator, state)}`` for all fixtures, deterministically."""
     rng = random.Random(20260628)
     psi = _make_state(rng, n_states)
     return {
         "hamiltonian": (_make_hamiltonian(rng, n1, n2), psi),
         "transition": (_make_transition(rng, n1), psi),
         "constant": (_make_constant(rng), psi),
+        "diagonal": (_make_diagonal(rng, n1 + n2), psi),
     }
+
+
+FIXTURE_NAMES = ["hamiltonian", "transition", "constant", "diagonal"]
 
 
 def build_oracle_fixtures():
@@ -182,7 +206,7 @@ def golden():
     return _load_golden()
 
 
-@pytest.mark.parametrize("name", ["hamiltonian", "transition", "constant"])
+@pytest.mark.parametrize("name", FIXTURE_NAMES)
 def test_apply_matches_golden(name, oracle_fixtures, golden):
     op, psi = oracle_fixtures[name]
     produced = _serialize(_apply(op, psi))
@@ -197,7 +221,42 @@ def test_apply_is_deterministic(oracle_fixtures):
     _assert_matches("hamiltonian", second, first)
 
 
-@pytest.mark.parametrize("name", ["hamiltonian", "transition", "constant"])
+def _occupied_orbitals(sd):
+    """Set of occupied orbital indices of a SlaterDeterminant (MSB-first per chunk)."""
+    occ = set()
+    for chunk_idx, chunk in enumerate(sd):
+        for bit in range(64):
+            if chunk & (1 << (63 - bit)):
+                occ.add(chunk_idx * 64 + bit)
+    return occ
+
+
+def test_diagonal_independent(oracle_fixtures):
+    """Independent oracle for the Phase 2b diagonal fast path.
+
+    The diagonal fixture is built only from ``n_i n_j`` (``c^d_i c^d_j c_j c_i`` with
+    i!=j, which equals ``n_i n_j`` exactly since the two number operators commute) and
+    ``n_i`` terms. Each has eigenvalue ``prod_o occ(o)`` and sign +1, so the expected
+    output amplitude is computable from occupancies alone -- no fermion-sign machinery,
+    making this a true cross-check of the C++ apply rather than a self-comparison.
+    """
+    op, psi = oracle_fixtures["diagonal"]
+    terms = [({p[0] for p in processes}, coeff) for processes, coeff in op.items()]
+
+    expected = {}
+    for sd, amp in psi.items():
+        occ = _occupied_orbitals(sd)
+        val = sum(coeff for orbs, coeff in terms if orbs <= occ) * amp
+        if val != 0:
+            expected[tuple(int(c) for c in sd)] = val
+
+    produced = {tuple(int(c) for c in k): v for k, v in _apply(op, psi).items()}
+    assert expected.keys() == produced.keys(), "diagonal support differs from occupancy oracle"
+    for key, ev in expected.items():
+        assert abs(ev - produced[key]) < TOL, f"diagonal amplitude mismatch at {key}"
+
+
+@pytest.mark.parametrize("name", FIXTURE_NAMES)
 def test_apply_timing(name, timing_fixtures, capsys):
     """Phase 0.3 timing harness: print median ms/apply (no absolute-time assertion)."""
     op, psi = timing_fixtures[name]
