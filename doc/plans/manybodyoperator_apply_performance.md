@@ -239,13 +239,15 @@ targets the *message pattern*, not the local loop.
   golden + independent diagonal + A/B-invariance + broader pipeline + MPI block-Lanczos
   green. C++ microbench (8 cores): hopping fixture serial 85→parallel **63 ms** (merge-
   bound, n_out = 90×n_in); the realistic diagonal fixture **12.4→3.1 ms** (~4×).
-- [x] **5b — Workload-scaled thread count (instead of a persistent pool).** A persistent
-  pool is high-risk for ~nil gain (per-call spawn is ~0.4% of a large apply); the real
-  hazard is small/under-MPI applies. So `apply` now scales the thread count to the input
-  (`>= 256` SDs/thread; tiny states run single-threaded), avoiding spawn overhead on small
-  matvecs and node oversubscription. The persistent thread pool is **deferred**.
-  *Checkpoint:* ✅ small (oracle, 40-SD) and large (2000-SD) fixtures both green on the
-  parallel build.
+- [x] **5b — Workload-scaled, SLURM-aware thread count (instead of a persistent pool).** A
+  persistent pool is high-risk for ~nil gain (per-call spawn is ~0.4% of a large apply);
+  the real hazard is small/under-MPI applies. So `apply` scales the thread count to the
+  input (`>= 256` SDs/thread; tiny states run single-threaded) **and caps it to
+  `SLURM_CPUS_PER_TASK`** (the cores the scheduler granted this MPI task), falling back to
+  `hardware_concurrency` only when unset — so one rank per task never oversubscribes the
+  node. The persistent thread pool is **deferred**. *Checkpoint:* ✅ small (40-SD) and
+  large (2000-SD) fixtures green on the parallel build; `SLURM_CPUS_PER_TASK=1` runs at
+  serial speed (14.8 ms diagonal), `=8`/unset at ~3.7 ms — cap confirmed.
 
 **Phase 5 shipping policy.** The threaded path is **opt-in, off by default**:
 `IMPURITYMODEL_PARALLEL=1 pip install -e . --no-build-isolation`. It must NOT be on for

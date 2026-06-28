@@ -12,6 +12,7 @@
 #endif
 #include <cmath>
 #include <cstddef>
+#include <cstdlib>
 #include <iostream>
 #include <thread>
 
@@ -509,6 +510,25 @@ struct SlaterKeyHash {
 using ResultMap =
     boost::unordered_flat_map<ManyBodyState::key_type,
                               ManyBodyState::mapped_type, SlaterKeyHash>;
+
+#if defined(PARALLEL)
+// Maximum threads the apply path may use. Prefer SLURM_CPUS_PER_TASK (the cores the
+// scheduler granted *this* MPI task) so one rank per task never oversubscribes the node;
+// fall back to hardware_concurrency only when unset. Resolved once.
+unsigned int apply_thread_cap() {
+  static const unsigned int cap = []() -> unsigned int {
+    if (const char *s = std::getenv("SLURM_CPUS_PER_TASK")) {
+      char *end = nullptr;
+      const long v = std::strtol(s, &end, 10);
+      if (end != s && v > 0) {
+        return static_cast<unsigned int>(v);
+      }
+    }
+    return std::max(1u, std::thread::hardware_concurrency());
+  }();
+  return cap;
+}
+#endif
 } // namespace
 
 [[nodiscard]] ManyBodyState ManyBodyOperator::apply(const ManyBodyState &state,
@@ -533,7 +553,7 @@ using ResultMap =
   // input determinants per thread, so tiny applies run on a single thread.
   constexpr size_t MIN_SD_PER_THREAD = 256;
   const ManyBodyState::size_type num_slater = state.size();
-  const unsigned int hw = std::max(1u, std::thread::hardware_concurrency());
+  const unsigned int hw = apply_thread_cap(); // SLURM_CPUS_PER_TASK, else hardware_concurrency
   const unsigned int want = static_cast<unsigned int>(
       std::max<size_t>(1, num_slater / MIN_SD_PER_THREAD));
   const unsigned int num_threads = std::max(1u, std::min(hw, want));
