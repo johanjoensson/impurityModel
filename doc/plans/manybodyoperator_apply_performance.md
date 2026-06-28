@@ -206,10 +206,16 @@ targets the *message pattern*, not the local loop.
   *Checkpoint:* ✅ MPI `test_mpi_comm` + `test_block_lanczos_cy_mpi` + `test_no_ghost_bands`
   + `test_mpi_block_lanczos_cy` green at n=3/4/6; instrumented check confirms the graph comm
   is built once and reused across repeated redistributes (1 cache entry, stable id).
-- [ ] **4c — Sparse count exchange (NBX).** Replace the dense size-`P` `Alltoall` of
-  `send_counts` with a nonblocking-consensus (NBX) sparse exchange so the count step is
-  O(neighbours) not O(P). Highest scaling value at 1000s of ranks, highest risk; gated on
-  4b. *Checkpoint:* MPI tests green; count-exchange volume per rank no longer scales with P.
+- [ ] **4c — Sparse count exchange (NBX). DEFERRED — needs real-scale validation.**
+  Replace the dense size-`P` `Alltoall` of `send_counts` with a nonblocking-consensus
+  (NBX: `Issend` to destinations + `Ibarrier` + `Iprobe`/`Recv` loop) so the count/source
+  discovery is O(neighbours) not O(P). This is the deepest remaining scaling lever, but
+  (i) it's secondary to 4a/4b (the count message is small — `P` int64, ~8 KB at P=1000 —
+  vs the data exchange those fixed), (ii) it's a research-grade rewrite of neighbourhood
+  discovery that interacts with the 4b cache, and (iii) its benefit is **unobservable at
+  the n≤6 test scale available here** — it must be validated on a real 100s–1000s-rank
+  allocation. Recommend doing it as a dedicated, separately-benchmarked effort rather than
+  shipping it blind.
 
 ---
 
