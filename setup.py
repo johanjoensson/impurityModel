@@ -26,6 +26,15 @@ cxxflags = os.environ.get("CXXFLAGS", "")
 if "-std=c++" not in cxxflags and "-std=gnu++" not in cxxflags:
     extra_compile_args.append("-std=c++17")
 
+# Opt-in multithreaded ManyBodyOperator::apply (off by default). Enable with
+# IMPURITYMODEL_PARALLEL=1 pip install -e . --no-build-isolation
+# Intended for single-process / few-rank-many-core runs; do NOT combine with one MPI
+# rank per core, which oversubscribes the node (each rank spawns its own threads).
+extra_link_args = []
+if os.environ.get("IMPURITYMODEL_PARALLEL", "").lower() in ("1", "true", "yes", "on"):
+    extra_compile_args += ["-DPARALLEL", "-pthread"]
+    extra_link_args += ["-pthread"]
+
 _cython_src_dir = "src/cython"
 _mpi_utils_src = os.path.join(_cython_src_dir, "MpiUtils.cpp")
 
@@ -39,6 +48,7 @@ ext_modules = [
         language="c++",
         include_dirs=include_dirs,
         extra_compile_args=extra_compile_args,
+        extra_link_args=extra_link_args,
     ),
     Extension(
         name="impurityModel.ed.BlockLanczos",
@@ -48,6 +58,7 @@ ext_modules = [
         language="c++",
         include_dirs=include_dirs,
         extra_compile_args=extra_compile_args,
+        extra_link_args=extra_link_args,
     ),
     Extension(
         name="impurityModel.ed.BlockLanczosArray",
@@ -57,6 +68,7 @@ ext_modules = [
         language="c++",
         include_dirs=include_dirs,
         extra_compile_args=extra_compile_args,
+        extra_link_args=extra_link_args,
     ),
 ]
 

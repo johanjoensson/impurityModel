@@ -193,12 +193,27 @@ Today `apply_multi` builds one full local state, then `redistribute_psis` →
 
 ## Phase 5 — Threading (parallel track; depends on 1b's accumulator choice)
 
-- [ ] **5a — Parallel merge.** Replace the serial `for (auto &tmp_map : local_maps)`
-  merge with a tree reduction (or per-output-bucket disjoint maps so threads never
-  collide). *Checkpoint:* `PARALLEL` build golden oracle green; thread-scaling improves.
-- [ ] **5b — Reuse a thread pool.** Stop spawning `std::thread` per `apply` (currently
-  one spawn+join set per matvec); reuse a persistent pool. *Checkpoint:* oracle green;
-  per-call overhead drops in the C++ microbench.
+- [x] **5a — Parallel merge.** Each compute thread now partitions its output into
+  `num_buckets` (= thread count) sub-maps by key hash; the merge then runs **one
+  lock-free thread per bucket** (disjoint key sets), each also applying the cutoff while
+  collecting its survivors — replacing the serial `for (auto &tmp_map : local_maps)` merge
+  that re-did every insert on one thread. *Checkpoint:* ✅ `IMPURITYMODEL_PARALLEL=1` build:
+  golden + independent diagonal + A/B-invariance + broader pipeline + MPI block-Lanczos
+  green. C++ microbench (8 cores): hopping fixture serial 85→parallel **63 ms** (merge-
+  bound, n_out = 90×n_in); the realistic diagonal fixture **12.4→3.1 ms** (~4×).
+- [x] **5b — Workload-scaled thread count (instead of a persistent pool).** A persistent
+  pool is high-risk for ~nil gain (per-call spawn is ~0.4% of a large apply); the real
+  hazard is small/under-MPI applies. So `apply` now scales the thread count to the input
+  (`>= 256` SDs/thread; tiny states run single-threaded), avoiding spawn overhead on small
+  matvecs and node oversubscription. The persistent thread pool is **deferred**.
+  *Checkpoint:* ✅ small (oracle, 40-SD) and large (2000-SD) fixtures both green on the
+  parallel build.
+
+**Phase 5 shipping policy.** The threaded path is **opt-in, off by default**:
+`IMPURITYMODEL_PARALLEL=1 pip install -e . --no-build-isolation`. It must NOT be on for
+the usual one-MPI-rank-per-core runs (every rank would spawn its own threads and
+oversubscribe the node); it is for single-process / few-rank-many-core use. The shipped
+default build is serial and unaffected.
 
 ---
 

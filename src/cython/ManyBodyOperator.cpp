@@ -490,8 +490,7 @@ using ResultMap =
 [[nodiscard]] ManyBodyState ManyBodyOperator::apply(const ManyBodyState &state,
                                                     double cutoff) const {
   std::vector<std::pair<ManyBodyState::Key, ManyBodyState::Value>> local_res;
-  ResultMap map_res;
-  map_res.reserve(state.size());
+  const double cutoff2 = cutoff * cutoff;
 
   // Phase 1c: most operators carry no occupation restrictions, so hoist the emptiness
   // test out of the per-output hot path and skip state_is_within_restrictions entirely
@@ -504,10 +503,25 @@ using ResultMap =
   if (m_flat_dirty) {
     build_flat_representation();
   }
-  unsigned int num_threads = std::thread::hardware_concurrency();
+  // Phase 5b: scale the thread count to the workload instead of always grabbing every
+  // core. Small states (few SDs) don't amortize thread spawn + the bucket merge, and under
+  // MPI every rank would otherwise oversubscribe the node; require >= MIN_SD_PER_THREAD
+  // input determinants per thread, so tiny applies run on a single thread.
+  constexpr size_t MIN_SD_PER_THREAD = 256;
+  const ManyBodyState::size_type num_slater = state.size();
+  const unsigned int hw = std::max(1u, std::thread::hardware_concurrency());
+  const unsigned int want = static_cast<unsigned int>(
+      std::max<size_t>(1, num_slater / MIN_SD_PER_THREAD));
+  const unsigned int num_threads = std::max(1u, std::min(hw, want));
+  // Output is partitioned across `num_buckets` by key hash so the merge below runs one
+  // lock-free thread per bucket (disjoint key sets), instead of the old serial merge
+  // that re-did every insert on one thread and capped the speedup.
+  const unsigned int num_buckets = num_threads;
+  const SlaterKeyHash hasher;
+  // local_buckets[t * num_buckets + b]: outputs from compute-thread t hashing to bucket b.
+  std::vector<ResultMap> local_buckets(static_cast<size_t>(num_threads) *
+                                       num_buckets);
   std::vector<std::thread> threads;
-  std::vector<ResultMap> local_maps(num_threads);
-  ManyBodyState::size_type num_slater = state.size();
   size_t chunk_size = (num_slater + num_threads - 1) / num_threads;
   for (unsigned int t = 0; t < num_threads; t++) {
     size_t start_slater = t * chunk_size;
@@ -516,7 +530,11 @@ using ResultMap =
       break;
     }
     threads.push_back(std::thread([&, t, start_slater, end_slater]() {
-      auto &tmp_map = local_maps[t];
+      ResultMap *buckets = &local_buckets[static_cast<size_t>(t) * num_buckets];
+      auto emit = [&](const ManyBodyState::key_type &k,
+                      ManyBodyState::mapped_type v) {
+        buckets[hasher(k) % num_buckets][k] += v;
+      };
       ManyBodyState::key_type out_slater_determinant;
 
       ManyBodyState::const_iterator it = state.begin(), end = state.begin();
@@ -566,7 +584,7 @@ using ResultMap =
             if (m_flat_diagonal[op_idx]) {
               diag_accum += contribution; // out == slater
             } else {
-              tmp_map[out_slater_determinant] += contribution;
+              emit(out_slater_determinant, contribution);
             }
           }
           // Restore out_slater_determinant to `slater`: undo the [start_idx, i)
@@ -579,7 +597,7 @@ using ResultMap =
           }
         }
         if (diag_accum != ManyBodyState::mapped_type(0.0, 0.0)) {
-          tmp_map[slater] += diag_accum;
+          emit(slater, diag_accum);
         }
       }
     }));
@@ -590,9 +608,43 @@ using ResultMap =
     }
   }
 
-  for (auto &tmp_map : local_maps) {
-    for (auto &[k, v] : tmp_map) {
-      map_res[k] += v;
+  // Phase 5a: parallel merge -- one thread per output bucket. Bucket b owns a disjoint
+  // set of keys (all hashing to b), so the threads never touch the same entry and need no
+  // locks. Each thread also applies the cutoff while collecting its bucket's survivors.
+  std::vector<std::vector<std::pair<ManyBodyState::Key, ManyBodyState::Value>>>
+      bucket_vecs(num_buckets);
+  std::vector<std::thread> merge_threads;
+  for (unsigned int b = 0; b < num_buckets; b++) {
+    merge_threads.push_back(std::thread([&, b]() {
+      ResultMap acc;
+      for (unsigned int t = 0; t < num_threads; t++) {
+        for (auto &[k, v] :
+             local_buckets[static_cast<size_t>(t) * num_buckets + b]) {
+          acc[k] += v;
+        }
+      }
+      auto &outv = bucket_vecs[b];
+      outv.reserve(acc.size());
+      for (auto &[k, v] : acc) {
+        if (std::norm(v) > cutoff2) {
+          outv.emplace_back(k, v);
+        }
+      }
+    }));
+  }
+  for (auto &thread : merge_threads) {
+    if (thread.joinable()) {
+      thread.join();
+    }
+  }
+  size_t total_out = 0;
+  for (const auto &v : bucket_vecs) {
+    total_out += v.size();
+  }
+  local_res.reserve(total_out);
+  for (auto &v : bucket_vecs) {
+    for (auto &kv : v) {
+      local_res.emplace_back(std::move(kv));
     }
   }
 
@@ -600,6 +652,8 @@ using ResultMap =
   if (m_flat_dirty) {
     build_flat_representation();
   }
+  ResultMap map_res;
+  map_res.reserve(state.size());
   ManyBodyState::key_type out_slater_determinant;
   for (const auto &[slater, amp] : state) {
     // Copy the input determinant ONCE per SD; each term applies its operators in
@@ -661,14 +715,13 @@ using ResultMap =
       map_res[slater] += diag_accum;
     }
   }
-#endif
-  double cutoff2 = cutoff * cutoff;
   local_res.reserve(map_res.size());
   for (auto &[k, v] : map_res) {
     if (std::norm(v) > cutoff2) {
       local_res.emplace_back(std::move(k), v);
     }
   }
+#endif
 
   // Sort vector to move duplicate keys next to each other
   std::sort(local_res.begin(), local_res.end(),
