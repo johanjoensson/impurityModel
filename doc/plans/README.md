@@ -73,6 +73,13 @@ The plans have dependencies. Read and execute in this order:
 
 ## Reference
 
+- **[apply_perf_deferred_designs.md](apply_perf_deferred_designs.md)** — Design sketches
+  (derivations + code) for the two items deferred from the apply-performance plan: the
+  off-diagonal **two-body masked sign** (single masked popcount + build-time constant,
+  probe-validated) and the **NBX sparse count exchange** (dynamic sparse data exchange,
+  adaptive vs the dense collective). Not yet scheduled work.
+
+
 - **[symmetry_plan_review.md](symmetry_plan_review.md)** — Archived code-grounded
   review (KEEP/FIX/REMOVE/ADD) of the original symmetry plan. Its conclusions are now
   incorporated into `symmetry_implementation_plan.md`; retained for rationale.
