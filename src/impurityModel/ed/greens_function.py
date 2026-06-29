@@ -218,8 +218,9 @@ def get_Greens_function(
                 _gfd.check_spectral_sum_rule(r_IPS, r_PS, es, e0, tau, block_dim),
                 _gfd.check_thermal_weight_cutoff(es, e0, tau, n_returned=len(es), num_wanted=num_wanted),
             ]
-            conv_add = _lanczos_convergence_summary(alphas_IPS, betas_IPS, delta)
-            conv_rem = _lanczos_convergence_summary(alphas_PS, betas_PS, delta)
+            lanczos_tol = _gf_rel_tol(slaterWeightMin)
+            conv_add = _lanczos_convergence_summary(alphas_IPS, betas_IPS, delta, tol=lanczos_tol)
+            conv_rem = _lanczos_convergence_summary(alphas_PS, betas_PS, delta, tol=lanczos_tol)
             converged = conv_add[0] and conv_rem[0]
             worst_dg = max(conv_add[1], conv_rem[1])
             n_blocks = max(conv_add[2], conv_rem[2])
@@ -630,6 +631,30 @@ def _scatter_qr_columns(comm, psi_dense, r, local_size):
     return psi_dense_local, r
 
 
+# Relative-change convergence floor for the block-Lanczos Green's function, shared by the
+# runtime monitor (_make_gf_convergence_monitor) and the post-hoc diagnostic summary
+# (_lanczos_convergence_summary) so the two can never disagree -- single source of truth.
+_GF_REL_TOL_FLOOR = 1e-6
+# Minimum blocks before the convergence mesh may be frozen (let the extremal Ritz values start
+# to settle before we commit to a sampling window).
+_GF_MESH_FREEZE_BLOCKS = 3
+# Mesh padding fraction AND the per-step edge-growth threshold below which the spectral edges
+# (the alpha-diagonal range) count as "settled": we only freeze the mesh once a new block grows
+# the range by less than the margin we pad with, and we re-extend the mesh if a later block's
+# range escapes the padded window. One constant ties the two so they stay consistent.
+_GF_MESH_MARGIN_REL = 0.05
+# Consecutive sub-tolerance steps required before declaring convergence -- guards against a
+# single accidental small relative change tripping convergence prematurely.
+_GF_CONSEC_CONVERGED = 2
+
+
+def _gf_rel_tol(slaterWeightMin):
+    """Relative-change convergence tolerance: the basis-truncation floor ``slaterWeightMin**2``
+    but never below :data:`_GF_REL_TOL_FLOOR`. Used by both the runtime monitor and the
+    diagnostic summary so they apply identical thresholds."""
+    return max(slaterWeightMin**2, _GF_REL_TOL_FLOOR)
+
+
 def _make_gf_convergence_monitor(delta, slaterWeightMin):
     r"""Frozen-mesh relative-change convergence monitor for the block-Lanczos Green's function.
 
@@ -637,35 +662,48 @@ def _make_gf_convergence_monitor(delta, slaterWeightMin):
     ``(converged_fn, converged_flag, delta_min)`` where ``delta_min`` is the convergence
     tolerance actually used (the single source of truth for the warning messages, so they
     never drift from this declaration): ``converged_fn(alphas, betas, verbose, block_widths)``
-    estimates ``G`` on a mesh frozen once a few blocks have resolved the spectral edges
-    (:func:`_gf_sample_mesh`) and reports convergence when the relative change
-    (:func:`_greens_function_change`, with the cross-step ``gs_cache``) drops below
-    ``max(slaterWeightMin**2, 1e-6)``. ``converged_flag[0]`` records whether tolerance was ever
-    met, for the non-convergence warning.
+    estimates ``G`` on an *adaptively* frozen mesh -- frozen once the spectral edges settle and
+    re-extended if a later block escapes the window (:func:`_gf_converged_mesh`) -- and reports
+    convergence only after :data:`_GF_CONSEC_CONVERGED` *consecutive* steps whose relative change
+    (:func:`_greens_function_change`, with the cross-step ``gs_cache``) stays below
+    ``max(slaterWeightMin**2, 1e-6)``.  Requiring the mesh to cover the resolved support and the
+    tolerance to hold for several steps in a row guards against premature convergence on a
+    too-narrow window or a single fluke step.  ``converged_flag[0]`` records whether convergence
+    was actually declared, for the non-convergence warning.
     """
-    delta_min = max(slaterWeightMin**2, 1e-6)
+    delta_min = _gf_rel_tol(slaterWeightMin)
     converged_flag = [False]
-    mesh_cache = [None]
+    mesh_cache = [None, -1]  # [mesh, frozen_block_count]; frozen_block_count detects (re)freezes
     gs_cache = [None, 0]
+    consec = [0]  # consecutive sub-tolerance steps on the current (stable) mesh
 
     def converged(alphas, betas, verbose=False, block_widths=None, **kwargs):
         if len(alphas) <= 1:
             return False
-        if mesh_cache[0] is None:
-            if len(alphas) < 3:  # let the extremal Ritz values settle before freezing
-                return False
-            A_trim, _ = (
-                _trim_blocks(alphas, betas, block_widths)
-                if (block_widths is not None and len(block_widths) == len(alphas))
-                else ([np.asarray(a) for a in alphas], None)
-            )
-            mesh_cache[0] = _gf_sample_mesh(A_trim, delta)
+        A_trim, _ = (
+            _trim_blocks(alphas, betas, block_widths)
+            if (block_widths is not None and len(block_widths) == len(alphas))
+            else ([np.asarray(a) for a in alphas], None)
+        )
+        res = _gf_converged_mesh(A_trim, delta)
+        if res is None:  # spectral edges have not settled yet -> keep building
+            return False
+        mesh, frozen = res
+        if frozen != mesh_cache[1]:
+            # First freeze or a re-extension changed the mesh: the cross-step resolvent cache and
+            # the consecutive-step count are measured against the old window, so reset both and
+            # re-confirm convergence on the new one.
+            mesh_cache[0], mesh_cache[1] = mesh, frozen
+            gs_cache[0], gs_cache[1] = None, 0
+            consec[0] = 0
         d_g = _greens_function_change(alphas, betas, block_widths, delta, omegaP=mesh_cache[0], cache=gs_cache)
         if d_g is None:  # spurious (wrong-sign) imaginary part -> not converged
+            consec[0] = 0
             return False
         if verbose:
             print(rf"$\delta$ = {d_g}", flush=True)
-        is_conv = d_g < delta_min
+        consec[0] = consec[0] + 1 if d_g < delta_min else 0
+        is_conv = consec[0] >= _GF_CONSEC_CONVERGED
         converged_flag[0] = converged_flag[0] or is_conv
         return is_conv
 
@@ -1145,19 +1183,30 @@ def _greens_function_change(alphas, betas, block_widths, delta, omegaP=None, cac
     return np.max(np.abs(G_new - G_prev)) / max(scale, np.finfo(float).tiny)
 
 
-def _lanczos_convergence_summary(alphas_list, betas_list, delta, tol=1e-6):
+def _lanczos_convergence_summary(alphas_list, betas_list, delta, tol=_GF_REL_TOL_FLOOR):
     r"""Post-hoc block-Lanczos convergence summary over the per-thermal-state coefficients.
 
     Avoids threading run-time monitor state out of ``block_Green_sparse``: for each thermal
-    state's trimmed ``(alphas, betas)`` it re-evaluates the final relative resolvent change on
-    a frozen mesh (the same measure the run-time monitor uses, via
-    :func:`_greens_function_change`).  A state whose final change exceeds ``tol`` (and was not
-    a short invariant-subspace run) is not fully resolved.
+    state's trimmed ``(alphas, betas)`` it re-evaluates the final relative resolvent change via
+    :func:`_greens_function_change`.  To agree with the run-time monitor's verdict (and not
+    raise spurious "not converged" warnings) it mirrors that monitor exactly:
+
+    * **Same frozen mesh.**  The monitor freezes its sample mesh after the first
+      ``_GF_MESH_FREEZE_BLOCKS`` blocks; here we rebuild it from those same leading blocks
+      (``A[:_GF_MESH_FREEZE_BLOCKS]``), not from the full final Ritz range -- otherwise the
+      last block's spectral-edge contribution registers as a large change on a wider mesh the
+      monitor never used.
+    * **Invariant subspace == exact.**  When the recurrence terminated on an invariant subspace
+      the trailing coupling block vanished (``betas[-1] ~ 0``); the continued fraction is then
+      exact regardless of the relative-change value, so that state counts as converged.  (A run
+      that stopped on the tolerance instead has a normal, nonzero trailing ``beta``.)
 
     Args:
         alphas_list, betas_list: Per-thermal-state lists of trimmed Lanczos blocks.
         delta: Broadening used to place the frozen sample mesh off the real axis.
-        tol: Relative-change threshold below which a state counts as converged.
+        tol: Relative-change threshold below which a state counts as converged. Defaults to
+            :data:`_GF_REL_TOL_FLOOR`; pass :func:`_gf_rel_tol` (slaterWeightMin) to match the
+            monitor's basis-truncation floor.
 
     Returns:
         tuple[bool, float, int]: ``(all_converged, worst_final_change, max_blocks)``.
@@ -1169,9 +1218,22 @@ def _lanczos_convergence_summary(alphas_list, betas_list, delta, tol=1e-6):
         A = list(A)
         B = list(B)
         max_blocks = max(max_blocks, len(A))
-        if len(A) <= 2:  # invariant subspace reached almost immediately -> exact
+        if len(A) < _GF_MESH_FREEZE_BLOCKS:  # invariant subspace reached almost immediately -> exact
             continue
-        mesh = _gf_sample_mesh(A, delta if delta else 1.0)
+        # Invariant subspace: trailing coupling vanished -> exact (matches the kernel's
+        # "invariant_subspace" status, which the run-time monitor treats as converged).
+        tail = np.asarray(B[-1]) if len(B) else np.zeros(0)
+        scale = max((float(np.linalg.norm(np.asarray(a), 2)) for a in A), default=1.0)
+        if tail.size == 0 or float(np.linalg.norm(tail, 2)) <= _GF_REL_TOL_FLOOR * max(scale, 1.0):
+            continue
+        # Use the *same* adaptively-frozen mesh the run-time monitor settled on (pure function of
+        # the coefficients, so the two agree). If the edges never settled the run is genuinely
+        # under-resolved.
+        res = _gf_converged_mesh(A, delta if delta else 1.0)
+        if res is None:
+            all_converged = False
+            continue
+        mesh, _ = res
         d_g = _greens_function_change(A, B, None, delta if delta else 1.0, omegaP=mesh)
         if d_g is None:
             all_converged = False
@@ -1192,11 +1254,70 @@ def _gf_sample_mesh(alphas, delta, n_points=64):
     actually decays as the spectrum fills in.
     """
     ws = np.concatenate([np.real(np.diagonal(np.asarray(a))) for a in alphas])
-    lo, hi = float(np.min(ws)), float(np.max(ws))
+    mesh, _, _ = _gf_mesh_from_range(float(np.min(ws)), float(np.max(ws)), delta, n_points)
+    return mesh
+
+
+def _gf_mesh_from_range(lo, hi, delta, n_points=64):
+    r"""Build the convergence sample mesh covering ``[lo, hi]`` padded by the margin, on the line
+    :math:`\omega + i\,\delta`.  Returns ``(mesh, ext_lo, ext_hi)`` where ``[ext_lo, ext_hi]`` is
+    the padded extent actually sampled (used by :func:`_gf_converged_mesh` to detect a later
+    block whose spectral edge escapes the window)."""
     span = hi - lo
-    margin = 0.05 * span + 10.0 * abs(delta)
-    grid = np.linspace(lo - margin, hi + margin, n_points)
-    return grid + 1j * delta
+    margin = _GF_MESH_MARGIN_REL * span + 10.0 * abs(delta)
+    ext_lo, ext_hi = lo - margin, hi + margin
+    return np.linspace(ext_lo, ext_hi, n_points) + 1j * delta, ext_lo, ext_hi
+
+
+def _gf_diag_range(alpha):
+    """Min/max of the real alpha-block diagonal (the per-direction Rayleigh quotients ~ the
+    spectral edges resolved so far)."""
+    d = np.real(np.diagonal(np.asarray(alpha)))
+    return float(np.min(d)), float(np.max(d))
+
+
+def _gf_converged_mesh(alphas, delta):
+    r"""Adaptively-frozen convergence mesh, as a *pure* function of the (trimmed) alpha blocks so
+    the runtime monitor and the post-hoc summary settle on exactly the same window.
+
+    Block-Lanczos resolves the spectral edges from the inside out, so a mesh frozen after a fixed
+    handful of blocks can be too narrow.  Instead we scan the blocks, tracking the cumulative
+    alpha-diagonal range ``[lo, hi]`` (the resolved edges), and:
+
+    * **Freeze** once at least :data:`_GF_MESH_FREEZE_BLOCKS` blocks are in *and* the range grew
+      by less than :data:`_GF_MESH_MARGIN_REL` in the last block (edges settled within the margin
+      we pad with).
+    * **Re-extend** afterwards if a later block's range escapes the padded window, rebuilding the
+      mesh around the new, wider range.
+
+    Returns ``(mesh, frozen_blocks)`` -- ``frozen_blocks`` is the block count at the last (re)freeze,
+    so a caller can detect when the mesh changed -- or ``None`` if the edges have not settled yet.
+    """
+    if len(alphas) < _GF_MESH_FREEZE_BLOCKS:
+        return None
+    lo = hi = None
+    prev_span = None
+    mesh = None
+    ext_lo = ext_hi = None
+    frozen = 0
+    for k, alpha in enumerate(alphas):
+        cur_lo, cur_hi = _gf_diag_range(alpha)
+        lo = cur_lo if lo is None else min(lo, cur_lo)
+        hi = cur_hi if hi is None else max(hi, cur_hi)
+        span = hi - lo
+        if mesh is None:
+            if k + 1 >= _GF_MESH_FREEZE_BLOCKS and prev_span is not None:
+                growth = (span - prev_span) / max(span, np.finfo(float).tiny)
+                if growth < _GF_MESH_MARGIN_REL:
+                    mesh, ext_lo, ext_hi = _gf_mesh_from_range(lo, hi, delta)
+                    frozen = k + 1
+            prev_span = span
+        elif lo < ext_lo or hi > ext_hi:  # a later edge escaped the sampled window -> re-extend
+            mesh, ext_lo, ext_hi = _gf_mesh_from_range(lo, hi, delta)
+            frozen = k + 1
+    if mesh is None:
+        return None
+    return mesh, frozen
 
 
 def rotate_matrix(M, T):

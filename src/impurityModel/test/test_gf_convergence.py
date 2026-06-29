@@ -17,8 +17,7 @@ import scipy.linalg as la
 
 from impurityModel.ed.BlockLanczosArray import Reort, block_lanczos_array
 from impurityModel.ed.greens_function import (
-    _gf_sample_mesh,
-    _greens_function_change,
+    _make_gf_convergence_monitor,
     _sanitize_continued_fraction,
     _trim_blocks,
     build_qr,
@@ -40,27 +39,15 @@ def _H_and_seed(d, seed):
 
 
 def _gf_monitor():
-    """Replica of the frozen-mesh GF convergence monitor used by block_Green_sparse,
-    instrumented to record the iteration at which it first declares convergence."""
-    mesh_cache = [None]
+    """The *production* GF convergence monitor (:func:`_make_gf_convergence_monitor`), wrapped
+    only to record the iteration at which it first declares convergence. Using the real monitor
+    (rather than a hand-copy) keeps this test honest: it exercises the actual adaptive-freeze +
+    consecutive-step logic and breaks if that logic regresses."""
+    converged_fn, _flag, _tol = _make_gf_convergence_monitor(DELTA, slaterWeightMin=0.0)
     stop_it = [None]
 
     def converged(alphas, betas, verbose=False, block_widths=None, **kw):
-        if len(alphas) <= 1:
-            return False
-        if mesh_cache[0] is None:
-            if len(alphas) < 3:
-                return False
-            A, _ = (
-                _trim_blocks(alphas, betas, block_widths)
-                if (block_widths is not None and len(block_widths) == len(alphas))
-                else ([np.asarray(a) for a in alphas], None)
-            )
-            mesh_cache[0] = _gf_sample_mesh(A, DELTA)
-        d_g = _greens_function_change(alphas, betas, block_widths, DELTA, omegaP=mesh_cache[0])
-        if d_g is None:
-            return False
-        ok = d_g < 1e-8
+        ok = converged_fn(alphas, betas, verbose=verbose, block_widths=block_widths, **kw)
         if ok and stop_it[0] is None:
             stop_it[0] = len(alphas)
         return ok
