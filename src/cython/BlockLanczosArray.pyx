@@ -62,25 +62,49 @@ cdef double EPS_VAL = np.finfo(float).eps
 EPS = EPS_VAL          # ~2.22e-16
 REORT_TOL = np.sqrt(EPS_VAL)        # ~1.49e-8  : trigger — reorth when max|W| exceeds this
 BAD_BLOCK_TOL = EPS_VAL ** 0.75        # ~1.83e-12 : selection — reorth against blocks above this
-DEFLATE_TOL = EPS_VAL ** 0.5          # ~1.49e-8  : relative rank floor for eigenvalues of M
+DEFLATE_TOL = EPS_VAL ** 0.5          # ~1.49e-8  : rank floor on singular values of the block
+DEFLATE_EVAL_TOL = EPS_VAL            # ~2.22e-16 : equivalent rank floor on eigenvalues of M
 BREAKDOWN_TOL = 1e-12              # absolute: ||beta||_2 below this ⇒ invariant subspace
+BETA_BLOWUP_FACTOR = 1e3           # ||beta_i|| above this * max(||beta||, ||alpha||) ⇒ divergence
 REORT_PERIOD = 5                   # PERIODIC cadence, and SELECTIVE Ritz-check cadence
 
 
 def _cholesky_or_deflate(M, p_in):
-    # Try Cholesky first (fast path)
+    r"""QR-factor the residual block via its Gram matrix ``M = Wp^H Wp``.
+
+    Returns ``(beta_j, beta_inv, k)`` with ``beta_j`` (``k x p_in``) the upper-triangular
+    QR factor (off-diagonal block), ``beta_inv`` (``p_in x k``) such that
+    ``Q = Wp @ beta_inv`` and ``Wp = Q @ beta_j``, and ``k`` the retained rank.
+
+    A column (singular direction) is deflated when its singular value
+    :math:`\sigma_k = \sqrt{\lambda_k(M)}` falls below
+    :math:`\sqrt{\texttt{EPS}}\,\sigma_{\max}`, i.e. its eigenvalue
+    :math:`\lambda_k < \texttt{EPS}\,\lambda_{\max}`.  This bounds the retained block's
+    condition number to :math:`\lesssim 1/\sqrt{\texttt{EPS}}`, which is the regime where a
+    second pass (CholeskyQR2, see :func:`_cholesky_qr2`) restores orthonormality to machine
+    precision.  Both the fast (Cholesky) and the fallback (``eigh``) path apply the *same*
+    eigenvalue floor — historically the fast path tested the Cholesky diagonal against
+    ``sqrt(EPS)`` (an effective ``EPS`` eigenvalue floor) while the fallback tested
+    eigenvalues against ``sqrt(EPS)`` (an ``EPS**0.25`` floor on singular values); that
+    inconsistency let a near-singular ``M`` through the fast path and produced a
+    ``beta_inv`` with norm up to ``1/EPS``, amplifying the Krylov block and diverging the
+    recurrence.
+    """
+    # Try Cholesky first (fast path). diag(L)**2 are the (real, positive) Cholesky
+    # pivots, an O(EPS)-faithful surrogate for the eigenvalues of the Hermitian-PD M.
     try:
         L = la.cholesky(M, lower=True)
-        if np.any(np.diag(L) < DEFLATE_TOL * max(np.max(np.diag(L)), 1.0)):
+        d2 = np.square(np.diag(L).real)
+        if np.any(d2 < DEFLATE_EVAL_TOL * max(np.max(d2), 1.0)):
             raise la.LinAlgError("Numeric singularity in Cholesky diagonal")
         beta_j = np.conj(L.T)
         beta_inv = la.inv(beta_j)
         p_next = p_in
         return beta_j, beta_inv, p_next
     except (la.LinAlgError, ValueError):
-        # Fall back to eigh
+        # Fall back to eigh, using the same eigenvalue floor as the fast path.
         evals, evecs = la.eigh(M)              # ascending
-        keep = evals > DEFLATE_TOL * max(evals[-1], 1.0) # boolean mask over p_in
+        keep = evals > DEFLATE_EVAL_TOL * max(evals[-1], 1.0) # boolean mask over p_in
         p_next = int(keep.sum())
         if p_next == 0:                                   # whole block collapsed
             return None, None, 0
@@ -90,6 +114,92 @@ def _cholesky_or_deflate(M, p_in):
         beta_inv = V / s[None, :]                         # (p_in,  p_next)
         return beta_j, beta_inv, p_next
 
+
+def _cholesky_qr2(M2, beta_j, active_k):
+    r"""Second pass of CholeskyQR2 on the *recomputed* Gram of the once-QR'd block.
+
+    Cholesky-QR (``_cholesky_or_deflate``) of an ill-conditioned block leaves
+    ``Q1 = Wp @ beta_inv`` with an orthonormality error of order
+    :math:`\kappa(M)\,\texttt{EPS}`, which can be :math:`O(1)`.  Re-orthonormalizing once
+    more — using the Gram ``M2 = Q1^H Q1`` recomputed from the *actual* (high-dimensional)
+    vectors, not from ``M`` — drives the error back to :math:`O(\texttt{EPS})` as long as the
+    deflated block satisfies :math:`\kappa \lesssim 1/\sqrt{\texttt{EPS}}` (guaranteed by the
+    ``_cholesky_or_deflate`` floor).
+
+    Given ``M2`` and the first-pass factor ``beta_j`` (so ``Wp = Q1 @ beta_j``), returns
+    ``(beta2_inv, beta_j_new, k2)`` such that ``Q2 = Q1 @ beta2_inv`` is orthonormal and
+    ``Wp = Q2 @ beta_j_new``.  Returns ``(None, None, 0)`` on full collapse.
+    """
+    beta2, beta2_inv, k2 = _cholesky_or_deflate(M2, active_k)
+    if k2 == 0:
+        return None, None, 0
+    return beta2_inv, beta2 @ beta_j, k2
+
+
+def resolve_reort(reort):
+    """Resolve a ``reort`` argument (``Reort`` member or string) to a ``Reort`` enum.
+
+    Shared by both kernels so the accepted spellings stay in sync. A non-string is
+    returned unchanged. Raises ``ValueError`` on an unknown string.
+    """
+    if not isinstance(reort, str):
+        return reort
+    _map = {
+        "none": Reort.NONE,
+        "partial": Reort.PARTIAL,
+        "selective": Reort.SELECTIVE,
+        "full": Reort.FULL,
+        "periodic": Reort.PERIODIC,
+    }
+    resolved = _map.get(reort.lower())
+    if resolved is None:
+        raise ValueError(f"Unknown reort string '{reort}'. Must be one of {list(_map.keys())}.")
+    return resolved
+
+
+def divergence_guard(double beta_norm, double alpha_norm, bint first_step,
+                     double t_norm_max, double h_norm_est):
+    r"""Spectral-scale divergence safeguard for the block-Lanczos recurrence.
+
+    Shared by both kernels (``block_lanczos_array_cy`` and the ``block_lanczos_cy``
+    driver) so the safeguard logic lives in exactly one place.
+
+    For a Hermitian ``H`` every block norm is bounded by ``||H||``; a jump of several
+    orders of magnitude over the largest healthy block norm means the recurrence has
+    been corrupted (orthogonality the QR/deflation did not repair). ``h_norm_est`` is a
+    spectral-scale estimate seeded on the first step (where ``beta ~ ||H||``) and grown
+    only by ``||alpha_i||`` (also bounded by ``||H||``, and which never runs away with
+    beta) — so it catches *gradual* runaway growth that the relative ``t_norm_max``
+    jump-check misses. ``first_step`` (the scale-establishing step of this run) never
+    self-triggers.
+
+    Parameters
+    ----------
+    beta_norm, alpha_norm : float
+        2-norms of the current ``beta_i`` / ``alpha_i`` blocks.
+    first_step : bool
+        ``True`` on the first step of this run (``t_norm_max == 0``).
+    t_norm_max, h_norm_est : float
+        Running trackers (carried across steps by the caller).
+
+    Returns
+    -------
+    diverged : bool
+        ``True`` if the recurrence has diverged and must be truncated *before* this block.
+    t_norm_max, h_norm_est : float
+        Updated trackers (``t_norm_max`` unchanged when ``diverged`` — the caller breaks).
+    """
+    if first_step:
+        h_norm_est = max(beta_norm, alpha_norm)
+    else:
+        h_norm_est = max(h_norm_est, alpha_norm)
+    diverged = (not first_step) and (
+        max(beta_norm, alpha_norm) > BETA_BLOWUP_FACTOR * max(t_norm_max, 1.0)
+        or beta_norm > BETA_BLOWUP_FACTOR * max(h_norm_est, 1.0)
+    )
+    if not diverged:
+        t_norm_max = max(t_norm_max, beta_norm, alpha_norm)
+    return diverged, t_norm_max, h_norm_est
 
 
 def calculate_thermal_gs(h, block_size, e_max, v0=None, reort=Reort.FULL, comm=None):
@@ -173,7 +283,9 @@ cpdef np.ndarray estimate_orthonormality(
     cdef int w_0 = widths[0]
 
     cdef np.ndarray[double complex, ndim=4] W_out = np.zeros((2, i + 2, n, n), dtype=complex)
-    cdef np.ndarray[double complex, ndim=3] w_bar = np.zeros((i + 2, n, n), dtype=complex)
+    # Build the new estimate directly into W_out[1] (a zero-initialized view) instead of a
+    # separate w_bar buffer that is then copied — saves one (i+2, n, n) allocation + copy/step.
+    cdef np.ndarray[double complex, ndim=3] w_bar = W_out[1]
 
     w_bar[i + 1, :w_next, :w_next] = np.identity(w_next)
 
@@ -181,20 +293,26 @@ cpdef np.ndarray estimate_orthonormality(
     w_bar[i, :w_next, :w_0] = eps * N * beta_i_dag_inv @ betas[0, :w_curr, :w_0]
 
     if i == 0:
-        W_out[0, : i + 1] = W[1]
-        W_out[1, : i + 2] = w_bar
+        W_out[0, : i + 1] = W[1]  # w_bar is already W_out[1] (built in place)
         return W_out
 
     # j = 0
     cdef int w_j = widths[0]
     cdef int w_j_next = widths[1]
     cdef int w_i_prev = widths[i-1]
-    cdef np.ndarray term1 = W[1, 1, :w_i, :w_j_next] @ betas[0, :w_j_next, :w_j]
-    cdef np.ndarray term2 = W[1, 0, :w_i, :w_j] @ alphas[0, :w_j, :w_j]
-    cdef np.ndarray term3 = alphas[i, :w_i, :w_i] @ W[1, 0, :w_i, :w_j]
-    cdef np.ndarray term5 = betas[i-1, :w_i, :w_i_prev] @ W[0, 0, :w_i_prev, :w_j]
-    cdef np.ndarray RHS_0 = term1 + term2 - term3 - term5
-    w_bar[0, :w_next, :w_j] = beta_i_dag_inv @ RHS_0
+    # Propagate the estimate through the three-term recurrence in *magnitude* (sum of |terms|,
+    # |beta_i^{-1}| applied entrywise). The signed recurrence suffers catastrophic cancellation
+    # in the RHS on clustered / near-invariant spectra (the amplification by ||beta_i^{-1}|| is
+    # cancelled away), so the estimate under-predicts the true loss by orders of magnitude and the
+    # bad-block trigger never fires. Propagating magnitudes makes W a guaranteed *upper bound* on
+    # the orthogonality loss — at worst it triggers reorthogonalization slightly early.
+    cdef np.ndarray abs_binv = np.abs(beta_i_dag_inv)
+    cdef np.ndarray term1 = np.abs(W[1, 1, :w_i, :w_j_next] @ betas[0, :w_j_next, :w_j])
+    cdef np.ndarray term2 = np.abs(W[1, 0, :w_i, :w_j] @ alphas[0, :w_j, :w_j])
+    cdef np.ndarray term3 = np.abs(alphas[i, :w_i, :w_i] @ W[1, 0, :w_i, :w_j])
+    cdef np.ndarray term5 = np.abs(betas[i-1, :w_i, :w_i_prev] @ W[0, 0, :w_i_prev, :w_j])
+    cdef np.ndarray RHS_0 = term1 + term2 + term3 + term5
+    w_bar[0, :w_next, :w_j] = abs_binv @ RHS_0
 
     cdef int j, w_j_prev
     cdef np.ndarray term4
@@ -204,34 +322,33 @@ cpdef np.ndarray estimate_orthonormality(
         w_j_prev = widths[j-1]
         w_j_next = widths[j+1]
 
-        term1 = W[1, j+1, :w_i, :w_j_next] @ betas[j, :w_j_next, :w_j]
-        term2 = W[1, j, :w_i, :w_j] @ alphas[j, :w_j, :w_j]
-        term3 = alphas[i, :w_i, :w_i] @ W[1, j, :w_i, :w_j]
-        term4 = W[1, j-1, :w_i, :w_j_prev] @ np.conj(betas[j-1, :w_j, :w_j_prev].T)
-        term5 = betas[i-1, :w_i, :w_i_prev] @ W[0, j, :w_i_prev, :w_j]
+        term1 = np.abs(W[1, j+1, :w_i, :w_j_next] @ betas[j, :w_j_next, :w_j])
+        term2 = np.abs(W[1, j, :w_i, :w_j] @ alphas[j, :w_j, :w_j])
+        term3 = np.abs(alphas[i, :w_i, :w_i] @ W[1, j, :w_i, :w_j])
+        term4 = np.abs(W[1, j-1, :w_i, :w_j_prev] @ np.conj(betas[j-1, :w_j, :w_j_prev].T))
+        term5 = np.abs(betas[i-1, :w_i, :w_i_prev] @ W[0, j, :w_i_prev, :w_j])
 
-        RHS = term1 + term2 - term3 + term4 - term5
-        w_bar[j, :w_next, :w_j] = beta_i_dag_inv @ RHS
+        RHS = term1 + term2 + term3 + term4 + term5
+        w_bar[j, :w_next, :w_j] = abs_binv @ RHS
 
-    w_bar[:i] += eps * (betas[i] + betas[:i])
+    # Local-rounding noise floor (Simon 1984 / Larsen PROPACK). Forming q_{i+1} = w_p beta_i^{-1}
+    # injects rounding ~eps*(||beta_i||+||beta_j||) that the normalization amplifies by
+    # ||beta_i^{-1}|| = 1/sigma_min(beta_i): when beta_i is small (a near-invariant block) the new
+    # vector is rounding-dominated and orthogonality is lost fastest, so the floor must *grow* as
+    # beta_i shrinks. The previous term `eps*(beta_i + beta_j)` omitted the 1/sigma_min factor (and
+    # shrank with beta_i), so the estimate vanished exactly when the true loss was worst -> the
+    # bad-block trigger never fired and PARTIAL degenerated to no reorthogonalization. The floor is
+    # added as a positive magnitude (no sign cancellation) so the estimate upper-bounds the loss.
+    _sig_min_bi = float(np.min(la.svd(betas[i, :w_next, :w_curr], compute_uv=False)))
+    _binv_norm = 1.0 / max(_sig_min_bi, eps)
+    _bnorm_i = float(np.linalg.norm(betas[i, :w_next, :w_curr], ord=2))
+    for j in range(i):
+        _bnorm_j = float(np.linalg.norm(betas[j, :widths[j+1], :widths[j]], ord=2))
+        w_bar[j, :w_next, :widths[j]] += eps * N * (_bnorm_i + _bnorm_j) * _binv_norm
 
-    W_out[0, : i + 1] = W[1]
-    W_out[1, : i + 2] = w_bar
+    W_out[0, : i + 1] = W[1]  # w_bar is already W_out[1] (built in place)
 
     return W_out
-
-
-cpdef np.ndarray build_banded_matrix(np.ndarray[double complex, ndim=3] alphas, np.ndarray[double complex, ndim=3] betas):
-    cdef int k = alphas.shape[0]
-    cdef int p = alphas.shape[1]
-    cdef np.ndarray[double complex, ndim=2] bands = np.zeros((p + 1, k * p), dtype=alphas.dtype)
-    cdef int i
-    bands[0, :] = np.diagonal(alphas, offset=0, axis1=1, axis2=2).flatten()
-    for i in range(1, p + 1):
-        alpha_diags = np.diagonal(alphas, offset=-i, axis1=1, axis2=2)
-        beta_diags = np.diagonal(betas, offset=p - i, axis1=1, axis2=2)
-        bands[i, :] = np.concatenate([alpha_diags, beta_diags], axis=1).flatten()
-    return bands
 
 
 cpdef np.ndarray _build_full_T(np.ndarray[double complex, ndim=3] alphas, np.ndarray[double complex, ndim=3] betas, object block_widths=None, object comm=None):
@@ -279,6 +396,75 @@ cpdef tuple _extract_blocks(np.ndarray[double complex, ndim=2] T, int m, int n):
     return alphas, betas
 
 
+def _build_banded_lower(alphas, betas, widths):
+    r"""LAPACK lower-banded storage of the *variable-width* block-tridiagonal T, assembled
+    directly from the block coefficients — no dense matrix is ever formed.
+
+    The full T (dimension :math:`\sum_i w_i`) is banded with lower bandwidth
+    :math:`\max_i(w_i + w_{i+1} - 1)`: every nonzero is inside a diagonal block
+    :math:`\alpha_i` (``w_i x w_i``) or an off-diagonal block :math:`\beta_i`
+    (``w_{i+1} x w_i``, coupling block ``i+1`` to block ``i``, hence in the lower triangle).
+    Returns ``a_band`` of shape ``(bw + 1, total)`` with ``a_band[d, j] == T[j + d, j]`` (the
+    format ``scipy.linalg.eig_banded(..., lower=True)`` expects) and the bandwidth ``bw``.
+    """
+    widths = [int(w) for w in widths]
+    m = len(widths)
+    offsets = [0]
+    for w in widths:
+        offsets.append(offsets[-1] + w)
+    total = offsets[-1]
+    bw = 0
+    for i in range(m):
+        bw = max(bw, widths[i] - 1)
+        if i < m - 1:
+            bw = max(bw, widths[i] + widths[i + 1] - 1)
+    a_band = np.zeros((bw + 1, total), dtype=complex)
+    for i in range(m):
+        wi = widths[i]
+        oi = offsets[i]
+        ai = np.asarray(alphas[i])[:wi, :wi]
+        for d in range(wi):  # lower diagonals of the diagonal block alpha_i
+            a_band[d, oi : oi + wi - d] = np.diagonal(ai, -d)
+        if i < m - 1:
+            wn = widths[i + 1]
+            bi = np.asarray(betas[i])[:wn, :wi]
+            # T[oi+wi+r, oi+c] = beta_i[r, c]  ->  band index (wi + r - c) at column (oi + c).
+            # Vectorized scatter (no Python element loop over the block).
+            rr, cc = np.indices((wn, wi))
+            a_band[(wi + rr - cc).ravel(), (oi + cc).ravel()] = bi.ravel()
+    return a_band, total
+
+
+def eigh_block_tridiagonal(alphas, betas, block_widths=None, eigvals_only=False):
+    r"""Eigen-decomposition of a (variable-width) block-tridiagonal T via the **banded** solver.
+
+    Builds the lower-banded storage straight from the ``alphas``/``betas`` blocks (no dense T,
+    see :func:`_build_banded_lower`) and calls ``scipy.linalg.eig_banded``. Use this instead of
+    ``_build_full_T(...) + scipy.linalg.eigh(...)`` whenever T is a genuine block-tridiagonal
+    (the Lanczos recurrence, an implicit-QR/IRLM restart) — i.e. *not* a thick-restart arrowhead,
+    which is not banded and must stay dense.
+
+    Args:
+        alphas: Diagonal blocks ``(m, p, p)`` (or sequence of 2D blocks).
+        betas: Sub-diagonal blocks; only the first ``m-1`` are used (the trailing residual is
+            ignored, matching ``_build_full_T``).
+        block_widths: True per-block widths; ``None`` => uniform ``p``.
+        eigvals_only: If True, skip eigenvectors.
+
+    Returns:
+        tuple ``(evals, Z)`` with ascending real ``evals`` and eigenvectors ``Z`` of dimension
+        ``sum(block_widths)`` (``Z`` is ``None`` when ``eigvals_only``).
+    """
+    cdef int m = (alphas.shape[0] if hasattr(alphas, "shape") else len(alphas))
+    cdef int p = (alphas.shape[1] if hasattr(alphas, "shape") else np.asarray(alphas[0]).shape[0])
+    widths = list(block_widths) if block_widths is not None else [p] * m
+    a_band, total = _build_banded_lower(alphas, betas, widths)
+    if eigvals_only:
+        return la.eig_banded(a_band, lower=True, eigvals_only=True, overwrite_a_band=True, check_finite=False), None
+    evals, Z = la.eig_banded(a_band, lower=True, eigvals_only=False, overwrite_a_band=True, check_finite=False)
+    return evals, Z
+
+
 cpdef tuple eigsh(
     np.ndarray[double complex, ndim=3] alphas,
     np.ndarray[double complex, ndim=3] betas,
@@ -288,7 +474,8 @@ cpdef tuple eigsh(
     str select="a",
     object select_range=None,
     int max_ev=0,
-    object comm=None
+    object comm=None,
+    object block_widths=None,
 ):
     cdef bint within_gs = False
     if select == "m":
@@ -296,28 +483,34 @@ cpdef tuple eigsh(
         select = "a"
         within_gs = True
 
-    cdef np.ndarray Tm = build_banded_matrix(alphas, betas)
+    # One band builder for both uniform and shrinking-block-deflated T: assembled straight from
+    # the block coefficients (no dense T) and honoring the true per-block widths, so deflated
+    # blocks neither inject spurious zero eigenvalues nor break the Ritz reconstruction.
+    cdef int _p = alphas.shape[1]
+    cdef list _widths = list(block_widths) if block_widths is not None else [_p] * alphas.shape[0]
+    a_band, total = _build_banded_lower(alphas, betas, _widths)
     cdef np.ndarray eigvals
     cdef np.ndarray eigvecs
 
     if eigvals_only:
-        eigvals = la.eig_banded(
-            Tm,
-            lower=True,
-            eigvals_only=True,
-            overwrite_a_band=True,
-            check_finite=False,
-            select=select,
-            select_range=select_range,
-            max_ev=max_ev,
+        eigvals = np.sort(
+            la.eig_banded(
+                a_band,
+                lower=True,
+                eigvals_only=True,
+                overwrite_a_band=True,
+                check_finite=False,
+                select=select,
+                select_range=select_range,
+                max_ev=max_ev,
+            )
         )
-        eigvals = np.sort(eigvals)
         if within_gs:
             return (eigvals[eigvals - eigvals[0] <= de], None)
         return (eigvals, None)
 
     eigvals, eigvecs = la.eig_banded(
-        Tm,
+        a_band,
         lower=True,
         eigvals_only=False,
         overwrite_a_band=True,
@@ -341,7 +534,8 @@ cpdef tuple eigsh(
     eigvecs = eigvecs[:, final_indices]
 
     if Q is not None:
-        eigvecs = Q @ eigvecs
+        # total == sum(widths): equals Q's columns when uniform, fewer when deflated.
+        eigvecs = Q[:, :total] @ eigvecs
 
     return eigvals, eigvecs
 
@@ -481,17 +675,7 @@ def block_lanczos_array_cy(
     # Resolve a string reort (e.g. "full") to the Reort enum, mirroring
     # block_lanczos_cy; otherwise the `reort == Reort.FULL` comparisons below never
     # match a string and the build silently runs with no reorthogonalization.
-    if isinstance(reort, str):
-        _map = {
-            "none": Reort.NONE,
-            "partial": Reort.PARTIAL,
-            "selective": Reort.SELECTIVE,
-            "full": Reort.FULL,
-            "periodic": Reort.PERIODIC,
-        }
-        reort = _map.get(reort.lower())
-        if reort is None:
-            raise ValueError(f"Unknown reort string. Must be one of {list(_map.keys())}.")
+    reort = resolve_reort(reort)
 
     cdef bint build_krylov_basis = (reort != Reort.NONE) or True
     cdef int N = psi0.shape[0] if psi0 is not None else Q.shape[0]
@@ -532,6 +716,9 @@ def block_lanczos_array_cy(
     cdef bint is_dense = isinstance(h_op, np.ndarray)
 
     cdef int it = start_it
+    cdef double t_norm_max = 0.0
+    cdef double h_norm_est = 0.0
+    cdef double beta_norm, alpha_norm
     cdef double reort_eps = np.sqrt(np.finfo(float).eps)
 
     cdef bint mpi = comm is not None
@@ -682,7 +869,7 @@ def block_lanczos_array_cy(
         if reort == Reort.FULL or (reort == Reort.PERIODIC and it > 0 and it % period == 0):
             if not build_krylov_basis:
                 raise RuntimeError("Krylov basis must be built for reorthogonalization")
-            wp_arr, _ = apply_reort(wp_arr, Q_list, None, Reort.FULL, mpi, comm, block_widths)
+            wp_arr, _, _ = apply_reort(wp_arr, Q_list, None, Reort.FULL, mpi, comm, block_widths)
 
         M = wp_arr.conj().T @ wp_arr
         if mpi:
@@ -699,9 +886,51 @@ def block_lanczos_array_cy(
             it += 1
             break
 
+        q_next = wp_arr @ beta_inv
+
+        # CholeskyQR2 (conditional): a single Cholesky-QR leaves q_next non-orthonormal by
+        # O(cond(M)*EPS); the second pass drives that to O(EPS) and folds the correction back
+        # into beta_i, preventing the Krylov vectors from being amplified to overflow. It is only
+        # needed for ill-conditioned blocks: when cond(M) < EPS^(-1/3) the first pass is already
+        # orthonormal to < EPS^(2/3) (~4e-11) << sqrt(EPS), so the extra Gram + MPI Allreduce is
+        # skipped. The same cond(M) gates both kernels, so they stay in lock-step.
+        if np.linalg.cond(M) >= EPS ** (-1.0 / 3.0):
+            M2 = np.ascontiguousarray(q_next.conj().T @ q_next)
+            if mpi:
+                comm.Allreduce(MPI.IN_PLACE, M2, op=MPI.SUM)
+            M2 = 0.5 * (M2 + M2.conj().T)
+            beta2_inv, beta_i, active_k = _cholesky_qr2(M2, beta_i, active_k)
+            if active_k == 0:
+                block_widths.append(n_curr)
+                it += 1
+                break
+            q_next = q_next @ beta2_inv
+
         betas_buf[it, :active_k, :n_curr] = beta_i
 
-        q_next = wp_arr @ beta_inv
+        # --- Divergence safeguard ---------------------------------------
+        # For a Hermitian H every block norm is bounded by ||H||; a jump of several orders
+        # of magnitude over the largest healthy block norm means the recurrence has been
+        # corrupted past repair. Truncate *before* this block (exclude alpha_i/beta_i at
+        # index it) so the diverged tail never reaches the Green's function. Mirrors the
+        # guard in block_lanczos_cy.
+        # One SVD of beta_i per step: largest singular value is the 2-norm (reused by the
+        # SELECTIVE Ritz-error check below).
+        _svb = np.linalg.svd(beta_i, compute_uv=False)
+        beta_norm = float(_svb[0])
+        alpha_norm = np.linalg.norm(alpha_i_arr, ord=2)
+        diverged, t_norm_max, h_norm_est = divergence_guard(
+            beta_norm, alpha_norm, it == start_it, t_norm_max, h_norm_est
+        )
+        if diverged:
+            if verbose and (not mpi or comm.rank == 0):
+                print(
+                    f"[BlockLanczos] Divergence detected at iteration {it}: "
+                    f"|beta|={beta_norm:.3e}, |alpha|={alpha_norm:.3e} >> spectral scale "
+                    f"{h_norm_est:.3e}. Truncating to the last trustworthy block.",
+                    flush=True,
+                )
+            break
 
         # EA16 §2.6.2 estimate-driven locking reorthogonalization. Propagate the cheap
         # per-pair overlap estimate (no O(N) work) and reorthogonalize q_next only against
@@ -760,30 +989,14 @@ def block_lanczos_array_cy(
             reort_eps = REORT_TOL
 
             if reort == Reort.SELECTIVE:
-                # Gate the O(m^3) Ritz-convergence check (build T_full + eigh) to a
-                # REORT_PERIOD cadence: the PARTIAL bad-block reorth below still runs
-                # every step to maintain orthogonality, so locking converged Ritz
-                # vectors less often is safe but much cheaper.
-                if it > 0 and it % REORT_PERIOD == 0:
-                    T_full = _build_full_T(alphas_buf[: it + 1], betas_buf[: it + 1], block_widths=block_widths + [n_curr])
-                    eigvals_T, conv_evec = la.eigh(T_full)
-                    for k_idx in range(len(eigvals_T)):
-                        err_bnd = np.linalg.norm(beta_i, ord=2) * np.abs(conv_evec[-1, k_idx])
-                        if err_bnd < reort_eps:
-                            s_k = conv_evec[:, k_idx]
-                            # Q_list[0] holds all it+1 completed blocks (the current
-                            # block q1 is already its last block), spanning the full
-                            # subspace s_k indexes. The earlier split that added q1
-                            # separately double-counted it and mismatched shapes whenever
-                            # a Ritz value locks on a resumed run (where the retained Ritz
-                            # pairs are already converged, so the lock fires immediately).
-                            ritz_vec = Q_list[0] @ s_k[:, np.newaxis]
-                            for _ in range(2):
-                                overlap = ritz_vec.conj().T @ q_next
-                                if mpi and comm is not None:
-                                    overlap = np.ascontiguousarray(overlap, dtype=complex)
-                                    comm.Allreduce(MPI.IN_PLACE, overlap, op=MPI.SUM)
-                                q_next -= ritz_vec @ overlap
+                # EA16 §2.6.2 selective orthogonalization (shared with block_lanczos_step_cy).
+                # Q_list[0] holds all it+1 completed blocks (the current block q1 is already its
+                # last block), spanning the full subspace the Ritz vectors index. beta_norm is the
+                # already-computed ||beta_i||_2.
+                q_next = selective_orthogonalize(
+                    q_next, Q_list[0], alphas_buf, betas_buf, W, block_widths,
+                    it, n_curr, beta_norm, reort_eps, REORT_PERIOD, mpi, comm,
+                )
 
             if reort in (Reort.PARTIAL, Reort.SELECTIVE):
                 # Pass block_widths + [n_curr] so the current block (index it, already
@@ -791,7 +1004,35 @@ def block_lanczos_array_cy(
                 # block_lanczos_cy. Without it the W-recurrence's bad-block columns are
                 # mis-mapped, which silently loses orthogonality when resuming on a
                 # restarted (e.g. IRLM-compressed) basis.
-                q_next, W = apply_reort(q_next, Q_list, W, reort, mpi, comm, block_widths + [n_curr])
+                q_next, W, _reort_acted = apply_reort(q_next, Q_list, W, reort, mpi, comm, block_widths + [n_curr])
+                # Only when the bad-block projection actually changed q_next does it need
+                # re-orthonormalizing; when no block was projected q_next is unchanged and this
+                # would be an exact no-op (M2 == I), so skip it and save the Gram + MPI Allreduce.
+                if _reort_acted:
+                    # The projection acts on the post-QR block, so it leaves q_next non-orthonormal
+                    # and beta_i inconsistent; on a near-redundant block (tight clusters) it removes
+                    # almost all of q_next, and that residual must be renormalized (or legitimately
+                    # deflated) before it feeds the next iteration — else the recurrence amplifies
+                    # the tiny leftover and the basis blows up.
+                    M2 = np.ascontiguousarray(q_next.conj().T @ q_next)
+                    if mpi:
+                        comm.Allreduce(MPI.IN_PLACE, M2, op=MPI.SUM)
+                    M2 = 0.5 * (M2 + M2.conj().T)
+                    # An *absolutely* tiny residual => the new block is fully contained in the
+                    # existing Krylov span (invariant subspace, e.g. a tight cluster whose
+                    # effective rank is exhausted). Renormalizing that noise would amplify rounding
+                    # into the recurrence (beta blow-up), so stop here.
+                    if float(np.max(np.real(np.diag(M2)))) < EPS:
+                        block_widths.append(n_curr)
+                        it += 1
+                        break
+                    beta2_inv, beta_i, active_k = _cholesky_qr2(M2, beta_i, active_k)
+                    if active_k == 0:
+                        block_widths.append(n_curr)
+                        it += 1
+                        break
+                    q_next = q_next @ beta2_inv
+                    betas_buf[it, :active_k, :n_curr] = beta_i
 
         if converged(alphas_buf[: it + 1], betas_buf[: it + 1], verbose=verbose, block_widths=block_widths + [n_curr]):
             block_widths.append(n_curr)
@@ -908,17 +1149,110 @@ cpdef tuple block_normalize(object wp, bint mpi=False, object comm=None, double 
         from impurityModel.ed.BlockLanczos import block_normalize_sparse
         return block_normalize_sparse(wp, mpi, comm, slaterWeightMin)
 
+
+def selective_orthogonalize(q_next, Q_basis, alphas, betas, W, block_widths,
+                            it, n_curr, double beta_norm, double reort_eps,
+                            int period, bint mpi, object comm):
+    r"""EA16 §2.6.2 selective orthogonalization of the new Krylov block.
+
+    Shared by both kernels: the eigensolve, the convergence/overlap gate and the
+    rank-0/bcast decision are all representation-independent (pure numpy on the
+    replicated ``alphas``/``betas``/``W``), and the projection itself dispatches on
+    ``is_array`` through ``block_combine`` / ``block_inner`` / ``block_add_scaled``, so
+    the same code drives the dense-array (``block_lanczos_array_cy``) and
+    ``ManyBodyState`` (``block_lanczos_step_cy``) kernels.
+
+    Gated to the ``period`` cadence (the per-step PARTIAL bad-block reorth keeps
+    orthogonality between locks, so the O(m^3) Ritz check can run less often). For each
+    Ritz pair that has **converged** (``err_bnd = beta_norm·|s_k[-1]| < reort_eps``) AND
+    whose running W-estimate shows ``q_next`` has actually lost orthogonality to it
+    (``max|w_ritz_k| > reort_eps``), the Ritz vector is projected out of ``q_next``
+    (twice). The decision data is replicated, so it is computed on rank 0 and the index
+    list broadcast to keep every rank's projection collectives in lock-step.
+
+    Parameters
+    ----------
+    q_next : ndarray or list of ManyBodyState
+        The freshly QR'd block to be cleaned; returned (possibly modified).
+    Q_basis : ndarray or list of ManyBodyState
+        The accumulated Krylov basis (all ``it+1`` blocks), indexed by ``s_k``.
+    alphas, betas : ndarray
+        Block-tridiagonal coefficients built so far (views ``[: it+1]`` are used).
+    W : ndarray
+        Paige-Simon estimator state (``W[-1]`` is the current-level overlap table).
+    block_widths : list of int
+        True width of every *completed* block (length ``it``); the current block
+        width ``n_curr`` is appended internally.
+    it : int
+        Absolute iteration index.
+    n_curr : int
+        Width of the current block.
+    beta_norm : float
+        ``||beta_i||_2`` (the Ritz residual scale).
+    reort_eps : float
+        Trigger tolerance (``REORT_TOL``).
+    period : int
+        Cadence for the Ritz-convergence check.
+    mpi : bool
+    comm : mpi4py communicator or None
+
+    Returns
+    -------
+    q_next : ndarray or list of ManyBodyState
+        ``q_next`` with the flagged converged Ritz directions removed.
+    """
+    if not (it > 0 and it % period == 0):
+        return q_next
+    # Banded eigensolve of the pure block-tridiagonal T (no dense matrix).
+    eigvals_T, conv_evec = eigh_block_tridiagonal(
+        alphas[: it + 1], betas[: it + 1], block_widths=block_widths + [n_curr]
+    )
+    ritz_to_project = []
+    if not mpi or comm is None or comm.rank == 0:
+        widths_list = list(block_widths) + [n_curr]
+        offsets_w = [0]
+        off = 0
+        for w_val in widths_list:
+            off += int(w_val)
+            offsets_w.append(off)
+        for k_idx in range(len(eigvals_T)):
+            err_bnd = beta_norm * np.abs(conv_evec[-1, k_idx])
+            if err_bnd < reort_eps:
+                w_ritz_k = np.zeros(n_curr, dtype=complex)
+                for j in range(it + 1):
+                    s_k_j = conv_evec[offsets_w[j] : offsets_w[j + 1], k_idx]
+                    w_j = widths_list[j]
+                    w_ritz_k += np.conj(s_k_j) @ np.conj(W[-1, j, :n_curr, :w_j].T)
+                if np.max(np.abs(w_ritz_k)) > reort_eps:
+                    ritz_to_project.append(k_idx)
+    if mpi and comm is not None:
+        ritz_to_project = comm.bcast(ritz_to_project, root=0)
+
+    for k_idx in ritz_to_project:
+        s_k = conv_evec[:, k_idx]
+        ritz_vec = block_combine(Q_basis, s_k[:, np.newaxis])
+        for _ in range(2):
+            overlap = block_inner(ritz_vec, q_next, mpi, comm)
+            q_next = block_add_scaled(q_next, ritz_vec, -overlap)
+    return q_next
+
+
 def block_lanczos_array(*args, **kwargs):
     return block_lanczos_array_cy(*args, **kwargs)
 
 
 cpdef tuple apply_reort(object wp, object Q_list, object W, object reort, bint mpi, object comm, list block_widths):
+    """Reorthogonalize ``wp`` per the reort mode. Returns ``(wp, W, acted)``; ``acted`` is True
+    iff a projection was actually applied (always for FULL/PERIODIC; for PARTIAL/SELECTIVE only
+    when a bad block exceeded the trigger), so the caller can skip the follow-up renormalize
+    when nothing changed."""
     from impurityModel.ed.BlockLanczosArray import Reort, REORT_TOL, BAD_BLOCK_TOL, EPS
     cdef list bad_block_idx = []
     cdef int j, col_start, col_end, w_j
     cdef list bad_cols
     cdef object Q_bad
     cdef int active_k
+    cdef bint acted = False
 
     if is_array(wp):
         active_k = wp.shape[1]
@@ -928,6 +1262,7 @@ cpdef tuple apply_reort(object wp, object Q_list, object W, object reort, bint m
     if reort == Reort.FULL or reort == Reort.PERIODIC:
         for _ in range(2):
             wp, _ = block_orthogonalize(wp, Q_list, mpi=mpi, comm=comm)
+        acted = True
 
     elif reort in (Reort.PARTIAL, Reort.SELECTIVE):
         if W is not None:
@@ -939,6 +1274,7 @@ cpdef tuple apply_reort(object wp, object Q_list, object W, object reort, bint m
                 bad_block_idx = comm.bcast(bad_block_idx, root=0)
 
             if bad_block_idx:
+                acted = True
                 bad_cols = []
                 for j in bad_block_idx:
                     col_start = sum(block_widths[:j])
@@ -958,4 +1294,4 @@ cpdef tuple apply_reort(object wp, object Q_list, object W, object reort, bint m
                     w_j = block_widths[j]
                     W[-1, j, :w_j, :active_k] = EPS * np.eye(w_j, active_k, dtype=complex)
 
-    return wp, W
+    return wp, W, acted

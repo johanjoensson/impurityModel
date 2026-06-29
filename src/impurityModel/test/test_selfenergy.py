@@ -1,5 +1,6 @@
 import numpy as np
 import pytest
+from impurityModel.ed import gf_diagnostics as gd
 from impurityModel.ed import selfenergy
 from impurityModel.ed.selfenergy import UnphysicalGreensFunctionError
 
@@ -143,7 +144,11 @@ def test_calc_selfenergy(mock_get_gf, mock_calc_gs):
         {"rhos": [np.array([[1.0]])]},  # gs_info
     )
 
-    mock_get_gf.return_value = ([np.array([[[-1j]]]), None], [np.array([[[-1j]]]), None])  # gs_matsubara  # gs_realaxis
+    mock_get_gf.return_value = (
+        [np.array([[[-1j]]]), None],
+        [np.array([[[-1j]]]), None],
+        None,
+    )  # gs_matsubara  # gs_realaxis
 
     h0 = {((0, "c"), (0, "a")): 1.0}
     u4 = np.zeros((1, 1, 1, 1))
@@ -197,6 +202,70 @@ def test_calc_selfenergy(mock_get_gf, mock_calc_gs):
     assert res["sigma_real"] is not None
     assert mock_calc_gs.called
     assert mock_get_gf.called
+
+
+@patch("impurityModel.ed.selfenergy.calc_gs")
+@patch("impurityModel.ed.selfenergy.get_Greens_function")
+def test_calc_selfenergy_retries_on_truncated_ensemble(mock_get_gf, mock_calc_gs):
+    """A diagnostics report flagging a truncated thermal ensemble triggers exactly one
+    auto-retry of calc_gs with a larger num_wanted; a clean report stops the loop."""
+    mock_calc_gs.return_value = (
+        [np.array([1.0])],
+        [0.0],
+        MagicMock(restrictions=None, impurity_orbitals={0: [[0]]}),
+        np.array([[1.0]]),
+        {"rhos": [np.array([[1.0]])]},
+    )
+
+    truncated = gd.DiagnosticReport()
+    truncated.add("[0]", gd.check_thermal_weight_cutoff([0.0, 0.05], 0.0, 0.1, n_returned=10, num_wanted=10))
+    assert truncated.needs_more_states  # sanity: first report does ask for more states
+    clean = gd.DiagnosticReport()
+    gf = ([np.array([[[-1j]]])], [np.array([[[-1j]]])], None)
+    # First call returns the truncated report, second the clean one.
+    mock_get_gf.side_effect = [gf[:-1] + (truncated,), gf[:-1] + (clean,)]
+
+    block_structure = BlockStructure(
+        blocks=[[0]],
+        identical_blocks=[[0]],
+        transposed_blocks=[[]],
+        particle_hole_blocks=[[]],
+        particle_hole_transposed_blocks=[[]],
+        inequivalent_blocks=[0],
+    )
+    selfenergy.calc_selfenergy(
+        h0={((0, "c"), (0, "a")): 1.0},
+        u4=np.zeros((1, 1, 1, 1)),
+        iw=np.array([1j]),
+        w=np.array([0.0]),
+        delta=0.1,
+        nominal_occ={0: 1},
+        mixed_valence=False,
+        impurity_orbitals={0: [[0]]},
+        bath_states=({0: []}, {0: []}),
+        tau=0.1,
+        verbosity=1,
+        block_structure=block_structure,
+        rot_to_spherical=np.eye(1),
+        cluster_label="test",
+        reort=None,
+        dense_cutoff=100,
+        spin_flip_dj=False,
+        comm=None,
+        chain_restrict=False,
+        occ_cutoff=1e-12,
+        truncation_threshold=100,
+        slaterWeightMin=1e-12,
+        dN=None,
+        sparse_green=False,
+    )
+
+    # Exactly one retry: calc_gs called twice, the second time with a larger num_wanted.
+    assert mock_calc_gs.call_count == 2
+    assert mock_get_gf.call_count == 2
+    first_nw = mock_calc_gs.call_args_list[0].kwargs["num_wanted"]
+    second_nw = mock_calc_gs.call_args_list[1].kwargs["num_wanted"]
+    assert second_nw > first_nw
 
 
 @patch("impurityModel.ed.selfenergy.finite.thermal_average_scale_indep")
@@ -287,7 +356,7 @@ def test_calc_selfenergy_no_matsubara(mock_get_gf, mock_calc_gs):
         np.array([[1.0]]),
         {"rhos": [np.array([[1.0]])]},
     )
-    mock_get_gf.return_value = (None, [np.array([[[-1j]]]), None])  # gs_matsubara  # gs_realaxis
+    mock_get_gf.return_value = (None, [np.array([[[-1j]]]), None], None)  # gs_matsubara  # gs_realaxis
     res = selfenergy.calc_selfenergy(
         h0={((0, "c"), (0, "a")): 1.0},
         u4=np.zeros((1, 1, 1, 1)),
@@ -329,7 +398,7 @@ def test_calc_selfenergy_exceptions(mock_get_gf, mock_calc_gs):
         np.array([[1.0]]),
         {"rhos": [np.array([[1.0]])]},
     )
-    mock_get_gf.return_value = ([np.array([[[1j]]])], None)  # Diagonal has positive imag part -> unphysical
+    mock_get_gf.return_value = ([np.array([[[1j]]])], None, None)  # Diagonal has positive imag part -> unphysical
 
     with pytest.raises(UnphysicalGreensFunctionError):
         selfenergy.calc_selfenergy(
@@ -360,7 +429,7 @@ def test_calc_selfenergy_exceptions(mock_get_gf, mock_calc_gs):
         )
 
     # Test Unphysical greens function in realaxis
-    mock_get_gf.return_value = (None, [np.array([[[1j]]])])
+    mock_get_gf.return_value = (None, [np.array([[[1j]]])], None)
     with pytest.raises(UnphysicalGreensFunctionError):
         selfenergy.calc_selfenergy(
             h0={((0, "c"), (0, "a")): 1.0},
@@ -404,7 +473,7 @@ def test_calc_selfenergy_sigma_exceptions(mock_get_sigma, mock_get_gf, mock_calc
     )
 
     # Test unphysical sigma_real
-    mock_get_gf.return_value = (None, [np.array([[[-1j]]])])  # Valid GS
+    mock_get_gf.return_value = (None, [np.array([[[-1j]]])], None)  # Valid GS
     mock_get_sigma.return_value = [np.array([[[1j]]])]  # Invalid sigma
 
     with pytest.raises(UnphysicalGreensFunctionError):
@@ -436,7 +505,7 @@ def test_calc_selfenergy_sigma_exceptions(mock_get_sigma, mock_get_gf, mock_calc
         )
 
     # Test unphysical sigma matsubara
-    mock_get_gf.return_value = ([np.array([[[-1j]]])], None)  # Valid GS
+    mock_get_gf.return_value = ([np.array([[[-1j]]])], None, None)  # Valid GS
     mock_get_sigma.return_value = [np.array([[[1j]]])]  # Invalid sigma
 
     with pytest.raises(UnphysicalGreensFunctionError):

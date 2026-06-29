@@ -184,40 +184,32 @@ def select_restart_indices(theta, n_keep, locked_local, which="smallest", locked
     return kept_idx, theta[shift_idx].real
 
 
-def _extract_blocks(T, nb, p):
-    """Read the diagonal (``alpha``) and sub-diagonal (``beta``) blocks of band ``T``."""
-    alphas = np.zeros((nb, p, p), dtype=complex)
-    betas = np.zeros((max(nb - 1, 0), p, p), dtype=complex)
-    for i in range(nb):
-        alphas[i] = T[i * p : (i + 1) * p, i * p : (i + 1) * p]
-        if i < nb - 1:
-            betas[i] = T[(i + 1) * p : (i + 2) * p, i * p : (i + 1) * p]
-    return alphas, betas
+def _block_tridiagonalize(lam, V0, p):
+    """Block-Lanczos tridiagonalization of the *diagonal* operator ``diag(lam)``.
 
-
-def _block_tridiagonalize(M, V0, p):
-    """Block-Lanczos tridiagonalization of a small dense Hermitian ``M``.
-
-    Builds an orthonormal basis ``Y`` (full reorthogonalization, since ``M`` is tiny)
-    with ``Y[:, :p] = V0`` such that ``Y^H M Y`` is block-tridiagonal. Used by
-    :func:`purge_restart` to re-band the purged Ritz factorization.
+    Builds an orthonormal basis ``Y`` (full reorthogonalization, since the operator is tiny)
+    with ``Y[:, :p] = V0`` such that ``Y^H diag(lam) Y`` is block-tridiagonal. Used by
+    :func:`purge_restart` to re-band the purged Ritz factorization. Taking ``lam`` as the 1-D
+    diagonal (the kept Ritz values) avoids materializing the dense ``diag(lam)`` and turns the
+    matvec into a row scaling (``diag(lam) @ Q`` is exactly ``lam[:, None] * Q``).
 
     Args:
-        M: ``(n, n)`` Hermitian matrix (``n`` a multiple of ``p``).
+        lam: ``(n,)`` diagonal entries (``n`` a multiple of ``p``).
         V0: ``(n, p)`` orthonormal starting block.
         p: Block size.
 
     Returns:
         numpy.ndarray: ``(n, n)`` orthonormal ``Y``.
     """
-    n = M.shape[0]
+    lam_col = np.asarray(lam).reshape(-1, 1)
+    n = lam_col.shape[0]
     nb = n // p
     Q = [V0]
     Qfull = V0.copy()
     q_prev = None
     beta_prev = None
     for j in range(nb):
-        w = M @ Q[-1]
+        w = lam_col * Q[-1]  # diag(lam) @ Q[-1]
         a = np.conj(Q[-1].T) @ w
         w = w - Q[-1] @ a
         if j > 0:
@@ -268,16 +260,27 @@ def purge_restart(evals, Z, beta_last, p, kept_idx):
     m = Z.shape[0] // p
 
     W = Z[:, kept_idx]
-    Lam = np.diag(evals[kept_idx].real).astype(complex)
+    lam = evals[kept_idx].real.astype(complex)  # diagonal of Lambda (1-D, no dense diag)
     S = beta_last @ Z[(m - 1) * p :, kept_idx]  # (p, n_keep) residual->kept coupling
 
     P1, _ = np.linalg.qr(np.conj(S.T))  # (n_keep, p) orthonormal
-    Y_fwd = _block_tridiagonalize(Lam, P1, p)
+    Y_fwd = _block_tridiagonalize(lam, P1, p)
     # Reverse the block order so the residual coupling lands on the trailing block.
     Y = np.concatenate([Y_fwd[:, (nb - 1 - j) * p : (nb - j) * p] for j in range(nb)], axis=1)
 
-    T_band = np.conj(Y.T) @ Lam @ Y
+    # T^+ = Y^H diag(lam) Y is block-tridiagonal by construction; assemble only its band blocks
+    # directly (no dense n_keep x n_keep matrix). LamY = diag(lam) @ Y is a row scaling, and
+    # the (i,j) block of T^+ is Y_i^H (LamY)_j -- we keep the diagonal (alpha) and sub-diagonal
+    # (beta) blocks, identical to slicing the full product.
+    LamY = lam.reshape(-1, 1) * Y
+    alphas_new = np.zeros((nb, p, p), dtype=complex)
+    betas_new = np.zeros((nb - 1, p, p), dtype=complex)
+    for i in range(nb):
+        Yi = Y[:, i * p : (i + 1) * p]
+        alphas_new[i] = np.conj(Yi.T) @ LamY[:, i * p : (i + 1) * p]
+        if i < nb - 1:
+            Yip1 = Y[:, (i + 1) * p : (i + 2) * p]
+            betas_new[i] = np.conj(Yip1.T) @ LamY[:, i * p : (i + 1) * p]
     beta_new = (S @ Y)[:, n_keep - p :]
-    alphas_new, betas_new = _extract_blocks(T_band, nb, p)
     C = W @ Y
     return C, beta_new, alphas_new, betas_new

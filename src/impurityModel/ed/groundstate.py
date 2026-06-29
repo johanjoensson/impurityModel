@@ -413,6 +413,7 @@ def calc_gs(
     verbose: bool,
     slaterWeightMin=0,
     cipsi_solver_method="irlm",
+    num_wanted: int = 10,
     **kwargs,
 ):
     """
@@ -482,7 +483,7 @@ def calc_gs(
     )
     es, psis = solver.get_eigenvectors(
         Hop,
-        num_wanted=10,
+        num_wanted=num_wanted,
         max_energy=energy_cut,
         dense_cutoff=dense_cutoff,
         slaterWeightMin=slaterWeightMin,

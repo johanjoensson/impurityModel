@@ -4,9 +4,18 @@ doc/sphinx/_doc_build/*
 
 # Cython generated sources
 ManyBodyUtils.cpp
+src/cython/*.cpp
+src/cython/*.html
 # Compiled Modules
 *.pyc
 *.so
+__pycache__/
+
+# Build / packaging artifacts
+build/
+*.egg-info/
+.coverage
+.pytest_cache/
 
 # VIM files
 .*~
