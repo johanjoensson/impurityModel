@@ -361,8 +361,16 @@ def main() -> None:
     parser.add_argument("--weight-function", type=str, default="unit")
     parser.add_argument("--weight-factor", type=float, default=2.0)
     parser.add_argument("--fit-center", type=float, default=0)
-    parser.add_argument("--natural-orbitals", action="store_true", help="Use Natural Orbitals approach instead of non-linear fitting")
-    parser.add_argument("--grid-type", type=str, default="linear", choices=["linear", "logarithmic"], help="Grid type for Natural Orbitals (linear or logarithmic)")
+    parser.add_argument(
+        "--natural-orbitals", action="store_true", help="Use Natural Orbitals approach instead of non-linear fitting"
+    )
+    parser.add_argument(
+        "--grid-type",
+        type=str,
+        default="linear",
+        choices=["linear", "logarithmic"],
+        help="Grid type for Natural Orbitals (linear or logarithmic)",
+    )
     args = parser.parse_args()
     run(**vars(args))
 
