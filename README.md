@@ -57,9 +57,9 @@ IMPURITYMODEL_PARALLEL=1 pip install --no-build-isolation -e .
 ```
 For small systems this might actually hurt performance a bit, but larger systems can benefit greatly (if you have multiple threads available).
 
-Note: `--no-build-isolation` reuses the packages already installed in your environment instead of provisioning the build requirements declared in `pyproject.toml`. If you use it, make sure the build prerequisites are installed first, otherwise the Cython `cimport numpy` (and the setuptools-scm version lookup) will fail:
+Note: `--no-build-isolation` reuses the packages already installed in your environment instead of provisioning the build requirements declared in `pyproject.toml`. If you use it, make sure the build prerequisites are installed first, otherwise the Cython compilation (`cimport numpy`, `from scipy.linalg.cython_blas cimport zgemm`) and the setuptools-scm version lookup will fail:
 ```bash
-pip install numpy cython "setuptools>=77.0.3" setuptools-scm
+pip install numpy scipy cython "setuptools>=77.0.3" setuptools-scm
 ```
 A plain `pip install -e .` (without `--no-build-isolation`) installs these automatically and needs no such preparation.
 

@@ -73,10 +73,11 @@ jobs:
       - name: Install Python dependencies
         run: |
           python -m pip install --upgrade pip
-          # Build-time deps for the --no-build-isolation install below. numpy and
-          # setuptools-scm are required at build time (Cython `cimport numpy`, dynamic
-          # version) and are NOT pulled in automatically without build isolation.
-          pip install numpy "setuptools>=77.0.3" setuptools-scm cython build
+          # Build-time deps for the --no-build-isolation install below. These are NOT
+          # pulled in automatically without build isolation:
+          #   numpy/scipy  - Cython `cimport numpy` and `from scipy.linalg.cython_blas cimport zgemm`
+          #   setuptools-scm - dynamic version lookup
+          pip install numpy scipy "setuptools>=77.0.3" setuptools-scm cython build
           # Build mpi4py from source so it links against the mpich installed above.
           pip install --no-binary mpi4py mpi4py pytest pytest-mpi
           if [ "${{ matrix.coverage }}" = "true" ]; then
