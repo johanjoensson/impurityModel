@@ -302,3 +302,49 @@ def test_get_Greens_function_matsubara_none():
 
     if gs_mat is not None and len(gs_mat) > 0:
         assert True
+
+
+def test_get_Greens_function_mesh_is_none():
+    """A None mesh (e.g. the self-energy driver requesting only one axis) returns that
+    axis as None instead of crashing on len(None)."""
+    omega_mesh = np.array([-1.0, 0.0, 1.0])
+    matsubara_mesh = np.array([1j, 2j])
+    hOp = ManyBodyOperator({((0, "c"), (0, "a")): 0.5})
+    states = [b"\x80", b"\x00"]
+
+    def run(mmesh, omesh):
+        basis = Basis(
+            impurity_orbitals={0: [[0]]},
+            bath_states=({0: [[]]}, {0: [[]]}),
+            initial_basis=states,
+            comm=MPI.COMM_SELF,
+        )
+        psi = ManyBodyState({SlaterDeterminant.from_bytes(states[0]): 1.0})
+        return get_Greens_function(
+            matsubara_mesh=mmesh,
+            omega_mesh=omesh,
+            psis=[psi],
+            es=[0.5],
+            tau=1.0,
+            basis=basis,
+            hOp=hOp,
+            delta=0.1,
+            blocks=[[0]],
+            verbose=False,
+            verbose_extra=False,
+            reort=None,
+            dN=1,
+            occ_cutoff=1e-6,
+            slaterWeightMin=0.0,
+            sparse=False,
+        )
+
+    # No Matsubara axis requested -> gs_matsubara is None, real axis still built.
+    gs_mat, gs_real, _ = run(None, omega_mesh)
+    assert gs_mat is None
+    assert len(gs_real) == 1 and gs_real[0].shape == (3, 1, 1)
+
+    # No real axis requested -> gs_realaxis is None, Matsubara axis still built.
+    gs_mat, gs_real, _ = run(matsubara_mesh, None)
+    assert gs_real is None
+    assert len(gs_mat) == 1 and gs_mat[0].shape == (2, 1, 1)

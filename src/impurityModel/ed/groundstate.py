@@ -3,12 +3,12 @@ from itertools import product
 import numpy as np
 
 from impurityModel.ed.block_structure import BlockStructure, print_block_structure
-from impurityModel.ed.density_matrix import calc_density_matrices
 from impurityModel.ed.finite import (
     apply_casimir,
     apply_spin_correlation,
     bath_spin_pairs,
     casimir_to_quantum_number,
+    derive_spin_pairs,
     impurity_spin_pairs,
     make_impurity_casimir_operators,
     make_spin_operators,
@@ -19,7 +19,8 @@ from impurityModel.ed.finite import (
     thermal_average_scale_indep,
     thermal_observable_value,
 )
-from impurityModel.ed.ManyBodyUtils import ManyBodyOperator, ManyBodyState
+from impurityModel.ed.gs_statistics import compute_gs_statistics, print_gs_statistics, save_gs_statistics
+from impurityModel.ed.ManyBodyUtils import ManyBodyOperator
 from impurityModel.ed.symmetries import (
     conserved_subset_charges,
     measure_conserved_charges,
@@ -414,6 +415,7 @@ def calc_gs(
     slaterWeightMin=0,
     cipsi_solver_method="irlm",
     num_wanted: int = 10,
+    stats_path: str = "ground_state_statistics.json",
     **kwargs,
 ):
     """
@@ -500,69 +502,83 @@ def calc_gs(
             print(f"---> {sorted(indices)} : {occupations}")
         print("=" * 80)
         print(f"{len(ground_state_basis)} Slater determinants in the basis.")
-    gs_stats = ground_state_basis.get_state_statistics(psis)
 
     comm = ground_state_basis.comm
     rank = comm.rank if comm is not None else 0
-    if ground_state_basis.is_distributed:
-        gathered_psis = ground_state_basis.comm.gather(psis, root=0)
-        if rank == 0:
-            full_psis = [ManyBodyState() for _ in psis]
-            for r_psis in gathered_psis:
-                for psi_i, r_psi_i in zip(full_psis, r_psis):
-                    psi_i += r_psi_i
-    else:
-        full_psis = psis
-    if rank == 0:
-        rhos = calc_density_matrices(full_psis, list(range(ground_state_basis.num_spin_orbitals)))
-    else:
-        rhos = np.empty(
-            (len(psis), ground_state_basis.num_spin_orbitals, ground_state_basis.num_spin_orbitals), dtype=complex
-        )
-    if ground_state_basis.is_distributed:
-        ground_state_basis.comm.Bcast(rhos, root=0)
+    # Single-particle density matrices, built distributed (each rank applies c_orb to its
+    # local partition, redistributes, computes local inner products, then Allreduce); the
+    # full rho is returned replicated on every rank. No full-state-vector gather needed.
+    rhos = ground_state_basis.build_density_matrices(psis)
 
     e_avg = thermal_average_scale_indep(es, es, tau)
     thermal_rho = thermal_average_scale_indep(es, rhos, tau)
-    if verbose:
+
+    # Occupation-weight statistics of the thermal ground state, built distributed
+    # (collective call); returns the dict on rank 0 and None elsewhere.
+    gs_stats = compute_gs_statistics(
+        ground_state_basis,
+        psis,
+        es,
+        tau,
+        thermal_rho,
+        ground_state_basis.impurity_spin_orbital_indices,
+    )
+    if rank == 0 and gs_stats is not None and stats_path is not None:
+        save_gs_statistics(gs_stats, stats_path)
+
+    # The verbose observable report below makes *collective* calls
+    # (manifold_observable_values Allreduces the <m|O|n> matrix). Those must run on all
+    # ranks or none, so gate them on a rank-consistent flag rather than the per-rank
+    # `verbose`, which is 0 on non-master ranks in the self-energy / spectra drivers —
+    # otherwise the master rank would block forever in the Allreduce.
+    report_observables = verbose
+    if comm is not None:
+        report_observables = comm.bcast(verbose, root=0)
+    if report_observables:
         impurity_indices = [
             orb
             for impurity_orbital_blocks in ground_state_basis.impurity_orbitals.values()
             for block in impurity_orbital_blocks
             for orb in block
         ]
-        print(f"{impurity_indices=}")
         impurity_ix = np.ix_(impurity_indices, impurity_indices)
-        print("Block structure")
-        print_block_structure(block_structure)
-        # Impurity S^2 / L^2 / J^2: two-body observables, so they need the actual
-        # eigenstates (gathered on rank 0). The L/S/J operators are built in the
+        # Impurity S^2 / L^2 / J^2 and <S_imp.S_bath> are two-body observables, so they
+        # need the actual eigenstates rather than the density matrix. They are evaluated
+        # *distributed*: each rank applies the operator to its local partition,
+        # redistribute_psis realigns it, and manifold_observable_values Allreduces the
+        # small <m|O|n> matrix (so this is a collective call with an identical result on
+        # every rank — no state-vector gather). The L/S/J operators are built in the
         # spherical basis and rotated to the computational basis via rot_to_spherical
-        # (symmetry-plan Phase 5), which makes the ml-dependence of L correct and is
-        # robust to the computational spin layout. Computed on rank 0 only and passed
-        # in; None on other ranks leaves the output unchanged there.
+        # (symmetry-plan Phase 5).
+        mov_comm = ground_state_basis.comm if ground_state_basis.is_distributed else None
+        mov_redistribute = ground_state_basis.redistribute_psis if ground_state_basis.is_distributed else None
         s_values = l_values = j_values = None
         s2_thermal = l2_thermal = j2_thermal = None
-        if rank == 0:
-            try:
-                l_ops, s_ops, j_ops = make_impurity_casimir_operators(
-                    ground_state_basis.impurity_orbitals, rot_to_spherical
+        try:
+            l_ops, s_ops, j_ops = make_impurity_casimir_operators(
+                ground_state_basis.impurity_orbitals, rot_to_spherical
+            )
+        except ValueError:
+            # Impurity is not a clean spin-doubled l-shell: skip the Casimirs
+            # (the rho-based <L.S>/<Lz>/<Sz> etc. still print).
+            l_ops = None
+        if l_ops is not None:
+            casimir = {}
+            for name, ops in (("S", s_ops), ("L", l_ops), ("J", j_ops)):
+                vals = manifold_observable_values(
+                    psis,
+                    es,
+                    lambda psi, _ops=ops: apply_casimir(psi, *_ops),
+                    comm=mov_comm,
+                    redistribute=mov_redistribute,
                 )
-            except ValueError:
-                # Impurity is not a clean spin-doubled l-shell: skip the Casimirs
-                # (the rho-based <L.S>/<Lz>/<Sz> etc. still print).
-                l_ops = None
-            if l_ops is not None:
-                casimir = {}
-                for name, ops in (("S", s_ops), ("L", l_ops), ("J", j_ops)):
-                    vals = manifold_observable_values(full_psis, es, lambda psi, _ops=ops: apply_casimir(psi, *_ops))
-                    casimir[name] = (
-                        np.array([casimir_to_quantum_number(v) for v in vals]),
-                        thermal_observable_value(vals, es, tau),
-                    )
-                s_values, s2_thermal = casimir["S"]
-                l_values, l2_thermal = casimir["L"]
-                j_values, j2_thermal = casimir["J"]
+                casimir[name] = (
+                    np.array([casimir_to_quantum_number(v) for v in vals]),
+                    thermal_observable_value(vals, es, tau),
+                )
+            s_values, s2_thermal = casimir["S"]
+            l_values, l2_thermal = casimir["L"]
+            j_values, j2_thermal = casimir["J"]
         # Kondo impurity-bath spin correlation <S_imp . S_bath>. The bath spin pairing
         # follows the down-then-up convention, but is only trusted if the induced global
         # spin operators commute with the one-body Hamiltonian (so the spin assignment
@@ -570,65 +586,87 @@ def calc_gs(
         # ordering) it is skipped rather than reported wrong.
         sisb_values = None
         sisb_thermal = None
+        sisb_skip_reason = None
+        n_orb = ground_state_basis.num_spin_orbitals
+        # Fast path: the down-then-up index convention (valid in the spherical/c2i layout).
+        imp_pairs = impurity_spin_pairs(ground_state_basis.impurity_orbitals)
+        bath_pairs = bath_spin_pairs(ground_state_basis.bath_states)
+        spin_pairs = None
+        if imp_pairs and bath_pairs and spin_pairs_consistent_with_h(Hop, imp_pairs + bath_pairs, n_orb):
+            spin_pairs = (imp_pairs, bath_pairs)
+        else:
+            # Fallback: derive the pairing from the Hamiltonian's spin symmetry (geometry-
+            # agnostic, e.g. the linked double-chain / Haverkort bath where the computational
+            # order is not down-then-up). Confirmed by the same [h, S] = 0 check.
+            derived = derive_spin_pairs(Hop, ground_state_basis.impurity_orbitals, rot_to_spherical, n_orb)
+            if derived is not None and spin_pairs_consistent_with_h(Hop, derived[0] + derived[1], n_orb):
+                spin_pairs = derived
+        if spin_pairs is None:
+            sisb_skip_reason = (
+                "could not determine a (down,up) spin pairing that commutes with the one-body "
+                "Hamiltonian. The down-then-up index convention only holds in the spherical-harmonics "
+                "representation, and the symmetry-derived fallback did not yield a consistent pairing "
+                "(spin-orbit coupling, or a bath connectivity it cannot resolve)."
+            )
+        else:
+            imp_pairs, bath_pairs = spin_pairs
+            ops_imp = make_spin_operators(imp_pairs)
+            ops_bath = make_spin_operators(bath_pairs)
+            sisb_raw = manifold_observable_values(
+                psis,
+                es,
+                lambda psi: apply_spin_correlation(psi, ops_imp, ops_bath),
+                comm=mov_comm,
+                redistribute=mov_redistribute,
+            )
+            sisb_values = np.real(sisb_raw)
+            sisb_thermal = thermal_observable_value(sisb_raw, es, tau)
+
         if rank == 0:
-            imp_pairs = impurity_spin_pairs(ground_state_basis.impurity_orbitals)
-            bath_pairs = bath_spin_pairs(ground_state_basis.bath_states)
-            n_orb = ground_state_basis.num_spin_orbitals
-            if imp_pairs and bath_pairs and spin_pairs_consistent_with_h(Hop, imp_pairs + bath_pairs, n_orb):
-                ops_imp = make_spin_operators(imp_pairs)
-                ops_bath = make_spin_operators(bath_pairs)
-                sisb_raw = manifold_observable_values(
-                    full_psis, es, lambda psi: apply_spin_correlation(psi, ops_imp, ops_bath)
-                )
-                sisb_values = np.real(sisb_raw)
-                sisb_thermal = thermal_observable_value(sisb_raw, es, tau)
-        print_thermal_expectation_values(
-            thermal_rho[impurity_ix],
-            e_avg,
-            rot_to_spherical,
-            block_structure,
-            s_thermal=s2_thermal,
-            l_thermal=l2_thermal,
-            j_thermal=j2_thermal,
-            sisb_thermal=sisb_thermal,
-        )
-        impurity_ix = np.ix_(np.arange(len(rhos)), impurity_indices, impurity_indices)
-        print_expectation_values(
-            rhos[impurity_ix],
-            es,
-            rot_to_spherical,
-            block_structure,
-            s_values=s_values,
-            l_values=l_values,
-            j_values=j_values,
-            sisb_values=sisb_values,
-        )
-        print("Occupation statistics for each eigenstate in the thermal ground state")
-        print("Impurity, Valence, Conduction: Weight (|amp|^2)")
-        for i, psi_stats in enumerate(gs_stats):
-            print(f"{i}:")
-            for imp_occ, val_occ, con_occ in sorted(psi_stats.keys()):
-                print(f"{imp_occ:^8d},{val_occ:^8d},{con_occ:^11d}: {psi_stats[(imp_occ, val_occ, con_occ)]}")
-            print("=" * 80)
+            print(f"{impurity_indices=}")
+            print("Block structure")
+            print_block_structure(block_structure)
+            print_thermal_expectation_values(
+                thermal_rho[impurity_ix],
+                e_avg,
+                rot_to_spherical,
+                block_structure,
+                s_thermal=s2_thermal,
+                l_thermal=l2_thermal,
+                j_thermal=j2_thermal,
+                sisb_thermal=sisb_thermal,
+            )
+            full_impurity_ix = np.ix_(np.arange(len(rhos)), impurity_indices, impurity_indices)
+            print_expectation_values(
+                rhos[full_impurity_ix],
+                es,
+                rot_to_spherical,
+                block_structure,
+                s_values=s_values,
+                l_values=l_values,
+                j_values=j_values,
+                sisb_values=sisb_values,
+            )
+            if sisb_skip_reason is not None:
+                print(f"<S_imp.S_bath> not reported: {sisb_skip_reason}")
+        if rank == 0 and gs_stats is not None:
+            print_gs_statistics(gs_stats)
+            print("Ground state impurity / bath density matrices:")
+            valence_bath_states, conduction_bath_states = ground_state_basis.bath_states
+            for i in ground_state_basis.impurity_orbitals.keys():
+                print(f"orbital set {i}:")
+                impurity_orbital_blocks = ground_state_basis.impurity_orbitals[i]
+                valence_bath_orbital_blocks = valence_bath_states[i]
+                conduction_bath_orbital_blocks = conduction_bath_states[i]
+                for block_i, (imp_orbs, val_orbs, con_orbs) in enumerate(
+                    zip(impurity_orbital_blocks, valence_bath_orbital_blocks, conduction_bath_orbital_blocks)
+                ):
+                    print(f"Block {block_i}: impurity {imp_orbs}, valence {val_orbs}, conduction {con_orbs}")
+                    impurity_ix = np.ix_(imp_orbs, imp_orbs)
+                    bath_ix = np.ix_(val_orbs + con_orbs, val_orbs + con_orbs)
+                    matrix_print(thermal_rho[impurity_ix], "Impurity density matrix:", n_prec=5)
+                    matrix_print(thermal_rho[bath_ix], "Bath density matrix:", n_prec=5)
+                    print("=" * 80)
+                print("", flush=verbose >= 2)
             print()
-        print("Ground state bath occupation statistics:")
-        valence_bath_states, conduction_bath_states = ground_state_basis.bath_states
-        for i in ground_state_basis.impurity_orbitals.keys():
-            print(f"orbital set {i}:")
-            impurity_orbital_blocks = ground_state_basis.impurity_orbitals[i]
-            valence_bath_orbital_blocks = valence_bath_states[i]
-            conduction_bath_orbital_blocks = conduction_bath_states[i]
-            for block_i, (imp_orbs, val_orbs, con_orbs) in enumerate(
-                zip(impurity_orbital_blocks, valence_bath_orbital_blocks, conduction_bath_orbital_blocks)
-            ):
-                print(f"Block {block_i} (impurity orbitals {imp_orbs})")
-                print(f"Block {block_i} (valence orbitals {val_orbs})")
-                print(f"Block {block_i} (conduction orbitals {con_orbs})")
-                impurity_ix = np.ix_(imp_orbs, imp_orbs)
-                bath_ix = np.ix_(val_orbs + con_orbs, val_orbs + con_orbs)
-                matrix_print(thermal_rho[impurity_ix], "Impurity density matrix:")
-                matrix_print(thermal_rho[bath_ix], "Bath density matrix:")
-                print("=" * 80)
-            print("", flush=verbose >= 2)
-        print()
-    return psis, es, ground_state_basis, thermal_rho, {"rhos": rhos}
+    return psis, es, ground_state_basis, thermal_rho, {"rhos": rhos, "statistics": gs_stats}

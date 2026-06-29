@@ -466,3 +466,133 @@ def test_kondo_correlation_reported(capsys):
     assert any(line.startswith("<S_imp.S_bath>") for line in out.splitlines())
     header = next(line for line in out.splitlines() if "E-E0" in line and "Sz" in line)
     assert "Si.Sb" in header
+
+
+def _hop(diag, hops):
+    """Hermitian one-body ManyBodyOperator from on-site energies and hopping triples."""
+    from impurityModel.ed.ManyBodyUtils import ManyBodyOperator
+
+    terms = {((o, "c"), (o, "a")): e for o, e in diag}
+    for a, b, t in hops:
+        terms[((a, "c"), (b, "a"))] = t
+        terms[((b, "c"), (a, "a"))] = t
+    return ManyBodyOperator(terms)
+
+
+def test_derive_spin_pairs_chain():
+    """derive_spin_pairs recovers the (dn,up) pairing for an interleaved-index chain."""
+    from impurityModel.ed.finite import derive_spin_pairs, spin_pairs_consistent_with_h
+
+    # 6 spin-orbitals, spins interleaved (NOT down-then-up): impurity (0 dn, 1 up);
+    # spin-down chain 0-2-4, spin-up chain 1-3-5; orbs 2,3 valence (e<0), 4,5 conduction.
+    Hop = _hop(
+        [(0, 0.3), (1, 0.3), (2, -0.4), (3, -0.4), (4, 0.7), (5, 0.7)],
+        [(0, 2, 0.5), (1, 3, 0.5), (2, 4, 0.2), (3, 5, 0.2)],
+    )
+    derived = derive_spin_pairs(Hop, {0: [[0, 1]]}, np.eye(2, dtype=complex), 6)
+    assert derived is not None
+    imp_pairs, bath_pairs = derived
+    assert imp_pairs == [(0, 1)]
+    assert sorted(bath_pairs) == [(2, 3), (4, 5)]
+    assert spin_pairs_consistent_with_h(Hop, imp_pairs + bath_pairs, 6)
+    # The naive down-then-up pairing of the same bath orbitals is inconsistent with h.
+    assert not spin_pairs_consistent_with_h(Hop, [(0, 1), (2, 4), (3, 5)], 6)
+
+
+def test_derive_spin_pairs_returns_none_when_unresolvable():
+    """derive_spin_pairs gives up on a disconnected bath orbital or spin-mixing rotation."""
+    from impurityModel.ed.finite import derive_spin_pairs
+
+    # Bath orbitals 4,5 are isolated (no hopping) -> cannot be paired to the impurity.
+    disconnected = _hop(
+        [(0, 0.0), (1, 0.0), (2, -0.4), (3, -0.4), (4, 0.7), (5, 0.7)],
+        [(0, 2, 0.5), (1, 3, 0.5)],
+    )
+    assert derive_spin_pairs(disconnected, {0: [[0, 1]]}, np.eye(2, dtype=complex), 6) is None
+
+    # A rotation that mixes the two impurity spins makes the rotated S_+ non-permutation.
+    theta = 0.3
+    rot_mix = np.array(
+        [[np.cos(theta), -np.sin(theta)], [np.sin(theta), np.cos(theta)]], dtype=complex
+    )
+    connected = _hop(
+        [(0, 0.0), (1, 0.0), (2, -0.4), (3, -0.4), (4, 0.7), (5, 0.7)],
+        [(0, 2, 0.5), (1, 3, 0.5), (2, 4, 0.2), (3, 5, 0.2)],
+    )
+    assert derive_spin_pairs(connected, {0: [[0, 1]]}, rot_mix, 6) is None
+
+
+def test_derive_spin_pairs_block_grouped_bath():
+    """Bath grouped by impurity block with unequal sizes (not (k,k+n/2)) still resolves.
+
+    Mirrors the real layout: bath orbitals are ordered [all bath coupling to impurity
+    block 0, then block 1, ...] and inequivalent blocks may have different bath counts.
+    derive_spin_pairs follows H's hopping graph, so the ordering is irrelevant.
+    """
+    from impurityModel.ed.finite import derive_spin_pairs, spin_pairs_consistent_with_h
+
+    # Two l=0 impurity shells: imp0 = (0 dn, 1 up), imp1 = (2 dn, 3 up).
+    # Bath block 0 (couples to imp0) has 2 sites/spin: dn 4,5 / up 6,7.
+    # Bath block 1 (couples to imp1) has 1 site/spin: dn 8 / up 9.  Different sizes.
+    Hop = _hop(
+        [(0, 0.2), (1, 0.2), (2, -0.1), (3, -0.1),
+         (4, -0.3), (6, -0.3), (5, 0.6), (7, 0.6), (8, 0.4), (9, 0.4)],
+        [(0, 4, 0.5), (1, 6, 0.5), (0, 5, 0.4), (1, 7, 0.4), (2, 8, 0.3), (3, 9, 0.3)],
+    )
+    derived = derive_spin_pairs(Hop, {0: [[0, 1]], 1: [[2, 3]]}, np.eye(2, dtype=complex), 10)
+    assert derived is not None
+    imp_pairs, bath_pairs = derived
+    assert sorted(imp_pairs) == [(0, 1), (2, 3)]
+    assert sorted(bath_pairs) == [(4, 6), (5, 7), (8, 9)]
+    assert spin_pairs_consistent_with_h(Hop, imp_pairs + bath_pairs, 10)
+
+
+def _thermal_sisb(out):
+    """Parse the '<S_imp.S_bath> = value' thermal line from calc_gs output."""
+    line = next(ln for ln in out.splitlines() if ln.startswith("<S_imp.S_bath>"))
+    return float(line.split("=")[1])
+
+
+def test_kondo_correlation_fallback_matches_fast_path(capsys):
+    """A non-down-then-up bath ordering falls back to derive_spin_pairs and agrees."""
+    from impurityModel.ed.block_structure import BlockStructure
+    from impurityModel.ed.groundstate import calc_gs
+
+    ed, U, ev, ec, V = -2.0, 6.0, -4.0, 4.0, 1.0
+    diag = [(0, ed), (1, ed), (2, ev), (3, ev), (4, ec), (5, ec)]
+    hops = [(0, 2, V), (1, 3, V), (0, 4, V), (1, 5, V)]
+    terms = {((o, "c"), (o, "a")): e for o, e in diag}
+    for a, b, t in hops:
+        terms[((a, "c"), (b, "a"))] = t
+        terms[((b, "c"), (a, "a"))] = t
+    terms[((0, "c"), (1, "c"), (1, "a"), (0, "a"))] = U
+    from impurityModel.ed.ManyBodyUtils import ManyBodyOperator
+
+    Hop = ManyBodyOperator(terms)
+    bs = BlockStructure(
+        blocks=[[0, 1]],
+        identical_blocks=[[0]],
+        transposed_blocks=[[]],
+        particle_hole_blocks=[[]],
+        particle_hole_transposed_blocks=[[]],
+        inequivalent_blocks=[0],
+    )
+
+    def run(valence_block, conduction_block):
+        setup = dict(
+            impurity_orbitals={0: [[0, 1]]},
+            bath_states=({0: [valence_block]}, {0: [conduction_block]}),
+            N0={0: 1},
+            mixed_valence={0: 1},
+            tau=0.01,
+            dense_cutoff=1000,
+            spin_flip_dj=False,
+            comm=None,
+            truncation_threshold=100000,
+        )
+        calc_gs(Hop, setup, bs, np.eye(2, dtype=complex), verbose=True, slaterWeightMin=1e-12)
+        return _thermal_sisb(capsys.readouterr().out)
+
+    fast = run([2, 3], [4, 5])  # down-then-up within each block -> fast path
+    fallback = run([3, 2], [5, 4])  # spins swapped within block -> derive_spin_pairs fallback
+    assert np.isclose(fast, fallback, atol=1e-9)

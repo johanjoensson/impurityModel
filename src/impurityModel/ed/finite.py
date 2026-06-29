@@ -5,6 +5,7 @@ This module contains functions doing the bulk of the calculations.
 import itertools
 import time
 import warnings
+from collections import deque
 from math import pi, sqrt
 from typing import Any, Callable, Optional
 
@@ -452,17 +453,21 @@ def print_expectation_values(
     equivalent_blocks = get_equivalent_blocks(block_structure)
     print(f"E0 = {es[0]:9.6f}")
     block_N_string = [f"N({','.join(f'{b}' for b in blocks)})" for blocks in equivalent_blocks]
-    block_N_string_formatted = ["" for _ in block_N_string]
-    for i, Ns in enumerate(block_N_string):
-        block_N_string_formatted[i] = " " * max(8 - len(Ns), 0) + Ns
+    # Each block-occupation column is right-aligned to a width that fits both its header
+    # and the 7-8 char ``.5f`` value below it, so header and numbers line up.
+    block_N_widths = [max(len(Ns), 8) for Ns in block_N_string]
+    block_N_string_formatted = [f"{Ns:>{w}s}" for Ns, w in zip(block_N_string, block_N_widths)]
     extra = [
         (name, vals)
         for name, vals in (("S", s_values), ("L", l_values), ("J", j_values), ("Si.Sb", sisb_values))
         if vals is not None
     ]
-    extra_header = "".join(f"  {name:>8s}" for name, _ in extra)
+    # Lz/Sz/L.S and the S/L/J/Si.Sb columns are printed with the space-flag format
+    # ``{x: 8.6f}``, which is 9 characters wide (the sign column sits on top of the 8),
+    # so their headers must be 9 wide to line up with the numbers below.
+    extra_header = "".join(f"  {name:>9s}" for name, _ in extra)
     print(
-        f"{'i':>3s}  {'E-E0':>11s}  {'N':>8s}  {'N(Dn)':>8s}  {'N(Up)':>8s}  {'  '.join(block_N_string_formatted)}  {'Lz':>8s}  {'Sz':>8s}  {'L.S':>8s}{extra_header}"
+        f"{'i':>3s}  {'E-E0':>11s}  {'N':>8s}  {'N(Dn)':>8s}  {'N(Up)':>8s}  {'  '.join(block_N_string_formatted)}  {'Lz':>9s}  {'Sz':>9s}  {'L.S':>9s}{extra_header}"
     )
     for i, (e, rho) in enumerate(zip(es - es[0], rhos)):
         block_occs = [
@@ -471,7 +476,7 @@ def print_expectation_values(
         ]
         block_occ_string_formatted = ["" for _ in block_occs]
         for ib, b_occ in enumerate(block_occs):
-            block_occ_string_formatted[ib] = f"{np.real(b_occ):^ {len(block_N_string[ib])}.5f}"
+            block_occ_string_formatted[ib] = f"{np.real(b_occ):>{block_N_widths[ib]}.5f}"
         rho_spherical = rotate_matrix(rho, rot_to_spherical)
         N, Ndn, Nup = get_occupations_from_rho_spherical(rho_spherical)
         Lz = get_Lz_from_rho_spherical(rho_spherical)
@@ -479,7 +484,7 @@ def print_expectation_values(
         LS = get_LS_from_rho_spherical(rho_spherical)
         extra_fields = "".join(f"  {vals[i]: 8.6f}" for _, vals in extra)
         print(
-            f"{i:^3d}  {e:11.8f}  {N:8.5f}  {Ndn:8.5f}  {Nup:8.5f}  {'  '.join(block_occ_string_formatted)}  {Lz: 8.6f}  {Sz: 8.6f}  {LS: 8.6f}{extra_fields}"
+            f"{i:>3d}  {e:11.8f}  {N:8.5f}  {Ndn:8.5f}  {Nup:8.5f}  {'  '.join(block_occ_string_formatted)}  {Lz: 8.6f}  {Sz: 8.6f}  {LS: 8.6f}{extra_fields}"
         )
     print("\n")
 
@@ -984,7 +989,7 @@ def _group_degenerate(energies, tol):
     return groups
 
 
-def manifold_observable_values(eigenstates, energies, apply_op, degeneracy_tol=1e-6):
+def manifold_observable_values(eigenstates, energies, apply_op, degeneracy_tol=1e-6, comm=None, redistribute=None):
     r"""Per-state physical values of an observable on a low-energy manifold.
 
     Block Lanczos returns a *block* spanning a (near-)degenerate eigenspace; any
@@ -994,19 +999,32 @@ def manifold_observable_values(eigenstates, energies, apply_op, degeneracy_tol=1
     subspace this builds the small matrix :math:`O_{mn}=\langle m|\hat O|n\rangle`
     and diagonalises it; the eigenvalues are the physical observable values.
 
-    The ``eigenstates`` are assumed orthonormal and *full* (gathered to a single
-    rank, as the density-matrix path already does) — not distributed.
+    This may be evaluated distributed: pass the rank-local states together with
+    ``comm`` and a ``redistribute`` callback (e.g. ``Basis.redistribute_psis``). Then
+    :math:`\hat O|n\rangle` is formed on each rank's local partition, redistributed to
+    align with the bra partition, the local contributions to :math:`O_{mn}` are summed,
+    and the small matrix is ``Allreduce``-d. The result is identical on every rank, so no
+    state-vector gather is needed. With ``comm=None`` the ``eigenstates`` are treated as
+    full (single-rank) states, as before.
 
     Parameters
     ----------
     eigenstates : sequence of ManyBodyState
-        Orthonormal manifold basis (e.g. a Lanczos block).
+        Orthonormal manifold basis (e.g. a Lanczos block); rank-local when ``comm`` is
+        given, otherwise full.
     energies : array_like of shape (N,)
         Energy of each eigenstate (used only to group degenerate subspaces).
     apply_op : callable
         ``apply_op(psi)`` returns :math:`\hat O|\psi\rangle` as a ManyBodyState.
     degeneracy_tol : float, default 1e-6
         Energies within this tolerance are treated as degenerate.
+    comm : MPI.Comm, optional
+        Communicator over which the states are distributed. If ``None`` the computation
+        is purely local.
+    redistribute : callable, optional
+        ``redistribute(op_states)`` returns the operator-applied states reshuffled onto
+        the same determinant partition as ``eigenstates`` (e.g. ``Basis.redistribute_psis``).
+        Required when the states are distributed.
 
     Returns
     -------
@@ -1018,10 +1036,14 @@ def manifold_observable_values(eigenstates, energies, apply_op, degeneracy_tol=1
     n = len(eigenstates)
     energies = np.asarray(energies, dtype=float)
     op_states = [apply_op(psi) for psi in eigenstates]
+    if redistribute is not None:
+        op_states = redistribute(op_states)
     o_matrix = np.array(
         [[inner(eigenstates[i], op_states[j]) for j in range(n)] for i in range(n)],
         dtype=complex,
     )
+    if comm is not None:
+        comm.Allreduce(MPI.IN_PLACE, o_matrix, op=MPI.SUM)
     # Hermitise to kill rounding asymmetry before diagonalising.
     o_matrix = 0.5 * (o_matrix + o_matrix.conj().T)
 
@@ -1159,6 +1181,120 @@ def spin_pairs_consistent_with_h(h_op, spin_pairs, n_orb, tol=1e-6):
     return bool(np.linalg.norm(h @ sz - sz @ h) <= tol and np.linalg.norm(h @ splus - splus @ h) <= tol)
 
 
+def derive_spin_pairs(h_op, impurity_orbitals, rot_to_spherical, n_orb, tol=1e-6):
+    r"""Derive the global ``(down, up)`` spin-orbital pairing from the one-body Hamiltonian.
+
+    Geometry-agnostic alternative to the down-then-up index convention of
+    :func:`impurity_spin_pairs` / :func:`bath_spin_pairs`, which is only valid in the
+    spherical-harmonics representation. It is needed for bath geometries (e.g. the linked
+    double-chain / Haverkort bath) where the computational orbital order is not
+    down-then-up.
+
+    Two ingredients:
+
+    1. **Impurity** — the pairing is read from the spherical spin-raising operator
+       :math:`S_+` rotated to the computational basis via ``rot_to_spherical``: the single
+       non-zero in each column marks a ``(down, up)`` partner. This carries no index-order
+       assumption. If the rotated :math:`S_+` is not a clean permutation (spin-orbit
+       coupling mixes the impurity spins) the derivation gives up.
+    2. **Bath** — propagated outward along the Hamiltonian's hopping graph. Because the
+       one-body ``h`` is spin-blind for a collinear model (``h_up == h_dn``), the spin-down
+       and spin-up sectors form identical connectivity blocks. Starting from each impurity
+       ``(down, up)`` pair, a simultaneous breadth-first search matches each spin-down bath
+       orbital with the structurally identical (same hopping magnitude and on-site energy)
+       spin-up bath orbital.
+
+    The result is a *candidate* that must still be confirmed with
+    :func:`spin_pairs_consistent_with_h`. Returns ``None`` when the pairing cannot be
+    determined unambiguously (spin-orbit coupling, a bath orbital disconnected from the
+    impurity, or a structurally ambiguous match).
+
+    Parameters
+    ----------
+    h_op : ManyBodyOperator or dict
+        The Hamiltonian (its one-body part is used).
+    impurity_orbitals : dict
+        ``Basis.impurity_orbitals`` (``partition -> list of orbital-index blocks``).
+    rot_to_spherical : np.ndarray or dict
+        The spherical->computational rotation (single matrix or ``{partition: matrix}``).
+    n_orb : int
+        Total number of spin-orbitals.
+    tol : float, optional
+        Magnitude tolerance for graph edges and structural matching.
+
+    Returns
+    -------
+    (imp_pairs, bath_pairs) : tuple of list of (int, int), or None
+    """
+    from impurityModel.ed.symmetries import extract_tensors
+
+    h, _, _ = extract_tensors(h_op, n_orb=n_orb)
+    impurity_orbs = set(orb for blocks in impurity_orbitals.values() for block in blocks for orb in block)
+
+    # --- impurity (dn, up) pairs from the rotated spherical S_+ ---
+    imp_pairs = []
+    for partition, blocks in impurity_orbitals.items():
+        orbs = [orb for block in blocks for orb in block]
+        n_so = len(orbs)
+        shell_l = (n_so // 2 - 1) // 2
+        if 2 * (2 * shell_l + 1) != n_so:
+            return None
+        _, _, _, _, sp_m, _ = _single_particle_lsj_matrices(shell_l)
+        rot = rot_to_spherical[partition] if isinstance(rot_to_spherical, dict) else rot_to_spherical
+        rot = np.asarray(rot, dtype=complex)
+        sp_comp = rot @ sp_m @ rot.conj().T  # S_+ in the computational basis
+        downs = {}  # local down index -> local up index
+        for j in range(n_so):
+            rows = [i for i in range(n_so) if abs(sp_comp[i, j]) > 0.5]
+            if len(rows) > 1 or (len(rows) == 1 and abs(abs(sp_comp[rows[0], j]) - 1.0) > 1e-3):
+                return None  # not a clean spin-eigen pairing (e.g. SOC)
+            if len(rows) == 1:
+                downs[j] = rows[0]
+        ups = set(downs.values())
+        if len(downs) != n_so // 2 or len(ups) != n_so // 2 or (set(downs) & ups):
+            return None
+        for j, i in downs.items():
+            imp_pairs.append((orbs[j], orbs[i]))
+
+    # --- bath pairs by simultaneous BFS over the hopping graph, seeded by imp_pairs ---
+    h_abs = np.abs(h)
+    matched = {}
+    for dn, up in imp_pairs:
+        matched[dn] = up
+        matched[up] = dn
+
+    def bath_neighbors(x):
+        return [y for y in range(n_orb) if y != x and y not in impurity_orbs and h_abs[x, y] > tol]
+
+    bath_pairs = []
+    queue = deque(imp_pairs)
+    while queue:
+        dn, up = queue.popleft()
+        up_candidates = [y for y in bath_neighbors(up) if y not in matched]
+        for ndn in bath_neighbors(dn):
+            if ndn in matched:
+                continue
+            cands = [
+                nup
+                for nup in up_candidates
+                if nup not in matched
+                and abs(h_abs[dn, ndn] - h_abs[up, nup]) <= tol
+                and abs(h[ndn, ndn] - h[nup, nup]) <= tol
+            ]
+            if len(cands) != 1:
+                return None  # no match or ambiguous
+            nup = cands[0]
+            matched[ndn] = nup
+            matched[nup] = ndn
+            bath_pairs.append((ndn, nup))
+            queue.append((ndn, nup))
+
+    bath_orbs = set(range(n_orb)) - impurity_orbs
+    if any(orb not in matched for orb in bath_orbs):
+        return None  # some bath orbital disconnected from the impurity
+    return imp_pairs, bath_pairs
+
+
 def print_thermal_expectation_values(
     rho_thermal,
     e_thermal,
@@ -1179,25 +1315,39 @@ def print_thermal_expectation_values(
     """
     orb_offset = min(orb for block in block_structure.blocks for orb in block)
     equivalent_blocks = get_equivalent_blocks(block_structure)
-    print(f"<E-E0>  = {e_thermal:8.7f}")
     rho_thermal_spherical = rotate_matrix(rho_thermal, rot_to_spherical)
     N, Ndn, Nup = get_occupations_from_rho_spherical(rho_thermal_spherical)
-    print(f"<N>     = {N:8.7f}")
-    print(f"<N(Dn)> = {Ndn:8.7f}")
-    print(f"<N(Up)> = {Nup:8.7f}")
+
+    # Collect (label, value, suffix) rows, then print with the '=' signs aligned and the
+    # numbers right-aligned (sign-padded), so the column reads as a tidy table.
+    rows = [
+        ("<E-E0>", e_thermal, ""),
+        ("<N>", N, ""),
+        ("<N(Dn)>", Ndn, ""),
+        ("<N(Up)>", Nup, ""),
+    ]
     for blocks in equivalent_blocks:
         occ = np.sum(
             np.diag(rho_thermal)[list(orb - orb_offset for block in blocks for orb in block_structure.blocks[block])]
         ).real
-        print(f"<N({','.join(str(orb) for orb in blocks)})> = {occ:8.7f}")
-    print(f"<Lz> = {get_Lz_from_rho_spherical(rho_thermal_spherical): 8.7f}")
-    print(f"<Sz> = {get_Sz_from_rho_spherical(rho_thermal_spherical): 8.7f}")
-    print(f"<L.S> = {get_LS_from_rho_spherical(rho_thermal_spherical): 8.7f}")
+        rows.append((f"<N({','.join(str(orb) for orb in blocks)})>", occ, ""))
+    rows.append(("<Lz>", get_Lz_from_rho_spherical(rho_thermal_spherical), ""))
+    rows.append(("<Sz>", get_Sz_from_rho_spherical(rho_thermal_spherical), ""))
+    rows.append(("<L.S>", get_LS_from_rho_spherical(rho_thermal_spherical), ""))
     for label, value in (("S", s_thermal), ("L", l_thermal), ("J", j_thermal)):
         if value is not None:
-            print(f"<{label}^2> = {np.real(value): 8.7f}  " f"({label} = {casimir_to_quantum_number(value): 6.4f})")
+            rows.append(
+                (f"<{label}^2>", np.real(value), f"({label} = {casimir_to_quantum_number(value): 6.4f})")
+            )
     if sisb_thermal is not None:
-        print(f"<S_imp.S_bath> = {np.real(sisb_thermal): 8.7f}")
+        rows.append(("<S_imp.S_bath>", np.real(sisb_thermal), ""))
+
+    label_width = max(len(label) for label, _, _ in rows)
+    for label, value, suffix in rows:
+        line = f"{label:<{label_width}} = {value: 12.7f}"
+        if suffix:
+            line += f"  {suffix}"
+        print(line)
 
 
 def dc_MLFT(n3d_i, c, Fdd, n2p_i=None, Fpd=None, Gpd=None):

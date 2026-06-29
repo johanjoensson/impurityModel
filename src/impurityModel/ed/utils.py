@@ -3,7 +3,27 @@ from typing import Any, Callable, Iterable, List, Optional, Tuple
 import numpy as np
 
 
-def vector_to_string(v: np.ndarray, realvalue: Optional[bool] = None, n_prec: int = 15) -> str:
+def _float_field_width(values: np.ndarray, n_prec: int, force_sign: bool = False) -> int:
+    """Field width for printing ``values`` with ``n_prec`` decimals, columns aligned.
+
+    The width reserves room for the integer digits of the largest-magnitude entry, the
+    decimal point, ``n_prec`` decimals, and a leading sign column when any value is
+    negative (or always, if ``force_sign`` — e.g. the ``+`` flag used for imaginary parts).
+    """
+    flat = np.real(np.asarray(values)).ravel()
+    max_abs = round(float(np.max(np.abs(flat))), n_prec) if flat.size else 0.0
+    int_digits = max(1, int(np.floor(np.log10(max_abs))) + 1) if max_abs >= 1 else 1
+    sign = 1 if force_sign or (flat.size and np.any(flat < 0)) else 0
+    return sign + int_digits + 1 + n_prec
+
+
+def vector_to_string(
+    v: np.ndarray,
+    realvalue: Optional[bool] = None,
+    n_prec: int = 15,
+    real_width: Optional[int] = None,
+    imag_width: Optional[int] = None,
+) -> str:
     """Pretty string representation of a (row) vector.
 
     Parameters
@@ -15,6 +35,9 @@ def vector_to_string(v: np.ndarray, realvalue: Optional[bool] = None, n_prec: in
         determined based on whether imaginary parts are close to zero.
     n_prec : int, default 15
         Number of decimal places to print.
+    real_width, imag_width : int, optional
+        Field widths for the real/imaginary parts. When None they are derived from ``v``;
+        :func:`matrix_to_string` passes matrix-wide widths so every row lines up.
 
     Returns
     -------
@@ -24,15 +47,22 @@ def vector_to_string(v: np.ndarray, realvalue: Optional[bool] = None, n_prec: in
     assert v.ndim == 1, f"{v.shape=}"
     if realvalue is None:
         realvalue = not np.any(np.abs(v.imag) > float(f"1e-{n_prec}"))
-    real_format = f">{n_prec + 2}.{n_prec}f"
+    if real_width is None:
+        real_width = _float_field_width(v.real, n_prec)
     if realvalue:
-        return " ".join([f"{np.real(el):{real_format}}" for el in v])
-    imag_format = f">+.{n_prec}f"
-    return " ".join([f"{np.real(el):{real_format}} {np.imag(el):{imag_format}}j" for el in v])
+        return " ".join(f"{np.real(el):>{real_width}.{n_prec}f}" for el in v)
+    if imag_width is None:
+        imag_width = _float_field_width(v.imag, n_prec, force_sign=True)
+    return " ".join(
+        f"{np.real(el):>{real_width}.{n_prec}f} {np.imag(el):>+{imag_width}.{n_prec}f}j" for el in v
+    )
 
 
 def matrix_to_string(m: np.ndarray, n_prec: int = 15, offset: int = 0) -> str:
     """Pretty string representation of a matrix.
+
+    Columns are right-aligned to a common width derived from the whole matrix, so the
+    entries form an aligned grid regardless of sign or magnitude.
 
     Parameters
     ----------
@@ -49,8 +79,12 @@ def matrix_to_string(m: np.ndarray, n_prec: int = 15, offset: int = 0) -> str:
         Formatted string representation of the matrix.
     """
     realvalue = not np.any(np.abs(m.imag) > float(f"1e-{n_prec}"))
-    print(" " * offset, end="")
-    return ("\n" + " " * offset).join([vector_to_string(row, realvalue, n_prec) for row in m])
+    real_width = _float_field_width(m.real, n_prec)
+    imag_width = None if realvalue else _float_field_width(m.imag, n_prec, force_sign=True)
+    pad = " " * offset
+    return "\n".join(
+        pad + vector_to_string(row, realvalue, n_prec, real_width=real_width, imag_width=imag_width) for row in m
+    )
 
 
 def matrix_print(m: np.ndarray, label: Optional[str] = None, n_prec: int = 15, **kwargs) -> None:

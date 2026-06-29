@@ -547,9 +547,9 @@ def test_get_selfenergy(mock_getUop, mock_get_h0, mock_calc):
         return
     mock_getUop.return_value = {(((0, 0, 0), "c"), ((0, 0, 0), "a"), ((0, 0, 0), "c"), ((0, 0, 0), "a")): 1.0}
     mock_get_h0.return_value = {(((0, 0, 0), "c"), ((0, 0, 0), "a")): 1.0}
-    mock_calc.return_value = (None, None, None)
+    mock_calc.return_value = {"sigma": None, "sigma_real": None, "sigma_static": None}
 
-    selfenergy.get_selfenergy(
+    result = selfenergy.get_selfenergy(
         clustername="test",
         h0_filename="dummy.h0",
         ls=0,
@@ -570,6 +570,9 @@ def test_get_selfenergy(mock_getUop, mock_get_h0, mock_calc):
         delta=0.1,
         verbose=True,
     )
+    # get_selfenergy forwards calc_selfenergy's result dict (no bogus tuple-unpacking).
+    assert result == {"sigma": None, "sigma_real": None, "sigma_static": None}
+    assert mock_calc.called
 
 
 @patch("impurityModel.ed.selfenergy.calc_selfenergy")

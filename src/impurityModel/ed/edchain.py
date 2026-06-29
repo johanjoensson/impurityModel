@@ -45,6 +45,19 @@ def build_imp_bath_blocks(
     return impurity_indices, occupied_indices, unoccupied_indices, block_structure
 
 
+def _print_bath_geometry(name, H_baths, vs, block_structure):
+    """Pretty-print the per-block bath Hamiltonian and impurity-bath hopping."""
+    print("\n" + "=" * 80)
+    print(f"  {name} bath geometry")
+    print("=" * 80)
+    for bi, (Hb, vb) in enumerate(zip(H_baths, vs)):
+        orbs = block_structure.blocks[block_structure.inequivalent_blocks[bi]]
+        print(f"Block {bi} (impurity orbitals {orbs}):")
+        matrix_print(Hb, "Bath Hamiltonian:")
+        matrix_print(vb, "Impurity-bath hopping:")
+        print("")
+
+
 def build_H_bath_v(H_dft, ebs_star, vs_star, bath_geometry, block_structure, verbose, extra_verbose):
     """Transform bath parameters from star to chain or Haverkort geometry.
 
@@ -88,14 +101,7 @@ def build_H_bath_v(H_dft, ebs_star, vs_star, bath_geometry, block_structure, ver
             H_baths.append(hc)
             vs.append(vc)
         if verbose:
-            for bi, (Hb, vb) in enumerate(zip(H_baths, vs)):
-                print(
-                    f"Block {bi} (impurity orbitals {block_structure.blocks[block_structure.inequivalent_blocks[bi]]})"
-                )
-                matrix_print(Hb, "Chain bath")
-                matrix_print(vb, "Chain hopping")
-                print("")
-            print("=" * 80)
+            _print_bath_geometry("Chain", H_baths, vs, block_structure)
     elif bath_geometry == "single_chain":
         for i_b, (v, ebs) in enumerate(zip(vs_star, ebs_star)):
             block_ix = block_structure.inequivalent_blocks[i_b]
@@ -109,14 +115,7 @@ def build_H_bath_v(H_dft, ebs_star, vs_star, bath_geometry, block_structure, ver
             H_baths.append(hc)
             vs.append(vc)
         if verbose:
-            for bi, (Hb, vb) in enumerate(zip(H_baths, vs)):
-                print(
-                    f"Block {bi} (impurity orbitals {block_structure.blocks[block_structure.inequivalent_blocks[bi]]})"
-                )
-                matrix_print(Hb, "Single Chain bath")
-                matrix_print(vb, "Single Chain hopping")
-                print("")
-            print("=" * 80)
+            _print_bath_geometry("Single chain", H_baths, vs, block_structure)
     elif bath_geometry == "haver":
         for i_b, (v, ebs) in enumerate(zip(vs_star, ebs_star)):
             block_ix = block_structure.inequivalent_blocks[i_b]
@@ -133,14 +132,7 @@ def build_H_bath_v(H_dft, ebs_star, vs_star, bath_geometry, block_structure, ver
             H_baths.append(Hh)
             vs.append(vh)
         if verbose:
-            for bi, (Hb, vb) in enumerate(zip(H_baths, vs)):
-                print(
-                    f"Block {bi} (impurity orbitals {block_structure.blocks[block_structure.inequivalent_blocks[bi]]})"
-                )
-                matrix_print(Hb, "Haverkort bath")
-                matrix_print(vb, "Haverkort hopping")
-                print("")
-            print("=" * 80)
+            _print_bath_geometry("Haverkort", H_baths, vs, block_structure)
     # Star geometry is the fallback
     else:
         for i_b, (v, ebs) in enumerate(zip(vs_star, ebs_star)):
@@ -322,17 +314,17 @@ def single_chain(H_imp: np.ndarray, vs: np.ndarray, ebs: np.ndarray, verbose: bo
 
     H_star = build_star_geometry_hamiltonian(H_imp, vs, ebs)
     if extremely_verbose:
-        matrix_print(H_star, "Original hamiltonian for single chain")
+        matrix_print(H_star, "Star-geometry Hamiltonian (single chain):")
         print("", flush=True)
 
-    H_chain = transform_to_lanczos_tridagonal_matrix(H_star, n_imp)
+    H_chain = transform_to_lanczos_tridagonal_matrix(H_star, n_imp, verbose=extremely_verbose)
 
     V = H_chain[n_imp:, :n_imp]
     Hb = H_chain[n_imp:, n_imp:]
 
     if verbose:
-        matrix_print(H_chain)
-        matrix_connectivity_print(H_chain, n_imp, "Block structure of single chain geometry Hamiltonian")
+        matrix_print(H_chain, "Single-chain Hamiltonian:")
+        matrix_connectivity_print(H_chain, n_imp, "Block structure of the single-chain Hamiltonian:")
     return V, Hb
 
 
@@ -374,20 +366,20 @@ def double_chains(H_imp: np.ndarray, vs: np.ndarray, ebs: np.ndarray, verbose: b
     n_occ = sum(ebs < 0)
     H_occ = build_star_geometry_hamiltonian(H_imp, np.flip(vs[:n_occ], axis=0), np.flip(ebs[:n_occ], axis=0))
     if extremely_verbose:
-        matrix_print(H_occ, "Original hamiltonian for occupied part")
+        matrix_print(H_occ, "Star-geometry Hamiltonian (occupied part):")
         print("", flush=True)
-    H_occ = transform_to_lanczos_tridagonal_matrix(H_occ, n_imp)
+    H_occ = transform_to_lanczos_tridagonal_matrix(H_occ, n_imp, verbose=extremely_verbose)
 
     H_unocc = build_star_geometry_hamiltonian(H_imp, vs[n_occ:], ebs[n_occ:])
     if extremely_verbose:
-        matrix_print(H_unocc, "Original hamiltonian for unoccupied part")
-    H_unocc = transform_to_lanczos_tridagonal_matrix(H_unocc, n_imp)
+        matrix_print(H_unocc, "Star-geometry Hamiltonian (unoccupied part):")
+    H_unocc = transform_to_lanczos_tridagonal_matrix(H_unocc, n_imp, verbose=extremely_verbose)
     V = np.vstack((H_occ[n_imp:, :n_imp], H_unocc[n_imp:, :n_imp]))
     Hb = sp.linalg.block_diag(H_occ[n_imp:, n_imp:], H_unocc[n_imp:, n_imp:])
     if verbose:
         H_tmp = np.block([[H_imp, V.T], [V, Hb]])
-        matrix_print(H_tmp)
-        matrix_connectivity_print(H_tmp, n_imp, "Block structure of double chain geometry Hamiltonian")
+        matrix_print(H_tmp, "Double-chain Hamiltonian:")
+        matrix_connectivity_print(H_tmp, n_imp, "Block structure of the double-chain Hamiltonian:")
     return V, Hb
 
 
@@ -485,7 +477,7 @@ def build_block_tridiagonal_hermitian_matrix(diagonals, offdiagonals):
     return H
 
 
-def transform_to_lanczos_tridagonal_matrix(H, n_imp):
+def transform_to_lanczos_tridagonal_matrix(H, n_imp, verbose=False):
     """Transform a Hamiltonian to Lanczos tridiagonal form.
 
     Parameters
@@ -494,13 +486,16 @@ def transform_to_lanczos_tridagonal_matrix(H, n_imp):
         The Hamiltonian matrix.
     n_imp : int
         The number of impurity orbitals.
+    verbose : bool, default False
+        If True, print the matrix being tridiagonalized.
 
     Returns
     -------
     np.ndarray
         The transformed tridiagonal Hamiltonian matrix.
     """
-    matrix_print(H, "Matrix to tridiagonalize")
+    if verbose:
+        matrix_print(H, "Matrix to tridiagonalize:")
     if H.shape[0] <= 2:
         return H
     Hb = H[n_imp:, n_imp:]
@@ -649,17 +644,17 @@ def linked_double_chain(H_imp, vs, es, verbose=True, extremely_verbose=False):
         return np.empty((0, n_imp), dtype=H_imp.dtype), np.empty((0, 0), dtype=H_imp.dtype)
     H_star = build_star_geometry_hamiltonian(H_imp, vs, es)
     if extremely_verbose:
-        matrix_print(
-            H_star, "Original Hamiltonian (star geometry), the impurity sits in the top left corner", flush=True
-        )
+        matrix_print(H_star, "Star-geometry Hamiltonian (impurity in the top-left corner):", flush=True)
 
     H_decoupled, imp_index, Q_decoupled = create_decoupled_hamiltonian(H_star, n_imp)
     if extremely_verbose:
         print(
-            f"After reshuffling the orbitals, the impurity sits at indices {np.arange(imp_index, imp_index + n_imp)} and the coupling bath state at indices {np.arange(imp_index + n_imp, imp_index + 2 * n_imp)}"
+            f"After reshuffling the orbitals, the impurity sits at indices "
+            f"{np.arange(imp_index, imp_index + n_imp)} and the coupling bath state at indices "
+            f"{np.arange(imp_index + n_imp, imp_index + 2 * n_imp)}"
         )
-        matrix_print(Q_decoupled, "Orbital character for states")
-        matrix_print(H_decoupled, "Hamiltonian transformed into decoupled occupied and unoccupied blocks", flush=True)
+        matrix_print(Q_decoupled, "Orbital character of the states:")
+        matrix_print(H_decoupled, "Decoupled occupied/unoccupied Hamiltonian:", flush=True)
     # Undo the mixing of impurity and bath states
     R_couple = np.eye(Q_decoupled.shape[0], dtype=Q_decoupled.dtype)
     R_couple[imp_index : imp_index + 2 * n_imp, imp_index : imp_index + 2 * n_imp] = separate_orbital_character(
@@ -667,22 +662,24 @@ def linked_double_chain(H_imp, vs, es, verbose=True, extremely_verbose=False):
     )
 
     if extremely_verbose:
-        matrix_print(Q_decoupled @ R_couple, "Restored impurity character")
+        matrix_print(Q_decoupled @ R_couple, "Restored impurity character:")
         matrix_print(
             np.conj(R_couple.T) @ H_decoupled @ R_couple,
-            "Hamiltonian transformed into coupled occupied and unoccupied blocks",
+            "Coupled occupied/unoccupied Hamiltonian:",
             flush=True,
         )
 
     occ_chain = transform_to_lanczos_tridagonal_matrix(
-        H_decoupled[: imp_index + n_imp, : imp_index + n_imp][::-1, ::-1], n_imp
+        H_decoupled[: imp_index + n_imp, : imp_index + n_imp][::-1, ::-1], n_imp, verbose=extremely_verbose
     )[::-1, ::-1]
 
     # The coupling state sits just after the impurity (i.e. imp_index + n_imp)
     # Check that we have unoccupied states, beyond just the impurity.
     if imp_index + n_imp < H_star.shape[0]:
         top_left = imp_index + n_imp
-        unocc_chain = transform_to_lanczos_tridagonal_matrix(H_decoupled[top_left:, top_left:], n_imp)
+        unocc_chain = transform_to_lanczos_tridagonal_matrix(
+            H_decoupled[top_left:, top_left:], n_imp, verbose=extremely_verbose
+        )
         H_tridiagonal_decoupled = sp.linalg.block_diag(occ_chain, unocc_chain)
     else:
         H_tridiagonal_decoupled = occ_chain
@@ -696,8 +693,8 @@ def linked_double_chain(H_imp, vs, es, verbose=True, extremely_verbose=False):
 
     H_linked_chains = np.linalg.multi_dot((np.conj(R_couple_new.T), H_tridiagonal_decoupled, R_couple_new))
     if extremely_verbose:
-        matrix_print(H_tridiagonal_decoupled, "Decoupled Hamiltonian with tridiagonal blocks")
-        matrix_print(H_linked_chains, "Hamiltonian with coupled tridiagonal blocks")
+        matrix_print(H_tridiagonal_decoupled, "Decoupled Hamiltonian (tridiagonal blocks):")
+        matrix_print(H_linked_chains, "Coupled tridiagonal Hamiltonian:")
 
     indices = np.append(
         np.roll(np.arange(new_imp_index + n_imp), -new_imp_index),
@@ -724,8 +721,8 @@ def linked_double_chain(H_imp, vs, es, verbose=True, extremely_verbose=False):
         return np.max(np.abs(m2 - m1))
 
     if verbose:
-        matrix_connectivity_print(H_linked_chains, n_imp, "Block structure of linked double chain Hamiltonian")
+        matrix_connectivity_print(H_linked_chains, n_imp, "Block structure of the linked double-chain Hamiltonian:")
     if extremely_verbose:
-        matrix_print(H_linked_chains, "Hamiltonian with linked chains (impurity sits in the top left corner)")
+        matrix_print(H_linked_chains, "Linked double-chain Hamiltonian (impurity in the top-left corner):")
 
     return H_linked_chains[n_imp:, :n_imp], H_linked_chains[n_imp:, n_imp:]

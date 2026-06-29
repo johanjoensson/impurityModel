@@ -255,11 +255,18 @@ def get_Greens_function(
     # non-empty dicts) and merge them into one report on the root rank.
     gathered_diags = basis.comm.gather(local_block_diags, root=0) if basis.comm is not None else [local_block_diags]
     if basis.comm.rank == 0:
-        gs_matsubara = [np.empty((len(matsubara_mesh), len(block), len(block)), dtype=complex) for block in blocks]
-        gs_realaxis = [np.empty((len(omega_mesh), len(block), len(block)), dtype=complex) for block in blocks]
-        for i, block_idx in enumerate(block_indices_per_color):
-            gs_matsubara[block_idx][:] = gathered_matsubara[i]
-            gs_realaxis[block_idx][:] = gathered_realaxis[i]
+        # A mesh may be None (e.g. the self-energy driver requests only the Matsubara axis):
+        # the per-block axis was then never computed, so leave the corresponding result None.
+        gs_matsubara = None
+        if matsubara_mesh is not None:
+            gs_matsubara = [np.empty((len(matsubara_mesh), len(block), len(block)), dtype=complex) for block in blocks]
+            for i, block_idx in enumerate(block_indices_per_color):
+                gs_matsubara[block_idx][:] = gathered_matsubara[i]
+        gs_realaxis = None
+        if omega_mesh is not None:
+            gs_realaxis = [np.empty((len(omega_mesh), len(block), len(block)), dtype=complex) for block in blocks]
+            for i, block_idx in enumerate(block_indices_per_color):
+                gs_realaxis[block_idx][:] = gathered_realaxis[i]
         report = _gfd.DiagnosticReport()
         merged = {}
         for part in gathered_diags:

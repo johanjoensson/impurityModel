@@ -156,9 +156,12 @@ def main(
         offset += nBaths[l] - nValBaths[l]
 
     if rank == 0:
-        print(f"{impurity_orbitals=}")
-        print(f"{valence_baths=}")
-        print(f"{conduction_baths=}")
+        print("Orbital layout (spin-orbital indices):")
+        for l in ls:
+            print(
+                f"  l = {l}: impurity {impurity_orbitals[l]}, "
+                f"valence bath {valence_baths[l]}, conduction bath {conduction_baths[l]}"
+            )
     # -- Basis occupation information --
     n0imps = OrderedDict(zip(ls, n0imps))
     dnTols = OrderedDict(zip(ls, dnTols))
@@ -221,11 +224,11 @@ def main(
     # Total number of spin-orbitals in the system
     n_spin_orbitals = sum(2 * (2 * ang + 1) + nBath for ang, nBath in nBaths.items())
     if rank == 0:
-        print("#spin-orbitals:", n_spin_orbitals)
+        print(f"Number of spin-orbitals: {n_spin_orbitals}")
 
     # Hamiltonian
     if rank == 0:
-        print("Construct the Hamiltonian operator...")
+        print("Constructing the Hamiltonian operator ...")
     hOp = get_hamiltonian_operator(
         nBaths,
         nValBaths,
@@ -250,10 +253,10 @@ def main(
             print(f"Auto-derived block structure: {len(block_structure.blocks)} blocks")
     # Measure how many physical processes the Hamiltonian contains.
     if rank == 0:
-        print("{:d} processes in the Hamiltonian.".format(len(hOp)))
+        print(f"Hamiltonian contains {len(hOp)} terms.")
     # Many body basis for the ground state
     if rank == 0:
-        print("Create basis...")
+        print("Creating the many-body basis ...")
     tau = k_B * T
     basis_setup = {
         "impurity_orbital": impurity_orbitals,
@@ -321,9 +324,11 @@ def main(
         h5f.create_dataset("RjNIXS", data=RjNIXS)
 
     if rank == 0:
-        print()
-        print(f"Consider {len(es):d} eigenstates for the spectra \n")
-        print("Calculate Interacting Green's function...", flush=verbosity >= 2)
+        print("\n" + "=" * 80)
+        print("  Spectra")
+        print("=" * 80)
+        print(f"Considering {len(es)} eigenstate(s) for the spectra.")
+        print("Calculating spectra ...", flush=verbosity >= 2)
     spectra.simulate_spectra(
         es,
         psis,
@@ -356,7 +361,10 @@ def main(
         verbosity >= 1,
     )
 
-    print("Script finished for rank:", rank)
+    if comm is not None:
+        comm.Barrier()
+    if rank == 0:
+        print("\nDone.")
 
 
 def get_noninteracting_hamiltonian_operator(nBaths, nValBaths, SOCs, hField, h0_filename, rank, verbose=True):
@@ -409,8 +417,7 @@ def get_noninteracting_hamiltonian_operator(nBaths, nValBaths, SOCs, hField, h0_
     # h0_operator = read_h0_operator(h0_filename, nBaths)
 
     if rank == 0 and verbose:
-        print("Non-interacting, non-relativistic Hamiltonian (h0):")
-        print(h0_operator)
+        print(f"Non-interacting, non-relativistic Hamiltonian (h0): {len(h0_operator)} terms.")
     hOperator = finite.addOps([hHfieldOperator, SOC2pOperator, SOC3dOperator, h0_operator])
     return hOperator
 

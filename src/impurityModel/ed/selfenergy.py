@@ -221,11 +221,10 @@ def fixed_peak_dc(
         dc_fac += F(dc_fac)
     if not 0.1 < abs(dc_fac) < 2:
         dc_fac = 1
-    if verbose:
-        print(f"Peak position {peak_position}")
-        matrix_print(dc_guess, label="DC guess")
-        matrix_print(dc_fac * dc_trial, label="dc found")
-        print("=" * 80)
+    if verbose and rank == 0:
+        print(f"Fixed-peak double counting (peak position = {peak_position}):")
+        matrix_print(dc_guess, label="DC guess:")
+        matrix_print(dc_fac * dc_trial, label="DC found:")
 
     return dc_fac * dc_trial
 
@@ -316,6 +315,21 @@ def calc_selfenergy(
     """
     # MPI variables
     rank = comm.rank if comm is not None else 0
+    # Confine this section's logging to the master rank: silencing the others keeps the
+    # output readable under MPI (the verbose flags below are only forwarded to printing,
+    # never to collective operations).
+    if rank != 0:
+        verbosity = 0
+
+    def log(msg="", *, level=1, **kwargs):
+        if verbosity >= level:
+            print(msg, **kwargs)
+
+    def banner(title, *, level=1):
+        if verbosity >= level:
+            print("\n" + "=" * 80)
+            print(f"  {title}")
+            print("=" * 80, flush=verbosity >= 2)
 
     valence_baths, conduction_baths = bath_states
     total_impurity_orbitals = {i: sum(len(orbs) for orbs in impurity_orbitals[i]) for i in impurity_orbitals}
@@ -359,14 +373,14 @@ def calc_selfenergy(
         )
         restrictions = ground_state_basis.restrictions
 
-        if restrictions is not None and verbosity >= 2:
-            print("Restrictions on GS occupation")
+        if restrictions is not None:
+            log("Restrictions on ground-state occupation:", level=2)
             for indices, limits in restrictions.items():
-                print(f"---> {sorted(indices)} : {limits}")
+                log(f"  {sorted(indices)} : {limits}", level=2)
 
-        if verbosity >= 1:
-            print(f"Consider {len(es):d} eigenstates for the spectra \n")
-            print("Calculate Interacting Green's function...", flush=verbosity >= 2)
+        banner("Interacting Green's function")
+        log(f"Considering {len(es)} eigenstate(s) for the spectra.")
+        log("Calculating interacting Green's function ...", flush=verbosity >= 2)
 
         gs_matsubara, gs_realaxis, gf_report = get_Greens_function(
             matsubara_mesh=iw,
@@ -392,16 +406,14 @@ def calc_selfenergy(
         # is broadcast so every rank re-enters calc_gs collectively (or all break).
         retry = False
         if rank == 0 and gf_report is not None:
-            if verbosity >= 1:
-                print(gf_report.render())
+            log(gf_report.render())
             retry = gf_report.needs_more_states and _attempt < max_retries
         if comm is not None:
             retry = comm.bcast(retry, root=0)
         if not retry:
             break
         num_wanted *= 2
-        if verbosity >= 1 and rank == 0:
-            print(f"\nThermal ensemble appears truncated; retrying with num_wanted={num_wanted}.\n", flush=True)
+        log(f"\nThermal ensemble appears truncated; retrying with num_wanted = {num_wanted}.\n", flush=True)
     if gs_matsubara is not None:
         try:
             for gs in gs_matsubara:
@@ -419,8 +431,8 @@ def calc_selfenergy(
         except UnphysicalGreensFunctionError as err:
             raise UnphysicalGreensFunctionError("Real frequency interacting Greens function:\n" + str(err)) from None
 
-    if verbosity >= 1:
-        print("Calculate self-energy...")
+    banner("Self-energy")
+    log("Calculating self-energy ...")
     if gs_realaxis is not None:
         sigma_real = get_sigma(
             omega_mesh=w,
@@ -461,8 +473,7 @@ def calc_selfenergy(
             raise UnphysicalGreensFunctionError("Matsubara self-energy:\n" + str(err)) from None
     else:
         sigma = None
-    if verbosity >= 1:
-        print("Calculating sig_static.")
+    log("Calculating static self-energy ...")
     impurity_indices = [
         orb
         for impurity_blocks in ground_state_basis.impurity_orbitals.values()
@@ -766,7 +777,7 @@ def get_selfenergy(
 
     # Hamiltonian
     if rank == 0 and verbose:
-        print("Construct the Hamiltonian operator...")
+        print("Constructing the Hamiltonian operator ...")
     hOp = get_noninteracting_hamiltonian_operator(
         sum_baths,
         [0, xi],
@@ -798,7 +809,9 @@ def get_selfenergy(
         if rank == 0 and verbose:
             print(f"Auto-derived block structure: {len(block_structure.blocks)} blocks")
 
-    sigma, sigma_real, sigma_static = calc_selfenergy(
+    # calc_selfenergy returns a result dict (keys: "sigma", "sigma_real", "sigma_static",
+    # "gs_matsubara", "gs_realaxis", "thermal_rho", "rhos"), not a tuple.
+    result = calc_selfenergy(
         h0=hOp,
         u4=u4,
         iw=None,
@@ -825,12 +838,16 @@ def get_selfenergy(
         sparse_green=True,
     )
 
-    # if rank == 0:
-    #     print("Writing sig_static to files")
-    #     np.savetxt(f"real-sig_static-{clustername}.dat", np.real(sigma_static))
-    #     np.savetxt(f"imag-sig_static-{clustername}.dat", np.imag(sigma_static))
-    # if rank == 0:
-    #     save_Greens_function(gs=sigma_real, omega_mesh=omega_mesh, label=f"Sigma-{clustername}", e_scale=1)
+    if rank == 0 and verbose:
+        print(f"Self-energy computed for cluster '{clustername}'.")
+    # To persist the results, save the relevant entries of `result`, e.g.:
+    #     if rank == 0:
+    #         np.savetxt(f"real-sig_static-{clustername}.dat", np.real(result["sigma_static"]))
+    #         np.savetxt(f"imag-sig_static-{clustername}.dat", np.imag(result["sigma_static"]))
+    #         save_Greens_function(
+    #             gs=result["sigma_real"], omega_mesh=omega_mesh, label=f"Sigma-{clustername}", e_scale=1
+    #         )
+    return result
 
 
 if __name__ == "__main__":

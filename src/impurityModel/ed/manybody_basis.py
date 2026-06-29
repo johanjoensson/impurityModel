@@ -1290,6 +1290,23 @@ class Basis:
             res = sp.sparse.csc_array((n, n), dtype=complex)
         return res
 
+    @property
+    def impurity_spin_orbital_indices(self):
+        """Flat, sorted-by-orbital-set list of all impurity spin-orbital indices."""
+        return [orb for blocks in self.impurity_orbitals.values() for block in blocks for orb in block]
+
+    @property
+    def valence_spin_orbital_indices(self):
+        """Flat list of all valence-bath spin-orbital indices."""
+        valence_baths, _conduction_baths = self.bath_states
+        return [orb for blocks in valence_baths.values() for block in blocks for orb in block]
+
+    @property
+    def conduction_spin_orbital_indices(self):
+        """Flat list of all conduction-bath spin-orbital indices."""
+        _valence_baths, conduction_baths = self.bath_states
+        return [orb for blocks in conduction_baths.values() for block in blocks for orb in block]
+
     def get_state_statistics(self, psis):
         """
         Calucluate some occupation statistics for the ManyBopdyState psi.
@@ -1299,11 +1316,9 @@ class Basis:
         ========
         stats: dict - Occupation statistics
         """
-        impurity_indices = self.impurity_orbitals
-        valence_indices, conduction_indices = self.bath_states
-        impurity_indices = [orb for blocks in impurity_indices.values() for block in blocks for orb in block]
-        valence_indices = [orb for i, blocks in valence_indices.items() for block in blocks for orb in block]
-        conduction_indices = [orb for blocks in conduction_indices.values() for block in blocks for orb in block]
+        impurity_indices = self.impurity_spin_orbital_indices
+        valence_indices = self.valence_spin_orbital_indices
+        conduction_indices = self.conduction_spin_orbital_indices
         psi_stats = [{} for _ in psis]
         for i, psi in enumerate(psis):
             for state, amp in psi.items():
