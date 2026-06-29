@@ -287,9 +287,6 @@ def block_qr(A, block_size=1, overwrite_A=False):
     return np.conj(Qd.T), A
 
 
-
-
-
 def single_chain(H_imp: np.ndarray, vs: np.ndarray, ebs: np.ndarray, verbose: bool = True, extremely_verbose=False):
     """Transform the bath geometry from a star into a single chain.
 
@@ -327,12 +324,12 @@ def single_chain(H_imp: np.ndarray, vs: np.ndarray, ebs: np.ndarray, verbose: bo
     if extremely_verbose:
         matrix_print(H_star, "Original hamiltonian for single chain")
         print("", flush=True)
-    
+
     H_chain = transform_to_lanczos_tridagonal_matrix(H_star, n_imp)
-    
+
     V = H_chain[n_imp:, :n_imp]
     Hb = H_chain[n_imp:, n_imp:]
-    
+
     if verbose:
         matrix_print(H_chain)
         matrix_connectivity_print(H_chain, n_imp, "Block structure of single chain geometry Hamiltonian")
@@ -417,7 +414,7 @@ def build_star_geometry_hamiltonian(H_imp, vs, es):
         vs = vs.reshape((vs.shape[0], 1))
     n_imp = H_imp.shape[1]
     n_bath = es.shape[0]
-    
+
     if len(vs.shape) == 2 and vs.shape[0] == n_bath:
         H_star = np.empty((n_imp + n_bath, n_imp + n_bath), dtype=H_imp.dtype)
         H_star[:n_imp, :n_imp] = H_imp
@@ -438,7 +435,7 @@ def build_star_geometry_hamiltonian(H_imp, vs, es):
         H_star[n_imp:, :n_imp] = vs.reshape((n_imp * n_bath, n_imp))
         H_star[:n_imp, n_imp:] = np.conj(vs.reshape((n_imp * n_bath, n_imp)).T)
         H_star[n_imp:, n_imp:] = np.diag(np.repeat(es, n_imp))
-        
+
     return H_star
 
 
@@ -508,10 +505,10 @@ def transform_to_lanczos_tridagonal_matrix(H, n_imp):
         return H
     Hb = H[n_imp:, n_imp:]
     V0 = H[n_imp:, :n_imp]
-    
+
     block_size = V0.shape[1]
     V0_q, V0_r = sp.linalg.qr(V0, mode="economic", overwrite_a=False, check_finite=True)
-    
+
     if V0_q.shape[0] == 0:
         alphas = np.empty((0, block_size, block_size), dtype=H.dtype)
         betas = np.empty((0, block_size, block_size), dtype=H.dtype)
@@ -522,28 +519,24 @@ def transform_to_lanczos_tridagonal_matrix(H, n_imp):
             return len(betas) > 0 and np.linalg.norm(betas[-1]) < 1e-14
 
         alphas, betas, _ = block_lanczos_array(
-            psi0=V0_q,
-            h_op=Hb,
-            converged=converged,
-            reort=Reort.FULL,
-            max_iter=int(np.ceil(Hb.shape[0] / block_size))
+            psi0=V0_q, h_op=Hb, converged=converged, reort=Reort.FULL, max_iter=int(np.ceil(Hb.shape[0] / block_size))
         )
 
     H_tridiagonal = build_block_tridiagonal_hermitian_matrix(alphas, betas)
-    
+
     if np.isrealobj(H) and np.allclose(H_tridiagonal.imag, 0, atol=1e-12):
         H_tridiagonal = H_tridiagonal.real
-        
+
     new_N = n_imp + H_tridiagonal.shape[0]
     res = np.zeros((new_N, new_N), dtype=np.result_type(H.dtype, H_tridiagonal.dtype))
-    
+
     res[:n_imp, :n_imp] = H[:n_imp, :n_imp]
-    
+
     # Only place the coupling if the tridiagonal matrix has at least one block
     if H_tridiagonal.shape[0] > 0:
         res[n_imp : n_imp + block_size, :n_imp] = V0_r
         res[:n_imp, n_imp : n_imp + block_size] = np.conj(V0_r.T)
-        
+
     res[n_imp:, n_imp:] = H_tridiagonal
 
     return res
@@ -689,9 +682,7 @@ def linked_double_chain(H_imp, vs, es, verbose=True, extremely_verbose=False):
     # Check that we have unoccupied states, beyond just the impurity.
     if imp_index + n_imp < H_star.shape[0]:
         top_left = imp_index + n_imp
-        unocc_chain = transform_to_lanczos_tridagonal_matrix(
-            H_decoupled[top_left:, top_left:], n_imp
-        )
+        unocc_chain = transform_to_lanczos_tridagonal_matrix(H_decoupled[top_left:, top_left:], n_imp)
         H_tridiagonal_decoupled = sp.linalg.block_diag(occ_chain, unocc_chain)
     else:
         H_tridiagonal_decoupled = occ_chain
@@ -699,8 +690,8 @@ def linked_double_chain(H_imp, vs, es, verbose=True, extremely_verbose=False):
     new_imp_index = occ_chain.shape[0] - n_imp
 
     R_couple_new = np.eye(H_tridiagonal_decoupled.shape[0], dtype=Q_decoupled.dtype)
-    R_couple_new[new_imp_index : new_imp_index + 2 * n_imp, new_imp_index : new_imp_index + 2 * n_imp] = separate_orbital_character(
-        Q_decoupled[:n_imp, imp_index : imp_index + 2 * n_imp]
+    R_couple_new[new_imp_index : new_imp_index + 2 * n_imp, new_imp_index : new_imp_index + 2 * n_imp] = (
+        separate_orbital_character(Q_decoupled[:n_imp, imp_index : imp_index + 2 * n_imp])
     )
 
     H_linked_chains = np.linalg.multi_dot((np.conj(R_couple_new.T), H_tridiagonal_decoupled, R_couple_new))
@@ -709,7 +700,8 @@ def linked_double_chain(H_imp, vs, es, verbose=True, extremely_verbose=False):
         matrix_print(H_linked_chains, "Hamiltonian with coupled tridiagonal blocks")
 
     indices = np.append(
-        np.roll(np.arange(new_imp_index + n_imp), -new_imp_index), np.arange(new_imp_index + n_imp, H_linked_chains.shape[1])
+        np.roll(np.arange(new_imp_index + n_imp), -new_imp_index),
+        np.arange(new_imp_index + n_imp, H_linked_chains.shape[1]),
     )
     idx = np.ix_(indices, indices)
     H_linked_chains = H_linked_chains[idx]

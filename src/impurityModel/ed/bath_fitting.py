@@ -2,12 +2,23 @@ import numpy as np
 import scipy.optimize as opt
 from typing import Optional, Dict
 
+
 class BathFitter:
     """
     Fits bath parameters (energies epsilon and hoppings V) to a target hybridization function.
     Supports multi-orbital systems, real/imaginary weights, and moment constraints.
     """
-    def __init__(self, w: np.ndarray, delta_target: np.ndarray, n_bath: int, n_imp: int, eta: float = 0.0, complex_v: bool = False, matsubara: bool = False):
+
+    def __init__(
+        self,
+        w: np.ndarray,
+        delta_target: np.ndarray,
+        n_bath: int,
+        n_imp: int,
+        eta: float = 0.0,
+        complex_v: bool = False,
+        matsubara: bool = False,
+    ):
         """
         Parameters
         ----------
@@ -33,22 +44,22 @@ class BathFitter:
         self.eta = eta
         self.complex_v = complex_v
         self.matsubara = matsubara
-        
+
         # Optimization weights
         self.weight_real = 1.0
         self.weight_imag = 1.0
         self.w_weights = np.ones_like(w)  # frequency-dependent weights
-        
+
         # Regularization (L2 penalty on V)
         self.weight_reg_v = 0.0
-        
+
         self.target_moments: Dict[int, np.ndarray] = {}
         self.moment_weights: Dict[int, float] = {}
 
     def set_moment(self, order: int, value: np.ndarray, weight: float):
         """
         Add a moment target to the cost function.
-        
+
         Parameters
         ----------
         order : int
@@ -62,8 +73,8 @@ class BathFitter:
         self.moment_weights[order] = weight
 
     def unpack(self, x: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
-        """ Unpack 1D array into eps and V """
-        eps = x[:self.n_bath]
+        """Unpack 1D array into eps and V"""
+        eps = x[: self.n_bath]
         if self.complex_v:
             v_real = x[self.n_bath : self.n_bath + self.n_imp * self.n_bath]
             v_imag = x[self.n_bath + self.n_imp * self.n_bath :]
@@ -75,7 +86,7 @@ class BathFitter:
         return eps, v
 
     def pack(self, eps: np.ndarray, v: np.ndarray) -> np.ndarray:
-        """ Pack eps and V into a 1D array """
+        """Pack eps and V into a 1D array"""
         if self.complex_v:
             return np.concatenate([eps, v.real.flatten(), v.imag.flatten()])
         else:
@@ -92,11 +103,11 @@ class BathFitter:
             z = self.w + 1j * self.eta  # (N_w,)
         denom_inv = 1.0 / (z[:, None] - eps[None, :])
         v_tensor = v[:, None, :] * np.conj(v[None, :, :])  # (n_imp, n_imp, N_b)
-        delta = np.einsum('ijk,wk->wij', v_tensor, denom_inv)
+        delta = np.einsum("ijk,wk->wij", v_tensor, denom_inv)
         return delta
 
     def cost_and_grad(self, x: np.ndarray) -> tuple[float, np.ndarray]:
-        """ Calculate the total cost function and its gradient """
+        """Calculate the total cost function and its gradient"""
         eps, v = self.unpack(x)
         if self.matsubara:
             z = 1j * self.w
@@ -104,74 +115,77 @@ class BathFitter:
             z = self.w + 1j * self.eta  # (N_w,)
         G = 1.0 / (z[:, None] - eps[None, :])
         v_tensor = v[:, None, :] * np.conj(v[None, :, :])
-        delta_fit = np.einsum('ijk,wk->wij', v_tensor, G)
-        
+        delta_fit = np.einsum("ijk,wk->wij", v_tensor, G)
+
         diff = delta_fit - self.delta_target
-        
+
         diff_real = diff.real * self.w_weights[:, None, None]
         diff_imag = diff.imag * self.w_weights[:, None, None]
-        
+
         cost_val = self.weight_real * np.sum(diff_real**2) + self.weight_imag * np.sum(diff_imag**2)
-        
+
         # E_star for gradient
-        E_star = 2 * self.weight_real * diff_real * self.w_weights[:, None, None] - 1j * 2 * self.weight_imag * diff_imag * self.w_weights[:, None, None]
-        
+        E_star = (
+            2 * self.weight_real * diff_real * self.w_weights[:, None, None]
+            - 1j * 2 * self.weight_imag * diff_imag * self.w_weights[:, None, None]
+        )
+
         # Regularization to prevent diverging hoppings
         if self.weight_reg_v > 0:
-            cost_val += self.weight_reg_v * np.sum(np.abs(v)**2)
-            
+            cost_val += self.weight_reg_v * np.sum(np.abs(v) ** 2)
+
         # dC / deps
         G2 = G**2
-        v_E_v = np.einsum('ik,wij,jk->wk', v, E_star, np.conj(v))
+        v_E_v = np.einsum("ik,wij,jk->wk", v, E_star, np.conj(v))
         grad_eps = np.real(np.sum(G2 * v_E_v, axis=0))
-        
+
         # dC / dV
-        A = np.einsum('wmj,jk->wmk', E_star, np.conj(v))
-        B = np.einsum('wim,ik->wmk', E_star, v)
-        
+        A = np.einsum("wmj,jk->wmk", E_star, np.conj(v))
+        B = np.einsum("wim,ik->wmk", E_star, v)
+
         if self.complex_v:
-            grad_R = np.real(np.einsum('wk,wmk->mk', G, A + B)) + 2 * self.weight_reg_v * v.real
-            grad_I = np.imag(np.einsum('wk,wmk->mk', -G, A - B)) + 2 * self.weight_reg_v * v.imag
+            grad_R = np.real(np.einsum("wk,wmk->mk", G, A + B)) + 2 * self.weight_reg_v * v.real
+            grad_I = np.imag(np.einsum("wk,wmk->mk", -G, A - B)) + 2 * self.weight_reg_v * v.imag
         else:
-            grad_V = np.real(np.einsum('wk,wmk->mk', G, A + B)) + 2 * self.weight_reg_v * v
-        
+            grad_V = np.real(np.einsum("wk,wmk->mk", G, A + B)) + 2 * self.weight_reg_v * v
+
         # Moment matching
         if len(self.target_moments) > 0:
             for order, target_M in self.target_moments.items():
                 weight = self.moment_weights[order]
                 if weight > 0:
-                    eps_p = eps ** order
+                    eps_p = eps**order
                     fit_M = np.sum(v_tensor * eps_p[None, None, :], axis=-1)
                     diff_M = fit_M - target_M
-                    cost_val += weight * np.sum(np.abs(diff_M)**2)
-                    
+                    cost_val += weight * np.sum(np.abs(diff_M) ** 2)
+
                     D_star = 2 * weight * np.conj(diff_M)
-                    
+
                     if order > 0:
                         eps_p_minus_1 = order * (eps ** (order - 1))
-                        v_D_v = np.einsum('ik,ij,jk->k', v, D_star, np.conj(v))
+                        v_D_v = np.einsum("ik,ij,jk->k", v, D_star, np.conj(v))
                         grad_eps += np.real(eps_p_minus_1 * v_D_v)
-                        
-                    A_M = np.einsum('mj,jk,k->mk', D_star, np.conj(v), eps_p)
-                    B_M = np.einsum('im,ik,k->mk', D_star, v, eps_p)
-                    
+
+                    A_M = np.einsum("mj,jk,k->mk", D_star, np.conj(v), eps_p)
+                    B_M = np.einsum("im,ik,k->mk", D_star, v, eps_p)
+
                     if self.complex_v:
                         grad_R += np.real(A_M + B_M)
                         grad_I += -np.imag(A_M - B_M)
                     else:
                         grad_V += np.real(A_M + B_M)
-                        
+
         if self.complex_v:
             grad = self.pack(grad_eps, grad_R + 1j * grad_I)
         else:
             grad = self.pack(grad_eps, grad_V)
-            
+
         return cost_val, grad
 
-    def fit(self, n_starts: int = 5, method: str = 'L-BFGS-B', maxiter: int = 10000) -> tuple[np.ndarray, np.ndarray]:
+    def fit(self, n_starts: int = 5, method: str = "L-BFGS-B", maxiter: int = 10000) -> tuple[np.ndarray, np.ndarray]:
         """
         Run the numerical optimization from multiple random starts to find the global minimum.
-        
+
         Returns
         -------
         best_eps : 1D array
@@ -181,7 +195,7 @@ class BathFitter:
         """
         best_cost = np.inf
         best_x = None
-        
+
         for i in range(n_starts):
             w_max = np.max(np.abs(self.w))
             w_max = w_max if w_max > 0 else 1.0
@@ -190,14 +204,14 @@ class BathFitter:
                 v0 = np.random.randn(self.n_imp, self.n_bath) + 1j * np.random.randn(self.n_imp, self.n_bath)
             else:
                 v0 = np.random.randn(self.n_imp, self.n_bath)
-                
+
             x0 = self.pack(eps0, v0)
-            res = opt.minimize(self.cost_and_grad, x0, method=method, jac=True, options={'maxiter': maxiter})
-            
+            res = opt.minimize(self.cost_and_grad, x0, method=method, jac=True, options={"maxiter": maxiter})
+
             if res.fun < best_cost:
                 best_cost = res.fun
                 best_x = res.x
-                
+
         self.best_eps, self.best_v = self.unpack(best_x)
         self.best_cost = best_cost
         return self.best_eps, self.best_v

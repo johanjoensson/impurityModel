@@ -1156,14 +1156,18 @@ def spin_pairs_consistent_with_h(h_op, spin_pairs, n_orb, tol=1e-6):
         sz[up, up] += 0.5
         sz[dn, dn] -= 0.5
         splus[up, dn] += 1.0  # S_+ = c†_up c_dn
-    return bool(
-        np.linalg.norm(h @ sz - sz @ h) <= tol and np.linalg.norm(h @ splus - splus @ h) <= tol
-    )
+    return bool(np.linalg.norm(h @ sz - sz @ h) <= tol and np.linalg.norm(h @ splus - splus @ h) <= tol)
 
 
 def print_thermal_expectation_values(
-    rho_thermal, e_thermal, rot_to_spherical, block_structure,
-    s_thermal=None, l_thermal=None, j_thermal=None, sisb_thermal=None,
+    rho_thermal,
+    e_thermal,
+    rot_to_spherical,
+    block_structure,
+    s_thermal=None,
+    l_thermal=None,
+    j_thermal=None,
+    sisb_thermal=None,
 ):
     """
     print several thermal expectation values, e.g. E, N, Sz, Lz.
@@ -1191,10 +1195,7 @@ def print_thermal_expectation_values(
     print(f"<L.S> = {get_LS_from_rho_spherical(rho_thermal_spherical): 8.7f}")
     for label, value in (("S", s_thermal), ("L", l_thermal), ("J", j_thermal)):
         if value is not None:
-            print(
-                f"<{label}^2> = {np.real(value): 8.7f}  "
-                f"({label} = {casimir_to_quantum_number(value): 6.4f})"
-            )
+            print(f"<{label}^2> = {np.real(value): 8.7f}  " f"({label} = {casimir_to_quantum_number(value): 6.4f})")
     if sisb_thermal is not None:
         print(f"<S_imp.S_bath> = {np.real(sisb_thermal): 8.7f}")
 

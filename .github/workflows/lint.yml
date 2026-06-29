@@ -18,6 +18,9 @@ jobs:
         with:
           python-version: "3.11"
       - name: Install Black
-        run: pip install black
+        # Pin the version so a new Black release (which can change the stable
+        # formatting style) cannot break CI on otherwise-unchanged code. Bump
+        # deliberately, re-running `black src/` when you do.
+        run: pip install black==26.5.1
       - name: Run Black
         run: black --check src/

@@ -671,9 +671,7 @@ class SymmetryRotationCache:
         self.discovery_count = 0
 
     def _symmetry_preserved(self, h):
-        return self._cartan is not None and all(
-            np.linalg.norm(h @ g - g @ h) <= self.tol for g in self._cartan
-        )
+        return self._cartan is not None and all(np.linalg.norm(h @ g - g @ h) <= self.tol for g in self._cartan)
 
     def get_rotation(self, op, n_orb=None):
         """Return ``U`` for ``op``, reusing the cached rotation if the symmetry is unchanged."""

@@ -195,7 +195,9 @@ def truncate_natural_orbitals(H_imp, w, hyb, n_keep, n_bins=1000, grid_type="lin
     return E_opt, V_opt_reshaped
 
 
-def fit_hyb_natural_orbitals(w, hyb, H_imp_blocks, bath_states_per_orbital, block_structure, n_bins=1000, grid_type="linear"):
+def fit_hyb_natural_orbitals(
+    w, hyb, H_imp_blocks, bath_states_per_orbital, block_structure, n_bins=1000, grid_type="linear"
+):
     """Wrapper to behave like fit_hyb but using Natural Orbitals.
 
     Parameters

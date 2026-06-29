@@ -152,7 +152,9 @@ class CIPSISolver:
                 if self.basis.is_distributed:
                     H_mat = H_mat[:, self.basis.local_indices]
                 psi0_arr = (
-                    self.basis.build_distributed_vector(psi0).T if len(psi0) > 0 else np.zeros((len(self.basis.local_basis), 1), dtype=complex)
+                    self.basis.build_distributed_vector(psi0).T
+                    if len(psi0) > 0
+                    else np.zeros((len(self.basis.local_basis), 1), dtype=complex)
                 )
 
                 e_ref, psi_refs_arr = restarted_lanczos(
@@ -265,7 +267,9 @@ class CIPSISolver:
                 H_mat = H_mat[:, self.basis.local_indices]
 
             psi0_arr = (
-                self.basis.build_distributed_vector(psi0).T if len(psi0) > 0 else np.zeros((len(self.basis.local_basis), 1), dtype=complex)
+                self.basis.build_distributed_vector(psi0).T
+                if len(psi0) > 0
+                else np.zeros((len(self.basis.local_basis), 1), dtype=complex)
             )
 
             e_ref, psi_refs_arr = restarted_lanczos(

@@ -28,7 +28,9 @@ import numpy as np
 EPS = np.finfo(float).eps
 
 
-def locked_overlap_step(xi, xi_prev, locked_evals, alpha_j, beta_j_inv_norm, beta_jm1_norm, rho, omega_tol, bad_tol, eps=EPS):
+def locked_overlap_step(
+    xi, xi_prev, locked_evals, alpha_j, beta_j_inv_norm, beta_jm1_norm, rho, omega_tol, bad_tol, eps=EPS
+):
     """One step of the EA16 §2.6.2 estimate of loss of orthogonality against locked pairs.
 
     Maintains, for each locked Ritz pair ``(lambda_x, x)``, a running estimate
