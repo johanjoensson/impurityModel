@@ -53,8 +53,15 @@ def test_zgemm_matmul_k_zero_is_beta_scale(transA, transB):
 def test_zgemm_matmul_empty_rows():
     """m == 0 (empty local partition) must be a no-op on an empty C."""
     got = _matmul_nogil_test(
-        np.zeros((0, 5), dtype=complex), N,
-        np.zeros((5, 4), dtype=complex), N,
-        1.0, 0.0, np.zeros((0, 4), dtype=complex), 0, 4, 5,
+        np.zeros((0, 5), dtype=complex),
+        N,
+        np.zeros((5, 4), dtype=complex),
+        N,
+        1.0,
+        0.0,
+        np.zeros((0, 4), dtype=complex),
+        0,
+        4,
+        5,
     )
     assert np.asarray(got).shape == (0, 4)

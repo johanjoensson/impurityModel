@@ -5,6 +5,7 @@ from impurityModel.test.test_restarted_lanczos import get_test_system, MockBasis
 from impurityModel.ed.ManyBodyUtils import inner_multi, add_scaled_multi, ManyBodyState
 import scipy.linalg as sp
 
+
 def test_compare():
     np.random.seed(42)
     h_op, N, eigvals_exact, basis_states = get_test_system()
@@ -24,11 +25,11 @@ def test_compare():
     psi0_orth = [ManyBodyState() for _ in range(n_blocks)]
     add_scaled_multi(psi0_orth, psi0, beta_inv)
     psi0 = psi0_orth
-    
+
     # Increase number of restarts dramatically to force breakdown/loss of orthogonality
     num_wanted = 4
     max_subspace_blocks = 6
-    
+
     evals_cy, evecs_cy = implicitly_restarted_block_lanczos_cy(
         psi0=psi0,
         h_op=h_op,
@@ -38,8 +39,7 @@ def test_compare():
         tol=1e-8,
         max_restarts=50,
         verbose=True,
-        reort=Reort.PARTIAL
+        reort=Reort.PARTIAL,
     )
-    
-    print("Cython vals:", evals_cy)
 
+    print("Cython vals:", evals_cy)

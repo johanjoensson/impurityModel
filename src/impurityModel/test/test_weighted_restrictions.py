@@ -4,7 +4,6 @@ import numpy as np
 
 from impurityModel.ed.ManyBodyUtils import ManyBodyOperator, ManyBodyState, SlaterDeterminant
 
-
 # 4 spin-orbitals: 0=dn0, 1=up0, 2=dn1, 3=up1.
 _UP = [1, 3]
 _DN = [0, 2]
@@ -175,15 +174,28 @@ def test_calc_gs_weighted_sz_restriction():
     sz0 = sz_weighted_restriction(pairs, two_sz_target=0)
 
     bs = BlockStructure(
-        blocks=[[0, 1]], identical_blocks=[[0]], transposed_blocks=[[]],
-        particle_hole_blocks=[[]], particle_hole_transposed_blocks=[[]], inequivalent_blocks=[0],
+        blocks=[[0, 1]],
+        identical_blocks=[[0]],
+        transposed_blocks=[[]],
+        particle_hole_blocks=[[]],
+        particle_hole_transposed_blocks=[[]],
+        inequivalent_blocks=[0],
     )
     basis_setup = dict(
-        impurity_orbitals=imp, bath_states=bath, N0={0: 1}, mixed_valence={0: 1}, tau=0.01,
-        dense_cutoff=1000, spin_flip_dj=False, comm=None, truncation_threshold=100000,
+        impurity_orbitals=imp,
+        bath_states=bath,
+        N0={0: 1},
+        mixed_valence={0: 1},
+        tau=0.01,
+        dense_cutoff=1000,
+        spin_flip_dj=False,
+        comm=None,
+        truncation_threshold=100000,
         weighted_restrictions=[sz0],
     )
-    psis, es, basis, _, _ = calc_gs(Hop, basis_setup, bs, np.eye(2, dtype=complex), verbose=False, slaterWeightMin=1e-12)
+    psis, es, basis, _, _ = calc_gs(
+        Hop, basis_setup, bs, np.eye(2, dtype=complex), verbose=False, slaterWeightMin=1e-12
+    )
 
     up, dn = {1, 3, 5}, {0, 2, 4}
     for det in psis[0]:
@@ -215,13 +227,24 @@ def test_greens_function_weighted_restriction_unchanged():
 
     def run(weighted, sparse):
         basis = Basis(
-            impurity_orbitals=imp, bath_states=({0: [[]]}, {0: [[]]}),
-            initial_basis=[bytes(_sd([0, 3]).to_bytearray())], comm=MPI.COMM_SELF,
+            impurity_orbitals=imp,
+            bath_states=({0: [[]]}, {0: [[]]}),
+            initial_basis=[bytes(_sd([0, 3]).to_bytearray())],
+            comm=MPI.COMM_SELF,
             weighted_restrictions=weighted,
         )
         return calc_Greens_function_with_offdiag(
-            hOp=hOp, tOps=[tOp], psis=[psi], es=[0.0], block_basis=basis,
-            delta=0.01, dN=2, occ_cutoff=1e-6, slaterWeightMin=0.0, verbose=False, sparse=sparse,
+            hOp=hOp,
+            tOps=[tOp],
+            psis=[psi],
+            es=[0.0],
+            block_basis=basis,
+            delta=0.01,
+            dN=2,
+            occ_cutoff=1e-6,
+            slaterWeightMin=0.0,
+            verbose=False,
+            sparse=sparse,
         )
 
     # GS is in 2*S_z = 0 sector; restrict to it (the GF widens by one orbital weight).

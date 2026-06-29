@@ -188,9 +188,7 @@ def test_automatic_restrictions():
     assert gs_occ == [1, 1]  # half-filled singlet sector
 
     restrictions = restrictions_from_charges(charges, gs_occ)
-    sector_dets = [
-        d for d in all_dets if all(lo <= len(s & _occset(d)) <= hi for s, (lo, hi) in restrictions.items())
-    ]
+    sector_dets = [d for d in all_dets if all(lo <= len(s & _occset(d)) <= hi for s, (lo, hi) in restrictions.items())]
     restricted = Basis(initial_basis=sector_dets, restrictions=restrictions, **_BASIS_KW)
     e0_restricted = np.linalg.eigvalsh(np.asarray(restricted.build_dense_matrix(op)))[0]
 
@@ -274,16 +272,27 @@ def test_prescan_finds_ground_state_sector():
     # Ground truth: diagonalize the full Fock space (64 determinants).
     all_dets = [_bytes6(occ) for ne in range(7) for occ in combinations(range(6), ne)]
     full = Basis(
-        impurity_orbitals={0: [[0, 1, 2, 3, 4, 5]]}, bath_states=({0: [[]]}, {0: [[]]}),
-        initial_basis=all_dets, verbose=False,
+        impurity_orbitals={0: [[0, 1, 2, 3, 4, 5]]},
+        bath_states=({0: [[]]}, {0: [[]]}),
+        initial_basis=all_dets,
+        verbose=False,
     )
     e_global = np.linalg.eigvalsh(np.asarray(full.build_dense_matrix(op)))[0]
 
     # Pre-scan: one rough solve over a broad window.
     winning_N0, restrictions, e_rough = prescan_ground_state_sector(
-        op, impurity_orbitals, bath_states, {0: 2},
-        mixed_valence={0: 1}, tau=0.01, chain_restrict=False, spin_flip_dj=False,
-        dense_cutoff=1000, comm=None, truncation_threshold=100000, slaterWeightMin=1e-12,
+        op,
+        impurity_orbitals,
+        bath_states,
+        {0: 2},
+        mixed_valence={0: 1},
+        tau=0.01,
+        chain_restrict=False,
+        spin_flip_dj=False,
+        dense_cutoff=1000,
+        comm=None,
+        truncation_threshold=100000,
+        slaterWeightMin=1e-12,
     )
     assert np.isclose(e_rough, e_global, atol=1e-6)  # rough scan found the true GS
 
@@ -293,12 +302,13 @@ def test_prescan_finds_ground_state_sector():
 
     # Refine: restricting the full Fock space to the pre-scan sector reproduces the GS
     # with a strictly smaller basis.
-    sector_dets = [
-        d for d in all_dets if all(lo <= len(s & _occset6(d)) <= hi for s, (lo, hi) in restrictions.items())
-    ]
+    sector_dets = [d for d in all_dets if all(lo <= len(s & _occset6(d)) <= hi for s, (lo, hi) in restrictions.items())]
     restricted = Basis(
-        impurity_orbitals={0: [[0, 1, 2, 3, 4, 5]]}, bath_states=({0: [[]]}, {0: [[]]}),
-        initial_basis=sector_dets, restrictions=restrictions, verbose=False,
+        impurity_orbitals={0: [[0, 1, 2, 3, 4, 5]]},
+        bath_states=({0: [[]]}, {0: [[]]}),
+        initial_basis=sector_dets,
+        restrictions=restrictions,
+        verbose=False,
     )
     e_refined = np.linalg.eigvalsh(np.asarray(restricted.build_dense_matrix(op)))[0]
     assert np.isclose(e_refined, e_global, atol=1e-10)
@@ -322,9 +332,18 @@ def test_prescan_matches_brute_force_loop():
 
     op = _siam_6()
     kw = dict(
-        impurity_orbitals={0: [[0, 1]]}, bath_states=({0: [[2, 3]]}, {0: [[4, 5]]}), N0={0: 2},
-        mixed_valence={0: 1}, tau=0.01, chain_restrict=False, dense_cutoff=1000,
-        spin_flip_dj=False, comm=None, truncation_threshold=100000, verbose=False, slaterWeightMin=1e-12,
+        impurity_orbitals={0: [[0, 1]]},
+        bath_states=({0: [[2, 3]]}, {0: [[4, 5]]}),
+        N0={0: 2},
+        mixed_valence={0: 1},
+        tau=0.01,
+        chain_restrict=False,
+        dense_cutoff=1000,
+        spin_flip_dj=False,
+        comm=None,
+        truncation_threshold=100000,
+        verbose=False,
+        slaterWeightMin=1e-12,
     )
 
     def gs_energy(basis):

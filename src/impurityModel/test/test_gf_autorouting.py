@@ -137,12 +137,12 @@ def test_green_function_explosion_prevention():
 
     # Confine to the addition sector.
     charges = conserved_subset_charges(op, n)
-    gs_occ = measure_conserved_charges(psi_state := ManyBodyState({d: psi[i] for i, d in enumerate(all_dets)}),
-                                       charges, n)
+    gs_occ = measure_conserved_charges(
+        psi_state := ManyBodyState({d: psi[i] for i, d in enumerate(all_dets)}), charges, n
+    )
     restr = gf_sector_restrictions(charges, gs_occ, 0, "addition")
     sector_idx = [
-        i for i, b in enumerate(all_bytes)
-        if all(lo <= len(s & _occset(b, n)) <= hi for s, (lo, hi) in restr.items())
+        i for i, b in enumerate(all_bytes) if all(lo <= len(s & _occset(b, n)) <= hi for s, (lo, hi) in restr.items())
     ]
     h_sec = h[np.ix_(sector_idx, sector_idx)]
     v_sec = v[sector_idx]
@@ -205,8 +205,6 @@ def test_advanced_block_equivalence():
     }
 
     # Compute only the inequivalent representative blocks, then reconstruct the rest.
-    inequivalent_parts = [
-        full[np.ix_(bs.blocks[ib], bs.blocks[ib])] for ib in bs.inequivalent_blocks
-    ]
+    inequivalent_parts = [full[np.ix_(bs.blocks[ib], bs.blocks[ib])] for ib in bs.inequivalent_blocks]
     reconstructed = build_matrix(inequivalent_parts, bs)
     np.testing.assert_allclose(reconstructed, full, atol=1e-12)

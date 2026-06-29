@@ -480,7 +480,7 @@ def test_irlm_cy_selective_reort_orthogonality():
         verbose=False,
         reort="selective",
     )
-    
+
     # Assert eigenvectors are orthogonal
     ov = inner_multi(eigvecs, eigvecs)
     err = np.linalg.norm(ov - np.eye(len(eigvecs)))

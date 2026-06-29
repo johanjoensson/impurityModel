@@ -14,7 +14,6 @@ from impurityModel.ed.symmetries import (
     in_span,
 )
 
-
 # Hubbard dimer, 4 spin-orbitals. Layout: orbital = spin*2 + site, up={0,1}, down={2,3}.
 T_HOP = 0.7
 _HSITE = np.array([[0.0, -T_HOP], [-T_HOP, 0.0]], dtype=complex)

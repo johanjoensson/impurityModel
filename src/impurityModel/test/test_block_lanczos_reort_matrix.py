@@ -6,6 +6,7 @@ import scipy.sparse as sps
 
 try:
     from mpi4py import MPI
+
     _has_mpi = True
 except ImportError:
     _has_mpi = False
@@ -31,6 +32,7 @@ def build_dense_matrix_from_manybody(h_op, basis_states):
 
 def get_mpi_basis(comm):
     from impurityModel.ed.manybody_basis import Basis
+
     n_sites = 8
     n_particles = 4
     combinations = list(itertools.combinations(range(n_sites), n_particles))
@@ -43,7 +45,7 @@ def get_mpi_basis(comm):
         bath_states=({0: [[]]}, {0: [[]]}),
         initial_basis=states_bytes,
         verbose=False,
-        comm=comm
+        comm=comm,
     )
     return basis
 
@@ -53,16 +55,16 @@ def assert_orthonormal(eigvecs, path, comm=None):
         overlaps = np.conj(eigvecs.T) @ eigvecs
     else:
         overlaps = inner_multi(eigvecs, eigvecs)
-    
+
     if comm is not None:
         overlaps = np.ascontiguousarray(overlaps, dtype=complex)
         comm.Allreduce(MPI.IN_PLACE, overlaps, op=MPI.SUM)
-    
+
     N = overlaps.shape[0]
     expected = np.eye(N, dtype=complex)
     eps = np.finfo(float).eps
     sqrt_eps = np.sqrt(eps)
-    
+
     np.testing.assert_allclose(overlaps, expected, atol=sqrt_eps)
 
 
@@ -79,7 +81,7 @@ def test_reort_matrix(mode, path, solver):
     n_blocks = 2
 
     np.random.seed(42)
-    
+
     if path == "array":
         H_dense = build_dense_matrix_from_manybody(h_op_mb, basis_states)
         psi0 = np.random.randn(N, n_blocks) + 1j * np.random.randn(N, n_blocks)
@@ -126,7 +128,7 @@ def test_reort_matrix(mode, path, solver):
 
     # Check eigenvalues
     np.testing.assert_allclose(eigvals, eigvals_exact[:num_wanted], atol=1e-8)
-    
+
     # Check orthonormality (except for NONE mode, which loses it)
     if mode != Reort.NONE:
         assert_orthonormal(eigvecs, path, comm=None)
@@ -149,27 +151,28 @@ def test_reort_matrix_mpi(mode, path, solver):
         offsets = np.array([sum(counts[:r]) for r in range(comm.size)], dtype=int)
         c0 = offsets[comm.rank]
         c1 = c0 + counts[comm.rank]
-        
+
         # Local row/col slice
         h_op = sps.csr_matrix(H_dense[:, c0:c1])
-        
+
         # Globally normalised starting block partitioned contiguously
         # Set seed per rank but construct same global vector
         rng = np.random.default_rng(42)
         psi0_full = rng.standard_normal((N, n_blocks)) + 1j * rng.standard_normal((N, n_blocks))
         psi0_local = np.ascontiguousarray(psi0_full[c0:c1, :], dtype=complex)
         psi0, _ = block_normalize(psi0_local, mpi=True, comm=comm)
-        
+
         # Create a mock basis with communicator for the TRLM/IRLM driver
         class ArrayMockBasis:
             def __init__(self, comm):
                 self.comm = comm
+
         basis = ArrayMockBasis(comm)
     else:
         # ManyBodyState path
         basis = get_mpi_basis(comm)
         h_op = h_op_mb
-        
+
         # Construct psi0 on rank 0, redistribute
         if comm.rank == 0:
             np.random.seed(42)
@@ -181,7 +184,7 @@ def test_reort_matrix_mpi(mode, path, solver):
                 psi0_full.append(state)
         else:
             psi0_full = [ManyBodyState() for _ in range(n_blocks)]
-            
+
         psi0 = basis.redistribute_psis(psi0_full)
         psi0, _ = block_normalize(psi0, mpi=True, comm=comm)
 
@@ -236,13 +239,14 @@ def test_W_identical_across_ranks(mode, path):
         c0 = offsets[comm.rank]
         c1 = c0 + counts[comm.rank]
         h_op = sps.csr_matrix(H_dense[:, c0:c1])
-        
+
         rng = np.random.default_rng(42)
         psi0_full = rng.standard_normal((N, n_blocks)) + 1j * rng.standard_normal((N, n_blocks))
         psi0_local = np.ascontiguousarray(psi0_full[c0:c1, :], dtype=complex)
         psi0, _ = block_normalize(psi0_local, mpi=True, comm=comm)
-        
+
         from impurityModel.ed.BlockLanczosArray import block_lanczos_array
+
         alphas, betas, Q_list, *W_res = block_lanczos_array(
             psi0=psi0,
             h_op=h_op,
@@ -257,7 +261,7 @@ def test_W_identical_across_ranks(mode, path):
     else:
         basis = get_mpi_basis(comm)
         h_op = h_op_mb
-        
+
         if comm.rank == 0:
             np.random.seed(42)
             psi0_full = []
@@ -268,11 +272,12 @@ def test_W_identical_across_ranks(mode, path):
                 psi0_full.append(state)
         else:
             psi0_full = [ManyBodyState() for _ in range(n_blocks)]
-            
+
         psi0 = basis.redistribute_psis(psi0_full)
         psi0, _ = block_normalize(psi0, mpi=True, comm=comm)
 
         from impurityModel.ed.BlockLanczos import block_lanczos_cy
+
         alphas, betas, Q_list, W = block_lanczos_cy(
             psi0=psi0,
             h_op=h_op,
@@ -283,7 +288,7 @@ def test_W_identical_across_ranks(mode, path):
             max_iter=max_iter,
             comm=comm,
         )
-        
+
     # comm.bcast rank-0's W and assert every rank's W equals it to 1e-12
     W_root = comm.bcast(W, root=0)
     np.testing.assert_allclose(W, W_root, atol=1e-12)
@@ -303,10 +308,11 @@ def test_deflation_shrinking_block(p, path):
         psi0 = np.random.randn(N, p) + 1j * np.random.randn(N, p)
         if p > 1:
             psi0[:, -1] = psi0[:, 0]
-        
+
         psi0, _ = block_normalize(psi0, mpi=False, comm=None)
-        
+
         from impurityModel.ed.BlockLanczosArray import block_lanczos_array
+
         alphas, betas, Q_list, block_widths = block_lanczos_array(
             psi0=psi0,
             h_op=H_dense,
@@ -326,10 +332,11 @@ def test_deflation_shrinking_block(p, path):
             psi0_list.append(state)
         if p > 1:
             psi0_list[-1] = psi0_list[0].copy()
-            
+
         psi0, _ = block_normalize(psi0_list, mpi=False, comm=None)
-        
+
         from impurityModel.ed.BlockLanczos import block_lanczos_cy
+
         alphas, betas, Q_basis, W, block_widths = block_lanczos_cy(
             psi0=psi0,
             h_op=h_op_mb,
@@ -341,10 +348,10 @@ def test_deflation_shrinking_block(p, path):
             return_widths=True,
             comm=None,
         )
-        
+
     for idx in range(len(block_widths) - 1):
-        assert block_widths[idx+1] <= block_widths[idx]
-        
+        assert block_widths[idx + 1] <= block_widths[idx]
+
     T_full = _build_full_T(alphas, betas, block_widths=block_widths)
     eigvals, _ = sp.eigh(T_full)
     np.testing.assert_allclose(eigvals[0], eigvals_exact[0], atol=1e-8)
@@ -366,17 +373,18 @@ def test_deflation_shrinking_block_mpi(p, path):
         offsets = np.array([sum(counts[:r]) for r in range(comm.size)], dtype=int)
         c0 = offsets[comm.rank]
         c1 = c0 + counts[comm.rank]
-        
+
         h_op = sps.csr_matrix(H_dense[:, c0:c1])
-        
+
         rng = np.random.default_rng(42)
         psi0_full = rng.standard_normal((N, p)) + 1j * rng.standard_normal((N, p))
         if p > 1:
             psi0_full[:, -1] = psi0_full[:, 0]
         psi0_local = np.ascontiguousarray(psi0_full[c0:c1, :], dtype=complex)
         psi0, _ = block_normalize(psi0_local, mpi=True, comm=comm)
-        
+
         from impurityModel.ed.BlockLanczosArray import block_lanczos_array
+
         alphas, betas, Q_list, block_widths = block_lanczos_array(
             psi0=psi0,
             h_op=h_op,
@@ -390,7 +398,7 @@ def test_deflation_shrinking_block_mpi(p, path):
     else:
         basis = get_mpi_basis(comm)
         h_op = h_op_mb
-        
+
         if comm.rank == 0:
             np.random.seed(42)
             psi0_full = []
@@ -403,11 +411,12 @@ def test_deflation_shrinking_block_mpi(p, path):
                 psi0_full[-1] = psi0_full[0].copy()
         else:
             psi0_full = [ManyBodyState() for _ in range(p)]
-            
+
         psi0 = basis.redistribute_psis(psi0_full)
         psi0, _ = block_normalize(psi0, mpi=True, comm=comm)
 
         from impurityModel.ed.BlockLanczos import block_lanczos_cy
+
         alphas, betas, Q_basis, W, block_widths = block_lanczos_cy(
             psi0=psi0,
             h_op=h_op,
@@ -419,10 +428,10 @@ def test_deflation_shrinking_block_mpi(p, path):
             return_widths=True,
             comm=comm,
         )
-        
+
     for idx in range(len(block_widths) - 1):
-        assert block_widths[idx+1] <= block_widths[idx]
-        
+        assert block_widths[idx + 1] <= block_widths[idx]
+
     T_full = _build_full_T(alphas, betas, block_widths=block_widths)
     eigvals, _ = sp.eigh(T_full)
     if comm.rank == 0:

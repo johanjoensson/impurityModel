@@ -34,13 +34,15 @@ def get_tight_binding_system_mpi():
     n_sites = 6
     n_particles = 3
     combinations = list(itertools.combinations(range(n_sites), n_particles))
-    states = [SlaterDeterminant.from_bytes(sum(1 << (63 - i) for i in c).to_bytes(8, byteorder="big")) for c in combinations]
-    
+    states = [
+        SlaterDeterminant.from_bytes(sum(1 << (63 - i) for i in c).to_bytes(8, byteorder="big")) for c in combinations
+    ]
+
     op_dict = {}
     for i in range(n_sites - 1):
         op_dict[((i, "c"), (i + 1, "a"))] = -1.0
         op_dict[((i + 1, "c"), (i, "a"))] = -1.0
-        
+
     basis = Basis(
         impurity_orbitals={0: [list(range(n_sites))]},
         bath_states=({0: [[]]}, {0: [[]]}),
@@ -48,7 +50,7 @@ def get_tight_binding_system_mpi():
         verbose=True,
         comm=MPI.COMM_WORLD,
     )
-    
+
     # Exact eigenvalues
     H_dense = basis.build_dense_matrix(op_dict)
     eigvals_exact, _ = np.linalg.eigh(H_dense)
@@ -59,7 +61,7 @@ def get_tight_binding_system_mpi():
 def test_mpi_block_lanczos_cy_orthogonality():
     hop, basis, states = get_diagonal_system_mpi(6)
     h_op = ManyBodyOperator(hop)
-    
+
     block_size = 2
     psi0 = []
     for i in range(block_size):
@@ -74,11 +76,11 @@ def test_mpi_block_lanczos_cy_orthogonality():
     alphas, betas, Q_basis, W = block_lanczos_cy(
         psi0, h_op, basis, converged, reort=Reort.FULL, max_iter=5, comm=MPI.COMM_WORLD
     )
-    
+
     k = len(alphas) * block_size
     G = inner_multi(Q_basis[:k], Q_basis[:k])
     MPI.COMM_WORLD.Allreduce(MPI.IN_PLACE, G, op=MPI.SUM)
-    
+
     np.testing.assert_allclose(np.abs(G - np.eye(k)), 0, atol=1e-10)
 
 
@@ -86,7 +88,7 @@ def test_mpi_block_lanczos_cy_orthogonality():
 def test_mpi_trlm_cy_correctness():
     hop, basis, states, exact_ev = get_tight_binding_system_mpi()
     h_op = ManyBodyOperator(hop)
-    
+
     np.random.seed(42)
     psi0 = []
     for _ in range(2):
@@ -101,10 +103,19 @@ def test_mpi_trlm_cy_correctness():
     beta_inv = sp.inv(np.conj(L.T))
     psi0_orth = [ManyBodyState() for _ in range(2)]
     from impurityModel.ed.ManyBodyUtils import add_scaled_multi
+
     add_scaled_multi(psi0_orth, psi0, beta_inv)
-    
+
     eigvals, eigvecs = thick_restart_block_lanczos_cy(
-        psi0=psi0_orth, h_op=h_op, basis=basis, num_wanted=4, max_subspace_blocks=10, tol=1e-8, max_restarts=50, verbose=True, comm=MPI.COMM_WORLD
+        psi0=psi0_orth,
+        h_op=h_op,
+        basis=basis,
+        num_wanted=4,
+        max_subspace_blocks=10,
+        tol=1e-8,
+        max_restarts=50,
+        verbose=True,
+        comm=MPI.COMM_WORLD,
     )
     np.testing.assert_allclose(eigvals, exact_ev[:4], atol=1e-6)
 
@@ -113,7 +124,7 @@ def test_mpi_trlm_cy_correctness():
 def test_mpi_irlm_cy_correctness():
     hop, basis, states, exact_ev = get_tight_binding_system_mpi()
     h_op = ManyBodyOperator(hop)
-    
+
     np.random.seed(42)
     psi0 = []
     for _ in range(2):
@@ -128,10 +139,19 @@ def test_mpi_irlm_cy_correctness():
     beta_inv = sp.inv(np.conj(L.T))
     psi0_orth = [ManyBodyState() for _ in range(2)]
     from impurityModel.ed.ManyBodyUtils import add_scaled_multi
+
     add_scaled_multi(psi0_orth, psi0, beta_inv)
-    
+
     # We use max_subspace_blocks=10 to avoid restarting since block implicit QR is unstable
     eigvals, eigvecs = implicitly_restarted_block_lanczos_cy(
-        psi0=psi0_orth, h_op=h_op, basis=basis, num_wanted=4, max_subspace_blocks=10, tol=1e-8, max_restarts=50, verbose=True, comm=MPI.COMM_WORLD
+        psi0=psi0_orth,
+        h_op=h_op,
+        basis=basis,
+        num_wanted=4,
+        max_subspace_blocks=10,
+        tol=1e-8,
+        max_restarts=50,
+        verbose=True,
+        comm=MPI.COMM_WORLD,
     )
     np.testing.assert_allclose(eigvals, exact_ev[:4], atol=1e-6)

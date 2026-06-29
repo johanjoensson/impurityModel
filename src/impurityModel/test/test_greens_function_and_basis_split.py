@@ -337,12 +337,23 @@ def test_dense_greens_function_basis_expansion():
     psi = ManyBodyState({_sd([0, 3]): 1.0})
     tOp = ManyBodyOperator({((0, "a"),): 1.0})
     basis = Basis(
-        impurity_orbitals={0: [[0, 1, 2, 3]]}, bath_states=({0: [[]]}, {0: [[]]}),
-        initial_basis=[bytes(_sd([0, 3]).to_bytearray())], comm=MPI.COMM_SELF,
+        impurity_orbitals={0: [[0, 1, 2, 3]]},
+        bath_states=({0: [[]]}, {0: [[]]}),
+        initial_basis=[bytes(_sd([0, 3]).to_bytearray())],
+        comm=MPI.COMM_SELF,
     )
     alphas, betas, r = calc_Greens_function_with_offdiag(
-        hOp=hOp, tOps=[tOp], psis=[psi], es=[0.0], block_basis=basis,
-        delta=0.01, dN=2, occ_cutoff=1e-6, slaterWeightMin=0.0, verbose=False, sparse=False,
+        hOp=hOp,
+        tOps=[tOp],
+        psis=[psi],
+        es=[0.0],
+        block_basis=basis,
+        delta=0.01,
+        dN=2,
+        occ_cutoff=1e-6,
+        slaterWeightMin=0.0,
+        verbose=False,
+        sparse=False,
     )
     # Ragged return: one entry per state, each a list of (block) 2D arrays.
     assert len(alphas) == 1
@@ -368,23 +379,36 @@ def test_mpi_load_balancing_gf_split_vs_unified():
 
     def run(split_threshold):
         basis = Basis(
-            impurity_orbitals={0: [[0, 1]]}, bath_states=({0: [[]]}, {0: [[]]}),
-            initial_basis=states, comm=comm, split_threshold=split_threshold,
+            impurity_orbitals={0: [[0, 1]]},
+            bath_states=({0: [[]]}, {0: [[]]}),
+            initial_basis=states,
+            comm=comm,
+            split_threshold=split_threshold,
         )
         if comm.rank == 0:
-            psi = ManyBodyState({SlaterDeterminant.from_bytes(states[0]): 1.0,
-                                 SlaterDeterminant.from_bytes(states[1]): 1.0})
+            psi = ManyBodyState(
+                {SlaterDeterminant.from_bytes(states[0]): 1.0, SlaterDeterminant.from_bytes(states[1]): 1.0}
+            )
             psi = psi / psi.norm()
         else:
             psi = ManyBodyState({})
         psi = basis.redistribute_psis([psi])[0]
         return calc_Greens_function_with_offdiag(
-            hOp=hOp, tOps=tOps, psis=[psi], es=[-0.5], block_basis=basis,
-            delta=0.01, dN=1, occ_cutoff=1e-6, slaterWeightMin=0.0, verbose=False, sparse=True,
+            hOp=hOp,
+            tOps=tOps,
+            psis=[psi],
+            es=[-0.5],
+            block_basis=basis,
+            delta=0.01,
+            dN=1,
+            occ_cutoff=1e-6,
+            slaterWeightMin=0.0,
+            verbose=False,
+            sparse=True,
         )
 
-    a_split, b_split, r_split = run(1e9)   # force maximal split
-    a_uni, b_uni, r_uni = run(0.0)         # force unified communicator
+    a_split, b_split, r_split = run(1e9)  # force maximal split
+    a_uni, b_uni, r_uni = run(0.0)  # force unified communicator
 
     if comm.rank == 0:
         assert len(a_split) == len(a_uni)
@@ -412,8 +436,10 @@ def test_basis_hash_distribution_balanced():
             b[o // 8] |= 1 << (7 - o % 8)
         dets.append(bytes(b))
     basis = Basis(
-        impurity_orbitals={0: [list(range(n_orb))]}, bath_states=({0: [[]]}, {0: [[]]}),
-        initial_basis=dets, comm=comm,
+        impurity_orbitals={0: [list(range(n_orb))]},
+        bath_states=({0: [[]]}, {0: [[]]}),
+        initial_basis=dets,
+        comm=comm,
     )
     sizes = comm.allgather(len(basis.local_basis))
     total = sum(sizes)

@@ -178,8 +178,7 @@ def _assert_matches(name, produced, reference):
     prod = {tuple(c): (re, im) for c, re, im in produced}
     ref = {tuple(c): (re, im) for c, re, im in reference}
     assert prod.keys() == ref.keys(), (
-        f"[{name}] key set differs: "
-        f"{len(prod.keys() - ref.keys())} extra, {len(ref.keys() - prod.keys())} missing"
+        f"[{name}] key set differs: " f"{len(prod.keys() - ref.keys())} extra, {len(ref.keys() - prod.keys())} missing"
     )
     for key, (re, im) in ref.items():
         pre, pim = prod[key]

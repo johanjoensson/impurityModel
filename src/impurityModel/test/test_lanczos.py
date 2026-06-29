@@ -231,6 +231,7 @@ def test_block_eigsh_mpi(reort_mode):
     if basis.comm.rank == 0:
         # Construct globally valid states on rank 0
         from impurityModel.ed.ManyBodyUtils import SlaterDeterminant
+
         global_states = [SlaterDeterminant.from_bytes(s) for s in states]
         psi0 = [
             ManyBodyState({s: 1 / np.sqrt(3) for s in global_states[:3]}),

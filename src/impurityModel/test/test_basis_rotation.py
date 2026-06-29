@@ -161,8 +161,7 @@ def _trace_spectral_function(op, n_orb, omegas):
         r_add = np.linalg.inv(omega * eye - (h - e0 * eye))
         r_rem = np.linalg.inv(omega * eye + (h - e0 * eye))
         tr_g = sum(
-            psi.conj() @ c[p] @ r_add @ cdag[p] @ psi + psi.conj() @ cdag[p] @ r_rem @ c[p] @ psi
-            for p in range(n_orb)
+            psi.conj() @ c[p] @ r_add @ cdag[p] @ psi + psi.conj() @ cdag[p] @ r_rem @ c[p] @ psi for p in range(n_orb)
         )
         out.append(-np.imag(tr_g) / np.pi)
     return np.array(out)

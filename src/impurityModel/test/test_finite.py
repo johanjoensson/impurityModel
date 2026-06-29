@@ -105,37 +105,39 @@ def test_rho_spherical_functions():
     Lz = get_Lz_from_rho_spherical(rho, l=0)
     assert Lz == 0.0
 
+
 def test_eigensystem():
     from impurityModel.ed.finite import eigensystem
-    
+
     N = 30
     # Create a 30x30 matrix
     np.random.seed(42)
     H_dense = np.random.rand(N, N) + 1j * np.random.rand(N, N)
     H_dense = H_dense + H_dense.T.conj()
-    
+
     diagonal = np.diag(H_dense).real
     diagonal_indices = np.arange(N)
-    
+
     # triangular part
     H_tri = np.triu(H_dense, k=1)
     triangular_part = scipy.sparse.csr_matrix(H_tri)
-    
+
     op = HermitianOperator(diagonal, diagonal_indices, triangular_part)
-    op.shape = (N, N) # Set shape if not already done by init
+    op.shape = (N, N)  # Set shape if not already done by init
     op.size = N
-    
+
     # Add dtype attribute if required by scipy LinearOperator
     op.dtype = np.complex128
-    
+
     # Test sparse solver (should hit TRLM or CIPSI or scipy_eigensystem)
     # Using k=4. Since N=30 and N>20, it will use thick_restarted_block_lanczos (if available) or fallback
     es, vs = eigensystem(op, e_max=100.0, k=4, dense=False)
     assert len(es) >= 1
     assert vs is not None
-    
+
     # Also explicitly test scipy_eigensystem which we know is missing coverage
     from impurityModel.ed.finite import scipy_eigensystem
+
     es_scipy, vs_scipy = scipy_eigensystem(op, e_max=100.0, k=4, return_eigvecs=True)
     assert len(es_scipy) >= 1
     assert vs_scipy is not None

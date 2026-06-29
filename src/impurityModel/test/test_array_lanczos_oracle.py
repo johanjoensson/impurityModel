@@ -36,8 +36,14 @@ def test_array_lanczos_matches_dense(p):
     h = _hermitian(n, seed=p)
     n_blocks = -(-n // p)  # ceil: full Krylov
     alphas, betas, _q = block_lanczos_array(
-        psi0=_start_block(n, p), h_op=sps.csr_matrix(h), converged=lambda a, b, **kw: False,
-        max_iter=n_blocks, verbose=False, reort=Reort.FULL, return_W=False, comm=None,
+        psi0=_start_block(n, p),
+        h_op=sps.csr_matrix(h),
+        converged=lambda a, b, **kw: False,
+        max_iter=n_blocks,
+        verbose=False,
+        reort=Reort.FULL,
+        return_W=False,
+        comm=None,
     )
     eig = np.sort(np.linalg.eigvalsh(_build_full_T(alphas, betas)))
     exact = np.sort(np.linalg.eigvalsh(h))
@@ -54,8 +60,14 @@ def test_array_lanczos_orthonormality(p):
     n = 12
     h = _hermitian(n, seed=10 + p)
     _alphas, _betas, q = block_lanczos_array(
-        psi0=_start_block(n, p), h_op=sps.csr_matrix(h), converged=lambda a, b, **kw: False,
-        max_iter=-(-n // p), verbose=False, reort=Reort.FULL, return_W=False, comm=None,
+        psi0=_start_block(n, p),
+        h_op=sps.csr_matrix(h),
+        converged=lambda a, b, **kw: False,
+        max_iter=-(-n // p),
+        verbose=False,
+        reort=Reort.FULL,
+        return_W=False,
+        comm=None,
     )
     q_mat = np.asarray(q)  # (n, n_vectors)
     gram = q_mat.conj().T @ q_mat
@@ -77,8 +89,14 @@ def test_array_lanczos_orthonormality_mpi():
     psi0_local = np.ascontiguousarray(psi0_full[c0:c1, :], dtype=complex)
 
     _alphas, _betas, q = block_lanczos_array(
-        psi0=psi0_local, h_op=h_local, converged=lambda a, b, **kw: False,
-        max_iter=-(-n // p), verbose=False, reort=Reort.FULL, return_W=False, comm=comm,
+        psi0=psi0_local,
+        h_op=h_local,
+        converged=lambda a, b, **kw: False,
+        max_iter=-(-n // p),
+        verbose=False,
+        reort=Reort.FULL,
+        return_W=False,
+        comm=comm,
     )
     q_local = np.asarray(q)  # (local_N, n_vectors); each column a vector's local rows
     # Column Gram summed over the row-block partition reconstructs the full Q^dagger Q.

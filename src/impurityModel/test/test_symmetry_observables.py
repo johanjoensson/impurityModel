@@ -347,8 +347,13 @@ def test_print_expectation_values_LJ_columns(capsys):
     rho = np.eye(n, dtype=complex)
     es = np.array([0.0])
     print_expectation_values(
-        np.array([rho]), es, np.eye(n), bs,
-        s_values=np.array([1.0]), l_values=np.array([2.0]), j_values=np.array([2.5]),
+        np.array([rho]),
+        es,
+        np.eye(n),
+        bs,
+        s_values=np.array([1.0]),
+        l_values=np.array([2.0]),
+        j_values=np.array([2.5]),
     )
     out = capsys.readouterr().out
     header = next(line for line in out.splitlines() if "E-E0" in line)
@@ -365,8 +370,13 @@ def test_print_thermal_LJ_lines(capsys):
     n = 10
     bs = _d_shell_block_structure()
     print_thermal_expectation_values(
-        np.eye(n, dtype=complex), 0.0, np.eye(n), bs,
-        s_thermal=2.0, l_thermal=6.0, j_thermal=35.0 / 4,
+        np.eye(n, dtype=complex),
+        0.0,
+        np.eye(n),
+        bs,
+        s_thermal=2.0,
+        l_thermal=6.0,
+        j_thermal=35.0 / 4,
     )
     out = capsys.readouterr().out
     assert "S = " in out and "<S^2>" in out
@@ -431,13 +441,23 @@ def test_kondo_correlation_reported(capsys):
     Hop = ManyBodyOperator(terms)
 
     bs = BlockStructure(
-        blocks=[[0, 1]], identical_blocks=[[0]], transposed_blocks=[[]],
-        particle_hole_blocks=[[]], particle_hole_transposed_blocks=[[]], inequivalent_blocks=[0],
+        blocks=[[0, 1]],
+        identical_blocks=[[0]],
+        transposed_blocks=[[]],
+        particle_hole_blocks=[[]],
+        particle_hole_transposed_blocks=[[]],
+        inequivalent_blocks=[0],
     )
     basis_setup = dict(
-        impurity_orbitals={0: [[0, 1]]}, bath_states=({0: [[2, 3]]}, {0: [[4, 5]]}),
-        N0={0: 1}, mixed_valence={0: 1}, tau=0.01, dense_cutoff=1000, spin_flip_dj=False,
-        comm=None, truncation_threshold=100000,
+        impurity_orbitals={0: [[0, 1]]},
+        bath_states=({0: [[2, 3]]}, {0: [[4, 5]]}),
+        N0={0: 1},
+        mixed_valence={0: 1},
+        tau=0.01,
+        dense_cutoff=1000,
+        spin_flip_dj=False,
+        comm=None,
+        truncation_threshold=100000,
     )
     calc_gs(Hop, basis_setup, bs, np.eye(2, dtype=complex), verbose=True, slaterWeightMin=1e-12)
     out = capsys.readouterr().out

@@ -51,9 +51,7 @@ def test_tensor_extraction_infers_n_orb():
 
 def test_tensor_extraction_rejects_3body():
     """A 3-body term raises rather than being silently dropped."""
-    op = ManyBodyOperator(
-        {((0, "c"), (1, "c"), (2, "c"), (2, "a"), (1, "a"), (0, "a")): 1.0}
-    )
+    op = ManyBodyOperator({((0, "c"), (1, "c"), (2, "c"), (2, "a"), (1, "a"), (0, "a")): 1.0})
     with pytest.raises(ValueError, match="1- and"):
         extract_tensors(op, n_orb=3)
 
@@ -110,10 +108,7 @@ def test_null_space_threshold_stability():
     """Discovered count is stable across cutoffs spanning orders of magnitude."""
     from impurityModel.ed.symmetries import discover_one_body_symmetries
 
-    counts = {
-        cut: len(discover_one_body_symmetries(H_DIMER, sigma_cut=cut))
-        for cut in (1e-10, 1e-8, 1e-6, 1e-4)
-    }
+    counts = {cut: len(discover_one_body_symmetries(H_DIMER, sigma_cut=cut)) for cut in (1e-10, 1e-8, 1e-6, 1e-4)}
     assert set(counts.values()) == {8}, counts
 
 

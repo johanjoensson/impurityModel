@@ -78,9 +78,7 @@ def test_selective_reort():
         )
         partial_inner_multi_calls = mock_inner_multi_partial.call_count
 
-    with patch(
-        "impurityModel.ed.BlockLanczos.inner_multi"
-    ) as mock_inner_multi_selective:
+    with patch("impurityModel.ed.BlockLanczos.inner_multi") as mock_inner_multi_selective:
 
         def side_effect_selective(*args, **kwargs):
             return real_inner_multi(*args, **kwargs)
@@ -100,9 +98,7 @@ def test_selective_reort():
 
     # Assert betas didn't blow up in selective
     max_beta_norm = max([np.linalg.norm(b) for b in betas_s])
-    assert (
-        max_beta_norm < 1e10
-    ), f"Betas blew up in selective reort: max beta norm = {max_beta_norm}"
+    assert max_beta_norm < 1e10, f"Betas blew up in selective reort: max beta norm = {max_beta_norm}"
 
     # Extract eigenvalues of the T matrix to compare
     T_p = _build_full_T(alphas_p, betas_p[: len(alphas_p) - 1])

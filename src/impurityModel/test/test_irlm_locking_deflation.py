@@ -275,9 +275,7 @@ def test_select_restart_indices_ghost_filter():
     assert set(kept_def.tolist()) == {0, 1}
 
     # With a tol: the -5.0 ghost (index 0) is shifted away; genuine -3.0 (index 2) fills in.
-    kept_g, _ = ea16.select_restart_indices(
-        theta, n_keep=2, locked_local=[], locked_evals=locked_evals, ghost_tol=1e-3
-    )
+    kept_g, _ = ea16.select_restart_indices(theta, n_keep=2, locked_local=[], locked_evals=locked_evals, ghost_tol=1e-3)
     assert 0 not in set(kept_g.tolist())
     assert set(kept_g.tolist()) == {1, 2}
 

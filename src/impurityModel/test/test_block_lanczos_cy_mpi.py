@@ -284,7 +284,7 @@ def test_irlm_cy_selective_reort_orthogonality_mpi():
         comm=comm,
     )
     h_op = ManyBodyOperator(hop)
-    
+
     psi0 = [ManyBodyState({b: np.random.randn() for b in basis.local_basis})]
     psi0 = basis.redistribute_psis(psi0)
     psi0, _ = block_normalize(psi0, True, comm)
@@ -301,7 +301,7 @@ def test_irlm_cy_selective_reort_orthogonality_mpi():
         reort="selective",
         comm=comm,
     )
-    
+
     # Assert eigenvectors are orthogonal
     ov = inner_multi(eigvecs, eigvecs)
     if comm is not None:
@@ -331,7 +331,7 @@ def test_trlm_cy_selective_reort_orthogonality_mpi():
         comm=comm,
     )
     h_op = ManyBodyOperator(hop)
-    
+
     psi0 = [ManyBodyState({b: np.random.randn() for b in basis.local_basis})]
     psi0 = basis.redistribute_psis(psi0)
     psi0, _ = block_normalize(psi0, True, comm)
@@ -348,11 +348,10 @@ def test_trlm_cy_selective_reort_orthogonality_mpi():
         reort="selective",
         comm=comm,
     )
-    
+
     # Assert eigenvectors are orthogonal
     ov = inner_multi(eigvecs, eigvecs)
     if comm is not None:
         comm.Allreduce(MPI.IN_PLACE, ov, op=MPI.SUM)
     err = np.linalg.norm(ov - np.eye(len(eigvecs)))
     assert err < 1e-10
-

@@ -188,9 +188,16 @@ def test_irlm_invariant_subspace_breakdown():
     # Ask for 2 eigenvalues, but max_subspace_blocks = 5.
     # Since total dimension is 4, it will exhaust the Hilbert space and trigger breakdown.
     eigvals_out, eigvecs = implicitly_restarted_block_lanczos_cy(
-        psi0=[psi0], h_op=h_op, basis=basis, num_wanted=2, max_subspace_blocks=5, tol=1e-8, max_restarts=50, verbose=True
+        psi0=[psi0],
+        h_op=h_op,
+        basis=basis,
+        num_wanted=2,
+        max_subspace_blocks=5,
+        tol=1e-8,
+        max_restarts=50,
+        verbose=True,
     )
-    
+
     # Exact eigenvalues for 4-site tight-binding with 1 particle
     # are -2*cos(k), where k = pi*j / 5 for j=1..4
     # -1.61803399, -0.61803399,  0.61803399,  1.61803399

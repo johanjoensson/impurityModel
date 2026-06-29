@@ -324,7 +324,13 @@ def test_calc_gs_options_serial():
     rot_to_spherical = np.eye(5, dtype=complex)
 
     psis, es, basis, thermal_rho, gs_info = calc_gs(
-        Hop, basis_setup, block_structure, rot_to_spherical, verbose=True, slaterWeightMin=1e-12, cipsi_solver_method="trlm"
+        Hop,
+        basis_setup,
+        block_structure,
+        rot_to_spherical,
+        verbose=True,
+        slaterWeightMin=1e-12,
+        cipsi_solver_method="trlm",
     )
     assert len(es) > 0
     assert len(psis) > 0
