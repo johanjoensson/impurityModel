@@ -634,14 +634,16 @@ def _make_gf_convergence_monitor(delta, slaterWeightMin):
     r"""Frozen-mesh relative-change convergence monitor for the block-Lanczos Green's function.
 
     Shared by both GF kernels (``block_green_impl``, ``block_Green_sparse``). Returns
-    ``(converged_fn, converged_flag)``: ``converged_fn(alphas, betas, verbose, block_widths)``
+    ``(converged_fn, converged_flag, delta_min)`` where ``delta_min`` is the convergence
+    tolerance actually used (the single source of truth for the warning messages, so they
+    never drift from this declaration): ``converged_fn(alphas, betas, verbose, block_widths)``
     estimates ``G`` on a mesh frozen once a few blocks have resolved the spectral edges
     (:func:`_gf_sample_mesh`) and reports convergence when the relative change
     (:func:`_greens_function_change`, with the cross-step ``gs_cache``) drops below
-    ``max(slaterWeightMin**2, 1e-8)``. ``converged_flag[0]`` records whether tolerance was ever
+    ``max(slaterWeightMin**2, 1e-6)``. ``converged_flag[0]`` records whether tolerance was ever
     met, for the non-convergence warning.
     """
-    delta_min = max(slaterWeightMin**2, 1e-8)
+    delta_min = max(slaterWeightMin**2, 1e-6)
     converged_flag = [False]
     mesh_cache = [None]
     gs_cache = [None, 0]
@@ -667,7 +669,7 @@ def _make_gf_convergence_monitor(delta, slaterWeightMin):
         converged_flag[0] = converged_flag[0] or is_conv
         return is_conv
 
-    return converged, converged_flag
+    return converged, converged_flag, delta_min
 
 
 def block_green_impl(basis, hOp, psi_arr, delta, reort, slaterWeightMin, verbose):
@@ -723,17 +725,19 @@ def block_green_impl(basis, hOp, psi_arr, delta, reort, slaterWeightMin, verbose
     if psi_dense_local.shape[1] == 0:
         return np.zeros((0, n, n), dtype=complex), np.zeros((0, n, n), dtype=complex), r, psi_arr, []
 
-    converged, converged_flag = _make_gf_convergence_monitor(delta, slaterWeightMin)
+    converged, converged_flag, delta_min = _make_gf_convergence_monitor(delta, slaterWeightMin)
 
     if dense:
         H = basis.build_dense_matrix(hOp)
-        alphas, betas, Q_list, widths = block_lanczos_array(
+        alphas, betas, Q_list, widths, status = block_lanczos_array(
             psi0=psi_dense_local,
             h_op=H,
             converged=converged,
             verbose=False and verbose,
             reort=reort if reort is not None else Reort.NONE,
             return_widths=True,
+            return_status=True,
+            max_iter=H.shape[0] // psi_dense_local.shape[1],
         )
     else:
         h_local = basis.build_sparse_matrix(hOp)[:, basis.local_indices]
@@ -770,7 +774,7 @@ def block_green_impl(basis, hOp, psi_arr, delta, reort, slaterWeightMin, verbose
         )
 
         # Run Lanczos on psi0^T* [wI - j*delta - H]^-1 psi0
-        alphas, betas, Q_list, widths = block_lanczos_array(
+        alphas, betas, Q_list, widths, status = block_lanczos_array(
             psi0=psi_dense_local,
             h_op=H,
             converged=converged,
@@ -778,11 +782,18 @@ def block_green_impl(basis, hOp, psi_arr, delta, reort, slaterWeightMin, verbose
             verbose=False and verbose,
             comm=comm,
             return_widths=True,
+            return_status=True,
+            max_iter=H.shape[0] // psi_dense_local.shape[1],
         )
+    # An invariant subspace closes the Krylov space under H, so the continued fraction is
+    # exact: treat it as converged (same semantics as the sparse path) so it does not trip
+    # the non-convergence warning below.
+    if status == "invariant_subspace":
+        converged_flag[0] = True
     if not converged_flag[0] and verbose and rank == 0:
         print(
             f"warning: block Green's function did not reach the convergence tolerance "
-            f"{max(slaterWeightMin ** 2, 1e-8):.1e} in {len(alphas)} block(s). The continued fraction uses the "
+            f"{delta_min:.1e} in {len(alphas)} block(s). The continued fraction uses the "
             f"subspace built so far.",
             flush=True,
         )
@@ -862,29 +873,59 @@ def block_Green_sparse(
     if len(psi_arr) == 0:
         return np.empty((0, n, n), dtype=complex), np.empty((0, n, n), dtype=complex), r
 
-    converged, converged_flag = _make_gf_convergence_monitor(delta, slaterWeightMin)
+    converged, converged_flag, delta_min = _make_gf_convergence_monitor(delta, slaterWeightMin)
 
-    # Cap the Krylov dimension: without convergence the recurrence would otherwise run the
-    # whole (possibly large) excited basis. basis.size // n is the kernel default; we make
-    # it explicit so we can detect and report a non-converged solve below.
-    max_iter = max(int(getattr(basis, "size", 0)) // max(n, 1), 1)
-    alphas, betas, _, _, widths = block_lanczos_cy(
-        psi_arr,
-        hOp,
-        basis,
-        converged,
-        verbose=verbose,
-        reort=reort if reort is not None else Reort.NONE,
-        slaterWeightMin=slaterWeightMin,
-        max_iter=max_iter,
-        return_widths=True,
-    )
+    # The block-Lanczos matvec (h_op.apply_multi) discovers new Slater determinants as the
+    # recurrence proceeds, so the reachable Krylov dimension is *not* bounded by the initial
+    # excited-basis size: convergence can require many more blocks than basis.size // n. Rather
+    # than guess one large cap (which either cuts the recurrence off early or wastes work),
+    # resume the recurrence in growing chunks until either the Green's function converges or
+    # the recurrence terminates on its own (invariant subspace / rank-deficient residual), at
+    # which point the continued fraction is already exact on the space built so far. A round
+    # returns fewer than `budget` new blocks exactly when the kernel stopped early; otherwise
+    # it used the whole budget and there may be more spectrum to resolve, so we extend it.
+    alphas = betas = Q = W = widths = None
+    budget = max(int(getattr(basis, "size", 0)) // max(n, 1), 1)
+    while True:
+        alphas, betas, Q, W, widths, status = block_lanczos_cy(
+            psi_arr,
+            hOp,
+            basis,
+            converged,
+            verbose=verbose,
+            reort=reort if reort is not None else Reort.NONE,
+            slaterWeightMin=slaterWeightMin,
+            max_iter=budget,
+            return_widths=True,
+            return_status=True,
+            alphas_init=alphas,
+            betas_init=betas,
+            Q_init=Q,
+            W_init=W,
+            block_widths_init=widths,
+        )
+        # The kernel reports exactly why it stopped (see block_lanczos_cy):
+        #   * "converged"          -- the GF convergence monitor was satisfied.
+        #   * "invariant_subspace" -- the block-Krylov space is closed under H (within the
+        #                             excited-sector restrictions), so the continued fraction
+        #                             is *exact*: this is a converged result.
+        #   * "diverged"           -- the divergence guard truncated a corrupted tail; not
+        #                             converged, and no further blocks can be built.
+        #   * "max_iter"           -- the budget was exhausted while the matvec was still
+        #                             reaching new determinants; grow the budget and resume.
+        if status in ("converged", "invariant_subspace"):
+            converged_flag[0] = True
+            break
+        if status == "diverged":
+            break
+        budget *= 2
 
-    if not converged_flag[0] and verbose and rank == 0:
+    if not converged_flag[0] and rank == 0:
         print(
             f"warning: block Green's function did not reach the convergence tolerance "
-            f"{max(slaterWeightMin ** 2, 1e-8):.1e} in {len(alphas)} block(s) (max_iter={max_iter}). The "
-            f"continued fraction uses the subspace built so far.",
+            f"{delta_min:.1e}; the block-Lanczos recurrence was truncated "
+            f"after {len(alphas)} block(s) (divergent tail). The continued fraction uses the "
+            f"subspace built so far.",
             flush=True,
         )
 

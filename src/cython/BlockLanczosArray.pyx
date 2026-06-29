@@ -670,6 +670,7 @@ def block_lanczos_array_cy(
     return_W=False,
     comm=None,
     return_widths=False,
+    return_status=False,
     **kwargs
 ):
     # Resolve a string reort (e.g. "full") to the Reort enum, mirroring
@@ -800,6 +801,13 @@ def block_lanczos_array_cy(
         xi_prev_l = np.full(nlock, omega_min_l)
     from impurityModel.ed import ea16 as _ea16
 
+    # Why the recurrence stops (returned when return_status=True), mirroring block_lanczos_cy:
+    # "converged" (converged() satisfied), "invariant_subspace" (rank-deficient residual => the
+    # block-Krylov space is closed under H => result is *exact*), "diverged" (non-finite Gram or
+    # the divergence guard truncated a corrupted tail => NOT exact) or "max_iter" (budget spent
+    # before the recurrence terminated naturally).
+    termination = "max_iter"
+
     while it < _buf_size:
         q1 = np.ascontiguousarray(q[1])
         n_curr = q1.shape[1]
@@ -876,12 +884,16 @@ def block_lanczos_array_cy(
             comm.Allreduce(MPI.IN_PLACE, M, op=MPI.SUM)
 
         if np.any(np.isnan(M)) or np.any(np.isinf(M)):
+            # Non-finite Gram matrix => corrupted recurrence, truncated (NOT exact).
+            termination = "diverged"
             block_widths.append(n_curr)
             it += 1
             break
 
         beta_i, beta_inv, active_k = _cholesky_or_deflate(M, n_curr)
         if active_k == 0:
+            # Rank-deficient residual => the block-Krylov space is closed => exact.
+            termination = "invariant_subspace"
             block_widths.append(n_curr)
             it += 1
             break
@@ -901,6 +913,7 @@ def block_lanczos_array_cy(
             M2 = 0.5 * (M2 + M2.conj().T)
             beta2_inv, beta_i, active_k = _cholesky_qr2(M2, beta_i, active_k)
             if active_k == 0:
+                termination = "invariant_subspace"
                 block_widths.append(n_curr)
                 it += 1
                 break
@@ -930,6 +943,7 @@ def block_lanczos_array_cy(
                     f"{h_norm_est:.3e}. Truncating to the last trustworthy block.",
                     flush=True,
                 )
+            termination = "diverged"
             break
 
         # EA16 §2.6.2 estimate-driven locking reorthogonalization. Propagate the cheap
@@ -1023,11 +1037,13 @@ def block_lanczos_array_cy(
                     # effective rank is exhausted). Renormalizing that noise would amplify rounding
                     # into the recurrence (beta blow-up), so stop here.
                     if float(np.max(np.real(np.diag(M2)))) < EPS:
+                        termination = "invariant_subspace"
                         block_widths.append(n_curr)
                         it += 1
                         break
                     beta2_inv, beta_i, active_k = _cholesky_qr2(M2, beta_i, active_k)
                     if active_k == 0:
+                        termination = "invariant_subspace"
                         block_widths.append(n_curr)
                         it += 1
                         break
@@ -1035,6 +1051,7 @@ def block_lanczos_array_cy(
                     betas_buf[it, :active_k, :n_curr] = beta_i
 
         if converged(alphas_buf[: it + 1], betas_buf[: it + 1], verbose=verbose, block_widths=block_widths + [n_curr]):
+            termination = "converged"
             block_widths.append(n_curr)
             it += 1
             break
@@ -1052,13 +1069,23 @@ def block_lanczos_array_cy(
     res_Q = Q_list[0] if build_krylov_basis else None
     res_alphas = alphas_buf[:it]
     res_betas = betas_buf[:it]
+    # return_status appends `termination` as the final element, independent of the other
+    # flags, so existing call sites that pass neither keep their original return arity.
     if return_widths:
         if return_W:
+            if return_status:
+                return res_alphas, res_betas, res_Q, W, block_widths, termination
             return res_alphas, res_betas, res_Q, W, block_widths
+        if return_status:
+            return res_alphas, res_betas, res_Q, block_widths, termination
         return res_alphas, res_betas, res_Q, block_widths
     else:
         if return_W:
+            if return_status:
+                return res_alphas, res_betas, res_Q, W, termination
             return res_alphas, res_betas, res_Q, W
+        if return_status:
+            return res_alphas, res_betas, res_Q, termination
         return res_alphas, res_betas, res_Q
 
 

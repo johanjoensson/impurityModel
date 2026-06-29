@@ -51,8 +51,17 @@ you can let the compiler know via the `BOOST_ROOT` environment variable (i.e. `e
 the headers using `pip install boost-headers`. With all this set up, `pip install` will be able to compile the C++/Cython sources for you.
 
 ##### Thread parallel execution
-The code can use multiple threads to speed up the C++ code further (the application of Hamiltonian to state mainly), to turn this on add `-DPARALLEL` to `CXXFLAGS`.
+The code can use multiple threads to speed up the C++ code further (the application of Hamiltonian to state mainly), to turn this on set the `IMPURITYMODEL_PARALLEL=1` environment variable when installing (this adds `-DPARALLEL -pthread` to both the compile and link steps):
+```bash
+IMPURITYMODEL_PARALLEL=1 pip install --no-build-isolation -e .
+```
 For small systems this might actually hurt performance a bit, but larger systems can benefit greatly (if you have multiple threads available).
+
+Note: `--no-build-isolation` reuses the packages already installed in your environment instead of provisioning the build requirements declared in `pyproject.toml`. If you use it, make sure the build prerequisites are installed first, otherwise the Cython `cimport numpy` (and the setuptools-scm version lookup) will fail:
+```bash
+pip install numpy cython "setuptools>=77.0.3" setuptools-scm
+```
+A plain `pip install -e .` (without `--no-build-isolation`) installs these automatically and needs no such preparation.
 
 ##### C++ standards and their implications
 Also, you can specify what

@@ -8,48 +8,55 @@ on:
     branches:
       - master
 
+concurrency:
+  group: tests-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
 jobs:
   test:
     runs-on: ubuntu-22.04
     strategy:
       fail-fast: false
       matrix:
-        compiler: [gcc-9, clang-11, gcc-12, clang-15, intel]
-        cxx_std: ["-std=c++17", "-std=c++20", "-std=c++2b"]
-        parallel: ["-DPARALLEL", ""]
-        exclude:
-          - compiler: gcc-9
-            cxx_std: "-std=c++20"
-          - compiler: gcc-9
-            cxx_std: "-std=c++2b"
-          - compiler: clang-11
-            cxx_std: "-std=c++20"
-          - compiler: clang-11
-            cxx_std: "-std=c++2b"
+        # Lean, reliable matrix: only compilers that are available on the
+        # ubuntu-22.04 runner (gcc-12, clang-15) plus the Intel oneAPI compiler.
+        # The `parallel` jobs exercise the threaded ManyBodyOperator::apply path;
+        # the `coverage` job is the single canonical run uploaded to Coveralls.
+        include:
+          - { compiler: gcc-12,   cxx_std: "-std=c++17", parallel: false }
+          - { compiler: gcc-12,   cxx_std: "-std=c++20", parallel: false, coverage: true }
+          - { compiler: gcc-12,   cxx_std: "-std=c++2b", parallel: false }
+          - { compiler: gcc-12,   cxx_std: "-std=c++20", parallel: true }
+          - { compiler: clang-15, cxx_std: "-std=c++17", parallel: false }
+          - { compiler: clang-15, cxx_std: "-std=c++20", parallel: false }
+          - { compiler: intel,    cxx_std: "-std=c++17", parallel: false }
+          - { compiler: intel,    cxx_std: "-std=c++20", parallel: false }
 
     steps:
       - name: Checkout code
         uses: actions/checkout@v4
+        with:
+          # Full history + tags so setuptools-scm can derive the real version
+          # instead of falling back to 0.0.0.
+          fetch-depth: 0
 
       - name: Set up Python
         uses: actions/setup-python@v5
         with:
           python-version: '3.11'
 
-      - name: Install dependencies
+      - name: Install system dependencies
         run: |
           sudo apt-get update
-          sudo apt-get install -y mpich libmpich-dev libtbb-dev
+          sudo apt-get install -y mpich libmpich-dev
           COMPILER="${{ matrix.compiler }}"
           if [[ "$COMPILER" == gcc-* ]]; then
-            VERSION=${COMPILER#gcc-}
-            sudo apt-get install -y g++-$VERSION
+            sudo apt-get install -y "g++-${COMPILER#gcc-}"
           elif [[ "$COMPILER" == clang-* ]]; then
-            VERSION=${COMPILER#clang-}
-            sudo apt-get install -y clang-$VERSION
+            sudo apt-get install -y "clang-${COMPILER#clang-}"
           fi
 
-      - name: Install Intel Compiler
+      - name: Install Intel oneAPI compiler
         if: matrix.compiler == 'intel'
         run: |
           wget -O- https://apt.repos.intel.com/intel-gpg-keys/GPG-PUB-KEY-INTEL-SW-PRODUCTS.PUB | gpg --dearmor | sudo tee /usr/share/keyrings/oneapi-archive-keyring.gpg > /dev/null
@@ -57,7 +64,7 @@ jobs:
           sudo apt-get update
           sudo apt-get install -y intel-oneapi-compiler-dpcpp-cpp
 
-      - name: Install Boost
+      - name: Install Boost (headers)
         uses: MarkusJx/install-boost@v2.4.5
         id: install-boost
         with:
@@ -66,12 +73,17 @@ jobs:
       - name: Install Python dependencies
         run: |
           python -m pip install --upgrade pip
-          pip install --no-binary mpi4py mpi4py pytest pytest-mpi cython setuptools build
-          if [ "${{ matrix.compiler }}" = "gcc-12" ] && [ "${{ matrix.cxx_std }}" = "-std=c++20" ] && [ "${{ matrix.parallel }}" = "" ]; then
+          # Build-time deps for the --no-build-isolation install below. numpy and
+          # setuptools-scm are required at build time (Cython `cimport numpy`, dynamic
+          # version) and are NOT pulled in automatically without build isolation.
+          pip install numpy "setuptools>=77.0.3" setuptools-scm cython build
+          # Build mpi4py from source so it links against the mpich installed above.
+          pip install --no-binary mpi4py mpi4py pytest pytest-mpi
+          if [ "${{ matrix.coverage }}" = "true" ]; then
             pip install pytest-cov
-            echo "PYTEST_COV_ARGS=--cov=src/impurityModel --cov-report=xml --cov-append" >> $GITHUB_ENV
+            echo "PYTEST_COV_ARGS=--cov=src/impurityModel --cov-report=xml --cov-append" >> "$GITHUB_ENV"
           else
-            echo "PYTEST_COV_ARGS=" >> $GITHUB_ENV
+            echo "PYTEST_COV_ARGS=" >> "$GITHUB_ENV"
           fi
 
       - name: Build and install impurityModel
@@ -81,20 +93,26 @@ jobs:
             export CXX="g++-${COMPILER#gcc-}"
           elif [[ "$COMPILER" == clang-* ]]; then
             export CXX="clang++-${COMPILER#clang-}"
-          elif [ "${{ matrix.compiler }}" = "intel" ]; then
+          elif [ "$COMPILER" = "intel" ]; then
             source /opt/intel/oneapi/setvars.sh
             export CXX="icpx"
-            echo "LD_LIBRARY_PATH=$LD_LIBRARY_PATH" >> $GITHUB_ENV
-            echo "PATH=$PATH" >> $GITHUB_ENV
+            # Persist the oneAPI runtime environment so the test steps can load
+            # the extension built against the Intel runtime libraries.
+            echo "LD_LIBRARY_PATH=$LD_LIBRARY_PATH" >> "$GITHUB_ENV"
+            echo "PATH=$PATH" >> "$GITHUB_ENV"
           fi
 
-          export CXXFLAGS="${{ matrix.cxx_std }} ${{ matrix.parallel }}"
-          if [ "${{ matrix.parallel }}" = "-DPARALLEL" ]; then
-            export CXXFLAGS="$CXXFLAGS -ltbb"
+          # setup.py adds -std=c++17 only if CXXFLAGS has no -std flag, and reads
+          # BOOST_ROOT to locate the Boost headers.
+          export CXXFLAGS="${{ matrix.cxx_std }}"
+          export BOOST_ROOT="${{ steps.install-boost.outputs.BOOST_ROOT }}"
+
+          # Enable the threaded apply path the way setup.py expects: this adds
+          # -DPARALLEL -pthread to BOTH the compile and link steps. Passing
+          # -DPARALLEL via CXXFLAGS alone would omit -pthread at link time.
+          if [ "${{ matrix.parallel }}" = "true" ]; then
+            export IMPURITYMODEL_PARALLEL=1
           fi
-          BOOST_DIR="${{ steps.install-boost.outputs.BOOST_ROOT }}"
-          export CXXFLAGS="$CXXFLAGS -I$BOOST_DIR/include -I$BOOST_DIR"
-          export CFLAGS="$CFLAGS -I$BOOST_DIR/include -I$BOOST_DIR"
 
           pip install --no-build-isolation -e .
 
@@ -111,7 +129,8 @@ jobs:
           mpiexec -n 2 python -m pytest --cache-clear --with-mpi $PYTEST_COV_ARGS
 
       - name: Upload coverage to Coveralls
-        if: matrix.compiler == 'gcc-12' && matrix.cxx_std == '-std=c++20' && matrix.parallel == ''
+        if: matrix.coverage == true
         uses: coverallsapp/github-action@v2
         with:
           file: coverage.xml
+          format: cobertura

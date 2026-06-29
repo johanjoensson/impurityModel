@@ -50,6 +50,13 @@ def block_lanczos_cy(
     betas_init=None,
     Q_init=None,
     W_init=None,
+    return_widths=False,
+    return_status=False,
+    block_widths_init=None,
+    locked=None,
+    locked_evals=None,
+    locked_res=0.0,
+    locked_reort="full",
 ): ...
 
 

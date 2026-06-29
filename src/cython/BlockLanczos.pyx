@@ -315,7 +315,11 @@ def block_lanczos_step_cy(
         comm.Allreduce(MPI.IN_PLACE, M, op=MPI.SUM)
 
     if np.any(np.isnan(M)) or np.any(np.isinf(M)):
-        return None, alpha_i, None, W, 0, True
+        # Non-finite Gram matrix => the recurrence is *corrupted*, not a genuine invariant
+        # subspace. Signal it with active_k = -1 so the caller can report "diverged" (and
+        # warn) instead of treating the truncated result as exact. active_k == 0 below is a
+        # real rank-deficient residual (the Krylov space is closed) => invariant subspace.
+        return None, alpha_i, None, W, -1, True
 
     # --- 6. Deflation / Cholesky QR -------------------------------------
     beta_i, beta_inv, active_k = _cholesky_or_deflate(M, p)
@@ -431,6 +435,7 @@ def block_lanczos_cy(
     Q_init=None,
     W_init=None,
     return_widths=False,
+    return_status=False,
     block_widths_init=None,
     locked=None,
     locked_evals=None,
@@ -536,6 +541,15 @@ def block_lanczos_cy(
           off-diagonal blocks :math:`\\beta_0, \\dots, \\beta_{k-1}`.
         * ``Q_basis`` – flat list of ``ManyBodyState`` of length
           ``(k + 1) * p``; the last ``p`` entries form the residual
+
+        ``return_widths=True`` appends ``block_widths`` (the per-block true widths)
+        and ``return_status=True`` appends a ``termination`` string -- one of
+        ``"converged"`` (``converged_fn`` satisfied), ``"invariant_subspace"`` (the
+        block-Krylov space is closed under H within the active restrictions, so the
+        result is *exact*), ``"diverged"`` (the divergence guard truncated a corrupted
+        tail; NOT exact) or ``"max_iter"`` (the ``max_iter`` budget was exhausted before
+        the recurrence terminated naturally). Both flags are independent and opt-in, so
+        existing call sites that pass neither keep the 4-tuple return.
     """
     from impurityModel.ed.ManyBodyUtils import ManyBodyOperator
 
@@ -640,6 +654,12 @@ def block_lanczos_cy(
     # --- Main Lanczos loop ----------------------------------------------
     it = 0
     breakdown = False
+    # Why the recurrence stops (returned when return_status=True). Default assumes the loop
+    # runs out the max_iter budget without terminating naturally; the branches below overwrite
+    # it. "invariant_subspace" => the block-Krylov space is closed under H (within the active
+    # restrictions) and the result is *exact*; "diverged" => the divergence guard truncated a
+    # corrupted tail (NOT exact); "converged" => converged_fn was satisfied.
+    termination = "max_iter"
     # Largest healthy block-norm seen so far (proxy for ||H|| on the subspace); used to
     # detect a runaway recurrence that the deflation/QR safeguards did not catch.
     t_norm_max = 0.0
@@ -672,9 +692,13 @@ def block_lanczos_cy(
         )
 
         if breakdown:
+            # active_k < 0 marks a non-finite (corrupted) Gram matrix -> truncated, NOT exact;
+            # active_k == 0 is a genuine rank-deficient residual -> the block-Krylov space is
+            # closed under H -> the continued fraction is exact on it.
+            termination = "diverged" if active_k < 0 else "invariant_subspace"
             if verbose:
                 if comm is None or comm.Get_rank() == 0:
-                    print(f"[BlockLanczos] Breakdown / invariant subspace " f"detected at iteration {it_abs}.")
+                    print(f"[BlockLanczos] {termination} detected at iteration {it_abs}.")
             block_widths.append(n_curr)
             it += 1
             break
@@ -702,6 +726,7 @@ def block_lanczos_cy(
                     f"|beta|={beta_norm:.3e}, |alpha|={alpha_norm:.3e} >> spectral scale "
                     f"{h_norm_est:.3e}. Truncating to the last trustworthy block."
                 )
+            termination = "diverged"
             breakdown = True
             break
 
@@ -739,6 +764,7 @@ def block_lanczos_cy(
         alphas_np = alphas_buf[:it_abs+1]
         betas_np = betas_buf[:it_abs+1]
         if converged_fn(alphas_np, betas_np, verbose=verbose, block_widths=block_widths + [n_curr]):
+            termination = "converged"
             block_widths.append(n_curr)
             it += 1
             break
@@ -750,8 +776,12 @@ def block_lanczos_cy(
 
     alphas_out = alphas_buf[:start_it + it]
     betas_out = betas_buf[:start_it + it]
+    if return_widths and return_status:
+        return alphas_out, betas_out, Q_basis, W, block_widths, termination
     if return_widths:
         return alphas_out, betas_out, Q_basis, W, block_widths
+    if return_status:
+        return alphas_out, betas_out, Q_basis, W, termination
     return alphas_out, betas_out, Q_basis, W
 
 

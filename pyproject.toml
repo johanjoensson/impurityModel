@@ -48,6 +48,12 @@ build-backend = "setuptools.build_meta"
 plot_RIXS="impurityModel.scripts.plot_RIXS:main"
 build_h0="impurityModel.scripts.build_h0:main"
 
+[tool.coverage.run]
+# Record source paths relative to the repo root. Without this, an editable
+# `src/` install records absolute paths (/home/runner/work/...), which Coveralls
+# cannot map back to the repository and ends up reporting empty/incorrect coverage.
+relative_files = true
+
 [tool.black]
 line-length = 120
 
