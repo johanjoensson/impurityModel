@@ -236,7 +236,7 @@ def test_get_Greens_function():
     psi = ManyBodyState({SlaterDeterminant.from_bytes(states[0]): 1.0})
     es = [0.5]
 
-    gs_mat, gs_real = get_Greens_function(
+    gs_mat, gs_real, _report = get_Greens_function(
         matsubara_mesh=matsubara_mesh,
         omega_mesh=omega_mesh,
         psis=[psi],
@@ -281,7 +281,7 @@ def test_get_Greens_function_matsubara_none():
     psi = ManyBodyState({SlaterDeterminant.from_bytes(states[0]): 1.0})
     es = [0.5]
 
-    gs_mat, gs_real = get_Greens_function(
+    gs_mat, gs_real, _report = get_Greens_function(
         matsubara_mesh=matsubara_mesh,
         omega_mesh=omega_mesh,
         psis=[psi],

@@ -341,38 +341,67 @@ def calc_selfenergy(
         "comm": comm,
         "truncation_threshold": truncation_threshold,
     }
-    psis, es, ground_state_basis, thermal_rho, gs_info = calc_gs(
-        h, basis_information, block_structure, rot_to_spherical, verbosity >= 1, slaterWeightMin=slaterWeightMin
-    )
-    restrictions = ground_state_basis.restrictions
+    # Compute the thermal ground state and the interacting Green's function, with a single
+    # auto-retry: the diagnostics report (gf_diagnostics) can detect that the thermal
+    # ensemble was truncated (the highest retained state still carries Boltzmann weight); if
+    # so we re-run the eigensolver with more requested states (num_wanted) once.
+    num_wanted = 10
+    max_retries = 1
+    for _attempt in range(max_retries + 1):
+        psis, es, ground_state_basis, thermal_rho, gs_info = calc_gs(
+            h,
+            basis_information,
+            block_structure,
+            rot_to_spherical,
+            verbosity >= 1,
+            slaterWeightMin=slaterWeightMin,
+            num_wanted=num_wanted,
+        )
+        restrictions = ground_state_basis.restrictions
 
-    if restrictions is not None and verbosity >= 2:
-        print("Restrictions on GS occupation")
-        for indices, limits in restrictions.items():
-            print(f"---> {sorted(indices)} : {limits}")
+        if restrictions is not None and verbosity >= 2:
+            print("Restrictions on GS occupation")
+            for indices, limits in restrictions.items():
+                print(f"---> {sorted(indices)} : {limits}")
 
-    if verbosity >= 1:
-        print(f"Consider {len(es):d} eigenstates for the spectra \n")
-        print("Calculate Interacting Green's function...", flush=verbosity >= 2)
+        if verbosity >= 1:
+            print(f"Consider {len(es):d} eigenstates for the spectra \n")
+            print("Calculate Interacting Green's function...", flush=verbosity >= 2)
 
-    gs_matsubara, gs_realaxis = get_Greens_function(
-        matsubara_mesh=iw,
-        omega_mesh=w,
-        psis=psis,
-        es=es,
-        tau=tau,
-        basis=ground_state_basis,
-        hOp=h,
-        delta=delta,
-        blocks=[block_structure.blocks[block_i] for block_i in block_structure.inequivalent_blocks],
-        verbose=verbosity >= 1,
-        verbose_extra=verbosity >= 2,
-        reort=reort,
-        dN=dN,
-        occ_cutoff=occ_cutoff,
-        slaterWeightMin=slaterWeightMin,
-        sparse=sparse_green,
-    )
+        gs_matsubara, gs_realaxis, gf_report = get_Greens_function(
+            matsubara_mesh=iw,
+            omega_mesh=w,
+            psis=psis,
+            es=es,
+            tau=tau,
+            basis=ground_state_basis,
+            hOp=h,
+            delta=delta,
+            blocks=[block_structure.blocks[block_i] for block_i in block_structure.inequivalent_blocks],
+            verbose=verbosity >= 1,
+            verbose_extra=verbosity >= 2,
+            reort=reort,
+            dN=dN,
+            occ_cutoff=occ_cutoff,
+            slaterWeightMin=slaterWeightMin,
+            sparse=sparse_green,
+            num_wanted=num_wanted,
+        )
+
+        # Root rank renders the diagnostics report and decides whether to retry; the decision
+        # is broadcast so every rank re-enters calc_gs collectively (or all break).
+        retry = False
+        if rank == 0 and gf_report is not None:
+            if verbosity >= 1:
+                print(gf_report.render())
+            retry = gf_report.needs_more_states and _attempt < max_retries
+        if comm is not None:
+            retry = comm.bcast(retry, root=0)
+        if not retry:
+            break
+        num_wanted *= 2
+        if verbosity >= 1 and rank == 0:
+            print(f"\nThermal ensemble appears truncated; retrying with num_wanted={num_wanted}.\n", flush=True)
     if gs_matsubara is not None:
         try:
             for gs in gs_matsubara:

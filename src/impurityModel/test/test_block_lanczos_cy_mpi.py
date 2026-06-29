@@ -69,6 +69,46 @@ def test_block_lanczos_cy_mpi_orthogonality_full():
 
 
 @pytest.mark.mpi
+def test_block_lanczos_cy_mpi_choleskyqr2_near_degenerate():
+    """The CholeskyQR2 second pass (and its M2 Allreduce) keeps the recurrence orthonormal
+    and bounded under MPI even with reort=none and a near-degenerate spectrum — the regime
+    that previously diverged. The block-QR runs on the replicated p x p Gram, so the result
+    must match the serial numerics."""
+    comm = MPI.COMM_WORLD
+    h_op, basis, states, _ = create_diagonal_h_and_basis_mpi(6, comm)
+    # Inject a near-degenerate pair into the (otherwise distinct) diagonal spectrum.
+    eigvals = np.array([0.0, 1e-9, 1.0, 2.0, 3.0, 4.0])
+    h_op = ManyBodyOperator({((i, "c"), (i, "a")): float(v) for i, v in enumerate(eigvals)})
+
+    np.random.seed(7 + comm.Get_rank())
+    psi0 = []
+    for _ in range(2):  # block size 2 -> exercises the block QR / CholeskyQR2 path
+        st = ManyBodyState()
+        for j in range(6):
+            st[basis.type.from_bytes(states[j])] = np.random.randn() + 1j * np.random.randn()
+        psi0.append(st)
+    psi0 = basis.redistribute_psis(psi0)
+    psi0, _ = block_normalize(psi0, mpi=True, comm=comm)  # orthonormal start (as the GF path provides)
+
+    alphas, betas, Q_basis, _ = block_lanczos_cy(
+        psi0=psi0,
+        h_op=h_op,
+        basis=basis,
+        converged_fn=lambda a, b, **kw: False,
+        reort="none",
+        max_iter=3,
+        verbose=False,
+        comm=comm,
+    )
+
+    max_beta = max(np.linalg.norm(np.asarray(b), 2) for b in betas)
+    assert max_beta < 10 * float(np.max(np.abs(eigvals)) + 1.0)
+    ov = inner_multi(Q_basis, Q_basis)
+    comm.Allreduce(MPI.IN_PLACE, ov, op=MPI.SUM)
+    assert np.linalg.norm(ov - np.eye(len(Q_basis))) < 1e-9
+
+
+@pytest.mark.mpi
 def test_trlm_cy_diagonal_mpi():
     comm = MPI.COMM_WORLD
     h_op, basis, states, eigvals = create_diagonal_h_and_basis_mpi(6, comm)

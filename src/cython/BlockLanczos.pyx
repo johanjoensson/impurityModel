@@ -57,15 +57,25 @@ from mpi4py import MPI
 
 cimport numpy as np
 
-from impurityModel.ed.BlockLanczosArray import estimate_orthonormality, eigsh, _build_full_T, _extract_blocks, _cholesky_or_deflate
+from impurityModel.ed.BlockLanczosArray import estimate_orthonormality, eigsh, _build_full_T, _extract_blocks, _cholesky_or_deflate, _cholesky_qr2, eigh_block_tridiagonal
 from impurityModel.ed.BlockLanczosArray import (
     apply_reort,
+    divergence_guard,
+    resolve_reort,
+    selective_orthogonalize,
+    is_array,
+    block_apply,
+    block_combine,
+    block_inner,
+    block_orthogonalize,
+    block_normalize,
     Reort,
     EPS,
     REORT_TOL,
     BAD_BLOCK_TOL,
     DEFLATE_TOL,
     BREAKDOWN_TOL,
+    BETA_BLOWUP_FACTOR,
     REORT_PERIOD,
 )
 
@@ -297,7 +307,7 @@ def block_lanczos_step_cy(
     # bit-for-bit equal to the old 2x inner_multi/add_scaled_multi loop because
     # block_orthogonalize_sparse does exactly that with comm=comm-if-mpi).
     if reort_mode == Reort.FULL or (reort_mode == Reort.PERIODIC and it > 0 and it % reort_period == 0):
-        wp, _ = apply_reort(wp, Q_basis, None, Reort.FULL, mpi, comm, block_widths or [])
+        wp, _, _ = apply_reort(wp, Q_basis, None, Reort.FULL, mpi, comm, block_widths or [])
 
     # --- 5. M = <wp|wp>, check breakdown --------------------------------
     M = inner_multi(wp, wp)
@@ -312,10 +322,28 @@ def block_lanczos_step_cy(
     if active_k == 0:
         return None, alpha_i, None, W, 0, True
 
-    betas[it, :active_k, :p] = beta_i
-
     q_next = [ManyBodyState() for _ in range(active_k)]
     add_scaled_multi(q_next, wp, beta_inv)
+
+    # --- 6b. CholeskyQR2 (conditional): re-orthonormalize using the actual vectors -----
+    # A single Cholesky-QR leaves q_next non-orthonormal by O(cond(M)*EPS); when cond(M) is
+    # large this amplifies the Krylov vectors and diverges the recurrence, so a second pass is
+    # required. But when cond(M) < EPS^(-1/3) the first pass is already orthonormal to
+    # < EPS^(2/3) (~4e-11), far below sqrt(EPS), so the second pass (an extra Gram inner product
+    # + MPI Allreduce) is skipped. The same cond(M) gates both kernels, so they stay in lock-step.
+    if np.linalg.cond(M) >= EPS ** (-1.0 / 3.0):
+        M2 = inner_multi(q_next, q_next)
+        if mpi and comm is not None:
+            comm.Allreduce(MPI.IN_PLACE, M2, op=MPI.SUM)
+        M2 = 0.5 * (M2 + np.conj(M2.T))
+        beta2_inv, beta_i, active_k = _cholesky_qr2(M2, beta_i, active_k)
+        if active_k == 0:
+            return None, alpha_i, None, W, 0, True
+        q_next2 = [ManyBodyState() for _ in range(active_k)]
+        add_scaled_multi(q_next2, q_next, beta2_inv)
+        q_next = q_next2
+
+    betas[it, :active_k, :p] = beta_i
 
     # --- 7. EA16 Selective Orthogonalization / Partial Reortho ---------
     if reort_mode in (Reort.PARTIAL, Reort.SELECTIVE):
@@ -347,50 +375,38 @@ def block_lanczos_step_cy(
         reort_eps = REORT_TOL
 
         if reort_mode == Reort.SELECTIVE:
-            # Gate the O(m^3) Ritz-convergence check to the REORT_PERIOD cadence,
-            # matching block_lanczos_array_cy (the PARTIAL bad-block reorth above runs
-            # every step, so this is safe but much cheaper).
-            if it > 0 and it % reort_period == 0:
-                import scipy.linalg as spla
-
-                T_full = _build_full_T(alphas[: it + 1], betas[: it + 1], block_widths=block_widths + [p])
-                eigvals_T, conv_evec = spla.eigh(T_full)
-                ritz_to_project = []
-                if not mpi or comm is None or comm.rank == 0:
-                    for k in range(len(eigvals_T)):
-                        err_bnd = np.linalg.norm(beta_i, ord=2) * np.abs(conv_evec[-1, k])
-                        if err_bnd < reort_eps:
-                            widths_list = list(block_widths) + [p]
-                            offsets = [0]
-                            off = 0
-                            for w_val in widths_list:
-                                off += int(w_val)
-                                offsets.append(off)
-                            w_ritz_k = np.zeros(p, dtype=complex)
-                            for j in range(it + 1):
-                                s_k_j = conv_evec[offsets[j] : offsets[j+1], k]
-                                w_j = widths_list[j]
-                                w_ritz_k += np.conj(s_k_j) @ np.conj(W[-1, j, :p, :w_j].T)
-                            if np.max(np.abs(w_ritz_k)) > reort_eps:
-                                ritz_to_project.append(k)
-                if mpi and comm is not None:
-                    ritz_to_project = comm.bcast(ritz_to_project, root=0)
-
-                for k in ritz_to_project:
-                    s_k = conv_evec[:, k]
-                    ritz_vec = [ManyBodyState() for _ in range(p)]
-                    add_scaled_multi(ritz_vec, Q_basis, s_k[:, np.newaxis])
-                    for _ in range(2):
-                        overlap = inner_multi(ritz_vec, q_next)
-                        if mpi and comm is not None:
-                            comm.Allreduce(MPI.IN_PLACE, overlap, op=MPI.SUM)
-                        add_scaled_multi(q_next, ritz_vec, -overlap)
+            # EA16 §2.6.2 selective orthogonalization (shared with block_lanczos_array_cy).
+            # beta_i's 2-norm is the Ritz residual scale; the driver has not computed it yet at
+            # this point, so pass it explicitly.
+            q_next = selective_orthogonalize(
+                q_next, Q_basis, alphas, betas, W, block_widths,
+                it, p, np.linalg.norm(beta_i, ord=2), reort_eps, reort_period, mpi, comm,
+            )
 
         if reort_mode in (Reort.PARTIAL, Reort.SELECTIVE):
             # Bad-block partial reorthogonalization via the shared apply_reort (single
             # implementation for both kernels). Pass block_widths + [p] so the current
             # block (index it) is included in the width table apply_reort indexes.
-            q_next, W = apply_reort(q_next, Q_basis, W, reort_mode, mpi, comm, block_widths + [p])
+            q_next, W, _reort_acted = apply_reort(q_next, Q_basis, W, reort_mode, mpi, comm, block_widths + [p])
+            # Only when a bad block was actually projected does q_next need re-orthonormalizing;
+            # otherwise it is unchanged and this would be an exact no-op (M2 == I), so skip it and
+            # save the Gram inner product + MPI Allreduce. Mirrors block_lanczos_array_cy.
+            if _reort_acted:
+                M2 = inner_multi(q_next, q_next)
+                if mpi and comm is not None:
+                    comm.Allreduce(MPI.IN_PLACE, M2, op=MPI.SUM)
+                M2 = 0.5 * (M2 + np.conj(M2.T))
+                # Absolutely tiny residual after projection => block contained in the existing span
+                # (invariant subspace); renormalizing it would amplify rounding. Treat as breakdown.
+                if float(np.max(np.real(np.diag(M2)))) < EPS:
+                    return None, alpha_i, None, W, 0, True
+                beta2_inv, beta_i, active_k = _cholesky_qr2(M2, beta_i, active_k)
+                if active_k == 0:
+                    return None, alpha_i, None, W, 0, True
+                q_next2 = [ManyBodyState() for _ in range(active_k)]
+                add_scaled_multi(q_next2, q_next, beta2_inv)
+                q_next = q_next2
+                betas[it, :active_k, :p] = beta_i
 
     if slaterWeightMin > 0:
         for st in q_next:
@@ -532,19 +548,7 @@ def block_lanczos_cy(
     mpi = comm is not None and comm.Get_size() > 1
 
     # --- Resolve reort mode ---------------------------------------------
-    if isinstance(reort, str):
-        _map = {
-            "none": Reort.NONE,
-            "partial": Reort.PARTIAL,
-            "selective": Reort.SELECTIVE,
-            "full": Reort.FULL,
-            "periodic": Reort.PERIODIC,
-        }
-        reort_mode = _map.get(reort.lower())
-        if reort_mode is None:
-            raise ValueError(f"Unknown reort string '{reort}'. " f"Must be one of {list(_map.keys())}.")
-    else:
-        reort_mode = reort
+    reort_mode = resolve_reort(reort)
 
     # --- Resume or start fresh? -----------------------------------------
     resuming = alphas_init is not None and betas_init is not None and Q_init is not None
@@ -636,6 +640,12 @@ def block_lanczos_cy(
     # --- Main Lanczos loop ----------------------------------------------
     it = 0
     breakdown = False
+    # Largest healthy block-norm seen so far (proxy for ||H|| on the subspace); used to
+    # detect a runaway recurrence that the deflation/QR safeguards did not catch.
+    t_norm_max = 0.0
+    # Spectral-scale estimate (seeded from beta_0 ~ ||H||, grown only by ||alpha_i||, which is
+    # bounded by ||H|| and never runs away) — catches gradual beta growth the relative check misses.
+    h_norm_est = 0.0
 
     while it < _buf_size:
         it_abs = start_it + it
@@ -669,12 +679,37 @@ def block_lanczos_cy(
             it += 1
             break
 
+        # --- Divergence safeguard ---------------------------------------
+        # For a Hermitian H every block norm is bounded by ||H||, so ||alpha_i||/||beta_i||
+        # can never exceed the largest healthy block norm by more than rounding. A jump of
+        # several orders of magnitude means the recurrence has been corrupted (lost
+        # orthogonality the QR/deflation did not repair). Truncate *before* the offending
+        # block — exclude alpha_i/beta_i at it_abs — so the returned T-matrix is the last
+        # numerically trustworthy subspace and the diverged tail never reaches the Green's
+        # function. The trailing beta then plays the role of the (ignored) residual coupling.
+        # One SVD of beta_i per step: its largest singular value is the 2-norm (guard/verbose)
+        # and its smallest gives ||beta_i^-1|| for the locked-reort estimate below.
+        _svb = np.linalg.svd(beta_i, compute_uv=False)
+        beta_norm = float(_svb[0])
+        alpha_norm = np.linalg.norm(alpha_i, ord=2)
+        diverged, t_norm_max, h_norm_est = divergence_guard(
+            beta_norm, alpha_norm, it == 0, t_norm_max, h_norm_est
+        )
+        if diverged:
+            if verbose and (comm is None or comm.Get_rank() == 0):
+                print(
+                    f"[BlockLanczos] Divergence detected at iteration {it_abs}: "
+                    f"|beta|={beta_norm:.3e}, |alpha|={alpha_norm:.3e} >> spectral scale "
+                    f"{h_norm_est:.3e}. Truncating to the last trustworthy block."
+                )
+            breakdown = True
+            break
+
         # EA16 §2.6.2 estimate-driven locking reorth: propagate the per-pair overlap
         # estimate (cheap, no O(N) work) and reorthogonalize q_next only against the
         # locked vectors whose estimate now exceeds omega_TOL.
         if partial_locked:
-            _sv = np.linalg.svd(np.asarray(beta_i), compute_uv=False)
-            bj_inv_norm = 1.0 / max(float(_sv.min()), EPS)
+            bj_inv_norm = 1.0 / max(float(_svb[-1]), EPS)  # reuse the step's beta_i SVD
             bjm1_norm = float(np.linalg.norm(betas_buf[it_abs - 1], 2)) if it_abs > 0 else 0.0
             xi_new_l, xi_trigger, xi_mask = _ea16.locked_overlap_step(
                 xi_l, xi_prev_l, locked_evals_arr, alpha_i,
@@ -696,7 +731,6 @@ def block_lanczos_cy(
         Q_basis.extend([st.copy() for st in q_next])
 
         if verbose:
-            beta_norm = np.linalg.norm(beta_i, ord=2)
             print(
                 f"[BlockLanczos] it={it_abs:4d}  " f"|beta|={beta_norm:.3e}  " f"alpha_diag={np.real(np.diag(alpha_i))}"
             )
@@ -726,9 +760,10 @@ def block_lanczos_cy(
 # ---------------------------------------------------------------------------
 
 
-def _trlm_extract_sparse(T_full, Q, dim, num_wanted, comm, slaterWeightMin):
-    """Diagonalize the leading ``dim`` x ``dim`` block of ``T_full`` and form the
-    ``num_wanted`` lowest Ritz vectors as ``ManyBodyState`` combinations of ``Q[:dim]``.
+def _trlm_extract(T_full, Q, dim, num_wanted, comm, slater):
+    """Diagonalize the leading ``dim`` x ``dim`` block of the (possibly arrowhead)
+    ``T_full`` and form the ``num_wanted`` lowest Ritz vectors as combinations of
+    ``Q[:dim]``. Path-agnostic (array ndarray or ManyBodyState list) via ``block_combine``.
     Shared by the TRLM early-exit / breakdown / final-extraction paths so they all honor
     the true (possibly deflated) subspace dimension ``dim`` instead of a padded
     ``m_actual * p``."""
@@ -737,7 +772,257 @@ def _trlm_extract_sparse(T_full, Q, dim, num_wanted, comm, slaterWeightMin):
         eigvals_T = comm.bcast(eigvals_T, root=0)
         eigvecs_T = comm.bcast(eigvecs_T, root=0)
     wanted = np.argsort(eigvals_T)[:num_wanted]
-    return eigvals_T[wanted], block_combine_sparse(Q[:dim], eigvecs_T[:, wanted], slaterWeightMin)
+    return eigvals_T[wanted], block_combine(_q_slice(Q, 0, dim), eigvecs_T[:, wanted], slater)
+
+
+def _trlm_core(
+    psi0,
+    h_op,
+    basis,
+    num_wanted,
+    max_subspace_blocks,
+    tol,
+    max_restarts,
+    verbose,
+    reort_mode,
+    slater,
+    comm,
+    sweep,
+):
+    """Path-agnostic thick-restart block Lanczos (TRLM).
+
+    Implements the thick-restart strategy of Knyazev (2001) and Wu & Simon (2000) to find
+    the ``num_wanted`` algebraically smallest eigenvalues (and Ritz vectors) of ``H``.
+    Drives both the dense-array and ``ManyBodyState`` paths through the path-agnostic
+    ``block_*`` helpers (``block_apply`` / ``block_combine`` / ``block_inner`` /
+    ``block_orthogonalize`` / ``block_normalize``) and a path-specific ``sweep`` callable
+    (``block_lanczos_array`` for arrays, ``block_lanczos_cy`` for ``ManyBodyState``).
+
+    Algorithm: run one block-Lanczos sweep of ``m`` blocks; diagonalise the
+    block-tridiagonal ``T``; keep the ``k = ceil(n_w/p)`` lowest Ritz pairs as one retained
+    super-block; reattach the residual block as a thick-restart spike; and continue the
+    recurrence from block ``k`` until the maximum wanted residual ``||beta_res s_i||`` drops
+    below ``tol`` or ``max_restarts`` is exhausted. A genuine invariant subspace (fewer
+    blocks than requested) or a block deflation (rank-deficient residual) terminates early
+    with a direct banded extraction.
+
+    The loop is width-aware: blocks can shrink mid-restart (rank-deficient residual ->
+    rectangular beta + narrower ``q_next``), so it tracks each block's actual width
+    (``cur_widths``) and addresses ``T_full`` / ``Q_basis`` by cumulative offsets instead of
+    a constant block width ``p``. ``nkeep = k_blocks * p`` is a *count* of retained Ritz
+    vectors (one diagonal super-block coupled to the residual by the thick-restart spike),
+    not a block width.
+
+    MPI: the dense ``sp.eigh`` results (replicated across ranks because ``T_full`` is built
+    from Allreduced coefficients) are broadcast from rank 0 so every rank uses identical Ritz
+    vectors and the restart bases stay in lock-step.
+
+    Returns:
+        tuple[numpy.ndarray, list | numpy.ndarray]: ``(eigvals, eigvecs)`` — the
+        ``num_wanted`` smallest eigenvalues (ascending) and matching Ritz vectors in the
+        path's basis representation.
+    """
+    mpi = comm is not None and getattr(comm, "size", 1) > 1
+    rank0 = (not mpi) or comm.rank == 0
+
+    is_arr = is_array(psi0)
+    p = (psi0.shape[1] if (is_arr and psi0.ndim == 2) else 1) if is_arr else len(psi0)
+    k_blocks = int(np.ceil(num_wanted / p))
+    m = max_subspace_blocks
+    if m <= k_blocks:
+        raise ValueError("max_subspace_blocks must be strictly greater than ceil(num_wanted / p).")
+
+    # --- Initial Lanczos run --------------------------------------------
+    alphas, betas, Q_basis, widths = sweep(psi0, m)
+    m_actual = len(alphas)
+    if m_actual == 0:
+        raise RuntimeError("Block Lanczos produced zero iterations.")
+
+    # The sweep can shrink blocks (rank-deficient beta -> deflation), so the true subspace
+    # dimension is sum(widths), not the padded m_actual * p. All slicing / T construction
+    # must use the real widths or they desynchronize from Q_basis.
+    total = int(sum(widths)) if widths is not None else m_actual * p
+    deflated = total < m_actual * p
+
+    # Split the trailing residual block off the basis.
+    q_m = _copy_block(_q_slice(Q_basis, total, _q_cols(Q_basis))) if _q_cols(Q_basis) > total else None
+    Q_basis = _q_slice(Q_basis, 0, total)
+
+    _betas_off = betas[: m_actual - 1] if len(betas) == m_actual else betas
+
+    # Early termination: a genuine invariant subspace (fewer blocks than asked) or block
+    # deflation (rank-deficient residual). In both cases the spanned block-Krylov space is
+    # (near-)invariant, so its Ritz pairs are accurate eigenpairs and we extract directly.
+    # T here is a pure block-tridiagonal, so the banded solver suffices (no dense T); this
+    # also avoids the uniform-width restart loop, whose arrowhead bookkeeping assumes a
+    # constant block width p and is invalid once blocks have shrunk.
+    if m_actual < m or deflated:
+        if verbose and rank0:
+            reason = "Invariant subspace" if m_actual < m else "Block deflation"
+            print(f"[TRLM] {reason} (dim {total}). Extracting directly.")
+        eigvals_T, eigvecs_T = eigh_block_tridiagonal(alphas, _betas_off, block_widths=widths)
+        if comm is not None:
+            eigvals_T = comm.bcast(eigvals_T, root=0)
+            eigvecs_T = comm.bcast(eigvecs_T, root=0)
+        wanted = np.argsort(eigvals_T)[:num_wanted]
+        return eigvals_T[wanted], block_combine(Q_basis, eigvecs_T[:, wanted], slater)
+
+    # The thick restart below builds an *arrowhead* T (a spike couples the retained Ritz
+    # block to the residual), which is not banded; this path keeps the dense T_full.
+    T_full = _build_full_T(alphas, _betas_off, block_widths=widths)
+
+    # --- Width-aware thick restart -------------------------------------------------
+    nkeep = k_blocks * p
+    p_resid = _q_cols(q_m) if q_m is not None else p
+    # betas[-1] is the trailing coupling, padded to (p, p) by the kernel. The residual block
+    # can deflate (rank p_resid < p) even when the diagonal blocks do not, leaving total ==
+    # m_actual*p (so we still reach here); slice off the phantom padded rows.
+    beta_res = betas[len(betas) - 1][:p_resid, :]
+    cur_widths = list(widths)
+
+    for restart in range(max_restarts):
+        D = int(sum(cur_widths))
+        p_last = cur_widths[len(cur_widths) - 1]
+        eigvals_T, eigvecs_T = sp.eigh(T_full[:D, :D])
+        if comm is not None:
+            eigvals_T = comm.bcast(eigvals_T, root=0)
+            eigvecs_T = comm.bcast(eigvecs_T, root=0)
+        res_norms = np.linalg.norm(beta_res @ eigvecs_T[D - p_last : D, :], axis=0)
+        wanted = np.argsort(eigvals_T)[:num_wanted]
+        max_res = float(np.max(res_norms[wanted]))
+
+        if verbose and rank0:
+            print(f"[TRLM] Restart {restart:3d} | MinEigval={eigvals_T[0]:.6f} | MaxWantedRes={max_res:.2e}")
+
+        done = max_res < tol
+        if mpi:
+            done = comm.bcast(done, root=0)
+        if done:
+            if verbose and rank0:
+                print("[TRLM] Converged!")
+            break
+
+        keep = np.argsort(eigvals_T)[:nkeep]
+        Y_k = eigvecs_T[:, keep]
+        Y_last = Y_k[D - p_last : D, :]  # last-block rows -> thick-restart spike
+        T_k = np.diag(eigvals_T[keep])
+
+        Q_ret = block_combine(_q_slice(Q_basis, 0, D), Y_k, 0.0)
+        Q_ret, _ = block_normalize(Q_ret, mpi, comm, 0.0)
+
+        # Worst case the continuation adds (m - k_blocks) full-width-p blocks.
+        T_full = np.zeros((nkeep + (m - k_blocks) * p, nkeep + (m - k_blocks) * p), dtype=complex)
+        T_full[:nkeep, :nkeep] = T_k
+
+        # Residual seed block (carried over as q_m, or recomputed if absent).
+        if q_m is None:
+            q_seed = _q_slice(Q_ret, max(0, nkeep - p), nkeep)
+            wp = block_apply(h_op, q_seed, basis, mpi, slater)
+            # Thick-restart always full-reorthogonalizes the residual seed against the whole
+            # retained basis (all modes): the arrowhead T_full requires it, and the PRO
+            # W-recurrence is not maintained across restart.
+            for _ in range(2):
+                wp, _ = block_orthogonalize(wp, Q_ret, mpi=mpi, comm=comm)
+            try:
+                q_m, beta_res = block_normalize(wp, mpi, comm, 0.0)
+            except (sp.LinAlgError, ValueError):
+                q_m = None
+            if q_m is None or np.linalg.norm(beta_res, ord=2) < 1e-5:
+                if verbose and rank0:
+                    print(f"[TRLM] Invariant subspace found at restart {restart}. Stopping early.")
+                return _trlm_extract(T_full, Q_ret, nkeep, num_wanted, comm, slater)
+            p_resid = _q_cols(q_m)
+
+        Q_basis = _q_concat(Q_ret, _copy_block(q_m))
+        cross = beta_res @ Y_last  # (p_resid, nkeep)
+        T_full[nkeep : nkeep + p_resid, :nkeep] = cross
+        T_full[:nkeep, nkeep : nkeep + p_resid] = np.conj(cross.T)
+
+        cur_widths = [nkeep, p_resid]
+        off = nkeep  # column start of the current block q1
+        w1 = p_resid
+        q1 = q_m
+        q_m = None  # consumed; the new trailing residual is set at the last inner step
+
+        for i in range(k_blocks, m):
+            wp = block_apply(h_op, q1, basis, mpi, slater)
+
+            overlaps = block_inner(Q_basis, wp, mpi, comm)
+            alpha_i = overlaps[overlaps.shape[0] - w1 :, :]  # q1^H H q1  (w1, w1)
+            T_full[off : off + w1, off : off + w1] = alpha_i
+
+            # First pass reuses the overlaps already formed for alpha_i (wp is unchanged), so
+            # this is the same projection the per-pass recompute would give; the second pass
+            # recomputes against the now-cleaned wp.
+            wp, _ = block_orthogonalize(wp, Q_basis, overlaps=overlaps, mpi=mpi, comm=comm)
+            wp, _ = block_orthogonalize(wp, Q_basis, mpi=mpi, comm=comm)
+
+            try:
+                q_next, beta_i = block_normalize(wp, mpi, comm, 0.0)
+            except (sp.LinAlgError, ValueError):
+                q_next = None
+
+            # Full collapse, or a near-invariant subspace: extract from what we have.
+            if q_next is None or np.linalg.norm(beta_i, ord=2) < 1e-5:
+                if verbose and rank0:
+                    print(f"[TRLM] Invariant subspace found during restart at block {i}. Stopping early.")
+                return _trlm_extract(T_full, Q_basis, off + w1, num_wanted, comm, slater)
+
+            # Partial deflation shrinks the block: beta_i is (w_next, w1), q_next has
+            # w_next <= w1 columns; place the arrowhead with those widths.
+            w_next = _q_cols(q_next)
+            if i < m - 1:
+                T_full[off + w1 : off + w1 + w_next, off : off + w1] = beta_i
+                T_full[off : off + w1, off + w1 : off + w1 + w_next] = np.conj(beta_i.T)
+                Q_basis = _q_concat(Q_basis, _copy_block(q_next))
+                cur_widths.append(w_next)
+                off += w1
+                w1 = w_next
+                q1 = q_next
+            else:
+                beta_res = beta_i
+                q_m = q_next
+                p_resid = w_next
+
+    # --- Final extraction -----------------------------------------------
+    final_eigvals, final_eigvecs = _trlm_extract(T_full, Q_basis, int(sum(cur_widths)), num_wanted, comm, slater)
+    if verbose and rank0:
+        print(f"[TRLM] Final eigvals:\n{final_eigvals}")
+    return final_eigvals, final_eigvecs
+
+
+def _thick_restart_block_lanczos_array(
+    psi0, h_op, basis, num_wanted, max_subspace_blocks, tol, max_restarts, verbose, reort_mode, comm
+):
+    """Array-path entry point: prepares the ``(N, p)`` start block and the
+    ``block_lanczos_array`` sweep, then delegates to the shared :func:`_trlm_core`."""
+    from impurityModel.ed.BlockLanczosArray import block_lanczos_array
+
+    mpi = comm is not None and getattr(comm, "size", 1) > 1
+    # block_lanczos_array assumes an orthonormal start block (it does not normalize
+    # internally); normalize here so the betas do not grow geometrically and overflow T.
+    psi0 = np.ascontiguousarray(psi0 if psi0.ndim == 2 else np.reshape(psi0, (-1, 1)), dtype=complex)
+    psi0, _ = block_normalize(psi0, mpi, comm, 0.0)
+
+    def sweep(v0, max_iter):
+        res = block_lanczos_array(
+            psi0=v0,
+            h_op=h_op,
+            converged=lambda a, b, **kw: False,
+            max_iter=max_iter,
+            verbose=verbose,
+            reort=reort_mode,
+            return_W=False,
+            return_widths=True,
+            comm=comm,
+        )
+        # (alphas, betas, Q, block_widths)
+        return res[0], res[1], res[2], res[3]
+
+    return _trlm_core(
+        psi0, h_op, basis, num_wanted, max_subspace_blocks, tol, max_restarts,
+        verbose, reort_mode, 0.0, comm, sweep,
+    )
 
 
 def thick_restart_block_lanczos_cy(
@@ -753,308 +1038,646 @@ def thick_restart_block_lanczos_cy(
     reort="partial",
     comm=None,
 ):
-    """Thick-restart block Lanczos (TRLM) eigensolver for ``ManyBodyState``.
+    """Thick-restart block Lanczos (TRLM) for the ManyBodyState path.
 
-    Implements the thick-restart strategy of Knyazev (2001) and Wu & Simon (2000)
-    to find the ``num_wanted`` algebraically smallest eigenvalues (and corresponding
-    Ritz vectors) of the Hamiltonian :math:`H`.
-
-    **Algorithm overview**:
-
-    1. Run ``block_lanczos_cy`` to fill :math:`m` blocks, producing
-       :math:`T_m` and the Krylov basis :math:`Q_m`.
-    2. Diagonalise :math:`T_m` via ``scipy.linalg.eigh``.
-    3. Keep the :math:`k = \\lceil n_w / p \\rceil` Ritz pairs with the lowest
-       eigenvalues; build the compressed basis :math:`Q_k = Q_m Y_k` where
-       :math:`Y_k` holds the corresponding eigenvectors.
-    4. Reattach the residual block :math:`\\beta_\\text{res}` and update the
-       cross-term :math:`T[k, :k] = \\beta_\\text{res} Y_k[-p:]`.
-    5. Continue the Lanczos recurrence from block :math:`k` until convergence
-       or ``max_restarts`` is exhausted.
-
-    **Convergence criterion** (checked on rank 0, then broadcast):
-
-    .. math::
-
-        \\max_{i \\in \\text{wanted}}
-            \\left\\| \\beta_{\\text{res}}\\, s_i \\right\\|_2 < \\text{tol}
-
-    where :math:`s_i = y_i[-p:]` is the last :math:`p`-row slice of the
-    :math:`i`-th Ritz vector :math:`y_i` of :math:`T_m`.
-
-    **Invariant subspace early termination**: if ``block_lanczos_cy`` produces
-    fewer than ``max_subspace_blocks`` steps (breakdown / invariant subspace),
-    the function returns immediately with the best Ritz pairs from the partial
-    factorisation.
-
-    **MPI collective operations**:
-
-    * All ``MPI_Allreduce`` calls inside ``block_lanczos_cy`` (one per Lanczos step
-      for :math:`\\alpha_i` and :math:`M`; more for reorthogonalization).
-    * One ``comm.bcast`` (root 0) to broadcast the convergence flag ``done`` so
-      all ranks exit the restart loop simultaneously.
-    * Additional ``MPI_Allreduce`` calls in the inner restart loop when
-      reorthogonalizing :math:`W_p` against :math:`Q_k`.
-
-    References:
-        * Knyazev, A. V. (2001). Toward the optimal preconditioned eigensolver:
-          Locally optimal block preconditioned conjugate gradient method.
-          *SIAM Journal on Scientific Computing*, 23(2), 517–541.
-        * Wu, K., & Simon, H. (2000). Thick-restart Lanczos method for large
-          symmetric eigenvalue problems.  *SIAM Journal on Matrix Analysis and
-          Applications*, 22(2), 602–616.
+    The MBS-only entry point: prepares the length-``p`` state block and the
+    ``block_lanczos_cy`` sweep, then runs the shared path-agnostic :func:`_trlm_core`.
 
     Args:
         psi0: Starting block of ``p`` ``ManyBodyState`` objects.
-        h_op: ``ManyBodyOperator`` Hamiltonian implementing
-            ``apply_multi(psis, cutoff)``.
-        basis: ``Basis`` object providing ``redistribute_psis`` and ``basis.comm``.
+        h_op: ``ManyBodyOperator`` Hamiltonian implementing ``apply_multi(psis, cutoff)``.
+        basis: ``Basis`` providing ``redistribute_psis`` and ``basis.comm``.
         num_wanted: Number of wanted lowest eigenvalues.
-        max_subspace_blocks: Maximum Krylov subspace size in blocks (``m`` in the
-            algorithm overview).  Must satisfy
-            ``max_subspace_blocks > ceil(num_wanted / p)``.
-        tol: Convergence tolerance on the maximum residual norm over wanted Ritz
-            pairs.  Default ``1e-8``.
-        max_restarts: Maximum number of thick restarts before returning the best
-            available Ritz pairs.  Default ``100``.
-        verbose: Print restart diagnostics including minimum eigenvalue and maximum
-            wanted residual.  Default ``True``.
-        slaterWeightMin: Amplitude cutoff for ``ManyBodyState.prune`` during
-            Lanczos and basis combination.  Default ``0.0``.
-        reort: Reorthogonalization mode.  Accepts a ``Reort`` enum member or one of
-            the strings ``'none'``, ``'partial'``, ``'selective'``, ``'full'``,
-            ``'periodic'``.  Default ``'partial'``.
-        comm: ``mpi4py`` communicator.  Falls back to ``basis.comm``, or serial
-            mode if ``None``.
+        max_subspace_blocks: Maximum Krylov subspace size in blocks
+            (``> ceil(num_wanted / p)``).
+        tol: Convergence tolerance on the maximum wanted residual. Default ``1e-8``.
+        max_restarts: Maximum number of thick restarts. Default ``100``.
+        verbose: Print restart diagnostics. Default ``True``.
+        slaterWeightMin: Amplitude cutoff for ``ManyBodyState.prune``. Default ``0.0``.
+        reort: Reorthogonalization mode (``Reort`` enum or string). Default ``'partial'``.
+        comm: ``mpi4py`` communicator. Falls back to ``basis.comm`` or serial.
 
     Returns:
-        tuple[numpy.ndarray, list]: A 2-tuple ``(eigvals, eigvecs)`` where
-
-        * ``eigvals`` – sorted numpy array of length ``num_wanted`` containing
-          the ``num_wanted`` smallest converged eigenvalues.
-        * ``eigvecs`` – list of ``num_wanted`` ``ManyBodyState`` Ritz vectors
-          corresponding to ``eigvals``.
-
-    Raises:
-        ValueError: If ``max_subspace_blocks <= ceil(num_wanted / p)``.
-        RuntimeError: If ``block_lanczos_cy`` produces zero iterations (e.g.,
-            immediate breakdown on the first step).
+        tuple[numpy.ndarray, list]: ``(eigvals, eigvecs)`` — the ``num_wanted`` smallest
+        eigenvalues (ascending) and matching ``ManyBodyState`` Ritz vectors.
     """
     if comm is None:
         comm = getattr(basis, "comm", None)
     mpi = comm is not None and comm.Get_size() > 1
+    reort_mode = resolve_reort(reort)
 
-    if isinstance(reort, str):
-        _map = {
-            "none": Reort.NONE,
-            "partial": Reort.PARTIAL,
-            "selective": Reort.SELECTIVE,
-            "full": Reort.FULL,
-            "periodic": Reort.PERIODIC,
-        }
-        reort_mode = _map.get(reort.lower())
-        if reort_mode is None:
-            raise ValueError(f"Unknown reort string '{reort}'. Must be one of {list(_map.keys())}.")
-    else:
-        reort_mode = reort
+    psi0 = list(psi0) if isinstance(psi0, (list, tuple)) else psi0
+    psi0, _ = block_normalize(psi0, mpi, comm, slaterWeightMin)
 
-    p = len(psi0)
-    k_blocks = math.ceil(num_wanted / p)
+    def sweep(v0, max_iter):
+        r = reort_mode.name.lower() if hasattr(reort_mode, "name") else reort_mode
+        res = block_lanczos_cy(
+            psi0=v0,
+            h_op=h_op,
+            basis=basis,
+            converged_fn=lambda a, b, **kw: False,
+            verbose=verbose,
+            reort=r,
+            max_iter=max_iter,
+            slaterWeightMin=slaterWeightMin,
+            comm=comm,
+            return_widths=True,
+        )
+        # (alphas, betas, Q_basis, W, block_widths) -> drop W
+        return res[0], res[1], res[2], res[4]
+
+    return _trlm_core(
+        psi0, h_op, basis, num_wanted, max_subspace_blocks, tol, max_restarts,
+        verbose, reort_mode, slaterWeightMin, comm, sweep,
+    )
+
+
+def thick_restart_block_lanczos(
+    psi0,
+    h_op,
+    basis,
+    num_wanted: int,
+    max_subspace_blocks: int,
+    tol: float = 1e-8,
+    max_restarts: int = 100,
+    verbose: bool = True,
+    slaterWeightMin: float = 0,
+    reort=Reort.PARTIAL,
+):
+    """Thick-restart block Lanczos (TRLM), dispatching on the operator type.
+
+    Routes to the array path (dense/sparse ``h_op``) or the ManyBodyState path
+    (``ManyBodyOperator``); both share the path-agnostic :func:`_trlm_core`.
+
+    Returns:
+        tuple[numpy.ndarray, list | numpy.ndarray]: ``(eigvals, eigvecs)``.
+    """
+    mpi = basis is not None and getattr(basis, "comm", None) is not None
+    comm = basis.comm if mpi else None
+    reort_mode = resolve_reort(reort)
+
+    if not is_array(h_op):
+        return thick_restart_block_lanczos_cy(
+            psi0=psi0,
+            h_op=h_op,
+            basis=basis,
+            num_wanted=num_wanted,
+            max_subspace_blocks=max_subspace_blocks,
+            tol=tol,
+            max_restarts=max_restarts,
+            verbose=verbose,
+            slaterWeightMin=slaterWeightMin,
+            reort=reort_mode,
+            comm=comm,
+        )
+
+    return _thick_restart_block_lanczos_array(
+        psi0, h_op, basis, num_wanted, max_subspace_blocks, tol, max_restarts, verbose, reort_mode, comm
+    )
+
+
+# ===========================================================================
+# Implicitly Restarted Block Lanczos (IRLM) \u2014 EA16 (Meerbergen & Scott,
+# RAL-TR-2000-011). The whole business logic lives here (Cython); the Python
+# module impurityModel.ed.irlm is a thin re-export. The core is path-agnostic:
+# both the dense-array and ManyBodyState paths run through _irlm_core via the
+# is_array-dispatching block_* primitives.
+# ===========================================================================
+
+# --- Path-agnostic basis helpers. The array path represents a basis as an
+# ``(N, k)`` ndarray (column blocks); the ManyBodyState path as a length-``k``
+# list of states. ---------------------------------------------------------
+def _q_cols(Q):
+    return Q.shape[1] if is_array(Q) else len(Q)
+
+
+def _q_slice(Q, a, b):
+    return Q[:, a:b] if is_array(Q) else Q[a:b]
+
+
+def _q_concat(A, B):
+    return np.concatenate([A, B], axis=1) if is_array(A) else (list(A) + list(B))
+
+
+def _copy_block(V):
+    return V.copy() if is_array(V) else [s.copy() for s in V]
+
+
+def _implicitly_restarted_block_lanczos_array(
+    psi0,
+    h_op,
+    basis,
+    num_wanted,
+    max_subspace_blocks,
+    tol,
+    max_restarts,
+    verbose,
+    reort_mode,
+    comm,
+    cntl2=None,
+    cntl3=0.0,
+    locked_reort="full",
+):
+    """Array-path entry point: prepares the ``(N, p)`` start block and the sweep
+    callable, then delegates to the shared :func:`_irlm_core`. See that function for
+    the EA16 algorithm description."""
+    from impurityModel.ed.BlockLanczosArray import block_lanczos_array
+
+    mpi = comm is not None and comm.size > 1
+    psi0 = np.ascontiguousarray(psi0 if psi0.ndim == 2 else psi0.reshape(-1, 1), dtype=complex)
+    psi0, _ = block_normalize(psi0, mpi, comm, 0.0)
+
+    def sweep(v0, max_iter, alphas=None, betas=None, Q=None, W=None, reort=None,
+              locked=None, locked_evals=None, locked_res=0.0):
+        res = block_lanczos_array(
+            psi0=v0,
+            h_op=h_op,
+            converged=lambda a, b, **kw: False,
+            max_iter=max_iter,
+            verbose=verbose,
+            reort=reort if reort is not None else reort_mode,
+            return_W=True,
+            return_widths=True,
+            comm=comm,
+            alphas=alphas,
+            betas=betas,
+            Q=Q,
+            W=W,
+            locked=locked,
+            locked_evals=locked_evals,
+            locked_res=locked_res,
+            locked_reort=locked_reort,
+        )
+        # (alphas, betas, Q, W, block_widths)
+        return res[0], res[1], res[2], res[3], res[4]
+
+    return _irlm_core(
+        psi0,
+        basis,
+        num_wanted,
+        max_subspace_blocks,
+        tol,
+        max_restarts,
+        verbose,
+        reort_mode,
+        comm,
+        sweep,
+        slater=0.0,
+        cntl2=cntl2,
+        cntl3=cntl3,
+        tag="IRLM-array",
+    )
+
+
+def _implicitly_restarted_block_lanczos_manybody(
+    psi0,
+    h_op,
+    basis,
+    num_wanted,
+    max_subspace_blocks,
+    tol,
+    max_restarts,
+    verbose,
+    reort_mode,
+    comm,
+    slaterWeightMin=0.0,
+    cntl2=None,
+    cntl3=0.0,
+    locked_reort="full",
+):
+    """ManyBodyState-path entry point: prepares the length-``p`` state block and the
+    sweep callable (the Cython ``block_lanczos_cy`` kernel), then delegates to the
+    shared :func:`_irlm_core`. Bit-for-bit consistent with the array path."""
+    mpi = comm is not None and comm.size > 1
+    psi0 = list(psi0) if isinstance(psi0, (list, tuple)) else psi0
+    psi0, _ = block_normalize(psi0, mpi, comm, slaterWeightMin)
+
+    def sweep(v0, max_iter, alphas=None, betas=None, Q=None, W=None, reort=None,
+              locked=None, locked_evals=None, locked_res=0.0):
+        r = reort if reort is not None else reort_mode
+        r = r.name.lower() if hasattr(r, "name") else r
+        res = block_lanczos_cy(
+            psi0=v0,
+            h_op=h_op,
+            basis=basis,
+            converged_fn=lambda a, b, **kw: False,
+            verbose=verbose,
+            reort=r,
+            max_iter=max_iter,
+            slaterWeightMin=slaterWeightMin,
+            comm=comm,
+            alphas_init=alphas,
+            betas_init=betas,
+            Q_init=Q,
+            W_init=W,
+            return_widths=True,
+            locked=locked,
+            locked_evals=locked_evals,
+            locked_res=locked_res,
+            locked_reort=locked_reort,
+        )
+        # (alphas, betas, Q, W, block_widths)
+        return res[0], res[1], res[2], res[3], res[4]
+
+    return _irlm_core(
+        psi0,
+        basis,
+        num_wanted,
+        max_subspace_blocks,
+        tol,
+        max_restarts,
+        verbose,
+        reort_mode,
+        comm,
+        sweep,
+        slater=slaterWeightMin,
+        cntl2=cntl2,
+        cntl3=cntl3,
+        tag="IRLM-mbs",
+    )
+
+
+def _irlm_core(
+    psi0,
+    basis,
+    num_wanted,
+    max_subspace_blocks,
+    tol,
+    max_restarts,
+    verbose,
+    reort_mode,
+    comm,
+    sweep,
+    slater,
+    cntl2,
+    cntl3,
+    tag,
+):
+    """Path-agnostic EA16 implicitly restarted block Lanczos (locking + purging).
+
+    Faithful to Meerbergen & Scott, RAL-TR-2000-011 (EA16) for the standard
+    real-symmetric/Hermitian problem in regular mode. Drives both the array and
+    ManyBodyState paths through the path-agnostic ``block_*`` helpers and a path-specific
+    ``sweep`` callable. Combines the block Lanczos recurrence (``sweep``, with
+    resumption); **locking** of converged Ritz pairs (\u00a72.2.2); **explicit purging**
+    (\u00a72.2.1, eq. 6) as the restart compression (``ea16.purge_restart``); and the EA16
+    eq. (15) acceptance test (\u00a73.2.4),
+    ``res <= u*||T_k|| + |CNTL(2)| + |CNTL(3)|*|theta|``.
+
+    Returns:
+        tuple: ``(eigvals, eigvecs)`` \u2014 sorted-ascending eigenvalues (length
+        ``num_wanted``) and the matching Ritz vectors in the path's basis representation.
+    """
+    from impurityModel.ed import ea16
+
+    mpi = comm is not None and comm.size > 1
+    rank0 = (not mpi) or comm.rank == 0
+    u = ea16.EPS
+    if cntl2 is None:
+        cntl2 = tol
+
+    is_arr = is_array(psi0)
+    p = (psi0.shape[1] if psi0.ndim == 2 else 1) if is_arr else len(psi0)
     m = max_subspace_blocks
+    k0 = int(np.ceil(num_wanted / p))
+    if m <= k0:
+        raise ValueError("max_subspace_blocks must be strictly greater than ceil(num_wanted / p).")
 
-    if m <= k_blocks:
-        raise ValueError("max_subspace_blocks must be strictly greater than " "ceil(num_wanted / p).")
+    Xl = np.zeros((psi0.shape[0], 0), dtype=complex) if is_arr else []
+    theta_l = []
 
-    psi0_list = list(psi0) if isinstance(psi0, (list, tuple)) else psi0
-    psi0, _ = block_normalize_sparse(psi0_list, mpi, comm, slaterWeightMin)
+    def _nlock():
+        return Xl.shape[1] if is_arr else len(Xl)
+
+    def _orth_against_locked(V):
+        if _nlock() == 0:
+            return V
+        for _ in range(2):
+            V, _ = block_orthogonalize(V, Xl, mpi=mpi, comm=comm)
+        return V
+
+    def _lock_block(X, vals):
+        """Lock the columns of ``X`` (Ritz vectors) one at a time, reorthogonalizing each
+        against the running locked set (\u00a72.6.2) and skipping any column that collapses \u2014
+        i.e. is already represented in ``Xl``. Stops at ``num_wanted``."""
+        nonlocal Xl
+        n_locked_now = 0
+        for j in range(_q_cols(X)):
+            if len(theta_l) >= num_wanted:
+                break
+            col = _orth_against_locked(_q_slice(X, j, j + 1))
+            g = block_inner(col, col, mpi, comm)
+            if float(np.abs(g[0, 0])) < 1e-16:
+                continue
+            try:
+                col, _ = block_normalize(col, mpi, comm, slater)
+            except ValueError:
+                # The column collapsed under block_normalize's stricter deflation floor
+                # (DEFLATE_TOL ~ sqrt(eps)): it is already represented in the locked set.
+                # block_normalize reduces M with a collective Allreduce, so every rank
+                # raises together and skipping is MPI-collective-safe.
+                continue
+            Xl = np.concatenate([Xl, col], axis=1) if is_arr else (list(Xl) + list(col))
+            theta_l.append(float(vals[j]))
+            n_locked_now += 1
+        return n_locked_now
+
+    def _locked_kwargs():
+        # Locked Ritz pairs to deflate the inner sweep against (EA16 \u00a72.6.2). Empty locked
+        # set -> locked=None so the kernel skips it. ``locked_evals``/``locked_res`` feed
+        # the \u00a72.6.2 overlap estimate (used only by the "partial" locked-reort mode).
+        if _nlock() == 0:
+            return {"locked": None}
+        return {
+            "locked": Xl,
+            "locked_evals": np.asarray(theta_l, dtype=float),
+            "locked_res": float(cntl2),
+        }
 
     # --- Initial Lanczos run --------------------------------------------
-    alphas, betas, Q_basis, W, widths = block_lanczos_cy(
+    alphas, betas, Q_basis, _W, widths = sweep(psi0, m, **_locked_kwargs())
+
+    for restart in range(max_restarts):
+        n_need = num_wanted - len(theta_l)
+        if n_need <= 0:
+            break
+        m_act = len(alphas)
+        if m_act < 1:
+            break
+
+        # The sweep may shrink blocks (rank-deficient beta -> deflation), so the true
+        # subspace dimension is sum(block_widths), not m_act * p. Build T against the
+        # real widths so T (and its eigenvectors Z) line up with the stored Q_basis.
+        total = int(sum(widths)) if widths is not None else m_act * p
+        _betas_off = betas[: m_act - 1] if len(betas) == m_act else betas
+        # Banded eigensolve straight from the block coefficients (no dense T); the IRLM
+        # implicit-QR restart keeps T block-tridiagonal, so the band is valid.
+        evals, Z = eigh_block_tridiagonal(alphas, _betas_off, block_widths=widths)
+        if mpi:
+            evals = comm.bcast(evals, root=0)
+            Z = comm.bcast(Z, root=0)
+
+        order = np.argsort(evals.real)
+        if total < m_act * p:
+            # Sweep deflated: the block Krylov recurrence broke down into a
+            # (near-)invariant subspace, so the uniform-width purge/restart below does
+            # not apply. Stop and let _assemble_results pull the lowest wanted Ritz
+            # pairs from this width-consistent factorization.
+            if verbose and rank0:
+                print(f"[{tag}] Restart {restart:3d} | sweep deflated to dim {total} (<{m_act * p}); extracting & stopping.")
+            break
+
+        beta_last = betas[m_act - 1]
+        res = ea16.ritz_residual_norms(beta_last, Z, p)
+        tnorm = ea16.operator_norm_estimate(evals, theta_l)
+
+        wanted = order[:n_need]
+        if rank0:
+            locked_local = [int(i) for i in wanted if res[i] <= ea16.acceptance_tol(evals[i], tnorm, cntl2, cntl3, u)]
+        else:
+            locked_local = None
+        if mpi:
+            locked_local = comm.bcast(locked_local, root=0)
+
+        if verbose and rank0:
+            print(
+                f"[{tag}] Restart {restart:3d} | locked={len(theta_l)} | "
+                f"MinEig={evals[order[0]].real:.6f} | "
+                f"MaxWantedRes={float(np.max(res[wanted])):.2e} | newly_locked={len(locked_local)}"
+            )
+
+        # --- Lock converged wanted pairs (\u00a72.2.2) ----------------------
+        if locked_local:
+            X_new = block_combine(_q_slice(Q_basis, 0, total), Z[:, locked_local], slater)
+            _lock_block(X_new, [evals[i].real for i in locked_local])
+            n_need = num_wanted - len(theta_l)
+            if n_need <= 0:
+                break
+
+        k_blocks = int(np.ceil(n_need / p))
+        n_keep = k_blocks * p
+        if total - n_keep < p:
+            v0 = _orth_against_locked(_copy_block(psi0))
+            try:
+                v0, _ = block_normalize(v0, mpi, comm, slater)
+            except ValueError:
+                # The start block, projected orthogonal to the locked Ritz vectors, has
+                # collapsed: psi0's Krylov space lies entirely within the already-locked
+                # subspace, so no further wanted pairs are reachable. Collective-safe break.
+                break
+            alphas, betas, Q_basis, _W, widths = sweep(v0, m, **_locked_kwargs())
+            continue
+
+        # --- Purge + restart in the Ritz basis (EA16 \u00a72.2.1, eq. 6) ----
+        kept_idx, _ = ea16.select_restart_indices(evals, n_keep, locked_local, which="smallest")
+        C, beta_new, alphas_new, betas_new = ea16.purge_restart(evals, Z, beta_last, p, kept_idx)
+        Q_used = _q_slice(Q_basis, 0, total)
+        Q_new = block_combine(Q_used, C, slater)
+        if _nlock() > 0:
+            Q_new = _orth_against_locked(Q_new)
+
+        # The trailing residual block can itself be rank-deficient when the sweep reached
+        # a (near-)invariant subspace without shrinking any *diagonal* block, so the
+        # alpha-width guard above (total < m_act * p) did not fire. Its stored width is
+        # then < p and the Sorensen residual rotation qres @ beta_new is undefined. Lock
+        # the lowest wanted Ritz pairs and stop.
+        res_width = _q_cols(Q_basis) - total
+        if res_width < p:
+            X_rem = block_combine(_q_slice(Q_basis, 0, total), Z[:, order], slater)
+            _lock_block(X_rem, [evals[i].real for i in order])
+            if verbose and rank0:
+                print(f"[{tag}] Restart {restart:3d} | trailing residual block deflated (width {res_width}<{p}). Locking remaining & stopping.")
+            break
+
+        # The trailing normalized residual block is always present after a sweep (the
+        # recurrence stores m_act+1 blocks), so the Sorensen residual reduces to rotating
+        # it by the re-banding coupling beta_new (EA16 \u00a72.2.1).
+        qres = _q_slice(Q_basis, total, total + p)
+        f_plus = block_combine(qres, beta_new, slater)
+        f_plus = _orth_against_locked(f_plus)
+
+        M = block_inner(f_plus, f_plus, mpi, comm)
+        if np.any(np.isnan(M)) or np.any(np.isinf(M)):
+            if verbose and rank0:
+                print(f"[{tag}] Breakdown at restart -- returning current Ritz pairs.")
+            break
+
+        beta_k, beta_k_inv, active_k = _cholesky_or_deflate(M, p)
+        if active_k < p:
+            # Trailing block deflated => near-invariant subspace. Lock the lowest wanted
+            # Ritz pairs (ascending; collapses against Xl are skipped) and stop.
+            X_rem = block_combine(_q_slice(Q_basis, 0, total), Z[:, order], slater)
+            _lock_block(X_rem, [evals[i].real for i in order])
+            if verbose and rank0:
+                print(f"[{tag}] Restart-block deflation (active_k={active_k}). Locking remaining & stopping.")
+            break
+
+        q_k_next = block_combine(f_plus, beta_k_inv, slater)
+        Q_basis_new = _q_concat(Q_new, q_k_next)
+
+        betas_pass_list = list(betas_new) if len(betas_new) > 0 else []
+        if len(betas_pass_list) < k_blocks:
+            betas_pass_list.append(beta_k)
+        else:
+            betas_pass_list[len(betas_pass_list) - 1] = beta_k
+        betas_pass = np.array(betas_pass_list) if betas_pass_list else np.empty((0, p, p), dtype=complex)
+        alphas_pass = np.array(alphas_new)
+
+        # Restart-PRO continuation: continue in PARTIAL/SELECTIVE, seeding the Paige-Simon
+        # estimator W at REORT_TOL (EA16 \u00a72.6.3). NONE/PERIODIC/FULL restart with FULL reort.
+        if reort_mode in (Reort.PARTIAL, Reort.SELECTIVE):
+            W_init = np.zeros((2, k_blocks + 1, p, p), dtype=complex)
+            W_init[1, :k_blocks] = REORT_TOL
+            if k_blocks >= 2:
+                W_init[0, : k_blocks - 1] = REORT_TOL
+            W_init[1, k_blocks] = np.eye(p)
+            W_init[0, k_blocks - 1] = np.eye(p)
+            reort_continuation = reort_mode
+        else:
+            W_init = None
+            reort_continuation = Reort.FULL
+
+        alphas, betas, Q_basis, _W, widths = sweep(
+            None,
+            m - k_blocks,
+            alphas=alphas_pass,
+            betas=betas_pass,
+            Q=Q_basis_new,
+            W=W_init,
+            reort=reort_continuation,
+            **_locked_kwargs(),
+        )
+
+    # --- Final extraction -----------------------------------------------
+    return _assemble_results(
+        Xl, theta_l, alphas, betas, Q_basis, num_wanted, p, mpi, comm, slater, is_arr, _build_full_T, widths
+    )
+
+
+def _assemble_results(
+    Xl, theta_l, alphas, betas, Q_basis, num_wanted, p, mpi, comm, slater, is_arr, _build_full_T, widths=None
+):
+    """Combine locked pairs with the best remaining active Ritz pairs, sorted ascending.
+
+    Active Ritz candidates are deflated against the locked set (and each other) and any
+    that collapse are skipped, so the result never contains duplicate eigenpairs. May
+    return **fewer than ``num_wanted``** pairs when the reachable invariant subspace is
+    smaller than ``num_wanted``; callers must use ``len(eigvals)``.
+    """
+    eigvals_list = list(theta_l)
+    nlock = Xl.shape[1] if is_arr else len(Xl)
+    eigvecs_cols = [_q_slice(Xl, j, j + 1) for j in range(nlock)]
+
+    n_need = num_wanted - len(eigvals_list)
+    if n_need > 0 and len(alphas) > 0:
+        m_act = len(alphas)
+        total = int(sum(widths)) if widths is not None else m_act * p
+        _betas_off = betas[: m_act - 1] if len(betas) == m_act else betas
+        # Banded eigensolve straight from the block coefficients (no dense T).
+        evals, Z = eigh_block_tridiagonal(alphas, _betas_off, block_widths=widths)
+        if mpi:
+            evals = comm.bcast(evals, root=0)
+            Z = comm.bcast(Z, root=0)
+        # Deflate active Ritz candidates against the locked set (and against each other)
+        # before accepting them, so near-copies of locked Ritz vectors are not accepted as
+        # spurious duplicate eigenpairs.
+        accepted = Xl
+        Q_used = _q_slice(Q_basis, 0, total)
+        for k in np.argsort(evals.real):
+            if len(eigvals_list) >= num_wanted:
+                break
+            col = block_combine(Q_used, Z[:, k : k + 1], slater)
+            n_acc = accepted.shape[1] if is_arr else len(accepted)
+            if n_acc > 0:
+                for _ in range(2):
+                    col, _ = block_orthogonalize(col, accepted, mpi=mpi, comm=comm)
+            g = block_inner(col, col, mpi, comm)
+            if float(np.abs(g[0, 0])) < 1e-12:
+                continue
+            try:
+                col, _ = block_normalize(col, mpi, comm, slater)
+            except ValueError:
+                continue
+            eigvals_list.append(float(evals[k].real))
+            eigvecs_cols.append(col)
+            accepted = np.concatenate([accepted, col], axis=1) if is_arr else (list(accepted) + list(col))
+
+    eigvals = np.array(eigvals_list[:num_wanted])
+    order = np.argsort(eigvals)
+    cols = eigvecs_cols[:num_wanted]
+    if is_arr:
+        eigvecs = np.concatenate(cols, axis=1) if cols else np.zeros((0, 0))
+        eigvecs = eigvecs[:, order]
+    else:
+        flat = [c[0] if isinstance(c, list) else c for c in cols]
+        eigvecs = [flat[i] for i in order]
+    return eigvals[order], eigvecs
+
+
+def implicitly_restarted_block_lanczos(
+    psi0,
+    h_op,
+    basis,
+    num_wanted: int,
+    max_subspace_blocks: int,
+    tol: float = 1e-8,
+    max_restarts: int = 100,
+    verbose: bool = True,
+    slaterWeightMin: float = 0.0,
+    reort=None,
+    comm=None,
+    locked_reort: str = "full",
+):
+    """Implicitly-restarted block Lanczos (IRLM), dispatching on the operator type.
+
+    Finds the ``num_wanted`` algebraically smallest eigenvalues of ``h_op`` via the EA16
+    block Lanczos algorithm with locking, explicit purging, partial reorthogonalization
+    against locked Ritz vectors, and the eq. (15) stopping criterion. Routes to the array
+    path (dense/sparse ``h_op``) or the ManyBodyState path (``ManyBodyOperator``); both
+    share the path-agnostic :func:`_irlm_core`.
+
+    Returns:
+        tuple[numpy.ndarray, list | numpy.ndarray]: ``(eigvals, eigvecs)``.
+    """
+    if reort is None:
+        reort_mode = Reort.PARTIAL
+    elif isinstance(reort, Reort):
+        reort_mode = reort
+    else:
+        reort_mode = Reort[str(reort).upper()]
+
+    if comm is None:
+        comm = getattr(basis, "comm", None)
+
+    if is_array(h_op):
+        return _implicitly_restarted_block_lanczos_array(
+            psi0=psi0,
+            h_op=h_op,
+            basis=basis,
+            num_wanted=num_wanted,
+            max_subspace_blocks=max_subspace_blocks,
+            tol=tol,
+            max_restarts=max_restarts,
+            verbose=verbose,
+            reort_mode=reort_mode,
+            comm=comm,
+            locked_reort=locked_reort,
+        )
+
+    return _implicitly_restarted_block_lanczos_manybody(
         psi0=psi0,
         h_op=h_op,
         basis=basis,
-        converged_fn=lambda a, b, **kw: False,
+        num_wanted=num_wanted,
+        max_subspace_blocks=max_subspace_blocks,
+        tol=tol,
+        max_restarts=max_restarts,
         verbose=verbose,
-        reort=reort,
-        max_iter=m,
-        slaterWeightMin=slaterWeightMin,
+        reort_mode=reort_mode,
         comm=comm,
-        return_widths=True,
+        slaterWeightMin=slaterWeightMin,
+        locked_reort=locked_reort,
     )
-
-    m_actual = len(alphas)
-    if m_actual == 0:
-        raise RuntimeError("Block Lanczos produced zero iterations.")
-
-    # The sweep can shrink blocks (rank-deficient beta -> deflation), so the true
-    # subspace dimension is sum(widths), not the padded m_actual * p. All slicing and
-    # T construction must use the real widths or they desynchronize from Q_basis.
-    total = int(sum(widths)) if widths is not None else m_actual * p
-    deflated = total < m_actual * p
-
-    # Q_basis has length >= total + p after the run (last p = residual)
-    q_m = [Q_basis[i].copy() for i in range(total, len(Q_basis))]
-    Q_basis = Q_basis[:total]
-
-    _betas_for_T = betas[: len(betas) - 1] if len(betas) == m_actual else betas
-    T_full = _build_full_T(alphas, _betas_for_T, block_widths=widths)
-
-    # Early termination: a genuine invariant subspace (fewer blocks than asked) or block
-    # deflation (rank-deficient residual). In both cases the spanned block-Krylov space is
-    # (near-)invariant, so its Ritz pairs are accurate eigenpairs and we extract directly
-    # -- this also avoids the uniform-width restart loop below, whose arrowhead/T_full
-    # bookkeeping assumes a constant block width p and is invalid once blocks have shrunk.
-    if m_actual < m or deflated:
-        if verbose and (comm is None or comm.Get_rank() == 0):
-            reason = "Invariant subspace" if m_actual < m else "Block deflation"
-            print(f"[TRLM] {reason} (dim {total}). Extracting directly.")
-        eigvals_T, eigvecs_T = sp.eigh(T_full)
-        if comm is not None:
-            eigvals_T = comm.bcast(eigvals_T, root=0)
-            eigvecs_T = comm.bcast(eigvecs_T, root=0)
-        wanted = np.argsort(eigvals_T)[:num_wanted]
-        if verbose and (comm is None or comm.Get_rank() == 0):
-            print("T_full eigenvalues at the end:", eigvals_T)
-            print("T_full matrix:")
-            print(T_full)
-        final_eigvals = eigvals_T[wanted]
-        final_eigvecs = block_combine_sparse(Q_basis, eigvecs_T[:, wanted], slaterWeightMin)
-        if verbose and (comm is None or comm.Get_rank() == 0):
-            print("T_full eigenvalues at the end:", eigvals_T)
-            print("T_full matrix:")
-            print(T_full)
-        return final_eigvals, final_eigvecs
-
-    # --- Width-aware thick restart -------------------------------------------------
-    # Mirrors the array path (impurityModel.ed.trlm). Blocks can shrink mid-restart
-    # (rank-deficient residual -> block_normalize_sparse returns a rectangular beta and a
-    # narrower q_next), so the loop tracks each block's actual width (``cur_widths``) and
-    # addresses T_full / Q_basis by cumulative offsets instead of the constant ``p``.
-    # nkeep = k_blocks * p is a *count* of retained Ritz vectors (one diagonal super-block
-    # coupled to the residual by the thick-restart spike), not a block width.
-    nkeep = k_blocks * p
-    p_resid = len(q_m) if q_m else p
-    # betas[-1] is the trailing coupling, padded to (p, p) by the kernel. The residual
-    # block can deflate (rank p_resid < p) even when the diagonal blocks do not, leaving
-    # total == m_actual*p (so we still reach here); slice off the phantom padded rows.
-    beta_res = betas[len(betas) - 1][:p_resid, :]
-    cur_widths = list(widths)
-
-    for restart in range(max_restarts):
-        D = int(sum(cur_widths))
-        p_last = cur_widths[len(cur_widths) - 1]
-        eigvals_T, eigvecs_T = sp.eigh(T_full[:D, :D])
-        if comm is not None:
-            eigvals_T = comm.bcast(eigvals_T, root=0)
-            eigvecs_T = comm.bcast(eigvecs_T, root=0)
-        res_norms = np.linalg.norm(beta_res @ eigvecs_T[D - p_last : D, :], axis=0)
-        wanted = np.argsort(eigvals_T)[:num_wanted]
-        max_res = float(np.max(res_norms[wanted]))
-
-        if verbose and (comm is None or comm.Get_rank() == 0):
-            print(f"[TRLM] Restart {restart:3d} | " f"MinEigval={eigvals_T[0]:.6f} | " f"MaxWantedRes={max_res:.2e}")
-
-        done = max_res < tol
-        if mpi:
-            done = comm.bcast(done, root=0)
-
-        if done:
-            if verbose and (comm is None or comm.Get_rank() == 0):
-                print("[TRLM] Converged!")
-            break
-
-        keep = np.argsort(eigvals_T)[:nkeep]
-        Y_k = eigvecs_T[:, keep]
-        Y_last = Y_k[D - p_last : D, :]  # last-block rows -> thick-restart spike
-        T_k = np.diag(eigvals_T[keep])
-
-        Q_ret = block_combine_sparse(Q_basis[:D], Y_k, 0.0)
-        Q_ret, _ = block_normalize_sparse(Q_ret, mpi, comm, 0.0)
-
-        # Worst case the continuation adds (m - k_blocks) full-width-p blocks.
-        T_full = np.zeros((nkeep + (m - k_blocks) * p, nkeep + (m - k_blocks) * p), dtype=complex)
-        T_full[:nkeep, :nkeep] = T_k
-
-        # Residual seed block (carried over as q_m, or recomputed if absent).
-        if not q_m:
-            q_seed = [Q_ret[i] for i in range(max(0, nkeep - p), nkeep)]
-            wp = h_op.apply_multi(q_seed, slaterWeightMin)
-            if mpi:
-                wp = basis.redistribute_psis(wp)
-            # Thick-restart always full-reorthogonalizes the residual seed against the
-            # whole retained basis (all modes): the arrowhead T_full requires it.
-            for _ in range(2):
-                ov = inner_multi(Q_ret, wp)
-                if mpi:
-                    comm.Allreduce(MPI.IN_PLACE, ov, op=MPI.SUM)
-                add_scaled_multi(wp, Q_ret, -ov)
-            try:
-                q_m, beta_res = block_normalize_sparse(wp, mpi, comm, 0.0)
-            except (sp.LinAlgError, ValueError):
-                q_m = None
-            if not q_m or np.linalg.norm(beta_res, ord=2) < 1e-5:
-                if verbose and (comm is None or comm.Get_rank() == 0):
-                    print(f"[TRLM] Invariant subspace found at restart {restart}. Stopping early.")
-                return _trlm_extract_sparse(T_full, Q_ret, nkeep, num_wanted, comm, slaterWeightMin)
-            p_resid = len(q_m)
-
-        Q_basis = list(Q_ret) + [st.copy() for st in q_m]
-        cross = beta_res @ Y_last  # (p_resid, nkeep)
-        T_full[nkeep : nkeep + p_resid, :nkeep] = cross
-        T_full[:nkeep, nkeep : nkeep + p_resid] = np.conj(cross.T)
-
-        cur_widths = [nkeep, p_resid]
-        off = nkeep  # column start of the current block q1
-        w1 = p_resid
-        q1 = q_m
-        q_m = None  # consumed; the new trailing residual is set at the last inner step
-
-        for i in range(k_blocks, m):
-            wp = h_op.apply_multi(q1, slaterWeightMin)
-            if mpi:
-                wp = basis.redistribute_psis(wp)
-
-            overlaps = inner_multi(Q_basis, wp)
-            if mpi:
-                comm.Allreduce(MPI.IN_PLACE, overlaps, op=MPI.SUM)
-
-            alpha_i = overlaps[overlaps.shape[0] - w1 :, :]  # q1^H H q1  (w1, w1)
-            T_full[off : off + w1, off : off + w1] = alpha_i
-
-            for _ in range(2):
-                ov2 = inner_multi(Q_basis, wp)
-                if mpi:
-                    comm.Allreduce(MPI.IN_PLACE, ov2, op=MPI.SUM)
-                add_scaled_multi(wp, Q_basis, -ov2)
-
-            try:
-                q_next, beta_i = block_normalize_sparse(wp, mpi, comm, 0.0)
-            except (sp.LinAlgError, ValueError):
-                q_next = None
-
-            if not q_next or np.linalg.norm(beta_i, ord=2) < 1e-5:
-                if verbose and (comm is None or comm.Get_rank() == 0):
-                    print(f"[TRLM] Invariant subspace found during restart at block {i}. Stopping early.")
-                return _trlm_extract_sparse(T_full, Q_basis, off + w1, num_wanted, comm, slaterWeightMin)
-
-            # Partial deflation shrinks the block: beta_i is (w_next, w1), q_next has
-            # w_next <= w1 states; place the arrowhead with those widths.
-            w_next = len(q_next)
-            if i < m - 1:
-                T_full[off + w1 : off + w1 + w_next, off : off + w1] = beta_i
-                T_full[off : off + w1, off + w1 : off + w1 + w_next] = np.conj(beta_i.T)
-                Q_basis.extend([st.copy() for st in q_next])
-                cur_widths.append(w_next)
-                off += w1
-                w1 = w_next
-                q1 = q_next
-            else:
-                beta_res = beta_i
-                q_m = q_next
-                p_resid = w_next
-
-    # --- Final extraction -----------------------------------------------
-    return _trlm_extract_sparse(T_full, Q_basis, int(sum(cur_widths)), num_wanted, comm, slaterWeightMin)
 
 
 def implicitly_restarted_block_lanczos_cy(
@@ -1070,39 +1693,16 @@ def implicitly_restarted_block_lanczos_cy(
     reort="partial",
     comm=None,
 ):
-    """Implicitly-restarted block Lanczos (IRLM) for the ManyBodyState path.
+    """Implicitly-restarted block Lanczos (IRLM) for the ManyBodyState path (EA16).
 
-    Thin compatibility shim that delegates to the unified, path-agnostic EA16 driver
-    :func:`impurityModel.ed.irlm._implicitly_restarted_block_lanczos_manybody`, which
-    implements the Meerbergen & Scott (RAL-TR-2000-011) block Lanczos with **locking**
-    (\u00a72.2.2), **explicit purging** (\u00a72.2.1, eq. 6) as the restart compression,
-    partial reorthogonalization against locked Ritz vectors (\u00a72.6.2), and the
-    eq. (15) stopping criterion (\u00a73.2.4). The Lanczos sweeps reuse the Cython
-    ``block_lanczos_cy`` kernel in this module.
-
-    The previous standalone copy of the restart loop lived here and is retired to keep
-    a single source of the algorithm shared with the array path.
-
-    Args:
-        psi0: Length-``p`` list of ``ManyBodyState`` starting block.
-        h_op: ``ManyBodyOperator`` Hamiltonian.
-        basis: ``Basis`` providing ``redistribute_psis`` and ``comm``.
-        num_wanted: Number of algebraically smallest eigenvalues wanted.
-        max_subspace_blocks: Maximum Krylov size in blocks (``> ceil(num_wanted/p)``).
-        tol: Convergence tolerance (maps onto EA16 ``CNTL(2)``). Default ``1e-8``.
-        max_restarts: Maximum implicit restarts. Default ``100``.
-        verbose: Per-restart diagnostics. Default ``True``.
-        slaterWeightMin: Amplitude cutoff for ``ManyBodyState.prune``. Default ``0.0``.
-        reort: Reorthogonalization mode (``Reort`` enum or string). Default ``"partial"``.
-        comm: ``mpi4py`` communicator. Falls back to ``basis.comm``.
+    The MBS-only entry point. Resolves ``reort`` and the communicator, then runs the
+    shared path-agnostic :func:`_irlm_core` via the ManyBodyState sweep kernel
+    ``block_lanczos_cy``.
 
     Returns:
-        tuple[numpy.ndarray, list]: ``(eigvals, eigvecs)`` with ``num_wanted`` smallest
+        tuple[numpy.ndarray, list]: ``(eigvals, eigvecs)`` \u2014 ``num_wanted`` smallest
         eigenvalues (ascending) and matching ``ManyBodyState`` Ritz vectors.
     """
-    from impurityModel.ed.irlm import _implicitly_restarted_block_lanczos_manybody
-    from impurityModel.ed.BlockLanczosArray import Reort
-
     if comm is None:
         comm = getattr(basis, "comm", None)
     if isinstance(reort, str):

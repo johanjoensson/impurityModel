@@ -13,6 +13,8 @@ import pytest
 import scipy.linalg as sp
 from mpi4py import MPI
 
+from impurityModel.ed.BlockLanczosArray import Reort
+from impurityModel.ed.irlm import implicitly_restarted_block_lanczos_cy
 from impurityModel.ed.ManyBodyUtils import (
     ManyBodyOperator,
     ManyBodyState,
@@ -20,8 +22,6 @@ from impurityModel.ed.ManyBodyUtils import (
     add_scaled_multi,
     inner_multi,
 )
-from impurityModel.ed.BlockLanczosArray import Reort
-from impurityModel.ed.irlm import implicitly_restarted_block_lanczos_cy
 from impurityModel.test.test_restarted_lanczos import MockBasis, get_test_system
 
 
@@ -55,9 +55,16 @@ def _basis_states_single_particle(n):
 
 def _run_irlm(h_op, basis, psi0, mode, num_wanted, msb, comm=None, tol=1e-13):
     ev, _ = implicitly_restarted_block_lanczos_cy(
-        psi0=psi0, h_op=h_op, basis=basis, num_wanted=num_wanted,
-        max_subspace_blocks=msb, tol=tol, max_restarts=300, verbose=False,
-        reort=mode, comm=comm,
+        psi0=psi0,
+        h_op=h_op,
+        basis=basis,
+        num_wanted=num_wanted,
+        max_subspace_blocks=msb,
+        tol=tol,
+        max_restarts=300,
+        verbose=False,
+        reort=mode,
+        comm=comm,
     )
     return np.sort(ev)
 
@@ -118,3 +125,37 @@ def test_irlm_restart_pro_matches_full_mpi(mode):
 
     np.testing.assert_allclose(pro, eigvals_exact[:num_wanted], atol=1e-9)
     np.testing.assert_allclose(pro, full, atol=1e-10)
+
+
+def _clustered_hermitian_op(n, seed):
+    """Single-particle ManyBodyOperator with a near-degenerate clustered spectrum (the regime
+    that previously broke partial reorthogonalization), + the dense matrix."""
+    rng = np.random.default_rng(seed)
+    per = max(n // 3, 1)
+    d = np.concatenate([rng.normal(c, 1e-3, per) for c in (-2.0, 0.5, 3.0)])
+    d = np.pad(d, (0, n - d.size), constant_values=5.0)[:n]
+    U = sp.qr(rng.standard_normal((n, n)) + 1j * rng.standard_normal((n, n)))[0]
+    h = (U * d) @ U.conj().T
+    h = 0.5 * (h + h.conj().T)
+    op = {((i, "c"), (j, "a")): h[i, j] for i in range(n) for j in range(n)}
+    return ManyBodyOperator(op), h
+
+
+@pytest.mark.parametrize("mode", [Reort.PARTIAL, Reort.SELECTIVE])
+def test_irlm_restart_clustered_spectrum(mode):
+    """IRLM restart on a near-degenerate clustered spectrum (WS5): the fixed partial reort must
+    match the dense lowest eigenvalues and FULL across restarts, with no Ritz value below the
+    spectral minimum."""
+    n = 12
+    h_op, h = _clustered_hermitian_op(n, seed=5)
+    exact = np.sort(np.linalg.eigvalsh(h))
+    basis_states = _basis_states_single_particle(n)
+    psi0 = _ortho_start_block(basis_states, seed=2)
+    num_wanted = 4
+
+    pro = _run_irlm(h_op, MockBasis(n), psi0, mode, num_wanted, 5, tol=1e-12)
+    full = _run_irlm(h_op, MockBasis(n), psi0, Reort.FULL, num_wanted, 5, tol=1e-12)
+
+    assert pro[0] >= exact[0] - 1e-6, f"spurious sub-minimum eigenvalue {pro[0]} < {exact[0]}"
+    np.testing.assert_allclose(pro[:num_wanted], exact[:num_wanted], atol=1e-6)
+    np.testing.assert_allclose(pro, full, atol=1e-6)

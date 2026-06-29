@@ -10,6 +10,7 @@ from impurityModel.ed.block_structure import BlockStructure, get_blocks
 from impurityModel.ed.BlockLanczosArray import (
     Reort,
     block_lanczos_array,
+    BETA_BLOWUP_FACTOR,
 )
 from impurityModel.ed.BlockLanczos import block_lanczos_cy
 from impurityModel.ed.manybody_basis import Basis
@@ -19,6 +20,7 @@ from impurityModel.ed.ManyBodyUtils import (
     ManyBodyState,
 )
 from impurityModel.ed.mpi_comm import gather_distributed_results
+from impurityModel.ed import gf_diagnostics as _gfd
 
 comm = MPI.COMM_WORLD
 rank = comm.rank
@@ -116,9 +118,15 @@ def get_Greens_function(
     occ_cutoff: float,
     slaterWeightMin: float,
     sparse: bool,
+    num_wanted: int = None,
 ):
     """
     Calculate interacting Greens function.
+
+    Returns ``(gs_matsubara, gs_realaxis, report)`` on the root rank, where ``report`` is a
+    :class:`gf_diagnostics.DiagnosticReport` of per-block convergence/consistency checks
+    (``(None, None, None)`` on non-root ranks). ``num_wanted`` is the number of thermal states
+    the eigensolver was asked for, used by the ensemble-truncation check.
     """
     (
         block_indices,
@@ -144,6 +152,7 @@ def get_Greens_function(
 
     local_gs_matsubara = []
     local_gs_realaxis = []
+    local_block_diags = {}  # block_i -> list[Diagnostic]; filled on each color's root rank
     IPS_ops = ([ManyBodyOperator({((orb, "c"),): 1}) for orb in blocks[bi]] for bi in block_indices)
     PS_ops = ([ManyBodyOperator({((orb, "a"),): 1}) for orb in blocks[bi]] for bi in block_indices)
     for block_i, IPS_ops, PS_ops in zip(block_indices, IPS_ops, PS_ops):
@@ -195,23 +204,36 @@ def get_Greens_function(
                 )
                 / Z
             )
+        G_IPS_real = G_PS_real = combined_real = None
         if omega_mesh is not None and block_basis.comm.rank == 0:
-            G_IPS = calc_thermally_averaged_G(alphas_IPS, betas_IPS, r_IPS, omega_mesh, es, e0, tau, delta)
-            G_PS = calc_thermally_averaged_G(alphas_PS, betas_PS, r_PS, -omega_mesh, es, e0, tau, -delta)
-            local_gs_realaxis.append(
-                (
-                    G_IPS
-                    - np.transpose(
-                        G_PS,
-                        (
-                            0,
-                            2,
-                            1,
-                        ),
-                    )
+            G_IPS_real = calc_thermally_averaged_G(alphas_IPS, betas_IPS, r_IPS, omega_mesh, es, e0, tau, delta)
+            G_PS_real = calc_thermally_averaged_G(alphas_PS, betas_PS, r_PS, -omega_mesh, es, e0, tau, -delta)
+            combined_real = (G_IPS_real - np.transpose(G_PS_real, (0, 2, 1))) / Z
+            local_gs_realaxis.append(combined_real)
+
+        # --- per-block convergence / consistency diagnostics (color root rank) ---------
+        if block_basis.comm.rank == 0:
+            block_dim = len(blocks[block_i])
+            diags = [
+                _gfd.check_spectral_sum_rule(r_IPS, r_PS, es, e0, tau, block_dim),
+                _gfd.check_thermal_weight_cutoff(es, e0, tau, n_returned=len(es), num_wanted=num_wanted),
+            ]
+            conv_add = _lanczos_convergence_summary(alphas_IPS, betas_IPS, delta)
+            conv_rem = _lanczos_convergence_summary(alphas_PS, betas_PS, delta)
+            converged = conv_add[0] and conv_rem[0]
+            worst_dg = max(conv_add[1], conv_rem[1])
+            n_blocks = max(conv_add[2], conv_rem[2])
+            diags.append(_gfd.check_lanczos_convergence(converged, worst_dg, n_blocks, n_blocks))
+            if G_IPS_real is not None:
+                diags.append(_gfd.check_mesh_density(omega_mesh, delta))
+                diags.append(
+                    _gfd.check_integrated_weight(G_IPS_real, r_IPS, es, e0, tau, omega_mesh, "add", delta=delta)
                 )
-                / Z
-            )
+                diags.append(
+                    _gfd.check_integrated_weight(G_PS_real, r_PS, es, e0, tau, -omega_mesh, "rem", delta=delta)
+                )
+                diags.append(_gfd.check_causality(combined_real, "G"))
+            local_block_diags[int(block_i)] = diags
     gathered_matsubara = gather_distributed_results(
         basis.comm,
         block_basis.comm.rank if block_basis.comm is not None else 0,
@@ -228,12 +250,21 @@ def get_Greens_function(
         local_gs_realaxis,
         is_array=False,
     )
+    # Gather the per-block diagnostics (collective on basis.comm; only color-root ranks hold
+    # non-empty dicts) and merge them into one report on the root rank.
+    gathered_diags = basis.comm.gather(local_block_diags, root=0) if basis.comm is not None else [local_block_diags]
     if basis.comm.rank == 0:
         gs_matsubara = [np.empty((len(matsubara_mesh), len(block), len(block)), dtype=complex) for block in blocks]
         gs_realaxis = [np.empty((len(omega_mesh), len(block), len(block)), dtype=complex) for block in blocks]
         for i, block_idx in enumerate(block_indices_per_color):
             gs_matsubara[block_idx][:] = gathered_matsubara[i]
             gs_realaxis[block_idx][:] = gathered_realaxis[i]
+        report = _gfd.DiagnosticReport()
+        merged = {}
+        for part in gathered_diags:
+            merged.update(part)
+        for block_idx in sorted(merged):
+            report.extend(str(blocks[block_idx]), merged[block_idx])
 
     # Free the split communicator collectively before returning.
     # block_basis.comm is a split comm created by split_basis_and_redistribute_psi.
@@ -242,7 +273,7 @@ def get_Greens_function(
     if block_basis is not None and block_basis.comm != basis.comm:
         block_basis.free_comm()
 
-    return (gs_matsubara, gs_realaxis) if basis.comm.rank == 0 else (None, None)
+    return (gs_matsubara, gs_realaxis, report) if basis.comm.rank == 0 else (None, None, None)
 
 
 def calc_Greens_function_with_offdiag(
@@ -569,6 +600,76 @@ def block_Green(
     return _trim_blocks(alphas, betas, widths) + (r,)
 
 
+def _scatter_qr_columns(comm, psi_dense, r, local_size):
+    """Scatter the row-distributed QR factor ``Q`` (held on rank 0) across MPI ranks.
+
+    Rank 0 holds the full ``(N, n)`` ``Q`` and the ``(n, n)`` ``R`` after :func:`build_qr`.
+    Broadcast ``R`` and the column count, then ``Scatterv`` ``Q``'s rows onto each rank's
+    local partition (``local_size`` rows). Shared by ``block_green_impl`` (sparse branch)
+    and ``block_Green_sparse``.
+
+    Returns
+    -------
+    psi_dense_local : ndarray
+        This rank's ``(local_size, n)`` slice of ``Q``.
+    r : ndarray
+        The ``(n, n)`` ``R`` factor (replicated on every rank).
+    """
+    rank = comm.rank
+    r = comm.bcast(r if rank == 0 else None, root=0)
+    columns = comm.bcast(psi_dense.shape[1] if rank == 0 else None, root=0)
+    psi_dense_local = np.empty((local_size, columns), dtype=complex, order="C")
+    send_counts = np.empty((comm.size), dtype=int) if rank == 0 else None
+    comm.Gather(np.array([psi_dense_local.size]), send_counts, root=0)
+    offsets = np.array([np.sum(send_counts[:rr]) for rr in range(comm.size)], dtype=int) if rank == 0 else None
+    comm.Scatterv(
+        [psi_dense, send_counts, offsets, MPI.C_DOUBLE_COMPLEX] if rank == 0 else None,
+        psi_dense_local,
+        root=0,
+    )
+    return psi_dense_local, r
+
+
+def _make_gf_convergence_monitor(delta, slaterWeightMin):
+    r"""Frozen-mesh relative-change convergence monitor for the block-Lanczos Green's function.
+
+    Shared by both GF kernels (``block_green_impl``, ``block_Green_sparse``). Returns
+    ``(converged_fn, converged_flag)``: ``converged_fn(alphas, betas, verbose, block_widths)``
+    estimates ``G`` on a mesh frozen once a few blocks have resolved the spectral edges
+    (:func:`_gf_sample_mesh`) and reports convergence when the relative change
+    (:func:`_greens_function_change`, with the cross-step ``gs_cache``) drops below
+    ``max(slaterWeightMin**2, 1e-8)``. ``converged_flag[0]`` records whether tolerance was ever
+    met, for the non-convergence warning.
+    """
+    delta_min = max(slaterWeightMin**2, 1e-8)
+    converged_flag = [False]
+    mesh_cache = [None]
+    gs_cache = [None, 0]
+
+    def converged(alphas, betas, verbose=False, block_widths=None, **kwargs):
+        if len(alphas) <= 1:
+            return False
+        if mesh_cache[0] is None:
+            if len(alphas) < 3:  # let the extremal Ritz values settle before freezing
+                return False
+            A_trim, _ = (
+                _trim_blocks(alphas, betas, block_widths)
+                if (block_widths is not None and len(block_widths) == len(alphas))
+                else ([np.asarray(a) for a in alphas], None)
+            )
+            mesh_cache[0] = _gf_sample_mesh(A_trim, delta)
+        d_g = _greens_function_change(alphas, betas, block_widths, delta, omegaP=mesh_cache[0], cache=gs_cache)
+        if d_g is None:  # spurious (wrong-sign) imaginary part -> not converged
+            return False
+        if verbose:
+            print(rf"$\delta$ = {d_g}", flush=True)
+        is_conv = d_g < delta_min
+        converged_flag[0] = converged_flag[0] or is_conv
+        return is_conv
+
+    return converged, converged_flag
+
+
 def block_green_impl(basis, hOp, psi_arr, delta, reort, slaterWeightMin, verbose):
     """
     Internal block Green's function implementation.
@@ -615,55 +716,14 @@ def block_green_impl(basis, hOp, psi_arr, delta, reort, slaterWeightMin, verbose
         psi_dense = basis.build_vector(psi_arr, root=0, slaterWeightMin=0).T
         if rank == 0:
             psi_dense, r = build_qr(psi_dense)
-        r = comm.bcast(r if rank == 0 else None, root=0)
-        rows, columns = comm.bcast(psi_dense.shape if rank == 0 else None, root=0)
-        psi_dense_local = np.empty((len(basis.local_basis), columns), dtype=complex, order="C")
-        send_counts = np.empty((comm.size), dtype=int) if rank == 0 else None
-        comm.Gather(np.array([psi_dense_local.size]), send_counts, root=0)
-        offsets = np.array([np.sum(send_counts[:r]) for r in range(comm.size)], dtype=int) if rank == 0 else None
-        comm.Scatterv(
-            [psi_dense, send_counts, offsets, MPI.C_DOUBLE_COMPLEX] if rank == 0 else None,
-            psi_dense_local,
-            root=0,
+        psi_dense_local, r = _scatter_qr_columns(
+            comm, psi_dense if rank == 0 else None, r if rank == 0 else None, len(basis.local_basis)
         )
 
     if psi_dense_local.shape[1] == 0:
         return np.zeros((0, n, n), dtype=complex), np.zeros((0, n, n), dtype=complex), r, psi_arr, []
 
-    delta_min = max(slaterWeightMin**2, 1e-8)
-
-    def converged(alphas, betas, verbose=False, block_widths=None, **kwargs):
-        """
-        Check convergence of the block Lanczos algorithm.
-
-        It monitors convergence by estimating the Green's function at selected
-        frequencies and checking whether the maximum change between subsequent
-        iterations is within a specified tolerance.  Shrinking-block deflation is
-        handled by trimming each block to its true width (``block_widths``) before
-        forming the continued fraction, so no fixed block dimension is assumed.
-
-        Parameters
-        ----------
-        alphas : ndarray
-            The diagonal block matrices (alpha) generated by block Lanczos.
-        betas : ndarray
-            The off-diagonal block matrices (beta) generated by block Lanczos.
-        verbose : bool, optional
-            If True, print the convergence difference at each step.
-        block_widths : sequence of int, optional
-            True width of every block (for stripping the zero padding).
-
-        Returns
-        -------
-        converged : bool
-            True if the calculation has converged, False otherwise.
-        """
-        if len(alphas) <= 1:
-            return False
-        d_g = _greens_function_change(alphas, betas, block_widths, delta)
-        if d_g is None:  # spurious (wrong-sign) imaginary part -> not converged
-            return False
-        return d_g < delta_min
+    converged, converged_flag = _make_gf_convergence_monitor(delta, slaterWeightMin)
 
     if dense:
         H = basis.build_dense_matrix(hOp)
@@ -719,6 +779,20 @@ def block_green_impl(basis, hOp, psi_arr, delta, reort, slaterWeightMin, verbose
             comm=comm,
             return_widths=True,
         )
+    if not converged_flag[0] and verbose and rank == 0:
+        print(
+            f"warning: block Green's function did not reach the convergence tolerance "
+            f"{max(slaterWeightMin ** 2, 1e-8):.1e} in {len(alphas)} block(s). The continued fraction uses the "
+            f"subspace built so far.",
+            flush=True,
+        )
+    # Keep alphas/betas padded (k, P, P) for the caller's elementwise cross-expansion diff;
+    # only drop a corrupted trailing tail (whole blocks + widths) so it never reaches the
+    # continued fraction. Norms of padded blocks equal those of the true blocks (zeros add
+    # nothing), so the scan is valid on the padded arrays.
+    keep = len(_sanitize_continued_fraction(list(alphas), list(betas), verbose=verbose, rank=rank)[0])
+    if keep < len(alphas):
+        alphas, betas, widths = alphas[:keep], betas[:keep], widths[:keep]
     q_last = Q_list[:, -1:]
     return alphas, betas, r, basis.build_state(q_last.T, slaterWeightMin=slaterWeightMin), widths
 
@@ -779,16 +853,8 @@ def block_Green_sparse(
     if rank == 0:
         psi_dense, r = build_qr(psi_dense)
     if mpi:
-        r = comm.bcast(r if rank == 0 else None, root=0)
-        rows, columns = comm.bcast(psi_dense.shape if rank == 0 else None, root=0)
-        psi_dense_local = np.empty((len(basis.local_basis), columns), dtype=complex, order="C")
-        send_counts = np.empty((comm.size), dtype=int) if rank == 0 else None
-        comm.Gather(np.array([psi_dense_local.size]), send_counts, root=0)
-        offsets = np.array([np.sum(send_counts[:r]) for r in range(comm.size)], dtype=int) if rank == 0 else None
-        comm.Scatterv(
-            [psi_dense, send_counts, offsets, MPI.C_DOUBLE_COMPLEX] if rank == 0 else None,
-            psi_dense_local,
-            root=0,
+        psi_dense_local, r = _scatter_qr_columns(
+            comm, psi_dense if rank == 0 else None, r if rank == 0 else None, len(basis.local_basis)
         )
     else:
         psi_dense_local = psi_dense
@@ -796,43 +862,12 @@ def block_Green_sparse(
     if len(psi_arr) == 0:
         return np.empty((0, n, n), dtype=complex), np.empty((0, n, n), dtype=complex), r
 
-    delta_min = max(slaterWeightMin**2, 1e-8)
+    converged, converged_flag = _make_gf_convergence_monitor(delta, slaterWeightMin)
 
-    def converged(alphas, betas, verbose=False, block_widths=None, **kwargs):
-        """
-        Check convergence of the block Lanczos algorithm.
-
-        It monitors convergence by estimating the Green's function at selected
-        frequencies and checking whether the maximum change between subsequent
-        iterations is within a specified tolerance.  Shrinking-block deflation is
-        handled by trimming each block to its true width (``block_widths``) before
-        forming the continued fraction, so no fixed block dimension is assumed.
-
-        Parameters
-        ----------
-        alphas : ndarray
-            The diagonal block matrices (alpha) generated by block Lanczos.
-        betas : ndarray
-            The off-diagonal block matrices (beta) generated by block Lanczos.
-        verbose : bool, optional
-            If True, print the convergence difference at each step.
-        block_widths : sequence of int, optional
-            True width of every block (for stripping the zero padding).
-
-        Returns
-        -------
-        converged : bool
-            True if the calculation has converged, False otherwise.
-        """
-        if len(alphas) <= 1:
-            return False
-        d_g = _greens_function_change(alphas, betas, block_widths, delta)
-        if d_g is None:  # spurious (wrong-sign) imaginary part -> not converged
-            return False
-        if verbose:
-            print(rf"$\delta$ = {d_g}", flush=True)
-        return d_g < delta_min
-
+    # Cap the Krylov dimension: without convergence the recurrence would otherwise run the
+    # whole (possibly large) excited basis. basis.size // n is the kernel default; we make
+    # it explicit so we can detect and report a non-converged solve below.
+    max_iter = max(int(getattr(basis, "size", 0)) // max(n, 1), 1)
     alphas, betas, _, _, widths = block_lanczos_cy(
         psi_arr,
         hOp,
@@ -841,10 +876,20 @@ def block_Green_sparse(
         verbose=verbose,
         reort=reort if reort is not None else Reort.NONE,
         slaterWeightMin=slaterWeightMin,
+        max_iter=max_iter,
         return_widths=True,
     )
 
+    if not converged_flag[0] and verbose and rank == 0:
+        print(
+            f"warning: block Green's function did not reach the convergence tolerance "
+            f"{max(slaterWeightMin ** 2, 1e-8):.1e} in {len(alphas)} block(s) (max_iter={max_iter}). The "
+            f"continued fraction uses the subspace built so far.",
+            flush=True,
+        )
+
     alphas, betas = _trim_blocks(alphas, betas, widths)
+    alphas, betas = _sanitize_continued_fraction(alphas, betas, verbose=verbose, rank=rank)
     return alphas, betas, r
 
 
@@ -875,6 +920,44 @@ def _trim_blocks(alphas, betas, block_widths):
         rows = widths[i + 1] if i + 1 < k else np.asarray(betas[i]).shape[0]
         b.append(np.asarray(betas[i])[:rows, : widths[i]])
     return a, b
+
+
+def _sanitize_continued_fraction(alphas, betas, verbose=False, rank=0):
+    r"""Drop a corrupted trailing tail from the block-Lanczos coefficients.
+
+    Defense-in-depth before the continued fraction / self-energy: the Lanczos kernels now
+    truncate a diverging recurrence at the source (CholeskyQR2 + the ``BETA_BLOWUP_FACTOR``
+    guard), but should a non-finite or runaway block ever reach here it must *not* be fed
+    silently into :func:`calc_G` and ``sig_static``.  Scans the (trimmed) blocks and keeps
+    only the leading run whose norms stay bounded relative to the healthy part; the trailing
+    ``beta`` of the kept run is the (ignored) residual coupling, so dropping the tail is
+    consistent with the continued fraction's own convention.
+
+    Returns the (possibly shortened) ``(alphas, betas)`` and warns when a tail is dropped.
+    """
+    norm_max = 0.0
+    keep = len(alphas)
+    for i in range(len(alphas)):
+        a = np.asarray(alphas[i])
+        b = np.asarray(betas[i])
+        if not (np.all(np.isfinite(a)) and np.all(np.isfinite(b))):
+            keep = i
+            break
+        a_norm = float(np.linalg.norm(a, 2)) if a.size else 0.0
+        b_norm = float(np.linalg.norm(b, 2)) if b.size else 0.0
+        if i > 0 and max(a_norm, b_norm) > BETA_BLOWUP_FACTOR * max(norm_max, 1.0):
+            keep = i
+            break
+        norm_max = max(norm_max, a_norm, b_norm)
+    if keep < len(alphas):
+        if verbose and rank == 0:
+            print(
+                f"warning: discarding {len(alphas) - keep} corrupted block(s) from the "
+                f"Green's-function continued fraction before computing the self-energy.",
+                flush=True,
+            )
+        return alphas[:keep], betas[:keep]
+    return alphas, betas
 
 
 def _block_cf_inverse(alphas, betas, omegaP):
@@ -960,32 +1043,119 @@ def calc_G(alphas, betas, r, omega, e, delta):
     return np.conj(r.T)[np.newaxis] @ np.linalg.solve(G_inv, r_b)
 
 
-def _greens_function_change(alphas, betas, block_widths, delta):
-    """Change in the level-0 inverse resolvent when the last Lanczos block is added.
+def _greens_function_change(alphas, betas, block_widths, delta, omegaP=None, cache=None):
+    r"""Relative change in the block resolvent when the last Lanczos block is added.
 
-    Block-Lanczos convergence monitor for the Green's function: compares the
-    inverse resolvent built from all ``k`` blocks against the one from the first
-    ``k-1`` blocks, on sample frequencies drawn from the (trimmed) diagonal blocks.
-    Shrinking-block deflation is handled by trimming to ``block_widths`` first, so
-    no fixed block dimension is assumed.
+    Block-Lanczos convergence monitor for the Green's function.  It compares the
+    seed-block resolvent :math:`G = (G^{-1}_0)^{-1}` built from all ``k`` blocks against
+    the one from the first ``k-1`` blocks, on sample frequencies drawn from the (trimmed)
+    diagonal blocks (the broadened Ritz values — where the spectral weight sits).  The
+    measure is the *relative* change
+
+    .. math::
+
+        d_g = \frac{\max_\omega \lVert G_k(\omega) - G_{k-1}(\omega)\rVert}
+                   {\max_\omega \lVert G_k(\omega)\rVert},
+
+    so it is scale-invariant and reflects the spectral function the self-energy actually
+    needs — unlike the absolute change in :math:`G^{-1}_0`, whose leading
+    :math:`\omega I - \alpha_0` term (:math:`\sim\lvert\omega\rvert`) is identical between
+    the two and which therefore never decays to a tight absolute tolerance even when the
+    spectrum is fully resolved.  Shrinking-block deflation is handled by trimming to
+    ``block_widths`` first, so no fixed block dimension is assumed.
+
+    The optional ``cache`` (a ``[gs_value, n_blocks]`` list) lets the convergence loop reuse
+    work: this step's ``G^{-1}`` over ``k-1`` blocks is *identical* to the previous step's
+    over ``k-1`` blocks on the same frozen mesh, so the ``gs_prev`` continued fraction is taken
+    from the cache instead of rebuilt — halving the per-step continued-fraction cost. Exact
+    (no behavior change); pass the same list each step.
 
     Returns:
-        float or None: the max abs difference, or ``None`` if the freshly added
-        block yields a wrong-sign spectral weight (not yet stabilized).
+        float or None: the relative change, or ``None`` if the freshly added block yields
+        a wrong-sign spectral weight (not yet stabilized).
     """
     if block_widths is not None and len(block_widths) == len(alphas):
         A, B = _trim_blocks(alphas, betas, block_widths)
     else:
         A = [np.asarray(alphas[i]) for i in range(len(alphas))]
         B = [np.asarray(betas[i]) for i in range(len(betas))]
-    n0 = A[0].shape[0]
-    ws = np.concatenate([np.diagonal(a) for a in A])[: 15 * n0]
-    omegaP = ws + delta * 1j
+    if omegaP is None:
+        # Default (back-compat / standalone use): sample at the current Ritz values. The
+        # convergence loop should instead pass a *frozen* mesh (see _gf_sample_mesh): the
+        # Ritz set grows every step, so each new block adds a pole at a fresh sample point
+        # and the change never decays — measuring on a fixed mesh is what converges.
+        n0 = A[0].shape[0]
+        ws = np.concatenate([np.diagonal(a) for a in A])[: 15 * n0]
+        omegaP = ws.real + delta * 1j
     gs_new = _block_cf_inverse(A, B, omegaP)
-    gs_prev = _block_cf_inverse(A[:-1], B[:-1], omegaP)
+    if cache is not None and cache[0] is not None and cache[1] == len(A) - 1:
+        gs_prev = cache[0]  # == previous step's gs_new (CF over the same k-1 blocks/mesh)
+    else:
+        gs_prev = _block_cf_inverse(A[:-1], B[:-1], omegaP)
+    if cache is not None:
+        cache[0], cache[1] = gs_new, len(A)
     if np.any(np.diagonal(gs_new.imag, axis1=1, axis2=2) * np.sign(delta) < 0):
         return None
-    return np.max(np.abs(gs_new - gs_prev))
+    # Compare the resolvents G = (G^{-1})^{-1}, not their inverses: the broadening
+    # (Im omega = delta) keeps G^{-1} non-singular, so the inverse is well defined.
+    G_new = np.linalg.inv(gs_new)
+    G_prev = np.linalg.inv(gs_prev)
+    scale = np.max(np.abs(G_new))
+    return np.max(np.abs(G_new - G_prev)) / max(scale, np.finfo(float).tiny)
+
+
+def _lanczos_convergence_summary(alphas_list, betas_list, delta, tol=1e-6):
+    r"""Post-hoc block-Lanczos convergence summary over the per-thermal-state coefficients.
+
+    Avoids threading run-time monitor state out of ``block_Green_sparse``: for each thermal
+    state's trimmed ``(alphas, betas)`` it re-evaluates the final relative resolvent change on
+    a frozen mesh (the same measure the run-time monitor uses, via
+    :func:`_greens_function_change`).  A state whose final change exceeds ``tol`` (and was not
+    a short invariant-subspace run) is not fully resolved.
+
+    Args:
+        alphas_list, betas_list: Per-thermal-state lists of trimmed Lanczos blocks.
+        delta: Broadening used to place the frozen sample mesh off the real axis.
+        tol: Relative-change threshold below which a state counts as converged.
+
+    Returns:
+        tuple[bool, float, int]: ``(all_converged, worst_final_change, max_blocks)``.
+    """
+    worst = 0.0
+    max_blocks = 0
+    all_converged = True
+    for A, B in zip(alphas_list, betas_list):
+        A = list(A)
+        B = list(B)
+        max_blocks = max(max_blocks, len(A))
+        if len(A) <= 2:  # invariant subspace reached almost immediately -> exact
+            continue
+        mesh = _gf_sample_mesh(A, delta if delta else 1.0)
+        d_g = _greens_function_change(A, B, None, delta if delta else 1.0, omegaP=mesh)
+        if d_g is None:
+            all_converged = False
+            continue
+        worst = max(worst, float(d_g))
+        if d_g >= tol:
+            all_converged = False
+    return all_converged, worst, max_blocks
+
+
+def _gf_sample_mesh(alphas, delta, n_points=64):
+    r"""Frozen real-frequency mesh for the block-Lanczos Green's-function convergence test.
+
+    Spans the current Ritz range (the diagonal entries of the ``alphas`` blocks — Lanczos
+    resolves the spectral *edges* within a few blocks) padded by a margin, on the line
+    :math:`\omega + i\,\mathrm{sign}(\delta)\,\lvert\delta\rvert`.  The caller builds this
+    once and reuses it, so the convergence measure is evaluated at *fixed* frequencies and
+    actually decays as the spectrum fills in.
+    """
+    ws = np.concatenate([np.real(np.diagonal(np.asarray(a))) for a in alphas])
+    lo, hi = float(np.min(ws)), float(np.max(ws))
+    span = hi - lo
+    margin = 0.05 * span + 10.0 * abs(delta)
+    grid = np.linspace(lo - margin, hi + margin, n_points)
+    return grid + 1j * delta
 
 
 def rotate_matrix(M, T):
