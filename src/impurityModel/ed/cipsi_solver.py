@@ -39,7 +39,13 @@ class CIPSISolver:
 
     def truncate(self, psis: list[ManyBodyState]) -> list[ManyBodyState]:
         cutoff = np.finfo(float).eps
-        self.basis.local_basis.clear()
+        # Use the full container reset, not list.clear(): clearing only the local_basis
+        # *list* leaves self.size and the _index_dict stale, so the subsequent
+        # add_states() dedupes the (subset) trimmed states against the still-populated
+        # index and repopulates nothing -- leaving size > 0 with an empty local_basis.
+        # That desync later crashes build_state (IndexError) and collapses the Lanczos
+        # seed block ("Block collapsed to zero rank").
+        self.basis.clear()
         num_states = self.basis.comm.allreduce(max(len(psi) for psi in psis))
         while num_states > self.basis.truncation_threshold:
             psis = [{state: amp for state, amp in psi.items() if abs(amp) > cutoff} for psi in psis]

@@ -42,6 +42,8 @@ from impurityModel.ed.BlockLanczosArray import (
     Reort,
     _cholesky_or_deflate,
     _cholesky_qr2,
+    DEFLATE_TOL,
+    DEFLATE_EVAL_TOL,
 )
 from impurityModel.ed.greens_function import (
     calc_G,
@@ -77,15 +79,19 @@ def test_single_choleskyqr_is_unstable_but_choleskyqr2_recovers():
     the second pass (using the real-vector Gram) restores it to machine precision."""
     rng = np.random.default_rng(0)
     n, p = 50, 2
-    Wp = _ill_conditioned_block(n, p, sep=1e-7, rng=rng)
+    # Stay just above the rank-deficiency floor so the block is *kept* but maximally
+    # ill-conditioned within the retained regime (sigma_min/sigma_max ~ sep/2, which must
+    # exceed DEFLATE_TOL). A more singular block is now deflated rather than kept, so the
+    # CholeskyQR2 recovery path is exercised on the worst *retained* conditioning.
+    Wp = _ill_conditioned_block(n, p, sep=4 * DEFLATE_TOL, rng=rng)
     M = Wp.conj().T @ Wp
-    assert np.linalg.cond(M) > 1e12  # genuinely ill-conditioned
+    assert np.linalg.cond(M) > 1e7  # genuinely ill-conditioned (but within the kept regime)
 
     beta_j, beta_inv, k = _cholesky_or_deflate(M, p)
     assert k == p  # above the rank-deficiency floor -> kept, but ill-conditioned
     Q1 = Wp @ beta_inv
     orth1 = np.linalg.norm(Q1.conj().T @ Q1 - np.eye(k))
-    assert orth1 > 1e-4  # single pass is badly non-orthonormal -> the historic blowup seed
+    assert orth1 > SQRT_EPS  # single pass is non-orthonormal -> the historic blowup seed
 
     # Second pass: recompute the Gram from the *actual* vectors (not from M).
     M2 = Q1.conj().T @ Q1
@@ -113,7 +119,9 @@ def test_deflation_threshold_consistent_between_paths():
         # Force the eigh fallback by passing a copy that fails Cholesky's PD check is hard;
         # instead compare against the eigenvalue floor directly.
         evals = la.eigvalsh(M)
-        k_expected = int(np.sum(evals > np.finfo(float).eps * max(evals[-1], 1.0)))
+        # Derive the expected rank from the module's eigenvalue floor (single source of
+        # truth) rather than a hardcoded literal, so this tracks DEFLATE_EVAL_TOL.
+        k_expected = int(np.sum(evals > DEFLATE_EVAL_TOL * max(evals[-1], 1.0)))
         assert k_chol == k_expected, f"log10_null={log10_null}: {k_chol} != {k_expected}"
 
 

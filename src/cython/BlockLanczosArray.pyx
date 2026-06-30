@@ -62,8 +62,16 @@ cdef double EPS_VAL = np.finfo(float).eps
 EPS = EPS_VAL          # ~2.22e-16
 REORT_TOL = np.sqrt(EPS_VAL)        # ~1.49e-8  : trigger — reorth when max|W| exceeds this
 BAD_BLOCK_TOL = EPS_VAL ** 0.75        # ~1.83e-12 : selection — reorth against blocks above this
-DEFLATE_TOL = EPS_VAL ** 0.5          # ~1.49e-8  : rank floor on singular values of the block
-DEFLATE_EVAL_TOL = EPS_VAL            # ~2.22e-16 : equivalent rank floor on eigenvalues of M
+# Rank floor for the block Cholesky-QR. Set so the *retained* block condition number is
+# bounded by ~EPS**(-1/3) (~1.7e5), not ~EPS**(-1/2) (~6.7e7). The looser sqrt(EPS) floor
+# let a marginally-conditioned (but not deflated) residual block through; under reort=NONE
+# the O(cond) amplification of the per-step Allreduce's rank-order rounding then accumulated
+# across iterations, so the recurrence followed a different (divergent) trajectory under MPI
+# than serially even though the matvec is bit-identical. The tighter floor deflates such a
+# block instead of normalizing it, well inside the CholeskyQR2 recovery regime
+# (cond <~ EPS**(-1/2)), which keeps serial and MPI on the same convergent path.
+DEFLATE_TOL = EPS_VAL ** (1.0 / 3.0)      # ~6.06e-6  : rank floor on singular values of the block
+DEFLATE_EVAL_TOL = EPS_VAL ** (2.0 / 3.0) # ~3.67e-11 : equivalent rank floor on eigenvalues of M (= DEFLATE_TOL**2)
 BREAKDOWN_TOL = 1e-12              # absolute: ||beta||_2 below this ⇒ invariant subspace
 BETA_BLOWUP_FACTOR = 1e3           # ||beta_i|| above this * max(||beta||, ||alpha||) ⇒ divergence
 REORT_PERIOD = 5                   # PERIODIC cadence, and SELECTIVE Ritz-check cadence
@@ -78,11 +86,16 @@ def _cholesky_or_deflate(M, p_in):
 
     A column (singular direction) is deflated when its singular value
     :math:`\sigma_k = \sqrt{\lambda_k(M)}` falls below
-    :math:`\sqrt{\texttt{EPS}}\,\sigma_{\max}`, i.e. its eigenvalue
-    :math:`\lambda_k < \texttt{EPS}\,\lambda_{\max}`.  This bounds the retained block's
-    condition number to :math:`\lesssim 1/\sqrt{\texttt{EPS}}`, which is the regime where a
-    second pass (CholeskyQR2, see :func:`_cholesky_qr2`) restores orthonormality to machine
-    precision.  Both the fast (Cholesky) and the fallback (``eigh``) path apply the *same*
+    :math:`\texttt{EPS}^{1/3}\,\sigma_{\max}`, i.e. its eigenvalue
+    :math:`\lambda_k < \texttt{EPS}^{2/3}\,\lambda_{\max}`.  This bounds the retained block's
+    condition number to :math:`\lesssim \texttt{EPS}^{-1/3}` (~1.7e5), comfortably inside the
+    regime where a second pass (CholeskyQR2, see :func:`_cholesky_qr2`) restores orthonormality
+    to machine precision (which needs :math:`\kappa \lesssim \texttt{EPS}^{-1/2}`).  The tighter
+    floor (vs the historical :math:`\sqrt{\texttt{EPS}}` singular-value floor) is what keeps the
+    ``reort=NONE`` recurrence on the *same* convergent trajectory serially and under MPI: a
+    marginally-conditioned residual block is deflated rather than normalized, so the
+    :math:`O(\kappa)` amplification of the per-step ``Allreduce`` rank-order rounding cannot
+    accumulate into a divergence.  Both the fast (Cholesky) and the fallback (``eigh``) path apply the *same*
     eigenvalue floor — historically the fast path tested the Cholesky diagonal against
     ``sqrt(EPS)`` (an effective ``EPS`` eigenvalue floor) while the fallback tested
     eigenvalues against ``sqrt(EPS)`` (an ``EPS**0.25`` floor on singular values); that
