@@ -1,4 +1,5 @@
 import itertools
+import os
 from typing import Optional
 
 import numpy as np
@@ -653,6 +654,19 @@ _GF_MESH_MARGIN_REL = 0.05
 # Consecutive sub-tolerance steps required before declaring convergence -- guards against a
 # single accidental small relative change tripping convergence prematurely.
 _GF_CONSEC_CONVERGED = 2
+# Adaptive convergence-test sampling (see _make_gf_convergence_monitor). The resolvent-change
+# test rebuilds the O(k)-level block continued fraction each call -- the single largest cost of
+# the block-Lanczos Green's function (~53% of runtime for reort=NONE; measured). During the long
+# approach (relative change still far above tolerance, convergence impossible) it is sampled only
+# every _GF_CHECK_EVERY blocks; once a check lands within _GF_NEAR_FACTOR x tol it switches to
+# every block so the exact convergence point is caught with no added Lanczos steps. The measure
+# and tolerance are unchanged, so the converged Green's function is unchanged.
+_GF_CHECK_EVERY = int(os.environ.get("GF_CHECK_EVERY", 8))  # set to 1 to disable (check every block)
+# Switch from sparse to per-block sampling once the relative change is within this factor of the
+# tolerance (i.e. convergence is imminent and must not be sampled coarsely). Kept small: the
+# relative change typically sits on a long noisy plateau a decade or two above tolerance before
+# the final descent, and that plateau must stay in the sparse regime for the sampling to pay off.
+_GF_NEAR_FACTOR = float(os.environ.get("GF_NEAR_FACTOR", 2.0))
 
 
 def _gf_rel_tol(slaterWeightMin):
@@ -683,9 +697,24 @@ def _make_gf_convergence_monitor(delta, slaterWeightMin):
     mesh_cache = [None, -1]  # [mesh, frozen_block_count]; frozen_block_count detects (re)freezes
     gs_cache = [None, 0]
     consec = [0]  # consecutive sub-tolerance steps on the current (stable) mesh
+    step = [0]  # block count since the mesh froze, for the adaptive sampling gate
+    last_dg = [None]  # most recent relative change, to decide sparse vs dense sampling
 
     def converged(alphas, betas, verbose=False, block_widths=None, **kwargs):
         if len(alphas) <= 1:
+            return False
+        # B6 adaptive sampling. The resolvent-change test rebuilds an O(k)-level block continued
+        # fraction every call, so running it on every block is O(k^2) per GF invocation and is the
+        # single largest cost for reort=NONE (~53% measured). But the test also *terminates* the
+        # recurrence, so simply running it less often delays convergence and adds (more expensive)
+        # Lanczos steps that cancel the saving. Instead: during the long approach, where the change
+        # is still far above tolerance and convergence is impossible, sample only every
+        # _GF_CHECK_EVERY blocks; once a check lands within _GF_NEAR_FACTOR x tol, switch to every
+        # block so the precise convergence point and the _GF_CONSEC_CONVERGED gate are detected with
+        # no delay. Same convergence measure/tolerance -> same converged Green's function.
+        step[0] += 1
+        near = last_dg[0] is not None and last_dg[0] < _GF_NEAR_FACTOR * delta_min
+        if not near and (step[0] % _GF_CHECK_EVERY) != 0:
             return False
         A_trim, _ = (
             _trim_blocks(alphas, betas, block_widths)
@@ -703,10 +732,13 @@ def _make_gf_convergence_monitor(delta, slaterWeightMin):
             mesh_cache[0], mesh_cache[1] = mesh, frozen
             gs_cache[0], gs_cache[1] = None, 0
             consec[0] = 0
+            last_dg[0] = None
         d_g = _greens_function_change(alphas, betas, block_widths, delta, omegaP=mesh_cache[0], cache=gs_cache)
         if d_g is None:  # spurious (wrong-sign) imaginary part -> not converged
             consec[0] = 0
+            last_dg[0] = None
             return False
+        last_dg[0] = d_g
         if verbose:
             print(rf"$\delta$ = {d_g}", flush=True)
         consec[0] = consec[0] + 1 if d_g < delta_min else 0

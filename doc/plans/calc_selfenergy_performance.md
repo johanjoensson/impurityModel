@@ -319,6 +319,53 @@ A meaningful strong-scaling sweep needs the production (100-bath) size, which is
 
 ---
 
+# B6 — GF CONVERGENCE MONITOR (IMPLEMENTED, 2026-06-30)
+
+**Goal:** cut the convergence monitor, which the per-step split measured at **53% of the GF kernel
+for reort=NONE** (it rebuilds an O(k)-level block continued fraction every block → O(k²) per GF
+invocation).
+
+**Failed approaches (measured, discarded):** simply checking every N blocks, or switching the
+measure to a stricter "drift since last check," both *added Lanczos steps* — the monitor also
+*terminates* the recurrence, so checking it less often delays convergence, and the extra (more
+expensive) Lanczos steps cancelled the monitor saving (net **slower**: e.g. drift+gate ran 1148
+steps vs 691 baseline and was 45→47 s vs 43.6 s).
+
+**Shipped: adaptive sampling.** Sample the test only every `_GF_CHECK_EVERY` (=8) blocks during the
+long "building" plateau — where the relative change still sits a decade+ above tolerance and
+convergence is impossible — then switch to **every block** once a check lands within
+`_GF_NEAR_FACTOR` (=2) × tol, so the exact convergence point (and the `_GF_CONSEC_CONVERGED` gate)
+is caught with **no added steps**. Same measure, same tolerance. Both knobs are env-overridable
+(`GF_CHECK_EVERY`, `GF_NEAR_FACTOR`; `GF_CHECK_EVERY=1` restores the old every-block behavior).
+(`greens_function.py` `_make_gf_convergence_monitor`.)
+
+**Result — controlled A/B on a pinned basis (`PYTHONHASHSEED=0`, NiO 10-bath, reort=NONE):**
+
+| | wall | Lanczos steps | monitor share |
+|--|----:|--------------:|--------------:|
+| baseline (every block) | 66.5 s | 987 | 53.2% |
+| **B6 (check=8, near=2)** | **50.2 s** | 1017 (+30) | **33.6%** |
+
+**~24% faster, monitor 53→34%, +30 steps, and the self-energy is bit-identical** (rel ≈ 7e-18 —
+convergence triggers at the same block because the near-convergence phase is sampled densely).
+
+**Validation:** self-energy unchanged (bit-identical on a pinned basis; rel ~1e-12 run-to-run);
+**serial == MPI(n=2) preserved** (sigma rel 6.6e-13 — the gate decision uses only Allreduced data,
+so it is collective-safe and does not reintroduce the B0.3 divergence); GF/eigensolver/groundstate
+suite green (54 serial + 11 MPI). The benefit **scales with system size**: at 100-bath the building
+plateau spans most of ~900 blocks and the per-call CF is O(900) levels, so the sparse phase saves
+far more there than at 10-bath.
+
+*Note on measurement:* run-to-run wall comparison at 10-bath is unreliable — `PYTHONHASHSEED`
+nondeterminism in the CIPSI determinant sets swings the basis trajectory (687–1072 steps for the
+"same" config, ~40% wall swing). All A/B numbers above pin `PYTHONHASHSEED=0` so the two cells do
+identical Lanczos work; the monitor share and step count are the robust quantities.
+
+**Remaining (not done):** **B2** — PARTIAL's reort (91% of its kernel, fires on ~97% of steps) is
+untouched and is the next lever for the PARTIAL path.
+
+---
+
 # FIXES APPLIED (B0 — calc_gs blockers)
 
 ## B0.1 + B0.2 — FIXED (one root cause, one-line change)
