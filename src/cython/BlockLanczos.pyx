@@ -79,6 +79,28 @@ from impurityModel.ed.BlockLanczosArray import (
     REORT_PERIOD,
 )
 
+# --- Optional per-step profiling (env-gated, ~zero cost when off) -------------------
+# Set BLOCKLANCZOS_PROFILE=1 to accumulate wall time per sub-operation of the sparse
+# block-Lanczos step (matvec / recurrence-LA / W-estimator / triggered reort /
+# CholeskyQR2 / convergence monitor). Read with get_block_lanczos_profile().
+import os as _os
+import time as _time
+_PROF = {}
+_PROF_ON = _os.environ.get("BLOCKLANCZOS_PROFILE") == "1"
+
+def get_block_lanczos_profile():
+    """Return a copy of the accumulated per-operation timings (seconds) and call counts."""
+    return dict(_PROF)
+
+def reset_block_lanczos_profile():
+    _PROF.clear()
+
+cdef inline void _prof_acc(str key, double t0):
+    if _PROF_ON:
+        _PROF[key] = _PROF.get(key, 0.0) + (_time.perf_counter() - t0)
+        _PROF[key + "#n"] = _PROF.get(key + "#n", 0.0) + 1.0
+
+
 cpdef list block_combine_sparse(list Q, np.ndarray Y, double slaterWeightMin=0.0):
     cdef int n_out = Y.shape[1]
     cdef list out = [ManyBodyState() for _ in range(n_out)]
@@ -270,11 +292,14 @@ def block_lanczos_step_cy(
     p = len(q_curr)
 
     # --- 1. Block matvec: wp = H q_curr ---------------------------------
+    _t0 = _time.perf_counter()
     wp = h_op.apply_multi(q_curr, slaterWeightMin)
     if mpi and comm is not None and basis is not None:
         wp = basis.redistribute_psis(wp)
+    _prof_acc("matvec", _t0)
 
     # --- 2. alpha_i = <q_curr | wp> -------------------------------------
+    _t0 = _time.perf_counter()
     alpha_i = inner_multi(q_curr, wp)
     if mpi and comm is not None:
         comm.Allreduce(MPI.IN_PLACE, alpha_i, op=MPI.SUM)
@@ -328,8 +353,10 @@ def block_lanczos_step_cy(
 
     q_next = [ManyBodyState() for _ in range(active_k)]
     add_scaled_multi(q_next, wp, beta_inv)
+    _prof_acc("recurrence", _t0)
 
     # --- 6b. CholeskyQR2 (conditional): re-orthonormalize using the actual vectors -----
+    _t0 = _time.perf_counter()
     # A single Cholesky-QR leaves q_next non-orthonormal by O(cond(M)*EPS); when cond(M) is
     # large this amplifies the Krylov vectors and diverges the recurrence, so a second pass is
     # required. But when cond(M) < EPS^(-1/3) the first pass is already orthonormal to
@@ -346,11 +373,13 @@ def block_lanczos_step_cy(
         q_next2 = [ManyBodyState() for _ in range(active_k)]
         add_scaled_multi(q_next2, q_next, beta2_inv)
         q_next = q_next2
+    _prof_acc("choleskyqr2_cond", _t0)
 
     betas[it, :active_k, :p] = beta_i
 
     # --- 7. EA16 Selective Orthogonalization / Partial Reortho ---------
     if reort_mode in (Reort.PARTIAL, Reort.SELECTIVE):
+        _t0 = _time.perf_counter()
         if W is None:
             if start_it > 0:
                 W = np.zeros((2, start_it + 1, alphas.shape[1], alphas.shape[1]), dtype=complex)
@@ -375,6 +404,8 @@ def block_lanczos_step_cy(
             block_widths=block_widths + [p, active_k],
             eps=EPS,
         )
+        _prof_acc("w_estimate", _t0)
+        _t0 = _time.perf_counter()
 
         reort_eps = REORT_TOL
 
@@ -392,6 +423,10 @@ def block_lanczos_step_cy(
             # implementation for both kernels). Pass block_widths + [p] so the current
             # block (index it) is included in the width table apply_reort indexes.
             q_next, W, _reort_acted = apply_reort(q_next, Q_basis, W, reort_mode, mpi, comm, block_widths + [p])
+            if _PROF_ON:
+                _PROF["reort_total#n"] = _PROF.get("reort_total#n", 0.0) + 1.0
+                if _reort_acted:
+                    _PROF["reort_acted#n"] = _PROF.get("reort_acted#n", 0.0) + 1.0
             # Only when a bad block was actually projected does q_next need re-orthonormalizing;
             # otherwise it is unchanged and this would be an exact no-op (M2 == I), so skip it and
             # save the Gram inner product + MPI Allreduce. Mirrors block_lanczos_array_cy.
@@ -411,6 +446,7 @@ def block_lanczos_step_cy(
                 add_scaled_multi(q_next2, q_next, beta2_inv)
                 q_next = q_next2
                 betas[it, :active_k, :p] = beta_i
+        _prof_acc("reort", _t0)
 
     if slaterWeightMin > 0:
         for st in q_next:
@@ -763,7 +799,10 @@ def block_lanczos_cy(
         # Convergence check
         alphas_np = alphas_buf[:it_abs+1]
         betas_np = betas_buf[:it_abs+1]
-        if converged_fn(alphas_np, betas_np, verbose=verbose, block_widths=block_widths + [n_curr]):
+        _t0m = _time.perf_counter()
+        _converged = converged_fn(alphas_np, betas_np, verbose=verbose, block_widths=block_widths + [n_curr])
+        _prof_acc("monitor", _t0m)
+        if _converged:
             termination = "converged"
             block_widths.append(n_curr)
             it += 1

@@ -234,24 +234,36 @@ The decomposition is the opposite of "PARTIAL just does fewer iterations": **PAR
 ~38% fewer steps** (better-conditioned recurrence) **but each step is ~11× more expensive**, and the
 per-step penalty wins → 6.7× slower overall at 10-bath.
 
-*Correction to an earlier draft:* PARTIAL is **selective**, not blanket. `apply_reort`
-(`BlockLanczosArray.pyx`) only reorthogonalizes when the Paige–Simon W-estimate exceeds `REORT_TOL`,
-and then only against the **flagged "bad" blocks** (`max|W[-1,j]| > BAD_BLOCK_TOL`) — *not* the whole
-Krylov basis. So the per-step cost is **data-dependent**: on this near-degenerate GF spectrum the
-estimate trips often enough (and flags enough blocks) that the per-step `estimate_orthonormality`
-bookkeeping + the triggered block projections (full inner products over the determinant vectors) +
-the extra CholeskyQR2 pass sum to ~11× NONE's bare matvec+QR step.
+## Per-step split (measured — env-gated Cython timers, `BLOCKLANCZOS_PROFILE=1`)
 
-cProfile attributes nearly everything to `block_Green_sparse` (286.9 s) because the inner kernels
-(`block_lanczos_cy`, `estimate_orthonormality`, `apply_reort`, `inner_multi`) are Cython and don't
-get their own Python frames — so cProfile **cannot** split matvec vs W-estimator vs triggered-reort
-vs CholeskyQR2. That split needs a Cython line-profile / explicit counters (not yet done). What *is*
-measured: the per-step cost and step count above.
+cProfile lumps everything into `block_Green_sparse` (the inner kernels are Cython, no Python
+frames), so I added per-op `perf_counter` accumulators in `block_lanczos_step_cy` /
+`block_lanczos_cy` (`get_block_lanczos_profile()`). Serial 10-bath, fraction of GF kernel time:
 
-For **NONE** the same lumping applies, but its Python-level convergence monitor *is* visible and
-sizeable: `_block_cf_inverse`→`np.linalg.solve` is **10.6 s over 37 637 calls** (~24% of NONE
-runtime), re-inverting the continued fraction on the frozen mesh every block. NONE needs more steps
-(691) but each is cheap (63 ms).
+| op | NONE | PARTIAL |
+|----|-----:|--------:|
+| matvec (`apply_multi`)            | **25.9%** (16.2 s) | 3.3% (9.3 s) |
+| recurrence LA (α, M, CholeskyQR)  | 20.6% (12.9 s) | 3.7% (10.4 s) |
+| CholeskyQR2 (conditional)         | 0.2% | 0.0% |
+| W-estimator (`estimate_orthonormality`) | — (unused) | 0.3% (0.9 s) |
+| **triggered reort** (`apply_reort` projections) | — (unused) | **91.1% (253 s)** |
+| **convergence monitor** (`converged_fn`)        | **53.3% (33.2 s)** | 1.4% (4.0 s) |
+
+**NONE is monitor-bound: 53%.** The convergence monitor (`_gf_converged_mesh` +
+`_greens_function_change` → `_block_cf_inverse`) runs every step and costs ~34 ms/call —
+*more* than matvec (26%) + recurrence (21%) combined. (cProfile only saw the `np.linalg.solve`
+sliver, ~24%; the full monitor incl. mesh/`_gf_diag_range`/cache is 53%.)
+
+**PARTIAL is reort-bound: 91%** — and the split confirms the correction. The W-estimator *bookkeeping*
+is trivial (0.3%); the cost is the **block projections** `apply_reort` performs against the
+flagged blocks. Crucially the trigger fires on **431/443 steps (97%)**: on this near-degenerate GF
+spectrum orthogonality degrades almost every step, so the "selective" reort effectively reorthogonalizes
+nearly constantly (close to FULL behavior) — *not* because it projects against the whole basis, but
+because it is triggered nearly every step. The monitor is cheap for PARTIAL (1.4%) because it runs
+on fewer/shorter continued fractions (fewer blocks).
+
+So the ~11× per-step gap (NONE 63 ms vs PARTIAL 688 ms) is **entirely the triggered reort
+projections**, which the matvec/recurrence (nearly identical between modes) are dwarfed by.
 
 ## Block-count scaling with system size (the crossover)
 
@@ -284,19 +296,25 @@ A meaningful strong-scaling sweep needs the production (100-bath) size, which is
 
 ## Verdict (refines Part A)
 
-- **GF phase is the whole game** (~98%+). Levers:
-  **(B6)** the convergence monitor — for NONE it is a *measured* ~24% of runtime
-  (`_block_cf_inverse`/`np.linalg.solve`, re-inverting the continued fraction every block); making it
-  incremental + terminating earlier shrinks the step count *both* modes pay for. **(B2)** the
-  PARTIAL per-step reort cost (~11× NONE's bare step here) — BLAS-accelerate the triggered block
-  projections / `estimate_orthonormality`, and tune the trigger so it fires less on near-degenerate
-  GF spectra. A Cython line-profile is needed to split matvec vs W-estimator vs triggered-reort
-  before optimizing B2 (cProfile lumps them).
-- **Reort choice is a real trade-off, not a free default:** NONE has a cheap step (63 ms) but its
-  step count explodes with system size (max blocks 142→241→923+ for bath 10→20→100); PARTIAL has an
-  expensive step (688 ms) but a roughly flat step count (selective reort keeps the recurrence
-  conditioned). They **cross over** — NONE wins small, PARTIAL is the only mode that converges at
-  100-bath. **B6** is the highest-leverage fix because reducing the block count helps both.
+- **GF phase is the whole game** (~98%+). The per-step split (measured) makes the two levers precise
+  and **mode-specific**:
+  - **B6 — the convergence monitor — is the #1 lever for NONE (53% of its kernel time).** It runs
+    every step at ~34 ms/call (`_gf_converged_mesh` + `_greens_function_change` → `_block_cf_inverse`).
+    Make it incremental (extend the resolvent rather than re-inverting) and/or check every *k* steps
+    instead of every step, and terminate earlier. Helps NONE enormously and helps PARTIAL a little.
+  - **B2 — the triggered reort projections — is the #1 lever for PARTIAL (91%).** The W-estimator
+    bookkeeping is negligible (0.3%); the cost is `apply_reort`'s block projections, which fire on
+    **97% of steps** here. Two angles: (i) reduce the per-projection cost (BLAS / fewer flagged
+    blocks), and (ii) **why does it trigger ~every step?** — the near-degenerate GF spectrum trips
+    `REORT_TOL` constantly, so PARTIAL is doing near-FULL work; a smarter trigger or a
+    better-conditioned seed/spectrum handling could cut the trigger rate.
+- **Reort choice is a real trade-off, not a free default:** NONE step 63 ms but step count explodes
+  with system size (max blocks 142→241→923+ for bath 10→20→100); PARTIAL step 688 ms (reort) but a
+  roughly flat step count. They **cross over** — NONE wins small, PARTIAL is the only mode that
+  converges at 100-bath.
+- **Highest-leverage single fix: B6.** The monitor is per-step in *both* modes; cutting its cost and
+  frequency shrinks NONE's dominant cost directly and lets *both* modes terminate sooner (fewer steps
+  → less reort for PARTIAL too).
 - `calc_gs` and `get_sigma` remain non-priorities.
 
 ---

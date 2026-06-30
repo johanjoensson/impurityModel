@@ -311,6 +311,27 @@ def test_calc_selfenergy_benchmark():
                 print(f"  {name:<22}{t:>10.2f}{100 * t / total:>8.1f}{_PHASE_CALLS.get(name, 0):>8d}")
             print(f"  {'other (build/IO)':<22}{other:>10.2f}{100 * other / total:>8.1f}{'':>8}")
 
+            # Optional per-step block-Lanczos split (BLOCKLANCZOS_PROFILE=1; env-gated in the
+            # Cython kernel). Splits the GF block-Lanczos step into matvec / recurrence-LA /
+            # W-estimator / triggered reort / CholeskyQR2 / convergence monitor.
+            try:
+                from impurityModel.ed.BlockLanczos import get_block_lanczos_profile
+
+                prof = get_block_lanczos_profile()
+            except Exception:
+                prof = {}
+            if prof:
+                ops = ["matvec", "recurrence", "choleskyqr2_cond", "w_estimate", "reort", "monitor"]
+                tot = sum(prof.get(o, 0.0) for o in ops)
+                print("\n[selfenergy-bench] --- block-Lanczos per-op split (GF kernel) ---")
+                print(f"  {'op':<18}{'time(s)':>10}{'%':>8}{'calls':>10}")
+                for o in ops:
+                    t = prof.get(o, 0.0)
+                    print(f"  {o:<18}{t:>10.2f}{100 * t / tot if tot else 0:>8.1f}{int(prof.get(o + '#n', 0)):>10d}")
+                acted = int(prof.get("reort_acted#n", 0))
+                rtot = int(prof.get("reort_total#n", 0))
+                print(f"  reort triggered: {acted}/{rtot} steps ({100 * acted / rtot if rtot else 0:.0f}%)", flush=True)
+
             # Top cProfile entries by cumulative and by tottime (rank-0 view).
             for sort_key in ("cumulative", "tottime"):
                 buf = io.StringIO()
