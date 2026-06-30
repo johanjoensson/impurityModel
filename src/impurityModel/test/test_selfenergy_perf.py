@@ -223,10 +223,10 @@ def _build_inputs(ls, nBaths, nValBaths, n0imp, n_omega, dense_cutoff, truncatio
         dense_cutoff=dense_cutoff,
         spin_flip_dj=False,
         chain_restrict=False,
-        occ_cutoff=1e-12,
+        occ_cutoff=float(os.environ.get("SELFENERGY_BENCH_OCC_CUTOFF", 1e-12)),
         truncation_threshold=truncation_threshold,
-        slaterWeightMin=1e-12,
-        dN=None,
+        slaterWeightMin=float(os.environ.get("SELFENERGY_BENCH_SWMIN", 1e-12)),
+        dN=(int(os.environ["SELFENERGY_BENCH_DN"]) if os.environ.get("SELFENERGY_BENCH_DN") else None),
         sparse_green=True,
     )
 
@@ -283,9 +283,21 @@ def test_calc_selfenergy_benchmark():
         profiler = cProfile.Profile()
         comm.Barrier()
         t0 = time.perf_counter()
+        # A pure *performance* benchmark: if the physics post-checks fail (e.g. an unphysical
+        # self-energy from an under-resolved excited sector at large bath with a tight dN), the
+        # phase timings (calc_gs / get_Greens_function) were still collected, so report them.
+        # Set SELFENERGY_BENCH_ALLOW_UNPHYSICAL=1 to swallow that and time the run anyway.
+        result = None
         with _phase_timers():
             profiler.enable()
-            result = selfenergy.calc_selfenergy(**kwargs)
+            try:
+                result = selfenergy.calc_selfenergy(**kwargs)
+            except selfenergy.UnphysicalGreensFunctionError:
+                if os.environ.get("SELFENERGY_BENCH_ALLOW_UNPHYSICAL") != "1":
+                    profiler.disable()
+                    raise
+                if rank == 0:
+                    print("[selfenergy-bench] NOTE: unphysical self-energy (timing-only run).", flush=True)
             profiler.disable()
         elapsed = time.perf_counter() - t0
         comm.Barrier()
@@ -296,7 +308,7 @@ def test_calc_selfenergy_benchmark():
         profiler.dump_stats(stats_path)
 
         # Optional: dump the real-axis self-energy on rank 0 for serial-vs-MPI comparison.
-        if rank == 0 and os.environ.get("SELFENERGY_BENCH_DUMP") and result.get("sigma_real") is not None:
+        if rank == 0 and os.environ.get("SELFENERGY_BENCH_DUMP") and result is not None and result.get("sigma_real") is not None:
             arr = np.array(result["sigma_real"])
             np.save(os.path.join(outdir, f"sigma_real_n{size}.npy"), arr)
             print(f"[selfenergy-bench] sigma_real dumped: shape={arr.shape} |.|={np.linalg.norm(arr):.6e}", flush=True)
@@ -359,7 +371,8 @@ def test_calc_selfenergy_benchmark():
             f"min={min(wall):.2f}s median={sorted(wall)[len(wall) // 2]:.2f}s max={max(wall):.2f}s",
             flush=True,
         )
-        # Light sanity: the solve produced a self-energy and a thermal density matrix.
-        assert result is not None
-        assert result["sigma_real"] is not None
-        assert result["thermal_rho"] is not None
+        # Light sanity: a completed solve produced a self-energy and a thermal density matrix.
+        # (Skipped for a deliberate timing-only run that swallowed an unphysical self-energy.)
+        if result is not None:
+            assert result["sigma_real"] is not None
+            assert result["thermal_rho"] is not None

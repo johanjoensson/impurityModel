@@ -184,6 +184,56 @@ separate measurement windows so each speedup is independently attributable on th
 
 ---
 
+# 100-BATH GF CONVERGENCE — DIAGNOSED + ENABLED (2026-06-30)
+
+**Goal:** make the 100-bath GF converge so calc_selfenergy benchmarks at scale.
+
+**Two distinct failures (both had to be addressed):**
+
+1. **Reort fragility → divergence.** With `Reort.NONE` (the GF default) *and* `Reort.PARTIAL`, the
+   block-Lanczos loses orthogonality at 100-bath: ghost components appear, the matvec spreads them
+   to spurious determinants (a positive-feedback **basis explosion**), and `|beta|` blows up
+   (~1e6 by block ~45) → the divergence guard truncates with a "divergent tail" → wrong/garbage GF.
+   PARTIAL's *selective* reort (W-estimator-gated) doesn't catch the loss fast enough at this scale.
+   **`Reort.FULL` is robust** — orthogonalising the residual against the whole basis every step keeps
+   `|beta|` bounded (~10) with **zero truncations**, breaking the ghost feedback. (B2's dense reort
+   makes FULL affordable.)
+
+2. **Unbounded excited sector → memory explosion.** Independently, the GF excited-state restrictions
+   are effectively absent with `dN=None` (calc_selfenergy's default): `build_excited_restrictions`
+   gets `imp/val/con_change=None` → no occupation window → the reachable N±1 sector at 100-bath is
+   enormous, so even with FULL reort one GF seed's Krylov space grows past 100 blocks / >8 GB toward
+   OOM. **Setting `dN` bounds the sector** to the physical N±1 window. Tradeoff: `dN=1` is tractable
+   (~1 GB, completes) but the self-energy is **unphysical** (sector too tight → `Σ=G0⁻¹−G⁻¹` gets a
+   positive-Im diagonal); `dN=2` is physical-er but one seed still grinds toward OOM (~8 GB, did not
+   complete in 15 min). So a *physically accurate* 100-bath Σ is memory-bound; a *performance*
+   benchmark is fine at `dN=1`.
+
+**Enabled (harness):** `SELFENERGY_BENCH_{REORT,DN,OCC_CUTOFF,SWMIN,ALLOW_UNPHYSICAL}` env knobs.
+With `REORT=full DN=1 ALLOW_UNPHYSICAL=1` the **100-bath solve completes**:
+
+| | wall | GF phase | max\|beta\| | truncations |
+|--|----:|---------:|----------:|------------:|
+| 100-bath, FULL, dN=1 | **375 s** | 99.7% | ~10 (bounded) | 0 |
+
+Per-op split: matvec ~48%, recurrence(+FULL reort) ~51%, monitor 1.6%. So at scale the GF is the
+whole cost and matvec ≈ recurrence/reort — pointing at **B1 (`ManyBodyOperator::apply`)** and the
+FULL-reort cost as the next levers. (`ALLOW_UNPHYSICAL` swallows the dN=1 Σ-physicality failure so
+the *timing* is reported; it is a performance benchmark, not a converged-physics result.)
+
+**Verdict / recommendations:**
+- The GF should **not** default to `Reort.NONE` at scale — it silently diverges. A robust default
+  (`FULL`, or auto-escalate to FULL when the divergence guard trips) is the correctness fix; B2 made
+  it affordable. (Policy change — left for sign-off; not imposed.)
+- `calc_selfenergy`/`get_Greens_function` should set a **sensible `dN`** for large bath counts to
+  bound the excited sector (production's `dN=None` is a latent scaling bug).
+- A *physically accurate* 100-bath Σ is intrinsically memory-heavy (large N±1 sector); routine
+  accurate work at that scale needs methodology changes (tighter restriction that stays physical, a
+  Krylov method that doesn't grow the determinant basis, or a smaller fitted bath) — beyond a
+  convergence fix.
+
+---
+
 # PART A2 — REORT.NONE vs REORT.PARTIAL BENCHMARK (post-fix, run 2026-06-30)
 
 Done with the committed harness (`SELFENERGY_BENCH_REORT` knob), production `dense_cutoff=500`,
