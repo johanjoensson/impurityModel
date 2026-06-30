@@ -1117,7 +1117,7 @@ def block_lanczos_array_cy(
 
 
 import scipy.sparse as sps
-from impurityModel.ed.ManyBodyUtils import inner_multi, add_scaled_multi
+from impurityModel.ed.ManyBodyUtils import inner_multi, add_scaled_multi, reorth_cgs2_dense
 
 cpdef bint is_array(object V):
     if isinstance(V, (np.ndarray, sps.spmatrix, sps.sparray)):
@@ -1313,8 +1313,13 @@ cpdef tuple apply_reort(object wp, object Q_list, object W, object reort, bint m
         active_k = len(wp)
 
     if reort == Reort.FULL or reort == Reort.PERIODIC:
-        for _ in range(2):
-            wp, _ = block_orthogonalize(wp, Q_list, mpi=mpi, comm=comm)
+        if is_array(wp):
+            for _ in range(2):
+                wp, _ = block_orthogonalize(wp, Q_list, mpi=mpi, comm=comm)
+        else:
+            # Sparse path: 2-pass CGS2 in dense BLAS (materialize once, zgemm) instead of
+            # two passes of per-pair flat_map inner products / merges.
+            wp = reorth_cgs2_dense(wp, Q_list, 2, comm if mpi else None)
         acted = True
 
     elif reort in (Reort.PARTIAL, Reort.SELECTIVE):
@@ -1345,11 +1350,12 @@ cpdef tuple apply_reort(object wp, object Q_list, object W, object reort, bint m
                 if is_array(Q_list):
                     Q_mat = Q_list if not isinstance(Q_list, list) else Q_list[0]
                     Q_bad = Q_mat[:, bad_cols]
+                    for _ in range(2):
+                        wp, _ = block_orthogonalize(wp, Q_bad, mpi=mpi, comm=comm)
                 else:
                     Q_bad = [Q_list[col] for col in bad_cols]
-
-                for _ in range(2):
-                    wp, _ = block_orthogonalize(wp, Q_bad, mpi=mpi, comm=comm)
+                    # Sparse path: 2-pass CGS2 in dense BLAS over the flagged bad blocks.
+                    wp = reorth_cgs2_dense(wp, Q_bad, 2, comm if mpi else None)
 
                 for j in bad_block_idx:
                     w_j = block_widths[j]

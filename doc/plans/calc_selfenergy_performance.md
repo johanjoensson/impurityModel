@@ -361,8 +361,8 @@ nondeterminism in the CIPSI determinant sets swings the basis trajectory (687–
 "same" config, ~40% wall swing). All A/B numbers above pin `PYTHONHASHSEED=0` so the two cells do
 identical Lanczos work; the monitor share and step count are the robust quantities.
 
-**Remaining (not done):** **B2** — PARTIAL's reort (91% of its kernel, fires on ~97% of steps) is
-untouched and is the next lever for the PARTIAL path.
+**Next lever:** **B2** — PARTIAL's reort (91% of its kernel) — now done (dense-BLAS projection,
+5.1× on the reort); see the B2 section below.
 
 ---
 
@@ -389,16 +389,34 @@ bit-identical. But the per-call OpenMP fork/join overhead on these medium loops 
 Fine-grained per-call parallelism is the wrong tool here; **reverted.** (The env-gated reort
 fan-out instrumentation is kept for the next attempt.)
 
-**Recommended path (not yet implemented): dense BLAS projection.** Since the reort is effectively
-full, the win is algorithmic per-projection cost, not parallelism or selectivity: materialize
-`wp` and the flagged `Q_bad` columns into dense arrays over their merged determinant support, run
-the two CGS2 passes as `Q^H W` / `W -= Q (Q^H W)` via `zgemm` (with the existing `Allreduce` on the
-small overlap matrix), and scatter `wp` back. This replaces ~206×10×2 hash-map inner/merge ops per
-step with cache-friendly BLAS at the same (or better) accuracy, and keeps the estimator untouched.
-It is a larger, correctness-sensitive change (gather/scatter `ManyBodyState`↔dense over `flat_map`,
-MPI semantics) that **overlaps `doc/plans/blocklanczos_blas_acceleration.md`** (maintain the Krylov
-basis densely so `Q_bad` is a slice, not a rebuild) — scope it there, gate on a bit-identical
-oracle.
+**Shipped: dense-BLAS projection.** New `ManyBodyUtils.reorth_cgs2_dense(wp, Q, n_passes, comm)`
+materializes `wp` and the flagged `Q_bad` columns onto their merged (local) determinant support,
+runs the two CGS2 passes as `O = Qᴴ wp` (Allreduced) / `wp -= Q O` via BLAS `zgemm`, and scatters
+`wp` back to `ManyBodyState`s. `apply_reort` (`BlockLanczosArray.pyx`) calls it for the sparse path
+(both the FULL and PARTIAL/SELECTIVE branches); the array path is unchanged. The **W-estimator and
+bad-block selection are untouched** — only the projection arithmetic changes (hash-map inner/merge →
+dense BLAS).
+
+**Result — controlled A/B on a pinned basis (`PYTHONHASHSEED=0`, PARTIAL 10-bath):**
+
+| | reort time | wall |
+|--|----------:|-----:|
+| map-based (before) | 230.5 s (92.8%) | 252 s |
+| **dense BLAS (after)** | **45.4 s (60.8%)** | **79.3 s** |
+
+**reort 5.1× faster, total 3.2× faster.** Bit-identical gate: vs the map-based PARTIAL on the *same*
+pinned basis, self-energy **rel 1.18e-12** (max|diff| 7e-11); vs the NONE baseline rel 5.2e-14.
+serial == MPI(n=2) preserved (rel 6.5e-13 — the per-pass `Allreduce` mirrors the map path, so it
+stays collective-safe). Suite green: 82 serial + 13 MPI + the `apply` golden oracle. Empty-rank /
+empty-column / empty-support cases short-circuit to a no-op.
+
+**Tried first and rejected: OpenMP threading** of `inner_multi`/`add_scaled_multi` — bit-identical
+but net *slower* (per-call fork/join overhead; OMP=8 reort 253 s vs OMP=1 231 s). Reverted; the
+algorithmic dense-BLAS win is far larger and single-threaded.
+
+**Remaining headroom:** the dense `Q_bad` is rebuilt from `ManyBodyState`s each call; maintaining the
+Krylov basis densely (so `Q_bad` is a slice) would remove the per-call gather —
+`doc/plans/blocklanczos_blas_acceleration.md`.
 
 ---
 

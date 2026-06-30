@@ -8,6 +8,7 @@ from SlaterDeterminant cimport SlaterDeterminant as SlaterDeterminant_cpp
 from libcpp.pair cimport pair
 from libcpp.vector cimport vector
 from cython.operator cimport dereference, preincrement
+from libcpp.algorithm cimport sort, unique, lower_bound
 from libc.stdint cimport uint8_t, uint16_t, uint64_t, int64_t, int32_t
 from libc.string cimport memcpy
 from libcpp.complex cimport complex as complex_cpp
@@ -922,3 +923,107 @@ def add_scaled_multi(list states_target, list states_source, complex[:, :] coeff
                 coeff = coeffs[i, j]
                 if coeff.real != 0 or coeff.imag != 0:
                     dereference(t_ptrs[j]).add_scaled(dereference(s_ptrs[i]), ManyBodyState_cpp.mapped_type(coeff.real, coeff.imag))
+
+
+def reorth_cgs2_dense(list wp, list Q, int n_passes, object comm):
+    r"""Dense (BLAS) block reorthogonalization of ``wp`` against ``Q`` for the sparse
+    (``ManyBodyState``) path.
+
+    Performs ``n_passes`` of classical block Gram-Schmidt
+
+    .. math:: O = Q^\dagger\, wp \quad(\text{Allreduced over ranks});\qquad wp \leftarrow wp - Q\,O,
+
+    but materializes ``wp`` and ``Q`` onto their merged determinant support and runs the two
+    projections as ``zgemm`` instead of per-pair ``flat_map`` inner products / merges.
+    Mathematically equivalent (to floating point) to repeating ``block_orthogonalize_sparse``
+    ``n_passes`` times -- the W-estimator / bad-block selection is unchanged; only the projection
+    is accelerated. Returns a new list of ``wp`` ManyBodyStates.
+    """
+    cdef int p = len(wp)
+    cdef int nq = len(Q)
+    if p == 0 or nq == 0 or n_passes <= 0:
+        return wp
+
+    cdef vector[ManyBodyState_cpp*] wp_ptrs
+    cdef vector[ManyBodyState_cpp*] q_ptrs
+    cdef ManyBodyState ms
+    cdef int ci
+    for obj in wp:
+        ms = <ManyBodyState>obj
+        wp_ptrs.push_back(&ms.v)
+    for obj in Q:
+        ms = <ManyBodyState>obj
+        q_ptrs.push_back(&ms.v)
+
+    # --- merged local support: sorted, unique determinant keys over wp ∪ Q ---
+    cdef vector[SlaterDeterminant_cpp[uint64_t]] support
+    cdef ManyBodyState_cpp.iterator it
+    for ci in range(p):
+        it = wp_ptrs[ci].begin()
+        while it != wp_ptrs[ci].end():
+            support.push_back(dereference(it).first)
+            preincrement(it)
+    for ci in range(nq):
+        it = q_ptrs[ci].begin()
+        while it != q_ptrs[ci].end():
+            support.push_back(dereference(it).first)
+            preincrement(it)
+    if support.size() == 0:
+        return wp
+    sort(support.begin(), support.end())
+    support.erase(unique(support.begin(), support.end()), support.end())
+    cdef Py_ssize_t ns = <Py_ssize_t>support.size()
+
+    # --- materialize dense (|S| x p) and (|S| x nq) over the local support ---
+    Wd = np.zeros((ns, p), dtype=complex)
+    Qd = np.zeros((ns, nq), dtype=complex)
+    cdef complex[:, :] Wv = Wd
+    cdef complex[:, :] Qv = Qd
+    cdef Py_ssize_t row
+    cdef ManyBodyState_cpp.mapped_type cval
+    for ci in range(p):
+        it = wp_ptrs[ci].begin()
+        while it != wp_ptrs[ci].end():
+            row = lower_bound(support.begin(), support.end(), dereference(it).first) - support.begin()
+            cval = dereference(it).second
+            Wv[row, ci].real = cval.real()
+            Wv[row, ci].imag = cval.imag()
+            preincrement(it)
+    for ci in range(nq):
+        it = q_ptrs[ci].begin()
+        while it != q_ptrs[ci].end():
+            row = lower_bound(support.begin(), support.end(), dereference(it).first) - support.begin()
+            cval = dereference(it).second
+            Qv[row, ci].real = cval.real()
+            Qv[row, ci].imag = cval.imag()
+            preincrement(it)
+
+    # --- CGS2 passes via BLAS; the small (nq x p) overlap is Allreduced each pass ---
+    Qh = np.conj(Qd.T)
+    if comm is not None:
+        from mpi4py import MPI
+    for _ in range(n_passes):
+        O = Qh @ Wd
+        if comm is not None:
+            comm.Allreduce(MPI.IN_PLACE, O, op=MPI.SUM)
+        Wd = Wd - Qd @ O
+
+    # --- scatter back to ManyBodyStates (keep the nonzero rows of each column) ---
+    cdef complex[:, :] Wout = Wd
+    cdef list out = []
+    cdef vector[ManyBodyState_cpp.key_type] keys
+    cdef vector[ManyBodyState_cpp.mapped_type] vals
+    cdef ManyBodyState new_ms
+    cdef double complex z
+    for ci in range(p):
+        keys.clear()
+        vals.clear()
+        for row in range(ns):
+            z = Wout[row, ci]
+            if z.real != 0 or z.imag != 0:
+                keys.push_back(support[row])
+                vals.push_back(ManyBodyState_cpp.mapped_type(z.real, z.imag))
+        new_ms = ManyBodyState()
+        new_ms.v = ManyBodyState_cpp(keys, vals)
+        out.append(new_ms)
+    return out
