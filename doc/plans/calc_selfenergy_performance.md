@@ -366,6 +366,42 @@ untouched and is the next lever for the PARTIAL path.
 
 ---
 
+# B2 — PARTIAL REORTHOGONALIZATION (INVESTIGATED, 2026-06-30)
+
+**Constraint (from the user):** the Paige–Simon W-estimator must remain an *upper* bound on the
+inter-block overlap (it must never under-predict, or needed reorth is skipped → lost orthogonality →
+ghosts/divergence; cf. the "partial reort estimator under-prediction" history). So B2 may only make
+the *projection* cheaper, not weaken the estimator or the trigger.
+
+**Diagnosis (measured, env-gated `apply_reort` counters → `get_reort_profile()`):** on the
+near-degenerate GF spectrum the reort is **barely selective** — per acting call it flags **20.6 of
+35.7 blocks (58%)**, i.e. ~206 columns, and fires on **97% of steps**. So it is effectively *full*
+reorthogonalization: the block *count* cannot be reduced without weakening the estimator (those
+blocks genuinely lost orthogonality). The cost is the sheer volume of the map-based projection:
+`inner_multi(Q_bad, wp)` (≈206×10 `flat_map` inner products) + `add_scaled_multi` (10×206 map
+merges), ×2 (CGS2), per step. (`inner()` already iterates the smaller map — it is not the lever.)
+
+**Tried and rejected — OpenMP threading of the block primitives.** `inner_multi` / `add_scaled_multi`
+are `nogil` loops over independent outputs, so threading them with `prange` is race-free and
+bit-identical. But the per-call OpenMP fork/join overhead on these medium loops (and especially
+`add_scaled_multi`'s 10-iteration target loop) *exceeded* the gain: controlled A/B on a pinned basis
+(PARTIAL 10-bath) gave **OMP=1: reort 230.5 s vs OMP=8: 252.9 s — slower** (result rel 1.2e-12).
+Fine-grained per-call parallelism is the wrong tool here; **reverted.** (The env-gated reort
+fan-out instrumentation is kept for the next attempt.)
+
+**Recommended path (not yet implemented): dense BLAS projection.** Since the reort is effectively
+full, the win is algorithmic per-projection cost, not parallelism or selectivity: materialize
+`wp` and the flagged `Q_bad` columns into dense arrays over their merged determinant support, run
+the two CGS2 passes as `Q^H W` / `W -= Q (Q^H W)` via `zgemm` (with the existing `Allreduce` on the
+small overlap matrix), and scatter `wp` back. This replaces ~206×10×2 hash-map inner/merge ops per
+step with cache-friendly BLAS at the same (or better) accuracy, and keeps the estimator untouched.
+It is a larger, correctness-sensitive change (gather/scatter `ManyBodyState`↔dense over `flat_map`,
+MPI semantics) that **overlaps `doc/plans/blocklanczos_blas_acceleration.md`** (maintain the Krylov
+basis densely so `Q_bad` is a slice, not a rebuild) — scope it there, gate on a bit-identical
+oracle.
+
+---
+
 # FIXES APPLIED (B0 — calc_gs blockers)
 
 ## B0.1 + B0.2 — FIXED (one root cause, one-line change)

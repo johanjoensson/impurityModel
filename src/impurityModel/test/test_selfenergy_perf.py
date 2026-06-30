@@ -331,6 +331,20 @@ def test_calc_selfenergy_benchmark():
                 acted = int(prof.get("reort_acted#n", 0))
                 rtot = int(prof.get("reort_total#n", 0))
                 print(f"  reort triggered: {acted}/{rtot} steps ({100 * acted / rtot if rtot else 0:.0f}%)", flush=True)
+                try:
+                    from impurityModel.ed.BlockLanczosArray import get_reort_profile
+
+                    rp = get_reort_profile()
+                except Exception:
+                    rp = {}
+                if rp.get("acted", 0):
+                    a = rp["acted"]
+                    print(
+                        f"  reort fan-out: avg {rp.get('bad_blocks', 0) / a:.1f} bad blocks / "
+                        f"{rp.get('bad_cols', 0) / a:.1f} bad cols per acting call; "
+                        f"avg {rp.get('n_blocks_total', 0) / max(rp.get('calls', 1), 1):.1f} blocks present",
+                        flush=True,
+                    )
 
             # Top cProfile entries by cumulative and by tottime (rank-0 view).
             for sort_key in ("cumulative", "tottime"):

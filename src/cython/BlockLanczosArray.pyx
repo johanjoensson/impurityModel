@@ -76,6 +76,19 @@ BREAKDOWN_TOL = 1e-12              # absolute: ||beta||_2 below this ⇒ invaria
 BETA_BLOWUP_FACTOR = 1e3           # ||beta_i|| above this * max(||beta||, ||alpha||) ⇒ divergence
 REORT_PERIOD = 5                   # PERIODIC cadence, and SELECTIVE Ritz-check cadence
 
+# --- Optional reort instrumentation (env-gated; ~zero cost when off) ----------------
+import os as _os_bla
+_REORT_PROF_ON = _os_bla.environ.get("BLOCKLANCZOS_PROFILE") == "1"
+_REORT_PROF = {}
+
+def get_reort_profile():
+    """Accumulated apply_reort stats: total calls, calls that acted, summed bad-block and
+    bad-column counts (so the average fan-out of the selective reort can be inspected)."""
+    return dict(_REORT_PROF)
+
+def reset_reort_profile():
+    _REORT_PROF.clear()
+
 
 def _cholesky_or_deflate(M, p_in):
     r"""QR-factor the residual block via its Gram matrix ``M = Wp^H Wp``.
@@ -1313,6 +1326,12 @@ cpdef tuple apply_reort(object wp, object Q_list, object W, object reort, bint m
             if mpi and comm is not None:
                 bad_block_idx = comm.bcast(bad_block_idx, root=0)
 
+            if _REORT_PROF_ON:
+                _REORT_PROF["calls"] = _REORT_PROF.get("calls", 0.0) + 1.0
+                _REORT_PROF["n_blocks_total"] = _REORT_PROF.get("n_blocks_total", 0.0) + float(n_blks)
+                if bad_block_idx:
+                    _REORT_PROF["acted"] = _REORT_PROF.get("acted", 0.0) + 1.0
+                    _REORT_PROF["bad_blocks"] = _REORT_PROF.get("bad_blocks", 0.0) + float(len(bad_block_idx))
             if bad_block_idx:
                 acted = True
                 bad_cols = []
@@ -1320,6 +1339,8 @@ cpdef tuple apply_reort(object wp, object Q_list, object W, object reort, bint m
                     col_start = sum(block_widths[:j])
                     col_end = col_start + block_widths[j]
                     bad_cols.extend(range(col_start, col_end))
+                if _REORT_PROF_ON:
+                    _REORT_PROF["bad_cols"] = _REORT_PROF.get("bad_cols", 0.0) + float(len(bad_cols))
 
                 if is_array(Q_list):
                     Q_mat = Q_list if not isinstance(Q_list, list) else Q_list[0]
