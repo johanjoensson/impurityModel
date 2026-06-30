@@ -52,6 +52,7 @@ from impurityModel.ed.ManyBodyUtils import (
     ManyBodyState,
     add_scaled_multi,
     inner_multi,
+    SparseKrylovDense,
 )
 from mpi4py import MPI
 
@@ -202,6 +203,7 @@ def block_lanczos_step_cy(
     block_widths=None,
     locked=None,
     locked_reort="full",
+    krylov=None,
 ):
     """Perform one step of the distributed block Lanczos iteration.
 
@@ -332,7 +334,7 @@ def block_lanczos_step_cy(
     # bit-for-bit equal to the old 2x inner_multi/add_scaled_multi loop because
     # block_orthogonalize_sparse does exactly that with comm=comm-if-mpi).
     if reort_mode == Reort.FULL or (reort_mode == Reort.PERIODIC and it > 0 and it % reort_period == 0):
-        wp, _, _ = apply_reort(wp, Q_basis, None, Reort.FULL, mpi, comm, block_widths or [])
+        wp, _, _ = apply_reort(wp, Q_basis, None, Reort.FULL, mpi, comm, block_widths or [], krylov)
 
     # --- 5. M = <wp|wp>, check breakdown --------------------------------
     M = inner_multi(wp, wp)
@@ -422,7 +424,7 @@ def block_lanczos_step_cy(
             # Bad-block partial reorthogonalization via the shared apply_reort (single
             # implementation for both kernels). Pass block_widths + [p] so the current
             # block (index it) is included in the width table apply_reort indexes.
-            q_next, W, _reort_acted = apply_reort(q_next, Q_basis, W, reort_mode, mpi, comm, block_widths + [p])
+            q_next, W, _reort_acted = apply_reort(q_next, Q_basis, W, reort_mode, mpi, comm, block_widths + [p], krylov)
             if _PROF_ON:
                 _PROF["reort_total#n"] = _PROF.get("reort_total#n", 0.0) + 1.0
                 if _reort_acted:
@@ -632,6 +634,14 @@ def block_lanczos_cy(
         q_prev = [ManyBodyState() for _ in range(p)]
         Q_basis = [st.copy() for st in q_curr]
 
+    # Maintain a dense copy of the (rank-local) Krylov basis so the block reort slices
+    # columns instead of re-materializing Q from flat_maps every step (see SparseKrylovDense).
+    # Only needed when a reort mode actually projects against Q_basis; NONE never does.
+    krylov = None
+    if reort_mode != Reort.NONE:
+        krylov = SparseKrylovDense()
+        krylov.append(Q_basis)
+
     # --- Determine max_iter ---------------------------------------------
     if max_iter is None:
         max_iter = getattr(basis, "size", 10 * p) // p
@@ -725,6 +735,7 @@ def block_lanczos_cy(
             block_widths=block_widths,
             locked=locked,
             locked_reort=locked_reort,
+            krylov=krylov,
         )
 
         if breakdown:
@@ -790,6 +801,8 @@ def block_lanczos_cy(
         # deflation is applied inside block_lanczos_step_cy (before M/beta) in "full"
         # mode, or just above in "partial" mode, so q_next is orthogonal to the locked set.
         Q_basis.extend([st.copy() for st in q_next])
+        if krylov is not None:
+            krylov.append(q_next)
 
         if verbose:
             print(

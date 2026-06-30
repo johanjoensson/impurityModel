@@ -1294,7 +1294,7 @@ def block_lanczos_array(*args, **kwargs):
     return block_lanczos_array_cy(*args, **kwargs)
 
 
-cpdef tuple apply_reort(object wp, object Q_list, object W, object reort, bint mpi, object comm, list block_widths):
+cpdef tuple apply_reort(object wp, object Q_list, object W, object reort, bint mpi, object comm, list block_widths, object krylov=None):
     """Reorthogonalize ``wp`` per the reort mode. Returns ``(wp, W, acted)``; ``acted`` is True
     iff a projection was actually applied (always for FULL/PERIODIC; for PARTIAL/SELECTIVE only
     when a bad block exceeded the trigger), so the caller can skip the follow-up renormalize
@@ -1316,9 +1316,11 @@ cpdef tuple apply_reort(object wp, object Q_list, object W, object reort, bint m
         if is_array(wp):
             for _ in range(2):
                 wp, _ = block_orthogonalize(wp, Q_list, mpi=mpi, comm=comm)
+        elif krylov is not None:
+            # Sparse path with a maintained dense Krylov basis: slice all columns, no gather.
+            wp = krylov.reort(wp, None, 2, comm if mpi else None)
         else:
-            # Sparse path: 2-pass CGS2 in dense BLAS (materialize once, zgemm) instead of
-            # two passes of per-pair flat_map inner products / merges.
+            # Sparse path fallback: 2-pass CGS2 in dense BLAS (materialize Q from flat_maps).
             wp = reorth_cgs2_dense(wp, Q_list, 2, comm if mpi else None)
         acted = True
 
@@ -1352,9 +1354,12 @@ cpdef tuple apply_reort(object wp, object Q_list, object W, object reort, bint m
                     Q_bad = Q_mat[:, bad_cols]
                     for _ in range(2):
                         wp, _ = block_orthogonalize(wp, Q_bad, mpi=mpi, comm=comm)
+                elif krylov is not None:
+                    # Sparse path with a maintained dense Krylov basis: slice the flagged columns.
+                    wp = krylov.reort(wp, bad_cols, 2, comm if mpi else None)
                 else:
                     Q_bad = [Q_list[col] for col in bad_cols]
-                    # Sparse path: 2-pass CGS2 in dense BLAS over the flagged bad blocks.
+                    # Sparse path fallback: 2-pass CGS2 in dense BLAS over the flagged bad blocks.
                     wp = reorth_cgs2_dense(wp, Q_bad, 2, comm if mpi else None)
 
                 for j in bad_block_idx:

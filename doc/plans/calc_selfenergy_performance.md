@@ -414,9 +414,27 @@ empty-column / empty-support cases short-circuit to a no-op.
 but net *slower* (per-call fork/join overhead; OMP=8 reort 253 s vs OMP=1 231 s). Reverted; the
 algorithmic dense-BLAS win is far larger and single-threaded.
 
-**Remaining headroom:** the dense `Q_bad` is rebuilt from `ManyBodyState`s each call; maintaining the
-Krylov basis densely (so `Q_bad` is a slice) would remove the per-call gather —
-`doc/plans/blocklanczos_blas_acceleration.md`.
+**Follow-up shipped: dense Krylov basis (removes the per-call gather).** New Cython
+`SparseKrylovDense` (`ManyBodyUtils.pyx`) keeps a rank-local dense copy of the block-Krylov basis
+(`det→row` `std::map` support + a doubling `(rows×cols)` buffer); `block_lanczos_cy` seeds it and
+`append`s each block in lockstep with `Q_basis`, and threads it through `block_lanczos_step_cy` →
+`apply_reort`, which now *slices* `Q[:, bad_cols]` instead of re-materializing `Q_bad` from
+`flat_map`s every step. Only `wp` (10 cols) is materialized/scattered per call; the W-estimator /
+selection are still untouched; collective footprint unchanged (the per-pass `(n_cols×p)` overlap
+`Allreduce`).
+
+**Result (pinned basis, PARTIAL 10-bath), reort time across the three implementations:**
+
+| reort impl | reort time | wall |
+|--|----------:|-----:|
+| map-based | 230.5 s | 252 s |
+| dense BLAS, per-call gather | 45.4 s | 79.3 s |
+| **dense BLAS + dense Krylov** | **21.8 s** | **57.7 s** |
+
+**Cumulative: reort 230.5 → 21.8 s (10.6×), wall 252 → 58 s (4.4×).** The dense-Krylov result is
+**bit-identical** to the per-call dense on the same basis (rel 2.97e-17) and matches NONE to 5.2e-14;
+serial == MPI(n=2) preserved; suite green (95 serial + 13 MPI + apply golden). The reort is no longer
+the dominant GF cost (41.9% now; matvec 28%).
 
 ---
 

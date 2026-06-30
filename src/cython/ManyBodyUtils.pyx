@@ -9,6 +9,7 @@ from libcpp.pair cimport pair
 from libcpp.vector cimport vector
 from cython.operator cimport dereference, preincrement
 from libcpp.algorithm cimport sort, unique, lower_bound
+from libcpp.map cimport map as cpp_map
 from libc.stdint cimport uint8_t, uint16_t, uint64_t, int64_t, int32_t
 from libc.string cimport memcpy
 from libcpp.complex cimport complex as complex_cpp
@@ -1027,3 +1028,164 @@ def reorth_cgs2_dense(list wp, list Q, int n_passes, object comm):
         new_ms.v = ManyBodyState_cpp(keys, vals)
         out.append(new_ms)
     return out
+
+
+cdef class SparseKrylovDense:
+    r"""Incrementally-maintained dense copy of the (rank-local) sparse block-Krylov basis.
+
+    Holds the Krylov vectors as a dense ``(n_rows x n_cols)`` complex buffer over a growing
+    determinant->row support map, so block reorthogonalization can *slice* columns
+    (``Q[:, cols]``) instead of re-materializing them from the ``flat_map`` states on every
+    step. ``append`` mirrors the driver's ``Q_basis.extend`` (one block at a time); ``reort``
+    runs ``n_passes`` of classical Gram-Schmidt of ``wp`` against the selected columns via BLAS
+    ``zgemm``, identical (to floating point) to repeating ``block_orthogonalize_sparse``. The
+    buffer is rank-local (over the rank's owned determinants); the only collective is the small
+    ``(n_cols x p)`` overlap ``Allreduce`` each pass, exactly as in the map-based path.
+    """
+    cdef cpp_map[SlaterDeterminant_cpp[uint64_t], int] support
+    cdef vector[SlaterDeterminant_cpp[uint64_t]] row_det
+    cdef object Qbuf
+    cdef int n_rows
+    cdef int n_cols
+    cdef int cap_rows
+    cdef int cap_cols
+
+    def __cinit__(self):
+        self.n_rows = 0
+        self.n_cols = 0
+        self.cap_rows = 256
+        self.cap_cols = 32
+        self.Qbuf = np.zeros((self.cap_rows, self.cap_cols), dtype=complex)
+
+    cdef void _realloc(self, int new_cap_rows, int new_cap_cols):
+        # Copy the old buffer's full extent (it holds all written data plus zeros); n_rows may
+        # already have been grown past the old capacity by _register, and the new rows carry no
+        # data yet, so copy by the *old buffer* shape, not by n_rows/n_cols.
+        newbuf = np.zeros((new_cap_rows, new_cap_cols), dtype=complex)
+        cdef int r = min(<int>self.Qbuf.shape[0], new_cap_rows)
+        cdef int c = min(<int>self.Qbuf.shape[1], new_cap_cols)
+        newbuf[:r, :c] = self.Qbuf[:r, :c]
+        self.Qbuf = newbuf
+        self.cap_rows = new_cap_rows
+        self.cap_cols = new_cap_cols
+
+    cdef int _register(self, SlaterDeterminant_cpp[uint64_t] det):
+        """Row index for ``det``, allocating a new (logical) zero row if absent."""
+        cdef cpp_map[SlaterDeterminant_cpp[uint64_t], int].iterator f = self.support.find(det)
+        if f != self.support.end():
+            return dereference(f).second
+        cdef int row = self.n_rows
+        self.support[det] = row
+        self.row_det.push_back(det)
+        self.n_rows += 1
+        return row
+
+    cdef void _ensure(self, int need_rows, int need_cols):
+        cdef int nr = self.cap_rows
+        cdef int nc = self.cap_cols
+        while nr < need_rows:
+            nr *= 2
+        while nc < need_cols:
+            nc *= 2
+        if nr != self.cap_rows or nc != self.cap_cols:
+            self._realloc(nr, nc)
+
+    def append(self, list cols):
+        """Append the columns of ``cols`` (a list of ManyBodyState) as new Krylov vectors."""
+        cdef int ncol = len(cols)
+        if ncol == 0:
+            return
+        cdef vector[ManyBodyState_cpp*] ptrs
+        cdef ManyBodyState ms
+        cdef int ci
+        for obj in cols:
+            ms = <ManyBodyState>obj
+            ptrs.push_back(&ms.v)
+        cdef ManyBodyState_cpp.iterator it
+        for ci in range(ncol):
+            it = ptrs[ci].begin()
+            while it != ptrs[ci].end():
+                self._register(dereference(it).first)
+                preincrement(it)
+        self._ensure(self.n_rows, self.n_cols + ncol)
+        cdef complex[:, :] Qv = self.Qbuf
+        cdef int base = self.n_cols
+        cdef int row
+        cdef ManyBodyState_cpp.mapped_type cval
+        for ci in range(ncol):
+            it = ptrs[ci].begin()
+            while it != ptrs[ci].end():
+                row = dereference(self.support.find(dereference(it).first)).second
+                cval = dereference(it).second
+                Qv[row, base + ci].real = cval.real()
+                Qv[row, base + ci].imag = cval.imag()
+                preincrement(it)
+        self.n_cols += ncol
+
+    def reort(self, list wp, object cols, int n_passes, object comm):
+        """``n_passes`` of CGS2: ``O = Q[:,cols]^H wp`` (Allreduced); ``wp -= Q[:,cols] O``.
+
+        ``cols`` is a list of column indices (the flagged bad blocks) or ``None`` for all
+        columns. Returns a new list of ``wp`` ManyBodyStates.
+        """
+        cdef int p = len(wp)
+        if p == 0 or self.n_cols == 0 or n_passes <= 0:
+            return wp
+        cdef vector[ManyBodyState_cpp*] wptrs
+        cdef ManyBodyState ms
+        cdef int ci
+        for obj in wp:
+            ms = <ManyBodyState>obj
+            wptrs.push_back(&ms.v)
+        # Register wp's determinants so its components outside the current Q support get rows
+        # (Q is zero there -> untouched by the projection, preserved by the scatter).
+        cdef ManyBodyState_cpp.iterator it
+        for ci in range(p):
+            it = wptrs[ci].begin()
+            while it != wptrs[ci].end():
+                self._register(dereference(it).first)
+                preincrement(it)
+        self._ensure(self.n_rows, self.n_cols)
+        cdef int ns = self.n_rows
+        Wd = np.zeros((ns, p), dtype=complex)
+        cdef complex[:, :] Wv = Wd
+        cdef int row
+        cdef ManyBodyState_cpp.mapped_type cval
+        for ci in range(p):
+            it = wptrs[ci].begin()
+            while it != wptrs[ci].end():
+                row = dereference(self.support.find(dereference(it).first)).second
+                cval = dereference(it).second
+                Wv[row, ci].real = cval.real()
+                Wv[row, ci].imag = cval.imag()
+                preincrement(it)
+        if cols is None:
+            Qsel = self.Qbuf[:ns, :self.n_cols]
+        else:
+            Qsel = np.ascontiguousarray(self.Qbuf[:ns][:, cols])
+        Qh = np.conj(Qsel.T)
+        if comm is not None:
+            from mpi4py import MPI
+        for _ in range(n_passes):
+            O = Qh @ Wd
+            if comm is not None:
+                comm.Allreduce(MPI.IN_PLACE, O, op=MPI.SUM)
+            Wd = Wd - Qsel @ O
+        cdef complex[:, :] Wout = Wd
+        cdef list out = []
+        cdef vector[ManyBodyState_cpp.key_type] keys
+        cdef vector[ManyBodyState_cpp.mapped_type] vals
+        cdef ManyBodyState new_ms
+        cdef double complex z
+        for ci in range(p):
+            keys.clear()
+            vals.clear()
+            for row in range(ns):
+                z = Wout[row, ci]
+                if z.real != 0 or z.imag != 0:
+                    keys.push_back(self.row_det[row])
+                    vals.push_back(ManyBodyState_cpp.mapped_type(z.real, z.imag))
+            new_ms = ManyBodyState()
+            new_ms.v = ManyBodyState_cpp(keys, vals)
+            out.append(new_ms)
+        return out
