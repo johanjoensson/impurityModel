@@ -1,0 +1,20 @@
+# Runs at every `git commit` (after `pre-commit install`) and in CI via
+# `pre-commit run --all-files` (see .github/workflows/lint.yml). This is the
+# single source of truth for formatting/linting, so local and CI never drift.
+repos:
+  - repo: https://github.com/psf/black-pre-commit-mirror
+    # Pin the version so a new Black release (which can change the stable
+    # formatting style) cannot break commits/CI on otherwise-unchanged code.
+    # Bump deliberately, then re-run `pre-commit run --all-files`.
+    rev: 26.5.1
+    hooks:
+      - id: black
+        # line-length 120 and target-version py311 come from [tool.black] in
+        # pyproject.toml.
+
+  - repo: https://github.com/MarcoGorelli/cython-lint
+    rev: v0.16.0
+    hooks:
+      # Black cannot format Cython, so lint .pyx/.pxd instead (check-only).
+      # max-line-length 120 comes from [tool.cython-lint] in pyproject.toml.
+      - id: cython-lint

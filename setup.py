@@ -11,12 +11,14 @@ if boost_dir:
 
 try:
     import numpy as np
+
     include_dirs.append(np.get_include())
 except ImportError:
     pass
 
 try:
     import mpi4py
+
     include_dirs.append(mpi4py.get_include())
 except ImportError:
     pass
@@ -72,6 +74,4 @@ ext_modules = [
     ),
 ]
 
-setuptools.setup(
-    ext_modules=ext_modules
-)
+setuptools.setup(ext_modules=ext_modules)

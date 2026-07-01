@@ -9,18 +9,17 @@ on:
       - master
 
 jobs:
-  format:
-    name: Check code formatting
+  pre-commit:
+    name: Run pre-commit hooks
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
         with:
+          # Match [tool.black] target-version = py311 so CI formatting is
+          # deterministic and Black's AST safety check can parse the output.
           python-version: "3.11"
-      - name: Install Black
-        # Pin the version so a new Black release (which can change the stable
-        # formatting style) cannot break CI on otherwise-unchanged code. Bump
-        # deliberately, re-running `black src/` when you do.
-        run: pip install black==26.5.1
-      - name: Run Black
-        run: black --check src/
+      # Runs `pre-commit run --all-files`, i.e. the exact hooks in
+      # .pre-commit-config.yaml (Black + cython-lint). If any file isn't
+      # formatted, Black reformats it and the job fails with the diff.
+      - uses: pre-commit/action@v3.0.1

@@ -59,6 +59,19 @@ relative_files = true
 
 [tool.black]
 line-length = 120
+# Pin the target so Black's output is deterministic regardless of the running
+# interpreter. Without this, Black auto-detects a newer Python and warns that the
+# CI interpreter "cannot parse code formatted for Python 3.x". CI runs 3.11.
+target-version = ["py311"]
+
+[tool.cython-lint]
+# Match Black's line length so long lines aren't flagged against the 88 default.
+max-line-length = 120
+# E501: long lines are still reported by max-line-length above for genuinely long
+#       code, but we don't enforce wrapping (e.g. the `# cython:` directive line
+#       and long cdef signatures can't be wrapped). E741: ambiguous names like `O`
+#       are already ignored for Python (see [tool.ruff] lint.ignore).
+ignore = ["E501", "E741"]
 
 [tool.ruff]
 line-length = 120
