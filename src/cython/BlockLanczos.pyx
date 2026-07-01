@@ -58,7 +58,7 @@ from mpi4py import MPI
 
 cimport numpy as np
 
-from impurityModel.ed.BlockLanczosArray import estimate_orthonormality, eigsh, _build_full_T, _extract_blocks, _cholesky_or_deflate, _cholesky_qr2, eigh_block_tridiagonal
+from impurityModel.ed.BlockLanczosArray import estimate_orthonormality, _build_full_T, _cholesky_or_deflate, _cholesky_qr2, eigh_block_tridiagonal
 from impurityModel.ed.BlockLanczosArray import (
     apply_reort,
     divergence_guard,
@@ -74,10 +74,6 @@ from impurityModel.ed.BlockLanczosArray import (
     EPS,
     REORT_TOL,
     BAD_BLOCK_TOL,
-    DEFLATE_TOL,
-    BREAKDOWN_TOL,
-    BETA_BLOWUP_FACTOR,
-    REORT_PERIOD,
 )
 
 # --- Optional per-step profiling (env-gated, ~zero cost when off) -------------------
@@ -89,12 +85,15 @@ import time as _time
 _PROF = {}
 _PROF_ON = _os.environ.get("BLOCKLANCZOS_PROFILE") == "1"
 
+
 def get_block_lanczos_profile():
     """Return a copy of the accumulated per-operation timings (seconds) and call counts."""
     return dict(_PROF)
 
+
 def reset_block_lanczos_profile():
     _PROF.clear()
+
 
 cdef inline void _prof_acc(str key, double t0):
     if _PROF_ON:
@@ -1632,12 +1631,12 @@ def _irlm_core(
 
     # --- Final extraction -----------------------------------------------
     return _assemble_results(
-        Xl, theta_l, alphas, betas, Q_basis, num_wanted, p, mpi, comm, slater, is_arr, _build_full_T, widths
+        Xl, theta_l, alphas, betas, Q_basis, num_wanted, p, mpi, comm, slater, is_arr, widths
     )
 
 
 def _assemble_results(
-    Xl, theta_l, alphas, betas, Q_basis, num_wanted, p, mpi, comm, slater, is_arr, _build_full_T, widths=None
+    Xl, theta_l, alphas, betas, Q_basis, num_wanted, p, mpi, comm, slater, is_arr, widths=None
 ):
     """Combine locked pairs with the best remaining active Ritz pairs, sorted ascending.
 

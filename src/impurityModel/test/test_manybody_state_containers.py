@@ -146,10 +146,7 @@ def test_distributed_global_size_and_lookup():
     # Each rank contributes distinct states; the container must agree on the global
     # size and be able to look up every state from every rank.
     base = 0x80 >> comm.rank
-    states = [
-        SlaterDeterminant.from_bytes(bytes([base]) + bytes([r]) + b"\x00" * (N_BYTES - 2))
-        for r in range(3)
-    ]
+    states = [SlaterDeterminant.from_bytes(bytes([base]) + bytes([r]) + b"\x00" * (N_BYTES - 2)) for r in range(3)]
     c = SimpleDistributedStateContainer(states, bytes_per_state=N_BYTES, comm=comm, verbose=False)
 
     expected_total = 3 * comm.size

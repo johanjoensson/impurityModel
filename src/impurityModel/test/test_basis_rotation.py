@@ -101,9 +101,7 @@ def test_one_body_rotation_preserves_spectrum_and_hermiticity():
     u = _random_unitary(4, seed=7)
     h_rot = rotate_one_body(h, u)
     np.testing.assert_allclose(h_rot, h_rot.conj().T, atol=1e-12)
-    np.testing.assert_allclose(
-        np.sort(np.linalg.eigvalsh(h)), np.sort(np.linalg.eigvalsh(h_rot)), atol=1e-12
-    )
+    np.testing.assert_allclose(np.sort(np.linalg.eigvalsh(h)), np.sort(np.linalg.eigvalsh(h_rot)), atol=1e-12)
 
 
 def test_rotation_diagonalizes_discovered_generators():

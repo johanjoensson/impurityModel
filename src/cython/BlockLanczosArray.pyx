@@ -43,7 +43,6 @@ cimport numpy as np
 import scipy.linalg as la
 import scipy.sparse as sps
 
-from libc.math cimport sqrt
 from scipy.linalg.cython_blas cimport zgemm
 
 from mpi4py import MPI
@@ -71,7 +70,7 @@ BAD_BLOCK_TOL = EPS_VAL ** 0.75        # ~1.83e-12 : selection — reorth agains
 # block instead of normalizing it, well inside the CholeskyQR2 recovery regime
 # (cond <~ EPS**(-1/2)), which keeps serial and MPI on the same convergent path.
 DEFLATE_TOL = EPS_VAL ** (1.0 / 3.0)      # ~6.06e-6  : rank floor on singular values of the block
-DEFLATE_EVAL_TOL = EPS_VAL ** (2.0 / 3.0) # ~3.67e-11 : equivalent rank floor on eigenvalues of M (= DEFLATE_TOL**2)
+DEFLATE_EVAL_TOL = EPS_VAL ** (2.0 / 3.0)  # ~3.67e-11 : equivalent rank floor on eigenvalues of M (= DEFLATE_TOL**2)
 BREAKDOWN_TOL = 1e-12              # absolute: ||beta||_2 below this ⇒ invariant subspace
 BETA_BLOWUP_FACTOR = 1e3           # ||beta_i|| above this * max(||beta||, ||alpha||) ⇒ divergence
 REORT_PERIOD = 5                   # PERIODIC cadence, and SELECTIVE Ritz-check cadence
@@ -81,10 +80,12 @@ import os as _os_bla
 _REORT_PROF_ON = _os_bla.environ.get("BLOCKLANCZOS_PROFILE") == "1"
 _REORT_PROF = {}
 
+
 def get_reort_profile():
     """Accumulated apply_reort stats: total calls, calls that acted, summed bad-block and
     bad-column counts (so the average fan-out of the selective reort can be inspected)."""
     return dict(_REORT_PROF)
+
 
 def reset_reort_profile():
     _REORT_PROF.clear()
@@ -130,13 +131,13 @@ def _cholesky_or_deflate(M, p_in):
     except (la.LinAlgError, ValueError):
         # Fall back to eigh, using the same eigenvalue floor as the fast path.
         evals, evecs = la.eigh(M)              # ascending
-        keep = evals > DEFLATE_EVAL_TOL * max(evals[-1], 1.0) # boolean mask over p_in
+        keep = evals > DEFLATE_EVAL_TOL * max(evals[-1], 1.0)  # boolean mask over p_in
         p_next = int(keep.sum())
         if p_next == 0:                                   # whole block collapsed
             return None, None, 0
         V = evecs[:, keep]                                # (p_in, p_next)
         s = np.sqrt(evals[keep])                          # (p_next,)
-        beta_j   = (s[:, None] * np.conj(V.T))             # (p_next, p_in)   off-diag block
+        beta_j = (s[:, None] * np.conj(V.T))             # (p_next, p_in)   off-diag block
         beta_inv = V / s[None, :]                         # (p_in,  p_next)
         return beta_j, beta_inv, p_next
 
@@ -305,7 +306,6 @@ cpdef np.ndarray estimate_orthonormality(
     cdef int w_curr = widths[i]
     cdef int w_i = w_curr
     cdef int w_next = widths[i+1]
-    cdef int w_i_next = w_next
     cdef int w_0 = widths[0]
 
     cdef np.ndarray[double complex, ndim=4] W_out = np.zeros((2, i + 2, n, n), dtype=complex)
@@ -315,7 +315,7 @@ cpdef np.ndarray estimate_orthonormality(
 
     w_bar[i + 1, :w_next, :w_next] = np.identity(w_next)
 
-    cdef np.ndarray beta_i_dag_inv = np.conj(la.pinv(betas[i, :w_next, :w_curr]).T) # shape (w_next, w_curr)
+    cdef np.ndarray beta_i_dag_inv = np.conj(la.pinv(betas[i, :w_next, :w_curr]).T)  # shape (w_next, w_curr)
     w_bar[i, :w_next, :w_0] = eps * N * beta_i_dag_inv @ betas[0, :w_curr, :w_0]
 
     if i == 0:
@@ -484,7 +484,7 @@ def eigh_block_tridiagonal(alphas, betas, block_widths=None, eigvals_only=False)
     cdef int m = (alphas.shape[0] if hasattr(alphas, "shape") else len(alphas))
     cdef int p = (alphas.shape[1] if hasattr(alphas, "shape") else np.asarray(alphas[0]).shape[0])
     widths = list(block_widths) if block_widths is not None else [p] * m
-    a_band, total = _build_banded_lower(alphas, betas, widths)
+    a_band, _total = _build_banded_lower(alphas, betas, widths)
     if eigvals_only:
         return la.eig_banded(a_band, lower=True, eigvals_only=True, overwrite_a_band=True, check_finite=False), None
     evals, Z = la.eig_banded(a_band, lower=True, eigvals_only=False, overwrite_a_band=True, check_finite=False)
@@ -596,6 +596,7 @@ cdef extern from "complex.h":
 
 # from scipy.linalg.cython_blas cimport zgemm, zgemv
 
+
 @cython.boundscheck(False)
 @cython.wraparound(False)
 cdef void matmul_nogil(
@@ -647,6 +648,7 @@ def _matmul_nogil_test(A, int transA, B, int transB, alpha, beta, C, int m, int 
     matmul_nogil(m, n, k, al, Av, ta, Bv, tb, be, Cv)
     return np.asarray(Cv)
 
+
 @cython.boundscheck(False)
 @cython.wraparound(False)
 cdef void apply_sparse_csr_nogil(
@@ -671,6 +673,7 @@ cdef void apply_sparse_csr_nogil(
             val = data[j]
             for k in range(p):
                 Y[i, k] = Y[i, k] + val * X[indices[j], k]
+
 
 @cython.boundscheck(False)
 @cython.wraparound(False)
@@ -790,9 +793,7 @@ def block_lanczos_array_cy(
     cdef double complex[:, ::1] wp_g = wp_global
 
     cdef list block_widths = list(kwargs.get("block_widths_init", [n] * start_it))
-    cdef int n_curr, n_prev, n_next, active_k
-    cdef list bad_block_idx
-    cdef np.ndarray Q_bad, overlap
+    cdef int n_curr, n_prev, active_k
 
     # EA16 §2.6.2 locking deflation: keep every Lanczos vector orthogonal to the
     # already-converged ("locked") Ritz vectors. Without this the matvec keeps
@@ -1113,7 +1114,6 @@ def block_lanczos_array_cy(
         if return_status:
             return res_alphas, res_betas, res_Q, termination
         return res_alphas, res_betas, res_Q
-
 
 
 import scipy.sparse as sps

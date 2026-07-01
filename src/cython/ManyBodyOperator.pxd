@@ -42,9 +42,6 @@ cdef extern from "ManyBodyOperator.h" nogil:
         ManyBodyState apply(const ManyBodyState&, double)
         vector[ManyBodyState] apply(const vector[const ManyBodyState*]&, double)
 
-
-
-
         ManyBodyOperator operator-()
         ManyBodyOperator operator+(const ManyBodyOperator&, const ManyBodyOperator&)
         ManyBodyOperator operator-(const ManyBodyOperator&, const ManyBodyOperator&)

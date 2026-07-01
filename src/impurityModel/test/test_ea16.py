@@ -108,9 +108,7 @@ def test_select_excludes_locked_local():
 
 def test_select_ghost_filter_pushes_out_near_locked_value():
     theta = np.array([1.0, 2.0, 3.0])
-    kept, _ = select_restart_indices(
-        theta, n_keep=2, locked_local=[], locked_evals=np.array([2.0]), ghost_tol=1e-6
-    )
+    kept, _ = select_restart_indices(theta, n_keep=2, locked_local=[], locked_evals=np.array([2.0]), ghost_tol=1e-6)
     # idx 1 (== a locked eigenvalue) is treated as a ghost and skipped.
     assert set(kept.tolist()) == {0, 2}
 
@@ -149,9 +147,7 @@ def test_purge_restart_preserves_kept_eigenvalues_and_orthonormal_C():
 
     # The re-banded T^+ is a unitary similarity of diag(kept evals): same spectrum.
     Tplus = _assemble_band(alphas_new, betas_new, p)
-    np.testing.assert_allclose(
-        np.sort(np.linalg.eigvalsh(Tplus)), np.sort(evals[kept_idx].real), atol=1e-10
-    )
+    np.testing.assert_allclose(np.sort(np.linalg.eigvalsh(Tplus)), np.sort(evals[kept_idx].real), atol=1e-10)
     # C = V_m -> V_new combination has orthonormal columns.
     np.testing.assert_allclose(C.conj().T @ C, np.eye(2 * p), atol=1e-10)
     assert beta_new.shape == (p, p)
@@ -167,9 +163,16 @@ def test_locked_overlap_step_recurrence_and_trigger():
     alpha_j = np.array([[2.0 + 0j]])
     # xi_new = binv*(xi*|lam-mu| + xi_prev*bprev + rho) + eps
     xi_new, trigger, mask = locked_overlap_step(
-        xi, xi_prev, locked_evals, alpha_j,
-        beta_j_inv_norm=1.0, beta_jm1_norm=0.0, rho=1.0,
-        omega_tol=0.5, bad_tol=0.5, eps=0.0,
+        xi,
+        xi_prev,
+        locked_evals,
+        alpha_j,
+        beta_j_inv_norm=1.0,
+        beta_jm1_norm=0.0,
+        rho=1.0,
+        omega_tol=0.5,
+        bad_tol=0.5,
+        eps=0.0,
     )
     np.testing.assert_allclose(xi_new, [1.0], atol=1e-14)
     assert trigger is True
@@ -178,9 +181,16 @@ def test_locked_overlap_step_recurrence_and_trigger():
 
 def test_locked_overlap_step_stays_below_threshold():
     xi_new, trigger, mask = locked_overlap_step(
-        np.array([0.0]), np.array([0.0]), np.array([0.0]), np.array([[2.0 + 0j]]),
-        beta_j_inv_norm=1.0, beta_jm1_norm=0.0, rho=0.0,
-        omega_tol=1e-8, bad_tol=1e-8, eps=EPS,
+        np.array([0.0]),
+        np.array([0.0]),
+        np.array([0.0]),
+        np.array([[2.0 + 0j]]),
+        beta_j_inv_norm=1.0,
+        beta_jm1_norm=0.0,
+        rho=0.0,
+        omega_tol=1e-8,
+        bad_tol=1e-8,
+        eps=EPS,
     )
     assert trigger is False
     assert mask.tolist() == [False]

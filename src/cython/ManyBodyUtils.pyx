@@ -10,12 +10,11 @@ from libcpp.vector cimport vector
 from cython.operator cimport dereference, preincrement
 from libcpp.algorithm cimport sort, unique, lower_bound
 from libcpp.map cimport map as cpp_map
-from libc.stdint cimport uint8_t, uint16_t, uint64_t, int64_t, int32_t
+from libc.stdint cimport uint8_t, uint64_t, int64_t, int32_t
 from libc.string cimport memcpy
 from libcpp.complex cimport complex as complex_cpp
 
 from copy import copy, deepcopy
-from bitarray import bitarray
 
 import numpy as np
 
@@ -46,7 +45,7 @@ cdef class SlaterDeterminant:
         """
         Create a SlaterDeterminant from bytes representation.
         """
-        cdef SlaterDeterminant_cpp[uint64_t] s
+        cdef SlaterDeterminant_cpp[uint64_t] _s
         cdef size_t n_bytes = sizeof(SlaterDeterminant_cpp[uint64_t].value_type)
         cdef size_t n_chunks = len(b) // n_bytes
         if len(b) % n_bytes:
@@ -115,7 +114,6 @@ cdef class SlaterDeterminant:
         return result
 
     def __deepcopy__(self, memo=None):
-        cls = self.__class__
         cdef uint64_t val
         cdef SlaterDeterminant result = SlaterDeterminant(tuple(val for val in self.s))
         return result
@@ -262,7 +260,6 @@ cdef class ManyBodyState:
             res= self.v.norm()
         return res
 
-
     def __len__(self):
         with nogil:
             res = self.v.size()
@@ -362,6 +359,7 @@ cdef class ManyBodyState:
         Returns true if the ManyBodyState is empty (i.e. contains no SlaterDeterminants)
         """
         return self.v.empty()
+
 
 def inner(ManyBodyState a, ManyBodyState b):
     """
@@ -658,15 +656,16 @@ cdef class ManyBodyOperator:
         return self.o.num_flat_terms()
 
 
-
 def applyOp(ManyBodyOperator op, ManyBodyState psi, double cutoff=0) ->ManyBodyState :
     """
     Apply a ManyBodyOperator to a ManyBodyState.
     """
     return op(psi, cutoff)
 
+
 from MpiUtils cimport pack_determinants as c_pack_determinants, unpack_determinants as c_unpack_determinants, pack_psis as c_pack_psis, unpack_psis as c_unpack_psis, pack_psis_fused as c_pack_psis_fused, unpack_psis_fused as c_unpack_psis_fused
 import numpy as np
+
 
 def pack_determinants_cy(list dets, int comm_size):
     cdef vector[SlaterDeterminant_cpp[uint64_t]] c_dets
@@ -697,6 +696,7 @@ def pack_determinants_cy(list dets, int comm_size):
 
     return send_counts_np, state_buf_np
 
+
 def unpack_determinants_cy(int comm_size, int64_t[:] recv_counts, uint64_t[:] state_buf, size_t chunks_per_state):
     cdef vector[int64_t] c_recv_counts
     cdef vector[uint64_t] c_state_buf
@@ -721,6 +721,7 @@ def unpack_determinants_cy(int comm_size, int64_t[:] recv_counts, uint64_t[:] st
             rank_dets.append(py_det)
         res.append(rank_dets)
     return res
+
 
 def pack_psis_cy(list psis, int comm_size):
     cdef vector[const ManyBodyState_cpp*] c_psis
@@ -791,6 +792,7 @@ def unpack_psis_cy(list psis, int comm_size, int64_t[:] recv_counts, uint64_t[:]
     with nogil:
         c_unpack_psis(c_psis, comm_size, c_recv_counts, c_state_buf, c_amp_buf_reim, c_psi_buf, chunks_per_state)
 
+
 def pack_psis_fused_cy(list psis, int comm_size, size_t chunks_per_state):
     """Pack psis into a single interleaved byte buffer (state||amp||psi_idx per entry),
     rank-ordered, for a one-shot Neighbor_alltoallv(MPI.BYTE) redistribute."""
@@ -857,6 +859,7 @@ def extract_new_states(list states, object existing_dict):
             preincrement(it)
     return new_states
 
+
 def inner_multi(list states_a, list states_b):
     """
     Compute inner products between two lists of ManyBodyStates.
@@ -891,6 +894,7 @@ def inner_multi(list states_a, list states_b):
                 res_view[i, j].imag = val.imag()
 
     return res
+
 
 def add_scaled_multi(list states_target, list states_source, complex[:, :] coeffs):
     """
