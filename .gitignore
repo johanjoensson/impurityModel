@@ -16,6 +16,8 @@ build/
 *.egg-info/
 .coverage
 .pytest_cache/
+# Per-rank pytest output from non-root MPI ranks (see test/conftest.py)
+.pytest_mpi_rank*.out
 
 # VIM files
 .*~

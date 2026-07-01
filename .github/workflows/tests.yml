@@ -82,7 +82,12 @@ jobs:
           pip install --no-binary mpi4py mpi4py pytest pytest-mpi
           if [ "${{ matrix.coverage }}" = "true" ]; then
             pip install pytest-cov
-            echo "PYTEST_COV_ARGS=--cov=src/impurityModel --cov-report=xml --cov-append" >> "$GITHUB_ENV"
+            # Only *collect* per run (no --cov-report): the report is generated once,
+            # after combining every run's data. The 2-rank MPI run additionally gives
+            # each rank its own COVERAGE_FILE so the two processes don't race to combine
+            # into a shared .coverage file (which corrupts it: "table coverage_schema
+            # already exists"). See the "Combine coverage" step below.
+            echo "PYTEST_COV_ARGS=--cov=src/impurityModel --cov-append --cov-report=" >> "$GITHUB_ENV"
           else
             echo "PYTEST_COV_ARGS=" >> "$GITHUB_ENV"
           fi
@@ -127,7 +132,21 @@ jobs:
 
       - name: Run MPI tests (2 ranks)
         run: |
-          mpiexec -n 2 python -m pytest --cache-clear --with-mpi $PYTEST_COV_ARGS
+          # Give each rank its own coverage data file so the two processes don't race
+          # to combine into a shared .coverage (which crashes rank>0 with exit 3). The
+          # rank env var is PMI_RANK under MPICH (the CI MPI) and OMPI_COMM_WORLD_RANK
+          # under Open MPI; default 0 keeps this a no-op when coverage is off.
+          mpiexec -n 2 bash -c 'COVERAGE_FILE=.coverage.mpi_rank${PMI_RANK:-${OMPI_COMM_WORLD_RANK:-0}} python -m pytest --cache-clear --with-mpi '"$PYTEST_COV_ARGS"
+
+      - name: Combine coverage and write XML
+        if: matrix.coverage == true
+        run: |
+          # Merge the serial, 1-rank and per-rank 2-rank data files into one .coverage
+          # and emit the authoritative report. Combining here (once) rather than in each
+          # run is what keeps the concurrent MPI ranks from corrupting the data file.
+          coverage combine
+          coverage xml -o coverage.xml
+          coverage report
 
       - name: Upload coverage to Coveralls
         if: matrix.coverage == true
