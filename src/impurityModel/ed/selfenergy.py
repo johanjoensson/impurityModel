@@ -241,7 +241,6 @@ def calc_selfenergy(
     bath_states,
     tau,
     verbosity,
-    block_structure,
     rot_to_spherical,
     cluster_label,
     reort,
@@ -281,8 +280,6 @@ def calc_selfenergy(
         Temperature parameter.
     verbosity : int
         Verbosity level.
-    block_structure : BlockStructure
-        The block structure of the Hamiltonian.
     rot_to_spherical : np.ndarray
         Rotation matrix to spherical harmonics.
     cluster_label : str
@@ -330,6 +327,61 @@ def calc_selfenergy(
             print("\n" + "=" * 80)
             print(f"  {title}")
             print("=" * 80, flush=verbosity >= 2)
+
+    # construct local, interacting, hamiltonian (in the caller's input/correlated basis B)
+    u = finite.getUop_from_rspt_u4(u4)
+    h_input = ManyBodyOperator(h0) + ManyBodyOperator(u)
+
+    from impurityModel.ed.symmetries import (
+        group_orbitals_by_charges,
+        impurity_block_structure,
+        impurity_symmetry_rotation,
+        rotate_hamiltonian,
+    )
+
+    # The impurity spin-orbital set and total orbital count, whether inputs are flat lists or
+    # already grouped dicts (the rotation only needs these, not the grouping).
+    valence_flat, conduction_flat = bath_states
+    impurity_indices = sorted(impurity_orbitals.values())
+    n_spin_orbitals = 1 + len(impurity_orbitals) + len(valence_flat) + len(conduction_flat)
+
+    # Adaptive symmetry-adapted basis: diagonalising the impurity one-body block collapses the
+    # Green's-function block structure to its finest form (e.g. 1x1 eg/t2g blocks) BUT can
+    # express the Coulomb interaction more densely. h0 and u4 are in the caller's "correlated"
+    # input basis (NOT assumed spherical); the fill test below is measured *relative to that
+    # input basis*, so we rotate only when it does not densify the operator (fill <= threshold)
+    # and keep the input basis otherwise (e.g. a j,m_j eigenbasis under spin-orbit coupling
+    # densifies the Coulomb tensor). Every output is rotated back to the input basis B before
+    # returning; nothing here presumes a spherical-harmonic input.
+    rotation_full, u_imp = impurity_symmetry_rotation(h_input, impurity_indices, n_orb=n_spin_orbitals)
+    h_rotated = rotate_hamiltonian(h_input, rotation_full, tol=_ROTATION_TRIM_TOL)
+    n_terms_input = sum(1 for v in h_input.to_dict().values() if abs(v) > _ROTATION_TRIM_TOL)
+    fill_ratio = len(h_rotated.to_dict()) / max(n_terms_input, 1)
+
+    rotate = fill_ratio <= _MAX_ROTATION_FILL
+    if rotate:
+        h = h_rotated
+        h0_solve = rotate_hamiltonian(ManyBodyOperator(h0), rotation_full, tol=_ROTATION_TRIM_TOL).to_dict()
+        # Observable rotation for the solve (spherical -> S): compose the caller's input rotation
+        # R_in (spherical -> B) with W^dag (B -> S). On the impurity block, R = u_imp^dag @ R_in.
+        rot_to_spherical = u_imp.conj().T @ np.asarray(rot_to_spherical, dtype=complex)
+    else:
+        # Stay in the input basis; make the output rotation below a no-op.
+        h = h_input
+        h0_solve = h0
+        rotation_full = np.eye(n_spin_orbitals, dtype=complex)
+        u_imp = np.eye(len(impurity_indices), dtype=complex)
+
+    # Group flat orbital lists into per-conserved-charge blocks **in the solver basis** h (the
+    # rotation mixes degenerate orbitals, so the grouping must be derived after it — grouping
+    # in the input basis and applying it post-rotation would mislabel the sectors). Existing
+    # dict-form inputs pass through unchanged.
+    if flat_inputs:
+        impurity_orbitals, bath_states = group_orbitals_by_charges(
+            h, impurity_orbitals, valence_flat, conduction_flat, n_orb=n_spin_orbitals
+        )
+        nominal_occ = _per_group_occupation(nominal_occ, impurity_orbitals)
+        mixed_valence = _per_group_scalar(mixed_valence, impurity_orbitals, default=0)
 
     valence_baths, conduction_baths = bath_states
     total_impurity_orbitals = {i: sum(len(orbs) for orbs in impurity_orbitals[i]) for i in impurity_orbitals}
