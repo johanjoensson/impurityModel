@@ -341,7 +341,15 @@ def calc_selfenergy(
     # construct local, interacting, hamiltonian
     u = finite.getUop_from_rspt_u4(u4)
     h = ManyBodyOperator(h0) + ManyBodyOperator(u)
-    # h = finite.addOps([h0, u])
+
+    # Determine block structure from Hamiltonian (single particle part only)
+    from impurityModel.ed.symmetries import auto_block_structure as derive_block_structure
+
+    impurity_indices = sorted(orb for blocks in impurity_orbitals.values() for block in blocks for orb in block)
+    block_structure = derive_block_structure(h, orbitals=impurity_indices)
+
+    if verbosity > 0:
+        print(f"Auto-derived block structure: {len(block_structure.blocks)} blocks")
     basis_information = {
         "impurity_orbitals": impurity_orbitals,
         "bath_states": bath_states,
@@ -360,7 +368,7 @@ def calc_selfenergy(
     # ensemble was truncated (the highest retained state still carries Boltzmann weight); if
     # so we re-run the eigensolver with more requested states (num_wanted) once.
     num_wanted = 10
-    max_retries = 1
+    max_retries = 2
     for _attempt in range(max_retries + 1):
         psis, es, ground_state_basis, thermal_rho, gs_info = calc_gs(
             h,

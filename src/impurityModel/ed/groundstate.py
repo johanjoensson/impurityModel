@@ -161,7 +161,7 @@ def prescan_ground_state_sector(
     truncation_threshold,
     slaterWeightMin,
     cipsi_solver_method="trlm",
-    scan_width=1,
+    scan_width=2,
     verbose=False,
     weighted_restrictions=None,
 ):
