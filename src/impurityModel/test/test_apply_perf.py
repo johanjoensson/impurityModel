@@ -295,7 +295,6 @@ def test_normal_ordering_multiplier(oracle_fixtures, capsys):
     """Report the term-count multiplier (Phase 3b). Already-normal-ordered Hamiltonian
     fixtures must not expand (multiplier ~1); the report flags any blow-up."""
     with capsys.disabled():
-        print()
         for name in FIXTURE_NAMES:
             op, _ = oracle_fixtures[name]
             op.set_normal_ordering(False)
@@ -303,7 +302,6 @@ def test_normal_ordering_multiplier(oracle_fixtures, capsys):
             op.set_normal_ordering(True)
             normal = op.num_flat_terms()
             mult = normal / raw if raw else 1.0
-            print(f"[normal-order] {name:11s} raw={raw:4d} normal={normal:4d} mult={mult:.2f}")
             assert mult <= 1.5, f"{name} normal-order expansion {mult:.2f} exceeds 1.5"
 
 
