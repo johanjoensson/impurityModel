@@ -7,10 +7,8 @@ from impurityModel.ed.block_structure import BlockStructure, build_block_structu
 from impurityModel.ed.utils import matrix_connectivity_print, matrix_print
 
 
-def build_imp_bath_blocks(
-    H: np.ndarray, n_orb: int
-) -> tuple[list[list[int]], list[list[int]], list[list[int]], list[list[int]]]:
-    """Build impurity and bath blocks based on the block structure of Hamiltonian H.
+def build_imp_bath_blocks(H: np.ndarray, n_orb: int) -> tuple[list[int], list[int], list[int]]:
+    """Build impurity and bath index lists based on the structure of Hamiltonian H.
 
     Parameters
     ----------
@@ -21,28 +19,17 @@ def build_imp_bath_blocks(
 
     Returns
     -------
-    impurity_indices : list of list of int
-        Impurity orbital indices for each block.
-    occupied_indices : list of list of int
-        Occupied bath orbital indices for each block.
-    unoccupied_indices : list of list of int
-        Unoccupied bath orbital indices for each block.
-    block_structure : BlockStructure
-        The block structure representation of the Hamiltonian.
+    impurity_indices : list of int
+        Impurity orbital indices.
+    occupied_indices : list of int
+        Occupied bath orbital indices.
+    unoccupied_indices : list of int
+        Unoccupied bath orbital indices.
     """
-    block_structure = build_block_structure(H)
-    impurity_indices = [None for _ in range(len(block_structure.blocks))]
-    occupied_indices = [None for _ in range(len(block_structure.blocks))]
-    unoccupied_indices = [None for _ in range(len(block_structure.blocks))]
-    for block_i, orbs in enumerate(block_structure.blocks):
-        bath_orbs = set(orb for orb in orbs if orb >= n_orb)
-        impurity_orbs = set(orbs) - bath_orbs
-        impurity_indices[block_i] = sorted(impurity_orbs)
-        occupied_indices[block_i] = set(orb for orb in bath_orbs if H[orb, orb] < 0)
-        unoccupied_indices[block_i] = sorted(bath_orbs - occupied_indices[block_i])
-        occupied_indices[block_i] = sorted(occupied_indices[block_i])
-        orbs[:] = impurity_indices[block_i]
-    return impurity_indices, occupied_indices, unoccupied_indices, block_structure
+    impurity_indices = set(range(n_orb))
+    occupied_indices = {orb for orb in range(n_orb, H.shape[0]) if H[orb, orb] < 0}
+    unoccupied_indices = {orb for orb in range(n_orb, H.shape[0]) if orb not in occupied_indices}
+    return sorted(impurity_indices), sorted(occupied_indices), sorted(unoccupied_indices)
 
 
 def _print_bath_geometry(name, H_baths, vs, block_structure):
