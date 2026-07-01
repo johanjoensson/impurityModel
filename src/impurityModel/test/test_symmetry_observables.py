@@ -512,9 +512,7 @@ def test_derive_spin_pairs_returns_none_when_unresolvable():
 
     # A rotation that mixes the two impurity spins makes the rotated S_+ non-permutation.
     theta = 0.3
-    rot_mix = np.array(
-        [[np.cos(theta), -np.sin(theta)], [np.sin(theta), np.cos(theta)]], dtype=complex
-    )
+    rot_mix = np.array([[np.cos(theta), -np.sin(theta)], [np.sin(theta), np.cos(theta)]], dtype=complex)
     connected = _hop(
         [(0, 0.0), (1, 0.0), (2, -0.4), (3, -0.4), (4, 0.7), (5, 0.7)],
         [(0, 2, 0.5), (1, 3, 0.5), (2, 4, 0.2), (3, 5, 0.2)],
@@ -535,8 +533,7 @@ def test_derive_spin_pairs_block_grouped_bath():
     # Bath block 0 (couples to imp0) has 2 sites/spin: dn 4,5 / up 6,7.
     # Bath block 1 (couples to imp1) has 1 site/spin: dn 8 / up 9.  Different sizes.
     Hop = _hop(
-        [(0, 0.2), (1, 0.2), (2, -0.1), (3, -0.1),
-         (4, -0.3), (6, -0.3), (5, 0.6), (7, 0.6), (8, 0.4), (9, 0.4)],
+        [(0, 0.2), (1, 0.2), (2, -0.1), (3, -0.1), (4, -0.3), (6, -0.3), (5, 0.6), (7, 0.6), (8, 0.4), (9, 0.4)],
         [(0, 4, 0.5), (1, 6, 0.5), (0, 5, 0.4), (1, 7, 0.4), (2, 8, 0.3), (3, 9, 0.3)],
     )
     derived = derive_spin_pairs(Hop, {0: [[0, 1]], 1: [[2, 3]]}, np.eye(2, dtype=complex), 10)

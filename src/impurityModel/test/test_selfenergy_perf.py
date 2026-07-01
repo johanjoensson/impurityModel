@@ -63,9 +63,7 @@ import pytest
 
 RUN = os.environ.get("RUN_SELFENERGY_BENCH") == "1"
 
-pytestmark = pytest.mark.skipif(
-    not RUN, reason="Set RUN_SELFENERGY_BENCH=1 to run the calc_selfenergy benchmark."
-)
+pytestmark = pytest.mark.skipif(not RUN, reason="Set RUN_SELFENERGY_BENCH=1 to run the calc_selfenergy benchmark.")
 
 # Repo root: this file is src/impurityModel/test/<this>; the h0 pickles live in <root>/h0.
 REPO_ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "..", ".."))
@@ -308,7 +306,12 @@ def test_calc_selfenergy_benchmark():
         profiler.dump_stats(stats_path)
 
         # Optional: dump the real-axis self-energy on rank 0 for serial-vs-MPI comparison.
-        if rank == 0 and os.environ.get("SELFENERGY_BENCH_DUMP") and result is not None and result.get("sigma_real") is not None:
+        if (
+            rank == 0
+            and os.environ.get("SELFENERGY_BENCH_DUMP")
+            and result is not None
+            and result.get("sigma_real") is not None
+        ):
             arr = np.array(result["sigma_real"])
             np.save(os.path.join(outdir, f"sigma_real_n{size}.npy"), arr)
             print(f"[selfenergy-bench] sigma_real dumped: shape={arr.shape} |.|={np.linalg.norm(arr):.6e}", flush=True)
