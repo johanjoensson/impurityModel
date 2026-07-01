@@ -63,7 +63,13 @@ import pytest
 
 RUN = os.environ.get("RUN_SELFENERGY_BENCH") == "1"
 
-pytestmark = pytest.mark.skipif(not RUN, reason="Set RUN_SELFENERGY_BENCH=1 to run the calc_selfenergy benchmark.")
+# `benchmark` keeps this out of standard `pytest` runs (see pytest.ini); the
+# RUN_SELFENERGY_BENCH gate is a second guard so even `pytest -m benchmark` skips
+# the known-broken 100-bath default workload unless it is explicitly requested.
+pytestmark = [
+    pytest.mark.benchmark,
+    pytest.mark.skipif(not RUN, reason="Set RUN_SELFENERGY_BENCH=1 to run the calc_selfenergy benchmark."),
+]
 
 # Repo root: this file is src/impurityModel/test/<this>; the h0 pickles live in <root>/h0.
 REPO_ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "..", ".."))

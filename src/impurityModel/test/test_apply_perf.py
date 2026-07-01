@@ -307,9 +307,15 @@ def test_normal_ordering_multiplier(oracle_fixtures, capsys):
             assert mult <= 1.5, f"{name} normal-order expansion {mult:.2f} exceeds 1.5"
 
 
+@pytest.mark.benchmark
 @pytest.mark.parametrize("name", FIXTURE_NAMES)
 def test_apply_timing(name, timing_fixtures, capsys):
-    """Phase 0.3 timing harness: print median ms/apply (no absolute-time assertion)."""
+    """Phase 0.3 timing harness: print median ms/apply (no absolute-time assertion).
+
+    Marked ``benchmark`` so it is skipped by default (see pytest.ini); run with
+    ``pytest -m benchmark``. Because ``timing_fixtures`` is used only here, the
+    expensive fixture is never built during a standard run.
+    """
     op, psi = timing_fixtures[name]
     reps = 7
     times = []

@@ -84,6 +84,28 @@ def test_python_basis_rotation_spectrum_invariant():
         np.testing.assert_allclose(ev, ev_rot, atol=1e-10)
 
 
+def test_identity_rotation_is_a_noop():
+    """Rotating by the identity leaves both tensors bit-for-bit unchanged."""
+    op = _hubbard_dimer_operator()
+    h, v, _ = extract_tensors(op, n_orb=4)
+    eye = np.eye(4, dtype=complex)
+    np.testing.assert_allclose(rotate_one_body(h, eye), h, atol=1e-14)
+    np.testing.assert_allclose(rotate_two_body(v, eye), v, atol=1e-14)
+
+
+def test_one_body_rotation_preserves_spectrum_and_hermiticity():
+    """A unitary rotation of the one-body tensor is a similarity transform: same
+    eigenvalues, and Hermiticity is preserved."""
+    op = _hubbard_dimer_operator()
+    h, _, _ = extract_tensors(op, n_orb=4)
+    u = _random_unitary(4, seed=7)
+    h_rot = rotate_one_body(h, u)
+    np.testing.assert_allclose(h_rot, h_rot.conj().T, atol=1e-12)
+    np.testing.assert_allclose(
+        np.sort(np.linalg.eigvalsh(h)), np.sort(np.linalg.eigvalsh(h_rot)), atol=1e-12
+    )
+
+
 def test_rotation_diagonalizes_discovered_generators():
     """In the joint-eigenbasis U, the discovered abelian generators become diagonal."""
     from impurityModel.ed.symmetries import (

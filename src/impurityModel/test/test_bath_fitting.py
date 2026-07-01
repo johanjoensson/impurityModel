@@ -1,4 +1,6 @@
 import numpy as np
+import pytest
+
 from impurityModel.ed.bath_fitting import BathFitter
 
 
@@ -78,3 +80,39 @@ def test_bath_fitter_matsubara():
     assert fitter.best_cost < 1e-5
     np.testing.assert_allclose(eps, [-0.5], atol=1e-3)
     np.testing.assert_allclose(v.flatten() ** 2, [0.64], atol=1e-3)
+
+
+# --------------------------------------------------------------------------- #
+# Edge cases
+# --------------------------------------------------------------------------- #
+def test_zero_hybridization_drives_couplings_to_zero():
+    """A vanishing target hybridization (and no moment constraints) is fit best by V=0."""
+    w = np.linspace(-3, 3, 61)
+    delta_target = np.zeros((len(w), 1, 1), dtype=complex)
+    fitter = BathFitter(w, delta_target, n_bath=2, n_imp=1, eta=0.1, complex_v=False)
+
+    np.random.seed(0)
+    _, v = fitter.fit(n_starts=5)
+
+    assert fitter.best_cost < 1e-6
+    assert np.max(np.abs(v)) < 1e-2
+
+
+def test_unpack_real_convention():
+    """``unpack`` splits x into eps (n_bath) then a row-major (n_imp, n_bath) V."""
+    w = np.linspace(-1, 1, 5)
+    fitter = BathFitter(w, np.zeros((5, 1, 2), dtype=complex), n_bath=2, n_imp=1, eta=0.1)
+    x = np.array([0.5, -0.5, 1.0, 2.0])  # eps=[0.5,-0.5], v=[[1.0, 2.0]]
+    eps, v = fitter.unpack(x)
+    np.testing.assert_allclose(eps, [0.5, -0.5])
+    np.testing.assert_allclose(v, [[1.0, 2.0]])
+
+
+def test_unpack_complex_convention():
+    """With ``complex_v`` the tail of x holds the imaginary parts of V."""
+    w = np.linspace(-1, 1, 5)
+    fitter = BathFitter(w, np.zeros((5, 1, 2), dtype=complex), n_bath=2, n_imp=1, eta=0.1, complex_v=True)
+    x = np.array([0.5, -0.5, 1.0, 2.0, 3.0, 4.0])  # eps, v_real=[1,2], v_imag=[3,4]
+    eps, v = fitter.unpack(x)
+    np.testing.assert_allclose(eps, [0.5, -0.5])
+    np.testing.assert_allclose(v, [[1.0 + 3.0j, 2.0 + 4.0j]])

@@ -28,11 +28,13 @@ class HermitianOperator(scipy.sparse.linalg.LinearOperator):
     """
 
     def __init__(self, diagonal: np.ndarray, diagonal_indices: np.ndarray, triangular_part: scipy.sparse.csr_matrix):
-        self.shape = triangular_part.shape
         self.diagonal = diagonal if len(diagonal.shape) == 1 else diagonal.reshape(-1)
         self.diagonal_indices = diagonal_indices
         self.triangular_part = triangular_part
-        self.dtype = triangular_part.dtype
+        # Delegate dtype/shape (and, on scipy>=1.15, the array-namespace ``_xp``
+        # attribute that ``LinearOperator.dot`` now requires) to the base initializer
+        # instead of setting them by hand.
+        super().__init__(dtype=triangular_part.dtype, shape=triangular_part.shape)
 
     def _matvec(self, v):
         v = v.reshape(-1)

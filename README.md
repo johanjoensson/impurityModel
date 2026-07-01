@@ -76,6 +76,8 @@ The code comes with a testsuite, to ensure that everything is running properly. 
 The code also contains tests to verify that the MPI parallelization is working correctly, to run the MPI tests, as well as the serial ones
 use the command `mpirun -n 3 pytest --with-mpi` (please replace 3 with however many MPI ranks you wan to use, the tests will take longer the more ranks you use).
 
+Performance benchmarks (timing/profiling, not correctness) are marked `benchmark` and skipped by default. Run them explicitly with `pytest -m benchmark`. The self-energy benchmark additionally requires `RUN_SELFENERGY_BENCH=1` (and accepts `SELFENERGY_BENCH_*` env vars to size the workload).
+
 
 # First X-ray spectra simulations
 

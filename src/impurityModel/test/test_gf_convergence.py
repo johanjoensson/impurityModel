@@ -142,3 +142,63 @@ def test_safeguard_does_not_false_trigger_on_large_norm_H():
     )
     assert len(a) == 60  # no false truncation
     assert max(np.linalg.norm(x, 2) for x in b) < 2 * np.linalg.norm(H, 2)
+
+
+# --------------------------------------------------------------------------- #
+# calc_G isolated unit / edge cases (the continued fraction vs a dense resolvent)
+# --------------------------------------------------------------------------- #
+def _dense_seed_resolvent(alphas, couplings, r, omega, delta):
+    """Oracle: r^H [(omega+i delta) I - T]^{-1}_{block 0,0} r, T dense block-tridiagonal.
+
+    ``couplings[i]`` (length ``nb-1``) is the sub-diagonal block ``T[i+1, i]`` matching the
+    ``calc_G`` convention ``betas[i]`` = block ``i -> i+1``; ``T`` is Hermitian.
+    """
+    p = alphas[0].shape[0]
+    nb = len(alphas)
+    N = nb * p
+    T = np.zeros((N, N), dtype=complex)
+    for i in range(nb):
+        T[i * p : (i + 1) * p, i * p : (i + 1) * p] = alphas[i]
+        if i < nb - 1:
+            T[(i + 1) * p : (i + 2) * p, i * p : (i + 1) * p] = couplings[i]
+            T[i * p : (i + 1) * p, (i + 1) * p : (i + 2) * p] = couplings[i].conj().T
+    out = np.zeros((len(omega), r.shape[1], r.shape[1]), dtype=complex)
+    for w_idx, w in enumerate(omega):
+        res00 = np.linalg.inv((w + 1j * delta) * np.eye(N) - T)[:p, :p]
+        out[w_idx] = r.conj().T @ res00 @ r
+    return out
+
+
+def test_calc_g_empty_blocks_returns_zeros():
+    r = np.ones((2, 3), dtype=complex)
+    omega = np.linspace(-1, 1, 4)
+    G = calc_G([], [], r, omega, 0.0, DELTA)
+    assert G.shape == (4, 3, 3)
+    np.testing.assert_allclose(G, 0.0, atol=0.0)
+
+
+def test_calc_g_single_block_is_plain_resolvent():
+    rng = np.random.default_rng(0)
+    a0 = rng.standard_normal((2, 2)) + 1j * rng.standard_normal((2, 2))
+    a0 = a0 + a0.conj().T
+    r = rng.standard_normal((2, 2)) + 1j * rng.standard_normal((2, 2))
+    omega = np.linspace(-4, 4, 20)
+    G = calc_G(np.array([a0]), np.empty((0, 2, 2), dtype=complex), r, omega, 0.0, DELTA)
+    ref = _dense_seed_resolvent([a0], [], r, omega, DELTA)
+    np.testing.assert_allclose(G, ref, atol=1e-10)
+
+
+def test_calc_g_two_blocks_matches_dense_resolvent():
+    rng = np.random.default_rng(1)
+    a0 = rng.standard_normal((2, 2)) + 1j * rng.standard_normal((2, 2))
+    a0 = a0 + a0.conj().T
+    a1 = rng.standard_normal((2, 2)) + 1j * rng.standard_normal((2, 2))
+    a1 = a1 + a1.conj().T
+    b0 = rng.standard_normal((2, 2)) + 1j * rng.standard_normal((2, 2))
+    r = rng.standard_normal((2, 2)) + 1j * rng.standard_normal((2, 2))
+    omega = np.linspace(-5, 5, 30)
+    # calc_G expects len(betas) == len(alphas); the trailing residual block is ignored.
+    residual = rng.standard_normal((2, 2)) + 1j * rng.standard_normal((2, 2))
+    G = calc_G(np.array([a0, a1]), np.array([b0, residual]), r, omega, 0.0, DELTA)
+    ref = _dense_seed_resolvent([a0, a1], [b0], r, omega, DELTA)
+    np.testing.assert_allclose(G, ref, atol=1e-9)
