@@ -371,9 +371,7 @@ def print_gs_statistics(stats, file=None):
     print(sep, file=file)
     print("Thermal ground-state configuration weights (Impurity, Valence, Conduction)", file=file)
     print(f"({stats['num_determinants']} Slater determinants, tau = {stats['tau']:.4g})", file=file)
-    _print_config_table(
-        stats["thermal_config_weights"]["rows"], stats["thermal_config_weights"]["remaining"], file
-    )
+    _print_config_table(stats["thermal_config_weights"]["rows"], stats["thermal_config_weights"]["remaining"], file)
 
     print("\nMarginal occupation distributions (thermal):", file=file)
     for name in ("impurity", "valence", "conduction"):
@@ -401,12 +399,9 @@ def print_gs_statistics(stats, file=None):
     print(f"{'Imp':>5s} {'Val':>5s} {'Con':>5s} {'Weight':>12s} {'%':>8s}  occupied (imp|val|con)", file=file)
     for d in stats["top_determinants"]:
         n_imp, n_val, n_con = d["config"]
-        occ = (
-            f"{d['impurity_occupied']}|{d['valence_occupied']}|{d['conduction_occupied']}"
-        )
+        occ = f"{d['impurity_occupied']}|{d['valence_occupied']}|{d['conduction_occupied']}"
         print(
-            f"{n_imp:>5d} {n_val:>5d} {n_con:>5d} "
-            f"{d['weight']:>12.6f} {100 * d['fraction']:>8.3f}  {occ}",
+            f"{n_imp:>5d} {n_val:>5d} {n_con:>5d} " f"{d['weight']:>12.6f} {100 * d['fraction']:>8.3f}  {occ}",
             file=file,
         )
 

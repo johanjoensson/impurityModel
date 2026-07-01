@@ -1336,9 +1336,7 @@ def print_thermal_expectation_values(
     rows.append(("<L.S>", get_LS_from_rho_spherical(rho_thermal_spherical), ""))
     for label, value in (("S", s_thermal), ("L", l_thermal), ("J", j_thermal)):
         if value is not None:
-            rows.append(
-                (f"<{label}^2>", np.real(value), f"({label} = {casimir_to_quantum_number(value): 6.4f})")
-            )
+            rows.append((f"<{label}^2>", np.real(value), f"({label} = {casimir_to_quantum_number(value): 6.4f})"))
     if sisb_thermal is not None:
         rows.append(("<S_imp.S_bath>", np.real(sisb_thermal), ""))
 

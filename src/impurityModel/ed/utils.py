@@ -53,9 +53,7 @@ def vector_to_string(
         return " ".join(f"{np.real(el):>{real_width}.{n_prec}f}" for el in v)
     if imag_width is None:
         imag_width = _float_field_width(v.imag, n_prec, force_sign=True)
-    return " ".join(
-        f"{np.real(el):>{real_width}.{n_prec}f} {np.imag(el):>+{imag_width}.{n_prec}f}j" for el in v
-    )
+    return " ".join(f"{np.real(el):>{real_width}.{n_prec}f} {np.imag(el):>+{imag_width}.{n_prec}f}j" for el in v)
 
 
 def matrix_to_string(m: np.ndarray, n_prec: int = 15, offset: int = 0) -> str:
