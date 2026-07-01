@@ -488,6 +488,174 @@ the dominant GF cost (41.9% now; matvec 28%).
 
 ---
 
+# GF PARALLELIZATION — EIGENSTATE-GROUPING KNOB (IMPLEMENTED + SWEPT, 2026-06-30)
+
+**Context.** The GF parallelization runs one block-Lanczos recurrence per thermal eigenstate at
+width = n_ops (the block's transition operators), split over two nested communicators
+(blocks → eigenstates). The open question was whether **wider blocks** (stacking eigenstates) and/or
+splitting the transition operators help. Off-diagonal `G_ij` forces all n_ops orbital columns into
+one block, so the only tunable axis that preserves the off-diagonals is **how many eigenstates share
+one recurrence**. Wider blocks share the Krylov/matvec build but grow per-step reort with width², so
+the optimum is workload-dependent — hence a knob + benchmark rather than a fixed choice.
+
+**Shipped (the knob).** `GF_EIGENSTATE_GROUP=g` (`greens_function.py`, `_gf_eigenstate_group` +
+`calc_Greens_function_with_offdiag`). `g=1` is the historical per-eigenstate behavior (default,
+exactly reproduced). `g>1` stacks `g` co-located eigenstates' seeds into one width-`g·n_ops`
+block-Lanczos recurrence sharing a Krylov space; the shared `(alphas, betas)` are reused per
+eigenstate while each keeps its own `n_ops` columns of the seed projection `r` (`r[:, p*n_ops:(p+1)*n_ops]`)
+and its own energy shift, so `calc_G` reconstructs each eigenstate's `n_ops×n_ops` block exactly.
+Grouping happens *after* the eigenstate split, on the eigenstates already co-located on a color, so it
+needs **no extra communication** and **no kernel change** (`block_lanczos_cy`/`block_lanczos_array`
+already accept arbitrary seed width).
+
+**Correctness (oracle).** Two new equivalence tests in `test_greens_function.py`
+(`..._eigenstate_grouping`, `..._eigenstate_grouping_with_bath`) assert `g=2` reproduces `g=1` — a
+mathematical identity — on a closed no-bath system (dense + sparse paths) and on a hybridizing-bath
+system whose excited basis grows (sparse, the production path), to ~1e-6/1e-5. Full GF suite green
+serial (25) and MPI n=2 (9); `test_selfenergy` green serial default + `g=2` (16) and MPI n=2 `g=2`
+(16). Black-clean (120 col).
+
+**Phase-3 sweep (NiO 10-bath, NW=200, serial, `PYTHONHASHSEED=0` so the 10 thermal states are
+identical across cells).** σ is **FP-identical** across every converged cell (‖σ‖=1957.6179; rel
+≤1.4e-13 vs the g=1 baseline) — grouping never changes the physics, only performance and stability.
+
+| reort | g | wall (s) | GF (s) | matvec calls / time | recurrence(+reort) (s) | monitor (s) | converged? |
+|------:|--:|---------:|-------:|--------------------:|-----------------------:|------------:|:-----------|
+| NONE  | 1 | **28.1** | 26.1 | 714 / 6.8 | 11.0 | 4.3 | yes (712 blk) |
+| NONE  | 2 | >900 (killed) | — | — | — | — | **diverges** (\|β\|→1.3e4 @1384 blk) |
+| FULL  | 1 | 149.2 | 85.0 | 580 / 19.1 | 52.1 | 4.7 | yes |
+| FULL  | **2** | **86.2** | 62.0 | 170 / 6.6 | 45.6 | 2.3 | yes |
+| FULL  | 4 | 141.6 | 111.7 | 123 / 9.4 | 84.7 | 4.0 | yes |
+| FULL  | 6 | 337.8 | 271.2 | 46 / 12.4 | 155.1 | 24.0 | yes |
+
+**Two regimes, opposite answers:**
+
+1. **NONE reort (only viable for small/cheap systems): keep `g=1`.** Stacking *destabilizes* the
+   knife's-edge `Reort.NONE` recurrence — orthogonality loss grows with block width, so the width-20
+   `g=2` block loses orthogonality far faster than the width-10 `g=1` block, `|β|` blows up to ~1.3e4
+   and it never converges, even at 10-bath where `g=1`/NONE converges cleanly in 712 blocks. (Same
+   mechanism as B0.3, amplified by width.) So with NONE the cheap narrow recurrence is the *only*
+   usable one; wider blocks are not merely slower, they are unstable.
+
+2. **FULL reort (mandatory at production scale, where even `g=1`/NONE diverges — see the 100-bath
+   section): grouping wins, with a clear optimum at `g=2` (1.73×).** Once full reort is paid for, the
+   shared Krylov space is pure upside: matvec **calls** fall 580→170→123→46 as `g` rises (fewer,
+   fatter, shared recurrences), and at `g=2` *every* component drops (matvec 19.1→6.6 s, recurrence+
+   reort 52.1→45.6 s, monitor 4.7→2.3 s). Beyond `g=2` the per-step width²/width³ LA (FULL reort,
+   Gram/CholeskyQR, and the monitor's continued-fraction inversion — 24 s at width-60!) overtakes the
+   diminishing step-count savings, so wall turns back up (g=4 142 s, g=6 338 s). The 3.4× step-count
+   drop g=1→g=2 vs only 1.4× g=2→g=4, against a 4× per-step reort growth, puts the minimum at g=2.
+
+**Verdict / recommended default policy (data-backed Phase-4 adaptive rule):**
+- Use **`g=1`** whenever the GF runs with `Reort.NONE` (small systems where NONE converges) — it is
+  both fastest (28 s) and the only stable choice there.
+- Use **`g≈2`** whenever `Reort.FULL` is in force — i.e. at the scale where NONE diverges and full
+  reort is already mandatory. There grouping is a free ~1.7× (serial), reusing the reort you must pay
+  anyway. `g≳4` is counter-productive; `g=n_states` (here g=10, width-100) is pathological.
+- These are **serial** numbers. Grouping also cuts the matvec **call** count 3.4× (580→170 at g=2),
+  i.e. 3.4× fewer per-step `Allreduce` rounds, so the wide-block benefit should *grow* under MPI
+  (latency amortization) — the serial 1.7× is a conservative lower bound on the distributed gain.
+  (A clean MPI sweep still needs the 100-bath anchor; 10-bath MPI is latency-confounded, see above.)
+
+**Still open (not done):** the optional pairwise-scalar operator split (the narrow end) remains
+future work; the eigenstate-group knob already answers the headline "are wider blocks worth it?" —
+yes, moderately, in the FULL-reort regime that production runs in. *(Now shipped — see the
+operator-split section below.)*
+
+---
+
+# GF PARALLELIZATION — UNIFIED SINGLE SPLIT (Phase 1, IMPLEMENTED, 2026-06-30)
+
+**Context.** `get_Greens_function` used a *nested* two-level communicator split: first over
+Green's-function blocks (`split_basis_and_redistribute_psi([len(block)**2 …])`), then a *second*
+split over thermal eigenstates inside each block's color (in `calc_Greens_function_with_offdiag`).
+With many small symmetry blocks (the typical production case — block sizes ~1–4), the hierarchical
+rank carving balances poorly and pays two rounds of comm/intercomm creation.
+
+**Shipped.** `get_Greens_function` now does **one** global split over the full
+`(block × addition/removal × eigenstate-group)` work-unit cross-product. It applies the transition
+operators for every block and both spectral sides up front (collective on the full basis), enumerates
+the units, weights each by `log10(excited seed length)+1` (the old eigenstate-split heuristic, now
+applied globally), and calls `split_basis_and_redistribute_psi` **once**; each color runs its units'
+block-Lanczos recurrences and the results are gathered and reassembled per block. The excited-sector
+restrictions are built **once** (they are block- and side-independent — the dN window is symmetric
+over all impurity orbitals) instead of per block. Three shared helpers
+(`_build_excited_restrictions`, `_apply_transition_ops`, `_block_green_group`) are factored out so
+`calc_Greens_function_with_offdiag` (still used by `spectra.py` and its own tests) and the new
+`get_Greens_function` share identical seed-building and block-Green logic. The eigenstate-grouping
+knob (`GF_EIGENSTATE_GROUP`) composes with the unified split unchanged.
+
+**Correctness.** New `test_get_Greens_function_split_threshold_invariant_mpi` asserts the per-block GF
+is identical under maximal split (`split_threshold=1e9`) vs a unified communicator
+(`split_threshold=0`) for a multi-block / multi-eigenstate system — the invariant the refactor must
+preserve. Suites green: GF + selfenergy serial (34) and broader GF serial (43); MPI **n=2, 3, 4** (26
+each), including the new invariant test, the `calc_Greens_function_with_offdiag` MPI tests, and
+selfenergy MPI; grouping (`g=2`) green under the unified split serial + MPI. At the 10-bath benchmark
+the unified-split self-energy is **FP-identical** to the pre-refactor nested split (‖σ‖=1957.6179,
+rel 1.1e-13) with serial wall unchanged (26.9 s) — the load-balance benefit shows only with many
+small blocks (the production regime), not the single-block anchor.
+
+**Found (pre-existing, out of scope):** `block_Green`'s **dense** basis-expansion loop
+(`greens_function.py:603`) raises `ValueError: operands could not be broadcast` (e.g. `(1,3,3)` vs
+`(1,2,2)`) on a **multi-orbital** block whose dense basis expands across iterations — the padded
+block width differs between two `block_green_impl` calls. It reproduces at `g=1` (the unmodified
+path), so it predates this work; the production `sparse_green=True` path is unaffected. Flagged for a
+separate fix.
+
+---
+
+# GF PARALLELIZATION — OPERATOR SPLIT / PAIRWISE-SCALAR (Phase 2 narrow end, IMPLEMENTED, 2026-07-01)
+
+**Context.** The eigenstate-group knob explores the *wide* end of the block-width spectrum; the
+operator split explores the *narrow* end. For a block of `n` transition operators it replaces the one
+shared width-`n` block-Lanczos recurrence with `n` width-1 (scalar) recurrences for the diagonal
+seeds `v_i = c_i|ψ⟩` plus, per off-diagonal pair `i<j`, two more scalar recurrences for the
+polarization seeds `v_i+v_j` and `v_i+i·v_j`. The off-diagonal `G_ij` is recovered exactly from the
+four scalar resolvents via the polarization identity
+`M_ij = ½[S(v_i+v_j) − i·S(v_i+i v_j) − (1−i)(M_ii+M_jj)]` (and its mirror for `M_ji`). This maximizes
+the number of independent, communication-free work units — the regime where ranks vastly outnumber
+the `block × eigenstate` units — at the cost of building `n + n(n−1)` Krylov spaces per eigenstate
+instead of one shared width-`n` space.
+
+**Shipped.** `GF_OPERATOR_SPLIT=1` (`greens_function.py`, `_gf_operator_split`). It rides the *same*
+unified single-split machinery: each scalar seed is one width-1 work unit in the global
+`(block × side × eigenstate × seed)` decomposition, so load-balancing, redistribution and gather are
+unchanged. A per-eigenstate `PairwiseGF` collects the scalar continued fractions on rank 0;
+`calc_thermally_averaged_G` dispatches on it to `calc_G_pairwise`, which assembles the `n×n` block via
+the identity above. Mutually exclusive with `GF_EIGENSTATE_GROUP` (operator split takes precedence,
+forces `g=1`). In pairwise mode only the G-derived diagnostics (thermal cutoff, mesh density,
+causality) run — the seed-projection- and scalar-tridiagonal-based checks (sum rule, integrated
+weight, Lanczos convergence) do not apply to the reassembled block.
+
+**Correctness.** New `test_calc_G_pairwise_polarization_identity` (single-pole synthetic, 1e-12) pins
+the assembly math; `test_get_Greens_function_operator_split_matches_block` (serial) and
+`test_get_Greens_function_operator_split_matches_block_mpi` (**n=2, 3, 4**) assert the pairwise GF
+reproduces the shared-Krylov block GF on a 2-orbital hybridizing-bath system (off-diagonal pairs
+exercised) to ~1e-5. Full GF suites green serial (23) + MPI n=2 (11).
+
+**Benchmark verdict (NiO 10-bath anchor, NW=200, serial).** The anchor is a **single 10×10 block**
+(the NiO d-shell, 5 orbitals × 2 spin) — the *worst case* for the operator split: it explodes one
+shared width-10 recurrence into `10 + 45×2 = 110` redundant width-1 Krylov builds per eigenstate. The
+block path completes in **27.5 s** (GF 24.9 s); the operator-split path takes **280.2 s (10.2×
+slower)**, exactly as the cost model predicts (no shared Krylov, `O(n²)` recurrences). The self-energy
+is **FP-identical** across the two paths (‖σ‖=1957.618 both; max|Δσ|=5.2e-11, rel 1.1e-12) — the
+polarization reassembly is exact, so the 10.2× is pure redundant-Krylov overhead, not a different
+answer.
+
+**Verdict / Phase-4 default policy.** Keep `GF_OPERATOR_SPLIT` **off by default.** It is the right
+knob only in the opposite corner from this anchor: **many small blocks (`n = 1–2`, the typical
+production symmetric GF) with ranks ≫ units**, where the wide recurrence cannot fill the machine and
+the redundant-Krylov penalty is small (`n=1` → 1 unit, no pairs; `n=2` → 2 diag + 2 polarization = 4
+units, vs 1). For `n=1` blocks it is *free* (a width-1 block already is the scalar recurrence) and
+purely adds parallel granularity. It is **counter-indicated for any block with `n≳3`**, and
+pathological on a large dense block like the NiO anchor. The composed default rule now reads:
+- `n=1` blocks: operator split is a no-op reorganization — enable freely when units < ranks.
+- small blocks (`n=2`) with idle ranks: enable to expose 4× the units.
+- large blocks (`n≳3`) or units ≥ ranks: leave off; prefer `g=1` (or `g=2` under FULL reort per the
+  eigenstate-group verdict).
+
+---
+
 # FIXES APPLIED (B0 — calc_gs blockers)
 
 ## B0.1 + B0.2 — FIXED (one root cause, one-line change)

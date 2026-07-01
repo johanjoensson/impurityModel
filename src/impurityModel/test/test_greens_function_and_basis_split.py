@@ -1,9 +1,12 @@
+import os
+
 import numpy as np
 import pytest
 from mpi4py import MPI
 
 from impurityModel.ed.greens_function import (
     calc_Greens_function_with_offdiag,
+    get_Greens_function,
 )
 from impurityModel.ed.manybody_basis import Basis
 from impurityModel.ed.ManyBodyUtils import ManyBodyOperator, ManyBodyState, SlaterDeterminant
@@ -418,6 +421,132 @@ def test_mpi_load_balancing_gf_split_vs_unified():
             np.testing.assert_allclose(ys, yu, atol=1e-10)
         for zs, zu in zip(r_split, r_uni):
             np.testing.assert_allclose(zs, zu, atol=1e-10)
+
+
+@pytest.mark.mpi
+def test_get_Greens_function_split_threshold_invariant_mpi():
+    """``get_Greens_function`` returns the same per-block Green's function no matter how the
+    ``(block x eigenstate)`` work units are distributed across ranks: ``split_threshold`` only
+    changes the parallel layout (max-split vs unified communicator), not the result. This is
+    the invariant the unified single-split decomposition must preserve. Multiple blocks and
+    multiple thermal states exercise the cross-product of work units.
+    """
+    comm = MPI.COMM_WORLD
+    omega = np.linspace(-2.0, 2.0, 17)
+    # Diagonal one-body H -> two independent 1-orbital Green's-function blocks.
+    hOp = ManyBodyOperator({((0, "c"), (0, "a")): 0.3, ((1, "c"), (1, "a")): 0.7})
+    state_bytes = [b"\x80", b"\x40", b"\xc0", b"\x00"]
+    es = [0.3, 0.7]  # two thermal states
+
+    def run(split_threshold):
+        basis = Basis(
+            impurity_orbitals={0: [[0, 1]]},
+            bath_states=({0: [[]]}, {0: [[]]}),
+            initial_basis=state_bytes,
+            comm=comm,
+            split_threshold=split_threshold,
+        )
+        if comm.rank == 0:
+            psis = [ManyBodyState({SlaterDeterminant.from_bytes(b): 1.0}) for b in (b"\x80", b"\x40")]
+        else:
+            psis = [ManyBodyState({}), ManyBodyState({})]
+        psis = basis.redistribute_psis(psis)
+        _, gs_real, _ = get_Greens_function(
+            matsubara_mesh=None,
+            omega_mesh=omega,
+            psis=psis,
+            es=es,
+            tau=1.0,
+            basis=basis,
+            hOp=hOp,
+            delta=0.1,
+            blocks=[[0], [1]],
+            verbose=False,
+            verbose_extra=False,
+            reort=None,
+            dN=1,
+            occ_cutoff=1e-6,
+            slaterWeightMin=0.0,
+            sparse=True,
+        )
+        return gs_real
+
+    g_split = run(1e9)  # maximal split: one color per unit
+    g_uni = run(0.0)  # unified: a single communicator processes every unit
+    if comm.rank == 0:
+        assert len(g_split) == 2 and len(g_uni) == 2
+        for a, b in zip(g_split, g_uni):
+            np.testing.assert_allclose(a, b, atol=1e-9)
+
+
+@pytest.mark.mpi
+def test_get_Greens_function_operator_split_matches_block_mpi():
+    """The operator-split (pairwise) decomposition reproduces the shared-Krylov block Green's
+    function when the seeds and their scalar recurrences are distributed across ranks. Uses a
+    2-orbital block (so off-diagonal pairs exercise the polarization seeds) with a hybridizing
+    bath, on the sparse path -- the distributed analogue of the serial pairwise oracle.
+    """
+    comm = MPI.COMM_WORLD
+    omega = np.linspace(-2.0, 2.0, 17)
+    hOp = ManyBodyOperator(
+        {
+            ((0, "c"), (0, "a")): 0.3,
+            ((1, "c"), (1, "a")): 0.7,
+            ((2, "c"), (2, "a")): -0.5,
+            ((3, "c"), (3, "a")): 0.4,
+            ((0, "c"), (2, "a")): 0.25,
+            ((2, "c"), (0, "a")): 0.25,
+            ((1, "c"), (3, "a")): 0.25,
+            ((3, "c"), (1, "a")): 0.25,
+        }
+    )
+    state_bytes = [b"\xa0", b"\x50"]  # {0,2}, {1,3}
+    es = [-0.2, 0.3]
+
+    def run(op_split):
+        basis = Basis(
+            impurity_orbitals={0: [[0, 1]]},
+            bath_states=({0: [[2, 3]]}, {0: [[]]}),
+            initial_basis=state_bytes,
+            comm=comm,
+        )
+        if comm.rank == 0:
+            psis = [ManyBodyState({SlaterDeterminant.from_bytes(b): 1.0}) for b in state_bytes]
+        else:
+            psis = [ManyBodyState({}), ManyBodyState({})]
+        psis = basis.redistribute_psis(psis)
+        old = os.environ.get("GF_OPERATOR_SPLIT")
+        os.environ["GF_OPERATOR_SPLIT"] = "1" if op_split else "0"
+        try:
+            _, gs_real, _ = get_Greens_function(
+                matsubara_mesh=None,
+                omega_mesh=omega,
+                psis=psis,
+                es=es,
+                tau=1.0,
+                basis=basis,
+                hOp=hOp,
+                delta=0.1,
+                blocks=[[0, 1]],
+                verbose=False,
+                verbose_extra=False,
+                reort=None,
+                dN=1,
+                occ_cutoff=1e-6,
+                slaterWeightMin=0.0,
+                sparse=True,
+            )
+        finally:
+            if old is None:
+                del os.environ["GF_OPERATOR_SPLIT"]
+            else:
+                os.environ["GF_OPERATOR_SPLIT"] = old
+        return gs_real
+
+    g_block = run(False)
+    g_split = run(True)
+    if comm.rank == 0:
+        np.testing.assert_allclose(g_split[0], g_block[0], atol=1e-5, rtol=1e-4)
 
 
 @pytest.mark.mpi

@@ -1,5 +1,6 @@
 import itertools
 import os
+from collections import defaultdict
 from typing import Optional
 
 import numpy as np
@@ -129,160 +130,312 @@ def get_Greens_function(
     (``(None, None, None)`` on non-root ranks). ``num_wanted`` is the number of thermal states
     the eigensolver was asked for, used by the ensemble-truncation check.
     """
+    # Excited-sector restrictions are independent of the orbital block and of the spectral side
+    # (the dN occupation window is symmetric and spans all impurity orbitals), so build them once
+    # on the full basis instead of per block.
+    excited_restrictions, excited_weighted_restrictions = _build_excited_restrictions(
+        basis, hOp, psis, es, dN, occ_cutoff
+    )
+    pairwise = _gf_operator_split()
+    group = 1 if pairwise else _gf_eigenstate_group()
+    n_psis = len(psis)
+
+    # --- Enumerate the work units = (block, addition/removal, eigenstate-group) -----------
+    # Apply the transition operators for every block and both spectral sides to all thermal
+    # states (collective on the full basis), then chunk the eigenstates into groups of `group`.
+    # Each chunk seeds one (possibly wide) block-Lanczos recurrence and is one work unit. This
+    # replaces the old nested block-then-eigenstate split with a single global decomposition that
+    # is load-balanced across the full (block x side x eigenstate) cross-product -- important when
+    # there are many small symmetry blocks (the typical production case).
+    #
+    # In operator-split (pairwise) mode every unit is a width-1 scalar recurrence: one per diagonal
+    # seed v_i, plus per off-diagonal pair (i<j) the two polarization seeds v_i+v_j and v_i+i*v_j.
+    # The scalar continued fractions are reassembled into a per-eigenstate PairwiseGF below. This is
+    # the narrow end of the granularity spectrum: maximal communication-free units, no shared Krylov.
+    SIDES = (("c", delta), ("a", -delta))  # 0 = addition (IPS), 1 = removal (PS)
+    unit_meta = []  # (block_i, side_i, delta_signed, chunk, n_ops, pw_tag) per unit
+    unit_seeds = []  # flat seed-state list per unit, (eigenstate, operator)-ordered
+    for block_i, block in enumerate(blocks):
+        for side_i, (op_char, delta_signed) in enumerate(SIDES):
+            tOps = [ManyBodyOperator({((orb, op_char),): 1}) for orb in block]
+            block_v = _apply_transition_ops(
+                tOps, psis, excited_restrictions, excited_weighted_restrictions, slaterWeightMin
+            )
+            n_ops = len(tOps)
+            if pairwise:
+                for ei in range(n_psis):
+                    for i in range(n_ops):
+                        unit_meta.append((block_i, side_i, delta_signed, [ei], 1, ("diag", i, i)))
+                        unit_seeds.append([block_v[ei][i]])
+                    for i in range(n_ops):
+                        for j in range(i + 1, n_ops):
+                            unit_meta.append((block_i, side_i, delta_signed, [ei], 1, ("sum", i, j)))
+                            unit_seeds.append([block_v[ei][i] + block_v[ei][j]])
+                            unit_meta.append((block_i, side_i, delta_signed, [ei], 1, ("imag", i, j)))
+                            unit_seeds.append([block_v[ei][i] + 1j * block_v[ei][j]])
+            else:
+                for chunk_start in range(0, n_psis, group):
+                    chunk = list(range(chunk_start, min(chunk_start + group, n_psis)))
+                    unit_meta.append((block_i, side_i, delta_signed, chunk, n_ops, None))
+                    unit_seeds.append([block_v[j][i] for j in chunk for i in range(n_ops)])
+
+    # Per-unit cost weight ~ log10(total excited seed length) + 1 (the historical eigenstate-split
+    # heuristic), reduced across the full comm since seed amplitudes are distributed.
+    unit_lengths = np.array([sum(len(s) for s in seeds) for seeds in unit_seeds], dtype=float)
+    if basis.comm is not None:
+        basis.comm.Allreduce(MPI.IN_PLACE, unit_lengths, op=MPI.SUM)
+    unit_weights = np.log10(unit_lengths + 1) + 1
+    # Structural seed count per unit (identical on every rank): len(chunk) * n_ops.
+    seed_offsets = np.concatenate(([0], np.cumsum([len(s) for s in unit_seeds]))).astype(int)
+
+    # --- ONE split over all units --------------------------------------------------------
     (
-        block_indices,
-        block_roots,
-        block_color,
-        blocks_per_color,
-        block_basis,
-        psis,
-        _,  # block_intercomms — freed collectively by gc after barrier in conftest
-    ) = basis.split_basis_and_redistribute_psi([len(block) ** 2 for block in blocks], psis)
+        unit_indices,
+        unit_roots,
+        unit_color,
+        units_per_color,
+        split_basis,
+        split_seeds,
+        _,  # intercomms — freed collectively by gc after barrier in conftest
+    ) = basis.split_basis_and_redistribute_psi(unit_weights, [s for seeds in unit_seeds for s in seeds])
     if verbose:
-        print(f"New block roots: {block_roots}")
-        print(f"Blocks per color: {blocks_per_color}")
-        print("=" * 80)
-    block_indices_per_color = gather_distributed_results(
-        basis.comm,
-        block_basis.comm.rank if block_basis.comm is not None else 0,
-        block_roots,
-        blocks_per_color,
-        np.array(block_indices),
-        is_array=True,
+        print(f"New unit roots: {unit_roots}")
+        print(f"Units per color: {units_per_color}")
+        print("=" * 80, flush=True)
+    sub_rank = split_basis.comm.rank if split_basis.comm is not None else 0
+    unit_indices_per_color = gather_distributed_results(
+        basis.comm, sub_rank, unit_roots, units_per_color, np.array(unit_indices), is_array=True
     )
 
-    local_gs_matsubara = []
-    local_gs_realaxis = []
-    local_block_diags = {}  # block_i -> list[Diagnostic]; filled on each color's root rank
-    IPS_ops = ([ManyBodyOperator({((orb, "c"),): 1}) for orb in blocks[bi]] for bi in block_indices)
-    PS_ops = ([ManyBodyOperator({((orb, "a"),): 1}) for orb in blocks[bi]] for bi in block_indices)
-    for block_i, IPS_ops, PS_ops in zip(block_indices, IPS_ops, PS_ops):
-        alphas_IPS, betas_IPS, r_IPS = calc_Greens_function_with_offdiag(
+    # --- Run one (possibly wide) block-Lanczos per unit on its color ----------------------
+    # Each list entry corresponds to one unit in `unit_indices` order; the gather maps them back
+    # to global unit indices via `unit_indices_per_color`. local_unit_r[k] is a list of the
+    # per-eigenstate r slices for that unit's chunk.
+    local_unit_alphas, local_unit_betas, local_unit_r = [], [], []
+    for u in unit_indices:
+        _, _, delta_signed, chunk, n_ops, _ = unit_meta[u]
+        seeds = split_seeds[seed_offsets[u] : seed_offsets[u + 1]]
+        alphas, betas, r, n_basis = _block_green_group(
+            split_basis,
             hOp,
-            IPS_ops,
-            psis,
-            es,
-            block_basis,
-            delta,
-            reort=reort,
-            dN=dN,
-            occ_cutoff=occ_cutoff,
-            slaterWeightMin=slaterWeightMin,
-            verbose=verbose_extra,
-            sparse=sparse,
+            seeds,
+            reort,
+            delta_signed,
+            slaterWeightMin,
+            sparse,
+            verbose_extra,
+            excited_restrictions,
+            excited_weighted_restrictions,
         )
-        alphas_PS, betas_PS, r_PS = calc_Greens_function_with_offdiag(
-            hOp,
-            PS_ops,
-            psis,
-            es,
-            block_basis,
-            -delta,
-            reort=reort,
-            dN=dN,
-            occ_cutoff=occ_cutoff,
-            slaterWeightMin=slaterWeightMin,
-            verbose=verbose_extra,
-            sparse=sparse,
-        )
+        local_unit_alphas.append(alphas)
+        local_unit_betas.append(betas)
+        local_unit_r.append([r[:, p * n_ops : (p + 1) * n_ops] for p in range(len(chunk))])
+        if verbose_extra:
+            print(f"Expanded excited state basis contains {n_basis} elements.")
+
+    gathered_alphas = gather_distributed_results(
+        basis.comm, sub_rank, unit_roots, units_per_color, local_unit_alphas, is_array=False
+    )
+    gathered_betas = gather_distributed_results(
+        basis.comm, sub_rank, unit_roots, units_per_color, local_unit_betas, is_array=False
+    )
+    gathered_r = gather_distributed_results(
+        basis.comm, sub_rank, unit_roots, units_per_color, local_unit_r, is_array=False
+    )
+
+    gs_matsubara = gs_realaxis = report = None
+    if basis.comm is None or basis.comm.rank == 0:
+        # Reassemble the gathered units into per-(block, side) eigenstate-indexed coefficient
+        # lists, then build each block's Green's function exactly as before.
+        # acc[(block_i, side_i)] = (alphas_list, betas_list, r_list) indexed by eigenstate. In
+        # grouped mode r_list[ei] is the seed-projection matrix; in pairwise mode it is a
+        # PairwiseGF assembled from the eigenstate's scalar continued fractions (a_list/b_list stay
+        # None -- each PairwiseGF carries its own scalar coefficients).
+        acc = {
+            (bi, si): ([None] * n_psis, [None] * n_psis, [None] * n_psis) for bi in range(len(blocks)) for si in (0, 1)
+        }
+        if pairwise:
+            # pw_cf[(block_i, side_i, ei)] = {"diag": {i: cf}, "sum": {(i,j): cf}, "imag": {(i,j): cf}}
+            pw_cf = defaultdict(lambda: {"diag": {}, "sum": {}, "imag": {}})
+            for i, u in enumerate(unit_indices_per_color):
+                block_i, side_i, _, chunk, _, pw_tag = unit_meta[u]
+                cf = (gathered_alphas[i], gathered_betas[i], gathered_r[i][0])
+                role, a, b = pw_tag
+                key = a if role == "diag" else (a, b)
+                pw_cf[(block_i, side_i, chunk[0])][role][key] = cf
+            for (block_i, side_i, ei), roles in pw_cf.items():
+                n = len(blocks[block_i])
+                diag = [roles["diag"][i] for i in range(n)]
+                pairs = {ij: (roles["sum"][ij], roles["imag"][ij]) for ij in roles["sum"]}
+                acc[(block_i, side_i)][2][ei] = PairwiseGF(n, diag, pairs)
+        else:
+            for i, u in enumerate(unit_indices_per_color):
+                block_i, side_i, _, chunk, _, _ = unit_meta[u]
+                a_list, b_list, r_list = acc[(block_i, side_i)]
+                for p, ei in enumerate(chunk):
+                    a_list[ei], b_list[ei], r_list[ei] = gathered_alphas[i], gathered_betas[i], gathered_r[i][p]
 
         e0 = np.min(es)
         Z = np.sum(np.exp(-(es - e0) / tau))
-        if matsubara_mesh is not None and block_basis.comm.rank == 0:
-            G_IPS = calc_thermally_averaged_G(alphas_IPS, betas_IPS, r_IPS, matsubara_mesh, es, e0, tau, 0)
-            G_PS = calc_thermally_averaged_G(alphas_PS, betas_PS, r_PS, -matsubara_mesh, es, e0, tau, 0)
-            local_gs_matsubara.append(
-                (
-                    G_IPS
-                    - np.transpose(
-                        G_PS,
-                        (
-                            0,
-                            2,
-                            1,
-                        ),
+        gs_matsubara = (
+            [np.empty((len(matsubara_mesh), len(b), len(b)), dtype=complex) for b in blocks]
+            if matsubara_mesh is not None
+            else None
+        )
+        gs_realaxis = (
+            [np.empty((len(omega_mesh), len(b), len(b)), dtype=complex) for b in blocks]
+            if omega_mesh is not None
+            else None
+        )
+        report = _gfd.DiagnosticReport()
+        for block_i, block in enumerate(blocks):
+            a_add, b_add, r_add = acc[(block_i, 0)]
+            a_rem, b_rem, r_rem = acc[(block_i, 1)]
+            if matsubara_mesh is not None:
+                G_IPS = calc_thermally_averaged_G(a_add, b_add, r_add, matsubara_mesh, es, e0, tau, 0)
+                G_PS = calc_thermally_averaged_G(a_rem, b_rem, r_rem, -matsubara_mesh, es, e0, tau, 0)
+                gs_matsubara[block_i][:] = (G_IPS - np.transpose(G_PS, (0, 2, 1))) / Z
+            G_IPS_real = G_PS_real = combined_real = None
+            if omega_mesh is not None:
+                G_IPS_real = calc_thermally_averaged_G(a_add, b_add, r_add, omega_mesh, es, e0, tau, delta)
+                G_PS_real = calc_thermally_averaged_G(a_rem, b_rem, r_rem, -omega_mesh, es, e0, tau, -delta)
+                combined_real = (G_IPS_real - np.transpose(G_PS_real, (0, 2, 1))) / Z
+                gs_realaxis[block_i][:] = combined_real
+
+            # --- per-block convergence / consistency diagnostics ---------------------------
+            # The pairwise path stores per-eigenstate PairwiseGF objects rather than the seed
+            # projection matrices and scalar-tridiagonal coefficients the r-/(alphas,betas)-based
+            # checks consume, so in that mode only the G-derived checks (thermal cutoff, mesh
+            # density, causality) apply.
+            diags = [_gfd.check_thermal_weight_cutoff(es, e0, tau, n_returned=len(es), num_wanted=num_wanted)]
+            if not pairwise:
+                diags.insert(0, _gfd.check_spectral_sum_rule(r_add, r_rem, es, e0, tau, len(block)))
+                lanczos_tol = _gf_rel_tol(slaterWeightMin)
+                conv_add = _lanczos_convergence_summary(a_add, b_add, delta, tol=lanczos_tol)
+                conv_rem = _lanczos_convergence_summary(a_rem, b_rem, delta, tol=lanczos_tol)
+                n_blocks = max(conv_add[2], conv_rem[2])
+                diags.append(
+                    _gfd.check_lanczos_convergence(
+                        conv_add[0] and conv_rem[0], max(conv_add[1], conv_rem[1]), n_blocks, n_blocks
                     )
                 )
-                / Z
-            )
-        G_IPS_real = G_PS_real = combined_real = None
-        if omega_mesh is not None and block_basis.comm.rank == 0:
-            G_IPS_real = calc_thermally_averaged_G(alphas_IPS, betas_IPS, r_IPS, omega_mesh, es, e0, tau, delta)
-            G_PS_real = calc_thermally_averaged_G(alphas_PS, betas_PS, r_PS, -omega_mesh, es, e0, tau, -delta)
-            combined_real = (G_IPS_real - np.transpose(G_PS_real, (0, 2, 1))) / Z
-            local_gs_realaxis.append(combined_real)
-
-        # --- per-block convergence / consistency diagnostics (color root rank) ---------
-        if block_basis.comm.rank == 0:
-            block_dim = len(blocks[block_i])
-            diags = [
-                _gfd.check_spectral_sum_rule(r_IPS, r_PS, es, e0, tau, block_dim),
-                _gfd.check_thermal_weight_cutoff(es, e0, tau, n_returned=len(es), num_wanted=num_wanted),
-            ]
-            lanczos_tol = _gf_rel_tol(slaterWeightMin)
-            conv_add = _lanczos_convergence_summary(alphas_IPS, betas_IPS, delta, tol=lanczos_tol)
-            conv_rem = _lanczos_convergence_summary(alphas_PS, betas_PS, delta, tol=lanczos_tol)
-            converged = conv_add[0] and conv_rem[0]
-            worst_dg = max(conv_add[1], conv_rem[1])
-            n_blocks = max(conv_add[2], conv_rem[2])
-            diags.append(_gfd.check_lanczos_convergence(converged, worst_dg, n_blocks, n_blocks))
             if G_IPS_real is not None:
                 diags.append(_gfd.check_mesh_density(omega_mesh, delta))
-                diags.append(
-                    _gfd.check_integrated_weight(G_IPS_real, r_IPS, es, e0, tau, omega_mesh, "add", delta=delta)
-                )
-                diags.append(
-                    _gfd.check_integrated_weight(G_PS_real, r_PS, es, e0, tau, -omega_mesh, "rem", delta=delta)
-                )
+                if not pairwise:
+                    diags.append(
+                        _gfd.check_integrated_weight(G_IPS_real, r_add, es, e0, tau, omega_mesh, "add", delta=delta)
+                    )
+                    diags.append(
+                        _gfd.check_integrated_weight(G_PS_real, r_rem, es, e0, tau, -omega_mesh, "rem", delta=delta)
+                    )
                 diags.append(_gfd.check_causality(combined_real, "G"))
-            local_block_diags[int(block_i)] = diags
-    gathered_matsubara = gather_distributed_results(
-        basis.comm,
-        block_basis.comm.rank if block_basis.comm is not None else 0,
-        block_roots,
-        blocks_per_color,
-        local_gs_matsubara,
-        is_array=False,
-    )
-    gathered_realaxis = gather_distributed_results(
-        basis.comm,
-        block_basis.comm.rank if block_basis.comm is not None else 0,
-        block_roots,
-        blocks_per_color,
-        local_gs_realaxis,
-        is_array=False,
-    )
-    # Gather the per-block diagnostics (collective on basis.comm; only color-root ranks hold
-    # non-empty dicts) and merge them into one report on the root rank.
-    gathered_diags = basis.comm.gather(local_block_diags, root=0) if basis.comm is not None else [local_block_diags]
-    if basis.comm.rank == 0:
-        # A mesh may be None (e.g. the self-energy driver requests only the Matsubara axis):
-        # the per-block axis was then never computed, so leave the corresponding result None.
-        gs_matsubara = None
-        if matsubara_mesh is not None:
-            gs_matsubara = [np.empty((len(matsubara_mesh), len(block), len(block)), dtype=complex) for block in blocks]
-            for i, block_idx in enumerate(block_indices_per_color):
-                gs_matsubara[block_idx][:] = gathered_matsubara[i]
-        gs_realaxis = None
-        if omega_mesh is not None:
-            gs_realaxis = [np.empty((len(omega_mesh), len(block), len(block)), dtype=complex) for block in blocks]
-            for i, block_idx in enumerate(block_indices_per_color):
-                gs_realaxis[block_idx][:] = gathered_realaxis[i]
-        report = _gfd.DiagnosticReport()
-        merged = {}
-        for part in gathered_diags:
-            merged.update(part)
-        for block_idx in sorted(merged):
-            report.extend(str(blocks[block_idx]), merged[block_idx])
+            report.extend(str(block), diags)
 
-    # Free the split communicator collectively before returning.
-    # block_basis.comm is a split comm created by split_basis_and_redistribute_psi.
-    # MPI_Comm_free is collective — it must be called by all ranks in the comm
-    # at the same time.  Leaving it for Python gc risks non-collective freeing.
-    if block_basis is not None and block_basis.comm != basis.comm:
-        block_basis.free_comm()
+    # Free the split communicator collectively before returning. MPI_Comm_free is collective --
+    # it must be called by all ranks in the comm at the same time. Leaving it for Python gc risks
+    # non-collective freeing.
+    if split_basis is not None and split_basis.comm != basis.comm:
+        split_basis.free_comm()
 
-    return (gs_matsubara, gs_realaxis, report) if basis.comm.rank == 0 else (None, None, None)
+    return (gs_matsubara, gs_realaxis, report) if (basis.comm is None or basis.comm.rank == 0) else (None, None, None)
+
+
+def _build_excited_restrictions(basis, hOp, psis, es, dN, occ_cutoff, dN_imp=None, dN_val=None, dN_con=None):
+    """Build the excited-sector occupation restrictions for a Green's-function calculation.
+
+    The window widens the ground-state impurity occupation by ``dN`` symmetrically (so it admits
+    both the addition ``c_j^\\dagger`` and removal ``c_j`` sectors) and is therefore *independent
+    of the orbital block and of the spectral side* -- it depends only on ``(hOp, psis, es, dN)``.
+    Shared by :func:`calc_Greens_function_with_offdiag` (per block) and :func:`get_Greens_function`
+    (computed once for all blocks).
+
+    Returns
+    -------
+    tuple
+        ``(excited_restrictions, excited_weighted_restrictions)``.
+    """
+    if dN_imp is None:
+        if dN is not None:
+            dN_imp = dict.fromkeys(basis.impurity_orbitals, (dN, dN))
+    else:
+        dN_imp = {i: dN_imp.get(i) for i in basis.impurity_orbitals}
+    if dN_val is None:
+        if dN is not None:
+            dN_val = dict.fromkeys(basis.impurity_orbitals, (dN, 0))
+    else:
+        dN_val = {i: dN_val.get(i) for i in basis.impurity_orbitals}
+    if dN_con is None:
+        if dN is not None:
+            dN_con = dict.fromkeys(basis.impurity_orbitals, (0, dN))
+    else:
+        dN_con = {i: dN_con.get(i) for i in basis.impurity_orbitals}
+    excited_restrictions = basis.build_excited_restrictions(
+        hOp, psis, es, imp_change=dN_imp, val_change=dN_val, con_change=dN_con, cutoff=occ_cutoff
+    )
+    # Weighted (e.g. S_z) restriction for the excited sector: widen the ground-state bounds by one
+    # orbital weight so the addition / removal sectors q_psi ± w_j are admitted while still
+    # confining the basis.
+    excited_weighted_restrictions = widen_weighted_restrictions(basis.weighted_restrictions)
+    return excited_restrictions, excited_weighted_restrictions
+
+
+def _apply_transition_ops(tOps, psis, excited_restrictions, excited_weighted_restrictions, slaterWeightMin):
+    """Apply each transition operator to every thermal state, returning the seed blocks.
+
+    Returns ``block_v`` indexed ``[j_psi][i_tOp]`` -- the excited state ``tOps[i] |psi_j>`` confined
+    to the excited sector. These are the columns of each eigenstate's block-Lanczos seed.
+    """
+    block_v = [[ManyBodyState({}) for _ in tOps] for _ in psis]
+    for i_tOp, tOp in enumerate(tOps):
+        tOp.set_restrictions(excited_restrictions)
+        tOp.set_weighted_restrictions(excited_weighted_restrictions)
+        res_psis = tOp.apply_multi(psis, cutoff=slaterWeightMin)
+        for j_psi, res_psi in enumerate(res_psis):
+            block_v[j_psi][i_tOp] += res_psi
+    return block_v
+
+
+def _block_green_group(
+    split_basis,
+    hOp,
+    group_seed_states,
+    reort,
+    delta,
+    slaterWeightMin,
+    sparse,
+    verbose,
+    excited_restrictions,
+    excited_weighted_restrictions,
+):
+    """Run one (possibly wide) block-Lanczos Green's function for a group of stacked seeds.
+
+    ``group_seed_states`` is the flat list of seed columns for an eigenstate group (length
+    ``len(group) * n_ops`` in ``(eigenstate, operator)`` order). Builds the excited basis from
+    their union, points ``hOp`` at its restrictions, and runs the sparse or dense block-Green
+    kernel. Returns ``(alphas, betas, r, n_basis)``; the caller slices ``r``'s columns per
+    eigenstate (``r[:, p*n_ops:(p+1)*n_ops]``) since ``(alphas, betas)`` are shared by the group.
+    """
+    excited_basis = split_basis.clone(
+        initial_basis=set(state for p in group_seed_states for state in p),
+        restrictions=excited_restrictions,
+        weighted_restrictions=excited_weighted_restrictions,
+        verbose=False,
+    )
+    if excited_basis.restrictions is not None:
+        hOp.set_restrictions(excited_basis.restrictions)
+    if excited_basis.weighted_restrictions is not None:
+        hOp.set_weighted_restrictions(excited_basis.weighted_restrictions)
+    green = block_Green_sparse if sparse else block_Green
+    alphas, betas, r = green(
+        reort=reort,
+        hOp=hOp,
+        psi_arr=excited_basis.redistribute_psis(group_seed_states),
+        basis=excited_basis,
+        delta=delta,
+        slaterWeightMin=slaterWeightMin,
+        verbose=verbose,
+    )
+    return alphas, betas, r, len(excited_basis)
 
 
 def calc_Greens_function_with_offdiag(
@@ -345,47 +498,13 @@ def calc_Greens_function_with_offdiag(
 
     """
 
-    # Set limits for change occupation, if any.
-    # limits are pairs of integers (max_holes, max_el)
-    # These limits are imposed on top of the (effective) ground state limitations.
-    if dN_imp is None:
-        if dN is not None:
-            dN_imp = dict.fromkeys(block_basis.impurity_orbitals, (dN, dN))
-    else:
-        dN_imp = {i: dN_imp.get(i) for i in block_basis.impurity_orbitals}
-
-    if dN_val is None:
-        if dN is not None:
-            dN_val = dict.fromkeys(block_basis.impurity_orbitals, (dN, 0))
-    else:
-        dN_val = {i: dN_val.get(i) for i in block_basis.impurity_orbitals}
-
-    if dN_con is None:
-        if dN is not None:
-            dN_con = dict.fromkeys(block_basis.impurity_orbitals, (0, dN))
-    else:
-        dN_con = {i: dN_con.get(i) for i in block_basis.impurity_orbitals}
-
-    excited_restrictions = block_basis.build_excited_restrictions(
-        hOp,
-        psis,
-        es,
-        imp_change=dN_imp,
-        val_change=dN_val,
-        con_change=dN_con,
-        cutoff=occ_cutoff,
+    # Set limits for change occupation, if any. Limits are pairs of integers (max_holes, max_el),
+    # imposed on top of the (effective) ground-state limitations. The window is block- and
+    # side-independent (see _build_excited_restrictions).
+    excited_restrictions, excited_weighted_restrictions = _build_excited_restrictions(
+        block_basis, hOp, psis, es, dN, occ_cutoff, dN_imp=dN_imp, dN_val=dN_val, dN_con=dN_con
     )
-    # Weighted (e.g. S_z) restriction for the excited sector: widen the ground-state
-    # bounds by one orbital weight so the addition (c_j†) / removal (c_j) sectors
-    # q_psi ± w_j are admitted while still confining the basis.
-    excited_weighted_restrictions = widen_weighted_restrictions(block_basis.weighted_restrictions)
-    block_v = [[ManyBodyState({}) for _ in tOps] for _ in psis]
-    for i_tOp, tOp in enumerate(tOps):
-        tOp.set_restrictions(excited_restrictions)
-        tOp.set_weighted_restrictions(excited_weighted_restrictions)
-        res_psis = tOp.apply_multi(psis, cutoff=slaterWeightMin)
-        for j_psi, res_psi in enumerate(res_psis):
-            block_v[j_psi][i_tOp] += res_psi
+    block_v = _apply_transition_ops(tOps, psis, excited_restrictions, excited_weighted_restrictions, slaterWeightMin)
     block_v_lengths = np.array([sum(len(t_psi) for t_psi in t_psis) for t_psis in block_v])
     block_basis.comm.Allreduce(MPI.IN_PLACE, block_v_lengths, op=MPI.SUM)
 
@@ -423,47 +542,47 @@ def calc_Greens_function_with_offdiag(
         print("Excited state restrictions:")
         for indices, occupations in excited_restrictions.items():
             print(f"---> {sorted(indices)} : {occupations}")
-    for excited_psis in (excited_block_psis[ei] for ei in excited_indices):
-        excited_basis = split_original_basis.clone(
-            initial_basis=set(state for p in excited_psis for state in p),
-            restrictions=excited_restrictions,
-            weighted_restrictions=excited_weighted_restrictions,
-            verbose=False,
+    # Eigenstate grouping (the "wide block" knob). With group size g>1 we stack g thermal
+    # eigenstates' transition-operator seeds into ONE block-Lanczos recurrence of width
+    # g*n_ops sharing a single Krylov space; the shared (alphas, betas) are reused for every
+    # eigenstate in the group while each keeps its own n_ops columns of the seed projection r
+    # (and, downstream, its own energy shift). g=1 reproduces the per-eigenstate behavior
+    # exactly (seed width = n_ops, r slice == the whole r). The eigenstates assigned to this
+    # color (excited_indices) are already co-located here, so grouping needs no extra
+    # communication; results are appended in excited_indices order so the gather below maps
+    # them back per eigenstate unchanged.
+    n_ops = len(tOps)
+    group = _gf_eigenstate_group()
+    excited_index_list = list(excited_indices)
+    for chunk_start in range(0, len(excited_index_list), group):
+        chunk = excited_index_list[chunk_start : chunk_start + group]
+        # Wide seed in (eigenstate, operator) order: eigenstate at chunk position p occupies
+        # seed columns [p*n_ops, (p+1)*n_ops), so its Green's function reads r[:, that slice].
+        group_psis = [excited_block_psis[ei][i] for ei in chunk for i in range(n_ops)]
+        alphas, betas, r, n_basis = _block_green_group(
+            split_original_basis,
+            hOp,
+            group_psis,
+            reort,
+            delta,
+            slaterWeightMin,
+            sparse,
+            verbose,
+            excited_restrictions,
+            excited_weighted_restrictions,
         )
-
-        if excited_basis.restrictions is not None:
-            hOp.set_restrictions(excited_basis.restrictions)
-        if excited_basis.weighted_restrictions is not None:
-            hOp.set_weighted_restrictions(excited_basis.weighted_restrictions)
-        if sparse:
-            alphas, betas, r = block_Green_sparse(
-                reort=reort,
-                hOp=hOp,
-                psi_arr=excited_basis.redistribute_psis(excited_psis),
-                basis=excited_basis,
-                delta=delta,
-                slaterWeightMin=slaterWeightMin,
-                verbose=verbose,
-            )
-        else:
-            alphas, betas, r = block_Green(
-                reort=reort,
-                hOp=hOp,
-                psi_arr=excited_basis.redistribute_psis(excited_psis),
-                basis=excited_basis,
-                delta=delta,
-                slaterWeightMin=slaterWeightMin,
-                verbose=verbose,
-            )
-        local_alphas.append(alphas)
-        local_betas.append(betas)
-        local_r.append(r)
+        # Split the shared recurrence into one (alphas, betas, r) per eigenstate. The
+        # coefficients are common to the chunk; only the seed-projection columns differ.
+        for p in range(len(chunk)):
+            local_alphas.append(alphas)
+            local_betas.append(betas)
+            local_r.append(r[:, p * n_ops : (p + 1) * n_ops])
         if verbose:
-            print(f"Expanded excited state basis contains {len(excited_basis)} elements.")
+            print(f"Expanded excited state basis contains {n_basis} elements.")
 
     gathered_alphas = gather_distributed_results(
         block_basis.comm,
-        excited_basis.comm.rank if excited_basis.comm is not None else 0,
+        split_original_basis.comm.rank if split_original_basis.comm is not None else 0,
         excited_roots,
         excited_states_per_color,
         local_alphas,
@@ -471,7 +590,7 @@ def calc_Greens_function_with_offdiag(
     )
     gathered_betas = gather_distributed_results(
         block_basis.comm,
-        excited_basis.comm.rank if excited_basis.comm is not None else 0,
+        split_original_basis.comm.rank if split_original_basis.comm is not None else 0,
         excited_roots,
         excited_states_per_color,
         local_betas,
@@ -479,7 +598,7 @@ def calc_Greens_function_with_offdiag(
     )
     gathered_r = gather_distributed_results(
         block_basis.comm,
-        excited_basis.comm.rank if excited_basis.comm is not None else 0,
+        split_original_basis.comm.rank if split_original_basis.comm is not None else 0,
         excited_roots,
         excited_states_per_color,
         local_r,
@@ -667,6 +786,103 @@ _GF_CHECK_EVERY = int(os.environ.get("GF_CHECK_EVERY", 8))  # set to 1 to disabl
 # relative change typically sits on a long noisy plateau a decade or two above tolerance before
 # the final descent, and that plateau must stay in the sparse regime for the sampling to pay off.
 _GF_NEAR_FACTOR = float(os.environ.get("GF_NEAR_FACTOR", 2.0))
+
+
+def _gf_eigenstate_group():
+    r"""Number of thermal eigenstates stacked into one block-Lanczos recurrence (the
+    "wide block" granularity knob).
+
+    For a Green's-function block of ``n_ops`` transition operators, ``g = 1`` (the default)
+    runs one width-``n_ops`` recurrence per thermal eigenstate -- the historical behavior.
+    ``g > 1`` stacks ``g`` eigenstates' seeds into a single width-``g * n_ops`` block that
+    shares one Krylov space: the shared block-tridiagonal coefficients ``(alphas, betas)``
+    are reused for every eigenstate in the group, while each eigenstate keeps its own
+    ``n_ops`` columns of the seed projection ``r`` and its own energy shift, so
+    :func:`calc_G` reconstructs that eigenstate's ``n_ops x n_ops`` Green's-function block
+    exactly (the block Krylov space of the stacked seed contains each eigenstate's own
+    Krylov space). Stacking shares the matvec/Krylov build across eigenstates but grows the
+    per-step reorthogonalization with the block width, so the optimum is workload-dependent
+    (see ``doc/plans/calc_selfenergy_performance.md``). Override with ``GF_EIGENSTATE_GROUP``.
+    """
+    return max(1, int(os.environ.get("GF_EIGENSTATE_GROUP", 1)))
+
+
+def _gf_operator_split():
+    r"""Whether to use the pairwise / scalar operator-split decomposition (the *narrow* end of
+    the block-width granularity spectrum). Default off (``GF_OPERATOR_SPLIT`` unset/0).
+
+    When on, a block of ``n`` transition operators is computed not as one width-``n`` block-Lanczos
+    recurrence but as ``n`` width-1 (scalar) recurrences for the diagonal seeds ``v_i = c_i|psi>``
+    plus, for each off-diagonal pair ``i < j``, two more scalar recurrences for the polarization
+    seeds ``v_i + v_j`` and ``v_i + i v_j``. The off-diagonal ``G_ij`` is recovered exactly from the
+    four scalar resolvents (:func:`calc_G_pairwise`). This maximizes the number of independent
+    (communication-free) work units -- useful when ranks greatly outnumber the
+    ``block x eigenstate`` units -- at the cost of redundant Krylov building (no shared subspace
+    across columns). Mutually exclusive with eigenstate grouping; the operator split takes
+    precedence when both are requested.
+    """
+    return os.environ.get("GF_OPERATOR_SPLIT", "0") not in ("0", "", "false", "False")
+
+
+class PairwiseGF:
+    r"""Per-eigenstate Green's-function block assembled from scalar (width-1) continued fractions.
+
+    Holds the scalar block-Lanczos coefficients for the operator-split decomposition of one
+    ``n x n`` block (one thermal state, one spectral side): the ``n`` diagonal seeds and, per
+    off-diagonal pair, the two polarization seeds. :func:`calc_G_pairwise` evaluates these on a
+    frequency mesh and reassembles the full matrix via the polarization identity.
+
+    Attributes
+    ----------
+    n : int
+        Block dimension (number of transition operators).
+    diag : list[tuple]
+        Length-``n`` list of ``(alphas, betas, r)`` scalar continued fractions for ``v_i``.
+    pairs : dict[tuple[int, int], tuple[tuple, tuple]]
+        ``{(i, j): (cf_sum, cf_imag)}`` for ``i < j`` -- the scalar continued fractions for the
+        seeds ``v_i + v_j`` and ``v_i + i v_j``.
+    """
+
+    __slots__ = ("n", "diag", "pairs")
+
+    def __init__(self, n, diag, pairs):
+        self.n = n
+        self.diag = diag
+        self.pairs = pairs
+
+
+def calc_G_pairwise(pgf: "PairwiseGF", mesh, e, delta):
+    r"""Assemble an ``n x n`` Green's-function block from its scalar continued fractions.
+
+    Each scalar seed ``w`` gives the resolvent
+    ``S(w) = w^\dagger (\omega + i\delta + e - H)^{-1} w`` via the width-1 continued fraction
+    (:func:`calc_G`). The diagonal elements are ``G_ii = S(v_i)``; each off-diagonal pair is
+    recovered from the polarization identity
+
+    .. math::
+
+        S(v_i + v_j)   &= M_{ii} + M_{jj} + M_{ij} + M_{ji}, \\
+        S(v_i + i v_j) &= M_{ii} + M_{jj} + i M_{ij} - i M_{ji},
+
+    so ``M_ij = ½[S(v_i+v_j) - i S(v_i+i v_j) - (1-i)(M_ii+M_jj)]`` and ``M_ji`` is its mirror.
+    Exact (no approximation) given converged scalar continued fractions.
+    """
+    n = pgf.n
+    G = np.zeros((len(mesh), n, n), dtype=complex)
+
+    def S(cf):
+        alphas, betas, r = cf
+        return calc_G(alphas, betas, r, mesh, e, delta)[:, 0, 0]
+
+    diag_S = [S(cf) for cf in pgf.diag]
+    for i in range(n):
+        G[:, i, i] = diag_S[i]
+    for (i, j), (cf_sum, cf_imag) in pgf.pairs.items():
+        Mii, Mjj = diag_S[i], diag_S[j]
+        S_sum, S_imag = S(cf_sum), S(cf_imag)
+        G[:, i, j] = 0.5 * (S_sum - 1j * S_imag - (1 - 1j) * (Mii + Mjj))
+        G[:, j, i] = 0.5 * (S_sum + 1j * S_imag - (1 + 1j) * (Mii + Mjj))
+    return G
 
 
 def _gf_rel_tol(slaterWeightMin):
@@ -904,6 +1120,18 @@ def calc_thermally_averaged_G(alphas, betas, r, mesh, es, e0, tau, delta):
     -------
     G_avg : ndarray
     """
+    # Operator-split (pairwise) path: r holds a per-eigenstate PairwiseGF; each carries its own
+    # scalar continued fractions, so (alphas, betas) are unused and calc_G_pairwise assembles the
+    # block from the polarization identity.
+    if any(isinstance(r_e, PairwiseGF) for r_e in r):
+        n_ops = next(r_e.n for r_e in r if isinstance(r_e, PairwiseGF))
+        G_avg = np.zeros((len(mesh), n_ops, n_ops), dtype=complex)
+        for e, r_e in zip(es, r):
+            if r_e is None:
+                continue
+            G_avg += calc_G_pairwise(r_e, mesh, e, delta) * np.exp(-(e - e0) / tau)
+        return G_avg
+
     if len(alphas) == 0:
         return np.zeros((len(mesh), 0, 0), dtype=complex)
 
@@ -1467,9 +1695,10 @@ def save_Greens_function(gs, omega_mesh, label, cluster_label, e_scale=1, tol=1e
                 off_diags.append((row, column))
 
     print(f"Writing {label}{axis_label}-{cluster_label} to files")
-    with open(f"real-{label}{axis_label}-{cluster_label}.dat", "w") as fg_real, open(
-        f"imag-{label}{axis_label}-{cluster_label}.dat", "w"
-    ) as fg_imag:
+    with (
+        open(f"real-{label}{axis_label}-{cluster_label}.dat", "w") as fg_real,
+        open(f"imag-{label}{axis_label}-{cluster_label}.dat", "w") as fg_imag,
+    ):
         header = "# Frequency, total, spin down, spin up\n"
         header += "# indexmap: (column index of projected elements)"
         for row in range(gs.shape[1]):
