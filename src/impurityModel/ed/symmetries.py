@@ -21,6 +21,8 @@ reconstruction in ``nonabelian_symmetry_casimir.md``.
 Implements symmetry-plan Phase 2 (``doc/plans/symmetry_implementation_plan.md``).
 """
 
+from collections import namedtuple
+
 import numpy as np
 
 from impurityModel.ed.ManyBodyUtils import ManyBodyOperator
@@ -323,6 +325,90 @@ def subset_occupations(charges, occupied_orbitals):
     return [len(subset & occupied) for subset in charges]
 
 
+def group_orbitals_by_charges(op, impurity_orbitals, valence_orbitals, conduction_orbitals, n_orb=None):
+    r"""Group flat impurity / valence / conduction orbital lists into conserved-charge blocks.
+
+    The many-body ``Basis`` is built from ``{group: [orbital-block, ...]}`` dictionaries whose
+    keys pair each impurity block with its valence and conduction baths. Given **flat** orbital
+    lists, this reconstructs that grouping from the **full-Hamiltonian** conserved charges
+    (:func:`conserved_subset_charges`): each conserved subset that contains impurity orbitals
+    becomes one group, holding the impurity, valence and conduction orbitals that fall in it.
+    Because a bath orbital is fused into the conserved charge of the impurity orbital it
+    hybridises with, each bath lands in the group of the impurity it couples to.
+
+    Groups are keyed by a 0-based integer sorted by their smallest impurity orbital, giving a
+    deterministic keying that ``nominal_occ`` / ``mixed_valence`` can match.
+
+    Parameters
+    ----------
+    op : ManyBodyOperator or dict
+        The full Hamiltonian (1- and 2-body).
+    impurity_orbitals, valence_orbitals, conduction_orbitals : sequence of int
+        Flat spin-orbital index lists.
+    n_orb : int, optional
+        Number of spin-orbitals (inferred if ``None``).
+
+    Returns
+    -------
+    impurity_orbitals : dict[int, list[list[int]]]
+        ``{group: [impurity orbital block]}``.
+    bath_states : tuple(dict, dict)
+        ``(valence_baths, conduction_baths)``, each ``{group: [bath orbital block]}`` with the
+        same keys as ``impurity_orbitals``.
+    """
+    imp_set = set(impurity_orbitals)
+    val_set = set(valence_orbitals)
+    con_set = set(conduction_orbitals)
+
+    charges = conserved_subset_charges(op, n_orb=n_orb)
+    groups = sorted((c for c in charges if c & imp_set), key=lambda c: min(c & imp_set))
+
+    impurity_dict, valence_dict, conduction_dict = {}, {}, {}
+    for g, subset in enumerate(groups):
+        impurity_dict[g] = [sorted(subset & imp_set)]
+        valence_dict[g] = [sorted(subset & val_set)]
+        conduction_dict[g] = [sorted(subset & con_set)]
+    return impurity_dict, (valence_dict, conduction_dict)
+
+
+def classify_bath_occupation(op, impurity_orbitals, n_orb=None):
+    r"""Split the bath orbitals into initially-occupied (valence) and empty (conduction) sets.
+
+    The bath orbitals are all spin-orbitals of ``op`` that are **not** impurity orbitals; each is
+    classified by its one-body on-site energy ``h[o, o]``: baths below the Fermi level
+    (``h[o, o] < 0``) sit filled in the nominal configuration (**valence**, initially occupied),
+    the rest are empty (**conduction**, initially empty). This is the same Fermi-level-zero
+    convention as :func:`edchain.build_imp_bath_blocks` / the ``build_h0`` bath partitioning, so a
+    Hamiltonian built there reproduces its valence/conduction split without the caller passing it.
+
+    The on-site energies are basis-independent for the bath here: the symmetry-adapted rotation
+    (:func:`impurity_symmetry_rotation`) acts only on the impurity block, leaving the bath diagonal
+    unchanged, so this may be called on either the input or the solver-basis Hamiltonian.
+
+    Parameters
+    ----------
+    op : ManyBodyOperator or dict
+        The Hamiltonian (only its one-body diagonal on the bath orbitals is used).
+    impurity_orbitals : sequence of int
+        The impurity spin-orbital indices; everything else in ``op`` is treated as bath.
+    n_orb : int, optional
+        Number of spin-orbitals (inferred if ``None``).
+
+    Returns
+    -------
+    valence_orbitals : list[int]
+        Initially-occupied bath orbital indices (``h[o, o] < 0``), sorted.
+    conduction_orbitals : list[int]
+        Initially-empty bath orbital indices (``h[o, o] >= 0``), sorted.
+    """
+    h, _, _ = extract_tensors(op, n_orb=n_orb)
+    imp_set = set(impurity_orbitals)
+    bath = [o for o in range(h.shape[0]) if o not in imp_set]
+    valence = [o for o in bath if h[o, o].real < 0]
+    conduction = [o for o in bath if h[o, o].real >= 0]
+    return valence, conduction
+
+
 def weighted_restriction(weights, target, slack=0):
     r"""Build one weighted-sum restriction ``({orbital: int weight}, (q_min, q_max))``.
 
@@ -418,9 +504,18 @@ def auto_block_structure(op, n_orb=None, orbitals=None):
     existing :func:`block_structure.build_block_structure` on it, which returns both the
     orbital blocks (connectivity / symmetry sectors) **and** the equivalences
     (``identical_blocks``, ``transposed_blocks``, ``particle_hole_blocks``, …) used to
-    skip redundant transition-operator evaluations in the spectra loop (Phase 4.2). The
-    blocks agree with :func:`green_function_block_structure` (both are the one-body
-    symmetry sectors); this adds the cross-block equivalence detection.
+    skip redundant transition-operator evaluations in the spectra loop (Phase 4.2).
+
+    .. warning::
+
+       This inspects **only the one-body sub-block** ``h[orbitals, orbitals]``. When
+       ``orbitals`` is the impurity set, the resulting partition can be **strictly finer**
+       than the interacting Green's-function block structure: two impurity orbitals with
+       ``h_ij = 0`` still have a nonzero ``G_ij`` if they couple through a shared bath
+       orbital (bath-mediated hybridization) or a two-body term. Use
+       :func:`impurity_block_structure` (which folds in the full-Hamiltonian conserved
+       charges) for the GF / self-energy paths; keep this only where the one-body
+       connectivity is known to be complete.
 
     Parameters
     ----------
@@ -441,6 +536,137 @@ def auto_block_structure(op, n_orb=None, orbitals=None):
     if orbitals is not None:
         h = h[np.ix_(list(orbitals), list(orbitals))]
     return build_block_structure(None, mat=h)
+
+
+def impurity_block_structure(op, impurity_orbitals, n_orb=None):
+    r"""Impurity ``BlockStructure`` consistent with the interacting Green's function.
+
+    The GF / self-energy paths partition the impurity orbitals into blocks and compute one
+    block-Lanczos Green's function per inequivalent block. For that partition to be
+    *correct*, ``G_ij`` must be zero for every pair ``(i, j)`` in different blocks, i.e. ``i``
+    and ``j`` must transform under inequivalent irreps of the symmetry group of the **full**
+    Hamiltonian.
+
+    The partition is derived from the **hybridization-dressed** impurity one-body matrix
+
+    .. math:: M = h_{\mathrm{imp}} + V^\dagger V,
+
+    where ``h_imp = h[imp, imp]`` is the impurity crystal field and ``V = h[bath, imp]`` the
+    impurity-bath hopping, so ``V†V`` is the (first-moment) bath-mediated coupling. Running
+    :func:`block_structure.build_block_structure` on ``M`` gives both the orbital blocks and
+    the value-based equivalences (``identical`` / ``transposed`` / ``particle_hole``) used to
+    skip redundant Green's functions. Using ``M`` rather than ``h[imp, imp]`` alone is what
+    makes the partition correct:
+
+    * ``V†V`` **merges bath-mediated pairs**: two impurity orbitals with ``h_ij = 0`` but a
+      common bath neighbour acquire ``(V†V)_{ij} \neq 0`` and are grouped together — the case
+      :func:`auto_block_structure` gets wrong (strictly too fine).
+    * ``V†V`` carries the **symmetry cancellation**, so it does *not* over-merge: for a bath
+      that respects the impurity symmetry, ``(V†V)`` between different irreps
+      (e.g. ``eg``/``t2g``) vanishes even though individual ``V`` elements do not. This avoids
+      the collapse that abelian conserved charges of the two-body ``U`` would cause (which
+      would fuse a correlated shell into one block per spin).
+
+    This is correct for impurity models because the local Coulomb interaction is rotationally
+    invariant — it carries higher symmetry than the one-body part, so ``U`` never couples
+    orbitals that the one-body + hybridization symmetry keeps separate.
+
+    In a symmetry-adapted single-particle basis (impurity one-body block diagonalised; see
+    :func:`impurity_symmetry_rotation`) ``M`` is diagonal and this yields the maximally-split
+    structure — for a cubic d-shell, ten ``1x1`` blocks with the ``eg`` and ``t2g`` orbitals
+    detected as *identical* (one inequivalent Green's function per irrep and spin).
+
+    Blocks are returned in the **local** impurity index convention (``0 .. n_imp-1`` over the
+    sorted ``impurity_orbitals``), matching what
+    :func:`greens_function.build_full_greens_function` and ``selfenergy.get_sigma`` expect.
+
+    Parameters
+    ----------
+    op : ManyBodyOperator or dict
+        The full Hamiltonian (only its one-body part — impurity, bath, and hybridization — is
+        used).
+    impurity_orbitals : sequence of int
+        The impurity spin-orbital indices.
+    n_orb : int, optional
+        Number of spin-orbitals (inferred if ``None``).
+
+    Returns
+    -------
+    BlockStructure
+    """
+    from impurityModel.ed.block_structure import build_block_structure
+
+    imp = sorted(impurity_orbitals)
+    imp_set = set(imp)
+    h, _, _ = extract_tensors(op, n_orb=n_orb)
+    n = h.shape[0]
+    bath = [o for o in range(n) if o not in imp_set]
+
+    m = h[np.ix_(imp, imp)]
+    if bath:
+        v = h[np.ix_(bath, imp)]  # (n_bath, n_imp) impurity-bath hopping
+        m = m + v.conj().T @ v  # add the bath-mediated (first-moment) coupling
+    return build_block_structure(None, mat=m)
+
+
+def impurity_symmetry_rotation(op, impurity_orbitals, n_orb=None):
+    r"""Full-space rotation that diagonalises the impurity one-body block (crystal field / SOC).
+
+    Returns the unitary that takes the impurity single-particle Hamiltonian ``h[imp, imp]`` to
+    its eigenbasis, obtained by a plain Hermitian eigendecomposition. This is the physical
+    single-particle basis: without spin-orbit coupling it is the crystal-field basis (e.g.
+    cubic ``eg`` / ``t2g``), and with SOC it is the ``j, m_j`` basis. Degenerate eigenvalues
+    stay degenerate (adjacent, equal), so the impurity Green's-function block structure
+    (:func:`impurity_block_structure`) collapses to its finest form with the degenerate
+    orbitals detected as identical.
+
+    .. note::
+
+       Use a straight eigendecomposition, **not** ``discover_one_body_symmetries`` +
+       ``joint_diagonalize``: a degenerate ``h_imp`` (e.g. six-fold ``t2g``×spin, four-fold
+       ``eg``×spin) has a huge ``U(6)×U(4)`` one-body commutant, and jointly diagonalising a
+       *random* element of it picks an arbitrary spin/orbital-scrambling basis that densifies
+       the (spherical-harmonic-sparse) Coulomb interaction ~7x. Diagonalising the physical
+       ``h_imp`` keeps that basis (and hence ``U``) as sparse as the crystal field allows.
+
+    .. warning::
+
+       With SOC the ``j, m_j`` eigenbasis genuinely densifies the Coulomb tensor (the Gaunt
+       sparsity holds only in the spherical spin-orbital basis), so rotating into it is not
+       free — weigh the finer block structure against the denser matvec before enabling it.
+
+    The rotation acts **only within the impurity block** (identity on the bath), matching the
+    existing ``rot_to_spherical`` convention (``selfenergy`` uses ``eye(n_imp)``): the bath
+    layout and the impurity-bath hybridization ``get_hcorr_v_hbath`` consumes are preserved,
+    the hybridization is simply expressed in the rotated impurity basis.
+
+    Parameters
+    ----------
+    op : ManyBodyOperator or dict
+        The Hamiltonian (only its one-body impurity block is used to build the rotation).
+    impurity_orbitals : sequence of int
+        The impurity spin-orbital indices.
+    n_orb : int, optional
+        Number of spin-orbitals (inferred if ``None``).
+
+    Returns
+    -------
+    W : ndarray, shape (n_orb, n_orb)
+        The full-space unitary (``u_imp`` embedded on the impurity orbitals, identity on the
+        bath). Rotate the Hamiltonian with :func:`rotate_hamiltonian`.
+    u_imp : ndarray, shape (n_imp, n_imp)
+        The impurity-block rotation, in the sorted-``impurity_orbitals`` order (columns are the
+        eigenvectors of ``h[imp, imp]``).
+    """
+    h, _, _ = extract_tensors(op, n_orb=n_orb)
+    n = h.shape[0]
+    imp = sorted(impurity_orbitals)
+    h_imp = h[np.ix_(imp, imp)]
+    h_imp = 0.5 * (h_imp + h_imp.conj().T)  # symmetrise away round-off before eigh
+    _eigvals, u_imp = np.linalg.eigh(h_imp)
+    W = np.eye(n, dtype=complex)
+    W[np.ix_(imp, imp)] = u_imp
+    return W, u_imp
 
 
 def gf_sector_restrictions(charges, gs_occupations, orbital, kind, slack=0):
@@ -482,6 +708,95 @@ def gf_sector_restrictions(charges, gs_occupations, orbital, kind, slack=0):
             break
     else:
         raise ValueError(f"orbital {orbital} is not in any conserved charge subset")
+    return restrictions_from_charges(charges, occupations, slack=slack)
+
+
+def operator_charge_shift(op, charges, tol=1e-9):
+    r"""Net occupation change each conserved subset undergoes under a transition operator.
+
+    A transition operator :math:`\hat{T} = \sum T_{...} \hat{c}^\dagger\cdots\hat{c}\cdots`
+    maps a state of definite conserved-charge signature into a *definite* target sector
+    **only if every term shifts every conserved subset by the same amount** (e.g. a dipole
+    ``c_i^\dagger c_j`` with ``i`` in the d-shell subset and ``j`` in the core-p subset shifts
+    ``(d:+1, p:-1)`` for every term). When that holds, ``T|\psi\rangle`` lives in one sector and
+    the ensuing Lanczos can be confined to it (see :func:`transition_sector_restrictions`).
+
+    Parameters
+    ----------
+    op : ManyBodyOperator or dict
+        The transition operator.
+    charges : sequence of frozenset of int
+        Conserved subset charges (from :func:`conserved_subset_charges` on the **full**
+        Hamiltonian -- the charges that are actually preserved during the Lanczos).
+    tol : float, optional
+        Terms with ``|amp| <= tol`` are ignored.
+
+    Returns
+    -------
+    list of int or None
+        The per-subset occupation shift (aligned with ``charges``) if every non-negligible
+        term induces the *same* shift; ``None`` if the operator does not have a definite
+        sector (its terms disagree), i.e. it cannot be sector-confined.
+    """
+    terms = op.to_dict() if hasattr(op, "to_dict") else dict(op)
+    subset_of = {}
+    for k, subset in enumerate(charges):
+        for orb in subset:
+            subset_of[orb] = k
+
+    reference = None
+    for factors, amp in terms.items():
+        if abs(amp) <= tol:
+            continue
+        shift = [0] * len(charges)
+        for idx, action in factors:
+            k = subset_of.get(idx)
+            if k is None:
+                # Orbital outside every conserved subset -> cannot reason about the sector.
+                return None
+            shift[k] += 1 if action == "c" else -1
+        if reference is None:
+            reference = shift
+        elif shift != reference:
+            return None
+    return reference
+
+
+def transition_sector_restrictions(charges, gs_occupations, op, slack=0, tol=1e-9):
+    r"""Conserved-charge restrictions confining ``op|\psi\rangle`` to its target sector.
+
+    Generalises :func:`gf_sector_restrictions` from a single ladder operator to an arbitrary
+    (many-term) transition operator. The seed ``T|\psi\rangle`` occupies the sector
+    ``q_ψ + Δq`` where ``Δq`` is the common per-subset shift of ``T``
+    (:func:`operator_charge_shift`). Because the Hamiltonian preserves every conserved subset,
+    the whole Krylov space stays in that sector, so the excited basis can be pinned to it --
+    pruning determinants that per-shell occupation windows would otherwise admit.
+
+    Parameters
+    ----------
+    charges : sequence of frozenset of int
+        Conserved subset charges of the **full** Hamiltonian.
+    gs_occupations : sequence of int
+        Ground-state occupation of each charge (from :func:`measure_conserved_charges`).
+    op : ManyBodyOperator or dict
+        The transition operator.
+    slack : int, optional
+        Neighbour-sector slack passed to :func:`restrictions_from_charges`.
+    tol : float, optional
+        Amplitude cutoff forwarded to :func:`operator_charge_shift`.
+
+    Returns
+    -------
+    dict of frozenset to (int, int) or None
+        ``Basis.restrictions`` confining the run to the target sector, or ``None`` when the
+        operator has no definite sector (fall back to the occupation-only restrictions).
+    """
+    shift = operator_charge_shift(op, charges, tol=tol)
+    if shift is None:
+        return None
+    occupations = [g + s for g, s in zip(gs_occupations, shift)]
+    if any(o < 0 for o in occupations):
+        return None
     return restrictions_from_charges(charges, occupations, slack=slack)
 
 
@@ -527,6 +842,88 @@ def green_function_allowed_mask(op, n_orb):
         for orb in block:
             label[orb] = b
     return label[:, None] == label[None, :]
+
+
+ImpurityBlockConsistency = namedtuple(
+    "ImpurityBlockConsistency",
+    ["impurity_only_blocks", "gf_blocks", "consistent", "missing_pairs"],
+)
+
+
+def impurity_gf_block_consistency(op, impurity_orbitals, n_orb=None):
+    r"""Compare the impurity-only block structure against the true Green's-function blocks.
+
+    The spectra / self-energy paths historically derived their Green's-function block
+    structure from :func:`auto_block_structure` with ``orbitals=impurity_orbitals``, which
+    inspects **only** the impurity sub-block ``h[imp, imp]`` of the one-body Hamiltonian.
+    That can be *strictly too fine*: two impurity orbitals with ``h_ij = 0`` still have a
+    nonzero ``G_ij`` when they are coupled through a **shared bath orbital** (bath-mediated
+    hybridization ``Δ_ij(ω) ≠ 0``). The correct GF block structure is that of the
+    hybridization-dressed impurity matrix ``h[imp, imp] + V†V`` (``V = h[bath, imp]``) — see
+    :func:`impurity_block_structure` — whose ``V†V`` term supplies the bath-mediated coupling
+    (with its symmetry cancellation) that ``h[imp, imp]`` alone misses.
+
+    This diagnostic computes both partitions (as sets of *global* orbital indices) and reports
+    whether the impurity-only structure reproduces the dressed one, listing every impurity
+    pair ``(i, j)`` that the impurity-only structure wrongly separates (same dressed block,
+    different impurity-only block).
+
+    Parameters
+    ----------
+    op : ManyBodyOperator or dict
+        The full Hamiltonian (1- and 2-body).
+    impurity_orbitals : sequence of int
+        The impurity spin-orbital indices.
+    n_orb : int, optional
+        Number of spin-orbitals (inferred from ``op`` if ``None``).
+
+    Returns
+    -------
+    ImpurityBlockConsistency
+        ``impurity_only_blocks`` and ``gf_blocks`` are lists of ``frozenset`` of global
+        orbital indices; ``consistent`` is ``True`` iff they are the same partition;
+        ``missing_pairs`` lists the impurity pairs the impurity-only structure drops.
+    """
+    from impurityModel.ed.block_structure import build_block_structure
+
+    imp = sorted(impurity_orbitals)
+
+    # Impurity-only partition: connected components of h[imp, imp] (auto_block_structure with
+    # orbitals=imp), mapped from local matrix indices back to global orbital indices.
+    imp_set = set(imp)
+    h, _, _ = extract_tensors(op, n_orb=n_orb)
+    n = h.shape[0]
+    bath = [o for o in range(n) if o not in imp_set]
+    h_imp = h[np.ix_(imp, imp)]
+    imp_only_local = build_block_structure(None, mat=h_imp).blocks
+    impurity_only_blocks = [frozenset(imp[k] for k in block) for block in imp_only_local]
+
+    # Dressed partition: connectivity of h[imp, imp] + V†V (bath-mediated coupling),
+    # mapped from local matrix indices back to global orbital indices.
+    m = h_imp + (h[np.ix_(bath, imp)].conj().T @ h[np.ix_(bath, imp)] if bath else 0.0)
+    gf_blocks = [frozenset(imp[k] for k in block) for block in build_block_structure(None, mat=m).blocks]
+
+    def _sorted_partition(blocks):
+        return sorted((frozenset(b) for b in blocks), key=min)
+
+    impurity_only_blocks = _sorted_partition(impurity_only_blocks)
+    gf_blocks = _sorted_partition(gf_blocks)
+    consistent = impurity_only_blocks == gf_blocks
+
+    # Which impurity orbital is in which impurity-only block.
+    imp_only_label = {}
+    for b, block in enumerate(impurity_only_blocks):
+        for orb in block:
+            imp_only_label[orb] = b
+    missing_pairs = []
+    for block in gf_blocks:
+        orbs = sorted(block)
+        for a in range(len(orbs)):
+            for b in range(a + 1, len(orbs)):
+                if imp_only_label[orbs[a]] != imp_only_label[orbs[b]]:
+                    missing_pairs.append((orbs[a], orbs[b]))
+
+    return ImpurityBlockConsistency(impurity_only_blocks, gf_blocks, consistent, missing_pairs)
 
 
 def discovered_orbital_blocks(op, n_orb=None):
@@ -1004,3 +1401,150 @@ def in_span(generators, matrix, tol=1e-9):
     q, _ = np.linalg.qr(basis)
     residual = vec - q @ (q.conj().T @ vec)
     return np.linalg.norm(residual) <= tol * max(np.linalg.norm(vec), 1.0)
+
+
+# Result of :func:`component_symmetry_reduction`.
+#
+# ``Q`` : (m, m) unitary; column ``a`` is a symmetry-adapted component ``T'_a = sum_alpha
+#         Q[alpha, a] T_alpha`` expressed in the original Cartesian component basis.
+# ``representatives`` : column indices of ``Q`` that must actually be computed (one per
+#         symmetry-equivalence group).
+# ``group_of_column`` : length ``m``; ``group_of_column[a]`` is the index *into*
+#         ``representatives`` of the representative for column ``a``.
+# ``diagonalizable`` : if True, ``chi' = Q^dagger chi Q`` is diagonal with equal entries
+#         within each group, so the full spectral tensor is rebuilt from the representative
+#         diagonals via ``Q``. If False (no closing continuous symmetry, or a non-abelian
+#         commutant), the caller falls back to the full ``m x m`` tensor (``Q`` is the
+#         identity, every column is its own representative) -- always correct, just no dedup.
+ComponentReduction = namedtuple("ComponentReduction", ["Q", "representatives", "group_of_column", "diagonalizable"])
+
+
+def _matrix_commutant(mats, tol=None):
+    r"""Orthonormal (Frobenius) basis of ``{X : [X, M] = 0 for all M in mats}``.
+
+    Uses column-stacking ``vec``: ``vec(X M) = (M^T (x) I) vec(X)`` and
+    ``vec(M X) = (I (x) M) vec(X)``, so ``vec([X, M]) = (M^T (x) I - I (x) M) vec(X)``.
+    The joint null space over all ``M`` is the commutant. Returns the null-space matrices
+    (generally not Hermitian; Hermitianise separately if needed).
+    """
+    mats = [np.asarray(m, dtype=complex) for m in mats]
+    if not mats:
+        return []
+    n = mats[0].shape[0]
+    eye = np.eye(n)
+    rows = [np.kron(m.T, eye) - np.kron(eye, m) for m in mats]
+    system = np.vstack(rows)
+    _, s, vh = np.linalg.svd(system)
+    norm = s[0] if s.size else 0.0
+    if tol is None:
+        tol = max(norm, 1.0) * n * np.finfo(float).eps
+    null = vh.conj().T[:, [i for i in range(vh.shape[0]) if i >= len(s) or s[i] <= tol]]
+    return [null[:, a].reshape(n, n, order="F") for a in range(null.shape[1])]
+
+
+def component_symmetry_reduction(component_ops, h_onebody, n_orb=None, tol=1e-8):
+    r"""Point-group dedup of a set of one-body *component* transition operators.
+
+    A dipole (or other one-body) transition tensor
+    :math:`\chi_{\alpha\beta}(\omega) = \langle g| T_\alpha^\dagger (\omega - H)^{-1}
+    T_\beta |g\rangle` is invariant under any continuous single-particle symmetry ``G`` of
+    ``h`` (``[h, G] = 0``): if ``G`` maps the component span onto itself,
+    :math:`[G, T_\alpha] = \sum_\beta M_{\beta\alpha} T_\beta`, then :math:`\chi` commutes
+    with the representation ``{M}`` on component space. When that representation is
+    multiplicity-free (commutant abelian) a common eigenbasis ``Q`` of the commutant makes
+    :math:`\chi' = Q^\dagger \chi Q` diagonal with **equal** entries within each
+    symmetry-equivalence group -- so only one representative component per group needs a
+    Lanczos run and the whole tensor is rebuilt from ``Q``.
+
+    Only **continuous** (Lie-algebra) symmetries are detected (via
+    :func:`discover_one_body_symmetries`): a fully rotational ``h`` collapses the three
+    Cartesian dipoles to a single representative. Lower continuous symmetry (e.g. axial
+    ``L_z``) still block-diagonalises the tensor -- ``chi`` comes back diagonal in ``Q`` --
+    but does not by itself equate the two in-plane components (``chi_{+} = chi_{-}`` needs a
+    reflection / time reversal, which ``[h, G] = 0`` cannot see), so no columns are dropped.
+    A purely **discrete** point group (e.g. a cubic crystal field) or no symmetry falls back
+    to the identity reduction and the full ``m x m`` tensor -- always correct, just no dedup.
+
+    Parameters
+    ----------
+    component_ops : sequence of ManyBodyOperator or dict
+        The one-body component operators (e.g. the three Cartesian dipole operators).
+    h_onebody : np.ndarray, shape (n_orb, n_orb)
+        One-body Hamiltonian matrix whose symmetries are used (from :func:`extract_tensors`).
+    n_orb : int, optional
+        Number of spin-orbitals; inferred from the operators/matrix if ``None``.
+    tol : float, optional
+        Closure / commutant residual tolerance.
+
+    Returns
+    -------
+    ComponentReduction
+    """
+    if n_orb is None:
+        n_orb = np.asarray(h_onebody).shape[0]
+    m = len(component_ops)
+    Ts = [extract_tensors(op, n_orb=n_orb)[0] for op in component_ops]
+    identity = ComponentReduction(np.eye(m, dtype=complex), list(range(m)), list(range(m)), m <= 1)
+    if m <= 1:
+        return identity
+
+    # Component matrices, vectorised, as the least-squares span for the closure test.
+    tvec = np.array([T.reshape(-1) for T in Ts]).T  # (n^2, m)
+    q_t, _ = np.linalg.qr(tvec)  # orthonormal basis of span(T); projector P = q_t q_t^dagger
+    generators = discover_one_body_symmetries(np.asarray(h_onebody, dtype=complex))
+    if not generators:
+        return identity
+
+    # The commutant basis from discovery is arbitrary: the generators that *close* on the
+    # component span (``[G, T_alpha] in span(T)``) are linear combinations ``G = sum_k x_k C_k``.
+    # Solve for that closing subalgebra as the null space of the "leaves-the-span" residual,
+    # then represent each closing generator on the component span as an m x m matrix M.
+    gens = [np.asarray(g, dtype=complex) for g in generators]
+    columns = []
+    for c in gens:
+        res_c = []
+        for T in Ts:
+            r = (c @ T - T @ c).reshape(-1)
+            r = r - q_t @ (q_t.conj().T @ r)  # component of [C, T_alpha] orthogonal to span(T)
+            res_c.append(r)
+        columns.append(np.concatenate(res_c))
+    b_matrix = np.array(columns).T  # (m * n^2, n_gen)
+    _, s_b, vh_b = np.linalg.svd(b_matrix)
+    scale = s_b[0] if s_b.size else 0.0
+    cut = max(scale, 1.0) * b_matrix.shape[0] * np.finfo(float).eps
+    null_coeffs = [vh_b[i].conj() for i in range(vh_b.shape[0]) if i >= len(s_b) or s_b[i] <= cut]
+
+    reps = []
+    for x in null_coeffs:
+        g = sum(x[k] * gens[k] for k in range(len(gens)))
+        M = np.zeros((m, m), dtype=complex)
+        for a, T in enumerate(Ts):
+            coeff, *_ = np.linalg.lstsq(tvec, (g @ T - T @ g).reshape(-1), rcond=None)
+            M[:, a] = coeff
+        if np.linalg.norm(M) > tol:
+            reps.append(M)
+
+    if not reps:
+        return identity  # no continuous symmetry acts non-trivially -> full tensor
+
+    # chi commutes with the representation; work with the commutant of {M, M^dagger} so it is
+    # closed under adjoint, then take its Hermitian basis.
+    commutant = _matrix_commutant([r for M in reps for r in (M, M.conj().T)], tol=tol)
+    herm = hermitian_algebra_basis(commutant, tol=tol)
+    if not herm or not is_abelian(herm, tol=tol):
+        return identity  # multiplicity > 1 (non-abelian commutant): keep the full tensor
+
+    # Common eigenbasis of the abelian commutant; group columns by identical eigenvalue
+    # signature (same "character" -> chi forced equal on them).
+    Q, diagonals = joint_diagonalize(herm)
+    signatures = np.round(np.array(diagonals).T / max(tol, 1e-12)).astype(np.int64)  # (m, len(herm))
+    group_of_column = [0] * m
+    representatives = []
+    seen = {}
+    for a in range(m):
+        key = tuple(signatures[a])
+        if key not in seen:
+            seen[key] = len(representatives)
+            representatives.append(a)
+        group_of_column[a] = seen[key]
+    return ComponentReduction(Q, representatives, group_of_column, True)

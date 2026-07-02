@@ -51,7 +51,7 @@ def main(
     deltaNIXS,
     XAS_projectors_filename,
     RIXS_projectors_filename,
-    auto_block_structure=False,
+    auto_block_structure=True,
 ):
     """
     First find the lowest eigenstates and then use them to calculate various spectra.
@@ -240,17 +240,49 @@ def main(
         rank,
     )
     hOp = ManyBodyOperator(hOp)
-    # Opt-in: replace the hand-coded block_structure with one auto-derived from the
-    # impurity sub-block of the one-body Hamiltonian (symmetry-plan Phase 4). It matches
-    # or strictly refines the manual structure (e.g. SOC splits each shell into m_j
-    # sub-blocks); enable to validate, then it can become the default.
+    # Default: derive the block structure from the hybridization-dressed impurity matrix
+    # (impurity_block_structure) rather than the hand-coded one. It matches or strictly refines
+    # the manual structure (e.g. SOC / crystal field splits each shell into sub-blocks) and
+    # fixes bath-mediated coupling. Pass auto_block_structure=False to keep the hand-coded one.
+    #
+    # Adaptive symmetry-adapted solver basis: rotate the correlated 3d shell into the basis that
+    # diagonalises its one-body block, IF that keeps the Coulomb term roughly as sparse (the
+    # fill-ratio gate; a d-shell with SOC densifies ~8x and stays spherical). The scalar XAS /
+    # PES / NIXS / RIXS spectra are basis-invariant, so simulate_spectra just rotates the one-body
+    # transition operators to match and deduplicates the now-degenerate PES/IPS operators (B2a).
+    rotation = None
+    correlated_block_structure = None
+    correlated_l = 2
     if auto_block_structure:
-        from impurityModel.ed.symmetries import auto_block_structure as derive_block_structure
+        from impurityModel.ed.symmetries import impurity_block_structure, impurity_symmetry_rotation, rotate_hamiltonian
 
         impurity_indices = sorted(orb for blocks in impurity_orbitals.values() for block in blocks for orb in block)
-        block_structure = derive_block_structure(hOp, orbitals=impurity_indices)
+        block_structure = impurity_block_structure(hOp, impurity_indices)
         if rank == 0:
             print(f"Auto-derived block structure: {len(block_structure.blocks)} blocks")
+
+        if correlated_l in impurity_orbitals:
+            d_indices = sorted(orb for block in impurity_orbitals[correlated_l] for orb in block)
+            W, u_imp = impurity_symmetry_rotation(hOp, d_indices, n_orb=n_spin_orbitals)
+            h_rotated = rotate_hamiltonian(hOp, W, tol=spectra._ROTATION_TRIM_TOL)
+            fill_ratio = len(h_rotated.to_dict()) / max(1, len(hOp))
+            if fill_ratio <= spectra._MAX_ROTATION_FILL:
+                rotation = W
+                hOp = h_rotated
+                block_structure = impurity_block_structure(hOp, impurity_indices)
+                correlated_block_structure = impurity_block_structure(hOp, d_indices)
+                # rot_to_spherical maps the (rotated) computational basis back to spherical harmonics
+                # for the L/S/J Casimir reporting in calc_gs; identity on the un-rotated core p shell.
+                rot_to_spherical = dict(rot_to_spherical)
+                rot_to_spherical[correlated_l] = u_imp.conj().T
+                if rank == 0:
+                    n_classes = len(correlated_block_structure.inequivalent_blocks)
+                    print(
+                        f"Rotated 3d shell into symmetry-adapted basis (fill {fill_ratio:.2f}x); "
+                        f"{n_classes} inequivalent PES/IPS classes."
+                    )
+            elif rank == 0:
+                print(f"Kept spherical basis (rotation would densify {fill_ratio:.2f}x > {spectra._MAX_ROTATION_FILL}).")
     # Measure how many physical processes the Hamiltonian contains.
     if rank == 0:
         print(f"Hamiltonian contains {len(hOp)} terms.")
@@ -359,6 +391,9 @@ def main(
         2,
         np.sqrt(np.finfo(float).eps),
         verbosity >= 1,
+        rotation=rotation,
+        correlated_l=correlated_l,
+        correlated_block_structure=correlated_block_structure,
     )
 
     if comm is not None:

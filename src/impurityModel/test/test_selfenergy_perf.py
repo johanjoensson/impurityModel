@@ -138,100 +138,25 @@ def _resolve_reort():
 def _build_inputs(ls, nBaths, nValBaths, n0imp, n_omega, dense_cutoff, truncation_threshold, *, rank, verbose):
     """Construct the calc_selfenergy arguments for the NiO d-shell anchor workload.
 
-    Mirrors the input construction inside ``selfenergy.get_selfenergy`` but calls
-    ``get_noninteracting_hamiltonian_operator`` with the correct keyword arguments.
+    Thin wrapper over the shared :func:`_nio_workload.build_selfenergy_inputs`, applying
+    the benchmark-specific env-var knobs (reort / occ / weight / dN).
     """
-    from impurityModel.ed import finite
-    from impurityModel.ed.block_structure import BlockStructure
-    from impurityModel.ed.get_spectra import get_noninteracting_hamiltonian_operator
+    from impurityModel.test._nio_workload import build_selfenergy_inputs
 
-    Fdd = [7.5, 0, 9.9, 0, 6.6]
-    xi = 0.0
-    hField = (0.0, 0.0, 0.0001)
-
-    sum_baths = OrderedDict({ls: nBaths})
-    nValBaths_d = OrderedDict({ls: nValBaths})
-    n_imp = 2 * (2 * ls + 1)
-
-    # Coulomb U as a rank-4 tensor in the impurity spin-orbital index space.
-    u4 = np.zeros((n_imp, n_imp, n_imp, n_imp), dtype=complex)
-    uOp = finite.getUop(l1=ls, l2=ls, l3=ls, l4=ls, R=Fdd)
-    nBaths_for_c2i = OrderedDict({ls: 0})
-    for process, val in uOp.items():
-        i = finite.c2i(nBaths_for_c2i, process[0][0])
-        j = finite.c2i(nBaths_for_c2i, process[1][0])
-        k = finite.c2i(nBaths_for_c2i, process[2][0])
-        m = finite.c2i(nBaths_for_c2i, process[3][0])
-        u4[i, j, k, m] = 2.0 * val
-
-    impurity_orbitals = {ls: [list(range(n_imp))]}
-    offset = n_imp
-    valence_baths = {ls: [[offset + i for i in range(nValBaths)]]}
-    offset += nValBaths
-    conduction_baths = {ls: [[offset + i for i in range(nBaths - nValBaths)]]}
-    bath_states = (valence_baths, conduction_baths)
-    mixed_valence = {ls: 0}
-
-    # calc_gs/find_ground_state_basis expect the impurity nominal-occupation dict
-    # ({l: n0}), not get_selfenergy's stale 3-tuple form.
-    nominal_occ = {ls: n0imp}
-
-    block_structure = BlockStructure(
-        blocks=[list(range(n_imp))],
-        identical_blocks=[[0]],
-        transposed_blocks=[[]],
-        particle_hole_blocks=[[]],
-        particle_hole_transposed_blocks=[[]],
-        inequivalent_blocks=[0],
-    )
-    rot_to_spherical = np.eye(n_imp, dtype=complex)
-
-    h0_filename = os.path.join(REPO_ROOT, "h0", f"h0_NiO_{nBaths}bath.pickle")
-    hOp = get_noninteracting_hamiltonian_operator(
-        nBaths=sum_baths,
-        nValBaths=nValBaths_d,
-        SOCs=[0, xi],
-        hField=hField,
-        h0_filename=h0_filename,
+    return build_selfenergy_inputs(
+        ls=ls,
+        nBaths=nBaths,
+        nValBaths=nValBaths,
+        n0imp=n0imp,
+        n_omega=n_omega,
+        dense_cutoff=dense_cutoff,
+        truncation_threshold=truncation_threshold,
         rank=rank,
         verbose=verbose,
-    )
-    # Map (l,s,m) / (l,b) labels to single integer indices. Drop identically-zero terms
-    # first: get_noninteracting_hamiltonian_operator unconditionally adds a 2p (l=1) SOC
-    # operator whose terms are all 0.0 when xi_2p=0; those carry unmappable l=1 labels and
-    # contribute nothing to H.
-    hOp_int = {}
-    for process, value in hOp.items():
-        if abs(value) == 0:
-            continue
-        hOp_int[tuple((finite.c2i(sum_baths, spinOrb), action) for spinOrb, action in process)] = value
-
-    omega_mesh = np.linspace(-1.83, 1.83, n_omega)
-
-    return dict(
-        h0=hOp_int,
-        u4=u4,
-        iw=None,
-        w=omega_mesh,
-        delta=0.2,
-        nominal_occ=nominal_occ,
-        mixed_valence=mixed_valence,
-        impurity_orbitals=impurity_orbitals,
-        bath_states=bath_states,
-        tau=0.002,
-        verbosity=2 if verbose else 0,
-        block_structure=block_structure,
-        rot_to_spherical=rot_to_spherical,
-        cluster_label="bench",
         reort=_resolve_reort(),
-        dense_cutoff=dense_cutoff,
-        spin_flip_dj=False,
-        chain_restrict=False,
         occ_cutoff=float(os.environ.get("SELFENERGY_BENCH_OCC_CUTOFF", 1e-12)),
-        truncation_threshold=truncation_threshold,
         slaterWeightMin=float(os.environ.get("SELFENERGY_BENCH_SWMIN", 1e-12)),
         dN=(int(os.environ["SELFENERGY_BENCH_DN"]) if os.environ.get("SELFENERGY_BENCH_DN") else None),
-        sparse_green=True,
     )
 
 

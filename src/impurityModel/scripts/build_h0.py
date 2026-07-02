@@ -329,7 +329,7 @@ def run(
     H[n_orb:, :n_orb] = v @ np.conj(Q.T) @ np.conj(T.T)
     H[:n_orb, n_orb:] = np.conj(H[n_orb:, :n_orb].T)
 
-    impurity_indices, valence_bath_indices, conduction_bath_indices, block_structure = build_imp_bath_blocks(H, n_orb)
+    impurity_indices, valence_bath_indices, conduction_bath_indices = build_imp_bath_blocks(H, n_orb)
 
     if verbose:
         print(f"eigvals(H) :\n{np.linalg.eigvalsh(H)}")

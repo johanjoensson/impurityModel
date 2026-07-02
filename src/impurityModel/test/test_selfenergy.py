@@ -129,7 +129,6 @@ def test_get_sigma():
 
 
 from unittest.mock import patch, MagicMock
-from impurityModel.ed.block_structure import BlockStructure
 
 
 @patch("impurityModel.ed.selfenergy.calc_gs")
@@ -145,10 +144,10 @@ def test_calc_selfenergy(mock_get_gf, mock_calc_gs):
     )
 
     mock_get_gf.return_value = (
-        [np.array([[[-1j]]]), None],
-        [np.array([[[-1j]]]), None],
+        [np.array([[[-1j]]])],  # gs_matsubara: one (n_omega, len(block), len(block)) per inequivalent block
+        [np.array([[[-1j]]])],  # gs_realaxis
         None,
-    )  # gs_matsubara  # gs_realaxis
+    )
 
     h0 = {((0, "c"), (0, "a")): 1.0}
     u4 = np.zeros((1, 1, 1, 1))
@@ -157,18 +156,9 @@ def test_calc_selfenergy(mock_get_gf, mock_calc_gs):
     delta = 0.1
     nominal_occ = {0: 1}
     mixed_valence = False
-    impurity_orbitals = {0: [[0]]}
-    bath_states = ({0: []}, {0: []})
+    impurity_orbitals = {0: [0]}
     tau = 0.1
     verbosity = 2
-    block_structure = BlockStructure(
-        blocks=[[0]],
-        identical_blocks=[[0]],
-        transposed_blocks=[[]],
-        particle_hole_blocks=[[]],
-        particle_hole_transposed_blocks=[[]],
-        inequivalent_blocks=[0],
-    )
     rot_to_spherical = np.eye(1)
 
     res = selfenergy.calc_selfenergy(
@@ -180,10 +170,8 @@ def test_calc_selfenergy(mock_get_gf, mock_calc_gs):
         nominal_occ=nominal_occ,
         mixed_valence=mixed_valence,
         impurity_orbitals=impurity_orbitals,
-        bath_states=bath_states,
         tau=tau,
         verbosity=verbosity,
-        block_structure=block_structure,
         rot_to_spherical=rot_to_spherical,
         cluster_label="test",
         reort=None,
@@ -225,14 +213,6 @@ def test_calc_selfenergy_retries_on_truncated_ensemble(mock_get_gf, mock_calc_gs
     # First call returns the truncated report, second the clean one.
     mock_get_gf.side_effect = [gf[:-1] + (truncated,), gf[:-1] + (clean,)]
 
-    block_structure = BlockStructure(
-        blocks=[[0]],
-        identical_blocks=[[0]],
-        transposed_blocks=[[]],
-        particle_hole_blocks=[[]],
-        particle_hole_transposed_blocks=[[]],
-        inequivalent_blocks=[0],
-    )
     selfenergy.calc_selfenergy(
         h0={((0, "c"), (0, "a")): 1.0},
         u4=np.zeros((1, 1, 1, 1)),
@@ -241,11 +221,9 @@ def test_calc_selfenergy_retries_on_truncated_ensemble(mock_get_gf, mock_calc_gs
         delta=0.1,
         nominal_occ={0: 1},
         mixed_valence=False,
-        impurity_orbitals={0: [[0]]},
-        bath_states=({0: []}, {0: []}),
+        impurity_orbitals={0: [0]},
         tau=0.1,
         verbosity=1,
-        block_structure=block_structure,
         rot_to_spherical=np.eye(1),
         cluster_label="test",
         reort=None,
@@ -356,7 +334,7 @@ def test_calc_selfenergy_no_matsubara(mock_get_gf, mock_calc_gs):
         np.array([[1.0]]),
         {"rhos": [np.array([[1.0]])]},
     )
-    mock_get_gf.return_value = (None, [np.array([[[-1j]]]), None], None)  # gs_matsubara  # gs_realaxis
+    mock_get_gf.return_value = (None, [np.array([[[-1j]]])], None)  # gs_matsubara=None, gs_realaxis=one block
     res = selfenergy.calc_selfenergy(
         h0={((0, "c"), (0, "a")): 1.0},
         u4=np.zeros((1, 1, 1, 1)),
@@ -365,11 +343,9 @@ def test_calc_selfenergy_no_matsubara(mock_get_gf, mock_calc_gs):
         delta=0.1,
         nominal_occ={0: 1},
         mixed_valence=False,
-        impurity_orbitals={0: [[0]]},
-        bath_states=({0: []}, {0: []}),
+        impurity_orbitals={0: [0]},
         tau=0.1,
         verbosity=2,
-        block_structure=BlockStructure([[0]], [[0]], [[]], [[]], [[]], [0]),
         rot_to_spherical=np.eye(1),
         cluster_label="test",
         reort=None,
@@ -409,11 +385,9 @@ def test_calc_selfenergy_exceptions(mock_get_gf, mock_calc_gs):
             delta=0.1,
             nominal_occ={0: 1},
             mixed_valence=False,
-            impurity_orbitals={0: [[0]]},
-            bath_states=({0: []}, {0: []}),
+            impurity_orbitals={0: [0]},
             tau=0.1,
             verbosity=2,
-            block_structure=BlockStructure([[0]], [[0]], [[]], [[]], [[]], [0]),
             rot_to_spherical=np.eye(1),
             cluster_label="test",
             reort=None,
@@ -439,11 +413,9 @@ def test_calc_selfenergy_exceptions(mock_get_gf, mock_calc_gs):
             delta=0.1,
             nominal_occ={0: 1},
             mixed_valence=False,
-            impurity_orbitals={0: [[0]]},
-            bath_states=({0: []}, {0: []}),
+            impurity_orbitals={0: [0]},
             tau=0.1,
             verbosity=2,
-            block_structure=BlockStructure([[0]], [[0]], [[]], [[]], [[]], [0]),
             rot_to_spherical=np.eye(1),
             cluster_label="test",
             reort=None,
@@ -485,11 +457,9 @@ def test_calc_selfenergy_sigma_exceptions(mock_get_sigma, mock_get_gf, mock_calc
             delta=0.1,
             nominal_occ={0: 1},
             mixed_valence=False,
-            impurity_orbitals={0: [[0]]},
-            bath_states=({0: []}, {0: []}),
+            impurity_orbitals={0: [0]},
             tau=0.1,
             verbosity=2,
-            block_structure=BlockStructure([[0]], [[0]], [[]], [[]], [[]], [0]),
             rot_to_spherical=np.eye(1),
             cluster_label="test",
             reort=None,
@@ -517,11 +487,9 @@ def test_calc_selfenergy_sigma_exceptions(mock_get_sigma, mock_get_gf, mock_calc
             delta=0.1,
             nominal_occ={0: 1},
             mixed_valence=False,
-            impurity_orbitals={0: [[0]]},
-            bath_states=({0: []}, {0: []}),
+            impurity_orbitals={0: [0]},
             tau=0.1,
             verbosity=2,
-            block_structure=BlockStructure([[0]], [[0]], [[]], [[]], [[]], [0]),
             rot_to_spherical=np.eye(1),
             cluster_label="test",
             reort=None,

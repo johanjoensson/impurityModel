@@ -238,3 +238,94 @@ def test_block_bicgstab_active_mask_break(mock_inner, mock_block_inner, mock_blo
 
     x_sol = block_bicgstab(A, x0, y, basis=basis, slaterWeightMin=0.0, max_iter=2)
     assert len(x_sol) == 1
+
+
+# --- rank-deficient block RHS (initial-block deflation + reconstruction) ---
+
+
+def test_block_bicgstab_array_rank_deficient():
+    """A block RHS with linearly dependent columns is solved exactly (A invertible), matching
+    the per-column solves -- the case that previously stalled at the zero guess."""
+    np.random.seed(1)
+    A = np.random.rand(8, 8) + 1j * np.random.rand(8, 8)
+    A = A @ A.conj().T + np.eye(8)
+    c0 = np.random.rand(8, 1) + 1j * np.random.rand(8, 1)
+    x_exact = np.hstack([c0, 2.0 * c0])  # rank-1 block: column 1 == 2 * column 0
+    y = A @ x_exact
+    x0 = np.zeros((8, 2), dtype=complex)
+
+    x_sol = block_bicgstab(A, x0, y, basis=None, slaterWeightMin=0.0, atol=1e-10, rtol=1e-12)
+    np.testing.assert_allclose(x_sol, x_exact, rtol=1e-6, atol=1e-6)
+    np.testing.assert_allclose(A @ x_sol, y, rtol=1e-6, atol=1e-6)
+
+    per_col = np.hstack(
+        [
+            block_bicgstab(A, np.zeros((8, 1), complex), y[:, k : k + 1], basis=None, slaterWeightMin=0.0,
+                           atol=1e-10, rtol=1e-12)
+            for k in range(2)
+        ]
+    )
+    np.testing.assert_allclose(x_sol, per_col, rtol=1e-6, atol=1e-6)
+
+
+def test_block_bicgstab_array_partial_rank():
+    """A 3-column block of rank 2 (column 2 = column 0 + column 1) is solved exactly."""
+    np.random.seed(2)
+    A = np.random.rand(9, 9) + 1j * np.random.rand(9, 9)
+    A = A @ A.conj().T + np.eye(9)
+    c0 = np.random.rand(9, 1) + 1j * np.random.rand(9, 1)
+    c1 = np.random.rand(9, 1) + 1j * np.random.rand(9, 1)
+    x_exact = np.hstack([c0, c1, c0 + c1])
+    y = A @ x_exact
+    x0 = np.zeros((9, 3), dtype=complex)
+
+    x_sol = block_bicgstab(A, x0, y, basis=None, slaterWeightMin=0.0, atol=1e-10, rtol=1e-12)
+    np.testing.assert_allclose(x_sol, x_exact, rtol=1e-6, atol=1e-6)
+
+
+def test_block_bicgstab_sparse_rank_deficient():
+    """Sparse (ManyBodyState) path: two proportional RHS states solved as a block match the
+    per-column solves to machine precision."""
+    from mpi4py import MPI
+    from impurityModel.ed.manybody_basis import Basis
+    from impurityModel.ed.ManyBodyUtils import ManyBodyOperator, ManyBodyState, SlaterDeterminant, inner
+
+    det0 = SlaterDeterminant.from_bytes(b"\x80")  # orbital 0 occupied
+    z = 3.0 + 0.5j
+    # A = z*I - H, with H a 0<->1 hopping (the (c,a)+(a,c) term on orbital 0 is the identity).
+    A = ManyBodyOperator(
+        {
+            ((0, "c"), (0, "a")): z,
+            ((0, "a"), (0, "c")): z,
+            ((0, "c"), (1, "a")): -0.7,
+            ((1, "c"), (0, "a")): -0.7,
+        }
+    )
+
+    def _basis():
+        b = Basis(
+            impurity_orbitals={0: [[0, 1]]},
+            bath_states=({0: [[]]}, {0: [[]]}),
+            initial_basis=[b"\x80", b"\x40"],
+            verbose=False,
+            comm=MPI.COMM_SELF,
+        )
+        b.add_states([b"\x80", b"\x40"])
+        return b
+
+    y_block = [ManyBodyState({det0: 1.0}), ManyBodyState({det0: 2.0})]  # proportional -> rank 1
+
+    x_block = block_bicgstab(
+        A, [ManyBodyState(), ManyBodyState()], y_block, basis=_basis(), slaterWeightMin=0.0, atol=1e-10, rtol=1e-12
+    )
+
+    ref = [
+        block_bicgstab(A, [ManyBodyState()], [col], basis=_basis(), slaterWeightMin=0.0, atol=1e-10, rtol=1e-12)[0]
+        for col in y_block
+    ]
+    for k in range(2):
+        diff = x_block[k] - ref[k]
+        assert inner(diff, diff).real < 1e-18
+    # Column 1 is exactly twice column 0 (linearity preserved through deflation).
+    diff10 = x_block[1] - (x_block[0] + x_block[0])
+    assert inner(diff10, diff10).real < 1e-18

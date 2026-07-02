@@ -429,8 +429,50 @@ class Basis:
         min_occ, max_occ = restrictions[orbs]
         return max(min_occ - occ_dec, 0), min(max_occ + occ_inc, len(orbs))
 
+    def _impurity_coupling_distance(self, op, tot_orb, all_impurity_orbitals, coupling_cutoff, min_dist):
+        r"""Distance-from-impurity matrix classifying how weakly each orbital couples in.
+
+        The default (``coupling_cutoff`` set) is a *physics-derived* metric: each hopping edge
+        gets weight :math:`-\log(|h_{ij}| / h_{\max})` (``h_max`` = largest off-diagonal
+        hopping), so the weighted shortest path from the impurity accumulates
+        :math:`-\log` of the product of couplings along the best path and
+        :math:`e^{-\text{dist}}` is the effective coupling strength. An orbital counts as
+        decoupled (freeze-eligible) when ``dist > -log(coupling_cutoff)``. This follows the
+        actual coupling *strength* rather than graph hop-count, so a strongly-hybridised long
+        chain stays free while a weakly-coupled near orbital is frozen.
+
+        With ``coupling_cutoff=None`` it falls back to the legacy unweighted hop-count distance
+        with threshold ``min_dist``.
+
+        Returns ``(dist_matrix, threshold)`` with ``dist_matrix`` rows ordered as
+        ``all_impurity_orbitals`` (the callers index it with impurity orbital indices, valid for
+        the 0-based impurity layout) and an orbital frozen when ``dist > threshold``.
+        """
+        hop = np.zeros((tot_orb, tot_orb))
+        for i, j in itertools.product(range(tot_orb), repeat=2):
+            key = ((i, "c"), (j, "a"))
+            if key in op:
+                hop[i, j] = abs(op[key])
+        if coupling_cutoff is None:
+            graph = hop > 1e-8
+            dist = sp.sparse.csgraph.shortest_path(
+                graph, directed=False, unweighted=True, indices=all_impurity_orbitals
+            )
+            return dist, min_dist
+        np.fill_diagonal(hop, 0.0)
+        h_max = hop.max()
+        mask = hop > 1e-8
+        graph = np.zeros((tot_orb, tot_orb))
+        if h_max > 0:
+            # weight = -log(|h| / h_max) >= 0; + small offset so the strongest edges (weight 0)
+            # are not read as "no edge" by csgraph (which drops values <~1e-8). The offset is
+            # negligible for the cutoff (it takes thousands of hops to accumulate to it).
+            graph[mask] = -np.log(hop[mask] / h_max) + 1e-3
+        dist = sp.sparse.csgraph.shortest_path(graph, directed=False, indices=all_impurity_orbitals)
+        return dist, -np.log(coupling_cutoff)
+
     def build_initial_restrictions(
-        self, op: ManyBodyOperator, min_dist: int = 4
+        self, op: ManyBodyOperator, min_dist: int = 4, coupling_cutoff: float = 1e-3
     ) -> Optional[dict[frozenset[int], tuple[int, int]]]:
         """Construct the initial occupation restrictions based on Hamiltonian connectivity.
 
@@ -462,26 +504,21 @@ class Basis:
             orb for orb_blocks in conduction_baths.values() for orb_block in orb_blocks for orb in orb_block
         ]
         tot_orb = len(all_impurity_orbitals) + len(all_valence_orbitals) + len(all_conduction_orbitals)
-        graph = np.zeros((tot_orb, tot_orb), dtype=bool)
-
-        for i, j in itertools.product(range(tot_orb), repeat=2):
-            if ((i, "c"), (j, "a")) in op:
-                graph[i, j] = abs(op[((i, "c"), (j, "a"))]) > 1e-8
-        dist_matrix = sp.sparse.csgraph.shortest_path(
-            graph, directed=False, unweighted=True, indices=all_impurity_orbitals
+        dist_matrix, dist_cutoff = self._impurity_coupling_distance(
+            op, tot_orb, all_impurity_orbitals, coupling_cutoff, min_dist
         )
         for i, impurity_orbitals in self.impurity_orbitals.items():
             for imp_orb_block, val_orb_block, con_orb_block in zip(
                 impurity_orbitals, valence_baths[i], conduction_baths[i]
             ):
                 # Identify filled and empty bath states
-                # Ignore states that are too close to the impurity
+                # Only restrict states that couple weakly to the impurity (dist above cutoff).
                 filled_valence_states = [
-                    orb for orb in val_orb_block if np.min(dist_matrix[np.ix_(imp_orb_block, [orb])]) > min_dist
+                    orb for orb in val_orb_block if np.min(dist_matrix[np.ix_(imp_orb_block, [orb])]) > dist_cutoff
                 ]
                 filled_states = frozenset(sorted(filled_valence_states))
                 empty_conduction_states = [
-                    orb for orb in con_orb_block if np.min(dist_matrix[np.ix_(imp_orb_block, [orb])]) > min_dist
+                    orb for orb in con_orb_block if np.min(dist_matrix[np.ix_(imp_orb_block, [orb])]) > dist_cutoff
                 ]
                 empty_states = frozenset(sorted(empty_conduction_states))
                 filled_bath_states.append(filled_states)
@@ -509,6 +546,7 @@ class Basis:
         con_change: Optional[dict[int, tuple[int, int]]] = None,
         cutoff: float = 1e-6,
         min_dist=4,
+        coupling_cutoff: float = 1e-3,
     ):
         """
         Construct restrictions for impurity occupation, valence bath occupation, and conduction bath occupation.
@@ -555,14 +593,8 @@ class Basis:
             orb for orb_blocks in conduction_baths.values() for orb_block in orb_blocks for orb in orb_block
         ]
         tot_orb = len(all_impurity_orbitals) + len(all_valence_orbitals) + len(all_conduction_orbitals)
-        graph = np.zeros((tot_orb, tot_orb), dtype=bool)
-
-        for i, j in itertools.product(range(tot_orb), repeat=2):
-            if ((i, "c"), (j, "a")) in op:
-                graph[i, j] = abs(op[((i, "c"), (j, "a"))]) > 1e-8
-
-        dist_matrix = sp.sparse.csgraph.shortest_path(
-            graph, directed=False, unweighted=True, indices=all_impurity_orbitals
+        dist_matrix, dist_cutoff = self._impurity_coupling_distance(
+            op, tot_orb, all_impurity_orbitals, coupling_cutoff, min_dist
         )
         if False and self.verbose:
             matrix_print(dist_matrix[:, :], "Orbital distance matrix", flush=True)
@@ -597,23 +629,23 @@ class Basis:
                     filled_valence_states = [
                         val_orb_block[orb]
                         for orb in np.nonzero(valence_occupations > 1 - cutoff)[0]
-                        if np.min(dist_matrix[np.ix_(imp_orb_block, [val_orb_block[orb]])]) > min_dist
+                        if np.min(dist_matrix[np.ix_(imp_orb_block, [val_orb_block[orb]])]) > dist_cutoff
                     ]
                     filled_conduction_states = [
                         con_orb_block[orb]
                         for orb in np.nonzero(conduction_occupations > 1 - cutoff)[0]
-                        if np.min(dist_matrix[np.ix_(imp_orb_block, [con_orb_block[orb]])]) > min_dist
+                        if np.min(dist_matrix[np.ix_(imp_orb_block, [con_orb_block[orb]])]) > dist_cutoff
                     ]
                     filled_states = frozenset(sorted(filled_valence_states + filled_conduction_states))
                     empty_valence_states = [
                         val_orb_block[orb]
                         for orb in np.nonzero(valence_occupations < cutoff)[0]
-                        if np.min(dist_matrix[np.ix_(imp_orb_block, [val_orb_block[orb]])]) > min_dist
+                        if np.min(dist_matrix[np.ix_(imp_orb_block, [val_orb_block[orb]])]) > dist_cutoff
                     ]
                     empty_conduction_states = [
                         con_orb_block[orb]
                         for orb in np.nonzero(conduction_occupations < cutoff)[0]
-                        if np.min(dist_matrix[np.ix_(imp_orb_block, [con_orb_block[orb]])]) > min_dist
+                        if np.min(dist_matrix[np.ix_(imp_orb_block, [con_orb_block[orb]])]) > dist_cutoff
                     ]
                     min_val = max(min_val - len(filled_valence_states) - len(empty_valence_states), 0)
                     max_con = max(max_con - len(empty_conduction_states) - len(filled_conduction_states), 0)

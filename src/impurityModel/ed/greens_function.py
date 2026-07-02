@@ -379,6 +379,25 @@ def _build_excited_restrictions(basis, hOp, psis, es, dN, occ_cutoff, dN_imp=Non
     return excited_restrictions, excited_weighted_restrictions
 
 
+def _intersect_restrictions(base, extra):
+    """Conjunctively merge two ``{frozenset: (min, max)}`` restriction dicts.
+
+    Shared keys are intersected (``max`` of the mins, ``min`` of the maxs); keys unique to
+    either side are kept. Every ``Basis`` restriction entry is enforced, so the result confines
+    a determinant iff it satisfies *both* inputs. ``base`` is treated as empty when ``None``.
+    """
+    if not base:
+        return dict(extra)
+    merged = dict(base)
+    for key, (lo, hi) in extra.items():
+        if key in merged:
+            blo, bhi = merged[key]
+            merged[key] = (max(blo, lo), min(bhi, hi))
+        else:
+            merged[key] = (lo, hi)
+    return merged
+
+
 def _apply_transition_ops(tOps, psis, excited_restrictions, excited_weighted_restrictions, slaterWeightMin):
     """Apply each transition operator to every thermal state, returning the seed blocks.
 
@@ -454,6 +473,7 @@ def calc_Greens_function_with_offdiag(
     dN_imp=None,
     dN_val=None,
     dN_con=None,
+    extra_restrictions=None,
 ):
     r"""
         Return Green's function for states with low enough energy.
@@ -504,6 +524,12 @@ def calc_Greens_function_with_offdiag(
     excited_restrictions, excited_weighted_restrictions = _build_excited_restrictions(
         block_basis, hOp, psis, es, dN, occ_cutoff, dN_imp=dN_imp, dN_val=dN_val, dN_con=dN_con
     )
+    # Optional conserved-charge sector confinement (symmetries.transition_sector_restrictions):
+    # pins the seed's charge sector on top of the per-shell occupation window, pruning
+    # sector-violating determinants the window alone would admit. Intersected key-by-key so it
+    # can only tighten the excited basis, never loosen it.
+    if extra_restrictions:
+        excited_restrictions = _intersect_restrictions(excited_restrictions, extra_restrictions)
     block_v = _apply_transition_ops(tOps, psis, excited_restrictions, excited_weighted_restrictions, slaterWeightMin)
     block_v_lengths = np.array([sum(len(t_psi) for t_psi in t_psis) for t_psis in block_v])
     block_basis.comm.Allreduce(MPI.IN_PLACE, block_v_lengths, op=MPI.SUM)

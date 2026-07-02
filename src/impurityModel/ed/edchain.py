@@ -1,7 +1,7 @@
 import numpy as np
 import scipy as sp
 
-from impurityModel.ed.block_structure import BlockStructure, build_block_structure
+from impurityModel.ed.block_structure import BlockStructure
 
 # from .utils import matrix_print, matrix_connectivity_print
 from impurityModel.ed.utils import matrix_connectivity_print, matrix_print

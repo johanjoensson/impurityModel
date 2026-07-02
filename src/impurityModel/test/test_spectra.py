@@ -114,11 +114,28 @@ def test_getSpectra_new(mock_therm_G, mock_gf):
 @patch("impurityModel.ed.spectra.getInversePhotoEmissionOperators")
 @patch("impurityModel.ed.spectra.getPhotoEmissionOperators")
 @patch("impurityModel.ed.spectra.getSpectra_new")
+@patch("impurityModel.ed.spectra.getSpectra_tensor")
+@patch("impurityModel.ed.spectra.component_symmetry_reduction")
+@patch("impurityModel.ed.spectra.extract_tensors")
 @patch("impurityModel.ed.spectra.getDipoleOperators")
 @patch("impurityModel.ed.spectra.getNIXSOperators")
 @patch("numpy.savetxt")
-def test_simulate_spectra(mock_savetxt, mock_getNIXS, mock_getDipole, mock_getSpectra_new, mock_getPS, mock_getIPS):
+def test_simulate_spectra(
+    mock_savetxt,
+    mock_getNIXS,
+    mock_getDipole,
+    mock_extract,
+    mock_reduction,
+    mock_getSpectra_tensor,
+    mock_getSpectra_new,
+    mock_getPS,
+    mock_getIPS,
+):
     mock_getSpectra_new.return_value = np.zeros((10, 1), dtype=complex)
+    # XAS now goes through the polarization-tensor path (unprojected dipole).
+    mock_getSpectra_tensor.return_value = np.zeros((10, 1), dtype=complex)
+    mock_extract.return_value = (np.zeros((1, 1), dtype=complex), None, 0)
+    mock_reduction.return_value = None
     mock_getIPS.return_value = [{((0, "c"),): 1}]
     mock_getPS.return_value = [{((0, "a"),): 1}]
     mock_getDipole.return_value = [{((0, "a"),): 1}]
@@ -157,6 +174,7 @@ def test_simulate_spectra(mock_savetxt, mock_getNIXS, mock_getDipole, mock_getSp
         verbose=False,
     )
     assert mock_getSpectra_new.called
+    assert mock_getSpectra_tensor.called
 
 
 # --- tests for get_spectra.py ---

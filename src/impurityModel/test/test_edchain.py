@@ -1,7 +1,6 @@
 import numpy as np
 import pytest
 from impurityModel.ed import edchain
-from impurityModel.ed.block_structure import BlockStructure
 
 
 def test_householder():
@@ -68,46 +67,21 @@ def test_separate_orbital_character():
     assert np.allclose(res @ np.conj(res.T), np.eye(2))
 
 
-from unittest.mock import patch
-
-
-@patch("impurityModel.ed.edchain.build_block_structure")
-def test_build_imp_bath_blocks(mock_build_block_structure):
-    # Mock the return value
-    from impurityModel.ed.block_structure import BlockStructure
-
-    mock_build_block_structure.return_value = BlockStructure(
-        blocks=[[0, 2, 3, 4], [1, 5]],
-        identical_blocks=[],
-        transposed_blocks=[],
-        particle_hole_blocks=[],
-        particle_hole_transposed_blocks=[],
-        inequivalent_blocks=[0, 1],
-    )
-
-    # Build a diagonal matrix
-    H = np.diag([1, 2, 3, 4, -1, -2])
-    # Connect 0 to 2, 3, 4
+def test_build_imp_bath_blocks():
+    # build_imp_bath_blocks returns flat, sorted index lists (impurity, occupied bath,
+    # unoccupied bath) classified purely by the sign of the bath on-site energies.
+    H = np.diag([1, 2, 3, 4, -1, -2]).astype(complex)
+    # Connect 0 to 2, 3, 4 and 1 to 5 (connectivity no longer affects the classification).
     H[0, 2] = H[2, 0] = 0.1
     H[0, 3] = H[3, 0] = 0.1
     H[0, 4] = H[4, 0] = 0.1
-    # Connect 1 to 5
     H[1, 5] = H[5, 1] = 0.1
 
-    impurity_indices, occupied_indices, unoccupied_indices, block_structure = edchain.build_imp_bath_blocks(H, n_orb=2)
+    impurity_indices, occupied_indices, unoccupied_indices = edchain.build_imp_bath_blocks(H, n_orb=2)
 
-    assert len(block_structure.blocks) == 2
-    # block 0 has 0, 2, 3, 4
-    # block 1 has 1, 5
-    # sorting matters
-
-    assert set(impurity_indices[0]) == {0}
-    assert set(occupied_indices[0]) == {4}  # only -1 is negative
-    assert set(unoccupied_indices[0]) == {2, 3}
-
-    assert set(impurity_indices[1]) == {1}
-    assert set(occupied_indices[1]) == {5}  # only -2 is negative
-    assert set(unoccupied_indices[1]) == set()
+    assert impurity_indices == [0, 1]
+    assert occupied_indices == [4, 5]  # bath orbitals with negative on-site energy (-1, -2)
+    assert unoccupied_indices == [2, 3]  # bath orbitals with positive on-site energy (3, 4)
 
 
 def test_linked_double_chain():

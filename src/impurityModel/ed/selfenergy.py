@@ -8,13 +8,51 @@ from mpi4py import MPI
 # from impurityModel.ed.get_spectra import get_noninteracting_hamiltonian_operator
 from impurityModel.ed import finite
 from impurityModel.ed.cipsi_solver import CIPSISolver
-from impurityModel.ed.greens_function import get_Greens_function, save_Greens_function
+from impurityModel.ed.greens_function import build_full_greens_function, get_Greens_function, save_Greens_function
 from impurityModel.ed.groundstate import calc_gs
 from impurityModel.ed.manybody_basis import Basis
 from impurityModel.ed.ManyBodyUtils import ManyBodyOperator
 from impurityModel.ed.utils import matrix_print
 
 EV_TO_RY = 1 / 13.605693122994
+
+# Adaptive symmetry-adapted-basis rotation (calc_selfenergy): drop rotated operator terms below
+# this magnitude (eV; removes rotation round-off fill), and rotate into the symmetry-adapted
+# basis only if it keeps the operator term count within this factor of the input basis.
+_ROTATION_TRIM_TOL = 1e-8
+_MAX_ROTATION_FILL = 2.0
+
+
+def _per_group_occupation(nominal_occ, impurity_orbitals):
+    """Map ``nominal_occ`` onto the derived conserved-charge groups.
+
+    Accepts a dict already keyed by the group indices (used as-is), or any other dict / a
+    scalar interpreted as the *total* impurity occupation, distributed across the groups in
+    proportion to their impurity size (integer allocation, remainder to the largest groups).
+    The prescan refines the per-group split, so this only needs to be a sensible starting point.
+    """
+    keys = list(impurity_orbitals)
+    if isinstance(nominal_occ, dict) and set(nominal_occ) == set(keys):
+        return {k: int(nominal_occ[k]) for k in keys}
+    total = int(sum(nominal_occ.values()) if isinstance(nominal_occ, dict) else nominal_occ)
+    sizes = {k: sum(len(block) for block in impurity_orbitals[k]) for k in keys}
+    tot_size = sum(sizes.values()) or 1
+    alloc = {k: int(total * sizes[k] // tot_size) for k in keys}
+    remainder = total - sum(alloc.values())
+    for k in sorted(keys, key=lambda k: sizes[k], reverse=True):
+        if remainder <= 0:
+            break
+        alloc[k] += 1
+        remainder -= 1
+    return alloc
+
+
+def _per_group_scalar(value, impurity_orbitals, default=0):
+    """Map a per-group scalar setting (e.g. mixed_valence) onto the derived group keys."""
+    keys = list(impurity_orbitals)
+    if isinstance(value, dict) and set(value) == set(keys):
+        return dict(value)
+    return {k: default for k in keys}
 
 
 class UnphysicalGreensFunctionError(Exception):
@@ -238,7 +276,6 @@ def calc_selfenergy(
     nominal_occ,
     mixed_valence,
     impurity_orbitals,
-    bath_states,
     tau,
     verbosity,
     rot_to_spherical,
@@ -272,10 +309,11 @@ def calc_selfenergy(
         Nominal occupation.
     mixed_valence : bool
         Whether to consider mixed valence.
-    impurity_orbitals : dict
-        Impurity orbitals mapping.
-    bath_states : tuple
-        Tuple of (valence_baths, conduction_baths).
+    impurity_orbitals : dict[int, list[int]]
+        Flat impurity spin-orbital index lists per group; re-grouped into conserved-charge blocks
+        internally by :func:`symmetries.group_orbitals_by_charges`. The bath orbitals (everything
+        else in ``h0``) and their valence/conduction (occupied/empty) split are derived from the
+        Hamiltonian via :func:`symmetries.classify_bath_occupation`.
     tau : float
         Temperature parameter.
     verbosity : int
@@ -333,17 +371,19 @@ def calc_selfenergy(
     h_input = ManyBodyOperator(h0) + ManyBodyOperator(u)
 
     from impurityModel.ed.symmetries import (
+        classify_bath_occupation,
+        extract_tensors,
         group_orbitals_by_charges,
         impurity_block_structure,
         impurity_symmetry_rotation,
         rotate_hamiltonian,
     )
 
-    # The impurity spin-orbital set and total orbital count, whether inputs are flat lists or
-    # already grouped dicts (the rotation only needs these, not the grouping).
-    valence_flat, conduction_flat = bath_states
-    impurity_indices = sorted(impurity_orbitals.values())
-    n_spin_orbitals = 1 + len(impurity_orbitals) + len(valence_flat) + len(conduction_flat)
+    # Flatten the impurity orbital dict (dict[int, list[int]]) into a plain spin-orbital index
+    # list; the total orbital count is inferred from the Hamiltonian (impurity + bath). The bath
+    # orbitals and their valence/conduction split are derived below, not passed in.
+    impurity_indices = sorted(o for orbs in impurity_orbitals.values() for o in orbs)
+    n_spin_orbitals = extract_tensors(h_input)[0].shape[0]
 
     # Adaptive symmetry-adapted basis: diagonalising the impurity one-body block collapses the
     # Green's-function block structure to its finest form (e.g. 1x1 eg/t2g blocks) BUT can
@@ -372,16 +412,21 @@ def calc_selfenergy(
         rotation_full = np.eye(n_spin_orbitals, dtype=complex)
         u_imp = np.eye(len(impurity_indices), dtype=complex)
 
-    # Group flat orbital lists into per-conserved-charge blocks **in the solver basis** h (the
+    # Derive the bath orbitals (complement of the impurity set) and their initial occupation:
+    # baths below the Fermi level (h[o, o] < 0) are valence (initially occupied), the rest are
+    # conduction (initially empty). The bath one-body diagonal is unchanged by the impurity-only
+    # rotation, so this is consistent whether measured in the input or solver basis.
+    valence_flat, conduction_flat = classify_bath_occupation(h, impurity_indices, n_orb=n_spin_orbitals)
+
+    # Group the flat orbital lists into per-conserved-charge blocks **in the solver basis** h (the
     # rotation mixes degenerate orbitals, so the grouping must be derived after it — grouping
-    # in the input basis and applying it post-rotation would mislabel the sectors). Existing
-    # dict-form inputs pass through unchanged.
-    if flat_inputs:
-        impurity_orbitals, bath_states = group_orbitals_by_charges(
-            h, impurity_orbitals, valence_flat, conduction_flat, n_orb=n_spin_orbitals
-        )
-        nominal_occ = _per_group_occupation(nominal_occ, impurity_orbitals)
-        mixed_valence = _per_group_scalar(mixed_valence, impurity_orbitals, default=0)
+    # in the input basis and applying it post-rotation would mislabel the sectors). This is what
+    # partitions all orbitals into the blocks the many-body Basis (built in calc_gs) consumes.
+    impurity_orbitals, bath_states = group_orbitals_by_charges(
+        h, impurity_indices, valence_flat, conduction_flat, n_orb=n_spin_orbitals
+    )
+    # nominal_occ = _per_group_occupation(nominal_occ, impurity_orbitals)
+    # mixed_valence = _per_group_scalar(mixed_valence, impurity_orbitals, default=0)
 
     valence_baths, conduction_baths = bath_states
     total_impurity_orbitals = {i: sum(len(orbs) for orbs in impurity_orbitals[i]) for i in impurity_orbitals}
@@ -390,18 +435,13 @@ def calc_selfenergy(
         for i in valence_baths
     }
 
-    # construct local, interacting, hamiltonian
-    u = finite.getUop_from_rspt_u4(u4)
-    h = ManyBodyOperator(h0) + ManyBodyOperator(u)
-
-    # Determine block structure from Hamiltonian (single particle part only)
-    from impurityModel.ed.symmetries import auto_block_structure as derive_block_structure
-
-    impurity_indices = sorted(orb for blocks in impurity_orbitals.values() for block in blocks for orb in block)
-    block_structure = derive_block_structure(h, orbitals=impurity_indices)
+    # GF block structure from the hybridization-dressed impurity matrix (h[imp,imp] + V^dag V),
+    # in whichever basis we solve in (fixes bath-mediated coupling; 1x1 blocks when rotated).
+    block_structure = impurity_block_structure(h, impurity_indices)
 
     if verbosity > 0:
-        print(f"Auto-derived block structure: {len(block_structure.blocks)} blocks")
+        basis_note = f"symmetry-adapted (fill {fill_ratio:.1f}x)" if rotate else f"input basis (fill {fill_ratio:.1f}x)"
+        print(f"Block structure: {len(block_structure.blocks)} blocks, solving in {basis_note}")
     basis_information = {
         "impurity_orbitals": impurity_orbitals,
         "bath_states": bath_states,
@@ -499,7 +539,7 @@ def calc_selfenergy(
             impurity_orbitals=total_impurity_orbitals,
             nBaths=sum_bath_states,
             gs=gs_realaxis,
-            h0op=h0,
+            h0op=h0_solve,
             delta=delta,
             clustername=cluster_label,
             blocks=[block_structure.blocks[block_i] for block_i in block_structure.inequivalent_blocks],
@@ -519,7 +559,7 @@ def calc_selfenergy(
             impurity_orbitals=total_impurity_orbitals,
             nBaths=sum_bath_states,
             gs=gs_matsubara,
-            h0op=h0,
+            h0op=h0_solve,
             delta=0,
             clustername=cluster_label,
             blocks=[block_structure.blocks[block_i] for block_i in block_structure.inequivalent_blocks],
@@ -541,16 +581,39 @@ def calc_selfenergy(
         for orb in block
     ]
     impurity_ix = np.ix_(impurity_indices, impurity_indices)
+
+    # Rotate every result from the solver basis S back to the caller's input basis B
+    # (O_B = W O_S W^dag; impurity block u_imp). When the adaptive test kept the input basis,
+    # W and u_imp are identity and these are no-ops. The density matrix is full-space (rotate
+    # with W); the self-energies / Green's functions are impurity-only (rotate with u_imp).
+    thermal_rho = rotation_full @ thermal_rho @ rotation_full.conj().T
+
+    def _to_input_basis(block_list):
+        """Reassemble per-inequivalent-block matrices (basis S) and rotate to input basis B."""
+        if block_list is None:
+            return None
+        full_s = build_full_greens_function(block_list, block_structure)
+        if full_s.ndim == 3:  # (n_omega, n_imp, n_imp)
+            return np.einsum("ij,wjk,lk->wil", u_imp, full_s, u_imp.conj())
+        return u_imp @ full_s @ u_imp.conj().T
+
+    sigma_full = _to_input_basis(sigma)
+    sigma_real_full = _to_input_basis(sigma_real)
+    gs_matsubara_full = _to_input_basis(gs_matsubara)
+    gs_realaxis_full = _to_input_basis(gs_realaxis)
+
+    # Static (Hartree-Fock) self-energy from the input-basis density matrix and u4 (input basis).
     sigma_static = get_Sigma_static(u4, thermal_rho[impurity_ix])
 
     return {
-        "sigma": sigma,
-        "sigma_real": sigma_real,
+        "sigma": sigma_full,
+        "sigma_real": sigma_real_full,
         "sigma_static": sigma_static,
-        "gs_matsubara": gs_matsubara,
-        "gs_realaxis": gs_realaxis,
+        "gs_matsubara": gs_matsubara_full,
+        "gs_realaxis": gs_realaxis_full,
         "thermal_rho": thermal_rho,
         "rhos": gs_info["rhos"],
+        "block_structure": block_structure,
     }
 
 
@@ -736,7 +799,6 @@ def get_selfenergy(
     energy_cut,
     delta,
     verbose,
-    auto_block_structure=False,
 ):
     """Calculate the self energy starting from a large number of arguments.
 
@@ -795,15 +857,11 @@ def get_selfenergy(
     # -- System information --
 
     sum_baths = OrderedDict({ls: nBaths})
-    nValBaths = OrderedDict({ls: nValBaths})
 
     # -- Basis occupation information --
-    n0imps = OrderedDict({ls: n0imps})
-    nominal_occ = (n0imps, {ls: nBaths}, {ls: 0})
+    nominal_occ = {ls: n0imps}
 
-    ({ls: nValBaths[ls]}, {ls: sum_baths[ls] - nValBaths[ls]})
-
-    # Construct u4 and rot_to_spherical, mixed_valence, block_structure, bath_states, etc.
+    # Construct u4 and rot_to_spherical, mixed_valence, etc.
     n_imp_spin_orbitals = 2 * (2 * ls + 1)
     u4 = np.zeros((n_imp_spin_orbitals, n_imp_spin_orbitals, n_imp_spin_orbitals, n_imp_spin_orbitals), dtype=complex)
     uOp = finite.getUop(l1=ls, l2=ls, l3=ls, l4=ls, R=Fdd)
@@ -815,24 +873,12 @@ def get_selfenergy(
         l = finite.c2i(nBaths_for_c2i, process[3][0])
         u4[i, j, k, l] = 2.0 * val
 
-    impurity_orbitals = {ls: [[i for i in range(n_imp_spin_orbitals)]]}
-    offset = n_imp_spin_orbitals
-    valence_baths = {ls: [[offset + i for i in range(nValBaths[ls])]]}
-    offset += nValBaths[ls]
-    conduction_baths = {ls: [[offset + i for i in range(sum_baths[ls] - nValBaths[ls])]]}
-    bath_states = (valence_baths, conduction_baths)
+    # Flat impurity spin-orbital index list (dict[int, list[int]]); calc_selfenergy re-groups the
+    # orbitals into per-conserved-charge blocks, derives the bath orbitals + their valence/
+    # conduction split from the Hamiltonian, and derives the block structure internally.
+    impurity_orbitals = {ls: list(range(n_imp_spin_orbitals))}
     mixed_valence = {ls: 0}
 
-    from impurityModel.ed.block_structure import BlockStructure
-
-    block_structure = BlockStructure(
-        blocks=[list(range(n_imp_spin_orbitals))],
-        identical_blocks=[[0]],
-        transposed_blocks=[[]],
-        particle_hole_blocks=[[]],
-        particle_hole_transposed_blocks=[[]],
-        inequivalent_blocks=[0],
-    )
     rot_to_spherical = np.eye(n_imp_spin_orbitals, dtype=complex)
 
     # Hamiltonian
@@ -859,18 +905,9 @@ def get_selfenergy(
         hOp_new[tuple(new_process)] = value
     hOp = hOp_new
 
-    # Opt-in: auto-derive the block structure from the impurity sub-block of the
-    # one-body Hamiltonian (symmetry-plan Phase 4) instead of the hand-coded one.
-    if auto_block_structure:
-        from impurityModel.ed.symmetries import auto_block_structure as derive_block_structure
-
-        impurity_indices = sorted(orb for blocks in impurity_orbitals.values() for block in blocks for orb in block)
-        block_structure = derive_block_structure(hOp, orbitals=impurity_indices)
-        if rank == 0 and verbose:
-            print(f"Auto-derived block structure: {len(block_structure.blocks)} blocks")
-
-    # calc_selfenergy returns a result dict (keys: "sigma", "sigma_real", "sigma_static",
-    # "gs_matsubara", "gs_realaxis", "thermal_rho", "rhos"), not a tuple.
+    # calc_selfenergy returns a result dict, not a tuple. Keys: "sigma"/"sigma_real" and
+    # "gs_matsubara"/"gs_realaxis" (full (n_omega, n_imp, n_imp) matrices rotated back to the
+    # caller's input basis, or None), "sigma_static", "thermal_rho", "rhos", "block_structure".
     result = calc_selfenergy(
         h0=hOp,
         u4=u4,
@@ -880,10 +917,8 @@ def get_selfenergy(
         nominal_occ=nominal_occ,
         mixed_valence=mixed_valence,
         impurity_orbitals=impurity_orbitals,
-        bath_states=bath_states,
         tau=tau,
         verbosity=2 if verbose else 0,
-        block_structure=block_structure,
         rot_to_spherical=rot_to_spherical,
         cluster_label=clustername,
         reort=None,
