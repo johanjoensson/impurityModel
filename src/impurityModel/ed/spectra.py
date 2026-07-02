@@ -47,14 +47,63 @@ from impurityModel.ed.finite import (
     gauntC,
 )
 from impurityModel.ed.BlockLanczosArray import Reort
-from impurityModel.ed.ManyBodyUtils import ManyBodyOperator, ManyBodyState
+from impurityModel.ed.ManyBodyUtils import ManyBodyOperator, ManyBodyState, inner
 from impurityModel.ed.ManyBodyUtils import applyOp as applyOp_test
 from impurityModel.ed.mpi_comm import gather_distributed_results
+from impurityModel.ed.symmetries import (
+    ComponentReduction,
+    component_symmetry_reduction,
+    conserved_subset_charges,
+    extract_tensors,
+    measure_conserved_charges,
+    transition_sector_restrictions,
+)
+
+from impurityModel.ed.symmetries import rotate_hamiltonian
 
 # MPI variables
 comm = MPI.COMM_WORLD
 rank = comm.rank
 ranks = comm.size
+
+# Adaptive-rotation gate, mirroring selfenergy: rotate the correlated shell into its
+# symmetry-adapted basis only when doing so keeps the operator roughly as sparse (a d-shell
+# with SOC densifies the Coulomb term ~8x and must stay in spherical harmonics). See the
+# "symmetry-rotation-densifies-coulomb" note.
+_ROTATION_TRIM_TOL = 1e-8
+_MAX_ROTATION_FILL = 2.0
+
+
+def _rotate_op_dict(tOp_dict, rotation):
+    """Rotate a one-body transition-operator dict into the symmetry-adapted basis (U† T U)."""
+    return rotate_hamiltonian(ManyBodyOperator(tOp_dict), rotation, tol=_ROTATION_TRIM_TOL).to_dict()
+
+
+def _shell_orbitals(nBaths, l):
+    """Sorted global spin-orbital indices of impurity shell ``l`` (spin-up then spin-down m's)."""
+    return sorted(c2i(nBaths, (l, s, m)) for s in range(2) for m in range(-l, l + 1))
+
+
+def _pes_ips_equivalence_groups(nBaths, l, block_structure):
+    """Symmetry-equivalence label per PES/IPS operator of shell ``l`` (B2a dedup).
+
+    ``getPhotoEmissionOperators`` / ``getInversePhotoEmissionOperators`` emit one operator per
+    ``(s, m)`` in the order ``for s in 0,1: for m in -l..l``. ``block_structure`` is the impurity
+    block structure of shell ``l`` in the symmetry-adapted basis (local indices into the sorted
+    shell). Operators whose orbital lands in the same ``identical_blocks`` class get the same
+    label, so :func:`getSpectra_new` computes one representative per class.
+    """
+    shell = _shell_orbitals(nBaths, l)
+    local_of_global = {orb: k for k, orb in enumerate(shell)}
+    class_of_block = {}
+    for cls_id, cls in enumerate(block_structure.identical_blocks):
+        for b in cls:
+            class_of_block[b] = cls_id
+    label_of_local = {}
+    for b, block in enumerate(block_structure.blocks):
+        for local in block:
+            label_of_local[local] = class_of_block.get(b, b)
+    return [label_of_local[local_of_global[c2i(nBaths, (l, s, m))]] for s in range(2) for m in range(-l, l + 1)]
 
 
 def simulate_spectra(
@@ -87,6 +136,9 @@ def simulate_spectra(
     dN,
     slaterWeightMin,
     verbose,
+    rotation=None,
+    correlated_l=2,
+    correlated_block_structure=None,
 ):
     """
     Simulate various spectra.
@@ -148,8 +200,31 @@ def simulate_spectra(
         Angular momentum : number of bath states.
     RIXS_projectors : dict
         dict of dicts representing the projections to apply for the calculation of the RIXS spectra
+    rotation : np.ndarray, optional
+        Full-space single-particle unitary rotating the correlated shell into its symmetry-adapted
+        basis. When given, ``hOp`` and ``psis`` are assumed already expressed in that basis, so the
+        one-body transition operators (dipole/NIXS/RIXS) are rotated to match; the scalar spectra
+        are basis-invariant and need no un-rotation. ``None`` keeps the spherical-harmonics basis.
+    correlated_l : int, optional
+        Angular momentum of the rotated correlated shell (default 2, the 3d shell).
+    correlated_block_structure : BlockStructure, optional
+        Impurity block structure of the correlated shell in the symmetry-adapted basis. When given
+        (with ``rotation``), degenerate PES/IPS operators of that shell are deduplicated (B2a).
 
     """
+    # One-body transition operators must be rotated into the same basis as hOp/psis; PES/IPS are
+    # bare ladder operators whose integer indices already refer to the rotated orbitals, so they
+    # are left as-is and instead deduplicated via the shell's symmetry-equivalence classes.
+    def _prep_one_body(tOp_dicts):
+        if rotation is None:
+            return [ManyBodyOperator(t) for t in tOp_dicts]
+        return [ManyBodyOperator(_rotate_op_dict(t, rotation)) for t in tOp_dicts]
+
+    if rotation is not None and correlated_block_structure is not None:
+        correlated_groups = _pes_ips_equivalence_groups(nBaths, correlated_l, correlated_block_structure)
+    else:
+        correlated_groups = None
+
     if rank == 0:
         t0 = time.perf_counter()
 
@@ -176,6 +251,7 @@ def simulate_spectra(
         dN_imp={1: (0, 0), 2: (0, 1)},
         dN_val={1: (0, 0), 2: (1, 0)},
         dN_con={1: (0, 0), 2: (0, 1)},
+        equivalence_groups=correlated_groups,
     )
     if rank == 0:
         print("Photoemission Green's function..")
@@ -194,6 +270,7 @@ def simulate_spectra(
         dN_imp={1: (0, 0), 2: (1, 0)},
         dN_val={1: (0, 0), 2: (1, 0)},
         dN_con={1: (0, 0), 2: (0, 1)},
+        equivalence_groups=correlated_groups,
     )
     gsPS *= -1
     gs = gsPS + gsIPS
@@ -272,7 +349,7 @@ def simulate_spectra(
     # Green's function
     gs = getSpectra_new(
         hOp,
-        [ManyBodyOperator(t) for t in tOps],
+        _prep_one_body(tOps),
         psis,
         es,
         tau,
@@ -313,33 +390,57 @@ def simulate_spectra(
 
     if rank == 0:
         print("Create XAS spectra...")
-    # Dipole transition operators
-    tOps = getDipoleOperators(nBaths, epsilons)
+    dN_XAS = dict(
+        dN_imp={1: (1, 0), 2: (0, 1)},
+        dN_val={1: (0, 0), 2: (1, 0)},
+        dN_con={1: (0, 0), 2: (0, 1)},
+    )
     if XAS_projectors:
+        # Projected operators are not a plain Cartesian linear combination -> keep the
+        # per-operator path.
+        tOps = getDipoleOperators(nBaths, epsilons)
         iBasisProjectors = arrayOp2Dict(nBaths, XAS_projectors.values())
         projectedTOps = []
         for proj in iBasisProjectors:
             for op in tOps:
                 projectedTOps.append(combineOp(nBaths, proj, op))
-        tOps = projectedTOps
-
-    # Green's function
-    gs = getSpectra_new(
-        hOp,
-        [ManyBodyOperator(t) for t in tOps],
-        psis,
-        es,
-        tau,
-        w,
-        basis,
-        delta,
-        slaterWeightMin,
-        verbose,
-        occ_cutoff,
-        dN_imp={1: (1, 0), 2: (0, 1)},
-        dN_val={1: (0, 0), 2: (1, 0)},
-        dN_con={1: (0, 0), 2: (0, 1)},
-    )
+        gs = getSpectra_new(
+            hOp,
+            _prep_one_body(projectedTOps),
+            psis,
+            es,
+            tau,
+            w,
+            basis,
+            delta,
+            slaterWeightMin,
+            verbose,
+            occ_cutoff,
+            **dN_XAS,
+        )
+    else:
+        # Dipole is linear in the polarization: compute the spectral tensor over the 3 Cartesian
+        # components once (symmetry-reduced) and contract with every requested polarization (B2b).
+        cartesian_ops = _prep_one_body(getDipoleOperators(nBaths, [[1, 0, 0], [0, 1, 0], [0, 0, 1]]))
+        n_orb = basis.num_spin_orbitals
+        h_onebody = extract_tensors(hOp, n_orb=n_orb)[0]
+        reduction = component_symmetry_reduction(cartesian_ops, h_onebody, n_orb=n_orb)
+        gs = getSpectra_tensor(
+            hOp,
+            cartesian_ops,
+            epsilons,
+            psis,
+            es,
+            tau,
+            w,
+            basis,
+            delta,
+            slaterWeightMin,
+            verbose,
+            occ_cutoff,
+            reduction=reduction,
+            **dN_XAS,
+        )
     # gs = getSpectra(n_spin_orbitals, hOp, tOps, psis, es, w, delta, restrictions)
     if rank == 0:
         # print("#eigenstates = {:d}".format(np.shape(gs)[0]))
@@ -367,12 +468,12 @@ def simulate_spectra(
     if len(wIn) > 0:
         if rank == 0:
             print("Create RIXS spectra...")
-        # Dipole 2p -> 3d transition operators
-        tOpsIn = getDipoleOperators(nBaths, epsilonsRIXSin)
-        # Dipole 3d -> 2p transition operators
-        tOpsOut = getDaggeredDipoleOperators(nBaths, epsilonsRIXSout)
 
         if RIXS_projectors:
+            # Projected operators are not a plain Cartesian linear combination -> keep the
+            # per-operator Kramers-Heisenberg path.
+            tOpsIn = getDipoleOperators(nBaths, epsilonsRIXSin)
+            tOpsOut = getDaggeredDipoleOperators(nBaths, epsilonsRIXSout)
             iBasisProjectors = arrayOp2Dict(nBaths, RIXS_projectors.values())
             projectedTOpsIn = []
             projectedTOpsOut = []
@@ -381,24 +482,44 @@ def simulate_spectra(
                     projectedTOpsIn.append(combineOp(nBaths, proj, opIn))
                 for opOut in tOpsOut:
                     projectedTOpsOut.append(combineOp(nBaths, opOut, proj))
-            tOpsIn = projectedTOpsIn
-            tOpsOut = projectedTOpsOut
-
-        gs = getRIXSmap_new(
-            hOp,
-            [ManyBodyOperator(t) for t in tOpsIn],
-            [ManyBodyOperator(t) for t in tOpsOut],
-            psis,
-            es,
-            tau,
-            wIn,
-            wLoss,
-            delta,
-            deltaRIXS,
-            basis,
-            verbose,
-            slaterWeightMin=slaterWeightMin,
-        )
+            gs = getRIXSmap_new(
+                hOp,
+                _prep_one_body(projectedTOpsIn),
+                _prep_one_body(projectedTOpsOut),
+                psis,
+                es,
+                tau,
+                wIn,
+                wLoss,
+                delta,
+                deltaRIXS,
+                basis,
+                verbose,
+                slaterWeightMin=slaterWeightMin,
+            )
+        else:
+            # Dipole is linear in the polarization: compute the full rank-4 Kramers-Heisenberg
+            # tensor over the 3 Cartesian in/out components once and contract with every
+            # requested (in, out) polarization pair (R4 -- the RIXS analogue of B2b).
+            in_component_ops = _prep_one_body(getDipoleOperators(nBaths, [[1, 0, 0], [0, 1, 0], [0, 0, 1]]))
+            out_component_ops = _prep_one_body(getDaggeredDipoleOperators(nBaths, [[1, 0, 0], [0, 1, 0], [0, 0, 1]]))
+            gs = getRIXSmap_tensor(
+                hOp,
+                in_component_ops,
+                out_component_ops,
+                epsilonsRIXSin,
+                epsilonsRIXSout,
+                psis,
+                es,
+                tau,
+                wIn,
+                wLoss,
+                delta,
+                deltaRIXS,
+                basis,
+                verbose,
+                slaterWeightMin=slaterWeightMin,
+            )
 
         if rank == 0:
             # print("#eigenstates = {:d}".format(np.shape(gs)[0]))
@@ -683,6 +804,35 @@ def getPhotoEmissionOperators(nBaths, l=2):
     return tOpsPS
 
 
+def _sector_restrictions_per_top(hOp, tOps, psis, basis):
+    r"""Conserved-charge sector restrictions for each transition operator (or ``None``).
+
+    Each Lanczos seed ``tOp|\psi\rangle`` lives in a definite conserved-charge sector
+    (``q_ψ`` shifted by the operator's charge change). Confining the excited basis to that
+    sector prunes determinants the per-shell occupation window would otherwise admit -- the
+    spectra analogue of :func:`symmetries.gf_sector_restrictions` used by the self-energy.
+
+    Returns a list aligned with ``tOps``; an entry is ``None`` when the operator has no
+    definite sector (its terms disagree) so the caller falls back to the occupation window.
+    Returns ``None`` (whole list) when the ground states do not share a single charge
+    signature -- then no per-operator sector is well defined.
+    """
+    n_orb = basis.num_spin_orbitals
+    comm = basis.comm
+    charges = conserved_subset_charges(hOp, n_orb=n_orb)
+    gs_occ = None
+    for psi in psis:
+        occ = measure_conserved_charges(psi, charges, n_orb, comm=comm)
+        if gs_occ is None:
+            gs_occ = occ
+        elif occ != gs_occ:
+            # Thermally-populated states span different sectors: no shared confinement.
+            return None
+    if gs_occ is None:
+        return None
+    return [transition_sector_restrictions(charges, gs_occ, tOp) for tOp in tOps]
+
+
 def getSpectra_new(
     hOp,
     tOps,
@@ -698,6 +848,7 @@ def getSpectra_new(
     dN_imp,
     dN_val,
     dN_con,
+    equivalence_groups=None,
 ):
     """
     Calculate the Green's function spectra for a list of transition operators.
@@ -734,6 +885,11 @@ def getSpectra_new(
         Restrictions on particle number change in the valence shell.
     dN_con : dict
         Restrictions on particle number change in the conduction shell.
+    equivalence_groups : list, optional
+        One hashable label per transition operator. Operators sharing a label are guaranteed
+        (by symmetry) to yield identical spectra, so the Lanczos is run for one representative
+        per label and the result is broadcast to every member -- the B2a degeneracy dedup.
+        ``None`` (default) computes every operator independently.
 
     Returns
     -------
@@ -742,7 +898,44 @@ def getSpectra_new(
         spectra on the real axis. Only returned on root process rank 0; other ranks
         return an empty array.
     """
+    if equivalence_groups is not None:
+        # Compute one representative per equivalence class, then broadcast columns. Every rank
+        # takes the same reduced path (the recursion is collective), so MPI stays in lock-step.
+        first_index = {}
+        rep_order = []
+        for i, label in enumerate(equivalence_groups):
+            if label not in first_index:
+                first_index[label] = i
+                rep_order.append(label)
+        reduced = getSpectra_new(
+            hOp,
+            [tOps[first_index[label]] for label in rep_order],
+            psis,
+            es,
+            tau,
+            w,
+            basis,
+            delta,
+            slaterWeightMin,
+            verbose,
+            occ_cutoff,
+            dN_imp,
+            dN_val,
+            dN_con,
+            equivalence_groups=None,
+        )
+        if reduced.size == 0:  # non-root ranks return an empty array
+            return reduced
+        pos = {label: k for k, label in enumerate(rep_order)}
+        full = np.empty((reduced.shape[0], len(equivalence_groups)), dtype=complex)
+        for i, label in enumerate(equivalence_groups):
+            full[:, i] = reduced[:, pos[label]]
+        return full
+
     comm = basis.comm
+    # Conserved-charge sector confinement, one restriction per transition operator (computed
+    # on the full communicator before any basis split, since it measures the ground states).
+    sector_restrictions = _sector_restrictions_per_top(hOp, tOps, psis, basis)
     if comm is None or comm.size <= 1:
         gs_realaxis = np.empty((len(w), len(tOps)), dtype=complex)
         for i, tOp in enumerate(tOps):
@@ -760,6 +953,7 @@ def getSpectra_new(
                 dN_imp=dN_imp,
                 dN_val=dN_val,
                 dN_con=dN_con,
+                extra_restrictions=None if sector_restrictions is None else sector_restrictions[i],
             )
             e0 = np.min(es)
             Z = np.sum(np.exp(-(es - e0) / tau))
@@ -804,6 +998,7 @@ def getSpectra_new(
             dN_imp=dN_imp,
             dN_val=dN_val,
             dN_con=dN_con,
+            extra_restrictions=None if sector_restrictions is None else sector_restrictions[tOp_idx],
         )
         if tOp_basis.comm.rank == 0:
             e0 = np.min(es)
@@ -829,6 +1024,185 @@ def getSpectra_new(
     return gs_realaxis if basis.comm.rank == 0 else np.empty((0, 0), dtype=complex)
 
 
+def _combine_component_ops(component_ops, coeffs):
+    r"""Linear combination :math:`\sum_\alpha c_\alpha T_\alpha` of one-body component operators."""
+    combined = {}
+    for coeff, op in zip(coeffs, component_ops):
+        if abs(coeff) == 0:
+            continue
+        for factors, amp in (op.to_dict() if hasattr(op, "to_dict") else op).items():
+            combined[factors] = combined.get(factors, 0) + coeff * amp
+    return ManyBodyOperator(combined)
+
+
+def _component_seed_moments(hOp, comp_ops, psis, es, e0, tau, basis, slaterWeightMin):
+    r"""Thermal seed norms ``<seed|seed>`` and energies ``<seed|H|seed>`` per component.
+
+    Used as the point-group-dedup safety net: symmetry predicts equal moments within a
+    dedup group, so a mismatch flags an *incomplete* symmetry multiplet (an ensemble that is
+    not actually symmetric) and the caller falls back to the full tensor. States are applied
+    locally then redistributed onto a shared working basis so the inner products are complete
+    under MPI (the apply-local -> redistribute -> local-inner -> Allreduce pattern).
+    """
+    m = len(comp_ops)
+    comm = basis.comm
+    weights = np.exp(-(np.asarray(es) - e0) / tau)
+    m0 = np.zeros(m)
+    m1 = np.zeros(m)
+    work = basis.clone(initial_basis=[], verbose=False, comm=comm)
+    for psi, wgt in zip(psis, weights):
+        seeds = [applyOp_test(op, psi) for op in comp_ops]
+        hseeds = [applyOp_test(hOp, s) for s in seeds]
+        work.clear()
+        for s in seeds + hseeds:
+            work.add_states(s.keys())
+        red = work.redistribute_psis(seeds + hseeds)
+        for a in range(m):
+            m0[a] += wgt * np.real(inner(red[a], red[a]))
+            m1[a] += wgt * np.real(inner(red[a], red[m + a]))
+    if comm is not None and comm.size > 1:
+        comm.Allreduce(MPI.IN_PLACE, m0, op=MPI.SUM)
+        comm.Allreduce(MPI.IN_PLACE, m1, op=MPI.SUM)
+    return m0, m1
+
+
+def _moments_consistent(m0, m1, group_of_column, tol=1e-6):
+    r"""Whether seed moments are equal within every dedup group (symmetry actually holds)."""
+    groups = {}
+    for a, g in enumerate(group_of_column):
+        groups.setdefault(g, []).append(a)
+    for members in groups.values():
+        if len(members) == 1:
+            continue
+        ref = members[0]
+        scale0 = max(abs(m0[ref]), 1.0)
+        for a in members[1:]:
+            if abs(m0[a] - m0[ref]) > tol * scale0:
+                return False
+            # Compare mean energies m1/m0 where the seed is non-trivial.
+            if m0[ref] > tol and m0[a] > tol:
+                if abs(m1[a] / m0[a] - m1[ref] / m0[ref]) > tol * max(abs(m1[ref] / m0[ref]), 1.0):
+                    return False
+    return True
+
+
+def getSpectra_tensor(
+    hOp,
+    component_ops,
+    polarizations,
+    psis,
+    es,
+    tau,
+    w,
+    basis,
+    delta,
+    slaterWeightMin,
+    verbose,
+    occ_cutoff,
+    dN_imp,
+    dN_val,
+    dN_con,
+    reduction=None,
+):
+    r"""Polarization-resolved spectra via the one-body spectral tensor (B2b).
+
+    A dipole (or NIXS) transition operator is *linear* in the polarization,
+    :math:`T_\varepsilon = \sum_\alpha \varepsilon_\alpha T_\alpha`, so every polarization's
+    spectrum is a contraction of a single Hermitian spectral tensor
+
+    .. math:: \chi_{\alpha\beta}(\omega) = \langle g| T_\alpha^\dagger (\omega - H)^{-1}
+              T_\beta |g\rangle, \qquad I_\varepsilon(\omega)
+              = \sum_{\alpha\beta} \varepsilon_\alpha^* \chi_{\alpha\beta}(\omega)
+              \varepsilon_\beta .
+
+    The tensor is computed with **one** block-Lanczos recurrence over the (symmetry-reduced)
+    component operators -- decoupling the number of Lanczos runs from the number of requested
+    polarizations, giving arbitrary/circular polarization for free -- and confined to the
+    conserved-charge sector of the seeds (B1). ``reduction`` (from
+    :func:`symmetries.component_symmetry_reduction`) optionally collapses symmetry-equivalent
+    components so the block shrinks further; a seed-moment spot-check guards against an
+    incomplete symmetry multiplet and falls back to the full tensor when it fails.
+
+    Parameters
+    ----------
+    hOp : ManyBodyOperator
+        The Hamiltonian.
+    component_ops : list of ManyBodyOperator
+        The Cartesian component transition operators (e.g. the 3 dipole components).
+    polarizations : sequence of array_like
+        Each element is a length-``len(component_ops)`` (complex) polarization vector.
+    reduction : ComponentReduction, optional
+        Point-group reduction of the components. ``None`` computes the full tensor.
+    The remaining parameters match :func:`getSpectra_new`.
+
+    Returns
+    -------
+    ndarray
+        ``(len(w), len(polarizations))`` complex spectra on rank 0; empty array elsewhere.
+    """
+    m = len(component_ops)
+    if reduction is None:
+        reduction = ComponentReduction(np.eye(m, dtype=complex), list(range(m)), list(range(m)), m <= 1)
+    Q = np.asarray(reduction.Q, dtype=complex)
+    diagonalizable = reduction.diagonalizable
+
+    # Representative component operators to actually run the block-Lanczos over.
+    rep_ops = [_combine_component_ops(component_ops, Q[:, c]) for c in reduction.representatives]
+
+    # Safety net: if the dedup would drop columns, verify the seed moments really match within
+    # each group (the ensemble is a complete symmetry multiplet). Otherwise fall back to full.
+    if diagonalizable and len(rep_ops) < m:
+        all_rot_ops = [_combine_component_ops(component_ops, Q[:, a]) for a in range(m)]
+        e0 = np.min(es)
+        m0, m1 = _component_seed_moments(hOp, all_rot_ops, psis, es, e0, tau, basis, slaterWeightMin)
+        if not _moments_consistent(m0, m1, reduction.group_of_column):
+            diagonalizable = False
+            Q = np.eye(m, dtype=complex)
+            rep_ops = list(component_ops)
+            reduction = reduction._replace(
+                Q=Q, representatives=list(range(m)), group_of_column=list(range(m)), diagonalizable=False
+            )
+
+    # One conserved-charge sector for the whole block (all components share the charge shift).
+    sector = _sector_restrictions_per_top(hOp, [rep_ops[0]], psis, basis)
+    extra = None if sector is None else sector[0]
+
+    comm = basis.comm
+    e0 = np.min(es)
+    Z = np.sum(np.exp(-(es - e0) / tau))
+    alphas, betas, r = gf.calc_Greens_function_with_offdiag(
+        hOp,
+        rep_ops,
+        psis,
+        es,
+        basis,
+        delta,
+        occ_cutoff=occ_cutoff,
+        slaterWeightMin=slaterWeightMin,
+        verbose=verbose,
+        sparse=True,
+        dN_imp=dN_imp,
+        dN_val=dN_val,
+        dN_con=dN_con,
+        extra_restrictions=extra,
+    )
+    if comm is not None and comm.rank != 0:
+        return np.empty((0, 0), dtype=complex)
+
+    chi_red = gf.calc_thermally_averaged_G(alphas, betas, r, w, es, e0, tau, delta) / Z  # (n_w, r, r)
+
+    if diagonalizable:
+        rep_diag = np.diagonal(chi_red, axis1=1, axis2=2)  # (n_w, r)
+        chi_diag = rep_diag[:, reduction.group_of_column]  # (n_w, m)
+        chi_full = np.einsum("wa,pa,qa->wpq", chi_diag, Q, Q.conj(), optimize=True)
+    else:
+        chi_full = chi_red  # full m x m tensor in the Cartesian basis (Q = I)
+
+    eps = np.array([np.asarray(p, dtype=complex) for p in polarizations])  # (n_pol, m)
+    spectra_out = np.einsum("pa,wab,pb->wp", eps.conj(), chi_full, eps, optimize=True)
+    return spectra_out
+
+
 def getRIXSmap_new(
     hOp,
     tOpsIn,
@@ -846,6 +1220,24 @@ def getRIXSmap_new(
 ):
     r"""
     Return RIXS Green's function for states.
+
+    The map ``gs[in, out, wIn, wLoss]`` is the Kramers-Heisenberg intensity for every
+    (in-operator, out-operator) pair. Two efficiency levers are applied on top of the
+    straightforward per-pair evaluation (numerically identical results):
+
+    * **Conserved-charge sector confinement (R1):** the intermediate resolvent
+      ``(wIn + i delta1 + E - H)^{-1} Tin|psi>`` stays in the core-excited charge sector of
+      ``Tin|psi>``, so the resolvent basis is pinned to that sector
+      (:func:`symmetries.transition_sector_restrictions`) on top of the occupation window.
+    * **In-component block resolvent (R2):** for each ``wIn`` all in-operators' resolvents are
+      solved as one block (:func:`cg.block_bicgstab`), sharing a single Krylov space /
+      iteration; the block solver deflates a rank-deficient in-component right-hand side.
+    * **Out-component block Green (R3):** for a fixed in-operator all out-operators are run
+      through a single block-Lanczos (:func:`greens_function.block_Green`); the diagonal
+      ``(j, j)`` of the resulting block reproduces the per-out-operator Green's function.
+
+    (A full polarization tensor with arbitrary in/out polarizations would require the rank-4
+    cross tensor and is not computed; the map is over the supplied operator pairs.)
 
     For states :math:`|psi \rangle`, calculate:
 
@@ -949,115 +1341,132 @@ def getRIXSmap_new(
         _,
     ) = basis.split_basis_and_redistribute_psi([1 for _ in Es], psis)
     eigen_basis.restrictions = relaxed_restrictions
+    from impurityModel.ed.cg import block_bicgstab
+
+    n_in = len(tOpsIn)
+    n_out = len(tOpsOut)
+    # Conserved-charge sector of the core-excited intermediate state (all in-components share the
+    # same charge shift): confines the resolvent solve (R1). None if hOp has no reusable charges.
+    charges = conserved_subset_charges(hOp, n_orb=basis.num_spin_orbitals)
+
     if eigen_basis.comm.rank == 0:
-        gs = np.zeros((len(tOpsIn), len(wIns), len(tOpsOut), len(wLoss)), dtype=complex)
+        gs = np.zeros((n_in, len(wIns), n_out, len(wLoss)), dtype=complex)
     for e, psi_e, E_e in zip(eigen_indices, (psis[ei] for ei in eigen_indices), (Es[ei] for ei in eigen_indices)):
-        for i, tin in enumerate(tOpsIn):
-            psi1 = applyOp_test(tin, psi_e)
+        # R2: apply every in-component up front and solve their resolvents as one block, sharing a
+        # single Krylov space / iteration across the in-components (instead of one solve per one).
+        psi1_all = [applyOp_test(tin, psi_e) for tin in tOpsIn]
 
-            basis_final = eigen_basis.clone(
-                initial_basis=[],
-                restrictions=excited_restrictions,
-                verbose=False,
-                comm=eigen_basis.comm.Clone() if eigen_basis.comm is not None else None,
-            )
-            (
-                wIn_indices,
-                wIn_roots,
-                _,
-                wIn_per_color,
-                wIn_basis,
-                psi1_arr,
-                _,
-            ) = basis_final.split_basis_and_redistribute_psi([1 for _ in wIns], [psi1])
-            indices_for_colors = gather_distributed_results(
-                eigen_basis.comm,
-                wIn_basis.comm.rank if wIn_basis.comm is not None else 0,
-                wIn_roots,
-                wIn_per_color,
-                np.array(wIn_indices),
-                is_array=True,
-            )
-            if eigen_basis.comm.rank != 0:
-                gs = np.zeros((len(tOpsIn), len(wIn_indices), len(tOpsOut), len(wLoss)), dtype=complex)
-            basis_tmp = eigen_basis.clone(
-                initial_basis=[],
-                restrictions=excited_restrictions,
-                verbose=False,
-                comm=wIn_basis.comm.Clone() if wIn_basis.comm is not None else None,
-            )
-            psi1 = psi1_arr[0]
-            psi2 = ManyBodyState()
+        # R1: pin the intermediate resolvent basis to the core-excited charge sector.
+        tmp_restrictions = excited_restrictions
+        if charges:
+            gs_occ = measure_conserved_charges(psi_e, charges, basis.num_spin_orbitals, comm=eigen_basis.comm)
+            sector_in = transition_sector_restrictions(charges, gs_occ, tOpsIn[0])
+            if sector_in:
+                tmp_restrictions = gf._intersect_restrictions(excited_restrictions, sector_in)
 
-            from impurityModel.ed.cg import block_bicgstab
+        basis_final = eigen_basis.clone(
+            initial_basis=[],
+            restrictions=excited_restrictions,
+            verbose=False,
+            comm=eigen_basis.comm.Clone() if eigen_basis.comm is not None else None,
+        )
+        (
+            wIn_indices,
+            wIn_roots,
+            _,
+            wIn_per_color,
+            wIn_basis,
+            psi1_all_arr,
+            _,
+        ) = basis_final.split_basis_and_redistribute_psi([1 for _ in wIns], psi1_all)
+        indices_for_colors = gather_distributed_results(
+            eigen_basis.comm,
+            wIn_basis.comm.rank if wIn_basis.comm is not None else 0,
+            wIn_roots,
+            wIn_per_color,
+            np.array(wIn_indices),
+            is_array=True,
+        )
+        basis_tmp = eigen_basis.clone(
+            initial_basis=[],
+            restrictions=tmp_restrictions,
+            verbose=False,
+            comm=wIn_basis.comm.Clone() if wIn_basis.comm is not None else None,
+        )
+        psi1_all = psi1_all_arr
+        # R2: warm-started resolvent solved as one block over all in-components, sharing a single
+        # Krylov space / iteration (block_bicgstab deflates a rank-deficient in-component block).
+        psi2_all = [ManyBodyState() for _ in tOpsIn]
+        # Per-eigenstate local accumulator (wIn axis first for the gather); rank 0 writes global.
+        gs_local = np.zeros((len(wIn_indices), n_in, n_out, len(wLoss)), dtype=complex)
 
-            for k, win in enumerate(wIns[wIn_indices]):
+        for k, win in enumerate(wIns[wIn_indices]):
+            for psi2 in psi2_all:
                 psi2.prune(slaterWeightMin)
-                basis_tmp.clear()
-                basis_tmp.add_states(sorted(set(state for p in (psi1, psi2) for state in p.keys())))
-
-                A_op = (
-                    ManyBodyOperator(
-                        {((0, "c"), (0, "a")): win + delta1 * 1j + E_e, ((0, "a"), (0, "c")): win + delta1 * 1j + E_e}
-                    )
-                    - hOp
+            basis_tmp.clear()
+            basis_tmp.add_states(sorted(set(state for p in psi1_all + psi2_all for state in p.keys())))
+            A_op = (
+                ManyBodyOperator(
+                    {((0, "c"), (0, "a")): win + delta1 * 1j + E_e, ((0, "a"), (0, "c")): win + delta1 * 1j + E_e}
                 )
-
-                psi2_list = block_bicgstab(
-                    A=A_op,
-                    x0=[psi2],
-                    y=[psi1],
-                    basis=basis_tmp,
-                    slaterWeightMin=slaterWeightMin,
-                    atol=1e-5,
-                    rtol=1e-7,
-                )
-                psi2 = psi2_list[0]
-                for j, tout in enumerate(tOpsOut):
-                    psi3 = applyOp_test(tout, psi2)
+                - hOp
+            )
+            psi2_all = block_bicgstab(
+                A=A_op,
+                x0=psi2_all,
+                y=psi1_all,
+                basis=basis_tmp,
+                slaterWeightMin=slaterWeightMin,
+                atol=1e-5,
+                rtol=1e-7,
+            )
+            for i in range(n_in):
+                # R3: build the final states for every out-component and run one block-Green over
+                # them; the diagonal (out-component j vs itself) reproduces the per-operator result.
+                psi3_all = [applyOp_test(tout, psi2_all[i]) for tout in tOpsOut]
+                for psi3 in psi3_all:
                     wIn_basis.add_states(psi3.keys())
-                    psi3 = wIn_basis.redistribute_psis([psi3])[0]
-                    alphas, betas, r = gf.block_Green(
-                        hOp,
-                        [psi3],
-                        wIn_basis,
-                        delta2,
-                        Reort.NONE,
-                        slaterWeightMin=slaterWeightMin,
-                        verbose=verbose,
-                    )
+                psi3_all = wIn_basis.redistribute_psis(psi3_all)
+                alphas, betas, r = gf.block_Green(
+                    hOp,
+                    psi3_all,
+                    wIn_basis,
+                    delta2,
+                    Reort.NONE,
+                    slaterWeightMin=slaterWeightMin,
+                    verbose=verbose,
+                )
+                g_tensor = gf.calc_G(alphas, betas, r, wLoss, E_e, delta2) * np.exp(-(E_e - E0) / tau)
+                for j in range(n_out):
                     if eigen_basis.comm.rank == 0:
-                        gs[i, wIn_indices[k], j, :, None, None] += gf.calc_G(
-                            alphas, betas, r, wLoss, E_e, delta2
-                        ) * np.exp(-(E_e - E0) / tau)
+                        gs[i, wIn_indices[k], j, :] += g_tensor[:, j, j]
                     else:
-                        gs[i, k, j, :, None, None] += gf.calc_G(alphas, betas, r, wLoss, E_e, delta2) * np.exp(
-                            -(E_e - E0) / tau
-                        )
-            local_gs = (
-                gs[i, :, :, :]
-                if eigen_basis.comm.rank != 0
-                else np.zeros((len(wIn_indices), len(tOpsOut), len(wLoss)), dtype=complex)
-            )
-            gathered_gs = gather_distributed_results(
-                eigen_basis.comm,
-                wIn_basis.comm.rank if wIn_basis.comm is not None else 0,
-                wIn_roots,
-                wIn_per_color,
-                local_gs,
-                is_array=True,
-            )
-            if eigen_basis.comm.rank == 0:
-                for idx_local, idx_global in enumerate(indices_for_colors):
-                    gs[i, idx_global, :, :] += gathered_gs[idx_local, :, :]
+                        gs_local[k, i, j, :] += g_tensor[:, j, j]
 
-            # Free loop-local split/cloned communicators collectively
-            if basis_tmp is not None and basis_tmp.comm != eigen_basis.comm:
-                basis_tmp.free_comm()
-            if wIn_basis is not None and wIn_basis.comm != basis_final.comm:
-                wIn_basis.free_comm()
-            if basis_final is not None and basis_final.comm != eigen_basis.comm:
-                basis_final.free_comm()
+        local_gs = (
+            gs_local
+            if eigen_basis.comm.rank != 0
+            else np.zeros((len(wIn_indices), n_in, n_out, len(wLoss)), dtype=complex)
+        )
+        gathered_gs = gather_distributed_results(
+            eigen_basis.comm,
+            wIn_basis.comm.rank if wIn_basis.comm is not None else 0,
+            wIn_roots,
+            wIn_per_color,
+            local_gs,
+            is_array=True,
+        )
+        if eigen_basis.comm.rank == 0:
+            for idx_local, idx_global in enumerate(indices_for_colors):
+                gs[:, idx_global, :, :] += gathered_gs[idx_local]
+
+        # Free loop-local split/cloned communicators collectively
+        if basis_tmp is not None and basis_tmp.comm != eigen_basis.comm:
+            basis_tmp.free_comm()
+        if wIn_basis is not None and wIn_basis.comm != basis_final.comm:
+            wIn_basis.free_comm()
+        if basis_final is not None and basis_final.comm != eigen_basis.comm:
+            basis_final.free_comm()
 
     if eigen_basis is not None and eigen_basis.comm != basis.comm:
         eigen_basis.free_comm()
@@ -1070,4 +1479,253 @@ def getRIXSmap_new(
         basis.comm.Reduce(
             np.zeros((len(tOpsIn), len(wIns), len(tOpsOut), len(wLoss)), dtype=complex), None, op=MPI.SUM, root=0
         )
+    return np.transpose(gs, (0, 2, 1, 3)).copy() / Z
+
+
+def getRIXSmap_tensor(
+    hOp,
+    in_component_ops,
+    out_component_ops,
+    epsilonsIn,
+    epsilonsOut,
+    psis,
+    Es,
+    tau,
+    wIns,
+    wLoss,
+    delta1,
+    delta2,
+    basis,
+    verbose,
+    slaterWeightMin,
+):
+    r"""RIXS map for arbitrary in/out polarizations via the full rank-4 Kramers-Heisenberg tensor.
+
+    A dipole (or NIXS) transition operator is *linear* in the polarization,
+    :math:`T_\varepsilon = \sum_\alpha \varepsilon_\alpha T_\alpha`, so the Kramers-Heisenberg
+    amplitude for every pair of in/out polarizations is a contraction of a single
+    Cartesian-component tensor
+
+    .. math:: C_{\alpha\alpha'\beta\beta'}(\omega_\text{in}, \omega_\text{loss}) =
+              \langle \psi^{(2)}_\alpha | T^{\text{out}\dagger}_\beta R_2 T^\text{out}_{\beta'}
+              | \psi^{(2)}_{\alpha'} \rangle, \qquad
+              \psi^{(2)}_\alpha = R_1 T^\text{in}_\alpha |g\rangle,
+
+    with :math:`R_1 = (\omega_\text{in} + i\delta_1 + E - H)^{-1}` and
+    :math:`R_2 = (\omega_\text{loss} + i\delta_2 + E - H)^{-1}`. Since
+    :math:`C_{\alpha\alpha'\beta\beta'} = \langle s_{\alpha\beta} | R_2 | s_{\alpha'\beta'}
+    \rangle` with the seeds :math:`s_{\alpha\beta} = T^\text{out}_\beta \psi^{(2)}_\alpha`, the
+    tensor is exactly the resolvent matrix over the flattened seed block -- one block-Lanczos
+    (:func:`greens_function.block_Green`) yields every polarization cross term at once, and the
+    number of solves is decoupled from the number of requested polarizations (arbitrary /
+    circular polarization for free). This is the RIXS analogue of :func:`getSpectra_tensor`.
+
+    The same efficiency levers as :func:`getRIXSmap_new` apply -- R1 conserved-charge sector
+    confinement of the intermediate resolvent and the R2 block resolvent over the in-components
+    (:func:`cg.block_bicgstab`, which deflates the frequently rank-deficient Cartesian
+    in-component right-hand side). The redundancy of symmetry-equivalent seeds is handled
+    exactly and automatically by the rank deflation inside ``block_bicgstab`` and
+    ``block_Green`` (a symmetry-based seed drop cannot reduce below the linear rank of the seed
+    span, and the XAS-style group rule does not generalize to this rank-4 tensor).
+
+    Parameters
+    ----------
+    hOp : ManyBodyOperator
+        The Hamiltonian.
+    in_component_ops : list of ManyBodyOperator
+        Cartesian in-transition (core-hole excitation) component operators, e.g. the three
+        dipole components ``getDipoleOperators(nBaths, [[1,0,0],[0,1,0],[0,0,1]])``.
+    out_component_ops : list of ManyBodyOperator
+        Cartesian out-transition (core-hole filling) component operators, e.g. the daggered
+        dipole components ``getDaggeredDipoleOperators(nBaths, [[1,0,0],[0,1,0],[0,0,1]])``.
+    epsilonsIn, epsilonsOut : sequence of array_like
+        In/out polarization vectors, each of length ``len(in_component_ops)`` /
+        ``len(out_component_ops)`` (real or complex).
+    The remaining parameters match :func:`getRIXSmap_new`.
+
+    Returns
+    -------
+    ndarray
+        ``gs[p_in, p_out, wIn, wLoss]`` on rank 0, thermally averaged.
+    """
+    epsIn = np.array([np.asarray(p, dtype=complex) for p in epsilonsIn])  # (n_pin, n_in_comp)
+    epsOut = np.array([np.asarray(p, dtype=complex) for p in epsilonsOut])  # (n_pout, n_out_comp)
+    n_pin = epsIn.shape[0]
+    n_pout = epsOut.shape[0]
+    n_in = len(in_component_ops)
+    n_out = len(out_component_ops)
+
+    excited_restrictions = basis.build_excited_restrictions(
+        hOp,
+        psis,
+        Es,
+        imp_change={1: (1, 0), 2: (1, 1)},
+        val_change={1: (0, 0), 2: (1, 0)},
+        con_change={1: (0, 0), 2: (0, 1)},
+    )
+    relaxed_restrictions = basis.build_excited_restrictions(
+        hOp,
+        psis,
+        Es,
+        imp_change={1: (0, 0), 2: (1, 1)},
+        val_change={1: (0, 0), 2: (1, 0)},
+        con_change={1: (0, 0), 2: (0, 1)},
+    )
+
+    E0 = min(Es)
+    Z = np.sum(np.exp(-(Es - E0) / tau))
+    (
+        eigen_indices,
+        eigen_roots,
+        color,
+        eigen_per_color,
+        eigen_basis,
+        psis,
+        _,
+    ) = basis.split_basis_and_redistribute_psi([1 for _ in Es], psis)
+    eigen_basis.restrictions = relaxed_restrictions
+    from impurityModel.ed.cg import block_bicgstab
+
+    # Conserved-charge sector of the core-excited intermediate state (all in-components share the
+    # same charge shift): confines the resolvent solve (R1). None if hOp has no reusable charges.
+    charges = conserved_subset_charges(hOp, n_orb=basis.num_spin_orbitals)
+
+    if eigen_basis.comm.rank == 0:
+        gs = np.zeros((n_pin, len(wIns), n_pout, len(wLoss)), dtype=complex)
+    for e, psi_e, E_e in zip(eigen_indices, (psis[ei] for ei in eigen_indices), (Es[ei] for ei in eigen_indices)):
+        # R2: apply every Cartesian in-component up front and solve their resolvents as one block.
+        psi1_all = [applyOp_test(tin, psi_e) for tin in in_component_ops]
+
+        # R1: pin the intermediate resolvent basis to the core-excited charge sector.
+        tmp_restrictions = excited_restrictions
+        if charges:
+            gs_occ = measure_conserved_charges(psi_e, charges, basis.num_spin_orbitals, comm=eigen_basis.comm)
+            sector_in = transition_sector_restrictions(charges, gs_occ, in_component_ops[0])
+            if sector_in:
+                tmp_restrictions = gf._intersect_restrictions(excited_restrictions, sector_in)
+
+        basis_final = eigen_basis.clone(
+            initial_basis=[],
+            restrictions=excited_restrictions,
+            verbose=False,
+            comm=eigen_basis.comm.Clone() if eigen_basis.comm is not None else None,
+        )
+        (
+            wIn_indices,
+            wIn_roots,
+            _,
+            wIn_per_color,
+            wIn_basis,
+            psi1_all_arr,
+            _,
+        ) = basis_final.split_basis_and_redistribute_psi([1 for _ in wIns], psi1_all)
+        indices_for_colors = gather_distributed_results(
+            eigen_basis.comm,
+            wIn_basis.comm.rank if wIn_basis.comm is not None else 0,
+            wIn_roots,
+            wIn_per_color,
+            np.array(wIn_indices),
+            is_array=True,
+        )
+        basis_tmp = eigen_basis.clone(
+            initial_basis=[],
+            restrictions=tmp_restrictions,
+            verbose=False,
+            comm=wIn_basis.comm.Clone() if wIn_basis.comm is not None else None,
+        )
+        psi1_all = psi1_all_arr
+        psi2_all = [ManyBodyState() for _ in in_component_ops]
+        # Per-eigenstate local accumulator (wIn axis first for the gather); rank 0 writes global.
+        gs_local = np.zeros((len(wIn_indices), n_pin, n_pout, len(wLoss)), dtype=complex)
+
+        for k, win in enumerate(wIns[wIn_indices]):
+            for psi2 in psi2_all:
+                psi2.prune(slaterWeightMin)
+            basis_tmp.clear()
+            basis_tmp.add_states(sorted(set(state for p in psi1_all + psi2_all for state in p.keys())))
+            A_op = (
+                ManyBodyOperator(
+                    {((0, "c"), (0, "a")): win + delta1 * 1j + E_e, ((0, "a"), (0, "c")): win + delta1 * 1j + E_e}
+                )
+                - hOp
+            )
+            # R2: warm-started resolvent solved as one block over all Cartesian in-components.
+            psi2_all = block_bicgstab(
+                A=A_op,
+                x0=psi2_all,
+                y=psi1_all,
+                basis=basis_tmp,
+                slaterWeightMin=slaterWeightMin,
+                atol=1e-5,
+                rtol=1e-7,
+            )
+            # Flattened out-seed block s_{a,b} = Tout_b psi2_a; index kf = a * n_out + b. One
+            # block-Green over all seeds gives the full resolvent matrix (every cross term).
+            seeds = [applyOp_test(out_component_ops[b], psi2_all[a]) for a in range(n_in) for b in range(n_out)]
+            for s in seeds:
+                wIn_basis.add_states(s.keys())
+            seeds = wIn_basis.redistribute_psis(seeds)
+            alphas, betas, r = gf.block_Green(
+                hOp,
+                seeds,
+                wIn_basis,
+                delta2,
+                Reort.NONE,
+                slaterWeightMin=slaterWeightMin,
+                verbose=verbose,
+            )
+            g_flat = gf.calc_G(alphas, betas, r, wLoss, E_e, delta2) * np.exp(-(E_e - E0) / tau)
+            # C[w, alpha, beta, alpha', beta'] = <s_{alpha,beta}| R2 |s_{alpha',beta'}>.
+            C5 = g_flat.reshape(len(wLoss), n_in, n_out, n_in, n_out)
+            # Contract with polarizations. Out operators are daggered (getDaggeredDipole..),
+            # T_out(eps) = sum_b eps_b^* Tout_b, so eps_out is unconjugated on the R2-ket seed
+            # index (beta) and conjugated on the bra index (beta'); in operators carry no dagger.
+            A = np.einsum(
+                "pa,qb,pc,qd,wabcd->pqw",
+                epsIn.conj(),
+                epsOut,
+                epsIn,
+                epsOut.conj(),
+                C5,
+                optimize=True,
+            )  # (n_pin, n_pout, n_wLoss)
+            if eigen_basis.comm.rank == 0:
+                gs[:, wIn_indices[k], :, :] += A
+            else:
+                gs_local[k, :, :, :] += A
+
+        local_gs = (
+            gs_local
+            if eigen_basis.comm.rank != 0
+            else np.zeros((len(wIn_indices), n_pin, n_pout, len(wLoss)), dtype=complex)
+        )
+        gathered_gs = gather_distributed_results(
+            eigen_basis.comm,
+            wIn_basis.comm.rank if wIn_basis.comm is not None else 0,
+            wIn_roots,
+            wIn_per_color,
+            local_gs,
+            is_array=True,
+        )
+        if eigen_basis.comm.rank == 0:
+            for idx_local, idx_global in enumerate(indices_for_colors):
+                gs[:, idx_global, :, :] += gathered_gs[idx_local]
+
+        # Free loop-local split/cloned communicators collectively
+        if basis_tmp is not None and basis_tmp.comm != eigen_basis.comm:
+            basis_tmp.free_comm()
+        if wIn_basis is not None and wIn_basis.comm != basis_final.comm:
+            wIn_basis.free_comm()
+        if basis_final is not None and basis_final.comm != eigen_basis.comm:
+            basis_final.free_comm()
+
+    if eigen_basis is not None and eigen_basis.comm != basis.comm:
+        eigen_basis.free_comm()
+
+    if basis.comm.rank == 0:
+        basis.comm.Reduce(MPI.IN_PLACE, gs, op=MPI.SUM, root=0)
+    elif basis.comm.rank in eigen_roots:
+        basis.comm.Reduce(gs, None, op=MPI.SUM, root=0)
+    else:
+        basis.comm.Reduce(np.zeros((n_pin, len(wIns), n_pout, len(wLoss)), dtype=complex), None, op=MPI.SUM, root=0)
     return np.transpose(gs, (0, 2, 1, 3)).copy() / Z
