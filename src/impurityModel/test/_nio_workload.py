@@ -36,6 +36,10 @@ def build_selfenergy_inputs(
     slaterWeightMin=1e-12,
     dN=None,
     rot_to_spherical=None,
+    chargeTransferCorrection=None,
+    n0imp_p=6,
+    Fpd=(8.9, 0.0, 6.8),
+    Gpd=(0.0, 5.0, 0.0, 2.8),
 ):
     """Construct the ``calc_selfenergy`` keyword arguments for the NiO d-shell workload.
 
@@ -105,6 +109,30 @@ def build_selfenergy_inputs(
         rank=rank,
         verbose=verbose,
     )
+
+    # Multiplet ligand-field-theory double counting (opt-in via ``chargeTransferCorrection``;
+    # ``None`` -> no DC, the historical SOC-free d6 workload used by the perf / driver-glue
+    # anchors). Without a DC the full Coulomb (u4) is double-counted against h0's mean-field d
+    # level (d8 sits ~180 eV above d2), so the impurity empties and only the occupation window
+    # keeps it near nominal. We remove the d-d double counting with the **d-only** MLFT DC,
+    # dc[2] = Udd*n3d - c, applied as a one-body level shift -dc[2] on every d spin-orbital ->
+    # nominal d occupation becomes the genuine energetic minimum (d ~ 8.16, physical NiO Ni(2+)
+    # with ligand->d covalency; interior to the window, so the DC, not the window, sets it).
+    #
+    # NOTE: this is a d-ONLY valence model (h0_NiO pickle has only l=2; no explicit 2p core). The
+    # full 2p3d form dc[2] = Udd*n3d + Upd*n2p - c (the get_spectra path, using n0imp_p / Fpd /
+    # Gpd) includes the p-d mean field precisely because that model carries the explicit 2p-3d
+    # Coulomb which cancels it; adding Upd*n2p here (no such interaction to cancel) over-subtracts
+    # ~50 eV and fills the impurity to d10. The 2p3d parameters (n0imp_p, Fpd, Gpd) and the 2p
+    # spin-orbit xi_2p are therefore retained only to document the physical NiO model / a future
+    # 2p3d benchmark; the d-only self-energy uses just Fdd, c and the valence xi_3d SOC (``xi``).
+    if chargeTransferCorrection is not None:
+        dc = finite.dc_MLFT(n3d_i=n0imp, c=chargeTransferCorrection, Fdd=Fdd)
+        eDCOperator = {
+            (((ls, s, m), "c"), ((ls, s, m), "a")): -dc[ls] for s in range(2) for m in range(-ls, ls + 1)
+        }
+        hOp = finite.addOps([hOp, eDCOperator])
+
     # Map (l,s,m) / (l,b) labels to single integer indices. Drop identically-zero terms
     # first: get_noninteracting_hamiltonian_operator unconditionally adds a 2p (l=1) SOC
     # operator whose terms are all 0.0 when xi_2p=0; those carry unmappable l=1 labels and

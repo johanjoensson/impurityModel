@@ -18,10 +18,12 @@ Findings this harness pins (vs a dense Kramers-Heisenberg ground truth):
 * **Speed:** the tensor is flat in the number of polarizations while per-pol grows -- ~2x for a
   single polarization up to ~7x for 16, the R4 payoff (compute once, contract for any
   polarizations).
-* **Accuracy:** error vs dense scales with the ``block_Green`` *seed-block size* (rank-deficient
-  block deflation, independent of ``Reort`` and of the ``block_bicgstab`` tolerance): ~1 seed is
-  exact, the fixed 9-seed tensor block sits at a stable ~1e-4 floor, and per-pol -- whose block
-  grows with the number of out-polarizations -- *degrades past the tensor* at scale.
+* **Accuracy:** both paths are accurate to the ``block_bicgstab`` R1 tolerance (~1e-7..1e-8) and
+  independent of the number of seeds/polarizations. (Historically a floor-division bug in the
+  block-Lanczos iteration cap -- ``max_iter = N // block_width`` in ``greens_function`` -- left
+  up to ``block_width - 1`` dimensions of a closed final-state sector unresolved, producing a
+  spurious ~1e-4 "floor" that grew with the block width; fixed to ``ceil`` so the final,
+  deflating block is always taken.)
 """
 
 import os
@@ -226,17 +228,24 @@ def test_rixs_tensor_vs_perpol_scaling():
         print(f"{n:>6} | {t_old:>12.3f} | {t_new:>12.3f} | {t_old / t_new:>7.2f}x | "
               f"{err_old:>11.2e} | {err_new:>11.2e}")
 
-    # The tensor keeps a bounded (fixed-block) error across the sweep; per-pol is accurate for a
-    # single pair. Timings are noisy, so only assert the qualitative win at the largest sweep.
+    # Both paths are now accurate at the block_bicgstab R1 tolerance, flat in the number of
+    # polarizations. Timings are noisy, so only assert the qualitative win at the largest sweep.
     n_max = N_POLS[-1]
-    t_old, t_new, _, err_new = results[n_max]
+    t_old, t_new, err_old, err_new = results[n_max]
     assert t_new < t_old, f"tensor ({t_new:.3f}s) not faster than per-pol ({t_old:.3f}s) at n_pol={n_max}"
-    assert err_new < 5e-2, f"tensor error {err_new:.2e} exceeds the expected block_Green floor"
+    assert err_new < 1e-4, f"tensor error {err_new:.2e} unexpectedly large (block-Lanczos should span the sector)"
+    assert err_old < 1e-4, f"per-pol error {err_old:.2e} unexpectedly large at n_pol={n_max}"
 
 
-def test_rixs_blockgreen_error_scales_with_seed_count():
-    """Isolate the accuracy floor: with identity (normalized) polarizations, error vs dense grows
-    with the block_Green seed count -- ~1 seed exact, the tensor's fixed 9-seed block ~1e-4."""
+def test_rixs_blockgreen_accuracy_independent_of_seed_count():
+    """Accuracy is independent of the block_Green seed count: 1-seed, K-seed (per-pol) and
+    K*K-seed (tensor) blocks are all accurate to the block_bicgstab R1 tolerance.
+
+    This is a regression guard for the floor-division bug in the block-Lanczos iteration cap
+    (``max_iter = N // block_width``), which truncated the final deflating block and left up to
+    ``block_width - 1`` dimensions of the closed final-state sector unresolved -- a spurious error
+    that GREW with the block width (~4e-9 at 1 seed, ~4e-5 at 3, ~4e-4 at 9). With ``ceil`` the
+    recurrence spans the sector and all three sit near machine precision (bounded by R1)."""
     op = _model()
     psis, es, dets = _thermal_states(op)
     in_comp, out_comp = _components()
@@ -258,6 +267,8 @@ def test_rixs_blockgreen_error_scales_with_seed_count():
     print(f"\nseed-count accuracy vs dense: 1 seed = {err_single:.2e}, "
           f"{K} seeds (per-pol) = {err_perpol:.2e}, {K * K} seeds (tensor) = {err_tensor:.2e}")
 
-    assert err_single < 1e-6            # single-seed block_Green is essentially exact
-    assert err_tensor < 5e-3            # fixed 9-seed block sits at a small, bounded floor
-    assert err_single <= err_perpol <= err_tensor + 1e-9  # error grows monotonically with seeds
+    # All near machine precision (bounded by the block_bicgstab R1 tolerance), and -- the point --
+    # the wider blocks are NOT worse than the single seed (the old bug made them ~10^5x worse).
+    assert err_single < 1e-6
+    assert err_perpol < 1e-6
+    assert err_tensor < 1e-6

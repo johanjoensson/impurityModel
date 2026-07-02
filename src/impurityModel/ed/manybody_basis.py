@@ -295,16 +295,31 @@ class Basis:
         # than keeping lazy nested itertools iterators) avoids re-consuming an exhausted
         # iterator when several groups each admit multiple occupations, and lets the cross-group
         # combination below be filtered by *total* impurity charge.
+        # When the impurity is split into several orbital-symmetry manifolds (this grouping),
+        # they are one correlated shell that must freely redistribute charge among manifolds at
+        # fixed *total* occupation. A single group already enumerates every whole-impurity
+        # arrangement through ``combinations`` below, so its per-group occupation stays pinned to
+        # ``nominal +/- mixed_valence`` (preserving the seed count for the un-grouped case); but
+        # with >= 2 groups each group's occupation must range freely (the cross-group *total*
+        # filter then keeps only the arrangements in the occupation window). Gating the per-group
+        # range by ``mixed_valence[i]`` in the grouped case instead pins each manifold and
+        # collapses the seed to a single frozen configuration -- the NiO covalency /
+        # magnetic-moment regression. ``mixed_valence`` still widens the *total* window via
+        # ``total_slack``.
+        redistribute = len(impurity_orbitals) > 1
         group_configurations = {}
         for i in valence_baths:
             configs = []
             impurity_electron_indices = [orb for imp_orbs in impurity_orbitals[i] for orb in imp_orbs]
             valence_electron_indices = [orb for val_orbs in valence_baths[i] for orb in val_orbs]
             conduction_electron_indices = [orb for con_orbs in conduction_baths[i] for orb in con_orbs]
-            for nominal_occ in range(
-                max(0, nominal_impurity_occ[i] - abs(mixed_valence[i])),
-                min(total_impurity_orbitals[i], nominal_impurity_occ[i] + abs(mixed_valence[i])) + 1,
-            ):
+            occ_lo = 0 if redistribute else max(0, nominal_impurity_occ[i] - abs(mixed_valence[i]))
+            occ_hi = (
+                total_impurity_orbitals[i]
+                if redistribute
+                else min(total_impurity_orbitals[i], nominal_impurity_occ[i] + abs(mixed_valence[i]))
+            )
+            for nominal_occ in range(occ_lo, occ_hi + 1):
                 for delta_valence in range(delta_valence_occ[i] + 1):
                     for delta_conduction in range(delta_conduction_occ[i] + 1):
                         delta_impurity = delta_valence - delta_conduction
@@ -332,15 +347,20 @@ class Basis:
         num_spin_orbitals = sum(total_impurity_orbitals[i] + total_baths[i] for i in total_baths)
 
         # Total impurity-occupation window: the seed spans a fixed *total* impurity charge (the
-        # sum of the per-group nominal occupations), widened by every source that legitimately
-        # moves the total — the per-group mixed valence (charge-state exploration) and the
-        # per-group impurity<->bath transfer bound ``delta_impurity_occ``. Filtering the
-        # cross-group product on this total — rather than letting each group's occupation float
-        # independently — keeps wide per-manifold windows from leaking total charge, so orbital
-        # manifolds (eg / t2g) redistribute charge at fixed impurity count while a single group
-        # keeps its full impurity/bath charge-transfer range (the filter is then a no-op).
+        # sum of the per-group nominal occupations), widened by the whole-impurity charge
+        # excursion budget. The groups are the orbital-symmetry manifolds (eg / t2g, spin up /
+        # down) of ONE correlated shell sharing ONE charge reservoir (the bath), so the total
+        # excursion is bounded by the *largest* per-group budget (``max``), NOT their sum: the
+        # per-group ``mixed_valence`` / ``delta_impurity_occ`` are wide enough to let each
+        # manifold redistribute, but summing them would multiply a uniform search widening (e.g.
+        # the prescan sets the same ``scan_width`` on every group) by the number of groups and
+        # blow the window open — which let the ground-state prescan discover an unphysical
+        # empty-impurity sector (the NiO d8 -> d2 regression). Filtering the cross-group product
+        # on this bounded total keeps wide per-manifold windows from leaking total charge, so the
+        # manifolds redistribute charge at fixed impurity count while a single group keeps its
+        # full impurity/bath charge-transfer range (the filter is then a no-op).
         total_nominal = sum(int(nominal_impurity_occ[i]) for i in valence_baths)
-        total_slack = sum(abs(mixed_valence[i]) + abs(delta_impurity_occ[i]) for i in valence_baths)
+        total_slack = max((abs(mixed_valence[i]) + abs(delta_impurity_occ[i]) for i in valence_baths), default=0)
         lo_tot = max(0, total_nominal - total_slack)
         hi_tot = total_nominal + total_slack
 

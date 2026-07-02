@@ -1056,7 +1056,11 @@ def block_green_impl(basis, hOp, psi_arr, delta, reort, slaterWeightMin, verbose
             reort=reort if reort is not None else Reort.NONE,
             return_widths=True,
             return_status=True,
-            max_iter=H.shape[0] // psi_dense_local.shape[1],
+            # ceil (not floor): spanning an N-dim (possibly closed) sector with a width-w block
+            # needs ceil(N/w) blocks; floor truncates the final, deflating block and leaves up to
+            # w-1 dimensions of the sector unresolved -- a systematic resolvent error that grows
+            # with the block width (the RIXS tensor floor). The final block simply deflates.
+            max_iter=-(-H.shape[0] // psi_dense_local.shape[1]),
         )
     else:
         h_local = basis.build_sparse_matrix(hOp)[:, basis.local_indices]
@@ -1102,7 +1106,11 @@ def block_green_impl(basis, hOp, psi_arr, delta, reort, slaterWeightMin, verbose
             comm=comm,
             return_widths=True,
             return_status=True,
-            max_iter=H.shape[0] // psi_dense_local.shape[1],
+            # ceil (not floor): spanning an N-dim (possibly closed) sector with a width-w block
+            # needs ceil(N/w) blocks; floor truncates the final, deflating block and leaves up to
+            # w-1 dimensions of the sector unresolved -- a systematic resolvent error that grows
+            # with the block width (the RIXS tensor floor). The final block simply deflates.
+            max_iter=-(-H.shape[0] // psi_dense_local.shape[1]),
         )
     # An invariant subspace closes the Krylov space under H, so the continued fraction is
     # exact: treat it as converged (same semantics as the sparse path) so it does not trip

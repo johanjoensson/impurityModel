@@ -110,7 +110,13 @@ def _run_spherical_baseline():
 
     comm = MPI.COMM_WORLD
     n_omega = int(os.environ.get("SYMMETRY_GOLDEN_NW", 41))
-    kwargs = build_selfenergy_inputs(nBaths=10, nValBaths=10, n0imp=8, n_omega=n_omega, rank=comm.rank)
+    # Physical NiO Ni(2+): d-only MLFT double counting (chargeTransferCorrection) so the ground
+    # state is the genuine d8 energetic minimum (not a window-confined artifact), plus the valence
+    # 3d spin-orbit coupling. These are golden-specific physics knobs; the shared builder defaults
+    # to the SOC-free, DC-free d-shell used by the perf / driver-glue anchors.
+    kwargs = build_selfenergy_inputs(
+        nBaths=10, nValBaths=10, n0imp=8, n_omega=n_omega, rank=comm.rank, xi=0.096, chargeTransferCorrection=1.5
+    )
     n_imp = 10
     result = selfenergy.calc_selfenergy(comm=comm, **kwargs)
     return result, n_imp
