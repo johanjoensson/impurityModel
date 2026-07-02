@@ -544,6 +544,47 @@ def test_derive_spin_pairs_block_grouped_bath():
     assert spin_pairs_consistent_with_h(Hop, imp_pairs + bath_pairs, 10)
 
 
+def test_derive_spin_pairs_crystal_field_manifolds():
+    """A single l-shell split into crystal-field manifolds (eg/t2g-like) resolves whole-shell.
+
+    The impurity is one complete l=1 shell whose partitions are crystal-field sub-manifolds
+    (not individually spin-doubled l-shells), described by a single whole-impurity rotation in
+    sorted-orbital order. The per-partition derivation cannot size its sub-shell S_+ to the
+    whole rotation, so the pairing is read from the full-shell S_+ across all manifolds at once.
+    """
+    from impurityModel.ed.finite import (
+        derive_spin_pairs,
+        spin_pairs_consistent_with_h,
+        _impurity_pairs_per_partition,
+        _impurity_pairs_whole_shell,
+    )
+
+    # Impurity = l=1 spherical shell, spin-down 0,1,2 / spin-up 3,4,5, split into two manifolds
+    # {orbital 1} and {orbitals 0,2}. Baths 6 dn/7 up couple to spatial orbital 0, 8 dn/9 up to 1.
+    Hop = _hop(
+        [(0, 0.2), (1, 0.1), (2, 0.3), (3, 0.2), (4, 0.1), (5, 0.3), (6, -0.4), (7, -0.4), (8, 0.6), (9, 0.6)],
+        [(0, 6, 0.5), (3, 7, 0.5), (1, 8, 0.4), (4, 9, 0.4)],
+    )
+    # Symmetry-adapted (spin-blind spatial) rotation: the same 3x3 mixing on each spin block.
+    theta = 0.4
+    U = np.array([[np.cos(theta), -np.sin(theta), 0], [np.sin(theta), np.cos(theta), 0], [0, 0, 1]])
+    rot = np.zeros((6, 6), dtype=complex)
+    rot[:3, :3] = U
+    rot[3:, 3:] = U
+    imp_orbitals = {0: [[1, 4]], 1: [[0, 2, 3, 5]]}
+
+    # Per-partition cannot resolve manifolds under a whole-shell rotation; whole-shell does.
+    assert _impurity_pairs_per_partition(imp_orbitals, rot) is None
+    assert sorted(_impurity_pairs_whole_shell(imp_orbitals, rot)) == [(0, 3), (1, 4), (2, 5)]
+
+    derived = derive_spin_pairs(Hop, imp_orbitals, rot, 10)
+    assert derived is not None
+    imp_pairs, bath_pairs = derived
+    assert sorted(imp_pairs) == [(0, 3), (1, 4), (2, 5)]
+    assert sorted(bath_pairs) == [(6, 7), (8, 9)]
+    assert spin_pairs_consistent_with_h(Hop, imp_pairs + bath_pairs, 10)
+
+
 def _thermal_sisb(out):
     """Parse the '<S_imp.S_bath> = value' thermal line from calc_gs output."""
     line = next(ln for ln in out.splitlines() if ln.startswith("<S_imp.S_bath>"))

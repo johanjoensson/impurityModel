@@ -23,18 +23,33 @@ _ROTATION_TRIM_TOL = 1e-8
 _MAX_ROTATION_FILL = 2.0
 
 
-def _per_group_occupation(nominal_occ, impurity_orbitals):
-    """Map ``nominal_occ`` onto the derived conserved-charge groups.
+def _per_group_occupation(nominal_occ, impurity_orbitals, h=None):
+    """Map ``nominal_occ`` onto the derived orbital-symmetry groups.
 
     Accepts a dict already keyed by the group indices (used as-is), or any other dict / a
-    scalar interpreted as the *total* impurity occupation, distributed across the groups in
-    proportion to their impurity size (integer allocation, remainder to the largest groups).
-    The prescan refines the per-group split, so this only needs to be a sensible starting point.
+    scalar interpreted as the *total* impurity occupation. When the one-body Hamiltonian ``h``
+    is supplied, the total is distributed by **energetic filling** — the lowest on-site-energy
+    impurity spin-orbitals (``h[o, o]``) are occupied first — so e.g. a cubic d-shell fills the
+    lower ``t2g`` manifold before ``eg`` (giving ``t2g=6``, ``eg=2`` for ``d8``) and the split
+    is spin-symmetric. Without ``h`` it falls back to a size-proportional split (remainder to
+    the largest groups). The prescan refines the per-group split, so this only needs to be a
+    sensible starting point.
     """
     keys = list(impurity_orbitals)
     if isinstance(nominal_occ, dict) and set(nominal_occ) == set(keys):
         return {k: int(nominal_occ[k]) for k in keys}
     total = int(sum(nominal_occ.values()) if isinstance(nominal_occ, dict) else nominal_occ)
+
+    if h is not None:
+        # Energetic filling: occupy the lowest on-site-energy impurity spin-orbitals first and
+        # count how many land in each group. Ties broken by orbital index for determinism.
+        orb_to_group = {orb: k for k in keys for block in impurity_orbitals[k] for orb in block}
+        ordered = sorted(orb_to_group, key=lambda o: (np.real(h[o, o]), o))
+        alloc = {k: 0 for k in keys}
+        for orb in ordered[: max(0, min(total, len(ordered)))]:
+            alloc[orb_to_group[orb]] += 1
+        return alloc
+
     sizes = {k: sum(len(block) for block in impurity_orbitals[k]) for k in keys}
     tot_size = sum(sizes.values()) or 1
     alloc = {k: int(total * sizes[k] // tot_size) for k in keys}
@@ -373,7 +388,7 @@ def calc_selfenergy(
     from impurityModel.ed.symmetries import (
         classify_bath_occupation,
         extract_tensors,
-        group_orbitals_by_charges,
+        group_orbitals_by_blocks,
         impurity_block_structure,
         impurity_symmetry_rotation,
         rotate_hamiltonian,
@@ -418,15 +433,23 @@ def calc_selfenergy(
     # rotation, so this is consistent whether measured in the input or solver basis.
     valence_flat, conduction_flat = classify_bath_occupation(h, impurity_indices, n_orb=n_spin_orbitals)
 
-    # Group the flat orbital lists into per-conserved-charge blocks **in the solver basis** h (the
-    # rotation mixes degenerate orbitals, so the grouping must be derived after it — grouping
-    # in the input basis and applying it post-rotation would mislabel the sectors). This is what
-    # partitions all orbitals into the blocks the many-body Basis (built in calc_gs) consumes.
-    impurity_orbitals, bath_states = group_orbitals_by_charges(
-        h, impurity_indices, valence_flat, conduction_flat, n_orb=n_spin_orbitals
+    # GF block structure from the hybridization-dressed impurity matrix (h[imp,imp] + V^dag V),
+    # in whichever basis we solve in (fixes bath-mediated coupling; 1x1 blocks when rotated).
+    # Derived from h *after* any rotation, so the blocks label the sectors of the solver basis.
+    block_structure = impurity_block_structure(h, impurity_indices)
+
+    # Group the flat orbital lists into orbital-symmetry manifolds (the inequivalent blocks and
+    # their spin-degenerate partners, e.g. eg / t2g) **in the solver basis** h. Grouping by the
+    # block structure keeps both spins of a manifold in one group, so the many-body basis spans
+    # all S_z sectors (spin multiplets stay degenerate); the impurity occupation window is tied
+    # across groups by the restriction machinery, not pinned per group.
+    impurity_orbitals, bath_states = group_orbitals_by_blocks(
+        h, impurity_indices, valence_flat, conduction_flat, block_structure, n_orb=n_spin_orbitals
     )
-    # nominal_occ = _per_group_occupation(nominal_occ, impurity_orbitals)
-    # mixed_valence = _per_group_scalar(mixed_valence, impurity_orbitals, default=0)
+    nominal_occ = _per_group_occupation(
+        nominal_occ, impurity_orbitals, extract_tensors(h, n_orb=n_spin_orbitals)[0]
+    )
+    mixed_valence = _per_group_scalar(mixed_valence, impurity_orbitals, default=0)
 
     valence_baths, conduction_baths = bath_states
     total_impurity_orbitals = {i: sum(len(orbs) for orbs in impurity_orbitals[i]) for i in impurity_orbitals}
@@ -434,10 +457,6 @@ def calc_selfenergy(
         i: sum(len(orbs) for orbs in valence_baths[i]) + sum(len(orbs) for orbs in conduction_baths[i])
         for i in valence_baths
     }
-
-    # GF block structure from the hybridization-dressed impurity matrix (h[imp,imp] + V^dag V),
-    # in whichever basis we solve in (fixes bath-mediated coupling; 1x1 blocks when rotated).
-    block_structure = impurity_block_structure(h, impurity_indices)
 
     if verbosity > 0:
         basis_note = f"symmetry-adapted (fill {fill_ratio:.1f}x)" if rotate else f"input basis (fill {fill_ratio:.1f}x)"

@@ -535,12 +535,17 @@ def calc_gs(
     if comm is not None:
         report_observables = comm.bcast(verbose, root=0)
     if report_observables:
-        impurity_indices = [
+        # Sorted (original computational) order, matching the convention of block_structure
+        # (local indices over the sorted impurity orbitals) and rot_to_spherical. The
+        # impurity_orbitals dict is grouped (e.g. eg then t2g), so iterating it would slice the
+        # density matrix into a *reordered* basis that no longer matches rot_to_spherical /
+        # block_structure — corrupting the spherical rotation and the Sz / N(Up) split.
+        impurity_indices = sorted(
             orb
             for impurity_orbital_blocks in ground_state_basis.impurity_orbitals.values()
             for block in impurity_orbital_blocks
             for orb in block
-        ]
+        )
         impurity_ix = np.ix_(impurity_indices, impurity_indices)
         # Impurity S^2 / L^2 / J^2 and <S_imp.S_bath> are two-body observables, so they
         # need the actual eigenstates rather than the density matrix. They are evaluated

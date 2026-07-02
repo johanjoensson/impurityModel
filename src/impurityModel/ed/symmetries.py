@@ -371,6 +371,72 @@ def group_orbitals_by_charges(op, impurity_orbitals, valence_orbitals, conductio
     return impurity_dict, (valence_dict, conduction_dict)
 
 
+def group_orbitals_by_blocks(op, impurity_orbitals, valence_orbitals, conduction_orbitals, block_structure, n_orb=None):
+    r"""Group flat impurity / valence / conduction orbital lists into orbital-symmetry blocks.
+
+    The many-body ``Basis`` is built from ``{group: [orbital-block, ...]}`` dictionaries that
+    pair each impurity block with its valence and conduction baths. This variant derives the
+    grouping from the **impurity block structure** (:func:`impurity_block_structure`) rather
+    than the conserved charges of the full Hamiltonian: each inequivalent block (with all its
+    equivalent partners, e.g. both spins of an ``eg`` / ``t2g`` manifold) becomes one group.
+
+    Crucially, because :func:`block_structure.get_equivalent_orbs` folds the spin-degenerate
+    (``identical``) partners into one block, **each group holds both spins of its manifold**.
+    Grouping this way therefore does *not* pin ``S_z`` (unlike
+    :func:`group_orbitals_by_charges`, which splits the impurity into per-spin conserved
+    charges and, with a fixed per-group occupation, confines the basis to one ``S_z`` sector
+    and destroys spin-multiplet degeneracy). The occupation window that ties the groups
+    together is applied to the impurity *as a whole* by the restriction machinery, not per
+    group, so the manifolds ``eg``/``t2g`` are free to redistribute charge without leaking it.
+
+    Each bath orbital is placed in the group of the impurity orbital it couples to most
+    strongly (largest ``|h[b, o]| + |h[o, b]|``).
+
+    Parameters
+    ----------
+    op : ManyBodyOperator or dict
+        The full Hamiltonian (1- and 2-body); only its one-body part is used here.
+    impurity_orbitals, valence_orbitals, conduction_orbitals : sequence of int
+        Flat spin-orbital index lists.
+    block_structure : BlockStructure
+        The impurity block structure (blocks in the **local** ``0 .. n_imp-1`` convention over
+        the sorted ``impurity_orbitals``), e.g. from :func:`impurity_block_structure`.
+    n_orb : int, optional
+        Number of spin-orbitals (inferred if ``None``).
+
+    Returns
+    -------
+    impurity_orbitals : dict[int, list[list[int]]]
+        ``{group: [impurity orbital block]}``.
+    bath_states : tuple(dict, dict)
+        ``(valence_baths, conduction_baths)``, each ``{group: [bath orbital block]}`` with the
+        same keys as ``impurity_orbitals``.
+    """
+    from impurityModel.ed.block_structure import get_equivalent_orbs
+
+    imp = sorted(impurity_orbitals)
+    val_set = set(valence_orbitals)
+    con_set = set(conduction_orbitals)
+    h, _, _ = extract_tensors(op, n_orb=n_orb)
+
+    # get_equivalent_orbs returns local (0..n_imp-1) indices per inequivalent block; map back
+    # to global spin-orbital indices via the sorted impurity list.
+    manifolds = [sorted(imp[o] for o in local_orbs) for local_orbs in get_equivalent_orbs(block_structure)]
+    manifolds = sorted(manifolds, key=min)
+    imp_to_group = {orb: g for g, orbs in enumerate(manifolds) for orb in orbs}
+
+    impurity_dict = {g: [list(orbs)] for g, orbs in enumerate(manifolds)}
+    valence_dict = {g: [] for g in range(len(manifolds))}
+    conduction_dict = {g: [] for g in range(len(manifolds))}
+    for b in sorted(val_set | con_set):
+        couplings = [abs(h[b, o]) + abs(h[o, b]) for o in imp]
+        g = imp_to_group[imp[int(np.argmax(couplings))]]
+        (valence_dict if b in val_set else conduction_dict)[g].append(b)
+    valence_dict = {g: [sorted(v)] for g, v in valence_dict.items()}
+    conduction_dict = {g: [sorted(c)] for g, c in conduction_dict.items()}
+    return impurity_dict, (valence_dict, conduction_dict)
+
+
 def classify_bath_occupation(op, impurity_orbitals, n_orb=None):
     r"""Split the bath orbitals into initially-occupied (valence) and empty (conduction) sets.
 

@@ -49,7 +49,6 @@ def get_equivalent_orbs(block_structure):
     """
     blocks, ident_blocks, transp_blocks, ph_blocks, phtransp_blocks, ineq_blocks = block_structure
     eq_orbs = [[] for _ in ineq_blocks]
-    print(f"{blocks=}")
     for ib, i_eq_orbs in zip(ineq_blocks, eq_orbs):
         tmp = set()
         for jb in ident_blocks[ib]:

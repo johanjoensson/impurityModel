@@ -290,9 +290,14 @@ class Basis:
             delta_impurity_occ = dict.fromkeys(impurity_orbitals.keys(), 0)
 
         total_impurity_orbitals = {i: sum(len(orbs) for orbs in impurity_orbitals[i]) for i in impurity_orbitals}
-        total_configurations = {}
+        # Per group, materialise the allowed configurations tagged with their impurity
+        # occupation, as (impurity_occupation, occupied_orbital_tuple). Materialising (rather
+        # than keeping lazy nested itertools iterators) avoids re-consuming an exhausted
+        # iterator when several groups each admit multiple occupations, and lets the cross-group
+        # combination below be filtered by *total* impurity charge.
+        group_configurations = {}
         for i in valence_baths:
-            valid_configurations = []
+            configs = []
             impurity_electron_indices = [orb for imp_orbs in impurity_orbitals[i] for orb in imp_orbs]
             valence_electron_indices = [orb for val_orbs in valence_baths[i] for orb in val_orbs]
             conduction_electron_indices = [orb for con_orbs in conduction_baths[i] for orb in con_orbs]
@@ -312,38 +317,41 @@ class Basis:
                             impurity_occupation = nominal_occ + delta_impurity
                             valence_occupation = len(valence_electron_indices) - delta_valence
                             conduction_occupation = delta_conduction
-                            impurity_configurations = itertools.combinations(
-                                impurity_electron_indices, impurity_occupation
-                            )
-                            valence_configurations = itertools.combinations(
-                                valence_electron_indices, valence_occupation
-                            )
-                            conduction_configurations = itertools.combinations(
-                                conduction_electron_indices, conduction_occupation
-                            )
                             if verbose:
                                 print(f"Partition {i} occupations")
                                 print(f"Impurity occupation:   {impurity_occupation:d}")
                                 print(f"Valence occupation:   {valence_occupation:d}")
                                 print(f"Conduction occupation: {conduction_occupation:d}")
-                            valid_configurations.append(
-                                itertools.product(
-                                    impurity_configurations,
-                                    valence_configurations,
-                                    conduction_configurations,
-                                )
-                            )
-            total_configurations[i] = valid_configurations
+                            for imp_c, val_c, con_c in itertools.product(
+                                itertools.combinations(impurity_electron_indices, impurity_occupation),
+                                itertools.combinations(valence_electron_indices, valence_occupation),
+                                itertools.combinations(conduction_electron_indices, conduction_occupation),
+                            ):
+                                configs.append((impurity_occupation, imp_c + val_c + con_c))
+            group_configurations[i] = configs
         num_spin_orbitals = sum(total_impurity_orbitals[i] + total_baths[i] for i in total_baths)
+
+        # Total impurity-occupation window: the seed spans a fixed *total* impurity charge (the
+        # sum of the per-group nominal occupations), widened by every source that legitimately
+        # moves the total — the per-group mixed valence (charge-state exploration) and the
+        # per-group impurity<->bath transfer bound ``delta_impurity_occ``. Filtering the
+        # cross-group product on this total — rather than letting each group's occupation float
+        # independently — keeps wide per-manifold windows from leaking total charge, so orbital
+        # manifolds (eg / t2g) redistribute charge at fixed impurity count while a single group
+        # keeps its full impurity/bath charge-transfer range (the filter is then a no-op).
+        total_nominal = sum(int(nominal_impurity_occ[i]) for i in valence_baths)
+        total_slack = sum(abs(mixed_valence[i]) + abs(delta_impurity_occ[i]) for i in valence_baths)
+        lo_tot = max(0, total_nominal - total_slack)
+        hi_tot = total_nominal + total_slack
+
         basis = []
-        # Combine all valid configurations for all l-subconfigurations (ex. p-states and d-states)
-        for config in itertools.product(*total_configurations.values()):
-            for set_bits in itertools.product(*config):
-                basis.append(
-                    psr.tuple2bytes(
-                        tuple(idx for subset in set_bits for part in subset for idx in part), 8 * self.n_bytes
-                    ),
-                )
+        # Combine the per-group configurations, keeping only determinants whose *total* impurity
+        # occupation lies in the window.
+        for combo in itertools.product(*group_configurations.values()):
+            if not (lo_tot <= sum(imp_occ for imp_occ, _ in combo) <= hi_tot):
+                continue
+            occupied = tuple(idx for _imp_occ, orbs in combo for idx in orbs)
+            basis.append(psr.tuple2bytes(occupied, 8 * self.n_bytes))
 
         return [SlaterDeterminant.from_bytes(bytestring) for bytestring in basis], num_spin_orbitals
 
@@ -356,50 +364,51 @@ class Basis:
             Dictionary mapping orbital subsets to their observed (min, max) occupations.
         """
         valence_baths, conduction_baths = self.bath_states
-
-        total_baths = {
-            i: sum(len(orbs) for orbs in valence_baths[i]) + sum(len(orbs) for orbs in conduction_baths[i])
-            for i in valence_baths
-        }
-        total_impurity_orbitals = {
-            i: sum(len(orbs) for orbs in self.impurity_orbitals[i]) for i in self.impurity_orbitals
-        }
         restrictions = {}
 
-        for i in sorted(total_baths.keys()):
-            max_imp = 0
-            min_imp = total_impurity_orbitals[i]
-            max_val = 0
-            min_val = sum(len(orbs) for orbs in valence_baths[i])
-            max_con = 0
-            min_con = sum(len(orbs) for orbs in conduction_baths[i])
-            impurity_indices = frozenset(sorted(ind for imp_ind in self.impurity_orbitals[i] for ind in imp_ind))
-            valence_indices = frozenset(sorted(ind for val_ind in valence_baths[i] for ind in val_ind))
-            conduction_indices = frozenset(sorted(ind for con_ind in conduction_baths[i] for ind in con_ind))
-            for state in self.local_basis:
-                bits = psr.bytes2bitarray(bytes(state.to_bytearray()), self.num_spin_orbitals)
-                n_imp = sum(bits[i] for i in impurity_indices)
-                n_val = sum(bits[i] for i in valence_indices)
-                n_con = sum(bits[i] for i in conduction_indices)
-                max_imp = max(max_imp, n_imp)
-                min_imp = min(min_imp, n_imp)
-                max_val = max(max_val, n_val)
-                min_val = min(min_val, n_val)
-                max_con = max(max_con, n_con)
-                min_con = min(min_con, n_con)
-            max_val = len(valence_indices)
-            min_con = 0
+        # Impurity occupation is restricted on the *whole* impurity as a single subset (never
+        # per orbital-symmetry group). A per-group impurity pin would fix S_z (spin groups) or
+        # the eg/t2g ratio (manifold groups) and destroy spin-multiplet degeneracy / confine the
+        # charge; the union bound confines only the total impurity charge, leaving the manifolds
+        # free to redistribute at fixed count.
+        all_impurity_indices = frozenset(
+            sorted(ind for imp_blocks in self.impurity_orbitals.values() for imp_ind in imp_blocks for ind in imp_ind)
+        )
+        valence_index_sets = {
+            i: frozenset(sorted(ind for val_ind in valence_baths[i] for ind in val_ind)) for i in valence_baths
+        }
+        conduction_index_sets = {
+            i: frozenset(sorted(ind for con_ind in conduction_baths[i] for ind in con_ind)) for i in conduction_baths
+        }
+
+        max_imp, min_imp = 0, len(all_impurity_indices)
+        min_val = {i: len(valence_index_sets[i]) for i in valence_baths}
+        max_con = {i: 0 for i in conduction_baths}
+        for state in self.local_basis:
+            bits = psr.bytes2bitarray(bytes(state.to_bytearray()), self.num_spin_orbitals)
+            n_imp = sum(bits[i] for i in all_impurity_indices)
+            max_imp = max(max_imp, n_imp)
+            min_imp = min(min_imp, n_imp)
+            for i in valence_baths:
+                n_val = sum(bits[j] for j in valence_index_sets[i])
+                n_con = sum(bits[j] for j in conduction_index_sets[i])
+                min_val[i] = min(min_val[i], n_val)
+                max_con[i] = max(max_con[i], n_con)
+        if self.is_distributed:
+            max_imp = self.comm.allreduce(max_imp, op=MPI.MAX)
+            min_imp = self.comm.allreduce(min_imp, op=MPI.MIN)
+        if len(all_impurity_indices) > 0:
+            restrictions[all_impurity_indices] = (min_imp, max_imp)
+        for i in sorted(valence_baths.keys()):
+            v_min, c_max = min_val[i], max_con[i]
             if self.is_distributed:
-                max_imp = self.comm.allreduce(max_imp, op=MPI.MAX)
-                min_imp = self.comm.allreduce(min_imp, op=MPI.MIN)
-                min_val = self.comm.allreduce(min_val, op=MPI.MIN)
-                max_con = self.comm.allreduce(max_con, op=MPI.MAX)
-            if len(impurity_indices) > 0:
-                restrictions[impurity_indices] = (min_imp, max_imp)
-            if len(valence_indices) > 0:
-                restrictions[valence_indices] = (min_val, max_val)
-            if len(conduction_indices) > 0:
-                restrictions[conduction_indices] = (min_con, max_con)
+                v_min = self.comm.allreduce(v_min, op=MPI.MIN)
+                c_max = self.comm.allreduce(c_max, op=MPI.MAX)
+            # Valence baths sit filled (max = full), conduction empty (min = 0) by convention.
+            if len(valence_index_sets[i]) > 0:
+                restrictions[valence_index_sets[i]] = (v_min, len(valence_index_sets[i]))
+            if len(conduction_index_sets[i]) > 0:
+                restrictions[conduction_index_sets[i]] = (0, c_max)
         return restrictions
 
     def _get_updated_occ_restrictions(
@@ -599,9 +608,19 @@ class Basis:
         if False and self.verbose:
             matrix_print(dist_matrix[:, :], "Orbital distance matrix", flush=True)
 
+        # Impurity occupation is confined on the *whole* impurity as one subset (never per
+        # orbital-symmetry group), so the window bounds only the total impurity charge and does
+        # not pin S_z or the eg/t2g ratio. Combine the per-group requested changes into a single
+        # (max decrease, max increase); if any group is unconstrained (None), the union is too.
+        all_imp_orbs = frozenset(sorted(all_impurity_orbitals))
+        imp_changes = [imp_change[i] for i in self.impurity_orbitals]
+        if imp_changes and all(c is not None for c in imp_changes):
+            combined_imp_change = (max(c[0] for c in imp_changes), max(c[1] for c in imp_changes))
+        else:
+            combined_imp_change = None
+        imp_min, imp_max = self._get_updated_occ_restrictions(ground_state_restrictions, all_imp_orbs, combined_imp_change)
+
         for i, impurity_orbitals in self.impurity_orbitals.items():
-            imp_orbs = frozenset(sorted(orb for block in impurity_orbitals for orb in block))
-            min_imp, max_imp = self._get_updated_occ_restrictions(ground_state_restrictions, imp_orbs, imp_change[i])
             val_orbs = frozenset(sorted(orb for block in valence_baths[i] for orb in block))
             min_val, max_val = self._get_updated_occ_restrictions(ground_state_restrictions, val_orbs, val_change[i])
             con_orbs = frozenset(sorted(orb for block in conduction_baths[i] for orb in block))
@@ -669,8 +688,6 @@ class Basis:
             new_conduction_indices = frozenset(
                 sorted(orb for orb in con_orbs if not any(orb in s for s in filled_bath_states + empty_bath_states))
             )
-            if len(imp_orbs) > 0 and (min_imp > 0 or max_imp < len(imp_orbs)):
-                excited_restrictions[frozenset(sorted(imp_orbs))] = (min_imp, max_imp)
             if len(new_valence_indices) > 0 and min_val > 0:
                 excited_restrictions[new_valence_indices] = (min_val, len(new_valence_indices))
             if len(new_conduction_indices) > 0 and max_con < len(new_conduction_indices):
@@ -682,6 +699,9 @@ class Basis:
                 if len(empty_orbitals) > 2:
                     excited_restrictions[empty_orbitals] = (0, ceil(len(empty_orbitals) / 2))
                     # excited_restrictions[empty_orbitals] = (0, 1)
+        # Emit the single whole-impurity occupation window (only when it actually confines).
+        if len(all_imp_orbs) > 0 and (imp_min > 0 or imp_max < len(all_imp_orbs)):
+            excited_restrictions[all_imp_orbs] = (imp_min, imp_max)
         if sum(len(rest) for rest in excited_restrictions.keys()) == 0:
             return None
         return excited_restrictions

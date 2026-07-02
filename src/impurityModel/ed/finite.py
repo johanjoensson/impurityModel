@@ -1183,6 +1183,75 @@ def spin_pairs_consistent_with_h(h_op, spin_pairs, n_orb, tol=1e-6):
     return bool(np.linalg.norm(h @ sz - sz @ h) <= tol and np.linalg.norm(h @ splus - splus @ h) <= tol)
 
 
+def _pairs_from_rotated_splus(orbs, rot, tol=1e-6):
+    r"""``(dn, up)`` global pairs from the spherical ``S_+`` rotated to the computational basis.
+
+    ``orbs`` are the global spin-orbital indices of a complete spin-doubled l-shell, listed in
+    the SAME order as the rows/columns of ``rot`` (the spherical -> computational rotation).
+    The single non-zero in each column of the rotated ``S_+`` marks a ``(down, up)`` partner.
+
+    Returns ``None`` when ``orbs`` is not a complete l-shell, ``rot`` is not sized to it, or the
+    rotated ``S_+`` is not a clean spin-diagonal permutation (e.g. spin-orbit coupling mixes the
+    spins) -- so the caller can fall back or skip rather than report a wrong pairing.
+    """
+    n_so = len(orbs)
+    shell_l = (n_so // 2 - 1) // 2
+    if 2 * (2 * shell_l + 1) != n_so:
+        return None
+    rot = np.asarray(rot, dtype=complex)
+    if rot.shape[0] != n_so:
+        return None
+    _, _, _, _, sp_m, _ = _single_particle_lsj_matrices(shell_l)
+    sp_comp = rot @ sp_m @ rot.conj().T  # S_+ in the computational basis
+    downs = {}  # local down index -> local up index
+    for j in range(n_so):
+        rows = [i for i in range(n_so) if abs(sp_comp[i, j]) > 0.5]
+        if len(rows) > 1 or (len(rows) == 1 and abs(abs(sp_comp[rows[0], j]) - 1.0) > 1e-3):
+            return None  # not a clean spin-eigen pairing (e.g. SOC)
+        if len(rows) == 1:
+            downs[j] = rows[0]
+    ups = set(downs.values())
+    if len(downs) != n_so // 2 or len(ups) != n_so // 2 or (set(downs) & ups):
+        return None
+    return [(orbs[j], orbs[i]) for j, i in downs.items()]
+
+
+def _impurity_pairs_per_partition(impurity_orbitals, rot_to_spherical, tol=1e-6):
+    r"""Impurity ``(dn, up)`` pairs when each partition is a complete spin-doubled l-shell.
+
+    Each partition of ``impurity_orbitals`` is paired independently from its own rotation
+    (``rot_to_spherical[partition]`` when a dict, else the shared matrix). Returns ``None`` if
+    any partition is not a spin-doubled l-shell matching its rotation -- e.g. crystal-field
+    sub-manifolds (eg / t2g) under a single whole-impurity rotation, which
+    :func:`_impurity_pairs_whole_shell` handles instead.
+    """
+    imp_pairs = []
+    for partition, blocks in impurity_orbitals.items():
+        orbs = [orb for block in blocks for orb in block]
+        rot = rot_to_spherical[partition] if isinstance(rot_to_spherical, dict) else rot_to_spherical
+        pairs = _pairs_from_rotated_splus(orbs, rot, tol)
+        if pairs is None:
+            return None
+        imp_pairs.extend(pairs)
+    return imp_pairs
+
+
+def _impurity_pairs_whole_shell(impurity_orbitals, rot_to_spherical, tol=1e-6):
+    r"""Impurity ``(dn, up)`` pairs when the impurity is a single l-shell split into manifolds.
+
+    The partitions (crystal-field sub-manifolds such as eg / t2g) are not individually l-shells,
+    but their union is one complete l-shell described by a single whole-impurity rotation whose
+    local indices run over the *sorted* impurity orbitals (the convention of
+    :func:`impurity_block_structure` / ``rot_to_spherical``). The full-shell ``S_+`` then yields
+    the pairing across all manifolds at once. Returns ``None`` for a per-partition (dict)
+    rotation or when the union is not a clean single l-shell.
+    """
+    if isinstance(rot_to_spherical, dict):
+        return None
+    orbs = sorted(orb for blocks in impurity_orbitals.values() for block in blocks for orb in block)
+    return _pairs_from_rotated_splus(orbs, rot_to_spherical, tol)
+
+
 def derive_spin_pairs(h_op, impurity_orbitals, rot_to_spherical, n_orb, tol=1e-6):
     r"""Derive the global ``(down, up)`` spin-orbital pairing from the one-body Hamiltonian.
 
@@ -1197,8 +1266,11 @@ def derive_spin_pairs(h_op, impurity_orbitals, rot_to_spherical, n_orb, tol=1e-6
     1. **Impurity** — the pairing is read from the spherical spin-raising operator
        :math:`S_+` rotated to the computational basis via ``rot_to_spherical``: the single
        non-zero in each column marks a ``(down, up)`` partner. This carries no index-order
-       assumption. If the rotated :math:`S_+` is not a clean permutation (spin-orbit
-       coupling mixes the impurity spins) the derivation gives up.
+       assumption. It is tried first per-partition (each partition a complete l-shell,
+       :func:`_impurity_pairs_per_partition`) and, failing that, over the whole impurity as
+       one l-shell split into crystal-field manifolds (eg / t2g,
+       :func:`_impurity_pairs_whole_shell`). If the rotated :math:`S_+` is not a clean
+       permutation (spin-orbit coupling mixes the impurity spins) the derivation gives up.
     2. **Bath** — propagated outward along the Hamiltonian's hopping graph. Because the
        one-body ``h`` is spin-blind for a collinear model (``h_up == h_dn``), the spin-down
        and spin-up sectors form identical connectivity blocks. Starting from each impurity
@@ -1234,29 +1306,19 @@ def derive_spin_pairs(h_op, impurity_orbitals, rot_to_spherical, n_orb, tol=1e-6
     impurity_orbs = set(orb for blocks in impurity_orbitals.values() for block in blocks for orb in block)
 
     # --- impurity (dn, up) pairs from the rotated spherical S_+ ---
-    imp_pairs = []
-    for partition, blocks in impurity_orbitals.items():
-        orbs = [orb for block in blocks for orb in block]
-        n_so = len(orbs)
-        shell_l = (n_so // 2 - 1) // 2
-        if 2 * (2 * shell_l + 1) != n_so:
-            return None
-        _, _, _, _, sp_m, _ = _single_particle_lsj_matrices(shell_l)
-        rot = rot_to_spherical[partition] if isinstance(rot_to_spherical, dict) else rot_to_spherical
-        rot = np.asarray(rot, dtype=complex)
-        sp_comp = rot @ sp_m @ rot.conj().T  # S_+ in the computational basis
-        downs = {}  # local down index -> local up index
-        for j in range(n_so):
-            rows = [i for i in range(n_so) if abs(sp_comp[i, j]) > 0.5]
-            if len(rows) > 1 or (len(rows) == 1 and abs(abs(sp_comp[rows[0], j]) - 1.0) > 1e-3):
-                return None  # not a clean spin-eigen pairing (e.g. SOC)
-            if len(rows) == 1:
-                downs[j] = rows[0]
-        ups = set(downs.values())
-        if len(downs) != n_so // 2 or len(ups) != n_so // 2 or (set(downs) & ups):
-            return None
-        for j, i in downs.items():
-            imp_pairs.append((orbs[j], orbs[i]))
+    # Two derivations, tried in order:
+    #  1. Per-partition -- each partition of ``impurity_orbitals`` is itself a complete
+    #     spin-doubled l-shell (spherical / single-shell layout), paired from its own
+    #     (per-partition or whole) rotation.
+    #  2. Whole-shell -- the impurity is grouped into crystal-field sub-manifolds
+    #     (eg / t2g) that are NOT individually l-shells, but their union is one complete
+    #     l-shell and a single whole-impurity rotation (in sorted-orbital order) is given.
+    #     Build S_+ for the full shell and read the pairing across all manifolds at once.
+    imp_pairs = _impurity_pairs_per_partition(impurity_orbitals, rot_to_spherical, tol)
+    if imp_pairs is None:
+        imp_pairs = _impurity_pairs_whole_shell(impurity_orbitals, rot_to_spherical, tol)
+    if imp_pairs is None:
+        return None
 
     # --- bath pairs by simultaneous BFS over the hopping graph, seeded by imp_pairs ---
     h_abs = np.abs(h)
