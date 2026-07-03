@@ -262,11 +262,6 @@ class Basis:
     supporting distributed states over MPI, restrictions, and basis extensions.
     """
 
-    @property
-    def state_container(self):
-        """Deprecated shim: the distributed state container was dissolved into Basis."""
-        return self
-
     def _get_initial_basis(
         self,
         impurity_orbitals: dict[int, list[list[int]]],

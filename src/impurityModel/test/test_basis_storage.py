@@ -1,26 +1,21 @@
-"""Unit tests for ``impurityModel.ed.manybody_state_containers``.
+"""Unit tests for the distributed determinant storage of :class:`Basis`.
 
-Covers the module-level helpers (:func:`batched`, :func:`hash_key`) and the public
-API of :class:`SimpleDistributedStateContainer` in its serial configuration
-(``MPI.COMM_SELF`` => ``is_distributed`` is False), plus one MPI-marked check of the
-distributed size/lookup path.
-
-Serial tests use ``MPI.COMM_SELF`` so they behave identically no matter how many
-ranks ``pytest`` is launched with.
+Formerly ``test_manybody_state_containers.py``: the state-container hierarchy was
+dissolved into ``Basis`` (its determinant list, state -> global-index dict, and
+hash-routed distributed lookups), so the same storage API is exercised through
+``Basis`` directly. Serial tests use ``MPI.COMM_SELF`` so they behave identically
+no matter how many ranks ``pytest`` is launched with; one MPI-marked check covers
+the distributed size/lookup path.
 """
 
-import numpy as np
 import pytest
 from mpi4py import MPI
 
+from impurityModel.ed.manybody_basis import Basis, batched
 from impurityModel.ed.ManyBodyUtils import SlaterDeterminant
-from impurityModel.ed.manybody_state_containers import (
-    SimpleDistributedStateContainer,
-    batched,
-    hash_key,
-)
 
 N_BYTES = 8
+N_SPIN_ORBITALS = 8 * N_BYTES
 
 
 def _sd(byte0):
@@ -33,8 +28,14 @@ def _make_states():
     return [_sd(0x80), _sd(0x40), _sd(0x20), _sd(0x10)]
 
 
-def _serial_container(states):
-    return SimpleDistributedStateContainer(states, bytes_per_state=N_BYTES, comm=MPI.COMM_SELF, verbose=False)
+def _make_basis(states, comm=MPI.COMM_SELF):
+    return Basis(
+        impurity_orbitals={0: [list(range(N_SPIN_ORBITALS))]},
+        bath_states=({0: []}, {0: []}),
+        initial_basis=states,
+        comm=comm,
+        verbose=False,
+    )
 
 
 # --------------------------------------------------------------------------- #
@@ -50,32 +51,24 @@ def test_batched_rejects_nonpositive_n():
 
 
 # --------------------------------------------------------------------------- #
-# hash_key
-# --------------------------------------------------------------------------- #
-def test_hash_key_delegates_to_get_hash():
-    s = _sd(0x80)
-    assert hash_key(s) == s.get_hash()
-
-
-# --------------------------------------------------------------------------- #
 # construction / len / ordering
 # --------------------------------------------------------------------------- #
 def test_len_counts_unique_states():
     states = _make_states()
-    c = _serial_container(states)
-    assert len(c) == len(states)
+    b = _make_basis(states)
+    assert len(b) == len(states)
 
 
 def test_duplicates_are_deduplicated():
     states = _make_states()
-    c = _serial_container(states + states)
-    assert len(c) == len(states)
+    b = _make_basis(states + states)
+    assert len(b) == len(states)
 
 
 def test_iteration_is_sorted():
     states = _make_states()
-    c = _serial_container(states)
-    assert list(c) == sorted(set(states))
+    b = _make_basis(states)
+    assert list(b) == sorted(set(states))
 
 
 # --------------------------------------------------------------------------- #
@@ -83,22 +76,22 @@ def test_iteration_is_sorted():
 # --------------------------------------------------------------------------- #
 def test_getitem_int_and_index_roundtrip():
     states = _make_states()
-    c = _serial_container(states)
-    for i in range(len(c)):
-        assert c.index(c[i]) == i
+    b = _make_basis(states)
+    for i in range(len(b)):
+        assert b.index(b[i]) == i
 
 
 def test_getitem_slice():
     states = _make_states()
-    c = _serial_container(states)
+    b = _make_basis(states)
     ordered = sorted(set(states))
-    assert list(c[1:3]) == ordered[1:3]
+    assert list(b[1:3]) == ordered[1:3]
 
 
 def test_index_missing_raises():
-    c = _serial_container(_make_states())
+    b = _make_basis(_make_states())
     with pytest.raises(ValueError):
-        c.index(_sd(0x01))  # never inserted
+        b.index(_sd(0x01))  # never inserted
 
 
 # --------------------------------------------------------------------------- #
@@ -106,15 +99,15 @@ def test_index_missing_raises():
 # --------------------------------------------------------------------------- #
 def test_contains_single():
     states = _make_states()
-    c = _serial_container(states)
-    assert states[0] in c
-    assert _sd(0x01) not in c
+    b = _make_basis(states)
+    assert states[0] in b
+    assert _sd(0x01) not in b
 
 
 def test_contains_sequence_returns_bools():
     states = _make_states()
-    c = _serial_container(states)
-    got = list(c.contains([states[0], _sd(0x01), states[2]]))
+    b = _make_basis(states)
+    got = list(b.contains([states[0], _sd(0x01), states[2]]))
     assert got == [True, False, True]
 
 
@@ -123,18 +116,18 @@ def test_contains_sequence_returns_bools():
 # --------------------------------------------------------------------------- #
 def test_add_states_extends_and_dedups():
     states = _make_states()
-    c = _serial_container(states[:2])
-    assert len(c) == 2
-    c.add_states([states[2], states[0]])  # one new, one already present
-    assert len(c) == 3
-    assert states[2] in c
+    b = _make_basis(states[:2])
+    assert len(b) == 2
+    b.add_states([states[2], states[0]])  # one new, one already present
+    assert len(b) == 3
+    assert states[2] in b
 
 
-def test_clear_empties_container():
-    c = _serial_container(_make_states())
-    c.clear()
-    assert len(c) == 0
-    assert list(c) == []
+def test_clear_empties_basis():
+    b = _make_basis(_make_states())
+    b.clear()
+    assert len(b) == 0
+    assert list(b) == []
 
 
 # --------------------------------------------------------------------------- #
@@ -143,14 +136,14 @@ def test_clear_empties_container():
 @pytest.mark.mpi
 def test_distributed_global_size_and_lookup():
     comm = MPI.COMM_WORLD
-    # Each rank contributes distinct states; the container must agree on the global
+    # Each rank contributes distinct states; the basis must agree on the global
     # size and be able to look up every state from every rank.
     base = 0x80 >> comm.rank
     states = [SlaterDeterminant.from_bytes(bytes([base]) + bytes([r]) + b"\x00" * (N_BYTES - 2)) for r in range(3)]
-    c = SimpleDistributedStateContainer(states, bytes_per_state=N_BYTES, comm=comm, verbose=False)
+    b = _make_basis(states, comm=comm)
 
     expected_total = 3 * comm.size
-    assert len(c) == expected_total
-    # Every state this rank created is present in the (possibly distributed) container.
+    assert len(b) == expected_total
+    # Every state this rank created is present in the (possibly distributed) basis.
     for s in states:
-        assert s in c
+        assert s in b

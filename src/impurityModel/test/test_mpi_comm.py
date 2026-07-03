@@ -329,7 +329,7 @@ def test_sparse_matrix_consistent_with_serial():
     global_basis = {}
     for rank_basis in local_basis_all:
         for state in rank_basis:
-            idx = basis_mpi.state_container._index_sequence([state])
+            idx = basis_mpi._index_sequence([state])
             i = next(idx)
             global_basis[i] = bytes(state.to_bytearray()[: basis_mpi.n_bytes])
 
