@@ -175,7 +175,7 @@ def test_generator_weight_classification():
 
 from collections import OrderedDict  # noqa: E402
 
-from impurityModel.ed.finite import getSOCop  # noqa: E402
+from impurityModel.ed.atomic_physics import getSOCop  # noqa: E402
 from impurityModel.ed.operator_algebra import c2i  # noqa: E402
 
 _L = 2
@@ -204,7 +204,7 @@ def _soc_matrix(xi):
 
 def _spherical_to_cubic(l=_L):
     """Spin-doubled spherical->cubic rotation in the c2i [down, up] x [ml] layout."""
-    from impurityModel.ed.finite import get_spherical_2_cubic_matrix
+    from impurityModel.ed.atomic_physics import get_spherical_2_cubic_matrix
 
     u_orb = get_spherical_2_cubic_matrix(spinpol=False, l=l)
     return np.kron(np.eye(2), u_orb)  # spin is the outer c2i index

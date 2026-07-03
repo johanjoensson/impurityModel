@@ -6,7 +6,7 @@ import numpy as np
 from mpi4py import MPI
 
 # from impurityModel.ed.get_spectra import get_noninteracting_hamiltonian_operator
-from impurityModel.ed import finite
+from impurityModel.ed import atomic_physics, finite
 from impurityModel.ed.operator_algebra import addOps, c2i
 from impurityModel.ed.cipsi_solver import CIPSISolver
 from impurityModel.ed.greens_function import build_full_greens_function, get_Greens_function, save_Greens_function
@@ -250,7 +250,7 @@ def fixed_peak_dc(
             f"fixed_peak_dc supports a single impurity group, got N0 = {N0}. "
             "With multiple groups it is ambiguous which group gains/loses the electron."
         )
-    u = finite.getUop_from_rspt_u4(u4)
+    u = atomic_physics.getUop_from_rspt_u4(u4)
     h_op_i = ManyBodyOperator(addOps([h0_op, u]))
     impurity_orbitals, bath_states = _normalize_dc_orbitals(impurity_orbitals, bath_states)
 
@@ -412,7 +412,7 @@ def fixed_occupation_dc(
     RuntimeError
         If the requested occupation cannot be bracketed within ``max_shift``.
     """
-    u = finite.getUop_from_rspt_u4(u4)
+    u = atomic_physics.getUop_from_rspt_u4(u4)
     h_op_i = ManyBodyOperator(addOps([h0_op, u]))
     impurity_orbitals, bath_states = _normalize_dc_orbitals(impurity_orbitals, bath_states)
 
@@ -605,7 +605,7 @@ def calc_selfenergy(
             print("=" * 80, flush=verbosity >= 2)
 
     # construct local, interacting, hamiltonian (in the caller's input/correlated basis B)
-    u = finite.getUop_from_rspt_u4(u4)
+    u = atomic_physics.getUop_from_rspt_u4(u4)
     h_input = ManyBodyOperator(h0) + ManyBodyOperator(u)
 
     from impurityModel.ed.symmetries import (
@@ -1114,7 +1114,7 @@ def get_selfenergy(
     # Construct u4 and rot_to_spherical, mixed_valence, etc.
     n_imp_spin_orbitals = 2 * (2 * ls + 1)
     u4 = np.zeros((n_imp_spin_orbitals, n_imp_spin_orbitals, n_imp_spin_orbitals, n_imp_spin_orbitals), dtype=complex)
-    uOp = finite.getUop(l1=ls, l2=ls, l3=ls, l4=ls, R=Fdd)
+    uOp = atomic_physics.getUop(l1=ls, l2=ls, l3=ls, l4=ls, R=Fdd)
     nBaths_for_c2i = OrderedDict({ls: 0})
     for process, val in uOp.items():
         i = c2i(nBaths_for_c2i, process[0][0])

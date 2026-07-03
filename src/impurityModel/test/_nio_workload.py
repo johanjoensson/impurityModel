@@ -67,7 +67,7 @@ def build_selfenergy_inputs(
     dict
         Keyword arguments for ``selfenergy.calc_selfenergy`` (minus ``comm``).
     """
-    from impurityModel.ed import finite, operator_algebra
+    from impurityModel.ed import atomic_physics, finite, operator_algebra
     from impurityModel.ed.get_spectra import get_noninteracting_hamiltonian_operator
 
     if nValBaths is None:
@@ -81,7 +81,7 @@ def build_selfenergy_inputs(
 
     # Coulomb U as a rank-4 tensor in the impurity spin-orbital index space.
     u4 = np.zeros((n_imp, n_imp, n_imp, n_imp), dtype=complex)
-    uOp = finite.getUop(l1=ls, l2=ls, l3=ls, l4=ls, R=Fdd)
+    uOp = atomic_physics.getUop(l1=ls, l2=ls, l3=ls, l4=ls, R=Fdd)
     nBaths_for_c2i = OrderedDict({ls: 0})
     for process, val in uOp.items():
         i = operator_algebra.c2i(nBaths_for_c2i, process[0][0])
@@ -127,7 +127,7 @@ def build_selfenergy_inputs(
     # spin-orbit xi_2p are therefore retained only to document the physical NiO model / a future
     # 2p3d benchmark; the d-only self-energy uses just Fdd, c and the valence xi_3d SOC (``xi``).
     if chargeTransferCorrection is not None:
-        dc = finite.dc_MLFT(n3d_i=n0imp, c=chargeTransferCorrection, Fdd=Fdd)
+        dc = atomic_physics.dc_MLFT(n3d_i=n0imp, c=chargeTransferCorrection, Fdd=Fdd)
         eDCOperator = {(((ls, s, m), "c"), ((ls, s, m), "a")): -dc[ls] for s in range(2) for m in range(-ls, ls + 1)}
         hOp = operator_algebra.addOps([hOp, eDCOperator])
 

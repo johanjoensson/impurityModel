@@ -15,7 +15,7 @@ import numpy as np
 from mpi4py import MPI
 
 # Local stuff
-from impurityModel.ed import finite, op_parser, spectra
+from impurityModel.ed import atomic_physics, finite, op_parser, spectra
 from impurityModel.ed.average import k_B
 from impurityModel.ed.block_structure import BlockStructure
 from impurityModel.ed.operator_algebra import addOps, assert_hermitian, c2i
@@ -442,11 +442,11 @@ def get_noninteracting_hamiltonian_operator(nBaths, nValBaths, SOCs, hField, h0_
     xi_2p, xi_3d = SOCs
     hx, hy, hz = hField
     # Add SOC, in spherical harmonics basis.
-    SOC2pOperator = finite.getSOCop(xi_2p, l=1)
-    SOC3dOperator = finite.getSOCop(xi_3d, l=2)
+    SOC2pOperator = atomic_physics.getSOCop(xi_2p, l=1)
+    SOC3dOperator = atomic_physics.getSOCop(xi_3d, l=2)
 
     # Magnetic field
-    hHfieldOperator = finite.gethHfieldop(hx, hy, hz, l=2)
+    hHfieldOperator = atomic_physics.gethHfieldop(hx, hy, hz, l=2)
 
     # Read the non-relativistic non-interacting Hamiltonian operator from file.
     h0_operator = read_h0_operator(h0_filename, nBaths, nValBaths)
@@ -525,8 +525,8 @@ def get_hamiltonian_operator(nBaths, nValBaths, slaterCondon, SOCs, DCinfo, hFie
         nBaths, nValBaths, SOCs, hField, h0_filename, rank, verbose
     )
     # Calculate the U operator, in spherical harmonics basis.
-    uOperator = finite.get2p3dSlaterCondonUop(Fdd=Fdd, Fpp=Fpp, Fpd=Fpd, Gpd=Gpd)
-    dc = finite.dc_MLFT(n3d_i=n0imps[2], c=chargeTransferCorrection, Fdd=Fdd, n2p_i=n0imps[1], Fpd=Fpd, Gpd=Gpd)
+    uOperator = atomic_physics.get2p3dSlaterCondonUop(Fdd=Fdd, Fpp=Fpp, Fpd=Fpd, Gpd=Gpd)
+    dc = atomic_physics.dc_MLFT(n3d_i=n0imps[2], c=chargeTransferCorrection, Fdd=Fdd, n2p_i=n0imps[1], Fpd=Fpd, Gpd=Gpd)
     eDCOperator = {}
     for l in [2, 1]:
         # for il, l in enumerate([2, 1]):
@@ -664,7 +664,7 @@ def get_CF_hamiltonian(nBaths, nValBaths, h0_CF_filename, bath_state_basis="sphe
     h_imp_3d = np.zeros((2 * l + 1, 2 * l + 1))
     np.fill_diagonal(h_imp_3d, (e_imp_eg, e_imp_eg, e_imp_t2g, e_imp_t2g, e_imp_t2g))
     # Convert to spherical harmonics basis
-    u = finite.get_spherical_2_cubic_matrix(spinpol=False, l=l)
+    u = atomic_physics.get_spherical_2_cubic_matrix(spinpol=False, l=l)
     h_imp_3d = np.dot(u, np.dot(h_imp_3d, np.conj(u.T)))
     # Convert from matrix to operator form.
     # Also add spin.

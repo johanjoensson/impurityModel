@@ -40,7 +40,7 @@ def sph_harm(m, n, theta, phi):
 
 # Local imports
 import impurityModel.ed.greens_function as gf
-from impurityModel.ed.finite import gauntC
+from impurityModel.ed.atomic_physics import gauntC
 from impurityModel.ed.operator_algebra import arrayOp2Dict, c2i, combineOp, daggerOp
 from impurityModel.ed.BlockLanczosArray import Reort
 from impurityModel.ed.ManyBodyUtils import ManyBodyOperator, ManyBodyState, inner

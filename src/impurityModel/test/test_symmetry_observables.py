@@ -594,10 +594,10 @@ def _thermal_sisb(out):
 
 def _cubic_dshell(n=10):
     """Build the whole-d-shell Casimir operators in cubic harmonics + the spherical->cubic rotation."""
-    from impurityModel.ed import finite
+    from impurityModel.ed import atomic_physics, finite
     from impurityModel.ed.finite import make_impurity_casimir_operators
 
-    Rot = finite.get_spherical_2_cubic_matrix(spinpol=True, l=2)  # spherical<->cubic (10x10)
+    Rot = atomic_physics.get_spherical_2_cubic_matrix(spinpol=True, l=2)  # spherical<->cubic (10x10)
     l_ops, s_ops, j_ops = make_impurity_casimir_operators({0: [list(range(n))]}, Rot.conj().T)
     return l_ops, s_ops, j_ops
 
@@ -611,7 +611,8 @@ def test_whole_shell_casimir_aggregation_dshell():
     """
     from impurityModel.ed.finite import make_impurity_casimir_operators
     from impurityModel.ed.ManyBodyUtils import ManyBodyState, SlaterDeterminant, inner
-    from impurityModel.ed.finite import apply_casimir, get_spherical_2_cubic_matrix
+    from impurityModel.ed.atomic_physics import get_spherical_2_cubic_matrix
+    from impurityModel.ed.finite import apply_casimir
 
     Rot = get_spherical_2_cubic_matrix(spinpol=True, l=2)
     # Per-manifold build raises (the case that made calc_gs skip the Casimirs before the fix).
@@ -647,7 +648,7 @@ def test_calc_gs_reports_casimirs_for_cubic_manifold_grouped_dshell(capsys):
 
     import pytest
 
-    from impurityModel.ed import finite
+    from impurityModel.ed import atomic_physics, finite
     from impurityModel.ed.groundstate import calc_gs
     from impurityModel.ed.ManyBodyUtils import ManyBodyOperator
     from impurityModel.ed.symmetries import (
@@ -657,15 +658,15 @@ def test_calc_gs_reports_casimirs_for_cubic_manifold_grouped_dshell(capsys):
     )
 
     Fdd = [7.5, 0, 9.9, 0, 6.6]
-    uOp = finite.getUop(l1=2, l2=2, l3=2, l4=2, R=Fdd)
+    uOp = atomic_physics.getUop(l1=2, l2=2, l3=2, l4=2, R=Fdd)
     nB = OrderedDict({2: 0})
     V4 = np.zeros((10,) * 4, dtype=complex)
     for proc, val in uOp.items():
         ix = [c2i(nB, proc[p][0]) for p in range(4)]
         V4[ix[0], ix[1], ix[2], ix[3]] = 2.0 * val
-    Rot = finite.get_spherical_2_cubic_matrix(spinpol=True, l=2)
+    Rot = atomic_physics.get_spherical_2_cubic_matrix(spinpol=True, l=2)
     u4 = np.einsum("ia,jb,ijkl,kc,ld->abcd", Rot.conj(), Rot.conj(), V4, Rot, Rot, optimize=True)
-    u_dict = finite.getUop_from_rspt_u4(u4)
+    u_dict = atomic_physics.getUop_from_rspt_u4(u4)
 
     eg, t2g = [0, 1, 5, 6], [2, 3, 4, 7, 8, 9]
     h0 = {}
