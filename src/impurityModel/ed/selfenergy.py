@@ -620,7 +620,8 @@ def calc_selfenergy(
     # list; the total orbital count is inferred from the Hamiltonian (impurity + bath). The bath
     # orbitals and their valence/conduction split are derived below, not passed in.
     impurity_indices = sorted(o for orbs in impurity_orbitals.values() for o in orbs)
-    n_spin_orbitals = extract_tensors(h_input, two_body=False)[0].shape[0]
+    h_input_matrix = extract_tensors(h_input, two_body=False)[0]
+    n_spin_orbitals = h_input_matrix.shape[0]
 
     # Adaptive symmetry-adapted basis: diagonalising the impurity one-body block collapses the
     # Green's-function block structure to its finest form (e.g. 1x1 eg/t2g blocks) BUT can
@@ -630,10 +631,12 @@ def calc_selfenergy(
     # and keep the input basis otherwise (e.g. a j,m_j eigenbasis under spin-orbit coupling
     # densifies the Coulomb tensor). Every output is rotated back to the input basis B before
     # returning; nothing here presumes a spherical-harmonic input.
-    rotation_full, u_imp = impurity_symmetry_rotation(h_input, impurity_indices, n_orb=n_spin_orbitals)
+    rotation_full, u_imp = impurity_symmetry_rotation(
+        h_input, impurity_indices, n_orb=n_spin_orbitals, h0_matrix=h_input_matrix
+    )
     h_rotated = rotate_hamiltonian(h_input, rotation_full, tol=_ROTATION_TRIM_TOL)
-    n_terms_input = sum(1 for v in h_input.to_dict().values() if abs(v) > _ROTATION_TRIM_TOL)
-    fill_ratio = len(h_rotated.to_dict()) / max(n_terms_input, 1)
+    n_terms_input = sum(1 for v in h_input.values() if abs(v) > _ROTATION_TRIM_TOL)
+    fill_ratio = len(h_rotated) / max(n_terms_input, 1)
 
     rotate = fill_ratio <= _MAX_ROTATION_FILL
     if rotate:
@@ -649,16 +652,23 @@ def calc_selfenergy(
         rotation_full = np.eye(n_spin_orbitals, dtype=complex)
         u_imp = np.eye(len(impurity_indices), dtype=complex)
 
+    # One-body matrix of the solver-basis Hamiltonian, extracted once and shared by the
+    # classification/grouping helpers below (each would otherwise re-walk the full operator
+    # and allocate its own dense n_orb x n_orb copy).
+    h_matrix = extract_tensors(h, n_orb=n_spin_orbitals, two_body=False)[0] if rotate else h_input_matrix
+
     # Derive the bath orbitals (complement of the impurity set) and their initial occupation:
     # baths below the Fermi level (h[o, o] < 0) are valence (initially occupied), the rest are
     # conduction (initially empty). The bath one-body diagonal is unchanged by the impurity-only
     # rotation, so this is consistent whether measured in the input or solver basis.
-    valence_flat, conduction_flat = classify_bath_occupation(h, impurity_indices, n_orb=n_spin_orbitals)
+    valence_flat, conduction_flat = classify_bath_occupation(
+        h, impurity_indices, n_orb=n_spin_orbitals, h0_matrix=h_matrix
+    )
 
     # GF block structure from the hybridization-dressed impurity matrix (h[imp,imp] + V^dag V),
     # in whichever basis we solve in (fixes bath-mediated coupling; 1x1 blocks when rotated).
     # Derived from h *after* any rotation, so the blocks label the sectors of the solver basis.
-    block_structure = impurity_block_structure(h, impurity_indices)
+    block_structure = impurity_block_structure(h, impurity_indices, h0_matrix=h_matrix)
 
     # Group the flat orbital lists into orbital-symmetry manifolds (the inequivalent blocks and
     # their spin-degenerate partners, e.g. eg / t2g) **in the solver basis** h. Grouping by the
@@ -666,11 +676,9 @@ def calc_selfenergy(
     # all S_z sectors (spin multiplets stay degenerate); the impurity occupation window is tied
     # across groups by the restriction machinery, not pinned per group.
     impurity_orbitals, bath_states = group_orbitals_by_blocks(
-        h, impurity_indices, valence_flat, conduction_flat, block_structure, n_orb=n_spin_orbitals
+        h, impurity_indices, valence_flat, conduction_flat, block_structure, n_orb=n_spin_orbitals, h0_matrix=h_matrix
     )
-    nominal_occ = _per_group_occupation(
-        nominal_occ, impurity_orbitals, extract_tensors(h, n_orb=n_spin_orbitals, two_body=False)[0]
-    )
+    nominal_occ = _per_group_occupation(nominal_occ, impurity_orbitals, h_matrix)
     mixed_valence = _per_group_scalar(mixed_valence, impurity_orbitals, default=0)
 
     valence_baths, conduction_baths = bath_states

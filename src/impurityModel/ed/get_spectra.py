@@ -254,23 +254,30 @@ def main(
     correlated_block_structure = None
     correlated_l = 2
     if auto_block_structure:
-        from impurityModel.ed.symmetries import impurity_block_structure, impurity_symmetry_rotation, rotate_hamiltonian
+        from impurityModel.ed.symmetries import (
+            extract_tensors,
+            impurity_block_structure,
+            impurity_symmetry_rotation,
+            rotate_hamiltonian,
+        )
 
         impurity_indices = sorted(orb for blocks in impurity_orbitals.values() for block in blocks for orb in block)
-        block_structure = impurity_block_structure(hOp, impurity_indices)
+        h_matrix = extract_tensors(hOp, n_orb=n_spin_orbitals, two_body=False)[0]
+        block_structure = impurity_block_structure(hOp, impurity_indices, h0_matrix=h_matrix)
         if rank == 0:
             print(f"Auto-derived block structure: {len(block_structure.blocks)} blocks")
 
         if correlated_l in impurity_orbitals:
             d_indices = sorted(orb for block in impurity_orbitals[correlated_l] for orb in block)
-            W, u_imp = impurity_symmetry_rotation(hOp, d_indices, n_orb=n_spin_orbitals)
+            W, u_imp = impurity_symmetry_rotation(hOp, d_indices, n_orb=n_spin_orbitals, h0_matrix=h_matrix)
             h_rotated = rotate_hamiltonian(hOp, W, tol=spectra._ROTATION_TRIM_TOL)
-            fill_ratio = len(h_rotated.to_dict()) / max(1, len(hOp))
+            fill_ratio = len(h_rotated) / max(1, len(hOp))
             if fill_ratio <= spectra._MAX_ROTATION_FILL:
                 rotation = W
                 hOp = h_rotated
-                block_structure = impurity_block_structure(hOp, impurity_indices)
-                correlated_block_structure = impurity_block_structure(hOp, d_indices)
+                h_matrix = extract_tensors(hOp, n_orb=n_spin_orbitals, two_body=False)[0]
+                block_structure = impurity_block_structure(hOp, impurity_indices, h0_matrix=h_matrix)
+                correlated_block_structure = impurity_block_structure(hOp, d_indices, h0_matrix=h_matrix)
                 # rot_to_spherical maps the (rotated) computational basis back to spherical harmonics
                 # for the L/S/J Casimir reporting in calc_gs; identity on the un-rotated core p shell.
                 rot_to_spherical = dict(rot_to_spherical)

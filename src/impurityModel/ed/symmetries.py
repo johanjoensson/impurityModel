@@ -411,7 +411,9 @@ def group_orbitals_by_charges(op, impurity_orbitals, valence_orbitals, conductio
     return impurity_dict, (valence_dict, conduction_dict)
 
 
-def group_orbitals_by_blocks(op, impurity_orbitals, valence_orbitals, conduction_orbitals, block_structure, n_orb=None):
+def group_orbitals_by_blocks(
+    op, impurity_orbitals, valence_orbitals, conduction_orbitals, block_structure, n_orb=None, h0_matrix=None
+):
     r"""Group flat impurity / valence / conduction orbital lists into orbital-symmetry blocks.
 
     The many-body ``Basis`` is built from ``{group: [orbital-block, ...]}`` dictionaries that
@@ -443,6 +445,9 @@ def group_orbitals_by_blocks(op, impurity_orbitals, valence_orbitals, conduction
         the sorted ``impurity_orbitals``), e.g. from :func:`impurity_block_structure`.
     n_orb : int, optional
         Number of spin-orbitals (inferred if ``None``).
+    h0_matrix : ndarray, optional
+        Pre-extracted one-body matrix of ``op`` (``extract_tensors(op, two_body=False)[0]``);
+        pass it to avoid re-walking the operator and re-allocating the dense matrix.
 
     Returns
     -------
@@ -457,7 +462,7 @@ def group_orbitals_by_blocks(op, impurity_orbitals, valence_orbitals, conduction
     imp = sorted(impurity_orbitals)
     val_set = set(valence_orbitals)
     con_set = set(conduction_orbitals)
-    h, _, _ = extract_tensors(op, n_orb=n_orb, two_body=False)
+    h = h0_matrix if h0_matrix is not None else extract_tensors(op, n_orb=n_orb, two_body=False)[0]
 
     # get_equivalent_orbs returns local (0..n_imp-1) indices per inequivalent block; map back
     # to global spin-orbital indices via the sorted impurity list.
@@ -477,7 +482,7 @@ def group_orbitals_by_blocks(op, impurity_orbitals, valence_orbitals, conduction
     return impurity_dict, (valence_dict, conduction_dict)
 
 
-def classify_bath_occupation(op, impurity_orbitals, n_orb=None):
+def classify_bath_occupation(op, impurity_orbitals, n_orb=None, h0_matrix=None):
     r"""Split the bath orbitals into initially-occupied (valence) and empty (conduction) sets.
 
     The bath orbitals are all spin-orbitals of ``op`` that are **not** impurity orbitals; each is
@@ -499,6 +504,8 @@ def classify_bath_occupation(op, impurity_orbitals, n_orb=None):
         The impurity spin-orbital indices; everything else in ``op`` is treated as bath.
     n_orb : int, optional
         Number of spin-orbitals (inferred if ``None``).
+    h0_matrix : ndarray, optional
+        Pre-extracted one-body matrix of ``op``; pass it to avoid re-walking the operator.
 
     Returns
     -------
@@ -507,7 +514,7 @@ def classify_bath_occupation(op, impurity_orbitals, n_orb=None):
     conduction_orbitals : list[int]
         Initially-empty bath orbital indices (``h[o, o] >= 0``), sorted.
     """
-    h, _, _ = extract_tensors(op, n_orb=n_orb, two_body=False)
+    h = h0_matrix if h0_matrix is not None else extract_tensors(op, n_orb=n_orb, two_body=False)[0]
     imp_set = set(impurity_orbitals)
     bath = [o for o in range(h.shape[0]) if o not in imp_set]
     valence = [o for o in bath if h[o, o].real < 0]
@@ -644,7 +651,7 @@ def auto_block_structure(op, n_orb=None, orbitals=None):
     return build_block_structure(None, mat=h)
 
 
-def impurity_block_structure(op, impurity_orbitals, n_orb=None):
+def impurity_block_structure(op, impurity_orbitals, n_orb=None, h0_matrix=None):
     r"""Impurity ``BlockStructure`` consistent with the interacting Green's function.
 
     The GF / self-energy paths partition the impurity orbitals into blocks and compute one
@@ -695,6 +702,8 @@ def impurity_block_structure(op, impurity_orbitals, n_orb=None):
         The impurity spin-orbital indices.
     n_orb : int, optional
         Number of spin-orbitals (inferred if ``None``).
+    h0_matrix : ndarray, optional
+        Pre-extracted one-body matrix of ``op``; pass it to avoid re-walking the operator.
 
     Returns
     -------
@@ -704,7 +713,7 @@ def impurity_block_structure(op, impurity_orbitals, n_orb=None):
 
     imp = sorted(impurity_orbitals)
     imp_set = set(imp)
-    h, _, _ = extract_tensors(op, n_orb=n_orb, two_body=False)
+    h = h0_matrix if h0_matrix is not None else extract_tensors(op, n_orb=n_orb, two_body=False)[0]
     n = h.shape[0]
     bath = [o for o in range(n) if o not in imp_set]
 
@@ -715,7 +724,7 @@ def impurity_block_structure(op, impurity_orbitals, n_orb=None):
     return build_block_structure(None, mat=m)
 
 
-def impurity_symmetry_rotation(op, impurity_orbitals, n_orb=None):
+def impurity_symmetry_rotation(op, impurity_orbitals, n_orb=None, h0_matrix=None):
     r"""Full-space rotation that diagonalises the impurity one-body block (crystal field / SOC).
 
     Returns the unitary that takes the impurity single-particle Hamiltonian ``h[imp, imp]`` to
@@ -754,6 +763,8 @@ def impurity_symmetry_rotation(op, impurity_orbitals, n_orb=None):
         The impurity spin-orbital indices.
     n_orb : int, optional
         Number of spin-orbitals (inferred if ``None``).
+    h0_matrix : ndarray, optional
+        Pre-extracted one-body matrix of ``op``; pass it to avoid re-walking the operator.
 
     Returns
     -------
@@ -764,7 +775,7 @@ def impurity_symmetry_rotation(op, impurity_orbitals, n_orb=None):
         The impurity-block rotation, in the sorted-``impurity_orbitals`` order (columns are the
         eigenvectors of ``h[imp, imp]``).
     """
-    h, _, _ = extract_tensors(op, n_orb=n_orb, two_body=False)
+    h = h0_matrix if h0_matrix is not None else extract_tensors(op, n_orb=n_orb, two_body=False)[0]
     n = h.shape[0]
     imp = sorted(impurity_orbitals)
     h_imp = h[np.ix_(imp, imp)]

@@ -228,6 +228,11 @@ def find_ground_state_basis(
     dN_gs = dict.fromkeys(N0.keys(), 0)
 
     energy_cache = {}
+    # Cache key of the single entry allowed to hold a Basis (the running best). Every other
+    # entry stores (energy, None): a revisited occupation only needs its basis when it is
+    # strictly better than the current best, which cannot happen for a superseded entry, so
+    # keeping one Basis instead of one per trial bounds the memory of the occupation scan.
+    best_cached_key = None
 
     def get_energy(trial_N0):
         """
@@ -245,6 +250,8 @@ def find_ground_state_basis(
         basis : Basis
             The optimized many-body basis.
         """
+
+        nonlocal best_cached_key
 
         key = tuple(sorted(trial_N0.items()))
         if key in energy_cache:
@@ -275,7 +282,16 @@ def find_ground_state_basis(
             cipsi_solver_method=cipsi_solver_method,
             weighted_restrictions=weighted_restrictions,
         )
-        energy_cache[key] = (e_trial, basis.copy() if basis is not None else None)
+        if basis is not None and (best_cached_key is None or e_trial < energy_cache[best_cached_key][0]):
+            if best_cached_key is not None:
+                prev_e, prev_basis = energy_cache[best_cached_key]
+                if prev_basis is not None:
+                    prev_basis.comm = None
+                energy_cache[best_cached_key] = (prev_e, None)
+            energy_cache[key] = (e_trial, basis.copy())
+            best_cached_key = key
+        else:
+            energy_cache[key] = (e_trial, None)
         return e_trial, basis
 
     keys = list(N0.keys())
