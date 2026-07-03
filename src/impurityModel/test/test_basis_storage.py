@@ -11,7 +11,7 @@ the distributed size/lookup path.
 import pytest
 from mpi4py import MPI
 
-from impurityModel.ed.manybody_basis import Basis, batched
+from impurityModel.ed.manybody_basis import Basis
 from impurityModel.ed.ManyBodyUtils import SlaterDeterminant
 
 N_BYTES = 8
@@ -36,18 +36,6 @@ def _make_basis(states, comm=MPI.COMM_SELF):
         comm=comm,
         verbose=False,
     )
-
-
-# --------------------------------------------------------------------------- #
-# batched
-# --------------------------------------------------------------------------- #
-def test_batched_splits_into_chunks():
-    assert list(batched("ABCDEFG", 3)) == [("A", "B", "C"), ("D", "E", "F"), ("G",)]
-
-
-def test_batched_rejects_nonpositive_n():
-    with pytest.raises(ValueError):
-        list(batched("ABC", 0))
 
 
 # --------------------------------------------------------------------------- #

@@ -28,149 +28,6 @@ from impurityModel.ed.mpi_comm import graph_alltoall, graph_alltoall_psis
 from impurityModel.ed.utils import matrix_print
 
 
-def batched(iterable: Iterable, n: int) -> Iterable:
-    """
-    batched('ABCDEFG', 3) → ABC DEF G
-    """
-    if n < 1:
-        raise ValueError("n must be at least one")
-    it = iter(iterable)
-    while batch := tuple(itertools.islice(it, n)):
-        yield batch
-
-
-def reduce_states(a: list[dict], b: list[dict], _) -> list[dict]:
-    """Reduce list of state dicts by summing amplitudes of identical states.
-
-    Parameters
-    ----------
-    a : list of dict
-        Accumulator list of state-to-amplitude dictionaries.
-    b : list of dict
-        Input list of state-to-amplitude dictionaries.
-    _ : Any
-        Unused MPI datatype parameter.
-
-    Returns
-    -------
-    list of dict
-        The updated accumulator list of dictionaries.
-    """
-    res = a.copy()
-    for sa, sb in zip(res, b):
-        for state, amp in sb.items():
-            sa[state] = amp + sa.get(state, 0)
-    return res
-
-
-reduce_states_op = MPI.Op.Create(reduce_states, commute=True)
-
-
-def combine_sets(set_1: set, set_2: set, _) -> set:
-    """Combine two sets using union.
-
-    Parameters
-    ----------
-    set_1 : set
-        First set.
-    set_2 : set
-        Second set.
-    _ : Any
-        Unused MPI datatype parameter.
-
-    Returns
-    -------
-    set
-        The union of the two sets.
-    """
-    return set_1 | set_2
-
-
-combine_sets_op = MPI.Op.Create(combine_sets, commute=True)
-
-
-def reduce_subscript(a: np.ndarray, b: np.ndarray, datatype) -> np.ndarray:
-    """MPI reduction operator to combine subscript arrays.
-
-    Replaces None elements in array a with elements from array b.
-
-    Parameters
-    ----------
-    a : np.ndarray
-        Accumulator array.
-    b : np.ndarray
-        Input array.
-    datatype : Any
-        The MPI datatype.
-
-    Returns
-    -------
-    np.ndarray
-        The combined subscript array.
-    """
-    res = np.empty_like(a)
-    for i in range(a.shape[0]):
-        for j in range(a.shape[1]):
-            if a[i][j] is None:
-                res[i][j] = b[i][j]
-            else:
-                res[i][j] = a[i][j]
-    return res
-
-
-reduce_subscript_op = MPI.Op.Create(reduce_subscript, commute=True)
-
-
-def getitem_reduce(a: list, b: list, datatype) -> list:
-    """MPI reduction operator to take element-wise maximum of two lists.
-
-    Parameters
-    ----------
-    a : list
-        First list.
-    b : list
-        Second list.
-    datatype : Any
-        The MPI datatype.
-
-    Returns
-    -------
-    list
-        List of element-wise maximum values.
-    """
-    return [max(val_a, val_b) for val_a, val_b in zip(a, b)]
-
-
-getitem_reduce_op = MPI.Op.Create(getitem_reduce, commute=True)
-
-
-def getitem_reduce_matrix(a: list[list], b: list[list], datatype) -> list[list]:
-    """MPI reduction operator to take element-wise maximum of two 2D lists (matrices).
-
-    Parameters
-    ----------
-    a : list of list
-        First matrix.
-    b : list of list
-        Second matrix.
-    datatype : Any
-        The MPI datatype.
-
-    Returns
-    -------
-    list of list
-        Matrix of element-wise maximum values.
-    """
-    res = [[None for _ in row] for row in a]
-    for i in range(len(a)):
-        for j in range(len(a[i])):
-            res[i][j] = max(a[i][j], b[i][j])
-    return res
-
-
-getitem_reduce_matrix_op = MPI.Op.Create(getitem_reduce_matrix, commute=True)
-
-
 def _pack_units(
     weights, comm_size: int, split_threshold: float
 ) -> tuple[Optional[list[tuple[int, ...]]], Optional[np.ndarray]]:
@@ -939,26 +796,6 @@ class Basis:
             self.comm.Free()
             self.comm = None
 
-    def alltoall_states(self, send_list: list[list[bytes]], flatten: bool = False) -> list[list[bytes]] | list[bytes]:
-        """Distribute basis states to their owners across MPI ranks.
-
-        Parameters
-        ----------
-        send_list : list of list of bytes
-            The states to send to each rank.
-        flatten : bool, default False
-            If True, return a flat list of bytes.
-
-        Returns
-        -------
-        list of list of bytes or list of bytes
-            The received states.
-        """
-        states = Basis._point2point(send_list, self.comm)
-        if flatten:
-            states = [state for r_states in states for state in r_states]
-        return states
-
     @staticmethod
     def _point2point(send_list, comm):
         """Sparse point-to-point MPI exchange of per-rank data lists."""
@@ -1185,7 +1022,6 @@ class Basis:
             it += 1
         if self.verbose:
             print(f"After expansion, the basis contains {self.size} elements.")
-        # return self.build_operator_dict(op)
 
     def index(self, val: SlaterDeterminant) -> int:
         """Find the global index of a Slater determinant in the basis.
@@ -1563,15 +1399,6 @@ class Basis:
             res.append(applyOp_test(op, unit_state, cutoff=slaterWeightMin))
             unit_state.erase(state)
         return res
-
-    def build_operator_dict(self, op, slaterWeightMin=0):
-        """
-        Express the operator, op, in the current basis. Do not expand the basis.
-        Return a dict containing the results of applying op to the different basis states
-        """
-        if isinstance(op, dict):
-            op = ManyBodyOperator(op)
-        return dict(zip(self.local_basis, self.build_local_operator_list(op, slaterWeightMin)))
 
     def build_dense_matrix(self, op, distribute=True):
         """

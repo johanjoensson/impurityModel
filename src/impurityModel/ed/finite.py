@@ -2036,24 +2036,3 @@ def matrixToIOp(mat):
             if abs(mat[i, j]) > 0:
                 res[((i, "c"), (j, "a"))] = mat[i, j]
     return res
-
-
-def i2c_op(nBaths: dict[int, int], i_op: dict) -> dict:
-    """Convert an operator dictionary from flat indices to spin-orbital labels.
-
-    Parameters
-    ----------
-    nBaths : dict
-        Number of bath states for each l quantum number.
-    i_op : dict
-        Operator dictionary with flat index keys.
-
-    Returns
-    -------
-    dict
-        Operator dictionary with spin-orbital label keys.
-    """
-    c_op = {}
-    for ((i, opi), (j, opj)), val in i_op.items():
-        c_op[((i2c(nBaths, i), opi), (i2c(nBaths, j), opj))] = val
-    return c_op

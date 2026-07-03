@@ -3,7 +3,12 @@ import pytest
 from mpi4py import MPI
 
 from impurityModel.ed.manybody_basis import Basis
-from impurityModel.ed.ManyBodyUtils import SlaterDeterminant
+from impurityModel.ed.ManyBodyUtils import ManyBodyOperator, SlaterDeterminant
+
+
+def build_operator_dict(basis, op):
+    """Express op in the current basis: map each local basis state to the result of applying op to it."""
+    return dict(zip(basis.local_basis, basis.build_local_operator_list(ManyBodyOperator(op), 0)))
 
 
 def build_states(states: list[bytes]):
@@ -506,7 +511,7 @@ def test_operator_dict_simple():
     states = [SlaterDeterminant.from_bytes(b"\x78")]
     basis.add_states(states)
 
-    op_dict = basis.build_operator_dict(operator)
+    op_dict = build_operator_dict(basis, operator)
     correct = {
         SlaterDeterminant.from_bytes(b"\x78"): {
             SlaterDeterminant.from_bytes(b"\xf0"): -1 / 2,
@@ -542,7 +547,7 @@ def test_operator_dict_simple_mpi():
     states = build_states([b"\x78"])
     basis.add_states(states)
 
-    op_dict = basis.build_operator_dict(operator)
+    op_dict = build_operator_dict(basis, operator)
     print(f"{op_dict=}")
     correct = {
         SlaterDeterminant.from_bytes(b"\x78"): {
@@ -592,7 +597,7 @@ def test_operator_dict_simple_with_extra_states():
     basis.add_states(states)
     # states = [b"\x78"]
 
-    op_dict = basis.build_operator_dict(operator)
+    op_dict = build_operator_dict(basis, operator)
     correct = {
         SlaterDeterminant.from_bytes(b"\x78"): {
             SlaterDeterminant.from_bytes(b"\xf0"): -1 / 2,
@@ -633,7 +638,7 @@ def test_operator_dict_simple_with_extra_states_mpi():
     states = [SlaterDeterminant.from_bytes(b"\x78")]
     basis.add_states(states)
 
-    op_dict = basis.build_operator_dict(operator)
+    op_dict = build_operator_dict(basis, operator)
     correct = {
         SlaterDeterminant.from_bytes(b"\x78"): {
             SlaterDeterminant.from_bytes(b"\xf0"): -1 / 2,
@@ -686,7 +691,7 @@ def test_operator_dict_eg_t2g():
     ]
     basis.add_states(states)
 
-    op_dict = basis.build_operator_dict(operator)
+    op_dict = build_operator_dict(basis, operator)
     correct = {
         SlaterDeterminant.from_bytes(b"\x78"): {
             SlaterDeterminant.from_bytes(b"\xf0"): -1 / 2,
@@ -738,7 +743,7 @@ def test_operator_dict_eg_t2g_mpi():
     ]
     basis.add_states(states)
 
-    op_dict = basis.build_operator_dict(operator)
+    op_dict = build_operator_dict(basis, operator)
     correct = {
         SlaterDeterminant.from_bytes(b"\x78"): {
             SlaterDeterminant.from_bytes(b"\xf0"): -1 / 2,
@@ -806,7 +811,7 @@ def test_operator_dict_eg_t2g_with_extra_states():
     ]
     basis.add_states(states)
 
-    op_dict = basis.build_operator_dict(operator)
+    op_dict = build_operator_dict(basis, operator)
     correct = {
         SlaterDeterminant.from_bytes(b"\x78"): {
             SlaterDeterminant.from_bytes(b"\xf0"): -1 / 2,
@@ -869,7 +874,7 @@ def test_operator_dict_eg_t2g_with_extra_states_mpi():
     ]
     basis.add_states(states)
 
-    op_dict = basis.build_operator_dict(operator)
+    op_dict = build_operator_dict(basis, operator)
     correct = {
         SlaterDeterminant.from_bytes(b"\x78"): {
             SlaterDeterminant.from_bytes(b"\xf0"): -1 / 2,
@@ -932,8 +937,7 @@ def test_simple_dense_matrix():
     states = [SlaterDeterminant.from_bytes(b"\x78")]
     basis.add_states(states)
 
-    op_dict = basis.build_operator_dict(operator)
-    dense_mat = basis.build_dense_matrix(operator, op_dict)
+    dense_mat = basis.build_dense_matrix(operator)
     assert dense_mat.shape == (1, 1)
     assert dense_mat[0, 0] == 9 / 2
 
@@ -961,8 +965,7 @@ def test_simple_dense_matrix_mpi():
         comm=MPI.COMM_WORLD,
     )
 
-    op_dict = basis.build_operator_dict(operator)
-    dense_mat = basis.build_dense_matrix(operator, op_dict)
+    dense_mat = basis.build_dense_matrix(operator)
     assert dense_mat.shape == (1, 1)
     assert dense_mat[0, 0] == 9 / 2
 
@@ -989,8 +992,7 @@ def test_eg_t2g_dense_matrix():
         comm=None,
     )
 
-    op_dict = basis.build_operator_dict(operator)
-    dense_mat = basis.build_dense_matrix(operator, op_dict)
+    dense_mat = basis.build_dense_matrix(operator)
     assert dense_mat.shape == (5, 5)
     assert np.allclose(
         dense_mat,
@@ -1030,8 +1032,7 @@ def test_eg_t2g_dense_matrix_mpi():
         comm=MPI.COMM_WORLD,
     )
 
-    op_dict = basis.build_operator_dict(operator)
-    dense_mat = basis.build_dense_matrix(operator, op_dict)
+    dense_mat = basis.build_dense_matrix(operator)
     assert dense_mat.shape == (5, 5)
     # assert np.allclose(
     #     dense_mat,
@@ -1245,49 +1246,6 @@ def test_state_mpi():
 
     # for i in range(len(s)):
     #     assert all(s[i][state] == s_exact[i][state] for state in s[i])
-
-
-@pytest.mark.mpi
-def test_alltoall_states_mpi():
-    comm = MPI.COMM_WORLD
-    num_spin_orbitals = comm.size
-    basis = Basis(
-        impurity_orbitals={0: [list(range(num_spin_orbitals))]},
-        bath_states=(
-            {0: [[]]},
-            {0: [[]]},
-        ),
-        initial_basis=[],
-        verbose=True,
-        comm=comm,
-    )
-    send_states = [[r.to_bytes(basis.n_bytes, "big")] for r in range(comm.size)]
-    received_states = basis.alltoall_states(send_states)
-    assert all(
-        state == comm.rank.to_bytes(basis.n_bytes, "big") for rs in received_states for state in rs
-    ), f"{comm.rank=} {received_states=} {basis.local_basis=}"
-
-
-@pytest.mark.mpi
-def test_alltoall_states_with_empty_mpi():
-    comm = MPI.COMM_WORLD
-    num_spin_orbitals = comm.size
-    basis = Basis(
-        impurity_orbitals={0: [list(range(num_spin_orbitals))]},
-        bath_states=(
-            {0: [[]]},
-            {0: [[]]},
-        ),
-        initial_basis=[],
-        verbose=True,
-        comm=comm,
-    )
-    send_states = [[r.to_bytes(basis.n_bytes, "big")] if r < comm.rank else [] for r in range(comm.size)]
-    basis.add_states([comm.rank.to_bytes(basis.n_bytes, "big")])
-    received_states = basis.alltoall_states(send_states)
-    assert all(
-        state == comm.rank.to_bytes(basis.n_bytes, "big") for rs in received_states for state in list(rs)
-    ), f"{comm.rank=} {received_states=} {basis.local_basis=}"
 
 
 def test_eg_t2g_basis_expand():
