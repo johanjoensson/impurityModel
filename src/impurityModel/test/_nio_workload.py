@@ -68,7 +68,7 @@ def build_selfenergy_inputs(
         Keyword arguments for ``selfenergy.calc_selfenergy`` (minus ``comm``).
     """
     from impurityModel.ed import atomic_physics, operator_algebra
-    from impurityModel.ed.get_spectra import get_noninteracting_hamiltonian_operator
+    from impurityModel.ed.hamiltonian_io import get_noninteracting_hamiltonian_operator
 
     if nValBaths is None:
         nValBaths = nBaths

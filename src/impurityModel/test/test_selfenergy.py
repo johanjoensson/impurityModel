@@ -431,7 +431,7 @@ def test_calc_selfenergy_sigma_exceptions(mock_get_sigma, mock_get_gf, mock_calc
 
 
 @patch("impurityModel.ed.selfenergy.calc_selfenergy")
-@patch("impurityModel.ed.get_spectra.get_noninteracting_hamiltonian_operator")
+@patch("impurityModel.ed.selfenergy.get_noninteracting_hamiltonian_operator")
 @patch("impurityModel.ed.selfenergy.atomic_physics.getUop")
 def test_get_selfenergy(mock_getUop, mock_get_h0, mock_calc):
     from mpi4py import MPI
@@ -469,7 +469,7 @@ def test_get_selfenergy(mock_getUop, mock_get_h0, mock_calc):
 
 
 @patch("impurityModel.ed.selfenergy.calc_selfenergy")
-@patch("impurityModel.ed.get_spectra.get_noninteracting_hamiltonian_operator")
+@patch("impurityModel.ed.selfenergy.get_noninteracting_hamiltonian_operator")
 @patch("impurityModel.ed.selfenergy.atomic_physics.getUop")
 def test_get_selfenergy_exception(mock_getUop, mock_get_h0, mock_calc):
     from mpi4py import MPI

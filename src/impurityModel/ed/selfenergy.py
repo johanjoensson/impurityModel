@@ -5,9 +5,9 @@ from collections import OrderedDict
 import numpy as np
 from mpi4py import MPI
 
-# from impurityModel.ed.get_spectra import get_noninteracting_hamiltonian_operator
 from impurityModel.ed import atomic_physics
 from impurityModel.ed.average import thermal_average_scale_indep
+from impurityModel.ed.hamiltonian_io import get_noninteracting_hamiltonian_operator
 from impurityModel.ed.operator_algebra import addOps, c2i
 from impurityModel.ed.cipsi_solver import CIPSISolver
 from impurityModel.ed.greens_function import build_full_greens_function, get_Greens_function, save_Greens_function
@@ -1097,7 +1097,6 @@ def get_selfenergy(
     # MPI variables
     comm = MPI.COMM_WORLD
     rank = comm.rank
-    from impurityModel.ed.get_spectra import get_noninteracting_hamiltonian_operator
 
     # omega_mesh = np.linspace(-25, 25, 2000)
     omega_mesh = np.linspace(-1.83, 1.83, 2000)

@@ -7,7 +7,7 @@ import scipy.integrate as si
 from scipy.special import spherical_jn
 
 from impurityModel.ed import spectra
-from impurityModel.ed import get_spectra
+from impurityModel.ed import hamiltonian_io
 from impurityModel.ed.ManyBodyUtils import ManyBodyOperator
 
 # --- tests for spectra.py ---
@@ -188,7 +188,7 @@ def test_simulate_spectra(
     assert mock_getSpectra_tensor.called
 
 
-# --- tests for get_spectra.py ---
+# --- tests for hamiltonian_io.py ---
 
 
 def test_gethHfieldop():
@@ -200,7 +200,7 @@ def test_gethHfieldop():
 
 def test_read_tuple():
     s = "((0, c), (1, a))"
-    t = get_spectra.read_tuple(s)
+    t = hamiltonian_io.read_tuple(s)
     assert t == ((0, "c"), (1, "a"))
 
 
@@ -208,7 +208,7 @@ def test_read_h0_dict():
     file_content = "((0, 'c'), (0, 'a')) 1.0\n"
     with patch("impurityModel.ed.op_parser.parse_file") as mock_parse:
         mock_parse.return_value = {0: {((0, "c"), (0, "a")): 1.0}}
-        d = get_spectra.read_h0_dict("dummy.dat")
+        d = hamiltonian_io.read_h0_dict("dummy.dat")
         assert d == {((0, "c"), (0, "a")): 1.0}
 
 
@@ -216,41 +216,41 @@ def test_read_pickled_file():
     with patch("builtins.open", mock_open()) as m:
         with patch("pickle.load") as mock_load:
             mock_load.return_value = "data"
-            res = get_spectra.read_pickled_file("dummy.pickle")
+            res = hamiltonian_io.read_pickled_file("dummy.pickle")
             assert res == "data"
 
 
 def test_read_h0_CF_file():
     json_data = '{"e_imp": -1.0, "e_deltaO_imp": 0.5}'
     with patch("builtins.open", mock_open(read_data=json_data)):
-        res = get_spectra.read_h0_CF_file("dummy.json")
+        res = hamiltonian_io.read_h0_CF_file("dummy.json")
         assert res[0] == -1.0
         assert res[1] == 0.5
 
 
-@patch("impurityModel.ed.get_spectra.read_h0_CF_file")
+@patch("impurityModel.ed.hamiltonian_io.read_h0_CF_file")
 def test_get_CF_hamiltonian(mock_read_cf):
     mock_read_cf.return_value = (-1.0, 0.5, -4.0, -6.0, 3.0, 2.0, 1.0, 1.0, 0.5, 0.5)
     nBaths = {2: 10}
     nValBaths = {2: 10}
-    h0 = get_spectra.get_CF_hamiltonian(nBaths, nValBaths, "dummy.json")
+    h0 = hamiltonian_io.get_CF_hamiltonian(nBaths, nValBaths, "dummy.json")
     assert isinstance(h0, dict)
     assert len(h0) > 0
 
 
-@patch("impurityModel.ed.get_spectra.read_h0_operator")
+@patch("impurityModel.ed.hamiltonian_io.read_h0_operator")
 def test_get_noninteracting_hamiltonian_operator(mock_read_h0):
     mock_read_h0.return_value = {}
-    h0 = get_spectra.get_noninteracting_hamiltonian_operator(
+    h0 = hamiltonian_io.get_noninteracting_hamiltonian_operator(
         {2: 10, 1: 6}, {2: 10, 1: 6}, (0.1, 0.1), (0.0, 0.0, 0.0), "dummy.pickle", 0, False
     )
     assert isinstance(h0, dict)
 
 
-@patch("impurityModel.ed.get_spectra.get_noninteracting_hamiltonian_operator")
+@patch("impurityModel.ed.hamiltonian_io.get_noninteracting_hamiltonian_operator")
 def test_get_hamiltonian_operator(mock_h0):
     mock_h0.return_value = {}
-    hOp = get_spectra.get_hamiltonian_operator(
+    hOp = hamiltonian_io.get_hamiltonian_operator(
         {2: 10, 1: 6},
         {2: 10, 1: 6},
         ([1.0] * 5, [1.0] * 3, [1.0] * 3, [1.0] * 4),

@@ -10,7 +10,7 @@ from typing import Optional
 import numpy as np
 from mpi4py import MPI
 
-from impurityModel.ed.average import thermal_average, thermal_average_scale_indep
+from impurityModel.ed.average import thermal_average_scale_indep
 from impurityModel.ed.block_structure import get_equivalent_blocks
 from impurityModel.ed.ManyBodyUtils import ManyBodyOperator, inner
 from impurityModel.ed.utils import rotate_matrix
