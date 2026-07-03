@@ -125,8 +125,19 @@ def _tin_tout():
 
 def _run_rixs(op, psis, es, tin, tout, dets):
     return spectra.getRIXSmap_new(
-        op, tin, tout, psis, es, tau=TAU, wIns=WIN, wLoss=WLOSS,
-        delta1=D1, delta2=D2, basis=_basis(dets), verbose=False, slaterWeightMin=0.0,
+        op,
+        tin,
+        tout,
+        psis,
+        es,
+        tau=TAU,
+        wIns=WIN,
+        wLoss=WLOSS,
+        delta1=D1,
+        delta2=D2,
+        basis=_basis(dets),
+        verbose=False,
+        slaterWeightMin=0.0,
     )
 
 
@@ -198,8 +209,21 @@ def _dense_rixs_pol(op, tin_comp, tout_comp, epsIn, epsOut, es, vecs, states):
 
 def _run_rixs_tensor(op, psis, es, tin, tout, dets, epsIn, epsOut):
     return spectra.getRIXSmap_tensor(
-        op, tin, tout, epsIn, epsOut, psis, es, tau=TAU, wIns=WIN, wLoss=WLOSS,
-        delta1=D1, delta2=D2, basis=_basis(dets), verbose=False, slaterWeightMin=0.0,
+        op,
+        tin,
+        tout,
+        epsIn,
+        epsOut,
+        psis,
+        es,
+        tau=TAU,
+        wIns=WIN,
+        wLoss=WLOSS,
+        delta1=D1,
+        delta2=D2,
+        basis=_basis(dets),
+        verbose=False,
+        slaterWeightMin=0.0,
     )
 
 

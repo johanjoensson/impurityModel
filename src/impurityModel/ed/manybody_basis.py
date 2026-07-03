@@ -655,7 +655,9 @@ class Basis:
             combined_imp_change = (max(c[0] for c in imp_changes), max(c[1] for c in imp_changes))
         else:
             combined_imp_change = None
-        imp_min, imp_max = self._get_updated_occ_restrictions(ground_state_restrictions, all_imp_orbs, combined_imp_change)
+        imp_min, imp_max = self._get_updated_occ_restrictions(
+            ground_state_restrictions, all_imp_orbs, combined_imp_change
+        )
 
         for i, impurity_orbitals in self.impurity_orbitals.items():
             val_orbs = frozenset(sorted(orb for block in valence_baths[i] for orb in block))

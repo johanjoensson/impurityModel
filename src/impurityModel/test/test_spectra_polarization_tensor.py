@@ -95,15 +95,37 @@ def test_tensor_contraction_matches_per_polarization():
     ]
 
     tensor = spectra.getSpectra_tensor(
-        op, comps, polarizations, [gs], [e0], tau=0.01, w=w, basis=_basis(dets),
-        delta=0.2, slaterWeightMin=0.0, verbose=False, occ_cutoff=1e-12, reduction=None, **_DN,
+        op,
+        comps,
+        polarizations,
+        [gs],
+        [e0],
+        tau=0.01,
+        w=w,
+        basis=_basis(dets),
+        delta=0.2,
+        slaterWeightMin=0.0,
+        verbose=False,
+        occ_cutoff=1e-12,
+        reduction=None,
+        **_DN,
     )
 
     for p, eps in enumerate(polarizations):
         combined = spectra._combine_component_ops(comps, eps)
         ref = spectra.getSpectra_new(
-            op, [combined], [gs], [e0], tau=0.01, w=w, basis=_basis(dets),
-            delta=0.2, slaterWeightMin=0.0, verbose=False, occ_cutoff=1e-12, **_DN,
+            op,
+            [combined],
+            [gs],
+            [e0],
+            tau=0.01,
+            w=w,
+            basis=_basis(dets),
+            delta=0.2,
+            slaterWeightMin=0.0,
+            verbose=False,
+            occ_cutoff=1e-12,
+            **_DN,
         )
         np.testing.assert_allclose(tensor[:, p], ref[:, 0], atol=1e-8, err_msg=f"polarization {eps}")
 
@@ -140,12 +162,36 @@ def test_diagonal_reconstruction_branch_matches_full():
 
     reduction = ComponentReduction(np.eye(2, dtype=complex), [0, 1], [0, 1], True)
     diag = spectra.getSpectra_tensor(
-        op, comps, pols, [gs], [e0], tau=0.01, w=w, basis=_basis(dets),
-        delta=0.3, slaterWeightMin=0.0, verbose=False, occ_cutoff=1e-12, reduction=reduction, **_DN,
+        op,
+        comps,
+        pols,
+        [gs],
+        [e0],
+        tau=0.01,
+        w=w,
+        basis=_basis(dets),
+        delta=0.3,
+        slaterWeightMin=0.0,
+        verbose=False,
+        occ_cutoff=1e-12,
+        reduction=reduction,
+        **_DN,
     )
     full = spectra.getSpectra_tensor(
-        op, comps, pols, [gs], [e0], tau=0.01, w=w, basis=_basis(dets),
-        delta=0.3, slaterWeightMin=0.0, verbose=False, occ_cutoff=1e-12, reduction=None, **_DN,
+        op,
+        comps,
+        pols,
+        [gs],
+        [e0],
+        tau=0.01,
+        w=w,
+        basis=_basis(dets),
+        delta=0.3,
+        slaterWeightMin=0.0,
+        verbose=False,
+        occ_cutoff=1e-12,
+        reduction=None,
+        **_DN,
     )
     np.testing.assert_allclose(diag, full, atol=1e-9)
 
@@ -165,13 +211,35 @@ def test_moment_check_falls_back_on_incorrect_reduction():
 
     wrong = ComponentReduction(np.eye(2, dtype=complex), [0], [0, 0], True)  # claims 0 == 1
     got = spectra.getSpectra_tensor(
-        op, comps, pols, [gs], [e0], tau=0.01, w=w, basis=_basis(dets),
-        delta=0.2, slaterWeightMin=0.0, verbose=False, occ_cutoff=1e-12, reduction=wrong, **_DN,
+        op,
+        comps,
+        pols,
+        [gs],
+        [e0],
+        tau=0.01,
+        w=w,
+        basis=_basis(dets),
+        delta=0.2,
+        slaterWeightMin=0.0,
+        verbose=False,
+        occ_cutoff=1e-12,
+        reduction=wrong,
+        **_DN,
     )
     for p, eps in enumerate(pols):
         combined = spectra._combine_component_ops(comps, eps)
         ref = spectra.getSpectra_new(
-            op, [combined], [gs], [e0], tau=0.01, w=w, basis=_basis(dets),
-            delta=0.2, slaterWeightMin=0.0, verbose=False, occ_cutoff=1e-12, **_DN,
+            op,
+            [combined],
+            [gs],
+            [e0],
+            tau=0.01,
+            w=w,
+            basis=_basis(dets),
+            delta=0.2,
+            slaterWeightMin=0.0,
+            verbose=False,
+            occ_cutoff=1e-12,
+            **_DN,
         )
         np.testing.assert_allclose(got[:, p], ref[:, 0], atol=1e-8, err_msg=f"polarization {eps}")

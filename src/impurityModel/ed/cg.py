@@ -81,7 +81,16 @@ def block_bicgstab(A, x0, y, basis: Basis, slaterWeightMin: float, atol=1e-8, rt
 
     q_block = block_combine(ri, beta_inv, slaterWeightMin)
     z_block = _block_bicgstab_core(
-        matmat, q_block, basis, slaterWeightMin, atol, rtol, mpi, comm, is_arr, rank,
+        matmat,
+        q_block,
+        basis,
+        slaterWeightMin,
+        atol,
+        rtol,
+        mpi,
+        comm,
+        is_arr,
+        rank,
         kwargs.get("max_iter", np.inf),
     )
     correction = block_combine(z_block, beta_j, slaterWeightMin)

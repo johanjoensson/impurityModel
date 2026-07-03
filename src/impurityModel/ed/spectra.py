@@ -212,6 +212,7 @@ def simulate_spectra(
         (with ``rotation``), degenerate PES/IPS operators of that shell are deduplicated (B2a).
 
     """
+
     # One-body transition operators must be rotated into the same basis as hOp/psis; PES/IPS are
     # bare ladder operators whose integer indices already refer to the rotated orbitals, so they
     # are left as-is and instead deduplicated via the shell's symmetry-equivalence classes.

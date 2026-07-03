@@ -260,8 +260,9 @@ def test_block_bicgstab_array_rank_deficient():
 
     per_col = np.hstack(
         [
-            block_bicgstab(A, np.zeros((8, 1), complex), y[:, k : k + 1], basis=None, slaterWeightMin=0.0,
-                           atol=1e-10, rtol=1e-12)
+            block_bicgstab(
+                A, np.zeros((8, 1), complex), y[:, k : k + 1], basis=None, slaterWeightMin=0.0, atol=1e-10, rtol=1e-12
+            )
             for k in range(2)
         ]
     )

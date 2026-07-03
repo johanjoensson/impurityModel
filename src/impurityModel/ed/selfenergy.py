@@ -265,10 +265,26 @@ def fixed_peak_dc(
         occ_lower = {i: N0[i] - 1 for i in N0}
 
     basis_upper, solver_upper = _prepare_dc_solver(
-        h_op_i, impurity_orbitals, bath_states, occ_upper, mixed_valence, truncation_threshold, spin_flip_dj, tau, verbose
+        h_op_i,
+        impurity_orbitals,
+        bath_states,
+        occ_upper,
+        mixed_valence,
+        truncation_threshold,
+        spin_flip_dj,
+        tau,
+        verbose,
     )
     basis_lower, solver_lower = _prepare_dc_solver(
-        h_op_i, impurity_orbitals, bath_states, occ_lower, mixed_valence, truncation_threshold, spin_flip_dj, tau, verbose
+        h_op_i,
+        impurity_orbitals,
+        bath_states,
+        occ_lower,
+        mixed_valence,
+        truncation_threshold,
+        spin_flip_dj,
+        tau,
+        verbose,
     )
 
     impurity_indices = [orb for orb_blocks in impurity_orbitals.values() for block in orb_blocks for orb in block]
@@ -401,9 +417,7 @@ def fixed_occupation_dc(
 
     total_impurity_orbitals = sum(len(block) for blocks in impurity_orbitals.values() for block in blocks)
     if not 0 <= occupation <= total_impurity_orbitals:
-        raise ValueError(
-            f"Requested impurity occupation {occupation} outside [0, {total_impurity_orbitals}]."
-        )
+        raise ValueError(f"Requested impurity occupation {occupation} outside [0, {total_impurity_orbitals}].")
 
     basis, solver = _prepare_dc_solver(
         h_op_i, impurity_orbitals, bath_states, N0, mixed_valence, truncation_threshold, spin_flip_dj, tau, verbose
@@ -427,10 +441,7 @@ def fixed_occupation_dc(
     def found(mu, n):
         dc = dc_guess + mu * identity
         if verbose and rank == 0:
-            print(
-                f"Fixed-occupation double counting (target = {occupation}, "
-                f"achieved = {n:.4f}, mu = {mu:.6f}):"
-            )
+            print(f"Fixed-occupation double counting (target = {occupation}, " f"achieved = {n:.4f}, mu = {mu:.6f}):")
             matrix_print(dc_guess, label="DC guess:")
             matrix_print(dc, label="DC found:")
         return dc

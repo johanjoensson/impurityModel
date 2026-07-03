@@ -47,10 +47,10 @@ pytestmark = [
 ]
 
 # --- model geometry (block key 2 = valence/impurity, block key 1 = core, as in the RIXS tests) ---
-NV = 6          # valence orbitals (block 2), indices 0..NV-1
-NC = 2          # core orbitals (block 1), indices NV..NV+NC-1
-NE_VAL = 3      # valence electrons in the ground sector (core full)
-K = 3           # number of Cartesian components (dipole target valence orbitals)
+NV = 6  # valence orbitals (block 2), indices 0..NV-1
+NC = 2  # core orbitals (block 1), indices NV..NV+NC-1
+NE_VAL = 3  # valence electrons in the ground sector (core full)
+K = 3  # number of Cartesian components (dipole target valence orbitals)
 N_ORB = NV + NC
 CORE = list(range(NV, NV + NC))
 NE_TOT = NE_VAL + NC  # total electrons; conserved by H and by the dipole (create + annihilate)
@@ -59,7 +59,7 @@ TAU = 0.02
 D1, D2 = 0.4, 0.2
 WIN = np.array([-7.0, -6.5])
 WLOSS = np.linspace(-1.0, 3.0, 11)
-N_GS = 2        # thermally-averaged ground states
+N_GS = 2  # thermally-averaged ground states
 N_POLS = [1, 2, 4, 8, 16]
 
 
@@ -181,15 +181,39 @@ def _run_perpol(op, psis, es, dets, in_comp, out_comp, epsIn, epsOut):
     t_ops_in = [spectra._combine_component_ops(in_comp, e) for e in epsIn]
     t_ops_out = [spectra._combine_component_ops(out_comp, np.conj(e)) for e in epsOut]
     return spectra.getRIXSmap_new(
-        op, t_ops_in, t_ops_out, psis, es, tau=TAU, wIns=WIN, wLoss=WLOSS,
-        delta1=D1, delta2=D2, basis=_basis(dets), verbose=False, slaterWeightMin=1e-12,
+        op,
+        t_ops_in,
+        t_ops_out,
+        psis,
+        es,
+        tau=TAU,
+        wIns=WIN,
+        wLoss=WLOSS,
+        delta1=D1,
+        delta2=D2,
+        basis=_basis(dets),
+        verbose=False,
+        slaterWeightMin=1e-12,
     )
 
 
 def _run_tensor(op, psis, es, dets, in_comp, out_comp, epsIn, epsOut):
     return spectra.getRIXSmap_tensor(
-        op, in_comp, out_comp, epsIn, epsOut, psis, es, tau=TAU, wIns=WIN, wLoss=WLOSS,
-        delta1=D1, delta2=D2, basis=_basis(dets), verbose=False, slaterWeightMin=1e-12,
+        op,
+        in_comp,
+        out_comp,
+        epsIn,
+        epsOut,
+        psis,
+        es,
+        tau=TAU,
+        wIns=WIN,
+        wLoss=WLOSS,
+        delta1=D1,
+        delta2=D2,
+        basis=_basis(dets),
+        verbose=False,
+        slaterWeightMin=1e-12,
     )
 
 
@@ -202,10 +226,14 @@ def test_rixs_tensor_vs_perpol_scaling():
     ev, vec, states = _dense_states(op)
 
     print(f"\nmodel: {NV} valence + {NC} core orbitals, {NE_VAL} valence e-, K={K} components")
-    print(f"ground dim = {len(_ground_dets())}, full {NE_TOT}e- space = {len(_all_dets())}, "
-          f"wIn={len(WIN)}, wLoss={len(WLOSS)}, n_gs={N_GS}")
-    hdr = (f"{'n_pol':>6} | {'per-pol (s)':>12} | {'tensor (s)':>12} | {'speedup':>8} | "
-           f"{'err_perpol':>11} | {'err_tensor':>11}")
+    print(
+        f"ground dim = {len(_ground_dets())}, full {NE_TOT}e- space = {len(_all_dets())}, "
+        f"wIn={len(WIN)}, wLoss={len(WLOSS)}, n_gs={N_GS}"
+    )
+    hdr = (
+        f"{'n_pol':>6} | {'per-pol (s)':>12} | {'tensor (s)':>12} | {'speedup':>8} | "
+        f"{'err_perpol':>11} | {'err_tensor':>11}"
+    )
     print("\n" + hdr + "\n" + "-" * len(hdr))
 
     results = {}
@@ -225,8 +253,10 @@ def test_rixs_tensor_vs_perpol_scaling():
         err_old = float(np.max(np.abs(old - ref)))
         err_new = float(np.max(np.abs(new - ref)))
         results[n] = (t_old, t_new, err_old, err_new)
-        print(f"{n:>6} | {t_old:>12.3f} | {t_new:>12.3f} | {t_old / t_new:>7.2f}x | "
-              f"{err_old:>11.2e} | {err_new:>11.2e}")
+        print(
+            f"{n:>6} | {t_old:>12.3f} | {t_new:>12.3f} | {t_old / t_new:>7.2f}x | "
+            f"{err_old:>11.2e} | {err_new:>11.2e}"
+        )
 
     # Both paths are now accurate at the block_bicgstab R1 tolerance, flat in the number of
     # polarizations. Timings are noisy, so only assert the qualitative win at the largest sweep.
@@ -264,8 +294,10 @@ def test_rixs_blockgreen_accuracy_independent_of_seed_count():
     err_single = float(np.max(np.abs(single - dense)))
     err_perpol = float(np.max(np.abs(perpol - dense)))
     err_tensor = float(np.max(np.abs(tens - dense)))
-    print(f"\nseed-count accuracy vs dense: 1 seed = {err_single:.2e}, "
-          f"{K} seeds (per-pol) = {err_perpol:.2e}, {K * K} seeds (tensor) = {err_tensor:.2e}")
+    print(
+        f"\nseed-count accuracy vs dense: 1 seed = {err_single:.2e}, "
+        f"{K} seeds (per-pol) = {err_perpol:.2e}, {K * K} seeds (tensor) = {err_tensor:.2e}"
+    )
 
     # All near machine precision (bounded by the block_bicgstab R1 tolerance), and -- the point --
     # the wider blocks are NOT worse than the single seed (the old bug made them ~10^5x worse).

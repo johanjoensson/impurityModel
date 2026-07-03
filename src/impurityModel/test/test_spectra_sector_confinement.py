@@ -56,9 +56,7 @@ def _ground_state_half_filled(op):
         for i, si in enumerate(states):
             h[i, j] = inner(si, col)
     ev, evec = np.linalg.eigh(h)
-    gs = ManyBodyState(
-        {SlaterDeterminant.from_bytes(dets[i]): evec[i, 0] for i in range(n) if abs(evec[i, 0]) > 1e-14}
-    )
+    gs = ManyBodyState({SlaterDeterminant.from_bytes(dets[i]): evec[i, 0] for i in range(n) if abs(evec[i, 0]) > 1e-14})
     return gs, ev[0], dets
 
 

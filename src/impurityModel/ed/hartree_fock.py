@@ -280,9 +280,7 @@ def build_cas_seed(filled_idx, partial_idx, active_electrons, num_spin_orbitals)
     import itertools
 
     if active_electrons < 0 or active_electrons > len(partial_idx):
-        raise ValueError(
-            f"active_electrons={active_electrons} out of range for {len(partial_idx)} partial orbitals"
-        )
+        raise ValueError(f"active_electrons={active_electrons} out of range for {len(partial_idx)} partial orbitals")
     n_bytes = (num_spin_orbitals + 7) // 8
     filled = list(filled_idx)
     seeds = []

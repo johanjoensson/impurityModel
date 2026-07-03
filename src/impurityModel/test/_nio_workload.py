@@ -128,9 +128,7 @@ def build_selfenergy_inputs(
     # 2p3d benchmark; the d-only self-energy uses just Fdd, c and the valence xi_3d SOC (``xi``).
     if chargeTransferCorrection is not None:
         dc = finite.dc_MLFT(n3d_i=n0imp, c=chargeTransferCorrection, Fdd=Fdd)
-        eDCOperator = {
-            (((ls, s, m), "c"), ((ls, s, m), "a")): -dc[ls] for s in range(2) for m in range(-ls, ls + 1)
-        }
+        eDCOperator = {(((ls, s, m), "c"), ((ls, s, m), "a")): -dc[ls] for s in range(2) for m in range(-ls, ls + 1)}
         hOp = finite.addOps([hOp, eDCOperator])
 
     # Map (l,s,m) / (l,b) labels to single integer indices. Drop identically-zero terms

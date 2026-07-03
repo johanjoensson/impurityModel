@@ -11,7 +11,6 @@ from impurityModel.ed.symmetries import (
     transition_sector_restrictions,
 )
 
-
 # Two conserved subsets: a "core" {0,1} and a "valence" {2,3}.
 CHARGES = [frozenset({0, 1}), frozenset({2, 3})]
 

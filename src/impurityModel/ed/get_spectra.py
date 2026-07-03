@@ -282,7 +282,9 @@ def main(
                         f"{n_classes} inequivalent PES/IPS classes."
                     )
             elif rank == 0:
-                print(f"Kept spherical basis (rotation would densify {fill_ratio:.2f}x > {spectra._MAX_ROTATION_FILL}).")
+                print(
+                    f"Kept spherical basis (rotation would densify {fill_ratio:.2f}x > {spectra._MAX_ROTATION_FILL})."
+                )
     # Measure how many physical processes the Hamiltonian contains.
     if rank == 0:
         print(f"Hamiltonian contains {len(hOp)} terms.")
