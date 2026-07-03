@@ -21,7 +21,7 @@ from impurityModel.ed.ManyBodyUtils import (
     ManyBodyState,
     SlaterDeterminant,
 )
-from impurityModel.ed.mpi_comm import empty_clone, graph_alltoall, graph_alltoall_psis, is_empty
+from impurityModel.ed.mpi_comm import empty_clone, get_job_tasks, graph_alltoall, graph_alltoall_psis, is_empty
 
 # ---------------------------------------------------------------------------
 # Helpers
@@ -505,3 +505,9 @@ def test_graph_alltoall_psis_empty():
     assert len(result) == n_psis
     for pi in range(n_psis):
         assert len(result[pi]) == 0
+
+
+def test_get_job_tasks():
+    tasks = [0, 1, 2, 3, 4]
+    assert get_job_tasks(0, 2, tasks) == (0, 1, 4)
+    assert get_job_tasks(1, 2, tasks) == (2, 3)

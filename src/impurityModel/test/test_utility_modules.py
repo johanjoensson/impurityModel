@@ -5,6 +5,7 @@ import numpy as np
 
 from impurityModel.ed import op_parser
 from impurityModel.ed.average import thermal_average, thermal_average_scale_indep
+from impurityModel.ed.utils import rotate_matrix
 
 
 def test_average():
@@ -65,3 +66,15 @@ def test_op_parser():
         assert (((1, 2), "c"), ((3, 4), "a")) in op
         assert op[(((1, 2), "c"), ((3, 4), "a"))] == 1.5 + 0.5j
         assert op[(((5, 6), "c"), ((7, 8), "a"))] == -0.5 + 0j
+
+
+def test_rotate_matrix():
+    M = np.array([[1.0, 0], [0, 2.0]])
+    T = np.array([[0, 1], [1, 0]])
+    M_rot = rotate_matrix(M, T)
+    expected = np.array([[2.0, 0], [0, 1.0]])
+    assert np.allclose(M_rot, expected)
+
+    T_dict = {0: np.array([[0, 1], [1, 0]])}
+    M_rot_dict = rotate_matrix(M, T_dict)
+    assert np.allclose(M_rot_dict, expected)

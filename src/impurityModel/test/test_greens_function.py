@@ -4,7 +4,6 @@ import numpy as np
 from mpi4py import MPI
 
 from impurityModel.ed.block_structure import BlockStructure
-from impurityModel.ed.utils import rotate_matrix
 from impurityModel.ed.greens_function import (
     build_full_greens_function,
     build_qr,
@@ -116,19 +115,6 @@ def test_calc_continuants():
     assert B.shape == (3, 2, 2)
     assert np.allclose(A[0], diag[0])
     assert np.allclose(B[0], np.ones((2, 2)))
-
-
-def test_rotate_matrix():
-    M = np.array([[1, 2], [3, 4]])
-    T = np.array([[0, 1], [1, 0]])
-    rot = rotate_matrix(M, T)
-    expected = T.T.conj() @ M @ T
-    assert np.allclose(rot, expected)
-
-    T_dict = {0: np.array([[0, 1], [1, 0]]), 1: np.array([[1]])}
-    M2 = np.eye(3)
-    rot2 = rotate_matrix(M2, T_dict)
-    assert rot2.shape == (3, 3)
 
 
 def test_rotate_Greens_function():
