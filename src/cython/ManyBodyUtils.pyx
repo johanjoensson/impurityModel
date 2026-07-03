@@ -973,7 +973,13 @@ def reorth_cgs2_dense(list wp, list Q, int n_passes, object comm):
         while it != q_ptrs[ci].end():
             support.push_back(dereference(it).first)
             preincrement(it)
-    if support.size() == 0:
+    # NOTE: an empty local support must NOT return early under MPI -- p, nq and
+    # n_passes are rank-identical (bad_cols is bcast), so every rank must join the
+    # n_passes Allreduce(O) collectives below; a rank-local early return mispairs
+    # the other ranks' Allreduce with this rank's next collective (wrong numerics,
+    # then deadlock -- seen at 4 ranks where a rank owns no determinants). With
+    # ns == 0 the GEMMs are zero-row no-ops and O contributes zeros, as intended.
+    if support.size() == 0 and comm is None:
         return wp
     sort(support.begin(), support.end())
     support.erase(unique(support.begin(), support.end()), support.end())
