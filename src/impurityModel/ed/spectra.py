@@ -1280,6 +1280,13 @@ def _rixs_map_flat(
         [len(chunk) for _, chunk in unit_infos], dtype=float
     )
 
+    # green_basis depends only on excited_restrictions (identical for every unit), so each
+    # color creates it once on its first unit (lazily -- all ranks of a color run the same
+    # unit list, so the collective Clone stays in lock-step) and clears it between units
+    # instead of cloning a fresh sub-communicator + basis per unit. Freed collectively after
+    # run_units_distributed returns on all ranks.
+    green_basis_cache = {}
+
     def kernel(split_basis, u, seeds):
         e, w_chunk = unit_infos[u]
         E_e = Es[e]
@@ -1287,12 +1294,17 @@ def _rixs_map_flat(
         sub_comm = split_basis.comm
         # green_basis hosts the out-transition block-Green solves and accumulates states over
         # the chunk; tmp_basis hosts the intermediate resolvent and is rebuilt per wIn point.
-        green_basis = split_basis.clone(
-            initial_basis=[],
-            restrictions=excited_restrictions,
-            verbose=False,
-            comm=sub_comm.Clone() if sub_comm is not None else None,
-        )
+        green_basis = green_basis_cache.get(id(split_basis))
+        if green_basis is None:
+            green_basis = split_basis.clone(
+                initial_basis=[],
+                restrictions=excited_restrictions,
+                verbose=False,
+                comm=sub_comm.Clone() if sub_comm is not None else None,
+            )
+            green_basis_cache[id(split_basis)] = green_basis
+        else:
+            green_basis.clear()
         tmp_basis = split_basis.clone(
             initial_basis=[],
             restrictions=tmp_restrictions_per_e[e],
@@ -1331,20 +1343,31 @@ def _rixs_map_flat(
                 rtol=1e-7,
             )
             out[k] = eval_out(green_basis, psi2_all, E_e) * thermal_weight
-        # Free the cloned sub-communicators collectively -- every rank of this color runs the
-        # same unit list in the same order.
+        # Free the per-unit cloned sub-communicator collectively -- every rank of this color
+        # runs the same unit list in the same order. green_basis's clone outlives the unit
+        # (per-color cache) and is freed after run_units_distributed.
         if sub_comm is not None:
             tmp_basis.free_comm()
-            green_basis.free_comm()
         return out
 
-    results = gf.run_units_distributed(basis, unit_seeds, unit_weights, kernel, verbose=verbose)
-    if results is None:  # non-root rank of a distributed run
-        return None
+    # Accumulate each unit's contribution into the preallocated output as it arrives, so
+    # rank 0 never holds all unit results plus the assembled tensor simultaneously.
     gs = np.zeros((n_i, n_win, n_o, len(wLoss)), dtype=complex)
-    for (e, w_chunk), res in zip(unit_infos, results):
+
+    def accumulate(u, res):
+        _e, w_chunk = unit_infos[u]
         for k, w_global in enumerate(w_chunk):
             gs[:, w_global, :, :] += res[k]
+
+    got = gf.run_units_distributed(basis, unit_seeds, unit_weights, kernel, verbose=verbose, reduce_fn=accumulate)
+    # Collective on each color's clone: every rank of a color created (at most) one cached
+    # green_basis and reaches this point after its unit loop.
+    for cached in green_basis_cache.values():
+        if cached.comm is not None:
+            cached.free_comm()
+    green_basis_cache.clear()
+    if got is None:  # non-root rank of a distributed run
+        return None
     return np.transpose(gs, (0, 2, 1, 3)).copy() / Z
 
 

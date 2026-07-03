@@ -255,6 +255,7 @@ def run_units_distributed(
     unit_weights: np.ndarray,
     kernel: Callable,
     verbose: bool = False,
+    reduce_fn: Optional[Callable] = None,
 ) -> Optional[list]:
     """Distribute work units over MPI colors, run ``kernel`` per unit, gather to global rank 0.
 
@@ -266,15 +267,24 @@ def run_units_distributed(
     ``kernel`` must be collective on ``split_basis.comm`` only (every rank of a color executes
     the identical unit list, so MPI stays in lock-step) and return a picklable object.
 
+    ``reduce_fn(unit_index, unit_result)``, when given, is called on global rank 0 (and in the
+    serial path) as each color's payload arrives, and the payload is dropped afterwards --
+    rank 0 then never holds more than one color's results at a time instead of all units
+    simultaneously (e.g. the caller accumulates into a preallocated output tensor).
+
     Returns
     -------
     list or None
         On global rank 0 (and on every rank in the serial path): ``results[u]`` = kernel result
-        for unit ``u``. ``None`` on other ranks. The split communicator is freed collectively
-        before returning.
+        for unit ``u``, or ``True`` when ``reduce_fn`` consumed the results. ``None`` on other
+        ranks. The split communicator is freed collectively before returning.
     """
     n_units = len(unit_seeds)
     if basis.comm is None or basis.comm.size <= 1:
+        if reduce_fn is not None:
+            for u in range(n_units):
+                reduce_fn(u, kernel(basis, u, unit_seeds[u]))
+            return True
         return [kernel(basis, u, unit_seeds[u]) for u in range(n_units)]
 
     seed_offsets = np.concatenate(([0], np.cumsum([len(s) for s in unit_seeds]))).astype(int)
@@ -297,15 +307,33 @@ def run_units_distributed(
     )
 
     local_results = [kernel(split_basis, u, split_seeds[seed_offsets[u] : seed_offsets[u + 1]]) for u in unit_indices]
-    gathered = gather_distributed_results(
-        basis.comm, sub_rank, unit_roots, units_per_color, local_results, is_array=False
-    )
 
     results = None
-    if basis.comm.rank == 0:
-        results = [None] * n_units
-        for i, u in enumerate(unit_indices_per_color):
-            results[int(u)] = gathered[i]
+    if reduce_fn is None:
+        gathered = gather_distributed_results(
+            basis.comm, sub_rank, unit_roots, units_per_color, local_results, is_array=False
+        )
+        if basis.comm.rank == 0:
+            results = [None] * n_units
+            for i, u in enumerate(unit_indices_per_color):
+                results[int(u)] = gathered[i]
+    elif basis.comm.rank == 0:
+        # Streaming consume: receive one color's payload at a time (same color order and
+        # send/recv pairing as gather_distributed_results), reduce it, drop it.
+        offset = 0
+        for count, root in zip(units_per_color, unit_roots):
+            if count == 0:
+                continue
+            payload = local_results if root == 0 else basis.comm.recv(source=root)
+            for i in range(count):
+                reduce_fn(int(unit_indices_per_color[offset + i]), payload[i])
+            payload = None
+            offset += count
+        local_results = None
+        results = True
+    elif sub_rank == 0:
+        basis.comm.send(local_results, dest=0)
+        local_results = None
 
     # Free the split communicator collectively before returning. MPI_Comm_free is collective --
     # it must be called by all ranks in the comm at the same time. Leaving it for Python gc risks
