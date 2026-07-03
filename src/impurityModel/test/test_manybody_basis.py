@@ -1521,6 +1521,12 @@ def test_distributed_vector_mpi():
 
 @pytest.mark.mpi
 def test_two_sets_of_imp_orbs():
+    # Several impurity groups form one correlated shell: only the *total* impurity
+    # occupation (3 + 4 = 7) is pinned, and charge redistributes freely between the
+    # manifolds (a per-group pin would fix the eg/t2g ratio or S_z). With zero slack
+    # the valence baths stay full and the conduction baths empty, so the seed holds
+    # every arrangement of 7 electrons over the manifolds of sizes 3 and 5:
+    # (n0, n1) = (2, 5) -> C(3,2) * C(5,5) = 3 and (3, 4) -> C(3,3) * C(5,4) = 5.
     comm = MPI.COMM_WORLD
     impurity_orbitals = {0: [list(range(3))], 1: [list(range(3, 8))]}
     bath_states = ({0: [[]], 1: [list(range(8, 13))]}, {0: [[]], 1: [list(range(13, 15))]})
@@ -1539,4 +1545,12 @@ def test_two_sets_of_imp_orbs():
         verbose=True,
         comm=comm,
     )
-    assert len(basis) == 5
+    assert len(basis) == 8
+
+    restrictions = basis.get_effective_restrictions()
+    impurity_indices = frozenset(range(8))
+    valence_indices = frozenset(range(8, 13))
+    conduction_indices = frozenset(range(13, 15))
+    assert restrictions[impurity_indices] == (7, 7)
+    assert restrictions[valence_indices] == (5, 5)
+    assert restrictions[conduction_indices] == (0, 0)
