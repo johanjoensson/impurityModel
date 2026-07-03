@@ -1,7 +1,7 @@
 import os
 from glob import glob
 
-from impurityModel.ed.finite import assert_hermitian
+from impurityModel.ed.operator_algebra import assert_hermitian
 from impurityModel.ed.get_spectra import read_pickled_file
 
 DIR_PATH = os.path.dirname(os.path.realpath(__file__))

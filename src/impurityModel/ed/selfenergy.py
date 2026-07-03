@@ -7,6 +7,7 @@ from mpi4py import MPI
 
 # from impurityModel.ed.get_spectra import get_noninteracting_hamiltonian_operator
 from impurityModel.ed import finite
+from impurityModel.ed.operator_algebra import addOps, c2i
 from impurityModel.ed.cipsi_solver import CIPSISolver
 from impurityModel.ed.greens_function import build_full_greens_function, get_Greens_function, save_Greens_function
 from impurityModel.ed.groundstate import calc_gs
@@ -250,7 +251,7 @@ def fixed_peak_dc(
             "With multiple groups it is ambiguous which group gains/loses the electron."
         )
     u = finite.getUop_from_rspt_u4(u4)
-    h_op_i = ManyBodyOperator(finite.addOps([h0_op, u]))
+    h_op_i = ManyBodyOperator(addOps([h0_op, u]))
     impurity_orbitals, bath_states = _normalize_dc_orbitals(impurity_orbitals, bath_states)
 
     # Keep the requested peak outside the thermal broadening, preserving the
@@ -412,7 +413,7 @@ def fixed_occupation_dc(
         If the requested occupation cannot be bracketed within ``max_shift``.
     """
     u = finite.getUop_from_rspt_u4(u4)
-    h_op_i = ManyBodyOperator(finite.addOps([h0_op, u]))
+    h_op_i = ManyBodyOperator(addOps([h0_op, u]))
     impurity_orbitals, bath_states = _normalize_dc_orbitals(impurity_orbitals, bath_states)
 
     total_impurity_orbitals = sum(len(block) for blocks in impurity_orbitals.values() for block in blocks)
@@ -1116,10 +1117,10 @@ def get_selfenergy(
     uOp = finite.getUop(l1=ls, l2=ls, l3=ls, l4=ls, R=Fdd)
     nBaths_for_c2i = OrderedDict({ls: 0})
     for process, val in uOp.items():
-        i = finite.c2i(nBaths_for_c2i, process[0][0])
-        j = finite.c2i(nBaths_for_c2i, process[1][0])
-        k = finite.c2i(nBaths_for_c2i, process[2][0])
-        l = finite.c2i(nBaths_for_c2i, process[3][0])
+        i = c2i(nBaths_for_c2i, process[0][0])
+        j = c2i(nBaths_for_c2i, process[1][0])
+        k = c2i(nBaths_for_c2i, process[2][0])
+        l = c2i(nBaths_for_c2i, process[3][0])
         u4[i, j, k, l] = 2.0 * val
 
     # Flat impurity spin-orbital index list (dict[int, list[int]]); calc_selfenergy re-groups the
@@ -1147,7 +1148,7 @@ def get_selfenergy(
         new_process = []
         for spinOrb, action in process:
             try:
-                new_process.append((finite.c2i(sum_baths, spinOrb), action))
+                new_process.append((c2i(sum_baths, spinOrb), action))
             except Exception as e:
                 print(f"FAILED on spinOrb: {spinOrb} in process {process}", flush=True)
                 raise e

@@ -18,7 +18,7 @@ from mpi4py import MPI
 from impurityModel.ed import finite, op_parser, spectra
 from impurityModel.ed.average import k_B
 from impurityModel.ed.block_structure import BlockStructure
-from impurityModel.ed.finite import assert_hermitian, c2i
+from impurityModel.ed.operator_algebra import addOps, assert_hermitian, c2i
 from impurityModel.ed.groundstate import calc_gs
 from impurityModel.ed.ManyBodyUtils import ManyBodyOperator
 
@@ -453,7 +453,7 @@ def get_noninteracting_hamiltonian_operator(nBaths, nValBaths, SOCs, hField, h0_
 
     if rank == 0 and verbose:
         print(f"Non-interacting, non-relativistic Hamiltonian (h0): {len(h0_operator)} terms.")
-    hOperator = finite.addOps([hHfieldOperator, SOC2pOperator, SOC3dOperator, h0_operator])
+    hOperator = addOps([hHfieldOperator, SOC2pOperator, SOC3dOperator, h0_operator])
     return hOperator
 
 
@@ -535,7 +535,7 @@ def get_hamiltonian_operator(nBaths, nValBaths, slaterCondon, SOCs, DCinfo, hFie
                 eDCOperator[(((l, s, m), "c"), ((l, s, m), "a"))] = -dc[l]
 
     # Add Hamiltonian terms to one operator.
-    hOperator = finite.addOps([uOperator, eDCOperator, h_non_interacting])
+    hOperator = addOps([uOperator, eDCOperator, h_non_interacting])
 
     # Convert spin-orbital and bath state indices to a single index notation.
     hOp = {}
@@ -743,7 +743,7 @@ def get_CF_hamiltonian(nBaths, nValBaths, h0_CF_filename, bath_state_basis="sphe
                         e_bath_3d_operator[(((l, bi_con), "c"), ((l, bj_con), "a"))] = eBath
 
     # Add Hamiltonian terms to one operator.
-    h0_operator = finite.addOps([h_imp_3d_operator, h_hopp_operator, e_bath_3d_operator])
+    h0_operator = addOps([h_imp_3d_operator, h_hopp_operator, e_bath_3d_operator])
     return h0_operator
 
 

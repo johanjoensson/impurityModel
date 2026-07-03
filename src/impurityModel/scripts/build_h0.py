@@ -18,7 +18,7 @@ from impurityModel.ed.edchain import (
     build_H_bath_v,
     build_imp_bath_blocks,
 )
-from impurityModel.ed.finite import matrixToIOp
+from impurityModel.ed.operator_algebra import matrixToIOp
 from impurityModel.ed.greens_function import (
     block_diagonalize_hyb,
 )

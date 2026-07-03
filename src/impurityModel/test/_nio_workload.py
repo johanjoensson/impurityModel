@@ -67,7 +67,7 @@ def build_selfenergy_inputs(
     dict
         Keyword arguments for ``selfenergy.calc_selfenergy`` (minus ``comm``).
     """
-    from impurityModel.ed import finite
+    from impurityModel.ed import finite, operator_algebra
     from impurityModel.ed.get_spectra import get_noninteracting_hamiltonian_operator
 
     if nValBaths is None:
@@ -84,10 +84,10 @@ def build_selfenergy_inputs(
     uOp = finite.getUop(l1=ls, l2=ls, l3=ls, l4=ls, R=Fdd)
     nBaths_for_c2i = OrderedDict({ls: 0})
     for process, val in uOp.items():
-        i = finite.c2i(nBaths_for_c2i, process[0][0])
-        j = finite.c2i(nBaths_for_c2i, process[1][0])
-        k = finite.c2i(nBaths_for_c2i, process[2][0])
-        m = finite.c2i(nBaths_for_c2i, process[3][0])
+        i = operator_algebra.c2i(nBaths_for_c2i, process[0][0])
+        j = operator_algebra.c2i(nBaths_for_c2i, process[1][0])
+        k = operator_algebra.c2i(nBaths_for_c2i, process[2][0])
+        m = operator_algebra.c2i(nBaths_for_c2i, process[3][0])
         u4[i, j, k, m] = 2.0 * val
 
     # Flat impurity spin-orbital index list (dict[int, list[int]]); calc_selfenergy re-groups the
@@ -129,7 +129,7 @@ def build_selfenergy_inputs(
     if chargeTransferCorrection is not None:
         dc = finite.dc_MLFT(n3d_i=n0imp, c=chargeTransferCorrection, Fdd=Fdd)
         eDCOperator = {(((ls, s, m), "c"), ((ls, s, m), "a")): -dc[ls] for s in range(2) for m in range(-ls, ls + 1)}
-        hOp = finite.addOps([hOp, eDCOperator])
+        hOp = operator_algebra.addOps([hOp, eDCOperator])
 
     # Map (l,s,m) / (l,b) labels to single integer indices. Drop identically-zero terms
     # first: get_noninteracting_hamiltonian_operator unconditionally adds a 2p (l=1) SOC
@@ -139,7 +139,7 @@ def build_selfenergy_inputs(
     for process, value in hOp.items():
         if abs(value) == 0:
             continue
-        hOp_int[tuple((finite.c2i(sum_baths, spinOrb), action) for spinOrb, action in process)] = value
+        hOp_int[tuple((operator_algebra.c2i(sum_baths, spinOrb), action) for spinOrb, action in process)] = value
 
     omega_mesh = np.linspace(-1.83, 1.83, n_omega)
 

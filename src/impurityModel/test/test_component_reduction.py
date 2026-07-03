@@ -20,7 +20,7 @@ from collections import OrderedDict
 import numpy as np
 import pytest
 
-from impurityModel.ed.finite import c2i
+from impurityModel.ed.operator_algebra import c2i
 from impurityModel.ed.spectra import getDipoleOperators
 from impurityModel.ed.symmetries import (
     component_symmetry_reduction,

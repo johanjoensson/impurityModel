@@ -175,7 +175,8 @@ def test_generator_weight_classification():
 
 from collections import OrderedDict  # noqa: E402
 
-from impurityModel.ed.finite import c2i, getSOCop  # noqa: E402
+from impurityModel.ed.finite import getSOCop  # noqa: E402
+from impurityModel.ed.operator_algebra import c2i  # noqa: E402
 
 _L = 2
 _NBATHS = OrderedDict({_L: 0})  # single d-shell impurity, no baths

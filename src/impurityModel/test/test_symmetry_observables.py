@@ -2,6 +2,7 @@
 
 import numpy as np
 
+from impurityModel.ed.operator_algebra import addOps, c2i
 from impurityModel.ed.finite import (
     get_LS_from_rho_spherical,
     make_spin_operators,
@@ -660,7 +661,7 @@ def test_calc_gs_reports_casimirs_for_cubic_manifold_grouped_dshell(capsys):
     nB = OrderedDict({2: 0})
     V4 = np.zeros((10,) * 4, dtype=complex)
     for proc, val in uOp.items():
-        ix = [finite.c2i(nB, proc[p][0]) for p in range(4)]
+        ix = [c2i(nB, proc[p][0]) for p in range(4)]
         V4[ix[0], ix[1], ix[2], ix[3]] = 2.0 * val
     Rot = finite.get_spherical_2_cubic_matrix(spinpol=True, l=2)
     u4 = np.einsum("ia,jb,ijkl,kc,ld->abcd", Rot.conj(), Rot.conj(), V4, Rot, Rot, optimize=True)
@@ -677,7 +678,7 @@ def test_calc_gs_reports_casimirs_for_cubic_manifold_grouped_dshell(capsys):
         h0[((b, "c"), (b, "a"))] = -0.5  # valence (below Fermi 0)
         h0[((k, "c"), (b, "a"))] = 0.15
         h0[((b, "c"), (k, "a"))] = 0.15
-    Hop = ManyBodyOperator(finite.addOps([h0, u_dict]))
+    Hop = ManyBodyOperator(addOps([h0, u_dict]))
 
     imp_flat = list(range(10))
     bs = impurity_block_structure(Hop, imp_flat)
