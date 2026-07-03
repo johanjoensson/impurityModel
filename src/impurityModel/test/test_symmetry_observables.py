@@ -3,12 +3,12 @@
 import numpy as np
 
 from impurityModel.ed.operator_algebra import addOps, c2i
-from impurityModel.ed.finite import (
+from impurityModel.ed.observables import (
+    apply_casimir,
+    casimir_to_quantum_number,
+    expect_casimir,
     get_LS_from_rho_spherical,
     make_spin_operators,
-    apply_casimir,
-    expect_casimir,
-    casimir_to_quantum_number,
     manifold_observable_values,
 )
 from impurityModel.ed.ManyBodyUtils import ManyBodyState, SlaterDeterminant
@@ -115,7 +115,7 @@ def test_L2_J2_observable():
     Layout (n_orbs=10): spin-down block indices 0..4 (ml=-2..2),
     spin-up block indices 5..9 (ml=-2..2).
     """
-    from impurityModel.ed.finite import make_orbital_angular_momentum_operators
+    from impurityModel.ed.observables import make_orbital_angular_momentum_operators
 
     n_orbs = 10
     down = [0, 1, 2, 3, 4]  # ml = -2..2, spin down
@@ -181,7 +181,7 @@ def test_degenerate_manifold_observable():
 
 def test_thermal_observable():
     """Thermal average matches a brute-force Boltzmann sum and reduces to T=0."""
-    from impurityModel.ed.finite import thermal_observable_value
+    from impurityModel.ed.observables import thermal_observable_value
 
     values = np.array([0.0, 2.0, 2.0, 2.0])
     energies = np.array([0.0, 1.0, 1.0, 3.0])
@@ -197,7 +197,7 @@ def test_thermal_observable():
 
 def test_kondo_correlation():
     """<S_imp . S_bath> on a two-spin model: singlet screened, triplet positive."""
-    from impurityModel.ed.finite import expect_spin_correlation
+    from impurityModel.ed.observables import expect_spin_correlation
 
     # Orbital A = "impurity" (dn=0, up=1); orbital B = "bath" (dn=2, up=3).
     ops_imp = make_spin_operators([(0, 1)])
@@ -233,7 +233,7 @@ def _d_shell_block_structure():
 
 def test_print_expectation_values_columns(capsys):
     """Existing per-eigenstate columns are preserved and <L.S> is appended."""
-    from impurityModel.ed.finite import print_expectation_values
+    from impurityModel.ed.observables import print_expectation_values
 
     n = 10  # d shell, l=2
     rot = np.eye(n)
@@ -258,7 +258,7 @@ def test_print_expectation_values_columns(capsys):
 
 def test_print_thermal_expectation_values_lines(capsys):
     """Existing thermal lines are preserved and a <L.S> line is added."""
-    from impurityModel.ed.finite import print_thermal_expectation_values
+    from impurityModel.ed.observables import print_thermal_expectation_values
 
     n = 10
     rot = np.eye(n)
@@ -276,7 +276,7 @@ def test_print_thermal_expectation_values_lines(capsys):
 
 def test_print_expectation_values_S_column(capsys):
     """Passing s_values appends an 'S' column; omitting it preserves old output."""
-    from impurityModel.ed.finite import print_expectation_values
+    from impurityModel.ed.observables import print_expectation_values
 
     n = 10
     rot = np.eye(n)
@@ -296,7 +296,7 @@ def test_print_expectation_values_S_column(capsys):
 
 def test_print_thermal_S2_line(capsys):
     """Passing s_thermal adds an <S^2> line with the matching S quantum number."""
-    from impurityModel.ed.finite import print_thermal_expectation_values
+    from impurityModel.ed.observables import print_thermal_expectation_values
 
     n = 10
     rot = np.eye(n)
@@ -315,7 +315,7 @@ def test_impurity_casimir_operators_rotated():
 
     Stretched single d-electron |ml=2, up> = |j=5/2, mj=5/2>: L^2=6, S^2=3/4, J^2=35/4.
     """
-    from impurityModel.ed.finite import make_impurity_casimir_operators, expect_casimir
+    from impurityModel.ed.observables import make_impurity_casimir_operators, expect_casimir
 
     imp = {0: [list(range(10))]}  # one d-shell, layout [down(ml=-2..2), up(ml=-2..2)]
 
@@ -341,7 +341,7 @@ def test_impurity_casimir_operators_rotated():
 
 def test_print_expectation_values_LJ_columns(capsys):
     """Passing l_values / j_values appends 'L' and 'J' columns after 'S'."""
-    from impurityModel.ed.finite import print_expectation_values
+    from impurityModel.ed.observables import print_expectation_values
 
     n = 10
     bs = _d_shell_block_structure()
@@ -366,7 +366,7 @@ def test_print_expectation_values_LJ_columns(capsys):
 
 def test_print_thermal_LJ_lines(capsys):
     """Passing l_thermal / j_thermal adds <L^2> and <J^2> lines with quantum numbers."""
-    from impurityModel.ed.finite import print_thermal_expectation_values
+    from impurityModel.ed.observables import print_thermal_expectation_values
 
     n = 10
     bs = _d_shell_block_structure()
@@ -393,9 +393,8 @@ def test_bath_spin_pairs_and_consistency():
         bath_spin_pairs,
         impurity_spin_pairs,
         spin_pairs_consistent_with_h,
-        expect_spin_correlation,
-        make_spin_operators,
     )
+    from impurityModel.ed.observables import expect_spin_correlation, make_spin_operators
     from impurityModel.ed.ManyBodyUtils import ManyBodyOperator
 
     # 4-orbital Anderson: imp 0=dn,1=up ; bath 2=dn,3=up. Spin-diagonal hopping.
@@ -595,7 +594,7 @@ def _thermal_sisb(out):
 def _cubic_dshell(n=10):
     """Build the whole-d-shell Casimir operators in cubic harmonics + the spherical->cubic rotation."""
     from impurityModel.ed import atomic_physics, finite
-    from impurityModel.ed.finite import make_impurity_casimir_operators
+    from impurityModel.ed.observables import make_impurity_casimir_operators
 
     Rot = atomic_physics.get_spherical_2_cubic_matrix(spinpol=True, l=2)  # spherical<->cubic (10x10)
     l_ops, s_ops, j_ops = make_impurity_casimir_operators({0: [list(range(n))]}, Rot.conj().T)
@@ -609,10 +608,10 @@ def test_whole_shell_casimir_aggregation_dshell():
     must raise (not a spin-doubled l-shell); aggregated over the whole shell it must succeed and,
     on the known high-spin d8 determinant (t2g^6 eg-up^2, S=1 Ms=1), give <S^2> = 2 exactly.
     """
-    from impurityModel.ed.finite import make_impurity_casimir_operators
+    from impurityModel.ed.observables import make_impurity_casimir_operators
     from impurityModel.ed.ManyBodyUtils import ManyBodyState, SlaterDeterminant, inner
     from impurityModel.ed.atomic_physics import get_spherical_2_cubic_matrix
-    from impurityModel.ed.finite import apply_casimir
+    from impurityModel.ed.observables import apply_casimir
 
     Rot = get_spherical_2_cubic_matrix(spinpol=True, l=2)
     # Per-manifold build raises (the case that made calc_gs skip the Casimirs before the fix).

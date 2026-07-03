@@ -5,7 +5,7 @@ from impurityModel.ed.utils import rotate_matrix
 from impurityModel.ed.operator_algebra import assert_hermitian, daggerOp
 from impurityModel.ed.atomic_physics import dc_MLFT, get_spherical_2_cubic_matrix
 from impurityModel.ed.eigensolvers import HermitianOperator
-from impurityModel.ed.finite import (
+from impurityModel.ed.observables import (
     get_Lz_from_rho_spherical,
     get_occupations_from_rho_spherical,
 )
