@@ -12,6 +12,7 @@ from impurityModel.ed.block_structure import BlockStructure, get_blocks
 from impurityModel.ed.BlockLanczosArray import (
     Reort,
     block_lanczos_array,
+    resolve_reort,
     BETA_BLOWUP_FACTOR,
 )
 from impurityModel.ed.BlockLanczos import block_lanczos_cy
@@ -1377,6 +1378,9 @@ def block_Green_sparse(
     # it used the whole budget and there may be more spectrum to resolve, so we extend it.
     alphas = betas = Q = W = widths = None
     budget = max(int(getattr(basis, "size", 0)) // max(n, 1), 1)
+    # With reort NONE the kernel never projects against the accumulated Krylov basis and
+    # the resume protocol reads only the two-block tail, so skip the full retention.
+    resolved_reort = resolve_reort(reort if reort is not None else Reort.NONE)
     while True:
         alphas, betas, Q, W, widths, status = block_lanczos_cy(
             psi_arr,
@@ -1384,7 +1388,7 @@ def block_Green_sparse(
             basis,
             converged,
             verbose=verbose,
-            reort=reort if reort is not None else Reort.NONE,
+            reort=resolved_reort,
             slaterWeightMin=slaterWeightMin,
             max_iter=budget,
             return_widths=True,
@@ -1394,6 +1398,7 @@ def block_Green_sparse(
             Q_init=Q,
             W_init=W,
             block_widths_init=widths,
+            store_krylov=resolved_reort != Reort.NONE,
         )
         # The kernel reports exactly why it stopped (see block_lanczos_cy):
         #   * "converged"          -- the GF convergence monitor was satisfied.

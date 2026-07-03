@@ -478,6 +478,7 @@ def block_lanczos_cy(
     locked_evals=None,
     locked_res=0.0,
     locked_reort="full",
+    store_krylov=True,
 ):
     """Run the distributed block Lanczos iteration with ``ManyBodyState``.
 
@@ -567,6 +568,14 @@ def block_lanczos_cy(
             the step function; ``None`` causes exact initialisation via EOR
             when resuming with partial/selective reorthogonalization.  Default
             ``None``.
+        store_krylov: When ``False`` (requires ``reort == 'none'`` and no
+            ``locked`` set) the accumulated Krylov basis is *not* retained;
+            the returned ``Q_basis`` holds only the last two blocks (previous
+            block + residual) — exactly what the warm-start protocol reads.
+            The alphas/betas are bit-identical to ``store_krylov=True``; only
+            the O(N_det * p * k) dead retention is dropped.  On resume,
+            ``Q_init`` is interpreted as that two-block tail (split by
+            ``block_widths_init[-1]``).  Default ``True``.
 
     Returns:
         tuple[numpy.ndarray, numpy.ndarray, list, numpy.ndarray]: A 4-tuple
@@ -601,6 +610,13 @@ def block_lanczos_cy(
     # --- Resolve reort mode ---------------------------------------------
     reort_mode = resolve_reort(reort)
 
+    # Tail-only mode: with reort == NONE (and no locked set) nothing in the recurrence
+    # ever projects against the accumulated Krylov basis, and the warm-start protocol
+    # reads only the last two blocks -- so retaining the full O(N_det * p * k) basis is
+    # pure dead memory (the dominant avoidable allocation in a Green's-function run).
+    if not store_krylov and (reort_mode != Reort.NONE or locked):
+        raise ValueError("store_krylov=False requires reort='none' and no locked vectors")
+
     # --- Resume or start fresh? -----------------------------------------
     resuming = alphas_init is not None and betas_init is not None and Q_init is not None
 
@@ -610,13 +626,27 @@ def block_lanczos_cy(
         p = alphas_init[0].shape[0] if len(alphas_init) > 0 else len(Q_init[0] if Q_init else psi0)
         if len(block_widths) == 0:
             block_widths = [p] * start_it
-        Q_basis = list(Q_init)
         W = W_init
 
-        if start_it == 0 or len(Q_init) < p:
+        if not store_krylov:
+            # Q_init is the two-block tail [prev block, residual block] returned by the
+            # previous tail-only run; split it by the true width of the last accepted
+            # block (deflation-safe: block_widths is authoritative, the tail may be
+            # narrower than p).
+            Q_basis = []
+            if start_it == 0:
+                q_prev = [ManyBodyState() for _ in range(p)]
+                q_curr = list(Q_init)
+            else:
+                q_prev_len = block_widths[start_it - 1]
+                q_prev = list(Q_init[:q_prev_len])
+                q_curr = list(Q_init[q_prev_len:])
+        elif start_it == 0 or len(Q_init) < p:
+            Q_basis = list(Q_init)
             q_prev = [ManyBodyState() for _ in range(p)]
             q_curr = [Q_basis[i] for i in range(p)]
         else:
+            Q_basis = list(Q_init)
             q_prev_start = sum(block_widths[:start_it - 1])
             q_prev_len = block_widths[start_it - 1]
             q_curr_start = sum(block_widths[:start_it])
@@ -631,7 +661,7 @@ def block_lanczos_cy(
         # Redistribute initial states across ranks
         q_curr = basis.redistribute_psis(list(psi0))
         q_prev = [ManyBodyState() for _ in range(p)]
-        Q_basis = [st.copy() for st in q_curr]
+        Q_basis = [st.copy() for st in q_curr] if store_krylov else []
 
     # Maintain a dense copy of the (rank-local) Krylov basis so the block reort slices
     # columns instead of re-materializing Q from flat_maps every step (see SparseKrylovDense).
@@ -799,7 +829,10 @@ def block_lanczos_cy(
         # Append q_next to the basis (last block = residual direction). The locking
         # deflation is applied inside block_lanczos_step_cy (before M/beta) in "full"
         # mode, or just above in "partial" mode, so q_next is orthogonal to the locked set.
-        Q_basis.extend([st.copy() for st in q_next])
+        # Tail-only mode keeps nothing here: q_prev/q_curr roll below and the two-block
+        # tail is assembled at return.
+        if store_krylov:
+            Q_basis.extend([st.copy() for st in q_next])
         if krylov is not None:
             krylov.append(q_next)
 
@@ -827,6 +860,16 @@ def block_lanczos_cy(
 
     alphas_out = alphas_buf[:start_it + it]
     betas_out = betas_buf[:start_it + it]
+    if not store_krylov:
+        # Return the two-block tail [last accepted block, residual block], mirroring the
+        # last two blocks of the full Q_basis: on a "converged" break the q_prev/q_curr
+        # roll has not run yet (tail = q_curr + q_next); on breakdown/divergence q_next
+        # was never appended, and on budget exhaustion the roll has run (both: tail =
+        # q_prev + q_curr).
+        if termination == "converged":
+            Q_basis = list(q_curr) + list(q_next)
+        else:
+            Q_basis = list(q_prev) + list(q_curr)
     if return_widths and return_status:
         return alphas_out, betas_out, Q_basis, W, block_widths, termination
     if return_widths:
