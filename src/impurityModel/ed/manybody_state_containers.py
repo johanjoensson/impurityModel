@@ -1,11 +1,10 @@
-from typing import Optional
-
 try:
     from collections.abc import Iterable, Sequence
 except ModuleNotFoundError:
     from collections import Iterable, Sequence
 import itertools
 from heapq import merge
+from typing import Optional
 
 import numpy as np
 from mpi4py import MPI
@@ -30,139 +29,60 @@ def hash_key(state):
     return state.get_hash()
 
 
-class StateContainer:
+class SimpleDistributedStateContainer:
     """
-    Base class for managing and mapping a collection of many-body states.
+    Distributed indexed set of many-body states (Slater determinants).
 
-    This container supports indexing, iteration, and membership checks for
-    many-body states (such as Slater determinants), with support for
-    parallel execution and distributed storage across MPI ranks.
+    Supports indexing, iteration, and membership checks, with the states
+    hash-distributed across MPI ranks and sparse point-to-point communication
+    (graph_alltoall) for index lookups and retrieval. The state → global-index
+    mapping is a plain dict (``_index_dict``) over the rank-local states;
+    SlaterDeterminant implements __hash__/__eq__ in the Cython layer, so dict
+    lookup is O(1).
     """
 
-    class IndexDict:
-        """O(1) state → index mapping backed by a plain dict.
-
-        Replaces the previous bisect-based implementation which was
-        O(log n) per lookup and paid Python-level comparison overhead on
-        every call.  SlaterDeterminant already implements __hash__ and
-        __eq__ via the Cython layer, so dict lookup is safe and fast.
-
-        The ``states`` list and ``offset`` attributes are kept for
-        compatibility with code that inspects them directly.
+    def _point2point(send_list, comm):
         """
+        Perform point-to-point MPI exchange of data.
 
-        def __init__(self, states: list, offset: int):
-            """
-            Initialize the IndexDict mapping.
+        Parameters
+        ----------
+        send_list : list of list
+            Data lists to send to each MPI rank.
+        comm : MPI.Comm
+            MPI communicator.
 
-            Parameters
-            ----------
-            states : list of SlaterDeterminant
-                Sorted list of local states.
-            offset : int
-                Global index offset for the local states on this MPI rank.
-            """
-            self.states = states
-            self.offset = offset
-            # Build the O(1) lookup table from the sorted list.
-            self._map: dict = {state: offset + i for i, state in enumerate(states)}
-
-        def __contains__(self, key):
-            """
-            Check if the state is contained in the mapping.
-
-            Parameters
-            ----------
-            key : SlaterDeterminant or bytes
-                The state to search for.
-
-            Returns
-            -------
-            bool
-                True if the state is in the mapping, False otherwise.
-            """
-            if isinstance(key, bytes) and self.states:
-                key = type(self.states[0]).from_bytes(key)
-            return key in self._map
-
-        def __getitem__(self, key):
-            """
-            Get the global index of a state.
-
-            Parameters
-            ----------
-            key : SlaterDeterminant or bytes
-                The state whose index is retrieved.
-
-            Returns
-            -------
-            int
-                The global index of the state.
-
-            Raises
-            ------
-            ValueError
-                If the state is not found in the mapping.
-            """
-            if isinstance(key, bytes) and self.states:
-                key = type(self.states[0]).from_bytes(key)
-            try:
-                return self._map[key]
-            except KeyError:
-                raise ValueError
-
-        def get(self, key, default=None):
-            """
-            Get the global index of a state, or return a default value if not found.
-
-            Parameters
-            ----------
-            key : SlaterDeterminant or bytes
-                The state whose index is retrieved.
-            default : Any, optional
-                The default value to return if the state is not found. Default is None.
-
-            Returns
-            -------
-            int or Any
-                The global index of the state, or the default value.
-            """
-            if isinstance(key, bytes) and self.states:
-                key = type(self.states[0]).from_bytes(key)
-            return self._map.get(key, default)
-
-        def __len__(self):
-            """
-            Return the number of mapped states in the dictionary.
-
-            Returns
-            -------
-            int
-                Number of states.
-            """
-            return len(self._map)
-
-    def __init__(self, states, bytes_per_state, state_type, comm):
+        Returns
+        -------
+        list of list
+            Data lists received from each MPI rank.
         """
-        Initialize the StateContainer.
+        return graph_alltoall(send_list, comm)
+
+    def __init__(self, states: Iterable, bytes_per_state, state_type=SlaterDeterminant, comm=None, verbose=True):
+        """
+        Initialize the SimpleDistributedStateContainer.
 
         Parameters
         ----------
         states : Iterable
-            Initial collection of states to add.
+            Initial collection of states.
         bytes_per_state : int
             Number of bytes representing a single state.
-        state_type : type
-            The class/type representing each state (e.g., SlaterDeterminant).
-        comm : MPI.Comm or None
-            MPI communicator for distributed parallel runs.
+        state_type : type, optional
+            The class representing the state. Default is SlaterDeterminant.
+        comm : MPI.Comm or None, optional
+            MPI communicator. Default is None.
+        verbose : bool, optional
+            If True, print verbose messages. Default is True.
         """
+        self.rng = np.random.default_rng()
         self.local_basis = []
         self.comm = comm
         self.offset = 0
         self.size = 0
         self.local_indices = range(0, 0)
-        self._index_dict = StateContainer.IndexDict(self.local_basis, self.offset)
+        self._index_dict: dict = {}
         self.type = state_type
         self.n_bytes = bytes_per_state
         self.is_distributed = comm is not None and comm.size > 1
@@ -187,19 +107,6 @@ class StateContainer:
             chunk = self._getitem_sequence(range(i, chunk_end))
             for state in chunk:
                 yield state
-
-    def add_states(self, new_states: Iterable[SlaterDeterminant]) -> None:
-        """
-        Add new states to the container.
-
-        This method must be implemented by subclasses.
-
-        Parameters
-        ----------
-        new_states : Iterable[SlaterDeterminant]
-            States to be added to the container.
-        """
-        pass
 
     def __getitem__(self, key) -> Iterable[SlaterDeterminant]:
         """
@@ -250,12 +157,9 @@ class StateContainer:
             for i, res in enumerate(result):
                 if res == SlaterDeterminant.from_bytes(bytes(0)):
                     raise IndexError(f"Could not find index {key[i]} in basis with size {self.size}!")
-                # if res == psr.int2bytes(0, self.num_spin_orbitals):
-                #     raise IndexError(f"Could not find index {key[i]} in basis with size {self.size}!")
             return (state for state in result)
         elif isinstance(key, int):
             result = next(self._getitem_sequence([key]))
-            # if result is None:
             if result == SlaterDeterminant.from_bytes(bytes(0)):
                 raise IndexError(f"Could not find index {key} in basis with size {self.size}!")
             return result
@@ -314,24 +218,6 @@ class StateContainer:
             raise TypeError(f"Invalid query type {type(val)}! Valid types are {self.type} and sequences thereof.")
         return None
 
-    def _index_sequence(self, s: Iterable[SlaterDeterminant]) -> Iterable[int]:
-        """
-        Look up the global indices for a sequence of states.
-
-        This method must be implemented by subclasses.
-
-        Parameters
-        ----------
-        s : Iterable[SlaterDeterminant]
-            The states to look up.
-
-        Returns
-        -------
-        Iterable[int]
-            The global indices corresponding to each state.
-        """
-        pass
-
     def contains(self, item) -> Iterable[bool]:
         """
         Check membership for a state or sequence of states.
@@ -376,24 +262,6 @@ class StateContainer:
             return item in self._index_dict
         return next(self._index_sequence([item])) != self.size
 
-    def _contains_sequence(self, items):
-        """
-        Check membership for a sequence of states.
-
-        This method must be implemented by subclasses.
-
-        Parameters
-        ----------
-        items : Iterable[SlaterDeterminant]
-            The states to check.
-
-        Returns
-        -------
-        Iterable[bool]
-            An iterable of booleans indicating if each state is present.
-        """
-        pass
-
     def clear(self):
         """
         Clear all states and reset the container.
@@ -402,56 +270,9 @@ class StateContainer:
         self.offset = 0
         self.size = 0
         self.local_indices = range(0, 0)
-        self._index_dict = StateContainer.IndexDict(self.local_basis, self.offset)
+        self._index_dict = {}
         self.index_bounds = [None] * self.comm.size if self.is_distributed else [None]
         self.state_bounds = [None] * self.comm.size if self.is_distributed else [None]
-
-
-class SimpleDistributedStateContainer(StateContainer):
-    """
-    A distributed state container that uses sparse point-to-point communication.
-
-    This container distributes states across MPI ranks based on their hash value,
-    using point-to-point MPI communication for index lookups and retrieval.
-    """
-
-    def _point2point(send_list, comm):
-        """
-        Perform point-to-point MPI exchange of data.
-
-        Parameters
-        ----------
-        send_list : list of list
-            Data lists to send to each MPI rank.
-        comm : MPI.Comm
-            MPI communicator.
-
-        Returns
-        -------
-        list of list
-            Data lists received from each MPI rank.
-        """
-        return graph_alltoall(send_list, comm)
-
-    def __init__(self, states: Iterable, bytes_per_state, state_type=SlaterDeterminant, comm=None, verbose=True):
-        """
-        Initialize the SimpleDistributedStateContainer.
-
-        Parameters
-        ----------
-        states : Iterable
-            Initial collection of states.
-        bytes_per_state : int
-            Number of bytes representing a single state.
-        state_type : type, optional
-            The class representing the state. Default is SlaterDeterminant.
-        comm : MPI.Comm or None, optional
-            MPI communicator. Default is None.
-        verbose : bool, optional
-            If True, print verbose messages. Default is True.
-        """
-        self.rng = np.random.default_rng()
-        super(SimpleDistributedStateContainer, self).__init__(states, bytes_per_state, state_type, comm)
 
     def add_states(self, new_states: Iterable[SlaterDeterminant], unique_sorted=False) -> None:
         """
@@ -459,14 +280,14 @@ class SimpleDistributedStateContainer(StateContainer):
         """
         new_states = [self.type.from_bytes(state) if isinstance(state, bytes) else state for state in new_states]
         if not self.is_distributed:
-            existing_set = self._index_dict._map
+            existing_set = self._index_dict
             unique_new = [s for s in sorted(set(new_states)) if s not in existing_set]
             if unique_new:
                 self.local_basis = list(merge(self.local_basis, unique_new))
                 self.size = len(self.local_basis)
                 self.offset = 0
                 self.local_indices = range(0, len(self.local_basis))
-                self._index_dict = StateContainer.IndexDict(self.local_basis, self.offset)
+                self._index_dict = {state: i for i, state in enumerate(self.local_basis)}
                 self.local_index_bounds = [(0, len(self.local_basis))]
                 if len(self.local_basis) > 0:
                     self.state_bounds: Optional[SlaterDeterminant] = [None]
@@ -486,7 +307,7 @@ class SimpleDistributedStateContainer(StateContainer):
             if r_data:
                 all_received.extend(r_data)
 
-        existing_set = self._index_dict._map
+        existing_set = self._index_dict
         unique_received = sorted(set(all_received))
         unique_new = [s for s in unique_received if s not in existing_set]
 
@@ -505,7 +326,7 @@ class SimpleDistributedStateContainer(StateContainer):
         self.offset = np.sum(size_arr[: self.comm.rank])
         self.local_indices = range(self.offset, self.offset + len(self.local_basis))
         self.index_bounds = [np.sum(size_arr[: r + 1]) if size_arr[r] > 0 else None for r in range(self.comm.size)]
-        self._index_dict = StateContainer.IndexDict(self.local_basis, self.offset)
+        self._index_dict = {state: self.offset + i for i, state in enumerate(self.local_basis)}
         state_bounds = list(self._getitem_sequence([i for i in self.index_bounds if i is not None and i < self.size]))
         self.state_bounds = state_bounds + [None] * (self.comm.size - len(state_bounds))
         self.state_bounds = [
@@ -581,7 +402,6 @@ class SimpleDistributedStateContainer(StateContainer):
         """
         if not self.is_distributed:
             return (self._index_dict.get(val, self.size) for val in s)
-            # return (self._index_dict[val] if val in self._index_dict else self.size for val in s)
 
         s = list(s)
         send_list: list[list[SlaterDeterminant]] = [[] for _ in range(self.comm.size)]
@@ -591,11 +411,6 @@ class SimpleDistributedStateContainer(StateContainer):
             r = val.get_hash() % self.comm.size
             send_list[r].append(val)
             send_to_ranks[i] = r
-            # for r in range(self.comm.size):
-            #     if self.state_bounds[r] is None or val < self.state_bounds[r]:
-            #         send_list[r].append(val)
-            #         send_to_ranks[i] = r
-            #         break
 
         send_order = np.argsort(send_to_ranks, kind="stable")
 
@@ -667,4 +482,7 @@ class SimpleDistributedStateContainer(StateContainer):
             states = [state for r_states in states for state in r_states]
         return states
 
-        # return (idx != len(self._full_basis) for idx in self._index_sequence(items))
+
+# Backwards-compatible alias: the abstract base was collapsed into the single
+# concrete container.
+StateContainer = SimpleDistributedStateContainer
