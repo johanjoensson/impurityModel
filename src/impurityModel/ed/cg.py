@@ -130,9 +130,12 @@ def _block_bicgstab_core(matmat, rhs, basis, slaterWeightMin, atol, rtol, mpi, c
         return xi
 
     if not is_arr:
+        # Track the reachable-determinant union by 64-bit hash instead of retaining the
+        # SlaterDeterminant objects: only the union *size* is ever consumed (the it*n
+        # loop bound below), and the hash set is ~10x smaller per entry.
         seen_states = set()
         for state in rhs:
-            seen_states.update(state.keys())
+            seen_states.update(hash(sd) for sd in state.keys())
         global_seen_size = np.array([len(seen_states)], dtype=int)
         if mpi:
             comm.Allreduce(MPI.IN_PLACE, global_seen_size, op=MPI.SUM)
@@ -176,7 +179,7 @@ def _block_bicgstab_core(matmat, rhs, basis, slaterWeightMin, atol, rtol, mpi, c
                 if abs(amp) > slaterWeightMin and state not in basis.local_basis
             )
             for state in vi:
-                seen_states.update(state.keys())
+                seen_states.update(hash(sd) for sd in state.keys())
             global_seen_size[0] = len(seen_states)
             if mpi:
                 comm.Allreduce(MPI.IN_PLACE, global_seen_size, op=MPI.SUM)
@@ -186,7 +189,10 @@ def _block_bicgstab_core(matmat, rhs, basis, slaterWeightMin, atol, rtol, mpi, c
         R0_R[:, ~active_mask] = 0
         ai = masked_lstsq(R0_V, R0_R, active_mask)
 
-        si = ri.copy() if is_arr else [r.copy() for r in ri]
+        # s_i = r_i - v_i a_i, in place: the old residual's last read was R0_R above,
+        # so reuse its block instead of copying (r_i is rebound to the new residual
+        # below before the next iteration reads it).
+        si = ri
         block_add_scaled(si, vi, -ai, slaterWeightMin=slaterWeightMin)
 
         if is_arr:
@@ -198,16 +204,15 @@ def _block_bicgstab_core(matmat, rhs, basis, slaterWeightMin, atol, rtol, mpi, c
 
         active_mask_s = np.sqrt(s_norms2) >= atol
         if not np.any(active_mask_s):
-            xip = xi.copy() if is_arr else [st.copy() for st in xi]
-            block_add_scaled(xip, pi, ai, slaterWeightMin=slaterWeightMin)
-            xi = xip
+            # x_i is dead on this exit path: update it in place.
+            block_add_scaled(xi, pi, ai, slaterWeightMin=slaterWeightMin)
             break
 
         ti = matmat(si)
         if not is_arr:
             basis.add_states(state for t in ti for state in t if state not in basis.local_basis)
             for state in ti:
-                seen_states.update(state.keys())
+                seen_states.update(hash(sd) for sd in state.keys())
             global_seen_size[0] = len(seen_states)
             if mpi:
                 comm.Allreduce(MPI.IN_PLACE, global_seen_size, op=MPI.SUM)
@@ -228,23 +233,25 @@ def _block_bicgstab_core(matmat, rhs, basis, slaterWeightMin, atol, rtol, mpi, c
 
         wi = 0.0 if abs(tt) < np.finfo(float).eps else ts / tt
 
-        xip = xi.copy() if is_arr else [st.copy() for st in xi]
-        block_add_scaled(xip, si, wi * np.eye(n, dtype=complex), slaterWeightMin=slaterWeightMin)
-        block_add_scaled(xip, pi, ai, slaterWeightMin=slaterWeightMin)
-
-        rip = si.copy() if is_arr else [st.copy() for st in si]
-        block_add_scaled(rip, ti, -wi * np.eye(n, dtype=complex), slaterWeightMin=slaterWeightMin)
+        # x_{i+1} = x_i + s_i w_i + p_i a_i, in place (x_i is never read again). Must
+        # run before s_i is overwritten with the new residual below.
+        block_add_scaled(xi, si, wi * np.eye(n, dtype=complex), slaterWeightMin=slaterWeightMin)
+        block_add_scaled(xi, pi, ai, slaterWeightMin=slaterWeightMin)
 
         R0_T = b_inner(r0_t, ti)
         R0_T[:, ~active_mask_s] = 0
         bi = masked_lstsq(R0_V, -R0_T, active_mask)
 
-        pip = rip.copy() if is_arr else [st.copy() for st in rip]
+        # r_{i+1} = s_i - t_i w_i, in place: s_i's last reads (the x update and R0_T)
+        # are done, so its block becomes the new residual.
+        block_add_scaled(si, ti, -wi * np.eye(n, dtype=complex), slaterWeightMin=slaterWeightMin)
+        ri = si
+
+        # p_{i+1} = r_{i+1} + (p_i - v_i w_i) b_i needs the old p_i and the new r_{i+1}
+        # simultaneously -- the one genuine block copy per iteration.
+        pip = ri.copy() if is_arr else [st.copy() for st in ri]
         block_add_scaled(pip, pi, bi, slaterWeightMin=slaterWeightMin)
         block_add_scaled(pip, vi, -wi * bi, slaterWeightMin=slaterWeightMin)
-
-        xi = xip
-        ri = rip
         pi = pip
 
     return xi
