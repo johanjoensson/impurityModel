@@ -540,10 +540,12 @@ def simulate_spectra(
                 g = h5f.create_group("RIXSprojectors")
                 for key, proj in RIXS_projectors:
                     g.create_dataset(key, data=str(proj))
-        # Sum over transition operators
-        aSum = np.sum(-gs.imag, axis=(0, 1))
-        # Save spectra to disk
+        # Sum over transition operators and save to disk. gs is None on non-root ranks
+        # of a distributed run (getRIXSmap_* gathers to global rank 0 only); computing
+        # aSum unguarded crashed rank != 0 with AttributeError, leaving rank 0 hung in
+        # the post-spectra Barrier.
         if rank == 0:
+            aSum = np.sum(-gs.imag, axis=(0, 1))
             print("Save spectra to disk...\n")
             # I[wLoss,wIn], with wLoss on first column and wIn on first row.
             tmp = np.empty((len(wLoss) + 1, len(wIn) + 1), dtype=np.float32)
