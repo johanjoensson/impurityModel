@@ -8,8 +8,8 @@ from collections import deque
 import numpy as np
 
 # Local imports
-from impurityModel.ed.average import k_B, thermal_average, thermal_average_scale_indep  # noqa: F401
 from impurityModel.ed.observables import _single_particle_lsj_matrices
+from impurityModel.ed.symmetries import extract_tensors
 
 
 def impurity_spin_pairs(impurity_orbitals):
@@ -96,8 +96,6 @@ def spin_pairs_consistent_with_h(h_op, spin_pairs, n_orb, tol=1e-6):
     -------
     bool
     """
-    from impurityModel.ed.symmetries import extract_tensors
-
     h, _, _ = extract_tensors(h_op, n_orb=n_orb, two_body=False)
     sz = np.zeros((n_orb, n_orb), dtype=complex)
     splus = np.zeros((n_orb, n_orb), dtype=complex)
@@ -225,8 +223,6 @@ def derive_spin_pairs(h_op, impurity_orbitals, rot_to_spherical, n_orb, tol=1e-6
     -------
     (imp_pairs, bath_pairs) : tuple of list of (int, int), or None
     """
-    from impurityModel.ed.symmetries import extract_tensors
-
     h, _, _ = extract_tensors(h_op, n_orb=n_orb, two_body=False)
     impurity_orbs = set(orb for blocks in impurity_orbitals.values() for block in blocks for orb in block)
 

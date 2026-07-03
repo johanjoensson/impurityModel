@@ -4,7 +4,7 @@ import numpy as np
 
 from impurityModel.ed.block_structure import BlockStructure, print_block_structure
 from impurityModel.ed.average import thermal_average_scale_indep
-from impurityModel.ed.finite import (
+from impurityModel.ed.spin_pairs import (
     bath_spin_pairs,
     derive_spin_pairs,
     impurity_spin_pairs,

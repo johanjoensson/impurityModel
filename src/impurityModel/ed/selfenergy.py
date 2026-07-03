@@ -6,7 +6,8 @@ import numpy as np
 from mpi4py import MPI
 
 # from impurityModel.ed.get_spectra import get_noninteracting_hamiltonian_operator
-from impurityModel.ed import atomic_physics, finite
+from impurityModel.ed import atomic_physics
+from impurityModel.ed.average import thermal_average_scale_indep
 from impurityModel.ed.operator_algebra import addOps, c2i
 from impurityModel.ed.cipsi_solver import CIPSISolver
 from impurityModel.ed.greens_function import build_full_greens_function, get_Greens_function, save_Greens_function
@@ -149,7 +150,7 @@ def _lowest_energy_and_thermal_rho(basis, solver, h_op, impurity_indices, energy
         orbital_indices_left=impurity_indices,
         orbital_indices_right=impurity_indices,
     )
-    rho = finite.thermal_average_scale_indep(es, rhos, basis.tau)
+    rho = thermal_average_scale_indep(es, rhos, basis.tau)
     return es[0], rho
 
 

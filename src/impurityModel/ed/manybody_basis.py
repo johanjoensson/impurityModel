@@ -13,9 +13,7 @@ import scipy as sp
 from mpi4py import MPI
 
 from impurityModel.ed import product_state_representation as psr
-from impurityModel.ed.finite import (
-    thermal_average_scale_indep,
-)
+from impurityModel.ed.average import thermal_average_scale_indep
 from impurityModel.ed.ManyBodyUtils import (
     ManyBodyOperator,
     ManyBodyState,

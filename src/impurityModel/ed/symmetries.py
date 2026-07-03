@@ -11,7 +11,7 @@ reconstruction in ``nonabelian_symmetry_casimir.md``.
 
 - Only **one-body** symmetry generators are found here. ``S^2`` and the other
   Casimirs are two-body and do not appear in the one-body null space; they are
-  constructed separately (see ``finite.make_spin_operators`` / ``apply_casimir``).
+  constructed separately (see ``observables.make_spin_operators`` / ``apply_casimir``).
 - The method finds only **unitary** symmetries. **Anti-unitary symmetries (time
   reversal / Kramers degeneracy) are not detectable** by ``[H, O] = 0`` over the
   complex field. ``H`` is genuinely complex in this code (spin-orbit coupling), so
@@ -33,7 +33,7 @@ def extract_tensors(op, n_orb=None, two_body=True):
 
     The operator is assumed purely 0-, 1- and 2-body and number-conserving, with
     terms in normal order. With the codebase convention
-    (``finite.get_2_body_operator``) a stored term is
+    (``symmetries.get_2_body_operator``) a stored term is
 
     - constant: ``()``  ->  ``const``
     - one-body: ``((i,'c'),(j,'a'))``  ->  :math:`h_{ij}` (coeff of
@@ -586,8 +586,8 @@ def sz_weighted_restriction(spin_pairs, two_sz_target, slack=0):
     Uses the integer-weight form ``2 S_z = Σ (n_up − n_dn)`` (weight ``+1`` on each up
     orbital, ``−1`` on each down orbital), so ``two_sz_target = 2 * S_z`` is an integer.
     The spin pairs should come from
-    ``finite.impurity_spin_pairs`` / ``finite.bath_spin_pairs`` after
-    ``finite.spin_pairs_consistent_with_h`` validates them.
+    ``spin_pairs.impurity_spin_pairs`` / ``spin_pairs.bath_spin_pairs`` after
+    ``spin_pairs.spin_pairs_consistent_with_h`` validates them.
 
     Parameters
     ----------

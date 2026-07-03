@@ -389,7 +389,7 @@ def test_print_thermal_LJ_lines(capsys):
 
 def test_bath_spin_pairs_and_consistency():
     """bath_spin_pairs + spin_pairs_consistent_with_h validate/skip the spin assignment."""
-    from impurityModel.ed.finite import (
+    from impurityModel.ed.spin_pairs import (
         bath_spin_pairs,
         impurity_spin_pairs,
         spin_pairs_consistent_with_h,
@@ -481,7 +481,7 @@ def _hop(diag, hops):
 
 def test_derive_spin_pairs_chain():
     """derive_spin_pairs recovers the (dn,up) pairing for an interleaved-index chain."""
-    from impurityModel.ed.finite import derive_spin_pairs, spin_pairs_consistent_with_h
+    from impurityModel.ed.spin_pairs import derive_spin_pairs, spin_pairs_consistent_with_h
 
     # 6 spin-orbitals, spins interleaved (NOT down-then-up): impurity (0 dn, 1 up);
     # spin-down chain 0-2-4, spin-up chain 1-3-5; orbs 2,3 valence (e<0), 4,5 conduction.
@@ -501,7 +501,7 @@ def test_derive_spin_pairs_chain():
 
 def test_derive_spin_pairs_returns_none_when_unresolvable():
     """derive_spin_pairs gives up on a disconnected bath orbital or spin-mixing rotation."""
-    from impurityModel.ed.finite import derive_spin_pairs
+    from impurityModel.ed.spin_pairs import derive_spin_pairs
 
     # Bath orbitals 4,5 are isolated (no hopping) -> cannot be paired to the impurity.
     disconnected = _hop(
@@ -527,7 +527,7 @@ def test_derive_spin_pairs_block_grouped_bath():
     block 0, then block 1, ...] and inequivalent blocks may have different bath counts.
     derive_spin_pairs follows H's hopping graph, so the ordering is irrelevant.
     """
-    from impurityModel.ed.finite import derive_spin_pairs, spin_pairs_consistent_with_h
+    from impurityModel.ed.spin_pairs import derive_spin_pairs, spin_pairs_consistent_with_h
 
     # Two l=0 impurity shells: imp0 = (0 dn, 1 up), imp1 = (2 dn, 3 up).
     # Bath block 0 (couples to imp0) has 2 sites/spin: dn 4,5 / up 6,7.
@@ -552,7 +552,7 @@ def test_derive_spin_pairs_crystal_field_manifolds():
     sorted-orbital order. The per-partition derivation cannot size its sub-shell S_+ to the
     whole rotation, so the pairing is read from the full-shell S_+ across all manifolds at once.
     """
-    from impurityModel.ed.finite import (
+    from impurityModel.ed.spin_pairs import (
         derive_spin_pairs,
         spin_pairs_consistent_with_h,
         _impurity_pairs_per_partition,
@@ -593,7 +593,7 @@ def _thermal_sisb(out):
 
 def _cubic_dshell(n=10):
     """Build the whole-d-shell Casimir operators in cubic harmonics + the spherical->cubic rotation."""
-    from impurityModel.ed import atomic_physics, finite
+    from impurityModel.ed import atomic_physics
     from impurityModel.ed.observables import make_impurity_casimir_operators
 
     Rot = atomic_physics.get_spherical_2_cubic_matrix(spinpol=True, l=2)  # spherical<->cubic (10x10)
@@ -647,7 +647,7 @@ def test_calc_gs_reports_casimirs_for_cubic_manifold_grouped_dshell(capsys):
 
     import pytest
 
-    from impurityModel.ed import atomic_physics, finite
+    from impurityModel.ed import atomic_physics
     from impurityModel.ed.groundstate import calc_gs
     from impurityModel.ed.ManyBodyUtils import ManyBodyOperator
     from impurityModel.ed.symmetries import (

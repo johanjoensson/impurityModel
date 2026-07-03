@@ -7,7 +7,7 @@ derived diagnostics (charge fluctuations, participation ratio / entropy, natural
 occupations).
 
 The density-matrix-based expectation values (``<N>``, ``<Lz>``, ``<L.S>``, ``<S^2>`` ...)
-live in :mod:`impurityModel.ed.finite`; this module is complementary and consumes the
+live in :mod:`impurityModel.ed.observables`; this module is complementary and consumes the
 already-gathered eigenstates (``full_psis`` on rank 0 of :func:`calc_gs`).
 """
 
