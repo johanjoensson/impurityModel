@@ -1812,27 +1812,6 @@ def _gf_converged_mesh(alphas, delta):
     return mesh, frozen
 
 
-def rotate_matrix(M, T):
-    r"""
-    Rotate the matrix, M, using the matrix T.
-    Returns M' = T^\dagger M T
-    Parameters
-    ==========
-    M : NDArray - Matrix to rotate
-    T : NDArray or dict - Rotation matrix to use, or dict of rotation matrices for blocks.
-    Returns
-    =======
-    M' : NDArray - The rotated matrix
-    """
-    if isinstance(T, dict):
-        from scipy.linalg import block_diag
-
-        sorted_keys = sorted(T.keys())
-        T_matrix = block_diag(*(T[k] for k in sorted_keys))
-        return np.conj(T_matrix.T) @ M @ T_matrix
-    return np.conj(T.T) @ M @ T
-
-
 def block_diagonalize_hyb(hyb):
     """
     Block diagonalize the hybridization function matrix.

@@ -19,6 +19,7 @@ from sympy.physics.wigner import gaunt
 from impurityModel.ed.average import k_B, thermal_average, thermal_average_scale_indep  # noqa: F401
 from impurityModel.ed.block_structure import get_equivalent_blocks
 from impurityModel.ed.ManyBodyUtils import ManyBodyOperator, ManyBodyState, inner
+from impurityModel.ed.utils import rotate_matrix
 
 
 class HermitianOperator(scipy.sparse.linalg.LinearOperator):
@@ -82,27 +83,6 @@ def get_job_tasks(rank, ranks, tasks_tot):
     if rank < rest:
         tasks.append(tasks_tot[n_tot - rest + rank])
     return tuple(tasks)
-
-
-def rotate_matrix(M, T):
-    r"""
-    Rotate the matrix, M, using the matrix T.
-    Returns :math:`M' = T^{\dagger} M T`
-    Parameters
-    ==========
-    M : NDArray - Matrix to rotate
-    T : NDArray or dict - Rotation matrix to use, or dict of rotation matrices for blocks.
-    Returns
-    =======
-    M' : NDArray - The rotated matrix
-    """
-    if isinstance(T, dict):
-        from scipy.linalg import block_diag
-
-        sorted_keys = sorted(T.keys())
-        T_matrix = block_diag(*(T[k] for k in sorted_keys))
-        return np.conj(T_matrix.T) @ M @ T_matrix
-    return np.conj(T.T) @ M @ T
 
 
 def mpi_matmat(m: Any, comm: Optional[MPI.Comm]) -> Callable[[np.ndarray], np.ndarray]:

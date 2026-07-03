@@ -3,6 +3,27 @@ from typing import Any, Callable, Iterable, List, Optional, Tuple
 import numpy as np
 
 
+def rotate_matrix(M, T):
+    r"""
+    Rotate the matrix, M, using the matrix T.
+    Returns :math:`M' = T^{\dagger} M T`
+    Parameters
+    ==========
+    M : NDArray - Matrix to rotate
+    T : NDArray or dict - Rotation matrix to use, or dict of rotation matrices for blocks.
+    Returns
+    =======
+    M' : NDArray - The rotated matrix
+    """
+    if isinstance(T, dict):
+        from scipy.linalg import block_diag
+
+        sorted_keys = sorted(T.keys())
+        T_matrix = block_diag(*(T[k] for k in sorted_keys))
+        return np.conj(T_matrix.T) @ M @ T_matrix
+    return np.conj(T.T) @ M @ T
+
+
 def _float_field_width(values: np.ndarray, n_prec: int, force_sign: bool = False) -> int:
     """Field width for printing ``values`` with ``n_prec`` decimals, columns aligned.
 

@@ -446,19 +446,10 @@ def get_noninteracting_hamiltonian_operator(nBaths, nValBaths, SOCs, hField, h0_
     SOC3dOperator = finite.getSOCop(xi_3d, l=2)
 
     # Magnetic field
-    hHfieldOperator = {}
-    l = 2
-    for m in range(-l, l + 1):
-        hHfieldOperator[(((l, 1, m), "c"), ((l, 0, m), "a"))] = hx * 1 / 2.0
-        hHfieldOperator[(((l, 0, m), "c"), ((l, 1, m), "a"))] = hx * 1 / 2.0
-        hHfieldOperator[(((l, 1, m), "c"), ((l, 0, m), "a"))] += -hy * 1 / 2.0 * 1j
-        hHfieldOperator[(((l, 0, m), "c"), ((l, 1, m), "a"))] += hy * 1 / 2.0 * 1j
-        for s in range(2):
-            hHfieldOperator[(((l, s, m), "c"), ((l, s, m), "a"))] = hz * 1 / 2 if s == 1 else -hz * 1 / 2
+    hHfieldOperator = finite.gethHfieldop(hx, hy, hz, l=2)
 
     # Read the non-relativistic non-interacting Hamiltonian operator from file.
     h0_operator = read_h0_operator(h0_filename, nBaths, nValBaths)
-    # h0_operator = read_h0_operator(h0_filename, nBaths)
 
     if rank == 0 and verbose:
         print(f"Non-interacting, non-relativistic Hamiltonian (h0): {len(h0_operator)} terms.")
@@ -492,29 +483,6 @@ def read_h0_operator(filename, nBaths, nValBaths=None):
     if ext.lower() == ".json":
         return get_CF_hamiltonian(nBaths, nValBaths, filename)
     raise RuntimeError(f"Unknown file h0 file extension {ext}")
-
-
-def gethHfieldop(hx, hy, hz, l=2):
-    """
-    Return magnetic field operator for one l-shell.
-
-    Returns
-    -------
-    hHfieldOperator : dict
-        Elements of the form:
-        ((sorb1,'c'), (sorb2,'a') : h_value
-        where sorb1 is a superindex of (l, s, m).
-
-    """
-    hHfieldOperator = {}
-    for m in range(-l, l + 1):
-        hHfieldOperator[(((l, 1, m), "c"), ((l, 0, m), "a"))] = hx / 2
-        hHfieldOperator[(((l, 0, m), "c"), ((l, 1, m), "a"))] = hx / 2
-        hHfieldOperator[(((l, 1, m), "c"), ((l, 0, m), "a"))] += -hy * 1j / 2
-        hHfieldOperator[(((l, 0, m), "c"), ((l, 1, m), "a"))] += hy * 1j / 2
-        for s in range(2):
-            hHfieldOperator[(((l, s, m), "c"), ((l, s, m), "a"))] = hz / 2 if s == 1 else -hz / 2
-    return hHfieldOperator
 
 
 def get_hamiltonian_operator(nBaths, nValBaths, slaterCondon, SOCs, DCinfo, hField, h0_filename, rank, verbose=True):

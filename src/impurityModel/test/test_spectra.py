@@ -192,7 +192,9 @@ def test_simulate_spectra(
 
 
 def test_gethHfieldop():
-    op = get_spectra.gethHfieldop(1.0, 0.0, 0.0, l=2)
+    from impurityModel.ed import finite
+
+    op = finite.gethHfieldop(1.0, 0.0, 0.0, l=2)
     assert len(op) > 0
 
 

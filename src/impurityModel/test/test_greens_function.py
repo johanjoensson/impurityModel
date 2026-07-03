@@ -4,13 +4,13 @@ import numpy as np
 from mpi4py import MPI
 
 from impurityModel.ed.block_structure import BlockStructure
+from impurityModel.ed.utils import rotate_matrix
 from impurityModel.ed.greens_function import (
     build_full_greens_function,
     build_qr,
     calc_continuants,
     calc_G,
     calc_thermally_averaged_G,
-    rotate_matrix,
     block_diagonalize_hyb,
     rotate_Greens_function,
     rotate_4index_U,

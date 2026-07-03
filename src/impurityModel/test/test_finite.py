@@ -1,10 +1,10 @@
 import numpy as np
 import scipy.sparse
 import pytest
+from impurityModel.ed.utils import rotate_matrix
 from impurityModel.ed.finite import (
     HermitianOperator,
     get_job_tasks,
-    rotate_matrix,
     daggerOp,
     assert_hermitian,
     dc_MLFT,
