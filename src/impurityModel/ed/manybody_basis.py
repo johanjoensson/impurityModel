@@ -10,7 +10,6 @@ import itertools
 import numpy as np
 import scipy as sp
 from mpi4py import MPI
-from scipy.cluster.hierarchy import DisjointSet
 
 from impurityModel.ed import product_state_representation as psr
 from impurityModel.ed.finite import (
@@ -67,34 +66,6 @@ def reduce_states(a: list[dict], b: list[dict], _) -> list[dict]:
 
 
 reduce_states_op = MPI.Op.Create(reduce_states, commute=True)
-
-
-def reduce_disjoint_set(a: DisjointSet, b: DisjointSet, _) -> DisjointSet:
-    """Reduce disjoint sets by merging subsets of b into a.
-
-    Parameters
-    ----------
-    a : scipy.cluster.hierarchy.DisjointSet
-        Accumulator disjoint set.
-    b : scipy.cluster.hierarchy.DisjointSet
-        Input disjoint set.
-    _ : Any
-        Unused MPI datatype parameter.
-
-    Returns
-    -------
-    scipy.cluster.hierarchy.DisjointSet
-        The merged disjoint set.
-    """
-    for subset in b.subsets():
-        it = iter(subset)
-        root = next(it)
-        for item in it:
-            a.merge(item, root)
-    return a
-
-
-reduce_disjoint_set_op = MPI.Op.Create(reduce_disjoint_set, commute=True)
 
 
 def combine_sets(set_1: set, set_2: set, _) -> set:
@@ -948,9 +919,7 @@ class Basis:
         # legacy max-split behaviour for equally-weighted blocks.
         self.split_threshold = split_threshold
 
-        # self.state_container = CentralizedStateContainer(
         self.state_container = SimpleDistributedStateContainer(
-            # self.state_container = DistributedStateContainer(
             initial_basis,
             bytes_per_state=self.n_bytes,
             comm=self.comm,
@@ -1482,39 +1451,6 @@ class Basis:
         _valence_baths, conduction_baths = self.bath_states
         return [orb for blocks in conduction_baths.values() for block in blocks for orb in block]
 
-    def get_state_statistics(self, psis):
-        """
-        Calucluate some occupation statistics for the ManyBopdyState psi.
-        Parameters:
-        ===========
-        Returns:
-        ========
-        stats: dict - Occupation statistics
-        """
-        impurity_indices = self.impurity_spin_orbital_indices
-        valence_indices = self.valence_spin_orbital_indices
-        conduction_indices = self.conduction_spin_orbital_indices
-        psi_stats = [{} for _ in psis]
-        for i, psi in enumerate(psis):
-            for state, amp in psi.items():
-                bits = psr.bytes2bitarray(bytes(state.to_bytearray()), self.num_spin_orbitals)
-                n_imp = bits[impurity_indices].count()
-                n_valence = bits[valence_indices].count()
-                n_cond = bits[conduction_indices].count()
-                psi_stats[i][(n_imp, n_valence, n_cond)] = abs(amp) ** 2 + psi_stats[i].get(
-                    (n_imp, n_valence, n_cond), 0
-                )
-        if self.is_distributed:
-            all_psi_stats = self.comm.gather(psi_stats)
-            if self.comm.rank == 0:
-                psi_stats = [{} for _ in psis]
-                for local_psi_stats in all_psi_stats:
-                    for i, psi_stat in enumerate(local_psi_stats):
-                        for key in psi_stat:
-                            psi_stats[i][key] = psi_stat[key] + psi_stats[i].get(key, 0)
-            psi_stats = self.comm.bcast(psi_stats)
-        return psi_stats
-
     def build_density_matrices(self, psis, orbital_indices_left=None, orbital_indices_right=None):
         r"""Compute single-particle density matrices for a list of many-body states.
 
@@ -1560,39 +1496,6 @@ class Basis:
             self.comm.Allreduce(MPI.IN_PLACE, rhos, op=MPI.SUM)
 
         return rhos
-
-    def determine_blocks(self, op, slaterWeightMin=0):
-        """
-        Determine the blockstructure of op in the ManyBodyBasis
-        Return a list of lists containing the (MPI-)local basis states belonging to each block
-        NB. The lists of local basis states for each block may be empty, but the block is not!
-        Arguments:
-        ==========
-        op: ManyBodyOperator to determine the block structure of
-        slaterWeightMin: float ignore matrix elements with magnitude < slaterWeightMin (|{op}_ij| < slaterWeightMin)
-        Returns:
-        ========
-        list[list[slater determinants]] the (MPI-)local manybody basis states belonging to each block.
-        """
-        disjoint_sets = DisjointSet(list(range(self.size)))
-        tmps = [None for _ in range(len(self.local_basis))]
-        states = set()
-        for i, state in enumerate(self.local_basis):
-            tmps[i] = set(applyOp_test(op, ManyBodyState({state: 1.0}), cutoff=slaterWeightMin).keys())
-            states |= tmps[i]
-
-        indices = self.state_container._index_sequence(states)
-        _size = self.size
-        idx_map = {state: idx for state, idx in zip(states, indices) if idx != _size}
-        for root, connected_states in enumerate(tmps):
-            for state in connected_states:
-                if state not in idx_map:
-                    continue
-                disjoint_sets.merge(root + self.offset, idx_map[state])
-        if self.is_distributed:
-            disjoint_sets = self.comm.allreduce(disjoint_sets, op=reduce_disjoint_set_op)
-
-        return [subset.intersection(self.local_indices) for subset in disjoint_sets.subsets()]
 
     def split_basis_and_redistribute_psi(
         self, priorities: list[float], psis: Optional[list[ManyBodyState]]

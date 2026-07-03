@@ -67,10 +67,6 @@ class StateContainer:
             # Build the O(1) lookup table from the sorted list.
             self._map: dict = {state: offset + i for i, state in enumerate(states)}
 
-        def _rebuild(self):
-            """Rebuild _map from self.states (call after mutating self.states)."""
-            self._map = {state: self.offset + i for i, state in enumerate(self.states)}
-
         def __contains__(self, key):
             """
             Check if the state is contained in the mapping.
@@ -410,72 +406,6 @@ class StateContainer:
         self.index_bounds = [None] * self.comm.size if self.is_distributed else [None]
         self.state_bounds = [None] * self.comm.size if self.is_distributed else [None]
 
-    def alltoall_states(self, send_list: list[list[SlaterDeterminant]], flatten=False):
-        """
-        Perform an MPI all-to-all exchange of many-body states.
-
-        Parameters
-        ----------
-        send_list : list of list of SlaterDeterminant
-            Outer list of size comm.size, where element `r` is a list of
-            states to send to rank `r`.
-        flatten : bool, optional
-            If True, the received states are flattened into a single list.
-            If False, returns a list of iterables of states, one per rank.
-            Default is False.
-
-        Returns
-        -------
-        list of Iterable of SlaterDeterminant or Iterable of SlaterDeterminant
-            The received states.
-        """
-        recv_counts = np.empty((self.comm.size), dtype=int)
-        request = self.comm.Ialltoall(
-            (np.fromiter((len(l) for l in send_list), dtype=int, count=len(send_list)), MPI.LONG), recv_counts
-        )
-
-        send_counts = np.fromiter((len(l) for l in send_list), dtype=int, count=len(send_list))
-        send_offsets = np.fromiter(
-            (np.sum(send_counts[:i]) for i in range(self.comm.size)), dtype=int, count=self.comm.size
-        )
-
-        request.Wait()
-        request.free()
-        received_bytes = bytearray(sum(recv_counts) * self.n_bytes)
-        offsets = np.fromiter((np.sum(recv_counts[:i]) for i in range(self.comm.size)), dtype=int, count=self.comm.size)
-
-        # numpy arrays of bytes do not play nicely with MPI, sometimes datacorruption happens.
-        # bytearrays seem to work though...
-        # Do not use Ialltoallv with bytearrays though, the call seems to simply freeze
-        self.comm.Alltoallv(
-            (
-                bytearray().join(state.to_bytearray() for state_list in send_list for state in state_list),
-                send_counts * self.n_bytes,
-                send_offsets * self.n_bytes,
-                MPI.BYTE,
-            ),
-            (received_bytes, recv_counts * self.n_bytes, offsets * self.n_bytes, MPI.BYTE),
-        )
-
-        if not flatten:
-            states: list[Iterable[SlaterDeterminant]] = [() for _ in range(len(send_list))]
-            # states: list[Iterable[bytes]] = [()] * len(send_list)
-            start = 0
-            for r in range(len(recv_counts)):
-                if recv_counts[r] == 0:
-                    continue
-                states[r] = [
-                    SlaterDeterminant.from_bytes(r_bytes)
-                    # bytes(r_bytes)
-                    for r_bytes in batched(received_bytes[start : start + recv_counts[r] * self.n_bytes], self.n_bytes)
-                ]
-                start += recv_counts[r] * self.n_bytes
-        else:
-            states: Iterable[SlaterDeterminant] = [
-                SlaterDeterminant.from_bytes(r_bytes) for r_bytes in batched(received_bytes, self.n_bytes)
-            ]
-        return states
-
 
 class SimpleDistributedStateContainer(StateContainer):
     """
@@ -522,52 +452,6 @@ class SimpleDistributedStateContainer(StateContainer):
         """
         self.rng = np.random.default_rng()
         super(SimpleDistributedStateContainer, self).__init__(states, bytes_per_state, state_type, comm)
-
-    def _set_state_bounds(self, local_states) -> list[Optional[SlaterDeterminant]]:
-        """
-        Determine state boundaries for partitioning states across ranks.
-
-        Parameters
-        ----------
-        local_states : Iterable
-            The local states on this rank.
-
-        Returns
-        -------
-        list of SlaterDeterminant or None
-            A list containing boundary states for each rank.
-        """
-        local_states_list = list(local_states)
-        total_local_states_len = self.comm.allreduce(len(local_states_list), op=MPI.SUM)
-        samples = []
-        if len(local_states_list) > 1:
-            n_samples = min(len(local_states_list), int(self.comm.size * np.log10(total_local_states_len) / 0.05**2))
-            for interval in batched(local_states_list, len(local_states_list) // n_samples):
-                samples.append(self.rng.choice(list(interval)))
-        else:
-            samples = local_states_list
-
-        all_states_received = self.comm.gather(samples)
-
-        if self.comm.rank == 0:
-            all_states_it = merge(*all_states_received)
-            all_states = []
-            for state, _ in itertools.groupby(all_states_it, key=lambda state: hash_key(state)):
-                all_states.append(state)
-
-            sizes = np.array([len(all_states) // self.comm.size] * self.comm.size, dtype=int)
-            sizes[: len(all_states) % self.comm.size] += 1
-
-            bounds = (sum(sizes[: i + 1]) for i in range(self.comm.size))
-            state_bounds = [all_states[bound] if bound < len(all_states) else all_states[-1] for bound in bounds]
-        else:
-            state_bounds = [None] * self.comm.size
-
-        state_bounds = self.comm.bcast(state_bounds, root=0)
-        return [
-            state_bounds[r] if r < self.comm.size - 1 and state_bounds[r] != state_bounds[r + 1] else None
-            for r in range(self.comm.size)
-        ]
 
     def add_states(self, new_states: Iterable[SlaterDeterminant], unique_sorted=False) -> None:
         """
