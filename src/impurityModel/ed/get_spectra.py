@@ -16,6 +16,12 @@ from impurityModel.ed import spectra
 from impurityModel.ed.average import k_B
 from impurityModel.ed.block_structure import BlockStructure
 from impurityModel.ed.hamiltonian_io import get_hamiltonian_operator
+from impurityModel.ed.symmetries import (
+    extract_tensors,
+    impurity_block_structure,
+    impurity_symmetry_rotation,
+    rotate_hamiltonian,
+)
 from impurityModel.ed.groundstate import calc_gs
 from impurityModel.ed.ManyBodyUtils import ManyBodyOperator
 
@@ -251,13 +257,6 @@ def main(
     correlated_block_structure = None
     correlated_l = 2
     if auto_block_structure:
-        from impurityModel.ed.symmetries import (
-            extract_tensors,
-            impurity_block_structure,
-            impurity_symmetry_rotation,
-            rotate_hamiltonian,
-        )
-
         impurity_indices = sorted(orb for blocks in impurity_orbitals.values() for block in blocks for orb in block)
         h_matrix = extract_tensors(hOp, n_orb=n_spin_orbitals, two_body=False)[0]
         block_structure = impurity_block_structure(hOp, impurity_indices, h0_matrix=h_matrix)

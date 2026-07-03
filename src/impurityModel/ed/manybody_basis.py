@@ -22,7 +22,7 @@ from impurityModel.ed.ManyBodyUtils import (
 from impurityModel.ed.ManyBodyUtils import (
     applyOp as applyOp_test,
 )
-from impurityModel.ed.mpi_comm import graph_alltoall, graph_alltoall_psis
+from impurityModel.ed.mpi_comm import distribute_determinants, graph_alltoall, graph_alltoall_psis
 from impurityModel.ed.utils import matrix_print
 
 
@@ -816,8 +816,6 @@ class Basis:
                 if __debug__:
                     assert all(self.local_basis[i] < self.local_basis[i + 1] for i in range(len(self.local_basis) - 1))
             return
-
-        from impurityModel.ed.mpi_comm import distribute_determinants
 
         unique_new_states = list(set(new_states))
         received_list = distribute_determinants(unique_new_states, self.n_bytes, self.comm)

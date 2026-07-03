@@ -3,6 +3,9 @@ from itertools import product
 import numpy as np
 
 from impurityModel.ed.block_structure import BlockStructure, print_block_structure
+from impurityModel.ed.cipsi_solver import CIPSISolver
+from impurityModel.ed.hartree_fock import hartree_fock_occupation
+from impurityModel.ed.manybody_basis import Basis
 from impurityModel.ed.average import thermal_average_scale_indep
 from impurityModel.ed.spin_pairs import (
     bath_spin_pairs,
@@ -91,9 +94,6 @@ def calc_energy(
         The optimized many-body basis.
     """
 
-    from impurityModel.ed.cipsi_solver import CIPSISolver
-    from impurityModel.ed.manybody_basis import Basis
-
     basis = Basis(
         impurity_indices,
         bath_states,
@@ -178,8 +178,6 @@ def hartree_fock_seed_occupation(h_op, impurity_orbitals, bath_states, N0, comm=
     winning_N0 : dict
         Nominal impurity occupation per orbital set (rounded HF occupation).
     """
-    from impurityModel.ed.hartree_fock import hartree_fock_occupation
-
     winning_N0, energy, converged = hartree_fock_occupation(h_op, impurity_orbitals, bath_states, N0)
     if verbose and (comm is None or comm.rank == 0):
         status = "converged" if converged else "NOT converged"
@@ -433,8 +431,6 @@ def calc_gs(
     # Hop.set_restrictions(ground_state_basis.restrictions)
     ground_state_basis.tau = tau
     energy_cut = -tau * np.log(1e-4)
-    from impurityModel.ed.cipsi_solver import CIPSISolver
-
     solver = CIPSISolver(ground_state_basis)
     solver.expand(
         Hop, dense_cutoff=dense_cutoff, de2_min=1e-6, slaterWeightMin=slaterWeightMin, solver=cipsi_solver_method

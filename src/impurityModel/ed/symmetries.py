@@ -25,7 +25,9 @@ from collections import namedtuple
 
 import numpy as np
 
-from impurityModel.ed.ManyBodyUtils import ManyBodyOperator
+import impurityModel.ed.product_state_representation as psr
+from impurityModel.ed.block_structure import build_block_structure, get_equivalent_orbs
+from impurityModel.ed.ManyBodyUtils import ManyBodyOperator, inner
 
 
 def extract_tensors(op, n_orb=None, two_body=True):
@@ -457,8 +459,6 @@ def group_orbitals_by_blocks(
         ``(valence_baths, conduction_baths)``, each ``{group: [bath orbital block]}`` with the
         same keys as ``impurity_orbitals``.
     """
-    from impurityModel.ed.block_structure import get_equivalent_orbs
-
     imp = sorted(impurity_orbitals)
     val_set = set(valence_orbitals)
     con_set = set(conduction_orbitals)
@@ -643,8 +643,6 @@ def auto_block_structure(op, n_orb=None, orbitals=None):
     -------
     BlockStructure
     """
-    from impurityModel.ed.block_structure import build_block_structure
-
     h, _, _ = extract_tensors(op, n_orb=n_orb, two_body=False)
     if orbitals is not None:
         h = h[np.ix_(list(orbitals), list(orbitals))]
@@ -709,8 +707,6 @@ def impurity_block_structure(op, impurity_orbitals, n_orb=None, h0_matrix=None):
     -------
     BlockStructure
     """
-    from impurityModel.ed.block_structure import build_block_structure
-
     imp = sorted(impurity_orbitals)
     imp_set = set(imp)
     h = h0_matrix if h0_matrix is not None else extract_tensors(op, n_orb=n_orb, two_body=False)[0]
@@ -1001,8 +997,6 @@ def impurity_gf_block_consistency(op, impurity_orbitals, n_orb=None):
         orbital indices; ``consistent`` is ``True`` iff they are the same partition;
         ``missing_pairs`` lists the impurity pairs the impurity-only structure drops.
     """
-    from impurityModel.ed.block_structure import build_block_structure
-
     imp = sorted(impurity_orbitals)
 
     # Impurity-only partition: connected components of h[imp, imp] (auto_block_structure with
@@ -1123,8 +1117,6 @@ def measure_conserved_charges(psi, charges, n_orb, comm=None, round_to_int=True)
     list
         ``<N_S>`` for each charge (ints if ``round_to_int``, else floats).
     """
-    import impurityModel.ed.product_state_representation as psr
-
     totals = np.zeros(len(charges))
     norm2 = 0.0
     for det, amp in psi.items():
@@ -1374,8 +1366,6 @@ def apply_reconstructed_casimir(psi, generators):
 
 def expect_reconstructed_casimir(psi, generators, comm=None):
     r"""Return ``<psi|Ĉ|psi>`` for the reconstructed Casimir ``Ĉ = Σ_a Ô_a²``."""
-    from impurityModel.ed.ManyBodyUtils import inner
-
     val = inner(psi, apply_reconstructed_casimir(psi, generators))
     if comm is not None:
         val = comm.allreduce(val)

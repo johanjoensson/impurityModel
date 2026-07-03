@@ -10,7 +10,14 @@ from itertools import islice
 import numpy as np
 from mpi4py import MPI
 
-from impurityModel.ed.ManyBodyUtils import ManyBodyState, SlaterDeterminant
+from impurityModel.ed.ManyBodyUtils import (
+    ManyBodyState,
+    SlaterDeterminant,
+    pack_determinants_cy,
+    pack_psis_fused_cy,
+    unpack_determinants_cy,
+    unpack_psis_fused_cy,
+)
 
 # MPI variables
 comm = MPI.COMM_WORLD
@@ -307,8 +314,6 @@ def distribute_determinants(
     if comm is None or comm.size <= 1:
         return [dets]
 
-    from impurityModel.ed.ManyBodyUtils import pack_determinants_cy, unpack_determinants_cy
-
     size = comm.size
     chunks_per_state = (n_bytes + 7) // 8
 
@@ -362,8 +367,6 @@ def graph_alltoall_psis(
     """
     if comm is None or comm.size <= 1:
         return [psi.copy() for psi in psis]
-
-    from impurityModel.ed.ManyBodyUtils import ManyBodyState, pack_psis_fused_cy, unpack_psis_fused_cy
 
     size = comm.size
     chunks_per_state = (n_bytes + 7) // 8

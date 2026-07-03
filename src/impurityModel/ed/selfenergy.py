@@ -8,6 +8,14 @@ from mpi4py import MPI
 from impurityModel.ed import atomic_physics
 from impurityModel.ed.average import thermal_average_scale_indep
 from impurityModel.ed.hamiltonian_io import get_noninteracting_hamiltonian_operator
+from impurityModel.ed.symmetries import (
+    classify_bath_occupation,
+    extract_tensors,
+    group_orbitals_by_blocks,
+    impurity_block_structure,
+    impurity_symmetry_rotation,
+    rotate_hamiltonian,
+)
 from impurityModel.ed.operator_algebra import addOps, c2i
 from impurityModel.ed.cipsi_solver import CIPSISolver
 from impurityModel.ed.greens_function import build_full_greens_function, get_Greens_function, save_Greens_function
@@ -608,15 +616,6 @@ def calc_selfenergy(
     # construct local, interacting, hamiltonian (in the caller's input/correlated basis B)
     u = atomic_physics.getUop_from_rspt_u4(u4)
     h_input = ManyBodyOperator(h0) + ManyBodyOperator(u)
-
-    from impurityModel.ed.symmetries import (
-        classify_bath_occupation,
-        extract_tensors,
-        group_orbitals_by_blocks,
-        impurity_block_structure,
-        impurity_symmetry_rotation,
-        rotate_hamiltonian,
-    )
 
     # Flatten the impurity orbital dict (dict[int, list[int]]) into a plain spin-orbital index
     # list; the total orbital count is inferred from the Hamiltonian (impurity + bath). The bath
