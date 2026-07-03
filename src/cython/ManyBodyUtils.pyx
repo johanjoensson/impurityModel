@@ -569,7 +569,7 @@ cdef class ManyBodyOperator:
 
         cdef ManyBodyState state
         for obj in psis:
-            state = <ManyBodyState>obj
+            state = <ManyBodyState?>obj
             p_ptrs.push_back(&state.v)
 
         cdef vector[ManyBodyState_cpp] res_vec
@@ -850,7 +850,7 @@ def extract_new_states(list states, object existing_dict):
     cdef ManyBodyState_cpp.const_iterator it
     cdef SlaterDeterminant key
     for obj in states:
-        s = <ManyBodyState>obj
+        s = <ManyBodyState?>obj
         it = s.v.cbegin()
         while it != s.v.cend():
             key = SlaterDeterminant(tuple(chunk for chunk in dereference(it).first))
@@ -878,12 +878,12 @@ def inner_multi(list states_a, list states_b):
 
     a_ptrs.reserve(na)
     for obj in states_a:
-        state = <ManyBodyState>obj
+        state = <ManyBodyState?>obj
         a_ptrs.push_back(&state.v)
 
     b_ptrs.reserve(nb)
     for obj in states_b:
-        state = <ManyBodyState>obj
+        state = <ManyBodyState?>obj
         b_ptrs.push_back(&state.v)
 
     with nogil:
@@ -912,12 +912,12 @@ def add_scaled_multi(list states_target, list states_source, complex[:, :] coeff
 
     t_ptrs.reserve(n_target)
     for obj in states_target:
-        state = <ManyBodyState>obj
+        state = <ManyBodyState?>obj
         t_ptrs.push_back(&state.v)
 
     s_ptrs.reserve(n_source)
     for obj in states_source:
-        state = <ManyBodyState>obj
+        state = <ManyBodyState?>obj
         s_ptrs.push_back(&state.v)
 
     cdef int i, j
@@ -954,10 +954,10 @@ def reorth_cgs2_dense(list wp, list Q, int n_passes, object comm):
     cdef ManyBodyState ms
     cdef int ci
     for obj in wp:
-        ms = <ManyBodyState>obj
+        ms = <ManyBodyState?>obj
         wp_ptrs.push_back(&ms.v)
     for obj in Q:
-        ms = <ManyBodyState>obj
+        ms = <ManyBodyState?>obj
         q_ptrs.push_back(&ms.v)
 
     # --- merged local support: sorted, unique determinant keys over wp ∪ Q ---
@@ -1103,7 +1103,7 @@ cdef class SparseKrylovDense:
         cdef ManyBodyState ms
         cdef int ci
         for obj in cols:
-            ms = <ManyBodyState>obj
+            ms = <ManyBodyState?>obj
             ptrs.push_back(&ms.v)
         cdef ManyBodyState_cpp.iterator it
         for ci in range(ncol):
@@ -1139,7 +1139,7 @@ cdef class SparseKrylovDense:
         cdef ManyBodyState ms
         cdef int ci
         for obj in wp:
-            ms = <ManyBodyState>obj
+            ms = <ManyBodyState?>obj
             wptrs.push_back(&ms.v)
         # Register wp's determinants so its components outside the current Q support get rows
         # (Q is zero there -> untouched by the projection, preserved by the scatter).

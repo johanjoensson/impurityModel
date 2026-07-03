@@ -4,6 +4,12 @@ from unittest.mock import MagicMock, patch
 from impurityModel.ed.cg import block_bicgstab
 
 
+def _fake_block_combine(Q, Y, slaterWeightMin=0.0):
+    # Stand-in for the Cython block_combine in the mock-based dict tests: the real one
+    # requires ManyBodyState blocks and segfaults on the plain dicts used here.
+    return [dict(Q[i % len(Q)]) for i in range(Y.shape[1])]
+
+
 def test_block_bicgstab_array_single():
     np.random.seed(42)
     A = np.random.rand(10, 10) + 1j * np.random.rand(10, 10)
@@ -57,11 +63,14 @@ def test_block_bicgstab_max_iter():
     assert not np.allclose(x_sol, x_exact)
 
 
+@patch("impurityModel.ed.cg.block_combine", side_effect=_fake_block_combine)
 @patch("impurityModel.ed.cg.block_add_scaled")
 @patch("impurityModel.ed.cg.block_apply")
 @patch("impurityModel.ed.cg.block_inner")
 @patch("impurityModel.ed.cg.inner")
-def test_block_bicgstab_dict_mpi(mock_inner, mock_block_inner, mock_block_apply, mock_block_add_scaled):
+def test_block_bicgstab_dict_mpi(
+    mock_inner, mock_block_inner, mock_block_apply, mock_block_add_scaled, mock_block_combine
+):
     # Setting up inputs
     A = MagicMock()
     A.set_restrictions = MagicMock()
@@ -100,11 +109,14 @@ def test_block_bicgstab_dict_mpi(mock_inner, mock_block_inner, mock_block_apply,
     basis.comm.Allreduce.assert_called()
 
 
+@patch("impurityModel.ed.cg.block_combine", side_effect=_fake_block_combine)
 @patch("impurityModel.ed.cg.block_add_scaled")
 @patch("impurityModel.ed.cg.block_apply")
 @patch("impurityModel.ed.cg.block_inner")
 @patch("impurityModel.ed.cg.inner")
-def test_block_bicgstab_dict_no_mpi(mock_inner, mock_block_inner, mock_block_apply, mock_block_add_scaled):
+def test_block_bicgstab_dict_no_mpi(
+    mock_inner, mock_block_inner, mock_block_apply, mock_block_add_scaled, mock_block_combine
+):
     A = MagicMock()
     x0 = [{"state1": 0.0 + 0j}, {"state2": 0.0 + 0j}]
     y = [{"state1": 1.0 + 0j}, {"state2": 1.0 + 0j}]
@@ -138,11 +150,14 @@ def test_block_bicgstab_dict_no_mpi(mock_inner, mock_block_inner, mock_block_app
     assert len(x_sol) == 2
 
 
+@patch("impurityModel.ed.cg.block_combine", side_effect=_fake_block_combine)
 @patch("impurityModel.ed.cg.block_add_scaled")
 @patch("impurityModel.ed.cg.block_apply")
 @patch("impurityModel.ed.cg.block_inner")
 @patch("impurityModel.ed.cg.inner")
-def test_block_bicgstab_cond_break(mock_inner, mock_block_inner, mock_block_apply, mock_block_add_scaled):
+def test_block_bicgstab_cond_break(
+    mock_inner, mock_block_inner, mock_block_apply, mock_block_add_scaled, mock_block_combine
+):
     # Test line 138: np.linalg.cond(R0_V) > 1 / np.finfo(float).eps
     A = MagicMock()
     x0 = [{"state1": 0.0 + 0j}]
@@ -162,11 +177,14 @@ def test_block_bicgstab_cond_break(mock_inner, mock_block_inner, mock_block_appl
     assert len(x_sol) == 1
 
 
+@patch("impurityModel.ed.cg.block_combine", side_effect=_fake_block_combine)
 @patch("impurityModel.ed.cg.block_add_scaled")
 @patch("impurityModel.ed.cg.block_apply")
 @patch("impurityModel.ed.cg.block_inner")
 @patch("impurityModel.ed.cg.inner")
-def test_block_bicgstab_tt_zero(mock_inner, mock_block_inner, mock_block_apply, mock_block_add_scaled):
+def test_block_bicgstab_tt_zero(
+    mock_inner, mock_block_inner, mock_block_apply, mock_block_add_scaled, mock_block_combine
+):
     # Test line 184: abs(tt) < eps
     A = MagicMock()
     x0 = [{"state1": 0.0 + 0j}]
@@ -213,11 +231,14 @@ def test_block_bicgstab_break_active_mask():
     np.testing.assert_allclose(x_sol, x_exact)
 
 
+@patch("impurityModel.ed.cg.block_combine", side_effect=_fake_block_combine)
 @patch("impurityModel.ed.cg.block_add_scaled")
 @patch("impurityModel.ed.cg.block_apply")
 @patch("impurityModel.ed.cg.block_inner")
 @patch("impurityModel.ed.cg.inner")
-def test_block_bicgstab_active_mask_break(mock_inner, mock_block_inner, mock_block_apply, mock_block_add_scaled):
+def test_block_bicgstab_active_mask_break(
+    mock_inner, mock_block_inner, mock_block_apply, mock_block_add_scaled, mock_block_combine
+):
     A = MagicMock()
     x0 = [{"state1": 0.0 + 0j}]
     y = [{"state1": 1.0 + 0j}]
