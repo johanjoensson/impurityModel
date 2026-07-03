@@ -700,6 +700,7 @@ def block_lanczos_array_cy(
     comm=None,
     return_widths=False,
     return_status=False,
+    build_krylov_basis=None,
     **kwargs
 ):
     # Resolve a string reort (e.g. "full") to the Reort enum, mirroring
@@ -707,13 +708,30 @@ def block_lanczos_array_cy(
     # match a string and the build silently runs with no reorthogonalization.
     reort = resolve_reort(reort)
 
-    cdef bint build_krylov_basis = (reort != Reort.NONE) or True
+    # Whether to retain the accumulated Krylov basis. The historical default (True) stands:
+    # restart machinery (TRLM/IRLM) and direct callers consume the returned Q regardless of
+    # the reort mode. Callers that only need the final residual block (the GF continued
+    # fraction with reort NONE) opt out explicitly, dropping the O(N * n * k) growth; any
+    # reort mode projects against the basis and the warm-start protocol slices its blocks,
+    # so opting out requires reort='none' and a fresh start.
+    cdef bint keep_krylov
+    if build_krylov_basis is None:
+        keep_krylov = True
+    else:
+        keep_krylov = bool(build_krylov_basis)
+        if not keep_krylov and (reort != Reort.NONE or Q is not None):
+            raise ValueError("build_krylov_basis=False requires reort='none' and no warm-start Q")
     cdef int N = psi0.shape[0] if psi0 is not None else Q.shape[0]
     cdef int n = (psi0.shape[1] if psi0.ndim == 2 else 1) if psi0 is not None else alphas[0].shape[0]
 
     cdef int start_it = 0
     cdef np.ndarray alphas_arr, betas_arr
     cdef list Q_list
+    # Krylov storage: Q_buf is an over-allocated column buffer grown geometrically
+    # (amortized O(1) copies instead of one full np.concatenate reallocation per step);
+    # Q_list[0] is always the filled Q_buf[:, :q_cols] view the reort machinery reads.
+    cdef np.ndarray Q_buf = None
+    cdef int q_cols = 0
 
     if alphas is not None and betas is not None and Q is not None:
         start_it = len(alphas)
@@ -723,6 +741,10 @@ def block_lanczos_array_cy(
         q0_fallback = psi0.copy() if psi0 is not None else Q[:, :n]
         q = [Q[:, (start_it - 1) * n : start_it * n] if start_it > 0 else q0_fallback]
         q.append(Q[:, start_it * n : (start_it + 1) * n] if start_it > 0 else q0_fallback)
+        # Zero spare capacity: the first append reallocates, so the caller's Q is never
+        # written to in place.
+        Q_buf = Q
+        q_cols = Q.shape[1]
         Q_list = [Q]
     else:
         start_it = 0
@@ -731,7 +753,12 @@ def block_lanczos_array_cy(
 
         q = [np.zeros((N, n), dtype=complex, order='C')]
         q.append(np.ascontiguousarray(psi0 if psi0.ndim == 2 else psi0.reshape(-1, 1)))
-        Q_list = [q[1].copy()] if build_krylov_basis else None
+        if keep_krylov:
+            Q_buf = q[1].copy()
+            q_cols = Q_buf.shape[1]
+            Q_list = [Q_buf]
+        else:
+            Q_list = None
 
     cdef int period = kwargs.get("reort_period", 5)
     cdef int max_iter = kwargs.get("max_iter", int(np.ceil(h_op.shape[0] / n if sps.issparse(h_op) or isinstance(h_op, np.ndarray) else N / n)))
@@ -902,7 +929,7 @@ def block_lanczos_array_cy(
             wp = wp_arr
 
         if reort == Reort.FULL or (reort == Reort.PERIODIC and it > 0 and it % period == 0):
-            if not build_krylov_basis:
+            if not keep_krylov:
                 raise RuntimeError("Krylov basis must be built for reorthogonalization")
             wp_arr, _, _ = apply_reort(wp_arr, Q_list, None, Reort.FULL, mpi, comm, block_widths)
 
@@ -998,7 +1025,7 @@ def block_lanczos_array_cy(
             xi_l = xi_new_l
 
         if reort in (Reort.PARTIAL, Reort.SELECTIVE):
-            if not build_krylov_basis:
+            if not keep_krylov:
                 raise RuntimeError("Krylov basis must be built for reorthogonalization")
             if W is None:
                 if start_it > 0:
@@ -1085,15 +1112,30 @@ def block_lanczos_array_cy(
 
         q[0] = q[1]
         q[1] = q_next
-        if build_krylov_basis:
-            Q_list[0] = np.concatenate([Q_list[0], q_next], axis=1)
+        if keep_krylov:
+            n_new = q_next.shape[1]
+            if q_cols + n_new > Q_buf.shape[1]:
+                Q_grown = np.empty((Q_buf.shape[0], max(2 * Q_buf.shape[1], q_cols + n_new)), dtype=complex, order='C')
+                Q_grown[:, :q_cols] = Q_buf[:, :q_cols]
+                Q_buf = Q_grown
+            Q_buf[:, q_cols : q_cols + n_new] = q_next
+            q_cols += n_new
+            Q_list[0] = Q_buf[:, :q_cols]
         block_widths.append(n_curr)
         it += 1
 
     if verbose:
         print(f"Converged at iteration {it}")
 
-    res_Q = Q_list[0] if build_krylov_basis else None
+    # Tail-only mode: q[1] is the last block ever appended in stored mode (the roll
+    # q[0]=q[1]; q[1]=q_next runs before the append, and every break happens before the
+    # append), so callers slicing the final residual columns see identical data.
+    if keep_krylov:
+        # Trim: returning a view of the over-allocated growth buffer would pin its spare
+        # capacity for as long as the caller (e.g. TRLM restart) holds Q.
+        res_Q = Q_buf if Q_buf.shape[1] == q_cols else np.ascontiguousarray(Q_buf[:, :q_cols])
+    else:
+        res_Q = q[1]
     res_alphas = alphas_buf[:it]
     res_betas = betas_buf[:it]
     # return_status appends `termination` as the final element, independent of the other

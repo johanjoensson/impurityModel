@@ -1199,6 +1199,10 @@ def block_green_impl(basis, hOp, psi_arr, delta, reort, slaterWeightMin, verbose
 
     converged, converged_flag, delta_min = _make_gf_convergence_monitor(delta, slaterWeightMin)
 
+    # The continued fraction only consumes alphas/betas plus the final residual block
+    # (q_last below), so with reort NONE skip the full Krylov-basis retention.
+    resolved_reort = resolve_reort(reort if reort is not None else Reort.NONE)
+
     if dense:
         H = basis.build_dense_matrix(hOp)
         alphas, betas, Q_list, widths, status = block_lanczos_array(
@@ -1206,7 +1210,8 @@ def block_green_impl(basis, hOp, psi_arr, delta, reort, slaterWeightMin, verbose
             h_op=H,
             converged=converged,
             verbose=False and verbose,
-            reort=reort if reort is not None else Reort.NONE,
+            reort=resolved_reort,
+            build_krylov_basis=resolved_reort != Reort.NONE,
             return_widths=True,
             return_status=True,
             # ceil (not floor): spanning an N-dim (possibly closed) sector with a width-w block
@@ -1254,7 +1259,8 @@ def block_green_impl(basis, hOp, psi_arr, delta, reort, slaterWeightMin, verbose
             psi0=psi_dense_local,
             h_op=H,
             converged=converged,
-            reort=reort if reort is not None else Reort.NONE,
+            reort=resolved_reort,
+            build_krylov_basis=resolved_reort != Reort.NONE,
             verbose=False and verbose,
             comm=comm,
             return_widths=True,
