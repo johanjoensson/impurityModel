@@ -484,3 +484,34 @@ def gather_distributed_results(
             else:
                 comm.send(local_res, dest=0)
         return None
+
+
+def get_job_tasks(rank, ranks, tasks_tot):
+    """
+    Return a tuple of job task indices for a particular rank.
+
+    This function distribute the job tasks in tasks_tot
+    over all the ranks.
+
+    Note
+    ----
+    This is a primerly a MPI help function.
+
+    Parameters
+    ----------
+    rank : int
+        Current MPI rank/worker.
+    ranks : int
+        Number of MPI ranks/workers in total.
+    tasks_tot : list
+        List of task indices.
+        Length is the total number of job tasks.
+
+    """
+    n_tot = len(tasks_tot)
+    nj = n_tot // ranks
+    rest = n_tot % ranks
+    tasks = [tasks_tot[i] for i in range(nj * rank, nj * rank + nj)]
+    if rank < rest:
+        tasks.append(tasks_tot[n_tot - rest + rank])
+    return tuple(tasks)

@@ -2,7 +2,7 @@ import numpy as np
 import pytest
 from mpi4py import MPI
 
-from impurityModel.ed.finite import eigensystem
+from impurityModel.ed.eigensolvers import eigensystem
 from impurityModel.ed.BlockLanczosArray import Reort, eigsh
 from impurityModel.ed.BlockLanczos import block_lanczos_cy
 from impurityModel.ed.manybody_basis import Basis

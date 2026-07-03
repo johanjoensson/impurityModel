@@ -3,7 +3,7 @@ import itertools
 import numpy as np
 from mpi4py import MPI
 
-from impurityModel.ed.finite import eigensystem
+from impurityModel.ed.eigensolvers import eigensystem
 from impurityModel.ed.irlm import implicitly_restarted_block_lanczos_cy
 from impurityModel.ed.manybody_basis import Basis
 from impurityModel.ed.ManyBodyUtils import ManyBodyOperator, ManyBodyState

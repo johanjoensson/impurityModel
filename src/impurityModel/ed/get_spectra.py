@@ -15,7 +15,7 @@ import numpy as np
 from mpi4py import MPI
 
 # Local stuff
-from impurityModel.ed import atomic_physics, finite, op_parser, spectra
+from impurityModel.ed import atomic_physics, op_parser, spectra
 from impurityModel.ed.average import k_B
 from impurityModel.ed.block_structure import BlockStructure
 from impurityModel.ed.operator_algebra import addOps, assert_hermitian, c2i

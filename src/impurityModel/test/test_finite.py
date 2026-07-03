@@ -4,12 +4,12 @@ import pytest
 from impurityModel.ed.utils import rotate_matrix
 from impurityModel.ed.operator_algebra import assert_hermitian, daggerOp
 from impurityModel.ed.atomic_physics import dc_MLFT, get_spherical_2_cubic_matrix
+from impurityModel.ed.eigensolvers import HermitianOperator
 from impurityModel.ed.finite import (
-    HermitianOperator,
-    get_job_tasks,
     get_Lz_from_rho_spherical,
     get_occupations_from_rho_spherical,
 )
+from impurityModel.ed.mpi_comm import get_job_tasks
 
 
 def test_hermitian_operator():
@@ -105,7 +105,7 @@ def test_rho_spherical_functions():
 
 
 def test_eigensystem():
-    from impurityModel.ed.finite import eigensystem
+    from impurityModel.ed.eigensolvers import eigensystem
 
     N = 30
     # Create a 30x30 matrix
@@ -134,7 +134,7 @@ def test_eigensystem():
     assert vs is not None
 
     # Also explicitly test scipy_eigensystem which we know is missing coverage
-    from impurityModel.ed.finite import scipy_eigensystem
+    from impurityModel.ed.eigensolvers import scipy_eigensystem
 
     es_scipy, vs_scipy = scipy_eigensystem(op, e_max=100.0, k=4, return_eigvecs=True)
     assert len(es_scipy) >= 1
