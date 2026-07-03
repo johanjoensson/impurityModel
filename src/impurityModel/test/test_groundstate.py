@@ -260,7 +260,8 @@ def test_find_ground_state_basis_serial():
     assert basis is not None
     assert len(basis) == 1
     state = list(basis)[0]
-    np.testing.assert_equal(psr.bytes2tuple(bytes(state.to_bytearray())[:8], 64), (0,))
+    # N0={0:2}: the two-electron ground state fills the two lowest orbitals (0.5 + 1.0 = 1.5).
+    np.testing.assert_equal(psr.bytes2tuple(bytes(state.to_bytearray())[:8], 64), (0, 1))
 
 
 @pytest.mark.mpi
@@ -290,7 +291,8 @@ def test_find_ground_state_basis_mpi():
     assert basis is not None
     assert len(basis) == 1
     state = list(basis)[0]
-    np.testing.assert_equal(psr.bytes2tuple(bytes(state.to_bytearray())[:8], 64), (0,))
+    # N0={0:2}: the two-electron ground state fills the two lowest orbitals (0.5 + 1.0 = 1.5).
+    np.testing.assert_equal(psr.bytes2tuple(bytes(state.to_bytearray())[:8], 64), (0, 1))
 
 
 def test_calc_gs_options_serial():

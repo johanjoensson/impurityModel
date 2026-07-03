@@ -656,6 +656,52 @@ pathological on a large dense block like the NiO anchor. The composed default ru
 
 ---
 
+# GF PARALLELIZATION — LOAD-BALANCE WEIGHT + PER-STATE WINDOWS (IMPLEMENTED, 2026-07-02)
+
+**Load-balance weight (unit_length × width).** The unified single split
+(`get_Greens_function`) weighted each work unit by `log10(seed_length)+1` — the historical
+*eigenstate*-split heuristic, valid when units are homogeneous (same block, same width). On the
+unified, *heterogeneous* unit list (blocks × sides × eigenstate-groups, plus the operator split's
+`O(n²)` width-1 units) that log crushed genuine 10–100× cost spreads into a <2.3× band, nearly
+equalizing units and — critically — burying the one cost multiplier known exactly at split time:
+the **block width** `w = len(chunk)·n_ops`. matvec cost `∝ N_basis·w`, reort `∝ w²` (and reort
+fires on ~97 % of steps here), so the color holding the widest block became the straggler. Replaced
+with `weight = unit_length · width` (`greens_function.py`); since `unit_length` (Σ per-column nnz)
+already scales ~linearly with the column count, this is `~ (per-column mass)·w²`, matching both
+matvec and reort. The excited *sector* is shared across units (the restriction window depends on
+`(hOp, psis, dN)`, not the block/side), so seed mass is the cheapest per-unit size proxy; `+1` floor
+keeps an all-empty seed set from zeroing the norm. **Value-preserving** (only reassigns units to
+ranks) — GF/self-energy unchanged to FP; serial (42) + MPI n=2 (34) green. NB the NiO anchor is a
+*single* 10×10 block → homogeneous units → the weight change is a no-op there; its benefit is on
+heterogeneous **multi-block** (production symmetric) workloads, not demonstrable on this anchor.
+
+**Per-state excited windows (`GF_PER_STATE_RESTRICT`, default = `chain_restrict`).** The excited
+occupation window was built once from the whole thermal ensemble. Its only state-dependent input is
+the bath filled/empty classification, which thresholds the *thermal-average* bath occupation — a
+single eigenstate typically pins strictly more baths as cleanly filled/empty (its own occupations
+are 0/1 to machine precision where the average is merely close), so its own window is tighter → a
+smaller excited basis. Measured on the anchor: the ensemble smears 5–6 cleanly-filled baths to
+"partial" (robust across cutoff 1e-12→1e-4; ensemble sees 0–2 filled vs per-state up to 6). Now each
+work unit uses the **union of the per-state windows over the eigenstates it stacks**
+(`_union_restrictions`: common keys only, loosened bounds — a superset that never truncates a
+stacked state's Krylov space); operator-split / `g=1` units get the full per-state tightening. Seeds
+are unchanged (an impurity operator preserves bath occupation, so `c_i|ψ_e⟩` lies inside `ψ_e`'s own
+window), so only the excited-basis *span* tightens.
+
+Gated to activate **exactly when `chain_restrict` is on** (per user policy): per-state == ensemble
+whenever the bath classification is state-independent — i.e. `chain_restrict` off, *or* on but with a
+directly-hybridizing bath shell whose sites are removed by the coupling-distance filter (measured on
+the anchor: forcing `chain_restrict` on still emitted 0 bath restriction subsets → identical basis).
+The tightening therefore bites only for **long chains** (`double_chain_haverkort`) with sites past
+the distance filter. Tests: `_union_restrictions` semantics; the chain-gated default + env override;
+and a GF equivalence oracle (`chain_restrict=True`, per-state vs ensemble window → same GF to ~1e-5)
+locking the no-truncation property on the plumbing. **Open:** the *tightening* regime (long chain
+with genuinely state-dependent far-site occupation) has no golden yet — add one with the double-chain
+workload, using GF(per-state) == GF(ensemble) as the gate, since a too-aggressive window would
+silently truncate the Green's function.
+
+---
+
 # FIXES APPLIED (B0 — calc_gs blockers)
 
 ## B0.1 + B0.2 — FIXED (one root cause, one-line change)

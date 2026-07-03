@@ -21,11 +21,6 @@ from impurityModel.ed.finite import (
 )
 from impurityModel.ed.gs_statistics import compute_gs_statistics, print_gs_statistics, save_gs_statistics
 from impurityModel.ed.ManyBodyUtils import ManyBodyOperator
-from impurityModel.ed.symmetries import (
-    conserved_subset_charges,
-    measure_conserved_charges,
-    restrictions_from_charges,
-)
 from impurityModel.ed.utils import matrix_print
 
 
@@ -147,89 +142,47 @@ def calc_energy(
     return np.min(es), basis
 
 
-def prescan_ground_state_sector(
-    h_op,
-    impurity_orbitals,
-    bath_states,
-    N0,
-    mixed_valence,
-    tau,
-    chain_restrict,
-    spin_flip_dj,
-    dense_cutoff,
-    comm,
-    truncation_threshold,
-    slaterWeightMin,
-    cipsi_solver_method="trlm",
-    scan_width=2,
-    verbose=False,
-    weighted_restrictions=None,
-):
-    """Rough CIPSI over a broad occupation window to locate the ground-state sector.
+def hartree_fock_seed_occupation(h_op, impurity_orbitals, bath_states, N0, comm=None, verbose=False):
+    """Nominal impurity occupation ``N0`` from a cheap unrestricted Hartree-Fock solve.
 
-    Instead of running a full accurate solve for every candidate impurity occupation
-    (the ``O(3^k)`` ``dN`` scan in :func:`find_ground_state_basis`), this runs **one**
-    rough solve over a window wide enough to span the candidates and then *measures*:
+    This is the default seed for :func:`find_ground_state_basis`. Instead of running an
+    accurate solve for every candidate impurity occupation (the legacy ``O(3^k)`` ``dN``
+    scan) — or a rough many-body CIPSI over a *broadened* occupation window, which for long
+    bath chains can build a massive basis and exhaust memory — it solves the problem at
+    mean-field level (:func:`impurityModel.ed.hartree_fock.hartree_fock_occupation`). The
+    unrestricted-HF single determinant variationally minimises the mean-field energy, so
+    **its impurity occupation is "the occupation corresponding to the lowest energy" at
+    mean-field level**, obtained from a handful of small ``(n_orb x n_orb)`` dense
+    diagonalisations. It is quick and hard-bounded in memory regardless of chain length. HF
+    is deterministic and its input (``h_op``) is replicated, so every rank computes the
+    identical ``N0`` with no communication.
 
-    - the rough ground state's **impurity occupation** per orbital set
-      (:math:`\\langle N_{\\mathrm{imp}}\\rangle`, rounded) — the winning nominal ``N0``
-      to seed the accurate basis; and
-    - its **conserved-charge sector** (:func:`conserved_subset_charges` +
-      :func:`measure_conserved_charges`) — used to restrict the accurate refine to the
-      correct sector (Phase 3).
+    The mean-field seed can miss the true integer sector by ``±1`` in strongly-correlated,
+    near-degenerate cases; the ``mixed_valence`` window of the subsequent accurate solve
+    absorbs such a miss.
 
     Parameters
     ----------
-    h_op, impurity_orbitals, bath_states, N0, mixed_valence, tau, chain_restrict,
-    spin_flip_dj, dense_cutoff, comm, truncation_threshold, slaterWeightMin,
-    cipsi_solver_method
-        As for :func:`calc_energy` / :func:`find_ground_state_basis`.
-    scan_width : int, default 1
-        How far (in electrons per orbital set) to widen the valence window beyond
-        ``mixed_valence`` for the scan, so the candidate sectors are spanned.
+    h_op, impurity_orbitals, bath_states, N0
+        As for :func:`calc_energy` / :func:`find_ground_state_basis`. ``N0`` sets the total
+        (conserved) particle number: ``sum_i N0[i]`` impurity electrons plus the nominally
+        full valence baths.
+    comm : MPI.Comm or None
+        Used only to gate the verbose print to rank 0; HF itself is uncommunicated.
     verbose : bool, default False
 
     Returns
     -------
     winning_N0 : dict
-        Nominal impurity occupation per orbital set (rounded rough-GS occupation).
-    restrictions : dict of frozenset to (int, int)
-        Conserved-charge sector restrictions for the accurate refine, or ``None`` if the
-        scan produced no state.
-    energy : float
-        The rough ground-state energy.
+        Nominal impurity occupation per orbital set (rounded HF occupation).
     """
-    prescan_mixed_valence = {i: abs(mixed_valence.get(i, 0)) + scan_width for i in N0}
-    energy, basis, gs_state = calc_energy(
-        h_op,
-        impurity_orbitals,
-        bath_states,
-        N0,
-        prescan_mixed_valence,
-        tau,
-        chain_restrict,
-        spin_flip_dj,
-        dense_cutoff,
-        comm,
-        verbose,
-        truncation_threshold,
-        slaterWeightMin,
-        cipsi_solver_method=cipsi_solver_method,
-        weighted_restrictions=weighted_restrictions,
-        return_state=True,
-    )
-    if gs_state is None:
-        return dict(N0), None, energy
+    from impurityModel.ed.hartree_fock import hartree_fock_occupation
 
-    n_orb = basis.num_spin_orbitals
-    impurity_subsets = [frozenset(orb for block in impurity_orbitals[i] for orb in block) for i in N0]
-    impurity_occ = measure_conserved_charges(gs_state, impurity_subsets, n_orb, comm=comm)
-    winning_N0 = {i: impurity_occ[k] for k, i in enumerate(N0)}
-
-    charges = conserved_subset_charges(h_op, n_orb)
-    charge_occ = measure_conserved_charges(gs_state, charges, n_orb, comm=comm)
-    restrictions = restrictions_from_charges(charges, charge_occ)
-    return winning_N0, restrictions, energy
+    winning_N0, energy, converged = hartree_fock_occupation(h_op, impurity_orbitals, bath_states, N0)
+    if verbose and (comm is None or comm.rank == 0):
+        status = "converged" if converged else "NOT converged"
+        print(f"HF seed occupation: {winning_N0}  (E_HF ~ {energy:6.3f}, {status})")
+    return winning_N0
 
 
 def find_ground_state_basis(
@@ -249,15 +202,15 @@ def find_ground_state_basis(
     verbose=True,
     slaterWeightMin=1e-12,
     cipsi_solver_method="trlm",
-    use_prescan=True,
+    use_hf_seed=True,
     weighted_restrictions=None,
 ):
     """
     Find the occupation corresponding to the lowest energy, compare N0 - 1, N0 and N0 + 1
 
-    use_prescan (default True): locate the ground-state occupation with a single rough
-    CIPSI over a broad window and measure the impurity occupation, instead of the
-    O(3^k) accurate scan over every dN combination. Set False for the legacy scan.
+    use_hf_seed (default True): seed the nominal occupation with a cheap, memory-bounded
+    unrestricted Hartree-Fock solve (the mean-field lowest-energy determinant), instead of
+    the O(3^k) accurate scan over every dN combination. Set False for the legacy scan.
 
     Returns:
     basis_gs, ManybodyBasis: Initial basis for the ground state
@@ -326,33 +279,18 @@ def find_ground_state_basis(
         return e_trial, basis
 
     keys = list(N0.keys())
-    if use_prescan:
-        # One rough CIPSI over a broad window locates the GS sector by *measuring* the
-        # ground state's impurity occupation, replacing the O(3^k) dN scan; then a single
-        # accurate solve at that occupation refines it.
-        winning_N0, _restrictions, _e_rough = prescan_ground_state_sector(
-            h_op,
-            impurity_orbitals,
-            bath_states,
-            N0,
-            mixed_valence,
-            tau,
-            chain_restrict,
-            spin_flip_dj,
-            dense_cutoff,
-            comm,
-            truncation_threshold,
-            slaterWeightMin,
-            cipsi_solver_method=cipsi_solver_method,
-            verbose=verbose,
-            weighted_restrictions=weighted_restrictions,
-        )
+    if use_hf_seed:
+        # A cheap unrestricted Hartree-Fock solve locates the GS impurity occupation
+        # (the mean-field lowest-energy determinant), replacing the O(3^k) dN scan; then a
+        # single accurate solve at that occupation refines it. HF is quick and memory-bounded
+        # (no broad-window CIPSI expansion), which matters for long bath chains.
+        winning_N0 = hartree_fock_seed_occupation(h_op, impurity_orbitals, bath_states, N0, comm=comm, verbose=verbose)
         winning_N0 = {i: N0[i] if i in frozen_occupations else winning_N0[i] for i in N0}
         e_gs, basis = get_energy(winning_N0)
         gs_impurity_occ = winning_N0
         basis_gs = basis.copy() if basis is not None else None
         if verbose and (comm is None or comm.rank == 0):
-            print("Pre-scan ground state occupation:", gs_impurity_occ, f"~ {e_gs:6.3f}")
+            print("HF-seeded ground state occupation:", gs_impurity_occ, f"~ {e_gs:6.3f}", flush=True)
     else:
         dN_trials = [
             {keys[i]: dN[i] if keys[i] not in frozen_occupations else 0 for i in range(len(keys))}
@@ -564,26 +502,46 @@ def calc_gs(
                 ground_state_basis.impurity_orbitals, rot_to_spherical
             )
         except ValueError:
-            # Impurity is not a clean spin-doubled l-shell: skip the Casimirs
-            # (the rho-based <L.S>/<Lz>/<Sz> etc. still print).
+            # The impurity is grouped into orbital-symmetry manifolds (e.g. eg / t2g), none of
+            # which is individually a full spin-doubled l-shell, so the per-partition build raised.
+            # L/S/J are shell-*total* operators, so aggregate the manifolds into the whole shell
+            # (the sorted impurity_indices, which match the single rot_to_spherical matrix) and
+            # retry. Only meaningful for a single shared rotation; a dict rotation is per-shell
+            # (get_spectra's multi-l case) and is already correct per partition.
             l_ops = None
+            if not isinstance(rot_to_spherical, dict):
+                try:
+                    l_ops, s_ops, j_ops = make_impurity_casimir_operators({0: [impurity_indices]}, rot_to_spherical)
+                except ValueError:
+                    # Genuinely not a spin-doubled l-shell: skip the Casimirs
+                    # (the rho-based <L.S>/<Lz>/<Sz> etc. still print).
+                    l_ops = None
         if l_ops is not None:
-            casimir = {}
-            for name, ops in (("S", s_ops), ("L", l_ops), ("J", j_ops)):
-                vals = manifold_observable_values(
-                    psis,
-                    es,
-                    lambda psi, _ops=ops: apply_casimir(psi, *_ops),
-                    comm=mov_comm,
-                    redistribute=mov_redistribute,
-                )
-                casimir[name] = (
-                    np.array([casimir_to_quantum_number(v) for v in vals]),
-                    thermal_observable_value(vals, es, tau),
-                )
-            s_values, s2_thermal = casimir["S"]
-            l_values, l2_thermal = casimir["L"]
-            j_values, j2_thermal = casimir["J"]
+            # Evaluation is deterministic and identical on every rank (manifold_observable_values
+            # Allreduces), so a failure raises on all ranks together -> the try/except stays
+            # collective-safe and the report degrades instead of crashing the ground-state solve.
+            try:
+                casimir = {}
+                for name, ops in (("S", s_ops), ("L", l_ops), ("J", j_ops)):
+                    vals = manifold_observable_values(
+                        psis,
+                        es,
+                        lambda psi, _ops=ops: apply_casimir(psi, *_ops),
+                        comm=mov_comm,
+                        redistribute=mov_redistribute,
+                    )
+                    casimir[name] = (
+                        np.array([casimir_to_quantum_number(v) for v in vals]),
+                        thermal_observable_value(vals, es, tau),
+                    )
+                s_values, s2_thermal = casimir["S"]
+                l_values, l2_thermal = casimir["L"]
+                j_values, j2_thermal = casimir["J"]
+            except Exception as exc:  # noqa: BLE001 - reporting must not crash the GS solve
+                if rank == 0:
+                    print(f"S^2/L^2/J^2 not reported: {exc}")
+                s_values = l_values = j_values = None
+                s2_thermal = l2_thermal = j2_thermal = None
         # Kondo impurity-bath spin correlation <S_imp . S_bath>. The bath spin pairing
         # follows the down-then-up convention, but is only trusted if the induced global
         # spin operators commute with the one-body Hamiltonian (so the spin assignment
@@ -592,86 +550,99 @@ def calc_gs(
         sisb_values = None
         sisb_thermal = None
         sisb_skip_reason = None
-        n_orb = ground_state_basis.num_spin_orbitals
-        # Fast path: the down-then-up index convention (valid in the spherical/c2i layout).
-        imp_pairs = impurity_spin_pairs(ground_state_basis.impurity_orbitals)
-        bath_pairs = bath_spin_pairs(ground_state_basis.bath_states)
-        spin_pairs = None
-        if imp_pairs and bath_pairs and spin_pairs_consistent_with_h(Hop, imp_pairs + bath_pairs, n_orb):
-            spin_pairs = (imp_pairs, bath_pairs)
-        else:
-            # Fallback: derive the pairing from the Hamiltonian's spin symmetry (geometry-
-            # agnostic, e.g. the linked double-chain / Haverkort bath where the computational
-            # order is not down-then-up). Confirmed by the same [h, S] = 0 check.
-            derived = derive_spin_pairs(Hop, ground_state_basis.impurity_orbitals, rot_to_spherical, n_orb)
-            if derived is not None and spin_pairs_consistent_with_h(Hop, derived[0] + derived[1], n_orb):
-                spin_pairs = derived
-        if spin_pairs is None:
-            sisb_skip_reason = (
-                "could not determine a (down,up) spin pairing that commutes with the one-body "
-                "Hamiltonian. The down-then-up index convention only holds in the spherical-harmonics "
-                "representation, and the symmetry-derived fallback did not yield a consistent pairing "
-                "(spin-orbit coupling, or a bath connectivity it cannot resolve)."
-            )
-        else:
-            imp_pairs, bath_pairs = spin_pairs
-            ops_imp = make_spin_operators(imp_pairs)
-            ops_bath = make_spin_operators(bath_pairs)
-            sisb_raw = manifold_observable_values(
-                psis,
-                es,
-                lambda psi: apply_spin_correlation(psi, ops_imp, ops_bath),
-                comm=mov_comm,
-                redistribute=mov_redistribute,
-            )
-            sisb_values = np.real(sisb_raw)
-            sisb_thermal = thermal_observable_value(sisb_raw, es, tau)
+        try:
+            n_orb = ground_state_basis.num_spin_orbitals
+            # Fast path: the down-then-up index convention (valid in the spherical/c2i layout).
+            imp_pairs = impurity_spin_pairs(ground_state_basis.impurity_orbitals)
+            bath_pairs = bath_spin_pairs(ground_state_basis.bath_states)
+            spin_pairs = None
+            if imp_pairs and bath_pairs and spin_pairs_consistent_with_h(Hop, imp_pairs + bath_pairs, n_orb):
+                spin_pairs = (imp_pairs, bath_pairs)
+            else:
+                # Fallback: derive the pairing from the Hamiltonian's spin symmetry (geometry-
+                # agnostic, e.g. the linked double-chain / Haverkort bath where the computational
+                # order is not down-then-up). Confirmed by the same [h, S] = 0 check.
+                derived = derive_spin_pairs(Hop, ground_state_basis.impurity_orbitals, rot_to_spherical, n_orb)
+                if derived is not None and spin_pairs_consistent_with_h(Hop, derived[0] + derived[1], n_orb):
+                    spin_pairs = derived
+            if spin_pairs is None:
+                sisb_skip_reason = (
+                    "could not determine a (down,up) spin pairing that commutes with the one-body "
+                    "Hamiltonian. The down-then-up index convention only holds in the spherical-harmonics "
+                    "representation, and the symmetry-derived fallback did not yield a consistent pairing "
+                    "(spin-orbit coupling, or a bath connectivity it cannot resolve)."
+                )
+            else:
+                imp_pairs, bath_pairs = spin_pairs
+                ops_imp = make_spin_operators(imp_pairs)
+                ops_bath = make_spin_operators(bath_pairs)
+                sisb_raw = manifold_observable_values(
+                    psis,
+                    es,
+                    lambda psi: apply_spin_correlation(psi, ops_imp, ops_bath),
+                    comm=mov_comm,
+                    redistribute=mov_redistribute,
+                )
+                sisb_values = np.real(sisb_raw)
+                sisb_thermal = thermal_observable_value(sisb_raw, es, tau)
+        except Exception as exc:  # noqa: BLE001 - reporting must not crash the GS solve
+            # Deterministic + identical on every rank (collective Allreduce inside), so this raises
+            # on all ranks together and stays collective-safe.
+            sisb_values = None
+            sisb_thermal = None
+            sisb_skip_reason = f"spin-correlation evaluation failed: {exc}"
 
         if rank == 0:
-            print(f"{impurity_indices=}")
-            print("Block structure")
-            print_block_structure(block_structure)
-            print_thermal_expectation_values(
-                thermal_rho[impurity_ix],
-                e_avg,
-                rot_to_spherical,
-                block_structure,
-                s_thermal=s2_thermal,
-                l_thermal=l2_thermal,
-                j_thermal=j2_thermal,
-                sisb_thermal=sisb_thermal,
-            )
-            full_impurity_ix = np.ix_(np.arange(len(rhos)), impurity_indices, impurity_indices)
-            print_expectation_values(
-                rhos[full_impurity_ix],
-                es,
-                rot_to_spherical,
-                block_structure,
-                s_values=s_values,
-                l_values=l_values,
-                j_values=j_values,
-                sisb_values=sisb_values,
-            )
-            if sisb_skip_reason is not None:
-                print(f"<S_imp.S_bath> not reported: {sisb_skip_reason}")
-        if rank == 0 and gs_stats is not None:
-            print_gs_statistics(gs_stats)
-            print("Ground state impurity / bath density matrices:")
-            valence_bath_states, conduction_bath_states = ground_state_basis.bath_states
-            for i in ground_state_basis.impurity_orbitals.keys():
-                print(f"orbital set {i}:")
-                impurity_orbital_blocks = ground_state_basis.impurity_orbitals[i]
-                valence_bath_orbital_blocks = valence_bath_states[i]
-                conduction_bath_orbital_blocks = conduction_bath_states[i]
-                for block_i, (imp_orbs, val_orbs, con_orbs) in enumerate(
-                    zip(impurity_orbital_blocks, valence_bath_orbital_blocks, conduction_bath_orbital_blocks)
-                ):
-                    print(f"Block {block_i}: impurity {imp_orbs}, valence {val_orbs}, conduction {con_orbs}")
-                    impurity_ix = np.ix_(imp_orbs, imp_orbs)
-                    bath_ix = np.ix_(val_orbs + con_orbs, val_orbs + con_orbs)
-                    matrix_print(thermal_rho[impurity_ix], "Impurity density matrix:", n_prec=5)
-                    matrix_print(thermal_rho[bath_ix], "Bath density matrix:", n_prec=5)
-                    print("=" * 80)
-                print("", flush=verbose >= 2)
-            print()
+            # The ground state is fully computed by here; formatting/printing the observable report
+            # must never crash the solve. Any failure degrades to a warning and still returns the GS.
+            # Rank-0-only (no collectives inside), so the guard cannot desync an MPI run.
+            try:
+                print(f"{impurity_indices=}")
+                print("Block structure")
+                print_block_structure(block_structure)
+                print_thermal_expectation_values(
+                    thermal_rho[impurity_ix],
+                    e_avg,
+                    rot_to_spherical,
+                    block_structure,
+                    s_thermal=s2_thermal,
+                    l_thermal=l2_thermal,
+                    j_thermal=j2_thermal,
+                    sisb_thermal=sisb_thermal,
+                )
+                full_impurity_ix = np.ix_(np.arange(len(rhos)), impurity_indices, impurity_indices)
+                print_expectation_values(
+                    rhos[full_impurity_ix],
+                    es,
+                    rot_to_spherical,
+                    block_structure,
+                    s_values=s_values,
+                    l_values=l_values,
+                    j_values=j_values,
+                    sisb_values=sisb_values,
+                )
+                if sisb_skip_reason is not None:
+                    print(f"<S_imp.S_bath> not reported: {sisb_skip_reason}")
+                if gs_stats is not None:
+                    print_gs_statistics(gs_stats)
+                    print("Ground state impurity / bath density matrices:")
+                    valence_bath_states, conduction_bath_states = ground_state_basis.bath_states
+                    for i in ground_state_basis.impurity_orbitals.keys():
+                        print(f"orbital set {i}:")
+                        impurity_orbital_blocks = ground_state_basis.impurity_orbitals[i]
+                        valence_bath_orbital_blocks = valence_bath_states[i]
+                        conduction_bath_orbital_blocks = conduction_bath_states[i]
+                        for block_i, (imp_orbs, val_orbs, con_orbs) in enumerate(
+                            zip(impurity_orbital_blocks, valence_bath_orbital_blocks, conduction_bath_orbital_blocks)
+                        ):
+                            print(f"Block {block_i}: impurity {imp_orbs}, valence {val_orbs}, conduction {con_orbs}")
+                            impurity_ix = np.ix_(imp_orbs, imp_orbs)
+                            bath_ix = np.ix_(val_orbs + con_orbs, val_orbs + con_orbs)
+                            matrix_print(thermal_rho[impurity_ix], "Impurity density matrix:", n_prec=5)
+                            matrix_print(thermal_rho[bath_ix], "Bath density matrix:", n_prec=5)
+                            print("=" * 80)
+                        print("", flush=verbose >= 2)
+                    print()
+            except Exception as exc:  # noqa: BLE001 - reporting must not crash the GS solve
+                print(f"[warning] ground-state observable report incomplete (GS still returned): {exc}")
     return psis, es, ground_state_basis, thermal_rho, {"rhos": rhos, "statistics": gs_stats}

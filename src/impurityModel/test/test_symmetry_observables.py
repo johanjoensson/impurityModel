@@ -591,6 +591,119 @@ def _thermal_sisb(out):
     return float(line.split("=")[1])
 
 
+def _cubic_dshell(n=10):
+    """Build the whole-d-shell Casimir operators in cubic harmonics + the spherical->cubic rotation."""
+    from impurityModel.ed import finite
+    from impurityModel.ed.finite import make_impurity_casimir_operators
+
+    Rot = finite.get_spherical_2_cubic_matrix(spinpol=True, l=2)  # spherical<->cubic (10x10)
+    l_ops, s_ops, j_ops = make_impurity_casimir_operators({0: [list(range(n))]}, Rot.conj().T)
+    return l_ops, s_ops, j_ops
+
+
+def test_whole_shell_casimir_aggregation_dshell():
+    """Aggregating a manifold-grouped d-shell into the whole l-shell builds correct L/S/J.
+
+    Regression for the calc_gs whole-shell Casimir fix. Per-manifold (eg:4 / t2g:6) the build
+    must raise (not a spin-doubled l-shell); aggregated over the whole shell it must succeed and,
+    on the known high-spin d8 determinant (t2g^6 eg-up^2, S=1 Ms=1), give <S^2> = 2 exactly.
+    """
+    from impurityModel.ed.finite import make_impurity_casimir_operators
+    from impurityModel.ed.ManyBodyUtils import ManyBodyState, SlaterDeterminant, inner
+    from impurityModel.ed.finite import apply_casimir, get_spherical_2_cubic_matrix
+
+    Rot = get_spherical_2_cubic_matrix(spinpol=True, l=2)
+    # Per-manifold build raises (the case that made calc_gs skip the Casimirs before the fix).
+    import pytest
+
+    with pytest.raises(ValueError):
+        make_impurity_casimir_operators({0: [[0, 1, 5, 6]]}, Rot.conj().T)  # eg only (4 orbs)
+
+    # Whole-shell build succeeds; <S^2> = 2 on the high-spin d8 determinant (rotation-invariant).
+    _, s_ops, _ = _cubic_dshell(10)
+
+    def _sd10(occ):
+        data = bytearray(2)
+        for o in occ:
+            data[o // 8] |= 1 << (7 - o % 8)
+        return ManyBodyState({SlaterDeterminant.from_bytes(bytes(data)): 1.0})
+
+    # cubic order: eg dn 0,1 ; t2g dn 2,3,4 ; eg up 5,6 ; t2g up 7,8,9. d8 Ms=1: t2g^6 + eg-up^2.
+    psi = _sd10([2, 3, 4, 5, 6, 7, 8, 9])
+    s2 = float(np.real(inner(psi, apply_casimir(psi, *s_ops))))
+    assert np.isclose(s2, 2.0, atol=1e-9)  # S=1
+
+
+def test_calc_gs_reports_casimirs_for_cubic_manifold_grouped_dshell(capsys):
+    """calc_gs reports S^2/L^2/J^2 (not silently skipped) for a manifold-grouped cubic d-shell.
+
+    Integration/plumbing check for the whole-shell aggregation: group_orbitals_by_blocks splits
+    the d-shell into eg/t2g manifolds, so the per-partition Casimir build raises; calc_gs must
+    aggregate them and still report L/S/J without crashing. (Exact S is checked in the unit test
+    above; this synthetic has no double counting, so it needn't land on a specific occupation.)
+    """
+    from collections import OrderedDict
+
+    import pytest
+
+    from impurityModel.ed import finite
+    from impurityModel.ed.groundstate import calc_gs
+    from impurityModel.ed.ManyBodyUtils import ManyBodyOperator
+    from impurityModel.ed.symmetries import (
+        classify_bath_occupation,
+        group_orbitals_by_blocks,
+        impurity_block_structure,
+    )
+
+    Fdd = [7.5, 0, 9.9, 0, 6.6]
+    uOp = finite.getUop(l1=2, l2=2, l3=2, l4=2, R=Fdd)
+    nB = OrderedDict({2: 0})
+    V4 = np.zeros((10,) * 4, dtype=complex)
+    for proc, val in uOp.items():
+        ix = [finite.c2i(nB, proc[p][0]) for p in range(4)]
+        V4[ix[0], ix[1], ix[2], ix[3]] = 2.0 * val
+    Rot = finite.get_spherical_2_cubic_matrix(spinpol=True, l=2)
+    u4 = np.einsum("ia,jb,ijkl,kc,ld->abcd", Rot.conj(), Rot.conj(), V4, Rot, Rot, optimize=True)
+    u_dict = finite.getUop_from_rspt_u4(u4)
+
+    eg, t2g = [0, 1, 5, 6], [2, 3, 4, 7, 8, 9]
+    h0 = {}
+    for o in t2g:
+        h0[((o, "c"), (o, "a"))] = -8.6
+    for o in eg:
+        h0[((o, "c"), (o, "a"))] = -8.0
+    for k in range(10):
+        b = 10 + k
+        h0[((b, "c"), (b, "a"))] = -0.5  # valence (below Fermi 0)
+        h0[((k, "c"), (b, "a"))] = 0.15
+        h0[((b, "c"), (k, "a"))] = 0.15
+    Hop = ManyBodyOperator(finite.addOps([h0, u_dict]))
+
+    imp_flat = list(range(10))
+    bs = impurity_block_structure(Hop, imp_flat)
+    val_flat, con_flat = classify_bath_occupation(Hop, imp_flat)
+    impurity_orbitals, bath_states = group_orbitals_by_blocks(Hop, imp_flat, val_flat, con_flat, bs)
+    assert len(impurity_orbitals) >= 2  # eg / t2g -> manifold-grouped (the case that used to skip)
+    N0 = {g: (6 if len(blocks[0]) == 6 else 2) for g, blocks in impurity_orbitals.items()}
+
+    setup = dict(
+        impurity_orbitals=impurity_orbitals,
+        bath_states=bath_states,
+        N0=N0,
+        mixed_valence={g: 1 for g in impurity_orbitals},
+        tau=0.01,
+        dense_cutoff=4000,
+        spin_flip_dj=True,
+        comm=None,
+        truncation_threshold=200000,
+    )
+    calc_gs(Hop, setup, bs, Rot.conj().T, verbose=True, slaterWeightMin=1e-12)  # must not raise
+    out = capsys.readouterr().out
+    assert "<S^2>" in out and "<L^2>" in out and "<J^2>" in out  # reported, not skipped
+    s2 = float(next(ln for ln in out.splitlines() if ln.startswith("<S^2>")).split("=")[1].split("(")[0])
+    assert s2 > 0.0 and s2 == pytest.approx(round(s2 * 4) / 4, abs=0.05)  # sane S(S+1) value
+
+
 def test_kondo_correlation_fallback_matches_fast_path(capsys):
     """A non-down-then-up bath ordering falls back to derive_spin_pairs and agrees."""
     from impurityModel.ed.block_structure import BlockStructure

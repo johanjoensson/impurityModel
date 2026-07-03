@@ -140,6 +140,17 @@ def get_Greens_function(
     group = 1 if pairwise else _gf_eigenstate_group()
     n_psis = len(psis)
 
+    # Per-state excited windows (see _gf_per_state_restrict). Built on the full basis before the
+    # split, from globally-reduced density matrices, so every rank holds the identical list and can
+    # look up any unit's window locally. Cheap and identical to the ensemble window when the bath
+    # classification is not state-dependent (chain_restrict off, or a directly-hybridizing shell).
+    if _gf_per_state_restrict(basis.chain_restrict):
+        per_state_restrictions = [
+            _build_excited_restrictions(basis, hOp, [psis[ei]], [es[ei]], dN, occ_cutoff)[0] for ei in range(n_psis)
+        ]
+    else:
+        per_state_restrictions = None
+
     # --- Enumerate the work units = (block, addition/removal, eigenstate-group) -----------
     # Apply the transition operators for every block and both spectral sides to all thermal
     # states (collective on the full basis), then chunk the eigenstates into groups of `group`.
@@ -179,12 +190,34 @@ def get_Greens_function(
                     unit_meta.append((block_i, side_i, delta_signed, chunk, n_ops, None))
                     unit_seeds.append([block_v[j][i] for j in chunk for i in range(n_ops)])
 
-    # Per-unit cost weight ~ log10(total excited seed length) + 1 (the historical eigenstate-split
-    # heuristic), reduced across the full comm since seed amplitudes are distributed.
+    # Per-unit excited window: the union of the per-state windows over the eigenstates the unit
+    # stacks (exactly that state's window for a single-state / operator-split unit). Falls back to
+    # the shared ensemble window when per-state restrictions are disabled or state-independent.
+    if per_state_restrictions is not None:
+        unit_restrictions = [_union_restrictions([per_state_restrictions[ei] for ei in meta[3]]) for meta in unit_meta]
+    else:
+        unit_restrictions = [excited_restrictions] * len(unit_meta)
+
+    # Per-unit cost weight. The block-Lanczos cost per unit is dominated by two per-step terms that
+    # are both known at split time: the matvec (~ excited-basis size x block width) and the block
+    # reorthogonalization (~ block width^2, and it fires on ~97% of steps on this near-degenerate
+    # spectrum). We use the total seed mass `unit_length` (sum of per-column nnz) as the excited-
+    # basis-size proxy -- it is the cheapest per-unit correlate of the reachable sector size, and
+    # while a per-unit restriction now bounds that sector (per_state_restrictions), the seed mass
+    # tracks the *seeded* Krylov growth more directly than the ambient window volume.
+    #
+    # Weight = unit_length * width. Because unit_length already scales ~linearly with the column
+    # count, this is ~ (per-column mass) * width^2, matching matvec (N_basis * width, with
+    # unit_length as the N_basis proxy) and reort (width^2). This replaces the old log10(len)+1
+    # compression, which crushed 10-100x true cost spreads into a <2.3x band -- nearly equalizing
+    # units and burying the exactly-known block width -- so the widest block became the straggler
+    # color. `width` = number of seed columns = len(chunk)*n_ops (grouped) or 1 (pairwise); it is a
+    # structural per-rank-identical count, so only unit_length needs the distributed Allreduce.
     unit_lengths = np.array([sum(len(s) for s in seeds) for seeds in unit_seeds], dtype=float)
     if basis.comm is not None:
         basis.comm.Allreduce(MPI.IN_PLACE, unit_lengths, op=MPI.SUM)
-    unit_weights = np.log10(unit_lengths + 1) + 1
+    unit_widths = np.array([len(seeds) for seeds in unit_seeds], dtype=float)
+    unit_weights = unit_lengths * unit_widths + 1.0  # +1 floor so an all-empty seed set can't zero the norm
     # Structural seed count per unit (identical on every rank): len(chunk) * n_ops.
     seed_offsets = np.concatenate(([0], np.cumsum([len(s) for s in unit_seeds]))).astype(int)
 
@@ -224,7 +257,7 @@ def get_Greens_function(
             slaterWeightMin,
             sparse,
             verbose_extra,
-            excited_restrictions,
+            unit_restrictions[u],
             excited_weighted_restrictions,
         )
         local_unit_alphas.append(alphas)
@@ -848,6 +881,70 @@ def _gf_operator_split():
     precedence when both are requested.
     """
     return os.environ.get("GF_OPERATOR_SPLIT", "0") not in ("0", "", "false", "False")
+
+
+def _gf_per_state_restrict(chain_restrict):
+    r"""Whether to build the excited-sector occupation window *per thermal state* (per work unit)
+    instead of once from the whole thermal ensemble.
+
+    Default: **on exactly when ``chain_restrict`` is on**. Per-state windows differ from the
+    ensemble window only through the state-dependent bath filled/empty classification, which is
+    itself only produced under ``chain_restrict`` (and only for sites past the coupling-distance
+    filter -- long chains); with ``chain_restrict`` off the two are identical, so per-state would
+    be pure overhead. ``GF_PER_STATE_RESTRICT`` overrides the default either way (for tests/A-B).
+
+    The ensemble window is effectively the union over all thermal states' filled/empty bath
+    classifications: a bath orbital counts as cleanly filled/empty only if the *thermal-average*
+    occupation is within ``occ_cutoff`` of 1/0. A single eigenstate usually pins strictly more baths
+    (its own occupations are 0/1 to machine precision where the ensemble average is merely close),
+    so its own window carries more restriction subsets -> a smaller excited basis and cheaper
+    Lanczos. Each work unit uses the *union* of the per-state windows over the eigenstates it stacks
+    (:func:`_union_restrictions`) so the shared block Krylov space still contains every seed's
+    dynamics; in operator-split mode every unit is a single state, giving the full per-state
+    tightening. The seed ``c_i|psi_e>`` is unchanged (an impurity operator preserves bath
+    occupation, so the seed lies inside ``psi_e``'s own window), so only the excited-basis span
+    tightens -- no seed is truncated.
+
+    This differs from the ensemble window *only* when the bath filled/empty classification is
+    state-dependent, i.e. ``chain_restrict=True`` with sites far enough from the impurity to clear
+    the coupling-distance filter (long chains). For a directly-hybridizing single bath shell the
+    per-state and ensemble windows are identical and this is a no-op.
+    """
+    env = os.environ.get("GF_PER_STATE_RESTRICT")
+    if env is None:
+        return bool(chain_restrict)
+    return env not in ("0", "", "false", "False")
+
+
+def _union_restrictions(rests):
+    r"""Loosest single restriction dict admitting every input window's feasible set.
+
+    A work unit that stacks several eigenstates shares one block Krylov space, which must contain
+    *every* stacked seed's dynamics; so the unit window must admit a determinant that is feasible
+    for **any** state in the group. Restriction dicts are conjunctions of per-subset ``(min, max)``
+    occupation bounds, so the group window keeps only the subset keys **common to all** states (a
+    key absent from some state imposes no bound there, hence cannot be enforced for the group) and
+    loosens each shared key to ``(min of mins, max of maxs)``. The result is a superset of each
+    input window, so it never truncates a stacked state's Krylov space. ``None`` means "no
+    restriction"; if any input is ``None`` (unconstrained) the union is ``None``. For a single-state
+    group (operator-split, or ``g = 1``) the union is exactly that state's window -- maximal
+    tightening.
+    """
+    rests = list(rests)
+    if not rests or any(r is None for r in rests):
+        return None
+    if len(rests) == 1:
+        return rests[0]
+    common = set(rests[0])
+    for r in rests[1:]:
+        common &= set(r)
+    if not common:
+        return None
+    out = {}
+    for key in common:
+        bounds = [r[key] for r in rests]
+        out[key] = (min(lo for lo, _ in bounds), max(hi for _, hi in bounds))
+    return out
 
 
 class PairwiseGF:

@@ -295,18 +295,19 @@ class Basis:
         # than keeping lazy nested itertools iterators) avoids re-consuming an exhausted
         # iterator when several groups each admit multiple occupations, and lets the cross-group
         # combination below be filtered by *total* impurity charge.
-        # When the impurity is split into several orbital-symmetry manifolds (this grouping),
-        # they are one correlated shell that must freely redistribute charge among manifolds at
-        # fixed *total* occupation. A single group already enumerates every whole-impurity
-        # arrangement through ``combinations`` below, so its per-group occupation stays pinned to
-        # ``nominal +/- mixed_valence`` (preserving the seed count for the un-grouped case); but
-        # with >= 2 groups each group's occupation must range freely (the cross-group *total*
-        # filter then keeps only the arrangements in the occupation window). Gating the per-group
-        # range by ``mixed_valence[i]`` in the grouped case instead pins each manifold and
-        # collapses the seed to a single frozen configuration -- the NiO covalency /
-        # magnetic-moment regression. ``mixed_valence`` still widens the *total* window via
-        # ``total_slack``.
+        # When the impurity is split into several orbital-symmetry manifolds (this grouping), they
+        # are one correlated shell that must freely redistribute charge among manifolds at fixed
+        # *total* occupation. A single group already enumerates every whole-impurity arrangement
+        # through ``combinations`` below, so its per-group occupation stays pinned to
+        # ``nominal +/- mixed_valence`` (preserving the seed count for the un-grouped case); but with
+        # >= 2 groups each group's occupation ranges over the whole [0, group_size] and the
+        # cross-group *total* filter keeps only the arrangements in the occupation window. Gating the
+        # per-group range by ``mixed_valence[i]`` in the grouped case instead pins each manifold and
+        # collapses the seed to a single frozen configuration -- the NiO covalency / magnetic-moment
+        # regression. ``mixed_valence`` still widens the *total* window via ``total_slack``.
         redistribute = len(impurity_orbitals) > 1
+        total_nominal = sum(int(nominal_impurity_occ[i]) for i in valence_baths)
+        total_slack = max((abs(mixed_valence[i]) + abs(delta_impurity_occ[i]) for i in valence_baths), default=0)
         group_configurations = {}
         for i in valence_baths:
             configs = []
@@ -346,32 +347,48 @@ class Basis:
             group_configurations[i] = configs
         num_spin_orbitals = sum(total_impurity_orbitals[i] + total_baths[i] for i in total_baths)
 
-        # Total impurity-occupation window: the seed spans a fixed *total* impurity charge (the
-        # sum of the per-group nominal occupations), widened by the whole-impurity charge
-        # excursion budget. The groups are the orbital-symmetry manifolds (eg / t2g, spin up /
-        # down) of ONE correlated shell sharing ONE charge reservoir (the bath), so the total
-        # excursion is bounded by the *largest* per-group budget (``max``), NOT their sum: the
-        # per-group ``mixed_valence`` / ``delta_impurity_occ`` are wide enough to let each
-        # manifold redistribute, but summing them would multiply a uniform search widening (e.g.
-        # the prescan sets the same ``scan_width`` on every group) by the number of groups and
-        # blow the window open — which let the ground-state prescan discover an unphysical
-        # empty-impurity sector (the NiO d8 -> d2 regression). Filtering the cross-group product
-        # on this bounded total keeps wide per-manifold windows from leaking total charge, so the
-        # manifolds redistribute charge at fixed impurity count while a single group keeps its
-        # full impurity/bath charge-transfer range (the filter is then a no-op).
-        total_nominal = sum(int(nominal_impurity_occ[i]) for i in valence_baths)
-        total_slack = max((abs(mixed_valence[i]) + abs(delta_impurity_occ[i]) for i in valence_baths), default=0)
+        # Filter the cross-group combinations on the whole-impurity charge window computed above,
+        # so wide per-manifold windows cannot leak total charge: the manifolds redistribute at
+        # fixed impurity count, while a single group keeps its full impurity/bath charge-transfer
+        # range (the filter is then a no-op).
         lo_tot = max(0, total_nominal - total_slack)
         hi_tot = total_nominal + total_slack
 
-        basis = []
         # Combine the per-group configurations, keeping only determinants whose *total* impurity
-        # occupation lies in the window.
-        for combo in itertools.product(*group_configurations.values()):
-            if not (lo_tot <= sum(imp_occ for imp_occ, _ in combo) <= hi_tot):
+        # occupation lies in the window [lo_tot, hi_tot]. Rather than materialise the full
+        # itertools.product of the per-group configs (up to ~2^n_imp arrangements in the
+        # multi-group ``redistribute`` branch, where each group ranges over its whole
+        # [0, group_size]) and discard the out-of-window majority, enumerate incrementally with
+        # running-total pruning: at each group only keep partial choices that can still reach a
+        # total inside the window, given the min/max impurity occupation attainable from the
+        # remaining groups. The surviving determinant set is identical to the product-then-filter
+        # result, but the cost is proportional to the in-window output rather than the full
+        # product -- decisive for large impurities / long manifolds.
+        group_lists = list(group_configurations.values())
+        n_groups = len(group_lists)
+        # suffix_min/max[t] = min/max total impurity occupation attainable from groups t.. onward.
+        suffix_min = [0] * (n_groups + 1)
+        suffix_max = [0] * (n_groups + 1)
+        for t in range(n_groups - 1, -1, -1):
+            occs = [imp_occ for imp_occ, _ in group_lists[t]]
+            suffix_min[t] = suffix_min[t + 1] + (min(occs) if occs else 0)
+            suffix_max[t] = suffix_max[t + 1] + (max(occs) if occs else 0)
+
+        basis = []
+        # Iterative DFS; a frame is (group_index, partial_impurity_occ, partial_occupied_orbitals).
+        stack = [(0, 0, ())]
+        while stack:
+            t, partial_occ, occupied = stack.pop()
+            if t == n_groups:
+                # The last group's prune already guarantees lo_tot <= partial_occ <= hi_tot.
+                basis.append(psr.tuple2bytes(occupied, 8 * self.n_bytes))
                 continue
-            occupied = tuple(idx for _imp_occ, orbs in combo for idx in orbs)
-            basis.append(psr.tuple2bytes(occupied, 8 * self.n_bytes))
+            for imp_occ, orbs in group_lists[t]:
+                next_occ = partial_occ + imp_occ
+                # Prune unless the remaining groups can still land the total inside the window.
+                if next_occ + suffix_min[t + 1] > hi_tot or next_occ + suffix_max[t + 1] < lo_tot:
+                    continue
+                stack.append((t + 1, next_occ, occupied + orbs))
 
         return [SlaterDeterminant.from_bytes(bytestring) for bytestring in basis], num_spin_orbitals
 

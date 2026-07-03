@@ -1173,7 +1173,7 @@ def spin_pairs_consistent_with_h(h_op, spin_pairs, n_orb, tol=1e-6):
     """
     from impurityModel.ed.symmetries import extract_tensors
 
-    h, _, _ = extract_tensors(h_op, n_orb=n_orb)
+    h, _, _ = extract_tensors(h_op, n_orb=n_orb, two_body=False)
     sz = np.zeros((n_orb, n_orb), dtype=complex)
     splus = np.zeros((n_orb, n_orb), dtype=complex)
     for dn, up in spin_pairs:
@@ -1302,7 +1302,7 @@ def derive_spin_pairs(h_op, impurity_orbitals, rot_to_spherical, n_orb, tol=1e-6
     """
     from impurityModel.ed.symmetries import extract_tensors
 
-    h, _, _ = extract_tensors(h_op, n_orb=n_orb)
+    h, _, _ = extract_tensors(h_op, n_orb=n_orb, two_body=False)
     impurity_orbs = set(orb for blocks in impurity_orbitals.values() for block in blocks for orb in block)
 
     # --- impurity (dn, up) pairs from the rotated spherical S_+ ---

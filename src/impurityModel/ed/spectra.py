@@ -423,7 +423,7 @@ def simulate_spectra(
         # components once (symmetry-reduced) and contract with every requested polarization (B2b).
         cartesian_ops = _prep_one_body(getDipoleOperators(nBaths, [[1, 0, 0], [0, 1, 0], [0, 0, 1]]))
         n_orb = basis.num_spin_orbitals
-        h_onebody = extract_tensors(hOp, n_orb=n_orb)[0]
+        h_onebody = extract_tensors(hOp, n_orb=n_orb, two_body=False)[0]
         reduction = component_symmetry_reduction(cartesian_ops, h_onebody, n_orb=n_orb)
         gs = getSpectra_tensor(
             hOp,

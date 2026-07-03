@@ -28,7 +28,7 @@ import numpy as np
 from impurityModel.ed.ManyBodyUtils import ManyBodyOperator
 
 
-def extract_tensors(op, n_orb=None):
+def extract_tensors(op, n_orb=None, two_body=True):
     r"""Extract the one- and two-body coefficient tensors of a ``ManyBodyOperator``.
 
     The operator is assumed purely 0-, 1- and 2-body and number-conserving, with
@@ -47,14 +47,19 @@ def extract_tensors(op, n_orb=None):
         The operator (or its term dict).
     n_orb : int, optional
         Number of spin-orbitals. If ``None``, inferred as ``max index + 1``.
+    two_body : bool, default True
+        If ``False``, skip building the two-body tensor and return ``V=None`` (two-body terms are
+        still validated but not stored). The dense ``V`` is ``O(n_orb^4)`` memory -- e.g. 2.7 GB
+        for a 114-orbital chain -- so allocating it just to read ``h`` OOMs under MPI when every
+        rank builds it. The many callers that need only ``h`` should pass ``two_body=False``.
 
     Returns
     -------
     h : np.ndarray, shape (n_orb, n_orb)
         One-body coefficient matrix.
-    V : np.ndarray, shape (n_orb, n_orb, n_orb, n_orb)
+    V : np.ndarray, shape (n_orb, n_orb, n_orb, n_orb), or None
         Two-body coefficient tensor, :math:`V_{ijkl}` = coeff of
-        :math:`c^\dagger_i c^\dagger_j c_l c_k`.
+        :math:`c^\dagger_i c^\dagger_j c_l c_k`; ``None`` when ``two_body=False``.
     const : complex
         Coefficient of the identity (energy shift).
 
@@ -69,7 +74,7 @@ def extract_tensors(op, n_orb=None):
         n_orb = 1 + max((idx for factors in terms for (idx, _) in factors), default=-1)
 
     h = np.zeros((n_orb, n_orb), dtype=complex)
-    V = np.zeros((n_orb, n_orb, n_orb, n_orb), dtype=complex)
+    V = np.zeros((n_orb, n_orb, n_orb, n_orb), dtype=complex) if two_body else None
     const = 0.0 + 0.0j
 
     for factors, amp in terms.items():
@@ -80,8 +85,9 @@ def extract_tensors(op, n_orb=None):
         elif ladder == ("c", "a"):
             h[idx[0], idx[1]] += amp
         elif ladder == ("c", "c", "a", "a"):
-            i, j, l, k = idx  # term is c†_i c†_j c_l c_k
-            V[i, j, k, l] += amp
+            if two_body:
+                i, j, l, k = idx  # term is c†_i c†_j c_l c_k
+                V[i, j, k, l] += amp
         else:
             raise ValueError(
                 f"Operator term {factors} is not a 0/1/2-body number-conserving term "
@@ -200,10 +206,44 @@ def rotate_hamiltonian(op, u, tol=1e-12):
     ManyBodyOperator
     """
     u = np.asarray(u, dtype=complex)
-    h, v_tensor, const = extract_tensors(op, n_orb=u.shape[0])
+    n = u.shape[0]
+    terms = op.to_dict() if hasattr(op, "to_dict") else dict(op)
+    # One-body + const, skipping the O(n^4) two-body tensor (rebuilt on its small support below).
+    h, _, const = extract_tensors(terms, n_orb=n, two_body=False)
     h_rot = rotate_one_body(h, u)
-    v_rot = rotate_two_body(v_tensor, u)
-    return tensors_to_operator(h_rot, v_rot, const, tol=tol)
+
+    # The two-body terms live on a small "interacting" subspace S (the impurity Coulomb block).
+    # Build V only on S (|S|^4, tiny) and rotate that sub-block -- exact when u does not mix S with
+    # its complement (impurity_symmetry_rotation is identity off the impurity). This avoids the
+    # O(n^4) full tensor + einsum that OOMs for long-chain baths (n^4 ~ 2.7 GB at n=114) once every
+    # MPI rank builds it. Falls back to the full rotation if u mixes S with the rest.
+    two_body_terms = {f: a for f, a in terms.items() if len(f) == 4}
+    S = sorted({idx for f in two_body_terms for (idx, _) in f})
+    v_s_rot = None
+    if S:
+        s_set = set(S)
+        comp = [o for o in range(n) if o not in s_set]
+        if comp and (np.max(np.abs(u[np.ix_(S, comp)])) > 1e-9 or np.max(np.abs(u[np.ix_(comp, S)])) > 1e-9):
+            _, v_full, _ = extract_tensors(terms, n_orb=n)  # u mixes S with the rest: full path
+            return tensors_to_operator(h_rot, rotate_two_body(v_full, u), const, tol=tol)
+        pos = {o: k for k, o in enumerate(S)}
+        m = len(S)
+        V_s = np.zeros((m, m, m, m), dtype=complex)
+        for f, a in two_body_terms.items():
+            (i, _), (j, _), (l, _), (k, _) = f  # ((i,c),(j,c),(l,a),(k,a)) -> V[i,j,k,l]
+            V_s[pos[i], pos[j], pos[k], pos[l]] += a
+        v_s_rot = rotate_two_body(V_s, u[np.ix_(S, S)])
+
+    d = tensors_to_operator(h_rot, None, const, tol=tol).to_dict()  # one-body + const (n^2 loop)
+    if v_s_rot is not None:
+        for a in range(len(S)):
+            for b in range(len(S)):
+                for c in range(len(S)):
+                    for e in range(len(S)):
+                        val = v_s_rot[a, b, c, e]
+                        if abs(val) > tol:
+                            d[((S[a], "c"), (S[b], "c"), (S[e], "a"), (S[c], "a"))] = val
+    return ManyBodyOperator(d)
 
 
 def conserved_subset_charges(op, n_orb=None, tol=1e-9):
@@ -417,7 +457,7 @@ def group_orbitals_by_blocks(op, impurity_orbitals, valence_orbitals, conduction
     imp = sorted(impurity_orbitals)
     val_set = set(valence_orbitals)
     con_set = set(conduction_orbitals)
-    h, _, _ = extract_tensors(op, n_orb=n_orb)
+    h, _, _ = extract_tensors(op, n_orb=n_orb, two_body=False)
 
     # get_equivalent_orbs returns local (0..n_imp-1) indices per inequivalent block; map back
     # to global spin-orbital indices via the sorted impurity list.
@@ -467,7 +507,7 @@ def classify_bath_occupation(op, impurity_orbitals, n_orb=None):
     conduction_orbitals : list[int]
         Initially-empty bath orbital indices (``h[o, o] >= 0``), sorted.
     """
-    h, _, _ = extract_tensors(op, n_orb=n_orb)
+    h, _, _ = extract_tensors(op, n_orb=n_orb, two_body=False)
     imp_set = set(impurity_orbitals)
     bath = [o for o in range(h.shape[0]) if o not in imp_set]
     valence = [o for o in bath if h[o, o].real < 0]
@@ -598,7 +638,7 @@ def auto_block_structure(op, n_orb=None, orbitals=None):
     """
     from impurityModel.ed.block_structure import build_block_structure
 
-    h, _, _ = extract_tensors(op, n_orb=n_orb)
+    h, _, _ = extract_tensors(op, n_orb=n_orb, two_body=False)
     if orbitals is not None:
         h = h[np.ix_(list(orbitals), list(orbitals))]
     return build_block_structure(None, mat=h)
@@ -664,7 +704,7 @@ def impurity_block_structure(op, impurity_orbitals, n_orb=None):
 
     imp = sorted(impurity_orbitals)
     imp_set = set(imp)
-    h, _, _ = extract_tensors(op, n_orb=n_orb)
+    h, _, _ = extract_tensors(op, n_orb=n_orb, two_body=False)
     n = h.shape[0]
     bath = [o for o in range(n) if o not in imp_set]
 
@@ -724,7 +764,7 @@ def impurity_symmetry_rotation(op, impurity_orbitals, n_orb=None):
         The impurity-block rotation, in the sorted-``impurity_orbitals`` order (columns are the
         eigenvectors of ``h[imp, imp]``).
     """
-    h, _, _ = extract_tensors(op, n_orb=n_orb)
+    h, _, _ = extract_tensors(op, n_orb=n_orb, two_body=False)
     n = h.shape[0]
     imp = sorted(impurity_orbitals)
     h_imp = h[np.ix_(imp, imp)]
@@ -957,7 +997,7 @@ def impurity_gf_block_consistency(op, impurity_orbitals, n_orb=None):
     # Impurity-only partition: connected components of h[imp, imp] (auto_block_structure with
     # orbitals=imp), mapped from local matrix indices back to global orbital indices.
     imp_set = set(imp)
-    h, _, _ = extract_tensors(op, n_orb=n_orb)
+    h, _, _ = extract_tensors(op, n_orb=n_orb, two_body=False)
     n = h.shape[0]
     bath = [o for o in range(n) if o not in imp_set]
     h_imp = h[np.ix_(imp, imp)]
@@ -1018,7 +1058,7 @@ def discovered_orbital_blocks(op, n_orb=None):
     list of frozenset of int
         The orbital blocks (a partition of ``range(n_orb)``).
     """
-    h, _, _ = extract_tensors(op, n_orb=n_orb)
+    h, _, _ = extract_tensors(op, n_orb=n_orb, two_body=False)
     one_body = tensors_to_operator(h)
     return conserved_subset_charges(one_body, n_orb=h.shape[0])
 
@@ -1102,7 +1142,7 @@ def discover_rotation(op, n_orb=None, seed=0):
     generators can be cheaply re-tested against a later Hamiltonian of the same symmetry
     (see :class:`SymmetryRotationCache`).
     """
-    h, _, _ = extract_tensors(op, n_orb=n_orb)
+    h, _, _ = extract_tensors(op, n_orb=n_orb, two_body=False)
     generators = discover_one_body_symmetries(h)
     cartan = cartan_subalgebra(generators, seed=seed)
     u, _ = joint_diagonalize(cartan, seed=seed)
@@ -1138,7 +1178,7 @@ class SymmetryRotationCache:
 
     def get_rotation(self, op, n_orb=None):
         """Return ``U`` for ``op``, reusing the cached rotation if the symmetry is unchanged."""
-        h, _, _ = extract_tensors(op, n_orb=n_orb)
+        h, _, _ = extract_tensors(op, n_orb=n_orb, two_body=False)
         if self._symmetry_preserved(h):
             return self._u
         self._u, self._cartan = discover_rotation(op, n_orb=n_orb, seed=self.seed)
@@ -1178,7 +1218,7 @@ def symmetry_adapted_transformation(op, n_orb=None, seed=0):
         are the raw material Phase 3 maps to restrictions (after rescaling to integer
         orbital weights and the ``{0,1}`` test); the mapping itself is left to Phase 3.
     """
-    h, _, _ = extract_tensors(op, n_orb=n_orb)
+    h, _, _ = extract_tensors(op, n_orb=n_orb, two_body=False)
     generators = discover_one_body_symmetries(h)
     cartan = cartan_subalgebra(generators, seed=seed)
     u, _ = joint_diagonalize(cartan, seed=seed)
@@ -1549,7 +1589,7 @@ def component_symmetry_reduction(component_ops, h_onebody, n_orb=None, tol=1e-8)
     if n_orb is None:
         n_orb = np.asarray(h_onebody).shape[0]
     m = len(component_ops)
-    Ts = [extract_tensors(op, n_orb=n_orb)[0] for op in component_ops]
+    Ts = [extract_tensors(op, n_orb=n_orb, two_body=False)[0] for op in component_ops]
     identity = ComponentReduction(np.eye(m, dtype=complex), list(range(m)), list(range(m)), m <= 1)
     if m <= 1:
         return identity

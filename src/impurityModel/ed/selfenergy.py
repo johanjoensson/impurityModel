@@ -398,7 +398,7 @@ def calc_selfenergy(
     # list; the total orbital count is inferred from the Hamiltonian (impurity + bath). The bath
     # orbitals and their valence/conduction split are derived below, not passed in.
     impurity_indices = sorted(o for orbs in impurity_orbitals.values() for o in orbs)
-    n_spin_orbitals = extract_tensors(h_input)[0].shape[0]
+    n_spin_orbitals = extract_tensors(h_input, two_body=False)[0].shape[0]
 
     # Adaptive symmetry-adapted basis: diagonalising the impurity one-body block collapses the
     # Green's-function block structure to its finest form (e.g. 1x1 eg/t2g blocks) BUT can
@@ -447,7 +447,7 @@ def calc_selfenergy(
         h, impurity_indices, valence_flat, conduction_flat, block_structure, n_orb=n_spin_orbitals
     )
     nominal_occ = _per_group_occupation(
-        nominal_occ, impurity_orbitals, extract_tensors(h, n_orb=n_spin_orbitals)[0]
+        nominal_occ, impurity_orbitals, extract_tensors(h, n_orb=n_spin_orbitals, two_body=False)[0]
     )
     mixed_valence = _per_group_scalar(mixed_valence, impurity_orbitals, default=0)
 

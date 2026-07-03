@@ -558,6 +558,117 @@ def test_get_Greens_function_operator_split_matches_block():
     )
 
 
+def test_union_restrictions_semantics():
+    """``_union_restrictions`` returns the loosest single window admitting every input's feasible
+    set: keep only subset keys common to all states, loosen each shared bound to (min lo, max hi),
+    and yield ``None`` (unconstrained) if any input is ``None`` or no key is common. This is the
+    superset that lets a grouped unit's shared Krylov space contain every stacked state's dynamics.
+    """
+    from impurityModel.ed.greens_function import _union_restrictions
+
+    a = frozenset({0, 1, 2})
+    b = frozenset({3, 4})
+    c = frozenset({5, 6})
+    # single window -> itself (full per-state tightening for an operator-split / g=1 unit)
+    assert _union_restrictions([{a: (1, 3)}]) == {a: (1, 3)}
+    # shared key -> loosened bound
+    assert _union_restrictions([{a: (2, 3)}, {a: (1, 2)}]) == {a: (1, 3)}
+    # key present in only one state -> dropped (it imposes no bound on the other)
+    assert _union_restrictions([{a: (2, 3), b: (0, 1)}, {a: (1, 2)}]) == {a: (1, 3)}
+    # any None (unconstrained) input -> None; no common key -> None; empty -> None
+    assert _union_restrictions([{a: (1, 2)}, None]) is None
+    assert _union_restrictions([None]) is None
+    assert _union_restrictions([{b: (0, 1)}, {c: (0, 1)}]) is None
+    assert _union_restrictions([]) is None
+
+
+def test_gf_per_state_restrict_gating(monkeypatch):
+    """Per-state windows default on exactly when ``chain_restrict`` is on; ``GF_PER_STATE_RESTRICT``
+    overrides the default either way (the user-facing policy: tie per-state to chain_restrict)."""
+    from impurityModel.ed.greens_function import _gf_per_state_restrict
+
+    monkeypatch.delenv("GF_PER_STATE_RESTRICT", raising=False)
+    assert _gf_per_state_restrict(True) is True
+    assert _gf_per_state_restrict(False) is False
+    monkeypatch.setenv("GF_PER_STATE_RESTRICT", "0")
+    assert _gf_per_state_restrict(True) is False
+    monkeypatch.setenv("GF_PER_STATE_RESTRICT", "1")
+    assert _gf_per_state_restrict(False) is True
+
+
+def test_get_Greens_function_per_state_restrict_matches_ensemble():
+    """Per-state excited windows must not change the Green's function -- they only tighten the
+    excited-basis span that the shared ensemble window over-provisions -- so GF(per-state) must
+    reproduce GF(ensemble) to the convergence tolerance. Run with ``chain_restrict`` on so the
+    per-state code path (per-unit ``_union_restrictions`` windows) is exercised; the two thermal
+    states occupy different bath orbitals, so a window that truncated a state's Krylov space would
+    change G by O(1)."""
+    omega_mesh = np.linspace(-2.0, 2.0, 25)
+    blocks = [[0, 1]]
+
+    def _hop():
+        return ManyBodyOperator(
+            {
+                ((0, "c"), (0, "a")): 0.3,
+                ((1, "c"), (1, "a")): 0.7,
+                ((2, "c"), (2, "a")): -0.5,
+                ((3, "c"), (3, "a")): 0.4,
+                ((0, "c"), (2, "a")): 0.25,
+                ((2, "c"), (0, "a")): 0.25,
+                ((1, "c"), (3, "a")): 0.25,
+                ((3, "c"), (1, "a")): 0.25,
+            }
+        )
+
+    state_bytes = [b"\xa0", b"\x50"]  # {0,2}, {1,3}
+    es = [-0.2, 0.3]
+
+    def run(per_state):
+        basis = Basis(
+            impurity_orbitals={0: [[0, 1]]},
+            bath_states=({0: [[2, 3]]}, {0: [[]]}),
+            initial_basis=state_bytes,
+            chain_restrict=True,
+            tau=1.0,
+            comm=MPI.COMM_SELF,
+        )
+        psis = [ManyBodyState({SlaterDeterminant.from_bytes(b): 1.0}) for b in state_bytes]
+        old = os.environ.get("GF_PER_STATE_RESTRICT")
+        os.environ["GF_PER_STATE_RESTRICT"] = "1" if per_state else "0"
+        try:
+            _, gs_real, _ = get_Greens_function(
+                matsubara_mesh=None,
+                omega_mesh=omega_mesh,
+                psis=psis,
+                es=list(es),
+                tau=1.0,
+                basis=basis,
+                hOp=_hop(),
+                delta=0.1,
+                blocks=blocks,
+                verbose=False,
+                verbose_extra=False,
+                reort=None,
+                dN=1,
+                occ_cutoff=1e-6,
+                slaterWeightMin=0.0,
+                sparse=True,
+            )
+        finally:
+            if old is None:
+                del os.environ["GF_PER_STATE_RESTRICT"]
+            else:
+                os.environ["GF_PER_STATE_RESTRICT"] = old
+        return gs_real[0]
+
+    ensemble = run(False)
+    per_state = run(True)
+    assert np.allclose(ensemble, per_state, atol=1e-5, rtol=1e-4), (
+        f"per-state-window GF differs from the ensemble-window GF: "
+        f"max|diff|={np.max(np.abs(ensemble - per_state)):.2e}"
+    )
+
+
 def test_get_Greens_function_mesh_is_none():
     """A None mesh (e.g. the self-energy driver requesting only one axis) returns that
     axis as None instead of crashing on len(None)."""
