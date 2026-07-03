@@ -1,7 +1,7 @@
-import itertools
 import os
 from collections import defaultdict
-from typing import Optional
+from dataclasses import dataclass
+from typing import Callable, Optional
 
 import numpy as np
 import scipy as sp
@@ -103,6 +103,217 @@ def build_full_greens_function(block_gf, block_structure: BlockStructure):
     return res
 
 
+@dataclass(frozen=True)
+class GFUnit:
+    """One distributable Green's-function work unit: a (possibly wide) block-Lanczos recurrence.
+
+    A unit stacks the transition-operator seeds of ``chunk`` thermal eigenstates from one
+    operator group into a single recurrence of width ``len(chunk) * n_ops`` (or a single scalar
+    seed in operator-split mode, identified by ``pw_tag``). Units are the atoms of the MPI
+    distribution: :func:`run_units_distributed` never splits one across colors.
+
+    Attributes
+    ----------
+    group_i : int
+        Index into the caller's operator-group list (e.g. block x spectral side, or a
+        transition-operator index).
+    chunk : tuple of int
+        Thermal-eigenstate indices whose seeds this unit stacks.
+    n_ops : int
+        Seed columns per eigenstate (1 in operator-split mode).
+    delta : float
+        Signed broadening of this unit's recurrence (sign selects addition/removal).
+    pw_tag : tuple, optional
+        ``("diag"|"sum"|"imag", i, j)`` identifying the scalar seed in operator-split mode;
+        ``None`` for grouped (wide-block) units.
+    """
+
+    group_i: int
+    chunk: tuple[int, ...]
+    n_ops: int
+    delta: float
+    pw_tag: Optional[tuple] = None
+
+
+def unit_cost_weights(unit_seeds: list[list[ManyBodyState]], comm) -> np.ndarray:
+    """Predicted block-Lanczos cost per work unit -- the single source of truth for split weights.
+
+    The per-step cost is dominated by two terms that are both known at split time: the matvec
+    (~ excited-basis size x block width) and the block reorthogonalization (~ width^2, firing on
+    nearly every step on a near-degenerate spectrum). The total seed mass (sum of per-column nnz)
+    is the cheapest per-unit correlate of the reachable excited-sector size, so
+
+        weight = seed_mass * width + 1.0
+
+    (the +1 floor keeps an all-empty seed set from zeroing the weight norm). Because seed mass
+    already scales ~linearly with the column count this is ~ per-column mass * width^2, matching
+    matvec + reort. This replaced the old ``log10(len)+1`` compression, which crushed 10-100x true
+    cost spreads into a <2.3x band -- nearly equalizing units and burying the exactly-known block
+    width -- so the widest block became the straggler color. Only the seed mass varies per rank
+    and needs the Allreduce; the width is a structural, per-rank-identical count.
+    """
+    lengths = np.array([sum(len(s) for s in seeds) for seeds in unit_seeds], dtype=float)
+    if comm is not None:
+        comm.Allreduce(MPI.IN_PLACE, lengths, op=MPI.SUM)
+    widths = np.array([len(seeds) for seeds in unit_seeds], dtype=float)
+    return lengths * widths + 1.0
+
+
+def enumerate_gf_units(
+    op_groups: list[tuple[list[ManyBodyOperator], float]],
+    psis: list[ManyBodyState],
+    group_restrictions: list,
+    weighted_restrictions,
+    slaterWeightMin: float,
+    per_state_restrictions: Optional[list] = None,
+    pairwise: Optional[bool] = None,
+) -> tuple[list[GFUnit], list[list[ManyBodyState]], list]:
+    """Enumerate the flat work units of a Green's-function calculation.
+
+    Applies each operator group's transition operators to every thermal state (collective on
+    the full basis), then chunks the eigenstates into groups of ``GF_EIGENSTATE_GROUP`` -- each
+    chunk seeds one (possibly wide) block-Lanczos recurrence and is one work unit. This is the
+    single global decomposition that is load-balanced across the full
+    (operator group x eigenstate) cross-product -- important when there are many small symmetry
+    blocks (the typical production case).
+
+    In operator-split mode (``GF_OPERATOR_SPLIT``) every unit is a width-1 scalar recurrence:
+    one per diagonal seed ``v_i``, plus per off-diagonal pair (i<j) the two polarization seeds
+    ``v_i + v_j`` and ``v_i + i v_j``. This is the narrow end of the granularity spectrum:
+    maximal communication-free units, no shared Krylov space.
+
+    Parameters
+    ----------
+    op_groups : list of (list of ManyBodyOperator, float)
+        One ``(tOps, signed_delta)`` entry per operator group (e.g. per block x spectral side,
+        or per transition operator).
+    psis : list of ManyBodyState
+        Thermal eigenstates.
+    group_restrictions : list
+        Excited-sector restriction dict per operator group, used both when applying the
+        group's operators and as the unit fallback window.
+    weighted_restrictions
+        Weighted (e.g. S_z) excited-sector restrictions, shared by all groups.
+    slaterWeightMin : float
+        Determinant-weight cutoff for the seed application.
+    per_state_restrictions : list, optional
+        Per-eigenstate excited windows; when given, each unit's window is the union
+        (:func:`_union_restrictions`) over the eigenstates it stacks instead of the group
+        fallback.
+    pairwise : bool, optional
+        Override the ``GF_OPERATOR_SPLIT`` environment default. Callers whose result
+        contract cannot represent scalar pairwise fractions (per-eigenstate ``r``
+        matrices) pass ``False``.
+
+    Returns
+    -------
+    tuple
+        ``(units, unit_seeds, unit_restrictions)`` -- the :class:`GFUnit` metadata, the flat
+        seed-column list per unit in (eigenstate, operator) order, and the excited window per
+        unit.
+    """
+    if pairwise is None:
+        pairwise = _gf_operator_split()
+    group = 1 if pairwise else _gf_eigenstate_group()
+    n_psis = len(psis)
+    units: list[GFUnit] = []
+    unit_seeds: list[list[ManyBodyState]] = []
+    for g, (tOps, delta_signed) in enumerate(op_groups):
+        block_v = _apply_transition_ops(tOps, psis, group_restrictions[g], weighted_restrictions, slaterWeightMin)
+        n_ops = len(tOps)
+        if pairwise:
+            for ei in range(n_psis):
+                for i in range(n_ops):
+                    units.append(GFUnit(g, (ei,), 1, delta_signed, ("diag", i, i)))
+                    unit_seeds.append([block_v[ei][i]])
+                for i in range(n_ops):
+                    for j in range(i + 1, n_ops):
+                        units.append(GFUnit(g, (ei,), 1, delta_signed, ("sum", i, j)))
+                        unit_seeds.append([block_v[ei][i] + block_v[ei][j]])
+                        units.append(GFUnit(g, (ei,), 1, delta_signed, ("imag", i, j)))
+                        unit_seeds.append([block_v[ei][i] + 1j * block_v[ei][j]])
+        else:
+            for chunk_start in range(0, n_psis, group):
+                chunk = tuple(range(chunk_start, min(chunk_start + group, n_psis)))
+                units.append(GFUnit(g, chunk, n_ops, delta_signed, None))
+                unit_seeds.append([block_v[j][i] for j in chunk for i in range(n_ops)])
+
+    # Per-unit excited window: the union of the per-state windows over the eigenstates the unit
+    # stacks (exactly that state's window for a single-state / operator-split unit). Falls back
+    # to the group window when per-state restrictions are disabled or state-independent.
+    if per_state_restrictions is not None:
+        unit_restrictions = [_union_restrictions([per_state_restrictions[ei] for ei in u.chunk]) for u in units]
+    else:
+        unit_restrictions = [group_restrictions[u.group_i] for u in units]
+    return units, unit_seeds, unit_restrictions
+
+
+def run_units_distributed(
+    basis: Basis,
+    unit_seeds: list[list[ManyBodyState]],
+    unit_weights: np.ndarray,
+    kernel: Callable,
+    verbose: bool = False,
+) -> Optional[list]:
+    """Distribute work units over MPI colors, run ``kernel`` per unit, gather to global rank 0.
+
+    The one distribution primitive shared by every Green's-function driver (self-energy and
+    spectra): ONE :meth:`Basis.split_basis_and_redistribute_psi` over all units, each color runs
+    ``kernel(split_basis, unit_index, seeds)`` for its assigned units on its sub-communicator,
+    and the per-unit results are gathered to global rank 0 in global unit order.
+
+    ``kernel`` must be collective on ``split_basis.comm`` only (every rank of a color executes
+    the identical unit list, so MPI stays in lock-step) and return a picklable object.
+
+    Returns
+    -------
+    list or None
+        On global rank 0 (and on every rank in the serial path): ``results[u]`` = kernel result
+        for unit ``u``. ``None`` on other ranks. The split communicator is freed collectively
+        before returning.
+    """
+    n_units = len(unit_seeds)
+    if basis.comm is None or basis.comm.size <= 1:
+        return [kernel(basis, u, unit_seeds[u]) for u in range(n_units)]
+
+    seed_offsets = np.concatenate(([0], np.cumsum([len(s) for s in unit_seeds]))).astype(int)
+    (
+        unit_indices,
+        unit_roots,
+        _unit_color,
+        units_per_color,
+        split_basis,
+        split_seeds,
+        _,  # intercomms -- freed collectively inside the split
+    ) = basis.split_basis_and_redistribute_psi(unit_weights, [s for seeds in unit_seeds for s in seeds])
+    if verbose:
+        print(f"New unit roots: {unit_roots}")
+        print(f"Units per color: {units_per_color}")
+        print("=" * 80, flush=True)
+    sub_rank = split_basis.comm.rank if split_basis.comm is not None else 0
+    unit_indices_per_color = gather_distributed_results(
+        basis.comm, sub_rank, unit_roots, units_per_color, np.array(unit_indices), is_array=True
+    )
+
+    local_results = [kernel(split_basis, u, split_seeds[seed_offsets[u] : seed_offsets[u + 1]]) for u in unit_indices]
+    gathered = gather_distributed_results(
+        basis.comm, sub_rank, unit_roots, units_per_color, local_results, is_array=False
+    )
+
+    results = None
+    if basis.comm.rank == 0:
+        results = [None] * n_units
+        for i, u in enumerate(unit_indices_per_color):
+            results[int(u)] = gathered[i]
+
+    # Free the split communicator collectively before returning. MPI_Comm_free is collective --
+    # it must be called by all ranks in the comm at the same time. Leaving it for Python gc risks
+    # non-collective freeing.
+    if split_basis is not None and split_basis.comm != basis.comm:
+        split_basis.free_comm()
+    return results
+
+
 def get_Greens_function(
     matsubara_mesh: np.ndarray,
     omega_mesh: np.ndarray,
@@ -137,7 +348,6 @@ def get_Greens_function(
         basis, hOp, psis, es, dN, occ_cutoff
     )
     pairwise = _gf_operator_split()
-    group = 1 if pairwise else _gf_eigenstate_group()
     n_psis = len(psis)
 
     # Per-state excited windows (see _gf_per_state_restrict). Built on the full basis before the
@@ -152,161 +362,79 @@ def get_Greens_function(
         per_state_restrictions = None
 
     # --- Enumerate the work units = (block, addition/removal, eigenstate-group) -----------
-    # Apply the transition operators for every block and both spectral sides to all thermal
-    # states (collective on the full basis), then chunk the eigenstates into groups of `group`.
-    # Each chunk seeds one (possibly wide) block-Lanczos recurrence and is one work unit. This
-    # replaces the old nested block-then-eigenstate split with a single global decomposition that
-    # is load-balanced across the full (block x side x eigenstate) cross-product -- important when
-    # there are many small symmetry blocks (the typical production case).
-    #
-    # In operator-split (pairwise) mode every unit is a width-1 scalar recurrence: one per diagonal
-    # seed v_i, plus per off-diagonal pair (i<j) the two polarization seeds v_i+v_j and v_i+i*v_j.
-    # The scalar continued fractions are reassembled into a per-eigenstate PairwiseGF below. This is
-    # the narrow end of the granularity spectrum: maximal communication-free units, no shared Krylov.
+    # One operator group per (block, spectral side); the flat unit decomposition, cost model and
+    # single split are the shared engine (enumerate_gf_units / unit_cost_weights /
+    # run_units_distributed), load-balanced across the full (block x side x eigenstate)
+    # cross-product -- important when there are many small symmetry blocks (the typical
+    # production case).
     SIDES = (("c", delta), ("a", -delta))  # 0 = addition (IPS), 1 = removal (PS)
-    unit_meta = []  # (block_i, side_i, delta_signed, chunk, n_ops, pw_tag) per unit
-    unit_seeds = []  # flat seed-state list per unit, (eigenstate, operator)-ordered
+    op_groups = []
+    group_meta = []  # (block_i, side_i) per operator group
     for block_i, block in enumerate(blocks):
         for side_i, (op_char, delta_signed) in enumerate(SIDES):
-            tOps = [ManyBodyOperator({((orb, op_char),): 1}) for orb in block]
-            block_v = _apply_transition_ops(
-                tOps, psis, excited_restrictions, excited_weighted_restrictions, slaterWeightMin
-            )
-            n_ops = len(tOps)
-            if pairwise:
-                for ei in range(n_psis):
-                    for i in range(n_ops):
-                        unit_meta.append((block_i, side_i, delta_signed, [ei], 1, ("diag", i, i)))
-                        unit_seeds.append([block_v[ei][i]])
-                    for i in range(n_ops):
-                        for j in range(i + 1, n_ops):
-                            unit_meta.append((block_i, side_i, delta_signed, [ei], 1, ("sum", i, j)))
-                            unit_seeds.append([block_v[ei][i] + block_v[ei][j]])
-                            unit_meta.append((block_i, side_i, delta_signed, [ei], 1, ("imag", i, j)))
-                            unit_seeds.append([block_v[ei][i] + 1j * block_v[ei][j]])
-            else:
-                for chunk_start in range(0, n_psis, group):
-                    chunk = list(range(chunk_start, min(chunk_start + group, n_psis)))
-                    unit_meta.append((block_i, side_i, delta_signed, chunk, n_ops, None))
-                    unit_seeds.append([block_v[j][i] for j in chunk for i in range(n_ops)])
-
-    # Per-unit excited window: the union of the per-state windows over the eigenstates the unit
-    # stacks (exactly that state's window for a single-state / operator-split unit). Falls back to
-    # the shared ensemble window when per-state restrictions are disabled or state-independent.
-    if per_state_restrictions is not None:
-        unit_restrictions = [_union_restrictions([per_state_restrictions[ei] for ei in meta[3]]) for meta in unit_meta]
-    else:
-        unit_restrictions = [excited_restrictions] * len(unit_meta)
-
-    # Per-unit cost weight. The block-Lanczos cost per unit is dominated by two per-step terms that
-    # are both known at split time: the matvec (~ excited-basis size x block width) and the block
-    # reorthogonalization (~ block width^2, and it fires on ~97% of steps on this near-degenerate
-    # spectrum). We use the total seed mass `unit_length` (sum of per-column nnz) as the excited-
-    # basis-size proxy -- it is the cheapest per-unit correlate of the reachable sector size, and
-    # while a per-unit restriction now bounds that sector (per_state_restrictions), the seed mass
-    # tracks the *seeded* Krylov growth more directly than the ambient window volume.
-    #
-    # Weight = unit_length * width. Because unit_length already scales ~linearly with the column
-    # count, this is ~ (per-column mass) * width^2, matching matvec (N_basis * width, with
-    # unit_length as the N_basis proxy) and reort (width^2). This replaces the old log10(len)+1
-    # compression, which crushed 10-100x true cost spreads into a <2.3x band -- nearly equalizing
-    # units and burying the exactly-known block width -- so the widest block became the straggler
-    # color. `width` = number of seed columns = len(chunk)*n_ops (grouped) or 1 (pairwise); it is a
-    # structural per-rank-identical count, so only unit_length needs the distributed Allreduce.
-    unit_lengths = np.array([sum(len(s) for s in seeds) for seeds in unit_seeds], dtype=float)
-    if basis.comm is not None:
-        basis.comm.Allreduce(MPI.IN_PLACE, unit_lengths, op=MPI.SUM)
-    unit_widths = np.array([len(seeds) for seeds in unit_seeds], dtype=float)
-    unit_weights = unit_lengths * unit_widths + 1.0  # +1 floor so an all-empty seed set can't zero the norm
-    # Structural seed count per unit (identical on every rank): len(chunk) * n_ops.
-    seed_offsets = np.concatenate(([0], np.cumsum([len(s) for s in unit_seeds]))).astype(int)
-
-    # --- ONE split over all units --------------------------------------------------------
-    (
-        unit_indices,
-        unit_roots,
-        unit_color,
-        units_per_color,
-        split_basis,
-        split_seeds,
-        _,  # intercomms — freed collectively by gc after barrier in conftest
-    ) = basis.split_basis_and_redistribute_psi(unit_weights, [s for seeds in unit_seeds for s in seeds])
-    if verbose:
-        print(f"New unit roots: {unit_roots}")
-        print(f"Units per color: {units_per_color}")
-        print("=" * 80, flush=True)
-    sub_rank = split_basis.comm.rank if split_basis.comm is not None else 0
-    unit_indices_per_color = gather_distributed_results(
-        basis.comm, sub_rank, unit_roots, units_per_color, np.array(unit_indices), is_array=True
+            op_groups.append(([ManyBodyOperator({((orb, op_char),): 1}) for orb in block], delta_signed))
+            group_meta.append((block_i, side_i))
+    units, unit_seeds, unit_restrictions = enumerate_gf_units(
+        op_groups,
+        psis,
+        [excited_restrictions] * len(op_groups),
+        excited_weighted_restrictions,
+        slaterWeightMin,
+        per_state_restrictions,
     )
+    unit_weights = unit_cost_weights(unit_seeds, basis.comm)
 
-    # --- Run one (possibly wide) block-Lanczos per unit on its color ----------------------
-    # Each list entry corresponds to one unit in `unit_indices` order; the gather maps them back
-    # to global unit indices via `unit_indices_per_color`. local_unit_r[k] is a list of the
-    # per-eigenstate r slices for that unit's chunk.
-    local_unit_alphas, local_unit_betas, local_unit_r = [], [], []
-    for u in unit_indices:
-        _, _, delta_signed, chunk, n_ops, _ = unit_meta[u]
-        seeds = split_seeds[seed_offsets[u] : seed_offsets[u + 1]]
+    def kernel(split_basis, u, seeds):
+        unit = units[u]
         alphas, betas, r, n_basis = _block_green_group(
             split_basis,
             hOp,
             seeds,
             reort,
-            delta_signed,
+            unit.delta,
             slaterWeightMin,
             sparse,
             verbose_extra,
             unit_restrictions[u],
             excited_weighted_restrictions,
         )
-        local_unit_alphas.append(alphas)
-        local_unit_betas.append(betas)
-        local_unit_r.append([r[:, p * n_ops : (p + 1) * n_ops] for p in range(len(chunk))])
         if verbose_extra:
             print(f"Expanded excited state basis contains {n_basis} elements.")
+        return alphas, betas, [r[:, p * unit.n_ops : (p + 1) * unit.n_ops] for p in range(len(unit.chunk))]
 
-    gathered_alphas = gather_distributed_results(
-        basis.comm, sub_rank, unit_roots, units_per_color, local_unit_alphas, is_array=False
-    )
-    gathered_betas = gather_distributed_results(
-        basis.comm, sub_rank, unit_roots, units_per_color, local_unit_betas, is_array=False
-    )
-    gathered_r = gather_distributed_results(
-        basis.comm, sub_rank, unit_roots, units_per_color, local_unit_r, is_array=False
-    )
+    results = run_units_distributed(basis, unit_seeds, unit_weights, kernel, verbose=verbose)
 
     gs_matsubara = gs_realaxis = report = None
-    if basis.comm is None or basis.comm.rank == 0:
-        # Reassemble the gathered units into per-(block, side) eigenstate-indexed coefficient
-        # lists, then build each block's Green's function exactly as before.
-        # acc[(block_i, side_i)] = (alphas_list, betas_list, r_list) indexed by eigenstate. In
-        # grouped mode r_list[ei] is the seed-projection matrix; in pairwise mode it is a
-        # PairwiseGF assembled from the eigenstate's scalar continued fractions (a_list/b_list stay
-        # None -- each PairwiseGF carries its own scalar coefficients).
+    if results is not None:
+        # Reassemble the per-unit results (global unit order) into per-(block, side)
+        # eigenstate-indexed coefficient lists, then build each block's Green's function exactly
+        # as before. acc[(block_i, side_i)] = (alphas_list, betas_list, r_list) indexed by
+        # eigenstate. In grouped mode r_list[ei] is the seed-projection matrix; in pairwise mode
+        # it is a PairwiseGF assembled from the eigenstate's scalar continued fractions
+        # (a_list/b_list stay None -- each PairwiseGF carries its own scalar coefficients).
         acc = {
             (bi, si): ([None] * n_psis, [None] * n_psis, [None] * n_psis) for bi in range(len(blocks)) for si in (0, 1)
         }
         if pairwise:
             # pw_cf[(block_i, side_i, ei)] = {"diag": {i: cf}, "sum": {(i,j): cf}, "imag": {(i,j): cf}}
             pw_cf = defaultdict(lambda: {"diag": {}, "sum": {}, "imag": {}})
-            for i, u in enumerate(unit_indices_per_color):
-                block_i, side_i, _, chunk, _, pw_tag = unit_meta[u]
-                cf = (gathered_alphas[i], gathered_betas[i], gathered_r[i][0])
-                role, a, b = pw_tag
+            for unit, (alphas, betas, r_slices) in zip(units, results):
+                block_i, side_i = group_meta[unit.group_i]
+                cf = (alphas, betas, r_slices[0])
+                role, a, b = unit.pw_tag
                 key = a if role == "diag" else (a, b)
-                pw_cf[(block_i, side_i, chunk[0])][role][key] = cf
+                pw_cf[(block_i, side_i, unit.chunk[0])][role][key] = cf
             for (block_i, side_i, ei), roles in pw_cf.items():
                 n = len(blocks[block_i])
                 diag = [roles["diag"][i] for i in range(n)]
                 pairs = {ij: (roles["sum"][ij], roles["imag"][ij]) for ij in roles["sum"]}
                 acc[(block_i, side_i)][2][ei] = PairwiseGF(n, diag, pairs)
         else:
-            for i, u in enumerate(unit_indices_per_color):
-                block_i, side_i, _, chunk, _, _ = unit_meta[u]
+            for unit, (alphas, betas, r_slices) in zip(units, results):
+                block_i, side_i = group_meta[unit.group_i]
                 a_list, b_list, r_list = acc[(block_i, side_i)]
-                for p, ei in enumerate(chunk):
-                    a_list[ei], b_list[ei], r_list[ei] = gathered_alphas[i], gathered_betas[i], gathered_r[i][p]
+                for p, ei in enumerate(unit.chunk):
+                    a_list[ei], b_list[ei], r_list[ei] = alphas, betas, r_slices[p]
 
         e0 = np.min(es)
         Z = np.sum(np.exp(-(es - e0) / tau))
@@ -364,13 +492,7 @@ def get_Greens_function(
                 diags.append(_gfd.check_causality(combined_real, "G"))
             report.extend(str(block), diags)
 
-    # Free the split communicator collectively before returning. MPI_Comm_free is collective --
-    # it must be called by all ranks in the comm at the same time. Leaving it for Python gc risks
-    # non-collective freeing.
-    if split_basis is not None and split_basis.comm != basis.comm:
-        split_basis.free_comm()
-
-    return (gs_matsubara, gs_realaxis, report) if (basis.comm is None or basis.comm.rank == 0) else (None, None, None)
+    return (gs_matsubara, gs_realaxis, report)
 
 
 def _build_excited_restrictions(basis, hOp, psis, es, dN, occ_cutoff, dN_imp=None, dN_val=None, dN_con=None):
@@ -509,46 +631,47 @@ def calc_Greens_function_with_offdiag(
     extra_restrictions=None,
 ):
     r"""
-        Return Green's function for states with low enough energy.
+    Return block-Lanczos Green's-function coefficients for the given transition operators.
 
-        For states :math:`|psi \rangle`, calculate:
+    For states :math:`|psi \rangle`, the coefficients represent:
 
-        :math:`g(w+1j*delta) =
-        = \langle psi| tOp^\dagger ((w+1j*delta+e)*\hat{1} - hOp)^{-1} tOp
-        |psi \rangle`,
+    :math:`g(w+1j*delta) =
+    = \langle psi| tOp^\dagger ((w+1j*delta+e)*\hat{1} - hOp)^{-1} tOp
+    |psi \rangle`,
 
-        where :math:`e = \langle psi| hOp |psi \rangle`
-    ,
-        Lanczos algorithm is used.
+    where :math:`e = \langle psi| hOp |psi \rangle`.
 
-        Parameters
-        ----------
-        n_spin_orbitals : int
-            Total number of spin-orbitals in the system.
-        hOp : dict
-            Operator
-        tOps : list
-            List of dict operators
-        psis : list
-            List of Multi state dictionaries
-        es : list
-            Total energies
-        w : list
-            Real axis energy mesh
-        delta : float
-            Deviation from real axis.
-            Broadening/resolution parameter.
-        restrictions : dict
-            Restriction the occupation of generated
-            product states.
-        krylovSize : int
-            Size of the Krylov space
-        slaterWeightMin : float
-            Restrict the number of product states by
-            looking at `|amplitudes|^2`.
-        parallelization_mode : str
-                "eigen_states" or "H_build".
+    Thin wrapper over the shared distribution engine: the (tOps x eigenstate-chunk) work units
+    are enumerated by :func:`enumerate_gf_units`, weighted by :func:`unit_cost_weights` and run
+    through :func:`run_units_distributed` (one split over all units).
 
+    Parameters
+    ----------
+    hOp : ManyBodyOperator
+        The Hamiltonian operator.
+    tOps : list of ManyBodyOperator
+        Transition operators; together they form one Green's-function block of width
+        ``len(tOps)``.
+    psis : list of ManyBodyState
+        Thermal eigenstates.
+    es : list of float
+        Total energies of the eigenstates.
+    block_basis : Basis
+        The basis container (carries the communicator).
+    delta : float
+        Deviation from the real axis (broadening/resolution parameter).
+    slaterWeightMin : float
+        Restrict the number of product states by looking at ``|amplitudes|^2``.
+    extra_restrictions : dict, optional
+        Conserved-charge sector confinement, intersected onto the excited-sector occupation
+        window (it can only tighten the excited basis, never loosen it).
+
+    Returns
+    -------
+    tuple
+        ``(excited_alphas, excited_betas, excited_r)`` -- per-eigenstate block-tridiagonal
+        coefficients and seed projections on rank 0 of ``block_basis.comm`` (and on every rank
+        in the serial path); ``(None, None, None)`` elsewhere.
     """
 
     # Set limits for change occupation, if any. Limits are pairs of integers (max_holes, max_el),
@@ -563,124 +686,56 @@ def calc_Greens_function_with_offdiag(
     # can only tighten the excited basis, never loosen it.
     if extra_restrictions:
         excited_restrictions = _intersect_restrictions(excited_restrictions, extra_restrictions)
-    block_v = _apply_transition_ops(tOps, psis, excited_restrictions, excited_weighted_restrictions, slaterWeightMin)
-    block_v_lengths = np.array([sum(len(t_psi) for t_psi in t_psis) for t_psis in block_v])
-    block_basis.comm.Allreduce(MPI.IN_PLACE, block_v_lengths, op=MPI.SUM)
-
-    (
-        excited_indices,
-        excited_roots,
-        excited_color,
-        excited_states_per_color,
-        split_original_basis,
-        split_original_psis,
-        _,
-    ) = block_basis.split_basis_and_redistribute_psi(
-        np.log10(block_v_lengths + 1) + 1, [t_psi for t_psis in block_v for t_psi in t_psis]
-    )
-    if verbose:
-        print(f"New excited state roots: {excited_roots}")
-        print(f"excited states per color: {excited_states_per_color}")
-        print("=" * 80, flush=True)
-    excited_indices_per_color = gather_distributed_results(
-        block_basis.comm,
-        split_original_basis.comm.rank if split_original_basis.comm is not None else 0,
-        excited_roots,
-        excited_states_per_color,
-        np.array(excited_indices),
-        is_array=True,
-    )
-
-    excited_block_psis = [[ManyBodyState({}) for _ in vs] for vs in block_v]
-    for i, j in itertools.product(range(len(tOps)), range(len(psis))):
-        excited_block_psis[j][i] += split_original_psis[j * len(tOps) + i]
-    local_alphas = []
-    local_betas = []
-    local_r = []
     if verbose and excited_restrictions is not None:
         print("Excited state restrictions:")
         for indices, occupations in excited_restrictions.items():
             print(f"---> {sorted(indices)} : {occupations}")
-    # Eigenstate grouping (the "wide block" knob). With group size g>1 we stack g thermal
-    # eigenstates' transition-operator seeds into ONE block-Lanczos recurrence of width
-    # g*n_ops sharing a single Krylov space; the shared (alphas, betas) are reused for every
-    # eigenstate in the group while each keeps its own n_ops columns of the seed projection r
-    # (and, downstream, its own energy shift). g=1 reproduces the per-eigenstate behavior
-    # exactly (seed width = n_ops, r slice == the whole r). The eigenstates assigned to this
-    # color (excited_indices) are already co-located here, so grouping needs no extra
-    # communication; results are appended in excited_indices order so the gather below maps
-    # them back per eigenstate unchanged.
-    n_ops = len(tOps)
-    group = _gf_eigenstate_group()
-    excited_index_list = list(excited_indices)
-    for chunk_start in range(0, len(excited_index_list), group):
-        chunk = excited_index_list[chunk_start : chunk_start + group]
-        # Wide seed in (eigenstate, operator) order: eigenstate at chunk position p occupies
-        # seed columns [p*n_ops, (p+1)*n_ops), so its Green's function reads r[:, that slice].
-        group_psis = [excited_block_psis[ei][i] for ei in chunk for i in range(n_ops)]
+
+    # One operator group holding the whole tOps block; pairwise=False because this function's
+    # return contract (per-eigenstate r matrices) cannot represent scalar pairwise fractions.
+    units, unit_seeds, unit_restrictions = enumerate_gf_units(
+        [(tOps, delta)],
+        psis,
+        [excited_restrictions],
+        excited_weighted_restrictions,
+        slaterWeightMin,
+        pairwise=False,
+    )
+    unit_weights = unit_cost_weights(unit_seeds, block_basis.comm)
+
+    def kernel(split_basis, u, seeds):
+        unit = units[u]
         alphas, betas, r, n_basis = _block_green_group(
-            split_original_basis,
+            split_basis,
             hOp,
-            group_psis,
+            seeds,
             reort,
-            delta,
+            unit.delta,
             slaterWeightMin,
             sparse,
             verbose,
-            excited_restrictions,
+            unit_restrictions[u],
             excited_weighted_restrictions,
         )
-        # Split the shared recurrence into one (alphas, betas, r) per eigenstate. The
-        # coefficients are common to the chunk; only the seed-projection columns differ.
-        for p in range(len(chunk)):
-            local_alphas.append(alphas)
-            local_betas.append(betas)
-            local_r.append(r[:, p * n_ops : (p + 1) * n_ops])
         if verbose:
             print(f"Expanded excited state basis contains {n_basis} elements.")
+        return alphas, betas, [r[:, p * unit.n_ops : (p + 1) * unit.n_ops] for p in range(len(unit.chunk))]
 
-    gathered_alphas = gather_distributed_results(
-        block_basis.comm,
-        split_original_basis.comm.rank if split_original_basis.comm is not None else 0,
-        excited_roots,
-        excited_states_per_color,
-        local_alphas,
-        is_array=False,
-    )
-    gathered_betas = gather_distributed_results(
-        block_basis.comm,
-        split_original_basis.comm.rank if split_original_basis.comm is not None else 0,
-        excited_roots,
-        excited_states_per_color,
-        local_betas,
-        is_array=False,
-    )
-    gathered_r = gather_distributed_results(
-        block_basis.comm,
-        split_original_basis.comm.rank if split_original_basis.comm is not None else 0,
-        excited_roots,
-        excited_states_per_color,
-        local_r,
-        is_array=False,
-    )
-    excited_alphas = None
-    excited_betas = None
-    excited_r = None
-    if block_basis.comm.rank == 0:
+    results = run_units_distributed(block_basis, unit_seeds, unit_weights, kernel, verbose=verbose)
+
+    excited_alphas = excited_betas = excited_r = None
+    if results is not None:
         excited_alphas = [None for _ in psis]
         excited_betas = [None for _ in psis]
         excited_r = [None for _ in psis]
-        for i, excited_i in enumerate(excited_indices_per_color):
-            excited_alphas[excited_i] = gathered_alphas[i]
-            excited_betas[excited_i] = gathered_betas[i]
-            excited_r[excited_i] = gathered_r[i]
+        for unit, (alphas, betas, r_slices) in zip(units, results):
+            for p, ei in enumerate(unit.chunk):
+                excited_alphas[ei] = alphas
+                excited_betas[ei] = betas
+                excited_r[ei] = r_slices[p]
         assert not any(alpha is None for alpha in excited_alphas), f"{excited_alphas=}"
         assert not any(beta is None for beta in excited_betas), f"{excited_betas=}"
         assert not any(r is None for r in excited_r), f"{excited_r=}"
-
-    # Free the split communicator collectively before returning.
-    if split_original_basis is not None and split_original_basis.comm != block_basis.comm:
-        split_original_basis.free_comm()
 
     return excited_alphas, excited_betas, excited_r
 

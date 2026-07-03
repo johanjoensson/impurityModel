@@ -202,6 +202,90 @@ def getitem_reduce_matrix(a: list[list], b: list[list], datatype) -> list[list]:
 getitem_reduce_matrix_op = MPI.Op.Create(getitem_reduce_matrix, commute=True)
 
 
+def _pack_units(
+    weights, comm_size: int, split_threshold: float
+) -> tuple[Optional[list[tuple[int, ...]]], Optional[np.ndarray]]:
+    """Pack work units into per-color bins and allocate ranks to each color.
+
+    Pure packing math behind :meth:`Basis.split_basis_and_redistribute_psi` — no MPI,
+    so it is unit-testable, and every rank computes the identical packing from the
+    (already Allreduced) weights.
+
+    The number of colors is capped by the participation ratio (Σw)²/Σw² — the
+    effective number of equally-weighted units — scaled by ``split_threshold``, so a
+    few dominant units are not starved of ranks: better to run them on a larger
+    sub-communicator (or unified). ``split_threshold=0`` forces a single unified
+    communicator; ``=1`` is the legacy max-split for equal weights.
+
+    Units are packed with LPT (Longest Processing Time): the next-heaviest unit goes
+    to the currently lightest bin, ties to the lowest bin index. This bounds the
+    heaviest bin at 4/3 of the optimal packing and reduces to round-robin dealing on
+    uniform weights. Ranks are then apportioned to bins proportionally to bin mass by
+    largest remainder, every bin keeping at least one rank.
+
+    Parameters
+    ----------
+    weights : array_like of float
+        Cost weight per unit (identical on every rank).
+    comm_size : int
+        Number of MPI ranks to distribute over.
+    split_threshold : float
+        Scale factor on the participation-ratio cap of the number of colors.
+
+    Returns
+    -------
+    subgroups : list of tuple of int, or None
+        Unit indices assigned to each color; ``None`` when the packing collapses to
+        a single color (the caller should not split).
+    procs_per_color : ndarray of int, or None
+        Ranks per color, each at least 1, summing to ``comm_size``.
+    """
+    normalized = np.abs(np.asarray(weights, dtype=float))
+    normalized /= np.sum(normalized)
+    n_colors = min(comm_size, len(normalized))
+    participation = 1.0 / np.sum(normalized**2)
+    n_colors = min(n_colors, max(1, int(np.ceil(participation * split_threshold))))
+    if n_colors <= 1:
+        return None, None
+
+    # LPT packing. The first n_colors units land in distinct empty bins, so no bin
+    # is ever empty (n_colors <= number of units).
+    sorted_idxs = np.argsort(normalized, kind="stable")[::-1]
+    subgroups: list[tuple[int, ...]] = [tuple() for _ in range(n_colors)]
+    bin_mass = np.zeros(n_colors)
+    for u in sorted_idxs:
+        c = int(np.argmin(bin_mass))
+        subgroups[c] += (int(u),)
+        bin_mass[c] += normalized[u]
+
+    # Largest-remainder rank apportionment on the bin masses (they sum to 1).
+    raw = comm_size * bin_mass
+    floors = np.floor(raw).astype(int)
+    procs_per_color = np.maximum(floors, 1)
+    remainder = comm_size - int(np.sum(procs_per_color))
+    if remainder > 0:
+        # The floors sum to within n_colors of comm_size, so one pass over the
+        # largest fractional parts places every leftover rank.
+        order = np.argsort(-(raw - floors), kind="stable")
+        procs_per_color[order[:remainder]] += 1
+    else:
+        # The max(1, .) floors over-allocated: reclaim ranks from the lightest bins
+        # that can spare one, so the heaviest bins keep their proportional share.
+        order = np.argsort(bin_mass, kind="stable")
+        while remainder < 0:
+            reclaimed = False
+            for c in order:
+                if procs_per_color[c] > 1:
+                    procs_per_color[c] -= 1
+                    remainder += 1
+                    reclaimed = True
+                    if remainder == 0:
+                        break
+            assert reclaimed, "rank apportionment failed to converge"
+    assert np.sum(procs_per_color) == comm_size
+    return subgroups, procs_per_color
+
+
 class Basis:
     """Many-body basis of Slater determinants.
 
@@ -1543,46 +1627,19 @@ class Basis:
         """
 
         if (not self.is_distributed) or len(priorities) <= 1:
-            return range(len(priorities)), [0], 0, [len(priorities)], self, psis, [None]
+            return list(range(len(priorities))), [0], 0, [len(priorities)], self, psis, [None]
 
         comm = self.comm
-        normalized_priorities = np.array([abs(p) for p in priorities], dtype=float)
-        normalized_priorities /= np.sum(np.abs(normalized_priorities))
-        # normalized_priorities[::-1].sort()
-        sorted_idxs = np.argsort(normalized_priorities, kind="stable")[::-1]
-        n_colors = min(comm.size, len(normalized_priorities))
-
-        # Adaptive split policy (Phase 7). The participation ratio
-        # (Σp)²/Σp² = 1/Σ(normalized_p²) is the effective number of equally-weighted
-        # blocks; capping n_colors near it (scaled by split_threshold) avoids starving a
-        # few dominant blocks of ranks — better to run them on a larger sub-communicator
-        # (or unified). split_threshold=1 is the legacy max-split for equal blocks;
-        # split_threshold=0 forces a single unified communicator.
-        participation = 1.0 / np.sum(normalized_priorities**2)
-        n_colors = min(n_colors, max(1, int(np.ceil(participation * self.split_threshold))))
-        if n_colors <= 1:
+        # All packing math (participation-ratio color cap, LPT unit packing,
+        # largest-remainder rank apportionment) lives in _pack_units; it is pure and
+        # deterministic, so every rank computes the identical packing.
+        subgroups, procs_per_color = _pack_units(priorities, comm.size, self.split_threshold)
+        if subgroups is None:
             # Unified: all ranks process every block together (no actual split).
-            return range(len(priorities)), [0], 0, [len(priorities)], self, psis, [None]
+            return list(range(len(priorities))), [0], 0, [len(priorities)], self, psis, [None]
 
-        subgroups = [tuple() for _ in range(n_colors)]
-        for i in range(0, len(normalized_priorities), n_colors):
-            for j in range(min(n_colors, len(normalized_priorities) - i)):
-                subgroups[j] += (sorted_idxs[i + j],)
-        merged_priorities = np.array([np.sum(normalized_priorities[list(subgroup)]) for subgroup in subgroups])
-        procs_per_color = np.array([max(1, n) for n in np.floor(comm.size * merged_priorities)], dtype=int)
-        remainder = comm.size - np.sum(procs_per_color)
-        while remainder != 0:
-            if remainder < 0:
-                mask = np.nonzero(procs_per_color > 1)
-
-                procs_per_color[mask][-abs(remainder) % n_colors :] -= 1
-            else:
-                procs_per_color[-remainder % n_colors :] += 1
-            remainder = comm.size - np.sum(procs_per_color)
-
-        assert sum(procs_per_color) == comm.size
         proc_cutoffs = np.cumsum(procs_per_color)
-        color = np.argmax(comm.rank < proc_cutoffs)
+        color = int(np.argmax(comm.rank < proc_cutoffs))
 
         split_comm = comm.Split(color=color, key=comm.rank)
         split_roots = [0] + proc_cutoffs[:-1].tolist()

@@ -83,10 +83,21 @@ def test_getNIXSOperators():
         assert ops[0] == {"op": 1}
 
 
-@patch("impurityModel.ed.spectra.gf.calc_Greens_function_with_offdiag")
+@patch("impurityModel.ed.spectra._sector_restrictions_per_top")
+@patch("impurityModel.ed.spectra.gf._build_excited_restrictions")
+@patch("impurityModel.ed.spectra.gf.enumerate_gf_units")
+@patch("impurityModel.ed.spectra.gf.unit_cost_weights")
+@patch("impurityModel.ed.spectra.gf.run_units_distributed")
 @patch("impurityModel.ed.spectra.gf.calc_thermally_averaged_G")
-def test_getSpectra_new(mock_therm_G, mock_gf):
-    mock_gf.return_value = (None, None, None)
+def test_getSpectra_new(mock_therm_G, mock_run, mock_weights, mock_enum, mock_build, mock_sector):
+    from impurityModel.ed.greens_function import GFUnit
+
+    mock_sector.return_value = None
+    mock_build.return_value = (None, None)
+    # One (tOp, eigenstate) unit whose kernel result is a single width-1 r column.
+    mock_enum.return_value = ([GFUnit(0, (0,), 1, 0.1)], [[MagicMock()]], [None])
+    mock_weights.return_value = np.array([1.0])
+    mock_run.return_value = [(None, None, [np.zeros((1, 1), dtype=complex)])]
     mock_therm_G.return_value = np.zeros((10, 1, 1), dtype=complex)
 
     basis = MagicMock()

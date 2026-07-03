@@ -577,3 +577,126 @@ def test_basis_hash_distribution_balanced():
     # Balanced: no rank deviates from the even share by more than ~20%.
     assert max(sizes) <= 1.2 * expected + 5
     assert min(sizes) >= 0.8 * expected - 5
+
+
+@pytest.mark.mpi
+def test_getSpectra_new_split_threshold_invariant_mpi():
+    """``getSpectra_new`` returns the same spectra no matter how the (tOp x eigenstate) work
+    units are distributed across ranks (``split_threshold``) or how many eigenstates share one
+    wide block-Lanczos recurrence (``GF_EIGENSTATE_GROUP``) -- the flat single-split scheme
+    shared with the self-energy path only changes the parallel layout, not the result."""
+    from impurityModel.ed.spectra import getSpectra_new
+
+    comm = MPI.COMM_WORLD
+    w = np.linspace(-2.0, 2.0, 17)
+    hOp = ManyBodyOperator({((0, "c"), (0, "a")): 0.3, ((1, "c"), (1, "a")): 0.7})
+    state_bytes = [b"\x80", b"\x40", b"\xc0", b"\x00"]
+    es = [0.3, 0.7]
+    tOps = [ManyBodyOperator({((0, "a"),): 1.0}), ManyBodyOperator({((1, "a"),): 1.0})]
+
+    def run(split_threshold, group):
+        basis = Basis(
+            impurity_orbitals={0: [[0, 1]]},
+            bath_states=({0: [[]]}, {0: [[]]}),
+            initial_basis=state_bytes,
+            comm=comm,
+            split_threshold=split_threshold,
+        )
+        if comm.rank == 0:
+            psis = [ManyBodyState({SlaterDeterminant.from_bytes(b): 1.0}) for b in (b"\x80", b"\x40")]
+        else:
+            psis = [ManyBodyState({}), ManyBodyState({})]
+        psis = basis.redistribute_psis(psis)
+        old = os.environ.get("GF_EIGENSTATE_GROUP")
+        os.environ["GF_EIGENSTATE_GROUP"] = str(group)
+        try:
+            gs = getSpectra_new(
+                hOp,
+                tOps,
+                psis,
+                es,
+                1.0,
+                w,
+                basis,
+                0.1,
+                0.0,
+                False,
+                1e-6,
+                {0: (1, 1)},
+                {0: (1, 0)},
+                {0: (0, 1)},
+            )
+        finally:
+            if old is None:
+                del os.environ["GF_EIGENSTATE_GROUP"]
+            else:
+                os.environ["GF_EIGENSTATE_GROUP"] = old
+        return gs
+
+    g_ref = run(1e9, 1)  # maximal split, one eigenstate per recurrence
+    for threshold, group in ((0.0, 1), (0.5, 1), (1e9, 2)):
+        g = run(threshold, group)
+        if comm.rank == 0:
+            assert g.shape == g_ref.shape
+            np.testing.assert_allclose(g, g_ref, atol=1e-9)
+
+
+@pytest.mark.mpi
+def test_getRIXSmap_new_win_chunk_invariant_mpi():
+    """The RIXS map is invariant to the (eigenstate x wIn-chunk) unit granularity
+    (``GF_RIXS_WIN_CHUNK``) and to the split policy: chunk boundaries only move where the
+    bicgstab warm-start chain cold-starts, which converges to the same resolvent."""
+    from impurityModel.ed.spectra import getRIXSmap_new
+
+    comm = MPI.COMM_WORLD
+    hOp = ManyBodyOperator({((0, "c"), (0, "a")): 0.5, ((1, "c"), (1, "a")): 0.3})
+    states = [b"\x80", b"\x40", b"\x20", b"\x10", b"\x00"]
+    wIns = np.array([0.1, 0.2, 0.3, 0.4])
+    wLoss = np.array([0.0])
+    tOpsIn = [ManyBodyOperator({((0, "a"),): 1.0})]
+    tOpsOut = [ManyBodyOperator({((0, "c"),): 1.0})]
+
+    def run(split_threshold, chunk):
+        basis = Basis(
+            impurity_orbitals={1: [[0]], 2: [[1]]},
+            bath_states=({1: [[]], 2: [[]]}, {1: [[]], 2: [[]]}),
+            initial_basis=states,
+            comm=comm,
+            split_threshold=split_threshold,
+        )
+        if comm.rank == 0:
+            psis = [ManyBodyState({SlaterDeterminant.from_bytes(b): 1.0}) for b in states[:2]]
+        else:
+            psis = [ManyBodyState({}), ManyBodyState({})]
+        psis = basis.redistribute_psis(psis)
+        old = os.environ.get("GF_RIXS_WIN_CHUNK")
+        os.environ["GF_RIXS_WIN_CHUNK"] = str(chunk)
+        try:
+            gs = getRIXSmap_new(
+                hOp=hOp,
+                tOpsIn=tOpsIn,
+                tOpsOut=tOpsOut,
+                psis=psis,
+                Es=np.array([0.5, 0.6]),
+                tau=1.0,
+                wIns=wIns,
+                wLoss=wLoss,
+                delta1=0.1,
+                delta2=0.1,
+                basis=basis,
+                verbose=False,
+                slaterWeightMin=0.0,
+            )
+        finally:
+            if old is None:
+                del os.environ["GF_RIXS_WIN_CHUNK"]
+            else:
+                os.environ["GF_RIXS_WIN_CHUNK"] = old
+        return gs
+
+    g_ref = run(1e9, 1)  # maximal split: one unit per (eigenstate, wIn point)
+    for threshold, chunk in ((0.0, 4), (1.0, 2)):
+        g = run(threshold, chunk)
+        if comm.rank == 0:
+            assert g.shape == g_ref.shape
+            np.testing.assert_allclose(g, g_ref, atol=1e-9)
