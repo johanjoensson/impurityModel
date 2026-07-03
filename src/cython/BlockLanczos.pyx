@@ -665,9 +665,13 @@ def block_lanczos_cy(
 
     # Maintain a dense copy of the (rank-local) Krylov basis so the block reort slices
     # columns instead of re-materializing Q from flat_maps every step (see SparseKrylovDense).
-    # Only needed when a reort mode actually projects against Q_basis; NONE never does.
+    # Only kept for FULL/PERIODIC, which project against *all* columns every (periodic) step:
+    # there the per-step re-materialization would dominate. PARTIAL/SELECTIVE project only
+    # against flagged bad blocks on rare trigger steps, so they use the transient
+    # reorth_cgs2_dense fallback in apply_reort instead of holding a second full copy of the
+    # Krylov basis (the mirror doubles the dominant memory of every CIPSI/ground-state solve).
     krylov = None
-    if reort_mode != Reort.NONE:
+    if reort_mode in (Reort.FULL, Reort.PERIODIC):
         krylov = SparseKrylovDense()
         krylov.append(Q_basis)
 
