@@ -2,10 +2,11 @@ from math import ceil
 from typing import Any, Optional, Union
 
 try:
-    from collections.abc import Iterable
+    from collections.abc import Iterable, Sequence
 except ModuleNotFoundError:
-    from collections import Iterable
+    from collections import Iterable, Sequence
 import itertools
+from heapq import merge
 
 import numpy as np
 import scipy as sp
@@ -15,9 +16,6 @@ from impurityModel.ed import product_state_representation as psr
 from impurityModel.ed.finite import (
     thermal_average_scale_indep,
 )
-from impurityModel.ed.manybody_state_containers import (
-    SimpleDistributedStateContainer,
-)
 from impurityModel.ed.ManyBodyUtils import (
     ManyBodyOperator,
     ManyBodyState,
@@ -26,7 +24,7 @@ from impurityModel.ed.ManyBodyUtils import (
 from impurityModel.ed.ManyBodyUtils import (
     applyOp as applyOp_test,
 )
-from impurityModel.ed.mpi_comm import graph_alltoall_psis
+from impurityModel.ed.mpi_comm import graph_alltoall, graph_alltoall_psis
 from impurityModel.ed.utils import matrix_print
 
 
@@ -265,32 +263,9 @@ class Basis:
     """
 
     @property
-    def offset(self):
-        return self.state_container.offset
-
-    @property
-    def size(self):
-        return self.state_container.size
-
-    @property
-    def local_indices(self):
-        return self.state_container.local_indices
-
-    @property
-    def _index_dict(self):
-        return self.state_container._index_dict
-
-    @property
-    def index_bounds(self):
-        return self.state_container.index_bounds
-
-    @property
-    def state_bounds(self):
-        return self.state_container.state_bounds
-
-    @property
-    def local_basis(self):
-        return self.state_container.local_basis
+    def state_container(self):
+        """Deprecated shim: the distributed state container was dissolved into Basis."""
+        return self
 
     def _get_initial_basis(
         self,
@@ -919,12 +894,19 @@ class Basis:
         # legacy max-split behaviour for equally-weighted blocks.
         self.split_threshold = split_threshold
 
-        self.state_container = SimpleDistributedStateContainer(
-            initial_basis,
-            bytes_per_state=self.n_bytes,
-            comm=self.comm,
-            verbose=verbose,
-        )
+        # Distributed determinant storage (formerly SimpleDistributedStateContainer):
+        # the rank-local sorted determinant list, its state -> global-index dict, and the
+        # rank-partition bookkeeping. States are hash-distributed across ranks; lookups and
+        # retrievals use sparse point-to-point communication (graph_alltoall).
+        self.rng = np.random.default_rng()
+        self.local_basis = []
+        self.offset = 0
+        self.size = 0
+        self.local_indices = range(0, 0)
+        self._index_dict: dict = {}
+        self.index_bounds = [None] * comm.size if self.is_distributed else [None]
+        self.state_bounds = [None] * comm.size if self.is_distributed else [None]
+        self.add_states(initial_basis)
 
     def clone(self, initial_basis=None, restrictions=None, weighted_restrictions=None, verbose=None, comm=None):
         """Create a new Basis instance, optionally overriding initial_basis and restrictions.
@@ -961,8 +943,6 @@ class Basis:
         if self.comm is not None and self.comm != MPI.COMM_NULL:
             self.comm.Free()
             self.comm = None
-        if hasattr(self, "state_container") and self.state_container is not None:
-            self.state_container.comm = None
 
     def alltoall_states(self, send_list: list[list[bytes]], flatten: bool = False) -> list[list[bytes]] | list[bytes]:
         """Distribute basis states to their owners across MPI ranks.
@@ -979,13 +959,75 @@ class Basis:
         list of list of bytes or list of bytes
             The received states.
         """
-        return self.state_container.alltoall_states(send_list, flatten)
+        states = Basis._point2point(send_list, self.comm)
+        if flatten:
+            states = [state for r_states in states for state in r_states]
+        return states
+
+    @staticmethod
+    def _point2point(send_list, comm):
+        """Sparse point-to-point MPI exchange of per-rank data lists."""
+        return graph_alltoall(send_list, comm)
 
     def add_states(self, new_states: Iterable[bytes], unique_sorted=False) -> None:
         """
         Extend the current basis by adding the new_states to it.
         """
-        self.state_container.add_states(new_states, unique_sorted)
+        new_states = [self.type.from_bytes(state) if isinstance(state, bytes) else state for state in new_states]
+        if not self.is_distributed:
+            existing_set = self._index_dict
+            unique_new = [s for s in sorted(set(new_states)) if s not in existing_set]
+            if unique_new:
+                self.local_basis = list(merge(self.local_basis, unique_new))
+                self.size = len(self.local_basis)
+                self.offset = 0
+                self.local_indices = range(0, len(self.local_basis))
+                self._index_dict = {state: i for i, state in enumerate(self.local_basis)}
+                if __debug__:
+                    assert all(self.local_basis[i] < self.local_basis[i + 1] for i in range(len(self.local_basis) - 1))
+            return
+
+        from impurityModel.ed.mpi_comm import distribute_determinants
+
+        unique_new_states = list(set(new_states))
+        received_list = distribute_determinants(unique_new_states, self.n_bytes, self.comm)
+
+        all_received = []
+        for r_data in received_list:
+            if r_data:
+                all_received.extend(r_data)
+
+        existing_set = self._index_dict
+        unique_received = sorted(set(all_received))
+        unique_new = [s for s in unique_received if s not in existing_set]
+
+        local_added = len(unique_new)
+        any_added = self.comm.allreduce(local_added, op=MPI.SUM)
+        if any_added == 0:
+            return
+
+        if unique_new:
+            self.local_basis = list(merge(self.local_basis, unique_new))
+
+        local_length = len(self.local_basis)
+        size_arr = np.array(self.comm.allgather(local_length), dtype=int)
+        self.size = np.sum(size_arr)
+        self.offset = np.sum(size_arr[: self.comm.rank])
+        self.local_indices = range(self.offset, self.offset + len(self.local_basis))
+        self.index_bounds = [np.sum(size_arr[: r + 1]) if size_arr[r] > 0 else None for r in range(self.comm.size)]
+        self._index_dict = {state: self.offset + i for i, state in enumerate(self.local_basis)}
+        state_bounds = list(self._getitem_sequence([i for i in self.index_bounds if i is not None and i < self.size]))
+        self.state_bounds = state_bounds + [None] * (self.comm.size - len(state_bounds))
+        self.state_bounds = [
+            (
+                self.state_bounds[r]
+                if r < self.comm.size - 1 and self.state_bounds[r] != self.state_bounds[r + 1]
+                else None
+            )
+            for r in range(self.comm.size)
+        ]
+        if __debug__:
+            assert all(self.local_basis[i] < self.local_basis[i + 1] for i in range(len(self.local_basis) - 1))
 
     def redistribute_psis(self, psis: list[ManyBodyState]) -> list[ManyBodyState]:
         """Redistribute wavefunctions across MPI ranks based on state ownership.
@@ -1162,8 +1204,31 @@ class Basis:
         -------
         int
             The global index of the determinant.
+
+        Raises
+        ------
+        ValueError
+            If any state is not found in the basis.
+        TypeError
+            If the query type is invalid.
         """
-        return self.state_container.index(val)
+        if isinstance(val, bytes):
+            val = self.type.from_bytes(val)
+        if isinstance(val, self.type):
+            res = next(self._index_sequence([val]))
+            if res == self.size:
+                raise ValueError(f"Could not find {val} in basis!")
+            return res
+        elif isinstance(val, Sequence) or isinstance(val, Iterable):
+            converted = [self.type.from_bytes(x) if isinstance(x, bytes) else x for x in val]
+            res = list(self._index_sequence(converted))
+            for i, v in enumerate(res):
+                if v >= self.size:
+                    raise ValueError(f"Could not find {list(val)[i]} in basis!")
+            return (i for i in res)
+        else:
+            raise TypeError(f"Invalid query type {type(val)}! Valid types are {self.type} and sequences thereof.")
+        return None
 
     def __getitem__(self, key: int | slice) -> SlaterDeterminant | list[SlaterDeterminant]:
         """Get the Slater determinant(s) at the specified index or slice.
@@ -1177,8 +1242,50 @@ class Basis:
         -------
         SlaterDeterminant or list of SlaterDeterminant
             The Slater determinant at the index, or list of determinants for a slice.
+
+        Raises
+        ------
+        IndexError
+            If the index is out of bounds or the state cannot be found.
+        TypeError
+            If the index type is invalid.
         """
-        return self.state_container[key]
+        if isinstance(key, slice):
+            start = key.start
+            if start is None:
+                start = 0
+            elif start < 0:
+                start = self.size + start
+            stop = key.stop
+            if stop is None:
+                stop = self.size
+            elif stop < 0:
+                stop = self.size + stop
+            step = key.step
+            if step is None and start < stop:
+                step = 1
+            elif step is None:
+                step = -1
+            query = range(start, stop, step)
+            result = list(self._getitem_sequence(query))
+            for i, res in enumerate(result):
+                if res == SlaterDeterminant.from_bytes(bytes(0)):
+                    raise IndexError(f"Could not find index {query[i]} in basis with size {self.size}!")
+            return (state for state in result)
+        elif isinstance(key, Sequence) or isinstance(key, Iterable):
+            result = list(self._getitem_sequence(key))
+            for i, res in enumerate(result):
+                if res == SlaterDeterminant.from_bytes(bytes(0)):
+                    raise IndexError(f"Could not find index {key[i]} in basis with size {self.size}!")
+            return (state for state in result)
+        elif isinstance(key, int):
+            result = next(self._getitem_sequence([key]))
+            if result == SlaterDeterminant.from_bytes(bytes(0)):
+                raise IndexError(f"Could not find index {key} in basis with size {self.size}!")
+            return result
+        else:
+            raise TypeError(f"Invalid index type {type(key)}. Valid types are slice, Sequence and int")
+        return None
 
     def __len__(self) -> int:
         """Get the total size of the basis.
@@ -1188,7 +1295,7 @@ class Basis:
         int
             The total number of Slater determinants in the basis.
         """
-        return self.state_container.size
+        return self.size
 
     def __contains__(self, item: SlaterDeterminant | bytes) -> bool:
         """Check if a Slater determinant or its byte representation is in the basis.
@@ -1203,7 +1310,11 @@ class Basis:
         bool
             True if the state is in the basis, False otherwise.
         """
-        return item in self.state_container
+        if isinstance(item, bytes):
+            item = self.type.from_bytes(item)
+        if not self.is_distributed:
+            return item in self._index_dict
+        return next(self._index_sequence([item])) != self.size
 
     def contains(self, item: Iterable[SlaterDeterminant | bytes]) -> np.ndarray:
         """Check containment for an iterable of states.
@@ -1218,7 +1329,14 @@ class Basis:
         np.ndarray of bool
             Boolean array indicating containment for each state.
         """
-        return self.state_container.contains(item)
+        if isinstance(item, bytes):
+            item = self.type.from_bytes(item)
+        if isinstance(item, self.type):
+            return next(self._contains_sequence([item]))
+        elif isinstance(item, Sequence) or isinstance(item, Iterable):
+            converted = [self.type.from_bytes(x) if isinstance(x, bytes) else x for x in item]
+            return self._contains_sequence(converted)
+        return None
 
     def __iter__(self) -> Iterable[SlaterDeterminant]:
         """Iterate over all Slater determinants in the basis.
@@ -1228,8 +1346,88 @@ class Basis:
         SlaterDeterminant
             The next Slater determinant in the basis.
         """
-        for state in self.state_container:
-            yield state
+        chunk_size = 10000
+        for i in range(0, self.size, chunk_size):
+            chunk_end = min(i + chunk_size, self.size)
+            chunk = self._getitem_sequence(range(i, chunk_end))
+            for state in chunk:
+                yield state
+
+    def _getitem_sequence(self, l: Iterable[int]) -> Iterable[SlaterDeterminant]:
+        """Retrieve the states for a sequence of global indices (sparse point-to-point)."""
+        if not self.is_distributed:
+            return (self.local_basis[i] for i in l)
+
+        l = np.fromiter((i if i >= 0 else self.size + i for i in l), dtype=int)
+
+        send_list: list[list[int]] = [[] for _ in range(self.comm.size)]
+        send_to_ranks = np.empty((len(l)), dtype=int)
+        send_to_ranks[:] = self.size
+        for idx, i in enumerate(l):
+            for r in range(self.comm.size):
+                if self.index_bounds[r] is not None and i < self.index_bounds[r]:
+                    send_list[r].append(i)
+                    send_to_ranks[idx] = r
+                    break
+        send_order = np.argsort(send_to_ranks, kind="stable")
+
+        queries = Basis._point2point(send_list, self.comm)
+
+        results = [[] for _ in range(self.comm.size)]
+        for r in range(len(queries)):
+            for i, query in enumerate(queries[r]):
+                if query >= self.offset and query < self.offset + len(self.local_basis):
+                    results[r].append(self.local_basis[query - self.offset])
+
+        result = [state for r_results in Basis._point2point(results, self.comm) for state in r_results]
+
+        return (result[i] for i in np.argsort(send_order))
+
+    def _index_sequence(self, s: Iterable[SlaterDeterminant]) -> Iterable[int]:
+        """Find the global indices for a sequence of states (hash-routed lookups)."""
+        if not self.is_distributed:
+            return (self._index_dict.get(val, self.size) for val in s)
+
+        s = list(s)
+        send_list: list[list[SlaterDeterminant]] = [[] for _ in range(self.comm.size)]
+        send_to_ranks = np.empty((len(s)), dtype=int)
+        send_to_ranks[:] = self.size
+        for i, val in enumerate(s):
+            r = val.get_hash() % self.comm.size
+            send_list[r].append(val)
+            send_to_ranks[i] = r
+
+        send_order = np.argsort(send_to_ranks, kind="stable")
+
+        queries = Basis._point2point(send_list, self.comm)
+
+        results = [[] for _ in range(self.comm.size)]
+        for r in range(self.comm.size):
+            for query in queries[r]:
+                results[r].append(self._index_dict.get(query, self.size))
+        result = np.array([i for r_i in Basis._point2point(results, self.comm) for i in r_i], dtype=int)
+        if len(result) > 0:
+            max_retries = 3
+            retry_count = 0
+            while np.any(np.logical_or(result > self.size, result < 0)) and retry_count < max_retries:
+                mask = np.logical_or(result > self.size, result < 0)
+                result[mask] = np.fromiter(
+                    self._index_sequence(itertools.compress(s, mask)), dtype=int, count=int(np.sum(mask))
+                )
+                retry_count += 1
+
+            if retry_count >= max_retries:
+                import warnings
+
+                warnings.warn(f"Failed to resolve all indices after {max_retries} retries")
+
+        return (res for res in result[np.argsort(send_order)])
+
+    def _contains_sequence(self, items) -> Iterable[bool]:
+        """Check membership for a sequence of states."""
+        if not self.is_distributed:
+            return (item in self._index_dict for item in items)
+        return (index < self.size for index in self._index_sequence(items))
 
     def copy(self) -> "Basis":
         """Create a copy of this Basis.
@@ -1256,7 +1454,13 @@ class Basis:
 
     def clear(self) -> None:
         """Clear all states from the basis."""
-        self.state_container.clear()
+        self.local_basis.clear()
+        self.offset = 0
+        self.size = 0
+        self.local_indices = range(0, 0)
+        self._index_dict = {}
+        self.index_bounds = [None] * self.comm.size if self.is_distributed else [None]
+        self.state_bounds = [None] * self.comm.size if self.is_distributed else [None]
         self.add_states([])
 
     def build_vector(
@@ -1419,7 +1623,7 @@ class Basis:
                     bras.append(bra)
                     values.append(val)
 
-            global_rows = list(self.state_container._index_sequence(bras))
+            global_rows = list(self._index_sequence(bras))
             _size = self.size
             for row, col, val in zip(global_rows, columns, values):
                 if row != _size:
