@@ -41,6 +41,7 @@ def sph_harm(m, n, theta, phi):
 # Local imports
 import impurityModel.ed.greens_function as gf
 from impurityModel.ed.atomic_physics import gauntC
+from impurityModel.ed.basis_restrictions import build_excited_restrictions
 from impurityModel.ed.cg import block_bicgstab
 from impurityModel.ed.operator_algebra import arrayOp2Dict, c2i, combineOp, daggerOp
 from impurityModel.ed.BlockLanczosArray import Reort
@@ -1233,7 +1234,8 @@ def _rixs_map_flat(
     Returns ``gs[i, o, wIn, wLoss] / Z`` (thermally averaged) on global rank 0 and in the
     serial path; ``None`` on other ranks.
     """
-    excited_restrictions = basis.build_excited_restrictions(
+    excited_restrictions = build_excited_restrictions(
+        basis,
         hOp,
         psis,
         Es,

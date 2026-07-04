@@ -2,6 +2,7 @@ from itertools import product
 
 import numpy as np
 
+from impurityModel.ed.basis_restrictions import build_excited_restrictions, get_effective_restrictions
 from impurityModel.ed.block_structure import BlockStructure, print_block_structure
 from impurityModel.ed.cipsi_solver import CIPSISolver
 from impurityModel.ed.hartree_fock import hartree_fock_occupation
@@ -113,7 +114,7 @@ def calc_energy(
     solver = CIPSISolver(basis)
     solver.truncate_initial(h_op)
 
-    basis.restrictions = basis.build_excited_restrictions(h_op, psis=None, es=None)
+    basis.restrictions = build_excited_restrictions(basis, h_op, psis=None, es=None)
     if len(basis) == 0:
         return (np.inf, basis, None) if return_state else (np.inf, basis)
     solver.expand(
@@ -447,7 +448,7 @@ def calc_gs(
     ground_state_basis.add_states(set(state for p in psis for state in p))
     psis = ground_state_basis.redistribute_psis(psis)
 
-    effective_restrictions = ground_state_basis.get_effective_restrictions()
+    effective_restrictions = get_effective_restrictions(ground_state_basis)
     if verbose:
         print("Effective GS restrictions:")
         for indices, occupations in effective_restrictions.items():

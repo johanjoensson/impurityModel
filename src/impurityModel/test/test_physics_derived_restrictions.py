@@ -8,6 +8,7 @@ how few hops away it is.
 
 from mpi4py import MPI
 
+from impurityModel.ed.basis_restrictions import _impurity_coupling_distance, build_initial_restrictions
 from impurityModel.ed.manybody_basis import Basis
 from impurityModel.ed.ManyBodyUtils import ManyBodyOperator
 
@@ -40,8 +41,8 @@ def test_strongly_coupled_long_chain_is_not_frozen():
     basis = _basis(orbs)
 
     # Legacy hop-count (min_dist=4) freezes orbitals 5,6; coupling-based keeps everything free.
-    assert basis.build_initial_restrictions(op, coupling_cutoff=1e-3) is None
-    legacy = basis.build_initial_restrictions(op, coupling_cutoff=None, min_dist=4)
+    assert build_initial_restrictions(basis, op, coupling_cutoff=1e-3) is None
+    legacy = build_initial_restrictions(basis, op, coupling_cutoff=None, min_dist=4)
     assert legacy is not None and any(5 in k or 6 in k for k in legacy)
 
 
@@ -52,7 +53,7 @@ def test_orbitals_past_a_weak_link_are_frozen():
     op = _chain_op(hop, {o: -1.0 for o in orbs})
     basis = _basis(orbs)
 
-    restr = basis.build_initial_restrictions(op, coupling_cutoff=1e-3)
+    restr = build_initial_restrictions(basis, op, coupling_cutoff=1e-3)
     assert restr is not None
     frozen = set().union(*restr.keys())
     assert {2, 3} <= frozen  # beyond the weak link
@@ -67,7 +68,7 @@ def test_near_but_weakly_coupled_orbital_is_frozen():
     op = _chain_op(hop, {o: -1.0 for o in orbs})
     basis = _basis(orbs)
 
-    dist, cutoff = basis._impurity_coupling_distance(
+    dist, cutoff = _impurity_coupling_distance(
         op, tot_orb=4, all_impurity_orbitals=[0], coupling_cutoff=1e-3, min_dist=4
     )
     # Orbital 1 (weakly coupled) is beyond the cutoff; orbitals 2,3 (strong) are not.

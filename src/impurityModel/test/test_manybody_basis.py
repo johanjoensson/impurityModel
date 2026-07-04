@@ -2,6 +2,7 @@ import numpy as np
 import pytest
 from mpi4py import MPI
 
+from impurityModel.ed.basis_restrictions import get_effective_restrictions
 from impurityModel.ed.manybody_basis import Basis
 from impurityModel.ed.ManyBodyUtils import ManyBodyOperator, SlaterDeterminant
 
@@ -1505,7 +1506,7 @@ def test_two_sets_of_imp_orbs():
     )
     assert len(basis) == 8
 
-    restrictions = basis.get_effective_restrictions()
+    restrictions = get_effective_restrictions(basis)
     impurity_indices = frozenset(range(8))
     valence_indices = frozenset(range(8, 13))
     conduction_indices = frozenset(range(13, 15))

@@ -8,6 +8,7 @@ import scipy as sp
 from mpi4py import MPI
 
 # from impurityModel.ed import spectra
+from impurityModel.ed.basis_restrictions import build_excited_restrictions
 from impurityModel.ed.block_structure import BlockStructure, get_blocks
 from impurityModel.ed.BlockLanczosArray import (
     Reort,
@@ -553,8 +554,8 @@ def _build_excited_restrictions(basis, hOp, psis, es, dN, occ_cutoff, dN_imp=Non
             dN_con = dict.fromkeys(basis.impurity_orbitals, (0, dN))
     else:
         dN_con = {i: dN_con.get(i) for i in basis.impurity_orbitals}
-    excited_restrictions = basis.build_excited_restrictions(
-        hOp, psis, es, imp_change=dN_imp, val_change=dN_val, con_change=dN_con, cutoff=occ_cutoff
+    excited_restrictions = build_excited_restrictions(
+        basis, hOp, psis, es, imp_change=dN_imp, val_change=dN_val, con_change=dN_con, cutoff=occ_cutoff
     )
     # Weighted (e.g. S_z) restriction for the excited sector: widen the ground-state bounds by one
     # orbital weight so the addition / removal sectors q_psi ± w_j are admitted while still
