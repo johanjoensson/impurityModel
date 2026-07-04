@@ -21,9 +21,6 @@ dependencies = [
 dynamic = ["version"]
 
 [project.optional-dependencies]
-# The build_h0 console script reads RSPt output via rspt2spectra; install with
-# `pip install -e '.[rspt]'` if you need it.
-rspt = ["rspt2spectra @ git+https://github.com/johanjoensson/rspt2spectra.git"]
 dev = [
     "black",
     "cython-lint",
@@ -56,7 +53,6 @@ build-backend = "setuptools.build_meta"
 
 [project.scripts]
 plot_RIXS="impurityModel.scripts.plot_RIXS:main"
-build_h0="impurityModel.scripts.build_h0:main"
 
 [tool.coverage.run]
 # Record source paths relative to the repo root. Without this, an editable

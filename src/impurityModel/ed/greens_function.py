@@ -10,7 +10,7 @@ from mpi4py import MPI
 # from impurityModel.ed import spectra
 from impurityModel.ed.basis_restrictions import build_excited_restrictions
 from impurityModel.ed.basis_split import split_basis_and_redistribute_psi
-from impurityModel.ed.block_structure import BlockStructure, get_blocks
+from impurityModel.ed.block_structure import BlockStructure
 from impurityModel.ed.BlockLanczosArray import (
     Reort,
     block_lanczos_array,
@@ -1813,44 +1813,6 @@ def _gf_converged_mesh(alphas, delta):
     if mesh is None:
         return None
     return mesh, frozen
-
-
-def block_diagonalize_hyb(hyb):
-    """
-    Block diagonalize the hybridization function matrix.
-
-    Parameters
-    ----------
-    hyb : ndarray of shape (n_freq, n_orb, n_orb)
-        The hybridization matrix.
-
-    Returns
-    -------
-    Q_full : ndarray of shape (n_orb, n_orb)
-        The transformation matrix.
-    """
-    hyb_herm = 1 / 2 * (hyb + np.conj(np.transpose(hyb, (0, 2, 1))))
-    blocks = get_blocks(hyb_herm)
-    Q_full = np.zeros((hyb.shape[1], hyb.shape[2]), dtype=complex)
-    treated_orbitals = 0
-    for block in blocks:
-        block_idx = np.ix_(range(hyb.shape[0]), block, block)
-        if len(block) == 1:
-            Q_full[block_idx[1:], treated_orbitals] = 1
-            treated_orbitals += 1
-            continue
-        block_hyb = hyb_herm[block_idx]
-        upper_triangular_hyb = np.triu(hyb_herm, k=1)
-        ind_max_offdiag = np.unravel_index(np.argmax(np.abs(upper_triangular_hyb)), upper_triangular_hyb.shape)
-        eigvals, Q = np.linalg.eigh(block_hyb[ind_max_offdiag[0], :, :])
-        sorted_indices = np.argsort(eigvals)
-        Q = Q[:, sorted_indices]
-        for column in range(Q.shape[1]):
-            j = np.argmax(np.abs(Q[:, column]))
-            Q_full[block, treated_orbitals + column] = Q[:, column] * abs(Q[j, column]) / Q[j, column]
-        treated_orbitals += Q.shape[1]
-    phase_hyb = np.conj(Q_full.T)[np.newaxis, :, :] @ hyb @ Q_full[np.newaxis, :, :]
-    return phase_hyb, Q_full
 
 
 def rotate_Greens_function(G, T):

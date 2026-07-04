@@ -8,6 +8,8 @@
 
 Calculate many-body states of an impurity Anderson model and a various spectra, e.g. photoemission spectroscopy (PS), x-ray photoemission spectroscopy (XPS), x-ray absorption spectroscopy (XAS), non-resonant inelastic x-ray scattering (NIXS), and resonant inelastic x-ray scattering (RIXS), using the [Lanczos algorithm](https://en.wikipedia.org/wiki/Lanczos_algorithm).
 
+This package is a pure many-body solver: it takes a non-interacting Hamiltonian h0 (impurity + bath), a Coulomb interaction and a temperature, and produces self-energies, Green's functions, double countings and spectra. Constructing h0 from DFT output (hybridization fitting, bath geometries) is the job of upstream tooling such as [rspt2spectra](https://github.com/johanjoensson/rspt2spectra); this package has no dependency on it. External consumers should import from the stable `impurityModel.api` module only — everything under `impurityModel.ed.*` is internal and may change without notice.
+
 
 ## Getting started
 

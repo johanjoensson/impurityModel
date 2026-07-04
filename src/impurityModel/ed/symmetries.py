@@ -489,8 +489,8 @@ def classify_bath_occupation(op, impurity_orbitals, n_orb=None, h0_matrix=None):
     classified by its one-body on-site energy ``h[o, o]``: baths below the Fermi level
     (``h[o, o] < 0``) sit filled in the nominal configuration (**valence**, initially occupied),
     the rest are empty (**conduction**, initially empty). This is the same Fermi-level-zero
-    convention as :func:`edchain.build_imp_bath_blocks` / the ``build_h0`` bath partitioning, so a
-    Hamiltonian built there reproduces its valence/conduction split without the caller passing it.
+    convention used by the tooling that assembled h0, so such a Hamiltonian
+    reproduces its valence/conduction split without the caller passing it.
 
     The on-site energies are basis-independent for the bath here: the symmetry-adapted rotation
     (:func:`impurity_symmetry_rotation`) acts only on the impurity block, leaving the bath diagonal
