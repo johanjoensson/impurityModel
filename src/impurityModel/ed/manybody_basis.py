@@ -149,7 +149,7 @@ class Basis:
         # legacy max-split behaviour for equally-weighted blocks.
         self.split_threshold = split_threshold
 
-        # Distributed determinant storage (formerly SimpleDistributedStateContainer):
+        # Distributed determinant storage:
         # the rank-local sorted determinant list, its state -> global-index dict, and the
         # rank-partition bookkeeping. States are hash-distributed across ranks; lookups and
         # retrievals use sparse point-to-point communication (graph_alltoall).

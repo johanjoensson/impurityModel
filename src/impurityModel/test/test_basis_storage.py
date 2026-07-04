@@ -1,9 +1,8 @@
 """Unit tests for the distributed determinant storage of :class:`Basis`.
 
-Formerly ``test_manybody_state_containers.py``: the state-container hierarchy was
-dissolved into ``Basis`` (its determinant list, state -> global-index dict, and
-hash-routed distributed lookups), so the same storage API is exercised through
-``Basis`` directly. Serial tests use ``MPI.COMM_SELF`` so they behave identically
+``Basis`` owns its storage directly (the rank-local sorted determinant list, the
+state -> global-index dict, and hash-routed distributed lookups), so the storage
+API is exercised through ``Basis``. Serial tests use ``MPI.COMM_SELF`` so they behave identically
 no matter how many ranks ``pytest`` is launched with; one MPI-marked check covers
 the distributed size/lookup path.
 """
