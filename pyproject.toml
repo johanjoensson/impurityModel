@@ -33,8 +33,10 @@ dev = [
     "ruff",
 ]
 doc = [
+    "myst-parser",
     "numpydoc",
     "sphinx",
+    "sphinx-autodoc-typehints",
     "sphinx-rtd-theme",
 ]
 
