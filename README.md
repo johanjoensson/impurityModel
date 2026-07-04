@@ -29,10 +29,7 @@ Optional extras:
 ```bash
 pip install -e '.[dev]'   # test + lint toolchain (pytest, pytest-mpi, black, ruff, mypy, cython-lint)
 pip install -e '.[doc]'   # Sphinx documentation toolchain
-pip install -e '.[rspt]'  # rspt2spectra, needed only by the build_h0 script
 ```
-The `build_h0` console script additionally imports the separate `pyRSPthon` project, which is not on PyPI; install it manually if you use `build_h0`.
-
 You can also use pip to install directly from github, without cloning the repository (and without being able to edit the code)
 ```bash
 pip install git+https://github.com/johanjoensson/impurityModel
