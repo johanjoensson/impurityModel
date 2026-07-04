@@ -3,7 +3,7 @@
 import numpy as np
 import pytest
 
-from impurityModel.ed.manybody_basis import _pack_units
+from impurityModel.ed.basis_split import _pack_units
 
 
 def _check_valid_packing(subgroups, procs_per_color, n_units, comm_size):

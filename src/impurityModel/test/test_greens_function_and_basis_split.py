@@ -10,6 +10,7 @@ from impurityModel.ed.greens_function import (
 )
 from impurityModel.ed.manybody_basis import Basis
 from impurityModel.ed.ManyBodyUtils import ManyBodyOperator, ManyBodyState, SlaterDeterminant
+from impurityModel.ed.basis_split import split_basis_and_redistribute_psi
 
 
 def test_basis_split_and_redistribute_serial():
@@ -29,8 +30,8 @@ def test_basis_split_and_redistribute_serial():
 
     # Test split_basis_and_redistribute_psi
     priorities = [1, 2]
-    indices, split_roots, color, items_per_color, split_basis, psis_out, intercomms = (
-        basis.split_basis_and_redistribute_psi(priorities, psi0)
+    indices, split_roots, color, items_per_color, split_basis, psis_out, intercomms = split_basis_and_redistribute_psi(
+        basis, priorities, psi0
     )
 
     assert list(indices) == [0, 1]
@@ -79,8 +80,8 @@ def test_basis_split_and_redistribute_mpi():
     # Test split_basis_and_redistribute_psi
     # With priorities for 2 items, rank 0 should get item 0, rank 1 should get item 1
     priorities = [1.0, 1.0]
-    indices, split_roots, color, items_per_color, split_basis, psis_out, intercomms = (
-        basis.split_basis_and_redistribute_psi(priorities, psi0)
+    indices, split_roots, color, items_per_color, split_basis, psis_out, intercomms = split_basis_and_redistribute_psi(
+        basis, priorities, psi0
     )
 
     assert len(indices) == 1

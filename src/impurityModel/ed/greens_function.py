@@ -9,6 +9,7 @@ from mpi4py import MPI
 
 # from impurityModel.ed import spectra
 from impurityModel.ed.basis_restrictions import build_excited_restrictions
+from impurityModel.ed.basis_split import split_basis_and_redistribute_psi
 from impurityModel.ed.block_structure import BlockStructure, get_blocks
 from impurityModel.ed.BlockLanczosArray import (
     Reort,
@@ -262,7 +263,7 @@ def run_units_distributed(
     """Distribute work units over MPI colors, run ``kernel`` per unit, gather to global rank 0.
 
     The one distribution primitive shared by every Green's-function driver (self-energy and
-    spectra): ONE :meth:`Basis.split_basis_and_redistribute_psi` over all units, each color runs
+    spectra): ONE :func:`basis_split.split_basis_and_redistribute_psi` over all units, each color runs
     ``kernel(split_basis, unit_index, seeds)`` for its assigned units on its sub-communicator,
     and the per-unit results are gathered to global rank 0 in global unit order.
 
@@ -298,7 +299,7 @@ def run_units_distributed(
         split_basis,
         split_seeds,
         _,  # intercomms -- freed collectively inside the split
-    ) = basis.split_basis_and_redistribute_psi(unit_weights, [s for seeds in unit_seeds for s in seeds])
+    ) = split_basis_and_redistribute_psi(basis, unit_weights, [s for seeds in unit_seeds for s in seeds])
     if verbose:
         print(f"New unit roots: {unit_roots}")
         print(f"Units per color: {units_per_color}")
