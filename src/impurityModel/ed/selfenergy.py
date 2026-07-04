@@ -23,6 +23,7 @@ from impurityModel.ed.groundstate import calc_gs
 from impurityModel.ed.manybody_basis import Basis
 from impurityModel.ed.ManyBodyUtils import ManyBodyOperator
 from impurityModel.ed.utils import matrix_print
+from impurityModel.ed.basis_transcription import build_density_matrices
 
 EV_TO_RY = 1 / 13.605693122994
 
@@ -153,7 +154,8 @@ def _lowest_energy_and_thermal_rho(basis, solver, h_op, impurity_indices, energy
         slaterWeightMin=slaterWeightMin,
         solver="trlm",
     )
-    rhos = basis.build_density_matrices(
+    rhos = build_density_matrices(
+        basis,
         psis,
         orbital_indices_left=impurity_indices,
         orbital_indices_right=impurity_indices,

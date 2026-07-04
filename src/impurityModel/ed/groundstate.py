@@ -28,6 +28,7 @@ from impurityModel.ed.observables import (
 from impurityModel.ed.gs_statistics import compute_gs_statistics, print_gs_statistics, save_gs_statistics
 from impurityModel.ed.ManyBodyUtils import ManyBodyOperator
 from impurityModel.ed.utils import matrix_print
+from impurityModel.ed.basis_transcription import build_density_matrices
 
 
 def calc_energy(
@@ -461,7 +462,7 @@ def calc_gs(
     # Single-particle density matrices, built distributed (each rank applies c_orb to its
     # local partition, redistributes, computes local inner products, then Allreduce); the
     # full rho is returned replicated on every rank. No full-state-vector gather needed.
-    rhos = ground_state_basis.build_density_matrices(psis)
+    rhos = build_density_matrices(ground_state_basis, psis)
 
     e_avg = thermal_average_scale_indep(es, es, tau)
     thermal_rho = thermal_average_scale_indep(es, rhos, tau)

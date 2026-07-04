@@ -25,6 +25,7 @@ from impurityModel.ed.ManyBodyUtils import (
 )
 from impurityModel.ed.mpi_comm import gather_distributed_results
 from impurityModel.ed import gf_diagnostics as _gfd
+from impurityModel.ed.basis_transcription import build_dense_matrix, build_sparse_matrix, build_state, build_vector
 
 comm = MPI.COMM_WORLD
 rank = comm.rank
@@ -1213,10 +1214,10 @@ def block_green_impl(basis, hOp, psi_arr, delta, reort, slaterWeightMin, verbose
 
     dense = len(basis) < 500
     if dense:
-        psi_dense = basis.build_vector(psi_arr, slaterWeightMin=0).T
+        psi_dense = build_vector(basis, psi_arr, slaterWeightMin=0).T
         psi_dense_local, r = build_qr(psi_dense)
     else:
-        psi_dense = basis.build_vector(psi_arr, root=0, slaterWeightMin=0).T
+        psi_dense = build_vector(basis, psi_arr, root=0, slaterWeightMin=0).T
         if rank == 0:
             psi_dense, r = build_qr(psi_dense)
         psi_dense_local, r = _scatter_qr_columns(
@@ -1233,7 +1234,7 @@ def block_green_impl(basis, hOp, psi_arr, delta, reort, slaterWeightMin, verbose
     resolved_reort = resolve_reort(reort if reort is not None else Reort.NONE)
 
     if dense:
-        H = basis.build_dense_matrix(hOp)
+        H = build_dense_matrix(basis, hOp)
         alphas, betas, Q_list, widths, status = block_lanczos_array(
             psi0=psi_dense_local,
             h_op=H,
@@ -1250,7 +1251,7 @@ def block_green_impl(basis, hOp, psi_arr, delta, reort, slaterWeightMin, verbose
             max_iter=-(-H.shape[0] // psi_dense_local.shape[1]),
         )
     else:
-        h_local = basis.build_sparse_matrix(hOp)[:, basis.local_indices]
+        h_local = build_sparse_matrix(basis, hOp)[:, basis.local_indices]
 
         def matmat(v):
             """
@@ -1320,7 +1321,7 @@ def block_green_impl(basis, hOp, psi_arr, delta, reort, slaterWeightMin, verbose
     if keep < len(alphas):
         alphas, betas, widths = alphas[:keep], betas[:keep], widths[:keep]
     q_last = Q_list[:, -1:]
-    return alphas, betas, r, basis.build_state(q_last.T, slaterWeightMin=slaterWeightMin), widths
+    return alphas, betas, r, build_state(basis, q_last.T, slaterWeightMin=slaterWeightMin), widths
 
 
 def calc_thermally_averaged_G(alphas, betas, r, mesh, es, e0, tau, delta):
@@ -1387,7 +1388,7 @@ def block_Green_sparse(
 
     if N == 0 or n == 0:
         return np.empty((0, n, n), dtype=complex), np.empty((0, n, n), dtype=complex), np.zeros((n, n), dtype=complex)
-    psi_dense = basis.build_vector(psi_arr, root=0, slaterWeightMin=slaterWeightMin).T
+    psi_dense = build_vector(basis, psi_arr, root=0, slaterWeightMin=slaterWeightMin).T
     if rank == 0:
         psi_dense, r = build_qr(psi_dense)
     if mpi:
@@ -1396,7 +1397,7 @@ def block_Green_sparse(
         )
     else:
         psi_dense_local = psi_dense
-    psi_arr = basis.build_state(psi_dense_local.T, slaterWeightMin=0)
+    psi_arr = build_state(basis, psi_dense_local.T, slaterWeightMin=0)
     if len(psi_arr) == 0:
         return np.empty((0, n, n), dtype=complex), np.empty((0, n, n), dtype=complex), r
 

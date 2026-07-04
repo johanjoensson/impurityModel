@@ -5,6 +5,7 @@ from itertools import combinations
 import numpy as np
 
 from impurityModel.ed.ManyBodyUtils import ManyBodyOperator, ManyBodyState, SlaterDeterminant, applyOp, inner
+from impurityModel.ed.basis_transcription import build_dense_matrix
 from impurityModel.ed.symmetries import (
     rotate_hamiltonian,
     rotate_one_body,
@@ -203,7 +204,7 @@ def test_pipeline_rotated_basis_matches_unrotated():
 
     def spectrum(o):
         basis = Basis(initial_basis=all_dets, **kw)
-        return np.sort(np.linalg.eigvalsh(np.asarray(basis.build_dense_matrix(o))))
+        return np.sort(np.linalg.eigvalsh(np.asarray(build_dense_matrix(basis, o))))
 
     np.testing.assert_allclose(spectrum(op), spectrum(op_rot), atol=1e-10)
 

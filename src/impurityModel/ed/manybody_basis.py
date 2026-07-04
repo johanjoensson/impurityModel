@@ -1,5 +1,5 @@
 from math import ceil
-from typing import Any, Optional, Union
+from typing import Optional
 
 try:
     from collections.abc import Iterable, Sequence
@@ -9,7 +9,6 @@ import itertools
 from heapq import merge
 
 import numpy as np
-import scipy as sp
 from mpi4py import MPI
 
 from impurityModel.ed.basis_generation import generate_initial_basis, spin_flipped_determinants
@@ -717,172 +716,6 @@ class Basis:
         self.state_bounds = [None] * self.comm.size if self.is_distributed else [None]
         self.add_states([])
 
-    def build_vector(
-        self, psis: list[ManyBodyState], root: Optional[int] = None, slaterWeightMin: float = 0
-    ) -> np.ndarray:
-        """Build a dense matrix representation of wavefunctions in the basis.
-
-        Parameters
-        ----------
-        psis : list of ManyBodyState
-            The wavefunctions to represent.
-        root : int, optional
-            MPI rank to reduce the vector to. If None, it is reduced to all ranks.
-        slaterWeightMin : float, default 0
-            Minimum amplitude threshold below which coefficients are ignored.
-
-        Returns
-        -------
-        np.ndarray
-            The 2D dense matrix representation of the wavefunctions.
-        """
-        v = np.zeros((len(psis), self.size), dtype=complex, order="C")
-        # psis = self.redistribute_psis(psis)
-        # row_states_in_basis: list[bytes] = []
-        # row_dict = {state: self._index_dict[state] for state in self.local_basis}
-        # col_dict = dict(zip(self.local_basis, range(self.local_indices.start, self.local_indices.stop)))
-        _index_dict = self._index_dict
-        for row, psi in enumerate(psis):
-            for state, val in psi.items():
-                idx = _index_dict.get(state)
-                if idx is None or abs(val) < slaterWeightMin:
-                    continue
-                v[row, idx] = val
-
-        if self.is_distributed and root is None:
-            self.comm.Allreduce(MPI.IN_PLACE, v, op=MPI.SUM)
-        elif self.is_distributed:
-            self.comm.Reduce(MPI.IN_PLACE if self.comm.rank == root else v, v, op=MPI.SUM, root=root)
-        return v
-
-    def build_distributed_vector(self, psis: list[ManyBodyState], dtype: Any = complex) -> np.ndarray:
-        """Build the MPI-local portion of a wavefunction vector.
-
-        Parameters
-        ----------
-        psis : list of ManyBodyState
-            The wavefunctions to represent.
-        dtype : Any, default complex
-            The data type of the returned array.
-
-        Returns
-        -------
-        np.ndarray
-            The 2D array containing the local amplitudes.
-        """
-        psis = self.redistribute_psis(psis)
-        v = np.empty((len(psis), len(self.local_basis)), dtype=dtype, order="C")
-        for (row, psi), (col, state) in itertools.product(enumerate(psis), enumerate(self.local_basis)):
-            v[row, col] = psi.get(state, 0)
-        return v
-
-    def build_state(self, vs: Union[list[np.ndarray], np.ndarray], slaterWeightMin: float = 0) -> list[ManyBodyState]:
-        """Convert dense vectors back to a list of ManyBodyState objects.
-
-        Parameters
-        ----------
-        vs : list of np.ndarray or np.ndarray
-            The dense vector representations.
-        slaterWeightMin : float, default 0
-            Minimum amplitude threshold to keep.
-
-        Returns
-        -------
-        list of ManyBodyState
-            The corresponding list of many-body states.
-        """
-        if isinstance(vs, np.matrix):
-            vs = vs.A
-        if isinstance(vs, np.ndarray) and len(vs.shape) == 1:
-            vs = vs.reshape((1, vs.shape[0]))
-        if isinstance(vs, list):
-            vs = np.array(vs)
-        res = [ManyBodyState({}) for _ in range(vs.shape[0])]
-        if vs.shape[1] == self.size:
-            for j, i in np.argwhere(np.abs(vs[:, self.local_indices]) > slaterWeightMin):
-                res[j][self.local_basis[i]] = vs[j, i + self.offset]
-        elif vs.shape[1] == len(self.local_basis):
-            for j, i in np.argwhere(np.abs(vs) > slaterWeightMin):
-                res[j][self.local_basis[i]] = vs[j, i]
-        else:
-            raise RuntimeError(
-                f"The dimensions of the input dense vector does not match a distributed, or full vector.\n{vs.shape} != ({vs.shape[0]}, {self.size}) || ({vs.shape[0]}, {len(self.local_basis)})"
-            )
-        return res
-
-    def build_local_operator_list(self, op, slaterWeightMin):
-        """
-        Apply the operator to all (MPI local) basis states, in order.
-        Return the results in a list.
-        """
-        res = []
-        unit_state = ManyBodyState()
-        for state in self.local_basis:
-            unit_state[state] = 1.0
-            res.append(applyOp_test(op, unit_state, cutoff=slaterWeightMin))
-            unit_state.erase(state)
-        return res
-
-    def build_dense_matrix(self, op, distribute=True):
-        """
-        Get the operator as a dense matrix in the current basis.
-        by default the dense matrix is distributed to all ranks.
-        """
-        h_local = self.build_sparse_matrix(op)
-        if self.is_distributed:
-            h = np.empty(h_local.shape, dtype=h_local.dtype)
-            self.comm.Allreduce(h_local.todense(), h, op=MPI.SUM)
-        else:
-            h = h_local.todense(order="C")
-        return h
-
-    def build_sparse_matrix(self, op: ManyBodyOperator):
-        """
-        Get the operator as a sparse matrix in the current basis.
-        The sparse matrix is distributed over all ranks.
-        """
-        if isinstance(op, dict):
-            op = ManyBodyOperator(op)
-
-        rows = []
-        cols = []
-        vals = []
-        _index_dict = self._index_dict
-        if not self.is_distributed:
-            for ket, ket_state in zip(self.local_basis, self.build_local_operator_list(op, 0)):
-                col = _index_dict[ket]
-                for bra, val in ket_state.items():
-                    row = _index_dict.get(bra)
-                    if row is not None:
-                        rows.append(row)
-                        cols.append(col)
-                        vals.append(val)
-        else:
-            columns = []
-            bras = []
-            values = []
-            for ket, ket_state in zip(self.local_basis, self.build_local_operator_list(op, 0)):
-                col = _index_dict[ket]
-                for bra, val in ket_state.items():
-                    columns.append(col)
-                    bras.append(bra)
-                    values.append(val)
-
-            global_rows = list(self._index_sequence(bras))
-            _size = self.size
-            for row, col, val in zip(global_rows, columns, values):
-                if row != _size:
-                    rows.append(row)
-                    cols.append(col)
-                    vals.append(val)
-
-        n = len(self)
-        if rows:
-            res = sp.sparse.csc_array((vals, (rows, cols)), shape=(n, n), dtype=complex)
-        else:
-            res = sp.sparse.csc_array((n, n), dtype=complex)
-        return res
-
     @property
     def impurity_spin_orbital_indices(self):
         """Flat, sorted-by-orbital-set list of all impurity spin-orbital indices."""
@@ -899,52 +732,6 @@ class Basis:
         """Flat list of all conduction-bath spin-orbital indices."""
         _valence_baths, conduction_baths = self.bath_states
         return [orb for blocks in conduction_baths.values() for block in blocks for orb in block]
-
-    def build_density_matrices(self, psis, orbital_indices_left=None, orbital_indices_right=None):
-        r"""Compute single-particle density matrices for a list of many-body states.
-
-        rho[n, i, j] = <psi_n| c_{orb_j}^dagger c_{orb_i} |psi_n>
-
-        For the square case (orbital_indices_left == orbital_indices_right) the
-        identity rho[i, j] = <phi_j | phi_i>  (where |phi_k> = c_{orb_k}|psi>)
-        is exploited, cutting operator applications from O(n^2) to O(n) and
-        halving inner products via Hermitian symmetry.
-
-        For the general rectangular case we also exploit this decomposition
-        rho[i, j] = <chi_j | phi_i> (where |chi_k> = c_{orb_k}|psi> and
-        |phi_k> = c_{orb_k}|psi>), reducing operator applications to O(n).
-        """
-        if orbital_indices_left is None:
-            orbital_indices_left = list(range(self.num_spin_orbitals))
-        if orbital_indices_right is None:
-            orbital_indices_right = list(range(self.num_spin_orbitals))
-        n_left, n_right = len(orbital_indices_left), len(orbital_indices_right)
-        rhos = np.zeros((len(psis), n_left, n_right), dtype=complex)
-
-        square = orbital_indices_left == orbital_indices_right
-
-        for n, psi_n in enumerate(psis):
-            phi = [ManyBodyOperator({((orb, "a"),): 1.0})(psi_n, 0) for orb in orbital_indices_left]
-            if square:
-                chi = phi
-            else:
-                chi = [ManyBodyOperator({((orb, "a"),): 1.0})(psi_n, 0) for orb in orbital_indices_right]
-
-            if self.is_distributed:
-                phi = self.redistribute_psis(phi)
-                if square:
-                    chi = phi
-                else:
-                    chi = self.redistribute_psis(chi)
-
-            from impurityModel.ed.ManyBodyUtils import inner_multi
-
-            rhos[n] = inner_multi(chi, phi).T
-
-        if self.is_distributed:
-            self.comm.Allreduce(MPI.IN_PLACE, rhos, op=MPI.SUM)
-
-        return rhos
 
     def split_basis_and_redistribute_psi(
         self, priorities: list[float], psis: Optional[list[ManyBodyState]]

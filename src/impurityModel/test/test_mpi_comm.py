@@ -22,6 +22,7 @@ from impurityModel.ed.ManyBodyUtils import (
     SlaterDeterminant,
 )
 from impurityModel.ed.mpi_comm import empty_clone, get_job_tasks, graph_alltoall, graph_alltoall_psis, is_empty
+from impurityModel.ed.basis_transcription import build_density_matrices, build_sparse_matrix
 
 # ---------------------------------------------------------------------------
 # Helpers
@@ -324,7 +325,7 @@ def test_sparse_matrix_consistent_with_serial():
 
     # MPI basis: collect (bra_bytes, ket_bytes, value) from all ranks
     basis_mpi = _make_basis(states_bytes, comm=comm)
-    H_mpi_local = basis_mpi.build_sparse_matrix(hop).tocoo()
+    H_mpi_local = build_sparse_matrix(basis_mpi, hop).tocoo()
     local_basis_all = comm.allgather(basis_mpi.local_basis)
     global_basis = {}
     for rank_basis in local_basis_all:
@@ -348,7 +349,7 @@ def test_sparse_matrix_consistent_with_serial():
     # Serial reference
     if comm.rank == 0:
         basis_s = _make_basis(states_bytes, comm=None)
-        H_s = basis_s.build_sparse_matrix(hop).tocoo()
+        H_s = build_sparse_matrix(basis_s, hop).tocoo()
         serial_basis_map = {
             i: bytes(state.to_bytearray()[: basis_s.n_bytes]) for i, state in enumerate(basis_s.local_basis)
         }
@@ -394,7 +395,8 @@ def test_density_matrix_mpi_vs_serial():
     if comm.rank == 0:
         basis_s = _make_basis(states_bytes, comm=None)
         psi_s = ManyBodyState({SlaterDeterminant.from_bytes(s): c for s, c in zip(states_bytes, coeffs)})
-        rho_serial = basis_s.build_density_matrices(
+        rho_serial = build_density_matrices(
+            basis_s,
             [psi_s],
             orbital_indices_left=orbital_indices,
             orbital_indices_right=orbital_indices,
@@ -411,7 +413,8 @@ def test_density_matrix_mpi_vs_serial():
         psi_m = ManyBodyState({})
     psi_m = basis_m.redistribute_psis([psi_m])[0]
 
-    rho_mpi = basis_m.build_density_matrices(
+    rho_mpi = build_density_matrices(
+        basis_m,
         [psi_m],
         orbital_indices_left=orbital_indices,
         orbital_indices_right=orbital_indices,

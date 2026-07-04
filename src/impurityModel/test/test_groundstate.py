@@ -5,6 +5,7 @@ from mpi4py import MPI
 from impurityModel.ed.block_structure import BlockStructure
 from impurityModel.ed.groundstate import calc_energy, calc_gs, find_ground_state_basis
 from impurityModel.ed.ManyBodyUtils import ManyBodyOperator, ManyBodyState
+from impurityModel.ed.basis_transcription import build_density_matrices
 
 
 @pytest.mark.mpi
@@ -64,7 +65,7 @@ def test_groundstate_and_density_matrix_mpi():
     gathered_psis = comm.gather(psis_mpi, root=0)
 
     # Also test the general rectangular case of build_density_matrices
-    rect_rho_mpi = basis_mpi.build_density_matrices(psis_mpi, [0, 1, 2], [3, 4, 5])
+    rect_rho_mpi = build_density_matrices(basis_mpi, psis_mpi, [0, 1, 2], [3, 4, 5])
 
     if rank == 0:
         full_psi_mpi = ManyBodyState()
@@ -118,7 +119,7 @@ def test_groundstate_and_density_matrix_mpi():
                 np.testing.assert_allclose(r, first_ratio, atol=1e-8)
 
         # Also test the general rectangular case of build_density_matrices
-        rect_rho_seq = basis_seq.build_density_matrices(psis_seq, [0, 1, 2], [3, 4, 5])
+        rect_rho_seq = build_density_matrices(basis_seq, psis_seq, [0, 1, 2], [3, 4, 5])
         np.testing.assert_allclose(rect_rho_mpi, rect_rho_seq, rtol=1e-10, atol=1e-10)
 
 
@@ -179,7 +180,7 @@ def test_groundstate_and_density_matrix_serial():
     np.testing.assert_allclose(rho.trace().real, 5.0, atol=1e-10)
 
     # Test build_density_matrices
-    rho_basis = basis.build_density_matrices(psis, list(range(10)), list(range(10)))
+    rho_basis = build_density_matrices(basis, psis, list(range(10)), list(range(10)))
     np.testing.assert_allclose(rho_basis[0], rho, rtol=1e-10, atol=1e-10)
 
 

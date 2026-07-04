@@ -134,6 +134,7 @@ def test_restrictions_from_charges_and_occupations():
 
 import impurityModel.ed.product_state_representation as psr  # noqa: E402
 from impurityModel.ed.manybody_basis import Basis  # noqa: E402
+from impurityModel.ed.basis_transcription import build_dense_matrix
 
 _BASIS_KW = dict(impurity_orbitals={0: [[0, 1, 2, 3]]}, bath_states=({0: [[]]}, {0: [[]]}), verbose=False)
 
@@ -174,7 +175,7 @@ def test_automatic_restrictions():
     # Unrestricted: the full Fock space (all 16 determinants, every N sector).
     all_dets = [_bytes(occ) for ne in range(5) for occ in combinations(range(4), ne)]
     full = Basis(initial_basis=all_dets, **_BASIS_KW)
-    h_full = np.asarray(full.build_dense_matrix(op))
+    h_full = np.asarray(build_dense_matrix(full, op))
     ev, evec = np.linalg.eigh(h_full)
     e0, gs = ev[0], evec[:, 0]
 
@@ -190,7 +191,7 @@ def test_automatic_restrictions():
     restrictions = restrictions_from_charges(charges, gs_occ)
     sector_dets = [d for d in all_dets if all(lo <= len(s & _occset(d)) <= hi for s, (lo, hi) in restrictions.items())]
     restricted = Basis(initial_basis=sector_dets, restrictions=restrictions, **_BASIS_KW)
-    e0_restricted = np.linalg.eigvalsh(np.asarray(restricted.build_dense_matrix(op)))[0]
+    e0_restricted = np.linalg.eigvalsh(np.asarray(build_dense_matrix(restricted, op)))[0]
 
     assert np.isclose(e0, e0_restricted, atol=1e-10)  # same ground-state energy
     assert len(sector_dets) < len(all_dets)  # 4 < 16 : smaller basis
@@ -278,7 +279,7 @@ def test_hf_seed_finds_ground_state_sector():
         initial_basis=all_dets,
         verbose=False,
     )
-    _, vecs = np.linalg.eigh(np.asarray(full.build_dense_matrix(op)))
+    _, vecs = np.linalg.eigh(np.asarray(build_dense_matrix(full, op)))
     gs = vecs[:, 0]
     exact_imp_occ = sum(
         abs(amp) ** 2 * len({0, 1} & _occset6(bytes(d.to_bytearray()))) for amp, d in zip(gs, full.local_basis)
@@ -323,7 +324,7 @@ def test_hf_seed_matches_brute_force_loop():
     )
 
     def gs_energy(basis):
-        return np.linalg.eigvalsh(np.asarray(basis.build_dense_matrix(op)))[0]
+        return np.linalg.eigvalsh(np.asarray(build_dense_matrix(basis, op)))[0]
 
     e_brute = gs_energy(find_ground_state_basis(op, **kw, use_hf_seed=False))
     e_hf = gs_energy(find_ground_state_basis(op, **kw, use_hf_seed=True))

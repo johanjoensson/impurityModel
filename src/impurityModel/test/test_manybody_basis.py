@@ -5,11 +5,18 @@ from mpi4py import MPI
 from impurityModel.ed.basis_restrictions import get_effective_restrictions
 from impurityModel.ed.manybody_basis import Basis
 from impurityModel.ed.ManyBodyUtils import ManyBodyOperator, SlaterDeterminant
+from impurityModel.ed.basis_transcription import (
+    build_dense_matrix,
+    build_distributed_vector,
+    build_local_operator_list,
+    build_state,
+    build_vector,
+)
 
 
 def build_operator_dict(basis, op):
     """Express op in the current basis: map each local basis state to the result of applying op to it."""
-    return dict(zip(basis.local_basis, basis.build_local_operator_list(ManyBodyOperator(op), 0)))
+    return dict(zip(basis.local_basis, build_local_operator_list(basis, ManyBodyOperator(op), 0)))
 
 
 def build_states(states: list[bytes]):
@@ -938,7 +945,7 @@ def test_simple_dense_matrix():
     states = [SlaterDeterminant.from_bytes(b"\x78")]
     basis.add_states(states)
 
-    dense_mat = basis.build_dense_matrix(operator)
+    dense_mat = build_dense_matrix(basis, operator)
     assert dense_mat.shape == (1, 1)
     assert dense_mat[0, 0] == 9 / 2
 
@@ -966,7 +973,7 @@ def test_simple_dense_matrix_mpi():
         comm=MPI.COMM_WORLD,
     )
 
-    dense_mat = basis.build_dense_matrix(operator)
+    dense_mat = build_dense_matrix(basis, operator)
     assert dense_mat.shape == (1, 1)
     assert dense_mat[0, 0] == 9 / 2
 
@@ -993,7 +1000,7 @@ def test_eg_t2g_dense_matrix():
         comm=None,
     )
 
-    dense_mat = basis.build_dense_matrix(operator)
+    dense_mat = build_dense_matrix(basis, operator)
     assert dense_mat.shape == (5, 5)
     assert np.allclose(
         dense_mat,
@@ -1033,7 +1040,7 @@ def test_eg_t2g_dense_matrix_mpi():
         comm=MPI.COMM_WORLD,
     )
 
-    dense_mat = basis.build_dense_matrix(operator)
+    dense_mat = build_dense_matrix(basis, operator)
     assert dense_mat.shape == (5, 5)
     # assert np.allclose(
     #     dense_mat,
@@ -1068,7 +1075,7 @@ def test_simple_vector():
     if states[1] in basis._index_dict:
         state[states[1]] = 0.33 + 0.15j
 
-    v = basis.build_vector([state])[0]
+    v = build_vector(basis, [state])[0]
     v_exact = np.array([0.25 + 0.2j, 0.33 + 0.15j], dtype=complex)
 
     assert v.shape == (len(basis),)
@@ -1095,7 +1102,7 @@ def test_simple_vector_mpi():
     if states[1] in basis.local_basis:
         state[states[1]] = 0.33 + 0.15j
 
-    v = basis.build_vector([state])[0]
+    v = build_vector(basis, [state])[0]
     v_exact = np.array([0.25 + 0.2j, 0.33 + 0.15j], dtype=complex)
 
     assert v.shape == (len(basis),)
@@ -1119,7 +1126,7 @@ def test_vector():
     state[states[0]] = 0.25 + 0.2j
     if states[1] in basis._index_dict:
         state[states[1]] = 0.33 + 0.15j
-    v = basis.build_vector([state])[0]
+    v = build_vector(basis, [state])[0]
     v_exact = np.array([0.25 + 0.2j, 0.33 + 0.15j, 0, 0], dtype=complex)
 
     assert v.shape == (len(basis),)
@@ -1145,7 +1152,7 @@ def test_vector_mpi():
     state[states[0]] = 0.25 + 0.2j
     if states[1] in basis.local_basis:
         state[states[1]] = 0.33 + 0.15j
-    v = basis.build_vector([state])[0]
+    v = build_vector(basis, [state])[0]
     v_exact = np.array([0.25 + 0.2j, 0.33 + 0.15j, 0, 0], dtype=complex)
 
     assert v.shape == (len(basis),)
@@ -1167,7 +1174,7 @@ def test_simple_state():
     )
 
     v = np.array([[1.0, -2.5]])
-    s = basis.build_state(v)
+    s = build_state(basis, v)
     s_exact = [{states[0]: v[0, 0], states[1]: v[0, 1]}]
 
     for i in range(len(s)):
@@ -1192,7 +1199,7 @@ def test_simple_state_mpi():
     v = np.zeros([1, len(states)])
     v[0, basis.index(states[0])] = 1.0
     v[0, basis.index(states[1])] = 2.5
-    s = basis.build_state(v)
+    s = build_state(basis, v)
     s_exact = [{states[0]: v[0, basis.index(states[0])], states[1]: v[0, basis.index(states[1])]}]
 
     for i in range(len(s)):
@@ -1213,7 +1220,7 @@ def test_state_mpi():
         comm=comm,
     )
     v = np.array([[1.0, -2.5, 0, 0, 1.2], [0, 3, 1, 0, 0]])
-    s = basis.build_state(v)
+    s = build_state(basis, v)
     s_exact = [
         {states[0]: v[0, 0], states[1]: v[0, 1], states[4]: v[0, 4]},
         {states[1]: v[1, 1], states[2]: v[1, 2]},
@@ -1238,7 +1245,7 @@ def test_state_mpi():
         comm=comm,
     )
     v = np.array([[1.0, -2.5, 0, 0, 1.2], [0, 3, 1, 0, 0]])
-    basis.build_state(v)
+    build_state(basis, v)
     state_indices = list(basis.index(states))
     [
         {states[state_indices[0]]: v[0, 0], states[state_indices[1]]: v[0, 1], states[state_indices[4]]: v[0, 4]},
@@ -1436,7 +1443,7 @@ def test_distributed_simple_vector():
     if states[1] in basis.local_basis:
         state[states[1]] = 0.33 + 0.15j
 
-    v = basis.build_distributed_vector([state])[0]
+    v = build_distributed_vector(basis, [state])[0]
     v_exact = np.zeros((len(basis.local_basis),), dtype=complex)
     if states[0] in basis.local_basis:
         v_exact[0] = 0.25 + 0.2j
@@ -1466,7 +1473,7 @@ def test_distributed_vector_mpi():
     state[states[0]] = 0.25 + 0.2j
     if states[1] in basis.local_basis:
         state[states[1]] = 0.33 + 0.15j
-    v = basis.build_distributed_vector([state])[0]
+    v = build_distributed_vector(basis, [state])[0]
     np.array([0.25 * comm.size + 0.2j * comm.size, 0.33 + 0.15j, 0, 0], dtype=complex)
 
     len(basis.local_basis)

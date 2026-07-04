@@ -10,6 +10,12 @@ from impurityModel.ed.ManyBodyUtils import ManyBodyOperator, ManyBodyState
 from impurityModel.ed.ManyBodyUtils import applyOp as applyOp_test
 from impurityModel.ed.BlockLanczosArray import Reort, block_normalize
 from impurityModel.ed.trlm import thick_restart_block_lanczos
+from impurityModel.ed.basis_transcription import (
+    build_distributed_vector,
+    build_sparse_matrix,
+    build_state,
+    build_vector,
+)
 
 SOLVERS = {
     "trlm": thick_restart_block_lanczos,
@@ -26,7 +32,7 @@ class CIPSISolver:
         if self.basis.size > self.basis.truncation_threshold and H is not None:
             if self.basis.verbose:
                 print("Truncating basis!")
-            H_sparse = self.basis.build_sparse_matrix(H)
+            H_sparse = build_sparse_matrix(self.basis, H)
             e_ref, psi_ref = eigensystem(
                 H_sparse,
                 e_max=-self.basis.tau * np.log(1e-4),
@@ -35,7 +41,7 @@ class CIPSISolver:
                 comm=self.basis.comm,
                 dense=False,
             )
-            self.truncate(self.basis.build_state(psi_ref))
+            self.truncate(build_state(self.basis, psi_ref))
 
     def truncate(self, psis: list[ManyBodyState]) -> list[ManyBodyState]:
         cutoff = np.finfo(float).eps
@@ -154,11 +160,11 @@ class CIPSISolver:
                 # with the *global* sector dimension, not the local partition. This path is
                 # for sectors small enough to also hold the sparse H_mat; very large sectors
                 # should use the hash-distributed ManyBodyState kernel instead.
-                H_mat = self.basis.build_sparse_matrix(H)
+                H_mat = build_sparse_matrix(self.basis, H)
                 if self.basis.is_distributed:
                     H_mat = H_mat[:, self.basis.local_indices]
                 psi0_arr = (
-                    self.basis.build_distributed_vector(psi0).T
+                    build_distributed_vector(self.basis, psi0).T
                     if len(psi0) > 0
                     else np.zeros((len(self.basis.local_basis), 1), dtype=complex)
                 )
@@ -177,7 +183,7 @@ class CIPSISolver:
                 )
 
                 if len(e_ref) > 0:
-                    psi_refs = self.basis.build_state(psi_refs_arr.T, slaterWeightMin=slaterWeightMin)
+                    psi_refs = build_state(self.basis, psi_refs_arr.T, slaterWeightMin=slaterWeightMin)
                     e_min = np.min(e_ref)
                     valid_idx = [i for i, e in enumerate(e_ref) if e - e_min <= de0_max]
                 else:
@@ -189,9 +195,9 @@ class CIPSISolver:
                 e_ref = e_ref[valid_idx]
                 psi_refs = [psi_refs[i] for i in valid_idx]
             else:
-                H_mat = self.basis.build_sparse_matrix(H)
+                H_mat = build_sparse_matrix(self.basis, H)
                 v0 = (
-                    self.basis.build_vector(psi_refs).T
+                    build_vector(self.basis, psi_refs).T
                     if psi_refs is not None and self.basis.size >= dense_cutoff
                     else None
                 )
@@ -205,7 +211,7 @@ class CIPSISolver:
                     comm=self.basis.comm,
                     dense=self.basis.size < dense_cutoff,
                 )
-                psi_refs = self.basis.build_state(psi_ref_dense.T)
+                psi_refs = build_state(self.basis, psi_ref_dense.T)
 
             new_Dj = self.determine_new_Dj(e_ref, psi_refs, H, de2_min, slater_cutoff=slaterWeightMin)
             old_size = self.basis.size
@@ -268,12 +274,12 @@ class CIPSISolver:
 
             num_wanted = min(num_wanted, (max_subspace_blocks - 1) * len(psi0))
 
-            H_mat = self.basis.build_sparse_matrix(H)
+            H_mat = build_sparse_matrix(self.basis, H)
             if self.basis.is_distributed:
                 H_mat = H_mat[:, self.basis.local_indices]
 
             psi0_arr = (
-                self.basis.build_distributed_vector(psi0).T
+                build_distributed_vector(self.basis, psi0).T
                 if len(psi0) > 0
                 else np.zeros((len(self.basis.local_basis), 1), dtype=complex)
             )
@@ -291,7 +297,7 @@ class CIPSISolver:
                 reort=reort,
             )
             if len(e_ref) > 0:
-                psi_refs = self.basis.build_state(psi_refs_arr.T, slaterWeightMin=slaterWeightMin)
+                psi_refs = build_state(self.basis, psi_refs_arr.T, slaterWeightMin=slaterWeightMin)
             if max_energy is not None and len(e_ref) > 0:
                 e_min = np.min(e_ref)
                 valid_idx = [i for i, e in enumerate(e_ref) if e - e_min <= max_energy]
@@ -299,7 +305,7 @@ class CIPSISolver:
                 psi_refs = [psi_refs[i] for i in valid_idx]
 
         else:
-            H_mat = self.basis.build_sparse_matrix(H)
+            H_mat = build_sparse_matrix(self.basis, H)
             e_ref, psi_ref_dense = eigensystem(
                 H_mat,
                 e_max=max_energy,
@@ -311,6 +317,6 @@ class CIPSISolver:
                 dense=self.basis.size < dense_cutoff,
                 return_eigvecs=True,
             )
-            psi_refs = self.basis.build_state(psi_ref_dense.T, slaterWeightMin=slaterWeightMin)
+            psi_refs = build_state(self.basis, psi_ref_dense.T, slaterWeightMin=slaterWeightMin)
 
         return e_ref, psi_refs

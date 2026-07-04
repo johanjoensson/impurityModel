@@ -7,6 +7,7 @@ from impurityModel.ed.BlockLanczosArray import Reort, eigsh
 from impurityModel.ed.BlockLanczos import block_lanczos_cy
 from impurityModel.ed.manybody_basis import Basis
 from impurityModel.ed.ManyBodyUtils import ManyBodyOperator, ManyBodyState, applyOp
+from impurityModel.ed.basis_transcription import build_dense_matrix, build_state
 
 
 def test_lancos():
@@ -24,7 +25,7 @@ def test_lancos():
         initial_basis=[b"\xf0", b"\xe8", b"\xd8", b"\xb8", b"\x78"],
         verbose=True,
     )
-    h_mat = basis.build_dense_matrix(Hop)
+    h_mat = build_dense_matrix(basis, Hop)
     gs_es, gs_psis = eigensystem(h_mat, 0)
     electron_removal_ops = {
         "t2g": [{((0, "a"),): 1}, {((1, "a"),): 1}, {((2, "a"),): 1}],
@@ -39,7 +40,7 @@ def test_lancos():
     for irrep in electron_removal_ops:
         for op in electron_removal_ops[irrep]:
             op_mbo = ManyBodyOperator(op)
-            gs_i = basis.build_state(gs_psis.T)
+            gs_i = build_state(basis, gs_psis.T)
             psi = applyOp(op_mbo, gs_i[0])
             N = psi.norm()
             if N > 1e-12:
@@ -57,7 +58,7 @@ def test_lancos():
                 # Assert that the eigenvalues of the Lanczos tridiagonal matrix
                 # match the direct eigenvalues of Hop on the excited basis
                 ev, _ = eigsh(alpha, beta, eigvals_only=True, de=10)
-                h_excited = excited_basis.build_dense_matrix(Hop)
+                h_excited = build_dense_matrix(excited_basis, Hop)
                 es_direct, _ = eigensystem(h_excited, 0)
                 np.testing.assert_allclose(ev, es_direct, atol=1e-12)
     print(f"{alphas=}\n{betas=}")
@@ -80,7 +81,7 @@ def test_lancos_mpi():
         verbose=True,
         comm=MPI.COMM_WORLD,
     )
-    h_mat = basis.build_dense_matrix(Hop)
+    h_mat = build_dense_matrix(basis, Hop)
     gs_es, gs_psis = eigensystem(h_mat, 0)
     electron_removal_ops = {
         "t2g": [{((0, "a"),): 1}, {((1, "a"),): 1}, {((2, "a"),): 1}],
@@ -101,7 +102,7 @@ def test_lancos_mpi():
             print(
                 f"Rank {MPI.COMM_WORLD.rank if MPI.COMM_WORLD else 'no MPI'} before build_state for op {op}", flush=True
             )
-            gs_i = basis.build_state(gs_psis.T)
+            gs_i = build_state(basis, gs_psis.T)
             print(f"Rank {MPI.COMM_WORLD.rank if MPI.COMM_WORLD else 'no MPI'} before applyOp for op {op}", flush=True)
             psi = applyOp(op_mbo, gs_i[0])
             print(f"Rank {MPI.COMM_WORLD.rank if MPI.COMM_WORLD else 'no MPI'} before norm2 for op {op}", flush=True)
@@ -126,7 +127,7 @@ def test_lancos_mpi():
 
                 # Assert that the eigenvalues of the Lanczos tridiagonal matrix
                 # match the direct eigenvalues of Hop on the excited basis
-                h_excited = excited_basis.build_dense_matrix(Hop)
+                h_excited = build_dense_matrix(excited_basis, Hop)
                 es_direct, _ = eigensystem(h_excited, 0)
                 if MPI.COMM_WORLD.rank == 0:
                     try:
@@ -305,7 +306,7 @@ def test_get_block_Lanczos_matrices_and_GS(reort_mode):
         verbose=True,
         comm=None,
     )
-    H_mat = basis.build_dense_matrix(hop)
+    H_mat = build_dense_matrix(basis, hop)
 
     psi0 = np.zeros((6, 1), dtype=complex)
     psi0[:, 0] = 1 / np.sqrt(6)
@@ -337,7 +338,7 @@ def test_get_block_Lanczos_matrices_and_GS_mpi(reort_mode):
         verbose=True,
         comm=MPI.COMM_WORLD,
     )
-    H_mat = basis.build_dense_matrix(hop)
+    H_mat = build_dense_matrix(basis, hop)
 
     psi0 = np.zeros((len(basis.local_basis), 1), dtype=complex)
     psi0[:, 0] = 1 / np.sqrt(6)  # Distributed vector representation
@@ -370,7 +371,7 @@ def test_get_block_Lanczos_matrices_dense(reort_mode):
         verbose=True,
         comm=None,
     )
-    H_mat = basis.build_dense_matrix(hop)
+    H_mat = build_dense_matrix(basis, hop)
 
     psi0 = np.zeros((6, 1), dtype=complex)
     psi0[:, 0] = 1 / np.sqrt(6)

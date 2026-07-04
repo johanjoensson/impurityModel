@@ -20,6 +20,7 @@ from mpi4py import MPI
 from impurityModel.ed import product_state_representation as psr
 from impurityModel.ed.average import thermal_average_scale_indep
 from impurityModel.ed.ManyBodyUtils import ManyBodyOperator, ManyBodyState
+from impurityModel.ed.basis_transcription import build_density_matrices
 
 
 def get_effective_restrictions(basis) -> dict[frozenset[int], tuple[int, int]]:
@@ -297,8 +298,8 @@ def build_excited_restrictions(
                 impurity_orbitals, valence_baths[i], conduction_baths[i]
             ):
                 if psis is not None:
-                    val_rhos = basis.build_density_matrices(psis, val_orb_block, val_orb_block)
-                    con_rhos = basis.build_density_matrices(psis, con_orb_block, con_orb_block)
+                    val_rhos = build_density_matrices(basis, psis, val_orb_block, val_orb_block)
+                    con_rhos = build_density_matrices(basis, psis, con_orb_block, con_orb_block)
                     valence_occupations = thermal_average_scale_indep(
                         es, np.diagonal(val_rhos.real, axis1=1, axis2=2), basis.tau
                     )
