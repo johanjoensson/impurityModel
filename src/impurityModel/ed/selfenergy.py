@@ -394,9 +394,10 @@ def fixed_occupation_dc(
     are limited by the bath. The many-body basis is expanded once, with the
     guess double counting.
 
+    Parameters other than the following match :func:`fixed_peak_dc`.
+
     Parameters
     ----------
-    Same as :func:`fixed_peak_dc`, except:
     N0 : dict
         Nominal impurity occupation used to build the many-body basis; use
         the integer occupation closest to the requested one.

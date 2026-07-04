@@ -7,9 +7,9 @@ def calc_density_matrix(psi: ManyBodyState, orbital_indices: list[int]):
     r"""
     Compute the single-particle density matrix for a many-body state.
 
-    rho[i, j] = <psi| c_{orb_j}^dagger c_{orb_i} |psi>
+    ``rho[i, j] = <psi| c_{orb_j}^dagger c_{orb_i} |psi>``
 
-    Uses the identity rho[i, j] = <phi_j | phi_i> where |phi_k> = c_{orb_k} |psi>,
+    Uses the identity ``rho[i, j] = <phi_j | phi_i>`` where ``|phi_k> = c_{orb_k} |psi>``,
     reducing the number of operator applications from n_orb^2 to n_orb.
     The Hermitian symmetry rho[j, i] = conj(rho[i, j]) further halves the
     number of inner products required.

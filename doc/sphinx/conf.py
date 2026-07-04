@@ -7,14 +7,14 @@
 #
 import sys
 
-sys.path.insert(0, "../../")
+sys.path.insert(0, "../../src")
 
 
 # -- Project information -----------------------------------------------------
 
 project = "impurityModel"
-copyright = "2020, Johan Schott"  # noqa: A001
-author = "Johan Schott"
+copyright = "2020-2026, Johan Schott, Johan Jönsson"  # noqa: A001
+author = "Johan Schott, Johan Jönsson"
 
 
 # -- General configuration ---------------------------------------------------
@@ -26,7 +26,12 @@ extensions = [
     "sphinx.ext.napoleon",
     "sphinx.ext.autodoc",
     "sphinx_autodoc_typehints",
+    "myst_parser",
 ]
+
+# Optional external packages used only by the build_h0 script (the `rspt` extra
+# and the local pyRSPthon project); mock them so autodoc can import the module.
+autodoc_mock_imports = ["rspt2spectra", "pyRSPthon"]
 
 source_suffix = [".rst", ".md"]
 
@@ -36,7 +41,8 @@ templates_path = ["_templates"]
 # List of patterns, relative to source directory, that match files and
 # directories to ignore when looking for source files.
 # This pattern also affects html_static_path and html_extra_path.
-exclude_patterns = ["sphinx/generated_doc", "README.md", "Thumbs.db", ".DS_Store", ".pytest_cache"]
+# "plans" holds internal working plans/design notes, not manual content.
+exclude_patterns = ["sphinx/generated_doc", "plans", "README.md", "Thumbs.db", ".DS_Store", ".pytest_cache"]
 
 
 # -- Options for HTML output -------------------------------------------------

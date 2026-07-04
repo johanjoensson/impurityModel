@@ -898,10 +898,11 @@ def inner_multi(list states_a, list states_b):
 
 def add_scaled_multi(list states_target, list states_source, complex[:, :] coeffs):
     """
-    Add a scaled sum of states_source to each state in states_target.
-    For each j in range(len(states_target)):
-        for i in range(len(states_source)):
-            states_target[j] += coeffs[i, j] * states_source[i]
+    Add a scaled sum of states_source to each state in states_target::
+
+        for each j in range(len(states_target)):
+            for i in range(len(states_source)):
+                states_target[j] += coeffs[i, j] * states_source[i]
     """
     cdef int n_target = len(states_target)
     cdef int n_source = len(states_source)

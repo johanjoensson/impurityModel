@@ -194,16 +194,16 @@ def build_sparse_matrix(basis, op: ManyBodyOperator):
 def build_density_matrices(basis, psis, orbital_indices_left=None, orbital_indices_right=None):
     r"""Compute single-particle density matrices for a list of many-body states.
 
-    rho[n, i, j] = <psi_n| c_{orb_j}^dagger c_{orb_i} |psi_n>
+    ``rho[n, i, j] = <psi_n| c_{orb_j}^dagger c_{orb_i} |psi_n>``
 
-    For the square case (orbital_indices_left == orbital_indices_right) the
-    identity rho[i, j] = <phi_j | phi_i>  (where |phi_k> = c_{orb_k}|psi>)
+    For the square case (``orbital_indices_left == orbital_indices_right``) the
+    identity ``rho[i, j] = <phi_j | phi_i>`` (where ``|phi_k> = c_{orb_k}|psi>``)
     is exploited, cutting operator applications from O(n^2) to O(n) and
     halving inner products via Hermitian symmetry.
 
     For the general rectangular case we also exploit this decomposition
-    rho[i, j] = <chi_j | phi_i> (where |chi_k> = c_{orb_k}|psi> and
-    |phi_k> = c_{orb_k}|psi>), reducing operator applications to O(n).
+    ``rho[i, j] = <chi_j | phi_i>`` (where ``|chi_k> = c_{orb_k}|psi>`` and
+    ``|phi_k> = c_{orb_k}|psi>``), reducing operator applications to O(n).
     """
     if orbital_indices_left is None:
         orbital_indices_left = list(range(basis.num_spin_orbitals))

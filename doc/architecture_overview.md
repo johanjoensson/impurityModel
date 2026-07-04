@@ -1,27 +1,30 @@
 # ImpurityModel Architecture Overview
 
-This document provides an overview of the architecture of the `impurityModel` codebase, detailing the roles of the Cython extension classes, the Python classes, and the various routines.
+This document describes the architecture of the `impurityModel` codebase: the C++/Cython
+kernels, the Python module layering, and the execution flow of a calculation.
 
 ## Cython Extensions (`src/cython/`)
 
-The core of the performance-critical operations in `impurityModel` is implemented in C++ and exposed to Python via Cython. This allows for high-performance manipulation of quantum many-body states and operators.
+The performance-critical operations are implemented in C++ and exposed to Python via
+Cython. This allows high-performance manipulation of quantum many-body states and
+operators.
 
-### Key Classes:
+### Key Classes
 1. **`SlaterDeterminant`**
    - **Role:** Represents a many-body Slater determinant using 64-bit integer chunks to track spin-orbital occupations.
-   - **Details:** This class wraps `std::vector<uint64_t>`. It uses bit manipulation to compactly represent fermion occupation numbers, allowing for very fast operations like applying creation/annihilation operators and comparing basis states.
+   - **Details:** Wraps `std::vector<uint64_t>`. Bit manipulation compactly represents fermion occupation numbers, allowing very fast application of creation/annihilation operators and comparison of basis states.
 
 2. **`ManyBodyState`**
    - **Role:** Represents a quantum many-body state as a superposition of Slater determinants.
-   - **Details:** Wraps a custom C++ `flat_map<SlaterDeterminant, std::complex<double>>`. It acts essentially as a highly-optimized dictionary mapping basis states (Slater determinants) to their complex probability amplitudes. It implements vectorized operations like addition, scalar multiplication, and inner products.
+   - **Details:** Wraps a custom C++ `flat_map<SlaterDeterminant, std::complex<double>>` — essentially a highly optimized dictionary mapping basis states to complex amplitudes, with vectorized addition, scalar multiplication, and inner products.
 
 3. **`ManyBodyOperator`**
-   - **Role:** Represents a quantum many-body operator composed of creation and annihilation sequences with corresponding amplitudes.
-   - **Details:** Maps tuples of integers representing creation/annihilation operators (e.g., $c^\dagger_i c_j$) to complex amplitudes. It provides a `__call__` method to apply the operator to a `ManyBodyState`, returning a new `ManyBodyState`. It's highly optimized in C++ to compute these sparse matrix-vector products quickly.
+   - **Role:** Represents a many-body operator as creation/annihilation sequences with amplitudes.
+   - **Details:** Maps tuples of integer-indexed creation/annihilation operators (e.g. $c^\dagger_i c_j$) to complex amplitudes. Its `__call__` applies the operator to a `ManyBodyState`, returning a new `ManyBodyState`; the sparse operator-state product is heavily optimized in C++.
 
 4. **MPI Utilities**
-   - **Role:** Facilitate efficient parallelization across nodes.
-   - **Details:** Functions like `pack_determinants_cy` and `unpack_psis_cy` serialize and deserialize `ManyBodyState` objects into contiguous NumPy arrays (`uint64`, `double`), allowing fast communication via `mpi4py`.
+   - **Role:** Efficient parallelization across ranks.
+   - **Details:** Functions like `pack_determinants_cy` and `pack_psis_fused_cy` serialize `ManyBodyState` objects into contiguous NumPy arrays for fast communication via `mpi4py`. Determinants are hash-distributed: each Slater determinant is owned by rank `hash(sd) % size`, and no rank ever holds a full state vector.
 
 ### Block Lanczos kernels: which one to use
 
@@ -46,47 +49,90 @@ Rule of thumb: **array kernel for small/dense, BLAS-friendly sectors; sparse ker
 when the matrix cannot be formed.** Both are driven through the same `Reort` modes and
 the same TRLM/IRLM drivers, so switching is a matter of the input type.
 
+The IRLM/TRLM restart logic lives inside `BlockLanczos.pyx` (`_irlm_core`,
+`_trlm_core`); the shared EA16 numerics (residual norms, acceptance tolerances,
+restart compression, locked-overlap recurrence) live in the Python module
+`ed/ea16.py`, which both Cython kernels import at runtime. `ed/irlm.py` and
+`ed/trlm.py` are thin re-export wrappers around the compiled entry points.
+
 ## Python Codebase (`src/impurityModel/ed/`)
 
-The Python codebase builds upon the Cython extensions to implement exact diagonalization (ED) algorithms, solvers, and physics-specific logic.
+The Python modules are layered; a module only imports from layers below it, and the
+CLIs sit strictly on top. **Physics/operator-algebra modules never import solvers.**
 
-### Key Modules and Classes:
-1. **State Containers (`manybody_state_containers.py`)**
-   - **Role:** Higher-level abstractions for state vectors.
-   - **Details:** Defines classes that wrap `ManyBodyState` objects to interface seamlessly with iterative eigensolvers (like SciPy's ARPACK or custom Lanczos solvers). They handle block structure logic, allowing the Hamiltonian to be diagonalized block-by-block.
+```
+Layer 0: average, utils, product_state_representation, op_parser, mpi_comm,
+         ManyBodyUtils (Cython)
+Layer 1: operator_algebra
+Layer 2: atomic_physics, eigensolvers, symmetries, block_structure
+Layer 3: observables, spin_pairs
+Layer 4: manybody_basis (+ basis_generation, basis_restrictions,
+         basis_transcription, basis_split)
+Layer 5: greens_function, spectra, cg, cipsi_solver, groundstate, hartree_fock,
+         hamiltonian_io, gf_diagnostics, gs_statistics
+Layer 6: CLIs: get_spectra, selfenergy
+```
 
-2. **Basis and Block Structure (`manybody_basis.py`, `block_structure.py`)**
-   - **Role:** Define the Hilbert space and exploit symmetries.
-   - **Details:** `manybody_basis.py` manages the generation of the Fock space basis. `block_structure.py` implements logic to partition the basis into non-interacting blocks (e.g., by particle number or $S_z$ sectors, or whatever symmetries it can find) to reduce the size of the matrices that need to be diagonalized.
+### Foundations (Layer 0–2)
+- **`average.py`** — thermal averaging (`thermal_average`, `thermal_average_scale_indep`, `k_B`).
+- **`utils.py`** — small numerics/printing helpers (`rotate_matrix`, `matrix_print`, …).
+- **`product_state_representation.py`** — conversions between bit/bytes/tuple/string encodings of product states.
+- **`op_parser.py`** — parsing of operator files for the CLIs.
+- **`mpi_comm.py`** — the MPI communication primitives: sparse graph-alltoall of determinants and states, chunked broadcast/allgather of dicts, task partitioning (`get_job_tasks`).
+- **`operator_algebra.py`** — algebra on second-quantized operator dicts (`addOps`, `daggerOp`, `combineOp`, …) and the `(l, s, m)` label ↔ flat-index conversions (`c2i`, `i2c`).
+- **`atomic_physics.py`** — single-shell atomic physics: Slater–Condon Coulomb integrals (`getU*`), spin-orbit coupling (`getSOCop`), Zeeman field (`gethHfieldop`), spherical↔cubic transforms, and the MLFT double-counting correction (`dc_MLFT`).
+- **`eigensolvers.py`** — eigensolver drivers for the low-energy spectrum: dense (`numpy.linalg.eigh`), ARPACK (`scipy.sparse.linalg.eigsh`), and the block-Lanczos TRLM path, behind the `eigensystem` driver and the MPI-aware `HermitianOperator` wrapper.
+- **`symmetries.py`** — automated symmetry discovery for second-quantized Hamiltonians: tensor extraction, conserved-charge classification, symmetry-adapted rotations, restriction widening, Hamiltonian rotation.
+- **`block_structure.py`** — the `BlockStructure` type: detection of identical/transposed/particle-hole-related orbital blocks and matrix↔block conversions.
 
-3. **Eigensolvers (`lanczos.py`, `finite.py`, `cipsi_solver.py`, `trlm.py`, `cg.py`)**
-   - **Role:** Find the ground state and excited states.
-   - **Details:**
-     - `finite.py`: Contains driver routines `eigensystem` and `dense_eigensystem`. Uses `scipy.sparse.linalg` (using `scipy.sparse.linalg.eigsh`) and dense matrix diagonalization (using `scipy.linalg.eigsh`).
-     - `lanczos.py`: Implement the (Block) Lanczos algorithm. This is the workhorse of this repository, this is used in the non-`scipy` eigensolvers, in generating the interacting Greens functions for calculating spectra and self-energies.
-     - `trlm.py`: Thick-Restart Lanczos Method for sparse symmetric/Hermitian matrices, in theory an efficient way to find extreme eigenvalues of large systems. This does not currently work correctly, so the code falls back to the finit.py implementations.
-     - `irlm.py`: Implicitly Restarted Lanczos Method for sparse symmetric/Hermitian matrices, in theory an efficient way to find extreme eigenvalues of large systems. This does not currently work correctly, so the code falls back to the finit.py implementations.
-     - `cipsi_solver.py`: Implements Configuration Interaction using a Perturbative Selection Iteratively (CIPSI) to selectively expand the active Hilbert space. Used for finding the ground state in an efficient manner.
-     - `cg.py`: Implements a Conjugate Gradient solver for iterative numerical solutions.Used e.g. when calculating the RIXS spectra.
+### Observables (Layer 3)
+- **`observables.py`** — occupations and angular-momentum expectation values from single-particle density matrices in the spherical basis, many-body spin/orbital/Casimir operator builders, and (thermally averaged) expectation-value reporting for degenerate manifolds.
+- **`spin_pairs.py`** — derivation of the `(down, up)` spin-orbital pairings of impurity and bath consistent with a given one-body Hamiltonian (used for spin-flip basis completion and weighted restrictions).
 
-4. **Spectra and Green's Functions (`greens_function.py`, `spectra.py`, `get_spectra.py`, `selfenergy.py`)**
-   - **Role:** Calculate observable physical quantities.
-   - **Details:** After finding the ground state, these modules compute dynamical properties like the single-particle Green's function, density of states, self-energy (using Dyson's equation logic), or X-ray absorption spectra (XAS) by applying relevant operators to the ground state and computing continued fractions or using the Krylov space.
+### The many-body basis (Layer 4)
+- **`manybody_basis.py`** — the `Basis` class: the distributed set of Slater determinants and its MPI bookkeeping. Storage/lookup (rank-local sorted determinant list, state → global-index dict, hash-routed distributed lookups), `redistribute_psis`, operator-driven `expand`, and lifecycle (`clone`, `copy`, `clear`, `free_comm`).
+- **`basis_generation.py`** — pure enumeration of the initial determinant basis from occupation windows, and spin-flip completion of determinant sets. No MPI.
+- **`basis_restrictions.py`** — occupation-restriction construction: effective (observed) restrictions of the current basis, connectivity-derived ground-state restrictions, and widened restrictions for excited/spectral sectors. Contains collectives; call from all ranks.
+- **`basis_transcription.py`** — transcription between the distributed basis and dense/sparse linear algebra: wavefunction vectors (`build_vector`, `build_state`, …), operator matrices (`build_sparse_matrix`, `build_dense_matrix`), density matrices (`build_density_matrices`).
+- **`basis_split.py`** — adaptive splitting of a `Basis` over MPI colors (`split_basis_and_redistribute_psi`) with the pure packing math in `_pack_units`; the distribution backbone of `greens_function.run_units_distributed`.
 
-5. **Impurity Models and Chains (`edchain.py`)**
-   - **Role:** Construct specific Hamiltonian models (e.g., Anderson Impurity Model).
-   - **Details:** Defines bath geometries. Contains logic for transforming models from star geometries into various chain geometries (a single (Wilson) chain, double chains for nominally occupied/unoccupied bath states, or a linked double chain geometry) in order to hopefully reduce the size of the manybody basis required in the calculations.
+### Solvers and spectra (Layer 5)
+- **`groundstate.py`** — the ground-state driver `calc_gs`: builds the variational basis (CIPSI + Hartree-Fock occupation seeding), solves for the low-energy states, and reports observables.
+- **`cipsi_solver.py`** — selected-CI (CIPSI) iterative basis expansion.
+- **`hartree_fock.py`** — mean-field occupation seeding for the basis generation.
+- **`greens_function.py`** — interacting Green's functions via block Lanczos continued fractions; `run_units_distributed` is the one distribution primitive shared by every GF driver (self-energy and spectra).
+- **`spectra.py`** — XAS/XPS/PS/NIXS/RIXS spectra drivers on top of `greens_function`.
+- **`cg.py`** — block BiCGSTAB solver (used by the RIXS tensor path).
+- **`gf_diagnostics.py`** — convergence/consistency diagnostics for computed Green's functions.
+- **`gs_statistics.py`** — ground-state statistics computation, printing, and saving.
+- **`hamiltonian_io.py`** — construction and file I/O of the impurity Hamiltonian: readers for pickled/`.dat`/`.json` h0 formats and the builders combining h0 with SOC, magnetic field, Coulomb, and double counting.
 
-## Test Suite Architecture (`src/impurityModel/test/`)
+### CLIs (Layer 6)
+- **`get_spectra.py`** (`python -m impurityModel.ed.get_spectra`) — find the lowest eigenstates, then calculate spectra (PS, XPS, XAS, NIXS, RIXS).
+- **`selfenergy.py`** (`python -m impurityModel.ed.selfenergy`) — impurity self-energy calculation (for DMFT-style workflows).
 
-The testing framework utilizes `pytest`, `pytest-cov`, and `pytest-mpi` to ensure the codebase's mathematical and functional integrity across different platforms and compilation environments.
-- **Coverage:** High global coverage (>80%) across standard ED solvers and physics quantities (Spectra, Self Energy, Green's Functions).
-- **Parallel Testing:** Handled by utilizing `@pytest.mark.mpi` for all functions that interact via `MPI.COMM_WORLD`, ensuring isolation and preventing test-collection deadlocks when run under `mpirun`.
-- **Mocks:** Broad use of dependency mocking (e.g., mocking ED eigenvalue returns) to verify integration logic for derived quantities like `get_sigma` without solving full dense eigenproblems in standard testing.
+### Bath construction (used by the `build_h0` script)
+- **`edchain.py`** — transformation of star-geometry baths into chain geometries (Wilson chain, double chains, linked double chains).
+- **`natural_orbitals.py`** — hybridization fitting in a natural-orbital basis.
+- **`bath_fitting.py`** — hybridization-function bath fitting helpers.
+- **`scripts/build_h0.py`** (console script `build_h0`) — builds a non-interacting Hamiltonian from RSPt output; requires the `rspt` extra (`pip install -e '.[rspt]'`).
 
-## Overview of Execution Flow
-1. **Define Model:** A user defines an impurity model (orbitals, hoppings, interactions).
-2. **Construct Basis:** The codebase generates the relevant `SlaterDeterminant` basis states and splits them into decoupled blocks.
-3. **Build Hamiltonian:** `ManyBodyOperator` objects are instantiated for the Hamiltonian.
-4. **Diagonalization:** A state vector is initialized, and iterative solvers repeatedly apply the Hamiltonian operator (`H(psi)`) to find the ground state (`ManyBodyState`).
-5. **Observables:** Physical observables and spectral functions are calculated using the ground state and relevant excitation operators.
+## Test Suite (`src/impurityModel/test/`)
+
+- **Framework:** `pytest` + `pytest-mpi`. Serial run: `pytest`. MPI run: `mpiexec -n 2 python -m pytest --with-mpi` (CI runs serial, 1 rank, and 2 ranks).
+- **MPI tests** are marked `@pytest.mark.mpi`; `conftest.py` redirects non-root-rank output to `.pytest_mpi_rank*.out`, adds a per-test watchdog, and synchronizes teardown.
+- **Benchmarks** are marked `benchmark` and skipped by default; run with `pytest -m benchmark`.
+
+## Execution Flow
+1. **Define model:** the non-interacting Hamiltonian is read/built (`hamiltonian_io`), Coulomb/SOC/field terms added (`atomic_physics`, `operator_algebra`).
+2. **Construct basis:** `Basis` enumerates determinants from the occupation windows (`basis_generation`), optionally seeded by Hartree–Fock occupations and grown by CIPSI.
+3. **Diagonalize:** iterative solvers repeatedly apply the Hamiltonian (`ManyBodyOperator` on `ManyBodyState`) through the Lanczos kernels to find the low-energy states.
+4. **Observables:** density matrices, occupations, and angular-momentum/Casimir expectation values are computed (`observables`) and reported.
+5. **Spectra / self-energy:** excitation operators are applied to the eigenstates and Green's functions are built from block-Lanczos continued fractions, distributed over MPI colors via `run_units_distributed`.
+
+## MPI ground rules
+
+These invariants have bitten before; hold them when changing code:
+- Never gate an MPI collective on rank-local state (e.g. a `verbose` flag that differs per rank).
+- No full state-vector gathers: determinants are hash-distributed, one owner per determinant. Observables use apply-local → redistribute → local-inner → `Allreduce`.
+- `MPI_Comm_free` is collective: free communicators/intercomms at synchronized points (see `basis_split.py`), never from the garbage collector.

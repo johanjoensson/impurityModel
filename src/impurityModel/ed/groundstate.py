@@ -86,7 +86,7 @@ def calc_energy(
     truncation_threshold : int
         Maximum basis size allowed during initialization and expansion.
     slaterWeightMin : float
-        Minimum weight (|amplitude|^2) below which Slater determinants are pruned.
+        Minimum weight (``|amplitude|^2``) below which Slater determinants are pruned.
 
     Returns
     -------

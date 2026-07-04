@@ -133,7 +133,7 @@ def get_Lplus_from_rho_spherical(rho: np.ndarray, l: int) -> complex:
 
 
 def get_Sminus_from_rho_spherical(rho: np.ndarray, l: int, s: float = 0.5) -> complex:
-    """Calculate the expectation value of S_- from the density matrix in spherical basis.
+    """Calculate the expectation value of ``S_-`` from the density matrix in spherical basis.
 
     Parameters
     ----------
@@ -147,7 +147,7 @@ def get_Sminus_from_rho_spherical(rho: np.ndarray, l: int, s: float = 0.5) -> co
     Returns
     -------
     complex
-        The expectation value <S_->.
+        The expectation value ``<S_->``.
     """
     # S+ |s, ms> = sqrt(s*(s+1) - ms*(ms+1))|s, ms+1>
     ssp1 = s * (s + 1)
@@ -170,7 +170,7 @@ def get_Sminus_from_rho_spherical(rho: np.ndarray, l: int, s: float = 0.5) -> co
 
 
 def get_Lminus_from_rho_spherical(rho: np.ndarray, l: int) -> complex:
-    """Calculate the expectation value of L_- from the density matrix in spherical basis.
+    """Calculate the expectation value of ``L_-`` from the density matrix in spherical basis.
 
     Parameters
     ----------
@@ -182,7 +182,7 @@ def get_Lminus_from_rho_spherical(rho: np.ndarray, l: int) -> complex:
     Returns
     -------
     complex
-        The expectation value <L_->.
+        The expectation value ``<L_->``.
     """
     # L- |l, ml> = sqrt(l*(l+1) - ml*(ml-1))|l, ml-1>
     llp1 = l * (l + 1)

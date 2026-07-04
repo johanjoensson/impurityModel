@@ -1113,7 +1113,8 @@ def getSpectra_tensor(
         Each element is a length-``len(component_ops)`` (complex) polarization vector.
     reduction : ComponentReduction, optional
         Point-group reduction of the components. ``None`` computes the full tensor.
-    The remaining parameters match :func:`getSpectra_new`.
+    **kwargs
+        The remaining parameters match :func:`getSpectra_new`.
 
     Returns
     -------
@@ -1568,7 +1569,8 @@ def getRIXSmap_tensor(
     epsilonsIn, epsilonsOut : sequence of array_like
         In/out polarization vectors, each of length ``len(in_component_ops)`` /
         ``len(out_component_ops)`` (real or complex).
-    The remaining parameters match :func:`getRIXSmap_new`.
+    **kwargs
+        The remaining parameters match :func:`getRIXSmap_new`.
 
     Returns
     -------

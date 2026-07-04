@@ -9,18 +9,6 @@
 Calculate many-body states of an impurity Anderson model and a various spectra, e.g. photoemission spectroscopy (PS), x-ray photoemission spectroscopy (XPS), x-ray absorption spectroscopy (XAS), non-resonant inelastic x-ray scattering (NIXS), and resonant inelastic x-ray scattering (RIXS), using the [Lanczos algorithm](https://en.wikipedia.org/wiki/Lanczos_algorithm).
 
 
-<figure>
-<div class="row">
-  <div class="column">
-  <img src="impurityModel/test/referenceOutput/Ni_NiO_50bath/ps.png" alt="Photoemission (PS)" width="150"/>
-  <img src="impurityModel/test/referenceOutput/Ni_NiO_50bath/xps.png" alt="X-ray photoemission (XPS)" width="150"/>
-  <img src="impurityModel/test/referenceOutput/Ni_NiO_50bath/xas.png" alt="X-ray absorption spectroscopy (XAS)" width="150"/>
-  <img src="impurityModel/test/referenceOutput/Ni_NiO_50bath/nixs.png" alt="Non-resonant inelastic x-ray scattering (NIXS)" width="150"/>
-  <img src="impurityModel/test/referenceOutput/Ni_NiO_50bath/rixs.png" alt="Resonant inelastic x-ray scattering (RIXS)" width="150"/>  </div>
-</div>
-<figcaption>Spectra of NiO. Simulated using 50 bath orbitals coupled to the Ni 3d orbitals.</figcaption>
-</figure>
-
 ## Getting started
 
 ### Installation
@@ -34,6 +22,14 @@ If you are a developer, you can do an editable installation
 pip install -e .
 ```
 this way you can make changes to the code, and they will immediately be included in your Python environment.
+
+Optional extras:
+```bash
+pip install -e '.[dev]'   # test + lint toolchain (pytest, pytest-mpi, black, ruff, mypy, cython-lint)
+pip install -e '.[doc]'   # Sphinx documentation toolchain
+pip install -e '.[rspt]'  # rspt2spectra, needed only by the build_h0 script
+```
+The `build_h0` console script additionally imports the separate `pyRSPthon` project, which is not on PyPI; install it manually if you use `build_h0`.
 
 You can also use pip to install directly from github, without cloning the repository (and without being able to edit the code)
 ```bash
@@ -72,9 +68,12 @@ will try to use the `std::flat_map` container (by default it uses the boost flat
 For more detailed information of the code architecture please see [the architecture overiew](doc/architecture_overview.md)
 
 ### Testing
-The code comes with a testsuite, to ensure that everything is running properly. To run the serial tests the command is simply `pytest`.
-The code also contains tests to verify that the MPI parallelization is working correctly, to run the MPI tests, as well as the serial ones
-use the command `mpirun -n 3 pytest --with-mpi` (please replace 3 with however many MPI ranks you wan to use, the tests will take longer the more ranks you use).
+The code comes with a test suite, to ensure that everything is running properly. To run the serial tests the command is simply `pytest`.
+The code also contains tests that verify that the MPI parallelization is working correctly. To run the MPI tests, as well as the serial ones, use
+```bash
+mpiexec -n 2 python -m pytest --with-mpi
+```
+(replace 2 with however many MPI ranks you want to use; CI runs the suite serially, with 1 rank, and with 2 ranks).
 
 Performance benchmarks (timing/profiling, not correctness) are marked `benchmark` and skipped by default. Run them explicitly with `pytest -m benchmark`. The self-energy benchmark additionally requires `RUN_SELFENERGY_BENCH=1` (and accepts `SELFENERGY_BENCH_*` env vars to size the workload).
 
@@ -97,11 +96,12 @@ path/to/folder/impurityModel/scripts/run_Ni_NiO_Xbath.sh 20 3
 ```
 These examples will read an non-interacting Hamiltonian from file.
 
-A simpler non-interacting Hamiltonian can instead be constructed by crystal-field parameters.
+A simpler non-interacting Hamiltonian can instead be constructed from crystal-field parameters.
 This is done for NiO by typing:
 ```bash
-path/to/folder/impurityModel/scripts/run_Ni_NiO_CFparam.sh
+path/to/folder/impurityModel/scripts/run_Ni_NiO_CF.sh
 ```
+(similar crystal-field examples exist for MnO, FeO and CoO in the same folder).
 #### Output files
 The input parameters to the simulation are saved in `.npz` format.
 Calculated spectra are saved to the file `spectra.h5`.
@@ -123,7 +123,7 @@ path/to/folder/impurityModel/impurityModel/plotScripts/plotRIXS.plt
 ### Documentation
 The documentation of this package is found in the directory `doc`.
 
-To update the manual type:
+To build the manual, install the documentation toolchain (`pip install -e '.[doc]'`) and type:
 
 ```bash
 make -s -C doc/sphinx clean

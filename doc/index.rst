@@ -1,7 +1,7 @@
 Welcome to impurityModel's documentation!
 =========================================
 
-:Web Site:     https://github.com/JohanSchott/impurityModel
+:Web Site:     https://github.com/johanjoensson/impurityModel
 :Date:         |today|
 
 .. toctree::
@@ -9,6 +9,7 @@ Welcome to impurityModel's documentation!
    :caption: Contents:
 
    intro
+   architecture_overview
    sphinx/_doc_build/impurityModel
 
 

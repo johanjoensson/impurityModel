@@ -301,21 +301,17 @@ class Basis:
 
     def expand(self, op, slaterWeightMin=0, max_it=5):
         """
-        Expand the basis by repeatedly applying an operator
-        to the basis states, thus generating new basis states.
-        The basis will probably explode!
+        Expand the basis in place by repeatedly applying an operator to the
+        basis states, thus generating new basis states.
 
-        Parameters:
-        ===========
-        op: ManyBodyOperator - The operator to apply, over and over again.
-        slaterWeightMin: float - Minimum weight for slater determinants to be kept (default: 0).
-        max_it: int - Apply the operator at most this number of times (default: 5)
-
-        Returns:
-        ========
-        op_dict: dict - Dictionary of slater determinants as keys and ManyBodyStates as values.
-                        Applying the operator to a key results in the ManyBodyState mapped to
-                        by that key.
+        Parameters
+        ----------
+        op : ManyBodyOperator or dict
+            The operator to apply, over and over again.
+        slaterWeightMin : float, default 0
+            Minimum amplitude for generated Slater determinants to be kept.
+        max_it : int, default 5
+            Apply the operator at most this number of times.
         """
         if isinstance(op, dict):
             op = ManyBodyOperator(op)
