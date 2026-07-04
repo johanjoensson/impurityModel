@@ -177,7 +177,7 @@ class CIPSISolver:
                     max_subspace_blocks=max_subspace_blocks,
                     tol=de2_min / 10,
                     max_restarts=10,
-                    verbose=self.basis.verbose,
+                    verbose=False,
                     slaterWeightMin=slaterWeightMin,
                     reort=reort,
                 )

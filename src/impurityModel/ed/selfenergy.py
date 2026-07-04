@@ -600,11 +600,6 @@ def calc_selfenergy(
     """
     # MPI variables
     rank = comm.rank if comm is not None else 0
-    # Confine this section's logging to the master rank: silencing the others keeps the
-    # output readable under MPI (the verbose flags below are only forwarded to printing,
-    # never to collective operations).
-    if rank != 0:
-        verbosity = 0
 
     def log(msg="", *, level=1, **kwargs):
         if verbosity >= level:
@@ -720,7 +715,7 @@ def calc_selfenergy(
             basis_information,
             block_structure,
             rot_to_spherical,
-            verbosity >= 1,
+            verbosity >= 2,
             slaterWeightMin=slaterWeightMin,
             num_wanted=num_wanted,
         )
