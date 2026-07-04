@@ -17,7 +17,7 @@ def impurity_spin_pairs(impurity_orbitals):
 
     Within each angular-momentum partition of ``impurity_orbitals`` the first half
     of the spin-orbitals are spin-down and the second half spin-up (the basis
-    layout, matching ``Basis._generate_spin_flipped_determinants``), so orbital
+    layout, matching ``basis_generation.spin_flipped_determinants``), so orbital
     ``k`` pairs with orbital ``k + n//2``.
 
     Parameters
