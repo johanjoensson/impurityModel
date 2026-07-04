@@ -22,3 +22,10 @@ build/
 # VIM files
 .*~
 .*.swp
+
+# Run/debug droppings from local calculations
+debug/
+h0.txt
+deflation_debug.txt
+ground_state_statistics.json
+*-realaxis-bench.dat

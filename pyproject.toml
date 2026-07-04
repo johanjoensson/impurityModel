@@ -1,7 +1,7 @@
 [project]
 name = "impurityModel"
 description = "Package for solving the Anderson impurity model."
-requires-python = ">=3.8"
+requires-python = ">=3.11"
 classifiers = [
     "Programming Language :: Python :: 3",
     "Operating System :: OS Independent",
@@ -11,27 +11,32 @@ license = "MIT"
 license-files = ["LICEN[CS]E*"]
 dependencies = [
 "bitarray",
-"black",
-"flake8",
-"flake8-bugbear",
-"flake8-comprehensions",
-"pep8-naming",
 "h5py",
 "matplotlib",
 "mpi4py",
 "numpy>2.0.0",
-"numpydoc",
-"pytest",
-"pytest-mpi",
-"sympy",
 "scipy",
-"sphinx",
-"sphinx-rtd-theme",
-"flake8-return",
-"pylint",
-"rspt2spectra @ git+https://github.com/johanjoensson/rspt2spectra.git"
+"sympy",
 ]
 dynamic = ["version"]
+
+[project.optional-dependencies]
+# The build_h0 console script reads RSPt output via rspt2spectra; install with
+# `pip install -e '.[rspt]'` if you need it.
+rspt = ["rspt2spectra @ git+https://github.com/johanjoensson/rspt2spectra.git"]
+dev = [
+    "black",
+    "cython-lint",
+    "mypy",
+    "pytest",
+    "pytest-mpi",
+    "ruff",
+]
+doc = [
+    "numpydoc",
+    "sphinx",
+    "sphinx-rtd-theme",
+]
 
 [project.urls]
 Homepage = "https://github.com/johanjoensson/impurityModel/"
