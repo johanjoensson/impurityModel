@@ -776,7 +776,21 @@ def impurity_symmetry_rotation(op, impurity_orbitals, n_orb=None, h0_matrix=None
     imp = sorted(impurity_orbitals)
     h_imp = h[np.ix_(imp, imp)]
     h_imp = 0.5 * (h_imp + h_imp.conj().T)  # symmetrise away round-off before eigh
-    _eigvals, u_imp = np.linalg.eigh(h_imp)
+
+    # Block-diagonalize h_imp first to prevent eigh from unnecessarily scrambling
+    # uncoupled degenerate orbitals (which densifies the Coulomb tensor).
+    import scipy.sparse as sp
+
+    mask = np.abs(h_imp) > 1e-10
+    n_components, labels = sp.csgraph.connected_components(mask, directed=False)
+
+    u_imp = np.zeros_like(h_imp, dtype=complex)
+    for comp in range(n_components):
+        idx = np.where(labels == comp)[0]
+        sub_h = h_imp[np.ix_(idx, idx)]
+        _, sub_u = np.linalg.eigh(sub_h)
+        u_imp[np.ix_(idx, idx)] = sub_u
+
     W = np.eye(n, dtype=complex)
     W[np.ix_(imp, imp)] = u_imp
     return W, u_imp

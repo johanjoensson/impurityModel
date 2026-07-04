@@ -28,9 +28,23 @@ def print_block_structure(block_structure):
     n_orb = sum(len(block) for block in block_structure.blocks)
     mat = np.empty((n_orb, n_orb), dtype=int)
     mat[:, :] = -1
+
+    # Map each block to its parent inequivalent block to reflect symmetry reduction
+    parent_map = {}
+    for inequiv in block_structure.inequivalent_blocks:
+        parent_map[inequiv] = inequiv
+        for b in block_structure.identical_blocks[inequiv]:
+            parent_map[b] = inequiv
+        for b in block_structure.transposed_blocks[inequiv]:
+            parent_map[b] = inequiv
+        for b in block_structure.particle_hole_blocks[inequiv]:
+            parent_map[b] = inequiv
+        for b in block_structure.particle_hole_transposed_blocks[inequiv]:
+            parent_map[b] = inequiv
+
     for block_i, orbs in enumerate(block_structure.blocks):
         idx = np.ix_([orb - orb_offset for orb in orbs], [orb - orb_offset for orb in orbs])
-        mat[idx] = block_i
+        mat[idx] = parent_map.get(block_i, block_i)
     print("\n".join(" ".join(f"{el:^3d}" if el != -1 else " + " for el in row) for row in mat))
 
 

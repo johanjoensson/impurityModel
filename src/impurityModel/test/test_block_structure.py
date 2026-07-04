@@ -82,7 +82,7 @@ def test_print_block_structure(capsys):
     print_block_structure(bs)
     captured = capsys.readouterr()
     assert "0   0   +   +" in captured.out
-    assert "+   +   1   1" in captured.out
+    assert "+   +   0   0" in captured.out
 
 
 def test_build_block_structure_G():

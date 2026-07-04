@@ -284,10 +284,12 @@ def main(
                         f"Rotated 3d shell into symmetry-adapted basis (fill {fill_ratio:.2f}x); "
                         f"{n_classes} inequivalent PES/IPS classes."
                     )
-            elif rank == 0:
-                print(
-                    f"Kept spherical basis (rotation would densify {fill_ratio:.2f}x > {spectra._MAX_ROTATION_FILL})."
-                )
+            else:
+                if rank == 0:
+                    print(
+                        f"Kept spherical basis (rotation would densify {fill_ratio:.2f}x > {spectra._MAX_ROTATION_FILL})."
+                    )
+                correlated_block_structure = impurity_block_structure(hOp, d_indices, h0_matrix=h_matrix)
     # Measure how many physical processes the Hamiltonian contains.
     if rank == 0:
         print(f"Hamiltonian contains {len(hOp)} terms.")
