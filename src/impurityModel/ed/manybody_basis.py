@@ -557,7 +557,7 @@ class Basis:
         send_to_ranks = np.empty((len(s)), dtype=int)
         send_to_ranks[:] = self.size
         for i, val in enumerate(s):
-            r = val.get_hash() % self.comm.size
+            r = val.routing_hash() % self.comm.size
             send_list[r].append(val)
             send_to_ranks[i] = r
 

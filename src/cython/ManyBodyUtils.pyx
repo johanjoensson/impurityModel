@@ -124,6 +124,9 @@ cdef class SlaterDeterminant:
     def get_hash(self):
         return self.s.hash()
 
+    def routing_hash(self):
+        return self.s.routing_hash()
+
     def copy(self, deep: bool = False):
         """
         Return a copy of the Slater determinant.

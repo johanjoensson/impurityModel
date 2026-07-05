@@ -29,7 +29,7 @@ void pack_determinants(
     // Determine unique states and their target ranks
     std::unordered_set<SlaterDeterminant<uint64_t>> unique_dets(dets.begin(), dets.end());
     for (const auto& det : unique_dets) {
-        int rank = det.hash() % comm_size;
+        int rank = det.routing_hash() % comm_size;
         rank_dets[rank].push_back(&det);
         send_counts[rank]++;
     }
@@ -96,7 +96,7 @@ void pack_psis(
         for (auto it = psi->begin(); it != psi->end(); ++it) {
             const auto& state = it->first;
             if (chunks_per_state == 0) chunks_per_state = state.size();
-            int rank = state.hash() % comm_size;
+            int rank = state.routing_hash() % comm_size;
             rank_entries[rank].push_back({&state, it->second, static_cast<int32_t>(pi)});
             send_counts[rank]++;
         }
@@ -176,7 +176,7 @@ void pack_psis_fused(
         if (!psi) continue;
         for (auto it = psi->begin(); it != psi->end(); ++it) {
             const auto& state = it->first;
-            int rank = state.hash() % comm_size;
+            int rank = state.routing_hash() % comm_size;
             rank_entries[rank].push_back({&state, it->second, static_cast<int32_t>(pi)});
             send_counts[rank]++;
         }

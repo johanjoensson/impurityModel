@@ -475,7 +475,7 @@ def test_graph_alltoall_psis_ring_exchange():
     # Actually, in the new implementation, graph_alltoall_psis internally hashes the state and routes it.
     # We can't easily force a state to go to `dest`. We just let it route.
     state = SlaterDeterminant.from_bytes((comm.rank + 1).to_bytes(8, "little"))
-    state.get_hash() % comm.size
+    state.routing_hash() % comm.size
 
     amp = complex(comm.rank + 1, 0)
     psis = [ManyBodyState({state: amp})]
@@ -489,7 +489,7 @@ def test_graph_alltoall_psis_ring_exchange():
         # Check that the state sent by each rank arrived at the correct destination
         for r in range(comm.size):
             s = SlaterDeterminant.from_bytes((r + 1).to_bytes(8, "little"))
-            expected_target = s.get_hash() % comm.size
+            expected_target = s.routing_hash() % comm.size
             expected_amp = complex(r + 1, 0)
             assert s in all_results[expected_target], f"State from {r} didn't reach {expected_target}"
             assert abs(all_results[expected_target][s] - expected_amp) < 1e-12

@@ -11,4 +11,5 @@ cdef extern from "SlaterDeterminant.h" nogil:
         # SlaterDeterminant(const SlaterDeterminant&)
         # SlaterDeterminant& operator=(const SlaterDeterminant&)
         size_t hash()
+        uint64_t routing_hash()
         string to_string()
