@@ -154,3 +154,80 @@ jobs:
         with:
           file: coverage.xml
           format: cobertura
+
+  docs:
+    # Build the Sphinx documentation. autodoc imports the package (only
+    # rspt2spectra/pyRSPthon are mocked in conf.py), so this needs the same
+    # full build environment as the test jobs: MPI, Boost and the compiled
+    # Cython/C++ extension. One default-compiler build is enough here — the
+    # matrix above already covers compiler variations.
+    runs-on: ubuntu-22.04
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+        with:
+          # Full history + tags so setuptools-scm can derive the real version
+          # instead of falling back to 0.0.0.
+          fetch-depth: 0
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Install system dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y mpich libmpich-dev
+
+      - name: Install Boost (headers)
+        uses: MarkusJx/install-boost@v2.4.5
+        id: install-boost
+        with:
+          boost_version: 1.83.0
+
+      - name: Install Python dependencies
+        run: |
+          python -m pip install --upgrade pip
+          # Build-time deps for the --no-build-isolation install below (see the
+          # test job for why each is needed).
+          pip install numpy scipy "setuptools>=77.0.3" setuptools-scm cython
+          # Build mpi4py from source so it links against the mpich installed above.
+          pip install --no-binary mpi4py mpi4py
+
+      - name: Build and install impurityModel with doc extras
+        run: |
+          # Default g++ and -std=c++17 (added by setup.py); BOOST_ROOT locates
+          # the Boost headers.
+          export BOOST_ROOT="${{ steps.install-boost.outputs.BOOST_ROOT }}"
+          pip install --no-build-isolation -e ".[doc]"
+
+      - name: Build HTML documentation
+        run: |
+          make -s -C doc/sphinx html
+
+      # Only pushes reach this (the workflow's push trigger is master-only);
+      # PR runs still build the docs above as a check but don't publish.
+      - name: Upload GitHub Pages artifact
+        if: github.event_name == 'push'
+        uses: actions/upload-pages-artifact@v3
+        with:
+          path: doc/sphinx/generated_doc/html
+
+  deploy-docs:
+    # Publish the docs built by the `docs` job to GitHub Pages. Requires the
+    # repository's Pages source to be set to "GitHub Actions"
+    # (Settings -> Pages -> Build and deployment).
+    if: github.event_name == 'push'
+    needs: docs
+    runs-on: ubuntu-latest
+    permissions:
+      pages: write      # deploy to Pages
+      id-token: write   # verify the deployment originates from this workflow
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - name: Deploy to GitHub Pages
+        id: deployment
+        uses: actions/deploy-pages@v4
