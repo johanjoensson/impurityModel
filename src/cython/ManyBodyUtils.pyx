@@ -339,13 +339,12 @@ cdef class ManyBodyState:
         """
         with nogil:
             self.v.truncate(max_size)
-            
     def max_norm2(self):
         """
         Return the maximum squared amplitude in the state.
         """
         return self.v.max_norm2()
-        
+
     def count_above(self, double cutoff2):
         """
         Count how many elements have a squared amplitude strictly greater than cutoff2.
@@ -391,7 +390,7 @@ def apply_global_truncation(ManyBodyState st, int max_size, object comm):
     """
     import math
     from mpi4py import MPI
-    
+
     if comm is None or comm.Get_size() == 1 or max_size <= 0:
         if max_size > 0:
             st.truncate(max_size)
@@ -407,7 +406,7 @@ def apply_global_truncation(ManyBodyState st, int max_size, object comm):
     cdef double low = 0.0
     cdef double mid
     cdef int global_count
-    
+
     # 45 iterations over [0, max_norm2] gives double precision
     for _ in range(45):
         mid = (low + high) * 0.5
