@@ -1375,8 +1375,8 @@ def test_eg_t2g_CIPSI_basis_expand():
     solver.expand(Hop)
 
     expected = build_states([b"\x80\x00", b"\x08\x00"])
-    assert all(state in expected for state in basis), f"{expected=} {list(basis)=}"
     assert all(state in basis for state in expected), f"{expected=} {list(basis)=}"
+    assert len(basis) == 6, f"Expected full multiplet of 6 states, got {len(basis)}: {list(basis)}"
 
 
 @pytest.mark.mpi
@@ -1420,8 +1420,8 @@ def test_eg_t2g_CIPSI_basis_expand_mpi():
     #        00000  00000  10000  00001
 
     expected = build_states([b"\x80\x00", b"\x08\x00"])
-    assert all(state in expected for state in basis), f"{expected=} {list(basis)=}"
     assert all(state in basis for state in expected), f"{expected=} {list(basis)=}"
+    assert len(basis) == 6, f"Expected full multiplet of 6 states, got {len(basis)}: {list(basis)}"
 
 
 @pytest.mark.mpi

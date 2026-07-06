@@ -88,17 +88,53 @@ class CIPSISolver:
         de2[mask] = np.square(np.abs(overlaps[mask])) / de[mask]
         return local_Djs, de2
 
-    def determine_new_Dj(self, e_ref, psi_ref, H, de2_min, slater_cutoff=0, return_Hpsi_ref=False):
+    def determine_new_Dj(self, e_ref, psi_ref, H, de2_min, slater_cutoff=0, return_Hpsi_ref=False, gen_ops=None):
         Hpsi_ref = [applyOp_test(H, psi_i, cutoff=slater_cutoff) for psi_i in psi_ref]
         Hpsi_ref = self.basis.redistribute_psis(Hpsi_ref)
         local_Djs, de2 = self._calc_de2(H, Hpsi_ref, e_ref)
         de2_mask = np.any(np.abs(de2) >= de2_min, axis=0)
         new_Dj = set(itertools.compress(local_Djs, de2_mask))
+
+        if gen_ops:
+            import random
+
+            unexplored_list = list(new_Dj)
+            chunk_size = 1000
+
+            while unexplored_list:
+                chunk = unexplored_list[:chunk_size]
+                unexplored_list = unexplored_list[chunk_size:]
+
+                # Use random superpositions to avoid destructive interference
+                chunk_state = ManyBodyState({state: random.random() + 1j * random.random() for state in chunk})
+
+                while chunk_state:
+                    next_chunk_state = ManyBodyState()
+                    for op in gen_ops:
+                        # Apply generator (cutoff=1e-12 to prune float noise)
+                        psi_op = applyOp_test(op, chunk_state, cutoff=1e-12)
+
+                        for state, amp in psi_op.items():
+                            if state not in new_Dj:
+                                new_Dj.add(state)
+                                next_chunk_state[state] = amp
+
+                    chunk_state = next_chunk_state
+
         if return_Hpsi_ref:
             return new_Dj, Hpsi_ref
         return new_Dj
 
-    def expand(self, H, de2_min=1e-10, dense_cutoff=1e3, slaterWeightMin=0, solver="trlm", reort=Reort.PARTIAL):
+    def expand(
+        self,
+        H,
+        de2_min=1e-10,
+        dense_cutoff=1e3,
+        slaterWeightMin=0,
+        solver="trlm",
+        reort=Reort.PARTIAL,
+        symmetry_generators=None,
+    ):
         if self.basis.restrictions is not None:
             H.set_restrictions(self.basis.restrictions)
         if self.basis.weighted_restrictions is not None:
@@ -108,6 +144,78 @@ class CIPSISolver:
 
         if isinstance(H, dict):
             H = ManyBodyOperator(H)
+
+        from impurityModel.ed.symmetries import (
+            extract_tensors,
+            discover_one_body_symmetries,
+            tensors_to_operator,
+        )
+
+        if symmetry_generators is None:
+            imp_orbs = []
+            if getattr(self.basis, "impurity_orbitals", None):
+                for orbs in self.basis.impurity_orbitals.values():
+                    for o in orbs:
+                        imp_orbs.extend(o)
+
+            h, _, _ = extract_tensors(H, two_body=False)
+
+            if imp_orbs:
+                imp = sorted(list(set(imp_orbs)))
+                h_imp = h[np.ix_(imp, imp)]
+                imp_generators = discover_one_body_symmetries(h_imp)
+
+                imp_map = {}
+                for group, imp_blocks in self.basis.impurity_orbitals.items():
+                    imp_blk = imp_blocks[0]
+                    for idx_in_grp, o in enumerate(imp_blk):
+                        imp_map[o] = (group, idx_in_grp)
+
+                generators = []
+                for g_imp in imp_generators:
+                    g_full = np.zeros_like(h)
+                    for i, oi in enumerate(imp):
+                        for j, oj in enumerate(imp):
+                            g_full[oi, oj] = g_imp[i, j]
+
+                    for bath_dict in self.basis.bath_states:
+                        if not bath_dict:
+                            continue
+                        n_bath = max([len(blks) for blks in bath_dict.values()], default=0)
+
+                        for k in range(n_bath):
+                            site_k_map = {}
+                            for i, o_imp in enumerate(imp):
+                                group, idx_in_grp = imp_map[o_imp]
+                                if group in bath_dict and k < len(bath_dict[group]):
+                                    if idx_in_grp < len(bath_dict[group][k]):
+                                        site_k_map[i] = bath_dict[group][k][idx_in_grp]
+
+                            for i in range(len(imp)):
+                                if i not in site_k_map:
+                                    continue
+                                oi = site_k_map[i]
+                                for j in range(len(imp)):
+                                    if j not in site_k_map:
+                                        continue
+                                    oj = site_k_map[j]
+                                    g_full[oi, oj] = g_imp[i, j]
+
+                    if np.linalg.norm(h @ g_full - g_full @ h) < 1e-9:
+                        generators.append(g_full)
+            else:
+                generators = discover_one_body_symmetries(h)
+        else:
+            generators = symmetry_generators
+
+        gen_ops = []
+        for g in generators:
+            op = tensors_to_operator(g, tol=1e-12)
+            if self.basis.restrictions is not None:
+                op.set_restrictions(self.basis.restrictions)
+            if self.basis.weighted_restrictions is not None:
+                op.set_weighted_restrictions(self.basis.weighted_restrictions)
+            gen_ops.append(op)
 
         old_size = self.basis.size - 1
         while old_size != self.basis.size:
@@ -213,7 +321,7 @@ class CIPSISolver:
                 )
                 psi_refs = build_state(self.basis, psi_ref_dense.T)
 
-            new_Dj = self.determine_new_Dj(e_ref, psi_refs, H, de2_min, slater_cutoff=slaterWeightMin)
+            new_Dj = self.determine_new_Dj(e_ref, psi_refs, H, de2_min, slater_cutoff=slaterWeightMin, gen_ops=gen_ops)
             old_size = self.basis.size
             self.basis.add_states(new_Dj)
             psi_refs = self.basis.redistribute_psis(psi_refs)
