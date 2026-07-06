@@ -339,6 +339,7 @@ cdef class ManyBodyState:
         """
         with nogil:
             self.v.truncate(max_size)
+
     def max_norm2(self):
         """
         Return the maximum squared amplitude in the state.
