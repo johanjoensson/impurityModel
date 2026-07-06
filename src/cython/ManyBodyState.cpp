@@ -200,6 +200,54 @@ ManyBodyState &ManyBodyState::prune(double cutoff) {
   return *this;
 }
 
+double ManyBodyState::max_norm2() const {
+  double max_val = 0.0;
+  for (const auto &pair : m_map) {
+    double val = std::norm(pair.second);
+    if (val > max_val) {
+      max_val = val;
+    }
+  }
+  return max_val;
+}
+
+ManyBodyState::size_type ManyBodyState::count_above(double cutoff2) const {
+  size_type count = 0;
+  for (const auto &pair : m_map) {
+    if (std::norm(pair.second) > cutoff2) {
+      ++count;
+    }
+  }
+  return count;
+}
+
+void ManyBodyState::truncate(size_t max_size) {
+  if (m_map.size() <= max_size || max_size == 0) {
+    return;
+  }
+  
+  std::vector<double> norms;
+  norms.reserve(m_map.size());
+  for (const auto &pair : m_map) {
+    norms.push_back(std::norm(pair.second));
+  }
+  
+  std::nth_element(norms.begin(), norms.begin() + max_size - 1, norms.end(), std::greater<double>());
+  double cutoff2 = norms[max_size - 1];
+  
+#if __cplusplus >= 202302L && __has_include(<flat_map>)
+  std::erase_if(m_map, [cutoff2](ManyBodyState::const_reference pair) {
+    return std::norm(pair.second) < cutoff2;
+  });
+#else
+  auto it = std::remove_if(m_map.begin(), m_map.end(),
+                           [cutoff2](ManyBodyState::const_reference pair) {
+                             return std::norm(pair.second) < cutoff2;
+                           });
+  m_map.erase(it, m_map.end());
+#endif
+}
+
 std::string ManyBodyState::to_string() const {
   std::string res;
   res += "ManyBodyState{";

@@ -30,6 +30,7 @@ def block_lanczos_step_cy(
     comm,
     basis,
     slaterWeightMin=0.0,
+    truncation_threshold=0,
     reort_period=5,
     start_it=0,
 ): ...
@@ -44,6 +45,7 @@ def block_lanczos_cy(
     reort="full",
     max_iter=None,
     slaterWeightMin=0.0,
+    truncation_threshold=0,
     comm=None,
     reort_period=5,
     alphas_init=None,
@@ -70,6 +72,7 @@ def thick_restart_block_lanczos_cy(
     max_restarts=100,
     verbose=True,
     slaterWeightMin=0.0,
+    truncation_threshold=0,
     reort="partial",
     comm=None,
 ): ...
@@ -85,6 +88,7 @@ def implicitly_restarted_block_lanczos_cy(
     max_restarts=100,
     verbose=True,
     slaterWeightMin=0.0,
+    truncation_threshold=0,
     reort="partial",
     comm=None,
 ): ...

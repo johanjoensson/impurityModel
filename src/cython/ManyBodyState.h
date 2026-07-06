@@ -136,6 +136,21 @@ public:
    */
   ManyBodyState &prune(double cutoff);
 
+  /**
+   * @brief Truncate the state to keep only the max_size elements with the largest amplitudes.
+   */
+  void truncate(size_t max_size);
+
+  /**
+   * @brief Return the maximum squared amplitude in the state.
+   */
+  double max_norm2() const;
+
+  /**
+   * @brief Count how many elements have a squared amplitude strictly greater than cutoff2.
+   */
+  size_type count_above(double cutoff2) const;
+
   iterator begin() { return m_map.begin(); }
   const_iterator begin() const { return m_map.begin(); }
   const_iterator cbegin() const noexcept { return m_map.cbegin(); }

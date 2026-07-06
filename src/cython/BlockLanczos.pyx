@@ -197,6 +197,7 @@ def block_lanczos_step_cy(
     comm,
     basis,
     slaterWeightMin: float = 0.0,
+    truncation_threshold: float = 0.0,
     reort_period: int = 5,
     start_it: int = 0,
     block_widths=None,
@@ -356,6 +357,18 @@ def block_lanczos_step_cy(
     add_scaled_multi(q_next, wp, beta_inv)
     _prof_acc("recurrence", _t0)
 
+    # --- 6a. Forceful / Amplitude Truncation ----------------------------
+    cdef bint did_truncate = False
+    if slaterWeightMin > 0.0:
+        for st in q_next:
+            st.prune(slaterWeightMin)
+        did_truncate = True
+    if truncation_threshold > 0:
+        from impurityModel.ed.ManyBodyUtils import apply_global_truncation
+        for st in q_next:
+            apply_global_truncation(st, truncation_threshold, comm if mpi else None)
+        did_truncate = True
+
     # --- 6b. CholeskyQR2 (conditional): re-orthonormalize using the actual vectors -----
     _t0 = _time.perf_counter()
     # A single Cholesky-QR leaves q_next non-orthonormal by O(cond(M)*EPS); when cond(M) is
@@ -363,7 +376,8 @@ def block_lanczos_step_cy(
     # required. But when cond(M) < EPS^(-1/3) the first pass is already orthonormal to
     # < EPS^(2/3) (~4e-11), far below sqrt(EPS), so the second pass (an extra Gram inner product
     # + MPI Allreduce) is skipped. The same cond(M) gates both kernels, so they stay in lock-step.
-    if np.linalg.cond(M) >= EPS ** (-1.0 / 3.0):
+    # If the basis was forcefully truncated, orthogonality is broken and CholeskyQR2 MUST run.
+    if did_truncate or np.linalg.cond(M) >= EPS ** (-1.0 / 3.0):
         M2 = inner_multi(q_next, q_next)
         if mpi and comm is not None:
             comm.Allreduce(MPI.IN_PLACE, M2, op=MPI.SUM)
@@ -449,10 +463,6 @@ def block_lanczos_step_cy(
                 betas[it, :active_k, :p] = beta_i
         _prof_acc("reort", _t0)
 
-    if slaterWeightMin > 0:
-        for st in q_next:
-            st.prune(slaterWeightMin)
-
     return q_next, alpha_i, beta_i, W, active_k, False
 
 
@@ -465,6 +475,7 @@ def block_lanczos_cy(
     reort="full",
     max_iter=None,
     slaterWeightMin: float = 0.0,
+    truncation_threshold: int = 0,
     comm=None,
     reort_period: int = 5,
     alphas_init=None,
@@ -763,6 +774,7 @@ def block_lanczos_cy(
             comm=comm,
             basis=basis,
             slaterWeightMin=slaterWeightMin,
+            truncation_threshold=truncation_threshold,
             reort_period=reort_period,
             start_it=start_it,
             block_widths=block_widths,
@@ -814,7 +826,7 @@ def block_lanczos_cy(
         # estimate (cheap, no O(N) work) and reorthogonalize q_next only against the
         # locked vectors whose estimate now exceeds omega_TOL.
         if partial_locked:
-            bj_inv_norm = 1.0 / max(float(_svb[-1]), EPS)  # reuse the step's beta_i SVD
+            bj_inv_norm = 1.0 / max(float(_svb[len(_svb) - 1]), EPS)  # reuse the step's beta_i SVD
             bjm1_norm = float(np.linalg.norm(betas_buf[it_abs - 1], 2)) if it_abs > 0 else 0.0
             xi_new_l, xi_trigger, xi_mask = _ea16.locked_overlap_step(
                 xi_l, xi_prev_l, locked_evals_arr, alpha_i,
@@ -1163,6 +1175,7 @@ def thick_restart_block_lanczos_cy(
     max_restarts: int = 100,
     verbose: bool = True,
     slaterWeightMin: float = 0.0,
+    truncation_threshold: int = 0,
     reort="partial",
     comm=None,
 ):
@@ -1208,6 +1221,7 @@ def thick_restart_block_lanczos_cy(
             reort=r,
             max_iter=max_iter,
             slaterWeightMin=slaterWeightMin,
+            truncation_threshold=truncation_threshold,
             comm=comm,
             return_widths=True,
         )
@@ -1369,6 +1383,7 @@ def _implicitly_restarted_block_lanczos_manybody(
     reort_mode,
     comm,
     slaterWeightMin=0.0,
+    truncation_threshold=0,
     cntl2=None,
     cntl3=0.0,
     locked_reort="full",
@@ -1393,6 +1408,7 @@ def _implicitly_restarted_block_lanczos_manybody(
             reort=r,
             max_iter=max_iter,
             slaterWeightMin=slaterWeightMin,
+            truncation_threshold=truncation_threshold,
             comm=comm,
             alphas_init=alphas,
             betas_init=betas,
@@ -1818,6 +1834,7 @@ def implicitly_restarted_block_lanczos_cy(
     max_restarts: int = 100,
     verbose: bool = True,
     slaterWeightMin: float = 0.0,
+    truncation_threshold: int = 0,
     reort="partial",
     comm=None,
 ):
@@ -1850,4 +1867,5 @@ def implicitly_restarted_block_lanczos_cy(
         reort_mode=reort_mode,
         comm=comm,
         slaterWeightMin=slaterWeightMin,
+        truncation_threshold=truncation_threshold,
     )

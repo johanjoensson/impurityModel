@@ -36,8 +36,11 @@ cdef extern from "ManyBodyState.h" nogil:
         size_type max_size()
         void clear()
         void prune(double)
+        void truncate(size_t)
         double norm2()
         double norm()
+        double max_norm2()
+        size_type count_above(double)
 
         mapped_type& operator[](const key_type&)
         mapped_type& at(const key_type&)

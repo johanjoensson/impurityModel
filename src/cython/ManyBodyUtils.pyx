@@ -333,6 +333,25 @@ cdef class ManyBodyState:
         with nogil:
             self.v.prune(cutoff)
 
+    def truncate(self, size_t max_size):
+        """
+        Truncate the state to keep only the max_size elements with the largest amplitudes.
+        """
+        with nogil:
+            self.v.truncate(max_size)
+            
+    def max_norm2(self):
+        """
+        Return the maximum squared amplitude in the state.
+        """
+        return self.v.max_norm2()
+        
+    def count_above(self, double cutoff2):
+        """
+        Count how many elements have a squared amplitude strictly greater than cutoff2.
+        """
+        return self.v.count_above(cutoff2)
+
     def to_dict(self):
         """
         Convert the ManyBodyState to a python dict.
@@ -362,6 +381,43 @@ cdef class ManyBodyState:
         Returns true if the ManyBodyState is empty (i.e. contains no SlaterDeterminants)
         """
         return self.v.empty()
+
+
+def apply_global_truncation(ManyBodyState st, int max_size, object comm):
+    """
+    Truncate the ManyBodyState across all MPI ranks such that the global total
+    number of Slater Determinants is at most max_size.
+    Uses a distributed binary search to find the exact amplitude threshold.
+    """
+    import math
+    from mpi4py import MPI
+    
+    if comm is None or comm.Get_size() == 1 or max_size <= 0:
+        if max_size > 0:
+            st.truncate(max_size)
+        return
+
+    cdef int local_size = len(st)
+    cdef int global_size = comm.allreduce(local_size, op=MPI.SUM)
+    if global_size <= max_size:
+        return
+
+    # Distributed binary search for the threshold cutoff2
+    cdef double high = comm.allreduce(st.max_norm2(), op=MPI.MAX)
+    cdef double low = 0.0
+    cdef double mid
+    cdef int global_count
+    
+    # 45 iterations over [0, max_norm2] gives double precision
+    for _ in range(45):
+        mid = (low + high) * 0.5
+        global_count = comm.allreduce(st.count_above(mid), op=MPI.SUM)
+        if global_count > max_size:
+            low = mid
+        else:
+            high = mid
+
+    st.prune(math.sqrt(high))
 
 
 def inner(ManyBodyState a, ManyBodyState b):
