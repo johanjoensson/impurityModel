@@ -250,3 +250,68 @@ def test_graph_alltoall_block_empty_contributor():
     got = out.to_states()
     for c in range(p):
         assert got[c] == ref[c]
+
+
+# --------------------------------------------------------------------------- #
+# Phase 2.4a: block linear-algebra primitives — bit-for-bit vs the list ops
+# --------------------------------------------------------------------------- #
+def test_block_inner_matches_inner_multi():
+    from impurityModel.ed.ManyBodyUtils import block_inner_cy, inner_multi
+
+    rng = np.random.default_rng(61)
+    A_states = _random_states(rng, 3, 25)
+    # different (overlapping) support for B
+    B_states = [ManyBodyState({_det(i + 10): rng.standard_normal() + 1j for i in range(20) if rng.random() < 0.7}) for _ in range(2)]
+    A = ManyBodyBlockState.from_states(A_states)
+    B = ManyBodyBlockState.from_states(B_states)
+    np.testing.assert_array_equal(block_inner_cy(A, B), inner_multi(A_states, B_states))
+    np.testing.assert_array_equal(block_inner_cy(A, A), inner_multi(A_states, A_states))
+
+
+def test_block_add_scaled_matches_add_scaled_multi():
+    from impurityModel.ed.ManyBodyUtils import add_scaled_multi, block_add_scaled_cy
+
+    rng = np.random.default_rng(62)
+    A_states = _random_states(rng, 3, 25)
+    B_states = [ManyBodyState({_det(i + 15): rng.standard_normal() + 1j * rng.standard_normal() for i in range(20) if rng.random() < 0.7}) for _ in range(2)]
+    C = rng.standard_normal((2, 3)) + 1j * rng.standard_normal((2, 3))
+    ref = [s.copy() for s in A_states]
+    add_scaled_multi(ref, B_states, np.ascontiguousarray(C))
+    out = block_add_scaled_cy(ManyBodyBlockState.from_states(A_states), ManyBodyBlockState.from_states(B_states), C)
+    for j, col in enumerate(out.to_states()):
+        diff = col - ref[j]
+        assert np.sqrt(diff.norm2()) == 0.0  # exact: same accumulation order
+    with pytest.raises(ValueError):
+        block_add_scaled_cy(
+            ManyBodyBlockState.from_states(A_states), ManyBodyBlockState.from_states(B_states), np.ones((3, 2))
+        )
+
+
+def test_combine_columns_matches_block_combine_sparse():
+    from impurityModel.ed.BlockLanczos import block_combine_sparse
+
+    rng = np.random.default_rng(63)
+    states = _random_states(rng, 4, 30)
+    blk = ManyBodyBlockState.from_states(states)
+    Y = rng.standard_normal((4, 2)) + 1j * rng.standard_normal((4, 2))
+    ref = block_combine_sparse(states, Y)
+    for j, col in enumerate(blk.combine_columns(Y).to_states()):
+        diff = col - ref[j]
+        assert np.sqrt(diff.norm2()) == 0.0
+    # width can shrink (deflation) and grow
+    assert blk.combine_columns(np.eye(4)[:, :1]).width == 1
+
+
+def test_store_append_block_matches_append():
+    from impurityModel.ed.ManyBodyUtils import SparseKrylovDense
+
+    rng = np.random.default_rng(64)
+    states = _random_states(rng, 3, 40)
+    more = _random_states(rng, 2, 55)
+    s1, s2 = SparseKrylovDense(), SparseKrylovDense()
+    s1.append(states)
+    s1.append(more)
+    s2.append_block(ManyBodyBlockState.from_states(states))
+    s2.append_block(ManyBodyBlockState.from_states(more))
+    assert len(s1) == len(s2) == 5
+    assert list(s1) == list(s2)

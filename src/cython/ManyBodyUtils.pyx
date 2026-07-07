@@ -3,7 +3,12 @@
 
 
 from ManyBodyState cimport ManyBodyState as ManyBodyState_cpp, inner as inner_cpp
-from ManyBodyBlockState cimport ManyBodyBlockState as ManyBodyBlockState_cpp
+from ManyBodyBlockState cimport (
+    ManyBodyBlockState as ManyBodyBlockState_cpp,
+    block_inner as c_block_inner,
+    block_add_scaled as c_block_add_scaled,
+    block_combine_cols as c_block_combine_cols,
+)
 from ManyBodyOperator cimport ManyBodyOperator as ManyBodyOperator_cpp
 from SlaterDeterminant cimport SlaterDeterminant as SlaterDeterminant_cpp
 from libcpp.pair cimport pair
@@ -1392,6 +1397,30 @@ cdef class SparseKrylovDense:
             key_heap = 32
         return self.Qbuf.nbytes + <size_t>self.n_rows * (2 * key_heap + 72)
 
+    def append_block(self, ManyBodyBlockState block):
+        """Append the columns of a shared-support block as new Krylov vectors —
+        the block analogue of ``append`` (reads rows directly, no per-state
+        materialization)."""
+        cdef Py_ssize_t ncol = <Py_ssize_t>block.b.width()
+        if ncol == 0:
+            return
+        cdef Py_ssize_t r
+        for r in range(<Py_ssize_t>block.b.rows()):
+            self._register(block.b.key(r))
+        self._ensure(self.n_rows, self.n_cols + ncol)
+        cdef complex[:, :] Qv = self.Qbuf
+        cdef int base = self.n_cols
+        cdef int row
+        cdef const ManyBodyBlockState_cpp.Value* src
+        cdef Py_ssize_t ci
+        for r in range(<Py_ssize_t>block.b.rows()):
+            row = dereference(self.support.find(block.b.key(r))).second
+            src = block.b.row(r)
+            for ci in range(ncol):
+                Qv[row, base + ci].real = src[ci].real()
+                Qv[row, base + ci].imag = src[ci].imag()
+        self.n_cols += ncol
+
     def reort(self, list wp, object cols, int n_passes, object comm):
         """``n_passes`` of CGS2: ``O = Q[:,cols]^H wp`` (Allreduced); ``wp -= Q[:,cols] O``.
 
@@ -1581,6 +1610,27 @@ cdef class ManyBodyBlockState:
             key_heap = 32
         return self.b.rows() * (16 * self.b.width() + key_heap + sizeof(SlaterDeterminant_cpp[uint64_t]))
 
+    def combine_columns(self, Y):
+        """New block ``OUT = self @ Y`` on the same support: ``out[det, k] =
+        sum_j self[det, j] * Y[j, k]``. The j-ascending accumulation matches
+        ``block_combine_sparse`` (add_scaled_multi) bit-for-bit. Used for the
+        Cholesky-QR normalization ``q_next = wp @ beta_inv`` (the output width may
+        shrink under deflation)."""
+        Ya = np.ascontiguousarray(Y, dtype=complex)
+        if Ya.ndim == 1:
+            Ya = Ya[:, np.newaxis]
+        if Ya.shape[0] != self.b.width():
+            raise ValueError(f"Y rows {Ya.shape[0]} != block width {self.b.width()}")
+        cdef double complex[:, ::1] yv = Ya
+        cdef ManyBodyBlockState out = ManyBodyBlockState()
+        cdef ManyBodyBlockState_cpp.Value* yptr = NULL
+        if Ya.size > 0:
+            yptr = <ManyBodyBlockState_cpp.Value*>&yv[0, 0]
+        cdef size_t wout = Ya.shape[1]
+        with nogil:
+            out.b = c_block_combine_cols(self.b, yptr, wout)
+        return out
+
     def copy(self):
         """Deep copy (independent key and amplitude storage)."""
         cdef ManyBodyBlockState res = ManyBodyBlockState()
@@ -1657,3 +1707,36 @@ def unpack_block_fused_cy(int comm_size, size_t width, int64_t[:] recv_counts, u
     with nogil:
         res.b = c_unpack_block_fused(comm_size, width, c_recv_counts, c_recv_buf, chunks_per_state)
     return res
+
+
+def block_inner_cy(ManyBodyBlockState A, ManyBodyBlockState B):
+    """Block Gram matrix ``C[i, j] = <A_i | B_j>`` over the merged supports.
+
+    Merge-join over the two sorted key vectors; the determinant summation order
+    equals the sorted flat_map order of ``inner_multi`` over lists, so the result is
+    bit-for-bit identical to the scalar path. Rank-local (no MPI)."""
+    res = np.zeros((A.b.width(), B.b.width()), dtype=complex)
+    cdef double complex[:, ::1] rv = res
+    if A.b.width() > 0 and B.b.width() > 0:
+        with nogil:
+            c_block_inner(A.b, B.b, <ManyBodyBlockState_cpp.Value*>&rv[0, 0])
+    return res
+
+
+def block_add_scaled_cy(ManyBodyBlockState A, ManyBodyBlockState B, C):
+    """New block ``OUT = A + B @ C`` over the union support: ``out[det, j] =
+    A[det, j] + sum_i B[det, i] * C[i, j]`` — the block analogue of
+    ``add_scaled_multi(target=A, source=B, coeffs=C)``, with the same i-ascending
+    accumulation order (bit-for-bit) but returning a NEW block instead of mutating
+    (the union support can outgrow A's storage)."""
+    Ca = np.ascontiguousarray(C, dtype=complex)
+    if Ca.ndim != 2 or Ca.shape[0] != B.b.width() or Ca.shape[1] != A.b.width():
+        raise ValueError(f"coeffs shape {Ca.shape} != (B.width={B.b.width()}, A.width={A.b.width()})")
+    cdef double complex[:, ::1] cv = Ca
+    cdef ManyBodyBlockState out = ManyBodyBlockState()
+    cdef ManyBodyBlockState_cpp.Value* cptr = NULL
+    if Ca.size > 0:
+        cptr = <ManyBodyBlockState_cpp.Value*>&cv[0, 0]
+    with nogil:
+        out.b = c_block_add_scaled(A.b, B.b, cptr)
+    return out

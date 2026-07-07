@@ -29,3 +29,7 @@ cdef extern from "ManyBodyBlockState.h" nogil:
 
         bint operator==(const ManyBodyBlockState&)
         bint operator!=(const ManyBodyBlockState&)
+
+    void block_inner(const ManyBodyBlockState&, const ManyBodyBlockState&, ManyBodyBlockState.Value*)
+    ManyBodyBlockState block_add_scaled(const ManyBodyBlockState&, const ManyBodyBlockState&, const ManyBodyBlockState.Value*)
+    ManyBodyBlockState block_combine_cols(const ManyBodyBlockState&, const ManyBodyBlockState.Value*, size_t)
