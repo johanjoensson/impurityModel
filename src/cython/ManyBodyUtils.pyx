@@ -1270,6 +1270,93 @@ cdef class SparseKrylovDense:
                 preincrement(it)
         self.n_cols += ncol
 
+    def __len__(self):
+        """Number of stored Krylov columns."""
+        return self.n_cols
+
+    def __iter__(self):
+        for ci in range(self.n_cols):
+            yield self._materialize(ci)
+
+    def __getitem__(self, idx):
+        """Materialize column(s) back to ``ManyBodyState`` (exact scatter: every stored
+        nonzero coefficient round-trips bit-identically). An integer index yields one
+        state; a slice yields a list — so the store is a drop-in sequence wherever a
+        Krylov list of ``ManyBodyState`` is indexed, sliced or iterated."""
+        cdef Py_ssize_t ci, start, stop, step
+        if isinstance(idx, slice):
+            start, stop, step = idx.indices(self.n_cols)
+            return [self._materialize(ci) for ci in range(start, stop, step)]
+        ci = idx
+        if ci < 0:
+            ci += self.n_cols
+        if ci < 0 or ci >= self.n_cols:
+            raise IndexError(f"column {idx} out of range for {self.n_cols} stored columns")
+        return self._materialize(ci)
+
+    cdef ManyBodyState _materialize(self, Py_ssize_t col):
+        cdef complex[:, :] Qv = self.Qbuf
+        cdef vector[ManyBodyState_cpp.key_type] keys
+        cdef vector[ManyBodyState_cpp.mapped_type] vals
+        cdef Py_ssize_t row
+        cdef double complex z
+        for row in range(self.n_rows):
+            z = Qv[row, col]
+            if z.real != 0 or z.imag != 0:
+                keys.push_back(self.row_det[row])
+                vals.push_back(ManyBodyState_cpp.mapped_type(z.real, z.imag))
+        cdef ManyBodyState ms = ManyBodyState()
+        ms.v = ManyBodyState_cpp(keys, vals)
+        return ms
+
+    def combine(self, object Y, Py_ssize_t a=0, object b=None, double slaterWeightMin=0.0):
+        """Linear combinations ``out_k = sum_j Q[:, a:b][:, j] * Y[j, k]`` as ManyBodyStates.
+
+        The dense analogue of ``block_combine_sparse``: one zgemm over the stored buffer
+        followed by a scatter of only the ``Y.shape[1]`` output columns — no per-column
+        materialization of the inputs. ``slaterWeightMin > 0`` prunes the outputs exactly
+        like ``block_combine_sparse`` does.
+        """
+        cdef Py_ssize_t bb = self.n_cols if b is None else <Py_ssize_t>b
+        Ya = np.ascontiguousarray(Y, dtype=complex)
+        if Ya.ndim == 1:
+            Ya = Ya[:, np.newaxis]
+        if Ya.shape[0] != bb - a:
+            raise ValueError(f"Y rows {Ya.shape[0]} != selected columns {bb - a}")
+        C = self.Qbuf[: self.n_rows, a:bb] @ Ya
+        cdef complex[:, :] Cv = C
+        cdef Py_ssize_t n_out = C.shape[1]
+        cdef vector[ManyBodyState_cpp.key_type] keys
+        cdef vector[ManyBodyState_cpp.mapped_type] vals
+        cdef list out = []
+        cdef ManyBodyState ms
+        cdef Py_ssize_t row, k
+        cdef double complex z
+        for k in range(n_out):
+            keys.clear()
+            vals.clear()
+            for row in range(self.n_rows):
+                z = Cv[row, k]
+                if z.real != 0 or z.imag != 0:
+                    keys.push_back(self.row_det[row])
+                    vals.push_back(ManyBodyState_cpp.mapped_type(z.real, z.imag))
+            ms = ManyBodyState()
+            ms.v = ManyBodyState_cpp(keys, vals)
+            if slaterWeightMin > 0:
+                ms.prune(slaterWeightMin)
+            out.append(ms)
+        return out
+
+    def memory_bytes(self):
+        """Estimated heap bytes: the dense coefficient buffer (capacity, not just the
+        filled extent) plus the support map / row_det key storage (one 32-B-class heap
+        block per determinant key vector, ~72 B map-node overhead per entry)."""
+        cdef size_t n_chunks = self.row_det[0].size() if self.n_rows > 0 else 1
+        cdef size_t key_heap = (8 * n_chunks + 8 + 15) & (~<size_t>15)
+        if key_heap < 32:
+            key_heap = 32
+        return self.Qbuf.nbytes + <size_t>self.n_rows * (2 * key_heap + 72)
+
     def reort(self, list wp, object cols, int n_passes, object comm):
         """``n_passes`` of CGS2: ``O = Q[:,cols]^H wp`` (Allreduced); ``wp -= Q[:,cols] O``.
 
