@@ -193,9 +193,19 @@ Stages (each committable, gate-green):
   duplicate rows are summed in arrival order (stable sort), bit-identical to the
   scalar unpack; verified against `graph_alltoall_psis` at n=2/3 including an
   empty-contributor rank.
-- **2.4 Lanczos loop switch**: q_prev/q_curr/wp as block states; block
-  inner/add_scaled as row-block gemm; store append from block rows; A/B against the
-  Phase-3 bench numbers.
+- **2.4 Lanczos loop switch — DONE**: q_prev/q_curr/wp/q_next are
+  ManyBodyBlockStates inside `block_lanczos_step_cy`/`block_lanczos_cy`; the
+  recurrence runs on the bit-exact block primitives (2.4a commit), the store
+  appends block rows directly, and the rare paths (FULL/PERIODIC reort, PARTIAL
+  trigger, SELECTIVE cadence, EOR seed, global truncation) convert at the
+  boundary only when they actually run (`apply_reort` converts inside the
+  acted branch). The whole-row prune (any-column-survives) is the one flagged
+  semantic difference. **Measured, NiO 50 bath (basis 5848, 60 its, serial)**:
+  p=2 iteration 65.5 → **33.9 ms** (matvec 50.2 → 27.4, recurrence 6.6 → 1.4);
+  p=4 iteration **44.7 ms** (matvec 29.6 — near-flat in p); `‖QᴴQ−I‖` and E0
+  unchanged to all printed digits; reort trigger pattern identical (5/60); loop
+  peak RSS delta 0.4 MiB. **Cumulative vs the campaign baseline: 125.2 → 33.9
+  ms/iter (3.7x) at p=2** plus the 3.1x Krylov memory cut.
 - **2.5 threaded path re-tune**: the block accumulator changes memory-per-entry;
   re-measure the MIN_SD_PER_THREAD workload scaling; threading stays opt-in.
 

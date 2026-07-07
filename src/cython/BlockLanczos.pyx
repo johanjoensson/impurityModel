@@ -50,7 +50,10 @@ import numpy as np
 import scipy.linalg as sp
 from impurityModel.ed.ManyBodyUtils import (
     ManyBodyState,
+    ManyBodyBlockState,
     add_scaled_multi,
+    block_add_scaled_cy,
+    block_inner_cy,
     inner_multi,
     SparseKrylovDense,
 )
@@ -256,9 +259,9 @@ def block_lanczos_step_cy(
     Args:
         h_op: ``ManyBodyOperator`` Hamiltonian; must implement
             ``apply_multi(psis, cutoff)``.
-        q_prev: List of ``p`` ``ManyBodyState`` objects from iteration ``i-1``
-            (pass an empty list or zero states at ``it=0``).
-        q_curr: List of ``p`` ``ManyBodyState`` objects from iteration ``i``.
+        q_prev: ``ManyBodyBlockState`` of width ``p`` from iteration ``i-1``
+            (a zero-row block of width ``p`` at ``it=0``).
+        q_curr: ``ManyBodyBlockState`` of width ``p`` from iteration ``i``.
         Q_basis: Accumulated Krylov basis as a flat list of ``ManyBodyState``
             (length ``p * (it + 1)`` on entry, grows by ``p`` each step).
         alphas: Pre-allocated numpy array of shape ``(max_iter, p, p)`` that
@@ -286,7 +289,7 @@ def block_lanczos_step_cy(
     Returns:
         tuple: A 5-tuple ``(q_next, alpha_i, beta_i, W_updated, breakdown)``:
 
-        * ``q_next`` – List of ``p`` ``ManyBodyState`` objects forming the next
+        * ``q_next`` – ``ManyBodyBlockState`` (width ``active_k``) forming the next
           Krylov block :math:`Q_{i+1}`, or ``None`` if breakdown occurred.
         * ``alpha_i`` – numpy complex array of shape ``(p, p)`` for the current
           diagonal block.
@@ -298,31 +301,41 @@ def block_lanczos_step_cy(
           block was detected (``NaN``/``Inf`` in :math:`M`, or condition number
           exceeding :math:`100 / \\varepsilon_{\\text{mach}}`).
     """
-    p = len(q_curr)
+    # q_prev / q_curr are shared-support ManyBodyBlockStates (Phase 2.4): the matvec,
+    # Gram products and axpy updates below run once per determinant ROW instead of once
+    # per (determinant, vector) pair. All block primitives are bit-for-bit identical to
+    # the old list-of-ManyBodyState ops (same accumulation order); only the pruning
+    # keeps whole rows (any-column-survives) instead of per-column entries.
+    p = q_curr.width
 
     # --- 1. Block matvec: wp = H q_curr ---------------------------------
     _t0 = _time.perf_counter()
-    wp = h_op.apply_multi(q_curr, slaterWeightMin)
+    wp = h_op.apply_block(q_curr, slaterWeightMin)
     _prof_acc("matvec_apply", _t0)
     _t1 = _time.perf_counter()
     if mpi and comm is not None and basis is not None:
-        wp = basis.redistribute_psis(wp)
+        if hasattr(basis, "redistribute_block"):
+            wp = basis.redistribute_block(wp)
+        else:
+            # Duck-typed basis without the block method (e.g. a test mock): fall back
+            # to the scalar redistribute through a boundary conversion.
+            wp = ManyBodyBlockState.from_states(basis.redistribute_psis(wp.to_states()))
     _prof_acc("matvec_redistribute", _t1)
     _prof_acc("matvec", _t0)
 
     # --- 2. alpha_i = <q_curr | wp> -------------------------------------
     _t0 = _time.perf_counter()
-    alpha_i = inner_multi(q_curr, wp)
+    alpha_i = block_inner_cy(q_curr, wp)
     if mpi and comm is not None:
         comm.Allreduce(MPI.IN_PLACE, alpha_i, op=MPI.SUM)
     alphas[it, :p, :p] = alpha_i
 
     # --- 3. Subtract: wp = wp - q_curr * alpha_i - q_prev * beta_{i-1}^† -
-    add_scaled_multi(wp, q_curr, -alpha_i)
+    wp = block_add_scaled_cy(wp, q_curr, -alpha_i)
     if it > 0:
-        n_prev = len(q_prev)
+        n_prev = q_prev.width
         beta_prev_dag = np.conj(betas[it - 1, :p, :n_prev].T)
-        add_scaled_multi(wp, q_prev, -beta_prev_dag)
+        wp = block_add_scaled_cy(wp, q_prev, -beta_prev_dag)
 
     # --- 3b. EA16 §2.6.2 locking deflation ------------------------------
     # Keep the residual block orthogonal to the already-converged ("locked") Ritz
@@ -335,8 +348,14 @@ def block_lanczos_step_cy(
     # numerical robustness. Skipped in the "partial" mode, where the estimate-driven
     # EA16 §2.6.2 reorth is applied to q_next in block_lanczos_cy instead.
     if locked and locked_reort != "partial":
+        locked_blk = (
+            locked if isinstance(locked, ManyBodyBlockState) else ManyBodyBlockState.from_states(list(locked))
+        )
         for _ in range(2):
-            wp, _ = block_orthogonalize_sparse(wp, list(locked), None, comm if mpi else None)
+            _ovl = block_inner_cy(locked_blk, wp)
+            if mpi and comm is not None:
+                comm.Allreduce(MPI.IN_PLACE, _ovl, op=MPI.SUM)
+            wp = block_add_scaled_cy(wp, locked_blk, -_ovl)
 
     # --- 4. Full / Periodic reorthogonalization -------------------------
     # The PERIODIC cadence gate stays in the caller; the reort action itself goes
@@ -347,7 +366,7 @@ def block_lanczos_step_cy(
         wp, _, _ = apply_reort(wp, Q_basis, None, Reort.FULL, mpi, comm, block_widths or [], krylov)
 
     # --- 5. M = <wp|wp>, check breakdown --------------------------------
-    M = inner_multi(wp, wp)
+    M = block_inner_cy(wp, wp)
     if mpi and comm is not None:
         comm.Allreduce(MPI.IN_PLACE, M, op=MPI.SUM)
 
@@ -363,20 +382,22 @@ def block_lanczos_step_cy(
     if active_k == 0:
         return None, alpha_i, None, W, 0, True
 
-    q_next = [ManyBodyState() for _ in range(active_k)]
-    add_scaled_multi(q_next, wp, beta_inv)
+    q_next = wp.combine_columns(beta_inv)
     _prof_acc("recurrence", _t0)
 
     # --- 6a. Forceful / Amplitude Truncation ----------------------------
     cdef bint did_truncate = False
     if slaterWeightMin > 0.0:
-        for st in q_next:
-            st.prune(slaterWeightMin)
+        # Whole-row prune: a row survives when ANY column survives (keeps the block's
+        # shared support; the per-column prune of independent states would desync it).
+        q_next.prune_rows(slaterWeightMin)
         did_truncate = True
     if truncation_threshold > 0:
         from impurityModel.ed.ManyBodyUtils import apply_global_truncation
-        for st in q_next:
+        _q_states = q_next.to_states()
+        for st in _q_states:
             apply_global_truncation(st, truncation_threshold, comm if mpi else None)
+        q_next = ManyBodyBlockState.from_states(_q_states)
         did_truncate = True
 
     # --- 6b. CholeskyQR2 (conditional): re-orthonormalize using the actual vectors -----
@@ -388,16 +409,14 @@ def block_lanczos_step_cy(
     # + MPI Allreduce) is skipped. The same cond(M) gates both kernels, so they stay in lock-step.
     # If the basis was forcefully truncated, orthogonality is broken and CholeskyQR2 MUST run.
     if did_truncate or np.linalg.cond(M) >= EPS ** (-1.0 / 3.0):
-        M2 = inner_multi(q_next, q_next)
+        M2 = block_inner_cy(q_next, q_next)
         if mpi and comm is not None:
             comm.Allreduce(MPI.IN_PLACE, M2, op=MPI.SUM)
         M2 = 0.5 * (M2 + np.conj(M2.T))
         beta2_inv, beta_i, active_k = _cholesky_qr2(M2, beta_i, active_k)
         if active_k == 0:
             return None, alpha_i, None, W, 0, True
-        q_next2 = [ManyBodyState() for _ in range(active_k)]
-        add_scaled_multi(q_next2, q_next, beta2_inv)
-        q_next = q_next2
+        q_next = q_next.combine_columns(beta2_inv)
     _prof_acc("choleskyqr2_cond", _t0)
 
     betas[it, :active_k, :p] = beta_i
@@ -407,13 +426,17 @@ def block_lanczos_step_cy(
         _t0 = _time.perf_counter()
         if W is None:
             if start_it > 0:
+                # Exact Overlap Restart (rare, resume-only): materialize the live blocks
+                # once so the store slices (lists) meet lists in inner_multi.
+                _wp_states = wp.to_states()
+                _q_prev_states = q_prev.to_states()
                 W = np.zeros((2, start_it + 1, alphas.shape[1], alphas.shape[1]), dtype=complex)
                 for j in range(start_it):
                     w_j = block_widths[j]
                     Q_j = Q_basis[sum(block_widths[:j]) : sum(block_widths[:j+1])]
-                    W[1, j, :w_j, :p] = inner_multi(Q_j, wp)
+                    W[1, j, :w_j, :p] = inner_multi(Q_j, _wp_states)
                     if j < start_it - 1:
-                        W[0, j, :w_j, :n_prev] = inner_multi(Q_j, q_prev)
+                        W[0, j, :w_j, :n_prev] = inner_multi(Q_j, _q_prev_states)
                 if mpi and comm is not None:
                     comm.Allreduce(MPI.IN_PLACE, W, op=MPI.SUM)
                 W[1, start_it, :p, :p] = np.eye(p)
@@ -435,13 +458,17 @@ def block_lanczos_step_cy(
 
         reort_eps = REORT_TOL
 
-        if reort_mode == Reort.SELECTIVE:
+        if reort_mode == Reort.SELECTIVE and it > 0 and it % reort_period == 0:
             # EA16 §2.6.2 selective orthogonalization (shared with block_lanczos_array_cy).
             # beta_i's 2-norm is the Ritz residual scale; the driver has not computed it yet at
-            # this point, so pass it explicitly.
-            q_next = selective_orthogonalize(
-                q_next, Q_basis, alphas, betas, W, block_widths,
-                it, p, np.linalg.norm(beta_i, ord=2), reort_eps, reort_period, mpi, comm,
+            # this point, so pass it explicitly. The cadence gate is replicated here (the
+            # function gates internally too) so the block<->list boundary conversion only
+            # happens on the steps where the Ritz check actually runs.
+            q_next = ManyBodyBlockState.from_states(
+                selective_orthogonalize(
+                    q_next.to_states(), Q_basis, alphas, betas, W, block_widths,
+                    it, p, np.linalg.norm(beta_i, ord=2), reort_eps, reort_period, mpi, comm,
+                )
             )
 
         if reort_mode in (Reort.PARTIAL, Reort.SELECTIVE):
@@ -457,7 +484,7 @@ def block_lanczos_step_cy(
             # otherwise it is unchanged and this would be an exact no-op (M2 == I), so skip it and
             # save the Gram inner product + MPI Allreduce. Mirrors block_lanczos_array_cy.
             if _reort_acted:
-                M2 = inner_multi(q_next, q_next)
+                M2 = block_inner_cy(q_next, q_next)
                 if mpi and comm is not None:
                     comm.Allreduce(MPI.IN_PLACE, M2, op=MPI.SUM)
                 M2 = 0.5 * (M2 + np.conj(M2.T))
@@ -468,9 +495,7 @@ def block_lanczos_step_cy(
                 beta2_inv, beta_i, active_k = _cholesky_qr2(M2, beta_i, active_k)
                 if active_k == 0:
                     return None, alpha_i, None, W, 0, True
-                q_next2 = [ManyBodyState() for _ in range(active_k)]
-                add_scaled_multi(q_next2, q_next, beta2_inv)
-                q_next = q_next2
+                q_next = q_next.combine_columns(beta2_inv)
                 betas[it, :active_k, :p] = beta_i
         _prof_acc("reort", _t0)
 
@@ -662,12 +687,12 @@ def block_lanczos_cy(
             # narrower than p).
             Q_basis = []
             if start_it == 0:
-                q_prev = [ManyBodyState() for _ in range(p)]
-                q_curr = list(Q_init)
+                q_prev = ManyBodyBlockState.from_states([ManyBodyState() for _ in range(p)])
+                q_curr = ManyBodyBlockState.from_states(list(Q_init))
             else:
                 q_prev_len = block_widths[start_it - 1]
-                q_prev = list(Q_init[:q_prev_len])
-                q_curr = list(Q_init[q_prev_len:])
+                q_prev = ManyBodyBlockState.from_states(list(Q_init[:q_prev_len]))
+                q_curr = ManyBodyBlockState.from_states(list(Q_init[q_prev_len:]))
         else:
             # Columnar retention: the store is the ONLY copy of the Krylov basis (shared
             # determinant->row support + one dense coefficient buffer, ~16 B/coeff vs
@@ -680,25 +705,26 @@ def block_lanczos_cy(
                 if len(Q_init) > 0:
                     Q_basis.append(list(Q_init))
             if start_it == 0 or len(Q_basis) < p:
-                q_prev = [ManyBodyState() for _ in range(p)]
-                q_curr = Q_basis[0:p]
+                q_prev = ManyBodyBlockState.from_states([ManyBodyState() for _ in range(p)])
+                q_curr = ManyBodyBlockState.from_states(Q_basis[0:p])
             else:
                 q_prev_start = sum(block_widths[:start_it - 1])
                 q_prev_len = block_widths[start_it - 1]
                 q_curr_start = sum(block_widths[:start_it])
-                q_prev = Q_basis[q_prev_start : q_prev_start + q_prev_len]
-                q_curr = Q_basis[q_curr_start : len(Q_basis)]
+                q_prev = ManyBodyBlockState.from_states(Q_basis[q_prev_start : q_prev_start + q_prev_len])
+                q_curr = ManyBodyBlockState.from_states(Q_basis[q_curr_start : len(Q_basis)])
     else:
         start_it = 0
         p = len(psi0)
         W = None
 
-        # Redistribute initial states across ranks
-        q_curr = basis.redistribute_psis(list(psi0))
-        q_prev = [ManyBodyState() for _ in range(p)]
+        # Redistribute initial states across ranks, then adopt the shared-support block
+        # representation for the live recurrence blocks (Phase 2.4).
+        q_curr = ManyBodyBlockState.from_states(basis.redistribute_psis(list(psi0)))
+        q_prev = ManyBodyBlockState.from_states([ManyBodyState() for _ in range(p)])
         if store_krylov:
             Q_basis = SparseKrylovDense()
-            Q_basis.append(q_curr)
+            Q_basis.append_block(q_curr)
         else:
             Q_basis = []
 
@@ -729,19 +755,20 @@ def block_lanczos_cy(
                 w_j = block_widths[j]
                 Q_j = Q_basis[sum(block_widths[:j]) : sum(block_widths[:j+1])]
 
+                # q_curr/q_prev are blocks; inner_multi materializes them (resume-only path)
                 ov_curr = inner_multi(Q_j, q_curr)
                 if mpi:
                     comm.Allreduce(MPI.IN_PLACE, ov_curr, op=MPI.SUM)
-                W[1, j, :w_j, :len(q_curr)] = ov_curr
+                W[1, j, :w_j, :q_curr.width] = ov_curr
 
                 if j < start_it - 1:
                     ov_prev = inner_multi(Q_j, q_prev)
                     if mpi:
                         comm.Allreduce(MPI.IN_PLACE, ov_prev, op=MPI.SUM)
-                    W[0, j, :w_j, :len(q_prev)] = ov_prev
+                    W[0, j, :w_j, :q_prev.width] = ov_prev
 
-            W[1, start_it, :len(q_curr), :len(q_curr)] = np.eye(len(q_curr))
-            W[0, start_it - 1, :len(q_prev), :len(q_prev)] = np.eye(len(q_prev))
+            W[1, start_it, :q_curr.width, :q_curr.width] = np.eye(q_curr.width)
+            W[0, start_it - 1, :q_prev.width, :q_prev.width] = np.eye(q_prev.width)
         else:
             W = np.zeros((2, 1, p, p), dtype=complex)
             W[1, 0] = np.eye(p)
@@ -780,7 +807,7 @@ def block_lanczos_cy(
 
     while it < _buf_size:
         it_abs = start_it + it
-        n_curr = len(q_curr)
+        n_curr = q_curr.width
         q_next, alpha_i, beta_i, W, active_k, breakdown = block_lanczos_step_cy(
             h_op=h_op,
             q_prev=q_prev,
@@ -855,9 +882,12 @@ def block_lanczos_cy(
             )
             if xi_trigger:
                 idx_l = np.nonzero(xi_mask)[0]
-                Lm = [locked[int(t)] for t in idx_l]
+                Lm_blk = ManyBodyBlockState.from_states([locked[int(t)] for t in idx_l])
                 for _ in range(2):
-                    q_next, _ = block_orthogonalize_sparse(q_next, Lm, None, comm if mpi else None)
+                    _lovl = block_inner_cy(Lm_blk, q_next)
+                    if mpi and comm is not None:
+                        comm.Allreduce(MPI.IN_PLACE, _lovl, op=MPI.SUM)
+                    q_next = block_add_scaled_cy(q_next, Lm_blk, -_lovl)
                 xi_new_l[idx_l] = omega_min_l
                 xi_l[idx_l] = omega_min_l
             xi_prev_l = xi_l
@@ -869,9 +899,9 @@ def block_lanczos_cy(
         # Tail-only mode keeps nothing here: q_prev/q_curr roll below and the two-block
         # tail is assembled at return.
         if store_krylov:
-            # append copies the coefficients into the dense buffer, so no defensive
-            # st.copy() is needed (the old list retention copied each state here).
-            Q_basis.append(q_next)
+            # append_block copies the coefficients into the dense buffer straight from
+            # the block rows — no per-state materialization, no defensive copies.
+            Q_basis.append_block(q_next)
 
         if verbose:
             print(
@@ -904,9 +934,9 @@ def block_lanczos_cy(
         # was never appended, and on budget exhaustion the roll has run (both: tail =
         # q_prev + q_curr).
         if termination == "converged":
-            Q_basis = list(q_curr) + list(q_next)
+            Q_basis = q_curr.to_states() + q_next.to_states()
         else:
-            Q_basis = list(q_prev) + list(q_curr)
+            Q_basis = q_prev.to_states() + q_curr.to_states()
     if return_widths and return_status:
         return alphas_out, betas_out, Q_basis, W, block_widths, termination
     if return_widths:

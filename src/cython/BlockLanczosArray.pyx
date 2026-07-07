@@ -1180,7 +1180,13 @@ def block_lanczos_array_cy(
 
 
 import scipy.sparse as sps
-from impurityModel.ed.ManyBodyUtils import inner_multi, add_scaled_multi, reorth_cgs2_dense, SparseKrylovDense
+from impurityModel.ed.ManyBodyUtils import (
+    inner_multi,
+    add_scaled_multi,
+    reorth_cgs2_dense,
+    SparseKrylovDense,
+    ManyBodyBlockState,
+)
 
 cpdef bint is_array(object V):
     if isinstance(V, (np.ndarray, sps.spmatrix, sps.sparray)):
@@ -1373,9 +1379,16 @@ cpdef tuple apply_reort(object wp, object Q_list, object W, object reort, bint m
     cdef object Q_bad
     cdef int active_k
     cdef bint acted = False
+    # A shared-support block (Phase 2.4) goes through the same list-based projection
+    # machinery via a boundary conversion: on every call for FULL/PERIODIC, but for
+    # PARTIAL/SELECTIVE only when a bad block actually triggers — the common no-op
+    # case never materializes the block.
+    cdef bint was_block = isinstance(wp, ManyBodyBlockState)
 
     if is_array(wp):
         active_k = wp.shape[1]
+    elif was_block:
+        active_k = wp.width
     else:
         active_k = len(wp)
 
@@ -1383,12 +1396,17 @@ cpdef tuple apply_reort(object wp, object Q_list, object W, object reort, bint m
         if is_array(wp):
             for _ in range(2):
                 wp, _ = block_orthogonalize(wp, Q_list, mpi=mpi, comm=comm)
-        elif krylov is not None:
-            # Sparse path with a maintained dense Krylov basis: slice all columns, no gather.
-            wp = krylov.reort(wp, None, 2, comm if mpi else None)
         else:
-            # Sparse path fallback: 2-pass CGS2 in dense BLAS (materialize Q from flat_maps).
-            wp = reorth_cgs2_dense(wp, Q_list, 2, comm if mpi else None)
+            if was_block:
+                wp = wp.to_states()
+            if krylov is not None:
+                # Sparse path with a maintained dense Krylov basis: slice all columns, no gather.
+                wp = krylov.reort(wp, None, 2, comm if mpi else None)
+            else:
+                # Sparse path fallback: 2-pass CGS2 in dense BLAS (materialize Q from flat_maps).
+                wp = reorth_cgs2_dense(wp, Q_list, 2, comm if mpi else None)
+            if was_block:
+                wp = ManyBodyBlockState.from_states(wp)
         acted = True
 
     elif reort in (Reort.PARTIAL, Reort.SELECTIVE):
@@ -1421,13 +1439,18 @@ cpdef tuple apply_reort(object wp, object Q_list, object W, object reort, bint m
                     Q_bad = Q_mat[:, bad_cols]
                     for _ in range(2):
                         wp, _ = block_orthogonalize(wp, Q_bad, mpi=mpi, comm=comm)
-                elif krylov is not None:
-                    # Sparse path with a maintained dense Krylov basis: slice the flagged columns.
-                    wp = krylov.reort(wp, bad_cols, 2, comm if mpi else None)
                 else:
-                    Q_bad = [Q_list[col] for col in bad_cols]
-                    # Sparse path fallback: 2-pass CGS2 in dense BLAS over the flagged bad blocks.
-                    wp = reorth_cgs2_dense(wp, Q_bad, 2, comm if mpi else None)
+                    if was_block:
+                        wp = wp.to_states()
+                    if krylov is not None:
+                        # Sparse path with a maintained dense Krylov basis: slice the flagged columns.
+                        wp = krylov.reort(wp, bad_cols, 2, comm if mpi else None)
+                    else:
+                        Q_bad = [Q_list[col] for col in bad_cols]
+                        # Sparse path fallback: 2-pass CGS2 in dense BLAS over the flagged bad blocks.
+                        wp = reorth_cgs2_dense(wp, Q_bad, 2, comm if mpi else None)
+                    if was_block:
+                        wp = ManyBodyBlockState.from_states(wp)
 
                 for j in bad_block_idx:
                     w_j = block_widths[j]

@@ -18,6 +18,9 @@ class MockBasis:
     def redistribute_psis(self, psis):
         return psis
 
+    def redistribute_block(self, block):
+        return block
+
     def add_states(self, states):
         pass
 
