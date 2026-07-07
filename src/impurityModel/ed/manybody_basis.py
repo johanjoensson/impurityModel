@@ -74,7 +74,12 @@ class Basis:
         delta_impurity_occ : dict, optional
             Allowed impurity occupation variations.
         truncation_threshold : float, default np.inf
-            Threshold for truncating states.
+            Global cap on the number of Slater determinants (``np.inf`` = uncapped). The
+            container itself only *stops growing* at the cap (``expand`` rejects a batch
+            that would overflow); importance-based truncation is the solvers' job (CIPSI
+            for the ground state, the capped GF drivers for spectra). ``None`` is
+            normalized to ``np.inf``; drivers derive RAM-fitted values via
+            :mod:`impurityModel.ed.memory_estimate`.
         spin_flip_dj : bool, default False
             Whether to enable spin-flip states.
         tau : float, default 0
@@ -106,7 +111,7 @@ class Basis:
         self.type = type(slater_det)
         self.n_bytes = int(ceil(ceil(self.num_spin_orbitals / 8) / len(slater_det)) * len(slater_det))
 
-        self.truncation_threshold = truncation_threshold
+        self.truncation_threshold = np.inf if truncation_threshold is None else truncation_threshold
         self.is_distributed = comm is not None and comm.size > 1
         self.tau = tau
 

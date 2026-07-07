@@ -302,7 +302,9 @@ def main(
         "bath_states": (valence_baths, conduction_baths),
         "nominal_impurity_occ": n0imps,
         "frozen_occupations": set(i for i in nBaths if nBaths[i] == 0),
-        "truncation_threshold": 1e7,
+        # None = "as many determinants as fit in RAM", resolved against the per-rank
+        # available memory inside find_ground_state_basis (see memory_estimate).
+        "truncation_threshold": None,
         "tau": tau,
         "comm": comm,
     }

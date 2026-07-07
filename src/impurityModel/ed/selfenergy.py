@@ -21,6 +21,7 @@ from impurityModel.ed.cipsi_solver import CIPSISolver
 from impurityModel.ed.greens_function import build_full_greens_function, get_Greens_function, save_Greens_function
 from impurityModel.ed.groundstate import calc_gs
 from impurityModel.ed.manybody_basis import Basis
+from impurityModel.ed.memory_estimate import log_memory_budget, suggest_truncation_threshold
 from impurityModel.ed.ManyBodyUtils import ManyBodyOperator
 from impurityModel.ed.utils import matrix_print
 from impurityModel.ed.basis_transcription import build_density_matrices
@@ -241,8 +242,9 @@ def fixed_peak_dc(
         Cutoff dimension for the dense eigensolver.
     slaterWeightMin : float
         Minimum Slater determinant weight.
-    truncation_threshold : float
-        Basis truncation threshold.
+    truncation_threshold : float or None
+        Global cap on the number of Slater determinants per basis; ``None`` derives it
+        from available per-rank memory (see :mod:`impurityModel.ed.memory_estimate`).
 
     Returns
     -------
@@ -584,8 +586,11 @@ def calc_selfenergy(
         Whether to restrict to chain geometry.
     occ_cutoff : float
         Cutoff for occupation numbers.
-    truncation_threshold : float
-        Threshold for truncating the basis.
+    truncation_threshold : float or None
+        Global cap on the number of Slater determinants per basis (ground state and each
+        Green's-function excited basis). ``None`` derives the cap from available per-rank
+        memory (collective probe; see :mod:`impurityModel.ed.memory_estimate`), ``np.inf``
+        disables capping.
     slaterWeightMin : float
         Minimum weight for Slater determinants.
     dN : int or None
@@ -690,6 +695,23 @@ def calc_selfenergy(
     if verbosity > 0:
         basis_note = f"symmetry-adapted (fill {fill_ratio:.1f}x)" if rotate else f"input basis (fill {fill_ratio:.1f}x)"
         print(f"Block structure: {len(block_structure.blocks)} blocks, solving in {basis_note}")
+    # Resolve the basis cap: None means "as many determinants as fit in RAM". Both the
+    # suggestion and the budget log are collective on comm (memory probe + allreduce), so
+    # they run unconditionally on every rank; only the printing is verbosity-gated.
+    gf_block_width = max(4, *(len(block) for block in block_structure.blocks))
+    if truncation_threshold is None:
+        truncation_threshold = suggest_truncation_threshold(
+            n_spin_orbitals, comm=comm, block_width=gf_block_width, reort=reort
+        )
+    log_memory_budget(
+        truncation_threshold,
+        n_spin_orbitals,
+        comm=comm,
+        block_width=gf_block_width,
+        reort=reort,
+        verbose=verbosity > 0,
+        label=cluster_label,
+    )
     basis_information = {
         "impurity_orbitals": impurity_orbitals,
         "bath_states": bath_states,
@@ -1174,7 +1196,7 @@ def get_selfenergy(
         comm=comm,
         chain_restrict=False,
         occ_cutoff=1e-12,
-        truncation_threshold=1000,
+        truncation_threshold=None,
         slaterWeightMin=1e-12,
         dN=None,
         sparse_green=True,

@@ -7,6 +7,7 @@ from impurityModel.ed.block_structure import BlockStructure, print_block_structu
 from impurityModel.ed.cipsi_solver import CIPSISolver
 from impurityModel.ed.hartree_fock import hartree_fock_occupation
 from impurityModel.ed.manybody_basis import Basis
+from impurityModel.ed.memory_estimate import log_memory_budget, suggest_truncation_threshold
 from impurityModel.ed.average import thermal_average_scale_indep
 from impurityModel.ed.spin_pairs import (
     bath_spin_pairs,
@@ -83,8 +84,10 @@ def calc_energy(
         MPI communicator for distributed calculation.
     verbose : bool
         If True, prints progress details.
-    truncation_threshold : int
-        Maximum basis size allowed during initialization and expansion.
+    truncation_threshold : int or float
+        Global cap on the number of Slater determinants in the basis; on overflow the CIPSI
+        solver keeps only the determinants with the largest eigenvector amplitudes
+        (``np.inf`` disables capping).
     slaterWeightMin : float
         Minimum weight (``|amplitude|^2``) below which Slater determinants are pruned.
 
@@ -200,7 +203,7 @@ def find_ground_state_basis(
     dense_cutoff=1000,
     spin_flip_dj=True,
     comm=None,
-    truncation_threshold=1000000,
+    truncation_threshold=None,
     verbose=True,
     slaterWeightMin=1e-12,
     cipsi_solver_method="trlm",
@@ -214,9 +217,27 @@ def find_ground_state_basis(
     unrestricted Hartree-Fock solve (the mean-field lowest-energy determinant), instead of
     the O(3^k) accurate scan over every dN combination. Set False for the legacy scan.
 
+    truncation_threshold (default None): global cap on the number of Slater determinants in
+    the basis; when the basis would grow past it, only the currently most important
+    determinants are kept. ``None`` derives the cap from the available per-rank memory
+    (:func:`impurityModel.ed.memory_estimate.suggest_truncation_threshold`; collective on
+    ``comm``), ``np.inf`` disables capping.
+
     Returns:
     basis_gs, ManybodyBasis: Initial basis for the ground state
     """
+    if truncation_threshold is None:
+        # Same spin-orbital count formula as Basis.__init__ (blocked orbital lists).
+        num_spin_orbitals = sum(
+            sum(len(orbs) for orbs in impurity_orbitals[i])
+            + sum(len(orbs) for orbs in bath_states[0][i])
+            + sum(len(orbs) for orbs in bath_states[1][i])
+            for i in bath_states[0]
+        )
+        truncation_threshold = suggest_truncation_threshold(num_spin_orbitals, comm=comm)
+        log_memory_budget(
+            truncation_threshold, num_spin_orbitals, comm=comm, verbose=verbose, label="ground-state basis"
+        )
     if mixed_valence is None or mixed_valence is False:
         mixed_valence = dict.fromkeys(N0, 0)
     (

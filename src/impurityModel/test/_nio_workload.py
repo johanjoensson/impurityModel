@@ -23,6 +23,8 @@ def build_selfenergy_inputs(
     n0imp=8,
     n_omega=2000,
     dense_cutoff=100000,
+    # Explicit (not None): the golden baselines were generated at this cap; the
+    # RAM-derived default would make them machine-dependent.
     truncation_threshold=1000,
     *,
     rank=0,

@@ -7,7 +7,9 @@ import pytest
 from mpi4py import MPI
 
 from impurityModel.ed import memory_estimate as me
-from impurityModel.ed.ManyBodyUtils import ManyBodyState, SlaterDeterminant
+from impurityModel.ed.groundstate import find_ground_state_basis
+from impurityModel.ed.manybody_basis import Basis
+from impurityModel.ed.ManyBodyUtils import ManyBodyOperator, ManyBodyState, SlaterDeterminant
 
 
 def _make_state(n_spin_orbitals, n_dets):
@@ -90,6 +92,52 @@ def test_log_memory_budget_warns_when_too_big(capsys):
     report = me.log_memory_budget(10**12, 60, comm=None, block_width=4, verbose=True)
     assert not report["fits"]
     assert "WARNING" in capsys.readouterr().out
+
+
+def _siam_6_pieces():
+    """Single-impurity Anderson model, 6 spin-orbitals (see test_sectorization)."""
+    ed_, u, ev, ec, v = -1.0, 4.0, -3.0, 3.0, 0.5
+    terms = {}
+    for o in (0, 1):
+        terms[((o, "c"), (o, "a"))] = ed_
+    for o in (2, 3):
+        terms[((o, "c"), (o, "a"))] = ev
+    for o in (4, 5):
+        terms[((o, "c"), (o, "a"))] = ec
+    terms[((0, "c"), (1, "c"), (1, "a"), (0, "a"))] = u
+    for a, b in ((0, 2), (1, 3), (0, 4), (1, 5)):
+        terms[((a, "c"), (b, "a"))] = v
+        terms[((b, "c"), (a, "a"))] = v
+    return terms, {0: [[0, 1]]}, ({0: [[2, 3]]}, {0: [[4, 5]]})
+
+
+def test_basis_normalizes_none_threshold_to_inf():
+    _, impurity_orbitals, bath_states = _siam_6_pieces()
+    basis = Basis(
+        impurity_orbitals,
+        bath_states,
+        nominal_impurity_occ={0: 2},
+        truncation_threshold=None,
+        verbose=False,
+    )
+    assert basis.truncation_threshold == np.inf
+
+
+def test_find_ground_state_basis_resolves_none_threshold():
+    """The default truncation_threshold=None must resolve to a finite RAM-derived cap."""
+    terms, impurity_orbitals, bath_states = _siam_6_pieces()
+    basis = find_ground_state_basis(
+        ManyBodyOperator(terms),
+        impurity_orbitals,
+        bath_states,
+        N0={0: 2},
+        tau=0.01,
+        dense_cutoff=1000,
+        comm=None,
+        verbose=False,
+    )
+    assert np.isfinite(basis.truncation_threshold)
+    assert basis.truncation_threshold >= 1
 
 
 @pytest.mark.mpi
