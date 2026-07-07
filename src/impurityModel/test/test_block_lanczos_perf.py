@@ -168,9 +168,7 @@ def nio_workload():
     h_input_matrix = extract_tensors(h_input, two_body=False)[0]
     n_orb = h_input_matrix.shape[0]
 
-    rotation_full, u_imp = impurity_symmetry_rotation(
-        h_input, impurity_indices, n_orb=n_orb, h0_matrix=h_input_matrix
-    )
+    rotation_full, u_imp = impurity_symmetry_rotation(h_input, impurity_indices, n_orb=n_orb, h0_matrix=h_input_matrix)
     h_rotated = rotate_hamiltonian(h_input, rotation_full, tol=_ROTATION_TRIM_TOL)
     n_terms_input = sum(1 for v in h_input.values() if abs(v) > _ROTATION_TRIM_TOL)
     if len(h_rotated) / max(n_terms_input, 1) <= _MAX_ROTATION_FILL:
@@ -242,8 +240,7 @@ def _random_block(basis, comm, width):
     random.seed(42 + rank)
     local_states = list(basis.local_basis)
     psi0 = [
-        ManyBodyState({state: random.random() + 1j * random.random() for state in local_states})
-        for _ in range(width)
+        ManyBodyState({state: random.random() + 1j * random.random() for state in local_states}) for _ in range(width)
     ]
     psi0, _ = block_normalize(psi0, basis.is_distributed, basis.comm, SLATER_WEIGHT_MIN)
     return psi0
@@ -402,7 +399,10 @@ def test_partial_sparse_kernel_bench(nio_workload):
             ("union support / fill", f"{union_size} determinants, fill {fill:.2f}"),
             ("legacy list equivalent", f"{legacy_bytes / MB:.1f} MiB ({legacy_bytes / max(q_bytes, 1):.1f}x larger)"),
             ("W buffer", f"{w_bytes / MB:.2f} MiB"),
-            ("per-rank (local_n, Q MiB, peak RSS delta MiB)", str([(n, f"{q / MB:.1f}", f"{p / MB:.1f}") for n, q, p in gathered])),
+            (
+                "per-rank (local_n, Q MiB, peak RSS delta MiB)",
+                str([(n, f"{q / MB:.1f}", f"{p / MB:.1f}") for n, q, p in gathered]),
+            ),
         ],
     )
 

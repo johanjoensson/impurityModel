@@ -96,8 +96,7 @@ def _sparse_system(n_sites=6, n_particles=3):
 def _rand_states(basis, rng, n_cols):
     dets = [basis.type.from_bytes(b) if isinstance(b, bytes) else b for b in basis.local_basis]
     return [
-        ManyBodyState({d: complex(rng.standard_normal(), rng.standard_normal()) for d in dets})
-        for _ in range(n_cols)
+        ManyBodyState({d: complex(rng.standard_normal(), rng.standard_normal()) for d in dets}) for _ in range(n_cols)
     ]
 
 

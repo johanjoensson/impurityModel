@@ -592,8 +592,13 @@ def test_estimate_orthonormality_bounded_buffer_bit_identical():
         widths = [p] * (it + 2)
         W_ref = estimate_orthonormality(W_ref, alphas[: it + 1], betas[: it + 1], block_widths=widths, N=1000.0)
         W_buf = estimate_orthonormality(
-            W_buf, alphas[: it + 1], betas[: it + 1], block_widths=widths, N=1000.0,
-            out=bufs[it % 2], beta_norms=hist,
+            W_buf,
+            alphas[: it + 1],
+            betas[: it + 1],
+            block_widths=widths,
+            N=1000.0,
+            out=bufs[it % 2],
+            beta_norms=hist,
         )
         np.testing.assert_array_equal(W_buf, W_ref)  # bit-for-bit
         hist.append(float(np.linalg.svd(betas[it, :p, :p], compute_uv=False)[0]))
@@ -604,7 +609,12 @@ def test_estimate_orthonormality_bounded_buffer_bit_identical():
     for it in range(k):
         widths = [p] * (it + 2)
         W_h = estimate_orthonormality(
-            W_h, alphas[: it + 1], betas[: it + 1], block_widths=widths, N=1000.0,
-            out=bufs[it % 2], beta_norms=hist_holes,
+            W_h,
+            alphas[: it + 1],
+            betas[: it + 1],
+            block_widths=widths,
+            N=1000.0,
+            out=bufs[it % 2],
+            beta_norms=hist_holes,
         )
     np.testing.assert_array_equal(W_h, W_ref)

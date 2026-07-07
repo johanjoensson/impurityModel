@@ -342,10 +342,7 @@ def test_apply_block_width_scaling(timing_fixtures, capsys):
     rows = []
     for p in (1, 2, 4, 8):
         rng = random.Random(97 + p)
-        psis = [
-            ManyBodyState({sd: complex(rng.random(), rng.random()) for sd in support})
-            for _ in range(p)
-        ]
+        psis = [ManyBodyState({sd: complex(rng.random(), rng.random()) for sd in support}) for _ in range(p)]
         blk = ManyBodyBlockState.from_states(psis)
         times, btimes = [], []
         for _ in range(5):

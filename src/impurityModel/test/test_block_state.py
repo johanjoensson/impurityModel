@@ -269,7 +269,10 @@ def test_block_inner_matches_inner_multi():
     rng = np.random.default_rng(61)
     A_states = _random_states(rng, 3, 25)
     # different (overlapping) support for B
-    B_states = [ManyBodyState({_det(i + 10): rng.standard_normal() + 1j for i in range(20) if rng.random() < 0.7}) for _ in range(2)]
+    B_states = [
+        ManyBodyState({_det(i + 10): rng.standard_normal() + 1j for i in range(20) if rng.random() < 0.7})
+        for _ in range(2)
+    ]
     A = ManyBodyBlockState.from_states(A_states)
     B = ManyBodyBlockState.from_states(B_states)
     np.testing.assert_array_equal(block_inner_cy(A, B), inner_multi(A_states, B_states))
@@ -281,7 +284,12 @@ def test_block_add_scaled_matches_add_scaled_multi():
 
     rng = np.random.default_rng(62)
     A_states = _random_states(rng, 3, 25)
-    B_states = [ManyBodyState({_det(i + 15): rng.standard_normal() + 1j * rng.standard_normal() for i in range(20) if rng.random() < 0.7}) for _ in range(2)]
+    B_states = [
+        ManyBodyState(
+            {_det(i + 15): rng.standard_normal() + 1j * rng.standard_normal() for i in range(20) if rng.random() < 0.7}
+        )
+        for _ in range(2)
+    ]
     C = rng.standard_normal((2, 3)) + 1j * rng.standard_normal((2, 3))
     ref = [s.copy() for s in A_states]
     add_scaled_multi(ref, B_states, np.ascontiguousarray(C))
