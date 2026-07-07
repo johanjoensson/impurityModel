@@ -216,6 +216,7 @@ def block_lanczos_step_cy(
     krylov=None,
     w_out=None,
     beta_norm_hist=None,
+    force_reort: bool = False,
 ):
     """Perform one step of the distributed block Lanczos iteration.
 
@@ -289,7 +290,10 @@ def block_lanczos_step_cy(
             Default ``5``.
 
     Returns:
-        tuple: A 5-tuple ``(q_next, alpha_i, beta_i, W_updated, breakdown)``:
+        tuple: A 7-tuple ``(q_next, alpha_i, beta_i, W_updated, active_k, breakdown,
+        reort_acted)``; ``reort_acted`` is True iff the PARTIAL/SELECTIVE bad-block
+        projection actually fired this step (the driver then forces a re-check on the
+        next step — the two-consecutive-steps rule):
 
         * ``q_next`` – ``ManyBodyBlockState`` (width ``active_k``) forming the next
           Krylov block :math:`Q_{i+1}`, or ``None`` if breakdown occurred.
@@ -377,12 +381,12 @@ def block_lanczos_step_cy(
         # subspace. Signal it with active_k = -1 so the caller can report "diverged" (and
         # warn) instead of treating the truncated result as exact. active_k == 0 below is a
         # real rank-deficient residual (the Krylov space is closed) => invariant subspace.
-        return None, alpha_i, None, W, -1, True
+        return None, alpha_i, None, W, -1, True, False
 
     # --- 6. Deflation / Cholesky QR -------------------------------------
     beta_i, beta_inv, active_k = _cholesky_or_deflate(M, p)
     if active_k == 0:
-        return None, alpha_i, None, W, 0, True
+        return None, alpha_i, None, W, 0, True, False
 
     q_next = wp.combine_columns(beta_inv)
     _prof_acc("recurrence", _t0)
@@ -417,13 +421,14 @@ def block_lanczos_step_cy(
         M2 = 0.5 * (M2 + np.conj(M2.T))
         beta2_inv, beta_i, active_k = _cholesky_qr2(M2, beta_i, active_k)
         if active_k == 0:
-            return None, alpha_i, None, W, 0, True
+            return None, alpha_i, None, W, 0, True, False
         q_next = q_next.combine_columns(beta2_inv)
     _prof_acc("choleskyqr2_cond", _t0)
 
     betas[it, :active_k, :p] = beta_i
 
     # --- 7. EA16 Selective Orthogonalization / Partial Reortho ---------
+    _reort_acted = False
     if reort_mode in (Reort.PARTIAL, Reort.SELECTIVE):
         _t0 = _time.perf_counter()
         if W is None:
@@ -479,7 +484,11 @@ def block_lanczos_step_cy(
             # Bad-block partial reorthogonalization via the shared apply_reort (single
             # implementation for both kernels). Pass block_widths + [p] so the current
             # block (index it) is included in the width table apply_reort indexes.
-            q_next, W, _reort_acted = apply_reort(q_next, Q_basis, W, reort_mode, mpi, comm, block_widths + [p], krylov)
+            # force_reort (set by the driver on the step after an acted one) bypasses
+            # the trigger gate — the two-consecutive-steps rule, see apply_reort.
+            q_next, W, _reort_acted = apply_reort(
+                q_next, Q_basis, W, reort_mode, mpi, comm, block_widths + [p], krylov, force=force_reort
+            )
             if _PROF_ON:
                 _PROF["reort_total#n"] = _PROF.get("reort_total#n", 0.0) + 1.0
                 if _reort_acted:
@@ -495,15 +504,20 @@ def block_lanczos_step_cy(
                 # Absolutely tiny residual after projection => block contained in the existing span
                 # (invariant subspace); renormalizing it would amplify rounding. Treat as breakdown.
                 if float(np.max(np.real(np.diag(M2)))) < EPS:
-                    return None, alpha_i, None, W, 0, True
+                    return None, alpha_i, None, W, 0, True, False
                 beta2_inv, beta_i, active_k = _cholesky_qr2(M2, beta_i, active_k)
                 if active_k == 0:
-                    return None, alpha_i, None, W, 0, True
+                    return None, alpha_i, None, W, 0, True, False
                 q_next = q_next.combine_columns(beta2_inv)
+                # The renormalization q_next <- q_next @ beta2_inv rescales its true
+                # overlaps with every Krylov column by up to ||beta2_inv||_2; propagate
+                # the same bound into the just-written honest post-reort W estimates
+                # (a no-op when the projection removed little: beta2_inv ~ I).
+                W[1, : W.shape[1] - 1] *= np.linalg.norm(beta2_inv, 2)
                 betas[it, :active_k, :p] = beta_i
         _prof_acc("reort", _t0)
 
-    return q_next, alpha_i, beta_i, W, active_k, False
+    return q_next, alpha_i, beta_i, W, active_k, False, _reort_acted
 
 
 def block_lanczos_cy(
@@ -831,10 +845,15 @@ def block_lanczos_cy(
     # bounded by ||H|| and never runs away) — catches gradual beta growth the relative check misses.
     h_norm_est = 0.0
 
+    # Two-consecutive-steps reort rule (Simon/PROPACK): when a step acts, the next step
+    # bypasses the REORT_TOL gate (see apply_reort force=) so q_curr's remaining overlap
+    # cannot silently re-contaminate the recurrence through the three-term coupling.
+    _force_reort = False
+
     while it < _buf_size:
         it_abs = start_it + it
         n_curr = q_curr.width
-        q_next, alpha_i, beta_i, W, active_k, breakdown = block_lanczos_step_cy(
+        q_next, alpha_i, beta_i, W, active_k, breakdown, _step_acted = block_lanczos_step_cy(
             h_op=h_op,
             q_prev=q_prev,
             q_curr=q_curr,
@@ -857,7 +876,9 @@ def block_lanczos_cy(
             krylov=krylov,
             w_out=_w_bufs[it % 2] if _w_bufs is not None else None,
             beta_norm_hist=beta_norm_hist,
+            force_reort=_force_reort,
         )
+        _force_reort = _step_acted
 
         if breakdown:
             # active_k < 0 marks a non-finite (corrupted) Gram matrix -> truncated, NOT exact;

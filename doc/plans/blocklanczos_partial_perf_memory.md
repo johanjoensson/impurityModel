@@ -332,3 +332,50 @@ before optimizing further (a `truncate_cols` + store-view would remove it).
 `cdef list` with `[-1]` is a raw out-of-bounds access (segfault) — use explicit
 positive indices (`lst[len(lst) - 1]`), which is why the existing code writes
 `_svb[len(_svb) - 1]`.
+
+## Post-campaign regression: PARTIAL long-horizon collapse on the GF path (FIXED, 2026-07-07)
+
+**Report**: a production Ni run (`h0_106.dat`, 106 spin-orbitals, GF continued fraction,
+p=1, reort=partial) collapsed: |beta| jumped 1.2 -> 39.7 at it=575 with period-2 alpha
+oscillation (q_next ~ -q_prev, the self-perpetuating signature of a beta inconsistent
+with the vectors), then the divergence guard truncated at it=833 and the GF missed its
+1e-6 tolerance. Smaller precursor at it~217.
+
+**Reproduction**: NiO 10-bath workload (D=391 frozen basis), sparse kernel, p=1 random
+seed, PARTIAL, 389 iterations — collapsed identically at slaterWeightMin=sqrt(eps),
+1e-12 AND 0 (cutoff noise ruled out): loss hit O(1) by column ~200, |beta| -> 3e3,
+bottom "Ritz value" -6041 vs dense +76.04. The 60-iteration Phase-0 bench never saw it
+because true loss onset needs ~50-100 iterations (loss amplification here is
+(alpha_j-alpha_i)/beta ~ 30x/step; long-horizon GF runs are the hostile regime).
+
+**Root cause** (offline estimator replay against the exact per-column Gram of the
+stored Krylov columns): the *projections were perfect* (flagged-column overlaps
+-> 1e-16), but the post-act protocol was broken. `apply_reort` reset the flagged
+`W[-1,j]` to EPS — a lie: CGS2 against a Krylov set whose own mutual orthogonality has
+degraded to delta leaves residuals ~ delta*|overlap| >> EPS. With acts firing every 2-3
+steps, both live W rows (the estimator's entire state) got chopped to EPS on
+consecutive steps, the estimator went blind (measured: estimate 3e-13 while true
+overlap was 1e-5), and the true loss regrew geometrically from the un-modeled
+projection residuals until the recurrence diverged. The signed W recurrence itself is a
+good tracker on a clean trajectory (first trigger at it=19 vs true crossing at 20,
+median over-bound 10x); Simon-style full-magnitude propagation over-bounds by 1e8+
+(would degenerate PARTIAL to FULL) — the reset protocol, not the recurrence, was the bug.
+
+**Fix** (three parts, both kernels via the shared `apply_reort`):
+1. **Honest resets**: all three projection paths (`block_orthogonalize`,
+   `SparseKrylovDense.reort`, `reorth_cgs2_dense`) return the FINAL CGS pass's measured
+   (already-Allreduced) overlap `O_last`; `apply_reort` writes those rows into
+   `W[-1, j]` instead of EPS. In the healthy regime O_last ~ EPS-scale, so the trigger
+   cadence there is unchanged; in the degrading regime the estimator stays locked on.
+2. **Two-consecutive-steps rule** (Simon/PROPACK): when a step acts, the driver forces
+   the next step through the trigger gate (`apply_reort(force=True)` projects
+   everything above BAD_BLOCK_TOL), closing the q_curr re-contamination channel.
+3. **Renormalization propagation**: after an acted step's CholeskyQR2, the honest W
+   row is scaled by ||beta2_inv||_2 (the renormalization rescales q_next's true
+   overlaps by up to that; a no-op when the projection removed little).
+
+**Result** (same 389-iteration reproduction, all three cutoffs): no divergence, beta
+bounded by the spectral scale, max loss 9e-4 transient / self-healing back to ~1e-8,
+bottom Ritz 76.041265746 vs dense 76.041265770. Cost on this hostile workload:
+acted 306/389 (near-FULL — what 30x/step amplification genuinely demands); GS-regime
+cadence unchanged (O_last ~ EPS there).

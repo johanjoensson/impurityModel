@@ -914,6 +914,11 @@ def block_lanczos_array_cy(
     # before the recurrence terminated naturally).
     termination = "max_iter"
 
+    # Two-consecutive-steps reort rule (Simon/PROPACK): when a step acts, the next step
+    # bypasses the REORT_TOL gate (see apply_reort force=) so q_curr's remaining overlap
+    # cannot silently re-contaminate the recurrence through the three-term coupling.
+    _force_reort = False
+
     while it < _buf_size:
         q1 = np.ascontiguousarray(q[1])
         n_curr = q1.shape[1]
@@ -1128,7 +1133,10 @@ def block_lanczos_array_cy(
                 # block_lanczos_cy. Without it the W-recurrence's bad-block columns are
                 # mis-mapped, which silently loses orthogonality when resuming on a
                 # restarted (e.g. IRLM-compressed) basis.
-                q_next, W, _reort_acted = apply_reort(q_next, Q_list, W, reort, mpi, comm, block_widths + [n_curr])
+                q_next, W, _reort_acted = apply_reort(
+                    q_next, Q_list, W, reort, mpi, comm, block_widths + [n_curr], force=_force_reort
+                )
+                _force_reort = _reort_acted
                 # Only when the bad-block projection actually changed q_next does it need
                 # re-orthonormalizing; when no block was projected q_next is unchanged and this
                 # would be an exact no-op (M2 == I), so skip it and save the Gram + MPI Allreduce.
@@ -1158,6 +1166,11 @@ def block_lanczos_array_cy(
                         it += 1
                         break
                     q_next = q_next @ beta2_inv
+                    # The renormalization rescales q_next's true overlaps with every
+                    # Krylov column by up to ||beta2_inv||_2; propagate the same bound
+                    # into the just-written honest post-reort W estimates (a no-op when
+                    # the projection removed little: beta2_inv ~ I).
+                    W[1, : W.shape[1] - 1] *= np.linalg.norm(beta2_inv, 2)
                     betas_buf[it, :active_k, :n_curr] = beta_i
 
         # Record ||beta_it||_2 of the FINAL stored beta (the acted-renormalize above may
@@ -1409,11 +1422,18 @@ def block_lanczos_array(*args, **kwargs):
     return block_lanczos_array_cy(*args, **kwargs)
 
 
-cpdef tuple apply_reort(object wp, object Q_list, object W, object reort, bint mpi, object comm, list block_widths, object krylov=None):
+cpdef tuple apply_reort(object wp, object Q_list, object W, object reort, bint mpi, object comm, list block_widths, object krylov=None, bint force=False):
     """Reorthogonalize ``wp`` per the reort mode. Returns ``(wp, W, acted)``; ``acted`` is True
     iff a projection was actually applied (always for FULL/PERIODIC; for PARTIAL/SELECTIVE only
     when a bad block exceeded the trigger), so the caller can skip the follow-up renormalize
-    when nothing changed."""
+    when nothing changed.
+
+    ``force=True`` (PARTIAL/SELECTIVE) skips the ``REORT_TOL`` trigger gate and projects
+    against every block whose estimate exceeds ``BAD_BLOCK_TOL``. Drivers pass it on the
+    step immediately after an acted step (the classic two-consecutive-steps rule, Simon
+    1984 / PROPACK): the projection cleans only ``wp`` = q_{i+1}, so q_i's remaining
+    overlap re-contaminates q_{i+2} through the three-term recurrence one step later —
+    deterministically re-projecting there closes that channel."""
     from impurityModel.ed.BlockLanczosArray import Reort, REORT_TOL, BAD_BLOCK_TOL, EPS
     cdef list bad_block_idx = []
     cdef int j, col_start, col_end, w_j
@@ -1443,10 +1463,10 @@ cpdef tuple apply_reort(object wp, object Q_list, object W, object reort, bint m
                 wp = wp.to_states()
             if krylov is not None:
                 # Sparse path with a maintained dense Krylov basis: slice all columns, no gather.
-                wp = krylov.reort(wp, None, 2, comm if mpi else None)
+                wp, _ = krylov.reort(wp, None, 2, comm if mpi else None)
             else:
                 # Sparse path fallback: 2-pass CGS2 in dense BLAS (materialize Q from flat_maps).
-                wp = reorth_cgs2_dense(wp, Q_list, 2, comm if mpi else None)
+                wp, _ = reorth_cgs2_dense(wp, Q_list, 2, comm if mpi else None)
             if was_block:
                 wp = ManyBodyBlockState.from_states(wp)
         acted = True
@@ -1455,7 +1475,7 @@ cpdef tuple apply_reort(object wp, object Q_list, object W, object reort, bint m
         if W is not None:
             n_blks = W.shape[1] - 1  # W[-1, :n_blks]
             if not mpi or comm is None or comm.rank == 0:
-                if np.max(np.abs(W[-1, :n_blks])) > REORT_TOL:
+                if force or np.max(np.abs(W[-1, :n_blks])) > REORT_TOL:
                     bad_block_idx = [j for j in range(n_blks) if np.max(np.abs(W[-1, j])) > BAD_BLOCK_TOL]
             if mpi and comm is not None:
                 bad_block_idx = comm.bcast(bad_block_idx, root=0)
@@ -1476,26 +1496,45 @@ cpdef tuple apply_reort(object wp, object Q_list, object W, object reort, bint m
                 if _REORT_PROF_ON:
                     _REORT_PROF["bad_cols"] = _REORT_PROF.get("bad_cols", 0.0) + float(len(bad_cols))
 
+                # Every path keeps the FINAL CGS pass's measured (Allreduced) overlap
+                # O_last (rows ordered as bad_cols): it upper-bounds the overlap left
+                # after the projection and becomes the post-reort W-estimate below.
+                O_last = None
                 if is_array(Q_list):
                     Q_mat = Q_list if not isinstance(Q_list, list) else Q_list[0]
                     Q_bad = Q_mat[:, bad_cols]
                     for _ in range(2):
-                        wp, _ = block_orthogonalize(wp, Q_bad, mpi=mpi, comm=comm)
+                        wp, O_last = block_orthogonalize(wp, Q_bad, mpi=mpi, comm=comm)
                 else:
                     if was_block:
                         wp = wp.to_states()
                     if krylov is not None:
                         # Sparse path with a maintained dense Krylov basis: slice the flagged columns.
-                        wp = krylov.reort(wp, bad_cols, 2, comm if mpi else None)
+                        wp, O_last = krylov.reort(wp, bad_cols, 2, comm if mpi else None)
                     else:
                         Q_bad = [Q_list[col] for col in bad_cols]
                         # Sparse path fallback: 2-pass CGS2 in dense BLAS over the flagged bad blocks.
-                        wp = reorth_cgs2_dense(wp, Q_bad, 2, comm if mpi else None)
+                        wp, O_last = reorth_cgs2_dense(wp, Q_bad, 2, comm if mpi else None)
                     if was_block:
                         wp = ManyBodyBlockState.from_states(wp)
 
+                # HONEST reset (the old ``W = EPS`` was a lie that lost production runs):
+                # against a Krylov set whose own mutual orthogonality has degraded to
+                # delta, CGS2 leaves a residual ~ delta * |overlap| >> EPS. Writing EPS
+                # made the estimator blind right when it mattered (both live W rows get
+                # chopped on consecutive acted steps), and the true loss then regrew
+                # geometrically from the un-modeled residual until the recurrence
+                # diverged (measured: estimate 1e-9 while the true overlap was 1e-2).
+                # The final-pass overlap O_last is a measured, conservative bound on
+                # that residual — in the healthy regime it is ~EPS-scale, so the
+                # trigger cadence there is unchanged.
+                row0 = 0
                 for j in bad_block_idx:
                     w_j = block_widths[j]
-                    W[-1, j, :w_j, :active_k] = EPS * np.eye(w_j, active_k, dtype=complex)
+                    if O_last is not None:
+                        W[-1, j, :w_j, :active_k] = O_last[row0 : row0 + w_j, :active_k]
+                    else:
+                        W[-1, j, :w_j, :active_k] = EPS * np.eye(w_j, active_k, dtype=complex)
+                    row0 += w_j
 
     return wp, W, acted

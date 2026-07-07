@@ -1112,12 +1112,14 @@ def reorth_cgs2_dense(list wp, list Q, int n_passes, object comm):
     projections as ``zgemm`` instead of per-pair ``flat_map`` inner products / merges.
     Mathematically equivalent (to floating point) to repeating ``block_orthogonalize_sparse``
     ``n_passes`` times -- the W-estimator / bad-block selection is unchanged; only the projection
-    is accelerated. Returns a new list of ``wp`` ManyBodyStates.
+    is accelerated. Returns ``(out, O_last)``: the new list of ``wp`` ManyBodyStates and the
+    final pass's measured (Allreduced) ``(nq x p)`` overlap (``None`` when nothing was done) —
+    the caller's honest post-reorthogonalization W-estimate.
     """
     cdef int p = len(wp)
     cdef int nq = len(Q)
     if p == 0 or nq == 0 or n_passes <= 0:
-        return wp
+        return wp, None
 
     cdef vector[ManyBodyState_cpp*] wp_ptrs
     cdef vector[ManyBodyState_cpp*] q_ptrs
@@ -1150,7 +1152,7 @@ def reorth_cgs2_dense(list wp, list Q, int n_passes, object comm):
     # then deadlock -- seen at 4 ranks where a rank owns no determinants). With
     # ns == 0 the GEMMs are zero-row no-ops and O contributes zeros, as intended.
     if support.size() == 0 and comm is None:
-        return wp
+        return wp, None
     sort(support.begin(), support.end())
     support.erase(unique(support.begin(), support.end()), support.end())
     cdef Py_ssize_t ns = <Py_ssize_t>support.size()
@@ -1191,6 +1193,7 @@ def reorth_cgs2_dense(list wp, list Q, int n_passes, object comm):
     Qh = np.conj(Qd.T)
     if comm is not None:
         from mpi4py import MPI
+    O = None
     for _ in range(n_passes):
         O = Qh @ Wd
         if comm is not None:
@@ -1215,7 +1218,7 @@ def reorth_cgs2_dense(list wp, list Q, int n_passes, object comm):
         new_ms = ManyBodyState()
         new_ms.v = ManyBodyState_cpp(keys, vals)
         out.append(new_ms)
-    return out
+    return out, O
 
 
 cdef class SparseKrylovDense:
@@ -1382,11 +1385,14 @@ cdef class SparseKrylovDense:
         """``n_passes`` of CGS2: ``O = Q[:,cols]^H wp`` (Allreduced); ``wp -= Q[:,cols] O``.
 
         ``cols`` is a list of column indices (the flagged bad blocks) or ``None`` for all
-        columns. Returns a new list of ``wp`` ManyBodyStates.
+        columns. Returns ``(out, O_last)``: the new list of ``wp`` ManyBodyStates and the
+        FINAL pass's measured (Allreduced) overlap matrix ``(len(cols) x p)`` — an upper
+        bound on the residual overlap left after the projection, which the caller uses as
+        the honest post-reorthogonalization W-estimate (``None`` when nothing was done).
         """
         cdef int p = len(wp)
         if p == 0 or self.n_cols == 0 or n_passes <= 0:
-            return wp
+            return wp, None
         cdef vector[ManyBodyState_cpp*] wptrs
         cdef ManyBodyState ms
         cdef int ci
@@ -1418,6 +1424,7 @@ cdef class SparseKrylovDense:
         Qh = np.conj(Qsel.T)
         if comm is not None:
             from mpi4py import MPI
+        O = None
         for _ in range(n_passes):
             O = Qh @ Wd
             if comm is not None:
@@ -1440,7 +1447,7 @@ cdef class SparseKrylovDense:
             new_ms = ManyBodyState()
             new_ms.v = ManyBodyState_cpp(keys, vals)
             out.append(new_ms)
-        return out
+        return out, O
 
     def __len__(self):
         """Number of stored Krylov columns."""
