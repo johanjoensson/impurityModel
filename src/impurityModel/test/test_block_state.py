@@ -148,7 +148,12 @@ def _dets_orbital_msb(n_orb, rng, n_dets, n_el):
 
 @pytest.mark.parametrize("p", [1, 2, 3, 5])
 def test_apply_block_matches_independent_applies(p):
-    """block apply == p independent scalar applies, bit-for-bit at cutoff 0."""
+    """block apply == p independent scalar applies at cutoff 0.
+
+    Last-ulp tolerance, not bit-for-bit: the block and scalar loops are different
+    code, so compilers may contract their multiply-accumulates into FMA differently
+    (Intel icx does; the threaded merge additionally reorders duplicate accumulation).
+    """
     from impurityModel.ed.ManyBodyUtils import ManyBodyOperator
 
     rng = np.random.default_rng(31 + p)
@@ -159,16 +164,11 @@ def test_apply_block_matches_independent_applies(p):
     blk_out = op.apply_block(ManyBodyBlockState.from_states(states), 0.0)
     assert blk_out.width == p
     got = blk_out.to_states()
-    from impurityModel.ed.ManyBodyUtils import parallel_apply_build
-
     for c in range(p):
-        if parallel_apply_build():
-            # The threaded merge changes the duplicate-accumulation order, so
-            # bit-for-bit equality is a serial-build property.
-            diff = got[c] - ref[c]
-            assert np.sqrt(diff.norm2()) < 1e-12 * max(np.sqrt(ref[c].norm2()), 1.0)
-        else:
-            assert got[c] == ref[c], f"column {c} differs from independent apply"
+        diff = got[c] - ref[c]
+        assert np.sqrt(diff.norm2()) < 1e-12 * max(np.sqrt(ref[c].norm2()), 1.0), (
+            f"column {c} differs from independent apply"
+        )
 
 
 def test_apply_block_cutoff_keeps_rows():
@@ -275,8 +275,10 @@ def test_block_inner_matches_inner_multi():
     ]
     A = ManyBodyBlockState.from_states(A_states)
     B = ManyBodyBlockState.from_states(B_states)
-    np.testing.assert_array_equal(block_inner_cy(A, B), inner_multi(A_states, B_states))
-    np.testing.assert_array_equal(block_inner_cy(A, A), inner_multi(A_states, A_states))
+    # Same accumulation order, but FMA contraction of conj(a)*b sums differs across
+    # compilers (Intel icx) between the block and list code paths — last-ulp tolerance.
+    np.testing.assert_allclose(block_inner_cy(A, B), inner_multi(A_states, B_states), rtol=1e-13, atol=1e-14)
+    np.testing.assert_allclose(block_inner_cy(A, A), inner_multi(A_states, A_states), rtol=1e-13, atol=1e-14)
 
 
 def test_block_add_scaled_matches_add_scaled_multi():
@@ -295,8 +297,9 @@ def test_block_add_scaled_matches_add_scaled_multi():
     add_scaled_multi(ref, B_states, np.ascontiguousarray(C))
     out = block_add_scaled_cy(ManyBodyBlockState.from_states(A_states), ManyBodyBlockState.from_states(B_states), C)
     for j, col in enumerate(out.to_states()):
+        # same accumulation order; last-ulp tolerance for compiler FMA differences
         diff = col - ref[j]
-        assert np.sqrt(diff.norm2()) == 0.0  # exact: same accumulation order
+        assert np.sqrt(diff.norm2()) < 1e-13 * max(np.sqrt(ref[j].norm2()), 1.0)
     with pytest.raises(ValueError):
         block_add_scaled_cy(
             ManyBodyBlockState.from_states(A_states), ManyBodyBlockState.from_states(B_states), np.ones((3, 2))
@@ -312,8 +315,9 @@ def test_combine_columns_matches_block_combine_sparse():
     Y = rng.standard_normal((4, 2)) + 1j * rng.standard_normal((4, 2))
     ref = block_combine_sparse(states, Y)
     for j, col in enumerate(blk.combine_columns(Y).to_states()):
+        # same accumulation order; last-ulp tolerance for compiler FMA differences
         diff = col - ref[j]
-        assert np.sqrt(diff.norm2()) == 0.0
+        assert np.sqrt(diff.norm2()) < 1e-13 * max(np.sqrt(ref[j].norm2()), 1.0)
     # width can shrink (deflation) and grow
     assert blk.combine_columns(np.eye(4)[:, :1]).width == 1
 
