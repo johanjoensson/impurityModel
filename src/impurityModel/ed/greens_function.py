@@ -844,13 +844,21 @@ def block_Green(
         old_size = basis.size
         # Reachability probe: repeatedly apply H to the residual block to discover new
         # determinants. The block shares its support, so the block matvec applies here too.
+        # The truncation_threshold check sits INSIDE the probe loop so the basis can
+        # overshoot the cap by at most one H-application batch (checking only after all
+        # five rounds used to blow past it by the full five-fold fanout). basis.size is
+        # replicated by add_states, so the break is collective-consistent.
         probe = ManyBodyBlockState.from_states(list(last_q))
+        capped = False
         for i in range(5):
             probe = hOp.apply_block(probe, slaterWeightMin)
             basis.add_states(
                 set(state for state in probe.support_keys(0.0) if state not in basis.local_basis),
             )
-        if basis.size == old_size or basis.size > basis.truncation_threshold:
+            if basis.size > basis.truncation_threshold:
+                capped = True
+                break
+        if basis.size == old_size or capped:
             break
         if verbose:
             print(f"    expanded basis contains {basis.size} states")

@@ -219,3 +219,24 @@ def test_capped_gf_mpi_matches_serial():
     np.testing.assert_allclose(g_mpi, g_serial, atol=1e-8)
     assert info["retained_size"] == info_serial["retained_size"]
 
+
+def test_array_path_probe_respects_cap():
+    """block_Green (array kernel): the probe loop must stop within ONE H-application
+    batch of crossing truncation_threshold, not run all five probe rounds first."""
+    from impurityModel.ed.BlockLanczosArray import Reort
+    from impurityModel.ed.greens_function import block_Green
+
+    cap = 5
+    basis = _excited_basis(cap)
+    hOp = _siam_6()
+    # One full H fanout from the initial basis: the largest support any single
+    # probe batch can add before the in-loop cap check fires.
+    probe = ManyBodyBlockState.from_states([ManyBodyState(dict.fromkeys(basis.local_basis, 1.0 + 0j))])
+    one_fanout = set(basis.local_basis) | set(hOp.apply_block(probe, 0).support_keys(0.0))
+    assert cap < len(one_fanout) < 18  # the cap must bind inside the first probe round
+
+    alphas, betas, r = block_Green(hOp, _seeds(), basis, DELTA, Reort.NONE, verbose=False)
+    assert basis.size > cap  # the cap was crossed (expansion did happen)
+    assert basis.size <= len(one_fanout)  # ...but by at most one apply batch
+    g = calc_G(alphas, betas, r, OMEGA, 0.0, DELTA)
+    assert np.all(np.diagonal(g.imag, axis1=1, axis2=2) <= 1e-12)
