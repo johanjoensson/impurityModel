@@ -166,9 +166,9 @@ def test_apply_block_matches_independent_applies(p):
     got = blk_out.to_states()
     for c in range(p):
         diff = got[c] - ref[c]
-        assert np.sqrt(diff.norm2()) < 1e-12 * max(np.sqrt(ref[c].norm2()), 1.0), (
-            f"column {c} differs from independent apply"
-        )
+        assert np.sqrt(diff.norm2()) < 1e-12 * max(
+            np.sqrt(ref[c].norm2()), 1.0
+        ), f"column {c} differs from independent apply"
 
 
 def test_apply_block_cutoff_keeps_rows():
