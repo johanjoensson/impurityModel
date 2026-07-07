@@ -963,11 +963,20 @@ def extract_new_states(list states, object existing_dict):
     return new_states
 
 
-def inner_multi(list states_a, list states_b):
+def inner_multi(states_a, states_b):
     """
-    Compute inner products between two lists of ManyBodyStates.
+    Compute inner products between two sequences of ManyBodyStates.
     Returns a complex numpy array of shape (len(states_a), len(states_b)).
+
+    Non-list sequences (e.g. a SparseKrylovDense column store) are materialized into a
+    list first: the loop below collects raw pointers into the states, so the Python
+    objects must stay alive for the whole call — a bare iterator's temporaries would
+    be collected mid-loop and leave the pointers dangling.
     """
+    if not isinstance(states_a, list):
+        states_a = list(states_a)
+    if not isinstance(states_b, list):
+        states_b = list(states_b)
     cdef int na = len(states_a)
     cdef int nb = len(states_b)
     cdef res = np.zeros((na, nb), dtype=complex)
@@ -999,14 +1008,21 @@ def inner_multi(list states_a, list states_b):
     return res
 
 
-def add_scaled_multi(list states_target, list states_source, complex[:, :] coeffs):
+def add_scaled_multi(list states_target, states_source, complex[:, :] coeffs):
     """
     Add a scaled sum of states_source to each state in states_target::
 
         for each j in range(len(states_target)):
             for i in range(len(states_source)):
                 states_target[j] += coeffs[i, j] * states_source[i]
+
+    ``states_target`` must be a real list (the states are mutated in place; a store's
+    materialized temporaries would silently discard the update). ``states_source`` may
+    be any sequence; non-lists are materialized first to keep the collected raw
+    pointers alive for the whole call.
     """
+    if not isinstance(states_source, list):
+        states_source = list(states_source)
     cdef int n_target = len(states_target)
     cdef int n_source = len(states_source)
 

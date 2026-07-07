@@ -1180,7 +1180,7 @@ def block_lanczos_array_cy(
 
 
 import scipy.sparse as sps
-from impurityModel.ed.ManyBodyUtils import inner_multi, add_scaled_multi, reorth_cgs2_dense
+from impurityModel.ed.ManyBodyUtils import inner_multi, add_scaled_multi, reorth_cgs2_dense, SparseKrylovDense
 
 cpdef bint is_array(object V):
     if isinstance(V, (np.ndarray, sps.spmatrix, sps.sparray)):
@@ -1245,6 +1245,10 @@ cpdef object block_combine(object Q, object Y, double slaterWeightMin=0.0):
         if isinstance(Q, list):
             Q = np.column_stack(Q)
         return block_combine_array(Q, Y)
+    elif isinstance(Q, SparseKrylovDense):
+        # Columnar Krylov store: one zgemm over the dense buffer + scatter of only the
+        # output columns — no materialization of the inputs.
+        return Q.combine(Y, slaterWeightMin=slaterWeightMin)
     else:
         from impurityModel.ed.BlockLanczos import block_combine_sparse
         return block_combine_sparse(Q, Y, slaterWeightMin)

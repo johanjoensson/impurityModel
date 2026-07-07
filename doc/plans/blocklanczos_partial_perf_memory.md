@@ -151,14 +151,57 @@ Ranked by the Phase-0 profile; current candidate order:
    transient.
 4. 2-body masked sign (deferred design §A) only if the general-path share justifies it.
 
-## Phase 3 — columnar Krylov store (planned, gated on Phase 0 numbers)
+## Phase 3 — columnar Krylov store (IN PROGRESS; gate criteria met)
 
-Promote a `SparseKrylovDense`-like structure to the *primary* Krylov storage
-(shared determinant→row support + one geometric complex buffer, `get_block`/`combine`
-accessors); rewire warm-start, TRLM/IRLM extraction, `selective_orthogonalize`,
-`apply_reort`; FULL/PERIODIC stop double-storing; `reorth_cgs2_dense` fallback retires.
-Recurrence stays bit-for-bit; the bad-block projection changes summation order
-(tolerance-equivalent, flag in commit).
+Gate confirmed by Phase 0: Q_basis is 52 of 75 MiB peak per rank (50 bath) at fill
+ratio 1.00 → the columnar store cuts Krylov memory ~4.5x (72 B/coeff flat_map → 16 B
+dense over the shared support).
+
+**Design (fixed 2026-07-07).** The TRLM/IRLM restart machinery is already
+path-agnostic through a small dispatch surface — `_q_cols`/`_q_slice`/`_q_concat`/
+`_copy_block` (BlockLanczos.pyx) and `is_array`/`block_combine`/`block_inner`/
+`block_orthogonalize`/`block_add_scaled` (BlockLanczosArray.pyx) — so the store lands
+as a *third dispatch path*, not a rewrite:
+
+1. **Commit A**: extend `SparseKrylovDense` (ManyBodyUtils.pyx) into the primary
+   store: sequence protocol (`__len__` = n_cols, `__getitem__` int→`ManyBodyState`,
+   slice→list, `__iter__`), `combine(Y, a, b, slaterWeightMin)` (zgemm over
+   `Qbuf[:, a:b] @ Y`, scatter only the output states — the dense analogue of
+   `block_combine_sparse`), `memory_bytes()`. Unit tests: bit-exact
+   materialize/append round-trip; `combine` vs `block_combine_sparse` on
+   materialized states.
+2. **Commit B**: `block_lanczos_cy` maintains the store as the ONLY retention for
+   `store_krylov=True` (all reort modes; the FULL/PERIODIC list+mirror double
+   storage disappears, PARTIAL's `reorth_cgs2_dense` transient path retires —
+   `apply_reort` gets `krylov=store` always). Returns the store as `Q_basis`;
+   accepts `Q_init` as store (resume round-trip: greens_function works unchanged)
+   or legacy list. Dispatch helpers + `selective_orthogonalize` learn the store
+   (a lightweight `(store, a, b)` view from `_q_slice` so `block_combine` can gemm
+   without materializing). Tests that do `inner_multi(Q, Q)` materialize via
+   `list(Q)`. The EOR warm-start W-seed (rare path) materializes block slices.
+
+Recurrence stays bit-for-bit (q_prev/q_curr untouched); the bad-block projection's
+summation order changes (insertion-ordered store rows vs merged-sorted transient
+support) → tolerance-equivalent, flag in commit B.
+
+**Commit B landed (2026-07-07). Measured, NiO 50 bath (basis 5848, p=2, 60 its):**
+
+|  | baseline (pre-campaign) | after estimator fix | after store |
+|---|---|---|---|
+| ms/iteration (serial) | 125.2 | 68.9 | **65.5** |
+| ms/iteration (n=2) | 84.7 | — | **49.8** |
+| reort ms/it (serial) | 44.6 | 10.6 | **2.2** |
+| Q_basis / rank (serial) | 52.0 MiB | 52.0 MiB | **16.8 MiB** (3.1x) |
+| loop peak RSS delta | 64.2 MiB | 74.6 MiB | **1.0 MiB** |
+| cgs2_dense churn / run | 180 MB | 42 MB | **0 (path retired)** |
+
+E0 identical to the array TRLM (-69.361029), `‖QᴴQ−I‖ = 1.9e-8` unchanged. The
+16.8 MiB store vs the 11.6 MiB theoretical minimum is geometric capacity slack
+(122 columns in a 128-capacity buffer + row slack) — acceptable; column-chunked
+growth (Phase 4) can shave it if it ever matters. TRLM/IRLM restart extraction
+gets the store's gemm `combine` automatically through `block_combine`; restart
+boundaries still transiently materialize slices (`_q_slice` → list) — measure
+before optimizing further (a `truncate_cols` + store-view would remove it).
 
 ## Phase 4 — transient-spike reductions (planned)
 

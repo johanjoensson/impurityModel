@@ -584,8 +584,10 @@ def block_lanczos_cy(
             resumes from block ``k0``.  Default ``None``.
         betas_init: Warm-start off-diagonal block array of shape ``(k0, p, p)``.
             Default ``None``.
-        Q_init: Warm-start Krylov basis as a flat list of ``ManyBodyState``
-            (length ``>= k0 * p``).  Default ``None``.
+        Q_init: Warm-start Krylov basis: the ``SparseKrylovDense`` store returned
+            by a previous run (adopted as-is, zero-copy resume) or a legacy flat
+            list of ``ManyBodyState`` (length ``>= k0 * p``, ingested into a fresh
+            store).  Default ``None``.
         W_init: Warm-start Paige-Simon W-estimator array.  Passed through to
             the step function; ``None`` causes exact initialisation via EOR
             when resuming with partial/selective reorthogonalization.  Default
@@ -607,8 +609,11 @@ def block_lanczos_cy(
           diagonal blocks :math:`\\alpha_0, \\dots, \\alpha_{k-1}`.
         * ``betas`` – complex array of shape ``(k, p, p)`` holding the
           off-diagonal blocks :math:`\\beta_0, \\dots, \\beta_{k-1}`.
-        * ``Q_basis`` – flat list of ``ManyBodyState`` of length
-          ``(k + 1) * p``; the last ``p`` entries form the residual
+        * ``Q_basis`` – the Krylov basis as a ``SparseKrylovDense`` column store
+          of ``(k + 1) * p`` columns (a sequence of ``ManyBodyState``: ``len``,
+          indexing, slicing and iteration materialize columns on demand); the
+          last ``p`` columns form the residual.  With ``store_krylov=False`` a
+          plain two-block tail list instead (see below).
 
         ``return_widths=True`` appends ``block_widths`` (the per-block true widths)
         and ``return_status=True`` appends a ``termination`` string -- one of
@@ -663,18 +668,26 @@ def block_lanczos_cy(
                 q_prev_len = block_widths[start_it - 1]
                 q_prev = list(Q_init[:q_prev_len])
                 q_curr = list(Q_init[q_prev_len:])
-        elif start_it == 0 or len(Q_init) < p:
-            Q_basis = list(Q_init)
-            q_prev = [ManyBodyState() for _ in range(p)]
-            q_curr = [Q_basis[i] for i in range(p)]
         else:
-            Q_basis = list(Q_init)
-            q_prev_start = sum(block_widths[:start_it - 1])
-            q_prev_len = block_widths[start_it - 1]
-            q_curr_start = sum(block_widths[:start_it])
-            q_curr_len = len(Q_basis) - q_curr_start
-            q_prev = [Q_basis[i] for i in range(q_prev_start, q_prev_start + q_prev_len)]
-            q_curr = [Q_basis[i] for i in range(q_curr_start, q_curr_start + q_curr_len)]
+            # Columnar retention: the store is the ONLY copy of the Krylov basis (shared
+            # determinant->row support + one dense coefficient buffer, ~16 B/coeff vs
+            # ~72 B/coeff for a list of flat_map states). A store from a previous run
+            # (the resume round-trip) is adopted as-is; a legacy list is ingested once.
+            if isinstance(Q_init, SparseKrylovDense):
+                Q_basis = Q_init
+            else:
+                Q_basis = SparseKrylovDense()
+                if len(Q_init) > 0:
+                    Q_basis.append(list(Q_init))
+            if start_it == 0 or len(Q_basis) < p:
+                q_prev = [ManyBodyState() for _ in range(p)]
+                q_curr = Q_basis[0:p]
+            else:
+                q_prev_start = sum(block_widths[:start_it - 1])
+                q_prev_len = block_widths[start_it - 1]
+                q_curr_start = sum(block_widths[:start_it])
+                q_prev = Q_basis[q_prev_start : q_prev_start + q_prev_len]
+                q_curr = Q_basis[q_curr_start : len(Q_basis)]
     else:
         start_it = 0
         p = len(psi0)
@@ -683,19 +696,16 @@ def block_lanczos_cy(
         # Redistribute initial states across ranks
         q_curr = basis.redistribute_psis(list(psi0))
         q_prev = [ManyBodyState() for _ in range(p)]
-        Q_basis = [st.copy() for st in q_curr] if store_krylov else []
+        if store_krylov:
+            Q_basis = SparseKrylovDense()
+            Q_basis.append(q_curr)
+        else:
+            Q_basis = []
 
-    # Maintain a dense copy of the (rank-local) Krylov basis so the block reort slices
-    # columns instead of re-materializing Q from flat_maps every step (see SparseKrylovDense).
-    # Only kept for FULL/PERIODIC, which project against *all* columns every (periodic) step:
-    # there the per-step re-materialization would dominate. PARTIAL/SELECTIVE project only
-    # against flagged bad blocks on rare trigger steps, so they use the transient
-    # reorth_cgs2_dense fallback in apply_reort instead of holding a second full copy of the
-    # Krylov basis (the mirror doubles the dominant memory of every CIPSI/ground-state solve).
-    krylov = None
-    if reort_mode in (Reort.FULL, Reort.PERIODIC):
-        krylov = SparseKrylovDense()
-        krylov.append(Q_basis)
+    # The store doubles as the dense reort mirror for every mode (apply_reort slices its
+    # columns via store.reort); the old FULL/PERIODIC-only mirror and the PARTIAL-mode
+    # transient reorth_cgs2_dense materialization are both subsumed by it.
+    krylov = Q_basis if store_krylov else None
 
     # --- Determine max_iter ---------------------------------------------
     if max_iter is None:
@@ -859,9 +869,9 @@ def block_lanczos_cy(
         # Tail-only mode keeps nothing here: q_prev/q_curr roll below and the two-block
         # tail is assembled at return.
         if store_krylov:
-            Q_basis.extend([st.copy() for st in q_next])
-        if krylov is not None:
-            krylov.append(q_next)
+            # append copies the coefficients into the dense buffer, so no defensive
+            # st.copy() is needed (the old list retention copied each state here).
+            Q_basis.append(q_next)
 
         if verbose:
             print(

@@ -356,11 +356,15 @@ def test_partial_sparse_kernel_bench(nio_workload):
         assert abs(e0_sparse - e0_trlm) < 1e-4, f"kernel E0 mismatch: sparse {e0_sparse} vs array {e0_trlm}"
 
     # --- memory breakdown ---
-    q_bytes = sum(st.memory_bytes() for st in Q_basis)
-    union_size, total_nnz = support_stats(Q_basis)
+    # Q_basis is the columnar store (Phase 3); report its dense footprint, plus what the
+    # same basis would cost as a list of flat_map states (the pre-Phase-3 retention).
+    q_bytes = Q_basis.memory_bytes()
+    q_states = list(Q_basis)
+    legacy_bytes = sum(st.memory_bytes() for st in q_states)
+    union_size, total_nnz = support_stats(q_states)
     fill = total_nnz / (union_size * len(Q_basis)) if union_size else 0.0
-    columnar_bytes = 16 * union_size * len(Q_basis)
     w_bytes = W.nbytes if W is not None else 0
+    del q_states
 
     prof = get_block_lanczos_profile()
     reort_prof = get_reort_profile()
@@ -394,9 +398,9 @@ def test_partial_sparse_kernel_bench(nio_workload):
             ("reort acted/total", f"{int(prof.get('reort_acted#n', 0))}/{int(prof.get('reort_total#n', 0))}"),
             ("apply_reort stats", str(reort_prof)),
             ("cgs2_dense transients", str(mbu_prof)),
-            ("Q_basis (local)", f"{q_bytes / MB:.1f} MiB, {len(Q_basis)} vectors"),
+            ("Q_basis store (local)", f"{q_bytes / MB:.1f} MiB, {len(Q_basis)} columns"),
             ("union support / fill", f"{union_size} determinants, fill {fill:.2f}"),
-            ("columnar equivalent", f"{columnar_bytes / MB:.1f} MiB ({q_bytes / max(columnar_bytes, 1):.1f}x smaller)"),
+            ("legacy list equivalent", f"{legacy_bytes / MB:.1f} MiB ({legacy_bytes / max(q_bytes, 1):.1f}x larger)"),
             ("W buffer", f"{w_bytes / MB:.2f} MiB"),
             ("per-rank (local_n, Q MiB, peak RSS delta MiB)", str([(n, f"{q / MB:.1f}", f"{p / MB:.1f}") for n, q, p in gathered])),
         ],
