@@ -1,6 +1,8 @@
 import faulthandler
 import gc
+import os
 import sys
+import tempfile
 
 import pytest
 
@@ -23,14 +25,28 @@ def pytest_configure(config):
     if not (_has_mpi and MPI.Is_initialized() and MPI.COMM_WORLD.Get_size() > 1):
         return
     rank = MPI.COMM_WORLD.Get_rank()
+    # Every rank also creates and garbage-collects numbered tmpdirs under the same
+    # /tmp/pytest-of-<user> root; the concurrent cleanup (rename to garbage-<uuid>
+    # + rmtree) races between ranks, and the resulting "(rm_rf) error removing"
+    # PytestWarning is a hard session error under filterwarnings = error even when
+    # every test passed. Point each rank at a private temp root instead. Read
+    # lazily by TempPathFactory.getbasetemp() and only when --basetemp is not
+    # given, so an explicit --basetemp still wins; the directory must pre-exist
+    # because getbasetemp() creates pytest-of-<user> without parents=True.
+    temproot = os.path.join(tempfile.gettempdir(), f"pytest-mpi-rank{rank}")
+    os.makedirs(temproot, exist_ok=True)
+    os.environ["PYTEST_DEBUG_TEMPROOT"] = temproot
     if rank == 0:
         return
     reporter = config.pluginmanager.getplugin("terminalreporter")
     if reporter is None:
         return
     out = open(f".pytest_mpi_rank{rank}.out", "w")
-    # Keep a reference on config so the file object survives the whole session.
+    # Keep a reference on config so the file object survives the whole session,
+    # and close it at unconfigure so interpreter shutdown doesn't emit an
+    # unclosed-file ResourceWarning.
     config._mpi_rank_out = out
+    config.add_cleanup(out.close)
     reporter._tw._file = out
     reporter._tw.hasmarkup = False
 
