@@ -436,7 +436,6 @@ cdef class ManyBodyState:
         return self.v.empty()
 
 
-
 def apply_global_truncation(ManyBodyState st, int max_size, object comm):
     """
     Truncate the ManyBodyState across all MPI ranks such that the global total
