@@ -94,6 +94,45 @@ comparison).
    ~4.5x Krylov-memory cut and retires the `reorth_cgs2_dense` transient
    (9.1 MiB peak per call at basis 5848, 180 MB total churn over 60 iterations).
 
+## Phase 2.1 — PARTIAL estimator calibration (DONE, second commit)
+
+Root cause of finding 2, established with a truth-vs-estimate replay
+(`block_lanczos_step_cy` driven directly with `reort=NONE`, exact `<Q_j|q_next>`
+overlaps vs the W recurrence on the same trajectory):
+
+- The **magnitude** W recurrence (sum of `|terms|`, introduced by "HARDEN Block
+  Lanczos" `48308d1` together with the 1/σ_min noise-floor fix) destroys the exact
+  structural cancellation of the O(‖β‖) identity-adjacent terms in the three-term
+  recurrence. The estimate jumps to O(‖β‖/σ_min) ≈ O(1) after **one** step and
+  compounds exponentially — measured over-prediction 1e15→1e62 on the NiO ground
+  state. Every block was flagged every iteration: PARTIAL silently did FULL work
+  (this also explains the "B2 investigation" conclusion in `0b8bfff` that reort is
+  "barely selective" — it was the estimator, not the spectrum).
+- Fix: **signed propagation restored** (pre-HARDEN form; the cancellation is the
+  physics) **+ the 1/σ_min-amplified magnitude noise floor kept** (that part of
+  HARDEN was the genuine under-prediction fix) **+ √N scaling** of the floor
+  (rounding accumulates as a √N random walk over an N-dimensional state; same
+  convention as the drivers' locked-reort floor `EPS*p*sqrt(N)`; the historical
+  `N=1` default under-scaled by exactly the measured ~10x gap at N=670). Call sites
+  now pass the global dimension N.
+- Validated: estimate/truth ratio stable at 2–10x (upper bound, never under at
+  trigger onset) across the full run; the estimator crosses REORT_TOL exactly when
+  the true loss reaches the √ε semi-orthogonality boundary.
+
+Effect (serial):
+- 20 bath: reort acted 4/40 (was 39/40), reort 2.99 → 0.93 ms/it, iteration
+  10.1 → 8.1 ms, `‖QᴴQ−I‖ = 1.49e-8`.
+- 50 bath: **iteration 125.2 → 68.9 ms (1.8x)**, reort 44.6 → 10.6 ms/it acting
+  5/60 (was 59/60), `reorth_cgs2_dense` churn 180 → 42 MB per run,
+  `‖QᴴQ−I‖ = 1.9e-8`, E0 identical to the array TRLM (-69.361029).
+
+The final orthogonality now sits exactly at the PARTIAL design point
+(semi-orthogonality at √ε with minimal projection work; the previous 1e-12 was
+FULL-grade orthogonality bought at FULL-grade cost). Tolerance-equivalent change by
+policy (the reort firing pattern differs ⇒ different rounding trajectory); full gate
+green serial + n=2 + n=3 with baseline-identical pass/xfail counts, reort oracle and
+restarted-Lanczos suites green.
+
 ## Phase 1 — bit-for-bit wins (planned)
 
 1. Bounded W buffer (callers pass views; kills the per-step `(2, i+2, n, n)` realloc in

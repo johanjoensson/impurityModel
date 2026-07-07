@@ -297,12 +297,19 @@ cpdef np.ndarray estimate_orthonormality(
     np.ndarray[double complex, ndim=3] betas,
     object block_widths=None,
     double eps=0.0,
-    int N=1
+    double N=1.0
 ):
     cdef int i = alphas.shape[0] - 1
     cdef int n = alphas.shape[1]
     if eps == 0.0:
         eps = np.finfo(float).eps
+
+    # Rounding-accumulation scale: a matvec/orthogonalization over an N-dimensional
+    # state accumulates ~N rounding errors whose sum grows like sqrt(N) (random-walk;
+    # the same convention as the locked-reort floor eps*p*sqrt(N) in the drivers).
+    # Callers pass N = the global problem dimension; the historical default N=1
+    # under-scaled the floor by sqrt(N) (measured ~10x at N=670).
+    cdef double n_scale = np.sqrt(N) if N > 1.0 else 1.0
 
     cdef list widths
     if block_widths is None:
@@ -323,7 +330,7 @@ cpdef np.ndarray estimate_orthonormality(
     w_bar[i + 1, :w_next, :w_next] = np.identity(w_next)
 
     cdef np.ndarray beta_i_dag_inv = np.conj(la.pinv(betas[i, :w_next, :w_curr]).T)  # shape (w_next, w_curr)
-    w_bar[i, :w_next, :w_0] = eps * N * beta_i_dag_inv @ betas[0, :w_curr, :w_0]
+    w_bar[i, :w_next, :w_0] = eps * n_scale * beta_i_dag_inv @ betas[0, :w_curr, :w_0]
 
     if i == 0:
         W_out[0, : i + 1] = W[1]  # w_bar is already W_out[1] (built in place)
@@ -333,19 +340,22 @@ cpdef np.ndarray estimate_orthonormality(
     cdef int w_j = widths[0]
     cdef int w_j_next = widths[1]
     cdef int w_i_prev = widths[i-1]
-    # Propagate the estimate through the three-term recurrence in *magnitude* (sum of |terms|,
-    # |beta_i^{-1}| applied entrywise). The signed recurrence suffers catastrophic cancellation
-    # in the RHS on clustered / near-invariant spectra (the amplification by ||beta_i^{-1}|| is
-    # cancelled away), so the estimate under-predicts the true loss by orders of magnitude and the
-    # bad-block trigger never fires. Propagating magnitudes makes W a guaranteed *upper bound* on
-    # the orthogonality loss — at worst it triggers reorthogonalization slightly early.
-    cdef np.ndarray abs_binv = np.abs(beta_i_dag_inv)
-    cdef np.ndarray term1 = np.abs(W[1, 1, :w_i, :w_j_next] @ betas[0, :w_j_next, :w_j])
-    cdef np.ndarray term2 = np.abs(W[1, 0, :w_i, :w_j] @ alphas[0, :w_j, :w_j])
-    cdef np.ndarray term3 = np.abs(alphas[i, :w_i, :w_i] @ W[1, 0, :w_i, :w_j])
-    cdef np.ndarray term5 = np.abs(betas[i-1, :w_i, :w_i_prev] @ W[0, 0, :w_i_prev, :w_j])
-    cdef np.ndarray RHS_0 = term1 + term2 + term3 + term5
-    w_bar[0, :w_next, :w_j] = abs_binv @ RHS_0
+    # Propagate the estimate through the SIGNED three-term recurrence (Paige/Simon; EA16
+    # eq. 14). The signs matter: the O(||beta||) structural terms (e.g. W[1,j+1] beta_j vs
+    # beta_{i-1} W[0,j] around the identity entries) cancel to O(eps ||beta||) exactly as
+    # the true overlaps do — that cancellation IS the physics of the recurrence. A
+    # magnitude version (sum of |terms|, tried 2026-06 as an "upper bound") destroys it:
+    # the estimate jumps to O(||beta||/sigma_min) ~ O(1) after a single step and then
+    # compounds exponentially (measured 1e15–1e62 x over-prediction on the NiO ground
+    # state), so every block is flagged on every iteration and PARTIAL silently does FULL
+    # work. The rounding injection the magnitudes were meant to capture is modeled
+    # explicitly by the sqrt(N)-scaled noise floor below instead.
+    cdef np.ndarray term1 = W[1, 1, :w_i, :w_j_next] @ betas[0, :w_j_next, :w_j]
+    cdef np.ndarray term2 = W[1, 0, :w_i, :w_j] @ alphas[0, :w_j, :w_j]
+    cdef np.ndarray term3 = alphas[i, :w_i, :w_i] @ W[1, 0, :w_i, :w_j]
+    cdef np.ndarray term5 = betas[i-1, :w_i, :w_i_prev] @ W[0, 0, :w_i_prev, :w_j]
+    cdef np.ndarray RHS_0 = term1 + term2 - term3 - term5
+    w_bar[0, :w_next, :w_j] = beta_i_dag_inv @ RHS_0
 
     cdef int j, w_j_prev
     cdef np.ndarray term4
@@ -355,29 +365,31 @@ cpdef np.ndarray estimate_orthonormality(
         w_j_prev = widths[j-1]
         w_j_next = widths[j+1]
 
-        term1 = np.abs(W[1, j+1, :w_i, :w_j_next] @ betas[j, :w_j_next, :w_j])
-        term2 = np.abs(W[1, j, :w_i, :w_j] @ alphas[j, :w_j, :w_j])
-        term3 = np.abs(alphas[i, :w_i, :w_i] @ W[1, j, :w_i, :w_j])
-        term4 = np.abs(W[1, j-1, :w_i, :w_j_prev] @ np.conj(betas[j-1, :w_j, :w_j_prev].T))
-        term5 = np.abs(betas[i-1, :w_i, :w_i_prev] @ W[0, j, :w_i_prev, :w_j])
+        term1 = W[1, j+1, :w_i, :w_j_next] @ betas[j, :w_j_next, :w_j]
+        term2 = W[1, j, :w_i, :w_j] @ alphas[j, :w_j, :w_j]
+        term3 = alphas[i, :w_i, :w_i] @ W[1, j, :w_i, :w_j]
+        term4 = W[1, j-1, :w_i, :w_j_prev] @ np.conj(betas[j-1, :w_j, :w_j_prev].T)
+        term5 = betas[i-1, :w_i, :w_i_prev] @ W[0, j, :w_i_prev, :w_j]
 
-        RHS = term1 + term2 + term3 + term4 + term5
-        w_bar[j, :w_next, :w_j] = abs_binv @ RHS
+        RHS = term1 + term2 - term3 + term4 - term5
+        w_bar[j, :w_next, :w_j] = beta_i_dag_inv @ RHS
 
     # Local-rounding noise floor (Simon 1984 / Larsen PROPACK). Forming q_{i+1} = w_p beta_i^{-1}
-    # injects rounding ~eps*(||beta_i||+||beta_j||) that the normalization amplifies by
+    # injects rounding ~eps*sqrt(N)*(||beta_i||+||beta_j||) that the normalization amplifies by
     # ||beta_i^{-1}|| = 1/sigma_min(beta_i): when beta_i is small (a near-invariant block) the new
     # vector is rounding-dominated and orthogonality is lost fastest, so the floor must *grow* as
-    # beta_i shrinks. The previous term `eps*(beta_i + beta_j)` omitted the 1/sigma_min factor (and
+    # beta_i shrinks. An earlier version `eps*(beta_i + beta_j)` omitted the 1/sigma_min factor (and
     # shrank with beta_i), so the estimate vanished exactly when the true loss was worst -> the
     # bad-block trigger never fired and PARTIAL degenerated to no reorthogonalization. The floor is
-    # added as a positive magnitude (no sign cancellation) so the estimate upper-bounds the loss.
+    # added as a positive magnitude (no sign cancellation): it, not the signed propagation above,
+    # carries the per-step rounding injection, and with the sqrt(N) scale it upper-bounds the
+    # measured true loss by a stable ~2-10x on the NiO ground-state workload.
     _sig_min_bi = float(np.min(la.svd(betas[i, :w_next, :w_curr], compute_uv=False)))
     _binv_norm = 1.0 / max(_sig_min_bi, eps)
     _bnorm_i = float(np.linalg.norm(betas[i, :w_next, :w_curr], ord=2))
     for j in range(i):
         _bnorm_j = float(np.linalg.norm(betas[j, :widths[j+1], :widths[j]], ord=2))
-        w_bar[j, :w_next, :widths[j]] += eps * N * (_bnorm_i + _bnorm_j) * _binv_norm
+        w_bar[j, :w_next, :widths[j]] += eps * n_scale * (_bnorm_i + _bnorm_j) * _binv_norm
 
     W_out[0, : i + 1] = W[1]  # w_bar is already W_out[1] (built in place)
 
@@ -1057,7 +1069,9 @@ def block_lanczos_array_cy(
 
             block_widths.append(n_curr)
             block_widths.append(active_k)
-            W = estimate_orthonormality(W, alphas_buf[: it + 1], betas_buf[: it + 1], block_widths=block_widths, eps=EPS)
+            W = estimate_orthonormality(
+                W, alphas_buf[: it + 1], betas_buf[: it + 1], block_widths=block_widths, eps=EPS, N=global_N
+            )
             block_widths.pop()
             block_widths.pop()
 

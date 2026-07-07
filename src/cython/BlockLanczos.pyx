@@ -428,6 +428,7 @@ def block_lanczos_step_cy(
             betas[: it + 1],
             block_widths=block_widths + [p, active_k],
             eps=EPS,
+            N=float(getattr(basis, "size", 0) or 1),
         )
         _prof_acc("w_estimate", _t0)
         _t0 = _time.perf_counter()
