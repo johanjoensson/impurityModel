@@ -821,6 +821,19 @@ unsigned int apply_thread_cap() {
   return res;
 }
 
+// True when the extension was compiled with the opt-in threaded apply
+// (IMPURITYMODEL_PARALLEL=1 at install time). Exposed to Python so tests can
+// choose exact vs tolerance assertions: the threaded merge changes the
+// duplicate-accumulation order, so bit-for-bit equality is a serial-build
+// property (same as for the scalar threaded apply).
+bool apply_parallel_build() noexcept {
+#if defined(PARALLEL)
+  return true;
+#else
+  return false;
+#endif
+}
+
 [[nodiscard]] ManyBodyBlockState
 ManyBodyOperator::apply(const ManyBodyBlockState &block, double cutoff) const {
   // Block variant of the serial apply above: one pass over the shared support,
@@ -852,6 +865,220 @@ ManyBodyOperator::apply(const ManyBodyBlockState &block, double cutoff) const {
     }
     return acc.data() + it->second * p;
   };
+
+#if defined(PARALLEL)
+  // Threaded block apply (Phase 2.5): partition the input ROWS across threads,
+  // one block accumulator per (thread, bucket) pair, lock-free per-bucket merge —
+  // the same structure as the scalar threaded apply above. Each row carries ~p
+  // times the scalar work, so the per-thread workload floor shrinks accordingly.
+  constexpr size_t MIN_SD_PER_THREAD = 256;
+  const size_t min_rows_per_thread = std::max<size_t>(1, MIN_SD_PER_THREAD / std::max<size_t>(1, p));
+  const unsigned int hw = apply_thread_cap();
+  const unsigned int want = static_cast<unsigned int>(
+      std::max<size_t>(1, block.rows() / min_rows_per_thread));
+  const unsigned int num_threads = std::max(1u, std::min(hw, want));
+  if (num_threads > 1) {
+    struct BucketAcc {
+      boost::unordered_flat_map<ManyBodyState::key_type, std::size_t,
+                                SlaterKeyHash>
+          row_of;
+      std::vector<ManyBodyBlockState::Value> acc;
+    };
+    const unsigned int num_buckets = num_threads;
+    const SlaterKeyHash hasher;
+    std::vector<BucketAcc> local_buckets(static_cast<size_t>(num_threads) *
+                                         num_buckets);
+    std::vector<std::thread> threads;
+    const size_t chunk_size = (block.rows() + num_threads - 1) / num_threads;
+    for (unsigned int t = 0; t < num_threads; t++) {
+      const size_t start_row = t * chunk_size;
+      const size_t end_row = std::min(start_row + chunk_size, block.rows());
+      if (start_row >= block.rows()) {
+        break;
+      }
+      threads.push_back(std::thread([&, t, start_row, end_row]() {
+        BucketAcc *buckets = &local_buckets[static_cast<size_t>(t) * num_buckets];
+        const auto emit_row_t = [&](const ManyBodyState::key_type &k) {
+          BucketAcc &ba = buckets[hasher(k) % num_buckets];
+          const auto [it, inserted] = ba.row_of.try_emplace(k, ba.row_of.size());
+          if (inserted) {
+            ba.acc.resize(ba.acc.size() + p);
+          }
+          return ba.acc.data() + it->second * p;
+        };
+        // Per-row term loop, duplicated from the serial body below (the same
+        // precedent as the scalar threaded apply: the loop reads private flat-term
+        // members, so a shared free function would need an unwieldy signature).
+        std::vector<ManyBodyBlockState::Value> diag_accum(p);
+        ManyBodyState::key_type out_sd;
+        for (std::size_t r = start_row; r < end_row; ++r) {
+          const auto &slater = block.key(r);
+          const ManyBodyBlockState::Value *amp = block.row(r);
+          out_sd = slater;
+          std::fill(diag_accum.begin(), diag_accum.end(),
+                    ManyBodyBlockState::Value{0.0, 0.0});
+          for (size_t op_idx = 0; op_idx < m_flat_coeffs.size(); op_idx++) {
+            if (m_flat_density[op_idx]) {
+              if (mask_occupied(slater, m_density_mask[op_idx]) &&
+                  (!check_restrictions ||
+                   state_is_within_restrictions(slater))) {
+                const auto coeff = m_density_coeff[op_idx];
+                for (std::size_t c = 0; c < p; ++c) {
+                  diag_accum[c] += coeff * amp[c];
+                }
+              }
+              continue;
+            }
+            if (m_flat_onebody[op_idx]) {
+              const size_t ob_i = m_onebody_i[op_idx];
+              const size_t ob_j = m_onebody_j[op_idx];
+              if (bit_set(slater, ob_j) && !bit_set(slater, ob_i)) {
+                const double sgn =
+                    mask_parity(slater, m_onebody_between[op_idx]) ? -1.0 : 1.0;
+                toggle_bit(out_sd, ob_j);
+                toggle_bit(out_sd, ob_i);
+                if (!check_restrictions ||
+                    state_is_within_restrictions(out_sd)) {
+                  const auto coeff = m_flat_coeffs[op_idx] * sgn;
+                  ManyBodyBlockState::Value *dst = emit_row_t(out_sd);
+                  for (std::size_t c = 0; c < p; ++c) {
+                    dst[c] += coeff * amp[c];
+                  }
+                }
+                toggle_bit(out_sd, ob_j);
+                toggle_bit(out_sd, ob_i);
+              }
+              continue;
+            }
+            double sign = 1;
+            const size_t start_idx = m_flat_offsets[op_idx];
+            const size_t end_idx = m_flat_offsets[op_idx + 1];
+            const auto coeff = m_flat_coeffs[op_idx];
+            size_t i = start_idx;
+            for (; i < end_idx; i++) {
+              const int64_t idx = m_flat_indices[i];
+              const int s =
+                  idx >= 0 ? create(out_sd, static_cast<size_t>(idx))
+                           : annihilate(out_sd, static_cast<size_t>(-(idx + 1)));
+              if (s == 0) {
+                sign = 0;
+                break;
+              }
+              sign *= s;
+            }
+            if (sign != 0 && (!check_restrictions ||
+                              state_is_within_restrictions(out_sd))) {
+              const auto scaled = coeff * sign;
+              if (m_flat_diagonal[op_idx]) {
+                for (std::size_t c = 0; c < p; ++c) {
+                  diag_accum[c] += scaled * amp[c];
+                }
+              } else {
+                ManyBodyBlockState::Value *dst = emit_row_t(out_sd);
+                for (std::size_t c = 0; c < p; ++c) {
+                  dst[c] += scaled * amp[c];
+                }
+              }
+            }
+            for (size_t j = start_idx; j < i; j++) {
+              const int64_t idx = m_flat_indices[j];
+              toggle_bit(out_sd, idx >= 0 ? static_cast<size_t>(idx)
+                                          : static_cast<size_t>(-(idx + 1)));
+            }
+          }
+          bool any_diag = false;
+          for (std::size_t c = 0; c < p; ++c) {
+            if (diag_accum[c] != ManyBodyBlockState::Value(0.0, 0.0)) {
+              any_diag = true;
+              break;
+            }
+          }
+          if (any_diag) {
+            ManyBodyBlockState::Value *dst = emit_row_t(slater);
+            for (std::size_t c = 0; c < p; ++c) {
+              dst[c] += diag_accum[c];
+            }
+          }
+        }
+      }));
+    }
+    for (auto &thread : threads) {
+      if (thread.joinable()) {
+        thread.join();
+      }
+    }
+
+    // Lock-free per-bucket merge (disjoint key sets); threads iterate the compute
+    // threads in index order, then apply the whole-row cutoff.
+    std::vector<std::vector<ManyBodyBlockState::Key>> bucket_keys(num_buckets);
+    std::vector<std::vector<ManyBodyBlockState::Value>> bucket_amps(num_buckets);
+    std::vector<std::thread> merge_threads;
+    for (unsigned int b = 0; b < num_buckets; b++) {
+      merge_threads.push_back(std::thread([&, b]() {
+        BucketAcc macc;
+        for (unsigned int t = 0; t < num_threads; t++) {
+          const BucketAcc &src =
+              local_buckets[static_cast<size_t>(t) * num_buckets + b];
+          for (const auto &[k, row] : src.row_of) {
+            const auto [it, inserted] = macc.row_of.try_emplace(k, macc.row_of.size());
+            if (inserted) {
+              macc.acc.resize(macc.acc.size() + p);
+            }
+            ManyBodyBlockState::Value *dst = macc.acc.data() + it->second * p;
+            const ManyBodyBlockState::Value *add = src.acc.data() + row * p;
+            for (std::size_t c = 0; c < p; ++c) {
+              dst[c] += add[c];
+            }
+          }
+        }
+        auto &okeys = bucket_keys[b];
+        auto &oamps = bucket_amps[b];
+        okeys.reserve(macc.row_of.size());
+        for (auto &[k, row] : macc.row_of) {
+          const ManyBodyBlockState::Value *src_row = macc.acc.data() + row * p;
+          for (std::size_t c = 0; c < p; ++c) {
+            if (std::norm(src_row[c]) > cutoff2) {
+              okeys.push_back(k);
+              oamps.insert(oamps.end(), src_row, src_row + p);
+              break;
+            }
+          }
+        }
+      }));
+    }
+    for (auto &thread : merge_threads) {
+      if (thread.joinable()) {
+        thread.join();
+      }
+    }
+
+    // Assemble: gather the surviving (key, row) pairs, sort by key, build.
+    size_t total_out = 0;
+    for (const auto &v : bucket_keys) {
+      total_out += v.size();
+    }
+    std::vector<std::pair<ManyBodyBlockState::Key, const ManyBodyBlockState::Value *>>
+        survivors;
+    survivors.reserve(total_out);
+    for (unsigned int b = 0; b < num_buckets; b++) {
+      for (size_t i = 0; i < bucket_keys[b].size(); ++i) {
+        survivors.emplace_back(std::move(bucket_keys[b][i]),
+                               bucket_amps[b].data() + i * p);
+      }
+    }
+    std::sort(survivors.begin(), survivors.end(),
+              [](const auto &a, const auto &b) { return a.first < b.first; });
+    std::vector<ManyBodyBlockState::Key> keys;
+    keys.reserve(total_out);
+    std::vector<ManyBodyBlockState::Value> amps;
+    amps.reserve(total_out * p);
+    for (auto &[k, src_row] : survivors) {
+      keys.push_back(std::move(k));
+      amps.insert(amps.end(), src_row, src_row + p);
+    }
+    return ManyBodyBlockState(std::move(keys), std::move(amps), p);
+  }
+#endif
 
   std::vector<ManyBodyBlockState::Value> diag_accum(p);
   ManyBodyState::key_type out_slater_determinant;

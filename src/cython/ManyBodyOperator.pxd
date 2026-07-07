@@ -14,6 +14,8 @@ cdef extern from "ManyBodyOperator.cpp" nogil:
     pass
 
 cdef extern from "ManyBodyOperator.h" nogil:
+    bint apply_parallel_build()
+
     cdef cppclass ManyBodyOperator:
         cppclass Comparer[T]:
             bint operator()(const vector[T]&, const vector[T]&)

@@ -227,8 +227,18 @@ Stages (each committable, gate-green):
     reference, rank-deficient RHS linearity, warm start, max_iter); the four real
     pre-block tests (array deflation cases, sparse rank-deficient linearity,
     break-on-active-mask) are kept verbatim.
-- **2.5 threaded path re-tune**: the block accumulator changes memory-per-entry;
-  re-measure the MIN_SD_PER_THREAD workload scaling; threading stays opt-in.
+- **2.5 threaded block apply — DONE**: the `IMPURITYMODEL_PARALLEL=1` build now has
+  a threaded `apply(block)` mirroring the scalar structure (rows partitioned across
+  threads, per-(thread, bucket) block accumulators, lock-free per-bucket merge,
+  whole-row cutoff in the merge). The per-thread workload floor scales with the
+  block width (`MIN_SD_PER_THREAD / p` rows — each row carries ~p× the scalar
+  work). `apply_parallel_build()` / `parallel_apply_build()` expose the compile
+  flag so the golden test asserts exact equality on serial builds and 1e-12
+  tolerance on threaded ones (the merge changes duplicate-accumulation order —
+  the same property as the scalar threaded apply). Measured on the hopping
+  fixture (8 cores): block apply keeps its near-flat p-scaling (73/75/87/104 ms
+  at p=1/2/4/8) with the same bounded thread win as the scalar path (the fixture
+  is accumulator/merge-bound) — threading remains opt-in, unchanged policy.
 
 Parked pending re-measurement after 2.2: apply cost center D (map→sort→rebuild —
 the block accumulator changes its weight) and the 2-body masked sign (§A design).

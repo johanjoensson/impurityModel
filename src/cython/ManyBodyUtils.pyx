@@ -9,7 +9,7 @@ from ManyBodyBlockState cimport (
     block_add_scaled as c_block_add_scaled,
     block_combine_cols as c_block_combine_cols,
 )
-from ManyBodyOperator cimport ManyBodyOperator as ManyBodyOperator_cpp
+from ManyBodyOperator cimport ManyBodyOperator as ManyBodyOperator_cpp, apply_parallel_build as c_apply_parallel_build
 from SlaterDeterminant cimport SlaterDeterminant as SlaterDeterminant_cpp
 from libcpp.pair cimport pair
 from libcpp.vector cimport vector
@@ -1761,3 +1761,11 @@ def block_add_scaled_cy(ManyBodyBlockState A, ManyBodyBlockState B, C):
     with nogil:
         out.b = c_block_add_scaled(A.b, B.b, cptr)
     return out
+
+
+def parallel_apply_build():
+    """True when the extension was compiled with the opt-in threaded apply
+    (``IMPURITYMODEL_PARALLEL=1`` at install time). The threaded merge changes the
+    duplicate-accumulation order, so bit-for-bit reproducibility of apply results is
+    a serial-build property — tests use this to pick exact vs tolerance assertions."""
+    return bool(c_apply_parallel_build())

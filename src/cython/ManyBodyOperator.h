@@ -9,6 +9,15 @@
 #include <vector>
 
 /**
+ * @brief True when compiled with the opt-in threaded apply (IMPURITYMODEL_PARALLEL=1).
+ *
+ * The threaded merge changes the duplicate-accumulation order, so bit-for-bit
+ * reproducibility of apply results is a serial-build property; tests use this to
+ * choose exact vs tolerance assertions.
+ */
+bool apply_parallel_build() noexcept;
+
+/**
  * @class ManyBodyOperator
  * @brief Represents a quantum many-body operator in second quantization.
  *

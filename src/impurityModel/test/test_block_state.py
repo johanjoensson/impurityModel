@@ -159,8 +159,16 @@ def test_apply_block_matches_independent_applies(p):
     blk_out = op.apply_block(ManyBodyBlockState.from_states(states), 0.0)
     assert blk_out.width == p
     got = blk_out.to_states()
+    from impurityModel.ed.ManyBodyUtils import parallel_apply_build
+
     for c in range(p):
-        assert got[c] == ref[c], f"column {c} differs from independent apply"
+        if parallel_apply_build():
+            # The threaded merge changes the duplicate-accumulation order, so
+            # bit-for-bit equality is a serial-build property.
+            diff = got[c] - ref[c]
+            assert np.sqrt(diff.norm2()) < 1e-12 * max(np.sqrt(ref[c].norm2()), 1.0)
+        else:
+            assert got[c] == ref[c], f"column {c} differs from independent apply"
 
 
 def test_apply_block_cutoff_keeps_rows():
