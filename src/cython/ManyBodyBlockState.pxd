@@ -25,6 +25,13 @@ cdef extern from "ManyBodyBlockState.h" nogil:
         size_t find_row(const Key&)
 
         void prune_rows(double)
+        void keep_rows(const vector[Key]&)
+        void row_max_norm2(double*)
+        size_t count_rows_in(const vector[Key]&)
+        void new_row_max_norm2(const vector[Key]&, vector[double]&)
+        ManyBodyBlockState keys_new_above(const vector[Key]&, double)
+        ManyBodyBlockState key_union(const ManyBodyBlockState&)
+        void merge_keys(const ManyBodyBlockState&)
         void col_norm2(double*)
 
         bint operator==(const ManyBodyBlockState&)

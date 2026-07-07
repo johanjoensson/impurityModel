@@ -335,3 +335,115 @@ def test_store_append_block_matches_append():
     s2.append_block(ManyBodyBlockState.from_states(more))
     assert len(s1) == len(s2) == 5
     assert list(s1) == list(s2)
+
+
+def test_keep_rows_intersection():
+    """keep_rows keeps exactly the rows whose key is in the mask's support (the
+    set-intersection complement of prune_rows), preserving row order."""
+    a = ManyBodyState({_det(1): 1.0 + 0j, _det(2): 2.0 + 0j, _det(4): 4.0 + 0j})
+    b = ManyBodyState({_det(2): -1.0 + 0j, _det(3): 3.0 + 0j})
+    blk = ManyBodyBlockState.from_states([a, b])
+    assert len(blk) == 4
+    # Mask keys need not be a subset of the block's support (det(9) is absent).
+    mask_state = ManyBodyState(dict.fromkeys([_det(2), _det(4), _det(9)], 1.0 + 0j))
+    blk.keep_rows(ManyBodyBlockState.from_states([mask_state]))
+    assert len(blk) == 2
+    kept = blk.to_states()
+    assert kept[0] == ManyBodyState({_det(2): 2.0 + 0j, _det(4): 4.0 + 0j})
+    assert kept[1] == ManyBodyState({_det(2): -1.0 + 0j})
+
+
+def test_keep_rows_superset_and_empty_mask():
+    rng = np.random.default_rng(31)
+    states = _random_states(rng, 3, 25)
+    blk = ManyBodyBlockState.from_states(states)
+    full = blk.copy()
+    all_keys = ManyBodyState(dict.fromkeys(blk.support_keys(0.0), 1.0 + 0j))
+    blk.keep_rows(ManyBodyBlockState.from_states([all_keys]))
+    assert blk == full  # superset mask is the identity
+    blk.keep_rows(ManyBodyBlockState.from_states([]))
+    assert len(blk) == 0  # empty mask drops everything
+
+
+def test_keep_rows_export_guard():
+    blk = ManyBodyBlockState.from_states(_random_states(np.random.default_rng(32), 2, 10))
+    mask = blk.copy()
+    arr = np.asarray(blk)
+    with pytest.raises(RuntimeError):
+        blk.keep_rows(mask)
+    del arr
+    blk.keep_rows(mask)  # fine once the view is released
+
+
+def test_row_max_norms2_values_and_alignment():
+    """keys[i] is aligned with norms2[i] over the FULL support, including exact-zero
+    rows (which support_keys(0.0) drops)."""
+    a = ManyBodyState({_det(1): 0.0 + 0j, _det(2): 3.0 + 4.0j})
+    b = ManyBodyState({_det(2): 1.0 + 0j, _det(3): -2.0 + 0j})
+    blk = ManyBodyBlockState.from_states([a, b])
+    keys, norms2 = blk.row_max_norms2()
+    assert keys == [_det(1), _det(2), _det(3)]
+    np.testing.assert_allclose(norms2, [0.0, 25.0, 4.0])
+    # the zero row is invisible to support_keys(0.0) but present here
+    assert _det(1) not in blk.support_keys(0.0)
+    assert len(keys) == len(blk)
+
+
+def test_row_max_norms2_empty():
+    blk = ManyBodyBlockState.from_states([])
+    keys, norms2 = blk.row_max_norms2()
+    assert keys == [] and norms2.shape == (0,)
+
+
+def test_count_rows_in_and_new_row_max_norms2():
+    a = ManyBodyState({_det(1): 1.0 + 0j, _det(2): 2.0 + 0j, _det(4): 0.5 + 0j})
+    b = ManyBodyState({_det(2): -3.0 + 0j, _det(3): 1.0 + 1.0j})
+    blk = ManyBodyBlockState.from_states([a, b])  # rows 1,2,3,4
+    mask = ManyBodyBlockState.from_states([ManyBodyState(dict.fromkeys([_det(2), _det(4)], 1.0 + 0j))])
+    assert blk.count_rows_in(mask) == 2
+    # new rows are det(1) and det(3), in row order
+    np.testing.assert_allclose(blk.new_row_max_norms2(mask), [1.0, 2.0])
+    assert len(blk.new_row_max_norms2(mask)) == len(blk) - blk.count_rows_in(mask)
+    empty_mask = ManyBodyBlockState.from_states([])
+    assert blk.count_rows_in(empty_mask) == 0
+    np.testing.assert_allclose(blk.new_row_max_norms2(empty_mask), [1.0, 9.0, 2.0, 0.25])
+
+
+def test_keys_new_above_and_key_union():
+    a = ManyBodyState({_det(1): 1.0 + 0j, _det(2): 2.0 + 0j, _det(4): 0.5 + 0j})
+    b = ManyBodyState({_det(2): -3.0 + 0j, _det(3): 1.0 + 1.0j})
+    blk = ManyBodyBlockState.from_states([a, b])
+    mask = ManyBodyBlockState.from_states([ManyBodyState({_det(2): 1.0 + 0j})])
+    # candidates 1 (norm2 1.0), 3 (norm2 2.0), 4 (norm2 0.25); cutoff2=0.5 admits 1 and 3
+    admitted = blk.keys_new_above(mask, 0.5)
+    assert admitted.width == 0
+    assert len(admitted) == 2
+    grown = mask.key_union(admitted)
+    assert len(grown) == 3 and grown.width == 0
+    # the union mask keeps exactly rows 1,2,3 of the block
+    kept = blk.copy()
+    kept.keep_rows(grown)
+    assert len(kept) == 3
+    keys, _ = kept.row_max_norms2()
+    assert keys == [_det(1), _det(2), _det(3)]
+    # cutoff above every candidate admits nothing; union with empty is identity
+    assert len(blk.keys_new_above(mask, 100.0)) == 0
+    assert len(mask.key_union(ManyBodyBlockState.from_states([]))) == 1
+
+
+def test_merge_keys_inplace_matches_key_union():
+    a = ManyBodyState({_det(1): 1.0 + 0j, _det(4): 4.0 + 0j})
+    b = ManyBodyState({_det(2): -1.0 + 0j, _det(4): 3.0 + 0j, _det(7): 1.0 + 0j})
+    mask = ManyBodyBlockState.from_states([a]).key_union(ManyBodyBlockState())
+    assert mask.width == 0 and len(mask) == 2
+    other = ManyBodyBlockState.from_states([b])
+    expected = mask.key_union(other)
+    mask.merge_keys(other)
+    keys, _ = mask.row_max_norms2()
+    exp_keys, _ = expected.row_max_norms2()
+    assert keys == exp_keys == [_det(1), _det(2), _det(4), _det(7)]
+    mask.merge_keys(ManyBodyBlockState())  # empty merge is a no-op
+    assert len(mask) == 4
+    # width-0 requirement is enforced
+    with pytest.raises(ValueError):
+        other.merge_keys(mask)

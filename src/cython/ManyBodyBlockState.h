@@ -103,6 +103,158 @@ public:
     m_amps.resize(out * m_width);
   }
 
+  /**
+   * @brief Keep only rows whose key appears in `keep` (sorted, strictly
+   * increasing). Linear merge over the two sorted sequences — the
+   * set-intersection complement of prune_rows, used by the capped
+   * Green's-function recurrence to project a block onto the retained
+   * determinant set.
+   */
+  void keep_rows(const std::vector<Key> &keep) {
+    std::size_t out = 0;
+    std::size_t ik = 0;
+    for (std::size_t r = 0; r < rows(); ++r) {
+      while (ik < keep.size() && keep[ik] < m_keys[r]) {
+        ++ik;
+      }
+      if (ik < keep.size() && keep[ik] == m_keys[r]) {
+        if (out != r) {
+          const Value *src = row(r);
+          m_keys[out] = std::move(m_keys[r]);
+          std::copy(src, src + m_width, m_amps.data() + out * m_width);
+        }
+        ++out;
+        ++ik;
+      }
+    }
+    m_keys.resize(out);
+    m_amps.resize(out * m_width);
+  }
+
+  /** @brief Per-row max column |amp|^2 into out[0..rows()). */
+  void row_max_norm2(double *out) const noexcept {
+    for (std::size_t r = 0; r < rows(); ++r) {
+      const Value *src = row(r);
+      double m = 0.0;
+      for (std::size_t c = 0; c < m_width; ++c) {
+        m = std::max(m, std::norm(src[c]));
+      }
+      out[r] = m;
+    }
+  }
+
+  /** @brief Row max |amp|^2 (helper for the capped-recurrence primitives). */
+  double row_max2(std::size_t r) const noexcept {
+    const Value *src = row(r);
+    double m = 0.0;
+    for (std::size_t c = 0; c < m_width; ++c) {
+      m = std::max(m, std::norm(src[c]));
+    }
+    return m;
+  }
+
+  /** @brief Number of rows whose key appears in `keep` (sorted, unique). */
+  std::size_t count_rows_in(const std::vector<Key> &keep) const noexcept {
+    std::size_t n = 0;
+    std::size_t ik = 0;
+    for (std::size_t r = 0; r < rows(); ++r) {
+      while (ik < keep.size() && keep[ik] < m_keys[r]) {
+        ++ik;
+      }
+      if (ik < keep.size() && keep[ik] == m_keys[r]) {
+        ++n;
+        ++ik;
+      }
+    }
+    return n;
+  }
+
+  /**
+   * @brief Max |amp|^2 of every row whose key is NOT in `keep`, appended to
+   * `out` in row order. With count_rows_in this gives the candidate-importance
+   * array for the capped recurrence's overflow-step ranking without any
+   * per-row Python traffic.
+   */
+  void new_row_max_norm2(const std::vector<Key> &keep,
+                         std::vector<double> &out) const {
+    std::size_t ik = 0;
+    for (std::size_t r = 0; r < rows(); ++r) {
+      while (ik < keep.size() && keep[ik] < m_keys[r]) {
+        ++ik;
+      }
+      if (ik < keep.size() && keep[ik] == m_keys[r]) {
+        ++ik;
+      } else {
+        out.push_back(row_max2(r));
+      }
+    }
+  }
+
+  /**
+   * @brief Width-0 key-only block of the rows NOT in `keep` (sorted, unique)
+   * whose max |amp|^2 exceeds `cutoff2` — the admitted boundary determinants
+   * once the overflow bisection has fixed the amplitude cutoff.
+   */
+  ManyBodyBlockState keys_new_above(const std::vector<Key> &keep,
+                                    double cutoff2) const {
+    std::vector<Key> out;
+    std::size_t ik = 0;
+    for (std::size_t r = 0; r < rows(); ++r) {
+      while (ik < keep.size() && keep[ik] < m_keys[r]) {
+        ++ik;
+      }
+      if (ik < keep.size() && keep[ik] == m_keys[r]) {
+        ++ik;
+      } else if (row_max2(r) > cutoff2) {
+        out.push_back(m_keys[r]);
+      }
+    }
+    return ManyBodyBlockState(std::move(out), {}, 0);
+  }
+
+  /**
+   * @brief Width-0 key-only block holding the sorted union of this block's and
+   * `other`'s keys (amplitudes of both are ignored). Used as the retained-set
+   * mask of the capped recurrence: merge each admitted step's support, then
+   * project later blocks with keep_rows.
+   */
+  ManyBodyBlockState key_union(const ManyBodyBlockState &other) const {
+    std::vector<Key> out;
+    out.reserve(rows() + other.rows());
+    std::set_union(m_keys.begin(), m_keys.end(), other.m_keys.begin(),
+                   other.m_keys.end(), std::back_inserter(out));
+    return ManyBodyBlockState(std::move(out), {}, 0);
+  }
+
+  /**
+   * @brief In-place key_union for width-0 mask blocks: append `other`'s keys
+   * not already present, then inplace_merge. Copies only the genuinely new
+   * keys (the existing ones are moved, not reallocated) — the per-step
+   * retained-mask accumulate of the capped recurrence. Requires width() == 0
+   * (amplitude storage must stay empty); checked by the Cython wrapper.
+   */
+  void merge_keys(const ManyBodyBlockState &other) {
+    std::vector<Key> add;
+    std::size_t ik = 0;
+    for (std::size_t r = 0; r < other.rows(); ++r) {
+      while (ik < m_keys.size() && m_keys[ik] < other.m_keys[r]) {
+        ++ik;
+      }
+      if (ik >= m_keys.size() || other.m_keys[r] < m_keys[ik]) {
+        add.push_back(other.m_keys[r]);
+      } else {
+        ++ik;
+      }
+    }
+    if (add.empty()) {
+      return;
+    }
+    const auto mid = static_cast<std::ptrdiff_t>(m_keys.size());
+    m_keys.insert(m_keys.end(), std::make_move_iterator(add.begin()),
+                  std::make_move_iterator(add.end()));
+    std::inplace_merge(m_keys.begin(), m_keys.begin() + mid, m_keys.end());
+  }
+
   /** @brief Per-column sum of |amp|^2 into out[0..width). */
   void col_norm2(double *out) const noexcept {
     for (std::size_t c = 0; c < m_width; ++c) {

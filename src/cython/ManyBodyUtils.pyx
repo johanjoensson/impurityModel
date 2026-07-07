@@ -1665,6 +1665,92 @@ cdef class ManyBodyBlockState:
             raise RuntimeError("cannot prune_rows while a buffer view is exported (np.asarray view alive)")
         self.b.prune_rows(cutoff)
 
+    def keep_rows(self, ManyBodyBlockState mask):
+        """Keep only rows whose determinant appears in ``mask``'s support (the
+        set-intersection complement of ``prune_rows``): a linear merge over the two
+        sorted key vectors, no Python-object traffic. ``mask`` is any block over the
+        retained determinant set (its amplitudes are ignored); build it once, e.g. via
+        ``from_states([ManyBodyState(dict.fromkeys(keys, 1.0))])``, and reuse it every
+        step. Raises while a buffer view is exported, like ``prune_rows``."""
+        if self._n_exports > 0:
+            raise RuntimeError("cannot keep_rows while a buffer view is exported (np.asarray view alive)")
+        with nogil:
+            self.b.keep_rows(mask.b.keys())
+
+    def row_max_norms2(self):
+        """Per-row max column ``|amp|^2`` and the row keys, as ``(keys, norms2)``.
+
+        ``keys`` is the full support in row order (including exact-zero rows, unlike
+        ``support_keys(0.0)`` which drops them), so ``keys[i]`` is aligned with
+        ``norms2[i]``. This is the importance measure used to rank boundary
+        determinants when a capped Green's-function basis overflows."""
+        cdef Py_ssize_t n = <Py_ssize_t>self.b.rows()
+        res = np.zeros(n, dtype=float)
+        cdef double[:] rv = res
+        if n > 0:
+            with nogil:
+                self.b.row_max_norm2(&rv[0])
+        cdef list keys = []
+        cdef SlaterDeterminant sd
+        cdef Py_ssize_t r
+        for r in range(n):
+            sd = SlaterDeterminant()
+            sd.s = self.b.key(r)
+            keys.append(sd)
+        return keys, res
+
+    def count_rows_in(self, ManyBodyBlockState mask):
+        """Number of rows whose determinant appears in ``mask``'s support (linear
+        merge over the two sorted key vectors; no Python-object traffic)."""
+        cdef size_t n
+        with nogil:
+            n = self.b.count_rows_in(mask.b.keys())
+        return n
+
+    def new_row_max_norms2(self, ManyBodyBlockState mask):
+        """Max column ``|amp|^2`` of every row NOT in ``mask``, as a float array in
+        row order — the candidate-importance array for the capped recurrence's
+        overflow-step amplitude bisection."""
+        cdef vector[double] out
+        with nogil:
+            self.b.new_row_max_norm2(mask.b.keys(), out)
+        res = np.empty(out.size(), dtype=float)
+        cdef double[:] rv = res
+        cdef Py_ssize_t i
+        for i in range(<Py_ssize_t>out.size()):
+            rv[i] = out[i]
+        return res
+
+    def keys_new_above(self, ManyBodyBlockState mask, double cutoff2):
+        """Width-0 key-only block of the rows NOT in ``mask`` whose max column
+        ``|amp|^2`` exceeds ``cutoff2`` (the admitted boundary determinants once the
+        overflow bisection has fixed the cutoff)."""
+        cdef ManyBodyBlockState res = ManyBodyBlockState()
+        with nogil:
+            res.b = self.b.keys_new_above(mask.b.keys(), cutoff2)
+        return res
+
+    def key_union(self, ManyBodyBlockState other):
+        """Width-0 key-only block holding the sorted union of both supports
+        (amplitudes ignored) — the retained-set mask accumulator of the capped
+        recurrence."""
+        cdef ManyBodyBlockState res = ManyBodyBlockState()
+        with nogil:
+            res.b = self.b.key_union(other.b)
+        return res
+
+    def merge_keys(self, ManyBodyBlockState other):
+        """In-place ``key_union`` for width-0 mask blocks: only the genuinely new
+        keys are copied, the existing ones are moved — the per-step retained-mask
+        accumulate of the capped recurrence. Requires ``width == 0`` and no exported
+        buffer view."""
+        if self.b.width() != 0:
+            raise ValueError("merge_keys requires a width-0 (key-only) mask block")
+        if self._n_exports > 0:
+            raise RuntimeError("cannot merge_keys while a buffer view is exported (np.asarray view alive)")
+        with nogil:
+            self.b.merge_keys(other.b)
+
     def col_norm2(self):
         """Per-column squared L2 norms as a float array of length ``width``."""
         res = np.zeros(self.b.width(), dtype=float)
