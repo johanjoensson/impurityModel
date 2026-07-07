@@ -48,6 +48,7 @@ def enable_manybody_profile(on=True):
     global _MBU_PROF_ON
     _MBU_PROF_ON = bool(on)
 
+
 cdef extern from "<utility>" namespace "std" nogil:
     ManyBodyState_cpp& move(ManyBodyState_cpp)
     SlaterDeterminant_cpp& move(SlaterDeterminant_cpp)
@@ -433,6 +434,7 @@ cdef class ManyBodyState:
         Returns true if the ManyBodyState is empty (i.e. contains no SlaterDeterminants)
         """
         return self.v.empty()
+
 
 
 def apply_global_truncation(ManyBodyState st, int max_size, object comm):
@@ -1558,7 +1560,6 @@ cdef class SparseKrylovDense:
         for chunk in self._chunks:
             buf_bytes += chunk.nbytes
         return buf_bytes + <size_t>self.n_rows * (2 * key_heap + 72)
-
 
 
 cdef class ManyBodyBlockState:
