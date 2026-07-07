@@ -141,15 +141,54 @@ restarted-Lanczos suites green.
    β_i per step today).
 3. Audit / drop the defensive `st.copy()` at `Q_basis.extend` (BlockLanczos.pyx:851).
 
-## Phase 2 — profile-ranked time optimizations (planned)
+## Phase 2 — block-state matvec: `ManyBodyBlockState` (approved 2026-07-07)
 
-Ranked by the Phase-0 profile; current candidate order:
-1. PARTIAL trigger calibration (finding 2 above).
-2. Cross-state parallelism / batching in `apply_multi` (the p block matvecs run
-   serially, `ManyBodyOperator.h:110-130`).
-3. Apply cost center D (map→vector→sort→flat_map rebuild) — also a 2x output-memory
-   transient.
-4. 2-body masked sign (deferred design §A) only if the general-path share justifies it.
+Item 1 (estimator calibration) is done above. Items 2–4 of the old list are
+superseded/absorbed by the block-state design: instead of parallelizing p
+independent matvecs, restructure the *hot-loop* state container so a block of p
+vectors is stored as ONE shared determinant support + a row-major `(n_dets x p)`
+amplitude array. `ManyBodyOperator::apply` then does the term loop, bit/sign work,
+restriction checks and — the dominant cost — the accumulator hash operation **once
+per (determinant, term)**, emitting p scaled amplitudes with p FMAs; threading stays
+over determinants (the existing PARALLEL partitioning, still opt-in per the
+MPI-oversubscription decision). matvec_apply is ~77% of the iteration post-Phase-3,
+so this is the main remaining lever; it also gemm-ifies `inner_multi`/
+`add_scaled_multi` and shrinks live-state memory by the same 72→16 B/coefficient
+argument as the Krylov store (fill ratio 1.00 measured).
+
+Design constraints: `ManyBodyState` is NOT retrofitted (it stays the scalar boundary
+type everywhere outside the hot loop); block width p is runtime (no compile-time
+width); row pruning keeps a row if ANY column survives the cutoff (deliberate,
+flagged semantic difference vs per-column prune); deflation narrows p via column
+subset. The Lanczos-loop conversion is contained because the kernel already funnels
+all block ops through `apply_multi`/`inner_multi`/`add_scaled_multi`/
+`redistribute_psis`/`prune`.
+
+Stages (each committable, gate-green):
+- **2.0 oracle + baseline — DONE (2026-07-07)**: `test_apply_block_width_scaling`
+  in both harnesses. Measured (serial): hopping fixture 81 ms/state flat →
+  1.00/2.00/4.03/9.69x at p=1/2/4/8; NiO 50-bath H (restrictions set) 18.7 ms/state
+  flat → 1.00/1.95/3.97/7.88x. Cost is exactly linear in p on shared-support blocks,
+  i.e. everything except the per-column FMAs is repeated work — the amortizable
+  fraction is ~all of a single apply. Golden equality (block == p independent
+  applies, bit-for-bit) lands with the 2.2 API.
+- **2.1 container**: C++ `ManyBodyBlockState` + Cython wrapper; conversions to/from
+  `list[ManyBodyState]` (bit-exact round-trip tests); row-prune-any-survives.
+- **2.2 block apply (serial)**: `ManyBodyOperator::apply(block)` — the per-term fast
+  paths (density mask, 1-body between-mask) act on the determinant only, so they
+  port unchanged; block accumulator maps out-determinant → p amplitudes. Golden:
+  equals p independent applies bit-for-bit.
+- **2.3 block redistribute**: pack `[det | p amps]` (the fused wire format already
+  tags psi_idx, so this is a simplification); same hash routing; empty-rank rules
+  (collectives unconditional, dtypes fixed); tests at n=2/3.
+- **2.4 Lanczos loop switch**: q_prev/q_curr/wp as block states; block
+  inner/add_scaled as row-block gemm; store append from block rows; A/B against the
+  Phase-3 bench numbers.
+- **2.5 threaded path re-tune**: the block accumulator changes memory-per-entry;
+  re-measure the MIN_SD_PER_THREAD workload scaling; threading stays opt-in.
+
+Parked pending re-measurement after 2.2: apply cost center D (map→sort→rebuild —
+the block accumulator changes its weight) and the 2-body masked sign (§A design).
 
 ## Phase 3 — columnar Krylov store (IN PROGRESS; gate criteria met)
 

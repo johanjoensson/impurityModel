@@ -325,3 +325,37 @@ def test_apply_timing(name, timing_fixtures, capsys):
     median = times[len(times) // 2]
     with capsys.disabled():
         print(f"\n[apply-perf] {name:11s} n_out={len(out):6d}  median={median:8.2f} ms  best={times[0]:8.2f} ms")
+
+
+@pytest.mark.benchmark
+def test_apply_block_width_scaling(timing_fixtures, capsys):
+    """Phase 2.0 of the block-state matvec plan (blocklanczos_partial_perf_memory.md):
+    apply_multi cost vs block width p on shared-support states — the Lanczos block
+    shape. Today the p matvecs run independently, so wall time scales ~linearly in p;
+    the ManyBodyBlockState target is near-flat in p (term/sign/accumulator work done
+    once per determinant, p FMAs per emission). This baseline is what the block
+    container is measured against."""
+    op, psi = timing_fixtures["hamiltonian"]
+    support = list(psi.to_dict().keys())
+    rows = []
+    for p in (1, 2, 4, 8):
+        rng = random.Random(97 + p)
+        psis = [
+            ManyBodyState({sd: complex(rng.random(), rng.random()) for sd in support})
+            for _ in range(p)
+        ]
+        times = []
+        for _ in range(5):
+            t0 = time.perf_counter()
+            out = op.apply_multi(psis, 0.0)
+            times.append((time.perf_counter() - t0) * 1e3)
+        times.sort()
+        rows.append((p, times[len(times) // 2], len(out[0])))
+    t1 = rows[0][1]
+    with capsys.disabled():
+        print()
+        for p, med, n_out in rows:
+            print(
+                f"[apply-block] p={p}  median={med:8.2f} ms  per-state={med / p:7.2f} ms"
+                f"  vs p=1: {med / t1:5.2f}x  n_out={n_out}"
+            )
