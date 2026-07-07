@@ -1375,6 +1375,145 @@ def calc_thermally_averaged_G(alphas, betas, r, mesh, es, e0, tau, delta):
     return G_avg
 
 
+class _CappedBasisProxy:
+    """Enforce ``truncation_threshold`` on the sparse-kernel GF recurrence.
+
+    ``block_lanczos_cy``'s matvec discovers new Slater determinants every step, so the
+    live block-state support (and, at reort != none, the Krylov store) grows without
+    bound — the excited ``Basis`` itself stays frozen and never sees them. This proxy
+    wraps that basis and caps the growth at the one point where every residual row
+    sits on its hash-owner rank: the per-step ``redistribute_block`` call.
+
+    Policy (freeze-growth + importance-ranked boundary admission):
+
+    * while ``retained + n_new <= cap``: admit every newly discovered determinant;
+    * on the single overflow step: rank that step's candidate rows by max column
+      ``|amp|^2`` of the residual and admit the top ``cap - retained`` via a
+      fixed-iteration distributed amplitude bisection (allreduce'd counts, so the
+      cutoff is collective and deterministic), then freeze;
+    * after the freeze: drop non-retained rows of every residual (rank-local
+      ``keep_rows`` merge; ownership routing makes membership checks local).
+
+    Why this is safe: every previously accepted Krylov block has support inside the
+    retained set, so the diagonal projector ``P`` is invisible to inner products
+    against them (``<Q_j, P wp> = <Q_j, wp>``) — orthogonality is untouched. From the
+    freeze on, the recurrence is an *exact* block Lanczos of the Hermitian projected
+    operator ``P H P``: the continued fraction stays causal, moments up to the freeze
+    are exact w.r.t. ``H``, and the recurrence terminates as ``invariant_subspace``
+    (already treated as exact-on-subspace). All reort modes remain valid, and the
+    Krylov store's row set is bounded by the retained set (it never needs removal).
+
+    MPI: one scalar allreduce per pre-freeze step; the freeze decision and the
+    bisection derive only from allreduce'd data, so ranks cannot disagree, and every
+    collective runs unconditionally (a rank may retain zero rows).
+    """
+
+    caps_growth = True
+
+    def __init__(self, basis, cap):
+        self._basis = basis
+        self.cap = int(cap)
+        self.comm = basis.comm
+        # Width-0 key-only mask of the retained determinants on this rank; grown by
+        # in-place C++ sorted merges only (no per-row Python objects in the hot path).
+        seed = ManyBodyState(dict.fromkeys(basis.local_basis, 1.0 + 0j))
+        self._mask = ManyBodyBlockState.from_states([seed]).key_union(ManyBodyBlockState())
+        self._global_count = int(basis.size)
+        self._frozen = self._global_count >= self.cap
+        self.cap_hit = self._frozen
+        self._verbose_freeze_logged = False
+
+    # --- attributes block_lanczos_cy reads off its basis ---------------------
+    @property
+    def local_basis(self):
+        return self._basis.local_basis
+
+    @property
+    def size(self):
+        return self._basis.size
+
+    @property
+    def n_bytes(self):
+        return self._basis.n_bytes
+
+    @property
+    def is_distributed(self):
+        return self._basis.is_distributed
+
+    def redistribute_psis(self, psis):
+        return self._basis.redistribute_psis(psis)
+
+    @property
+    def retained_size(self):
+        """Global number of determinants currently admitted to the recurrence."""
+        return self._global_count
+
+    def retained_keys(self):
+        """Rank-local retained determinants as ``SlaterDeterminant`` wrappers (sorted).
+
+        Builds one Python object per retained determinant — diagnostics/tests only,
+        never the hot path."""
+        keys, _ = self._mask.row_max_norms2()
+        return keys
+
+    def _allreduce_sum(self, value):
+        if self.comm is None or self.comm.size == 1:
+            return value
+        return self.comm.allreduce(value, op=MPI.SUM)
+
+    def redistribute_block(self, block):
+        block = self._basis.redistribute_block(block)
+        if self._frozen:
+            block.keep_rows(self._mask)
+            return block
+        n_new = self._allreduce_sum(len(block) - block.count_rows_in(self._mask))
+        if self._global_count + n_new <= self.cap:
+            self._mask.merge_keys(block)
+            self._global_count += n_new
+            return block
+        self._admit_top_and_freeze(block)
+        block.keep_rows(self._mask)
+        return block
+
+    def _admit_top_and_freeze(self, block):
+        """Admit the ``cap - retained`` most important candidate rows, then freeze.
+
+        The amplitude-cutoff bisection runs a fixed iteration count on allreduce'd
+        counts, so all ranks compute the identical cutoff. Ties at the cutoff are
+        under-admitted (the cap is never exceeded); near-tie retained sets may differ
+        across rank counts through summation-order rounding, like the CIPSI basis
+        trajectory.
+        """
+        slots = self.cap - self._global_count
+        norms2 = block.new_row_max_norms2(self._mask)
+        local_max = float(norms2.max()) if norms2.size else 0.0
+        if self.comm is not None and self.comm.size > 1:
+            hi = self.comm.allreduce(local_max, op=MPI.MAX)
+        else:
+            hi = local_max
+        # Smallest cutoff2 with (global candidates above it) <= slots.
+        lo = 0.0
+        for _ in range(45):
+            mid = 0.5 * (lo + hi)
+            if self._allreduce_sum(int(np.count_nonzero(norms2 > mid))) <= slots:
+                hi = mid
+            else:
+                lo = mid
+        admitted = block.keys_new_above(self._mask, hi)
+        self._global_count += self._allreduce_sum(len(admitted))
+        self._mask.merge_keys(admitted)
+        self._frozen = True
+        self.cap_hit = True
+
+    def freeze_message(self):
+        """One-line description of the cap state (rank-0 logging)."""
+        return (
+            f"GF basis cap hit: froze the recurrence support at {self._global_count:,} "
+            f"determinants (truncation_threshold={self.cap:,}); the Green's function is "
+            f"exact on the retained subspace."
+        )
+
+
 def block_Green_sparse(
     hOp,
     psi_arr,
@@ -1383,9 +1522,16 @@ def block_Green_sparse(
     reort: Optional = None,
     slaterWeightMin=0,
     verbose=True,
+    cap_info=None,
 ):
     """
     calculate  one block of the Greens function. This function builds the many body basis iteratively. Reducing memory requrements.
+
+    ``basis.truncation_threshold`` caps the number of Slater determinants the
+    recurrence may touch (see :class:`_CappedBasisProxy`); ``np.inf`` (the ``Basis``
+    default) leaves the growth bounded only by ``slaterWeightMin`` and the
+    restrictions. Pass a dict as ``cap_info`` to receive ``{"cap_hit",
+    "retained_size", "proxy"}`` back (diagnostics/tests).
     """
     mpi = basis.comm is not None
     comm = basis.comm if mpi else None
@@ -1422,6 +1568,10 @@ def block_Green_sparse(
     # it used the whole budget and there may be more spectrum to resolve, so we extend it.
     alphas = betas = Q = W = widths = None
     budget = max(int(getattr(basis, "size", 0)) // max(n, 1), 1)
+    # Enforce the determinant cap on the recurrence: the proxy persists across the
+    # resume rounds below, so the retained set (and a freeze) carries over.
+    cap = getattr(basis, "truncation_threshold", np.inf)
+    lanczos_basis = _CappedBasisProxy(basis, cap) if np.isfinite(cap) else basis
     # With reort NONE the kernel never projects against the accumulated Krylov basis and
     # the resume protocol reads only the two-block tail, so skip the full retention.
     resolved_reort = resolve_reort(reort if reort is not None else Reort.NONE)
@@ -1429,7 +1579,7 @@ def block_Green_sparse(
         alphas, betas, Q, W, widths, status = block_lanczos_cy(
             psi_arr,
             hOp,
-            basis,
+            lanczos_basis,
             converged,
             verbose=verbose,
             reort=resolved_reort,
@@ -1459,6 +1609,18 @@ def block_Green_sparse(
         if status == "diverged":
             break
         budget *= 2
+
+    if isinstance(lanczos_basis, _CappedBasisProxy):
+        if lanczos_basis.cap_hit and verbose and rank == 0:
+            print(lanczos_basis.freeze_message(), flush=True)
+        if cap_info is not None:
+            cap_info["cap_hit"] = lanczos_basis.cap_hit
+            cap_info["retained_size"] = lanczos_basis.retained_size
+            cap_info["proxy"] = lanczos_basis
+    elif cap_info is not None:
+        cap_info["cap_hit"] = False
+        cap_info["retained_size"] = None
+        cap_info["proxy"] = None
 
     if not converged_flag[0] and rank == 0:
         print(

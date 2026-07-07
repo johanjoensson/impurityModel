@@ -319,7 +319,10 @@ def block_lanczos_step_cy(
     wp = h_op.apply_block(q_curr, slaterWeightMin)
     _prof_acc("matvec_apply", _t0)
     _t1 = _time.perf_counter()
-    if mpi and comm is not None and basis is not None:
+    # A growth-capping basis proxy (caps_growth=True) must see every step's residual
+    # even serially: its redistribute_block enforces the truncation_threshold there
+    # (the inner Basis redistribute no-ops without MPI).
+    if basis is not None and ((mpi and comm is not None) or getattr(basis, "caps_growth", False)):
         if hasattr(basis, "redistribute_block"):
             wp = basis.redistribute_block(wp)
         else:
