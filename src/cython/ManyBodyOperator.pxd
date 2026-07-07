@@ -8,6 +8,7 @@ from libcpp.complex cimport complex
 cimport cython
 
 from ManyBodyState cimport ManyBodyState
+from ManyBodyBlockState cimport ManyBodyBlockState
 
 cdef extern from "ManyBodyOperator.cpp" nogil:
     pass
@@ -41,6 +42,7 @@ cdef extern from "ManyBodyOperator.h" nogil:
         void build_weighted_restriction_mask(const weighted_restrictions&)
         ManyBodyState apply(const ManyBodyState&, double)
         vector[ManyBodyState] apply(const vector[const ManyBodyState*]&, double)
+        ManyBodyBlockState apply(const ManyBodyBlockState&, double)
 
         ManyBodyOperator operator-()
         ManyBodyOperator operator+(const ManyBodyOperator&, const ManyBodyOperator&)

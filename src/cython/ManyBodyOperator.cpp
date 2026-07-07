@@ -821,6 +821,162 @@ unsigned int apply_thread_cap() {
   return res;
 }
 
+[[nodiscard]] ManyBodyBlockState
+ManyBodyOperator::apply(const ManyBodyBlockState &block, double cutoff) const {
+  // Block variant of the serial apply above: one pass over the shared support,
+  // per-(determinant, term) work done once, p amplitudes emitted per hit. The
+  // accumulator maps out-determinant -> row index of a growing row-major buffer
+  // (one hash op per (det, term) instead of p). Per-column arithmetic mirrors
+  // the scalar path exactly: same term order, same += sequence per column.
+  if (m_flat_dirty) {
+    build_flat_representation();
+  }
+  const std::size_t p = block.width();
+  const double cutoff2 = cutoff * cutoff;
+  const bool check_restrictions =
+      !std::get<0>(m_restrictions_mask).empty() ||
+      !m_weighted_restrictions_mask.empty();
+
+  boost::unordered_flat_map<ManyBodyState::key_type, std::size_t, SlaterKeyHash>
+      row_of;
+  row_of.reserve(block.rows());
+  std::vector<ManyBodyBlockState::Value> acc; // row-major, row_of.size() * p
+  acc.reserve(block.rows() * p);
+
+  // Row of `k` in acc, appending a zero row on first sight. resize() grows the
+  // buffer geometrically, so the amortized cost stays O(1) per new row.
+  const auto emit_row = [&](const ManyBodyState::key_type &k) {
+    const auto [it, inserted] = row_of.try_emplace(k, row_of.size());
+    if (inserted) {
+      acc.resize(acc.size() + p);
+    }
+    return acc.data() + it->second * p;
+  };
+
+  std::vector<ManyBodyBlockState::Value> diag_accum(p);
+  ManyBodyState::key_type out_slater_determinant;
+  for (std::size_t r = 0; r < block.rows(); ++r) {
+    const auto &slater = block.key(r);
+    const ManyBodyBlockState::Value *amp = block.row(r);
+    out_slater_determinant = slater;
+    std::fill(diag_accum.begin(), diag_accum.end(),
+              ManyBodyBlockState::Value{0.0, 0.0});
+    for (size_t op_idx = 0; op_idx < m_flat_coeffs.size(); op_idx++) {
+      if (m_flat_density[op_idx]) {
+        if (mask_occupied(slater, m_density_mask[op_idx]) &&
+            (!check_restrictions || state_is_within_restrictions(slater))) {
+          const auto coeff = m_density_coeff[op_idx];
+          for (std::size_t c = 0; c < p; ++c) {
+            diag_accum[c] += coeff * amp[c];
+          }
+        }
+        continue;
+      }
+      if (m_flat_onebody[op_idx]) {
+        const size_t ob_i = m_onebody_i[op_idx];
+        const size_t ob_j = m_onebody_j[op_idx];
+        if (bit_set(slater, ob_j) && !bit_set(slater, ob_i)) {
+          const double sgn =
+              mask_parity(slater, m_onebody_between[op_idx]) ? -1.0 : 1.0;
+          toggle_bit(out_slater_determinant, ob_j); // remove j
+          toggle_bit(out_slater_determinant, ob_i); // add i
+          if (!check_restrictions ||
+              state_is_within_restrictions(out_slater_determinant)) {
+            const auto coeff = m_flat_coeffs[op_idx] * sgn;
+            ManyBodyBlockState::Value *dst = emit_row(out_slater_determinant);
+            for (std::size_t c = 0; c < p; ++c) {
+              dst[c] += coeff * amp[c];
+            }
+          }
+          toggle_bit(out_slater_determinant, ob_j); // restore scratch
+          toggle_bit(out_slater_determinant, ob_i);
+        }
+        continue;
+      }
+      double sign = 1;
+      const size_t start_idx = m_flat_offsets[op_idx];
+      const size_t end_idx = m_flat_offsets[op_idx + 1];
+      const auto coeff = m_flat_coeffs[op_idx];
+
+      size_t i = start_idx;
+      for (; i < end_idx; i++) {
+        const int64_t idx = m_flat_indices[i];
+        const int s =
+            idx >= 0
+                ? create(out_slater_determinant, static_cast<size_t>(idx))
+                : annihilate(out_slater_determinant,
+                             static_cast<size_t>(-(idx + 1)));
+        if (s == 0) {
+          sign = 0;
+          break;
+        }
+        sign *= s;
+      }
+      if (sign != 0 && (!check_restrictions ||
+                        state_is_within_restrictions(out_slater_determinant))) {
+        const auto scaled = coeff * sign;
+        if (m_flat_diagonal[op_idx]) {
+          // out_slater_determinant == slater here (occupation conserved).
+          for (std::size_t c = 0; c < p; ++c) {
+            diag_accum[c] += scaled * amp[c];
+          }
+        } else {
+          ManyBodyBlockState::Value *dst = emit_row(out_slater_determinant);
+          for (std::size_t c = 0; c < p; ++c) {
+            dst[c] += scaled * amp[c];
+          }
+        }
+      }
+      for (size_t j = start_idx; j < i; j++) {
+        const int64_t idx = m_flat_indices[j];
+        toggle_bit(out_slater_determinant,
+                   idx >= 0 ? static_cast<size_t>(idx)
+                            : static_cast<size_t>(-(idx + 1)));
+      }
+    }
+    bool any_diag = false;
+    for (std::size_t c = 0; c < p; ++c) {
+      if (diag_accum[c] != ManyBodyBlockState::Value(0.0, 0.0)) {
+        any_diag = true;
+        break;
+      }
+    }
+    if (any_diag) {
+      ManyBodyBlockState::Value *dst = emit_row(slater);
+      for (std::size_t c = 0; c < p; ++c) {
+        dst[c] += diag_accum[c];
+      }
+    }
+  }
+
+  // Keep rows where ANY column survives the cutoff, then sort by determinant to
+  // establish the container's sorted-unique invariant.
+  std::vector<std::pair<ManyBodyState::key_type, std::size_t>> survivors;
+  survivors.reserve(row_of.size());
+  for (auto &[k, row] : row_of) {
+    const ManyBodyBlockState::Value *src = acc.data() + row * p;
+    for (std::size_t c = 0; c < p; ++c) {
+      if (std::norm(src[c]) > cutoff2) {
+        survivors.emplace_back(std::move(k), row);
+        break;
+      }
+    }
+  }
+  std::sort(survivors.begin(), survivors.end(),
+            [](const auto &a, const auto &b) { return a.first < b.first; });
+
+  std::vector<ManyBodyBlockState::Key> keys;
+  keys.reserve(survivors.size());
+  std::vector<ManyBodyBlockState::Value> amps;
+  amps.reserve(survivors.size() * p);
+  for (auto &[k, row] : survivors) {
+    keys.push_back(std::move(k));
+    const ManyBodyBlockState::Value *src = acc.data() + row * p;
+    amps.insert(amps.end(), src, src + p);
+  }
+  return ManyBodyBlockState(std::move(keys), std::move(amps), p);
+}
+
 ManyBodyOperator &
 ManyBodyOperator::operator+=(const ManyBodyOperator &other) noexcept {
   m_flat_dirty = true;

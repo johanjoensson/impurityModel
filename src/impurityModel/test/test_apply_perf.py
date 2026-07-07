@@ -335,6 +335,8 @@ def test_apply_block_width_scaling(timing_fixtures, capsys):
     the ManyBodyBlockState target is near-flat in p (term/sign/accumulator work done
     once per determinant, p FMAs per emission). This baseline is what the block
     container is measured against."""
+    from impurityModel.ed.ManyBodyUtils import ManyBodyBlockState
+
     op, psi = timing_fixtures["hamiltonian"]
     support = list(psi.to_dict().keys())
     rows = []
@@ -344,18 +346,23 @@ def test_apply_block_width_scaling(timing_fixtures, capsys):
             ManyBodyState({sd: complex(rng.random(), rng.random()) for sd in support})
             for _ in range(p)
         ]
-        times = []
+        blk = ManyBodyBlockState.from_states(psis)
+        times, btimes = [], []
         for _ in range(5):
             t0 = time.perf_counter()
             out = op.apply_multi(psis, 0.0)
             times.append((time.perf_counter() - t0) * 1e3)
+            t0 = time.perf_counter()
+            bout = op.apply_block(blk, 0.0)
+            btimes.append((time.perf_counter() - t0) * 1e3)
         times.sort()
-        rows.append((p, times[len(times) // 2], len(out[0])))
+        btimes.sort()
+        rows.append((p, times[len(times) // 2], btimes[len(btimes) // 2], len(out[0])))
     t1 = rows[0][1]
     with capsys.disabled():
         print()
-        for p, med, n_out in rows:
+        for p, med, bmed, n_out in rows:
             print(
-                f"[apply-block] p={p}  median={med:8.2f} ms  per-state={med / p:7.2f} ms"
-                f"  vs p=1: {med / t1:5.2f}x  n_out={n_out}"
+                f"[apply-block] p={p}  multi={med:8.2f} ms ({med / t1:5.2f}x p=1)"
+                f"  block={bmed:8.2f} ms  speedup={med / bmed:5.2f}x  n_out={n_out}"
             )

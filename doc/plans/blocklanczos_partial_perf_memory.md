@@ -172,12 +172,19 @@ Stages (each committable, gate-green):
   i.e. everything except the per-column FMAs is repeated work — the amortizable
   fraction is ~all of a single apply. Golden equality (block == p independent
   applies, bit-for-bit) lands with the 2.2 API.
-- **2.1 container**: C++ `ManyBodyBlockState` + Cython wrapper; conversions to/from
-  `list[ManyBodyState]` (bit-exact round-trip tests); row-prune-any-survives.
-- **2.2 block apply (serial)**: `ManyBodyOperator::apply(block)` — the per-term fast
-  paths (density mask, 1-body between-mask) act on the determinant only, so they
-  port unchanged; block accumulator maps out-determinant → p amplitudes. Golden:
-  equals p independent applies bit-for-bit.
+- **2.1 container — DONE**: C++ `ManyBodyBlockState` (sorted shared support +
+  row-major amplitudes, header-only) + Cython wrapper with buffer protocol
+  (zero-copy `np.asarray`, export guard against mutation-under-view); conversions
+  to/from `list[ManyBodyState]` bit-exact; row-prune-any-survives.
+- **2.2 block apply (serial) — DONE**: `ManyBodyOperator::apply(const
+  ManyBodyBlockState&, cutoff)` mirrors the scalar hot loop with a
+  determinant→row block accumulator (one hash op per (det, term), p FMAs per
+  emission); the density/1-body fast paths ported unchanged. Golden: bit-for-bit
+  equal to p independent applies (parametrized p ∈ {1,2,3,5}, density + 1-body +
+  general 2-body terms); whole-row cutoff semantics tested. **Measured**: block
+  apply is near-flat in p — NiO 50-bath H 18.96/20.09/22.30/23.52 ms at
+  p=1/2/4/8 → speedup 0.99/1.89/3.43/6.45x vs apply_multi; hopping fixture
+  2.12/3.89/6.79x at p=2/4/8; no p=1 regression.
 - **2.3 block redistribute**: pack `[det | p amps]` (the fused wire format already
   tags psi_idx, so this is a simplification); same hash routing; empty-rank rules
   (collectives unconditional, dtypes fixed); tests at n=2/3.

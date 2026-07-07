@@ -413,23 +413,34 @@ def test_apply_block_width_scaling(nio_workload):
     Today's independent per-state applies scale ~linearly in p; the ManyBodyBlockState
     target is near-flat. Baseline for the block-container A/B."""
     h, basis, comm = nio_workload["h"], nio_workload["basis"], nio_workload["comm"]
+    from impurityModel.ed.ManyBodyUtils import ManyBodyBlockState
+
     rows = []
     for p in (1, 2, 4, 8):
         psis = _random_block(basis, comm, p)
-        times = []
+        blk = ManyBodyBlockState.from_states(psis)
+        times, btimes = [], []
         for _ in range(5):
             t0 = time.perf_counter()
             out = h.apply_multi(psis, SLATER_WEIGHT_MIN)
             times.append((time.perf_counter() - t0) * 1e3)
+            t0 = time.perf_counter()
+            bout = h.apply_block(blk, SLATER_WEIGHT_MIN)
+            btimes.append((time.perf_counter() - t0) * 1e3)
         times.sort()
-        rows.append((p, times[len(times) // 2], sum(len(st) for st in out)))
+        btimes.sort()
+        rows.append((p, times[len(times) // 2], btimes[len(btimes) // 2], sum(len(st) for st in out)))
     t1 = rows[0][1]
     _report(
         comm,
         f"apply_multi p-scaling (NiO {NBATHS} bath, basis {len(basis)}, "
         f"{'serial' if comm is None else f'{comm.size} ranks'})",
         [
-            (f"p={p}", f"median {med:8.2f} ms   per-state {med / p:7.2f} ms   vs p=1 {med / t1:5.2f}x   nnz_out {nnz}")
-            for p, med, nnz in rows
+            (
+                f"p={p}",
+                f"multi {med:8.2f} ms ({med / t1:5.2f}x p=1)   block {bmed:8.2f} ms   "
+                f"speedup {med / bmed:5.2f}x   nnz_out {nnz}",
+            )
+            for p, med, bmed, nnz in rows
         ],
     )

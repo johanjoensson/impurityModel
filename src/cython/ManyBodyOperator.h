@@ -1,6 +1,7 @@
 #ifndef MANYBODYOPERATOR_H
 #define MANYBODYOPERATOR_H
 
+#include "ManyBodyBlockState.h"
 #include "ManyBodyState.h"
 #include <complex>
 #include <cstdint>
@@ -128,6 +129,20 @@ public:
     }
     return res;
   }
+
+  /**
+   * @brief Apply this operator to a shared-support block of p vectors.
+   *
+   * The term loop, fermion sign, restriction check and accumulator hash
+   * operation run once per (determinant, term); the p amplitudes are emitted
+   * with p fused multiply-adds. Per-column arithmetic is identical to p
+   * independent apply() calls (bit-for-bit at cutoff 0). The cutoff acts on
+   * whole rows: a row is kept when ANY column survives the |amp|^2 > cutoff^2
+   * test, so the output block keeps its shared support (sub-cutoff residuals
+   * in the other columns are retained, unlike per-column pruning).
+   */
+  [[nodiscard]] ManyBodyBlockState apply(const ManyBodyBlockState &block,
+                                         double cutoff = 0) const;
 
   [[nodiscard]] size_type size() const noexcept;
   [[nodiscard]] bool empty() const noexcept;

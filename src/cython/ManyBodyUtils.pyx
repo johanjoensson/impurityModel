@@ -3,6 +3,7 @@
 
 
 from ManyBodyState cimport ManyBodyState as ManyBodyState_cpp, inner as inner_cpp
+from ManyBodyBlockState cimport ManyBodyBlockState as ManyBodyBlockState_cpp
 from ManyBodyOperator cimport ManyBodyOperator as ManyBodyOperator_cpp
 from SlaterDeterminant cimport SlaterDeterminant as SlaterDeterminant_cpp
 from libcpp.pair cimport pair
@@ -45,6 +46,8 @@ def enable_manybody_profile(on=True):
 cdef extern from "<utility>" namespace "std" nogil:
     ManyBodyState_cpp& move(ManyBodyState_cpp)
     SlaterDeterminant_cpp& move(SlaterDeterminant_cpp)
+    vector[SlaterDeterminant_cpp[uint64_t]]& move(vector[SlaterDeterminant_cpp[uint64_t]])
+    vector[complex_cpp[double]]& move(vector[complex_cpp[double]])
 
 
 cdef class SlaterDeterminant:
@@ -688,6 +691,22 @@ cdef class ManyBodyOperator:
             res_list.append(res_state)
 
         return res_list
+
+    def apply_block(self, ManyBodyBlockState block, double cutoff = 0):
+        """Apply the operator to a shared-support block of p vectors (Phase 2.2).
+
+        The term loop, fermion sign, restriction checks and the accumulator hash
+        operation run once per (determinant, term); the p amplitudes are emitted with
+        p multiply-adds — near-flat cost in p vs the linear scaling of
+        ``apply_multi`` (see the p-scaling baseline in the campaign doc). Per-column
+        arithmetic is identical to p independent ``apply`` calls (bit-for-bit at
+        ``cutoff=0``). The cutoff keeps whole rows (any column above threshold), so
+        the output block retains its shared support.
+        """
+        cdef ManyBodyBlockState res = ManyBodyBlockState()
+        with nogil:
+            res.b = self.o.apply(block.b, cutoff)
+        return res
 
     def erase(self, tuple[tuple[int, str]]key):
         """
@@ -1440,3 +1459,150 @@ cdef class SparseKrylovDense:
             new_ms.v = ManyBodyState_cpp(keys, vals)
             out.append(new_ms)
         return out
+
+
+cdef class ManyBodyBlockState:
+    r"""A block of ``p`` many-body vectors over ONE shared Slater-determinant support.
+
+    The hot-loop counterpart of ``ManyBodyState`` (which stays the single-vector
+    boundary type): the union support is stored once as a sorted key vector, the
+    coefficients as a row-major ``(rows x width)`` dense array. This is the container
+    the block-Lanczos loop operates on so ``ManyBodyOperator::apply`` amortizes the
+    term/sign/accumulator work over the block width and the block linear algebra runs
+    as dense row-block BLAS (see the Phase-2 plan in
+    ``doc/plans/blocklanczos_partial_perf_memory.md``).
+
+    Supports the buffer protocol: ``np.asarray(block)`` is a zero-copy writable
+    ``(rows, width)`` complex view (the array keeps this object alive). Mutating the
+    row structure (``prune_rows``) while such a view is exported raises, because the
+    reallocation would dangle the view.
+    """
+    cdef ManyBodyBlockState_cpp b
+    cdef Py_ssize_t _shape[2]
+    cdef Py_ssize_t _strides[2]
+    cdef int _n_exports
+
+    @staticmethod
+    def from_states(list states):
+        """Build the block from a list of ``ManyBodyState`` over their union support.
+
+        Missing determinants of a column hold exact zeros; every stored coefficient
+        round-trips bit-identically through ``to_states``.
+        """
+        cdef Py_ssize_t p = len(states)
+        cdef ManyBodyBlockState out = ManyBodyBlockState()
+        if p == 0:
+            return out
+        cdef vector[ManyBodyState_cpp*] ptrs
+        cdef ManyBodyState ms
+        for obj in states:
+            ms = <ManyBodyState?>obj
+            ptrs.push_back(&ms.v)
+
+        cdef vector[SlaterDeterminant_cpp[uint64_t]] support
+        cdef ManyBodyState_cpp.iterator it
+        cdef Py_ssize_t ci
+        for ci in range(p):
+            it = ptrs[ci].begin()
+            while it != ptrs[ci].end():
+                support.push_back(dereference(it).first)
+                preincrement(it)
+        sort(support.begin(), support.end())
+        support.erase(unique(support.begin(), support.end()), support.end())
+        cdef Py_ssize_t ns = <Py_ssize_t>support.size()
+
+        cdef vector[ManyBodyBlockState_cpp.Value] amps
+        amps.resize(ns * p)  # value-initialized: exact zeros
+        cdef Py_ssize_t row
+        for ci in range(p):
+            it = ptrs[ci].begin()
+            while it != ptrs[ci].end():
+                row = lower_bound(support.begin(), support.end(), dereference(it).first) - support.begin()
+                amps[row * p + ci] = dereference(it).second
+                preincrement(it)
+        out.b = ManyBodyBlockState_cpp(move(support), move(amps), <size_t>p)
+        return out
+
+    def to_states(self):
+        """Materialize the columns back to a list of ``ManyBodyState`` (exact-zero
+        entries are skipped, so a ``from_states`` round-trip is bit-identical)."""
+        cdef Py_ssize_t p = <Py_ssize_t>self.b.width()
+        cdef Py_ssize_t ns = <Py_ssize_t>self.b.rows()
+        cdef list out = []
+        cdef vector[ManyBodyState_cpp.key_type] keys
+        cdef vector[ManyBodyState_cpp.mapped_type] vals
+        cdef ManyBodyState new_ms
+        cdef Py_ssize_t ci, row
+        cdef ManyBodyBlockState_cpp.Value z
+        for ci in range(p):
+            keys.clear()
+            vals.clear()
+            for row in range(ns):
+                z = self.b.data()[row * p + ci]
+                if z.real() != 0 or z.imag() != 0:
+                    keys.push_back(self.b.key(row))
+                    vals.push_back(z)
+            new_ms = ManyBodyState()
+            new_ms.v = ManyBodyState_cpp(keys, vals)
+            out.append(new_ms)
+        return out
+
+    @property
+    def width(self):
+        """Number of block vectors (columns)."""
+        return self.b.width()
+
+    def __len__(self):
+        """Number of shared-support determinants (rows)."""
+        return self.b.rows()
+
+    def prune_rows(self, double cutoff):
+        """Drop rows where ALL columns satisfy the ``ManyBodyState.prune`` test
+        (``|amp|^2 <= cutoff^2``); a row survives if ANY column survives. This keeps
+        the support shared across the block — the deliberate semantic difference vs
+        pruning p independent states."""
+        if self._n_exports > 0:
+            raise RuntimeError("cannot prune_rows while a buffer view is exported (np.asarray view alive)")
+        self.b.prune_rows(cutoff)
+
+    def col_norm2(self):
+        """Per-column squared L2 norms as a float array of length ``width``."""
+        res = np.zeros(self.b.width(), dtype=float)
+        cdef double[:] rv = res
+        if self.b.width() > 0:
+            self.b.col_norm2(&rv[0])
+        return res
+
+    def memory_bytes(self):
+        """Estimated heap bytes: dense amplitude array + one heap block per key vector."""
+        cdef size_t n_chunks = self.b.key(0).size() if self.b.rows() > 0 else 1
+        cdef size_t key_heap = (8 * n_chunks + 8 + 15) & (~<size_t>15)
+        if key_heap < 32:
+            key_heap = 32
+        return self.b.rows() * (16 * self.b.width() + key_heap + sizeof(SlaterDeterminant_cpp[uint64_t]))
+
+    def __eq__(self, other):
+        if not isinstance(other, ManyBodyBlockState):
+            return NotImplemented
+        return self.b == (<ManyBodyBlockState>other).b
+
+    def __getbuffer__(self, Py_buffer *buffer, int flags):
+        self._shape[0] = <Py_ssize_t>self.b.rows()
+        self._shape[1] = <Py_ssize_t>self.b.width()
+        self._strides[0] = self._shape[1] * <Py_ssize_t>sizeof(double complex)
+        self._strides[1] = <Py_ssize_t>sizeof(double complex)
+        buffer.buf = <void*>self.b.data()
+        buffer.format = "Zd"
+        buffer.internal = NULL
+        buffer.itemsize = <Py_ssize_t>sizeof(double complex)
+        buffer.len = self._shape[0] * self._shape[1] * <Py_ssize_t>sizeof(double complex)
+        buffer.ndim = 2
+        buffer.obj = self
+        buffer.readonly = 0
+        buffer.shape = self._shape
+        buffer.strides = self._strides
+        buffer.suboffsets = NULL
+        self._n_exports += 1
+
+    def __releasebuffer__(self, Py_buffer *buffer):
+        self._n_exports -= 1
