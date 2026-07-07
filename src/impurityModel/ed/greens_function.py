@@ -21,6 +21,7 @@ from impurityModel.ed.BlockLanczos import block_lanczos_cy
 from impurityModel.ed.manybody_basis import Basis
 from impurityModel.ed.symmetries import widen_weighted_restrictions
 from impurityModel.ed.ManyBodyUtils import (
+    ManyBodyBlockState,
     ManyBodyOperator,
     ManyBodyState,
 )
@@ -591,11 +592,15 @@ def _apply_transition_ops(tOps, psis, excited_restrictions, excited_weighted_res
     Returns ``block_v`` indexed ``[j_psi][i_tOp]`` -- the excited state ``tOps[i] |psi_j>`` confined
     to the excited sector. These are the columns of each eigenstate's block-Lanczos seed.
     """
+    # The thermal states share their support, so each transition operator is applied to
+    # the whole block at once (term/sign/accumulator work once per determinant, near-flat
+    # in the number of eigenstates — Phase 2 block-state matvec).
+    psi_blk = ManyBodyBlockState.from_states(list(psis))
     block_v = [[ManyBodyState({}) for _ in tOps] for _ in psis]
     for i_tOp, tOp in enumerate(tOps):
         tOp.set_restrictions(excited_restrictions)
         tOp.set_weighted_restrictions(excited_weighted_restrictions)
-        res_psis = tOp.apply_multi(psis, cutoff=slaterWeightMin)
+        res_psis = tOp.apply_block(psi_blk, slaterWeightMin).to_states()
         for j_psi, res_psi in enumerate(res_psis):
             block_v[j_psi][i_tOp] += res_psi
     return block_v
@@ -837,11 +842,13 @@ def block_Green(
     done = False
     while not done:
         old_size = basis.size
-        new_psis = last_q
+        # Reachability probe: repeatedly apply H to the residual block to discover new
+        # determinants. The block shares its support, so the block matvec applies here too.
+        probe = ManyBodyBlockState.from_states(list(last_q))
         for i in range(5):
-            new_psis = hOp.apply_multi(new_psis, cutoff=slaterWeightMin)
+            probe = hOp.apply_block(probe, slaterWeightMin)
             basis.add_states(
-                set(state for p in new_psis for state in p if state not in basis.local_basis),
+                set(state for state in probe.support_keys(0.0) if state not in basis.local_basis),
             )
         if basis.size == old_size or basis.size > basis.truncation_threshold:
             break

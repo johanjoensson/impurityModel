@@ -1,13 +1,6 @@
 import numpy as np
 import pytest
-from unittest.mock import MagicMock, patch
 from impurityModel.ed.cg import block_bicgstab
-
-
-def _fake_block_combine(Q, Y, slaterWeightMin=0.0):
-    # Stand-in for the Cython block_combine in the mock-based dict tests: the real one
-    # requires ManyBodyState blocks and segfaults on the plain dicts used here.
-    return [dict(Q[i % len(Q)]) for i in range(Y.shape[1])]
 
 
 def test_block_bicgstab_array_single():
@@ -63,158 +56,107 @@ def test_block_bicgstab_max_iter():
     assert not np.allclose(x_sol, x_exact)
 
 
-@patch("impurityModel.ed.cg.block_combine", side_effect=_fake_block_combine)
-@patch("impurityModel.ed.cg.block_add_scaled")
-@patch("impurityModel.ed.cg.block_apply")
-@patch("impurityModel.ed.cg.block_inner")
-@patch("impurityModel.ed.cg.inner")
-def test_block_bicgstab_dict_mpi(
-    mock_inner, mock_block_inner, mock_block_apply, mock_block_add_scaled, mock_block_combine
-):
-    # Setting up inputs
-    A = MagicMock()
-    A.set_restrictions = MagicMock()
+# --------------------------------------------------------------------------- #
+# Sparse (ManyBodyBlockState) path: real end-to-end solves against a dense
+# reference. These replace the old mock-based dict tests, which patched the
+# pre-block internals (cg.inner etc.) and never exercised the real solver.
+# --------------------------------------------------------------------------- #
+import itertools
 
-    x0 = [{"state1": 0.0 + 0j}]
-    y = [{"state1": 1.0 + 0j}]
-
-    basis = MagicMock()
-    basis.is_distributed = True
-    basis.comm = MagicMock()
-    basis.local_basis = set(["state1"])
-    basis.add_states = MagicMock()
-    basis.restrictions = {}
-
-    # We want block_bicgstab to do exactly one iteration and finish.
-    # To do that, the active_mask should be false after one iteration, or cond > eps,
-    # or the residual norms become small.
-    # We can control the loop through mock_block_inner and mock_inner
-
-    # Let's say max_iter=1
-    # Matmat returns something
-    mock_block_apply.return_value = [{"state1": 0.5 + 0j, "state2": 0.5 + 0j, "state3": 0.5 + 0j}]
-
-    # inner returns something big for r0_norm
-    mock_inner.return_value = 1.0
-
-    # block_inner returns a 1x1 matrix
-    mock_block_inner.return_value = np.array([[1.0 + 0j]])
-
-    # After one iteration, it calculates residual norm. We can just set max_iter=1.
-    x_sol = block_bicgstab(A, x0, y, basis=basis, slaterWeightMin=0.0, max_iter=1, atol=1e-8, rtol=1e-12)
-
-    assert len(x_sol) == 1
-    basis.add_states.assert_called()
-    A.set_restrictions.assert_called_with(basis.restrictions)
-    basis.comm.Allreduce.assert_called()
+from impurityModel.ed.basis_transcription import build_sparse_matrix, build_vector
+from impurityModel.ed.manybody_basis import Basis
+from impurityModel.ed.ManyBodyUtils import ManyBodyOperator, ManyBodyState, SlaterDeterminant
 
 
-@patch("impurityModel.ed.cg.block_combine", side_effect=_fake_block_combine)
-@patch("impurityModel.ed.cg.block_add_scaled")
-@patch("impurityModel.ed.cg.block_apply")
-@patch("impurityModel.ed.cg.block_inner")
-@patch("impurityModel.ed.cg.inner")
-def test_block_bicgstab_dict_no_mpi(
-    mock_inner, mock_block_inner, mock_block_apply, mock_block_add_scaled, mock_block_combine
-):
-    A = MagicMock()
-    x0 = [{"state1": 0.0 + 0j}, {"state2": 0.0 + 0j}]
-    y = [{"state1": 1.0 + 0j}, {"state2": 1.0 + 0j}]
+def _sparse_system(n_sites=6, n_particles=3):
+    """Number-conserving H on the full fixed-N space (closed under H, so the dense
+    reference matches exactly)."""
+    states = []
+    for c in itertools.combinations(range(n_sites), n_particles):
+        b = bytearray((n_sites + 7) // 8)
+        for o in c:
+            b[o // 8] |= 1 << (7 - (o % 8))
+        states.append(bytes(b))
+    op = {}
+    for i in range(n_sites):
+        op[((i, "c"), (i, "a"))] = float(i + 1)  # distinct levels -> nonsingular H
+        if i + 1 < n_sites:
+            op[((i, "c"), (i + 1, "a"))] = 0.5
+            op[((i + 1, "c"), (i, "a"))] = 0.5
+    op[((0, "c"), (1, "c"), (1, "a"), (0, "a"))] = 0.7  # a two-body term
+    basis = Basis(
+        impurity_orbitals={0: [list(range(n_sites))]},
+        bath_states=({0: [[]]}, {0: [[]]}),
+        initial_basis=states,
+        verbose=False,
+    )
+    return ManyBodyOperator(op), basis
 
-    basis = MagicMock()
-    basis.is_distributed = False
-    basis.local_basis = set()
-    basis.add_states = MagicMock()
 
-    mock_block_apply.return_value = [{"state1": 0.5 + 0j}, {"state2": 0.5 + 0j}]
-    mock_inner.return_value = 1.0
-    mock_block_inner.return_value = np.eye(2, dtype=complex)
-
-    # Let it run for 2 iterations, then finish.
-    # To make it finish, we need active_mask to be False, which means r_norms < atol
-    # We will use side_effect on mock_inner to return 1.0 initially, then 0.0 to break.
-    # inner is called in block_norm (len=2), then inside loop for r_norms2 (len=2), then for s_norms2 (len=2), then ts/tt (len=2, len=2).
-    # Since side_effect is sequential, we just provide enough 1.0s and then 0.0s.
-    # Actually, if s_norms2 is 0, it breaks early.
-    mock_inner.side_effect = [
-        1.0,
-        1.0,  # block_norm
-        1.0,
-        1.0,  # r_norms2
-        0.0,
-        0.0,  # s_norms2 -> breaks early
+def _rand_states(basis, rng, n_cols):
+    dets = [basis.type.from_bytes(b) if isinstance(b, bytes) else b for b in basis.local_basis]
+    return [
+        ManyBodyState({d: complex(rng.standard_normal(), rng.standard_normal()) for d in dets})
+        for _ in range(n_cols)
     ]
 
-    x_sol = block_bicgstab(A, x0, y, basis=basis, slaterWeightMin=0.0, max_iter=2, atol=1e-8, rtol=1e-12)
 
-    assert len(x_sol) == 2
-
-
-@patch("impurityModel.ed.cg.block_combine", side_effect=_fake_block_combine)
-@patch("impurityModel.ed.cg.block_add_scaled")
-@patch("impurityModel.ed.cg.block_apply")
-@patch("impurityModel.ed.cg.block_inner")
-@patch("impurityModel.ed.cg.inner")
-def test_block_bicgstab_cond_break(
-    mock_inner, mock_block_inner, mock_block_apply, mock_block_add_scaled, mock_block_combine
-):
-    # Test line 138: np.linalg.cond(R0_V) > 1 / np.finfo(float).eps
-    A = MagicMock()
-    x0 = [{"state1": 0.0 + 0j}]
-    y = [{"state1": 1.0 + 0j}]
-    basis = MagicMock()
-    basis.is_distributed = False
-
-    mock_block_apply.return_value = [{"state1": 0.5 + 0j, "state2": 0.5 + 0j, "state3": 0.5 + 0j}]
-    mock_inner.return_value = 1.0
-    # Make R0_V perfectly singular
-    mock_block_inner.return_value = np.zeros((1, 1), dtype=complex)
-
-    # We provide enough side effects for inner if needed
-    mock_inner.side_effect = [1.0, 1.0]  # block_norm, r_norms2
-
-    x_sol = block_bicgstab(A, x0, y, basis=basis, slaterWeightMin=0.0, max_iter=2)
-    assert len(x_sol) == 1
+def _dense_ref(basis, H, ys):
+    H_mat = build_sparse_matrix(basis, H).toarray()
+    Y = build_vector(basis, ys).T
+    return H_mat, np.linalg.solve(H_mat, Y)
 
 
-@patch("impurityModel.ed.cg.block_combine", side_effect=_fake_block_combine)
-@patch("impurityModel.ed.cg.block_add_scaled")
-@patch("impurityModel.ed.cg.block_apply")
-@patch("impurityModel.ed.cg.block_inner")
-@patch("impurityModel.ed.cg.inner")
-def test_block_bicgstab_tt_zero(
-    mock_inner, mock_block_inner, mock_block_apply, mock_block_add_scaled, mock_block_combine
-):
-    # Test line 184: abs(tt) < eps
-    A = MagicMock()
-    x0 = [{"state1": 0.0 + 0j}]
-    y = [{"state1": 1.0 + 0j}]
-    basis = MagicMock()
-    basis.is_distributed = False
+def test_block_bicgstab_sparse_matches_dense():
+    H, basis = _sparse_system()
+    rng = np.random.default_rng(17)
+    ys = _rand_states(basis, rng, 3)
+    x0 = [ManyBodyState() for _ in range(3)]
+    xs = block_bicgstab(H, x0, ys, basis=basis, slaterWeightMin=0.0)
+    _, X_ref = _dense_ref(basis, H, ys)
+    X = build_vector(basis, xs).T
+    np.testing.assert_allclose(X, X_ref, atol=1e-6)
 
-    mock_block_apply.return_value = [{"state1": 0.5 + 0j, "state2": 0.5 + 0j, "state3": 0.5 + 0j}]
-    mock_block_inner.return_value = np.eye(1, dtype=complex)
 
-    # inner calls:
-    # 1. block_norm
-    # Loop 1:
-    # 2. r_norms2
-    # 3. s_norms2
-    # 4. ts (inner(ti, si))
-    # 5. tt (inner(ti, ti))
-    # Loop 2:
-    # 6. r_norms2 -> make it 0.0 to break
-    mock_inner.side_effect = [
-        1.0,  # block_norm
-        1.0,  # r_norms2
-        1.0,  # s_norms2
-        0.0,  # ts
-        0.0,  # tt -> triggers abs(tt) < eps
-        0.0,  # r_norms2 (loop 2) -> break
-    ]
+def test_block_bicgstab_sparse_rank_deficient_rhs():
+    """A duplicated RHS column must be reconstructed by linearity via the deflation."""
+    H, basis = _sparse_system()
+    rng = np.random.default_rng(19)
+    y = _rand_states(basis, rng, 1)[0]
+    ys = [y, y * (2.0 + 0j)]
+    x0 = [ManyBodyState() for _ in range(2)]
+    xs = block_bicgstab(H, x0, ys, basis=basis, slaterWeightMin=0.0)
+    _, X_ref = _dense_ref(basis, H, ys)
+    X = build_vector(basis, xs).T
+    np.testing.assert_allclose(X, X_ref, atol=1e-6)
+    diff = xs[1] - xs[0] * (2.0 + 0j)
+    assert np.sqrt(diff.norm2()) < 1e-8  # exact linearity of the dependent column
 
-    x_sol = block_bicgstab(A, x0, y, basis=basis, slaterWeightMin=0.0, max_iter=2)
-    assert len(x_sol) == 1
+
+def test_block_bicgstab_sparse_warm_start_exact():
+    """An exact initial guess returns immediately (zero residual -> rank 0)."""
+    H, basis = _sparse_system()
+    rng = np.random.default_rng(23)
+    ys = _rand_states(basis, rng, 2)
+    xs = block_bicgstab(H, [ManyBodyState() for _ in range(2)], ys, basis=basis, slaterWeightMin=0.0)
+    xs2 = block_bicgstab(H, xs, ys, basis=basis, slaterWeightMin=0.0)
+    for a, b in zip(xs, xs2):
+        diff = a - b
+        assert np.sqrt(diff.norm2()) < 1e-10
+
+
+def test_block_bicgstab_sparse_max_iter():
+    H, basis = _sparse_system()
+    rng = np.random.default_rng(29)
+    ys = _rand_states(basis, rng, 2)
+    xs = block_bicgstab(H, [ManyBodyState() for _ in range(2)], ys, basis=basis, slaterWeightMin=0.0, max_iter=0)
+    _, X_ref = _dense_ref(basis, H, ys)
+    X = build_vector(basis, xs).T
+    assert not np.allclose(X, X_ref, atol=1e-6)
+
+
+# Recovered pre-block tests (real coverage, kept verbatim): array deflation
+# cases and the original sparse rank-deficient linearity check.
 
 
 def test_block_bicgstab_break_active_mask():
@@ -229,39 +171,6 @@ def test_block_bicgstab_break_active_mask():
     # We can force a break after 1 iteration because A is identity
     x_sol = block_bicgstab(A, x0, y, basis=None, slaterWeightMin=0.0)
     np.testing.assert_allclose(x_sol, x_exact)
-
-
-@patch("impurityModel.ed.cg.block_combine", side_effect=_fake_block_combine)
-@patch("impurityModel.ed.cg.block_add_scaled")
-@patch("impurityModel.ed.cg.block_apply")
-@patch("impurityModel.ed.cg.block_inner")
-@patch("impurityModel.ed.cg.inner")
-def test_block_bicgstab_active_mask_break(
-    mock_inner, mock_block_inner, mock_block_apply, mock_block_add_scaled, mock_block_combine
-):
-    A = MagicMock()
-    x0 = [{"state1": 0.0 + 0j}]
-    y = [{"state1": 1.0 + 0j}]
-    basis = MagicMock()
-    basis.is_distributed = False
-
-    mock_block_apply.return_value = [{"state1": 0.5 + 0j, "state2": 0.5 + 0j, "state3": 0.5 + 0j}]
-    mock_block_inner.return_value = np.eye(1, dtype=complex)
-
-    mock_inner.side_effect = [
-        1.0,  # block_norm
-        1.0,  # r_norms2 loop 1
-        1.0,  # s_norms2 loop 1
-        1.0,  # ts loop 1
-        1.0,  # tt loop 1
-        0.0,  # r_norms2 loop 2 -> breaks at line 110
-    ]
-
-    x_sol = block_bicgstab(A, x0, y, basis=basis, slaterWeightMin=0.0, max_iter=2)
-    assert len(x_sol) == 1
-
-
-# --- rank-deficient block RHS (initial-block deflation + reconstruction) ---
 
 
 def test_block_bicgstab_array_rank_deficient():

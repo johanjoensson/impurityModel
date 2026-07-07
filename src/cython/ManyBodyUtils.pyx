@@ -1610,6 +1610,27 @@ cdef class ManyBodyBlockState:
             key_heap = 32
         return self.b.rows() * (16 * self.b.width() + key_heap + sizeof(SlaterDeterminant_cpp[uint64_t]))
 
+    def support_keys(self, double min_amp=0.0):
+        """The shared-support determinants (``SlaterDeterminant`` wrappers) of rows
+        where ANY column has ``|amp| > min_amp`` — the block analogue of iterating the
+        union of the columns' flat_map keys with a per-entry amplitude filter (the
+        union of per-column tests equals the row-max test)."""
+        cdef double cutoff2 = min_amp * min_amp
+        cdef Py_ssize_t p = <Py_ssize_t>self.b.width()
+        cdef Py_ssize_t r, c
+        cdef const ManyBodyBlockState_cpp.Value* row
+        cdef list out = []
+        cdef SlaterDeterminant sd
+        for r in range(<Py_ssize_t>self.b.rows()):
+            row = self.b.row(r)
+            for c in range(p):
+                if row[c].real() * row[c].real() + row[c].imag() * row[c].imag() > cutoff2:
+                    sd = SlaterDeterminant()
+                    sd.s = self.b.key(r)
+                    out.append(sd)
+                    break
+        return out
+
     def combine_columns(self, Y):
         """New block ``OUT = self @ Y`` on the same support: ``out[det, k] =
         sum_j self[det, j] * Y[j, k]``. The j-ascending accumulation matches

@@ -206,6 +206,27 @@ Stages (each committable, gate-green):
   unchanged to all printed digits; reort trigger pattern identical (5/60); loop
   peak RSS delta 0.4 MiB. **Cumulative vs the campaign baseline: 125.2 → 33.9
   ms/iter (3.7x) at p=2** plus the 3.1x Krylov memory cut.
+- **2.4c spectra paths — DONE (user-requested)**: the block matvec now powers the
+  whole spectra layer, not just the Lanczos kernel:
+  - `cg.block_bicgstab` / `_block_bicgstab_core`: the sparse branch runs on
+    `ManyBodyBlockState` end to end — `apply_block` matvecs (2 per iteration),
+    fused block redistribute, per-column norms from `col_norm2`, Gram products via
+    `block_inner_cy`, axpy rebinds via `block_add_scaled_cy`. Callers keep the
+    `list[ManyBodyState]` interface (conversion at the solver boundary). The dense
+    (ndarray) branch is untouched. The reachable-support bookkeeping uses the new
+    `ManyBodyBlockState.support_keys(min_amp)` (row-max filter == the old union of
+    per-column filters).
+  - `greens_function._apply_transition_ops`: transition operators applied to the
+    whole thermal-eigenstate block at once.
+  - `greens_function` excited-basis reachability probe: the 5x repeated H
+    application runs on the block.
+  - The Lanczos-based GF path (`block_green_impl`) already used the block kernel
+    since 2.4b.
+  - Tests: the five obsolete mock-based cg tests (patching pre-block internals on
+    plain dicts) are replaced by four real end-to-end sparse solver tests (dense
+    reference, rank-deficient RHS linearity, warm start, max_iter); the four real
+    pre-block tests (array deflation cases, sparse rank-deficient linearity,
+    break-on-active-mask) are kept verbatim.
 - **2.5 threaded path re-tune**: the block accumulator changes memory-per-entry;
   re-measure the MIN_SD_PER_THREAD workload scaling; threading stays opt-in.
 
