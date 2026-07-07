@@ -185,9 +185,14 @@ Stages (each committable, gate-green):
   apply is near-flat in p — NiO 50-bath H 18.96/20.09/22.30/23.52 ms at
   p=1/2/4/8 → speedup 0.99/1.89/3.43/6.45x vs apply_multi; hopping fixture
   2.12/3.89/6.79x at p=2/4/8; no p=1 regression.
-- **2.3 block redistribute**: pack `[det | p amps]` (the fused wire format already
-  tags psi_idx, so this is a simplification); same hash routing; empty-rank rules
-  (collectives unconditional, dtypes fixed); tests at n=2/3.
+- **2.3 block redistribute — DONE**: `pack_block_fused`/`unpack_block_fused`
+  (MpiUtils) + `graph_alltoall_block` (mpi_comm) + `Basis.redistribute_block`.
+  One wire entry per shared-support row — `state_bytes + 16p` bytes per
+  determinant instead of `p*(state_bytes + 20)` — same `routing_hash` ownership,
+  same cached dist-graph + one fused `Neighbor_alltoallv(BYTE)`. Cross-rank
+  duplicate rows are summed in arrival order (stable sort), bit-identical to the
+  scalar unpack; verified against `graph_alltoall_psis` at n=2/3 including an
+  empty-contributor rank.
 - **2.4 Lanczos loop switch**: q_prev/q_curr/wp as block states; block
   inner/add_scaled as row-block gemm; store append from block rows; A/B against the
   Phase-3 bench numbers.

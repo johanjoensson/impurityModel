@@ -19,7 +19,7 @@ from impurityModel.ed.ManyBodyUtils import (
 from impurityModel.ed.ManyBodyUtils import (
     applyOp as applyOp_test,
 )
-from impurityModel.ed.mpi_comm import distribute_determinants, graph_alltoall, graph_alltoall_psis
+from impurityModel.ed.mpi_comm import distribute_determinants, graph_alltoall, graph_alltoall_block, graph_alltoall_psis
 
 
 class Basis:
@@ -298,6 +298,19 @@ class Basis:
 
         res = graph_alltoall_psis(psis, self.n_bytes, comm)
         return res
+
+    def redistribute_block(self, block):
+        """Redistribute a ``ManyBodyBlockState`` across MPI ranks by state ownership.
+
+        The block analogue of :meth:`redistribute_psis` (Phase 2.3 of the block-state
+        matvec plan): one wire entry per shared-support row instead of one per
+        (determinant, vector) pair; rows for the same determinant arriving from
+        several ranks are summed per column. Non-distributed bases return the block
+        unchanged, mirroring :meth:`redistribute_psis`.
+        """
+        if not self.is_distributed:
+            return block
+        return graph_alltoall_block(block, self.n_bytes, self.comm)
 
     def expand(self, op, slaterWeightMin=0, max_it=5):
         """

@@ -185,3 +185,68 @@ def test_apply_block_cutoff_keeps_rows():
     ref_tiny_full = op.apply_multi([tiny], 0.0)[0]
     for sd, amp in got[1].items():
         assert sd in ref_tiny_full
+
+
+# --------------------------------------------------------------------------- #
+# Phase 2.3: block redistribute
+# --------------------------------------------------------------------------- #
+def test_graph_alltoall_block_serial_copy():
+    """Serial (comm=None): an independent copy comes back, like graph_alltoall_psis."""
+    from impurityModel.ed.mpi_comm import graph_alltoall_block
+
+    rng = np.random.default_rng(51)
+    states = _random_states(rng, 3, 20)
+    blk = ManyBodyBlockState.from_states(states)
+    out = graph_alltoall_block(blk, 2, None)
+    assert out == blk
+    np.asarray(out)[0, 0] += 1.0
+    assert out != blk  # independent storage
+
+
+@pytest.mark.mpi
+def test_graph_alltoall_block_matches_scalar_path():
+    """Distributed: block redistribute must equal the scalar redistribute of the same
+    columns bit-for-bit, including cross-rank duplicate summation."""
+    from mpi4py import MPI
+
+    from impurityModel.ed.mpi_comm import graph_alltoall_block, graph_alltoall_psis
+
+    comm = MPI.COMM_WORLD
+    p = 3
+    n_bytes = 2
+    rng = np.random.default_rng(400 + comm.rank)
+    # Every rank holds partial amplitudes for an overlapping determinant set, so the
+    # owners receive contributions from several ranks and must sum them.
+    states = _random_states(rng, p, 30, sparsity=0.8)
+
+    ref = graph_alltoall_psis(states, n_bytes, comm)
+    out = graph_alltoall_block(ManyBodyBlockState.from_states(states), n_bytes, comm)
+
+    assert out.width == p
+    got = out.to_states()
+    for c in range(p):
+        assert got[c] == ref[c], f"rank {comm.rank}: column {c} differs from scalar redistribute"
+
+
+@pytest.mark.mpi
+def test_graph_alltoall_block_empty_contributor():
+    """A rank contributing zero rows (empty block of width p) must not deadlock or
+    corrupt the result — collectives are unconditional, dtypes fixed."""
+    from mpi4py import MPI
+
+    from impurityModel.ed.mpi_comm import graph_alltoall_block, graph_alltoall_psis
+
+    comm = MPI.COMM_WORLD
+    p = 2
+    n_bytes = 2
+    if comm.rank == comm.size - 1:
+        states = [ManyBodyState() for _ in range(p)]
+    else:
+        rng = np.random.default_rng(500 + comm.rank)
+        states = _random_states(rng, p, 15, sparsity=0.9)
+
+    ref = graph_alltoall_psis(states, n_bytes, comm)
+    out = graph_alltoall_block(ManyBodyBlockState.from_states(states), n_bytes, comm)
+    got = out.to_states()
+    for c in range(p):
+        assert got[c] == ref[c]

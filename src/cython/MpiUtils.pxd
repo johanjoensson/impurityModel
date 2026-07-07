@@ -2,6 +2,7 @@
 
 from SlaterDeterminant cimport SlaterDeterminant as SlaterDeterminant_cpp
 from ManyBodyState cimport ManyBodyState as ManyBodyState_cpp
+from ManyBodyBlockState cimport ManyBodyBlockState as ManyBodyBlockState_cpp
 from libcpp.vector cimport vector
 from libc.stdint cimport uint64_t, int64_t, int32_t
 
@@ -46,6 +47,20 @@ cdef extern from "MpiUtils.h" namespace "mpi_utils" nogil:
     void unpack_psis_fused(
         vector[ManyBodyState_cpp*]& psis,
         int comm_size,
+        const vector[int64_t]& recv_counts,
+        const vector[char]& recv_buf,
+        size_t chunks_per_state)
+
+    void pack_block_fused(
+        const ManyBodyBlockState_cpp& block,
+        int comm_size,
+        size_t chunks_per_state,
+        vector[int64_t]& send_counts,
+        vector[char]& send_buf)
+
+    ManyBodyBlockState_cpp unpack_block_fused(
+        int comm_size,
+        size_t width,
         const vector[int64_t]& recv_counts,
         const vector[char]& recv_buf,
         size_t chunks_per_state)

@@ -238,4 +238,95 @@ void unpack_psis_fused(
     }
 }
 
+void pack_block_fused(
+    const ManyBodyBlockState& block,
+    int comm_size,
+    size_t chunks_per_state,
+    std::vector<int64_t>& send_counts,
+    std::vector<char>& send_buf) {
+
+    const size_t p = block.width();
+    const size_t state_bytes = chunks_per_state * sizeof(uint64_t);
+    const size_t amp_bytes = p * sizeof(ManyBodyBlockState::Value);
+    const size_t bpe = state_bytes + amp_bytes;
+
+    send_counts.assign(comm_size, 0);
+    std::vector<int> owner(block.rows());
+    for (size_t r = 0; r < block.rows(); ++r) {
+        owner[r] = static_cast<int>(block.key(r).routing_hash() % comm_size);
+        send_counts[owner[r]]++;
+    }
+
+    // Rank-ordered entry offsets, then a single fill pass (rows keep their block
+    // order within each destination rank, like the scalar packer's per-rank lists).
+    std::vector<size_t> next(comm_size, 0);
+    size_t total = 0;
+    for (int rk = 0; rk < comm_size; ++rk) {
+        next[rk] = total;
+        total += static_cast<size_t>(send_counts[rk]);
+    }
+    send_buf.clear();
+    send_buf.resize(total * bpe);
+    for (size_t r = 0; r < block.rows(); ++r) {
+        char* dst = send_buf.data() + (next[owner[r]]++) * bpe;
+        std::memcpy(dst, block.key(r).data(), state_bytes);
+        std::memcpy(dst + state_bytes, block.row(r), amp_bytes);
+    }
+}
+
+ManyBodyBlockState unpack_block_fused(
+    int comm_size,
+    size_t width,
+    const std::vector<int64_t>& recv_counts,
+    const std::vector<char>& recv_buf,
+    size_t chunks_per_state) {
+
+    const size_t state_bytes = chunks_per_state * sizeof(uint64_t);
+    const size_t amp_bytes = width * sizeof(ManyBodyBlockState::Value);
+    size_t total = 0;
+    for (int r = 0; r < comm_size; ++r) {
+        total += static_cast<size_t>(recv_counts[r]);
+    }
+
+    std::vector<ManyBodyBlockState::Key> keys(total);
+    std::vector<ManyBodyBlockState::Value> amps(total * width);
+    const char* src = recv_buf.data();
+    for (size_t e = 0; e < total; ++e) {
+        keys[e].resize(chunks_per_state);
+        std::memcpy(keys[e].data(), src, state_bytes);
+        src += state_bytes;
+        std::memcpy(amps.data() + e * width, src, amp_bytes);
+        src += amp_bytes;
+    }
+
+    // Stable sort keeps duplicates (the same determinant from several source ranks)
+    // in arrival order, so the left-to-right summation below reproduces the scalar
+    // unpack's insert-then-accumulate order bit-for-bit per column.
+    std::vector<size_t> idx(total);
+    std::iota(idx.begin(), idx.end(), 0);
+    std::stable_sort(idx.begin(), idx.end(),
+                     [&keys](size_t a, size_t b) { return keys[a] < keys[b]; });
+
+    std::vector<ManyBodyBlockState::Key> out_keys;
+    out_keys.reserve(total);
+    std::vector<ManyBodyBlockState::Value> out_amps;
+    out_amps.reserve(total * width);
+    for (size_t t = 0; t < total; ++t) {
+        const size_t e = idx[t];
+        if (!out_keys.empty() && out_keys.back() == keys[e]) {
+            ManyBodyBlockState::Value* dst =
+                out_amps.data() + (out_keys.size() - 1) * width;
+            const ManyBodyBlockState::Value* add = amps.data() + e * width;
+            for (size_t c = 0; c < width; ++c) {
+                dst[c] += add[c];
+            }
+        } else {
+            out_keys.push_back(std::move(keys[e]));
+            out_amps.insert(out_amps.end(), amps.begin() + e * width,
+                            amps.begin() + (e + 1) * width);
+        }
+    }
+    return ManyBodyBlockState(std::move(out_keys), std::move(out_amps), width);
+}
+
 } // namespace mpi_utils

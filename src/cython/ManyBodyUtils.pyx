@@ -785,7 +785,7 @@ def applyOp(ManyBodyOperator op, ManyBodyState psi, double cutoff=0) ->ManyBodyS
     return op(psi, cutoff)
 
 
-from MpiUtils cimport pack_determinants as c_pack_determinants, unpack_determinants as c_unpack_determinants, pack_psis as c_pack_psis, unpack_psis as c_unpack_psis, pack_psis_fused as c_pack_psis_fused, unpack_psis_fused as c_unpack_psis_fused
+from MpiUtils cimport pack_determinants as c_pack_determinants, unpack_determinants as c_unpack_determinants, pack_psis as c_pack_psis, unpack_psis as c_unpack_psis, pack_psis_fused as c_pack_psis_fused, unpack_psis_fused as c_unpack_psis_fused, pack_block_fused as c_pack_block_fused, unpack_block_fused as c_unpack_block_fused
 import numpy as np
 
 
@@ -1581,6 +1581,12 @@ cdef class ManyBodyBlockState:
             key_heap = 32
         return self.b.rows() * (16 * self.b.width() + key_heap + sizeof(SlaterDeterminant_cpp[uint64_t]))
 
+    def copy(self):
+        """Deep copy (independent key and amplitude storage)."""
+        cdef ManyBodyBlockState res = ManyBodyBlockState()
+        res.b = self.b
+        return res
+
     def __eq__(self, other):
         if not isinstance(other, ManyBodyBlockState):
             return NotImplemented
@@ -1606,3 +1612,48 @@ cdef class ManyBodyBlockState:
 
     def __releasebuffer__(self, Py_buffer *buffer):
         self._n_exports -= 1
+
+
+def pack_block_fused_cy(ManyBodyBlockState block, int comm_size, size_t chunks_per_state):
+    """Pack a block state into a single rank-ordered byte buffer for a one-shot
+    ``Neighbor_alltoallv(MPI.BYTE)`` redistribute. One entry per shared-support row:
+    ``[det | width x complex amp]`` — no per-entry psi index (the column position
+    identifies the vector), so the wire cost per determinant is ``state_bytes +
+    16*width`` instead of ``width * (state_bytes + 20)``. Ownership uses the same
+    ``routing_hash() % comm_size`` as ``pack_psis_fused_cy``."""
+    cdef vector[int64_t] send_counts
+    cdef vector[char] send_buf
+
+    with nogil:
+        c_pack_block_fused(block.b, comm_size, chunks_per_state, send_counts, send_buf)
+
+    cdef size_t nbytes = send_buf.size()
+    send_counts_np = np.zeros(comm_size, dtype=np.int64)
+    send_buf_np = np.zeros(nbytes, dtype=np.uint8)
+
+    cdef int64_t[:] send_counts_view = send_counts_np
+    cdef uint8_t[:] send_buf_view = send_buf_np
+    if comm_size > 0:
+        memcpy(&send_counts_view[0], <void*>send_counts.data(), comm_size * sizeof(int64_t))
+    if nbytes > 0:
+        memcpy(&send_buf_view[0], <void*>send_buf.data(), nbytes)
+
+    return send_counts_np, send_buf_np
+
+
+def unpack_block_fused_cy(int comm_size, size_t width, int64_t[:] recv_counts, uint8_t[:] recv_buf, size_t chunks_per_state):
+    """Rebuild a ``ManyBodyBlockState`` from the received fused byte buffer. Rows for
+    the same determinant arriving from different ranks are summed in arrival order,
+    matching ``unpack_psis_fused_cy``'s accumulate semantics bit-for-bit per column."""
+    cdef vector[int64_t] c_recv_counts
+    cdef vector[char] c_recv_buf
+
+    if comm_size > 0:
+        c_recv_counts.assign(<int64_t*> &recv_counts[0], <int64_t*> &recv_counts[0] + comm_size)
+    if recv_buf.shape[0] > 0:
+        c_recv_buf.assign(<char*> &recv_buf[0], <char*> &recv_buf[0] + recv_buf.shape[0])
+
+    cdef ManyBodyBlockState res = ManyBodyBlockState()
+    with nogil:
+        res.b = c_unpack_block_fused(comm_size, width, c_recv_counts, c_recv_buf, chunks_per_state)
+    return res

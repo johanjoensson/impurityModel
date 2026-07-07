@@ -1,6 +1,7 @@
 #ifndef MPI_UTILS_H
 #define MPI_UTILS_H
 
+#include "ManyBodyBlockState.h"
 #include "ManyBodyState.h"
 #include "SlaterDeterminant.h"
 #include <vector>
@@ -58,6 +59,29 @@ void pack_psis_fused(
 void unpack_psis_fused(
     std::vector<ManyBodyState*>& psis,
     int comm_size,
+    const std::vector<int64_t>& recv_counts,
+    const std::vector<char>& recv_buf,
+    size_t chunks_per_state);
+
+// Block-state variants: one entry per shared-support ROW, serialized as
+// [state: chunks_per_state x uint64][p x complex amp] — no per-entry psi index
+// (the column position within the row identifies the vector), so the wire cost
+// per determinant is state_bytes + 16*p instead of p * (state_bytes + 20).
+// Ownership uses the same routing_hash() % comm_size as the scalar path.
+void pack_block_fused(
+    const ManyBodyBlockState& block,
+    int comm_size,
+    size_t chunks_per_state,
+    std::vector<int64_t>& send_counts,
+    std::vector<char>& send_buf);
+
+// Rebuild a block from the received buffer. Rows for the same determinant
+// arriving from different ranks are summed; the summation order per column is
+// the arrival order (stable sort), matching unpack_psis_fused's
+// insert-then-accumulate semantics bit-for-bit.
+ManyBodyBlockState unpack_block_fused(
+    int comm_size,
+    size_t width,
     const std::vector<int64_t>& recv_counts,
     const std::vector<char>& recv_buf,
     size_t chunks_per_state);

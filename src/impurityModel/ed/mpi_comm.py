@@ -13,8 +13,10 @@ from mpi4py import MPI
 from impurityModel.ed.ManyBodyUtils import (
     ManyBodyState,
     SlaterDeterminant,
+    pack_block_fused_cy,
     pack_determinants_cy,
     pack_psis_fused_cy,
+    unpack_block_fused_cy,
     unpack_determinants_cy,
     unpack_psis_fused_cy,
 )
@@ -414,6 +416,64 @@ def graph_alltoall_psis(
         unpack_psis_fused_cy(res, size, recv_counts, recv_buf, chunks_per_state)
 
     return res
+
+
+def graph_alltoall_block(
+    block: "ManyBodyBlockState",
+    n_bytes: int,
+    comm: "MPI.Comm",
+) -> "ManyBodyBlockState":
+    """Redistribute a shared-support block state across MPI ranks (Phase 2.3).
+
+    The block analogue of :func:`graph_alltoall_psis`: one wire entry per
+    shared-support ROW (``[det | width x complex amp]``, no per-entry psi index),
+    same ``routing_hash`` ownership, same cached dist-graph + single fused
+    ``Neighbor_alltoallv(MPI.BYTE)``. Rows for the same determinant arriving from
+    several ranks are summed per column, bit-identically to the scalar path.
+    """
+    if comm is None or comm.size <= 1:
+        return block.copy()
+
+    size = comm.size
+    width = int(block.width)
+    chunks_per_state = (n_bytes + 7) // 8
+    # One interleaved entry = state chunks + width complex amps.
+    bytes_per_entry = chunks_per_state * 8 + width * 16
+
+    # 1. Cython packing into a single rank-ordered byte buffer (counts are rows/rank).
+    send_counts, send_buf = pack_block_fused_cy(block, size, chunks_per_state)
+
+    # 2. Exchange counts
+    recv_counts = np.empty(size, dtype=np.int64)
+    comm.Alltoall(send_counts, recv_counts)
+
+    # 3. Reuse (or build) the graph communicator over the send/recv neighbourhood.
+    destinations = [r for r in range(size) if send_counts[r] > 0]
+    sources = [r for r in range(size) if recv_counts[r] > 0]
+    graph_comm = _cached_dist_graph(comm, sources, destinations)
+
+    s_counts_nb = np.array([send_counts[r] for r in destinations], dtype=np.int64)
+    s_displs_nb = (
+        np.concatenate(([0], np.cumsum(s_counts_nb[:-1]))) if len(s_counts_nb) else np.array([], dtype=np.int64)
+    )
+
+    # 4. Allocate the single receive byte buffer
+    total_recv = int(np.sum(recv_counts))
+    recv_buf = np.empty(total_recv * bytes_per_entry, dtype=np.uint8)
+
+    r_counts_nb = np.array([recv_counts[r] for r in sources], dtype=np.int64)
+    r_displs_nb = (
+        np.concatenate(([0], np.cumsum(r_counts_nb[:-1]))) if len(r_counts_nb) else np.array([], dtype=np.int64)
+    )
+
+    # 5. One fused exchange (BYTE); all ranks participate unconditionally.
+    graph_comm.Neighbor_alltoallv(
+        [send_buf, s_counts_nb * bytes_per_entry, s_displs_nb * bytes_per_entry, MPI.BYTE],
+        [recv_buf, r_counts_nb * bytes_per_entry, r_displs_nb * bytes_per_entry, MPI.BYTE],
+    )
+
+    # 6. Unpack into a fresh block (duplicate rows summed in arrival order).
+    return unpack_block_fused_cy(size, width, recv_counts, recv_buf, chunks_per_state)
 
 
 def gather_distributed_results(
