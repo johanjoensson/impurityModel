@@ -25,17 +25,17 @@ Strong-scaling sweep (fixed problem, more ranks)::
     RUN_SELFENERGY_BENCH=1 mpirun -n 2 pytest -s \
         src/impurityModel/test/test_selfenergy_perf.py
 
-.. warning::
+.. note::
 
-   The default 100-bath anchor workload **does not currently complete**: ``calc_gs``
-   fails for any basis large enough to exceed ``dense_cutoff`` (≈20 bath and up), on
-   *both* solver paths — the IRLM/TRLM array Lanczos collapses on its seed block
-   ("Block collapsed to zero rank"), and the dense fallback hits an ``IndexError`` in
-   ``Basis.build_state`` because the post-truncation basis has ``size > 0`` but an empty
-   ``local_basis`` (``CIPSISolver.truncate`` clears ``local_basis`` and the
-   >truncation_threshold break path leaves it desynced). These are correctness bugs that
-   must be fixed before the 100-bath benchmark can run; this harness then re-runs
-   unchanged. The **currently-runnable** config is the small 10-bath workload::
+   The historical ``calc_gs`` truncation failures ("Block collapsed to zero rank" on the
+   IRLM/TRLM array Lanczos; ``IndexError`` in ``Basis.build_state`` from a ``size > 0`` /
+   empty-``local_basis`` desync after ``CIPSISolver.truncate``) were fixed in ``5c2b37e``
+   (``truncate`` now does the full ``Basis.clear()`` container reset — see the comment in
+   ``cipsi_solver.py``). The 20-bath workload is verified to complete on the production
+   Lanczos path (``dense_cutoff=500``); the 100-bath default is memory-bound rather than
+   correctness-bound — bound it with ``SELFENERGY_BENCH_TRUNC`` (see
+   ``memory_estimate.suggest_truncation_threshold`` for sizing). The quick smoke config
+   remains the small 10-bath workload::
 
        RUN_SELFENERGY_BENCH=1 SELFENERGY_BENCH_NBATH=10 SELFENERGY_BENCH_NVALBATH=10 \
            pytest -s src/impurityModel/test/test_selfenergy_perf.py

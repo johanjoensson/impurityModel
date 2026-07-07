@@ -883,6 +883,7 @@ def calc_selfenergy(
         "gs_realaxis": gs_realaxis_full,
         "thermal_rho": thermal_rho,
         "rhos": gs_info["rhos"],
+        "gs_energies": np.asarray(es),
         "block_structure": block_structure,
     }
 
