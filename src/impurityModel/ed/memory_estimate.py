@@ -333,12 +333,12 @@ def log_memory_budget(
     if verbose and rank == 0:
         prefix = f"{label}: " if label else ""
         if uncapped:
-            print(f"{prefix}truncation_threshold=inf (uncapped); {_fmt_bytes(available)}/rank available.", flush=True)
+            print(f"{prefix}truncation_threshold=inf (uncapped); {format_bytes(available)}/rank available.", flush=True)
         else:
             print(
                 f"{prefix}truncation_threshold={int(truncation_threshold):,}: predicted per-rank peak "
-                f"{_fmt_bytes(gs)} (ground state) / {_fmt_bytes(gf)} (Green's function), "
-                f"{_fmt_bytes(available)}/rank available.",
+                f"{format_bytes(gs)} (ground state) / {format_bytes(gf)} (Green's function), "
+                f"{format_bytes(available)}/rank available.",
                 flush=True,
             )
             if not fits:
@@ -353,7 +353,7 @@ def log_memory_budget(
     return {"available_per_rank": available, "gs_peak": gs, "gf_peak": gf, "fits": fits}
 
 
-def _fmt_bytes(n):
+def format_bytes(n):
     """Human-readable bytes (binary units)."""
     x = float(n)
     for unit in ("B", "KiB", "MiB", "GiB", "TiB"):

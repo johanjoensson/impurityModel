@@ -962,7 +962,7 @@ def getSpectra_new(
 
     def kernel(split_basis, u, seeds):
         unit = units[u]
-        alphas, betas, r, n_basis = gf._block_green_group(
+        alphas, betas, r, n_basis, _cap_stats = gf._block_green_group(
             split_basis,
             hOp,
             seeds,

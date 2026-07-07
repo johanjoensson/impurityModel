@@ -404,6 +404,49 @@ def check_lanczos_convergence(converged: bool, d_g: float, n_blocks: int, max_it
     )
 
 
+def check_basis_truncation(cap_hit: bool, retained, cap) -> Diagnostic:
+    r"""Surface a Green's-function basis frozen by ``truncation_threshold``.
+
+    When the excited-basis determinant cap is hit, the recurrence continues as an exact
+    block Lanczos of the projected operator :math:`PHP` (see
+    ``greens_function._CappedBasisProxy``): the result is causal and exact *on the
+    retained subspace*, but spectral weight reachable only through the discarded
+    determinants is missing.  That is a resource limit, not a solver failure, so this is
+    a ``WARN``.  It deliberately does **not** set ``needs_more_states`` — that flag
+    triggers the thermal-ensemble eigensolver retry (more eigenstates), which cannot
+    widen the retained subspace; the remedy is a larger ``truncation_threshold`` (more
+    memory or more ranks).
+
+    Args:
+        cap_hit: Whether any of the block's GF solves froze at the cap.
+        retained: Global retained determinant count (the largest over the block's solves).
+        cap: The ``truncation_threshold`` in effect (``inf`` or ``None`` if uncapped).
+
+    Returns:
+        Diagnostic: ``OK`` if the cap never bound, else ``WARN``.
+    """
+    cap_value = float(cap) if cap is not None else float("inf")
+    if not cap_hit:
+        return Diagnostic(
+            name="basis_cap",
+            severity=Severity.OK,
+            value=float(retained) if retained is not None else float("nan"),
+            threshold=cap_value,
+            message="determinant cap not reached",
+        )
+    return Diagnostic(
+        name="basis_cap",
+        severity=Severity.WARN,
+        value=float(retained),
+        threshold=cap_value,
+        message=f"GF basis frozen at {int(retained):,} determinants (truncation_threshold)",
+        suggestion=(
+            "result is exact on the retained subspace; raise truncation_threshold "
+            "(more memory per rank or more ranks) to recover the missing spectral weight"
+        ),
+    )
+
+
 def check_causality(G, label: str = "G") -> Diagnostic:
     r"""Causality: every diagonal spectral weight must be non-negative.
 

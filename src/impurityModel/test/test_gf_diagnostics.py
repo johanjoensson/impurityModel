@@ -184,3 +184,19 @@ def test_empty_report_renders_pass():
 def test_addition_removal_peak_check_is_deferred():
     with pytest.raises(NotImplementedError):
         gd.addition_removal_peak_check()
+
+
+def test_basis_truncation_check():
+    """Cap not reached -> OK; frozen -> WARN that must NOT trigger the thermal retry
+    (needs_more_states drives an eigensolver re-run, which cannot widen the basis)."""
+    ok = gd.check_basis_truncation(False, 1234, float("inf"))
+    assert ok.severity == gd.Severity.OK
+    warn = gd.check_basis_truncation(True, 5000, 5000)
+    assert warn.severity == gd.Severity.WARN
+    assert not warn.needs_more_states and not warn.needs_more_iterations
+    assert "5,000" in warn.message
+    assert "truncation_threshold" in warn.suggestion
+    report = gd.DiagnosticReport()
+    report.add("block", warn)
+    assert report.worst_severity == gd.Severity.WARN
+    assert not report.needs_more_states

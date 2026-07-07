@@ -25,6 +25,7 @@ from impurityModel.ed.ManyBodyUtils import (
     ManyBodyOperator,
     ManyBodyState,
 )
+from impurityModel.ed.memory_estimate import estimate_gf_peak_bytes, format_bytes
 from impurityModel.ed.mpi_comm import gather_distributed_results
 from impurityModel.ed import gf_diagnostics as _gfd
 from impurityModel.ed.basis_transcription import build_dense_matrix, build_sparse_matrix, build_state, build_vector
@@ -305,6 +306,24 @@ def run_units_distributed(
         print(f"New unit roots: {unit_roots}")
         print(f"Units per color: {units_per_color}")
         print("=" * 80, flush=True)
+    # Every color's unit basis inherits the same truncation_threshold, so colors multiply
+    # per-rank memory: each rank's share of a capped unit basis is threshold/(ranks/n_colors).
+    # All inputs are replicated (no collectives), so gating the print on rank 0 is safe.
+    cap = getattr(basis, "truncation_threshold", np.inf)
+    if verbose and basis.comm.rank == 0 and np.isfinite(cap):
+        n_colors = len(units_per_color)
+        width = max((len(s) for s in unit_seeds), default=1)
+        per_rank = estimate_gf_peak_bytes(
+            int(cap),
+            basis.num_spin_orbitals,
+            width,
+            ranks=max(1, basis.comm.size // max(1, n_colors)),
+        )
+        print(
+            f"{n_colors} simultaneous unit bases at truncation_threshold={int(cap):,}: "
+            f"predicted per-rank GF peak {format_bytes(per_rank)} if a unit fills its cap.",
+            flush=True,
+        )
     sub_rank = split_basis.comm.rank if split_basis.comm is not None else 0
     unit_indices_per_color = gather_distributed_results(
         basis.comm, sub_rank, unit_roots, units_per_color, np.array(unit_indices), is_array=True
@@ -419,7 +438,7 @@ def get_Greens_function(
 
     def kernel(split_basis, u, seeds):
         unit = units[u]
-        alphas, betas, r, n_basis = _block_green_group(
+        alphas, betas, r, n_basis, cap_stats = _block_green_group(
             split_basis,
             hOp,
             seeds,
@@ -433,7 +452,12 @@ def get_Greens_function(
         )
         if verbose_extra:
             print(f"Expanded excited state basis contains {n_basis} elements.")
-        return alphas, betas, [r[:, p * unit.n_ops : (p + 1) * unit.n_ops] for p in range(len(unit.chunk))]
+        return (
+            alphas,
+            betas,
+            [r[:, p * unit.n_ops : (p + 1) * unit.n_ops] for p in range(len(unit.chunk))],
+            cap_stats,
+        )
 
     results = run_units_distributed(basis, unit_seeds, unit_weights, kernel, verbose=verbose)
 
@@ -448,10 +472,22 @@ def get_Greens_function(
         acc = {
             (bi, si): ([None] * n_psis, [None] * n_psis, [None] * n_psis) for bi in range(len(blocks)) for si in (0, 1)
         }
+        # Worst-case cap state per block over all its (side, eigenstate) solves: any
+        # frozen solve marks the block; retained_size is the smallest frozen size.
+        cap_acc = {}
+        for unit, (_alphas, _betas, _r_slices, cap_stats) in zip(units, results):
+            block_i, _ = group_meta[unit.group_i]
+            stats = cap_acc.setdefault(block_i, {"cap_hit": False, "retained_size": None, "cap": cap_stats["cap"]})
+            if cap_stats["cap_hit"]:
+                stats["cap_hit"] = True
+                stats["cap"] = cap_stats["cap"]
+                retained = cap_stats.get("retained_size")
+                if retained is not None and (stats["retained_size"] is None or retained < stats["retained_size"]):
+                    stats["retained_size"] = retained
         if pairwise:
             # pw_cf[(block_i, side_i, ei)] = {"diag": {i: cf}, "sum": {(i,j): cf}, "imag": {(i,j): cf}}
             pw_cf = defaultdict(lambda: {"diag": {}, "sum": {}, "imag": {}})
-            for unit, (alphas, betas, r_slices) in zip(units, results):
+            for unit, (alphas, betas, r_slices, _cap_stats) in zip(units, results):
                 block_i, side_i = group_meta[unit.group_i]
                 cf = (alphas, betas, r_slices[0])
                 role, a, b = unit.pw_tag
@@ -463,7 +499,7 @@ def get_Greens_function(
                 pairs = {ij: (roles["sum"][ij], roles["imag"][ij]) for ij in roles["sum"]}
                 acc[(block_i, side_i)][2][ei] = PairwiseGF(n, diag, pairs)
         else:
-            for unit, (alphas, betas, r_slices) in zip(units, results):
+            for unit, (alphas, betas, r_slices, _cap_stats) in zip(units, results):
                 block_i, side_i = group_meta[unit.group_i]
                 a_list, b_list, r_list = acc[(block_i, side_i)]
                 for p, ei in enumerate(unit.chunk):
@@ -502,6 +538,11 @@ def get_Greens_function(
             # checks consume, so in that mode only the G-derived checks (thermal cutoff, mesh
             # density, causality) apply.
             diags = [_gfd.check_thermal_weight_cutoff(es, e0, tau, n_returned=len(es), num_wanted=num_wanted)]
+            block_cap = cap_acc.get(block_i)
+            if block_cap is not None:
+                diags.append(
+                    _gfd.check_basis_truncation(block_cap["cap_hit"], block_cap["retained_size"], block_cap["cap"])
+                )
             if not pairwise:
                 diags.insert(0, _gfd.check_spectral_sum_rule(r_add, r_rem, es, e0, tau, len(block)))
                 lanczos_tol = _gf_rel_tol(slaterWeightMin)
@@ -623,8 +664,10 @@ def _block_green_group(
     ``group_seed_states`` is the flat list of seed columns for an eigenstate group (length
     ``len(group) * n_ops`` in ``(eigenstate, operator)`` order). Builds the excited basis from
     their union, points ``hOp`` at its restrictions, and runs the sparse or dense block-Green
-    kernel. Returns ``(alphas, betas, r, n_basis)``; the caller slices ``r``'s columns per
-    eigenstate (``r[:, p*n_ops:(p+1)*n_ops]``) since ``(alphas, betas)`` are shared by the group.
+    kernel. Returns ``(alphas, betas, r, n_basis, cap_stats)``; the caller slices ``r``'s columns
+    per eigenstate (``r[:, p*n_ops:(p+1)*n_ops]``) since ``(alphas, betas)`` are shared by the
+    group. ``cap_stats`` is ``{"cap_hit", "retained_size", "cap"}`` describing whether this
+    solve froze at ``truncation_threshold`` (feeds the basis_cap diagnostic).
     """
     excited_basis = split_basis.clone(
         initial_basis=set(state for p in group_seed_states for state in p),
@@ -636,17 +679,41 @@ def _block_green_group(
         hOp.set_restrictions(excited_basis.restrictions)
     if excited_basis.weighted_restrictions is not None:
         hOp.set_weighted_restrictions(excited_basis.weighted_restrictions)
-    green = block_Green_sparse if sparse else block_Green
-    alphas, betas, r = green(
-        reort=reort,
-        hOp=hOp,
-        psi_arr=excited_basis.redistribute_psis(group_seed_states),
-        basis=excited_basis,
-        delta=delta,
-        slaterWeightMin=slaterWeightMin,
-        verbose=verbose,
-    )
-    return alphas, betas, r, len(excited_basis)
+    cap = getattr(excited_basis, "truncation_threshold", np.inf)
+    if sparse:
+        cap_info = {}
+        alphas, betas, r = block_Green_sparse(
+            reort=reort,
+            hOp=hOp,
+            psi_arr=excited_basis.redistribute_psis(group_seed_states),
+            basis=excited_basis,
+            delta=delta,
+            slaterWeightMin=slaterWeightMin,
+            verbose=verbose,
+            cap_info=cap_info,
+        )
+        cap_stats = {
+            "cap_hit": bool(cap_info.get("cap_hit", False)),
+            "retained_size": cap_info.get("retained_size"),
+            "cap": cap,
+        }
+    else:
+        alphas, betas, r = block_Green(
+            reort=reort,
+            hOp=hOp,
+            psi_arr=excited_basis.redistribute_psis(group_seed_states),
+            basis=excited_basis,
+            delta=delta,
+            slaterWeightMin=slaterWeightMin,
+            verbose=verbose,
+        )
+        # The array path stops expanding when the basis crosses the cap (never removes).
+        cap_stats = {
+            "cap_hit": bool(np.isfinite(cap) and excited_basis.size > cap),
+            "retained_size": len(excited_basis),
+            "cap": cap,
+        }
+    return alphas, betas, r, len(excited_basis), cap_stats
 
 
 def calc_Greens_function_with_offdiag(
@@ -742,7 +809,7 @@ def calc_Greens_function_with_offdiag(
 
     def kernel(split_basis, u, seeds):
         unit = units[u]
-        alphas, betas, r, n_basis = _block_green_group(
+        alphas, betas, r, n_basis, _cap_stats = _block_green_group(
             split_basis,
             hOp,
             seeds,
