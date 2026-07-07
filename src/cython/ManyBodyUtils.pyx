@@ -790,7 +790,7 @@ def applyOp(ManyBodyOperator op, ManyBodyState psi, double cutoff=0) ->ManyBodyS
     return op(psi, cutoff)
 
 
-from MpiUtils cimport pack_determinants as c_pack_determinants, unpack_determinants as c_unpack_determinants, pack_psis as c_pack_psis, unpack_psis as c_unpack_psis, pack_psis_fused as c_pack_psis_fused, unpack_psis_fused as c_unpack_psis_fused, pack_block_fused as c_pack_block_fused, unpack_block_fused as c_unpack_block_fused
+from MpiUtils cimport pack_determinants as c_pack_determinants, unpack_determinants as c_unpack_determinants, pack_psis as c_pack_psis, unpack_psis as c_unpack_psis, pack_psis_fused as c_pack_psis_fused, unpack_psis_fused as c_unpack_psis_fused, pack_block_count as c_pack_block_count, pack_block_fill as c_pack_block_fill, unpack_block_fused as c_unpack_block_fused
 import numpy as np
 
 
@@ -1221,41 +1221,43 @@ def reorth_cgs2_dense(list wp, list Q, int n_passes, object comm):
 cdef class SparseKrylovDense:
     r"""Incrementally-maintained dense copy of the (rank-local) sparse block-Krylov basis.
 
-    Holds the Krylov vectors as a dense ``(n_rows x n_cols)`` complex buffer over a growing
-    determinant->row support map, so block reorthogonalization can *slice* columns
-    (``Q[:, cols]``) instead of re-materializing them from the ``flat_map`` states on every
-    step. ``append`` mirrors the driver's ``Q_basis.extend`` (one block at a time); ``reort``
-    runs ``n_passes`` of classical Gram-Schmidt of ``wp`` against the selected columns via BLAS
-    ``zgemm``, identical (to floating point) to repeating ``block_orthogonalize_sparse``. The
-    buffer is rank-local (over the rank's owned determinants); the only collective is the small
-    ``(n_cols x p)`` overlap ``Allreduce`` each pass, exactly as in the map-based path.
+    Holds the Krylov vectors as COLUMN-CHUNKED dense complex buffers over a growing
+    determinant->row support map, so block reorthogonalization can gather columns
+    (``Q[:, cols]``) instead of re-materializing them from the ``flat_map`` states on
+    every step. ``append``/``append_block`` add one block of columns at a time; ``reort``
+    runs ``n_passes`` of classical Gram-Schmidt of ``wp`` against the selected columns via
+    BLAS ``zgemm``. The buffer is rank-local (over the rank's owned determinants); the
+    only collective is the small ``(n_cols x p)`` overlap ``Allreduce`` each pass.
+
+    **Chunked growth (Phase 4)**: instead of one geometrically-doubled buffer whose every
+    growth reallocates AND copies the whole basis (a ~3x transient at each doubling —
+    old + new buffer live simultaneously), new columns go into a fresh chunk sized
+    geometrically. Existing chunks are never copied. Rows registered after a chunk was
+    created are implicitly zero in that chunk's columns — exactly right, because older
+    Krylov vectors have no weight on determinants discovered later. ``reserve_rows``
+    (e.g. the local basis size, which bounds the support) sizes future chunks so row
+    growth never forces a new chunk.
     """
     cdef cpp_map[SlaterDeterminant_cpp[uint64_t], int] support
     cdef vector[SlaterDeterminant_cpp[uint64_t]] row_det
-    cdef object Qbuf
+    cdef list _chunks       # dense (rows_c x cols_c) complex buffers
+    cdef list _used         # used columns per chunk
     cdef int n_rows
     cdef int n_cols
-    cdef int cap_rows
-    cdef int cap_cols
+    cdef int _rows_hint
 
     def __cinit__(self):
         self.n_rows = 0
         self.n_cols = 0
-        self.cap_rows = 256
-        self.cap_cols = 32
-        self.Qbuf = np.zeros((self.cap_rows, self.cap_cols), dtype=complex)
+        self._rows_hint = 0
+        self._chunks = []
+        self._used = []
 
-    cdef void _realloc(self, int new_cap_rows, int new_cap_cols):
-        # Copy the old buffer's full extent (it holds all written data plus zeros); n_rows may
-        # already have been grown past the old capacity by _register, and the new rows carry no
-        # data yet, so copy by the *old buffer* shape, not by n_rows/n_cols.
-        newbuf = np.zeros((new_cap_rows, new_cap_cols), dtype=complex)
-        cdef int r = min(<int>self.Qbuf.shape[0], new_cap_rows)
-        cdef int c = min(<int>self.Qbuf.shape[1], new_cap_cols)
-        newbuf[:r, :c] = self.Qbuf[:r, :c]
-        self.Qbuf = newbuf
-        self.cap_rows = new_cap_rows
-        self.cap_cols = new_cap_cols
+    def reserve_rows(self, Py_ssize_t n):
+        """Row-capacity hint for future chunks (e.g. the local basis size, an upper
+        bound on the support after redistribution). Never shrinks."""
+        if <int>n > self._rows_hint:
+            self._rows_hint = <int>n
 
     cdef int _register(self, SlaterDeterminant_cpp[uint64_t] det):
         """Row index for ``det``, allocating a new (logical) zero row if absent."""
@@ -1268,15 +1270,34 @@ cdef class SparseKrylovDense:
         self.n_rows += 1
         return row
 
-    cdef void _ensure(self, int need_rows, int need_cols):
-        cdef int nr = self.cap_rows
-        cdef int nc = self.cap_cols
-        while nr < need_rows:
-            nr *= 2
-        while nc < need_cols:
-            nc *= 2
-        if nr != self.cap_rows or nc != self.cap_cols:
-            self._realloc(nr, nc)
+    cdef object _chunk_for_append(self, int ncol):
+        """The chunk new columns go into: the last one if it has room (columns AND
+        rows), else a fresh chunk sized geometrically (cols ~ current total capacity)
+        and to the row hint / current rows. One append never straddles chunks."""
+        # NOTE: this file compiles with wraparound=False, so cdef-list indexing must
+        # use explicit positive indices — a bare [-1] is a raw out-of-bounds access.
+        cdef Py_ssize_t li = len(self._chunks) - 1
+        cdef object last
+        if li >= 0:
+            last = self._chunks[li]
+            if (<int>last.shape[1]) - <int>self._used[li] >= ncol and <int>last.shape[0] >= self.n_rows:
+                return last
+        cdef int rows = max(self._rows_hint, 256)
+        if self.n_rows > rows:
+            # The support outgrew the hint (e.g. serial runs discovering excited-sector
+            # determinants beyond the built basis): allocate with a 25% growth margin
+            # and adopt it as the new hint, so once the support saturates no further
+            # row-overflow chunks are spawned.
+            rows = self.n_rows + self.n_rows // 4 + 256
+            self._rows_hint = rows
+        # Fixed-width column chunks: geometric growth only amortized COPIES, and the
+        # chunked design has none — so fixed chunks minimize capacity slack (~one
+        # chunk's worth) where geometric chunk sums doubled the steady-state footprint.
+        cdef int cols = max(ncol, 32)
+        arr = np.zeros((rows, cols), dtype=complex)
+        self._chunks.append(arr)
+        self._used.append(0)
+        return arr
 
     def append(self, list cols):
         """Append the columns of ``cols`` (a list of ManyBodyState) as new Krylov vectors."""
@@ -1295,9 +1316,10 @@ cdef class SparseKrylovDense:
             while it != ptrs[ci].end():
                 self._register(dereference(it).first)
                 preincrement(it)
-        self._ensure(self.n_rows, self.n_cols + ncol)
-        cdef complex[:, :] Qv = self.Qbuf
-        cdef int base = self.n_cols
+        chunk = self._chunk_for_append(ncol)
+        cdef complex[:, :] Qv = chunk
+        cdef Py_ssize_t li = len(self._used) - 1
+        cdef int base = self._used[li]
         cdef int row
         cdef ManyBodyState_cpp.mapped_type cval
         for ci in range(ncol):
@@ -1308,94 +1330,8 @@ cdef class SparseKrylovDense:
                 Qv[row, base + ci].real = cval.real()
                 Qv[row, base + ci].imag = cval.imag()
                 preincrement(it)
+        self._used[li] = base + ncol
         self.n_cols += ncol
-
-    def __len__(self):
-        """Number of stored Krylov columns."""
-        return self.n_cols
-
-    def __iter__(self):
-        for ci in range(self.n_cols):
-            yield self._materialize(ci)
-
-    def __getitem__(self, idx):
-        """Materialize column(s) back to ``ManyBodyState`` (exact scatter: every stored
-        nonzero coefficient round-trips bit-identically). An integer index yields one
-        state; a slice yields a list — so the store is a drop-in sequence wherever a
-        Krylov list of ``ManyBodyState`` is indexed, sliced or iterated."""
-        cdef Py_ssize_t ci, start, stop, step
-        if isinstance(idx, slice):
-            start, stop, step = idx.indices(self.n_cols)
-            return [self._materialize(ci) for ci in range(start, stop, step)]
-        ci = idx
-        if ci < 0:
-            ci += self.n_cols
-        if ci < 0 or ci >= self.n_cols:
-            raise IndexError(f"column {idx} out of range for {self.n_cols} stored columns")
-        return self._materialize(ci)
-
-    cdef ManyBodyState _materialize(self, Py_ssize_t col):
-        cdef complex[:, :] Qv = self.Qbuf
-        cdef vector[ManyBodyState_cpp.key_type] keys
-        cdef vector[ManyBodyState_cpp.mapped_type] vals
-        cdef Py_ssize_t row
-        cdef double complex z
-        for row in range(self.n_rows):
-            z = Qv[row, col]
-            if z.real != 0 or z.imag != 0:
-                keys.push_back(self.row_det[row])
-                vals.push_back(ManyBodyState_cpp.mapped_type(z.real, z.imag))
-        cdef ManyBodyState ms = ManyBodyState()
-        ms.v = ManyBodyState_cpp(keys, vals)
-        return ms
-
-    def combine(self, object Y, Py_ssize_t a=0, object b=None, double slaterWeightMin=0.0):
-        """Linear combinations ``out_k = sum_j Q[:, a:b][:, j] * Y[j, k]`` as ManyBodyStates.
-
-        The dense analogue of ``block_combine_sparse``: one zgemm over the stored buffer
-        followed by a scatter of only the ``Y.shape[1]`` output columns — no per-column
-        materialization of the inputs. ``slaterWeightMin > 0`` prunes the outputs exactly
-        like ``block_combine_sparse`` does.
-        """
-        cdef Py_ssize_t bb = self.n_cols if b is None else <Py_ssize_t>b
-        Ya = np.ascontiguousarray(Y, dtype=complex)
-        if Ya.ndim == 1:
-            Ya = Ya[:, np.newaxis]
-        if Ya.shape[0] != bb - a:
-            raise ValueError(f"Y rows {Ya.shape[0]} != selected columns {bb - a}")
-        C = self.Qbuf[: self.n_rows, a:bb] @ Ya
-        cdef complex[:, :] Cv = C
-        cdef Py_ssize_t n_out = C.shape[1]
-        cdef vector[ManyBodyState_cpp.key_type] keys
-        cdef vector[ManyBodyState_cpp.mapped_type] vals
-        cdef list out = []
-        cdef ManyBodyState ms
-        cdef Py_ssize_t row, k
-        cdef double complex z
-        for k in range(n_out):
-            keys.clear()
-            vals.clear()
-            for row in range(self.n_rows):
-                z = Cv[row, k]
-                if z.real != 0 or z.imag != 0:
-                    keys.push_back(self.row_det[row])
-                    vals.push_back(ManyBodyState_cpp.mapped_type(z.real, z.imag))
-            ms = ManyBodyState()
-            ms.v = ManyBodyState_cpp(keys, vals)
-            if slaterWeightMin > 0:
-                ms.prune(slaterWeightMin)
-            out.append(ms)
-        return out
-
-    def memory_bytes(self):
-        """Estimated heap bytes: the dense coefficient buffer (capacity, not just the
-        filled extent) plus the support map / row_det key storage (one 32-B-class heap
-        block per determinant key vector, ~72 B map-node overhead per entry)."""
-        cdef size_t n_chunks = self.row_det[0].size() if self.n_rows > 0 else 1
-        cdef size_t key_heap = (8 * n_chunks + 8 + 15) & (~<size_t>15)
-        if key_heap < 32:
-            key_heap = 32
-        return self.Qbuf.nbytes + <size_t>self.n_rows * (2 * key_heap + 72)
 
     def append_block(self, ManyBodyBlockState block):
         """Append the columns of a shared-support block as new Krylov vectors —
@@ -1407,9 +1343,10 @@ cdef class SparseKrylovDense:
         cdef Py_ssize_t r
         for r in range(<Py_ssize_t>block.b.rows()):
             self._register(block.b.key(r))
-        self._ensure(self.n_rows, self.n_cols + ncol)
-        cdef complex[:, :] Qv = self.Qbuf
-        cdef int base = self.n_cols
+        chunk = self._chunk_for_append(<int>ncol)
+        cdef complex[:, :] Qv = chunk
+        cdef Py_ssize_t li = len(self._used) - 1
+        cdef int base = self._used[li]
         cdef int row
         cdef const ManyBodyBlockState_cpp.Value* src
         cdef Py_ssize_t ci
@@ -1419,7 +1356,27 @@ cdef class SparseKrylovDense:
             for ci in range(ncol):
                 Qv[row, base + ci].real = src[ci].real()
                 Qv[row, base + ci].imag = src[ci].imag()
-        self.n_cols += ncol
+        self._used[li] = base + <int>ncol
+        self.n_cols += <int>ncol
+
+    def _gather_columns(self, object cols):
+        """Dense (n_rows x len(cols)) copy of the selected global columns (all columns
+        when ``cols`` is None), zero-filled where a chunk predates a row. Identical
+        values to slicing the old single buffer (unwritten area was zero there too)."""
+        sel = np.arange(self.n_cols) if cols is None else np.asarray(cols, dtype=np.intp)
+        out = np.zeros((self.n_rows, len(sel)), dtype=complex)
+        cdef Py_ssize_t off = 0
+        cdef Py_ssize_t k
+        for k in range(len(self._chunks)):
+            chunk = self._chunks[k]
+            used = self._used[k]
+            mask = (sel >= off) & (sel < off + used)
+            if np.any(mask):
+                local = sel[mask] - off
+                rows_c = min(<Py_ssize_t>chunk.shape[0], <Py_ssize_t>self.n_rows)
+                out[:rows_c, np.where(mask)[0]] = chunk[:rows_c][:, local]
+            off += used
+        return out
 
     def reort(self, list wp, object cols, int n_passes, object comm):
         """``n_passes`` of CGS2: ``O = Q[:,cols]^H wp`` (Allreduced); ``wp -= Q[:,cols] O``.
@@ -1444,11 +1401,10 @@ cdef class SparseKrylovDense:
             while it != wptrs[ci].end():
                 self._register(dereference(it).first)
                 preincrement(it)
-        self._ensure(self.n_rows, self.n_cols)
-        cdef int ns = self.n_rows
+        cdef Py_ssize_t ns = self.n_rows
         Wd = np.zeros((ns, p), dtype=complex)
         cdef complex[:, :] Wv = Wd
-        cdef int row
+        cdef Py_ssize_t row
         cdef ManyBodyState_cpp.mapped_type cval
         for ci in range(p):
             it = wptrs[ci].begin()
@@ -1458,10 +1414,7 @@ cdef class SparseKrylovDense:
                 Wv[row, ci].real = cval.real()
                 Wv[row, ci].imag = cval.imag()
                 preincrement(it)
-        if cols is None:
-            Qsel = self.Qbuf[:ns, :self.n_cols]
-        else:
-            Qsel = np.ascontiguousarray(self.Qbuf[:ns][:, cols])
+        Qsel = self._gather_columns(cols)
         Qh = np.conj(Qsel.T)
         if comm is not None:
             from mpi4py import MPI
@@ -1488,6 +1441,117 @@ cdef class SparseKrylovDense:
             new_ms.v = ManyBodyState_cpp(keys, vals)
             out.append(new_ms)
         return out
+
+    def __len__(self):
+        """Number of stored Krylov columns."""
+        return self.n_cols
+
+    def __iter__(self):
+        for ci in range(self.n_cols):
+            yield self._materialize(ci)
+
+    def __getitem__(self, idx):
+        """Materialize column(s) back to ``ManyBodyState`` (exact scatter: every stored
+        nonzero coefficient round-trips bit-identically). An integer index yields one
+        state; a slice yields a list — so the store is a drop-in sequence wherever a
+        Krylov list of ``ManyBodyState`` is indexed, sliced or iterated."""
+        cdef Py_ssize_t ci, start, stop, step
+        if isinstance(idx, slice):
+            start, stop, step = idx.indices(self.n_cols)
+            return [self._materialize(ci) for ci in range(start, stop, step)]
+        ci = idx
+        if ci < 0:
+            ci += self.n_cols
+        if ci < 0 or ci >= self.n_cols:
+            raise IndexError(f"column {idx} out of range for {self.n_cols} stored columns")
+        return self._materialize(ci)
+
+    cdef ManyBodyState _materialize(self, Py_ssize_t col):
+        cdef Py_ssize_t k = 0
+        cdef Py_ssize_t off = 0
+        while col - off >= <Py_ssize_t>self._used[k]:
+            off += <Py_ssize_t>self._used[k]
+            k += 1
+        chunk = self._chunks[k]
+        cdef complex[:, :] Qv = chunk
+        cdef Py_ssize_t local = col - off
+        cdef Py_ssize_t rows_c = min(<Py_ssize_t>chunk.shape[0], <Py_ssize_t>self.n_rows)
+        cdef vector[ManyBodyState_cpp.key_type] keys
+        cdef vector[ManyBodyState_cpp.mapped_type] vals
+        cdef Py_ssize_t row
+        cdef double complex z
+        for row in range(rows_c):
+            z = Qv[row, local]
+            if z.real != 0 or z.imag != 0:
+                keys.push_back(self.row_det[row])
+                vals.push_back(ManyBodyState_cpp.mapped_type(z.real, z.imag))
+        cdef ManyBodyState ms = ManyBodyState()
+        ms.v = ManyBodyState_cpp(keys, vals)
+        return ms
+
+    def combine(self, object Y, Py_ssize_t a=0, object b=None, double slaterWeightMin=0.0):
+        """Linear combinations ``out_k = sum_j Q[:, a:b][:, j] * Y[j, k]`` as ManyBodyStates.
+
+        One zgemm per chunk, accumulating partial sums (the chunk partition splits the
+        column sum, so the floating-point accumulation order differs from a single-buffer
+        gemm — tolerance-equivalent). ``slaterWeightMin > 0`` prunes the outputs exactly
+        like ``block_combine_sparse`` does.
+        """
+        cdef Py_ssize_t bb = self.n_cols if b is None else <Py_ssize_t>b
+        Ya = np.ascontiguousarray(Y, dtype=complex)
+        if Ya.ndim == 1:
+            Ya = Ya[:, np.newaxis]
+        if Ya.shape[0] != bb - a:
+            raise ValueError(f"Y rows {Ya.shape[0]} != selected columns {bb - a}")
+        cdef Py_ssize_t n_out = Ya.shape[1]
+        C = np.zeros((self.n_rows, n_out), dtype=complex)
+        cdef Py_ssize_t off = 0
+        cdef Py_ssize_t k
+        cdef Py_ssize_t lo, hi, rows_c
+        for k in range(len(self._chunks)):
+            chunk = self._chunks[k]
+            used = <Py_ssize_t>self._used[k]
+            lo = max(a, off)
+            hi = min(bb, off + used)
+            if hi > lo:
+                rows_c = min(<Py_ssize_t>chunk.shape[0], <Py_ssize_t>self.n_rows)
+                C[:rows_c] += chunk[:rows_c, lo - off : hi - off] @ Ya[lo - a : hi - a]
+            off += used
+        cdef complex[:, :] Cv = C
+        cdef vector[ManyBodyState_cpp.key_type] keys
+        cdef vector[ManyBodyState_cpp.mapped_type] vals
+        cdef list out = []
+        cdef ManyBodyState ms
+        cdef Py_ssize_t row, kk
+        cdef double complex z
+        for kk in range(n_out):
+            keys.clear()
+            vals.clear()
+            for row in range(self.n_rows):
+                z = Cv[row, kk]
+                if z.real != 0 or z.imag != 0:
+                    keys.push_back(self.row_det[row])
+                    vals.push_back(ManyBodyState_cpp.mapped_type(z.real, z.imag))
+            ms = ManyBodyState()
+            ms.v = ManyBodyState_cpp(keys, vals)
+            if slaterWeightMin > 0:
+                ms.prune(slaterWeightMin)
+            out.append(ms)
+        return out
+
+    def memory_bytes(self):
+        """Estimated heap bytes: the dense chunk buffers (capacity) plus the support
+        map / row_det key storage (one 32-B-class heap block per determinant key
+        vector, ~72 B map-node overhead per entry)."""
+        cdef size_t n_chunks = self.row_det[0].size() if self.n_rows > 0 else 1
+        cdef size_t key_heap = (8 * n_chunks + 8 + 15) & (~<size_t>15)
+        if key_heap < 32:
+            key_heap = 32
+        cdef size_t buf_bytes = 0
+        for chunk in self._chunks:
+            buf_bytes += chunk.nbytes
+        return buf_bytes + <size_t>self.n_rows * (2 * key_heap + 72)
+
 
 
 cdef class ManyBodyBlockState:
@@ -1693,21 +1757,28 @@ def pack_block_fused_cy(ManyBodyBlockState block, int comm_size, size_t chunks_p
     16*width`` instead of ``width * (state_bytes + 20)``. Ownership uses the same
     ``routing_hash() % comm_size`` as ``pack_psis_fused_cy``."""
     cdef vector[int64_t] send_counts
-    cdef vector[char] send_buf
+    cdef vector[int] owners
 
     with nogil:
-        c_pack_block_fused(block.b, comm_size, chunks_per_state, send_counts, send_buf)
+        c_pack_block_count(block.b, comm_size, send_counts, owners)
 
-    cdef size_t nbytes = send_buf.size()
+    # Serialize straight into the numpy buffer handed to MPI (Phase 4): no
+    # intermediate std::vector wire buffer and no full copy-out.
+    cdef size_t total = 0
+    cdef int rk
+    for rk in range(comm_size):
+        total += <size_t>send_counts[rk]
+    cdef size_t bpe = chunks_per_state * 8 + block.b.width() * 16
     send_counts_np = np.zeros(comm_size, dtype=np.int64)
-    send_buf_np = np.zeros(nbytes, dtype=np.uint8)
+    send_buf_np = np.empty(total * bpe, dtype=np.uint8)
 
     cdef int64_t[:] send_counts_view = send_counts_np
     cdef uint8_t[:] send_buf_view = send_buf_np
     if comm_size > 0:
         memcpy(&send_counts_view[0], <void*>send_counts.data(), comm_size * sizeof(int64_t))
-    if nbytes > 0:
-        memcpy(&send_buf_view[0], <void*>send_buf.data(), nbytes)
+    if total > 0:
+        with nogil:
+            c_pack_block_fill(block.b, comm_size, chunks_per_state, send_counts, owners, <char*>&send_buf_view[0])
 
     return send_counts_np, send_buf_np
 
@@ -1717,16 +1788,18 @@ def unpack_block_fused_cy(int comm_size, size_t width, int64_t[:] recv_counts, u
     the same determinant arriving from different ranks are summed in arrival order,
     matching ``unpack_psis_fused_cy``'s accumulate semantics bit-for-bit per column."""
     cdef vector[int64_t] c_recv_counts
-    cdef vector[char] c_recv_buf
 
     if comm_size > 0:
         c_recv_counts.assign(<int64_t*> &recv_counts[0], <int64_t*> &recv_counts[0] + comm_size)
+
+    # Parse straight out of the numpy receive buffer (no std::vector copy).
+    cdef const char* buf_ptr = NULL
     if recv_buf.shape[0] > 0:
-        c_recv_buf.assign(<char*> &recv_buf[0], <char*> &recv_buf[0] + recv_buf.shape[0])
+        buf_ptr = <const char*> &recv_buf[0]
 
     cdef ManyBodyBlockState res = ManyBodyBlockState()
     with nogil:
-        res.b = c_unpack_block_fused(comm_size, width, c_recv_counts, c_recv_buf, chunks_per_state)
+        res.b = c_unpack_block_fused(comm_size, width, c_recv_counts, buf_ptr, chunks_per_state)
     return res
 
 

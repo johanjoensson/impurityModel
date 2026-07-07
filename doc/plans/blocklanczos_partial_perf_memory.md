@@ -133,13 +133,21 @@ policy (the reort firing pattern differs ⇒ different rounding trajectory); ful
 green serial + n=2 + n=3 with baseline-identical pass/xfail counts, reort oracle and
 restarted-Lanczos suites green.
 
-## Phase 1 — bit-for-bit wins (planned)
+## Phase 1 — bit-for-bit wins (DONE)
 
-1. Bounded W buffer (callers pass views; kills the per-step `(2, i+2, n, n)` realloc in
-   `estimate_orthonormality`).
-2. Cache per-`j` β norms + reuse the driver's β SVD (three factorizations of the same
-   β_i per step today).
-3. Audit / drop the defensive `st.copy()` at `Q_basis.extend` (BlockLanczos.pyx:851).
+1. **Bounded W buffer — DONE**: `estimate_orthonormality(out=...)` builds the estimate
+   into the zeroed leading view of a caller-provided persistent buffer; both kernels
+   ping-pong two buffers (the previous estimate is read while the new one is written).
+2. **β-norm history — DONE**: `estimate_orthonormality(beta_norms=...)` reuses the
+   drivers' running `||beta_j||_2` history (from the divergence guard's SVD of the
+   same final stored beta) instead of re-factorizing every previous beta each step
+   (O(k²) SVDs over a run); one SVD of the current beta now yields both its 2-norm
+   and σ_min. Resume prefixes None placeholders (computed on demand).
+   All bit-for-bit (unit test asserts exact array equality with/without buffer,
+   history, and placeholders). Measured: w_estimate 1.08 → 0.59 ms/call at 50 bath;
+   array-kernel TRLM median 15.0 → 13.4 s.
+3. The defensive-copy audit was resolved by design in Phase 3/2.4 (`append_block`
+   copies into the dense store buffer; no list retention remains).
 
 ## Phase 2 — block-state matvec: `ManyBodyBlockState` (approved 2026-07-07)
 
@@ -295,7 +303,32 @@ gets the store's gemm `combine` automatically through `block_combine`; restart
 boundaries still transiently materialize slices (`_q_slice` → list) — measure
 before optimizing further (a `truncate_cols` + store-view would remove it).
 
-## Phase 4 — transient-spike reductions (planned)
+## Phase 4 — transient-spike reductions (DONE)
 
-`SparseKrylovDense` realloc doubling (column chunking), apply output double-pass,
-redistribute buffer reuse.
+1. **Chunked Krylov store**: `SparseKrylovDense` stores fixed-width column chunks
+   instead of one geometrically-doubled buffer — growth never reallocates or copies
+   existing data (the old doubling held old+new simultaneously, a ~3x transient at
+   each doubling). `reserve_rows` (the local basis size, called by the driver) sizes
+   chunks so row growth is free; when the support outgrows the hint (serial runs
+   discovering excited-sector determinants) the overflow chunk takes a 25% margin
+   and updates the hint. `_gather_columns` reproduces the old column-selection copy
+   bit-for-bit for PARTIAL reort; whole-column gathers (FULL mode) and the chunk-wise
+   `combine` accumulate per chunk (tolerance-equivalent, flagged). Measured 50-bath
+   serial: 19.1 MiB steady (vs 16.8 single-buffer) — the +14% is one abandoned
+   first chunk in the serial support-overflow case; MPI ranks have an exact hint and
+   avoid it — with zero growth transients (was ~50 MiB at the last doubling).
+   Lazy allocation: an empty store holds no buffer.
+2. **Direct-fill block pack/unpack**: `pack_block_count`/`pack_block_fill` serialize
+   straight into the numpy wire buffer handed to MPI, and `unpack_block_fused` parses
+   the receive buffer in place — the intermediate `std::vector` wire buffers and
+   their full per-redistribute copies are gone. Bit-for-bit (n=2/3 equivalence tests
+   vs the scalar path unchanged).
+3. The block-apply "survivors key copy" item was dropped on inspection: the current
+   code already performs exactly one heap key copy per output determinant (the
+   map owns its keys until destruction; a pointer-based survivors list would still
+   need that same single copy).
+
+**Cython gotcha recorded**: this file compiles with `wraparound=False`, so indexing a
+`cdef list` with `[-1]` is a raw out-of-bounds access (segfault) — use explicit
+positive indices (`lst[len(lst) - 1]`), which is why the existing code writes
+`_svb[len(_svb) - 1]`.

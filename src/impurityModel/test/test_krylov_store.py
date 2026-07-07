@@ -121,7 +121,6 @@ def test_store_gram_matches_states():
 
 def test_store_memory_bytes():
     store = SparseKrylovDense()
-    empty = store.memory_bytes()
-    assert empty > 0  # the pre-allocated buffer
+    assert store.memory_bytes() == 0  # chunked store allocates lazily on first append
     store.append(_random_states(np.random.default_rng(2), 4, 50))
-    assert store.memory_bytes() > empty
+    assert store.memory_bytes() > 0

@@ -238,24 +238,32 @@ void unpack_psis_fused(
     }
 }
 
-void pack_block_fused(
+void pack_block_count(
+    const ManyBodyBlockState& block,
+    int comm_size,
+    std::vector<int64_t>& send_counts,
+    std::vector<int>& owners) {
+
+    send_counts.assign(comm_size, 0);
+    owners.resize(block.rows());
+    for (size_t r = 0; r < block.rows(); ++r) {
+        owners[r] = static_cast<int>(block.key(r).routing_hash() % comm_size);
+        send_counts[owners[r]]++;
+    }
+}
+
+void pack_block_fill(
     const ManyBodyBlockState& block,
     int comm_size,
     size_t chunks_per_state,
-    std::vector<int64_t>& send_counts,
-    std::vector<char>& send_buf) {
+    const std::vector<int64_t>& send_counts,
+    const std::vector<int>& owners,
+    char* send_buf) {
 
     const size_t p = block.width();
     const size_t state_bytes = chunks_per_state * sizeof(uint64_t);
     const size_t amp_bytes = p * sizeof(ManyBodyBlockState::Value);
     const size_t bpe = state_bytes + amp_bytes;
-
-    send_counts.assign(comm_size, 0);
-    std::vector<int> owner(block.rows());
-    for (size_t r = 0; r < block.rows(); ++r) {
-        owner[r] = static_cast<int>(block.key(r).routing_hash() % comm_size);
-        send_counts[owner[r]]++;
-    }
 
     // Rank-ordered entry offsets, then a single fill pass (rows keep their block
     // order within each destination rank, like the scalar packer's per-rank lists).
@@ -265,10 +273,8 @@ void pack_block_fused(
         next[rk] = total;
         total += static_cast<size_t>(send_counts[rk]);
     }
-    send_buf.clear();
-    send_buf.resize(total * bpe);
     for (size_t r = 0; r < block.rows(); ++r) {
-        char* dst = send_buf.data() + (next[owner[r]]++) * bpe;
+        char* dst = send_buf + (next[owners[r]]++) * bpe;
         std::memcpy(dst, block.key(r).data(), state_bytes);
         std::memcpy(dst + state_bytes, block.row(r), amp_bytes);
     }
@@ -278,7 +284,7 @@ ManyBodyBlockState unpack_block_fused(
     int comm_size,
     size_t width,
     const std::vector<int64_t>& recv_counts,
-    const std::vector<char>& recv_buf,
+    const char* recv_buf,
     size_t chunks_per_state) {
 
     const size_t state_bytes = chunks_per_state * sizeof(uint64_t);
@@ -290,7 +296,7 @@ ManyBodyBlockState unpack_block_fused(
 
     std::vector<ManyBodyBlockState::Key> keys(total);
     std::vector<ManyBodyBlockState::Value> amps(total * width);
-    const char* src = recv_buf.data();
+    const char* src = recv_buf;
     for (size_t e = 0; e < total; ++e) {
         keys[e].resize(chunks_per_state);
         std::memcpy(keys[e].data(), src, state_bytes);

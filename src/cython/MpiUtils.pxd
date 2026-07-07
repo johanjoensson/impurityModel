@@ -51,16 +51,23 @@ cdef extern from "MpiUtils.h" namespace "mpi_utils" nogil:
         const vector[char]& recv_buf,
         size_t chunks_per_state)
 
-    void pack_block_fused(
+    void pack_block_count(
+        const ManyBodyBlockState_cpp& block,
+        int comm_size,
+        vector[int64_t]& send_counts,
+        vector[int]& owners)
+
+    void pack_block_fill(
         const ManyBodyBlockState_cpp& block,
         int comm_size,
         size_t chunks_per_state,
-        vector[int64_t]& send_counts,
-        vector[char]& send_buf)
+        const vector[int64_t]& send_counts,
+        const vector[int]& owners,
+        char* send_buf)
 
     ManyBodyBlockState_cpp unpack_block_fused(
         int comm_size,
         size_t width,
         const vector[int64_t]& recv_counts,
-        const vector[char]& recv_buf,
+        const char* recv_buf,
         size_t chunks_per_state)

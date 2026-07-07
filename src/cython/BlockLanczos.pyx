@@ -706,6 +706,11 @@ def block_lanczos_cy(
                 Q_basis = Q_init
             else:
                 Q_basis = SparseKrylovDense()
+                # Row hint = the local basis size (an upper bound on the support after
+                # redistribution): chunks are sized so row growth never forces a new one.
+                _local_basis = getattr(basis, "local_basis", None)
+                if _local_basis is not None:
+                    Q_basis.reserve_rows(len(_local_basis))
                 if len(Q_init) > 0:
                     Q_basis.append(list(Q_init))
             if start_it == 0 or len(Q_basis) < p:
@@ -728,6 +733,9 @@ def block_lanczos_cy(
         q_prev = ManyBodyBlockState.from_states([ManyBodyState() for _ in range(p)])
         if store_krylov:
             Q_basis = SparseKrylovDense()
+            _local_basis = getattr(basis, "local_basis", None)
+            if _local_basis is not None:
+                Q_basis.reserve_rows(len(_local_basis))
             Q_basis.append_block(q_curr)
         else:
             Q_basis = []

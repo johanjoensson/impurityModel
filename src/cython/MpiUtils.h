@@ -68,12 +68,23 @@ void unpack_psis_fused(
 // (the column position within the row identifies the vector), so the wire cost
 // per determinant is state_bytes + 16*p instead of p * (state_bytes + 20).
 // Ownership uses the same routing_hash() % comm_size as the scalar path.
-void pack_block_fused(
+// Two-phase pack (Phase 4): count computes the per-rank row counts and caches the
+// owners; fill serializes straight into the caller-provided buffer (the numpy array
+// handed to MPI), eliminating the intermediate std::vector wire buffer and its full
+// copy-out per redistribute.
+void pack_block_count(
+    const ManyBodyBlockState& block,
+    int comm_size,
+    std::vector<int64_t>& send_counts,
+    std::vector<int>& owners);
+
+void pack_block_fill(
     const ManyBodyBlockState& block,
     int comm_size,
     size_t chunks_per_state,
-    std::vector<int64_t>& send_counts,
-    std::vector<char>& send_buf);
+    const std::vector<int64_t>& send_counts,
+    const std::vector<int>& owners,
+    char* send_buf);
 
 // Rebuild a block from the received buffer. Rows for the same determinant
 // arriving from different ranks are summed; the summation order per column is
@@ -83,7 +94,7 @@ ManyBodyBlockState unpack_block_fused(
     int comm_size,
     size_t width,
     const std::vector<int64_t>& recv_counts,
-    const std::vector<char>& recv_buf,
+    const char* recv_buf,
     size_t chunks_per_state);
 
 } // namespace mpi_utils
