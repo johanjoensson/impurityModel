@@ -18,6 +18,30 @@ from copy import copy, deepcopy
 
 import numpy as np
 
+# --- Optional transient-allocation profiling (env-gated, ~zero cost when off) -------
+# Shares the BLOCKLANCZOS_PROFILE=1 switch with BlockLanczos.pyx: accumulates the peak
+# transient dense-materialization footprint of reorth_cgs2_dense (the PARTIAL bad-block
+# projection path). Read with get_manybody_profile().
+import os as _os
+_MBU_PROF = {}
+_MBU_PROF_ON = _os.environ.get("BLOCKLANCZOS_PROFILE") == "1"
+
+
+def get_manybody_profile():
+    """Return a copy of the accumulated transient-allocation counters (bytes / counts)."""
+    return dict(_MBU_PROF)
+
+
+def reset_manybody_profile():
+    _MBU_PROF.clear()
+
+
+def enable_manybody_profile(on=True):
+    """Toggle the transient-allocation counters at runtime (equivalent to setting
+    BLOCKLANCZOS_PROFILE=1 in the environment before import)."""
+    global _MBU_PROF_ON
+    _MBU_PROF_ON = bool(on)
+
 cdef extern from "<utility>" namespace "std" nogil:
     ManyBodyState_cpp& move(ManyBodyState_cpp)
     SlaterDeterminant_cpp& move(SlaterDeterminant_cpp)
@@ -281,6 +305,26 @@ cdef class ManyBodyState:
         with nogil:
             res = self.v.max_size()
         return res
+
+    def memory_bytes(self):
+        """Estimated heap bytes held by this state's determinant->amplitude storage.
+
+        Counts the contiguous ``flat_map`` entry array (``sizeof(pair<SlaterDeterminant,
+        complex>)`` per entry) plus one heap block per determinant key: the key is a
+        ``std::vector<uint64_t>``, so every entry owns a separate allocation of
+        ``8 * n_chunks`` payload rounded up to the 16-byte glibc granularity plus an
+        8-byte header (minimum chunk 32 bytes). Capacity slack of the entry vector is
+        not visible through the map interface and is ignored, so after a growth phase
+        the true footprint can be up to ~2x the entry-array part of this estimate.
+        """
+        cdef size_t n = self.v.size()
+        if n == 0:
+            return 0
+        cdef size_t n_chunks = dereference(self.v.begin()).first.size()
+        cdef size_t key_heap = (8 * n_chunks + 8 + 15) & (~<size_t>15)
+        if key_heap < 32:
+            key_heap = 32
+        return n * (sizeof(ManyBodyState_cpp.value_type) + key_heap)
 
     def erase(self, SlaterDeterminant key):
         """
@@ -990,6 +1034,32 @@ def add_scaled_multi(list states_target, list states_source, complex[:, :] coeff
                     dereference(t_ptrs[j]).add_scaled(dereference(s_ptrs[i]), ManyBodyState_cpp.mapped_type(coeff.real, coeff.imag))
 
 
+def support_stats(list states):
+    """Union-support statistics of a list of ``ManyBodyState`` (rank-local, no MPI).
+
+    Returns ``(union_size, total_nnz)``: the number of distinct determinants in the
+    union support of ``states`` and the total number of stored coefficients. The dense
+    fill ratio of the block is ``total_nnz / (union_size * len(states))`` — the fraction
+    of a dense ``(union_size x len(states))`` coefficient matrix that is actually
+    nonzero, which is the break-even measure for a columnar (dense-over-support)
+    Krylov storage vs the per-state ``flat_map`` representation.
+    """
+    cdef vector[SlaterDeterminant_cpp[uint64_t]] support
+    cdef ManyBodyState ms
+    cdef ManyBodyState_cpp.iterator it
+    cdef size_t total_nnz = 0
+    for obj in states:
+        ms = <ManyBodyState?>obj
+        total_nnz += ms.v.size()
+        it = ms.v.begin()
+        while it != ms.v.end():
+            support.push_back(dereference(it).first)
+            preincrement(it)
+    sort(support.begin(), support.end())
+    support.erase(unique(support.begin(), support.end()), support.end())
+    return (<size_t>support.size(), total_nnz)
+
+
 def reorth_cgs2_dense(list wp, list Q, int n_passes, object comm):
     r"""Dense (BLAS) block reorthogonalization of ``wp`` against ``Q`` for the sparse
     (``ManyBodyState``) path.
@@ -1044,6 +1114,14 @@ def reorth_cgs2_dense(list wp, list Q, int n_passes, object comm):
     sort(support.begin(), support.end())
     support.erase(unique(support.begin(), support.end()), support.end())
     cdef Py_ssize_t ns = <Py_ssize_t>support.size()
+
+    if _MBU_PROF_ON:
+        # Transient dense footprint of this call: the (ns x p) W block + (ns x nq) Q block
+        # materialized below (16 B/coeff). Track the peak across calls plus totals.
+        _bytes = 16 * ns * (p + nq)
+        _MBU_PROF["cgs2_dense_peak_bytes"] = max(_MBU_PROF.get("cgs2_dense_peak_bytes", 0), _bytes)
+        _MBU_PROF["cgs2_dense_calls"] = _MBU_PROF.get("cgs2_dense_calls", 0) + 1
+        _MBU_PROF["cgs2_dense_total_bytes"] = _MBU_PROF.get("cgs2_dense_total_bytes", 0) + _bytes
 
     # --- materialize dense (|S| x p) and (|S| x nq) over the local support ---
     Wd = np.zeros((ns, p), dtype=complex)

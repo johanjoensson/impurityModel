@@ -91,6 +91,13 @@ def reset_reort_profile():
     _REORT_PROF.clear()
 
 
+def enable_reort_profile(on=True):
+    """Toggle the apply_reort instrumentation at runtime (equivalent to setting
+    BLOCKLANCZOS_PROFILE=1 in the environment before import)."""
+    global _REORT_PROF_ON
+    _REORT_PROF_ON = bool(on)
+
+
 def _cholesky_or_deflate(M, p_in):
     r"""QR-factor the residual block via its Gram matrix ``M = Wp^H Wp``.
 

@@ -95,6 +95,13 @@ def reset_block_lanczos_profile():
     _PROF.clear()
 
 
+def enable_block_lanczos_profile(on=True):
+    """Toggle the per-step profiling accumulators at runtime (equivalent to setting
+    BLOCKLANCZOS_PROFILE=1 in the environment before import)."""
+    global _PROF_ON
+    _PROF_ON = bool(on)
+
+
 cdef inline void _prof_acc(str key, double t0):
     if _PROF_ON:
         _PROF[key] = _PROF.get(key, 0.0) + (_time.perf_counter() - t0)
@@ -296,8 +303,11 @@ def block_lanczos_step_cy(
     # --- 1. Block matvec: wp = H q_curr ---------------------------------
     _t0 = _time.perf_counter()
     wp = h_op.apply_multi(q_curr, slaterWeightMin)
+    _prof_acc("matvec_apply", _t0)
+    _t1 = _time.perf_counter()
     if mpi and comm is not None and basis is not None:
         wp = basis.redistribute_psis(wp)
+    _prof_acc("matvec_redistribute", _t1)
     _prof_acc("matvec", _t0)
 
     # --- 2. alpha_i = <q_curr | wp> -------------------------------------
