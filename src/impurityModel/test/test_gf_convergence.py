@@ -109,9 +109,15 @@ def test_partial_matches_full_gf_on_dense_spectrum():
 
 
 def test_absolute_safeguard_bounds_gradual_beta_growth():
-    """Forcing the rank-~2 spectrum far past its effective rank (convergence disabled) makes
-    beta grow gradually; the absolute spectral-scale safeguard must truncate it rather than
-    let beta run away by ~10 orders of magnitude."""
+    """Forcing the rank-~2 spectrum far past its effective rank (convergence disabled) must
+    not let beta run away by ~10 orders of magnitude (~2.5e10 unguarded). Two healthy
+    endings exist in this rounding-marginal regime and both are correct: the divergence
+    safeguard truncates a corrupted tail early, or PARTIAL keeps the recurrence clean
+    through the whole budget so there is nothing to truncate (the typical trajectory since
+    the W-estimator fix — the old over-triggering estimator projected q_next against
+    ~everything every step, collapsing the residual and forcing an early invariant-subspace
+    exit, which is what this test's original ``len(a) < max_iter`` assertion captured).
+    Assert the outcome (no runaway), not the mechanism."""
     rng = np.random.default_rng(3)
     d = np.concatenate([rng.normal(0.0, 1e-3, 150), rng.normal(10.0, 1e-3, 150)])
     H, Q0, _, _, _ = _H_and_seed(d, seed=3)
@@ -123,7 +129,6 @@ def test_absolute_safeguard_bounds_gradual_beta_growth():
         return_widths=True,
         max_iter=120,
     )
-    assert len(a) < 120  # truncated before the cap
     assert max(np.linalg.norm(x, 2) for x in b) < 1e7  # bounded (was ~2.5e10 unguarded)
 
 
