@@ -297,7 +297,9 @@ cpdef np.ndarray estimate_orthonormality(
     np.ndarray[double complex, ndim=3] betas,
     object block_widths=None,
     double eps=0.0,
-    double N=1.0
+    double N=1.0,
+    object out=None,
+    object beta_norms=None,
 ):
     cdef int i = alphas.shape[0] - 1
     cdef int n = alphas.shape[1]
@@ -322,7 +324,16 @@ cpdef np.ndarray estimate_orthonormality(
     cdef int w_next = widths[i+1]
     cdef int w_0 = widths[0]
 
-    cdef np.ndarray[double complex, ndim=4] W_out = np.zeros((2, i + 2, n, n), dtype=complex)
+    # Bounded-W: the caller may provide a persistent buffer (`out`, shape
+    # (2, >=i+2, n, n)); the estimate is built into its zeroed leading view instead of a
+    # fresh allocation every step. The caller must ping-pong two buffers (the previous
+    # estimate `W` is read while the new one is written, so they must not alias).
+    cdef np.ndarray[double complex, ndim=4] W_out
+    if out is None:
+        W_out = np.zeros((2, i + 2, n, n), dtype=complex)
+    else:
+        W_out = out[:, : i + 2]
+        W_out[...] = 0
     # Build the new estimate directly into W_out[1] (a zero-initialized view) instead of a
     # separate w_bar buffer that is then copied — saves one (i+2, n, n) allocation + copy/step.
     cdef np.ndarray[double complex, ndim=3] w_bar = W_out[1]
@@ -384,11 +395,21 @@ cpdef np.ndarray estimate_orthonormality(
     # added as a positive magnitude (no sign cancellation): it, not the signed propagation above,
     # carries the per-step rounding injection, and with the sqrt(N) scale it upper-bounds the
     # measured true loss by a stable ~2-10x on the NiO ground-state workload.
-    _sig_min_bi = float(np.min(la.svd(betas[i, :w_next, :w_curr], compute_uv=False)))
+    # One SVD of the current beta gives both the 2-norm (largest singular value) and
+    # sigma_min — np.linalg.norm(ord=2) computes the same SVD internally, so this is
+    # bit-identical and drops a redundant factorization per step.
+    _sv_bi = la.svd(betas[i, :w_next, :w_curr], compute_uv=False)
+    _sig_min_bi = float(_sv_bi[len(_sv_bi) - 1])
     _binv_norm = 1.0 / max(_sig_min_bi, eps)
-    _bnorm_i = float(np.linalg.norm(betas[i, :w_next, :w_curr], ord=2))
+    _bnorm_i = float(_sv_bi[0])
     for j in range(i):
-        _bnorm_j = float(np.linalg.norm(betas[j, :widths[j+1], :widths[j]], ord=2))
+        # The past ||beta_j||_2 never change; the caller may pass its running history
+        # (`beta_norms`, one entry per completed block) instead of re-factorizing every
+        # previous beta on every step (O(k^2) SVDs over a run without it).
+        if beta_norms is not None and j < len(beta_norms) and beta_norms[j] is not None:
+            _bnorm_j = float(beta_norms[j])
+        else:
+            _bnorm_j = float(np.linalg.norm(betas[j, :widths[j+1], :widths[j]], ord=2))
         w_bar[j, :w_next, :widths[j]] += eps * n_scale * (_bnorm_i + _bnorm_j) * _binv_norm
 
     W_out[0, : i + 1] = W[1]  # w_bar is already W_out[1] (built in place)
@@ -788,6 +809,18 @@ def block_lanczos_array_cy(
         alphas_buf[:start_it] = alphas_arr
         betas_buf[:start_it] = betas_arr
 
+    # Bounded-W ping-pong buffers + beta-norm history (Phase 1), mirroring
+    # block_lanczos_cy: the estimator writes into the spare persistent buffer and
+    # reuses the completed blocks' ||beta_j||_2 instead of re-factorizing them.
+    _w_bufs = None
+    beta_norm_hist = None
+    if reort in (Reort.PARTIAL, Reort.SELECTIVE):
+        _w_bufs = (
+            np.empty((2, _buf_size + 2, n, n), dtype=complex),
+            np.empty((2, _buf_size + 2, n, n), dtype=complex),
+        )
+        beta_norm_hist = [None] * start_it
+
     cdef bint is_sparse = sps.issparse(h_op)
     cdef bint is_dense = isinstance(h_op, np.ndarray)
 
@@ -1004,6 +1037,7 @@ def block_lanczos_array_cy(
         # SELECTIVE Ritz-error check below).
         _svb = np.linalg.svd(beta_i, compute_uv=False)
         beta_norm = float(_svb[0])
+        _reort_acted = False
         alpha_norm = np.linalg.norm(alpha_i_arr, ord=2)
         diverged, t_norm_max, h_norm_est = divergence_guard(
             beta_norm, alpha_norm, it == start_it, t_norm_max, h_norm_est
@@ -1070,7 +1104,8 @@ def block_lanczos_array_cy(
             block_widths.append(n_curr)
             block_widths.append(active_k)
             W = estimate_orthonormality(
-                W, alphas_buf[: it + 1], betas_buf[: it + 1], block_widths=block_widths, eps=EPS, N=global_N
+                W, alphas_buf[: it + 1], betas_buf[: it + 1], block_widths=block_widths, eps=EPS, N=global_N,
+                out=_w_bufs[it % 2] if _w_bufs is not None else None, beta_norms=beta_norm_hist,
             )
             block_widths.pop()
             block_widths.pop()
@@ -1124,6 +1159,13 @@ def block_lanczos_array_cy(
                         break
                     q_next = q_next @ beta2_inv
                     betas_buf[it, :active_k, :n_curr] = beta_i
+
+        # Record ||beta_it||_2 of the FINAL stored beta (the acted-renormalize above may
+        # have replaced beta_i) for the estimator's noise floor at later iterations.
+        if beta_norm_hist is not None:
+            beta_norm_hist.append(
+                float(np.linalg.svd(beta_i, compute_uv=False)[0]) if _reort_acted else beta_norm
+            )
 
         if converged(alphas_buf[: it + 1], betas_buf[: it + 1], verbose=verbose, block_widths=block_widths + [n_curr]):
             termination = "converged"

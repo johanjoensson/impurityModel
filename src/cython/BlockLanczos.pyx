@@ -214,6 +214,8 @@ def block_lanczos_step_cy(
     locked=None,
     locked_reort="full",
     krylov=None,
+    w_out=None,
+    beta_norm_hist=None,
 ):
     """Perform one step of the distributed block Lanczos iteration.
 
@@ -452,6 +454,8 @@ def block_lanczos_step_cy(
             block_widths=block_widths + [p, active_k],
             eps=EPS,
             N=float(getattr(basis, "size", 0) or 1),
+            out=w_out,
+            beta_norms=beta_norm_hist,
         )
         _prof_acc("w_estimate", _t0)
         _t0 = _time.perf_counter()
@@ -775,6 +779,20 @@ def block_lanczos_cy(
     elif reort_mode in (Reort.PARTIAL, Reort.SELECTIVE) and W is not None:
         pass  # W expands dynamically in estimate_orthonormality
 
+    # Bounded-W ping-pong buffers + the beta-norm history (Phase 1): the estimator
+    # writes each step's W into the spare persistent buffer instead of allocating,
+    # and reuses ||beta_j||_2 of completed blocks instead of re-factorizing them
+    # every step. Resume prefixes the history with None placeholders (block index
+    # aligned); the estimator falls back to computing those on demand.
+    _w_bufs = None
+    beta_norm_hist = None
+    if reort_mode in (Reort.PARTIAL, Reort.SELECTIVE):
+        _w_bufs = (
+            np.empty((2, start_it + _buf_size + 2, p, p), dtype=complex),
+            np.empty((2, start_it + _buf_size + 2, p, p), dtype=complex),
+        )
+        beta_norm_hist = [None] * start_it
+
     # Estimate-driven locking reorthogonalization (EA16 §2.6.2) state. Only active when a
     # locked set is supplied and locked_reort == "partial"; otherwise the step does the
     # unconditional "full" projection. See ea16.locked_overlap_step for the recurrence.
@@ -829,6 +847,8 @@ def block_lanczos_cy(
             locked=locked,
             locked_reort=locked_reort,
             krylov=krylov,
+            w_out=_w_bufs[it % 2] if _w_bufs is not None else None,
+            beta_norm_hist=beta_norm_hist,
         )
 
         if breakdown:
@@ -855,6 +875,8 @@ def block_lanczos_cy(
         # and its smallest gives ||beta_i^-1|| for the locked-reort estimate below.
         _svb = np.linalg.svd(beta_i, compute_uv=False)
         beta_norm = float(_svb[0])
+        if beta_norm_hist is not None:
+            beta_norm_hist.append(beta_norm)
         alpha_norm = np.linalg.norm(alpha_i, ord=2)
         diverged, t_norm_max, h_norm_est = divergence_guard(
             beta_norm, alpha_norm, it == 0, t_norm_max, h_norm_est

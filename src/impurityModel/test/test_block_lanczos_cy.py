@@ -570,3 +570,41 @@ def test_converged_views_equivalence():
     # Convergence/eigenvalues unchanged: T's spectrum matches the dense reference.
     T = _build_full_T(alphas, betas[: len(alphas) - 1])
     np.testing.assert_allclose(np.sort(np.linalg.eigvalsh(T)), np.sort(eigvals), atol=1e-10)
+
+
+def test_estimate_orthonormality_bounded_buffer_bit_identical():
+    """Phase 1: the caller-provided ping-pong buffer (`out`) and the beta-norm history
+    (`beta_norms`) must reproduce the allocating/no-history path bit-for-bit."""
+    from impurityModel.ed.BlockLanczosArray import estimate_orthonormality
+
+    rng = np.random.default_rng(77)
+    p, k = 3, 12
+    alphas = rng.standard_normal((k, p, p)) + 1j * rng.standard_normal((k, p, p))
+    alphas = 0.5 * (alphas + np.conj(alphas.transpose(0, 2, 1)))
+    betas = rng.standard_normal((k, p, p)) + 1j * rng.standard_normal((k, p, p))
+
+    W_ref = np.zeros((2, 1, p, p), dtype=complex)
+    W_ref[1, 0] = np.eye(p)
+    W_buf = W_ref.copy()
+    bufs = (np.empty((2, k + 2, p, p), dtype=complex), np.empty((2, k + 2, p, p), dtype=complex))
+    hist = []
+    for it in range(k):
+        widths = [p] * (it + 2)
+        W_ref = estimate_orthonormality(W_ref, alphas[: it + 1], betas[: it + 1], block_widths=widths, N=1000.0)
+        W_buf = estimate_orthonormality(
+            W_buf, alphas[: it + 1], betas[: it + 1], block_widths=widths, N=1000.0,
+            out=bufs[it % 2], beta_norms=hist,
+        )
+        np.testing.assert_array_equal(W_buf, W_ref)  # bit-for-bit
+        hist.append(float(np.linalg.svd(betas[it, :p, :p], compute_uv=False)[0]))
+    # resume-style None placeholders fall back to on-demand norms, still bit-identical
+    hist_holes = [None] * len(hist)
+    W_h = np.zeros((2, 1, p, p), dtype=complex)
+    W_h[1, 0] = np.eye(p)
+    for it in range(k):
+        widths = [p] * (it + 2)
+        W_h = estimate_orthonormality(
+            W_h, alphas[: it + 1], betas[: it + 1], block_widths=widths, N=1000.0,
+            out=bufs[it % 2], beta_norms=hist_holes,
+        )
+    np.testing.assert_array_equal(W_h, W_ref)
