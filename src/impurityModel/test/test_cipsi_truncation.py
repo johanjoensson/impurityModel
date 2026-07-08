@@ -77,8 +77,10 @@ def test_collective_cutoff_empty_scores():
 @pytest.mark.mpi
 def test_collective_cutoff_mpi_agrees_and_caps():
     comm = MPI.COMM_WORLD
-    # Distinct scores per rank; global top-3 must be selected and the cutoff identical.
-    scores = np.array([float(comm.rank * comm.size + i + 1) for i in range(comm.size)])
+    # Three distinct scores per rank so the global pool always has >= 3 values (the top-3
+    # request stays well-defined even at -n 1); interleaved so the top 3 span >= 2 ranks
+    # when size > 1. Values are 1 .. 3*size with no duplicates across ranks.
+    scores = np.array([float(comm.rank + 1 + comm.size * i) for i in range(3)])
     cutoff = collective_amplitude_cutoff(scores, 3, comm)
     assert all(c == cutoff for c in comm.allgather(cutoff))
     n_above = comm.allreduce(int(np.count_nonzero(scores > cutoff)), op=MPI.SUM)
