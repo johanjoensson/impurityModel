@@ -17,7 +17,7 @@ from impurityModel.ed.ManyBodyUtils import ManyBodyState
 
 
 def _pack_units(
-    weights, comm_size: int, split_threshold: float
+    weights, comm_size: int, split_threshold: float, max_colors: Optional[int] = None
 ) -> tuple[Optional[list[tuple[int, ...]]], Optional[np.ndarray]]:
     """Pack work units into per-color bins and allocate ranks to each color.
 
@@ -45,6 +45,11 @@ def _pack_units(
         Number of MPI ranks to distribute over.
     split_threshold : float
         Scale factor on the participation-ratio cap of the number of colors.
+    max_colors : int, optional
+        Hard cap on the color count (e.g. the memory budget cap from
+        :func:`impurityModel.ed.memory_estimate.max_colors_within_budget` — every
+        simultaneous color may fill the same ``truncation_threshold``, so memory can
+        bound the concurrency below what the participation ratio allows).
 
     Returns
     -------
@@ -59,6 +64,8 @@ def _pack_units(
     n_colors = min(comm_size, len(normalized))
     participation = 1.0 / np.sum(normalized**2)
     n_colors = min(n_colors, max(1, int(np.ceil(participation * split_threshold))))
+    if max_colors is not None:
+        n_colors = min(n_colors, max(1, max_colors))
     if n_colors <= 1:
         return None, None
 
@@ -101,7 +108,7 @@ def _pack_units(
 
 
 def split_basis_and_redistribute_psi(
-    basis, priorities: list[float], psis: Optional[list[ManyBodyState]]
+    basis, priorities: list[float], psis: Optional[list[ManyBodyState]], max_colors: Optional[int] = None
 ) -> tuple[list[int], list[int], int, list[int], Basis, Optional[list[ManyBodyState]], list[Optional[MPI.Intercomm]]]:
     """Split the basis and redistribute wavefunctions over a split communicator.
 
@@ -111,6 +118,9 @@ def split_basis_and_redistribute_psi(
         The split priority weights for each block.
     psis : list of ManyBodyState, optional
         The wavefunctions to redistribute, or None.
+    max_colors : int, optional
+        Hard cap on the number of colors (see :func:`_pack_units`); must be identical
+        on every rank of ``basis.comm``.
 
     Returns
     -------
@@ -137,7 +147,7 @@ def split_basis_and_redistribute_psi(
     # All packing math (participation-ratio color cap, LPT unit packing,
     # largest-remainder rank apportionment) lives in _pack_units; it is pure and
     # deterministic, so every rank computes the identical packing.
-    subgroups, procs_per_color = _pack_units(priorities, comm.size, basis.split_threshold)
+    subgroups, procs_per_color = _pack_units(priorities, comm.size, basis.split_threshold, max_colors)
     if subgroups is None:
         # Unified: all ranks process every block together (no actual split).
         return list(range(len(priorities))), [0], 0, [len(priorities)], basis, psis, [None]

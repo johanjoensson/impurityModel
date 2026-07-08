@@ -65,6 +65,26 @@ def test_remainder_reclaim_many_small_units():
     assert procs[heavy_color] == max(procs)
 
 
+def test_max_colors_clamps_split():
+    weights = [1.0] * 8
+    subgroups, procs = _pack_units(weights, 8, 1.0, max_colors=3)
+    _check_valid_packing(subgroups, procs, 8, 8)
+    assert len(subgroups) == 3
+
+
+def test_max_colors_one_forces_unified():
+    subgroups, procs = _pack_units([1.0] * 4, 4, 1.0, max_colors=1)
+    assert subgroups is None and procs is None
+
+
+def test_max_colors_looser_than_participation_is_inert():
+    weights = [1.0] * 8
+    capped = _pack_units(weights, 8, 1.0, max_colors=100)
+    uncapped = _pack_units(weights, 8, 1.0)
+    assert capped[0] == uncapped[0]
+    assert np.array_equal(capped[1], uncapped[1])
+
+
 @pytest.mark.parametrize("comm_size", [1, 2, 3, 4, 7, 16, 64])
 @pytest.mark.parametrize("seed", range(5))
 def test_randomized_packings_valid(comm_size, seed):

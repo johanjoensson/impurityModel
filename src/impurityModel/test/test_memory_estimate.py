@@ -73,6 +73,81 @@ def test_available_bytes_serial_positive():
     assert me.available_bytes_per_rank(None) > 0
 
 
+def _write_cgroup_v2(tmp_path, entries):
+    """Build a fake cgroup v2 tree; entries = {relpath: (max, current)} with str/int values."""
+    root = tmp_path / "cgroup"
+    for rel, (limit, current) in entries.items():
+        d = root / rel if rel else root
+        d.mkdir(parents=True, exist_ok=True)
+        (d / "memory.max").write_text(f"{limit}\n")
+        (d / "memory.current").write_text(f"{current}\n")
+    return root
+
+
+def test_cgroup_v2_tightest_ancestor_headroom(tmp_path):
+    """min(limit - current) over the ancestor chain wins, root without files skipped."""
+    root = _write_cgroup_v2(
+        tmp_path,
+        {
+            "slurm/job_1": (8 * 2**30, 2**30),  # 7 GiB headroom
+            "slurm/job_1/step_0": (16 * 2**30, 0),  # looser child
+        },
+    )
+    proc = tmp_path / "proc_cgroup"
+    proc.write_text("0::/slurm/job_1/step_0\n")
+    headroom = me._cgroup_available_bytes(proc_path=str(proc), v2_root=str(root))
+    assert headroom == 7 * 2**30
+
+
+def test_cgroup_v2_unlimited_returns_none(tmp_path):
+    root = _write_cgroup_v2(tmp_path, {"user": ("max", 12345)})
+    proc = tmp_path / "proc_cgroup"
+    proc.write_text("0::/user\n")
+    assert me._cgroup_available_bytes(proc_path=str(proc), v2_root=str(root)) is None
+
+
+def test_cgroup_v1_limit_and_huge_means_unlimited(tmp_path):
+    v1 = tmp_path / "memory" / "slurm" / "job_2"
+    v1.mkdir(parents=True)
+    proc = tmp_path / "proc_cgroup"
+    proc.write_text("3:cpu:/ignored\n2:memory:/slurm/job_2\n")
+    (v1 / "memory.limit_in_bytes").write_text(f"{2**63 - 4096}\n")
+    (v1 / "memory.usage_in_bytes").write_text("0\n")
+    assert me._cgroup_available_bytes(proc_path=str(proc), v1_root=str(tmp_path / "memory")) is None
+    (v1 / "memory.limit_in_bytes").write_text(f"{4 * 2**30}\n")
+    (v1 / "memory.usage_in_bytes").write_text(f"{2**30}\n")
+    headroom = me._cgroup_available_bytes(proc_path=str(proc), v1_root=str(tmp_path / "memory"))
+    assert headroom == 3 * 2**30
+
+
+def test_cgroup_missing_proc_file_returns_none(tmp_path):
+    assert me._cgroup_available_bytes(proc_path=str(tmp_path / "nope")) is None
+
+
+def test_node_available_bytes_respects_cgroup(monkeypatch):
+    """A binding cgroup limit must cap the node availability figure."""
+    unconstrained = me._node_available_bytes()
+    monkeypatch.setattr(me, "_cgroup_available_bytes", lambda **kw: 12345)
+    assert me._node_available_bytes() == 12345
+    monkeypatch.setattr(me, "_cgroup_available_bytes", lambda **kw: None)
+    assert me._node_available_bytes() >= min(unconstrained, 12345)
+
+
+def test_max_colors_within_budget(monkeypatch):
+    """The color cap must invert estimate_gf_peak_bytes against the safety-scaled budget."""
+    from types import SimpleNamespace
+
+    comm = SimpleNamespace(size=16)
+    n, nso, width = 100_000, 100, 4
+    target = me.estimate_gf_peak_bytes(n, nso, width, "none", ranks=16 // 4)
+    monkeypatch.setattr(me, "available_bytes_per_rank", lambda c: target / me.DEFAULT_MEMORY_SAFETY)
+    assert me.max_colors_within_budget(n, nso, width, "none", comm, 16) == 4
+    monkeypatch.setattr(me, "available_bytes_per_rank", lambda c: 1)
+    assert me.max_colors_within_budget(n, nso, width, "none", comm, 16) == 1
+    monkeypatch.setattr(me, "available_bytes_per_rank", lambda c: 2**60)
+    assert me.max_colors_within_budget(n, nso, width, "none", comm, 16) == 16
+
+
 def test_log_memory_budget_serial(capsys):
     report = me.log_memory_budget(100_000, 100, comm=None, block_width=4, verbose=True, label="test")
     out = capsys.readouterr().out
@@ -86,6 +161,29 @@ def test_log_memory_budget_uncapped(capsys):
         report = me.log_memory_budget(uncapped, 100, comm=None, verbose=True)
         assert report["gs_peak"] is None and report["gf_peak"] is None
     assert "uncapped" in capsys.readouterr().out
+
+
+def test_log_peak_vs_predicted_serial(capsys):
+    budget = me.log_memory_budget(100_000, 100, comm=None, verbose=False)
+    measured = me.log_peak_vs_predicted(budget, comm=None, verbose=True, label="test")
+    out = capsys.readouterr().out
+    assert measured > 0
+    assert "measured per-rank peak RSS" in out and "predicted" in out
+
+
+def test_log_peak_vs_predicted_uncapped(capsys):
+    budget = me.log_memory_budget(np.inf, 100, comm=None, verbose=False)
+    me.log_peak_vs_predicted(budget, comm=None, verbose=True)
+    assert "predicted uncapped" in capsys.readouterr().out
+
+
+@pytest.mark.mpi
+def test_log_peak_vs_predicted_mpi_rank_local_verbose():
+    """Collectives must run unconditionally under per-rank verbose flags."""
+    comm = MPI.COMM_WORLD
+    budget = me.log_memory_budget(10_000, 100, comm=comm, verbose=False)
+    measured = me.log_peak_vs_predicted(budget, comm=comm, verbose=comm.rank == 0)
+    assert measured >= me.peak_rss_bytes()
 
 
 def test_log_memory_budget_warns_when_too_big(capsys):

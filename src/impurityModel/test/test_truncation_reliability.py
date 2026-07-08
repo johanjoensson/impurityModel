@@ -53,11 +53,9 @@ def _env(name, default):
 
 def _peak_rss_bytes():
     """Process high-water-mark RSS (VmHWM) in bytes."""
-    with open("/proc/self/status") as f:
-        for line in f:
-            if line.startswith("VmHWM:"):
-                return int(line.split()[1]) * 1024
-    return 0
+    from impurityModel.ed.memory_estimate import peak_rss_bytes
+
+    return peak_rss_bytes()
 
 
 def _reference_path(outdir, nbaths, ranks):
@@ -116,6 +114,11 @@ def test_truncation_reliability_config():
     e0 = float(np.min(result["gs_energies"]))
     causality_violation = float(np.max(np.diagonal(gs_real.imag, axis1=1, axis2=2)))
 
+    # Whether the truncation_threshold actually bound the *ground-state* basis (as opposed
+    # to only the Green's-function bases). None until the cap binds; a dict with the
+    # fixed-budget CIPSI refinement summary otherwise (CIPSISolver.expand).
+    gs_trunc = result.get("gs_truncation")
+
     is_reference = not np.isfinite(threshold)
     ref_file = _reference_path(outdir, nbaths, ranks)
     row = {
@@ -127,6 +130,10 @@ def test_truncation_reliability_config():
         "causality_violation": causality_violation,
         "wall_s": round(wall, 3),
         "peak_rss_bytes": int(peak_rss),
+        "gs_cap_hit": bool(gs_trunc),
+        "gs_cap_retained": int(gs_trunc["retained"]) if gs_trunc else None,
+        "gs_cap_cycles": int(gs_trunc["cycles"]) if gs_trunc else None,
+        "gs_cap_discarded_de2": float(gs_trunc["discarded_de2_mass"]) if gs_trunc else None,
     }
     if is_reference:
         np.savez_compressed(ref_file, sigma_real=sigma_real, gs_realaxis=gs_real, e0=e0)
@@ -143,10 +150,13 @@ def test_truncation_reliability_config():
         )
     with open(_results_path(outdir), "a") as f:
         f.write(json.dumps(row) + "\n")
+    gs_note = (
+        f", GS cap {row['gs_cap_retained']} ({row['gs_cap_cycles']} cyc)" if row["gs_cap_hit"] else ", GS uncapped"
+    )
     print(
         f"[truncation-bench] T={trunc_env} reort={reort} ranks={ranks}: "
         f"e0={e0:.6f} (err {row['e0_err']:.2e}), sigma max dev {row['sigma_max_dev']:.2e}, "
-        f"causality {causality_violation:.1e}, peak RSS {peak_rss / 2**20:.0f} MiB, {wall:.1f} s",
+        f"causality {causality_violation:.1e}, peak RSS {peak_rss / 2**20:.0f} MiB, {wall:.1f} s{gs_note}",
         flush=True,
     )
 
@@ -159,15 +169,16 @@ def render_table(outdir):
     rows.sort(key=lambda r: (r["ranks"], r["reort"], -(r["threshold"] or 10**18)))
     header = (
         f"{'ranks':>5} {'reort':>8} {'threshold':>10} {'e0_err':>10} {'sig_max':>10} "
-        f"{'sig_l2':>10} {'causal':>9} {'RSS_MiB':>8} {'wall_s':>8}"
+        f"{'sig_l2':>10} {'causal':>9} {'RSS_MiB':>8} {'wall_s':>8} {'GS_cap':>10}"
     )
     lines = [header, "-" * len(header)]
     for r in rows:
         thr = "inf" if r["threshold"] is None else str(r["threshold"])
+        gs_cap = f"{r.get('gs_cap_retained')}/{r.get('gs_cap_cycles')}c" if r.get("gs_cap_hit") else "-"
         lines.append(
             f"{r['ranks']:>5} {r['reort']:>8} {thr:>10} {r.get('e0_err', float('nan')):>10.2e} "
             f"{r.get('sigma_max_dev', float('nan')):>10.2e} {r.get('sigma_l2_dev', float('nan')):>10.2e} "
-            f"{r['causality_violation']:>9.1e} {r['peak_rss_bytes'] / 2**20:>8.0f} {r['wall_s']:>8.1f}"
+            f"{r['causality_violation']:>9.1e} {r['peak_rss_bytes'] / 2**20:>8.0f} {r['wall_s']:>8.1f} {gs_cap:>10}"
         )
     return "\n".join(lines)
 

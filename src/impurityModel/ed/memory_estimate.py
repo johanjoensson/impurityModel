@@ -25,7 +25,14 @@ Two per-rank scaling regimes matter (see ``doc/architecture_overview.md``):
 Under ``run_units_distributed`` the communicator is split into colors and every unit
 basis inherits the same numeric ``truncation_threshold``, so each rank's share of a
 unit basis is ``threshold / (ranks / n_colors)`` — parallel units multiply per-rank
-memory accordingly (pass ``n_parallel_units``).
+memory accordingly. The split site enforces this: :func:`max_colors_within_budget`
+caps the color count so a cap-filling unit basis still fits the per-rank budget
+(``n_parallel_units`` remains available for sizing by hand).
+
+The available-memory probe respects the enforced cgroup memory limit (SLURM ``--mem``
+and shared-node allocations), taking the minimum of ``MemAvailable`` and the cgroup
+headroom. Unmodeled at-scale overheads (MPI library buffers, transient redistribution
+buffers) are absorbed by ``DEFAULT_MEMORY_SAFETY``.
 """
 
 import os
@@ -50,6 +57,14 @@ _PY_BASIS_OVERHEAD_BYTES = 160
 #: Fallback cap used by drivers when no memory probe is possible (matches the historical
 #: ``groundstate.calc_gs`` default).
 DEFAULT_TRUNCATION_THRESHOLD = 1_000_000
+
+#: Fraction of the available per-rank RAM the sizing helpers budget by default; the rest
+#: absorbs transient matvec fanout, allocator slack and unmodeled overheads (MPI buffers).
+DEFAULT_MEMORY_SAFETY = 0.5
+
+# cgroup v1 reports "no limit" as a huge number (PAGE_COUNTER_MAX); anything this large
+# is unlimited in practice.
+_CGROUP_UNLIMITED = 1 << 60
 
 _ranks_per_node_cache: dict = {}
 
@@ -167,16 +182,75 @@ def estimate_gs_peak_bytes(n_dets, n_spin_orbitals, block_width=4, ranks=1, nnz_
     return basis_bytes + csr_bytes + replicated_bytes + krylov_bytes
 
 
+def _read_cgroup_int(path):
+    """Integer content of a cgroup file; ``None`` on missing file or non-numeric (``max``)."""
+    try:
+        with open(path) as f:
+            text = f.read().strip()
+    except OSError:
+        return None
+    return int(text) if text.isdigit() else None
+
+
+def _cgroup_available_bytes(proc_path="/proc/self/cgroup", v2_root="/sys/fs/cgroup", v1_root="/sys/fs/cgroup/memory"):
+    """Tightest memory headroom (limit - current usage) over this process's cgroup ancestors.
+
+    Job schedulers (SLURM) enforce ``--mem`` through cgroup limits, which can sit far
+    below the node's ``MemAvailable`` on shared allocations. Handles cgroup v2
+    (``memory.max``/``memory.current``) and v1 (``memory.limit_in_bytes``/
+    ``memory.usage_in_bytes``); returns ``None`` when no limit applies (unlimited,
+    non-Linux, or unreadable hierarchy).
+    """
+    try:
+        with open(proc_path) as f:
+            lines = f.read().splitlines()
+    except OSError:
+        return None
+    headroom = None
+    for line in lines:
+        parts = line.split(":", 2)
+        if len(parts) != 3:
+            continue
+        hierarchy_id, controllers, cgroup_path = parts
+        if hierarchy_id == "0" and not controllers:
+            base, limit_name, usage_name = v2_root, "memory.max", "memory.current"
+        elif "memory" in controllers.split(","):
+            base, limit_name, usage_name = v1_root, "memory.limit_in_bytes", "memory.usage_in_bytes"
+        else:
+            continue
+        stop = os.path.normpath(base)
+        node = os.path.normpath(os.path.join(base, cgroup_path.lstrip("/")))
+        while node.startswith(stop):
+            limit = _read_cgroup_int(os.path.join(node, limit_name))
+            if limit is not None and limit < _CGROUP_UNLIMITED:
+                usage = _read_cgroup_int(os.path.join(node, usage_name)) or 0
+                headroom = min(headroom, max(0, limit - usage)) if headroom is not None else max(0, limit - usage)
+            if node == stop:
+                break
+            node = os.path.dirname(node)
+    return headroom
+
+
 def _node_available_bytes():
-    """Available bytes on this node: ``MemAvailable`` from /proc/meminfo, sysconf fallback."""
+    """Available bytes on this node, respecting the enforced cgroup limit.
+
+    The minimum of ``MemAvailable`` from /proc/meminfo (sysconf fallback) and the
+    cgroup memory headroom (:func:`_cgroup_available_bytes`) — the latter is what the
+    kernel OOM-kills against under a scheduler-constrained allocation.
+    """
+    available = None
     try:
         with open("/proc/meminfo") as f:
             for line in f:
                 if line.startswith("MemAvailable:"):
-                    return int(line.split()[1]) * 1024
+                    available = int(line.split()[1]) * 1024
+                    break
     except OSError:
         pass
-    return os.sysconf("SC_AVPHYS_PAGES") * os.sysconf("SC_PAGE_SIZE")
+    if available is None:
+        available = os.sysconf("SC_AVPHYS_PAGES") * os.sysconf("SC_PAGE_SIZE")
+    cgroup = _cgroup_available_bytes()
+    return available if cgroup is None else min(available, cgroup)
 
 
 def available_bytes_per_rank(comm=None):
@@ -221,7 +295,7 @@ def suggest_truncation_threshold(
     reort="none",
     n_parallel_units=1,
     nnz_per_state=100,
-    safety=0.5,
+    safety=DEFAULT_MEMORY_SAFETY,
 ):
     """Largest ``truncation_threshold`` whose predicted peak fits in per-rank RAM.
 
@@ -247,7 +321,7 @@ def suggest_truncation_threshold(
     nnz_per_state : int
         Stored Hamiltonian elements per basis state for the ground-state CSR estimate.
     safety : float
-        Fraction of available RAM to budget (default 0.5).
+        Fraction of available RAM to budget (default ``DEFAULT_MEMORY_SAFETY``).
 
     Returns
     -------
@@ -257,6 +331,51 @@ def suggest_truncation_threshold(
     budget = safety * available_bytes_per_rank(comm)
     ranks = comm.size if comm is not None else 1
     return _suggest_for_budget(budget, n_spin_orbitals, block_width, reort, n_parallel_units, nnz_per_state, ranks)
+
+
+def max_colors_within_budget(
+    n_dets, n_spin_orbitals, block_width, reort, comm, max_candidate, safety=DEFAULT_MEMORY_SAFETY
+):
+    """Largest unit-color count whose predicted per-rank GF peak fits the memory budget.
+
+    .. warning:: **Collective on** ``comm`` (calls :func:`available_bytes_per_rank`).
+
+    Under ``run_units_distributed`` each color's unit basis may fill the same
+    ``truncation_threshold`` on only ``comm.size / n_colors`` ranks, so per-rank memory
+    grows with the color count. This inverts :func:`estimate_gf_peak_bytes`: the largest
+    ``n_colors <= max_candidate`` for which a cap-filling unit basis still fits
+    ``safety * available_bytes_per_rank``. At ``reort != "none"`` the estimate uses the
+    invariant-subspace worst case for the Krylov store (very conservative), consistent
+    with :func:`suggest_truncation_threshold`.
+
+    Parameters
+    ----------
+    n_dets : int
+        The basis cap (``truncation_threshold``) each unit basis may fill.
+    n_spin_orbitals : int
+        Determinant bit width.
+    block_width : int
+        Widest unit's seed count (GF block width).
+    reort : str or None
+        GF reorthogonalization mode.
+    comm : MPI communicator
+        The full communicator about to be split.
+    max_candidate : int
+        Upper bound on the color count (``min(comm.size, n_units)`` at the split site).
+    safety : float
+        Fraction of available RAM to budget (default ``DEFAULT_MEMORY_SAFETY``).
+
+    Returns
+    -------
+    int
+        Color count in ``[1, max_candidate]``.
+    """
+    budget = safety * available_bytes_per_rank(comm)
+    for n_colors in range(max_candidate, 1, -1):
+        ranks_per_color = max(1, comm.size // n_colors)
+        if estimate_gf_peak_bytes(n_dets, n_spin_orbitals, block_width, reort, ranks=ranks_per_color) <= budget:
+            return n_colors
+    return 1
 
 
 def _suggest_for_budget(budget, n_spin_orbitals, block_width, reort, n_parallel_units, nnz_per_state, ranks):
@@ -343,7 +462,13 @@ def log_memory_budget(
             )
             if not fits:
                 suggestion = _suggest_for_budget(
-                    0.5 * available, n_spin_orbitals, block_width, reort, n_parallel_units, nnz_per_state, ranks
+                    DEFAULT_MEMORY_SAFETY * available,
+                    n_spin_orbitals,
+                    block_width,
+                    reort,
+                    n_parallel_units,
+                    nnz_per_state,
+                    ranks,
                 )
                 print(
                     f"{prefix}WARNING: predicted peak exceeds available memory; consider "
@@ -351,6 +476,63 @@ def log_memory_budget(
                     flush=True,
                 )
     return {"available_per_rank": available, "gs_peak": gs, "gf_peak": gf, "fits": fits}
+
+
+def peak_rss_bytes():
+    """This process's high-water-mark RSS (``VmHWM`` from /proc/self/status); 0 if unreadable."""
+    try:
+        with open("/proc/self/status") as f:
+            for line in f:
+                if line.startswith("VmHWM:"):
+                    return int(line.split()[1]) * 1024
+    except OSError:
+        pass
+    return 0
+
+
+def log_peak_vs_predicted(memory_budget, comm=None, verbose=True, label=""):
+    """Print the measured per-rank peak RSS next to the predicted peaks, for re-calibration.
+
+    .. warning:: **Collective on** ``comm`` (MAX-allreduce of the per-rank ``VmHWM``).
+       Call it unconditionally on every rank; only the printing is gated on
+       ``verbose``/rank 0.
+
+    The measured figure includes the Python/import floor (~hundreds of MiB) that the
+    byte model deliberately does not count; on production-size runs the determinant
+    terms dominate and the comparison calibrates ``_PY_BASIS_OVERHEAD_BYTES`` and
+    ``nnz_per_state`` (see ``doc/plans/truncation_reliability.md``).
+
+    Parameters
+    ----------
+    memory_budget : dict
+        The return value of :func:`log_memory_budget` for the run being measured.
+    comm : MPI communicator, optional
+    verbose : bool
+        Gate for the rank-0 print (may safely differ across ranks).
+    label : str
+        Prefix for the log line (e.g. the cluster name).
+
+    Returns
+    -------
+    int
+        Measured peak RSS in bytes (communicator-wide maximum).
+    """
+    measured = peak_rss_bytes()
+    if comm is not None and comm.size > 1:
+        measured = comm.allreduce(measured, op=MPI.MAX)
+    if verbose and (comm is None or comm.rank == 0):
+        prefix = f"{label}: " if label else ""
+        gs, gf = memory_budget.get("gs_peak"), memory_budget.get("gf_peak")
+        if gs is None:
+            predicted = "uncapped"
+        else:
+            predicted = f"{format_bytes(gs)} (ground state) / {format_bytes(gf)} (Green's function)"
+        print(
+            f"{prefix}measured per-rank peak RSS {format_bytes(measured)} (includes the Python/import floor); "
+            f"predicted {predicted}.",
+            flush=True,
+        )
+    return measured
 
 
 def format_bytes(n):
@@ -361,3 +543,46 @@ def format_bytes(n):
             return f"{x:.1f} {unit}"
         x /= 1024
     return f"{x:.1f} TiB"
+
+
+def _main():
+    """Interactive sizing probe: ``[mpiexec -n R] python -m impurityModel.ed.memory_estimate``."""
+    import argparse
+
+    parser = argparse.ArgumentParser(description="Probe per-rank memory and suggest a truncation_threshold.")
+    parser.add_argument("--n-spin-orbitals", type=int, default=120, help="determinant bit width (default 120)")
+    parser.add_argument("--block-width", type=int, default=4, help="Lanczos block width (default 4)")
+    parser.add_argument("--reort", default="none", help="GF reorthogonalization mode (default none)")
+    parser.add_argument("--n-parallel-units", type=int, default=1, help="simultaneous unit colors (default 1)")
+    parser.add_argument("--nnz-per-state", type=int, default=100, help="stored H elements per state (default 100)")
+    parser.add_argument("--safety", type=float, default=0.5, help="fraction of available RAM to budget (default 0.5)")
+    args = parser.parse_args()
+
+    comm = MPI.COMM_WORLD if MPI.COMM_WORLD.size > 1 else None
+    suggestion = suggest_truncation_threshold(
+        args.n_spin_orbitals,
+        comm=comm,
+        block_width=args.block_width,
+        reort=args.reort,
+        n_parallel_units=args.n_parallel_units,
+        nnz_per_state=args.nnz_per_state,
+        safety=args.safety,
+    )
+    if comm is None or comm.rank == 0:
+        cgroup = _cgroup_available_bytes()
+        print(f"node available (min of MemAvailable and cgroup headroom): {format_bytes(_node_available_bytes())}")
+        print(f"cgroup memory headroom: {format_bytes(cgroup) if cgroup is not None else 'unlimited'}")
+    log_memory_budget(
+        suggestion,
+        args.n_spin_orbitals,
+        comm=comm,
+        block_width=args.block_width,
+        reort=args.reort,
+        n_parallel_units=args.n_parallel_units,
+        nnz_per_state=args.nnz_per_state,
+        label=f"suggested (safety {args.safety})",
+    )
+
+
+if __name__ == "__main__":
+    _main()

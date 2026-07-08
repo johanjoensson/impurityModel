@@ -21,7 +21,7 @@ from impurityModel.ed.cipsi_solver import CIPSISolver
 from impurityModel.ed.greens_function import build_full_greens_function, get_Greens_function, save_Greens_function
 from impurityModel.ed.groundstate import calc_gs
 from impurityModel.ed.manybody_basis import Basis
-from impurityModel.ed.memory_estimate import log_memory_budget, suggest_truncation_threshold
+from impurityModel.ed.memory_estimate import log_memory_budget, log_peak_vs_predicted, suggest_truncation_threshold
 from impurityModel.ed.ManyBodyUtils import ManyBodyOperator
 from impurityModel.ed.utils import matrix_print
 from impurityModel.ed.basis_transcription import build_density_matrices
@@ -306,8 +306,8 @@ def fixed_peak_dc(
 
     # Expand the many-body bases once, with the guess double counting.
     h_guess = h_op_i + _dc_operator(dc_guess)
-    solver_upper.expand(h_guess, dense_cutoff=dense_cutoff, de2_min=1e-3, slaterWeightMin=slaterWeightMin)
-    solver_lower.expand(h_guess, dense_cutoff=dense_cutoff, de2_min=1e-3, slaterWeightMin=slaterWeightMin)
+    solver_upper.expand(h_guess, dense_cutoff=dense_cutoff, de2_min=1e-5, slaterWeightMin=slaterWeightMin)
+    solver_lower.expand(h_guess, dense_cutoff=dense_cutoff, de2_min=1e-5, slaterWeightMin=slaterWeightMin)
 
     energy_cut = -tau * np.log(1e-4)
 
@@ -442,7 +442,7 @@ def fixed_occupation_dc(
 
     # Expand the many-body basis once, with the guess double counting.
     h_guess = h_op_i + _dc_operator(dc_guess)
-    solver.expand(h_guess, dense_cutoff=dense_cutoff, de2_min=1e-3, slaterWeightMin=slaterWeightMin)
+    solver.expand(h_guess, dense_cutoff=dense_cutoff, de2_min=1e-5, slaterWeightMin=slaterWeightMin)
 
     energy_cut = -tau * np.log(1e-4)
 
@@ -703,7 +703,7 @@ def calc_selfenergy(
         truncation_threshold = suggest_truncation_threshold(
             n_spin_orbitals, comm=comm, block_width=gf_block_width, reort=reort
         )
-    log_memory_budget(
+    memory_budget = log_memory_budget(
         truncation_threshold,
         n_spin_orbitals,
         comm=comm,
@@ -880,6 +880,11 @@ def calc_selfenergy(
     # Static (Hartree-Fock) self-energy from the input-basis density matrix and u4 (input basis).
     sigma_static = get_Sigma_static(u4, thermal_rho[impurity_ix])
 
+    # Predicted-vs-measured peak feedback for re-calibrating the byte model on
+    # production-size runs (doc/plans/truncation_reliability.md). Collective on comm,
+    # so it runs unconditionally; only the printing is verbosity-gated.
+    log_peak_vs_predicted(memory_budget, comm=comm, verbose=verbosity > 0, label=cluster_label)
+
     return {
         "sigma": sigma_full,
         "sigma_real": sigma_real_full,
@@ -890,6 +895,9 @@ def calc_selfenergy(
         "rhos": gs_info["rhos"],
         "gs_energies": np.asarray(es),
         "block_structure": block_structure,
+        # None unless the truncation_threshold bound the ground-state basis; a dict with
+        # the fixed-budget CIPSI refinement summary otherwise (see CIPSISolver.expand).
+        "gs_truncation": gs_info.get("truncation"),
     }
 
 

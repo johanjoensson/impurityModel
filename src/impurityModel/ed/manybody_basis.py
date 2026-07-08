@@ -22,6 +22,57 @@ from impurityModel.ed.ManyBodyUtils import (
 from impurityModel.ed.mpi_comm import distribute_determinants, graph_alltoall, graph_alltoall_block, graph_alltoall_psis
 
 
+def collective_amplitude_cutoff(scores, k, comm):
+    """Smallest cutoff with at most ``k`` scores above it, across all ranks.
+
+    Ranks candidates by their (nonnegative) importance ``scores`` and returns the
+    cutoff such that the global number of entries with ``score > cutoff`` is <= ``k``:
+    keeping everything strictly above the cutoff admits the top-``k`` candidates,
+    under-admitting ties at the cutoff (the cap is never exceeded). Near-tie retained
+    sets may differ across rank counts through summation-order rounding.
+
+    The bisection runs a fixed iteration count on allreduce'd counts, so every rank
+    computes the identical cutoff. It bisects geometrically over the nonzero score
+    range, so the full floating-point dynamic range is resolved (a linear bisection
+    from the maximum cannot reach scores below ``max / 2^45``). **Collective on**
+    ``comm``: call unconditionally on all ranks (a rank may hold zero scores).
+
+    Parameters
+    ----------
+    scores : np.ndarray
+        Rank-local nonnegative importance scores (e.g. ``|amplitude|^2``).
+    k : int
+        Maximum global number of scores allowed above the returned cutoff.
+    comm : MPI.Comm or None
+        Communicator; ``None`` (or size 1) means serial.
+
+    Returns
+    -------
+    float
+        The cutoff; retain entries with ``score > cutoff``.
+    """
+    mpi = comm is not None and comm.size > 1
+    positive = scores[scores > 0.0] if scores.size else scores
+    local_max = float(positive.max()) if positive.size else 0.0
+    hi = comm.allreduce(local_max, op=MPI.MAX) if mpi else local_max
+    if hi == 0.0:
+        return 0.0
+    local_min = float(positive.min()) if positive.size else np.inf
+    lo = comm.allreduce(local_min, op=MPI.MIN) if mpi else local_min
+    # Floor just below the smallest nonzero score, so "retain everything" is reachable.
+    lo *= 0.5
+    for _ in range(45):
+        mid = np.sqrt(lo * hi)
+        count = int(np.count_nonzero(scores > mid))
+        if mpi:
+            count = comm.allreduce(count, op=MPI.SUM)
+        if count <= k:
+            hi = mid
+        else:
+            lo = mid
+    return hi
+
+
 class Basis:
     """Many-body basis of Slater determinants.
 

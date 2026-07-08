@@ -97,6 +97,48 @@ def test_basis_split_and_redistribute_mpi():
     split_basis = None
 
 
+@pytest.mark.mpi
+def test_memory_budget_caps_unit_split_mpi(monkeypatch):
+    """A tiny memory budget must force the unit split down to a single color."""
+    from impurityModel.ed import memory_estimate as me
+    from impurityModel.ed.greens_function import run_units_distributed
+
+    comm = MPI.COMM_WORLD
+    if comm.size < 2:
+        pytest.skip("This test requires at least 2 MPI ranks")
+
+    states = [b"\x80", b"\x40", b"\x20", b"\x10"]
+    basis = Basis(
+        impurity_orbitals={0: [[0, 1, 2, 3]]},
+        bath_states=({0: [[]]}, {0: [[]]}),
+        initial_basis=states,
+        comm=comm,
+        truncation_threshold=100,
+    )
+    psi = ManyBodyState({SlaterDeterminant.from_bytes(states[0]): 1.0}) if comm.rank == 0 else ManyBodyState({})
+    unit_seeds = [[psi], [psi]]
+    unit_weights = np.array([1.0, 1.0])
+
+    observed: list[int] = []
+
+    def kernel(split_basis, u, seeds):
+        size = split_basis.comm.size if split_basis.comm is not None else 1
+        observed.append(size)
+        return size
+
+    # Generous budget: two equal units on >=2 ranks split into two colors, each smaller
+    # than the full communicator.
+    monkeypatch.setattr(me, "available_bytes_per_rank", lambda c: 2**60)
+    run_units_distributed(basis, unit_seeds, unit_weights, kernel)
+    assert all(size < comm.size for size in observed)
+
+    # Tiny budget: the memory cap forces a single color (the unified basis on all ranks).
+    observed.clear()
+    monkeypatch.setattr(me, "available_bytes_per_rank", lambda c: 1)
+    run_units_distributed(basis, unit_seeds, unit_weights, kernel)
+    assert observed and all(size == comm.size for size in observed)
+
+
 def test_calc_Greens_function_with_offdiag_serial():
     # Setup simple Hamiltonian H = 0.5 * c_0^\dagger c_0
     np.array([0.5])

@@ -124,7 +124,12 @@ def calc_energy(
     solver.expand(
         h_op,
         dense_cutoff=dense_cutoff,
-        de2_min=1e-4,
+        # de2_min is a per-determinant Epstein-Nesbet PT2 energy threshold (|<Dj|H|psi>|^2
+        # / |E_ref - E_Dj|). It was recalibrated ~2 orders down from the historical 1e-4
+        # when the de2 denominator was corrected (previously a frozen ~1e-12 clamp made
+        # de2_min a meaningless coupling filter); this occupation-search value is one order
+        # looser than the final-GS solve in calc_gs.
+        de2_min=1e-6,
         slaterWeightMin=slaterWeightMin,
         solver=cipsi_solver_method,
         reort=reort,
@@ -142,6 +147,10 @@ def calc_energy(
         reort=reort,
     )
     gs_state = eigen_psis[int(np.argmin(es))] if return_state and len(eigen_psis) > 0 else None
+    # Remember whether the truncation_threshold bound this occupation's expansion, so the
+    # caller can report a capped ground-state determination even though the final basis
+    # (reduced to the eigenstate support below) may fit under the cap.
+    basis.occupation_search_truncation = solver.truncation_report
     basis.clear()
     basis.add_states(set(state for psi in eigen_psis for state in psi))
     if return_state:
@@ -256,6 +265,10 @@ def find_ground_state_basis(
     # strictly better than the current best, which cannot happen for a superseded entry, so
     # keeping one Basis instead of one per trial bounds the memory of the occupation scan.
     best_cached_key = None
+    # Per-trial truncation report of the (memory-capped) occupation-search expansion, keyed
+    # by trial occupation. The winning occupation's report is attached to basis_gs so a capped
+    # ground-state determination is auditable even when the final basis fits under the cap.
+    occ_search_reports = {}
 
     def get_energy(trial_N0):
         """
@@ -305,6 +318,8 @@ def find_ground_state_basis(
             cipsi_solver_method=cipsi_solver_method,
             weighted_restrictions=weighted_restrictions,
         )
+        if basis is not None:
+            occ_search_reports[key] = getattr(basis, "occupation_search_truncation", None)
         if basis is not None and (best_cached_key is None or e_trial < energy_cache[best_cached_key][0]):
             if best_cached_key is not None:
                 prev_e, prev_basis = energy_cache[best_cached_key]
@@ -380,6 +395,10 @@ def find_ground_state_basis(
         if _cached_basis is not None:
             _cached_basis.comm = None
     energy_cache.clear()
+    if basis_gs is not None:
+        # Whether the winning occupation's expansion was memory-capped (None if not), for
+        # downstream truncation auditing (calc_gs merges this with its own final expand).
+        basis_gs.occupation_search_truncation = occ_search_reports.get(tuple(sorted(gs_impurity_occ.items())))
     return basis_gs
 
 
@@ -455,9 +474,18 @@ def calc_gs(
     ground_state_basis.tau = tau
     energy_cut = -tau * np.log(1e-4)
     solver = CIPSISolver(ground_state_basis)
+    # de2_min: per-determinant PT2 energy tolerance for the final ground-state expansion
+    # (recalibrated from 1e-6 when the de2 denominator was corrected in cipsi_solver; see
+    # calc_energy). Tighter than the occupation search so the returned GS is well-converged.
     solver.expand(
-        Hop, dense_cutoff=dense_cutoff, de2_min=1e-6, slaterWeightMin=slaterWeightMin, solver=cipsi_solver_method
+        Hop, dense_cutoff=dense_cutoff, de2_min=1e-8, slaterWeightMin=slaterWeightMin, solver=cipsi_solver_method
     )
+    # Record whether the truncation_threshold bound the ground-state determination (and how
+    # the fixed-budget refinement resolved it), so a capped GS is auditable downstream
+    # (returned in gs_info and saved to the statistics JSON). None when the cap never bound.
+    # The cap can bind either the final expansion here or the earlier occupation search
+    # (whose final basis may then fit under the cap); report either.
+    gs_truncation_report = solver.truncation_report or getattr(ground_state_basis, "occupation_search_truncation", None)
     es, psis = solver.get_eigenvectors(
         Hop,
         num_wanted=num_wanted,
@@ -498,6 +526,10 @@ def calc_gs(
         thermal_rho,
         ground_state_basis.impurity_spin_orbital_indices,
     )
+    if gs_stats is not None:
+        # Record whether the ground-state basis was truncation-capped (None = not capped),
+        # so it lands in the saved statistics JSON alongside the occupation weights.
+        gs_stats["truncation"] = gs_truncation_report
     if rank == 0 and gs_stats is not None and stats_path is not None:
         save_gs_statistics(gs_stats, stats_path)
 
@@ -671,4 +703,10 @@ def calc_gs(
                 print()
         except Exception as exc:  # noqa: BLE001 - reporting must not crash the GS solve
             print(f"[warning] ground-state observable report incomplete (GS still returned): {exc}")
-    return psis, es, ground_state_basis, thermal_rho, {"rhos": rhos, "statistics": gs_stats}
+    return (
+        psis,
+        es,
+        ground_state_basis,
+        thermal_rho,
+        {"rhos": rhos, "statistics": gs_stats, "truncation": gs_truncation_report},
+    )

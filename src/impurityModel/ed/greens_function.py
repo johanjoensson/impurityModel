@@ -18,14 +18,14 @@ from impurityModel.ed.BlockLanczosArray import (
     BETA_BLOWUP_FACTOR,
 )
 from impurityModel.ed.BlockLanczos import block_lanczos_cy
-from impurityModel.ed.manybody_basis import Basis
+from impurityModel.ed.manybody_basis import Basis, collective_amplitude_cutoff
 from impurityModel.ed.symmetries import widen_weighted_restrictions
 from impurityModel.ed.ManyBodyUtils import (
     ManyBodyBlockState,
     ManyBodyOperator,
     ManyBodyState,
 )
-from impurityModel.ed.memory_estimate import estimate_gf_peak_bytes, format_bytes
+from impurityModel.ed.memory_estimate import estimate_gf_peak_bytes, format_bytes, max_colors_within_budget
 from impurityModel.ed.mpi_comm import gather_distributed_results
 from impurityModel.ed import gf_diagnostics as _gfd
 from impurityModel.ed.basis_transcription import build_dense_matrix, build_sparse_matrix, build_state, build_vector
@@ -261,6 +261,7 @@ def run_units_distributed(
     kernel: Callable,
     verbose: bool = False,
     reduce_fn: Optional[Callable] = None,
+    reort=None,
 ) -> Optional[list]:
     """Distribute work units over MPI colors, run ``kernel`` per unit, gather to global rank 0.
 
@@ -276,6 +277,10 @@ def run_units_distributed(
     serial path) as each color's payload arrives, and the payload is dropped afterwards --
     rank 0 then never holds more than one color's results at a time instead of all units
     simultaneously (e.g. the caller accumulates into a preallocated output tensor).
+
+    ``reort`` is the GF reorthogonalization mode the kernel will run with; it only feeds the
+    memory model that caps the number of simultaneous colors (each color's unit basis may fill
+    the same ``truncation_threshold`` on fewer ranks, so memory bounds the concurrency).
 
     Returns
     -------
@@ -293,6 +298,24 @@ def run_units_distributed(
         return [kernel(basis, u, unit_seeds[u]) for u in range(n_units)]
 
     seed_offsets = np.concatenate(([0], np.cumsum([len(s) for s in unit_seeds]))).astype(int)
+    # Every color's unit basis inherits the same truncation_threshold, so colors multiply
+    # per-rank memory: each rank's share of a capped unit basis is threshold/(ranks/n_colors).
+    # Cap the concurrency so a cap-filling unit basis still fits the per-rank budget. The
+    # probe is collective on basis.comm; the gates (cap finiteness, unit/rank counts) are
+    # replicated, so every rank computes the identical max_colors.
+    cap = getattr(basis, "truncation_threshold", np.inf)
+    width = max((len(s) for s in unit_seeds), default=1)
+    max_colors = None
+    if np.isfinite(cap) and min(basis.comm.size, n_units) > 1:
+        max_colors = max_colors_within_budget(
+            int(cap), basis.num_spin_orbitals, width, reort, basis.comm, min(basis.comm.size, n_units)
+        )
+        if verbose and basis.comm.rank == 0 and max_colors < min(basis.comm.size, n_units):
+            print(
+                f"Memory budget caps the unit split at {max_colors} simultaneous unit bases "
+                f"(truncation_threshold={int(cap):,}).",
+                flush=True,
+            )
     (
         unit_indices,
         unit_roots,
@@ -301,22 +324,20 @@ def run_units_distributed(
         split_basis,
         split_seeds,
         _,  # intercomms -- freed collectively inside the split
-    ) = split_basis_and_redistribute_psi(basis, unit_weights, [s for seeds in unit_seeds for s in seeds])
+    ) = split_basis_and_redistribute_psi(basis, unit_weights, [s for seeds in unit_seeds for s in seeds], max_colors)
     if verbose:
         print(f"New unit roots: {unit_roots}")
         print(f"Units per color: {units_per_color}")
         print("=" * 80, flush=True)
-    # Every color's unit basis inherits the same truncation_threshold, so colors multiply
-    # per-rank memory: each rank's share of a capped unit basis is threshold/(ranks/n_colors).
-    # All inputs are replicated (no collectives), so gating the print on rank 0 is safe.
-    cap = getattr(basis, "truncation_threshold", np.inf)
+    # All inputs of the per-color prediction are replicated (no collectives), so gating the
+    # print on rank 0 is safe.
     if verbose and basis.comm.rank == 0 and np.isfinite(cap):
         n_colors = len(units_per_color)
-        width = max((len(s) for s in unit_seeds), default=1)
         per_rank = estimate_gf_peak_bytes(
             int(cap),
             basis.num_spin_orbitals,
             width,
+            reort,
             ranks=max(1, basis.comm.size // max(1, n_colors)),
         )
         print(
@@ -459,7 +480,7 @@ def get_Greens_function(
             cap_stats,
         )
 
-    results = run_units_distributed(basis, unit_seeds, unit_weights, kernel, verbose=verbose)
+    results = run_units_distributed(basis, unit_seeds, unit_weights, kernel, verbose=verbose, reort=reort)
 
     gs_matsubara = gs_realaxis = report = None
     if results is not None:
@@ -825,7 +846,7 @@ def calc_Greens_function_with_offdiag(
             print(f"Expanded excited state basis contains {n_basis} elements.")
         return alphas, betas, [r[:, p * unit.n_ops : (p + 1) * unit.n_ops] for p in range(len(unit.chunk))]
 
-    results = run_units_distributed(block_basis, unit_seeds, unit_weights, kernel, verbose=verbose)
+    results = run_units_distributed(block_basis, unit_seeds, unit_weights, kernel, verbose=verbose, reort=reort)
 
     excited_alphas = excited_betas = excited_r = None
     if results is not None:
@@ -1561,20 +1582,8 @@ class _CappedBasisProxy:
         """
         slots = self.cap - self._global_count
         norms2 = block.new_row_max_norms2(self._mask)
-        local_max = float(norms2.max()) if norms2.size else 0.0
-        if self.comm is not None and self.comm.size > 1:
-            hi = self.comm.allreduce(local_max, op=MPI.MAX)
-        else:
-            hi = local_max
-        # Smallest cutoff2 with (global candidates above it) <= slots.
-        lo = 0.0
-        for _ in range(45):
-            mid = 0.5 * (lo + hi)
-            if self._allreduce_sum(int(np.count_nonzero(norms2 > mid))) <= slots:
-                hi = mid
-            else:
-                lo = mid
-        admitted = block.keys_new_above(self._mask, hi)
+        cutoff2 = collective_amplitude_cutoff(norms2, slots, self.comm)
+        admitted = block.keys_new_above(self._mask, cutoff2)
         self._global_count += self._allreduce_sum(len(admitted))
         self._mask.merge_keys(admitted)
         self._frozen = True
