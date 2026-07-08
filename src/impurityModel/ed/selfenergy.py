@@ -844,12 +844,17 @@ def calc_selfenergy(
     else:
         sigma = None
     log("Calculating static self-energy ...")
-    impurity_indices = [
+    # Sort the flattened indices: the groups enumerate the impurity orbitals in
+    # block order (e.g. eg [0,1,5,6] before t2g [2,3,4,7,8,9]), but thermal_rho
+    # and u4 below are in the input-basis orbital order. Indexing rho with the
+    # unsorted list permutes it against u4 and yields a wrong static self-energy
+    # (Sigma_static would no longer equal the iw -> inf limit of Sigma).
+    impurity_indices = sorted(
         orb
         for impurity_blocks in ground_state_basis.impurity_orbitals.values()
         for block in impurity_blocks
         for orb in block
-    ]
+    )
     impurity_ix = np.ix_(impurity_indices, impurity_indices)
 
     # Rotate every result from the solver basis S back to the caller's input basis B
@@ -1029,12 +1034,17 @@ def get_sigma(
 
 
 def get_Sigma_static(U4, rho):
-    """Calculate the static (Hartree-Fock) self-energy.
+    r"""Calculate the static (Hartree-Fock) self-energy.
+
+    ``U4`` is in RSPt's physicists'-notation convention,
+    :math:`U4[i,j,k,l] = \langle ij|V|kl \rangle`, i.e. the operator
+    :math:`\frac{1}{2}\sum U4[i,j,k,l] c^\dagger_i c^\dagger_j c_l c_k`
+    (see :func:`impurityModel.ed.atomic_physics.getUop_from_rspt_u4`).
 
     Parameters
     ----------
     U4 : np.ndarray
-        Coulomb interaction tensor.
+        Coulomb interaction tensor (RSPt convention).
     rho : np.ndarray
         Density matrix.
 
@@ -1045,7 +1055,7 @@ def get_Sigma_static(U4, rho):
     """
     sigma_static = np.zeros_like(rho)
     for i, j in itertools.product(range(rho.shape[0]), range(rho.shape[1])):
-        sigma_static += (U4[j, :, :, i] - U4[j, :, i, :]) * rho[i, j]
+        sigma_static += (U4[j, :, i, :] - U4[j, :, :, i]) * rho[i, j]
 
     return sigma_static
 
@@ -1141,7 +1151,9 @@ def get_selfenergy(
         j = c2i(nBaths_for_c2i, process[1][0])
         k = c2i(nBaths_for_c2i, process[2][0])
         l = c2i(nBaths_for_c2i, process[3][0])
-        u4[i, j, k, l] = 2.0 * val
+        # RSPt convention: u4[i,j,k,l] multiplies c^dag_i c^dag_j c_l c_k, so
+        # the process c^dag_i c^dag_j c_k c_l is stored with k and l swapped.
+        u4[i, j, l, k] = 2.0 * val
 
     # Flat impurity spin-orbital index list (dict[int, list[int]]); calc_selfenergy re-groups the
     # orbitals into per-conserved-charge blocks, derives the bath orbitals + their valence/

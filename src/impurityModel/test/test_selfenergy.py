@@ -62,12 +62,52 @@ def test_hyb():
 
 
 def test_get_Sigma_static():
+    """Hartree-Fock values for a two-orbital U/J model in RSPt's u4 convention.
+
+    u4[i,j,k,l] = <ij|V|kl> (pairs (i,k),(j,l)): the direct element is
+    u4[0,1,0,1] = U and the exchange element u4[0,1,1,0] = J, giving
+    Sigma[0,0] = (U - J) n_1 and Sigma[1,1] = (U - J) n_0.
+    """
+    U, J = 2.3, 0.4
     U4 = np.zeros((2, 2, 2, 2))
-    U4[0, 1, 0, 1] = 1.0
-    rho = np.array([[1.0, 0], [0, 1.0]])
+    U4[0, 1, 0, 1] = U4[1, 0, 1, 0] = U  # direct
+    U4[0, 1, 1, 0] = U4[1, 0, 0, 1] = J  # exchange
+    n0, n1 = 1.0, 0.25
+    rho = np.diag([n0, n1]).astype(complex)
 
     sigma = selfenergy.get_Sigma_static(U4, rho)
     assert sigma.shape == (2, 2)
+    assert np.allclose(sigma, np.diag([(U - J) * n1, (U - J) * n0]))
+
+
+def test_get_Sigma_static_consistent_with_operator():
+    """For a single determinant D: <D|U_op|D> = 1/2 Tr[Sigma_static(rho_D) rho_D].
+
+    Ties get_Sigma_static and getUop_from_rspt_u4 to the same u4 convention.
+    """
+    from itertools import combinations
+
+    from impurityModel.ed.atomic_physics import getUop_from_rspt_u4
+    from impurityModel.ed.ManyBodyUtils import ManyBodyOperator, ManyBodyState, SlaterDeterminant, inner
+
+    n = 4
+    rng = np.random.default_rng(1)
+    r = rng.standard_normal((n, n, n, n)) + 1j * rng.standard_normal((n, n, n, n))
+    r = r + r.transpose((1, 0, 3, 2))  # exchange symmetry
+    U4 = r + np.conj(r.transpose((2, 3, 0, 1)))  # hermiticity
+    u_op = ManyBodyOperator(getUop_from_rspt_u4(U4))
+
+    for occupied in combinations(range(n), 2):
+        data = bytearray((n + 7) // 8)
+        for orb in occupied:
+            data[orb // 8] |= 1 << (7 - orb % 8)
+        det = ManyBodyState({SlaterDeterminant.from_bytes(bytes(data)): 1.0})
+        rho = np.zeros((n, n), dtype=complex)
+        for orb in occupied:
+            rho[orb, orb] = 1.0
+        e_op = inner(det, u_op(det, 0))
+        e_hf = 0.5 * np.trace(selfenergy.get_Sigma_static(U4, rho) @ rho)
+        assert np.isclose(e_op, e_hf, atol=1e-12)
 
 
 def test_get_hcorr_v_hbath_reversed():

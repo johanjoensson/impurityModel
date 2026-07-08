@@ -172,23 +172,25 @@ def getU(l1, m1, l2, m2, l3, m3, l4, m4, R):
 
 
 def getUop_from_rspt_u4(u4: np.ndarray) -> dict:
-    """Convert a 4-index U matrix from RSPT format to an operator dictionary.
+    r"""Convert a 4-index U matrix in RSPt's convention to an operator dictionary.
+
+    RSPt stores the Coulomb tensor in physicists' notation,
+    :math:`u4[i,j,k,l] = \langle ij|V|kl \rangle` with bra/ket pairs (i,k) and
+    (j,l), corresponding to the operator
+
+    .. math:: \hat U = \frac{1}{2} \sum_{ijkl} u4[i,j,k,l]\,
+        c^\dagger_i c^\dagger_j c_l c_k .
 
     Parameters
     ----------
     u4 : np.ndarray
-        The 4D array representing the Hubbard U matrix.
+        The 4D Coulomb interaction tensor, in RSPt's index order.
 
     Returns
     -------
     uDict : dict
         The converted operator dictionary.
     """
-    l1, l2, l3, l4 = u4.shape
-    l1 = ((l1 // 2) - 1) // 2
-    l2 = ((l2 // 2) - 1) // 2
-    l3 = ((l3 // 2) - 1) // 2
-    l4 = ((l4 // 2) - 1) // 2
     uDict = {}
     for i, j, k, l in itertools.product(range(u4.shape[0]), range(u4.shape[1]), range(u4.shape[2]), range(u4.shape[3])):
         u = u4[i, j, k, l]
@@ -196,8 +198,8 @@ def getUop_from_rspt_u4(u4: np.ndarray) -> dict:
             proccess = (
                 (i, "c"),
                 (j, "c"),
-                (k, "a"),
                 (l, "a"),
+                (k, "a"),
             )
             uDict[proccess] = u / 2
     return uDict

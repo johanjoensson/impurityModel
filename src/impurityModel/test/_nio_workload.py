@@ -90,7 +90,9 @@ def build_selfenergy_inputs(
         j = operator_algebra.c2i(nBaths_for_c2i, process[1][0])
         k = operator_algebra.c2i(nBaths_for_c2i, process[2][0])
         m = operator_algebra.c2i(nBaths_for_c2i, process[3][0])
-        u4[i, j, k, m] = 2.0 * val
+        # RSPt convention: u4[i,j,k,l] multiplies c^dag_i c^dag_j c_l c_k, so
+        # the process c^dag_i c^dag_j c_k c_m is stored with k and m swapped.
+        u4[i, j, m, k] = 2.0 * val
 
     # Flat impurity spin-orbital index list (dict[int, list[int]]); calc_selfenergy re-groups the
     # orbitals and derives the bath orbitals + valence/conduction split from the Hamiltonian.

@@ -662,7 +662,9 @@ def test_calc_gs_reports_casimirs_for_cubic_manifold_grouped_dshell(capsys):
     V4 = np.zeros((10,) * 4, dtype=complex)
     for proc, val in uOp.items():
         ix = [c2i(nB, proc[p][0]) for p in range(4)]
-        V4[ix[0], ix[1], ix[2], ix[3]] = 2.0 * val
+        # RSPt convention: V4[i,j,k,l] multiplies c^dag_i c^dag_j c_l c_k, so
+        # the process operators (p2, p3) fill the tensor with swapped indices.
+        V4[ix[0], ix[1], ix[3], ix[2]] = 2.0 * val
     Rot = atomic_physics.get_spherical_2_cubic_matrix(spinpol=True, l=2)
     u4 = np.einsum("ia,jb,ijkl,kc,ld->abcd", Rot.conj(), Rot.conj(), V4, Rot, Rot, optimize=True)
     u_dict = atomic_physics.getUop_from_rspt_u4(u4)

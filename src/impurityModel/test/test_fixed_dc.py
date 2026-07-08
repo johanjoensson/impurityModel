@@ -37,8 +37,10 @@ def build_model(v):
         h0[((imp, "c"), (bath, "a"))] = v
         h0[((bath, "c"), (imp, "a"))] = v
     u4 = np.zeros((4, 4, 4, 4), dtype=complex)
-    u4[0, 1, 1, 0] = U
-    u4[1, 0, 0, 1] = U
+    # RSPt convention <ij|V|kl> with pairs (i,k),(j,l): the density-density
+    # element U n_0 n_1 sits at u4[0,1,0,1] (and its exchange-symmetric partner).
+    u4[0, 1, 0, 1] = U
+    u4[1, 0, 1, 0] = U
     return h0, u4
 
 
