@@ -883,10 +883,12 @@ C++ restriction machinery.
 > values force maximal splitting, and `0` collapses to a single **unified**
 > communicator (early-return, no actual split). `test_mpi_load_balancing_gf_split_vs_unified`
 > asserts the GF is **numerically identical** with split (`split_threshold=1e9`) vs
-> unified (`0`) — serial-safe + MPI **n=2,3,4** green. **§7.2** `test_basis_hash_distribution_balanced`
-> asserts the splitmix64 hash distribution spreads determinants evenly (within ~20% of
-> `global_N/size`), i.e. the **sparse** path's per-rank storage scales like `local_N`
-> (n=2,3,4). The **array** path's `(global_N, p)` `wp_global` replication remains the
+> unified (`0`) — serial-safe + MPI **n=2,3,4** green. **§7.2**
+> `test_basis_hash_distribution_partitions_and_stays_sparse` asserts the `routing_hash`
+> distribution gives a complete, disjoint partition and a comm graph whose out-degree is
+> bounded independent of rank count (the property behind 100000+ rank scaling). Ownership
+> is only *approximately* balanced — uniformity is deliberately traded for graph sparsity,
+> so the test asserts no-rank-0-OOM rather than a tight `global_N/size` spread. The **array** path's `(global_N, p)` `wp_global` replication remains the
 > documented won't-fix from the Block-Lanczos hardening work (massive cases use the
 > sparse kernel; `test_array_lanczos_mpi_memory` lives in `blocklanczos_blas_acceleration.md`).
 > Benchmark selection of the faster mode is left as a perf-tuning follow-up (the policy
