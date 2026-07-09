@@ -549,6 +549,17 @@ class Basis:
             return item in self._index_dict
         return next(self._index_sequence([item])) != self.size
 
+    def contains_local(self, item: SlaterDeterminant) -> bool:
+        """Check whether this rank already owns ``item``, without any communication.
+
+        The rank-local, ``O(1)`` counterpart of :meth:`__contains__`, which runs a global
+        index query when the basis is distributed. Callers that only want to avoid handing
+        :meth:`add_states` a determinant it already has (and shrink the redistribution
+        payload) want this: ``item in self.local_basis`` is the same predicate but scans a
+        list, and at solver support sizes that scan dominates the matvec it accompanies.
+        """
+        return item in self._index_dict
+
     def contains(self, item: Iterable[SlaterDeterminant | bytes]) -> np.ndarray:
         """Check containment for an iterable of states.
 

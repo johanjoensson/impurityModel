@@ -112,7 +112,7 @@ def block_bicgstab(A, x0, y, basis, double slaterWeightMin, atol=1e-8, rtol=1e-1
         ri = block_add_scaled_cy(ManyBodyBlockState.from_states(list(y)), Axi, -eye_n)
         if slaterWeightMin > 0:
             ri.prune_rows(slaterWeightMin)
-        basis.add_states(state for state in ri.support_keys(slaterWeightMin) if state not in basis.local_basis)
+        basis.add_states(state for state in ri.support_keys(slaterWeightMin) if not basis.contains_local(state))
 
     # Deflate R0 = Q @ beta_j into rank independent directions (Q = R0 @ beta_inv, orthonormal).
     # Solve the full-rank reduced system A Zq = Q, then reconstruct the correction
@@ -245,7 +245,9 @@ def _block_bicgstab_core(
         global_seen_size = np.array([np.inf])
 
     def grow_basis_and_seen(v):
-        basis.add_states(state for state in v.support_keys(slaterWeightMin) if state not in basis.local_basis)
+        # contains_local, not `in basis.local_basis`: the latter scans a list once per
+        # determinant of the support, twice per iteration, and outweighs both matvecs.
+        basis.add_states(state for state in v.support_keys(slaterWeightMin) if not basis.contains_local(state))
         seen_states.update(hash(sd) for sd in v.support_keys(0.0))
         global_seen_size[0] = len(seen_states)
         if mpi:
