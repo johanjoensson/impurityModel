@@ -207,6 +207,63 @@ Their product `M * c / 7` is independent of `m`. **BiCGSTAB's footprint is const
 hatch than paging `Q` to disk (10x wall time, no I/O, no new failure modes), and it is *not* a
 faster Green's function on any production mesh (375 Matsubara points, 2000 real-axis points).
 
+## Phase 3a-bis — Auditing the Lanczos convergence monitor  ✔
+
+A hand-rolled width-5 seed block suggested the recurrence was over-converging by ~10x (80 blocks
+run, 8 needed). **That was an artifact of the harness**, not a property of the code: the driver
+decomposes the d-shell into width-1 symmetry blocks, and the error norm there is a scalar rather
+than the max over a 5x5 matrix. Re-measured *through* `calc_selfenergy`, per `(block, side)` unit —
+`m` blocks produced against the minimum `k` for which the same continued fraction truncated to `k`
+blocks reproduces `G` on the mesh the driver actually evaluates:
+
+| unit | width | blocks `m` | `k` for 1e-8 | over-convergence |
+|---|---|---|---|---|
+| real axis | 1 | 114–116 | 82–97 | **1.2–1.4x** |
+| Matsubara | 1 | 114–116 | 28–32 | **3.6–4.1x** |
+
+So the monitor is close to right on the real axis, which is what actually drives the depth. It
+over-converges only when a real-axis mesh was **not requested**: it converges the real-axis
+resolvent regardless. For a Matsubara-only self-energy (the DMFT case, `w=None`), capping the
+recurrence at the measured requirement gives, end to end through `calc_selfenergy`:
+
+    matsubara-only, cap 35 vs 114:  3.65x wall time, ~3.3x less retained Q
+                                    sigma      rel diff 1.3e-09
+                                    sigma_static  bit-identical
+    both meshes,   cap 100 vs 114:  1.37x wall time
+                                    sigma      rel diff 2.6e-16
+                                    sigma_real rel diff 1.5e-07
+                                    sigma_static  bit-identical
+
+`Sigma(iw_max) - Sigma_static` is unchanged to all printed digits in every case, so a truncated
+continued fraction does not damage the high-frequency tail.
+
+**Actionable:** make the monitor mesh-aware — test convergence of `G` on the meshes the caller
+passed, keeping the two-consecutive-steps gate. Worth ~3.6x wall and ~3.3x memory on Matsubara-only
+runs, nothing on runs that also want the real axis. Not the 10x it first appeared to be.
+
+### The FCC-Ni operating point is a *divergent* run
+
+`blocklanczos_reort_memory.md` sizes its memory table at "`p=1`, `m=833` — read off
+`impurityModel-Ni.out`". The last line of that file is:
+
+> warning: block Green's function did not reach the convergence tolerance 1.0e-06; the
+> block-Lanczos recurrence was truncated after 833 block(s) (**divergent tail**).
+
+So `m=833` is the `BETA_BLOWUP_FACTOR` divergence guard truncating a runaway recurrence, **not the
+monitor asking for 833 blocks**. The store that motivates paging `Q` to disk is being sized from a
+recurrence that never converged. Whether a *converged* Ni Green's function needs anything like 833
+blocks is unknown, and should be established before that plan's cost model is trusted.
+
+That run could not be reproduced here: `impurityModel-Ni.out` was not produced by this codebase
+(neither `"Bath geometry"` nor `"Hybridization fit"` appears anywhere in `src/`), and `h0_106.dat`
+is a dense 106x106 matrix that `read_h0_dict` cannot parse. Reproducing the Ni run's *structural*
+settings on NiO instead (`chain_restrict=True`, no `dN` window) changes none of the numbers above.
+
+> Two incidental bugs found while trying: `selfenergy.get_selfenergy` still mis-calls
+> `get_noninteracting_hamiltonian_operator` with a stale positional argument order (already noted
+> in `_nio_workload`), so the CLI entry point is dead; and `op_parser.skip_whitespaces` raises
+> `UnboundLocalError` rather than a parse error on an all-whitespace line.
+
 ## Phase 3b — The driver (open, and now a memory decision)
 
 Given the above, the driver should be an **opt-in / auto-selected fallback**, not the default:
@@ -223,10 +280,18 @@ chunk is cold, so a chunk of `C` points costs `(12 + (C-1) * 2.9) / C` matvecs p
 
 **Before writing it, price shifted BiCGSTAB.** All `M` systems share one Krylov space
 (`K(z - H, b) = K(H, b)`, and the RHS is `z`-independent), which is exactly why Lanczos gets the
-whole mesh from one recurrence. A shifted BiCGSTAB (Frommer 2003) keeps that property *and*
-BiCGSTAB's flat memory: one seed solve plus `O(1)` vector work per shift. If the seed system's
-Krylov space suffices for every shift, that is ~12 matvecs for the whole mesh — better than Lanczos
-on both axes, and it would make the per-frequency driver below obsolete before it is written.
+whole mesh from one recurrence. A shifted BiCGSTAB (Frommer 2003) keeps that property: fix the
+stabilizing `omega_i` on a seed system and transplant them as `omega_i^z = omega_i / (1 + omega_i z)`,
+which restores the collinearity `r_m^z = r_m / Phi_m(-z)` that BiCGSTAB's local minimal-residual step
+otherwise destroys. Seed the *hardest* shift (smallest `|Im z|`); the rest then converge at least as
+fast.
+
+It does **not** keep BiCGSTAB's flat memory. Textbook shifted BiCGSTAB stores `x_z` and `p_z` per
+shift — `2M` blocks, 750 here against Lanczos's 80 — and chunking the mesh into groups of `C` only
+buys a Pareto curve (`C = 40` -> 87 blocks and ~112 matvecs, i.e. parity with Lanczos on both).
+It dominates *per-frequency* BiCGSTAB everywhere, but it is not free. The one way to get flat
+memory is to exploit that the driver needs only `G_ij = <y_i | X_j>`, never `X_j` itself, and
+project onto the seed Krylov space — which is what the continued fraction already does.
 
 - [ ] New kernel in `greens_function.py` alongside `block_Green` / `block_Green_sparse`, selected
       by a `gf_method` in `{"lanczos", "bicgstab"}` threaded through `_block_green_group` — not by

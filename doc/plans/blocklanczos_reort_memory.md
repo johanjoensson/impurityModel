@@ -34,7 +34,21 @@ support, `m` the block count and `p` the block width. Per retained determinant:
 | **Krylov store** | **`16*p*m`** | **13 464** |
 
 A factor **30** at the Ni operating point (`p=1`, `m=833` — read off `impurityModel-Ni.out`);
-**43x** at `p=4, m=400`. `memory_estimate.estimate_gf_peak_bytes` models this correctly,
+**43x** at `p=4, m=400`.
+
+> ⚠ **`m=833` is not a converged recurrence.** The last line of `impurityModel-Ni.out` reads
+> *"did not reach the convergence tolerance 1.0e-06; the block-Lanczos recurrence was truncated
+> after 833 block(s) (divergent tail)"* — that is the `BETA_BLOWUP_FACTOR` guard cutting off a
+> runaway recurrence, not the convergence monitor demanding depth. The store this plan proposes to
+> page to disk is therefore sized from a run that never converged, and the memory problem may be a
+> symptom of the divergence rather than an independent fact. Establish `m` for a *converged* Ni
+> Green's function before trusting the cost model below. See
+> [`bicgstab_per_frequency_gf.md`](bicgstab_per_frequency_gf.md) Phase 3a-bis, which also measures
+> that the GF convergence monitor over-converges by 3.6–4.1x on Matsubara-only runs (it resolves
+> the real-axis resolvent whether or not a real-axis mesh was requested) and by only 1.2–1.4x when
+> the real axis is actually wanted.
+
+`memory_estimate.estimate_gf_peak_bytes` models this correctly,
 which is exactly why `suggest_truncation_threshold` collapses the cap as soon as
 `reort != "none"`. The coupling is not a bug — it is the sizing model faithfully reporting a
 real `O(N_local * p * m)` allocation.
