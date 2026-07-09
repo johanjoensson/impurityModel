@@ -24,6 +24,15 @@ from copy import copy, deepcopy
 
 import numpy as np
 
+
+# Krylov-store element type. The store may hold its basis in complex64 (see
+# SparseKrylovDense.dtype); the scatter loop is compiled for both widths rather than
+# duplicated, and every *arithmetic* consumer (combine / reort) promotes to complex128
+# through numpy, so only the storage narrows.
+ctypedef fused krylov_t:
+    float complex
+    double complex
+
 # --- Optional transient-allocation profiling (env-gated, ~zero cost when off) -------
 # Shares the BLOCKLANCZOS_PROFILE=1 switch with BlockLanczos.pyx: accumulates the peak
 # transient dense-materialization footprint of reorth_cgs2_dense (the PARTIAL bad-block
@@ -1222,6 +1231,29 @@ def reorth_cgs2_dense(list wp, list Q, int n_passes, object comm):
     return out, O
 
 
+cdef void _scatter_block_rows(
+    krylov_t[:, :] Qv,
+    ManyBodyBlockState_cpp* b,
+    const int* rows,
+    Py_ssize_t nrow,
+    Py_ssize_t ncol,
+    Py_ssize_t base,
+) noexcept:
+    """Copy a shared-support block's coefficients into ``Qv[:, base:base+ncol]``.
+
+    ``rows[r]`` is the store row that block row ``r`` was registered to. Compiled once per
+    ``krylov_t`` so a complex64 store scatters without a complex128 staging buffer; the
+    narrowing conversion happens element-wise here and nowhere else.
+    """
+    cdef Py_ssize_t r, ci
+    cdef ManyBodyBlockState_cpp.Value* src
+    for r in range(nrow):
+        src = dereference(b).row(r)
+        for ci in range(ncol):
+            Qv[rows[r], base + ci].real = src[ci].real()
+            Qv[rows[r], base + ci].imag = src[ci].imag()
+
+
 cdef class SparseKrylovDense:
     r"""Incrementally-maintained dense copy of the (rank-local) sparse block-Krylov basis.
 
@@ -1249,13 +1281,33 @@ cdef class SparseKrylovDense:
     cdef int n_rows
     cdef int n_cols
     cdef int _rows_hint
+    cdef object _dtype      # chunk dtype: complex128 (default) or complex64
+    cdef bint _single       # True iff _dtype is complex64
 
-    def __cinit__(self):
+    def __cinit__(self, dtype=None):
         self.n_rows = 0
         self.n_cols = 0
         self._rows_hint = 0
         self._chunks = []
         self._used = []
+        self._dtype = np.dtype(complex if dtype is None else dtype)
+        if self._dtype not in (np.dtype(np.complex64), np.dtype(np.complex128)):
+            raise ValueError(f"SparseKrylovDense dtype must be complex64 or complex128, got {self._dtype}")
+        self._single = self._dtype == np.dtype(np.complex64)
+
+    @property
+    def dtype(self):
+        """Storage dtype of the Krylov coefficients (``complex128`` or ``complex64``).
+
+        ``complex64`` halves the store at the cost of representing each basis vector to
+        ~6e-8 relative accuracy. That is the same order as the semi-orthogonality target
+        ``REORT_TOL = sqrt(EPS) ~ 1.5e-8`` the reorthogonalization is aiming for, so the
+        projection quality is essentially unchanged; the overlaps and the residual are
+        still accumulated in complex128. Do not use it where the Krylov basis is read to
+        *reconstruct* a vector (eigenvectors on the ground-state path) — only to project
+        against.
+        """
+        return self._dtype
 
     def reserve_rows(self, Py_ssize_t n):
         """Row-capacity hint for future chunks (e.g. the local basis size, an upper
@@ -1305,44 +1357,22 @@ cdef class SparseKrylovDense:
         # chunked design has none — so fixed chunks minimize capacity slack (~one
         # chunk's worth) where geometric chunk sums doubled the steady-state footprint.
         cdef int cols = max(ncol, 32)
-        arr = np.zeros((rows, cols), dtype=complex)
+        arr = np.zeros((rows, cols), dtype=self._dtype)
         self._chunks.append(arr)
         self._used.append(0)
         return arr
 
     def append(self, list cols):
-        """Append the columns of ``cols`` (a list of ManyBodyState) as new Krylov vectors."""
-        cdef int ncol = len(cols)
-        if ncol == 0:
+        """Append the columns of ``cols`` (a list of ManyBodyState) as new Krylov vectors.
+
+        Routed through :meth:`append_block` over the columns' union support: a determinant
+        absent from one column is an exact zero there, and the chunk entry it lands on is
+        already zero, so writing it changes nothing. This is the cold path (warm-start
+        ingestion of a legacy Krylov list); the recurrence appends blocks directly.
+        """
+        if len(cols) == 0:
             return
-        cdef vector[ManyBodyState_cpp*] ptrs
-        cdef ManyBodyState ms
-        cdef int ci
-        for obj in cols:
-            ms = <ManyBodyState?>obj
-            ptrs.push_back(&ms.v)
-        cdef ManyBodyState_cpp.iterator it
-        for ci in range(ncol):
-            it = ptrs[ci].begin()
-            while it != ptrs[ci].end():
-                self._register(dereference(it).first)
-                preincrement(it)
-        chunk = self._chunk_for_append(ncol)
-        cdef complex[:, :] Qv = chunk
-        cdef Py_ssize_t li = len(self._used) - 1
-        cdef int base = self._used[li]
-        cdef int row
-        cdef ManyBodyState_cpp.mapped_type cval
-        for ci in range(ncol):
-            it = ptrs[ci].begin()
-            while it != ptrs[ci].end():
-                row = dereference(self.support.find(dereference(it).first)).second
-                cval = dereference(it).second
-                Qv[row, base + ci].real = cval.real()
-                Qv[row, base + ci].imag = cval.imag()
-                preincrement(it)
-        self._used[li] = base + ncol
-        self.n_cols += ncol
+        self.append_block(ManyBodyBlockState.from_states(cols))
 
     def append_block(self, ManyBodyBlockState block):
         """Append the columns of a shared-support block as new Krylov vectors —
@@ -1351,22 +1381,25 @@ cdef class SparseKrylovDense:
         cdef Py_ssize_t ncol = <Py_ssize_t>block.b.width()
         if ncol == 0:
             return
+        cdef Py_ssize_t nrow = <Py_ssize_t>block.b.rows()
+        # Cache the row index handed back by _register instead of looking each key up a
+        # second time in the support map during the scatter.
+        cdef vector[int] rows_v
+        rows_v.reserve(nrow)
         cdef Py_ssize_t r
-        for r in range(<Py_ssize_t>block.b.rows()):
-            self._register(block.b.key(r))
+        for r in range(nrow):
+            rows_v.push_back(self._register(block.b.key(r)))
         chunk = self._chunk_for_append(<int>ncol)
-        cdef complex[:, :] Qv = chunk
         cdef Py_ssize_t li = len(self._used) - 1
         cdef int base = self._used[li]
-        cdef int row
-        cdef const ManyBodyBlockState_cpp.Value* src
-        cdef Py_ssize_t ci
-        for r in range(<Py_ssize_t>block.b.rows()):
-            row = dereference(self.support.find(block.b.key(r))).second
-            src = block.b.row(r)
-            for ci in range(ncol):
-                Qv[row, base + ci].real = src[ci].real()
-                Qv[row, base + ci].imag = src[ci].imag()
+        cdef float complex[:, :] Qv32
+        cdef double complex[:, :] Qv64
+        if self._single:
+            Qv32 = chunk
+            _scatter_block_rows(Qv32, &block.b, rows_v.data(), nrow, ncol, base)
+        else:
+            Qv64 = chunk
+            _scatter_block_rows(Qv64, &block.b, rows_v.data(), nrow, ncol, base)
         self._used[li] = base + <int>ncol
         self.n_cols += <int>ncol
 
@@ -1528,15 +1561,16 @@ cdef class SparseKrylovDense:
             off += <Py_ssize_t>self._used[k]
             k += 1
         chunk = self._chunks[k]
-        cdef complex[:, :] Qv = chunk
         cdef Py_ssize_t local = col - off
         cdef Py_ssize_t rows_c = min(<Py_ssize_t>chunk.shape[0], <Py_ssize_t>self.n_rows)
+        # One column, widened to complex128 (a no-op copy for a complex128 store).
+        cdef double complex[::1] Qv = np.ascontiguousarray(chunk[:rows_c, local], dtype=complex)
         cdef vector[ManyBodyState_cpp.key_type] keys
         cdef vector[ManyBodyState_cpp.mapped_type] vals
         cdef Py_ssize_t row
         cdef double complex z
         for row in range(rows_c):
-            z = Qv[row, local]
+            z = Qv[row]
             if z.real != 0 or z.imag != 0:
                 keys.push_back(self.row_det[row])
                 vals.push_back(ManyBodyState_cpp.mapped_type(z.real, z.imag))
@@ -1544,13 +1578,13 @@ cdef class SparseKrylovDense:
         ms.v = ManyBodyState_cpp(keys, vals)
         return ms
 
-    def combine(self, object Y, Py_ssize_t a=0, object b=None, double slaterWeightMin=0.0):
-        """Linear combinations ``out_k = sum_j Q[:, a:b][:, j] * Y[j, k]`` as ManyBodyStates.
+    def _combine_dense(self, object Y, Py_ssize_t a=0, object b=None):
+        """Dense ``(n_rows x Y.shape[1])`` complex128 result of ``Q[:, a:b] @ Y``.
 
-        One zgemm per chunk, accumulating partial sums (the chunk partition splits the
+        One gemm per chunk, accumulating partial sums (the chunk partition splits the
         column sum, so the floating-point accumulation order differs from a single-buffer
-        gemm — tolerance-equivalent). ``slaterWeightMin > 0`` prunes the outputs exactly
-        like ``block_combine_sparse`` does.
+        gemm — tolerance-equivalent). Accumulation is complex128 even for a complex64
+        store.
         """
         cdef Py_ssize_t bb = self.n_cols if b is None else <Py_ssize_t>b
         Ya = np.ascontiguousarray(Y, dtype=complex)
@@ -1558,11 +1592,10 @@ cdef class SparseKrylovDense:
             Ya = Ya[:, np.newaxis]
         if Ya.shape[0] != bb - a:
             raise ValueError(f"Y rows {Ya.shape[0]} != selected columns {bb - a}")
-        cdef Py_ssize_t n_out = Ya.shape[1]
-        C = np.zeros((self.n_rows, n_out), dtype=complex)
+        C = np.zeros((self.n_rows, Ya.shape[1]), dtype=complex)
         cdef Py_ssize_t off = 0
         cdef Py_ssize_t k
-        cdef Py_ssize_t lo, hi, rows_c
+        cdef Py_ssize_t lo, hi, rows_c, used
         for k in range(len(self._chunks)):
             chunk = self._chunks[k]
             used = <Py_ssize_t>self._used[k]
@@ -1572,6 +1605,15 @@ cdef class SparseKrylovDense:
                 rows_c = min(<Py_ssize_t>chunk.shape[0], <Py_ssize_t>self.n_rows)
                 C[:rows_c] += chunk[:rows_c, lo - off : hi - off] @ Ya[lo - a : hi - a]
             off += used
+        return C
+
+    def combine(self, object Y, Py_ssize_t a=0, object b=None, double slaterWeightMin=0.0):
+        """Linear combinations ``out_k = sum_j Q[:, a:b][:, j] * Y[j, k]`` as ManyBodyStates.
+
+        ``slaterWeightMin > 0`` prunes the outputs exactly like ``block_combine_sparse``.
+        """
+        C = self._combine_dense(Y, a, b)
+        cdef Py_ssize_t n_out = C.shape[1]
         cdef complex[:, :] Cv = C
         cdef vector[ManyBodyState_cpp.key_type] keys
         cdef vector[ManyBodyState_cpp.mapped_type] vals

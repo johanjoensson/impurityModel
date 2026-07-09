@@ -59,6 +59,8 @@ def block_lanczos_cy(
     locked_evals=None,
     locked_res=0.0,
     locked_reort="full",
+    store_krylov=True,
+    krylov_dtype=None,
 ): ...
 
 

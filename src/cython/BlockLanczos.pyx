@@ -547,6 +547,7 @@ def block_lanczos_cy(
     locked_res=0.0,
     locked_reort="full",
     store_krylov=True,
+    krylov_dtype=None,
 ):
     """Run the distributed block Lanczos iteration with ``ManyBodyState``.
 
@@ -646,6 +647,19 @@ def block_lanczos_cy(
             the O(N_det * p * k) dead retention is dropped.  On resume,
             ``Q_init`` is interpreted as that two-block tail (split by
             ``block_widths_init[-1]``).  Default ``True``.
+        krylov_dtype: Storage dtype of the retained Krylov basis --
+            ``complex128`` (default) or ``complex64``, which halves the store.
+            A ``complex64`` basis can only be projected against to ~6e-8, i.e.
+            *above* the ``REORT_TOL = sqrt(EPS) ~ 1.5e-8`` semi-orthogonality
+            target that ``PARTIAL``/``SELECTIVE`` steer to, so those modes reject
+            it: the target is unreachable, and their ``BAD_BLOCK_TOL ~ 1.8e-12``
+            block selection sits five orders below the fp32 noise floor, so every
+            block would be flagged.  ``FULL``/``PERIODIC`` accept it: they hold no estimator and
+            simply settle at orthogonality ~6e-8, which perturbs the
+            block-tridiagonal ``T`` by O(6e-8**2 * ||H||) -- far below the
+            Green's-function broadening.  The live recurrence blocks, the
+            overlaps and the residual all stay complex128; only the *stored*
+            basis narrows.  Default ``None`` (complex128).
 
     Returns:
         tuple[numpy.ndarray, numpy.ndarray, list, numpy.ndarray]: A 4-tuple
@@ -690,6 +704,31 @@ def block_lanczos_cy(
     if not store_krylov and (reort_mode != Reort.NONE or locked):
         raise ValueError("store_krylov=False requires reort='none' and no locked vectors")
 
+    # A complex64 store represents each Krylov vector to ~u32 = 6e-8, so a projection against
+    # it cannot drive the residual overlap against the TRUE Krylov space below that (measured:
+    # FULL + complex64 settles at ||Q^H Q - I|| = 6.0e-8, vs 1.1e-15 at complex128). But
+    # PARTIAL/SELECTIVE steer to REORT_TOL = sqrt(EPS) ~ 1.5e-8, four times tighter: the target
+    # is unreachable, so their control loop has nothing to converge to. Worse, once the trigger
+    # fires they select blocks with BAD_BLOCK_TOL = EPS**0.75 ~ 1.8e-12 -- five orders below the
+    # fp32 noise floor -- so every block is flagged and PARTIAL degenerates into FULL while
+    # delivering worse orthogonality than FULL at complex128. Paying FULL's cost for a worse
+    # answer is strictly dominated, so reject rather than warn.
+    #
+    # The estimator's own reading of the situation is regime dependent and was NOT measured
+    # end to end (this guard fires first): O_last tracks the true residual within ~1.5x when
+    # there is a real projection to do, but is measured against the *stored* (rounded) basis,
+    # so on a near-no-op step it reads rounding-level while the true loss sits at ~u32. That is
+    # the under-prediction failure mode that has cost production runs before (see the "HONEST
+    # reset" note in BlockLanczosArray.apply_reort). Either way the combination is unusable.
+    if krylov_dtype is not None and np.dtype(krylov_dtype) == np.dtype(np.complex64):
+        if reort_mode in (Reort.PARTIAL, Reort.SELECTIVE):
+            raise ValueError(
+                "krylov_dtype='complex64' is incompatible with reort='partial'/'selective': "
+                "the stored basis is only accurate to ~6e-8, above the sqrt(EPS) ~ 1.5e-8 "
+                "semi-orthogonality target these modes maintain. Use reort='full'/'periodic' "
+                "(no Paige-Simon estimator) or keep complex128."
+            )
+
     # --- Resume or start fresh? -----------------------------------------
     resuming = alphas_init is not None and betas_init is not None and Q_init is not None
 
@@ -722,7 +761,7 @@ def block_lanczos_cy(
             if isinstance(Q_init, SparseKrylovDense):
                 Q_basis = Q_init
             else:
-                Q_basis = SparseKrylovDense()
+                Q_basis = SparseKrylovDense(krylov_dtype)
                 # Row hint = the local basis size (an upper bound on the support after
                 # redistribution): chunks are sized so row growth never forces a new one.
                 _local_basis = getattr(basis, "local_basis", None)
@@ -749,7 +788,7 @@ def block_lanczos_cy(
         q_curr = ManyBodyBlockState.from_states(basis.redistribute_psis(list(psi0)))
         q_prev = ManyBodyBlockState.from_states([ManyBodyState() for _ in range(p)])
         if store_krylov:
-            Q_basis = SparseKrylovDense()
+            Q_basis = SparseKrylovDense(krylov_dtype)
             _local_basis = getattr(basis, "local_basis", None)
             if _local_basis is not None:
                 Q_basis.reserve_rows(len(_local_basis))

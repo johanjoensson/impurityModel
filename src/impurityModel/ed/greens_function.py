@@ -1607,6 +1607,7 @@ def block_Green_sparse(
     slaterWeightMin=0,
     verbose=True,
     cap_info=None,
+    krylov_dtype=None,
 ):
     """
     calculate  one block of the Greens function. This function builds the many body basis iteratively. Reducing memory requrements.
@@ -1616,6 +1617,17 @@ def block_Green_sparse(
     default) leaves the growth bounded only by ``slaterWeightMin`` and the
     restrictions. Pass a dict as ``cap_info`` to receive ``{"cap_hit",
     "retained_size", "proxy"}`` back (diagnostics/tests).
+
+    ``krylov_dtype`` sets the storage precision of the retained Krylov basis, which is the
+    dominant allocation of a reorthogonalized run (``16 * p * n_blocks`` bytes per retained
+    determinant, ~30x everything else at the FCC-Ni operating point). ``complex64`` halves
+    it, at the cost of an orthogonality (and Green's function) floor at fp32 roundoff,
+    ~6e-8. It is **opt-in**, not the default, for two reasons: it is rejected outright by
+    ``PARTIAL``/``SELECTIVE``, whose Paige-Simon estimator steers to ``sqrt(EPS) ~ 1.5e-8``
+    and cannot be fed a basis known only to ~6e-8; and it would silently break the exactness
+    guarantee that a capped recurrence reproduces the dense ``P H P`` resolvent (see
+    ``test_gf_truncation``). Only the *stored* basis narrows -- the recurrence, the overlaps
+    and the residual stay complex128. See ``doc/plans/blocklanczos_reort_memory.md``.
     """
     mpi = basis.comm is not None
     comm = basis.comm if mpi else None
@@ -1677,6 +1689,7 @@ def block_Green_sparse(
             W_init=W,
             block_widths_init=widths,
             store_krylov=resolved_reort != Reort.NONE,
+            krylov_dtype=krylov_dtype,
         )
         # The kernel reports exactly why it stopped (see block_lanczos_cy):
         #   * "converged"          -- the GF convergence monitor was satisfied.
