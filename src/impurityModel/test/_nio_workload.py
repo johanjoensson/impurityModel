@@ -170,3 +170,122 @@ def build_selfenergy_inputs(
         dN=dN,
         sparse_green=True,
     )
+
+
+def build_ground_state_workload(
+    nBaths=10,
+    mixed_valence=1,
+    truncation_threshold=30000,
+    dense_cutoff=50,
+    slater_weight_min=1e-12,
+    de2_min=1e-6,
+    comm=None,
+    verbose=False,
+):
+    """Build the NiO d-shell Hamiltonian and its converged CIPSI ground-state basis.
+
+    Runs the same preamble as ``selfenergy.calc_selfenergy``: symmetry rotation of the
+    Hamiltonian, bath valence/conduction classification, orbital grouping by symmetry
+    block, then ``find_ground_state_basis`` plus one ``CIPSISolver.expand``.
+
+    Parameters
+    ----------
+    nBaths : int
+        Which ``h0/h0_NiO_<n>bath.pickle`` to load.
+    mixed_valence : int
+        Impurity occupation slack per orbital group. The 10-bath anchor's zero window
+        pins every group's occupation and collapses the ground-state sector to a
+        trivial basis, so benchmarks want at least 1.
+    truncation_threshold : int
+        CIPSI basis-size cap.
+    dense_cutoff : int
+        Basis size above which the restarted (TRLM) eigensolver is used.
+    de2_min : float
+        CIPSI Epstein-Nesbet selection threshold. This, more than ``nBaths``, sets the
+        ground-state basis size: at the default the NiO anchor selects only a few hundred
+        determinants regardless of the bath count.
+
+    Returns
+    -------
+    dict
+        ``{"h", "basis", "solver", "tau", "comm"}``. ``h``'s restrictions are already
+        pointed at ``basis``.
+    """
+    from impurityModel.ed import atomic_physics
+    from impurityModel.ed.BlockLanczosArray import Reort
+    from impurityModel.ed.cipsi_solver import CIPSISolver
+    from impurityModel.ed.groundstate import find_ground_state_basis
+    from impurityModel.ed.ManyBodyUtils import ManyBodyOperator
+    from impurityModel.ed.selfenergy import (
+        _MAX_ROTATION_FILL,
+        _ROTATION_TRIM_TOL,
+        _per_group_occupation,
+        _per_group_scalar,
+    )
+    from impurityModel.ed.symmetries import (
+        classify_bath_occupation,
+        extract_tensors,
+        group_orbitals_by_blocks,
+        impurity_block_structure,
+        impurity_symmetry_rotation,
+        rotate_hamiltonian,
+    )
+
+    inputs = build_selfenergy_inputs(nBaths=nBaths, truncation_threshold=truncation_threshold, verbose=verbose)
+
+    u = atomic_physics.getUop_from_rspt_u4(inputs["u4"])
+    h_input = ManyBodyOperator(inputs["h0"]) + ManyBodyOperator(u)
+    impurity_indices = sorted(o for orbs in inputs["impurity_orbitals"].values() for o in orbs)
+    h_input_matrix = extract_tensors(h_input, two_body=False)[0]
+    n_orb = h_input_matrix.shape[0]
+
+    rotation_full, _u_imp = impurity_symmetry_rotation(h_input, impurity_indices, n_orb=n_orb, h0_matrix=h_input_matrix)
+    h_rotated = rotate_hamiltonian(h_input, rotation_full, tol=_ROTATION_TRIM_TOL)
+    n_terms_input = sum(1 for v in h_input.values() if abs(v) > _ROTATION_TRIM_TOL)
+    if len(h_rotated) / max(n_terms_input, 1) <= _MAX_ROTATION_FILL:
+        h = h_rotated
+        h_matrix = extract_tensors(h, n_orb=n_orb, two_body=False)[0]
+    else:
+        h = h_input
+        h_matrix = h_input_matrix
+
+    valence_flat, conduction_flat = classify_bath_occupation(h, impurity_indices, n_orb=n_orb, h0_matrix=h_matrix)
+    block_structure = impurity_block_structure(h, impurity_indices, h0_matrix=h_matrix)
+    impurity_orbitals, bath_states = group_orbitals_by_blocks(
+        h, impurity_indices, valence_flat, conduction_flat, block_structure, n_orb=n_orb, h0_matrix=h_matrix
+    )
+    nominal_occ = _per_group_occupation(inputs["nominal_occ"], impurity_orbitals, h_matrix)
+    # _per_group_scalar maps a dict keyed by the derived group indices through unchanged;
+    # anything else collapses to the default -- so key the window by group explicitly.
+    mv = _per_group_scalar(dict.fromkeys(impurity_orbitals, mixed_valence), impurity_orbitals, default=0)
+
+    tau = inputs["tau"]
+    basis = find_ground_state_basis(
+        h,
+        impurity_orbitals,
+        bath_states,
+        nominal_occ,
+        mixed_valence=mv,
+        tau=tau / 100,  # calc_gs runs the occupation search at tau/100
+        chain_restrict=False,
+        dense_cutoff=dense_cutoff,
+        spin_flip_dj=False,
+        comm=comm,
+        truncation_threshold=truncation_threshold,
+        verbose=verbose,
+        slaterWeightMin=np.sqrt(slater_weight_min),
+        cipsi_solver_method="trlm",
+    )
+    basis.tau = tau
+    solver = CIPSISolver(basis)
+    solver.expand(
+        h,
+        dense_cutoff=dense_cutoff,
+        de2_min=de2_min,
+        slaterWeightMin=slater_weight_min,
+        solver="trlm",
+        reort=Reort.PARTIAL,
+    )
+    if basis.restrictions is not None:
+        h.set_restrictions(basis.restrictions)
+    return {"h": h, "basis": basis, "solver": solver, "tau": tau, "comm": comm}
