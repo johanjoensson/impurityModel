@@ -77,6 +77,7 @@ from impurityModel.ed.BlockLanczosArray import (
     EPS,
     REORT_TOL,
     BAD_BLOCK_TOL,
+    RESTART_ORTH_TOL,
 )
 
 # --- Optional per-step profiling (env-gated, ~zero cost when off) -------------------
@@ -1093,18 +1094,35 @@ def _trlm_core(
     The loop is width-aware: blocks can shrink mid-restart (rank-deficient residual ->
     rectangular beta + narrower ``q_next``), so it tracks each block's actual width
     (``cur_widths``) and addresses ``T_full`` / ``Q_basis`` by cumulative offsets instead of
-    a constant block width ``p``. ``nkeep = k_blocks * p`` is a *count* of retained Ritz
-    vectors (one diagonal super-block coupled to the residual by the thick-restart spike),
-    not a block width.
+    a constant block width ``p``. ``nkeep = k_blocks * p`` is the *requested* number of
+    retained Ritz vectors (one diagonal super-block coupled to the residual by the
+    thick-restart spike), not a block width -- and not necessarily the number actually
+    retained; see below.
+
+    Two ways to restart, chosen per restart by the retained block's orthogonality:
+
+    * ``||Q^H Q - I|| <= RESTART_ORTH_TOL`` at full rank -- use the textbook coefficients
+      (``diag(theta_keep)`` for the retained block, ``beta_res @ Y_last`` for the spike).
+      They follow from the recurrence identity ``H Q = Q T + q_m beta_res E_last^H``
+      *together with* ``Q^H Q = I``, and cost nothing.
+    * otherwise -- an explicit Rayleigh-Ritz step on the orthonormalized retained basis,
+      which assumes nothing about ``Q_basis``, at the price of ``k_ret`` matvecs.
+      ``reort=NONE`` needs this (measured ``||Q^H Q - I|| = 1.0`` on a spectrum with a 1e-9
+      cluster, where the retained block is also rank deficient); the semi-orthogonal modes
+      never take it.
 
     MPI: the dense ``sp.eigh`` results (replicated across ranks because ``T_full`` is built
     from Allreduced coefficients) are broadcast from rank 0 so every rank uses identical Ritz
-    vectors and the restart bases stay in lock-step.
+    vectors and the restart bases stay in lock-step. The branch above is decided from an
+    Allreduced Gram matrix, so it too is identical on every rank -- it must be, because the
+    Rayleigh-Ritz arm issues four collectives.
 
     Returns:
-        tuple[numpy.ndarray, list | numpy.ndarray]: ``(eigvals, eigvecs)`` — the
-        ``num_wanted`` smallest eigenvalues (ascending) and matching Ritz vectors in the
-        path's basis representation.
+        tuple[numpy.ndarray, list | numpy.ndarray]: ``(eigvals, eigvecs)`` — the smallest
+        eigenvalues (ascending) and matching Ritz vectors in the path's basis
+        representation. **May be fewer than ``num_wanted``** when the retained Ritz block
+        deflates below that and the continuation then closes on an invariant subspace: only
+        ``k_ret`` independent directions were ever there. Callers must use ``len(eigvals)``.
     """
     mpi = comm is not None and getattr(comm, "size", 1) > 1
     rank0 = (not mpi) or comm.rank == 0
@@ -1125,6 +1143,7 @@ def _trlm_core(
     # The sweep can shrink blocks (rank-deficient beta -> deflation), so the true subspace
     # dimension is sum(widths), not the padded m_actual * p. All slicing / T construction
     # must use the real widths or they desynchronize from Q_basis.
+    _check_width_sync(Q_basis, widths, "TRLM initial sweep")
     total = int(sum(widths)) if widths is not None else m_actual * p
     deflated = total < m_actual * p
 
@@ -1134,15 +1153,17 @@ def _trlm_core(
 
     _betas_off = betas[: m_actual - 1] if len(betas) == m_actual else betas
 
-    # Early termination: a genuine invariant subspace (fewer blocks than asked) or block
-    # deflation (rank-deficient residual). In both cases the spanned block-Krylov space is
-    # (near-)invariant, so its Ritz pairs are accurate eigenpairs and we extract directly.
-    # T here is a pure block-tridiagonal, so the banded solver suffices (no dense T); this
-    # also avoids the uniform-width restart loop, whose arrowhead bookkeeping assumes a
-    # constant block width p and is invalid once blocks have shrunk.
-    if m_actual < m or deflated:
+    # Early termination: a genuine invariant subspace (fewer blocks than asked), block
+    # deflation (rank-deficient residual), or a sweep that stored no trailing residual block
+    # at all. That last case (``q_m is None``) means the sweep broke out before appending
+    # q_next, which it only does on breakdown -- the block-Krylov space is closed under H.
+    # In all three the spanned space is (near-)invariant, so its Ritz pairs are accurate
+    # eigenpairs and we extract directly. T here is a pure block-tridiagonal, so the banded
+    # solver suffices (no dense T); this also avoids the restart loop below, which needs a
+    # residual block to hang the thick-restart spike on.
+    if m_actual < m or deflated or q_m is None:
         if verbose and rank0:
-            reason = "Invariant subspace" if m_actual < m else "Block deflation"
+            reason = "Invariant subspace" if m_actual < m or q_m is None else "Block deflation"
             print(f"[TRLM] {reason} (dim {total}). Extracting directly.")
         eigvals_T, eigvecs_T = eigh_block_tridiagonal(alphas, _betas_off, block_widths=widths)
         if comm is not None:
@@ -1157,7 +1178,7 @@ def _trlm_core(
 
     # --- Width-aware thick restart -------------------------------------------------
     nkeep = k_blocks * p
-    p_resid = _q_cols(q_m) if q_m is not None else p
+    p_resid = _q_cols(q_m)  # q_m is not None here: the closed-space case extracted above
     # betas[-1] is the trailing coupling, padded to (p, p) by the kernel. The residual block
     # can deflate (rank p_resid < p) even when the diagonal blocks do not, leaving total ==
     # m_actual*p (so we still reach here); slice off the phantom padded rows.
@@ -1165,6 +1186,9 @@ def _trlm_core(
     cur_widths = list(widths)
 
     for restart in range(max_restarts):
+        # Q_basis carries exactly the columns T_full[:D, :D] is expressed in: the trailing
+        # residual block lives in q_m, not in Q_basis.
+        _check_width_sync(Q_basis, cur_widths, f"TRLM restart {restart}", exact=True)
         D = int(sum(cur_widths))
         p_last = cur_widths[len(cur_widths) - 1]
         eigvals_T, eigvecs_T = sp.eigh(T_full[:D, :D])
@@ -1189,24 +1213,55 @@ def _trlm_core(
         keep = np.argsort(eigvals_T)[:nkeep]
         Y_k = eigvecs_T[:, keep]
         Y_last = Y_k[D - p_last : D, :]  # last-block rows -> thick-restart spike
-        T_k = np.diag(eigvals_T[keep])
 
-        Q_ret = block_combine(_q_slice(Q_basis, 0, D), Y_k, 0.0)
-        Q_ret, _ = block_normalize(Q_ret, mpi, comm, 0.0)
+        # The retained Ritz block X = Q_basis[:D] @ Y_k inherits Q_basis's orthonormality.
+        # Both thick-restart coefficient shortcuts below are derived from Q^H Q = I, so they
+        # are only usable while that holds; under reort=NONE (and, at its design tolerance,
+        # PARTIAL) the recurrence loses orthogonality, spawns ghost copies of converged Ritz
+        # values, and X can even become rank deficient -- block_normalize then deflates it to
+        # k_ret < nkeep columns. cur_widths, T_full's leading block, the spike and the residual
+        # must all follow the *actual* width k_ret, or T's dimension desynchronizes from
+        # Q_basis and the next restart's block_combine raises (or, worse, silently pairs Ritz
+        # values with the wrong vectors).
+        X = block_combine(_q_slice(Q_basis, 0, D), Y_k, 0.0)
+        gram = block_inner(X, X, mpi, comm)
+        orth_err = float(np.linalg.norm(gram - np.eye(gram.shape[0]), ord=2))
+        Q_ret, _ = block_normalize(X, mpi, comm, 0.0)
+        k_ret = _q_cols(Q_ret)
+        if verbose and rank0:
+            print(f"[TRLM] Restart {restart}: retained block ||Q^H Q - I|| = {orth_err:.2e}, rank {k_ret}/{nkeep}")
 
-        # Worst case the continuation adds (m - k_blocks) full-width-p blocks.
-        T_full = np.zeros((nkeep + (m - k_blocks) * p, nkeep + (m - k_blocks) * p), dtype=complex)
-        T_full[:nkeep, :nkeep] = T_k
-
-        # Residual seed block (carried over as q_m, or recomputed if absent).
-        if q_m is None:
-            q_seed = _q_slice(Q_ret, max(0, nkeep - p), nkeep)
-            wp = block_apply(h_op, q_seed, basis, mpi, slater)
-            # Thick-restart always full-reorthogonalizes the residual seed against the whole
-            # retained basis (all modes): the arrowhead T_full requires it, and the PRO
-            # W-recurrence is not maintained across restart.
-            for _ in range(2):
-                wp, _ = block_orthogonalize(wp, Q_ret, mpi=mpi, comm=comm)
+        if k_ret == nkeep and orth_err <= RESTART_ORTH_TOL:
+            # Healthy case. The textbook thick-restart coefficients follow from the recurrence
+            # identity H Q = Q T + q_m beta_res E_last^H together with Q^H Q = I, and cost
+            # nothing: the retained block's projected operator is diag(theta_keep), the spike
+            # is beta_res @ Y_last, and the carried-over residual block q_m is already the
+            # whole residual -- (I - P) H Q_ret = q_m beta_res Y_last has rank <= p.
+            T_lead = np.asarray(np.diag(eigvals_T[keep]), dtype=complex)
+            cross = beta_res @ Y_last  # (p_resid, nkeep)
+        else:
+            # The retained block lost semi-orthogonality (and possibly rank). Q^H Q != I, so
+            # *neither* textbook coefficient is valid -- both derive from it -- and rescaling
+            # them by the orthonormalizing factor only amplifies the error by 1/sigma_min.
+            # Rebuild the restart from actual matvecs instead: a plain Rayleigh-Ritz step on
+            # the orthonormalized retained basis, which needs no premise about Q_basis at all.
+            #   T_lead = Q_ret^H H Q_ret
+            #   q_m    = orthonormalized (I - Q_ret Q_ret^H) H Q_ret
+            #   cross  = q_m^H H Q_ret = beta_res  (q_m _|_ Q_ret, so the projection drops out)
+            # Costs k_ret matvecs, on the restarts that need it. Without Q^H Q = I the residual
+            # is no longer rank <= p, so q_m can be up to k_ret wide -- hence T_full is sized
+            # off p_resid below, not off p. Keeping the *whole* residual matters: the inner loop
+            # stores only the sub-diagonal coupling, so a dropped piece of (I - P) H Q_ret would
+            # leave H q_next with an uncaptured component on Q_ret.
+            HQ = block_apply(h_op, Q_ret, basis, mpi, slater)
+            ovl = block_inner(Q_ret, HQ, mpi, comm)
+            T_lead = 0.5 * (ovl + np.conj(ovl.T))
+            # Thick restart always full-reorthogonalizes the residual against the retained
+            # basis (all modes): the arrowhead T_full requires it, and the PRO W-recurrence
+            # is not maintained across a restart. The first pass reuses the overlaps already
+            # formed for T_lead.
+            wp, _ = block_orthogonalize(HQ, Q_ret, overlaps=ovl, mpi=mpi, comm=comm)
+            wp, _ = block_orthogonalize(wp, Q_ret, mpi=mpi, comm=comm)
             try:
                 q_m, beta_res = block_normalize(wp, mpi, comm, 0.0)
             except (sp.LinAlgError, ValueError):
@@ -1214,16 +1269,24 @@ def _trlm_core(
             if q_m is None or np.linalg.norm(beta_res, ord=2) < 1e-5:
                 if verbose and rank0:
                     print(f"[TRLM] Invariant subspace found at restart {restart}. Stopping early.")
-                return _trlm_extract(T_full, Q_ret, nkeep, num_wanted, comm, slater)
+                return _trlm_extract(T_lead, Q_ret, k_ret, num_wanted, comm, slater)
             p_resid = _q_cols(q_m)
+            cross = beta_res  # (p_resid, k_ret)
+
+        # The continuation adds at most (m - k_blocks) blocks, and block widths are
+        # non-increasing under deflation, so none is wider than the residual block it starts
+        # from. Sizing off p_resid (not the constant p) is what keeps the deflating branch --
+        # whose residual can be wider than p -- inside T_full.
+        dim = k_ret + (m - k_blocks) * p_resid
+        T_full = np.zeros((dim, dim), dtype=complex)
+        T_full[:k_ret, :k_ret] = T_lead
 
         Q_basis = _q_concat(Q_ret, _copy_block(q_m))
-        cross = beta_res @ Y_last  # (p_resid, nkeep)
-        T_full[nkeep : nkeep + p_resid, :nkeep] = cross
-        T_full[:nkeep, nkeep : nkeep + p_resid] = np.conj(cross.T)
+        T_full[k_ret : k_ret + p_resid, :k_ret] = cross
+        T_full[:k_ret, k_ret : k_ret + p_resid] = np.conj(cross.T)
 
-        cur_widths = [nkeep, p_resid]
-        off = nkeep  # column start of the current block q1
+        cur_widths = [k_ret, p_resid]
+        off = k_ret  # column start of the current block q1
         w1 = p_resid
         q1 = q_m
         q_m = None  # consumed; the new trailing residual is set at the last inner step
@@ -1343,8 +1406,9 @@ def thick_restart_block_lanczos_cy(
         comm: ``mpi4py`` communicator. Falls back to ``basis.comm`` or serial.
 
     Returns:
-        tuple[numpy.ndarray, list]: ``(eigvals, eigvecs)`` — the ``num_wanted`` smallest
-        eigenvalues (ascending) and matching ``ManyBodyState`` Ritz vectors.
+        tuple[numpy.ndarray, list]: ``(eigvals, eigvecs)`` — the smallest eigenvalues
+        (ascending) and matching ``ManyBodyState`` Ritz vectors. May be fewer than
+        ``num_wanted``; see :func:`_trlm_core`. Callers must use ``len(eigvals)``.
     """
     if comm is None:
         comm = getattr(basis, "comm", None)
@@ -1435,6 +1499,41 @@ def thick_restart_block_lanczos(
 # list of states. ---------------------------------------------------------
 def _q_cols(Q):
     return Q.shape[1] if is_array(Q) else len(Q)
+
+
+def _check_width_sync(Q, widths, where, exact=False):
+    """Assert the block-width table and the stored Krylov basis agree.
+
+    Every restarted kernel indexes ``T`` (sized from ``block_widths``) and ``Q_basis``
+    (a column store) by the *same* cumulative offsets, so ``sum(widths)`` must never
+    exceed ``Q``'s column count. A sweep ends either with a trailing residual block
+    appended but not counted (``sum(widths) == cols - w_last``, the ``max_iter`` and
+    ``diverged`` exits) or with the last block counted and no residual stored
+    (``sum(widths) == cols``, the breakdown exits) -- never with a counted block whose
+    vectors were never stored.
+
+    Desynchronization used to surface as an opaque ``matmul`` shape error several
+    restarts later (or, where the shapes happened to line up, as Ritz values silently
+    paired with the wrong vectors), so check it where the two meet. Pass
+    ``exact=True`` where the residual block has already been split off.
+
+    Raises:
+        RuntimeError: if the invariant is violated.
+    """
+    cols = _q_cols(Q)
+    total = int(sum(widths)) if widths is not None else 0
+    if total > cols:
+        raise RuntimeError(
+            f"{where}: block widths sum to {total} but the Krylov basis holds only {cols} "
+            f"columns ({widths!r}). The recurrence counted a block whose vectors were "
+            "never stored."
+        )
+    if exact and total != cols:
+        raise RuntimeError(
+            f"{where}: block widths sum to {total} but the Krylov basis holds {cols} "
+            f"columns ({widths!r}). The residual block has already been split off here, so "
+            "the stored columns must be exactly the ones T is expressed in."
+        )
 
 
 def _q_slice(Q, a, b):
@@ -1696,6 +1795,7 @@ def _irlm_core(
         # The sweep may shrink blocks (rank-deficient beta -> deflation), so the true
         # subspace dimension is sum(block_widths), not m_act * p. Build T against the
         # real widths so T (and its eigenvectors Z) line up with the stored Q_basis.
+        _check_width_sync(Q_basis, widths, f"{tag} restart {restart} sweep")
         total = int(sum(widths)) if widths is not None else m_act * p
         _betas_off = betas[: m_act - 1] if len(betas) == m_act else betas
         # Banded eigensolve straight from the block coefficients (no dense T); the IRLM
@@ -1859,6 +1959,7 @@ def _assemble_results(
     n_need = num_wanted - len(eigvals_list)
     if n_need > 0 and len(alphas) > 0:
         m_act = len(alphas)
+        _check_width_sync(Q_basis, widths, "IRLM final extraction")
         total = int(sum(widths)) if widths is not None else m_act * p
         _betas_off = betas[: m_act - 1] if len(betas) == m_act else betas
         # Banded eigensolve straight from the block coefficients (no dense T).

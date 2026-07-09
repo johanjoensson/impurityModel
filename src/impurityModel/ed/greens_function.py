@@ -1751,9 +1751,21 @@ def _trim_blocks(alphas, betas, block_widths):
 
     Returns:
         tuple[list, list]: ragged ``(alphas, betas)`` lists of 2D arrays.
+
+    Raises:
+        ValueError: if the width table and the coefficient arrays disagree in length.
+            The kernels append a width for every stored block, so a mismatch means a
+            caller trimmed one and not the other -- which would silently shorten the
+            continued fraction (``k = len(widths)``) instead of failing.
     """
     widths = [int(w) for w in block_widths]
     k = len(widths)
+    if k != len(alphas) or k != len(betas):
+        raise ValueError(
+            f"block_widths has {k} entries but alphas/betas have {len(alphas)}/{len(betas)}; "
+            "the continued fraction would silently use only the first "
+            f"{min(k, len(alphas))} block(s)."
+        )
     a = [np.asarray(alphas[i])[: widths[i], : widths[i]] for i in range(k)]
     b = []
     for i in range(k):

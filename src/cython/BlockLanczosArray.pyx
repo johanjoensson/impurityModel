@@ -86,6 +86,12 @@ DEFLATE_EVAL_TOL = EPS_VAL ** (2.0 / 3.0)  # ~3.67e-11 : equivalent rank floor o
 BREAKDOWN_TOL = 1e-12              # absolute: ||beta||_2 below this ⇒ invariant subspace
 BETA_BLOWUP_FACTOR = 1e3           # ||beta_i|| above this * max(||beta||, ||alpha||) ⇒ divergence
 REORT_PERIOD = 5                   # PERIODIC cadence, and SELECTIVE Ritz-check cadence
+# Semi-orthogonality threshold (Simon's classical sqrt(EPS) criterion — the very level the
+# PARTIAL estimator maintains, hence the shared constant). TRLM's thick-restart coefficient
+# shortcuts (diag(theta) for the retained block, beta_res @ Y_last for the spike) are both
+# derived from Q^H Q = I; above this level that premise is too inaccurate to use them and the
+# restart is rebuilt from actual matvecs instead. See _trlm_core.
+RESTART_ORTH_TOL = REORT_TOL       # ~1.49e-8
 
 # --- Optional reort instrumentation (env-gated; ~zero cost when off) ----------------
 import os as _os_bla
