@@ -1,13 +1,25 @@
 """Unit tests for the SparseKrylovDense column store (Phase 3 commit A of
 doc/plans/blocklanczos_partial_perf_memory.md): sequence protocol (materialization
 round-trip), combine() vs the flat_map reference, and growth across realloc
-boundaries."""
+boundaries.
+
+Also the memory regressions of ``doc/plans/blocklanczos_reort_memory.md`` Phase 1: the
+streaming ``reort`` must never materialize an ``(n_rows x n_cols)`` buffer, and a chunk
+retired by row growth must not keep its unwritten columns."""
+
+import tracemalloc
 
 import numpy as np
 import pytest
 
 from impurityModel.ed.BlockLanczos import block_combine_sparse
-from impurityModel.ed.ManyBodyUtils import ManyBodyState, SlaterDeterminant, SparseKrylovDense, inner_multi
+from impurityModel.ed.ManyBodyUtils import (
+    ManyBodyState,
+    SlaterDeterminant,
+    SparseKrylovDense,
+    inner_multi,
+    reorth_cgs2_dense,
+)
 
 
 def _det(i):
@@ -124,3 +136,112 @@ def test_store_memory_bytes():
     assert store.memory_bytes() == 0  # chunked store allocates lazily on first append
     store.append(_random_states(np.random.default_rng(2), 4, 50))
     assert store.memory_bytes() > 0
+
+
+def _orthonormal_columns(rng, n_cols, n_dets):
+    """A Krylov-like orthonormal column set, so projecting it out is meaningful."""
+    cols = _random_states(rng, n_cols, n_dets, sparsity=0.8)
+    L = np.linalg.cholesky(inner_multi(cols, cols))
+    return block_combine_sparse(cols, np.linalg.inv(L).conj().T)
+
+
+@pytest.mark.parametrize(
+    "cols",
+    [
+        None,  # FULL: every column
+        list(range(5, 22)),  # a contiguous run (the zero-copy view path)
+        [0, 1, 2, 9, 10, 11, 30, 31, 32, 33],  # gaps straddling chunk boundaries
+        [17],  # a single column
+    ],
+    ids=["all", "contiguous", "gapped", "single"],
+)
+def test_store_reort_matches_reorth_cgs2_dense(cols):
+    """The streaming per-chunk CGS2 must reproduce the independent dense reference.
+
+    ``reorth_cgs2_dense`` materializes Q on the merged support and runs one zgemm pair;
+    ``store.reort`` streams the same projection chunk by chunk. They may differ only by
+    accumulation order.
+    """
+    rng = np.random.default_rng(42)
+    n_dets, n_cols, p = 120, 37, 3
+    qcols = _orthonormal_columns(rng, n_cols, n_dets)
+
+    store = SparseKrylovDense()
+    for i in range(0, n_cols, 5):  # uneven append widths => several chunks
+        store.append(qcols[i : i + 5])
+    assert len(store) == n_cols
+
+    wp = _random_states(rng, p, n_dets, sparsity=0.9)
+    selected = qcols if cols is None else [qcols[c] for c in cols]
+
+    out_new, o_new = store.reort([ManyBodyState(dict(s.items())) for s in wp], cols, 2, None)
+    out_ref, o_ref = reorth_cgs2_dense([ManyBodyState(dict(s.items())) for s in wp], selected, 2, None)
+
+    np.testing.assert_allclose(o_new, o_ref, atol=1e-12)
+    for a, b in zip(out_new, out_ref):
+        assert np.sqrt((a - b).norm2()) < 1e-12
+    # and the projection actually removed the selected directions
+    assert np.max(np.abs(inner_multi(selected, out_new))) < 1e-13
+
+
+@pytest.mark.parametrize("cols", [None, list(range(110))], ids=["full", "partial"])
+def test_store_reort_transient_is_not_store_sized(cols):
+    """``reort`` must not gather ``Q[:, cols]`` (nor its conjugate transpose).
+
+    The retired implementation held two dense ``(n_rows x len(cols))`` copies at once —
+    measured at 1.85x the whole store for a FULL sweep. The streaming version's transient
+    is bounded by the residual ``(n_rows x p)`` plus one chunk's columns.
+    """
+    rng = np.random.default_rng(5)
+    n_dets, n_cols, p = 800, 160, 2
+    store = SparseKrylovDense()
+    store.reserve_rows(n_dets)
+    qcols = _random_states(rng, n_cols, n_dets, sparsity=1.0)
+    for i in range(0, n_cols, p):
+        store.append(qcols[i : i + p])
+
+    buffer_bytes = store.stats()["buffer_bytes"]
+    wp = _random_states(rng, p, n_dets, sparsity=1.0)
+
+    tracemalloc.start()
+    try:
+        tracemalloc.reset_peak()
+        base = tracemalloc.get_traced_memory()[0]
+        store.reort(wp, cols, 2, None)
+        peak = tracemalloc.get_traced_memory()[1]
+    finally:
+        tracemalloc.stop()
+
+    transient = peak - base
+    gathered = n_dets * (n_cols if cols is None else len(cols)) * 16
+    assert transient < 0.25 * buffer_bytes, f"transient {transient} vs buffer {buffer_bytes}"
+    assert transient < 0.25 * gathered, f"transient {transient} vs gathered copy {gathered}"
+
+
+def test_store_retired_chunk_drops_unwritten_columns():
+    """A chunk retired by row growth keeps only the columns it received.
+
+    On a growing determinant support (the Green's-function regime, where ``reserve_rows``
+    only sees the seed basis) row growth — not column exhaustion — ends a chunk's life,
+    leaving most of its reserved columns unwritten. Those were 95% of all chunk slack
+    before the trim. Afterwards only the one still-open chunk may hold unwritten columns,
+    which is what the bound below states; without the trim every retired chunk keeps its
+    own reservation and this fails by ~2.4x.
+    """
+    rng = np.random.default_rng(9)
+    store = SparseKrylovDense()
+    store.reserve_rows(32)  # seed-sized hint: the support will outgrow it repeatedly
+    p = 2
+    for it in range(60):
+        store.append(_random_states(rng, p, 32 + it * 60, sparsity=1.0))
+
+    s = store.stats()
+    assert s["n_chunks"] > 3, "test needs several retired chunks to be meaningful"
+    # The invariant: a retired chunk reserves no column it did not receive.
+    for rows_c, cols_c, used_c in s["chunks"][:-1]:
+        assert used_c == cols_c, f"retired chunk ({rows_c}x{cols_c}) kept {cols_c - used_c} dead columns"
+    # ... so only the one still-open chunk may hold unwritten columns.
+    open_rows, open_cols, open_used = s["chunks"][-1]
+    assert s["unused_col_bytes"] == open_rows * (open_cols - open_used) * 16
+    # The staircase must beat a flat (n_rows x n_cols) buffer.
+    assert s["buffer_bytes"] < s["rows"] * s["cols"] * 16

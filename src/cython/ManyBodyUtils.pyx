@@ -1286,6 +1286,13 @@ cdef class SparseKrylovDense:
             last = self._chunks[li]
             if (<int>last.shape[1]) - <int>self._used[li] >= ncol and <int>last.shape[0] >= self.n_rows:
                 return last
+            # Retire the last chunk: row growth (not column exhaustion) usually ends a
+            # chunk's life, leaving most of its reserved columns unwritten. On a growing
+            # support that dead reservation was measured at 95% of all chunk slack (~38%
+            # of the buffer). Trim it to the columns it actually received; the copy is
+            # one chunk wide and happens once per chunk.
+            if <int>self._used[li] < <int>last.shape[1]:
+                self._chunks[li] = np.ascontiguousarray(last[:, : self._used[li]])
         cdef int rows = max(self._rows_hint, 256)
         if self.n_rows > rows:
             # The support outgrew the hint (e.g. serial runs discovering excited-sector
@@ -1363,24 +1370,40 @@ cdef class SparseKrylovDense:
         self._used[li] = base + <int>ncol
         self.n_cols += <int>ncol
 
-    def _gather_columns(self, object cols):
-        """Dense (n_rows x len(cols)) copy of the selected global columns (all columns
-        when ``cols`` is None), zero-filled where a chunk predates a row. Identical
-        values to slicing the old single buffer (unwritten area was zero there too)."""
-        sel = np.arange(self.n_cols) if cols is None else np.asarray(cols, dtype=np.intp)
-        out = np.zeros((self.n_rows, len(sel)), dtype=complex)
+    def _plan_selection(self, object cols):
+        """Per-chunk plan for reading the selected global columns, in ``cols`` order.
+
+        Returns a list of ``(chunk_view, dest, rows_c)``: ``chunk_view`` is a
+        ``(rows_c x n_k)`` slice of one chunk holding that chunk's share of the
+        selection, ``dest`` indexes the rows of the overlap matrix those columns own.
+        A contiguous ascending run inside a chunk yields a zero-copy *view*; otherwise
+        the fancy index copies at most one chunk's worth of columns. Nothing of size
+        ``n_rows x n_cols`` is ever materialized.
+        """
+        sel = np.arange(self.n_cols, dtype=np.intp) if cols is None else np.asarray(cols, dtype=np.intp)
+        cdef list plan = []
         cdef Py_ssize_t off = 0
-        cdef Py_ssize_t k
+        cdef Py_ssize_t k, used, rows_c
         for k in range(len(self._chunks)):
             chunk = self._chunks[k]
-            used = self._used[k]
+            used = <Py_ssize_t>self._used[k]
             mask = (sel >= off) & (sel < off + used)
             if np.any(mask):
+                dest = np.where(mask)[0]
                 local = sel[mask] - off
                 rows_c = min(<Py_ssize_t>chunk.shape[0], <Py_ssize_t>self.n_rows)
-                out[:rows_c, np.where(mask)[0]] = chunk[:rows_c][:, local]
+                # A contiguous ascending run slices as a view; anything else copies
+                # (bounded by this chunk's column count, not by the whole store).
+                # The step-1 test must be elementwise: `last - first == size - 1` also
+                # holds for permutations that merely start at the min and end at the max
+                # (e.g. [0, 2, 1, 3]), which must NOT be sliced as a view.
+                if local.size == 1 or (local.size > 1 and np.all(np.diff(local) == 1)):
+                    view = chunk[:rows_c, local[0] : local[0] + local.size]
+                else:
+                    view = chunk[:rows_c][:, local]
+                plan.append((view, dest, rows_c))
             off += used
-        return out
+        return plan
 
     def reort(self, list wp, object cols, int n_passes, object comm):
         """``n_passes`` of CGS2: ``O = Q[:,cols]^H wp`` (Allreduced); ``wp -= Q[:,cols] O``.
@@ -1390,6 +1413,22 @@ cdef class SparseKrylovDense:
         FINAL pass's measured (Allreduced) overlap matrix ``(len(cols) x p)`` — an upper
         bound on the residual overlap left after the projection, which the caller uses as
         the honest post-reorthogonalization W-estimate (``None`` when nothing was done).
+
+        Both gemms stream over the column chunks (:meth:`_plan_selection`) rather than
+        gathering ``Q[:, cols]`` into one dense buffer: the old ``_gather_columns`` +
+        ``np.conj(Qsel.T)`` pair held *two* ``(n_rows x len(cols))`` copies at once —
+        measured at 1.85x the whole store for a FULL sweep, which is the dominant
+        avoidable peak on the Green's-function path. The transient here is bounded by
+        ``n_rows * p`` (the residual ``Wd``) plus one chunk's columns.
+
+        ``O`` is accumulated as ``conj(Q_c^T conj(Wd))`` so the large operand enters the
+        gemm as a plain (possibly strided) view: ``Q_c^H`` would materialize a conjugated
+        copy of the chunk, while ``conj(Wd)`` is only ``n_rows x p``.
+
+        .. warning:: **Collective on** ``comm``: the per-pass ``Allreduce(O)`` runs
+           unconditionally. ``p``, ``n_cols`` and ``n_passes`` are rank-identical (``cols``
+           is broadcast by the caller), but ``n_rows`` is not — a rank owning zero
+           determinants contributes zero-row gemms and must still join every ``Allreduce``.
         """
         cdef int p = len(wp)
         if p == 0 or self.n_cols == 0 or n_passes <= 0:
@@ -1421,16 +1460,24 @@ cdef class SparseKrylovDense:
                 Wv[row, ci].real = cval.real()
                 Wv[row, ci].imag = cval.imag()
                 preincrement(it)
-        Qsel = self._gather_columns(cols)
-        Qh = np.conj(Qsel.T)
+        cdef list plan = self._plan_selection(cols)
+        cdef Py_ssize_t n_sel = self.n_cols if cols is None else len(cols)
         if comm is not None:
             from mpi4py import MPI
-        O = None
+        O = np.zeros((n_sel, p), dtype=complex)
+        cdef Py_ssize_t k_plan
+        cdef Py_ssize_t n_plan = len(plan)
         for _ in range(n_passes):
-            O = Qh @ Wd
+            O[...] = 0
+            Wd_conj = np.conj(Wd)
+            for k_plan in range(n_plan):
+                entry = plan[k_plan]
+                O[entry[1]] = np.conj(entry[0].T @ Wd_conj[: entry[2]])
             if comm is not None:
                 comm.Allreduce(MPI.IN_PLACE, O, op=MPI.SUM)
-            Wd = Wd - Qsel @ O
+            for k_plan in range(n_plan):
+                entry = plan[k_plan]
+                Wd[: entry[2]] -= entry[0] @ O[entry[1]]
         cdef complex[:, :] Wout = Wd
         cdef list out = []
         cdef vector[ManyBodyState_cpp.key_type] keys
@@ -1559,6 +1606,59 @@ cdef class SparseKrylovDense:
         for chunk in self._chunks:
             buf_bytes += chunk.nbytes
         return buf_bytes + <size_t>self.n_rows * (2 * key_heap + 72)
+
+    def stats(self):
+        """Storage breakdown of the column store, for memory profiling and regressions.
+
+        Returns a dict with ``rows`` / ``cols`` (the logical shape), ``n_chunks``,
+        ``buffer_bytes`` (allocated chunk capacity), ``payload_bytes`` (the coefficients
+        actually addressed, ``sum_c rows_c * used_c * itemsize``), ``slack_bytes``
+        (capacity minus payload — the price of the chunked staircase), ``support_bytes``
+        (determinant keys + map nodes) and ``total_bytes`` (== :meth:`memory_bytes`).
+
+        ``payload_bytes`` is the quantity the sizing model in
+        ``impurityModel.ed.memory_estimate`` predicts; comparing it against
+        ``buffer_bytes`` calibrates the chunk row/column growth policy. The slack splits
+        into ``unused_col_bytes`` (columns a chunk reserved but never received, because
+        row growth retired it early) and ``unused_row_bytes`` (rows reserved above the
+        support that ever registered).
+
+        ``chunks`` lists ``(rows, cols, used)`` per chunk. Every chunk but the last is
+        retired and therefore trimmed, i.e. ``used == cols``.
+        """
+        cdef size_t nchunks_key = self.row_det[0].size() if self.n_rows > 0 else 1
+        cdef size_t key_heap = (8 * nchunks_key + 8 + 15) & (~<size_t>15)
+        if key_heap < 32:
+            key_heap = 32
+        cdef size_t buf_bytes = 0
+        cdef size_t payload = 0
+        cdef size_t unused_cols = 0
+        cdef size_t unused_rows = 0
+        cdef Py_ssize_t k, rows_c, item
+        cdef list chunk_shapes = []
+        for k in range(len(self._chunks)):
+            chunk = self._chunks[k]
+            item = <Py_ssize_t>chunk.itemsize
+            buf_bytes += chunk.nbytes
+            rows_c = min(<Py_ssize_t>chunk.shape[0], <Py_ssize_t>self.n_rows)
+            payload += <size_t>rows_c * <size_t>self._used[k] * <size_t>item
+            unused_cols += <size_t>chunk.shape[0] * <size_t>(chunk.shape[1] - self._used[k]) * <size_t>item
+            unused_rows += <size_t>(chunk.shape[0] - rows_c) * <size_t>self._used[k] * <size_t>item
+            chunk_shapes.append((int(chunk.shape[0]), int(chunk.shape[1]), int(self._used[k])))
+        cdef size_t support_bytes = <size_t>self.n_rows * (2 * key_heap + 72)
+        return {
+            "rows": int(self.n_rows),
+            "cols": int(self.n_cols),
+            "n_chunks": len(self._chunks),
+            "chunks": chunk_shapes,
+            "buffer_bytes": int(buf_bytes),
+            "payload_bytes": int(payload),
+            "slack_bytes": int(buf_bytes - payload),
+            "unused_col_bytes": int(unused_cols),
+            "unused_row_bytes": int(unused_rows),
+            "support_bytes": int(support_bytes),
+            "total_bytes": int(buf_bytes + support_bytes),
+        }
 
 
 cdef class ManyBodyBlockState:

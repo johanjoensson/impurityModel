@@ -25,6 +25,13 @@ Reorthogonalization modes (``Reort``), what each guarantees:
 * ``SELECTIVE`` — PARTIAL plus periodic locking of converged Ritz vectors
   (gated to a ``REORT_PERIOD`` cadence; see ``block_lanczos_array_cy``).
 
+Every mode retains all ``p * m`` Krylov columns. That is the dominant allocation of a
+long Green's-function run, and it cannot be compressed away: reorthogonalization needs
+the *converged Ritz vectors*, and a Ritz vector converging at step ``m`` has weight on
+every block, including any an earlier compression would have discarded. Bounding the
+retained basis therefore needs secondary storage, not a smaller basis — see the
+"Ritz compression is unsound" section of ``doc/plans/blocklanczos_reort_memory.md``.
+
 Module thresholds (all derived from machine ``eps``; see definitions below):
 ``REORT_TOL`` (loss-of-orthogonality trigger), ``BAD_BLOCK_TOL`` (which blocks to
 reorth against), ``DEFLATE_TOL`` (relative rank floor for the block Cholesky),
@@ -61,6 +68,11 @@ cdef double EPS_VAL = np.finfo(float).eps
 EPS = EPS_VAL          # ~2.22e-16
 REORT_TOL = np.sqrt(EPS_VAL)        # ~1.49e-8  : trigger — reorth when max|W| exceeds this
 BAD_BLOCK_TOL = EPS_VAL ** 0.75        # ~1.83e-12 : selection — reorth against blocks above this
+# Ritz vectors projected out per pass in selective_orthogonalize. Each pass costs one sweep
+# of the Krylov store, so batching turns k sweeps into ceil(k/RITZ_BATCH) BLAS-3 sweeps; the
+# batch bounds the transient Ritz block at (n_rows x RITZ_BATCH) instead of (n_rows x k),
+# which matters because k grows with the number of converged Ritz pairs.
+RITZ_BATCH = 8
 # Rank floor for the block Cholesky-QR. Set so the *retained* block condition number is
 # bounded by ~EPS**(-1/3) (~1.7e5), not ~EPS**(-1/2) (~6.7e7). The looser sqrt(EPS) floor
 # let a marginally-conditioned (but not deflated) residual block through; under reort=NONE
@@ -1409,12 +1421,17 @@ def selective_orthogonalize(q_next, Q_basis, alphas, betas, W, block_widths,
     if mpi and comm is not None:
         ritz_to_project = comm.bcast(ritz_to_project, root=0)
 
-    for k_idx in ritz_to_project:
-        s_k = conv_evec[:, k_idx]
-        ritz_vec = block_combine(Q_basis, s_k[:, np.newaxis])
+    # Batched projection: the flagged Ritz vectors are mutually orthonormal (eigenvectors of
+    # the Hermitian banded T over an orthonormal Q), so projecting them out as one block via
+    # CGS2 is equivalent to the old one-at-a-time loop up to rounding — but it costs one
+    # store sweep per RITZ_BATCH instead of one per Ritz vector. The batch keeps the
+    # materialized Ritz block bounded at (n_rows x RITZ_BATCH).
+    for batch_start in range(0, len(ritz_to_project), RITZ_BATCH):
+        idx = ritz_to_project[batch_start : batch_start + RITZ_BATCH]
+        ritz_blk = block_combine(Q_basis, np.ascontiguousarray(conv_evec[:, idx]))
         for _ in range(2):
-            overlap = block_inner(ritz_vec, q_next, mpi, comm)
-            q_next = block_add_scaled(q_next, ritz_vec, -overlap)
+            overlap = block_inner(ritz_blk, q_next, mpi, comm)
+            q_next = block_add_scaled(q_next, ritz_blk, -overlap)
     return q_next
 
 
