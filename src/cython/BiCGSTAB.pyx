@@ -233,23 +233,39 @@ def _block_bicgstab_core(
     if r0_norm < np.finfo(float).eps:
         return xi
 
+    cdef double cutoff2 = slaterWeightMin * slaterWeightMin
     if not is_arr:
-        # Track the reachable-determinant union by 64-bit hash instead of retaining the
-        # SlaterDeterminant objects: only the union *size* is ever consumed (the it*n
-        # loop bound below), and the hash set is ~10x smaller per entry.
-        seen_states = {hash(sd) for sd in rhs.support_keys(0.0)}
-        global_seen_size = np.array([len(seen_states)], dtype=int)
+        # Two width-0 key-only mask blocks track the determinant bookkeeping. Both are
+        # sorted C++ key vectors merged in nogil, so nothing here materializes a Python
+        # object per determinant of the support (`support_keys` does, once per row).
+        #
+        # `seen_mask` -- every determinant ever touched, at cutoff 0. Only its *size*
+        #   is consumed, by the `it * n < global_seen_size` exhaustion bound below.
+        # `offered_mask` -- every determinant ever handed to `basis.add_states`, at
+        #   `slaterWeightMin`. Kept separate rather than folded into `seen_mask`: a
+        #   determinant can enter the support below the cutoff (so it is seen but not
+        #   offered) and grow above it later, and one mask would drop it from the basis
+        #   forever. The two coincide only when `slaterWeightMin == 0`.
+        seen_mask = ManyBodyBlockState()
+        offered_mask = ManyBodyBlockState()
+        seen_mask.merge_keys(rhs.keys_new_above(seen_mask, 0.0))
+        global_seen_size = np.array([len(seen_mask)], dtype=int)
         if mpi:
             comm.Allreduce(MPI.IN_PLACE, global_seen_size, op=MPI.SUM)
     else:
         global_seen_size = np.array([np.inf])
 
     def grow_basis_and_seen(v):
-        # contains_local, not `in basis.local_basis`: the latter scans a list once per
-        # determinant of the support, twice per iteration, and outweighs both matvecs.
-        basis.add_states(state for state in v.support_keys(slaterWeightMin) if not basis.contains_local(state))
-        seen_states.update(hash(sd) for sd in v.support_keys(0.0))
-        global_seen_size[0] = len(seen_states)
+        # Only the determinants this solve has not offered before are materialized as
+        # Python objects, so each one costs an allocation at most once over the whole
+        # solve instead of once per iteration. `contains_local` (an O(1) dict lookup, not
+        # the `in basis.local_basis` list scan) then drops the ones this rank already owns,
+        # which is purely a redistribution-payload optimization -- `add_states` dedups too.
+        new_offered = v.keys_new_above(offered_mask, cutoff2)
+        offered_mask.merge_keys(new_offered)
+        basis.add_states(state for state in new_offered.keys() if not basis.contains_local(state))
+        seen_mask.merge_keys(v.keys_new_above(seen_mask, 0.0))
+        global_seen_size[0] = len(seen_mask)
         if mpi:
             comm.Allreduce(MPI.IN_PLACE, global_seen_size, op=MPI.SUM)
 

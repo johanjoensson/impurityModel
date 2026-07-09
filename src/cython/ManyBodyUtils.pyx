@@ -1930,6 +1930,23 @@ cdef class ManyBodyBlockState:
                     break
         return out
 
+    def keys(self):
+        """Every shared-support determinant in row order, amplitudes ignored.
+
+        Works at ``width == 0``, which ``support_keys`` cannot: that filters on the row's
+        column amplitudes, of which a key-only mask block has none. This is the accessor
+        for materializing the output of ``keys_new_above`` / ``key_union`` / ``merge_keys``
+        back into Python ``SlaterDeterminant`` objects."""
+        cdef Py_ssize_t n = <Py_ssize_t>self.b.rows()
+        cdef list out = []
+        cdef SlaterDeterminant sd
+        cdef Py_ssize_t r
+        for r in range(n):
+            sd = SlaterDeterminant()
+            sd.s = self.b.key(r)
+            out.append(sd)
+        return out
+
     def combine_columns(self, Y):
         """New block ``OUT = self @ Y`` on the same support: ``out[det, k] =
         sum_j self[det, j] * Y[j, k]``. The j-ascending accumulation matches

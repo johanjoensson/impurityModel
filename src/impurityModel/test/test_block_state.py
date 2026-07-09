@@ -447,3 +447,56 @@ def test_merge_keys_inplace_matches_key_union():
     # width-0 requirement is enforced
     with pytest.raises(ValueError):
         other.merge_keys(mask)
+
+
+def test_keys_matches_support_keys_and_works_at_width_zero():
+    """``keys()`` is the accessor for width-0 mask blocks, where ``support_keys`` cannot help.
+
+    ``support_keys`` filters on the row's column amplitudes; a key-only mask has none, so it
+    returns nothing there. ``keys()`` returns the support in row order either way, and on a
+    block whose rows all carry amplitude it agrees with ``support_keys(0.0)`` elementwise.
+    """
+    a = ManyBodyState({_det(1): 1.0 + 0j, _det(4): 4.0 + 0j})
+    b = ManyBodyState({_det(2): -1.0 + 0j, _det(4): 3.0 + 0j})
+    blk = ManyBodyBlockState.from_states([a, b])
+    assert blk.keys() == blk.support_keys(0.0) == [_det(1), _det(2), _det(4)]
+
+    mask = ManyBodyBlockState()
+    mask.merge_keys(blk)
+    assert mask.width == 0
+    assert mask.support_keys(0.0) == []  # no amplitudes to filter on
+    assert mask.keys() == [_det(1), _det(2), _det(4)]
+    assert ManyBodyBlockState().keys() == []
+
+
+def test_seen_and_offered_masks_track_sub_cutoff_determinants_separately():
+    """The invariant behind BiCGSTAB's two-mask bookkeeping.
+
+    A determinant can enter the block support below ``slaterWeightMin`` -- so it is *seen*
+    (it counts toward the Krylov-exhaustion bound) but must not yet be *offered* to the
+    basis -- and grow above the cutoff on a later iteration, at which point it must be
+    offered. A single mask would record it on the first sighting and never offer it.
+    """
+    cutoff2 = 1e-12**2
+    seen, offered = ManyBodyBlockState(), ManyBodyBlockState()
+
+    # Iteration 1: det(2) is present but far below the cutoff.
+    step1 = ManyBodyBlockState.from_states([ManyBodyState({_det(1): 1.0 + 0j, _det(2): 1e-20 + 0j})])
+    seen.merge_keys(step1.keys_new_above(seen, 0.0))
+    new_offered = step1.keys_new_above(offered, cutoff2)
+    offered.merge_keys(new_offered)
+    assert seen.keys() == [_det(1), _det(2)]
+    assert new_offered.keys() == [_det(1)]
+
+    # Iteration 2: det(2) has grown above the cutoff. It is already seen, but not offered,
+    # so exactly one new determinant reaches the basis.
+    step2 = ManyBodyBlockState.from_states([ManyBodyState({_det(1): 1.0 + 0j, _det(2): 0.5 + 0j})])
+    seen.merge_keys(step2.keys_new_above(seen, 0.0))
+    new_offered = step2.keys_new_above(offered, cutoff2)
+    offered.merge_keys(new_offered)
+    assert len(seen) == 2  # unchanged: nothing newly reachable
+    assert new_offered.keys() == [_det(2)]
+    assert offered.keys() == [_det(1), _det(2)]
+
+    # Idempotent: a third sighting offers nothing.
+    assert step2.keys_new_above(offered, cutoff2).keys() == []
