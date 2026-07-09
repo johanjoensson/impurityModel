@@ -1332,13 +1332,19 @@ def _rixs_map_flat(
             )
             # Warm-started resolvent solved as one block over all in-components, sharing a
             # single Krylov space / iteration (block_bicgstab deflates a rank-deficient block).
+            # atol is relative to ||psi1_all||. It was 1e-5 while the solver applied the
+            # tolerance to the *warm-start* residual instead, which on this sweep is ~10x
+            # smaller -- so 1e-6 is what the RIXS map was actually getting, and keeps the
+            # measured accuracy-vs-dense at 2.6e-7 (test_rixs_tensor_perf). Tighten to 1e-7
+            # for ~6e-9 if a map ever needs it; the extra iterations are cheap now that a warm
+            # start shortens the solve rather than silently tightening its target.
             psi2_all = block_bicgstab(
                 A=A_op,
                 x0=psi2_all,
                 y=psi1_all,
                 basis=tmp_basis,
                 slaterWeightMin=slaterWeightMin,
-                atol=1e-5,
+                atol=1e-6,
                 rtol=1e-7,
             )
             out[k] = eval_out(green_basis, psi2_all, E_e) * thermal_weight
