@@ -258,15 +258,21 @@ per-rank bandwidth before making it a default.
 ## Alternatives
 
 - **`block_bicgstab` per frequency** — memory-flat (O(1) vectors), and *no orthogonality to lose*:
-  it sidesteps this entire problem class. The cost is one solve per mesh point instead of one
-  recurrence for all of them, plus poor conditioning at small `delta` on the real axis. For a
-  Matsubara self-energy — where the mesh is a few hundred points and `delta` is effectively the
-  Matsubara spacing — this deserves a direct benchmark against the Lanczos path before more
-  effort goes into paging `Q`. It is the only option here that is both memory-flat and exactly
-  as reliable as a linear solve. **Now being pursued: see
-  [`bicgstab_per_frequency_gf.md`](bicgstab_per_frequency_gf.md).** The solver has been moved to
-  `src/cython/BiCGSTAB.pyx` and made matvec-bound; the per-frequency driver and the head-to-head
-  benchmark this bullet asks for are that plan's Phase 3.
+  it sidesteps this entire problem class. **Benchmarked; see
+  [`bicgstab_per_frequency_gf.md`](bicgstab_per_frequency_gf.md) Phase 3a.** On the production
+  375-point Matsubara mesh (NiO, 50 bath, block width 5), against one `PARTIAL` Lanczos
+  recurrence at identical accuracy (`|dG|` agrees to 7.8e-9):
+
+      block Lanczos     80 block matvecs   3.15 s   retained Q = 14.2 MiB
+      BiCGSTAB          1071 matvecs      31.85 s   7 live blocks = 2.1 MiB
+
+  Warm starts do cut the solve — quadratic extrapolation in `z` takes it from 12 to 2.9 matvecs
+  per mesh point — but not nearly enough: `time_ratio = M * c / m`, `memory_ratio = m / 7`,
+  breakeven at `M = m / c ~ 28` points. **So this is the memory escape hatch, and a better one
+  than paging `Q`** (10x wall time, but no I/O, no network-FS failure mode, no new invariants),
+  and it is not a faster Green's function on any production mesh. It should be an opt-in
+  `gf_method` selected when `estimate_gf_peak_bytes` says `Q` will not fit — which makes the
+  paging work below optional rather than necessary.
 - **Recompute `Q` from `(alphas, betas)` on demand** — rejected. O(m) matvecs per reort event;
   at `m ~ 800` and ~70 acted steps, a ~50x slowdown of the dominant kernel.
 - **Restarted Lanczos for `f(A)b`** (Frommer/Güttel/Schweitzer) — rejected as scoped. Would

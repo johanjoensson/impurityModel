@@ -79,7 +79,13 @@ The plans have dependencies. Read and execute in this order:
    seven blocks and has no orthogonality to lose. Phases 0–2 are **done** — `cg.py` is
    consolidated into `src/cython/BiCGSTAB.pyx`, and after removing a quadratic
    `basis.local_basis` list scan the solver is **matvec-bound (93%)**, so any further speedup
-   of this path belongs to plan #6, not here. Phase 3 (the driver) is the open work.
+   of this path belongs to plan #6, not here. Phase 3a (**done**) prices the benchmark that plan
+   #1 asked for: warm starts (quadratic extrapolation in `z`) cut a solve from 12 to 2.9 matvecs
+   per mesh point, and per-frequency BiCGSTAB still costs **10x the wall time** of one Lanczos
+   recurrence on the production 375-point Matsubara mesh, for **7x less memory**, at identical
+   accuracy. So it is a memory escape hatch (a better one than paging `Q`), not a faster GF.
+   Phase 3b (the driver, as an opt-in `gf_method`) is the open work — but price *shifted*
+   BiCGSTAB first, which would keep the flat memory and get the whole mesh from one Krylov space.
 
 ## Reference
 
