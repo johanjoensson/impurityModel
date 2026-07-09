@@ -257,3 +257,31 @@ def test_log_memory_budget_mpi_verbose_rank_local():
     # Drivers commonly set verbosity only on rank 0 -- this must not deadlock.
     report = me.log_memory_budget(10_000, 100, comm=comm, verbose=comm.rank == 0)
     assert report["available_per_rank"] > 0
+
+
+def test_krylov_dtype_halves_the_store_term_and_raises_the_cap():
+    """complex64 storage must reach the sizing model, or the 2x never reaches the user.
+
+    The Krylov store is the term that forces ``truncation_threshold`` down when
+    reorthogonalization is on, so halving it must raise the suggested cap
+    (see ``doc/plans/blocklanczos_reort_memory.md``).
+    """
+    kw = dict(n_dets=100_000, n_spin_orbitals=106, block_width=2, reort="full", ranks=4, n_blocks=400)
+    wide = me.estimate_gf_peak_bytes(**kw)
+    narrow = me.estimate_gf_peak_bytes(**kw, krylov_dtype=np.complex64)
+    assert narrow < wide
+    # Everything but the store is dtype independent, so the saving is exactly half of it.
+    store_only = me.estimate_gf_peak_bytes(**{**kw, "reort": "none"})
+    assert wide - narrow == pytest.approx((wide - store_only) * 0.5, rel=0.02)
+
+    budget = 8 * 2**30
+    lo = me._suggest_for_budget(budget, 106, 2, "full", 1, 100, 4)
+    hi = me._suggest_for_budget(budget, 106, 2, "full", 1, 100, 4, np.complex64)
+    assert hi > lo
+
+
+@pytest.mark.parametrize("reort", ["partial", "selective"])
+def test_krylov_dtype_complex64_rejected_for_estimator_modes(reort):
+    """The model must refuse a combination the kernel refuses to run."""
+    with pytest.raises(ValueError, match="incompatible with reort"):
+        me.estimate_gf_peak_bytes(1000, 106, 2, reort=reort, krylov_dtype=np.complex64)

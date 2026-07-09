@@ -75,6 +75,27 @@ def _retains_krylov(reort):
     return name is not None and str(name).lower() != "none"
 
 
+def _krylov_itemsize(reort, krylov_dtype):
+    """Bytes per stored Krylov coefficient for a (reort mode, dtype) pair.
+
+    ``complex64`` halves the store but only ``FULL``/``PERIODIC`` may use it: the
+    Paige-Simon estimator behind ``PARTIAL``/``SELECTIVE`` steers to
+    ``REORT_TOL = sqrt(EPS)``, which a basis stored to ~6e-8 cannot support (the kernel
+    raises on that combination). Mirroring that rule here keeps the predicted peak from
+    promising a cap the solver will refuse to run.
+    """
+    if krylov_dtype is None:
+        return _COMPLEX_BYTES
+    import numpy as _np
+
+    if _np.dtype(krylov_dtype) != _np.dtype(_np.complex64):
+        return _COMPLEX_BYTES
+    name = str(getattr(reort, "name", reort)).lower()
+    if name in ("partial", "selective"):
+        raise ValueError(f"krylov_dtype='complex64' is incompatible with reort='{name}'")
+    return _COMPLEX_BYTES // 2
+
+
 def _key_heap_bytes(n_spin_orbitals):
     """Heap bytes of one determinant key allocation (16-byte glibc classes, min 32 B)."""
     n_chunks = max(1, ceil(n_spin_orbitals / 64))
@@ -101,13 +122,24 @@ def bytes_per_determinant(n_spin_orbitals):
     return _FLAT_MAP_ENTRY_BYTES + _key_heap_bytes(n_spin_orbitals)
 
 
-def estimate_gf_peak_bytes(n_dets, n_spin_orbitals, block_width, reort="none", ranks=1, n_blocks=None):
+def estimate_gf_peak_bytes(
+    n_dets, n_spin_orbitals, block_width, reort="none", ranks=1, n_blocks=None, krylov_dtype=None
+):
     """Predicted per-rank peak bytes of the sparse (MBS-kernel) Green's-function path.
 
     Counts the excited ``Basis`` bookkeeping, the ~3 live ``ManyBodyBlockState`` blocks
     of the recurrence (``q_prev``, ``q_curr``, ``wp``) and, at ``reort != "none"``, the
     ``SparseKrylovDense`` retention (its rows are bounded by the retained determinant
     set, its columns by the number of Lanczos blocks).
+
+    The store dominates: ``itemsize * p * n_blocks`` bytes per retained determinant,
+    against ~450 for everything else. It is the reason a reorthogonalized run must cap
+    ``truncation_threshold`` far below what ``reort="none"`` allows, and it cannot be
+    compressed away — see ``doc/plans/blocklanczos_reort_memory.md``.
+
+    Since the reort projection now streams the store chunk by chunk, the old
+    ``(n_rows x n_cols)`` gather transient (which peaked at ~1.85x the store) is gone and
+    is no longer modelled.
 
     Parameters
     ----------
@@ -125,6 +157,9 @@ def estimate_gf_peak_bytes(n_dets, n_spin_orbitals, block_width, reort="none", r
     n_blocks : int, optional
         Krylov blocks retained at ``reort != "none"``. Defaults to the invariant-subspace
         bound ``ceil(n_dets / block_width)`` (worst case).
+    krylov_dtype : optional
+        Storage dtype of the Krylov basis. ``complex64`` halves the store and is legal
+        only for ``FULL``/``PERIODIC`` (see :func:`_krylov_itemsize`).
 
     Returns
     -------
@@ -140,7 +175,8 @@ def estimate_gf_peak_bytes(n_dets, n_spin_orbitals, block_width, reort="none", r
     if _retains_krylov(reort):
         if n_blocks is None:
             n_blocks = ceil(n_dets / max(1, block_width))
-        store_bytes = local_rows * (_COMPLEX_BYTES * block_width * n_blocks + 2 * key_heap + _KRYLOV_NODE_BYTES)
+        itemsize = _krylov_itemsize(reort, krylov_dtype)
+        store_bytes = local_rows * (itemsize * block_width * n_blocks + 2 * key_heap + _KRYLOV_NODE_BYTES)
     return basis_bytes + live_bytes + store_bytes
 
 
@@ -296,6 +332,7 @@ def suggest_truncation_threshold(
     n_parallel_units=1,
     nnz_per_state=100,
     safety=DEFAULT_MEMORY_SAFETY,
+    krylov_dtype=None,
 ):
     """Largest ``truncation_threshold`` whose predicted peak fits in per-rank RAM.
 
@@ -322,6 +359,8 @@ def suggest_truncation_threshold(
         Stored Hamiltonian elements per basis state for the ground-state CSR estimate.
     safety : float
         Fraction of available RAM to budget (default ``DEFAULT_MEMORY_SAFETY``).
+    krylov_dtype : optional
+        Krylov store dtype; ``complex64`` halves the store and so raises the cap.
 
     Returns
     -------
@@ -330,11 +369,13 @@ def suggest_truncation_threshold(
     """
     budget = safety * available_bytes_per_rank(comm)
     ranks = comm.size if comm is not None else 1
-    return _suggest_for_budget(budget, n_spin_orbitals, block_width, reort, n_parallel_units, nnz_per_state, ranks)
+    return _suggest_for_budget(
+        budget, n_spin_orbitals, block_width, reort, n_parallel_units, nnz_per_state, ranks, krylov_dtype
+    )
 
 
 def max_colors_within_budget(
-    n_dets, n_spin_orbitals, block_width, reort, comm, max_candidate, safety=DEFAULT_MEMORY_SAFETY
+    n_dets, n_spin_orbitals, block_width, reort, comm, max_candidate, safety=DEFAULT_MEMORY_SAFETY, krylov_dtype=None
 ):
     """Largest unit-color count whose predicted per-rank GF peak fits the memory budget.
 
@@ -373,18 +414,25 @@ def max_colors_within_budget(
     budget = safety * available_bytes_per_rank(comm)
     for n_colors in range(max_candidate, 1, -1):
         ranks_per_color = max(1, comm.size // n_colors)
-        if estimate_gf_peak_bytes(n_dets, n_spin_orbitals, block_width, reort, ranks=ranks_per_color) <= budget:
+        if (
+            estimate_gf_peak_bytes(
+                n_dets, n_spin_orbitals, block_width, reort, ranks=ranks_per_color, krylov_dtype=krylov_dtype
+            )
+            <= budget
+        ):
             return n_colors
     return 1
 
 
-def _suggest_for_budget(budget, n_spin_orbitals, block_width, reort, n_parallel_units, nnz_per_state, ranks):
+def _suggest_for_budget(
+    budget, n_spin_orbitals, block_width, reort, n_parallel_units, nnz_per_state, ranks, krylov_dtype=None
+):
     """Largest ``n`` with both path estimates within ``budget``, by bisection. Rank-local."""
     ranks_per_unit = max(1, ranks // max(1, n_parallel_units))
 
     def fits(n):
         gs = estimate_gs_peak_bytes(n, n_spin_orbitals, block_width, ranks, nnz_per_state)
-        gf = estimate_gf_peak_bytes(n, n_spin_orbitals, block_width, reort, ranks_per_unit)
+        gf = estimate_gf_peak_bytes(n, n_spin_orbitals, block_width, reort, ranks_per_unit, krylov_dtype=krylov_dtype)
         return max(gs, gf) <= budget
 
     lo, hi = 1, 1024
@@ -411,6 +459,7 @@ def log_memory_budget(
     nnz_per_state=100,
     verbose=True,
     label="",
+    krylov_dtype=None,
 ):
     """Predict peak memory for a chosen threshold, print it on rank 0, warn if it won't fit.
 
@@ -447,7 +496,7 @@ def log_memory_budget(
         n = int(truncation_threshold)
         ranks_per_unit = max(1, ranks // max(1, n_parallel_units))
         gs = estimate_gs_peak_bytes(n, n_spin_orbitals, block_width, ranks, nnz_per_state)
-        gf = estimate_gf_peak_bytes(n, n_spin_orbitals, block_width, reort, ranks_per_unit)
+        gf = estimate_gf_peak_bytes(n, n_spin_orbitals, block_width, reort, ranks_per_unit, krylov_dtype=krylov_dtype)
         fits = max(gs, gf) <= available
     if verbose and rank == 0:
         prefix = f"{label}: " if label else ""
@@ -469,6 +518,7 @@ def log_memory_budget(
                     n_parallel_units,
                     nnz_per_state,
                     ranks,
+                    krylov_dtype,
                 )
                 print(
                     f"{prefix}WARNING: predicted peak exceeds available memory; consider "
