@@ -49,6 +49,13 @@ def block_bicgstab(A, x0, y, basis, double slaterWeightMin, atol=1e-8, rtol=1e-1
     independent directions, the full-rank reduced system is solved, and the dependent columns
     are reconstructed by linearity.
 
+    ``atol`` is a tolerance on the residual **relative to the right-hand side**: the solve stops
+    once ``||A X - Y||`` is about ``atol * ||Y||``, whatever ``x0`` was. That is what lets a warm
+    start (``x0`` = the previous frequency's solution, as the per-frequency Green's function and
+    the RIXS resolvent both use) pay off in iterations rather than in an ever-tighter target --
+    the internal reduced system is normalized, so a tolerance applied directly there would scale
+    with ``||Y - A x0||`` and silently demand more accuracy the better the warm start was.
+
     The sparse branch runs on ``ManyBodyBlockState`` (Phase 2 of the block-state matvec plan):
     one shared determinant support per block, ``ManyBodyOperator.apply_block`` matvecs
     (term/sign/accumulator work once per determinant, near-flat in the block width), the
@@ -68,9 +75,11 @@ def block_bicgstab(A, x0, y, basis, double slaterWeightMin, atol=1e-8, rtol=1e-1
     slaterWeightMin : float
         Slater determinant cutoff weight.
     atol : float, optional
-        Absolute tolerance. Default is 1e-8.
+        Residual tolerance relative to ``||Y||``. Default is 1e-8. ``x0`` is returned unrefined
+        if it already meets it.
     rtol : float, optional
-        Relative tolerance. Default is 1e-12.
+        Stagnation tolerance on the deflated system's residual, relative to its own initial
+        value. Default is 1e-12.
 
     Returns
     -------
@@ -81,6 +90,8 @@ def block_bicgstab(A, x0, y, basis, double slaterWeightMin, atol=1e-8, rtol=1e-1
     cdef Py_ssize_t n = x0.shape[1] if is_arr and len(x0.shape) == 2 else len(x0)
     cdef bint mpi = basis is not None and getattr(basis, "is_distributed", False)
     cdef Py_ssize_t rank
+    cdef double y_scale
+    cdef double r0_scale
     comm = basis.comm if mpi else None
 
     if not is_arr and hasattr(A, "set_restrictions"):
@@ -106,13 +117,19 @@ def block_bicgstab(A, x0, y, basis, double slaterWeightMin, atol=1e-8, rtol=1e-1
         Axi = matmat(x0.copy())
         ri = y.copy()
         block_add_scaled(ri, Axi, -eye_n, slaterWeightMin=slaterWeightMin)
+        y_cols2 = np.linalg.norm(y, axis=0) ** 2
     else:
         x_blk = ManyBodyBlockState.from_states(list(x0))
+        y_blk = ManyBodyBlockState.from_states(list(y))
         Axi = matmat(x_blk)
-        ri = block_add_scaled_cy(ManyBodyBlockState.from_states(list(y)), Axi, -eye_n)
+        ri = block_add_scaled_cy(y_blk, Axi, -eye_n)
         if slaterWeightMin > 0:
             ri.prune_rows(slaterWeightMin)
         basis.add_states(state for state in ri.support_keys(slaterWeightMin) if not basis.contains_local(state))
+        y_cols2 = y_blk.col_norm2()
+        if mpi:
+            comm.Allreduce(MPI.IN_PLACE, y_cols2, op=MPI.SUM)
+    y_scale = np.sqrt(np.max(y_cols2))
 
     # Deflate R0 = Q @ beta_j into rank independent directions (Q = R0 @ beta_inv, orthonormal).
     # Solve the full-rank reduced system A Zq = Q, then reconstruct the correction
@@ -125,9 +142,34 @@ def block_bicgstab(A, x0, y, basis, double slaterWeightMin, atol=1e-8, rtol=1e-1
         gram = block_inner_cy(ri, ri)
         if mpi:
             comm.Allreduce(MPI.IN_PLACE, gram, op=MPI.SUM)
-    beta_j, beta_inv, rank = _cholesky_or_deflate(gram, n)
+
+    # ``gram``'s diagonal holds the squared column norms of R0, so its largest entry is the
+    # block's overall scale -- free, no extra reduction.
+    r0_scale = np.sqrt(max(np.max(gram.diagonal().real), 0.0))
+
+    # A zero RHS has no scale of its own to measure the residual against; fall back to
+    # R0's, which makes `atol` absolute there (and keeps the degenerate y = 0, x0 != 0
+    # case from demanding an exactly-zero residual).
+    if y_scale == 0.0:
+        y_scale = r0_scale
+
+    # Converged before we started: a warm start (or a zero RHS) already meets the tolerance.
+    # This test has to live here, explicitly. `_cholesky_or_deflate`'s rank floor is
+    # *absolute* (`evals > DEFLATE_EVAL_TOL * max(evals[-1], 1.0)`), which is right for a
+    # block-Lanczos residual block but would otherwise silently deflate any R0 with
+    # ||R0|| < sqrt(DEFLATE_EVAL_TOL) ~ 6e-6 to rank 0 and return x0 unrefined, whatever
+    # `atol` asked for.
+    if r0_scale <= atol * y_scale:
+        return x0
+
+    # Deflate the *normalized* Gram: the rank of R0 is a property of its column directions,
+    # not of its overall scale. beta_j/beta_inv are rescaled to keep Q = R0 @ beta_inv
+    # orthonormal and R0 = Q @ beta_j exact.
+    beta_j, beta_inv, rank = _cholesky_or_deflate(gram / (r0_scale * r0_scale), n)
     if rank == 0:
         return x0  # zero residual: x0 already solves the system
+    beta_j = beta_j * r0_scale
+    beta_inv = beta_inv / r0_scale
 
     if is_arr:
         q_block = block_combine(ri, beta_inv, slaterWeightMin)
@@ -135,12 +177,18 @@ def block_bicgstab(A, x0, y, basis, double slaterWeightMin, atol=1e-8, rtol=1e-1
         q_block = ri.combine_columns(beta_inv)
         if slaterWeightMin > 0:
             q_block.prune_rows(slaterWeightMin)
+
+    # The core drives the residual of the *normalized* system A Zq = Q (unit columns) below
+    # its tolerance, and the true residual is that times ||R0|| (Z = Zq @ beta_j). Scaling by
+    # ||Y||/||R0|| makes the delivered accuracy ``atol * ||Y||`` regardless of the warm start,
+    # so a good x0 buys fewer iterations rather than a silently tighter target. A cold start
+    # has R0 = Y, hence the ratio is exactly 1 and the tolerance is unchanged.
     z_block = _block_bicgstab_core(
         matmat,
         q_block,
         basis,
         slaterWeightMin,
-        atol,
+        atol * (y_scale / r0_scale),
         rtol,
         mpi,
         comm,

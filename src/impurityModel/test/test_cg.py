@@ -56,6 +56,54 @@ def test_block_bicgstab_max_iter():
     assert not np.allclose(x_sol, x_exact)
 
 
+def _resolvent_system(n=60, seed=0):
+    """A ``(z - H)`` block system of the shape the per-frequency Green's function solves."""
+    rng = np.random.default_rng(seed)
+    H = rng.normal(size=(n, n)) + 1j * rng.normal(size=(n, n))
+    H = 0.5 * (H + H.conj().T)
+    A = 0.05j * np.eye(n) - H
+    Y = rng.normal(size=(n, 3)) + 1j * rng.normal(size=(n, 3))
+    return A, Y, rng
+
+
+@pytest.mark.parametrize("perturbation", [1e-2, 1e-5, 1e-7, 1e-9])
+def test_block_bicgstab_refines_a_good_warm_start(perturbation):
+    """A warm start is refined to ``atol``, however good it already is.
+
+    ``_cholesky_or_deflate``'s rank floor is absolute (``evals > EPS**(2/3) * max(l_max, 1)``),
+    so before the Gram was normalized any initial residual block with ``||R0|| < ~6e-6``
+    deflated to rank 0 and ``block_bicgstab`` returned ``x0`` untouched -- silently, whatever
+    ``atol`` asked for. That is exactly the regime a frequency-swept warm start lives in.
+    """
+    A, Y, rng = _resolvent_system()
+    X_exact = np.linalg.solve(A, Y)
+    noise = rng.normal(size=X_exact.shape) + 1j * rng.normal(size=X_exact.shape)
+    X0 = X_exact + perturbation * noise * np.linalg.norm(X_exact) / np.linalg.norm(noise)
+
+    atol = 1e-11
+    X = block_bicgstab(A, X0.copy(), Y, basis=None, slaterWeightMin=0.0, atol=atol, rtol=1e-14, max_iter=200)
+    assert np.linalg.norm(A @ X - Y) / np.linalg.norm(Y) < 10 * atol
+
+
+def test_block_bicgstab_atol_is_relative_to_the_rhs():
+    """Scaling ``Y`` scales the delivered residual, so ``atol`` means the same thing."""
+    A, Y, _rng = _resolvent_system()
+    X0 = np.zeros_like(Y)
+    atol = 1e-9
+    for scale in (1e-6, 1.0, 1e6):
+        X = block_bicgstab(A, X0.copy(), scale * Y, basis=None, slaterWeightMin=0.0, atol=atol, max_iter=200)
+        rel = np.linalg.norm(A @ X - scale * Y) / np.linalg.norm(scale * Y)
+        assert rel < 10 * atol, f"scale {scale:g}: relative residual {rel:.2e}"
+
+
+def test_block_bicgstab_converged_warm_start_costs_no_iterations():
+    """An ``x0`` that already meets ``atol`` is returned unchanged, not refined further."""
+    A, Y, _rng = _resolvent_system()
+    X_exact = np.linalg.solve(A, Y)
+    X = block_bicgstab(A, X_exact.copy(), Y, basis=None, slaterWeightMin=0.0, atol=1e-6, max_iter=200)
+    np.testing.assert_array_equal(X, X_exact)
+
+
 # --------------------------------------------------------------------------- #
 # Sparse (ManyBodyBlockState) path: real end-to-end solves against a dense
 # reference. These replace the old mock-based dict tests, which patched the
