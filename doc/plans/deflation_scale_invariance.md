@@ -1,9 +1,10 @@
 # Scale-invariant deflation in `_cholesky_or_deflate`
 
-**Status (2026-07-09):** analysed, attempted, **reverted**. The change is correct and necessary;
-it cannot land until a latent width-bookkeeping bug in `_trlm_core` is fixed. The attempted patch
-is preserved in the session scratchpad as `BlockLanczosArray_relative_deflation.pyx`; everything
-needed to redo it is below.
+**Status (2026-07-09):** the `_trlm_core` blocker is **fixed and landed** (see the worklist); the
+`_cholesky_or_deflate` change itself is analysed, attempted, **still reverted**. The attempted
+patch is preserved in the session scratchpad as `BlockLanczosArray_relative_deflation.pyx`;
+everything needed to redo it is below. Note the original diagnosis of the blocker was wrong — the
+correction is in "The fix, and why it cannot land yet".
 
 ## The defect
 
@@ -75,33 +76,108 @@ _trlm_core (BlockLanczos.pyx:1194)
 ValueError: matmul: size 108 is different from 105
 ```
 
-`D = int(sum(cur_widths))` (`BlockLanczos.pyx:1168`) says the accumulated Krylov space is
-108-dimensional; `Q_basis` holds 105 columns. **The width array counts directions whose `Q`
-columns were never appended** — the trailing residual block. While small-but-full-rank blocks were
-being deflated to rank 0, the recurrence never reached the state where the two disagree; the
-absolute floor was, accidentally, keeping TRLM out of a broken code path. That is not a reason to
-keep the floor, but it is the reason this change cannot land alone.
+**Resolved (2026-07-09), and the diagnosis above was wrong.** The trailing residual block is
+*correctly* excluded from `block_widths` on every sweep exit; `sum(widths) <= cols(Q)` always
+holds. The culprit was inside the restart loop: `Q_ret, _ = block_normalize(Q_ret, ...)` can
+**deflate the retained Ritz block** from `nkeep` to `k_ret < nkeep` columns, while
+`cur_widths = [nkeep, p_resid]` recorded `nkeep` regardless. The desync then surfaced one restart
+later as the opaque `matmul` error above (`nkeep = 12 -> k_ret = 9`, hence `108` vs `105`).
 
-This is the same family as the two IRLM deflation sites (see
-`blocklanczos_reort_reliability.md`): a width guard that covers the `alpha` path and misses the
-trailing residual block.
+Nothing about that requires the deflation change — it is reachable on today's kernel, and the
+Ritz-block deflation is a *relative* test (`lambda_max(Gram) ~ 1`), so the `max(..., 1.0)` clamp
+never applied to it. See `test_trlm_restart_widths.py`.
 
-**No existing test covers it.** With the broken deflation in place, `pytest -k "lanczos or trlm or
-irlm or cg"` is 195 passed. Only the real NiO ground state (`_nio_workload`, `dense_cutoff=50`, so
-TRLM rather than the dense path) reaches the failing branch.
+Two further defects came out of fixing it:
+
+1. **The thick-restart coefficient shortcuts need `Q^H Q = I`, not just full rank.** Both
+   `T_k = diag(theta_keep)` and `cross = beta_res @ Y_last` are derived from the recurrence
+   identity `H Q = Q T + q_m beta_res E_last^H` *together with* orthonormality of `Q`. Under
+   `reort=NONE` the retained block's measured `||Q^H Q - I||` is **1.0** — total loss — while
+   still testing full rank, so the old code sailed into the shortcut and produced eigenvalues
+   off by `4.1e3` on a spectrum bounded by `|E| <= 5`. Silently.
+2. **Rescaling the shortcut by the orthonormalizing factor does not rescue it.** The first
+   attempt set `T_k = S^H diag(theta) S` with `S = pinv(beta_ret)`; because `||S|| = 1/sigma_min`
+   it amplified the very error it was meant to correct (returned `-3.2e9`).
+
+The fix is to gate on semi-orthogonality (`RESTART_ORTH_TOL = sqrt(EPS)`, Simon's criterion, the
+level `PARTIAL` maintains by construction) and, when it fails, rebuild the restart with an
+explicit Rayleigh-Ritz step on the orthonormalized retained basis — `T_lead = Q_ret^H H Q_ret`,
+`q_m` = orthonormalized `(I - P) H Q_ret`, `cross = beta_res` — which assumes nothing about
+`Q_basis`. It costs `k_ret` matvecs and only fires where the premise is violated. Measured
+retained-block `||Q^H Q - I||`: `FULL` ~1e-14, `PARTIAL` ~5e-10, `NONE` 1.0. Note the residual is
+then no longer rank `<= p` (that bound also needed `Q^H Q = I`), so `T_full` must be sized off
+`p_resid`, not `p`.
+
+`_irlm_core` and the Green's-function paths were audited and do **not** violate the invariant:
+IRLM guards both `total < m_act * p` (diagonal deflation) and `res_width < p` (trailing residual),
+and the GF drivers never build a retained Ritz block. The invariant is now *checked* rather than
+assumed, by `_check_width_sync` at every point where widths and a stored `Q` meet, plus a length
+guard in `_trim_blocks` (whose `k = len(widths)` would otherwise silently shorten the continued
+fraction).
+
+**No existing test covered any of it.** `pytest -k "lanczos or trlm or irlm or cg"` was 195 passed
+with all three defects live.
+
+### What the deflation change does now that the blocker is gone
+
+Re-applied on top of the width fix, `_cholesky_or_deflate`'s relative rank test no longer crashes,
+and it delivers the promised accuracy — but **only when the start block is not itself a
+near-invariant subspace**. Measured on the NiO ground state (`scratchpad/trlm_gate.py`):
+
+| start block | outcome |
+|---|---|
+| `psi_refs` from `CIPSISolver.expand` (`\|\|r\|\| = 2.2e-9`) | sweep **diverges** at `it=37` (`\|beta\| = 1.17e5` vs spectral scale `1.11e2`); guard truncates; direct extraction gives `\|\|r\|\| = 7.86e3` |
+| the same, perturbed by `1e-6` | converges in 8 restarts, `\|\|r\|\| = 8.36e-14` |
+
+So the change *works* (`8.4e-14` beats the fresh start's `1.75e-11` and `reort=FULL`'s `3e-13` under
+the old floor, and `_eigen_tol` finally bites), and the width fix was a real prerequisite — but
+`BREAKDOWN_TOL = 1e-12` is on the wrong scale. A warm-start residual of `2.2e-9` against
+`||H|| ~ 1.1e2` is `2e-11` *relative*: a near-invariant subspace by any sensible measure, yet the
+absolute test lets it through, `beta_inv ~ 4.5e8` amplifies it, and 37 steps later the recurrence
+is gone. **Breakdown must be judged relative to the operator scale** (`||T||`, or the running
+`h_norm_est` the divergence guard already maintains), not absolutely. That is the next thing to
+design — not a mechanical port of the reverted patch.
+
+### Still open: `reort=NONE` corrupts the sweep, not just the restart
+
+Independent of everything above, a `reort=NONE` sweep on a spectrum with a `1e-9` cluster returns
+Ritz values off by `~4.0` (`|E| <= 5`) **before any restart** — `max_restarts=0` reproduces it at
+`n = 80, 100, 120, 160`. The restart's Rayleigh-Ritz rebuild happens to repair it when it fires,
+but when the sweep terminates on an invariant subspace there is no restart and the direct
+extraction inherits the garbage. That is the documented limitation of the mode (no orthogonality
+guarantee), not a bookkeeping bug, and it is why `test_trlm_restart_widths.py` asserts accuracy
+only in the configurations that do restart.
+
+### Still open: two more absolute floors in `_trlm_core`
+
+`np.linalg.norm(beta_i, ord=2) < 1e-5` (inner loop) and the same test on `beta_res` (rebuild
+branch) declare an invariant subspace on an **absolute** threshold. For NiO (`||H|| ~ 2e4`) that is
+a relative `5e-10` and harmless; for an `O(1)`-norm operator it caps TRLM's residual at `1e-5`
+whatever `tol` asks. Same family as `_cholesky_or_deflate`'s floor — fix them in the same commit,
+relative to `max(|eigvals_T|)`.
 
 ## Worklist
 
-- [ ] Make `_trlm_core`'s Krylov dimension the single source of truth. Either derive `D` from
-      `Q_basis`'s column count rather than `sum(cur_widths)`, or append `Q` columns for every
-      direction counted in `block_widths`. Determine which of the two is the actual invariant —
-      `eigh_block_tridiagonal(alphas, betas, block_widths)` and `_build_full_T` both size `T` from
-      the widths, so `T`'s dimension and `Q_basis`'s width must agree by construction.
-- [ ] Add a regression test that drives a restarted recurrence past a **small but full-rank**
-      residual block (`||beta|| ~ 1e-9`, `cond(beta) ~ 1`), i.e. exactly a warm start from
-      converged eigenvectors. Must fail on today's `_trlm_core`.
-- [ ] Then switch `_cholesky_or_deflate` to the relative rank test + explicit `BREAKDOWN_TOL`
-      breakdown test (both paths: Cholesky fast path on `diag(L)**2`, `eigh` fallback on `evals`).
+- [x] Make `_trlm_core`'s Krylov dimension the single source of truth. Done: `cur_widths[0]` is
+      now `k_ret = _q_cols(Q_ret)`, the *actual* retained width, and `_check_width_sync` asserts
+      `sum(widths) == cols(Q_basis)` at the top of every restart. `Q_basis`'s column count is the
+      invariant; `T`'s dimension follows it.
+- [x] Add a regression test that drives a restarted recurrence into the broken branch.
+      `test_trlm_restart_widths.py`, both paths (the array kernel and `ManyBodyState`, which share
+      `_trlm_core`) plus MPI. Fails on the pre-fix kernel: array raises
+      `ValueError: matmul: ... 120 is different from 118`, ManyBodyState silently returns
+      eigenvalues off by `5.1e3`. *(The warm-start-from-converged-eigenvectors scenario the note
+      originally proposed is a `_cholesky_or_deflate` test, not a `_trlm_core` one — it belongs to
+      the next item.)*
+- [ ] Give breakdown an **operator-relative** scale before switching it on. `BREAKDOWN_TOL = 1e-12`
+      absolute is not the test: NiO's warm start (`||beta_0|| = 2.2e-9`, `||H|| = 1.1e2`) passes it,
+      then diverges 37 steps later. Candidates: `||beta|| <= tol * h_norm_est` reusing the
+      divergence guard's running estimate, or `tol * ||alpha_0||` on the first step. Whatever is
+      chosen must also cover the two absolute `1e-5` invariant-subspace tests in `_trlm_core`.
+- [ ] Then switch `_cholesky_or_deflate` to the relative rank test + the breakdown test above
+      (both paths: Cholesky fast path on `diag(L)**2`, `eigh` fallback on `evals`). Add the
+      small-but-full-rank residual-block test (`||beta|| ~ 1e-9`, `cond(beta) ~ 1`) there, and a
+      warm-start test asserting NiO reaches `~1e-13` rather than diverging.
 - [ ] Re-check `reort=NONE` serial vs MPI. The docstring claims the absolute floor "keeps the
       `reort=NONE` recurrence on the *same* convergent trajectory serially and under MPI". **That
       claim is already false** on the NiO workload with the floor in place:

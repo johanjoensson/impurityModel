@@ -94,10 +94,13 @@ The plans have dependencies. Read and execute in this order:
    locally in `f4d2aea`) and for TRLM warm-started from `CIPSISolver.expand`'s eigenvectors, which
    returns them unimproved at `||r|| = 2.2e-9` and caps the production ground-state accuracy
    whatever `tol` asks. The fix (relative rank test + the currently-**dead** `BREAKDOWN_TOL` for
-   breakdown) is written and **reverted**: it exposes a latent width-bookkeeping bug in
-   `_trlm_core` (`D = sum(cur_widths) = 108` vs `Q_basis`'s 105 columns), which no existing test
-   covers. Fix the width bookkeeping first. Independent of plans #1–#3 in scope, but it is the
-   mechanism behind several of their symptoms.
+   breakdown) is written and **reverted**: it exposed a latent width-bookkeeping bug in
+   `_trlm_core` (`D = sum(cur_widths) = 108` vs `Q_basis`'s 105 columns). That blocker is now
+   **fixed** — the retained Ritz block can deflate, and the thick-restart shortcuts additionally
+   needed `Q^H Q = I`, not merely full rank (`reort=NONE` measured `||Q^H Q - I|| = 1.0` and
+   returned eigenvalues off by `4.1e3`, silently) — so the deflation change is unblocked. Two
+   absolute `1e-5` invariant-subspace floors in `_trlm_core` belong in the same commit.
+   Independent of plans #1–#3 in scope, but it is the mechanism behind several of their symptoms.
 
 ## Reference
 
