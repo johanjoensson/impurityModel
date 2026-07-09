@@ -22,6 +22,115 @@ SOLVERS = {
     "irlm": implicitly_restarted_block_lanczos_cy,
 }
 
+_U64 = (1 << 64) - 1
+
+
+def _splitmix64(x: int) -> int:
+    """One splitmix64 round: a well-mixed 64-bit hash of a 64-bit integer."""
+    x = (x + 0x9E3779B97F4A7C15) & _U64
+    x = ((x ^ (x >> 30)) * 0xBF58476D1CE4E5B9) & _U64
+    x = ((x ^ (x >> 27)) * 0x94D049BB133111EB) & _U64
+    return x ^ (x >> 31)
+
+
+#: Reference eigenvalues closer than this are treated as one degenerate manifold when scoring
+#: CIPSI candidates. A restarted Lanczos converges the invariant *subspace*, not a basis within
+#: it -- every rotation of a degenerate block has the same residual -- so any per-eigenvector
+#: score must be summed over the block to be well defined. Chosen well above the eigensolver's
+#: attainable eigenvalue accuracy and far below any physical splitting of interest.
+DEGENERACY_TOL = 1e-9
+
+#: How many times ``get_eigenvectors`` may double ``num_wanted`` looking for an eigenstate beyond
+#: the thermal energy cut. Each doubling is a full re-solve, so this bounds the worst case; in
+#: practice the first solve already overshoots the cut.
+_MAX_EIGENSTATE_DOUBLINGS = 6
+
+#: Loosest eigenvector residual we ever accept -- the historical hard-coded default. Deriving the
+#: tolerance from ``slaterWeightMin`` must never make the eigensolver *lazier* than this.
+_EIGEN_TOL_MAX = 1e-8
+
+#: Tightest residual worth asking for: below ``eps * ||H||`` (``||H||`` of order 1e2 here) the
+#: residual is pure roundoff and the restart loop would never terminate.
+_EIGEN_TOL_FLOOR = 1e-13
+
+
+def _eigen_tol(slaterWeightMin):
+    """Eigenvector residual tolerance implied by the amplitude cutoff ``slaterWeightMin``.
+
+    An eigenvector converged to residual ``||r||`` carries spurious amplitudes of order ``||r||``.
+    If ``||r||`` exceeds the cutoff those amplitudes survive the ``slaterWeightMin`` prune, and
+    *which* of them survive is decided by rounding -- so the state's support, the excited basis
+    seeded from it and the Green's function all become rank-count dependent. Measured on the NiO
+    ground state: at ``||r|| = 2.2e-9`` and ``slaterWeightMin = 1e-12`` the support varied between
+    4205 and 5099 determinants; converged to ``1.8e-11`` the smallest genuine amplitude is 4.5e-10,
+    three orders above the cutoff, and the support is identical at every rank count.
+
+    So converge until the residual sits at or below the cutoff. Clamped so this can only ever
+    tighten the historical ``1e-8``, and never chase roundoff. ``slaterWeightMin <= 0`` means no
+    pruning happens at all, so the noise is harmless and the loose default is kept.
+    """
+    if not slaterWeightMin or slaterWeightMin <= 0:
+        return _EIGEN_TOL_MAX
+    return max(min(float(slaterWeightMin), _EIGEN_TOL_MAX), _EIGEN_TOL_FLOOR)
+
+
+def _degenerate_groups(e_ref, tol=DEGENERACY_TOL):
+    """Partition reference-state indices into runs of (near-)degenerate eigenvalues.
+
+    ``e_ref`` comes from the eigensolver in ascending order, so a single forward scan suffices.
+    Returns a list of index lists, one per manifold.
+    """
+    e = np.asarray(e_ref).real
+    groups, start = [], 0
+    for i in range(1, len(e) + 1):
+        if i == len(e) or abs(e[i] - e[start]) > tol:
+            groups.append(list(range(start, i)))
+            start = i
+    return groups
+
+
+def _energy_cut_indices(e_ref, max_energy, tol=DEGENERACY_TOL):
+    """Indices of the eigenstates within ``max_energy`` of the lowest, never bisecting a manifold.
+
+    A degenerate manifold has no preferred basis: the eigensolver returns an arbitrary rotation of
+    it. Keeping only *some* of its members therefore makes every downstream quantity built from
+    that set -- the CIPSI candidate scores, the thermal average, the Green's-function seed support
+    -- depend on which rotation the solver happened to land on, and hence on the MPI rank count.
+    Whenever the cut would fall inside a manifold, extend it to include the whole manifold.
+
+    Returns ``(indices, need_more_states)``. ``need_more_states`` is True when *every* computed
+    eigenstate was kept: the solver never produced a state beyond the cut, so there is no evidence
+    that the boundary manifold is complete (or even that the cut was reached). Only a computed
+    state lying strictly outside -- and not degenerate with the last kept one -- certifies that.
+    """
+    e = np.asarray(e_ref).real
+    if len(e) == 0:
+        return [], False
+    order = np.argsort(e, kind="stable")
+    e_sorted = e[order]
+
+    if max_energy is None:
+        return [int(i) for i in order], False
+
+    n_keep = max(int(np.count_nonzero(e_sorted - e_sorted[0] <= max_energy)), 1)
+    # Never split a manifold: absorb any state degenerate with the last kept one.
+    while n_keep < len(e_sorted) and abs(e_sorted[n_keep] - e_sorted[n_keep - 1]) <= tol:
+        n_keep += 1
+    return [int(i) for i in order[:n_keep]], n_keep == len(e_sorted)
+
+
+def _amplitude_from_hash(det_hash: int) -> complex:
+    """A deterministic pseudo-random start amplitude for one determinant.
+
+    Depends only on the determinant (through its C++ splitmix64 hash), never on the MPI rank
+    that happens to own it or on ``PYTHONHASHSEED``. That makes the Lanczos start vector -- and
+    therefore the CIPSI basis grown from it -- identical at any rank count. The two components
+    come from independently mixed streams so the real and imaginary parts are uncorrelated.
+    """
+    re = _splitmix64(det_hash) / 2.0**64
+    im = _splitmix64(det_hash ^ 0xD1B54A32D192ED03) / 2.0**64
+    return complex(re, im)
+
 
 class CIPSISolver:
     def __init__(self, basis: Basis):
@@ -111,6 +220,30 @@ class CIPSISolver:
 
         _index_dict = self.basis._index_dict
         local_Djs = sorted({state for hp in Hpsi_ref for state in hp if state not in _index_dict})
+
+        # Diagonal probe <Dj|H|Dj> from a single H application to one superposition of
+        # all candidates. Unit-modulus pseudo-random phases (derived from the
+        # determinant hash, so deterministic and rank-independent) make the
+        # candidate-candidate couplings enter with quasi-random phases instead of the
+        # systematic offset an all-ones probe would add to the diagonal estimate.
+        #
+        # `local_Djs` is this rank's share of the hash-routed candidates (the *union* over
+        # ranks is partition independent, the per-rank slice is not). So `H psi_all_Dj`
+        # computed locally is a partial sum: it misses every candidate-candidate coupling
+        # <Dj|H|Dk> whose Dk is owned by another rank -- and *which* ones are missing depends
+        # on `comm.size`. Redistributing accumulates each determinant's contributions on its
+        # hash owner, reconstructing the exact global probe, so `e_Dj` (and hence the whole
+        # CIPSI selection, and every basis derived from it) is the same at any rank count.
+        #
+        # `redistribute_psis` is COLLECTIVE, so it must run on every rank -- including a rank
+        # that happens to own no candidates at all, whose probe is simply empty. Returning
+        # early on `not local_Djs` before it deadlocks the ranks that do have candidates.
+        phases = np.exp(2j * np.pi * np.array([(hash(Dj) & 0xFFFF) / 65536.0 for Dj in local_Djs]))
+        psi_all_Dj = ManyBodyState({Dj: phases[j] for j, Dj in enumerate(local_Djs)})
+        H_psi_all = applyOp_test(H, psi_all_Dj, cutoff=slaterWeightMin)
+        if self.basis.is_distributed:
+            H_psi_all = self.basis.redistribute_psis([H_psi_all])[0]
+
         if not local_Djs:
             return local_Djs, np.zeros((len(Hpsi_ref), 0), dtype=complex)
 
@@ -121,15 +254,6 @@ class CIPSISolver:
                 j = Dj_index.get(state)
                 if j is not None:
                     overlaps[i, j] = amp
-
-        # Diagonal probe <Dj|H|Dj> from a single H application to one superposition of
-        # all candidates. Unit-modulus pseudo-random phases (derived from the
-        # determinant hash, so deterministic and rank-independent) make the
-        # candidate-candidate couplings enter with quasi-random phases instead of the
-        # systematic offset an all-ones probe would add to the diagonal estimate.
-        phases = np.exp(2j * np.pi * np.array([(hash(Dj) & 0xFFFF) / 65536.0 for Dj in local_Djs]))
-        psi_all_Dj = ManyBodyState({Dj: phases[j] for j, Dj in enumerate(local_Djs)})
-        H_psi_all = applyOp_test(H, psi_all_Dj, cutoff=slaterWeightMin)
         e_Dj = np.array(
             [np.real(np.conj(phases[j]) * H_psi_all.get(Dj, 0.0)) for j, Dj in enumerate(local_Djs)], dtype=float
         )
@@ -161,7 +285,21 @@ class CIPSISolver:
         Hpsi_ref = [applyOp_test(H, psi_i, cutoff=slater_cutoff) for psi_i in psi_ref]
         Hpsi_ref = self.basis.redistribute_psis(Hpsi_ref)
         local_Djs, de2 = self._calc_de2(H, Hpsi_ref, e_ref)
-        scores = np.max(np.abs(de2), axis=0) if len(local_Djs) else np.zeros(0)
+        # Importance = max over reference *manifolds* of the manifold-summed de2, not max over
+        # individual reference states. Within a degenerate manifold the eigensolver returns an
+        # arbitrary basis (all rotations share the same residual), and `max_i |<Dj|H|psi_i>|^2`
+        # moves with that rotation -- measured: 2% between a serial and a 2-rank run, enough to
+        # flip a candidate across `de2_min` and, through the resulting cascade, change the basis
+        # by 5% and the Green's function by 1e-7. The manifold sum
+        # `Sum_{i in block} |<Dj|H|psi_i>|^2` is the squared norm of the projection of H|Dj> onto
+        # that eigenspace and is rotation invariant; the shared `|e_i - e_Dj|` denominator makes
+        # summing de2 directly equivalent. Reduces to the old max when the spectrum is
+        # non-degenerate.
+        if len(local_Djs):
+            de2_abs = np.abs(de2)
+            scores = np.max(np.stack([de2_abs[g, :].sum(axis=0) for g in _degenerate_groups(e_ref)]), axis=0)
+        else:
+            scores = np.zeros(0)
         de2_mask = scores >= de2_min
         n_candidates = self._allreduce_sum(int(np.count_nonzero(de2_mask)))
         discarded_de2_mass = 0.0
@@ -332,18 +470,17 @@ class CIPSISolver:
                 restarted_lanczos = SOLVERS[solver]
 
                 if psi_refs is None:
-                    import random
-
-                    # Per-rank seed (42 + rank) gives a different local random start on each
-                    # rank. The *final energy* is reproducible across rank counts (it is what
-                    # the tests compare), but the adaptively-selected basis *trajectory* is
-                    # not bit-for-bit reproducible vs a different np, since the start vector
-                    # differs. If cross-np basis reproducibility is ever required, seed from a
-                    # single rank-independent global vector and scatter it instead.
-                    rank = self.basis.comm.rank if self.basis.comm is not None else 0
-                    random.seed(42 + rank)
+                    # Seed each determinant's amplitude from its *own* hash rather than from a
+                    # per-rank RNG stream. A `random.seed(42 + rank)` start vector depends on
+                    # how the determinants happen to be partitioned, so the adaptively-selected
+                    # CIPSI basis -- and every excited basis and Green's function derived from
+                    # it -- differed with the rank count (measured: 532/566/526 determinants at
+                    # 1/2/3 ranks, and G shifting by 1e-7). The energy was reproducible, which
+                    # is why the tests never caught it. Deriving the amplitude from the
+                    # determinant makes the global start vector identical at any rank count,
+                    # with no scatter needed.
                     local_states = list(self.basis.local_basis)
-                    psi0_dict = {state: random.random() + 1j * random.random() for state in local_states}
+                    psi0_dict = {state: _amplitude_from_hash(state.get_hash()) for state in local_states}
                     psi0 = [ManyBodyState(psi0_dict)] if psi0_dict else [ManyBodyState()]
                     psi0 = self.basis.redistribute_psis(psi0)
 
@@ -528,18 +665,16 @@ class CIPSISolver:
         if solver in SOLVERS and self.basis.size >= dense_cutoff:
             restarted_lanczos = SOLVERS[solver]
 
-            import random
-
-            rank = self.basis.comm.rank if self.basis.comm is not None else 0
-            random.seed(42 + rank)
+            # Same rank-independent start vector as `expand` (see `_amplitude_from_hash`): a
+            # `random.seed(42 + rank)` stream made the start vector depend on the rank count
+            # *and* on the local_basis iteration order, so the Lanczos trajectory -- and the
+            # eigenvector whose support seeds the next CIPSI selection -- differed between
+            # serial and MPI runs of the same Hamiltonian.
             local_states = list(self.basis.local_basis)
             if hasattr(self, "psi_refs") and self.psi_refs is not None:
                 psi0 = self.psi_refs
             else:
-                psi0 = [
-                    ManyBodyState({state: random.random() + 1j * random.random() for state in local_states})
-                    for _ in range(1)
-                ]
+                psi0 = [ManyBodyState({state: _amplitude_from_hash(state.get_hash()) for state in local_states})]
 
             num_wanted = min(num_wanted + 10, len(self.basis))
 
@@ -567,23 +702,56 @@ class CIPSISolver:
                 else np.zeros((len(self.basis.local_basis), 1), dtype=complex)
             )
 
-            e_ref, psi_refs_arr = restarted_lanczos(
-                psi0=psi0_arr,
-                h_op=H_mat,
-                basis=self.basis,
-                num_wanted=num_wanted,
-                max_subspace_blocks=max_subspace_blocks,
-                tol=1e-8,
-                max_restarts=100,
-                verbose=self.basis.verbose and (self.basis.comm is None or self.basis.comm.rank == 0),
-                slaterWeightMin=slaterWeightMin,
-                reort=reort,
-            )
+            # Solve for more and more eigenstates until at least one lands *outside* the thermal
+            # cut. Only then is the boundary manifold provably complete: a degenerate manifold has
+            # no preferred basis, so keeping part of one leaves the CIPSI selection, the thermal
+            # average and the Green's-function seeds at the mercy of whichever rotation the
+            # eigensolver returned -- which depends on the MPI rank count. Cheap in practice: the
+            # first solve almost always overshoots the cut already.
+            cap = len(self.basis)
+            for _ in range(_MAX_EIGENSTATE_DOUBLINGS):
+                e_ref, psi_refs_arr = restarted_lanczos(
+                    psi0=psi0_arr,
+                    h_op=H_mat,
+                    basis=self.basis,
+                    num_wanted=num_wanted,
+                    max_subspace_blocks=max_subspace_blocks,
+                    tol=_eigen_tol(slaterWeightMin),
+                    max_restarts=100,
+                    verbose=self.basis.verbose and (self.basis.comm is None or self.basis.comm.rank == 0),
+                    slaterWeightMin=slaterWeightMin,
+                    reort=reort,
+                )
+                if max_energy is None or len(e_ref) == 0:
+                    break
+                _, need_more = _energy_cut_indices(e_ref, max_energy)
+                # `restarted_lanczos` is collective. `e_ref` is replicated but only to roundoff,
+                # so a state sitting on the cut could make ranks disagree about re-solving and
+                # deadlock. Decide on rank 0 and broadcast, per the MPI rule in CLAUDE.md.
+                if self.basis.is_distributed:
+                    need_more = self.basis.comm.bcast(need_more, root=0)
+                if not need_more or num_wanted >= cap:
+                    break
+                num_wanted = min(2 * num_wanted, cap)
+                max_subspace = min(max(2 * num_wanted, num_wanted + 10), cap)
+                max_subspace_blocks = min(
+                    2 * int(np.ceil(max_subspace / max(1, len(psi0)))) + 20,
+                    max(2, cap // max(1, len(psi0)) - 1),
+                )
+                num_wanted = min(num_wanted, (max_subspace_blocks - 1) * max(1, len(psi0)))
+
             if len(e_ref) > 0:
                 psi_refs = build_state(self.basis, psi_refs_arr.T, slaterWeightMin=slaterWeightMin)
             if max_energy is not None and len(e_ref) > 0:
-                e_min = np.min(e_ref)
-                valid_idx = [i for i, e in enumerate(e_ref) if e - e_min <= max_energy]
+                valid_idx, need_more = _energy_cut_indices(e_ref, max_energy)
+                if need_more and (self.basis.comm is None or self.basis.comm.rank == 0):
+                    print(
+                        f"warning: every one of the {len(e_ref)} computed eigenstates falls inside "
+                        f"the thermal energy cut, so the boundary manifold cannot be shown to be "
+                        f"complete. A partially-kept degenerate manifold has no rotation-invariant "
+                        f"basis and makes the results depend on the MPI rank count.",
+                        flush=True,
+                    )
                 e_ref = e_ref[valid_idx]
                 psi_refs = [psi_refs[i] for i in valid_idx]
 
