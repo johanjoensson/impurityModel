@@ -359,7 +359,32 @@ cpdef np.ndarray estimate_orthonormality(
     w_bar[i + 1, :w_next, :w_next] = np.identity(w_next)
 
     cdef np.ndarray beta_i_dag_inv = np.conj(la.pinv(betas[i, :w_next, :w_curr]).T)  # shape (w_next, w_curr)
-    w_bar[i, :w_next, :w_0] = eps * n_scale * beta_i_dag_inv @ betas[0, :w_curr, :w_0]
+
+    # omega_{i+1,i}: forming q_{i+1} = wp @ beta_i^-1 injects rounding of size eps*sqrt(N)*||H||
+    # (the scale of the matvec that produced wp) and the normalization amplifies it by
+    # ||beta_i^-1||. Simon (1984) writes this as eps*||A||/beta_i.
+    #
+    # The scale factor must bound ||H||, NOT ||beta_0||. Those coincide for a *cold* start --
+    # a random q_0 has ||H q_0|| ~ ||H|| -- and the old code exploited that, writing the term as
+    # ``eps * n_scale * beta_i^-H @ betas[0]``. Warm-started they do not: from converged
+    # eigenvectors ||beta_0|| is the eigenpair residual (measured 2.2e-9 on the NiO ground state
+    # against ||H|| ~ 1.1e2), and at i = 0 the expression collapses to ``beta_0^-H @ beta_0 ~ I``
+    # -- an estimate of eps, where the true overlap is eps*||H||/||beta_0|| ~ 1e-5. The trigger
+    # never fired, PARTIAL silently did no reorthogonalization at all, and the recurrence
+    # diverged ~30 steps later (measured ||Q^H Q - I|| = 11.3, ||beta|| 8x FULL's).
+    #
+    # So take the operator scale directly: max(||alpha_0||, ||beta_0||), the same seed
+    # divergence_guard uses for h_norm_est. alpha_0 is a Rayleigh quotient, hence bounded by
+    # ||H|| and O(||H||) for a warm start; beta_0 covers a cold start whose spectrum straddles
+    # zero. On a cold start the two forms agree in magnitude and the reort trigger rate is
+    # unchanged (measured identical: 38/120, 8/60, 9/60 blocks acted).
+    cdef double anorm = max(
+        float(np.linalg.norm(alphas[0, :w_0, :w_0], ord=2)),
+        float(np.linalg.norm(betas[0, :widths[1], :w_0], ord=2)),
+    )
+    # A magnitude, like the noise floor below and unlike the signed three-term propagation:
+    # this term models a rounding *injection*, which has no sign structure to cancel.
+    w_bar[i, :w_next, :w_curr] = eps * n_scale * anorm * np.abs(beta_i_dag_inv)
 
     if i == 0:
         W_out[0, : i + 1] = W[1]  # w_bar is already W_out[1] (built in place)

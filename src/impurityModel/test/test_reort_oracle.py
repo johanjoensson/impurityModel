@@ -1,13 +1,17 @@
 r"""Brute-force orthogonality oracle for block-Lanczos partial reorthogonalization.
 
-These tests pin the fix for the partial-reort estimator (``estimate_orthonormality``), which
-previously under-predicted the orthogonality loss by orders of magnitude — its noise floor
-``eps*(beta_i+beta_j)`` *shrank* with ``beta_i`` instead of growing as ``eps*||A||*||beta_i^-1||``,
-and the signed three-term recurrence cancelled away the amplification — so on clustered /
-near-degenerate spectra the bad-block trigger never fired and ``PARTIAL`` degenerated to (or
-worse than) no reorthogonalization. The fix propagates the estimate in magnitude (a guaranteed
-upper bound), restores the amplified noise floor, and renormalizes the block after the bad-block
-projection.
+These tests pin the fixes for the partial-reort estimator (``estimate_orthonormality``), which
+has twice under-predicted the orthogonality loss by orders of magnitude — so the bad-block trigger
+never fired and ``PARTIAL`` degenerated to (or worse than) no reorthogonalization:
+
+* its noise floor ``eps*(beta_i+beta_j)`` *shrank* with ``beta_i`` instead of growing as
+  ``eps*||A||*||beta_i^-1||``, which broke clustered / near-degenerate spectra. Fixed by
+  restoring the amplified floor (added in magnitude, so no sign cancellation — the three-term
+  propagation itself stays *signed*, see the comment in ``estimate_orthonormality``) and
+  renormalizing the block after the bad-block projection.
+* the ``omega_{i+1,i}`` seed used ``beta_0`` as a stand-in for ``||A||``, which holds only for a
+  *cold* start. Warm-started from converged eigenvectors it cancelled itself and estimated ``eps``
+  where the truth is ``eps*||A||/||beta_0||``. Fixed by using the operator scale directly.
 
 The oracle runs the *real* array kernel and measures the true accumulated orthogonality
 ``||Q^H Q - I||`` against the semi-orthogonality target ``sqrt(eps)``, and checks eigenvalues
@@ -102,3 +106,45 @@ def test_partial_reort_recovers_tight_clusters():
     evals = np.asarray(eigsh(np.asarray(a_p), np.asarray(b_p), eigvals_only=True)[0]).real
     lo, hi = float(np.min(evals)), float(np.max(evals))
     assert abs(lo - 0.0) < 0.05 and abs(hi - 10.0) < 0.05  # both clusters recovered
+
+
+def test_partial_reort_survives_a_warm_start_from_converged_eigenvectors():
+    """``omega_{i+1,i} ~ eps*||A||/beta_i``, not ``eps * beta_i^-H @ beta_0``.
+
+    Those two agree for a *cold* start, where ``||beta_0|| ~ ||A||``. Warm-started from (nearly)
+    converged eigenvectors ``beta_0`` is the eigenpair residual, and at ``i = 0`` the old
+    expression collapsed to ``beta_0^-H @ beta_0 ~ I`` — an estimate of ``eps`` at the one step
+    where the true overlap is largest, ``eps*||A||/||beta_0||``. The trigger never fired and the
+    recurrence lost orthogonality completely.
+
+    ``||A|| ~ 3e5`` is what makes this reachable without any other change: it keeps
+    ``||beta_0|| = 9.2e-6`` just above ``_cholesky_or_deflate``'s absolute ``EPS**(1/3) = 6.06e-6``
+    floor, so the residual block is not deflated away and the recurrence actually runs. Pre-fix
+    this reached ``||Q^H Q - I|| = 0.73`` with ``max|beta| = 1.24e6`` against FULL's ``1.54e5``.
+    """
+    rng = np.random.default_rng(0)
+    n, p = 400, 3
+    d = np.sort(rng.standard_normal(n)) * 1e5
+    U = la.qr(rng.standard_normal((n, n)) + 1j * rng.standard_normal((n, n)))[0]
+    H = 0.5 * (((U * d) @ U.conj().T) + ((U * d) @ U.conj().T).conj().T)
+
+    # Warm start: the p lowest eigenvectors, nudged so the residual is small but nonzero.
+    exact = U[:, np.argsort(d)[:p]]
+    Q0 = la.qr(exact + 1e-12 * (rng.standard_normal((n, p)) + 1j * rng.standard_normal((n, p))), mode="economic")[0]
+
+    a_p, b_p, _, _, ortho_partial = _run(H, Q0, Reort.PARTIAL, 30)
+    _, b_f, _, _, ortho_full = _run(H, Q0, Reort.FULL, 30)
+
+    beta0 = np.linalg.norm(b_p[0], 2)
+    assert beta0 > 6.06e-6, f"beta_0={beta0:.2e} deflated away; the test no longer bites"
+
+    assert ortho_partial < 1e3 * SQRT_EPS, f"PARTIAL ||Q^HQ-I||={ortho_partial:.2e}"
+    assert ortho_full < 1e3 * SQRT_EPS
+
+    # beta must not run away past the FULL reference (pre-fix: 8x).
+    max_beta_p = max(np.linalg.norm(x, 2) for x in b_p)
+    max_beta_f = max(np.linalg.norm(x, 2) for x in b_f)
+    assert max_beta_p < 2 * max_beta_f, f"PARTIAL max|beta|={max_beta_p:.2e} vs FULL {max_beta_f:.2e}"
+
+    evals = np.asarray(eigsh(np.asarray(a_p), np.asarray(b_p), eigvals_only=True)[0]).real
+    np.testing.assert_allclose(np.sort(evals)[:p], np.sort(d)[:p], rtol=1e-8)
