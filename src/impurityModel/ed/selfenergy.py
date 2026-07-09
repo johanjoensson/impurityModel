@@ -88,6 +88,34 @@ class UnphysicalGreensFunctionError(Exception):
     """
 
 
+def _raise_together(comm, message):
+    """Turn a rank-local validation verdict into a *collective* raise.
+
+    .. warning:: **Collective on** ``comm`` (broadcast of the verdict from rank 0). Call it
+       unconditionally on every rank, outside the ``if gs is not None`` guard.
+
+    ``get_Greens_function`` gathers its results to global rank 0, so ``gs_matsubara`` /
+    ``gs_realaxis`` (and the self-energies built from them) are ``None`` on every other rank.
+    The physicality checks therefore run on rank 0 alone. Raising there unwinds rank 0 out of
+    :func:`calc_selfenergy` and into ``MPI_Finalize`` while the remaining ranks walk on to the
+    next collective -- ``log_peak_vs_predicted``'s ``Allreduce`` -- and block there forever.
+    An unphysical Green's function then presents as a *hang* rather than an error.
+
+    Broadcasting the verdict makes every rank raise the same exception at the same point.
+
+    Parameters
+    ----------
+    comm : MPI communicator or None
+    message : str or None
+        The failure message on rank 0; ``None`` on the other ranks and when the check passed.
+        Only rank 0's value is used.
+    """
+    if comm is not None:
+        message = comm.bcast(message, root=0)
+    if message is not None:
+        raise UnphysicalGreensFunctionError(message)
+
+
 def _normalize_dc_orbitals(impurity_orbitals, bath_states):
     """Normalize flat orbital-index lists to the ``{group: [block, ...]}`` format of ``Basis``.
 
@@ -784,6 +812,10 @@ def calc_selfenergy(
             break
         num_wanted *= 2
         log(f"\nThermal ensemble appears truncated; retrying with num_wanted = {num_wanted}.\n", flush=True)
+    # The four physicality checks below only have data on rank 0; `_raise_together` broadcasts
+    # each verdict so every rank raises (or continues) as one. See its docstring: raising on
+    # rank 0 alone deadlocks the survivors in the next collective.
+    message = None
     if gs_matsubara is not None:
         try:
             for gs in gs_matsubara:
@@ -791,7 +823,10 @@ def calc_selfenergy(
                     continue
                 check_greens_function(gs)
         except UnphysicalGreensFunctionError as err:
-            raise UnphysicalGreensFunctionError("Matsubara interacting Greens function:\n" + str(err)) from None
+            message = "Matsubara interacting Greens function:\n" + str(err)
+    _raise_together(comm, message)
+
+    message = None
     if gs_realaxis is not None:
         try:
             for gs in gs_realaxis:
@@ -799,10 +834,12 @@ def calc_selfenergy(
                     continue
                 check_greens_function(gs)
         except UnphysicalGreensFunctionError as err:
-            raise UnphysicalGreensFunctionError("Real frequency interacting Greens function:\n" + str(err)) from None
+            message = "Real frequency interacting Greens function:\n" + str(err)
+    _raise_together(comm, message)
 
     banner("Self-energy")
     log("Calculating self-energy ...")
+    message = None
     if gs_realaxis is not None:
         sigma_real = get_sigma(
             omega_mesh=w,
@@ -820,9 +857,12 @@ def calc_selfenergy(
         except UnphysicalGreensFunctionError as err:
             for i, sig in enumerate(sigma_real):
                 save_Greens_function(sig, w, f"sig+dc-{i}", cluster_label)
-            raise UnphysicalGreensFunctionError("Real frequency self-energy:\n" + str(err)) from None
+            message = "Real frequency self-energy:\n" + str(err)
     else:
         sigma_real = None
+    _raise_together(comm, message)
+
+    message = None
     if gs_matsubara is not None:
         sigma = get_sigma(
             omega_mesh=iw,
@@ -840,9 +880,11 @@ def calc_selfenergy(
         except UnphysicalGreensFunctionError as err:
             for i, sig in enumerate(sigma):
                 save_Greens_function(sig, iw, f"sig+dc-{i}", cluster_label)
-            raise UnphysicalGreensFunctionError("Matsubara self-energy:\n" + str(err)) from None
+            message = "Matsubara self-energy:\n" + str(err)
     else:
         sigma = None
+    _raise_together(comm, message)
+
     log("Calculating static self-energy ...")
     # Sort the flattened indices: the groups enumerate the impurity orbitals in
     # block order (e.g. eg [0,1,5,6] before t2g [2,3,4,7,8,9]), but thermal_rho

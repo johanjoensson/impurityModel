@@ -19,6 +19,37 @@ def test_check_greens_function_invalid():
         selfenergy.check_greens_function(G)
 
 
+def test_raise_together_serial():
+    selfenergy._raise_together(None, None)  # clean verdict: must not raise
+    with pytest.raises(UnphysicalGreensFunctionError, match="boom"):
+        selfenergy._raise_together(None, "boom")
+
+
+@pytest.mark.mpi
+def test_raise_together_is_collective():
+    """An unphysical Green's function must raise on *every* rank, not just rank 0.
+
+    ``get_Greens_function`` gathers to global rank 0, so the physicality verdict exists only
+    there. Raising it on rank 0 alone left the other ranks to march into the next collective
+    (``log_peak_vs_predicted``'s ``Allreduce``) and hang, turning an error into a deadlock.
+    """
+    from mpi4py import MPI
+
+    comm = MPI.COMM_WORLD
+    if comm.size < 2:
+        pytest.skip("needs at least 2 ranks")
+
+    # The verdict lives on rank 0 only, exactly as `gs_matsubara` does.
+    message = "Matsubara self-energy:\nDiagonal term has positive imaginary part." if comm.rank == 0 else None
+    with pytest.raises(UnphysicalGreensFunctionError, match="positive imaginary part"):
+        selfenergy._raise_together(comm, message)
+
+    # A clean verdict must leave every rank running, so the next collective completes. If any
+    # rank had bailed out above, this Allreduce would hang (or the count would be short).
+    selfenergy._raise_together(comm, None)
+    assert comm.allreduce(1, op=MPI.SUM) == comm.size
+
+
 def test_get_hcorr_v_hbath():
     # impurity_orbitals dict mapping cluster index to number of impurity orbitals
     impurity_orbitals = {0: 2}
