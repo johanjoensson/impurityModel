@@ -87,6 +87,18 @@ The plans have dependencies. Read and execute in this order:
    Phase 3b (the driver, as an opt-in `gf_method`) is the open work — but price *shifted*
    BiCGSTAB first, which would keep the flat memory and get the whole mesh from one Krylov space.
 
+8. **[deflation_scale_invariance.md](deflation_scale_invariance.md)** — `_cholesky_or_deflate`'s
+   rank test is **absolute**, not relative: any residual block smaller than `EPS**(1/3) ~ 6.06e-6`
+   deflates to rank 0 however well conditioned it is. Every **warm-started** Krylov solve is
+   therefore handed back its own input and reports success — measured for `block_bicgstab` (fixed
+   locally in `f4d2aea`) and for TRLM warm-started from `CIPSISolver.expand`'s eigenvectors, which
+   returns them unimproved at `||r|| = 2.2e-9` and caps the production ground-state accuracy
+   whatever `tol` asks. The fix (relative rank test + the currently-**dead** `BREAKDOWN_TOL` for
+   breakdown) is written and **reverted**: it exposes a latent width-bookkeeping bug in
+   `_trlm_core` (`D = sum(cur_widths) = 108` vs `Q_basis`'s 105 columns), which no existing test
+   covers. Fix the width bookkeeping first. Independent of plans #1–#3 in scope, but it is the
+   mechanism behind several of their symptoms.
+
 ## Reference
 
 - **[apply_perf_deferred_designs.md](apply_perf_deferred_designs.md)** — Design sketches

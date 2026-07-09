@@ -29,6 +29,14 @@ Exploration confirmed the root causes:
    floor, `1e-5` breakdown, `sqrt(eps)`, double-pass `for _ in range(2)`, deflation
    via zero-padding vs block-shrink, silent Cholesky→eigh fallback, and SELECTIVE
    rank-0-gated decision + `bcast` (deadlock-prone if it drifts).
+   **Update (2026-07-09):** `_cholesky_or_deflate`'s rank floor turns out to be *absolute*
+   (`evals > EPS**(2/3) * max(lambda_max, 1.0)`), so a small but well-conditioned residual block
+   deflates to rank 0 — every warm-started solve is silently returned its own input, and
+   `BREAKDOWN_TOL` is dead code. Fixing it exposes a width-bookkeeping bug in `_trlm_core`
+   (`D = sum(cur_widths)` disagrees with `Q_basis`'s column count on the trailing residual block
+   — the same shape as this plan's two IRLM deflation sites). Scoped separately in
+   [`deflation_scale_invariance.md`](deflation_scale_invariance.md); it is a prerequisite for
+   trusting `tol` as an accuracy contract in any restarted kernel.
 
 **Chosen approach**: *incremental unification* (first make both kernels behaviorally
 identical and fully tested, then extract a shared engine); *reliability-first,
