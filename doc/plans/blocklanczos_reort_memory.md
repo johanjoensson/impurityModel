@@ -257,14 +257,16 @@ per-rank bandwidth before making it a default.
 
 ## Alternatives
 
-- **`block_bicgstab` per frequency** — already implemented in `cg.py` and used by the RIXS
-  intermediate-state resolvent. Memory-flat (O(1) vectors), and *no orthogonality to lose*: it
-  sidesteps this entire problem class. The cost is one solve per mesh point instead of one
+- **`block_bicgstab` per frequency** — memory-flat (O(1) vectors), and *no orthogonality to lose*:
+  it sidesteps this entire problem class. The cost is one solve per mesh point instead of one
   recurrence for all of them, plus poor conditioning at small `delta` on the real axis. For a
   Matsubara self-energy — where the mesh is a few hundred points and `delta` is effectively the
   Matsubara spacing — this deserves a direct benchmark against the Lanczos path before more
   effort goes into paging `Q`. It is the only option here that is both memory-flat and exactly
-  as reliable as a linear solve.
+  as reliable as a linear solve. **Now being pursued: see
+  [`bicgstab_per_frequency_gf.md`](bicgstab_per_frequency_gf.md).** The solver has been moved to
+  `src/cython/BiCGSTAB.pyx` and made matvec-bound; the per-frequency driver and the head-to-head
+  benchmark this bullet asks for are that plan's Phase 3.
 - **Recompute `Q` from `(alphas, betas)` on demand** — rejected. O(m) matvecs per reort event;
   at `m ~ 800` and ~70 acted steps, a ~50x slowdown of the dominant kernel.
 - **Restarted Lanczos for `f(A)b`** (Frommer/Güttel/Schweitzer) — rejected as scoped. Would

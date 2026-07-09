@@ -71,6 +71,16 @@ The plans have dependencies. Read and execute in this order:
    #1–#3 (different code: the C++ operator, not the Cython Lanczos drivers). `n_orbs` is
    runtime-determined and unbounded; the hot path must not assume a fixed chunk count.
 
+7. **[bicgstab_per_frequency_gf.md](bicgstab_per_frequency_gf.md)** — Compute the interacting
+   Green's function with a **per-frequency block BiCGSTAB solve** (real and Matsubara axes)
+   instead of a block-Lanczos recurrence plus continued fraction. This is the memory-flat
+   alternative `blocklanczos_reort_memory.md` (#1's companion) names and asks to benchmark
+   before more effort goes into paging the retained Krylov basis `Q` to disk: a solve carries
+   seven blocks and has no orthogonality to lose. Phases 0–2 are **done** — `cg.py` is
+   consolidated into `src/cython/BiCGSTAB.pyx`, and after removing a quadratic
+   `basis.local_basis` list scan the solver is **matvec-bound (93%)**, so any further speedup
+   of this path belongs to plan #6, not here. Phase 3 (the driver) is the open work.
+
 ## Reference
 
 - **[apply_perf_deferred_designs.md](apply_perf_deferred_designs.md)** — Design sketches
