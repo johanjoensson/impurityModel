@@ -29,14 +29,20 @@ Exploration confirmed the root causes:
    floor, `1e-5` breakdown, `sqrt(eps)`, double-pass `for _ in range(2)`, deflation
    via zero-padding vs block-shrink, silent Cholesky→eigh fallback, and SELECTIVE
    rank-0-gated decision + `bcast` (deadlock-prone if it drifts).
-   **Update (2026-07-09):** `_cholesky_or_deflate`'s rank floor turns out to be *absolute*
+   **Resolved (2026-07-10).** `_cholesky_or_deflate`'s rank floor was *absolute*
    (`evals > EPS**(2/3) * max(lambda_max, 1.0)`), so a small but well-conditioned residual block
-   deflates to rank 0 — every warm-started solve is silently returned its own input, and
-   `BREAKDOWN_TOL` is dead code. Fixing it exposes a width-bookkeeping bug in `_trlm_core`
-   (`D = sum(cur_widths)` disagrees with `Q_basis`'s column count on the trailing residual block
-   — the same shape as this plan's two IRLM deflation sites). Scoped separately in
-   [`deflation_scale_invariance.md`](deflation_scale_invariance.md); it is a prerequisite for
-   trusting `tol` as an accuracy contract in any restarted kernel.
+   deflated to rank 0 — every warm-started solve was silently returned its own input — and
+   `BREAKDOWN_TOL` was dead code. It is now a relative rank test plus a breakdown test against a
+   caller-supplied operator scale, the `1e-5` breakdown in `_trlm_core` is gone (it becomes
+   `max(tol, BREAKDOWN_TOL * ||T||)`), and fixing it turned up two further defects: a
+   width-bookkeeping bug in `_trlm_core`'s restart (the *retained Ritz block* deflates, not the
+   trailing residual — a different site from this plan's two IRLM ones) and a partial-reort
+   estimator that under-predicted the loss on any warm start. See
+   [`deflation_scale_invariance.md`](deflation_scale_invariance.md). `tol` is now an accuracy
+   contract in TRLM: warm-started NiO reaches `||r|| = 3.0e-14` at `tol = 1e-12`.
+   Still open in this item: the `sqrt(eps)` spellings, the double-pass `for _ in range(2)`,
+   deflation via zero-padding vs block-shrink, the silent Cholesky→eigh fallback, and the
+   SELECTIVE rank-0-gated decision + `bcast`.
 
 **Chosen approach**: *incremental unification* (first make both kernels behaviorally
 identical and fully tested, then extract a shared engine); *reliability-first,

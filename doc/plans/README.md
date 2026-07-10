@@ -87,20 +87,20 @@ The plans have dependencies. Read and execute in this order:
    Phase 3b (the driver, as an opt-in `gf_method`) is the open work — but price *shifted*
    BiCGSTAB first, which would keep the flat memory and get the whole mesh from one Krylov space.
 
-8. **[deflation_scale_invariance.md](deflation_scale_invariance.md)** — `_cholesky_or_deflate`'s
-   rank test is **absolute**, not relative: any residual block smaller than `EPS**(1/3) ~ 6.06e-6`
-   deflates to rank 0 however well conditioned it is. Every **warm-started** Krylov solve is
-   therefore handed back its own input and reports success — measured for `block_bicgstab` (fixed
-   locally in `f4d2aea`) and for TRLM warm-started from `CIPSISolver.expand`'s eigenvectors, which
-   returns them unimproved at `||r|| = 2.2e-9` and caps the production ground-state accuracy
-   whatever `tol` asks. The fix (relative rank test + the currently-**dead** `BREAKDOWN_TOL` for
-   breakdown) is written and **reverted**: it exposed a latent width-bookkeeping bug in
-   `_trlm_core` (`D = sum(cur_widths) = 108` vs `Q_basis`'s 105 columns). That blocker is now
-   **fixed** — the retained Ritz block can deflate, and the thick-restart shortcuts additionally
-   needed `Q^H Q = I`, not merely full rank (`reort=NONE` measured `||Q^H Q - I|| = 1.0` and
-   returned eigenvalues off by `4.1e3`, silently) — so the deflation change is unblocked. Two
-   absolute `1e-5` invariant-subspace floors in `_trlm_core` belong in the same commit.
-   Independent of plans #1–#3 in scope, but it is the mechanism behind several of their symptoms.
+8. **[deflation_scale_invariance.md](deflation_scale_invariance.md)** — ✅ **DONE.**
+   `_cholesky_or_deflate` answered two questions with one test. Its rank test was **absolute**,
+   not relative: any residual block smaller than `EPS**(1/3) ~ 6.06e-6` deflated to rank 0 however
+   well conditioned it was, so every **warm-started** Krylov solve was handed back its own input
+   and reported success — `block_bicgstab` (fixed locally in `f4d2aea`) and TRLM warm-started from
+   `CIPSISolver.expand`'s eigenvectors, which returned them unimproved at `||r|| = 2.2e-9` and
+   capped the production ground-state accuracy whatever `tol` asked. Meanwhile `BREAKDOWN_TOL` was
+   dead code. Landing it took three commits, because two independent defects hid behind it: a
+   width-bookkeeping bug in `_trlm_core`'s restart (the *retained Ritz block* can deflate, and the
+   thick-restart shortcuts need `Q^H Q = I` rather than merely full rank), and a partial-reort
+   estimator that seeded `omega_{i+1,i}` with `beta_0` as a stand-in for `||H||` — true for a cold
+   start, catastrophic for a warm one. Warm-started TRLM on NiO now reaches `||r|| = 3.0e-14`
+   instead of `2.2e-9`, so `cipsi_solver._eigen_tol` finally bites. See the plan for the numbers,
+   the two wrong diagnoses along the way, and what is deliberately left behind.
 
 ## Reference
 
