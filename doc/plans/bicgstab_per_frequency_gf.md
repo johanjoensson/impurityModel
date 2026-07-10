@@ -7,7 +7,10 @@ Hamiltonians now load straight from the `impmod_tests` HDF5 archives. On them: t
 monitor (`81a3c75`) is worth ~10x on a Matsubara-only self-energy and ~nothing on the real axis;
 block counts are in the low hundreds, not 10; and per-frequency BiCGSTAB is ~35x slower for zero
 memory saving. FCC Ni's memory is the **excited basis**, not the Krylov store — it runs
-`reort=none`, which stores no `Q` at all. See
+`reort=none`, which stores no `Q` at all. The corrected memory model is
+`peak ~ C * (s_live + 16*m*p)`, not `Q` alone: both methods pay the live block-state support
+`s_live * C`, so BiCGSTAB's ceiling is `(s_live + 16*m*p)/(s_live + 112*p)` — 2.0x at `m = 114`,
+8.7x at `m = 833`, and **0.93x** (a loss) at `reort=none`. See
 [Phase 3a-quinquies](#phase-3a-quinquies--measured-on-the-real-workloads-2026-07-10).
 
 ## Why
@@ -466,11 +469,53 @@ no occupation window (`dN=None`) and no determinant cap. Per-frequency BiCGSTAB 
 it grows the same basis by the same mechanism, and on the synthetic anchor it grew it *further*
 (3232 -> 4000 vs Lanczos's 3232).
 
-**Open, and now the load-bearing question for Phase 3b:** on FCC Ni, how is the peak footprint split
-between the excited basis and the retained `Q`, at `reort=partial` where `Q` exists? Until that is
-measured, neither "BiCGSTAB is the memory escape hatch" nor its negation is established. What *is*
-established is that the escape hatch does not help the one configuration that actually ran out of
-memory here, because that configuration stores no `Q`.
+### The corrected trade law
+
+`_CappedBasisProxy`'s own docstring names the thing this plan's cost model omitted: *"the matvec
+discovers new Slater determinants every step, so the **live block-state support** (and, at
+`reort != none`, the Krylov store) grows without bound — the excited `Basis` itself stays frozen and
+never sees them."* So `len(basis)` is not the support, and the recurrence's footprint is the support,
+not `Q`.
+
+FCC Ni, one GF unit, `truncation_threshold = C` capping that support:
+
+| axis | `C` | `m` | `reort=none` | `reort=partial` | difference | `16·m·p·C` |
+|---|---|---|---|---|---|---|
+| Matsubara | 100 000 | 34 | 129 MiB | 188 MiB | 59 MiB | 54 MiB |
+| Matsubara | 400 000 | 34 | 489 MiB | 767 MiB | 278 MiB | 218 MiB |
+| real | 100 000 | 115 / 114 | 159 MiB | 359 MiB | 200 MiB | 174 MiB |
+
+The difference between the two reort modes *is* the Krylov store, and it matches `16·m·p·C` bytes.
+So the real model, per unit, is
+
+    peak(Lanczos)  ~ C * (s_live + 16*m*p)          s_live ~ 1.3-1.7 kB/determinant
+    peak(BiCGSTAB) ~ C * (s_live + 16*L*p)          L = 7 live blocks
+
+and the memory ratio is **not** `m*p/7`. It is
+
+    memory_ratio = (s_live + 16*m*p) / (s_live + 16*L*p)
+
+Both methods pay `s_live * C`. That term is common, unavoidable, and at FCC Ni's operating point it
+is the *larger* one. Evaluated at `p = 1`, `s_live = 1.6 kB`:
+
+    m = 114  ->  2.0x   (measured 359/171)
+    m = 250  ->  3.3x
+    m = 833  ->  8.7x
+
+Against ~35x the wall time. And FCC Ni's production `reort=none` stores **no `Q` at all**, so there
+the ratio is `159 / 171 = 0.93x`: per-frequency BiCGSTAB would use *more* memory than block Lanczos,
+not less.
+
+**Conclusion.** The escape hatch is real but bounded, and it is bounded by a term the plan never
+modelled. It buys at most `(s_live + 16*m*p)/(s_live + 112*p)` — never the `m*p/7` this document
+claimed — it requires `reort != none`, and it costs ~35x wall. The one configuration that actually
+exhausted memory here (FCC Ni uncapped, `reort=none`, `dN=None`, no determinant cap, 11.7 GiB and
+climbing inside its first unit) is the one BiCGSTAB cannot help, because its memory is entirely the
+live support that BiCGSTAB grows identically.
+
+If FCC Ni needs to fit in RAM, the lever is `truncation_threshold` (it is `None` in that run) or a
+`dN` window on the excited sector — not the linear solver. `memory_estimate.estimate_gf_peak_bytes`
+should be corrected to model `C * (s_live + 16*m*p)` rather than `Q` alone.
 
 ## Phase 3b — The driver (blocked: it has no case)
 
