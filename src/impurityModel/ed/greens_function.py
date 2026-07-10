@@ -459,6 +459,17 @@ def get_Greens_function(
 
     def kernel(split_basis, u, seeds):
         unit = units[u]
+        # Converge G where this unit's G will actually be evaluated: the caller's meshes, shifted
+        # by each thermal energy the unit stacks and signed by its spectral side. Without this the
+        # monitor resolves the real-axis resolvent at broadening `delta` even for a Matsubara-only
+        # self-energy, which costs 3.6-4.1x the blocks such a run needs.
+        eval_meshes = _gf_eval_meshes(
+            matsubara_mesh,
+            omega_mesh,
+            group_meta[unit.group_i][1],
+            delta,
+            [es[ei] for ei in unit.chunk],
+        )
         alphas, betas, r, n_basis, cap_stats = _block_green_group(
             split_basis,
             hOp,
@@ -470,6 +481,7 @@ def get_Greens_function(
             verbose_extra,
             unit_restrictions[u],
             excited_weighted_restrictions,
+            eval_meshes=eval_meshes,
         )
         if verbose_extra:
             print(f"Expanded excited state basis contains {n_basis} elements.")
@@ -679,6 +691,7 @@ def _block_green_group(
     verbose,
     excited_restrictions,
     excited_weighted_restrictions,
+    eval_meshes=None,
 ):
     """Run one (possibly wide) block-Lanczos Green's function for a group of stacked seeds.
 
@@ -689,6 +702,10 @@ def _block_green_group(
     per eigenstate (``r[:, p*n_ops:(p+1)*n_ops]``) since ``(alphas, betas)`` are shared by the
     group. ``cap_stats`` is ``{"cap_hit", "retained_size", "cap"}`` describing whether this
     solve froze at ``truncation_threshold`` (feeds the basis_cap diagnostic).
+
+    ``eval_meshes`` (:func:`_gf_eval_meshes`) tells the convergence monitor which frequencies this
+    unit's ``G`` will be evaluated on. Passing ``None`` -- the default, and what the spectra/RIXS
+    callers do -- leaves it converging the real-axis resolvent over the resolved Ritz band.
     """
     excited_basis = split_basis.clone(
         initial_basis=set(state for p in group_seed_states for state in p),
@@ -712,6 +729,7 @@ def _block_green_group(
             slaterWeightMin=slaterWeightMin,
             verbose=verbose,
             cap_info=cap_info,
+            eval_meshes=eval_meshes,
         )
         cap_stats = {
             "cap_hit": bool(cap_info.get("cap_hit", False)),
@@ -727,6 +745,7 @@ def _block_green_group(
             delta=delta,
             slaterWeightMin=slaterWeightMin,
             verbose=verbose,
+            eval_meshes=eval_meshes,
         )
         # The array path stops expanding when the basis crosses the cap (never removes).
         cap_stats = {
@@ -913,9 +932,13 @@ def block_Green(
     reort,
     slaterWeightMin=0,
     verbose=True,
+    eval_meshes=None,
 ):
     """
     calculate  one block of the Greens function. This function builds the many body basis iteratively. Reducing memory requrements.
+
+    ``eval_meshes`` is the caller's evaluation mesh per axis (see :func:`_gf_eval_meshes`); ``None``
+    leaves the convergence monitor on its spectral-edge fallback.
     """
 
     len(basis)
@@ -925,7 +948,7 @@ def block_Green(
     # diff below has matching shapes; they are trimmed to true block widths before
     # any continued-fraction evaluation and at the final return.
     alphas, betas, r, last_q, widths = block_green_impl(
-        basis, hOp, basis.redistribute_psis(psi_arr), delta, reort, slaterWeightMin, verbose
+        basis, hOp, basis.redistribute_psis(psi_arr), delta, reort, slaterWeightMin, verbose, eval_meshes
     )
     done = False
     while not done:
@@ -954,7 +977,7 @@ def block_Green(
         betas_prev = betas
         widths_prev = widths
         alphas, betas, r, last_q, widths = block_green_impl(
-            basis, hOp, basis.redistribute_psis(psi_arr), delta, reort, slaterWeightMin, verbose
+            basis, hOp, basis.redistribute_psis(psi_arr), delta, reort, slaterWeightMin, verbose, eval_meshes
         )
 
         n_test = min(alphas.shape[0], alphas_prev.shape[0])
@@ -1010,7 +1033,29 @@ def _scatter_qr_columns(comm, psi_dense, r, local_size):
 # Relative-change convergence floor for the block-Lanczos Green's function, shared by the
 # runtime monitor (_make_gf_convergence_monitor) and the post-hoc diagnostic summary
 # (_lanczos_convergence_summary) so the two can never disagree -- single source of truth.
-_GF_REL_TOL_FLOOR = 1e-6
+#
+# 1e-9, not the historical 1e-6. While the monitor sampled the whole Ritz band on the real axis it
+# converged a resolvent the caller often never evaluated, and so *over*-delivered: a declared 1e-6
+# returned sigma accurate to 1e-13..1e-15. Now that it tests G on the caller's own mesh the
+# tolerance means what it says, and leaving the floor at 1e-6 would have quietly turned that into
+# ~5e-8. Measured end to end on the 20-bath NiO self-energy, sigma against a deeply-converged
+# reference, with the number of Lanczos blocks the run actually produced:
+#
+#     monitor        floor    Matsubara            real axis            blocks
+#     band-wide      1e-6     3.2e-15              2.3e-13                 336
+#     caller's mesh  1e-6     2.0e-08              5.2e-08                 158
+#     caller's mesh  1e-9     3.5e-11              2.4e-12                 180 / 214
+#     caller's mesh  1e-10    3.8e-14              2.4e-12                 214
+#
+# So 1e-9 is a deliberate trade, not a restoration: against the old *accidental* accuracy it gives
+# up ~4 orders on the Matsubara axis and ~10x on the real axis, both still comfortably inside the
+# tolerance it now honestly declares, and it needs 1.9x fewer blocks (and 1.9x less retained Q).
+# Callers who want the old numbers back should set 1e-10, which costs 1.57x instead.
+#
+# Note `_gf_rel_tol` takes max(slaterWeightMin**2, this), so this floor -- not the cutoff --
+# governs every production slaterWeightMin (1e-5 gives 1e-10, far below it). Only a cutoff looser
+# than sqrt(floor) ever overrides it, and then basis truncation is the accuracy limit anyway.
+_GF_REL_TOL_FLOOR = 1e-9
 # Minimum blocks before the convergence mesh may be frozen (let the extremal Ritz values start
 # to settle before we commit to a sampling window).
 _GF_MESH_FREEZE_BLOCKS = 3
@@ -1035,6 +1080,56 @@ _GF_CHECK_EVERY = int(os.environ.get("GF_CHECK_EVERY", 8))  # set to 1 to disabl
 # relative change typically sits on a long noisy plateau a decade or two above tolerance before
 # the final descent, and that plateau must stay in the sparse regime for the sampling to pay off.
 _GF_NEAR_FACTOR = float(os.environ.get("GF_NEAR_FACTOR", 2.0))
+# Sample points per requested axis, per eigenstate, when the caller's evaluation mesh is known
+# (see _gf_eval_meshes). The production real-axis mesh is ~2000 points and the Matsubara one ~375;
+# feeding either to the monitor verbatim would multiply the continued-fraction cost above -- which
+# is already the largest single cost of the recurrence -- by more than an order of magnitude. The
+# monitor only has to decide *whether* G has stopped moving, so it subsamples. Matches the 64
+# points _gf_sample_mesh uses for its spectral-edge fallback, so the cost is unchanged.
+_GF_MONITOR_POINTS = 64
+
+
+def _gf_eval_meshes(matsubara_mesh, omega_mesh, side_i, delta, es, n_points=_GF_MONITOR_POINTS):
+    r"""The frequencies the caller will actually evaluate ``G`` at, in the ``alphas`` frame.
+
+    ``calc_G`` forms :math:`\omega_P = \omega + i\delta + e`, and ``get_Greens_function`` calls it
+    with ``(+mesh, +delta)`` for the addition side and ``(-mesh, -delta)`` for removal, with
+    ``delta = 0`` on the Matsubara axis. Reproduce exactly that, for every thermal eigenstate the
+    unit stacks.
+
+    Returned as one array **per axis**, not one concatenated array, because the convergence measure
+    is relative: :math:`\max|\Delta G| / \max|G|` over a mesh spanning both axes would divide the
+    real-axis change by the Matsubara peak. At :math:`T = 0.002` and :math:`\delta = 0.2` those
+    scales are :math:`1/\pi T \approx 159` and :math:`1/\delta = 5`, so the real axis would be
+    declared converged more than an order of magnitude early. The monitor takes the max of the
+    per-axis relative changes instead.
+
+    Returns ``None`` when the caller asked for no mesh at all, which sends the monitor back to its
+    spectral-edge fallback.
+    """
+    axes = []
+    if matsubara_mesh is not None:
+        axes.append((np.asarray(matsubara_mesh), 0.0))
+    if omega_mesh is not None:
+        axes.append((np.asarray(omega_mesh), delta))
+    if not axes:
+        return None
+
+    # sign selects addition (+) vs removal (-); it multiplies the mesh *and* the broadening, so the
+    # sampled points keep Im(z) of the same sign as the unit's signed delta -- which is what
+    # _greens_function_change's spurious-weight test compares against.
+    sign = 1.0 if side_i == 0 else -1.0
+    per_axis = max(2, n_points // max(1, len(es)))
+
+    meshes = []
+    for axis_mesh, axis_delta in axes:
+        sub = (
+            axis_mesh
+            if len(axis_mesh) <= per_axis
+            else axis_mesh[np.linspace(0, len(axis_mesh) - 1, per_axis).astype(int)]
+        )
+        meshes.append(np.concatenate([sign * sub + 1j * sign * axis_delta + e for e in es]).astype(complex))
+    return meshes
 
 
 def _gf_eigenstate_group():
@@ -1205,21 +1300,33 @@ def _gf_rel_tol(slaterWeightMin):
     return max(slaterWeightMin**2, _GF_REL_TOL_FLOOR)
 
 
-def _make_gf_convergence_monitor(delta, slaterWeightMin):
-    r"""Frozen-mesh relative-change convergence monitor for the block-Lanczos Green's function.
+def _make_gf_convergence_monitor(delta, slaterWeightMin, eval_meshes=None):
+    r"""Relative-change convergence monitor for the block-Lanczos Green's function.
 
     Shared by both GF kernels (``block_green_impl``, ``block_Green_sparse``). Returns
     ``(converged_fn, converged_flag, delta_min)`` where ``delta_min`` is the convergence
     tolerance actually used (the single source of truth for the warning messages, so they
     never drift from this declaration): ``converged_fn(alphas, betas, verbose, block_widths)``
-    estimates ``G`` on an *adaptively* frozen mesh -- frozen once the spectral edges settle and
-    re-extended if a later block escapes the window (:func:`_gf_converged_mesh`) -- and reports
-    convergence only after :data:`_GF_CONSEC_CONVERGED` *consecutive* steps whose relative change
-    (:func:`_greens_function_change`, with the cross-step ``gs_cache``) stays below
-    ``max(slaterWeightMin**2, 1e-6)``.  Requiring the mesh to cover the resolved support and the
-    tolerance to hold for several steps in a row guards against premature convergence on a
-    too-narrow window or a single fluke step.  ``converged_flag[0]`` records whether convergence
-    was actually declared, for the non-convergence warning.
+    estimates ``G`` and reports convergence only after :data:`_GF_CONSEC_CONVERGED` *consecutive*
+    steps whose relative change (:func:`_greens_function_change`, with the cross-step ``gs_cache``)
+    stays below ``max(slaterWeightMin**2, 1e-6)``.  Requiring the tolerance to hold for several
+    steps in a row guards against a single fluke step.  ``converged_flag[0]`` records whether
+    convergence was actually declared, for the non-convergence warning.
+
+    ``eval_meshes`` (from :func:`_gf_eval_meshes`) is the list of frequency arrays the caller will
+    actually evaluate ``G`` on -- one per requested axis, already shifted into the ``alphas`` frame.
+    Given it, the monitor tests convergence *there*, and takes the **max** of the per-axis relative
+    changes so neither axis can mask the other.
+
+    Without it the monitor falls back to an *adaptively* frozen mesh spanning the resolved Ritz
+    band on the line :math:`\omega + i\delta` (:func:`_gf_converged_mesh`) -- frozen once the
+    spectral edges settle and re-extended if a later block escapes the window. That fallback
+    converges the **real-axis** resolvent at broadening ``delta`` whether or not a real-axis mesh
+    was requested, and a Matsubara point :math:`i\omega_n` sits a distance
+    :math:`\sqrt{E_k^2 + \omega_n^2}` from every pole while a real-axis point can come within
+    ``delta`` of one. So a Matsubara-only self-energy was being charged for a resolvent it never
+    evaluates: measured 3.6-4.1x more blocks than it needs, against 1.2-1.4x when the real axis is
+    also requested. It remains the right behaviour for a caller that supplies no mesh.
     """
     delta_min = _gf_rel_tol(slaterWeightMin)
     converged_flag = [False]
@@ -1228,6 +1335,18 @@ def _make_gf_convergence_monitor(delta, slaterWeightMin):
     consec = [0]  # consecutive sub-tolerance steps on the current (stable) mesh
     step = [0]  # block count since the mesh froze, for the adaptive sampling gate
     last_dg = [None]  # most recent relative change, to decide sparse vs dense sampling
+    # One continued-fraction cache per axis: the caller's meshes never move, so the cross-step
+    # reuse in _greens_function_change is always valid and never needs the freeze bookkeeping.
+    axis_caches = [[None, 0] for _ in (eval_meshes or ())]
+
+    def converged_on_eval_meshes(alphas, betas, verbose, block_widths):
+        d_g = 0.0
+        for mesh, cache in zip(eval_meshes, axis_caches):
+            d = _greens_function_change(alphas, betas, block_widths, delta, omegaP=mesh, cache=cache)
+            if d is None:  # spurious (wrong-sign) imaginary part on this axis -> not converged
+                return None
+            d_g = max(d_g, d)
+        return d_g
 
     def converged(alphas, betas, verbose=False, block_widths=None, **kwargs):
         if len(alphas) <= 1:
@@ -1245,24 +1364,29 @@ def _make_gf_convergence_monitor(delta, slaterWeightMin):
         near = last_dg[0] is not None and last_dg[0] < _GF_NEAR_FACTOR * delta_min
         if not near and (step[0] % _GF_CHECK_EVERY) != 0:
             return False
-        A_trim, _ = (
-            _trim_blocks(alphas, betas, block_widths)
-            if (block_widths is not None and len(block_widths) == len(alphas))
-            else ([np.asarray(a) for a in alphas], None)
-        )
-        res = _gf_converged_mesh(A_trim, delta)
-        if res is None:  # spectral edges have not settled yet -> keep building
-            return False
-        mesh, frozen = res
-        if frozen != mesh_cache[1]:
-            # First freeze or a re-extension changed the mesh: the cross-step resolvent cache and
-            # the consecutive-step count are measured against the old window, so reset both and
-            # re-confirm convergence on the new one.
-            mesh_cache[0], mesh_cache[1] = mesh, frozen
-            gs_cache[0], gs_cache[1] = None, 0
-            consec[0] = 0
-            last_dg[0] = None
-        d_g = _greens_function_change(alphas, betas, block_widths, delta, omegaP=mesh_cache[0], cache=gs_cache)
+        if eval_meshes is not None:
+            # The caller's mesh is fixed from the start, so there is nothing to freeze or
+            # re-extend: no spectral-edge warm-up, no cache resets.
+            d_g = converged_on_eval_meshes(alphas, betas, verbose, block_widths)
+        else:
+            A_trim, _ = (
+                _trim_blocks(alphas, betas, block_widths)
+                if (block_widths is not None and len(block_widths) == len(alphas))
+                else ([np.asarray(a) for a in alphas], None)
+            )
+            res = _gf_converged_mesh(A_trim, delta)
+            if res is None:  # spectral edges have not settled yet -> keep building
+                return False
+            mesh, frozen = res
+            if frozen != mesh_cache[1]:
+                # First freeze or a re-extension changed the mesh: the cross-step resolvent cache
+                # and the consecutive-step count are measured against the old window, so reset both
+                # and re-confirm convergence on the new one.
+                mesh_cache[0], mesh_cache[1] = mesh, frozen
+                gs_cache[0], gs_cache[1] = None, 0
+                consec[0] = 0
+                last_dg[0] = None
+            d_g = _greens_function_change(alphas, betas, block_widths, delta, omegaP=mesh_cache[0], cache=gs_cache)
         if d_g is None:  # spurious (wrong-sign) imaginary part -> not converged
             consec[0] = 0
             last_dg[0] = None
@@ -1278,7 +1402,7 @@ def _make_gf_convergence_monitor(delta, slaterWeightMin):
     return converged, converged_flag, delta_min
 
 
-def block_green_impl(basis, hOp, psi_arr, delta, reort, slaterWeightMin, verbose):
+def block_green_impl(basis, hOp, psi_arr, delta, reort, slaterWeightMin, verbose, eval_meshes=None):
     """
     Internal block Green's function implementation.
 
@@ -1331,7 +1455,7 @@ def block_green_impl(basis, hOp, psi_arr, delta, reort, slaterWeightMin, verbose
     if psi_dense_local.shape[1] == 0:
         return np.zeros((0, n, n), dtype=complex), np.zeros((0, n, n), dtype=complex), r, psi_arr, []
 
-    converged, converged_flag, delta_min = _make_gf_convergence_monitor(delta, slaterWeightMin)
+    converged, converged_flag, delta_min = _make_gf_convergence_monitor(delta, slaterWeightMin, eval_meshes)
 
     # The continued fraction only consumes alphas/betas plus the final residual block
     # (q_last below), so with reort NONE skip the full Krylov-basis retention.
@@ -1608,6 +1732,7 @@ def block_Green_sparse(
     verbose=True,
     cap_info=None,
     krylov_dtype=None,
+    eval_meshes=None,
 ):
     """
     calculate  one block of the Greens function. This function builds the many body basis iteratively. Reducing memory requrements.
@@ -1628,6 +1753,10 @@ def block_Green_sparse(
     guarantee that a capped recurrence reproduces the dense ``P H P`` resolvent (see
     ``test_gf_truncation``). Only the *stored* basis narrows -- the recurrence, the overlaps
     and the residual stay complex128. See ``doc/plans/blocklanczos_reort_memory.md``.
+
+    ``eval_meshes`` is the caller's evaluation mesh per axis (see :func:`_gf_eval_meshes`), which
+    the convergence monitor tests ``G`` on. ``None`` leaves it on the spectral-edge fallback, which
+    converges the real-axis resolvent whether or not a real-axis mesh was asked for.
     """
     mpi = basis.comm is not None
     comm = basis.comm if mpi else None
@@ -1651,7 +1780,7 @@ def block_Green_sparse(
     if len(psi_arr) == 0:
         return np.empty((0, n, n), dtype=complex), np.empty((0, n, n), dtype=complex), r
 
-    converged, converged_flag, delta_min = _make_gf_convergence_monitor(delta, slaterWeightMin)
+    converged, converged_flag, delta_min = _make_gf_convergence_monitor(delta, slaterWeightMin, eval_meshes)
 
     # The block-Lanczos matvec (h_op.apply_multi) discovers new Slater determinants as the
     # recurrence proceeds, so the reachable Krylov dimension is *not* bounded by the initial
