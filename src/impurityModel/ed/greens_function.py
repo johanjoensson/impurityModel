@@ -1052,6 +1052,14 @@ def _scatter_qr_columns(comm, psi_dense, r, local_size):
 # tolerance it now honestly declares, and it needs 1.9x fewer blocks (and 1.9x less retained Q).
 # Callers who want the old numbers back should set 1e-10, which costs 1.57x instead.
 #
+# CAVEAT: that table was measured on `_nio_workload`, which defaults to
+# `chargeTransferCorrection=None`. Without a double counting the addition-GF poles sit ~14688 eV
+# above E0 while the meshes span |z| <= 4.7, so `G` is *constant* on the frequencies it is evaluated
+# at (relative variation 5.0e-08 across the whole Matsubara mesh). The tolerance choice is
+# conservative -- 1e-9 is strictly tighter than the old 1e-6, so nothing can silently degrade -- but
+# the *cost* it quotes is not established. Re-measure on a workload whose spectral weight lies
+# inside the evaluation window. See doc/plans/bicgstab_per_frequency_gf.md, Phase 3a-quater.
+#
 # Note `_gf_rel_tol` takes max(slaterWeightMin**2, this), so this floor -- not the cutoff --
 # governs every production slaterWeightMin (1e-5 gives 1e-10, far below it). Only a cutoff looser
 # than sqrt(floor) ever overrides it, and then basis truncation is the accuracy limit anyway.

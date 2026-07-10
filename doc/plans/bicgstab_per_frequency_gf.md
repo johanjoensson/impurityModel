@@ -1,12 +1,14 @@
 # Per-frequency BiCGSTAB Green's function
 
-**Status (2026-07-10): the memory case is gone.** Phases 0–2 done; BiCGSTAB is consolidated into
-`src/cython/` and is matvec-bound (93% of a solve). Phase 3a priced it against a block-Lanczos
-recurrence whose convergence monitor sampled the whole Ritz band on the real axis — even for a
-Matsubara-only mesh. With that fixed (`81a3c75`, `_gf_eval_meshes`), the same Lanczos recurrence
-converges in **10 blocks instead of 74**, and per-frequency BiCGSTAB comes out **136x slower and
-only 1.15x leaner**. It is not the memory escape hatch; the memory requirement it was meant to
-escape was a monitor bug. See [Phase 3a-ter](#phase-3a-ter--the-re-price-2026-07-10).
+**Status (2026-07-10): Phase 3a-ter is RETRACTED. The benchmark measures a Green's function with
+no spectral weight in the evaluation window.** Phases 0–2 stand. The mesh-aware convergence monitor
+(`81a3c75`) is correct — it converges `G` where the caller evaluates it, verified to 3e-16 — but the
+speedups and the BiCGSTAB re-price attributed to it were measured on `_nio_workload`, which runs
+with `chargeTransferCorrection=None`. Without a double counting the Coulomb `u4` is never
+subtracted, so `E0 = -14757 eV` and the addition-GF poles sit at **+14688 eV** while the meshes
+span `|z| <= 4.7`. Measured: `||G(i w_n)||` varies by **5.0e-08** across the whole 375-point
+Matsubara mesh, and `max|Im G|` on the real axis is `1.1e-06`. `G` is a **constant** there. "It
+converged in 10 blocks" says nothing. See [Phase 3a-quater](#phase-3a-quater--the-benchmark-is-vacuous).
 
 ## Why
 
@@ -323,6 +325,66 @@ escape hatch — rests on `m` in the hundreds, and every observation of that reg
 a monitor that was converging a resolvent nobody asked for, or a recurrence that was diverging.
 Before any further work on this path, someone must exhibit a **converged** Green's function whose
 retained `Q` does not fit. That has not been done.
+
+## Phase 3a-quater — The benchmark is vacuous
+
+Everything measured on `_nio_workload` in Phase 3a, 3a-bis and 3a-ter is measured on a Green's
+function that is **constant on the frequencies it is evaluated at**. This invalidates 3a-ter's
+conclusion, and it puts an asterisk on 3a's and 3a-bis's.
+
+`_nio_workload.build_selfenergy_inputs` defaults `chargeTransferCorrection=None`. Its own comment
+says what that means — "the full Coulomb (u4) is double-counted against h0's mean-field d level
+(d8 sits ~180 eV above d2), so the impurity empties and only the occupation window keeps it near
+nominal" — but the consequence for the *Green's function* was never drawn. Measured, addition GF,
+NiO 50 bath, width-5 seed block:
+
+    E0                                                    -14757.522 eV
+    addition-GF poles carrying weight                50    [+14688.185, +14875.725] eV
+    Matsubara mesh                                        |z| <= 4.71
+    real-axis mesh                                        [-1.83, 1.83] + 0.2i
+    min |i w_n - pole|                                    14688.18 eV
+    ||G(i w_n)|| across the whole 375-point mesh          7.015971e-05 -> 7.015971e-05
+       relative variation                                 5.04e-08
+    ||G(w + 0.2i)|| across [-1.83, 1.83]
+       relative variation                                 2.47e-04
+    max |Im G| on the real axis (the spectral function)   1.14e-06
+
+So the resolvent the driver evaluates is `sum_k w_k / (z - 14688)`: a constant. The band-wide
+monitor needed 74-193 blocks because *its* mesh was built from the Ritz band — i.e. around the
+poles, where the structure actually is. The mesh-aware monitor stops at 10 because there is nothing
+to resolve in the window. Both are behaving correctly. The workload is the problem.
+
+What this does and does not invalidate:
+
+* **The mesh-aware monitor (`81a3c75`) is still right.** `G` on the requested mesh is genuinely
+  converged at 10 blocks (`G(m=10) == G(m=108)` to 3.0e-16). Converging where you evaluate is the
+  correct criterion. It is only the *magnitude* of the saving that this workload exaggerates: a
+  physical `G` has its weight inside the window, and the mesh-aware monitor must then resolve it.
+* **`_GF_REL_TOL_FLOOR = 1e-6 -> 1e-9` was calibrated on this workload.** The accuracy table in
+  `greens_function.py` compares `sigma` values derived from a constant `G`. The change is
+  conservative (strictly tighter) so it cannot silently degrade anything, but the *cost* it quotes
+  (1.9x fewer blocks) is not established. Re-measure on a physical workload.
+* **Phase 3a-ter's re-price is withdrawn.** "136x slower, 1.15x leaner" is the cost of BiCGSTAB
+  against a Lanczos recurrence that had nothing to do. It says nothing about the memory trade.
+* **Phase 3a's 6.8x / ~28-point breakeven is also suspect**, for the same reason: it priced against
+  the band-wide monitor, which was resolving a resolvent 14688 eV from the mesh.
+
+**Before this plan can be re-priced, the benchmark needs a Green's function with spectral weight in
+the window it is evaluated on.** Three workloads to build, none of which the current anchor covers:
+
+1. **A physically double-counted NiO** (`chargeTransferCorrection` set), so the addition pole sits
+   a few eV from `E_F` instead of 14688 eV. Note that turning the DC on with today's other defaults
+   collapses the ground-state basis to 34 determinants and the excited basis to 1 — the workload
+   needs re-tuning, not just a flag.
+2. **A metal.** NiO's 50-bath fit has **zero conduction bath states** (all 50 levels lie in
+   [-7.29, -0.69] eV), so the excited sector is gapped and `c^dag` cannot put an electron near
+   `E_F`. FCC Ni is gapless: poles arbitrarily close to `i w_0 = 0.0063`, which is exactly the
+   regime that makes the Matsubara resolvent hard. `h0_106.dat` is *not* FCC Ni — it is a NiO
+   Haverkort double-chain fit with nominal impurity occupation 8.
+3. **A system with off-diagonal blocks.** Without SOC the NiO impurity block structure is ten 1x1
+   blocks, so every `G` in the benchmark is scalar. With `xi = 0.083 eV` the blocks become
+   `[[0,4,8],[1,5,9],[2,6],[3,7]]` — widths 3,3,2,2 — and the block-Lanczos recurrence must resolve
+   a genuine matrix-valued resolvent with deflation.
 
 ## Phase 3b — The driver (blocked: it has no case)
 
