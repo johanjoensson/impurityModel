@@ -725,12 +725,18 @@ class CIPSISolver:
                 if max_energy is None or len(e_ref) == 0:
                     break
                 _, need_more = _energy_cut_indices(e_ref, max_energy)
+                # A short return means the eigensolver exhausted the Krylov space reachable from
+                # `psi0` -- it hit an invariant subspace, which a block warm-started from converged
+                # eigenvectors does immediately. Doubling `num_wanted` then re-solves the *same*
+                # subspace and returns the same states, at the cost of a full re-solve each time.
+                # Stop and let the warning below report the uncertified manifold.
+                exhausted = len(e_ref) < num_wanted
                 # `restarted_lanczos` is collective. `e_ref` is replicated but only to roundoff,
                 # so a state sitting on the cut could make ranks disagree about re-solving and
                 # deadlock. Decide on rank 0 and broadcast, per the MPI rule in CLAUDE.md.
                 if self.basis.is_distributed:
-                    need_more = self.basis.comm.bcast(need_more, root=0)
-                if not need_more or num_wanted >= cap:
+                    need_more, exhausted = self.basis.comm.bcast((need_more, exhausted), root=0)
+                if not need_more or exhausted or num_wanted >= cap:
                     break
                 num_wanted = min(2 * num_wanted, cap)
                 max_subspace = min(max(2 * num_wanted, num_wanted + 10), cap)
