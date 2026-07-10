@@ -43,9 +43,31 @@ Consequences per reort mode:
 
 - **NONE** (GF default): valid; only ~3 live blocks exist and the importance measure
   is the current residual, so the cap adds **zero Krylov-store** overhead (there is no
-  store). This does *not* make the path free: the recurrence still holds every retained
-  determinant as live support, measured at ~1.3–1.7 kB/det on the real workloads (FCC Ni
-  OOMs here, not on the store). See `memory_estimate._GF_RECURRENCE_OVERHEAD_BYTES`.
+  store). It is not *free* — the recurrence still holds every retained determinant as the
+  excited basis plus 3 live blocks, ~450–550 B/det at block width 1 (below) — but it is
+  bounded, and cheaper than any reort mode.
+
+### VmHWM memory calibration (2026-07)
+
+The per-determinant memory constants in `memory_estimate` were validated against measured
+peak RSS. The real test workloads are too small to do this end-to-end: FCC Ni's ground
+state is ~1.7k determinants and its Green's-function excited basis ~3k (under the mesh-aware
+monitor), so the determinant-scaling terms sit under the ~213 MiB Python/import floor and
+cannot be separated from it. (The 11.7 GiB FCC Ni "OOM in one GF unit" was the *band-wide*
+monitor's divergent m≈833 recurrence, since fixed — not a large basis.)
+
+So the basis storage slope was measured directly: a synthetic `Basis` of N distinct
+determinants at nso=124, N ∈ {1,2,4}×10⁵, resident RSS and VmHWM linear-fit above the floor.
+
+| quantity | slope | model |
+| --- | --- | --- |
+| resident RSS / det | 273 B | — |
+| VmHWM / det (incl. transient input) | 333 B | `bytes_per_determinant(124)` = 72 + `_PY_BASIS_OVERHEAD_BYTES` |
+| ⇒ `_PY_BASIS_OVERHEAD_BYTES` | 261 B to match VmHWM | set to **260** |
+
+GF `reort=none` per-det is then basis (~330) + 3 live blocks (~216 at width 1) ≈ 550 B/det;
+the reort store adds `16·p·m` on top. An earlier recalibration to 1.1 kB/det was **wrong** —
+it came from raw delta-RSS numbers that were floor-contaminated rather than clean slopes.
 - **FULL / PERIODIC**: valid; the `SparseKrylovDense` rows are bounded by the retained
   set and the store never needs removal (removal is unsupported there — this design
   never removes).

@@ -43,6 +43,16 @@ def test_gf_reort_retention_costs_more():
     assert full > none
 
 
+def test_gf_reort_none_per_det_matches_measured_slope():
+    """reort=none per-det stays near the VmHWM-calibrated ~550 B/det (width 1).
+
+    Guards the constant against a wild miscalibration: a prior recalibration put it at
+    ~1.4 kB/det (3x the measured slope). See doc/plans/truncation_reliability.md.
+    """
+    per_det = me.estimate_gf_peak_bytes(100_000, 124, block_width=1, reort="none") / 100_000
+    assert 450 <= per_det <= 700, per_det
+
+
 def test_gf_ranks_reduce_per_rank_cost():
     one = me.estimate_gf_peak_bytes(10_000, 100, block_width=10, reort="none", ranks=1)
     four = me.estimate_gf_peak_bytes(10_000, 100, block_width=10, reort="none", ranks=4)
