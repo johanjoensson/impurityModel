@@ -1,12 +1,12 @@
 # Per-frequency BiCGSTAB Green's function
 
-**Status (2026-07-09):** Phases 0–2 done. BiCGSTAB is consolidated into `src/cython/` and is now
-**matvec-bound** (93% of a solve). Phase 3a (warm starts, measured) is done and settles the
-question this plan exists to answer: **per-frequency BiCGSTAB is not a faster Green's function.
-It is the memory escape hatch.** On the production 375-point Matsubara mesh it costs ~10x the wall
-time of a single block-Lanczos recurrence and ~7x less memory, at identical accuracy. Whether to
-build the driver (Phase 3b) is therefore a decision about memory, not speed — see
-[Phase 3a](#phase-3a--warm-starts-measured).
+**Status (2026-07-10): the memory case is gone.** Phases 0–2 done; BiCGSTAB is consolidated into
+`src/cython/` and is matvec-bound (93% of a solve). Phase 3a priced it against a block-Lanczos
+recurrence whose convergence monitor sampled the whole Ritz band on the real axis — even for a
+Matsubara-only mesh. With that fixed (`81a3c75`, `_gf_eval_meshes`), the same Lanczos recurrence
+converges in **10 blocks instead of 74**, and per-frequency BiCGSTAB comes out **136x slower and
+only 1.15x leaner**. It is not the memory escape hatch; the memory requirement it was meant to
+escape was a monitor bug. See [Phase 3a-ter](#phase-3a-ter--the-re-price-2026-07-10).
 
 ## Why
 
@@ -202,10 +202,14 @@ determinants:
     breakeven    = M = m / c            (~28 points here, at c = 2.86, m = 80)
 
 Their product `M * c / 7` is independent of `m`. **BiCGSTAB's footprint is constant in both `m` and
-`M`; Lanczos's grows linearly in `m`.** That is the whole trade, and it is the one
-`blocklanczos_reort_memory.md` asked to price: per-frequency BiCGSTAB is a better memory escape
-hatch than paging `Q` to disk (10x wall time, no I/O, no new failure modes), and it is *not* a
-faster Green's function on any production mesh (375 Matsubara points, 2000 real-axis points).
+`M`; Lanczos's grows linearly in `m`.** That is the whole trade.
+
+> **Superseded.** Every number in this section was measured against a Lanczos recurrence whose
+> convergence monitor was resolving the real-axis resolvent for a Matsubara-only mesh. With the
+> monitor fixed the same recurrence needs `m = 10`, not 80, and the memory ratio falls from 6.8x to
+> **1.15x** while the wall-time ratio rises from 10x to 136x. See
+> [Phase 3a-ter](#phase-3a-ter--the-re-price-2026-07-10). The trade law itself is unchanged; only
+> `m` was wrong, and `m` is the whole argument.
 
 ## Phase 3a-bis — Auditing the Lanczos convergence monitor  ✔
 
@@ -264,14 +268,77 @@ settings on NiO instead (`chain_restrict=True`, no `dN` window) changes none of 
 > in `_nio_workload`), so the CLI entry point is dead; and `op_parser.skip_whitespaces` raises
 > `UnboundLocalError` rather than a parse error on an all-whitespace line.
 
-## Phase 3b — The driver (open, and now a memory decision)
+## Phase 3a-ter — The re-price (2026-07-10)
 
-Given the above, the driver should be an **opt-in / auto-selected fallback**, not the default:
-select `gf_method="bicgstab"` when `memory_estimate.estimate_gf_peak_bytes` predicts the retained
-`Q` will not fit. Its one structural advantage over Lanczos is that the frequency axis is
-embarrassingly parallel, while a Lanczos recurrence is strictly sequential — so on a machine with
-more ranks than the determinant-parallel matvec can absorb, BiCGSTAB converts spare ranks into wall
-time that Lanczos cannot.
+Phase 3a-bis called the monitor "close to right on the real axis" and worth ~3.6x on Matsubara.
+It was worth far more than that, and the reason is worse than over-convergence.
+
+`_make_gf_convergence_monitor` never saw the caller's frequency mesh. It built its own from the
+resolved Ritz band on the line `w + i*delta`, so it converged the **real-axis** resolvent at
+broadening `delta` no matter which axis had been requested, and across the whole band rather than
+the window asked for. `_gf_eval_meshes` (`81a3c75`) now hands it the frequencies `calc_G` will
+actually be given.
+
+Same workload as Phase 3a — NiO 50 bath, `de2_min = 1e-12`, excited basis 3232 -> 4000, block
+width 5, 375-point Matsubara mesh at `T = 0.002`, `atol = 1e-8`, `reort = PARTIAL`:
+
+| Lanczos monitor | rel-tol | blocks `m` | status | retained `Q` | wall | memory ratio | breakeven |
+|---|---|---|---|---|---|---|---|
+| band-wide (old) | 1e-6 | 74 | converged | 18.25 MiB | 2.54 s | 8.54x | 26.4 pts |
+| band-wide (old) | 1e-9 | 193 | **diverged** | 47.59 MiB | 12.61 s | 22.28x | 68.9 pts |
+| caller's mesh | 1e-6 / 1e-9 / 1e-14 | **10** | converged | **2.47 MiB** | 0.26 s | **1.15x** | 3.6 pts |
+
+BiCGSTAB, quadratic warm-start extrapolation in `z`: 1051 matvecs (2.80/pt), 35.8 s, 2.14 MiB of
+live blocks. `|dG|` between the two paths is 7.0e-9 in every row — which is BiCGSTAB's own `atol`,
+not a Lanczos error.
+
+Three things follow, and the first two invalidate Phase 3a's conclusion rather than refine it.
+
+* **Phase 3a's row is reproduced exactly, and it was measuring the monitor.** The band-wide monitor
+  at the then-current 1e-6 floor gives 74 blocks / 2.54 s / 18.25 MiB / 8.54x / 26.4 points against
+  Phase 3a's reported 80 / 3.15 s / 14.2 MiB / 6.8x / ~28 points. The harness agrees; the baseline
+  was wrong.
+* **`m = 10` is not premature.** `G` at 10 blocks equals `G` at 108 blocks to **3.0e-16**, and the
+  block count is unchanged as the tolerance is driven from 1e-6 to 1e-14 — the monitor cannot ask
+  for fewer than the recurrence needs. The Matsubara resolvent is simply converged: every point
+  `i*w_n` sits a distance `sqrt(E_k^2 + w_n^2)` from every pole.
+* **The band-wide monitor could not reach 1e-9 at all.** Asked for it, the recurrence ran to 193
+  blocks and tripped the `BETA_BLOWUP_FACTOR` divergence guard. This is the same failure the
+  FCC-Ni `m = 833` figure records (below), on a workload we *can* reproduce.
+
+So the trade law stands as algebra but its inputs collapse:
+
+    time_ratio   = M * c / m            = 375 * 2.80 / 10   = 105x  (matvecs), 136x wall
+    memory_ratio = m * p / 7            = 10 * 5 / 7        = 7.1x columns, 1.15x measured
+    breakeven    = M = m / c            = 3.6 points
+
+The measured memory ratio (1.15x) falls short of the column ratio (7.1x) because BiCGSTAB's
+`add_states` grows the excited basis from 3232 to 4000 determinants while the Lanczos recurrence
+needs only the 3232 it started with. That growth was always there; it simply had nothing to hide
+behind when `m` was 74.
+
+**Conclusion.** Per-frequency BiCGSTAB is not a faster Green's function *and it is not a leaner
+one*. `blocklanczos_reort_memory.md`'s premise — that the retained `Q` is large enough to need an
+escape hatch — rests on `m` in the hundreds, and every observation of that regime so far has been
+a monitor that was converging a resolvent nobody asked for, or a recurrence that was diverging.
+Before any further work on this path, someone must exhibit a **converged** Green's function whose
+retained `Q` does not fit. That has not been done.
+
+## Phase 3b — The driver (blocked: it has no case)
+
+**Do not build this until Phase 3a-ter's open question is answered.** At the only operating point
+we can reproduce, the driver would be 136x slower for a 1.15x memory saving. Its remaining
+structural advantage over Lanczos is that the frequency axis is embarrassingly parallel while a
+Lanczos recurrence is strictly sequential — so on a machine with more ranks than the
+determinant-parallel matvec can absorb, BiCGSTAB converts spare ranks into wall time that Lanczos
+cannot. That is a *scaling* argument, not a memory one, and it has not been measured.
+
+What would revive the memory case: a **converged** Green's function (not a diverging one, and not
+one whose monitor is chasing an axis the caller never evaluates) whose retained `Q` does not fit in
+RAM. If such a workload exists, `m` is large there and the rest of this section applies as written.
+If it does not, the honest answer is that `reort=PARTIAL` block Lanczos is simply the right kernel.
+
+The sketch below is kept because it is correct *if* the premise is ever established.
 
 The shape already exists in `spectra.py:_rixs_driver`'s kernel: sweep a contiguous frequency chunk
 in order, warm-starting each `block_bicgstab` from the previous frequency's solution, on a
