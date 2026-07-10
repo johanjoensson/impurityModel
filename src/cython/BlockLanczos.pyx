@@ -79,6 +79,7 @@ from impurityModel.ed.BlockLanczosArray import (
     BAD_BLOCK_TOL,
     RESTART_ORTH_TOL,
     BREAKDOWN_TOL,
+    DEFLATE_EVAL_TOL,
 )
 
 # --- Optional per-step profiling (env-gated, ~zero cost when off) -------------------
@@ -1772,15 +1773,20 @@ def _irlm_core(
                 break
             col = _orth_against_locked(_q_slice(X, j, j + 1))
             g = block_inner(col, col, mpi, comm)
-            if float(np.abs(g[0, 0])) < 1e-16:
+            # ``col`` entered with unit norm, so ``g[0,0]`` is the fraction of it that survives
+            # deflation against the locked set. Below the rank floor ``_cholesky_or_deflate``
+            # itself uses -- ``DEFLATE_EVAL_TOL = DEFLATE_TOL**2``, on the *squared* norm -- the
+            # column is already represented in ``Xl`` and locking it again would return a
+            # duplicate eigenpair. Scale-free because the input is normalized.
+            if float(np.abs(g[0, 0])) < DEFLATE_EVAL_TOL:
                 continue
             try:
                 col, _ = block_normalize(col, mpi, comm, slater)
             except ValueError:
-                # The column collapsed under block_normalize's stricter deflation floor
-                # (DEFLATE_TOL ~ sqrt(eps)): it is already represented in the locked set.
-                # block_normalize reduces M with a collective Allreduce, so every rank
-                # raises together and skipping is MPI-collective-safe.
+                # Belt and braces: block_normalize's own breakdown test (1e-12 absolute, since a
+                # unit-norm column wants scale=1) is looser than the guard above, so this is
+                # reached only on an exactly-zero column. It reduces M with a collective
+                # Allreduce, so every rank raises together and skipping is MPI-collective-safe.
                 continue
             Xl = np.concatenate([Xl, col], axis=1) if is_arr else (list(Xl) + list(col))
             theta_l.append(float(vals[j]))
@@ -2015,7 +2021,10 @@ def _assemble_results(
                 for _ in range(2):
                     col, _ = block_orthogonalize(col, accepted, mpi=mpi, comm=comm)
             g = block_inner(col, col, mpi, comm)
-            if float(np.abs(g[0, 0])) < 1e-12:
+            # Same test, same reason, same threshold as _lock_block's: a unit-norm Ritz column
+            # retaining less than the rank floor after deflation against ``accepted`` is a
+            # near-copy of one already taken.
+            if float(np.abs(g[0, 0])) < DEFLATE_EVAL_TOL:
                 continue
             try:
                 col, _ = block_normalize(col, mpi, comm, slater)
