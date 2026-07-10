@@ -314,8 +314,14 @@ def eigensystem(h_local, e_max, k=10, e0=None, v0=None, eigenValueTol=0, return_
     dende : Convert h_local to dense form and use standard np.linalg.eigh to calculate the full spectra
     """
 
-    # e_max is limited by the accuracy of the calculated eigenvalues and machine precision
-    e_max = max(e_max, eigenValueTol, np.finfo(float).eps * 100)
+    # e_max is limited by the accuracy of the calculated eigenvalues and machine precision.
+    # e_max=None means "no energy cutoff" (get_eigenvectors passes max_energy=None): keep every
+    # computed state. Guard the None here, otherwise max(None, ...) raises TypeError -- a live
+    # crash on the dense (basis < dense_cutoff) path, which does not otherwise touch e_max.
+    if e_max is None:
+        e_max = np.inf
+    else:
+        e_max = max(e_max, eigenValueTol, np.finfo(float).eps * 100)
 
     N = h_local.shape[0]
     # Set up random initial vectors

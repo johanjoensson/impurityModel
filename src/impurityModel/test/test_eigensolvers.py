@@ -64,3 +64,25 @@ def test_eigensystem():
     es_scipy, vs_scipy = scipy_eigensystem(op, e_max=100.0, k=4, return_eigvecs=True)
     assert len(es_scipy) >= 1
     assert vs_scipy is not None
+
+
+def test_eigensystem_none_e_max_keeps_all_states():
+    """e_max=None means no energy cutoff; it must not raise (max(None, ...) TypeError).
+
+    get_eigenvectors calls eigensystem with e_max=max_energy=None on the dense path
+    (basis < dense_cutoff). Regression: that used to crash in max(e_max, ...).
+    """
+    from impurityModel.ed.eigensolvers import eigensystem
+
+    N = 8  # <= 20 forces the dense branch, where e_max only gates the returned mask
+    np.random.seed(0)
+    H = np.random.rand(N, N) + 1j * np.random.rand(N, N)
+    H = H + H.conj().T
+    op = scipy.sparse.csr_matrix(H)
+
+    es, vs = eigensystem(op, e_max=None, k=N, dense=True)
+    # No cutoff -> the whole computed spectrum comes back, sorted, matching dense eigh.
+    ref = np.linalg.eigvalsh(H)
+    assert len(es) == N
+    assert np.allclose(es, ref)
+    assert vs.shape == (N, N)
