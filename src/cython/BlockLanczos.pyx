@@ -1908,7 +1908,23 @@ def _irlm_core(
                 print(f"[{tag}] Breakdown at restart -- returning current Ritz pairs.")
             break
 
-        beta_k, beta_k_inv, active_k = _cholesky_or_deflate(M, p)
+        # ``f_plus`` is a *residual* block (the trailing Krylov block rotated by the re-banding
+        # coupling ``beta_new``), so its norm is O(||H||), not O(1): its breakdown reference must
+        # be the operator norm, like the two Lanczos sweeps and unlike ``block_normalize``.
+        # ``tnorm`` is the proxy already in hand -- the largest-magnitude Ritz value including the
+        # locked ones, as used by the eq. (15) acceptance test above and by ``_trlm_core``'s
+        # ``stop_beta``. The default ``scale=1.0`` arms the guard at 1e-12 *absolute*, which for
+        # an O(||H||) block means never.
+        #
+        # This is a consistency fix, not a live bug. The branch is unreachable today: eq. (15)
+        # locks a Ritz pair as soon as ``res <= u*tnorm + |cntl2|``, so a residual block cannot
+        # survive to here once it has shrunk that far, and an anisotropic one is caught by the
+        # *relative* rank test first. Instrumented over the restart/Lanczos/CIPSI suite plus a
+        # warm-start probe: 734 hits, 0 decisions changed, closest approach 1127x above the
+        # branch. Keep the guard honest anyway -- an isotropic residual block that is numerically
+        # zero against ||H|| would clear the rank test and be inverted, ``beta_k_inv`` amplifying
+        # its rounding noise by ||H||/eps.
+        beta_k, beta_k_inv, active_k = _cholesky_or_deflate(M, p, tnorm)
         if active_k < p:
             # Trailing block deflated => near-invariant subspace. Lock the lowest wanted
             # Ritz pairs (ascending; collapses against Xl are skipped) and stop.
