@@ -78,6 +78,7 @@ from impurityModel.ed.BlockLanczosArray import (
     REORT_TOL,
     BAD_BLOCK_TOL,
     RESTART_ORTH_TOL,
+    BREAKDOWN_TOL,
 )
 
 # --- Optional per-step profiling (env-gated, ~zero cost when off) -------------------
@@ -218,6 +219,7 @@ def block_lanczos_step_cy(
     w_out=None,
     beta_norm_hist=None,
     force_reort: bool = False,
+    h_norm_est: float = 0.0,
 ):
     """Perform one step of the distributed block Lanczos iteration.
 
@@ -388,7 +390,13 @@ def block_lanczos_step_cy(
         return None, alpha_i, None, W, -1, True, False
 
     # --- 6. Deflation / Cholesky QR -------------------------------------
-    beta_i, beta_inv, active_k = _cholesky_or_deflate(M, p)
+    # Breakdown is measured against the operator scale, not against 1: a residual block is
+    # negligible when it is small compared to H. `h_norm_est` is the driver's running estimate
+    # (0 on the first step of a cold start, where alpha_i carries the scale). Mirrors
+    # block_lanczos_array_cy so both kernels deflate on the same criterion.
+    beta_i, beta_inv, active_k = _cholesky_or_deflate(
+        M, p, max(float(h_norm_est), float(np.linalg.norm(alpha_i, ord=2)))
+    )
     if active_k == 0:
         return None, alpha_i, None, W, 0, True, False
 
@@ -920,6 +928,7 @@ def block_lanczos_cy(
             w_out=_w_bufs[it % 2] if _w_bufs is not None else None,
             beta_norm_hist=beta_norm_hist,
             force_reort=_force_reort,
+            h_norm_est=max(h_norm_est, t_norm_max),
         )
         _force_reort = _step_acted
 
@@ -1199,6 +1208,15 @@ def _trlm_core(
         wanted = np.argsort(eigvals_T)[:num_wanted]
         max_res = float(np.max(res_norms[wanted]))
 
+        # Threshold below which a residual block means "stop here". Two reasons to stop, and
+        # neither is an absolute 1e-5 (which was the old test, and which caps TRLM's residual at
+        # 1e-5 for any operator whose norm is O(1), whatever `tol` asks):
+        #   * ||beta|| < tol       -- every Ritz residual ||beta s_i|| is then already under tol;
+        #   * ||beta|| <= BREAKDOWN_TOL * ||T||  -- the block is numerically zero against the
+        #     operator scale, i.e. a genuine invariant subspace.
+        t_scale = float(np.max(np.abs(eigvals_T))) if eigvals_T.size else 1.0
+        stop_beta = max(float(tol), BREAKDOWN_TOL * t_scale)
+
         if verbose and rank0:
             print(f"[TRLM] Restart {restart:3d} | MinEigval={eigvals_T[0]:.6f} | MaxWantedRes={max_res:.2e}")
 
@@ -1266,7 +1284,7 @@ def _trlm_core(
                 q_m, beta_res = block_normalize(wp, mpi, comm, 0.0)
             except (sp.LinAlgError, ValueError):
                 q_m = None
-            if q_m is None or np.linalg.norm(beta_res, ord=2) < 1e-5:
+            if q_m is None or np.linalg.norm(beta_res, ord=2) <= stop_beta:
                 if verbose and rank0:
                     print(f"[TRLM] Invariant subspace found at restart {restart}. Stopping early.")
                 return _trlm_extract(T_lead, Q_ret, k_ret, num_wanted, comm, slater)
@@ -1310,7 +1328,7 @@ def _trlm_core(
                 q_next = None
 
             # Full collapse, or a near-invariant subspace: extract from what we have.
-            if q_next is None or np.linalg.norm(beta_i, ord=2) < 1e-5:
+            if q_next is None or np.linalg.norm(beta_i, ord=2) <= stop_beta:
                 if verbose and rank0:
                     print(f"[TRLM] Invariant subspace found during restart at block {i}. Stopping early.")
                 return _trlm_extract(T_full, Q_basis, off + w1, num_wanted, comm, slater)
