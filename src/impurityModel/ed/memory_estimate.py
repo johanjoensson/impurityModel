@@ -54,6 +54,19 @@ _CSR_BYTES_PER_NNZ = 24
 # local_basis list slot and _index_dict entry. Rough; calibrated against measured RSS.
 _PY_BASIS_OVERHEAD_BYTES = 160
 
+# Per-determinant live support of the *sparse GF recurrence*, over and above the ~3 tidy
+# ManyBodyBlockState blocks the static model counts. The recurrence discovers new
+# determinants every matvec (``_CappedBasisProxy`` freezes the excited ``Basis`` but not
+# the live block-state support), and each matvec's fanout materializes a transiently wider
+# block before re-truncation. Measured on the real workloads (``reort="none"``, block
+# width 1, so no Krylov store): FCC Ni C=1e5 real axis 1668 B/det, C=1e5 Matsubara
+# 1352 B/det, C=4e5 Matsubara 1281 B/det. The static basis+live model gives only ~448 B/det
+# there, under-predicting the peak (and the run that OOMs) ~3x. This constant absorbs the
+# difference. It is a raw-RSS figure (allocator slack included), so it sits on the
+# conservative side; ``DEFAULT_MEMORY_SAFETY`` multiplies on top. A proper VmHWM-vs-predicted
+# recalibration across widths belongs with the ``doc/plans/truncation_reliability.md`` campaign.
+_GF_RECURRENCE_OVERHEAD_BYTES = 1100
+
 #: Fallback cap used by drivers when no memory probe is possible (matches the historical
 #: ``groundstate.calc_gs`` default).
 DEFAULT_TRUNCATION_THRESHOLD = 1_000_000
@@ -127,15 +140,20 @@ def estimate_gf_peak_bytes(
 ):
     """Predicted per-rank peak bytes of the sparse (MBS-kernel) Green's-function path.
 
-    Counts the excited ``Basis`` bookkeeping, the ~3 live ``ManyBodyBlockState`` blocks
-    of the recurrence (``q_prev``, ``q_curr``, ``wp``) and, at ``reort != "none"``, the
-    ``SparseKrylovDense`` retention (its rows are bounded by the retained determinant
-    set, its columns by the number of Lanczos blocks).
+    Peak ``~ C * (s_live + itemsize * p * n_blocks)`` per rank, where ``C`` is the local
+    determinant count. **Both** reort modes pay ``s_live`` — the live support the recurrence
+    discovers (excited ``Basis`` bookkeeping plus the live ``ManyBodyBlockState`` blocks and
+    their matvec fanout). Measured ``s_live ~ 1.3-1.7 kB/det`` on the FCC Ni / NiO / AFM-NiO
+    workloads (see ``_GF_RECURRENCE_OVERHEAD_BYTES``); ``reort="none"`` is *not* free of it.
+    At ``reort != "none"`` the ``SparseKrylovDense`` store adds ``itemsize * p * n_blocks``
+    bytes per retained determinant *on top* (rows bounded by the retained set, columns by the
+    Lanczos block count) — it cannot be compressed away, see
+    ``doc/plans/blocklanczos_reort_memory.md``.
 
-    The store dominates: ``itemsize * p * n_blocks`` bytes per retained determinant,
-    against ~450 for everything else. It is the reason a reorthogonalized run must cap
-    ``truncation_threshold`` far below what ``reort="none"`` allows, and it cannot be
-    compressed away — see ``doc/plans/blocklanczos_reort_memory.md``.
+    Which term leads depends on the run: the store scales with ``n_blocks`` (``m``, tens to
+    hundreds), so it overtakes ``s_live`` once ``16*p*m`` exceeds ~1.5 kB, but at
+    ``reort="none"`` (the production self-energy path) ``s_live`` is the whole cost, and it is
+    the term that OOMs FCC Ni. This is why the earlier "the store dominates" framing was wrong.
 
     Since the reort projection now streams the store chunk by chunk, the old
     ``(n_rows x n_cols)`` gather transient (which peaked at ~1.85x the store) is gone and
@@ -168,7 +186,7 @@ def estimate_gf_peak_bytes(
     """
     local_rows = ceil(n_dets / max(1, ranks))
     key_heap = _key_heap_bytes(n_spin_orbitals)
-    basis_bytes = local_rows * (bytes_per_determinant(n_spin_orbitals) + _PY_BASIS_OVERHEAD_BYTES)
+    basis_bytes = local_rows * (bytes_per_determinant(n_spin_orbitals) + _GF_RECURRENCE_OVERHEAD_BYTES)
     row_bytes = _COMPLEX_BYTES * block_width + key_heap + _SD_STRUCT_BYTES
     live_bytes = 3 * local_rows * row_bytes
     store_bytes = 0

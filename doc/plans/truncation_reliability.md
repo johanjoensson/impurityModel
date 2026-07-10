@@ -42,7 +42,10 @@ is projected onto it (diagonal projector `P`). Two facts make this safe:
 Consequences per reort mode:
 
 - **NONE** (GF default): valid; only ~3 live blocks exist and the importance measure
-  is the current residual, so the cap adds **zero** memory overhead.
+  is the current residual, so the cap adds **zero Krylov-store** overhead (there is no
+  store). This does *not* make the path free: the recurrence still holds every retained
+  determinant as live support, measured at ~1.3–1.7 kB/det on the real workloads (FCC Ni
+  OOMs here, not on the store). See `memory_estimate._GF_RECURRENCE_OVERHEAD_BYTES`.
 - **FULL / PERIODIC**: valid; the `SparseKrylovDense` rows are bounded by the retained
   set and the store never needs removal (removal is unsupported there — this design
   never removes).
