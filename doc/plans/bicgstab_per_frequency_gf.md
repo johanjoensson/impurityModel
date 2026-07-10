@@ -1,14 +1,14 @@
 # Per-frequency BiCGSTAB Green's function
 
-**Status (2026-07-10): Phase 3a-ter is RETRACTED. The benchmark measures a Green's function with
-no spectral weight in the evaluation window.** Phases 0–2 stand. The mesh-aware convergence monitor
-(`81a3c75`) is correct — it converges `G` where the caller evaluates it, verified to 3e-16 — but the
-speedups and the BiCGSTAB re-price attributed to it were measured on `_nio_workload`, which runs
-with `chargeTransferCorrection=None`. Without a double counting the Coulomb `u4` is never
-subtracted, so `E0 = -14757 eV` and the addition-GF poles sit at **+14688 eV** while the meshes
-span `|z| <= 4.7`. Measured: `||G(i w_n)||` varies by **5.0e-08** across the whole 375-point
-Matsubara mesh, and `max|Im G|` on the real axis is `1.1e-06`. `G` is a **constant** there. "It
-converged in 10 blocks" says nothing. See [Phase 3a-quater](#phase-3a-quater--the-benchmark-is-vacuous).
+**Status (2026-07-10): re-measured on the real workloads.** Phase 3a-ter is RETRACTED — its
+benchmark had no spectral weight in the evaluation window (see
+[Phase 3a-quater](#phase-3a-quater--the-benchmark-is-vacuous)). Real FCC Ni / NiO / AFM-NiO
+Hamiltonians now load straight from the `impmod_tests` HDF5 archives. On them: the mesh-aware
+monitor (`81a3c75`) is worth ~10x on a Matsubara-only self-energy and ~nothing on the real axis;
+block counts are in the low hundreds, not 10; and per-frequency BiCGSTAB is ~35x slower for zero
+memory saving. FCC Ni's memory is the **excited basis**, not the Krylov store — it runs
+`reort=none`, which stores no `Q` at all. See
+[Phase 3a-quinquies](#phase-3a-quinquies--measured-on-the-real-workloads-2026-07-10).
 
 ## Why
 
@@ -385,6 +385,92 @@ the window it is evaluated on.** Three workloads to build, none of which the cur
    blocks, so every `G` in the benchmark is scalar. With `xi = 0.083 eV` the blocks become
    `[[0,4,8],[1,5,9],[2,6],[3,7]]` — widths 3,3,2,2 — and the block-Lanczos recurrence must resolve
    a genuine matrix-valued resolvent with deflation.
+
+## Phase 3a-quinquies — Measured on the real workloads (2026-07-10)
+
+Phase 3a-quater said the benchmark had to be replaced. It has been. `impmod_tests/*/impmod/**/
+impurityModel_data.h5` carries the Hamiltonians the solver actually ran on -- `H solver`, `U`, the
+meshes, `tau`, `delta`, the valence/conduction split -- written by `impurityModel_interface.lib`
+straight before its `calc_selfenergy` call. `real_workload.py` reconstructs that call exactly.
+
+| workload | orbitals | conduction bath | delta | impurity off-diag | GF block widths |
+|---|---|---|---|---|---|
+| **FCC Ni** (ferromagnetic, metal) | 62 | **16** | 0.1 | none | 1 |
+| **NiO** (paramagnetic, insulator) | 58 | **0** | 0.01 | none | 1 |
+| NiO, 1 bath/orbital | 20 | 0 | 0.01 | none | 1 |
+| **NiO AFM** (antiferromagnetic) | 20 | 0 | 0.005 | 16 terms | **up to 4** |
+
+FCC Ni is gapless: 16 conduction bath orbitals, bath energies straddling `E_F` in `[-0.52, +0.25]`.
+Paramagnetic NiO has **zero** conduction bath orbitals -- its excited sector is gapped, which the
+synthetic anchor at least got right. AFM NiO is the only one with a matrix-valued `G`.
+
+And these have spectral weight where they are evaluated: real NiO measures `max|Im G| = 19.9` and
+`||G||` varying 98% across the mesh, against `1.1e-06` and `5.0e-08` on the synthetic anchor.
+
+### The mesh-aware monitor: vindicated, for the right reason
+
+NiO 1-bath, 200 mesh points, `reort=partial`:
+
+| axis | band-wide | mesh-aware | sigma agreement |
+|---|---|---|---|
+| Matsubara only | 3496 blocks, 33.1 s | **360 blocks, 0.9 s** | 5.4e-13 |
+| real axis only | 3496 blocks, 34.8 s | 3479 blocks, 32.6 s | 3.5e-11 |
+
+AFM NiO, Matsubara, 240 units: mesh-aware finishes **all 240 in 5.2 s** (`m <= 34`, widths to 4);
+band-wide completes **45 of 240 in 300 s** and was still running after two hours, spending its life
+inside `_block_cf_inverse` -- the monitor's own `O(k^2)` continued-fraction rebuild.
+
+So the fix is worth ~10x on a Matsubara-only self-energy and ~nothing on the real axis -- the shape
+Phase 3a-bis predicted (3.6-4.1x / 1.2-1.4x), larger in magnitude. It has nothing to do with the
+`74 -> 10` of Phase 3a-ter, which was a featureless `G` collapsing.
+
+### Block counts on a real Green's function
+
+NiO 1-bath, real axis, 48 points, mesh-aware, per `(block, side, eigenstate)` unit:
+
+    reort=full     m_max=250  m_mean=191.6  wall=106.3 s
+    reort=partial  m_max=250  m_mean=190.5  wall=113.3 s   |G - G(full)| = 2.5e-08
+    reort=none     m_max=268  m_mean=201.4  wall= 25.2 s   |G - G(full)| = 1.6e-10
+
+`m` is in the low hundreds, not 10. Note `m` legitimately exceeds the stored basis dimension
+(62-68 determinants): the Krylov vectors are `ManyBodyState`s whose support escapes `basis`,
+because `add_states` only ingests determinants above `slaterWeightMin`. An exact Lanczos of the
+in-basis `P H P` from the same seed does terminate at 62 steps with `beta = 1.6e-30`.
+
+### Per-frequency BiCGSTAB, measured inside the driver
+
+`driver_headtohead.py` wraps `block_Green_sparse`, so the seeds, restrictions and starting basis are
+the driver's own. NiO 1-bath, real axis, 48 points:
+
+| unit | wall | matvecs | excited basis | dG |
+|---|---|---|---|---|
+| 0 | **32.0x** | 90.0x | 10 vs 10 dets | 2.16e-09 |
+| 1 | **37.8x** | 90.5x | 10 vs 10 dets | 2.16e-09 |
+
+BiCGSTAB is ~35x slower for **no** memory saving: the excited basis it grows is the same size.
+
+### FCC Ni: the memory is not the Krylov store
+
+This is the finding that matters for this plan, and it is *not* what the plan assumed.
+
+    find_ground_state_basis:   559 determinants, 44.7 s, peak RSS 0.36 GiB
+    Green's function:          11.7 GiB, 63 min, still inside its FIRST unit (killed)
+
+FCC Ni's production settings are `reort=none`, `dN=None`, `truncation_threshold=None`. `reort=none`
+means `store_krylov=False` -- **there is no retained `Q` at all** -- and yet the run reaches 11.7 GiB
+and climbs. (An earlier pair of concurrent runs was OOM-killed: cgroup `oom_kill 1`, `memory.peak =
+13.2 GB` on a 15 GB box. That pair was a confounded experiment and is not evidence on its own.)
+
+So FCC Ni's memory is the **excited basis** discovered by `add_states` during the recurrence, under
+no occupation window (`dN=None`) and no determinant cap. Per-frequency BiCGSTAB does not touch that:
+it grows the same basis by the same mechanism, and on the synthetic anchor it grew it *further*
+(3232 -> 4000 vs Lanczos's 3232).
+
+**Open, and now the load-bearing question for Phase 3b:** on FCC Ni, how is the peak footprint split
+between the excited basis and the retained `Q`, at `reort=partial` where `Q` exists? Until that is
+measured, neither "BiCGSTAB is the memory escape hatch" nor its negation is established. What *is*
+established is that the escape hatch does not help the one configuration that actually ran out of
+memory here, because that configuration stores no `Q`.
 
 ## Phase 3b — The driver (blocked: it has no case)
 

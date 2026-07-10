@@ -1055,10 +1055,23 @@ def _scatter_qr_columns(comm, psi_dense, r, local_size):
 # CAVEAT: that table was measured on `_nio_workload`, which defaults to
 # `chargeTransferCorrection=None`. Without a double counting the addition-GF poles sit ~14688 eV
 # above E0 while the meshes span |z| <= 4.7, so `G` is *constant* on the frequencies it is evaluated
-# at (relative variation 5.0e-08 across the whole Matsubara mesh). The tolerance choice is
-# conservative -- 1e-9 is strictly tighter than the old 1e-6, so nothing can silently degrade -- but
-# the *cost* it quotes is not established. Re-measure on a workload whose spectral weight lies
-# inside the evaluation window. See doc/plans/bicgstab_per_frequency_gf.md, Phase 3a-quater.
+# at (relative variation 5.0e-08 across the whole Matsubara mesh). Its block counts mean nothing.
+#
+# Re-measured on the real workloads (the RSPt Hamiltonians in `impmod_tests/*/impurityModel_data.h5`,
+# which have `max|Im G| = 19.9` in the window). NiO, 1 bath/orbital, 200 mesh points, reort=partial,
+# blocks summed over all (block, side, eigenstate) units:
+#
+#     axis             band-wide      caller's mesh     sigma agreement
+#     Matsubara only   3496 blocks    360 blocks        5.4e-13
+#     real axis only   3496 blocks    3479 blocks       3.5e-11
+#
+# So ~10x on a Matsubara-only self-energy and ~nothing on the real axis -- the shape Phase 3a-bis
+# predicted. On antiferromagnetic NiO (matrix-valued G, block widths to 4) the caller's-mesh monitor
+# finishes all 240 units in 5.2 s; the band-wide one manages 45 of them in 300 s and is still going
+# after two hours, all of it inside `_block_cf_inverse`, this monitor's own O(k^2) rebuild.
+#
+# The 1e-9 floor stands: it is strictly tighter than the old 1e-6, so nothing can silently degrade.
+# See doc/plans/bicgstab_per_frequency_gf.md, Phases 3a-quater and 3a-quinquies.
 #
 # Note `_gf_rel_tol` takes max(slaterWeightMin**2, this), so this floor -- not the cutoff --
 # governs every production slaterWeightMin (1e-5 gives 1e-10, far below it). Only a cutoff looser
