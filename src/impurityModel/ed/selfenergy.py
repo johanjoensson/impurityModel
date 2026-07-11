@@ -570,6 +570,7 @@ def calc_selfenergy(
     slaterWeightMin,
     dN,
     sparse_green,
+    gf_method="lanczos",
 ):
     """Calculate the self energy of the impurity.
 
@@ -625,6 +626,12 @@ def calc_selfenergy(
         Particle number constraint.
     sparse_green : bool
         Whether to use sparse representation for Green's function.
+    gf_method : str
+        Green's-function kernel: ``"lanczos"`` (default, one block-Lanczos recurrence per
+        work unit serving the whole mesh) or ``"bicgstab"`` (one linear solve per frequency
+        point on a rebuilt-and-discarded basis -- the memory-first path; ``sparse_green``
+        and ``reort`` do not apply to it). See
+        :func:`impurityModel.ed.greens_function.block_Green_bicgstab`.
 
     Returns
     -------
@@ -729,7 +736,7 @@ def calc_selfenergy(
     gf_block_width = max(4, *(len(block) for block in block_structure.blocks))
     if truncation_threshold is None:
         truncation_threshold = suggest_truncation_threshold(
-            n_spin_orbitals, comm=comm, block_width=gf_block_width, reort=reort
+            n_spin_orbitals, comm=comm, block_width=gf_block_width, reort=reort, method=gf_method
         )
     memory_budget = log_memory_budget(
         truncation_threshold,
@@ -739,6 +746,7 @@ def calc_selfenergy(
         reort=reort,
         verbose=verbosity > 0,
         label=cluster_label,
+        method=gf_method,
     )
     basis_information = {
         "impurity_orbitals": impurity_orbitals,
@@ -798,6 +806,7 @@ def calc_selfenergy(
             slaterWeightMin=slaterWeightMin,
             sparse=sparse_green,
             num_wanted=num_wanted,
+            gf_method=gf_method,
         )
 
         # Root rank renders the diagnostics report and decides whether to retry; the decision
@@ -1130,6 +1139,7 @@ def get_selfenergy(
     energy_cut,
     delta,
     verbose,
+    gf_method="lanczos",
 ):
     """Calculate the self energy starting from a large number of arguments.
 
@@ -1173,6 +1183,9 @@ def get_selfenergy(
         Smearing parameter.
     verbose : bool
         Verbosity flag.
+    gf_method : str
+        Green's-function kernel, ``"lanczos"`` (default) or ``"bicgstab"`` (per-frequency
+        linear solves, memory-first). See :func:`calc_selfenergy`.
     """
     # MPI variables
     comm = MPI.COMM_WORLD
@@ -1263,6 +1276,7 @@ def get_selfenergy(
         slaterWeightMin=1e-12,
         dN=None,
         sparse_green=True,
+        gf_method=gf_method,
     )
 
     if rank == 0 and verbose:
@@ -1385,6 +1399,17 @@ if __name__ == "__main__":
         action="store_true",
         help=("Set verbose output (very loud...)"),
     )
+    parser.add_argument(
+        "--gf_method",
+        type=str,
+        choices=("lanczos", "bicgstab"),
+        default="lanczos",
+        help=(
+            "Green's-function kernel: 'lanczos' runs one block-Lanczos recurrence per work unit "
+            "for the whole mesh; 'bicgstab' solves one linear system per frequency point on a "
+            "rebuilt-and-discarded basis (memory-first, slower)."
+        ),
+    )
     args = parser.parse_args()
 
     # Sanity checks
@@ -1414,4 +1439,5 @@ if __name__ == "__main__":
         energy_cut=args.energy_cut,
         delta=args.delta,
         verbose=args.verbose,
+        gf_method=args.gf_method,
     )
