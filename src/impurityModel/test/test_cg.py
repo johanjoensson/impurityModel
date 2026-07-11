@@ -104,6 +104,42 @@ def test_block_bicgstab_converged_warm_start_costs_no_iterations():
     np.testing.assert_array_equal(X, X_exact)
 
 
+def test_block_bicgstab_info_cold_solve():
+    """``info`` reports a converged cold solve, and its residual estimate is honest."""
+    A, Y, _rng = _resolvent_system()
+    atol = 1e-9
+    info = {}
+    X = block_bicgstab(A, np.zeros_like(Y), Y, basis=None, slaterWeightMin=0.0, atol=atol, max_iter=500, info=info)
+    assert info["converged"]
+    assert info["iterations"] > 0
+    true_rel = np.max(np.linalg.norm(A @ X - Y, axis=0)) / np.linalg.norm(Y)
+    # The estimate is measured on the deflated system and rescaled by ||R0|| (an upper-bound
+    # scale up to sqrt(n)); it must be the right order of magnitude and never optimistic by
+    # more than that geometry factor.
+    assert info["rel_residual"] < 10 * atol
+    assert true_rel < np.sqrt(Y.shape[1]) * info["rel_residual"] + np.finfo(float).eps
+
+
+def test_block_bicgstab_info_max_iter_reports_unconverged():
+    A, Y, _rng = _resolvent_system()
+    info = {}
+    block_bicgstab(A, np.zeros_like(Y), Y, basis=None, slaterWeightMin=0.0, atol=1e-12, max_iter=1, info=info)
+    assert info["iterations"] == 1
+    assert not info["converged"]
+    assert info["rel_residual"] > 1e-12
+
+
+def test_block_bicgstab_info_converged_warm_start():
+    """An already-converged warm start reports 0 iterations and converged=True."""
+    A, Y, _rng = _resolvent_system()
+    X_exact = np.linalg.solve(A, Y)
+    info = {}
+    block_bicgstab(A, X_exact.copy(), Y, basis=None, slaterWeightMin=0.0, atol=1e-6, max_iter=200, info=info)
+    assert info["iterations"] == 0
+    assert info["converged"]
+    assert info["rel_residual"] < 1e-6
+
+
 # --------------------------------------------------------------------------- #
 # Sparse (ManyBodyBlockState) path: real end-to-end solves against a dense
 # reference. These replace the old mock-based dict tests, which patched the
@@ -113,7 +149,7 @@ import itertools
 
 from impurityModel.ed.basis_transcription import build_sparse_matrix, build_vector
 from impurityModel.ed.manybody_basis import Basis
-from impurityModel.ed.ManyBodyUtils import ManyBodyOperator, ManyBodyState, SlaterDeterminant
+from impurityModel.ed.ManyBodyUtils import ManyBodyOperator, ManyBodyState
 
 
 def _sparse_system(n_sites=6, n_particles=3):
@@ -190,6 +226,24 @@ def test_block_bicgstab_sparse_warm_start_exact():
     for a, b in zip(xs, xs2):
         diff = a - b
         assert np.sqrt(diff.norm2()) < 1e-10
+
+
+def test_block_bicgstab_sparse_info_and_rhs_untouched():
+    """Sparse path: ``info`` reports convergence, and the caller's RHS states are unmodified
+    (guards the ``ri = r0_t = pi = rhs`` aliasing at the core's entry -- an in-place update
+    would corrupt the shadow residual *and* the caller's states)."""
+    H, basis = _sparse_system()
+    rng = np.random.default_rng(31)
+    ys = _rand_states(basis, rng, 2)
+    y_before = build_vector(basis, ys).T.copy()
+    info = {}
+    xs = block_bicgstab(H, [ManyBodyState() for _ in range(2)], ys, basis=basis, slaterWeightMin=0.0, info=info)
+    assert info["converged"]
+    assert info["iterations"] > 0
+    assert info["rel_residual"] < 1e-7
+    np.testing.assert_array_equal(build_vector(basis, ys).T, y_before)
+    _, X_ref = _dense_ref(basis, H, ys)
+    np.testing.assert_allclose(build_vector(basis, xs).T, X_ref, atol=1e-6)
 
 
 def test_block_bicgstab_sparse_max_iter():

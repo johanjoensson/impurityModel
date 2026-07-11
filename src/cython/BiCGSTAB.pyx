@@ -38,7 +38,16 @@ from impurityModel.ed.ManyBodyUtils import (
 )
 
 
-def block_bicgstab(A, x0, y, basis, double slaterWeightMin, atol=1e-8, rtol=1e-12, **kwargs):
+def _fill_info(info, iterations, converged, rel_residual):
+    """Populate the caller's optional ``info`` dict (no-op when ``info is None``)."""
+    if info is None:
+        return
+    info["iterations"] = int(iterations)
+    info["converged"] = bool(converged)
+    info["rel_residual"] = float(rel_residual)
+
+
+def block_bicgstab(A, x0, y, basis, double slaterWeightMin, atol=1e-8, rtol=1e-12, max_iter=np.inf, info=None):
     """
     Solve a linear system ``A X = Y`` with Block BiCGSTAB.
 
@@ -80,6 +89,20 @@ def block_bicgstab(A, x0, y, basis, double slaterWeightMin, atol=1e-8, rtol=1e-1
     rtol : float, optional
         Stagnation tolerance on the deflated system's residual, relative to its own initial
         value. Default is 1e-12.
+    max_iter : int or float, optional
+        Hard bound on the number of BiCGSTAB iterations. The sparse path is additionally
+        bounded by basis exhaustion (``it * n < |seen support|``); the dense path has **no**
+        other bound, so a dense caller that can stagnate (e.g. a resolvent close to a pole)
+        should always pass a finite ``max_iter``. Default ``np.inf``.
+    info : dict, optional
+        When given, receives the solve's exit state (the reliability contract the
+        per-frequency Green's-function driver reports on):
+
+        * ``"iterations"`` -- BiCGSTAB iterations run (0 for an already-converged warm start).
+        * ``"converged"`` -- whether every residual column met ``atol`` (``False`` means
+          ``max_iter``, basis exhaustion, or ``rtol`` stagnation ended the solve first).
+        * ``"rel_residual"`` -- estimated final residual relative to ``||Y||`` (max over
+          columns; measured on the deflated system and rescaled, no extra matvec).
 
     Returns
     -------
@@ -106,7 +129,10 @@ def block_bicgstab(A, x0, y, basis, double slaterWeightMin, atol=1e-8, rtol=1e-1
 
         def matmat(v):
             out = A.apply_block(v, slaterWeightMin)
-            if mpi:
+            # `caps_growth` bases (the per-frequency Green's function's _CappedBasisProxy)
+            # enforce their determinant cap inside redistribute_block, so they must see every
+            # matvec output even in a serial run, where redistribution itself is a no-op.
+            if mpi or getattr(basis, "caps_growth", False):
                 out = basis.redistribute_block(out)
             return out
 
@@ -160,6 +186,7 @@ def block_bicgstab(A, x0, y, basis, double slaterWeightMin, atol=1e-8, rtol=1e-1
     # ||R0|| < sqrt(DEFLATE_EVAL_TOL) ~ 6e-6 to rank 0 and return x0 unrefined, whatever
     # `atol` asked for.
     if r0_scale <= atol * y_scale:
+        _fill_info(info, 0, True, r0_scale / y_scale if y_scale > 0.0 else 0.0)
         return x0
 
     # Deflate the *normalized* Gram: the rank of R0 is a property of its column directions,
@@ -167,6 +194,7 @@ def block_bicgstab(A, x0, y, basis, double slaterWeightMin, atol=1e-8, rtol=1e-1
     # orthonormal and R0 = Q @ beta_j exact.
     beta_j, beta_inv, rank = _cholesky_or_deflate(gram / (r0_scale * r0_scale), n)
     if rank == 0:
+        _fill_info(info, 0, True, r0_scale / y_scale if y_scale > 0.0 else 0.0)
         return x0  # zero residual: x0 already solves the system
     beta_j = beta_j * r0_scale
     beta_inv = beta_inv / r0_scale
@@ -183,7 +211,7 @@ def block_bicgstab(A, x0, y, basis, double slaterWeightMin, atol=1e-8, rtol=1e-1
     # ||Y||/||R0|| makes the delivered accuracy ``atol * ||Y||`` regardless of the warm start,
     # so a good x0 buys fewer iterations rather than a silently tighter target. A cold start
     # has R0 = Y, hence the ratio is exactly 1 and the tolerance is unchanged.
-    z_block = _block_bicgstab_core(
+    z_block, core_iters, core_norms, core_converged = _block_bicgstab_core(
         matmat,
         q_block,
         basis,
@@ -194,8 +222,13 @@ def block_bicgstab(A, x0, y, basis, double slaterWeightMin, atol=1e-8, rtol=1e-1
         comm,
         is_arr,
         rank,
-        kwargs.get("max_iter", np.inf),
+        max_iter,
     )
+    # The core's residual columns live on the normalized system A Zq = Q; the true residual is
+    # R_core @ beta_j (see the deflation comment above), so ||R0|| ~ r0_scale rescales it back
+    # and y_scale makes it relative to the RHS -- an estimate (sigma_max(beta_j) can exceed
+    # r0_scale by up to sqrt(n)), consistent with the atol the core was driven to.
+    _fill_info(info, core_iters, core_converged, float(np.max(core_norms)) * (r0_scale / y_scale))
     if is_arr:
         correction = block_combine(z_block, beta_j, slaterWeightMin)
         xi = x0.copy()
@@ -233,10 +266,21 @@ def _block_bicgstab_core(
     blocks (``block_add_scaled_cy``) instead of mutating in place, per-column norms come from
     ``col_norm2`` on the shared rows, and the two matvecs per iteration are single
     ``apply_block`` calls.
+
+    Returns
+    -------
+    tuple
+        ``(xi, iterations, exit_norms, converged)`` -- the solution block, the iteration
+        count, the final per-column residual norms (on this normalized system), and whether
+        every column met ``atol`` (``False`` on ``max_iter``, basis exhaustion, or ``rtol``
+        stagnation). ``exit_norms`` is exact at every exit: the two mid-loop breaks capture
+        the norms they just measured, and a while-condition exit recomputes them (one extra
+        reduction, no matvec) because ``ri`` was updated after the loop-top measurement.
     """
     cdef int it
     cdef double r0_norm
     cdef double complex wi
+    cdef bint broke = False
 
     def b_inner(B1, B2):
         if is_arr:
@@ -277,9 +321,11 @@ def _block_bicgstab_core(
         r0_t = rhs
         pi = rhs
 
-    r0_norm = np.sqrt(np.max(col_norms2(r0_t)))
+    r0_cols = np.sqrt(col_norms2(r0_t))
+    r0_norm = np.max(r0_cols)
+    last_norms = r0_cols
     if r0_norm < np.finfo(float).eps:
-        return xi
+        return xi, 0, last_norms, True
 
     cdef double cutoff2 = slaterWeightMin * slaterWeightMin
     if not is_arr:
@@ -333,9 +379,11 @@ def _block_bicgstab_core(
         it += 1
 
         r_norms = np.sqrt(col_norms2(ri))
+        last_norms = r_norms
 
         active_mask = (r_norms >= atol) & (r_norms / r0_norm >= rtol)
         if not np.any(active_mask):
+            broke = True
             break
 
         vi = matmat(pi)
@@ -350,9 +398,12 @@ def _block_bicgstab_core(
         # s_i = r_i - v_i a_i (rebinding; the dense path updates ri's buffer in place).
         si = axpy(ri, vi, -ai)
 
-        active_mask_s = np.sqrt(col_norms2(si)) >= atol
+        s_norms = np.sqrt(col_norms2(si))
+        active_mask_s = s_norms >= atol
         if not np.any(active_mask_s):
             xi = axpy(xi, pi, ai)
+            last_norms = s_norms
+            broke = True
             break
 
         ti = matmat(si)
@@ -392,4 +443,11 @@ def _block_bicgstab_core(
         else:
             pi = axpy(axpy(ri, pi, bi), vi, -wi * bi)
 
-    return xi
+    # A while-condition exit (max_iter / basis exhaustion) leaves `last_norms` one residual
+    # update stale (ri changed at the end of the final iteration). Recompute -- one reduction,
+    # no matvec, and collective-consistent: every rank exits the loop the same way because
+    # `it`, `max_iter` and `global_seen_size` are replicated.
+    if not broke:
+        last_norms = np.sqrt(col_norms2(ri))
+
+    return xi, it, last_norms, bool(np.all(last_norms < atol))
