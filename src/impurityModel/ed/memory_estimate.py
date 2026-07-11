@@ -131,7 +131,7 @@ def bytes_per_determinant(n_spin_orbitals):
 
 
 def estimate_gf_peak_bytes(
-    n_dets, n_spin_orbitals, block_width, reort="none", ranks=1, n_blocks=None, krylov_dtype=None
+    n_dets, n_spin_orbitals, block_width, reort="none", ranks=1, n_blocks=None, krylov_dtype=None, method="lanczos"
 ):
     """Predicted per-rank peak bytes of the sparse (MBS-kernel) Green's-function path.
 
@@ -175,6 +175,13 @@ def estimate_gf_peak_bytes(
     krylov_dtype : optional
         Storage dtype of the Krylov basis. ``complex64`` halves the store and is legal
         only for ``FULL``/``PERIODIC`` (see :func:`_krylov_itemsize`).
+    method : str
+        ``"lanczos"`` (default) or ``"bicgstab"`` -- the per-frequency BiCGSTAB driver
+        retains **no** Krylov store (``reort``/``n_blocks``/``krylov_dtype`` are ignored)
+        but carries more live blocks per solve: the 7 solver blocks (``xi, ri, r0_t, pi,
+        vi, si, ti``) plus the seeds, the 3 warm-start history solutions and the
+        extrapolated guess -- ~12 block-rows against the recurrence's 3. Its basis term is
+        the *per-point* rebuilt support, still bounded by the same ``n_dets`` cap.
 
     Returns
     -------
@@ -185,6 +192,8 @@ def estimate_gf_peak_bytes(
     key_heap = _key_heap_bytes(n_spin_orbitals)
     basis_bytes = local_rows * (bytes_per_determinant(n_spin_orbitals) + _PY_BASIS_OVERHEAD_BYTES)
     row_bytes = _COMPLEX_BYTES * block_width + key_heap + _SD_STRUCT_BYTES
+    if method == "bicgstab":
+        return basis_bytes + 12 * local_rows * row_bytes
     live_bytes = 3 * local_rows * row_bytes
     store_bytes = 0
     if _retains_krylov(reort):
@@ -348,6 +357,7 @@ def suggest_truncation_threshold(
     nnz_per_state=100,
     safety=DEFAULT_MEMORY_SAFETY,
     krylov_dtype=None,
+    method="lanczos",
 ):
     """Largest ``truncation_threshold`` whose predicted peak fits in per-rank RAM.
 
@@ -385,12 +395,20 @@ def suggest_truncation_threshold(
     budget = safety * available_bytes_per_rank(comm)
     ranks = comm.size if comm is not None else 1
     return _suggest_for_budget(
-        budget, n_spin_orbitals, block_width, reort, n_parallel_units, nnz_per_state, ranks, krylov_dtype
+        budget, n_spin_orbitals, block_width, reort, n_parallel_units, nnz_per_state, ranks, krylov_dtype, method
     )
 
 
 def max_colors_within_budget(
-    n_dets, n_spin_orbitals, block_width, reort, comm, max_candidate, safety=DEFAULT_MEMORY_SAFETY, krylov_dtype=None
+    n_dets,
+    n_spin_orbitals,
+    block_width,
+    reort,
+    comm,
+    max_candidate,
+    safety=DEFAULT_MEMORY_SAFETY,
+    krylov_dtype=None,
+    method="lanczos",
 ):
     """Largest unit-color count whose predicted per-rank GF peak fits the memory budget.
 
@@ -431,7 +449,13 @@ def max_colors_within_budget(
         ranks_per_color = max(1, comm.size // n_colors)
         if (
             estimate_gf_peak_bytes(
-                n_dets, n_spin_orbitals, block_width, reort, ranks=ranks_per_color, krylov_dtype=krylov_dtype
+                n_dets,
+                n_spin_orbitals,
+                block_width,
+                reort,
+                ranks=ranks_per_color,
+                krylov_dtype=krylov_dtype,
+                method=method,
             )
             <= budget
         ):
@@ -440,14 +464,24 @@ def max_colors_within_budget(
 
 
 def _suggest_for_budget(
-    budget, n_spin_orbitals, block_width, reort, n_parallel_units, nnz_per_state, ranks, krylov_dtype=None
+    budget,
+    n_spin_orbitals,
+    block_width,
+    reort,
+    n_parallel_units,
+    nnz_per_state,
+    ranks,
+    krylov_dtype=None,
+    method="lanczos",
 ):
     """Largest ``n`` with both path estimates within ``budget``, by bisection. Rank-local."""
     ranks_per_unit = max(1, ranks // max(1, n_parallel_units))
 
     def fits(n):
         gs = estimate_gs_peak_bytes(n, n_spin_orbitals, block_width, ranks, nnz_per_state)
-        gf = estimate_gf_peak_bytes(n, n_spin_orbitals, block_width, reort, ranks_per_unit, krylov_dtype=krylov_dtype)
+        gf = estimate_gf_peak_bytes(
+            n, n_spin_orbitals, block_width, reort, ranks_per_unit, krylov_dtype=krylov_dtype, method=method
+        )
         return max(gs, gf) <= budget
 
     lo, hi = 1, 1024
@@ -475,6 +509,7 @@ def log_memory_budget(
     verbose=True,
     label="",
     krylov_dtype=None,
+    method="lanczos",
 ):
     """Predict peak memory for a chosen threshold, print it on rank 0, warn if it won't fit.
 
@@ -511,7 +546,9 @@ def log_memory_budget(
         n = int(truncation_threshold)
         ranks_per_unit = max(1, ranks // max(1, n_parallel_units))
         gs = estimate_gs_peak_bytes(n, n_spin_orbitals, block_width, ranks, nnz_per_state)
-        gf = estimate_gf_peak_bytes(n, n_spin_orbitals, block_width, reort, ranks_per_unit, krylov_dtype=krylov_dtype)
+        gf = estimate_gf_peak_bytes(
+            n, n_spin_orbitals, block_width, reort, ranks_per_unit, krylov_dtype=krylov_dtype, method=method
+        )
         fits = max(gs, gf) <= available
     if verbose and rank == 0:
         prefix = f"{label}: " if label else ""
@@ -534,6 +571,7 @@ def log_memory_budget(
                     nnz_per_state,
                     ranks,
                     krylov_dtype,
+                    method,
                 )
                 print(
                     f"{prefix}WARNING: predicted peak exceeds available memory; consider "
