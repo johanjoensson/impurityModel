@@ -129,6 +129,7 @@ def run_selfenergy(
     gf_method="lanczos",
     reort="archive",
     truncation_threshold="archive",
+    dN="archive",
     n_iw=None,
     n_w=None,
     verbosity=0,
@@ -141,8 +142,10 @@ def run_selfenergy(
         From :func:`load_workload`.
     gf_method : str
         ``"lanczos"`` or ``"bicgstab"``.
-    reort, truncation_threshold
-        ``"archive"`` keeps the recorded production setting; anything else overrides it.
+    reort, truncation_threshold, dN
+        ``"archive"`` keeps the recorded production setting; anything else overrides it
+        (``dN`` bounds the excited-sector occupation window -- FCC Ni production runs
+        record ``dN=None``, i.e. no window at all).
     n_iw, n_w : int, optional
         Subsample the Matsubara / real mesh to this many points (``0`` drops the axis
         entirely, ``None`` keeps the full mesh). Point counts scale the per-frequency
@@ -179,7 +182,7 @@ def run_selfenergy(
             workload["truncation_threshold"] if truncation_threshold == "archive" else truncation_threshold
         ),
         slaterWeightMin=workload["slaterWeightMin"],
-        dN=workload["dN"],
+        dN=workload["dN"] if dN == "archive" else dN,
         sparse_green=workload["sparse_green"],
         gf_method=gf_method,
     )
