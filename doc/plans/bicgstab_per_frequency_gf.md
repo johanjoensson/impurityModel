@@ -1,5 +1,13 @@
 # Per-frequency BiCGSTAB Green's function
 
+**Status (2026-07-11): Phase 3b BUILT.** The driver exists — `gf_method="bicgstab"` on
+`calc_selfenergy` / `get_Greens_function`, backed by `block_Green_bicgstab` — with the one
+mechanism every earlier measurement lacked: the excited basis is **rebuilt and discarded at
+every frequency point** (the RIXS `tmp_basis` pattern) and hard-capped per point by
+`_CappedBasisProxy`. The wall-time verdicts of 3a-quinquies stand; the open question 3b was
+blocked on (is the *per-point* support materially smaller than the mesh-union support?) is now
+answered by measurement, see [Phase 3b](#phase-3b--the-driver-built-2026-07-11).
+
 **Status (2026-07-10): re-measured on the real workloads.** Phase 3a-ter is RETRACTED — its
 benchmark had no spectral weight in the evaluation window (see
 [Phase 3a-quater](#phase-3a-quater--the-benchmark-is-vacuous)). Real FCC Ni / NiO / AFM-NiO
@@ -517,21 +525,80 @@ If FCC Ni needs to fit in RAM, the lever is `truncation_threshold` (it is `None`
 `dN` window on the excited sector — not the linear solver. `memory_estimate.estimate_gf_peak_bytes`
 should be corrected to model `C * (s_live + 16*m*p)` rather than `Q` alone.
 
-## Phase 3b — The driver (blocked: it has no case)
+## Phase 3b — The driver (built, 2026-07-11)
 
-**Do not build this until Phase 3a-ter's open question is answered.** At the only operating point
-we can reproduce, the driver would be 136x slower for a 1.15x memory saving. Its remaining
-structural advantage over Lanczos is that the frequency axis is embarrassingly parallel while a
-Lanczos recurrence is strictly sequential — so on a machine with more ranks than the
-determinant-parallel matvec can absorb, BiCGSTAB converts spare ranks into wall time that Lanczos
-cannot. That is a *scaling* argument, not a memory one, and it has not been measured.
+Built despite the 3a-quinquies wall-time verdict, deliberately: the memory-first configuration
+none of the earlier measurements exercised is **per-point rebuild-and-discard** — every earlier
+head-to-head grew ONE shared basis across the sweep, so the union-vs-single-point support
+question was never separated from the solver comparison. The driver is both the deliverable and
+the measuring instrument for that question.
 
-What would revive the memory case: a **converged** Green's function (not a diverging one, and not
-one whose monitor is chasing an axis the caller never evaluates) whose retained `Q` does not fit in
-RAM. If such a workload exists, `m` is large there and the rest of this section applies as written.
-If it does not, the honest answer is that `reort=PARTIAL` block Lanczos is simply the right kernel.
+### What was built
 
-The sketch below is kept because it is correct *if* the premise is ever established.
+* `block_Green_bicgstab` (`greens_function.py`): per unit, per stacked eigenstate, per axis,
+  sweep the caller's full mesh solving `(z + E_e - H) X = seeds` and forming
+  `G_ij = <seed_i|X_j>`. Per point: `tmp_basis.clear()` + re-add the seed + warm-start support
+  + `redistribute_psis` (the RIXS resolvent's rebuild pattern, one clone per unit); warm start
+  by **quadratic extrapolation in z** through the last three solutions (the Phase 3a optimum);
+  sweep each axis from large `|Im z|` toward the hard region. Unconverged solves are
+  **restarted** (re-enter `block_bicgstab` with the current solution: fresh shadow residual),
+  progress-gated — this fixed the near-pole stagnation the sparse exhaustion bound
+  (`it*n < |seen|`) otherwise leaves behind (measured on the SIAM-6 anchor: max error
+  6.6e-3 → 3.9e-9 at ~unchanged cost). Knobs: `GF_BICGSTAB_ATOL` (1e-8),
+  `GF_BICGSTAB_MAX_ITER` (500), `GF_BICGSTAB_RESTARTS` (10).
+* **Per-point cap**: `_CappedBasisProxy` reused verbatim in policy (freeze-growth +
+  amplitude-ranked admission at the overflow step, `keep_rows` after), constructed fresh per
+  frequency point; `block_bicgstab`'s matvec now routes through `redistribute_block` for
+  `caps_growth` bases in serial too. Post-freeze the solve is exact BiCGSTAB of `P H P` — the
+  same exact-on-retained-subspace contract as the capped Lanczos, verified against the dense
+  `P H P` resolvent (`test_gf_bicgstab_driver.py`, mirroring `test_gf_truncation.py`). A seed
+  support exceeding the cap is *never* truncated (solved frozen, flagged `seed_overflow`).
+* **Threading**: `get_Greens_function(gf_method="bicgstab")` reuses the identical unit
+  decomposition / weights / single split; units return `G` evaluated on the caller's meshes
+  (`_gf_signed_axes`, the extracted single source of the `omegaP` frame) and a streaming
+  `reduce_fn` Boltzmann-accumulates per `(block, side)` on rank 0. `calc_selfenergy` /
+  `get_selfenergy` take `gf_method` (CLI `--gf_method`); the operator-split (pairwise)
+  decomposition is never used on this path (the solve yields the full `G_ij` block directly).
+* **Reliability contract**: `block_bicgstab(..., info=)` reports
+  `{iterations, converged, rel_residual}` per solve; `gf_diagnostics.check_bicgstab_convergence`
+  surfaces unconverged points / worst residual / seed overflow next to the retained
+  representation-independent checks (thermal cutoff, basis cap, mesh density, causality).
+* **Memory model**: `estimate_gf_peak_bytes(method="bicgstab")` — no Krylov store ever, ~12
+  live block-rows (7 solver blocks + seeds + 3 warm-start solutions + guess) against the
+  recurrence's 3 — threaded through `suggest_truncation_threshold` / `max_colors_within_budget`
+  / `log_memory_budget` and `run_units_distributed`'s color probe.
+* **Measurement rig**: `test/real_workload.py` reconstructs the production `calc_selfenergy`
+  call from any `impmod_tests/**/impurityModel_data.h5` archive (mesh-subsampling knobs);
+  `test/test_gf_real_workload.py` is the opt-in one-process-per-point VmHWM/wall/sigma rig.
+
+### Measured: NiO 1-bath, end to end through `calc_selfenergy` (2026-07-11)
+
+`real_workload.py` on the production archive (`reort=partial`, `delta=0.01`, `tau=0.0025`),
+serial, meshes subsampled to 32 + 32 points, against the same run at `gf_method="lanczos"`:
+
+| quantity | `atol=1e-8` (default) | `atol=1e-10` | `atol=1e-10` + GMRES fallback | Lanczos partial-vs-full |
+|---|---|---|---|---|
+| `sigma` (Matsubara) rel | **2.4e-8** | — | — | 3.6e-16 |
+| `sigma_static` | **bit-identical** | bit-identical | bit-identical | 1e-15 |
+| `sigma_real` abs | 9.2e-3 | 2.0e-4 | **5.4e-7** | 5.3e-6 |
+| wall (vs 21.5 s Lanczos) | 1028 s (**48x**) | 1219 s | 1780 s (loaded box) | 60.2 s (full) |
+
+* **Matsubara: target met.** 2.4e-8 is inside the PARTIAL-vs-FULL spread the Lanczos path
+  itself shows on this workload (2.5e-8, Phase 3a-quinquies).
+* **Real axis at `delta=0.01`: fixed by the GMRES fallback.** Pre-fallback the driver honestly
+  reported 25 of 1440 solves stagnated at residual ~2e-2 (near-pole points where BiCGSTAB's
+  shadow-residual recurrence degenerates; ~250 iterations/solve there against ~3 on the
+  Matsubara axis) and those points dominated `sigma_real`'s error. With `block_gmres`
+  re-solving the flagged points (warm-started from the stalled iterate): 16 fallbacks, 13
+  fully converged, the 3 stragglers at residual 2.9e-8 (six orders below the stagnation
+  level), for ~2% extra iterations — and `sigma_real` lands at 5.4e-7, *below* the Lanczos
+  reference's own partial-vs-full spread. The success criterion of the fallback plan is met.
+* **No memory story on NiO, as predicted**: the per-point support (398–734 determinants)
+  *equals* the union support — the restrictions bound this workload's basis, not the sweep.
+
+The sketch below is kept for the record; everything in it is now implemented except the
+frequency-chunk work-unit axis (frequencies stay inside the unit for maximal warm-start
+locality; chunking them across colors is the noted follow-up for the scaling argument).
 
 The shape already exists in `spectra.py:_rixs_driver`'s kernel: sweep a contiguous frequency chunk
 in order, warm-starting each `block_bicgstab` from the previous frequency's solution, on a
