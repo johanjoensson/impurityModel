@@ -20,10 +20,12 @@ from impurityModel.ed.BlockLanczosArray import (
 from impurityModel.ed.BlockLanczos import block_lanczos_cy
 from impurityModel.ed.manybody_basis import Basis, collective_amplitude_cutoff
 from impurityModel.ed.symmetries import widen_weighted_restrictions
+from impurityModel.ed.cg import block_bicgstab
 from impurityModel.ed.ManyBodyUtils import (
     ManyBodyBlockState,
     ManyBodyOperator,
     ManyBodyState,
+    block_inner_cy,
 )
 from impurityModel.ed.memory_estimate import estimate_gf_peak_bytes, format_bytes, max_colors_within_budget
 from impurityModel.ed.mpi_comm import gather_distributed_results
@@ -262,6 +264,7 @@ def run_units_distributed(
     verbose: bool = False,
     reduce_fn: Optional[Callable] = None,
     reort=None,
+    gf_method: str = "lanczos",
 ) -> Optional[list]:
     """Distribute work units over MPI colors, run ``kernel`` per unit, gather to global rank 0.
 
@@ -278,9 +281,10 @@ def run_units_distributed(
     rank 0 then never holds more than one color's results at a time instead of all units
     simultaneously (e.g. the caller accumulates into a preallocated output tensor).
 
-    ``reort`` is the GF reorthogonalization mode the kernel will run with; it only feeds the
-    memory model that caps the number of simultaneous colors (each color's unit basis may fill
-    the same ``truncation_threshold`` on fewer ranks, so memory bounds the concurrency).
+    ``reort`` is the GF reorthogonalization mode the kernel will run with, and ``gf_method``
+    names the kernel family (``"lanczos"`` / ``"bicgstab"``); both only feed the memory model
+    that caps the number of simultaneous colors (each color's unit basis may fill the same
+    ``truncation_threshold`` on fewer ranks, so memory bounds the concurrency).
 
     Returns
     -------
@@ -308,7 +312,7 @@ def run_units_distributed(
     max_colors = None
     if np.isfinite(cap) and min(basis.comm.size, n_units) > 1:
         max_colors = max_colors_within_budget(
-            int(cap), basis.num_spin_orbitals, width, reort, basis.comm, min(basis.comm.size, n_units)
+            int(cap), basis.num_spin_orbitals, width, reort, basis.comm, min(basis.comm.size, n_units), method=gf_method
         )
         if verbose and basis.comm.rank == 0 and max_colors < min(basis.comm.size, n_units):
             print(
@@ -339,6 +343,7 @@ def run_units_distributed(
             width,
             reort,
             ranks=max(1, basis.comm.size // max(1, n_colors)),
+            method=gf_method,
         )
         print(
             f"{n_colors} simultaneous unit bases at truncation_threshold={int(cap):,}: "
@@ -405,6 +410,7 @@ def get_Greens_function(
     slaterWeightMin: float,
     sparse: bool,
     num_wanted: int = None,
+    gf_method: str = "lanczos",
 ):
     """
     Calculate interacting Greens function.
@@ -413,14 +419,24 @@ def get_Greens_function(
     :class:`gf_diagnostics.DiagnosticReport` of per-block convergence/consistency checks
     (``(None, None, None)`` on non-root ranks). ``num_wanted`` is the number of thermal states
     the eigensolver was asked for, used by the ensemble-truncation check.
+
+    ``gf_method`` selects the resolvent kernel: ``"lanczos"`` (default) runs one block-Lanczos
+    recurrence per work unit serving the whole mesh; ``"bicgstab"`` solves one linear system
+    per frequency point with a rebuilt-and-discarded basis (:func:`block_Green_bicgstab`) --
+    the memory-first path, whose excited-basis footprint is per *point* rather than per mesh.
+    On the bicgstab path ``sparse`` is ignored (the solver works on the ManyBodyState
+    representation only) and the operator-split (pairwise) decomposition is never used (the
+    linear solve yields the full ``G_ij`` block directly).
     """
+    if gf_method not in ("lanczos", "bicgstab"):
+        raise ValueError(f"Unknown gf_method {gf_method!r}; expected 'lanczos' or 'bicgstab'")
     # Excited-sector restrictions are independent of the orbital block and of the spectral side
     # (the dN occupation window is symmetric and spans all impurity orbitals), so build them once
     # on the full basis instead of per block.
     excited_restrictions, excited_weighted_restrictions = _build_excited_restrictions(
         basis, hOp, psis, es, dN, occ_cutoff
     )
-    pairwise = _gf_operator_split()
+    pairwise = _gf_operator_split() if gf_method == "lanczos" else False
     n_psis = len(psis)
 
     # Per-state excited windows (see _gf_per_state_restrict). Built on the full basis before the
@@ -454,8 +470,31 @@ def get_Greens_function(
         excited_weighted_restrictions,
         slaterWeightMin,
         per_state_restrictions,
+        pairwise=pairwise,
     )
     unit_weights = unit_cost_weights(unit_seeds, basis.comm)
+
+    if gf_method == "bicgstab":
+        return _get_greens_function_bicgstab(
+            matsubara_mesh,
+            omega_mesh,
+            es,
+            tau,
+            basis,
+            hOp,
+            delta,
+            blocks,
+            units,
+            unit_seeds,
+            unit_weights,
+            unit_restrictions,
+            group_meta,
+            excited_weighted_restrictions,
+            slaterWeightMin,
+            verbose,
+            verbose_extra,
+            num_wanted,
+        )
 
     def kernel(split_basis, u, seeds):
         unit = units[u]
@@ -600,6 +639,172 @@ def get_Greens_function(
             report.extend(str(block), diags)
 
     return (gs_matsubara, gs_realaxis, report)
+
+
+def _get_greens_function_bicgstab(
+    matsubara_mesh,
+    omega_mesh,
+    es,
+    tau,
+    basis,
+    hOp,
+    delta,
+    blocks,
+    units,
+    unit_seeds,
+    unit_weights,
+    unit_restrictions,
+    group_meta,
+    excited_weighted_restrictions,
+    slaterWeightMin,
+    verbose,
+    verbose_extra,
+    num_wanted,
+):
+    r"""Distribution + assembly of the per-frequency BiCGSTAB Green's function.
+
+    The unit decomposition (and the excited windows) are exactly the Lanczos driver's --
+    :func:`get_Greens_function` hands them over after :func:`enumerate_gf_units` -- only the
+    per-unit kernel and the result contract differ: each unit returns ``G`` already evaluated
+    on the caller's meshes (:func:`block_Green_bicgstab`), so the assembly is a streaming
+    Boltzmann-weighted accumulation into per-``(block, side)`` arrays (rank 0 never holds more
+    than one color's payload) followed by the same
+    :math:`(G_\mathrm{IPS} - G_\mathrm{PS}^T)/Z` combination the Lanczos path applies to its
+    evaluated continued fractions.
+
+    The diagnostics report keeps the representation-independent checks (thermal cutoff, mesh
+    density, causality, basis truncation) and replaces the Lanczos-specific ones with the
+    solver-residual record (:func:`gf_diagnostics.check_bicgstab_convergence`); the spectral
+    sum rule and integrated-weight checks are expressed in seed-projection/continued-fraction
+    terms this path does not produce.
+    """
+    e0 = np.min(es)
+    boltzmann = np.exp(-(np.asarray(es) - e0) / tau)
+    Z = float(np.sum(boltzmann))
+    axis_lens = [len(m) for m in (matsubara_mesh, omega_mesh) if m is not None]
+
+    def kernel(split_basis, u, seeds):
+        unit = units[u]
+        _block_i, side_i = group_meta[unit.group_i]
+        z_axes = _gf_signed_axes(matsubara_mesh, omega_mesh, side_i, delta)
+        return block_Green_bicgstab(
+            hOp,
+            seeds,
+            split_basis,
+            [es[ei] for ei in unit.chunk],
+            unit.n_ops,
+            z_axes,
+            slaterWeightMin=slaterWeightMin,
+            verbose=verbose_extra,
+            excited_restrictions=unit_restrictions[u],
+            excited_weighted_restrictions=excited_weighted_restrictions,
+        )
+
+    # Streaming accumulators, populated on global rank 0 only (reduce_fn's contract).
+    is_root = basis.comm is None or basis.comm.rank == 0
+    G_acc = (
+        {
+            (bi, si): [np.zeros((L, len(blocks[bi]), len(blocks[bi])), dtype=complex) for L in axis_lens]
+            for bi in range(len(blocks))
+            for si in (0, 1)
+        }
+        if is_root
+        else None
+    )
+    stats_acc = {} if is_root else None
+
+    def reduce_fn(u, result):
+        G_axes, stats = result
+        unit = units[u]
+        block_i, side_i = group_meta[unit.group_i]
+        for p, ei in enumerate(unit.chunk):
+            for ax in range(len(axis_lens)):
+                G_acc[(block_i, side_i)][ax] += boltzmann[ei] * G_axes[ax][p]
+        agg = stats_acc.setdefault(
+            block_i,
+            {
+                "n_points": 0,
+                "n_unconverged": 0,
+                "max_rel_residual": 0.0,
+                "iterations": 0,
+                "atol": stats["atol"],
+                "cap": stats["cap"],
+                "cap_hit": False,
+                "retained_size": None,
+                "seed_overflow": False,
+                "max_solve_basis": 0,
+                "max_rebuild_basis": 0,
+            },
+        )
+        for key in ("n_points", "n_unconverged", "iterations"):
+            agg[key] += stats[key]
+        for key in ("max_rel_residual", "max_solve_basis", "max_rebuild_basis"):
+            agg[key] = max(agg[key], stats[key])
+        agg["cap_hit"] = agg["cap_hit"] or stats["cap_hit"]
+        agg["seed_overflow"] = agg["seed_overflow"] or stats["seed_overflow"]
+        if stats["retained_size"] is not None:
+            agg["retained_size"] = (
+                stats["retained_size"]
+                if agg["retained_size"] is None
+                else min(agg["retained_size"], stats["retained_size"])
+            )
+
+    got = run_units_distributed(
+        basis, unit_seeds, unit_weights, kernel, verbose=verbose, reduce_fn=reduce_fn, gf_method="bicgstab"
+    )
+    if got is None:
+        return None, None, None
+
+    gs_matsubara = (
+        [np.empty((len(matsubara_mesh), len(b), len(b)), dtype=complex) for b in blocks]
+        if matsubara_mesh is not None
+        else None
+    )
+    gs_realaxis = (
+        [np.empty((len(omega_mesh), len(b), len(b)), dtype=complex) for b in blocks] if omega_mesh is not None else None
+    )
+    report = _gfd.DiagnosticReport()
+    for block_i, block in enumerate(blocks):
+        ax = 0
+        combined_real = None
+        if matsubara_mesh is not None:
+            G_IPS = G_acc[(block_i, 0)][ax]
+            G_PS = G_acc[(block_i, 1)][ax]
+            gs_matsubara[block_i][:] = (G_IPS - np.transpose(G_PS, (0, 2, 1))) / Z
+            ax += 1
+        if omega_mesh is not None:
+            G_IPS_real = G_acc[(block_i, 0)][ax]
+            G_PS_real = G_acc[(block_i, 1)][ax]
+            combined_real = (G_IPS_real - np.transpose(G_PS_real, (0, 2, 1))) / Z
+            gs_realaxis[block_i][:] = combined_real
+
+        agg = stats_acc[block_i]
+        if verbose:
+            print(
+                f"block {block}: {agg['n_points']} bicgstab solves, {agg['iterations']} iterations, "
+                f"max per-point basis {agg['max_solve_basis']:,} "
+                f"(rebuild floor {agg['max_rebuild_basis']:,}), "
+                f"max residual {agg['max_rel_residual']:.1e}",
+                flush=True,
+            )
+        diags = [
+            _gfd.check_thermal_weight_cutoff(es, e0, tau, n_returned=len(es), num_wanted=num_wanted),
+            _gfd.check_bicgstab_convergence(
+                agg["n_points"],
+                agg["n_unconverged"],
+                agg["max_rel_residual"],
+                agg["atol"],
+                seed_overflow=agg["seed_overflow"],
+            ),
+        ]
+        if np.isfinite(agg["cap"]):
+            diags.append(_gfd.check_basis_truncation(agg["cap_hit"], agg["retained_size"], agg["cap"]))
+        if combined_real is not None:
+            diags.append(_gfd.check_mesh_density(omega_mesh, delta))
+            diags.append(_gfd.check_causality(combined_real, "G"))
+        report.extend(str(block), diags)
+
+    return gs_matsubara, gs_realaxis, report
 
 
 def _build_excited_restrictions(basis, hOp, psis, es, dN, occ_cutoff, dN_imp=None, dN_val=None, dN_con=None):
@@ -1108,6 +1313,54 @@ _GF_NEAR_FACTOR = float(os.environ.get("GF_NEAR_FACTOR", 2.0))
 # monitor only has to decide *whether* G has stopped moving, so it subsamples. Matches the 64
 # points _gf_sample_mesh uses for its spectral-edge fallback, so the cost is unchanged.
 _GF_MONITOR_POINTS = 64
+# --- Per-frequency BiCGSTAB Green's function (gf_method="bicgstab") -------------------------
+# Residual tolerance of one per-frequency solve, relative to the seed norm (block_bicgstab's
+# `atol` contract). 1e-8 measured to give |dG| ~ 7e-9 against a converged block-Lanczos
+# reference (doc/plans/bicgstab_per_frequency_gf.md, Phase 3a) -- inside the 2.5e-8 spread
+# PARTIAL-vs-FULL reorthogonalization itself shows on the real workloads. The reliability
+# diagnostics (gf_diagnostics.check_bicgstab_convergence) derive their thresholds from the
+# value actually used -- never re-hardcode it.
+_GF_BICGSTAB_ATOL = float(os.environ.get("GF_BICGSTAB_ATOL", "1e-8"))
+# Hard per-point iteration bound. Warm-started production solves measure ~3 iterations and a
+# cold start ~6, so 500 is pathology headroom: a stagnating solve (a real-axis point within
+# `delta` of a pole) ends and is *reported* by the diagnostics instead of iterating until the
+# growing seen-support exhaustion bound -- which a solve that keeps discovering determinants
+# may never reach.
+_GF_BICGSTAB_MAX_ITER = int(os.environ.get("GF_BICGSTAB_MAX_ITER", "500"))
+# Solutions retained for the warm start: quadratic extrapolation in z through the last three
+# is the measured optimum (Phase 3a; cubic amplifies the atol-level noise it extrapolates
+# through, and each retained block costs live memory).
+_GF_BICGSTAB_WARM_HISTORY = 3
+# Restarts of one per-point solve that ends unconverged (re-entering block_bicgstab with the
+# current solution re-deflates the residual block and picks a fresh shadow residual r0_t --
+# the standard cure for BiCGSTAB's r0-orthogonality stagnation, which real-axis points within
+# ~delta of a pole do hit; the sparse path's basis-exhaustion bound also ends hard solves
+# after ~N/width iterations and a restart grants the next round). Progress-gated below, so a
+# genuinely stuck point stops early and is reported rather than looping.
+_GF_BICGSTAB_RESTARTS = int(os.environ.get("GF_BICGSTAB_RESTARTS", "10"))
+# A restart must shrink the reported residual by at least this factor to earn the next one.
+_GF_BICGSTAB_RESTART_PROGRESS = 0.5
+
+
+def _gf_signed_axes(matsubara_mesh, omega_mesh, side_i, delta):
+    r"""The requested frequency axes in the resolvent frame, *before* the thermal-energy shift.
+
+    One complex array per requested axis (Matsubara first): ``sign*mesh + i*sign*axis_delta``,
+    where ``sign`` selects addition (+, ``side_i = 0``) vs removal (-, ``side_i = 1``) and the
+    broadening applies to the real axis only (a Matsubara mesh already carries its imaginary
+    part). The sign multiplies the mesh *and* the broadening so ``Im(z)`` keeps the sign of the
+    unit's signed delta. Adding an eigenstate energy ``e`` to any returned axis gives exactly the
+    ``omegaP`` frame :func:`calc_G` evaluates in -- the single source of that frame, shared by
+    the convergence monitor (:func:`_gf_eval_meshes`, subsampled) and the per-frequency BiCGSTAB
+    driver (full axes). Empty list when no mesh was requested.
+    """
+    sign = 1.0 if side_i == 0 else -1.0
+    axes = []
+    if matsubara_mesh is not None:
+        axes.append((sign * np.asarray(matsubara_mesh)).astype(complex))
+    if omega_mesh is not None:
+        axes.append((sign * np.asarray(omega_mesh) + 1j * sign * delta).astype(complex))
+    return axes
 
 
 def _gf_eval_meshes(matsubara_mesh, omega_mesh, side_i, delta, es, n_points=_GF_MONITOR_POINTS):
@@ -1128,28 +1381,22 @@ def _gf_eval_meshes(matsubara_mesh, omega_mesh, side_i, delta, es, n_points=_GF_
     Returns ``None`` when the caller asked for no mesh at all, which sends the monitor back to its
     spectral-edge fallback.
     """
-    axes = []
-    if matsubara_mesh is not None:
-        axes.append((np.asarray(matsubara_mesh), 0.0))
-    if omega_mesh is not None:
-        axes.append((np.asarray(omega_mesh), delta))
+    axes = _gf_signed_axes(matsubara_mesh, omega_mesh, side_i, delta)
     if not axes:
         return None
 
-    # sign selects addition (+) vs removal (-); it multiplies the mesh *and* the broadening, so the
-    # sampled points keep Im(z) of the same sign as the unit's signed delta -- which is what
-    # _greens_function_change's spurious-weight test compares against.
-    sign = 1.0 if side_i == 0 else -1.0
     per_axis = max(2, n_points // max(1, len(es)))
 
     meshes = []
-    for axis_mesh, axis_delta in axes:
+    for axis_mesh in axes:
+        # Subsampling by index commutes with the (already applied) affine sign/broadening map,
+        # so this is exactly the old subsample-then-shift construction.
         sub = (
             axis_mesh
             if len(axis_mesh) <= per_axis
             else axis_mesh[np.linspace(0, len(axis_mesh) - 1, per_axis).astype(int)]
         )
-        meshes.append(np.concatenate([sign * sub + 1j * sign * axis_delta + e for e in es]).astype(complex))
+        meshes.append(np.concatenate([sub + e for e in es]))
     return meshes
 
 
@@ -1647,6 +1894,15 @@ class _CappedBasisProxy:
     MPI: one scalar allreduce per pre-freeze step; the freeze decision and the
     bisection derive only from allreduce'd data, so ranks cannot disagree, and every
     collective runs unconditionally (a rank may retain zero rows).
+
+    The per-frequency BiCGSTAB driver (:func:`block_Green_bicgstab`) reuses this proxy
+    unchanged in spirit: ``block_bicgstab``'s matvec routes through
+    ``redistribute_block`` (also in serial runs, keyed on ``caps_growth``), so the same
+    freeze-growth policy bounds a linear solve's live support, and post-freeze the solve
+    is an exact BiCGSTAB of the projected operator ``P H P`` -- the same
+    exact-on-retained-subspace contract as the capped Lanczos recurrence. The extra
+    forwarders below (``add_states``, ``contains_local``, the restriction properties)
+    are the attributes ``block_bicgstab`` reads off its basis.
     """
 
     caps_growth = True
@@ -1681,8 +1937,26 @@ class _CappedBasisProxy:
     def is_distributed(self):
         return self._basis.is_distributed
 
+    @property
+    def restrictions(self):
+        return self._basis.restrictions
+
+    @property
+    def weighted_restrictions(self):
+        return self._basis.weighted_restrictions
+
     def redistribute_psis(self, psis):
         return self._basis.redistribute_psis(psis)
+
+    def add_states(self, new_states, unique_sorted=False):
+        # Growth bookkeeping only: every determinant block_bicgstab offers here came off a
+        # redistribute_block-capped block, so it is already inside the retained mask and
+        # counted by _global_count -- the wrapped basis can never outgrow the cap through
+        # this path.
+        return self._basis.add_states(new_states, unique_sorted=unique_sorted)
+
+    def contains_local(self, state):
+        return self._basis.contains_local(state)
 
     @property
     def retained_size(self):
@@ -1881,6 +2155,241 @@ def block_Green_sparse(
     alphas, betas = _trim_blocks(alphas, betas, widths)
     alphas, betas = _sanitize_continued_fraction(alphas, betas, verbose=verbose, rank=rank)
     return alphas, betas, r
+
+
+def _warm_start_extrapolation(zs, sols, z_new, n_cols):
+    r"""Warm-start guess at ``z_new``: Lagrange extrapolation through the retained solutions.
+
+    ``zs``/``sols`` hold the last (up to :data:`_GF_BICGSTAB_WARM_HISTORY`) frequencies and
+    solution blocks of the sweep, oldest first. Zero, one and two retained solutions give the
+    cold start, the previous solution and linear extrapolation respectively; three gives the
+    quadratic optimum. The coefficients sum to 1 (an extrapolation, not a fit), so a solution
+    that is locally polynomial in ``z`` is reproduced exactly.
+    """
+    if not sols:
+        return [ManyBodyState() for _ in range(n_cols)]
+    coeffs = []
+    for k, zk in enumerate(zs):
+        c = 1.0 + 0j
+        for j, zj in enumerate(zs):
+            if j != k:
+                c *= (z_new - zj) / (zk - zj)
+        coeffs.append(c)
+    return [sum((sol[col] * c for c, sol in zip(coeffs, sols)), ManyBodyState()) for col in range(n_cols)]
+
+
+def _bicgstab_sweep_order(z_shifted):
+    r"""Sweep indices from the easiest frequency toward the hardest.
+
+    Distance to the spectrum is governed by ``|Im z|``: a point far from the real axis is
+    nearly diagonal-dominant and converges in a couple of iterations, so sweeping from large
+    ``|Im z|`` down builds the warm-start chain on cheap solves before it reaches the hard
+    region. On a fixed-broadening real-axis mesh all ``|Im z|`` are equal and the stable sort
+    leaves the caller's (monotone-in-``omega``) order unchanged -- exactly the contiguous
+    sweep the warm start wants there.
+    """
+    return np.argsort(-np.abs(np.imag(z_shifted)), kind="stable")
+
+
+def block_Green_bicgstab(
+    hOp,
+    psi_arr,
+    basis,
+    es,
+    n_ops,
+    z_axes,
+    slaterWeightMin=0,
+    atol=None,
+    max_iter=None,
+    verbose=False,
+    excited_restrictions=None,
+    excited_weighted_restrictions=None,
+):
+    r"""Per-frequency BiCGSTAB Green's function for one work unit (memory-first path).
+
+    For every stacked eigenstate ``e`` and every frequency ``z`` of every requested axis this
+    solves the resolvent linear system
+
+    .. math:: (z + E_e - H)\, X = \text{seeds}_e, \qquad
+              G_e[i, j](z) = \langle \text{seed}_i | X_j \rangle
+
+    instead of running one block-Lanczos recurrence for the whole mesh. The memory contract is
+    the point: the excited basis is **rebuilt from the current seed + warm-start support and
+    discarded at every frequency point** (the RIXS resolvent's ``tmp_basis`` pattern), so the
+    retained footprint is the largest *single-point* support, not the union over the mesh that
+    a Lanczos recurrence accumulates -- and a finite ``basis.truncation_threshold`` caps even
+    that via :class:`_CappedBasisProxy` (freeze-growth, exact on the retained subspace). No
+    Krylov store exists on this path and there is no orthogonality to lose, so accuracy is set
+    by ``atol`` alone.
+
+    Parameters
+    ----------
+    hOp : ManyBodyOperator
+        The Hamiltonian. Each point solves against a fresh ``z*I - hOp`` operator (the RIXS
+        identity-operator construction), whose occupation restrictions come from the rebuilt
+        basis and whose weighted restrictions are set from ``excited_weighted_restrictions``.
+    psi_arr : list of ManyBodyState
+        Flat seed columns in ``(eigenstate, operator)`` order -- ``len(es) * n_ops`` entries,
+        exactly the unit-seed convention of :func:`enumerate_gf_units`.
+    basis : Basis
+        The unit's (split) basis; carries the communicator, the clone template and
+        ``truncation_threshold``.
+    es : sequence of float
+        Energies of the stacked eigenstates. Each eigenstate is solved separately: the shift
+        enters the operator, so solves cannot be stacked across eigenstates the way one
+        Lanczos recurrence serves them all.
+    n_ops : int
+        Seed columns per eigenstate (the Green's-function block width).
+    z_axes : list of ndarray
+        Complex frequency axes from :func:`_gf_signed_axes` -- *before* the ``E_e`` shift,
+        which is applied here per eigenstate.
+    atol : float, optional
+        Per-solve residual tolerance relative to the seed norm; defaults to
+        :data:`_GF_BICGSTAB_ATOL`.
+    max_iter : int, optional
+        Per-point iteration bound; defaults to :data:`_GF_BICGSTAB_MAX_ITER`.
+
+    Returns
+    -------
+    tuple
+        ``(G_axes, stats)``: ``G_axes[ax][p, k]`` is the ``n_ops x n_ops`` block of eigenstate
+        ``p`` at frequency ``k`` of axis ``ax`` (caller's mesh order), and ``stats`` is the
+        reliability/memory record consumed by the diagnostics -- solver convergence
+        (``n_points``, ``n_unconverged``, ``max_rel_residual``, ``iterations``), the cap state
+        (``cap``, ``cap_hit``, ``retained_size``, ``seed_overflow``) and the measured
+        per-point support (``max_solve_basis``, ``max_rebuild_basis`` -- the numbers that
+        decide whether this path's memory promise holds on a given workload).
+    """
+    atol = _GF_BICGSTAB_ATOL if atol is None else atol
+    max_iter = _GF_BICGSTAB_MAX_ITER if max_iter is None else max_iter
+    n_e = len(es)
+    sub_comm = basis.comm
+    cap = getattr(basis, "truncation_threshold", np.inf)
+    # One clone (and one cloned communicator) per unit; the per-point rebuild is
+    # clear() + add_states, never a re-clone. Freed collectively below -- every rank of the
+    # color runs the identical unit list, so this stays in lock-step.
+    tmp_basis = basis.clone(
+        initial_basis=[],
+        restrictions=excited_restrictions,
+        weighted_restrictions=excited_weighted_restrictions,
+        verbose=False,
+        comm=sub_comm.Clone() if sub_comm is not None else None,
+    )
+
+    G_axes = [np.zeros((n_e, len(z_axis), n_ops, n_ops), dtype=complex) for z_axis in z_axes]
+    stats = {
+        "n_points": 0,
+        "n_unconverged": 0,
+        "max_rel_residual": 0.0,
+        "iterations": 0,
+        "atol": atol,
+        "cap": cap,
+        "cap_hit": False,
+        "retained_size": None,
+        "seed_overflow": False,
+        "max_solve_basis": 0,
+        "max_rebuild_basis": 0,
+    }
+
+    for p in range(n_e):
+        seeds = list(psi_arr[p * n_ops : (p + 1) * n_ops])
+        for ax, z_axis in enumerate(z_axes):
+            z_shifted = z_axis + es[p]
+            # Fresh warm-start chain per (eigenstate, axis): extrapolating across axes (or
+            # across eigenstates) would extrapolate through a discontinuous z-path.
+            hist_z: list[complex] = []
+            hist_x: list[list[ManyBodyState]] = []
+            for k in _bicgstab_sweep_order(z_shifted):
+                z = complex(z_shifted[k])
+                x0 = _warm_start_extrapolation(hist_z, hist_x, z, n_ops)
+                if slaterWeightMin > 0:
+                    for x in x0:
+                        x.prune(slaterWeightMin)
+                # Rebuild-and-discard: the basis holds only this point's seed + warm-start
+                # support; redistribute_psis aligns the amplitudes to the fresh ownership
+                # layout (the solver assumes its states are distributed per `basis`).
+                tmp_basis.clear()
+                tmp_basis.add_states(sorted({state for psi in seeds + x0 for state in psi.keys()}))
+                redistributed = tmp_basis.redistribute_psis(seeds + x0)
+                seeds = list(redistributed[:n_ops])
+                x0 = list(redistributed[n_ops:])
+                stats["max_rebuild_basis"] = max(stats["max_rebuild_basis"], int(tmp_basis.size))
+
+                solve_basis = tmp_basis
+                if np.isfinite(cap):
+                    if tmp_basis.size > cap:
+                        # The seed/warm-start support alone exceeds the cap. Never truncate
+                        # the right-hand side silently: solve on it frozen (exact on that
+                        # subspace) and flag it for the diagnostics.
+                        stats["seed_overflow"] = True
+                    solve_basis = _CappedBasisProxy(tmp_basis, cap)
+
+                # z*(n_0 + h_0) = z*I -- the RIXS identity-operator construction. A fresh
+                # operator per point: block_bicgstab sets its occupation restrictions from
+                # the basis; the weighted restrictions are set here (unconditionally, so a
+                # None clears any stale mask -- the Basis.expand convention).
+                A_op = ManyBodyOperator({((0, "c"), (0, "a")): z, ((0, "a"), (0, "c")): z}) - hOp
+                A_op.set_weighted_restrictions(excited_weighted_restrictions)
+
+                # Solve, restarting while unconverged and still making progress (each call
+                # re-deflates Y - A x0 and picks a fresh shadow residual). Every rank sees the
+                # identical info dict -- its fields derive from allreduce'd norms -- so the
+                # restart loop is collective-consistent.
+                info = {}
+                iterations = 0
+                X = x0
+                prev_residual = np.inf
+                for _attempt in range(1 + _GF_BICGSTAB_RESTARTS):
+                    X = block_bicgstab(
+                        A_op,
+                        X,
+                        seeds,
+                        solve_basis,
+                        slaterWeightMin,
+                        atol=atol,
+                        max_iter=max_iter,
+                        info=info,
+                    )
+                    iterations += info["iterations"]
+                    if info["converged"] or info["rel_residual"] > _GF_BICGSTAB_RESTART_PROGRESS * prev_residual:
+                        break
+                    prev_residual = info["rel_residual"]
+
+                stats["n_points"] += 1
+                stats["iterations"] += iterations
+                stats["max_rel_residual"] = max(stats["max_rel_residual"], info["rel_residual"])
+                if not info["converged"]:
+                    stats["n_unconverged"] += 1
+                stats["max_solve_basis"] = max(stats["max_solve_basis"], int(tmp_basis.size))
+                if isinstance(solve_basis, _CappedBasisProxy) and solve_basis.cap_hit:
+                    stats["cap_hit"] = True
+                    retained = solve_basis.retained_size
+                    if stats["retained_size"] is None or retained < stats["retained_size"]:
+                        stats["retained_size"] = retained
+
+                # G_e[i, j] = <seed_i | X_j>; both blocks live on tmp_basis's layout, so the
+                # local Gram + Allreduce is the whole inner product (no state-vector gather).
+                gram = block_inner_cy(ManyBodyBlockState.from_states(seeds), ManyBodyBlockState.from_states(list(X)))
+                if sub_comm is not None:
+                    sub_comm.Allreduce(MPI.IN_PLACE, gram, op=MPI.SUM)
+                G_axes[ax][p, k] = gram
+
+                hist_z.append(z)
+                hist_x.append(list(X))
+                if len(hist_z) > _GF_BICGSTAB_WARM_HISTORY:
+                    hist_z.pop(0)
+                    hist_x.pop(0)
+            if verbose:
+                print(
+                    f"    axis {ax}, eigenstate {p}: {len(z_shifted)} solves, "
+                    f"{stats['iterations']} cumulative iterations, "
+                    f"max per-point basis {stats['max_solve_basis']}",
+                    flush=True,
+                )
+
+    if sub_comm is not None:
+        tmp_basis.free_comm()
+    return G_axes, stats
 
 
 def _trim_blocks(alphas, betas, block_widths):

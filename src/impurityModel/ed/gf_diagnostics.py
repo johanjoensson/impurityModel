@@ -404,6 +404,55 @@ def check_lanczos_convergence(converged: bool, d_g: float, n_blocks: int, max_it
     )
 
 
+def check_bicgstab_convergence(
+    n_points: int, n_unconverged: int, max_rel_residual: float, atol: float, seed_overflow: bool = False
+) -> Diagnostic:
+    r"""Surface the per-frequency BiCGSTAB Green's-function solver record.
+
+    The per-frequency driver (``greens_function.block_Green_bicgstab``) solves one linear
+    system per mesh point; each solve reports whether it drove the residual below the
+    ``atol`` it was asked for (after restarts).  A point left unconverged means ``G`` at
+    that frequency carries an error above ``atol`` — typically a real-axis point within
+    ~``delta`` of a pole.  ``seed_overflow`` flags points whose seed/warm-start support
+    alone exceeded ``truncation_threshold`` (the solve ran frozen on that support rather
+    than truncating the right-hand side).
+
+    Args:
+        n_points: Total per-frequency solves of this block.
+        n_unconverged: Solves that ended above ``atol`` (max_iter / stagnated restarts).
+        max_rel_residual: Worst final residual, relative to the seed norm.
+        atol: The residual tolerance the solves were asked for (the threshold reported).
+        seed_overflow: Whether any point's seed support alone exceeded the determinant cap.
+
+    Returns:
+        Diagnostic: ``OK`` if every point converged (and no seed overflow), else ``WARN``
+        + ``needs_more_iterations``.
+    """
+    ok = n_unconverged == 0 and not seed_overflow
+    if ok:
+        message = f"all {n_points} per-frequency solves converged"
+    else:
+        parts = []
+        if n_unconverged:
+            parts.append(f"{n_unconverged} of {n_points} per-frequency solves above atol")
+        if seed_overflow:
+            parts.append("seed support exceeded truncation_threshold (solved frozen, RHS untruncated)")
+        message = "; ".join(parts)
+    return Diagnostic(
+        name="bicgstab",
+        severity=Severity.OK if ok else Severity.WARN,
+        value=float(max_rel_residual),
+        threshold=float(atol),
+        message=message,
+        suggestion=(
+            ""
+            if ok
+            else "raise GF_BICGSTAB_MAX_ITER / GF_BICGSTAB_RESTARTS, loosen delta, or raise truncation_threshold"
+        ),
+        needs_more_iterations=n_unconverged > 0,
+    )
+
+
 def check_basis_truncation(cap_hit: bool, retained, cap) -> Diagnostic:
     r"""Surface a Green's-function basis frozen by ``truncation_threshold``.
 
