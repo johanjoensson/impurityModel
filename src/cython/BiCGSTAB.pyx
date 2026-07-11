@@ -47,6 +47,93 @@ def _fill_info(info, iterations, converged, rel_residual):
     info["rel_residual"] = float(rel_residual)
 
 
+def _make_matmat(A, basis, double slaterWeightMin, bint is_arr, bint mpi):
+    """The solver matvec, shared by ``block_bicgstab`` and ``block_gmres``.
+
+    Dense path: :func:`BlockLanczosArray.block_apply`. Sparse path: one
+    ``ManyBodyOperator.apply_block`` per call, routed through
+    ``basis.redistribute_block`` when distributed **or** when the basis enforces a
+    determinant cap (``caps_growth`` -- the per-frequency Green's function's
+    ``_CappedBasisProxy`` binds inside ``redistribute_block``, so it must see every
+    matvec output even in a serial run, where redistribution itself is a no-op).
+    """
+    if is_arr:
+
+        def matmat(v):
+            return block_apply(A, v, basis=basis, mpi=mpi, slaterWeightMin=slaterWeightMin)
+
+    else:
+        caps = getattr(basis, "caps_growth", False)
+
+        def matmat(v):
+            out = A.apply_block(v, slaterWeightMin)
+            if mpi or caps:
+                out = basis.redistribute_block(out)
+            return out
+
+    return matmat
+
+
+class _SupportTracker:
+    """Width-0 mask bookkeeping of a sparse solve's determinant support.
+
+    Two sorted C++ key-vector masks, merged in nogil -- nothing here materializes a
+    Python object per determinant of the support (``keys()`` does, once per *new*
+    offered determinant):
+
+    * ``seen_mask`` -- every determinant ever touched, at cutoff 0. Only its *size*
+      is consumed, by the solvers' Krylov-exhaustion bound.
+    * ``offered_mask`` -- every determinant ever handed to ``basis.add_states``, at
+      ``slaterWeightMin``. Kept separate rather than folded into ``seen_mask``: a
+      determinant can enter the support below the cutoff (so it is seen but not
+      offered) and grow above it later, and one mask would drop it from the basis
+      forever. The two coincide only when ``slaterWeightMin == 0``.
+
+    Shared by ``block_bicgstab`` and ``block_gmres`` (sparse paths only; dense
+    callers use no tracker and an infinite exhaustion bound).
+    """
+
+    def __init__(self, basis, double slaterWeightMin, bint mpi, comm):
+        self.basis = basis
+        self.cutoff2 = slaterWeightMin * slaterWeightMin
+        self.mpi = mpi
+        self.comm = comm
+        self.seen_mask = ManyBodyBlockState()
+        self.offered_mask = ManyBodyBlockState()
+        self.global_seen_size = np.array([0], dtype=int)
+
+    def seed(self, block):
+        """Register the right-hand side's support (already in the basis: no add_states)."""
+        self.seen_mask.merge_keys(block.keys_new_above(self.seen_mask, 0.0))
+        self._reduce_seen()
+
+    def grow(self, v):
+        """Register one matvec output: offer new above-cutoff determinants to the basis.
+
+        Only the determinants this solve has not offered before are materialized as
+        Python objects, so each one costs an allocation at most once over the whole
+        solve instead of once per iteration. ``contains_local`` (an O(1) dict lookup,
+        not the ``in basis.local_basis`` list scan) then drops the ones this rank
+        already owns, which is purely a redistribution-payload optimization --
+        ``add_states`` dedups too.
+        """
+        new_offered = v.keys_new_above(self.offered_mask, self.cutoff2)
+        self.offered_mask.merge_keys(new_offered)
+        self.basis.add_states(state for state in new_offered.keys() if not self.basis.contains_local(state))
+        self.seen_mask.merge_keys(v.keys_new_above(self.seen_mask, 0.0))
+        self._reduce_seen()
+
+    def _reduce_seen(self):
+        self.global_seen_size[0] = len(self.seen_mask)
+        if self.mpi:
+            self.comm.Allreduce(MPI.IN_PLACE, self.global_seen_size, op=MPI.SUM)
+
+    @property
+    def seen_size(self):
+        """Global count of determinants the solve has touched (the Krylov-dimension bound)."""
+        return self.global_seen_size[0]
+
+
 def block_bicgstab(A, x0, y, basis, double slaterWeightMin, atol=1e-8, rtol=1e-12, max_iter=np.inf, info=None):
     """
     Solve a linear system ``A X = Y`` with Block BiCGSTAB.
@@ -120,21 +207,7 @@ def block_bicgstab(A, x0, y, basis, double slaterWeightMin, atol=1e-8, rtol=1e-1
     if not is_arr and hasattr(A, "set_restrictions"):
         A.set_restrictions(basis.restrictions)
 
-    if is_arr:
-
-        def matmat(v):
-            return block_apply(A, v, basis=basis, mpi=mpi, slaterWeightMin=slaterWeightMin)
-
-    else:
-
-        def matmat(v):
-            out = A.apply_block(v, slaterWeightMin)
-            # `caps_growth` bases (the per-frequency Green's function's _CappedBasisProxy)
-            # enforce their determinant cap inside redistribute_block, so they must see every
-            # matvec output even in a serial run, where redistribution itself is a no-op.
-            if mpi or getattr(basis, "caps_growth", False):
-                out = basis.redistribute_block(out)
-            return out
+    matmat = _make_matmat(A, basis, slaterWeightMin, is_arr, mpi)
 
     eye_n = np.eye(n, dtype=complex)
 
@@ -327,41 +400,17 @@ def _block_bicgstab_core(
     if r0_norm < np.finfo(float).eps:
         return xi, 0, last_norms, True
 
-    cdef double cutoff2 = slaterWeightMin * slaterWeightMin
+    # Determinant bookkeeping (sparse path): the shared width-0 mask tracker feeds the
+    # `it * n < seen_size` Krylov-exhaustion bound and offers newly discovered
+    # determinants to the basis. Dense solves have no support to track and an infinite
+    # exhaustion bound.
     if not is_arr:
-        # Two width-0 key-only mask blocks track the determinant bookkeeping. Both are
-        # sorted C++ key vectors merged in nogil, so nothing here materializes a Python
-        # object per determinant of the support (`support_keys` does, once per row).
-        #
-        # `seen_mask` -- every determinant ever touched, at cutoff 0. Only its *size*
-        #   is consumed, by the `it * n < global_seen_size` exhaustion bound below.
-        # `offered_mask` -- every determinant ever handed to `basis.add_states`, at
-        #   `slaterWeightMin`. Kept separate rather than folded into `seen_mask`: a
-        #   determinant can enter the support below the cutoff (so it is seen but not
-        #   offered) and grow above it later, and one mask would drop it from the basis
-        #   forever. The two coincide only when `slaterWeightMin == 0`.
-        seen_mask = ManyBodyBlockState()
-        offered_mask = ManyBodyBlockState()
-        seen_mask.merge_keys(rhs.keys_new_above(seen_mask, 0.0))
-        global_seen_size = np.array([len(seen_mask)], dtype=int)
-        if mpi:
-            comm.Allreduce(MPI.IN_PLACE, global_seen_size, op=MPI.SUM)
+        tracker = _SupportTracker(basis, slaterWeightMin, mpi, comm)
+        tracker.seed(rhs)
+        global_seen_size = tracker.global_seen_size
     else:
+        tracker = None
         global_seen_size = np.array([np.inf])
-
-    def grow_basis_and_seen(v):
-        # Only the determinants this solve has not offered before are materialized as
-        # Python objects, so each one costs an allocation at most once over the whole
-        # solve instead of once per iteration. `contains_local` (an O(1) dict lookup, not
-        # the `in basis.local_basis` list scan) then drops the ones this rank already owns,
-        # which is purely a redistribution-payload optimization -- `add_states` dedups too.
-        new_offered = v.keys_new_above(offered_mask, cutoff2)
-        offered_mask.merge_keys(new_offered)
-        basis.add_states(state for state in new_offered.keys() if not basis.contains_local(state))
-        seen_mask.merge_keys(v.keys_new_above(seen_mask, 0.0))
-        global_seen_size[0] = len(seen_mask)
-        if mpi:
-            comm.Allreduce(MPI.IN_PLACE, global_seen_size, op=MPI.SUM)
 
     def masked_lstsq(mat, rhs_mat, active):
         # Solve mat @ X = rhs_mat restricted to active rows/cols (inactive rows of X -> 0),
@@ -388,7 +437,7 @@ def _block_bicgstab_core(
 
         vi = matmat(pi)
         if not is_arr:
-            grow_basis_and_seen(vi)
+            tracker.grow(vi)
 
         R0_V = b_inner(r0_t, vi)
         R0_R = b_inner(r0_t, ri)
@@ -408,7 +457,7 @@ def _block_bicgstab_core(
 
         ti = matmat(si)
         if not is_arr:
-            grow_basis_and_seen(ti)
+            tracker.grow(ti)
 
         if is_arr:
             ts = np.sum(np.conj(ti[:, active_mask_s]) * si[:, active_mask_s], axis=0).sum()
