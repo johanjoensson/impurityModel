@@ -405,7 +405,12 @@ def check_lanczos_convergence(converged: bool, d_g: float, n_blocks: int, max_it
 
 
 def check_bicgstab_convergence(
-    n_points: int, n_unconverged: int, max_rel_residual: float, atol: float, seed_overflow: bool = False
+    n_points: int,
+    n_unconverged: int,
+    max_rel_residual: float,
+    atol: float,
+    seed_overflow: bool = False,
+    n_gmres_fallbacks: int = 0,
 ) -> Diagnostic:
     r"""Surface the per-frequency BiCGSTAB Green's-function solver record.
 
@@ -423,18 +428,21 @@ def check_bicgstab_convergence(
         max_rel_residual: Worst final residual, relative to the seed norm.
         atol: The residual tolerance the solves were asked for (the threshold reported).
         seed_overflow: Whether any point's seed support alone exceeded the determinant cap.
+        n_gmres_fallbacks: Points BiCGSTAB left unconverged and the GMRES fallback re-solved
+            (``n_unconverged`` counts post-fallback failures only).
 
     Returns:
         Diagnostic: ``OK`` if every point converged (and no seed overflow), else ``WARN``
         + ``needs_more_iterations``.
     """
     ok = n_unconverged == 0 and not seed_overflow
+    rescued = f" ({n_gmres_fallbacks} via GMRES fallback)" if n_gmres_fallbacks else ""
     if ok:
-        message = f"all {n_points} per-frequency solves converged"
+        message = f"all {n_points} per-frequency solves converged{rescued}"
     else:
         parts = []
         if n_unconverged:
-            parts.append(f"{n_unconverged} of {n_points} per-frequency solves above atol")
+            parts.append(f"{n_unconverged} of {n_points} per-frequency solves above atol{rescued}")
         if seed_overflow:
             parts.append("seed support exceeded truncation_threshold (solved frozen, RHS untruncated)")
         message = "; ".join(parts)
@@ -445,9 +453,7 @@ def check_bicgstab_convergence(
         threshold=float(atol),
         message=message,
         suggestion=(
-            ""
-            if ok
-            else "raise GF_BICGSTAB_MAX_ITER / GF_BICGSTAB_RESTARTS, loosen delta, or raise truncation_threshold"
+            "" if ok else "raise GF_GMRES_RESTART / GF_BICGSTAB_MAX_ITER, loosen delta, or raise truncation_threshold"
         ),
         needs_more_iterations=n_unconverged > 0,
     )

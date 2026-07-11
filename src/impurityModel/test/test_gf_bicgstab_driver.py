@@ -146,6 +146,32 @@ def test_kernel_zero_seed_column():
     assert np.max(np.abs(G_axes[0][0][:, 0, 0])) > 0
 
 
+def test_kernel_gmres_fallback_rescues_failed_points():
+    """With BiCGSTAB disabled (max_iter=0, every point 'fails'), the GMRES fallback must
+    solve every point on its own: G still equals the dense resolvent, no point is left
+    unconverged, and the stats record the fallback. (The default GF_GMRES_RESTART of 40
+    exceeds this sector's dimension, so the rescue is a guaranteed full-GMRES solve.)"""
+    e_shift = 0.3
+    z_axes = _gf_signed_axes(MATSUBARA, OMEGA, 0, DELTA)
+    G_axes, stats = block_Green_bicgstab(
+        _siam_6(),
+        _seeds(),
+        _seed_basis(),
+        [e_shift],
+        len(_seeds()),
+        z_axes,
+        atol=1e-10,
+        max_iter=0,
+    )
+    assert stats["gmres_points"] == stats["n_points"]
+    assert stats["gmres_iterations"] > 0
+    assert stats["n_unconverged"] == 0
+    sector = _n3_sector_dets()
+    for ax, z_axis in enumerate(z_axes):
+        ref = _dense_G_on(sector, z_axis + e_shift)
+        np.testing.assert_allclose(G_axes[ax][0], ref, atol=1e-7 * np.max(np.abs(ref)))
+
+
 def test_kernel_bounded_by_cap():
     """A finite truncation_threshold bounds every per-point basis; the result stays causal."""
     cap = 12
@@ -164,7 +190,10 @@ def test_kernel_bounded_by_cap():
 # --------------------------------------------------------------------------- #
 
 
-def _capped_solve(cap, z, comm=None):
+def _capped_solve_with(solver, cap, z, comm=None):
+    """The cap-oracle harness, parametrized over the linear solver (BiCGSTAB / GMRES):
+    solve ``(z - H) X = seeds`` through a fresh ``_CappedBasisProxy`` and return the
+    seed-projected ``G`` plus the proxy (whose retained keys define ``P``)."""
     basis = _seed_basis(comm=comm)
     proxy = _CappedBasisProxy(basis, cap)
     # redistribute_psis SUMS per-rank contributions, so only rank 0 provides amplitudes.
@@ -172,17 +201,22 @@ def _capped_solve(cap, z, comm=None):
     seeds = basis.redistribute_psis(seeds)
     A = ManyBodyOperator({((0, "c"), (0, "a")): z, ((0, "a"), (0, "c")): z}) - _siam_6()
     # Restart while unconverged, as the driver does: a near-pole z stagnates a single
-    # BiCGSTAB pass (fresh shadow residual each call).
+    # BiCGSTAB pass (fresh shadow residual each call). GMRES restarts internally, so its
+    # first call already converges and the loop is a no-op for it.
     X = [ManyBodyState() for _ in seeds]
     info = {}
     for _ in range(10):
-        X = block_bicgstab(A, X, seeds, proxy, 0.0, atol=1e-12, info=info)
+        X = solver(A, X, seeds, proxy, 0.0, atol=1e-12, info=info)
         if info["converged"]:
             break
     gram = block_inner_cy(ManyBodyBlockState.from_states(list(seeds)), ManyBodyBlockState.from_states(list(X)))
     if comm is not None:
         comm.Allreduce(MPI.IN_PLACE, gram, op=MPI.SUM)
     return gram, proxy
+
+
+def _capped_solve(cap, z, comm=None):
+    return _capped_solve_with(block_bicgstab, cap, z, comm=comm)
 
 
 @pytest.mark.parametrize("cap", [6, 12, 17])

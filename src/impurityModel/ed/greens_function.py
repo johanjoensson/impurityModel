@@ -21,6 +21,7 @@ from impurityModel.ed.BlockLanczos import block_lanczos_cy
 from impurityModel.ed.manybody_basis import Basis, collective_amplitude_cutoff
 from impurityModel.ed.symmetries import widen_weighted_restrictions
 from impurityModel.ed.cg import block_bicgstab
+from impurityModel.ed.gmres import block_gmres
 from impurityModel.ed.ManyBodyUtils import (
     ManyBodyBlockState,
     ManyBodyOperator,
@@ -727,6 +728,8 @@ def _get_greens_function_bicgstab(
                 "n_unconverged": 0,
                 "max_rel_residual": 0.0,
                 "iterations": 0,
+                "gmres_points": 0,
+                "gmres_iterations": 0,
                 "atol": stats["atol"],
                 "cap": stats["cap"],
                 "cap_hit": False,
@@ -736,7 +739,7 @@ def _get_greens_function_bicgstab(
                 "max_rebuild_basis": 0,
             },
         )
-        for key in ("n_points", "n_unconverged", "iterations"):
+        for key in ("n_points", "n_unconverged", "iterations", "gmres_points", "gmres_iterations"):
             agg[key] += stats[key]
         for key in ("max_rel_residual", "max_solve_basis", "max_rebuild_basis"):
             agg[key] = max(agg[key], stats[key])
@@ -781,7 +784,8 @@ def _get_greens_function_bicgstab(
         agg = stats_acc[block_i]
         if verbose:
             print(
-                f"block {block}: {agg['n_points']} bicgstab solves, {agg['iterations']} iterations, "
+                f"block {block}: {agg['n_points']} bicgstab solves, {agg['iterations']} iterations "
+                f"({agg['gmres_points']} GMRES-fallback points, {agg['gmres_iterations']} of the iterations), "
                 f"max per-point basis {agg['max_solve_basis']:,} "
                 f"(rebuild floor {agg['max_rebuild_basis']:,}), "
                 f"max residual {agg['max_rel_residual']:.1e}",
@@ -795,6 +799,7 @@ def _get_greens_function_bicgstab(
                 agg["max_rel_residual"],
                 agg["atol"],
                 seed_overflow=agg["seed_overflow"],
+                n_gmres_fallbacks=agg["gmres_points"],
             ),
         ]
         if np.isfinite(agg["cap"]):
@@ -1340,6 +1345,12 @@ _GF_BICGSTAB_WARM_HISTORY = 3
 _GF_BICGSTAB_RESTARTS = int(os.environ.get("GF_BICGSTAB_RESTARTS", "10"))
 # A restart must shrink the reported residual by at least this factor to earn the next one.
 _GF_BICGSTAB_RESTART_PROGRESS = 0.5
+# GMRES fallback for the points BiCGSTAB leaves unconverged (its shadow-residual
+# recurrence stagnates within ~delta of a pole; GMRES minimizes the residual and has no
+# such mode). The restart length bounds the fallback's live Krylov blocks -- the
+# memory-model transient in estimate_gf_peak_bytes(method="bicgstab") must match it.
+_GF_GMRES_RESTART = int(os.environ.get("GF_GMRES_RESTART", "40"))
+_GF_GMRES_MAX_RESTARTS = int(os.environ.get("GF_GMRES_MAX_RESTARTS", "25"))
 
 
 def _gf_signed_axes(matsubara_mesh, omega_mesh, side_i, delta):
@@ -2282,6 +2293,8 @@ def block_Green_bicgstab(
         "n_unconverged": 0,
         "max_rel_residual": 0.0,
         "iterations": 0,
+        "gmres_points": 0,
+        "gmres_iterations": 0,
         "atol": atol,
         "cap": cap,
         "cap_hit": False,
@@ -2354,6 +2367,25 @@ def block_Green_bicgstab(
                     if info["converged"] or info["rel_residual"] > _GF_BICGSTAB_RESTART_PROGRESS * prev_residual:
                         break
                     prev_residual = info["rel_residual"]
+
+                # GMRES fallback: warm-started from BiCGSTAB's partial iterate, before the
+                # solution enters the extrapolation history -- so a rescued point also
+                # repairs the warm-start chain its stagnated result would have poisoned.
+                if not info["converged"]:
+                    X = block_gmres(
+                        A_op,
+                        X,
+                        seeds,
+                        solve_basis,
+                        slaterWeightMin,
+                        atol=atol,
+                        restart=_GF_GMRES_RESTART,
+                        max_restarts=_GF_GMRES_MAX_RESTARTS,
+                        info=info,
+                    )
+                    iterations += info["iterations"]
+                    stats["gmres_points"] += 1
+                    stats["gmres_iterations"] += info["iterations"]
 
                 stats["n_points"] += 1
                 stats["iterations"] += iterations

@@ -131,7 +131,15 @@ def bytes_per_determinant(n_spin_orbitals):
 
 
 def estimate_gf_peak_bytes(
-    n_dets, n_spin_orbitals, block_width, reort="none", ranks=1, n_blocks=None, krylov_dtype=None, method="lanczos"
+    n_dets,
+    n_spin_orbitals,
+    block_width,
+    reort="none",
+    ranks=1,
+    n_blocks=None,
+    krylov_dtype=None,
+    method="lanczos",
+    gmres_restart=40,
 ):
     """Predicted per-rank peak bytes of the sparse (MBS-kernel) Green's-function path.
 
@@ -180,8 +188,15 @@ def estimate_gf_peak_bytes(
         retains **no** Krylov store (``reort``/``n_blocks``/``krylov_dtype`` are ignored)
         but carries more live blocks per solve: the 7 solver blocks (``xi, ri, r0_t, pi,
         vi, si, ti``) plus the seeds, the 3 warm-start history solutions and the
-        extrapolated guess -- ~12 block-rows against the recurrence's 3. Its basis term is
-        the *per-point* rebuilt support, still bounded by the same ``n_dets`` cap.
+        extrapolated guess -- ~12 block-rows against the recurrence's 3 -- plus, on the
+        points BiCGSTAB leaves unconverged, the GMRES fallback's transient Arnoldi space
+        of ``gmres_restart + 3`` block-rows. That transient is what a worst-case point
+        peaks at, and peaks are what OOM-kill, so it is modeled rather than footnoted.
+        The basis term is the *per-point* rebuilt support, still bounded by the same
+        ``n_dets`` cap.
+    gmres_restart : int
+        The fallback's block-Arnoldi restart length (``GF_GMRES_RESTART``); only read
+        for ``method="bicgstab"``.
 
     Returns
     -------
@@ -193,7 +208,7 @@ def estimate_gf_peak_bytes(
     basis_bytes = local_rows * (bytes_per_determinant(n_spin_orbitals) + _PY_BASIS_OVERHEAD_BYTES)
     row_bytes = _COMPLEX_BYTES * block_width + key_heap + _SD_STRUCT_BYTES
     if method == "bicgstab":
-        return basis_bytes + 12 * local_rows * row_bytes
+        return basis_bytes + (12 + gmres_restart + 3) * local_rows * row_bytes
     live_bytes = 3 * local_rows * row_bytes
     store_bytes = 0
     if _retains_krylov(reort):

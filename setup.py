@@ -82,6 +82,16 @@ ext_modules = [
         extra_compile_args=extra_compile_args,
         extra_link_args=extra_link_args,
     ),
+    Extension(
+        name="impurityModel.ed.GMRES",
+        sources=[
+            os.path.join(_cython_src_dir, "GMRES.pyx"),
+        ],
+        language="c++",
+        include_dirs=include_dirs,
+        extra_compile_args=extra_compile_args,
+        extra_link_args=extra_link_args,
+    ),
 ]
 
 setuptools.setup(ext_modules=ext_modules)
