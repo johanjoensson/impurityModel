@@ -29,6 +29,10 @@ extensions = [
     "myst_parser",
 ]
 
+# Dollar-delimited math ($...$ / $$...$$) in MyST Markdown pages
+# (doc/greens_function_theory.md); rendered by MathJax.
+myst_enable_extensions = ["dollarmath"]
+
 # Optional external packages used only by the build_h0 script (the `rspt` extra
 # and the local pyRSPthon project); mock them so autodoc can import the module.
 autodoc_mock_imports = ["rspt2spectra", "pyRSPthon"]

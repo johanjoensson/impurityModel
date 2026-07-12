@@ -10,6 +10,7 @@ Welcome to impurityModel's documentation!
 
    intro
    architecture_overview
+   greens_function_theory
    sphinx/_doc_build/impurityModel
 
 
