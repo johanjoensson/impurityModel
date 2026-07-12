@@ -346,12 +346,32 @@ def test_sliced_driver_matches_partial_lanczos():
     assert all(d.severity.name != "FAIL" for d in report.diagnostics)
 
 
+def _reported_windows(report):
+    """Window count the slicing diagnostic recorded (guards this file's GF_SLICES tests against
+    silently testing the default: the knob is read at call time, so a regression to an
+    import-time constant would make the slice-count legs identical and the assertions vacuous)."""
+    (slicing,) = [d for d in report.diagnostics if d.name == "slicing"]
+    return int(slicing.message.split()[0])
+
+
 def test_sliced_driver_slice_count_invariance():
     """1 slice vs several: the partition identity makes the result slice-count independent
     (up to the per-solve atol)."""
-    _, r_1, _ = _run_driver("sliced", None, monkeypatch_env={"GF_SLICES": "1"})
-    _, r_4, _ = _run_driver("sliced", None, monkeypatch_env={"GF_SLICES": "4"})
+    _, r_1, rep_1 = _run_driver("sliced", None, monkeypatch_env={"GF_SLICES": "1"})
+    _, r_4, rep_4 = _run_driver("sliced", None, monkeypatch_env={"GF_SLICES": "4"})
+    assert _reported_windows(rep_1) < _reported_windows(rep_4)
     np.testing.assert_allclose(r_4[0], r_1[0], atol=1e-6)
+
+
+def test_sliced_driver_slice_tol_is_a_reported_accuracy_trade():
+    """GF_SLICE_TOL prunes the filtered slice seeds -- the memory-for-accuracy knob. It must
+    stay accurate to the discarded tail (<= sqrt(n_tail)*tol, i.e. far above the atol floor but
+    nowhere near an unusable G) and it must never pass silently: the diagnostic warns."""
+    _, r_exact, _ = _run_driver("sliced", None, monkeypatch_env={"GF_SLICES": "2"})
+    _, r_pruned, report = _run_driver("sliced", None, monkeypatch_env={"GF_SLICES": "2", "GF_SLICE_TOL": "1e-6"})
+    np.testing.assert_allclose(r_pruned[0], r_exact[0], atol=1e-3)
+    (slicing,) = [d for d in report.diagnostics if d.name == "slicing"]
+    assert slicing.severity.name == "WARN" and slicing.value == 1e-6
 
 
 def test_kernel_bra_seeds_cross_element():

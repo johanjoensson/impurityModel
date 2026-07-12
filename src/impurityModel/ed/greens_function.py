@@ -922,6 +922,7 @@ def _get_greens_function_sliced(
         return _CappedBasisProxy(b, cap) if np.isfinite(cap) else b
 
     w_lo, w_hi = float(np.min(omega_mesh)), float(np.max(omega_mesh))
+    n_slices, degree_knob, slice_tol = _slice_count(), _slice_degree(), _slice_tol()
     sliced_meta = []  # (block_i, side_i, chunk, n_ops, unit_restrictions index)
     sliced_seeds = []  # filtered kets + unfiltered bras, flat per engine unit
     n_windows = degree_used = edge_width = None
@@ -940,15 +941,15 @@ def _get_greens_function_sliced(
         ends = [e + sign * w for e in chunk_es for w in (w_lo, w_hi)]
         band_lo = max(bounds[0], min(ends))
         band_hi = min(bounds[1], max(ends))
-        slice_width = max((band_hi - band_lo) / max(_GF_SLICES, 1), 1e-12)
-        degree = _GF_SLICE_DEGREE or int(np.clip(8.0 * (bounds[1] - bounds[0]) / slice_width, 200, 4000))
+        slice_width = max((band_hi - band_lo) / n_slices, 1e-12)
+        degree = degree_knob or int(np.clip(8.0 * (bounds[1] - bounds[0]) / slice_width, 200, 4000))
         coeff_sets, _windows, edge_width = partition_of_unity(
-            bounds, np.linspace(band_lo, band_hi, _GF_SLICES + 1), degree
+            bounds, np.linspace(band_lo, band_hi, n_slices + 1), degree
         )
         if verbose and (basis.comm is None or basis.comm.rank == 0):
             print(
                 f"Spectrum slicing unit {u}: bounds [{bounds[0]:.3f}, {bounds[1]:.3f}], "
-                f"{len(coeff_sets)} windows, degree {degree}, slice tol {_GF_SLICE_TOL:g}.",
+                f"{len(coeff_sets)} windows, degree {degree}, slice tol {slice_tol:g}.",
                 flush=True,
             )
         filtered = chebyshev_apply(hOp, unit_basis, list(unit_seeds[u]), coeff_sets, slaterWeightMin, bounds)
@@ -967,9 +968,9 @@ def _get_greens_function_sliced(
                 "(spectral_bounds pad_rel) or its Lanczos depth."
             )
         for kets in filtered:
-            if _GF_SLICE_TOL > 0:
+            if slice_tol > 0:
                 for ket in kets:
-                    ket.prune(_GF_SLICE_TOL)
+                    ket.prune(slice_tol)
             sliced_meta.append((block_i, side_i, unit.chunk, unit.n_ops, u))
             sliced_seeds.append(list(kets) + list(unit_seeds[u]))
         n_windows, degree_used = len(coeff_sets), degree
@@ -995,7 +996,7 @@ def _get_greens_function_sliced(
         )
 
     def extra_diags(_block_i):
-        return [_gfd.check_slice_partition(n_windows, degree_used, edge_width, _GF_SLICE_TOL)]
+        return [_gfd.check_slice_partition(n_windows, degree_used, edge_width, slice_tol)]
 
     units_meta = [(m[0], m[1], m[2]) for m in sliced_meta]
     return _run_evaluated_gf_units(
@@ -1556,11 +1557,25 @@ _GF_BICGSTAB_RESTART_PROGRESS = 0.5
 # seeds' dominant amplitudes are energy-local, their sub-1e-6 tails are not -- so the memory
 # lever is GF_SLICE_TOL (extra amplitude truncation of each filtered seed), traded explicitly
 # against accuracy (discarded tail ~ sqrt(n_tail) * tol) and reported by the diagnostics.
-_GF_SLICES = int(os.environ.get("GF_SLICES", "8"))
-# Filter polynomial degree; 0 = auto (~8 * bandwidth / slice width, clipped to [200, 4000]).
-_GF_SLICE_DEGREE = int(os.environ.get("GF_SLICE_DEGREE", "0"))
-# Amplitude truncation of the filtered slice seeds; 0 = none (exactness-first default).
-_GF_SLICE_TOL = float(os.environ.get("GF_SLICE_TOL", "0"))
+# Read at call time, like the other GF_* knobs -- an import-time constant cannot be set by a
+# caller that has already imported this module (which silently voided a slicing test).
+
+
+def _slice_count():
+    """Chebyshev windows tiling the real-axis evaluation band (``GF_SLICES``)."""
+    return max(1, int(os.environ.get("GF_SLICES", "8")))
+
+
+def _slice_degree():
+    """Filter degree (``GF_SLICE_DEGREE``); 0 = auto (from the bandwidth / slice-width ratio)."""
+    return max(0, int(os.environ.get("GF_SLICE_DEGREE", "0")))
+
+
+def _slice_tol():
+    """Amplitude truncation of the filtered slice seeds (``GF_SLICE_TOL``); 0 = none."""
+    return max(0.0, float(os.environ.get("GF_SLICE_TOL", "0")))
+
+
 # GMRES fallback for the points BiCGSTAB leaves unconverged (its shadow-residual
 # recurrence stagnates within ~delta of a pole; GMRES minimizes the residual and has no
 # such mode). The restart length bounds the fallback's live Krylov blocks -- the
