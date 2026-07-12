@@ -70,3 +70,59 @@ As per the approved plan: Phase 1 `ChebyshevFilter.pyx` (`spectral_bounds`,
 `check_slice_partition` diagnostics; the calibrated memory model), Phase 3 verification
 (SIAM-6 oracle, slice-count invariance, NiO σ parity, the FCC Ni support/VmHWM/causality
 table) with the verdict recorded here.
+
+## Phase 2 — the driver (built 2026-07-12, commits `ce9eeb4`, `09c5e6a`, `647bb09`)
+
+`_get_greens_function_sliced` filters each GF unit's seeds once (one Chebyshev recurrence
+serves all windows), then fans out **one engine unit per window**, each an ordinary
+per-frequency BiCGSTAB/GMRES solve on its own rebuild-and-discard basis, with the *filtered*
+ket and the *unfiltered* bra (`block_Green_bicgstab(bra_seeds=...)`). The window terms are
+summed back by the shared `_run_evaluated_gf_units` accumulator — a plain sum, which is what
+lets several units target the same `(block, side, eigenstate)` and add up.
+
+**Spectral bounds are per unit.** Each unit's excited sector has its own reachable spectrum,
+and a Chebyshev polynomial evaluated outside its interval grows as `cosh(n·arccosh|x|)`: at
+degree ~10^3 a 1% bounds violation is a ~1e100 blowup. Sharing one unit's bounds across all
+units produced `|G| ~ 1e+111` (measured). A norm guard on the filtered seeds (`|p_s| ≲ 1.1`
+on the interval, so a filtered norm above ~2x the seed norm means the recurrence left the
+interval) now turns that whole class into a hard error rather than a plausible-looking number.
+
+### Two bugs the sliced path had no test for (both found by adding the MPI driver test)
+
+1. **The filter ran on never-redistributed seeds.** Seeds are built by applying `c`/`c†`
+   rank-locally, so each amplitude sits on the rank that *generated* it, not the rank that
+   *owns* that determinant (`routing_hash % size`). Every other solver reaches its basis
+   through a `redistribute_psis`; the Chebyshev recurrence is the one stage that runs before
+   it — and it redistributes `H·t` but not `t`. A misplaced row therefore leaves `H·t` on the
+   owner and `t` on the generator: the three-term recurrence **decouples across ranks and
+   diverges to `inf`**. The Phase-1 MPI filter test missed it by seeding a *closed* basis,
+   where generator == owner. The divergence guard is what turned this into an exception
+   instead of a number.
+
+2. **The unfiltered bras were admitted into the per-slice basis.** They belong only in the
+   closing Gram, and `block_inner_cy` merge-joins the two key vectors, so a determinant in
+   `supp(bra)\supp(X)` contributes nothing; ownership is by hash, so the merge-join is
+   MPI-consistent *without* basis membership. Admitting them pinned every per-slice basis to
+   the **unfiltered** seed support — precisely the quantity slicing exists to avoid paying.
+   On FCC Ni, where the seeds saturate the cap, this would have capped every slice at the
+   union support and yielded a "slicing buys nothing" verdict for a self-inflicted reason.
+
+The lesson generalizes: *the memory claim and the correctness claim have to be measured on
+the same code path the MPI test exercises.* Both bugs were invisible serially.
+
+## Phase 3 — verification (in progress)
+
+Correctness oracles (unit level, `test_gf_bicgstab_driver.py` / `test_chebyshev_filter.py`):
+
+* **Partition of unity is exact by construction** — the tiling windows telescope, Jackson
+  damping included, so `sum_s p_s ≡ 1` and the slicing adds *no* partition error. Tested
+  directly on the coefficients and end-to-end.
+* **Slice-count invariance**: 1 window vs 4 give the same `G` to 1e-6. This is the oracle for
+  the whole scheme — and it was **vacuous until `09c5e6a`**: the `GF_SLICE*` knobs were
+  import-time constants, so both legs silently ran the default 8 windows and the test compared
+  a number against itself. The test now asserts the reported window counts actually differ.
+* **Sliced == PARTIAL-reort Lanczos** on both meshes, serial and under MPI (2 and 3 ranks).
+* **`GF_SLICE_TOL`** stays within its predicted discard tail and is reported as a `WARN`, so
+  the memory-for-accuracy trade can never be taken silently.
+
+Measured campaign (NiO real axis 32 pts; FCC Ni real axis 5 pts, cap 400k): running.
