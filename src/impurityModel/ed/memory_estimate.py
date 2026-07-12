@@ -211,8 +211,10 @@ def estimate_gf_peak_bytes(
         live = 12 + gmres_restart + 3
         if method == "sliced":
             # The filter stage's transient (3 recurrence blocks + one accumulator per
-            # window, evaluation-band slices + 2 rest windows) runs before the solves;
-            # the peak is whichever transient is larger.
+            # window) runs before the solves; the peak is whichever transient is larger.
+            # At most 2 rest windows complete the partition -- one collapses whenever the
+            # evaluation band reaches a spectral bound, so this is an upper bound, which is
+            # what a peak model wants.
             n_windows = int(os.environ.get("GF_SLICES", "8")) + 2
             live = max(live, 3 + n_windows)
         return basis_bytes + live * local_rows * row_bytes
