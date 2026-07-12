@@ -596,6 +596,56 @@ serial, meshes subsampled to 32 + 32 points, against the same run at `gf_method=
 * **No memory story on NiO, as predicted**: the per-point support (398–734 determinants)
   *equals* the union support — the restrictions bound this workload's basis, not the sweep.
 
+### Measured: FCC Ni 5-bath, the decision gate (2026-07-12)
+
+The question this driver was built to answer: is the *per-point* support materially smaller
+than the mesh-union support, so that rebuild-and-discard buys memory where the union explodes?
+Five serial legs on the production archive (`reort=none`, `delta=0.1`, 59 spin-orbitals),
+cap 400,000, 16 Matsubara points, crash-tolerant harness:
+
+| leg | wall | VmHWM | GF outcome | Σ physicality |
+|---|---|---|---|---|
+| Lanczos `none`, `dN=None` | 5,621 s | 1.4 GiB | 16/16 units frozen at ~400k; monitor **not converged** (66–82 blocks, δ 5e-5..6e-4) | **FAILED** (Im Σ_ii > 0) |
+| Lanczos `partial`, `dN=None` | 5,651 s | 2.0 GiB | same freezes, same non-convergence | **FAILED** |
+| per-freq BiCGSTAB, `dN=None` | 29,659 s | 2.3 GiB | **all 256 solves converged to ~1e-8** (0 GMRES fallbacks); `max per-point basis 400,000`, **rebuild floor 399,999–400,001** | **FAILED** |
+| Lanczos `none`, `dN=1` | 6,309 s | 1.3 GiB | identical freezes/non-convergence; 12% *slower* | **FAILED** |
+| Lanczos `none`, `dN=2` | 6,346 s | 1.3 GiB | identical | **FAILED** |
+
+**The answer is no.** The BiCGSTAB leg's `rebuild floor` — the basis size immediately after the
+per-point rebuild from seeds + warm start, *before* any solve growth — is already the full cap.
+Two mechanisms close the door:
+
+1. **The seeds saturate any cap before the sweep starts.** The cap-400k CIPSI ground state
+   fills its budget, so `c†|psi>` inherits ≥400k support; block [2] even flags
+   `seed_overflow` (seed support 400,001 > cap). There is nothing per-point about the
+   dominant term.
+2. **The single-point solution is not support-local on the Matsubara axis.** `X(iω_n)` mixes
+   every pole, so discarding between points frees nothing. (The energy-locality argument was
+   always strongest for the *real* axis; untested here at production scale — the NiO real-axis
+   data, support 398–734 = union, points the same way. That door stays ajar for the
+   spectrum-slicing follow-up, which localizes by *filtering*, not by hoping.)
+
+What the leg comparison *does* establish:
+
+* **Per-point solves are more reliable than the capped recurrence on the frozen subspace**:
+  every BiCGSTAB solve delivered its 1e-8 target (Matsubara points are easy — 38–52
+  iterations/point, zero fallbacks) while the Lanczos monitor stalled at δ ~ 1e-4 against a
+  1e-9 tolerance on every unit. At 5.3x end-to-end wall (~12x GF-phase).
+* **Memory goes the wrong way**: VmHWM 2.3 GiB (bicgstab) vs 2.0 (partial: +0.6 GiB of
+  Krylov store, matching `16·m·C`) vs 1.4 (none). The 3a-quinquies conclusion survives its
+  strongest test: on FCC Ni the linear solver cannot beat `reort=none` Lanczos on memory,
+  because the live support is the memory and both pay it.
+* **`dN` is not the lever on a metal** (agreed work-order step 2, answered): with 16
+  conduction baths straddling `E_F`, the occupation window admits far more than 400k
+  determinants before its bounds bind — `dN=1`/`dN=2` reproduce the `dN=None` freezes
+  exactly and only add per-matvec restriction cost.
+* **Cap 400k is below what FCC Ni physically needs**: *every* method's Σ — including the
+  per-point solves that hit their residual targets exactly — fails the Matsubara causality
+  guard. The retained subspace is missing real spectral weight; a causal G on P does not
+  make `G0^{-1} - G^{-1}` causal. Fitting FCC Ni needs a larger cap (more ranks/RAM) or a
+  genuinely better subspace (the spectrum-slicing / filtered-basis follow-up), not a
+  different resolvent solver.
+
 The sketch below is kept for the record; everything in it is now implemented except the
 frequency-chunk work-unit axis (frequencies stay inside the unit for maximal warm-start
 locality; chunking them across colors is the noted follow-up for the scaling argument).
