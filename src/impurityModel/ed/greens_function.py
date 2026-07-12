@@ -936,7 +936,15 @@ def _get_greens_function_sliced(
         # is a ~1e100 blowup (measured; the norm guard below turns any recurrence of it
         # into a hard error instead of silent garbage). The bounds Lanczos and the filter
         # share one capped clone.
-        unit_basis = _capped(_excited_clone(u))
+        unit_clone = _excited_clone(u)
+        # The seeds were built by applying c/c^dagger rank-locally, so each amplitude sits on
+        # the rank that *generated* it, not on the rank that *owns* that determinant (owner =
+        # routing_hash % size). The three-term recurrence redistributes H*t but not t, so a
+        # misplaced row leaves H*t on the owner and t on the generator: the recurrence
+        # decouples across ranks and diverges. Every other solver reaches its basis through
+        # the same redistribute -- the filter stage is just the one that runs before it.
+        seeds_u = unit_clone.redistribute_psis(list(unit_seeds[u]))
+        unit_basis = _capped(unit_clone)
         bounds = spectral_bounds(hOp, unit_basis)
         ends = [e + sign * w for e in chunk_es for w in (w_lo, w_hi)]
         band_lo = max(bounds[0], min(ends))
@@ -952,8 +960,8 @@ def _get_greens_function_sliced(
                 f"{len(coeff_sets)} windows, degree {degree}, slice tol {slice_tol:g}.",
                 flush=True,
             )
-        filtered = chebyshev_apply(hOp, unit_basis, list(unit_seeds[u]), coeff_sets, slaterWeightMin, bounds)
-        seed_norm2 = sum(s.norm2() for s in unit_seeds[u])
+        filtered = chebyshev_apply(hOp, unit_basis, list(seeds_u), coeff_sets, slaterWeightMin, bounds)
+        seed_norm2 = sum(s.norm2() for s in seeds_u)
         filt_norm2 = max(sum(k.norm2() for k in kets) for kets in filtered)
         if basis.comm is not None:
             seed_norm2 = basis.comm.allreduce(seed_norm2, op=MPI.SUM)
@@ -972,7 +980,7 @@ def _get_greens_function_sliced(
                 for ket in kets:
                     ket.prune(slice_tol)
             sliced_meta.append((block_i, side_i, unit.chunk, unit.n_ops, u))
-            sliced_seeds.append(list(kets) + list(unit_seeds[u]))
+            sliced_seeds.append(list(kets) + list(seeds_u))
         n_windows, degree_used = len(coeff_sets), degree
 
     sliced_weights = unit_cost_weights(sliced_seeds, basis.comm)
@@ -2560,12 +2568,20 @@ def block_Green_bicgstab(
                     for x in x0:
                         x.prune(slaterWeightMin)
                 # Rebuild-and-discard: the basis holds only this point's seed + warm-start
-                # (+ bra) support; redistribute_psis aligns the amplitudes to the fresh
-                # ownership layout (the solver assumes its states are distributed per
-                # `basis`).
+                # support; redistribute_psis aligns the amplitudes to the fresh ownership
+                # layout (the solver assumes its states are distributed per `basis`).
+                #
+                # The bras are redistributed but deliberately NOT added to the basis. They
+                # enter only the closing Gram, and block_inner_cy merge-joins the two key
+                # vectors, so a determinant in supp(bra)\supp(X) contributes nothing;
+                # ownership is by determinant hash, which is basis-independent, so the
+                # merge-join stays MPI-consistent. Admitting them would pin every basis to
+                # the *unfiltered* seed support -- exactly the quantity spectrum slicing
+                # exists to avoid paying (on FCC Ni the unfiltered seeds saturate the cap,
+                # so it would have silently capped every slice at the union support).
                 carried = seeds + x0 + (bras if bras is not None else [])
                 tmp_basis.clear()
-                tmp_basis.add_states(sorted({state for psi in carried for state in psi.keys()}))
+                tmp_basis.add_states(sorted({state for psi in seeds + x0 for state in psi.keys()}))
                 redistributed = tmp_basis.redistribute_psis(carried)
                 seeds = list(redistributed[:n_ops])
                 x0 = list(redistributed[n_ops : 2 * n_ops])

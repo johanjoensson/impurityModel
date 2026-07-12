@@ -428,6 +428,23 @@ def test_driver_mpi_matches_partial_lanczos():
 
 
 @pytest.mark.mpi
+def test_sliced_driver_mpi_matches_partial_lanczos():
+    """Distributed sliced run. The bras live *outside* the per-point basis (they enter only
+    the closing Gram), so their amplitudes are placed by determinant hash while X is placed
+    by the basis partition. This test is what keeps those two orderings honest: if the bra
+    ownership and the basis ownership ever disagree, the merge-joined Gram silently drops
+    (or double-counts) the determinants they disagree on, and G walks away from Lanczos."""
+    comm = MPI.COMM_WORLD
+    m_l, r_l, _ = _run_driver("lanczos", "partial", comm=comm)
+    m_s, r_s, _ = _run_driver("sliced", None, comm=comm, monkeypatch_env={"GF_SLICES": "3"})
+    if comm.rank == 0:
+        np.testing.assert_allclose(m_s[0], m_l[0], atol=1e-6)
+        np.testing.assert_allclose(r_s[0], r_l[0], atol=1e-6)
+    else:
+        assert m_s is None and r_s is None
+
+
+@pytest.mark.mpi
 def test_capped_solve_mpi_matches_dense_php():
     """Distributed capped solve: collective cap decisions consistent, P H P oracle holds."""
     comm = MPI.COMM_WORLD
