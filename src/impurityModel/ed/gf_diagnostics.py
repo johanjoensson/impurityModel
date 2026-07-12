@@ -459,6 +459,46 @@ def check_bicgstab_convergence(
     )
 
 
+def check_slice_partition(n_windows: int, degree: int, edge_width: float, slice_tol: float) -> Diagnostic:
+    r"""Record the spectrum-slicing configuration and its accuracy trade.
+
+    The Chebyshev partition of unity is exact by construction (tiling windows telescope,
+    Jackson damping included), so the slicing itself adds **no** partition error; the two
+    quantities that do affect accuracy are the kernel edge broadening (weight within
+    ``edge_width`` of a window boundary is shared between the adjacent slice terms -- summed
+    exactly, but each term individually is smeared) and, when ``slice_tol > 0``, the explicit
+    amplitude truncation of the filtered seeds (discarded tail
+    :math:`\lesssim \sqrt{n_{\mathrm{tail}}}\cdot` ``slice_tol`` per slice — the deliberate
+    memory-for-accuracy knob, hence ``WARN`` so it can never pass silently).
+
+    Args:
+        n_windows: Chebyshev windows per unit (evaluation-band slices + rest windows).
+        degree: filter polynomial degree.
+        edge_width: kernel edge broadening in energy units.
+        slice_tol: amplitude truncation applied to the filtered slice seeds (0 = none).
+
+    Returns:
+        Diagnostic: ``OK`` at ``slice_tol == 0``, else ``WARN``.
+    """
+    relaxed = slice_tol > 0
+    return Diagnostic(
+        name="slicing",
+        severity=Severity.WARN if relaxed else Severity.OK,
+        value=float(slice_tol),
+        threshold=0.0,
+        message=(
+            f"{n_windows} windows, degree {degree}, edge width {edge_width:.3g}"
+            + (f"; slice seeds truncated at {slice_tol:g}" if relaxed else "")
+        ),
+        suggestion=(
+            "slice-seed truncation trades accuracy for memory (tail ~ sqrt(n)*tol); "
+            "set GF_SLICE_TOL=0 for the exact partition"
+            if relaxed
+            else ""
+        ),
+    )
+
+
 def check_basis_truncation(cap_hit: bool, retained, cap) -> Diagnostic:
     r"""Surface a Green's-function basis frozen by ``truncation_threshold``.
 

@@ -1402,12 +1402,13 @@ if __name__ == "__main__":
     parser.add_argument(
         "--gf_method",
         type=str,
-        choices=("lanczos", "bicgstab"),
+        choices=("lanczos", "bicgstab", "sliced"),
         default="lanczos",
         help=(
             "Green's-function kernel: 'lanczos' runs one block-Lanczos recurrence per work unit "
             "for the whole mesh; 'bicgstab' solves one linear system per frequency point on a "
-            "rebuilt-and-discarded basis (memory-first, slower)."
+            "rebuilt-and-discarded basis; 'sliced' adds Chebyshev spectral-window decomposition "
+            "with per-slice bases (real-axis meshes; see GF_SLICES/GF_SLICE_TOL)."
         ),
     )
     args = parser.parse_args()

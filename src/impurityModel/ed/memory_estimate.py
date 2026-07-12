@@ -207,8 +207,15 @@ def estimate_gf_peak_bytes(
     key_heap = _key_heap_bytes(n_spin_orbitals)
     basis_bytes = local_rows * (bytes_per_determinant(n_spin_orbitals) + _PY_BASIS_OVERHEAD_BYTES)
     row_bytes = _COMPLEX_BYTES * block_width + key_heap + _SD_STRUCT_BYTES
-    if method == "bicgstab":
-        return basis_bytes + (12 + gmres_restart + 3) * local_rows * row_bytes
+    if method in ("bicgstab", "sliced"):
+        live = 12 + gmres_restart + 3
+        if method == "sliced":
+            # The filter stage's transient (3 recurrence blocks + one accumulator per
+            # window, evaluation-band slices + 2 rest windows) runs before the solves;
+            # the peak is whichever transient is larger.
+            n_windows = int(os.environ.get("GF_SLICES", "8")) + 2
+            live = max(live, 3 + n_windows)
+        return basis_bytes + live * local_rows * row_bytes
     live_bytes = 3 * local_rows * row_bytes
     store_bytes = 0
     if _retains_krylov(reort):

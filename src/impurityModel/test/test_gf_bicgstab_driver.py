@@ -330,7 +330,62 @@ def test_driver_grouping_and_operator_split_invariance():
 
 def test_driver_rejects_unknown_method():
     with pytest.raises(ValueError, match="gf_method"):
-        _run_driver("chebyshev", None)
+        _run_driver("haydock", None)
+
+
+def test_sliced_driver_matches_partial_lanczos():
+    """gf_method='sliced': the Chebyshev window terms sum back to the exact G (partition of
+    unity is exact by construction), so the sliced driver must reproduce the PARTIAL-reort
+    Lanczos G on both meshes -- and its report must carry the slicing record."""
+    m_l, r_l, _ = _run_driver("lanczos", "partial")
+    m_s, r_s, report = _run_driver("sliced", None, monkeypatch_env={"GF_SLICES": "3"})
+    np.testing.assert_allclose(m_s[0], m_l[0], atol=1e-6)
+    np.testing.assert_allclose(r_s[0], r_l[0], atol=1e-6)
+    names = {d.name for d in report.diagnostics}
+    assert "slicing" in names and "bicgstab" in names
+    assert all(d.severity.name != "FAIL" for d in report.diagnostics)
+
+
+def test_sliced_driver_slice_count_invariance():
+    """1 slice vs several: the partition identity makes the result slice-count independent
+    (up to the per-solve atol)."""
+    _, r_1, _ = _run_driver("sliced", None, monkeypatch_env={"GF_SLICES": "1"})
+    _, r_4, _ = _run_driver("sliced", None, monkeypatch_env={"GF_SLICES": "4"})
+    np.testing.assert_allclose(r_4[0], r_1[0], atol=1e-6)
+
+
+def test_kernel_bra_seeds_cross_element():
+    """block_Green_bicgstab(bra_seeds=...) computes <bra|(z-H)^{-1}|ket> -- checked against
+    the dense resolvent with distinct bra and ket blocks."""
+    e_shift = 0.3
+    z_axes = _gf_signed_axes(MATSUBARA, None, 0, DELTA)
+    kets = _seeds()
+    bras = [_seeds()[1], _seeds()[0]]  # swapped, so the cross element is genuinely asymmetric
+    G_axes, stats = block_Green_bicgstab(
+        _siam_6(),
+        list(kets),
+        _seed_basis(),
+        [e_shift],
+        2,
+        z_axes,
+        atol=1e-10,
+        bra_seeds=list(bras),
+    )
+    assert stats["n_unconverged"] == 0
+    sector = _n3_sector_dets()
+    basis = Basis(_IMP, _BATHS, initial_basis=sorted(sector), verbose=False)
+    H_mat = np.asarray(build_dense_matrix(basis, _siam_6()))
+    index = {det: i for i, det in enumerate(sorted(sector))}
+    K = np.zeros((len(index), 2), dtype=complex)
+    B = np.zeros((len(index), 2), dtype=complex)
+    for j, (k_state, b_state) in enumerate(zip(kets, bras)):
+        for det, amp in k_state.items():
+            K[index[det], j] = amp
+        for det, amp in b_state.items():
+            B[index[det], j] = amp
+    for k, z in enumerate(z_axes[0] + e_shift):
+        ref = B.conj().T @ np.linalg.solve(z * np.eye(len(index)) - H_mat, K)
+        np.testing.assert_allclose(G_axes[0][0, k], ref, atol=1e-7 * max(np.max(np.abs(ref)), 1.0))
 
 
 # --------------------------------------------------------------------------- #

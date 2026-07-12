@@ -21,6 +21,7 @@ from impurityModel.ed.BlockLanczos import block_lanczos_cy
 from impurityModel.ed.manybody_basis import Basis, collective_amplitude_cutoff
 from impurityModel.ed.symmetries import widen_weighted_restrictions
 from impurityModel.ed.cg import block_bicgstab
+from impurityModel.ed.chebyshev_filter import chebyshev_apply, partition_of_unity, spectral_bounds
 from impurityModel.ed.gmres import block_gmres
 from impurityModel.ed.ManyBodyUtils import (
     ManyBodyBlockState,
@@ -423,14 +424,16 @@ def get_Greens_function(
 
     ``gf_method`` selects the resolvent kernel: ``"lanczos"`` (default) runs one block-Lanczos
     recurrence per work unit serving the whole mesh; ``"bicgstab"`` solves one linear system
-    per frequency point with a rebuilt-and-discarded basis (:func:`block_Green_bicgstab`) --
-    the memory-first path, whose excited-basis footprint is per *point* rather than per mesh.
-    On the bicgstab path ``sparse`` is ignored (the solver works on the ManyBodyState
-    representation only) and the operator-split (pairwise) decomposition is never used (the
-    linear solve yields the full ``G_ij`` block directly).
+    per frequency point with a rebuilt-and-discarded basis (:func:`block_Green_bicgstab`);
+    ``"sliced"`` decomposes ``G`` into Chebyshev spectral-window terms with per-slice bases
+    (:func:`_get_greens_function_sliced`; requires a real-axis mesh -- a Matsubara-only call
+    falls back to ``bicgstab``, where slicing has nothing to offer). On the non-Lanczos paths
+    ``sparse`` is ignored (the solvers work on the ManyBodyState representation only) and the
+    operator-split (pairwise) decomposition is never used (the linear solve yields the full
+    ``G_ij`` block directly).
     """
-    if gf_method not in ("lanczos", "bicgstab"):
-        raise ValueError(f"Unknown gf_method {gf_method!r}; expected 'lanczos' or 'bicgstab'")
+    if gf_method not in ("lanczos", "bicgstab", "sliced"):
+        raise ValueError(f"Unknown gf_method {gf_method!r}; expected 'lanczos', 'bicgstab' or 'sliced'")
     # Excited-sector restrictions are independent of the orbital block and of the spectral side
     # (the dN occupation window is symmetric and spans all impurity orbitals), so build them once
     # on the full basis instead of per block.
@@ -475,8 +478,13 @@ def get_Greens_function(
     )
     unit_weights = unit_cost_weights(unit_seeds, basis.comm)
 
-    if gf_method == "bicgstab":
-        return _get_greens_function_bicgstab(
+    if gf_method in ("bicgstab", "sliced"):
+        driver = (
+            _get_greens_function_sliced
+            if gf_method == "sliced" and omega_mesh is not None
+            else _get_greens_function_bicgstab
+        )
+        return driver(
             matsubara_mesh,
             omega_mesh,
             es,
@@ -667,22 +675,9 @@ def _get_greens_function_bicgstab(
     The unit decomposition (and the excited windows) are exactly the Lanczos driver's --
     :func:`get_Greens_function` hands them over after :func:`enumerate_gf_units` -- only the
     per-unit kernel and the result contract differ: each unit returns ``G`` already evaluated
-    on the caller's meshes (:func:`block_Green_bicgstab`), so the assembly is a streaming
-    Boltzmann-weighted accumulation into per-``(block, side)`` arrays (rank 0 never holds more
-    than one color's payload) followed by the same
-    :math:`(G_\mathrm{IPS} - G_\mathrm{PS}^T)/Z` combination the Lanczos path applies to its
-    evaluated continued fractions.
-
-    The diagnostics report keeps the representation-independent checks (thermal cutoff, mesh
-    density, causality, basis truncation) and replaces the Lanczos-specific ones with the
-    solver-residual record (:func:`gf_diagnostics.check_bicgstab_convergence`); the spectral
-    sum rule and integrated-weight checks are expressed in seed-projection/continued-fraction
-    terms this path does not produce.
+    on the caller's meshes (:func:`block_Green_bicgstab`); the shared assembler
+    :func:`_run_evaluated_gf_units` does the rest.
     """
-    e0 = np.min(es)
-    boltzmann = np.exp(-(np.asarray(es) - e0) / tau)
-    Z = float(np.sum(boltzmann))
-    axis_lens = [len(m) for m in (matsubara_mesh, omega_mesh) if m is not None]
 
     def kernel(split_basis, u, seeds):
         unit = units[u]
@@ -701,6 +696,65 @@ def _get_greens_function_bicgstab(
             excited_weighted_restrictions=excited_weighted_restrictions,
         )
 
+    units_meta = [(group_meta[unit.group_i][0], group_meta[unit.group_i][1], unit.chunk) for unit in units]
+    return _run_evaluated_gf_units(
+        matsubara_mesh,
+        omega_mesh,
+        es,
+        tau,
+        basis,
+        delta,
+        blocks,
+        units_meta,
+        unit_seeds,
+        unit_weights,
+        kernel,
+        verbose,
+        num_wanted,
+    )
+
+
+def _run_evaluated_gf_units(
+    matsubara_mesh,
+    omega_mesh,
+    es,
+    tau,
+    basis,
+    delta,
+    blocks,
+    units_meta,
+    unit_seeds,
+    unit_weights,
+    kernel,
+    verbose,
+    num_wanted,
+    extra_diags=None,
+    gf_method="bicgstab",
+):
+    r"""Distribute, accumulate and assemble Green's-function units that return evaluated ``G``.
+
+    The shared engine behind the ``bicgstab`` and ``sliced`` drivers: ``kernel(split_basis,
+    u, seeds)`` must return ``(G_axes, stats)`` in :func:`block_Green_bicgstab`'s contract,
+    and ``units_meta[u] = (block_i, side_i, chunk)`` names where unit ``u``'s result belongs.
+    The assembly is a streaming Boltzmann-weighted accumulation into per-``(block, side)``
+    arrays (rank 0 never holds more than one color's payload) followed by the same
+    :math:`(G_\mathrm{IPS} - G_\mathrm{PS}^T)/Z` combination the Lanczos path applies to its
+    evaluated continued fractions. Because the accumulation is a plain sum, several units may
+    target the same ``(block, side, eigenstate)`` -- the sliced driver's window terms sum to
+    the full ``G`` exactly this way.
+
+    The diagnostics report keeps the representation-independent checks (thermal cutoff, mesh
+    density, causality, basis truncation) plus the solver-residual record
+    (:func:`gf_diagnostics.check_bicgstab_convergence`); ``extra_diags(block_i)``, when given,
+    appends caller-specific checks (e.g. the slice-partition record). The spectral sum rule
+    and integrated-weight checks are expressed in seed-projection/continued-fraction terms
+    these paths do not produce.
+    """
+    e0 = np.min(es)
+    boltzmann = np.exp(-(np.asarray(es) - e0) / tau)
+    Z = float(np.sum(boltzmann))
+    axis_lens = [len(m) for m in (matsubara_mesh, omega_mesh) if m is not None]
+
     # Streaming accumulators, populated on global rank 0 only (reduce_fn's contract).
     is_root = basis.comm is None or basis.comm.rank == 0
     G_acc = (
@@ -716,9 +770,8 @@ def _get_greens_function_bicgstab(
 
     def reduce_fn(u, result):
         G_axes, stats = result
-        unit = units[u]
-        block_i, side_i = group_meta[unit.group_i]
-        for p, ei in enumerate(unit.chunk):
+        block_i, side_i, chunk = units_meta[u]
+        for p, ei in enumerate(chunk):
             for ax in range(len(axis_lens)):
                 G_acc[(block_i, side_i)][ax] += boltzmann[ei] * G_axes[ax][p]
         agg = stats_acc.setdefault(
@@ -753,7 +806,7 @@ def _get_greens_function_bicgstab(
             )
 
     got = run_units_distributed(
-        basis, unit_seeds, unit_weights, kernel, verbose=verbose, reduce_fn=reduce_fn, gf_method="bicgstab"
+        basis, unit_seeds, unit_weights, kernel, verbose=verbose, reduce_fn=reduce_fn, gf_method=gf_method
     )
     if got is None:
         return None, None, None
@@ -807,9 +860,161 @@ def _get_greens_function_bicgstab(
         if combined_real is not None:
             diags.append(_gfd.check_mesh_density(omega_mesh, delta))
             diags.append(_gfd.check_causality(combined_real, "G"))
+        if extra_diags is not None:
+            diags.extend(extra_diags(block_i))
         report.extend(str(block), diags)
 
     return gs_matsubara, gs_realaxis, report
+
+
+def _get_greens_function_sliced(
+    matsubara_mesh,
+    omega_mesh,
+    es,
+    tau,
+    basis,
+    hOp,
+    delta,
+    blocks,
+    units,
+    unit_seeds,
+    unit_weights,
+    unit_restrictions,
+    group_meta,
+    excited_weighted_restrictions,
+    slaterWeightMin,
+    verbose,
+    verbose_extra,
+    num_wanted,
+):
+    r"""The spectrum-slicing Green's function: filtered work units through the shared engine.
+
+    Implements the partition-of-unity identity (``doc/plans/spectrum_slicing.md``,
+    theory in ``doc/greens_function_theory.md`` section 5)
+
+    .. math:: G_{ij}(z) = \sum_s \langle v_i | (z - H)^{-1} \, p_s(H) v_j \rangle :
+
+    every base unit fans out into one engine unit per Chebyshev window, whose seeds are the
+    *filtered* kets ``p_s(H) v`` and whose bra block is the unfiltered ``v`` (the
+    ``bra_seeds`` cross-element mode of :func:`block_Green_bicgstab`). The windows tile the
+    spectral interval and telescope to 1 identically, so the streaming sum of the slice
+    terms in :func:`_run_evaluated_gf_units` reconstructs the exact ``G`` -- the only
+    approximations are the per-solve ``atol`` and the optional slice-seed truncation
+    ``GF_SLICE_TOL`` (the Phase-0-calibrated memory knob: filtered seeds' dominant
+    amplitudes are energy-local, their sub-1e-6 tails are not).
+
+    Filtering runs *before* the split, unit by unit, collectively on the full communicator
+    (one Chebyshev recurrence per unit serves all its windows); the spectral bounds are
+    estimated once and shared. Knobs: ``GF_SLICES`` (windows across the evaluation band),
+    ``GF_SLICE_DEGREE`` (0 = auto from bandwidth/slice width), ``GF_SLICE_TOL``.
+    """
+    cap = getattr(basis, "truncation_threshold", np.inf)
+
+    def _excited_clone(u):
+        return basis.clone(
+            initial_basis=sorted({state for s in unit_seeds[u] for state in s.keys()}),
+            restrictions=unit_restrictions[u],
+            weighted_restrictions=excited_weighted_restrictions,
+            verbose=False,
+        )
+
+    def _capped(b):
+        return _CappedBasisProxy(b, cap) if np.isfinite(cap) else b
+
+    w_lo, w_hi = float(np.min(omega_mesh)), float(np.max(omega_mesh))
+    sliced_meta = []  # (block_i, side_i, chunk, n_ops, unit_restrictions index)
+    sliced_seeds = []  # filtered kets + unfiltered bras, flat per engine unit
+    n_windows = degree_used = edge_width = None
+    for u, unit in enumerate(units):
+        block_i, side_i = group_meta[unit.group_i]
+        sign = 1.0 if side_i == 0 else -1.0
+        chunk_es = [es[ei] for ei in unit.chunk]
+        # Spectral bounds PER UNIT: each unit's excited sector has its own reachable
+        # spectrum, and a Chebyshev polynomial evaluated even slightly outside its
+        # interval grows as cosh(n*arccosh|x|) -- a 1% bounds violation at degree ~10^3
+        # is a ~1e100 blowup (measured; the norm guard below turns any recurrence of it
+        # into a hard error instead of silent garbage). The bounds Lanczos and the filter
+        # share one capped clone.
+        unit_basis = _capped(_excited_clone(u))
+        bounds = spectral_bounds(hOp, unit_basis)
+        ends = [e + sign * w for e in chunk_es for w in (w_lo, w_hi)]
+        band_lo = max(bounds[0], min(ends))
+        band_hi = min(bounds[1], max(ends))
+        slice_width = max((band_hi - band_lo) / max(_GF_SLICES, 1), 1e-12)
+        degree = _GF_SLICE_DEGREE or int(np.clip(8.0 * (bounds[1] - bounds[0]) / slice_width, 200, 4000))
+        coeff_sets, _windows, edge_width = partition_of_unity(
+            bounds, np.linspace(band_lo, band_hi, _GF_SLICES + 1), degree
+        )
+        if verbose and (basis.comm is None or basis.comm.rank == 0):
+            print(
+                f"Spectrum slicing unit {u}: bounds [{bounds[0]:.3f}, {bounds[1]:.3f}], "
+                f"{len(coeff_sets)} windows, degree {degree}, slice tol {_GF_SLICE_TOL:g}.",
+                flush=True,
+            )
+        filtered = chebyshev_apply(hOp, unit_basis, list(unit_seeds[u]), coeff_sets, slaterWeightMin, bounds)
+        seed_norm2 = sum(s.norm2() for s in unit_seeds[u])
+        filt_norm2 = max(sum(k.norm2() for k in kets) for kets in filtered)
+        if basis.comm is not None:
+            seed_norm2 = basis.comm.allreduce(seed_norm2, op=MPI.SUM)
+            filt_norm2 = basis.comm.allreduce(filt_norm2, op=MPI.SUM)
+        if filt_norm2 > 4.0 * max(seed_norm2, 1e-300):
+            # |p_s| <= ~1.1 on the interval (Jackson-damped windows), so a filtered norm
+            # beyond ~2x the seed norm means the recurrence left the spectral interval.
+            raise RuntimeError(
+                f"Chebyshev filter diverged on GF unit {u} (filtered norm^2 {filt_norm2:.3e} vs "
+                f"seed norm^2 {seed_norm2:.3e}): spectral bounds [{bounds[0]:.4f}, {bounds[1]:.4f}] "
+                "do not contain this unit's reachable spectrum. Increase the bounds padding "
+                "(spectral_bounds pad_rel) or its Lanczos depth."
+            )
+        for kets in filtered:
+            if _GF_SLICE_TOL > 0:
+                for ket in kets:
+                    ket.prune(_GF_SLICE_TOL)
+            sliced_meta.append((block_i, side_i, unit.chunk, unit.n_ops, u))
+            sliced_seeds.append(list(kets) + list(unit_seeds[u]))
+        n_windows, degree_used = len(coeff_sets), degree
+
+    sliced_weights = unit_cost_weights(sliced_seeds, basis.comm)
+
+    def kernel(split_basis, su, seeds):
+        _block_i, side_i, chunk, n_ops, u = sliced_meta[su]
+        n_cols = len(chunk) * n_ops
+        z_axes = _gf_signed_axes(matsubara_mesh, omega_mesh, side_i, delta)
+        return block_Green_bicgstab(
+            hOp,
+            list(seeds[:n_cols]),
+            split_basis,
+            [es[ei] for ei in chunk],
+            n_ops,
+            z_axes,
+            slaterWeightMin=slaterWeightMin,
+            verbose=verbose_extra,
+            excited_restrictions=unit_restrictions[u],
+            excited_weighted_restrictions=excited_weighted_restrictions,
+            bra_seeds=list(seeds[n_cols:]),
+        )
+
+    def extra_diags(_block_i):
+        return [_gfd.check_slice_partition(n_windows, degree_used, edge_width, _GF_SLICE_TOL)]
+
+    units_meta = [(m[0], m[1], m[2]) for m in sliced_meta]
+    return _run_evaluated_gf_units(
+        matsubara_mesh,
+        omega_mesh,
+        es,
+        tau,
+        basis,
+        delta,
+        blocks,
+        units_meta,
+        sliced_seeds,
+        sliced_weights,
+        kernel,
+        verbose,
+        num_wanted,
+        extra_diags=extra_diags,
+        gf_method="sliced",
+    )
 
 
 def _build_excited_restrictions(basis, hOp, psis, es, dN, occ_cutoff, dN_imp=None, dN_val=None, dN_con=None):
@@ -1345,6 +1550,17 @@ _GF_BICGSTAB_WARM_HISTORY = 3
 _GF_BICGSTAB_RESTARTS = int(os.environ.get("GF_BICGSTAB_RESTARTS", "10"))
 # A restart must shrink the reported residual by at least this factor to earn the next one.
 _GF_BICGSTAB_RESTART_PROGRESS = 0.5
+# --- Spectrum slicing (gf_method="sliced") --------------------------------------------------
+# Chebyshev windows tiling the real-axis evaluation band (plus the rest-windows completing
+# the partition of unity). The Phase-0 calibration (doc/plans/spectrum_slicing.md): filtered
+# seeds' dominant amplitudes are energy-local, their sub-1e-6 tails are not -- so the memory
+# lever is GF_SLICE_TOL (extra amplitude truncation of each filtered seed), traded explicitly
+# against accuracy (discarded tail ~ sqrt(n_tail) * tol) and reported by the diagnostics.
+_GF_SLICES = int(os.environ.get("GF_SLICES", "8"))
+# Filter polynomial degree; 0 = auto (~8 * bandwidth / slice width, clipped to [200, 4000]).
+_GF_SLICE_DEGREE = int(os.environ.get("GF_SLICE_DEGREE", "0"))
+# Amplitude truncation of the filtered slice seeds; 0 = none (exactness-first default).
+_GF_SLICE_TOL = float(os.environ.get("GF_SLICE_TOL", "0"))
 # GMRES fallback for the points BiCGSTAB leaves unconverged (its shadow-residual
 # recurrence stagnates within ~delta of a pole; GMRES minimizes the residual and has no
 # such mode). The restart length bounds the fallback's live Krylov blocks -- the
@@ -2215,6 +2431,7 @@ def block_Green_bicgstab(
     verbose=False,
     excited_restrictions=None,
     excited_weighted_restrictions=None,
+    bra_seeds=None,
 ):
     r"""Per-frequency BiCGSTAB Green's function for one work unit (memory-first path).
 
@@ -2259,6 +2476,12 @@ def block_Green_bicgstab(
         :data:`_GF_BICGSTAB_ATOL`.
     max_iter : int, optional
         Per-point iteration bound; defaults to :data:`_GF_BICGSTAB_MAX_ITER`.
+    bra_seeds : list of ManyBodyState, optional
+        Cross-element mode (the spectrum-slicing driver): a second flat block in the same
+        ``(eigenstate, operator)`` order whose columns form the *bra* of the Gram,
+        ``G_e[i, j] = <bra_i | X_j>`` -- e.g. the unfiltered seeds against a filtered
+        right-hand side, computing ``<v| (z-H)^{-1} p_s(H) |v>``. ``None`` (default) uses
+        the seeds themselves (the symmetric element).
 
     Returns
     -------
@@ -2306,6 +2529,9 @@ def block_Green_bicgstab(
 
     for p in range(n_e):
         seeds = list(psi_arr[p * n_ops : (p + 1) * n_ops])
+        # Cross-element mode (spectrum slicing): the bra of the Gram is a separate block
+        # (the unfiltered seeds) riding along through every per-point redistribution.
+        bras = list(bra_seeds[p * n_ops : (p + 1) * n_ops]) if bra_seeds is not None else None
         for ax, z_axis in enumerate(z_axes):
             z_shifted = z_axis + es[p]
             # Fresh warm-start chain per (eigenstate, axis): extrapolating across axes (or
@@ -2319,13 +2545,17 @@ def block_Green_bicgstab(
                     for x in x0:
                         x.prune(slaterWeightMin)
                 # Rebuild-and-discard: the basis holds only this point's seed + warm-start
-                # support; redistribute_psis aligns the amplitudes to the fresh ownership
-                # layout (the solver assumes its states are distributed per `basis`).
+                # (+ bra) support; redistribute_psis aligns the amplitudes to the fresh
+                # ownership layout (the solver assumes its states are distributed per
+                # `basis`).
+                carried = seeds + x0 + (bras if bras is not None else [])
                 tmp_basis.clear()
-                tmp_basis.add_states(sorted({state for psi in seeds + x0 for state in psi.keys()}))
-                redistributed = tmp_basis.redistribute_psis(seeds + x0)
+                tmp_basis.add_states(sorted({state for psi in carried for state in psi.keys()}))
+                redistributed = tmp_basis.redistribute_psis(carried)
                 seeds = list(redistributed[:n_ops])
-                x0 = list(redistributed[n_ops:])
+                x0 = list(redistributed[n_ops : 2 * n_ops])
+                if bras is not None:
+                    bras = list(redistributed[2 * n_ops :])
                 stats["max_rebuild_basis"] = max(stats["max_rebuild_basis"], int(tmp_basis.size))
 
                 solve_basis = tmp_basis
@@ -2399,9 +2629,13 @@ def block_Green_bicgstab(
                     if stats["retained_size"] is None or retained < stats["retained_size"]:
                         stats["retained_size"] = retained
 
-                # G_e[i, j] = <seed_i | X_j>; both blocks live on tmp_basis's layout, so the
+                # G_e[i, j] = <bra_i | X_j> (bra = seeds unless the caller supplied a
+                # separate bra block); both blocks live on tmp_basis's layout, so the
                 # local Gram + Allreduce is the whole inner product (no state-vector gather).
-                gram = block_inner_cy(ManyBodyBlockState.from_states(seeds), ManyBodyBlockState.from_states(list(X)))
+                gram = block_inner_cy(
+                    ManyBodyBlockState.from_states(bras if bras is not None else seeds),
+                    ManyBodyBlockState.from_states(list(X)),
+                )
                 if sub_comm is not None:
                     sub_comm.Allreduce(MPI.IN_PLACE, gram, op=MPI.SUM)
                 G_axes[ax][p, k] = gram
