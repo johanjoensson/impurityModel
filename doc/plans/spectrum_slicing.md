@@ -1,13 +1,24 @@
 # Spectrum slicing + Chebyshev filtering for the real-axis Green's function
 
-**Status (2026-07-12): Phase 0 measured on FCC Ni.** The support-locality bet is settled with
-nuance: filtered seeds localize strongly in their *dominant* amplitudes (up to ~80–260x below
-the union support at the 1e-4 amplitude level) but their tails delocalize across the whole
-reachable set — at the production `slaterWeightMin` (1.5e-8) the per-slice support is the
-union support. Slicing therefore buys memory **only at relaxed per-slice accuracy**: ~2x at a
-1e-6 amplitude cutoff (slice-seed accuracy ~1e-3), 4–8x at 1e-5 (~5e-3). Per the user's
-decision (calibration, not a gate) the filter stage and sliced driver are built regardless;
-the calibration table below is their memory model.
+**Status (2026-07-13): COMPLETE — the answer is no.** All phases built, tested (serial + MPI)
+and measured. `gf_method="sliced"` is correct and slice-count invariant, and it **buys no
+memory on either production workload**: on FCC Ni it costs *2x* the Lanczos baseline's peak
+(2.75 vs 1.4 GiB) before a single solve runs, and on NiO the per-point basis is identical at
+every slice tolerance. The premise — that energy localization implies support localization —
+is false: the live basis is the **H-connectivity closure** of the seed support, invariant
+under any reweighting of the seed, and `(z-H)^{-1}` re-expands to that closure however sharply
+the seed is filtered. Slicing also *loses* accuracy (27x worse `sigma_real` than Lanczos),
+because it multiplies the number of near-singular solves. Full verdict in Phase 3 below.
+
+*(Superseded — kept for the record.)* **Phase 0 (2026-07-12)** read the bet as settled "with
+nuance": filtered seeds localize strongly in their *dominant* amplitudes (80–260x below the
+union support at the 1e-4 level) but their tails delocalize; at the production
+`slaterWeightMin` (1.5e-8) the per-slice support is the union support, so slicing looked like
+it would buy 2x at a 1e-6 cutoff and 4–8x at 1e-5, in exchange for accuracy. **That
+projection did not survive the end-to-end measurement**: it priced the *filtered seed's*
+support, but the memory is set by the closure of that support under `H`, which the solve
+re-grows regardless. The seed-support tables below are still accurate as far as they go —
+they simply measure the wrong quantity.
 
 ## Why
 
@@ -110,7 +121,7 @@ interval) now turns that whole class into a hard error rather than a plausible-l
 The lesson generalizes: *the memory claim and the correctness claim have to be measured on
 the same code path the MPI test exercises.* Both bugs were invisible serially.
 
-## Phase 3 — verification (in progress)
+## Phase 3 — verification and verdict (measured 2026-07-13)
 
 Correctness oracles (unit level, `test_gf_bicgstab_driver.py` / `test_chebyshev_filter.py`):
 
@@ -125,4 +136,72 @@ Correctness oracles (unit level, `test_gf_bicgstab_driver.py` / `test_chebyshev_
 * **`GF_SLICE_TOL`** stays within its predicted discard tail and is reported as a `WARN`, so
   the memory-for-accuracy trade can never be taken silently.
 
-Measured campaign (NiO real axis 32 pts; FCC Ni real axis 5 pts, cap 400k): running.
+The scheme is therefore *correct*. It is also, on both production workloads, **useless** —
+and for a reason worth stating precisely.
+
+### Measured: NiO 1-bath, real axis, 32 points, serial (accuracy)
+
+Against the same run at `gf_method="lanczos"`, `reort=full`. `sigma_static` is bit-identical
+in every leg.
+
+| leg | `sigma_real` abs | wall | VmHWM | max per-point basis | solves | above atol / max residual |
+|---|---|---|---|---|---|---|
+| Lanczos `partial` | 5.3e-6 | 20 s | 324 M | — | — | — |
+| BiCGSTAB + GMRES | 1.0e-5 | 1,031 s | 320 M | 718 / 734 | 576/blk | 0 / 1.8e-8 |
+| **sliced, exact partition** | **1.5e-4** | 3,988 s | 323 M | **718 / 734** | 2,880/blk | 3 / 4.8e-6 |
+| sliced, slice tol 1e-6 | 9.7e-5 | 3,838 s | 323 M | **718 / 734** | 2,880/blk | 5 / 4.7e-6 |
+| sliced, slice tol 1e-5 | 1.5e-3 | 3,784 s | 323 M | **718 / 734** | 2,880/blk | 8 / 4.3e-6 |
+
+Two results, both negative:
+
+1. **The per-point basis is identical at every slice tolerance** (718/734, rebuild floor
+   710–734) — and identical to the *unfiltered* BiCGSTAB run. Pruning the filtered seed does
+   not shrink the basis, because the solve's Krylov growth re-expands it. This is the finding
+   Phase 0 could not see: it measured the *filtered seed's* support, but the quantity that
+   sets the memory is the **H-connectivity closure** of that support, and repeated
+   application of `H` spreads any seed across the whole connected sector. Energy locality is
+   not determinant locality. Filtering changes a seed's *amplitudes*; the basis is a
+   *support* object, and `(z-H)^{-1}` couples the seed to everything `H` can reach.
+
+2. **Accuracy is 27x worse than Lanczos, not better.** The partition is exact, so this is not
+   a slicing error — the diagnostics name it: 3–8 of 2,880 solves per block finish *above*
+   atol, at residuals ~4e-6 against BiCGSTAB's 1.8e-8 on the same workload. Slicing
+   multiplies the solve count by the window count *and* hands each solve a worse-conditioned
+   system: the filtered ket `p_s(H)v` concentrates its weight exactly in the window that
+   contains `z`, so the slice carrying the answer is by construction the near-singular one.
+   And `sigma_real` is famously unforgiving of per-point residuals (9.2e-3 → 2.0e-4 → 5.4e-7
+   as residuals tightened, Phase 3b). Slicing spends its extra solves buying worse residuals.
+
+### Measured: FCC Ni 5-bath, real axis 5 points, cap 400k (memory — the decision gate)
+
+| leg | wall | VmHWM | outcome |
+|---|---|---|---|
+| Lanczos `none` (baseline) | 14,972 s | **1.4 GiB** | frozen at 399,999; block [0] converged 9.3e-10 in 181 blocks, block [2] not converged at max_iter |
+| sliced, exact partition | killed at 8 h 16 m | **2.75 GiB** | still in the *filter stage* (unit 12 of 16); **no solve had started** |
+
+**Slicing costs 2x the memory of the recurrence it was meant to replace, before doing any of
+the work.** The mechanism is the one Phase 0 predicted and NiO confirmed: at the production
+`slaterWeightMin` the filtered seeds' support *is* the union support, so the filter must hold
+3 recurrence blocks **plus one accumulator per window** over that same full support — 6
+block-rows where the Lanczos recurrence needs 3. The leg was killed rather than run to
+completion (it needed ~18 more hours to reproduce a verdict three independent measurements
+already agreed on: the Phase-0 probe, NiO end-to-end, and its own pre-solve peak).
+
+### Verdict
+
+**Spectrum slicing is not the memory lever for these workloads, and it never could have
+been.** The bet was that energy localization implies support localization. It does not: the
+live basis is the H-connectivity closure of the seed support, which is invariant under any
+reweighting of the seed — and the resolvent re-expands to that closure no matter how sharply
+the seed is filtered. Slicing buys nothing on memory, costs 4x wall against per-frequency
+BiCGSTAB (200x against Lanczos), and loses two orders of magnitude of `sigma_real` accuracy
+to the extra ill-conditioned solves.
+
+`gf_method="sliced"` is kept — it is correct, tested (serial + MPI, slice-count invariant),
+and it is the honest home for the Chebyshev machinery (`spectral_bounds`, `partition_of_unity`,
+`chebyshev_apply`), which is reusable for KPM densities of states and for filtered
+eigensolvers. It is **not** a recommended production mode and the decision guide says so.
+The one regime never tested and still open in principle: a **narrow XAS/RIXS window on a
+gapped insulator**, where the seed's reachable set may genuinely be a small subsector — but
+that is a *restriction/sector* argument, not a filtering one, and it should be attacked with
+occupation windows, which are free.

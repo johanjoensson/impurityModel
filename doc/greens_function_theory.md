@@ -433,10 +433,12 @@ frequency* — which is exactly the RIXS intermediate-state problem
 
 ---
 
-## 5. Method III (outlook) — spectrum slicing with Chebyshev filters (`gf_method="sliced"`, experimental)
+## 5. Method III — spectrum slicing with Chebyshev filters (`gf_method="sliced"`, not recommended)
 
-*Status: under construction on this branch; this section records the theory and will be
-updated with the measured verdict.*
+*Status (measured 2026-07-13): correct, tested, and **it does not work** — it buys no memory
+and costs accuracy. Read §5.1 for why; the short version is that the premise is false. The
+mode is kept because the machinery is sound and reusable, but do not reach for it in
+production. Full campaign: `doc/plans/spectrum_slicing.md`.*
 
 All methods above pay the full **live determinant support** of the seed's Krylov space — the
 term that actually exhausts memory (section 3.4). The one idea that attacks it directly is
@@ -454,11 +456,45 @@ controlled leakage). Each slice term is an independent work unit with its *own, 
 basis, solved by the per-frequency driver of section 4 with an unfiltered bra (its natural
 cross-element form); the filter itself is a three-term Chebyshev recurrence
 ($t_{n+1} = 2\tilde H t_n - t_{n-1}$, three live vectors, one pass serving all slices), with
-spectral bounds from a short Lanczos run. The bet under measurement: whether the
-$\varepsilon$-support of $p_s(H)v$ at production amplitude cutoffs is genuinely smaller than
-the union support — for a metal's mid-band many-body states, delocalization in Fock space is
-the honest risk, and the calibration probe measures exactly this before the driver's memory
-model is trusted.
+spectral bounds from a short Lanczos run — estimated *per unit*, since a Chebyshev polynomial
+evaluated outside its interval grows like $\cosh(n\,\mathrm{arccosh}|x|)$ and at degree $10^3$
+a 1% bounds violation overflows.
+
+### 5.1 Why it fails: energy locality is not determinant locality
+
+The identity above is exact and the implementation reproduces it (the partition telescopes, so
+$G$ is invariant under the number of slices — the code's correctness oracle). The *memory*
+premise is what breaks.
+
+Slicing localizes the seed in **energy**. The memory is the **live determinant support**, and
+the support of the basis a solve actually builds is the closure of $\mathrm{supp}(v^s)$ under
+repeated application of $H$ — the set of determinants reachable by the hopping and Coulomb
+terms. That closure does not care how the seed's amplitudes are weighted: $p_s(H)$ reweights
+$v$, it does not disconnect Fock space. Whatever the filter suppresses, $(z-H)^{-1}$ re-grows,
+because the Krylov space of the *filtered* seed spans the same connected sector as that of the
+unfiltered one. Measured on NiO: the per-point basis is **identical (718/734 determinants) at
+every slice tolerance** — 0, $10^{-6}$, $10^{-5}$ — and identical to the unfiltered
+per-frequency run. On FCC Ni the sliced driver peaked at **2.75 GiB against the Lanczos
+baseline's 1.4 GiB**, *before its first solve*: with the filtered support equal to the union
+support, the filter must hold three recurrence blocks **plus one accumulator per window** over
+that full support — six block-rows where the recurrence needs three.
+
+Worse, slicing *loses* accuracy. It multiplies the number of linear solves by the number of
+windows and makes each one harder: the filtered ket $p_s(H)v$ concentrates its weight exactly
+in the window containing $z$, so the slice that carries the answer is by construction the
+near-singular one — precisely the regime where BiCGSTAB stagnates (§4.2). On NiO,
+$\sigma_{\mathrm{real}}$ lands at $1.5\times10^{-4}$ against Lanczos's $5.3\times10^{-6}$, with
+a handful of solves per block finishing above `atol` at residuals $\sim\!4\times10^{-6}$.
+
+**The lesson worth keeping.** For a *sparse-basis* many-body solver, spectral filtering is the
+wrong tool for memory: it acts on the spectrum, while the cost is set by Fock-space
+connectivity. The levers that *do* reduce the live support act on the support directly — the
+occupation restrictions of §1.4 (which genuinely disconnect sectors) and the determinant cap
+of §3.4. This is why KPM and filtered eigensolvers pay off in a *fixed* basis (a lattice
+Hamiltonian, where the vector length is constant and filtering buys iterations) and not here,
+where the basis is the thing that grows. The machinery itself (`spectral_bounds`,
+`partition_of_unity`, `chebyshev_apply`) is sound and stays available for KPM densities of
+states and filtered eigensolvers, where the fixed-basis assumption holds.
 
 ---
 
@@ -588,7 +624,24 @@ solve per $\omega_{\mathrm{in}}$ regardless of how many polarization pairs are r
 
 **Method choice** — the table of section 4.4, plus: spectra drivers (`get_spectra`) currently
 run Method I internally (their result contract is continued-fraction coefficients); the
-self-energy path accepts `--gf_method {lanczos,bicgstab}`.
+self-energy path accepts `--gf_method {lanczos,bicgstab,sliced}`.
+
+**Start with `lanczos`.** It is the default for a reason: one recurrence serves the whole mesh,
+it retains no Krylov store at `reort=none`, and on every workload measured on this branch it is
+simultaneously the fastest *and* the most memory-frugal method. The other two exist for
+specific reasons, both narrow:
+
+| method | reach for it when | measured cost |
+|---|---|---|
+| `lanczos` | always, first | baseline |
+| `bicgstab` | the capped recurrence's monitor cannot converge on a frozen subspace but per-point solves can (FCC Ni), or you want embarrassing frequency parallelism / RIXS intermediate states | ~5x wall end-to-end (~12x in the GF phase); **more** memory than `reort=none`, not less |
+| `sliced` | **do not** — kept for its reusable Chebyshev machinery, not as a production mode (§5.1) | 2x the memory of `lanczos` on FCC Ni; 27x worse `sigma_real` on NiO |
+
+The memory hope that motivated both non-default methods — that a per-point or per-slice basis
+is smaller than the mesh-union basis — is **false on both production workloads**, for the same
+underlying reason: the live basis is the H-connectivity closure of the seed support, and
+neither restricting to one frequency nor filtering in energy shrinks that closure. What *does*
+shrink it: the occupation restrictions (§1.4) and the determinant cap (§3.4).
 
 **The knobs that matter, and what they mean physically:**
 
@@ -602,6 +655,7 @@ self-energy path accepts `--gf_method {lanczos,bicgstab}`.
 | `GF_BICGSTAB_ATOL` / `MAX_ITER` / `RESTARTS` | per-point solve contract (§4.2) | default `1e-8`; tighten to `1e-10` for real-axis Σ at small δ |
 | `GF_GMRES_RESTART` / `MAX_RESTARTS` | fallback Arnoldi depth (§4.3) | 40 default; bounds the fallback's memory transient |
 | `GF_EIGENSTATE_GROUP` / `GF_OPERATOR_SPLIT` | unit granularity (§3.5) | grouping shares matvecs; splitting maximizes independent units |
+| `GF_SLICES` / `GF_SLICE_DEGREE` / `GF_SLICE_TOL` | Chebyshev windows, filter degree, slice-seed pruning (§5) | only for `gf_method="sliced"`, which is not recommended; `GF_SLICE_TOL>0` is reported as a `WARN` because it trades accuracy for a memory saving that **does not materialize** (§5.1) |
 | `num_wanted`, `tau` | thermal ensemble (§2.4) | auto-retry doubles `num_wanted` on the truncation diagnostic |
 
 ## 9. References
