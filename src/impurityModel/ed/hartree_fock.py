@@ -33,6 +33,13 @@ mean-field energy and Fock matrix are
 
 import numpy as np
 
+# SCF iteration cap. Raised from 200 after the constrained solve on the 112-orbital NiO L-edge
+# was measured to need 283 iterations at the default mixing -- converging monotonically, not
+# oscillating, so the old cap merely truncated it and reported "NOT converged". At ~3 ms per
+# iteration (a few small dense diagonalisations) the whole solve is under a second, which is
+# nothing against the dN occupation scan it exists to replace.
+_SCF_MAX_ITER = 500
+
 
 def extract_hf_tensors(h_op, impurity_indices):
     """Parse ``h_op`` into a full one-body matrix and an impurity-restricted two-body tensor.
@@ -128,7 +135,71 @@ def _aufbau_density(f, n_tot):
     return u_occ.conj() @ u_occ.T
 
 
-def hartree_fock_density_matrix(h, V, imp, n_tot, max_iter=200, tol=1e-8, mixing=0.5):
+def _resolve_groups(n_orb, n_tot, constraints):
+    """``constraints`` -> a full partition of the orbitals into ``(indices, n_electrons)`` groups.
+
+    The orbitals no constraint names form the free group, holding the electrons the constraints
+    do not account for. ``constraints=None`` yields the single all-orbital group, i.e. exactly
+    the unconstrained aufbau.
+    """
+    if not constraints:
+        return [(np.arange(n_orb), n_tot)]
+    groups = []
+    claimed: set[int] = set()
+    for indices, n_e in constraints:
+        idx = np.asarray(sorted(indices), dtype=int)
+        if idx.size and (idx.min() < 0 or idx.max() >= n_orb):
+            raise ValueError(f"constrained orbital index out of range [0, {n_orb})")
+        overlap = claimed.intersection(idx.tolist())
+        if overlap:
+            raise ValueError(f"constrained groups overlap on orbitals {sorted(overlap)}")
+        if not 0 <= n_e <= idx.size:
+            raise ValueError(f"constrained group of {idx.size} orbitals cannot hold {n_e} electrons")
+        claimed.update(idx.tolist())
+        groups.append((idx, int(n_e)))
+    free = np.array([i for i in range(n_orb) if i not in claimed], dtype=int)
+    n_free = n_tot - sum(n_e for _, n_e in groups)
+    if not 0 <= n_free <= free.size:
+        raise ValueError(
+            f"{n_tot} electrons minus {n_tot - n_free} constrained leaves {n_free} for "
+            f"{free.size} unconstrained orbitals"
+        )
+    groups.append((free, int(n_free)))
+    return groups
+
+
+def _grouped_aufbau_density(f, groups):
+    """Aufbau density with each group's electron count held fixed.
+
+    Each group is filled from the eigenvectors of ``f``'s *diagonal block* for that group, and the
+    blocks are assembled without cross-group coherence. The groups still see each other: ``f`` is
+    the **full** Fock matrix, so every group feels every other group's Hartree/exchange field --
+    that mean field is exactly what keeps a frozen core's valence partner honest.
+
+    Forbidding cross-group coherence is not an approximation whenever the groups do not couple in
+    the one-body ``h`` -- which is the case that matters here: a *frozen* shell is by definition one
+    with no bath states, so it cannot hybridize, and then a block-diagonal ``rho`` is already an
+    exact fixed point of the unconstrained SCF (the only other channel, the exchange term in
+    :func:`_fock_matrix`, feeds on the cross-group block of ``rho``, which stays zero). The
+    constraint therefore *selects* a fixed point rather than approximating one.
+
+    ``f`` is Hermitian on entry (both callers hand over a symmetrised matrix), and a diagonal
+    sub-block of a Hermitian matrix is Hermitian, so the blocks go to ``eigh`` untouched -- which
+    also keeps the single-group case bit-for-bit identical to :func:`_aufbau_density`.
+    """
+    if len(groups) == 1:
+        idx, n_e = groups[0]
+        if idx.size == f.shape[0]:
+            return _aufbau_density(f, n_e)
+    rho = np.zeros(f.shape, dtype=complex)
+    for idx, n_e in groups:
+        if idx.size == 0:
+            continue
+        rho[np.ix_(idx, idx)] = _aufbau_density(f[np.ix_(idx, idx)], n_e)
+    return rho
+
+
+def hartree_fock_density_matrix(h, V, imp, n_tot, constraints=None, max_iter=_SCF_MAX_ITER, tol=1e-8, mixing=0.5):
     """Self-consistent (unrestricted) Hartree-Fock density matrix at fixed particle number.
 
     The single-determinant, spin-orbital formulation is intrinsically unrestricted: a full
@@ -141,6 +212,20 @@ def hartree_fock_density_matrix(h, V, imp, n_tot, max_iter=200, tol=1e-8, mixing
         As returned by :func:`extract_hf_tensors`.
     n_tot : int
         Total electron number (conserved); the ``n_tot`` lowest orbitals are filled.
+    constraints : sequence of (indices, n_electrons), optional
+        Orbital subsets held at a **fixed electron count**, filled group-wise (see
+        :func:`_grouped_aufbau_density`); the orbitals no constraint names take the remainder.
+        ``None`` (default) is the plain global aufbau, unchanged.
+
+        This is what keeps a *frozen* shell frozen. Unconstrained HF is free to empty one: on the
+        NiO L-edge model, where the MLFT double counting puts the bare 3d level (-106 eV) *below*
+        the 2p core (-74.5 eV), it ionizes the core into the 3d -- returning ``2p^4 3d^10``, and
+        not even converging (it oscillates across that crossing). Pinning the core makes it
+        converge to ``2p^6 3d^8.2``, the true ground-state sector.
+
+        **Expect a higher energy than the unconstrained solve** (measured: -1175 vs -1196 eV).
+        That is the point, not a defect: the unconstrained minimum really is lower, it just gets
+        there through a state the calculation has declared unphysical.
     max_iter, tol, mixing
         SCF controls: linear density mixing ``rho <- mixing*rho_new + (1-mixing)*rho``.
 
@@ -154,12 +239,14 @@ def hartree_fock_density_matrix(h, V, imp, n_tot, max_iter=200, tol=1e-8, mixing
     """
     n_orb = h.shape[0]
     n_tot = int(max(0, min(n_tot, n_orb)))
+    groups = _resolve_groups(n_orb, n_tot, constraints)
     # Non-interacting start: fill the lowest orbitals of the one-body part (carries any field).
-    rho = _aufbau_density(0.5 * (h + h.conj().T), n_tot)
+    # The start must honour the constraints too, or the SCF sets off from the wrong sector.
+    rho = _grouped_aufbau_density(0.5 * (h + h.conj().T), groups)
     converged = False
     for _ in range(max_iter):
         f = _fock_matrix(h, V, imp, rho)
-        rho_new = _aufbau_density(f, n_tot)
+        rho_new = _grouped_aufbau_density(f, groups)
         if np.linalg.norm(rho_new - rho) < tol:
             rho = rho_new
             converged = True
@@ -168,7 +255,9 @@ def hartree_fock_density_matrix(h, V, imp, n_tot, max_iter=200, tol=1e-8, mixing
     return rho, converged, mean_field_energy(h, V, imp, rho)
 
 
-def hartree_fock_occupation(h_op, impurity_orbitals, bath_states, N0, max_iter=200, tol=1e-8, mixing=0.5):
+def hartree_fock_occupation(
+    h_op, impurity_orbitals, bath_states, N0, frozen_occupations=None, max_iter=_SCF_MAX_ITER, tol=1e-8, mixing=0.5
+):
     """Nominal impurity occupation per orbital set from an unrestricted Hartree-Fock solve.
 
     The total electron number is fixed at the nominal sector: ``sum_i N0[i]`` impurity
@@ -186,6 +275,11 @@ def hartree_fock_occupation(h_op, impurity_orbitals, bath_states, N0, max_iter=2
         ``(valence_baths, conduction_baths)``, each ``{set_index: [block, ...]}``.
     N0 : dict
         Nominal impurity occupations per orbital set (sets the total particle number).
+    frozen_occupations : set, optional
+        Orbital sets whose occupation is **held at** ``N0[i]`` (a core shell, say). Without this,
+        HF is free to empty them wherever that lowers the mean-field energy -- which on a
+        core-level workload it does, ionizing the core (see
+        :func:`hartree_fock_density_matrix`). Frozen sets come back at exactly ``N0[i]``.
     max_iter, tol, mixing
         SCF controls, forwarded to :func:`hartree_fock_density_matrix`.
 
@@ -205,7 +299,13 @@ def hartree_fock_occupation(h_op, impurity_orbitals, bath_states, N0, max_iter=2
     n_valence = sum(len(block) for blocks in valence_baths.values() for block in blocks)
     n_tot = int(sum(int(N0[i]) for i in N0) + n_valence)
 
-    rho, converged, energy = hartree_fock_density_matrix(h, V, imp, n_tot, max_iter=max_iter, tol=tol, mixing=mixing)
+    constraints = [
+        ([orb for block in impurity_orbitals[i] for orb in block], int(N0[i])) for i in sorted(frozen_occupations or ())
+    ]
+
+    rho, converged, energy = hartree_fock_density_matrix(
+        h, V, imp, n_tot, constraints=constraints, max_iter=max_iter, tol=tol, mixing=mixing
+    )
 
     occ = np.real(np.diag(rho))
     winning_N0 = {}
@@ -294,7 +394,17 @@ def build_cas_seed(filled_idx, partial_idx, active_electrons, num_spin_orbitals)
     return seeds
 
 
-def hf_active_space(h_op, impurity_orbitals, bath_states, N0, eps=0.05, max_iter=200, tol=1e-8, mixing=0.5):
+def hf_active_space(
+    h_op,
+    impurity_orbitals,
+    bath_states,
+    N0,
+    frozen_occupations=None,
+    eps=0.05,
+    max_iter=_SCF_MAX_ITER,
+    tol=1e-8,
+    mixing=0.5,
+):
     """Run unrestricted HF and classify every spin-orbital into the active space.
 
     Combines :func:`hartree_fock_density_matrix` with :func:`classify_orbitals`. The total
@@ -302,6 +412,10 @@ def hf_active_space(h_op, impurity_orbitals, bath_states, N0, eps=0.05, max_iter
     full valence baths); HF redistributes at fixed total and the resulting density -- over
     impurity **and** bath -- is classified. The partial orbitals are exactly the near-Fermi
     covalent orbitals (ligand + impurity) whose occupation must be spanned by the seed.
+
+    ``frozen_occupations`` pins those orbital sets at ``N0[i]``, exactly as in
+    :func:`hartree_fock_occupation` -- the two must agree on which shells are frozen, or the CAS
+    classification would be built on a density in which the core has quietly ionized.
 
     Returns
     -------
@@ -317,6 +431,11 @@ def hf_active_space(h_op, impurity_orbitals, bath_states, N0, eps=0.05, max_iter
     h, V, imp, _n_orb, _const = extract_hf_tensors(h_op, all_impurity_indices)
     n_valence = sum(len(block) for blocks in valence_baths.values() for block in blocks)
     n_tot = int(sum(int(N0[i]) for i in N0) + n_valence)
-    rho, converged, energy = hartree_fock_density_matrix(h, V, imp, n_tot, max_iter=max_iter, tol=tol, mixing=mixing)
+    constraints = [
+        ([orb for block in impurity_orbitals[i] for orb in block], int(N0[i])) for i in sorted(frozen_occupations or ())
+    ]
+    rho, converged, energy = hartree_fock_density_matrix(
+        h, V, imp, n_tot, constraints=constraints, max_iter=max_iter, tol=tol, mixing=mixing
+    )
     filled_idx, empty_idx, partial_idx, active_electrons, n_tot = classify_orbitals(rho, eps=eps)
     return filled_idx, empty_idx, partial_idx, active_electrons, n_tot, rho, converged, energy

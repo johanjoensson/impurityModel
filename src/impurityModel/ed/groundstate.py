@@ -158,7 +158,9 @@ def calc_energy(
     return np.min(es), basis
 
 
-def hartree_fock_seed_occupation(h_op, impurity_orbitals, bath_states, N0, comm=None, verbose=False):
+def hartree_fock_seed_occupation(
+    h_op, impurity_orbitals, bath_states, N0, frozen_occupations=None, comm=None, verbose=False
+):
     """Nominal impurity occupation ``N0`` from a cheap unrestricted Hartree-Fock solve.
 
     This is the default seed for :func:`find_ground_state_basis`. Instead of running an
@@ -199,7 +201,9 @@ def hartree_fock_seed_occupation(h_op, impurity_orbitals, bath_states, N0, comm=
         paid for by emptying the 2p core -- which, once the frozen core is restored, closes the
         shell, collapses the basis to a single determinant and zeroes every core-level spectrum.
     """
-    winning_N0, energy, converged = hartree_fock_occupation(h_op, impurity_orbitals, bath_states, N0)
+    winning_N0, energy, converged = hartree_fock_occupation(
+        h_op, impurity_orbitals, bath_states, N0, frozen_occupations=frozen_occupations
+    )
     if verbose and (comm is None or comm.rank == 0):
         status = "converged" if converged else "NOT converged"
         print(f"HF seed occupation: {winning_N0}  (E_HF ~ {energy:6.3f}, {status})")
@@ -344,23 +348,33 @@ def find_ground_state_basis(
     def _hf_seed():
         """The HF seed occupation, or ``None`` when it cannot be trusted.
 
-        Two ways it cannot. **(1) HF did not converge**: the returned occupation is then just the
-        last iterate, not a minimiser. **(2) Restoring the frozen shells changes the impurity
-        electron count**: HF is free to move charge into or out of a shell this calculation holds
-        fixed, and it pays for that charge elsewhere. Re-freezing afterwards keeps its answer for
-        the *unfrozen* shells while undoing the compensation, so the total silently drifts --
-        which is not a seed for this problem at all.
+        The frozen shells are passed *into* HF, which solves at their fixed occupation
+        (:func:`hartree_fock.hartree_fock_density_matrix`), so on a core-level workload the seed
+        is now converged and usable and neither guard below fires. The guards remain because they
+        are the difference between a wrong answer and a loud one:
 
-        Both fire on the NiO L-edge workload, and either alone is fatal: HF returns
-        ``{2p: 4, 3d: 10}`` (sum 14 = the correct impurity count, a 3d10 paid for out of the
-        core), and re-freezing the core to 6 leaves ``{2p: 6, 3d: 10}`` = 16 -- two electrons
-        from nowhere. That closes the shell (a filled system has exactly one determinant), so
-        the basis collapses and every core-level spectrum comes out identically zero, while PES
-        still looks healthy. Measured against the true d8 ground state, which lies inside the
-        scan's own candidate space, the accepted state is 8.7 eV too high.
+        **(1) HF did not converge** -- the returned occupation is then merely the last iterate,
+        not a minimiser. **(2) Re-freezing the frozen shells changes the impurity electron
+        count** -- a seed that did not respect the freeze paid for the charge it moved somewhere
+        else; restoring the frozen shells keeps its answer for the *unfrozen* ones while undoing
+        that compensation, so the total silently drifts.
+
+        Both fired on the NiO L-edge workload before the constraint existed, and either alone was
+        fatal: unconstrained HF returned ``{2p: 4, 3d: 10}`` (sum 14 = the correct impurity count,
+        a 3d10 paid for out of the core), and re-freezing the core to 6 left ``{2p: 6, 3d: 10}``
+        = 16 -- two electrons from nowhere. That closes the shell (a filled system has exactly one
+        determinant), so the basis collapsed and every core-level spectrum came out identically
+        zero, while PES still looked healthy. Measured against the true d8 ground state, which
+        lies inside the scan's own candidate space, the accepted state was 8.7 eV too high.
         """
         seed_N0, converged = hartree_fock_seed_occupation(
-            h_op, impurity_orbitals, bath_states, N0, comm=comm, verbose=verbose
+            h_op,
+            impurity_orbitals,
+            bath_states,
+            N0,
+            frozen_occupations=frozen_occupations,
+            comm=comm,
+            verbose=verbose,
         )
         refrozen = {i: N0[i] if i in frozen_occupations else seed_N0[i] for i in N0}
         leaked = sum(refrozen.values()) != sum(seed_N0.values())

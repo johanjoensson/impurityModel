@@ -122,6 +122,113 @@ def test_two_body_outside_impurity_raises():
         hf.extract_hf_tensors(ManyBodyOperator(terms), impurity_indices=[0])  # term touches orb 1
 
 
+# --------------------------------------------------------------------------- #
+# Constrained HF: keeping a frozen shell frozen
+# --------------------------------------------------------------------------- #
+
+
+def _core_valence_model():
+    """A miniature of the NiO L-edge pathology: a 'core' that HF wants to ionize.
+
+    Orbitals 0,1 = core (a shell with no bath, hence frozen, nominally full); 2..7 = valence
+    (6 slots, nominally holding only 2); 8,9 = bath. Two ingredients make the core drain, and both
+    are present in the real problem:
+
+    * the core level sits *above* the valence -- what the MLFT double counting does to NiO, where
+      the bare 3d (-106 eV) ends up below the 2p core (-74.5 eV); and
+    * the valence has **empty slots below the core** for those electrons to fall into (NiO: a d8
+      shell has two).
+
+    Unconstrained HF duly empties the core into them. The core hybridizes with nothing (a frozen
+    shell has no baths), which is what makes the block-diagonal constrained density an exact fixed
+    point rather than an approximation.
+    """
+    e_core, e_val, e_bath, v, u, u_cv = -1.0, -8.0, -0.5, 0.3, 2.0, 1.5
+    valence = list(range(2, 8))
+    terms = {}
+    for o in (0, 1):
+        terms[((o, "c"), (o, "a"))] = e_core
+    for o in valence:
+        terms[((o, "c"), (o, "a"))] = e_val
+    for o in (8, 9):
+        terms[((o, "c"), (o, "a"))] = e_bath
+    for a, b in ((2, 8), (3, 9)):  # valence hybridizes with the bath; the core with nothing
+        terms[((a, "c"), (b, "a"))] = v
+        terms[((b, "c"), (a, "a"))] = v
+    for a in valence:
+        for b in valence:
+            if a < b:
+                terms[((a, "c"), (b, "c"), (b, "a"), (a, "a"))] = u
+    for c in (0, 1):  # core-valence density-density repulsion (the Fpd analogue)
+        for w in valence:
+            terms[((c, "c"), (w, "c"), (w, "a"), (c, "a"))] = u_cv
+    impurity_orbitals = {0: [[0, 1]], 1: [valence]}  # set 0 = core (frozen), set 1 = valence
+    bath_states = ({0: [[]], 1: [[8, 9]]}, {0: [[]], 1: [[]]})
+    return ManyBodyOperator(terms), impurity_orbitals, bath_states, {0: 2, 1: 2}
+
+
+def test_unconstrained_hf_drains_the_core():
+    """The bug this constraint exists for: with nothing pinning it, HF empties the frozen shell."""
+    h_op, impurity_orbitals, bath_states, N0 = _core_valence_model()
+    occ, _energy, _converged = hf.hartree_fock_occupation(h_op, impurity_orbitals, bath_states, N0)
+    assert occ[0] < N0[0], "expected unconstrained HF to ionize the core -- the model no longer bites"
+
+
+def test_constrained_hf_keeps_the_frozen_shell_exactly_full():
+    """Pinning the core holds it at N0 *exactly* (not merely on rounding), and HF still converges.
+
+    The valence is left free, so this also checks the constraint does not freeze the whole problem:
+    HF still redistributes charge between valence and bath at the fixed total.
+    """
+    h_op, impurity_orbitals, bath_states, N0 = _core_valence_model()
+    occ, _energy, converged = hf.hartree_fock_occupation(
+        h_op, impurity_orbitals, bath_states, N0, frozen_occupations={0}
+    )
+    assert converged
+    assert occ[0] == N0[0]
+
+    # exact, not rounded: the core block of rho carries precisely N0[0] electrons
+    h, V, imp, _n_orb, _c = hf.extract_hf_tensors(h_op, list(range(8)))
+    rho, _conv, _e = hf.hartree_fock_density_matrix(h, V, imp, n_tot=6, constraints=[([0, 1], 2)])
+    assert np.real(np.trace(rho)) == pytest.approx(6.0, abs=1e-10)
+    assert float(np.real(np.diag(rho)[[0, 1]].sum())) == pytest.approx(2.0, abs=1e-12)
+
+
+def test_constrained_hf_costs_energy_and_that_is_the_point():
+    """The constrained solution is *higher* in mean-field energy than the unconstrained one.
+
+    The unconstrained minimum really is lower -- it just gets there through a state the calculation
+    has declared unphysical (an ionized core). Pinned here so nobody 'optimizes' the constraint away
+    on the grounds that it raises the energy.
+    """
+    h_op, impurity_orbitals, bath_states, N0 = _core_valence_model()
+    _, e_free, _ = hf.hartree_fock_occupation(h_op, impurity_orbitals, bath_states, N0)
+    _, e_pinned, _ = hf.hartree_fock_occupation(h_op, impurity_orbitals, bath_states, N0, frozen_occupations={0})
+    assert e_pinned > e_free
+
+
+def test_unconstrained_path_is_bit_for_bit_unchanged():
+    """constraints=None (and the empty list) must reduce exactly to the global aufbau."""
+    h_op, _io, _bs, _N0 = _core_valence_model()
+    h, V, imp, _n_orb, _c = hf.extract_hf_tensors(h_op, list(range(8)))
+    ref, conv_ref, e_ref = hf.hartree_fock_density_matrix(h, V, imp, n_tot=6)
+    for constraints in (None, []):
+        rho, conv, e = hf.hartree_fock_density_matrix(h, V, imp, n_tot=6, constraints=constraints)
+        assert np.array_equal(rho, ref)  # bit-for-bit, not allclose
+        assert conv == conv_ref and e == e_ref
+
+
+def test_constraint_validation():
+    h_op, _io, _bs, _N0 = _core_valence_model()
+    h, V, imp, _n_orb, _c = hf.extract_hf_tensors(h_op, list(range(8)))
+    with pytest.raises(ValueError, match="overlap"):
+        hf.hartree_fock_density_matrix(h, V, imp, 6, constraints=[([0, 1], 2), ([1, 2], 1)])
+    with pytest.raises(ValueError, match="cannot hold"):
+        hf.hartree_fock_density_matrix(h, V, imp, 6, constraints=[([0, 1], 3)])
+    with pytest.raises(ValueError, match="unconstrained orbitals"):
+        hf.hartree_fock_density_matrix(h, V, imp, 2, constraints=[([0, 1], 2), ([2, 3], 2)])
+
+
 def test_classify_orbitals_basic():
     rho = np.diag([1.0, 1.0, 0.5, 0.5, 0.0, 0.0]).astype(complex)  # sum = 3
     filled, empty, partial, active_electrons, n_tot = hf.classify_orbitals(rho, eps=0.05)
