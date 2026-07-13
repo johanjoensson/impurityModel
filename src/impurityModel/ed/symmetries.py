@@ -1288,17 +1288,44 @@ def discover_one_body_symmetries(h, sigma_cut=None):
     -----
     Unitary symmetries only: ``[H, O] = 0`` over the complex field does not detect
     anti-unitary (time-reversal / Kramers) symmetries. See the module docstring.
+
+    For Hermitian ``h`` the commutant is computed from the eigendecomposition:
+    ``[h, O] = 0`` exactly when ``O`` is block diagonal in ``h``'s eigenbasis, and the
+    superoperator's singular values are ``|e_i - e_j|``, so the null space at
+    ``sigma_cut`` is spanned by the matrix units ``u_i u_j^\dagger`` of eigenvectors
+    whose eigenvalues agree within ``sigma_cut``. This is ``O(n^3)`` time and
+    ``O(n^2)`` working memory; the dense ``n^2 x n^2`` superoperator SVD it replaces
+    is ``O(n^6)`` / ``O(n^4)`` and OOM-killed real workloads already at ``n = 112``
+    (12544 x 12544 complex ~ 2.4 GiB before LAPACK workspace). Non-Hermitian input
+    falls back to the dense superoperator path.
     """
     h = np.asarray(h, dtype=complex)
     n = h.shape[0]
-    a_matrix = _commutator_superoperator(h)
-    _, s, vh = np.linalg.svd(a_matrix)
-    norm_a = s[0] if s.size else 0.0
+    norm_h = np.linalg.norm(h)
+    if np.linalg.norm(h - h.conj().T) > max(norm_h, 1.0) * n * np.finfo(float).eps:
+        a_matrix = _commutator_superoperator(h)
+        _, s, vh = np.linalg.svd(a_matrix)
+        norm_a = s[0] if s.size else 0.0
+        if sigma_cut is None:
+            sigma_cut = max(norm_a, 1.0) * n * np.finfo(float).eps
+        null_mask = s <= sigma_cut
+        null_vecs = vh.conj().T[:, null_mask]  # columns = vec(O), orthonormal
+        return [null_vecs[:, a].reshape(n, n, order="F") for a in range(null_vecs.shape[1])]
+
+    es, u = np.linalg.eigh(h)
     if sigma_cut is None:
-        sigma_cut = max(norm_a, 1.0) * n * np.finfo(float).eps
-    null_mask = s <= sigma_cut
-    null_vecs = vh.conj().T[:, null_mask]  # columns = vec(O), orthonormal
-    return [null_vecs[:, a].reshape(n, n, order="F") for a in range(null_vecs.shape[1])]
+        # Same scale as the superoperator path: ||A||_2 = max |e_i - e_j| = the spectral spread.
+        spread = float(es[-1] - es[0]) if n else 0.0
+        sigma_cut = max(spread, 1.0) * n * np.finfo(float).eps
+    generators = []
+    start = 0
+    for k in range(1, n + 1):
+        if k == n or es[k] - es[start] > sigma_cut:
+            for a in range(start, k):
+                for b in range(start, k):
+                    generators.append(np.outer(u[:, a], u[:, b].conj()))
+            start = k
+    return generators
 
 
 def is_abelian(generators, tol=1e-9):
@@ -1630,7 +1657,11 @@ def component_symmetry_reduction(component_ops, h_onebody, n_orb=None, tol=1e-8)
             res_c.append(r)
         columns.append(np.concatenate(res_c))
     b_matrix = np.array(columns).T  # (m * n^2, n_gen)
-    _, s_b, vh_b = np.linalg.svd(b_matrix)
+    # Economy SVD: with m * n^2 rows, full_matrices=True materialises a (m n^2)^2 U
+    # (~21 GiB at n = 112) that is never read. Full right-singular vectors are only
+    # needed when there are more generators than rows (then the extra rows of vh span
+    # part of the null space, picked up by the ``i >= len(s_b)`` branch below).
+    _, s_b, vh_b = np.linalg.svd(b_matrix, full_matrices=b_matrix.shape[1] > b_matrix.shape[0])
     scale = s_b[0] if s_b.size else 0.0
     cut = max(scale, 1.0) * b_matrix.shape[0] * np.finfo(float).eps
     null_coeffs = [vh_b[i].conj() for i in range(vh_b.shape[0]) if i >= len(s_b) or s_b[i] <= cut]
