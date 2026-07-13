@@ -179,7 +179,9 @@ def chebyshev_apply(hOp, basis, seeds, coefficient_sets, double slaterWeightMin,
     basis : Basis or _CappedBasisProxy
         Hosts (and optionally caps) the recurrence support.
     seeds : list of ManyBodyState
-        The seed block columns (width ``p``).
+        The seed block columns (width ``p``). Redistributed onto ``basis``'s ownership on
+        entry, so callers may pass seeds straight from a rank-local ``c``/``c^dagger``
+        apply (see the note under "Raises" for why this is not optional).
     coefficient_sets : sequence of ndarray
         From :func:`partition_of_unity` (or any Chebyshev coefficient vectors).
     slaterWeightMin : float
@@ -193,6 +195,18 @@ def chebyshev_apply(hOp, basis, seeds, coefficient_sets, double slaterWeightMin,
     -------
     list of list of ManyBodyState
         ``filtered[s]`` = the ``p`` columns of ``p_s(H) v``.
+
+    Notes
+    -----
+    The recurrence redistributes ``H t_n`` (the matvec output) but not ``t_n``, so it is the
+    one solver stage that cannot tolerate a seed row sitting on a rank that does not own that
+    determinant: ``H t`` would land on the owner while ``t`` stayed on the generator, the
+    three-term recurrence would decouple across ranks, and the filtered seeds would run away
+    to ``inf`` (measured). Seeds built by a rank-local ``c``/``c^dagger`` apply are exactly in
+    that state -- their amplitudes sit where they were *generated*, not where they are
+    *owned*. Hence the entry redistribute below: it is a no-op on already-owner-distributed
+    seeds, and it makes the primitive safe for any caller, as ``block_bicgstab`` already is
+    for its own inputs.
     """
     cdef Py_ssize_t degree = max(len(c) for c in coefficient_sets) - 1
     cdef Py_ssize_t p = len(seeds)
@@ -204,6 +218,9 @@ def chebyshev_apply(hOp, basis, seeds, coefficient_sets, double slaterWeightMin,
 
     hOp.set_restrictions(basis.restrictions)
     hOp.set_weighted_restrictions(basis.weighted_restrictions)
+
+    if mpi:
+        seeds = basis.redistribute_psis(list(seeds))
 
     eye_p = np.eye(p, dtype=complex)
     t_prev = None

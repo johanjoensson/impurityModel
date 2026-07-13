@@ -237,3 +237,51 @@ def test_chebyshev_apply_mpi_matches_serial():
             total = total + filtered[s][col]
         diff = total - seeds[col]
         assert np.sqrt(diff.norm2()) < 1e-10
+
+
+@pytest.mark.mpi
+def test_chebyshev_apply_mpi_redistributes_misplaced_seeds():
+    """Seeds whose amplitudes sit on the rank that GENERATED them, not the rank that OWNS the
+    determinant -- the state a rank-local c/c^dagger apply leaves them in.
+
+    The recurrence redistributes ``H t`` but not ``t``, so a misplaced row leaves ``H t`` on
+    the owner and ``t`` on the generator: the recurrence decouples across ranks and diverges
+    to inf (this is exactly what the sliced driver hit in production). ``chebyshev_apply``
+    must therefore redistribute its own seed block on entry.
+
+    The sibling test above cannot catch this: it seeds the *closed* C(6,3) sector and hands
+    over already-redistributed seeds, so generator == owner there.
+    """
+    comm = MPI.COMM_WORLD
+    H = _siam_6()
+    dets = []
+    for c in itertools.combinations(range(6), 3):
+        b = bytearray(1)
+        for o in c:
+            b[o // 8] |= 1 << (7 - (o % 8))
+        dets.append(bytes(b))
+    dist = Basis(
+        impurity_orbitals={0: [[0, 1]]},
+        bath_states=({0: [[2, 3]]}, {0: [[4, 5]]}),
+        initial_basis=dets,
+        comm=comm,
+        verbose=False,
+    )
+    ev_bounds = spectral_bounds(_siam_6(), dist, n_iter=20)
+    coeff_sets, _, _ = partition_of_unity(ev_bounds, np.linspace(ev_bounds[0] + 1, ev_bounds[1] - 1, 3), degree=80)
+
+    # Deliberately misplaced: rank 0 holds every amplitude, no rank owns what it holds.
+    misplaced = _seeds() if comm.rank == 0 else [ManyBodyState() for _ in _seeds()]
+    filtered = chebyshev_apply(H, dist, list(misplaced), coeff_sets, 0.0, ev_bounds)
+
+    # sum_s p_s v == v, compared against the *properly* distributed seeds: the entry
+    # redistribute must have moved every row to its owner.
+    owned = dist.redistribute_psis(_seeds() if comm.rank == 0 else [ManyBodyState() for _ in _seeds()])
+    for col in range(2):
+        total = ManyBodyState()
+        for s in range(len(coeff_sets)):
+            total = total + filtered[s][col]
+        diff = total - owned[col]
+        assert np.sqrt(diff.norm2()) < 1e-10
+        # and the filter did not run away (the failure mode was inf, not a small error)
+        assert np.isfinite(total.norm2())
