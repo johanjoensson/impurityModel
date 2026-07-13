@@ -191,12 +191,19 @@ def hartree_fock_seed_occupation(h_op, impurity_orbitals, bath_states, N0, comm=
     -------
     winning_N0 : dict
         Nominal impurity occupation per orbital set (rounded HF occupation).
+    converged : bool
+        Whether the HF iteration converged. A non-converged seed is **not** an occupation: it
+        is whatever the last iterate happened to be, and callers must not use it (see
+        :func:`find_ground_state_basis`, which falls back to the ``dN`` scan). Measured on the
+        NiO L-edge workload, a non-converged seed returned ``{1: 4, 2: 10}`` -- a 3d10 impurity
+        paid for by emptying the 2p core -- which, once the frozen core is restored, closes the
+        shell, collapses the basis to a single determinant and zeroes every core-level spectrum.
     """
     winning_N0, energy, converged = hartree_fock_occupation(h_op, impurity_orbitals, bath_states, N0)
     if verbose and (comm is None or comm.rank == 0):
         status = "converged" if converged else "NOT converged"
         print(f"HF seed occupation: {winning_N0}  (E_HF ~ {energy:6.3f}, {status})")
-    return winning_N0
+    return winning_N0, converged
 
 
 def find_ground_state_basis(
@@ -333,13 +340,51 @@ def find_ground_state_basis(
         return e_trial, basis
 
     keys = list(N0.keys())
-    if use_hf_seed:
+
+    def _hf_seed():
+        """The HF seed occupation, or ``None`` when it cannot be trusted.
+
+        Two ways it cannot. **(1) HF did not converge**: the returned occupation is then just the
+        last iterate, not a minimiser. **(2) Restoring the frozen shells changes the impurity
+        electron count**: HF is free to move charge into or out of a shell this calculation holds
+        fixed, and it pays for that charge elsewhere. Re-freezing afterwards keeps its answer for
+        the *unfrozen* shells while undoing the compensation, so the total silently drifts --
+        which is not a seed for this problem at all.
+
+        Both fire on the NiO L-edge workload, and either alone is fatal: HF returns
+        ``{2p: 4, 3d: 10}`` (sum 14 = the correct impurity count, a 3d10 paid for out of the
+        core), and re-freezing the core to 6 leaves ``{2p: 6, 3d: 10}`` = 16 -- two electrons
+        from nowhere. That closes the shell (a filled system has exactly one determinant), so
+        the basis collapses and every core-level spectrum comes out identically zero, while PES
+        still looks healthy. Measured against the true d8 ground state, which lies inside the
+        scan's own candidate space, the accepted state is 8.7 eV too high.
+        """
+        seed_N0, converged = hartree_fock_seed_occupation(
+            h_op, impurity_orbitals, bath_states, N0, comm=comm, verbose=verbose
+        )
+        refrozen = {i: N0[i] if i in frozen_occupations else seed_N0[i] for i in N0}
+        leaked = sum(refrozen.values()) != sum(seed_N0.values())
+        if converged and not leaked:
+            return refrozen
+        if verbose and (comm is None or comm.rank == 0):
+            why = (
+                "HF did not converge"
+                if not converged
+                else (
+                    f"re-freezing {sorted(frozen_occupations)} changed the impurity count "
+                    f"{sum(seed_N0.values())} -> {sum(refrozen.values())}"
+                )
+            )
+            print(f"HF seed rejected ({why}); falling back to the dN occupation scan.", flush=True)
+        return None
+
+    hf_seed = _hf_seed() if use_hf_seed else None
+    if hf_seed is not None:
         # A cheap unrestricted Hartree-Fock solve locates the GS impurity occupation
         # (the mean-field lowest-energy determinant), replacing the O(3^k) dN scan; then a
         # single accurate solve at that occupation refines it. HF is quick and memory-bounded
         # (no broad-window CIPSI expansion), which matters for long bath chains.
-        winning_N0 = hartree_fock_seed_occupation(h_op, impurity_orbitals, bath_states, N0, comm=comm, verbose=verbose)
-        winning_N0 = {i: N0[i] if i in frozen_occupations else winning_N0[i] for i in N0}
+        winning_N0 = hf_seed
         e_gs, basis = get_energy(winning_N0)
         gs_impurity_occ = winning_N0
         basis_gs = basis.copy() if basis is not None else None

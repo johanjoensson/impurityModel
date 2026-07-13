@@ -286,10 +286,92 @@ def test_hf_seed_finds_ground_state_sector():
     )
 
     # Cheap unrestricted Hartree-Fock seed (no broad-window many-body expansion).
-    winning_N0 = hartree_fock_seed_occupation(op, impurity_orbitals, bath_states, {0: 2})
+    winning_N0, converged = hartree_fock_seed_occupation(op, impurity_orbitals, bath_states, {0: 2})
 
-    # The mean-field seed lands on the correct integer impurity occupation of the correlated GS.
+    # The mean-field seed lands on the correct integer impurity occupation of the correlated GS,
+    # and says so: an unconverged seed is not an occupation and callers must reject it.
+    assert converged
     assert winning_N0 == {0: int(round(exact_imp_occ))}
+
+
+def test_unconverged_hf_seed_is_rejected(monkeypatch):
+    """A non-converged HF seed must never be used: it is the last iterate, not a minimiser.
+
+    Measured on the NiO L-edge workload, an unconverged seed returned a 3d10 impurity paid for by
+    emptying the (frozen) 2p core. Re-freezing the core then left two electrons from nowhere, the
+    shell closed, the basis collapsed to a single determinant and every core-level spectrum came
+    out identically zero -- while PES still looked healthy. find_ground_state_basis must fall back
+    to the dN scan instead.
+    """
+    from impurityModel.ed import groundstate
+
+    op = _siam_6()
+    impurity_orbitals = {0: [[0, 1]]}
+    bath_states = ({0: [[2, 3]]}, {0: [[4, 5]]})
+    N0 = {0: 2}
+
+    # The oracle: what the dN scan produces, i.e. what "falling back" has to mean.
+    scanned = groundstate.find_ground_state_basis(
+        op,
+        impurity_orbitals=impurity_orbitals,
+        bath_states=bath_states,
+        N0=N0,
+        verbose=False,
+        use_hf_seed=False,
+    )
+
+    # Same problem, but HF now reports a garbage occupation and admits it did not converge.
+    calls = []
+    monkeypatch.setattr(
+        groundstate,
+        "hartree_fock_seed_occupation",
+        lambda *a, **k: (calls.append(1), ({0: 0}, False))[1],
+    )
+    fell_back = groundstate.find_ground_state_basis(
+        op, impurity_orbitals=impurity_orbitals, bath_states=bath_states, N0=N0, verbose=False
+    )
+
+    assert calls, "the seed should still be consulted"
+    # The rejected seed (impurity occupation 0) must not have been taken.
+    assert fell_back.size == scanned.size
+    assert sorted(fell_back.local_basis) == sorted(scanned.local_basis)
+
+
+def test_hf_seed_that_raids_a_frozen_shell_is_rejected(monkeypatch):
+    """HF is free to move charge into or out of a shell this calculation holds frozen, paying for
+    it elsewhere. Re-freezing afterwards keeps HF's answer for the *unfrozen* shells but undoes the
+    compensation, so the impurity electron count silently drifts -- exactly the NiO failure (HF
+    {2p: 4, 3d: 10}, sum 14; re-frozen {2p: 6, 3d: 10}, sum 16). Such a seed is not a seed for this
+    problem and must be rejected even when HF converged."""
+    from impurityModel.ed import groundstate
+
+    op = _siam_6()
+    impurity_orbitals = {0: [[0, 1]]}
+    bath_states = ({0: [[2, 3]]}, {0: [[4, 5]]})
+    N0 = {0: 2}
+
+    scanned = groundstate.find_ground_state_basis(
+        op,
+        impurity_orbitals=impurity_orbitals,
+        bath_states=bath_states,
+        N0=N0,
+        frozen_occupations={0},
+        verbose=False,
+        use_hf_seed=False,
+    )
+    # A *converged* seed that moved charge out of the frozen set 0: re-freezing restores N0[0]=2
+    # while keeping HF's answer elsewhere, changing the impurity count 0 -> 2. Reject it.
+    monkeypatch.setattr(groundstate, "hartree_fock_seed_occupation", lambda *a, **k: ({0: 0}, True))
+    fell_back = groundstate.find_ground_state_basis(
+        op,
+        impurity_orbitals=impurity_orbitals,
+        bath_states=bath_states,
+        N0=N0,
+        frozen_occupations={0},
+        verbose=False,
+    )
+    assert fell_back.size == scanned.size
+    assert sorted(fell_back.local_basis) == sorted(scanned.local_basis)
 
 
 def _bytes6(occ):
