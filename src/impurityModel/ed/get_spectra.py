@@ -55,6 +55,7 @@ def main(
     XAS_projectors_filename,
     RIXS_projectors_filename,
     auto_block_structure=True,
+    truncation_threshold=None,
 ):
     """
     First find the lowest eigenstates and then use them to calculate various spectra.
@@ -121,6 +122,9 @@ def main(
         Due to finite lifetime of excited states.
     RIXS_projectors_filename : string
         File containing the RIXS projectors, separated by an empty line.
+    truncation_threshold : int, optional
+        Maximum number of Slater determinants in any many-body basis (ground state and
+        Green's function). ``None`` resolves to as many as fit in RAM (see ``memory_estimate``).
 
     """
 
@@ -304,7 +308,7 @@ def main(
         "frozen_occupations": set(i for i in nBaths if nBaths[i] == 0),
         # None = "as many determinants as fit in RAM", resolved against the per-rank
         # available memory inside find_ground_state_basis (see memory_estimate).
-        "truncation_threshold": None,
+        "truncation_threshold": truncation_threshold,
         "tau": tau,
         "comm": comm,
     }
@@ -571,6 +575,15 @@ if __name__ == "__main__":
         default=None,
         help=("File containing the RIXS projectors. Separated by newlines."),
     )
+    parser.add_argument(
+        "--truncation_threshold",
+        type=int,
+        default=None,
+        help=(
+            "Maximum number of Slater determinants in any many-body basis (ground state and "
+            "Green's function). Default: as many as fit in RAM (see memory_estimate)."
+        ),
+    )
 
     args = parser.parse_args()
 
@@ -617,4 +630,5 @@ if __name__ == "__main__":
         deltaNIXS=args.deltaNIXS,
         XAS_projectors_filename=args.XAS_projectors_filename,
         RIXS_projectors_filename=args.RIXS_projectors_filename,
+        truncation_threshold=args.truncation_threshold,
     )
