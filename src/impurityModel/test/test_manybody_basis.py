@@ -2,6 +2,7 @@ import numpy as np
 import pytest
 from mpi4py import MPI
 
+from impurityModel.ed import product_state_representation as psr
 from impurityModel.ed.basis_restrictions import get_effective_restrictions
 from impurityModel.ed.manybody_basis import Basis
 from impurityModel.ed.ManyBodyUtils import ManyBodyOperator, SlaterDeterminant
@@ -26,6 +27,67 @@ def build_states(states: list[bytes]):
         initial_basis=[],
     )
     return [SlaterDeterminant.from_bytes(state) for state in states]
+
+
+def _shell_counts(state, shell_orbitals):
+    """Occupation of each orbital set in ``shell_orbitals`` (dict key -> flat orbital list)."""
+    occupied = {orb for orb, filled in enumerate(psr.bytes2bitarray(state, 64)) if filled}
+    return {i: len(occupied & set(orbs)) for i, orbs in shell_orbitals.items()}
+
+
+def test_generation_frozen_shell_pinned():
+    """A frozen (bath-less core) shell must not drain into the other shell.
+
+    Miniature of the NiO L-edge layout: shell 1 = 2-orbital core with no baths, shell 2 =
+    4-orbital valence with 4 valence-bath orbitals. With >= 2 impurity groups the generation
+    lets each group range over its full size and filters only the cross-group total, so
+    without the pin the basis admits core-drained configurations (core 0/1) that the
+    Hamiltonian cannot reconnect to the physical sector (no term moves charge between
+    shells).
+    """
+    shells = {1: list(range(2)), 2: list(range(2, 6))}
+    kwargs = dict(
+        impurity_orbitals={1: [shells[1]], 2: [shells[2]]},
+        bath_states=({1: [[]], 2: [list(range(6, 10))]}, {1: [[]], 2: [[]]}),
+        delta_valence_occ={1: 0, 2: 0},
+        delta_conduction_occ={1: 0, 2: 0},
+        delta_impurity_occ={1: 0, 2: 0},
+        nominal_impurity_occ={1: 2, 2: 2},
+        verbose=False,
+    )
+    unpinned = Basis(**kwargs)
+    assert any(_shell_counts(state, shells)[1] < 2 for state in unpinned), (
+        "expected the unpinned multi-group generation to admit core-drained configurations; "
+        "if this no longer holds, the frozen_occupations pin may be redundant"
+    )
+    pinned = Basis(**kwargs, frozen_occupations={1})
+    assert len(pinned) > 0
+    for state in pinned:
+        counts = _shell_counts(state, shells)
+        assert counts[1] == 2, f"frozen shell drained: {counts=}"
+        assert counts[2] == 2, f"total filter should fix the active shell: {counts=}"
+
+
+def test_generation_frozen_shell_keeps_active_redistribution():
+    """Pinning a frozen shell must not pin the remaining active shells against each other."""
+    shells = {0: list(range(2)), 1: list(range(2, 4)), 2: list(range(4, 8))}
+    basis = Basis(
+        impurity_orbitals={i: [shells[i]] for i in shells},
+        bath_states=(
+            {0: [[]], 1: [list(range(8, 10))], 2: [list(range(10, 14))]},
+            {0: [[]], 1: [[]], 2: [[]]},
+        ),
+        delta_valence_occ={0: 0, 1: 0, 2: 0},
+        delta_conduction_occ={0: 0, 1: 0, 2: 0},
+        delta_impurity_occ={0: 0, 1: 0, 2: 0},
+        nominal_impurity_occ={0: 2, 1: 1, 2: 2},
+        verbose=False,
+        frozen_occupations={0},
+    )
+    seen = {(counts[1], counts[2]) for counts in (_shell_counts(state, shells) for state in basis)}
+    assert all(_shell_counts(state, shells)[0] == 2 for state in basis)
+    # active shells 1 and 2 redistribute at fixed total 3
+    assert seen == {(n1, 3 - n1) for n1 in range(0, 3)} | {(3 - n2, n2) for n2 in range(0, 4) if 0 <= 3 - n2 <= 2}
 
 
 def test_Basis_states():

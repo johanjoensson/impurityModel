@@ -50,6 +50,7 @@ def calc_energy(
     reort="full",
     return_state=False,
     weighted_restrictions=None,
+    frozen_occupations=None,
 ):
     """
     Calculate the ground-state energy of the system for a given charge sector.
@@ -84,6 +85,10 @@ def calc_energy(
         MPI communicator for distributed calculation.
     verbose : bool
         If True, prints progress details.
+    frozen_occupations : set, optional
+        Orbital-set keys whose impurity occupation is pinned at exactly ``N0[i]`` during
+        basis generation (a bath-less core shell); see
+        :func:`impurityModel.ed.basis_generation.generate_initial_basis`.
     truncation_threshold : int or float
         Global cap on the number of Slater determinants in the basis; on overflow the CIPSI
         solver keeps only the determinants with the largest eigenvector amplitudes
@@ -105,6 +110,7 @@ def calc_energy(
         delta_impurity_occ=dict.fromkeys(N0, 0),
         delta_valence_occ=dict.fromkeys(N0, 0),
         delta_conduction_occ=dict.fromkeys(N0, 0),
+        frozen_occupations=frozen_occupations,
         nominal_impurity_occ=N0,
         mixed_valence=mixed_valence,
         tau=tau,
@@ -328,6 +334,7 @@ def find_ground_state_basis(
             slaterWeightMin=slaterWeightMin,
             cipsi_solver_method=cipsi_solver_method,
             weighted_restrictions=weighted_restrictions,
+            frozen_occupations=frozen_occupations,
         )
         if basis is not None:
             occ_search_reports[key] = getattr(basis, "occupation_search_truncation", None)

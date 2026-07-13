@@ -21,6 +21,7 @@ def generate_initial_basis(
     mixed_valence: dict[int, int],
     n_bytes: int,
     verbose: bool,
+    frozen_occupations: Optional[set] = None,
 ) -> tuple[list[SlaterDeterminant], int]:
     """Construct the initial basis of Slater determinants.
 
@@ -42,6 +43,13 @@ def generate_initial_basis(
         Allowed mixed valence variations.
     verbose : bool
         Whether to print configuration details.
+    frozen_occupations : set, optional
+        Orbital-set keys whose impurity occupation is pinned at exactly
+        ``nominal_impurity_occ[i]`` (e.g. a bath-less core shell). Pinned shells are
+        excluded from the multi-group redistribution: without this, the cross-group
+        total filter alone lets a core shell drain into a lower-lying valence shell
+        (2p4 3d10 on the NiO L-edge), and since no Hamiltonian term moves charge
+        between shells, the drained sector is H-disconnected from the physical one.
 
     Returns
     -------
@@ -62,6 +70,8 @@ def generate_initial_basis(
         delta_conduction_occ = dict.fromkeys(impurity_orbitals.keys(), 0)
     if delta_impurity_occ is None:
         delta_impurity_occ = dict.fromkeys(impurity_orbitals.keys(), 0)
+    if frozen_occupations is None:
+        frozen_occupations = set()
 
     total_impurity_orbitals = {i: sum(len(orbs) for orbs in impurity_orbitals[i]) for i in impurity_orbitals}
     # Per group, materialise the allowed configurations tagged with their impurity
@@ -79,21 +89,29 @@ def generate_initial_basis(
     # per-group range by ``mixed_valence[i]`` in the grouped case instead pins each manifold and
     # collapses the seed to a single frozen configuration -- the NiO covalency / magnetic-moment
     # regression. ``mixed_valence`` still widens the *total* window via ``total_slack``.
-    redistribute = len(impurity_orbitals) > 1
+    # Frozen shells never redistribute (their window is pinned below) and contribute no
+    # slack to the total window.
+    redistribute = len([i for i in impurity_orbitals if i not in frozen_occupations]) > 1
     total_nominal = sum(int(nominal_impurity_occ[i]) for i in valence_baths)
-    total_slack = max((abs(mixed_valence[i]) + abs(delta_impurity_occ[i]) for i in valence_baths), default=0)
+    total_slack = max(
+        (abs(mixed_valence[i]) + abs(delta_impurity_occ[i]) for i in valence_baths if i not in frozen_occupations),
+        default=0,
+    )
     group_configurations = {}
     for i in valence_baths:
         configs = []
         impurity_electron_indices = [orb for imp_orbs in impurity_orbitals[i] for orb in imp_orbs]
         valence_electron_indices = [orb for val_orbs in valence_baths[i] for orb in val_orbs]
         conduction_electron_indices = [orb for con_orbs in conduction_baths[i] for orb in con_orbs]
-        occ_lo = 0 if redistribute else max(0, nominal_impurity_occ[i] - abs(mixed_valence[i]))
-        occ_hi = (
-            total_impurity_orbitals[i]
-            if redistribute
-            else min(total_impurity_orbitals[i], nominal_impurity_occ[i] + abs(mixed_valence[i]))
-        )
+        if i in frozen_occupations:
+            occ_lo = occ_hi = nominal_impurity_occ[i]
+        else:
+            occ_lo = 0 if redistribute else max(0, nominal_impurity_occ[i] - abs(mixed_valence[i]))
+            occ_hi = (
+                total_impurity_orbitals[i]
+                if redistribute
+                else min(total_impurity_orbitals[i], nominal_impurity_occ[i] + abs(mixed_valence[i]))
+            )
         for nominal_occ in range(occ_lo, occ_hi + 1):
             for delta_valence in range(delta_valence_occ[i] + 1):
                 for delta_conduction in range(delta_conduction_occ[i] + 1):

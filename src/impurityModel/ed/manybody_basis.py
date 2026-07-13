@@ -93,6 +93,7 @@ class Basis:
         delta_valence_occ=None,
         delta_conduction_occ=None,
         delta_impurity_occ=None,
+        frozen_occupations=None,
         truncation_threshold=np.inf,
         spin_flip_dj=False,
         tau=0,
@@ -124,6 +125,10 @@ class Basis:
             Allowed conduction occupation variations.
         delta_impurity_occ : dict, optional
             Allowed impurity occupation variations.
+        frozen_occupations : set, optional
+            Orbital-set keys whose impurity occupation is pinned at exactly
+            ``nominal_impurity_occ[i]`` during basis generation (e.g. a bath-less core
+            shell); see :func:`impurityModel.ed.basis_generation.generate_initial_basis`.
         truncation_threshold : float, default np.inf
             Global cap on the number of Slater determinants (``np.inf`` = uncapped). The
             container itself only *stops growing* at the cap (``expand`` rejects a batch
@@ -186,6 +191,7 @@ class Basis:
                 mixed_valence=mixed_valence if mixed_valence is not None else dict.fromkeys(nominal_impurity_occ, 0),
                 n_bytes=self.n_bytes,
                 verbose=verbose,
+                frozen_occupations=frozen_occupations,
             )
         self.impurity_orbitals = impurity_orbitals
         self.bath_states = bath_states
