@@ -184,12 +184,17 @@ def test_simulate_spectra(
         slaterWeightMin=1e-4,
         verbose=False,
     )
+    # The solvers are collective, so the mocks are called on every rank; the h5 datasets and
+    # the file close, however, are written on the root rank only (simulate_spectra gates them
+    # on ``spectra.rank == 0``). Under ``mpiexec -n N`` this unmarked test runs on every rank,
+    # so the write assertions must be guarded or they fail on the non-root ranks.
     assert mock_getSpectra_new.called
     assert mock_getSpectra_tensor.called
-    written = {c.args[0] for c in h5f.create_dataset.call_args_list}
-    assert {"PS/spectra", "XPS/spectra", "NIXS/spectra", "XAS/tensor"} <= written
-    assert not any(name.endswith("thermal") for name in written)  # no legacy dataset names
-    h5f.close.assert_called_once()
+    if spectra.rank == 0:
+        written = {c.args[0] for c in h5f.create_dataset.call_args_list}
+        assert {"PS/spectra", "XPS/spectra", "NIXS/spectra", "XAS/tensor"} <= written
+        assert not any(name.endswith("thermal") for name in written)  # no legacy dataset names
+        h5f.close.assert_called_once()
 
 
 # --- tests for hamiltonian_io.py ---
