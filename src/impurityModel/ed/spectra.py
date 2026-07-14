@@ -6,47 +6,31 @@ import time
 from math import ceil, sqrt
 
 import numpy as np
-import scipy.integrate as si
 from mpi4py import MPI
-from scipy.special import sph_harm_y, spherical_jn
-
-
-def sph_harm(m, n, theta, phi):
-    """
-    Compute the spherical harmonics.
-
-    This function wraps scipy's `sph_harm_y` to compute the spherical harmonic of
-    degree `n` and order `m` at polar angle `theta` and azimuthal angle `phi`.
-
-    Parameters
-    ----------
-    m : int
-        Order of the harmonic (often denoted `m`).
-    n : int
-        Degree of the harmonic (often denoted `l` or `n`).
-    theta : float
-        Polar (colatitudinal) coordinate in radians.
-    phi : float
-        Azimuthal (longitudinal) coordinate in radians.
-
-    Returns
-    -------
-    complex
-        The value of the spherical harmonic.
-    """
-    return sph_harm_y(n, m, phi, theta)
-
 
 # Local imports
 import impurityModel.ed.greens_function as gf
 from impurityModel.ed import config
-from impurityModel.ed.atomic_physics import gauntC
 from impurityModel.ed.basis_restrictions import build_excited_restrictions
-from impurityModel.ed.operator_algebra import arrayOp2Dict, c2i, combineOp, daggerOp
+from impurityModel.ed.operator_algebra import arrayOp2Dict, c2i, combineOp
 from impurityModel.ed.rational_sampling import barycentric_eval, greedy_next_samples, set_valued_aaa
 from impurityModel.ed.BlockLanczosArray import Reort
 from impurityModel.ed.ManyBodyUtils import ManyBodyOperator, ManyBodyState, inner
 from impurityModel.ed.ManyBodyUtils import applyOp as applyOp_test
+
+# The transition-operator builders now live in their own physics module. They are re-exported
+# here (and referenced by the bare names below) so that simulate_spectra's calls resolve and
+# existing callers/tests that reach them via ``spectra.getDipoleOperators`` etc. keep working.
+from impurityModel.ed.transition_operators import (  # noqa: E402,F401
+    getDaggeredDipoleOperators,
+    getDipoleOperator,
+    getDipoleOperators,
+    getInversePhotoEmissionOperators,
+    getNIXSOperator,
+    getNIXSOperators,
+    getPhotoEmissionOperators,
+    sph_harm,
+)
 from impurityModel.ed.symmetries import (
     ComponentReduction,
     component_symmetry_reduction,
@@ -500,251 +484,6 @@ def simulate_spectra(
 
     if rank == 0 and h5f:
         h5f.close()
-
-
-def getDipoleOperators(nBaths, ns):
-    r"""
-    Return dipole transition operators.
-
-    Transitions between states of different angular momentum,
-    defined by the keys in the nBaths dictionary.
-
-    Parameters
-    ----------
-    nBaths : dict
-        angular momentum: number of bath states.
-    ns : list
-        Each element contains a polarization vector n = [nx,ny,nz]
-
-    """
-    tOps = []
-    for n in ns:
-        tOps.append(getDipoleOperator(nBaths, n))
-    return tOps
-
-
-def getDaggeredDipoleOperators(nBaths, ns):
-    """
-    Return daggered dipole transition operators.
-
-    Parameters
-    ----------
-    nBaths : dict
-        angular momentum: number of bath states.
-    ns : list
-        Each element contains a polarization vector n = [nx,ny,nz]
-
-    """
-    tDaggerOps = []
-    for n in ns:
-        tDaggerOps.append(daggerOp(getDipoleOperator(nBaths, n)))
-    return tDaggerOps
-
-
-def getDipoleOperator(nBaths, n):
-    r"""
-    Return dipole transition operator :math:`\hat{T}`.
-
-    Transition between states of different angular momentum,
-    defined by the keys in the nBaths dictionary.
-
-    Parameters
-    ----------
-    nBaths : Ordered dict
-        int : int,
-        where the keys are angular momenta and values are number of bath states.
-    n : list
-        polarization vector n = [nx,ny,nz]
-
-    """
-    tOp = {}
-    nDict = {-1: (n[0] + 1j * n[1]) / sqrt(2), 0: n[2], 1: (-n[0] + 1j * n[1]) / sqrt(2)}
-    # Angular momentum
-    l1, l2 = nBaths.keys()
-    for m in range(-l2, l2 + 1):
-        for mp in range(-l1, l1 + 1):
-            for s in range(2):
-                if abs(m - mp) <= 1:
-                    # See Robert Eder's lecture notes:
-                    # "Multiplets in Transition Metal Ions"
-                    # in Julich school.
-                    # tij = d*n*c1(l=2,m;l=1,mp),
-                    # d - radial integral
-                    # n - polarization vector
-                    # c - Gaunt coefficient
-                    tij = gauntC(k=1, l=l2, m=m, lp=l1, mp=mp, prec=16)
-                    tij *= nDict[m - mp]
-                    if tij != 0:
-                        i = c2i(nBaths, (l2, s, m))
-                        j = c2i(nBaths, (l1, s, mp))
-                        tOp[((i, "c"), (j, "a"))] = tij
-    return tOp
-
-
-def getNIXSOperators(nBaths, qs, li, lj, Ri, Rj, r, kmin=1):
-    r"""
-    Return non-resonant inelastic x-ray scattering transition operators.
-
-    :math:`\hat{T} = \sum_{i,j,\sigma} T_{i,j}
-    \hat{c}_{i\sigma}^\dagger \hat{c}_{j\sigma}`,
-
-    where
-    :math:`T_{i,j} = \langle i | e^{i\mathbf{q}\cdot \mathbf{r}} | j \rangle`.
-    The plane-wave is expanded in spherical harmonics.
-    See PRL 99 257401 (2007) for more information.
-
-    Parameters
-    ----------
-    nBaths : Ordered dict
-        angular momentum: number of bath states.
-    qs : list
-        Each element contain a photon scattering vector q = [qx,qy,qz].
-    li : int
-        Angular momentum of the orbitals to excite into.
-    lj : int
-        Angular momentum of the orbitals to excite from.
-    Ri : list
-        Radial part of the orbital to excite into.
-        Normalized such that the integral of Ri^2(r) * r^2
-        should be equal to one.
-    Rj : list
-        Radial part of the orbital to excite from.
-        Normalized such that the integral of Ri^2(r) * r^2
-        should be equal to one.
-    r : list
-        Radial mesh points.
-    kmin : int
-        The lowest integer in the plane-wave expansion.
-        By default kmin = 1, which means that the monopole contribution
-        is not included.
-        To include also the monopole scattering, set kmin = 0.
-
-    """
-    if rank == 0:
-        if kmin == 0:
-            print("Monopole contribution included in the expansion")
-        elif kmin > 0:
-            print("Monopole contribution not included in the expansion")
-    tOps = []
-    for q in qs:
-        if rank == 0:
-            print("q =", q)
-        tOps.append(getNIXSOperator(nBaths, q, li, lj, Ri, Rj, r, kmin))
-    return tOps
-
-
-def getNIXSOperator(nBaths, q, li, lj, Ri, Rj, r, kmin=1):
-    r"""
-    Return non-resonant inelastic x-ray scattering transition
-    operator :math:`\hat{T}`.
-
-    :math:`\hat{T} = \sum_{i,j,\sigma} T_{i,j}
-    \hat{c}_{i\sigma}^\dagger \hat{c}_{j\sigma}`,
-
-    where
-    :math:`T_{i,j} = \langle i | e^{i\mathbf{q}\cdot \mathbf{r}} | j \rangle`.
-    The plane-wave is expanded in spherical harmonics.
-    See PRL 99 257401 (2007) for more information.
-
-    Parameters
-    ----------
-    nBaths : Ordered dict
-        angular momentum: number of bath states.
-    q : list
-        Photon scattering vector q = [qx,qy,qz]
-        The change in photon momentum.
-    li : int
-        Angular momentum of the orbitals to excite into.
-    lj : int
-        Angular momentum of the orbitals to excite from.
-    Ri : list
-        Radial part of the orbital to excite into.
-        Normalized such that the integral of Ri^2(r) * r^2
-        should be equal to one.
-    Rj : list
-        Radial part of the orbital to excite from.
-        Normalized such that the integral of Ri^2(r) * r^2
-        should be equal to one.
-    r : list
-        Radial mesh points.
-    kmin : int
-        The lowest integer in the plane-wave expansion.
-        By default kmin = 1, which means that the monopole contribution
-        is not included.
-        To include also the monopole scattering, set kmin = 0.
-
-    """
-    # Convert scattering list to numpy array
-    q = np.array(q)
-    qNorm = np.linalg.norm(q)
-    # Polar (colatitudinal) coordinate
-    theta = np.arccos(q[2] / qNorm)
-    # Azimuthal (longitudinal) coordinate
-    phi = np.arccos(q[0] / (qNorm * np.sin(theta)))
-    tOp = {}
-    for k in range(kmin, abs(li + lj) + 1):
-        if (li + lj + k) % 2 == 0:
-            Rintegral = si.simpson(np.conj(Ri) * spherical_jn(k, qNorm * r) * Rj * r**2, r)
-            if rank == 0:
-                print("Rintegral(k=", k, ") =", Rintegral)
-            for mi in range(-li, li + 1):
-                for mj in range(-lj, lj + 1):
-                    m = mi - mj
-                    if abs(m) <= k:
-                        tij = Rintegral
-                        tij *= 1j ** (k) * sqrt(2 * k + 1)
-                        tij *= np.conj(sph_harm(m, k, phi, theta))
-                        tij *= gauntC(k, li, mi, lj, mj, prec=16)
-                        if tij != 0:
-                            for s in range(2):
-                                i = c2i(nBaths, (li, s, mi))
-                                j = c2i(nBaths, (lj, s, mj))
-                                process = ((i, "c"), (j, "a"))
-                                if process in tOp:
-                                    tOp[((i, "c"), (j, "a"))] += tij
-                                else:
-                                    tOp[((i, "c"), (j, "a"))] = tij
-    return tOp
-
-
-def getInversePhotoEmissionOperators(nBaths, l=2):
-    r"""
-    Return inverse photo emission operators :math:`\{ c_i^\dagger \}`.
-
-    Parameters
-    ----------
-    nBaths : OrderedDict
-        Angular momentum: number of bath states.
-    l : int
-        Angular momentum.
-
-    """
-    # Transition operators
-    tOpsIPS = []
-    for s in range(2):
-        for m in range(-l, l + 1):
-            tOpsIPS.append({((c2i(nBaths, (l, s, m)), "c"),): 1})
-    return tOpsIPS
-
-
-def getPhotoEmissionOperators(nBaths, l=2):
-    r"""
-    Return photo emission operators :math:`\{ c_i \}`.
-
-    Parameters
-    ----------
-    nBaths : OrderedDict
-        Angular momentum: number of bath states.
-    l : int
-        Angular momentum.
-
-    """
-    # Transition operators
-    tOpsPS = []
-    for s in range(2):
-        for m in range(-l, l + 1):
-            tOpsPS.append({((c2i(nBaths, (l, s, m)), "a"),): 1})
-    return tOpsPS
 
 
 def _sector_restrictions_per_top(hOp, tOps, psis, basis):

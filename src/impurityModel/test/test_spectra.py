@@ -8,6 +8,7 @@ from scipy.special import spherical_jn
 
 from impurityModel.ed import spectra
 from impurityModel.ed import hamiltonian_io
+from impurityModel.ed import transition_operators
 from impurityModel.ed.ManyBodyUtils import ManyBodyOperator
 
 # --- tests for spectra.py ---
@@ -37,48 +38,53 @@ def test_getPhotoEmissionOperators():
     assert list(ops[0].values())[0] == 1
 
 
-@patch("impurityModel.ed.spectra.gauntC")
+# The transition-operator builders live in transition_operators.py; patch and call them there
+# (their internal cross-calls -- getDipoleOperators->getDipoleOperator, getNIXSOperators->
+# getNIXSOperator -- resolve inside that module).
+@patch("impurityModel.ed.transition_operators.gauntC")
 def test_getDipoleOperator(mock_gauntC):
     nBaths = OrderedDict([(2, 10), (1, 6)])
     mock_gauntC.return_value = 1.0
     n = [1, 0, 0]
-    op = spectra.getDipoleOperator(nBaths, n)
+    op = transition_operators.getDipoleOperator(nBaths, n)
     assert isinstance(op, dict)
     assert len(op) > 0
 
 
-@patch("impurityModel.ed.spectra.getDipoleOperator")
+@patch("impurityModel.ed.transition_operators.getDipoleOperator")
 def test_getDipoleOperators(mock_getDipoleOperator):
     mock_getDipoleOperator.return_value = {"mock": 1}
-    ops = spectra.getDipoleOperators(OrderedDict(), [[1, 0, 0], [0, 1, 0]])
+    ops = transition_operators.getDipoleOperators(OrderedDict(), [[1, 0, 0], [0, 1, 0]])
     assert len(ops) == 2
     assert ops[0] == {"mock": 1}
 
 
-@patch("impurityModel.ed.spectra.getDipoleOperator")
-@patch("impurityModel.ed.spectra.daggerOp")
+@patch("impurityModel.ed.transition_operators.getDipoleOperator")
+@patch("impurityModel.ed.transition_operators.daggerOp")
 def test_getDaggeredDipoleOperators(mock_daggerOp, mock_getDipoleOperator):
     mock_getDipoleOperator.return_value = {"mock": 1}
     mock_daggerOp.return_value = {"mock_dag": 1}
-    ops = spectra.getDaggeredDipoleOperators(OrderedDict(), [[1, 0, 0]])
+    ops = transition_operators.getDaggeredDipoleOperators(OrderedDict(), [[1, 0, 0]])
     assert len(ops) == 1
     assert ops[0] == {"mock_dag": 1}
 
 
-@patch("impurityModel.ed.spectra.si.simpson")
-@patch("impurityModel.ed.spectra.spherical_jn")
+@patch("impurityModel.ed.transition_operators.si.simpson")
+@patch("impurityModel.ed.transition_operators.spherical_jn")
 def test_getNIXSOperator(mock_jn, mock_simpson):
     mock_simpson.return_value = 1.0
     mock_jn.return_value = 1.0
     nBaths = OrderedDict([(2, 10)])
-    op = spectra.getNIXSOperator(nBaths, [1, 1, 1], 2, 2, np.array([1.0]), np.array([1.0]), np.array([1.0]), kmin=1)
+    op = transition_operators.getNIXSOperator(
+        nBaths, [1, 1, 1], 2, 2, np.array([1.0]), np.array([1.0]), np.array([1.0]), kmin=1
+    )
     assert isinstance(op, dict)
 
 
 def test_getNIXSOperators():
-    with patch("impurityModel.ed.spectra.getNIXSOperator") as mock_nixs:
+    with patch("impurityModel.ed.transition_operators.getNIXSOperator") as mock_nixs:
         mock_nixs.return_value = {"op": 1}
-        ops = spectra.getNIXSOperators(OrderedDict(), [[1, 1, 1]], 2, 2, [1], [1], [1], 1)
+        ops = transition_operators.getNIXSOperators(OrderedDict(), [[1, 1, 1]], 2, 2, [1], [1], [1], 1)
         assert len(ops) == 1
         assert ops[0] == {"op": 1}
 
