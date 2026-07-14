@@ -1812,7 +1812,6 @@ def block_Green(
     unit's cumulative counters keep accumulating across a whole run.
     """
 
-    len(basis)
     n = len(psi_arr)
 
     # alphas/betas stay padded (k, P, P) here so the cross-expansion elementwise
@@ -2438,7 +2437,6 @@ def block_green_impl(basis, hOp, psi_arr, delta, reort, slaterWeightMin, verbose
     psi_arr : list
         Resulting states.
     """
-    len(basis)
     n = len(psi_arr)
 
     comm = basis.comm
