@@ -438,13 +438,13 @@ def test_sector_resolvent_cache_matches_dense_solve():
 
 
 def test_sector_resolvent_cache_declines_oversized_sector(monkeypatch):
-    """Above GF_R2_DENSE_MAX the cache declines and the tensor path falls back to
+    """Above GF_SECTOR_DENSE_MAX the cache declines and the tensor path falls back to
     block-Lanczos -- and still matches the independent dense reference."""
     from impurityModel.ed import greens_function as gf
 
     op = _model()
     psis, es, dets, states, vecs = _thermal_states(op, 2)
-    monkeypatch.setenv("GF_R2_DENSE_MAX", "1")
+    monkeypatch.setenv("GF_SECTOR_DENSE_MAX", "1")
     cache = gf.SectorResolventCache()
     assert cache.try_eval(_basis([]), op, list(psis[:2]), WLOSS + 0.3j) is None
 
@@ -496,3 +496,23 @@ def test_adaptive_blowup_guard_forces_solving_spurious_pole(monkeypatch):
     # the denominator zero of the poisoned fit sits midway between the outermost initial
     # samples; the guard must have forced solves in that region
     assert len(solved_wins) > 5, "guard never forced additional solves"
+
+
+def test_sector_resolvent_cache_solve_matches_dense():
+    """try_solve returns exact (z - H)^-1 rhs on the sector, reusing the eigendecomposition."""
+    from impurityModel.ed import greens_function as gf
+
+    op = _model()
+    psis, es, dets, states, vecs = _thermal_states(op, 2)
+    H = _matrix(op, states)
+    cache = gf.SectorResolventCache()
+    basis = _basis([])
+    eye = np.eye(len(states), dtype=complex)
+
+    for z in (0.5 + 0.4j, -7.3 + 0.4j):
+        got = cache.try_solve(basis, op, list(psis), z)
+        rhs = np.array([[inner(sk, psi) for psi in psis] for sk in states])
+        ref = np.linalg.solve(z * eye - H, rhs)
+        got_dense = np.array([[inner(sk, x) for x in got] for sk in states])
+        np.testing.assert_allclose(got_dense, ref, atol=1e-10)
+    assert cache._n_builds == 1

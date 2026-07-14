@@ -1373,6 +1373,7 @@ def _rixs_map_flat(
     n_i,
     n_o,
     eval_out,
+    r1_caches=None,
 ):
     r"""Shared flat-unit RIXS driver behind :func:`getRIXSmap_new` and :func:`getRIXSmap_tensor`.
 
@@ -1386,6 +1387,13 @@ def _rixs_map_flat(
     for the intermediate resolvent (R1 sector confinement, R2 in-component block), then
     ``eval_out(green_basis, psi2_all, E_e) -> (n_i, n_o, len(wLoss))`` evaluates the
     out-transition Green's functions (per-pair diagonal or full tensor contraction).
+
+    ``r1_caches`` (dict, eigenstate index -> :class:`greens_function.SectorResolventCache`,
+    owned by the caller so it survives repeated invocations, e.g. adaptive-sampling rounds)
+    solves the intermediate resolvent spectrally on cacheable sectors -- exact and immune to
+    the near-pole BiCGSTAB stagnation that silently poisoned solved columns (measured: a
+    cold-started solve at the NiO L3 window edge returned relative residual 7.2 while
+    targeting 1e-6). Sectors the cache declines fall through to ``block_bicgstab``.
 
     Returns ``gs[i, o, wIn, wLoss] / Z`` (thermally averaged) on global rank 0 and in the
     serial path; ``None`` on other ranks.
@@ -1467,8 +1475,21 @@ def _rixs_map_flat(
         )
         psi1_all = list(seeds)
         psi2_all = [ManyBodyState() for _ in in_ops]
+        r1_cache = r1_caches.setdefault(e, gf.SectorResolventCache()) if r1_caches is not None else None
         out = np.zeros((len(w_chunk), n_i, n_o, len(wLoss)), dtype=complex)
         for k, win in enumerate(wIns[w_chunk]):
+            if r1_cache is not None:
+                psi2_spectral = r1_cache.try_solve(
+                    tmp_basis,
+                    hOp,
+                    psi1_all,
+                    win + delta1 * 1j + E_e,
+                    slaterWeightMin=slaterWeightMin,
+                    verbose=verbose,
+                )
+                if psi2_spectral is not None:
+                    out[k] = eval_out(green_basis, psi2_spectral, E_e) * thermal_weight
+                    continue
             for psi2 in psi2_all:
                 psi2.prune(slaterWeightMin)
             tmp_basis.clear()
@@ -1764,10 +1785,12 @@ def getRIXSmap_tensor(
     n_in = len(in_component_ops)
     n_out = len(out_component_ops)
 
-    # The R2 sector is the same for every wIn point, eigenstate and adaptive round (the
-    # shift enters only at evaluation time), so its eigendecomposition is computed once
-    # and every point's resolvent matrix becomes two dense contractions. Held in this
-    # closure so it outlives the per-round _rixs_map_flat calls of the adaptive sampler.
+    # The R1 (per eigenstate) and R2 sectors are the same for every wIn point and
+    # adaptive round (the shift enters only at evaluation time), so each sector's
+    # eigendecomposition is computed once: every point's intermediate solve and
+    # resolvent matrix become dense contractions. Held in this closure so they outlive
+    # the per-round _rixs_map_flat calls of the adaptive sampler.
+    r1_caches = {}
     r2_cache = gf.SectorResolventCache()
 
     def eval_out(green_basis, psi2_all, E_e):
@@ -1823,6 +1846,7 @@ def getRIXSmap_tensor(
             n_i=n_pin,
             n_o=n_pout,
             eval_out=eval_out,
+            r1_caches=r1_caches,
         )
 
     tol = adaptive_wIn_tol if adaptive_wIn_tol is not None else _rixs_adaptive_tol()

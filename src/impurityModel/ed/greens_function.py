@@ -1354,13 +1354,13 @@ def calc_continuants(diagonal, offdiagonal):
 
 
 def _sector_dense_max():
-    """Largest sector size the spectral cache may densify (``GF_R2_DENSE_MAX``).
+    """Largest sector size the spectral cache may densify (``GF_SECTOR_DENSE_MAX``).
 
     The eigendecomposition holds ~3 dense ``(N, N)`` complex arrays (H, the eigenvector
     matrix and LAPACK workspace); the default caps that at a quarter of the available
     per-rank memory.
     """
-    env = os.environ.get("GF_R2_DENSE_MAX")
+    env = os.environ.get("GF_SECTOR_DENSE_MAX")
     if env is not None:
         return max(0, int(env))
     return int(np.sqrt(0.25 * available_bytes_per_rank() / (3 * 16)))
@@ -1400,6 +1400,28 @@ class SectorResolventCache:
             state in self._index for psi in seeds for state in psi.keys()
         )
 
+    def _ensure(self, basis, hOp, seeds, slaterWeightMin, verbose):
+        """Cover ``seeds``' sector, eigendecomposing it on first sight. False = declined."""
+        if basis.comm is not None and basis.comm.size > 1:
+            return False
+        if self._covers(seeds):
+            return True
+        self._expand_to_closure(basis, hOp, seeds, slaterWeightMin)
+        if len(basis) > _sector_dense_max():
+            return False
+        h = build_sparse_matrix(basis, hOp).toarray()
+        h = 0.5 * (h + h.conj().T)
+        self._evals, self._evecs = np.linalg.eigh(h)
+        self._index = {state: i for i, state in enumerate(basis.local_basis)}
+        self._n_builds += 1
+        if verbose:
+            print(
+                f"Sector resolvent cache: eigendecomposed a {len(basis)}-determinant sector "
+                f"(build {self._n_builds}).",
+                flush=True,
+            )
+        return True
+
     def _expand_to_closure(self, basis, hOp, seeds, slaterWeightMin):
         """Grow ``basis`` to the H-connectivity closure of the seed support.
 
@@ -1426,33 +1448,42 @@ class SectorResolventCache:
         eigenbasis is shift-independent, so one cache serves every eigenstate and
         frequency offset.
         """
-        if basis.comm is not None and basis.comm.size > 1:
+        if not self._ensure(basis, hOp, seeds, slaterWeightMin, verbose):
             return None
-        if not self._covers(seeds):
-            self._expand_to_closure(basis, hOp, seeds, slaterWeightMin)
-            if len(basis) > _sector_dense_max():
-                return None
-            h = build_sparse_matrix(basis, hOp).toarray()
-            h = 0.5 * (h + h.conj().T)
-            self._evals, self._evecs = np.linalg.eigh(h)
-            self._index = {state: i for i, state in enumerate(basis.local_basis)}
-            self._n_builds += 1
-            if verbose:
-                print(
-                    f"Sector resolvent cache: eigendecomposed a {len(basis)}-determinant sector "
-                    f"(build {self._n_builds}).",
-                    flush=True,
-                )
-        s_dense = np.zeros((len(self._index), len(seeds)), dtype=complex)
-        for k, psi in enumerate(seeds):
-            for state, amp in psi.items():
-                s_dense[self._index[state], k] = amp
-        x = self._evecs.conj().T @ s_dense  # (N, n_seeds)
+        x = self._evecs.conj().T @ self._project(seeds)  # (N, n_seeds)
         self._n_solves += 1
         # G[w] = X^dagger diag(1 / (z_w - lambda)) X, batched over the z mesh.
         zs = np.asarray(zs)
         inv = 1.0 / (zs[:, None] - self._evals[None, :])  # (n_w, N)
         return np.einsum("nk,wn,nl->wkl", x.conj(), inv, x, optimize=True)
+
+    def _project(self, seeds):
+        s_dense = np.zeros((len(self._index), len(seeds)), dtype=complex)
+        for k, psi in enumerate(seeds):
+            for state, amp in psi.items():
+                s_dense[self._index[state], k] = amp
+        return s_dense
+
+    def try_solve(self, basis, hOp, rhs, z, slaterWeightMin=0, verbose=False):
+        r"""Exact sector solutions ``x_k = (z - H)^{-1} rhs_k``, or ``None`` if not applicable.
+
+        The spectral counterpart of an iterative shifted solve (e.g. the RIXS
+        intermediate resolvent's ``block_bicgstab``): on a cached sector it is direct
+        -- no iteration, no near-pole stagnation -- and exact on the sector.
+        Amplitudes with ``|amp|^2 <= slaterWeightMin`` are pruned from the returned
+        states, mirroring the iterative solvers' support pruning.
+        """
+        if not self._ensure(basis, hOp, rhs, slaterWeightMin, verbose):
+            return None
+        x = self._evecs.conj().T @ self._project(rhs)
+        x = self._evecs @ (x / (z - self._evals)[:, None])  # (N, n_rhs)
+        self._n_solves += 1
+        states = list(self._index)
+        out = []
+        for k in range(x.shape[1]):
+            keep = np.abs(x[:, k]) ** 2 > slaterWeightMin
+            out.append(ManyBodyState({states[i]: x[i, k] for i in np.nonzero(keep)[0]}))
+        return out
 
 
 def block_Green(
