@@ -628,10 +628,11 @@ def calc_selfenergy(
         Whether to use sparse representation for Green's function.
     gf_method : str
         Green's-function kernel: ``"lanczos"`` (default, one block-Lanczos recurrence per
-        work unit serving the whole mesh) or ``"bicgstab"`` (one linear solve per frequency
+        work unit serving the whole mesh), ``"bicgstab"`` (one linear solve per frequency
         point on a rebuilt-and-discarded basis -- the memory-first path; ``sparse_green``
-        and ``reort`` do not apply to it). See
-        :func:`impurityModel.ed.greens_function.block_Green_bicgstab`.
+        and ``reort`` do not apply to it), or ``"sliced"`` (Chebyshev spectral-window
+        decomposition with per-slice bases; real-axis meshes only). See
+        :func:`impurityModel.ed.greens_function.get_Greens_function`.
 
     Returns
     -------
@@ -1184,8 +1185,9 @@ def get_selfenergy(
     verbose : bool
         Verbosity flag.
     gf_method : str
-        Green's-function kernel, ``"lanczos"`` (default) or ``"bicgstab"`` (per-frequency
-        linear solves, memory-first). See :func:`calc_selfenergy`.
+        Green's-function kernel, ``"lanczos"`` (default), ``"bicgstab"`` (per-frequency
+        linear solves, memory-first), or ``"sliced"`` (Chebyshev spectral-window
+        decomposition, real-axis meshes only). See :func:`calc_selfenergy`.
     """
     # MPI variables
     comm = MPI.COMM_WORLD
