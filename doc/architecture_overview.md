@@ -68,8 +68,9 @@ Layer 2: atomic_physics, eigensolvers, symmetries, block_structure
 Layer 3: observables, spin_pairs
 Layer 4: manybody_basis (+ basis_generation, basis_restrictions,
          basis_transcription, basis_split)
-Layer 5: greens_function, spectra, cg, cipsi_solver, groundstate, hartree_fock,
-         hamiltonian_io, gf_diagnostics, gs_statistics
+Layer 5: gf_primitives, gf_convergence, gf_shift_recycling, greens_function, spectra,
+         cg, cipsi_solver, groundstate, hartree_fock, hamiltonian_io, gf_diagnostics,
+         gs_statistics
 Layer 6: CLIs: get_spectra, selfenergy
 ```
 
@@ -100,7 +101,10 @@ Layer 6: CLIs: get_spectra, selfenergy
 - **`groundstate.py`** — the ground-state driver `calc_gs`: builds the variational basis (CIPSI + Hartree-Fock occupation seeding), solves for the low-energy states, and reports observables.
 - **`cipsi_solver.py`** — selected-CI (CIPSI) iterative basis expansion.
 - **`hartree_fock.py`** — mean-field occupation seeding for the basis generation.
-- **`greens_function.py`** — interacting Green's functions via block Lanczos continued fractions; `run_units_distributed` is the one distribution primitive shared by every GF driver (self-energy and spectra).
+- **`gf_primitives.py`** — dependency-free GF building blocks: QR/state-vector plumbing (`build_qr`, `_distributed_seed_qr`), the block-tridiagonal continued fraction (`calc_G`, `calc_continuants`, `_block_cf_inverse`, `calc_thermally_averaged_G`, `PairwiseGF`/`calc_G_pairwise`), and the `truncation_threshold`-capping `_CappedBasisProxy`. Imports nothing from the other two below or from `greens_function`.
+- **`gf_convergence.py`** — the runtime block-Lanczos convergence monitor (`_make_gf_convergence_monitor`) and its post-hoc counterpart (`_lanczos_convergence_summary`), plus the shared frequency-mesh helpers. Depends only on `gf_primitives`.
+- **`gf_shift_recycling.py`** — `SectorResolventCache` (dense spectral cache over a closed H-sector) and `KrylovShiftedResolvent` (one distributed block-Lanczos recurrence serving every shift of a fixed right-hand side): the two tiers ahead of the per-point BiCGSTAB/GMRES fallback in the RIXS R1 solver chain. Depends only on `gf_primitives`.
+- **`greens_function.py`** — interacting Green's functions via block Lanczos continued fractions; `run_units_distributed` is the one distribution primitive shared by every GF driver (self-energy and spectra). Re-exports every symbol of the three modules above that other modules/tests reach via `greens_function.X` / `gf.X`, so it stayed a drop-in for existing callers when it was split into them.
 - **`spectra.py`** — XAS/XPS/PS/NIXS/RIXS spectra drivers on top of `greens_function`.
 - **`cg.py`** — block BiCGSTAB solver (used by the RIXS tensor path).
 - **`gf_diagnostics.py`** — convergence/consistency diagnostics for computed Green's functions.
