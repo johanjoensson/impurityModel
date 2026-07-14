@@ -1798,12 +1798,18 @@ def block_Green(
     slaterWeightMin=0,
     verbose=True,
     eval_meshes=None,
+    info=None,
 ):
     """
     calculate  one block of the Greens function. This function builds the many body basis iteratively. Reducing memory requrements.
 
     ``eval_meshes`` is the caller's evaluation mesh per axis (see :func:`_gf_eval_meshes`); ``None``
     leaves the convergence monitor on its spectral-edge fallback.
+
+    ``info`` (optional dict) is filled with the last :func:`block_green_impl` call's
+    ``{"converged", "d_g", "n_blocks"}`` (diagnostics; e.g. the RIXS R2 solve summary
+    aggregates it across every call). A caller-supplied dict is mutated in place so a
+    unit's cumulative counters keep accumulating across a whole run.
     """
 
     len(basis)
@@ -1813,7 +1819,7 @@ def block_Green(
     # diff below has matching shapes; they are trimmed to true block widths before
     # any continued-fraction evaluation and at the final return.
     alphas, betas, r, last_q, widths = block_green_impl(
-        basis, hOp, basis.redistribute_psis(psi_arr), delta, reort, slaterWeightMin, verbose, eval_meshes
+        basis, hOp, basis.redistribute_psis(psi_arr), delta, reort, slaterWeightMin, verbose, eval_meshes, info
     )
     done = False
     while not done:
@@ -1842,7 +1848,7 @@ def block_Green(
         betas_prev = betas
         widths_prev = widths
         alphas, betas, r, last_q, widths = block_green_impl(
-            basis, hOp, basis.redistribute_psis(psi_arr), delta, reort, slaterWeightMin, verbose, eval_meshes
+            basis, hOp, basis.redistribute_psis(psi_arr), delta, reort, slaterWeightMin, verbose, eval_meshes, info
         )
 
         n_test = min(alphas.shape[0], alphas_prev.shape[0])
@@ -2296,14 +2302,17 @@ def _make_gf_convergence_monitor(delta, slaterWeightMin, eval_meshes=None):
     r"""Relative-change convergence monitor for the block-Lanczos Green's function.
 
     Shared by both GF kernels (``block_green_impl``, ``block_Green_sparse``). Returns
-    ``(converged_fn, converged_flag, delta_min)`` where ``delta_min`` is the convergence
-    tolerance actually used (the single source of truth for the warning messages, so they
-    never drift from this declaration): ``converged_fn(alphas, betas, verbose, block_widths)``
-    estimates ``G`` and reports convergence only after :data:`_GF_CONSEC_CONVERGED` *consecutive*
-    steps whose relative change (:func:`_greens_function_change`, with the cross-step ``gs_cache``)
-    stays below ``max(slaterWeightMin**2, 1e-6)``.  Requiring the tolerance to hold for several
-    steps in a row guards against a single fluke step.  ``converged_flag[0]`` records whether
-    convergence was actually declared, for the non-convergence warning.
+    ``(converged_fn, converged_flag, delta_min, last_dg)`` where ``delta_min`` is the
+    convergence tolerance actually used (the single source of truth for the warning
+    messages, so they never drift from this declaration): ``converged_fn(alphas, betas,
+    verbose, block_widths)`` estimates ``G`` and reports convergence only after
+    :data:`_GF_CONSEC_CONVERGED` *consecutive* steps whose relative change
+    (:func:`_greens_function_change`, with the cross-step ``gs_cache``) stays below
+    ``max(slaterWeightMin**2, 1e-6)``.  Requiring the tolerance to hold for several
+    steps in a row guards against a single fluke step.  ``converged_flag[0]`` records
+    whether convergence was actually declared, for the non-convergence warning.
+    ``last_dg[0]`` is the most recently measured relative change (``None`` if the monitor
+    never got to compute one), for callers that report it (e.g. the RIXS R2 summary).
 
     ``eval_meshes`` (from :func:`_gf_eval_meshes`) is the list of frequency arrays the caller will
     actually evaluate ``G`` on -- one per requested axis, already shifted into the ``alphas`` frame.
@@ -2391,10 +2400,10 @@ def _make_gf_convergence_monitor(delta, slaterWeightMin, eval_meshes=None):
         converged_flag[0] = converged_flag[0] or is_conv
         return is_conv
 
-    return converged, converged_flag, delta_min
+    return converged, converged_flag, delta_min, last_dg
 
 
-def block_green_impl(basis, hOp, psi_arr, delta, reort, slaterWeightMin, verbose, eval_meshes=None):
+def block_green_impl(basis, hOp, psi_arr, delta, reort, slaterWeightMin, verbose, eval_meshes=None, info=None):
     """
     Internal block Green's function implementation.
 
@@ -2414,6 +2423,9 @@ def block_green_impl(basis, hOp, psi_arr, delta, reort, slaterWeightMin, verbose
         Slater determinant cutoff weight.
     verbose : bool
         Whether to print verbose output.
+    info : dict, optional
+        Filled with ``{"converged", "d_g", "n_blocks"}`` from the convergence monitor
+        (diagnostics/tests; e.g. the RIXS R2 solve summary).
 
     Returns
     -------
@@ -2445,7 +2457,7 @@ def block_green_impl(basis, hOp, psi_arr, delta, reort, slaterWeightMin, verbose
     if psi_dense_local.shape[1] == 0:
         return np.zeros((0, n, n), dtype=complex), np.zeros((0, n, n), dtype=complex), r, psi_arr, []
 
-    converged, converged_flag, delta_min = _make_gf_convergence_monitor(delta, slaterWeightMin, eval_meshes)
+    converged, converged_flag, delta_min, last_dg = _make_gf_convergence_monitor(delta, slaterWeightMin, eval_meshes)
 
     # The continued fraction only consumes alphas/betas plus the final residual block
     # (q_last below), so with reort NONE skip the full Krylov-basis retention.
@@ -2531,6 +2543,10 @@ def block_green_impl(basis, hOp, psi_arr, delta, reort, slaterWeightMin, verbose
             f"subspace built so far.",
             flush=True,
         )
+    if info is not None:
+        info["converged"] = converged_flag[0]
+        info["d_g"] = last_dg[0]
+        info["n_blocks"] = len(alphas)
     # Keep alphas/betas padded (k, P, P) for the caller's elementwise cross-expansion diff;
     # only drop a corrupted trailing tail (whole blocks + widths) so it never reaches the
     # continued fraction. Norms of padded blocks equal those of the true blocks (zeros add
@@ -2789,7 +2805,7 @@ def block_Green_sparse(
     if len(psi_arr) == 0:
         return np.empty((0, n, n), dtype=complex), np.empty((0, n, n), dtype=complex), r
 
-    converged, converged_flag, delta_min = _make_gf_convergence_monitor(delta, slaterWeightMin, eval_meshes)
+    converged, converged_flag, delta_min, _last_dg = _make_gf_convergence_monitor(delta, slaterWeightMin, eval_meshes)
 
     # The block-Lanczos matvec (h_op.apply_multi) discovers new Slater determinants as the
     # recurrence proceeds, so the reachable Krylov dimension is *not* bounded by the initial

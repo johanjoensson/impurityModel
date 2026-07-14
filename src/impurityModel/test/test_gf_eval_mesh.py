@@ -147,8 +147,8 @@ def test_a_matsubara_only_run_stops_far_earlier_and_stays_exact():
         )
         return a, b
 
-    matsubara_aware, _f1, _d1 = _make_gf_convergence_monitor(_DELTA, 0.0, eval_meshes=eval_meshes)
-    band_wide, _f2, _d2 = _make_gf_convergence_monitor(_DELTA, 0.0)
+    matsubara_aware, _f1, _d1, _dg1 = _make_gf_convergence_monitor(_DELTA, 0.0, eval_meshes=eval_meshes)
+    band_wide, _f2, _d2, _dg2 = _make_gf_convergence_monitor(_DELTA, 0.0)
 
     a_m, b_m = run(matsubara_aware)
     a_w, _b_w = run(band_wide)

@@ -1358,6 +1358,55 @@ def _rixs_map_adaptive(map_fn, wIns, comm, tol, verbose):
     return gs
 
 
+def _new_rixs_solver_stats():
+    """Fresh, zeroed RIXS solver-tier counters -- see :func:`_report_rixs_solver_stats`."""
+    return {
+        "r1_spectral": 0,
+        "r1_recycled": 0,
+        "r1_bicgstab": 0,
+        "r1_gmres": 0,
+        "r1_unconverged": 0,
+        "r2_cache": 0,
+        "r2_lanczos": 0,
+        "r2_unconverged": 0,
+        "r2_worst_d_g": 0.0,
+    }
+
+
+def _report_rixs_solver_stats(stats, comm, verbose):
+    """Reduce rank-local RIXS solver-tier counters to global rank 0 and print once.
+
+    Counts every R1 intermediate-resolvent solve by the tier that served it (dense
+    spectral cache / shift-recycled Krylov / per-point BiCGSTAB, further split into how
+    many of those needed a GMRES escalation or still finished unconverged) and every R2
+    final-resolvent evaluation by cache-hit vs. per-seed block-Lanczos fallback, plus
+    that fallback's worst final relative change and unconverged count -- replacing what
+    used to be one ``block Green's function did not reach the convergence tolerance``
+    warning line per unconverged R2 point with a single end-of-run summary.
+
+    Collective on ``comm``: every rank's counters (however many units it processed) are
+    summed (max for the worst ``d_g``), so this must run unconditionally on every rank --
+    only the print itself is gated on ``verbose``.
+    """
+    counts = {k: v for k, v in stats.items() if k != "r2_worst_d_g"}
+    worst_d_g = stats["r2_worst_d_g"]
+    if comm is not None:
+        counts = {k: comm.reduce(v, op=MPI.SUM, root=0) for k, v in counts.items()}
+        worst_d_g = comm.reduce(worst_d_g, op=MPI.MAX, root=0)
+    if verbose and (comm is None or comm.rank == 0):
+        r1_total = counts["r1_spectral"] + counts["r1_recycled"] + counts["r1_bicgstab"]
+        r2_total = counts["r2_cache"] + counts["r2_lanczos"]
+        print(
+            f"RIXS solver summary: R1 {r1_total} solves "
+            f"({counts['r1_spectral']} spectral / {counts['r1_recycled']} recycled / "
+            f"{counts['r1_bicgstab']} bicgstab / {counts['r1_gmres']} gmres / "
+            f"{counts['r1_unconverged']} unconverged); "
+            f"R2 {r2_total} evals ({counts['r2_cache']} cache / {counts['r2_lanczos']} lanczos, "
+            f"{counts['r2_unconverged']} unconverged, worst d_g {worst_d_g:.2e})",
+            flush=True,
+        )
+
+
 class _R1SolverChain:
     r"""Per-chunk intermediate (R1) resolvent solver: dense sector cache -> shift-recycled
     Krylov -> BiCGSTAB restarts -> GMRES escalation. All tiers target ``_RIXS_R1_ATOL``.
@@ -1372,11 +1421,16 @@ class _R1SolverChain:
     touch ``psi2_all``; the fallback tier is the only one that reads and updates it,
     exactly as the original inline kernel did -- so a warm-start chain across points
     only exists once the fallback has run at least once for this chunk.
+
+    ``counters``, when given, is one of the caller's (run-lifetime, rank-local)
+    :func:`_new_rixs_solver_stats` dicts: each tier increments its own ``r1_*`` count as
+    it serves a point, so :func:`_report_rixs_solver_stats` can summarize the whole run.
     """
 
-    def __init__(self, r1_cache, eigenstate):
+    def __init__(self, r1_cache, eigenstate, counters=None):
         self.r1_cache = r1_cache
         self.eigenstate = eigenstate  # for the unconverged-fallback warning message only
+        self.counters = counters
         self._recycled = None  # in-chunk wIn index -> shift-recycled solution
         self._recycle_declined = r1_cache is None
 
@@ -1394,6 +1448,8 @@ class _R1SolverChain:
                 tmp_basis, hOp, psi1_all, z, slaterWeightMin=slaterWeightMin, verbose=verbose
             )
             if psi2_spectral is not None:
+                if self.counters is not None:
+                    self.counters["r1_spectral"] += 1
                 return psi2_spectral
             if self._recycled is None and not self._recycle_declined:
                 # The dense sector cache declined (distributed basis or oversized
@@ -1414,6 +1470,8 @@ class _R1SolverChain:
                 else:
                     self._recycled = dict(zip(range(k, k + len(remaining_wins)), sols))
             if self._recycled is not None:
+                if self.counters is not None:
+                    self.counters["r1_recycled"] += 1
                 return self._recycled.pop(k)
 
         for psi2 in psi2_all:
@@ -1442,6 +1500,12 @@ class _R1SolverChain:
         psi2_all[:] = gf.solve_shifted_block(
             A_op, psi2_all, psi1_all, tmp_basis, slaterWeightMin, _RIXS_R1_ATOL, rtol=1e-7, info=solve_info
         )
+        if self.counters is not None:
+            self.counters["r1_bicgstab"] += 1
+            if solve_info["gmres_used"]:
+                self.counters["r1_gmres"] += 1
+            if not solve_info["converged"]:
+                self.counters["r1_unconverged"] += 1
         if not solve_info["converged"] and (tmp_basis.comm is None or tmp_basis.comm.rank == 0):
             print(
                 f"warning: RIXS intermediate resolvent at wIn = {win:.6g} (eigenstate {self.eigenstate}) "
@@ -1469,6 +1533,7 @@ def _rixs_map_flat(
     n_o,
     eval_out,
     r1_caches=None,
+    solver_stats=None,
 ):
     r"""Shared flat-unit RIXS driver behind :func:`getRIXSmap_new` and :func:`getRIXSmap_tensor`.
 
@@ -1494,6 +1559,11 @@ def _rixs_map_flat(
     Should that decline too (memory bound), the per-point ``block_bicgstab`` fallback runs,
     restarted while progressing and escalated to ``block_gmres`` when stagnated -- every tier
     targets the same ``_RIXS_R1_ATOL``.
+
+    ``solver_stats`` (one of the caller's :func:`_new_rixs_solver_stats` dicts, likewise
+    owned across repeated invocations) accumulates rank-local per-tier solve counts as the
+    kernel runs; the caller reports it via :func:`_report_rixs_solver_stats` once the whole
+    map (every adaptive round, if any) is done.
 
     Returns ``gs[i, o, wIn, wLoss] / Z`` (thermally averaged) on global rank 0 and in the
     serial path; ``None`` on other ranks.
@@ -1576,7 +1646,7 @@ def _rixs_map_flat(
         psi1_all = list(seeds)
         psi2_all = [ManyBodyState() for _ in in_ops]
         r1_cache = r1_caches.setdefault(e, gf.SectorResolventCache()) if r1_caches is not None else None
-        chain = _R1SolverChain(r1_cache, eigenstate=e)
+        chain = _R1SolverChain(r1_cache, eigenstate=e, counters=solver_stats)
         out = np.zeros((len(w_chunk), n_i, n_o, len(wLoss)), dtype=complex)
         wins = wIns[w_chunk]
         for k, win in enumerate(wins):
@@ -1707,6 +1777,7 @@ def getRIXSmap_new(
     """
     n_in = len(tOpsIn)
     n_out = len(tOpsOut)
+    solver_stats = _new_rixs_solver_stats()
 
     def eval_out(green_basis, psi2_all, E_e):
         out = np.zeros((n_in, n_out, len(wLoss)), dtype=complex)
@@ -1717,6 +1788,7 @@ def getRIXSmap_new(
             for psi3 in psi3_all:
                 green_basis.add_states(psi3.keys())
             psi3_all = green_basis.redistribute_psis(psi3_all)
+            r2_info = {}
             alphas, betas, r = gf.block_Green(
                 hOp,
                 psi3_all,
@@ -1725,13 +1797,19 @@ def getRIXSmap_new(
                 Reort.NONE,
                 slaterWeightMin=slaterWeightMin,
                 verbose=verbose,
+                info=r2_info,
             )
+            solver_stats["r2_lanczos"] += 1
+            if not r2_info.get("converged", True):
+                solver_stats["r2_unconverged"] += 1
+            if r2_info.get("d_g") is not None:
+                solver_stats["r2_worst_d_g"] = max(solver_stats["r2_worst_d_g"], r2_info["d_g"])
             g_tensor = gf.calc_G(alphas, betas, r, wLoss, E_e, delta2)
             for j in range(n_out):
                 out[i, j, :] = g_tensor[:, j, j]
         return out
 
-    return _rixs_map_flat(
+    gs = _rixs_map_flat(
         hOp,
         tOpsIn,
         psis,
@@ -1747,7 +1825,10 @@ def getRIXSmap_new(
         n_i=n_in,
         n_o=n_out,
         eval_out=eval_out,
+        solver_stats=solver_stats,
     )
+    _report_rixs_solver_stats(solver_stats, basis.comm, verbose)
+    return gs
 
 
 def getRIXSmap_tensor(
@@ -1838,6 +1919,7 @@ def getRIXSmap_tensor(
     # the per-round _rixs_map_flat calls of the adaptive sampler.
     r1_caches = {}
     r2_cache = gf.SectorResolventCache()
+    solver_stats = _new_rixs_solver_stats()
 
     def eval_out(green_basis, psi2_all, E_e):
         # Flattened out-seed block s_{a,b} = Tout_b psi2_a; index kf = a * n_out + b. One
@@ -1850,6 +1932,7 @@ def getRIXSmap_tensor(
             for s in seeds:
                 green_basis.add_states(s.keys())
             seeds = green_basis.redistribute_psis(seeds)
+            r2_info = {}
             alphas, betas, r = gf.block_Green(
                 hOp,
                 seeds,
@@ -1858,8 +1941,16 @@ def getRIXSmap_tensor(
                 Reort.NONE,
                 slaterWeightMin=slaterWeightMin,
                 verbose=verbose,
+                info=r2_info,
             )
+            solver_stats["r2_lanczos"] += 1
+            if not r2_info.get("converged", True):
+                solver_stats["r2_unconverged"] += 1
+            if r2_info.get("d_g") is not None:
+                solver_stats["r2_worst_d_g"] = max(solver_stats["r2_worst_d_g"], r2_info["d_g"])
             g_flat = gf.calc_G(alphas, betas, r, wLoss, E_e, delta2)
+        else:
+            solver_stats["r2_cache"] += 1
         # C[w, alpha, beta, alpha', beta'] = <s_{alpha,beta}| R2 |s_{alpha',beta'}>.
         C5 = g_flat.reshape(len(wLoss), n_in, n_out, n_in, n_out)
         # Contract with polarizations. Out operators are daggered (getDaggeredDipole..),
@@ -1893,9 +1984,13 @@ def getRIXSmap_tensor(
             n_o=n_pout,
             eval_out=eval_out,
             r1_caches=r1_caches,
+            solver_stats=solver_stats,
         )
 
     tol = adaptive_wIn_tol if adaptive_wIn_tol is not None else _rixs_adaptive_tol()
     if tol is not None and len(wIns) >= _RIXS_ADAPTIVE_MIN_GRID:
-        return _rixs_map_adaptive(map_fn, wIns, basis.comm, tol, verbose)
-    return map_fn(np.asarray(wIns))
+        gs = _rixs_map_adaptive(map_fn, wIns, basis.comm, tol, verbose)
+    else:
+        gs = map_fn(np.asarray(wIns))
+    _report_rixs_solver_stats(solver_stats, basis.comm, verbose)
+    return gs

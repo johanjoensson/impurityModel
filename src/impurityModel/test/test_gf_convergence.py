@@ -43,7 +43,7 @@ def _gf_monitor():
     only to record the iteration at which it first declares convergence. Using the real monitor
     (rather than a hand-copy) keeps this test honest: it exercises the actual adaptive-freeze +
     consecutive-step logic and breaks if that logic regresses."""
-    converged_fn, _flag, _tol = _make_gf_convergence_monitor(DELTA, slaterWeightMin=0.0)
+    converged_fn, _flag, _tol, _dg = _make_gf_convergence_monitor(DELTA, slaterWeightMin=0.0)
     stop_it = [None]
 
     def converged(alphas, betas, verbose=False, block_widths=None, **kw):
