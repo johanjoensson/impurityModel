@@ -160,7 +160,10 @@ def simulate_spectra(
         Distance above the real axis (in eV).
         Gives smearing to spectra.
     epsilons : list
-        Each element is a XAS polarization vector.
+        Each element is a XAS polarization vector. Only consumed when ``XAS_projectors`` is
+        given (projected operators are not linear in the polarization); otherwise the XAS
+        spectral tensor is stored and polarization contraction is a post-processing step (see
+        ``impurityModel.ed.polarization``).
     wLoss : ndarray
         Real-energy mesh (in eV).
         Incoming minus outgoing photon energy.
@@ -185,14 +188,21 @@ def simulate_spectra(
         Distance above the real axis (in eV).
         Gives smearing to RIXS spectra.
     epsilonsRIXSin : list
-        Polarization vectors of in-going photon.
+        Polarization vectors of in-going photon. Only consumed when ``RIXS_projectors`` is
+        given; otherwise the RIXS Kramers-Heisenberg tensor is stored and polarization
+        contraction is a post-processing step (see ``impurityModel.ed.polarization``).
     epsilonsRIXSout : list
-        Polarization vectors of out-going photon.
+        Polarization vectors of out-going photon. Same caveat as ``epsilonsRIXSin``.
     restrictions : dict
         Restriction the occupation of generated
         product states.
     h5f : h5py file-handle
-        Will be used to write data to disk.
+        Will be used to write data to disk. This is the single output of a spectra run --
+        each spectrum/tensor is written under its own group (``PS/spectra``, ``XPS/spectra``,
+        ``NIXS/spectra``, ``XAS/tensor`` or ``XAS/projected``, ``RIXS/tensor`` or
+        ``RIXS/projected``) as complex arrays; no separate quick-look ``.dat``/``.bin`` files
+        are written. See ``impurityModel.ed.polarization`` for turning a tensor into an
+        intensity for one or more polarizations.
     nBaths : OrderedDict
         Angular momentum : number of bath states.
     RIXS_projectors : dict
@@ -273,24 +283,10 @@ def simulate_spectra(
     gsPS *= -1
     gs = gsPS + gsIPS
     if rank == 0:
-        # print("#eigenstates = {:d}".format(np.shape(gs)[0]))
         print("#spin orbitals = {:d}".format(np.shape(gs)[1]))
         print("#mesh points = {:d}".format(np.shape(gs)[0]))
-    # Thermal average
-    # a = thermal_average(es[: np.shape(gs)[0]], -gs.imag, T=T)
     if rank == 0 and h5f:
-        # h5f.create_dataset("PS", data=-gs.imag)
-        h5f.create_dataset("PSthermal", data=-gs.imag)
-    # Sum over transition operators
-    aSum = np.sum(-gs.imag, axis=1)
-    # Save spectra to disk
-    if rank == 0:
-        tmp = [w, aSum]
-        # Each transition operator seperatly
-        for i in range(np.shape(gs)[1]):
-            tmp.append(-gs.imag[:, i])
-        print("Save spectra to disk...\n")
-        np.savetxt("PS.dat", np.array(tmp).T, fmt="%8.4f", header="E  sum  T1  T2  T3 ...")
+        h5f.create_dataset("PS/spectra", data=gs)
     if rank == 0:
         print("time(PS) = {:.2f} seconds \n".format(time.perf_counter() - t0))
         t0 = time.perf_counter()
@@ -318,24 +314,10 @@ def simulate_spectra(
     )
     gs *= -1
     if rank == 0:
-        # print("#eigenstates = {:d}".format(np.shape(gs)[0]))
         print("#spin orbitals = {:d}".format(np.shape(gs)[1]))
         print("#mesh points = {:d}".format(np.shape(gs)[0]))
-    # Thermal average
-    # a = thermal_average(es[: np.shape(gs)[0]], -gs.imag, T=T)
     if rank == 0 and h5f:
-        # h5f.create_dataset("XPS", data=-gs.imag)
-        h5f.create_dataset("XPSthermal", data=-gs.imag)
-    # Sum over transition operators
-    aSum = np.sum(-gs.imag, axis=1)
-    # Save spectra to disk
-    if rank == 0:
-        tmp = [w, aSum]
-        # Each transition operator seperatly
-        for i in range(np.shape(gs)[1]):
-            tmp.append(-gs.imag[:, i])
-        print("Save spectra to disk...\n")
-        np.savetxt("XPS.dat", np.array(tmp).T, fmt="%8.4f", header="E  sum  T1  T2  T3 ...")
+        h5f.create_dataset("XPS/spectra", data=gs)
     if rank == 0:
         print("time(XPS) = {:.2f} seconds \n".format(time.perf_counter() - t0))
         t0 = time.perf_counter()
@@ -361,26 +343,11 @@ def simulate_spectra(
         dN_val={liNIXS: (1, 0), ljNIXS: (1, 0)},
         dN_con={liNIXS: (0, 1), ljNIXS: (0, 1)},
     )
-    # gs = getSpectra(n_spin_orbitals, hOp, tOps, psis, es, wLoss, deltaNIXS, restrictions)
     if rank == 0:
-        # print("#eigenstates = {:d}".format(np.shape(gs)[0]))
         print("#q-points = {:d}".format(np.shape(gs)[1]))
         print("#mesh points = {:d}".format(np.shape(gs)[0]))
-    # Thermal average
-    # a = thermal_average(es[: np.shape(gs)[0]], -gs.imag, T=T)
     if rank == 0 and h5f:
-        # h5f.create_dataset("NIXS", data=-gs.imag)
-        h5f.create_dataset("NIXSthermal", data=-gs.imag)
-    # Sum over q-points
-    aSum = np.sum(-gs.imag, axis=1)
-    # Save spectra to disk
-    if rank == 0:
-        tmp = [wLoss, aSum]
-        # Each q-point seperatly
-        for i in range(np.shape(gs)[1]):
-            tmp.append(-gs.imag[:, i])
-        print("Save spectra to disk...\n")
-        np.savetxt("NIXS.dat", np.array(tmp).T, fmt="%8.4f", header="E  sum  T1  T2  T3 ...")
+        h5f.create_dataset("NIXS/spectra", data=gs)
 
     if rank == 0:
         print("time(NIXS) = {:.2f} seconds \n".format(time.perf_counter() - t0))
@@ -416,17 +383,23 @@ def simulate_spectra(
             occ_cutoff,
             **dN_XAS,
         )
+        if rank == 0:
+            print("#projected operators = {:d}".format(np.shape(gs)[1]))
+            print("#mesh points = {:d}".format(np.shape(gs)[0]))
+        if rank == 0 and h5f:
+            h5f.create_dataset("XAS/projected", data=gs)
     else:
-        # Dipole is linear in the polarization: compute the spectral tensor over the 3 Cartesian
-        # components once (symmetry-reduced) and contract with every requested polarization (B2b).
+        # Dipole is linear in the polarization: compute and store the spectral tensor over the
+        # 3 Cartesian components once (symmetry-reduced). Polarization contraction (arbitrary /
+        # circular, dichroism, ...) is left to post-processing (impurityModel.ed.polarization),
+        # so it never requires re-running the solve.
         cartesian_ops = _prep_one_body(getDipoleOperators(nBaths, [[1, 0, 0], [0, 1, 0], [0, 0, 1]]))
         n_orb = basis.num_spin_orbitals
         h_onebody = extract_tensors(hOp, n_orb=n_orb, two_body=False)[0]
         reduction = component_symmetry_reduction(cartesian_ops, h_onebody, n_orb=n_orb)
-        gs = getSpectra_tensor(
+        chi = getSpectra_tensor(
             hOp,
             cartesian_ops,
-            epsilons,
             psis,
             es,
             tau,
@@ -439,26 +412,11 @@ def simulate_spectra(
             reduction=reduction,
             **dN_XAS,
         )
-    # gs = getSpectra(n_spin_orbitals, hOp, tOps, psis, es, w, delta, restrictions)
-    if rank == 0:
-        # print("#eigenstates = {:d}".format(np.shape(gs)[0]))
-        print("#polarizations = {:d}".format(np.shape(gs)[1]))
-        print("#mesh points = {:d}".format(np.shape(gs)[0]))
-    # Thermal average
-    # a = thermal_average(es[: np.shape(gs)[0]], -gs.imag, T=T)
-    if rank == 0 and h5f:
-        # h5f.create_dataset("XAS", data=-gs.imag)
-        h5f.create_dataset("XASthermal", data=-gs.imag)
-    # Sum over transition operators
-    aSum = np.sum(-gs.imag, axis=1)
-    # Save spectra to disk
-    if rank == 0:
-        tmp = [w, aSum]
-        # Each transition operator seperatly
-        for i in range(np.shape(gs)[1]):
-            tmp.append(-gs.imag[:, i])
-        print("Save spectra to disk...\n")
-        np.savetxt("XAS.dat", np.array(tmp).T, fmt="%8.4f", header="E  sum  T1  T2  T3 ...")
+        if rank == 0:
+            print("#Cartesian components = {:d}".format(chi.shape[1]))
+            print("#mesh points = {:d}".format(chi.shape[0]))
+        if rank == 0 and h5f:
+            h5f.create_dataset("XAS/tensor", data=chi)
     if rank == 0:
         print("time(XAS) = {:.2f} seconds \n".format(time.perf_counter() - t0))
         t0 = time.perf_counter()
@@ -495,18 +453,25 @@ def simulate_spectra(
                 verbose,
                 slaterWeightMin=slaterWeightMin,
             )
+            if rank == 0:
+                print("RIXS projectors = {}".format(RIXS_projectors.keys()))
+                print(f"shape(gs) = {np.shape(gs)}")
+            if rank == 0 and h5f:
+                h5f.create_dataset("RIXS/projected", data=gs)
+                g = h5f.create_group("RIXSprojectors")
+                for key, proj in RIXS_projectors:
+                    g.create_dataset(key, data=str(proj))
         else:
-            # Dipole is linear in the polarization: compute the full rank-4 Kramers-Heisenberg
-            # tensor over the 3 Cartesian in/out components once and contract with every
-            # requested (in, out) polarization pair (R4 -- the RIXS analogue of B2b).
+            # Dipole is linear in the polarization: compute and store the full rank-4
+            # Kramers-Heisenberg tensor over the 3 Cartesian in/out components once (R4 -- the
+            # RIXS analogue of B2b). Polarization contraction (arbitrary/circular, dichroism,
+            # ...) is left to post-processing (impurityModel.ed.polarization).
             in_component_ops = _prep_one_body(getDipoleOperators(nBaths, [[1, 0, 0], [0, 1, 0], [0, 0, 1]]))
             out_component_ops = _prep_one_body(getDaggeredDipoleOperators(nBaths, [[1, 0, 0], [0, 1, 0], [0, 0, 1]]))
-            gs = getRIXSmap_tensor(
+            C = getRIXSmap_tensor(
                 hOp,
                 in_component_ops,
                 out_component_ops,
-                epsilonsRIXSin,
-                epsilonsRIXSout,
                 psis,
                 es,
                 tau,
@@ -518,39 +483,17 @@ def simulate_spectra(
                 verbose,
                 slaterWeightMin=slaterWeightMin,
             )
+            if rank == 0:
+                print(f"shape(C) = {np.shape(C)}")
+                print("#in-components = {:d}".format(C.shape[0]))
+                print("#out-components = {:d}".format(C.shape[1]))
+                print("#mesh points of input energy = {:d}".format(C.shape[4]))
+                print("#mesh points of energy loss = {:d}".format(C.shape[5]))
+            if rank == 0 and h5f:
+                # complex64: ~1e-7 relative precision, below the R1 solve tolerance (1e-6);
+                # halves the storage of the default-mesh tensor (~260 -> ~130 MB).
+                h5f.create_dataset("RIXS/tensor", data=C.astype(np.complex64))
 
-        if rank == 0:
-            # print("#eigenstates = {:d}".format(np.shape(gs)[0]))
-            if RIXS_projectors:
-                print("RIXS projectors = {}".format(RIXS_projectors.keys()))
-            print(f"shape(gs) = {np.shape(gs)}")
-            print("#in-polarizations = {:d}".format(np.shape(gs)[0]))
-            print("#out-polarizations = {:d}".format(np.shape(gs)[1]))
-            print("#mesh points of input energy = {:d}".format(np.shape(gs)[2]))
-            print("#mesh points of energy loss = {:d}".format(np.shape(gs)[3]))
-        # Thermal average
-        # a = thermal_average(es[: np.shape(gs)[0]], -gs.imag, T=T)
-        if rank == 0 and h5f:
-            # h5f.create_dataset("RIXS", data=-gs.imag)
-            h5f.create_dataset("RIXSthermal", data=-gs.imag)
-            if RIXS_projectors:
-                g = h5f.create_group("RIXSprojectors")
-                for key, proj in RIXS_projectors:
-                    g.create_dataset(key, data=str(proj))
-        # Sum over transition operators and save to disk. gs is None on non-root ranks
-        # of a distributed run (getRIXSmap_* gathers to global rank 0 only); computing
-        # aSum unguarded crashed rank != 0 with AttributeError, leaving rank 0 hung in
-        # the post-spectra Barrier.
-        if rank == 0:
-            aSum = np.sum(-gs.imag, axis=(0, 1))
-            print("Save spectra to disk...\n")
-            # I[wLoss,wIn], with wLoss on first column and wIn on first row.
-            tmp = np.empty((len(wLoss) + 1, len(wIn) + 1), dtype=np.float32)
-            tmp[0, 0] = len(wIn)
-            tmp[0, 1:] = wIn
-            tmp[1:, 0] = wLoss
-            tmp[1:, 1:] = aSum.T
-            tmp.tofile("RIXS.bin")
         if rank == 0:
             print("time(RIXS) = {:.2f} seconds \n".format(time.perf_counter() - t0))
             t0 = time.perf_counter()
@@ -1069,7 +1012,6 @@ def _moments_consistent(m0, m1, group_of_column, tol=1e-6):
 def getSpectra_tensor(
     hOp,
     component_ops,
-    polarizations,
     psis,
     es,
     tau,
@@ -1084,24 +1026,26 @@ def getSpectra_tensor(
     dN_con,
     reduction=None,
 ):
-    r"""Polarization-resolved spectra via the one-body spectral tensor (B2b).
+    r"""One-body spectral tensor over Cartesian transition components (B2b).
 
     A dipole (or NIXS) transition operator is *linear* in the polarization,
     :math:`T_\varepsilon = \sum_\alpha \varepsilon_\alpha T_\alpha`, so every polarization's
-    spectrum is a contraction of a single Hermitian spectral tensor
+    spectrum is a contraction (see :func:`impurityModel.ed.polarization.contract_spectra_tensor`)
+    of a single Hermitian spectral tensor
 
     .. math:: \chi_{\alpha\beta}(\omega) = \langle g| T_\alpha^\dagger (\omega - H)^{-1}
-              T_\beta |g\rangle, \qquad I_\varepsilon(\omega)
-              = \sum_{\alpha\beta} \varepsilon_\alpha^* \chi_{\alpha\beta}(\omega)
-              \varepsilon_\beta .
+              T_\beta |g\rangle .
+
+    This function computes and returns ``chi`` itself (not a polarization contraction), so any
+    number of polarizations -- including ones chosen after the fact, e.g. for dichroism -- can
+    be evaluated as a cheap post-processing step instead of re-running the solve.
 
     The tensor is computed with **one** block-Lanczos recurrence over the (symmetry-reduced)
-    component operators -- decoupling the number of Lanczos runs from the number of requested
-    polarizations, giving arbitrary/circular polarization for free -- and confined to the
-    conserved-charge sector of the seeds (B1). ``reduction`` (from
-    :func:`symmetries.component_symmetry_reduction`) optionally collapses symmetry-equivalent
-    components so the block shrinks further; a seed-moment spot-check guards against an
-    incomplete symmetry multiplet and falls back to the full tensor when it fails.
+    component operators, confined to the conserved-charge sector of the seeds (B1).
+    ``reduction`` (from :func:`symmetries.component_symmetry_reduction`) optionally collapses
+    symmetry-equivalent components so the block shrinks further; a seed-moment spot-check
+    guards against an incomplete symmetry multiplet and falls back to the full tensor when it
+    fails.
 
     Parameters
     ----------
@@ -1109,8 +1053,6 @@ def getSpectra_tensor(
         The Hamiltonian.
     component_ops : list of ManyBodyOperator
         The Cartesian component transition operators (e.g. the 3 dipole components).
-    polarizations : sequence of array_like
-        Each element is a length-``len(component_ops)`` (complex) polarization vector.
     reduction : ComponentReduction, optional
         Point-group reduction of the components. ``None`` computes the full tensor.
     **kwargs
@@ -1119,7 +1061,8 @@ def getSpectra_tensor(
     Returns
     -------
     ndarray
-        ``(len(w), len(polarizations))`` complex spectra on rank 0; empty array elsewhere.
+        ``(len(w), len(component_ops), len(component_ops))`` complex spectral tensor on rank 0;
+        empty array elsewhere.
     """
     m = len(component_ops)
     if reduction is None:
@@ -1168,7 +1111,7 @@ def getSpectra_tensor(
         extra_restrictions=extra,
     )
     if comm is not None and comm.rank != 0:
-        return np.empty((0, 0), dtype=complex)
+        return np.empty((0, 0, 0), dtype=complex)
 
     chi_red = gf.calc_thermally_averaged_G(alphas, betas, r, w, es, e0, tau, delta) / Z  # (n_w, r, r)
 
@@ -1179,9 +1122,7 @@ def getSpectra_tensor(
     else:
         chi_full = chi_red  # full m x m tensor in the Cartesian basis (Q = I)
 
-    eps = np.array([np.asarray(p, dtype=complex) for p in polarizations])  # (n_pol, m)
-    spectra_out = np.einsum("pa,wab,pb->wp", eps.conj(), chi_full, eps, optimize=True)
-    return spectra_out
+    return chi_full
 
 
 def _rixs_win_chunk(n_eigen: int, n_win: int, comm_size: int) -> int:
@@ -1839,8 +1780,6 @@ def getRIXSmap_tensor(
     hOp,
     in_component_ops,
     out_component_ops,
-    epsilonsIn,
-    epsilonsOut,
     psis,
     Es,
     tau,
@@ -1853,12 +1792,13 @@ def getRIXSmap_tensor(
     slaterWeightMin,
     adaptive_wIn_tol=None,
 ):
-    r"""RIXS map for arbitrary in/out polarizations via the full rank-4 Kramers-Heisenberg tensor.
+    r"""Full rank-4 Kramers-Heisenberg tensor over Cartesian in/out transition components.
 
     A dipole (or NIXS) transition operator is *linear* in the polarization,
     :math:`T_\varepsilon = \sum_\alpha \varepsilon_\alpha T_\alpha`, so the Kramers-Heisenberg
-    amplitude for every pair of in/out polarizations is a contraction of a single
-    Cartesian-component tensor
+    amplitude for any pair of in/out polarizations is a contraction (see
+    :func:`impurityModel.ed.polarization.contract_rixs_tensor`) of a single Cartesian-component
+    tensor
 
     .. math:: C_{\alpha\alpha'\beta\beta'}(\omega_\text{in}, \omega_\text{loss}) =
               \langle \psi^{(2)}_\alpha | T^{\text{out}\dagger}_\beta R_2 T^\text{out}_{\beta'}
@@ -1870,17 +1810,17 @@ def getRIXSmap_tensor(
     :math:`C_{\alpha\alpha'\beta\beta'} = \langle s_{\alpha\beta} | R_2 | s_{\alpha'\beta'}
     \rangle` with the seeds :math:`s_{\alpha\beta} = T^\text{out}_\beta \psi^{(2)}_\alpha`, the
     tensor is exactly the resolvent matrix over the flattened seed block -- one block-Lanczos
-    (:func:`greens_function.block_Green`) yields every polarization cross term at once, and the
-    number of solves is decoupled from the number of requested polarizations (arbitrary /
-    circular polarization for free). This is the RIXS analogue of :func:`getSpectra_tensor`.
+    (:func:`greens_function.block_Green`) yields every polarization cross term at once.
+
+    This function computes and returns ``C`` itself (not a polarization contraction), so any
+    number of in/out polarization pairs -- including ones chosen after the fact, e.g. for
+    circular dichroism -- can be evaluated as a cheap post-processing step instead of
+    re-running the solve. This is the RIXS analogue of :func:`getSpectra_tensor`.
 
     The same efficiency levers as :func:`getRIXSmap_new` apply -- R1 conserved-charge sector
     confinement of the intermediate resolvent and the R2 block resolvent over the in-components
     (:func:`cg.block_bicgstab`, which deflates the frequently rank-deficient Cartesian
-    in-component right-hand side). The redundancy of symmetry-equivalent seeds is handled
-    exactly and automatically by the rank deflation inside ``block_bicgstab`` and
-    ``block_Green`` (a symmetry-based seed drop cannot reduce below the linear rank of the seed
-    span, and the XAS-style group rule does not generalize to this rank-4 tensor).
+    in-component right-hand side).
 
     Parameters
     ----------
@@ -1892,9 +1832,6 @@ def getRIXSmap_tensor(
     out_component_ops : list of ManyBodyOperator
         Cartesian out-transition (core-hole filling) component operators, e.g. the daggered
         dipole components ``getDaggeredDipoleOperators(nBaths, [[1,0,0],[0,1,0],[0,0,1]])``.
-    epsilonsIn, epsilonsOut : sequence of array_like
-        In/out polarization vectors, each of length ``len(in_component_ops)`` /
-        ``len(out_component_ops)`` (real or complex).
     adaptive_wIn_tol : float, optional
         Enable greedy adaptive sampling of the ``wIns`` grid (:func:`_rixs_map_adaptive`):
         only the AAA-selected support frequencies are actually solved, the rest are
@@ -1907,14 +1844,11 @@ def getRIXSmap_tensor(
     Returns
     -------
     ndarray
-        ``gs[p_in, p_out, wIn, wLoss]`` on rank 0, thermally averaged.
+        ``C[in, out, in', out', wIn, wLoss]`` on rank 0, thermally averaged; empty elsewhere.
     """
-    epsIn = np.array([np.asarray(p, dtype=complex) for p in epsilonsIn])  # (n_pin, n_in_comp)
-    epsOut = np.array([np.asarray(p, dtype=complex) for p in epsilonsOut])  # (n_pout, n_out_comp)
-    n_pin = epsIn.shape[0]
-    n_pout = epsOut.shape[0]
     n_in = len(in_component_ops)
     n_out = len(out_component_ops)
+    n_pairs = n_in * n_out
 
     # The R1 (per eigenstate) and R2 sectors are the same for every wIn point and
     # adaptive round (the shift enters only at evaluation time), so each sector's
@@ -1957,20 +1891,11 @@ def getRIXSmap_tensor(
             g_flat = gf.calc_G(alphas, betas, r, wLoss, E_e, delta2)
         else:
             solver_stats["r2_cache"] += 1
-        # C[w, alpha, beta, alpha', beta'] = <s_{alpha,beta}| R2 |s_{alpha',beta'}>.
+        # C[w, alpha, beta, alpha', beta'] = <s_{alpha,beta}| R2 |s_{alpha',beta'}>; flatten the
+        # (alpha, beta) / (alpha', beta') pairs into the (n_i, n_o) work-unit axes expected by
+        # _rixs_map_flat (kf = a * n_out + b matches the seed ordering above).
         C5 = g_flat.reshape(len(wLoss), n_in, n_out, n_in, n_out)
-        # Contract with polarizations. Out operators are daggered (getDaggeredDipole..),
-        # T_out(eps) = sum_b eps_b^* Tout_b, so eps_out is unconjugated on the R2-ket seed
-        # index (beta) and conjugated on the bra index (beta'); in operators carry no dagger.
-        return np.einsum(
-            "pa,qb,pc,qd,wabcd->pqw",
-            epsIn.conj(),
-            epsOut,
-            epsIn,
-            epsOut.conj(),
-            C5,
-            optimize=True,
-        )  # (n_pin, n_pout, n_wLoss)
+        return np.moveaxis(C5, 0, -1).reshape(n_pairs, n_pairs, len(wLoss))
 
     def map_fn(wIn_subset):
         return _rixs_map_flat(
@@ -1986,8 +1911,8 @@ def getRIXSmap_tensor(
             basis,
             verbose,
             slaterWeightMin,
-            n_i=n_pin,
-            n_o=n_pout,
+            n_i=n_pairs,
+            n_o=n_pairs,
             eval_out=eval_out,
             r1_caches=r1_caches,
             solver_stats=solver_stats,
@@ -1999,4 +1924,7 @@ def getRIXSmap_tensor(
     else:
         gs = map_fn(np.asarray(wIns))
     _report_rixs_solver_stats(solver_stats, basis.comm, verbose)
-    return gs
+    if gs is None:  # non-root rank of a distributed run
+        return None
+    n_win = gs.shape[2]
+    return gs.reshape(n_in, n_out, n_in, n_out, n_win, len(wLoss))

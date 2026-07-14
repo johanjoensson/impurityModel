@@ -34,7 +34,7 @@ import numpy as np
 import pytest
 from mpi4py import MPI
 
-from impurityModel.ed import spectra
+from impurityModel.ed import polarization, spectra
 from impurityModel.ed.manybody_basis import Basis
 from impurityModel.ed.ManyBodyUtils import ManyBodyOperator, ManyBodyState, SlaterDeterminant, applyOp, inner
 
@@ -198,12 +198,10 @@ def _run_perpol(op, psis, es, dets, in_comp, out_comp, epsIn, epsOut):
 
 
 def _run_tensor(op, psis, es, dets, in_comp, out_comp, epsIn, epsOut):
-    return spectra.getRIXSmap_tensor(
+    C = spectra.getRIXSmap_tensor(
         op,
         in_comp,
         out_comp,
-        epsIn,
-        epsOut,
         psis,
         es,
         tau=TAU,
@@ -215,6 +213,7 @@ def _run_tensor(op, psis, es, dets, in_comp, out_comp, epsIn, epsOut):
         verbose=False,
         slaterWeightMin=1e-12,
     )
+    return polarization.contract_rixs_tensor(C, epsIn, epsOut)
 
 
 def test_rixs_tensor_vs_perpol_scaling():

@@ -53,6 +53,7 @@ build-backend = "setuptools.build_meta"
 
 [project.scripts]
 plot_RIXS="impurityModel.scripts.plot_RIXS:main"
+plot_spectra="impurityModel.scripts.plot_spectra:main"
 
 [tool.coverage.run]
 # Record source paths relative to the repo root. Without this, an editable

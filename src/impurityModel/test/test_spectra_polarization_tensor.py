@@ -4,8 +4,9 @@ per-polarization scalar spectrum.
 A one-body transition operator is linear in the polarization,
 ``T_eps = sum_alpha eps_alpha T_alpha``, so the spectrum for any polarization is a
 contraction of the single Hermitian tensor ``chi_{alpha beta}(w) = <g|T_alpha^dagger (w-H)^-1
-T_beta|g>``. :func:`spectra.getSpectra_tensor` computes ``chi`` once (one block-Lanczos) and
-contracts; this must reproduce :func:`spectra.getSpectra_new` run on the combined operator
+T_beta|g>``. :func:`spectra.getSpectra_tensor` computes and returns ``chi`` itself (one
+block-Lanczos); :func:`impurityModel.ed.polarization.contract_spectra_tensor` then contracts
+it -- this must reproduce :func:`spectra.getSpectra_new` run on the combined operator
 ``T_eps`` for every polarization -- including complex / circular ones.
 """
 
@@ -14,7 +15,7 @@ from itertools import combinations
 import numpy as np
 from mpi4py import MPI
 
-from impurityModel.ed import spectra
+from impurityModel.ed import polarization, spectra
 from impurityModel.ed.manybody_basis import Basis
 from impurityModel.ed.ManyBodyUtils import ManyBodyOperator, ManyBodyState, SlaterDeterminant, applyOp, inner
 from impurityModel.ed.symmetries import ComponentReduction
@@ -94,10 +95,9 @@ def test_tensor_contraction_matches_per_polarization():
         [0.3, -0.7, 0.5j],
     ]
 
-    tensor = spectra.getSpectra_tensor(
+    chi = spectra.getSpectra_tensor(
         op,
         comps,
-        polarizations,
         [gs],
         [e0],
         tau=0.01,
@@ -110,6 +110,7 @@ def test_tensor_contraction_matches_per_polarization():
         reduction=None,
         **_DN,
     )
+    tensor = polarization.contract_spectra_tensor(chi, polarizations)
 
     for p, eps in enumerate(polarizations):
         combined = spectra._combine_component_ops(comps, eps)
@@ -161,10 +162,9 @@ def test_diagonal_reconstruction_branch_matches_full():
     pols = [[1.0, 0.0], [0.0, 1.0], [1.0, 1j]]
 
     reduction = ComponentReduction(np.eye(2, dtype=complex), [0, 1], [0, 1], True)
-    diag = spectra.getSpectra_tensor(
+    diag_chi = spectra.getSpectra_tensor(
         op,
         comps,
-        pols,
         [gs],
         [e0],
         tau=0.01,
@@ -177,10 +177,9 @@ def test_diagonal_reconstruction_branch_matches_full():
         reduction=reduction,
         **_DN,
     )
-    full = spectra.getSpectra_tensor(
+    full_chi = spectra.getSpectra_tensor(
         op,
         comps,
-        pols,
         [gs],
         [e0],
         tau=0.01,
@@ -193,6 +192,8 @@ def test_diagonal_reconstruction_branch_matches_full():
         reduction=None,
         **_DN,
     )
+    diag = polarization.contract_spectra_tensor(diag_chi, pols)
+    full = polarization.contract_spectra_tensor(full_chi, pols)
     np.testing.assert_allclose(diag, full, atol=1e-9)
 
 
@@ -210,10 +211,9 @@ def test_moment_check_falls_back_on_incorrect_reduction():
     pols = [[1.0, 0.0], [0.0, 1.0], [1.0, 1j]]
 
     wrong = ComponentReduction(np.eye(2, dtype=complex), [0], [0, 0], True)  # claims 0 == 1
-    got = spectra.getSpectra_tensor(
+    chi = spectra.getSpectra_tensor(
         op,
         comps,
-        pols,
         [gs],
         [e0],
         tau=0.01,
@@ -226,6 +226,7 @@ def test_moment_check_falls_back_on_incorrect_reduction():
         reduction=wrong,
         **_DN,
     )
+    got = polarization.contract_spectra_tensor(chi, pols)
     for p, eps in enumerate(pols):
         combined = spectra._combine_component_ops(comps, eps)
         ref = spectra.getSpectra_new(

@@ -103,20 +103,22 @@ path/to/folder/impurityModel/scripts/run_Ni_NiO_CF.sh
 (similar crystal-field examples exist for MnO, FeO and CoO in the same folder).
 #### Output files
 The input parameters to the simulation are saved in `.npz` format.
-Calculated spectra are saved to the file `spectra.h5`.
-Some small size spectra are also stored in `.dat` and `.bin` format, for easy and fast plotting with e.g. gnuplot.
-For plotting all generated spectra (using matplotlib), type:
+Calculated spectra are saved to the single file `spectra.h5`. XAS and RIXS are stored as
+polarization *tensors* (the Cartesian dipole components); polarization contraction -- including
+circular polarizations, dichroism, and arbitrary polarization vectors -- happens as a
+post-processing step at plot time (see `impurityModel.ed.polarization`), not during the solve.
+
+For plotting PS/XPS/NIXS/XAS (using matplotlib), type:
 ```bash
-python -m impurityModel.plotScripts.plotSpectra
+plot_spectra --filename spectra.h5
 ```
 For only plotting the RIXS map, type:
 ```bash
-python -m impurityModel.plotScripts.plotRIXS
+plot_RIXS --filename spectra.h5
 ```
-Using Gnuplot, instead type:
-```bash
-path/to/folder/impurityModel/impurityModel/plotScripts/plotRIXS.plt
-```
+Both accept `--pol`/`--pol-in`/`--pol-out` polarization selections, `--xmcd`/`--mcd` dichroism,
+and `-o FILE` to save the figures instead of showing them; run with `--help` for the full list
+of options.
 
 
 ### Documentation

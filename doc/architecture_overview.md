@@ -61,7 +61,7 @@ The Python modules are layered; a module only imports from layers below it, and 
 CLIs sit strictly on top. **Physics/operator-algebra modules never import solvers.**
 
 ```
-Layer 0: average, utils, product_state_representation, op_parser, mpi_comm,
+Layer 0: average, utils, polarization, product_state_representation, op_parser, mpi_comm,
          ManyBodyUtils (Cython)
 Layer 1: operator_algebra
 Layer 2: atomic_physics, eigensolvers, symmetries, block_structure
@@ -80,6 +80,7 @@ Layer 6: CLIs: get_spectra, selfenergy
 - **`product_state_representation.py`** — conversions between bit/bytes/tuple/string encodings of product states.
 - **`op_parser.py`** — parsing of operator files for the CLIs.
 - **`mpi_comm.py`** — the MPI communication primitives: sparse graph-alltoall of determinants and states, chunked broadcast/allgather of dicts, task partitioning (`get_job_tasks`).
+- **`polarization.py`** — numpy-only polarization vectors and tensor contractions (`contract_spectra_tensor`, `contract_rixs_tensor`, dichroism/isotropic helpers) that turn the tensor quantities `spectra.py` computes into polarization-resolved intensities; used both by `spectra.py`'s projector code paths and by the `plot_spectra`/`plot_RIXS` CLIs as a post-processing step, so no MPI or solver imports.
 - **`operator_algebra.py`** — algebra on second-quantized operator dicts (`addOps`, `daggerOp`, `combineOp`, …) and the `(l, s, m)` label ↔ flat-index conversions (`c2i`, `i2c`).
 - **`atomic_physics.py`** — single-shell atomic physics: Slater–Condon Coulomb integrals (`getU*`), spin-orbit coupling (`getSOCop`), Zeeman field (`gethHfieldop`), spherical↔cubic transforms, and the MLFT double-counting correction (`dc_MLFT`).
 - **`eigensolvers.py`** — eigensolver drivers for the low-energy spectrum: dense (`numpy.linalg.eigh`), ARPACK (`scipy.sparse.linalg.eigsh`), and the block-Lanczos TRLM path, behind the `eigensystem` driver and the MPI-aware `HermitianOperator` wrapper.
@@ -105,7 +106,7 @@ Layer 6: CLIs: get_spectra, selfenergy
 - **`gf_convergence.py`** — the runtime block-Lanczos convergence monitor (`_make_gf_convergence_monitor`) and its post-hoc counterpart (`_lanczos_convergence_summary`), plus the shared frequency-mesh helpers. Depends only on `gf_primitives`.
 - **`gf_shift_recycling.py`** — `SectorResolventCache` (dense spectral cache over a closed H-sector) and `KrylovShiftedResolvent` (one distributed block-Lanczos recurrence serving every shift of a fixed right-hand side): the two tiers ahead of the per-point BiCGSTAB/GMRES fallback in the RIXS R1 solver chain. Depends only on `gf_primitives`.
 - **`greens_function.py`** — interacting Green's functions via block Lanczos continued fractions; `run_units_distributed` is the one distribution primitive shared by every GF driver (self-energy and spectra). Re-exports every symbol of the three modules above that other modules/tests reach via `greens_function.X` / `gf.X`, so it stayed a drop-in for existing callers when it was split into them.
-- **`spectra.py`** — XAS/XPS/PS/NIXS/RIXS spectra drivers on top of `greens_function`.
+- **`spectra.py`** — XAS/XPS/PS/NIXS/RIXS spectra drivers on top of `greens_function`. PS/XPS/NIXS and the projector-driven XAS/RIXS paths return per-operator spectra directly; the default (unprojected) XAS/RIXS paths return the polarization *tensor* (`getSpectra_tensor`, `getRIXSmap_tensor`) rather than a polarization-contracted spectrum -- `simulate_spectra` stores the tensor as-is (`spectra.h5`: `XAS/tensor`, `RIXS/tensor`), and `polarization.py` contracts it with concrete polarizations as a cheap post-processing step (in the projector paths, or at plot time).
 - **`cg.py`** — block BiCGSTAB solver (used by the RIXS tensor path).
 - **`gf_diagnostics.py`** — convergence/consistency diagnostics for computed Green's functions.
 - **`gs_statistics.py`** — ground-state statistics computation, printing, and saving.
@@ -120,6 +121,11 @@ Layer 6: CLIs: get_spectra, selfenergy
 - **`natural_orbitals.py`** — hybridization fitting in a natural-orbital basis.
 - **`bath_fitting.py`** — hybridization-function bath fitting helpers.
 - **`scripts/build_h0.py`** (console script `build_h0`) — builds a non-interacting Hamiltonian from RSPt output; requires the `rspt` extra (`pip install -e '.[rspt]'`).
+
+### Plotting (post-processing, `scripts/`)
+- **`scripts/_plot_common.py`** — shared CLI plumbing for the plot scripts (input/output/figure-style arguments, `spectra.h5` loading, orbital-selection parsing, `.dat` export), ported from `pyRSPthon.cli._common`.
+- **`scripts/plot_spectra.py`** (console script `plot_spectra`) — plots PS/XPS/NIXS from `spectra.h5`, and XAS by contracting the stored spectral tensor with the requested polarizations (`--pol`, default x/y/z + isotropic; `--xmcd`/`--xld` dichroism; `--tensor-components`) via `polarization.py`; also overlays the RIXS-tensor fluorescence yield when both are present.
+- **`scripts/plot_RIXS.py`** (console script `plot_RIXS`) — plots the RIXS map from `spectra.h5`'s `RIXS/tensor`, contracting with `--pol-in`/`--pol-out` polarization pairs, `--mcd` circular dichroism, `--fy` fluorescence yield, and `--cuts`/`--emission` energy-loss line cuts, all as post-processing (no solver re-run).
 
 ## Test Suite (`src/impurityModel/test/`)
 

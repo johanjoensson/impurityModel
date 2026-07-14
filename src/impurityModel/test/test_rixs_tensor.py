@@ -18,7 +18,7 @@ import numpy as np
 import pytest
 from mpi4py import MPI
 
-from impurityModel.ed import spectra
+from impurityModel.ed import polarization, spectra
 from impurityModel.ed.manybody_basis import Basis
 from impurityModel.ed.ManyBodyUtils import ManyBodyOperator, ManyBodyState, SlaterDeterminant, applyOp, inner
 from impurityModel.ed.symmetries import impurity_symmetry_rotation, rotate_hamiltonian
@@ -209,12 +209,10 @@ def _dense_rixs_pol(op, tin_comp, tout_comp, epsIn, epsOut, es, vecs, states):
 
 
 def _run_rixs_tensor(op, psis, es, tin, tout, dets, epsIn, epsOut):
-    return spectra.getRIXSmap_tensor(
+    C = spectra.getRIXSmap_tensor(
         op,
         tin,
         tout,
-        epsIn,
-        epsOut,
         psis,
         es,
         tau=TAU,
@@ -226,6 +224,7 @@ def _run_rixs_tensor(op, psis, es, tin, tout, dets, epsIn, epsOut):
         verbose=False,
         slaterWeightMin=0.0,
     )
+    return polarization.contract_rixs_tensor(C, epsIn, epsOut)
 
 
 def test_rixs_tensor_matches_dense_reference():
@@ -309,12 +308,10 @@ def test_rixs_tensor_adaptive_matches_dense(monkeypatch):
     tin, tout = _tin_tout()
 
     def run(adaptive_tol):
-        return spectra.getRIXSmap_tensor(
+        C = spectra.getRIXSmap_tensor(
             op,
             tin,
             tout,
-            EPS_IN,
-            EPS_OUT,
             psis,
             es,
             tau=TAU,
@@ -327,6 +324,7 @@ def test_rixs_tensor_adaptive_matches_dense(monkeypatch):
             slaterWeightMin=0.0,
             adaptive_wIn_tol=adaptive_tol,
         )
+        return polarization.contract_rixs_tensor(C, EPS_IN, EPS_OUT)
 
     dense = run(None)
 
@@ -363,8 +361,6 @@ def test_rixs_tensor_adaptive_short_grid_stays_dense(monkeypatch):
         op,
         tin,
         tout,
-        EPS_IN,
-        EPS_OUT,
         psis,
         es,
         tau=TAU,
@@ -398,8 +394,6 @@ def test_rixs_tensor_adaptive_env_knob(monkeypatch):
         op,
         tin,
         tout,
-        EPS_IN,
-        EPS_OUT,
         psis,
         es,
         tau=TAU,
@@ -431,12 +425,10 @@ def test_rixs_tensor_adaptive_distributed_matches_dense():
             verbose=False,
             comm=comm,
         )
-        return spectra.getRIXSmap_tensor(
+        C = spectra.getRIXSmap_tensor(
             op,
             tin,
             tout,
-            EPS_IN,
-            EPS_OUT,
             psis,
             es,
             tau=TAU,
@@ -449,6 +441,7 @@ def test_rixs_tensor_adaptive_distributed_matches_dense():
             slaterWeightMin=0.0,
             adaptive_wIn_tol=adaptive_tol,
         )
+        return C if C is None else polarization.contract_rixs_tensor(C, EPS_IN, EPS_OUT)
 
     dense = run(None)
     adaptive = run(1e-8)
@@ -792,12 +785,10 @@ def test_rixs_tensor_distributed_krylov_recycler_matches_dense(monkeypatch):
         verbose=False,
         comm=comm,
     )
-    got = spectra.getRIXSmap_tensor(
+    C = spectra.getRIXSmap_tensor(
         op,
         tin,
         tout,
-        EPS_IN,
-        EPS_OUT,
         psis,
         es,
         tau=TAU,
@@ -810,7 +801,8 @@ def test_rixs_tensor_distributed_krylov_recycler_matches_dense(monkeypatch):
         slaterWeightMin=0.0,
     )
     if comm.rank == 0:
+        got = polarization.contract_rixs_tensor(C, EPS_IN, EPS_OUT)
         ref = _dense_rixs_pol(op, tin, tout, EPS_IN, EPS_OUT, es, vecs, states)
         np.testing.assert_allclose(got, ref, atol=1e-8)
     else:
-        assert got is None
+        assert C is None

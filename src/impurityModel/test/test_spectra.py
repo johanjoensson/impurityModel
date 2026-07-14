@@ -130,9 +130,7 @@ def test_getSpectra_new(mock_therm_G, mock_run, mock_weights, mock_enum, mock_bu
 @patch("impurityModel.ed.spectra.extract_tensors")
 @patch("impurityModel.ed.spectra.getDipoleOperators")
 @patch("impurityModel.ed.spectra.getNIXSOperators")
-@patch("numpy.savetxt")
 def test_simulate_spectra(
-    mock_savetxt,
     mock_getNIXS,
     mock_getDipole,
     mock_extract,
@@ -143,8 +141,9 @@ def test_simulate_spectra(
     mock_getIPS,
 ):
     mock_getSpectra_new.return_value = np.zeros((10, 1), dtype=complex)
-    # XAS now goes through the polarization-tensor path (unprojected dipole).
-    mock_getSpectra_tensor.return_value = np.zeros((10, 1), dtype=complex)
+    # XAS now goes through the polarization-tensor path (unprojected dipole): getSpectra_tensor
+    # returns the (n_w, m, m) chi tensor directly (no contraction inside simulate_spectra).
+    mock_getSpectra_tensor.return_value = np.zeros((10, 3, 3), dtype=complex)
     mock_extract.return_value = (np.zeros((1, 1), dtype=complex), None, 0)
     mock_reduction.return_value = None
     mock_getIPS.return_value = [{((0, "c"),): 1}]
@@ -153,6 +152,7 @@ def test_simulate_spectra(
     mock_getNIXS.return_value = [{((0, "a"),): 1}]
 
     hOp = MagicMock(spec=ManyBodyOperator)
+    h5f = MagicMock()
     spectra.simulate_spectra(
         es=[0.0],
         psis=[MagicMock()],
@@ -174,7 +174,7 @@ def test_simulate_spectra(
         epsilonsRIXSin=[],
         epsilonsRIXSout=[],
         restrictions={},
-        h5f=None,
+        h5f=h5f,
         nBaths=OrderedDict([(2, 10), (1, 6)]),
         XAS_projectors=None,
         RIXS_projectors=None,
@@ -186,6 +186,10 @@ def test_simulate_spectra(
     )
     assert mock_getSpectra_new.called
     assert mock_getSpectra_tensor.called
+    written = {c.args[0] for c in h5f.create_dataset.call_args_list}
+    assert {"PS/spectra", "XPS/spectra", "NIXS/spectra", "XAS/tensor"} <= written
+    assert not any(name.endswith("thermal") for name in written)  # no legacy dataset names
+    h5f.close.assert_called_once()
 
 
 # --- tests for hamiltonian_io.py ---
