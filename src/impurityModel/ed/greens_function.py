@@ -1693,16 +1693,7 @@ class KrylovShiftedResolvent:
         rhs = basis.redistribute_psis(list(rhs))
 
         # Orthonormal seed block + projection B0 (the same preamble as block_green_impl).
-        psi_dense = build_vector(basis, rhs, root=0, slaterWeightMin=slaterWeightMin).T
-        r = None
-        if rank == 0:
-            psi_dense, r = build_qr(psi_dense)
-        if mpi:
-            psi_dense_local, r = _scatter_qr_columns(
-                comm, psi_dense if rank == 0 else None, r if rank == 0 else None, len(basis.local_basis)
-            )
-        else:
-            psi_dense_local = psi_dense
+        psi_dense_local, r = _distributed_seed_qr(basis, rhs, slaterWeightMin)
         psi_arr = build_state(basis, psi_dense_local.T, slaterWeightMin=0)
         b0 = r
         scale = float(np.linalg.norm(b0))
@@ -1883,6 +1874,39 @@ def _scatter_qr_columns(comm, psi_dense, r, local_size):
         psi_dense_local,
         root=0,
     )
+    return psi_dense_local, r
+
+
+def _distributed_seed_qr(basis, psi_arr, slaterWeightMin=0):
+    """Row-distributed orthonormal seed block + its ``R`` factor.
+
+    Shared preamble of every resolvent solver that needs an orthonormal seed block
+    distributed by ``basis``'s ownership (:func:`block_Green_sparse`, the sparse branch
+    of :func:`block_green_impl`, :class:`KrylovShiftedResolvent`): build the dense seed
+    matrix on rank 0, QR it there (:func:`build_qr`), then scatter ``Q``'s rows onto each
+    rank's local partition (:func:`_scatter_qr_columns`) so every rank ends up with only
+    its own slice. Serial (``basis.comm is None``) just runs ``build_qr`` directly.
+
+    Returns
+    -------
+    psi_dense_local : ndarray
+        This rank's ``(local_size, n)`` slice of the orthonormal seed block ``Q``.
+    r : ndarray
+        The ``(n, n)`` ``R`` factor (replicated on every rank).
+    """
+    comm = basis.comm
+    mpi = comm is not None
+    rank = comm.rank if mpi else 0
+    psi_dense = build_vector(basis, psi_arr, root=0, slaterWeightMin=slaterWeightMin).T
+    r = None
+    if rank == 0:
+        psi_dense, r = build_qr(psi_dense)
+    if mpi:
+        psi_dense_local, r = _scatter_qr_columns(
+            comm, psi_dense if rank == 0 else None, r if rank == 0 else None, len(basis.local_basis)
+        )
+    else:
+        psi_dense_local = psi_dense
     return psi_dense_local, r
 
 
@@ -2395,12 +2419,10 @@ def block_green_impl(basis, hOp, psi_arr, delta, reort, slaterWeightMin, verbose
         psi_dense = build_vector(basis, psi_arr, slaterWeightMin=0).T
         psi_dense_local, r = build_qr(psi_dense)
     else:
-        psi_dense = build_vector(basis, psi_arr, root=0, slaterWeightMin=0).T
-        if rank == 0:
-            psi_dense, r = build_qr(psi_dense)
-        psi_dense_local, r = _scatter_qr_columns(
-            comm, psi_dense if rank == 0 else None, r if rank == 0 else None, len(basis.local_basis)
-        )
+        # 0, not `slaterWeightMin`: this branch has always built its seed block unpruned
+        # (unlike block_Green_sparse/KrylovShiftedResolvent, which prune it) -- preserved
+        # as-is here since this is a mechanical extraction, not a behaviour change.
+        psi_dense_local, r = _distributed_seed_qr(basis, psi_arr, 0)
 
     if psi_dense_local.shape[1] == 0:
         return np.zeros((0, n, n), dtype=complex), np.zeros((0, n, n), dtype=complex), r, psi_arr, []
@@ -2744,15 +2766,7 @@ def block_Green_sparse(
 
     if N == 0 or n == 0:
         return np.empty((0, n, n), dtype=complex), np.empty((0, n, n), dtype=complex), np.zeros((n, n), dtype=complex)
-    psi_dense = build_vector(basis, psi_arr, root=0, slaterWeightMin=slaterWeightMin).T
-    if rank == 0:
-        psi_dense, r = build_qr(psi_dense)
-    if mpi:
-        psi_dense_local, r = _scatter_qr_columns(
-            comm, psi_dense if rank == 0 else None, r if rank == 0 else None, len(basis.local_basis)
-        )
-    else:
-        psi_dense_local = psi_dense
+    psi_dense_local, r = _distributed_seed_qr(basis, psi_arr, slaterWeightMin)
     psi_arr = build_state(basis, psi_dense_local.T, slaterWeightMin=0)
     if len(psi_arr) == 0:
         return np.empty((0, n, n), dtype=complex), np.empty((0, n, n), dtype=complex), r
