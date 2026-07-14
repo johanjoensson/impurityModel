@@ -64,7 +64,8 @@ CLIs sit strictly on top. **Physics/operator-algebra modules never import solver
 Layer 0: average, utils, config, polarization, product_state_representation, op_parser,
          mpi_comm, ManyBodyUtils (Cython)
 Layer 1: operator_algebra
-Layer 2: atomic_physics, eigensolvers, symmetries, block_structure, transition_operators
+Layer 2: atomic_physics, eigensolvers, lie_algebra, symmetries, block_structure,
+         transition_operators
 Layer 3: observables, spin_pairs
 Layer 4: manybody_basis (+ basis_generation, basis_restrictions,
          basis_transcription, basis_split)
@@ -85,7 +86,8 @@ Layer 6: CLIs: get_spectra, selfenergy
 - **`operator_algebra.py`** — algebra on second-quantized operator dicts (`addOps`, `daggerOp`, `combineOp`, …) and the `(l, s, m)` label ↔ flat-index conversions (`c2i`, `i2c`).
 - **`atomic_physics.py`** — single-shell atomic physics: Slater–Condon Coulomb integrals (`getU*`), spin-orbit coupling (`getSOCop`), Zeeman field (`gethHfieldop`), spherical↔cubic transforms, and the MLFT double-counting correction (`dc_MLFT`).
 - **`eigensolvers.py`** — eigensolver drivers for the low-energy spectrum: dense (`numpy.linalg.eigh`), ARPACK (`scipy.sparse.linalg.eigsh`), and the block-Lanczos TRLM path, behind the `eigensystem` driver and the MPI-aware `HermitianOperator` wrapper.
-- **`symmetries.py`** — automated symmetry discovery for second-quantized Hamiltonians: tensor extraction, conserved-charge classification, symmetry-adapted rotations, restriction widening, Hamiltonian rotation.
+- **`lie_algebra.py`** — the *algebraic half* of the symmetry machinery: tensor extraction/rotation (`extract_tensors`, `rotate_hamiltonian`), one-body symmetry discovery (the single-particle commutant null space), the Cartan reduction and joint diagonalization, and the reconstructed-Casimir observables. Depends only on `ManyBodyUtils`; `symmetries.py` builds its conserved charges and rotations on top of it.
+- **`symmetries.py`** — the consumer half built on `lie_algebra`: conserved-charge classification, occupation-window restrictions (`S_z`-weighted and frozen-shell flavors), impurity/bath occupation classification, and the impurity/Green's-function block structures used to deduplicate and sectorize GF/RIXS solves. Re-exports the `lie_algebra` primitives for backward compatibility.
 - **`block_structure.py`** — the `BlockStructure` type: detection of identical/transposed/particle-hole-related orbital blocks and matrix↔block conversions.
 - **`transition_operators.py`** — pure second-quantized transition-operator builders for the spectroscopy drivers: dipole (`getDipoleOperator(s)`, `getDaggeredDipoleOperators`), the plane-wave NIXS operator (`getNIXSOperator(s)`), the bare photo-emission/inverse-photo-emission ladder operators (`get{,Inverse}PhotoEmissionOperators`), and the `sph_harm` helper. Depends only on `atomic_physics` and `operator_algebra`; `spectra.py` builds its transition operators through these.
 

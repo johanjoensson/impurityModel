@@ -1,9 +1,8 @@
 # Deep refactor + documentation overhaul
 
-**Status (2026-07-15):** in progress. Phases 0, 1, 2a, 2b complete; config reference doc
-written. Remaining: Phase 2c (symmetries→lie_algebra), 2d (greens_function→gf_units/
-gf_solvers), 2e (CLI dataclasses); Phase 3 renames; Phase 4 Cython `.pxi` splits; Phase 5
-developer/user docs + Sphinx polish.
+**Status (2026-07-15):** in progress. Phases 0, 1, 2a, 2b, 2c complete; config reference doc
+written. Remaining: Phase 2d (greens_function→gf_units/gf_solvers), 2e (CLI dataclasses);
+Phase 3 renames; Phase 4 Cython `.pxi` splits; Phase 5 developer/user docs + Sphinx polish.
 
 ## Motivation
 
@@ -151,9 +150,11 @@ asserted rank-0-only h5 writes on every rank (the gate was red on rank 1 at HEAD
       (`calc_selfenergy` + CLI). **Done** (re-exported for backward compat). The further
       decomposition of the 407-line `calc_selfenergy` body into named stage functions is
       deferred to a follow-up.
-- [ ] **`symmetries.py`** → `ed/lie_algebra.py` (the algebraic half: symmetry discovery,
-      structure constants, Cartan subalgebra, joint diagonalization, Casimirs) +
-      `symmetries.py` (conserved charges, restrictions, block structure).
+- [x] **`symmetries.py`** → `ed/lie_algebra.py` (the algebraic half: tensor extraction/
+      rotation, symmetry discovery, structure constants, Cartan subalgebra, joint
+      diagonalization, Casimirs) + `symmetries.py` (conserved charges, restrictions, block
+      structure). **Done:** 1702 → 944 (symmetries) + 801 (lie_algebra); the algebraic
+      primitives are re-exported from `symmetries.py` for backward compat.
 - [ ] **`greens_function.py`** → `ed/gf_units.py` (the distribution engine: `GFUnit`,
       `enumerate_gf_units`, `unit_cost_weights`, `run_units_distributed`) +
       `ed/gf_solvers.py` (the per-unit kernels: `block_Green*`, `solve_shifted_block`) +
@@ -202,7 +203,6 @@ import changes, purely file-level readability.
 
 ## Remaining (follow-up sessions)
 
-- Phase 2c: `symmetries.py` → `ed/lie_algebra.py` (the algebraic half).
 - Phase 2d: `greens_function.py` → `ed/gf_units.py` + `ed/gf_solvers.py`.
 - Phase 2e: group the `get_spectra`/`selfenergy` CLI positional params into dataclasses.
 - Phase 3: renames (`getSpectra_new` → `calc_spectra`, etc.).
