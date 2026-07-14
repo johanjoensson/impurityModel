@@ -1358,6 +1358,100 @@ def _rixs_map_adaptive(map_fn, wIns, comm, tol, verbose):
     return gs
 
 
+class _R1SolverChain:
+    r"""Per-chunk intermediate (R1) resolvent solver: dense sector cache -> shift-recycled
+    Krylov -> BiCGSTAB restarts -> GMRES escalation. All tiers target ``_RIXS_R1_ATOL``.
+
+    One instance is created per work unit (one (eigenstate, wIn-chunk) pair, see
+    :func:`_rixs_map_flat`'s kernel) and walks that chunk's wIn points in order via
+    repeated :meth:`solve` calls. ``r1_cache`` is the caller-owned, per-eigenstate
+    :class:`greens_function.SectorResolventCache` (``None`` disables the spectral and
+    recycled tiers outright, forcing every point through the per-point fallback).
+
+    The spectral and recycled tiers return that point's solution directly and never
+    touch ``psi2_all``; the fallback tier is the only one that reads and updates it,
+    exactly as the original inline kernel did -- so a warm-start chain across points
+    only exists once the fallback has run at least once for this chunk.
+    """
+
+    def __init__(self, r1_cache, eigenstate):
+        self.r1_cache = r1_cache
+        self.eigenstate = eigenstate  # for the unconverged-fallback warning message only
+        self._recycled = None  # in-chunk wIn index -> shift-recycled solution
+        self._recycle_declined = r1_cache is None
+
+    def solve(self, tmp_basis, hOp, psi1_all, psi2_all, k, win, remaining_wins, delta1, E_e, slaterWeightMin, verbose):
+        """Intermediate-resolvent solution at wIn index ``k`` of the chunk.
+
+        ``remaining_wins`` is this chunk's wIn values from ``k`` onward (the shared shift
+        set the recycler solves in one recurrence). ``psi1_all``/``psi2_all`` are mutated
+        in place by the fallback tier (rebuild-and-redistribute onto ``tmp_basis``, then
+        the warm-started solve), mirroring the original kernel's rebinding.
+        """
+        z = win + delta1 * 1j + E_e
+        if self.r1_cache is not None:
+            psi2_spectral = self.r1_cache.try_solve(
+                tmp_basis, hOp, psi1_all, z, slaterWeightMin=slaterWeightMin, verbose=verbose
+            )
+            if psi2_spectral is not None:
+                return psi2_spectral
+            if self._recycled is None and not self._recycle_declined:
+                # The dense sector cache declined (distributed basis or oversized
+                # sector): recycle ONE block-Lanczos recurrence across every remaining
+                # shift of the chunk -- the right-hand-side block is wIn-independent,
+                # so all shifts share the same Krylov space.
+                sols = gf.KrylovShiftedResolvent().solve(
+                    tmp_basis,
+                    hOp,
+                    psi1_all,
+                    remaining_wins + delta1 * 1j + E_e,
+                    slaterWeightMin=slaterWeightMin,
+                    atol=_RIXS_R1_ATOL,
+                    verbose=verbose,
+                )
+                if sols is None:
+                    self._recycle_declined = True
+                else:
+                    self._recycled = dict(zip(range(k, k + len(remaining_wins)), sols))
+            if self._recycled is not None:
+                return self._recycled.pop(k)
+
+        for psi2 in psi2_all:
+            psi2.prune(slaterWeightMin)
+        tmp_basis.clear()
+        tmp_basis.add_states(sorted(set(state for p in psi1_all + psi2_all for state in p.keys())))
+        # Align seeds and warm starts to tmp_basis's ownership layout -- the solver assumes
+        # its states are distributed per `basis`, and the layout of the freshly rebuilt
+        # tmp_basis need not match where the amplitudes currently live.
+        n1 = len(psi1_all)
+        redistributed = tmp_basis.redistribute_psis(psi1_all + psi2_all)
+        psi1_all[:] = redistributed[:n1]
+        psi2_all[:] = redistributed[n1:]
+        A_op = ManyBodyOperator({((0, "c"), (0, "a")): z, ((0, "a"), (0, "c")): z}) - hOp
+        # Warm-started resolvent solved as one block over all in-components, sharing a
+        # single Krylov space / iteration (block_bicgstab deflates a rank-deficient block).
+        # atol is relative to ||psi1_all|| (see _RIXS_R1_ATOL); the extra iterations are
+        # cheap now that a warm start shortens the solve rather than silently tightening
+        # its target. gf.solve_shifted_block restarts while unconverged and still making
+        # progress and escalates to GMRES on stagnation -- near-pole points are exactly
+        # where BiCGSTAB stagnates (measured: a cold-started solve at the NiO L3 window
+        # edge silently returned relative residual 7.2), and a stagnated solve caps the
+        # map's accuracy at its residual level, so a wrong column must be rescued, and
+        # failing that, loud.
+        solve_info = {}
+        psi2_all[:] = gf.solve_shifted_block(
+            A_op, psi2_all, psi1_all, tmp_basis, slaterWeightMin, _RIXS_R1_ATOL, rtol=1e-7, info=solve_info
+        )
+        if not solve_info["converged"] and (tmp_basis.comm is None or tmp_basis.comm.rank == 0):
+            print(
+                f"warning: RIXS intermediate resolvent at wIn = {win:.6g} (eigenstate {self.eigenstate}) "
+                f"stopped unconverged at relative residual "
+                f"{solve_info.get('rel_residual', float('nan')):.2e} (after GMRES escalation).",
+                flush=True,
+            )
+        return psi2_all
+
+
 def _rixs_map_flat(
     hOp,
     in_ops,
@@ -1482,81 +1576,12 @@ def _rixs_map_flat(
         psi1_all = list(seeds)
         psi2_all = [ManyBodyState() for _ in in_ops]
         r1_cache = r1_caches.setdefault(e, gf.SectorResolventCache()) if r1_caches is not None else None
-        r1_recycled = None  # chunk index -> shift-recycled solutions (filled on first dense decline)
-        r1_recycle_declined = r1_cache is None
+        chain = _R1SolverChain(r1_cache, eigenstate=e)
         out = np.zeros((len(w_chunk), n_i, n_o, len(wLoss)), dtype=complex)
-        for k, win in enumerate(wIns[w_chunk]):
-            if r1_cache is not None:
-                psi2_spectral = r1_cache.try_solve(
-                    tmp_basis,
-                    hOp,
-                    psi1_all,
-                    win + delta1 * 1j + E_e,
-                    slaterWeightMin=slaterWeightMin,
-                    verbose=verbose,
-                )
-                if psi2_spectral is not None:
-                    out[k] = eval_out(green_basis, psi2_spectral, E_e) * thermal_weight
-                    continue
-                if r1_recycled is None and not r1_recycle_declined:
-                    # The dense sector cache declined (distributed basis or oversized
-                    # sector): recycle ONE block-Lanczos recurrence across every remaining
-                    # shift of the chunk -- the right-hand-side block is wIn-independent,
-                    # so all shifts share the same Krylov space.
-                    sols = gf.KrylovShiftedResolvent().solve(
-                        tmp_basis,
-                        hOp,
-                        psi1_all,
-                        wIns[w_chunk][k:] + delta1 * 1j + E_e,
-                        slaterWeightMin=slaterWeightMin,
-                        atol=_RIXS_R1_ATOL,
-                        verbose=verbose,
-                    )
-                    if sols is None:
-                        r1_recycle_declined = True
-                    else:
-                        r1_recycled = dict(zip(range(k, len(w_chunk)), sols))
-                if r1_recycled is not None:
-                    out[k] = eval_out(green_basis, r1_recycled.pop(k), E_e) * thermal_weight
-                    continue
-            for psi2 in psi2_all:
-                psi2.prune(slaterWeightMin)
-            tmp_basis.clear()
-            tmp_basis.add_states(sorted(set(state for p in psi1_all + psi2_all for state in p.keys())))
-            # Align seeds and warm starts to tmp_basis's ownership layout -- the solver assumes
-            # its states are distributed per `basis`, and the layout of the freshly rebuilt
-            # tmp_basis need not match where the amplitudes currently live.
-            redistributed = tmp_basis.redistribute_psis(psi1_all + psi2_all)
-            psi1_all = list(redistributed[: len(psi1_all)])
-            psi2_all = list(redistributed[len(psi1_all) :])
-            A_op = (
-                ManyBodyOperator(
-                    {((0, "c"), (0, "a")): win + delta1 * 1j + E_e, ((0, "a"), (0, "c")): win + delta1 * 1j + E_e}
-                )
-                - hOp
-            )
-            # Warm-started resolvent solved as one block over all in-components, sharing a
-            # single Krylov space / iteration (block_bicgstab deflates a rank-deficient block).
-            # atol is relative to ||psi1_all|| (see _RIXS_R1_ATOL); the extra iterations are
-            # cheap now that a warm start shortens the solve rather than silently tightening
-            # its target. gf.solve_shifted_block restarts while unconverged and still making
-            # progress and escalates to GMRES on stagnation -- near-pole points are exactly
-            # where BiCGSTAB stagnates (measured: a cold-started solve at the NiO L3 window
-            # edge silently returned relative residual 7.2), and a stagnated solve caps the
-            # map's accuracy at its residual level, so a wrong column must be rescued, and
-            # failing that, loud.
-            solve_info = {}
-            psi2_all = gf.solve_shifted_block(
-                A_op, psi2_all, psi1_all, tmp_basis, slaterWeightMin, _RIXS_R1_ATOL, rtol=1e-7, info=solve_info
-            )
-            if not solve_info["converged"] and (sub_comm is None or sub_comm.rank == 0):
-                print(
-                    f"warning: RIXS intermediate resolvent at wIn = {win:.6g} (eigenstate {e}) "
-                    f"stopped unconverged at relative residual "
-                    f"{solve_info.get('rel_residual', float('nan')):.2e} (after GMRES escalation).",
-                    flush=True,
-                )
-            out[k] = eval_out(green_basis, psi2_all, E_e) * thermal_weight
+        wins = wIns[w_chunk]
+        for k, win in enumerate(wins):
+            psi2 = chain.solve(tmp_basis, hOp, psi1_all, psi2_all, k, win, wins[k:], delta1, E_e, slaterWeightMin, verbose)
+            out[k] = eval_out(green_basis, psi2, E_e) * thermal_weight
         # Free the per-unit cloned sub-communicator collectively -- every rank of this color
         # runs the same unit list in the same order. green_basis's clone outlives the unit
         # (per-color cache) and is freed after run_units_distributed.
