@@ -102,6 +102,18 @@ The plans have dependencies. Read and execute in this order:
    instead of `2.2e-9`, so `cipsi_solver._eigen_tol` finally bites. See the plan for the numbers,
    the two wrong diagnoses along the way, and what is deliberately left behind.
 
+9. **[rixs_r2_performance.md](rixs_r2_performance.md)** — 📋 **PROPOSAL, not started.**
+   Where the RIXS wall time goes now that the R1 solver chain ([[rixs-r1-solver-chain]])
+   is validated and fully solved on NiO L3: the entire 4.6x gap to the dense-cache path
+   is R2 (the final-state resolvent), whose convergence monitor was measured chasing an
+   accuracy three to six orders tighter than the map needs. Four design options, ordered
+   by effort-to-payoff: align R2's convergence target with the map's own tolerance
+   (cheapest, most directly supported by the data); a distributed dense sector cache for
+   the (not yet observed) case of a unit spanning multiple ranks; a union-seed chunk
+   block reusing R1's existing rank-deflation trick; and Krylov reuse across wIn seeds
+   (highest payoff, research-grade, needs a throwaway prototype first). Not an execution
+   plan yet — the adaptive-path tolerance question is still open, so no checkboxes.
+
 ## Reference
 
 - **[apply_perf_deferred_designs.md](apply_perf_deferred_designs.md)** — Design sketches
