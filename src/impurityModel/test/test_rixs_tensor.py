@@ -636,6 +636,47 @@ def test_krylov_shifted_resolvent_matches_dense_solve():
         np.testing.assert_allclose(got, ref, atol=1e-8)
 
 
+def test_krylov_shifted_resolvent_long_recurrence():
+    """A sector large enough that the recurrence cannot close before the kernel's
+    per-iteration convergence check runs and the budget-resume loop cycles.
+
+    The 3-orbital model above spans 3 determinants: block Lanczos exhausts the space
+    before ever invoking the convergence callback or a second budget round, so neither
+    path was covered (the callback crashed on the kernel's ``block_widths`` keyword on
+    the first real workload)."""
+    from impurityModel.ed import greens_function as gf
+
+    ei, t, u = -1.0, 0.7, 2.0
+    terms = {((i, "c"), (i, "a")): ei + 0.3 * i for i in range(8)}
+    for i in range(7):
+        terms[((i, "c"), (i + 1, "a"))] = t
+        terms[((i + 1, "c"), (i, "a"))] = t
+    terms[((0, "c"), (1, "c"), (1, "a"), (0, "a"))] = u
+    op = ManyBodyOperator(terms)
+
+    dets = [_bytes(o) for o in combinations(range(8), 4)]  # 70 determinants, chain-connected
+    states = _states(dets)
+    H = _matrix(op, states)
+    basis = Basis(
+        impurity_orbitals={2: [list(range(8))]},
+        bath_states=({2: [[]]}, {2: [[]]}),
+        initial_basis=list(dets),
+        verbose=False,
+        comm=MPI.COMM_SELF,
+    )
+
+    zs = np.array([0.4 + 0.2j, -2.3 + 0.1j, 3.1 + 0.5j])
+    rhs = [states[0]]  # one seed: the Krylov space grows one vector per iteration
+    sols = gf.KrylovShiftedResolvent().solve(basis, op, rhs, zs, slaterWeightMin=0.0, atol=1e-10)
+    assert sols is not None
+    s_dense = np.array([[inner(sk, psi) for psi in rhs] for sk in states])
+    eye = np.eye(len(states), dtype=complex)
+    for z, xs in zip(zs, sols):
+        ref = np.linalg.solve(z * eye - H, s_dense)
+        got = np.array([[inner(sk, x) for x in xs] for sk in states])
+        np.testing.assert_allclose(got, ref, atol=1e-8)
+
+
 def test_rixs_tensor_declined_sector_uses_krylov_recycler(monkeypatch):
     """When the dense sector cache declines, the R1 solves come from the recycled
     recurrence -- the per-point BiCGSTAB fallback must not run -- and the map still

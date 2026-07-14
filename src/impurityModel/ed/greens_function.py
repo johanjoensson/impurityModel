@@ -1723,7 +1723,7 @@ class KrylovShiftedResolvent:
                 psi_arr,
                 hOp,
                 lanczos_basis,
-                lambda a, b, verbose=False: False,
+                lambda a, b, verbose=False, block_widths=None, **kwargs: False,
                 verbose=verbose,
                 reort=self._reort,
                 slaterWeightMin=slaterWeightMin,
