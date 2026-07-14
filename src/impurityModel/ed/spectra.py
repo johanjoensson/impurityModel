@@ -1789,6 +1789,10 @@ def getRIXSmap_new(
                 green_basis.add_states(psi3.keys())
             psi3_all = green_basis.redistribute_psis(psi3_all)
             r2_info = {}
+            # verbose=False regardless of the caller's own verbose flag: this runs once per
+            # (eigenstate, wIn, in-component) -- hundreds of times on a real map -- and its
+            # non-convergence warning is exactly what produced 309 near-identical lines on
+            # the NiO L3 validation run. solver_stats aggregates the same information once.
             alphas, betas, r = gf.block_Green(
                 hOp,
                 psi3_all,
@@ -1796,7 +1800,7 @@ def getRIXSmap_new(
                 delta2,
                 Reort.NONE,
                 slaterWeightMin=slaterWeightMin,
-                verbose=verbose,
+                verbose=False,
                 info=r2_info,
             )
             solver_stats["r2_lanczos"] += 1
@@ -1933,6 +1937,8 @@ def getRIXSmap_tensor(
                 green_basis.add_states(s.keys())
             seeds = green_basis.redistribute_psis(seeds)
             r2_info = {}
+            # verbose=False regardless of the caller's own verbose flag -- see the matching
+            # comment in getRIXSmap_new's eval_out: solver_stats aggregates this instead.
             alphas, betas, r = gf.block_Green(
                 hOp,
                 seeds,
@@ -1940,7 +1946,7 @@ def getRIXSmap_tensor(
                 delta2,
                 Reort.NONE,
                 slaterWeightMin=slaterWeightMin,
-                verbose=verbose,
+                verbose=False,
                 info=r2_info,
             )
             solver_stats["r2_lanczos"] += 1
