@@ -409,3 +409,90 @@ def test_rixs_tensor_adaptive_distributed_matches_dense():
         assert np.max(np.abs(adaptive - dense)) <= 1e-6 * scale
     else:
         assert adaptive is None and dense is None
+
+
+# --- tests for the R2 sector resolvent cache and the spurious-pole guard ---
+
+
+def test_sector_resolvent_cache_matches_dense_solve():
+    """One eigendecomposition serves different seed blocks and evaluation shifts."""
+    from impurityModel.ed import greens_function as gf
+
+    op = _model()
+    psis, es, dets, states, vecs = _thermal_states(op, 2)
+    H = _matrix(op, states)
+    cache = gf.SectorResolventCache()
+    basis = _basis([])  # cache expands from the seeds
+    eye = np.eye(len(states), dtype=complex)
+
+    # the second seed set's support is nested inside the first's sector (the model's
+    # {0,1} determinant is H-disconnected, so an unrelated seed would legitimately rebuild)
+    for shift, seeds_src in ((0.7 + 0.3j, psis), (-1.1 + 0.2j, psis[:2])):
+        zs = WLOSS + shift
+        got = cache.try_eval(basis, op, list(seeds_src), zs)
+        s_dense = np.array([[inner(sk, psi) for psi in seeds_src] for sk in states])
+        ref = np.array([s_dense.conj().T @ np.linalg.solve(z * eye - H, s_dense) for z in zs])
+        np.testing.assert_allclose(got, ref, atol=1e-10)
+    assert cache._n_builds == 1, "second evaluation must reuse the eigendecomposition"
+    assert cache._n_solves == 2
+
+
+def test_sector_resolvent_cache_declines_oversized_sector(monkeypatch):
+    """Above GF_R2_DENSE_MAX the cache declines and the tensor path falls back to
+    block-Lanczos -- and still matches the independent dense reference."""
+    from impurityModel.ed import greens_function as gf
+
+    op = _model()
+    psis, es, dets, states, vecs = _thermal_states(op, 2)
+    monkeypatch.setenv("GF_R2_DENSE_MAX", "1")
+    cache = gf.SectorResolventCache()
+    assert cache.try_eval(_basis([]), op, list(psis[:2]), WLOSS + 0.3j) is None
+
+    tin, tout = _tin_tout()
+    got = _run_rixs_tensor(op, psis, es, tin, tout, dets, EPS_IN, EPS_OUT)
+    ref = _dense_rixs_pol(op, tin, tout, EPS_IN, EPS_OUT, es, vecs, states)
+    np.testing.assert_allclose(got, ref, atol=1e-8)
+
+
+def test_adaptive_blowup_guard_forces_solving_spurious_pole(monkeypatch):
+    """A fit with a barycentric denominator zero between support points must not survive:
+    the guard forces a solve at the blown-up node instead of trusting the reconstruction.
+
+    The first fit is doctored to weights (1, 1) on the two outermost solved points -- its
+    denominator vanishes at their midpoint, the classic Froissart signature. The surrogate
+    alone would then compare the NEXT fit against this one and could stop; the guard must
+    instead sample the artifact region and converge to the truth.
+    """
+    rng = np.random.default_rng(11)
+    poles = np.array([-8.4 + 0.35j, -6.6 + 0.3j])
+    n_i, n_o, n_l = 1, 1, 9
+    numerators = rng.standard_normal((n_i * n_o * n_l, 2)) + 1j * rng.standard_normal((n_i * n_o * n_l, 2))
+    x = np.linspace(-9.0, -5.0, 33)
+
+    def truth(wins):
+        cauchy = 1.0 / (np.asarray(wins)[:, None] - poles[None, :])
+        flat = cauchy @ numerators.T
+        return np.moveaxis(flat.reshape(len(wins), n_i, n_o, n_l), 0, 2)
+
+    solved_wins = []
+
+    def map_fn(wins):
+        solved_wins.extend(np.atleast_1d(wins).tolist())
+        return truth(wins)
+
+    real_aaa = spectra.set_valued_aaa
+    doctored = {"used": False}
+
+    def poisoned_aaa(xs, F, rtol):
+        if not doctored["used"]:
+            doctored["used"] = True
+            return [0, len(xs) - 1], np.array([1.0, 1.0], dtype=complex)
+        return real_aaa(xs, F, rtol=rtol)
+
+    monkeypatch.setattr(spectra, "set_valued_aaa", poisoned_aaa)
+    got = spectra._rixs_map_adaptive(map_fn, x, None, tol=1e-8, verbose=False)
+    ref = truth(x)
+    assert np.max(np.abs(got - ref)) <= 1e-6 * np.max(np.abs(ref))
+    # the denominator zero of the poisoned fit sits midway between the outermost initial
+    # samples; the guard must have forced solves in that region
+    assert len(solved_wins) > 5, "guard never forced additional solves"

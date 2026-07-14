@@ -113,7 +113,11 @@ def barycentric_eval(x_eval, x_support, weights, F_support):
     # barycentric sums stay warning-free.
     diff[exact_row, exact_col] = 1.0
     cauchy = 1.0 / diff
-    out = (cauchy @ (weights[:, None] * F_support)) / (cauchy @ weights)[:, None]
+    # A (near-)zero denominator -- a spurious barycentric pole between support points --
+    # yields inf/nan on that row; callers detect this with isfinite (see the adaptive
+    # sampler's blow-up guard) rather than it raising here.
+    with np.errstate(divide="ignore", invalid="ignore"):
+        out = (cauchy @ (weights[:, None] * F_support)) / (cauchy @ weights)[:, None]
     out[exact_row] = F_support[exact_col]
     return out
 

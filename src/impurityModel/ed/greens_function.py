@@ -29,7 +29,12 @@ from impurityModel.ed.ManyBodyUtils import (
     ManyBodyState,
     block_inner_cy,
 )
-from impurityModel.ed.memory_estimate import estimate_gf_peak_bytes, format_bytes, max_colors_within_budget
+from impurityModel.ed.memory_estimate import (
+    available_bytes_per_rank,
+    estimate_gf_peak_bytes,
+    format_bytes,
+    max_colors_within_budget,
+)
 from impurityModel.ed.mpi_comm import gather_distributed_results
 from impurityModel.ed import gf_diagnostics as _gfd
 from impurityModel.ed.basis_transcription import build_dense_matrix, build_sparse_matrix, build_state, build_vector
@@ -1346,6 +1351,108 @@ def calc_continuants(diagonal, offdiagonal):
         An[n] = diagonal[n] * An[n - 1] - np.conj(offdiagonal[n]) * An[n - 2] * offdiagonal[n]
         Bn[n] = diagonal[n] * Bn[n - 1] - np.conj(offdiagonal[n]) * Bn[n - 2] * offdiagonal[n]
     return An, Bn
+
+
+def _sector_dense_max():
+    """Largest sector size the spectral cache may densify (``GF_R2_DENSE_MAX``).
+
+    The eigendecomposition holds ~3 dense ``(N, N)`` complex arrays (H, the eigenvector
+    matrix and LAPACK workspace); the default caps that at a quarter of the available
+    per-rank memory.
+    """
+    env = os.environ.get("GF_R2_DENSE_MAX")
+    if env is not None:
+        return max(0, int(env))
+    return int(np.sqrt(0.25 * available_bytes_per_rank() / (3 * 16)))
+
+
+class SectorResolventCache:
+    r"""Spectral cache for repeated resolvent Gram matrices over one closed sector.
+
+    Serves callers that evaluate :math:`G[w, k, k'] = \langle s_k| (z_w - H)^{-1}
+    |s_{k'}\rangle` for MANY different seed blocks living in the SAME H-closed sector --
+    e.g. the RIXS final-state (R2) resolvent, whose seeds change with every incoming
+    frequency while the sector does not. Instead of one block-Lanczos per seed block
+    (:func:`block_Green` re-spans the sector every time), the sector Hamiltonian is
+    densified and eigendecomposed ONCE; every subsequent evaluation is two small dense
+    contractions.
+
+    The cache snapshots the sector's determinant list at build time and is self-contained
+    afterwards: callers may freely clear / rebuild the basis they hand in. A seed block
+    whose support leaks outside the cached sector triggers a fresh expansion + rebuild
+    (different sector). Sectors larger than :func:`_sector_dense_max` are declined
+    (``try_eval`` returns ``None``) and the caller falls back to its per-seed solver.
+
+    Only the serial / single-rank-color path is served (``basis.comm`` of size > 1
+    returns ``None``): a distributed sector wants the distributed Lanczos, not a
+    replicated dense eigenbasis.
+    """
+
+    def __init__(self):
+        self._index = None  # determinant -> row
+        self._evals = None
+        self._evecs = None
+        self._n_solves = 0
+        self._n_builds = 0
+
+    def _covers(self, seeds):
+        return self._index is not None and all(
+            state in self._index for psi in seeds for state in psi.keys()
+        )
+
+    def _expand_to_closure(self, basis, hOp, seeds, slaterWeightMin):
+        """Grow ``basis`` to the H-connectivity closure of the seed support.
+
+        The same reachability probe as :func:`block_Green`'s expansion loop (repeated
+        ``apply_block`` on the accumulated support), bounded by the basis
+        ``truncation_threshold`` -- a capped sector keeps the freeze-growth
+        exact-on-subspace contract.
+        """
+        basis.add_states(sorted(set(state for psi in seeds for state in psi.keys())))
+        probe = ManyBodyBlockState.from_states(list(seeds))
+        while True:
+            old_size = basis.size
+            probe = hOp.apply_block(probe, slaterWeightMin)
+            basis.add_states(
+                set(state for state in probe.support_keys(0.0) if state not in basis.local_basis),
+            )
+            if basis.size == old_size or basis.size > basis.truncation_threshold:
+                break
+
+    def try_eval(self, basis, hOp, seeds, zs, slaterWeightMin=0, verbose=False):
+        """Resolvent Gram matrix ``G[w, k, k']`` over ``zs``, or ``None`` if not applicable.
+
+        ``zs`` carries the full shift (e.g. ``wLoss + 1j * delta2 + E_e``): the cached
+        eigenbasis is shift-independent, so one cache serves every eigenstate and
+        frequency offset.
+        """
+        if basis.comm is not None and basis.comm.size > 1:
+            return None
+        if not self._covers(seeds):
+            self._expand_to_closure(basis, hOp, seeds, slaterWeightMin)
+            if len(basis) > _sector_dense_max():
+                return None
+            h = build_sparse_matrix(basis, hOp).toarray()
+            h = 0.5 * (h + h.conj().T)
+            self._evals, self._evecs = np.linalg.eigh(h)
+            self._index = {state: i for i, state in enumerate(basis.local_basis)}
+            self._n_builds += 1
+            if verbose:
+                print(
+                    f"Sector resolvent cache: eigendecomposed a {len(basis)}-determinant sector "
+                    f"(build {self._n_builds}).",
+                    flush=True,
+                )
+        s_dense = np.zeros((len(self._index), len(seeds)), dtype=complex)
+        for k, psi in enumerate(seeds):
+            for state, amp in psi.items():
+                s_dense[self._index[state], k] = amp
+        x = self._evecs.conj().T @ s_dense  # (N, n_seeds)
+        self._n_solves += 1
+        # G[w] = X^dagger diag(1 / (z_w - lambda)) X, batched over the z mesh.
+        zs = np.asarray(zs)
+        inv = 1.0 / (zs[:, None] - self._evals[None, :])  # (n_w, N)
+        return np.einsum("nk,wn,nl->wkl", x.conj(), inv, x, optimize=True)
 
 
 def block_Green(

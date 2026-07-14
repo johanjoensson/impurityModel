@@ -1221,6 +1221,11 @@ _RIXS_ADAPTIVE_MIN_GRID = 12
 # many components (strided across polarization pairs x wLoss); the final reconstruction uses
 # the full component set with the shared weights, which is exact for shared-pole functions.
 _RIXS_ADAPTIVE_MAX_FIT_COMPONENTS = 4096
+# A reconstructed magnitude exceeding the solved data's envelope by this factor at an
+# unsolved node is treated as a spurious barycentric pole (Froissart artifact) and forces a
+# solve there; legitimate inter-sample peaks are excluded by the grid being finer than the
+# physical broadening.
+_RIXS_ADAPTIVE_BLOWUP_FACTOR = 2.0
 
 
 def _rixs_map_adaptive(map_fn, wIns, comm, tol, verbose):
@@ -1263,6 +1268,7 @@ def _rixs_map_adaptive(map_fn, wIns, comm, tol, verbose):
     min_solves = min(n, 8)
     next_batch = sorted(set(int(i) for i in np.round(np.linspace(0, n - 1, min(5, n)))))
     n_rounds = 0
+    last_fit = None  # (support indices into `solved`, weights) of the last guarded fit
 
     while True:
         if comm is not None:
@@ -1283,6 +1289,7 @@ def _rixs_map_adaptive(map_fn, wIns, comm, tol, verbose):
             F_fit = F_full[:, fit_idx]
             scale = np.max(np.abs(F_fit))
             support, weights = set_valued_aaa(x_solved, F_fit, rtol=0.1 * tol)
+            last_fit = (support, weights)
             R = barycentric_eval(wIns, x_solved[support], weights, F_fit[support])
             if prev_R is None or scale == 0.0:
                 surrogate = None
@@ -1290,10 +1297,29 @@ def _rixs_map_adaptive(map_fn, wIns, comm, tol, verbose):
                 surrogate = np.max(np.abs(R - prev_R), axis=1) / scale
             prev_R = R
             unsolved = [i for i in range(n) if i not in set(solved)]
+            # Spurious-pole (Froissart) guard: a barycentric denominator zero between
+            # support points makes the reconstruction blow up at nodes no data pins
+            # down -- and BOTH consecutive iterates can share the artifact, so the
+            # surrogate alone would happily converge on it (that exact failure produced
+            # a 3x-of-scale spike on the NiO L3 map). With the grid finer than the
+            # physical broadening, no true inter-sample feature can exceed the sampled
+            # envelope by this factor: treat any such node as must-solve.
+            recon_mag = np.max(np.abs(R), axis=1)
+            blown = [
+                i
+                for i in unsolved
+                if not np.isfinite(recon_mag[i]) or recon_mag[i] > _RIXS_ADAPTIVE_BLOWUP_FACTOR * scale
+            ]
+            if blown:
+                if surrogate is None:
+                    surrogate = np.zeros(n)
+                finite_max = float(np.max(surrogate[np.isfinite(surrogate)], initial=tol))
+                surrogate[blown] = 10.0 * finite_max
             converged = (
                 not unsolved
                 or (
-                    len(solved) >= min_solves
+                    not blown
+                    and len(solved) >= min_solves
                     and surrogate is not None
                     and np.max(surrogate[unsolved]) <= tol
                 )
@@ -1314,17 +1340,20 @@ def _rixs_map_adaptive(map_fn, wIns, comm, tol, verbose):
         gs[:, :, idx, :] = cols[idx]
     unsolved = [i for i in range(n) if i not in set(solved)]
     if unsolved:
+        # Reuse the loop's LAST fit -- it is the one the blow-up guard vetted; a fresh
+        # refit here could reintroduce an unchecked artifact.
+        support, weights = last_fit
         x_solved = wIns[np.asarray(solved)]
         F_full = np.array([cols[i].reshape(-1) for i in solved])
-        support, weights = set_valued_aaa(x_solved, F_full[:, fit_idx], rtol=0.1 * tol)
         recon = barycentric_eval(wIns[np.asarray(unsolved)], x_solved[support], weights, F_full[support])
         for k, idx in enumerate(unsolved):
             gs[:, :, idx, :] = recon[k].reshape(n_i, n_o, n_l)
     if verbose:
         print(
             f"Adaptive RIXS wIn sampling: solved {len(solved)}/{n} points in {n_rounds} rounds "
-            f"({len(support) if unsolved else 0} support points; tol {tol:g})."
+            f"({len(last_fit[0]) if unsolved else 0} support points; tol {tol:g})."
         )
+        print(f"  solved wIn: {np.array2string(np.sort(wIns[np.asarray(solved)]), precision=4, max_line_width=100)}")
     return gs
 
 
@@ -1464,6 +1493,7 @@ def _rixs_map_flat(
             # measured accuracy-vs-dense at 2.6e-7 (test_rixs_tensor_perf). Tighten to 1e-7
             # for ~6e-9 if a map ever needs it; the extra iterations are cheap now that a warm
             # start shortens the solve rather than silently tightening its target.
+            solve_info = {}
             psi2_all = block_bicgstab(
                 A=A_op,
                 x0=psi2_all,
@@ -1472,7 +1502,18 @@ def _rixs_map_flat(
                 slaterWeightMin=slaterWeightMin,
                 atol=1e-6,
                 rtol=1e-7,
+                info=solve_info,
             )
+            # A stagnated solve silently caps the map's accuracy at its residual level
+            # (and near-pole points are exactly where BiCGSTAB stagnates), so report it:
+            # a wrong column must be loud, not free.
+            if not solve_info.get("converged", True) and (sub_comm is None or sub_comm.rank == 0):
+                print(
+                    f"warning: RIXS intermediate resolvent at wIn = {win:.6g} (eigenstate {e}) "
+                    f"stopped unconverged at relative residual "
+                    f"{solve_info.get('rel_residual', float('nan')):.2e}.",
+                    flush=True,
+                )
             out[k] = eval_out(green_basis, psi2_all, E_e) * thermal_weight
         # Free the per-unit cloned sub-communicator collectively -- every rank of this color
         # runs the same unit list in the same order. green_basis's clone outlives the unit
@@ -1723,23 +1764,33 @@ def getRIXSmap_tensor(
     n_in = len(in_component_ops)
     n_out = len(out_component_ops)
 
+    # The R2 sector is the same for every wIn point, eigenstate and adaptive round (the
+    # shift enters only at evaluation time), so its eigendecomposition is computed once
+    # and every point's resolvent matrix becomes two dense contractions. Held in this
+    # closure so it outlives the per-round _rixs_map_flat calls of the adaptive sampler.
+    r2_cache = gf.SectorResolventCache()
+
     def eval_out(green_basis, psi2_all, E_e):
         # Flattened out-seed block s_{a,b} = Tout_b psi2_a; index kf = a * n_out + b. One
         # block-Green over all seeds gives the full resolvent matrix (every cross term).
         seeds = [applyOp_test(out_component_ops[b], psi2_all[a]) for a in range(n_in) for b in range(n_out)]
-        for s in seeds:
-            green_basis.add_states(s.keys())
-        seeds = green_basis.redistribute_psis(seeds)
-        alphas, betas, r = gf.block_Green(
-            hOp,
-            seeds,
-            green_basis,
-            delta2,
-            Reort.NONE,
-            slaterWeightMin=slaterWeightMin,
-            verbose=verbose,
+        g_flat = r2_cache.try_eval(
+            green_basis, hOp, seeds, wLoss + 1j * delta2 + E_e, slaterWeightMin=slaterWeightMin, verbose=verbose
         )
-        g_flat = gf.calc_G(alphas, betas, r, wLoss, E_e, delta2)
+        if g_flat is None:  # distributed or over the dense-size bound: per-seed block-Lanczos
+            for s in seeds:
+                green_basis.add_states(s.keys())
+            seeds = green_basis.redistribute_psis(seeds)
+            alphas, betas, r = gf.block_Green(
+                hOp,
+                seeds,
+                green_basis,
+                delta2,
+                Reort.NONE,
+                slaterWeightMin=slaterWeightMin,
+                verbose=verbose,
+            )
+            g_flat = gf.calc_G(alphas, betas, r, wLoss, E_e, delta2)
         # C[w, alpha, beta, alpha', beta'] = <s_{alpha,beta}| R2 |s_{alpha',beta'}>.
         C5 = g_flat.reshape(len(wLoss), n_in, n_out, n_in, n_out)
         # Contract with polarizations. Out operators are daggered (getDaggeredDipole..),
