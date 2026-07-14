@@ -70,7 +70,7 @@ Layer 4: manybody_basis (+ basis_generation, basis_restrictions,
          basis_transcription, basis_split)
 Layer 5: gf_primitives, gf_convergence, gf_shift_recycling, greens_function, spectra, rixs,
          cg, cipsi_solver, groundstate, hartree_fock, hamiltonian_io, gf_diagnostics,
-         gs_statistics
+         gs_statistics, double_counting, sigma
 Layer 6: CLIs: get_spectra, selfenergy
 ```
 
@@ -114,10 +114,12 @@ Layer 6: CLIs: get_spectra, selfenergy
 - **`gf_diagnostics.py`** — convergence/consistency diagnostics for computed Green's functions.
 - **`gs_statistics.py`** — ground-state statistics computation, printing, and saving.
 - **`hamiltonian_io.py`** — construction and file I/O of the impurity Hamiltonian: readers for pickled/`.dat`/`.json` h0 formats and the builders combining h0 with SOC, magnetic field, Coulomb, and double counting.
+- **`double_counting.py`** — the double-counting search for the self-energy workflow: `fixed_peak_dc` (pin a spectral peak) and `fixed_occupation_dc` (pin the impurity occupation), each bisecting a chemical potential while rebuilding the variational ground state and its thermal density matrix. Split out of `selfenergy.py`.
+- **`sigma.py`** — self-energy extraction downstream of `G`: the static (Hartree-Fock) and dynamic self-energies (`get_sigma`, `get_Sigma_static`), the hybridization function (`hyb`), the correlated/bath splitting (`get_hcorr_v_hbath`), and the physicality check (`check_greens_function`, `UnphysicalGreensFunctionError`). Split out of `selfenergy.py`.
 
 ### CLIs (Layer 6)
 - **`get_spectra.py`** (`python -m impurityModel.ed.get_spectra`) — find the lowest eigenstates, then calculate spectra (PS, XPS, XAS, NIXS, RIXS).
-- **`selfenergy.py`** (`python -m impurityModel.ed.selfenergy`) — impurity self-energy calculation (for DMFT-style workflows).
+- **`selfenergy.py`** (`python -m impurityModel.ed.selfenergy`) — impurity self-energy calculation (for DMFT-style workflows): the `calc_selfenergy`/`get_selfenergy` orchestration and CLI on top of `double_counting` and `sigma` (both re-exported for backward compatibility).
 
 ### Bath construction (currently unused by the solvers)
 - **`bath_fitting.py`** — hybridization-function bath fitting helpers. No production

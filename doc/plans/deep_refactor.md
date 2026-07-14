@@ -1,6 +1,9 @@
 # Deep refactor + documentation overhaul
 
-**Status (2026-07-15):** in progress. Phase 0 and Phase 1 complete.
+**Status (2026-07-15):** in progress. Phases 0, 1, 2a, 2b complete; config reference doc
+written. Remaining: Phase 2c (symmetries→lie_algebra), 2d (greens_function→gf_units/
+gf_solvers), 2e (CLI dataclasses); Phase 3 renames; Phase 4 Cython `.pxi` splits; Phase 5
+developer/user docs + Sphinx polish.
 
 ## Motivation
 
@@ -142,11 +145,12 @@ asserted rank-0-only h5 writes on every rank (the gate was red on rank 1 at HEAD
       `_R1SolverChain`, `_rixs_map_flat`, both map drivers) + `spectra.py`
       (XAS/PS/XPS/NIXS drivers + the `simulate_spectra` orchestrator). **Done:** 1930 → ~860
       lines; both new modules re-exported from `spectra.py` for backward compat.
-- [ ] **`selfenergy.py`** → `ed/double_counting.py` (`fixed_peak_dc`,
+- [x] **`selfenergy.py`** → `ed/double_counting.py` (`fixed_peak_dc`,
       `fixed_occupation_dc`, DC solver plumbing) + `ed/sigma.py` (`get_hcorr_v_hbath`,
       `hyb`, `get_sigma`, `get_Sigma_static`, causality check) + `selfenergy.py`
-      (`calc_selfenergy` + CLI). Then decompose the 407-line `calc_selfenergy` body into
-      named stage functions.
+      (`calc_selfenergy` + CLI). **Done** (re-exported for backward compat). The further
+      decomposition of the 407-line `calc_selfenergy` body into named stage functions is
+      deferred to a follow-up.
 - [ ] **`symmetries.py`** → `ed/lie_algebra.py` (the algebraic half: symmetry discovery,
       structure constants, Cartan subalgebra, joint diagonalization, Casimirs) +
       `symmetries.py` (conserved charges, restrictions, block structure).
