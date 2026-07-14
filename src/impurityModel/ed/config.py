@@ -368,7 +368,7 @@ def dump() -> str:
         knobs = [k for k in KNOBS.values() if k.group == group]
         if not knobs:
             continue
-        lines.append(f"### {title}\n")
+        lines.append(f"## {title}\n")
         lines.append("| Variable | Type | Default | Description |")
         lines.append("| --- | --- | --- | --- |")
         for knob in knobs:

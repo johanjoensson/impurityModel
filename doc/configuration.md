@@ -17,7 +17,7 @@ available per-rank memory or the communicator size) unless the variable override
 > `impurityModel/ed/config.py`, not this file. Regenerate with
 > `python -m impurityModel.ed.config > doc/configuration.md` (then re-add this header).
 
-### Per-frequency BiCGSTAB solver (``gf_method="bicgstab"``)
+## Per-frequency BiCGSTAB solver (``gf_method="bicgstab"``)
 
 | Variable | Type | Default | Description |
 | --- | --- | --- | --- |
@@ -27,7 +27,7 @@ available per-rank memory or the communicator size) unless the variable override
 | `GF_GMRES_RESTART` | int | `40` | Krylov restart length of the GMRES fallback (the solver for points BiCGSTAB leaves unconverged: its shadow-residual recurrence stagnates near a pole, GMRES minimizes the residual and has no such mode). Bounds the fallback's live Krylov blocks, so the memory model (memory_estimate.estimate_gf_peak_bytes, method="bicgstab") reads the same knob. |
 | `GF_GMRES_MAX_RESTARTS` | int | `25` | Maximum GMRES restart cycles before the point is reported as unconverged. |
 
-### Spectrum slicing (``gf_method="sliced"``)
+## Spectrum slicing (``gf_method="sliced"``)
 
 | Variable | Type | Default | Description |
 | --- | --- | --- | --- |
@@ -35,7 +35,7 @@ available per-rank memory or the communicator size) unless the variable override
 | `GF_SLICE_DEGREE` | int | `0` | Chebyshev filter degree; 0 = auto (derived from the bandwidth / slice-width ratio). |
 | `GF_SLICE_TOL` | float | `0.0` | Amplitude truncation applied to the filtered slice seeds; 0 = no truncation. |
 
-### Green's-function work-unit decomposition
+## Green's-function work-unit decomposition
 
 | Variable | Type | Default | Description |
 | --- | --- | --- | --- |
@@ -43,14 +43,14 @@ available per-rank memory or the communicator size) unless the variable override
 | `GF_OPERATOR_SPLIT` | bool | `False` | Split each orbital block's Green's function into scalar (pairwise) continued fractions, one per operator column, instead of one block recurrence. Multiplies the number of independent work units -- better load balance for few large blocks -- at the cost of redundant Krylov building (no subspace shared across columns). Mutually exclusive with eigenstate grouping; the operator split wins when both are requested. |
 | `GF_PER_STATE_RESTRICT` | bool | *derived* | Build the excited-sector occupation window per eigenstate rather than once for the thermal ensemble. Unset, it follows the basis's ``chain_restrict`` flag. It only matters when the bath classification is state-dependent (long chains, where distant sites clear the coupling-distance filter); for a directly-hybridizing single bath shell the per-state and ensemble windows are identical and this is a no-op. |
 
-### Block-Lanczos convergence monitor
+## Block-Lanczos convergence monitor
 
 | Variable | Type | Default | Description |
 | --- | --- | --- | --- |
 | `GF_CHECK_EVERY` | int | `8` | Blocks between convergence tests during the long approach. The test rebuilds the block continued fraction each call -- the single largest cost of the block-Lanczos Green's function (~53% of runtime at reort=NONE, measured) -- so while convergence is still far away it is sampled sparsely. Set to 1 to test every block. Once a check lands within GF_NEAR_FACTOR x tol the monitor switches to every block regardless, so the exact convergence point is caught with no added Lanczos steps and the converged G is unchanged. |
 | `GF_NEAR_FACTOR` | float | `2.0` | Switch from sparse to per-block convergence sampling once the relative change is within this factor of the tolerance. Kept small: the relative change typically sits on a long noisy plateau a decade or two above tolerance before its final descent, and that plateau must stay in the sparse regime for the sampling to pay off. |
 
-### RIXS shift-recycling solver tiers
+## RIXS shift-recycling solver tiers
 
 | Variable | Type | Default | Description |
 | --- | --- | --- | --- |
@@ -58,7 +58,7 @@ available per-rank memory or the communicator size) unless the variable override
 | `GF_SECTOR_CACHE_DIR` | str | `''` | Directory persisting SectorResolventCache eigendecompositions across runs. Empty = in-memory only. With it, the dominant one-time `eigh` cost (measured ~450 s at 5565 determinants; OpenBLAS's Hermitian eigensolvers are bound by their non-parallelizing reduction stage, and the measured alternatives are no faster with eigenvectors) is paid once per material instead of once per run. |
 | `GF_KRYLOV_RECYCLE_MAX_BYTES` | int | *derived* | Per-rank byte cap on a recycled Krylov store (KrylovShiftedResolvent: one block-Lanczos recurrence serving every shift of a fixed right-hand side). The retained Krylov basis is that tier's dominant allocation; unset, it is capped at a quarter of the available per-rank memory, mirroring GF_SECTOR_DENSE_MAX's budget. 0 disables the tier. |
 
-### RIXS incoming-energy sampling
+## RIXS incoming-energy sampling
 
 | Variable | Type | Default | Description |
 | --- | --- | --- | --- |
