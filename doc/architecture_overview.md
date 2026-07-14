@@ -61,14 +61,14 @@ The Python modules are layered; a module only imports from layers below it, and 
 CLIs sit strictly on top. **Physics/operator-algebra modules never import solvers.**
 
 ```
-Layer 0: average, utils, polarization, product_state_representation, op_parser, mpi_comm,
-         ManyBodyUtils (Cython)
+Layer 0: average, utils, config, polarization, product_state_representation, op_parser,
+         mpi_comm, ManyBodyUtils (Cython)
 Layer 1: operator_algebra
-Layer 2: atomic_physics, eigensolvers, symmetries, block_structure
+Layer 2: atomic_physics, eigensolvers, symmetries, block_structure, transition_operators
 Layer 3: observables, spin_pairs
 Layer 4: manybody_basis (+ basis_generation, basis_restrictions,
          basis_transcription, basis_split)
-Layer 5: gf_primitives, gf_convergence, gf_shift_recycling, greens_function, spectra,
+Layer 5: gf_primitives, gf_convergence, gf_shift_recycling, greens_function, spectra, rixs,
          cg, cipsi_solver, groundstate, hartree_fock, hamiltonian_io, gf_diagnostics,
          gs_statistics
 Layer 6: CLIs: get_spectra, selfenergy
@@ -77,6 +77,7 @@ Layer 6: CLIs: get_spectra, selfenergy
 ### Foundations (Layer 0–2)
 - **`average.py`** — thermal averaging (`thermal_average`, `thermal_average_scale_indep`, `k_B`).
 - **`utils.py`** — small numerics/printing helpers (`rotate_matrix`, `matrix_print`, …).
+- **`config.py`** — the central registry of the `GF_*` environment-variable tuning knobs: one `Knob` declaration per knob (name, type, default, clamp, rationale), a lazy `.get()` accessor, and `dump()` (which generates `doc/configuration.md`). Every solver/spectra module reads its knobs through this, so a default lives in exactly one place. Depends on nothing.
 - **`product_state_representation.py`** — conversions between bit/bytes/tuple/string encodings of product states.
 - **`op_parser.py`** — parsing of operator files for the CLIs.
 - **`mpi_comm.py`** — the MPI communication primitives: sparse graph-alltoall of determinants and states, chunked broadcast/allgather of dicts, task partitioning (`get_job_tasks`).
@@ -86,6 +87,7 @@ Layer 6: CLIs: get_spectra, selfenergy
 - **`eigensolvers.py`** — eigensolver drivers for the low-energy spectrum: dense (`numpy.linalg.eigh`), ARPACK (`scipy.sparse.linalg.eigsh`), and the block-Lanczos TRLM path, behind the `eigensystem` driver and the MPI-aware `HermitianOperator` wrapper.
 - **`symmetries.py`** — automated symmetry discovery for second-quantized Hamiltonians: tensor extraction, conserved-charge classification, symmetry-adapted rotations, restriction widening, Hamiltonian rotation.
 - **`block_structure.py`** — the `BlockStructure` type: detection of identical/transposed/particle-hole-related orbital blocks and matrix↔block conversions.
+- **`transition_operators.py`** — pure second-quantized transition-operator builders for the spectroscopy drivers: dipole (`getDipoleOperator(s)`, `getDaggeredDipoleOperators`), the plane-wave NIXS operator (`getNIXSOperator(s)`), the bare photo-emission/inverse-photo-emission ladder operators (`get{,Inverse}PhotoEmissionOperators`), and the `sph_harm` helper. Depends only on `atomic_physics` and `operator_algebra`; `spectra.py` builds its transition operators through these.
 
 ### Observables (Layer 3)
 - **`observables.py`** — occupations and angular-momentum expectation values from single-particle density matrices in the spherical basis, many-body spin/orbital/Casimir operator builders, and (thermally averaged) expectation-value reporting for degenerate manifolds.
@@ -106,7 +108,8 @@ Layer 6: CLIs: get_spectra, selfenergy
 - **`gf_convergence.py`** — the runtime block-Lanczos convergence monitor (`_make_gf_convergence_monitor`) and its post-hoc counterpart (`_lanczos_convergence_summary`), plus the shared frequency-mesh helpers. Depends only on `gf_primitives`.
 - **`gf_shift_recycling.py`** — `SectorResolventCache` (dense spectral cache over a closed H-sector) and `KrylovShiftedResolvent` (one distributed block-Lanczos recurrence serving every shift of a fixed right-hand side): the two tiers ahead of the per-point BiCGSTAB/GMRES fallback in the RIXS R1 solver chain. Depends only on `gf_primitives`.
 - **`greens_function.py`** — interacting Green's functions via block Lanczos continued fractions; `run_units_distributed` is the one distribution primitive shared by every GF driver (self-energy and spectra). Re-exports every symbol of the three modules above that other modules/tests reach via `greens_function.X` / `gf.X`, so it stayed a drop-in for existing callers when it was split into them.
-- **`spectra.py`** — XAS/XPS/PS/NIXS/RIXS spectra drivers on top of `greens_function`. PS/XPS/NIXS and the projector-driven XAS/RIXS paths return per-operator spectra directly; the default (unprojected) XAS/RIXS paths return the polarization *tensor* (`getSpectra_tensor`, `getRIXSmap_tensor`) rather than a polarization-contracted spectrum -- `simulate_spectra` stores the tensor as-is (`spectra.h5`: `XAS/tensor`, `RIXS/tensor`), and `polarization.py` contracts it with concrete polarizations as a cheap post-processing step (in the projector paths, or at plot time).
+- **`spectra.py`** — the `simulate_spectra` orchestrator and the XAS/XPS/PS/NIXS drivers on top of `greens_function`. PS/XPS/NIXS and the projector-driven XAS path return per-operator spectra directly; the default (unprojected) XAS path returns the polarization *tensor* (`getSpectra_tensor`) rather than a polarization-contracted spectrum -- `simulate_spectra` stores the tensor as-is (`spectra.h5`: `XAS/tensor`), and `polarization.py` contracts it with concrete polarizations as a cheap post-processing step. Re-exports `rixs.getRIXSmap_new`/`getRIXSmap_tensor` so `simulate_spectra` and existing `spectra.getRIXSmap_*` callers reach them unchanged.
+- **`rixs.py`** — the RIXS (resonant inelastic x-ray scattering) map half, split out of `spectra.py`: incoming-energy work-unit sizing, the greedy adaptive incoming-energy sampler, the per-tier R1 solver chain (`_R1SolverChain`), the flat-unit distribution driver `_rixs_map_flat`, and the two public drivers `getRIXSmap_new` (per-polarization) / `getRIXSmap_tensor` (Kramers-Heisenberg tensor stored under `spectra.h5:RIXS/tensor`). Sits on `greens_function` like `spectra.py`.
 - **`cg.py`** — block BiCGSTAB solver (used by the RIXS tensor path).
 - **`gf_diagnostics.py`** — convergence/consistency diagnostics for computed Green's functions.
 - **`gs_statistics.py`** — ground-state statistics computation, printing, and saving.

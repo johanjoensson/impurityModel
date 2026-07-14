@@ -1,6 +1,6 @@
 # Deep refactor + documentation overhaul
 
-**Status (2026-07-15):** in progress. Phase 0 complete.
+**Status (2026-07-15):** in progress. Phase 0 and Phase 1 complete.
 
 ## Motivation
 
@@ -122,21 +122,26 @@ plot time.
 
 ---
 
-## Phase 1 — Central configuration module
+## Phase 1 — Central configuration module ✅
 
-- [ ] New `ed/config.py` (Layer 0): one declaration per knob — env-var name, type, default,
+- [x] New `ed/config.py` (Layer 0): one declaration per knob — env-var name, type, default,
       docstring — with typed accessors and a `dump()` rendering the full table.
-- [ ] Migrate every `os.environ.get` in `greens_function.py`, `gf_convergence.py`,
+- [x] Migrate every `os.environ.get` in `greens_function.py`, `gf_convergence.py`,
       `gf_shift_recycling.py`, `spectra.py`, `memory_estimate.py` to it; this deletes the
       duplicated defaults in `memory_estimate.py`.
-- [ ] Env-var names and defaults stay identical, so existing run scripts keep working.
+- [x] Env-var names and defaults stay identical, so existing run scripts keep working.
+- [x] `test_config.py` covers defaults, lazy override, parsers/clamps, derived knobs.
+
+Also fixed a pre-existing MPI-gate failure discovered here: `test_simulate_spectra`
+asserted rank-0-only h5 writes on every rank (the gate was red on rank 1 at HEAD).
 
 ## Phase 2 — Python module splits (verbatim moves)
 
-- [ ] **`spectra.py`** → `ed/transition_operators.py` (dipole/NIXS/PES/IPS operator
+- [x] **`spectra.py`** → `ed/transition_operators.py` (dipole/NIXS/PES/IPS operator
       builders, pure physics) + `ed/rixs.py` (the whole RIXS half: adaptive sampler,
       `_R1SolverChain`, `_rixs_map_flat`, both map drivers) + `spectra.py`
-      (XAS/PS/XPS/NIXS drivers + the `simulate_spectra` orchestrator).
+      (XAS/PS/XPS/NIXS drivers + the `simulate_spectra` orchestrator). **Done:** 1930 → ~860
+      lines; both new modules re-exported from `spectra.py` for backward compat.
 - [ ] **`selfenergy.py`** → `ed/double_counting.py` (`fixed_peak_dc`,
       `fixed_occupation_dc`, DC solver plumbing) + `ed/sigma.py` (`get_hcorr_v_hbath`,
       `hyb`, `get_sigma`, `get_Sigma_static`, causality check) + `selfenergy.py`
