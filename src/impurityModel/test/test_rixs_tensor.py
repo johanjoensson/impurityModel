@@ -523,3 +523,42 @@ def test_sector_resolvent_cache_solve_matches_dense():
         got_dense = np.array([[inner(sk, x) for x in got] for sk in states])
         np.testing.assert_allclose(got_dense, ref, atol=1e-10)
     assert cache._n_builds == 1
+
+
+def test_sector_resolvent_cache_disk_persistence(monkeypatch, tmp_path):
+    """GF_SECTOR_CACHE_DIR persists the eigendecomposition across cache instances; a
+    changed Hamiltonian gets a different digest (no false hit)."""
+    from impurityModel.ed import greens_function as gf
+
+    op = _model()
+    psis, es, dets, states, vecs = _thermal_states(op, 2)
+    monkeypatch.setenv("GF_SECTOR_CACHE_DIR", str(tmp_path))
+    zs = WLOSS + 0.3j
+
+    first = gf.SectorResolventCache()
+    g1 = first.try_eval(_basis([]), op, list(psis), zs)
+    files = list(tmp_path.glob("sector_*.npz"))
+    assert len(files) == 1
+
+    # a fresh instance must load, not re-eigendecompose
+    def no_eigh(*a, **k):
+        raise AssertionError("eigh called despite a valid disk cache")
+
+    monkeypatch.setattr(np.linalg, "eigh", no_eigh)
+    second = gf.SectorResolventCache()
+    g2 = second.try_eval(_basis([]), op, list(psis), zs)
+    np.testing.assert_allclose(g2, g1, atol=1e-12)
+    monkeypatch.undo()
+    monkeypatch.setenv("GF_SECTOR_CACHE_DIR", str(tmp_path))
+
+    # perturbing the Hamiltonian changes the digest -> a new build, a new file
+    op2 = ManyBodyOperator({**op.to_dict(), ((0, "c"), (0, "a")): 0.51 + 0j})
+    third = gf.SectorResolventCache()
+    third.try_eval(_basis([]), op2, list(psis), zs)
+    assert len(list(tmp_path.glob("sector_*.npz"))) == 2
+
+    # a corrupt file is ignored and rebuilt, not fatal
+    files[0].write_bytes(b"garbage")
+    fourth = gf.SectorResolventCache()
+    g4 = fourth.try_eval(_basis([]), op, list(psis), zs)
+    np.testing.assert_allclose(g4, g1, atol=1e-12)

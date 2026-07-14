@@ -1,3 +1,4 @@
+import hashlib
 import os
 from collections import defaultdict
 from dataclasses import dataclass
@@ -1366,6 +1367,30 @@ def _sector_dense_max():
     return int(np.sqrt(0.25 * available_bytes_per_rank() / (3 * 16)))
 
 
+def _sector_cache_dir():
+    """Directory for on-disk sector eigendecompositions (``GF_SECTOR_CACHE_DIR``).
+
+    Unset/empty disables persistence -- the default, since the eigenvector file of a
+    several-thousand-determinant sector is hundreds of MB and should not appear
+    unasked. The sector is a fixed property of the physical workload, so across
+    repeated runs on the same material the dominant one-time ``eigh`` cost (measured
+    ~450 s at 5565 determinants: OpenBLAS's Hermitian eigensolvers are bound by their
+    non-parallelizing reduction stage, and the measured alternatives -- banded
+    eigensolvers, Lanczos tridiagonalization -- are no faster with eigenvectors) is
+    then paid once per material instead of once per run.
+    """
+    return os.environ.get("GF_SECTOR_CACHE_DIR", "")
+
+
+def _sector_digest(states, hOp):
+    """Content digest of a sector: its determinant list plus the Hamiltonian."""
+    digest = hashlib.sha256()
+    for state in states:
+        digest.update(bytes(state.to_bytearray()))
+    digest.update(repr(sorted(hOp.to_dict().items())).encode())
+    return digest.hexdigest()[:24]
+
+
 class SectorResolventCache:
     r"""Spectral cache for repeated resolvent Gram matrices over one closed sector.
 
@@ -1418,18 +1443,53 @@ class SectorResolventCache:
         if len(basis) > bound:
             self._declined = True
             return False
-        h = build_sparse_matrix(basis, hOp).toarray()
-        h = 0.5 * (h + h.conj().T)
-        self._evals, self._evecs = np.linalg.eigh(h)
         self._index = {state: i for i, state in enumerate(basis.local_basis)}
+        how = self._load_from_disk(basis, hOp)
+        if how is None:
+            h = build_sparse_matrix(basis, hOp).toarray()
+            h = 0.5 * (h + h.conj().T)
+            self._evals, self._evecs = np.linalg.eigh(h)
+            self._save_to_disk(basis, hOp)
+            how = "eigendecomposed"
         self._n_builds += 1
         if verbose:
             print(
-                f"Sector resolvent cache: eigendecomposed a {len(basis)}-determinant sector "
+                f"Sector resolvent cache: {how} a {len(basis)}-determinant sector "
                 f"(build {self._n_builds}).",
                 flush=True,
             )
         return True
+
+    def _disk_path(self, basis, hOp):
+        cache_dir = _sector_cache_dir()
+        if not cache_dir:
+            return None
+        return os.path.join(cache_dir, f"sector_{_sector_digest(basis.local_basis, hOp)}.npz")
+
+    def _load_from_disk(self, basis, hOp):
+        """Load a persisted eigendecomposition; None if disabled/missing/unusable."""
+        path = self._disk_path(basis, hOp)
+        if path is None or not os.path.exists(path):
+            return None
+        try:
+            with np.load(path) as data:
+                evals, evecs = data["evals"], data["evecs"]
+        except Exception as exc:  # unreadable/corrupt (e.g. a killed writer): rebuild
+            print(f"warning: ignoring unreadable sector cache file {path}: {exc}", flush=True)
+            return None
+        if evecs.shape != (len(basis), len(basis)):
+            return None
+        self._evals, self._evecs = evals, evecs
+        return f"loaded (from {path})"
+
+    def _save_to_disk(self, basis, hOp):
+        path = self._disk_path(basis, hOp)
+        if path is None:
+            return
+        # Write-then-rename so a killed run never leaves a truncated file behind.
+        tmp = f"{path}.{os.getpid()}.tmp.npz"  # .npz suffix so np.savez keeps the name as-is
+        np.savez(tmp, evals=self._evals, evecs=self._evecs)
+        os.replace(tmp, path)
 
     def _expand_to_closure(self, basis, hOp, seeds, slaterWeightMin, size_bound):
         """Grow ``basis`` toward the H-connectivity closure of the seed support.
