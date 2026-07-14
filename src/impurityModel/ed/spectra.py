@@ -43,6 +43,7 @@ import impurityModel.ed.greens_function as gf
 from impurityModel.ed.atomic_physics import gauntC
 from impurityModel.ed.basis_restrictions import build_excited_restrictions
 from impurityModel.ed.cg import block_bicgstab
+from impurityModel.ed.gmres import block_gmres
 from impurityModel.ed.operator_algebra import arrayOp2Dict, c2i, combineOp, daggerOp
 from impurityModel.ed.rational_sampling import barycentric_eval, greedy_next_samples, set_valued_aaa
 from impurityModel.ed.BlockLanczosArray import Reort
@@ -1226,6 +1227,14 @@ _RIXS_ADAPTIVE_MAX_FIT_COMPONENTS = 4096
 # solve there; legitimate inter-sample peaks are excluded by the grid being finer than the
 # physical broadening.
 _RIXS_ADAPTIVE_BLOWUP_FACTOR = 2.0
+# Relative residual target of the RIXS intermediate (R1) resolvent solves -- shared by
+# every solver on that path (shift-recycled Krylov, BiCGSTAB, its GMRES escalation), so
+# a point rescued by a different solver meets the same accuracy. It was 1e-5 while
+# BiCGSTAB applied the tolerance to the *warm-start* residual instead, which on this
+# sweep is ~10x smaller -- so 1e-6 is what the RIXS map was actually getting, and keeps
+# the measured accuracy-vs-dense at 2.6e-7 (test_rixs_tensor_perf). Tighten to 1e-7 for
+# ~6e-9 if a map ever needs it.
+_RIXS_R1_ATOL = 1e-6
 
 
 def _rixs_map_adaptive(map_fn, wIns, comm, tol, verbose):
@@ -1315,14 +1324,8 @@ def _rixs_map_adaptive(map_fn, wIns, comm, tol, verbose):
                     surrogate = np.zeros(n)
                 finite_max = float(np.max(surrogate[np.isfinite(surrogate)], initial=tol))
                 surrogate[blown] = 10.0 * finite_max
-            converged = (
-                not unsolved
-                or (
-                    not blown
-                    and len(solved) >= min_solves
-                    and surrogate is not None
-                    and np.max(surrogate[unsolved]) <= tol
-                )
+            converged = not unsolved or (
+                not blown and len(solved) >= min_solves and surrogate is not None and np.max(surrogate[unsolved]) <= tol
             )
             quiet_rounds = quiet_rounds + 1 if converged else 0
             if not unsolved or quiet_rounds >= 2:
@@ -1393,7 +1396,12 @@ def _rixs_map_flat(
     solves the intermediate resolvent spectrally on cacheable sectors -- exact and immune to
     the near-pole BiCGSTAB stagnation that silently poisoned solved columns (measured: a
     cold-started solve at the NiO L3 window edge returned relative residual 7.2 while
-    targeting 1e-6). Sectors the cache declines fall through to ``block_bicgstab``.
+    targeting 1e-6). Sectors the cache declines (distributed bases, oversized sectors) go to
+    :class:`greens_function.KrylovShiftedResolvent`: one distributed block-Lanczos recurrence
+    per chunk serves every remaining wIn shift (the right-hand side is wIn-independent).
+    Should that decline too (memory bound), the per-point ``block_bicgstab`` fallback runs,
+    restarted while progressing and escalated to ``block_gmres`` when stagnated -- every tier
+    targets the same ``_RIXS_R1_ATOL``.
 
     Returns ``gs[i, o, wIn, wLoss] / Z`` (thermally averaged) on global rank 0 and in the
     serial path; ``None`` on other ranks.
@@ -1476,6 +1484,8 @@ def _rixs_map_flat(
         psi1_all = list(seeds)
         psi2_all = [ManyBodyState() for _ in in_ops]
         r1_cache = r1_caches.setdefault(e, gf.SectorResolventCache()) if r1_caches is not None else None
+        r1_recycled = None  # chunk index -> shift-recycled solutions (filled on first dense decline)
+        r1_recycle_declined = r1_cache is None
         out = np.zeros((len(w_chunk), n_i, n_o, len(wLoss)), dtype=complex)
         for k, win in enumerate(wIns[w_chunk]):
             if r1_cache is not None:
@@ -1489,6 +1499,27 @@ def _rixs_map_flat(
                 )
                 if psi2_spectral is not None:
                     out[k] = eval_out(green_basis, psi2_spectral, E_e) * thermal_weight
+                    continue
+                if r1_recycled is None and not r1_recycle_declined:
+                    # The dense sector cache declined (distributed basis or oversized
+                    # sector): recycle ONE block-Lanczos recurrence across every remaining
+                    # shift of the chunk -- the right-hand-side block is wIn-independent,
+                    # so all shifts share the same Krylov space.
+                    sols = gf.KrylovShiftedResolvent().solve(
+                        tmp_basis,
+                        hOp,
+                        psi1_all,
+                        wIns[w_chunk][k:] + delta1 * 1j + E_e,
+                        slaterWeightMin=slaterWeightMin,
+                        atol=_RIXS_R1_ATOL,
+                        verbose=verbose,
+                    )
+                    if sols is None:
+                        r1_recycle_declined = True
+                    else:
+                        r1_recycled = dict(zip(range(k, len(w_chunk)), sols))
+                if r1_recycled is not None:
+                    out[k] = eval_out(green_basis, r1_recycled.pop(k), E_e) * thermal_weight
                     continue
             for psi2 in psi2_all:
                 psi2.prune(slaterWeightMin)
@@ -1508,31 +1539,51 @@ def _rixs_map_flat(
             )
             # Warm-started resolvent solved as one block over all in-components, sharing a
             # single Krylov space / iteration (block_bicgstab deflates a rank-deficient block).
-            # atol is relative to ||psi1_all||. It was 1e-5 while the solver applied the
-            # tolerance to the *warm-start* residual instead, which on this sweep is ~10x
-            # smaller -- so 1e-6 is what the RIXS map was actually getting, and keeps the
-            # measured accuracy-vs-dense at 2.6e-7 (test_rixs_tensor_perf). Tighten to 1e-7
-            # for ~6e-9 if a map ever needs it; the extra iterations are cheap now that a warm
-            # start shortens the solve rather than silently tightening its target.
+            # atol is relative to ||psi1_all|| (see _RIXS_R1_ATOL); the extra iterations are
+            # cheap now that a warm start shortens the solve rather than silently tightening
+            # its target. Restarted while unconverged and still making progress (each call
+            # re-deflates the residual and picks a fresh shadow residual).
             solve_info = {}
-            psi2_all = block_bicgstab(
-                A=A_op,
-                x0=psi2_all,
-                y=psi1_all,
-                basis=tmp_basis,
-                slaterWeightMin=slaterWeightMin,
-                atol=1e-6,
-                rtol=1e-7,
-                info=solve_info,
-            )
-            # A stagnated solve silently caps the map's accuracy at its residual level
-            # (and near-pole points are exactly where BiCGSTAB stagnates), so report it:
-            # a wrong column must be loud, not free.
-            if not solve_info.get("converged", True) and (sub_comm is None or sub_comm.rank == 0):
+            prev_residual = np.inf
+            for _attempt in range(1 + gf._GF_BICGSTAB_RESTARTS):
+                psi2_all = block_bicgstab(
+                    A=A_op,
+                    x0=psi2_all,
+                    y=psi1_all,
+                    basis=tmp_basis,
+                    slaterWeightMin=slaterWeightMin,
+                    atol=_RIXS_R1_ATOL,
+                    rtol=1e-7,
+                    info=solve_info,
+                )
+                if (
+                    solve_info["converged"]
+                    or solve_info["rel_residual"] > gf._GF_BICGSTAB_RESTART_PROGRESS * prev_residual
+                ):
+                    break
+                prev_residual = solve_info["rel_residual"]
+            # GMRES escalation, warm-started from BiCGSTAB's partial iterate: near-pole
+            # points are exactly where BiCGSTAB stagnates (measured: a cold-started solve
+            # at the NiO L3 window edge silently returned relative residual 7.2), and a
+            # stagnated solve caps the map's accuracy at its residual level -- so a wrong
+            # column must be rescued, and failing that, loud.
+            if not solve_info["converged"]:
+                psi2_all = block_gmres(
+                    A_op,
+                    psi2_all,
+                    psi1_all,
+                    tmp_basis,
+                    slaterWeightMin,
+                    atol=_RIXS_R1_ATOL,
+                    restart=gf._GF_GMRES_RESTART,
+                    max_restarts=gf._GF_GMRES_MAX_RESTARTS,
+                    info=solve_info,
+                )
+            if not solve_info["converged"] and (sub_comm is None or sub_comm.rank == 0):
                 print(
                     f"warning: RIXS intermediate resolvent at wIn = {win:.6g} (eigenstate {e}) "
                     f"stopped unconverged at relative residual "
-                    f"{solve_info.get('rel_residual', float('nan')):.2e}.",
+                    f"{solve_info.get('rel_residual', float('nan')):.2e} (after GMRES escalation).",
                     flush=True,
                 )
             out[k] = eval_out(green_basis, psi2_all, E_e) * thermal_weight

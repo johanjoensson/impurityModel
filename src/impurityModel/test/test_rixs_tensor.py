@@ -310,9 +310,21 @@ def test_rixs_tensor_adaptive_matches_dense(monkeypatch):
 
     def run(adaptive_tol):
         return spectra.getRIXSmap_tensor(
-            op, tin, tout, EPS_IN, EPS_OUT, psis, es,
-            tau=TAU, wIns=WIN_ADAPTIVE, wLoss=WLOSS, delta1=D1, delta2=D2,
-            basis=_basis(dets), verbose=False, slaterWeightMin=0.0,
+            op,
+            tin,
+            tout,
+            EPS_IN,
+            EPS_OUT,
+            psis,
+            es,
+            tau=TAU,
+            wIns=WIN_ADAPTIVE,
+            wLoss=WLOSS,
+            delta1=D1,
+            delta2=D2,
+            basis=_basis(dets),
+            verbose=False,
+            slaterWeightMin=0.0,
             adaptive_wIn_tol=adaptive_tol,
         )
 
@@ -348,9 +360,21 @@ def test_rixs_tensor_adaptive_short_grid_stays_dense(monkeypatch):
 
     monkeypatch.setattr(spectra, "_rixs_map_flat", counting_flat)
     spectra.getRIXSmap_tensor(
-        op, tin, tout, EPS_IN, EPS_OUT, psis, es,
-        tau=TAU, wIns=WIN, wLoss=WLOSS, delta1=D1, delta2=D2,
-        basis=_basis(dets), verbose=False, slaterWeightMin=0.0,
+        op,
+        tin,
+        tout,
+        EPS_IN,
+        EPS_OUT,
+        psis,
+        es,
+        tau=TAU,
+        wIns=WIN,
+        wLoss=WLOSS,
+        delta1=D1,
+        delta2=D2,
+        basis=_basis(dets),
+        verbose=False,
+        slaterWeightMin=0.0,
         adaptive_wIn_tol=1e-6,
     )
     assert solved_counts == [len(WIN)]
@@ -371,9 +395,21 @@ def test_rixs_tensor_adaptive_env_knob(monkeypatch):
     monkeypatch.setattr(spectra, "_rixs_map_flat", counting_flat)
     monkeypatch.setenv("GF_RIXS_ADAPTIVE_TOL", "1e-8")
     spectra.getRIXSmap_tensor(
-        op, tin, tout, EPS_IN, EPS_OUT, psis, es,
-        tau=TAU, wIns=WIN_ADAPTIVE, wLoss=WLOSS, delta1=D1, delta2=D2,
-        basis=_basis(dets), verbose=False, slaterWeightMin=0.0,
+        op,
+        tin,
+        tout,
+        EPS_IN,
+        EPS_OUT,
+        psis,
+        es,
+        tau=TAU,
+        wIns=WIN_ADAPTIVE,
+        wLoss=WLOSS,
+        delta1=D1,
+        delta2=D2,
+        basis=_basis(dets),
+        verbose=False,
+        slaterWeightMin=0.0,
     )
     assert sum(solved_counts) < len(WIN_ADAPTIVE)
 
@@ -396,9 +432,21 @@ def test_rixs_tensor_adaptive_distributed_matches_dense():
             comm=comm,
         )
         return spectra.getRIXSmap_tensor(
-            op, tin, tout, EPS_IN, EPS_OUT, psis, es,
-            tau=TAU, wIns=WIN_ADAPTIVE, wLoss=WLOSS, delta1=D1, delta2=D2,
-            basis=world_basis, verbose=False, slaterWeightMin=0.0,
+            op,
+            tin,
+            tout,
+            EPS_IN,
+            EPS_OUT,
+            psis,
+            es,
+            tau=TAU,
+            wIns=WIN_ADAPTIVE,
+            wLoss=WLOSS,
+            delta1=D1,
+            delta2=D2,
+            basis=world_basis,
+            verbose=False,
+            slaterWeightMin=0.0,
             adaptive_wIn_tol=adaptive_tol,
         )
 
@@ -586,3 +634,140 @@ def test_krylov_shifted_resolvent_matches_dense_solve():
         ref = np.linalg.solve(z * eye - H, s_dense)
         got = np.array([[inner(sk, x) for x in xs] for sk in states])
         np.testing.assert_allclose(got, ref, atol=1e-8)
+
+
+def test_rixs_tensor_declined_sector_uses_krylov_recycler(monkeypatch):
+    """When the dense sector cache declines, the R1 solves come from the recycled
+    recurrence -- the per-point BiCGSTAB fallback must not run -- and the map still
+    matches the independent dense reference.
+
+    GF_SECTOR_DENSE_MAX=0 (not 1): this model's R1 seeds all live on the single
+    H-disconnected {0,1} determinant, so its "sector" is 1-dimensional and a bound
+    of 1 would let the dense cache serve it after all."""
+    from impurityModel.ed import greens_function as gf
+
+    op = _model()
+    psis, es, dets, states, vecs = _thermal_states(op, 2)
+    tin, tout = _tin_tout()
+    monkeypatch.setenv("GF_SECTOR_DENSE_MAX", "0")
+
+    def no_bicgstab(*args, **kwargs):
+        raise AssertionError("per-point BiCGSTAB must not run when the recycler serves the chunk")
+
+    monkeypatch.setattr(spectra, "block_bicgstab", no_bicgstab)
+    recycler_served = []
+    real_solve = gf.KrylovShiftedResolvent.solve
+
+    def spying_solve(self, *args, **kwargs):
+        sols = real_solve(self, *args, **kwargs)
+        recycler_served.append(sols is not None)
+        return sols
+
+    monkeypatch.setattr(gf.KrylovShiftedResolvent, "solve", spying_solve)
+    got = _run_rixs_tensor(op, psis, es, tin, tout, dets, EPS_IN, EPS_OUT)
+    ref = _dense_rixs_pol(op, tin, tout, EPS_IN, EPS_OUT, es, vecs, states)
+    np.testing.assert_allclose(got, ref, atol=1e-8)
+    assert recycler_served and all(recycler_served), f"recycler did not serve: {recycler_served}"
+
+
+def test_krylov_recycler_declines_under_memory_cap(monkeypatch):
+    """GF_KRYLOV_RECYCLE_MAX_BYTES=0 declines the recycler up front; the per-point
+    BiCGSTAB fallback then serves the declined sector and stays correct."""
+    from impurityModel.ed import greens_function as gf
+
+    op = _model()
+    psis, es, dets, states, vecs = _thermal_states(op, 2)
+    monkeypatch.setenv("GF_KRYLOV_RECYCLE_MAX_BYTES", "0")
+    assert gf.KrylovShiftedResolvent().solve(_basis([]), op, list(psis), np.array([0.5 + 0.3j])) is None
+
+    monkeypatch.setenv("GF_SECTOR_DENSE_MAX", "0")
+    tin, tout = _tin_tout()
+    bicgstab_calls = []
+    real_bicgstab = spectra.block_bicgstab
+
+    def counting_bicgstab(*args, **kwargs):
+        bicgstab_calls.append(1)
+        return real_bicgstab(*args, **kwargs)
+
+    monkeypatch.setattr(spectra, "block_bicgstab", counting_bicgstab)
+    got = _run_rixs_tensor(op, psis, es, tin, tout, dets, EPS_IN, EPS_OUT)
+    ref = _dense_rixs_pol(op, tin, tout, EPS_IN, EPS_OUT, es, vecs, states)
+    np.testing.assert_allclose(got, ref, atol=1e-8)
+    assert bicgstab_calls, "the per-point fallback should have run"
+
+
+def test_rixs_r1_gmres_escalation_rescues_stagnated_bicgstab(monkeypatch):
+    """A silently-stagnating BiCGSTAB no longer poisons a solved column: the GMRES
+    escalation re-solves the point to _RIXS_R1_ATOL and the map matches dense."""
+    op = _model()
+    psis, es, dets, states, vecs = _thermal_states(op, 2)
+    tin, tout = _tin_tout()
+    # Force the per-point fallback path (dense cache and recycler both declined).
+    monkeypatch.setenv("GF_SECTOR_DENSE_MAX", "0")
+    monkeypatch.setenv("GF_KRYLOV_RECYCLE_MAX_BYTES", "0")
+
+    def stagnated_bicgstab(A, x0, y, basis, slaterWeightMin, atol=1e-8, rtol=0.0, info=None, **kwargs):
+        if info is not None:
+            info.update({"converged": False, "rel_residual": 1.0, "iterations": 0})
+        return x0
+
+    monkeypatch.setattr(spectra, "block_bicgstab", stagnated_bicgstab)
+
+    gmres_calls = []
+    real_gmres = spectra.block_gmres
+
+    def counting_gmres(*args, **kwargs):
+        gmres_calls.append(1)
+        return real_gmres(*args, **kwargs)
+
+    monkeypatch.setattr(spectra, "block_gmres", counting_gmres)
+    got = _run_rixs_tensor(op, psis, es, tin, tout, dets, EPS_IN, EPS_OUT)
+    ref = _dense_rixs_pol(op, tin, tout, EPS_IN, EPS_OUT, es, vecs, states)
+    assert gmres_calls, "the GMRES escalation should have run"
+    np.testing.assert_allclose(got, ref, atol=1e-8)
+
+
+@pytest.mark.mpi
+def test_rixs_tensor_distributed_krylov_recycler_matches_dense(monkeypatch):
+    """The recycled recurrence stays collective on a genuinely distributed basis (the
+    dense sector cache is forced to decline on every color) and matches dense.
+
+    Eigenstates enter on rank 0 only: state vectors are one-owner-per-determinant, so a
+    replicated copy on every rank would be double-counted by redistribution (amplitudes
+    x size, the map x size^2)."""
+    comm = MPI.COMM_WORLD
+    op = _model()
+    psis, es, dets, states, vecs = _thermal_states(op, 2)
+    if comm.rank != 0:
+        psis = [ManyBodyState() for _ in psis]
+    tin, tout = _tin_tout()
+    monkeypatch.setenv("GF_SECTOR_DENSE_MAX", "0")
+    world_basis = Basis(
+        impurity_orbitals={2: [[0, 1]], 1: [[2]]},
+        bath_states=({2: [[]], 1: [[]]}, {2: [[]], 1: [[]]}),
+        initial_basis=list(dets),
+        verbose=False,
+        comm=comm,
+    )
+    got = spectra.getRIXSmap_tensor(
+        op,
+        tin,
+        tout,
+        EPS_IN,
+        EPS_OUT,
+        psis,
+        es,
+        tau=TAU,
+        wIns=WIN,
+        wLoss=WLOSS,
+        delta1=D1,
+        delta2=D2,
+        basis=world_basis,
+        verbose=False,
+        slaterWeightMin=0.0,
+    )
+    if comm.rank == 0:
+        ref = _dense_rixs_pol(op, tin, tout, EPS_IN, EPS_OUT, es, vecs, states)
+        np.testing.assert_allclose(got, ref, atol=1e-8)
+    else:
+        assert got is None
