@@ -1,0 +1,188 @@
+# Deep refactor + documentation overhaul
+
+**Status (2026-07-15):** in progress. Phase 0 complete.
+
+## Motivation
+
+The codebase grew through successive feature/perf campaigns (the symmetry program, the RIXS
+R1 solver chain, the Block-Lanczos reorthogonalization campaigns). Earlier refactor waves
+dissolved `finite.py`, decomposed `Basis` into the `basis_*` modules, and split
+`greens_function.py` into `gf_primitives`/`gf_convergence`/`gf_shift_recycling`. What remains:
+
+- Four modules still bundle several concerns: `greens_function.py` (2281 lines),
+  `spectra.py` (1930), `symmetries.py` (1702), `selfenergy.py` (1446).
+- The Cython kernels are 1600–2200-line single files (`BlockLanczos.pyx` 2162,
+  `ManyBodyUtils.pyx` 2096, `BlockLanczosArray.pyx` 1629).
+- ~21 `GF_*` environment variables act as scattered, undocumented configuration, with
+  defaults duplicated across modules (`memory_estimate.py` re-hardcodes `GF_GMRES_RESTART`
+  and `GF_SLICES` defaults — a single-source-of-truth violation).
+- Naming mixes camelCase and `_new` suffixes (`getSpectra_new`, `getRIXSmap_tensor`) with
+  the snake_case used everywhere else.
+- Documentation lags: no user guide, no configuration reference, a 7-line `intro.rst`,
+  a `doc/plans/` index with stale statuses, and an architecture overview that documents
+  three modules that no longer exist.
+
+Goal: one obvious home per concern, a single documented configuration surface, consistent
+naming, readable Cython kernels, and documentation for developers *and* users.
+
+## Scope
+
+- **Internal APIs may change** — names, signatures, module boundaries.
+- **Stable surface:** CLI entry points and flags (`get_spectra`, `selfenergy`,
+  `plot_spectra`, `plot_RIXS`), input file formats, and the `spectra.h5` layout.
+- The Cython layer is in scope (restructure the `.pyx` files, not just their docstrings).
+- Documented-failure code paths (`gf_method="sliced"`, the per-polarization RIXS path)
+  are **kept** — they are deliberately retained alongside their verdict docs.
+
+Every commit stays green on the full gate: `python -m pytest` and
+`mpiexec -n 2 python -m pytest --with-mpi` (plus `-n 3` when touching `basis_split.py` or
+`run_units_distributed`). Splits move code verbatim; renames are mechanical and separate
+from moves.
+
+---
+
+## Phase 0 — Probe & inventory ✅
+
+### 0a. Stale documentation found
+
+`doc/architecture_overview.md` documents a "Bath construction (used by the `build_h0`
+script)" section naming three modules that **do not exist** in the tree:
+
+| Documented | Reality |
+| --- | --- |
+| `ed/edchain.py` | does not exist |
+| `ed/natural_orbitals.py` | does not exist |
+| `scripts/build_h0.py` (console script `build_h0`) | does not exist; no `build_h0` entry in `[project.scripts]` |
+
+`CLAUDE.md` likewise advertises a `.[rspt]` extra "only for the `build_h0` script" — there
+is no `rspt` extra in `pyproject.toml`. Both were corrected in Phase 0.
+
+The only surviving module of that group is `ed/bath_fitting.py`, which has no production
+importer (see below).
+
+### 0b. Orphan audit
+
+Importer counts (greps over `.py`, `.pyx`, `.pxd` in `ed/`, `scripts/`, `cython/`;
+`ea16.py` taught us that `.pyx` files import Python modules at runtime, so they are
+included):
+
+| Module | Production importers | Test importers | Verdict |
+| --- | --- | --- | --- |
+| `ed/double_chain_haverkort/double_chains.py` (825 lines) | 0 | 0 | **dead** — no importer anywhere, no `main`, not a script |
+| `ed/givens_qr.py` | 0 | 1 | test-only |
+| `ed/density_matrix.py` | 0 | 1 | test-only |
+| `ed/bath_fitting.py` | 0 | 1 | test-only (orphaned with `build_h0`) |
+| `ed/rational_sampling.py` | 1 (`spectra.py`) | 1 | live |
+| `ed/chebyshev_filter.py` | 2 | 1 | live (`gf_method="sliced"`) |
+
+**These are not deleted by this refactor.** They are recorded here for a separate,
+explicit decision — removing 825 lines of physics code (and three test-covered modules)
+is not something a refactor should do silently. Recommended follow-up: delete
+`double_chains.py`; keep or relocate the test-only modules depending on whether the
+`build_h0`/bath-fitting workflow is coming back.
+
+Untracked build droppings present in the working tree (`src/cython/scratch.*.so`,
+`src/impurityModel/ed/ManyBodyUtils.so`) are gitignored and left alone.
+
+### 0c. Execution-path map
+
+The dispatch surfaces a reader has to hold in their head. These anchors seed
+`doc/gf_solver_architecture.md` (Phase 5).
+
+**Green's-function resolvent kernel** — `gf_method`, dispatched in
+`greens_function.get_Greens_function`:
+
+| `gf_method` | Driver | Kernel | Notes |
+| --- | --- | --- | --- |
+| `"lanczos"` (default) | `get_Greens_function` | `_block_green_group` → `block_green_impl` / `block_Green_sparse` | one recurrence per unit, serves the whole mesh |
+| `"bicgstab"` | `_get_greens_function_bicgstab` | `block_Green_bicgstab` | one linear solve per frequency, basis rebuilt-and-discarded |
+| `"sliced"` | `_get_greens_function_sliced` | Chebyshev spectral windows | needs a real-axis mesh, else falls back to bicgstab; **documented failure**, retained |
+
+Orthogonal switches on the Lanczos path: `sparse` (`ManyBodyState` kernel vs CSR array
+kernel), the pairwise operator split (`GF_OPERATOR_SPLIT`), the reort mode
+(NONE/PARTIAL/FULL/PERIODIC/SELECTIVE), and `truncation_threshold` capping
+(`_CappedBasisProxy`).
+
+**Spectra** — `spectra.simulate_spectra` chooses per spectrum:
+PS/XPS/NIXS always go through `getSpectra_new` (per-operator spectra); XAS and RIXS take
+the *projected* path (`getSpectra_new` / `getRIXSmap_new`, per-polarization) when a
+projector file is given, and otherwise the *tensor* path (`getSpectra_tensor` /
+`getRIXSmap_tensor`), which stores a Cartesian tensor that `polarization.py` contracts at
+plot time.
+
+**RIXS solver tiers** — `spectra._R1SolverChain.solve`, in order:
+`SectorResolventCache` (dense spectral cache on a closed sector) → `KrylovShiftedResolvent`
+(one block-Lanczos recurrence serving every shift) → `block_bicgstab` (with restarts) →
+`block_gmres` (escalation). Plus the adaptive incoming-energy sampler
+(`_rixs_map_adaptive`, set-valued AAA).
+
+**Distribution engine** — every GF/spectra/RIXS driver funnels through
+`enumerate_gf_units` → `unit_cost_weights` → `run_units_distributed`
+(→ `basis_split.split_basis_and_redistribute_psi`).
+
+---
+
+## Phase 1 — Central configuration module
+
+- [ ] New `ed/config.py` (Layer 0): one declaration per knob — env-var name, type, default,
+      docstring — with typed accessors and a `dump()` rendering the full table.
+- [ ] Migrate every `os.environ.get` in `greens_function.py`, `gf_convergence.py`,
+      `gf_shift_recycling.py`, `spectra.py`, `memory_estimate.py` to it; this deletes the
+      duplicated defaults in `memory_estimate.py`.
+- [ ] Env-var names and defaults stay identical, so existing run scripts keep working.
+
+## Phase 2 — Python module splits (verbatim moves)
+
+- [ ] **`spectra.py`** → `ed/transition_operators.py` (dipole/NIXS/PES/IPS operator
+      builders, pure physics) + `ed/rixs.py` (the whole RIXS half: adaptive sampler,
+      `_R1SolverChain`, `_rixs_map_flat`, both map drivers) + `spectra.py`
+      (XAS/PS/XPS/NIXS drivers + the `simulate_spectra` orchestrator).
+- [ ] **`selfenergy.py`** → `ed/double_counting.py` (`fixed_peak_dc`,
+      `fixed_occupation_dc`, DC solver plumbing) + `ed/sigma.py` (`get_hcorr_v_hbath`,
+      `hyb`, `get_sigma`, `get_Sigma_static`, causality check) + `selfenergy.py`
+      (`calc_selfenergy` + CLI). Then decompose the 407-line `calc_selfenergy` body into
+      named stage functions.
+- [ ] **`symmetries.py`** → `ed/lie_algebra.py` (the algebraic half: symmetry discovery,
+      structure constants, Cartan subalgebra, joint diagonalization, Casimirs) +
+      `symmetries.py` (conserved charges, restrictions, block structure).
+- [ ] **`greens_function.py`** → `ed/gf_units.py` (the distribution engine: `GFUnit`,
+      `enumerate_gf_units`, `unit_cost_weights`, `run_units_distributed`) +
+      `ed/gf_solvers.py` (the per-unit kernels: `block_Green*`, `solve_shifted_block`) +
+      `greens_function.py` (top-level drivers and assembly). Importers move to the owning
+      module — the re-export shim goes away.
+- [ ] **CLIs**: group `get_spectra.main`'s 30 positional parameters into dataclasses built
+      by the argparse layer. CLI flags unchanged.
+
+## Phase 3 — Naming & signature cleanup
+
+- [ ] `getSpectra_new` → `calc_spectra`, `getSpectra_tensor` → `calc_spectra_tensor`,
+      `getRIXSmap_new` → `rixs.calc_map`, `getRIXSmap_tensor` → `rixs.calc_tensor_map`.
+- [ ] Operator builders drop the `get` prefix on the move to `transition_operators.py`.
+- [ ] Physics-domain argument names (`nBaths`, `Fdd`, …) stay — they mirror the literature
+      and the CLI surface.
+
+## Phase 4 — Cython layer
+
+Split via `.pxi` textual includes: same compiled extension modules, no build-system or
+import changes, purely file-level readability.
+
+- [ ] `BlockLanczos.pyx` → `_lanczos_step.pxi` + `_trlm.pxi` + `_irlm.pxi`.
+- [ ] `ManyBodyUtils.pyx` → `_slater_state.pxi` + `_operator.pxi` + `_mpi_pack.pxi` +
+      `_krylov_store.pxi` + `_block_state.pxi`.
+- [ ] `BlockLanczosArray.pyx` → `_reort.pxi` + the array kernel.
+- [ ] Kernel documentation pass: the invariants (reort-estimator honesty, deflation's two
+      scales, seed ownership in the recurrences) documented at the code that owns them.
+- [ ] `setup.py`: `depends=` on the `.pxi` files so edits trigger recythonization.
+
+## Phase 5 — Documentation
+
+- [ ] `doc/architecture_overview.md` — kept current throughout; final pass for the new layout.
+- [ ] `doc/gf_solver_architecture.md` — the execution-path map above, expanded.
+- [ ] `doc/basis_and_restrictions.md` — `Basis` lifecycle, hash distribution, restriction
+      flavors, CIPSI/HF seeding, the d10-collapse case studies.
+- [ ] `doc/mpi_model.md` — the distribution model and the MPI ground rules.
+- [ ] `doc/configuration.md` — every knob from `ed/config.py`.
+- [ ] `doc/user_guide.md` — install, input formats, running the CLIs, `spectra.h5` layout,
+      plotting, a worked NiO example.
+- [ ] Sphinx: rewrite `intro.rst`, add the new pages to the toctree, warning-free build.
+- [ ] `doc/plans/README.md` — mark every plan done/superseded/live.

@@ -15,8 +15,7 @@ The C++ layer needs Boost headers (env var `BOOST_ROOT` for custom locations) an
 (`CXX`/`CXXFLAGS` respected). Threaded apply: `IMPURITYMODEL_PARALLEL=1` at install time.
 
 Editing anything under `src/cython/` requires re-running the pip install to recompile.
-Extras: `.[dev]` (pytest, pytest-mpi, black, ruff, mypy, cython-lint), `.[doc]` (Sphinx),
-`.[rspt]` (only for the `build_h0` script, which also needs the local `pyRSPthon` project).
+Extras: `.[dev]` (pytest, pytest-mpi, black, ruff, mypy, cython-lint), `.[doc]` (Sphinx).
 
 ## Test gate
 
