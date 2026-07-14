@@ -323,8 +323,6 @@ class CIPSISolver:
         new_Dj = set(itertools.compress(local_Djs, de2_mask))
 
         if gen_ops:
-            import random
-
             unexplored_list = list(new_Dj)
             chunk_size = 1000
 
@@ -332,8 +330,15 @@ class CIPSISolver:
                 chunk = unexplored_list[:chunk_size]
                 unexplored_list = unexplored_list[chunk_size:]
 
-                # Use random superpositions to avoid destructive interference
-                chunk_state = ManyBodyState({state: random.random() + 1j * random.random() for state in chunk})
+                # Pseudo-random superpositions (derived from each determinant's hash, not
+                # Python's global `random` stream) avoid destructive interference the same
+                # way the diagonal probe above does, but deterministically: an unseeded
+                # `random.random()` here made which determinants this closure discovers --
+                # and hence the basis grown from them -- depend on run-to-run RNG state and
+                # on `new_Dj`'s (rank-local, insertion-order-dependent) set iteration order,
+                # the same reproducibility failure `_amplitude_from_hash` was introduced to
+                # close off elsewhere in this class.
+                chunk_state = ManyBodyState({state: _amplitude_from_hash(state.get_hash()) for state in chunk})
 
                 while chunk_state:
                     next_chunk_state = ManyBodyState()
