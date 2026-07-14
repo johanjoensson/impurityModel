@@ -4,13 +4,20 @@ Design and implementation plans for in-progress and proposed work on the
 `impurityModel` ED/DMFT package. Each plan uses checkboxes so progress is verifiable
 at a glance.
 
-> **Status (2026-06-24):** the **symmetry program is complete** — the main
-> `symmetry_implementation_plan.md` (Phases 1–7 + the cross-phase acceptance gate) and
-> its `nonabelian_symmetry_casimir.md` companion are all implemented and tested (serial
-> + MPI), with `use_prescan` defaulted on and `auto_block_structure` available as a
-> validated opt-in. See each plan's top-of-file progress block for details. The
-> remaining open work is in the Block Lanczos plans (#1–#3) and a few explicitly-scoped
-> perf/won't-fix follow-ups noted inline.
+> **Status (2026-07-15):** a **deep refactor + documentation overhaul** is in progress —
+> see **[deep_refactor.md](deep_refactor.md)** for its plan and live checkboxes (config-knob
+> registry, spectra and selfenergy module splits, and the developer/user documentation are
+> done; the remaining symmetries/greens_function splits, renames, and Cython `.pxi` splits
+> are pending).
+>
+> The **symmetry program is complete** — the main `symmetry_implementation_plan.md`
+> (Phases 1–7 + the cross-phase acceptance gate) and its `nonabelian_symmetry_casimir.md`
+> companion are all implemented and tested (serial + MPI), with `use_prescan` defaulted on
+> and `auto_block_structure` available as a validated opt-in. See each plan's top-of-file
+> progress block for details. The remaining open work is in the Block Lanczos plans (#1–#3),
+> the deep-refactor plan above, and a few explicitly-scoped perf/won't-fix follow-ups noted
+> inline. The spectrum-slicing plan (`spectrum_slicing.md`) is a **documented failure**,
+> retained with its verdict; `rixs_r2_performance.md` is a **proposal, not implemented**.
 
 ## Reading order
 

@@ -183,15 +183,30 @@ import changes, purely file-level readability.
       scales, seed ownership in the recurrences) documented at the code that owns them.
 - [ ] `setup.py`: `depends=` on the `.pxi` files so edits trigger recythonization.
 
-## Phase 5 — Documentation
+## Phase 5 — Documentation ✅ (developer + user docs done)
 
-- [ ] `doc/architecture_overview.md` — kept current throughout; final pass for the new layout.
-- [ ] `doc/gf_solver_architecture.md` — the execution-path map above, expanded.
-- [ ] `doc/basis_and_restrictions.md` — `Basis` lifecycle, hash distribution, restriction
+- [x] `doc/architecture_overview.md` — kept current throughout; reflects config/
+      transition_operators/rixs/double_counting/sigma.
+- [x] `doc/gf_solver_architecture.md` — the distribution engine, `gf_method` kernels, the
+      RIXS four-tier solver chain, spectra dispatch, and a reading guide.
+- [x] `doc/basis_and_restrictions.md` — `Basis` lifecycle, hash distribution, restriction
       flavors, CIPSI/HF seeding, the d10-collapse case studies.
-- [ ] `doc/mpi_model.md` — the distribution model and the MPI ground rules.
-- [ ] `doc/configuration.md` — every knob from `ed/config.py`.
-- [ ] `doc/user_guide.md` — install, input formats, running the CLIs, `spectra.h5` layout,
+- [x] `doc/mpi_model.md` — the distribution model and the MPI ground rules.
+- [x] `doc/configuration.md` — every knob from `ed/config.py` (generated from `dump()`).
+- [x] `doc/user_guide.md` — install, input formats, running the CLIs, `spectra.h5` layout,
       plotting, a worked NiO example.
-- [ ] Sphinx: rewrite `intro.rst`, add the new pages to the toctree, warning-free build.
-- [ ] `doc/plans/README.md` — mark every plan done/superseded/live.
+- [x] Sphinx: rewrote `intro.rst`, sectioned `index.rst` toctree with all new pages,
+      warning-free build on the new pages.
+- [x] `doc/plans/README.md` — status block updated; slicing marked a documented failure,
+      rixs_r2 marked a proposal.
+
+## Remaining (follow-up sessions)
+
+- Phase 2c: `symmetries.py` → `ed/lie_algebra.py` (the algebraic half).
+- Phase 2d: `greens_function.py` → `ed/gf_units.py` + `ed/gf_solvers.py`.
+- Phase 2e: group the `get_spectra`/`selfenergy` CLI positional params into dataclasses.
+- Phase 3: renames (`getSpectra_new` → `calc_spectra`, etc.).
+- Phase 4: Cython `.pxi` splits of the three large kernels + a kernel documentation pass.
+- Decompose the 407-line `calc_selfenergy` body into named stage functions.
+- Delete-or-relocate decision on the dead `double_chain_haverkort/double_chains.py` and the
+  test-only `bath_fitting.py`/`givens_qr.py`/`density_matrix.py` (needs user sign-off).
