@@ -7,10 +7,9 @@ compatibility). Depends only on :mod:`gf_primitives` (the continued-fraction eva
 :mod:`gf_shift_recycling`.
 """
 
-import os
-
 import numpy as np
 
+from impurityModel.ed import config
 from impurityModel.ed.gf_primitives import _block_cf_inverse, _trim_blocks
 
 # Relative-change convergence floor for the block-Lanczos Green's function, shared by the
@@ -71,19 +70,10 @@ _GF_MESH_MARGIN_REL = 0.05
 # Consecutive sub-tolerance steps required before declaring convergence -- guards against a
 # single accidental small relative change tripping convergence prematurely.
 _GF_CONSEC_CONVERGED = 2
-# Adaptive convergence-test sampling (see _make_gf_convergence_monitor). The resolvent-change
-# test rebuilds the O(k)-level block continued fraction each call -- the single largest cost of
-# the block-Lanczos Green's function (~53% of runtime for reort=NONE; measured). During the long
-# approach (relative change still far above tolerance, convergence impossible) it is sampled only
-# every _GF_CHECK_EVERY blocks; once a check lands within _GF_NEAR_FACTOR x tol it switches to
-# every block so the exact convergence point is caught with no added Lanczos steps. The measure
-# and tolerance are unchanged, so the converged Green's function is unchanged.
-_GF_CHECK_EVERY = int(os.environ.get("GF_CHECK_EVERY", 8))  # set to 1 to disable (check every block)
-# Switch from sparse to per-block sampling once the relative change is within this factor of the
-# tolerance (i.e. convergence is imminent and must not be sampled coarsely). Kept small: the
-# relative change typically sits on a long noisy plateau a decade or two above tolerance before
-# the final descent, and that plateau must stay in the sparse regime for the sampling to pay off.
-_GF_NEAR_FACTOR = float(os.environ.get("GF_NEAR_FACTOR", 2.0))
+# Adaptive convergence-test sampling (see _make_gf_convergence_monitor) is governed by
+# config.GF_CHECK_EVERY and config.GF_NEAR_FACTOR; the measure and tolerance are unchanged by
+# either, so the converged Green's function is unchanged.
+#
 # Sample points per requested axis, per eigenstate, when the caller's evaluation mesh is known
 # (see _gf_eval_meshes). The production real-axis mesh is ~2000 points and the Matsubara one ~375;
 # feeding either to the monitor verbatim would multiply the continued-fraction cost above -- which
@@ -218,12 +208,12 @@ def _make_gf_convergence_monitor(delta, slaterWeightMin, eval_meshes=None):
         # recurrence, so simply running it less often delays convergence and adds (more expensive)
         # Lanczos steps that cancel the saving. Instead: during the long approach, where the change
         # is still far above tolerance and convergence is impossible, sample only every
-        # _GF_CHECK_EVERY blocks; once a check lands within _GF_NEAR_FACTOR x tol, switch to every
+        # GF_CHECK_EVERY blocks; once a check lands within GF_NEAR_FACTOR x tol, switch to every
         # block so the precise convergence point and the _GF_CONSEC_CONVERGED gate are detected with
         # no delay. Same convergence measure/tolerance -> same converged Green's function.
         step[0] += 1
-        near = last_dg[0] is not None and last_dg[0] < _GF_NEAR_FACTOR * delta_min
-        if not near and (step[0] % _GF_CHECK_EVERY) != 0:
+        near = last_dg[0] is not None and last_dg[0] < config.GF_NEAR_FACTOR.get() * delta_min
+        if not near and (step[0] % config.GF_CHECK_EVERY.get()) != 0:
             return False
         if eval_meshes is not None:
             # The caller's mesh is fixed from the start, so there is nothing to freeze or

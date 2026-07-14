@@ -40,6 +40,8 @@ from math import ceil
 
 from mpi4py import MPI
 
+from impurityModel.ed import config
+
 # sizeof(pair<SlaterDeterminant, complex<double>>) in the flat_map entry array:
 # a std::vector<uint64_t> header (24 B) + complex<double> (16 B).
 _FLAT_MAP_ENTRY_BYTES = 40
@@ -196,10 +198,9 @@ def estimate_gf_peak_bytes(
         ``n_dets`` cap.
     gmres_restart : int, optional
         The fallback's block-Arnoldi restart length; only read for ``method="bicgstab"``.
-        ``None`` (default) reads ``GF_GMRES_RESTART`` from the environment, the same
-        variable :data:`greens_function._GF_GMRES_RESTART` resolves at solve time --
-        otherwise a caller who overrides that env var would silently get a peak estimate
-        for the un-overridden restart length.
+        ``None`` (default) reads :data:`config.GF_GMRES_RESTART` -- the same knob
+        :func:`greens_function.solve_shifted_block` resolves at solve time, so a caller who
+        overrides it cannot silently get a peak estimate for the un-overridden length.
 
     Returns
     -------
@@ -212,7 +213,7 @@ def estimate_gf_peak_bytes(
     row_bytes = _COMPLEX_BYTES * block_width + key_heap + _SD_STRUCT_BYTES
     if method in ("bicgstab", "sliced"):
         if gmres_restart is None:
-            gmres_restart = int(os.environ.get("GF_GMRES_RESTART", "40"))
+            gmres_restart = config.GF_GMRES_RESTART.get()
         live = 12 + gmres_restart + 3
         if method == "sliced":
             # The filter stage's transient (3 recurrence blocks + one accumulator per
@@ -220,7 +221,7 @@ def estimate_gf_peak_bytes(
             # At most 2 rest windows complete the partition -- one collapses whenever the
             # evaluation band reaches a spectral bound, so this is an upper bound, which is
             # what a peak model wants.
-            n_windows = int(os.environ.get("GF_SLICES", "8")) + 2
+            n_windows = config.GF_SLICES.get() + 2
             live = max(live, 3 + n_windows)
         return basis_bytes + live * local_rows * row_bytes
     live_bytes = 3 * local_rows * row_bytes

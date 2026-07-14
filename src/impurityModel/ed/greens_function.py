@@ -1,4 +1,3 @@
-import os
 from collections import defaultdict
 from dataclasses import dataclass
 from typing import Callable, Optional
@@ -7,7 +6,7 @@ import numpy as np
 import scipy as sp
 from mpi4py import MPI
 
-# from impurityModel.ed import spectra
+from impurityModel.ed import config
 from impurityModel.ed.basis_restrictions import build_excited_restrictions
 from impurityModel.ed.basis_split import split_basis_and_redistribute_psi
 from impurityModel.ed.block_structure import BlockStructure
@@ -1421,63 +1420,40 @@ def block_Green(
 
 
 # --- Per-frequency BiCGSTAB Green's function (gf_method="bicgstab") -------------------------
-# Residual tolerance of one per-frequency solve, relative to the seed norm (block_bicgstab's
-# `atol` contract). 1e-8 measured to give |dG| ~ 7e-9 against a converged block-Lanczos
-# reference (doc/plans/bicgstab_per_frequency_gf.md, Phase 3a) -- inside the 2.5e-8 spread
-# PARTIAL-vs-FULL reorthogonalization itself shows on the real workloads. The reliability
-# diagnostics (gf_diagnostics.check_bicgstab_convergence) derive their thresholds from the
-# value actually used -- never re-hardcode it.
-_GF_BICGSTAB_ATOL = float(os.environ.get("GF_BICGSTAB_ATOL", "1e-8"))
-# Hard per-point iteration bound. Warm-started production solves measure ~3 iterations and a
-# cold start ~6, so 500 is pathology headroom: a stagnating solve (a real-axis point within
-# `delta` of a pole) ends and is *reported* by the diagnostics instead of iterating until the
-# growing seen-support exhaustion bound -- which a solve that keeps discovering determinants
-# may never reach.
-_GF_BICGSTAB_MAX_ITER = int(os.environ.get("GF_BICGSTAB_MAX_ITER", "500"))
+# The tunable parameters (atol, iteration bound, restarts, the GMRES fallback's restart
+# lengths) are declared in `ed/config.py` and read at call time -- an import-time constant
+# cannot be set by a caller that has already imported this module (which silently voided a
+# slicing test once).
+#
 # Solutions retained for the warm start: quadratic extrapolation in z through the last three
-# is the measured optimum (Phase 3a; cubic amplifies the atol-level noise it extrapolates
-# through, and each retained block costs live memory).
+# is the measured optimum (doc/plans/bicgstab_per_frequency_gf.md Phase 3a; cubic amplifies the
+# atol-level noise it extrapolates through, and each retained block costs live memory).
 _GF_BICGSTAB_WARM_HISTORY = 3
-# Restarts of one per-point solve that ends unconverged (re-entering block_bicgstab with the
-# current solution re-deflates the residual block and picks a fresh shadow residual r0_t --
-# the standard cure for BiCGSTAB's r0-orthogonality stagnation, which real-axis points within
-# ~delta of a pole do hit; the sparse path's basis-exhaustion bound also ends hard solves
-# after ~N/width iterations and a restart grants the next round). Progress-gated below, so a
-# genuinely stuck point stops early and is reported rather than looping.
-_GF_BICGSTAB_RESTARTS = int(os.environ.get("GF_BICGSTAB_RESTARTS", "10"))
-# A restart must shrink the reported residual by at least this factor to earn the next one.
+# A restart must shrink the reported residual by at least this factor to earn the next one, so
+# a genuinely stuck point stops early and is reported rather than looping.
 _GF_BICGSTAB_RESTART_PROGRESS = 0.5
+
+
 # --- Spectrum slicing (gf_method="sliced") --------------------------------------------------
-# Chebyshev windows tiling the real-axis evaluation band (plus the rest-windows completing
-# the partition of unity). The Phase-0 calibration (doc/plans/spectrum_slicing.md): filtered
-# seeds' dominant amplitudes are energy-local, their sub-1e-6 tails are not -- so the memory
-# lever is GF_SLICE_TOL (extra amplitude truncation of each filtered seed), traded explicitly
-# against accuracy (discarded tail ~ sqrt(n_tail) * tol) and reported by the diagnostics.
-# Read at call time, like the other GF_* knobs -- an import-time constant cannot be set by a
-# caller that has already imported this module (which silently voided a slicing test).
+# The Phase-0 calibration (doc/plans/spectrum_slicing.md): filtered seeds' dominant amplitudes
+# are energy-local, their sub-1e-6 tails are not -- so the memory lever is GF_SLICE_TOL (extra
+# amplitude truncation of each filtered seed), traded explicitly against accuracy (discarded
+# tail ~ sqrt(n_tail) * tol) and reported by the diagnostics.
 
 
 def _slice_count():
-    """Chebyshev windows tiling the real-axis evaluation band (``GF_SLICES``)."""
-    return max(1, int(os.environ.get("GF_SLICES", "8")))
+    """Chebyshev windows tiling the real-axis evaluation band (:data:`config.GF_SLICES`)."""
+    return config.GF_SLICES.get()
 
 
 def _slice_degree():
-    """Filter degree (``GF_SLICE_DEGREE``); 0 = auto (from the bandwidth / slice-width ratio)."""
-    return max(0, int(os.environ.get("GF_SLICE_DEGREE", "0")))
+    """Filter degree (:data:`config.GF_SLICE_DEGREE`); 0 = auto (bandwidth / slice-width)."""
+    return config.GF_SLICE_DEGREE.get()
 
 
 def _slice_tol():
-    """Amplitude truncation of the filtered slice seeds (``GF_SLICE_TOL``); 0 = none."""
-    return max(0.0, float(os.environ.get("GF_SLICE_TOL", "0")))
-
-
-# GMRES fallback for the points BiCGSTAB leaves unconverged (its shadow-residual
-# recurrence stagnates within ~delta of a pole; GMRES minimizes the residual and has no
-# such mode). The restart length bounds the fallback's live Krylov blocks -- the
-# memory-model transient in estimate_gf_peak_bytes(method="bicgstab") must match it.
-_GF_GMRES_RESTART = int(os.environ.get("GF_GMRES_RESTART", "40"))
-_GF_GMRES_MAX_RESTARTS = int(os.environ.get("GF_GMRES_MAX_RESTARTS", "25"))
+    """Amplitude truncation of the filtered slice seeds (:data:`config.GF_SLICE_TOL`)."""
+    return config.GF_SLICE_TOL.get()
 
 
 def _gf_eigenstate_group():
@@ -1494,14 +1470,15 @@ def _gf_eigenstate_group():
     exactly (the block Krylov space of the stacked seed contains each eigenstate's own
     Krylov space). Stacking shares the matvec/Krylov build across eigenstates but grows the
     per-step reorthogonalization with the block width, so the optimum is workload-dependent
-    (see ``doc/plans/calc_selfenergy_performance.md``). Override with ``GF_EIGENSTATE_GROUP``.
+    (see ``doc/plans/calc_selfenergy_performance.md``). Override with
+    :data:`config.GF_EIGENSTATE_GROUP`.
     """
-    return max(1, int(os.environ.get("GF_EIGENSTATE_GROUP", 1)))
+    return config.GF_EIGENSTATE_GROUP.get()
 
 
 def _gf_operator_split():
     r"""Whether to use the pairwise / scalar operator-split decomposition (the *narrow* end of
-    the block-width granularity spectrum). Default off (``GF_OPERATOR_SPLIT`` unset/0).
+    the block-width granularity spectrum). Default off (:data:`config.GF_OPERATOR_SPLIT`).
 
     When on, a block of ``n`` transition operators is computed not as one width-``n`` block-Lanczos
     recurrence but as ``n`` width-1 (scalar) recurrences for the diagonal seeds ``v_i = c_i|psi>``
@@ -1513,7 +1490,7 @@ def _gf_operator_split():
     across columns). Mutually exclusive with eigenstate grouping; the operator split takes
     precedence when both are requested.
     """
-    return os.environ.get("GF_OPERATOR_SPLIT", "0") not in ("0", "", "false", "False")
+    return config.GF_OPERATOR_SPLIT.get()
 
 
 def _gf_per_state_restrict(chain_restrict):
@@ -1524,7 +1501,7 @@ def _gf_per_state_restrict(chain_restrict):
     ensemble window only through the state-dependent bath filled/empty classification, which is
     itself only produced under ``chain_restrict`` (and only for sites past the coupling-distance
     filter -- long chains); with ``chain_restrict`` off the two are identical, so per-state would
-    be pure overhead. ``GF_PER_STATE_RESTRICT`` overrides the default either way (for tests/A-B).
+    be pure overhead. :data:`config.GF_PER_STATE_RESTRICT` overrides the default either way.
 
     The ensemble window is effectively the union over all thermal states' filled/empty bath
     classifications: a bath orbital counts as cleanly filled/empty only if the *thermal-average*
@@ -1543,10 +1520,10 @@ def _gf_per_state_restrict(chain_restrict):
     the coupling-distance filter (long chains). For a directly-hybridizing single bath shell the
     per-state and ensemble windows are identical and this is a no-op.
     """
-    env = os.environ.get("GF_PER_STATE_RESTRICT")
-    if env is None:
+    override = config.GF_PER_STATE_RESTRICT.get()
+    if override is None:
         return bool(chain_restrict)
-    return env not in ("0", "", "false", "False")
+    return override
 
 
 def _union_restrictions(rests):
@@ -1904,7 +1881,7 @@ def solve_shifted_block(A_op, x0, rhs, basis, slaterWeightMin, atol, rtol=0.0, m
     r"""Restart-while-progressing BiCGSTAB, escalated to ``block_gmres`` on stagnation.
 
     Shared by every per-frequency resolvent solve on this branch (:func:`block_Green_bicgstab`,
-    the RIXS R1 fallback in ``spectra._rixs_map_flat``): runs up to ``1 + _GF_BICGSTAB_RESTARTS``
+    the RIXS R1 fallback in ``rixs._rixs_map_flat``): runs up to ``1 + config.GF_BICGSTAB_RESTARTS``
     :func:`~impurityModel.ed.cg.block_bicgstab` attempts, restarting with the current iterate as
     long as each attempt still makes at least ``_GF_BICGSTAB_RESTART_PROGRESS`` progress over the
     previous residual (each restart re-deflates ``Y - A x0`` and picks a fresh shadow residual,
@@ -1947,7 +1924,7 @@ def solve_shifted_block(A_op, x0, rhs, basis, slaterWeightMin, atol, rtol=0.0, m
     iterations = 0
     X = x0
     prev_residual = np.inf
-    for _attempt in range(1 + _GF_BICGSTAB_RESTARTS):
+    for _attempt in range(1 + config.GF_BICGSTAB_RESTARTS.get()):
         X = block_bicgstab(A_op, X, rhs, basis, slaterWeightMin, **bicgstab_kwargs)
         iterations += info["iterations"]
         if info["converged"] or info["rel_residual"] > _GF_BICGSTAB_RESTART_PROGRESS * prev_residual:
@@ -1964,8 +1941,8 @@ def solve_shifted_block(A_op, x0, rhs, basis, slaterWeightMin, atol, rtol=0.0, m
             basis,
             slaterWeightMin,
             atol=atol,
-            restart=_GF_GMRES_RESTART,
-            max_restarts=_GF_GMRES_MAX_RESTARTS,
+            restart=config.GF_GMRES_RESTART.get(),
+            max_restarts=config.GF_GMRES_MAX_RESTARTS.get(),
             info=info,
         )
         iterations += info["iterations"]
@@ -2033,9 +2010,9 @@ def block_Green_bicgstab(
         which is applied here per eigenstate.
     atol : float, optional
         Per-solve residual tolerance relative to the seed norm; defaults to
-        :data:`_GF_BICGSTAB_ATOL`.
+        :data:`config.GF_BICGSTAB_ATOL`.
     max_iter : int, optional
-        Per-point iteration bound; defaults to :data:`_GF_BICGSTAB_MAX_ITER`.
+        Per-point iteration bound; defaults to :data:`config.GF_BICGSTAB_MAX_ITER`.
     bra_seeds : list of ManyBodyState, optional
         Cross-element mode (the spectrum-slicing driver): a second flat block in the same
         ``(eigenstate, operator)`` order whose columns form the *bra* of the Gram,
@@ -2054,8 +2031,8 @@ def block_Green_bicgstab(
         per-point support (``max_solve_basis``, ``max_rebuild_basis`` -- the numbers that
         decide whether this path's memory promise holds on a given workload).
     """
-    atol = _GF_BICGSTAB_ATOL if atol is None else atol
-    max_iter = _GF_BICGSTAB_MAX_ITER if max_iter is None else max_iter
+    atol = config.GF_BICGSTAB_ATOL.get() if atol is None else atol
+    max_iter = config.GF_BICGSTAB_MAX_ITER.get() if max_iter is None else max_iter
     n_e = len(es)
     sub_comm = basis.comm
     cap = getattr(basis, "truncation_threshold", np.inf)

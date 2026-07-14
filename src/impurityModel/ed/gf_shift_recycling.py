@@ -18,6 +18,7 @@ import numpy as np
 import scipy as sp
 from mpi4py import MPI
 
+from impurityModel.ed import config
 from impurityModel.ed.BlockLanczos import block_lanczos_cy
 from impurityModel.ed.BlockLanczosArray import resolve_reort
 from impurityModel.ed.basis_transcription import build_sparse_matrix, build_state
@@ -26,15 +27,15 @@ from impurityModel.ed.ManyBodyUtils import ManyBodyBlockState, ManyBodyState
 from impurityModel.ed.memory_estimate import available_bytes_per_rank, format_bytes
 
 def _sector_dense_max():
-    """Largest sector size the spectral cache may densify (``GF_SECTOR_DENSE_MAX``).
+    """Largest sector size the spectral cache may densify (:data:`config.GF_SECTOR_DENSE_MAX`).
 
     The eigendecomposition holds ~3 dense ``(N, N)`` complex arrays (H, the eigenvector
-    matrix and LAPACK workspace); the default caps that at a quarter of the available
-    per-rank memory.
+    matrix and LAPACK workspace); unset, the cap is derived so that fits in a quarter of the
+    available per-rank memory.
     """
-    env = os.environ.get("GF_SECTOR_DENSE_MAX")
-    if env is not None:
-        return max(0, int(env))
+    override = config.GF_SECTOR_DENSE_MAX.get()
+    if override is not None:
+        return override
     return int(np.sqrt(0.25 * available_bytes_per_rank() / (3 * 16)))
 
 
@@ -50,7 +51,7 @@ def _sector_cache_dir():
     eigensolvers, Lanczos tridiagonalization -- are no faster with eigenvectors) is
     then paid once per material instead of once per run.
     """
-    return os.environ.get("GF_SECTOR_CACHE_DIR", "")
+    return config.GF_SECTOR_CACHE_DIR.get()
 
 
 def _sector_digest(states, hOp):
@@ -225,15 +226,15 @@ class SectorResolventCache:
 
 
 def _gf_krylov_recycle_max_bytes():
-    """Per-rank byte cap on a recycled Krylov store (``GF_KRYLOV_RECYCLE_MAX_BYTES``).
+    """Per-rank byte cap on a recycled Krylov store (:data:`config.GF_KRYLOV_RECYCLE_MAX_BYTES`).
 
     The retained Krylov basis is :class:`KrylovShiftedResolvent`'s dominant allocation;
-    the default caps it at a quarter of the available per-rank memory, mirroring
+    unset, it is capped at a quarter of the available per-rank memory, mirroring
     :func:`_sector_dense_max`'s budget for the dense spectral cache.
     """
-    env = os.environ.get("GF_KRYLOV_RECYCLE_MAX_BYTES")
-    if env is not None:
-        return max(0, int(env))
+    override = config.GF_KRYLOV_RECYCLE_MAX_BYTES.get()
+    if override is not None:
+        return override
     return available_bytes_per_rank() // 4
 
 

@@ -2,7 +2,6 @@
 This module contains functions for calculating various spectra.
 """
 
-import os
 import time
 from math import ceil, sqrt
 
@@ -40,6 +39,7 @@ def sph_harm(m, n, theta, phi):
 
 # Local imports
 import impurityModel.ed.greens_function as gf
+from impurityModel.ed import config
 from impurityModel.ed.atomic_physics import gauntC
 from impurityModel.ed.basis_restrictions import build_excited_restrictions
 from impurityModel.ed.operator_algebra import arrayOp2Dict, c2i, combineOp, daggerOp
@@ -1133,25 +1133,24 @@ def _rixs_win_chunk(n_eigen: int, n_win: int, comm_size: int) -> int:
     initial guess) inside a unit -- a unit is atomic, the engine never reorders within one.
     The default targets ~3 units per rank so the LPT packing has slack to balance, without
     fragmenting the warm-start chains more than needed. Serial runs get one unit per
-    eigenstate (maximal warm-start locality). Override with ``GF_RIXS_WIN_CHUNK``.
+    eigenstate (maximal warm-start locality). Override with :data:`config.GF_RIXS_WIN_CHUNK`.
     """
-    env = os.environ.get("GF_RIXS_WIN_CHUNK")
-    if env is not None:
-        return max(1, int(env))
+    override = config.GF_RIXS_WIN_CHUNK.get()
+    if override is not None:
+        return override
     if comm_size <= 1:
         return max(1, n_win)
     return max(1, min(n_win, ceil(n_eigen * n_win / (3 * comm_size))))
 
 
 def _rixs_adaptive_tol():
-    """Adaptive-wIn stop tolerance from ``GF_RIXS_ADAPTIVE_TOL``; unset/empty disables."""
-    env = os.environ.get("GF_RIXS_ADAPTIVE_TOL")
-    return float(env) if env else None
+    """Adaptive-wIn stop tolerance (:data:`config.GF_RIXS_ADAPTIVE_TOL`); unset/empty disables."""
+    return config.GF_RIXS_ADAPTIVE_TOL.get()
 
 
 def _rixs_adaptive_batch():
-    """New wIn solves per adaptive round (``GF_RIXS_ADAPTIVE_BATCH``, default 1)."""
-    return max(1, int(os.environ.get("GF_RIXS_ADAPTIVE_BATCH", 1)))
+    """New wIn solves per adaptive round (:data:`config.GF_RIXS_ADAPTIVE_BATCH`)."""
+    return config.GF_RIXS_ADAPTIVE_BATCH.get()
 
 
 # Below this many requested wIn points the adaptive sampler cannot beat the dense sweep
@@ -1591,7 +1590,9 @@ def _rixs_map_flat(
         out = np.zeros((len(w_chunk), n_i, n_o, len(wLoss)), dtype=complex)
         wins = wIns[w_chunk]
         for k, win in enumerate(wins):
-            psi2 = chain.solve(tmp_basis, hOp, psi1_all, psi2_all, k, win, wins[k:], delta1, E_e, slaterWeightMin, verbose)
+            psi2 = chain.solve(
+                tmp_basis, hOp, psi1_all, psi2_all, k, win, wins[k:], delta1, E_e, slaterWeightMin, verbose
+            )
             out[k] = eval_out(green_basis, psi2, E_e) * thermal_weight
         # Free the per-unit cloned sub-communicator collectively -- every rank of this color
         # runs the same unit list in the same order. green_basis's clone outlives the unit
