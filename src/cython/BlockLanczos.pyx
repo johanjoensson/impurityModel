@@ -616,9 +616,12 @@ def block_lanczos_cy(
         h_op: ``ManyBodyOperator`` that implements ``apply_multi(psis, cutoff)``.
         basis: ``Basis`` object providing ``redistribute_psis`` and ``basis.comm``.
         converged_fn: Callable with signature
-            ``converged_fn(alphas, betas, verbose=bool) -> bool`` that returns
-            ``True`` once the desired accuracy is reached.  Called after every
-            accepted step with the *full* ``alphas``/``betas`` arrays built so far.
+            ``converged_fn(alphas, betas, verbose=bool, block_widths=list[int]) -> bool``
+            that returns ``True`` once the desired accuracy is reached.  Called after
+            every accepted step with the *full* ``alphas``/``betas`` arrays built so
+            far and ``block_widths`` extended with the current step's width -- a
+            callback that only accepts ``(alphas, betas, verbose)`` raises
+            ``TypeError`` (accept ``**kwargs`` if ``block_widths`` is unused).
         verbose: Print per-iteration diagnostics including ``|beta|`` norms and
             diagonal alpha values.  Default ``False``.
         reort: Reorthogonalization mode.  Accepts ``Reort`` enum members or the

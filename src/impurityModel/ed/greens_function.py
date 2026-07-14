@@ -1633,6 +1633,24 @@ def _shifted_tridiag_solutions(alphas, betas, block_widths, b0, zs):
     return Y, res
 
 
+def _no_convergence_check(alphas, betas, verbose=False, block_widths=None, **kwargs):
+    """Convergence callback that never fires: convergence is judged by the caller instead.
+
+    Matches ``block_lanczos_cy``'s actual convergence-callback contract -- it calls
+    ``converged_fn(alphas, betas, verbose=verbose, block_widths=block_widths + [n_curr])``
+    on *every* iteration (see ``BlockLanczos.pyx``), not just ``(alphas, betas, verbose)``.
+    Used by :class:`KrylovShiftedResolvent`, whose ``solve`` judges convergence itself
+    between resume rounds via the exact shifted Galerkin residuals
+    (:func:`_shifted_tridiag_solutions`), never through the kernel's own check.
+
+    A version of this that only accepted ``(a, b, verbose=False)`` crashed with a
+    ``TypeError`` the first time a real workload's sector outlived the seed block's
+    invariant-subspace closure (no unit test's tiny model reached the callback before
+    then) -- see the regression test ``test_krylov_shifted_resolvent_long_recurrence``.
+    """
+    return False
+
+
 class KrylovShiftedResolvent:
     r"""Shift-recycled block-Krylov resolvent: one recurrence serves every frequency.
 
@@ -1714,7 +1732,7 @@ class KrylovShiftedResolvent:
                 psi_arr,
                 hOp,
                 lanczos_basis,
-                lambda a, b, verbose=False, block_widths=None, **kwargs: False,
+                _no_convergence_check,
                 verbose=verbose,
                 reort=self._reort,
                 slaterWeightMin=slaterWeightMin,
