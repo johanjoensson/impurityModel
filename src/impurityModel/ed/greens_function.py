@@ -1422,9 +1422,7 @@ class SectorResolventCache:
         self._n_builds = 0
 
     def _covers(self, seeds):
-        return self._index is not None and all(
-            state in self._index for psi in seeds for state in psi.keys()
-        )
+        return self._index is not None and all(state in self._index for psi in seeds for state in psi.keys())
 
     def _ensure(self, basis, hOp, seeds, slaterWeightMin, verbose):
         """Cover ``seeds``' sector, eigendecomposing it on first sight. False = declined.
@@ -1454,8 +1452,7 @@ class SectorResolventCache:
         self._n_builds += 1
         if verbose:
             print(
-                f"Sector resolvent cache: {how} a {len(basis)}-determinant sector "
-                f"(build {self._n_builds}).",
+                f"Sector resolvent cache: {how} a {len(basis)}-determinant sector " f"(build {self._n_builds}).",
                 flush=True,
             )
         return True
@@ -1554,6 +1551,233 @@ class SectorResolventCache:
             keep = np.abs(x[:, k]) ** 2 > slaterWeightMin
             out.append(ManyBodyState({states[i]: x[i, k] for i in np.nonzero(keep)[0]}))
         return out
+
+
+def _gf_krylov_recycle_max_bytes():
+    """Per-rank byte cap on a recycled Krylov store (``GF_KRYLOV_RECYCLE_MAX_BYTES``).
+
+    The retained Krylov basis is :class:`KrylovShiftedResolvent`'s dominant allocation;
+    the default caps it at a quarter of the available per-rank memory, mirroring
+    :func:`_sector_dense_max`'s budget for the dense spectral cache.
+    """
+    env = os.environ.get("GF_KRYLOV_RECYCLE_MAX_BYTES")
+    if env is not None:
+        return max(0, int(env))
+    return available_bytes_per_rank() // 4
+
+
+def _shifted_tridiag_solutions(alphas, betas, block_widths, b0, zs):
+    r"""Shifted solves of the projected block-tridiagonal systems, plus exact residuals.
+
+    For every shift ``z`` solves ``(z I - T) y = E_1 b_0`` where ``T`` is the block
+    tridiagonal assembled from the (trimmed) block-Lanczos coefficients. By the
+    recurrence ``H Q = Q T + q_{m+1} \beta_m E_m^H``, the residual of the full-space
+    Galerkin solution ``x = Q y`` of ``(z - H) x = Q E_1 b_0`` is exactly
+    ``q_{m+1} \beta_m y_m``, so its norm ``||\beta_m y_m||_F`` follows from the small
+    quantities alone -- no matvec. The systems are solved banded (bandwidth below twice
+    the maximum block width), so a residual check per resume round costs
+    ``O(n_z * n_T * p^2)`` -- negligible next to one Lanczos step.
+
+    Args:
+        alphas, betas, block_widths: coefficients as returned by ``block_lanczos_cy``
+            (padded; trimmed here). ``betas[-1]`` is the residual coupling used for
+            the residual norms.
+        b0: ``(w_0, n_rhs)`` projection of the right-hand-side block onto the first
+            Lanczos block (the seed QR's R factor).
+        zs: complex shifts.
+
+    Returns:
+        tuple: ``(Y, res)`` -- ``Y`` of shape ``(n_z, n_T, n_rhs)`` with
+        ``n_T = sum(block_widths)``, and ``res`` of shape ``(n_z,)`` holding the
+        residual Frobenius norms.
+    """
+    a, b = _trim_blocks(alphas, betas, block_widths)
+    widths = [int(w) for w in block_widths]
+    k = len(widths)
+    starts = np.concatenate([[0], np.cumsum(widths)]).astype(int)
+    n_t = int(starts[-1])
+    zs = np.asarray(zs, dtype=complex)
+    n_rhs = b0.shape[1]
+    if n_t == 0:
+        return np.zeros((len(zs), 0, n_rhs), dtype=complex), np.full(len(zs), float(np.linalg.norm(b0)))
+
+    bw = max(w - 1 for w in widths)
+    for i in range(k - 1):
+        bw = max(bw, widths[i] + widths[i + 1] - 1)
+    ab = np.zeros((2 * bw + 1, n_t), dtype=complex)
+
+    def _put(M, r0, c0):
+        # LAPACK banded storage: ab[bw + i - j, j] = T[i, j].
+        for jl in range(M.shape[1]):
+            j = c0 + jl
+            ab[bw + r0 - j : bw + r0 - j + M.shape[0], j] = M[:, jl]
+
+    for i in range(k):
+        _put(a[i], starts[i], starts[i])
+        if i + 1 < k:
+            _put(b[i], starts[i + 1], starts[i])
+            _put(np.conj(b[i].T), starts[i], starts[i + 1])
+
+    rhs = np.zeros((n_t, n_rhs), dtype=complex)
+    rhs[: widths[0]] = b0[: widths[0]]
+    tail = b[-1]  # residual coupling beyond the retained subspace
+    last = slice(int(starts[k - 1]), n_t)
+    Y = np.empty((len(zs), n_t, n_rhs), dtype=complex)
+    res = np.empty(len(zs))
+    for wi, z in enumerate(zs):
+        ab_z = -ab
+        ab_z[bw] += z
+        y = sp.linalg.solve_banded((bw, bw), ab_z, rhs, check_finite=False)
+        Y[wi] = y
+        res[wi] = float(np.linalg.norm(tail @ y[last]))
+    return Y, res
+
+
+class KrylovShiftedResolvent:
+    r"""Shift-recycled block-Krylov resolvent: one recurrence serves every frequency.
+
+    Solves ``(z - H) x_k = y_k`` for a FIXED right-hand-side block and MANY shifts
+    ``z``. The Krylov space of ``z - H`` seeded with ``y`` is independent of ``z``, so a
+    single distributed block-Lanczos recurrence serves all shifts:
+    ``x(z) = Q (z I - T)^{-1} E_1 B_0``, with the small shifted systems solved banded
+    and the per-shift Galerkin residual known exactly from the projected quantities
+    (see :func:`_shifted_tridiag_solutions`). The recurrence is resumed through the
+    kernel's warm-start protocol until every shift meets ``atol`` (or the recurrence
+    closes: an invariant subspace makes the solutions exact).
+
+    This serves the regime :class:`SectorResolventCache` declines -- distributed bases
+    and sectors too large to densify -- replacing one iterative solve *per frequency*
+    with one recurrence per right-hand-side block. On a ``truncation_threshold``-capped
+    basis it is exact in the same sense as the other capped Lanczos paths: post-freeze,
+    the converged solutions are those of the frozen ``P H P``.
+
+    Memory: the solutions are RECONSTRUCTED from the retained Krylov store, so
+    tail-only retention and complex64 storage are both off the table; the store is
+    bounded by :func:`_gf_krylov_recycle_max_bytes` per rank instead, and a resume
+    round that would exceed the bound before convergence declines the whole solve
+    (``solve`` returns ``None``, the caller falls back to its per-point solver).
+
+    ``reort`` defaults to ``"partial"``: unlike the continued-fraction Green's function
+    (which never reads Q back), the reconstruction multiplies into Q, so it needs
+    semi-orthogonality; PARTIAL's ``sqrt(eps)`` target keeps the reconstruction error
+    around 1e-8 relative at a fraction of FULL's cost.
+    """
+
+    def __init__(self, reort="partial"):
+        self._reort = resolve_reort(reort)
+
+    def solve(self, basis, hOp, rhs, zs, slaterWeightMin=0, atol=1e-6, verbose=False):
+        """Solutions ``[x_k(z) for k] for z in zs`` as ``ManyBodyState`` lists, or ``None``.
+
+        ``None`` means declined -- the memory bound would be exceeded before the shifted
+        residuals reach ``atol * ||rhs||`` (or the recurrence diverged) -- and the caller
+        should fall back to its per-point solver. MPI-collective on ``basis.comm``; every
+        branch decision derives from replicated data, so all ranks agree. ``basis`` is
+        cleared and regrown toward the seeds' H-closure (the same contract as the
+        per-point iterative solvers' rebuild loop); the returned states are distributed
+        by the grown basis's ownership.
+        """
+        comm = basis.comm
+        mpi = comm is not None
+        rank = comm.rank if mpi else 0
+        n_rhs = len(rhs)
+        zs = np.asarray(zs, dtype=complex)
+        max_bytes = _gf_krylov_recycle_max_bytes()
+        if max_bytes == 0:
+            return None
+        if n_rhs == 0 or len(zs) == 0:
+            return [[ManyBodyState() for _ in range(n_rhs)] for _ in zs]
+
+        basis.clear()
+        basis.add_states(sorted(set(state for psi in rhs for state in psi.keys())))
+        rhs = basis.redistribute_psis(list(rhs))
+
+        # Orthonormal seed block + projection B0 (the same preamble as block_green_impl).
+        psi_dense = build_vector(basis, rhs, root=0, slaterWeightMin=slaterWeightMin).T
+        r = None
+        if rank == 0:
+            psi_dense, r = build_qr(psi_dense)
+        if mpi:
+            psi_dense_local, r = _scatter_qr_columns(
+                comm, psi_dense if rank == 0 else None, r if rank == 0 else None, len(basis.local_basis)
+            )
+        else:
+            psi_dense_local = psi_dense
+        psi_arr = build_state(basis, psi_dense_local.T, slaterWeightMin=0)
+        b0 = r
+        scale = float(np.linalg.norm(b0))
+        if len(psi_arr) == 0 or scale == 0.0:
+            return [[ManyBodyState() for _ in range(n_rhs)] for _ in zs]
+
+        # Enforce the determinant cap on the recurrence (post-freeze: exact P H P).
+        cap = getattr(basis, "truncation_threshold", np.inf)
+        lanczos_basis = _CappedBasisProxy(basis, cap) if np.isfinite(cap) else basis
+
+        # Resume in growing budget rounds (the block_Green_sparse pattern): convergence
+        # is judged between rounds on the exact shifted residuals, not by the kernel.
+        alphas = betas = Q = W = widths = None
+        Y = None
+        budget = max(int(getattr(basis, "size", 0)) // max(len(psi_arr), 1), 8)
+        while True:
+            alphas, betas, Q, W, widths, status = block_lanczos_cy(
+                psi_arr,
+                hOp,
+                lanczos_basis,
+                lambda a, b, verbose=False: False,
+                verbose=verbose,
+                reort=self._reort,
+                slaterWeightMin=slaterWeightMin,
+                max_iter=budget,
+                return_widths=True,
+                return_status=True,
+                alphas_init=alphas,
+                betas_init=betas,
+                Q_init=Q,
+                W_init=W,
+                block_widths_init=widths,
+                store_krylov=True,
+            )
+            Y, res = _shifted_tridiag_solutions(alphas, betas, widths, b0, zs)
+            # An invariant subspace closes the recurrence: the coupling out of the
+            # retained space is zero, so the solutions are exact there (the residual
+            # check below is then satisfied by construction, up to roundoff).
+            if np.max(res) <= atol * scale or status == "invariant_subspace":
+                break
+            if status == "diverged":
+                if rank == 0:
+                    print(
+                        f"warning: shift-recycled Krylov resolvent diverged at relative residual "
+                        f"{np.max(res) / scale:.2e} (target {atol:.1e}); declining to the per-point solver.",
+                        flush=True,
+                    )
+                return None
+            # Memory guard before growing: the next round roughly doubles the store.
+            q_bytes = int(Q.memory_bytes())
+            if mpi:
+                q_bytes = comm.allreduce(q_bytes, op=MPI.MAX)
+            if 2 * q_bytes > max_bytes:
+                if rank == 0:
+                    print(
+                        f"Shift-recycled Krylov resolvent declined: store at {format_bytes(q_bytes)} "
+                        f"per rank would exceed the {format_bytes(max_bytes)} bound "
+                        f"(GF_KRYLOV_RECYCLE_MAX_BYTES) before reaching {atol:.1e} "
+                        f"(residual {np.max(res) / scale:.2e}); falling back to the per-point solver.",
+                        flush=True,
+                    )
+                return None
+            budget *= 2
+
+        if verbose and rank == 0:
+            print(
+                f"Shift-recycled Krylov resolvent: {len(zs)} shift(s) from one "
+                f"{int(np.sum(widths))}-vector recurrence "
+                f"(max relative residual {np.max(res) / scale:.2e}).",
+                flush=True,
+            )
+        # The store's leading sum(widths) columns are the Lanczos blocks (laid out by
+        # true, deflated widths); the trailing residual block is excluded.
+        n_keep = int(np.sum(widths))
+        return [Q.combine(Y[wi], 0, n_keep, slaterWeightMin) for wi in range(len(zs))]
 
 
 def block_Green(

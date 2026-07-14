@@ -562,3 +562,27 @@ def test_sector_resolvent_cache_disk_persistence(monkeypatch, tmp_path):
     fourth = gf.SectorResolventCache()
     g4 = fourth.try_eval(_basis([]), op, list(psis), zs)
     np.testing.assert_allclose(g4, g1, atol=1e-12)
+
+
+# --- tests for the shift-recycled Krylov resolvent and the GMRES escalation ---
+
+
+def test_krylov_shifted_resolvent_matches_dense_solve():
+    """One block-Lanczos recurrence solves (z - H) x = y for every shift, matching the
+    dense solve on the seeds' H-closed sector."""
+    from impurityModel.ed import greens_function as gf
+
+    op = _model()
+    psis, es, dets, states, vecs = _thermal_states(op, 2)
+    H = _matrix(op, states)
+    eye = np.eye(len(states), dtype=complex)
+    zs = np.array([0.7 + 0.3j, -1.1 + 0.2j, 2.5 + 0.05j, 0.7 + 0.3j])
+    rhs = list(psis)  # spans both connected components, so the closure is the full sector
+
+    sols = gf.KrylovShiftedResolvent().solve(_basis([]), op, rhs, zs, slaterWeightMin=0.0, atol=1e-10)
+    assert sols is not None
+    s_dense = np.array([[inner(sk, psi) for psi in rhs] for sk in states])
+    for z, xs in zip(zs, sols):
+        ref = np.linalg.solve(z * eye - H, s_dense)
+        got = np.array([[inner(sk, x) for x in xs] for sk in states])
+        np.testing.assert_allclose(got, ref, atol=1e-8)
