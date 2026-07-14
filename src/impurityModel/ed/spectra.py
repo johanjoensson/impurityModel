@@ -42,8 +42,6 @@ def sph_harm(m, n, theta, phi):
 import impurityModel.ed.greens_function as gf
 from impurityModel.ed.atomic_physics import gauntC
 from impurityModel.ed.basis_restrictions import build_excited_restrictions
-from impurityModel.ed.cg import block_bicgstab
-from impurityModel.ed.gmres import block_gmres
 from impurityModel.ed.operator_algebra import arrayOp2Dict, c2i, combineOp, daggerOp
 from impurityModel.ed.rational_sampling import barycentric_eval, greedy_next_samples, set_valued_aaa
 from impurityModel.ed.BlockLanczosArray import Reort
@@ -1541,44 +1539,16 @@ def _rixs_map_flat(
             # single Krylov space / iteration (block_bicgstab deflates a rank-deficient block).
             # atol is relative to ||psi1_all|| (see _RIXS_R1_ATOL); the extra iterations are
             # cheap now that a warm start shortens the solve rather than silently tightening
-            # its target. Restarted while unconverged and still making progress (each call
-            # re-deflates the residual and picks a fresh shadow residual).
+            # its target. gf.solve_shifted_block restarts while unconverged and still making
+            # progress and escalates to GMRES on stagnation -- near-pole points are exactly
+            # where BiCGSTAB stagnates (measured: a cold-started solve at the NiO L3 window
+            # edge silently returned relative residual 7.2), and a stagnated solve caps the
+            # map's accuracy at its residual level, so a wrong column must be rescued, and
+            # failing that, loud.
             solve_info = {}
-            prev_residual = np.inf
-            for _attempt in range(1 + gf._GF_BICGSTAB_RESTARTS):
-                psi2_all = block_bicgstab(
-                    A=A_op,
-                    x0=psi2_all,
-                    y=psi1_all,
-                    basis=tmp_basis,
-                    slaterWeightMin=slaterWeightMin,
-                    atol=_RIXS_R1_ATOL,
-                    rtol=1e-7,
-                    info=solve_info,
-                )
-                if (
-                    solve_info["converged"]
-                    or solve_info["rel_residual"] > gf._GF_BICGSTAB_RESTART_PROGRESS * prev_residual
-                ):
-                    break
-                prev_residual = solve_info["rel_residual"]
-            # GMRES escalation, warm-started from BiCGSTAB's partial iterate: near-pole
-            # points are exactly where BiCGSTAB stagnates (measured: a cold-started solve
-            # at the NiO L3 window edge silently returned relative residual 7.2), and a
-            # stagnated solve caps the map's accuracy at its residual level -- so a wrong
-            # column must be rescued, and failing that, loud.
-            if not solve_info["converged"]:
-                psi2_all = block_gmres(
-                    A_op,
-                    psi2_all,
-                    psi1_all,
-                    tmp_basis,
-                    slaterWeightMin,
-                    atol=_RIXS_R1_ATOL,
-                    restart=gf._GF_GMRES_RESTART,
-                    max_restarts=gf._GF_GMRES_MAX_RESTARTS,
-                    info=solve_info,
-                )
+            psi2_all = gf.solve_shifted_block(
+                A_op, psi2_all, psi1_all, tmp_basis, slaterWeightMin, _RIXS_R1_ATOL, rtol=1e-7, info=solve_info
+            )
             if not solve_info["converged"] and (sub_comm is None or sub_comm.rank == 0):
                 print(
                     f"warning: RIXS intermediate resolvent at wIn = {win:.6g} (eigenstate {e}) "

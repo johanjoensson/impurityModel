@@ -2873,6 +2873,84 @@ def _bicgstab_sweep_order(z_shifted):
     return np.argsort(-np.abs(np.imag(z_shifted)), kind="stable")
 
 
+def solve_shifted_block(A_op, x0, rhs, basis, slaterWeightMin, atol, rtol=0.0, max_iter=None, info=None):
+    r"""Restart-while-progressing BiCGSTAB, escalated to ``block_gmres`` on stagnation.
+
+    Shared by every per-frequency resolvent solve on this branch (:func:`block_Green_bicgstab`,
+    the RIXS R1 fallback in ``spectra._rixs_map_flat``): runs up to ``1 + _GF_BICGSTAB_RESTARTS``
+    :func:`~impurityModel.ed.cg.block_bicgstab` attempts, restarting with the current iterate as
+    long as each attempt still makes at least ``_GF_BICGSTAB_RESTART_PROGRESS`` progress over the
+    previous residual (each restart re-deflates ``Y - A x0`` and picks a fresh shadow residual,
+    which is what cures near-pole stagnation -- a plain re-solve from the same iterate would not).
+    If still unconverged after the restarts, escalates to :func:`~impurityModel.ed.gmres.block_gmres`,
+    warm-started from BiCGSTAB's last iterate, before that iterate can poison a warm-start chain
+    downstream.
+
+    Every field of ``info`` derives from allreduce'd norms (``block_bicgstab``/``block_gmres`` are
+    collective), so this restart loop is collective-consistent: every rank takes the same branch.
+
+    Parameters
+    ----------
+    A_op, x0, rhs, basis, slaterWeightMin, atol
+        Forwarded to ``block_bicgstab``/``block_gmres`` (``x0`` is the warm start; ``rhs`` is
+        the right-hand side block, ``y`` in their signature).
+    rtol : float, optional
+        BiCGSTAB-only relative tolerance floor (some callers pin the RIXS R1 solve to one
+        additionally); 0 (default) omits it and uses ``block_bicgstab``'s own default.
+    max_iter : int, optional
+        BiCGSTAB-only per-attempt iteration bound; ``None`` uses ``block_bicgstab``'s default.
+    info : dict, optional
+        Filled (created if not supplied) with ``converged``, ``rel_residual`` (both as reported
+        by whichever solver ran last), cumulative ``iterations`` across every attempt and any
+        GMRES escalation, ``gmres_used`` and ``gmres_iterations``.
+
+    Returns
+    -------
+    list of ManyBodyState
+        The solution block.
+    """
+    if info is None:
+        info = {}
+    bicgstab_kwargs = {"atol": atol, "info": info}
+    if rtol:
+        bicgstab_kwargs["rtol"] = rtol
+    if max_iter is not None:
+        bicgstab_kwargs["max_iter"] = max_iter
+
+    iterations = 0
+    X = x0
+    prev_residual = np.inf
+    for _attempt in range(1 + _GF_BICGSTAB_RESTARTS):
+        X = block_bicgstab(A_op, X, rhs, basis, slaterWeightMin, **bicgstab_kwargs)
+        iterations += info["iterations"]
+        if info["converged"] or info["rel_residual"] > _GF_BICGSTAB_RESTART_PROGRESS * prev_residual:
+            break
+        prev_residual = info["rel_residual"]
+
+    gmres_used = False
+    gmres_iterations = 0
+    if not info["converged"]:
+        X = block_gmres(
+            A_op,
+            X,
+            rhs,
+            basis,
+            slaterWeightMin,
+            atol=atol,
+            restart=_GF_GMRES_RESTART,
+            max_restarts=_GF_GMRES_MAX_RESTARTS,
+            info=info,
+        )
+        iterations += info["iterations"]
+        gmres_used = True
+        gmres_iterations = info["iterations"]
+
+    info["iterations"] = iterations
+    info["gmres_used"] = gmres_used
+    info["gmres_iterations"] = gmres_iterations
+    return X
+
+
 def block_Green_bicgstab(
     hOp,
     psi_arr,
@@ -3037,52 +3115,20 @@ def block_Green_bicgstab(
                 A_op = ManyBodyOperator({((0, "c"), (0, "a")): z, ((0, "a"), (0, "c")): z}) - hOp
                 A_op.set_weighted_restrictions(excited_weighted_restrictions)
 
-                # Solve, restarting while unconverged and still making progress (each call
-                # re-deflates Y - A x0 and picks a fresh shadow residual). Every rank sees the
-                # identical info dict -- its fields derive from allreduce'd norms -- so the
-                # restart loop is collective-consistent.
+                # Solve, restarting while unconverged and still making progress and
+                # escalating to GMRES on stagnation (block_Green_bicgstab's own warm-start
+                # chain is separate from the RIXS one but shares the same solver policy).
                 info = {}
-                iterations = 0
-                X = x0
-                prev_residual = np.inf
-                for _attempt in range(1 + _GF_BICGSTAB_RESTARTS):
-                    X = block_bicgstab(
-                        A_op,
-                        X,
-                        seeds,
-                        solve_basis,
-                        slaterWeightMin,
-                        atol=atol,
-                        max_iter=max_iter,
-                        info=info,
-                    )
-                    iterations += info["iterations"]
-                    if info["converged"] or info["rel_residual"] > _GF_BICGSTAB_RESTART_PROGRESS * prev_residual:
-                        break
-                    prev_residual = info["rel_residual"]
-
-                # GMRES fallback: warm-started from BiCGSTAB's partial iterate, before the
-                # solution enters the extrapolation history -- so a rescued point also
-                # repairs the warm-start chain its stagnated result would have poisoned.
-                if not info["converged"]:
-                    X = block_gmres(
-                        A_op,
-                        X,
-                        seeds,
-                        solve_basis,
-                        slaterWeightMin,
-                        atol=atol,
-                        restart=_GF_GMRES_RESTART,
-                        max_restarts=_GF_GMRES_MAX_RESTARTS,
-                        info=info,
-                    )
-                    iterations += info["iterations"]
-                    stats["gmres_points"] += 1
-                    stats["gmres_iterations"] += info["iterations"]
+                X = solve_shifted_block(
+                    A_op, x0, seeds, solve_basis, slaterWeightMin, atol, max_iter=max_iter, info=info
+                )
 
                 stats["n_points"] += 1
-                stats["iterations"] += iterations
+                stats["iterations"] += info["iterations"]
                 stats["max_rel_residual"] = max(stats["max_rel_residual"], info["rel_residual"])
+                if info["gmres_used"]:
+                    stats["gmres_points"] += 1
+                    stats["gmres_iterations"] += info["gmres_iterations"]
                 if not info["converged"]:
                     stats["n_unconverged"] += 1
                 stats["max_solve_basis"] = max(stats["max_solve_basis"], int(tmp_basis.size))
