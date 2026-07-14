@@ -446,7 +446,14 @@ def test_sector_resolvent_cache_declines_oversized_sector(monkeypatch):
     psis, es, dets, states, vecs = _thermal_states(op, 2)
     monkeypatch.setenv("GF_SECTOR_DENSE_MAX", "1")
     cache = gf.SectorResolventCache()
-    assert cache.try_eval(_basis([]), op, list(psis[:2]), WLOSS + 0.3j) is None
+    oversized_basis = _basis([])
+    assert cache.try_eval(oversized_basis, op, list(psis[:2]), WLOSS + 0.3j) is None
+    # the expansion probe must stop early, not complete the closure of a sector it
+    # is about to decline (a massive sector would otherwise grow to truncation_threshold)
+    assert len(oversized_basis) <= 2 + len(psis[0])
+    # and the decline is sticky: later evaluations short-circuit without re-expanding
+    assert cache._declined
+    assert cache.try_solve(_basis([]), op, list(psis[:2]), 0.5 + 0.3j) is None
 
     tin, tout = _tin_tout()
     got = _run_rixs_tensor(op, psis, es, tin, tout, dets, EPS_IN, EPS_OUT)

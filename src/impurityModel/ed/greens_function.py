@@ -1392,6 +1392,7 @@ class SectorResolventCache:
         self._index = None  # determinant -> row
         self._evals = None
         self._evecs = None
+        self._declined = False
         self._n_solves = 0
         self._n_builds = 0
 
@@ -1401,13 +1402,21 @@ class SectorResolventCache:
         )
 
     def _ensure(self, basis, hOp, seeds, slaterWeightMin, verbose):
-        """Cover ``seeds``' sector, eigendecomposing it on first sight. False = declined."""
-        if basis.comm is not None and basis.comm.size > 1:
+        """Cover ``seeds``' sector, eigendecomposing it on first sight. False = declined.
+
+        A decline is sticky: the sector is a fixed property of the caller's run, so
+        once it proved too large (or distributed) there is no point re-paying the
+        expansion probe on every subsequent evaluation.
+        """
+        if self._declined or (basis.comm is not None and basis.comm.size > 1):
+            self._declined = True
             return False
         if self._covers(seeds):
             return True
-        self._expand_to_closure(basis, hOp, seeds, slaterWeightMin)
-        if len(basis) > _sector_dense_max():
+        bound = _sector_dense_max()
+        self._expand_to_closure(basis, hOp, seeds, slaterWeightMin, size_bound=bound)
+        if len(basis) > bound:
+            self._declined = True
             return False
         h = build_sparse_matrix(basis, hOp).toarray()
         h = 0.5 * (h + h.conj().T)
@@ -1422,13 +1431,14 @@ class SectorResolventCache:
             )
         return True
 
-    def _expand_to_closure(self, basis, hOp, seeds, slaterWeightMin):
-        """Grow ``basis`` to the H-connectivity closure of the seed support.
+    def _expand_to_closure(self, basis, hOp, seeds, slaterWeightMin, size_bound):
+        """Grow ``basis`` toward the H-connectivity closure of the seed support.
 
         The same reachability probe as :func:`block_Green`'s expansion loop (repeated
-        ``apply_block`` on the accumulated support), bounded by the basis
-        ``truncation_threshold`` -- a capped sector keeps the freeze-growth
-        exact-on-subspace contract.
+        ``apply_block`` on the accumulated support). Stops early once ``size_bound`` is
+        exceeded: the caller will decline the sector anyway, and completing the closure
+        of a massive sector would grow the basis all the way to its
+        ``truncation_threshold`` for nothing.
         """
         basis.add_states(sorted(set(state for psi in seeds for state in psi.keys())))
         probe = ManyBodyBlockState.from_states(list(seeds))
@@ -1438,7 +1448,7 @@ class SectorResolventCache:
             basis.add_states(
                 set(state for state in probe.support_keys(0.0) if state not in basis.local_basis),
             )
-            if basis.size == old_size or basis.size > basis.truncation_threshold:
+            if basis.size == old_size or basis.size > min(size_bound, basis.truncation_threshold):
                 break
 
     def try_eval(self, basis, hOp, seeds, zs, slaterWeightMin=0, verbose=False):
