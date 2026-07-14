@@ -18,7 +18,7 @@ import numpy as np
 import pytest
 from mpi4py import MPI
 
-from impurityModel.ed import polarization, spectra
+from impurityModel.ed import polarization, rixs, spectra
 from impurityModel.ed.manybody_basis import Basis
 from impurityModel.ed.ManyBodyUtils import ManyBodyOperator, ManyBodyState, SlaterDeterminant, applyOp, inner
 from impurityModel.ed.symmetries import impurity_symmetry_rotation, rotate_hamiltonian
@@ -294,7 +294,7 @@ def test_rixs_map_adaptive_synthetic():
         calls.append(len(wins))
         return truth(wins)
 
-    got = spectra._rixs_map_adaptive(map_fn, x, None, tol=1e-8, verbose=False)
+    got = rixs._rixs_map_adaptive(map_fn, x, None, tol=1e-8, verbose=False)
     ref = truth(x)
     assert np.max(np.abs(got - ref)) <= 1e-6 * np.max(np.abs(ref))
     assert sum(calls) < len(x), f"adaptive solved every point: {calls}"
@@ -329,14 +329,14 @@ def test_rixs_tensor_adaptive_matches_dense(monkeypatch):
     dense = run(None)
 
     solved_counts = []
-    real_flat = spectra._rixs_map_flat
+    real_flat = rixs._rixs_map_flat
 
     def counting_flat(*args, **kwargs):
         # positional arg 5 is the wIn subset (hOp, in_ops, psis, Es, tau, wIns, ...)
         solved_counts.append(len(args[5]))
         return real_flat(*args, **kwargs)
 
-    monkeypatch.setattr(spectra, "_rixs_map_flat", counting_flat)
+    monkeypatch.setattr(rixs, "_rixs_map_flat", counting_flat)
     adaptive = run(1e-8)
 
     scale = np.max(np.abs(dense))
@@ -350,13 +350,13 @@ def test_rixs_tensor_adaptive_short_grid_stays_dense(monkeypatch):
     psis, es, dets, states, vecs = _thermal_states(op, 2)
     tin, tout = _tin_tout()
     solved_counts = []
-    real_flat = spectra._rixs_map_flat
+    real_flat = rixs._rixs_map_flat
 
     def counting_flat(*args, **kwargs):
         solved_counts.append(len(args[5]))
         return real_flat(*args, **kwargs)
 
-    monkeypatch.setattr(spectra, "_rixs_map_flat", counting_flat)
+    monkeypatch.setattr(rixs, "_rixs_map_flat", counting_flat)
     spectra.getRIXSmap_tensor(
         op,
         tin,
@@ -382,13 +382,13 @@ def test_rixs_tensor_adaptive_env_knob(monkeypatch):
     psis, es, dets, states, vecs = _thermal_states(op, 2)
     tin, tout = _tin_tout()
     solved_counts = []
-    real_flat = spectra._rixs_map_flat
+    real_flat = rixs._rixs_map_flat
 
     def counting_flat(*args, **kwargs):
         solved_counts.append(len(args[5]))
         return real_flat(*args, **kwargs)
 
-    monkeypatch.setattr(spectra, "_rixs_map_flat", counting_flat)
+    monkeypatch.setattr(rixs, "_rixs_map_flat", counting_flat)
     monkeypatch.setenv("GF_RIXS_ADAPTIVE_TOL", "1e-8")
     spectra.getRIXSmap_tensor(
         op,
@@ -528,7 +528,7 @@ def test_adaptive_blowup_guard_forces_solving_spurious_pole(monkeypatch):
         solved_wins.extend(np.atleast_1d(wins).tolist())
         return truth(wins)
 
-    real_aaa = spectra.set_valued_aaa
+    real_aaa = rixs.set_valued_aaa
     doctored = {"used": False}
 
     def poisoned_aaa(xs, F, rtol):
@@ -537,8 +537,8 @@ def test_adaptive_blowup_guard_forces_solving_spurious_pole(monkeypatch):
             return [0, len(xs) - 1], np.array([1.0, 1.0], dtype=complex)
         return real_aaa(xs, F, rtol=rtol)
 
-    monkeypatch.setattr(spectra, "set_valued_aaa", poisoned_aaa)
-    got = spectra._rixs_map_adaptive(map_fn, x, None, tol=1e-8, verbose=False)
+    monkeypatch.setattr(rixs, "set_valued_aaa", poisoned_aaa)
+    got = rixs._rixs_map_adaptive(map_fn, x, None, tol=1e-8, verbose=False)
     ref = truth(x)
     assert np.max(np.abs(got - ref)) <= 1e-6 * np.max(np.abs(ref))
     # the denominator zero of the poisoned fit sits midway between the outermost initial
