@@ -139,7 +139,7 @@ def estimate_gf_peak_bytes(
     n_blocks=None,
     krylov_dtype=None,
     method="lanczos",
-    gmres_restart=40,
+    gmres_restart=None,
 ):
     """Predicted per-rank peak bytes of the sparse (MBS-kernel) Green's-function path.
 
@@ -194,9 +194,12 @@ def estimate_gf_peak_bytes(
         peaks at, and peaks are what OOM-kill, so it is modeled rather than footnoted.
         The basis term is the *per-point* rebuilt support, still bounded by the same
         ``n_dets`` cap.
-    gmres_restart : int
-        The fallback's block-Arnoldi restart length (``GF_GMRES_RESTART``); only read
-        for ``method="bicgstab"``.
+    gmres_restart : int, optional
+        The fallback's block-Arnoldi restart length; only read for ``method="bicgstab"``.
+        ``None`` (default) reads ``GF_GMRES_RESTART`` from the environment, the same
+        variable :data:`greens_function._GF_GMRES_RESTART` resolves at solve time --
+        otherwise a caller who overrides that env var would silently get a peak estimate
+        for the un-overridden restart length.
 
     Returns
     -------
@@ -208,6 +211,8 @@ def estimate_gf_peak_bytes(
     basis_bytes = local_rows * (bytes_per_determinant(n_spin_orbitals) + _PY_BASIS_OVERHEAD_BYTES)
     row_bytes = _COMPLEX_BYTES * block_width + key_heap + _SD_STRUCT_BYTES
     if method in ("bicgstab", "sliced"):
+        if gmres_restart is None:
+            gmres_restart = int(os.environ.get("GF_GMRES_RESTART", "40"))
         live = 12 + gmres_restart + 3
         if method == "sliced":
             # The filter stage's transient (3 recurrence blocks + one accumulator per
