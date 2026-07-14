@@ -44,6 +44,7 @@ from impurityModel.ed.atomic_physics import gauntC
 from impurityModel.ed.basis_restrictions import build_excited_restrictions
 from impurityModel.ed.cg import block_bicgstab
 from impurityModel.ed.operator_algebra import arrayOp2Dict, c2i, combineOp, daggerOp
+from impurityModel.ed.rational_sampling import barycentric_eval, greedy_next_samples, set_valued_aaa
 from impurityModel.ed.BlockLanczosArray import Reort
 from impurityModel.ed.ManyBodyUtils import ManyBodyOperator, ManyBodyState, inner
 from impurityModel.ed.ManyBodyUtils import applyOp as applyOp_test
@@ -1202,6 +1203,131 @@ def _rixs_win_chunk(n_eigen: int, n_win: int, comm_size: int) -> int:
     return max(1, min(n_win, ceil(n_eigen * n_win / (3 * comm_size))))
 
 
+def _rixs_adaptive_tol():
+    """Adaptive-wIn stop tolerance from ``GF_RIXS_ADAPTIVE_TOL``; unset/empty disables."""
+    env = os.environ.get("GF_RIXS_ADAPTIVE_TOL")
+    return float(env) if env else None
+
+
+def _rixs_adaptive_batch():
+    """New wIn solves per adaptive round (``GF_RIXS_ADAPTIVE_BATCH``, default 1)."""
+    return max(1, int(os.environ.get("GF_RIXS_ADAPTIVE_BATCH", 1)))
+
+
+# Below this many requested wIn points the adaptive sampler cannot beat the dense sweep
+# (its initial space-filling sample plus the two-quiet-rounds stop already cost that much).
+_RIXS_ADAPTIVE_MIN_GRID = 12
+# Fit-component subsample bound: the set-valued AAA weights are determined from at most this
+# many components (strided across polarization pairs x wLoss); the final reconstruction uses
+# the full component set with the shared weights, which is exact for shared-pole functions.
+_RIXS_ADAPTIVE_MAX_FIT_COMPONENTS = 4096
+
+
+def _rixs_map_adaptive(map_fn, wIns, comm, tol, verbose):
+    r"""Greedy adaptive-wIn evaluation of a RIXS map via set-valued AAA.
+
+    Every component of the map (polarization pairs x energy-loss points) shares its
+    ``wIn`` poles -- the intermediate core-hole resolvent's -- so the whole map is a
+    vector-valued rational function of ``wIn`` and can be reconstructed from solves at a
+    few support points (measured on NiO L3: 20 of 121 points at 1e-3, ``doc`` Gate B).
+
+    Strategy: solve a small space-filling initial sample, fit a set-valued AAA
+    approximant (one shared support/weight set for a strided component subsample),
+    and iterate greedily -- each round solves the wIn point(s) where two consecutive
+    approximants disagree most, until they agree within ``tol * max|map|`` on every
+    unsolved point for two consecutive rounds (the standard guard against the
+    lookahead's failure mode: two iterates agreeing prematurely). Solved points enter
+    the returned map exactly; unsolved points are barycentric-evaluated with the full
+    component set. Falls back to the dense sweep (all points solved) if convergence
+    never sets in.
+
+    MPI: the greedy selection runs on global rank 0 and is broadcast each round;
+    ``map_fn`` (collective) is called by every rank with the identical wIn subset, so
+    all collectives stay in lock-step. Returns the assembled map on rank 0, ``None``
+    elsewhere (the :func:`_rixs_map_flat` contract).
+
+    Trade-off: within one round the warm-start chain only spans that round's batch, so
+    each adaptive solve pays more bicgstab iterations than a dense-sweep point; the
+    win is the ~5-10x reduction in the number of solves.
+    """
+    wIns = np.asarray(wIns)
+    n = len(wIns)
+    root = comm is None or comm.rank == 0
+    batch_size = _rixs_adaptive_batch()
+
+    solved: list[int] = []
+    cols = {}  # wIn index -> (n_i, n_o, n_l) map column; root only
+    fit_idx = None  # strided component subsample, fixed on first solve
+    prev_R = None
+    quiet_rounds = 0
+    min_solves = min(n, 8)
+    next_batch = sorted(set(int(i) for i in np.round(np.linspace(0, n - 1, min(5, n)))))
+    n_rounds = 0
+
+    while True:
+        if comm is not None:
+            next_batch = comm.bcast(next_batch, root=0)
+        if not next_batch:
+            break
+        n_rounds += 1
+        sub = map_fn(wIns[np.asarray(next_batch)])  # collective
+        if root:
+            for k, idx in enumerate(next_batch):
+                cols[idx] = sub[:, :, k, :]
+            solved.extend(next_batch)
+            x_solved = wIns[np.asarray(solved)]
+            F_full = np.array([cols[i].reshape(-1) for i in solved])  # (n_solved, K)
+            if fit_idx is None:
+                stride = max(1, ceil(F_full.shape[1] / _RIXS_ADAPTIVE_MAX_FIT_COMPONENTS))
+                fit_idx = np.arange(0, F_full.shape[1], stride)
+            F_fit = F_full[:, fit_idx]
+            scale = np.max(np.abs(F_fit))
+            support, weights = set_valued_aaa(x_solved, F_fit, rtol=0.1 * tol)
+            R = barycentric_eval(wIns, x_solved[support], weights, F_fit[support])
+            if prev_R is None or scale == 0.0:
+                surrogate = None
+            else:
+                surrogate = np.max(np.abs(R - prev_R), axis=1) / scale
+            prev_R = R
+            unsolved = [i for i in range(n) if i not in set(solved)]
+            converged = (
+                not unsolved
+                or (
+                    len(solved) >= min_solves
+                    and surrogate is not None
+                    and np.max(surrogate[unsolved]) <= tol
+                )
+            )
+            quiet_rounds = quiet_rounds + 1 if converged else 0
+            if not unsolved or quiet_rounds >= 2:
+                next_batch = []
+            else:
+                next_batch = greedy_next_samples(wIns, solved, surrogate, batch_size)
+        else:
+            next_batch = None
+
+    if not root:
+        return None
+    n_i, n_o, n_l = cols[solved[0]].shape
+    gs = np.empty((n_i, n_o, n, n_l), dtype=complex)
+    for idx in solved:
+        gs[:, :, idx, :] = cols[idx]
+    unsolved = [i for i in range(n) if i not in set(solved)]
+    if unsolved:
+        x_solved = wIns[np.asarray(solved)]
+        F_full = np.array([cols[i].reshape(-1) for i in solved])
+        support, weights = set_valued_aaa(x_solved, F_full[:, fit_idx], rtol=0.1 * tol)
+        recon = barycentric_eval(wIns[np.asarray(unsolved)], x_solved[support], weights, F_full[support])
+        for k, idx in enumerate(unsolved):
+            gs[:, :, idx, :] = recon[k].reshape(n_i, n_o, n_l)
+    if verbose:
+        print(
+            f"Adaptive RIXS wIn sampling: solved {len(solved)}/{n} points in {n_rounds} rounds "
+            f"({len(support) if unsolved else 0} support points; tol {tol:g})."
+        )
+    return gs
+
+
 def _rixs_map_flat(
     hOp,
     in_ops,
@@ -1532,6 +1658,7 @@ def getRIXSmap_tensor(
     basis,
     verbose,
     slaterWeightMin,
+    adaptive_wIn_tol=None,
 ):
     r"""RIXS map for arbitrary in/out polarizations via the full rank-4 Kramers-Heisenberg tensor.
 
@@ -1575,6 +1702,12 @@ def getRIXSmap_tensor(
     epsilonsIn, epsilonsOut : sequence of array_like
         In/out polarization vectors, each of length ``len(in_component_ops)`` /
         ``len(out_component_ops)`` (real or complex).
+    adaptive_wIn_tol : float, optional
+        Enable greedy adaptive sampling of the ``wIns`` grid (:func:`_rixs_map_adaptive`):
+        only the AAA-selected support frequencies are actually solved, the rest are
+        rational-reconstructed to this relative tolerance. ``None`` (default) reads
+        ``GF_RIXS_ADAPTIVE_TOL`` from the environment; unset there too means dense.
+        Grids shorter than ``_RIXS_ADAPTIVE_MIN_GRID`` are always solved densely.
     **kwargs
         The remaining parameters match :func:`getRIXSmap_new`.
 
@@ -1622,20 +1755,26 @@ def getRIXSmap_tensor(
             optimize=True,
         )  # (n_pin, n_pout, n_wLoss)
 
-    return _rixs_map_flat(
-        hOp,
-        in_component_ops,
-        psis,
-        Es,
-        tau,
-        wIns,
-        wLoss,
-        delta1,
-        delta2,
-        basis,
-        verbose,
-        slaterWeightMin,
-        n_i=n_pin,
-        n_o=n_pout,
-        eval_out=eval_out,
-    )
+    def map_fn(wIn_subset):
+        return _rixs_map_flat(
+            hOp,
+            in_component_ops,
+            psis,
+            Es,
+            tau,
+            wIn_subset,
+            wLoss,
+            delta1,
+            delta2,
+            basis,
+            verbose,
+            slaterWeightMin,
+            n_i=n_pin,
+            n_o=n_pout,
+            eval_out=eval_out,
+        )
+
+    tol = adaptive_wIn_tol if adaptive_wIn_tol is not None else _rixs_adaptive_tol()
+    if tol is not None and len(wIns) >= _RIXS_ADAPTIVE_MIN_GRID:
+        return _rixs_map_adaptive(map_fn, wIns, basis.comm, tol, verbose)
+    return map_fn(np.asarray(wIns))

@@ -15,6 +15,7 @@ map's component sum is invariant under a single-particle basis rotation.
 from itertools import combinations
 
 import numpy as np
+import pytest
 from mpi4py import MPI
 
 from impurityModel.ed import spectra
@@ -268,3 +269,143 @@ def test_rixs_tensor_is_rotation_invariant():
     rot = _run_rixs_tensor(op_rot, psis_rot, es_rot, tin_rot, tout_rot, dets_rot, ident, ident).sum(axis=(0, 1))
 
     np.testing.assert_allclose(base, rot, atol=1e-8)
+
+
+# --- tests for the adaptive greedy-AAA wIn sampler ---
+
+WIN_ADAPTIVE = np.linspace(-9.0, -5.0, 25)
+
+
+def test_rixs_map_adaptive_synthetic():
+    """The adaptive driver reconstructs a shared-pole map from a fraction of the solves."""
+    rng = np.random.default_rng(3)
+    poles = np.array([-8.2 + 0.3j, -7.0 + 0.25j, -6.1 + 0.4j])
+    n_i, n_o, n_l = 2, 2, 17
+    numerators = rng.standard_normal((n_i * n_o * n_l, 3)) + 1j * rng.standard_normal((n_i * n_o * n_l, 3))
+    x = WIN_ADAPTIVE
+
+    def truth(wins):
+        cauchy = 1.0 / (np.asarray(wins)[:, None] - poles[None, :])
+        flat = cauchy @ numerators.T  # (n_w, K)
+        return np.moveaxis(flat.reshape(len(wins), n_i, n_o, n_l), 0, 2)
+
+    calls = []
+
+    def map_fn(wins):
+        calls.append(len(wins))
+        return truth(wins)
+
+    got = spectra._rixs_map_adaptive(map_fn, x, None, tol=1e-8, verbose=False)
+    ref = truth(x)
+    assert np.max(np.abs(got - ref)) <= 1e-6 * np.max(np.abs(ref))
+    assert sum(calls) < len(x), f"adaptive solved every point: {calls}"
+
+
+def test_rixs_tensor_adaptive_matches_dense(monkeypatch):
+    """End-to-end: getRIXSmap_tensor(adaptive_wIn_tol=...) matches the dense sweep on the
+    model while solving fewer wIn points."""
+    op = _model()
+    psis, es, dets, states, vecs = _thermal_states(op, 2)
+    tin, tout = _tin_tout()
+
+    def run(adaptive_tol):
+        return spectra.getRIXSmap_tensor(
+            op, tin, tout, EPS_IN, EPS_OUT, psis, es,
+            tau=TAU, wIns=WIN_ADAPTIVE, wLoss=WLOSS, delta1=D1, delta2=D2,
+            basis=_basis(dets), verbose=False, slaterWeightMin=0.0,
+            adaptive_wIn_tol=adaptive_tol,
+        )
+
+    dense = run(None)
+
+    solved_counts = []
+    real_flat = spectra._rixs_map_flat
+
+    def counting_flat(*args, **kwargs):
+        # positional arg 5 is the wIn subset (hOp, in_ops, psis, Es, tau, wIns, ...)
+        solved_counts.append(len(args[5]))
+        return real_flat(*args, **kwargs)
+
+    monkeypatch.setattr(spectra, "_rixs_map_flat", counting_flat)
+    adaptive = run(1e-8)
+
+    scale = np.max(np.abs(dense))
+    assert np.max(np.abs(adaptive - dense)) <= 1e-6 * scale
+    assert sum(solved_counts) < len(WIN_ADAPTIVE), f"no savings: {solved_counts}"
+
+
+def test_rixs_tensor_adaptive_short_grid_stays_dense(monkeypatch):
+    """Grids below _RIXS_ADAPTIVE_MIN_GRID are solved densely even with a tolerance set."""
+    op = _model()
+    psis, es, dets, states, vecs = _thermal_states(op, 2)
+    tin, tout = _tin_tout()
+    solved_counts = []
+    real_flat = spectra._rixs_map_flat
+
+    def counting_flat(*args, **kwargs):
+        solved_counts.append(len(args[5]))
+        return real_flat(*args, **kwargs)
+
+    monkeypatch.setattr(spectra, "_rixs_map_flat", counting_flat)
+    spectra.getRIXSmap_tensor(
+        op, tin, tout, EPS_IN, EPS_OUT, psis, es,
+        tau=TAU, wIns=WIN, wLoss=WLOSS, delta1=D1, delta2=D2,
+        basis=_basis(dets), verbose=False, slaterWeightMin=0.0,
+        adaptive_wIn_tol=1e-6,
+    )
+    assert solved_counts == [len(WIN)]
+
+
+def test_rixs_tensor_adaptive_env_knob(monkeypatch):
+    """GF_RIXS_ADAPTIVE_TOL enables the sampler without a code change."""
+    op = _model()
+    psis, es, dets, states, vecs = _thermal_states(op, 2)
+    tin, tout = _tin_tout()
+    solved_counts = []
+    real_flat = spectra._rixs_map_flat
+
+    def counting_flat(*args, **kwargs):
+        solved_counts.append(len(args[5]))
+        return real_flat(*args, **kwargs)
+
+    monkeypatch.setattr(spectra, "_rixs_map_flat", counting_flat)
+    monkeypatch.setenv("GF_RIXS_ADAPTIVE_TOL", "1e-8")
+    spectra.getRIXSmap_tensor(
+        op, tin, tout, EPS_IN, EPS_OUT, psis, es,
+        tau=TAU, wIns=WIN_ADAPTIVE, wLoss=WLOSS, delta1=D1, delta2=D2,
+        basis=_basis(dets), verbose=False, slaterWeightMin=0.0,
+    )
+    assert sum(solved_counts) < len(WIN_ADAPTIVE)
+
+
+@pytest.mark.mpi
+def test_rixs_tensor_adaptive_distributed_matches_dense():
+    """The greedy selection loop stays collective on a genuinely distributed basis: the
+    rank-0 fit is broadcast each round, every rank calls the solver with the same subset."""
+    comm = MPI.COMM_WORLD
+    op = _model()
+    psis, es, dets, states, vecs = _thermal_states(op, 2)
+    tin, tout = _tin_tout()
+
+    def run(adaptive_tol):
+        world_basis = Basis(
+            impurity_orbitals={2: [[0, 1]], 1: [[2]]},
+            bath_states=({2: [[]], 1: [[]]}, {2: [[]], 1: [[]]}),
+            initial_basis=list(dets),
+            verbose=False,
+            comm=comm,
+        )
+        return spectra.getRIXSmap_tensor(
+            op, tin, tout, EPS_IN, EPS_OUT, psis, es,
+            tau=TAU, wIns=WIN_ADAPTIVE, wLoss=WLOSS, delta1=D1, delta2=D2,
+            basis=world_basis, verbose=False, slaterWeightMin=0.0,
+            adaptive_wIn_tol=adaptive_tol,
+        )
+
+    dense = run(None)
+    adaptive = run(1e-8)
+    if comm.rank == 0:
+        scale = np.max(np.abs(dense))
+        assert np.max(np.abs(adaptive - dense)) <= 1e-6 * scale
+    else:
+        assert adaptive is None and dense is None
