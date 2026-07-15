@@ -76,11 +76,11 @@ included):
 | `ed/rational_sampling.py` | 1 (`spectra.py`) | 1 | live |
 | `ed/chebyshev_filter.py` | 2 | 1 | live (`gf_method="sliced"`) |
 
-**These are not deleted by this refactor.** They are recorded here for a separate,
-explicit decision — removing 825 lines of physics code (and three test-covered modules)
-is not something a refactor should do silently. Recommended follow-up: delete
-`double_chains.py`; keep or relocate the test-only modules depending on whether the
-`build_h0`/bath-fitting workflow is coming back.
+**Resolved (2026-07-15, with user sign-off):** all of these were deleted — the dead
+`double_chain_haverkort/double_chains.py` (825 lines, zero importers) and the three
+test-only modules `density_matrix.py`, `givens_qr.py`, `bath_fitting.py` together with
+their tests (`test_density_matrix.py`, `test_givens_qr.py`, `test_bath_fitting.py`). None
+had a production importer; all remain recoverable from git history.
 
 Untracked build droppings present in the working tree (`src/cython/scratch.*.so`,
 `src/impurityModel/ed/ManyBodyUtils.so`) are gitignored and left alone.
@@ -220,6 +220,3 @@ import changes, purely file-level readability.
 ## Remaining (follow-up sessions)
 
 - Phase 4: Cython `.pxi` splits of the three large kernels + a kernel documentation pass.
-- Decompose the 407-line `calc_selfenergy` body into named stage functions.
-- Delete-or-relocate decision on the dead `double_chain_haverkort/double_chains.py` and the
-  test-only `bath_fitting.py`/`givens_qr.py`/`density_matrix.py` (needs user sign-off).

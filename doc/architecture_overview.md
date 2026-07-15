@@ -126,14 +126,6 @@ Layer 6: CLIs: get_spectra, selfenergy
 - **`get_spectra.py`** (`python -m impurityModel.ed.get_spectra`) — find the lowest eigenstates, then calculate spectra (PS, XPS, XAS, NIXS, RIXS).
 - **`selfenergy.py`** (`python -m impurityModel.ed.selfenergy`) — impurity self-energy calculation (for DMFT-style workflows): the `calc_selfenergy`/`get_selfenergy` orchestration and CLI on top of `double_counting` and `sigma` (both re-exported for backward compatibility).
 
-### Bath construction (currently unused by the solvers)
-- **`bath_fitting.py`** — hybridization-function bath fitting helpers. No production
-  importer at present (only its own test): the `build_h0` script and its `edchain.py` /
-  `natural_orbitals.py` companions, which used to consume it, are no longer in the tree.
-  The non-interacting Hamiltonian is read from file by `hamiltonian_io.py` instead.
-- **`double_chain_haverkort/double_chains.py`** — star-to-double-chain bath transformations.
-  Dead code: no importer anywhere. See `doc/plans/deep_refactor.md` (Phase 0 inventory).
-
 ### Plotting (post-processing, `scripts/`)
 - **`scripts/_plot_common.py`** — shared CLI plumbing for the plot scripts (input/output/figure-style arguments, `spectra.h5` loading, orbital-selection parsing, `.dat` export), ported from `pyRSPthon.cli._common`.
 - **`scripts/plot_spectra.py`** (console script `plot_spectra`) — plots PS/XPS/NIXS from `spectra.h5`, and XAS by contracting the stored spectral tensor with the requested polarizations (`--pol`, default x/y/z + isotropic; `--xmcd`/`--xld` dichroism; `--tensor-components`) via `polarization.py`; also overlays the RIXS-tensor fluorescence yield when both are present.
