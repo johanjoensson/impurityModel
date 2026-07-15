@@ -1,8 +1,8 @@
 # Deep refactor + documentation overhaul
 
-**Status (2026-07-15):** in progress. Phases 0, 1, 2a, 2b, 2c, 2d complete; config reference
-doc written. Remaining: Phase 2e (CLI dataclasses); Phase 3 renames; Phase 4 Cython `.pxi`
-splits; Phase 5 developer/user docs + Sphinx polish.
+**Status (2026-07-15):** in progress. Phases 0, 1, 2 (a–e) complete; config reference doc
+written. Remaining: Phase 3 renames; Phase 4 Cython `.pxi` splits; Phase 5 developer/user docs
++ Sphinx polish.
 
 ## Motivation
 
@@ -169,8 +169,12 @@ asserted rank-0-only h5 writes on every rank (the gate was red on rank 1 at HEAD
       names its own drivers use. Dead imports pruned from `greens_function.py`; the
       pre-existing `gf_primitives`/`gf_convergence`/`gf_shift_recycling` re-export block is
       kept.
-- [ ] **CLIs**: group `get_spectra.main`'s 30 positional parameters into dataclasses built
-      by the argparse layer. CLI flags unchanged.
+- [x] **CLIs**: group `get_spectra.main`'s 30 positional parameters (and
+      `selfenergy.get_selfenergy`'s 20) into dataclasses built by the argparse layer
+      (`HamiltonianParameters`/`OccupationParameters`/`SpectrumParameters`/`SolverParameters`).
+      **Done:** CLI flags unchanged; the function bodies are verbatim (the dataclasses are
+      unpacked into the existing local names at the top). Verified `get_spectra.main` (no test
+      coverage) with a mocked end-to-end run; `get_selfenergy` is covered by `test_selfenergy`.
 
 ## Phase 3 — Naming & signature cleanup
 
@@ -212,7 +216,6 @@ import changes, purely file-level readability.
 
 ## Remaining (follow-up sessions)
 
-- Phase 2e: group the `get_spectra`/`selfenergy` CLI positional params into dataclasses.
 - Phase 3: renames (`getSpectra_new` → `calc_spectra`, etc.).
 - Phase 4: Cython `.pxi` splits of the three large kernels + a kernel documentation pass.
 - Decompose the 407-line `calc_selfenergy` body into named stage functions.

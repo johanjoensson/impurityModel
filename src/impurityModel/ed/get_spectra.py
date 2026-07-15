@@ -6,6 +6,8 @@ Script for calculating various spectra.
 import argparse
 import time
 from collections import OrderedDict
+from dataclasses import dataclass
+from typing import Optional
 
 import h5py
 import numpy as np
@@ -26,107 +28,167 @@ from impurityModel.ed.groundstate import calc_gs
 from impurityModel.ed.ManyBodyUtils import ManyBodyOperator
 
 
-def main(
-    h0_filename,
-    radial_filename,
-    ls,
-    nBaths,
-    nValBaths,
-    n0imps,
-    dnTols,
-    dnValBaths,
-    dnConBaths,
-    Fdd,
-    Fpp,
-    Fpd,
-    Gpd,
-    xi_2p,
-    xi_3d,
-    chargeTransferCorrection,
-    hField,
-    nPsiMax,
-    nPrintSlaterWeights,
-    tolPrintOccupation,
-    T,
-    energy_cut,
-    delta,
-    deltaRIXS,
-    deltaNIXS,
-    XAS_projectors_filename,
-    RIXS_projectors_filename,
-    auto_block_structure=True,
-    truncation_threshold=None,
-):
-    """
-    First find the lowest eigenstates and then use them to calculate various spectra.
+@dataclass(frozen=True)
+class HamiltonianParameters:
+    """Non-interacting Hamiltonian file plus the atomic interaction parameters.
 
-    Parameters
+    Attributes
     ----------
     h0_filename : str
         Filename of the non-relativistic non-interacting Hamiltonian operator, in pickle-format.
-    radial_filename : str
-        File name of file containing radial mesh and radial part of final
-        and initial orbitals in the NIXS excitation process.
     ls : tuple
         Angular momenta of correlated orbitals.
-    nBaths : tuple
-        Number of bath states,
-        for each angular momentum.
-    nValBaths : tuple
-        Number of valence bath states,
-        for each angular momentum.
+    nBaths, nValBaths : tuple
+        Number of (total / valence) bath states, for each angular momentum.
+    Fdd, Fpp, Fpd, Gpd : tuple
+        Slater-Condon parameters (dd assumes d-orbitals; pp/pd/pd assume p- and d-orbitals).
+    xi_2p, xi_3d : float
+        SOC values for p- and d-orbitals.
+    chargeTransferCorrection : float
+        Double counting parameter.
+    hField : tuple
+        Magnetic field.
+    """
+
+    h0_filename: str
+    ls: tuple
+    nBaths: tuple
+    nValBaths: tuple
+    Fdd: tuple
+    Fpp: tuple
+    Fpd: tuple
+    Gpd: tuple
+    xi_2p: float
+    xi_3d: float
+    chargeTransferCorrection: float
+    hField: tuple
+
+
+@dataclass(frozen=True)
+class OccupationParameters:
+    """Nominal impurity occupation and the allowed deviations (basis restrictions).
+
+    Attributes
+    ----------
     n0imps : tuple
         Initial impurity occupation.
     dnTols : tuple
-        Max devation from initial impurity occupation,
-        for each angular momentum.
+        Max deviation from initial impurity occupation, for each angular momentum.
     dnValBaths : tuple
-        Max number of electrons to leave valence bath orbitals,
-        for each angular momentum.
+        Max number of electrons to leave valence bath orbitals, for each angular momentum.
     dnConBaths : tuple
-        Max number of electrons to enter conduction bath orbitals,
-        for each angular momentum.
-    Fdd : tuple
-        Slater-Condon parameters Fdd. This assumes d-orbitals.
-    Fpp : tuple
-        Slater-Condon parameters Fpp. This assumes p-orbitals.
-    Fpd : tuple
-        Slater-Condon parameters Fpd. This assumes p- and d-orbitals.
-    Gpd : tuple
-        Slater-Condon parameters Gpd. This assumes p- and d-orbitals.
-    xi_2p : float
-        SOC value for p-orbitals. This assumes p-orbitals.
-    xi_3d : float
-        SOC value for d-orbitals. This assumes d-orbitals.
-    chargeTransferCorrection : float
-        Double counting parameter
-    hField : tuple
-        Magnetic field.
+        Max number of electrons to enter conduction bath orbitals, for each angular momentum.
+    truncation_threshold : int, optional
+        Maximum number of Slater determinants in any many-body basis (ground state and
+        Green's function). ``None`` resolves to as many as fit in RAM (see ``memory_estimate``).
+    """
+
+    n0imps: tuple
+    dnTols: tuple
+    dnValBaths: tuple
+    dnConBaths: tuple
+    truncation_threshold: Optional[int] = None
+
+
+@dataclass(frozen=True)
+class SpectrumParameters:
+    """Spectroscopy broadenings, temperature, energy window, and projector files.
+
+    Attributes
+    ----------
+    radial_filename : str
+        File containing the radial mesh and radial part of the final/initial NIXS orbitals.
+    T : float
+        Temperature (Kelvin).
+    energy_cut : float
+        How many k_B*T above the lowest eigenenergy to consider.
+    delta : float
+        Smearing HWHM due to the short core-hole lifetime.
+    deltaRIXS, deltaNIXS : float
+        Smearing HWHM due to the finite lifetime of the excited states.
+    XAS_projectors_filename, RIXS_projectors_filename : str, optional
+        Files containing the XAS / RIXS projectors, separated by empty lines.
+    """
+
+    radial_filename: str
+    T: float
+    energy_cut: float
+    delta: float
+    deltaRIXS: float
+    deltaNIXS: float
+    XAS_projectors_filename: Optional[str] = None
+    RIXS_projectors_filename: Optional[str] = None
+
+
+@dataclass(frozen=True)
+class SolverParameters:
+    """Eigenstate budget, printing controls, and the solver-basis option.
+
+    Attributes
+    ----------
     nPsiMax : int
         Maximum number of eigenstates to consider.
     nPrintSlaterWeights : int
         Printing parameter.
     tolPrintOccupation : float
         Printing parameter.
-    T : float
-        Temperature (Kelvin)
-    energy_cut : float
-        How many k_B*T above lowest eigenenergy to consider.
-    delta : float
-        Smearing, half width half maximum (HWHM). Due to short core-hole lifetime.
-    deltaRIXS : float
-        Smearing, half width half maximum (HWHM).
-        Due to finite lifetime of excited states.
-    deltaNIXS : float
-        Smearing, half width half maximum (HWHM).
-        Due to finite lifetime of excited states.
-    RIXS_projectors_filename : string
-        File containing the RIXS projectors, separated by an empty line.
-    truncation_threshold : int, optional
-        Maximum number of Slater determinants in any many-body basis (ground state and
-        Green's function). ``None`` resolves to as many as fit in RAM (see ``memory_estimate``).
-
+    auto_block_structure : bool
+        Derive the block structure from the hybridization-dressed impurity matrix (and rotate
+        into the symmetry-adapted solver basis when it stays sparse) instead of the hand-coded one.
     """
+
+    nPsiMax: int
+    nPrintSlaterWeights: int
+    tolPrintOccupation: float
+    auto_block_structure: bool = True
+
+
+def main(
+    hamiltonian: HamiltonianParameters,
+    occupation: OccupationParameters,
+    spectrum: SpectrumParameters,
+    solver: SolverParameters,
+):
+    """First find the lowest eigenstates and then use them to calculate various spectra.
+
+    Parameters
+    ----------
+    hamiltonian : HamiltonianParameters
+        Non-interacting Hamiltonian file and the atomic interaction parameters.
+    occupation : OccupationParameters
+        Nominal impurity occupation and its allowed deviations (basis restrictions).
+    spectrum : SpectrumParameters
+        Spectroscopy broadenings, temperature, energy window, and projector files.
+    solver : SolverParameters
+        Eigenstate budget, printing controls, and the solver-basis option.
+    """
+
+    # Unpack the grouped CLI parameters into the local names used below.
+    h0_filename = hamiltonian.h0_filename
+    ls = hamiltonian.ls
+    nBaths = hamiltonian.nBaths
+    nValBaths = hamiltonian.nValBaths
+    Fdd = hamiltonian.Fdd
+    Fpp = hamiltonian.Fpp
+    Fpd = hamiltonian.Fpd
+    Gpd = hamiltonian.Gpd
+    xi_2p = hamiltonian.xi_2p
+    xi_3d = hamiltonian.xi_3d
+    chargeTransferCorrection = hamiltonian.chargeTransferCorrection
+    hField = hamiltonian.hField
+    n0imps = occupation.n0imps
+    dnTols = occupation.dnTols
+    dnValBaths = occupation.dnValBaths
+    dnConBaths = occupation.dnConBaths
+    truncation_threshold = occupation.truncation_threshold
+    radial_filename = spectrum.radial_filename
+    T = spectrum.T
+    energy_cut = spectrum.energy_cut
+    delta = spectrum.delta
+    deltaRIXS = spectrum.deltaRIXS
+    deltaNIXS = spectrum.deltaNIXS
+    nPsiMax = solver.nPsiMax
+    auto_block_structure = solver.auto_block_structure
 
     # MPI variables
     comm = MPI.COMM_WORLD
@@ -603,32 +665,40 @@ if __name__ == "__main__":
     # print("n0imps: ",args.n0imps)
 
     main(
-        h0_filename=args.h0_filename,
-        radial_filename=args.radial_filename,
-        ls=tuple(args.ls),
-        nBaths=tuple(args.nBaths),
-        nValBaths=tuple(args.nValBaths),
-        n0imps=tuple(args.n0imps),
-        dnTols=tuple(args.dnTols),
-        dnValBaths=tuple(args.dnValBaths),
-        dnConBaths=tuple(args.dnConBaths),
-        Fdd=tuple(args.Fdd),
-        Fpp=tuple(args.Fpp),
-        Fpd=tuple(args.Fpd),
-        Gpd=tuple(args.Gpd),
-        xi_2p=args.xi_2p,
-        xi_3d=args.xi_3d,
-        chargeTransferCorrection=args.chargeTransferCorrection,
-        hField=tuple(args.hField),
-        nPsiMax=args.nPsiMax,
-        nPrintSlaterWeights=args.nPrintSlaterWeights,
-        tolPrintOccupation=args.tolPrintOccupation,
-        T=args.T,
-        energy_cut=args.energy_cut,
-        delta=args.delta,
-        deltaRIXS=args.deltaRIXS,
-        deltaNIXS=args.deltaNIXS,
-        XAS_projectors_filename=args.XAS_projectors_filename,
-        RIXS_projectors_filename=args.RIXS_projectors_filename,
-        truncation_threshold=args.truncation_threshold,
+        hamiltonian=HamiltonianParameters(
+            h0_filename=args.h0_filename,
+            ls=tuple(args.ls),
+            nBaths=tuple(args.nBaths),
+            nValBaths=tuple(args.nValBaths),
+            Fdd=tuple(args.Fdd),
+            Fpp=tuple(args.Fpp),
+            Fpd=tuple(args.Fpd),
+            Gpd=tuple(args.Gpd),
+            xi_2p=args.xi_2p,
+            xi_3d=args.xi_3d,
+            chargeTransferCorrection=args.chargeTransferCorrection,
+            hField=tuple(args.hField),
+        ),
+        occupation=OccupationParameters(
+            n0imps=tuple(args.n0imps),
+            dnTols=tuple(args.dnTols),
+            dnValBaths=tuple(args.dnValBaths),
+            dnConBaths=tuple(args.dnConBaths),
+            truncation_threshold=args.truncation_threshold,
+        ),
+        spectrum=SpectrumParameters(
+            radial_filename=args.radial_filename,
+            T=args.T,
+            energy_cut=args.energy_cut,
+            delta=args.delta,
+            deltaRIXS=args.deltaRIXS,
+            deltaNIXS=args.deltaNIXS,
+            XAS_projectors_filename=args.XAS_projectors_filename,
+            RIXS_projectors_filename=args.RIXS_projectors_filename,
+        ),
+        solver=SolverParameters(
+            nPsiMax=args.nPsiMax,
+            nPrintSlaterWeights=args.nPrintSlaterWeights,
+            tolPrintOccupation=args.tolPrintOccupation,
+        ),
     )

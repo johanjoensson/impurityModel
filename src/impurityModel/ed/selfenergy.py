@@ -1,5 +1,6 @@
 import argparse
 from collections import OrderedDict
+from dataclasses import dataclass
 
 import numpy as np
 from mpi4py import MPI
@@ -523,50 +524,18 @@ def calc_selfenergy(
     }
 
 
-def get_selfenergy(
-    clustername,
-    h0_filename,
-    ls,
-    nBaths,
-    nValBaths,
-    n0imps,
-    dnTols,
-    dnValBaths,
-    dnConBaths,
-    Fdd,
-    xi,
-    chargeTransferCorrection,
-    hField,
-    nPsiMax,
-    nPrintSlaterWeights,
-    tau,
-    energy_cut,
-    delta,
-    verbose,
-    gf_method="lanczos",
-):
-    """Calculate the self energy starting from a large number of arguments.
+@dataclass(frozen=True)
+class HamiltonianParameters:
+    """Non-interacting Hamiltonian file plus the atomic interaction parameters.
 
-    Parameters
+    Attributes
     ----------
-    clustername : str
-        Label for the cluster.
     h0_filename : str
         Filename of the non-interacting Hamiltonian.
     ls : int
         Angular momentum of correlated orbitals.
-    nBaths : int
-        Total number of bath states.
-    nValBaths : int
-        Number of valence bath states.
-    n0imps : int
-        Nominal impurity occupation.
-    dnTols : int
-        Max deviation from nominal impurity occupation.
-    dnValBaths : int
-        Max number of electrons to leave valence bath orbitals.
-    dnConBaths : int
-        Max number of electrons to enter conduction bath orbitals.
+    nBaths, nValBaths : int
+        Total number of bath states / number of valence bath states.
     Fdd : list of float
         Slater-Condon parameters.
     xi : float
@@ -575,6 +544,48 @@ def get_selfenergy(
         Double counting parameter.
     hField : tuple of float
         Magnetic field vector (hx, hy, hz).
+    """
+
+    h0_filename: str
+    ls: int
+    nBaths: int
+    nValBaths: int
+    Fdd: object
+    xi: float
+    chargeTransferCorrection: float
+    hField: tuple
+
+
+@dataclass(frozen=True)
+class OccupationParameters:
+    """Nominal impurity occupation and the allowed deviations.
+
+    Attributes
+    ----------
+    n0imps : int
+        Nominal impurity occupation.
+    dnTols : int
+        Max deviation from nominal impurity occupation.
+    dnValBaths : int
+        Max number of electrons to leave valence bath orbitals.
+    dnConBaths : int
+        Max number of electrons to enter conduction bath orbitals.
+    """
+
+    n0imps: int
+    dnTols: int
+    dnValBaths: int
+    dnConBaths: int
+
+
+@dataclass(frozen=True)
+class SolverParameters:
+    """Output label, eigenstate budget, temperature/smearing, and the GF kernel.
+
+    Attributes
+    ----------
+    clustername : str
+        Label for the cluster.
     nPsiMax : int
         Maximum number of eigenstates to consider.
     nPrintSlaterWeights : int
@@ -592,6 +603,47 @@ def get_selfenergy(
         linear solves, memory-first), or ``"sliced"`` (Chebyshev spectral-window
         decomposition, real-axis meshes only). See :func:`calc_selfenergy`.
     """
+
+    clustername: str
+    nPsiMax: int
+    nPrintSlaterWeights: int
+    tau: float
+    energy_cut: float
+    delta: float
+    verbose: bool
+    gf_method: str = "lanczos"
+
+
+def get_selfenergy(
+    hamiltonian: HamiltonianParameters,
+    occupation: OccupationParameters,
+    solver: SolverParameters,
+):
+    """Calculate the self energy from the grouped CLI parameters.
+
+    Parameters
+    ----------
+    hamiltonian : HamiltonianParameters
+        Non-interacting Hamiltonian file and the atomic interaction parameters.
+    occupation : OccupationParameters
+        Nominal impurity occupation and its allowed deviations.
+    solver : SolverParameters
+        Output label, eigenstate budget, temperature/smearing, and the GF kernel.
+    """
+    # Unpack the grouped parameters into the local names used below.
+    h0_filename = hamiltonian.h0_filename
+    ls = hamiltonian.ls
+    nBaths = hamiltonian.nBaths
+    Fdd = hamiltonian.Fdd
+    xi = hamiltonian.xi
+    hField = hamiltonian.hField
+    n0imps = occupation.n0imps
+    clustername = solver.clustername
+    tau = solver.tau
+    delta = solver.delta
+    verbose = solver.verbose
+    gf_method = solver.gf_method
+
     # MPI variables
     comm = MPI.COMM_WORLD
     rank = comm.rank
@@ -826,24 +878,30 @@ if __name__ == "__main__":
     assert len(args.hField) == 3
 
     get_selfenergy(
-        clustername=args.clustername,
-        h0_filename=args.h0_filename,
-        ls=(args.ls),
-        nBaths=(args.nBaths),
-        nValBaths=(args.nValBaths),
-        n0imps=(args.n0imps),
-        dnTols=(args.dnTols),
-        dnValBaths=(args.dnValBaths),
-        dnConBaths=(args.dnConBaths),
-        Fdd=(args.Fdd),
-        xi=args.xi,
-        chargeTransferCorrection=args.chargeTransferCorrection,
-        hField=tuple(args.hField),
-        nPsiMax=args.nPsiMax,
-        nPrintSlaterWeights=args.nPrintSlaterWeights,
-        tau=args.tau,
-        energy_cut=args.energy_cut,
-        delta=args.delta,
-        verbose=args.verbose,
-        gf_method=args.gf_method,
+        hamiltonian=HamiltonianParameters(
+            h0_filename=args.h0_filename,
+            ls=(args.ls),
+            nBaths=(args.nBaths),
+            nValBaths=(args.nValBaths),
+            Fdd=(args.Fdd),
+            xi=args.xi,
+            chargeTransferCorrection=args.chargeTransferCorrection,
+            hField=tuple(args.hField),
+        ),
+        occupation=OccupationParameters(
+            n0imps=(args.n0imps),
+            dnTols=(args.dnTols),
+            dnValBaths=(args.dnValBaths),
+            dnConBaths=(args.dnConBaths),
+        ),
+        solver=SolverParameters(
+            clustername=args.clustername,
+            nPsiMax=args.nPsiMax,
+            nPrintSlaterWeights=args.nPrintSlaterWeights,
+            tau=args.tau,
+            energy_cut=args.energy_cut,
+            delta=args.delta,
+            verbose=args.verbose,
+            gf_method=args.gf_method,
+        ),
     )
