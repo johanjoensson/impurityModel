@@ -26,6 +26,7 @@ from impurityModel.ed.gf_primitives import _CappedBasisProxy, _distributed_seed_
 from impurityModel.ed.ManyBodyUtils import ManyBodyBlockState, ManyBodyState
 from impurityModel.ed.memory_estimate import available_bytes_per_rank, format_bytes
 
+
 def _sector_dense_max():
     """Largest sector size the spectral cache may densify (:data:`config.GF_SECTOR_DENSE_MAX`).
 
