@@ -639,7 +639,7 @@ def calc_spectra(
 
     def kernel(split_basis, u, seeds):
         unit = units[u]
-        alphas, betas, r, n_basis, _cap_stats = gf._block_green_group(
+        alphas, betas, r, _cap_stats = gf._block_green_group(
             split_basis,
             hOp,
             seeds,
@@ -652,7 +652,7 @@ def calc_spectra(
             weighted_restrictions,
         )
         if verbose:
-            print(f"Expanded excited state basis contains {n_basis} elements.")
+            print(f"Expanded excited state basis contains {_cap_stats["retained_size"]} elements.")
         return alphas, betas, [r[:, p * unit.n_ops : (p + 1) * unit.n_ops] for p in range(len(unit.chunk))]
 
     results = gf.run_units_distributed(basis, unit_seeds, unit_weights, kernel, verbose=verbose)

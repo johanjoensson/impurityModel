@@ -255,7 +255,7 @@ def get_Greens_function(
             delta,
             [es[ei] for ei in unit.chunk],
         )
-        alphas, betas, r, n_basis, cap_stats = _block_green_group(
+        alphas, betas, r, cap_stats = _block_green_group(
             split_basis,
             hOp,
             seeds,
@@ -269,7 +269,7 @@ def get_Greens_function(
             eval_meshes=eval_meshes,
         )
         if verbose_extra:
-            print(f"Expanded excited state basis contains {n_basis} elements.")
+            print(f"Expanded excited state basis contains {cap_stats["retained_size"]} elements.")
         return (
             alphas,
             betas,
@@ -894,7 +894,7 @@ def _block_green_group(
             "retained_size": len(excited_basis),
             "cap": cap,
         }
-    return alphas, betas, r, len(excited_basis), cap_stats
+    return alphas, betas, r, cap_stats
 
 
 def calc_Greens_function_with_offdiag(
@@ -990,7 +990,7 @@ def calc_Greens_function_with_offdiag(
 
     def kernel(split_basis, u, seeds):
         unit = units[u]
-        alphas, betas, r, n_basis, _cap_stats = _block_green_group(
+        alphas, betas, r, _cap_stats = _block_green_group(
             split_basis,
             hOp,
             seeds,
@@ -1003,7 +1003,7 @@ def calc_Greens_function_with_offdiag(
             excited_weighted_restrictions,
         )
         if verbose:
-            print(f"Expanded excited state basis contains {n_basis} elements.")
+            print(f"Expanded excited state basis contains {_cap_stats["retained_size"]} elements.")
         return alphas, betas, [r[:, p * unit.n_ops : (p + 1) * unit.n_ops] for p in range(len(unit.chunk))]
 
     results = run_units_distributed(block_basis, unit_seeds, unit_weights, kernel, verbose=verbose, reort=reort)
