@@ -118,6 +118,195 @@ def _raise_together(comm, message):
         raise UnphysicalGreensFunctionError(message)
 
 
+@dataclass(frozen=True)
+class _SolverBasis:
+    """Solver-basis Hamiltonian and derived orbital/block layout for a self-energy run.
+
+    Produced by :func:`_prepare_solver_basis`: the (optionally symmetry-adapted) solver
+    Hamiltonian ``h`` and the matching non-interacting operator ``h0_solve``, the impurity/bath
+    orbital grouping and block structure derived from it, the per-group occupation windows, and
+    the rotations (``rotation_full`` full-space, ``u_imp`` impurity block) that carry results
+    back to the caller's input basis.
+    """
+
+    h: object
+    h0_solve: object
+    n_spin_orbitals: int
+    block_structure: object
+    impurity_orbitals: dict
+    bath_states: tuple
+    nominal_occ: dict
+    mixed_valence: dict
+    rotation_full: "np.ndarray"
+    u_imp: "np.ndarray"
+    rot_to_spherical: "np.ndarray"
+    total_impurity_orbitals: dict
+    sum_bath_states: dict
+
+
+def _prepare_solver_basis(h0, u4, impurity_orbitals, nominal_occ, mixed_valence, rot_to_spherical, verbosity):
+    """Build the solver-basis Hamiltonian and derive its orbital/block layout.
+
+    Assembles the interacting Hamiltonian ``H = h0 + U(u4)`` in the caller's input basis, then
+    adaptively rotates into the impurity-diagonalising basis when that does not densify the
+    Coulomb tensor (fill ratio ``<= _MAX_ROTATION_FILL``; the input basis is kept otherwise).
+    Derives the bath valence/conduction split, the Green's-function block structure, and the
+    per-group impurity/bath orbital grouping and occupation windows -- all in whichever basis is
+    solved in. Returns a :class:`_SolverBasis`.
+    """
+    # construct local, interacting, hamiltonian (in the caller's input/correlated basis B)
+    u = atomic_physics.getUop_from_rspt_u4(u4)
+    h_input = ManyBodyOperator(h0) + ManyBodyOperator(u)
+
+    # Flatten the impurity orbital dict (dict[int, list[int]]) into a plain spin-orbital index
+    # list; the total orbital count is inferred from the Hamiltonian (impurity + bath). The bath
+    # orbitals and their valence/conduction split are derived below, not passed in.
+    impurity_indices = sorted(o for orbs in impurity_orbitals.values() for o in orbs)
+    h_input_matrix = extract_tensors(h_input, two_body=False)[0]
+    n_spin_orbitals = h_input_matrix.shape[0]
+
+    # Adaptive symmetry-adapted basis: diagonalising the impurity one-body block collapses the
+    # Green's-function block structure to its finest form (e.g. 1x1 eg/t2g blocks) BUT can
+    # express the Coulomb interaction more densely. h0 and u4 are in the caller's "correlated"
+    # input basis (NOT assumed spherical); the fill test below is measured *relative to that
+    # input basis*, so we rotate only when it does not densify the operator (fill <= threshold)
+    # and keep the input basis otherwise (e.g. a j,m_j eigenbasis under spin-orbit coupling
+    # densifies the Coulomb tensor). Every output is rotated back to the input basis B before
+    # returning; nothing here presumes a spherical-harmonic input.
+    rotation_full, u_imp = impurity_symmetry_rotation(
+        h_input, impurity_indices, n_orb=n_spin_orbitals, h0_matrix=h_input_matrix
+    )
+    h_rotated = rotate_hamiltonian(h_input, rotation_full, tol=_ROTATION_TRIM_TOL)
+    n_terms_input = sum(1 for v in h_input.values() if abs(v) > _ROTATION_TRIM_TOL)
+    fill_ratio = len(h_rotated) / max(n_terms_input, 1)
+
+    rotate = fill_ratio <= _MAX_ROTATION_FILL
+    if rotate:
+        h = h_rotated
+        h0_solve = rotate_hamiltonian(ManyBodyOperator(h0), rotation_full, tol=_ROTATION_TRIM_TOL).to_dict()
+        # Observable rotation for the solve (spherical -> S): compose the caller's input rotation
+        # R_in (spherical -> B) with W^dag (B -> S). On the impurity block, R = u_imp^dag @ R_in.
+        rot_to_spherical = u_imp.conj().T @ np.asarray(rot_to_spherical, dtype=complex)
+    else:
+        # Stay in the input basis; make the output rotation below a no-op.
+        h = h_input
+        h0_solve = h0
+        rotation_full = np.eye(n_spin_orbitals, dtype=complex)
+        u_imp = np.eye(len(impurity_indices), dtype=complex)
+
+    # One-body matrix of the solver-basis Hamiltonian, extracted once and shared by the
+    # classification/grouping helpers below (each would otherwise re-walk the full operator
+    # and allocate its own dense n_orb x n_orb copy).
+    h_matrix = extract_tensors(h, n_orb=n_spin_orbitals, two_body=False)[0] if rotate else h_input_matrix
+
+    # Derive the bath orbitals (complement of the impurity set) and their initial occupation:
+    # baths below the Fermi level (h[o, o] < 0) are valence (initially occupied), the rest are
+    # conduction (initially empty). The bath one-body diagonal is unchanged by the impurity-only
+    # rotation, so this is consistent whether measured in the input or solver basis.
+    valence_flat, conduction_flat = classify_bath_occupation(
+        h, impurity_indices, n_orb=n_spin_orbitals, h0_matrix=h_matrix
+    )
+
+    # GF block structure from the hybridization-dressed impurity matrix (h[imp,imp] + V^dag V),
+    # in whichever basis we solve in (fixes bath-mediated coupling; 1x1 blocks when rotated).
+    # Derived from h *after* any rotation, so the blocks label the sectors of the solver basis.
+    block_structure = impurity_block_structure(h, impurity_indices, h0_matrix=h_matrix)
+
+    # Group the flat orbital lists into orbital-symmetry manifolds (the inequivalent blocks and
+    # their spin-degenerate partners, e.g. eg / t2g) **in the solver basis** h. Grouping by the
+    # block structure keeps both spins of a manifold in one group, so the many-body basis spans
+    # all S_z sectors (spin multiplets stay degenerate); the impurity occupation window is tied
+    # across groups by the restriction machinery, not pinned per group.
+    impurity_orbitals, bath_states = group_orbitals_by_blocks(
+        h, impurity_indices, valence_flat, conduction_flat, block_structure, n_orb=n_spin_orbitals, h0_matrix=h_matrix
+    )
+    nominal_occ = _per_group_occupation(nominal_occ, impurity_orbitals, h_matrix)
+    mixed_valence = _per_group_scalar(mixed_valence, impurity_orbitals, default=0)
+
+    valence_baths, conduction_baths = bath_states
+    total_impurity_orbitals = {i: sum(len(orbs) for orbs in impurity_orbitals[i]) for i in impurity_orbitals}
+    sum_bath_states = {
+        i: sum(len(orbs) for orbs in valence_baths[i]) + sum(len(orbs) for orbs in conduction_baths[i])
+        for i in valence_baths
+    }
+
+    if verbosity > 0:
+        basis_note = f"symmetry-adapted (fill {fill_ratio:.1f}x)" if rotate else f"input basis (fill {fill_ratio:.1f}x)"
+        print(f"Block structure: {len(block_structure.blocks)} blocks, solving in {basis_note}")
+    return _SolverBasis(
+        h=h,
+        h0_solve=h0_solve,
+        n_spin_orbitals=n_spin_orbitals,
+        block_structure=block_structure,
+        impurity_orbitals=impurity_orbitals,
+        bath_states=bath_states,
+        nominal_occ=nominal_occ,
+        mixed_valence=mixed_valence,
+        rotation_full=rotation_full,
+        u_imp=u_imp,
+        rot_to_spherical=rot_to_spherical,
+        total_impurity_orbitals=total_impurity_orbitals,
+        sum_bath_states=sum_bath_states,
+    )
+
+
+def _check_gf_physical(comm, gss, label):
+    """Collectively verify a list of Green's functions is physical.
+
+    Runs :func:`check_greens_function` on each block (skipping ``None`` and the ``None`` the
+    non-root ranks hold), then broadcasts the verdict via :func:`_raise_together` so every rank
+    raises (or continues) as one. Call it unconditionally on every rank.
+    """
+    message = None
+    if gss is not None:
+        try:
+            for gs in gss:
+                if gs is None:
+                    continue
+                check_greens_function(gs)
+        except UnphysicalGreensFunctionError as err:
+            message = f"{label} interacting Greens function:\n" + str(err)
+    _raise_together(comm, message)
+
+
+def _self_energy_on_mesh(
+    mesh, gss, *, delta, total_impurity_orbitals, sum_bath_states, h0_solve, cluster_label, blocks, comm, label
+):
+    """Compute (and collectively physicality-check) the self-energy on one frequency mesh.
+
+    Returns the per-inequivalent-block self-energy list, or ``None`` when ``gss`` is ``None``
+    (``get_Greens_function`` gathers to rank 0, so the non-root ranks hold ``None``). On an
+    unphysical result the offending blocks are saved to disk before the collective raise.
+
+    .. warning:: **Collective on** ``comm`` (:func:`_raise_together`). ``get_sigma`` and the
+       check run on rank 0 only, but ``_raise_together`` must run on *every* rank -- it is
+       therefore called outside the ``gss is not None`` guard, never short-circuited by an
+       early return.
+    """
+    sigma = None
+    message = None
+    if gss is not None:
+        sigma = get_sigma(
+            omega_mesh=mesh,
+            impurity_orbitals=total_impurity_orbitals,
+            nBaths=sum_bath_states,
+            gs=gss,
+            h0op=h0_solve,
+            delta=delta,
+            clustername=cluster_label,
+            blocks=blocks,
+        )
+        try:
+            for sig in sigma:
+                check_greens_function(sig)
+        except UnphysicalGreensFunctionError as err:
+            for i, sig in enumerate(sigma):
+                save_Greens_function(sig, mesh, f"sig+dc-{i}", cluster_label)
+            message = f"{label} self-energy:\n" + str(err)
+    _raise_together(comm, message)
+    return sigma
+
+
 def calc_selfenergy(
     h0,
     u4,
@@ -223,85 +412,20 @@ def calc_selfenergy(
             print(f"  {title}")
             print("=" * 80, flush=verbosity >= 2)
 
-    # construct local, interacting, hamiltonian (in the caller's input/correlated basis B)
-    u = atomic_physics.getUop_from_rspt_u4(u4)
-    h_input = ManyBodyOperator(h0) + ManyBodyOperator(u)
-
-    # Flatten the impurity orbital dict (dict[int, list[int]]) into a plain spin-orbital index
-    # list; the total orbital count is inferred from the Hamiltonian (impurity + bath). The bath
-    # orbitals and their valence/conduction split are derived below, not passed in.
-    impurity_indices = sorted(o for orbs in impurity_orbitals.values() for o in orbs)
-    h_input_matrix = extract_tensors(h_input, two_body=False)[0]
-    n_spin_orbitals = h_input_matrix.shape[0]
-
-    # Adaptive symmetry-adapted basis: diagonalising the impurity one-body block collapses the
-    # Green's-function block structure to its finest form (e.g. 1x1 eg/t2g blocks) BUT can
-    # express the Coulomb interaction more densely. h0 and u4 are in the caller's "correlated"
-    # input basis (NOT assumed spherical); the fill test below is measured *relative to that
-    # input basis*, so we rotate only when it does not densify the operator (fill <= threshold)
-    # and keep the input basis otherwise (e.g. a j,m_j eigenbasis under spin-orbit coupling
-    # densifies the Coulomb tensor). Every output is rotated back to the input basis B before
-    # returning; nothing here presumes a spherical-harmonic input.
-    rotation_full, u_imp = impurity_symmetry_rotation(
-        h_input, impurity_indices, n_orb=n_spin_orbitals, h0_matrix=h_input_matrix
-    )
-    h_rotated = rotate_hamiltonian(h_input, rotation_full, tol=_ROTATION_TRIM_TOL)
-    n_terms_input = sum(1 for v in h_input.values() if abs(v) > _ROTATION_TRIM_TOL)
-    fill_ratio = len(h_rotated) / max(n_terms_input, 1)
-
-    rotate = fill_ratio <= _MAX_ROTATION_FILL
-    if rotate:
-        h = h_rotated
-        h0_solve = rotate_hamiltonian(ManyBodyOperator(h0), rotation_full, tol=_ROTATION_TRIM_TOL).to_dict()
-        # Observable rotation for the solve (spherical -> S): compose the caller's input rotation
-        # R_in (spherical -> B) with W^dag (B -> S). On the impurity block, R = u_imp^dag @ R_in.
-        rot_to_spherical = u_imp.conj().T @ np.asarray(rot_to_spherical, dtype=complex)
-    else:
-        # Stay in the input basis; make the output rotation below a no-op.
-        h = h_input
-        h0_solve = h0
-        rotation_full = np.eye(n_spin_orbitals, dtype=complex)
-        u_imp = np.eye(len(impurity_indices), dtype=complex)
-
-    # One-body matrix of the solver-basis Hamiltonian, extracted once and shared by the
-    # classification/grouping helpers below (each would otherwise re-walk the full operator
-    # and allocate its own dense n_orb x n_orb copy).
-    h_matrix = extract_tensors(h, n_orb=n_spin_orbitals, two_body=False)[0] if rotate else h_input_matrix
-
-    # Derive the bath orbitals (complement of the impurity set) and their initial occupation:
-    # baths below the Fermi level (h[o, o] < 0) are valence (initially occupied), the rest are
-    # conduction (initially empty). The bath one-body diagonal is unchanged by the impurity-only
-    # rotation, so this is consistent whether measured in the input or solver basis.
-    valence_flat, conduction_flat = classify_bath_occupation(
-        h, impurity_indices, n_orb=n_spin_orbitals, h0_matrix=h_matrix
-    )
-
-    # GF block structure from the hybridization-dressed impurity matrix (h[imp,imp] + V^dag V),
-    # in whichever basis we solve in (fixes bath-mediated coupling; 1x1 blocks when rotated).
-    # Derived from h *after* any rotation, so the blocks label the sectors of the solver basis.
-    block_structure = impurity_block_structure(h, impurity_indices, h0_matrix=h_matrix)
-
-    # Group the flat orbital lists into orbital-symmetry manifolds (the inequivalent blocks and
-    # their spin-degenerate partners, e.g. eg / t2g) **in the solver basis** h. Grouping by the
-    # block structure keeps both spins of a manifold in one group, so the many-body basis spans
-    # all S_z sectors (spin multiplets stay degenerate); the impurity occupation window is tied
-    # across groups by the restriction machinery, not pinned per group.
-    impurity_orbitals, bath_states = group_orbitals_by_blocks(
-        h, impurity_indices, valence_flat, conduction_flat, block_structure, n_orb=n_spin_orbitals, h0_matrix=h_matrix
-    )
-    nominal_occ = _per_group_occupation(nominal_occ, impurity_orbitals, h_matrix)
-    mixed_valence = _per_group_scalar(mixed_valence, impurity_orbitals, default=0)
-
-    valence_baths, conduction_baths = bath_states
-    total_impurity_orbitals = {i: sum(len(orbs) for orbs in impurity_orbitals[i]) for i in impurity_orbitals}
-    sum_bath_states = {
-        i: sum(len(orbs) for orbs in valence_baths[i]) + sum(len(orbs) for orbs in conduction_baths[i])
-        for i in valence_baths
-    }
-
-    if verbosity > 0:
-        basis_note = f"symmetry-adapted (fill {fill_ratio:.1f}x)" if rotate else f"input basis (fill {fill_ratio:.1f}x)"
-        print(f"Block structure: {len(block_structure.blocks)} blocks, solving in {basis_note}")
+    sb = _prepare_solver_basis(h0, u4, impurity_orbitals, nominal_occ, mixed_valence, rot_to_spherical, verbosity)
+    h = sb.h
+    h0_solve = sb.h0_solve
+    n_spin_orbitals = sb.n_spin_orbitals
+    block_structure = sb.block_structure
+    impurity_orbitals = sb.impurity_orbitals
+    bath_states = sb.bath_states
+    nominal_occ = sb.nominal_occ
+    mixed_valence = sb.mixed_valence
+    rotation_full = sb.rotation_full
+    u_imp = sb.u_imp
+    rot_to_spherical = sb.rot_to_spherical
+    total_impurity_orbitals = sb.total_impurity_orbitals
+    sum_bath_states = sb.sum_bath_states
     # Resolve the basis cap: None means "as many determinants as fit in RAM". Both the
     # suggestion and the budget log are collective on comm (memory probe + allreduce), so
     # they run unconditionally on every rank; only the printing is verbosity-gated.
@@ -393,78 +517,38 @@ def calc_selfenergy(
             break
         num_wanted *= 2
         log(f"\nThermal ensemble appears truncated; retrying with num_wanted = {num_wanted}.\n", flush=True)
-    # The four physicality checks below only have data on rank 0; `_raise_together` broadcasts
-    # each verdict so every rank raises (or continues) as one. See its docstring: raising on
-    # rank 0 alone deadlocks the survivors in the next collective.
-    message = None
-    if gs_matsubara is not None:
-        try:
-            for gs in gs_matsubara:
-                if gs is None:
-                    continue
-                check_greens_function(gs)
-        except UnphysicalGreensFunctionError as err:
-            message = "Matsubara interacting Greens function:\n" + str(err)
-    _raise_together(comm, message)
-
-    message = None
-    if gs_realaxis is not None:
-        try:
-            for gs in gs_realaxis:
-                if gs is None:
-                    continue
-                check_greens_function(gs)
-        except UnphysicalGreensFunctionError as err:
-            message = "Real frequency interacting Greens function:\n" + str(err)
-    _raise_together(comm, message)
+    # Physicality checks run on rank 0 (where the gathered results live); _check_gf_physical
+    # broadcasts each verdict so every rank raises (or continues) as one.
+    _check_gf_physical(comm, gs_matsubara, "Matsubara")
+    _check_gf_physical(comm, gs_realaxis, "Real frequency")
 
     banner("Self-energy")
     log("Calculating self-energy ...")
-    message = None
-    if gs_realaxis is not None:
-        sigma_real = get_sigma(
-            omega_mesh=w,
-            impurity_orbitals=total_impurity_orbitals,
-            nBaths=sum_bath_states,
-            gs=gs_realaxis,
-            h0op=h0_solve,
-            delta=delta,
-            clustername=cluster_label,
-            blocks=[block_structure.blocks[block_i] for block_i in block_structure.inequivalent_blocks],
-        )
-        try:
-            for sig in sigma_real:
-                check_greens_function(sig)
-        except UnphysicalGreensFunctionError as err:
-            for i, sig in enumerate(sigma_real):
-                save_Greens_function(sig, w, f"sig+dc-{i}", cluster_label)
-            message = "Real frequency self-energy:\n" + str(err)
-    else:
-        sigma_real = None
-    _raise_together(comm, message)
-
-    message = None
-    if gs_matsubara is not None:
-        sigma = get_sigma(
-            omega_mesh=iw,
-            impurity_orbitals=total_impurity_orbitals,
-            nBaths=sum_bath_states,
-            gs=gs_matsubara,
-            h0op=h0_solve,
-            delta=0,
-            clustername=cluster_label,
-            blocks=[block_structure.blocks[block_i] for block_i in block_structure.inequivalent_blocks],
-        )
-        try:
-            for sig in sigma:
-                check_greens_function(sig)
-        except UnphysicalGreensFunctionError as err:
-            for i, sig in enumerate(sigma):
-                save_Greens_function(sig, iw, f"sig+dc-{i}", cluster_label)
-            message = "Matsubara self-energy:\n" + str(err)
-    else:
-        sigma = None
-    _raise_together(comm, message)
+    inequivalent_blocks = [block_structure.blocks[block_i] for block_i in block_structure.inequivalent_blocks]
+    sigma_real = _self_energy_on_mesh(
+        w,
+        gs_realaxis,
+        delta=delta,
+        total_impurity_orbitals=total_impurity_orbitals,
+        sum_bath_states=sum_bath_states,
+        h0_solve=h0_solve,
+        cluster_label=cluster_label,
+        blocks=inequivalent_blocks,
+        comm=comm,
+        label="Real frequency",
+    )
+    sigma = _self_energy_on_mesh(
+        iw,
+        gs_matsubara,
+        delta=0,
+        total_impurity_orbitals=total_impurity_orbitals,
+        sum_bath_states=sum_bath_states,
+        h0_solve=h0_solve,
+        cluster_label=cluster_label,
+        blocks=inequivalent_blocks,
+        comm=comm,
+        label="Matsubara",
+    )
 
     log("Calculating static self-energy ...")
     # Sort the flattened indices: the groups enumerate the impurity orbitals in

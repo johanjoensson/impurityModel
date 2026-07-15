@@ -146,9 +146,10 @@ asserted rank-0-only h5 writes on every rank (the gate was red on rank 1 at HEAD
 - [x] **`selfenergy.py`** → `ed/double_counting.py` (`fixed_peak_dc`,
       `fixed_occupation_dc`, DC solver plumbing) + `ed/sigma.py` (`get_hcorr_v_hbath`,
       `hyb`, `get_sigma`, `get_Sigma_static`, causality check) + `selfenergy.py`
-      (`calc_selfenergy` + CLI). **Done** (re-exported for backward compat). The further
-      decomposition of the 407-line `calc_selfenergy` body into named stage functions is
-      deferred to a follow-up.
+      (`calc_selfenergy` + CLI). **Done** (re-exported for backward compat). The
+      `calc_selfenergy` body was further decomposed into named stage helpers
+      (`_prepare_solver_basis` returning a `_SolverBasis`, `_check_gf_physical`,
+      `_self_energy_on_mesh`), shrinking its logic by ~108 lines.
 - [x] **`symmetries.py`** → `ed/lie_algebra.py` (the algebraic half: tensor extraction/
       rotation, symmetry discovery, structure constants, Cartan subalgebra, joint
       diagonalization, Casimirs) + `symmetries.py` (conserved charges, restrictions, block
