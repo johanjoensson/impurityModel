@@ -576,21 +576,21 @@ with the broadening $\Gamma$ now playing a physical role: the inverse core-hole 
 The spectroscopies differ only in $T$:
 
 * **PES / IPS** (photoemission / inverse photoemission): $T = c_i$ / $c^\dagger_i$ over the
-  valence orbitals (`getPhotoEmissionOperators`, `getInversePhotoEmissionOperators`) — these
+  valence orbitals (`photoemission_operators`, `inverse_photoemission_operators`) — these
   are literally the removal/addition Green's functions of section 1.2, traced.
 * **XAS** (x-ray absorption): the dipole operator between the core and valence shells,
   $T_\varepsilon = \sum_\alpha \varepsilon_\alpha T_\alpha$ with Gaunt-coefficient matrix
-  elements (`getDipoleOperator`; conventions after Eder's multiplet notes). The final states
+  elements (`dipole_operator`; conventions after Eder's multiplet notes). The final states
   contain a core hole, so the excited-sector restrictions differ from the ground state's —
   the `imp_change`/`val_change`/`con_change` windows passed to the spectra drivers encode
   exactly which charge rearrangements the intermediate space may explore.
 * **XPS**: the sudden removal of a core electron (a scalar seed in the core-hole sector).
 * **NIXS** (non-resonant inelastic x-ray scattering): $T = e^{i q\cdot r}$ expanded in
   spherical harmonics with radial integrals $\langle R_i | j_k(qr) | R_j \rangle$
-  (`getNIXSOperator`) — access to multipole transitions beyond dipole at large $|q|$.
+  (`nixs_operator`) — access to multipole transitions beyond dipole at large $|q|$.
 
 Since transition operators are *linear* in the polarization vector, an $n$-polarization
-measurement is a contraction of one Cartesian component tensor: `getSpectra_tensor` runs a
+measurement is a contraction of one Cartesian component tensor: `calc_spectra_tensor` runs a
 single block recurrence over the component seeds and reads off every polarization (and
 circular/arbitrary combinations) afterwards — with symmetry-equivalent seed redundancy removed
 automatically by the rank deflation of the block QR, which is the *correct* dedup (an
@@ -600,7 +600,7 @@ XAS-style group rule does not generalize to tensors).
 
 Resonant inelastic x-ray scattering is a two-photon process through a core-hole intermediate
 state [24,25]; the Kramers–Heisenberg amplitude requires **two nested resolvents**
-(`getRIXSmap_tensor`, `_rixs_map_flat`):
+(`calc_tensor_map`, `_rixs_map_flat`):
 
 $$
 C_{\alpha\alpha'\beta\beta'}(\omega_{\mathrm{in}}, \omega_{\mathrm{loss}}) =

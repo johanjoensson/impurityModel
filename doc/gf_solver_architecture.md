@@ -123,13 +123,13 @@ map and only the incoming energies it cannot yet predict are actually solved (me
 
 `simulate_spectra(...)` is the orchestrator. Per spectrum:
 
-- **PS / XPS / NIXS** — per-operator spectra via `getSpectra_new`.
-- **XAS** — the *projected* path (`getSpectra_new`, per polarization) when an XAS projector
-  file is given; otherwise the *tensor* path (`getSpectra_tensor`) storing a Cartesian tensor
+- **PS / XPS / NIXS** — per-operator spectra via `calc_spectra`.
+- **XAS** — the *projected* path (`calc_spectra`, per polarization) when an XAS projector
+  file is given; otherwise the *tensor* path (`calc_spectra_tensor`) storing a Cartesian tensor
   under `spectra.h5:XAS/tensor` that `polarization.py` contracts with concrete polarizations
   at plot time.
-- **RIXS** — the projected path (`rixs.getRIXSmap_new`) with a projector file, else the
-  tensor path (`rixs.getRIXSmap_tensor`) storing the Kramers-Heisenberg tensor under
+- **RIXS** — the projected path (`rixs.calc_map`) with a projector file, else the
+  tensor path (`rixs.calc_tensor_map`) storing the Kramers-Heisenberg tensor under
   `spectra.h5:RIXS/tensor`.
 
 The transition operators themselves come from `transition_operators.py` (pure physics

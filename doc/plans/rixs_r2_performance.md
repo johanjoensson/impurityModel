@@ -33,7 +33,7 @@ ordered by expected effort-to-payoff, not dependency (1 does not require 2/3/4).
 
 **The cheapest tweak and the one the numbers most directly support.**
 
-The R2 `block_Green` call in both `getRIXSmap_new`'s and `getRIXSmap_tensor`'s
+The R2 `block_Green` call in both `calc_map`'s and `calc_tensor_map`'s
 `eval_out` passes no `eval_meshes`, so `_make_gf_convergence_monitor` falls back to its
 spectral-edge mesh and converges to `_gf_rel_tol(slaterWeightMin)` -- effectively the
 `_GF_REL_TOL_FLOOR` of 1e-9 (`gf_convergence.py`) unless `slaterWeightMin` is looser.
@@ -120,7 +120,7 @@ Simpler and lower-risk than Tweak 2: instead of one `block_Green` call per wIn p
 build ONE call per chunk over the flattened union of that chunk's R2 seed blocks (all
 `(eigenstate, wIn, in-component)` seeds in the chunk stacked as one wide block), the same
 pattern R2's own `try_eval`/tensor contraction already uses to serve every polarization
-cross-term from one block-Lanczos (see `getRIXSmap_tensor`'s `eval_out`). The existing
+cross-term from one block-Lanczos (see `calc_tensor_map`'s `eval_out`). The existing
 rank deflation inside `block_Green`/`block_bicgstab` trims the redundancy automatically
 when seeds are near-parallel (adjacent wIn points' R1 solutions are close for a smooth
 map), same guarantee already relied on for the Cartesian polarization seeds.

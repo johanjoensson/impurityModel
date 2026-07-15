@@ -22,8 +22,8 @@ through the same engine in `greens_function.py`:
    `split_basis.comm` only and picklable in its return.
 
 Clients: `get_Greens_function` (self-energy), `calc_Greens_function_with_offdiag` (thin
-wrapper, used by `getSpectra_tensor` and tests), `getSpectra_new`, `_rixs_map_flat`
-(behind `getRIXSmap_new` / `getRIXSmap_tensor`).
+wrapper, used by `calc_spectra_tensor` and tests), `calc_spectra`, `_rixs_map_flat`
+(behind `calc_map` / `calc_tensor_map`).
 
 The packing math lives in `manybody_basis._pack_units(weights, comm_size, split_threshold)`:
 participation-ratio cap on the number of colors, **LPT packing** (next-heaviest unit into the
@@ -38,7 +38,7 @@ deterministic — every rank recomputes the identical packing; unit-tested witho
   one-pass largest-remainder apportionment.
 - Round-robin dealing guaranteed bin 0 the heaviest unit of every round; LPT bounds the
   straggler bin at 4/3 of optimal and reduces to round-robin on uniform weights.
-- `getRIXSmap_new`/`_tensor` referenced `gs` on ranks that never allocated it
+- `calc_map`/`_tensor` referenced `gs` on ranks that never allocated it
   (`UnboundLocalError` on non-root sub-ranks at ≥ 3 ranks); both now return the map on global
   rank 0 (and serially) and `None` elsewhere.
 - The RIXS kernel now redistributes the resolvent seeds and warm starts onto the freshly

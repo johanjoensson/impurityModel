@@ -1,8 +1,7 @@
 # Deep refactor + documentation overhaul
 
-**Status (2026-07-15):** in progress. Phases 0, 1, 2 (a–e) complete; config reference doc
-written. Remaining: Phase 3 renames; Phase 4 Cython `.pxi` splits; Phase 5 developer/user docs
-+ Sphinx polish.
+**Status (2026-07-15):** in progress. Phases 0, 1, 2 (a–e), 3 complete; config reference doc
+written. Remaining: Phase 4 Cython `.pxi` splits; Phase 5 developer/user docs + Sphinx polish.
 
 ## Motivation
 
@@ -106,10 +105,10 @@ kernel), the pairwise operator split (`GF_OPERATOR_SPLIT`), the reort mode
 (`_CappedBasisProxy`).
 
 **Spectra** — `spectra.simulate_spectra` chooses per spectrum:
-PS/XPS/NIXS always go through `getSpectra_new` (per-operator spectra); XAS and RIXS take
-the *projected* path (`getSpectra_new` / `getRIXSmap_new`, per-polarization) when a
-projector file is given, and otherwise the *tensor* path (`getSpectra_tensor` /
-`getRIXSmap_tensor`), which stores a Cartesian tensor that `polarization.py` contracts at
+PS/XPS/NIXS always go through `calc_spectra` (per-operator spectra); XAS and RIXS take
+the *projected* path (`calc_spectra` / `calc_map`, per-polarization) when a
+projector file is given, and otherwise the *tensor* path (`calc_spectra_tensor` /
+`calc_tensor_map`), which stores a Cartesian tensor that `polarization.py` contracts at
 plot time.
 
 **RIXS solver tiers** — `spectra._R1SolverChain.solve`, in order:
@@ -178,10 +177,14 @@ asserted rank-0-only h5 writes on every rank (the gate was red on rank 1 at HEAD
 
 ## Phase 3 — Naming & signature cleanup
 
-- [ ] `getSpectra_new` → `calc_spectra`, `getSpectra_tensor` → `calc_spectra_tensor`,
+- [x] `getSpectra_new` → `calc_spectra`, `getSpectra_tensor` → `calc_spectra_tensor`,
       `getRIXSmap_new` → `rixs.calc_map`, `getRIXSmap_tensor` → `rixs.calc_tensor_map`.
-- [ ] Operator builders drop the `get` prefix on the move to `transition_operators.py`.
-- [ ] Physics-domain argument names (`nBaths`, `Fdd`, …) stay — they mirror the literature
+- [x] Operator builders lose the `get` prefix and move to snake_case in
+      `transition_operators.py`: `getDipoleOperator(s)` → `dipole_operator(s)`,
+      `getDaggeredDipoleOperators` → `daggered_dipole_operators`, `getNIXSOperator(s)` →
+      `nixs_operator(s)`, `get{Inverse,}PhotoEmissionOperators` →
+      `{inverse_,}photoemission_operators`. Re-exported from `spectra.py` unchanged.
+- [x] Physics-domain argument names (`nBaths`, `Fdd`, …) stay — they mirror the literature
       and the CLI surface.
 
 ## Phase 4 — Cython layer
@@ -216,7 +219,6 @@ import changes, purely file-level readability.
 
 ## Remaining (follow-up sessions)
 
-- Phase 3: renames (`getSpectra_new` → `calc_spectra`, etc.).
 - Phase 4: Cython `.pxi` splits of the three large kernels + a kernel documentation pass.
 - Decompose the 407-line `calc_selfenergy` body into named stage functions.
 - Delete-or-relocate decision on the dead `double_chain_haverkort/double_chains.py` and the
