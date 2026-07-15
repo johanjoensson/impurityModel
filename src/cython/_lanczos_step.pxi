@@ -1,3 +1,11 @@
+# ===========================================================================
+# Core block-Lanczos recurrence
+# ===========================================================================
+# One three-term block step (block_lanczos_step_cy) and the full recurrence driver
+# (block_lanczos_cy) that serves the whole frequency mesh from a single recurrence. The
+# reorthogonalization mode (NONE/PARTIAL/FULL/PERIODIC/SELECTIVE) and the EA16
+# shrinking-block deflation policy are dispatched from here.
+
 def block_lanczos_step_cy(
     h_op,
     q_prev,

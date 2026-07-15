@@ -1,3 +1,10 @@
+# ===========================================================================
+# Many-body operator
+# ===========================================================================
+# ManyBodyOperator wraps the C++ operator (ManyBodyOperator.pxd), with the tuple<->int
+# process conversions (processes_to_ints / ints_to_processes) and applyOp. The matvec hot
+# path (ManyBodyOperator::apply, optionally threaded via -DPARALLEL) lives in the C++ layer.
+
 cdef ManyBodyOperator_cpp.value_type.first_type processes_to_ints(tuple[tuple[int, str]] processes):
     cdef tuple[int, str] process
     cdef ManyBodyOperator_cpp.key_type ints

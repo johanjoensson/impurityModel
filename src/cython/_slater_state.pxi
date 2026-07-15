@@ -1,3 +1,10 @@
+# ===========================================================================
+# Slater determinant + many-body state wrappers
+# ===========================================================================
+# SlaterDeterminant and ManyBodyState wrap the C++ types (ManyBodyState.pxd). The
+# orbital->bit convention is MSB-first: orbital i is bit (7 - i) of each byte, so orbital 0
+# is 0x80.
+
 cdef class SlaterDeterminant:
     """
     Cython wrapper class for C++ SlaterDeterminant.

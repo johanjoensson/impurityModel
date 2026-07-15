@@ -1,7 +1,9 @@
 # Deep refactor + documentation overhaul
 
-**Status (2026-07-15):** in progress. Phases 0, 1, 2 (a–e), 3 complete; config reference doc
-written. Remaining: Phase 4 Cython `.pxi` splits; Phase 5 developer/user docs + Sphinx polish.
+**Status (2026-07-15):** all phases (0–5) complete. The deep refactor + documentation
+overhaul is done: central config, the Python module splits, CLI dataclasses, snake_case
+renames, `calc_selfenergy` stage helpers, the dead-module cleanup, and the Cython `.pxi`
+splits are all landed and green on the full gate.
 
 ## Motivation
 
@@ -188,18 +190,22 @@ asserted rank-0-only h5 writes on every rank (the gate was red on rank 1 at HEAD
 - [x] Physics-domain argument names (`nBaths`, `Fdd`, …) stay — they mirror the literature
       and the CLI surface.
 
-## Phase 4 — Cython layer
+## Phase 4 — Cython layer ✅
 
-Split via `.pxi` textual includes: same compiled extension modules, no build-system or
-import changes, purely file-level readability.
+Split via `.pxi` textual includes: same compiled extension modules, no import changes,
+purely file-level readability. Each split is a **verbatim move** — the concatenation of a
+`.pyx`'s includes is byte-identical to the pre-split source.
 
-- [ ] `BlockLanczos.pyx` → `_lanczos_step.pxi` + `_trlm.pxi` + `_irlm.pxi`.
-- [ ] `ManyBodyUtils.pyx` → `_slater_state.pxi` + `_operator.pxi` + `_mpi_pack.pxi` +
+- [x] `BlockLanczos.pyx` → `_lanczos_step.pxi` + `_trlm.pxi` + `_irlm.pxi`.
+- [x] `ManyBodyUtils.pyx` → `_slater_state.pxi` + `_operator.pxi` + `_mpi_pack.pxi` +
       `_krylov_store.pxi` + `_block_state.pxi`.
-- [ ] `BlockLanczosArray.pyx` → `_reort.pxi` + the array kernel.
-- [ ] Kernel documentation pass: the invariants (reort-estimator honesty, deflation's two
-      scales, seed ownership in the recurrences) documented at the code that owns them.
-- [ ] `setup.py`: `depends=` on the `.pxi` files so edits trigger recythonization.
+- [x] `BlockLanczosArray.pyx` → `_reort.pxi` (ManyBodyState-path block primitives +
+      `selective_orthogonalize`/`apply_reort`) + the array kernel (kept in the `.pyx`).
+- [x] Kernel documentation pass: each `.pxi` opens with a reading-map header naming its
+      contents and the invariant it owns (MSB-first bit convention, the Krylov store backing
+      every reort mode, reort-estimator honesty).
+- [x] `setup.py`: `depends=` on the `.pxi` files so edits trigger recythonization (verified —
+      a comment-only `.pxi` edit forced a full recompile).
 
 ## Phase 5 — Documentation ✅ (developer + user docs done)
 
@@ -220,4 +226,4 @@ import changes, purely file-level readability.
 
 ## Remaining (follow-up sessions)
 
-- Phase 4: Cython `.pxi` splits of the three large kernels + a kernel documentation pass.
+- None — all phases complete.

@@ -1,3 +1,10 @@
+# ===========================================================================
+# Sparse Krylov retention store
+# ===========================================================================
+# SparseKrylovDense: the chunked columnar store that retains the Krylov basis for the
+# reorthogonalizing Lanczos modes (zero-copy growth; _scatter_block_rows fills it). Since the
+# MBS kernel's retention IS this store, it backs every reort mode's Q.
+
 cdef void _scatter_block_rows(
     krylov_t[:, :] Qv,
     ManyBodyBlockState_cpp* b,

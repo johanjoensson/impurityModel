@@ -1,3 +1,11 @@
+# ===========================================================================
+# ManyBodyState-path block primitives + reorthogonalization
+# ===========================================================================
+# The is_array-dispatching block primitives (block_inner/apply/add_scaled/combine/
+# orthogonalize/normalize) that let the array Lanczos kernel run on ManyBodyState bases, and
+# the reorthogonalization machinery (selective_orthogonalize, apply_reort). Reort-estimator
+# honesty: resets use measured overlaps, never an EPS post-act reset (which blinds it).
+
 import scipy.sparse as sps
 from impurityModel.ed.ManyBodyUtils import (
     inner_multi,

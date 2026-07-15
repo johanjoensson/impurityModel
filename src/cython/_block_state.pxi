@@ -1,3 +1,9 @@
+# ===========================================================================
+# Many-body block state
+# ===========================================================================
+# ManyBodyBlockState: a block (column set) of many-body states with width-0 key-only masks
+# and nogil merge primitives, plus block inner/add and the MPI block pack/unpack.
+
 cdef class ManyBodyBlockState:
     r"""A block of ``p`` many-body vectors over ONE shared Slater-determinant support.
 
