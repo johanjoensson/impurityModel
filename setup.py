@@ -47,6 +47,13 @@ ext_modules = [
             os.path.join(_cython_src_dir, "ManyBodyUtils.pyx"),
             _mpi_utils_src,
         ],
+        depends=[
+            os.path.join(_cython_src_dir, "_slater_state.pxi"),
+            os.path.join(_cython_src_dir, "_operator.pxi"),
+            os.path.join(_cython_src_dir, "_mpi_pack.pxi"),
+            os.path.join(_cython_src_dir, "_krylov_store.pxi"),
+            os.path.join(_cython_src_dir, "_block_state.pxi"),
+        ],
         language="c++",
         include_dirs=include_dirs,
         extra_compile_args=extra_compile_args,
@@ -57,6 +64,11 @@ ext_modules = [
         sources=[
             os.path.join(_cython_src_dir, "BlockLanczos.pyx"),
         ],
+        depends=[
+            os.path.join(_cython_src_dir, "_lanczos_step.pxi"),
+            os.path.join(_cython_src_dir, "_trlm.pxi"),
+            os.path.join(_cython_src_dir, "_irlm.pxi"),
+        ],
         language="c++",
         include_dirs=include_dirs,
         extra_compile_args=extra_compile_args,
@@ -66,6 +78,9 @@ ext_modules = [
         name="impurityModel.ed.BlockLanczosArray",
         sources=[
             os.path.join(_cython_src_dir, "BlockLanczosArray.pyx"),
+        ],
+        depends=[
+            os.path.join(_cython_src_dir, "_reort.pxi"),
         ],
         language="c++",
         include_dirs=include_dirs,
