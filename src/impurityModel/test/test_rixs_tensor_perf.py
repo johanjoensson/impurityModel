@@ -1,5 +1,5 @@
-"""Benchmark: full rank-4 RIXS tensor (:func:`spectra.getRIXSmap_tensor`) vs the
-per-polarization Kramers-Heisenberg map (:func:`spectra.getRIXSmap_new`).
+"""Benchmark: full rank-4 RIXS tensor (:func:`spectra.calc_tensor_map`) vs the
+per-polarization Kramers-Heisenberg map (:func:`spectra.calc_map`).
 
 Both produce the identical ``[n_in_pol, n_out_pol, wIn, wLoss]`` intensity map. The tensor path
 runs one ``block_bicgstab`` (R2) over the K Cartesian in-components and one ``block_Green`` (R3)
@@ -180,7 +180,7 @@ def _dense_ref(op, in_comp, out_comp, epsIn, epsOut, es_all, vec_all, states):
 def _run_perpol(op, psis, es, dets, in_comp, out_comp, epsIn, epsOut):
     t_ops_in = [spectra._combine_component_ops(in_comp, e) for e in epsIn]
     t_ops_out = [spectra._combine_component_ops(out_comp, np.conj(e)) for e in epsOut]
-    return spectra.getRIXSmap_new(
+    return spectra.calc_map(
         op,
         t_ops_in,
         t_ops_out,
@@ -198,7 +198,7 @@ def _run_perpol(op, psis, es, dets, in_comp, out_comp, epsIn, epsOut):
 
 
 def _run_tensor(op, psis, es, dets, in_comp, out_comp, epsIn, epsOut):
-    C = spectra.getRIXSmap_tensor(
+    C = spectra.calc_tensor_map(
         op,
         in_comp,
         out_comp,

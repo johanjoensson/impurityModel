@@ -51,7 +51,7 @@ def sph_harm(m, n, theta, phi):
     return sph_harm_y(n, m, phi, theta)
 
 
-def getDipoleOperators(nBaths, ns):
+def dipole_operators(nBaths, ns):
     r"""
     Return dipole transition operators.
 
@@ -68,11 +68,11 @@ def getDipoleOperators(nBaths, ns):
     """
     tOps = []
     for n in ns:
-        tOps.append(getDipoleOperator(nBaths, n))
+        tOps.append(dipole_operator(nBaths, n))
     return tOps
 
 
-def getDaggeredDipoleOperators(nBaths, ns):
+def daggered_dipole_operators(nBaths, ns):
     """
     Return daggered dipole transition operators.
 
@@ -86,11 +86,11 @@ def getDaggeredDipoleOperators(nBaths, ns):
     """
     tDaggerOps = []
     for n in ns:
-        tDaggerOps.append(daggerOp(getDipoleOperator(nBaths, n)))
+        tDaggerOps.append(daggerOp(dipole_operator(nBaths, n)))
     return tDaggerOps
 
 
-def getDipoleOperator(nBaths, n):
+def dipole_operator(nBaths, n):
     r"""
     Return dipole transition operator :math:`\hat{T}`.
 
@@ -130,7 +130,7 @@ def getDipoleOperator(nBaths, n):
     return tOp
 
 
-def getNIXSOperators(nBaths, qs, li, lj, Ri, Rj, r, kmin=1):
+def nixs_operators(nBaths, qs, li, lj, Ri, Rj, r, kmin=1):
     r"""
     Return non-resonant inelastic x-ray scattering transition operators.
 
@@ -178,11 +178,11 @@ def getNIXSOperators(nBaths, qs, li, lj, Ri, Rj, r, kmin=1):
     for q in qs:
         if rank == 0:
             print("q =", q)
-        tOps.append(getNIXSOperator(nBaths, q, li, lj, Ri, Rj, r, kmin))
+        tOps.append(nixs_operator(nBaths, q, li, lj, Ri, Rj, r, kmin))
     return tOps
 
 
-def getNIXSOperator(nBaths, q, li, lj, Ri, Rj, r, kmin=1):
+def nixs_operator(nBaths, q, li, lj, Ri, Rj, r, kmin=1):
     r"""
     Return non-resonant inelastic x-ray scattering transition
     operator :math:`\hat{T}`.
@@ -256,7 +256,7 @@ def getNIXSOperator(nBaths, q, li, lj, Ri, Rj, r, kmin=1):
     return tOp
 
 
-def getInversePhotoEmissionOperators(nBaths, l=2):
+def inverse_photoemission_operators(nBaths, l=2):
     r"""
     Return inverse photo emission operators :math:`\{ c_i^\dagger \}`.
 
@@ -276,7 +276,7 @@ def getInversePhotoEmissionOperators(nBaths, l=2):
     return tOpsIPS
 
 
-def getPhotoEmissionOperators(nBaths, l=2):
+def photoemission_operators(nBaths, l=2):
     r"""
     Return photo emission operators :math:`\{ c_i \}`.
 

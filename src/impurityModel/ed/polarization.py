@@ -68,7 +68,7 @@ def contract_spectra_tensor(chi, polarizations):
     ----------
     chi : ndarray
         Spectral tensor of shape ``(n_w, m, m)`` over the ``m`` Cartesian transition
-        components (from :func:`spectra.getSpectra_tensor`).
+        components (from :func:`spectra.calc_spectra_tensor`).
     polarizations : sequence
         Polarization specifications (anything :func:`polarization_vector` accepts),
         each of length ``m``.
@@ -88,7 +88,7 @@ def contract_rixs_tensor(C, polarizations_in, polarizations_out):
 
     ``C[a, b, a', b', wIn, wLoss]`` is the resolvent matrix over the flattened out-seed
     block :math:`s_{\alpha\beta} = T^\text{out}_\beta \psi^{(2)}_\alpha` (from
-    :func:`spectra.getRIXSmap_tensor`). The out-component operators are *daggered*
+    :func:`spectra.calc_tensor_map`). The out-component operators are *daggered*
     dipole operators, :math:`T_\text{out}(\varepsilon) = \sum_\beta \varepsilon_\beta^*
     T^\text{out}_\beta`, so the out polarization enters unconjugated on the R2-ket seed
     index (:math:`\beta`) and conjugated on the bra index (:math:`\beta'`); the in

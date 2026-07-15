@@ -4,9 +4,9 @@ per-polarization scalar spectrum.
 A one-body transition operator is linear in the polarization,
 ``T_eps = sum_alpha eps_alpha T_alpha``, so the spectrum for any polarization is a
 contraction of the single Hermitian tensor ``chi_{alpha beta}(w) = <g|T_alpha^dagger (w-H)^-1
-T_beta|g>``. :func:`spectra.getSpectra_tensor` computes and returns ``chi`` itself (one
+T_beta|g>``. :func:`spectra.calc_spectra_tensor` computes and returns ``chi`` itself (one
 block-Lanczos); :func:`impurityModel.ed.polarization.contract_spectra_tensor` then contracts
-it -- this must reproduce :func:`spectra.getSpectra_new` run on the combined operator
+it -- this must reproduce :func:`spectra.calc_spectra` run on the combined operator
 ``T_eps`` for every polarization -- including complex / circular ones.
 """
 
@@ -95,7 +95,7 @@ def test_tensor_contraction_matches_per_polarization():
         [0.3, -0.7, 0.5j],
     ]
 
-    chi = spectra.getSpectra_tensor(
+    chi = spectra.calc_spectra_tensor(
         op,
         comps,
         [gs],
@@ -114,7 +114,7 @@ def test_tensor_contraction_matches_per_polarization():
 
     for p, eps in enumerate(polarizations):
         combined = spectra._combine_component_ops(comps, eps)
-        ref = spectra.getSpectra_new(
+        ref = spectra.calc_spectra(
             op,
             [combined],
             [gs],
@@ -162,7 +162,7 @@ def test_diagonal_reconstruction_branch_matches_full():
     pols = [[1.0, 0.0], [0.0, 1.0], [1.0, 1j]]
 
     reduction = ComponentReduction(np.eye(2, dtype=complex), [0, 1], [0, 1], True)
-    diag_chi = spectra.getSpectra_tensor(
+    diag_chi = spectra.calc_spectra_tensor(
         op,
         comps,
         [gs],
@@ -177,7 +177,7 @@ def test_diagonal_reconstruction_branch_matches_full():
         reduction=reduction,
         **_DN,
     )
-    full_chi = spectra.getSpectra_tensor(
+    full_chi = spectra.calc_spectra_tensor(
         op,
         comps,
         [gs],
@@ -211,7 +211,7 @@ def test_moment_check_falls_back_on_incorrect_reduction():
     pols = [[1.0, 0.0], [0.0, 1.0], [1.0, 1j]]
 
     wrong = ComponentReduction(np.eye(2, dtype=complex), [0], [0, 0], True)  # claims 0 == 1
-    chi = spectra.getSpectra_tensor(
+    chi = spectra.calc_spectra_tensor(
         op,
         comps,
         [gs],
@@ -229,7 +229,7 @@ def test_moment_check_falls_back_on_incorrect_reduction():
     got = polarization.contract_spectra_tensor(chi, pols)
     for p, eps in enumerate(pols):
         combined = spectra._combine_component_ops(comps, eps)
-        ref = spectra.getSpectra_new(
+        ref = spectra.calc_spectra(
             op,
             [combined],
             [gs],

@@ -6,7 +6,7 @@ give the energy-loss spectrum. This module owns the whole RIXS half of the spect
 stack -- the incoming-energy work-unit sizing and greedy adaptive sampler, the per-tier
 solver chain (``_R1SolverChain``: spectral sector cache -> shift-recycled Krylov ->
 BiCGSTAB/GMRES), the flat-unit distribution driver, and the two public entry points
-(:func:`getRIXSmap_new` for per-polarization maps and :func:`getRIXSmap_tensor` for the
+(:func:`calc_map` for per-polarization maps and :func:`calc_tensor_map` for the
 Kramers-Heisenberg tensor that :mod:`polarization` contracts at plot time).
 
 Sits on top of :mod:`greens_function` (imported as ``gf``) like the rest of the spectra
@@ -388,7 +388,7 @@ def _rixs_map_flat(
     r1_caches=None,
     solver_stats=None,
 ):
-    r"""Shared flat-unit RIXS driver behind :func:`getRIXSmap_new` and :func:`getRIXSmap_tensor`.
+    r"""Shared flat-unit RIXS driver behind :func:`calc_map` and :func:`calc_tensor_map`.
 
     Work units = (eigenstate x contiguous wIn-chunk), distributed in ONE weighted split through
     the shared engine (:func:`gf_units.run_units_distributed`) -- the same scheme as the
@@ -535,7 +535,7 @@ def _rixs_map_flat(
     return np.transpose(gs, (0, 2, 1, 3)).copy() / Z
 
 
-def getRIXSmap_new(
+def calc_map(
     hOp,
     tOpsIn,
     tOpsOut,
@@ -690,7 +690,7 @@ def getRIXSmap_new(
     return gs
 
 
-def getRIXSmap_tensor(
+def calc_tensor_map(
     hOp,
     in_component_ops,
     out_component_ops,
@@ -729,9 +729,9 @@ def getRIXSmap_tensor(
     This function computes and returns ``C`` itself (not a polarization contraction), so any
     number of in/out polarization pairs -- including ones chosen after the fact, e.g. for
     circular dichroism -- can be evaluated as a cheap post-processing step instead of
-    re-running the solve. This is the RIXS analogue of :func:`getSpectra_tensor`.
+    re-running the solve. This is the RIXS analogue of :func:`calc_spectra_tensor`.
 
-    The same efficiency levers as :func:`getRIXSmap_new` apply -- R1 conserved-charge sector
+    The same efficiency levers as :func:`calc_map` apply -- R1 conserved-charge sector
     confinement of the intermediate resolvent and the R2 block resolvent over the in-components
     (:func:`cg.block_bicgstab`, which deflates the frequently rank-deficient Cartesian
     in-component right-hand side).
@@ -742,10 +742,10 @@ def getRIXSmap_tensor(
         The Hamiltonian.
     in_component_ops : list of ManyBodyOperator
         Cartesian in-transition (core-hole excitation) component operators, e.g. the three
-        dipole components ``getDipoleOperators(nBaths, [[1,0,0],[0,1,0],[0,0,1]])``.
+        dipole components ``dipole_operators(nBaths, [[1,0,0],[0,1,0],[0,0,1]])``.
     out_component_ops : list of ManyBodyOperator
         Cartesian out-transition (core-hole filling) component operators, e.g. the daggered
-        dipole components ``getDaggeredDipoleOperators(nBaths, [[1,0,0],[0,1,0],[0,0,1]])``.
+        dipole components ``daggered_dipole_operators(nBaths, [[1,0,0],[0,1,0],[0,0,1]])``.
     adaptive_wIn_tol : float, optional
         Enable greedy adaptive sampling of the ``wIns`` grid (:func:`_rixs_map_adaptive`):
         only the AAA-selected support frequencies are actually solved, the rest are
@@ -753,7 +753,7 @@ def getRIXSmap_tensor(
         ``GF_RIXS_ADAPTIVE_TOL`` from the environment; unset there too means dense.
         Grids shorter than ``_RIXS_ADAPTIVE_MIN_GRID`` are always solved densely.
     **kwargs
-        The remaining parameters match :func:`getRIXSmap_new`.
+        The remaining parameters match :func:`calc_map`.
 
     Returns
     -------
@@ -786,7 +786,7 @@ def getRIXSmap_tensor(
             seeds = green_basis.redistribute_psis(seeds)
             r2_info = {}
             # verbose=False regardless of the caller's own verbose flag -- see the matching
-            # comment in getRIXSmap_new's eval_out: solver_stats aggregates this instead.
+            # comment in calc_map's eval_out: solver_stats aggregates this instead.
             alphas, betas, r = gf.block_Green(
                 hOp,
                 seeds,

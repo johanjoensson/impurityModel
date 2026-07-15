@@ -1,4 +1,4 @@
-"""End-to-end correctness of conserved-charge sector confinement in getSpectra_new (B1).
+"""End-to-end correctness of conserved-charge sector confinement in calc_spectra (B1).
 
 Confining each transition-operator Lanczos to the conserved-charge sector of ``tOp|gs>`` only
 removes determinants that are symmetry-unreachable from the seed, so it must leave the spectrum
@@ -64,7 +64,7 @@ def _run(hOp, tOps, gs, e0, basis, confine, monkeypatch):
     w = np.linspace(-6.0, 6.0, 41)
     if not confine:
         monkeypatch.setattr(spectra, "_sector_restrictions_per_top", lambda *a, **k: None)
-    return spectra.getSpectra_new(
+    return spectra.calc_spectra(
         hOp,
         tOps,
         [gs],

@@ -1,6 +1,6 @@
 """RIXS correctness backbone (T0 for the RIXS tensor refactor).
 
-:func:`spectra.getRIXSmap_new` implements the Kramers-Heisenberg map
+:func:`spectra.calc_map` implements the Kramers-Heisenberg map
 
     A_{ij}(w_in, w_loss) = sum_g (weight_g / Z)
         <g| Tin_i^dagger R1(w_in) Tout_j^dagger R2(w_loss) Tout_j R1(w_in) Tin_i |g>,
@@ -125,7 +125,7 @@ def _tin_tout():
 
 
 def _run_rixs(op, psis, es, tin, tout, dets):
-    return spectra.getRIXSmap_new(
+    return spectra.calc_map(
         op,
         tin,
         tout,
@@ -168,7 +168,7 @@ def test_rixs_component_sum_is_rotation_invariant():
     np.testing.assert_allclose(base, rot, atol=1e-8)
 
 
-# --- tests for the full rank-4 polarization tensor (getRIXSmap_tensor) ---
+# --- tests for the full rank-4 polarization tensor (calc_tensor_map) ---
 
 # In/out polarization vectors (length = #components = 2), including non-axis and circular ones.
 EPS_IN = [[1.0, 0.0], [0.0, 1.0], [1 / np.sqrt(2), 1 / np.sqrt(2)], [1 / np.sqrt(2), 1j / np.sqrt(2)]]
@@ -209,7 +209,7 @@ def _dense_rixs_pol(op, tin_comp, tout_comp, epsIn, epsOut, es, vecs, states):
 
 
 def _run_rixs_tensor(op, psis, es, tin, tout, dets, epsIn, epsOut):
-    C = spectra.getRIXSmap_tensor(
+    C = spectra.calc_tensor_map(
         op,
         tin,
         tout,
@@ -237,8 +237,8 @@ def test_rixs_tensor_matches_dense_reference():
     np.testing.assert_allclose(got, ref, atol=1e-8)
 
 
-def test_rixs_tensor_matches_getRIXSmap_new():
-    """Contracting the tensor reproduces the validated per-pair getRIXSmap_new for the same
+def test_rixs_tensor_matches_calc_map():
+    """Contracting the tensor reproduces the validated per-pair calc_map for the same
     polarizations (built as the linear combinations of the component operators)."""
     op = _model()
     psis, es, dets, states, vecs = _thermal_states(op, 2)
@@ -301,14 +301,14 @@ def test_rixs_map_adaptive_synthetic():
 
 
 def test_rixs_tensor_adaptive_matches_dense(monkeypatch):
-    """End-to-end: getRIXSmap_tensor(adaptive_wIn_tol=...) matches the dense sweep on the
+    """End-to-end: calc_tensor_map(adaptive_wIn_tol=...) matches the dense sweep on the
     model while solving fewer wIn points."""
     op = _model()
     psis, es, dets, states, vecs = _thermal_states(op, 2)
     tin, tout = _tin_tout()
 
     def run(adaptive_tol):
-        C = spectra.getRIXSmap_tensor(
+        C = spectra.calc_tensor_map(
             op,
             tin,
             tout,
@@ -357,7 +357,7 @@ def test_rixs_tensor_adaptive_short_grid_stays_dense(monkeypatch):
         return real_flat(*args, **kwargs)
 
     monkeypatch.setattr(rixs, "_rixs_map_flat", counting_flat)
-    spectra.getRIXSmap_tensor(
+    spectra.calc_tensor_map(
         op,
         tin,
         tout,
@@ -390,7 +390,7 @@ def test_rixs_tensor_adaptive_env_knob(monkeypatch):
 
     monkeypatch.setattr(rixs, "_rixs_map_flat", counting_flat)
     monkeypatch.setenv("GF_RIXS_ADAPTIVE_TOL", "1e-8")
-    spectra.getRIXSmap_tensor(
+    spectra.calc_tensor_map(
         op,
         tin,
         tout,
@@ -425,7 +425,7 @@ def test_rixs_tensor_adaptive_distributed_matches_dense():
             verbose=False,
             comm=comm,
         )
-        C = spectra.getRIXSmap_tensor(
+        C = spectra.calc_tensor_map(
             op,
             tin,
             tout,
@@ -787,7 +787,7 @@ def test_rixs_tensor_distributed_krylov_recycler_matches_dense(monkeypatch):
         verbose=False,
         comm=comm,
     )
-    C = spectra.getRIXSmap_tensor(
+    C = spectra.calc_tensor_map(
         op,
         tin,
         tout,

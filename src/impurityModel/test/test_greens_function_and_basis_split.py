@@ -289,7 +289,7 @@ def test_calc_Greens_function_with_offdiag_mpi_sparse():
 
 
 @pytest.mark.mpi
-def test_getRIXSmap_new_mpi():
+def test_calc_map_mpi():
     comm = MPI.COMM_WORLD
     # Setup simple Hamiltonian H = 0.5 * c_0^\dagger c_0 + 0.3 * c_1^\dagger c_1
     hop = {
@@ -331,9 +331,9 @@ def test_getRIXSmap_new_mpi():
     tOpsIn = [ManyBodyOperator({((0, "a"),): 1.0})]
     tOpsOut = [ManyBodyOperator({((0, "c"),): 1.0})]
 
-    from impurityModel.ed.spectra import getRIXSmap_new
+    from impurityModel.ed.spectra import calc_map
 
-    gs = getRIXSmap_new(
+    gs = calc_map(
         hOp=hOp,
         tOpsIn=tOpsIn,
         tOpsOut=tOpsOut,
@@ -674,12 +674,12 @@ def test_basis_hash_distribution_partitions_and_stays_sparse():
 
 
 @pytest.mark.mpi
-def test_getSpectra_new_split_threshold_invariant_mpi():
-    """``getSpectra_new`` returns the same spectra no matter how the (tOp x eigenstate) work
+def test_calc_spectra_split_threshold_invariant_mpi():
+    """``calc_spectra`` returns the same spectra no matter how the (tOp x eigenstate) work
     units are distributed across ranks (``split_threshold``) or how many eigenstates share one
     wide block-Lanczos recurrence (``GF_EIGENSTATE_GROUP``) -- the flat single-split scheme
     shared with the self-energy path only changes the parallel layout, not the result."""
-    from impurityModel.ed.spectra import getSpectra_new
+    from impurityModel.ed.spectra import calc_spectra
 
     comm = MPI.COMM_WORLD
     w = np.linspace(-2.0, 2.0, 17)
@@ -704,7 +704,7 @@ def test_getSpectra_new_split_threshold_invariant_mpi():
         old = os.environ.get("GF_EIGENSTATE_GROUP")
         os.environ["GF_EIGENSTATE_GROUP"] = str(group)
         try:
-            gs = getSpectra_new(
+            gs = calc_spectra(
                 hOp,
                 tOps,
                 psis,
@@ -736,11 +736,11 @@ def test_getSpectra_new_split_threshold_invariant_mpi():
 
 
 @pytest.mark.mpi
-def test_getRIXSmap_new_win_chunk_invariant_mpi():
+def test_calc_map_win_chunk_invariant_mpi():
     """The RIXS map is invariant to the (eigenstate x wIn-chunk) unit granularity
     (``GF_RIXS_WIN_CHUNK``) and to the split policy: chunk boundaries only move where the
     bicgstab warm-start chain cold-starts, which converges to the same resolvent."""
-    from impurityModel.ed.spectra import getRIXSmap_new
+    from impurityModel.ed.spectra import calc_map
 
     comm = MPI.COMM_WORLD
     hOp = ManyBodyOperator({((0, "c"), (0, "a")): 0.5, ((1, "c"), (1, "a")): 0.3})
@@ -766,7 +766,7 @@ def test_getRIXSmap_new_win_chunk_invariant_mpi():
         old = os.environ.get("GF_RIXS_WIN_CHUNK")
         os.environ["GF_RIXS_WIN_CHUNK"] = str(chunk)
         try:
-            gs = getRIXSmap_new(
+            gs = calc_map(
                 hOp=hOp,
                 tOpsIn=tOpsIn,
                 tOpsOut=tOpsOut,

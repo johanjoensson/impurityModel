@@ -78,7 +78,7 @@ def _basis(dets):
 
 def _spectrum(hOp, tOps, gs, e0, dets):
     w = np.linspace(-5.0, 5.0, 51)
-    return spectra.getSpectra_new(
+    return spectra.calc_spectra(
         hOp,
         tOps,
         [gs],
@@ -170,7 +170,7 @@ def _swap_symmetric_model():
 
 
 def test_equivalence_groups_dedup_matches_full():
-    """getSpectra_new with equivalence_groups (compute one rep, broadcast) reproduces the
+    """calc_spectra with equivalence_groups (compute one rep, broadcast) reproduces the
     per-operator computation for genuinely degenerate operators."""
     global N_ORB
     saved = N_ORB
@@ -182,7 +182,7 @@ def test_equivalence_groups_dedup_matches_full():
 
         full = _spectrum(op, pes, gs, e0, dets)
         # 0 and 1 are symmetry-equivalent -> one class.
-        deduped = spectra.getSpectra_new(
+        deduped = spectra.calc_spectra(
             op,
             pes,
             [gs],

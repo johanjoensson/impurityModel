@@ -15,15 +15,15 @@ from impurityModel.ed.ManyBodyUtils import applyOp as applyOp_test
 
 # The transition-operator builders now live in their own physics module. They are re-exported
 # here (and referenced by the bare names below) so that simulate_spectra's calls resolve and
-# existing callers/tests that reach them via ``spectra.getDipoleOperators`` etc. keep working.
+# existing callers/tests that reach them via ``spectra.dipole_operators`` etc. keep working.
 from impurityModel.ed.transition_operators import (  # noqa: E402,F401
-    getDaggeredDipoleOperators,
-    getDipoleOperator,
-    getDipoleOperators,
-    getInversePhotoEmissionOperators,
-    getNIXSOperator,
-    getNIXSOperators,
-    getPhotoEmissionOperators,
+    daggered_dipole_operators,
+    dipole_operator,
+    dipole_operators,
+    inverse_photoemission_operators,
+    nixs_operator,
+    nixs_operators,
+    photoemission_operators,
     sph_harm,
 )
 from impurityModel.ed.symmetries import (
@@ -63,11 +63,11 @@ def _shell_orbitals(nBaths, l):
 def _pes_ips_equivalence_groups(nBaths, l, block_structure):
     """Symmetry-equivalence label per PES/IPS operator of shell ``l`` (B2a dedup).
 
-    ``getPhotoEmissionOperators`` / ``getInversePhotoEmissionOperators`` emit one operator per
+    ``photoemission_operators`` / ``inverse_photoemission_operators`` emit one operator per
     ``(s, m)`` in the order ``for s in 0,1: for m in -l..l``. ``block_structure`` is the impurity
     block structure of shell ``l`` in the symmetry-adapted basis (local indices into the sorted
     shell). Operators whose orbital lands in the same ``identical_blocks`` class get the same
-    label, so :func:`getSpectra_new` computes one representative per class.
+    label, so :func:`calc_spectra` computes one representative per class.
     """
     shell = _shell_orbitals(nBaths, l)
     local_of_global = {orb: k for k, orb in enumerate(shell)}
@@ -218,12 +218,12 @@ def simulate_spectra(
     if rank == 0:
         print("Create 3d inverse photoemission and photoemission spectra...")
     # Transition operators
-    tOpsIPS = getInversePhotoEmissionOperators(nBaths, l=2)
-    tOpsPS = getPhotoEmissionOperators(nBaths, l=2)
+    tOpsIPS = inverse_photoemission_operators(nBaths, l=2)
+    tOpsPS = photoemission_operators(nBaths, l=2)
     if rank == 0:
         print("Inverse photoemission Green's function..")
     assert isinstance(hOp, ManyBodyOperator)
-    gsIPS = getSpectra_new(
+    gsIPS = calc_spectra(
         hOp,
         [ManyBodyOperator(t) for t in tOpsIPS],
         psis,
@@ -242,7 +242,7 @@ def simulate_spectra(
     )
     if rank == 0:
         print("Photoemission Green's function..")
-    gsPS = getSpectra_new(
+    gsPS = calc_spectra(
         hOp,
         [ManyBodyOperator(t) for t in tOpsPS],
         psis,
@@ -273,9 +273,9 @@ def simulate_spectra(
     if rank == 0:
         print("Create core 2p x-ray photoemission spectra (XPS) ...")
     # Transition operators
-    tOpsPS = getPhotoEmissionOperators(nBaths, l=1)
+    tOpsPS = photoemission_operators(nBaths, l=1)
     # Photoemission Green's function
-    gs = getSpectra_new(
+    gs = calc_spectra(
         hOp,
         [ManyBodyOperator(t) for t in tOpsPS],
         psis,
@@ -304,9 +304,9 @@ def simulate_spectra(
     if rank == 0:
         print("Create NIXS spectra...")
     # Transition operator: exp(iq*r)
-    tOps = getNIXSOperators(nBaths, qsNIXS, liNIXS, ljNIXS, RiNIXS, RjNIXS, radialMesh)
+    tOps = nixs_operators(nBaths, qsNIXS, liNIXS, ljNIXS, RiNIXS, RjNIXS, radialMesh)
     # Green's function
-    gs = getSpectra_new(
+    gs = calc_spectra(
         hOp,
         _prep_one_body(tOps),
         psis,
@@ -342,13 +342,13 @@ def simulate_spectra(
     if XAS_projectors:
         # Projected operators are not a plain Cartesian linear combination -> keep the
         # per-operator path.
-        tOps = getDipoleOperators(nBaths, epsilons)
+        tOps = dipole_operators(nBaths, epsilons)
         iBasisProjectors = arrayOp2Dict(nBaths, XAS_projectors.values())
         projectedTOps = []
         for proj in iBasisProjectors:
             for op in tOps:
                 projectedTOps.append(combineOp(nBaths, proj, op))
-        gs = getSpectra_new(
+        gs = calc_spectra(
             hOp,
             _prep_one_body(projectedTOps),
             psis,
@@ -372,11 +372,11 @@ def simulate_spectra(
         # 3 Cartesian components once (symmetry-reduced). Polarization contraction (arbitrary /
         # circular, dichroism, ...) is left to post-processing (impurityModel.ed.polarization),
         # so it never requires re-running the solve.
-        cartesian_ops = _prep_one_body(getDipoleOperators(nBaths, [[1, 0, 0], [0, 1, 0], [0, 0, 1]]))
+        cartesian_ops = _prep_one_body(dipole_operators(nBaths, [[1, 0, 0], [0, 1, 0], [0, 0, 1]]))
         n_orb = basis.num_spin_orbitals
         h_onebody = extract_tensors(hOp, n_orb=n_orb, two_body=False)[0]
         reduction = component_symmetry_reduction(cartesian_ops, h_onebody, n_orb=n_orb)
-        chi = getSpectra_tensor(
+        chi = calc_spectra_tensor(
             hOp,
             cartesian_ops,
             psis,
@@ -407,8 +407,8 @@ def simulate_spectra(
         if RIXS_projectors:
             # Projected operators are not a plain Cartesian linear combination -> keep the
             # per-operator Kramers-Heisenberg path.
-            tOpsIn = getDipoleOperators(nBaths, epsilonsRIXSin)
-            tOpsOut = getDaggeredDipoleOperators(nBaths, epsilonsRIXSout)
+            tOpsIn = dipole_operators(nBaths, epsilonsRIXSin)
+            tOpsOut = daggered_dipole_operators(nBaths, epsilonsRIXSout)
             iBasisProjectors = arrayOp2Dict(nBaths, RIXS_projectors.values())
             projectedTOpsIn = []
             projectedTOpsOut = []
@@ -417,7 +417,7 @@ def simulate_spectra(
                     projectedTOpsIn.append(combineOp(nBaths, proj, opIn))
                 for opOut in tOpsOut:
                     projectedTOpsOut.append(combineOp(nBaths, opOut, proj))
-            gs = getRIXSmap_new(
+            gs = calc_map(
                 hOp,
                 _prep_one_body(projectedTOpsIn),
                 _prep_one_body(projectedTOpsOut),
@@ -445,9 +445,9 @@ def simulate_spectra(
             # Kramers-Heisenberg tensor over the 3 Cartesian in/out components once (R4 -- the
             # RIXS analogue of B2b). Polarization contraction (arbitrary/circular, dichroism,
             # ...) is left to post-processing (impurityModel.ed.polarization).
-            in_component_ops = _prep_one_body(getDipoleOperators(nBaths, [[1, 0, 0], [0, 1, 0], [0, 0, 1]]))
-            out_component_ops = _prep_one_body(getDaggeredDipoleOperators(nBaths, [[1, 0, 0], [0, 1, 0], [0, 0, 1]]))
-            C = getRIXSmap_tensor(
+            in_component_ops = _prep_one_body(dipole_operators(nBaths, [[1, 0, 0], [0, 1, 0], [0, 0, 1]]))
+            out_component_ops = _prep_one_body(daggered_dipole_operators(nBaths, [[1, 0, 0], [0, 1, 0], [0, 0, 1]]))
+            C = calc_tensor_map(
                 hOp,
                 in_component_ops,
                 out_component_ops,
@@ -510,7 +510,7 @@ def _sector_restrictions_per_top(hOp, tOps, psis, basis):
     return [transition_sector_restrictions(charges, gs_occ, tOp) for tOp in tOps]
 
 
-def getSpectra_new(
+def calc_spectra(
     hOp,
     tOps,
     psis,
@@ -584,7 +584,7 @@ def getSpectra_new(
             if label not in first_index:
                 first_index[label] = i
                 rep_order.append(label)
-        reduced = getSpectra_new(
+        reduced = calc_spectra(
             hOp,
             [tOps[first_index[label]] for label in rep_order],
             psis,
@@ -743,7 +743,7 @@ def _moments_consistent(m0, m1, group_of_column, tol=1e-6):
     return True
 
 
-def getSpectra_tensor(
+def calc_spectra_tensor(
     hOp,
     component_ops,
     psis,
@@ -790,7 +790,7 @@ def getSpectra_tensor(
     reduction : ComponentReduction, optional
         Point-group reduction of the components. ``None`` computes the full tensor.
     **kwargs
-        The remaining parameters match :func:`getSpectra_new`.
+        The remaining parameters match :func:`calc_spectra`.
 
     Returns
     -------
@@ -861,4 +861,4 @@ def getSpectra_tensor(
 
 # The RIXS drivers live in their own module; re-export them so simulate_spectra's calls and
 # existing spectra.getRIXSmap_* callers resolve unchanged.
-from impurityModel.ed.rixs import getRIXSmap_new, getRIXSmap_tensor  # noqa: E402,F401
+from impurityModel.ed.rixs import calc_map, calc_tensor_map  # noqa: E402,F401

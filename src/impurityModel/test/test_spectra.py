@@ -21,9 +21,9 @@ def test_sph_harm():
     assert np.isclose(val, expected)
 
 
-def test_getInversePhotoEmissionOperators():
+def test_inverse_photoemission_operators():
     nBaths = OrderedDict([(2, 10)])
-    ops = spectra.getInversePhotoEmissionOperators(nBaths, l=2)
+    ops = spectra.inverse_photoemission_operators(nBaths, l=2)
     # l=2 => 5 m values (-2, -1, 0, 1, 2)
     # s=2 => 2 spins
     # Total 10 operators
@@ -31,60 +31,60 @@ def test_getInversePhotoEmissionOperators():
     assert list(ops[0].values())[0] == 1
 
 
-def test_getPhotoEmissionOperators():
+def test_photoemission_operators():
     nBaths = OrderedDict([(2, 10)])
-    ops = spectra.getPhotoEmissionOperators(nBaths, l=2)
+    ops = spectra.photoemission_operators(nBaths, l=2)
     assert len(ops) == 10
     assert list(ops[0].values())[0] == 1
 
 
 # The transition-operator builders live in transition_operators.py; patch and call them there
-# (their internal cross-calls -- getDipoleOperators->getDipoleOperator, getNIXSOperators->
-# getNIXSOperator -- resolve inside that module).
+# (their internal cross-calls -- dipole_operators->dipole_operator, nixs_operators->
+# nixs_operator -- resolve inside that module).
 @patch("impurityModel.ed.transition_operators.gauntC")
-def test_getDipoleOperator(mock_gauntC):
+def test_dipole_operator(mock_gauntC):
     nBaths = OrderedDict([(2, 10), (1, 6)])
     mock_gauntC.return_value = 1.0
     n = [1, 0, 0]
-    op = transition_operators.getDipoleOperator(nBaths, n)
+    op = transition_operators.dipole_operator(nBaths, n)
     assert isinstance(op, dict)
     assert len(op) > 0
 
 
-@patch("impurityModel.ed.transition_operators.getDipoleOperator")
-def test_getDipoleOperators(mock_getDipoleOperator):
-    mock_getDipoleOperator.return_value = {"mock": 1}
-    ops = transition_operators.getDipoleOperators(OrderedDict(), [[1, 0, 0], [0, 1, 0]])
+@patch("impurityModel.ed.transition_operators.dipole_operator")
+def test_dipole_operators(mock_dipole_operator):
+    mock_dipole_operator.return_value = {"mock": 1}
+    ops = transition_operators.dipole_operators(OrderedDict(), [[1, 0, 0], [0, 1, 0]])
     assert len(ops) == 2
     assert ops[0] == {"mock": 1}
 
 
-@patch("impurityModel.ed.transition_operators.getDipoleOperator")
+@patch("impurityModel.ed.transition_operators.dipole_operator")
 @patch("impurityModel.ed.transition_operators.daggerOp")
-def test_getDaggeredDipoleOperators(mock_daggerOp, mock_getDipoleOperator):
-    mock_getDipoleOperator.return_value = {"mock": 1}
+def test_daggered_dipole_operators(mock_daggerOp, mock_dipole_operator):
+    mock_dipole_operator.return_value = {"mock": 1}
     mock_daggerOp.return_value = {"mock_dag": 1}
-    ops = transition_operators.getDaggeredDipoleOperators(OrderedDict(), [[1, 0, 0]])
+    ops = transition_operators.daggered_dipole_operators(OrderedDict(), [[1, 0, 0]])
     assert len(ops) == 1
     assert ops[0] == {"mock_dag": 1}
 
 
 @patch("impurityModel.ed.transition_operators.si.simpson")
 @patch("impurityModel.ed.transition_operators.spherical_jn")
-def test_getNIXSOperator(mock_jn, mock_simpson):
+def test_nixs_operator(mock_jn, mock_simpson):
     mock_simpson.return_value = 1.0
     mock_jn.return_value = 1.0
     nBaths = OrderedDict([(2, 10)])
-    op = transition_operators.getNIXSOperator(
+    op = transition_operators.nixs_operator(
         nBaths, [1, 1, 1], 2, 2, np.array([1.0]), np.array([1.0]), np.array([1.0]), kmin=1
     )
     assert isinstance(op, dict)
 
 
-def test_getNIXSOperators():
-    with patch("impurityModel.ed.transition_operators.getNIXSOperator") as mock_nixs:
+def test_nixs_operators():
+    with patch("impurityModel.ed.transition_operators.nixs_operator") as mock_nixs:
         mock_nixs.return_value = {"op": 1}
-        ops = transition_operators.getNIXSOperators(OrderedDict(), [[1, 1, 1]], 2, 2, [1], [1], [1], 1)
+        ops = transition_operators.nixs_operators(OrderedDict(), [[1, 1, 1]], 2, 2, [1], [1], [1], 1)
         assert len(ops) == 1
         assert ops[0] == {"op": 1}
 
@@ -95,7 +95,7 @@ def test_getNIXSOperators():
 @patch("impurityModel.ed.spectra.gf.unit_cost_weights")
 @patch("impurityModel.ed.spectra.gf.run_units_distributed")
 @patch("impurityModel.ed.spectra.gf.calc_thermally_averaged_G")
-def test_getSpectra_new(mock_therm_G, mock_run, mock_weights, mock_enum, mock_build, mock_sector):
+def test_calc_spectra(mock_therm_G, mock_run, mock_weights, mock_enum, mock_build, mock_sector):
     from impurityModel.ed.gf_units import GFUnit
 
     mock_sector.return_value = None
@@ -109,7 +109,7 @@ def test_getSpectra_new(mock_therm_G, mock_run, mock_weights, mock_enum, mock_bu
     basis = MagicMock()
     basis.comm = None
 
-    gs = spectra.getSpectra_new(
+    gs = spectra.calc_spectra(
         MagicMock(spec=ManyBodyOperator),
         [MagicMock(spec=ManyBodyOperator)],
         [MagicMock()],
@@ -128,28 +128,28 @@ def test_getSpectra_new(mock_therm_G, mock_run, mock_weights, mock_enum, mock_bu
     assert gs.shape == (10, 1)
 
 
-@patch("impurityModel.ed.spectra.getInversePhotoEmissionOperators")
-@patch("impurityModel.ed.spectra.getPhotoEmissionOperators")
-@patch("impurityModel.ed.spectra.getSpectra_new")
-@patch("impurityModel.ed.spectra.getSpectra_tensor")
+@patch("impurityModel.ed.spectra.inverse_photoemission_operators")
+@patch("impurityModel.ed.spectra.photoemission_operators")
+@patch("impurityModel.ed.spectra.calc_spectra")
+@patch("impurityModel.ed.spectra.calc_spectra_tensor")
 @patch("impurityModel.ed.spectra.component_symmetry_reduction")
 @patch("impurityModel.ed.spectra.extract_tensors")
-@patch("impurityModel.ed.spectra.getDipoleOperators")
-@patch("impurityModel.ed.spectra.getNIXSOperators")
+@patch("impurityModel.ed.spectra.dipole_operators")
+@patch("impurityModel.ed.spectra.nixs_operators")
 def test_simulate_spectra(
     mock_getNIXS,
     mock_getDipole,
     mock_extract,
     mock_reduction,
-    mock_getSpectra_tensor,
-    mock_getSpectra_new,
+    mock_calc_spectra_tensor,
+    mock_calc_spectra,
     mock_getPS,
     mock_getIPS,
 ):
-    mock_getSpectra_new.return_value = np.zeros((10, 1), dtype=complex)
-    # XAS now goes through the polarization-tensor path (unprojected dipole): getSpectra_tensor
+    mock_calc_spectra.return_value = np.zeros((10, 1), dtype=complex)
+    # XAS now goes through the polarization-tensor path (unprojected dipole): calc_spectra_tensor
     # returns the (n_w, m, m) chi tensor directly (no contraction inside simulate_spectra).
-    mock_getSpectra_tensor.return_value = np.zeros((10, 3, 3), dtype=complex)
+    mock_calc_spectra_tensor.return_value = np.zeros((10, 3, 3), dtype=complex)
     mock_extract.return_value = (np.zeros((1, 1), dtype=complex), None, 0)
     mock_reduction.return_value = None
     mock_getIPS.return_value = [{((0, "c"),): 1}]
@@ -194,8 +194,8 @@ def test_simulate_spectra(
     # the file close, however, are written on the root rank only (simulate_spectra gates them
     # on ``spectra.rank == 0``). Under ``mpiexec -n N`` this unmarked test runs on every rank,
     # so the write assertions must be guarded or they fail on the non-root ranks.
-    assert mock_getSpectra_new.called
-    assert mock_getSpectra_tensor.called
+    assert mock_calc_spectra.called
+    assert mock_calc_spectra_tensor.called
     if spectra.rank == 0:
         written = {c.args[0] for c in h5f.create_dataset.call_args_list}
         assert {"PS/spectra", "XPS/spectra", "NIXS/spectra", "XAS/tensor"} <= written
