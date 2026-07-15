@@ -1,8 +1,8 @@
 # Deep refactor + documentation overhaul
 
-**Status (2026-07-15):** in progress. Phases 0, 1, 2a, 2b, 2c complete; config reference doc
-written. Remaining: Phase 2d (greens_function→gf_units/gf_solvers), 2e (CLI dataclasses);
-Phase 3 renames; Phase 4 Cython `.pxi` splits; Phase 5 developer/user docs + Sphinx polish.
+**Status (2026-07-15):** in progress. Phases 0, 1, 2a, 2b, 2c, 2d complete; config reference
+doc written. Remaining: Phase 2e (CLI dataclasses); Phase 3 renames; Phase 4 Cython `.pxi`
+splits; Phase 5 developer/user docs + Sphinx polish.
 
 ## Motivation
 
@@ -155,11 +155,20 @@ asserted rank-0-only h5 writes on every rank (the gate was red on rank 1 at HEAD
       diagonalization, Casimirs) + `symmetries.py` (conserved charges, restrictions, block
       structure). **Done:** 1702 → 944 (symmetries) + 801 (lie_algebra); the algebraic
       primitives are re-exported from `symmetries.py` for backward compat.
-- [ ] **`greens_function.py`** → `ed/gf_units.py` (the distribution engine: `GFUnit`,
-      `enumerate_gf_units`, `unit_cost_weights`, `run_units_distributed`) +
-      `ed/gf_solvers.py` (the per-unit kernels: `block_Green*`, `solve_shifted_block`) +
-      `greens_function.py` (top-level drivers and assembly). Importers move to the owning
-      module — the re-export shim goes away.
+- [x] **`greens_function.py`** → `ed/gf_units.py` (the distribution engine: `GFUnit`,
+      `enumerate_gf_units`, `unit_cost_weights`, `run_units_distributed`, plus the
+      `_gf_operator_split`/`_union_restrictions`/`_apply_transition_ops` helpers) +
+      `ed/gf_solvers.py` (the per-unit kernels: `block_Green*`, `block_green_impl`,
+      `solve_shifted_block`, the BiCGSTAB warm-start helpers) + `greens_function.py`
+      (top-level drivers and assembly). **Done:** 2258 → 1223 lines; gf_units and
+      gf_solvers are independent lower layers (neither imports the other, nor
+      `greens_function`), verified by an AST call-graph. No explicit re-export shim was
+      added for the two new modules — direct `from greens_function import <moved-name>`
+      importers were repointed to the owning module; the `gf.X` facade accesses in
+      `spectra.py`/`rixs.py` keep working because `greens_function` genuinely imports the
+      names its own drivers use. Dead imports pruned from `greens_function.py`; the
+      pre-existing `gf_primitives`/`gf_convergence`/`gf_shift_recycling` re-export block is
+      kept.
 - [ ] **CLIs**: group `get_spectra.main`'s 30 positional parameters into dataclasses built
       by the argparse layer. CLI flags unchanged.
 
@@ -203,7 +212,6 @@ import changes, purely file-level readability.
 
 ## Remaining (follow-up sessions)
 
-- Phase 2d: `greens_function.py` → `ed/gf_units.py` + `ed/gf_solvers.py`.
 - Phase 2e: group the `get_spectra`/`selfenergy` CLI positional params into dataclasses.
 - Phase 3: renames (`getSpectra_new` → `calc_spectra`, etc.).
 - Phase 4: Cython `.pxi` splits of the three large kernels + a kernel documentation pass.
