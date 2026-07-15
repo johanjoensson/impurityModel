@@ -55,6 +55,19 @@ restart compression, locked-overlap recurrence) live in the Python module
 `ed/ea16.py`, which both Cython kernels import at runtime. `ed/irlm.py` and
 `ed/trlm.py` are thin re-export wrappers around the compiled entry points.
 
+### File organization (`.pxi` includes)
+
+The three large kernels are split into `.pxi` textual includes for readability (same
+compiled modules; `setup.py` lists them in each Extension's `depends=` so edits trigger a
+recompile). Each `.pxi` opens with a reading-map header:
+
+- `BlockLanczos.pyx` = `_lanczos_step.pxi` (core recurrence) + `_trlm.pxi` (thick-restart) +
+  `_irlm.pxi` (implicitly-restarted / EA16).
+- `ManyBodyUtils.pyx` = `_slater_state.pxi` + `_operator.pxi` + `_mpi_pack.pxi` +
+  `_krylov_store.pxi` (`SparseKrylovDense`) + `_block_state.pxi` (`ManyBodyBlockState`).
+- `BlockLanczosArray.pyx` keeps the array kernel and includes `_reort.pxi` (the
+  `ManyBodyState`-path block primitives + `selective_orthogonalize`/`apply_reort`).
+
 ## Python Codebase (`src/impurityModel/ed/`)
 
 The Python modules are layered; a module only imports from layers below it, and the
