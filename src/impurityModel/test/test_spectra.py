@@ -96,7 +96,7 @@ def test_getNIXSOperators():
 @patch("impurityModel.ed.spectra.gf.run_units_distributed")
 @patch("impurityModel.ed.spectra.gf.calc_thermally_averaged_G")
 def test_getSpectra_new(mock_therm_G, mock_run, mock_weights, mock_enum, mock_build, mock_sector):
-    from impurityModel.ed.greens_function import GFUnit
+    from impurityModel.ed.gf_units import GFUnit
 
     mock_sector.return_value = None
     mock_build.return_value = (None, None)

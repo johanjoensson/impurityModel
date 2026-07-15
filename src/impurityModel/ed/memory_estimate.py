@@ -199,7 +199,7 @@ def estimate_gf_peak_bytes(
     gmres_restart : int, optional
         The fallback's block-Arnoldi restart length; only read for ``method="bicgstab"``.
         ``None`` (default) reads :data:`config.GF_GMRES_RESTART` -- the same knob
-        :func:`greens_function.solve_shifted_block` resolves at solve time, so a caller who
+        :func:`gf_solvers.solve_shifted_block` resolves at solve time, so a caller who
         overrides it cannot silently get a peak estimate for the un-overridden length.
 
     Returns

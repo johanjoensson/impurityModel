@@ -21,6 +21,7 @@ from mpi4py import MPI
 
 import impurityModel.ed.greens_function as gf
 from impurityModel.ed import config
+from impurityModel.ed.gf_solvers import solve_shifted_block
 from impurityModel.ed.basis_restrictions import build_excited_restrictions
 from impurityModel.ed.rational_sampling import barycentric_eval, greedy_next_samples, set_valued_aaa
 from impurityModel.ed.BlockLanczosArray import Reort
@@ -342,14 +343,14 @@ class _R1SolverChain:
         # single Krylov space / iteration (block_bicgstab deflates a rank-deficient block).
         # atol is relative to ||psi1_all|| (see _RIXS_R1_ATOL); the extra iterations are
         # cheap now that a warm start shortens the solve rather than silently tightening
-        # its target. gf.solve_shifted_block restarts while unconverged and still making
+        # its target. solve_shifted_block restarts while unconverged and still making
         # progress and escalates to GMRES on stagnation -- near-pole points are exactly
         # where BiCGSTAB stagnates (measured: a cold-started solve at the NiO L3 window
         # edge silently returned relative residual 7.2), and a stagnated solve caps the
         # map's accuracy at its residual level, so a wrong column must be rescued, and
         # failing that, loud.
         solve_info = {}
-        psi2_all[:] = gf.solve_shifted_block(
+        psi2_all[:] = solve_shifted_block(
             A_op, psi2_all, psi1_all, tmp_basis, slaterWeightMin, _RIXS_R1_ATOL, rtol=1e-7, info=solve_info
         )
         if self.counters is not None:
@@ -390,7 +391,7 @@ def _rixs_map_flat(
     r"""Shared flat-unit RIXS driver behind :func:`getRIXSmap_new` and :func:`getRIXSmap_tensor`.
 
     Work units = (eigenstate x contiguous wIn-chunk), distributed in ONE weighted split through
-    the shared engine (:func:`greens_function.run_units_distributed`) -- the same scheme as the
+    the shared engine (:func:`gf_units.run_units_distributed`) -- the same scheme as the
     self-energy and spectra paths. Per-eigenstate metadata (in-component seeds
     ``Tin_a |psi_e>``, conserved-charge sector windows) is computed on the full communicator
     before the split, so every rank holds the identical unit list.
@@ -564,7 +565,7 @@ def getRIXSmap_new(
       solved as one block (:func:`cg.block_bicgstab`), sharing a single Krylov space /
       iteration; the block solver deflates a rank-deficient in-component right-hand side.
     * **Out-component block Green (R3):** for a fixed in-operator all out-operators are run
-      through a single block-Lanczos (:func:`greens_function.block_Green`); the diagonal
+      through a single block-Lanczos (:func:`gf_solvers.block_Green`); the diagonal
       ``(j, j)`` of the resulting block reproduces the per-out-operator Green's function.
 
     (A full polarization tensor with arbitrary in/out polarizations would require the rank-4
@@ -723,7 +724,7 @@ def getRIXSmap_tensor(
     :math:`C_{\alpha\alpha'\beta\beta'} = \langle s_{\alpha\beta} | R_2 | s_{\alpha'\beta'}
     \rangle` with the seeds :math:`s_{\alpha\beta} = T^\text{out}_\beta \psi^{(2)}_\alpha`, the
     tensor is exactly the resolvent matrix over the flattened seed block -- one block-Lanczos
-    (:func:`greens_function.block_Green`) yields every polarization cross term at once.
+    (:func:`gf_solvers.block_Green`) yields every polarization cross term at once.
 
     This function computes and returns ``C`` itself (not a polarization contraction), so any
     number of in/out polarization pairs -- including ones chosen after the fact, e.g. for

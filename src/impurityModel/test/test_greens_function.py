@@ -14,6 +14,8 @@ from impurityModel.ed.greens_function import (
     rotate_4index_U,
     save_Greens_function,
     get_Greens_function,
+)
+from impurityModel.ed.gf_solvers import (
     block_green_impl,
     block_Green,
     block_Green_sparse,
@@ -535,7 +537,7 @@ def test_union_restrictions_semantics():
     and yield ``None`` (unconstrained) if any input is ``None`` or no key is common. This is the
     superset that lets a grouped unit's shared Krylov space contain every stacked state's dynamics.
     """
-    from impurityModel.ed.greens_function import _union_restrictions
+    from impurityModel.ed.gf_units import _union_restrictions
 
     a = frozenset({0, 1, 2})
     b = frozenset({3, 4})

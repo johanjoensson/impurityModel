@@ -414,7 +414,7 @@ def check_bicgstab_convergence(
 ) -> Diagnostic:
     r"""Surface the per-frequency BiCGSTAB Green's-function solver record.
 
-    The per-frequency driver (``greens_function.block_Green_bicgstab``) solves one linear
+    The per-frequency driver (``gf_solvers.block_Green_bicgstab``) solves one linear
     system per mesh point; each solve reports whether it drove the residual below the
     ``atol`` it was asked for (after restarts).  A point left unconverged means ``G`` at
     that frequency carries an error above ``atol`` — typically a real-axis point within

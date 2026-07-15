@@ -679,6 +679,7 @@ def test_rixs_tensor_declined_sector_uses_krylov_recycler(monkeypatch):
     H-disconnected {0,1} determinant, so its "sector" is 1-dimensional and a bound
     of 1 would let the dense cache serve it after all."""
     from impurityModel.ed import greens_function as gf
+    from impurityModel.ed import gf_solvers
 
     op = _model()
     psis, es, dets, states, vecs = _thermal_states(op, 2)
@@ -688,7 +689,7 @@ def test_rixs_tensor_declined_sector_uses_krylov_recycler(monkeypatch):
     def no_bicgstab(*args, **kwargs):
         raise AssertionError("per-point BiCGSTAB must not run when the recycler serves the chunk")
 
-    monkeypatch.setattr(gf, "block_bicgstab", no_bicgstab)
+    monkeypatch.setattr(gf_solvers, "block_bicgstab", no_bicgstab)
     recycler_served = []
     real_solve = gf.KrylovShiftedResolvent.solve
 
@@ -708,6 +709,7 @@ def test_krylov_recycler_declines_under_memory_cap(monkeypatch):
     """GF_KRYLOV_RECYCLE_MAX_BYTES=0 declines the recycler up front; the per-point
     BiCGSTAB fallback then serves the declined sector and stays correct."""
     from impurityModel.ed import greens_function as gf
+    from impurityModel.ed import gf_solvers
 
     op = _model()
     psis, es, dets, states, vecs = _thermal_states(op, 2)
@@ -717,13 +719,13 @@ def test_krylov_recycler_declines_under_memory_cap(monkeypatch):
     monkeypatch.setenv("GF_SECTOR_DENSE_MAX", "0")
     tin, tout = _tin_tout()
     bicgstab_calls = []
-    real_bicgstab = gf.block_bicgstab
+    real_bicgstab = gf_solvers.block_bicgstab
 
     def counting_bicgstab(*args, **kwargs):
         bicgstab_calls.append(1)
         return real_bicgstab(*args, **kwargs)
 
-    monkeypatch.setattr(gf, "block_bicgstab", counting_bicgstab)
+    monkeypatch.setattr(gf_solvers, "block_bicgstab", counting_bicgstab)
     got = _run_rixs_tensor(op, psis, es, tin, tout, dets, EPS_IN, EPS_OUT)
     ref = _dense_rixs_pol(op, tin, tout, EPS_IN, EPS_OUT, es, vecs, states)
     np.testing.assert_allclose(got, ref, atol=1e-8)
@@ -733,7 +735,7 @@ def test_krylov_recycler_declines_under_memory_cap(monkeypatch):
 def test_rixs_r1_gmres_escalation_rescues_stagnated_bicgstab(monkeypatch):
     """A silently-stagnating BiCGSTAB no longer poisons a solved column: the GMRES
     escalation re-solves the point to _RIXS_R1_ATOL and the map matches dense."""
-    from impurityModel.ed import greens_function as gf
+    from impurityModel.ed import gf_solvers
 
     op = _model()
     psis, es, dets, states, vecs = _thermal_states(op, 2)
@@ -747,16 +749,16 @@ def test_rixs_r1_gmres_escalation_rescues_stagnated_bicgstab(monkeypatch):
             info.update({"converged": False, "rel_residual": 1.0, "iterations": 0})
         return x0
 
-    monkeypatch.setattr(gf, "block_bicgstab", stagnated_bicgstab)
+    monkeypatch.setattr(gf_solvers, "block_bicgstab", stagnated_bicgstab)
 
     gmres_calls = []
-    real_gmres = gf.block_gmres
+    real_gmres = gf_solvers.block_gmres
 
     def counting_gmres(*args, **kwargs):
         gmres_calls.append(1)
         return real_gmres(*args, **kwargs)
 
-    monkeypatch.setattr(gf, "block_gmres", counting_gmres)
+    monkeypatch.setattr(gf_solvers, "block_gmres", counting_gmres)
     got = _run_rixs_tensor(op, psis, es, tin, tout, dets, EPS_IN, EPS_OUT)
     ref = _dense_rixs_pol(op, tin, tout, EPS_IN, EPS_OUT, es, vecs, states)
     assert gmres_calls, "the GMRES escalation should have run"

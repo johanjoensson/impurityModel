@@ -101,7 +101,7 @@ def test_basis_split_and_redistribute_mpi():
 def test_memory_budget_caps_unit_split_mpi(monkeypatch):
     """A tiny memory budget must force the unit split down to a single color."""
     from impurityModel.ed import memory_estimate as me
-    from impurityModel.ed.greens_function import run_units_distributed
+    from impurityModel.ed.gf_units import run_units_distributed
 
     comm = MPI.COMM_WORLD
     if comm.size < 2:

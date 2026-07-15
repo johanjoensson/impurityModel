@@ -215,7 +215,7 @@ def test_block_green_sparse_defaults_to_complex128():
     Green's-function accuracy — quietly breaking the guarantee that a capped recurrence
     reproduces the dense ``P H P`` resolvent exactly (``test_gf_truncation``).
     """
-    from impurityModel.ed.greens_function import block_Green_sparse
+    from impurityModel.ed.gf_solvers import block_Green_sparse
 
     hOp, (imp, baths) = _hamiltonian(), _imp_bath()
     psi = _seeds()

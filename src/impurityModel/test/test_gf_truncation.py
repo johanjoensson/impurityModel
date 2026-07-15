@@ -10,7 +10,8 @@ import pytest
 from mpi4py import MPI
 
 from impurityModel.ed.basis_transcription import build_dense_matrix
-from impurityModel.ed.greens_function import _CappedBasisProxy, block_Green_sparse, calc_G
+from impurityModel.ed.greens_function import _CappedBasisProxy, calc_G
+from impurityModel.ed.gf_solvers import block_Green_sparse
 from impurityModel.ed.manybody_basis import Basis
 from impurityModel.ed.ManyBodyUtils import ManyBodyBlockState, ManyBodyOperator, ManyBodyState, SlaterDeterminant
 
@@ -224,7 +225,7 @@ def test_array_path_probe_respects_cap():
     """block_Green (array kernel): the probe loop must stop within ONE H-application
     batch of crossing truncation_threshold, not run all five probe rounds first."""
     from impurityModel.ed.BlockLanczosArray import Reort
-    from impurityModel.ed.greens_function import block_Green
+    from impurityModel.ed.gf_solvers import block_Green
 
     cap = 5
     basis = _excited_basis(cap)
