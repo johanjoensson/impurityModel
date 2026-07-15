@@ -451,4 +451,3 @@ def thick_restart_block_lanczos(
     return _thick_restart_block_lanczos_array(
         psi0, h_op, basis, num_wanted, max_subspace_blocks, tol, max_restarts, verbose, reort_mode, comm
     )
-

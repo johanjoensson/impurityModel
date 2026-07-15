@@ -430,4 +430,3 @@ def inner(ManyBodyState a, ManyBodyState b):
     with nogil:
         res = inner_cpp(a.v, b.v)
     return res
-

@@ -196,7 +196,6 @@ def _block_inner_mpi(states_a, states_b, mpi: bool, comm):
 # single source of the EA16 shrinking-block deflation policy).
 
 
-
 include "_lanczos_step.pxi"
 include "_trlm.pxi"
 include "_irlm.pxi"

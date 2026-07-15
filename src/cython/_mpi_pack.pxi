@@ -434,4 +434,3 @@ def reorth_cgs2_dense(list wp, list Q, int n_passes, object comm):
         new_ms.v = ManyBodyState_cpp(keys, vals)
         out.append(new_ms)
     return out, O
-

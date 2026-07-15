@@ -475,4 +475,3 @@ cdef class SparseKrylovDense:
             "support_bytes": int(support_bytes),
             "total_bytes": int(buf_bytes + support_bytes),
         }
-

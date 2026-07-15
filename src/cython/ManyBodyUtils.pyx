@@ -65,7 +65,6 @@ cdef extern from "<utility>" namespace "std" nogil:
     vector[complex_cpp[double]]& move(vector[complex_cpp[double]])
 
 
-
 include "_slater_state.pxi"
 include "_operator.pxi"
 include "_mpi_pack.pxi"

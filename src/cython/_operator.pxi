@@ -311,4 +311,3 @@ def applyOp(ManyBodyOperator op, ManyBodyState psi, double cutoff=0) ->ManyBodyS
     Apply a ManyBodyOperator to a ManyBodyState.
     """
     return op(psi, cutoff)
-

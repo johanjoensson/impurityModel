@@ -861,4 +861,3 @@ def block_lanczos_cy(
     if return_status:
         return alphas_out, betas_out, Q_basis, W, termination
     return alphas_out, betas_out, Q_basis, W
-
