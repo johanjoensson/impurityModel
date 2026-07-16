@@ -17,10 +17,13 @@ switches from 1 to 2 through charge transfer when eps - dc + U < eps_b, i.e.
 for dc > eps + U - eps_b = 6.
 """
 
+from dataclasses import replace
+
 import numpy as np
 import pytest
 from mpi4py import MPI
 
+from impurityModel.ed.model import BasisOptions, ImpurityModel, SolverOptions
 from impurityModel.ed.selfenergy import fixed_peak_dc, fixed_occupation_dc
 
 EPS = -1.0
@@ -46,21 +49,23 @@ def build_model(v):
 
 def common_kwargs(v, tau):
     h0, u4 = build_model(v)
-    return dict(
-        h0_op=h0,
-        N0={0: 1},
-        mixed_valence=None,
-        impurity_orbitals={0: [0, 1]},
-        bath_states=({0: [2, 3]}, {0: []}),
+    model = ImpurityModel(
+        h0=h0,
         u4=u4,
+        impurity_orbitals={0: [0, 1]},
+        rot_to_spherical=np.eye(2, dtype=complex),
+        bath_states=({0: [2, 3]}, {0: []}),
+    )
+    basis = BasisOptions(
+        nominal_occ={0: 1},
+        mixed_valence=None,
         spin_flip_dj=False,
         tau=tau,
-        rank=MPI.COMM_WORLD.rank,
-        verbose=False,
-        dense_cutoff=1000,
-        slaterWeightMin=np.sqrt(np.finfo(float).eps),
+        slater_weight_min=np.sqrt(np.finfo(float).eps),
         truncation_threshold=int(1e8),
     )
+    solver = SolverOptions(dense_cutoff=1000)
+    return dict(model=model, basis=basis, solver=solver, comm=MPI.COMM_WORLD)
 
 
 def assert_uniform_shift(dc, dc_guess):
@@ -93,7 +98,7 @@ def test_fixed_peak_dc_removal_peak():
 
 def test_fixed_peak_dc_multiple_groups_raises():
     kwargs = common_kwargs(v=0.01, tau=1e-3)
-    kwargs["N0"] = {0: 1, 1: 1}
+    kwargs["basis"] = replace(kwargs["basis"], nominal_occ={0: 1, 1: 1})
     with pytest.raises(ValueError, match="single impurity group"):
         fixed_peak_dc(peak_position=1.0, dc_guess=np.identity(2, dtype=complex), **kwargs)
 
