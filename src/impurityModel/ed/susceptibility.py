@@ -45,16 +45,14 @@ The results are written to a ``chi.h5`` file (one group per operator with ``real
 """
 
 import argparse
-from collections import OrderedDict
 
 import numpy as np
 from mpi4py import MPI
 
-from impurityModel.ed import atomic_physics, spectra
-from impurityModel.ed.hamiltonian_io import get_noninteracting_hamiltonian_operator
+from impurityModel.ed import spectra
 from impurityModel.ed.ManyBodyUtils import ManyBodyOperator, inner
+from impurityModel.ed.model import BasisOptions, ImpurityModel, Meshes, SolverOptions
 from impurityModel.ed.observables import make_impurity_casimir_operators, make_spin_operators
-from impurityModel.ed.operator_algebra import c2i
 from impurityModel.ed.spin_pairs import resolve_spin_pairs
 from impurityModel.ed.utils import report_banner
 
@@ -379,37 +377,70 @@ def print_susceptibility_summary(result):
 
 
 def calc_susceptibility_workflow(
-    h0,
-    u4,
-    nominal_occ,
-    mixed_valence,
-    impurity_orbitals,
-    tau,
-    w,
-    delta,
-    n_matsubara,
-    rot_to_spherical,
-    verbosity,
+    model,
+    meshes,
+    basis,
+    solver,
+    *,
     comm,
+    verbosity=0,
     cluster_label="cluster",
     num_wanted=5,
-    occ_cutoff=1e-12,
-    slaterWeightMin=1e-12,
-    truncation_threshold=None,
+    n_matsubara=64,
     output_filename="chi.h5",
 ):
     """Solve the ground states, compute the dynamical susceptibilities, and save/print them.
 
-    Mirrors ``calc_selfenergy``'s ground-state stage (solver-basis preparation +
-    ``calc_gs``), then runs :func:`calc_susceptibility` and, on rank 0, writes
+    Mirrors ``calc_selfenergy``'s grouped signature and ground-state stage (solver-basis
+    preparation + ``calc_gs``), then runs :func:`calc_susceptibility` and, on rank 0, writes
     ``output_filename`` and prints the summary. Returns the result dict (rank 0) /
     ``None`` (other ranks).
+
+    Parameters
+    ----------
+    model : impurityModel.ed.model.ImpurityModel
+        The impurity problem (``h0``, ``u4``, ``impurity_orbitals``, ``rot_to_spherical``).
+    meshes : impurityModel.ed.model.Meshes
+        Real frequency mesh ``w`` and the real-axis smearing ``delta``. The bosonic Matsubara
+        mesh is built from ``basis.tau`` and ``n_matsubara`` (see :func:`bosonic_matsubara_mesh`).
+    basis : impurityModel.ed.model.BasisOptions
+        Nominal occupation, mixed valence, temperature ``tau``, occupation cutoff, minimum
+        Slater weight and the determinant budget.
+    solver : impurityModel.ed.model.SolverOptions
+        Provides the dense-eigensolver cutoff.
+    comm : MPI.Comm or None
+        MPI communicator.
+    verbosity : int, optional
+        Verbosity level.
+    cluster_label : str, optional
+        Label for the cluster (used in the output message).
+    num_wanted : int, optional
+        Number of ground-state eigenstates to solve for.
+    n_matsubara : int, optional
+        Number of bosonic Matsubara points (0 disables the Matsubara output).
+    output_filename : str or None, optional
+        HDF5 output path; ``None`` skips saving.
     """
     # Imported here (not at module top) to keep the module importable without pulling in
     # the whole self-energy stack when only the calc_susceptibility driver is used.
     from impurityModel.ed.groundstate import calc_gs  # noqa: PLC0415
     from impurityModel.ed.memory_estimate import suggest_truncation_threshold  # noqa: PLC0415
     from impurityModel.ed.selfenergy import _prepare_solver_basis  # noqa: PLC0415
+
+    # Unpack the grouped parameters into the local names used throughout the body.
+    h0 = model.h0
+    u4 = model.u4
+    impurity_orbitals = model.impurity_orbitals
+    rot_to_spherical = model.rot_to_spherical
+    nominal_occ = basis.nominal_occ
+    mixed_valence = basis.mixed_valence
+    tau = basis.tau
+    occ_cutoff = basis.occ_cutoff
+    slaterWeightMin = basis.slater_weight_min
+    truncation_threshold = basis.truncation_threshold
+    w = meshes.w
+    delta = meshes.delta
+    dense_cutoff = solver.dense_cutoff
 
     rank = comm.rank if comm is not None else 0
     sb = _prepare_solver_basis(h0, u4, impurity_orbitals, nominal_occ, mixed_valence, rot_to_spherical, verbosity)
@@ -425,7 +456,7 @@ def calc_susceptibility_workflow(
         "mixed_valence": sb.mixed_valence,
         "tau": tau,
         "chain_restrict": False,
-        "dense_cutoff": 500,
+        "dense_cutoff": dense_cutoff,
         "spin_flip_dj": False,
         "rank": rank,
         "comm": comm,
@@ -493,41 +524,35 @@ def main():
 
     comm = MPI.COMM_WORLD
     ls = args.ls
-    sum_baths = OrderedDict({ls: args.nBaths})
-    nominal_occ = {ls: args.n0imps}
-    n_imp_spin_orbitals = 2 * (2 * ls + 1)
 
-    # Coulomb tensor in the RSPt u4 convention (same assembly as the selfenergy CLI).
-    u4 = np.zeros((n_imp_spin_orbitals,) * 4, dtype=complex)
-    uOp = atomic_physics.getUop(l1=ls, l2=ls, l3=ls, l4=ls, R=args.Fdd)
-    nBaths_for_c2i = OrderedDict({ls: 0})
-    for process, val in uOp.items():
-        i = c2i(nBaths_for_c2i, process[0][0])
-        j = c2i(nBaths_for_c2i, process[1][0])
-        k = c2i(nBaths_for_c2i, process[2][0])
-        l = c2i(nBaths_for_c2i, process[3][0])
-        u4[i, j, l, k] = 2.0 * val
-
-    hOp = get_noninteracting_hamiltonian_operator(
-        sum_baths, [0, args.xi], tuple(args.hField), args.h0_filename, comm.rank, args.verbose
+    model = ImpurityModel.from_h0_file(
+        args.h0_filename,
+        l=ls,
+        n_baths=args.nBaths,
+        slater=args.Fdd,
+        xi=args.xi,
+        h_field=tuple(args.hField),
+        rank=comm.rank,
+        verbose=args.verbose,
     )
-    hOp = {tuple((c2i(sum_baths, so), action) for so, action in process): value for process, value in hOp.items()}
+    meshes = Meshes(w=np.linspace(args.w_min, args.w_max, args.w_n), delta=args.delta)
+    basis = BasisOptions(
+        nominal_occ={ls: args.n0imps},
+        mixed_valence={ls: 0},
+        tau=args.tau,
+    )
+    solver = SolverOptions()
 
     calc_susceptibility_workflow(
-        h0=hOp,
-        u4=u4,
-        nominal_occ=nominal_occ,
-        mixed_valence={ls: 0},
-        impurity_orbitals={ls: list(range(n_imp_spin_orbitals))},
-        tau=args.tau,
-        w=np.linspace(args.w_min, args.w_max, args.w_n),
-        delta=args.delta,
-        n_matsubara=args.n_matsubara,
-        rot_to_spherical=np.eye(n_imp_spin_orbitals, dtype=complex),
-        verbosity=2 if args.verbose else 0,
+        model,
+        meshes,
+        basis,
+        solver,
         comm=comm,
+        verbosity=2 if args.verbose else 0,
         cluster_label=args.clustername,
         num_wanted=args.nPsiMax,
+        n_matsubara=args.n_matsubara,
         output_filename=args.output,
     )
 

@@ -4,7 +4,6 @@ Script for calculating various spectra.
 """
 
 import argparse
-import time
 from collections import OrderedDict
 from dataclasses import dataclass
 from typing import Optional
@@ -18,6 +17,7 @@ from impurityModel.ed import spectra
 from impurityModel.ed.average import k_B
 from impurityModel.ed.block_structure import BlockStructure
 from impurityModel.ed.hamiltonian_io import get_hamiltonian_operator
+from impurityModel.ed.model import BasisOptions, ImpurityModel, SpectraOptions
 from impurityModel.ed.symmetries import (
     extract_tensors,
     impurity_block_structure,
@@ -143,75 +143,65 @@ class SolverParameters:
     auto_block_structure: bool = True
 
 
-def main(
-    hamiltonian: HamiltonianParameters,
-    occupation: OccupationParameters,
-    spectrum: SpectrumParameters,
-    solver: SolverParameters,
+def build_spectra_model(
+    h0_filename,
+    ls,
+    nBaths,
+    nValBaths,
+    n0imps,
+    Fdd,
+    Fpp,
+    Fpd,
+    Gpd,
+    xi_2p,
+    xi_3d,
+    chargeTransferCorrection,
+    hField,
+    rank=0,
+    verbose=True,
 ):
-    """First find the lowest eigenstates and then use them to calculate various spectra.
+    """Assemble the full interacting spectra model from a non-interacting ``h0`` file.
+
+    Unlike the self-energy path (``h0`` + separate ``u4``), the spectra driver works with the
+    *full* single-index interacting operator that :func:`hamiltonian_io.get_hamiltonian_operator`
+    builds (core + correlated shells, SOC, magnetic field, atomic Coulomb and double counting all
+    folded in). It is carried as :attr:`ImpurityModel.h0` with ``u4=None``; the explicit
+    multi-shell ``(valence_baths, conduction_baths)`` partition is stored in
+    :attr:`ImpurityModel.bath_states`.
 
     Parameters
     ----------
-    hamiltonian : HamiltonianParameters
-        Non-interacting Hamiltonian file and the atomic interaction parameters.
-    occupation : OccupationParameters
-        Nominal impurity occupation and its allowed deviations (basis restrictions).
-    spectrum : SpectrumParameters
-        Spectroscopy broadenings, temperature, energy window, and projector files.
-    solver : SolverParameters
-        Eigenstate budget, printing controls, and the solver-basis option.
+    h0_filename : str
+        Non-interacting Hamiltonian file (pickle format).
+    ls : sequence of int
+        Angular momenta of the correlated shells (e.g. ``(1, 2)`` for 2p + 3d).
+    nBaths, nValBaths : sequence of int
+        Total / valence bath-state counts, one per shell in ``ls``.
+    n0imps : sequence of int
+        Nominal impurity occupation per shell (used for the double-counting term).
+    Fdd, Fpp, Fpd, Gpd : sequence of float
+        Slater-Condon parameters.
+    xi_2p, xi_3d : float
+        Spin-orbit couplings for the p- and d-shell.
+    chargeTransferCorrection : float
+        Double-counting parameter.
+    hField : sequence of float
+        Magnetic field ``(hx, hy, hz)``.
+    rank : int
+        MPI rank, forwarded to the reader for rank-0 logging.
+    verbose : bool
+        Whether the reader logs on rank 0.
+
+    Returns
+    -------
+    ImpurityModel
+        With ``h0`` = the full interacting operator, ``u4=None``, ``impurity_orbitals`` the
+        per-shell block lists, and ``bath_states = (valence_baths, conduction_baths)``.
     """
-
-    # Unpack the grouped CLI parameters into the local names used below.
-    h0_filename = hamiltonian.h0_filename
-    ls = hamiltonian.ls
-    nBaths = hamiltonian.nBaths
-    nValBaths = hamiltonian.nValBaths
-    Fdd = hamiltonian.Fdd
-    Fpp = hamiltonian.Fpp
-    Fpd = hamiltonian.Fpd
-    Gpd = hamiltonian.Gpd
-    xi_2p = hamiltonian.xi_2p
-    xi_3d = hamiltonian.xi_3d
-    chargeTransferCorrection = hamiltonian.chargeTransferCorrection
-    hField = hamiltonian.hField
-    n0imps = occupation.n0imps
-    dnTols = occupation.dnTols
-    dnValBaths = occupation.dnValBaths
-    dnConBaths = occupation.dnConBaths
-    truncation_threshold = occupation.truncation_threshold
-    radial_filename = spectrum.radial_filename
-    T = spectrum.T
-    energy_cut = spectrum.energy_cut
-    delta = spectrum.delta
-    deltaRIXS = spectrum.deltaRIXS
-    deltaNIXS = spectrum.deltaNIXS
-    nPsiMax = solver.nPsiMax
-    auto_block_structure = solver.auto_block_structure
-
-    # MPI variables
-    comm = MPI.COMM_WORLD
-    rank = comm.rank
-
-    verbosity = 2 if rank == 0 else 0
-    500
-    rot_to_spherical = {1: np.eye(6, dtype=complex), 2: np.eye(10, dtype=complex)}
-    block_structure = BlockStructure(
-        blocks=[list(range(6)), list(range(6, 16))],
-        identical_blocks=[[i] for i in range(2)],
-        transposed_blocks=[[] for _ in range(2)],
-        particle_hole_blocks=[[] for _ in range(2)],
-        particle_hole_transposed_blocks=[[] for _ in range(2)],
-        inequivalent_blocks=list(range(2)),
-    )
-
-    if rank == 0:
-        time.perf_counter()
-
-    # -- System information --
     nBaths = OrderedDict(zip(ls, nBaths))
     nValBaths = OrderedDict(zip(ls, nValBaths))
+    n0imps = OrderedDict(zip(ls, n0imps))
+
     impurity_orbitals = {}
     valence_baths = {}
     conduction_baths = {}
@@ -224,80 +214,15 @@ def main(
         conduction_baths[l] = [[offset + i for i in range(nBaths[l] - nValBaths[l])]]
         offset += nBaths[l] - nValBaths[l]
 
-    if rank == 0:
+    if rank == 0 and verbose:
         print("Orbital layout (spin-orbital indices):")
         for l in ls:
             print(
                 f"  l = {l}: impurity {impurity_orbitals[l]}, "
                 f"valence bath {valence_baths[l]}, conduction bath {conduction_baths[l]}"
             )
-    # -- Basis occupation information --
-    n0imps = OrderedDict(zip(ls, n0imps))
-    dnTols = OrderedDict(zip(ls, dnTols))
-    dnValBaths = OrderedDict(zip(ls, dnValBaths))
-    dnConBaths = OrderedDict(zip(ls, dnConBaths))
-
-    # -- Spectra information --
-    # Energy cut in eV.
-    energy_cut *= k_B * T
-    # XAS parameters
-    # Energy-mesh
-    # w = np.linspace(-35, 35, 4000)
-    w = np.linspace(-25, 25, 3001)
-    # Each element is a XAS polarization vector.
-    epsilons = [[1, 0, 0], [0, 1, 0], [0, 0, 1]]  # [[0,0,1]]
-    # epsilons = [[ 1./np.sqrt(2), 1.j/np.sqrt(2), 0.], [ 1/np.sqrt(2), -1j/np.sqrt(2), 0.]] # [[0,0,1]]
-    # epsilons = [[0.,  -1./np.sqrt(2), -1.j/np.sqrt(2)], [0., 1/np.sqrt(2), -1j/np.sqrt(2)]] # [[0,0,1]]
-    # RIXS parameters
-    # Polarization vectors, of in and outgoing photon.
-    # epsilonsRIXSin = [[ 0., -1./np.sqrt(2), -1.j/np.sqrt(2)], [ 0., 1./np.sqrt(2), -1.j/np.sqrt(2) ]] # [[0,0,1]]
-    # epsilonsRIXSin = [[ -1./np.sqrt(2), -1.j/np.sqrt(2), 0.], [1/np.sqrt(2), -1j/np.sqrt(2), 0.]] # [[0,0,1]]
-    epsilonsRIXSin = [[1, 0, 0], [0, 1, 0], [0, 0, 1]]  # x, y, z, cl, cr
-    # epsilonsRIXSout = [[ -1./np.sqrt(2), -1.j/np.sqrt(2), 0], [  1./np.sqrt(2), -1.j/np.sqrt(2), 0], [0, 0, 1]] # [[0,0,1]]
-    # epsilonsRIXSout = [[1./np.sqrt(2), 1.j/np.sqrt(2), 0], [1./np.sqrt(2), -1.j/np.sqrt(2), 0], [0, 0, 1]] # [[0,0,1]]
-    epsilonsRIXSout = [[1, 0, 0], [0, 1, 0], [0, 0, 1]]  # x, y, z, cl, cr
-    if deltaRIXS > 0:
-        wIn = np.linspace(-10, 20, 50)
-        # wIn = np.linspace(-1, 2, 500)
-    else:
-        wIn = []
-    wLoss = np.linspace(-2.0, 12.0, 4000)
-    # wLoss = np.linspace(-1.0, 2.5, 3000)
-
-    # Read XAS and/or RIXS projectors from file
-    XAS_projectors = None
-    RIXS_projectors = None
-    # if XAS_projectors_filename:
-    #     XAS_projectors = get_XAS_projectors(XAS_projectors_filename)
-    #     if rank == 0:
-    #         print("XAS projectors")
-    #         print(XAS_projectors)
-    # if RIXS_projectors_filename:
-    #     RIXS_projectors = get_XAS_projectors(RIXS_projectors_filename)
-    #     if rank == 0:
-    #         print("RIXS projectors")
-    #         print(RIXS_projectors)
-
-    # NIXS parameters
-    qsNIXS = [2 * np.array([1, 1, 1]) / np.sqrt(3), 7 * np.array([1, 1, 1]) / np.sqrt(3)]
-    # Angular momentum of final and initial orbitals in the NIXS excitation process.
-    liNIXS, ljNIXS = 2, 2
-
-    # -- Occupation restrictions for excited states --
-    l = 2
-
-    # Read the radial part of correlated orbitals
-    radialMesh, RiNIXS = np.loadtxt(radial_filename).T
-    RjNIXS = np.copy(RiNIXS)
-
-    # Total number of spin-orbitals in the system
-    n_spin_orbitals = sum(2 * (2 * ang + 1) + nBath for ang, nBath in nBaths.items())
-    if rank == 0:
-        print(f"Number of spin-orbitals: {n_spin_orbitals}")
-
-    # Hamiltonian
-    if rank == 0:
         print("Constructing the Hamiltonian operator ...")
+
     hOp = get_hamiltonian_operator(
         nBaths,
         nValBaths,
@@ -308,7 +233,100 @@ def main(
         h0_filename,
         rank,
     )
-    hOp = ManyBodyOperator(hOp)
+    return ImpurityModel(
+        h0=hOp,
+        u4=None,
+        impurity_orbitals=impurity_orbitals,
+        rot_to_spherical={l: np.eye(2 * (2 * l + 1), dtype=complex) for l in ls},
+        bath_states=(valence_baths, conduction_baths),
+        # The layout offset is the exact spin-orbital total (impurity + bath for every shell),
+        # independent of whether every bath orbital appears in an h0 term.
+        n_spin_orbitals=offset,
+    )
+
+
+def run_spectra(model, spectra_options, basis, comm, *, verbosity=None):
+    """Find the lowest eigenstates of ``model`` and calculate the requested spectra.
+
+    Extracted verbatim from the historical ``get_spectra.main``: builds the many-body ground
+    state, derives (or keeps) the block structure, optionally rotates the correlated shell into
+    a symmetry-adapted basis, writes ``spectra.h5`` and calls
+    :func:`impurityModel.ed.spectra.simulate_spectra`.
+
+    Parameters
+    ----------
+    model : ImpurityModel
+        The full interacting model from :func:`build_spectra_model` (``bath_states`` set).
+    spectra_options : SpectraOptions
+        Meshes, broadenings, polarizations and (optional) NIXS radial data. ``None`` array
+        fields are filled with the historical default grids here.
+    basis : BasisOptions
+        Nominal occupation, determinant budget and ``tau = k_B * T``.
+    comm : mpi4py communicator
+        MPI communicator (``MPI.COMM_WORLD`` for the CLI).
+    verbosity : int, optional
+        Printing level. ``None`` -> ``2`` on rank 0, ``0`` elsewhere.
+    """
+    rank = comm.rank if comm is not None else 0
+    if verbosity is None:
+        verbosity = 2 if rank == 0 else 0
+
+    hOp = ManyBodyOperator(model.h0)
+    impurity_orbitals = model.impurity_orbitals
+    valence_baths, conduction_baths = model.bath_states
+    rot_to_spherical = dict(model.rot_to_spherical)
+
+    ls = list(impurity_orbitals.keys())
+    nBaths = OrderedDict(
+        (l, sum(len(b) for b in valence_baths[l]) + sum(len(b) for b in conduction_baths[l])) for l in ls
+    )
+    n_spin_orbitals = model.n_spin_orbitals
+
+    # Hand-coded fall-back block structure (2p + 3d): used when auto_block_structure is off.
+    block_structure = BlockStructure(
+        blocks=[list(range(6)), list(range(6, 16))],
+        identical_blocks=[[i] for i in range(2)],
+        transposed_blocks=[[] for _ in range(2)],
+        particle_hole_blocks=[[] for _ in range(2)],
+        particle_hole_transposed_blocks=[[] for _ in range(2)],
+        inequivalent_blocks=list(range(2)),
+    )
+
+    # -- Spectra meshes / polarizations: fill the unset (None) fields with today's defaults. --
+    w = spectra_options.w if spectra_options.w is not None else np.linspace(-25, 25, 3001)
+    delta = spectra_options.delta
+    cartesian = [[1, 0, 0], [0, 1, 0], [0, 0, 1]]
+    epsilons = spectra_options.epsilons if spectra_options.epsilons is not None else cartesian
+    epsilonsRIXSin = spectra_options.epsilonsRIXSin if spectra_options.epsilonsRIXSin is not None else cartesian
+    epsilonsRIXSout = spectra_options.epsilonsRIXSout if spectra_options.epsilonsRIXSout is not None else cartesian
+    deltaRIXS = spectra_options.deltaRIXS
+    deltaNIXS = spectra_options.deltaNIXS
+    if spectra_options.wIn is not None:
+        wIn = spectra_options.wIn
+    elif deltaRIXS > 0:
+        wIn = np.linspace(-10, 20, 50)
+    else:
+        wIn = []
+    wLoss = spectra_options.wLoss if spectra_options.wLoss is not None else np.linspace(-2.0, 12.0, 4000)
+    qsNIXS = (
+        spectra_options.qsNIXS
+        if spectra_options.qsNIXS is not None
+        else [2 * np.array([1, 1, 1]) / np.sqrt(3), 7 * np.array([1, 1, 1]) / np.sqrt(3)]
+    )
+    liNIXS, ljNIXS = spectra_options.liNIXS, spectra_options.ljNIXS
+    XAS_projectors = spectra_options.XAS_projectors
+    RIXS_projectors = spectra_options.RIXS_projectors
+
+    # NIXS needs the radial part of the correlated orbitals; it is optional. When no radial data
+    # was supplied the radial arrays stay None and simulate_spectra skips the NIXS block.
+    if spectra_options.radial is not None:
+        radialMesh, RiNIXS, RjNIXS = spectra_options.radial
+    else:
+        radialMesh = RiNIXS = RjNIXS = None
+
+    if rank == 0:
+        print(f"Number of spin-orbitals: {n_spin_orbitals}")
+
     # Default: derive the block structure from the hybridization-dressed impurity matrix
     # (impurity_block_structure) rather than the hand-coded one. It matches or strictly refines
     # the manual structure (e.g. SOC / crystal field splits each shell into sub-blocks) and
@@ -322,7 +340,7 @@ def main(
     rotation = None
     correlated_block_structure = None
     correlated_l = 2
-    if auto_block_structure:
+    if spectra_options.auto_block_structure:
         impurity_indices = sorted(orb for blocks in impurity_orbitals.values() for block in blocks for orb in block)
         h_matrix = extract_tensors(hOp, n_orb=n_spin_orbitals, two_body=False)[0]
         block_structure = impurity_block_structure(hOp, impurity_indices, h0_matrix=h_matrix)
@@ -342,7 +360,6 @@ def main(
                 correlated_block_structure = impurity_block_structure(hOp, d_indices, h0_matrix=h_matrix)
                 # rot_to_spherical maps the (rotated) computational basis back to spherical harmonics
                 # for the L/S/J Casimir reporting in calc_gs; identity on the un-rotated core p shell.
-                rot_to_spherical = dict(rot_to_spherical)
                 rot_to_spherical[correlated_l] = u_imp.conj().T
                 if rank == 0:
                     n_classes = len(correlated_block_structure.inequivalent_blocks)
@@ -362,19 +379,19 @@ def main(
     # Many body basis for the ground state
     if rank == 0:
         print("Creating the many-body basis ...")
-    tau = k_B * T
+    tau = basis.tau
     basis_setup = {
         "impurity_orbital": impurity_orbitals,
         "bath_states": (valence_baths, conduction_baths),
-        "nominal_impurity_occ": n0imps,
+        "nominal_impurity_occ": basis.nominal_occ,
         "frozen_occupations": set(i for i in nBaths if nBaths[i] == 0),
         # None = "as many determinants as fit in RAM", resolved against the per-rank
         # available memory inside find_ground_state_basis (see memory_estimate).
-        "truncation_threshold": truncation_threshold,
+        "truncation_threshold": basis.truncation_threshold,
         "tau": tau,
         "comm": comm,
     }
-    psis, es, basis, rho, _ = calc_gs(
+    psis, es, ground_state_basis, rho, _ = calc_gs(
         hOp,
         basis_setup,
         block_structure,
@@ -382,53 +399,19 @@ def main(
         verbosity > 0,
     )
 
-    # Save some information to disk
+    # Save some of the arrays. HDF5-format does not directly support dictionaries.
     h5f = None
     if rank == 0:
-        # Most of the input parameters. Dictonaries can be stored in this file format.
-        np.savez_compressed(
-            "data",
-            ls=ls,
-            nBaths=nBaths,
-            nValBaths=nValBaths,
-            n0imps=n0imps,
-            dnTols=dnTols,
-            dnValBaths=dnValBaths,
-            dnConBaths=dnConBaths,
-            Fdd=Fdd,
-            Fpp=Fpp,
-            Fpd=Fpd,
-            Gpd=Gpd,
-            xi_2p=xi_2p,
-            xi_3d=xi_3d,
-            chargeTransferCorrection=chargeTransferCorrection,
-            hField=hField,
-            h0_filename=h0_filename,
-            nPsiMax=nPsiMax,
-            T=T,
-            energy_cut=energy_cut,
-            delta=delta,
-            restrictions=basis.restrictions,
-            epsilons=epsilons,
-            epsilonsRIXSin=epsilonsRIXSin,
-            epsilonsRIXSout=epsilonsRIXSout,
-            deltaRIXS=deltaRIXS,
-            deltaNIXS=deltaNIXS,
-            n_spin_orbitals=n_spin_orbitals,
-            hOp=hOp.to_dict(),
-        )
-    if rank == 0:
-        # Save some of the arrays.
-        # HDF5-format does not directly support dictonaries.
         h5f = h5py.File("spectra.h5", "w")
         h5f.create_dataset("E", data=es)
         h5f.create_dataset("w", data=w)
         h5f.create_dataset("wIn", data=wIn)
         h5f.create_dataset("wLoss", data=wLoss)
         h5f.create_dataset("qsNIXS", data=qsNIXS)
-        h5f.create_dataset("r", data=radialMesh)
-        h5f.create_dataset("RiNIXS", data=RiNIXS)
-        h5f.create_dataset("RjNIXS", data=RjNIXS)
+        if radialMesh is not None:
+            h5f.create_dataset("r", data=radialMesh)
+            h5f.create_dataset("RiNIXS", data=RiNIXS)
+            h5f.create_dataset("RjNIXS", data=RjNIXS)
 
     if rank == 0:
         print("\n" + "=" * 80)
@@ -440,7 +423,7 @@ def main(
         es,
         psis,
         hOp,
-        k_B * T,
+        tau,
         w,
         delta,
         epsilons,
@@ -456,25 +439,96 @@ def main(
         deltaRIXS,
         epsilonsRIXSin,
         epsilonsRIXSout,
-        basis.restrictions,
+        ground_state_basis.restrictions,
         h5f,
         nBaths,
         XAS_projectors,
         RIXS_projectors,
-        basis,
-        1e-6,
-        2,
-        np.sqrt(np.finfo(float).eps),
+        ground_state_basis,
+        basis.occ_cutoff,
+        basis.dN if basis.dN is not None else 2,
+        basis.slater_weight_min,
         verbosity >= 1,
         rotation=rotation,
         correlated_l=correlated_l,
         correlated_block_structure=correlated_block_structure,
     )
 
+    if h5f is not None:
+        h5f.close()
     if comm is not None:
         comm.Barrier()
     if rank == 0:
         print("\nDone.")
+
+
+def main(
+    hamiltonian: HamiltonianParameters,
+    occupation: OccupationParameters,
+    spectrum: SpectrumParameters,
+    solver: SolverParameters,
+):
+    """Thin adapter: build an :class:`ImpurityModel` + option groups and call :func:`run_spectra`.
+
+    Parameters
+    ----------
+    hamiltonian : HamiltonianParameters
+        Non-interacting Hamiltonian file and the atomic interaction parameters.
+    occupation : OccupationParameters
+        Nominal impurity occupation and its allowed deviations (basis restrictions).
+    spectrum : SpectrumParameters
+        Spectroscopy broadenings, temperature, energy window, and projector files.
+    solver : SolverParameters
+        Eigenstate budget, printing controls, and the solver-basis option.
+    """
+    comm = MPI.COMM_WORLD
+    rank = comm.rank
+    verbosity = 2 if rank == 0 else 0
+
+    model = build_spectra_model(
+        hamiltonian.h0_filename,
+        hamiltonian.ls,
+        hamiltonian.nBaths,
+        hamiltonian.nValBaths,
+        occupation.n0imps,
+        hamiltonian.Fdd,
+        hamiltonian.Fpp,
+        hamiltonian.Fpd,
+        hamiltonian.Gpd,
+        hamiltonian.xi_2p,
+        hamiltonian.xi_3d,
+        hamiltonian.chargeTransferCorrection,
+        hamiltonian.hField,
+        rank=rank,
+        verbose=verbosity > 0,
+    )
+
+    # Read the (optional) radial part of the correlated orbitals for NIXS.
+    if spectrum.radial_filename:
+        radialMesh, RiNIXS = np.loadtxt(spectrum.radial_filename).T
+        radial = (radialMesh, RiNIXS, np.copy(RiNIXS))
+    else:
+        radial = None
+
+    spectra_options = SpectraOptions(
+        delta=spectrum.delta,
+        deltaRIXS=spectrum.deltaRIXS,
+        deltaNIXS=spectrum.deltaNIXS,
+        radial=radial,
+        energy_cut=spectrum.energy_cut,
+        nPsiMax=solver.nPsiMax,
+        auto_block_structure=solver.auto_block_structure,
+    )
+
+    basis = BasisOptions(
+        nominal_occ=OrderedDict(zip(hamiltonian.ls, occupation.n0imps)),
+        dN=2,
+        truncation_threshold=occupation.truncation_threshold,
+        occ_cutoff=1e-6,
+        tau=k_B * spectrum.T,
+    )
+
+    run_spectra(model, spectra_options, basis, comm, verbosity=verbosity)
 
 
 if __name__ == "__main__":

@@ -14,9 +14,10 @@ functions in RSPt's .dat format (:func:`save_Greens_function`).
 """
 
 from impurityModel.ed.greens_function import save_Greens_function
-from impurityModel.ed.model import BasisOptions, ImpurityModel, Meshes, SolverOptions, atomic_u4
+from impurityModel.ed.model import BasisOptions, ImpurityModel, Meshes, SolverOptions, SpectraOptions, atomic_u4
 from impurityModel.ed.operator_algebra import matrixToIOp
 from impurityModel.ed.selfenergy import calc_selfenergy, fixed_occupation_dc, fixed_peak_dc
+from impurityModel.ed.susceptibility import calc_susceptibility_workflow
 
 try:
     from importlib.metadata import PackageNotFoundError, version
@@ -34,8 +35,10 @@ __all__ = [
     "ImpurityModel",
     "Meshes",
     "SolverOptions",
+    "SpectraOptions",
     "atomic_u4",
     "calc_selfenergy",
+    "calc_susceptibility_workflow",
     "fixed_occupation_dc",
     "fixed_peak_dc",
     "matrixToIOp",

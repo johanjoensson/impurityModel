@@ -29,6 +29,7 @@ __all__ = [
     "Meshes",
     "BasisOptions",
     "SolverOptions",
+    "SpectraOptions",
     "atomic_u4",
 ]
 
@@ -97,6 +98,11 @@ class ImpurityModel:
     rot_to_spherical : numpy.ndarray or dict
         Rotation from the impurity input basis to spherical harmonics, used only for the
         L/S/J observable reporting. An identity when the input basis already is spherical.
+    bath_states : tuple or None
+        Explicit ``(valence_baths, conduction_baths)`` layout (each a
+        ``dict[group, list[list[int]]]``), used by the spectra driver where the multi-shell
+        bath partition is built up-front. ``None`` in the self-energy path, where the solver
+        derives the bath orbitals and their valence/conduction split from ``h0``.
     n_spin_orbitals : int, optional
         Total number of spin-orbitals (impurity + bath). Derived from ``h0`` when not given.
     """
@@ -105,6 +111,7 @@ class ImpurityModel:
     impurity_orbitals: dict
     rot_to_spherical: Union[np.ndarray, dict]
     u4: Optional[np.ndarray] = None
+    bath_states: Optional[tuple] = None
     n_spin_orbitals: int = field(default=0)
 
     def __post_init__(self):
@@ -281,3 +288,67 @@ class SolverOptions:
     dense_cutoff: int = 500
     sparse_green: bool = True
     gf_method: str = "lanczos"
+
+
+@dataclass(frozen=True)
+class SpectraOptions:
+    """Spectroscopy meshes, broadenings, polarizations and projectors for the spectra driver.
+
+    Every field defaults to ``None`` for the arrays the driver fills in with its standard
+    grids/polarizations (so an API caller can override just the pieces it cares about) and to
+    the historical literal for the scalars. The frequency meshes are resolved once inside
+    :func:`impurityModel.ed.get_spectra.run_spectra`.
+
+    Attributes
+    ----------
+    w : numpy.ndarray or None
+        XAS / PES / XPS energy mesh (eV). ``None`` -> ``linspace(-25, 25, 3001)``.
+    delta : float
+        Core-hole-lifetime broadening (HWHM, eV).
+    epsilons : sequence or None
+        XAS polarization vectors. ``None`` -> the Cartesian ``x, y, z`` triple.
+    wLoss : numpy.ndarray or None
+        RIXS energy-loss mesh. ``None`` -> ``linspace(-2, 12, 4000)``.
+    wIn : numpy.ndarray or None
+        RIXS incoming-energy mesh. ``None`` with ``deltaRIXS > 0`` -> ``linspace(-10, 20, 50)``;
+        an empty mesh disables RIXS.
+    deltaRIXS, deltaNIXS : float
+        Excited-state-lifetime broadenings for RIXS / NIXS (HWHM, eV). ``deltaRIXS <= 0``
+        disables RIXS.
+    epsilonsRIXSin, epsilonsRIXSout : sequence or None
+        RIXS in/out polarization vectors. ``None`` -> the Cartesian ``x, y, z`` triple.
+    qsNIXS : sequence or None
+        NIXS momentum-transfer vectors. ``None`` -> the driver's two default ``|q|``.
+    liNIXS, ljNIXS : int
+        Angular momenta of the final/initial orbitals in the NIXS excitation.
+    radial : tuple or None
+        ``(radial_mesh, Ri, Rj)`` for the NIXS radial integral. ``None`` skips NIXS.
+    energy_cut : float
+        How many ``k_B * T`` above the ground state to keep (thermal window).
+    nPsiMax : int
+        Maximum number of eigenstates to consider.
+    auto_block_structure : bool
+        Derive the block structure (and the symmetry-adapted solver basis) from the
+        hybridization-dressed impurity matrix instead of the hand-coded one.
+    XAS_projectors, RIXS_projectors : object or None
+        Optional transition projectors; ``None`` computes the full polarization tensor.
+    """
+
+    w: Optional[np.ndarray] = None
+    delta: float = 0.2
+    epsilons: Any = None
+    wLoss: Optional[np.ndarray] = None
+    wIn: Optional[np.ndarray] = None
+    deltaRIXS: float = 0.050
+    deltaNIXS: float = 0.100
+    epsilonsRIXSin: Any = None
+    epsilonsRIXSout: Any = None
+    qsNIXS: Any = None
+    liNIXS: int = 2
+    ljNIXS: int = 2
+    radial: Any = None
+    energy_cut: float = 10.0
+    nPsiMax: int = 5
+    auto_block_structure: bool = True
+    XAS_projectors: Any = None
+    RIXS_projectors: Any = None

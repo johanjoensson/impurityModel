@@ -301,36 +301,39 @@ def simulate_spectra(
         print("time(XPS) = {:.2f} seconds \n".format(time.perf_counter() - t0))
         t0 = time.perf_counter()
 
-    if rank == 0:
-        print("Create NIXS spectra...")
-    # Transition operator: exp(iq*r)
-    tOps = nixs_operators(nBaths, qsNIXS, liNIXS, ljNIXS, RiNIXS, RjNIXS, radialMesh)
-    # Green's function
-    gs = calc_spectra(
-        hOp,
-        _prep_one_body(tOps),
-        psis,
-        es,
-        tau,
-        wLoss,
-        basis,
-        deltaNIXS,
-        slaterWeightMin,
-        verbose,
-        occ_cutoff,
-        dN_imp={liNIXS: (1, 1), ljNIXS: (1, 1)},
-        dN_val={liNIXS: (1, 0), ljNIXS: (1, 0)},
-        dN_con={liNIXS: (0, 1), ljNIXS: (0, 1)},
-    )
-    if rank == 0:
-        print("#q-points = {:d}".format(np.shape(gs)[1]))
-        print("#mesh points = {:d}".format(np.shape(gs)[0]))
-    if rank == 0 and h5f:
-        h5f.create_dataset("NIXS/spectra", data=gs)
+    # NIXS needs the radial part of the correlated orbitals; skip it when no radial data was
+    # supplied (RiNIXS is None). Every other spectrum is independent of it.
+    if RiNIXS is not None:
+        if rank == 0:
+            print("Create NIXS spectra...")
+        # Transition operator: exp(iq*r)
+        tOps = nixs_operators(nBaths, qsNIXS, liNIXS, ljNIXS, RiNIXS, RjNIXS, radialMesh)
+        # Green's function
+        gs = calc_spectra(
+            hOp,
+            _prep_one_body(tOps),
+            psis,
+            es,
+            tau,
+            wLoss,
+            basis,
+            deltaNIXS,
+            slaterWeightMin,
+            verbose,
+            occ_cutoff,
+            dN_imp={liNIXS: (1, 1), ljNIXS: (1, 1)},
+            dN_val={liNIXS: (1, 0), ljNIXS: (1, 0)},
+            dN_con={liNIXS: (0, 1), ljNIXS: (0, 1)},
+        )
+        if rank == 0:
+            print("#q-points = {:d}".format(np.shape(gs)[1]))
+            print("#mesh points = {:d}".format(np.shape(gs)[0]))
+        if rank == 0 and h5f:
+            h5f.create_dataset("NIXS/spectra", data=gs)
 
-    if rank == 0:
-        print("time(NIXS) = {:.2f} seconds \n".format(time.perf_counter() - t0))
-        t0 = time.perf_counter()
+        if rank == 0:
+            print("time(NIXS) = {:.2f} seconds \n".format(time.perf_counter() - t0))
+            t0 = time.perf_counter()
 
     if rank == 0:
         print("Create XAS spectra...")
