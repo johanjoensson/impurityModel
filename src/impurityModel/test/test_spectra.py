@@ -277,3 +277,66 @@ def test_get_hamiltonian_operator(mock_h0):
         False,
     )
     assert isinstance(hOp, dict)
+
+
+def test_calc_spectra_extra_meshes_match_direct_calls():
+    """extra_meshes evaluates the same Lanczos coefficients on more meshes.
+
+    The list return must reproduce (i) the plain single-mesh call on the primary mesh and
+    (ii) a plain call on the extra mesh, including a purely imaginary (Matsubara-style)
+    mesh with delta = 0.
+    """
+    from mpi4py import MPI
+
+    from impurityModel.ed.manybody_basis import Basis
+    from impurityModel.ed.ManyBodyUtils import ManyBodyState, SlaterDeterminant
+
+    # 0=imp_up, 1=imp_dn, 2=bath_up, 3=bath_dn; U on the impurity.
+    eps_i, eps_b, v, u = -1.0, 0.5, 0.7, 3.0
+    terms = {((o, "c"), (o, "a")): eps_i if o < 2 else eps_b for o in range(4)}
+    for a, b in ((0, 2), (1, 3)):
+        terms[((a, "c"), (b, "a"))] = v
+        terms[((b, "c"), (a, "a"))] = v
+    terms[((0, "c"), (1, "c"), (1, "a"), (0, "a"))] = u
+    hOp = ManyBodyOperator(terms)
+
+    def _b(occ):
+        data = bytearray(1)
+        for o in occ:
+            data[0] |= 1 << (7 - o)
+        return bytes(data)
+
+    dets = [_b((u_, d_)) for u_ in (0, 2) for d_ in (1, 3)]
+    gs = ManyBodyState({SlaterDeterminant.from_bytes(dets[0]): 1.0})
+
+    def fresh_basis():
+        return Basis(
+            impurity_orbitals={0: [[0, 1]]},
+            bath_states=({0: [[2, 3]]}, {0: [[]]}),
+            initial_basis=list(dets),
+            verbose=False,
+            comm=MPI.COMM_SELF,
+        )
+
+    tOps = [ManyBodyOperator({((0, "a"),): 1.0})]
+    w = np.linspace(-4.0, 4.0, 21)
+    w_matsubara = 1j * np.linspace(0.1, 3.0, 7)
+    delta = 0.15
+    common = dict(
+        psis=[gs],
+        es=[float(eps_i)],
+        tau=0.01,
+        delta=delta,
+        slaterWeightMin=0.0,
+        verbose=False,
+        occ_cutoff=1e-12,
+        dN_imp={0: (1, 1)},
+        dN_val={0: (1, 1)},
+        dN_con={0: (0, 0)},
+    )
+    combined = spectra.calc_spectra(hOp, tOps, w=w, basis=fresh_basis(), extra_meshes=[(w_matsubara, 0.0)], **common)
+    assert isinstance(combined, list) and len(combined) == 2
+    direct_w = spectra.calc_spectra(hOp, tOps, w=w, basis=fresh_basis(), **common)
+    direct_iw = spectra.calc_spectra(hOp, tOps, w=w_matsubara, basis=fresh_basis(), **{**common, "delta": 0.0})
+    np.testing.assert_allclose(combined[0], direct_w, atol=1e-12)
+    np.testing.assert_allclose(combined[1], direct_iw, atol=1e-12)

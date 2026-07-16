@@ -122,6 +122,40 @@ def test_natural_orbital_occupations_match_eigvalsh():
     assert stats["natural_orbital_occupations"] == pytest.approx(list(expected))
 
 
+def test_one_body_entropy_and_natural_vectors():
+    stats = _stats()
+    occ = np.array(stats["natural_orbital_occupations"])
+    # S_1b = -sum [n ln n + (1-n) ln(1-n)] over the natural occupations.
+    n = np.clip(occ, 1e-12, 1 - 1e-12)
+    expected = float(-np.sum(n * np.log(n) + (1 - n) * np.log(1 - n)))
+    assert stats["one_body_entropy"] == pytest.approx(expected)
+    # Vectors diagonalize the impurity block, columns ordered like the occupations.
+    imp_block = np.array([[0.7, 0.1], [0.1, 0.3]], dtype=complex)
+    vecs = np.asarray(stats["natural_orbital_vectors"])
+    assert np.allclose(vecs.conj().T @ imp_block @ vecs, np.diag(occ), atol=1e-12)
+    assert stats["natural_orbital_basis"] == IMPURITY
+
+    # Trivial occupations (0/1) -> zero one-body entropy.
+    thermal_rho = np.zeros((N_ORBS, N_ORBS), dtype=complex)
+    thermal_rho[0, 0] = 1.0
+    stats0 = compute_gs_statistics(
+        _FakeBasis(), _make_psis(), es=np.array([0.0, 0.0]), tau=1.0, thermal_rho=thermal_rho, impurity_indices=IMPURITY
+    )
+    assert stats0["one_body_entropy"] == pytest.approx(0.0, abs=1e-9)
+
+
+def test_json_round_trip_complex_vectors(tmp_path):
+    """Complex natural-orbital vectors serialize as [re, im] pairs."""
+    stats = _stats()
+    path = tmp_path / "stats_cplx.json"
+    save_gs_statistics(stats, path)
+    loaded = json.loads(path.read_text())
+    vec00 = loaded["natural_orbital_vectors"][0][0]
+    assert isinstance(vec00, list) and len(vec00) == 2  # [re, im]
+    reconstructed = np.array([[complex(re, im) for re, im in row] for row in loaded["natural_orbital_vectors"]])
+    assert np.allclose(reconstructed, np.asarray(stats["natural_orbital_vectors"]), atol=1e-12)
+
+
 def test_top_determinants_sorted_and_labelled():
     stats = _stats()
     top = stats["top_determinants"]
@@ -135,6 +169,23 @@ def test_top_determinants_sorted_and_labelled():
     assert top[0]["config"] == (1, 1, 1)
 
 
+def test_print_top_determinants_hole_notation(capsys):
+    """Default printing shows valence holes / conduction particles; verbose>=2 full lists."""
+    from impurityModel.ed.gs_statistics import print_gs_statistics
+
+    stats = _stats()
+    print_gs_statistics(stats)
+    out = capsys.readouterr().out
+    # Dominant determinant |[0,2,4]>: valence holes = {2,3} - {2} = [3], conduction particle [4].
+    assert "imp occupied | val holes | con particles" in out
+    assert "imp [0] | val holes [3] | con [4]" in out
+
+    print_gs_statistics(stats, verbose=2)
+    out = capsys.readouterr().out
+    assert "occupied (imp|val|con)" in out
+    assert "[0]|[2]|[4]" in out
+
+
 def test_json_round_trip(tmp_path):
     stats = _stats()
     path = tmp_path / "stats.json"
@@ -144,6 +195,103 @@ def test_json_round_trip(tmp_path):
     assert loaded["marginals"]["impurity"]["mean"] == pytest.approx(1.3)
     # config keys round-trip as lists through JSON.
     assert loaded["thermal_config_weights"]["rows"][0]["config"] == [1, 1, 1]
+
+
+def test_entanglement_entropy_analytic():
+    """Impurity-bath entanglement: product state -> 0, Bell states -> ln 2."""
+    from impurityModel.ed.gs_statistics import compute_entanglement_entropy
+
+    tau = 1e-3
+    # Product state: one impurity electron, one bath electron -> no entanglement.
+    product = ManyBodyState({_det([0, 2]): 1.0})
+    ent = compute_entanglement_entropy(_FakeBasis(), [product], np.array([0.0]), tau)
+    assert ent["per_state_entropy"][0] == pytest.approx(0.0, abs=1e-12)
+    assert ent["per_state_norm"][0] == pytest.approx(1.0)
+    assert ent["n_imp_sectors"] == [1]
+
+    # Bell state within one impurity sector: S = ln 2.
+    bell = ManyBodyState({_det([1, 2]): math.sqrt(0.5), _det([0, 3]): -math.sqrt(0.5)})
+    ent = compute_entanglement_entropy(_FakeBasis(), [bell], np.array([0.0]), tau)
+    assert ent["per_state_entropy"][0] == pytest.approx(math.log(2))
+    assert ent["spectrum_top"][0][:2] == pytest.approx([0.5, 0.5])
+
+    # Bell state across impurity sectors (valence fluctuation): S = ln 2, two sectors.
+    mixed_valence = ManyBodyState({_det([0, 1]): math.sqrt(0.5), _det([0, 2]): math.sqrt(0.5)})
+    ent = compute_entanglement_entropy(_FakeBasis(), [mixed_valence], np.array([0.0]), tau)
+    assert ent["per_state_entropy"][0] == pytest.approx(math.log(2))
+    assert ent["n_imp_sectors"] == [1, 2]
+    assert ent["sector_weights"][0] == {1: pytest.approx(0.5), 2: pytest.approx(0.5)}
+
+    # Superposition on the impurity over the SAME bath configuration stays pure: S = 0.
+    coherent = ManyBodyState({_det([0, 2]): math.sqrt(0.5), _det([1, 2]): math.sqrt(0.5)})
+    ent = compute_entanglement_entropy(_FakeBasis(), [coherent], np.array([0.0]), tau)
+    assert ent["per_state_entropy"][0] == pytest.approx(0.0, abs=1e-12)
+
+
+def test_entanglement_thermal_vs_mixture():
+    """Two orthogonal product eigenstates: thermal entropy = pure mixture entropy."""
+    from impurityModel.ed.gs_statistics import compute_entanglement_entropy
+
+    psis = [ManyBodyState({_det([0, 2]): 1.0}), ManyBodyState({_det([1, 3]): 1.0})]
+    es = np.array([0.0, 0.5])
+    tau = 1.0
+    ent = compute_entanglement_entropy(_FakeBasis(), psis, es, tau)
+    assert ent["per_state_entropy"] == pytest.approx([0.0, 0.0], abs=1e-12)
+    assert ent["thermal_entropy"] == pytest.approx(ent["mixture_entropy"])
+
+
+def test_entanglement_sector_weights_match_config_marginal():
+    """Tr rho_imp[N] reproduces the per-state impurity-occupation weights."""
+    from impurityModel.ed.gs_statistics import compute_entanglement_entropy
+
+    ent = compute_entanglement_entropy(_FakeBasis(), _make_psis(), np.array([0.0, 0.0]), 1.0)
+    # psi0: config (2,1,1) with weight 0.6 and (1,2,2) with weight 0.4.
+    assert ent["sector_weights"][0] == {1: pytest.approx(0.4), 2: pytest.approx(0.6)}
+    assert ent["sector_weights"][1] == {1: pytest.approx(1.0), 2: pytest.approx(0.0)}
+
+
+def test_entanglement_memory_guard():
+    from impurityModel.ed.gs_statistics import compute_entanglement_entropy
+
+    ent = compute_entanglement_entropy(_FakeBasis(), _make_psis(), np.array([0.0, 0.0]), 1.0, max_bytes=1)
+    assert ent is None
+
+
+@pytest.mark.mpi
+def test_entanglement_entropy_distributed_matches_serial():
+    """Distributed impurity-RDM path reproduces the serial analytic entropies.
+
+    States are fed on rank 0 ONLY and distributed with redistribute_psis (each
+    determinant owned by exactly one rank); feeding replicated copies on every rank
+    would double-count amplitudes.
+    """
+    from mpi4py import MPI
+
+    from impurityModel.ed.gs_statistics import compute_entanglement_entropy
+    from impurityModel.ed.manybody_basis import Basis
+
+    comm = MPI.COMM_WORLD
+    dets = [_det(occ) for occ in ([1, 2], [0, 3], [0, 1], [0, 2])]
+    basis = Basis(
+        impurity_orbitals={0: [[0, 1]]},
+        bath_states=({0: [[2, 3]]}, {0: [[4, 5]]}),
+        initial_basis=dets,
+        comm=comm,
+        verbose=False,
+    )
+    if comm.rank == 0:
+        bell = ManyBodyState({_det([1, 2]): math.sqrt(0.5), _det([0, 3]): -math.sqrt(0.5)})
+        mixed_valence = ManyBodyState({_det([0, 1]): math.sqrt(0.5), _det([0, 2]): math.sqrt(0.5)})
+    else:
+        bell = ManyBodyState({})
+        mixed_valence = ManyBodyState({})
+    psis = basis.redistribute_psis([bell, mixed_valence])
+
+    ent = compute_entanglement_entropy(basis, psis, np.array([0.0, 1.0]), tau=0.5)
+    assert ent["per_state_entropy"] == pytest.approx([math.log(2), math.log(2)])
+    assert ent["per_state_norm"] == pytest.approx([1.0, 1.0])
+    assert ent["n_imp_sectors"] == [1, 2]
+    assert ent["sector_weights"][1] == {1: pytest.approx(0.5), 2: pytest.approx(0.5)}
 
 
 def test_participation_helpers_on_known_distributions():

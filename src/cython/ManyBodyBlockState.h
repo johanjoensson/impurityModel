@@ -10,7 +10,8 @@
 
 /**
  * @class ManyBodyBlockState
- * @brief A block of p many-body vectors over ONE shared Slater-determinant support.
+ * @brief A block of p many-body vectors over ONE shared Slater-determinant
+ * support.
  *
  * Stores the union support as a sorted, strictly-increasing key vector and the
  * coefficients as a row-major (rows() x width()) dense array: row r holds the p
@@ -18,12 +19,12 @@
  * (block Lanczos / Green's function) counterpart of ManyBodyState: the shared
  * support lets ManyBodyOperator::apply do the term loop, sign work, restriction
  * checks and accumulator hashing once per (determinant, term) and emit p scaled
- * amplitudes, and it lets block inner products / axpy run as dense row-block BLAS
- * when two blocks share a support. ManyBodyState remains the single-vector
+ * amplitudes, and it lets block inner products / axpy run as dense row-block
+ * BLAS when two blocks share a support. ManyBodyState remains the single-vector
  * boundary type everywhere outside the hot loop.
  *
- * Invariants: m_keys is sorted and unique; m_amps.size() == m_keys.size() * m_width.
- * The block width is a runtime value (no compile-time bound).
+ * Invariants: m_keys is sorted and unique; m_amps.size() == m_keys.size() *
+ * m_width. The block width is a runtime value (no compile-time bound).
  */
 class ManyBodyBlockState {
 public:
@@ -280,15 +281,17 @@ public:
 };
 
 /**
- * @brief Block Gram matrix C = A^H B: C[i, j] = sum_det conj(A[det, i]) * B[det, j].
+ * @brief Block Gram matrix C = A^H B: C[i, j] = sum_det conj(A[det, i]) *
+ * B[det, j].
  *
  * Merge-join over the two sorted supports (linear in rows); shared determinants
  * contribute a rank-1 update. The determinant order equals the sorted flat_map
- * iteration order of the scalar path, so the per-(i, j) summation sequence matches
- * `inner_multi` over lists bit-for-bit. `C` must hold A.width() * B.width() values
- * (row-major, stride B.width()).
+ * iteration order of the scalar path, so the per-(i, j) summation sequence
+ * matches `inner_multi` over lists bit-for-bit. `C` must hold A.width() *
+ * B.width() values (row-major, stride B.width()).
  */
-inline void block_inner(const ManyBodyBlockState &A, const ManyBodyBlockState &B,
+inline void block_inner(const ManyBodyBlockState &A,
+                        const ManyBodyBlockState &B,
                         ManyBodyBlockState::Value *C) {
   const std::size_t wa = A.width();
   const std::size_t wb = B.width();
@@ -338,8 +341,8 @@ inline ManyBodyBlockState block_add_scaled(const ManyBodyBlockState &A,
   const auto emit_bc = [&](const ManyBodyBlockState::Value *base,
                            const ManyBodyBlockState::Value *rb) {
     for (std::size_t j = 0; j < wa; ++j) {
-      ManyBodyBlockState::Value v = base ? base[j]
-                                         : ManyBodyBlockState::Value{0.0, 0.0};
+      ManyBodyBlockState::Value v =
+          base ? base[j] : ManyBodyBlockState::Value{0.0, 0.0};
       if (rb != nullptr) {
         for (std::size_t i = 0; i < wb; ++i) {
           const ManyBodyBlockState::Value c = C[i * wa + j];
@@ -370,14 +373,13 @@ inline ManyBodyBlockState block_add_scaled(const ManyBodyBlockState &A,
       ++ib;
     }
   }
-  return ManyBodyBlockState(std::move(keys), std::move(amps),
-                            wa);
+  return ManyBodyBlockState(std::move(keys), std::move(amps), wa);
 }
 
 /**
  * @brief OUT = A * Y on A's support: out[det, k] = sum_j A[det, j] * Y[j, k],
- * with Y row-major (A.width() x width_out). The j-ascending accumulation matches
- * `block_combine_sparse` (add_scaled_multi) bit-for-bit, including the
+ * with Y row-major (A.width() x width_out). The j-ascending accumulation
+ * matches `block_combine_sparse` (add_scaled_multi) bit-for-bit, including the
  * skip-exact-zero-coefficient behavior.
  */
 inline ManyBodyBlockState block_combine_cols(const ManyBodyBlockState &A,
@@ -385,9 +387,8 @@ inline ManyBodyBlockState block_combine_cols(const ManyBodyBlockState &A,
                                              std::size_t width_out) {
   const std::size_t wa = A.width();
   std::vector<ManyBodyBlockState::Key> keys(A.keys());
-  std::vector<ManyBodyBlockState::Value> amps(A.rows() * width_out,
-                                              ManyBodyBlockState::Value{0.0,
-                                                                        0.0});
+  std::vector<ManyBodyBlockState::Value> amps(
+      A.rows() * width_out, ManyBodyBlockState::Value{0.0, 0.0});
   for (std::size_t r = 0; r < A.rows(); ++r) {
     const ManyBodyBlockState::Value *ra = A.row(r);
     ManyBodyBlockState::Value *out = amps.data() + r * width_out;

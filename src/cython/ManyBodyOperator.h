@@ -9,11 +9,12 @@
 #include <vector>
 
 /**
- * @brief True when compiled with the opt-in threaded apply (IMPURITYMODEL_PARALLEL=1).
+ * @brief True when compiled with the opt-in threaded apply
+ * (IMPURITYMODEL_PARALLEL=1).
  *
  * The threaded merge changes the duplicate-accumulation order, so bit-for-bit
- * reproducibility of apply results is a serial-build property; tests use this to
- * choose exact vs tolerance assertions.
+ * reproducibility of apply results is a serial-build property; tests use this
+ * to choose exact vs tolerance assertions.
  */
 bool apply_parallel_build() noexcept;
 
@@ -21,10 +22,11 @@ bool apply_parallel_build() noexcept;
  * @class ManyBodyOperator
  * @brief Represents a quantum many-body operator in second quantization.
  *
- * This class stores a collection of creation and annihilation operator sequences
- * along with their corresponding complex amplitudes. It provides functionality
- * to apply the operator to a ManyBodyState, with support for multithreading
- * (when PARALLEL is defined) and restriction masks to filter allowed states.
+ * This class stores a collection of creation and annihilation operator
+ * sequences along with their corresponding complex amplitudes. It provides
+ * functionality to apply the operator to a ManyBodyState, with support for
+ * multithreading (when PARALLEL is defined) and restriction masks to filter
+ * allowed states.
  */
 class ManyBodyOperator {
 
@@ -51,13 +53,14 @@ public:
   using Restrictions =
       std::vector<std::pair<std::vector<size_t>, std::pair<size_t, size_t>>>;
   // Weighted-sum restrictions: each entry is a list of (integer weight, orbital
-  // subset) groups together with an inclusive [q_min, q_max] bound on the weighted
-  // occupation sum  sum_w  w * (#occupied orbitals in that group).  Lets a charge
-  // like S_z = sum +-1 n_i (after scaling to integer weights) or L_z = sum m_l n_i
-  // be expressed, which a plain subset-occupation bound cannot.
-  using WeightedRestrictions = std::vector<
-      std::pair<std::vector<std::pair<long, std::vector<size_t>>>,
-                std::pair<long, long>>>;
+  // subset) groups together with an inclusive [q_min, q_max] bound on the
+  // weighted occupation sum  sum_w  w * (#occupied orbitals in that group).
+  // Lets a charge like S_z = sum +-1 n_i (after scaling to integer weights) or
+  // L_z = sum m_l n_i be expressed, which a plain subset-occupation bound
+  // cannot.
+  using WeightedRestrictions =
+      std::vector<std::pair<std::vector<std::pair<long, std::vector<size_t>>>,
+                            std::pair<long, long>>>;
 
 public:
   using key_type = OPS;
@@ -129,11 +132,11 @@ public:
   }
 
   [[nodiscard]] std::vector<ManyBodyState>
-  apply(const std::vector<const ManyBodyState*> &psis, double cutoff) const
+  apply(const std::vector<const ManyBodyState *> &psis, double cutoff) const
   /*noexcept*/ {
     std::vector<ManyBodyState> res;
     res.reserve(psis.size());
-    for (const ManyBodyState* psi : psis) {
+    for (const ManyBodyState *psi : psis) {
       res.push_back(this->apply(*psi, cutoff));
     }
     return res;
@@ -158,18 +161,21 @@ public:
   bool clear();
 
   /**
-   * @brief Enable/disable build-time normal ordering of the apply() representation.
+   * @brief Enable/disable build-time normal ordering of the apply()
+   * representation.
    *
-   * When enabled (default) each term is rewritten to canonical order (creations before
-   * annihilations, each group ascending in orbital) via the fermionic anticommutators,
-   * emitting contraction terms when a creation crosses an annihilation of the same
-   * orbital and dropping Pauli-vanishing terms. This is a representation change only:
-   * the operator's action on any state is unchanged. It lets the diagonal/density fast
-   * path absorb forms like c_i c^d_i = 1 - n_i and merges terms equal up to ordering.
+   * When enabled (default) each term is rewritten to canonical order (creations
+   * before annihilations, each group ascending in orbital) via the fermionic
+   * anticommutators, emitting contraction terms when a creation crosses an
+   * annihilation of the same orbital and dropping Pauli-vanishing terms. This
+   * is a representation change only: the operator's action on any state is
+   * unchanged. It lets the diagonal/density fast path absorb forms like c_i
+   * c^d_i = 1 - n_i and merges terms equal up to ordering.
    */
   void set_normal_ordering(bool enable) noexcept;
   [[nodiscard]] bool normal_ordering() const noexcept;
-  /** @brief Number of terms in the (possibly normal-ordered) apply() representation. */
+  /** @brief Number of terms in the (possibly normal-ordered) apply()
+   * representation. */
   [[nodiscard]] size_type num_flat_terms() const;
 
   ManyBodyOperator &operator+=(const ManyBodyOperator &) noexcept;
@@ -281,8 +287,9 @@ private:
              std::vector<size_t>>
       m_restrictions_mask;
 
-  // For each weighted restriction: a list of (weight, precomputed bitmask) groups
-  // and the inclusive [q_min, q_max] bound on the weighted occupation sum.
+  // For each weighted restriction: a list of (weight, precomputed bitmask)
+  // groups and the inclusive [q_min, q_max] bound on the weighted occupation
+  // sum.
   std::vector<std::pair<std::vector<std::pair<long, ManyBodyState::key_type>>,
                         std::pair<long, long>>>
       m_weighted_restrictions_mask;
@@ -293,25 +300,28 @@ private:
   mutable std::vector<size_t> m_flat_offsets;
   mutable std::vector<std::complex<double>> m_flat_coeffs;
   // Per-term flag (1 = diagonal): the created-orbital multiset equals the
-  // annihilated-orbital multiset, so the term maps every occupation basis state to
-  // itself up to a scalar. Lets apply() accumulate all diagonal terms of one input SD
-  // into a single output insert. Constants (zero operators) are diagonal.
+  // annihilated-orbital multiset, so the term maps every occupation basis state
+  // to itself up to a scalar. Lets apply() accumulate all diagonal terms of one
+  // input SD into a single output insert. Constants (zero operators) are
+  // diagonal.
   mutable std::vector<uint8_t> m_flat_diagonal;
-  // Per-term flag (1 = pure number-operator product, e.g. n_i, n_i n_j, or a constant):
-  // balanced + all-distinct orbitals AND the build-time all-occupied probe gives a
-  // nonzero (occupancy-independent) sign. These get the Phase 2b fast path: a single
-  // occupancy AND-test against m_density_mask instead of running create/annihilate, with
-  // the constant sign folded into m_density_coeff. Balanced terms that are NOT pure
-  // n-products (e.g. c_i c^d_i = 1 - n_i) fail the probe and fall back to the general
-  // diagonal path, so correctness never depends on this optimization firing.
+  // Per-term flag (1 = pure number-operator product, e.g. n_i, n_i n_j, or a
+  // constant): balanced + all-distinct orbitals AND the build-time all-occupied
+  // probe gives a nonzero (occupancy-independent) sign. These get the Phase 2b
+  // fast path: a single occupancy AND-test against m_density_mask instead of
+  // running create/annihilate, with the constant sign folded into
+  // m_density_coeff. Balanced terms that are NOT pure n-products (e.g. c_i
+  // c^d_i = 1 - n_i) fail the probe and fall back to the general diagonal path,
+  // so correctness never depends on this optimization firing.
   mutable std::vector<uint8_t> m_flat_density;
   mutable std::vector<ManyBodyState::key_type> m_density_mask;
   mutable std::vector<std::complex<double>> m_density_coeff;
-  // Per-term flag (1 = off-diagonal one-body hop c^d_i c_j, i != j). These get a masked
-  // kernel: occupancy/vacancy bit tests + the fermion sign as
-  // (-1)^popcount(state & m_onebody_between), where the between-mask marks the orbitals
-  // strictly between i and j -- one popcount instead of the two prefix scans inside
-  // create/annihilate. m_onebody_i = created orbital, m_onebody_j = annihilated orbital.
+  // Per-term flag (1 = off-diagonal one-body hop c^d_i c_j, i != j). These get
+  // a masked kernel: occupancy/vacancy bit tests + the fermion sign as
+  // (-1)^popcount(state & m_onebody_between), where the between-mask marks the
+  // orbitals strictly between i and j -- one popcount instead of the two prefix
+  // scans inside create/annihilate. m_onebody_i = created orbital, m_onebody_j
+  // = annihilated orbital.
   mutable std::vector<uint8_t> m_flat_onebody;
   mutable std::vector<size_t> m_onebody_i;
   mutable std::vector<size_t> m_onebody_j;

@@ -6,6 +6,7 @@
 # is_array-dispatching block_* primitives.
 # ===========================================================================
 
+
 # --- Path-agnostic basis helpers. The array path represents a basis as an
 # ``(N, k)`` ndarray (column blocks); the ManyBodyState path as a length-``k``
 # list of states. ---------------------------------------------------------
@@ -84,8 +85,18 @@ def _implicitly_restarted_block_lanczos_array(
     psi0 = np.ascontiguousarray(psi0 if psi0.ndim == 2 else psi0.reshape(-1, 1), dtype=complex)
     psi0, _ = block_normalize(psi0, mpi, comm, 0.0)
 
-    def sweep(v0, max_iter, alphas=None, betas=None, Q=None, W=None, reort=None,
-              locked=None, locked_evals=None, locked_res=0.0):
+    def sweep(
+        v0,
+        max_iter,
+        alphas=None,
+        betas=None,
+        Q=None,
+        W=None,
+        reort=None,
+        locked=None,
+        locked_evals=None,
+        locked_res=0.0,
+    ):
         res = block_lanczos_array(
             psi0=v0,
             h_op=h_op,
@@ -150,8 +161,18 @@ def _implicitly_restarted_block_lanczos_manybody(
     psi0 = list(psi0) if isinstance(psi0, (list, tuple)) else psi0
     psi0, _ = block_normalize(psi0, mpi, comm, slaterWeightMin)
 
-    def sweep(v0, max_iter, alphas=None, betas=None, Q=None, W=None, reort=None,
-              locked=None, locked_evals=None, locked_res=0.0):
+    def sweep(
+        v0,
+        max_iter,
+        alphas=None,
+        betas=None,
+        Q=None,
+        W=None,
+        reort=None,
+        locked=None,
+        locked_evals=None,
+        locked_res=0.0,
+    ):
         r = reort if reort is not None else reort_mode
         r = r.name.lower() if hasattr(r, "name") else r
         res = block_lanczos_cy(
@@ -329,7 +350,9 @@ def _irlm_core(
             # not apply. Stop and let _assemble_results pull the lowest wanted Ritz
             # pairs from this width-consistent factorization.
             if verbose and rank0:
-                print(f"[{tag}] Restart {restart:3d} | sweep deflated to dim {total} (<{m_act * p}); extracting & stopping.")
+                print(
+                    f"[{tag}] Restart {restart:3d} | sweep deflated to dim {total} (<{m_act * p}); extracting & stopping."
+                )
             break
 
         beta_last = betas[m_act - 1]
@@ -391,7 +414,9 @@ def _irlm_core(
             X_rem = block_combine(_q_slice(Q_basis, 0, total), Z[:, order], slater)
             _lock_block(X_rem, [evals[i].real for i in order])
             if verbose and rank0:
-                print(f"[{tag}] Restart {restart:3d} | trailing residual block deflated (width {res_width}<{p}). Locking remaining & stopping.")
+                print(
+                    f"[{tag}] Restart {restart:3d} | trailing residual block deflated (width {res_width}<{p}). Locking remaining & stopping."
+                )
             break
 
         # The trailing normalized residual block is always present after a sweep (the
@@ -470,14 +495,10 @@ def _irlm_core(
         )
 
     # --- Final extraction -----------------------------------------------
-    return _assemble_results(
-        Xl, theta_l, alphas, betas, Q_basis, num_wanted, p, mpi, comm, slater, is_arr, widths
-    )
+    return _assemble_results(Xl, theta_l, alphas, betas, Q_basis, num_wanted, p, mpi, comm, slater, is_arr, widths)
 
 
-def _assemble_results(
-    Xl, theta_l, alphas, betas, Q_basis, num_wanted, p, mpi, comm, slater, is_arr, widths=None
-):
+def _assemble_results(Xl, theta_l, alphas, betas, Q_basis, num_wanted, p, mpi, comm, slater, is_arr, widths=None):
     """Combine locked pairs with the best remaining active Ritz pairs, sorted ascending.
 
     Active Ritz candidates are deflated against the locked set (and each other) and any

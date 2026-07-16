@@ -334,8 +334,18 @@ def _thick_restart_block_lanczos_array(
         return res[0], res[1], res[2], res[3]
 
     return _trlm_core(
-        psi0, h_op, basis, num_wanted, max_subspace_blocks, tol, max_restarts,
-        verbose, reort_mode, 0.0, comm, sweep,
+        psi0,
+        h_op,
+        basis,
+        num_wanted,
+        max_subspace_blocks,
+        tol,
+        max_restarts,
+        verbose,
+        reort_mode,
+        0.0,
+        comm,
+        sweep,
     )
 
 
@@ -404,8 +414,18 @@ def thick_restart_block_lanczos_cy(
         return res[0], res[1], res[2], res[4]
 
     return _trlm_core(
-        psi0, h_op, basis, num_wanted, max_subspace_blocks, tol, max_restarts,
-        verbose, reort_mode, slaterWeightMin, comm, sweep,
+        psi0,
+        h_op,
+        basis,
+        num_wanted,
+        max_subspace_blocks,
+        tol,
+        max_restarts,
+        verbose,
+        reort_mode,
+        slaterWeightMin,
+        comm,
+        sweep,
     )
 
 

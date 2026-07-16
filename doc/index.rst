@@ -23,6 +23,7 @@ self-energies for DMFT-style workflows.
    architecture_overview
    gf_solver_architecture
    basis_and_restrictions
+   ground_state_report
    mpi_model
    greens_function_theory
 

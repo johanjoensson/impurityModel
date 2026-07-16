@@ -130,3 +130,31 @@ def test_fixed_occupation_dc_unreachable_raises():
     dc_guess = 0.5 * np.identity(2, dtype=complex)
     with pytest.raises(RuntimeError, match="Could not bracket"):
         fixed_occupation_dc(occupation=0.2, dc_guess=dc_guess, **common_kwargs(v=0.3, tau=1e-2))
+
+
+@pytest.mark.mpi
+def test_fixed_peak_dc_ranks_agree():
+    # The Newton loop in fixed_peak_dc branches on Lanczos energies, which are
+    # only replicated to roundoff across ranks. Every rank must nevertheless run
+    # the same iterations and return an identical dc; a per-rank divergence
+    # would deadlock on the next collective solve instead of returning here.
+    comm = MPI.COMM_WORLD
+    dc_guess = 0.5 * np.identity(2, dtype=complex)
+    dc = fixed_peak_dc(peak_position=1.2, dc_guess=dc_guess, **common_kwargs(v=0.01, tau=1e-3))
+    gathered = comm.gather(dc, root=0)
+    if comm.rank == 0:
+        for other in gathered[1:]:
+            assert np.array_equal(dc, other), (dc, other)
+
+
+@pytest.mark.mpi
+def test_fixed_occupation_dc_ranks_agree():
+    # Occupation control keys off the Allreduced density matrix, so agreement is
+    # by construction; guard it against regressions all the same.
+    comm = MPI.COMM_WORLD
+    dc_guess = 0.5 * np.identity(2, dtype=complex)
+    dc = fixed_occupation_dc(occupation=2.0, dc_guess=dc_guess, **common_kwargs(v=0.3, tau=1e-2))
+    gathered = comm.gather(dc, root=0)
+    if comm.rank == 0:
+        for other in gathered[1:]:
+            assert np.array_equal(dc, other), (dc, other)

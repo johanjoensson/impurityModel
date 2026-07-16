@@ -531,7 +531,10 @@ def calc_G(alphas, betas, r, omega, e, delta):
         ``(len(omega), n_ops, n_ops)`` Green's function.
     """
     r = np.asarray(r)
-    if len(alphas) == 0:
+    if len(alphas) == 0 or not np.any(r):
+        # A zero seed projection gives G = r^H (...) r = 0 identically; skip the solve,
+        # whose tridiagonal may be singular on the mesh (e.g. an all-elastic
+        # susceptibility seed projected to zero, evaluated at nu = 0 with delta = 0).
         n_ops = r.shape[-1]
         return np.zeros((len(omega), n_ops, n_ops), dtype=complex)
     omegaP = np.asarray(omega) + 1j * delta + e

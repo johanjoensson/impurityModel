@@ -526,6 +526,8 @@ def calc_spectra(
     dN_val,
     dN_con,
     equivalence_groups=None,
+    extra_meshes=None,
+    seed_transform=None,
 ):
     """
     Calculate the Green's function spectra for a list of transition operators.
@@ -567,15 +569,31 @@ def calc_spectra(
         (by symmetry) to yield identical spectra, so the Lanczos is run for one representative
         per label and the result is broadcast to every member -- the B2a degeneracy dedup.
         ``None`` (default) computes every operator independently.
+    extra_meshes : list of (ndarray, float), optional
+        Additional ``(mesh, delta)`` pairs on which the *same* accumulated Lanczos
+        coefficients are evaluated (evaluation is pointwise in ``mesh + 1j*delta``, so a
+        complex mesh with ``delta=0`` gives e.g. a Matsubara evaluation) -- no extra
+        Lanczos work. When given, the return value is a **list** ``[G(w, delta),
+        G(mesh_1, delta_1), ...]``.
+    seed_transform : callable, optional
+        ``seed_transform(ei, i_op, seed) -> ManyBodyState`` applied to each enumerated
+        Lanczos seed column ``tOps[i_op] |psi_ei>`` before the work-unit split (e.g. the
+        susceptibility driver's projection of the seed out of the degenerate ground
+        manifold). Must be linear in ``seed`` and collective-safe: it is invoked in the
+        identical order on every rank, so it may perform collectives on ``basis.comm``.
+        Incompatible with ``equivalence_groups``; forces the non-pairwise unit
+        decomposition.
 
     Returns
     -------
-    ndarray
+    ndarray or list of ndarray
         A 2D array of shape `(len(w), len(tOps))` containing the complex-valued
-        spectra on the real axis. Only returned on root process rank 0; other ranks
-        return an empty array.
+        spectra on the real axis (a list of such arrays, one per mesh, when
+        ``extra_meshes`` is given). Only returned on root process rank 0; other ranks
+        return an empty array (or a list of empty arrays).
     """
     if equivalence_groups is not None:
+        assert seed_transform is None, "seed_transform is incompatible with equivalence_groups"
         # Compute one representative per equivalence class, then broadcast columns. Every rank
         # takes the same reduced path (the recursion is collective), so MPI stays in lock-step.
         first_index = {}
@@ -600,14 +618,19 @@ def calc_spectra(
             dN_val,
             dN_con,
             equivalence_groups=None,
+            extra_meshes=extra_meshes,
         )
-        if reduced.size == 0:  # non-root ranks return an empty array
+        reduced_list = reduced if extra_meshes is not None else [reduced]
+        if reduced_list[0].size == 0:  # non-root ranks return (a list of) empty arrays
             return reduced
         pos = {label: k for k, label in enumerate(rep_order)}
-        full = np.empty((reduced.shape[0], len(equivalence_groups)), dtype=complex)
-        for i, label in enumerate(equivalence_groups):
-            full[:, i] = reduced[:, pos[label]]
-        return full
+        full_list = []
+        for reduced_mesh in reduced_list:
+            full = np.empty((reduced_mesh.shape[0], len(equivalence_groups)), dtype=complex)
+            for i, label in enumerate(equivalence_groups):
+                full[:, i] = reduced_mesh[:, pos[label]]
+            full_list.append(full)
+        return full_list if extra_meshes is not None else full_list[0]
 
     comm = basis.comm
     # Conserved-charge sector confinement, one restriction per transition operator (computed
@@ -633,8 +656,20 @@ def calc_spectra(
     # (gf.get_Greens_function); the engine handles the serial path internally.
     op_groups = [([tOp], delta) for tOp in tOps]
     units, unit_seeds, unit_restrictions = gf.enumerate_gf_units(
-        op_groups, psis, group_restrictions, weighted_restrictions, slaterWeightMin
+        op_groups,
+        psis,
+        group_restrictions,
+        weighted_restrictions,
+        slaterWeightMin,
+        # The pairwise decomposition combines seed columns, which would hide the
+        # (eigenstate, operator) identity the transform needs.
+        pairwise=False if seed_transform is not None else None,
     )
+    if seed_transform is not None:
+        # One operator per group here, so group_i identifies the transition operator and
+        # the unit's seed columns are in eigenstate (chunk) order.
+        for u, unit in enumerate(units):
+            unit_seeds[u] = [seed_transform(ei, unit.group_i, seed) for ei, seed in zip(unit.chunk, unit_seeds[u])]
     unit_weights = gf.unit_cost_weights(unit_seeds, comm)
 
     def kernel(split_basis, u, seeds):
@@ -657,7 +692,8 @@ def calc_spectra(
 
     results = gf.run_units_distributed(basis, unit_seeds, unit_weights, kernel, verbose=verbose)
     if results is None:  # non-root rank of a distributed run
-        return np.empty((0, 0), dtype=complex)
+        empty = np.empty((0, 0), dtype=complex)
+        return [empty] * (1 + len(extra_meshes)) if extra_meshes is not None else empty
 
     # Reassemble per-(tOp, eigenstate) coefficients (unit.group_i indexes tOps; at width 1 the
     # operator-split mode emits only diagonal units, so the same reassembly covers both modes),
@@ -674,11 +710,15 @@ def calc_spectra(
 
     e0 = np.min(es)
     Z = np.sum(np.exp(-(es - e0) / tau))
-    gs_realaxis = np.empty((len(w), len(tOps)), dtype=complex)
-    for i in range(len(tOps)):
-        G_tOp = gf.calc_thermally_averaged_G(acc_alphas[i], acc_betas[i], acc_r[i], w, es, e0, tau, delta)
-        gs_realaxis[:, i] = G_tOp[:, 0, 0] / Z
-    return gs_realaxis
+    meshes = [(w, delta)] + list(extra_meshes or [])
+    gs_per_mesh = []
+    for mesh, mesh_delta in meshes:
+        gs_mesh = np.empty((len(mesh), len(tOps)), dtype=complex)
+        for i in range(len(tOps)):
+            G_tOp = gf.calc_thermally_averaged_G(acc_alphas[i], acc_betas[i], acc_r[i], mesh, es, e0, tau, mesh_delta)
+            gs_mesh[:, i] = G_tOp[:, 0, 0] / Z
+        gs_per_mesh.append(gs_mesh)
+    return gs_per_mesh if extra_meshes is not None else gs_per_mesh[0]
 
 
 def _combine_component_ops(component_ops, coeffs):

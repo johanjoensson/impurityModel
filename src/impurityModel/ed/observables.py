@@ -5,11 +5,13 @@ basis, many-body spin/orbital/Casimir operators, and (thermally averaged)
 expectation-value reporting for degenerate manifolds.
 """
 
+from functools import lru_cache
 from typing import Optional
 
 import numpy as np
 from mpi4py import MPI
 
+from impurityModel.ed.atomic_physics import gauntC
 from impurityModel.ed.average import thermal_average_scale_indep
 from impurityModel.ed.block_structure import get_equivalent_blocks
 from impurityModel.ed.ManyBodyUtils import ManyBodyOperator, inner
@@ -17,7 +19,15 @@ from impurityModel.ed.utils import rotate_matrix
 
 
 def print_expectation_values(
-    rhos, es, rot_to_spherical, block_structure, s_values=None, l_values=None, j_values=None, sisb_values=None
+    rhos,
+    es,
+    rot_to_spherical,
+    block_structure,
+    s_values=None,
+    l_values=None,
+    j_values=None,
+    sisb_values=None,
+    sisb_z_values=None,
 ):
     """
     print several expectation values, e.g. E, N, L^2.
@@ -25,9 +35,10 @@ def print_expectation_values(
     If ``s_values`` / ``l_values`` / ``j_values`` are given (one impurity ``S`` / ``L``
     / ``J`` quantum number per eigenstate, e.g. from :func:`manifold_observable_values`
     with :func:`make_impurity_casimir_operators` + :func:`casimir_to_quantum_number`),
-    the corresponding columns are appended. When all are ``None`` the output is
-    identical to before (used when the eigenstates are not available, e.g. on non-root
-    ranks).
+    the corresponding columns are appended; ``sisb_z_values`` (the longitudinal
+    ``<Sz_imp Sz_bath>``, reported for a collinear spin-polarized bath) adds a
+    ``Szi.Szb`` column. When all are ``None`` the output is identical to before (used
+    when the eigenstates are not available, e.g. on non-root ranks).
     """
     orb_offset = min(orb for block in block_structure.blocks for orb in block)
     equivalent_blocks = get_equivalent_blocks(block_structure)
@@ -39,7 +50,13 @@ def print_expectation_values(
     block_N_string_formatted = [f"{Ns:>{w}s}" for Ns, w in zip(block_N_string, block_N_widths)]
     extra = [
         (name, vals)
-        for name, vals in (("S", s_values), ("L", l_values), ("J", j_values), ("Si.Sb", sisb_values))
+        for name, vals in (
+            ("S", s_values),
+            ("L", l_values),
+            ("J", j_values),
+            ("Si.Sb", sisb_values),
+            ("Szi.Szb", sisb_z_values),
+        )
         if vals is not None
     ]
     # Lz/Sz/L.S and the S/L/J/Si.Sb columns are printed with the space-flag format
@@ -323,6 +340,164 @@ def get_LS_from_rho_spherical(rho: np.ndarray, l: Optional[int] = None) -> float
     return np.real(np.trace(rho @ ls))
 
 
+def get_moments_from_rho_spherical(rho: np.ndarray, l: Optional[int] = None) -> tuple[float, float]:
+    r"""Magnetic moments :math:`\langle L_z + 2S_z\rangle` and :math:`\langle J_z\rangle`.
+
+    :math:`\langle L_z + 2S_z\rangle` is the saturation magnetic moment along ``z`` in
+    units of :math:`\mu_B` (the magnetic-moment operator is
+    :math:`\mu_z = -\mu_B (L_z + 2S_z)`; the sign convention is left to the reader, the
+    printed value is the bare :math:`\langle L_z + 2S_z\rangle`).
+
+    Parameters
+    ----------
+    rho : np.ndarray
+        The density matrix in the spherical basis (down-then-up layout).
+    l : int, optional
+        The orbital angular momentum quantum number. If None, inferred from rho's shape.
+
+    Returns
+    -------
+    (m_z, j_z) : tuple of float
+        :math:`(\langle L_z + 2S_z\rangle, \langle L_z + S_z\rangle)`.
+    """
+    lz = get_Lz_from_rho_spherical(rho, l)
+    sz = get_Sz_from_rho_spherical(rho, l)
+    return float(lz + 2.0 * sz), float(lz + sz)
+
+
+@lru_cache(maxsize=None)
+def _single_particle_tz_matrix(l):
+    r"""Single-particle magnetic-dipole operator :math:`T_z` in the spherical basis.
+
+    :math:`T_z = \sum_i [s_z - 3\hat r_z(\hat{\mathbf r}\cdot\mathbf s)]_i` — the
+    intra-atomic magnetic-dipole term of the XMCD spin sum rule. Expanding the
+    direction-cosine products in Racah tensors :math:`C^2_q` gives the one-body form
+
+    .. math::
+        T_z = -2 C^2_0\, s_z - \sqrt{3/2}\,(C^2_{-1}\, s_+ - C^2_{+1}\, s_-),
+
+    whose orbital matrix elements :math:`\langle l m'|C^2_q|l m\rangle` are Gaunt
+    coefficients (:func:`atomic_physics.gauntC`). Layout matches
+    :func:`_single_particle_lsj_matrices`: first ``2l+1`` orbitals spin-down
+    (``ml=-l..l``), then spin-up.
+
+    For a pure :math:`|m_l, m_s\rangle` state this reproduces the closed form
+    :math:`\langle T_z\rangle = m_s[1 - 3(2l^2+2l-1-2m_l^2)/((2l-1)(2l+3))]`.
+    """
+    n = 2 * l + 1
+    tz = np.zeros((2 * n, 2 * n), dtype=complex)
+    pref = np.sqrt(1.5)
+    for a, m in enumerate(range(-l, l + 1)):
+        c20 = gauntC(2, l, m, l, m)
+        tz[a, a] += c20  # -2 * (-1/2) * C^2_0  (spin-down block)
+        tz[n + a, n + a] -= c20  # -2 * (+1/2) * C^2_0  (spin-up block)
+        if m - 1 >= -l:
+            # -sqrt(3/2) C^2_{-1} s_+ : |dn, m> -> |up, m-1>
+            tz[n + a - 1, a] -= pref * gauntC(2, l, m - 1, l, m)
+        if m + 1 <= l:
+            # +sqrt(3/2) C^2_{+1} s_- : |up, m> -> |dn, m+1>
+            tz[a + 1, n + a] += pref * gauntC(2, l, m + 1, l, m)
+    return tz
+
+
+def get_Tz_from_rho_spherical(rho: np.ndarray, l: Optional[int] = None) -> float:
+    r"""Expectation of the magnetic-dipole term :math:`\langle T_z\rangle` (XMCD spin sum rule).
+
+    :math:`T_z` is a one-body operator, so
+    :math:`\langle T_z\rangle = \mathrm{Tr}(\rho\, t_z)` with the single-particle matrix
+    from :func:`_single_particle_tz_matrix`. Together with :math:`\langle S_z\rangle`
+    and :math:`\langle L_z\rangle` this is the ground-state side of the XMCD spin and
+    orbital sum rules (the "effective spin moment" is
+    :math:`\langle S_z\rangle + \tfrac{7}{2}\langle T_z\rangle` for a d shell).
+
+    Parameters
+    ----------
+    rho : np.ndarray
+        The density matrix in the spherical basis (down-then-up layout).
+    l : int, optional
+        The orbital angular momentum quantum number. If None, inferred from rho's shape.
+
+    Returns
+    -------
+    float
+    """
+    if l is None:
+        l = (rho.shape[0] // 2 - 1) // 2
+    n = 2 * l + 1
+    rho = rho[: 2 * n, : 2 * n]
+    return float(np.real(np.trace(rho @ _single_particle_tz_matrix(l))))
+
+
+_TERM_LETTERS = "SPDFGHIKLMNOQRTUV"
+
+
+def term_symbol(s, l, j, tol=5e-2):
+    r"""Spectroscopic term symbol :math:`^{2S+1}L_J` from quantum numbers.
+
+    Parameters
+    ----------
+    s, l, j : float
+        The spin / orbital / total angular-momentum quantum numbers (e.g. from
+        :func:`casimir_to_quantum_number` of the impurity Casimirs).
+    tol : float, optional
+        Tolerance for treating ``s``/``j`` as half-integers and ``l`` as an integer.
+
+    Returns
+    -------
+    str
+        E.g. ``"3F4"`` or ``"2F7/2"``. When the values are not clean (half-)integers —
+        a mixed-valence or strongly hybridized state — the nearest term is prefixed
+        with ``~`` (e.g. ``"~3F4"``) to mark it approximate.
+    """
+    s, l, j = float(s), float(l), float(j)
+    clean = abs(2 * s - round(2 * s)) <= 2 * tol and abs(l - round(l)) <= tol and abs(2 * j - round(2 * j)) <= 2 * tol
+    l_r = round(l)
+    mult = round(2 * s + 1)
+    j2_r = round(2 * j)
+    letter = _TERM_LETTERS[l_r] if l_r < len(_TERM_LETTERS) else f"(L={l_r})"
+    j_str = str(j2_r // 2) if j2_r % 2 == 0 else f"{j2_r}/2"
+    term = f"{mult}{letter}{j_str}"
+    return term if clean else "~" + term
+
+
+def lande_g_and_moments(s2, l2, j2, j2_tol=1e-3):
+    r"""Landé :math:`g_J` and effective moments from Casimir expectation values.
+
+    .. math::
+        g_J = \tfrac32 + \frac{\langle S^2\rangle - \langle L^2\rangle}
+                              {2\langle J^2\rangle},
+        \qquad
+        \mu_\mathrm{eff} = g_J \sqrt{\langle J^2\rangle},
+        \qquad
+        \mu_\mathrm{spin} = 2\sqrt{\langle S^2\rangle},
+
+    in units of :math:`\mu_B`. Evaluated directly on the (thermal) expectation values
+    :math:`\langle S^2\rangle = S(S+1)` etc., so mixed-valence states give the
+    correspondingly interpolated moments.
+
+    Parameters
+    ----------
+    s2, l2, j2 : float
+        Expectation values of the :math:`S^2`, :math:`L^2`, :math:`J^2` Casimirs.
+    j2_tol : float, optional
+        Below this :math:`\langle J^2\rangle`, ``g_J``/``mu_eff`` are returned as
+        ``None`` (a ``J=0`` state has no Landé factor).
+
+    Returns
+    -------
+    (g_j, mu_eff, mu_spin) : tuple
+        ``g_j`` and ``mu_eff`` are ``None`` when :math:`\langle J^2\rangle \le` tol.
+    """
+    s2 = float(np.real(s2))
+    l2 = float(np.real(l2))
+    j2 = float(np.real(j2))
+    mu_spin = 2.0 * np.sqrt(max(s2, 0.0))
+    if j2 <= j2_tol:
+        return None, None, mu_spin
+    g_j = 1.5 + (s2 - l2) / (2.0 * j2)
+    return g_j, g_j * np.sqrt(j2), mu_spin
+
+
 def make_spin_operators(spin_pairs):
     r"""Build the one-body spin ladder/Cartan operators for a set of spatial orbitals.
 
@@ -514,6 +689,57 @@ def apply_spin_correlation(psi, ops_a, ops_b):
     return result
 
 
+def apply_spin_z_correlation(psi, ops_a, ops_b):
+    r"""Apply the longitudinal spin-correlation operator :math:`\hat S^A_z \hat S^B_z`.
+
+    The Ising part of :func:`apply_spin_correlation`. Unlike the transverse part it
+    only needs the spin *labels* (up vs down), not the down↔up pairing, so it stays
+    exact for a collinear spin-polarized bath where the transverse pairing is a
+    modelling choice (see :func:`spin_pairs.collinear_spin_pairs_consistent_with_h`).
+
+    Parameters
+    ----------
+    psi : ManyBodyState
+        The state to act on.
+    ops_a, ops_b : (ManyBodyOperator, ManyBodyOperator, ManyBodyOperator)
+        The ``(S_+, S_-, S_z)`` operators for set A and set B (see
+        :func:`make_spin_operators`). Unlike :func:`apply_spin_correlation`, A and B need
+        not be disjoint: the ``S_z`` operators are diagonal and commute, so passing the
+        same set twice yields :math:`\hat S_z^2|\psi\rangle`.
+
+    Returns
+    -------
+    ManyBodyState
+        :math:`\hat S^A_z \hat S^B_z\,|\psi\rangle`.
+    """
+    a_z = ops_a[2]
+    b_z = ops_b[2]
+    return a_z(b_z(psi, 0), 0)
+
+
+def get_Sz_from_rho_pairs(rho, spin_pairs):
+    r"""``<S_z> = 1/2 sum_a (n_{a up} - n_{a dn})`` from a density matrix and a pairing.
+
+    Works directly in the computational basis: ``spin_pairs`` lists the ``(dn, up)``
+    spin-orbital index pairs (into ``rho``) of the orbital set, so no spherical
+    rotation is needed. Only the spin labels matter (each pair contributes through its
+    two diagonal entries), so this is exact whenever ``[h, S_z] = 0`` validates the
+    labelling — including for a collinear spin-polarized bath.
+
+    Parameters
+    ----------
+    rho : np.ndarray
+        Single-particle density matrix in the computational basis.
+    spin_pairs : sequence of (int, int)
+        ``(dn, up)`` index pairs of the orbital set.
+
+    Returns
+    -------
+    float
+    """
+    return float(np.real(sum(0.5 * (rho[up, up] - rho[dn, dn]) for dn, up in spin_pairs)))
+
+
 def expect_spin_correlation(psi, ops_a, ops_b, comm=None):
     r"""Return :math:`\langle\psi|\hat{\mathbf S}_A\cdot\hat{\mathbf S}_B|\psi\rangle`.
 
@@ -549,6 +775,480 @@ def expect_casimir(psi, j_plus, j_minus, j_z, comm=None):
     if comm is not None:
         val = comm.allreduce(val)
     return np.real(val)
+
+
+def compute_correlation_diagnostics(psis, es, tau, thermal_rho, imp_pairs, comm=None, redistribute=None):
+    r"""Correlation-strength diagnostics of the impurity (Mott/Hund physics).
+
+    Per impurity spatial orbital ``a`` (one ``(dn, up)`` pair each): the double occupancy
+    :math:`d_a = \langle n_{a\uparrow} n_{a\downarrow}\rangle` and the local moment
+    :math:`\langle m_z^2\rangle_a = (\langle n_\uparrow\rangle + \langle n_\downarrow\rangle
+    - 2 d_a)/4` (using :math:`n^2 = n`). For the whole impurity: :math:`\langle S_z^2\rangle`,
+    the static longitudinal susceptibility
+    :math:`\chi_{zz} = (\langle S_z^2\rangle - \langle S_z\rangle^2)/\tau`, and the
+    inter-orbital Hund matrix :math:`\langle \mathbf S_a\cdot\mathbf S_b\rangle` (diagonal
+    :math:`\langle S_a^2\rangle = 3\langle m_z^2\rangle_a`).
+
+    All two-body values are evaluated per state with :func:`manifold_observable_values`
+    (manifold-safe) and thermally averaged. Collective when ``comm`` is given.
+
+    Parameters
+    ----------
+    psis, es, tau
+        Eigenstates (rank-local when distributed), energies, thermal energy scale.
+    thermal_rho : np.ndarray
+        Full thermally-averaged one-particle density matrix (replicated).
+    imp_pairs : list of (int, int)
+        Validated impurity ``(dn, up)`` spin-orbital pairs.
+    comm, redistribute
+        As in :func:`manifold_observable_values`.
+
+    Returns
+    -------
+    dict
+    """
+    n_sp = len(imp_pairs)
+    docc_values = np.empty((n_sp, len(psis)))
+    for a, (dn, up) in enumerate(imp_pairs):
+        op = ManyBodyOperator({((up, "c"), (dn, "c"), (dn, "a"), (up, "a")): 1.0})
+        docc_values[a] = manifold_observable_values(
+            psis, es, lambda psi, _op=op: _op(psi, 0), comm=comm, redistribute=redistribute
+        )
+    docc_thermal = np.array([np.real(thermal_observable_value(docc_values[a], es, tau)) for a in range(n_sp)])
+    n_dn = np.array([np.real(thermal_rho[dn, dn]) for dn, _ in imp_pairs])
+    n_up = np.array([np.real(thermal_rho[up, up]) for _, up in imp_pairs])
+    mz2 = (n_dn + n_up - 2.0 * docc_thermal) / 4.0
+
+    ops_imp = make_spin_operators(imp_pairs)
+    sz2_values = manifold_observable_values(
+        psis,
+        es,
+        lambda psi: apply_spin_z_correlation(psi, ops_imp, ops_imp),
+        comm=comm,
+        redistribute=redistribute,
+    )
+    sz2_thermal = float(np.real(thermal_observable_value(sz2_values, es, tau)))
+    sz_thermal = get_Sz_from_rho_pairs(thermal_rho, imp_pairs)
+    chi_zz = (sz2_thermal - sz_thermal**2) / tau
+
+    hund = np.diag(3.0 * mz2)
+    orbital_ops = [make_spin_operators([pair]) for pair in imp_pairs]
+    for i in range(n_sp):
+        for j in range(i + 1, n_sp):
+            vals = manifold_observable_values(
+                psis,
+                es,
+                lambda psi, _i=i, _j=j: apply_spin_correlation(psi, orbital_ops[_i], orbital_ops[_j]),
+                comm=comm,
+                redistribute=redistribute,
+            )
+            hund[i, j] = hund[j, i] = float(np.real(thermal_observable_value(vals, es, tau)))
+
+    return {
+        "pairs": [(int(dn), int(up)) for dn, up in imp_pairs],
+        "n_dn": n_dn,
+        "n_up": n_up,
+        "docc": docc_thermal,
+        "docc_values": np.real(docc_values),
+        "docc_total": float(np.sum(docc_thermal)),
+        "local_moment_z2": mz2,
+        "sz2_values": np.real(sz2_values),
+        "sz2_thermal": sz2_thermal,
+        "sz_thermal": sz_thermal,
+        "chi_zz": float(chi_zz),
+        "tau": float(tau),
+        "hund": hund,
+    }
+
+
+def compute_static_susceptibilities(
+    psis, es, tau, impurity_indices, s_z_op=None, l_z_op=None, comm=None, redistribute=None
+):
+    r"""Static (Curie) susceptibilities of the impurity from the retained thermal manifold.
+
+    Fluctuation-dissipation form :math:`\chi_O = (\langle O^2\rangle_\mathrm{th} -
+    \langle O\rangle_\mathrm{th}^2)/\tau` for the impurity charge :math:`O = N`, and —
+    when the many-body operators are available — the longitudinal spin
+    :math:`O = S_z`, orbital :math:`O = L_z` and the spin-orbital cross term
+    :math:`\chi_{SL} = (\langle S_z L_z\rangle - \langle S_z\rangle\langle
+    L_z\rangle)/\tau`. Comparing them is the static Hund's-metal fingerprint: a large,
+    slowly screened :math:`\chi_\mathrm{spin}` next to quenched
+    :math:`\chi_\mathrm{orb}` and suppressed :math:`\chi_\mathrm{charge}`.
+
+    These are *Curie* terms only — fluctuations within the retained low-energy states;
+    Van Vleck contributions from states above the energy cut are not included (see the
+    dynamical susceptibility CLI for the full response).
+
+    All expectation values are evaluated per state with
+    :func:`manifold_observable_values` (manifold-safe) and thermally averaged.
+    Collective when ``comm`` is given.
+
+    Parameters
+    ----------
+    psis, es, tau
+        Eigenstates (rank-local when distributed), energies, thermal energy scale.
+    impurity_indices : sequence of int
+        Flat impurity spin-orbital indices (for the charge operator).
+    s_z_op, l_z_op : ManyBodyOperator, optional
+        Many-body impurity :math:`S_z` / :math:`L_z` (e.g. from
+        :func:`make_impurity_casimir_operators`); ``None`` skips the respective rows.
+    comm, redistribute
+        As in :func:`manifold_observable_values`.
+
+    Returns
+    -------
+    dict
+    """
+    n_op = ManyBodyOperator({((int(i), "c"), (int(i), "a")): 1.0 for i in impurity_indices})
+
+    def thermal_pair(op_a, op_b):
+        """Thermal <A B> (A, B commuting) and, for A == B, the pieces for the variance."""
+        vals = manifold_observable_values(
+            psis,
+            es,
+            lambda psi: op_a(op_b(psi, 0), 0),
+            comm=comm,
+            redistribute=redistribute,
+        )
+        return float(np.real(thermal_observable_value(vals, es, tau)))
+
+    def thermal_single(op):
+        vals = manifold_observable_values(psis, es, lambda psi: op(psi, 0), comm=comm, redistribute=redistribute)
+        return float(np.real(thermal_observable_value(vals, es, tau)))
+
+    n_th = thermal_single(n_op)
+    n2_th = thermal_pair(n_op, n_op)
+    result = {
+        "tau": float(tau),
+        "n_thermal": n_th,
+        "n2_thermal": n2_th,
+        "chi_charge": (n2_th - n_th**2) / tau,
+        "chi_spin_zz": None,
+        "chi_orb_zz": None,
+        "chi_spin_orb": None,
+    }
+    if s_z_op is not None:
+        sz_th = thermal_single(s_z_op)
+        sz2_th = thermal_pair(s_z_op, s_z_op)
+        result["sz_thermal"] = sz_th
+        result["sz2_thermal"] = sz2_th
+        result["chi_spin_zz"] = (sz2_th - sz_th**2) / tau
+    if l_z_op is not None:
+        lz_th = thermal_single(l_z_op)
+        lz2_th = thermal_pair(l_z_op, l_z_op)
+        result["lz_thermal"] = lz_th
+        result["lz2_thermal"] = lz2_th
+        result["chi_orb_zz"] = (lz2_th - lz_th**2) / tau
+    if s_z_op is not None and l_z_op is not None:
+        szlz_th = thermal_pair(s_z_op, l_z_op)
+        result["szlz_thermal"] = szlz_th
+        result["chi_spin_orb"] = (szlz_th - result["sz_thermal"] * result["lz_thermal"]) / tau
+    return result
+
+
+def static_susceptibility_rows(chi):
+    """``(label, value, suffix)`` rows for the *Static susceptibilities* report group."""
+    rows = []
+    if chi.get("chi_spin_zz") is not None:
+        rows.append(("chi_spin_zz", chi["chi_spin_zz"], "((<Sz^2> - <Sz>^2)/tau)"))
+    if chi.get("chi_orb_zz") is not None:
+        rows.append(("chi_orb_zz", chi["chi_orb_zz"], "((<Lz^2> - <Lz>^2)/tau)"))
+    if chi.get("chi_spin_orb") is not None:
+        rows.append(("chi_spin_orb", chi["chi_spin_orb"], "((<Sz.Lz> - <Sz><Lz>)/tau)"))
+    rows.append(("chi_charge", chi["chi_charge"], "((<N^2> - <N>^2)/tau)"))
+    rows.append(
+        (
+            "note",
+            None,
+            "Curie terms of the retained manifold only (no Van Vleck part); tau = " f"{chi['tau']:.4g}",
+        )
+    )
+    return rows
+
+
+def print_correlation_diagnostics(corr, file=None):
+    """Pretty-print the dict from :func:`compute_correlation_diagnostics`."""
+    print("Impurity correlation diagnostics (thermal):", file=file)
+    print(f"  {'orbital(dn,up)':>16s} {'n_dn':>8s} {'n_up':>8s} {'<n_up*n_dn>':>12s} {'<m_z^2>':>9s}", file=file)
+    for a, (dn, up) in enumerate(corr["pairs"]):
+        pair_label = f"({dn},{up})"
+        print(
+            f"  {pair_label:>16s} {corr['n_dn'][a]:>8.5f} {corr['n_up'][a]:>8.5f} "
+            f"{corr['docc'][a]:>12.6f} {corr['local_moment_z2'][a]:>9.5f}",
+            file=file,
+        )
+    print(f"  total double occupancy D = {corr['docc_total']:.6f}", file=file)
+    print(
+        f"  <Sz_imp^2> = {corr['sz2_thermal']:.6f}   "
+        f"chi_zz = (<Sz^2> - <Sz>^2)/tau = {corr['chi_zz']:.4f}  (tau = {corr['tau']:.4g})",
+        file=file,
+    )
+    print("  Inter-orbital <S_i.S_j> (i,j = impurity spatial orbitals, labelled by their (dn,up) pairs):", file=file)
+    for i, row in enumerate(corr["hund"]):
+        label = f"({corr['pairs'][i][0]},{corr['pairs'][i][1]})"
+        print(f"  {label:>10s} " + " ".join(f"{x: 9.5f}" for x in np.real(row)), file=file)
+
+
+def compute_screening_diagnostics(
+    psis,
+    es,
+    tau,
+    thermal_rho,
+    imp_pairs,
+    bath_pairs,
+    h1,
+    imp_groups=None,
+    z_only=False,
+    comm=None,
+    redistribute=None,
+    max_bath_correlation_levels=200,
+):
+    r"""Channel- and bath-level-resolved impurity-bath spin correlations (Kondo screening).
+
+    Two resolutions of :math:`\langle\mathbf S_\mathrm{imp}\cdot\mathbf S_\mathrm{bath}\rangle`:
+
+    - **per impurity channel**: ``imp_groups`` maps a label (e.g. the equivalent-block
+      group of the ``N(...)`` columns) to a subset of impurity pairs; one correlation per
+      group tells *which* orbital channel is screened;
+    - **per bath level**: one row per bath ``(dn, up)`` pair with its on-site energies,
+      thermal occupations, hybridization strengths and (when the level count does not
+      exceed ``max_bath_correlation_levels``) its :math:`\langle\mathbf S_\mathrm{imp}
+      \cdot\mathbf S_b\rangle` — the screening cloud resolved over the bath spectrum.
+
+    With ``z_only=True`` (collinear spin-polarized bath) the longitudinal part
+    :math:`\langle S^z_\mathrm{imp} S^z_b\rangle` is evaluated instead — exact under the
+    label-only validation, consistent with the flagged full ``<S_imp.S_bath>``.
+
+    Parameters
+    ----------
+    h1 : np.ndarray
+        One-body Hamiltonian matrix (``extract_tensors(..., two_body=False)``).
+    imp_groups : dict or None
+        ``{label: [pair, ...]}``; ``None`` skips the channel resolution.
+
+    Returns
+    -------
+    dict
+    """
+    apply_corr = apply_spin_z_correlation if z_only else apply_spin_correlation
+    imp_orbs = sorted(orb for pair in imp_pairs for orb in pair)
+
+    channels = []
+    if imp_groups:
+        ops_bath = make_spin_operators(bath_pairs)
+        for label, pairs in imp_groups.items():
+            if not pairs:
+                continue
+            ops_g = make_spin_operators(pairs)
+            vals = manifold_observable_values(
+                psis,
+                es,
+                lambda psi, _ops_g=ops_g: apply_corr(psi, _ops_g, ops_bath),
+                comm=comm,
+                redistribute=redistribute,
+            )
+            channels.append((label, float(np.real(thermal_observable_value(vals, es, tau)))))
+
+    with_correlation = len(bath_pairs) <= max_bath_correlation_levels
+    ops_imp = make_spin_operators(imp_pairs)
+    levels = []
+    for dn, up in bath_pairs:
+        row = {
+            "pair": (int(dn), int(up)),
+            "eps_dn": float(np.real(h1[dn, dn])),
+            "eps_up": float(np.real(h1[up, up])),
+            "n_dn": float(np.real(thermal_rho[dn, dn])),
+            "n_up": float(np.real(thermal_rho[up, up])),
+            "v_dn": float(np.linalg.norm(h1[imp_orbs, dn])),
+            "v_up": float(np.linalg.norm(h1[imp_orbs, up])),
+        }
+        if with_correlation:
+            ops_b = make_spin_operators([(dn, up)])
+            vals = manifold_observable_values(
+                psis,
+                es,
+                lambda psi, _ops_b=ops_b: apply_corr(psi, ops_imp, _ops_b),
+                comm=comm,
+                redistribute=redistribute,
+            )
+            row["sisb"] = float(np.real(thermal_observable_value(vals, es, tau)))
+        levels.append(row)
+    levels.sort(key=lambda r: 0.5 * (r["eps_dn"] + r["eps_up"]))
+
+    return {"z_only": bool(z_only), "channels": channels, "levels": levels, "with_correlation": with_correlation}
+
+
+def print_screening_diagnostics(scr, file=None):
+    """Pretty-print the dict from :func:`compute_screening_diagnostics`."""
+    corr_label = "Sz_imp.Sz_b" if scr["z_only"] else "S_imp.S_b"
+    print("Screening channels (thermal):", file=file)
+    if scr["z_only"]:
+        print("  (spin-polarized bath: longitudinal z-parts only, exact under the label check)", file=file)
+    for label, value in scr["channels"]:
+        name = f"<Sz_imp({label}).Sz_bath>" if scr["z_only"] else f"<S_imp({label}).S_bath>"
+        print(f"  {name} = {value: .6f}", file=file)
+    header = (
+        f"  {'bath(dn,up)':>14s} {'eps_dn':>9s} {'eps_up':>9s} {'n_dn':>8s} {'n_up':>8s} {'|V|_dn':>8s} {'|V|_up':>8s}"
+    )
+    if scr["with_correlation"]:
+        header += f" {f'<{corr_label}>':>13s}"
+    print("  Bath levels (sorted by energy):", file=file)
+    print(header, file=file)
+    for row in scr["levels"]:
+        pair_label = "({},{})".format(*row["pair"])
+        line = (
+            f"  {pair_label:>14s} {row['eps_dn']:>9.4f} {row['eps_up']:>9.4f} "
+            f"{row['n_dn']:>8.5f} {row['n_up']:>8.5f} {row['v_dn']:>8.4f} {row['v_up']:>8.4f}"
+        )
+        if scr["with_correlation"]:
+            line += f" {row['sisb']:>13.6f}"
+        print(line, file=file)
+
+
+def compute_magnetic_summary(rho_imp, rot_to_spherical, s2=None, l2=None, j2=None):
+    r"""JSON-able summary of the magnetism/multiplet observables (A-bundle).
+
+    Same underlying helpers as :func:`print_thermal_expectation_values`; used to persist
+    the values into the ground-state statistics JSON.
+
+    Parameters
+    ----------
+    rho_imp : np.ndarray
+        Impurity block of the (thermal) density matrix, computational basis.
+    rot_to_spherical : np.ndarray
+        Spherical -> computational rotation for the impurity block.
+    s2, l2, j2 : float, optional
+        Thermal Casimir expectation values; when all are given the term symbol and
+        Landé/effective moments are included.
+
+    Returns
+    -------
+    dict
+    """
+    rho_sph = rotate_matrix(rho_imp, rot_to_spherical)
+    m_z, j_z = get_moments_from_rho_spherical(rho_sph)
+    out = {
+        "lz": float(get_Lz_from_rho_spherical(rho_sph)),
+        "sz": float(get_Sz_from_rho_spherical(rho_sph)),
+        "m_z": m_z,
+        "j_z": j_z,
+        "t_z": get_Tz_from_rho_spherical(rho_sph),
+        "l_dot_s": float(get_LS_from_rho_spherical(rho_sph)),
+    }
+    if s2 is not None and l2 is not None and j2 is not None:
+        s_qn = casimir_to_quantum_number(s2)
+        l_qn = casimir_to_quantum_number(l2)
+        j_qn = casimir_to_quantum_number(j2)
+        g_j, mu_eff, mu_spin = lande_g_and_moments(s2, l2, j2)
+        out.update(
+            {
+                "s2": float(np.real(s2)),
+                "l2": float(np.real(l2)),
+                "j2": float(np.real(j2)),
+                "term": term_symbol(s_qn, l_qn, j_qn),
+                "g_j": g_j,
+                "mu_eff": mu_eff,
+                "mu_spin_only": mu_spin,
+            }
+        )
+    return out
+
+
+def compute_state_summary(rhos, es, rot_to_spherical, s_values=None, l_values=None, j_values=None, entanglement=None):
+    r"""Compact per-eigenstate summary rows (term symbol, moments, entanglement).
+
+    One dict per state with ``energy_rel``, ``m_z`` (:math:`\langle L_z+2S_z\rangle`),
+    ``j_z``, and — when available — ``term`` (from the manifold-resolved S/L/J values)
+    and ``s_ent`` (impurity-bath entanglement entropy). Shared by the printed table and
+    the statistics JSON.
+
+    Note the usual degenerate-manifold caveat: ``m_z``/``j_z`` are single-particle
+    values on one arbitrary member of a degenerate manifold; ``term`` and ``s_ent``
+    are manifold-safe.
+
+    Parameters
+    ----------
+    rhos : np.ndarray
+        Per-state impurity density matrices (computational basis), shape (n, d, d).
+    es : array_like
+        Eigen-energies.
+    rot_to_spherical : np.ndarray
+        Spherical -> computational rotation for the impurity block.
+    s_values, l_values, j_values : array_like or None
+        Per-state quantum numbers (from the Casimirs); all three needed for ``term``.
+    entanglement : dict or None
+        The dict from :func:`gs_statistics.compute_entanglement_entropy`.
+
+    Returns
+    -------
+    list of dict
+    """
+    es = np.asarray(es, dtype=float)
+    e0 = float(np.min(es)) if es.size else 0.0
+    have_term = s_values is not None and l_values is not None and j_values is not None
+    ent_values = entanglement["per_state_entropy"] if entanglement is not None else None
+    rows = []
+    for i, (e, rho) in enumerate(zip(es, rhos)):
+        rho_sph = rotate_matrix(rho, rot_to_spherical)
+        m_z, j_z = get_moments_from_rho_spherical(rho_sph)
+        row = {"state": i, "energy_rel": float(e - e0), "m_z": m_z, "j_z": j_z}
+        if have_term:
+            row["term"] = term_symbol(s_values[i], l_values[i], j_values[i])
+        if ent_values is not None and i < len(ent_values):
+            row["s_ent"] = float(ent_values[i])
+        rows.append(row)
+    return rows
+
+
+def print_state_summary(summary, file=None):
+    """Pretty-print the rows from :func:`compute_state_summary`."""
+    have_term = any("term" in row for row in summary)
+    have_ent = any("s_ent" in row for row in summary)
+    header = f"{'i':>3s}  {'E-E0':>11s}  {'Lz+2Sz':>9s}  {'Jz':>9s}"
+    if have_term:
+        header += f"  {'term':>8s}"
+    if have_ent:
+        header += f"  {'S_ent':>8s}"
+    print("Per-state summary (m_z/Jz are arbitrary within a degenerate manifold; term/S_ent are not):", file=file)
+    print(header, file=file)
+    for row in summary:
+        line = f"{row['state']:>3d}  {row['energy_rel']:11.8f}  {row['m_z']: 8.5f}  {row['j_z']: 8.5f}"
+        if have_term:
+            line += f"  {row.get('term', ''):>8s}"
+        if have_ent:
+            line += f"  {row.get('s_ent', float('nan')):>8.4f}"
+        print(line, file=file)
+
+
+def compute_energy_decomposition(thermal_rho, h1, impurity_indices, e_thermal):
+    r"""Decompose the thermal energy into one-body blocks and the Coulomb remainder.
+
+    With the density-matrix convention :math:`\rho_{ij} = \langle c_j^\dagger c_i\rangle`
+    the one-body energy is :math:`\langle H_{1b}\rangle = \mathrm{Tr}(h_1\rho)`, split into
+    the impurity block, the bath block and the impurity-bath (hybridization) cross terms;
+    the interaction energy follows as
+    :math:`\langle H_U\rangle = \langle E\rangle - \langle H_{1b}\rangle`.
+
+    Returns
+    -------
+    dict with keys ``e_imp_1b``, ``e_bath``, ``e_hyb``, ``e_one_body``, ``e_coulomb``,
+    ``e_total``.
+    """
+    n_orb = thermal_rho.shape[0]
+    imp = sorted(impurity_indices)
+    bath = sorted(set(range(n_orb)) - set(imp))
+    e_one_body = float(np.real(np.trace(h1 @ thermal_rho)))
+    e_imp = float(np.real(np.trace(h1[np.ix_(imp, imp)] @ thermal_rho[np.ix_(imp, imp)])))
+    e_bath = float(np.real(np.trace(h1[np.ix_(bath, bath)] @ thermal_rho[np.ix_(bath, bath)])))
+    e_hyb = e_one_body - e_imp - e_bath
+    return {
+        "e_imp_1b": e_imp,
+        "e_bath": e_bath,
+        "e_hyb": e_hyb,
+        "e_one_body": e_one_body,
+        "e_coulomb": float(np.real(e_thermal) - e_one_body),
+        "e_total": float(np.real(e_thermal)),
+    }
 
 
 def _group_degenerate(energies, tol):
@@ -674,24 +1374,41 @@ def print_thermal_expectation_values(
     l_thermal=None,
     j_thermal=None,
     sisb_thermal=None,
+    sisb_z_thermal=None,
+    sisb_z_connected=None,
+    sisb_pairing_approx=False,
+    extra_groups=None,
 ):
     """
     print several thermal expectation values, e.g. E, N, Sz, Lz.
+
+    The table is printed in titled sub-blocks (*Charge & occupations*, *Magnetism &
+    multiplets*, *Spin correlations*) with the ``=`` signs aligned across all blocks.
+    ``extra_groups`` (optional) is a list of ``(title, rows)`` sub-blocks appended after
+    the built-in ones (e.g. the energy decomposition), where each row is a
+    ``(label, value, suffix)`` tuple; a ``None`` value prints the suffix as text.
 
     If ``s_thermal`` / ``l_thermal`` / ``j_thermal`` are given (the thermally-averaged
     impurity ``S(S+1)`` / ``L(L+1)`` / ``J(J+1)``), the corresponding ``<S^2>`` /
     ``<L^2>`` / ``<J^2>`` lines (with the quantum number) are appended. When all are
     ``None`` the output is identical to before.
+
+    For a collinear spin-polarized bath the longitudinal correlation and its connected
+    (covariance) form can be passed as ``sisb_z_thermal`` / ``sisb_z_connected`` — they
+    print as ``<Sz_imp.Sz_bath>`` / ``cov(Sz_imp,Sz_bath)`` — and
+    ``sisb_pairing_approx=True`` marks the full ``<S_imp.S_bath>`` line as depending on
+    the (index-convention) bath down↔up pairing.
     """
     orb_offset = min(orb for block in block_structure.blocks for orb in block)
     equivalent_blocks = get_equivalent_blocks(block_structure)
     rho_thermal_spherical = rotate_matrix(rho_thermal, rot_to_spherical)
     N, Ndn, Nup = get_occupations_from_rho_spherical(rho_thermal_spherical)
 
-    # Collect (label, value, suffix) rows, then print with the '=' signs aligned and the
-    # numbers right-aligned (sign-padded), so the column reads as a tidy table.
-    rows = [
-        ("<E-E0>", e_thermal, ""),
+    # Collect (label, value, suffix) rows into titled sub-blocks, then print with the '='
+    # signs aligned across all blocks and the numbers right-aligned (sign-padded), so the
+    # whole section reads as one tidy table.
+    charge_rows = [
+        ("<E>", e_thermal, ""),
         ("<N>", N, ""),
         ("<N(Dn)>", Ndn, ""),
         ("<N(Up)>", Nup, ""),
@@ -700,19 +1417,63 @@ def print_thermal_expectation_values(
         occ = np.sum(
             np.diag(rho_thermal)[list(orb - orb_offset for block in blocks for orb in block_structure.blocks[block])]
         ).real
-        rows.append((f"<N({','.join(str(orb) for orb in blocks)})>", occ, ""))
-    rows.append(("<Lz>", get_Lz_from_rho_spherical(rho_thermal_spherical), ""))
-    rows.append(("<Sz>", get_Sz_from_rho_spherical(rho_thermal_spherical), ""))
-    rows.append(("<L.S>", get_LS_from_rho_spherical(rho_thermal_spherical), ""))
+        charge_rows.append((f"<N({','.join(str(orb) for orb in blocks)})>", occ, ""))
+    magnetism_rows = [
+        ("<Lz>", get_Lz_from_rho_spherical(rho_thermal_spherical), ""),
+        ("<Sz>", get_Sz_from_rho_spherical(rho_thermal_spherical), ""),
+    ]
+    m_z, j_z = get_moments_from_rho_spherical(rho_thermal_spherical)
+    magnetism_rows.append(("<Lz+2Sz>", m_z, "(saturation moment m_z, in mu_B)"))
+    magnetism_rows.append(("<Jz>", j_z, ""))
+    magnetism_rows.append(("<L.S>", get_LS_from_rho_spherical(rho_thermal_spherical), ""))
+    magnetism_rows.append(
+        ("<T_z>", get_Tz_from_rho_spherical(rho_thermal_spherical), "(magnetic dipole, XMCD spin sum rule)")
+    )
     for label, value in (("S", s_thermal), ("L", l_thermal), ("J", j_thermal)):
         if value is not None:
-            rows.append((f"<{label}^2>", np.real(value), f"({label} = {casimir_to_quantum_number(value): 6.4f})"))
+            magnetism_rows.append(
+                (f"<{label}^2>", np.real(value), f"({label} = {casimir_to_quantum_number(value): 6.4f})")
+            )
+    if s_thermal is not None and l_thermal is not None and j_thermal is not None:
+        s_qn = casimir_to_quantum_number(s_thermal)
+        l_qn = casimir_to_quantum_number(l_thermal)
+        j_qn = casimir_to_quantum_number(j_thermal)
+        g_j, mu_eff, mu_spin = lande_g_and_moments(s_thermal, l_thermal, j_thermal)
+        magnetism_rows.append(("term", None, term_symbol(s_qn, l_qn, j_qn)))
+        if g_j is not None:
+            magnetism_rows.append(("g_J", g_j, ""))
+            magnetism_rows.append(("mu_eff", mu_eff, "(g_J sqrt(<J^2>), in mu_B)"))
+        magnetism_rows.append(("mu_spin_only", mu_spin, "(2 sqrt(<S^2>), in mu_B)"))
+    correlation_rows = []
     if sisb_thermal is not None:
-        rows.append(("<S_imp.S_bath>", np.real(sisb_thermal), ""))
+        suffix = "(transverse part depends on the bath dn/up pairing)" if sisb_pairing_approx else ""
+        correlation_rows.append(("<S_imp.S_bath>", np.real(sisb_thermal), suffix))
+    if sisb_z_thermal is not None:
+        correlation_rows.append(("<Sz_imp.Sz_bath>", np.real(sisb_z_thermal), ""))
+    if sisb_z_connected is not None:
+        correlation_rows.append(("cov(Sz_imp,Sz_bath)", np.real(sisb_z_connected), ""))
 
-    label_width = max(len(label) for label, _, _ in rows)
-    for label, value, suffix in rows:
-        line = f"{label:<{label_width}} = {value: 12.7f}"
-        if suffix:
-            line += f"  {suffix}"
-        print(line)
+    groups = [
+        ("Charge & occupations", charge_rows),
+        ("Magnetism & multiplets", magnetism_rows),
+        ("Spin correlations", correlation_rows),
+    ]
+    if extra_groups:
+        groups.extend(extra_groups)
+    groups = [(title, rows) for title, rows in groups if rows]
+
+    label_width = max(len(label) for _, rows in groups for label, _, _ in rows)
+    for gi, (title, rows) in enumerate(groups):
+        if gi > 0:
+            print()
+        print(f"{title}:")
+        for label, value, suffix in rows:
+            # Text-only rows (e.g. the term symbol) carry their content in the suffix.
+            line = (
+                f"  {label:<{label_width}} = {suffix}"
+                if value is None
+                else f"  {label:<{label_width}} = {value: 12.7f}"
+            )
+            if suffix and value is not None:
+                line += f"  {suffix}"
+            print(line)

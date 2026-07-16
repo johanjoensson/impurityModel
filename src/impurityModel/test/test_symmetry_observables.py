@@ -1,6 +1,7 @@
 """Tests for symmetry-related ground-state observables (symmetry plan, Phase 1)."""
 
 import numpy as np
+import pytest
 
 from impurityModel.ed.operator_algebra import addOps, c2i
 from impurityModel.ed.observables import (
@@ -218,6 +219,84 @@ def test_kondo_correlation():
     assert np.isclose(expect_spin_correlation(only_bath, ops_imp, ops_bath), 0.0, atol=1e-12)
 
 
+def test_spin_z_correlation():
+    """<Sz_A Sz_B> (longitudinal part) matches analytic two-spin values."""
+    from impurityModel.ed.ManyBodyUtils import inner
+    from impurityModel.ed.observables import apply_spin_z_correlation, get_Sz_from_rho_pairs
+
+    ops_imp = make_spin_operators([(0, 1)])
+    ops_bath = make_spin_operators([(2, 3)])
+
+    def expect_z(psi):
+        return np.real(inner(psi, apply_spin_z_correlation(psi, ops_imp, ops_bath)))
+
+    # Both singlet and Sz=0 triplet are built from |up,dn> components: <Sz_A Sz_B> = -1/4.
+    singlet = _state([([1, 2], 1.0), ([0, 3], -1.0)])
+    triplet0 = _state([([1, 2], 1.0), ([0, 3], 1.0)])
+    assert np.isclose(expect_z(singlet), -0.25, atol=1e-12)
+    assert np.isclose(expect_z(triplet0), -0.25, atol=1e-12)
+    # Stretched triplet (both up): +1/4.
+    triplet_up = _state([([1, 3], 1.0)])
+    assert np.isclose(expect_z(triplet_up), 0.25, atol=1e-12)
+
+    # get_Sz_from_rho_pairs: diagonal occupations [dn=0, up=1] per pair -> Sz = +1/2 each.
+    rho = np.diag([0.0, 1.0, 0.0, 1.0]).astype(complex)
+    assert np.isclose(get_Sz_from_rho_pairs(rho, [(0, 1), (2, 3)]), 1.0, atol=1e-12)
+    assert np.isclose(get_Sz_from_rho_pairs(rho, [(2, 3)]), 0.5, atol=1e-12)
+
+
+def test_magnetic_dipole_tz():
+    """T_z matrix: Hermitian, traceless, matches the closed form on pure |ml,ms> states."""
+    from impurityModel.ed.observables import _single_particle_tz_matrix, get_Tz_from_rho_spherical
+
+    for l in (1, 2, 3):
+        tz = _single_particle_tz_matrix(l)
+        n = 2 * l + 1
+        assert np.allclose(tz, tz.conj().T)  # Hermitian
+        assert abs(np.trace(tz)) < 1e-12  # traceless: full shell has <T_z> = 0
+        denom = (2 * l - 1) * (2 * l + 3)
+        for ml in range(-l, l + 1):
+            for spin, ms in ((-1, -0.5), (+1, +0.5)):
+                rho = np.zeros((2 * n, 2 * n), dtype=complex)
+                idx = _index(l, ml, spin)
+                rho[idx, idx] = 1.0
+                # <T_z> = m_s [1 - 3<z^2>_{l ml}], <z^2> = (2l^2+2l-1-2ml^2)/((2l-1)(2l+3))
+                expected = ms * (1 - 3 * (2 * l * l + 2 * l - 1 - 2 * ml * ml) / denom)
+                assert np.isclose(get_Tz_from_rho_spherical(rho, l=l), expected, atol=1e-10)
+    assert abs(get_Tz_from_rho_spherical(np.eye(10, dtype=complex))) < 1e-12
+
+
+def test_term_symbol_and_lande():
+    """Term symbols and Lande g / effective moments for textbook configurations."""
+    from impurityModel.ed.observables import lande_g_and_moments, term_symbol
+
+    assert term_symbol(1.0, 3.0, 4.0) == "3F4"  # d8 Hund ground term
+    assert term_symbol(0.5, 2.0, 2.5) == "2D5/2"  # d9
+    assert term_symbol(0.5, 3.0, 2.5) == "2F5/2"  # f1
+    assert term_symbol(0.883, 2.757, 3.003).startswith("~")  # mixed valence -> approximate
+
+    # f1 (2F5/2): g_J = 6/7, mu_eff = g_J sqrt(J(J+1)).
+    g, mu, mu_s = lande_g_and_moments(0.75, 12.0, 35.0 / 4.0)
+    assert np.isclose(g, 6.0 / 7.0, atol=1e-12)
+    assert np.isclose(mu, 6.0 / 7.0 * np.sqrt(35.0 / 4.0), atol=1e-12)
+    assert np.isclose(mu_s, 2.0 * np.sqrt(0.75), atol=1e-12)
+    # J = 0: no Lande factor, spin-only moment still defined.
+    g, mu, mu_s = lande_g_and_moments(2.0, 2.0, 0.0)
+    assert g is None and mu is None
+    assert np.isclose(mu_s, 2.0 * np.sqrt(2.0), atol=1e-12)
+
+
+def test_moments_from_rho():
+    """<Lz+2Sz> and <Jz> for a single |ml=2, up> electron: 3 and 5/2."""
+    from impurityModel.ed.observables import get_moments_from_rho_spherical
+
+    rho = np.zeros((10, 10), dtype=complex)
+    rho[9, 9] = 1.0  # ml=+2, spin up
+    m_z, j_z = get_moments_from_rho_spherical(rho)
+    assert np.isclose(m_z, 3.0, atol=1e-12)
+    assert np.isclose(j_z, 2.5, atol=1e-12)
+
+
 def _d_shell_block_structure():
     from impurityModel.ed.block_structure import BlockStructure
 
@@ -268,10 +347,23 @@ def test_print_thermal_expectation_values_lines(capsys):
 
     print_thermal_expectation_values(rho_one, 0.0, rot, bs)
     out = capsys.readouterr().out
-    for label in ("<E-E0>", "<N>", "<N(Dn)>", "<N(Up)>", "<Lz>", "<Sz>"):
+    for label in ("<E>", "<N>", "<N(Dn)>", "<N(Up)>", "<Lz>", "<Sz>", "<Lz+2Sz>", "<Jz>", "<T_z>"):
         assert label in out
-    ls_line = next(line for line in out.splitlines() if line.startswith("<L.S>"))
-    assert np.isclose(float(ls_line.split("=")[1]), 1.0, atol=1e-6)
+    ls_line = next(line for line in out.splitlines() if line.lstrip().startswith("<L.S>"))
+    assert np.isclose(float(ls_line.split("=")[1].split()[0]), 1.0, atol=1e-6)
+    # |ml=2, up>: Lz+2Sz = 3, Jz = 5/2; no Casimirs passed -> no term/g_J rows.
+    mz_line = next(line for line in out.splitlines() if line.lstrip().startswith("<Lz+2Sz>"))
+    assert np.isclose(float(mz_line.split("=")[1].split()[0]), 3.0, atol=1e-6)
+    assert "term" not in out and "g_J" not in out
+
+    # With Casimirs: term symbol, g_J, mu_eff rows appear (d9-like: 2D5/2, g_J = 6/5).
+    print_thermal_expectation_values(rho_one, 0.0, rot, bs, s_thermal=0.75, l_thermal=6.0, j_thermal=35.0 / 4.0)
+    out = capsys.readouterr().out
+    term_line = next(line for line in out.splitlines() if line.lstrip().startswith("term"))
+    assert "2D5/2" in term_line
+    g_line = next(line for line in out.splitlines() if line.lstrip().startswith("g_J"))
+    assert np.isclose(float(g_line.split("=")[1].split()[0]), 1.2, atol=1e-6)
+    assert "mu_eff" in out and "mu_spin_only" in out
 
 
 def test_print_expectation_values_S_column(capsys):
@@ -305,7 +397,7 @@ def test_print_thermal_S2_line(capsys):
 
     print_thermal_expectation_values(rho, 0.0, rot, bs, s_thermal=2.0)
     out = capsys.readouterr().out
-    s2_line = next(line for line in out.splitlines() if line.startswith("<S^2>"))
+    s2_line = next(line for line in out.splitlines() if line.lstrip().startswith("<S^2>"))
     assert np.isclose(float(s2_line.split("=")[1].split()[0]), 2.0, atol=1e-6)
     assert "S =  1.0000" in s2_line  # S(S+1)=2 -> S=1
 
@@ -381,9 +473,9 @@ def test_print_thermal_LJ_lines(capsys):
     )
     out = capsys.readouterr().out
     assert "S = " in out and "<S^2>" in out
-    l_line = next(line for line in out.splitlines() if line.startswith("<L^2>"))
+    l_line = next(line for line in out.splitlines() if line.lstrip().startswith("<L^2>"))
     assert "L =  2.0000" in l_line  # L(L+1)=6 -> L=2
-    j_line = next(line for line in out.splitlines() if line.startswith("<J^2>"))
+    j_line = next(line for line in out.splitlines() if line.lstrip().startswith("<J^2>"))
     assert "J =  2.5000" in j_line  # J(J+1)=35/4 -> J=5/2
 
 
@@ -463,9 +555,104 @@ def test_kondo_correlation_reported(capsys):
     out = capsys.readouterr().out
 
     # Thermal line and per-eigenstate column both present.
-    assert any(line.startswith("<S_imp.S_bath>") for line in out.splitlines())
+    assert any(line.lstrip().startswith("<S_imp.S_bath>") for line in out.splitlines())
     header = next(line for line in out.splitlines() if "E-E0" in line and "Sz" in line)
     assert "Si.Sb" in header
+    # Full SU(2) case: no pairing flag, no longitudinal-only lines/column.
+    sisb_line = next(line for line in out.splitlines() if line.lstrip().startswith("<S_imp.S_bath>"))
+    assert "pairing" not in sisb_line
+    assert not any(line.lstrip().startswith("<Sz_imp.Sz_bath>") for line in out.splitlines())
+    assert "Szi.Szb" not in header
+    # New report sections all present.
+    for section in (
+        "Ground-state report",
+        "-- Thermal expectation values ",
+        "-- Eigenstates ",
+        "-- Correlation strength ",
+        "-- Screening ",
+        "-- Configurations & entanglement ",
+        "-- Density matrices ",
+        "Per-state summary",
+        "Impurity correlation diagnostics",
+        "Screening channels",
+        "Impurity-bath entanglement",
+        "one-body entanglement entropy",
+        "<Lz+2Sz>",
+        "<T_z>",
+        "<H_Coulomb>",
+        "mu_spin_only",
+        "Static susceptibilities (Curie)",
+        "chi_spin_zz",
+        "chi_charge",
+    ):
+        assert section in out, f"missing report section: {section}"
+    # The two independent Sz implementations (pairs-based chi_zz vs Casimir-op
+    # chi_spin_zz) must agree on the same thermal manifold.
+    chi_zz = float(next(ln for ln in out.splitlines() if "chi_zz = (<Sz^2>" in ln).split("/tau =")[1].split("(")[0])
+    chi_spin = float(
+        next(ln for ln in out.splitlines() if ln.lstrip().startswith("chi_spin_zz")).split("=")[1].split("(")[0]
+    )
+    # chi_zz prints with 4 decimals, so compare at that resolution.
+    assert chi_spin == pytest.approx(chi_zz, abs=1e-4)
+
+
+def test_kondo_correlation_reported_polarized_bath(capsys):
+    """calc_gs on a SIAM with a spin-polarized bath reports the flagged full value plus the
+    exact longitudinal correlation (raw + connected) and the Szi.Szb column.
+
+    RSPt-style: spin-degenerate impurity, all polarization in the hybridization (spin-split
+    bath energies and hoppings). Before the collinear check this case was skipped entirely.
+    """
+    from impurityModel.ed.block_structure import BlockStructure
+    from impurityModel.ed.groundstate import calc_gs
+    from impurityModel.ed.ManyBodyUtils import ManyBodyOperator
+
+    ed, U = -2.0, 6.0
+    ev = {0: -4.0, 1: -3.6}  # valence bath energy per spin (0 = dn, 1 = up)
+    ec = {0: 4.0, 1: 4.4}  # conduction bath energy per spin
+    V = {0: 1.0, 1: 0.8}  # hybridization per spin
+    terms = {((o, "c"), (o, "a")): ed for o in (0, 1)}
+    terms.update({((o, "c"), (o, "a")): ev[s] for s, o in ((0, 2), (1, 3))})
+    terms.update({((o, "c"), (o, "a")): ec[s] for s, o in ((0, 4), (1, 5))})
+    terms[((0, "c"), (1, "c"), (1, "a"), (0, "a"))] = U
+    for s, a, b in ((0, 0, 2), (1, 1, 3), (0, 0, 4), (1, 1, 5)):
+        terms[((a, "c"), (b, "a"))] = V[s]
+        terms[((b, "c"), (a, "a"))] = V[s]
+    Hop = ManyBodyOperator(terms)
+
+    bs = BlockStructure(
+        blocks=[[0, 1]],
+        identical_blocks=[[0]],
+        transposed_blocks=[[]],
+        particle_hole_blocks=[[]],
+        particle_hole_transposed_blocks=[[]],
+        inequivalent_blocks=[0],
+    )
+    basis_setup = dict(
+        impurity_orbitals={0: [[0, 1]]},
+        bath_states=({0: [[2, 3]]}, {0: [[4, 5]]}),
+        N0={0: 1},
+        mixed_valence={0: 1},
+        tau=0.01,
+        dense_cutoff=1000,
+        spin_flip_dj=False,
+        comm=None,
+        truncation_threshold=100000,
+    )
+    calc_gs(Hop, basis_setup, bs, np.eye(2, dtype=complex), verbose=True, slaterWeightMin=1e-12)
+    out = capsys.readouterr().out
+
+    # Full value present and flagged as pairing-dependent.
+    sisb_line = next(line for line in out.splitlines() if line.lstrip().startswith("<S_imp.S_bath>"))
+    assert "pairing" in sisb_line
+    # Exact longitudinal lines present; singlet-like screening -> negative correlation.
+    z_line = next(line for line in out.splitlines() if line.lstrip().startswith("<Sz_imp.Sz_bath>"))
+    z_value = float(z_line.split("=")[1].split()[0])
+    assert z_value < 0
+    assert any(line.lstrip().startswith("cov(Sz_imp,Sz_bath)") for line in out.splitlines())
+    # Per-eigenstate column for the longitudinal part.
+    header = next(line for line in out.splitlines() if "E-E0" in line and "Sz" in line)
+    assert "Szi.Szb" in header
 
 
 def _hop(diag, hops):
@@ -585,9 +772,201 @@ def test_derive_spin_pairs_crystal_field_manifolds():
     assert spin_pairs_consistent_with_h(Hop, imp_pairs + bath_pairs, 10)
 
 
+def test_correlation_diagnostics_analytic():
+    """Double occupancy / local moments / Sz^2 / Hund matrix on constructed two-orbital states."""
+    from impurityModel.ed.observables import compute_correlation_diagnostics
+
+    # Two impurity spatial orbitals: pairs (0,1) and (2,3); no bath (4-orbital space).
+    imp_pairs = [(0, 1), (2, 3)]
+    tau = 0.01
+
+    # State 1: both orbitals doubly occupied (a "d10-like" closed shell).
+    full = _state([([0, 1, 2, 3], 1.0)])
+    rho_full = np.diag([1.0, 1.0, 1.0, 1.0]).astype(complex)
+    corr = compute_correlation_diagnostics([full], np.array([0.0]), tau, rho_full, imp_pairs)
+    assert np.allclose(corr["docc"], [1.0, 1.0], atol=1e-12)
+    assert np.isclose(corr["docc_total"], 2.0, atol=1e-12)
+    assert np.allclose(corr["local_moment_z2"], 0.0, atol=1e-12)
+    assert np.isclose(corr["sz2_thermal"], 0.0, atol=1e-12)
+    assert np.allclose(corr["hund"], 0.0, atol=1e-12)
+
+    # State 2: stretched triplet, one up electron per orbital.
+    triplet = _state([([1, 3], 1.0)])
+    rho_t = np.diag([0.0, 1.0, 0.0, 1.0]).astype(complex)
+    corr = compute_correlation_diagnostics([triplet], np.array([0.0]), tau, rho_t, imp_pairs)
+    assert np.allclose(corr["docc"], 0.0, atol=1e-12)
+    assert np.allclose(corr["local_moment_z2"], 0.25, atol=1e-12)  # a full 1/2 moment per orbital
+    assert np.isclose(corr["sz2_thermal"], 1.0, atol=1e-12)  # (Sz = 1)^2
+    # Hund matrix: diagonal <S_a^2> = 3/4, off-diagonal <S_1.S_2> = +1/4 (aligned spins).
+    assert np.allclose(np.diag(corr["hund"]), 0.75, atol=1e-12)
+    assert np.isclose(corr["hund"][0, 1], 0.25, atol=1e-12)
+
+    # State 3: inter-orbital singlet -> <S_1.S_2> = -3/4, <Sz^2> = 0.
+    singlet = _state([([1, 2], 1.0), ([0, 3], -1.0)])
+    rho_s = np.diag([0.5, 0.5, 0.5, 0.5]).astype(complex)
+    corr = compute_correlation_diagnostics([singlet], np.array([0.0]), tau, rho_s, imp_pairs)
+    assert np.isclose(corr["hund"][0, 1], -0.75, atol=1e-12)
+    assert np.isclose(corr["sz2_thermal"], 0.0, atol=1e-12)
+    assert np.allclose(corr["docc"], 0.0, atol=1e-12)
+
+
+def test_energy_decomposition_analytic():
+    """Tr(h rho) block split on a hand-built rho/h; Coulomb = remainder."""
+    from impurityModel.ed.observables import compute_energy_decomposition
+
+    # 2 impurity orbitals (0,1), 2 bath orbitals (2,3).
+    h1 = np.array(
+        [
+            [-1.0, 0.0, 0.5, 0.0],
+            [0.0, -1.0, 0.0, 0.5],
+            [0.5, 0.0, -3.0, 0.0],
+            [0.0, 0.5, 0.0, -3.0],
+        ],
+        dtype=complex,
+    )
+    # rho[i,j] = <c_j^dag c_i>: diagonal occupations + imp-bath coherence.
+    rho = np.array(
+        [
+            [0.3, 0.0, 0.1, 0.0],
+            [0.0, 0.3, 0.0, 0.1],
+            [0.1, 0.0, 0.9, 0.0],
+            [0.0, 0.1, 0.0, 0.9],
+        ],
+        dtype=complex,
+    )
+    e_total = -6.0
+    dec = compute_energy_decomposition(rho, h1, [0, 1], e_total)
+    assert np.isclose(dec["e_imp_1b"], 2 * (-1.0 * 0.3), atol=1e-12)
+    assert np.isclose(dec["e_bath"], 2 * (-3.0 * 0.9), atol=1e-12)
+    assert np.isclose(dec["e_hyb"], 2 * (2 * 0.5 * 0.1), atol=1e-12)
+    assert np.isclose(dec["e_one_body"], dec["e_imp_1b"] + dec["e_bath"] + dec["e_hyb"], atol=1e-12)
+    assert np.isclose(dec["e_coulomb"], e_total - dec["e_one_body"], atol=1e-12)
+
+
+def test_screening_diagnostics_analytic():
+    """Bath-level table + per-level correlation on the two-spin singlet/triplet."""
+    from impurityModel.ed.observables import compute_screening_diagnostics
+
+    imp_pairs = [(0, 1)]
+    bath_pairs = [(2, 3)]
+    h1 = np.zeros((4, 4), dtype=complex)
+    h1[2, 2] = h1[3, 3] = -2.0
+    h1[0, 2] = h1[2, 0] = 0.7
+    h1[1, 3] = h1[3, 1] = 0.7
+    rho = np.diag([0.5, 0.5, 0.5, 0.5]).astype(complex)
+
+    singlet = _state([([1, 2], 1.0), ([0, 3], -1.0)])
+    scr = compute_screening_diagnostics([singlet], np.array([0.0]), 0.01, rho, imp_pairs, bath_pairs, h1)
+    assert len(scr["levels"]) == 1
+    row = scr["levels"][0]
+    assert np.isclose(row["eps_dn"], -2.0) and np.isclose(row["eps_up"], -2.0)
+    assert np.isclose(row["v_dn"], 0.7) and np.isclose(row["v_up"], 0.7)
+    assert np.isclose(row["sisb"], -0.75, atol=1e-12)  # singlet fully screened
+
+    # z_only mode: singlet <Sz_imp Sz_b> = -1/4.
+    scr_z = compute_screening_diagnostics([singlet], np.array([0.0]), 0.01, rho, imp_pairs, bath_pairs, h1, z_only=True)
+    assert scr_z["z_only"]
+    assert np.isclose(scr_z["levels"][0]["sisb"], -0.25, atol=1e-12)
+
+    # Channel resolution: one group -> its value equals the total.
+    scr_g = compute_screening_diagnostics(
+        [singlet], np.array([0.0]), 0.01, rho, imp_pairs, bath_pairs, h1, imp_groups={"0": imp_pairs}
+    )
+    assert scr_g["channels"] == [("0", scr_g["levels"][0]["sisb"])]
+
+
+def test_spin_pair_consistency_polarized_bath():
+    """A collinear spin-polarized bath passes the Sz check but fails the S+ check.
+
+    RSPt-style setup: all spin polarization lives in the hybridization (spin-degenerate
+    impurity block, spin-split bath energies and hoppings). The index-convention pairing
+    is a correct labelling ([h,Sz]=0) even though full SU(2) consistency fails.
+    """
+    from impurityModel.ed.spin_pairs import (
+        collinear_spin_pairs_consistent_with_h,
+        spin_pair_consistency,
+        spin_pairs_consistent_with_h,
+    )
+
+    # imp (0 dn, 1 up); valence bath (2 dn, 4 up); conduction bath (3 dn, 5 up).
+    # Spin-degenerate impurity; bath energies AND hoppings differ per spin.
+    Hop = _hop(
+        [(0, -0.1), (1, -0.1), (2, -1.0), (3, 0.7), (4, -0.8), (5, 0.9)],
+        [(0, 2, 0.5), (0, 3, 0.3), (1, 4, 0.45), (1, 5, 0.25)],
+    )
+    imp_pairs = [(0, 1)]
+    bath_pairs = [(2, 4), (3, 5)]
+
+    sz_ok, splus_ok = spin_pair_consistency(Hop, imp_pairs + bath_pairs, 6)
+    assert sz_ok and not splus_ok
+    assert not spin_pairs_consistent_with_h(Hop, imp_pairs + bath_pairs, 6)
+    # The collinear check accepts: labels verified globally, pairing verified on the impurity.
+    assert collinear_spin_pairs_consistent_with_h(Hop, imp_pairs, bath_pairs, 6)
+
+
+def test_collinear_check_rejects_mislabels_and_polarized_impurity():
+    """The collinear check still rejects what it cannot verify.
+
+    A relative bath mislabel breaks [h,Sz]=0; spin polarization on the *impurity* itself
+    breaks the impurity-block SU(2) (the transverse impurity operators would be wrong).
+    """
+    from impurityModel.ed.spin_pairs import collinear_spin_pairs_consistent_with_h
+
+    Hop = _hop(
+        [(0, -0.1), (1, -0.1), (2, -1.0), (3, 0.7), (4, -0.8), (5, 0.9)],
+        [(0, 2, 0.5), (0, 3, 0.3), (1, 4, 0.45), (1, 5, 0.25)],
+    )
+    # Relative mislabel: swapping one bath pair's (dn, up) makes h couple unlike labels.
+    assert not collinear_spin_pairs_consistent_with_h(Hop, [(0, 1)], [(4, 2), (3, 5)], 6)
+
+    # Spin-split impurity on-site energies: labels fine, impurity pairing not SU(2).
+    Hop_imp_pol = _hop(
+        [(0, -0.2), (1, -0.1), (2, -1.0), (3, 0.7), (4, -0.8), (5, 0.9)],
+        [(0, 2, 0.5), (0, 3, 0.3), (1, 4, 0.45), (1, 5, 0.25)],
+    )
+    assert not collinear_spin_pairs_consistent_with_h(Hop_imp_pol, [(0, 1)], [(2, 4), (3, 5)], 6)
+
+
+def test_resolve_spin_pairs_cascade():
+    """resolve_spin_pairs: SU(2) case -> exact pairing; polarized bath -> pairing_approx;
+    spin-polarized impurity -> None."""
+    from impurityModel.ed.spin_pairs import resolve_spin_pairs
+
+    impurity_orbitals = {0: [[0, 1]]}
+    bath_states = ({0: [[2, 4]]}, {0: [[3, 5]]})
+    rot = np.eye(2, dtype=complex)
+
+    # Fully SU(2)-symmetric: spin-degenerate bath energies and hoppings.
+    Hop_su2 = _hop(
+        [(0, -0.1), (1, -0.1), (2, -1.0), (3, 0.7), (4, -1.0), (5, 0.7)],
+        [(0, 2, 0.5), (0, 3, 0.3), (1, 4, 0.5), (1, 5, 0.3)],
+    )
+    resolved = resolve_spin_pairs(Hop_su2, impurity_orbitals, bath_states, rot, 6)
+    assert resolved is not None
+    imp_pairs, bath_pairs, approx = resolved
+    assert imp_pairs == [(0, 1)] and not approx
+    assert sorted(bath_pairs) == [(2, 4), (3, 5)]
+
+    # Collinear spin-polarized bath: accepted with the pairing_approx flag.
+    Hop_pol = _hop(
+        [(0, -0.1), (1, -0.1), (2, -1.0), (3, 0.7), (4, -0.8), (5, 0.9)],
+        [(0, 2, 0.5), (0, 3, 0.3), (1, 4, 0.45), (1, 5, 0.25)],
+    )
+    resolved = resolve_spin_pairs(Hop_pol, impurity_orbitals, bath_states, rot, 6)
+    assert resolved is not None
+    assert resolved[2] is True
+
+    # Spin-polarized impurity: nothing to trust.
+    Hop_imp_pol = _hop(
+        [(0, -0.2), (1, -0.1), (2, -1.0), (3, 0.7), (4, -0.8), (5, 0.9)],
+        [(0, 2, 0.5), (0, 3, 0.3), (1, 4, 0.45), (1, 5, 0.25)],
+    )
+    assert resolve_spin_pairs(Hop_imp_pol, impurity_orbitals, bath_states, rot, 6) is None
+
+
 def _thermal_sisb(out):
     """Parse the '<S_imp.S_bath> = value' thermal line from calc_gs output."""
-    line = next(ln for ln in out.splitlines() if ln.startswith("<S_imp.S_bath>"))
+    line = next(ln for ln in out.splitlines() if ln.lstrip().startswith("<S_imp.S_bath>"))
     return float(line.split("=")[1])
 
 
@@ -703,7 +1082,7 @@ def test_calc_gs_reports_casimirs_for_cubic_manifold_grouped_dshell(capsys):
     calc_gs(Hop, setup, bs, Rot.conj().T, verbose=True, slaterWeightMin=1e-12)  # must not raise
     out = capsys.readouterr().out
     assert "<S^2>" in out and "<L^2>" in out and "<J^2>" in out  # reported, not skipped
-    s2 = float(next(ln for ln in out.splitlines() if ln.startswith("<S^2>")).split("=")[1].split("(")[0])
+    s2 = float(next(ln for ln in out.splitlines() if ln.lstrip().startswith("<S^2>")).split("=")[1].split("(")[0])
     assert s2 > 0.0 and s2 == pytest.approx(round(s2 * 4) / 4, abs=0.05)  # sane S(S+1) value
 
 
@@ -750,3 +1129,59 @@ def test_kondo_correlation_fallback_matches_fast_path(capsys):
     fast = run([2, 3], [4, 5])  # down-then-up within each block -> fast path
     fallback = run([3, 2], [5, 4])  # spins swapped within block -> derive_spin_pairs fallback
     assert np.isclose(fast, fallback, atol=1e-9)
+
+
+# --------------------------------------------------------------------------- #
+# compute_static_susceptibilities (Curie terms of the retained manifold)
+# --------------------------------------------------------------------------- #
+def test_static_susceptibility_free_spin_half():
+    """Free spin-1/2 doublet: chi_spin_zz = 1/(4 tau), frozen charge -> chi_charge = 0."""
+    from impurityModel.ed.observables import compute_static_susceptibilities, make_spin_operators
+
+    tau = 0.02
+    # One spatial orbital, (dn, up) = (0, 1); degenerate |dn>, |up> manifold.
+    psis = [_state([((0,), 1.0)], n_orbs=2), _state([((1,), 1.0)], n_orbs=2)]
+    es = np.array([0.0, 0.0])
+    s_z = make_spin_operators([(0, 1)])[2]
+    chi = compute_static_susceptibilities(psis, es, tau, impurity_indices=[0, 1], s_z_op=s_z)
+    assert chi["chi_spin_zz"] == pytest.approx(0.25 / tau, rel=1e-12)
+    assert chi["chi_charge"] == pytest.approx(0.0, abs=1e-12)
+    assert chi["chi_orb_zz"] is None
+
+
+def test_static_susceptibility_orbital_and_cross():
+    """p-shell single electron, manifold {|ml=1,up>, |ml=-1,dn>}:
+
+    <Lz>_th = <Sz>_th = 0 but <Lz^2>_th = 1, <Sz Lz>_th = 1/2 ->
+    chi_orb = 1/tau, chi_spin_orb = 1/(2 tau) (ferro spin-orbital locking).
+    """
+    from impurityModel.ed.observables import compute_static_susceptibilities, make_impurity_casimir_operators
+
+    tau = 0.05
+    n = 6  # spin-doubled p shell, spherical layout: dn ml=-1,0,1 -> 0,1,2; up -> 3,4,5
+    l_ops, s_ops, _ = make_impurity_casimir_operators({0: [list(range(n))]}, np.eye(n, dtype=complex))
+    psis = [
+        _state([((_index(1, 1, 1),), 1.0)], n_orbs=n),  # |ml=+1, up>
+        _state([((_index(1, -1, -1),), 1.0)], n_orbs=n),  # |ml=-1, dn>
+    ]
+    es = np.array([0.0, 0.0])
+    chi = compute_static_susceptibilities(
+        psis, es, tau, impurity_indices=list(range(n)), s_z_op=s_ops[2], l_z_op=l_ops[2]
+    )
+    assert chi["chi_orb_zz"] == pytest.approx(1.0 / tau, rel=1e-12)
+    assert chi["chi_spin_zz"] == pytest.approx(0.25 / tau, rel=1e-12)
+    assert chi["chi_spin_orb"] == pytest.approx(0.5 / tau, rel=1e-12)
+    assert chi["chi_charge"] == pytest.approx(0.0, abs=1e-12)
+
+
+def test_static_susceptibility_mixed_valence_charge():
+    """Valence superposition a|N=1> + b|N=2>: chi_charge = (<N^2>-<N>^2)/tau exactly."""
+    from impurityModel.ed.observables import compute_static_susceptibilities
+
+    tau = 0.1
+    a2, b2 = 0.7, 0.3
+    psi = _state([((0,), np.sqrt(a2)), ((0, 1), np.sqrt(b2))], n_orbs=2)
+    chi = compute_static_susceptibilities([psi], np.array([0.0]), tau, impurity_indices=[0, 1])
+    mean = a2 * 1 + b2 * 2
+    second = a2 * 1 + b2 * 4
+    assert chi["chi_charge"] == pytest.approx((second - mean**2) / tau, rel=1e-12)

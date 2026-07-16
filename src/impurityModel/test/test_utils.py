@@ -9,11 +9,15 @@ import numpy as np
 import pytest
 
 from impurityModel.ed.utils import (
+    REPORT_WIDTH,
     _float_field_width,
     matrix_connectivity_print,
     matrix_print,
     matrix_to_string,
     partition,
+    print_density_matrix_summary,
+    report_banner,
+    report_rule,
     vector_to_string,
 )
 
@@ -147,3 +151,53 @@ def test_partition_empty():
 def test_partition_all_pass_and_all_fail():
     assert partition([1, 2], predicate=lambda _: True) == ([1, 2], [])
     assert partition([1, 2], predicate=lambda _: False) == ([], [1, 2])
+
+
+# --------------------------------------------------------------------------- #
+# report banners / rules
+# --------------------------------------------------------------------------- #
+def test_report_banner_full_width_and_title(capsys):
+    report_banner("Ground-state report")
+    lines = capsys.readouterr().out.splitlines()
+    # Leading blank line, rule, indented title, rule.
+    assert lines[0] == ""
+    assert lines[1] == "=" * REPORT_WIDTH
+    assert lines[2] == "  Ground-state report"
+    assert lines[3] == "=" * REPORT_WIDTH
+
+
+def test_report_rule_dashes_pad_to_width(capsys):
+    report_rule("Screening")
+    lines = capsys.readouterr().out.splitlines()
+    assert lines[0] == ""
+    assert lines[1].startswith("-- Screening ")
+    assert len(lines[1]) == REPORT_WIDTH
+    assert set(lines[1][len("-- Screening ") :]) == {"-"}
+
+
+# --------------------------------------------------------------------------- #
+# print_density_matrix_summary
+# --------------------------------------------------------------------------- #
+def test_density_matrix_summary_lists_only_large_offdiagonals(capsys):
+    m = np.eye(10, dtype=complex)
+    m[3, 7] = m[7, 3] = 0.02
+    m[1, 2] = m[2, 1] = 1e-6  # below the tolerance -> not listed
+    print_density_matrix_summary(m, "Bath density matrix (summary):")
+    out = capsys.readouterr().out
+    assert "Bath density matrix (summary):" in out
+    assert "diagonal occupations:" in out
+    # 10 diagonal entries wrap into two rows of 8 + 2 with index ranges.
+    assert "[  0-  7]" in out
+    assert "[  8-  9]" in out
+    assert "(  3,  7) =  0.02000" in out
+    assert "(  1,  2)" not in out
+    assert "1 of 45" in out
+
+
+def test_density_matrix_summary_prints_complex_offdiagonal(capsys):
+    m = np.eye(3, dtype=complex)
+    m[0, 2] = 0.01 + 0.02j
+    m[2, 0] = np.conj(m[0, 2])
+    print_density_matrix_summary(m)
+    out = capsys.readouterr().out
+    assert "(  0,  2) =  0.01000+0.02000j" in out

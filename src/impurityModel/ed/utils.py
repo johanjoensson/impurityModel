@@ -181,6 +181,74 @@ def matrix_connectivity_print(m: np.ndarray, block_size: int = 1, label: Optiona
     )
 
 
+REPORT_WIDTH = 80
+
+
+def print_density_matrix_summary(m: np.ndarray, label: Optional[str] = None, offdiag_tol: float = 1e-4) -> None:
+    """Compact summary of a (nearly diagonal) density matrix.
+
+    Prints the diagonal occupations (wrapped, eight per row, with index ranges) and only
+    the off-diagonal entries with ``|m_ij| > offdiag_tol`` (upper triangle, sparse
+    ``(i, j) = value`` lines with a count summary), instead of the full matrix.
+
+    Parameters
+    ----------
+    m : np.ndarray
+        The (square) density matrix to summarize.
+    label : str, optional
+        Text to print above the summary.
+    offdiag_tol : float, default 1e-4
+        Magnitude threshold above which off-diagonal entries are listed.
+    """
+    if label is not None:
+        print(label)
+    diag = np.real(np.diag(m))
+    per_row = 8
+    print("  diagonal occupations:")
+    for start in range(0, len(diag), per_row):
+        chunk = diag[start : start + per_row]
+        idx = f"[{start:>3d}-{min(start + per_row, len(diag)) - 1:>3d}]"
+        print(f"    {idx}  " + "  ".join(f"{x:8.5f}" for x in chunk))
+    iu, ju = np.triu_indices_from(m, k=1)
+    big = np.abs(m[iu, ju]) > offdiag_tol
+    n_big = int(np.count_nonzero(big))
+    print(f"  off-diagonal entries with |value| > {offdiag_tol:g}: {n_big} of {iu.size}")
+    order = np.argsort(np.abs(m[iu[big], ju[big]]))[::-1]
+    for k in order:
+        i, j = int(iu[big][k]), int(ju[big][k])
+        val = m[i, j]
+        val_str = f"{val.real: .5f}" if abs(val.imag) < 1e-12 else f"{val.real: .5f}{val.imag:+.5f}j"
+        print(f"    ({i:>3d},{j:>3d}) = {val_str}")
+
+
+def report_banner(title: str, file=None) -> None:
+    """Print a top-level report section banner.
+
+    Parameters
+    ----------
+    title : str
+        Section title.
+    file : file-like, optional
+        Destination stream (defaults to stdout).
+    """
+    rule = "=" * REPORT_WIDTH
+    print(f"\n{rule}\n  {title}\n{rule}", file=file)
+
+
+def report_rule(title: str, file=None) -> None:
+    """Print a light sub-section rule: ``-- title ------``.
+
+    Parameters
+    ----------
+    title : str
+        Sub-section title.
+    file : file-like, optional
+        Destination stream (defaults to stdout).
+    """
+    head = f"-- {title} "
+    print(f"\n{head}{'-' * max(0, REPORT_WIDTH - len(head))}", file=file)
+
+
 def partition(l: Iterable[Any], predicate: Callable[[Any], bool] = lambda a: bool(a)) -> Tuple[List[Any], List[Any]]:
     """Partition elements of an iterable into two lists based on a predicate.
 

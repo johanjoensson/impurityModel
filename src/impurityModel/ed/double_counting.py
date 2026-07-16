@@ -87,7 +87,7 @@ def _lowest_energy_and_thermal_rho(basis, solver, h_op, impurity_indices, energy
         max_energy=energy_cut,
         dense_cutoff=dense_cutoff,
         slaterWeightMin=slaterWeightMin,
-        solver="trlm",
+        solver="irlm",
     )
     rhos = build_density_matrices(
         basis,
@@ -96,7 +96,15 @@ def _lowest_energy_and_thermal_rho(basis, solver, h_op, impurity_indices, energy
         orbital_indices_right=impurity_indices,
     )
     rho = thermal_average_scale_indep(es, rhos, basis.tau)
-    return es[0], rho
+    # ``rhos`` is Allreduced in ``build_density_matrices`` and so is identical on every
+    # rank, but ``es`` comes from the Lanczos kernel and is only replicated to roundoff
+    # (MPI SUM reductions are not order-deterministic). The DC searches branch on this
+    # energy -- ``fixed_peak_dc``'s Newton convergence and update -- so a value sitting on
+    # a decision boundary could make ranks disagree about looping and deadlock on the next
+    # collective solve. Broadcast rank 0's energy so every rank decides identically, the
+    # same guard ``get_eigenvectors`` already applies to its own re-solve decision.
+    lowest_energy = basis.comm.bcast(es[0], root=0) if basis.comm is not None else es[0]
+    return lowest_energy, rho
 
 
 def fixed_peak_dc(

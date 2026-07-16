@@ -71,15 +71,62 @@ def bath_spin_pairs(bath_states):
     return pairs
 
 
+def _sz_splus_matrices(spin_pairs, n_orb):
+    """Single-particle ``S_z`` and ``S_+`` matrices implied by a ``(dn, up)`` pairing."""
+    sz = np.zeros((n_orb, n_orb), dtype=complex)
+    splus = np.zeros((n_orb, n_orb), dtype=complex)
+    for dn, up in spin_pairs:
+        sz[up, up] += 0.5
+        sz[dn, dn] -= 0.5
+        splus[up, dn] += 1.0  # S_+ = c†_up c_dn
+    return sz, splus
+
+
+def spin_pair_consistency(h_op, spin_pairs, n_orb, tol=1e-6):
+    r"""The two consistency checks of a ``(dn, up)`` pairing against the one-body ``h``.
+
+    Builds the single-particle ``S_z`` and ``S_+`` matrices implied by the pairing and
+    tests the two commutators separately, because they validate two different things:
+
+    - ``[h, S_z] = 0`` validates the spin **labelling** (which orbitals are up vs down,
+      consistently between impurity and bath). It holds for any collinear model,
+      including a spin-*polarized* one.
+    - ``[h, S_+] = 0`` additionally validates the down↔up **pairing** as an SU(2)
+      symmetry of ``h``. It fails when spin rotation symmetry is broken — by a wrong
+      pairing, by spin-orbit coupling, or *by design* when the spin polarization lives
+      in the hybridization function (spin-split bath energies/hoppings).
+
+    Parameters
+    ----------
+    h_op : ManyBodyOperator or dict
+        The Hamiltonian (its one-body part is used).
+    spin_pairs : sequence of (int, int)
+        ``(dn, up)`` global spin-orbital pairs (impurity + bath).
+    n_orb : int
+        Total number of spin-orbitals.
+    tol : float, optional
+        Commutator norm tolerance.
+
+    Returns
+    -------
+    (sz_ok, splus_ok) : tuple of bool
+    """
+    h, _, _ = extract_tensors(h_op, n_orb=n_orb, two_body=False)
+    sz, splus = _sz_splus_matrices(spin_pairs, n_orb)
+    sz_ok = bool(np.linalg.norm(h @ sz - sz @ h) <= tol)
+    splus_ok = bool(np.linalg.norm(h @ splus - splus @ h) <= tol)
+    return sz_ok, splus_ok
+
+
 def spin_pairs_consistent_with_h(h_op, spin_pairs, n_orb, tol=1e-6):
     r"""Whether the spin operators from ``spin_pairs`` commute with the one-body ``h``.
 
-    Builds the single-particle ``S_z`` and ``S_+`` matrices implied by the ``(dn, up)``
-    pairing and checks ``[h, S_z] = [h, S_+] = 0``. If both hold, the spin labelling
-    **and** the down↔up pairing are consistent with the Hamiltonian's spin symmetry, so
-    the spin operators are physically correct. If either fails (spin-orbit coupling, a
-    non-standard orbital ordering, …), the pairing is **not** trustworthy and spin-spin
-    observables built from it should be skipped rather than reported wrong.
+    ``True`` iff both checks of :func:`spin_pair_consistency` hold, i.e. the spin
+    labelling **and** the down↔up pairing are consistent with the Hamiltonian's full
+    SU(2) spin symmetry, so the spin operators are physically correct. If either fails
+    (spin-orbit coupling, a non-standard orbital ordering, a spin-polarized bath, …),
+    the pairing is **not** trustworthy at this level; see
+    :func:`collinear_spin_pairs_consistent_with_h` for the weaker collinear guarantee.
 
     Parameters
     ----------
@@ -96,14 +143,65 @@ def spin_pairs_consistent_with_h(h_op, spin_pairs, n_orb, tol=1e-6):
     -------
     bool
     """
+    sz_ok, splus_ok = spin_pair_consistency(h_op, spin_pairs, n_orb, tol)
+    return sz_ok and splus_ok
+
+
+def collinear_spin_pairs_consistent_with_h(h_op, imp_pairs, bath_pairs, n_orb, tol=1e-6):
+    r"""Whether the pairing is trustworthy for a *collinear spin-polarized bath*.
+
+    Targets the common RSPt setup where all spin polarization lives in the
+    hybridization function: the impurity one-body block is spin degenerate while the
+    bath energies/hoppings are spin split. Full SU(2) consistency
+    (:func:`spin_pairs_consistent_with_h`) necessarily fails there, but two weaker
+    statements can still be verified, and together they make the spin *labels* and the
+    *impurity* pairing physically correct:
+
+    1. ``[h, S_z] = 0`` for the global labelling — ``h`` never mixes up- and
+       down-labelled orbitals, which (because every bath orbital hybridizes with the
+       impurity, directly or through a chain) also pins the relative impurity/bath
+       labelling.
+    2. ``[h_imp, S^imp_z] = [h_imp, S^imp_+] = 0`` for the pairing restricted to the
+       *impurity-projected* one-body block — the impurity block is spin degenerate in
+       the paired basis, so the impurity down↔up pairing is a genuine symmetry there.
+       (The global ``[h, S^imp_+]`` cannot be used: it picks up the spin-split
+       hybridization terms even for a correct impurity pairing.)
+
+    What remains unverifiable is the *bath* down↔up pairing: spin-split bath levels
+    are different spatial states, so no symmetry fixes their pairing and any choice
+    (here: the index convention, i.e. same fit slot) is a modelling approximation for
+    the transverse spin operators. Observables built from ``S_z`` alone are exact under
+    this check; observables involving the bath ``S_±`` are pairing-dependent and should
+    be reported flagged.
+
+    Parameters
+    ----------
+    h_op : ManyBodyOperator or dict
+        The Hamiltonian (its one-body part is used).
+    imp_pairs, bath_pairs : sequence of (int, int)
+        ``(dn, up)`` global spin-orbital pairs of the impurity and the bath.
+    n_orb : int
+        Total number of spin-orbitals.
+    tol : float, optional
+        Commutator norm tolerance.
+
+    Returns
+    -------
+    bool
+    """
     h, _, _ = extract_tensors(h_op, n_orb=n_orb, two_body=False)
-    sz = np.zeros((n_orb, n_orb), dtype=complex)
-    splus = np.zeros((n_orb, n_orb), dtype=complex)
-    for dn, up in spin_pairs:
-        sz[up, up] += 0.5
-        sz[dn, dn] -= 0.5
-        splus[up, dn] += 1.0  # S_+ = c†_up c_dn
-    return bool(np.linalg.norm(h @ sz - sz @ h) <= tol and np.linalg.norm(h @ splus - splus @ h) <= tol)
+    sz, _ = _sz_splus_matrices(list(imp_pairs) + list(bath_pairs), n_orb)
+    if np.linalg.norm(h @ sz - sz @ h) > tol:
+        return False
+    imp_orbs = sorted({orb for pair in imp_pairs for orb in pair})
+    pos = {orb: i for i, orb in enumerate(imp_orbs)}
+    h_imp = h[np.ix_(imp_orbs, imp_orbs)]
+    local_pairs = [(pos[dn], pos[up]) for dn, up in imp_pairs]
+    sz_imp, splus_imp = _sz_splus_matrices(local_pairs, len(imp_orbs))
+    return bool(
+        np.linalg.norm(h_imp @ sz_imp - sz_imp @ h_imp) <= tol
+        and np.linalg.norm(h_imp @ splus_imp - splus_imp @ h_imp) <= tol
+    )
 
 
 def _pairs_from_rotated_splus(orbs, rot, tol=1e-6):
@@ -278,3 +376,52 @@ def derive_spin_pairs(h_op, impurity_orbitals, rot_to_spherical, n_orb, tol=1e-6
     if any(orb not in matched for orb in bath_orbs):
         return None  # some bath orbital disconnected from the impurity
     return imp_pairs, bath_pairs
+
+
+def resolve_spin_pairs(h_op, impurity_orbitals, bath_states, rot_to_spherical, n_orb, tol=1e-6):
+    """Decide a trustworthy ``(dn, up)`` spin pairing for the impurity and bath.
+
+    The validation cascade shared by ``calc_gs``'s spin-correlation block and the
+    susceptibility driver:
+
+    1. the down-then-up index convention (valid in the spherical/``c2i`` layout),
+       accepted when the induced global spin operators commute with the one-body
+       Hamiltonian (``[h, S_z] = [h, S_+] = 0``);
+    2. the pairing derived from the Hamiltonian's spin symmetry
+       (:func:`derive_spin_pairs` — geometry-agnostic), confirmed by the same check;
+    3. the collinear spin-polarized bath check
+       (:func:`collinear_spin_pairs_consistent_with_h`): spin labels and the impurity
+       pairing are verified, but the spin-split bath levels have no symmetry-fixed
+       dn/up pairing — transverse (``S_±``) quantities are then pairing-dependent.
+
+    Parameters
+    ----------
+    h_op : ManyBodyOperator
+        The (many-body) Hamiltonian; only its one-body part is inspected.
+    impurity_orbitals : dict
+        ``Basis.impurity_orbitals``.
+    bath_states : tuple
+        ``Basis.bath_states`` (valence, conduction).
+    rot_to_spherical : np.ndarray or dict
+        Spherical→computational rotation (for the symmetry-derived fallback).
+    n_orb : int
+        Total number of spin-orbitals.
+    tol : float, default 1e-6
+        Commutator tolerance.
+
+    Returns
+    -------
+    (imp_pairs, bath_pairs, pairing_approx) or None
+        The validated pairs and whether only the collinear (label-level) validation
+        held (``pairing_approx=True``); ``None`` when no trustworthy labelling exists.
+    """
+    imp_pairs = impurity_spin_pairs(impurity_orbitals)
+    bath_pairs = bath_spin_pairs(bath_states)
+    if imp_pairs and bath_pairs and spin_pairs_consistent_with_h(h_op, imp_pairs + bath_pairs, n_orb, tol):
+        return imp_pairs, bath_pairs, False
+    derived = derive_spin_pairs(h_op, impurity_orbitals, rot_to_spherical, n_orb, tol)
+    if derived is not None and spin_pairs_consistent_with_h(h_op, derived[0] + derived[1], n_orb, tol):
+        return derived[0], derived[1], False
+    if imp_pairs and bath_pairs and collinear_spin_pairs_consistent_with_h(h_op, imp_pairs, bath_pairs, n_orb, tol):
+        return imp_pairs, bath_pairs, True
+    return None

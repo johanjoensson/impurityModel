@@ -137,7 +137,8 @@ public:
   ManyBodyState &prune(double cutoff);
 
   /**
-   * @brief Truncate the state to keep only the max_size elements with the largest amplitudes.
+   * @brief Truncate the state to keep only the max_size elements with the
+   * largest amplitudes.
    */
   void truncate(size_t max_size);
 
@@ -147,7 +148,8 @@ public:
   double max_norm2() const;
 
   /**
-   * @brief Count how many elements have a squared amplitude strictly greater than cutoff2.
+   * @brief Count how many elements have a squared amplitude strictly greater
+   * than cutoff2.
    */
   size_type count_above(double cutoff2) const;
 
