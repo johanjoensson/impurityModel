@@ -31,6 +31,7 @@ __all__ = [
     "SolverOptions",
     "SpectraOptions",
     "atomic_u4",
+    "load_selfenergy_archive",
 ]
 
 
@@ -196,6 +197,167 @@ class ImpurityModel:
             impurity_orbitals={l: list(range(n_imp_spin_orbitals))},
             rot_to_spherical=np.eye(n_imp_spin_orbitals, dtype=complex),
         )
+
+    @classmethod
+    def from_hdf5(cls, path, cluster: Optional[str] = None, iteration: Optional[int] = None) -> "ImpurityModel":
+        """Build a model from a group of an ``impurityModel_data.h5`` archive.
+
+        The RSPt interface (:mod:`impurityModel_interface`) writes one group per
+        ``(cluster, DMFT iteration)`` holding the full one-particle solver Hamiltonian
+        (``H solver``), the Coulomb tensor (``U``), ``Rot to spherical`` and the impurity
+        orbital indices, which is exactly the physics of an :class:`ImpurityModel`. This makes
+        an archived DFT-embedded run re-runnable offline. Use :func:`load_selfenergy_archive`
+        to also recover the frequency meshes and the recorded solver/basis options.
+
+        Parameters
+        ----------
+        path : str or path-like
+            Path to the archive.
+        cluster : str, optional
+            Cluster label (e.g. ``"Ni"``); defaults to the label of the first group.
+        iteration : int, optional
+            DMFT iteration; defaults to the archive's ``last iteration`` attribute.
+
+        Returns
+        -------
+        ImpurityModel
+        """
+        raw = _read_archive_group(path, cluster, iteration)
+        return cls(
+            h0=raw["h0"],
+            u4=raw["u4"],
+            impurity_orbitals=raw["impurity_orbitals"],
+            rot_to_spherical=raw["rot_to_spherical"],
+            n_spin_orbitals=raw["n_spin_orbitals"],
+        )
+
+
+def _archive_attr(attrs, key, default=None):
+    """Group attribute with the interface's ``None``-stored-as-the-string-``"None"`` undone."""
+    value = attrs.get(key, default)
+    if isinstance(value, (str, bytes)) and str(value) == "None":
+        return None
+    return value
+
+
+def _read_archive_group(path, cluster=None, iteration=None) -> dict:
+    """Parse one ``(cluster, iteration)`` group of an ``impurityModel_data.h5`` archive.
+
+    Returns the raw physics arrays (``h0`` operator dict, ``u4``, ``impurity_orbitals``,
+    ``rot_to_spherical``, ``n_spin_orbitals``), both frequency meshes and every recorded
+    solver/basis option, plus the group ``label``. Shared by :meth:`ImpurityModel.from_hdf5`
+    and :func:`load_selfenergy_archive`.
+    """
+    import h5py  # noqa: PLC0415 -- only the archive path needs it
+
+    with h5py.File(path, "r") as f:
+        if iteration is None:
+            iteration = int(f.attrs.get("last iteration", 1))
+        if cluster is None:
+            labels = sorted(f.keys())
+            if not labels:
+                raise ValueError(f"{path}: archive holds no cluster groups")
+            cluster = labels[0].rsplit(" ", 1)[0]
+        name = f"{cluster} {iteration}"
+        if name not in f:
+            raise ValueError(f"{path}: no group {name!r}; available: {sorted(f.keys())}")
+        g = f[name]
+        attrs = dict(g.attrs)
+
+        h_solver = np.asarray(g["H solver"])
+        u4 = np.asarray(g["U"])
+        iw_mesh = np.asarray(g["Matsubara frequency mesh"])
+        w_mesh = np.asarray(g["Real frequency mesh"])
+        rot_to_spherical = np.asarray(g["Rot to spherical"])
+        impurity_indices = [int(i) for i in np.asarray(g["Impurity orbitals"])]
+
+    # The interface hands calc_selfenergy the Hamiltonian as a second-quantized operator.
+    h0 = {((int(i), "c"), (int(j), "a")): complex(h_solver[i, j]) for i, j in zip(*np.nonzero(h_solver))}
+
+    truncation_threshold = _archive_attr(attrs, "truncation_threshold")
+    if truncation_threshold is not None:
+        truncation_threshold = float(truncation_threshold)
+    dN = _archive_attr(attrs, "dN")
+    if dN is not None:
+        dN = int(dN)
+
+    return {
+        "label": name,
+        "h0": h0,
+        "u4": u4,
+        "n_spin_orbitals": int(h_solver.shape[0]),
+        "impurity_orbitals": {0: impurity_indices},
+        "rot_to_spherical": rot_to_spherical,
+        # Meshes are stored real-valued; the Matsubara mesh is z = i * nu (see Meshes.iw).
+        "iw_mesh": iw_mesh if iw_mesh.size else None,
+        "w_mesh": w_mesh if w_mesh.size else None,
+        "nominal_occ": {0: int(attrs["nominal occupation"])},
+        "mixed_valence": _archive_attr(attrs, "mv"),
+        "tau": float(attrs["tau"]),
+        "delta": float(attrs["delta"]),
+        "reort": _archive_attr(attrs, "reort"),
+        "dense_cutoff": int(_archive_attr(attrs, "dense_cutoff", 1000)),
+        "spin_flip_dj": bool(_archive_attr(attrs, "spin_flip_dj", False)),
+        "chain_restrict": bool(_archive_attr(attrs, "chain_restrict", False)),
+        "occ_cutoff": float(_archive_attr(attrs, "occ_cutoff", 1e-6)),
+        "truncation_threshold": truncation_threshold,
+        "slater_weight_min": float(_archive_attr(attrs, "slater_min", 0.0)),
+        "dN": dN,
+        "sparse_green": bool(_archive_attr(attrs, "sparse_green", True)),
+    }
+
+
+def load_selfenergy_archive(path, cluster=None, iteration=None):
+    """Reconstruct a full ``calc_selfenergy`` call from an ``impurityModel_data.h5`` archive.
+
+    Returns ``(model, meshes, basis, solver, cluster_label)`` -- the :class:`ImpurityModel`
+    together with the frequency meshes and the recorded basis/solver options, so an archived
+    DFT-embedded self-energy run can be reproduced offline (see :meth:`ImpurityModel.from_hdf5`
+    for the physics-only view).
+
+    Parameters
+    ----------
+    path : str or path-like
+        Path to the archive.
+    cluster : str, optional
+        Cluster label; defaults to the first group's label.
+    iteration : int, optional
+        DMFT iteration; defaults to the archive's ``last iteration`` attribute.
+
+    Returns
+    -------
+    (ImpurityModel, Meshes, BasisOptions, SolverOptions, str)
+    """
+    raw = _read_archive_group(path, cluster, iteration)
+    model = ImpurityModel(
+        h0=raw["h0"],
+        u4=raw["u4"],
+        impurity_orbitals=raw["impurity_orbitals"],
+        rot_to_spherical=raw["rot_to_spherical"],
+        n_spin_orbitals=raw["n_spin_orbitals"],
+    )
+    meshes = Meshes(
+        iw=1j * raw["iw_mesh"] if raw["iw_mesh"] is not None else None,
+        w=raw["w_mesh"],
+        delta=raw["delta"],
+    )
+    basis = BasisOptions(
+        nominal_occ=raw["nominal_occ"],
+        mixed_valence=raw["mixed_valence"],
+        dN=raw["dN"],
+        truncation_threshold=raw["truncation_threshold"],
+        chain_restrict=raw["chain_restrict"],
+        spin_flip_dj=raw["spin_flip_dj"],
+        occ_cutoff=raw["occ_cutoff"],
+        slater_weight_min=raw["slater_weight_min"],
+        tau=raw["tau"],
+    )
+    solver = SolverOptions(
+        reort=raw["reort"],
+        dense_cutoff=raw["dense_cutoff"],
+        sparse_green=raw["sparse_green"],
+    )
+    return model, meshes, basis, solver, raw["label"]
 
 
 def _count_spin_orbitals(h0) -> int:

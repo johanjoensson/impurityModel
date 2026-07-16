@@ -7,16 +7,35 @@ disk: the frequency-dependent self-energy and impurity Green's function in RSPt 
 ``.dat`` file, and everything into a per-cluster HDF5 archive.
 """
 
+from dataclasses import replace
+
 import numpy as np
 from mpi4py import MPI
 
-from impurityModel.ed.model import BasisOptions, ImpurityModel, Meshes, SolverOptions
+from impurityModel.ed.model import BasisOptions, ImpurityModel, Meshes, SolverOptions, load_selfenergy_archive
 from impurityModel.ed.selfenergy import calc_selfenergy
 
 
 def add_arguments(parser):
     """Register the ``selfenergy`` sub-command arguments on ``parser``."""
-    parser.add_argument("h0_filename", type=str, help="Filename of non-interacting Hamiltonian.")
+    parser.add_argument(
+        "h0_filename",
+        type=str,
+        nargs="?",
+        default=None,
+        help="Filename of non-interacting Hamiltonian (omit when using --from-archive).",
+    )
+    parser.add_argument(
+        "--from-archive",
+        type=str,
+        default=None,
+        metavar="PATH",
+        help="Reconstruct the whole run (model, meshes, options) from an impurityModel_data.h5 archive.",
+    )
+    parser.add_argument("--cluster", type=str, default=None, help="Archive cluster label (with --from-archive).")
+    parser.add_argument(
+        "--iteration", type=int, default=None, help="Archive DMFT iteration (with --from-archive; default: last)."
+    )
     parser.add_argument("--clustername", type=str, default="cluster", help="Label of the cluster.")
     parser.add_argument("--ls", type=int, default=2, help="Angular momentum of the correlated orbitals.")
     parser.add_argument("--nBaths", type=int, default=10, help="Total number of bath states.")
@@ -119,48 +138,56 @@ def _save_results(result, meshes, cluster_label, output):
 
 def run(args):
     """Build the model and option groups from ``args``, solve, and save the results on rank 0."""
-    assert 0 <= args.n0imps <= 2 * (2 * args.ls + 1)
-    assert len(args.hField) == 3
-    if not args.realaxis and args.n_matsubara <= 0:
-        raise SystemExit("Nothing to compute: enable the real axis or request Matsubara points (--n_matsubara).")
-
     comm = MPI.COMM_WORLD
-    ls = args.ls
     verbosity = 2 if args.verbose else 0
 
-    model = ImpurityModel.from_h0_file(
-        args.h0_filename,
-        l=ls,
-        n_baths=args.nBaths,
-        slater=args.Fdd,
-        xi=args.xi,
-        h_field=tuple(args.hField),
-        rank=comm.rank,
-        verbose=args.verbose,
-    )
-    w = np.linspace(args.w_min, args.w_max, args.w_n) if args.realaxis else None
-    iw = _fermionic_matsubara(args.tau, args.n_matsubara) if args.n_matsubara > 0 else None
-    meshes = Meshes(iw=iw, w=w, delta=args.delta)
-    basis = BasisOptions(
-        nominal_occ={ls: args.n0imps},
-        mixed_valence={ls: 0},
-        dN=args.dN,
-        truncation_threshold=args.truncation_threshold,
-        chain_restrict=args.chain_restrict,
-        tau=args.tau,
-    )
-    solver = SolverOptions(
-        reort=args.reort,
-        dense_cutoff=args.dense_cutoff,
-        sparse_green=args.sparse_green,
-        gf_method=args.gf_method,
-    )
+    if args.from_archive:
+        # The archive carries the model, both meshes and every recorded basis/solver option;
+        # --gf-method still overrides the kernel (it is not part of the recorded run).
+        model, meshes, basis, solver, cluster_label = load_selfenergy_archive(
+            args.from_archive, cluster=args.cluster, iteration=args.iteration
+        )
+        solver = replace(solver, gf_method=args.gf_method)
+    else:
+        if not args.h0_filename:
+            raise SystemExit("Provide an h0 file (positional) or --from-archive PATH.")
+        assert 0 <= args.n0imps <= 2 * (2 * args.ls + 1)
+        assert len(args.hField) == 3
+        if not args.realaxis and args.n_matsubara <= 0:
+            raise SystemExit("Nothing to compute: enable the real axis or request Matsubara points (--n_matsubara).")
+        ls = args.ls
+        model = ImpurityModel.from_h0_file(
+            args.h0_filename,
+            l=ls,
+            n_baths=args.nBaths,
+            slater=args.Fdd,
+            xi=args.xi,
+            h_field=tuple(args.hField),
+            rank=comm.rank,
+            verbose=args.verbose,
+        )
+        w = np.linspace(args.w_min, args.w_max, args.w_n) if args.realaxis else None
+        iw = _fermionic_matsubara(args.tau, args.n_matsubara) if args.n_matsubara > 0 else None
+        meshes = Meshes(iw=iw, w=w, delta=args.delta)
+        basis = BasisOptions(
+            nominal_occ={ls: args.n0imps},
+            mixed_valence={ls: 0},
+            dN=args.dN,
+            truncation_threshold=args.truncation_threshold,
+            chain_restrict=args.chain_restrict,
+            tau=args.tau,
+        )
+        solver = SolverOptions(
+            reort=args.reort,
+            dense_cutoff=args.dense_cutoff,
+            sparse_green=args.sparse_green,
+            gf_method=args.gf_method,
+        )
+        cluster_label = args.clustername
 
-    result = calc_selfenergy(
-        model, meshes, basis, solver, comm=comm, verbosity=verbosity, cluster_label=args.clustername
-    )
+    result = calc_selfenergy(model, meshes, basis, solver, comm=comm, verbosity=verbosity, cluster_label=cluster_label)
     if comm.rank == 0 and result is not None:
-        _save_results(result, meshes, args.clustername, args.output)
+        _save_results(result, meshes, cluster_label, args.output)
 
 
 def main():

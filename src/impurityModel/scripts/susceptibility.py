@@ -8,13 +8,30 @@ runs :func:`impurityModel.ed.susceptibility.calc_susceptibility_workflow`, which
 import numpy as np
 from mpi4py import MPI
 
-from impurityModel.ed.model import BasisOptions, ImpurityModel, Meshes, SolverOptions
+from impurityModel.ed.model import BasisOptions, ImpurityModel, Meshes, SolverOptions, load_selfenergy_archive
 from impurityModel.ed.susceptibility import calc_susceptibility_workflow
 
 
 def add_arguments(parser):
     """Register the ``susceptibility`` sub-command arguments on ``parser``."""
-    parser.add_argument("h0_filename", type=str, help="Filename of non-interacting Hamiltonian.")
+    parser.add_argument(
+        "h0_filename",
+        type=str,
+        nargs="?",
+        default=None,
+        help="Filename of non-interacting Hamiltonian (omit when using --from-archive).",
+    )
+    parser.add_argument(
+        "--from-archive",
+        type=str,
+        default=None,
+        metavar="PATH",
+        help="Take the impurity model (and nominal occupation/tau) from an impurityModel_data.h5 archive.",
+    )
+    parser.add_argument("--cluster", type=str, default=None, help="Archive cluster label (with --from-archive).")
+    parser.add_argument(
+        "--iteration", type=int, default=None, help="Archive DMFT iteration (with --from-archive; default: last)."
+    )
     parser.add_argument("--clustername", type=str, default="cluster", help="Label of the cluster.")
     parser.add_argument("--ls", type=int, default=2, help="Angular momentum of the correlated orbitals.")
     parser.add_argument("--nBaths", type=int, default=10, help="Total number of bath states.")
@@ -37,24 +54,34 @@ def add_arguments(parser):
 
 def run(args):
     """Build the model and option groups from ``args`` and run the susceptibility workflow."""
-    assert 0 <= args.n0imps <= 2 * (2 * args.ls + 1)
-    assert len(args.hField) == 3
-
     comm = MPI.COMM_WORLD
-    ls = args.ls
 
-    model = ImpurityModel.from_h0_file(
-        args.h0_filename,
-        l=ls,
-        n_baths=args.nBaths,
-        slater=args.Fdd,
-        xi=args.xi,
-        h_field=tuple(args.hField),
-        rank=comm.rank,
-        verbose=args.verbose,
-    )
+    if args.from_archive:
+        # The archive supplies the model plus its nominal occupation / mixed valence / tau; the
+        # susceptibility-specific real mesh and Matsubara count still come from the CLI flags.
+        model, _meshes, basis, _solver, cluster_label = load_selfenergy_archive(
+            args.from_archive, cluster=args.cluster, iteration=args.iteration
+        )
+    else:
+        if not args.h0_filename:
+            raise SystemExit("Provide an h0 file (positional) or --from-archive PATH.")
+        assert 0 <= args.n0imps <= 2 * (2 * args.ls + 1)
+        assert len(args.hField) == 3
+        ls = args.ls
+        model = ImpurityModel.from_h0_file(
+            args.h0_filename,
+            l=ls,
+            n_baths=args.nBaths,
+            slater=args.Fdd,
+            xi=args.xi,
+            h_field=tuple(args.hField),
+            rank=comm.rank,
+            verbose=args.verbose,
+        )
+        basis = BasisOptions(nominal_occ={ls: args.n0imps}, mixed_valence={ls: 0}, tau=args.tau)
+        cluster_label = args.clustername
+
     meshes = Meshes(w=np.linspace(args.w_min, args.w_max, args.w_n), delta=args.delta)
-    basis = BasisOptions(nominal_occ={ls: args.n0imps}, mixed_valence={ls: 0}, tau=args.tau)
     solver = SolverOptions()
 
     calc_susceptibility_workflow(
@@ -64,7 +91,7 @@ def run(args):
         solver,
         comm=comm,
         verbosity=2 if args.verbose else 0,
-        cluster_label=args.clustername,
+        cluster_label=cluster_label,
         num_wanted=args.nPsiMax,
         n_matsubara=args.n_matsubara,
         output_filename=args.output,

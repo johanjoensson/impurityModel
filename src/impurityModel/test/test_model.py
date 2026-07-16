@@ -7,7 +7,14 @@ import numpy as np
 import pytest
 
 from impurityModel.ed import atomic_physics
-from impurityModel.ed.model import BasisOptions, ImpurityModel, Meshes, SolverOptions, atomic_u4
+from impurityModel.ed.model import (
+    BasisOptions,
+    ImpurityModel,
+    Meshes,
+    SolverOptions,
+    atomic_u4,
+    load_selfenergy_archive,
+)
 from impurityModel.ed.operator_algebra import c2i
 
 REPO_ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "..", ".."))
@@ -104,3 +111,73 @@ def test_from_h0_file_matches_nio_workload_inputs():
     np.testing.assert_array_equal(model.u4, inputs["u4"])
     assert model.h0 == inputs["h0"]
     assert model.impurity_orbitals == inputs["impurity_orbitals"]
+
+
+def _write_synthetic_archive(path):
+    """Write a minimal impurityModel_data.h5 (one 2-orbital impurity + 1 bath) like the interface does."""
+    import h5py
+
+    h_solver = np.zeros((3, 3), dtype=complex)
+    h_solver[0, 0] = 0.5
+    h_solver[1, 1] = 0.5
+    h_solver[2, 2] = -1.0
+    h_solver[0, 2] = h_solver[2, 0] = 0.3  # impurity-bath hybridization
+    u4 = np.zeros((2, 2, 2, 2), dtype=complex)
+    u4[0, 1, 1, 0] = 2.0
+    with h5py.File(path, "w") as f:
+        f.attrs["last iteration"] = 2
+        g = f.create_group("X 2")
+        g.create_dataset("H solver", data=h_solver)
+        g.create_dataset("U", data=u4)
+        g.create_dataset("Matsubara frequency mesh", data=np.linspace(0.1, 5.0, 8))
+        g.create_dataset("Real frequency mesh", data=np.linspace(-3, 3, 11))
+        g.create_dataset("Rot to spherical", data=np.eye(2, dtype=complex))
+        g.create_dataset("Impurity orbitals", data=np.array([0, 1]))
+        g.attrs["nominal occupation"] = 1
+        g.attrs["tau"] = 0.0025
+        g.attrs["delta"] = 0.1
+        g.attrs["mv"] = "None"
+        g.attrs["reort"] = "partial"
+        g.attrs["dense_cutoff"] = 500
+        g.attrs["spin_flip_dj"] = False
+        g.attrs["chain_restrict"] = True
+        g.attrs["occ_cutoff"] = 1e-6
+        g.attrs["truncation_threshold"] = "None"
+        g.attrs["slater_min"] = 0.0
+        g.attrs["dN"] = "None"
+        g.attrs["sparse_green"] = True
+
+
+def test_from_hdf5_reads_archive_group(tmp_path):
+    """ImpurityModel.from_hdf5 recovers the physics arrays from an archive group."""
+    archive = tmp_path / "impurityModel_data.h5"
+    _write_synthetic_archive(str(archive))
+
+    model = ImpurityModel.from_hdf5(str(archive))  # defaults to last iteration / first cluster
+    assert model.n_spin_orbitals == 3  # H solver is 3x3
+    assert model.impurity_orbitals == {0: [0, 1]}
+    assert model.u4.shape == (2, 2, 2, 2)
+    np.testing.assert_array_equal(model.rot_to_spherical, np.eye(2, dtype=complex))
+    # h0 holds the non-zero H solver entries, including the hybridization.
+    assert model.h0[((0, "c"), (2, "a"))] == 0.3
+
+
+def test_load_selfenergy_archive_recovers_options(tmp_path):
+    """load_selfenergy_archive rebuilds model + meshes + basis + solver from the archive."""
+    archive = tmp_path / "impurityModel_data.h5"
+    _write_synthetic_archive(str(archive))
+
+    model, meshes, basis, solver, label = load_selfenergy_archive(str(archive))
+    assert label == "X 2"
+    # The stored Matsubara mesh is real-valued nu; the Meshes.iw is the complex z = i*nu.
+    assert meshes.iw is not None and meshes.iw.dtype.kind == "c"
+    np.testing.assert_allclose(meshes.iw.imag, np.linspace(0.1, 5.0, 8))
+    assert len(meshes.w) == 11
+    assert basis.nominal_occ == {0: 1}
+    assert basis.mixed_valence is None
+    assert basis.tau == 0.0025
+    assert basis.chain_restrict is True
+    assert basis.dN is None
+    assert solver.reort == "partial"
+    assert solver.dense_cutoff == 500
+    assert isinstance(model, ImpurityModel)

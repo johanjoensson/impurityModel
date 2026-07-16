@@ -65,6 +65,21 @@ def test_susceptibility_defaults():
     assert args.output == "chi.h5"
 
 
+def test_selfenergy_from_archive_makes_h0_optional():
+    # --from-archive replaces the positional h0 file, which becomes optional.
+    args = _parse(selfenergy.add_arguments, ["--from-archive", "arch.h5", "--cluster", "Ni", "--iteration", "3"])
+    assert args.h0_filename is None
+    assert args.from_archive == "arch.h5"
+    assert args.cluster == "Ni"
+    assert args.iteration == 3
+
+
+def test_susceptibility_from_archive_makes_h0_optional():
+    args = _parse(susceptibility.add_arguments, ["--from-archive", "arch.h5"])
+    assert args.h0_filename is None
+    assert args.from_archive == "arch.h5"
+
+
 def test_cli_dispatches_to_subcommand(monkeypatch):
     recorded = {}
 
