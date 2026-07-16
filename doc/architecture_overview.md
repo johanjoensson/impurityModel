@@ -86,7 +86,7 @@ Layer 5: gf_primitives, gf_convergence, gf_shift_recycling, gf_units, gf_solvers
          greens_function, spectra, rixs,
          cg, cipsi_solver, groundstate, hartree_fock, hamiltonian_io, gf_diagnostics,
          gs_statistics, double_counting, sigma
-Layer 6: CLIs: get_spectra, selfenergy
+Layer 6: CLIs: get_spectra, selfenergy, susceptibility
 ```
 
 ### Foundations (Layer 0–2)
@@ -138,6 +138,7 @@ Layer 6: CLIs: get_spectra, selfenergy
 ### CLIs (Layer 6)
 - **`get_spectra.py`** (`python -m impurityModel.ed.get_spectra`) — find the lowest eigenstates, then calculate spectra (PS, XPS, XAS, NIXS, RIXS).
 - **`selfenergy.py`** (`python -m impurityModel.ed.selfenergy`) — impurity self-energy calculation (for DMFT-style workflows): the `calc_selfenergy`/`get_selfenergy` orchestration and CLI on top of `double_counting` and `sigma` (both re-exported for backward compatibility).
+- **`susceptibility.py`** (`python -m impurityModel.ed.susceptibility`) — dynamical local susceptibilities of the impurity (`chi_spin_zz`, `chi_orb_zz`, `chi_charge`, transverse `chi_+-`) on a real mesh and the bosonic Matsubara mesh, via `spectra.calc_spectra` resolvent branches with the elastic (Curie) weight projected out per degenerate manifold; writes `chi.h5` and prints a Van Vleck/Curie/screening-scale summary (the Hund's-metal diagnostic).
 
 ### Plotting (post-processing, `scripts/`)
 - **`scripts/_plot_common.py`** — shared CLI plumbing for the plot scripts (input/output/figure-style arguments, `spectra.h5` loading, orbital-selection parsing, `.dat` export), ported from `pyRSPthon.cli._common`.
