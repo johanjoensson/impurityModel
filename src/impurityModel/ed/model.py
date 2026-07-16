@@ -216,8 +216,8 @@ class Meshes:
     Attributes
     ----------
     iw : numpy.ndarray or None
-        Matsubara frequency mesh (imaginary part; the solver multiplies by ``1j``). ``None``
-        skips the Matsubara output.
+        Complex Matsubara mesh :math:`z = i\\nu_n` (the solver evaluates the resolvent at
+        ``iw`` directly, so pass ``1j * nu``). ``None`` skips the Matsubara output.
     w : numpy.ndarray or None
         Real frequency mesh (eV). ``None`` skips the real-axis output.
     delta : float

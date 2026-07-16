@@ -33,25 +33,22 @@ charge results is the Hund's-metal diagnostic: a large spin Curie weight screene
 low energy scale, next to an orbital response screened at a much higher scale and a
 suppressed charge response.
 
-This module is a *driver/CLI layer* on top of ``groundstate`` and ``spectra`` (see the
-layering rule in ``doc/architecture_overview.md``). Run it as
+This module is a *driver* on top of ``groundstate`` and ``spectra`` (see the layering rule in
+``doc/architecture_overview.md``); the command-line interface lives in
+:mod:`impurityModel.scripts.susceptibility`. Run it as
 
 .. code-block:: bash
 
-    python -m impurityModel.ed.susceptibility h0_and_two_body.h5 ...
+    impurityModel susceptibility h0_and_two_body.h5 ...
 
 The results are written to a ``chi.h5`` file (one group per operator with ``realaxis`` /
 ``matsubara`` datasets, the Curie coefficient and the meshes).
 """
 
-import argparse
-
 import numpy as np
-from mpi4py import MPI
 
 from impurityModel.ed import spectra
 from impurityModel.ed.ManyBodyUtils import ManyBodyOperator, inner
-from impurityModel.ed.model import BasisOptions, ImpurityModel, Meshes, SolverOptions
 from impurityModel.ed.observables import make_impurity_casimir_operators, make_spin_operators
 from impurityModel.ed.spin_pairs import resolve_spin_pairs
 from impurityModel.ed.utils import report_banner
@@ -492,70 +489,3 @@ def calc_susceptibility_workflow(
             save_susceptibility(result, output_filename)
             print(f"\nSusceptibilities written to {output_filename} (cluster '{cluster_label}').")
     return result
-
-
-def main():
-    """CLI: solve the impurity ground state and compute chi_spin/orb/charge/transverse."""
-    parser = argparse.ArgumentParser(description="Calculate dynamical impurity susceptibilities chi(w) / chi(i nu)")
-    parser.add_argument("h0_filename", type=str, help="Filename of non-interacting Hamiltonian.")
-    parser.add_argument("--clustername", type=str, default="cluster", help="Label of the cluster.")
-    parser.add_argument("--ls", type=int, default=2, help="Angular momenta of correlated orbitals.")
-    parser.add_argument("--nBaths", type=int, default=10, help="Total number of bath states.")
-    parser.add_argument("--n0imps", type=int, default=8, help="Nominal impurity occupation.")
-    parser.add_argument(
-        "--Fdd", type=float, nargs="+", default=[7.5, 0, 9.9, 0, 6.6], help="Slater-Condon parameters Fdd."
-    )
-    parser.add_argument("--xi", type=float, default=0, help="SOC value for the correlated orbitals.")
-    parser.add_argument("--hField", type=float, nargs="+", default=[0, 0, 0.0001], help="Magnetic field (x, y, z).")
-    parser.add_argument("--nPsiMax", type=int, default=5, help="Maximum number of eigenstates to consider.")
-    parser.add_argument("--tau", type=float, default=0.002, help="Fundamental temperature (kb*T).")
-    parser.add_argument("--w_min", type=float, default=-5.0, help="Lower edge of the real frequency mesh (eV).")
-    parser.add_argument("--w_max", type=float, default=5.0, help="Upper edge of the real frequency mesh (eV).")
-    parser.add_argument("--w_n", type=int, default=501, help="Number of real mesh points.")
-    parser.add_argument("--delta", type=float, default=0.01, help="Broadening above the real axis (eV).")
-    parser.add_argument("--n_matsubara", type=int, default=64, help="Number of bosonic Matsubara points (0 disables).")
-    parser.add_argument("--output", type=str, default="chi.h5", help="Output HDF5 filename.")
-    parser.add_argument("-v", "--verbose", action="store_true", help="Set verbose output.")
-    args = parser.parse_args()
-
-    assert args.n0imps >= 0
-    assert args.n0imps <= 2 * (2 * args.ls + 1)
-    assert len(args.hField) == 3
-
-    comm = MPI.COMM_WORLD
-    ls = args.ls
-
-    model = ImpurityModel.from_h0_file(
-        args.h0_filename,
-        l=ls,
-        n_baths=args.nBaths,
-        slater=args.Fdd,
-        xi=args.xi,
-        h_field=tuple(args.hField),
-        rank=comm.rank,
-        verbose=args.verbose,
-    )
-    meshes = Meshes(w=np.linspace(args.w_min, args.w_max, args.w_n), delta=args.delta)
-    basis = BasisOptions(
-        nominal_occ={ls: args.n0imps},
-        mixed_valence={ls: 0},
-        tau=args.tau,
-    )
-    solver = SolverOptions()
-
-    calc_susceptibility_workflow(
-        model,
-        meshes,
-        basis,
-        solver,
-        comm=comm,
-        verbosity=2 if args.verbose else 0,
-        cluster_label=args.clustername,
-        num_wanted=args.nPsiMax,
-        n_matsubara=args.n_matsubara,
-        output_filename=args.output,
-    )
-
-
-if __name__ == "__main__":
-    main()

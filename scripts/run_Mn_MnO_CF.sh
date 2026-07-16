@@ -22,5 +22,5 @@ radial_filename=${DIR}"/../radialOrbitals/Mn3d.dat"
 echo "H0 filename: $h0_filename"
 echo "Radial wavefunction filename: $radial_filename"
 
-mpirun -n $ranks python -m impurityModel.ed.get_spectra $h0_filename $radial_filename \
+mpirun -n $ranks python -m impurityModel spectra $h0_filename $radial_filename \
     --n0imps 6 5 --Fdd 6 0 9.0 0 6.1 --Fpd 7.5 0 5.6 --Gpd 0 4 0 2.3 --xi_2p 6.936 --xi_3d 0.051 --nPsiMax 7

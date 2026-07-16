@@ -22,5 +22,5 @@ echo "Number of MPI ranks to use: $ranks"
 echo "H0 filename: $h0_filename"
 echo "Radial wavefunction filename: $radial_filename"
 
-mpirun -n $ranks python -m impurityModel.ed.get_spectra $h0_filename $radial_filename --nBaths 0 60 --nValBaths 0 10 --dnConBaths 0 1
+mpirun -n $ranks python -m impurityModel spectra $h0_filename $radial_filename --nBaths 0 60 --nValBaths 0 10 --dnConBaths 0 1
 
