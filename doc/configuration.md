@@ -6,7 +6,7 @@ before launching a calculation:
 
 ```bash
 GF_EIGENSTATE_GROUP=2 GF_SECTOR_CACHE_DIR=/scratch/sectors \
-    mpiexec -n 16 python -m impurityModel.ed.selfenergy ...
+    mpiexec -n 16 impurityModel selfenergy ...
 ```
 
 Knobs are read **lazily** on every access, so a variable set at any point takes effect on

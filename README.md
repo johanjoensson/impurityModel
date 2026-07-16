@@ -101,8 +101,16 @@ This is done for NiO by typing:
 path/to/folder/impurityModel/scripts/run_Ni_NiO_CF.sh
 ```
 (similar crystal-field examples exist for MnO, FeO and CoO in the same folder).
+
+The example scripts wrap the command-line interface. You can also call it directly:
+```bash
+impurityModel spectra h0/h0_NiO_10bath.pickle radialOrbitals/Ni3d.dat --nBaths 0 10 --nValBaths 0 10
+```
+`impurityModel` has sub-commands `spectra`, `selfenergy`, `susceptibility`, `plot-spectra` and
+`plot-rixs` (run `impurityModel --help`, or `python -m impurityModel ...` if the console script
+is not on `PATH`).
+
 #### Output files
-The input parameters to the simulation are saved in `.npz` format.
 Calculated spectra are saved to the single file `spectra.h5`. XAS and RIXS are stored as
 polarization *tensors* (the Cartesian dipole components); polarization contraction -- including
 circular polarizations, dichroism, and arbitrary polarization vectors -- happens as a

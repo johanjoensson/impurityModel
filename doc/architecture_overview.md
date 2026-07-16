@@ -85,9 +85,17 @@ Layer 4: manybody_basis (+ basis_generation, basis_restrictions,
 Layer 5: gf_primitives, gf_convergence, gf_shift_recycling, gf_units, gf_solvers,
          greens_function, spectra, rixs,
          cg, cipsi_solver, groundstate, hartree_fock, hamiltonian_io, gf_diagnostics,
-         gs_statistics, double_counting, sigma
-Layer 6: CLIs: get_spectra, selfenergy, susceptibility
+         gs_statistics, double_counting, sigma, model
+Layer 6: drivers: get_spectra, selfenergy, susceptibility
+Layer 7: CLIs: scripts/cli (umbrella), scripts/{spectra,selfenergy,susceptibility},
+         scripts/{plot_spectra,plot_RIXS}; entry points impurityModel / python -m impurityModel
 ```
+
+`model.py` is the single construction point for the *physics* of a problem (the `ImpurityModel`
+dataclass plus the `Meshes`/`BasisOptions`/`SolverOptions`/`SpectraOptions` option groups). It
+imports only `atomic_physics`/`operator_algebra`/`hamiltonian_io`, so it sits below the drivers
+and is what both the CLIs and embedded callers (the RSPt interface) build to pass into a driver.
+`impurityModel.api` re-exports it together with `calc_selfenergy` and the save helpers.
 
 ### Foundations (Layer 0–2)
 - **`average.py`** — thermal averaging (`thermal_average`, `thermal_average_scale_indep`, `k_B`).
@@ -135,15 +143,21 @@ Layer 6: CLIs: get_spectra, selfenergy, susceptibility
 - **`double_counting.py`** — the double-counting search for the self-energy workflow: `fixed_peak_dc` (pin a spectral peak) and `fixed_occupation_dc` (pin the impurity occupation), each bisecting a chemical potential while rebuilding the variational ground state and its thermal density matrix. Split out of `selfenergy.py`.
 - **`sigma.py`** — self-energy extraction downstream of `G`: the static (Hartree-Fock) and dynamic self-energies (`get_sigma`, `get_Sigma_static`), the hybridization function (`hyb`), the correlated/bath splitting (`get_hcorr_v_hbath`), and the physicality check (`check_greens_function`, `UnphysicalGreensFunctionError`). Split out of `selfenergy.py`.
 
-### CLIs (Layer 6)
-- **`get_spectra.py`** (`python -m impurityModel.ed.get_spectra`) — find the lowest eigenstates, then calculate spectra (PS, XPS, XAS, NIXS, RIXS).
-- **`selfenergy.py`** (`python -m impurityModel.ed.selfenergy`) — impurity self-energy calculation (for DMFT-style workflows): the `calc_selfenergy`/`get_selfenergy` orchestration and CLI on top of `double_counting` and `sigma` (both re-exported for backward compatibility).
-- **`susceptibility.py`** (`python -m impurityModel.ed.susceptibility`) — dynamical local susceptibilities of the impurity (`chi_spin_zz`, `chi_orb_zz`, `chi_charge`, transverse `chi_+-`) on a real mesh and the bosonic Matsubara mesh, via `spectra.calc_spectra` resolvent branches with the elastic (Curie) weight projected out per degenerate manifold; writes `chi.h5` and prints a Van Vleck/Curie/screening-scale summary (the Hund's-metal diagnostic).
+### Drivers (Layer 6)
+These are library modules — importable functions, no `__main__` — that the CLIs (and embedded
+callers) invoke with an `ImpurityModel` + option groups.
+- **`get_spectra.py`** — `build_spectra_model` assembles the full interacting model from an `h0` file; `run_spectra` finds the lowest eigenstates and calculates the spectra (PS, XPS, XAS, NIXS, RIXS), writing `spectra.h5`.
+- **`selfenergy.py`** — impurity self-energy for DMFT-style workflows: `calc_selfenergy(model, meshes, basis, solver, ...)` on top of `double_counting` and `sigma` (both re-exported).
+- **`susceptibility.py`** — dynamical local susceptibilities of the impurity (`chi_spin_zz`, `chi_orb_zz`, `chi_charge`, transverse `chi_+-`) on a real mesh and the bosonic Matsubara mesh, via `spectra.calc_spectra` resolvent branches with the elastic (Curie) weight projected out per degenerate manifold; writes `chi.h5` and prints a Van Vleck/Curie/screening-scale summary (the Hund's-metal diagnostic).
 
-### Plotting (post-processing, `scripts/`)
+### CLIs (Layer 7, `scripts/`)
+- **`scripts/cli.py`** (console script `impurityModel`, and `python -m impurityModel`) — the umbrella argparse dispatcher over the sub-commands below.
+- **`scripts/spectra.py`** (`impurityModel spectra`) — builds the model via `build_spectra_model` and runs `run_spectra`; the radial file is optional (NIXS is skipped without it).
+- **`scripts/selfenergy.py`** (`impurityModel selfenergy`) — builds/loads the model, runs `calc_selfenergy`, and saves Σ/G (RSPt `.dat`), the static Σ, and a per-cluster HDF5 archive; `--from-archive` reproduces a recorded run.
+- **`scripts/susceptibility.py`** (`impurityModel susceptibility`) — runs `calc_susceptibility_workflow`; also accepts `--from-archive`.
 - **`scripts/_plot_common.py`** — shared CLI plumbing for the plot scripts (input/output/figure-style arguments, `spectra.h5` loading, orbital-selection parsing, `.dat` export), ported from `pyRSPthon.cli._common`.
-- **`scripts/plot_spectra.py`** (console script `plot_spectra`) — plots PS/XPS/NIXS from `spectra.h5`, and XAS by contracting the stored spectral tensor with the requested polarizations (`--pol`, default x/y/z + isotropic; `--xmcd`/`--xld` dichroism; `--tensor-components`) via `polarization.py`; also overlays the RIXS-tensor fluorescence yield when both are present.
-- **`scripts/plot_RIXS.py`** (console script `plot_RIXS`) — plots the RIXS map from `spectra.h5`'s `RIXS/tensor`, contracting with `--pol-in`/`--pol-out` polarization pairs, `--mcd` circular dichroism, `--fy` fluorescence yield, and `--cuts`/`--emission` energy-loss line cuts, all as post-processing (no solver re-run).
+- **`scripts/plot_spectra.py`** (console script `plot_spectra`, or `impurityModel plot-spectra`) — plots PS/XPS/NIXS from `spectra.h5`, and XAS by contracting the stored spectral tensor with the requested polarizations (`--pol`, default x/y/z + isotropic; `--xmcd`/`--xld` dichroism; `--tensor-components`) via `polarization.py`; also overlays the RIXS-tensor fluorescence yield when both are present.
+- **`scripts/plot_RIXS.py`** (console script `plot_RIXS`, or `impurityModel plot-rixs`) — plots the RIXS map from `spectra.h5`'s `RIXS/tensor`, contracting with `--pol-in`/`--pol-out` polarization pairs, `--mcd` circular dichroism, `--fy` fluorescence yield, and `--cuts`/`--emission` energy-loss line cuts, all as post-processing (no solver re-run).
 
 ## Test Suite (`src/impurityModel/test/`)
 

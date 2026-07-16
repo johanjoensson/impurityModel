@@ -288,7 +288,7 @@ scale as $1/\tau$ for a free moment ($\chi_{zz} = S_\mathrm{eff}(S_\mathrm{eff}+
 summed over a degenerate multiplet). Van Vleck contributions from excited states above
 the energy cut are *not* included — for the full frequency-resolved response (and the
 screened static limit) use the dynamical susceptibility CLI
-(`python -m impurityModel.ed.susceptibility`). Reading them together is the static
+(`impurityModel susceptibility`). Reading them together is the static
 Hund's-metal fingerprint: a large `chi_spin_zz` next to a quenched `chi_orb_zz` and a
 small `chi_charge` signals a fluctuating Hund moment with frozen orbital and charge
 degrees of freedom; `chi_spin_orb` $\neq 0$ indicates spin-orbital locking. The

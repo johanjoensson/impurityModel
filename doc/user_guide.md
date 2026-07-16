@@ -22,24 +22,40 @@ Optional extras: `.[dev]` (pytest, pytest-mpi, black, ruff, mypy, cython-lint), 
 `IMPURITYMODEL_PARALLEL=1` (intended for few-rank-many-core nodes; do **not** combine it with
 one MPI rank per core, which oversubscribes).
 
-## Inputs
+## The CLI
 
-A calculation needs two files (positional arguments to `get_spectra`):
+Everything is driven by one umbrella command with sub-commands:
+
+```bash
+impurityModel spectra         <h0> [radial] [options]   # PS/XPS/NIXS/XAS/RIXS -> spectra.h5
+impurityModel selfenergy      <h0>          [options]   # Sigma(w)/Sigma(i nu), G_imp
+impurityModel susceptibility  <h0>          [options]   # chi(w)/chi(i nu) -> chi.h5
+impurityModel plot-spectra    spectra.h5    [options]   # plot from spectra.h5 (no re-solve)
+impurityModel plot-rixs       spectra.h5    [options]
+```
+
+`python -m impurityModel <subcommand> ...` is an equivalent entry point when the console script
+is not on `PATH`. Every sub-command runs identically under MPI (`mpiexec -n N ...`). See
+`impurityModel <subcommand> --help` for the full option set.
+
+## Inputs
 
 1. **The non-interacting Hamiltonian `h0`** — a single-particle Hamiltonian read by
    `hamiltonian_io.py`. Supported formats: a pickled operator dict, a `.dat` matrix, or `.json`.
-   The impurity orbitals come first, then the bath orbitals. `get_spectra` combines it with the
-   interaction (Slater–Condon `Fdd`/`Fpp`/`Fpd`/`Gpd`), spin–orbit coupling (`xi_2p`, `xi_3d`), a
-   magnetic field, and the double-counting correction at runtime.
-2. **The radial file** — the radial mesh and the radial part of the correlated orbitals, used by
-   the NIXS excitation.
+   The impurity orbitals come first, then the bath orbitals. The `spectra` sub-command combines
+   it with the interaction (Slater–Condon `Fdd`/`Fpp`/`Fpd`/`Gpd`), spin–orbit coupling (`xi_2p`,
+   `xi_3d`), a magnetic field, and the double-counting correction at runtime.
+2. **The radial file** *(optional)* — the radial mesh and the radial part of the correlated
+   orbitals, used by the NIXS excitation. Omit it and NIXS is skipped; every other spectrum is
+   independent of it.
 
-Optionally, XAS and RIXS **projector files** select specific transitions; without them the
-default paths compute the full polarization tensor (see Outputs).
+Alternatively, `selfenergy`/`susceptibility` can take `--from-archive impurityModel_data.h5`
+(the file the RSPt interface writes) instead of an `h0` file — the whole model comes from the
+archive.
 
 ## Running a spectra calculation
 
-The CLI is `python -m impurityModel.ed.get_spectra <h0_filename> <radial_filename> [options]`.
+The command is `impurityModel spectra <h0_filename> [radial_filename] [options]`.
 The key options (all have defaults; see `--help` for the full list):
 
 | Option | Meaning |
@@ -56,6 +72,7 @@ The key options (all have defaults; see `--help` for the full list):
 | `--delta --deltaRIXS --deltaNIXS` | Broadenings (HWHM). |
 | `--nPsiMax` | Maximum number of eigenstates. |
 | `--truncation_threshold` | Global cap on determinants per basis (memory control). |
+| `--no-auto-block-structure` | Keep the hand-coded block structure instead of deriving it. |
 
 Run it under MPI for anything nontrivial. A worked NiO L-edge invocation (from
 `scripts/run_Ni_NiO_Xbath.sh`):
@@ -64,7 +81,7 @@ Run it under MPI for anything nontrivial. A worked NiO L-edge invocation (from
 h0_filename=h0/h0_NiO_10bath.pickle
 radial_filename=radialOrbitals/Ni3d.dat
 
-mpiexec -n 8 python -m impurityModel.ed.get_spectra \
+mpiexec -n 8 impurityModel spectra \
     "$h0_filename" "$radial_filename" \
     --nBaths 0 10 --nValBaths 0 10
 ```
@@ -91,25 +108,62 @@ re-running the solve. No quick-look `.dat`/`.bin` files are written.
 
 ## Plotting
 
-Two console scripts post-process `spectra.h5` (no solver re-run):
+Two sub-commands post-process `spectra.h5` (no solver re-run); the standalone `plot_spectra` /
+`plot_RIXS` console scripts are equivalent:
 
 ```bash
-plot_spectra spectra.h5 --pol x y z         # PS/XPS/NIXS, and XAS by contracting the tensor
-plot_RIXS   spectra.h5 --pol-in x --pol-out y   # the RIXS map from RIXS/tensor
+impurityModel plot-spectra spectra.h5 --pol x y z          # PS/XPS/NIXS, and XAS by contracting the tensor
+impurityModel plot-rixs    spectra.h5 --pol-in x --pol-out y   # the RIXS map from RIXS/tensor
 ```
 
-`plot_spectra` contracts the stored XAS tensor with the requested polarizations (`--pol`,
+`plot-spectra` contracts the stored XAS tensor with the requested polarizations (`--pol`,
 `--xmcd`/`--xld` for dichroism, `--tensor-components`) and can overlay the RIXS fluorescence
-yield. `plot_RIXS` contracts `RIXS/tensor` with `--pol-in`/`--pol-out` pairs and supports
+yield. `plot-rixs` contracts `RIXS/tensor` with `--pol-in`/`--pol-out` pairs and supports
 `--mcd`, `--fy` (fluorescence yield), and `--cuts`/`--emission` energy-loss line cuts. Both
 export `.dat` on request. See `--help` on each for the full option set.
 
 ## Self-energy (DMFT workflows)
 
-`python -m impurityModel.ed.selfenergy` computes the impurity self-energy for DMFT-style
-workflows. It shares the ground-state and Green's-function machinery with `get_spectra`; the
-double-counting is fixed by pinning either a spectral peak or the impurity occupation
-(`double_counting.py`). The `--help` output lists its arguments.
+`impurityModel selfenergy <h0>` computes the impurity self-energy for DMFT-style workflows. It
+shares the ground-state and Green's-function machinery with `spectra`. Choose the frequency axes
+with `--w_min/--w_max/--w_n/--delta` (real) and `--n_matsubara` (fermionic Matsubara); the run
+writes the frequency-dependent Σ and impurity G in RSPt `.dat` format, the static Σ to a `.dat`
+file, and a per-cluster HDF5 archive. `--from-archive impurityModel_data.h5 [--cluster L]`
+reproduces a recorded DFT-embedded run (model, meshes and solver options all come from the
+archive). The double-counting is fixed by pinning either a spectral peak or the impurity
+occupation (`double_counting.py`).
+
+## Susceptibilities
+
+`impurityModel susceptibility <h0>` computes the dynamical impurity susceptibilities
+(spin / orbital / charge / transverse) on a real mesh and the bosonic Matsubara mesh, writing
+`chi.h5` and a Curie/Van-Vleck/screening-scale summary (the Hund's-metal diagnostic). It also
+accepts `--from-archive`.
+
+## Python API
+
+The CLIs are thin wrappers over a small API (`impurityModel.api`). Build an `ImpurityModel` plus
+option groups and call the solver directly — this is how the RSPt interface embeds the solver
+in memory, no files involved:
+
+```python
+from mpi4py import MPI
+from impurityModel.api import ImpurityModel, Meshes, BasisOptions, SolverOptions, calc_selfenergy
+
+model = ImpurityModel(h0=h0_operator, u4=u4_tensor, impurity_orbitals={0: list(range(10))},
+                      rot_to_spherical=rot)
+result = calc_selfenergy(
+    model,
+    Meshes(iw=1j * matsubara_nu, w=real_mesh, delta=0.1),
+    BasisOptions(nominal_occ={0: 8}, tau=0.002),
+    SolverOptions(gf_method="lanczos"),
+    comm=MPI.COMM_WORLD,
+)
+```
+
+`ImpurityModel.from_h0_file(...)` builds the model from a file, and
+`ImpurityModel.from_hdf5(archive)` / `load_selfenergy_archive(archive)` rebuild it (and the
+option groups) from an `impurityModel_data.h5` archive.
 
 ## Sanity check
 
