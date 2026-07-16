@@ -2,7 +2,66 @@ import numpy as np
 import pytest
 from impurityModel.ed import gf_diagnostics as gd
 from impurityModel.ed import selfenergy
+from impurityModel.ed.model import BasisOptions, ImpurityModel, Meshes, SolverOptions
 from impurityModel.ed.selfenergy import UnphysicalGreensFunctionError
+
+
+def _selfenergy_args(**overrides):
+    """Grouped ``calc_selfenergy`` arguments for the single-orbital mocked-solver unit tests.
+
+    The orchestration tests below mock ``calc_gs`` / ``get_Greens_function`` / ``get_sigma``,
+    so the actual physics values are placeholders; only the plumbing matters. Override any
+    field by name (e.g. ``verbosity=1``); returns the ``model, meshes, basis, solver`` kwargs
+    (minus ``comm``, which each test passes explicitly).
+    """
+    v = dict(
+        h0={((0, "c"), (0, "a")): 1.0},
+        u4=np.zeros((1, 1, 1, 1)),
+        iw=np.array([1j]),
+        w=np.array([0.0]),
+        delta=0.1,
+        nominal_occ={0: 1},
+        mixed_valence=False,
+        impurity_orbitals={0: [0]},
+        tau=0.1,
+        verbosity=2,
+        rot_to_spherical=np.eye(1),
+        cluster_label="test",
+        reort=None,
+        dense_cutoff=100,
+        spin_flip_dj=False,
+        chain_restrict=False,
+        occ_cutoff=1e-12,
+        truncation_threshold=100,
+        slaterWeightMin=1e-12,
+        dN=None,
+        sparse_green=False,
+    )
+    v.update(overrides)
+    model = ImpurityModel(
+        h0=v["h0"], u4=v["u4"], impurity_orbitals=v["impurity_orbitals"], rot_to_spherical=v["rot_to_spherical"]
+    )
+    meshes = Meshes(iw=v["iw"], w=v["w"], delta=v["delta"])
+    basis = BasisOptions(
+        nominal_occ=v["nominal_occ"],
+        mixed_valence=v["mixed_valence"],
+        dN=v["dN"],
+        truncation_threshold=v["truncation_threshold"],
+        chain_restrict=v["chain_restrict"],
+        spin_flip_dj=v["spin_flip_dj"],
+        occ_cutoff=v["occ_cutoff"],
+        slater_weight_min=v["slaterWeightMin"],
+        tau=v["tau"],
+    )
+    solver = SolverOptions(reort=v["reort"], dense_cutoff=v["dense_cutoff"], sparse_green=v["sparse_green"])
+    return dict(
+        model=model,
+        meshes=meshes,
+        basis=basis,
+        solver=solver,
+        verbosity=v["verbosity"],
+        cluster_label=v["cluster_label"],
+    )
 
 
 def test_check_greens_function_valid():
@@ -220,42 +279,7 @@ def test_calc_selfenergy(mock_get_gf, mock_calc_gs):
         None,
     )
 
-    h0 = {((0, "c"), (0, "a")): 1.0}
-    u4 = np.zeros((1, 1, 1, 1))
-    iw = np.array([1j])
-    w = np.array([0.0])
-    delta = 0.1
-    nominal_occ = {0: 1}
-    mixed_valence = False
-    impurity_orbitals = {0: [0]}
-    tau = 0.1
-    verbosity = 2
-    rot_to_spherical = np.eye(1)
-
-    res = selfenergy.calc_selfenergy(
-        h0=h0,
-        u4=u4,
-        iw=iw,
-        w=w,
-        delta=delta,
-        nominal_occ=nominal_occ,
-        mixed_valence=mixed_valence,
-        impurity_orbitals=impurity_orbitals,
-        tau=tau,
-        verbosity=verbosity,
-        rot_to_spherical=rot_to_spherical,
-        cluster_label="test",
-        reort=None,
-        dense_cutoff=100,
-        spin_flip_dj=False,
-        comm=None,
-        chain_restrict=False,
-        occ_cutoff=1e-12,
-        truncation_threshold=100,
-        slaterWeightMin=1e-12,
-        dN=None,
-        sparse_green=False,
-    )
+    res = selfenergy.calc_selfenergy(**_selfenergy_args(), comm=None)
 
     assert res["sigma"] is not None
     assert res["sigma_real"] is not None
@@ -284,30 +308,7 @@ def test_calc_selfenergy_retries_on_truncated_ensemble(mock_get_gf, mock_calc_gs
     # First call returns the truncated report, second the clean one.
     mock_get_gf.side_effect = [gf[:-1] + (truncated,), gf[:-1] + (clean,)]
 
-    selfenergy.calc_selfenergy(
-        h0={((0, "c"), (0, "a")): 1.0},
-        u4=np.zeros((1, 1, 1, 1)),
-        iw=np.array([1j]),
-        w=np.array([0.0]),
-        delta=0.1,
-        nominal_occ={0: 1},
-        mixed_valence=False,
-        impurity_orbitals={0: [0]},
-        tau=0.1,
-        verbosity=1,
-        rot_to_spherical=np.eye(1),
-        cluster_label="test",
-        reort=None,
-        dense_cutoff=100,
-        spin_flip_dj=False,
-        comm=None,
-        chain_restrict=False,
-        occ_cutoff=1e-12,
-        truncation_threshold=100,
-        slaterWeightMin=1e-12,
-        dN=None,
-        sparse_green=False,
-    )
+    selfenergy.calc_selfenergy(**_selfenergy_args(verbosity=1), comm=None)
 
     # Exactly one retry: calc_gs called twice, the second time with a larger num_wanted.
     assert mock_calc_gs.call_count == 2
@@ -331,30 +332,7 @@ def test_calc_selfenergy_no_matsubara(mock_get_gf, mock_calc_gs):
         {"rhos": [np.array([[1.0]])]},
     )
     mock_get_gf.return_value = (None, [np.array([[[-1j]]])], None)  # gs_matsubara=None, gs_realaxis=one block
-    res = selfenergy.calc_selfenergy(
-        h0={((0, "c"), (0, "a")): 1.0},
-        u4=np.zeros((1, 1, 1, 1)),
-        iw=np.array([1j]),
-        w=np.array([0.0]),
-        delta=0.1,
-        nominal_occ={0: 1},
-        mixed_valence=False,
-        impurity_orbitals={0: [0]},
-        tau=0.1,
-        verbosity=2,
-        rot_to_spherical=np.eye(1),
-        cluster_label="test",
-        reort=None,
-        dense_cutoff=100,
-        spin_flip_dj=False,
-        comm=None,
-        chain_restrict=False,
-        occ_cutoff=1e-12,
-        truncation_threshold=100,
-        slaterWeightMin=1e-12,
-        dN=None,
-        sparse_green=False,
-    )
+    res = selfenergy.calc_selfenergy(**_selfenergy_args(), comm=None)
     assert res["sigma"] is None
     assert res["sigma_real"] is not None
 
@@ -373,58 +351,12 @@ def test_calc_selfenergy_exceptions(mock_get_gf, mock_calc_gs):
     mock_get_gf.return_value = ([np.array([[[1j]]])], None, None)  # Diagonal has positive imag part -> unphysical
 
     with pytest.raises(UnphysicalGreensFunctionError):
-        selfenergy.calc_selfenergy(
-            h0={((0, "c"), (0, "a")): 1.0},
-            u4=np.zeros((1, 1, 1, 1)),
-            iw=np.array([1j]),
-            w=np.array([0.0]),
-            delta=0.1,
-            nominal_occ={0: 1},
-            mixed_valence=False,
-            impurity_orbitals={0: [0]},
-            tau=0.1,
-            verbosity=2,
-            rot_to_spherical=np.eye(1),
-            cluster_label="test",
-            reort=None,
-            dense_cutoff=100,
-            spin_flip_dj=False,
-            comm=None,
-            chain_restrict=False,
-            occ_cutoff=1e-12,
-            truncation_threshold=100,
-            slaterWeightMin=1e-12,
-            dN=None,
-            sparse_green=False,
-        )
+        selfenergy.calc_selfenergy(**_selfenergy_args(), comm=None)
 
     # Test Unphysical greens function in realaxis
     mock_get_gf.return_value = (None, [np.array([[[1j]]])], None)
     with pytest.raises(UnphysicalGreensFunctionError):
-        selfenergy.calc_selfenergy(
-            h0={((0, "c"), (0, "a")): 1.0},
-            u4=np.zeros((1, 1, 1, 1)),
-            iw=np.array([1j]),
-            w=np.array([0.0]),
-            delta=0.1,
-            nominal_occ={0: 1},
-            mixed_valence=False,
-            impurity_orbitals={0: [0]},
-            tau=0.1,
-            verbosity=2,
-            rot_to_spherical=np.eye(1),
-            cluster_label="test",
-            reort=None,
-            dense_cutoff=100,
-            spin_flip_dj=False,
-            comm=None,
-            chain_restrict=False,
-            occ_cutoff=1e-12,
-            truncation_threshold=100,
-            slaterWeightMin=1e-12,
-            dN=None,
-            sparse_green=False,
-        )
+        selfenergy.calc_selfenergy(**_selfenergy_args(), comm=None)
 
 
 @patch("impurityModel.ed.selfenergy.save_Greens_function")
@@ -445,136 +377,11 @@ def test_calc_selfenergy_sigma_exceptions(mock_get_sigma, mock_get_gf, mock_calc
     mock_get_sigma.return_value = [np.array([[[1j]]])]  # Invalid sigma
 
     with pytest.raises(UnphysicalGreensFunctionError):
-        selfenergy.calc_selfenergy(
-            h0={((0, "c"), (0, "a")): 1.0},
-            u4=np.zeros((1, 1, 1, 1)),
-            iw=np.array([1j]),
-            w=np.array([0.0]),
-            delta=0.1,
-            nominal_occ={0: 1},
-            mixed_valence=False,
-            impurity_orbitals={0: [0]},
-            tau=0.1,
-            verbosity=2,
-            rot_to_spherical=np.eye(1),
-            cluster_label="test",
-            reort=None,
-            dense_cutoff=100,
-            spin_flip_dj=False,
-            comm=None,
-            chain_restrict=False,
-            occ_cutoff=1e-12,
-            truncation_threshold=100,
-            slaterWeightMin=1e-12,
-            dN=None,
-            sparse_green=False,
-        )
+        selfenergy.calc_selfenergy(**_selfenergy_args(), comm=None)
 
     # Test unphysical sigma matsubara
     mock_get_gf.return_value = ([np.array([[[-1j]]])], None, None)  # Valid GS
     mock_get_sigma.return_value = [np.array([[[1j]]])]  # Invalid sigma
 
     with pytest.raises(UnphysicalGreensFunctionError):
-        selfenergy.calc_selfenergy(
-            h0={((0, "c"), (0, "a")): 1.0},
-            u4=np.zeros((1, 1, 1, 1)),
-            iw=np.array([1j]),
-            w=np.array([0.0]),
-            delta=0.1,
-            nominal_occ={0: 1},
-            mixed_valence=False,
-            impurity_orbitals={0: [0]},
-            tau=0.1,
-            verbosity=2,
-            rot_to_spherical=np.eye(1),
-            cluster_label="test",
-            reort=None,
-            dense_cutoff=100,
-            spin_flip_dj=False,
-            comm=None,
-            chain_restrict=False,
-            occ_cutoff=1e-12,
-            truncation_threshold=100,
-            slaterWeightMin=1e-12,
-            dN=None,
-            sparse_green=False,
-        )
-
-
-@patch("impurityModel.ed.selfenergy.calc_selfenergy")
-@patch("impurityModel.ed.selfenergy.get_noninteracting_hamiltonian_operator")
-@patch("impurityModel.ed.selfenergy.atomic_physics.getUop")
-def test_get_selfenergy(mock_getUop, mock_get_h0, mock_calc):
-    from mpi4py import MPI
-
-    if MPI.COMM_WORLD.rank != 0:
-        return
-    mock_getUop.return_value = {(((0, 0, 0), "c"), ((0, 0, 0), "a"), ((0, 0, 0), "c"), ((0, 0, 0), "a")): 1.0}
-    mock_get_h0.return_value = {(((0, 0, 0), "c"), ((0, 0, 0), "a")): 1.0}
-    mock_calc.return_value = {"sigma": None, "sigma_real": None, "sigma_static": None}
-
-    result = selfenergy.get_selfenergy(
-        hamiltonian=selfenergy.HamiltonianParameters(
-            h0_filename="dummy.h0",
-            ls=0,
-            nBaths=2,
-            nValBaths=1,
-            Fdd=[0.0],
-            xi=0.0,
-            chargeTransferCorrection=0.0,
-            hField=(0.0, 0.0, 0.0),
-        ),
-        occupation=selfenergy.OccupationParameters(n0imps=1, dnTols=1, dnValBaths=1, dnConBaths=1),
-        solver=selfenergy.SolverParameters(
-            clustername="test",
-            nPsiMax=1,
-            nPrintSlaterWeights=1,
-            tau=0.1,
-            energy_cut=1.0,
-            delta=0.1,
-            verbose=True,
-        ),
-    )
-    # get_selfenergy forwards calc_selfenergy's result dict (no bogus tuple-unpacking).
-    assert result == {"sigma": None, "sigma_real": None, "sigma_static": None}
-    assert mock_calc.called
-
-
-@patch("impurityModel.ed.selfenergy.calc_selfenergy")
-@patch("impurityModel.ed.selfenergy.get_noninteracting_hamiltonian_operator")
-@patch("impurityModel.ed.selfenergy.atomic_physics.getUop")
-def test_get_selfenergy_exception(mock_getUop, mock_get_h0, mock_calc):
-    from mpi4py import MPI
-
-    if MPI.COMM_WORLD.rank != 0:
-        return
-    # Pass an invalid spinOrb to trigger Exception in c2i
-    mock_getUop.return_value = {
-        (((99, 99, 99), "c"), ((99, 99, 99), "a"), ((99, 99, 99), "c"), ((99, 99, 99), "a")): 1.0
-    }
-    mock_get_h0.return_value = {(((99, 99, 99), "c"), ((99, 99, 99), "a")): 1.0}
-    mock_calc.return_value = (None, None, None)
-
-    with pytest.raises(Exception):
-        selfenergy.get_selfenergy(
-            hamiltonian=selfenergy.HamiltonianParameters(
-                h0_filename="dummy.h0",
-                ls=0,
-                nBaths=2,
-                nValBaths=1,
-                Fdd=[0.0],
-                xi=0.0,
-                chargeTransferCorrection=0.0,
-                hField=(0.0, 0.0, 0.0),
-            ),
-            occupation=selfenergy.OccupationParameters(n0imps=1, dnTols=1, dnValBaths=1, dnConBaths=1),
-            solver=selfenergy.SolverParameters(
-                clustername="test",
-                nPsiMax=1,
-                nPrintSlaterWeights=1,
-                tau=0.1,
-                energy_cut=1.0,
-                delta=0.1,
-                verbose=True,
-            ),
-        )
+        selfenergy.calc_selfenergy(**_selfenergy_args(), comm=None)

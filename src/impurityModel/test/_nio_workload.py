@@ -172,6 +172,52 @@ def build_selfenergy_inputs(
     )
 
 
+def as_calc_selfenergy_args(inputs):
+    """Pack the flat :func:`build_selfenergy_inputs` dict into the grouped ``calc_selfenergy`` call.
+
+    ``calc_selfenergy`` takes an :class:`~impurityModel.ed.model.ImpurityModel` plus the
+    :class:`~impurityModel.ed.model.Meshes` / :class:`~impurityModel.ed.model.BasisOptions` /
+    :class:`~impurityModel.ed.model.SolverOptions` option groups; the benchmark/golden helper
+    still produces the flat workload dict (its keys are also read individually elsewhere), so
+    this adapter builds the grouped objects. Use as
+    ``calc_selfenergy(**as_calc_selfenergy_args(inputs), comm=comm)``.
+    """
+    from impurityModel.ed.model import BasisOptions, ImpurityModel, Meshes, SolverOptions
+
+    model = ImpurityModel(
+        h0=inputs["h0"],
+        u4=inputs["u4"],
+        impurity_orbitals=inputs["impurity_orbitals"],
+        rot_to_spherical=inputs["rot_to_spherical"],
+    )
+    meshes = Meshes(iw=inputs["iw"], w=inputs["w"], delta=inputs["delta"])
+    basis = BasisOptions(
+        nominal_occ=inputs["nominal_occ"],
+        mixed_valence=inputs["mixed_valence"],
+        dN=inputs["dN"],
+        truncation_threshold=inputs["truncation_threshold"],
+        chain_restrict=inputs["chain_restrict"],
+        spin_flip_dj=inputs["spin_flip_dj"],
+        occ_cutoff=inputs["occ_cutoff"],
+        slater_weight_min=inputs["slaterWeightMin"],
+        tau=inputs["tau"],
+    )
+    solver = SolverOptions(
+        reort=inputs["reort"],
+        dense_cutoff=inputs["dense_cutoff"],
+        sparse_green=inputs["sparse_green"],
+        gf_method=inputs.get("gf_method", "lanczos"),
+    )
+    return dict(
+        model=model,
+        meshes=meshes,
+        basis=basis,
+        solver=solver,
+        verbosity=inputs["verbosity"],
+        cluster_label=inputs["cluster_label"],
+    )
+
+
 def build_ground_state_workload(
     nBaths=10,
     mixed_valence=1,

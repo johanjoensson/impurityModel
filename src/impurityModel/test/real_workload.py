@@ -157,32 +157,42 @@ def run_selfenergy(
     dict
         The ``calc_selfenergy`` result dict (rank 0; empty-ish on other ranks).
     """
+    from impurityModel.ed.model import BasisOptions, ImpurityModel, Meshes, SolverOptions
+
     iw = _subsample(workload["iw_mesh"], n_iw)
     w = _subsample(workload["w_mesh"], n_w)
-    return calc_selfenergy(
+    model = ImpurityModel(
         h0=workload["h0"],
         u4=workload["u4"],
-        iw=1j * iw if iw is not None else None,
-        w=w,
-        delta=workload["delta"],
+        impurity_orbitals=workload["impurity_orbitals"],
+        rot_to_spherical=workload["rot_to_spherical"],
+    )
+    meshes = Meshes(iw=1j * iw if iw is not None else None, w=w, delta=workload["delta"])
+    basis = BasisOptions(
         nominal_occ=workload["nominal_occ"],
         mixed_valence=workload["mixed_valence"],
-        impurity_orbitals=workload["impurity_orbitals"],
-        tau=workload["tau"],
-        verbosity=verbosity,
-        rot_to_spherical=workload["rot_to_spherical"],
-        cluster_label=workload["label"],
-        reort=workload["reort"] if reort == "archive" else reort,
-        dense_cutoff=workload["dense_cutoff"],
-        spin_flip_dj=workload["spin_flip_dj"],
-        comm=comm,
-        chain_restrict=workload["chain_restrict"],
-        occ_cutoff=workload["occ_cutoff"],
+        dN=workload["dN"] if dN == "archive" else dN,
         truncation_threshold=(
             workload["truncation_threshold"] if truncation_threshold == "archive" else truncation_threshold
         ),
-        slaterWeightMin=workload["slaterWeightMin"],
-        dN=workload["dN"] if dN == "archive" else dN,
+        chain_restrict=workload["chain_restrict"],
+        spin_flip_dj=workload["spin_flip_dj"],
+        occ_cutoff=workload["occ_cutoff"],
+        slater_weight_min=workload["slaterWeightMin"],
+        tau=workload["tau"],
+    )
+    solver = SolverOptions(
+        reort=workload["reort"] if reort == "archive" else reort,
+        dense_cutoff=workload["dense_cutoff"],
         sparse_green=workload["sparse_green"],
         gf_method=gf_method,
+    )
+    return calc_selfenergy(
+        model,
+        meshes,
+        basis,
+        solver,
+        comm=comm,
+        verbosity=verbosity,
+        cluster_label=workload["label"],
     )

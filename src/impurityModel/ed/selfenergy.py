@@ -1,12 +1,8 @@
-import argparse
-from collections import OrderedDict
 from dataclasses import dataclass
 
 import numpy as np
-from mpi4py import MPI
 
 from impurityModel.ed import atomic_physics
-from impurityModel.ed.hamiltonian_io import get_noninteracting_hamiltonian_operator
 from impurityModel.ed.symmetries import (
     classify_bath_occupation,
     extract_tensors,
@@ -15,7 +11,6 @@ from impurityModel.ed.symmetries import (
     impurity_symmetry_rotation,
     rotate_hamiltonian,
 )
-from impurityModel.ed.operator_algebra import c2i
 from impurityModel.ed.greens_function import build_full_greens_function, get_Greens_function, save_Greens_function
 from impurityModel.ed.groundstate import calc_gs
 from impurityModel.ed.memory_estimate import log_memory_budget, log_peak_vs_predicted, suggest_truncation_threshold
@@ -33,8 +28,6 @@ from impurityModel.ed.sigma import (  # noqa: F401
     get_sigma,
     hyb,
 )
-
-EV_TO_RY = 1 / 13.605693122994
 
 # Adaptive symmetry-adapted-basis rotation (calc_selfenergy): drop rotated operator terms below
 # this magnitude (eV; removes rotation round-off fill), and rotate into the symmetry-adapted
@@ -307,98 +300,62 @@ def _self_energy_on_mesh(
     return sigma
 
 
-def calc_selfenergy(
-    h0,
-    u4,
-    iw,
-    w,
-    delta,
-    nominal_occ,
-    mixed_valence,
-    impurity_orbitals,
-    tau,
-    verbosity,
-    rot_to_spherical,
-    cluster_label,
-    reort,
-    dense_cutoff,
-    spin_flip_dj,
-    comm,
-    chain_restrict,
-    occ_cutoff,
-    truncation_threshold,
-    slaterWeightMin,
-    dN,
-    sparse_green,
-    gf_method="lanczos",
-):
+def calc_selfenergy(model, meshes, basis, solver, *, comm, verbosity=0, cluster_label="cluster"):
     """Calculate the self energy of the impurity.
 
     Parameters
     ----------
-    h0 : dict or ManyBodyOperator
-        The non-interacting Hamiltonian.
-    u4 : np.ndarray
-        The Coulomb interaction matrix.
-    iw : np.ndarray or None
-        Matsubara frequency mesh.
-    w : np.ndarray or None
-        Real frequency mesh.
-    delta : float
-        Smearing parameter for real frequencies.
-    nominal_occ : dict
-        Nominal occupation.
-    mixed_valence : bool
-        Whether to consider mixed valence.
-    impurity_orbitals : dict[int, list[int]]
-        Flat impurity spin-orbital index lists per group; re-grouped into conserved-charge blocks
-        internally by :func:`symmetries.group_orbitals_by_charges`. The bath orbitals (everything
-        else in ``h0``) and their valence/conduction (occupied/empty) split are derived from the
-        Hamiltonian via :func:`symmetries.classify_bath_occupation`.
-    tau : float
-        Temperature parameter.
-    verbosity : int
-        Verbosity level.
-    rot_to_spherical : np.ndarray
-        Rotation matrix to spherical harmonics.
-    cluster_label : str
-        Label for the cluster.
-    reort : float or None
-        Reorthogonalization parameter.
-    dense_cutoff : int
-        Cutoff for dense matrix representation.
-    spin_flip_dj : bool
-        Whether to include spin-flip terms.
+    model : impurityModel.ed.model.ImpurityModel
+        The impurity problem: the non-interacting Hamiltonian ``h0`` (single-index operator
+        form), the Coulomb tensor ``u4``, the impurity orbital layout ``impurity_orbitals``
+        (flat per-group spin-orbital index lists; the bath orbitals and their valence/
+        conduction split are derived from ``h0`` internally), and ``rot_to_spherical``.
+    meshes : impurityModel.ed.model.Meshes
+        Matsubara (``iw``) and real (``w``) frequency meshes and the real-axis smearing
+        (``delta``); either mesh may be ``None`` to skip that output.
+    basis : impurityModel.ed.model.BasisOptions
+        Many-body basis construction: nominal occupation, mixed valence, the occupation
+        window ``dN``, the determinant budget ``truncation_threshold`` (``None`` derives the
+        cap from available per-rank memory; ``np.inf`` disables capping), chain restrictions,
+        spin-flip determinants, occupation cutoff, minimum Slater weight and temperature.
+    solver : impurityModel.ed.model.SolverOptions
+        Green's-function kernel (``gf_method`` -- ``"lanczos"``/``"bicgstab"``/``"sliced"``),
+        reorthogonalization mode, dense cutoff and the sparse-Green flag. See
+        :func:`impurityModel.ed.greens_function.get_Greens_function`.
     comm : MPI.Comm or None
         MPI communicator.
-    chain_restrict : bool
-        Whether to restrict to chain geometry.
-    occ_cutoff : float
-        Cutoff for occupation numbers.
-    truncation_threshold : float or None
-        Global cap on the number of Slater determinants per basis (ground state and each
-        Green's-function excited basis). ``None`` derives the cap from available per-rank
-        memory (collective probe; see :mod:`impurityModel.ed.memory_estimate`), ``np.inf``
-        disables capping.
-    slaterWeightMin : float
-        Minimum weight for Slater determinants.
-    dN : int or None
-        Particle number constraint.
-    sparse_green : bool
-        Whether to use sparse representation for Green's function.
-    gf_method : str
-        Green's-function kernel: ``"lanczos"`` (default, one block-Lanczos recurrence per
-        work unit serving the whole mesh), ``"bicgstab"`` (one linear solve per frequency
-        point on a rebuilt-and-discarded basis -- the memory-first path; ``sparse_green``
-        and ``reort`` do not apply to it), or ``"sliced"`` (Chebyshev spectral-window
-        decomposition with per-slice bases; real-axis meshes only). See
-        :func:`impurityModel.ed.greens_function.get_Greens_function`.
+    verbosity : int, optional
+        Verbosity level.
+    cluster_label : str, optional
+        Label for the cluster.
 
     Returns
     -------
     dict
         Dictionary containing self-energy, Green's function, thermal density matrix, and ground state info.
     """
+    # Unpack the grouped parameters into the local names used throughout the body.
+    h0 = model.h0
+    u4 = model.u4
+    impurity_orbitals = model.impurity_orbitals
+    rot_to_spherical = model.rot_to_spherical
+    iw = meshes.iw
+    w = meshes.w
+    delta = meshes.delta
+    nominal_occ = basis.nominal_occ
+    mixed_valence = basis.mixed_valence
+    tau = basis.tau
+    chain_restrict = basis.chain_restrict
+    spin_flip_dj = basis.spin_flip_dj
+    occ_cutoff = basis.occ_cutoff
+    truncation_threshold = basis.truncation_threshold
+    slaterWeightMin = basis.slater_weight_min
+    dN = basis.dN
+    reort = solver.reort
+    dense_cutoff = solver.dense_cutoff
+    sparse_green = solver.sparse_green
+    gf_method = solver.gf_method
+
     # MPI variables
     rank = comm.rank if comm is not None else 0
 
@@ -606,386 +563,3 @@ def calc_selfenergy(
         # the fixed-budget CIPSI refinement summary otherwise (see CIPSISolver.expand).
         "gs_truncation": gs_info.get("truncation"),
     }
-
-
-@dataclass(frozen=True)
-class HamiltonianParameters:
-    """Non-interacting Hamiltonian file plus the atomic interaction parameters.
-
-    Attributes
-    ----------
-    h0_filename : str
-        Filename of the non-interacting Hamiltonian.
-    ls : int
-        Angular momentum of correlated orbitals.
-    nBaths, nValBaths : int
-        Total number of bath states / number of valence bath states.
-    Fdd : list of float
-        Slater-Condon parameters.
-    xi : float
-        Spin-orbit coupling value.
-    chargeTransferCorrection : float
-        Double counting parameter.
-    hField : tuple of float
-        Magnetic field vector (hx, hy, hz).
-    """
-
-    h0_filename: str
-    ls: int
-    nBaths: int
-    nValBaths: int
-    Fdd: object
-    xi: float
-    chargeTransferCorrection: float
-    hField: tuple
-
-
-@dataclass(frozen=True)
-class OccupationParameters:
-    """Nominal impurity occupation and the allowed deviations.
-
-    Attributes
-    ----------
-    n0imps : int
-        Nominal impurity occupation.
-    dnTols : int
-        Max deviation from nominal impurity occupation.
-    dnValBaths : int
-        Max number of electrons to leave valence bath orbitals.
-    dnConBaths : int
-        Max number of electrons to enter conduction bath orbitals.
-    """
-
-    n0imps: int
-    dnTols: int
-    dnValBaths: int
-    dnConBaths: int
-
-
-@dataclass(frozen=True)
-class SolverParameters:
-    """Output label, eigenstate budget, temperature/smearing, and the GF kernel.
-
-    Attributes
-    ----------
-    clustername : str
-        Label for the cluster.
-    nPsiMax : int
-        Maximum number of eigenstates to consider.
-    nPrintSlaterWeights : int
-        Printing parameter for Slater weights.
-    tau : float
-        Fundamental temperature.
-    energy_cut : float
-        Energy cutoff for eigenstates.
-    delta : float
-        Smearing parameter.
-    verbose : bool
-        Verbosity flag.
-    gf_method : str
-        Green's-function kernel, ``"lanczos"`` (default), ``"bicgstab"`` (per-frequency
-        linear solves, memory-first), or ``"sliced"`` (Chebyshev spectral-window
-        decomposition, real-axis meshes only). See :func:`calc_selfenergy`.
-    """
-
-    clustername: str
-    nPsiMax: int
-    nPrintSlaterWeights: int
-    tau: float
-    energy_cut: float
-    delta: float
-    verbose: bool
-    gf_method: str = "lanczos"
-
-
-def get_selfenergy(
-    hamiltonian: HamiltonianParameters,
-    occupation: OccupationParameters,
-    solver: SolverParameters,
-):
-    """Calculate the self energy from the grouped CLI parameters.
-
-    Parameters
-    ----------
-    hamiltonian : HamiltonianParameters
-        Non-interacting Hamiltonian file and the atomic interaction parameters.
-    occupation : OccupationParameters
-        Nominal impurity occupation and its allowed deviations.
-    solver : SolverParameters
-        Output label, eigenstate budget, temperature/smearing, and the GF kernel.
-    """
-    # Unpack the grouped parameters into the local names used below.
-    h0_filename = hamiltonian.h0_filename
-    ls = hamiltonian.ls
-    nBaths = hamiltonian.nBaths
-    Fdd = hamiltonian.Fdd
-    xi = hamiltonian.xi
-    hField = hamiltonian.hField
-    n0imps = occupation.n0imps
-    clustername = solver.clustername
-    tau = solver.tau
-    delta = solver.delta
-    verbose = solver.verbose
-    gf_method = solver.gf_method
-
-    # MPI variables
-    comm = MPI.COMM_WORLD
-    rank = comm.rank
-
-    # omega_mesh = np.linspace(-25, 25, 2000)
-    omega_mesh = np.linspace(-1.83, 1.83, 2000)
-    # omega_mesh = 1j*np.pi*tau*np.arange(start = 1, step = 2, stop = 2*375)
-
-    # if rank == 0:
-    #     t0 = time.perf_counter()
-    # -- System information --
-
-    sum_baths = OrderedDict({ls: nBaths})
-
-    # -- Basis occupation information --
-    nominal_occ = {ls: n0imps}
-
-    # Construct u4 and rot_to_spherical, mixed_valence, etc.
-    n_imp_spin_orbitals = 2 * (2 * ls + 1)
-    u4 = np.zeros((n_imp_spin_orbitals, n_imp_spin_orbitals, n_imp_spin_orbitals, n_imp_spin_orbitals), dtype=complex)
-    uOp = atomic_physics.getUop(l1=ls, l2=ls, l3=ls, l4=ls, R=Fdd)
-    nBaths_for_c2i = OrderedDict({ls: 0})
-    for process, val in uOp.items():
-        i = c2i(nBaths_for_c2i, process[0][0])
-        j = c2i(nBaths_for_c2i, process[1][0])
-        k = c2i(nBaths_for_c2i, process[2][0])
-        l = c2i(nBaths_for_c2i, process[3][0])
-        # RSPt convention: u4[i,j,k,l] multiplies c^dag_i c^dag_j c_l c_k, so
-        # the process c^dag_i c^dag_j c_k c_l is stored with k and l swapped.
-        u4[i, j, l, k] = 2.0 * val
-
-    # Flat impurity spin-orbital index list (dict[int, list[int]]); calc_selfenergy re-groups the
-    # orbitals into per-conserved-charge blocks, derives the bath orbitals + their valence/
-    # conduction split from the Hamiltonian, and derives the block structure internally.
-    impurity_orbitals = {ls: list(range(n_imp_spin_orbitals))}
-    mixed_valence = {ls: 0}
-
-    rot_to_spherical = np.eye(n_imp_spin_orbitals, dtype=complex)
-
-    # Hamiltonian
-    if rank == 0 and verbose:
-        print("Constructing the Hamiltonian operator ...")
-    hOp = get_noninteracting_hamiltonian_operator(
-        sum_baths,
-        [0, xi],
-        hField,
-        h0_filename,
-        rank,
-        verbose,
-    )
-    # Convert spin-orbital and bath state indices to a single index notation.
-    hOp_new = {}
-    for process, value in hOp.items():
-        new_process = []
-        for spinOrb, action in process:
-            try:
-                new_process.append((c2i(sum_baths, spinOrb), action))
-            except Exception as e:
-                print(f"FAILED on spinOrb: {spinOrb} in process {process}", flush=True)
-                raise e
-        hOp_new[tuple(new_process)] = value
-    hOp = hOp_new
-
-    # calc_selfenergy returns a result dict, not a tuple. Keys: "sigma"/"sigma_real" and
-    # "gs_matsubara"/"gs_realaxis" (full (n_omega, n_imp, n_imp) matrices rotated back to the
-    # caller's input basis, or None), "sigma_static", "thermal_rho", "rhos", "block_structure".
-    result = calc_selfenergy(
-        h0=hOp,
-        u4=u4,
-        iw=None,
-        w=omega_mesh,
-        delta=delta,
-        nominal_occ=nominal_occ,
-        mixed_valence=mixed_valence,
-        impurity_orbitals=impurity_orbitals,
-        tau=tau,
-        verbosity=2 if verbose else 0,
-        rot_to_spherical=rot_to_spherical,
-        cluster_label=clustername,
-        reort=None,
-        dense_cutoff=500,
-        spin_flip_dj=False,
-        comm=comm,
-        chain_restrict=False,
-        occ_cutoff=1e-12,
-        truncation_threshold=None,
-        slaterWeightMin=1e-12,
-        dN=None,
-        sparse_green=True,
-        gf_method=gf_method,
-    )
-
-    if rank == 0 and verbose:
-        print(f"Self-energy computed for cluster '{clustername}'.")
-    # To persist the results, save the relevant entries of `result`, e.g.:
-    #     if rank == 0:
-    #         np.savetxt(f"real-sig_static-{clustername}.dat", np.real(result["sigma_static"]))
-    #         np.savetxt(f"imag-sig_static-{clustername}.dat", np.imag(result["sigma_static"]))
-    #         save_Greens_function(
-    #             gs=result["sigma_real"], omega_mesh=omega_mesh, label=f"Sigma-{clustername}", e_scale=1
-    #         )
-    return result
-
-
-if __name__ == "__main__":
-    # Parse input parameters
-    parser = argparse.ArgumentParser(description="Calculate selfenergy")
-    parser.add_argument(
-        "h0_filename",
-        type=str,
-        help="Filename of non-interacting Hamiltonian.",
-    )
-    parser.add_argument(
-        "--clustername",
-        type=str,
-        default="cluster",
-        help="Id of cluster, used for generating the filename in which to store the calculated self-energy.",
-    )
-    parser.add_argument(
-        "--ls",
-        type=int,
-        default=2,
-        help="Angular momenta of correlated orbitals.",
-    )
-    parser.add_argument(
-        "--nBaths",
-        type=int,
-        default=10,
-        help="Total number of bath states, for the correlated orbitals.",
-    )
-    parser.add_argument(
-        "--nValBaths",
-        type=int,
-        default=10,
-        help="Number of valence bath states for the correlated orbitals.",
-    )
-    parser.add_argument(
-        "--n0imps",
-        type=int,
-        default=8,
-        help="Nominal impurity occupation.",
-    )
-    parser.add_argument(
-        "--dnTols",
-        type=int,
-        default=2,
-        help=("Max devation from nominal impurity occupation."),
-    )
-    parser.add_argument(
-        "--dnValBaths",
-        type=int,
-        default=2,
-        help=("Max number of electrons to leave valence bath orbitals."),
-    )
-    parser.add_argument(
-        "--dnConBaths",
-        type=int,
-        default=0,
-        help=("Max number of electrons to enter conduction bath orbitals."),
-    )
-    parser.add_argument(
-        "--Fdd",
-        type=float,
-        nargs="+",
-        default=[7.5, 0, 9.9, 0, 6.6],
-        help="Slater-Condon parameters Fdd. d-orbitals are assumed.",
-    )
-    parser.add_argument(
-        "--xi",
-        type=float,
-        default=0,
-        help="SOC value for valence orbitals. Assumed to be d-orbitals",
-    )
-    parser.add_argument(
-        "--chargeTransferCorrection",
-        type=float,
-        default=None,
-        help="Double counting parameter.",
-    )
-    parser.add_argument(
-        "--hField",
-        type=float,
-        nargs="+",
-        default=[0, 0, 0.0001],
-        help="Magnetic field. (h_x, h_y, h_z)",
-    )
-    parser.add_argument(
-        "--nPsiMax",
-        type=int,
-        default=5,
-        help="Maximum number of eigenstates to consider.",
-    )
-    parser.add_argument("--nPrintSlaterWeights", type=int, default=3, help="Printing parameter.")
-    parser.add_argument("--tau", type=float, default=0.002, help="Fundamental temperature (kb*T).")
-    parser.add_argument(
-        "--energy_cut",
-        type=float,
-        default=10,
-        help="How many k_B*T above lowest eigenenergy to consider.",
-    )
-    parser.add_argument(
-        "--delta",
-        type=float,
-        default=0.2,
-        help=("Smearing, half width half maximum (HWHM). Due to short core-hole lifetime."),
-    )
-    parser.add_argument(
-        "-v",
-        "--verbose",
-        action="store_true",
-        help=("Set verbose output (very loud...)"),
-    )
-    parser.add_argument(
-        "--gf_method",
-        type=str,
-        choices=("lanczos", "bicgstab", "sliced"),
-        default="lanczos",
-        help=(
-            "Green's-function kernel: 'lanczos' runs one block-Lanczos recurrence per work unit "
-            "for the whole mesh; 'bicgstab' solves one linear system per frequency point on a "
-            "rebuilt-and-discarded basis; 'sliced' adds Chebyshev spectral-window decomposition "
-            "with per-slice bases (real-axis meshes; see GF_SLICES/GF_SLICE_TOL)."
-        ),
-    )
-    args = parser.parse_args()
-
-    # Sanity checks
-    assert args.nBaths >= args.nValBaths
-    assert args.n0imps >= 0
-    assert args.n0imps <= 2 * (2 * args.ls + 1)
-    assert len(args.Fdd) == 5
-    assert len(args.hField) == 3
-
-    get_selfenergy(
-        hamiltonian=HamiltonianParameters(
-            h0_filename=args.h0_filename,
-            ls=(args.ls),
-            nBaths=(args.nBaths),
-            nValBaths=(args.nValBaths),
-            Fdd=(args.Fdd),
-            xi=args.xi,
-            chargeTransferCorrection=args.chargeTransferCorrection,
-            hField=tuple(args.hField),
-        ),
-        occupation=OccupationParameters(
-            n0imps=(args.n0imps),
-            dnTols=(args.dnTols),
-            dnValBaths=(args.dnValBaths),
-            dnConBaths=(args.dnConBaths),
-        ),
-        solver=SolverParameters(
-            clustername=args.clustername,
-            nPsiMax=args.nPsiMax,
-            nPrintSlaterWeights=args.nPrintSlaterWeights,
-            tau=args.tau,
-            energy_cut=args.energy_cut,
-            delta=args.delta,
-            verbose=args.verbose,
-            gf_method=args.gf_method,
-        ),
-    )

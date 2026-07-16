@@ -4,7 +4,9 @@ External consumers (e.g. the RSPt wrapper impurityModel_interface) should
 import from this module only. Everything under ``impurityModel.ed.*`` is
 internal and may change without notice.
 
-The supported surface is deliberately small: convert a one-particle
+The supported surface is deliberately small: build the impurity problem
+(:class:`ImpurityModel` plus the option groups :class:`Meshes`,
+:class:`BasisOptions`, :class:`SolverOptions`), convert a one-particle
 Hamiltonian matrix to the operator format (:func:`matrixToIOp`), solve for
 the self-energy (:func:`calc_selfenergy`), determine the double counting
 (:func:`fixed_peak_dc`, :func:`fixed_occupation_dc`) and write Green's
@@ -12,6 +14,7 @@ functions in RSPt's .dat format (:func:`save_Greens_function`).
 """
 
 from impurityModel.ed.greens_function import save_Greens_function
+from impurityModel.ed.model import BasisOptions, ImpurityModel, Meshes, SolverOptions, atomic_u4
 from impurityModel.ed.operator_algebra import matrixToIOp
 from impurityModel.ed.selfenergy import calc_selfenergy, fixed_occupation_dc, fixed_peak_dc
 
@@ -27,6 +30,11 @@ except ImportError:  # pragma: no cover
 
 __all__ = [
     "__version__",
+    "BasisOptions",
+    "ImpurityModel",
+    "Meshes",
+    "SolverOptions",
+    "atomic_u4",
     "calc_selfenergy",
     "fixed_occupation_dc",
     "fixed_peak_dc",

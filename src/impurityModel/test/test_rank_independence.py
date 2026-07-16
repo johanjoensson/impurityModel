@@ -33,7 +33,11 @@ except ImportError:  # pragma: no cover - mpi4py is a hard dependency in practic
     _has_mpi = False
 
 from impurityModel.ed.selfenergy import calc_selfenergy
-from impurityModel.test._nio_workload import build_ground_state_workload, build_selfenergy_inputs
+from impurityModel.test._nio_workload import (
+    as_calc_selfenergy_args,
+    build_ground_state_workload,
+    build_selfenergy_inputs,
+)
 
 _MASK = (1 << 64) - 1
 _GF_RTOL = 1e-10
@@ -111,12 +115,12 @@ def test_greens_function_and_selfenergy_are_rank_independent():
     kwargs = build_selfenergy_inputs(
         nBaths=_NBATHS, n_omega=_N_OMEGA, truncation_threshold=_TRUNCATION, rank=world.rank, verbose=False
     )
-    distributed = calc_selfenergy(comm=world, **kwargs)
+    distributed = calc_selfenergy(**as_calc_selfenergy_args(kwargs), comm=world)
 
     kwargs_serial = build_selfenergy_inputs(
         nBaths=_NBATHS, n_omega=_N_OMEGA, truncation_threshold=_TRUNCATION, rank=0, verbose=False
     )
-    serial = calc_selfenergy(comm=MPI.COMM_SELF, **kwargs_serial)
+    serial = calc_selfenergy(**as_calc_selfenergy_args(kwargs_serial), comm=MPI.COMM_SELF)
 
     if world.rank != 0:
         return  # calc_selfenergy returns the result on the root of the passed communicator

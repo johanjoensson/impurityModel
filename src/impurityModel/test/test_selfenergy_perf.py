@@ -191,9 +191,12 @@ def test_calc_selfenergy_benchmark():
 
     verbose = rank == 0
 
-    kwargs = _build_inputs(
+    from impurityModel.test._nio_workload import as_calc_selfenergy_args
+
+    inputs = _build_inputs(
         ls, nBaths, nValBaths, n0imp, n_omega, dense_cutoff, truncation_threshold, rank=rank, verbose=verbose
     )
+    kwargs = as_calc_selfenergy_args(inputs)
     kwargs["comm"] = comm
 
     if rank == 0:

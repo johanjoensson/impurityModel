@@ -73,7 +73,10 @@ def test_truncation_reliability_config():
     from mpi4py import MPI  # noqa: PLC0415
 
     from impurityModel.ed.selfenergy import calc_selfenergy  # noqa: PLC0415
-    from impurityModel.test._nio_workload import build_selfenergy_inputs  # noqa: PLC0415
+    from impurityModel.test._nio_workload import (  # noqa: PLC0415
+        as_calc_selfenergy_args,
+        build_selfenergy_inputs,
+    )
 
     comm = MPI.COMM_WORLD
     ranks = comm.size
@@ -102,7 +105,7 @@ def test_truncation_reliability_config():
         rank=rank,
     )
     t0 = time.perf_counter()
-    result = calc_selfenergy(comm=comm, **kwargs)
+    result = calc_selfenergy(**as_calc_selfenergy_args(kwargs), comm=comm)
     wall = time.perf_counter() - t0
     peak_rss = comm.allreduce(_peak_rss_bytes(), op=MPI.MAX)
 
