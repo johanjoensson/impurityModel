@@ -15,7 +15,7 @@ from impurityModel.ed.model import (
     atomic_u4,
     load_selfenergy_archive,
 )
-from impurityModel.ed.operator_algebra import c2i
+from impurityModel.ed.operator_algebra import c2i, matrixToIOp
 
 REPO_ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "..", ".."))
 
@@ -181,3 +181,69 @@ def test_load_selfenergy_archive_recovers_options(tmp_path):
     assert solver.reort == "partial"
     assert solver.dense_cutoff == 500
     assert isinstance(model, ImpurityModel)
+
+
+def _blocks():
+    """A small (2 impurity + 1 bath) block set for the from_blocks / from_solver_matrix tests."""
+    H_imp = np.array([[0.5, 0.1], [0.1, 0.5]], dtype=complex)
+    V = np.array([[0.3, 0.2]], dtype=complex)  # (n_bath=1, n_imp=2)
+    H_bath = np.array([[-1.0]], dtype=complex)
+    return H_imp, V, H_bath
+
+
+def _stacked(H_imp, V, H_bath):
+    n_imp, n_bath = H_imp.shape[0], H_bath.shape[0]
+    H = np.zeros((n_imp + n_bath, n_imp + n_bath), dtype=complex)
+    H[:n_imp, :n_imp] = H_imp
+    H[n_imp:, n_imp:] = H_bath
+    H[n_imp:, :n_imp] = V
+    H[:n_imp, n_imp:] = V.conj().T
+    return H
+
+
+def test_from_solver_matrix_builds_operator_and_layout():
+    """from_solver_matrix converts the matrix to an operator and derives the orbital layout."""
+    H_imp, V, H_bath = _blocks()
+    H = _stacked(H_imp, V, H_bath)
+    u4 = np.zeros((2, 2, 2, 2), dtype=complex)
+    model = ImpurityModel.from_solver_matrix(
+        H, 2, u4=u4, rot_to_spherical=np.eye(2, dtype=complex), bath_valence_conduction=([2], [])
+    )
+    assert model.h0 == matrixToIOp(H)
+    assert model.impurity_orbitals == {0: [0, 1]}
+    assert model.impurity_indices == [0, 1]
+    assert model.n_spin_orbitals == 3
+    # The valence/conduction split populates bath_states (needed by the DC/spectra paths).
+    assert model.bath_states == ({0: [2]}, {0: []})
+
+
+def test_from_blocks_matches_hand_stacked_matrix():
+    """from_blocks stacks [[H_imp, V^dag],[V, H_bath]] and yields that matrix's operator."""
+    H_imp, V, H_bath = _blocks()
+    model = ImpurityModel.from_blocks(H_imp, V, H_bath, rot_to_spherical=np.eye(2, dtype=complex))
+    assert model.h0 == matrixToIOp(_stacked(H_imp, V, H_bath))
+    assert model.impurity_orbitals == {0: [0, 1]}
+    assert model.n_spin_orbitals == 3
+    # Hermitian off-diagonal placement: impurity->bath term is the conjugate of bath->impurity.
+    assert model.h0[((2, "c"), (0, "a"))] == np.conj(model.h0[((0, "c"), (2, "a"))])
+
+
+def test_from_blocks_agrees_with_from_solver_matrix():
+    """The block front-door and the matrix core produce the same model."""
+    H_imp, V, H_bath = _blocks()
+    via_blocks = ImpurityModel.from_blocks(
+        H_imp, V, H_bath, rot_to_spherical=np.eye(2, dtype=complex), bath_valence_conduction=([2], [])
+    )
+    via_matrix = ImpurityModel.from_solver_matrix(
+        _stacked(H_imp, V, H_bath), 2, rot_to_spherical=np.eye(2, dtype=complex), bath_valence_conduction=([2], [])
+    )
+    assert via_blocks.h0 == via_matrix.h0
+    assert via_blocks.impurity_orbitals == via_matrix.impurity_orbitals
+    assert via_blocks.bath_states == via_matrix.bath_states
+
+
+def test_from_blocks_without_split_leaves_bath_states_none():
+    """Omitting the valence/conduction split leaves bath_states None (the self-energy path re-derives it)."""
+    H_imp, V, H_bath = _blocks()
+    model = ImpurityModel.from_blocks(H_imp, V, H_bath, rot_to_spherical=np.eye(2, dtype=complex))
+    assert model.bath_states is None

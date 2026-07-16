@@ -22,7 +22,7 @@ import numpy as np
 
 from impurityModel.ed import atomic_physics
 from impurityModel.ed.hamiltonian_io import get_noninteracting_hamiltonian_operator
-from impurityModel.ed.operator_algebra import c2i
+from impurityModel.ed.operator_algebra import c2i, matrixToIOp
 
 __all__ = [
     "ImpurityModel",
@@ -231,6 +231,122 @@ class ImpurityModel:
             n_spin_orbitals=raw["n_spin_orbitals"],
         )
 
+    @classmethod
+    def from_solver_matrix(
+        cls,
+        H,
+        n_impurity_orbitals: int,
+        *,
+        u4: Optional[np.ndarray] = None,
+        rot_to_spherical,
+        bath_valence_conduction=None,
+    ) -> "ImpurityModel":
+        """Build a model from the full one-particle solver matrix ``H`` (impurity block first).
+
+        ``H`` is the dense ``(n, n)`` single-particle Hamiltonian with the impurity orbitals in
+        the first ``n_impurity_orbitals`` rows/columns and the bath orbitals after -- the layout
+        :func:`rspt2spectra.h0.assemble_h0` produces and the ``impurityModel_data.h5`` archive
+        stores as ``H solver``. The impurity orbital layout is derived from
+        ``n_impurity_orbitals``; the bath orbitals (and their valence/conduction split, when the
+        solver needs it) are everything after.
+
+        Parameters
+        ----------
+        H : numpy.ndarray
+            Full ``(n, n)`` one-particle Hamiltonian, impurity block first.
+        n_impurity_orbitals : int
+            Number of impurity spin-orbitals (the leading block dimension).
+        u4 : numpy.ndarray, optional
+            Impurity Coulomb tensor (``n_imp`` per axis), in the same basis as ``H``.
+        rot_to_spherical : numpy.ndarray or dict
+            Rotation from the impurity input basis to spherical harmonics (observable reporting).
+        bath_valence_conduction : tuple of sequence, optional
+            ``(valence_indices, conduction_indices)`` classifying the bath spin-orbitals; when
+            given it populates :attr:`bath_states`. The self-energy path re-derives its own split
+            from ``h0`` and ignores this; the double-counting and spectra paths require it.
+
+        Returns
+        -------
+        ImpurityModel
+        """
+        H = np.asarray(H)
+        n_imp = int(n_impurity_orbitals)
+        bath_states = None
+        if bath_valence_conduction is not None:
+            valence, conduction = bath_valence_conduction
+            bath_states = ({0: [int(i) for i in valence]}, {0: [int(i) for i in conduction]})
+        return cls(
+            h0=_operator_from_matrix(H),
+            u4=u4,
+            impurity_orbitals={0: list(range(n_imp))},
+            rot_to_spherical=rot_to_spherical,
+            bath_states=bath_states,
+            n_spin_orbitals=H.shape[0],
+        )
+
+    @classmethod
+    def from_blocks(
+        cls,
+        H_imp,
+        V,
+        H_bath,
+        *,
+        u4: Optional[np.ndarray] = None,
+        rot_to_spherical,
+        bath_valence_conduction=None,
+    ) -> "ImpurityModel":
+        """Build a model from the impurity / hybridization / bath blocks.
+
+        Stacks the block form ``H = [[H_imp, V^dagger], [V, H_bath]]`` (impurity block first,
+        matching :func:`rspt2spectra.h0.assemble_h0`) and delegates to
+        :meth:`from_solver_matrix`. ``H_imp`` must be the *effective* impurity block, i.e. the
+        DFT block with the fitted constant hybridization offset already folded in
+        (``E_imp = H_imp + C``); ``assemble_h0`` returns exactly that.
+
+        Parameters
+        ----------
+        H_imp : numpy.ndarray
+            Effective impurity block, ``(n_imp, n_imp)``.
+        V : numpy.ndarray
+            Impurity-bath hopping, ``(n_bath, n_imp)`` (the bath-row / impurity-column block, as
+            ``assemble_h0`` returns ``v_solver``).
+        H_bath : numpy.ndarray
+            Bath block, ``(n_bath, n_bath)``.
+        u4, rot_to_spherical, bath_valence_conduction
+            As in :meth:`from_solver_matrix`.
+
+        Returns
+        -------
+        ImpurityModel
+        """
+        H_imp = np.asarray(H_imp)
+        V = np.asarray(V)
+        H_bath = np.asarray(H_bath)
+        n_imp = H_imp.shape[0]
+        n_bath = H_bath.shape[0]
+        H = np.zeros((n_imp + n_bath, n_imp + n_bath), dtype=complex)
+        H[:n_imp, :n_imp] = H_imp
+        H[n_imp:, n_imp:] = H_bath
+        H[n_imp:, :n_imp] = V
+        H[:n_imp, n_imp:] = V.conj().T
+        return cls.from_solver_matrix(
+            H,
+            n_imp,
+            u4=u4,
+            rot_to_spherical=rot_to_spherical,
+            bath_valence_conduction=bath_valence_conduction,
+        )
+
+
+def _operator_from_matrix(h_matrix) -> dict:
+    """Single-index operator dict of a dense one-particle Hamiltonian (the one matrix->op site).
+
+    Wraps :func:`operator_algebra.matrixToIOp`; shared by :meth:`ImpurityModel.from_solver_matrix`
+    and the archive reader so the matrix -> ``{((i, "c"), (j, "a")): value}`` conversion lives in
+    exactly one place.
+    """
+    return matrixToIOp(np.asarray(h_matrix))
+
 
 def _archive_attr(attrs, key, default=None):
     """Group attribute with the interface's ``None``-stored-as-the-string-``"None"`` undone."""
@@ -272,7 +388,7 @@ def _read_archive_group(path, cluster=None, iteration=None) -> dict:
         impurity_indices = [int(i) for i in np.asarray(g["Impurity orbitals"])]
 
     # The interface hands calc_selfenergy the Hamiltonian as a second-quantized operator.
-    h0 = {((int(i), "c"), (int(j), "a")): complex(h_solver[i, j]) for i, j in zip(*np.nonzero(h_solver))}
+    h0 = _operator_from_matrix(h_solver)
 
     truncation_threshold = _archive_attr(attrs, "truncation_threshold")
     if truncation_threshold is not None:
