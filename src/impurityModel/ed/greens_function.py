@@ -269,7 +269,7 @@ def get_Greens_function(
             eval_meshes=eval_meshes,
         )
         if verbose_extra:
-            print(f"Expanded excited state basis contains {cap_stats["retained_size"]} elements.")
+            print(f"Expanded excited state basis contains {cap_stats['retained_size']} elements.")
         return (
             alphas,
             betas,
@@ -1003,7 +1003,7 @@ def calc_Greens_function_with_offdiag(
             excited_weighted_restrictions,
         )
         if verbose:
-            print(f"Expanded excited state basis contains {_cap_stats["retained_size"]} elements.")
+            print(f"Expanded excited state basis contains {_cap_stats['retained_size']} elements.")
         return alphas, betas, [r[:, p * unit.n_ops : (p + 1) * unit.n_ops] for p in range(len(unit.chunk))]
 
     results = run_units_distributed(block_basis, unit_seeds, unit_weights, kernel, verbose=verbose, reort=reort)
