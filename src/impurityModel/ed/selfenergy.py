@@ -11,6 +11,7 @@ from impurityModel.ed.symmetries import (
     impurity_symmetry_rotation,
     rotate_hamiltonian,
 )
+from impurityModel.ed.basis_restrictions import build_weighted_restrictions
 from impurityModel.ed.greens_function import build_full_greens_function, get_Greens_function, save_Greens_function
 from impurityModel.ed.groundstate import calc_gs
 from impurityModel.ed.memory_estimate import log_memory_budget, log_peak_vs_predicted, suggest_truncation_threshold
@@ -351,6 +352,7 @@ def calc_selfenergy(model, meshes, basis, solver, *, comm, verbosity=0, cluster_
     truncation_threshold = basis.truncation_threshold
     slaterWeightMin = basis.slater_weight_min
     dN = basis.dN
+    excitation_budget = basis.excitation_budget
     reort = solver.reort
     dense_cutoff = solver.dense_cutoff
     sparse_green = solver.sparse_green
@@ -413,6 +415,9 @@ def calc_selfenergy(model, meshes, basis, solver, *, comm, verbosity=0, cluster_
         "rank": rank,
         "comm": comm,
         "truncation_threshold": truncation_threshold,
+        # Optional excitation-budget weighted restriction on the ground-state basis; the GF
+        # excited bases inherit it (widened) via greens_function._build_excited_restrictions.
+        "weighted_restrictions": build_weighted_restrictions(bath_states, excitation_budget),
     }
     # Compute the thermal ground state and the interacting Green's function, with a single
     # auto-retry: the diagnostics report (gf_diagnostics) can detect that the thermal

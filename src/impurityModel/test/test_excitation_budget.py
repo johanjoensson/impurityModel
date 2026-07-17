@@ -7,7 +7,9 @@ conduction baths empty; a hole in a filled-valence orbital or an electron in an
 empty-conduction orbital each costs one (default), and the budget caps their sum.
 """
 
-from impurityModel.ed.basis_restrictions import excitation_budget_restriction
+import numpy as np
+
+from impurityModel.ed.basis_restrictions import build_weighted_restrictions, excitation_budget_restriction
 from impurityModel.ed.ManyBodyUtils import ManyBodyOperator, ManyBodyState, SlaterDeterminant
 
 
@@ -122,3 +124,120 @@ def test_budget_composes_in_basis_expand():
     free = Basis(impurity_orbitals=imp, bath_states=_BATHS, initial_basis=list(seed), verbose=False)
     free.expand(op)
     assert any(_excitations(_occset(d)) > 1 for d in free.local_basis)  # leaks past 1 without the budget
+
+
+# ---- build_weighted_restrictions helper (what the drivers call) ----------------------
+
+
+def test_build_weighted_restrictions_none_when_unset():
+    """No budget -> None, so the drivers leave Basis.weighted_restrictions unset."""
+    assert build_weighted_restrictions(_BATHS, excitation_budget=None) is None
+
+
+def test_build_weighted_restrictions_wraps_budget_in_list():
+    """A budget -> a one-element list holding the excitation-budget restriction."""
+    got = build_weighted_restrictions(_BATHS, excitation_budget=2)
+    assert isinstance(got, list) and len(got) == 1
+    assert got[0] == excitation_budget_restriction(_BATHS, 2)
+
+
+def test_build_weighted_restrictions_none_without_baths():
+    """No bath orbitals -> nothing to bound even with a budget set."""
+    assert build_weighted_restrictions(({0: [[]]}, {0: [[]]}), excitation_budget=1) is None
+
+
+# ---- calc_gs enforcement (the path calc_selfenergy / run_spectra build the GS with) --
+
+
+def _siam_with_baths():
+    """A 6-orbital SIAM: imp {0,1}, valence bath {2,3} (below E_F), conduction bath {4,5}."""
+    from impurityModel.ed.block_structure import BlockStructure
+
+    ed, U, ev, ec, V = -2.0, 6.0, -4.0, 4.0, 1.0
+    terms = {((o, "c"), (o, "a")): ed for o in (0, 1)}
+    terms.update({((o, "c"), (o, "a")): ev for o in (2, 3)})
+    terms.update({((o, "c"), (o, "a")): ec for o in (4, 5)})
+    terms[((0, "c"), (1, "c"), (1, "a"), (0, "a"))] = U
+    for a, b in ((0, 2), (1, 3), (0, 4), (1, 5)):
+        terms[((a, "c"), (b, "a"))] = V
+        terms[((b, "c"), (a, "a"))] = V
+    Hop = ManyBodyOperator(terms)
+    bath = ({0: [[2, 3]]}, {0: [[4, 5]]})
+    bs = BlockStructure(
+        blocks=[[0, 1]],
+        identical_blocks=[[0]],
+        transposed_blocks=[[]],
+        particle_hole_blocks=[[]],
+        particle_hole_transposed_blocks=[[]],
+        inequivalent_blocks=[0],
+    )
+    return Hop, {0: [[0, 1]]}, bath, bs
+
+
+def _run_calc_gs(weighted_restrictions):
+    from impurityModel.ed.groundstate import calc_gs
+
+    Hop, imp, bath, bs = _siam_with_baths()
+    basis_setup = dict(
+        impurity_orbitals=imp,
+        bath_states=bath,
+        N0={0: 1},
+        mixed_valence={0: 1},
+        tau=0.01,
+        dense_cutoff=1000,
+        spin_flip_dj=False,
+        comm=None,
+        truncation_threshold=100000,
+        weighted_restrictions=weighted_restrictions,
+    )
+    return calc_gs(Hop, basis_setup, bs, np.eye(2, dtype=complex), verbose=False, slaterWeightMin=1e-12)
+
+
+def _bath_excitations(det, n=6, val=(2, 3), con=(4, 5)):
+    occ = _occset(det, n)
+    return len(set(val) - occ) + len(occ & set(con))
+
+
+def test_calc_gs_excitation_budget_enforced():
+    """A ground state built with an excitation budget respects it on every determinant."""
+    budget = 1
+    weighted = build_weighted_restrictions(({0: [[2, 3]]}, {0: [[4, 5]]}), excitation_budget=budget)
+    psis, es, basis, _, _ = _run_calc_gs(weighted)
+    for det in basis.local_basis:
+        assert _bath_excitations(det) <= budget
+
+
+def test_calc_gs_large_budget_reproduces_unrestricted_energy():
+    """A budget >= the largest reachable excitation leaves E0 unchanged (Q=inf oracle)."""
+    _, es_free, _, _, _ = _run_calc_gs(None)
+    weighted = build_weighted_restrictions(({0: [[2, 3]]}, {0: [[4, 5]]}), excitation_budget=4)
+    _, es_big, _, _, _ = _run_calc_gs(weighted)
+    np.testing.assert_allclose(min(es_free), min(es_big), atol=1e-10)
+
+
+# ---- calc_selfenergy end-to-end (the driver threading + GF inheritance) --------------
+
+
+def _nio_selfenergy(excitation_budget):
+    """Run calc_selfenergy on the small NiO d-shell workload with the given budget."""
+    import dataclasses
+
+    from impurityModel.ed.selfenergy import calc_selfenergy
+    from impurityModel.test._nio_workload import as_calc_selfenergy_args, build_selfenergy_inputs
+
+    inputs = build_selfenergy_inputs(nBaths=10, n_omega=3, dense_cutoff=100000, truncation_threshold=100000)
+    args = as_calc_selfenergy_args(inputs)
+    args["basis"] = dataclasses.replace(args["basis"], excitation_budget=excitation_budget)
+    return calc_selfenergy(**args, comm=None)
+
+
+def test_calc_selfenergy_excitation_budget_oracle():
+    """Through calc_selfenergy: an unset budget and a >=max budget give the same self-energy.
+
+    Exercises the full driver threading (basis_information -> calc_gs) and the automatic GF
+    inheritance (greens_function widens basis.weighted_restrictions onto the excited bases).
+    """
+    base = _nio_selfenergy(None)
+    big = _nio_selfenergy(50)  # 50 >> the 10 valence orbitals: admits everything
+    np.testing.assert_allclose(base["sigma_real"], big["sigma_real"], atol=1e-8)
+    np.testing.assert_allclose(np.min(base["gs_energies"]), np.min(big["gs_energies"]), atol=1e-10)

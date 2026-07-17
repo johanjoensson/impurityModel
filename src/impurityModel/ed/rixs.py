@@ -31,6 +31,7 @@ from impurityModel.ed.symmetries import (
     conserved_subset_charges,
     measure_conserved_charges,
     transition_sector_restrictions,
+    widen_weighted_restrictions,
 )
 
 comm = MPI.COMM_WORLD
@@ -430,6 +431,11 @@ def _rixs_map_flat(
         val_change={1: (0, 0), 2: (1, 0)},
         con_change={1: (0, 0), 2: (0, 1)},
     )
+    # Weighted restrictions (e.g. the excitation budget) for the core-excited / final bases:
+    # widen the ground-state bounds by one orbital weight so a single transition operator stays
+    # in-bounds, mirroring greens_function._build_excited_restrictions. None when the GS basis
+    # carries none, so the clones below then inherit split_basis.weighted_restrictions unchanged.
+    excited_weighted_restrictions = widen_weighted_restrictions(basis.weighted_restrictions)
 
     E0 = min(Es)
     Z = np.sum(np.exp(-(Es - E0) / tau))
@@ -484,6 +490,7 @@ def _rixs_map_flat(
             green_basis = split_basis.clone(
                 initial_basis=[],
                 restrictions=excited_restrictions,
+                weighted_restrictions=excited_weighted_restrictions,
                 verbose=False,
                 comm=sub_comm.Clone() if sub_comm is not None else None,
             )
@@ -493,6 +500,7 @@ def _rixs_map_flat(
         tmp_basis = split_basis.clone(
             initial_basis=[],
             restrictions=tmp_restrictions_per_e[e],
+            weighted_restrictions=excited_weighted_restrictions,
             verbose=False,
             comm=sub_comm.Clone() if sub_comm is not None else None,
         )

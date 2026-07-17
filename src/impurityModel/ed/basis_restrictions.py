@@ -471,3 +471,31 @@ def excitation_budget_restriction(bath_states, budget, cost_fn=None, extra_orbit
     if not weights:
         return None
     return (weights, (-filled_cost, int(budget) - filled_cost))
+
+
+def build_weighted_restrictions(bath_states, excitation_budget=None):
+    """Assemble the ground-state weighted restrictions a driver enables via its options.
+
+    Currently just the optional excitation budget (see :func:`excitation_budget_restriction`),
+    returned as a *list* so more weighted restrictions can be appended later and so it matches
+    :meth:`ManyBodyOperator.set_weighted_restrictions`' contract. Returns ``None`` when nothing
+    is requested (the drivers then leave ``Basis.weighted_restrictions`` unset).
+
+    Parameters
+    ----------
+    bath_states : tuple of dict
+        ``(valence_baths, conduction_baths)`` in the solver basis.
+    excitation_budget : int, optional
+        Maximum total bath excitations; ``None`` disables the budget.
+
+    Returns
+    -------
+    list or None
+        A list of ``(weights, (q_min, q_max))`` weighted restrictions, or ``None`` if empty.
+    """
+    restrictions = []
+    if excitation_budget is not None:
+        budget = excitation_budget_restriction(bath_states, excitation_budget)
+        if budget is not None:
+            restrictions.append(budget)
+    return restrictions or None

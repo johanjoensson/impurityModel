@@ -21,6 +21,7 @@ from impurityModel.ed.symmetries import (
     impurity_symmetry_rotation,
     rotate_hamiltonian,
 )
+from impurityModel.ed.basis_restrictions import build_weighted_restrictions
 from impurityModel.ed.groundstate import calc_gs
 from impurityModel.ed.ManyBodyUtils import ManyBodyOperator
 
@@ -272,6 +273,12 @@ def run_spectra(model, spectra_options, basis, comm, *, verbosity=None):
         "truncation_threshold": basis.truncation_threshold,
         "tau": tau,
         "comm": comm,
+        # Optional excitation-budget weighted restriction on the ground-state basis; the XAS/PES
+        # excited bases inherit it (widened) via spectra/greens_function; RIXS attaches it
+        # explicitly (rixs.py).
+        "weighted_restrictions": build_weighted_restrictions(
+            (valence_baths, conduction_baths), basis.excitation_budget
+        ),
     }
     psis, es, ground_state_basis, rho, _ = calc_gs(
         hOp,

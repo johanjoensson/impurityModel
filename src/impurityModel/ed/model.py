@@ -396,6 +396,9 @@ def _read_archive_group(path, cluster=None, iteration=None) -> dict:
     dN = _archive_attr(attrs, "dN")
     if dN is not None:
         dN = int(dN)
+    excitation_budget = _archive_attr(attrs, "excitation_budget")
+    if excitation_budget is not None:
+        excitation_budget = int(excitation_budget)
 
     return {
         "label": name,
@@ -419,6 +422,7 @@ def _read_archive_group(path, cluster=None, iteration=None) -> dict:
         "truncation_threshold": truncation_threshold,
         "slater_weight_min": float(_archive_attr(attrs, "slater_min", 0.0)),
         "dN": dN,
+        "excitation_budget": excitation_budget,
         "sparse_green": bool(_archive_attr(attrs, "sparse_green", True)),
     }
 
@@ -467,6 +471,7 @@ def load_selfenergy_archive(path, cluster=None, iteration=None):
         occ_cutoff=raw["occ_cutoff"],
         slater_weight_min=raw["slater_weight_min"],
         tau=raw["tau"],
+        excitation_budget=raw["excitation_budget"],
     )
     solver = SolverOptions(
         reort=raw["reort"],
@@ -533,6 +538,13 @@ class BasisOptions:
         Minimum Slater-determinant weight retained.
     tau : float
         Fundamental temperature ``k_B * T`` (eV).
+    excitation_budget : int or None
+        Optional cap on the total number of bath excitations (holes in filled-valence +
+        electrons in empty-conduction orbitals) a determinant may carry, enforced as a
+        weighted restriction on the ground-state basis and inherited (widened) by the
+        Green's-function / spectra excited bases. ``None`` (default) disables it. A memory
+        lever on metals; judge its accuracy on the eigenvector/spectral criterion, not
+        ``E0`` (see ``doc/plans/restrictions_redux.md``).
     """
 
     nominal_occ: Any
@@ -544,6 +556,7 @@ class BasisOptions:
     occ_cutoff: float = 1e-12
     slater_weight_min: float = float(np.sqrt(np.finfo(float).eps))
     tau: float = 0.002
+    excitation_budget: Optional[int] = None
 
 
 @dataclass(frozen=True)
