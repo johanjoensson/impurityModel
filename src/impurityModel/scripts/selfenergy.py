@@ -64,6 +64,16 @@ def add_arguments(parser):
         "--truncation_threshold", type=int, default=None, help="Determinant budget (default: as many as fit in RAM)."
     )
     parser.add_argument(
+        "--excitation_budget",
+        type=int,
+        default=None,
+        help=(
+            "Maximum total bath excitations per determinant (holes in filled-valence + "
+            "electrons in empty-conduction orbitals). Default: unset. A memory lever; validate "
+            "accuracy on the target system (see doc/plans/restrictions_redux.md)."
+        ),
+    )
+    parser.add_argument(
         "--no-chain-restrict",
         dest="chain_restrict",
         action="store_false",
@@ -176,6 +186,7 @@ def run(args):
             truncation_threshold=args.truncation_threshold,
             chain_restrict=args.chain_restrict,
             tau=args.tau,
+            excitation_budget=args.excitation_budget,
         )
         solver = SolverOptions(
             reort=args.reort,

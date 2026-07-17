@@ -106,6 +106,16 @@ def add_arguments(parser):
         ),
     )
     parser.add_argument(
+        "--excitation_budget",
+        type=int,
+        default=None,
+        help=(
+            "Maximum total bath excitations (holes in filled-valence + electrons in "
+            "empty-conduction orbitals) per determinant. Default: unset (no budget). A memory "
+            "lever; validate accuracy on the target system (see doc/plans/restrictions_redux.md)."
+        ),
+    )
+    parser.add_argument(
         "--no-auto-block-structure",
         dest="auto_block_structure",
         action="store_false",
@@ -175,6 +185,7 @@ def run(args):
         truncation_threshold=args.truncation_threshold,
         occ_cutoff=1e-6,
         tau=k_B * args.T,
+        excitation_budget=args.excitation_budget,
     )
     run_spectra(model, spectra_options, basis, comm, verbosity=verbosity)
 
