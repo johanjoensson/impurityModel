@@ -166,6 +166,29 @@ the norm for these impurity models, not the exception. If a future workload show
 concentrated importance profile (e.g. core-level XAS at large `delta`, where near-resonant
 selection has something to bite on), the machinery is in place and rank-count invariant.
 
+### Addendum: seed localization does not shrink the closure (measured)
+
+Follow-up question: would a *smaller seed support* reduce the per-point basis? Measured by
+truncating every thermal state to its global top-K determinants (renormalized) before the
+GF seeds are built, then running uncapped per-point bicgstab on the same 5-point mesh
+(`max per-point basis`, eg / t2g blocks):
+
+| seed support per state | eg | t2g |
+| --- | --- | --- |
+| full (72-det ground states) | 3,119 | 2,885 |
+| K=16 | 3,119 | 2,885 |
+| K=4 | 3,119 | 2,885 |
+| **K=1 (single determinant)** | **3,119** | **2,885** |
+
+The live basis is *bit-for-bit identical* down to a single-determinant seed: any
+determinant of the H-connected ground-state cluster generates the same closure within a
+few shells (the graph has small diameter — 8 shells already covered ~2.8k). Seed count is
+not a lever. What bounds the closure is the restriction graph (chain windows, dN, frozen
+shells) and, at large broadening, amplitude pruning of a fast-decaying resolvent tail.
+(Note truncating the seed also changes the *observable* — spectral weight is lost in
+proportion to the discarded seed norm², invisibly to any solver residual — which is why
+the drivers' seed-overflow contract never truncates the right-hand side.)
+
 ### Follow-ups worth considering
 
 - `GF_CIPSI_MAX_ROUNDS` is the binding limit for tight boundary tolerances (each round is
