@@ -18,6 +18,12 @@ at a glance.
 > the deep-refactor plan above, and a few explicitly-scoped perf/won't-fix follow-ups noted
 > inline. The spectrum-slicing plan (`spectrum_slicing.md`) is a **documented failure**,
 > retained with its verdict; `rixs_r2_performance.md` is a **proposal, not implemented**.
+> The **restriction/cutoff study** (`restrictions_redux.md`) is **measured**: the current
+> cutoffs are already near the accuracy bar, the excitation-budget restriction is a real
+> opt-in *memory* win on metals, and the split-cutoff idea (looser ground-state cutoff) was
+> **tested and refuted** — loosening the GS cutoff rotates the metal eigenvector above the
+> 1e-3 bar while ΔE₀ stays ~1e-5 (ΔE₀ is a misleading proxy for correlated metals). No
+> production defaults were changed.
 
 ## Reading order
 
