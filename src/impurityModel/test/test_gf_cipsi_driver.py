@@ -12,6 +12,8 @@ Layers mirror ``test_gf_bicgstab_driver`` (whose SIAM-6 harness is reused):
   (the collective bisections must admit identical sets at any rank count).
 """
 
+import itertools
+
 import numpy as np
 import pytest
 from mpi4py import MPI
@@ -94,7 +96,7 @@ def test_kernel_budget_error_decays(monkeypatch):
             assert stats["cap_hit"]
             assert stats["retained_size"] <= budget
             assert err <= 10 * stats["max_boundary_rel"]
-    assert all(e1 >= 0.99 * e2 for e1, e2 in zip(errs, errs[1:]))
+    assert all(e1 >= 0.99 * e2 for e1, e2 in itertools.pairwise(errs))
     assert errs[-1] < 1e-7 and bounds[-1] == 0.0
 
 
@@ -105,7 +107,7 @@ def test_kernel_pt2_improves_moderate_budget(monkeypatch):
     monkeypatch.setenv("GF_CIPSI_BUDGET", "15")
     G_plain, stats_plain = _run_kernel(z_axes)
     monkeypatch.setenv("GF_CIPSI_PT2", "1")
-    G_pt2, stats_pt2 = _run_kernel(z_axes)
+    G_pt2, _stats_pt2 = _run_kernel(z_axes)
     assert stats_plain["pt2_max_correction"] > 0  # recorded even when not applied
     assert _max_rel_err(G_pt2, z_axes) < _max_rel_err(G_plain, z_axes)
 
