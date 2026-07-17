@@ -690,7 +690,7 @@ def calc_spectra(
             weighted_restrictions,
         )
         if verbose:
-            print(f"Expanded excited state basis contains {_cap_stats["retained_size"]} elements.")
+            print(f"Expanded excited state basis contains {_cap_stats['retained_size']} elements.")
         return alphas, betas, [r[:, p * unit.n_ops : (p + 1) * unit.n_ops] for p in range(len(unit.chunk))]
 
     results = gf.run_units_distributed(basis, unit_seeds, unit_weights, kernel, verbose=verbose)
