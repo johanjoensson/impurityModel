@@ -214,7 +214,19 @@ class CIPSISolver:
         psis = [{state: amp for state, amp in psi.items() if state in retained} for psi in psis]
         return self.basis.redistribute_psis(psis)
 
-    def _calc_de2(self, H, Hpsi_ref, e_ref: float, slaterWeightMin: float = 0):
+    def _candidate_overlaps_and_energies(self, H, Hpsi_ref, slaterWeightMin: float = 0):
+        """Enumerate the out-of-basis candidates of ``Hpsi_ref`` with couplings and energies.
+
+        The machinery every CIPSI-style selection shares (the ground-state
+        :meth:`_calc_de2` and the resolvent-targeted :meth:`select_at` differ only in the
+        importance denominator applied on top): this rank's hash-owned candidate
+        determinants ``local_Djs`` (sorted, so rank-independent given ``Hpsi_ref`` is
+        redistributed), the coupling matrix ``overlaps[i, j] = <Dj | H | psi_i>`` read off
+        ``Hpsi_ref``, and the diagonal-probe energies ``e_Dj[j] ~ <Dj|H|Dj>``.
+
+        Collective on ``basis.comm`` (the probe redistribution), so it must run on every
+        rank -- including one that owns no candidates, whose arrays come back empty.
+        """
         if isinstance(H, dict):
             H = ManyBodyOperator(H)
 
@@ -245,7 +257,7 @@ class CIPSISolver:
             H_psi_all = self.basis.redistribute_psis([H_psi_all])[0]
 
         if not local_Djs:
-            return local_Djs, np.zeros((len(Hpsi_ref), 0), dtype=complex)
+            return local_Djs, np.zeros((len(Hpsi_ref), 0), dtype=complex), np.zeros(0, dtype=float)
 
         Dj_index = {Dj: j for j, Dj in enumerate(local_Djs)}
         overlaps = np.zeros((len(Hpsi_ref), len(local_Djs)), dtype=complex)
@@ -257,6 +269,12 @@ class CIPSISolver:
         e_Dj = np.array(
             [np.real(np.conj(phases[j]) * H_psi_all.get(Dj, 0.0)) for j, Dj in enumerate(local_Djs)], dtype=float
         )
+        return local_Djs, overlaps, e_Dj
+
+    def _calc_de2(self, H, Hpsi_ref, e_ref: float, slaterWeightMin: float = 0):
+        local_Djs, overlaps, e_Dj = self._candidate_overlaps_and_energies(H, Hpsi_ref, slaterWeightMin)
+        if not local_Djs:
+            return local_Djs, overlaps
 
         # Epstein-Nesbet importance |<Dj|H|psi>|^2 / |E_ref - E_Dj| (the magnitude of
         # the second-order energy contribution). The denominator must not be a signed
@@ -268,6 +286,122 @@ class CIPSISolver:
         mask = np.abs(overlaps) > 1e-12
         de2[mask] = np.square(np.abs(overlaps[mask])) / de[mask]
         return local_Djs, de2
+
+    def _admit_top(self, scores, mask, max_new):
+        """Cap an importance-masked candidate set at the globally top ``max_new`` scores.
+
+        ``mask`` is the rank-local boolean pre-selection (e.g. ``scores >= de2_min``);
+        ``max_new=None`` admits it unchanged. Otherwise the cutoff comes from the
+        collective amplitude bisection so every rank admits the identical set (ties at
+        the cutoff under-admitted, with the all-tied fallback admitting the max-score
+        tie class rather than nothing). Collective on ``basis.comm``; returns
+        ``(admitted_mask, stats)`` with the ``last_selection``-shaped stats dict.
+        """
+        n_candidates = self._allreduce_sum(int(np.count_nonzero(mask)))
+        discarded_de2_mass = 0.0
+        if max_new is not None and n_candidates > max_new:
+            comm = self.basis.comm if self.basis.is_distributed else None
+            cutoff = collective_amplitude_cutoff(scores[mask], int(max_new), comm)
+            admitted = mask & (scores > cutoff)
+            if self._allreduce_sum(int(np.count_nonzero(admitted))) == 0:
+                # All candidates tie at the maximum importance (the bisection
+                # under-admits ties): admit the max-score tie class instead of nothing.
+                global_max = self._allreduce_max(float(scores[mask].max()) if np.any(mask) else 0.0)
+                if global_max > 0.0:
+                    admitted = mask & (scores >= global_max)
+            discarded_de2_mass = self._allreduce_sum(float(scores[mask & ~admitted].sum()))
+            mask = admitted
+        stats = {
+            "n_candidates": n_candidates,
+            "n_admitted": self._allreduce_sum(int(np.count_nonzero(mask))),
+            "discarded_de2_mass": discarded_de2_mass,
+        }
+        return mask, stats
+
+    def select_at(self, z, psi_ref, H, de2_min=0.0, max_new=None, scorer="de2", slater_cutoff=0):
+        r"""One resolvent-targeted selection round around the complex frequency ``z``.
+
+        The Green's-function analogue of :meth:`determine_new_Dj` (the revived
+        ``expand_at``): for the linear system :math:`(z - H) X = s` solved on the current
+        basis :math:`P`, the residual at an out-of-basis determinant :math:`D_j` is exactly
+        :math:`-\langle D_j | H | X \rangle` (the seed lives inside :math:`P`), so with
+        ``psi_ref`` = the current iterate block the selection is residual-driven greedy
+        expansion, and the leading-order weight of :math:`D_j` in the exact solution is
+
+        .. math:: w_j = \sum_i |\langle D_j|H|X_i\rangle|^2 \, / \, |z - E_{D_j}|^2 .
+
+        The column sum makes the score invariant under rotations within the reference
+        block (the manifold-sum rationale of :meth:`determine_new_Dj`); the complex ``z``
+        (carrying :math:`i\delta` or the Matsubara distance) regularizes near-resonant
+        candidates, so no clamp is needed -- near-resonant *is* important here, that is
+        the point of frequency targeting.
+
+        Parameters
+        ----------
+        z : complex
+            The resolvent frequency, already shifted by the eigenstate energy
+            (``omega + i*delta + E_e`` in the Green's-function drivers).
+        psi_ref : list of ManyBodyState
+            Reference block, distributed per ``self.basis`` -- the current solution
+            iterate (or the seeds, for a cold start).
+        H : ManyBodyOperator or dict
+            The (unshifted) Hamiltonian.
+        de2_min : float, optional
+            Importance floor on :math:`w_j`; 0 keeps every coupled candidate and leaves
+            the capping entirely to ``max_new``.
+        max_new : int, optional
+            Global cap on the number of admitted candidates (collective bisection, ties
+            under-admitted -- see :meth:`_admit_top`).
+        scorer : {"de2", "amplitude"}, optional
+            ``"de2"`` is the resolvent importance above; ``"amplitude"`` drops the energy
+            denominator (:math:`w_j = \sum_i |\langle D_j|H|X_i\rangle|^2`), the
+            bare-coupling baseline the frequency targeting must beat.
+        slater_cutoff : float, optional
+            Amplitude cutoff forwarded to the ``H`` applications.
+
+        Returns
+        -------
+        new_Dj : set
+            This rank's admitted candidates (hash-owned).
+        stats : dict
+            ``boundary_norms2``: global per-reference-column boundary residual norms
+            :math:`\sum_{D \notin P} |\langle D|H|X_i\rangle|^2` (the true-residual
+            contribution outside the basis -- the outer loop's convergence measure),
+            the :meth:`_admit_top` selection counts, and the rank-local PT2 ingredients
+            ``overlaps`` (couplings, reference x candidate), ``e_Dj`` (diagonal-probe
+            energies) and ``admitted`` (mask) for the downfolding correction of the
+            discarded boundary.
+
+        Collective on ``basis.comm`` (every branch, including empty candidate sets).
+        """
+        if isinstance(H, dict):
+            H = ManyBodyOperator(H)
+        Hpsi_ref = [applyOp_test(H, psi_i, cutoff=slater_cutoff) for psi_i in psi_ref]
+        Hpsi_ref = self.basis.redistribute_psis(Hpsi_ref)
+        local_Djs, overlaps, e_Dj = self._candidate_overlaps_and_energies(H, Hpsi_ref, slater_cutoff)
+
+        coupling2 = np.square(np.abs(overlaps))
+        boundary_norms2 = np.ascontiguousarray(coupling2.sum(axis=1), dtype=float)
+        if self.basis.is_distributed:
+            self.basis.comm.Allreduce(MPI.IN_PLACE, boundary_norms2, op=MPI.SUM)
+
+        if scorer == "de2":
+            scores = coupling2.sum(axis=0) / np.square(np.abs(complex(z) - e_Dj))
+        elif scorer == "amplitude":
+            scores = coupling2.sum(axis=0)
+        else:
+            raise ValueError(f"Unknown scorer {scorer!r}; expected 'de2' or 'amplitude'")
+
+        admitted, selection_stats = self._admit_top(scores, scores >= de2_min, max_new)
+        new_Dj = set(itertools.compress(local_Djs, admitted))
+        stats = {
+            "boundary_norms2": boundary_norms2,
+            "overlaps": overlaps,
+            "e_Dj": e_Dj,
+            "admitted": admitted,
+            **selection_stats,
+        }
+        return new_Dj, stats
 
     def determine_new_Dj(
         self, e_ref, psi_ref, H, de2_min, slater_cutoff=0, return_Hpsi_ref=False, gen_ops=None, max_new=None
@@ -300,26 +434,8 @@ class CIPSISolver:
             scores = np.max(np.stack([de2_abs[g, :].sum(axis=0) for g in _degenerate_groups(e_ref)]), axis=0)
         else:
             scores = np.zeros(0)
-        de2_mask = scores >= de2_min
-        n_candidates = self._allreduce_sum(int(np.count_nonzero(de2_mask)))
-        discarded_de2_mass = 0.0
-        if max_new is not None and n_candidates > max_new:
-            comm = self.basis.comm if self.basis.is_distributed else None
-            cutoff = collective_amplitude_cutoff(scores[de2_mask], int(max_new), comm)
-            admitted = de2_mask & (scores > cutoff)
-            if self._allreduce_sum(int(np.count_nonzero(admitted))) == 0:
-                # All candidates tie at the maximum importance (the bisection
-                # under-admits ties): admit the max-score tie class instead of nothing.
-                global_max = self._allreduce_max(float(scores[de2_mask].max()) if np.any(de2_mask) else 0.0)
-                if global_max > 0.0:
-                    admitted = de2_mask & (scores >= global_max)
-            discarded_de2_mass = self._allreduce_sum(float(scores[de2_mask & ~admitted].sum()))
-            de2_mask = admitted
-        self.last_selection = {
-            "n_candidates": n_candidates,
-            "n_admitted": self._allreduce_sum(int(np.count_nonzero(de2_mask))),
-            "discarded_de2_mass": discarded_de2_mass,
-        }
+        de2_mask, selection_stats = self._admit_top(scores, scores >= de2_min, max_new)
+        self.last_selection = selection_stats
         new_Dj = set(itertools.compress(local_Djs, de2_mask))
 
         if gen_ops:
