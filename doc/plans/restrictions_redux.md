@@ -127,7 +127,7 @@ so nothing is pruned; the effect only appears where the cutoff actually bites, i
 
 ## Phase 3 — new restrictions
 
-### 3a. Excitation budget — IMPLEMENTED, a real win on metals
+### 3a. Excitation budget — IMPLEMENTED + WIRED, a real win on metals
 `basis_restrictions.excitation_budget_restriction(bath_states, budget, cost_fn=None)` builds a
 single weighted restriction `(w, (q_min, q_max))` with `wₒ = ∓cost` on filled-valence /
 empty-conduction orbitals, so `Σ excitations ≤ budget`. It composes (AND) with any other
@@ -135,6 +135,16 @@ weighted restriction (`S_z`) and widens correctly on a Green's-function sector v
 `symmetries.widen_weighted_restrictions`. The uniform default is the excitation-order budget
 the §2 profiles motivate; a graded (per-orbital `cost_fn`) form is supported but §3 shows the
 distance metric does not discriminate post-rotation.
+
+**Wired into the production drivers (2026-07-18).** `BasisOptions.excitation_budget`
+(default `None` = off) is threaded by `calc_selfenergy` and `run_spectra` onto the
+ground-state `Basis.weighted_restrictions` via the `build_weighted_restrictions` helper. The
+self-energy GF and XAS/PES bases inherit it automatically (the shared
+`greens_function._build_excited_restrictions` widens it); RIXS attaches the widened budget
+explicitly to its excited-basis clones (`rixs.py`). Exposed on the `spectra`/`selfenergy` CLIs
+(`--excitation_budget`) and read from the hdf5 archive. Sz-based GF restrictions were
+considered and **not** added — `H` conserves Sz, so the GF closure never leaves the seed's Sz
+sector (nothing to prune), and under SOC an Sz window is invalid.
 
 Ground-state gate experiment:
 
