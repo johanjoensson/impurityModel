@@ -93,6 +93,11 @@ The plans have dependencies. Read and execute in this order:
    accuracy. So it is a memory escape hatch (a better one than paging `Q`), not a faster GF.
    Phase 3b (the driver, as an opt-in `gf_method`) is the open work — but price *shifted*
    BiCGSTAB first, which would keep the flat memory and get the whole mesh from one Krylov space.
+   A follow-up experiment, **[gf_cipsi_frequency_truncation.md](gf_cipsi_frequency_truncation.md)**
+   (`gf_method="cipsi"`, shipped), replaces the freeze-growth cap's discovery-order retention
+   with resolvent-targeted CIPSI selection per frequency point; **verdict: equal error at equal
+   budget on NiO** (the importance distribution over the closure is flat), but it adds a
+   *measured* per-point truncation-error bar (the boundary residual) that freeze-growth lacks.
 
 8. **[deflation_scale_invariance.md](deflation_scale_invariance.md)** — ✅ **DONE.**
    `_cholesky_or_deflate` answered two questions with one test. Its rank test was **absolute**,
