@@ -459,6 +459,42 @@ def check_bicgstab_convergence(
     )
 
 
+def check_cipsi_boundary(max_boundary_rel: float, boundary_tol: float) -> Diagnostic:
+    r"""Surface the CIPSI-selected solver's boundary-residual record.
+
+    The CIPSI kernel (``gf_solvers.block_Green_cipsi``) solves each frequency point exactly
+    on a frozen basis and grows it by importance selection; the boundary residual -- the
+    norm of the true residual *outside* the retained basis, relative to the seed norm -- is
+    the part of the error the in-basis solver tolerance cannot see, and hence the honest
+    truncation-error estimate of the returned ``G``. A worst point above the tolerance means
+    the selection loop ran out of budget or rounds before the basis captured the solution's
+    support at that frequency.
+
+    Args:
+        max_boundary_rel: Worst per-point boundary residual, relative to the seed norm.
+        boundary_tol: The stop tolerance the selection loop was asked for
+            (``GF_CIPSI_BOUNDARY_TOL``, defaulting to the solver atol).
+
+    Returns:
+        Diagnostic: ``OK`` if every point's boundary residual reached the tolerance,
+        else ``WARN``.
+    """
+    ok = max_boundary_rel <= boundary_tol
+    return Diagnostic(
+        name="cipsi_boundary",
+        severity=Severity.OK if ok else Severity.WARN,
+        value=float(max_boundary_rel),
+        threshold=float(boundary_tol),
+        message=(
+            f"all per-point boundary residuals within {boundary_tol:.1e}"
+            if ok
+            else f"worst boundary residual {max_boundary_rel:.1e} above {boundary_tol:.1e}: "
+            "the retained basis does not capture the solution support at every frequency"
+        ),
+        suggestion=("" if ok else "raise GF_CIPSI_BUDGET / GF_CIPSI_MAX_ROUNDS, or loosen GF_CIPSI_BOUNDARY_TOL"),
+    )
+
+
 def check_slice_partition(n_windows: int, degree: int, edge_width: float, slice_tol: float) -> Diagnostic:
     r"""Record the spectrum-slicing configuration and its accuracy trade.
 

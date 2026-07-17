@@ -49,6 +49,7 @@ from impurityModel.ed.gf_units import (
 from impurityModel.ed.gf_solvers import (
     block_Green,
     block_Green_bicgstab,
+    block_Green_cipsi,
     block_Green_sparse,
 )
 
@@ -162,15 +163,17 @@ def get_Greens_function(
     ``gf_method`` selects the resolvent kernel: ``"lanczos"`` (default) runs one block-Lanczos
     recurrence per work unit serving the whole mesh; ``"bicgstab"`` solves one linear system
     per frequency point with a rebuilt-and-discarded basis (:func:`block_Green_bicgstab`);
-    ``"sliced"`` decomposes ``G`` into Chebyshev spectral-window terms with per-slice bases
-    (:func:`_get_greens_function_sliced`; requires a real-axis mesh -- a Matsubara-only call
-    falls back to ``bicgstab``, where slicing has nothing to offer). On the non-Lanczos paths
-    ``sparse`` is ignored (the solvers work on the ManyBodyState representation only) and the
-    operator-split (pairwise) decomposition is never used (the linear solve yields the full
-    ``G_ij`` block directly).
+    ``"cipsi"`` is the experimental importance-truncated variant of the same per-point solve
+    (:func:`block_Green_cipsi`: resolvent-targeted CIPSI selection grows the basis, frozen
+    solves in between); ``"sliced"`` decomposes ``G`` into Chebyshev spectral-window terms
+    with per-slice bases (:func:`_get_greens_function_sliced`; requires a real-axis mesh -- a
+    Matsubara-only call falls back to ``bicgstab``, where slicing has nothing to offer). On
+    the non-Lanczos paths ``sparse`` is ignored (the solvers work on the ManyBodyState
+    representation only) and the operator-split (pairwise) decomposition is never used (the
+    linear solve yields the full ``G_ij`` block directly).
     """
-    if gf_method not in ("lanczos", "bicgstab", "sliced"):
-        raise ValueError(f"Unknown gf_method {gf_method!r}; expected 'lanczos', 'bicgstab' or 'sliced'")
+    if gf_method not in ("lanczos", "bicgstab", "sliced", "cipsi"):
+        raise ValueError(f"Unknown gf_method {gf_method!r}; expected 'lanczos', 'bicgstab', 'sliced' or 'cipsi'")
     # Excited-sector restrictions are independent of the orbital block and of the spectral side
     # (the dN occupation window is symmetric and spans all impurity orbitals), so build them once
     # on the full basis instead of per block.
@@ -215,12 +218,17 @@ def get_Greens_function(
     )
     unit_weights = unit_cost_weights(unit_seeds, basis.comm)
 
-    if gf_method in ("bicgstab", "sliced"):
+    if gf_method in ("bicgstab", "sliced", "cipsi"):
         driver = (
             _get_greens_function_sliced
             if gf_method == "sliced" and omega_mesh is not None
             else _get_greens_function_bicgstab
         )
+        driver_kwargs = {}
+        if driver is _get_greens_function_bicgstab:
+            # A Matsubara-only "sliced" run falls back to plain bicgstab (slicing has
+            # nothing to offer there); "cipsi" keeps its own per-point kernel.
+            driver_kwargs["gf_method"] = "cipsi" if gf_method == "cipsi" else "bicgstab"
         return driver(
             matsubara_mesh,
             omega_mesh,
@@ -240,6 +248,7 @@ def get_Greens_function(
             verbose,
             verbose_extra,
             num_wanted,
+            **driver_kwargs,
         )
 
     def kernel(split_basis, u, seeds):
@@ -406,21 +415,24 @@ def _get_greens_function_bicgstab(
     verbose,
     verbose_extra,
     num_wanted,
+    gf_method="bicgstab",
 ):
-    r"""Distribution + assembly of the per-frequency BiCGSTAB Green's function.
+    r"""Distribution + assembly of the per-frequency (BiCGSTAB or CIPSI) Green's function.
 
     The unit decomposition (and the excited windows) are exactly the Lanczos driver's --
     :func:`get_Greens_function` hands them over after :func:`enumerate_gf_units` -- only the
     per-unit kernel and the result contract differ: each unit returns ``G`` already evaluated
-    on the caller's meshes (:func:`block_Green_bicgstab`); the shared assembler
-    :func:`_run_evaluated_gf_units` does the rest.
+    on the caller's meshes (:func:`block_Green_bicgstab`, or :func:`block_Green_cipsi` for
+    ``gf_method="cipsi"``); the shared assembler :func:`_run_evaluated_gf_units` does the
+    rest.
     """
+    point_kernel = block_Green_cipsi if gf_method == "cipsi" else block_Green_bicgstab
 
     def kernel(split_basis, u, seeds):
         unit = units[u]
         _block_i, side_i = group_meta[unit.group_i]
         z_axes = _gf_signed_axes(matsubara_mesh, omega_mesh, side_i, delta)
-        return block_Green_bicgstab(
+        return point_kernel(
             hOp,
             seeds,
             split_basis,
@@ -448,6 +460,7 @@ def _get_greens_function_bicgstab(
         kernel,
         verbose,
         num_wanted,
+        gf_method=gf_method,
     )
 
 
@@ -533,6 +546,12 @@ def _run_evaluated_gf_units(
             agg[key] += stats[key]
         for key in ("max_rel_residual", "max_solve_basis", "max_rebuild_basis"):
             agg[key] = max(agg[key], stats[key])
+        # CIPSI-kernel extras (absent from plain bicgstab/sliced stats).
+        if "rounds" in stats:
+            agg["rounds"] = agg.get("rounds", 0) + stats["rounds"]
+            agg["boundary_tol"] = stats["boundary_tol"]
+            for key in ("max_boundary_rel", "pt2_max_correction"):
+                agg[key] = max(agg.get(key, 0.0), stats[key])
         agg["cap_hit"] = agg["cap_hit"] or stats["cap_hit"]
         agg["seed_overflow"] = agg["seed_overflow"] or stats["seed_overflow"]
         if stats["retained_size"] is not None:
@@ -573,12 +592,17 @@ def _run_evaluated_gf_units(
 
         agg = stats_acc[block_i]
         if verbose:
+            cipsi_extra = (
+                f", {agg['rounds']} selection rounds, max boundary residual {agg['max_boundary_rel']:.1e}"
+                if "max_boundary_rel" in agg
+                else ""
+            )
             print(
                 f"block {block}: {agg['n_points']} bicgstab solves, {agg['iterations']} iterations "
                 f"({agg['gmres_points']} GMRES-fallback points, {agg['gmres_iterations']} of the iterations), "
                 f"max per-point basis {agg['max_solve_basis']:,} "
                 f"(rebuild floor {agg['max_rebuild_basis']:,}), "
-                f"max residual {agg['max_rel_residual']:.1e}",
+                f"max residual {agg['max_rel_residual']:.1e}{cipsi_extra}",
                 flush=True,
             )
         diags = [
@@ -594,6 +618,8 @@ def _run_evaluated_gf_units(
         ]
         if np.isfinite(agg["cap"]):
             diags.append(_gfd.check_basis_truncation(agg["cap_hit"], agg["retained_size"], agg["cap"]))
+        if "max_boundary_rel" in agg:
+            diags.append(_gfd.check_cipsi_boundary(agg["max_boundary_rel"], agg["boundary_tol"]))
         if combined_real is not None:
             diags.append(_gfd.check_mesh_density(omega_mesh, delta))
             diags.append(_gfd.check_causality(combined_real, "G"))

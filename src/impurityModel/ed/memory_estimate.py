@@ -211,7 +211,9 @@ def estimate_gf_peak_bytes(
     key_heap = _key_heap_bytes(n_spin_orbitals)
     basis_bytes = local_rows * (bytes_per_determinant(n_spin_orbitals) + _PY_BASIS_OVERHEAD_BYTES)
     row_bytes = _COMPLEX_BYTES * block_width + key_heap + _SD_STRUCT_BYTES
-    if method in ("bicgstab", "sliced"):
+    # "cipsi" shares the bicgstab live-vector model: same per-point solver, and the
+    # selection loop's basis is bounded by the same cap (GF_CIPSI_BUDGET defaults to it).
+    if method in ("bicgstab", "sliced", "cipsi"):
         if gmres_restart is None:
             gmres_restart = config.GF_GMRES_RESTART.get()
         live = 12 + gmres_restart + 3

@@ -300,17 +300,24 @@ class CIPSISolver:
         n_candidates = self._allreduce_sum(int(np.count_nonzero(mask)))
         discarded_de2_mass = 0.0
         if max_new is not None and n_candidates > max_new:
-            comm = self.basis.comm if self.basis.is_distributed else None
-            cutoff = collective_amplitude_cutoff(scores[mask], int(max_new), comm)
-            admitted = mask & (scores > cutoff)
-            if self._allreduce_sum(int(np.count_nonzero(admitted))) == 0:
-                # All candidates tie at the maximum importance (the bisection
-                # under-admits ties): admit the max-score tie class instead of nothing.
-                global_max = self._allreduce_max(float(scores[mask].max()) if np.any(mask) else 0.0)
-                if global_max > 0.0:
-                    admitted = mask & (scores >= global_max)
-            discarded_de2_mass = self._allreduce_sum(float(scores[mask & ~admitted].sum()))
-            mask = admitted
+            if max_new <= 0:
+                # An exhausted budget: admit nothing (callers still want the selection
+                # stats, e.g. the boundary residual). The tie fallback below must not
+                # run -- it exists to avoid *under*-admission, not to override a zero cap.
+                discarded_de2_mass = self._allreduce_sum(float(scores[mask].sum()))
+                mask = np.zeros_like(mask)
+            else:
+                comm = self.basis.comm if self.basis.is_distributed else None
+                cutoff = collective_amplitude_cutoff(scores[mask], int(max_new), comm)
+                admitted = mask & (scores > cutoff)
+                if self._allreduce_sum(int(np.count_nonzero(admitted))) == 0:
+                    # All candidates tie at the maximum importance (the bisection
+                    # under-admits ties): admit the max-score tie class instead of nothing.
+                    global_max = self._allreduce_max(float(scores[mask].max()) if np.any(mask) else 0.0)
+                    if global_max > 0.0:
+                        admitted = mask & (scores >= global_max)
+                discarded_de2_mass = self._allreduce_sum(float(scores[mask & ~admitted].sum()))
+                mask = admitted
         stats = {
             "n_candidates": n_candidates,
             "n_admitted": self._allreduce_sum(int(np.count_nonzero(mask))),

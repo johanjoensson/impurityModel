@@ -319,7 +319,7 @@ def calc_selfenergy(model, meshes, basis, solver, *, comm, verbosity=0, cluster_
         cap from available per-rank memory; ``np.inf`` disables capping), chain restrictions,
         spin-flip determinants, occupation cutoff, minimum Slater weight and temperature.
     solver : impurityModel.ed.model.SolverOptions
-        Green's-function kernel (``gf_method`` -- ``"lanczos"``/``"bicgstab"``/``"sliced"``),
+        Green's-function kernel (``gf_method`` -- ``"lanczos"``/``"bicgstab"``/``"sliced"``/``"cipsi"``),
         reorthogonalization mode, dense cutoff and the sparse-Green flag. See
         :func:`impurityModel.ed.greens_function.get_Greens_function`.
     comm : MPI.Comm or None

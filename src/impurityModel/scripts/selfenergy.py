@@ -74,7 +74,7 @@ def add_arguments(parser):
         "--gf-method",
         type=str,
         default="lanczos",
-        choices=["lanczos", "bicgstab", "sliced"],
+        choices=["lanczos", "bicgstab", "sliced", "cipsi"],
         help="Green's-function kernel.",
     )
     parser.add_argument("--dense-cutoff", type=int, default=500, help="Use a dense eigensolver below this size.")

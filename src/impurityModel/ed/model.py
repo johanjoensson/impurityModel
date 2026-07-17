@@ -558,7 +558,7 @@ class SolverOptions:
         Use a dense eigensolver below this matrix size.
     sparse_green : bool
         Whether the Green's function uses the sparse block-Lanczos path.
-    gf_method : {"lanczos", "bicgstab", "sliced"}
+    gf_method : {"lanczos", "bicgstab", "sliced", "cipsi"}
         Green's-function kernel. See :func:`impurityModel.ed.greens_function.get_Greens_function`.
     """
 

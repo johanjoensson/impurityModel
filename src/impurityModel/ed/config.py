@@ -147,6 +147,90 @@ GF_GMRES_MAX_RESTARTS = Knob(
     doc="Maximum GMRES restart cycles before the point is reported as unconverged.",
 )
 
+# --- Green's function: per-frequency CIPSI-selected solver (gf_method="cipsi") --------------
+# Experimental (doc/plans/gf_cipsi_frequency_truncation.md): the per-point basis is grown by
+# resolvent-targeted CIPSI selection (CIPSISolver.select_at) instead of the H-connectivity
+# closure, so the retained determinants are the *important* ones at each frequency rather
+# than the first-discovered ones the freeze-growth cap keeps.
+
+GF_CIPSI_BUDGET = Knob(
+    name="GF_CIPSI_BUDGET",
+    kind="int",
+    default=None,  # unset = inherit the basis truncation_threshold
+    minimum=1,
+    group="cipsi",
+    doc="""Per-point determinant budget of a CIPSI-selected solve: selection rounds stop
+    admitting candidates once the basis reaches this size. Unset inherits the basis
+    ``truncation_threshold`` (possibly unbounded).""",
+)
+
+GF_CIPSI_MAX_NEW = Knob(
+    name="GF_CIPSI_MAX_NEW",
+    kind="int",
+    default=None,  # unset = only the remaining budget caps a round
+    minimum=1,
+    group="cipsi",
+    doc="""Global cap on the candidates admitted per selection round (collective bisection on
+    the importance scores). Unset admits every candidate passing ``GF_CIPSI_DE2_MIN`` up to
+    the remaining budget; a finite value staggers the growth so later rounds select with a
+    better-converged iterate.""",
+)
+
+GF_CIPSI_DE2_MIN = Knob(
+    name="GF_CIPSI_DE2_MIN",
+    kind="float",
+    default=0.0,
+    minimum=0.0,
+    group="cipsi",
+    doc="""Importance floor of the resolvent CIPSI selection: candidates below it are never
+    admitted regardless of budget. 0 (default) leaves the truncation entirely to the budget
+    and the boundary-residual stop.""",
+)
+
+GF_CIPSI_MAX_ROUNDS = Knob(
+    name="GF_CIPSI_MAX_ROUNDS",
+    kind="int",
+    default=8,
+    minimum=1,
+    group="cipsi",
+    doc="""Solve->select->re-solve rounds per frequency point. Each round solves exactly on
+    the frozen basis, then admits the highest-importance boundary determinants; the loop
+    also stops on the boundary-residual tolerance or an exhausted budget.""",
+)
+
+GF_CIPSI_BOUNDARY_TOL = Knob(
+    name="GF_CIPSI_BOUNDARY_TOL",
+    kind="float",
+    default=None,  # unset = the solver atol (GF_BICGSTAB_ATOL)
+    minimum=0.0,
+    group="cipsi",
+    doc="""Stop tolerance on the boundary residual (the true-residual norm outside the basis,
+    relative to the seed norm) -- the selection loop's convergence measure, and the honest
+    truncation-error estimate of the returned G. Unset uses the in-basis solver tolerance
+    (``GF_BICGSTAB_ATOL``), so in-basis and out-of-basis errors are balanced by default.""",
+)
+
+GF_CIPSI_SCORER = Knob(
+    name="GF_CIPSI_SCORER",
+    kind="str",
+    default="de2",
+    group="cipsi",
+    doc="""Candidate importance: ``de2`` is the resolvent weight
+    ``sum_i |<Dj|H|X_i>|^2 / |z - E_Dj|^2`` (frequency-targeted); ``amplitude`` drops the
+    energy denominator (the bare-coupling baseline the frequency targeting must beat).""",
+)
+
+GF_CIPSI_PT2 = Knob(
+    name="GF_CIPSI_PT2",
+    kind="bool",
+    default=False,
+    group="cipsi",
+    doc="""Add the second-order (Loewdin downfolding) correction of the discarded boundary to
+    G: ``dG_ij = sum_D <D|H|X_i> <D|H|X_j> / (z - E_D)`` over the final round's unadmitted
+    candidates (complex-symmetric approximation, exact for a real Hamiltonian matrix). Its
+    magnitude is recorded in the stats either way -- it doubles as a truncation-error bar.""",
+)
+
 # --- Green's function: spectrum slicing (gf_method="sliced") --------------------------------
 # Retained as a documented failure: doc/plans/spectrum_slicing.md records why the projected
 # 2-8x win never materialized (the live basis is the H-connectivity closure of the seed
@@ -327,6 +411,13 @@ KNOBS: dict[str, Knob] = _register(
     GF_BICGSTAB_RESTARTS,
     GF_GMRES_RESTART,
     GF_GMRES_MAX_RESTARTS,
+    GF_CIPSI_BUDGET,
+    GF_CIPSI_MAX_NEW,
+    GF_CIPSI_DE2_MIN,
+    GF_CIPSI_MAX_ROUNDS,
+    GF_CIPSI_BOUNDARY_TOL,
+    GF_CIPSI_SCORER,
+    GF_CIPSI_PT2,
     GF_SLICES,
     GF_SLICE_DEGREE,
     GF_SLICE_TOL,
@@ -345,6 +436,7 @@ KNOBS: dict[str, Knob] = _register(
 
 GROUP_TITLES = {
     "bicgstab": 'Per-frequency BiCGSTAB solver (``gf_method="bicgstab"``)',
+    "cipsi": 'Per-frequency CIPSI-selected solver (``gf_method="cipsi"``)',
     "sliced": 'Spectrum slicing (``gf_method="sliced"``)',
     "units": "Green's-function work-unit decomposition",
     "convergence": "Block-Lanczos convergence monitor",

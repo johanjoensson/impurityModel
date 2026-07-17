@@ -10,6 +10,7 @@ these kernels lives in :mod:`impurityModel.ed.gf_units`; the top-level assembly 
 in :mod:`impurityModel.ed.greens_function`.
 """
 
+import itertools
 from typing import Optional
 
 import numpy as np
@@ -21,6 +22,8 @@ from impurityModel.ed.basis_transcription import build_dense_matrix, build_spars
 from impurityModel.ed.BlockLanczos import block_lanczos_cy
 from impurityModel.ed.BlockLanczosArray import Reort, block_lanczos_array, resolve_reort
 from impurityModel.ed.cg import block_bicgstab
+from impurityModel.ed.cipsi_solver import CIPSISolver
+from impurityModel.ed.manybody_basis import collective_amplitude_cutoff
 from impurityModel.ed.gf_convergence import _make_gf_convergence_monitor
 from impurityModel.ed.gf_primitives import (
     _CappedBasisProxy,
@@ -741,6 +744,256 @@ def block_Green_bicgstab(
                     f"    axis {ax}, eigenstate {p}: {len(z_shifted)} solves, "
                     f"{stats['iterations']} cumulative iterations, "
                     f"max per-point basis {stats['max_solve_basis']}",
+                    flush=True,
+                )
+
+    if sub_comm is not None:
+        tmp_basis.free_comm()
+    return G_axes, stats
+
+
+def _fit_warm_start_to_budget(tmp_basis, seeds, x0, budget):
+    r"""Shrink a rebuilt per-point basis to ``budget`` by discarding warm-start-only support.
+
+    The seeds are the right-hand side and are never truncated (the bicgstab driver's
+    seed-overflow contract): every determinant carrying seed amplitude is retained, and when
+    the seed support alone reaches the budget the caller solves frozen on the full rebuilt
+    support with ``seed_overflow`` flagged. Otherwise the warm-start-only remainder is kept
+    top-K by max column :math:`|amp|^2` through the collective amplitude bisection (ties
+    under-admitted), the basis is rebuilt in place from the retained set and the warm-start
+    columns are pruned to it. ``seeds``/``x0`` must be redistributed per ``tmp_basis``, so
+    each determinant is counted once on its hash-owner rank. Collective on ``tmp_basis.comm``.
+
+    Returns ``(x0, seed_overflow)``; the seeds are not touched.
+    """
+    seed_keys = {state for s in seeds for state in s.keys()}
+    n_seed = len(seed_keys)
+    if tmp_basis.is_distributed:
+        n_seed = tmp_basis.comm.allreduce(n_seed, op=MPI.SUM)
+    if n_seed >= budget:
+        return x0, True
+
+    keys, norms2 = ManyBodyBlockState.from_states(list(x0)).row_max_norms2()
+    extra_mask = np.array([key not in seed_keys for key in keys], dtype=bool)
+    comm = tmp_basis.comm if tmp_basis.is_distributed else None
+    cutoff2 = collective_amplitude_cutoff(norms2[extra_mask], int(budget) - n_seed, comm)
+    kept = seed_keys | set(itertools.compress(keys, extra_mask & (norms2 > cutoff2)))
+    tmp_basis.clear()
+    tmp_basis.add_states(sorted(kept))
+    x0 = [ManyBodyState({state: amp for state, amp in x.items() if state in kept}) for x in x0]
+    return x0, False
+
+
+def block_Green_cipsi(
+    hOp,
+    psi_arr,
+    basis,
+    es,
+    n_ops,
+    z_axes,
+    slaterWeightMin=0,
+    atol=None,
+    max_iter=None,
+    verbose=False,
+    excited_restrictions=None,
+    excited_weighted_restrictions=None,
+):
+    r"""Per-frequency Green's function with resolvent-targeted CIPSI basis selection.
+
+    Same resolvent systems and unit contract as :func:`block_Green_bicgstab` -- for every
+    stacked eigenstate and frequency solve :math:`(z + E_e - H) X = \text{seeds}_e` and close
+    the Gram -- but the per-point basis is grown by *importance* instead of connectivity:
+    every solve runs **frozen** on the current basis :math:`P` (exact BiCGSTAB/GMRES of
+    :math:`PHP`, the :class:`_CappedBasisProxy` contract), then
+    :meth:`~impurityModel.ed.cipsi_solver.CIPSISolver.select_at` scores the out-of-basis
+    boundary of the iterate -- :math:`\sum_i |\langle D|H|X_i\rangle|^2 / |z - E_D|^2`, the
+    leading-order weight of :math:`D` in the exact solution -- and only the top candidates
+    are admitted before the next round. The loop stops when the boundary residual (the true
+    residual outside :math:`P`, *the* measure freeze-growth never sees) drops below
+    ``GF_CIPSI_BOUNDARY_TOL``, no candidates remain, or the ``GF_CIPSI_BUDGET`` /
+    ``GF_CIPSI_MAX_ROUNDS`` budgets are exhausted. Optionally the discarded boundary is
+    folded back at second order (``GF_CIPSI_PT2``); its magnitude is recorded either way as
+    the per-point truncation-error bar.
+
+    Every ``GF_CIPSI_*`` knob is read from :mod:`~impurityModel.ed.config`; the solver
+    tolerances reuse the bicgstab knobs (``GF_BICGSTAB_ATOL`` etc.). Parameters and the
+    ``(G_axes, stats)`` return follow :func:`block_Green_bicgstab` exactly (no ``bra_seeds``
+    mode); ``stats`` adds ``rounds``, ``max_boundary_rel``, ``boundary_tol`` and
+    ``pt2_max_correction``.
+    """
+    atol = config.GF_BICGSTAB_ATOL.get() if atol is None else atol
+    max_iter = config.GF_BICGSTAB_MAX_ITER.get() if max_iter is None else max_iter
+    budget = config.GF_CIPSI_BUDGET.get()
+    if budget is None:
+        budget = getattr(basis, "truncation_threshold", np.inf)
+    max_new_cfg = config.GF_CIPSI_MAX_NEW.get()
+    de2_min = config.GF_CIPSI_DE2_MIN.get()
+    max_rounds = config.GF_CIPSI_MAX_ROUNDS.get()
+    boundary_tol = config.GF_CIPSI_BOUNDARY_TOL.get()
+    if boundary_tol is None:
+        boundary_tol = atol
+    scorer = config.GF_CIPSI_SCORER.get()
+    use_pt2 = config.GF_CIPSI_PT2.get()
+
+    n_e = len(es)
+    sub_comm = basis.comm
+    tmp_basis = basis.clone(
+        initial_basis=[],
+        restrictions=excited_restrictions,
+        weighted_restrictions=excited_weighted_restrictions,
+        verbose=False,
+        comm=sub_comm.Clone() if sub_comm is not None else None,
+    )
+    selector = CIPSISolver(tmp_basis)
+    # Candidate generation must respect the excited windows: determinants outside them are
+    # never admitted. Set on the Hamiltonian unconditionally (Basis.expand's convention --
+    # a None clears any stale mask left on the shared operator object).
+    hOp.set_restrictions(tmp_basis.restrictions)
+    hOp.set_weighted_restrictions(excited_weighted_restrictions)
+
+    G_axes = [np.zeros((n_e, len(z_axis), n_ops, n_ops), dtype=complex) for z_axis in z_axes]
+    stats = {
+        "n_points": 0,
+        "n_unconverged": 0,
+        "max_rel_residual": 0.0,
+        "iterations": 0,
+        "gmres_points": 0,
+        "gmres_iterations": 0,
+        "atol": atol,
+        "cap": float(budget),
+        "cap_hit": False,
+        "retained_size": None,
+        "seed_overflow": False,
+        "max_solve_basis": 0,
+        "max_rebuild_basis": 0,
+        "rounds": 0,
+        "max_boundary_rel": 0.0,
+        "boundary_tol": boundary_tol,
+        "pt2_max_correction": 0.0,
+    }
+
+    for p in range(n_e):
+        seeds = list(psi_arr[p * n_ops : (p + 1) * n_ops])
+        for ax, z_axis in enumerate(z_axes):
+            z_shifted = z_axis + es[p]
+            # Fresh warm-start chain per (eigenstate, axis), as in block_Green_bicgstab.
+            hist_z: list[complex] = []
+            hist_x: list[list[ManyBodyState]] = []
+            for k in _bicgstab_sweep_order(z_shifted):
+                z = complex(z_shifted[k])
+                x0 = _warm_start_extrapolation(hist_z, hist_x, z, n_ops)
+                if slaterWeightMin > 0:
+                    for x in x0:
+                        x.prune(slaterWeightMin)
+                # Rebuild-and-discard from the seed + warm-start support; redistribute_psis
+                # aligns the amplitudes to the fresh ownership layout.
+                tmp_basis.clear()
+                tmp_basis.add_states(sorted({state for psi in seeds + x0 for state in psi.keys()}))
+                redistributed = tmp_basis.redistribute_psis(seeds + x0)
+                seeds = list(redistributed[:n_ops])
+                x0 = list(redistributed[n_ops:])
+                stats["max_rebuild_basis"] = max(stats["max_rebuild_basis"], int(tmp_basis.size))
+                if tmp_basis.size > budget:
+                    x0, overflowed = _fit_warm_start_to_budget(tmp_basis, seeds, x0, budget)
+                    stats["seed_overflow"] = stats["seed_overflow"] or overflowed
+
+                # Per-column seed norms close the *relative* boundary residual; global, so
+                # every rank takes the same stop decision.
+                seed_norms2 = np.array([s.norm2() for s in seeds], dtype=float)
+                if sub_comm is not None:
+                    sub_comm.Allreduce(MPI.IN_PLACE, seed_norms2, op=MPI.SUM)
+                nonzero = seed_norms2 > 0.0
+
+                X = x0
+                sel = None
+                for _round in range(max_rounds):
+                    stats["rounds"] += 1
+                    # Solve exactly on the frozen current basis: a cap at the current size
+                    # makes _CappedBasisProxy freeze immediately, so the solve is an exact
+                    # BiCGSTAB/GMRES of P H P -- growth belongs to the selection, not the
+                    # solver's connectivity closure.
+                    frozen = _CappedBasisProxy(tmp_basis, max(int(tmp_basis.size), 1))
+                    A_op = ManyBodyOperator({((0, "c"), (0, "a")): z, ((0, "a"), (0, "c")): z}) - hOp
+                    A_op.set_weighted_restrictions(excited_weighted_restrictions)
+                    info = {}
+                    X = solve_shifted_block(A_op, X, seeds, frozen, slaterWeightMin, atol, max_iter=max_iter, info=info)
+                    stats["iterations"] += info["iterations"]
+                    stats["max_rel_residual"] = max(stats["max_rel_residual"], info["rel_residual"])
+                    if info["gmres_used"]:
+                        stats["gmres_points"] += 1
+                        stats["gmres_iterations"] += info["gmres_iterations"]
+
+                    # Selection round (collective): score the out-of-basis boundary of the
+                    # iterate. Runs even with an exhausted budget (max_new=0) -- the boundary
+                    # residual and the PT2 ingredients come from the same pass.
+                    remaining = budget - tmp_basis.size
+                    if max_new_cfg is not None:
+                        remaining = min(remaining, max_new_cfg)
+                    max_new = None if np.isinf(remaining) else max(int(remaining), 0)
+                    new_Dj, sel = selector.select_at(
+                        z, list(X), hOp, de2_min=de2_min, max_new=max_new, scorer=scorer, slater_cutoff=slaterWeightMin
+                    )
+                    boundary_rel = (
+                        float(np.max(np.sqrt(sel["boundary_norms2"][nonzero] / seed_norms2[nonzero])))
+                        if np.any(nonzero)
+                        else 0.0
+                    )
+                    # Stop without admitting on the last allowed round too: states added
+                    # here would never be re-solved, and the PT2 closure below assumes
+                    # every remaining candidate is still boundary.
+                    if boundary_rel <= boundary_tol or sel["n_admitted"] == 0 or _round == max_rounds - 1:
+                        break
+                    tmp_basis.add_states(sorted(new_Dj))
+                    # Determinant ownership is hash-based and basis-independent, so the
+                    # grown basis needs no re-redistribution of seeds/X; the admitted
+                    # candidates simply become in-basis rows on their owner ranks.
+
+                stats["n_points"] += 1
+                if not (info["converged"] and boundary_rel <= boundary_tol):
+                    stats["n_unconverged"] += 1
+                stats["max_boundary_rel"] = max(stats["max_boundary_rel"], boundary_rel)
+                stats["max_solve_basis"] = max(stats["max_solve_basis"], int(tmp_basis.size))
+                if np.isfinite(budget) and boundary_rel > boundary_tol and tmp_basis.size >= budget:
+                    stats["cap_hit"] = True
+                    retained = int(tmp_basis.size)
+                    if stats["retained_size"] is None or retained < stats["retained_size"]:
+                        stats["retained_size"] = retained
+
+                gram = block_inner_cy(
+                    ManyBodyBlockState.from_states(seeds),
+                    ManyBodyBlockState.from_states(list(X)),
+                )
+                if sub_comm is not None:
+                    sub_comm.Allreduce(MPI.IN_PLACE, gram, op=MPI.SUM)
+
+                # Second-order (Loewdin downfolding) closure of the discarded boundary,
+                # dG_ij = sum_D <D|H|X_i> (z - E_D)^{-1} <D|H|X_j> (complex-symmetric
+                # approximation: the bra solve at conj(z) is taken as conj(X), exact for a
+                # real Hamiltonian matrix). Computed always -- it is the per-point
+                # truncation-error bar -- added to G only when GF_CIPSI_PT2 is set. The
+                # final round admitted nothing, so every remaining candidate is boundary.
+                ov = sel["overlaps"]
+                dG = (ov / (z - sel["e_Dj"])[None, :]) @ ov.T if ov.shape[1] else np.zeros((n_ops, n_ops), complex)
+                dG = np.ascontiguousarray(dG, dtype=complex)
+                if sub_comm is not None:
+                    sub_comm.Allreduce(MPI.IN_PLACE, dG, op=MPI.SUM)
+                stats["pt2_max_correction"] = max(stats["pt2_max_correction"], float(np.max(np.abs(dG))))
+                if use_pt2:
+                    gram = gram + dG
+
+                G_axes[ax][p, k] = gram
+
+                hist_z.append(z)
+                hist_x.append(list(X))
+                if len(hist_z) > _GF_BICGSTAB_WARM_HISTORY:
+                    hist_z.pop(0)
+                    hist_x.pop(0)
+            if verbose:
+                print(
+                    f"    axis {ax}, eigenstate {p}: {len(z_shifted)} points, "
+                    f"{stats['rounds']} cumulative selection rounds, "
+                    f"max per-point basis {stats['max_solve_basis']}, "
+                    f"max boundary residual {stats['max_boundary_rel']:.1e}",
                     flush=True,
                 )
 

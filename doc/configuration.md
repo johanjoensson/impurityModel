@@ -27,6 +27,18 @@ available per-rank memory or the communicator size) unless the variable override
 | `GF_GMRES_RESTART` | int | `40` | Krylov restart length of the GMRES fallback (the solver for points BiCGSTAB leaves unconverged: its shadow-residual recurrence stagnates near a pole, GMRES minimizes the residual and has no such mode). Bounds the fallback's live Krylov blocks, so the memory model (memory_estimate.estimate_gf_peak_bytes, method="bicgstab") reads the same knob. |
 | `GF_GMRES_MAX_RESTARTS` | int | `25` | Maximum GMRES restart cycles before the point is reported as unconverged. |
 
+## Per-frequency CIPSI-selected solver (``gf_method="cipsi"``)
+
+| Variable | Type | Default | Description |
+| --- | --- | --- | --- |
+| `GF_CIPSI_BUDGET` | int | *derived* | Per-point determinant budget of a CIPSI-selected solve: selection rounds stop admitting candidates once the basis reaches this size. Unset inherits the basis ``truncation_threshold`` (possibly unbounded). |
+| `GF_CIPSI_MAX_NEW` | int | *derived* | Global cap on the candidates admitted per selection round (collective bisection on the importance scores). Unset admits every candidate passing ``GF_CIPSI_DE2_MIN`` up to the remaining budget; a finite value staggers the growth so later rounds select with a better-converged iterate. |
+| `GF_CIPSI_DE2_MIN` | float | `0.0` | Importance floor of the resolvent CIPSI selection: candidates below it are never admitted regardless of budget. 0 (default) leaves the truncation entirely to the budget and the boundary-residual stop. |
+| `GF_CIPSI_MAX_ROUNDS` | int | `8` | Solve->select->re-solve rounds per frequency point. Each round solves exactly on the frozen basis, then admits the highest-importance boundary determinants; the loop also stops on the boundary-residual tolerance or an exhausted budget. |
+| `GF_CIPSI_BOUNDARY_TOL` | float | *derived* | Stop tolerance on the boundary residual (the true-residual norm outside the basis, relative to the seed norm) -- the selection loop's convergence measure, and the honest truncation-error estimate of the returned G. Unset uses the in-basis solver tolerance (``GF_BICGSTAB_ATOL``), so in-basis and out-of-basis errors are balanced by default. |
+| `GF_CIPSI_SCORER` | str | `'de2'` | Candidate importance: ``de2`` is the resolvent weight ``sum_i |<Dj|H|X_i>|^2 / |z - E_Dj|^2`` (frequency-targeted); ``amplitude`` drops the energy denominator (the bare-coupling baseline the frequency targeting must beat). |
+| `GF_CIPSI_PT2` | bool | `False` | Add the second-order (Loewdin downfolding) correction of the discarded boundary to G: ``dG_ij = sum_D <D|H|X_i> <D|H|X_j> / (z - E_D)`` over the final round's unadmitted candidates (complex-symmetric approximation, exact for a real Hamiltonian matrix). Its magnitude is recorded in the stats either way -- it doubles as a truncation-error bar. |
+
 ## Spectrum slicing (``gf_method="sliced"``)
 
 | Variable | Type | Default | Description |
