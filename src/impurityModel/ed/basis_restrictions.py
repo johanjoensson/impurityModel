@@ -22,6 +22,28 @@ from impurityModel.ed.average import thermal_average_scale_indep
 from impurityModel.ed.ManyBodyUtils import ManyBodyOperator, ManyBodyState
 from impurityModel.ed.basis_transcription import build_density_matrices
 
+# Tunable restriction knobs, gathered here as named constants (rather than literals scattered
+# through the builders) so a measurement sweep or a driver can override them. Every default
+# reproduces the historical behavior exactly:
+#   * COUPLING_CUTOFF_DEFAULT / MIN_DIST_DEFAULT -- the freeze-eligibility threshold on the
+#     physics-weighted / legacy hop-count impurity coupling distance (see
+#     :func:`_impurity_coupling_distance`). Resolved when the corresponding argument is None.
+#   * CHAIN_FILLED_HOLE_FRACTION / CHAIN_EMPTY_ELECTRON_FRACTION -- the excited-sector chain
+#     window widths: a "filled" valence chain of length L may lose up to
+#     ``round(L * hole_fraction)`` electrons (floor occupation ``int(L*(1-hole_fraction))``),
+#     an "empty" conduction chain may gain up to ``ceil(L * electron_fraction)``. Both default
+#     to 0.5, i.e. the historical ``(L//2, L)`` / ``(0, ceil(L/2))`` windows.
+COUPLING_CUTOFF_DEFAULT = 1e-3
+MIN_DIST_DEFAULT = 4
+CHAIN_FILLED_HOLE_FRACTION = 0.5
+CHAIN_EMPTY_ELECTRON_FRACTION = 0.5
+
+# Sentinel for "resolve from the module default" -- distinct from an explicit ``None``, which
+# is a *meaningful* value for ``coupling_cutoff`` (it selects the legacy unweighted hop-count
+# metric in :func:`_impurity_coupling_distance`). A caller that omits the argument gets the
+# module default; one that passes ``None`` still gets the legacy path.
+_USE_DEFAULT = object()
+
 
 def get_effective_restrictions(basis) -> dict[frozenset[int], tuple[int, int]]:
     """Calculate the actual min/max occupations observed across the current basis.
@@ -150,7 +172,7 @@ def _impurity_coupling_distance(op, tot_orb, all_impurity_orbitals, coupling_cut
 
 
 def build_initial_restrictions(
-    basis, op: ManyBodyOperator, min_dist: int = 4, coupling_cutoff: float = 1e-3
+    basis, op: ManyBodyOperator, min_dist=_USE_DEFAULT, coupling_cutoff=_USE_DEFAULT
 ) -> Optional[dict[frozenset[int], tuple[int, int]]]:
     """Construct the initial occupation restrictions based on Hamiltonian connectivity.
 
@@ -166,6 +188,10 @@ def build_initial_restrictions(
     restrictions : dict of frozenset of int to (int, int), optional
         The initial ground state restrictions, or None if no restrictions were built.
     """
+    if coupling_cutoff is _USE_DEFAULT:
+        coupling_cutoff = COUPLING_CUTOFF_DEFAULT
+    if min_dist is _USE_DEFAULT:
+        min_dist = MIN_DIST_DEFAULT
     ground_state_restrictions = {}
     valence_baths, conduction_baths = basis.bath_states
 
@@ -224,8 +250,8 @@ def build_excited_restrictions(
     val_change: Optional[dict[int, tuple[int, int]]] = None,
     con_change: Optional[dict[int, tuple[int, int]]] = None,
     cutoff: float = 1e-6,
-    min_dist=4,
-    coupling_cutoff: float = 1e-3,
+    min_dist=_USE_DEFAULT,
+    coupling_cutoff=_USE_DEFAULT,
 ):
     """
     Construct restrictions for impurity occupation, valence bath occupation, and conduction bath occupation.
@@ -243,6 +269,10 @@ def build_excited_restrictions(
     ========
     excited restrictions: Optional[dict[frozenset[int], tuple[int, int]]] - The occupation restrictions of various orbital indices, or None if no restrictions are generated
     """
+    if coupling_cutoff is _USE_DEFAULT:
+        coupling_cutoff = COUPLING_CUTOFF_DEFAULT
+    if min_dist is _USE_DEFAULT:
+        min_dist = MIN_DIST_DEFAULT
     if isinstance(psis, ManyBodyState):
         psis = [psis]
     if psis is not None and len(psis) == 0:
@@ -359,14 +389,85 @@ def build_excited_restrictions(
             excited_restrictions[new_conduction_indices] = (0, max_con)
         for filled_orbitals, empty_orbitals in zip(filled_bath_states, empty_bath_states):
             if len(filled_orbitals) > 2:
-                excited_restrictions[filled_orbitals] = (len(filled_orbitals) // 2, len(filled_orbitals))
-                # excited_restrictions[filled_orbitals] = (len(filled_orbitals) - 1, len(filled_orbitals))
+                # Floor occupation: allow up to round(L * hole_fraction) holes. At the default
+                # hole_fraction 0.5 this is exactly the historical L // 2.
+                filled_min = int(len(filled_orbitals) * (1.0 - CHAIN_FILLED_HOLE_FRACTION))
+                excited_restrictions[filled_orbitals] = (filled_min, len(filled_orbitals))
             if len(empty_orbitals) > 2:
-                excited_restrictions[empty_orbitals] = (0, ceil(len(empty_orbitals) / 2))
-                # excited_restrictions[empty_orbitals] = (0, 1)
+                # Cap occupation: allow up to ceil(L * electron_fraction) electrons. At the
+                # default electron_fraction 0.5 this is exactly the historical ceil(L / 2).
+                empty_max = ceil(len(empty_orbitals) * CHAIN_EMPTY_ELECTRON_FRACTION)
+                excited_restrictions[empty_orbitals] = (0, empty_max)
     # Emit the single whole-impurity occupation window (only when it actually confines).
     if len(all_imp_orbs) > 0 and (imp_min > 0 or imp_max < len(all_imp_orbs)):
         excited_restrictions[all_imp_orbs] = (imp_min, imp_max)
     if sum(len(rest) for rest in excited_restrictions.keys()) == 0:
         return None
     return excited_restrictions
+
+
+def excitation_budget_restriction(bath_states, budget, cost_fn=None, extra_orbitals=None):
+    r"""Weighted restriction bounding the *total* bath-excitation cost to ``budget``.
+
+    This is the Phase-3a generalization of the per-chain occupation windows: instead of
+    windowing each chain separately, it caps a single weighted sum over the whole bath.
+    Taking the reference occupation as "valence baths filled, conduction baths empty" (the
+    :func:`get_effective_restrictions` convention), a determinant's excitation cost is
+
+    .. math::
+        E = \sum_{o\in\text{val}} c_o (1 - n_o) + \sum_{o\in\text{con}} c_o n_o,
+
+    i.e. every hole in a filled-valence orbital and every electron in an empty-conduction
+    orbital costs ``c_o = cost_fn(o)`` (default 1 -- then ``E`` is just the number of bath
+    excitations, and ``budget`` is the maximum excitation order). Because
+    :math:`E = C + \sum_o w_o n_o` with :math:`w_o = -c_o` on valence, :math:`+c_o` on
+    conduction and :math:`C = \sum_{\text{val}} c_o`, the constraint ``0 <= E <= budget``
+    is exactly the integer weighted restriction ``(w, (-C, budget - C))`` consumed by
+    :meth:`ManyBodyOperator.set_weighted_restrictions`. It composes (AND) with any other
+    weighted restriction (e.g. ``S_z``) and, on a Green's-function sector, widens correctly
+    through :func:`symmetries.widen_weighted_restrictions` (max ``|weight|`` = max cost).
+
+    A graded budget (weaker-coupled orbitals cheaper to excite) is obtained by passing a
+    ``cost_fn`` that quantizes the impurity coupling distance to a small integer; the
+    uniform default is the excitation-order budget the Phase-1 profiles motivate.
+
+    Parameters
+    ----------
+    bath_states : tuple of dict
+        ``(valence_baths, conduction_baths)`` as on a :class:`Basis`.
+    budget : int
+        Maximum total excitation cost admitted.
+    cost_fn : callable, optional
+        ``orbital -> non-negative int cost``. Default: 1 for every orbital.
+    extra_orbitals : iterable of int, optional
+        Additional orbitals to treat as conduction-like (cost on occupation); unused by the
+        default construction, provided for symmetry with mixed valence/conduction layouts.
+
+    Returns
+    -------
+    tuple or None
+        A single weighted restriction ``(weights, (q_min, q_max))``, or ``None`` when there
+        are no bath orbitals / every cost is zero.
+    """
+    valence_baths, conduction_baths = bath_states
+    valence = [o for blocks in valence_baths.values() for blk in blocks for o in blk]
+    conduction = [o for blocks in conduction_baths.values() for blk in blocks for o in blk]
+    if extra_orbitals:
+        conduction = conduction + list(extra_orbitals)
+    cost = (lambda o: 1) if cost_fn is None else cost_fn
+    weights: dict[int, int] = {}
+    filled_cost = 0
+    for o in valence:
+        c = int(cost(o))
+        if c == 0:
+            continue
+        weights[o] = -c
+        filled_cost += c
+    for o in conduction:
+        c = int(cost(o))
+        if c == 0:
+            continue
+        weights[o] = c
+    if not weights:
+        return None
+    return (weights, (-filled_cost, int(budget) - filled_cost))
