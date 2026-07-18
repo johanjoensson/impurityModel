@@ -13,7 +13,7 @@ from mpi4py import MPI
 
 from impurityModel.ed.average import k_B
 from impurityModel.ed.get_spectra import build_spectra_model, run_spectra
-from impurityModel.ed.model import BasisOptions, SpectraOptions
+from impurityModel.ed.model import EXCITATION_BUDGET_DEFAULT, BasisOptions, SpectraOptions, resolve_excitation_budget
 
 
 def add_arguments(parser):
@@ -111,8 +111,9 @@ def add_arguments(parser):
         default=None,
         help=(
             "Maximum total bath excitations (holes in filled-valence + electrons in "
-            "empty-conduction orbitals) per determinant. Default: unset (no budget). A memory "
-            "lever; validate accuracy on the target system (see doc/plans/restrictions_redux.md)."
+            f"empty-conduction orbitals) per determinant. Default: {EXCITATION_BUDGET_DEFAULT} "
+            "(measured lossless); pass a negative value to disable. Validate accuracy on the "
+            "target system (see doc/plans/restrictions_redux.md)."
         ),
     )
     parser.add_argument(
@@ -185,7 +186,7 @@ def run(args):
         truncation_threshold=args.truncation_threshold,
         occ_cutoff=1e-6,
         tau=k_B * args.T,
-        excitation_budget=args.excitation_budget,
+        excitation_budget=resolve_excitation_budget(args.excitation_budget),
     )
     run_spectra(model, spectra_options, basis, comm, verbosity=verbosity)
 

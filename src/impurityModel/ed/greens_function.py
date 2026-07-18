@@ -267,6 +267,14 @@ def get_Greens_function(
             delta,
             [es[ei] for ei in unit.chunk],
         )
+        if verbose and unit_restrictions[u] is not None:
+            print("Excited restrictions:")
+            for indices, occ_rest in unit_restrictions[u].items():
+                print(f"{sorted(indices)}: {occ_rest}")
+        if verbose and excited_weighted_restrictions is not None:
+            print("weight restrictions:")
+            for weights, sum_rest in excited_weighted_restrictions:
+                print(f"{weights}: {sum_rest}")
         alphas, betas, r, cap_stats = _block_green_group(
             split_basis,
             hOp,

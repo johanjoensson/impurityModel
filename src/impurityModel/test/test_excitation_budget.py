@@ -321,17 +321,20 @@ def test_chain_max_holes_none_is_noop():
 # ---- CHAIN_GRADED_RESTRICT: hopping-derived three-zone chain restriction ---------------
 #
 # The graded scheme splits a chain by the accumulated hopping a(o)=exp(-dist(o)) into a free
-# head, an intermediate band (capped at CHAIN_INTERMEDIATE_MAX_EXCITATIONS), and a hard-frozen
-# deep zone (pinned, 0 excitations). Uses the weighted metric (coupling_cutoff set) with
-# hopping that DECAYS along the chain, so a(o) drops with depth and all three zones appear.
+# head, an intermediate band (capped at CHAIN_INTERMEDIATE_MAX_EXCITATIONS), and a deep zone
+# capped at CHAIN_DEEP_MAX_EXCITATIONS (default 1 -- the single-excitation sector must stay
+# complete so every chain eigenmode / hybridization peak remains representable; pinning the
+# deep zone was measured to make the self-energy non-causal on hybridization peaks). Uses the
+# weighted metric (coupling_cutoff set) with hopping that DECAYS along the chain, so a(o)
+# drops with depth and all three zones appear.
 
 
-def _graded_chain_valence_windows(n_val=12, graded=True, slater_weight_min=1e-8, hop0=0.4, decay=0.85):
+def _graded_chain_valence_windows(n_val=16, graded=True, slater_weight_min=1e-8, hop0=0.4, decay=0.85, deep_cap=None):
     """All valence-chain windows from build_excited_restrictions, graded on/off.
 
     Returns ``{frozenset(sites): (lo, hi)}`` restricted to valence orbitals. The chain hopping
     decays geometrically from the head so the accumulated hopping (and thus the zone) varies
-    with depth.
+    with depth. ``deep_cap`` overrides CHAIN_DEEP_MAX_EXCITATIONS when not None.
     """
     from impurityModel.ed import basis_restrictions as br
     from impurityModel.ed.basis_restrictions import build_excited_restrictions
@@ -356,39 +359,73 @@ def _graded_chain_valence_windows(n_val=12, graded=True, slater_weight_min=1e-8,
         verbose=False,
     )
     saved = br.CHAIN_GRADED_RESTRICT
+    saved_cap = br.CHAIN_DEEP_MAX_EXCITATIONS
     br.CHAIN_GRADED_RESTRICT = graded
+    if deep_cap is not None:
+        br.CHAIN_DEEP_MAX_EXCITATIONS = deep_cap
     try:
         rest = build_excited_restrictions(basis, op, psis=None, es=None, slater_weight_min=slater_weight_min)
     finally:
         br.CHAIN_GRADED_RESTRICT = saved
+        br.CHAIN_DEEP_MAX_EXCITATIONS = saved_cap
     return {k: v for k, v in (rest or {}).items() if set(k) <= set(val)}, set(val)
 
 
-def test_graded_chain_has_frozen_and_intermediate_zones():
-    """Graded mode hard-freezes the deep chain (pinned) and caps the intermediate band."""
-    from impurityModel.ed.basis_restrictions import CHAIN_INTERMEDIATE_MAX_EXCITATIONS
+def _deep_windows(windows, cap):
+    """The deep-zone windows: slack (hi - lo) equal to the deep cap on a group larger than it."""
+    return {k: (lo, hi) for k, (lo, hi) in windows.items() if hi - lo == cap and len(k) > cap}
+
+
+def test_graded_chain_has_deep_and_intermediate_zones():
+    """Graded mode caps the deep chain at CHAIN_DEEP_MAX_EXCITATIONS and the middle band at K."""
+    from impurityModel.ed.basis_restrictions import CHAIN_DEEP_MAX_EXCITATIONS, CHAIN_INTERMEDIATE_MAX_EXCITATIONS
 
     windows, _val = _graded_chain_valence_windows(graded=True)
-    # A frozen (pinned) group has floor == ceil == its size: no excitations allowed.
-    frozen = [k for k, (lo, hi) in windows.items() if lo == hi == len(k)]
-    assert frozen, f"no hard-frozen deep zone produced (windows={windows})"
-    # Every non-frozen valence window allows at most the intermediate cap of holes.
-    for k, (lo, hi) in windows.items():
-        if (lo, hi) == (len(k), len(k)):
-            continue
+    deep = _deep_windows(windows, CHAIN_DEEP_MAX_EXCITATIONS)
+    assert deep, f"no deep zone produced (windows={windows})"
+    # No window pins its group (lo == hi == len would forbid the propagating GF excitation).
+    assert not any(lo == hi == len(k) for k, (lo, hi) in windows.items())
+    # Every valence window allows at most the intermediate cap of holes.
+    for lo, hi in windows.values():
         assert hi - lo <= CHAIN_INTERMEDIATE_MAX_EXCITATIONS
+
+
+def test_graded_deep_zone_admits_a_single_excitation():
+    """A lone hole on ANY chain site (even the deepest) satisfies the graded windows.
+
+    This is the causality guarantee: the complete single-excitation sector keeps every
+    eigenmode of the chain (every hybridization peak) representable.
+    """
+    windows, val = _graded_chain_valence_windows(graded=True)
+    for site in val:
+        occupied = val - {site}  # one hole at `site`
+        for k, (lo, hi) in windows.items():
+            n_occ = len(k & occupied)
+            assert lo <= n_occ <= hi, f"single hole at {site} violates window {sorted(k)}: {(lo, hi)}"
+
+
+def test_graded_deep_cap_zero_reproduces_hard_freeze():
+    """CHAIN_DEEP_MAX_EXCITATIONS=0 restores the old pinned (len, len) deep window."""
+    windows, _val = _graded_chain_valence_windows(graded=True, deep_cap=0)
+    pinned = [k for k, (lo, hi) in windows.items() if lo == hi == len(k)]
+    assert pinned, f"no pinned deep zone at cap 0 (windows={windows})"
 
 
 def test_graded_off_reproduces_binary_window():
     """CHAIN_GRADED_RESTRICT=False leaves the single fraction window untouched."""
+    from impurityModel.ed.basis_restrictions import CHAIN_DEEP_MAX_EXCITATIONS
+
     off, _ = _graded_chain_valence_windows(graded=False)
-    # Binary mode emits one far-chain window (no pinned (len,len) group).
+    # Binary mode emits one far-chain window (no deep-cap group, nothing pinned).
+    assert not _deep_windows(off, CHAIN_DEEP_MAX_EXCITATIONS)
     assert not any(lo == hi == len(k) for k, (lo, hi) in off.items())
 
 
 def test_graded_freeze_boundary_tracks_amplitude_cutoff():
-    """A tighter amplitude cutoff pushes the freeze boundary deeper (fewer frozen sites)."""
-    loose, _ = _graded_chain_valence_windows(graded=True, slater_weight_min=1e-4)
+    """A tighter amplitude cutoff pushes the freeze boundary deeper (smaller deep zone)."""
+    from impurityModel.ed.basis_restrictions import CHAIN_DEEP_MAX_EXCITATIONS
+
+    loose, _ = _graded_chain_valence_windows(graded=True, slater_weight_min=1e-8)
     tight, _ = _graded_chain_valence_windows(graded=True, slater_weight_min=1e-12)
-    n_frozen = lambda w: sum(len(k) for k, (lo, hi) in w.items() if lo == hi == len(k))  # noqa: E731
-    assert n_frozen(tight) <= n_frozen(loose)
+    n_deep = lambda w: sum(len(k) for k in _deep_windows(w, CHAIN_DEEP_MAX_EXCITATIONS))  # noqa: E731
+    assert n_deep(tight) <= n_deep(loose)

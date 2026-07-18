@@ -32,7 +32,28 @@ __all__ = [
     "SpectraOptions",
     "atomic_u4",
     "load_selfenergy_archive",
+    "EXCITATION_BUDGET_DEFAULT",
+    "resolve_excitation_budget",
 ]
+
+# Default cap on the total number of bath excitations per determinant (see
+# ``BasisOptions.excitation_budget``). 4 is the tightest measured-lossless value: on the
+# metallic tier (FCC Ni) it shrinks the ground-state basis 1.43x at eigenvector rotation
+# ~2e-4 (budget 3 is 3.45x but rotates the ground state past the 1e-3 accuracy bar), and on
+# localized insulators the basis already carries fewer excitations so it is inert. A negative
+# value (CLI) or ``None`` disables the budget entirely; see doc/plans/restrictions_redux.md.
+EXCITATION_BUDGET_DEFAULT = 4
+
+
+def resolve_excitation_budget(value: Optional[int]) -> Optional[int]:
+    """Map a CLI-style excitation budget to ``BasisOptions.excitation_budget``.
+
+    ``None`` (flag not given) resolves to ``EXCITATION_BUDGET_DEFAULT``; a negative value
+    means "explicitly disabled" and resolves to ``None``.
+    """
+    if value is None:
+        return EXCITATION_BUDGET_DEFAULT
+    return value if value >= 0 else None
 
 
 def atomic_u4(l: int, slater) -> np.ndarray:
@@ -396,9 +417,11 @@ def _read_archive_group(path, cluster=None, iteration=None) -> dict:
     dN = _archive_attr(attrs, "dN")
     if dN is not None:
         dN = int(dN)
-    excitation_budget = _archive_attr(attrs, "excitation_budget")
+    # Missing attribute (older archives) falls back to the default budget; a stored
+    # negative value means the producing run explicitly disabled it.
+    excitation_budget = _archive_attr(attrs, "excitation_budget", EXCITATION_BUDGET_DEFAULT)
     if excitation_budget is not None:
-        excitation_budget = int(excitation_budget)
+        excitation_budget = int(excitation_budget) if int(excitation_budget) >= 0 else None
 
     return {
         "label": name,
@@ -539,12 +562,13 @@ class BasisOptions:
     tau : float
         Fundamental temperature ``k_B * T`` (eV).
     excitation_budget : int or None
-        Optional cap on the total number of bath excitations (holes in filled-valence +
-        electrons in empty-conduction orbitals) a determinant may carry, enforced as a
-        weighted restriction on the ground-state basis and inherited (widened) by the
-        Green's-function / spectra excited bases. ``None`` (default) disables it. A memory
-        lever on metals; judge its accuracy on the eigenvector/spectral criterion, not
-        ``E0`` (see ``doc/plans/restrictions_redux.md``).
+        Cap on the total number of bath excitations (holes in filled-valence + electrons in
+        empty-conduction orbitals) a determinant may carry, enforced as a weighted
+        restriction on the ground-state basis and inherited (widened) by the
+        Green's-function / spectra excited bases. Defaults to ``EXCITATION_BUDGET_DEFAULT``
+        (4, the tightest measured-lossless value); ``None`` disables it. A memory lever on
+        metals; judge its accuracy on the eigenvector/spectral criterion, not ``E0`` (see
+        ``doc/plans/restrictions_redux.md``).
     """
 
     nominal_occ: Any
@@ -556,7 +580,7 @@ class BasisOptions:
     occ_cutoff: float = 1e-12
     slater_weight_min: float = float(np.sqrt(np.finfo(float).eps))
     tau: float = 0.002
-    excitation_budget: Optional[int] = None
+    excitation_budget: Optional[int] = EXCITATION_BUDGET_DEFAULT
 
 
 @dataclass(frozen=True)

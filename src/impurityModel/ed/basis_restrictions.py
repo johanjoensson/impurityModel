@@ -42,27 +42,37 @@ from impurityModel.ed.basis_transcription import build_density_matrices
 #     per-chain order <= 2 on both the localized-insulator and metallic tiers). This is the
 #     lever for long chains / small-gap systems where the amplitude cutoff no longer prunes
 #     the deep chain by itself; see doc/plans/restrictions_redux.md.
-#   * CHAIN_GRADED_RESTRICT -- opt-in (default False = the binary free/frozen behavior above).
-#     When True, the excited-sector chain is split into THREE zones by the accumulated hopping
+#   * CHAIN_GRADED_RESTRICT -- default True (set False for the binary free/frozen behavior
+#     above). The excited-sector chain is split into THREE zones by the accumulated hopping
 #     ``a(o) = exp(-dist(o))`` from :func:`_impurity_coupling_distance` (``dist`` accumulates
 #     ``-log(|h_ij|/h_max)`` along the chain, so ``a(o)`` is the product of couplings from the
 #     impurity to ``o`` -- built from the block off-diagonal hopping terms): a strongly-coupled
 #     HEAD (``a >= free_cutoff``, unrestricted), an INTERMEDIATE band capped at
 #     ``CHAIN_INTERMEDIATE_MAX_EXCITATIONS`` excitations, and a DEEP zone (``a < freeze_cutoff``)
-#     hard-frozen to its reference occupation. ``free_cutoff`` is ``COUPLING_CUTOFF_DEFAULT``
+#     capped at ``CHAIN_DEEP_MAX_EXCITATIONS``. ``free_cutoff`` is ``COUPLING_CUTOFF_DEFAULT``
 #     (today's freeze boundary); ``freeze_cutoff`` is auto-calibrated to the amplitude cutoff as
-#     ``slater_weight_min ** CHAIN_FREEZE_WEIGHT_EXPONENT`` -- freeze exactly where a single
-#     excitation's amplitude can no longer survive ``slater_weight_min``. The GF/Lanczos path has
-#     no amplitude ranking of the determinants it generates, so this a-priori pruning is what
-#     keeps the deep chain out of its basis; see doc/plans/restrictions_redux.md.
+#     ``slater_weight_min ** CHAIN_FREEZE_WEIGHT_EXPONENT``. The GF/Lanczos path has no amplitude
+#     ranking of the determinants it generates, so this a-priori pruning is what keeps the deep
+#     chain out of its basis; see doc/plans/restrictions_redux.md.
+#   * CHAIN_DEEP_MAX_EXCITATIONS -- the deep-zone cap. The default 1 (NOT 0) is load-bearing for
+#     causality: keeping the complete single-excitation sector means every eigenmode of the
+#     chain's tridiagonal single-particle Hamiltonian -- i.e. every peak of the fitted
+#     hybridization -- stays exactly representable, no matter where the freeze boundary sits.
+#     The ``a(o) < freeze_cutoff`` calibration is an OFF-RESONANT perturbative estimate; at a
+#     real frequency on a hybridization peak the resolvent enhancement makes deep-site
+#     amplitudes O(1), so the one-excitation sector must never be pruned by it. Hard-freezing
+#     (cap 0) was measured to produce a non-causal self-energy, Im Sigma up to +0.068 exactly on
+#     the dominant hybridization peak of a 25-bath linked-chain NiO run. Multi-pair excitations
+#     deep in the chain (the combinatorial blowup) are still excluded.
 COUPLING_CUTOFF_DEFAULT = 1e-3
 MIN_DIST_DEFAULT = 4
 CHAIN_FILLED_HOLE_FRACTION = 0.5
 CHAIN_EMPTY_ELECTRON_FRACTION = 0.5
 CHAIN_MAX_HOLES = None
 CHAIN_MAX_ELECTRONS = None
-CHAIN_GRADED_RESTRICT = False
+CHAIN_GRADED_RESTRICT = True
 CHAIN_INTERMEDIATE_MAX_EXCITATIONS = 2
+CHAIN_DEEP_MAX_EXCITATIONS = 1
 CHAIN_FREEZE_WEIGHT_EXPONENT = 0.5
 
 # Sentinel for "resolve from the module default" -- distinct from an explicit ``None``, which
@@ -269,31 +279,34 @@ def build_initial_restrictions(
 
 
 def _emit_graded_chain_window(excited_restrictions, orbitals, dist_matrix, dist_freeze, filled):
-    """Emit the frozen + intermediate windows for one freeze-eligible chain group.
+    """Emit the deep + intermediate windows for one freeze-eligible chain group.
 
     ``orbitals`` are the far (freeze-eligible) sites of one chain -- already past the free/head
     boundary. Split them by the deep boundary ``dist_freeze`` on the whole-impurity coupling
     distance ``min_k dist_matrix[k, o]``: DEEP sites (``dist > dist_freeze``, accumulated hopping
-    below the freeze cutoff) are hard-frozen to their reference occupation (0 excitations); the
-    INTERMEDIATE shell is capped at ``CHAIN_INTERMEDIATE_MAX_EXCITATIONS`` excitations. ``filled``
-    selects the valence (filled reference) vs conduction (empty reference) direction. A shell
-    smaller than the cap yields an unconstraining ``(0, len)`` window (no spurious tightening).
+    below the freeze cutoff) are capped at ``CHAIN_DEEP_MAX_EXCITATIONS`` excitations; the
+    INTERMEDIATE shell is capped at ``CHAIN_INTERMEDIATE_MAX_EXCITATIONS``. The deep cap must
+    admit the single propagating GF particle/hole (see the constant's comment) -- pinning the
+    deep zone to its reference occupation makes the self-energy non-causal on hybridization
+    peaks. ``filled`` selects the valence (filled reference) vs conduction (empty reference)
+    direction. A shell smaller than the cap yields an unconstraining ``(0, len)`` window (no
+    spurious tightening).
     """
     if len(orbitals) == 0:
         return
-    frozen = frozenset(o for o in orbitals if np.min(dist_matrix[:, o]) > dist_freeze)
-    intermediate = frozenset(o for o in orbitals if o not in frozen)
+    deep = frozenset(o for o in orbitals if np.min(dist_matrix[:, o]) > dist_freeze)
+    intermediate = frozenset(o for o in orbitals if o not in deep)
     if filled:
-        if len(frozen) > 0:
-            excited_restrictions[frozen] = (len(frozen), len(frozen))  # every deep site stays filled
+        if len(deep) > 0:
+            excited_restrictions[deep] = (max(len(deep) - CHAIN_DEEP_MAX_EXCITATIONS, 0), len(deep))
         if len(intermediate) > 0:
             excited_restrictions[intermediate] = (
                 max(len(intermediate) - CHAIN_INTERMEDIATE_MAX_EXCITATIONS, 0),
                 len(intermediate),
             )
     else:
-        if len(frozen) > 0:
-            excited_restrictions[frozen] = (0, 0)  # every deep site stays empty
+        if len(deep) > 0:
+            excited_restrictions[deep] = (0, min(CHAIN_DEEP_MAX_EXCITATIONS, len(deep)))
         if len(intermediate) > 0:
             excited_restrictions[intermediate] = (0, min(CHAIN_INTERMEDIATE_MAX_EXCITATIONS, len(intermediate)))
 
@@ -363,7 +376,7 @@ def build_excited_restrictions(
     dist_matrix, dist_cutoff = _impurity_coupling_distance(
         op, tot_orb, all_impurity_orbitals, coupling_cutoff, min_dist
     )
-    # Graded three-zone chain restriction (opt-in). The accumulated hopping a(o) = exp(-dist(o))
+    # Graded three-zone chain restriction (default on). The accumulated hopping a(o) = exp(-dist(o))
     # is only meaningful on the weighted metric (coupling_cutoff set); with the legacy hop-count
     # metric the -log calibration does not apply, so graded stays off. ``dist_freeze`` is the
     # distance beyond which a single excitation's amplitude ~ a(o) falls below the determinant
@@ -461,9 +474,10 @@ def build_excited_restrictions(
         for filled_orbitals, empty_orbitals in zip(filled_bath_states, empty_bath_states):
             if graded:
                 # Split the freeze-eligible far group by the DEEP boundary: sites with
-                # accumulated hopping below freeze_cutoff (dist > dist_freeze) are hard-frozen to
-                # their reference occupation; the intermediate shell is capped. a(o) uses the
-                # whole-impurity coupling distance min_k dist_matrix[k, o].
+                # accumulated hopping below freeze_cutoff (dist > dist_freeze) are capped at
+                # CHAIN_DEEP_MAX_EXCITATIONS; the intermediate shell is capped at
+                # CHAIN_INTERMEDIATE_MAX_EXCITATIONS. a(o) uses the whole-impurity coupling
+                # distance min_k dist_matrix[k, o].
                 _emit_graded_chain_window(excited_restrictions, filled_orbitals, dist_matrix, dist_freeze, filled=True)
                 _emit_graded_chain_window(excited_restrictions, empty_orbitals, dist_matrix, dist_freeze, filled=False)
                 continue

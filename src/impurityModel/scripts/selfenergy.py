@@ -12,7 +12,15 @@ from dataclasses import replace
 import numpy as np
 from mpi4py import MPI
 
-from impurityModel.ed.model import BasisOptions, ImpurityModel, Meshes, SolverOptions, load_selfenergy_archive
+from impurityModel.ed.model import (
+    EXCITATION_BUDGET_DEFAULT,
+    BasisOptions,
+    ImpurityModel,
+    Meshes,
+    SolverOptions,
+    load_selfenergy_archive,
+    resolve_excitation_budget,
+)
 from impurityModel.ed.selfenergy import calc_selfenergy
 
 
@@ -69,8 +77,10 @@ def add_arguments(parser):
         default=None,
         help=(
             "Maximum total bath excitations per determinant (holes in filled-valence + "
-            "electrons in empty-conduction orbitals). Default: unset. A memory lever; validate "
-            "accuracy on the target system (see doc/plans/restrictions_redux.md)."
+            f"electrons in empty-conduction orbitals). Default: {EXCITATION_BUDGET_DEFAULT} "
+            "(measured lossless), or the value recorded in the archive with --from-archive; "
+            "pass a negative value to disable. Validate accuracy on the target system "
+            "(see doc/plans/restrictions_redux.md)."
         ),
     )
     parser.add_argument(
@@ -158,6 +168,9 @@ def run(args):
             args.from_archive, cluster=args.cluster, iteration=args.iteration
         )
         solver = replace(solver, gf_method=args.gf_method)
+        if args.excitation_budget is not None:
+            # An explicitly passed flag overrides the archived budget (negative disables).
+            basis = replace(basis, excitation_budget=resolve_excitation_budget(args.excitation_budget))
     else:
         if not args.h0_filename:
             raise SystemExit("Provide an h0 file (positional) or --from-archive PATH.")
@@ -186,7 +199,7 @@ def run(args):
             truncation_threshold=args.truncation_threshold,
             chain_restrict=args.chain_restrict,
             tau=args.tau,
-            excitation_budget=args.excitation_budget,
+            excitation_budget=resolve_excitation_budget(args.excitation_budget),
         )
         solver = SolverOptions(
             reort=args.reort,

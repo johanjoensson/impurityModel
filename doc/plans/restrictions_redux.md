@@ -163,8 +163,10 @@ for scale but — per the split-cutoff refutation above — **ΔE₀ under-state
 the metal** (the energy is flat along the pruned directions); a budget should be accepted on an
 eigenvector/spectral criterion, not ΔE₀. The budget is a genuine *memory* knob for metals and,
 unlike `truncation_threshold`, an *a-priori* bound (it constrains the basis before it is built,
-not after it overflows) — shipped **off by default** as an opt-in, with the guidance that its
-accuracy be checked against the eigenvector overlap on the target workload.
+not after it overflows) — initially shipped off by default as an opt-in, with the guidance that
+its accuracy be checked against the eigenvector overlap on the target workload. **Flipped ON by
+default (2026-07-18, user decision — see "Defaults flipped" below)** at the tightest
+measured-lossless value, budget 4 (`model.EXCITATION_BUDGET_DEFAULT`).
 
 ### 3b. Perturbation-aware distance metric — NOT PURSUED
 The coupling distance is ~uniform in the solver basis (§3); there is nothing to grade.
@@ -219,15 +221,17 @@ off by default, same discipline as §3a.
 The `CHAIN_MAX_HOLES` cap (§3d) is a two-zone (free/capped) special case. The **motivating**
 observation: the GF/block-Lanczos basis-build has *no amplitude importance ranking* of the
 determinants it generates (unlike the CIPSI ground state, which drops low-amplitude ones), so the
-GF basis must be pruned a priori by the occupation restrictions. `CHAIN_GRADED_RESTRICT` (opt-in,
-default off) does this with a physically-motivated **three-zone** split derived from the block
+GF basis must be pruned a priori by the occupation restrictions. `CHAIN_GRADED_RESTRICT`
+(initially opt-in; **default on since 2026-07-18**, see "Defaults flipped" below) does this with
+a physically-motivated **three-zone** split derived from the block
 off-diagonal hopping terms, reusing the existing accumulated-hopping metric: `_impurity_coupling_distance`
 already returns `dist(o) = -log(∏|h_ij|/h_max)` along the best impurity→`o` path, so
 `a(o) = exp(-dist(o))` is the accumulated hopping amplitude. Two thresholds on `a(o)` define:
 
 - **Head / free** (`a ≥ free_cutoff = COUPLING_CUTOFF_DEFAULT`) — unrestricted;
 - **Intermediate** (`freeze_cutoff ≤ a < free_cutoff`) — capped at `CHAIN_INTERMEDIATE_MAX_EXCITATIONS`;
-- **Deep / frozen** (`a < freeze_cutoff`) — hard-pinned to the reference occupation (0 excitations).
+- **Deep** (`a < freeze_cutoff`) — capped at `CHAIN_DEEP_MAX_EXCITATIONS` (default **1**, see the
+  causality post-mortem below; `0` = the original hard pin).
 
 `freeze_cutoff` is **auto-calibrated** to the amplitude cutoff as
 `slater_weight_min ** CHAIN_FREEZE_WEIGHT_EXPONENT` (default 0.5): freeze exactly where a single
@@ -239,14 +243,39 @@ from all four call sites (GF `greens_function._build_excited_restrictions`, GS `
 
 Measured (2026-07-18):
 - **A-priori GF-window prune** — on the real `nio_25chain` excited sector, block-0's far valence
-  chain (L=146) goes from the binary `(73,146)` (up to 73 holes) to **36 orbitals hard-frozen
-  (0 holes) + 110 capped at ≤2**, with block-1's 4 coupling orbitals capped at ≤2: the reachable
-  far-region excitation count drops from 73 to ≤4.
+  chain (L=146) goes from the binary `(73,146)` (up to 73 holes) to **36 orbitals deep-capped +
+  110 capped at ≤2**, with block-1's 4 coupling orbitals capped at ≤2: the reachable far-region
+  excitation count drops from 73 to ≤5 (≤4 under the original hard pin).
 - **Lossless on the ground state** (eigenvector-overlap gate): rotation `2.2e-16` on `nio_25chain`
   and `2.8e-13` on `fcc_ni_5`, with `gs_size` unchanged on both. The GS is *inert* because it is
   already amplitude/CIPSI-pruned and its weight sits in the free head zone — confirming the graded
   zones touch nothing with weight; the payoff is the un-ranked GF basis-build. The global
   `excitation_budget` (§3a) composes with the per-zone windows (conjunctive).
+
+**Causality post-mortem (2026-07-18): the hard-frozen deep zone (0 excitations) made the
+real-axis Σ non-causal — fixed by `CHAIN_DEEP_MAX_EXCITATIONS = 1`.** The first production run
+with graded enabled (25-bath linked-chain NiO DFT+DMFT) produced Im Σ up to **+0.068**, confined
+to ω ∈ [−0.316, −0.288] — sitting exactly on the *dominant* fitted-hybridization peak at
+ω = −0.300 (height 16.3; next-largest 4.2). Mechanism, confirmed by diagonalizing the archive's
+bath block: the bath eigenmodes at ε ≈ −0.29…−0.31 are strongly impurity-coupled *and* carry
+14–57 % of their weight on the 86 deep-zone sites (freeze boundary `a < 1.2e-4` at the production
+√ε cutoff). A hybridization peak is a near-discrete bath eigenmode delocalized along the chain; a
+PES final state at the peak is "one hole in that mode", and the pinned `(|F|, |F|)` window made
+the mode unrepresentable, so G lost its weight there and Σ = ω − εd − Δ − G⁻¹ went non-causal.
+The `a(o) < freeze_cutoff` calibration is an *off-resonant* perturbative estimate — at a real
+frequency on a hybridization peak the resolvent enhancement makes deep-site amplitudes O(1), so
+the calibration must never prune the one-excitation sector. Deep cap **1** restores the complete
+single-excitation sector: every eigenmode of the chain's tridiagonal single-particle Hamiltonian
+(every peak of the fitted Δ) stays exactly representable *regardless of where the freeze boundary
+sits*, while multi-pair configurations deep in the chain (the combinatorial blowup) remain
+excluded.
+
+**VERIFIED end-to-end** (full real-axis selfenergy rerun from the production archive, 6 ranks,
+graded ON with cap 1, ~2h10): max Im diag Σ over the 1001-point real mesh = −3.0e-4 (≤ 0
+everywhere; 0 points above 1e-3 vs 7 points up to +0.068 with the hard pin), and in the old
+failure window [−0.35, −0.25] the new Σ sits at −6.1e-2. The single-particle truncation
+experiment quantifies the mechanism: deleting the deep zone from the chain distorts Im Δ at the
+peak by 46% (hard pin ≈ deletion), while the graded cap-1 zone keeps the exact chain.
 
 Shipped **off by default** (`CHAIN_GRADED_RESTRICT=False` reproduces the §3d binary behavior
 exactly). Recommended for the long-chain / small-gap GF regime; validate on the target system's
@@ -260,28 +289,53 @@ exactly). Recommended for the long-chain / small-gap GF regime; validate on the 
    ~1e-5. The energy is flat along the pruned directions, so ΔE₀ badly under-reports the cost;
    the Green's function is built from those eigenvectors and would move above tolerance. The
    default `√ε` is correct.
-2. **Excitation budget as an opt-in metal knob.** Ship `excitation_budget` (default off): it is
-   a real *memory* lever on metals (1.4× at budget 4, 3.45× at budget 3) and the principled
-   a-priori replacement for the one-sided chain lower-bound slack (§1). Judge its accuracy on the
-   target workload by the eigenvector overlap / spectral deviation, **not** ΔE₀ (same mirage as
-   #1).
+2. **Excitation budget as a metal knob.** `excitation_budget` is a real *memory* lever on metals
+   (1.4× at budget 4, 3.45× at budget 3) and the principled a-priori replacement for the
+   one-sided chain lower-bound slack (§1). Judge its accuracy on the target workload by the
+   eigenvector overlap / spectral deviation, **not** ΔE₀ (same mirage as #1). Now **on by
+   default at budget 4** (the tightest measured-lossless value; see "Defaults flipped").
 3. **The chain-window *fraction* is the wrong knob; use hopping-derived per-chain caps for long
    chains (§3d, §3e).** The `L//2` fraction never binds — the amplitude cutoff prunes per-chain
    order first — so narrowing the fraction is a no-op. For the long-chain / small-gap regime where
    the cutoff no longer prunes the deep chain, prefer the **graded three-zone restriction**
-   (`CHAIN_GRADED_RESTRICT`, §3e): a free head, a capped intermediate band, and a hard-frozen deep
-   zone, with the freeze boundary auto-calibrated to `slater_weight_min` from the accumulated
-   hopping. It is the a-priori pruning the GF path needs (no amplitude ranking there) and measured
-   lossless on the GS eigenvectors of both tiers; `CHAIN_MAX_HOLES` (§3d) is its two-zone special
-   case. The global budget (#2) composes and bounds the total. Leave the coupling cutoff alone.
-   All three ship off by default — enable per system after an eigenvector/Σ check.
+   (`CHAIN_GRADED_RESTRICT`, §3e): a free head, a capped intermediate band, and a deep zone capped
+   at **1** excitation (never 0 — the hard pin was measured non-causal on hybridization peaks, see
+   the §3e post-mortem), with the freeze boundary auto-calibrated to `slater_weight_min` from the
+   accumulated hopping. It is the a-priori pruning the GF path needs (no amplitude ranking there)
+   and measured lossless on the GS eigenvectors of both tiers; `CHAIN_MAX_HOLES` (§3d) is its
+   two-zone special case. The global budget (#2) composes and bounds the total. Leave the coupling
+   cutoff alone. The graded restriction and the budget are now on by default ("Defaults flipped"
+   below); `CHAIN_MAX_HOLES`/`CHAIN_MAX_ELECTRONS` stay `None` (the graded scheme supersedes them
+   where the cutoffs are non-degenerate, and falls back to the binary window otherwise).
 4. **Note 3b is superseded on chains.** The graded distance metric was negative in the *rotated
    star* basis (§3b), but the *chain* geometry has genuinely graded accumulated hopping, which is
    exactly what §3e exploits. Default-on 3c (conserved charges) stays negative on every workload.
 
-Net: the current cutoffs are already well-tuned; the genuinely new levers are the opt-in
-excitation budget for metals (§3a) and the hopping-derived graded per-chain restriction for the
-long-chain / small-gap GF regime (§3e). No production defaults changed.
+Net: the current cutoffs are already well-tuned; the genuinely new levers are the excitation
+budget for metals (§3a) and the hopping-derived graded per-chain restriction for the
+long-chain / small-gap GF regime (§3e).
+
+## Defaults flipped (2026-07-18, user decision)
+
+After the cap-1 causality fix was verified end-to-end (§3e post-mortem: full real-axis Σ rerun
+causal everywhere, max Im diag Σ = −3.0e-4), the user chose the **strict restrictions as the
+production defaults**:
+
+- `basis_restrictions.CHAIN_GRADED_RESTRICT = True` — the graded three-zone chain restriction is
+  the default excited-sector chain treatment (deep cap 1, intermediate cap 2, freeze boundary
+  auto-calibrated from `slater_weight_min`). It degrades gracefully: with degenerate cutoffs
+  (`freeze_cutoff ≥ free_cutoff`, e.g. loose `slater_weight_min`) it falls back to the binary
+  free/frozen window, and it is measured lossless on the GS eigenvectors of both tiers.
+- `BasisOptions.excitation_budget` defaults to `model.EXCITATION_BUDGET_DEFAULT = 4` — the
+  tightest measured-lossless budget (metal 1.43× at rotation ~2e-4; inert on localized
+  insulators). Disable with `--excitation_budget -1` on the CLIs (a negative value maps to
+  `None`, via `model.resolve_excitation_budget`) or `excitation_budget=None` in `BasisOptions`.
+  `load_selfenergy_archive` applies the default when the archive predates the attribute; a
+  stored negative value means the producing run explicitly disabled it; an explicitly passed
+  `--excitation_budget` overrides the archived value on `--from-archive`.
+
+The acceptance discipline stands: any tightening beyond these defaults is judged on the
+eigenvector overlap / Σ causality, never ΔE₀ alone.
 
 ## Caveats
 
@@ -304,10 +358,14 @@ long-chain / small-gap GF regime (§3e). No production defaults changed.
   `CHAIN_FILLED_HOLE_FRACTION`, `CHAIN_EMPTY_ELECTRON_FRACTION` (behavior-preserving named
   constants; `_USE_DEFAULT` sentinel keeps `coupling_cutoff=None` meaning the legacy metric);
   `CHAIN_MAX_HOLES` / `CHAIN_MAX_ELECTRONS` (default `None`, length-independent per-chain caps, §3d);
-  `CHAIN_GRADED_RESTRICT` / `CHAIN_INTERMEDIATE_MAX_EXCITATIONS` / `CHAIN_FREEZE_WEIGHT_EXPONENT`
-  (default off, the graded three-zone restriction + its `_emit_graded_chain_window` helper, §3e);
+  `CHAIN_GRADED_RESTRICT` / `CHAIN_INTERMEDIATE_MAX_EXCITATIONS` / `CHAIN_DEEP_MAX_EXCITATIONS` /
+  `CHAIN_FREEZE_WEIGHT_EXPONENT`
+  (default **on** since 2026-07-18, the graded three-zone restriction + its
+  `_emit_graded_chain_window` helper, §3e);
   `excitation_budget_restriction`. `build_excited_restrictions` gained `slater_weight_min` (threaded
   from the GF/GS/spectra/RIXS call sites for the freeze-cutoff auto-calibration).
+- `src/impurityModel/ed/model.py` — `EXCITATION_BUDGET_DEFAULT = 4` (single source of the default
+  budget: `BasisOptions`, both CLIs, and the archive-loader fallback derive from it).
 - `src/impurityModel/test/test_excitation_budget.py` — excitation-budget, `CHAIN_MAX_*`, and graded
   three-zone cap tests.
 - `src/impurityModel/test/restriction_diagnostics.py`, `restriction_sweep.py` — opt-in harnesses
