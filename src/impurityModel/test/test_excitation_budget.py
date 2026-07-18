@@ -7,6 +7,8 @@ conduction baths empty; a hole in a filled-valence orbital or an electron in an
 empty-conduction orbital each costs one (default), and the budget caps their sum.
 """
 
+from itertools import pairwise
+
 import numpy as np
 
 from impurityModel.ed.basis_restrictions import build_weighted_restrictions, excitation_budget_restriction
@@ -241,3 +243,152 @@ def test_calc_selfenergy_excitation_budget_oracle():
     big = _nio_selfenergy(50)  # 50 >> the 10 valence orbitals: admits everything
     np.testing.assert_allclose(base["sigma_real"], big["sigma_real"], atol=1e-8)
     np.testing.assert_allclose(np.min(base["gs_energies"]), np.min(big["gs_energies"]), atol=1e-10)
+
+
+# ---- CHAIN_MAX_HOLES / CHAIN_MAX_ELECTRONS: length-independent per-chain caps ----------
+#
+# The excited-sector chain window defaults to a *fraction* of the chain length
+# (CHAIN_FILLED_HOLE_FRACTION = 0.5 -> L//2 holes), which grows with the chain. The absolute
+# caps replace that with a length-independent bound (the tighter of the two wins), so a long
+# chain no longer inflates the window. These build a genuine chain -- impurity coupled only
+# to the chain head, nearest-neighbour bath hopping -- so the far sites are freeze-eligible
+# and receive a chain occupation window.
+
+
+def _chain_excited_window(n_val=6, max_holes=None):
+    """Valence-chain window from build_excited_restrictions, optionally with CHAIN_MAX_HOLES set."""
+    from impurityModel.ed import basis_restrictions as br
+    from impurityModel.ed.basis_restrictions import build_excited_restrictions
+    from impurityModel.ed.manybody_basis import Basis
+
+    n = 1 + n_val
+    val = list(range(1, n))
+    terms = {((0, "c"), (0, "a")): -1.0}
+    for o in val:
+        terms[((o, "c"), (o, "a"))] = -3.0  # below E_F -> nominally filled valence
+    chain = [0, *val]
+    for a, b in pairwise(chain):
+        terms[((a, "c"), (b, "a"))] = 0.3  # nearest-neighbour chain hopping
+        terms[((b, "c"), (a, "a"))] = 0.3
+    op = ManyBodyOperator(terms)
+    seed = bytes(_sd(list(range(n)), n=n).to_bytearray())  # impurity + whole chain filled
+    basis = Basis(
+        impurity_orbitals={0: [[0]]},
+        bath_states=({0: [val]}, {0: [[]]}),
+        initial_basis=[seed],
+        chain_restrict=True,
+        verbose=False,
+    )
+    saved = br.CHAIN_MAX_HOLES
+    br.CHAIN_MAX_HOLES = max_holes
+    try:
+        # Legacy hop-count metric (coupling_cutoff=None) + min_dist=2 so the chain interior
+        # is freeze-eligible; psis=None takes the "valence nominally filled" reference.
+        rest = build_excited_restrictions(basis, op, psis=None, min_dist=2, coupling_cutoff=None)
+    finally:
+        br.CHAIN_MAX_HOLES = saved
+    # The chain window is the largest restricted subset of the valence orbitals.
+    chain_keys = [k for k in (rest or {}) if k and set(k) <= set(val) and len(k) > 2]
+    assert chain_keys, f"no valence-chain window produced (restrictions={rest})"
+    key = max(chain_keys, key=len)
+    lo, hi = rest[key]
+    return len(key), lo, hi  # (chain length windowed, floor, ceil==length)
+
+
+def test_chain_max_holes_caps_excited_window():
+    """CHAIN_MAX_HOLES bounds the holes per chain independently of the chain length."""
+    length, lo0, hi0 = _chain_excited_window(n_val=6, max_holes=None)
+    holes_uncapped = hi0 - lo0
+    # Default fraction lets the window lose ~L//2 electrons.
+    assert holes_uncapped >= length // 2
+
+    _, lo2, hi2 = _chain_excited_window(n_val=6, max_holes=2)
+    assert hi2 - lo2 <= 2  # at most two holes with the cap
+    assert lo2 >= lo0  # the cap only tightens (raises the floor)
+
+    _, lo1, _ = _chain_excited_window(n_val=6, max_holes=1)
+    assert lo1 >= lo2  # a tighter cap raises the floor further
+
+
+def test_chain_max_holes_none_is_noop():
+    """With the cap unset (None) the window is exactly the historical fraction window."""
+    _, lo_none, hi_none = _chain_excited_window(n_val=6, max_holes=None)
+    # A cap at least as large as the chain removes nothing, matching the unset case.
+    _, lo_big, hi_big = _chain_excited_window(n_val=6, max_holes=6)
+    assert (lo_none, hi_none) == (lo_big, hi_big)
+
+
+# ---- CHAIN_GRADED_RESTRICT: hopping-derived three-zone chain restriction ---------------
+#
+# The graded scheme splits a chain by the accumulated hopping a(o)=exp(-dist(o)) into a free
+# head, an intermediate band (capped at CHAIN_INTERMEDIATE_MAX_EXCITATIONS), and a hard-frozen
+# deep zone (pinned, 0 excitations). Uses the weighted metric (coupling_cutoff set) with
+# hopping that DECAYS along the chain, so a(o) drops with depth and all three zones appear.
+
+
+def _graded_chain_valence_windows(n_val=12, graded=True, slater_weight_min=1e-8, hop0=0.4, decay=0.85):
+    """All valence-chain windows from build_excited_restrictions, graded on/off.
+
+    Returns ``{frozenset(sites): (lo, hi)}`` restricted to valence orbitals. The chain hopping
+    decays geometrically from the head so the accumulated hopping (and thus the zone) varies
+    with depth.
+    """
+    from impurityModel.ed import basis_restrictions as br
+    from impurityModel.ed.basis_restrictions import build_excited_restrictions
+    from impurityModel.ed.manybody_basis import Basis
+
+    n = 1 + n_val
+    val = list(range(1, n))
+    terms = {((0, "c"), (0, "a")): -1.0}
+    for o in val:
+        terms[((o, "c"), (o, "a"))] = -3.0
+    for k, (a, b) in enumerate(pairwise([0, *val])):
+        t = hop0 * (decay**k)  # decaying hops -> accumulated hopping decays along the chain
+        terms[((a, "c"), (b, "a"))] = t
+        terms[((b, "c"), (a, "a"))] = t
+    op = ManyBodyOperator(terms)
+    seed = bytes(_sd(list(range(n)), n=n).to_bytearray())
+    basis = Basis(
+        impurity_orbitals={0: [[0]]},
+        bath_states=({0: [val]}, {0: [[]]}),
+        initial_basis=[seed],
+        chain_restrict=True,
+        verbose=False,
+    )
+    saved = br.CHAIN_GRADED_RESTRICT
+    br.CHAIN_GRADED_RESTRICT = graded
+    try:
+        rest = build_excited_restrictions(basis, op, psis=None, es=None, slater_weight_min=slater_weight_min)
+    finally:
+        br.CHAIN_GRADED_RESTRICT = saved
+    return {k: v for k, v in (rest or {}).items() if set(k) <= set(val)}, set(val)
+
+
+def test_graded_chain_has_frozen_and_intermediate_zones():
+    """Graded mode hard-freezes the deep chain (pinned) and caps the intermediate band."""
+    from impurityModel.ed.basis_restrictions import CHAIN_INTERMEDIATE_MAX_EXCITATIONS
+
+    windows, _val = _graded_chain_valence_windows(graded=True)
+    # A frozen (pinned) group has floor == ceil == its size: no excitations allowed.
+    frozen = [k for k, (lo, hi) in windows.items() if lo == hi == len(k)]
+    assert frozen, f"no hard-frozen deep zone produced (windows={windows})"
+    # Every non-frozen valence window allows at most the intermediate cap of holes.
+    for k, (lo, hi) in windows.items():
+        if (lo, hi) == (len(k), len(k)):
+            continue
+        assert hi - lo <= CHAIN_INTERMEDIATE_MAX_EXCITATIONS
+
+
+def test_graded_off_reproduces_binary_window():
+    """CHAIN_GRADED_RESTRICT=False leaves the single fraction window untouched."""
+    off, _ = _graded_chain_valence_windows(graded=False)
+    # Binary mode emits one far-chain window (no pinned (len,len) group).
+    assert not any(lo == hi == len(k) for k, (lo, hi) in off.items())
+
+
+def test_graded_freeze_boundary_tracks_amplitude_cutoff():
+    """A tighter amplitude cutoff pushes the freeze boundary deeper (fewer frozen sites)."""
+    loose, _ = _graded_chain_valence_windows(graded=True, slater_weight_min=1e-4)
+    tight, _ = _graded_chain_valence_windows(graded=True, slater_weight_min=1e-12)
+    n_frozen = lambda w: sum(len(k) for k, (lo, hi) in w.items() if lo == hi == len(k))  # noqa: E731
+    assert n_frozen(tight) <= n_frozen(loose)

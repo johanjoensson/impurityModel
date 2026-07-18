@@ -178,7 +178,7 @@ def get_Greens_function(
     # (the dN occupation window is symmetric and spans all impurity orbitals), so build them once
     # on the full basis instead of per block.
     excited_restrictions, excited_weighted_restrictions = _build_excited_restrictions(
-        basis, hOp, psis, es, dN, occ_cutoff
+        basis, hOp, psis, es, dN, occ_cutoff, slater_weight_min=slaterWeightMin
     )
     pairwise = _gf_operator_split() if gf_method == "lanczos" else False
     n_psis = len(psis)
@@ -189,7 +189,10 @@ def get_Greens_function(
     # classification is not state-dependent (chain_restrict off, or a directly-hybridizing shell).
     if _gf_per_state_restrict(basis.chain_restrict):
         per_state_restrictions = [
-            _build_excited_restrictions(basis, hOp, [psis[ei]], [es[ei]], dN, occ_cutoff)[0] for ei in range(n_psis)
+            _build_excited_restrictions(
+                basis, hOp, [psis[ei]], [es[ei]], dN, occ_cutoff, slater_weight_min=slaterWeightMin
+            )[0]
+            for ei in range(n_psis)
         ]
     else:
         per_state_restrictions = None
@@ -789,7 +792,9 @@ def _get_greens_function_sliced(
     )
 
 
-def _build_excited_restrictions(basis, hOp, psis, es, dN, occ_cutoff, dN_imp=None, dN_val=None, dN_con=None):
+def _build_excited_restrictions(
+    basis, hOp, psis, es, dN, occ_cutoff, dN_imp=None, dN_val=None, dN_con=None, slater_weight_min=None
+):
     """Build the excited-sector occupation restrictions for a Green's-function calculation.
 
     The window widens the ground-state impurity occupation by ``dN`` symmetrically (so it admits
@@ -819,7 +824,15 @@ def _build_excited_restrictions(basis, hOp, psis, es, dN, occ_cutoff, dN_imp=Non
     else:
         dN_con = {i: dN_con.get(i) for i in basis.impurity_orbitals}
     excited_restrictions = build_excited_restrictions(
-        basis, hOp, psis, es, imp_change=dN_imp, val_change=dN_val, con_change=dN_con, cutoff=occ_cutoff
+        basis,
+        hOp,
+        psis,
+        es,
+        imp_change=dN_imp,
+        val_change=dN_val,
+        con_change=dN_con,
+        cutoff=occ_cutoff,
+        slater_weight_min=slater_weight_min,
     )
     # Weighted (e.g. S_z) restriction for the excited sector: widen the ground-state bounds by one
     # orbital weight so the addition / removal sectors q_psi ± w_j are admitted while still
@@ -989,7 +1002,16 @@ def calc_Greens_function_with_offdiag(
     # imposed on top of the (effective) ground-state limitations. The window is block- and
     # side-independent (see _build_excited_restrictions).
     excited_restrictions, excited_weighted_restrictions = _build_excited_restrictions(
-        block_basis, hOp, psis, es, dN, occ_cutoff, dN_imp=dN_imp, dN_val=dN_val, dN_con=dN_con
+        block_basis,
+        hOp,
+        psis,
+        es,
+        dN,
+        occ_cutoff,
+        dN_imp=dN_imp,
+        dN_val=dN_val,
+        dN_con=dN_con,
+        slater_weight_min=slaterWeightMin,
     )
     # Optional conserved-charge sector confinement (symmetries.transition_sector_restrictions):
     # pins the seed's charge sector on top of the per-shell occupation window, pruning

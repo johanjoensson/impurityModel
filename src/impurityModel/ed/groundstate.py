@@ -137,7 +137,7 @@ def calc_energy(
     solver = CIPSISolver(basis)
     solver.truncate_initial(h_op)
 
-    basis.restrictions = build_excited_restrictions(basis, h_op, psis=None, es=None)
+    basis.restrictions = build_excited_restrictions(basis, h_op, psis=None, es=None, slater_weight_min=slaterWeightMin)
     if len(basis) == 0:
         return (np.inf, basis, None) if return_state else (np.inf, basis)
     solver.expand(

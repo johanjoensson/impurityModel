@@ -430,6 +430,7 @@ def _rixs_map_flat(
         imp_change={1: (1, 0), 2: (1, 1)},
         val_change={1: (0, 0), 2: (1, 0)},
         con_change={1: (0, 0), 2: (0, 1)},
+        slater_weight_min=slaterWeightMin,
     )
     # Weighted restrictions (e.g. the excitation budget) for the core-excited / final bases:
     # widen the ground-state bounds by one orbital weight so a single transition operator stays

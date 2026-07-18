@@ -44,6 +44,7 @@ WORKLOADS = {
     "fcc_ni_15": f"{_IMPMOD_ROOT}/FCC_Ni/impmod/15_BathStates_HaverGeometry_partialReorthonormalization/impurityModel_data.h5",
     "nio_20": f"{_IMPMOD_ROOT}/NiO/impmod/verify_fixes/impurityModel_data.h5",
     "nio_15chain": f"{_IMPMOD_ROOT}/NiO/impmod/15_BathStates_linked_chainGeometry_noneReorthonormalization_6_processors_/impurityModel_data.h5",
+    "nio_25chain": f"{_IMPMOD_ROOT}/NiO/impmod/25_BathStates_linked_chainGeometry_noneReorthonormalization_6_processors_/impurityModel_data.h5",
     "smo": f"{_IMPMOD_ROOT}/SMO/cubic/impmod/impurityModel_data.h5",
 }
 
@@ -419,6 +420,63 @@ def budget_experiment(workload_key, budgets, comm=None, truncation_threshold=np.
         print(f"{'budget':>8}{'gs_size':>10}{'ref/size':>10}{'dE0':>14}")
         for r in rows:
             print(f"{r['budget']:>8}{r['gs_size']:>10d}{r['size_ratio']:>10.2f}{r['dE0']:>14.2e}")
+    return rows
+
+
+def _manifold_fidelity(ref_psis, res_psis):
+    """Singular values of the cross-overlap between two low-energy eigenvector manifolds.
+
+    Amplitudes are keyed by determinant bytes so the two independently-built bases can be
+    compared on their shared determinants (the restricted basis is a subset, so its states
+    carry zero amplitude on the pruned determinants). With orthonormal input states the
+    singular values are the cosines of the principal angles between the subspaces; the
+    smallest is the worst-case fidelity, and ``1 - min`` is the largest manifold rotation.
+    """
+
+    def _keyed(psis):
+        return [{bytes(d.to_bytearray()): a for d, a in p.items()} for p in psis]
+
+    ref, res = _keyed(ref_psis), _keyed(res_psis)
+    overlap = np.zeros((len(ref), len(res)), dtype=complex)
+    for i, r in enumerate(ref):
+        for j, s in enumerate(res):
+            shared = r.keys() & s.keys()
+            overlap[i, j] = sum(np.conj(r[k]) * s[k] for k in shared)
+    return np.linalg.svd(overlap, compute_uv=False)
+
+
+def eigenvector_overlap_experiment(workload_key, budgets, comm=None, truncation_threshold=np.inf, verbosity=0):
+    """Accuracy gate: does an excitation budget rotate the ground-state manifold?
+
+    The self-energy / Green's function is a deterministic function of the eigenstates
+    ``psis`` and energies ``es`` (the campaign's rigorous cheap proxy -- no GF solve, which
+    avoids the FCC Ni over-convergence pathology). Builds the reference GS (no budget) and
+    each budget-restricted GS, and reports the worst-case fidelity of the restricted
+    low-energy manifold within the reference manifold (smallest cross-overlap singular value)
+    alongside ``dE0``. A budget is lossless where ``1 - min_fidelity`` stays below the
+    physical broadening (~1e-3); ``dE0`` alone is a MISLEADING proxy (see the campaign verdict).
+    """
+    rank = comm.rank if comm is not None else 0
+    ref = build_ground_state(workload_key, comm=comm, verbosity=0, truncation_threshold=truncation_threshold)
+    ref_e0 = float(np.min(ref["es"]))
+    ref_psis = ref["psis"]
+    rows = []
+    for b in budgets:
+        gs = build_ground_state(
+            workload_key, comm=comm, verbosity=0, truncation_threshold=truncation_threshold, excitation_budget=b
+        )
+        sv = _manifold_fidelity(ref_psis, gs["psis"])
+        e0 = float(np.min(gs["es"]))
+        size = gs["gs_basis"].size
+        del gs
+        if rank == 0:
+            rows.append({"budget": b, "gs_size": size, "min_fidelity": float(np.min(sv)), "dE0": e0 - ref_e0})
+    if rank == 0:
+        print(f"\n=== excitation-budget eigenvector-overlap gate: {workload_key} (reference: no budget) ===")
+        print(f"reference: {ref['gs_basis'].size} determinants, E0 = {ref_e0:.6f}, {len(ref_psis)} states")
+        print(f"{'budget':>8}{'gs_size':>10}{'1-fidelity':>13}{'dE0':>13}")
+        for r in rows:
+            print(f"{r['budget']:>8}{r['gs_size']:>10d}{1 - r['min_fidelity']:>13.2e}{r['dE0']:>13.2e}")
     return rows
 
 

@@ -37,15 +37,38 @@ import numpy as np
 from impurityModel.ed import basis_restrictions
 from impurityModel.test.restriction_diagnostics import WORKLOADS, build_ground_state
 
+# Sentinel for the absolute-cap overrides, whose ``None`` is a meaningful value ("disable the
+# cap"), distinct from "leave the module default untouched".
+_UNSET = object()
+
 
 @contextmanager
-def _restriction_overrides(coupling_cutoff=None, min_dist=None, hole_fraction=None, electron_fraction=None):
-    """Temporarily override the :mod:`basis_restrictions` tunables (restored on exit)."""
+def _restriction_overrides(
+    coupling_cutoff=None,
+    min_dist=None,
+    hole_fraction=None,
+    electron_fraction=None,
+    max_holes=_UNSET,
+    max_electrons=_UNSET,
+    graded=None,
+    intermediate_max_excitations=None,
+):
+    """Temporarily override the :mod:`basis_restrictions` tunables (restored on exit).
+
+    ``max_holes`` / ``max_electrons`` accept ``None`` as a *meaningful* value (disable the
+    absolute per-chain cap), so they use a distinct ``_UNSET`` sentinel to mean "leave the
+    module default"; the fraction knobs keep their ``None``-means-leave convention. ``graded``
+    toggles the three-zone hopping-derived restriction (``CHAIN_GRADED_RESTRICT``).
+    """
     saved = (
         basis_restrictions.COUPLING_CUTOFF_DEFAULT,
         basis_restrictions.MIN_DIST_DEFAULT,
         basis_restrictions.CHAIN_FILLED_HOLE_FRACTION,
         basis_restrictions.CHAIN_EMPTY_ELECTRON_FRACTION,
+        basis_restrictions.CHAIN_MAX_HOLES,
+        basis_restrictions.CHAIN_MAX_ELECTRONS,
+        basis_restrictions.CHAIN_GRADED_RESTRICT,
+        basis_restrictions.CHAIN_INTERMEDIATE_MAX_EXCITATIONS,
     )
     if coupling_cutoff is not None:
         basis_restrictions.COUPLING_CUTOFF_DEFAULT = coupling_cutoff
@@ -55,6 +78,14 @@ def _restriction_overrides(coupling_cutoff=None, min_dist=None, hole_fraction=No
         basis_restrictions.CHAIN_FILLED_HOLE_FRACTION = hole_fraction
     if electron_fraction is not None:
         basis_restrictions.CHAIN_EMPTY_ELECTRON_FRACTION = electron_fraction
+    if max_holes is not _UNSET:
+        basis_restrictions.CHAIN_MAX_HOLES = max_holes
+    if max_electrons is not _UNSET:
+        basis_restrictions.CHAIN_MAX_ELECTRONS = max_electrons
+    if graded is not None:
+        basis_restrictions.CHAIN_GRADED_RESTRICT = graded
+    if intermediate_max_excitations is not None:
+        basis_restrictions.CHAIN_INTERMEDIATE_MAX_EXCITATIONS = intermediate_max_excitations
     try:
         yield
     finally:
@@ -63,6 +94,10 @@ def _restriction_overrides(coupling_cutoff=None, min_dist=None, hole_fraction=No
             basis_restrictions.MIN_DIST_DEFAULT,
             basis_restrictions.CHAIN_FILLED_HOLE_FRACTION,
             basis_restrictions.CHAIN_EMPTY_ELECTRON_FRACTION,
+            basis_restrictions.CHAIN_MAX_HOLES,
+            basis_restrictions.CHAIN_MAX_ELECTRONS,
+            basis_restrictions.CHAIN_GRADED_RESTRICT,
+            basis_restrictions.CHAIN_INTERMEDIATE_MAX_EXCITATIONS,
         ) = saved
 
 
@@ -121,11 +156,18 @@ def _run_config(workload_key, cfg, comm=None, n_iw=0, n_w=60, verbosity=0):
         min_dist=cfg.get("min_dist"),
         hole_fraction=cfg.get("hole_fraction"),
         electron_fraction=cfg.get("electron_fraction"),
+        max_holes=cfg.get("max_holes", _UNSET),
+        max_electrons=cfg.get("max_electrons", _UNSET),
     ):
         # Ground-state basis size (Phase-1 build; cheap relative to the GF, responds directly
         # to the amplitude cutoff and chain-window knobs).
         gs = build_ground_state(
-            workload_key, comm=comm, verbosity=0, truncation_threshold=cfg.get("truncation_threshold", 300000)
+            workload_key,
+            comm=comm,
+            verbosity=0,
+            truncation_threshold=cfg.get("truncation_threshold", 300000),
+            excitation_budget=cfg.get("excitation_budget"),
+            slater_weight_min=cfg.get("slater_weight_min"),
         )
         gs_size = gs["gs_basis"].size
         del gs
@@ -151,6 +193,7 @@ def _run_config(workload_key, cfg, comm=None, n_iw=0, n_w=60, verbosity=0):
             spin_flip_dj=wl["spin_flip_dj"],
             occ_cutoff=cfg.get("occ_cutoff", wl["occ_cutoff"]),
             slater_weight_min=cfg.get("slater_weight_min", wl["slaterWeightMin"]),
+            excitation_budget=cfg.get("excitation_budget"),
             tau=wl["tau"],
         )
         solver = SolverOptions(

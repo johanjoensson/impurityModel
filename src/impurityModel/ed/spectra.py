@@ -644,7 +644,16 @@ def calc_spectra(
     # window intersects it with that operator's charge sector -- it can only tighten, never
     # loosen. Built on the full basis before the split, so every rank holds the identical list.
     base_restrictions, weighted_restrictions = gf._build_excited_restrictions(
-        basis, hOp, psis, es, None, occ_cutoff, dN_imp=dN_imp, dN_val=dN_val, dN_con=dN_con
+        basis,
+        hOp,
+        psis,
+        es,
+        None,
+        occ_cutoff,
+        dN_imp=dN_imp,
+        dN_val=dN_val,
+        dN_con=dN_con,
+        slater_weight_min=slaterWeightMin,
     )
     if sector_restrictions is None:
         group_restrictions = [base_restrictions] * len(tOps)

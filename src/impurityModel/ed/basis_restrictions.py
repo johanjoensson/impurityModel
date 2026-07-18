@@ -33,10 +33,37 @@ from impurityModel.ed.basis_transcription import build_density_matrices
 #     ``round(L * hole_fraction)`` electrons (floor occupation ``int(L*(1-hole_fraction))``),
 #     an "empty" conduction chain may gain up to ``ceil(L * electron_fraction)``. Both default
 #     to 0.5, i.e. the historical ``(L//2, L)`` / ``(0, ceil(L/2))`` windows.
+#   * CHAIN_MAX_HOLES / CHAIN_MAX_ELECTRONS -- a length-INDEPENDENT absolute cap on the same
+#     excited-sector chain windows (``None`` = disabled, the historical fraction-only
+#     behavior). When set, the *tighter* of the fraction and the absolute cap wins, so a long
+#     chain no longer inflates the window in proportion to its length: the fraction gives
+#     ``L//2`` holes on an ``L``-site chain (78 on a 156-orbital chain), whereas the physics
+#     of the chain geometry keeps excitations localized on the coupling head (measured
+#     per-chain order <= 2 on both the localized-insulator and metallic tiers). This is the
+#     lever for long chains / small-gap systems where the amplitude cutoff no longer prunes
+#     the deep chain by itself; see doc/plans/restrictions_redux.md.
+#   * CHAIN_GRADED_RESTRICT -- opt-in (default False = the binary free/frozen behavior above).
+#     When True, the excited-sector chain is split into THREE zones by the accumulated hopping
+#     ``a(o) = exp(-dist(o))`` from :func:`_impurity_coupling_distance` (``dist`` accumulates
+#     ``-log(|h_ij|/h_max)`` along the chain, so ``a(o)`` is the product of couplings from the
+#     impurity to ``o`` -- built from the block off-diagonal hopping terms): a strongly-coupled
+#     HEAD (``a >= free_cutoff``, unrestricted), an INTERMEDIATE band capped at
+#     ``CHAIN_INTERMEDIATE_MAX_EXCITATIONS`` excitations, and a DEEP zone (``a < freeze_cutoff``)
+#     hard-frozen to its reference occupation. ``free_cutoff`` is ``COUPLING_CUTOFF_DEFAULT``
+#     (today's freeze boundary); ``freeze_cutoff`` is auto-calibrated to the amplitude cutoff as
+#     ``slater_weight_min ** CHAIN_FREEZE_WEIGHT_EXPONENT`` -- freeze exactly where a single
+#     excitation's amplitude can no longer survive ``slater_weight_min``. The GF/Lanczos path has
+#     no amplitude ranking of the determinants it generates, so this a-priori pruning is what
+#     keeps the deep chain out of its basis; see doc/plans/restrictions_redux.md.
 COUPLING_CUTOFF_DEFAULT = 1e-3
 MIN_DIST_DEFAULT = 4
 CHAIN_FILLED_HOLE_FRACTION = 0.5
 CHAIN_EMPTY_ELECTRON_FRACTION = 0.5
+CHAIN_MAX_HOLES = None
+CHAIN_MAX_ELECTRONS = None
+CHAIN_GRADED_RESTRICT = False
+CHAIN_INTERMEDIATE_MAX_EXCITATIONS = 2
+CHAIN_FREEZE_WEIGHT_EXPONENT = 0.5
 
 # Sentinel for "resolve from the module default" -- distinct from an explicit ``None``, which
 # is a *meaningful* value for ``coupling_cutoff`` (it selects the legacy unweighted hop-count
@@ -241,6 +268,36 @@ def build_initial_restrictions(
     return ground_state_restrictions
 
 
+def _emit_graded_chain_window(excited_restrictions, orbitals, dist_matrix, dist_freeze, filled):
+    """Emit the frozen + intermediate windows for one freeze-eligible chain group.
+
+    ``orbitals`` are the far (freeze-eligible) sites of one chain -- already past the free/head
+    boundary. Split them by the deep boundary ``dist_freeze`` on the whole-impurity coupling
+    distance ``min_k dist_matrix[k, o]``: DEEP sites (``dist > dist_freeze``, accumulated hopping
+    below the freeze cutoff) are hard-frozen to their reference occupation (0 excitations); the
+    INTERMEDIATE shell is capped at ``CHAIN_INTERMEDIATE_MAX_EXCITATIONS`` excitations. ``filled``
+    selects the valence (filled reference) vs conduction (empty reference) direction. A shell
+    smaller than the cap yields an unconstraining ``(0, len)`` window (no spurious tightening).
+    """
+    if len(orbitals) == 0:
+        return
+    frozen = frozenset(o for o in orbitals if np.min(dist_matrix[:, o]) > dist_freeze)
+    intermediate = frozenset(o for o in orbitals if o not in frozen)
+    if filled:
+        if len(frozen) > 0:
+            excited_restrictions[frozen] = (len(frozen), len(frozen))  # every deep site stays filled
+        if len(intermediate) > 0:
+            excited_restrictions[intermediate] = (
+                max(len(intermediate) - CHAIN_INTERMEDIATE_MAX_EXCITATIONS, 0),
+                len(intermediate),
+            )
+    else:
+        if len(frozen) > 0:
+            excited_restrictions[frozen] = (0, 0)  # every deep site stays empty
+        if len(intermediate) > 0:
+            excited_restrictions[intermediate] = (0, min(CHAIN_INTERMEDIATE_MAX_EXCITATIONS, len(intermediate)))
+
+
 def build_excited_restrictions(
     basis,
     op: ManyBodyOperator,
@@ -252,6 +309,7 @@ def build_excited_restrictions(
     cutoff: float = 1e-6,
     min_dist=_USE_DEFAULT,
     coupling_cutoff=_USE_DEFAULT,
+    slater_weight_min=None,
 ):
     """
     Construct restrictions for impurity occupation, valence bath occupation, and conduction bath occupation.
@@ -305,6 +363,19 @@ def build_excited_restrictions(
     dist_matrix, dist_cutoff = _impurity_coupling_distance(
         op, tot_orb, all_impurity_orbitals, coupling_cutoff, min_dist
     )
+    # Graded three-zone chain restriction (opt-in). The accumulated hopping a(o) = exp(-dist(o))
+    # is only meaningful on the weighted metric (coupling_cutoff set); with the legacy hop-count
+    # metric the -log calibration does not apply, so graded stays off. ``dist_freeze`` is the
+    # distance beyond which a single excitation's amplitude ~ a(o) falls below the determinant
+    # cutoff (a(o) < slater_weight_min ** exponent), i.e. the DEEP/frozen boundary; the free/head
+    # boundary is ``dist_cutoff``. Needs a real gap (dist_freeze > dist_cutoff) for a middle band.
+    graded = CHAIN_GRADED_RESTRICT and slater_weight_min is not None and coupling_cutoff is not None
+    dist_freeze = np.inf
+    if graded:
+        freeze_cutoff = slater_weight_min**CHAIN_FREEZE_WEIGHT_EXPONENT
+        dist_freeze = -np.log(freeze_cutoff) if freeze_cutoff > 0 else np.inf
+        if not dist_freeze > dist_cutoff:
+            graded = False  # no room for an intermediate band -> fall back to the binary window
     # Impurity occupation is confined on the *whole* impurity as one subset (never per
     # orbital-symmetry group), so the window bounds only the total impurity charge and does
     # not pin S_z or the eg/t2g ratio. Combine the per-group requested changes into a single
@@ -388,15 +459,32 @@ def build_excited_restrictions(
         if len(new_conduction_indices) > 0 and max_con < len(new_conduction_indices):
             excited_restrictions[new_conduction_indices] = (0, max_con)
         for filled_orbitals, empty_orbitals in zip(filled_bath_states, empty_bath_states):
+            if graded:
+                # Split the freeze-eligible far group by the DEEP boundary: sites with
+                # accumulated hopping below freeze_cutoff (dist > dist_freeze) are hard-frozen to
+                # their reference occupation; the intermediate shell is capped. a(o) uses the
+                # whole-impurity coupling distance min_k dist_matrix[k, o].
+                _emit_graded_chain_window(excited_restrictions, filled_orbitals, dist_matrix, dist_freeze, filled=True)
+                _emit_graded_chain_window(excited_restrictions, empty_orbitals, dist_matrix, dist_freeze, filled=False)
+                continue
             if len(filled_orbitals) > 2:
                 # Floor occupation: allow up to round(L * hole_fraction) holes. At the default
-                # hole_fraction 0.5 this is exactly the historical L // 2.
-                filled_min = int(len(filled_orbitals) * (1.0 - CHAIN_FILLED_HOLE_FRACTION))
-                excited_restrictions[filled_orbitals] = (filled_min, len(filled_orbitals))
+                # hole_fraction 0.5 this is exactly the historical L // 2. CHAIN_MAX_HOLES, when
+                # set, additionally caps the holes at a length-independent absolute count; the
+                # tighter floor wins, so a long chain does not inflate the window with its length.
+                length = len(filled_orbitals)
+                filled_min = int(length * (1.0 - CHAIN_FILLED_HOLE_FRACTION))
+                if CHAIN_MAX_HOLES is not None:
+                    filled_min = max(filled_min, length - CHAIN_MAX_HOLES)
+                excited_restrictions[filled_orbitals] = (filled_min, length)
             if len(empty_orbitals) > 2:
                 # Cap occupation: allow up to ceil(L * electron_fraction) electrons. At the
                 # default electron_fraction 0.5 this is exactly the historical ceil(L / 2).
-                empty_max = ceil(len(empty_orbitals) * CHAIN_EMPTY_ELECTRON_FRACTION)
+                # CHAIN_MAX_ELECTRONS, when set, additionally caps at a length-independent count.
+                length = len(empty_orbitals)
+                empty_max = ceil(length * CHAIN_EMPTY_ELECTRON_FRACTION)
+                if CHAIN_MAX_ELECTRONS is not None:
+                    empty_max = min(empty_max, CHAIN_MAX_ELECTRONS)
                 excited_restrictions[empty_orbitals] = (0, empty_max)
     # Emit the single whole-impurity occupation window (only when it actually confines).
     if len(all_imp_orbs) > 0 and (imp_min > 0 or imp_max < len(all_imp_orbs)):
