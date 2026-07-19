@@ -291,7 +291,7 @@ def hartree_fock_occupation(
         Converged mean-field energy.
     converged : bool
     """
-    valence_baths, conduction_baths = bath_states
+    valence_baths, _conduction_baths = bath_states
 
     all_impurity_indices = sorted(orb for blocks in impurity_orbitals.values() for block in blocks for orb in block)
     h, V, imp, _n_orb, _const = extract_hf_tensors(h_op, all_impurity_indices)
@@ -311,7 +311,7 @@ def hartree_fock_occupation(
     winning_N0 = {}
     for i in N0:
         set_indices = [orb for block in impurity_orbitals[i] for orb in block]
-        n_i = int(round(float(np.sum(occ[set_indices]))))
+        n_i = round(float(np.sum(occ[set_indices])))
         winning_N0[i] = int(max(0, min(len(set_indices), n_i)))
     return winning_N0, energy, converged
 
@@ -346,7 +346,7 @@ def classify_orbitals(rho, eps=0.05):
     filled_idx = [i for i in range(n_orb) if occ[i] > 1.0 - eps]
     empty_idx = [i for i in range(n_orb) if occ[i] < eps]
     partial_idx = [i for i in range(n_orb) if eps <= occ[i] <= 1.0 - eps]
-    n_tot = int(round(float(np.sum(occ))))
+    n_tot = round(float(np.sum(occ)))
     active_electrons = n_tot - len(filled_idx)
     return filled_idx, empty_idx, partial_idx, active_electrons, n_tot
 

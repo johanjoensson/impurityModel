@@ -193,7 +193,7 @@ def run(args):
 
 def main():
     """Stand-alone entry point (``python -m impurityModel.scripts.spectra``)."""
-    import argparse  # noqa: PLC0415 -- only needed on the stand-alone path
+    import argparse
 
     parser = argparse.ArgumentParser(description="Spectroscopy simulations (PS/XPS/NIXS/XAS/RIXS).")
     add_arguments(parser)

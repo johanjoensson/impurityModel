@@ -1,7 +1,5 @@
 """Flat-list orbital grouping for calc_selfenergy (group by full-H conserved charges)."""
 
-import numpy as np
-
 from impurityModel.ed.ManyBodyUtils import ManyBodyOperator
 from impurityModel.ed.selfenergy import _per_group_occupation, _per_group_scalar
 from impurityModel.ed.symmetries import classify_bath_occupation, group_orbitals_by_charges
@@ -61,7 +59,7 @@ def test_bath_joins_its_impurity_group():
     terms[((1, "c"), (4, "a"))] = -0.3  # impurity 1 <-> conduction bath 4
     terms[((4, "c"), (1, "a"))] = -0.3
     op2 = ManyBodyOperator(terms)
-    imp, (val, con) = group_orbitals_by_charges(op2, [0, 1], [2, 3], [4], n_orb=5)
+    _imp, (_val, con) = group_orbitals_by_charges(op2, [0, 1], [2, 3], [4], n_orb=5)
     assert con[1] == [[4]]
     assert con[0] == [[]]
 

@@ -12,8 +12,11 @@ import numpy as np
 
 # Local stuff
 from impurityModel.ed import spectra
+from impurityModel.ed.basis_restrictions import build_weighted_restrictions
 from impurityModel.ed.block_structure import BlockStructure
+from impurityModel.ed.groundstate import calc_gs
 from impurityModel.ed.hamiltonian_io import get_hamiltonian_operator
+from impurityModel.ed.ManyBodyUtils import ManyBodyOperator
 from impurityModel.ed.model import ImpurityModel
 from impurityModel.ed.symmetries import (
     extract_tensors,
@@ -21,9 +24,6 @@ from impurityModel.ed.symmetries import (
     impurity_symmetry_rotation,
     rotate_hamiltonian,
 )
-from impurityModel.ed.basis_restrictions import build_weighted_restrictions
-from impurityModel.ed.groundstate import calc_gs
-from impurityModel.ed.ManyBodyUtils import ManyBodyOperator
 
 
 def build_spectra_model(
@@ -253,7 +253,8 @@ def run_spectra(model, spectra_options, basis, comm, *, verbosity=None):
             else:
                 if rank == 0:
                     print(
-                        f"Kept spherical basis (rotation would densify {fill_ratio:.2f}x > {spectra._MAX_ROTATION_FILL})."
+                        f"Kept spherical basis (rotation would densify {fill_ratio:.2f}x"
+                        f" > {spectra._MAX_ROTATION_FILL})."
                     )
                 correlated_block_structure = impurity_block_structure(hOp, d_indices, h0_matrix=h_matrix)
     # Measure how many physical processes the Hamiltonian contains.
@@ -267,7 +268,7 @@ def run_spectra(model, spectra_options, basis, comm, *, verbosity=None):
         "impurity_orbital": impurity_orbitals,
         "bath_states": (valence_baths, conduction_baths),
         "nominal_impurity_occ": basis.nominal_occ,
-        "frozen_occupations": set(i for i in nBaths if nBaths[i] == 0),
+        "frozen_occupations": {i for i in nBaths if nBaths[i] == 0},
         # None = "as many determinants as fit in RAM", resolved against the per-rank
         # available memory inside find_ground_state_basis (see memory_estimate).
         "truncation_threshold": basis.truncation_threshold,
@@ -280,7 +281,7 @@ def run_spectra(model, spectra_options, basis, comm, *, verbosity=None):
             (valence_baths, conduction_baths), basis.excitation_budget
         ),
     }
-    psis, es, ground_state_basis, rho, _ = calc_gs(
+    psis, es, ground_state_basis, _rho, _ = calc_gs(
         hOp,
         basis_setup,
         block_structure,

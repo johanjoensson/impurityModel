@@ -1,10 +1,10 @@
-def skip_whitespaces(str):
+def skip_whitespaces(text):
     """
     Remove leading whitespaces, tabs, and newlines from a string.
 
     Parameters
     ----------
-    str : str
+    text : str
         The input string.
 
     Returns
@@ -17,13 +17,13 @@ def skip_whitespaces(str):
     >>> skip_whitespaces("   hello  ")
     'hello  '
     """
-    for i, c in enumerate(str):
+    for i, c in enumerate(text):  # noqa: B007  (i is the break position, used after the loop)
         if c not in [" ", "\t", "\n"]:
             break
-    return str[i:]
+    return text[i:]
 
 
-def read_state_tuple(str):
+def read_state_tuple(text):
     """
     Parse a tuple of integers representing a state from the string.
 
@@ -32,7 +32,7 @@ def read_state_tuple(str):
 
     Parameters
     ----------
-    str : str
+    text : str
         The input string starting with elements of the tuple, e.g., "1, 2) remaining".
 
     Returns
@@ -48,7 +48,7 @@ def read_state_tuple(str):
     """
     res = []
     num = ""
-    for i, c in enumerate(str):
+    for i, c in enumerate(text):  # noqa: B007  (i is the closing-paren position, used after the loop)
         if c == ")":
             try:
                 res.append(int(num))
@@ -65,10 +65,10 @@ def read_state_tuple(str):
             num = ""
         elif c in "0123456789-":
             num += c
-    return (str[i + 1 :], tuple(res))
+    return (text[i + 1 :], tuple(res))
 
 
-def read_real(str):
+def read_real(text):
     """
     Parse a floating-point number from the beginning of the string.
 
@@ -76,7 +76,7 @@ def read_real(str):
 
     Parameters
     ----------
-    str : str
+    text : str
         The input string.
 
     Returns
@@ -89,10 +89,10 @@ def read_real(str):
     >>> read_real("   -1.23e-4 remainder")
     (' remainder', -0.000123)
     """
-    str = skip_whitespaces(str)
+    text = skip_whitespaces(text)
     num = ""
     val = 0
-    for i, c in enumerate(str):
+    for i, c in enumerate(text):  # noqa: B007  (i is the number-end position, used after the loop)
         if c in "0123456789+-.eE":
             num += c
         else:
@@ -102,16 +102,16 @@ def read_real(str):
     except:
         print("Error casting string " + num + ", to floating point number.")
         raise
-    return (str[i:], val)
+    return (text[i:], val)
 
 
-def read_real_imag(str):
+def read_real_imag(text):
     """
     Parse real and imaginary parts from a string to form a complex number.
 
     Parameters
     ----------
-    str : str
+    text : str
         The input string containing real and imaginary values separated by whitespace.
 
     Returns
@@ -126,10 +126,10 @@ def read_real_imag(str):
     """
     real = 0
     imag = 0
-    str = skip_whitespaces(str)
-    str, real = read_real(str)
-    str = skip_whitespaces(str)
-    str, imag = read_real(str)
+    text = skip_whitespaces(text)
+    text, real = read_real(text)
+    text = skip_whitespaces(text)
+    text, imag = read_real(text)
 
     try:
         val = complex(real, imag)
@@ -211,8 +211,8 @@ def parse_file(filename):
     with open(filename, "r") as f:
         name = ""
         op = {}
-        for linue_number, line in enumerate(f):
-            line = line.strip()
+        for raw_line in f:
+            line = raw_line.strip()
             if line and line[0] != "#":
                 if not name:
                     name = read_name(line)

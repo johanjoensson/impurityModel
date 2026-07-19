@@ -37,7 +37,7 @@ def test_strongly_coupled_long_chain_is_not_frozen():
     """All hops equal (strong): even far orbitals stay free — hop-count min_dist would freeze them."""
     orbs = [1, 2, 3, 4, 5, 6]
     hop = {(i, i + 1): 1.0 for i in range(0, 6)}  # 0-1-2-...-6, all t = 1
-    op = _chain_op(hop, {o: -1.0 for o in orbs})
+    op = _chain_op(hop, dict.fromkeys(orbs, -1.0))
     basis = _basis(orbs)
 
     # Legacy hop-count (min_dist=4) freezes orbitals 5,6; coupling-based keeps everything free.
@@ -50,7 +50,7 @@ def test_orbitals_past_a_weak_link_are_frozen():
     """A weak link partway down the chain decouples the orbitals beyond it -> frozen."""
     orbs = [1, 2, 3]
     hop = {(0, 1): 1.0, (1, 2): 1e-4, (2, 3): 1.0}  # weak link between 1 and 2
-    op = _chain_op(hop, {o: -1.0 for o in orbs})
+    op = _chain_op(hop, dict.fromkeys(orbs, -1.0))
     basis = _basis(orbs)
 
     restr = build_initial_restrictions(basis, op, coupling_cutoff=1e-3)
@@ -65,8 +65,7 @@ def test_near_but_weakly_coupled_orbital_is_frozen():
     orbs = [1, 2, 3]
     # Impurity couples strongly to 2,3 and very weakly to 1 (all one/two hops away).
     hop = {(0, 2): 1.0, (2, 3): 1.0, (0, 1): 1e-6}
-    op = _chain_op(hop, {o: -1.0 for o in orbs})
-    basis = _basis(orbs)
+    op = _chain_op(hop, dict.fromkeys(orbs, -1.0))
 
     dist, cutoff = _impurity_coupling_distance(
         op, tot_orb=4, all_impurity_orbitals=[0], coupling_cutoff=1e-3, min_dist=4

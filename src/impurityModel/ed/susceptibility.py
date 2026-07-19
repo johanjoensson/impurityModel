@@ -314,7 +314,7 @@ def save_susceptibility(result, filename):
     and ``curie_coefficient`` / ``expectation`` attrs. Skipped operators are recorded as
     ``chi`` group attrs ``skipped_<name>``.
     """
-    import h5py  # noqa: PLC0415 - optional at import time; only the save path needs it
+    import h5py
 
     with h5py.File(filename, "w") as h5f:
         h5f.create_dataset("w", data=np.asarray(result["w"]))
@@ -420,9 +420,9 @@ def calc_susceptibility_workflow(
     """
     # Imported here (not at module top) to keep the module importable without pulling in
     # the whole self-energy stack when only the calc_susceptibility driver is used.
-    from impurityModel.ed.groundstate import calc_gs  # noqa: PLC0415
-    from impurityModel.ed.memory_estimate import suggest_truncation_threshold  # noqa: PLC0415
-    from impurityModel.ed.selfenergy import _prepare_solver_basis  # noqa: PLC0415
+    from impurityModel.ed.groundstate import calc_gs
+    from impurityModel.ed.memory_estimate import suggest_truncation_threshold
+    from impurityModel.ed.selfenergy import _prepare_solver_basis
 
     # Unpack the grouped parameters into the local names used throughout the body.
     h0 = model.h0

@@ -46,7 +46,7 @@ def _c2list(arr):
 
 
 def _sample_indices(n):
-    return sorted({int(round(f * (n - 1))) for f in _FREQ_FRACTIONS})
+    return sorted({round(f * (n - 1)) for f in _FREQ_FRACTIONS})
 
 
 def fingerprint(result, n_imp):
@@ -109,7 +109,7 @@ def _run_spherical_baseline():
     from impurityModel.test._nio_workload import as_calc_selfenergy_args, build_selfenergy_inputs
 
     comm = MPI.COMM_WORLD
-    n_omega = int(os.environ.get("SYMMETRY_GOLDEN_NW", 41))
+    n_omega = int(os.environ.get("SYMMETRY_GOLDEN_NW", "41"))
     # Physical NiO Ni(2+): d-only MLFT double counting (chargeTransferCorrection) so the ground
     # state is the genuine d8 energetic minimum (not a window-confined artifact), plus the valence
     # 3d spin-orbit coupling. These are golden-specific physics knobs; the shared builder defaults

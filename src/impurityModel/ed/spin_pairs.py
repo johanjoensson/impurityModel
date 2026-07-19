@@ -322,7 +322,7 @@ def derive_spin_pairs(h_op, impurity_orbitals, rot_to_spherical, n_orb, tol=1e-6
     (imp_pairs, bath_pairs) : tuple of list of (int, int), or None
     """
     h, _, _ = extract_tensors(h_op, n_orb=n_orb, two_body=False)
-    impurity_orbs = set(orb for blocks in impurity_orbitals.values() for block in blocks for orb in block)
+    impurity_orbs = {orb for blocks in impurity_orbitals.values() for block in blocks for orb in block}
 
     # --- impurity (dn, up) pairs from the rotated spherical S_+ ---
     # Two derivations, tried in order:

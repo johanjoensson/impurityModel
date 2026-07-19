@@ -3,7 +3,7 @@
 import numpy as np
 import pytest
 
-from impurityModel.ed.operator_algebra import addOps, c2i
+from impurityModel.ed.ManyBodyUtils import ManyBodyState, SlaterDeterminant
 from impurityModel.ed.observables import (
     apply_casimir,
     casimir_to_quantum_number,
@@ -12,7 +12,7 @@ from impurityModel.ed.observables import (
     make_spin_operators,
     manifold_observable_values,
 )
-from impurityModel.ed.ManyBodyUtils import ManyBodyState, SlaterDeterminant
+from impurityModel.ed.operator_algebra import addOps, c2i
 
 
 def _sd(occupied, n_orbs=4):
@@ -407,7 +407,7 @@ def test_impurity_casimir_operators_rotated():
 
     Stretched single d-electron |ml=2, up> = |j=5/2, mj=5/2>: L^2=6, S^2=3/4, J^2=35/4.
     """
-    from impurityModel.ed.observables import make_impurity_casimir_operators, expect_casimir
+    from impurityModel.ed.observables import expect_casimir, make_impurity_casimir_operators
 
     imp = {0: [list(range(10))]}  # one d-shell, layout [down(ml=-2..2), up(ml=-2..2)]
 
@@ -481,13 +481,13 @@ def test_print_thermal_LJ_lines(capsys):
 
 def test_bath_spin_pairs_and_consistency():
     """bath_spin_pairs + spin_pairs_consistent_with_h validate/skip the spin assignment."""
+    from impurityModel.ed.ManyBodyUtils import ManyBodyOperator
+    from impurityModel.ed.observables import expect_spin_correlation, make_spin_operators
     from impurityModel.ed.spin_pairs import (
         bath_spin_pairs,
         impurity_spin_pairs,
         spin_pairs_consistent_with_h,
     )
-    from impurityModel.ed.observables import expect_spin_correlation, make_spin_operators
-    from impurityModel.ed.ManyBodyUtils import ManyBodyOperator
 
     # 4-orbital Anderson: imp 0=dn,1=up ; bath 2=dn,3=up. Spin-diagonal hopping.
     imp_orbitals = {0: [[0, 1]]}
@@ -740,10 +740,10 @@ def test_derive_spin_pairs_crystal_field_manifolds():
     whole rotation, so the pairing is read from the full-shell S_+ across all manifolds at once.
     """
     from impurityModel.ed.spin_pairs import (
-        derive_spin_pairs,
-        spin_pairs_consistent_with_h,
         _impurity_pairs_per_partition,
         _impurity_pairs_whole_shell,
+        derive_spin_pairs,
+        spin_pairs_consistent_with_h,
     )
 
     # Impurity = l=1 spherical shell, spin-down 0,1,2 / spin-up 3,4,5, split into two manifolds
@@ -987,10 +987,9 @@ def test_whole_shell_casimir_aggregation_dshell():
     must raise (not a spin-doubled l-shell); aggregated over the whole shell it must succeed and,
     on the known high-spin d8 determinant (t2g^6 eg-up^2, S=1 Ms=1), give <S^2> = 2 exactly.
     """
-    from impurityModel.ed.observables import make_impurity_casimir_operators
-    from impurityModel.ed.ManyBodyUtils import ManyBodyState, SlaterDeterminant, inner
     from impurityModel.ed.atomic_physics import get_spherical_2_cubic_matrix
-    from impurityModel.ed.observables import apply_casimir
+    from impurityModel.ed.ManyBodyUtils import ManyBodyState, SlaterDeterminant, inner
+    from impurityModel.ed.observables import apply_casimir, make_impurity_casimir_operators
 
     Rot = get_spherical_2_cubic_matrix(spinpol=True, l=2)
     # Per-manifold build raises (the case that made calc_gs skip the Casimirs before the fix).
@@ -1072,7 +1071,7 @@ def test_calc_gs_reports_casimirs_for_cubic_manifold_grouped_dshell(capsys):
         impurity_orbitals=impurity_orbitals,
         bath_states=bath_states,
         N0=N0,
-        mixed_valence={g: 1 for g in impurity_orbitals},
+        mixed_valence=dict.fromkeys(impurity_orbitals, 1),
         tau=0.01,
         dense_cutoff=4000,
         spin_flip_dj=True,

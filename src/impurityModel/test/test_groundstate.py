@@ -2,10 +2,10 @@ import numpy as np
 import pytest
 from mpi4py import MPI
 
+from impurityModel.ed.basis_transcription import build_density_matrices
 from impurityModel.ed.block_structure import BlockStructure
 from impurityModel.ed.groundstate import calc_energy, calc_gs, find_ground_state_basis
 from impurityModel.ed.ManyBodyUtils import ManyBodyOperator, ManyBodyState
-from impurityModel.ed.basis_transcription import build_density_matrices
 
 
 @pytest.mark.mpi
@@ -166,7 +166,7 @@ def test_groundstate_and_density_matrix_serial():
         "truncation_threshold": 1000,
     }
 
-    psis, es, basis, rho, gs_info = calc_gs(
+    psis, es, basis, rho, _gs_info = calc_gs(
         Hop, basis_setup, block_structure, rot_to_spherical, verbose=True, slaterWeightMin=1e-12
     )
 
@@ -260,7 +260,7 @@ def test_find_ground_state_basis_serial():
 
     assert basis is not None
     assert len(basis) == 1
-    state = list(basis)[0]
+    state = next(iter(basis))
     # N0={0:2}: the two-electron ground state fills the two lowest orbitals (0.5 + 1.0 = 1.5).
     np.testing.assert_equal(psr.bytes2tuple(bytes(state.to_bytearray())[:8], 64), (0, 1))
 
@@ -291,7 +291,7 @@ def test_find_ground_state_basis_mpi():
 
     assert basis is not None
     assert len(basis) == 1
-    state = list(basis)[0]
+    state = next(iter(basis))
     # N0={0:2}: the two-electron ground state fills the two lowest orbitals (0.5 + 1.0 = 1.5).
     np.testing.assert_equal(psr.bytes2tuple(bytes(state.to_bytearray())[:8], 64), (0, 1))
 
@@ -326,7 +326,7 @@ def test_calc_gs_options_serial():
     )
     rot_to_spherical = np.eye(5, dtype=complex)
 
-    psis, es, basis, thermal_rho, gs_info = calc_gs(
+    psis, es, _basis, thermal_rho, _gs_info = calc_gs(
         Hop,
         basis_setup,
         block_structure,
@@ -375,7 +375,7 @@ def test_calc_gs_options_mpi():
     )
     rot_to_spherical = np.eye(5, dtype=complex)
 
-    psis, es, basis, thermal_rho, gs_info = calc_gs(
+    psis, es, _basis, thermal_rho, _gs_info = calc_gs(
         Hop, basis_setup, block_structure, rot_to_spherical, verbose=True, slaterWeightMin=1e-12
     )
     assert len(es) > 0

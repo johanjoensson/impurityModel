@@ -19,8 +19,8 @@ from mpi4py import MPI
 
 from impurityModel.ed import product_state_representation as psr
 from impurityModel.ed.average import thermal_average_scale_indep
-from impurityModel.ed.ManyBodyUtils import ManyBodyOperator, ManyBodyState
 from impurityModel.ed.basis_transcription import build_density_matrices
+from impurityModel.ed.ManyBodyUtils import ManyBodyOperator, ManyBodyState
 
 # Tunable restriction knobs, gathered here as named constants (rather than literals scattered
 # through the builders) so a measurement sweep or a driver can override them. Every default
@@ -110,7 +110,7 @@ def get_effective_restrictions(basis) -> dict[frozenset[int], tuple[int, int]]:
 
     max_imp, min_imp = 0, len(all_impurity_indices)
     min_val = {i: len(valence_index_sets[i]) for i in valence_baths}
-    max_con = {i: 0 for i in conduction_baths}
+    max_con = dict.fromkeys(conduction_baths, 0)
     for state in basis.local_basis:
         bits = psr.bytes2bitarray(bytes(state.to_bytearray()), basis.num_spin_orbitals)
         n_imp = sum(bits[i] for i in all_impurity_indices)
@@ -325,20 +325,31 @@ def build_excited_restrictions(
     slater_weight_min=None,
 ):
     """
-    Construct restrictions for impurity occupation, valence bath occupation, and conduction bath occupation.
-    Restrictions are formed by identifying which bath states are filled, empty, and partially filled, using the density matrices of states psis.
-    Filled states are restricted to containing a maximum of one hole. Empty states can have a maximum of one electron. Partially filled states can be empty or filled.
-    The total occupations of the impurity, valence band, and conduction band is limited by the ground state occupations with an optional occupation change.
+    Construct restrictions for impurity occupation, valence bath occupation, and conduction bath
+    occupation.
+    Restrictions are formed by identifying which bath states are filled, empty, and partially
+    filled, using the density matrices of states psis.
+    Filled states are restricted to containing a maximum of one hole. Empty states can have a
+    maximum of one electron. Partially filled states can be empty or filled.
+    The total occupations of the impurity, valence band, and conduction band is limited by the
+    ground state occupations with an optional occupation change.
     Arguments:
     =========
     psis: list[ManyBodyState] | ManyBodyState - Eigenstates used to calculate the density matrices.
-    imp_change: Optional[tuple[int, int]] - Tuple containing the maximum deviation of the impurity occupation from the ground state occupations, (max_decrease, max_increasess). Default = None
-    val_change: Optional[tuple[int, int]] - Tuple containing the maximum deviation of the valence bath occupation from the ground state occupations, (max_decrease, max_increasess). Default = None
-    con_change: Optional[tuple[int, int]] - Tuple containing the maximum deviation of the conduction occupation from the ground state occupations, (max_decrease, max_increasess). Default = None
-    occ_cutoff: float - Cutoff separating filled, partially filled, and empty states. Filled stated have occupation > 1-occ_cutoff, empty states have occupation < occ_cutoff, partially filled states lie in between
+    imp_change: Optional[tuple[int, int]] - Tuple containing the maximum deviation of the impurity
+        occupation from the ground state occupations, (max_decrease, max_increasess). Default = None
+    val_change: Optional[tuple[int, int]] - Tuple containing the maximum deviation of the valence
+        bath occupation from the ground state occupations, (max_decrease, max_increasess).
+        Default = None
+    con_change: Optional[tuple[int, int]] - Tuple containing the maximum deviation of the conduction
+        occupation from the ground state occupations, (max_decrease, max_increasess). Default = None
+    occ_cutoff: float - Cutoff separating filled, partially filled, and empty states. Filled stated
+        have occupation > 1-occ_cutoff, empty states have occupation < occ_cutoff, partially filled
+        states lie in between
     Returns:
     ========
-    excited restrictions: Optional[dict[frozenset[int], tuple[int, int]]] - The occupation restrictions of various orbital indices, or None if no restrictions are generated
+    excited restrictions: Optional[dict[frozenset[int], tuple[int, int]]] - The occupation
+        restrictions of various orbital indices, or None if no restrictions are generated
     """
     if coupling_cutoff is _USE_DEFAULT:
         coupling_cutoff = COUPLING_CUTOFF_DEFAULT
@@ -396,16 +407,19 @@ def build_excited_restrictions(
     all_imp_orbs = frozenset(sorted(all_impurity_orbitals))
     imp_changes = [imp_change[i] for i in basis.impurity_orbitals]
     if imp_changes and all(c is not None for c in imp_changes):
-        combined_imp_change = (max(c[0] for c in imp_changes), max(c[1] for c in imp_changes))
+        combined_imp_change = (
+            max(c[0] for c in imp_changes if c is not None),
+            max(c[1] for c in imp_changes if c is not None),
+        )
     else:
         combined_imp_change = None
     imp_min, imp_max = _get_updated_occ_restrictions(ground_state_restrictions, all_imp_orbs, combined_imp_change)
 
     for i, impurity_orbitals in basis.impurity_orbitals.items():
         val_orbs = frozenset(sorted(orb for block in valence_baths[i] for orb in block))
-        min_val, max_val = _get_updated_occ_restrictions(ground_state_restrictions, val_orbs, val_change[i])
+        min_val, _max_val = _get_updated_occ_restrictions(ground_state_restrictions, val_orbs, val_change[i])
         con_orbs = frozenset(sorted(orb for block in conduction_baths[i] for orb in block))
-        min_con, max_con = _get_updated_occ_restrictions(ground_state_restrictions, con_orbs, con_change[i])
+        _min_con, max_con = _get_updated_occ_restrictions(ground_state_restrictions, con_orbs, con_change[i])
 
         if basis.chain_restrict:
             for imp_orb_block, val_orb_block, con_orb_block in zip(

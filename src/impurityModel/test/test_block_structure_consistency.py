@@ -7,8 +7,6 @@ strictly too fine when impurity orbitals are coupled through a shared bath orbit
 :func:`green_function_block_structure` catches those couplings.
 """
 
-import numpy as np
-
 from impurityModel.ed.ManyBodyUtils import ManyBodyOperator
 from impurityModel.ed.symmetries import (
     auto_block_structure,

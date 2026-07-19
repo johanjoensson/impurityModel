@@ -56,7 +56,7 @@ def apply_plot_style(args):
         matplotlib.use("Agg")
     # Deferred: pyplot must not be imported anywhere before matplotlib.use() runs above, or
     # the backend is already locked to the default interactive one.
-    import matplotlib.pyplot as plt  # noqa: PLC0415
+    import matplotlib.pyplot as plt
 
     if args.figsize is not None:
         plt.rcParams["figure.figsize"] = args.figsize
@@ -72,7 +72,7 @@ def finish_plots(args):
     Show the figures, or save them to args.output. With several open figures the output
     name gets a numbered suffix per figure.
     """
-    import matplotlib.pyplot as plt  # noqa: PLC0415 -- see apply_plot_style
+    import matplotlib.pyplot as plt
 
     if args.output is None:
         plt.show()

@@ -521,8 +521,8 @@ def hermitian_algebra_basis(generators, tol=1e-9):
     ``Re Tr(A†B)``) so every returned matrix stays Hermitian.
     """
     candidates = []
-    for gen in generators:
-        gen = np.asarray(gen, dtype=complex)
+    for gen_raw in generators:
+        gen = np.asarray(gen_raw, dtype=complex)
         candidates.append(0.5 * (gen + gen.conj().T))
         candidates.append(0.5j * (gen.conj().T - gen))
     basis = []

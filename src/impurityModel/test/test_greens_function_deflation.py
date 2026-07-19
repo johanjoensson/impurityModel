@@ -21,10 +21,10 @@ check that the resulting ``calc_G`` reproduces the exact diagonal resolvent
 
 import numpy as np
 
-from impurityModel.ed.ManyBodyUtils import ManyBodyOperator, ManyBodyState, SlaterDeterminant
 from impurityModel.ed.BlockLanczos import block_lanczos_cy
-from impurityModel.ed.BlockLanczosArray import block_lanczos_array, Reort
-from impurityModel.ed.greens_function import calc_G, build_qr, _trim_blocks
+from impurityModel.ed.BlockLanczosArray import Reort, block_lanczos_array
+from impurityModel.ed.greens_function import _trim_blocks, build_qr, calc_G
+from impurityModel.ed.ManyBodyUtils import ManyBodyOperator, ManyBodyState, SlaterDeterminant
 from impurityModel.test.test_restarted_lanczos import MockBasis
 
 # Diagonal one-body energies on 5 orbitals; single particle -> 5 determinants,

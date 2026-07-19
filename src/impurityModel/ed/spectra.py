@@ -9,14 +9,23 @@ from mpi4py import MPI
 
 # Local imports
 import impurityModel.ed.greens_function as gf
-from impurityModel.ed.operator_algebra import arrayOp2Dict, c2i, combineOp
 from impurityModel.ed.ManyBodyUtils import ManyBodyOperator, inner
 from impurityModel.ed.ManyBodyUtils import applyOp as applyOp_test
+from impurityModel.ed.operator_algebra import arrayOp2Dict, c2i, combineOp
+from impurityModel.ed.symmetries import (
+    ComponentReduction,
+    component_symmetry_reduction,
+    conserved_subset_charges,
+    extract_tensors,
+    measure_conserved_charges,
+    rotate_hamiltonian,
+    transition_sector_restrictions,
+)
 
 # The transition-operator builders now live in their own physics module. They are re-exported
 # here (and referenced by the bare names below) so that simulate_spectra's calls resolve and
 # existing callers/tests that reach them via ``spectra.dipole_operators`` etc. keep working.
-from impurityModel.ed.transition_operators import (  # noqa: E402,F401
+from impurityModel.ed.transition_operators import (  # noqa: F401
     daggered_dipole_operators,
     dipole_operator,
     dipole_operators,
@@ -26,16 +35,6 @@ from impurityModel.ed.transition_operators import (  # noqa: E402,F401
     photoemission_operators,
     sph_harm,
 )
-from impurityModel.ed.symmetries import (
-    ComponentReduction,
-    component_symmetry_reduction,
-    conserved_subset_charges,
-    extract_tensors,
-    measure_conserved_charges,
-    transition_sector_restrictions,
-)
-
-from impurityModel.ed.symmetries import rotate_hamiltonian
 
 # MPI variables
 comm = MPI.COMM_WORLD
@@ -789,9 +788,12 @@ def _moments_consistent(m0, m1, group_of_column, tol=1e-6):
             if abs(m0[a] - m0[ref]) > tol * scale0:
                 return False
             # Compare mean energies m1/m0 where the seed is non-trivial.
-            if m0[ref] > tol and m0[a] > tol:
-                if abs(m1[a] / m0[a] - m1[ref] / m0[ref]) > tol * max(abs(m1[ref] / m0[ref]), 1.0):
-                    return False
+            if (
+                m0[ref] > tol
+                and m0[a] > tol
+                and abs(m1[a] / m0[a] - m1[ref] / m0[ref]) > tol * max(abs(m1[ref] / m0[ref]), 1.0)
+            ):
+                return False
     return True
 
 
@@ -913,4 +915,4 @@ def calc_spectra_tensor(
 
 # The RIXS drivers live in their own module; re-export them so simulate_spectra's calls and
 # existing spectra.getRIXSmap_* callers resolve unchanged.
-from impurityModel.ed.rixs import calc_map, calc_tensor_map  # noqa: E402,F401
+from impurityModel.ed.rixs import calc_map, calc_tensor_map  # noqa: E402

@@ -41,7 +41,7 @@ def pytest_configure(config):
     reporter = config.pluginmanager.getplugin("terminalreporter")
     if reporter is None:
         return
-    out = open(f".pytest_mpi_rank{rank}.out", "w")
+    out = open(f".pytest_mpi_rank{rank}.out", "w")  # noqa: SIM115  (see below)
     # Keep a reference on config so the file object survives the whole session,
     # and close it at unconfigure so interpreter shutdown doesn't emit an
     # unclosed-file ResourceWarning.

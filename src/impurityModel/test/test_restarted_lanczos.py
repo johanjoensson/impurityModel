@@ -6,7 +6,7 @@ import numpy as np
 from impurityModel.ed.ManyBodyUtils import ManyBodyOperator, ManyBodyState, SlaterDeterminant
 
 warnings.filterwarnings("ignore")
-from impurityModel.ed.irlm import implicitly_restarted_block_lanczos_cy
+from impurityModel.ed.irlm import implicitly_restarted_block_lanczos_cy  # noqa: E402
 
 
 class MockBasis:
@@ -87,7 +87,7 @@ def test_irlm_thick_restart():
 
     from impurityModel.ed.trlm import thick_restart_block_lanczos
 
-    eigvals, eigvecs = thick_restart_block_lanczos(
+    eigvals, _eigvecs = thick_restart_block_lanczos(
         psi0=psi0, h_op=h_op, basis=basis, num_wanted=4, max_subspace_blocks=6, tol=1e-8, max_restarts=50, verbose=False
     )
 
@@ -122,7 +122,7 @@ def test_irlm_qr_restart():
     from impurityModel.ed.BlockLanczosArray import Reort
 
     # Run IRLM QR Restart
-    eigvals, eigvecs = implicitly_restarted_block_lanczos_cy(
+    eigvals, _eigvecs = implicitly_restarted_block_lanczos_cy(
         psi0=psi0,
         h_op=h_op,
         basis=basis,
@@ -148,7 +148,7 @@ def test_trlm_invariant_subspace_breakdown():
 
     # Ask for 2 eigenvalues, but max_subspace_blocks = 4.
     # Since total dimension is 4, it will exhaust the Hilbert space and trigger breakdown.
-    eigvals, eigvecs = thick_restart_block_lanczos(
+    eigvals, _eigvecs = thick_restart_block_lanczos(
         psi0=psi0, h_op=H, basis=None, num_wanted=2, max_subspace_blocks=4, tol=1e-8, max_restarts=50, verbose=True
     )
 
@@ -160,7 +160,6 @@ def test_irlm_invariant_subspace_breakdown():
 
     # 4-site, 1-particle system -> 4 states total.
     n_sites = 4
-    n_particles = 1
 
     op_dict = {}
     for i in range(n_sites - 1):
@@ -174,7 +173,7 @@ def test_irlm_invariant_subspace_breakdown():
     for i in range(n_sites):
         op = ManyBodyOperator({((i, "c"),): 1.0})
         st = op.apply(vac)
-        states.append(list(st.keys())[0])
+        states.append(next(iter(st.keys())))
 
     basis = MockBasis(4)
     basis.local_basis = states
@@ -190,7 +189,7 @@ def test_irlm_invariant_subspace_breakdown():
 
     # Ask for 2 eigenvalues, but max_subspace_blocks = 5.
     # Since total dimension is 4, it will exhaust the Hilbert space and trigger breakdown.
-    eigvals_out, eigvecs = implicitly_restarted_block_lanczos_cy(
+    eigvals_out, _eigvecs = implicitly_restarted_block_lanczos_cy(
         psi0=[psi0],
         h_op=h_op,
         basis=basis,
@@ -223,8 +222,9 @@ def test_trlm_reort_partial():
         psi0.append(state)
 
     import scipy.linalg as sp
-    from impurityModel.ed.ManyBodyUtils import add_scaled_multi, inner_multi
+
     from impurityModel.ed.BlockLanczosArray import Reort
+    from impurityModel.ed.ManyBodyUtils import add_scaled_multi, inner_multi
 
     M = inner_multi(psi0, psi0)
     L = sp.cholesky(M, lower=True)
@@ -269,8 +269,9 @@ def test_irlm_reort_partial():
         psi0.append(state)
 
     import scipy.linalg as sp
-    from impurityModel.ed.ManyBodyUtils import add_scaled_multi, inner_multi
+
     from impurityModel.ed.BlockLanczosArray import Reort
+    from impurityModel.ed.ManyBodyUtils import add_scaled_multi, inner_multi
 
     M = inner_multi(psi0, psi0)
     L = sp.cholesky(M, lower=True)

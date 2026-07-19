@@ -2,15 +2,21 @@ from itertools import product
 
 import numpy as np
 
+from impurityModel.ed.average import thermal_average_scale_indep
 from impurityModel.ed.basis_restrictions import build_excited_restrictions, get_effective_restrictions
+from impurityModel.ed.basis_transcription import build_density_matrices
 from impurityModel.ed.block_structure import BlockStructure, get_equivalent_blocks, print_block_structure
-from impurityModel.ed.symmetries import extract_tensors
 from impurityModel.ed.cipsi_solver import CIPSISolver
+from impurityModel.ed.gs_statistics import (
+    compute_entanglement_entropy,
+    compute_gs_statistics,
+    print_gs_statistics,
+    save_gs_statistics,
+)
 from impurityModel.ed.hartree_fock import hartree_fock_occupation
 from impurityModel.ed.manybody_basis import Basis
+from impurityModel.ed.ManyBodyUtils import ManyBodyOperator
 from impurityModel.ed.memory_estimate import log_memory_budget, suggest_truncation_threshold
-from impurityModel.ed.average import thermal_average_scale_indep
-from impurityModel.ed.spin_pairs import resolve_spin_pairs
 from impurityModel.ed.observables import (
     apply_casimir,
     apply_spin_correlation,
@@ -22,8 +28,6 @@ from impurityModel.ed.observables import (
     compute_screening_diagnostics,
     compute_state_summary,
     compute_static_susceptibilities,
-    print_state_summary,
-    static_susceptibility_rows,
     get_Sz_from_rho_pairs,
     make_impurity_casimir_operators,
     make_spin_operators,
@@ -31,18 +35,14 @@ from impurityModel.ed.observables import (
     print_correlation_diagnostics,
     print_expectation_values,
     print_screening_diagnostics,
+    print_state_summary,
     print_thermal_expectation_values,
+    static_susceptibility_rows,
     thermal_observable_value,
 )
-from impurityModel.ed.gs_statistics import (
-    compute_entanglement_entropy,
-    compute_gs_statistics,
-    print_gs_statistics,
-    save_gs_statistics,
-)
-from impurityModel.ed.ManyBodyUtils import ManyBodyOperator
+from impurityModel.ed.spin_pairs import resolve_spin_pairs
+from impurityModel.ed.symmetries import extract_tensors
 from impurityModel.ed.utils import matrix_print, print_density_matrix_summary, report_banner, report_rule
-from impurityModel.ed.basis_transcription import build_density_matrices
 
 
 def calc_energy(
@@ -171,7 +171,7 @@ def calc_energy(
     # (reduced to the eigenstate support below) may fit under the cap.
     basis.occupation_search_truncation = solver.truncation_report
     basis.clear()
-    basis.add_states(set(state for psi in eigen_psis for state in psi))
+    basis.add_states({state for psi in eigen_psis for state in psi})
     if return_state:
         return np.min(es), basis, gs_state
     return np.min(es), basis
@@ -280,8 +280,8 @@ def find_ground_state_basis(
     if mixed_valence is None or mixed_valence is False:
         mixed_valence = dict.fromkeys(N0, 0)
     (
-        num_val_baths,
-        num_cond_baths,
+        _num_val_baths,
+        _num_cond_baths,
     ) = bath_states
     if frozen_occupations is None:
         frozen_occupations = set()
@@ -574,7 +574,7 @@ def calc_gs(
         solver=cipsi_solver_method,
     )
     ground_state_basis.clear()
-    ground_state_basis.add_states(set(state for p in psis for state in p))
+    ground_state_basis.add_states({state for p in psis for state in p})
     psis = ground_state_basis.redistribute_psis(psis)
 
     # The effective restrictions are printed in the ground-state-report overview below.
@@ -609,7 +609,7 @@ def calc_gs(
     # memory guard may skip it, deterministically on every rank). Degrades to None.
     try:
         entanglement = compute_entanglement_entropy(ground_state_basis, psis, es, tau)
-    except Exception:  # noqa: BLE001 - reporting must not crash the GS solve
+    except Exception:
         entanglement = None
     if gs_stats is not None:
         gs_stats["entanglement"] = entanglement
@@ -678,7 +678,7 @@ def calc_gs(
             s_values, s2_thermal = casimir["S"]
             l_values, l2_thermal = casimir["L"]
             j_values, j2_thermal = casimir["J"]
-        except Exception as exc:  # noqa: BLE001 - reporting must not crash the GS solve
+        except Exception as exc:
             if rank == 0:
                 print(f"S^2/L^2/J^2 not reported: {exc}")
             s_values = l_values = j_values = None
@@ -745,7 +745,7 @@ def calc_gs(
                 sz_imp = get_Sz_from_rho_pairs(thermal_rho, imp_pairs)
                 sz_bath = get_Sz_from_rho_pairs(thermal_rho, bath_pairs)
                 sisb_z_connected = sisb_z_thermal - sz_imp * sz_bath
-    except Exception as exc:  # noqa: BLE001 - reporting must not crash the GS solve
+    except Exception as exc:
         # Deterministic + identical on every rank (collective Allreduce inside), so this raises
         # on all ranks together and stays collective-safe.
         sisb_values = None
@@ -772,7 +772,7 @@ def calc_gs(
             comm=mov_comm,
             redistribute=mov_redistribute,
         )
-    except Exception:  # noqa: BLE001 - reporting must not crash the GS solve
+    except Exception:
         static_susceptibilities = None
 
     # Correlation-strength, screening and energy-decomposition diagnostics. Collective
@@ -818,7 +818,7 @@ def calc_gs(
             )
         else:
             diagnostics_skip_reason = "no validated spin pairing (see the <S_imp.S_bath> message)"
-    except Exception as exc:  # noqa: BLE001 - reporting must not crash the GS solve
+    except Exception as exc:
         corr_diagnostics = None
         screening_diagnostics = None
         energy_decomposition = None
@@ -831,14 +831,14 @@ def calc_gs(
         state_summary = compute_state_summary(
             rhos[full_impurity_ix], es, rot_to_spherical, s_values, l_values, j_values, entanglement
         )
-    except Exception:  # noqa: BLE001 - reporting must not crash the GS solve
+    except Exception:
         state_summary = None
     if gs_stats is not None:
         try:
             magnetic_summary = compute_magnetic_summary(
                 thermal_rho[impurity_ix], rot_to_spherical, s2_thermal, l2_thermal, j2_thermal
             )
-        except Exception:  # noqa: BLE001 - reporting must not crash the GS solve
+        except Exception:
             magnetic_summary = None
         gs_stats["observables"] = {
             "magnetic": magnetic_summary,
@@ -954,7 +954,7 @@ def calc_gs(
                             print_density_matrix_summary(thermal_rho[bath_ix], "Bath density matrix (summary):")
                     print("", flush=verbose >= 2)
                 print()
-        except Exception as exc:  # noqa: BLE001 - reporting must not crash the GS solve
+        except Exception as exc:
             print(f"[warning] ground-state observable report incomplete (GS still returned): {exc}")
     return (
         psis,

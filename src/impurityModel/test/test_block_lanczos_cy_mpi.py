@@ -1,18 +1,15 @@
-import pytest
 import numpy as np
-import scipy.linalg as sp
+import pytest
 from mpi4py import MPI
-
-from impurityModel.ed.ManyBodyUtils import inner_multi, ManyBodyState, ManyBodyOperator
-from impurityModel.ed.BlockLanczosArray import block_normalize
-from impurityModel.ed.manybody_basis import Basis
-from impurityModel.ed.BlockLanczosArray import Reort
 
 from impurityModel.ed.BlockLanczos import (
     block_lanczos_cy,
-    thick_restart_block_lanczos_cy,
     implicitly_restarted_block_lanczos_cy,
+    thick_restart_block_lanczos_cy,
 )
+from impurityModel.ed.BlockLanczosArray import block_normalize
+from impurityModel.ed.manybody_basis import Basis
+from impurityModel.ed.ManyBodyUtils import ManyBodyOperator, ManyBodyState, inner_multi
 
 
 def create_diagonal_h_and_basis_mpi(n_states, comm):
@@ -39,7 +36,7 @@ def test_block_lanczos_cy_mpi_orthogonality_full():
     # Block size 1
     np.random.seed(42 + comm.Get_rank())
     psi0 = []
-    for i in range(1):
+    for _i in range(1):
         st = ManyBodyState()
         for j in range(6):
             st[basis.type.from_bytes(states[j])] = np.random.randn()
@@ -48,7 +45,7 @@ def test_block_lanczos_cy_mpi_orthogonality_full():
     psi0 = basis.redistribute_psis(psi0)
     psi0, _ = block_normalize(psi0, mpi=True, comm=comm)
 
-    alphas, betas, Q_basis, W = block_lanczos_cy(
+    alphas, _betas, Q_basis, _W = block_lanczos_cy(
         psi0=psi0,
         h_op=h_op,
         basis=basis,
@@ -90,7 +87,7 @@ def test_block_lanczos_cy_mpi_choleskyqr2_near_degenerate():
     psi0 = basis.redistribute_psis(psi0)
     psi0, _ = block_normalize(psi0, mpi=True, comm=comm)  # orthonormal start (as the GF path provides)
 
-    alphas, betas, Q_basis, _ = block_lanczos_cy(
+    _alphas, betas, Q_basis, _ = block_lanczos_cy(
         psi0=psi0,
         h_op=h_op,
         basis=basis,
@@ -119,7 +116,7 @@ def test_trlm_cy_diagonal_mpi():
     psi0 = basis.redistribute_psis([st])
     psi0, _ = block_normalize(psi0, mpi=True, comm=comm)
 
-    eigs, evecs = thick_restart_block_lanczos_cy(
+    eigs, _evecs = thick_restart_block_lanczos_cy(
         psi0=psi0,
         h_op=h_op,
         basis=basis,
@@ -137,6 +134,7 @@ def test_trlm_cy_diagonal_mpi():
 
 def create_tight_binding_h_and_basis_mpi(comm):
     import itertools
+
     from impurityModel.ed.manybody_basis import Basis
     from impurityModel.ed.ManyBodyUtils import ManyBodyOperator
 
@@ -168,11 +166,12 @@ def create_tight_binding_h_and_basis_mpi(comm):
 
 @pytest.mark.mpi
 def test_trlm_cy_tight_binding_mpi():
-    from impurityModel.ed.BlockLanczosArray import block_normalize
     import numpy as np
-    from impurityModel.ed.ManyBodyUtils import ManyBodyState
-    from impurityModel.ed.BlockLanczos import thick_restart_block_lanczos_cy
     from mpi4py import MPI
+
+    from impurityModel.ed.BlockLanczos import thick_restart_block_lanczos_cy
+    from impurityModel.ed.BlockLanczosArray import block_normalize
+    from impurityModel.ed.ManyBodyUtils import ManyBodyState
 
     comm = MPI.COMM_WORLD
     h_op, basis = create_tight_binding_h_and_basis_mpi(comm)
@@ -188,7 +187,7 @@ def test_trlm_cy_tight_binding_mpi():
     psi0 = basis.redistribute_psis(psi0)
     psi0, _ = block_normalize(psi0, True, comm)
 
-    eigs, evecs = thick_restart_block_lanczos_cy(
+    eigs, _evecs = thick_restart_block_lanczos_cy(
         psi0=psi0,
         h_op=h_op,
         basis=basis,
@@ -214,7 +213,7 @@ def test_irlm_cy_diagonal_mpi():
     psi0 = basis.redistribute_psis([st])
     psi0, _ = block_normalize(psi0, mpi=True, comm=comm)
 
-    eigs, evecs = implicitly_restarted_block_lanczos_cy(
+    eigs, _evecs = implicitly_restarted_block_lanczos_cy(
         psi0=psi0,
         h_op=h_op,
         basis=basis,
@@ -248,7 +247,7 @@ def test_irlm_cy_tight_binding_mpi():
     psi0 = basis.redistribute_psis(psi0)
     psi0, _ = block_normalize(psi0, True, comm)
 
-    eigs, evecs = implicitly_restarted_block_lanczos_cy(
+    eigs, _evecs = implicitly_restarted_block_lanczos_cy(
         psi0=psi0,
         h_op=h_op,
         basis=basis,
@@ -289,7 +288,7 @@ def test_irlm_cy_selective_reort_orthogonality_mpi():
     psi0 = basis.redistribute_psis(psi0)
     psi0, _ = block_normalize(psi0, True, comm)
 
-    eigvals, eigvecs = implicitly_restarted_block_lanczos_cy(
+    _eigvals, eigvecs = implicitly_restarted_block_lanczos_cy(
         psi0=psi0,
         h_op=h_op,
         basis=basis,
@@ -336,7 +335,7 @@ def test_trlm_cy_selective_reort_orthogonality_mpi():
     psi0 = basis.redistribute_psis(psi0)
     psi0, _ = block_normalize(psi0, True, comm)
 
-    eigvals, eigvecs = thick_restart_block_lanczos_cy(
+    _eigvals, eigvecs = thick_restart_block_lanczos_cy(
         psi0=psi0,
         h_op=h_op,
         basis=basis,

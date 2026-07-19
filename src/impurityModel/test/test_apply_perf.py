@@ -350,7 +350,7 @@ def test_apply_block_width_scaling(timing_fixtures, capsys):
             out = op.apply_multi(psis, 0.0)
             times.append((time.perf_counter() - t0) * 1e3)
             t0 = time.perf_counter()
-            bout = op.apply_block(blk, 0.0)
+            op.apply_block(blk, 0.0)
             btimes.append((time.perf_counter() - t0) * 1e3)
         times.sort()
         btimes.sort()

@@ -124,7 +124,7 @@ def test_absolute_safeguard_bounds_gradual_beta_growth():
     rng = np.random.default_rng(3)
     d = np.concatenate([rng.normal(0.0, 1e-3, 150), rng.normal(10.0, 1e-3, 150)])
     H, Q0, _, _, _ = _H_and_seed(d, seed=3)
-    a, b, _, _ = block_lanczos_array(
+    _a, b, _, _ = block_lanczos_array(
         psi0=Q0.copy(),
         h_op=H.astype(complex),
         converged=lambda *x, **k: False,

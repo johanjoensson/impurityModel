@@ -153,7 +153,7 @@ def test_rixs_matches_dense_reference():
 
 def test_rixs_component_sum_is_rotation_invariant():
     op = _model()
-    psis, es, dets, states, vecs = _thermal_states(op, 2)
+    psis, es, dets, _states, _vecs = _thermal_states(op, 2)
     tin, tout = _tin_tout()
     base = _run_rixs(op, psis, es, tin, tout, dets).sum(axis=(0, 1))
 
@@ -241,7 +241,7 @@ def test_rixs_tensor_matches_calc_map():
     """Contracting the tensor reproduces the validated per-pair calc_map for the same
     polarizations (built as the linear combinations of the component operators)."""
     op = _model()
-    psis, es, dets, states, vecs = _thermal_states(op, 2)
+    psis, es, dets, _states, _vecs = _thermal_states(op, 2)
     tin, tout = _tin_tout()
     # Per-pair reference: T_in(e) = sum e_a Tin_a; T_out(e) = sum e_b^* Tout_b (daggered dipole).
     ref_in = [spectra._combine_component_ops(tin, e) for e in EPS_IN]
@@ -256,7 +256,7 @@ def test_rixs_tensor_is_rotation_invariant():
     component span) is invariant under a single-particle basis rotation."""
     ident = np.eye(2, dtype=complex)
     op = _model()
-    psis, es, dets, states, vecs = _thermal_states(op, 2)
+    psis, es, dets, _states, _vecs = _thermal_states(op, 2)
     tin, tout = _tin_tout()
     base = _run_rixs_tensor(op, psis, es, tin, tout, dets, ident, ident).sum(axis=(0, 1))
 
@@ -304,7 +304,7 @@ def test_rixs_tensor_adaptive_matches_dense(monkeypatch):
     """End-to-end: calc_tensor_map(adaptive_wIn_tol=...) matches the dense sweep on the
     model while solving fewer wIn points."""
     op = _model()
-    psis, es, dets, states, vecs = _thermal_states(op, 2)
+    psis, es, dets, _states, _vecs = _thermal_states(op, 2)
     tin, tout = _tin_tout()
 
     def run(adaptive_tol):
@@ -347,7 +347,7 @@ def test_rixs_tensor_adaptive_matches_dense(monkeypatch):
 def test_rixs_tensor_adaptive_short_grid_stays_dense(monkeypatch):
     """Grids below _RIXS_ADAPTIVE_MIN_GRID are solved densely even with a tolerance set."""
     op = _model()
-    psis, es, dets, states, vecs = _thermal_states(op, 2)
+    psis, es, dets, _states, _vecs = _thermal_states(op, 2)
     tin, tout = _tin_tout()
     solved_counts = []
     real_flat = rixs._rixs_map_flat
@@ -379,7 +379,7 @@ def test_rixs_tensor_adaptive_short_grid_stays_dense(monkeypatch):
 def test_rixs_tensor_adaptive_env_knob(monkeypatch):
     """GF_RIXS_ADAPTIVE_TOL enables the sampler without a code change."""
     op = _model()
-    psis, es, dets, states, vecs = _thermal_states(op, 2)
+    psis, es, dets, _states, _vecs = _thermal_states(op, 2)
     tin, tout = _tin_tout()
     solved_counts = []
     real_flat = rixs._rixs_map_flat
@@ -414,7 +414,7 @@ def test_rixs_tensor_adaptive_distributed_matches_dense():
     rank-0 fit is broadcast each round, every rank calls the solver with the same subset."""
     comm = MPI.COMM_WORLD
     op = _model()
-    psis, es, dets, states, vecs = _thermal_states(op, 2)
+    psis, es, dets, _states, _vecs = _thermal_states(op, 2)
     tin, tout = _tin_tout()
 
     def run(adaptive_tol):
@@ -460,7 +460,7 @@ def test_sector_resolvent_cache_matches_dense_solve():
     from impurityModel.ed import greens_function as gf
 
     op = _model()
-    psis, es, dets, states, vecs = _thermal_states(op, 2)
+    psis, _es, _dets, states, _vecs = _thermal_states(op, 2)
     H = _matrix(op, states)
     cache = gf.SectorResolventCache()
     basis = _basis([])  # cache expands from the seeds
@@ -551,7 +551,7 @@ def test_sector_resolvent_cache_solve_matches_dense():
     from impurityModel.ed import greens_function as gf
 
     op = _model()
-    psis, es, dets, states, vecs = _thermal_states(op, 2)
+    psis, _es, _dets, states, _vecs = _thermal_states(op, 2)
     H = _matrix(op, states)
     cache = gf.SectorResolventCache()
     basis = _basis([])
@@ -572,7 +572,7 @@ def test_sector_resolvent_cache_disk_persistence(monkeypatch, tmp_path):
     from impurityModel.ed import greens_function as gf
 
     op = _model()
-    psis, es, dets, states, vecs = _thermal_states(op, 2)
+    psis, _es, _dets, _states, _vecs = _thermal_states(op, 2)
     monkeypatch.setenv("GF_SECTOR_CACHE_DIR", str(tmp_path))
     zs = WLOSS + 0.3j
 
@@ -614,7 +614,7 @@ def test_krylov_shifted_resolvent_matches_dense_solve():
     from impurityModel.ed import greens_function as gf
 
     op = _model()
-    psis, es, dets, states, vecs = _thermal_states(op, 2)
+    psis, _es, _dets, states, _vecs = _thermal_states(op, 2)
     H = _matrix(op, states)
     eye = np.eye(len(states), dtype=complex)
     zs = np.array([0.7 + 0.3j, -1.1 + 0.2j, 2.5 + 0.05j, 0.7 + 0.3j])
@@ -678,8 +678,8 @@ def test_rixs_tensor_declined_sector_uses_krylov_recycler(monkeypatch):
     GF_SECTOR_DENSE_MAX=0 (not 1): this model's R1 seeds all live on the single
     H-disconnected {0,1} determinant, so its "sector" is 1-dimensional and a bound
     of 1 would let the dense cache serve it after all."""
-    from impurityModel.ed import greens_function as gf
     from impurityModel.ed import gf_solvers
+    from impurityModel.ed import greens_function as gf
 
     op = _model()
     psis, es, dets, states, vecs = _thermal_states(op, 2)
@@ -708,8 +708,8 @@ def test_rixs_tensor_declined_sector_uses_krylov_recycler(monkeypatch):
 def test_krylov_recycler_declines_under_memory_cap(monkeypatch):
     """GF_KRYLOV_RECYCLE_MAX_BYTES=0 declines the recycler up front; the per-point
     BiCGSTAB fallback then serves the declined sector and stays correct."""
-    from impurityModel.ed import greens_function as gf
     from impurityModel.ed import gf_solvers
+    from impurityModel.ed import greens_function as gf
 
     op = _model()
     psis, es, dets, states, vecs = _thermal_states(op, 2)

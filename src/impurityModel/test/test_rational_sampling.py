@@ -67,7 +67,7 @@ def test_set_valued_aaa_rtol_controls_support_size():
 
 def test_set_valued_aaa_zero_function():
     x = np.linspace(0.0, 1.0, 10)
-    support, weights = set_valued_aaa(x, np.zeros((10, 3), dtype=complex), rtol=1e-12)
+    support, _weights = set_valued_aaa(x, np.zeros((10, 3), dtype=complex), rtol=1e-12)
     assert len(support) == 1
 
 

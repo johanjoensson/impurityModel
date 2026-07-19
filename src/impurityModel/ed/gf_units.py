@@ -180,7 +180,7 @@ def run_units_distributed(
     reduce_fn: Optional[Callable] = None,
     reort=None,
     gf_method: str = "lanczos",
-) -> Optional[list]:
+) -> list | bool | None:
     """Distribute work units over MPI colors, run ``kernel`` per unit, gather to global rank 0.
 
     The one distribution primitive shared by every Green's-function driver (self-energy and
@@ -270,6 +270,7 @@ def run_units_distributed(
         basis.comm, sub_rank, unit_roots, units_per_color, np.array(unit_indices), is_array=True
     )
 
+    assert split_seeds is not None  # seeds passed in are a (possibly empty) list, never None
     local_results = [kernel(split_basis, u, split_seeds[seed_offsets[u] : seed_offsets[u + 1]]) for u in unit_indices]
 
     results = None

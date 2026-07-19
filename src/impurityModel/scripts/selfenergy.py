@@ -127,9 +127,9 @@ def _save_static(sigma_static, cluster_label):
 
 def _save_results(result, meshes, cluster_label, output):
     """Rank-0 saving: RSPt ``.dat`` files for Sigma/G, static Sigma, and a per-cluster HDF5 archive."""
-    import h5py  # noqa: PLC0415 -- only the save path needs it
+    import h5py
 
-    from impurityModel.ed.greens_function import save_Greens_function  # noqa: PLC0415
+    from impurityModel.ed.greens_function import save_Greens_function
 
     if meshes.iw is not None and result["sigma"] is not None:
         save_Greens_function(result["sigma"], meshes.iw, "Sigma", cluster_label)
@@ -216,7 +216,7 @@ def run(args):
 
 def main():
     """Stand-alone entry point (``python -m impurityModel.scripts.selfenergy``)."""
-    import argparse  # noqa: PLC0415 -- only needed on the stand-alone path
+    import argparse
 
     parser = argparse.ArgumentParser(description="Calculate the impurity self-energy Sigma(w) / Sigma(i nu).")
     add_arguments(parser)

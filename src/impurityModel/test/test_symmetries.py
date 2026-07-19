@@ -44,7 +44,7 @@ def test_tensor_extraction():
 def test_tensor_extraction_infers_n_orb():
     """n_orb defaults to max index + 1."""
     op = ManyBodyOperator({((0, "c"), (5, "a")): 1.0})
-    h, V, _ = extract_tensors(op)
+    h, _V, _ = extract_tensors(op)
     assert h.shape == (6, 6)
     assert np.isclose(h[0, 5], 1.0)
 
@@ -120,8 +120,8 @@ def test_null_space_threshold_stability():
 def test_cartan_subalgebra_and_joint_diagonalization():
     """Cartan generators mutually commute and are simultaneously diagonalised."""
     from impurityModel.ed.symmetries import (
-        discover_one_body_symmetries,
         cartan_subalgebra,
+        discover_one_body_symmetries,
         joint_diagonalize,
     )
 
@@ -196,8 +196,8 @@ def _soc_matrix(xi):
     """
     h = np.zeros((_N_D, _N_D), dtype=complex)
     for term, val in getSOCop(xi, _L).items():
-        (l1, s1, m1), _ = term[0]
-        (l2, s2, m2), _ = term[1]
+        (_l1, s1, m1), _ = term[0]
+        (_l2, s2, m2), _ = term[1]
         h[_idx(s1, m1), _idx(s2, m2)] += val
     return h
 
@@ -248,7 +248,7 @@ def test_discovery_real_dshell_no_soc_has_su2():
     for g in gens:
         assert np.linalg.norm(h @ g - g @ h) < 1e-9
 
-    N, Sx, Sy, Sz, Lz, Jz = _spin_and_orbital_generators()
+    N, Sx, Sy, Sz, Lz, _Jz = _spin_and_orbital_generators()
     for gen in (N, Sx, Sy, Sz, Lz):
         assert in_span(gens, gen)
 
@@ -264,7 +264,7 @@ def test_discovery_real_dshell_soc_breaks_su2():
     for g in gens:
         assert np.linalg.norm(h @ g - g @ h) < 1e-9
 
-    N, Sx, Sy, Sz, Lz, Jz = _spin_and_orbital_generators()
+    N, Sx, _Sy, Sz, _Lz, Jz = _spin_and_orbital_generators()
     # Charge and total J_z conserved; individual spin / orbital rotations broken.
     assert in_span(gens, N)
     assert in_span(gens, Jz)
@@ -328,12 +328,12 @@ def _shell_ml_chain(l):
 def test_acceptance_gate_discovery_refines_pd_block_structure():
     """SOC p+d model: discovered orbital blocks refine the hand-coded [p, d] structure
     (SOC conserves J_z, so each shell decouples into mj sub-blocks)."""
+    from impurityModel.ed.block_structure import build_block_structure
     from impurityModel.ed.symmetries import (
-        discovered_orbital_blocks,
         blocks_refine_or_match,
+        discovered_orbital_blocks,
         extract_tensors,
     )
-    from impurityModel.ed.block_structure import build_block_structure
 
     terms = {}
     terms.update(_soc_terms(0.1, 1))  # p SOC
@@ -361,7 +361,7 @@ def test_acceptance_gate_discovery_refines_pd_block_structure():
 def test_acceptance_gate_fully_coupled_shells_match_exactly():
     """With intra-shell ml coupling + SOC each shell is fully connected, so the
     discovered blocks equal the hand-coded [p, d] structure exactly."""
-    from impurityModel.ed.symmetries import discovered_orbital_blocks, blocks_refine_or_match
+    from impurityModel.ed.symmetries import blocks_refine_or_match, discovered_orbital_blocks
 
     terms = {}
     terms.update(_soc_terms(0.1, 1))
@@ -381,7 +381,7 @@ def test_acceptance_gate_fully_coupled_shells_match_exactly():
 
 def test_acceptance_gate_refines_single_impurity_block():
     """selfenergy.py uses a single impurity block; any discovered partition refines it."""
-    from impurityModel.ed.symmetries import discovered_orbital_blocks, blocks_refine_or_match
+    from impurityModel.ed.symmetries import blocks_refine_or_match, discovered_orbital_blocks
 
     terms = {}
     terms.update(_soc_terms(0.5, 2))  # d shell only

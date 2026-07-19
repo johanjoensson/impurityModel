@@ -3,6 +3,24 @@ from dataclasses import dataclass
 import numpy as np
 
 from impurityModel.ed import atomic_physics
+from impurityModel.ed.basis_restrictions import build_weighted_restrictions
+
+# The double-counting search and the self-energy extraction were split into their own modules;
+# re-export their public entry points so calc_selfenergy's calls and existing
+# selfenergy.<name> callers (and their test patches) resolve here unchanged.
+from impurityModel.ed.double_counting import fixed_occupation_dc, fixed_peak_dc  # noqa: F401
+from impurityModel.ed.greens_function import build_full_greens_function, get_Greens_function, save_Greens_function
+from impurityModel.ed.groundstate import calc_gs
+from impurityModel.ed.ManyBodyUtils import ManyBodyOperator
+from impurityModel.ed.memory_estimate import log_memory_budget, log_peak_vs_predicted, suggest_truncation_threshold
+from impurityModel.ed.sigma import (  # noqa: F401
+    UnphysicalGreensFunctionError,
+    check_greens_function,
+    get_hcorr_v_hbath,
+    get_sigma,
+    get_Sigma_static,
+    hyb,
+)
 from impurityModel.ed.symmetries import (
     classify_bath_occupation,
     extract_tensors,
@@ -10,24 +28,6 @@ from impurityModel.ed.symmetries import (
     impurity_block_structure,
     impurity_symmetry_rotation,
     rotate_hamiltonian,
-)
-from impurityModel.ed.basis_restrictions import build_weighted_restrictions
-from impurityModel.ed.greens_function import build_full_greens_function, get_Greens_function, save_Greens_function
-from impurityModel.ed.groundstate import calc_gs
-from impurityModel.ed.memory_estimate import log_memory_budget, log_peak_vs_predicted, suggest_truncation_threshold
-from impurityModel.ed.ManyBodyUtils import ManyBodyOperator
-
-# The double-counting search and the self-energy extraction were split into their own modules;
-# re-export their public entry points so calc_selfenergy's calls and existing
-# selfenergy.<name> callers (and their test patches) resolve here unchanged.
-from impurityModel.ed.double_counting import fixed_occupation_dc, fixed_peak_dc  # noqa: F401
-from impurityModel.ed.sigma import (  # noqa: F401
-    UnphysicalGreensFunctionError,
-    check_greens_function,
-    get_hcorr_v_hbath,
-    get_Sigma_static,
-    get_sigma,
-    hyb,
 )
 
 # Adaptive symmetry-adapted-basis rotation (calc_selfenergy): drop rotated operator terms below
@@ -59,7 +59,7 @@ def _per_group_occupation(nominal_occ, impurity_orbitals, h=None):
         # count how many land in each group. Ties broken by orbital index for determinism.
         orb_to_group = {orb: k for k in keys for block in impurity_orbitals[k] for orb in block}
         ordered = sorted(orb_to_group, key=lambda o: (np.real(h[o, o]), o))
-        alloc = {k: 0 for k in keys}
+        alloc = dict.fromkeys(keys, 0)
         for orb in ordered[: max(0, min(total, len(ordered)))]:
             alloc[orb_to_group[orb]] += 1
         return alloc
@@ -81,7 +81,7 @@ def _per_group_scalar(value, impurity_orbitals, default=0):
     keys = list(impurity_orbitals)
     if isinstance(value, dict) and set(value) == set(keys):
         return dict(value)
-    return {k: default for k in keys}
+    return dict.fromkeys(keys, default)
 
 
 def _raise_together(comm, message):

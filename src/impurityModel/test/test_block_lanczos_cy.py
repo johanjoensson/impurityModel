@@ -1,19 +1,14 @@
-import pytest
 import numpy as np
-import scipy.linalg as sp
-
-
-from impurityModel.ed.manybody_basis import Basis
-from impurityModel.ed.ManyBodyUtils import inner_multi, ManyBodyState, ManyBodyOperator
-from impurityModel.ed.BlockLanczosArray import block_normalize
-from impurityModel.ed.BlockLanczosArray import Reort
 
 from impurityModel.ed.BlockLanczos import (
     block_lanczos_cy,
-    thick_restart_block_lanczos_cy,
-    implicitly_restarted_block_lanczos_cy,
     block_lanczos_step_cy,
+    implicitly_restarted_block_lanczos_cy,
+    thick_restart_block_lanczos_cy,
 )
+from impurityModel.ed.BlockLanczosArray import block_normalize
+from impurityModel.ed.manybody_basis import Basis
+from impurityModel.ed.ManyBodyUtils import ManyBodyOperator, ManyBodyState, inner_multi
 
 
 def create_diagonal_h_and_basis(n_states):
@@ -45,7 +40,7 @@ def test_block_lanczos_cy_orthogonality_full():
     # Block size 2
     np.random.seed(42)
     psi0 = []
-    for i in range(2):
+    for _i in range(2):
         st = ManyBodyState()
         for j in range(6):
             st[basis.type.from_bytes(states[j])] = np.random.randn()
@@ -53,7 +48,7 @@ def test_block_lanczos_cy_orthogonality_full():
 
     psi0, _ = block_normalize(psi0, mpi=False, comm=None)
 
-    alphas, betas, Q_basis, W = block_lanczos_cy(
+    alphas, _betas, Q_basis, _W = block_lanczos_cy(
         psi0=psi0,
         h_op=h_op,
         basis=basis,
@@ -78,7 +73,7 @@ def test_block_lanczos_cy_eigenvalues_block1():
         st[basis.type.from_bytes(states[i])] = 1.0 / np.sqrt(6)
     psi0 = [st]
 
-    alphas, betas, Q_basis, W = block_lanczos_cy(
+    alphas, betas, _Q_basis, _W = block_lanczos_cy(
         psi0=psi0,
         h_op=h_op,
         basis=basis,
@@ -103,7 +98,7 @@ def test_trlm_cy_diagonal():
         st[basis.type.from_bytes(states[i])] = 1.0 / np.sqrt(6)
     psi0 = [st]
 
-    eigs, evecs = thick_restart_block_lanczos_cy(
+    eigs, _evecs = thick_restart_block_lanczos_cy(
         psi0=psi0,
         h_op=h_op,
         basis=basis,
@@ -126,7 +121,7 @@ def test_irlm_cy_diagonal():
         st[basis.type.from_bytes(states[i])] = 1.0 / np.sqrt(6)
     psi0 = [st]
 
-    eigs, evecs = implicitly_restarted_block_lanczos_cy(
+    eigs, _evecs = implicitly_restarted_block_lanczos_cy(
         psi0=psi0,
         h_op=h_op,
         basis=basis,
@@ -143,6 +138,7 @@ def test_irlm_cy_diagonal():
 
 def create_tight_binding_h_and_basis():
     import itertools
+
     from impurityModel.ed.manybody_basis import Basis
     from impurityModel.ed.ManyBodyUtils import ManyBodyOperator
 
@@ -172,10 +168,11 @@ def create_tight_binding_h_and_basis():
 
 
 def test_trlm_cy_tight_binding():
-    from impurityModel.ed.BlockLanczosArray import block_normalize
     import numpy as np
-    from impurityModel.ed.ManyBodyUtils import ManyBodyState
+
     from impurityModel.ed.BlockLanczos import thick_restart_block_lanczos_cy
+    from impurityModel.ed.BlockLanczosArray import block_normalize
+    from impurityModel.ed.ManyBodyUtils import ManyBodyState
 
     h_op, basis = create_tight_binding_h_and_basis()
 
@@ -189,7 +186,7 @@ def test_trlm_cy_tight_binding():
 
     psi0, _ = block_normalize(psi0, False, None)
 
-    eigs, evecs = thick_restart_block_lanczos_cy(
+    eigs, _evecs = thick_restart_block_lanczos_cy(
         psi0=psi0,
         h_op=h_op,
         basis=basis,
@@ -226,7 +223,7 @@ def test_block_lanczos_cy_orthogonality_partial():
 
     np.random.seed(42)
     psi0 = []
-    for i in range(2):
+    for _i in range(2):
         st = ManyBodyState()
         for j in range(6):
             st[basis.type.from_bytes(states[j])] = np.random.randn()
@@ -234,7 +231,7 @@ def test_block_lanczos_cy_orthogonality_partial():
 
     psi0, _ = block_normalize(psi0, mpi=False, comm=None)
 
-    alphas, betas, Q_basis, W = block_lanczos_cy(
+    alphas, _betas, Q_basis, _W = block_lanczos_cy(
         psi0=psi0,
         h_op=h_op,
         basis=basis,
@@ -256,7 +253,7 @@ def test_block_lanczos_cy_orthogonality_none():
 
     np.random.seed(42)
     psi0 = []
-    for i in range(2):
+    for _i in range(2):
         st = ManyBodyState()
         for j in range(6):
             st[basis.type.from_bytes(states[j])] = np.random.randn()
@@ -265,7 +262,7 @@ def test_block_lanczos_cy_orthogonality_none():
     psi0, _ = block_normalize(psi0, mpi=False, comm=None)
 
     # With reort='none', just verify no crash
-    alphas, betas, Q_basis, W = block_lanczos_cy(
+    alphas, _betas, Q_basis, _W = block_lanczos_cy(
         psi0=psi0,
         h_op=h_op,
         basis=basis,
@@ -285,7 +282,7 @@ def test_block_lanczos_cy_eigenvalues_block2():
     # Block size 2: two starting vectors
     np.random.seed(42)
     psi0 = []
-    for i in range(2):
+    for _i in range(2):
         st = ManyBodyState()
         for j in range(6):
             st[basis.type.from_bytes(states[j])] = np.random.randn()
@@ -293,7 +290,7 @@ def test_block_lanczos_cy_eigenvalues_block2():
 
     psi0, _ = block_normalize(psi0, mpi=False, comm=None)
 
-    alphas, betas, Q_basis, W = block_lanczos_cy(
+    alphas, betas, _Q_basis, _W = block_lanczos_cy(
         psi0=psi0,
         h_op=h_op,
         basis=basis,
@@ -323,7 +320,7 @@ def test_irlm_cy_tight_binding():
 
     psi0, _ = block_normalize(psi0, False, None)
 
-    eigs, evecs = implicitly_restarted_block_lanczos_cy(
+    eigs, _evecs = implicitly_restarted_block_lanczos_cy(
         psi0=psi0,
         h_op=h_op,
         basis=basis,
@@ -357,7 +354,7 @@ def test_trlm_cy_tight_binding_eigenvalue_accuracy():
 
     psi0, _ = block_normalize(psi0, False, None)
 
-    eigs, evecs = thick_restart_block_lanczos_cy(
+    eigs, _evecs = thick_restart_block_lanczos_cy(
         psi0=psi0,
         h_op=h_op,
         basis=basis,
@@ -469,7 +466,7 @@ def test_irlm_cy_selective_reort_orthogonality():
     psi0 = [ManyBodyState({b: np.random.randn() for b in basis.local_basis})]
     psi0, _ = block_normalize(psi0, False, None)
 
-    eigvals, eigvecs = implicitly_restarted_block_lanczos_cy(
+    _eigvals, eigvecs = implicitly_restarted_block_lanczos_cy(
         psi0=psi0,
         h_op=h_op,
         basis=basis,
@@ -508,7 +505,7 @@ def test_trlm_cy_selective_reort_orthogonality():
     psi0 = [ManyBodyState({b: np.random.randn() for b in basis.local_basis})]
     psi0, _ = block_normalize(psi0, False, None)
 
-    eigvals, eigvecs = thick_restart_block_lanczos_cy(
+    _eigvals, eigvecs = thick_restart_block_lanczos_cy(
         psi0=psi0,
         h_op=h_op,
         basis=basis,
@@ -547,7 +544,7 @@ def test_converged_views_equivalence():
         snapshots.append((np.array(alphas, copy=True), np.array(betas, copy=True)))
         return False
 
-    alphas, betas, Q_basis, W = block_lanczos_cy(
+    alphas, betas, _Q_basis, _W = block_lanczos_cy(
         psi0=psi0,
         h_op=h_op,
         basis=basis,

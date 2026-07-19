@@ -179,8 +179,8 @@ def test_apply_block_cutoff_keeps_rows():
     rng = np.random.default_rng(41)
     op = ManyBodyOperator(_hopping_operator(8, rng))
     dets = _dets_orbital_msb(8, rng, 12, 4)
-    big = ManyBodyState({d: 1.0 + 0j for d in dets})
-    tiny = ManyBodyState({d: 1e-10 + 0j for d in dets})
+    big = ManyBodyState(dict.fromkeys(dets, 1.0 + 0j))
+    tiny = ManyBodyState(dict.fromkeys(dets, 1e-10 + 0j))
     cutoff = 1e-6
 
     blk_out = op.apply_block(ManyBodyBlockState.from_states([big, tiny]), cutoff)
@@ -191,7 +191,7 @@ def test_apply_block_cutoff_keeps_rows():
     # the tiny column keeps its (sub-cutoff) residuals on the shared rows: applying the
     # scalar path with cutoff 0 and restricting to the surviving support must match
     ref_tiny_full = op.apply_multi([tiny], 0.0)[0]
-    for sd, amp in got[1].items():
+    for sd, _amp in got[1].items():
         assert sd in ref_tiny_full
 
 

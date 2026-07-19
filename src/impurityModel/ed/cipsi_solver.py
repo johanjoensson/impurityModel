@@ -3,19 +3,19 @@ import itertools
 import numpy as np
 from mpi4py import MPI
 
-from impurityModel.ed.eigensolvers import eigensystem
-from impurityModel.ed.irlm import implicitly_restarted_block_lanczos_cy
-from impurityModel.ed.manybody_basis import Basis, collective_amplitude_cutoff
-from impurityModel.ed.ManyBodyUtils import ManyBodyBlockState, ManyBodyOperator, ManyBodyState
-from impurityModel.ed.ManyBodyUtils import applyOp as applyOp_test
-from impurityModel.ed.BlockLanczosArray import Reort, block_normalize
-from impurityModel.ed.trlm import thick_restart_block_lanczos
 from impurityModel.ed.basis_transcription import (
     build_distributed_vector,
     build_sparse_matrix,
     build_state,
     build_vector,
 )
+from impurityModel.ed.BlockLanczosArray import Reort, block_normalize
+from impurityModel.ed.eigensolvers import eigensystem
+from impurityModel.ed.irlm import implicitly_restarted_block_lanczos_cy
+from impurityModel.ed.manybody_basis import Basis, collective_amplitude_cutoff
+from impurityModel.ed.ManyBodyUtils import ManyBodyBlockState, ManyBodyOperator, ManyBodyState
+from impurityModel.ed.ManyBodyUtils import applyOp as applyOp_test
+from impurityModel.ed.trlm import thick_restart_block_lanczos
 
 SOLVERS = {
     "trlm": thick_restart_block_lanczos,
@@ -139,7 +139,7 @@ class CIPSISolver:
         # Diagnostics of the latest candidate selection / basis truncation (see
         # determine_new_Dj / truncate); None until the corresponding event happens.
         self.last_selection = None
-        self.last_truncation = None
+        self.last_truncation: dict | None = None
         self.truncation_report = None
 
     def _allreduce_sum(self, value):
@@ -162,7 +162,7 @@ class CIPSISolver:
             # single eigenvector: the downstream expansion / get_eigenvectors keep the whole
             # near-degenerate ground manifold, so truncating to one state's support would
             # bias the retained determinants toward one member of the multiplet.
-            e_ref, psi_ref = eigensystem(
+            _e_ref, psi_ref = eigensystem(
                 H_sparse,
                 e_max=-self.basis.tau * np.log(1e-4),
                 k=min(10, self.basis.size),
@@ -271,7 +271,7 @@ class CIPSISolver:
         )
         return local_Djs, overlaps, e_Dj
 
-    def _calc_de2(self, H, Hpsi_ref, e_ref: float, slaterWeightMin: float = 0):
+    def _calc_de2(self, H, Hpsi_ref, e_ref: np.ndarray, slaterWeightMin: float = 0):
         local_Djs, overlaps, e_Dj = self._candidate_overlaps_and_energies(H, Hpsi_ref, slaterWeightMin)
         if not local_Djs:
             return local_Djs, overlaps
@@ -513,8 +513,8 @@ class CIPSISolver:
             H = ManyBodyOperator(H)
 
         from impurityModel.ed.symmetries import (
-            extract_tensors,
             discover_one_body_symmetries,
+            extract_tensors,
             tensors_to_operator,
         )
 
@@ -528,7 +528,7 @@ class CIPSISolver:
             h, _, _ = extract_tensors(H, two_body=False)
 
             if imp_orbs:
-                imp = sorted(list(set(imp_orbs)))
+                imp = sorted(set(imp_orbs))
                 h_imp = h[np.ix_(imp, imp)]
                 imp_generators = discover_one_body_symmetries(h_imp)
 
@@ -554,9 +554,12 @@ class CIPSISolver:
                             site_k_map = {}
                             for i, o_imp in enumerate(imp):
                                 group, idx_in_grp = imp_map[o_imp]
-                                if group in bath_dict and k < len(bath_dict[group]):
-                                    if idx_in_grp < len(bath_dict[group][k]):
-                                        site_k_map[i] = bath_dict[group][k][idx_in_grp]
+                                if (
+                                    group in bath_dict
+                                    and k < len(bath_dict[group])
+                                    and idx_in_grp < len(bath_dict[group][k])
+                                ):
+                                    site_k_map[i] = bath_dict[group][k][idx_in_grp]
 
                             for i in range(len(imp)):
                                 if i not in site_k_map:
@@ -625,7 +628,7 @@ class CIPSISolver:
                 if len(psi0) > 0:
                     try:
                         psi0, _ = block_normalize(psi0, self.basis.is_distributed, self.basis.comm, slaterWeightMin)
-                    except Exception as e:
+                    except Exception:
                         pass
 
                 max_subspace_blocks = 2 * int(np.ceil(max_subspace / max(1, len(psi0)))) + 20
@@ -810,7 +813,7 @@ class CIPSISolver:
             if len(psi0) > 0:
                 try:
                     psi0, _ = block_normalize(psi0, self.basis.is_distributed, self.basis.comm, slaterWeightMin)
-                except Exception as e:
+                except Exception:
                     pass
 
             max_subspace_blocks = 2 * int(np.ceil(max_subspace / max(1, len(psi0)))) + 20

@@ -24,7 +24,7 @@ import pytest
 from mpi4py import MPI
 
 from impurityModel.ed.model import BasisOptions, ImpurityModel, SolverOptions
-from impurityModel.ed.selfenergy import fixed_peak_dc, fixed_occupation_dc
+from impurityModel.ed.selfenergy import fixed_occupation_dc, fixed_peak_dc
 
 EPS = -1.0
 U = 3.0

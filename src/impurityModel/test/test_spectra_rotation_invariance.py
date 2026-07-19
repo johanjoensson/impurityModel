@@ -172,7 +172,7 @@ def _swap_symmetric_model():
 def test_equivalence_groups_dedup_matches_full():
     """calc_spectra with equivalence_groups (compute one rep, broadcast) reproduces the
     per-operator computation for genuinely degenerate operators."""
-    global N_ORB
+    global N_ORB  # noqa: PLW0603  (test temporarily overrides the module-level orbital count, restored in finally)
     saved = N_ORB
     N_ORB = 3
     try:

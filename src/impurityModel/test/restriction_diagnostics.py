@@ -40,11 +40,15 @@ import numpy as np
 # the off-diagonal tier; NiO-verify (nso=20) is the cheap synthetic-style exact reference.
 _IMPMOD_ROOT = "/home/johan/Programming/impmod_tests"
 WORKLOADS = {
-    "fcc_ni_5": f"{_IMPMOD_ROOT}/FCC_Ni/impmod/5_BathStates_HaverGeometry_noneReorthonormalization/impurityModel_data.h5",
-    "fcc_ni_15": f"{_IMPMOD_ROOT}/FCC_Ni/impmod/15_BathStates_HaverGeometry_partialReorthonormalization/impurityModel_data.h5",
+    "fcc_ni_5": f"{_IMPMOD_ROOT}/FCC_Ni/impmod/"
+    "5_BathStates_HaverGeometry_noneReorthonormalization/impurityModel_data.h5",
+    "fcc_ni_15": f"{_IMPMOD_ROOT}/FCC_Ni/impmod/"
+    "15_BathStates_HaverGeometry_partialReorthonormalization/impurityModel_data.h5",
     "nio_20": f"{_IMPMOD_ROOT}/NiO/impmod/verify_fixes/impurityModel_data.h5",
-    "nio_15chain": f"{_IMPMOD_ROOT}/NiO/impmod/15_BathStates_linked_chainGeometry_noneReorthonormalization_6_processors_/impurityModel_data.h5",
-    "nio_25chain": f"{_IMPMOD_ROOT}/NiO/impmod/25_BathStates_linked_chainGeometry_noneReorthonormalization_6_processors_/impurityModel_data.h5",
+    "nio_15chain": f"{_IMPMOD_ROOT}/NiO/impmod/"
+    "15_BathStates_linked_chainGeometry_noneReorthonormalization_6_processors_/impurityModel_data.h5",
+    "nio_25chain": f"{_IMPMOD_ROOT}/NiO/impmod/"
+    "25_BathStates_linked_chainGeometry_noneReorthonormalization_6_processors_/impurityModel_data.h5",
     "smo": f"{_IMPMOD_ROOT}/SMO/cubic/impmod/impurityModel_data.h5",
 }
 
@@ -225,8 +229,8 @@ def _excitation_profiles(gs, coupling_cutoff=1e-3, min_dist=4, n_depth_bins=8, n
     from mpi4py import MPI
 
     from impurityModel.ed import product_state_representation as psr
-    from impurityModel.ed.ManyBodyUtils import ManyBodyOperator
     from impurityModel.ed.basis_restrictions import _impurity_coupling_distance
+    from impurityModel.ed.ManyBodyUtils import ManyBodyOperator
 
     basis = gs["gs_basis"]
     comm = basis.comm if basis.is_distributed else None
@@ -337,7 +341,7 @@ def render(result):
             orbs = str(row["orbitals"])
             orbs = orbs if len(orbs) <= 26 else orbs[:23] + "..."
             lines.append(
-                f"{orbs:<28} {str(row['enforced']):>12} {str(row['observed']):>12} "
+                f"{orbs:<28} {row['enforced']!s:>12} {row['observed']!s:>12} "
                 f"{str(row['slack_low']) + '/' + str(row['slack_high']):>12}"
             )
     wr = result["slack"]["weighted_windows"]
@@ -496,7 +500,7 @@ def test_restriction_diagnostics():
     _run(key, comm=MPI.COMM_WORLD, verbosity=int(os.environ.get("RESTRICTION_DIAG_VERBOSITY", "0")))
 
 
-test_restriction_diagnostics.benchmark = True
+test_restriction_diagnostics.benchmark = True  # type: ignore[attr-defined]  # pytest-benchmark marker
 
 
 if __name__ == "__main__":

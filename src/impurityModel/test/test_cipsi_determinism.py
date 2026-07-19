@@ -14,13 +14,15 @@ inherited the difference. Three independent causes, one test each:
    manifold (all rotations share the same residual).
 """
 
+import itertools
+
 import numpy as np
 import pytest
 
 from impurityModel.ed.cipsi_solver import (
-    DEGENERACY_TOL,
     _EIGEN_TOL_FLOOR,
     _EIGEN_TOL_MAX,
+    DEGENERACY_TOL,
     _amplitude_from_hash,
     _degenerate_groups,
     _eigen_tol,
@@ -46,7 +48,7 @@ def test_eigen_tol_follows_slater_weight_min():
     # monotone: a tighter cutoff never yields a looser tolerance
     cuts = [1e-4, 1e-6, 1e-8, 1e-10, 1e-12, 1e-14]
     tols = [_eigen_tol(c) for c in cuts]
-    assert all(a >= b for a, b in zip(tols, tols[1:]))
+    assert all(a >= b for a, b in itertools.pairwise(tols))
 
 
 def test_amplitude_from_hash_is_deterministic_and_rank_independent():
@@ -56,8 +58,8 @@ def test_amplitude_from_hash_is_deterministic_and_rank_independent():
     assert len(set(vals)) == len(vals), "amplitudes collide"
     a = np.array(vals)
     # Uniform on [0,1) in both components, with uncorrelated real/imaginary streams.
-    assert 0.0 <= a.real.min() and a.real.max() < 1.0
-    assert 0.0 <= a.imag.min() and a.imag.max() < 1.0
+    assert a.real.min() >= 0.0 and a.real.max() < 1.0
+    assert a.imag.min() >= 0.0 and a.imag.max() < 1.0
     assert abs(a.real.mean() - 0.5) < 0.02 and abs(a.imag.mean() - 0.5) < 0.02
     assert abs(np.corrcoef(a.real, a.imag)[0, 1]) < 0.05
 

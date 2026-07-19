@@ -15,6 +15,7 @@ import numpy as np
 import pytest
 from mpi4py import MPI
 
+from impurityModel.ed.basis_transcription import build_density_matrices, build_sparse_matrix
 from impurityModel.ed.manybody_basis import Basis
 from impurityModel.ed.ManyBodyUtils import (
     ManyBodyOperator,
@@ -22,7 +23,6 @@ from impurityModel.ed.ManyBodyUtils import (
     SlaterDeterminant,
 )
 from impurityModel.ed.mpi_comm import empty_clone, get_job_tasks, graph_alltoall, graph_alltoall_psis, is_empty
-from impurityModel.ed.basis_transcription import build_density_matrices, build_sparse_matrix
 
 # ---------------------------------------------------------------------------
 # Helpers
@@ -118,7 +118,7 @@ def test_graph_alltoall_single_rank_comm():
 
 @pytest.mark.mpi
 def test_graph_alltoall_empty_sends():
-    """All ranks send empty/None to all others – result should be empty clones."""
+    """All ranks send empty/None to all others - result should be empty clones."""
     comm = MPI.COMM_WORLD
     send_list = [None] * comm.size
     result = graph_alltoall(send_list, comm)

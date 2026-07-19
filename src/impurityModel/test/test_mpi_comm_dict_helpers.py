@@ -1,13 +1,12 @@
 import numpy as np
 import pytest
 from mpi4py import MPI
+
 from impurityModel.ed.mpi_comm import (
-    dict_chunks_from_one_MPI_rank,
     allgather_dict,
+    dict_chunks_from_one_MPI_rank,
     gather_distributed_results,
-    distribute_determinants,
 )
-from impurityModel.ed.ManyBodyUtils import SlaterDeterminant
 
 
 def test_dict_chunks_from_one_MPI_rank():

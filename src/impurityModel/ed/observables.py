@@ -64,11 +64,12 @@ def print_expectation_values(
     # so their headers must be 9 wide to line up with the numbers below.
     extra_header = "".join(f"  {name:>9s}" for name, _ in extra)
     print(
-        f"{'i':>3s}  {'E-E0':>11s}  {'N':>8s}  {'N(Dn)':>8s}  {'N(Up)':>8s}  {'  '.join(block_N_string_formatted)}  {'Lz':>9s}  {'Sz':>9s}  {'L.S':>9s}{extra_header}"
+        f"{'i':>3s}  {'E-E0':>11s}  {'N':>8s}  {'N(Dn)':>8s}  {'N(Up)':>8s}  "
+        f"{'  '.join(block_N_string_formatted)}  {'Lz':>9s}  {'Sz':>9s}  {'L.S':>9s}{extra_header}"
     )
     for i, (e, rho) in enumerate(zip(es - es[0], rhos)):
         block_occs = [
-            np.sum(np.diag(rho)[list(orb - orb_offset for block in blocks for orb in block_structure.blocks[block])])
+            np.sum(np.diag(rho)[[orb - orb_offset for block in blocks for orb in block_structure.blocks[block]]])
             for blocks in equivalent_blocks
         ]
         block_occ_string_formatted = ["" for _ in block_occs]
@@ -81,7 +82,8 @@ def print_expectation_values(
         LS = get_LS_from_rho_spherical(rho_spherical)
         extra_fields = "".join(f"  {vals[i]: 8.6f}" for _, vals in extra)
         print(
-            f"{i:>3d}  {e:11.8f}  {N:8.5f}  {Ndn:8.5f}  {Nup:8.5f}  {'  '.join(block_occ_string_formatted)}  {Lz: 8.6f}  {Sz: 8.6f}  {LS: 8.6f}{extra_fields}"
+            f"{i:>3d}  {e:11.8f}  {N:8.5f}  {Ndn:8.5f}  {Nup:8.5f}  "
+            f"{'  '.join(block_occ_string_formatted)}  {Lz: 8.6f}  {Sz: 8.6f}  {LS: 8.6f}{extra_fields}"
         )
     print("\n")
 
@@ -553,8 +555,8 @@ def make_orbital_angular_momentum_operators(channels):
         The operators :math:`(\hat L_+, \hat L_-, \hat L_z)`.
     """
     l_plus, l_minus, l_z = {}, {}, {}
-    for indices in channels:
-        indices = list(indices)
+    for indices_raw in channels:
+        indices = list(indices_raw)
         l = (len(indices) - 1) // 2
         llp1 = l * (l + 1)
         for a, ml in enumerate(range(-l, l + 1)):
@@ -1415,7 +1417,7 @@ def print_thermal_expectation_values(
     ]
     for blocks in equivalent_blocks:
         occ = np.sum(
-            np.diag(rho_thermal)[list(orb - orb_offset for block in blocks for orb in block_structure.blocks[block])]
+            np.diag(rho_thermal)[[orb - orb_offset for block in blocks for orb in block_structure.blocks[block]]]
         ).real
         charge_rows.append((f"<N({','.join(str(orb) for orb in blocks)})>", occ, ""))
     magnetism_rows = [

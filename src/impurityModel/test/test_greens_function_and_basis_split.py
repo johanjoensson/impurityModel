@@ -4,13 +4,13 @@ import numpy as np
 import pytest
 from mpi4py import MPI
 
+from impurityModel.ed.basis_split import split_basis_and_redistribute_psi
 from impurityModel.ed.greens_function import (
     calc_Greens_function_with_offdiag,
     get_Greens_function,
 )
 from impurityModel.ed.manybody_basis import Basis
 from impurityModel.ed.ManyBodyUtils import ManyBodyOperator, ManyBodyState, SlaterDeterminant
-from impurityModel.ed.basis_split import split_basis_and_redistribute_psi
 
 
 def test_basis_split_and_redistribute_serial():
@@ -30,7 +30,7 @@ def test_basis_split_and_redistribute_serial():
 
     # Test split_basis_and_redistribute_psi
     priorities = [1, 2]
-    indices, split_roots, color, items_per_color, split_basis, psis_out, intercomms = split_basis_and_redistribute_psi(
+    indices, split_roots, color, items_per_color, split_basis, psis_out, _intercomms = split_basis_and_redistribute_psi(
         basis, priorities, psi0
     )
 
@@ -80,9 +80,8 @@ def test_basis_split_and_redistribute_mpi():
     # Test split_basis_and_redistribute_psi
     # With priorities for 2 items, rank 0 should get item 0, rank 1 should get item 1
     priorities = [1.0, 1.0]
-    indices, split_roots, color, items_per_color, split_basis, psis_out, intercomms = split_basis_and_redistribute_psi(
-        basis, priorities, psi0
-    )
+    result = split_basis_and_redistribute_psi(basis, priorities, psi0)
+    indices, split_roots, color, items_per_color, split_basis, _psis_out, _intercomms = result
 
     assert len(indices) == 1
     assert indices[0] in [0, 1]
@@ -202,10 +201,7 @@ def test_calc_Greens_function_with_offdiag_mpi():
     )
 
     # Ground state
-    if comm.rank == 0:
-        psi = ManyBodyState({SlaterDeterminant.from_bytes(states[0]): 1.0})
-    else:
-        psi = ManyBodyState({})
+    psi = ManyBodyState({SlaterDeterminant.from_bytes(states[0]): 1.0}) if comm.rank == 0 else ManyBodyState({})
     psi = basis.redistribute_psis([psi])[0]
 
     # tOp
@@ -254,10 +250,7 @@ def test_calc_Greens_function_with_offdiag_mpi_sparse():
     )
 
     # Ground state
-    if comm.rank == 0:
-        psi = ManyBodyState({SlaterDeterminant.from_bytes(states[0]): 1.0})
-    else:
-        psi = ManyBodyState({})
+    psi = ManyBodyState({SlaterDeterminant.from_bytes(states[0]): 1.0}) if comm.rank == 0 else ManyBodyState({})
     psi = basis.redistribute_psis([psi])[0]
 
     # tOp
@@ -388,7 +381,7 @@ def test_dense_greens_function_basis_expansion():
         initial_basis=[bytes(_sd([0, 3]).to_bytearray())],
         comm=MPI.COMM_SELF,
     )
-    alphas, betas, r = calc_Greens_function_with_offdiag(
+    alphas, _betas, _r = calc_Greens_function_with_offdiag(
         hOp=hOp,
         tOps=[tOp],
         psis=[psi],

@@ -11,6 +11,7 @@ import numpy as np
 from mpi4py import MPI
 
 from impurityModel.ed.ManyBodyUtils import (
+    ManyBodyBlockState,
     ManyBodyState,
     SlaterDeterminant,
     pack_block_fused_cy,
@@ -228,7 +229,7 @@ def graph_alltoall(send_list, comm):
     size = comm.size
 
     # ------------------------------------------------------------------
-    # Step 1 – serialise the non-empty payloads and record their sizes.
+    # Step 1 - serialise the non-empty payloads and record their sizes.
     # ------------------------------------------------------------------
     send_bytes = [None] * size
     send_sizes = np.zeros(size, dtype=np.int64)
@@ -238,20 +239,20 @@ def graph_alltoall(send_list, comm):
             send_sizes[r] = len(send_bytes[r])
 
     # ------------------------------------------------------------------
-    # Step 2 – exchange sizes with a lean Alltoall so every rank learns
+    # Step 2 - exchange sizes with a lean Alltoall so every rank learns
     #           how many bytes it will receive from every other rank.
     # ------------------------------------------------------------------
     recv_sizes = np.empty(size, dtype=np.int64)
     comm.Alltoall(send_sizes, recv_sizes)
 
     # ------------------------------------------------------------------
-    # Step 3 – identify the sparse send/receive neighbourhood.
+    # Step 3 - identify the sparse send/receive neighbourhood.
     # ------------------------------------------------------------------
     destinations = [r for r in range(size) if send_sizes[r] > 0]
     sources = [r for r in range(size) if recv_sizes[r] > 0]
 
     # ------------------------------------------------------------------
-    # Step 4 – build a distributed-graph communicator so that only the
+    # Step 4 - build a distributed-graph communicator so that only the
     #           actual (source, destination) pairs are represented.
     #           MPI_Dist_graph_create_adjacent lets MPI optimise the
     #           collective over this sparse neighbourhood.
@@ -263,21 +264,21 @@ def graph_alltoall(send_list, comm):
     )
 
     # ------------------------------------------------------------------
-    # Step 5 – pack send buffer (bytes for each destination in order).
+    # Step 5 - pack send buffer (bytes for each destination in order).
     # ------------------------------------------------------------------
     send_buf = bytearray().join(send_bytes[r] for r in destinations if send_bytes[r] is not None)
     s_counts = np.array([int(send_sizes[r]) for r in destinations], dtype=np.int64)
     s_displs = np.concatenate(([0], np.cumsum(s_counts[:-1]))) if len(s_counts) > 0 else np.array([], dtype=np.int64)
 
     # ------------------------------------------------------------------
-    # Step 6 – allocate receive buffer.
+    # Step 6 - allocate receive buffer.
     # ------------------------------------------------------------------
     r_counts = np.array([int(recv_sizes[r]) for r in sources], dtype=np.int64)
     r_displs = np.concatenate(([0], np.cumsum(r_counts[:-1]))) if len(r_counts) > 0 else np.array([], dtype=np.int64)
     recv_buf = bytearray(int(np.sum(r_counts)))
 
     # ------------------------------------------------------------------
-    # Step 7 – neighbourhood all-to-all-v over the sparse graph.
+    # Step 7 - neighbourhood all-to-all-v over the sparse graph.
     # ------------------------------------------------------------------
     graph_comm.Neighbor_alltoallv(
         [send_buf, s_counts, s_displs, MPI.BYTE],
@@ -285,12 +286,12 @@ def graph_alltoall(send_list, comm):
     )
 
     # ------------------------------------------------------------------
-    # Step 8 – free the neighbourhood communicator.
+    # Step 8 - free the neighbourhood communicator.
     # ------------------------------------------------------------------
     graph_comm.Free()
 
     # ------------------------------------------------------------------
-    # Step 9 – deserialise and build result list.
+    # Step 9 - deserialise and build result list.
     # ------------------------------------------------------------------
     result = [None] * size
     offset = 0
@@ -308,7 +309,7 @@ def graph_alltoall(send_list, comm):
 def distribute_determinants(
     dets: "list[SlaterDeterminant]",
     n_bytes: int,
-    comm: "MPI.Comm",
+    comm: "MPI.Intracomm",  # graph-topology helpers (Create_dist_graph_adjacent) live on Intracomm
 ) -> "list[list[SlaterDeterminant]]":
     """
     Partition and distribute SlaterDeterminants across MPI ranks.

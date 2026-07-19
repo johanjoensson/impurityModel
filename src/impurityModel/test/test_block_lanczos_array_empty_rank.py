@@ -18,10 +18,9 @@ distributed run completes and reproduces the dense eigenvalues.
 
 import numpy as np
 import pytest
-
 from mpi4py import MPI
 
-from impurityModel.ed.BlockLanczosArray import block_lanczos_array, _build_full_T, Reort
+from impurityModel.ed.BlockLanczosArray import Reort, _build_full_T, block_lanczos_array
 
 
 def _contiguous_counts_with_empty_last(global_N, size):

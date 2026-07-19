@@ -1,6 +1,7 @@
+import os
+
 import setuptools
 from setuptools import Extension
-import os
 
 include_dirs = []
 

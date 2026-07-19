@@ -7,12 +7,9 @@ confined spectrum equals the spectrum with confinement disabled, on a 4-orbital 
 whose per-shell occupation window is deliberately loose enough to admit out-of-sector states.
 """
 
-from itertools import combinations
-
 import numpy as np
 from mpi4py import MPI
 
-import impurityModel.ed.product_state_representation as psr
 from impurityModel.ed import spectra
 from impurityModel.ed.manybody_basis import Basis
 from impurityModel.ed.ManyBodyUtils import ManyBodyOperator, ManyBodyState, SlaterDeterminant
@@ -123,7 +120,7 @@ def test_sector_confinement_preserves_ips_spectrum(monkeypatch):
 def test_sector_restrictions_engage_and_confine():
     """The mechanism actually fires: a definite-sector operator yields a tightening restriction."""
     op = _anderson_4()
-    gs, e0, dets = _ground_state_half_filled(op)
+    gs, _e0, dets = _ground_state_half_filled(op)
     basis = _fresh_basis(dets)
     tOps = [ManyBodyOperator({((0, "a"),): 1.0})]
 

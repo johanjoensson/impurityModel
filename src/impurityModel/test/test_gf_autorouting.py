@@ -7,11 +7,11 @@ import numpy as np
 import impurityModel.ed.product_state_representation as psr
 from impurityModel.ed.ManyBodyUtils import ManyBodyOperator, ManyBodyState, SlaterDeterminant, applyOp, inner
 from impurityModel.ed.symmetries import (
-    green_function_block_structure,
-    green_function_allowed_mask,
     conserved_subset_charges,
-    measure_conserved_charges,
     gf_sector_restrictions,
+    green_function_allowed_mask,
+    green_function_block_structure,
+    measure_conserved_charges,
 )
 
 
@@ -137,9 +137,7 @@ def test_green_function_explosion_prevention():
 
     # Confine to the addition sector.
     charges = conserved_subset_charges(op, n)
-    gs_occ = measure_conserved_charges(
-        psi_state := ManyBodyState({d: psi[i] for i, d in enumerate(all_dets)}), charges, n
-    )
+    gs_occ = measure_conserved_charges(ManyBodyState({d: psi[i] for i, d in enumerate(all_dets)}), charges, n)
     restr = gf_sector_restrictions(charges, gs_occ, 0, "addition")
     sector_idx = [
         i for i, b in enumerate(all_bytes) if all(lo <= len(s & _occset(b, n)) <= hi for s, (lo, hi) in restr.items())

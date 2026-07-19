@@ -5,18 +5,28 @@ import numpy as np
 from mpi4py import MPI
 
 from impurityModel.ed import config
+from impurityModel.ed import gf_diagnostics as _gfd
 from impurityModel.ed.basis_restrictions import build_excited_restrictions
 from impurityModel.ed.block_structure import BlockStructure
-from impurityModel.ed.manybody_basis import Basis
-from impurityModel.ed.symmetries import widen_weighted_restrictions
+from impurityModel.ed.BlockLanczosArray import Reort
 from impurityModel.ed.chebyshev_filter import chebyshev_apply, partition_of_unity, spectral_bounds
-from impurityModel.ed.ManyBodyUtils import ManyBodyOperator, ManyBodyState
-from impurityModel.ed import gf_diagnostics as _gfd
 
 # The module was split for readability (gf_primitives/gf_convergence/gf_shift_recycling hold the
-# solver-primitive, convergence-monitor and shift-recycled-resolvent layers respectively); these
-# re-exports keep every existing `greens_function.X` / `gf.X` access (tests, spectra.py) working.
-from impurityModel.ed.gf_primitives import (
+# solver-primitive, convergence-monitor and shift-recycled-resolvent layers respectively); the
+# re-exports below keep every existing `greens_function.X` / `gf.X` access (tests, spectra.py)
+# working, so the F401 suppressions below are deliberate (imported-for-re-export, not unused).
+from impurityModel.ed.gf_convergence import (  # noqa: F401  -- re-exported for backward compat
+    _GF_MONITOR_POINTS,
+    _GF_REL_TOL_FLOOR,
+    _gf_eval_meshes,
+    _gf_rel_tol,
+    _gf_sample_mesh,
+    _gf_signed_axes,
+    _greens_function_change,
+    _lanczos_convergence_summary,
+    _make_gf_convergence_monitor,
+)
+from impurityModel.ed.gf_primitives import (  # noqa: F401  -- re-exported for backward compat
     PairwiseGF,
     _CappedBasisProxy,
     _distributed_seed_qr,
@@ -28,23 +38,9 @@ from impurityModel.ed.gf_primitives import (
     calc_G_pairwise,
     calc_thermally_averaged_G,
 )
-from impurityModel.ed.gf_convergence import (
-    _GF_MONITOR_POINTS,
-    _GF_REL_TOL_FLOOR,
-    _gf_eval_meshes,
-    _gf_rel_tol,
-    _gf_sample_mesh,
-    _gf_signed_axes,
-    _greens_function_change,
-    _lanczos_convergence_summary,
-    _make_gf_convergence_monitor,
-)
-from impurityModel.ed.gf_shift_recycling import KrylovShiftedResolvent, SectorResolventCache
-from impurityModel.ed.gf_units import (
-    _gf_operator_split,
-    enumerate_gf_units,
-    run_units_distributed,
-    unit_cost_weights,
+from impurityModel.ed.gf_shift_recycling import (  # noqa: F401  -- re-exported for backward compat
+    KrylovShiftedResolvent,
+    SectorResolventCache,
 )
 from impurityModel.ed.gf_solvers import (
     block_Green,
@@ -52,6 +48,15 @@ from impurityModel.ed.gf_solvers import (
     block_Green_cipsi,
     block_Green_sparse,
 )
+from impurityModel.ed.gf_units import (
+    _gf_operator_split,
+    enumerate_gf_units,
+    run_units_distributed,
+    unit_cost_weights,
+)
+from impurityModel.ed.manybody_basis import Basis
+from impurityModel.ed.ManyBodyUtils import ManyBodyOperator, ManyBodyState
+from impurityModel.ed.symmetries import widen_weighted_restrictions
 
 comm = MPI.COMM_WORLD
 rank = comm.rank
@@ -144,12 +149,12 @@ def get_Greens_function(
     blocks: list[list[int]],
     verbose: bool,
     verbose_extra: bool,
-    reort: Optional,
+    reort: Optional[Reort],
     dN: Optional[int],
     occ_cutoff: float,
     slaterWeightMin: float,
     sparse: bool,
-    num_wanted: int = None,
+    num_wanted: int | None = None,
     gf_method: str = "lanczos",
 ):
     """
@@ -301,18 +306,19 @@ def get_Greens_function(
 
     gs_matsubara = gs_realaxis = report = None
     if results is not None:
+        assert isinstance(results, list)  # this call passes no reduce_fn, so results is the gathered list
         # Reassemble the per-unit results (global unit order) into per-(block, side)
         # eigenstate-indexed coefficient lists, then build each block's Green's function exactly
         # as before. acc[(block_i, side_i)] = (alphas_list, betas_list, r_list) indexed by
         # eigenstate. In grouped mode r_list[ei] is the seed-projection matrix; in pairwise mode
         # it is a PairwiseGF assembled from the eigenstate's scalar continued fractions
         # (a_list/b_list stay None -- each PairwiseGF carries its own scalar coefficients).
-        acc = {
+        acc: dict[tuple[int, int], tuple[list, list, list]] = {
             (bi, si): ([None] * n_psis, [None] * n_psis, [None] * n_psis) for bi in range(len(blocks)) for si in (0, 1)
         }
         # Worst-case cap state per block over all its (side, eigenstate) solves: any
         # frozen solve marks the block; retained_size is the smallest frozen size.
-        cap_acc = {}
+        cap_acc: dict[int, dict] = {}
         for unit, (_alphas, _betas, _r_slices, cap_stats) in zip(units, results):
             block_i, _ = group_meta[unit.group_i]
             stats = cap_acc.setdefault(block_i, {"cap_hit": False, "retained_size": None, "cap": cap_stats["cap"]})
@@ -324,10 +330,11 @@ def get_Greens_function(
                     stats["retained_size"] = retained
         if pairwise:
             # pw_cf[(block_i, side_i, ei)] = {"diag": {i: cf}, "sum": {(i,j): cf}, "imag": {(i,j): cf}}
-            pw_cf = defaultdict(lambda: {"diag": {}, "sum": {}, "imag": {}})
+            pw_cf: defaultdict = defaultdict(lambda: {"diag": {}, "sum": {}, "imag": {}})
             for unit, (alphas, betas, r_slices, _cap_stats) in zip(units, results):
                 block_i, side_i = group_meta[unit.group_i]
                 cf = (alphas, betas, r_slices[0])
+                assert unit.pw_tag is not None  # always set on the pairwise path
                 role, a, b = unit.pw_tag
                 key = a if role == "diag" else (a, b)
                 pw_cf[(block_i, side_i, unit.chunk[0])][role][key] = cf
@@ -344,7 +351,7 @@ def get_Greens_function(
                     a_list[ei], b_list[ei], r_list[ei] = alphas, betas, r_slices[p]
 
         e0 = np.min(es)
-        Z = np.sum(np.exp(-(es - e0) / tau))
+        Z = np.sum(np.exp(-(np.asarray(es) - e0) / tau))
         gs_matsubara = (
             [np.empty((len(matsubara_mesh), len(b), len(b)), dtype=complex) for b in blocks]
             if matsubara_mesh is not None
@@ -896,7 +903,7 @@ def _block_green_group(
     callers do -- leaves it converging the real-axis resolvent over the resolved Ritz band.
     """
     excited_basis = split_basis.clone(
-        initial_basis=set(state for p in group_seed_states for state in p),
+        initial_basis={state for p in group_seed_states for state in p},
         restrictions=excited_restrictions,
         weighted_restrictions=excited_weighted_restrictions,
         verbose=False,
@@ -951,7 +958,7 @@ def calc_Greens_function_with_offdiag(
     es,
     block_basis,
     delta,
-    reort: Optional = None,
+    reort: Optional[Reort] = None,
     dN: Optional[int] = None,
     occ_cutoff: float = 1e-6,
     slaterWeightMin: float = 0,
@@ -1066,6 +1073,7 @@ def calc_Greens_function_with_offdiag(
 
     excited_alphas = excited_betas = excited_r = None
     if results is not None:
+        assert isinstance(results, list)  # this call passes no reduce_fn, so results is the gathered list
         excited_alphas = [None for _ in psis]
         excited_betas = [None for _ in psis]
         excited_r = [None for _ in psis]

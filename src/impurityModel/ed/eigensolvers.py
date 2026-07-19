@@ -122,10 +122,7 @@ def dense_eigensystem(
             es = np.empty((h_local.shape[0]), dtype=float, order="C")
             vecs = np.empty(h_local.shape, dtype=h_local.dtype, order="C")
     else:
-        if rank == 0:
-            es = np.linalg.eigvalsh(h, UPLO="L")
-        else:
-            es = np.empty((h_local.shape[0]), dtype=float)
+        es = np.linalg.eigvalsh(h, UPLO="L") if rank == 0 else np.empty(h_local.shape[0], dtype=float)
     if comm is not None:
         comm.Bcast(es, root=0)
         if return_eigvecs:
@@ -231,7 +228,8 @@ def scipy_eigensystem(
                 ncv=ncv,
                 tol=eigenValueTol if conv_fail else 0,
             )
-            # eigsh does not guarantee that the eigenvectors are orthonormal. therefore we do a QR decomposition on them.
+            # eigsh does not guarantee that the eigenvectors are orthonormal. therefore we do a
+            # QR decomposition on them.
             vecs, _ = np.linalg.qr(vecs, mode="reduced")
             k *= 2
         except ArpackNoConvergence as e:
@@ -265,9 +263,13 @@ def scipy_eigensystem(
         es = es[indices]
         vecs = vecs[:, indices]
         if done(es) and 5 * vecs.shape[1] < h.shape[0]:
-            # In principle, lobpcg should be able to correct some errors in the eigenvectors ad eigenvalues found by eigsh (which uses ARPACK behind the scenes).
-            # eigsh struggles with degenerate or nearly degenerate eigenstates, so do one round of lobpcg to correct any errors.
-            # lobpcg is robust as long as the preconditioner is very good (is this what robust means?). We don't have a good preconditioner, so we ignore any warnings from lobpcg instead.
+            # In principle, lobpcg should be able to correct some errors in the eigenvectors ad
+            # eigenvalues found by eigsh (which uses ARPACK behind the scenes).
+            # eigsh struggles with degenerate or nearly degenerate eigenstates, so do one round of
+            # lobpcg to correct any errors.
+            # lobpcg is robust as long as the preconditioner is very good (is this what robust
+            # means?). We don't have a good preconditioner, so we ignore any warnings from lobpcg
+            # instead.
             # if comm.rank == 0:
             time.perf_counter()
             with warnings.catch_warnings():
@@ -318,10 +320,7 @@ def eigensystem(h_local, e_max, k=10, e0=None, v0=None, eigenValueTol=0, return_
     # e_max=None means "no energy cutoff" (get_eigenvectors passes max_energy=None): keep every
     # computed state. Guard the None here, otherwise max(None, ...) raises TypeError -- a live
     # crash on the dense (basis < dense_cutoff) path, which does not otherwise touch e_max.
-    if e_max is None:
-        e_max = np.inf
-    else:
-        e_max = max(e_max, eigenValueTol, np.finfo(float).eps * 100)
+    e_max = np.inf if e_max is None else max(e_max, eigenValueTol, np.finfo(float).eps * 100)
 
     N = h_local.shape[0]
     # Set up random initial vectors
@@ -338,9 +337,6 @@ def eigensystem(h_local, e_max, k=10, e0=None, v0=None, eigenValueTol=0, return_
 
     # We want to find eigenvalues up to e_max above ground state.
     # Since we don't know the ground state yet, we just find k eigenvalues.
-    num_wanted = k
-    max_subspace_blocks = max(40, int(np.ceil(num_wanted * 2)))
-
     if dense or N <= 20:
         if return_eigvecs:
             es, vecs = dense_eigensystem(h_local, return_eigvecs, comm)

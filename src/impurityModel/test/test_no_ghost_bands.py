@@ -1,6 +1,5 @@
-import pytest
 import numpy as np
-import scipy.linalg as sp
+import pytest
 import scipy.sparse as sps
 
 try:
@@ -11,10 +10,9 @@ except ImportError:
     _has_mpi = False
 
 from impurityModel.ed.BlockLanczosArray import Reort, block_normalize
-from impurityModel.ed.trlm import thick_restart_block_lanczos
 from impurityModel.ed.irlm import implicitly_restarted_block_lanczos_cy
-from impurityModel.ed.ManyBodyUtils import inner_multi, ManyBodyState
-from impurityModel.test.test_restarted_lanczos import MockBasis
+from impurityModel.ed.ManyBodyUtils import ManyBodyState, inner_multi
+from impurityModel.ed.trlm import thick_restart_block_lanczos
 from impurityModel.test.test_block_lanczos_array_empty_rank import _contiguous_counts_with_empty_last
 
 
@@ -106,10 +104,7 @@ def create_diagonal_system(eigvals, path, comm=None):
 
 
 def assert_orthonormal(eigvecs, path, comm=None):
-    if path == "array":
-        overlaps = np.conj(eigvecs.T) @ eigvecs
-    else:
-        overlaps = inner_multi(eigvecs, eigvecs)
+    overlaps = np.conj(eigvecs.T) @ eigvecs if path == "array" else inner_multi(eigvecs, eigvecs)
 
     if comm is not None:
         overlaps = np.ascontiguousarray(overlaps, dtype=complex)

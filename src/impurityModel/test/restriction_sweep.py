@@ -395,7 +395,7 @@ def test_restriction_sweep():
         print("\n" + render(key, rows))
 
 
-test_restriction_sweep.benchmark = True
+test_restriction_sweep.benchmark = True  # type: ignore[attr-defined]  # pytest-benchmark marker
 
 
 if __name__ == "__main__":

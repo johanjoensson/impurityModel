@@ -89,7 +89,7 @@ def run(args) -> None:
         i_cr = pol.intensity(pol.contract_rixs_tensor(C_or_map, ["cr"], args.pol_out or ["x", "y", "z"]))
         mcd_map = np.sum(i_cl - i_cr, axis=(0, 1))  # (wIn, wLoss)
 
-        import matplotlib.pyplot as plt  # noqa: PLC0415 -- see _plot_common.apply_plot_style
+        import matplotlib.pyplot as plt
 
         fig, ax = plt.subplots()
         tmp = mcd_map.T
@@ -115,7 +115,7 @@ def run(args) -> None:
     maps = _resolve_maps(C_or_map, is_tensor, pols_in, pols_out)  # (n_pin, n_pout, wIn, wLoss)
     n_pin, n_pout = maps.shape[:2]
 
-    import matplotlib.pyplot as plt  # noqa: PLC0415 -- see _plot_common.apply_plot_style
+    import matplotlib.pyplot as plt
 
     summed = np.sum(maps, axis=(0, 1))
     fig, ax = plt.subplots()

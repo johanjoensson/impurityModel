@@ -110,7 +110,8 @@ def build_state(basis, vs: Union[list[np.ndarray], np.ndarray], slaterWeightMin:
             res[j][basis.local_basis[i]] = vs[j, i]
     else:
         raise RuntimeError(
-            f"The dimensions of the input dense vector does not match a distributed, or full vector.\n{vs.shape} != ({vs.shape[0]}, {basis.size}) || ({vs.shape[0]}, {len(basis.local_basis)})"
+            f"The dimensions of the input dense vector does not match a distributed, or full vector.\n"
+            f"{vs.shape} != ({vs.shape[0]}, {basis.size}) || ({vs.shape[0]}, {len(basis.local_basis)})"
         )
     return res
 
@@ -216,17 +217,11 @@ def build_density_matrices(basis, psis, orbital_indices_left=None, orbital_indic
 
     for n, psi_n in enumerate(psis):
         phi = [ManyBodyOperator({((orb, "a"),): 1.0})(psi_n, 0) for orb in orbital_indices_left]
-        if square:
-            chi = phi
-        else:
-            chi = [ManyBodyOperator({((orb, "a"),): 1.0})(psi_n, 0) for orb in orbital_indices_right]
+        chi = phi if square else [ManyBodyOperator({((orb, "a"),): 1.0})(psi_n, 0) for orb in orbital_indices_right]
 
         if basis.is_distributed:
             phi = basis.redistribute_psis(phi)
-            if square:
-                chi = phi
-            else:
-                chi = basis.redistribute_psis(chi)
+            chi = phi if square else basis.redistribute_psis(chi)
 
         rhos[n] = inner_multi(chi, phi).T
 

@@ -21,12 +21,12 @@ from mpi4py import MPI
 
 import impurityModel.ed.greens_function as gf
 from impurityModel.ed import config
-from impurityModel.ed.gf_solvers import solve_shifted_block
 from impurityModel.ed.basis_restrictions import build_excited_restrictions
-from impurityModel.ed.rational_sampling import barycentric_eval, greedy_next_samples, set_valued_aaa
 from impurityModel.ed.BlockLanczosArray import Reort
+from impurityModel.ed.gf_solvers import solve_shifted_block
 from impurityModel.ed.ManyBodyUtils import ManyBodyOperator, ManyBodyState
 from impurityModel.ed.ManyBodyUtils import applyOp as applyOp_test
+from impurityModel.ed.rational_sampling import barycentric_eval, greedy_next_samples, set_valued_aaa
 from impurityModel.ed.symmetries import (
     conserved_subset_charges,
     measure_conserved_charges,
@@ -127,7 +127,7 @@ def _rixs_map_adaptive(map_fn, wIns, comm, tol, verbose):
     prev_R = None
     quiet_rounds = 0
     min_solves = min(n, 8)
-    next_batch = sorted(set(int(i) for i in np.round(np.linspace(0, n - 1, min(5, n)))))
+    next_batch = sorted({int(i) for i in np.round(np.linspace(0, n - 1, min(5, n)))})
     n_rounds = 0
     last_fit = None  # (support indices into `solved`, weights) of the last guarded fit
 
@@ -152,10 +152,7 @@ def _rixs_map_adaptive(map_fn, wIns, comm, tol, verbose):
             support, weights = set_valued_aaa(x_solved, F_fit, rtol=0.1 * tol)
             last_fit = (support, weights)
             R = barycentric_eval(wIns, x_solved[support], weights, F_fit[support])
-            if prev_R is None or scale == 0.0:
-                surrogate = None
-            else:
-                surrogate = np.max(np.abs(R - prev_R), axis=1) / scale
+            surrogate = None if prev_R is None or scale == 0.0 else np.max(np.abs(R - prev_R), axis=1) / scale
             prev_R = R
             unsolved = [i for i in range(n) if i not in set(solved)]
             # Spurious-pole (Froissart) guard: a barycentric denominator zero between
@@ -331,7 +328,7 @@ class _R1SolverChain:
         for psi2 in psi2_all:
             psi2.prune(slaterWeightMin)
         tmp_basis.clear()
-        tmp_basis.add_states(sorted(set(state for p in psi1_all + psi2_all for state in p.keys())))
+        tmp_basis.add_states(sorted({state for p in psi1_all + psi2_all for state in p.keys()}))
         # Align seeds and warm starts to tmp_basis's ownership layout -- the solver assumes
         # its states are distributed per `basis`, and the layout of the freshly rebuilt
         # tmp_basis need not match where the amplitudes currently live.

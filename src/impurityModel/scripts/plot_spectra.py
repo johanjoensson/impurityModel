@@ -38,7 +38,7 @@ def _grouped_curves(spectra_arr, orbital_spec):
 
 
 def _plot_orbital_spectrum(w, spectra_arr, title, xlabel, orbital_spec, export_prefix, export_name):
-    import matplotlib.pyplot as plt  # noqa: PLC0415 -- see _plot_common.apply_plot_style
+    import matplotlib.pyplot as plt
 
     curves = _grouped_curves(spectra_arr, orbital_spec)
     total = np.sum(pol.intensity(spectra_arr), axis=1)
@@ -59,7 +59,7 @@ def _plot_orbital_spectrum(w, spectra_arr, title, xlabel, orbital_spec, export_p
 
 
 def _plot_nixs(wLoss, nixs, qs, export_prefix):
-    import matplotlib.pyplot as plt  # noqa: PLC0415 -- see _plot_common.apply_plot_style
+    import matplotlib.pyplot as plt
 
     intensity = pol.intensity(nixs)  # (n_w, n_q)
     if qs is not None:
@@ -83,7 +83,7 @@ def _plot_nixs(wLoss, nixs, qs, export_prefix):
 
 
 def _plot_xas_tensor(w, chi, args):
-    import matplotlib.pyplot as plt  # noqa: PLC0415 -- see _plot_common.apply_plot_style
+    import matplotlib.pyplot as plt
 
     pols = args.pol if args.pol else ["x", "y", "z"]
     contracted = pol.intensity(pol.contract_spectra_tensor(chi, pols))  # (n_w, n_pol)
@@ -203,7 +203,7 @@ def plot_spectra_in_file(filename, args=None):
 
     rixs_key = "RIXS/tensor" if "RIXS/tensor" in data else "RIXS/projected" if "RIXS/projected" in data else None
     if rixs_key is not None and ("XAS/tensor" in data or "XAS/projected" in data):
-        import matplotlib.pyplot as plt  # noqa: PLC0415 -- see _plot_common.apply_plot_style
+        import matplotlib.pyplot as plt
 
         wIn, wLoss = data["wIn"], data["wLoss"]
         if rixs_key == "RIXS/tensor":

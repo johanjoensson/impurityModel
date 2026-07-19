@@ -1,8 +1,8 @@
 import os
 from glob import glob
 
-from impurityModel.ed.operator_algebra import assert_hermitian
 from impurityModel.ed.hamiltonian_io import read_pickled_file
+from impurityModel.ed.operator_algebra import assert_hermitian
 
 DIR_PATH = os.path.dirname(os.path.realpath(__file__))
 

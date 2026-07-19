@@ -204,7 +204,7 @@ def test_calc_gs_excitation_budget_enforced():
     """A ground state built with an excitation budget respects it on every determinant."""
     budget = 1
     weighted = build_weighted_restrictions(({0: [[2, 3]]}, {0: [[4, 5]]}), excitation_budget=budget)
-    psis, es, basis, _, _ = _run_calc_gs(weighted)
+    _psis, _es, basis, _, _ = _run_calc_gs(weighted)
     for det in basis.local_basis:
         assert _bath_excitations(det) <= budget
 

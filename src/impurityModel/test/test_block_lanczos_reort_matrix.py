@@ -1,6 +1,7 @@
 import itertools
-import pytest
+
 import numpy as np
+import pytest
 import scipy.linalg as sp
 import scipy.sparse as sps
 
@@ -12,17 +13,17 @@ except ImportError:
     _has_mpi = False
 
 from impurityModel.ed.BlockLanczosArray import Reort, block_normalize
-from impurityModel.ed.trlm import thick_restart_block_lanczos
 from impurityModel.ed.irlm import implicitly_restarted_block_lanczos_cy
-from impurityModel.ed.ManyBodyUtils import inner_multi, ManyBodyState, SlaterDeterminant
-from impurityModel.test.test_restarted_lanczos import get_test_system, MockBasis
+from impurityModel.ed.ManyBodyUtils import ManyBodyState, inner_multi
+from impurityModel.ed.trlm import thick_restart_block_lanczos
 from impurityModel.test.test_block_lanczos_array_empty_rank import _contiguous_counts_with_empty_last
+from impurityModel.test.test_restarted_lanczos import MockBasis, get_test_system
 
 
 def build_dense_matrix_from_manybody(h_op, basis_states):
     N = len(basis_states)
     H_dense = np.zeros((N, N), dtype=complex)
-    states = [list(b.keys())[0] for b in basis_states]
+    states = [next(iter(b.keys())) for b in basis_states]
     H_basis_states = h_op.apply_multi(basis_states)
     for j in range(N):
         for i, sd_i in enumerate(states):
@@ -51,10 +52,7 @@ def get_mpi_basis(comm):
 
 
 def assert_orthonormal(eigvecs, path, comm=None):
-    if path == "array":
-        overlaps = np.conj(eigvecs.T) @ eigvecs
-    else:
-        overlaps = inner_multi(eigvecs, eigvecs)
+    overlaps = np.conj(eigvecs.T) @ eigvecs if path == "array" else inner_multi(eigvecs, eigvecs)
 
     if comm is not None:
         overlaps = np.ascontiguousarray(overlaps, dtype=complex)
@@ -228,7 +226,7 @@ def test_reort_matrix_mpi(mode, path, solver):
 @pytest.mark.parametrize("path", ["array", "ManyBodyState"])
 def test_W_identical_across_ranks(mode, path):
     comm = MPI.COMM_WORLD
-    h_op_mb, N, eigvals_exact, basis_states = get_test_system()
+    h_op_mb, N, _eigvals_exact, basis_states = get_test_system()
     n_blocks = 2
     max_iter = 5
 
@@ -247,7 +245,7 @@ def test_W_identical_across_ranks(mode, path):
 
         from impurityModel.ed.BlockLanczosArray import block_lanczos_array
 
-        alphas, betas, Q_list, *W_res = block_lanczos_array(
+        _alphas, _betas, _Q_list, *W_res = block_lanczos_array(
             psi0=psi0,
             h_op=h_op,
             converged=lambda a, b, **kw: False,
@@ -278,7 +276,7 @@ def test_W_identical_across_ranks(mode, path):
 
         from impurityModel.ed.BlockLanczos import block_lanczos_cy
 
-        alphas, betas, Q_list, W = block_lanczos_cy(
+        _alphas, _betas, _Q_list, W = block_lanczos_cy(
             psi0=psi0,
             h_op=h_op,
             basis=basis,
@@ -313,7 +311,7 @@ def test_deflation_shrinking_block(p, path):
 
         from impurityModel.ed.BlockLanczosArray import block_lanczos_array
 
-        alphas, betas, Q_list, block_widths = block_lanczos_array(
+        alphas, betas, _Q_list, block_widths = block_lanczos_array(
             psi0=psi0,
             h_op=H_dense,
             converged=lambda a, b, **kw: False,
@@ -337,7 +335,7 @@ def test_deflation_shrinking_block(p, path):
 
         from impurityModel.ed.BlockLanczos import block_lanczos_cy
 
-        alphas, betas, Q_basis, W, block_widths = block_lanczos_cy(
+        alphas, betas, _Q_basis, _W, block_widths = block_lanczos_cy(
             psi0=psi0,
             h_op=h_op_mb,
             basis=MockBasis(N),
@@ -385,7 +383,7 @@ def test_deflation_shrinking_block_mpi(p, path):
 
         from impurityModel.ed.BlockLanczosArray import block_lanczos_array
 
-        alphas, betas, Q_list, block_widths = block_lanczos_array(
+        alphas, betas, _Q_list, block_widths = block_lanczos_array(
             psi0=psi0,
             h_op=h_op,
             converged=lambda a, b, **kw: False,
@@ -417,7 +415,7 @@ def test_deflation_shrinking_block_mpi(p, path):
 
         from impurityModel.ed.BlockLanczos import block_lanczos_cy
 
-        alphas, betas, Q_basis, W, block_widths = block_lanczos_cy(
+        alphas, betas, _Q_basis, _W, block_widths = block_lanczos_cy(
             psi0=psi0,
             h_op=h_op,
             basis=basis,

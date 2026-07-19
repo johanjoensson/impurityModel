@@ -4,13 +4,13 @@ from itertools import combinations
 
 import numpy as np
 
-from impurityModel.ed.ManyBodyUtils import ManyBodyOperator, ManyBodyState, SlaterDeterminant, applyOp, inner
 from impurityModel.ed.basis_transcription import build_dense_matrix
+from impurityModel.ed.ManyBodyUtils import ManyBodyOperator, ManyBodyState, SlaterDeterminant, applyOp, inner
 from impurityModel.ed.symmetries import (
+    extract_tensors,
     rotate_hamiltonian,
     rotate_one_body,
     rotate_two_body,
-    extract_tensors,
 )
 
 
@@ -61,7 +61,7 @@ def test_python_basis_rotation_roundtrip():
     """Rotating by U then by U† recovers the original tensors to 1e-12."""
     op = _hubbard_dimer_operator()
     u = _random_unitary(4, seed=1)
-    h, v, const = extract_tensors(op, n_orb=4)
+    h, v, _const = extract_tensors(op, n_orb=4)
 
     h2 = rotate_one_body(rotate_one_body(h, u), u.conj().T)
     v2 = rotate_two_body(rotate_two_body(v, u), u.conj().T)
@@ -108,8 +108,8 @@ def test_one_body_rotation_preserves_spectrum_and_hermiticity():
 def test_rotation_diagonalizes_discovered_generators():
     """In the joint-eigenbasis U, the discovered abelian generators become diagonal."""
     from impurityModel.ed.symmetries import (
-        discover_one_body_symmetries,
         cartan_subalgebra,
+        discover_one_body_symmetries,
         joint_diagonalize,
     )
 
@@ -134,7 +134,7 @@ def test_symmetry_adapted_transformation_bridges_to_phase3():
     from impurityModel.ed.symmetries import symmetry_adapted_transformation
 
     op = _hubbard_dimer_operator()
-    u, rotated_op, cartan_rotated = symmetry_adapted_transformation(op, n_orb=4)
+    _u, rotated_op, cartan_rotated = symmetry_adapted_transformation(op, n_orb=4)
 
     # Spectrum preserved (rotation is physical).
     for n_elec in (1, 2, 3):

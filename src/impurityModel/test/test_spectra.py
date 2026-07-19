@@ -1,14 +1,9 @@
-import pytest
-import numpy as np
-from unittest.mock import patch, MagicMock, mock_open
-import math
 from collections import OrderedDict
-import scipy.integrate as si
-from scipy.special import spherical_jn
+from unittest.mock import MagicMock, mock_open, patch
 
-from impurityModel.ed import spectra
-from impurityModel.ed import hamiltonian_io
-from impurityModel.ed import transition_operators
+import numpy as np
+
+from impurityModel.ed import hamiltonian_io, spectra, transition_operators
 from impurityModel.ed.ManyBodyUtils import ManyBodyOperator
 
 # --- tests for spectra.py ---
@@ -28,14 +23,14 @@ def test_inverse_photoemission_operators():
     # s=2 => 2 spins
     # Total 10 operators
     assert len(ops) == 10
-    assert list(ops[0].values())[0] == 1
+    assert next(iter(ops[0].values())) == 1
 
 
 def test_photoemission_operators():
     nBaths = OrderedDict([(2, 10)])
     ops = spectra.photoemission_operators(nBaths, l=2)
     assert len(ops) == 10
-    assert list(ops[0].values())[0] == 1
+    assert next(iter(ops[0].values())) == 1
 
 
 # The transition-operator builders live in transition_operators.py; patch and call them there
@@ -220,7 +215,6 @@ def test_read_tuple():
 
 
 def test_read_h0_dict():
-    file_content = "((0, 'c'), (0, 'a')) 1.0\n"
     with patch("impurityModel.ed.op_parser.parse_file") as mock_parse:
         mock_parse.return_value = {0: {((0, "c"), (0, "a")): 1.0}}
         d = hamiltonian_io.read_h0_dict("dummy.dat")
@@ -228,11 +222,10 @@ def test_read_h0_dict():
 
 
 def test_read_pickled_file():
-    with patch("builtins.open", mock_open()) as m:
-        with patch("pickle.load") as mock_load:
-            mock_load.return_value = "data"
-            res = hamiltonian_io.read_pickled_file("dummy.pickle")
-            assert res == "data"
+    with patch("builtins.open", mock_open()), patch("pickle.load") as mock_load:
+        mock_load.return_value = "data"
+        res = hamiltonian_io.read_pickled_file("dummy.pickle")
+        assert res == "data"
 
 
 def test_read_h0_CF_file():

@@ -1,11 +1,8 @@
-from math import ceil
-
-try:
-    from collections.abc import Iterable, Sequence
-except ModuleNotFoundError:
-    from collections import Iterable, Sequence
 import itertools
+from collections.abc import Iterable, Iterator, Sequence
 from heapq import merge
+from math import ceil
+from typing import overload
 
 import numpy as np
 from mpi4py import MPI
@@ -163,7 +160,7 @@ class Basis:
             for i in bath_states[0]
         )
         test = ManyBodyState({SlaterDeterminant.from_bytes(b"\x00"): 1.0})
-        slater_det = list(test.keys())[0]
+        slater_det = next(iter(test.keys()))
         self.type = type(slater_det)
         self.n_bytes = int(ceil(ceil(self.num_spin_orbitals / 8) / len(slater_det)) * len(slater_det))
 
@@ -181,7 +178,7 @@ class Basis:
             ]
         else:
             assert nominal_impurity_occ is not None
-            initial_basis, num_spin_orbitals = generate_initial_basis(
+            initial_basis, _num_spin_orbitals = generate_initial_basis(
                 impurity_orbitals=impurity_orbitals,
                 bath_states=bath_states,
                 delta_valence_occ=delta_valence_occ,
@@ -340,7 +337,8 @@ class Basis:
         if isinstance(psis, ManyBodyState):
             print("WARNING in redistribute_psi:")
             print(
-                "Expetced a list of ManyBodyStates, received a single ManyBodyState. Remaking into list of one ManyBodyState"
+                "Expetced a list of ManyBodyStates, received a single ManyBodyState."
+                " Remaking into list of one ManyBodyState"
             )
             psis = [psis]
         psis = [
@@ -410,7 +408,7 @@ class Basis:
                         ManyBodyState({state: 1}),
                         cutoff=slaterWeightMin,
                     )
-                    new_local_states |= set(state for state in res.keys()) - local_states
+                    new_local_states |= set(res.keys()) - local_states
                 if len(new_local_states) == 0:
                     break
                 apply_h_to_these = new_local_states
@@ -431,7 +429,7 @@ class Basis:
         if self.verbose:
             print(f"After expansion, the basis contains {self.size} elements.")
 
-    def index(self, val: SlaterDeterminant) -> int:
+    def index(self, val: SlaterDeterminant | bytes | Iterable[SlaterDeterminant | bytes]) -> int | Iterator[int]:
         """Find the global index of a Slater determinant in the basis.
 
         Parameters
@@ -458,18 +456,17 @@ class Basis:
             if res == self.size:
                 raise ValueError(f"Could not find {val} in basis!")
             return res
-        elif isinstance(val, Sequence) or isinstance(val, Iterable):
+        elif isinstance(val, (Sequence, Iterable)):
             converted = [self.type.from_bytes(x) if isinstance(x, bytes) else x for x in val]
             res = list(self._index_sequence(converted))
             for i, v in enumerate(res):
                 if v >= self.size:
-                    raise ValueError(f"Could not find {list(val)[i]} in basis!")
+                    raise ValueError(f"Could not find {list(val)[i]!r} in basis!")
             return (i for i in res)
         else:
             raise TypeError(f"Invalid query type {type(val)}! Valid types are {self.type} and sequences thereof.")
-        return None
 
-    def __getitem__(self, key: int | slice) -> SlaterDeterminant | list[SlaterDeterminant]:
+    def __getitem__(self, key: int | slice | Iterable[int]) -> SlaterDeterminant | Iterator[SlaterDeterminant]:
         """Get the Slater determinant(s) at the specified index or slice.
 
         Parameters
@@ -511,11 +508,12 @@ class Basis:
                 if res == SlaterDeterminant.from_bytes(bytes(0)):
                     raise IndexError(f"Could not find index {query[i]} in basis with size {self.size}!")
             return (state for state in result)
-        elif isinstance(key, Sequence) or isinstance(key, Iterable):
-            result = list(self._getitem_sequence(key))
+        elif isinstance(key, (Sequence, Iterable)):
+            key_list = list(key)
+            result = list(self._getitem_sequence(key_list))
             for i, res in enumerate(result):
                 if res == SlaterDeterminant.from_bytes(bytes(0)):
-                    raise IndexError(f"Could not find index {key[i]} in basis with size {self.size}!")
+                    raise IndexError(f"Could not find index {key_list[i]} in basis with size {self.size}!")
             return (state for state in result)
         elif isinstance(key, int):
             result = next(self._getitem_sequence([key]))
@@ -524,7 +522,6 @@ class Basis:
             return result
         else:
             raise TypeError(f"Invalid index type {type(key)}. Valid types are slice, Sequence and int")
-        return None
 
     def __len__(self) -> int:
         """Get the total size of the basis.
@@ -566,27 +563,32 @@ class Basis:
         """
         return item in self._index_dict
 
-    def contains(self, item: Iterable[SlaterDeterminant | bytes]) -> np.ndarray:
-        """Check containment for an iterable of states.
+    @overload
+    def contains(self, item: SlaterDeterminant | bytes) -> bool: ...
+    @overload
+    def contains(self, item: Iterable[SlaterDeterminant | bytes]) -> Iterator[bool]: ...
+    def contains(self, item):
+        """Check containment for a single state or an iterable of states.
 
         Parameters
         ----------
-        item : Iterable of SlaterDeterminant or bytes
-            The collection of states to check.
+        item : SlaterDeterminant, bytes, or an iterable thereof
+            The state(s) to check.
 
         Returns
         -------
-        np.ndarray of bool
-            Boolean array indicating containment for each state.
+        bool or Iterator[bool]
+            A single bool for a single state, or an iterator of bools (one per state) for an
+            iterable of states.
         """
         if isinstance(item, bytes):
             item = self.type.from_bytes(item)
         if isinstance(item, self.type):
             return next(self._contains_sequence([item]))
-        elif isinstance(item, Sequence) or isinstance(item, Iterable):
+        elif isinstance(item, (Sequence, Iterable)):
             converted = [self.type.from_bytes(x) if isinstance(x, bytes) else x for x in item]
             return self._contains_sequence(converted)
-        return None
+        raise TypeError(f"Invalid query type {type(item)}! Valid types are {self.type} and sequences thereof.")
 
     def __iter__(self) -> Iterable[SlaterDeterminant]:
         """Iterate over all Slater determinants in the basis.
@@ -603,7 +605,7 @@ class Basis:
             for state in chunk:
                 yield state
 
-    def _getitem_sequence(self, l: Iterable[int]) -> Iterable[SlaterDeterminant]:
+    def _getitem_sequence(self, l: Iterable[int]) -> Iterator[SlaterDeterminant]:
         """Retrieve the states for a sequence of global indices (sparse point-to-point)."""
         if not self.is_distributed:
             return (self.local_basis[i] for i in l)
@@ -616,16 +618,16 @@ class Basis:
         for idx, i in enumerate(l):
             for r in range(self.comm.size):
                 if self.index_bounds[r] is not None and i < self.index_bounds[r]:
-                    send_list[r].append(i)
+                    send_list[r].append(int(i))
                     send_to_ranks[idx] = r
                     break
         send_order = np.argsort(send_to_ranks, kind="stable")
 
         queries = Basis._point2point(send_list, self.comm)
 
-        results = [[] for _ in range(self.comm.size)]
+        results: list[list[SlaterDeterminant]] = [[] for _ in range(self.comm.size)]
         for r in range(len(queries)):
-            for i, query in enumerate(queries[r]):
+            for query in queries[r]:
                 if query >= self.offset and query < self.offset + len(self.local_basis):
                     results[r].append(self.local_basis[query - self.offset])
 
@@ -633,7 +635,7 @@ class Basis:
 
         return (result[i] for i in np.argsort(send_order))
 
-    def _index_sequence(self, s: Iterable[SlaterDeterminant]) -> Iterable[int]:
+    def _index_sequence(self, s: Iterable[SlaterDeterminant]) -> Iterator[int]:
         """Find the global indices for a sequence of states (hash-routed lookups)."""
         if not self.is_distributed:
             return (self._index_dict.get(val, self.size) for val in s)
@@ -651,7 +653,7 @@ class Basis:
 
         queries = Basis._point2point(send_list, self.comm)
 
-        results = [[] for _ in range(self.comm.size)]
+        results: list[list[int]] = [[] for _ in range(self.comm.size)]
         for r in range(self.comm.size):
             for query in queries[r]:
                 results[r].append(self._index_dict.get(query, self.size))
@@ -669,11 +671,11 @@ class Basis:
             if retry_count >= max_retries:
                 import warnings
 
-                warnings.warn(f"Failed to resolve all indices after {max_retries} retries")
+                warnings.warn(f"Failed to resolve all indices after {max_retries} retries", stacklevel=2)
 
         return (res for res in result[np.argsort(send_order)])
 
-    def _contains_sequence(self, items) -> Iterable[bool]:
+    def _contains_sequence(self, items) -> Iterator[bool]:
         """Check membership for a sequence of states."""
         if not self.is_distributed:
             return (item in self._index_dict for item in items)

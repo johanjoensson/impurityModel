@@ -1,6 +1,7 @@
 import os
-import pytest
+
 import numpy as np
+import pytest
 from mpi4py import MPI
 
 from impurityModel.ed.block_structure import BlockStructure
@@ -10,15 +11,10 @@ from impurityModel.ed.greens_function import (
     calc_continuants,
     calc_G,
     calc_thermally_averaged_G,
-    rotate_Greens_function,
-    rotate_4index_U,
-    save_Greens_function,
     get_Greens_function,
-)
-from impurityModel.ed.gf_solvers import (
-    block_green_impl,
-    block_Green,
-    block_Green_sparse,
+    rotate_4index_U,
+    rotate_Greens_function,
+    save_Greens_function,
 )
 from impurityModel.ed.manybody_basis import Basis
 from impurityModel.ed.ManyBodyUtils import ManyBodyOperator, ManyBodyState, SlaterDeterminant
@@ -254,7 +250,7 @@ def test_get_Greens_function_matsubara_none():
     psi = ManyBodyState({SlaterDeterminant.from_bytes(states[0]): 1.0})
     es = [0.5]
 
-    gs_mat, gs_real, _report = get_Greens_function(
+    gs_mat, _gs_real, _report = get_Greens_function(
         matsubara_mesh=matsubara_mesh,
         omega_mesh=omega_mesh,
         psis=[psi],

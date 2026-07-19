@@ -100,7 +100,7 @@ def run(args):
 
 def main():
     """Stand-alone entry point (``python -m impurityModel.scripts.susceptibility``)."""
-    import argparse  # noqa: PLC0415 -- only needed on the stand-alone path
+    import argparse
 
     parser = argparse.ArgumentParser(description="Calculate dynamical impurity susceptibilities chi(w) / chi(i nu).")
     add_arguments(parser)

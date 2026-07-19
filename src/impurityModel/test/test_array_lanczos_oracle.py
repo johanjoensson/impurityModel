@@ -11,7 +11,7 @@ import pytest
 import scipy.sparse as sps
 from mpi4py import MPI
 
-from impurityModel.ed.BlockLanczosArray import block_lanczos_array, _build_full_T, Reort
+from impurityModel.ed.BlockLanczosArray import Reort, _build_full_T, block_lanczos_array
 
 _SQRT_EPS = np.sqrt(np.finfo(float).eps)
 

@@ -33,10 +33,10 @@ import numpy as np
 import pytest
 from mpi4py import MPI
 
-from impurityModel.ed.BlockLanczosArray import Reort, block_normalize
-from impurityModel.ed.ManyBodyUtils import ManyBodyOperator, ManyBodyState, SlaterDeterminant
-from impurityModel.ed.irlm import implicitly_restarted_block_lanczos_cy
 from impurityModel.ed.BlockLanczos import implicitly_restarted_block_lanczos_cy as mbs_irlm
+from impurityModel.ed.BlockLanczosArray import Reort, block_normalize
+from impurityModel.ed.irlm import implicitly_restarted_block_lanczos_cy
+from impurityModel.ed.ManyBodyUtils import ManyBodyOperator, ManyBodyState, SlaterDeterminant
 from impurityModel.test.test_restarted_lanczos import MockBasis
 
 
@@ -205,8 +205,7 @@ def test_converged_start_no_duplicate_eigenpairs():
     once each (the bug returned every eigenvalue twice)."""
     import scipy.sparse as sps
 
-    _, H, _, eigvals = _build_system()
-    N = H.shape[0]
+    _, H, _, _eigvals = _build_system()
     evals, evecs = np.linalg.eigh(H)
     psi0 = evecs[:, :10].copy()  # exact lowest 10 eigenvectors as the start block
 
@@ -231,7 +230,7 @@ def test_converged_start_no_duplicate_eigenpairs():
 @pytest.mark.parametrize("mode", ["full", "partial"])
 def test_manybody_path_no_spurious_eigenvalue(mode):
     """The ManyBodyState (hash-distributed) IRLM kernel is deflated against Xl too."""
-    h_op, H, basis_states, eigvals = _build_system()
+    h_op, _H, basis_states, eigvals = _build_system()
     N = len(basis_states)
     rng = np.random.RandomState(2)
     coeffs = rng.standard_normal(N) + 1j * rng.standard_normal(N)
@@ -297,6 +296,7 @@ def test_trlm_array_no_spurious_eigenvalue(msb, mode):
     (T overflowing to ~1e150) because it did not normalize the start block before the
     recurrence."""
     import scipy.sparse as sps
+
     from impurityModel.ed.trlm import thick_restart_block_lanczos
 
     _, H, _, eigvals = _build_system()
@@ -324,6 +324,7 @@ def test_trlm_array_no_spurious_eigenvalue(msb, mode):
 def test_trlm_array_unnormalized_start_is_stable():
     """An unnormalized start block must not make TRLM diverge (it now normalizes psi0)."""
     import scipy.sparse as sps
+
     from impurityModel.ed.trlm import thick_restart_block_lanczos
 
     _, H, _, eigvals = _build_system()
@@ -358,6 +359,7 @@ def test_trlm_array_restart_loop_width_agnostic(nstart, mode):
     continuation must stay correct for block starts of width 1, 2, 3 and recover the
     lowest eigenvalues with none below the spectral minimum."""
     import scipy.sparse as sps
+
     from impurityModel.ed.trlm import thick_restart_block_lanczos
 
     rng = np.random.RandomState(17)
@@ -394,6 +396,7 @@ def test_trlm_array_block_deflation_in_restart(N):
     Regression for the padded-``beta_res`` broadcast crash and the uniform-width arrowhead
     assumption; the result must stay finite, above the minimum, and match the dense GS."""
     import scipy.sparse as sps
+
     from impurityModel.ed.trlm import thick_restart_block_lanczos
 
     rng = np.random.RandomState(N * 13)

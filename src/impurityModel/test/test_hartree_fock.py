@@ -7,9 +7,9 @@ the mean-field energy ``E[rho]`` must equal the exact operator expectation ``<D|
 import numpy as np
 import pytest
 
+from impurityModel.ed import hartree_fock as hf
 from impurityModel.ed.ManyBodyUtils import ManyBodyOperator, ManyBodyState, inner
 from impurityModel.ed.product_state_representation import bytes2bitarray  # noqa: F401  (parity w/ codebase)
-from impurityModel.ed import hartree_fock as hf
 
 
 def _det(occupied, n_orbs):
@@ -97,7 +97,6 @@ def test_strong_U_localises_impurity_occupation():
     Single impurity orbital (index 0) coupled to one bath orbital (index 1). With the
     impurity level well below the bath and a large U, HF keeps ~1 electron on the impurity.
     """
-    n_orb = 2
     terms = {
         ((0, "c"), (0, "a")): -3.0,  # deep impurity level
         ((1, "c"), (1, "a")): 0.0,  # bath at zero
@@ -110,7 +109,7 @@ def test_strong_U_localises_impurity_occupation():
     bath_states = ({0: [[1]]}, {0: [[]]})  # one valence bath, no conduction
     N0 = {0: 1}
 
-    winning, energy, converged = hf.hartree_fock_occupation(h_op, impurity_orbitals, bath_states, N0)
+    winning, _energy, converged = hf.hartree_fock_occupation(h_op, impurity_orbitals, bath_states, N0)
     assert converged
     # total electrons = N0 (1) + valence baths (1) = 2; impurity keeps close to one.
     assert winning[0] in (1,)
@@ -265,7 +264,7 @@ def test_hf_active_space_strong_U():
     impurity_orbitals = {0: [[0]]}
     bath_states = ({0: [[1]]}, {0: [[]]})
     N0 = {0: 1}
-    filled, empty, partial, active_electrons, n_tot, rho, converged, energy = hf.hf_active_space(
+    filled, empty, partial, active_electrons, n_tot, _rho, converged, _energy = hf.hf_active_space(
         h_op, impurity_orbitals, bath_states, N0, eps=0.05
     )
     assert converged

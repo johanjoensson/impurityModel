@@ -35,24 +35,24 @@ ill-conditioned / near-degenerate problems that exercise the failure path.
 import numpy as np
 import scipy.linalg as la
 
-from impurityModel.ed.ManyBodyUtils import ManyBodyOperator, ManyBodyState, SlaterDeterminant
 from impurityModel.ed.BlockLanczos import block_lanczos_cy
 from impurityModel.ed.BlockLanczosArray import (
-    block_lanczos_array,
+    DEFLATE_EVAL_TOL,
+    DEFLATE_TOL,
     Reort,
     _cholesky_or_deflate,
     _cholesky_qr2,
-    DEFLATE_TOL,
-    DEFLATE_EVAL_TOL,
+    block_lanczos_array,
 )
 from impurityModel.ed.greens_function import (
-    calc_G,
-    build_qr,
-    _trim_blocks,
-    _greens_function_change,
     _gf_sample_mesh,
+    _greens_function_change,
     _sanitize_continued_fraction,
+    _trim_blocks,
+    build_qr,
+    calc_G,
 )
+from impurityModel.ed.ManyBodyUtils import ManyBodyOperator, ManyBodyState, SlaterDeterminant
 from impurityModel.test.test_restarted_lanczos import MockBasis
 
 SQRT_EPS = np.sqrt(np.finfo(float).eps)
@@ -248,19 +248,19 @@ def test_sanitizer_drops_corrupted_tail():
     b = [np.array([[0.5]], dtype=complex) for _ in range(4)]
 
     # Healthy: unchanged.
-    a_s, b_s = _sanitize_continued_fraction(list(a), list(b))
+    a_s, _b_s = _sanitize_continued_fraction(list(a), list(b))
     assert len(a_s) == 4
 
     # Non-finite trailing block -> truncated before it.
     a_inf = list(a) + [np.array([[np.inf]], dtype=complex)]
     b_inf = list(b) + [np.array([[0.5]], dtype=complex)]
-    a_s, b_s = _sanitize_continued_fraction(a_inf, b_inf)
+    a_s, _b_s = _sanitize_continued_fraction(a_inf, b_inf)
     assert len(a_s) == 4 and all(np.all(np.isfinite(x)) for x in a_s)
 
     # Runaway (||beta|| >> healthy scale) trailing block -> truncated.
     a_big = list(a) + [np.array([[-2.0]], dtype=complex)]
     b_big = list(b) + [np.array([[1e9]], dtype=complex)]
-    a_s, b_s = _sanitize_continued_fraction(a_big, b_big)
+    a_s, _b_s = _sanitize_continued_fraction(a_big, b_big)
     assert len(a_s) == 4
 
 
@@ -275,7 +275,7 @@ def test_divergence_safeguard_does_not_false_trigger_on_large_norm_H():
     H = 0.5 * ((U * d) @ U.conj().T + (U * d) @ U.conj().T).conj().T
     Q0 = la.qr(rng.standard_normal((n, 2)) + 1j * rng.standard_normal((n, 2)), mode="economic")[0]
 
-    alphas, betas, Q, widths = block_lanczos_array(
+    alphas, betas, _Q, widths = block_lanczos_array(
         psi0=Q0.copy(),
         h_op=H.astype(complex),
         converged=lambda a, b, **kw: False,

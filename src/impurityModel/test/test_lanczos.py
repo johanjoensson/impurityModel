@@ -2,12 +2,12 @@ import numpy as np
 import pytest
 from mpi4py import MPI
 
-from impurityModel.ed.eigensolvers import eigensystem
-from impurityModel.ed.BlockLanczosArray import Reort, eigsh
+from impurityModel.ed.basis_transcription import build_dense_matrix, build_state
 from impurityModel.ed.BlockLanczos import block_lanczos_cy
+from impurityModel.ed.BlockLanczosArray import Reort, eigsh
+from impurityModel.ed.eigensolvers import eigensystem
 from impurityModel.ed.manybody_basis import Basis
 from impurityModel.ed.ManyBodyUtils import ManyBodyOperator, ManyBodyState, applyOp
-from impurityModel.ed.basis_transcription import build_dense_matrix, build_state
 
 
 def test_lancos():
@@ -26,7 +26,7 @@ def test_lancos():
         verbose=True,
     )
     h_mat = build_dense_matrix(basis, Hop)
-    gs_es, gs_psis = eigensystem(h_mat, 0)
+    _gs_es, gs_psis = eigensystem(h_mat, 0)
     electron_removal_ops = {
         "t2g": [{((0, "a"),): 1}, {((1, "a"),): 1}, {((2, "a"),): 1}],
         "eg": [{((3, "a"),): 1}, {((4, "a"),): 1}],
@@ -37,8 +37,8 @@ def test_lancos():
     def converged(alphas, betas, *args, **kwargs):
         return alphas.shape[0] * alphas.shape[1] >= len(basis)
 
-    for irrep in electron_removal_ops:
-        for op in electron_removal_ops[irrep]:
+    for irrep, value in electron_removal_ops.items():
+        for op in value:
             op_mbo = ManyBodyOperator(op)
             gs_i = build_state(basis, gs_psis.T)
             psi = applyOp(op_mbo, gs_i[0])
@@ -82,7 +82,7 @@ def test_lancos_mpi():
         comm=MPI.COMM_WORLD,
     )
     h_mat = build_dense_matrix(basis, Hop)
-    gs_es, gs_psis = eigensystem(h_mat, 0)
+    _gs_es, gs_psis = eigensystem(h_mat, 0)
     electron_removal_ops = {
         "t2g": [{((0, "a"),): 1}, {((1, "a"),): 1}, {((2, "a"),): 1}],
         "eg": [{((3, "a"),): 1}, {((4, "a"),): 1}],
@@ -96,8 +96,8 @@ def test_lancos_mpi():
         # changing the exact eigenvalues from the 1x1 projection.
         return alphas.shape[0] >= 1
 
-    for irrep in electron_removal_ops:
-        for op in electron_removal_ops[irrep]:
+    for irrep, value in electron_removal_ops.items():
+        for op in value:
             op_mbo = ManyBodyOperator(op)
             print(
                 f"Rank {MPI.COMM_WORLD.rank if MPI.COMM_WORLD else 'no MPI'} before build_state for op {op}", flush=True
@@ -294,7 +294,7 @@ def test_block_lanczos_cy_mpi(reort_mode):
 
 @pytest.mark.parametrize("reort_mode", [Reort.NONE, Reort.FULL, Reort.PERIODIC, Reort.PARTIAL, Reort.SELECTIVE])
 def test_get_block_Lanczos_matrices_and_GS(reort_mode):
-    from impurityModel.ed.BlockLanczosArray import calculate_thermal_gs, block_lanczos_array
+    from impurityModel.ed.BlockLanczosArray import block_lanczos_array, calculate_thermal_gs
 
     eigvals = np.array([0.5, 1.0, 1.5, 2.0, 2.5, 3.0])
     states = [b"\x80", b"\x40", b"\x20", b"\x10", b"\x08", b"\x04"]
@@ -314,7 +314,7 @@ def test_get_block_Lanczos_matrices_and_GS(reort_mode):
     def converged(alphas, betas, *args, **kwargs):
         return alphas.shape[0] > 5
 
-    alphas, betas, Q = block_lanczos_array(psi0, H_mat[:, basis.local_indices], converged, reort=reort_mode)[:3]
+    alphas, betas, _Q = block_lanczos_array(psi0, H_mat[:, basis.local_indices], converged, reort=reort_mode)[:3]
     ev, _ = eigsh(alphas, betas, eigvals_only=True, de=10)
     assert np.allclose(ev, eigvals[: len(ev)])
 
@@ -326,7 +326,7 @@ def test_get_block_Lanczos_matrices_and_GS(reort_mode):
 @pytest.mark.mpi
 @pytest.mark.parametrize("reort_mode", [Reort.NONE, Reort.FULL, Reort.PERIODIC, Reort.PARTIAL, Reort.SELECTIVE])
 def test_get_block_Lanczos_matrices_and_GS_mpi(reort_mode):
-    from impurityModel.ed.BlockLanczosArray import calculate_thermal_gs, block_lanczos_array
+    from impurityModel.ed.BlockLanczosArray import block_lanczos_array, calculate_thermal_gs
 
     eigvals = np.array([0.5, 1.0, 1.5, 2.0, 2.5, 3.0])
     states = [b"\x80", b"\x40", b"\x20", b"\x10", b"\x08", b"\x04"]
@@ -346,7 +346,7 @@ def test_get_block_Lanczos_matrices_and_GS_mpi(reort_mode):
     def converged(alphas, betas, *args, **kwargs):
         return alphas.shape[0] > 5
 
-    alphas, betas, Q = block_lanczos_array(
+    alphas, betas, _Q = block_lanczos_array(
         psi0, H_mat[:, basis.local_indices], converged, comm=MPI.COMM_WORLD, reort=reort_mode
     )[:3]
     ev, _ = eigsh(alphas, betas, eigvals_only=True, de=10)
@@ -379,6 +379,6 @@ def test_get_block_Lanczos_matrices_dense(reort_mode):
     def converged(alphas, betas, *args, **kwargs):
         return alphas.shape[0] > 5
 
-    alphas, betas, Q = block_lanczos_array(psi0, H_mat, converged, reort=reort_mode)[:3]
+    alphas, betas, _Q = block_lanczos_array(psi0, H_mat, converged, reort=reort_mode)[:3]
     ev, _ = eigsh(alphas, betas, eigvals_only=True, de=10)
     assert np.allclose(ev, eigvals[: len(ev)])

@@ -1,5 +1,8 @@
+from unittest.mock import MagicMock, patch
+
 import numpy as np
 import pytest
+
 from impurityModel.ed import gf_diagnostics as gd
 from impurityModel.ed import selfenergy
 from impurityModel.ed.model import BasisOptions, ImpurityModel, Meshes, SolverOptions
@@ -210,7 +213,7 @@ def test_get_hcorr_v_hbath_reversed():
         ((1, "a"), (2, "c")): 0.3,  # i!=j case: h0Matrix[1, 2] = -0.3
     }
 
-    hcorr, v, v_dagger, h_bath = selfenergy.get_hcorr_v_hbath(h0op, impurity_orbitals, sum_bath_states)
+    hcorr, _v, v_dagger, _h_bath = selfenergy.get_hcorr_v_hbath(h0op, impurity_orbitals, sum_bath_states)
 
     assert hcorr[0, 0] == 0.8
     assert hcorr[1, 1] == 0.0  # not set
@@ -256,9 +259,6 @@ def test_get_sigma():
     assert len(sigma) == 1
     assert sigma[0].shape == (2, 2, 2)
     np.testing.assert_allclose(sigma[0], np.zeros((2, 2, 2), dtype=complex), atol=1e-12)
-
-
-from unittest.mock import patch, MagicMock
 
 
 @patch("impurityModel.ed.selfenergy.calc_gs")

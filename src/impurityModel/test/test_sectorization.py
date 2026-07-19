@@ -133,8 +133,8 @@ def test_restrictions_from_charges_and_occupations():
 # ---------------------------------------------------------------------------
 
 import impurityModel.ed.product_state_representation as psr  # noqa: E402
+from impurityModel.ed.basis_transcription import build_dense_matrix  # noqa: E402
 from impurityModel.ed.manybody_basis import Basis  # noqa: E402
-from impurityModel.ed.basis_transcription import build_dense_matrix
 
 _BASIS_KW = dict(impurity_orbitals={0: [[0, 1, 2, 3]]}, bath_states=({0: [[]]}, {0: [[]]}), verbose=False)
 
@@ -183,8 +183,7 @@ def test_automatic_restrictions():
     # each <N_S> is integer for the non-degenerate GS).
     local = [bytes(d.to_bytearray()) for d in full.local_basis]
     gs_occ = [
-        int(round(sum(abs(gs[i]) ** 2 * len(charge & _occset(local[i])) for i in range(len(local)))))
-        for charge in charges
+        round(sum(abs(gs[i]) ** 2 * len(charge & _occset(local[i])) for i in range(len(local)))) for charge in charges
     ]
     assert gs_occ == [1, 1]  # half-filled singlet sector
 
@@ -291,7 +290,7 @@ def test_hf_seed_finds_ground_state_sector():
     # The mean-field seed lands on the correct integer impurity occupation of the correlated GS,
     # and says so: an unconverged seed is not an occupation and callers must reject it.
     assert converged
-    assert winning_N0 == {0: int(round(exact_imp_occ))}
+    assert winning_N0 == {0: round(exact_imp_occ)}
 
 
 def test_unconverged_hf_seed_is_rejected(monkeypatch):

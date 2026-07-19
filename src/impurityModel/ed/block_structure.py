@@ -90,7 +90,7 @@ def get_equivalent_blocks(block_structure):
     list of list of int
         A list of lists of equivalent block indices for each inequivalent block.
     """
-    blocks, ident_blocks, transp_blocks, ph_blocks, phtransp_blocks, ineq_blocks = block_structure
+    _blocks, ident_blocks, transp_blocks, ph_blocks, phtransp_blocks, ineq_blocks = block_structure
     eq_blocks = [[] for _ in ineq_blocks]
     for ib, i_eq_blocks in zip(ineq_blocks, eq_blocks):
         tmp = set()
@@ -228,7 +228,7 @@ def get_n_blocks_block_indices_mask_matrix(mat: np.ndarray, tol=1e-6):
     return sp.sparse.csgraph.connected_components(mask, directed=False, return_labels=True)
 
 
-def get_n_blocks_block_indices_mask(G: np.ndarray = None, mat: np.ndarray = None, tol=1e-6):
+def get_n_blocks_block_indices_mask(G: np.ndarray | None = None, mat: np.ndarray | None = None, tol=1e-6):
     """Determine block components of a Green's function and/or a matrix.
 
     Parameters
@@ -255,12 +255,13 @@ def get_n_blocks_block_indices_mask(G: np.ndarray = None, mat: np.ndarray = None
         if mat is not None:
             mask = np.logical_or(mask, np.abs(mat) > tol)
     else:
+        assert mat is not None  # guaranteed by the (G is not None or mat is not None) assert above
         mask = np.abs(mat) > tol
 
     return sp.sparse.csgraph.connected_components(mask, directed=False, return_labels=True)
 
 
-def get_blocks(G: np.ndarray = None, mat=None, tol=1e-6):
+def get_blocks(G: np.ndarray | None = None, mat=None, tol=1e-6):
     """Group orbital indices into blocks based on connectedness in G and/or mat.
 
     Parameters
@@ -285,7 +286,7 @@ def get_blocks(G: np.ndarray = None, mat=None, tol=1e-6):
     else:
         n_blocks, block_idxs = get_n_blocks_block_indices_mask_matrix(mat)
 
-    blocks = [[] for _ in range(n_blocks)]
+    blocks: list[list[int]] = [[] for _ in range(n_blocks)]
     for orb_i, block_i in enumerate(block_idxs):
         blocks[block_i].append(orb_i)
 

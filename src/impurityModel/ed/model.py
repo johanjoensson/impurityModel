@@ -25,14 +25,14 @@ from impurityModel.ed.hamiltonian_io import get_noninteracting_hamiltonian_opera
 from impurityModel.ed.operator_algebra import c2i, matrixToIOp
 
 __all__ = [
+    "EXCITATION_BUDGET_DEFAULT",
+    "BasisOptions",
     "ImpurityModel",
     "Meshes",
-    "BasisOptions",
     "SolverOptions",
     "SpectraOptions",
     "atomic_u4",
     "load_selfenergy_archive",
-    "EXCITATION_BUDGET_DEFAULT",
     "resolve_excitation_budget",
 ]
 
@@ -385,7 +385,7 @@ def _read_archive_group(path, cluster=None, iteration=None) -> dict:
     solver/basis option, plus the group ``label``. Shared by :meth:`ImpurityModel.from_hdf5`
     and :func:`load_selfenergy_archive`.
     """
-    import h5py  # noqa: PLC0415 -- only the archive path needs it
+    import h5py
 
     with h5py.File(path, "r") as f:
         if iteration is None:
@@ -510,8 +510,7 @@ def _count_spin_orbitals(h0) -> int:
     highest = -1
     for process, _value in items:
         for index, _action in process:
-            if index > highest:
-                highest = index
+            highest = max(highest, index)
     return highest + 1
 
 

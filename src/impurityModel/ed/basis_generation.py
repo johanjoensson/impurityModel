@@ -168,7 +168,7 @@ def generate_initial_basis(
 
     basis = []
     # Iterative DFS; a frame is (group_index, partial_impurity_occ, partial_occupied_orbitals).
-    stack = [(0, 0, ())]
+    stack: list[tuple[int, int, tuple[int, ...]]] = [(0, 0, ())]
     while stack:
         t, partial_occ, occupied = stack.pop()
         if t == n_groups:
@@ -221,8 +221,8 @@ def spin_flipped_determinants(
         n_up = int(applyOp(n_up_mbo, ManyBodyState({det: 1.0}), cutoff=0).get(det, 0).real)
         spin_flip.add(det)
         to_flip = {det}
-        for l in impurity_orbitals:
-            n_orb = sum(len(orbs) for orbs in impurity_orbitals[l])
+        for _l, orb_groups in impurity_orbitals.items():
+            n_orb = sum(len(orbs) for orbs in orb_groups)
             for i in range(n_orb // 2):
                 spin_flip_op = {
                     ((i + n_orb // 2, "c"), (i, "a")): 1.0,
@@ -234,7 +234,7 @@ def spin_flipped_determinants(
                     to_flip.update(flipped.keys())
                     if len(flipped) == 0:
                         continue
-                    flipped_state = list(flipped.keys())[0]
+                    flipped_state = next(iter(flipped.keys()))
                     new_n_dn = int(
                         applyOp(n_dn_mbo, ManyBodyState({flipped_state: 1.0}), cutoff=0).get(flipped_state, 0).real
                     )

@@ -70,10 +70,10 @@ def test_truncation_reliability_config():
     """Run one (threshold, reort) configuration and record metrics vs the reference."""
     # Deferred (like test_selfenergy_perf): default CI runs skip this module and must
     # not pay the heavy solver imports.
-    from mpi4py import MPI  # noqa: PLC0415
+    from mpi4py import MPI
 
-    from impurityModel.ed.selfenergy import calc_selfenergy  # noqa: PLC0415
-    from impurityModel.test._nio_workload import (  # noqa: PLC0415
+    from impurityModel.ed.selfenergy import calc_selfenergy
+    from impurityModel.test._nio_workload import (
         as_calc_selfenergy_args,
         build_selfenergy_inputs,
     )

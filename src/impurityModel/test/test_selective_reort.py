@@ -1,14 +1,12 @@
-import pytest
-import numpy as np
-import scipy.linalg as sp
 from unittest.mock import patch
 
-from impurityModel.ed.manybody_basis import Basis
-from impurityModel.ed.ManyBodyUtils import ManyBodyState, ManyBodyOperator
-from impurityModel.ed.BlockLanczosArray import block_normalize
+import numpy as np
+import pytest
 
 from impurityModel.ed.BlockLanczos import block_lanczos_cy
-from impurityModel.ed.BlockLanczosArray import _build_full_T
+from impurityModel.ed.BlockLanczosArray import _build_full_T, block_normalize
+from impurityModel.ed.manybody_basis import Basis
+from impurityModel.ed.ManyBodyUtils import ManyBodyOperator, ManyBodyState
 
 
 def create_poorly_conditioned_h_and_basis(n_states=20):
@@ -46,7 +44,7 @@ def create_poorly_conditioned_h_and_basis(n_states=20):
 
 def test_selective_reort():
     n_states = 20
-    h_op, basis, H_mat = create_poorly_conditioned_h_and_basis(n_states)
+    h_op, basis, _H_mat = create_poorly_conditioned_h_and_basis(n_states)
 
     block_size = 2
     np.random.seed(123)
@@ -67,7 +65,7 @@ def test_selective_reort():
 
         mock_inner_multi_partial.side_effect = side_effect_partial
 
-        alphas_p, betas_p, Q_p, W_p = block_lanczos_cy(
+        alphas_p, betas_p, _Q_p, _W_p = block_lanczos_cy(
             psi0=psi0,
             h_op=h_op,
             basis=basis,
@@ -85,7 +83,7 @@ def test_selective_reort():
 
         mock_inner_multi_selective.side_effect = side_effect_selective
 
-        alphas_s, betas_s, Q_s, W_s = block_lanczos_cy(
+        alphas_s, betas_s, _Q_s, _W_s = block_lanczos_cy(
             psi0=psi0,
             h_op=h_op,
             basis=basis,
@@ -118,7 +116,8 @@ def test_selective_reort():
     # Check that selective makes fewer inner_multi calls than partial
     # Wait, 'partial' might not always do more if it doesn't trigger.
     # Let's see if selective is indeed less or equal to partial.
-    # Usually selective triggers only when ritz error bounds dictate, whereas partial does it based on local orthogonality loss.
+    # Usually selective triggers only when ritz error bounds dictate, whereas partial does it based
+    # on local orthogonality loss.
     # In block_lanczos_cy, partial does reorthogonalization of q_next against all Q_basis.
     # We just ensure it's not failing and maybe check if partial_inner_multi_calls > selective_inner_multi_calls
     # To be safe, just assert selective <= partial. If the test matrix is right, it might be strictly less.

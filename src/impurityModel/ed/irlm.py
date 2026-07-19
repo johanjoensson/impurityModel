@@ -8,17 +8,19 @@ existing ``from impurityModel.ed.irlm import ...`` import paths keep working.
 """
 
 from impurityModel.ed.BlockLanczos import (
-    implicitly_restarted_block_lanczos as implicitly_restarted_block_lanczos_cy,
+    _assemble_results,
     _implicitly_restarted_block_lanczos_array,
     _implicitly_restarted_block_lanczos_manybody,
     _irlm_core,
-    _assemble_results,
+)
+from impurityModel.ed.BlockLanczos import (
+    implicitly_restarted_block_lanczos as implicitly_restarted_block_lanczos_cy,
 )
 
 __all__ = [
-    "implicitly_restarted_block_lanczos_cy",
+    "_assemble_results",
     "_implicitly_restarted_block_lanczos_array",
     "_implicitly_restarted_block_lanczos_manybody",
     "_irlm_core",
-    "_assemble_results",
+    "implicitly_restarted_block_lanczos_cy",
 ]

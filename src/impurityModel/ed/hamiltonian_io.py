@@ -196,8 +196,8 @@ def read_tuple(line):
     line = line.replace("(", "(,")
     line = line.replace(")", ",)")
     tmp = line.split(",")
-    for cs in tmp:
-        cs = cs.strip()
+    for cs_raw in tmp:
+        cs = cs_raw.strip()
         if cs == "(":
             store.append(tmp_tup)
             tmp_tup = []

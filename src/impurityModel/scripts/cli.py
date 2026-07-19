@@ -29,7 +29,7 @@ _SUBCOMMANDS = {
 
 def _plot_delegates():
     """Lazily import the plot mains (they pull in matplotlib); returns ``name -> main``."""
-    from impurityModel.scripts import plot_RIXS, plot_spectra  # noqa: PLC0415
+    from impurityModel.scripts import plot_RIXS, plot_spectra
 
     return {"plot-spectra": plot_spectra.main, "plot-rixs": plot_RIXS.main}
 

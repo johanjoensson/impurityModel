@@ -23,7 +23,6 @@ from impurityModel.ed.BlockLanczos import block_lanczos_cy
 from impurityModel.ed.BlockLanczosArray import Reort, block_lanczos_array, resolve_reort
 from impurityModel.ed.cg import block_bicgstab
 from impurityModel.ed.cipsi_solver import CIPSISolver
-from impurityModel.ed.manybody_basis import collective_amplitude_cutoff
 from impurityModel.ed.gf_convergence import _make_gf_convergence_monitor
 from impurityModel.ed.gf_primitives import (
     _CappedBasisProxy,
@@ -34,6 +33,7 @@ from impurityModel.ed.gf_primitives import (
     calc_G,
 )
 from impurityModel.ed.gmres import block_gmres
+from impurityModel.ed.manybody_basis import collective_amplitude_cutoff
 from impurityModel.ed.ManyBodyUtils import ManyBodyBlockState, ManyBodyOperator, ManyBodyState, block_inner_cy
 
 comm = MPI.COMM_WORLD
@@ -52,7 +52,8 @@ def block_Green(
     info=None,
 ):
     """
-    calculate  one block of the Greens function. This function builds the many body basis iteratively. Reducing memory requrements.
+    Calculate one block of the Greens function. This function builds the many body basis
+    iteratively, reducing memory requirements.
 
     ``eval_meshes`` is the caller's evaluation mesh per axis (see :func:`_gf_eval_meshes`); ``None``
     leaves the convergence monitor on its spectral-edge fallback.
@@ -82,10 +83,10 @@ def block_Green(
         # replicated by add_states, so the break is collective-consistent.
         probe = ManyBodyBlockState.from_states(list(last_q))
         capped = False
-        for i in range(5):
+        for _i in range(5):
             probe = hOp.apply_block(probe, slaterWeightMin)
             basis.add_states(
-                set(state for state in probe.support_keys(0.0) if state not in basis.local_basis),
+                {state for state in probe.support_keys(0.0) if state not in basis.local_basis},
             )
             if basis.size > basis.truncation_threshold:
                 capped = True
@@ -203,7 +204,7 @@ def block_green_impl(basis, hOp, psi_arr, delta, reort, slaterWeightMin, verbose
             psi0=psi_dense_local,
             h_op=H,
             converged=converged,
-            verbose=False and verbose,
+            verbose=False and verbose,  # noqa: SIM223  (force-off toggle; keep verbose wiring)
             reort=resolved_reort,
             build_krylov_basis=resolved_reort != Reort.NONE,
             return_widths=True,
@@ -255,7 +256,7 @@ def block_green_impl(basis, hOp, psi_arr, delta, reort, slaterWeightMin, verbose
             converged=converged,
             reort=resolved_reort,
             build_krylov_basis=resolved_reort != Reort.NONE,
-            verbose=False and verbose,
+            verbose=False and verbose,  # noqa: SIM223  (force-off toggle; keep verbose wiring)
             comm=comm,
             return_widths=True,
             return_status=True,
@@ -297,7 +298,7 @@ def block_Green_sparse(
     psi_arr,
     basis,
     delta,
-    reort: Optional = None,
+    reort: Optional[Reort] = None,
     slaterWeightMin=0,
     verbose=True,
     cap_info=None,
@@ -305,7 +306,8 @@ def block_Green_sparse(
     eval_meshes=None,
 ):
     """
-    calculate  one block of the Greens function. This function builds the many body basis iteratively. Reducing memory requrements.
+    Calculate one block of the Greens function. This function builds the many body basis
+    iteratively, reducing memory requirements.
 
     ``basis.truncation_threshold`` caps the number of Slater determinants the
     recurrence may touch (see :class:`_CappedBasisProxy`); ``np.inf`` (the ``Basis``
@@ -328,9 +330,8 @@ def block_Green_sparse(
     the convergence monitor tests ``G`` on. ``None`` leaves it on the spectral-edge fallback, which
     converges the real-axis resolvent whether or not a real-axis mesh was asked for.
     """
-    mpi = basis.comm is not None
-    comm = basis.comm if mpi else None
-    rank = comm.rank if mpi else 0
+    comm = basis.comm
+    rank = comm.rank if comm is not None else 0
 
     N = len(basis)
     n = len(psi_arr)

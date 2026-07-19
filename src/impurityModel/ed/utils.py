@@ -249,7 +249,7 @@ def report_rule(title: str, file=None) -> None:
     print(f"\n{head}{'-' * max(0, REPORT_WIDTH - len(head))}", file=file)
 
 
-def partition(l: Iterable[Any], predicate: Callable[[Any], bool] = lambda a: bool(a)) -> Tuple[List[Any], List[Any]]:
+def partition(l: Iterable[Any], predicate: Callable[[Any], bool] = bool) -> Tuple[List[Any], List[Any]]:
     """Partition elements of an iterable into two lists based on a predicate.
 
     Parameters

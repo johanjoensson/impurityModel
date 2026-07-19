@@ -25,8 +25,8 @@ def test_ManyBodyState():
             print(f"{chunk.to_bytes(8)}", end=" ")
         print()
     psi = ManyBodyState(d)
-    for state in d:
-        assert d[state] == psi[state]
+    for state, value in d.items():
+        assert value == psi[state]
     # for state in psi:
     #     assert d[state] == psi[state]
 
@@ -42,8 +42,8 @@ def test_ManyBodyState_2():
     psi = ManyBodyState()
     for state, amp in d.items():
         psi[state] = amp
-    for state in d:
-        assert d[state] == psi[state]
+    for state, value in d.items():
+        assert value == psi[state]
     # for state in psi:
     #     assert d[state] == psi[state]
 
@@ -54,8 +54,8 @@ def test_ManyBodyState_2():
 def test_ManyBodyState_prune():
     d = {SlaterDeterminant.from_bytes(b"\xff\xac"): 1.0, SlaterDeterminant.from_bytes(b"\xac\xff"): 2j}
     psi = ManyBodyState(d)
-    for state in d:
-        assert d[state] == psi[state]
+    for state, value in d.items():
+        assert value == psi[state]
     # for state in psi:
     #     assert d[state] == psi[state]
 
@@ -123,8 +123,8 @@ def test_ManyBodyOperator():
     d = {((1, "c"),): 1.0, ((0, "a"),): 1j}
     op = ManyBodyOperator(d)
 
-    for process in d:
-        assert pytest.approx(d[process]) == op[process]
+    for process, value in d.items():
+        assert pytest.approx(value) == op[process]
     for process in op:
         assert pytest.approx(d[process]) == op[process]
 
@@ -136,8 +136,8 @@ def test_ManyBodyOperator_2():
     for process, amp in d.items():
         op[process] = amp
 
-    for process in d:
-        assert pytest.approx(d[process]) == op[process]
+    for process, value in d.items():
+        assert pytest.approx(value) == op[process]
     for process in op:
         assert pytest.approx(d[process]) == op[process]
 
@@ -148,36 +148,36 @@ def test_ManyBodyOperator_arithmetic():
     b = ManyBodyOperator({((0, "a"),): 1j})
 
     op = a + b
-    for state in add:
-        assert pytest.approx(add[state]) == op[state]
+    for state, value in add.items():
+        assert pytest.approx(value) == op[state]
     for state in op:
         assert pytest.approx(add[state]) == op[state]
 
     sub = {((1, "c"),): 1.0, ((0, "a"),): -1j}
     op = a - b
-    for state in sub:
-        assert pytest.approx(sub[state]) == op[state]
+    for state, value in sub.items():
+        assert pytest.approx(value) == op[state]
     for state in op:
         assert pytest.approx(sub[state]) == op[state]
 
     scale = {((1, "c"),): 2.5, ((0, "a"),): 2.5j}
     op = (a + b) * 2.5
-    for state in scale:
-        assert pytest.approx(scale[state]) == op[state]
-    for state in scale:
-        assert pytest.approx(scale[state]) == op[state]
+    for state, value in scale.items():
+        assert pytest.approx(value) == op[state]
+    for state, value in scale.items():
+        assert pytest.approx(value) == op[state]
 
     op = 2.5 * (a + b)
-    for state in scale:
-        assert pytest.approx(scale[state]) == op[state]
-    for state in scale:
-        assert pytest.approx(scale[state]) == op[state]
+    for state, value in scale.items():
+        assert pytest.approx(value) == op[state]
+    for state, value in scale.items():
+        assert pytest.approx(value) == op[state]
 
     op = (a + b) / 0.4
-    for state in scale:
-        assert pytest.approx(scale[state]) == op[state]
-    for state in scale:
-        assert pytest.approx(scale[state]) == op[state]
+    for state, value in scale.items():
+        assert pytest.approx(value) == op[state]
+    for state, value in scale.items():
+        assert pytest.approx(value) == op[state]
 
 
 def test_ManyBodyOperator_apply():

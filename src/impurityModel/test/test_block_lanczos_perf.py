@@ -123,8 +123,7 @@ class RssSampler:
     def _run(self):
         while not self._stop.is_set():
             rss = self._read_rss()
-            if rss > self.peak_bytes:
-                self.peak_bytes = rss
+            self.peak_bytes = max(self.peak_bytes, rss)
             self._stop.wait(self._interval)
 
     def start(self):
@@ -138,8 +137,7 @@ class RssSampler:
         self._stop.set()
         self._thread.join()
         rss = self._read_rss()
-        if rss > self.peak_bytes:
-            self.peak_bytes = rss
+        self.peak_bytes = max(self.peak_bytes, rss)
 
     @property
     def peak_delta_bytes(self):
@@ -168,7 +166,7 @@ def nio_workload():
     h_input_matrix = extract_tensors(h_input, two_body=False)[0]
     n_orb = h_input_matrix.shape[0]
 
-    rotation_full, u_imp = impurity_symmetry_rotation(h_input, impurity_indices, n_orb=n_orb, h0_matrix=h_input_matrix)
+    rotation_full, _u_imp = impurity_symmetry_rotation(h_input, impurity_indices, n_orb=n_orb, h0_matrix=h_input_matrix)
     h_rotated = rotate_hamiltonian(h_input, rotation_full, tol=_ROTATION_TRIM_TOL)
     n_terms_input = sum(1 for v in h_input.values() if abs(v) > _ROTATION_TRIM_TOL)
     if len(h_rotated) / max(n_terms_input, 1) <= _MAX_ROTATION_FILL:
@@ -186,7 +184,7 @@ def nio_workload():
     nominal_occ = _per_group_occupation(inputs["nominal_occ"], impurity_orbitals, h_matrix)
     # _per_group_scalar maps a dict keyed by the derived group indices through unchanged;
     # anything else collapses to the default — so key the window by group explicitly.
-    mixed_valence = _per_group_scalar({k: MIXED_VALENCE for k in impurity_orbitals}, impurity_orbitals, default=0)
+    mixed_valence = _per_group_scalar(dict.fromkeys(impurity_orbitals, MIXED_VALENCE), impurity_orbitals, default=0)
 
     tau = inputs["tau"]
     basis = find_ground_state_basis(
@@ -292,7 +290,8 @@ def test_partial_trlm_array_bench(nio_workload):
     locals_n = [local_n] if comm is None else comm.gather(local_n, root=0)
     _report(
         comm,
-        f"TRLM/array PARTIAL (NiO {NBATHS} bath, basis {n_global}, {'serial' if comm is None else f'{comm.size} ranks'})",
+        f"TRLM/array PARTIAL (NiO {NBATHS} bath, basis {n_global}, "
+        f"{'serial' if comm is None else f'{comm.size} ranks'})",
         [
             ("E0", f"{np.min(e_ref):.6f}"),
             ("median wall time", f"{np.median(times):.3f} s over {REPS} reps"),
@@ -425,7 +424,7 @@ def test_apply_block_width_scaling(nio_workload):
             out = h.apply_multi(psis, SLATER_WEIGHT_MIN)
             times.append((time.perf_counter() - t0) * 1e3)
             t0 = time.perf_counter()
-            bout = h.apply_block(blk, SLATER_WEIGHT_MIN)
+            h.apply_block(blk, SLATER_WEIGHT_MIN)
             btimes.append((time.perf_counter() - t0) * 1e3)
         times.sort()
         btimes.sort()

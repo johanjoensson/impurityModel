@@ -6,12 +6,12 @@ import numpy as np
 
 from impurityModel.ed.ManyBodyUtils import ManyBodyOperator, ManyBodyState, SlaterDeterminant, applyOp, inner
 from impurityModel.ed.symmetries import (
-    discover_one_body_symmetries,
-    is_abelian,
-    structure_constants,
     apply_reconstructed_casimir,
+    discover_one_body_symmetries,
     expect_reconstructed_casimir,
     in_span,
+    is_abelian,
+    structure_constants,
 )
 
 # Hubbard dimer, 4 spin-orbitals. Layout: orbital = spin*2 + site, up={0,1}, down={2,3}.
@@ -69,7 +69,7 @@ def test_detect_abelian():
 
 def test_casimir_matches_handbuilt():
     """Reconstructed S^2 = S_x^2+S_y^2+S_z^2 equals the hand-built S^2 (Phase 1.2)."""
-    from impurityModel.ed.observables import make_spin_operators, expect_casimir
+    from impurityModel.ed.observables import expect_casimir, make_spin_operators
 
     s_plus, s_minus, s_z = make_spin_operators([(2, 0), (3, 1)])  # (dn, up) pairs
 
@@ -114,7 +114,7 @@ def test_casimir_commutes_with_H():
 def test_multiplet_labeling():
     """A degenerate singlet+triplet manifold is labeled S=0 (x1) and S=1 (x3) by the
     reconstructed Casimir, with degeneracy 2S+1."""
-    from impurityModel.ed.observables import manifold_observable_values, casimir_to_quantum_number
+    from impurityModel.ed.observables import casimir_to_quantum_number, manifold_observable_values
 
     # Two spatial orbitals (up:0/dn:2, up:1/dn:3), one electron each -> singlet + triplet.
     manifold = [

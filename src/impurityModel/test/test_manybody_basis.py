@@ -4,8 +4,6 @@ from mpi4py import MPI
 
 from impurityModel.ed import product_state_representation as psr
 from impurityModel.ed.basis_restrictions import get_effective_restrictions
-from impurityModel.ed.manybody_basis import Basis
-from impurityModel.ed.ManyBodyUtils import ManyBodyOperator, SlaterDeterminant
 from impurityModel.ed.basis_transcription import (
     build_dense_matrix,
     build_distributed_vector,
@@ -13,6 +11,8 @@ from impurityModel.ed.basis_transcription import (
     build_state,
     build_vector,
 )
+from impurityModel.ed.manybody_basis import Basis
+from impurityModel.ed.ManyBodyUtils import ManyBodyOperator, SlaterDeterminant
 
 
 def build_operator_dict(basis, op):
@@ -129,7 +129,8 @@ def test_Basis_states_val():
 
 
 @pytest.mark.parametrize(
-    "valence_baths, conduction_baths, delta_valence_occ, delta_conduction_occ, delta_impurity_occ, nominal_impurity_occ, expected",
+    "valence_baths, conduction_baths, delta_valence_occ, delta_conduction_occ, "
+    "delta_impurity_occ, nominal_impurity_occ, expected",
     [
         (0, 0, 0, 0, 0, 9, 10),
         (10, 0, 2, 0, 3, 8, 190),
@@ -162,7 +163,8 @@ def test_Basis_len(
 
 @pytest.mark.mpi
 @pytest.mark.parametrize(
-    "valence_baths, conduction_baths, delta_valence_occ, delta_conduction_occ, delta_impurity_occ, nominal_impurity_occ, expected",
+    "valence_baths, conduction_baths, delta_valence_occ, delta_conduction_occ, "
+    "delta_impurity_occ, nominal_impurity_occ, expected",
     [
         (0, 0, 0, 0, 0, 9, 10),
         (10, 0, 2, 0, 3, 8, 190),
@@ -195,7 +197,8 @@ def test_Basis_len_mpi(
 
 
 @pytest.mark.parametrize(
-    "valence_baths, conduction_baths, delta_valence_occ, delta_conduction_occ, delta_impurity_occ, nominal_impurity_occ",
+    "valence_baths, conduction_baths, delta_valence_occ, delta_conduction_occ, "
+    "delta_impurity_occ, nominal_impurity_occ",
     [
         (0, 0, 0, 0, 0, 9),
         (10, 0, 2, 0, 3, 8),
@@ -228,7 +231,8 @@ def test_Basis_in(
 
 @pytest.mark.mpi
 @pytest.mark.parametrize(
-    "valence_baths, conduction_baths, delta_valence_occ, delta_conduction_occ, delta_impurity_occ, nominal_impurity_occ",
+    "valence_baths, conduction_baths, delta_valence_occ, delta_conduction_occ, "
+    "delta_impurity_occ, nominal_impurity_occ",
     [
         (0, 0, 0, 0, 0, 9),
         (10, 0, 2, 0, 3, 8),
@@ -261,7 +265,8 @@ def test_Basis_in_mpi(
 
 
 @pytest.mark.parametrize(
-    "valence_baths, conduction_baths, delta_valence_occ, delta_conduction_occ, delta_impurity_occ, nominal_impurity_occ",
+    "valence_baths, conduction_baths, delta_valence_occ, delta_conduction_occ, "
+    "delta_impurity_occ, nominal_impurity_occ",
     [
         (0, 0, 0, 0, 0, 9),
         (10, 0, 2, 0, 3, 8),
@@ -293,7 +298,8 @@ def test_Basis_list(
 
 @pytest.mark.mpi
 @pytest.mark.parametrize(
-    "valence_baths, conduction_baths, delta_valence_occ, delta_conduction_occ, delta_impurity_occ, nominal_impurity_occ",
+    "valence_baths, conduction_baths, delta_valence_occ, delta_conduction_occ, "
+    "delta_impurity_occ, nominal_impurity_occ",
     [
         (0, 0, 0, 0, 0, 9),
         (10, 0, 2, 0, 3, 8),
@@ -322,72 +328,6 @@ def test_Basis_list_mpi(
         comm=MPI.COMM_WORLD,
     )
     assert len(basis) == len(list(basis))
-
-
-@pytest.mark.parametrize(
-    "valence_baths, conduction_baths, delta_valence_occ, delta_conduction_occ, delta_impurity_occ, nominal_impurity_occ, expected",
-    [
-        (0, 0, 0, 0, 0, 9, 10),
-        (10, 0, 2, 0, 3, 8, 190),
-        (10, 10, 2, 1, 3, 8, 10390),
-    ],
-)
-def test_Basis_len(
-    valence_baths,
-    conduction_baths,
-    delta_valence_occ,
-    delta_conduction_occ,
-    delta_impurity_occ,
-    nominal_impurity_occ,
-    expected,
-):
-    basis = Basis(
-        impurity_orbitals={0: [list(range(10))]},
-        bath_states=(
-            {0: [list(range(10, 10 + valence_baths))]},
-            {0: [list(range(10 + valence_baths, 10 + valence_baths + conduction_baths))]},
-        ),
-        delta_valence_occ={0: delta_valence_occ},
-        delta_conduction_occ={0: delta_conduction_occ},
-        delta_impurity_occ={0: delta_impurity_occ},
-        nominal_impurity_occ={0: nominal_impurity_occ},
-        verbose=True,
-    )
-    assert len(basis) == expected
-
-
-@pytest.mark.mpi
-@pytest.mark.parametrize(
-    "valence_baths, conduction_baths, delta_valence_occ, delta_conduction_occ, delta_impurity_occ, nominal_impurity_occ, expected",
-    [
-        (0, 0, 0, 0, 0, 9, 10),
-        (10, 0, 2, 0, 3, 8, 190),
-        (10, 10, 2, 1, 3, 8, 10390),
-    ],
-)
-def test_Basis_len_mpi(
-    valence_baths,
-    conduction_baths,
-    delta_valence_occ,
-    delta_conduction_occ,
-    delta_impurity_occ,
-    nominal_impurity_occ,
-    expected,
-):
-    basis = Basis(
-        impurity_orbitals={0: [list(range(10))]},
-        bath_states=(
-            {0: [list(range(10, 10 + valence_baths))]},
-            {0: [list(range(10 + valence_baths, 10 + valence_baths + conduction_baths))]},
-        ),
-        delta_valence_occ={0: delta_valence_occ},
-        delta_conduction_occ={0: delta_conduction_occ},
-        delta_impurity_occ={0: delta_impurity_occ},
-        nominal_impurity_occ={0: nominal_impurity_occ},
-        verbose=True,
-        comm=MPI.COMM_WORLD,
-    )
-    assert len(basis) == expected
 
 
 @pytest.mark.mpi
@@ -442,7 +382,7 @@ def test_contains_random(n_bytes, n_states):
     too_large_state = copy.copy(sorted_states[-1])
     too_large_state[-1] += 1
 
-    assert not (sorted_states[-1] == too_large_state)
+    assert sorted_states[-1] != too_large_state
     assert all(basis.contains(states))
     assert too_large_state not in basis
     assert not list(basis.contains(states + [too_large_state]))[-1]
@@ -1268,7 +1208,7 @@ def test_simple_state_mpi():
         assert all(s[i][state] == s_exact[i][state] for state in basis.local_basis), f"{s=} {s_exact=}"
 
 
-def test_state_mpi():
+def test_state():
     comm = None
     states = build_states([b"\x78", b"\xb8", b"\xd8", b"\xe8", b"\xf0"])
     basis = Basis(

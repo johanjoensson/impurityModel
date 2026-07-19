@@ -22,8 +22,8 @@ def test_rotate_op_dict_identity_is_noop():
     op = {((2, "c"), (0, "a")): 0.7, ((3, "c"), (1, "a")): -0.4}
     rotated = spectra._rotate_op_dict(op, np.eye(4, dtype=complex))
     assert rotated.keys() == op.keys()
-    for k in op:
-        assert np.isclose(rotated[k], op[k])
+    for k, value in op.items():
+        assert np.isclose(rotated[k], value)
 
 
 def test_rotate_op_dict_swaps_under_permutation():

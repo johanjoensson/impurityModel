@@ -139,7 +139,7 @@ class PairwiseGF:
         seeds ``v_i + v_j`` and ``v_i + i v_j``.
     """
 
-    __slots__ = ("n", "diag", "pairs")
+    __slots__ = ("diag", "n", "pairs")
 
     def __init__(self, n, diag, pairs):
         self.n = n
@@ -490,9 +490,9 @@ def _block_cf_inverse(alphas, betas, omegaP):
 
     a_last = np.asarray(alphas[-1])
     G_inv = wI(a_last.shape[0]) - a_last[np.newaxis]
-    for alpha, beta in zip(alphas[-2::-1], betas[-2::-1]):
-        alpha = np.asarray(alpha)
-        beta = np.asarray(beta)
+    for alpha_raw, beta_raw in zip(alphas[-2::-1], betas[-2::-1]):
+        alpha = np.asarray(alpha_raw)
+        beta = np.asarray(beta_raw)
         n_i = alpha.shape[0]
         beta_b = np.broadcast_to(beta, (nw,) + beta.shape)
         G_inv = wI(n_i) - alpha[np.newaxis] - np.conj(beta.T)[np.newaxis] @ np.linalg.solve(G_inv, beta_b)

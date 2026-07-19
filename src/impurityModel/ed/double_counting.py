@@ -35,8 +35,8 @@ def _normalize_dc_orbitals(impurity_orbitals, bath_states):
 
     def as_blocked(orbital_dict):
         out = {}
-        for key, val in orbital_dict.items():
-            val = list(val)
+        for key, val_raw in orbital_dict.items():
+            val = list(val_raw)
             if len(val) > 0 and not hasattr(val[0], "__iter__"):
                 out[key] = [sorted(val)]
             else:

@@ -55,7 +55,6 @@ import io
 import os
 import pstats
 import time
-from collections import OrderedDict
 from contextlib import contextmanager
 
 import numpy as np
@@ -154,8 +153,8 @@ def _build_inputs(ls, nBaths, nValBaths, n0imp, n_omega, dense_cutoff, truncatio
         rank=rank,
         verbose=verbose,
         reort=_resolve_reort(),
-        occ_cutoff=float(os.environ.get("SELFENERGY_BENCH_OCC_CUTOFF", 1e-12)),
-        slaterWeightMin=float(os.environ.get("SELFENERGY_BENCH_SWMIN", 1e-12)),
+        occ_cutoff=float(os.environ.get("SELFENERGY_BENCH_OCC_CUTOFF", "1e-12")),
+        slaterWeightMin=float(os.environ.get("SELFENERGY_BENCH_SWMIN", "1e-12")),
         dN=(int(os.environ["SELFENERGY_BENCH_DN"]) if os.environ.get("SELFENERGY_BENCH_DN") else None),
     )
 

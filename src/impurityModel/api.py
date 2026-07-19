@@ -38,12 +38,12 @@ except ImportError:  # pragma: no cover
     __version__ = "unknown"
 
 __all__ = [
-    "__version__",
     "BasisOptions",
     "ImpurityModel",
     "Meshes",
     "SolverOptions",
     "SpectraOptions",
+    "__version__",
     "atomic_u4",
     "calc_selfenergy",
     "calc_susceptibility_workflow",

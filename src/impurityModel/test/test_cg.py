@@ -1,6 +1,12 @@
+import itertools
+
 import numpy as np
 import pytest
+
+from impurityModel.ed.basis_transcription import build_sparse_matrix, build_vector
 from impurityModel.ed.cg import block_bicgstab
+from impurityModel.ed.manybody_basis import Basis
+from impurityModel.ed.ManyBodyUtils import ManyBodyOperator, ManyBodyState
 
 
 def test_block_bicgstab_array_single():
@@ -148,13 +154,6 @@ def test_block_bicgstab_info_converged_warm_start():
 # reference. These replace the old mock-based dict tests, which patched the
 # pre-block internals (cg.inner etc.) and never exercised the real solver.
 # --------------------------------------------------------------------------- #
-import itertools
-
-from impurityModel.ed.basis_transcription import build_sparse_matrix, build_vector
-from impurityModel.ed.manybody_basis import Basis
-from impurityModel.ed.ManyBodyUtils import ManyBodyOperator, ManyBodyState
-
-
 def _sparse_system(n_sites=6, n_particles=3):
     """Number-conserving H on the full fixed-N space (closed under H, so the dense
     reference matches exactly)."""
@@ -322,6 +321,7 @@ def test_block_bicgstab_sparse_rank_deficient():
     """Sparse (ManyBodyState) path: two proportional RHS states solved as a block match the
     per-column solves to machine precision."""
     from mpi4py import MPI
+
     from impurityModel.ed.manybody_basis import Basis
     from impurityModel.ed.ManyBodyUtils import ManyBodyOperator, ManyBodyState, SlaterDeterminant, inner
 

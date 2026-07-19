@@ -83,6 +83,7 @@ def test_weighted_and_subset_restrictions_combine():
 def test_automatic_restrictions_Sz():
     """The auto-generated S_z restriction (from spin pairs) isolates the S_z sector."""
     from itertools import combinations
+
     from impurityModel.ed.spin_pairs import impurity_spin_pairs, spin_pairs_consistent_with_h
     from impurityModel.ed.symmetries import sz_weighted_restriction
 
@@ -119,8 +120,8 @@ def test_automatic_restrictions_Sz():
 def test_weighted_restriction_in_basis_expand():
     """A Basis with a weighted S_z restriction keeps expand inside the S_z sector."""
     from impurityModel.ed.manybody_basis import Basis
-    from impurityModel.ed.symmetries import sz_weighted_restriction
     from impurityModel.ed.spin_pairs import impurity_spin_pairs
+    from impurityModel.ed.symmetries import sz_weighted_restriction
 
     imp = {0: [[0, 1, 2, 3]]}  # dn = {0,1}, up = {2,3}
     pairs = impurity_spin_pairs(imp)  # [(0,2),(1,3)]
@@ -154,7 +155,7 @@ def test_calc_gs_weighted_sz_restriction():
     """calc_gs with a weighted S_z restriction keeps the whole ground state in-sector."""
     from impurityModel.ed.block_structure import BlockStructure
     from impurityModel.ed.groundstate import calc_gs
-    from impurityModel.ed.spin_pairs import impurity_spin_pairs, bath_spin_pairs
+    from impurityModel.ed.spin_pairs import bath_spin_pairs, impurity_spin_pairs
     from impurityModel.ed.symmetries import sz_weighted_restriction
 
     # SIAM 6 orbitals: 0,1=imp(dn,up); 2,3=val bath(dn,up); 4,5=cond bath(dn,up).
@@ -193,7 +194,7 @@ def test_calc_gs_weighted_sz_restriction():
         truncation_threshold=100000,
         weighted_restrictions=[sz0],
     )
-    psis, es, basis, _, _ = calc_gs(
+    psis, _es, _basis, _, _ = calc_gs(
         Hop, basis_setup, bs, np.eye(2, dtype=complex), verbose=False, slaterWeightMin=1e-12
     )
 
@@ -206,10 +207,11 @@ def test_calc_gs_weighted_sz_restriction():
 def test_greens_function_weighted_restriction_unchanged():
     """A correctly-widened weighted S_z restriction does not change the Green's function."""
     from mpi4py import MPI
-    from impurityModel.ed.manybody_basis import Basis
+
     from impurityModel.ed.greens_function import calc_Greens_function_with_offdiag
-    from impurityModel.ed.symmetries import sz_weighted_restriction
+    from impurityModel.ed.manybody_basis import Basis
     from impurityModel.ed.spin_pairs import impurity_spin_pairs
+    from impurityModel.ed.symmetries import sz_weighted_restriction
 
     # 4 orbitals (2 spatial): impurity_spin_pairs -> dn={0,1}, up={2,3}.
     imp = {0: [[0, 1, 2, 3]]}

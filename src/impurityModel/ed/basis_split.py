@@ -108,7 +108,7 @@ def _pack_units(
 
 
 def split_basis_and_redistribute_psi(
-    basis, priorities: list[float], psis: Optional[list[ManyBodyState]], max_colors: Optional[int] = None
+    basis, priorities: list[float] | np.ndarray, psis: Optional[list[ManyBodyState]], max_colors: Optional[int] = None
 ) -> tuple[list[int], list[int], int, list[int], Basis, Optional[list[ManyBodyState]], list[Optional[MPI.Intercomm]]]:
     """Split the basis and redistribute wavefunctions over a split communicator.
 
@@ -152,6 +152,9 @@ def split_basis_and_redistribute_psi(
         # Unified: all ranks process every block together (no actual split).
         return list(range(len(priorities))), [0], 0, [len(priorities)], basis, psis, [None]
 
+    # _pack_units returns (None, None) or two non-None values together; the guard above
+    # rules out the None case, so procs_per_color is a real array from here on.
+    assert procs_per_color is not None
     proc_cutoffs = np.cumsum(procs_per_color)
     color = int(np.argmax(comm.rank < proc_cutoffs))
 
@@ -160,7 +163,8 @@ def split_basis_and_redistribute_psi(
     items_per_color = [len(subgroup) for subgroup in subgroups]
     assert sum(items_per_color) == len(priorities)
 
-    intercomms = []
+    # None for this rank's own color; a real intercommunicator for every other color.
+    intercomms: list[MPI.Intercomm | None] = []
     for c, c_root in enumerate(split_roots):
         if c == color:
             intercomms.append(None)
@@ -173,13 +177,15 @@ def split_basis_and_redistribute_psi(
 
     new_states = set(basis.local_basis)
     # Distribute my local basis states among all other colors
-    for c, c_root in enumerate(split_roots):
+    for c, _c_root in enumerate(split_roots):
         # I will send  states to this color
         if color != c:
             serialized_local_basis = bytearray().join(
                 state.to_bytearray()[: basis.n_bytes] for state in basis.local_basis
             )
-            intercomms[c].send(serialized_local_basis, dest=split_comm.rank % procs_per_color[c])
+            target = intercomms[c]
+            assert target is not None  # never None on the color != c branch
+            target.send(serialized_local_basis, dest=split_comm.rank % procs_per_color[c])
         # I will receive states from all other colors
         else:
             for send_color in range(len(split_roots)):
@@ -188,7 +194,9 @@ def split_basis_and_redistribute_psi(
                 for sender in range(procs_per_color[send_color]):
                     if sender % procs_per_color[c] != split_comm.rank:
                         continue
-                    received_bytes = intercomms[send_color].recv(source=sender)
+                    source_comm = intercomms[send_color]
+                    assert source_comm is not None
+                    received_bytes = source_comm.recv(source=sender)
                     new_states.update(
                         basis.type.from_bytes(bytes(received_bytes[i : i + basis.n_bytes]))
                         for i in range(0, len(received_bytes), basis.n_bytes)
@@ -212,10 +220,12 @@ def split_basis_and_redistribute_psi(
 
     if psis is not None:
         new_psis = [p.copy() for p in psis]
-        for c, c_root in enumerate(split_roots):
+        for c, _c_root in enumerate(split_roots):
             if color != c:
                 serialized_psis = [{bytes(k.to_bytearray()[: basis.n_bytes]): v for k, v in p.items()} for p in psis]
-                intercomms[c].send(serialized_psis, dest=split_comm.rank % procs_per_color[c])
+                target = intercomms[c]
+                assert target is not None  # never None on the color != c branch
+                target.send(serialized_psis, dest=split_comm.rank % procs_per_color[c])
             else:
                 for send_color in range(len(split_roots)):
                     if send_color == color:
@@ -223,7 +233,9 @@ def split_basis_and_redistribute_psi(
                     for sender in range(procs_per_color[send_color]):
                         if sender % procs_per_color[color] != split_comm.rank:
                             continue
-                        received_psis = intercomms[send_color].recv(source=sender)
+                        source_comm = intercomms[send_color]
+                        assert source_comm is not None
+                        received_psis = source_comm.recv(source=sender)
                         for i, received_psi in enumerate(received_psis):
                             new_psis[i] += ManyBodyState({basis.type.from_bytes(k): v for k, v in received_psi.items()})
         psis = split_basis.redistribute_psis(new_psis)

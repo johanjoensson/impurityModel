@@ -165,7 +165,7 @@ def select_restart_indices(theta, n_keep, locked_local, which="smallest", locked
     order = np.argsort(theta.real)
     if which == "largest":
         order = order[::-1]
-    locked_set = set(int(i) for i in locked_local)
+    locked_set = {int(i) for i in locked_local}
     ranked = [int(i) for i in order if int(i) not in locked_set]
 
     if locked_evals is not None and len(locked_evals) and ghost_tol > 0:

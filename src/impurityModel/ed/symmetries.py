@@ -376,8 +376,8 @@ def widen_weighted_restrictions(weighted_restrictions, extra=None):
 def sz_weighted_restriction(spin_pairs, two_sz_target, slack=0):
     r"""Auto-generate the ``S_z`` weighted restriction from ``(dn, up)`` spin pairs.
 
-    Uses the integer-weight form ``2 S_z = Σ (n_up − n_dn)`` (weight ``+1`` on each up
-    orbital, ``−1`` on each down orbital), so ``two_sz_target = 2 * S_z`` is an integer.
+    Uses the integer-weight form ``2 S_z = Σ (n_up - n_dn)`` (weight ``+1`` on each up
+    orbital, ``-1`` on each down orbital), so ``two_sz_target = 2 * S_z`` is an integer.
     The spin pairs should come from
     ``spin_pairs.impurity_spin_pairs`` / ``spin_pairs.bath_spin_pairs`` after
     ``spin_pairs.spin_pairs_consistent_with_h`` validates them.
@@ -387,7 +387,7 @@ def sz_weighted_restriction(spin_pairs, two_sz_target, slack=0):
     spin_pairs : sequence of (int, int)
         ``(dn, up)`` spin-orbital index pairs.
     two_sz_target : int
-        Target value of ``2 S_z`` (``N_up − N_dn``).
+        Target value of ``2 S_z`` (``N_up - N_dn``).
     slack : int, optional
         Allow ``two_sz_target ± slack``.
 
@@ -527,8 +527,8 @@ def impurity_symmetry_rotation(op, impurity_orbitals, n_orb=None, h0_matrix=None
     .. note::
 
        Use a straight eigendecomposition, **not** ``discover_one_body_symmetries`` +
-       ``joint_diagonalize``: a degenerate ``h_imp`` (e.g. six-fold ``t2g``×spin, four-fold
-       ``eg``×spin) has a huge ``U(6)×U(4)`` one-body commutant, and jointly diagonalising a
+       ``joint_diagonalize``: a degenerate ``h_imp`` (e.g. six-fold ``t2g``xspin, four-fold
+       ``eg``xspin) has a huge ``U(6)xU(4)`` one-body commutant, and jointly diagonalising a
        *random* element of it picks an arbitrary spin/orbital-scrambling basis that densifies
        the (spherical-harmonic-sparse) Coulomb interaction ~7x. Diagonalising the physical
        ``h_imp`` keeps that basis (and hence ``U``) as sparse as the crystal field allows.
@@ -939,5 +939,5 @@ def measure_conserved_charges(psi, charges, n_orb, comm=None, round_to_int=True)
         return [0 for _ in charges]
     averages = totals / norm2
     if round_to_int:
-        return [int(round(x)) for x in averages]
+        return [int(round(x)) for x in averages]  # noqa: RUF046  (np.float64 round() returns float, cast is needed)
     return list(averages)

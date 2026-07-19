@@ -1,13 +1,12 @@
 import numpy as np
-import pytest
 
 from impurityModel.ed.block_structure import (
     BlockStructure,
     build_block_structure,
     build_greens_function,
+    build_matrix,
     get_equivalent_blocks,
     get_equivalent_orbs,
-    build_matrix,
     print_block_structure,
 )
 

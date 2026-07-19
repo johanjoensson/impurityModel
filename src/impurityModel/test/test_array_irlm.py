@@ -11,12 +11,12 @@ import numpy as np
 import pytest
 from mpi4py import MPI
 
-from impurityModel.ed.BlockLanczosArray import Reort, block_normalize
-from impurityModel.ed.ManyBodyUtils import ManyBodyState
-from impurityModel.ed.irlm import implicitly_restarted_block_lanczos_cy
 from impurityModel.ed.BlockLanczos import implicitly_restarted_block_lanczos_cy as mbs_irlm
-from impurityModel.test.test_restarted_lanczos import MockBasis, get_test_system
+from impurityModel.ed.BlockLanczosArray import Reort, block_normalize
+from impurityModel.ed.irlm import implicitly_restarted_block_lanczos_cy
+from impurityModel.ed.ManyBodyUtils import ManyBodyState
 from impurityModel.test.test_block_lanczos_reort_matrix import build_dense_matrix_from_manybody
+from impurityModel.test.test_restarted_lanczos import MockBasis, get_test_system
 
 _MODES = [Reort.NONE, Reort.FULL, Reort.PARTIAL, Reort.SELECTIVE, Reort.PERIODIC]
 
@@ -33,7 +33,7 @@ def _reort_system():
 @pytest.mark.parametrize("mode", _MODES)
 def test_array_irlm_matches_dense_large_subspace(mode):
     """With a large subspace (no restart) the array IRLM reproduces the dense spectrum."""
-    _, H, N, exact, _, psi0 = _reort_system()
+    _, H, _N, exact, _, psi0 = _reort_system()
     # msb*p >~ Krylov dimension that captures the wanted pairs without restarting.
     ev, _ = implicitly_restarted_block_lanczos_cy(
         psi0=psi0.copy(),
@@ -179,7 +179,7 @@ def _partition(n, size):
 def test_array_irlm_mpi_matches_serial(mode):
     """Row-block-distributed array IRLM matches a serial run of the same problem."""
     comm = MPI.COMM_WORLD
-    _, H, N, exact, _, psi0_full = _reort_system()
+    _, H, N, _exact, _, psi0_full = _reort_system()
 
     counts = _partition(N, comm.size)
     c0 = sum(counts[: comm.rank])

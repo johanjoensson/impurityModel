@@ -345,15 +345,15 @@ def _lanczos_convergence_summary(alphas_list, betas_list, delta, tol=_GF_REL_TOL
     worst = 0.0
     max_blocks = 0
     all_converged = True
-    for A, B in zip(alphas_list, betas_list):
-        A = list(A)
-        B = list(B)
+    for A_raw, B_raw in zip(alphas_list, betas_list):
+        A = list(A_raw)
+        B = list(B_raw)
         max_blocks = max(max_blocks, len(A))
         if len(A) < _GF_MESH_FREEZE_BLOCKS:  # invariant subspace reached almost immediately -> exact
             continue
         # Invariant subspace: trailing coupling vanished -> exact (matches the kernel's
         # "invariant_subspace" status, which the run-time monitor treats as converged).
-        tail = np.asarray(B[-1]) if len(B) else np.zeros(0)
+        tail = np.asarray(B[-1]) if B else np.zeros(0)
         scale = max((float(np.linalg.norm(np.asarray(a), 2)) for a in A), default=1.0)
         if tail.size == 0 or float(np.linalg.norm(tail, 2)) <= _GF_REL_TOL_FLOOR * max(scale, 1.0):
             continue
