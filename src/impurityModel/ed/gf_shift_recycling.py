@@ -19,9 +19,9 @@ import scipy as sp
 from mpi4py import MPI
 
 from impurityModel.ed import config
+from impurityModel.ed.basis_transcription import build_sparse_matrix, build_state
 from impurityModel.ed.BlockLanczos import block_lanczos_cy
 from impurityModel.ed.BlockLanczosArray import resolve_reort
-from impurityModel.ed.basis_transcription import build_sparse_matrix, build_state
 from impurityModel.ed.gf_primitives import _CappedBasisProxy, _distributed_seed_qr, _trim_blocks
 from impurityModel.ed.ManyBodyUtils import ManyBodyBlockState, ManyBodyState
 from impurityModel.ed.memory_estimate import available_bytes_per_rank, format_bytes
@@ -170,13 +170,13 @@ class SectorResolventCache:
         of a massive sector would grow the basis all the way to its
         ``truncation_threshold`` for nothing.
         """
-        basis.add_states(sorted(set(state for psi in seeds for state in psi.keys())))
+        basis.add_states(sorted({state for psi in seeds for state in psi.keys()}))
         probe = ManyBodyBlockState.from_states(list(seeds))
         while True:
             old_size = basis.size
             probe = hOp.apply_block(probe, slaterWeightMin)
             basis.add_states(
-                set(state for state in probe.support_keys(0.0) if state not in basis.local_basis),
+                {state for state in probe.support_keys(0.0) if state not in basis.local_basis},
             )
             if basis.size == old_size or basis.size > min(size_bound, basis.truncation_threshold):
                 break
@@ -348,13 +348,20 @@ class KrylovShiftedResolvent:
     round that would exceed the bound before convergence declines the whole solve
     (``solve`` returns ``None``, the caller falls back to its per-point solver).
 
-    ``reort`` defaults to ``"partial"``: unlike the continued-fraction Green's function
-    (which never reads Q back), the reconstruction multiplies into Q, so it needs
-    semi-orthogonality; PARTIAL's ``sqrt(eps)`` target keeps the reconstruction error
-    around 1e-8 relative at a fraction of FULL's cost.
+    ``reort`` defaults to ``"full"``: the reconstruction multiplies the shifted
+    tridiagonal solution back into the retained Krylov store ``Q``, and the per-round
+    convergence gate trusts the projected residual ``||beta_m y_m||`` -- both are only
+    faithful while ``Q`` is orthonormal, i.e. while ``T`` really is ``Q^H H Q``. FULL
+    reorthogonalizes each new block against the whole store, which this recycler keeps in
+    memory anyway (``store_krylov=True``), so it costs no extra storage and keeps the
+    residual estimate honest. PARTIAL's approximate ``sqrt(eps)`` estimator is mismatched
+    with a full store: on a long single-seed recurrence it was observed to leave the
+    reconstruction near ``1e-6`` while the projected residual still reported convergence
+    at ``atol`` (worse than doing no reorthogonalization at all) -- see the regression test
+    ``test_krylov_shifted_resolvent_long_recurrence``.
     """
 
-    def __init__(self, reort="partial"):
+    def __init__(self, reort="full"):
         self._reort = resolve_reort(reort)
 
     def solve(self, basis, hOp, rhs, zs, slaterWeightMin=0, atol=1e-6, verbose=False):
@@ -380,7 +387,7 @@ class KrylovShiftedResolvent:
             return [[ManyBodyState() for _ in range(n_rhs)] for _ in zs]
 
         basis.clear()
-        basis.add_states(sorted(set(state for psi in rhs for state in psi.keys())))
+        basis.add_states(sorted({state for psi in rhs for state in psi.keys()}))
         rhs = basis.redistribute_psis(list(rhs))
 
         # Orthonormal seed block + projection B0 (the same preamble as block_green_impl).
