@@ -83,4 +83,13 @@ line-length = 120
 
 lint.select = ["E", "F", "B", "C4", "PL", "A", "SIM", "RUF", "PGH", "I"]
 
-lint.ignore = ["B905", "PLR2004", "PLR0911", "PLR0912", "PLR0913", "PLR0915", "SIM105","RUF005", "PGH003", "C408", "SIM118", "E741", "PLR5501"]
+lint.ignore = [
+    "B905", "PLR2004", "PLR0911", "PLR0912", "PLR0913", "PLR0915", "SIM105",
+    "RUF005", "PGH003", "C408", "SIM118", "E741", "PLR5501",
+    # PLC0415 (import-outside-top-level): function-local imports are used
+    # deliberately here to break import cycles required by the layering rule in
+    # CLAUDE.md (e.g. solvers importing physics/symmetries lazily) and to keep
+    # test modules self-contained. Enforcing top-level imports would fight that
+    # design, so the rule is disabled project-wide.
+    "PLC0415",
+]
