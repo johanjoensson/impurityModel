@@ -137,6 +137,51 @@ def test_fixed_occupation_dc_unreachable_raises():
         fixed_occupation_dc(occupation=0.2, dc_guess=dc_guess, **common_kwargs(v=0.3, tau=1e-2))
 
 
+def test_noninteracting_impurity_occupation_matches_fermi_fill():
+    # The h_loc-derived target is the Fermi-filled (mu=0) occupation of the full
+    # non-interacting h0. Build a 1-impurity / 1-bath cluster with an impurity
+    # level poking above the Fermi level so the answer is genuinely fractional,
+    # and compare against an independent per-eigenvector Fermi sum.
+    from impurityModel.ed.double_counting import _noninteracting_impurity_occupation
+
+    e_imp, e_bath, v, tau = 0.5, -2.0, 0.5, 0.1
+    h0 = {
+        ((0, "c"), (0, "a")): e_imp,
+        ((1, "c"), (1, "a")): e_bath,
+        ((0, "c"), (1, "a")): v,
+        ((1, "c"), (0, "a")): v,
+    }
+    n = _noninteracting_impurity_occupation(h0, impurity_indices=[0], n_spin_orbitals=2, tau=tau)
+
+    h = np.array([[e_imp, v], [v, e_bath]], dtype=complex)
+    energies, vecs = np.linalg.eigh(h)
+    f = 1.0 / (1.0 + np.exp(energies / tau))
+    expected = float(np.sum(f * np.abs(vecs[0, :]) ** 2))  # <imp| sum_n f_n |v_n><v_n| |imp>
+    assert 0.0 < expected < 1.0  # genuinely fractional, not a plateau boundary
+    assert np.isclose(n, expected, atol=1e-12), (n, expected)
+
+
+def test_fixed_occupation_dc_derives_target_from_hloc():
+    # Omitting `occupation` must pin the h_loc-derived target. For this cluster
+    # both non-interacting levels sit below the Fermi level, so the derived
+    # occupation is 2; the resulting DC must match an explicit occupation=2 call
+    # (and, as in test_fixed_occupation_dc_increases_occupation, push dc > 6).
+    from impurityModel.ed.double_counting import _noninteracting_impurity_occupation
+
+    kwargs = common_kwargs(v=0.3, tau=1e-2)
+    derived = _noninteracting_impurity_occupation(
+        kwargs["model"].h0, impurity_indices=[0, 1], n_spin_orbitals=4, tau=kwargs["basis"].tau
+    )
+    assert np.isclose(derived, 2.0, atol=1e-6)
+
+    dc_guess = 0.5 * np.identity(2, dtype=complex)
+    dc_auto = fixed_occupation_dc(dc_guess=dc_guess, **kwargs)
+    dc_explicit = fixed_occupation_dc(occupation=2.0, dc_guess=dc_guess, **common_kwargs(v=0.3, tau=1e-2))
+    assert_uniform_shift(dc_auto, dc_guess)
+    assert dc_auto[0, 0].real > 6.0, dc_auto
+    assert np.allclose(dc_auto, dc_explicit), (dc_auto, dc_explicit)
+
+
 @pytest.mark.mpi
 def test_fixed_peak_dc_ranks_agree():
     # The Newton loop in fixed_peak_dc branches on Lanczos energies, which are
