@@ -43,7 +43,7 @@ DEGENERACY_TOL = 1e-9
 #: How many times ``get_eigenvectors`` may double ``num_wanted`` looking for an eigenstate beyond
 #: the thermal energy cut. Each doubling is a full re-solve, so this bounds the worst case; in
 #: practice the first solve already overshoots the cut.
-_MAX_EIGENSTATE_DOUBLINGS = 6
+_MAX_EIGENSTATE_DOUBLINGS = 24
 
 #: Loosest eigenvector residual we ever accept -- the historical hard-coded default. Deriving the
 #: tolerance from ``slaterWeightMin`` must never make the eigensolver *lazier* than this.

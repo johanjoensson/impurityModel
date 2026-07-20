@@ -410,12 +410,15 @@ def apply_global_truncation(ManyBodyState st, int max_size, object comm):
     cdef double mid
     cdef int global_count
 
-    # 45 iterations over [0, max_norm2] gives double precision
-    for _ in range(45):
+    # Keep iterating until the range of possible values is small enough
+    while abs(high - low) > 1e-8:
         mid = (low + high) * 0.5
         global_count = comm.allreduce(st.count_above(mid), op=MPI.SUM)
+        # Keep too many, mid is lower than the required value
         if global_count > max_size:
             low = mid
+        # Keep too few, mid is higher than the required value
+        # If you keep just the right amount, keep increasing the lower bound until the range converges.
         else:
             high = mid
 
