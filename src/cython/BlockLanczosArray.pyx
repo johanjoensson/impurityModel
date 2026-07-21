@@ -1074,51 +1074,28 @@ def block_lanczos_array_cy(
                 raise RuntimeError("Krylov basis must be built for reorthogonalization")
             wp_arr, _, _ = apply_reort(wp_arr, Q_list, None, Reort.FULL, mpi, comm, block_widths)
 
-        M = wp_arr.conj().T @ wp_arr
-        if mpi:
-            comm.Allreduce(MPI.IN_PLACE, M, op=MPI.SUM)
-
-        if np.any(np.isnan(M)) or np.any(np.isinf(M)):
-            # Non-finite Gram matrix => corrupted recurrence, truncated (NOT exact).
+        # TSQR of the residual block: the triangular factor is built from the block itself
+        # (panel Householder + Givens merges + one Allgather), never from wp^H wp, so it is
+        # backward stable at any conditioning and the rank decision below is made on the
+        # block's true singular values. A *residual* block is negligible when it is small
+        # against H, not against 1, so the breakdown reference is the divergence guard's
+        # running spectral-scale estimate (max of the block norms seen so far, all bounded by
+        # ||H||), widened by this step's alpha since the guard has not run yet. On the first
+        # step of a cold start h_norm_est is still 0 and alpha_0 carries the scale.
+        _h_scale = max(h_norm_est, t_norm_max, float(np.linalg.norm(alpha_i_arr, ord=2)))
+        q_next, beta_i, active_k, sv_i = tsqr(wp_arr, comm if mpi else None, _h_scale)
+        if active_k < 0:
+            # Non-finite factor => corrupted recurrence, truncated (NOT exact).
             termination = "diverged"
             block_widths.append(n_curr)
             it += 1
             break
-
-        # A *residual* block is negligible when it is small against H, not against 1. Reuse the
-        # divergence guard's running spectral-scale estimate (max of the block norms seen so
-        # far, all bounded by ||H||), widened by this step's alpha since the guard has not run
-        # yet. On the first step of a cold start h_norm_est is still 0 and alpha_0 carries the
-        # scale; an exactly-zero block gives lam_max = 0 <= 0 and still breaks down.
-        _h_scale = max(h_norm_est, t_norm_max, float(np.linalg.norm(alpha_i_arr, ord=2)))
-        beta_i, beta_inv, active_k = _cholesky_or_deflate(M, n_curr, _h_scale)
         if active_k == 0:
             # Rank-deficient residual => the block-Krylov space is closed => exact.
             termination = "invariant_subspace"
             block_widths.append(n_curr)
             it += 1
             break
-
-        q_next = wp_arr @ beta_inv
-
-        # CholeskyQR2 (conditional): a single Cholesky-QR leaves q_next non-orthonormal by
-        # O(cond(M)*EPS); the second pass drives that to O(EPS) and folds the correction back
-        # into beta_i, preventing the Krylov vectors from being amplified to overflow. It is only
-        # needed for ill-conditioned blocks: when cond(M) < EPS^(-1/3) the first pass is already
-        # orthonormal to < EPS^(2/3) (~4e-11) << sqrt(EPS), so the extra Gram + MPI Allreduce is
-        # skipped. The same cond(M) gates both kernels, so they stay in lock-step.
-        if np.linalg.cond(M) >= EPS ** (-1.0 / 3.0):
-            M2 = np.ascontiguousarray(q_next.conj().T @ q_next)
-            if mpi:
-                comm.Allreduce(MPI.IN_PLACE, M2, op=MPI.SUM)
-            M2 = 0.5 * (M2 + M2.conj().T)
-            beta2_inv, beta_i, active_k = _cholesky_qr2(M2, beta_i, active_k)
-            if active_k == 0:
-                termination = "invariant_subspace"
-                block_widths.append(n_curr)
-                it += 1
-                break
-            q_next = q_next @ beta2_inv
 
         betas_buf[it, :active_k, :n_curr] = beta_i
 
@@ -1128,10 +1105,10 @@ def block_lanczos_array_cy(
         # corrupted past repair. Truncate *before* this block (exclude alpha_i/beta_i at
         # index it) so the diverged tail never reaches the Green's function. Mirrors the
         # guard in block_lanczos_cy.
-        # One SVD of beta_i per step: largest singular value is the 2-norm (reused by the
-        # SELECTIVE Ritz-error check below).
-        _svb = np.linalg.svd(beta_i, compute_uv=False)
-        beta_norm = float(_svb[0])
+        # ||beta_i||_2 comes out of the factorization: beta_i and the block share their
+        # singular values, so sv_i[0] is the 2-norm (reused by the SELECTIVE Ritz-error check
+        # below) with no SVD of its own.
+        beta_norm = float(sv_i[0])
         _reort_acted = False
         alpha_norm = np.linalg.norm(alpha_i_arr, ord=2)
         diverged, t_norm_max, h_norm_est = divergence_guard(
@@ -1151,9 +1128,10 @@ def block_lanczos_array_cy(
         # EA16 §2.6.2 estimate-driven locking reorthogonalization. Propagate the cheap
         # per-pair overlap estimate (no O(N) work) and reorthogonalize q_next only against
         # the locked vectors whose estimate now exceeds omega_TOL, resetting those to
-        # omega_min. ||B_j^{-1}|| = ||beta_inv||_2, ||B_{j-1}|| = ||betas_buf[it-1]||_2.
+        # omega_min. ||B_j^{-1}|| = 1/sigma_min of the retained block, ||B_{j-1}|| =
+        # ||betas_buf[it-1]||_2.
         if partial_locked:
-            bj_inv_norm = float(np.linalg.norm(beta_inv, 2))
+            bj_inv_norm = 1.0 / float(sv_i[active_k - 1])
             bjm1_norm = float(np.linalg.norm(betas_buf[it - 1], 2)) if it > 0 else 0.0
             xi_new_l, xi_trigger, xi_mask = _ea16.locked_overlap_step(
                 xi_l, xi_prev_l, locked_evals_arr, alpha_i_arr,
@@ -1235,32 +1213,26 @@ def block_lanczos_array_cy(
                     # and beta_i inconsistent; on a near-redundant block (tight clusters) it removes
                     # almost all of q_next, and that residual must be renormalized (or legitimately
                     # deflated) before it feeds the next iteration — else the recurrence amplifies
-                    # the tiny leftover and the basis blows up.
-                    M2 = np.ascontiguousarray(q_next.conj().T @ q_next)
-                    if mpi:
-                        comm.Allreduce(MPI.IN_PLACE, M2, op=MPI.SUM)
-                    M2 = 0.5 * (M2 + M2.conj().T)
+                    # the tiny leftover and the basis blows up. Re-factoring folds the correction
+                    # into beta_i: wp = (q_next @ R2) @ beta_i.
+                    q_next_2, R2, active_k, sv2 = tsqr(q_next, comm if mpi else None, 1.0)
                     # An *absolutely* tiny residual => the new block is fully contained in the
                     # existing Krylov span (invariant subspace, e.g. a tight cluster whose
                     # effective rank is exhausted). Renormalizing that noise would amplify rounding
-                    # into the recurrence (beta blow-up), so stop here.
-                    if float(np.max(np.real(np.diag(M2)))) < EPS:
+                    # into the recurrence (beta blow-up), so stop here. sqrt(EPS) is the largest
+                    # column norm the old max(diag(q_next^H q_next)) < EPS test admitted.
+                    if active_k <= 0 or float(sv2[0]) < np.sqrt(EPS):
                         termination = "invariant_subspace"
                         block_widths.append(n_curr)
                         it += 1
                         break
-                    beta2_inv, beta_i, active_k = _cholesky_qr2(M2, beta_i, active_k)
-                    if active_k == 0:
-                        termination = "invariant_subspace"
-                        block_widths.append(n_curr)
-                        it += 1
-                        break
-                    q_next = q_next @ beta2_inv
+                    beta_i = R2 @ beta_i
+                    q_next = q_next_2
                     # The renormalization rescales q_next's true overlaps with every
-                    # Krylov column by up to ||beta2_inv||_2; propagate the same bound
-                    # into the just-written honest post-reort W estimates (a no-op when
-                    # the projection removed little: beta2_inv ~ I).
-                    W[1, : W.shape[1] - 1] *= np.linalg.norm(beta2_inv, 2)
+                    # Krylov column by up to ||R2^{-1}||_2 = 1/sigma_min; propagate the same
+                    # bound into the just-written honest post-reort W estimates (a no-op when
+                    # the projection removed little: R2 ~ I).
+                    W[1, : W.shape[1] - 1] *= 1.0 / float(sv2[active_k - 1])
                     betas_buf[it, :active_k, :n_curr] = beta_i
 
         # Record ||beta_it||_2 of the FINAL stored beta (the acted-renormalize above may
