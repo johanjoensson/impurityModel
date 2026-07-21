@@ -1265,6 +1265,40 @@ ManyBodyOperator::operator-=(const ManyBodyOperator &other) noexcept {
   return *this;
 }
 
+ManyBodyOperator::mapped_type ManyBodyOperator::constant() const noexcept {
+  // The empty key sorts before every other term, so this is the front element
+  // whenever a constant is present at all.
+  if (!m_ops.empty() && m_ops.front().first.empty()) {
+    return m_ops.front().second;
+  }
+  return mapped_type{0.0, 0.0};
+}
+
+void ManyBodyOperator::set_constant(mapped_type c) noexcept {
+  m_flat_dirty = true;
+  const bool have = !m_ops.empty() && m_ops.front().first.empty();
+  const bool want = c != mapped_type{0.0, 0.0};
+  if (have && want) {
+    m_ops.front().second = c;
+  } else if (have) {
+    m_ops.erase(m_ops.begin());
+  } else if (want) {
+    m_ops.emplace(m_ops.begin(), key_type{}, c);
+  }
+  // m_canonical is deliberately left alone: the empty term is canonical and is
+  // written at the front, which is exactly where the ordering puts it.
+}
+
+ManyBodyOperator &ManyBodyOperator::operator+=(mapped_type s) noexcept {
+  set_constant(constant() + s);
+  return *this;
+}
+
+ManyBodyOperator &ManyBodyOperator::operator-=(mapped_type s) noexcept {
+  set_constant(constant() - s);
+  return *this;
+}
+
 ManyBodyOperator &ManyBodyOperator::operator*=(mapped_type s) noexcept {
   m_flat_dirty = true;
   for (auto &p : m_ops) {

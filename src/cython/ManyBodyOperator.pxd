@@ -46,9 +46,16 @@ cdef extern from "ManyBodyOperator.h" nogil:
         vector[ManyBodyState] apply(const vector[const ManyBodyState*]&, double)
         ManyBodyBlockState apply(const ManyBodyBlockState&, double)
 
+        mapped_type constant()
+        void set_constant(mapped_type)
+
         ManyBodyOperator operator-()
         ManyBodyOperator operator+(const ManyBodyOperator&, const ManyBodyOperator&)
         ManyBodyOperator operator-(const ManyBodyOperator&, const ManyBodyOperator&)
+        ManyBodyOperator operator+(const ManyBodyOperator&, mapped_type)
+        ManyBodyOperator operator+(mapped_type, const ManyBodyOperator&)
+        ManyBodyOperator operator-(const ManyBodyOperator&, mapped_type)
+        ManyBodyOperator operator-(mapped_type, const ManyBodyOperator&)
         ManyBodyOperator operator*(const ManyBodyOperator&, mapped_type)
         ManyBodyOperator operator*(mapped_type, const ManyBodyOperator&)
         ManyBodyOperator operator/(const ManyBodyOperator&, mapped_type)

@@ -50,6 +50,13 @@ cdef class ManyBodyOperator:
     other operation, so a result must have its restrictions set explicitly (this is
     what e.g. ``gf_solvers`` and ``manybody_basis.Basis`` do).
     """
+    # Opt out of numpy's ufunc dispatch. Without this a numpy scalar on the left of a
+    # mixed expression (`np.complex128(z) - hOp`, which is what a frequency taken from a
+    # mesh actually is) tries to broadcast the operator as an array element and raises
+    # _UFuncNoLoopError instead of deferring; setting it to None is numpy's documented
+    # way to make it return NotImplemented so __rsub__/__radd__/__rmul__ run.
+    __array_ufunc__ = None
+
     cdef ManyBodyOperator_cpp o
 
     def __cinit__(self, dict[tuple[tuple[int, str]], complex_cpp] op=None):
@@ -80,26 +87,97 @@ cdef class ManyBodyOperator:
     def __setitem__(self, tuple[tuple[int, str]]key, ManyBodyState_cpp.mapped_type value):
         self.o[processes_to_ints(key)] = value
 
-    def __add__(self, ManyBodyOperator other) ->ManyBodyOperator:
-        res = ManyBodyOperator()
+    @staticmethod
+    def identity(scale=1.0) -> ManyBodyOperator:
+        """
+        Return ``scale`` times the identity operator.
+
+        The identity is the single empty-string term ``{(): scale}``; note that a
+        default-constructed ``ManyBodyOperator()`` is the *zero* operator, not this.
+        """
+        cdef ManyBodyOperator res = ManyBodyOperator()
+        cdef ManyBodyOperator_cpp.mapped_type s = scale
         with nogil:
-            res.o = self.o + other.o
+            res.o.set_constant(s)
         return res
 
-    def __iadd__(self, ManyBodyOperator other) ->ManyBodyOperator:
+    @property
+    def constant(self) -> complex:
+        """
+        Coefficient of the identity: the amplitude of the empty term ``()``.
+
+        Writable. Setting it to zero removes the term.
+        """
+        return self.o.constant()
+
+    @constant.setter
+    def constant(self, ManyBodyOperator_cpp.mapped_type value):
         with nogil:
-            self.o = self.o + other.o
+            self.o.set_constant(value)
+
+    def __add__(self, other) -> ManyBodyOperator:
+        cdef ManyBodyOperator res = ManyBodyOperator()
+        cdef ManyBodyOperator rhs
+        cdef ManyBodyOperator_cpp.mapped_type s
+        if isinstance(other, ManyBodyOperator):
+            rhs = <ManyBodyOperator>other
+            with nogil:
+                res.o = self.o + rhs.o
+        else:
+            s = other
+            with nogil:
+                res.o = self.o + s
+        return res
+
+    def __radd__(self, other) -> ManyBodyOperator:
+        return self.__add__(other)
+
+    def __iadd__(self, other) -> ManyBodyOperator:
+        cdef ManyBodyOperator rhs
+        cdef ManyBodyOperator_cpp.mapped_type s
+        if isinstance(other, ManyBodyOperator):
+            rhs = <ManyBodyOperator>other
+            with nogil:
+                self.o = self.o + rhs.o
+        else:
+            s = other
+            with nogil:
+                self.o = self.o + s
         return self
 
-    def __sub__(self, ManyBodyOperator other) -> ManyBodyOperator:
-        res = ManyBodyOperator()
-        with nogil:
-            res.o = self.o - other.o
+    def __sub__(self, other) -> ManyBodyOperator:
+        cdef ManyBodyOperator res = ManyBodyOperator()
+        cdef ManyBodyOperator rhs
+        cdef ManyBodyOperator_cpp.mapped_type s
+        if isinstance(other, ManyBodyOperator):
+            rhs = <ManyBodyOperator>other
+            with nogil:
+                res.o = self.o - rhs.o
+        else:
+            s = other
+            with nogil:
+                res.o = self.o - s
         return res
 
-    def __isub__(self, ManyBodyOperator other) -> ManyBodyOperator:
+    def __rsub__(self, other) -> ManyBodyOperator:
+        """``scalar - op``, i.e. ``scalar*I - op`` (used for resolvents ``z - H``)."""
+        cdef ManyBodyOperator res = ManyBodyOperator()
+        cdef ManyBodyOperator_cpp.mapped_type s = other
         with nogil:
-            self.o = self.o - other.o
+            res.o = s - self.o
+        return res
+
+    def __isub__(self, other) -> ManyBodyOperator:
+        cdef ManyBodyOperator rhs
+        cdef ManyBodyOperator_cpp.mapped_type s
+        if isinstance(other, ManyBodyOperator):
+            rhs = <ManyBodyOperator>other
+            with nogil:
+                self.o = self.o - rhs.o
+        else:
+            s = other
+            with nogil:
+                self.o = self.o - s
         return self
 
     def __neg__(self) -> ManyBodyOperator:

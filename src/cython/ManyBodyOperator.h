@@ -200,8 +200,31 @@ public:
    * representation. */
   [[nodiscard]] size_type num_flat_terms() const;
 
+  /**
+   * @brief Coefficient of the identity, i.e. the amplitude of the empty term.
+   *
+   * A constant is just the zero-length operator string: it needs no orbitals
+   * and no ladder operators, and apply() already handles it through the
+   * number-operator fast path with an empty occupancy mask. Building z*I as
+   * `z*(n_i + (1 - n_i))` -- two single-particle terms on the same orbital --
+   * is the same operator the long way round.
+   */
+  [[nodiscard]] mapped_type constant() const noexcept;
+  /**
+   * @brief Set the identity coefficient, dropping the term when it is zero.
+   *
+   * Keeps the operator canonical: the empty key IS in canonical form and sorts
+   * before every other term, so this is not one of the invariant-breaking raw
+   * mutators.
+   */
+  void set_constant(mapped_type) noexcept;
+
   ManyBodyOperator &operator+=(const ManyBodyOperator &) noexcept;
   ManyBodyOperator &operator-=(const ManyBodyOperator &) noexcept;
+  /** @brief Add a multiple of the identity. */
+  ManyBodyOperator &operator+=(mapped_type) noexcept;
+  /** @brief Subtract a multiple of the identity. */
+  ManyBodyOperator &operator-=(mapped_type) noexcept;
   ManyBodyOperator &operator*=(mapped_type) noexcept;
   ManyBodyOperator &operator/=(mapped_type) noexcept;
   [[nodiscard]] ManyBodyOperator operator-() const noexcept;
@@ -214,6 +237,27 @@ public:
   [[nodiscard]] friend ManyBodyOperator
   operator-(const ManyBodyOperator &self, const ManyBodyOperator &other) {
     return ManyBodyOperator{self} -= other;
+  }
+
+  [[nodiscard]] friend ManyBodyOperator operator+(const ManyBodyOperator &self,
+                                                  mapped_type s) {
+    return ManyBodyOperator{self} += s;
+  }
+
+  [[nodiscard]] friend ManyBodyOperator operator+(mapped_type s,
+                                                  const ManyBodyOperator &o) {
+    return o + s;
+  }
+
+  [[nodiscard]] friend ManyBodyOperator operator-(const ManyBodyOperator &self,
+                                                  mapped_type s) {
+    return ManyBodyOperator{self} -= s;
+  }
+
+  /** @brief s*I - op (note the operand order: this is not -(op - s)). */
+  [[nodiscard]] friend ManyBodyOperator operator-(mapped_type s,
+                                                  const ManyBodyOperator &o) {
+    return -o += s;
   }
 
   [[nodiscard]] friend ManyBodyOperator operator*(const ManyBodyOperator &self,
