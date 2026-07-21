@@ -85,8 +85,8 @@ from impurityModel.ed.BlockLanczosArray import (
 
 # --- Optional per-step profiling (env-gated, ~zero cost when off) -------------------
 # Set BLOCKLANCZOS_PROFILE=1 to accumulate wall time per sub-operation of the sparse
-# block-Lanczos step (matvec / recurrence-LA / W-estimator / triggered reort /
-# CholeskyQR2 / convergence monitor). Read with get_block_lanczos_profile().
+# block-Lanczos step (matvec / recurrence-LA / W-estimator / triggered reort / TSQR /
+# convergence monitor). Read with get_block_lanczos_profile().
 import os as _os
 import time as _time
 _PROF = {}

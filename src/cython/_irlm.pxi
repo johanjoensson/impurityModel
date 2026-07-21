@@ -288,8 +288,8 @@ def _irlm_core(
             col = _orth_against_locked(_q_slice(X, j, j + 1))
             g = block_inner(col, col, mpi, comm)
             # ``col`` entered with unit norm, so ``g[0,0]`` is the fraction of it that survives
-            # deflation against the locked set. Below the rank floor ``_cholesky_or_deflate``
-            # itself uses -- ``DEFLATE_EVAL_TOL = DEFLATE_TOL**2``, on the *squared* norm -- the
+            # deflation against the locked set. Below the rank floor the factorization itself
+            # uses -- ``DEFLATE_EVAL_TOL = DEFLATE_TOL**2``, on the *squared* norm -- the
             # column is already represented in ``Xl`` and locking it again would return a
             # duplicate eigenpair. Scale-free because the input is normalized.
             if float(np.abs(g[0, 0])) < DEFLATE_EVAL_TOL:

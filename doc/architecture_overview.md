@@ -55,6 +55,32 @@ restart compression, locked-overlap recurrence) live in the Python module
 `ed/ea16.py`, which both Cython kernels import at runtime. `ed/irlm.py` and
 `ed/trlm.py` are thin re-export wrappers around the compiled entry points.
 
+### Block orthonormalization: `TSQR.pyx`
+
+Every block-Krylov routine — both Lanczos kernels, the starting/restart block
+normalizations, the IRLM restart block, `block_bicgstab` and `block_gmres` — factors its
+tall-skinny block through one leaf module, `TSQR.pyx` (`impurityModel.ed.TSQR`). It computes
+the triangular factor from the block itself (LAPACK `zgeqrf` over local row panels, a Givens
+sweep over flat packed triangles to merge them, one `Allgather` to combine the ranks) and
+then forms `Q = A R^{-1}` by back substitution, instead of going through the Gram matrix
+`A^H A`, which squares the condition number. Consequences worth knowing:
+
+- The global `R` is **bitwise identical on every rank** by construction (the same merges are
+  replayed in rank order everywhere), which is what lets each rank decide the same deflated
+  block width without a broadcast.
+- Deflation is decided from true singular values; the contract callers see is `k > 0`
+  (retained rank), `k == 0` (numerically zero block relative to a caller-supplied `scale` —
+  invariant subspace), `k == -1` (non-finite factor — a *corrupted* recurrence, not a closed
+  one).
+- `TSQR.pyx` owns `EPS`, `DEFLATE_TOL`, `DEFLATE_EVAL_TOL` and `BREAKDOWN_TOL`;
+  `BlockLanczosArray` re-exports the ones its callers read from it.
+- `block_tsqr` (in `_reort.pxi`) is the representation-dispatching entry point, so array,
+  `ManyBodyBlockState` and `ManyBodyState`-list callers all run the same factorization.
+
+`_cholesky_or_deflate` / `_cholesky_qr2` remain in `BlockLanczosArray.pyx` as the reference
+implementation the CholeskyQR2-era regression tests are written against; no production path
+calls them.
+
 ### File organization (`.pxi` includes)
 
 The three large kernels are split into `.pxi` textual includes for readability (same

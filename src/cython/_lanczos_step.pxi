@@ -42,21 +42,19 @@ def block_lanczos_step_cy(
 
     where :math:`\\alpha_i = Q_i^\\dagger H Q_i` is the diagonal block and
     :math:`\\beta_{i-1}` is the off-diagonal block from the previous step.
-    The residual block :math:`W_p` is then QR-factorised via the Cholesky
-    decomposition of :math:`M = W_p^\\dagger W_p`:
-
-    .. math::
-
-        M = L L^\\dagger, \\quad
-        \\beta_i = L^\\dagger, \\quad
-        Q_{i+1} = W_p \\beta_i^{-1}.
+    The residual block :math:`W_p = Q_{i+1}\\beta_i` is then QR-factorised by TSQR
+    (``block_tsqr``), which builds :math:`\\beta_i` from :math:`W_p` itself and obtains
+    :math:`Q_{i+1} = W_p\\beta_i^{-1}` by back substitution — the Gram matrix
+    :math:`W_p^\\dagger W_p` is never formed.
 
     **MPI collective operations** (all ranks must call simultaneously):
 
     1. ``MPI_Allreduce`` (``MPI.SUM``) on :math:`\\alpha_i` – :math:`p \\times p`
        complex matrix; result is replicated on every rank.
-    2. ``MPI_Allreduce`` (``MPI.SUM``) on :math:`M = W_p^\\dagger W_p` – :math:`p \\times p`
-       complex matrix; used for Cholesky QR and breakdown detection.
+    2. ``MPI_Allgather`` of the rank-local packed triangular factor
+       (:math:`p(p+1)/2` complex) inside the TSQR; every rank merges them in rank order,
+       so the resulting :math:`\\beta_i`, the retained rank and the breakdown decision are
+       identical on all ranks.
     3. For ``FULL`` / ``PERIODIC`` modes, an additional ``MPI_Allreduce`` per
        reorthogonalization pass on the :math:`(it \\cdot p) \\times p` overlap matrix.
     4. For ``PARTIAL``, standard Paige-Simon tracking operates against all Lanczos vectors,
@@ -117,9 +115,9 @@ def block_lanczos_step_cy(
           off-diagonal block, or ``None`` if breakdown occurred.
         * ``W_updated`` – updated Paige-Simon estimator array, or ``None`` if
           not applicable.
-        * ``breakdown`` – ``True`` if an invariant subspace or an ill-conditioned
-          block was detected (``NaN``/``Inf`` in :math:`M`, or condition number
-          exceeding :math:`100 / \\varepsilon_{\\text{mach}}`).
+        * ``breakdown`` – ``True`` if the residual block was numerically zero against the
+          operator scale (an invariant subspace, ``active_k == 0``) or its factor came out
+          non-finite (a corrupted recurrence, ``active_k == -1``).
     """
     # q_prev / q_curr are shared-support ManyBodyBlockStates (Phase 2.4): the matvec,
     # Gram products and axpy updates below run once per determinant ROW instead of once
@@ -391,8 +389,8 @@ def block_lanczos_cy(
 
     * One ``MPI_Allreduce`` (``MPI.SUM``) for :math:`\\alpha_i` – shape
       ``(p, p)``; result is replicated on all ranks.
-    * One ``MPI_Allreduce`` (``MPI.SUM``) for :math:`M = W_p^\\dagger W_p` –
-      shape ``(p, p)``; used for Cholesky QR.
+    * One ``MPI_Allgather`` of the packed triangular factor – ``p(p+1)/2``
+      complex per rank; the TSQR of the residual block.
     * Additional ``MPI_Allreduce`` calls inside reorthogonalization (see
       ``block_lanczos_step_cy`` for details).
 

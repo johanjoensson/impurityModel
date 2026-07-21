@@ -387,7 +387,7 @@ def test_partial_sparse_kernel_bench(nio_workload):
             ("matvec_apply", per_it("matvec_apply")),
             ("matvec_redistribute", per_it("matvec_redistribute")),
             ("recurrence (LA)", per_it("recurrence")),
-            ("choleskyqr2_cond", per_it("choleskyqr2_cond")),
+            ("tsqr", per_it("tsqr")),
             ("w_estimate", per_it("w_estimate")),
             ("reort", per_it("reort")),
             ("monitor", per_it("monitor")),

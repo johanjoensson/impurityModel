@@ -35,14 +35,18 @@ retained basis therefore needs secondary storage, not a smaller basis — see th
 Module thresholds (all derived from machine ``eps``; see definitions below):
 ``REORT_TOL`` (loss-of-orthogonality trigger), ``BAD_BLOCK_TOL`` (which blocks to
 reorth against), ``DEFLATE_TOL`` (relative rank floor on the block's singular values),
-``BREAKDOWN_TOL`` (invariant-subspace detection), ``REORT_PERIOD`` (cadence). The last
-three are defined in — and re-exported from — the ``TSQR`` module that applies them.
+``BREAKDOWN_TOL`` (invariant-subspace detection), ``REORT_PERIOD`` (cadence). The
+deflation floors are defined in the ``TSQR`` module that applies them.
 
-Deflation policy: when a Lanczos block is rank-deficient (Cholesky of the block
-Gram matrix ``M`` hits the ``DEFLATE_TOL`` floor), the block size shrinks (EA16
-shrinking-block, Meerbergen & Scott, RAL-TR-2000-011) rather than zero-padding or
-terminating, so ``beta`` becomes rectangular and ``T`` carries variable-size
-blocks; the recurrence keeps converging.
+Orthonormalization goes through ``TSQR`` (``tsqr`` here, ``block_tsqr`` in ``_reort.pxi``
+for the other block representations): the residual block's triangular factor is computed
+from the block itself, never from the Gram matrix ``Wp^H Wp``, which is what makes it
+stable at any conditioning and its singular values trustworthy.
+
+Deflation policy: when a Lanczos block is rank-deficient (a singular value below the
+``DEFLATE_TOL`` floor), the block size shrinks (EA16 shrinking-block, Meerbergen & Scott,
+RAL-TR-2000-011) rather than zero-padding or terminating, so ``beta`` becomes rectangular
+and ``T`` carries variable-size blocks; the recurrence keeps converging.
 """
 
 cimport cython
@@ -124,6 +128,13 @@ def enable_reort_profile(on=True):
 
 def _cholesky_or_deflate(M, p_in, double scale=1.0):
     r"""QR-factor the residual block via its Gram matrix ``M = Wp^H Wp``.
+
+    **Superseded** by :func:`impurityModel.ed.TSQR.tsqr`, which factors the block itself and
+    is therefore stable at conditioning this cannot survive; no production path calls this
+    any more. It is kept as the reference implementation the CholeskyQR2-era regression tests
+    (``test_block_lanczos_blowup``, ``test_deflation_scale_invariance``,
+    ``test_warm_restart_refines``) are written against — that record is the reason the
+    deflation contract below reads the way it does, and TSQR inherited it unchanged.
 
     Returns ``(beta_j, beta_inv, k)`` with ``beta_j`` (``k x p_in``) the upper-triangular
     QR factor (off-diagonal block), ``beta_inv`` (``p_in x k``) such that
@@ -209,6 +220,11 @@ def _cholesky_or_deflate(M, p_in, double scale=1.0):
 
 def _cholesky_qr2(M2, beta_j, active_k):
     r"""Second pass of CholeskyQR2 on the *recomputed* Gram of the once-QR'd block.
+
+    **Superseded** together with :func:`_cholesky_or_deflate`, and for the same reason: the
+    repetition below exists only to repair the first pass, and TSQR's first pass needs no
+    repair (it repeats itself at all only above ``kappa ~ EPS**(-1/4)``, and can then never
+    be *rescuing* a failed factorization). Kept for the regression tests.
 
     Cholesky-QR (``_cholesky_or_deflate``) of an ill-conditioned block leaves
     ``Q1 = Wp @ beta_inv`` with an orthonormality error of order
