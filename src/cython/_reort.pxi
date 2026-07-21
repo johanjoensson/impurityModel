@@ -103,6 +103,60 @@ cpdef tuple block_normalize(object wp, bint mpi=False, object comm=None, double 
         return block_normalize_sparse(wp, mpi, comm, slaterWeightMin)
 
 
+cpdef tuple block_tsqr(object wp, bint mpi=False, object comm=None, double scale=1.0,
+                       double slaterWeightMin=0.0):
+    """Orthonormalize a distributed block through TSQR, in whatever representation it comes.
+
+    The single orthonormalization entry point of the Krylov layer: dispatches on ``is_array``
+    exactly like :func:`block_normalize` / :func:`block_combine`, so the dense-array kernel,
+    the ``ManyBodyBlockState`` kernel and the ``ManyBodyState``-list callers all share one
+    factorization. ``Q`` comes back in the same representation ``wp`` arrived in.
+
+    The block representations reach the numerics through their buffer protocol, i.e. without a
+    copy: the shared-support ``(rows x width)`` coefficients *are* the tall-skinny matrix. The
+    exported view blocks row-structure mutation of ``wp`` while it is alive, so it is dropped
+    before this returns (``Q`` is always freshly allocated), and a zero-row block is
+    materialized as an empty array because there is no buffer to point at.
+
+    **Collective** when ``mpi`` and ``comm`` are given: every rank must call it, and all ranks
+    return the same ``beta``, ``k`` and ``sv``.
+
+    Returns
+    -------
+    tuple
+        ``(Q, beta, k, sv)``; ``Q`` is ``None`` when ``k <= 0`` (breakdown / non-finite).
+    """
+    cdef object src = None       # the block backing the array view, for the write-back
+    cdef bint as_list = False
+    if isinstance(wp, ManyBodyBlockState):
+        src = wp
+    elif isinstance(wp, list) and len(wp) > 0 and not isinstance(wp[0], np.ndarray):
+        src = ManyBodyBlockState.from_states(list(wp))
+        as_list = True
+
+    if src is not None:
+        A = np.zeros((0, src.width), dtype=complex) if len(src) == 0 else np.asarray(src)
+    elif isinstance(wp, list):
+        A = np.column_stack(wp)
+    else:
+        A = wp
+
+    Q, beta, k, sv = tsqr(A, comm if mpi else None, scale)
+    if k <= 0 or src is None:
+        return Q, beta, k, sv
+
+    Q_block = ManyBodyBlockState.from_keys_and_amps(src, Q)
+    if as_list:
+        Q_states = Q_block.to_states()
+        if slaterWeightMin > 0:
+            for st in Q_states:
+                st.prune(slaterWeightMin)
+        return Q_states, beta, k, sv
+    if slaterWeightMin > 0:
+        Q_block.prune_rows(slaterWeightMin)
+    return Q_block, beta, k, sv
+
+
 def selective_orthogonalize(q_next, Q_basis, alphas, betas, W, block_widths,
                             it, n_curr, double beta_norm, double reort_eps,
                             int period, bint mpi, object comm):

@@ -20,7 +20,8 @@ import numpy as np
 import pytest
 from mpi4py import MPI
 
-from impurityModel.ed.BlockLanczosArray import _cholesky_or_deflate
+from impurityModel.ed.BlockLanczosArray import _cholesky_or_deflate, block_tsqr
+from impurityModel.ed.ManyBodyUtils import ManyBodyBlockState, ManyBodyState, SlaterDeterminant
 from impurityModel.ed.TSQR import (
     BREAKDOWN_TOL,
     DEFLATE_TOL,
@@ -267,6 +268,90 @@ def test_tsqr_refinement_pass_is_folded_into_beta():
 
 
 # ---------------------------------------------------------------------------
+# block_tsqr: the same factorization through every block representation
+# ---------------------------------------------------------------------------
+
+
+def _states(A, dets):
+    """The columns of ``A`` as ``ManyBodyState`` objects over ``dets`` (zeros dropped)."""
+    return [ManyBodyState({d: complex(A[i, c]) for i, d in enumerate(dets) if A[i, c] != 0}) for c in range(A.shape[1])]
+
+
+def _dets(n, offset=0):
+    return [SlaterDeterminant((i + offset + 1,)) for i in range(n)]
+
+
+def test_from_keys_and_amps_roundtrip():
+    """The write-back keeps the support and accepts a narrower block than it was built from."""
+    A = _block(30, 4, seed=91)
+    src = ManyBodyBlockState.from_states(_states(A, _dets(30)))
+    np.testing.assert_allclose(np.asarray(src), A)
+
+    same = ManyBodyBlockState.from_keys_and_amps(src, A)
+    assert [bytes(d) for d in same.keys()] == [bytes(d) for d in src.keys()]
+    np.testing.assert_array_equal(np.asarray(same), A)
+
+    narrow = ManyBodyBlockState.from_keys_and_amps(src, A[:, :2])
+    assert narrow.width == 2 and len(narrow) == len(src)
+    np.testing.assert_array_equal(np.asarray(narrow), A[:, :2])
+
+    with pytest.raises(ValueError):
+        ManyBodyBlockState.from_keys_and_amps(src, A[:5])
+
+
+def test_block_tsqr_agrees_across_representations():
+    """Array, ``ManyBodyBlockState`` and ``ManyBodyState``-list inputs give the same factor."""
+    A = _block(40, 3, seed=93)
+    dets = _dets(40)
+    blk = ManyBodyBlockState.from_states(_states(A, dets))
+
+    Q_arr, beta_arr, k_arr, _ = block_tsqr(A)
+    Q_blk, beta_blk, k_blk, _ = block_tsqr(blk)
+    Q_lst, beta_lst, k_lst, _ = block_tsqr(blk.to_states())
+
+    assert k_arr == k_blk == k_lst == 3
+    np.testing.assert_allclose(beta_blk, beta_arr, atol=1e-14)
+    np.testing.assert_allclose(beta_lst, beta_arr, atol=1e-14)
+    assert isinstance(Q_blk, ManyBodyBlockState)
+    assert isinstance(Q_lst, list) and isinstance(Q_lst[0], ManyBodyState)
+    np.testing.assert_allclose(np.asarray(Q_blk), Q_arr, atol=1e-14)
+    np.testing.assert_allclose(np.asarray(ManyBodyBlockState.from_states(Q_lst)), Q_arr, atol=1e-14)
+    # The support is carried through unchanged, and the input block is not disturbed.
+    assert [bytes(d) for d in Q_blk.keys()] == [bytes(d) for d in blk.keys()]
+    np.testing.assert_allclose(np.asarray(blk), A)
+
+
+def test_block_tsqr_deflates_the_block_width():
+    A = _block(40, 3, seed=95)
+    A = np.hstack([A, 3.0 * A[:, :1]])
+    blk = ManyBodyBlockState.from_states(_states(A, _dets(40)))
+    Q, beta, k, _ = block_tsqr(blk)
+    assert k == 3 and Q.width == 3 and beta.shape == (3, 4)
+    np.testing.assert_allclose(np.asarray(Q) @ beta, A, atol=1e-12 * np.linalg.norm(A))
+
+
+def test_block_tsqr_breakdown_returns_no_block():
+    blk = ManyBodyBlockState.from_states(_states(np.zeros((10, 3), dtype=complex), _dets(10)))
+    Q, beta, k, _ = block_tsqr(blk)
+    assert k == 0 and Q is None
+
+
+def test_block_tsqr_zero_row_block():
+    """A block with no determinants has no buffer to export; it must still answer."""
+    empty = ManyBodyBlockState.from_states([ManyBodyState({}) for _ in range(3)])
+    assert len(empty) == 0
+    assert block_tsqr(empty)[2] == 0
+
+
+def test_block_tsqr_releases_the_buffer_view():
+    """The exported view must be gone by the time the caller mutates the block's rows."""
+    A = _block(20, 2, seed=97)
+    blk = ManyBodyBlockState.from_states(_states(A, _dets(20)))
+    block_tsqr(blk)
+    blk.prune_rows(1e-3)  # raises RuntimeError if a view were still exported
+
+
+# ---------------------------------------------------------------------------
 # Distributed
 # ---------------------------------------------------------------------------
 
@@ -359,6 +444,31 @@ def test_tsqr_mpi_breakdown_and_corruption_agree():
         A_local = A_local.copy()
         A_local[0, 0] = np.nan
     assert tsqr(A_local, comm)[2] == -1
+
+
+@pytest.mark.mpi
+@pytest.mark.parametrize("empty_last", [False, True])
+def test_block_tsqr_mpi_on_a_distributed_block_state(empty_last):
+    """The determinant-distributed block: each rank owns a disjoint slice of the support."""
+    comm = MPI.COMM_WORLD
+    A = _block(90, 3, seed=99)
+    dets = _dets(90)
+    A_local = _row_slice(A, comm, empty_last)
+    off = comm.scan(A_local.shape[0]) - A_local.shape[0]
+    local = ManyBodyBlockState.from_states(_states(A_local, dets[off : off + A_local.shape[0]]))
+
+    Q, beta, k, sv = block_tsqr(local, True, comm)
+    assert k == 3
+    assert comm.bcast(beta.tobytes(), root=0) == beta.tobytes()
+
+    Q_arr = np.zeros((0, k), dtype=complex) if len(Q) == 0 else np.asarray(Q)
+    gram = np.ascontiguousarray(Q_arr.conj().T @ Q_arr)
+    comm.Allreduce(MPI.IN_PLACE, gram, op=MPI.SUM)
+    np.testing.assert_allclose(gram, np.eye(k), atol=1e-12)
+
+    resid = comm.allreduce(np.linalg.norm(A_local - Q_arr @ beta) ** 2, op=MPI.SUM)
+    assert np.sqrt(resid) < 1e-12 * np.linalg.norm(A)
+    np.testing.assert_allclose(beta, tsqr(A)[1], atol=1e-12 * np.max(np.abs(beta)))
 
 
 @pytest.mark.mpi

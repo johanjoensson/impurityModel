@@ -73,6 +73,7 @@ from impurityModel.ed.TSQR import (  # noqa: F401
     DEFLATE_TOL,
     DEFLATE_EVAL_TOL,
     BREAKDOWN_TOL,
+    tsqr,
 )
 
 cdef double EPS_VAL = EPS
