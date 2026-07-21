@@ -199,7 +199,7 @@ def _capped_solve_with(solver, cap, z, comm=None):
     # redistribute_psis SUMS per-rank contributions, so only rank 0 provides amplitudes.
     seeds = _seeds() if comm is None or comm.rank == 0 else [ManyBodyState() for _ in _seeds()]
     seeds = basis.redistribute_psis(seeds)
-    A = ManyBodyOperator({((0, "c"), (0, "a")): z, ((0, "a"), (0, "c")): z}) - _siam_6()
+    A = z - _siam_6()
     # Restart while unconverged, as the driver does: a near-pole z stagnates a single
     # BiCGSTAB pass (fresh shadow residual each call). GMRES restarts internally, so its
     # first call already converges and the loop is a no-op for it.

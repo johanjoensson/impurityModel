@@ -327,15 +327,8 @@ def test_block_bicgstab_sparse_rank_deficient():
 
     det0 = SlaterDeterminant.from_bytes(b"\x80")  # orbital 0 occupied
     z = 3.0 + 0.5j
-    # A = z*I - H, with H a 0<->1 hopping (the (c,a)+(a,c) term on orbital 0 is the identity).
-    A = ManyBodyOperator(
-        {
-            ((0, "c"), (0, "a")): z,
-            ((0, "a"), (0, "c")): z,
-            ((0, "c"), (1, "a")): -0.7,
-            ((1, "c"), (0, "a")): -0.7,
-        }
-    )
+    # A = z*I - H, with H a 0<->1 hopping.
+    A = z - ManyBodyOperator({((0, "c"), (1, "a")): 0.7, ((1, "c"), (0, "a")): 0.7})
 
     def _basis():
         b = Basis(

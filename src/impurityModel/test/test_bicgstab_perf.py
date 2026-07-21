@@ -248,11 +248,8 @@ def _solve(workload, width, z, sample_rss=True):
     if excited_basis.weighted_restrictions is not None:
         h.set_weighted_restrictions(excited_basis.weighted_restrictions)
 
-    # n_0 + (1 - n_0) = identity: the standard shift trick, as in the RIXS resolvent.
     shift = z + workload["e0"]
-    a_op = CountingOperator(
-        ManyBodyOperator({((0, "c"), (0, "a")): shift, ((0, "a"), (0, "c")): shift}) - h,
-    )
+    a_op = CountingOperator(shift - h)
 
     y = excited_basis.redistribute_psis(list(seeds))
     x0 = [ManyBodyState() for _ in y]
@@ -277,7 +274,7 @@ def _residual_norm(workload, excited_basis, z, x, y):
     residual is squared, or the norm double-counts partial contributions.
     """
     shift = z + workload["e0"]
-    a_op = ManyBodyOperator({((0, "c"), (0, "a")): shift, ((0, "a"), (0, "c")): shift}) - workload["h"]
+    a_op = shift - workload["h"]
     ax = excited_basis.redistribute_psis([applyOp(a_op, xi, SLATER_WEIGHT_MIN) for xi in x])
     total = sum((axi - yi).norm2() for axi, yi in zip(ax, y))
     if excited_basis.comm is not None:

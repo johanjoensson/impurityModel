@@ -253,14 +253,7 @@ def test_block_gmres_sparse_happy_breakdown_exact():
     """Seeds spanning a tiny invariant subspace close the Arnoldi space in a few steps;
     the projected solution is exact (residual at machine precision, not just atol)."""
     z = 3.0 + 0.5j
-    A = ManyBodyOperator(
-        {
-            ((0, "c"), (0, "a")): z,
-            ((0, "a"), (0, "c")): z,
-            ((0, "c"), (1, "a")): -0.7,
-            ((1, "c"), (0, "a")): -0.7,
-        }
-    )
+    A = z - ManyBodyOperator({((0, "c"), (1, "a")): 0.7, ((1, "c"), (0, "a")): 0.7})
     basis = Basis(
         impurity_orbitals={0: [[0, 1]]},
         bath_states=({0: [[]]}, {0: [[]]}),

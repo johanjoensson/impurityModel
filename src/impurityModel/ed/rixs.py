@@ -336,7 +336,7 @@ class _R1SolverChain:
         redistributed = tmp_basis.redistribute_psis(psi1_all + psi2_all)
         psi1_all[:] = redistributed[:n1]
         psi2_all[:] = redistributed[n1:]
-        A_op = ManyBodyOperator({((0, "c"), (0, "a")): z, ((0, "a"), (0, "c")): z}) - hOp
+        A_op = z - hOp
         # Warm-started resolvent solved as one block over all in-components, sharing a
         # single Krylov space / iteration (block_bicgstab deflates a rank-deficient block).
         # atol is relative to ||psi1_all|| (see _RIXS_R1_ATOL); the extra iterations are

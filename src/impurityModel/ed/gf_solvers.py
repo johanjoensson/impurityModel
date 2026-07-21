@@ -705,11 +705,11 @@ def block_Green_bicgstab(
                         stats["seed_overflow"] = True
                     solve_basis = _CappedBasisProxy(tmp_basis, cap)
 
-                # z*(n_0 + h_0) = z*I -- the RIXS identity-operator construction. A fresh
-                # operator per point: block_bicgstab sets its occupation restrictions from
-                # the basis; the weighted restrictions are set here (unconditionally, so a
-                # None clears any stale mask -- the Basis.expand convention).
-                A_op = ManyBodyOperator({((0, "c"), (0, "a")): z, ((0, "a"), (0, "c")): z}) - hOp
+                # A fresh operator per point: block_bicgstab sets its occupation
+                # restrictions from the basis; the weighted restrictions are set here
+                # (unconditionally, so a None clears any stale mask -- the Basis.expand
+                # convention).
+                A_op = z - hOp
                 A_op.set_weighted_restrictions(excited_weighted_restrictions)
 
                 # Solve, restarting while unconverged and still making progress and
@@ -925,7 +925,7 @@ def block_Green_cipsi(
                     # BiCGSTAB/GMRES of P H P -- growth belongs to the selection, not the
                     # solver's connectivity closure.
                     frozen = _CappedBasisProxy(tmp_basis, max(int(tmp_basis.size), 1))
-                    A_op = ManyBodyOperator({((0, "c"), (0, "a")): z, ((0, "a"), (0, "c")): z}) - hOp
+                    A_op = z - hOp
                     A_op.set_weighted_restrictions(excited_weighted_restrictions)
                     info = {}
                     X = solve_shifted_block(A_op, X, seeds, frozen, slaterWeightMin, atol, max_iter=max_iter, info=info)
