@@ -58,13 +58,27 @@ from scipy.linalg.cython_blas cimport ztrsm
 # --- Tolerances (single definition site for the whole package) ----------------------
 cdef double EPS_VAL = np.finfo(float).eps
 EPS = EPS_VAL                              # ~2.22e-16
-# Rank floor on the singular values of the block, relative to sigma_max. Deflating here
-# bounds the retained block's condition number by ~EPS**(-1/3) (~1.7e5). Historically this
-# floor had to protect CholeskyQR2's second pass (which needs kappa <~ EPS**(-1/2) to
-# recover); TSQR has no such requirement, so the floor is now purely a statement about
-# which directions of the block are numerically independent.
-DEFLATE_TOL = EPS_VAL ** (1.0 / 3.0)       # ~6.06e-6
-DEFLATE_EVAL_TOL = EPS_VAL ** (2.0 / 3.0)  # ~3.67e-11 : the same floor on eigenvalues of the Gram
+# Rank floor on the singular values of the block, relative to sigma_max: a direction is
+# deflated when sigma_k <= DEFLATE_TOL * sigma_max.
+#
+# This was EPS**(1/3) (~6.06e-6) for as long as the factorization went through the Gram
+# matrix, and *that* was why: the floor had to keep the retained block inside CholeskyQR2's
+# kappa <~ EPS**(-1/2) recovery regime, so blocks were being deflated to protect the
+# arithmetic rather than because their directions were dependent. TSQR needs no such
+# protection -- it is backward stable to kappa ~ EPS**(-1) -- so the floor can say what it
+# is supposed to say: which directions are numerically independent.
+#
+# EPS**(2/3) is where that lands. TSQR resolves a singular value of R to ~EPS*sigma_max, so
+# 3.67e-11 is five orders above the noise it could possibly be measuring, while sitting
+# below any physical scale a calculation is likely to care about. The old floor did not:
+# measured on the near-degenerate spectrum of test_no_ghost_bands, whose eigenvalues split
+# by 1e-9 relative, EPS**(1/3) sat three orders *above* the splitting and deflated away the
+# near-copies, leaving a partially-filled T and spurious Ritz values. Ten cells of that test
+# (five serial, five MPI) were marked xfail for it and now pass. The trade is downstream
+# conditioning: the retained block's kappa is now bounded by 1/DEFLATE_TOL ~ 2.7e10 instead
+# of 1.7e5, which propagates into ||beta^+|| in the W-estimator and into T.
+DEFLATE_TOL = EPS_VAL ** (2.0 / 3.0)       # ~3.67e-11
+DEFLATE_EVAL_TOL = DEFLATE_TOL * DEFLATE_TOL  # ~1.35e-21 : the same floor on a squared norm
 BREAKDOWN_TOL = 1e-12                      # absolute: ||beta||_2 <= this * scale => invariant subspace
 # Condition number above which the A R^{-1} back substitution is repeated. One pass leaves
 # ||Q^H Q - I|| ~ kappa * EPS, so this bounds it by EPS**(3/4) ~ 1e-12.

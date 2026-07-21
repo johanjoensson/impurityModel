@@ -28,7 +28,13 @@ from impurityModel.ed.BlockLanczosArray import (
     block_lanczos_array,
     eigsh,
 )
-from impurityModel.ed.TSQR import DEFLATE_TOL
+from impurityModel.ed.TSQR import EPS as _EPS
+
+#: The rank floor of the CholeskyQR2 era, when it still carried an absolute clamp.
+#: The bugs pinned in this module lived at that value, so the scenarios below are
+#: sized against it; the live DEFLATE_TOL is EPS**(2/3) and a purely relative test,
+#: against which "||W|| is small" no longer decides anything at all.
+HISTORIC_ABSOLUTE_FLOOR = _EPS ** (1.0 / 3.0)  # ~6.06e-6
 
 
 def _gram(w):
@@ -74,8 +80,15 @@ def test_rank_deficiency_is_detected_at_every_scale(norm):
 
 
 def test_a_tiny_block_is_not_rank_deficient_just_because_it_is_tiny():
-    """The boundary case the old clamp got wrong: ||W|| below DEFLATE_TOL, cond(W) ~ 1."""
-    w = _block(40, 2, seed=3, scale=DEFLATE_TOL / 100.0)
+    """The boundary case the old clamp got wrong: a block tiny in *absolute* terms, cond ~ 1.
+
+    Anchored to ``BREAKDOWN_TOL``, not to the rank floor: "tiny" here is an absolute
+    statement, and the rank floor is a relative one. (It was written against ``DEFLATE_TOL``
+    when that floor was ``EPS**(1/3)`` and the rank test still had an absolute clamp; at the
+    live ``EPS**(2/3)`` a block scaled that far down is below the breakdown threshold and
+    *correctly* reports rank 0, which would test the opposite of what this asserts.)
+    """
+    w = _block(40, 2, seed=3, scale=1e4 * BREAKDOWN_TOL)
     gram = _gram(w)
     cond = np.linalg.cond(gram)
     assert cond < 10.0, f"test block is not well conditioned (cond={cond:.1e})"
@@ -170,7 +183,7 @@ def test_a_warm_start_is_refined_rather_than_declared_invariant():
     alphas, betas, _, _, status = _sweep(h, psi0, 30)
 
     beta0 = np.linalg.norm(betas[0], 2)
-    assert beta0 < DEFLATE_TOL, f"beta_0={beta0:.2e} is above the old floor; the test no longer bites"
+    assert beta0 < HISTORIC_ABSOLUTE_FLOOR, f"beta_0={beta0:.2e} is above the historic floor; the test no longer bites"
     assert status == "max_iter", f"warm start stopped early: {status}"
     assert len(alphas) == 30
 

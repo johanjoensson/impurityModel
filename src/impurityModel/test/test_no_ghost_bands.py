@@ -120,19 +120,29 @@ def assert_orthonormal(eigvecs, path, comm=None):
 
 def get_xfail_marker(mode, path, solver, spectrum_type, mpi):
     # On this 12-state spectrum with block size 2 and a tight restart subspace
-    # (max_subspace_blocks=5), only the array-path TRLM converges, and only when the
-    # degeneracies are *split* (near_degenerate): then each near-copy is a distinct Ritz
-    # value the block recurrence can resolve one block at a time, so it returns the six
-    # lowest cleanly. That combination runs for real (and guards against regressions).
+    # (max_subspace_blocks=5), the array path converges whenever the degeneracies are
+    # *split* (near_degenerate): each near-copy is then a distinct Ritz value the block
+    # recurrence can resolve one block at a time, so it returns the six lowest cleanly.
+    # Those cells run for real (and guard against regressions).
     #
-    # Every other cell hits a genuine restarted-block-Lanczos limitation, not a
-    # reorthogonalization bug: a high-multiplicity degeneracy (eigenvalue 2.0 has
-    # multiplicity 3, exceeding the block size 2) cannot be fully captured inside the
-    # tight restart subspace. T_full is left partially filled and spurious (e.g. zero)
-    # Ritz values appear. Deflation itself works (see test_deflation_shrinking_block);
+    # IRLM used to be excluded from that: it was xfail on near_degenerate too, because the
+    # rank floor sat *above* this spectrum's splitting. The eigenvalues here are 1e-9 apart
+    # in relative terms and DEFLATE_TOL was EPS**(1/3) ~ 6.06e-6, so the second copy of each
+    # near-degenerate pair looked rank-deficient and was deflated away -- leaving T_full
+    # partially filled and producing exactly the spurious Ritz values this test is named
+    # after. The floor is now EPS**(2/3) ~ 3.67e-11, below the splitting, and those ten
+    # cells (five here, five in the MPI variant) pass. See the DEFLATE_TOL comment in
+    # TSQR.pyx.
+    #
+    # The remaining cells hit a genuine restarted-block-Lanczos limitation, not a
+    # reorthogonalization bug and not a deflation threshold: an *exact* high-multiplicity
+    # degeneracy (eigenvalue 2.0 has multiplicity 3, exceeding the block size 2) cannot be
+    # fully captured inside the tight restart subspace, whatever the floor -- the discarded
+    # singular value is exactly zero. T_full is left partially filled and spurious (e.g.
+    # zero) Ritz values appear. Deflation itself works (see test_deflation_shrinking_block);
     # this is tracked as future work. strict=False so that if a solver later resolves a
     # cell it surfaces as XPASS rather than failing the suite.
-    if path == "array" and solver == "TRLM" and spectrum_type == "near_degenerate":
+    if path == "array" and spectrum_type == "near_degenerate":
         return None
     return pytest.mark.xfail(
         strict=False,

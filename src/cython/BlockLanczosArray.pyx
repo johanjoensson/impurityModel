@@ -88,12 +88,13 @@ BAD_BLOCK_TOL = EPS_VAL ** 0.75        # ~1.83e-12 : selection — reorth agains
 # batch bounds the transient Ritz block at (n_rows x RITZ_BATCH) instead of (n_rows x k),
 # which matters because k grows with the number of converged Ritz pairs.
 RITZ_BATCH = 8
-# DEFLATE_TOL (~6.06e-6, the rank floor on the block's singular values), its squared
+# DEFLATE_TOL (~3.67e-11, the rank floor on the block's singular values), its squared
 # counterpart DEFLATE_EVAL_TOL for tests on a Gram matrix, and BREAKDOWN_TOL are imported
-# from TSQR above. The floor bounds the *retained* block's condition number by ~EPS**(-1/3)
-# (~1.7e5); it was originally tightened to that from sqrt(EPS) because a marginally
-# conditioned block let the O(cond) amplification of the per-step Allreduce's rank-order
-# rounding accumulate, so the reort=NONE recurrence diverged under MPI but not serially.
+# from TSQR above, which is where the reasoning for their values lives. Short version: the
+# floor used to be EPS**(1/3) to keep the retained block inside CholeskyQR2's recovery
+# regime, and TSQR needs no such protection -- at EPS**(1/3) the floor sat *above* physical
+# splittings (it deflated away the near-copies of a 1e-9-split degeneracy and produced the
+# spurious Ritz values test_no_ghost_bands is named after).
 BETA_BLOWUP_FACTOR = 1e3           # ||beta_i|| above this * max(||beta||, ||alpha||) ⇒ divergence
 REORT_PERIOD = 5                   # PERIODIC cadence, and SELECTIVE Ritz-check cadence
 # Semi-orthogonality threshold (Simon's classical sqrt(EPS) criterion — the very level the

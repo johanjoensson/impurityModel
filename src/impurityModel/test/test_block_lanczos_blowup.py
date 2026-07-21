@@ -43,7 +43,14 @@ from impurityModel.ed.BlockLanczosArray import (
     _cholesky_qr2,
     block_lanczos_array,
 )
-from impurityModel.ed.TSQR import DEFLATE_TOL
+from impurityModel.ed.TSQR import EPS as _EPS
+
+#: The rank floor of the CholeskyQR2 era. This test exercises the legacy
+#: _cholesky_or_deflate / _cholesky_qr2 pair, whose recovery regime is
+#: kappa <~ EPS**(-1/2); the live DEFLATE_TOL (now EPS**(2/3)) would place the block
+#: at kappa ~ 5e9, far outside it, and the test would assert nothing about the code
+#: it is written against.
+DEFLATE_TOL = _EPS ** (1.0 / 3.0)  # ~6.06e-6
 from impurityModel.ed.greens_function import (
     _gf_sample_mesh,
     _greens_function_change,

@@ -1,9 +1,9 @@
 # TSQR: block orthonormalization without the Gram matrix
 
-> **Status (2026-07-21): implemented and shipped.** Every block-Krylov call site in the
-> package factors through `src/cython/TSQR.pyx`; `_cholesky_or_deflate` / `_cholesky_qr2`
-> survive only as the reference implementation their regression tests are written against.
-> Deliberately deferred: relaxing `DEFLATE_TOL` (see "Open follow-up" below).
+> **Status (2026-07-21): implemented and shipped**, including the `DEFLATE_TOL` relaxation
+> that was originally deferred. Every block-Krylov call site in the package factors through
+> `src/cython/TSQR.pyx`; `_cholesky_or_deflate` / `_cholesky_qr2` survive only as the
+> reference implementation their regression tests are written against.
 
 ## Why
 
@@ -99,15 +99,48 @@ Two things fall out of the factorization that call sites used to compute for the
 also being built just to read the largest column norm off its diagonal; that is now an `O(n)`
 column-norm reduction instead of an `O(n^2)` Gram.
 
-## Open follow-up
+## The `DEFLATE_TOL` relaxation (done, and it bought something)
 
-**Relax `DEFLATE_TOL`.** The `EPS^(1/3)` floor was chosen to keep the retained block inside
-CholeskyQR2's recovery regime. TSQR has no such requirement — it is stable to `kappa ~
-EPS^(-1)` — so the floor could drop towards `EPS^(1/2)` or lower, deflating less and keeping
-more block width. This was *deliberately not* done in the same change: it alters
-shrinking-block behaviour across the whole suite, and keeping the floor fixed made every
-convergence difference attributable to the factorization itself. It wants its own measurement
-(eigenvector overlap, not `dE0` — see `restrictions_redux.md` on why).
+The `EPS^(1/3)` floor (6.06e-6) existed to keep the retained block inside CholeskyQR2's
+recovery regime. TSQR needs no such protection, so the floor was free to say what it is
+supposed to say — which directions are numerically independent — and it is now `EPS^(2/3)`
+(3.67e-11).
+
+**What it fixes.** Ten cells of `test_no_ghost_bands.py` (five serial, five MPI) were marked
+xfail with *"restarted block Lanczos cannot resolve a degeneracy exceeding the block size
+within a tight restart subspace (partial T_full -> spurious Ritz values)"*. They now pass.
+The mechanism is not subtle: that spectrum splits its eigenvalues by **1e-9 relative**, and a
+floor of 6.06e-6 sits three orders *above* the splitting, so the second copy of each
+near-degenerate pair was deflated away as rank-deficient — leaving `T_full` partially filled
+and generating exactly the spurious Ritz values the test is named after. Scanning the floor
+puts the threshold precisely at the splitting: xfail at 1e-9, xpass at 1e-10 and below.
+
+**Why `EPS^(2/3)` specifically.** TSQR resolves a singular value of `R` to `~EPS*sigma_max`,
+so 3.67e-11 is five orders above the noise it could be measuring while below any physical
+scale a calculation is likely to care about.
+
+**What it does *not* change.** Across the whole suite (23825 factorizations) deflation fires
+2927 times, and **94.2% of those discard an exactly-zero singular value** — closed sectors,
+where no floor matters. Only 57 sat above `EPS^(1/2)`, nearly all in IRLM restart paths. On
+the FCC Ni production ground state the floor never fired at all, and the relaxation left the
+converged energies bit-identical (`-14.985551211434395`), at the cost of ~10% more blocks
+(3209 vs 2911) because the restart locks later.
+
+**The trade.** The retained block's condition number is now bounded by `1/DEFLATE_TOL ~ 2.7e10`
+rather than 1.7e5. That propagates into `||beta^+||` in the W-estimator and into the
+conditioning of `T`. Nothing measured regressed, but the Green's-function coverage in the
+suite is small and the production GF path is width-1, so this is the place to look first if
+something does.
+
+**Consequence for the calibrated tests.** `EPS^(2/3)` is *below* `BREAKDOWN_TOL * ||H||` for
+any `||H|| > 37`, so the window the CholeskyQR2-era regression tests were written against —
+"small enough that the old absolute clamp deflated it, large enough not to be breakdown" — no
+longer exists. Those tests (`test_warm_restart_refines`, `test_deflation_scale_invariance`,
+`test_block_lanczos_blowup`) now size their scenarios against the constant that actually
+governs what each asserts: a local `HISTORIC_ABSOLUTE_FLOOR = EPS^(1/3)` where the point is
+the historic bug, and `BREAKDOWN_TOL` where the point is "tiny in absolute terms".
+
+## Open follow-up
 
 **Reduction shape at very large rank counts.** The `Allgather` + in-rank-order merge is
 `O(P p^3)` local work and `O(P p^2)` buffer. For `p <= 32` that is negligible up to a few

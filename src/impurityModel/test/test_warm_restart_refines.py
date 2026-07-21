@@ -48,7 +48,7 @@ from impurityModel.ed.BlockLanczos import (
     thick_restart_block_lanczos_cy,
 )
 from impurityModel.ed.BlockLanczosArray import BREAKDOWN_TOL, Reort, block_normalize
-from impurityModel.ed.TSQR import DEFLATE_TOL
+from impurityModel.ed.TSQR import EPS
 from impurityModel.ed.ManyBodyUtils import ManyBodyOperator, ManyBodyState, SlaterDeterminant
 from impurityModel.test.test_restarted_lanczos import MockBasis
 
@@ -121,17 +121,28 @@ def _mbs_residual(h_op, psi, theta):
     return float(np.sqrt((h_op.apply(psi) - psi * complex(theta)).norm2()))
 
 
-def _assert_window(h, q0):
-    """The warm start must sit strictly between the new relative floor and the old absolute one.
+#: The rank floor as it stood while the factorization went through the Gram matrix. The bug
+#: these tests pin lived *at* this value: the rank test had an absolute clamp, so any warm
+#: start with ``||R0||`` below it was declared rank 0 and handed straight back. The live
+#: ``DEFLATE_TOL`` is no longer usable as the upper edge of that window — it is now
+#: ``EPS**(2/3)``, i.e. *below* ``BREAKDOWN_TOL * ||H||`` for any ``||H|| > 37``, so the
+#: window would be empty and every one of these tests would assert nothing.
+HISTORIC_ABSOLUTE_FLOOR = EPS ** (1.0 / 3.0)  # ~6.06e-6
 
-    Without this the test silently stops proving anything: above ``DEFLATE_TOL`` the old code
-    also refines, below ``BREAKDOWN_TOL * ||H||`` the new code correctly declares invariance.
+
+def _assert_window(h, q0):
+    """The warm start must be small enough to have tripped the historic clamp, and large
+    enough that declaring invariance would be wrong.
+
+    Without this the test silently stops proving anything: above ``HISTORIC_ABSOLUTE_FLOOR``
+    the old code also refined, and below ``BREAKDOWN_TOL * ||H||`` the current code correctly
+    declares invariance.
     """
     h_norm = np.linalg.norm(h, 2)
     r0 = float(np.max(_start_residuals(h, q0)))
-    assert BREAKDOWN_TOL * h_norm < r0 < DEFLATE_TOL, (
+    assert BREAKDOWN_TOL * h_norm < r0 < HISTORIC_ABSOLUTE_FLOOR, (
         f"warm start ||R0||={r0:.3e} is outside the window "
-        f"({BREAKDOWN_TOL * h_norm:.3e}, {DEFLATE_TOL:.3e}); the test no longer bites"
+        f"({BREAKDOWN_TOL * h_norm:.3e}, {HISTORIC_ABSOLUTE_FLOOR:.3e}); the test no longer bites"
     )
     return r0
 
