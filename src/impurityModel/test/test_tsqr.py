@@ -165,6 +165,21 @@ def test_tsqr_is_exact_and_orthonormal(n, p):
     np.testing.assert_allclose(sv, np.linalg.svd(A, compute_uv=False), rtol=1e-12)
 
 
+@pytest.mark.parametrize("p", [1, 2, 8, 15, 16, 17, 33])
+def test_tsqr_solve_paths_agree_across_the_blas_crossover(p):
+    """The back substitution has two implementations — a hand-rolled loop for narrow blocks
+    and ``ztrsm`` for wide ones (``TRSM_BLAS_MIN_WIDTH``, chosen because OpenBLAS threads a
+    ``m = p, n = rows`` solve by the wrong axis and spends ~1.2 ms of dispatch on ~30 us of
+    work). Both sides of the crossover must be equally exact, on well- and ill-conditioned
+    blocks alike."""
+    for kappa in (None, 1e5):
+        A = _block(2000, p, seed=p) if kappa is None else _conditioned_block(2000, p, kappa, seed=p)
+        Q, beta, k, _ = tsqr(A)
+        assert k == p
+        np.testing.assert_allclose(A, Q @ beta, atol=1e-13 * np.linalg.norm(A))
+        assert np.linalg.norm(Q.conj().T @ Q - np.eye(k)) < 1e-12
+
+
 def test_tsqr_does_not_modify_its_input():
     A = _block(100, 4, seed=21)
     before = A.copy()

@@ -379,20 +379,58 @@ def tsqr_r(A, comm=None, Py_ssize_t panel_rows=PANEL_ROWS):
 # Pass 2: Q by back substitution, with deflation
 # ===========================================================================
 
-cdef void _trsm_right_inv(double complex[:, ::1] Q, double complex[:, ::1] R) noexcept nogil:
-    """``Q <- Q R^{-1}`` by back substitution, in place, for row-major ``Q``.
+# Above this block width the solve goes to BLAS; at or below it, the hand-rolled loop wins.
+#
+# The BLAS call for a tall-skinny right-solve is `m = p, n = n_rows`, and OpenBLAS threads
+# that shape by columns -- the wrong axis. At p = 2, n ~ 8000 the thread dispatch alone
+# measured ~1.2 ms per call against ~30 us of actual work: 88% of the factorization time of
+# a whole ground-state solve, and invisible to a single-threaded microbenchmark (the same
+# run is 3x faster end-to-end under OPENBLAS_NUM_THREADS=1). The hand-rolled substitution
+# below is one pass over the rows with the triangle in registers -- no dispatch, no
+# threading, perfect locality.
+#
+# It is O(n p^2) scalar work though, so it loses to BLAS-3 blocking once the block is wide.
+# Measured against the Cholesky path it replaced: at p <= 8 the loop wins outright, by
+# p = 16 it is ~3x a single Cholesky-QR, and by p = 40 the scalar cost would dominate
+# outright. Every block this package builds (Lanczos p ~ 2, GF seeds 1, RIXS polarization
+# tensors <= 9, CIPSI reference blocks ~ 10) sits in the region where the loop wins.
+DEF TRSM_BLAS_MIN_WIDTH = 16
 
-    BLAS reads the C-contiguous ``(n, p)`` buffer as the column-major ``p x n`` matrix
-    ``Q^T``, and the C-contiguous ``R`` as ``R^T`` (lower triangular), so the row-major
-    right-solve ``Q R^{-1}`` is the column-major left-solve ``R^T X = Q^T``.
+
+cdef void _trsm_right_inv(double complex[:, ::1] Q, double complex[:, ::1] R) noexcept nogil:
+    r"""``Q <- Q R^{-1}`` by back substitution, in place, for row-major ``Q``.
+
+    Each row :math:`a` of ``Q`` is replaced by the solution :math:`x` of :math:`x R = a`.
+    With ``R`` upper triangular that is forward substitution in ``j``:
+
+    .. math:: x_j = \Bigl(a_j - \sum_{l<j} x_l R_{lj}\Bigr) / R_{jj}.
+
+    For a wide block this hands over to ``ztrsm``: BLAS reads the C-contiguous ``(n, p)``
+    buffer as the column-major ``p x n`` matrix ``Q^T`` and the C-contiguous ``R`` as ``R^T``
+    (lower triangular), so the row-major right-solve is the column-major left-solve
+    ``R^T X = Q^T``.
     """
     cdef int p = <int>Q.shape[1]
     cdef int n = <int>Q.shape[0]
     cdef double complex one = 1.0
     cdef char side = b'L', uplo = b'L', transa = b'N', diag = b'N'
+    cdef Py_ssize_t i, j, l
+    cdef double complex s
+    cdef double complex rdiag_inv[TRSM_BLAS_MIN_WIDTH]
     if n == 0 or p == 0:
         return
-    ztrsm(&side, &uplo, &transa, &diag, &p, &n, &one, &R[0, 0], &p, &Q[0, 0], &p)
+    if p > TRSM_BLAS_MIN_WIDTH:
+        ztrsm(&side, &uplo, &transa, &diag, &p, &n, &one, &R[0, 0], &p, &Q[0, 0], &p)
+        return
+    # Reciprocals once, not once per row: n*p divisions become p.
+    for j in range(p):
+        rdiag_inv[j] = 1.0 / R[j, j]
+    for i in range(n):
+        for j in range(p):
+            s = Q[i, j]
+            for l in range(j):
+                s = s - Q[i, l] * R[l, j]
+            Q[i, j] = s * rdiag_inv[j]
 
 
 def tsqr(A, comm=None, double scale=1.0, Py_ssize_t panel_rows=PANEL_ROWS, bint refine=True):
