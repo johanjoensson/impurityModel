@@ -703,15 +703,15 @@ cpdef tuple block_orthogonalize_array(np.ndarray wp, np.ndarray Q, object overla
 
 
 cpdef tuple block_normalize_array(np.ndarray wp, object comm=None):
-    cdef np.ndarray M = np.conj(wp.T) @ wp
-    if comm is not None:
-        comm.Allreduce(MPI.IN_PLACE, M, op=MPI.SUM)
-    cdef np.ndarray beta_j, beta_inv
-    cdef int active_k
-    beta_j, beta_inv, active_k = _cholesky_or_deflate(M, wp.shape[1])
-    if active_k == 0:
+    """Orthonormalize a dense row-distributed block: ``wp = q_next @ beta_j``.
+
+    The columns here are already O(1) (a starting block, a restart block), so the breakdown
+    reference is 1 rather than an operator norm; a block that collapses raises instead of
+    returning a rank, because its callers have no shrinking-block path to fall back on.
+    """
+    q_next, beta_j, active_k, _ = tsqr(wp, comm, 1.0)
+    if active_k <= 0:
         raise ValueError("Block collapsed to zero rank")
-    cdef np.ndarray q_next = wp @ beta_inv
     return q_next, beta_j
 
 cdef extern from "complex.h":
