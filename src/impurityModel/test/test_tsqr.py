@@ -1,0 +1,373 @@
+r"""TSQR: the orthonormalization primitive that replaced Gram-matrix Cholesky-QR.
+
+What these tests pin down, in the order the algorithm runs:
+
+* the packed triangular storage and the Givens merge that combines two upper triangles
+  without ever materializing the stacked ``2p x p`` matrix,
+* the panel-blocked local pass (its result must not depend on the panel height, and it must
+  handle panels — and whole ranks — with fewer than ``p`` rows),
+* the ``Allgather`` reduction, whose result has to be **bitwise** identical on every rank:
+  the deflated block width is decided from it independently per rank, and the shrinking-block
+  recurrence deadlocks or diverges if two ranks disagree,
+* the deflation / breakdown / corruption contract (``k > 0`` / ``k == 0`` / ``k == -1``),
+* and the reason the change was made at all: at a condition number the old rank floor
+  deliberately *retains* (``kappa`` just under ``DEFLATE_TOL**-1``), a single Cholesky-QR
+  leaves an orthonormality error above ``sqrt(EPS)`` — the semi-orthogonality level the
+  reort machinery assumes — while TSQR stays at machine precision.
+"""
+
+import numpy as np
+import pytest
+from mpi4py import MPI
+
+from impurityModel.ed.BlockLanczosArray import _cholesky_or_deflate
+from impurityModel.ed.TSQR import (
+    BREAKDOWN_TOL,
+    DEFLATE_TOL,
+    EPS,
+    local_r,
+    merge_packed_r,
+    pack_upper,
+    packed_len,
+    reduce_r,
+    tsqr,
+    tsqr_r,
+    unpack_upper,
+)
+
+
+def _rng(seed=0):
+    return np.random.default_rng(seed)
+
+
+def _block(n, p, seed=0):
+    rng = _rng(seed)
+    return rng.standard_normal((n, p)) + 1j * rng.standard_normal((n, p))
+
+
+def _conditioned_block(n, p, kappa, seed=0):
+    """Tall block with prescribed singular values spanning ``kappa``."""
+    rng = _rng(seed)
+    U, _ = np.linalg.qr(rng.standard_normal((n, p)) + 1j * rng.standard_normal((n, p)))
+    V, _ = np.linalg.qr(rng.standard_normal((p, p)) + 1j * rng.standard_normal((p, p)))
+    s = np.logspace(0.0, -np.log10(kappa), p)
+    return (U * s) @ V.conj().T
+
+
+def _upper(R):
+    return np.allclose(R, np.triu(R), atol=0.0)
+
+
+# ---------------------------------------------------------------------------
+# Packed storage + Givens merge
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize("p", [1, 2, 3, 5, 8])
+def test_pack_unpack_roundtrip(p):
+    M = np.triu(_block(p, p, seed=p))
+    assert packed_len(p) == p * (p + 1) // 2
+    v = pack_upper(M)
+    assert v.size == packed_len(p)
+    np.testing.assert_array_equal(unpack_upper(v, p), M)
+
+
+@pytest.mark.parametrize("p", [1, 2, 3, 6])
+def test_givens_merge_equals_dense_qr(p):
+    """``merge(R1, R2)`` is the triangular factor of the stacked ``[R1; R2]``."""
+    R1 = np.triu(_block(p, p, seed=1))
+    R2 = np.triu(_block(p, p, seed=2))
+    merged = unpack_upper(merge_packed_r(pack_upper(R1), pack_upper(R2)), p)
+
+    assert _upper(merged)
+    # The Gram of the stack is the invariant a QR factor must reproduce.
+    np.testing.assert_allclose(merged.conj().T @ merged, R1.conj().T @ R1 + R2.conj().T @ R2, atol=1e-12)
+    # Same singular values as the dense stack.
+    np.testing.assert_allclose(
+        np.linalg.svd(merged, compute_uv=False),
+        np.linalg.svd(np.vstack([R1, R2]), compute_uv=False),
+        rtol=1e-12,
+    )
+
+
+def test_givens_merge_does_not_modify_inputs():
+    p = 4
+    a, b = pack_upper(np.triu(_block(p, p, seed=3))), pack_upper(np.triu(_block(p, p, seed=4)))
+    a0, b0 = a.copy(), b.copy()
+    merge_packed_r(a, b)
+    np.testing.assert_array_equal(a, a0)
+    np.testing.assert_array_equal(b, b0)
+
+
+def test_givens_merge_with_zero_operand_is_identity():
+    """An empty rank contributes ``R = 0``; merging it must change nothing."""
+    p = 4
+    R = pack_upper(np.triu(_block(p, p, seed=5)))
+    np.testing.assert_array_equal(merge_packed_r(R, np.zeros_like(R)), R)
+
+
+# ---------------------------------------------------------------------------
+# Local pass
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize("n,p", [(200, 4), (37, 3), (5, 5), (3, 7), (1, 1), (1, 4)])
+def test_local_r_reproduces_the_gram(n, p):
+    """``R^H R == A^H A`` and ``R`` is upper triangular with a real non-negative diagonal."""
+    A = _block(n, p, seed=n + p)
+    R = unpack_upper(local_r(A), p)
+    assert _upper(R)
+    diag = np.diag(R)
+    np.testing.assert_allclose(diag.imag, 0.0, atol=1e-14)
+    assert np.all(diag.real >= 0.0)
+    np.testing.assert_allclose(R.conj().T @ R, A.conj().T @ A, atol=1e-11 * max(1.0, n))
+
+
+@pytest.mark.parametrize("panel", [1, 2, 7, 512, 5000])
+def test_local_r_is_panel_invariant(panel):
+    """The panel height is a blocking choice, not a numerical one."""
+    A = _conditioned_block(997, 5, 1e6, seed=11)
+    ref = local_r(A, 5000)
+    got = local_r(A, panel)
+    np.testing.assert_allclose(got, ref, atol=1e-14 * np.max(np.abs(ref)))
+
+
+def test_local_r_of_empty_block_is_zero():
+    np.testing.assert_array_equal(local_r(np.zeros((0, 3), dtype=complex)), np.zeros(6))
+
+
+def test_local_r_accepts_non_contiguous_input():
+    """Column slices of a Krylov buffer are handed in directly; ``A`` is never copied."""
+    big = _block(50, 8, seed=7)
+    view = big[:, 2:6]
+    assert not view.flags["C_CONTIGUOUS"]
+    before = big.copy()
+    R = unpack_upper(local_r(view), 4)
+    np.testing.assert_allclose(R.conj().T @ R, view.conj().T @ view, atol=1e-12)
+    np.testing.assert_array_equal(big, before)
+
+
+# ---------------------------------------------------------------------------
+# Full factorization: accuracy, deflation, breakdown
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize("n,p", [(500, 1), (500, 2), (500, 4), (64, 8), (9, 4)])
+def test_tsqr_is_exact_and_orthonormal(n, p):
+    A = _block(n, p, seed=n * p)
+    Q, beta, k, sv = tsqr(A)
+    assert k == p
+    assert beta.shape == (p, p)
+    assert _upper(beta)
+    np.testing.assert_allclose(A, Q @ beta, atol=1e-13 * np.linalg.norm(A))
+    np.testing.assert_allclose(Q.conj().T @ Q, np.eye(k), atol=1e-13)
+    np.testing.assert_allclose(sv, np.linalg.svd(A, compute_uv=False), rtol=1e-12)
+
+
+def test_tsqr_does_not_modify_its_input():
+    A = _block(100, 4, seed=21)
+    before = A.copy()
+    tsqr(A)
+    np.testing.assert_array_equal(A, before)
+
+
+@pytest.mark.parametrize("kappa", [1e2, 1e4, 1e5])
+def test_tsqr_beats_cholesky_qr_on_ill_conditioned_blocks(kappa):
+    """The reason for the change.
+
+    ``DEFLATE_TOL`` retains every direction down to ``kappa = DEFLATE_TOL**-1`` (~1.7e5), so
+    these blocks are all *kept*, not deflated. A single Cholesky-QR of such a block leaves an
+    orthonormality error of order ``kappa**2 * EPS`` — which is why the second CholeskyQR2
+    pass had to exist. TSQR's back substitution is at machine precision without it.
+    """
+    A = _conditioned_block(400, 4, kappa, seed=int(np.log10(kappa)))
+    Q, beta, k, _ = tsqr(A)
+    assert k == 4, "the deflation floor should retain this block"
+    np.testing.assert_allclose(A, Q @ beta, atol=1e-13 * np.linalg.norm(A))
+    orth_tsqr = np.linalg.norm(Q.conj().T @ Q - np.eye(k))
+    assert orth_tsqr < 1e-13
+
+    beta_c, beta_inv, k_c = _cholesky_or_deflate(A.conj().T @ A, 4)
+    assert k_c == k
+    Qc = A @ beta_inv
+    orth_chol = np.linalg.norm(Qc.conj().T @ Qc - np.eye(k_c))
+    assert orth_tsqr <= orth_chol
+    if kappa >= 1e5:
+        # At the top of the retained range the single Cholesky pass is already worse than
+        # the sqrt(EPS) semi-orthogonality level the reort estimator assumes.
+        assert orth_chol > np.sqrt(EPS)
+
+
+def test_tsqr_of_singular_block_deflates():
+    """An exactly dependent column shrinks the block; the retained factor stays exact."""
+    A = _block(200, 3, seed=31)
+    A = np.hstack([A, 2.0 * A[:, :1]])  # column 3 == 2 * column 0
+    Q, beta, k, sv = tsqr(A, scale=1.0)
+    assert k == 3
+    assert beta.shape == (3, 4)
+    np.testing.assert_allclose(A, Q @ beta, atol=1e-12 * np.linalg.norm(A))
+    np.testing.assert_allclose(Q.conj().T @ Q, np.eye(k), atol=1e-13)
+    assert sv[3] < DEFLATE_TOL * sv[0]
+
+
+def test_tsqr_rank_matches_the_singular_value_floor():
+    """The rank is exactly ``#{sigma > DEFLATE_TOL * sigma_max}`` — no more, no less."""
+    p = 5
+    for n_keep in range(1, p + 1):
+        s = np.ones(p)
+        s[n_keep:] = DEFLATE_TOL / 100.0
+        rng = _rng(n_keep)
+        U, _ = np.linalg.qr(rng.standard_normal((80, p)) + 1j * rng.standard_normal((80, p)))
+        V, _ = np.linalg.qr(rng.standard_normal((p, p)) + 1j * rng.standard_normal((p, p)))
+        _, _, k, _ = tsqr((U * s) @ V.conj().T)
+        assert k == n_keep
+
+
+def test_tsqr_breakdown_is_relative_to_scale():
+    """Breakdown asks "is this block zero *against something*"; deflation does not."""
+    A = 1e-9 * _block(50, 3, seed=41)
+    # Against its own O(1) scale the block is alive...
+    assert tsqr(A, scale=1.0)[2] == 3
+    # ...and against an operator norm of 1e6 it is numerically zero.
+    assert tsqr(A, scale=1e6)[2] == 0
+    assert tsqr(np.zeros((50, 3), dtype=complex))[2] == 0
+
+
+def test_tsqr_breakdown_threshold():
+    A = _block(50, 2, seed=42)
+    A *= 0.5 * BREAKDOWN_TOL / np.linalg.norm(A, ord=2)
+    assert tsqr(A, scale=1.0)[2] == 0
+
+
+@pytest.mark.parametrize("bad", [np.nan, np.inf, -np.inf])
+def test_tsqr_signals_corruption_not_breakdown(bad):
+    """A non-finite factor is a corrupted recurrence (``-1``), not a closed space (``0``)."""
+    A = _block(50, 3, seed=51)
+    A[7, 1] = bad
+    Q, beta, k, sv = tsqr(A)
+    assert k == -1
+    assert Q is None and beta is None
+
+
+def test_tsqr_width_zero_block():
+    Q, beta, k, sv = tsqr(np.zeros((10, 0), dtype=complex))
+    assert k == 0 and Q.shape == (10, 0)
+
+
+def test_tsqr_refinement_pass_is_folded_into_beta():
+    """The conditional second pass must keep ``A = Q @ beta`` exact, not just orthonormalize."""
+    A = _conditioned_block(300, 4, 1e5, seed=61)
+    Q, beta, k, _ = tsqr(A, refine=True)
+    Q1, beta1, k1, _ = tsqr(A, refine=False)
+    assert k == k1 == 4
+    np.testing.assert_allclose(A, Q @ beta, atol=1e-13 * np.linalg.norm(A))
+    np.testing.assert_allclose(A, Q1 @ beta1, atol=1e-13 * np.linalg.norm(A))
+    # Refinement can only improve orthonormality.
+    assert np.linalg.norm(Q.conj().T @ Q - np.eye(k)) <= np.linalg.norm(Q1.conj().T @ Q1 - np.eye(k1)) + 1e-16
+
+
+# ---------------------------------------------------------------------------
+# Distributed
+# ---------------------------------------------------------------------------
+
+
+def _row_slice(A, comm, empty_last=False):
+    """This rank's contiguous row block of a globally-known ``A``."""
+    n = A.shape[0]
+    size = comm.size
+    if empty_last and size > 1:
+        counts = [0] * size
+        base, rem = divmod(n, size - 1)
+        for r in range(size - 1):
+            counts[r] = base + (1 if r < rem else 0)
+    else:
+        base, rem = divmod(n, size)
+        counts = [base + (1 if r < rem else 0) for r in range(size)]
+    off = sum(counts[: comm.rank])
+    return np.ascontiguousarray(A[off : off + counts[comm.rank]])
+
+
+@pytest.mark.mpi
+@pytest.mark.parametrize("empty_last", [False, True])
+def test_tsqr_mpi_matches_serial(empty_last):
+    comm = MPI.COMM_WORLD
+    A = _block(120, 4, seed=71)
+    R_serial = tsqr_r(A, None)
+    R_dist = tsqr_r(_row_slice(A, comm, empty_last), comm)
+    np.testing.assert_allclose(R_dist, R_serial, atol=1e-12 * np.max(np.abs(R_serial)))
+
+
+@pytest.mark.mpi
+@pytest.mark.parametrize("empty_last", [False, True])
+def test_tsqr_mpi_is_bitwise_identical_across_ranks(empty_last):
+    """Every rank decides the deflated block width from ``R`` on its own — so ``R`` must be
+    bit-identical, not merely close, or two ranks can pick different widths and the
+    shrinking-block recurrence desynchronizes."""
+    comm = MPI.COMM_WORLD
+    A = _conditioned_block(200, 4, 1e5, seed=73)
+    A_local = _row_slice(A, comm, empty_last)
+    R = tsqr_r(A_local, comm)
+    R_root = comm.bcast(R.tobytes(), root=0)
+    assert R.tobytes() == R_root
+
+    _, beta, k, sv = tsqr(A_local, comm)
+    assert comm.bcast(k, root=0) == k
+    assert comm.bcast(beta.tobytes(), root=0) == beta.tobytes()
+
+
+@pytest.mark.mpi
+@pytest.mark.parametrize("empty_last", [False, True])
+def test_tsqr_mpi_q_is_globally_orthonormal(empty_last):
+    comm = MPI.COMM_WORLD
+    A = _block(120, 3, seed=75)
+    A_local = _row_slice(A, comm, empty_last)
+    Q, beta, k, _ = tsqr(A_local, comm)
+    assert k == 3
+    assert Q.shape == (A_local.shape[0], k)
+
+    gram = np.ascontiguousarray(Q.conj().T @ Q)
+    comm.Allreduce(MPI.IN_PLACE, gram, op=MPI.SUM)
+    np.testing.assert_allclose(gram, np.eye(k), atol=1e-12)
+
+    resid = np.linalg.norm(A_local - Q @ beta) ** 2
+    resid = comm.allreduce(resid, op=MPI.SUM)
+    assert np.sqrt(resid) < 1e-12 * np.linalg.norm(A)
+
+
+@pytest.mark.mpi
+def test_tsqr_mpi_deflation_agrees_on_every_rank():
+    comm = MPI.COMM_WORLD
+    A = _block(120, 3, seed=77)
+    A = np.hstack([A, A[:, :1] - 3.0 * A[:, 2:3]])
+    Q, beta, k, _ = tsqr(_row_slice(A, comm), comm)
+    assert k == 3
+    assert comm.allreduce(k, op=MPI.MIN) == comm.allreduce(k, op=MPI.MAX) == 3
+    gram = np.ascontiguousarray(Q.conj().T @ Q)
+    comm.Allreduce(MPI.IN_PLACE, gram, op=MPI.SUM)
+    np.testing.assert_allclose(gram, np.eye(k), atol=1e-12)
+
+
+@pytest.mark.mpi
+def test_tsqr_mpi_breakdown_and_corruption_agree():
+    comm = MPI.COMM_WORLD
+    zero_local = np.zeros((120 // comm.size + 1, 3), dtype=complex)
+    assert tsqr(zero_local, comm)[2] == 0
+
+    # One rank's rows are poisoned; every rank must report corruption.
+    A_local = _row_slice(_block(120, 3, seed=79), comm)
+    if comm.rank == comm.size - 1 and A_local.shape[0] > 0:
+        A_local = A_local.copy()
+        A_local[0, 0] = np.nan
+    assert tsqr(A_local, comm)[2] == -1
+
+
+@pytest.mark.mpi
+def test_reduce_r_ignores_rank_order_of_empty_contributions():
+    """A rank owning no rows contributes a zero triangle; the global R is unchanged."""
+    comm = MPI.COMM_WORLD
+    A = _block(60, 3, seed=81)
+    all_on_rank0 = A if comm.rank == 0 else np.zeros((0, 3), dtype=complex)
+    np.testing.assert_allclose(tsqr_r(all_on_rank0, comm), tsqr_r(A, None), atol=1e-14)
+    # reduce_r is collective and its serial path must be a no-op.
+    R = local_r(A)
+    np.testing.assert_array_equal(reduce_r(R, None), R)

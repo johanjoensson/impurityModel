@@ -34,8 +34,9 @@ retained basis therefore needs secondary storage, not a smaller basis — see th
 
 Module thresholds (all derived from machine ``eps``; see definitions below):
 ``REORT_TOL`` (loss-of-orthogonality trigger), ``BAD_BLOCK_TOL`` (which blocks to
-reorth against), ``DEFLATE_TOL`` (relative rank floor for the block Cholesky),
-``BREAKDOWN_TOL`` (invariant-subspace detection), ``REORT_PERIOD`` (cadence).
+reorth against), ``DEFLATE_TOL`` (relative rank floor on the block's singular values),
+``BREAKDOWN_TOL`` (invariant-subspace detection), ``REORT_PERIOD`` (cadence). The last
+three are defined in — and re-exported from — the ``TSQR`` module that applies them.
 
 Deflation policy: when a Lanczos block is rank-deficient (Cholesky of the block
 Gram matrix ``M`` hits the ``DEFLATE_TOL`` floor), the block size shrinks (EA16
@@ -64,8 +65,17 @@ class Reort(Enum):
     SELECTIVE = 4
 
 
-cdef double EPS_VAL = np.finfo(float).eps
-EPS = EPS_VAL          # ~2.22e-16
+# The machine constant and the two deflation floors are defined once, in the TSQR leaf that
+# applies them, and re-exported here: every Krylov module already imports its tolerances from
+# this module, and a second literal would be a second source of truth.
+from impurityModel.ed.TSQR import (  # noqa: F401
+    EPS,
+    DEFLATE_TOL,
+    DEFLATE_EVAL_TOL,
+    BREAKDOWN_TOL,
+)
+
+cdef double EPS_VAL = EPS
 REORT_TOL = np.sqrt(EPS_VAL)        # ~1.49e-8  : trigger — reorth when max|W| exceeds this
 BAD_BLOCK_TOL = EPS_VAL ** 0.75        # ~1.83e-12 : selection — reorth against blocks above this
 # Ritz vectors projected out per pass in selective_orthogonalize. Each pass costs one sweep
@@ -73,17 +83,12 @@ BAD_BLOCK_TOL = EPS_VAL ** 0.75        # ~1.83e-12 : selection — reorth agains
 # batch bounds the transient Ritz block at (n_rows x RITZ_BATCH) instead of (n_rows x k),
 # which matters because k grows with the number of converged Ritz pairs.
 RITZ_BATCH = 8
-# Rank floor for the block Cholesky-QR. Set so the *retained* block condition number is
-# bounded by ~EPS**(-1/3) (~1.7e5), not ~EPS**(-1/2) (~6.7e7). The looser sqrt(EPS) floor
-# let a marginally-conditioned (but not deflated) residual block through; under reort=NONE
-# the O(cond) amplification of the per-step Allreduce's rank-order rounding then accumulated
-# across iterations, so the recurrence followed a different (divergent) trajectory under MPI
-# than serially even though the matvec is bit-identical. The tighter floor deflates such a
-# block instead of normalizing it, well inside the CholeskyQR2 recovery regime
-# (cond <~ EPS**(-1/2)), which keeps serial and MPI on the same convergent path.
-DEFLATE_TOL = EPS_VAL ** (1.0 / 3.0)      # ~6.06e-6  : rank floor on singular values of the block
-DEFLATE_EVAL_TOL = EPS_VAL ** (2.0 / 3.0)  # ~3.67e-11 : equivalent rank floor on eigenvalues of M (= DEFLATE_TOL**2)
-BREAKDOWN_TOL = 1e-12              # absolute: ||beta||_2 below this ⇒ invariant subspace
+# DEFLATE_TOL (~6.06e-6, the rank floor on the block's singular values), its squared
+# counterpart DEFLATE_EVAL_TOL for tests on a Gram matrix, and BREAKDOWN_TOL are imported
+# from TSQR above. The floor bounds the *retained* block's condition number by ~EPS**(-1/3)
+# (~1.7e5); it was originally tightened to that from sqrt(EPS) because a marginally
+# conditioned block let the O(cond) amplification of the per-step Allreduce's rank-order
+# rounding accumulate, so the reort=NONE recurrence diverged under MPI but not serially.
 BETA_BLOWUP_FACTOR = 1e3           # ||beta_i|| above this * max(||beta||, ||alpha||) ⇒ divergence
 REORT_PERIOD = 5                   # PERIODIC cadence, and SELECTIVE Ritz-check cadence
 # Semi-orthogonality threshold (Simon's classical sqrt(EPS) criterion — the very level the
