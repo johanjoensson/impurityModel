@@ -65,12 +65,12 @@ class Reort(Enum):
     SELECTIVE = 4
 
 
-# The machine constant and the two deflation floors are defined once, in the TSQR leaf that
-# applies them, and re-exported here: every Krylov module already imports its tolerances from
-# this module, and a second literal would be a second source of truth.
-from impurityModel.ed.TSQR import (  # noqa: F401
+# The machine constant and the deflation floors are defined once, in the TSQR leaf that
+# applies them; a second literal here would be a second source of truth. ``DEFLATE_TOL``
+# itself is only read by callers, who import it straight from ``TSQR`` (cython-lint has no
+# noqa escape for a pure re-export).
+from impurityModel.ed.TSQR import (
     EPS,
-    DEFLATE_TOL,
     DEFLATE_EVAL_TOL,
     BREAKDOWN_TOL,
     tsqr,

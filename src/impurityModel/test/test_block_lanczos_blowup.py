@@ -38,12 +38,12 @@ import scipy.linalg as la
 from impurityModel.ed.BlockLanczos import block_lanczos_cy
 from impurityModel.ed.BlockLanczosArray import (
     DEFLATE_EVAL_TOL,
-    DEFLATE_TOL,
     Reort,
     _cholesky_or_deflate,
     _cholesky_qr2,
     block_lanczos_array,
 )
+from impurityModel.ed.TSQR import DEFLATE_TOL
 from impurityModel.ed.greens_function import (
     _gf_sample_mesh,
     _greens_function_change,

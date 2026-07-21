@@ -188,33 +188,29 @@ def block_lanczos_step_cy(
     if reort_mode == Reort.FULL or (reort_mode == Reort.PERIODIC and it > 0 and it % reort_period == 0):
         wp, _, _ = apply_reort(wp, Q_basis, None, Reort.FULL, mpi, comm, block_widths or [], krylov)
 
-    # --- 5. M = <wp|wp>, check breakdown --------------------------------
-    M = block_inner_cy(wp, wp)
-    if mpi and comm is not None:
-        comm.Allreduce(MPI.IN_PLACE, M, op=MPI.SUM)
-
-    if np.any(np.isnan(M)) or np.any(np.isinf(M)):
-        # Non-finite Gram matrix => the recurrence is *corrupted*, not a genuine invariant
-        # subspace. Signal it with active_k = -1 so the caller can report "diverged" (and
-        # warn) instead of treating the truncated result as exact. active_k == 0 below is a
-        # real rank-deficient residual (the Krylov space is closed) => invariant subspace.
-        return None, alpha_i, None, W, -1, True, False
-
-    # --- 6. Deflation / Cholesky QR -------------------------------------
+    # --- 5. TSQR of the residual block ----------------------------------
+    # The triangular factor is built from the block's own rows (panel Householder + Givens
+    # merges + one Allgather), never from <wp|wp>, so it is backward stable at any
+    # conditioning and the rank decision is made on the block's true singular values.
     # Breakdown is measured against the operator scale, not against 1: a residual block is
     # negligible when it is small compared to H. `h_norm_est` is the driver's running estimate
     # (0 on the first step of a cold start, where alpha_i carries the scale). Mirrors
     # block_lanczos_array_cy so both kernels deflate on the same criterion.
-    beta_i, beta_inv, active_k = _cholesky_or_deflate(
-        M, p, max(float(h_norm_est), float(np.linalg.norm(alpha_i, ord=2)))
+    q_next, beta_i, active_k, sv_i = block_tsqr(
+        wp, mpi, comm, max(float(h_norm_est), float(np.linalg.norm(alpha_i, ord=2)))
     )
+    if active_k < 0:
+        # Non-finite factor => the recurrence is *corrupted*, not a genuine invariant
+        # subspace. Signal it with active_k = -1 so the caller can report "diverged" (and
+        # warn) instead of treating the truncated result as exact. active_k == 0 is a
+        # real rank-deficient residual (the Krylov space is closed) => invariant subspace.
+        return None, alpha_i, None, W, -1, True, False
     if active_k == 0:
         return None, alpha_i, None, W, 0, True, False
-
-    q_next = wp.combine_columns(beta_inv)
     _prof_acc("recurrence", _t0)
 
-    # --- 6a. Forceful / Amplitude Truncation ----------------------------
+    # --- 5a. Forceful / Amplitude Truncation ----------------------------
+    _t0 = _time.perf_counter()
     cdef bint did_truncate = False
     if slaterWeightMin > 0.0:
         # Whole-row prune: a row survives when ANY column survives (keeps the block's
@@ -229,24 +225,16 @@ def block_lanczos_step_cy(
         q_next = ManyBodyBlockState.from_states(_q_states)
         did_truncate = True
 
-    # --- 6b. CholeskyQR2 (conditional): re-orthonormalize using the actual vectors -----
-    _t0 = _time.perf_counter()
-    # A single Cholesky-QR leaves q_next non-orthonormal by O(cond(M)*EPS); when cond(M) is
-    # large this amplifies the Krylov vectors and diverges the recurrence, so a second pass is
-    # required. But when cond(M) < EPS^(-1/3) the first pass is already orthonormal to
-    # < EPS^(2/3) (~4e-11), far below sqrt(EPS), so the second pass (an extra Gram inner product
-    # + MPI Allreduce) is skipped. The same cond(M) gates both kernels, so they stay in lock-step.
-    # If the basis was forcefully truncated, orthogonality is broken and CholeskyQR2 MUST run.
-    if did_truncate or np.linalg.cond(M) >= EPS ** (-1.0 / 3.0):
-        M2 = block_inner_cy(q_next, q_next)
-        if mpi and comm is not None:
-            comm.Allreduce(MPI.IN_PLACE, M2, op=MPI.SUM)
-        M2 = 0.5 * (M2 + np.conj(M2.T))
-        beta2_inv, beta_i, active_k = _cholesky_qr2(M2, beta_i, active_k)
-        if active_k == 0:
+    # Dropping amplitudes breaks the orthonormality the factorization just established, so
+    # the truncated block has to be re-factored and the correction folded into beta_i:
+    # wp = (q_next @ R2) @ beta_i. Unlike the CholeskyQR2 pass this replaces, no second pass
+    # is needed for well-conditioned blocks — TSQR delivers orthonormality directly.
+    if did_truncate:
+        q_next, R2, active_k, _sv2 = block_tsqr(q_next, mpi, comm, 1.0)
+        if active_k <= 0:
             return None, alpha_i, None, W, 0, True, False
-        q_next = q_next.combine_columns(beta2_inv)
-    _prof_acc("choleskyqr2_cond", _t0)
+        beta_i = R2 @ beta_i
+    _prof_acc("tsqr", _t0)
 
     betas[it, :active_k, :p] = beta_i
 
@@ -317,26 +305,22 @@ def block_lanczos_step_cy(
                 if _reort_acted:
                     _PROF["reort_acted#n"] = _PROF.get("reort_acted#n", 0.0) + 1.0
             # Only when a bad block was actually projected does q_next need re-orthonormalizing;
-            # otherwise it is unchanged and this would be an exact no-op (M2 == I), so skip it and
-            # save the Gram inner product + MPI Allreduce. Mirrors block_lanczos_array_cy.
+            # otherwise it is unchanged and this would be an exact no-op (R2 == I), so skip the
+            # factorization entirely. Mirrors block_lanczos_array_cy.
             if _reort_acted:
-                M2 = block_inner_cy(q_next, q_next)
-                if mpi and comm is not None:
-                    comm.Allreduce(MPI.IN_PLACE, M2, op=MPI.SUM)
-                M2 = 0.5 * (M2 + np.conj(M2.T))
+                q_next_2, R2, active_k, sv2 = block_tsqr(q_next, mpi, comm, 1.0)
                 # Absolutely tiny residual after projection => block contained in the existing span
                 # (invariant subspace); renormalizing it would amplify rounding. Treat as breakdown.
-                if float(np.max(np.real(np.diag(M2)))) < EPS:
+                # sqrt(EPS) is the largest column norm the old max(diag(<q|q>)) < EPS test admitted.
+                if active_k <= 0 or float(sv2[0]) < np.sqrt(EPS):
                     return None, alpha_i, None, W, 0, True, False
-                beta2_inv, beta_i, active_k = _cholesky_qr2(M2, beta_i, active_k)
-                if active_k == 0:
-                    return None, alpha_i, None, W, 0, True, False
-                q_next = q_next.combine_columns(beta2_inv)
-                # The renormalization q_next <- q_next @ beta2_inv rescales its true
-                # overlaps with every Krylov column by up to ||beta2_inv||_2; propagate
+                beta_i = R2 @ beta_i
+                q_next = q_next_2
+                # The renormalization q_next <- q_next @ R2^{-1} rescales its true overlaps
+                # with every Krylov column by up to ||R2^{-1}||_2 = 1/sigma_min; propagate
                 # the same bound into the just-written honest post-reort W estimates
-                # (a no-op when the projection removed little: beta2_inv ~ I).
-                W[1, : W.shape[1] - 1] *= np.linalg.norm(beta2_inv, 2)
+                # (a no-op when the projection removed little: R2 ~ I).
+                W[1, : W.shape[1] - 1] *= 1.0 / float(sv2[active_k - 1])
                 betas[it, :active_k, :p] = beta_i
         _prof_acc("reort", _t0)
 

@@ -23,12 +23,12 @@ import pytest
 
 from impurityModel.ed.BlockLanczosArray import (
     BREAKDOWN_TOL,
-    DEFLATE_TOL,
     Reort,
     _cholesky_or_deflate,
     block_lanczos_array,
     eigsh,
 )
+from impurityModel.ed.TSQR import DEFLATE_TOL
 
 
 def _gram(w):

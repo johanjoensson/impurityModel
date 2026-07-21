@@ -61,7 +61,7 @@ from mpi4py import MPI
 
 cimport numpy as np
 
-from impurityModel.ed.BlockLanczosArray import estimate_orthonormality, _build_full_T, _cholesky_or_deflate, _cholesky_qr2, eigh_block_tridiagonal
+from impurityModel.ed.BlockLanczosArray import estimate_orthonormality, _build_full_T, _cholesky_or_deflate, eigh_block_tridiagonal
 from impurityModel.ed.BlockLanczosArray import (
     apply_reort,
     divergence_guard,
@@ -73,6 +73,7 @@ from impurityModel.ed.BlockLanczosArray import (
     block_inner,
     block_orthogonalize,
     block_normalize,
+    block_tsqr,
     Reort,
     EPS,
     REORT_TOL,

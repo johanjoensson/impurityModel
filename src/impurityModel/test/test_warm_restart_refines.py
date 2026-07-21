@@ -47,7 +47,8 @@ from impurityModel.ed.BlockLanczos import (
     implicitly_restarted_block_lanczos_cy,
     thick_restart_block_lanczos_cy,
 )
-from impurityModel.ed.BlockLanczosArray import BREAKDOWN_TOL, DEFLATE_TOL, Reort, block_normalize
+from impurityModel.ed.BlockLanczosArray import BREAKDOWN_TOL, Reort, block_normalize
+from impurityModel.ed.TSQR import DEFLATE_TOL
 from impurityModel.ed.ManyBodyUtils import ManyBodyOperator, ManyBodyState, SlaterDeterminant
 from impurityModel.test.test_restarted_lanczos import MockBasis
 
