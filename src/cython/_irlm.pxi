@@ -288,8 +288,8 @@ def _irlm_core(
             col = _orth_against_locked(_q_slice(X, j, j + 1))
             g = block_inner(col, col, mpi, comm)
             # ``col`` entered with unit norm, so ``g[0,0]`` is the fraction of it that survives
-            # deflation against the locked set. Below the rank floor ``_cholesky_or_deflate``
-            # itself uses -- ``DEFLATE_EVAL_TOL = DEFLATE_TOL**2``, on the *squared* norm -- the
+            # deflation against the locked set. Below the rank floor the factorization itself
+            # uses -- ``DEFLATE_EVAL_TOL = DEFLATE_TOL**2``, on the *squared* norm -- the
             # column is already represented in ``Xl`` and locking it again would return a
             # duplicate eigenpair. Scale-free because the input is normalized.
             if float(np.abs(g[0, 0])) < DEFLATE_EVAL_TOL:
@@ -426,12 +426,6 @@ def _irlm_core(
         f_plus = block_combine(qres, beta_new, slater)
         f_plus = _orth_against_locked(f_plus)
 
-        M = block_inner(f_plus, f_plus, mpi, comm)
-        if np.any(np.isnan(M)) or np.any(np.isinf(M)):
-            if verbose and rank0:
-                print(f"[{tag}] Breakdown at restart -- returning current Ritz pairs.")
-            break
-
         # ``f_plus`` is a *residual* block (the trailing Krylov block rotated by the re-banding
         # coupling ``beta_new``), so its norm is O(||H||), not O(1): its breakdown reference must
         # be the operator norm, like the two Lanczos sweeps and unlike ``block_normalize``.
@@ -446,9 +440,13 @@ def _irlm_core(
         # *relative* rank test first. Instrumented over the restart/Lanczos/CIPSI suite plus a
         # warm-start probe: 734 hits, 0 decisions changed, closest approach 1127x above the
         # branch. Keep the guard honest anyway -- an isotropic residual block that is numerically
-        # zero against ||H|| would clear the rank test and be inverted, ``beta_k_inv`` amplifying
-        # its rounding noise by ||H||/eps.
-        beta_k, beta_k_inv, active_k = _cholesky_or_deflate(M, p, tnorm)
+        # zero against ||H|| would deflate to nothing yet still be normalized, amplifying its
+        # rounding noise by ||H||/eps.
+        q_k_next, beta_k, active_k, _sv_k = block_tsqr(f_plus, mpi, comm, tnorm, slater)
+        if active_k < 0:
+            if verbose and rank0:
+                print(f"[{tag}] Breakdown at restart -- returning current Ritz pairs.")
+            break
         if active_k < p:
             # Trailing block deflated => near-invariant subspace. Lock the lowest wanted
             # Ritz pairs (ascending; collapses against Xl are skipped) and stop.
@@ -457,8 +455,6 @@ def _irlm_core(
             if verbose and rank0:
                 print(f"[{tag}] Restart-block deflation (active_k={active_k}). Locking remaining & stopping.")
             break
-
-        q_k_next = block_combine(f_plus, beta_k_inv, slater)
         Q_basis_new = _q_concat(Q_new, q_k_next)
 
         betas_pass_list = list(betas_new) if len(betas_new) > 0 else []

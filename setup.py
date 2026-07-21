@@ -89,6 +89,16 @@ ext_modules = [
         extra_link_args=extra_link_args,
     ),
     Extension(
+        name="impurityModel.ed.TSQR",
+        sources=[
+            os.path.join(_cython_src_dir, "TSQR.pyx"),
+        ],
+        language="c++",
+        include_dirs=include_dirs,
+        extra_compile_args=extra_compile_args,
+        extra_link_args=extra_link_args,
+    ),
+    Extension(
         name="impurityModel.ed.BiCGSTAB",
         sources=[
             os.path.join(_cython_src_dir, "BiCGSTAB.pyx"),

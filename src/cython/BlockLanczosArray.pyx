@@ -34,14 +34,19 @@ retained basis therefore needs secondary storage, not a smaller basis — see th
 
 Module thresholds (all derived from machine ``eps``; see definitions below):
 ``REORT_TOL`` (loss-of-orthogonality trigger), ``BAD_BLOCK_TOL`` (which blocks to
-reorth against), ``DEFLATE_TOL`` (relative rank floor for the block Cholesky),
-``BREAKDOWN_TOL`` (invariant-subspace detection), ``REORT_PERIOD`` (cadence).
+reorth against), ``DEFLATE_TOL`` (relative rank floor on the block's singular values),
+``BREAKDOWN_TOL`` (invariant-subspace detection), ``REORT_PERIOD`` (cadence). The
+deflation floors are defined in the ``TSQR`` module that applies them.
 
-Deflation policy: when a Lanczos block is rank-deficient (Cholesky of the block
-Gram matrix ``M`` hits the ``DEFLATE_TOL`` floor), the block size shrinks (EA16
-shrinking-block, Meerbergen & Scott, RAL-TR-2000-011) rather than zero-padding or
-terminating, so ``beta`` becomes rectangular and ``T`` carries variable-size
-blocks; the recurrence keeps converging.
+Orthonormalization goes through ``TSQR`` (``tsqr`` here, ``block_tsqr`` in ``_reort.pxi``
+for the other block representations): the residual block's triangular factor is computed
+from the block itself, never from the Gram matrix ``Wp^H Wp``, which is what makes it
+stable at any conditioning and its singular values trustworthy.
+
+Deflation policy: when a Lanczos block is rank-deficient (a singular value below the
+``DEFLATE_TOL`` floor), the block size shrinks (EA16 shrinking-block, Meerbergen & Scott,
+RAL-TR-2000-011) rather than zero-padding or terminating, so ``beta`` becomes rectangular
+and ``T`` carries variable-size blocks; the recurrence keeps converging.
 """
 
 cimport cython
@@ -64,8 +69,18 @@ class Reort(Enum):
     SELECTIVE = 4
 
 
-cdef double EPS_VAL = np.finfo(float).eps
-EPS = EPS_VAL          # ~2.22e-16
+# The machine constant and the deflation floors are defined once, in the TSQR leaf that
+# applies them; a second literal here would be a second source of truth. ``DEFLATE_TOL``
+# itself is only read by callers, who import it straight from ``TSQR`` (cython-lint has no
+# noqa escape for a pure re-export).
+from impurityModel.ed.TSQR import (
+    EPS,
+    DEFLATE_EVAL_TOL,
+    BREAKDOWN_TOL,
+    tsqr,
+)
+
+cdef double EPS_VAL = EPS
 REORT_TOL = np.sqrt(EPS_VAL)        # ~1.49e-8  : trigger — reorth when max|W| exceeds this
 BAD_BLOCK_TOL = EPS_VAL ** 0.75        # ~1.83e-12 : selection — reorth against blocks above this
 # Ritz vectors projected out per pass in selective_orthogonalize. Each pass costs one sweep
@@ -73,17 +88,13 @@ BAD_BLOCK_TOL = EPS_VAL ** 0.75        # ~1.83e-12 : selection — reorth agains
 # batch bounds the transient Ritz block at (n_rows x RITZ_BATCH) instead of (n_rows x k),
 # which matters because k grows with the number of converged Ritz pairs.
 RITZ_BATCH = 8
-# Rank floor for the block Cholesky-QR. Set so the *retained* block condition number is
-# bounded by ~EPS**(-1/3) (~1.7e5), not ~EPS**(-1/2) (~6.7e7). The looser sqrt(EPS) floor
-# let a marginally-conditioned (but not deflated) residual block through; under reort=NONE
-# the O(cond) amplification of the per-step Allreduce's rank-order rounding then accumulated
-# across iterations, so the recurrence followed a different (divergent) trajectory under MPI
-# than serially even though the matvec is bit-identical. The tighter floor deflates such a
-# block instead of normalizing it, well inside the CholeskyQR2 recovery regime
-# (cond <~ EPS**(-1/2)), which keeps serial and MPI on the same convergent path.
-DEFLATE_TOL = EPS_VAL ** (1.0 / 3.0)      # ~6.06e-6  : rank floor on singular values of the block
-DEFLATE_EVAL_TOL = EPS_VAL ** (2.0 / 3.0)  # ~3.67e-11 : equivalent rank floor on eigenvalues of M (= DEFLATE_TOL**2)
-BREAKDOWN_TOL = 1e-12              # absolute: ||beta||_2 below this ⇒ invariant subspace
+# DEFLATE_TOL (~3.67e-11, the rank floor on the block's singular values), its squared
+# counterpart DEFLATE_EVAL_TOL for tests on a Gram matrix, and BREAKDOWN_TOL are imported
+# from TSQR above, which is where the reasoning for their values lives. Short version: the
+# floor used to be EPS**(1/3) to keep the retained block inside CholeskyQR2's recovery
+# regime, and TSQR needs no such protection -- at EPS**(1/3) the floor sat *above* physical
+# splittings (it deflated away the near-copies of a 1e-9-split degeneracy and produced the
+# spurious Ritz values test_no_ghost_bands is named after).
 BETA_BLOWUP_FACTOR = 1e3           # ||beta_i|| above this * max(||beta||, ||alpha||) ⇒ divergence
 REORT_PERIOD = 5                   # PERIODIC cadence, and SELECTIVE Ritz-check cadence
 # Semi-orthogonality threshold (Simon's classical sqrt(EPS) criterion — the very level the
@@ -118,6 +129,13 @@ def enable_reort_profile(on=True):
 
 def _cholesky_or_deflate(M, p_in, double scale=1.0):
     r"""QR-factor the residual block via its Gram matrix ``M = Wp^H Wp``.
+
+    **Superseded** by :func:`impurityModel.ed.TSQR.tsqr`, which factors the block itself and
+    is therefore stable at conditioning this cannot survive; no production path calls this
+    any more. It is kept as the reference implementation the CholeskyQR2-era regression tests
+    (``test_block_lanczos_blowup``, ``test_deflation_scale_invariance``,
+    ``test_warm_restart_refines``) are written against — that record is the reason the
+    deflation contract below reads the way it does, and TSQR inherited it unchanged.
 
     Returns ``(beta_j, beta_inv, k)`` with ``beta_j`` (``k x p_in``) the upper-triangular
     QR factor (off-diagonal block), ``beta_inv`` (``p_in x k``) such that
@@ -203,6 +221,11 @@ def _cholesky_or_deflate(M, p_in, double scale=1.0):
 
 def _cholesky_qr2(M2, beta_j, active_k):
     r"""Second pass of CholeskyQR2 on the *recomputed* Gram of the once-QR'd block.
+
+    **Superseded** together with :func:`_cholesky_or_deflate`, and for the same reason: the
+    repetition below exists only to repair the first pass, and TSQR's first pass needs no
+    repair (it repeats itself at all only above ``kappa ~ EPS**(-1/4)``, and can then never
+    be *rescuing* a failed factorization). Kept for the regression tests.
 
     Cholesky-QR (``_cholesky_or_deflate``) of an ill-conditioned block leaves
     ``Q1 = Wp @ beta_inv`` with an orthonormality error of order
@@ -697,15 +720,15 @@ cpdef tuple block_orthogonalize_array(np.ndarray wp, np.ndarray Q, object overla
 
 
 cpdef tuple block_normalize_array(np.ndarray wp, object comm=None):
-    cdef np.ndarray M = np.conj(wp.T) @ wp
-    if comm is not None:
-        comm.Allreduce(MPI.IN_PLACE, M, op=MPI.SUM)
-    cdef np.ndarray beta_j, beta_inv
-    cdef int active_k
-    beta_j, beta_inv, active_k = _cholesky_or_deflate(M, wp.shape[1])
-    if active_k == 0:
+    """Orthonormalize a dense row-distributed block: ``wp = q_next @ beta_j``.
+
+    The columns here are already O(1) (a starting block, a restart block), so the breakdown
+    reference is 1 rather than an operator norm; a block that collapses raises instead of
+    returning a rank, because its callers have no shrinking-block path to fall back on.
+    """
+    q_next, beta_j, active_k, _ = tsqr(wp, comm, 1.0)
+    if active_k <= 0:
         raise ValueError("Block collapsed to zero rank")
-    cdef np.ndarray q_next = wp @ beta_inv
     return q_next, beta_j
 
 cdef extern from "complex.h":
@@ -818,6 +841,7 @@ def block_lanczos_array_cy(
     return_widths=False,
     return_status=False,
     build_krylov_basis=None,
+    deflate_tol=-1.0,
     **kwargs
 ):
     # Resolve a string reort (e.g. "full") to the Reort enum, mirroring
@@ -1068,51 +1092,30 @@ def block_lanczos_array_cy(
                 raise RuntimeError("Krylov basis must be built for reorthogonalization")
             wp_arr, _, _ = apply_reort(wp_arr, Q_list, None, Reort.FULL, mpi, comm, block_widths)
 
-        M = wp_arr.conj().T @ wp_arr
-        if mpi:
-            comm.Allreduce(MPI.IN_PLACE, M, op=MPI.SUM)
-
-        if np.any(np.isnan(M)) or np.any(np.isinf(M)):
-            # Non-finite Gram matrix => corrupted recurrence, truncated (NOT exact).
+        # TSQR of the residual block: the triangular factor is built from the block itself
+        # (panel Householder + Givens merges + one Allgather), never from wp^H wp, so it is
+        # backward stable at any conditioning and the rank decision below is made on the
+        # block's true singular values. A *residual* block is negligible when it is small
+        # against H, not against 1, so the breakdown reference is the divergence guard's
+        # running spectral-scale estimate (max of the block norms seen so far, all bounded by
+        # ||H||), widened by this step's alpha since the guard has not run yet. On the first
+        # step of a cold start h_norm_est is still 0 and alpha_0 carries the scale.
+        _h_scale = max(h_norm_est, t_norm_max, float(np.linalg.norm(alpha_i_arr, ord=2)))
+        q_next, beta_i, active_k, sv_i = tsqr(
+            wp_arr, comm if mpi else None, _h_scale, deflate_tol=deflate_tol
+        )
+        if active_k < 0:
+            # Non-finite factor => corrupted recurrence, truncated (NOT exact).
             termination = "diverged"
             block_widths.append(n_curr)
             it += 1
             break
-
-        # A *residual* block is negligible when it is small against H, not against 1. Reuse the
-        # divergence guard's running spectral-scale estimate (max of the block norms seen so
-        # far, all bounded by ||H||), widened by this step's alpha since the guard has not run
-        # yet. On the first step of a cold start h_norm_est is still 0 and alpha_0 carries the
-        # scale; an exactly-zero block gives lam_max = 0 <= 0 and still breaks down.
-        _h_scale = max(h_norm_est, t_norm_max, float(np.linalg.norm(alpha_i_arr, ord=2)))
-        beta_i, beta_inv, active_k = _cholesky_or_deflate(M, n_curr, _h_scale)
         if active_k == 0:
             # Rank-deficient residual => the block-Krylov space is closed => exact.
             termination = "invariant_subspace"
             block_widths.append(n_curr)
             it += 1
             break
-
-        q_next = wp_arr @ beta_inv
-
-        # CholeskyQR2 (conditional): a single Cholesky-QR leaves q_next non-orthonormal by
-        # O(cond(M)*EPS); the second pass drives that to O(EPS) and folds the correction back
-        # into beta_i, preventing the Krylov vectors from being amplified to overflow. It is only
-        # needed for ill-conditioned blocks: when cond(M) < EPS^(-1/3) the first pass is already
-        # orthonormal to < EPS^(2/3) (~4e-11) << sqrt(EPS), so the extra Gram + MPI Allreduce is
-        # skipped. The same cond(M) gates both kernels, so they stay in lock-step.
-        if np.linalg.cond(M) >= EPS ** (-1.0 / 3.0):
-            M2 = np.ascontiguousarray(q_next.conj().T @ q_next)
-            if mpi:
-                comm.Allreduce(MPI.IN_PLACE, M2, op=MPI.SUM)
-            M2 = 0.5 * (M2 + M2.conj().T)
-            beta2_inv, beta_i, active_k = _cholesky_qr2(M2, beta_i, active_k)
-            if active_k == 0:
-                termination = "invariant_subspace"
-                block_widths.append(n_curr)
-                it += 1
-                break
-            q_next = q_next @ beta2_inv
 
         betas_buf[it, :active_k, :n_curr] = beta_i
 
@@ -1122,10 +1125,10 @@ def block_lanczos_array_cy(
         # corrupted past repair. Truncate *before* this block (exclude alpha_i/beta_i at
         # index it) so the diverged tail never reaches the Green's function. Mirrors the
         # guard in block_lanczos_cy.
-        # One SVD of beta_i per step: largest singular value is the 2-norm (reused by the
-        # SELECTIVE Ritz-error check below).
-        _svb = np.linalg.svd(beta_i, compute_uv=False)
-        beta_norm = float(_svb[0])
+        # ||beta_i||_2 comes out of the factorization: beta_i and the block share their
+        # singular values, so sv_i[0] is the 2-norm (reused by the SELECTIVE Ritz-error check
+        # below) with no SVD of its own.
+        beta_norm = float(sv_i[0])
         _reort_acted = False
         alpha_norm = np.linalg.norm(alpha_i_arr, ord=2)
         diverged, t_norm_max, h_norm_est = divergence_guard(
@@ -1145,9 +1148,10 @@ def block_lanczos_array_cy(
         # EA16 §2.6.2 estimate-driven locking reorthogonalization. Propagate the cheap
         # per-pair overlap estimate (no O(N) work) and reorthogonalize q_next only against
         # the locked vectors whose estimate now exceeds omega_TOL, resetting those to
-        # omega_min. ||B_j^{-1}|| = ||beta_inv||_2, ||B_{j-1}|| = ||betas_buf[it-1]||_2.
+        # omega_min. ||B_j^{-1}|| = 1/sigma_min of the retained block, ||B_{j-1}|| =
+        # ||betas_buf[it-1]||_2.
         if partial_locked:
-            bj_inv_norm = float(np.linalg.norm(beta_inv, 2))
+            bj_inv_norm = 1.0 / float(sv_i[active_k - 1])
             bjm1_norm = float(np.linalg.norm(betas_buf[it - 1], 2)) if it > 0 else 0.0
             xi_new_l, xi_trigger, xi_mask = _ea16.locked_overlap_step(
                 xi_l, xi_prev_l, locked_evals_arr, alpha_i_arr,
@@ -1229,32 +1233,28 @@ def block_lanczos_array_cy(
                     # and beta_i inconsistent; on a near-redundant block (tight clusters) it removes
                     # almost all of q_next, and that residual must be renormalized (or legitimately
                     # deflated) before it feeds the next iteration — else the recurrence amplifies
-                    # the tiny leftover and the basis blows up.
-                    M2 = np.ascontiguousarray(q_next.conj().T @ q_next)
-                    if mpi:
-                        comm.Allreduce(MPI.IN_PLACE, M2, op=MPI.SUM)
-                    M2 = 0.5 * (M2 + M2.conj().T)
+                    # the tiny leftover and the basis blows up. Re-factoring folds the correction
+                    # into beta_i: wp = (q_next @ R2) @ beta_i.
+                    q_next_2, R2, active_k, sv2 = tsqr(
+                        q_next, comm if mpi else None, 1.0, deflate_tol=deflate_tol
+                    )
                     # An *absolutely* tiny residual => the new block is fully contained in the
                     # existing Krylov span (invariant subspace, e.g. a tight cluster whose
                     # effective rank is exhausted). Renormalizing that noise would amplify rounding
-                    # into the recurrence (beta blow-up), so stop here.
-                    if float(np.max(np.real(np.diag(M2)))) < EPS:
+                    # into the recurrence (beta blow-up), so stop here. sqrt(EPS) is the largest
+                    # column norm the old max(diag(q_next^H q_next)) < EPS test admitted.
+                    if active_k <= 0 or float(sv2[0]) < np.sqrt(EPS):
                         termination = "invariant_subspace"
                         block_widths.append(n_curr)
                         it += 1
                         break
-                    beta2_inv, beta_i, active_k = _cholesky_qr2(M2, beta_i, active_k)
-                    if active_k == 0:
-                        termination = "invariant_subspace"
-                        block_widths.append(n_curr)
-                        it += 1
-                        break
-                    q_next = q_next @ beta2_inv
+                    beta_i = R2 @ beta_i
+                    q_next = q_next_2
                     # The renormalization rescales q_next's true overlaps with every
-                    # Krylov column by up to ||beta2_inv||_2; propagate the same bound
-                    # into the just-written honest post-reort W estimates (a no-op when
-                    # the projection removed little: beta2_inv ~ I).
-                    W[1, : W.shape[1] - 1] *= np.linalg.norm(beta2_inv, 2)
+                    # Krylov column by up to ||R2^{-1}||_2 = 1/sigma_min; propagate the same
+                    # bound into the just-written honest post-reort W estimates (a no-op when
+                    # the projection removed little: R2 ~ I).
+                    W[1, : W.shape[1] - 1] *= 1.0 / float(sv2[active_k - 1])
                     betas_buf[it, :active_k, :n_curr] = beta_i
 
         # Record ||beta_it||_2 of the FINAL stored beta (the acted-renormalize above may

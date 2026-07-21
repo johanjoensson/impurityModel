@@ -29,12 +29,13 @@ from mpi4py import MPI
 from impurityModel.ed.BiCGSTAB import _fill_info, _make_matmat, _SupportTracker
 from impurityModel.ed.BlockLanczosArray import (
     BREAKDOWN_TOL,
-    _cholesky_or_deflate,
     block_add_scaled,
     block_combine,
     block_inner,
+    block_tsqr,
     is_array,
 )
+from impurityModel.ed.TSQR import DEFLATE_TOL_SEEDS
 from impurityModel.ed.ManyBodyUtils import (
     ManyBodyBlockState,
     block_add_scaled_cy,
@@ -177,8 +178,12 @@ def block_gmres(A, x0, y, basis, double slaterWeightMin, atol=1e-8, restart=40, 
     converged = False
     rel_res = np.inf
     for cycle in range(max_restarts):
-        gram = b_inner(R, R)
-        r_scale = np.sqrt(max(np.max(gram.diagonal().real), 0.0))
+        # The cycle's scale is the largest column norm of R -- an O(n) reduction, where the
+        # Gram it used to be read off the diagonal of is O(n^2).
+        r_cols2 = np.linalg.norm(R, axis=0) ** 2 if is_arr else R.col_norm2()
+        if mpi:
+            comm.Allreduce(MPI.IN_PLACE, r_cols2, op=MPI.SUM)
+        r_scale = np.sqrt(max(np.max(r_cols2), 0.0))
         scale = y_scale if y_scale > 0.0 else r_scale
         rel_res = r_scale / scale if scale > 0.0 else 0.0
         if r_scale <= atol * scale:
@@ -194,17 +199,21 @@ def block_gmres(A, x0, y, basis, double slaterWeightMin, atol=1e-8, restart=40, 
             stalled = 0
         prev_res = min(prev_res, r_scale)
 
-        # Deflate the *normalized* Gram (rank is a property of the directions, not the
-        # scale); beta_j reconstructs R = V_1 @ beta_j so dependent columns are
-        # recovered by linearity, exactly as in block_bicgstab's entry.
-        beta_j, beta_inv, rank_r = _cholesky_or_deflate(gram / (r_scale * r_scale), n)
+        # Rank is a property of the directions, not the scale, so only the breakdown test
+        # needs R's scale as its reference; beta_j reconstructs R = V_1 @ beta_j so dependent
+        # columns are recovered by linearity, exactly as in block_bicgstab's entry.
+        # DEFLATE_TOL_SEEDS: this is the same transition-operator right-hand side
+        # block_bicgstab deflates at entry -- see the note there.
+        V_1, beta_j, rank_r, _sv_r = block_tsqr(
+            R, mpi, comm, r_scale, slaterWeightMin, deflate_tol=DEFLATE_TOL_SEEDS
+        )
         if rank_r == 0:
             converged = True
             break
-        beta_j = beta_j * r_scale
-        beta_inv = beta_inv / r_scale
+        if rank_r < 0:
+            break  # non-finite residual block: stop and report the last honest residual
 
-        V = [combine(R, beta_inv)]
+        V = [V_1]
         widths = [rank_r]
         col_off = [0]
         # Padded block Hessenberg: rows/cols indexed by the cumulative block widths.
@@ -229,22 +238,30 @@ def block_gmres(A, x0, y, basis, double slaterWeightMin, atol=1e-8, restart=40, 
                 Hij = b_inner(V[i], W)
                 Hbar[col_off[i] : col_off[i] + widths[i], col_off[j] : col_off[j] + widths[j]] = Hij
                 W = axpy(W, V[i], -Hij)
-            gW = b_inner(W, W)
-            w_scale = np.sqrt(max(np.max(gW.diagonal().real), 0.0))
-            # Two questions, two scales (the _cholesky_or_deflate doctrine): the rank of
-            # W's *directions* is judged on the normalized Gram below, but "is W zero"
-            # (the Arnoldi space closed) is an absolute question needing a reference --
-            # here the magnitude of this step's Hessenberg column, ~||A V_j||.
-            # Normalizing first would erase exactly that information (a numerically-zero
-            # W still has a full-rank normalized Gram of roundoff noise).
+            w_cols2 = np.linalg.norm(W, axis=0) ** 2 if is_arr else W.col_norm2()
+            if mpi:
+                comm.Allreduce(MPI.IN_PLACE, w_cols2, op=MPI.SUM)
+            w_scale = np.sqrt(max(np.max(w_cols2), 0.0))
+            # Two questions, two scales: the rank of W's *directions* is relative and the
+            # factorization judges it on its own singular values, but "is W zero" (the
+            # Arnoldi space closed) is an absolute question needing a reference -- here the
+            # magnitude of this step's Hessenberg column, ~||A V_j||. That reference has to
+            # be applied here rather than handed to the factorization, because W's own scale
+            # is what it would otherwise be measured against, and a numerically-zero W still
+            # has full-rank directions made of roundoff noise.
             h_scale = np.linalg.norm(Hbar[: col_off[j] + widths[j], col_off[j] : col_off[j] + widths[j]])
+            V_next = None
             if w_scale > BREAKDOWN_TOL * max(h_scale, w_scale):
-                bj, bj_inv, w_next = _cholesky_or_deflate(gW / (w_scale * w_scale), widths[j])
+                V_next, bj, w_next, _sv_w = block_tsqr(
+                    W, mpi, comm, w_scale, slaterWeightMin, deflate_tol=DEFLATE_TOL_SEEDS
+                )
+                if w_next < 0:
+                    w_next = 0  # non-finite: treat as a closed space and stop this cycle
             else:
                 w_next = 0
             row = col_off[j] + widths[j]
             if w_next > 0:
-                Hbar[row : row + w_next, col_off[j] : col_off[j] + widths[j]] = bj * w_scale
+                Hbar[row : row + w_next, col_off[j] : col_off[j] + widths[j]] = bj
             n_cols = col_off[j] + widths[j]
             y_sol, res_cols = _hessenberg_lstsq(Hbar, e1, n_cols, row + w_next)
             if w_next == 0:
@@ -256,7 +273,7 @@ def block_gmres(A, x0, y, basis, double slaterWeightMin, atol=1e-8, restart=40, 
             # No explicit Krylov-exhaustion bound (unlike the BiCGSTAB core): a closed
             # space announces itself through the breakdown test one step later (W
             # deflates to zero after MGS), which is exact rather than one step early.
-            V.append(combine(W, bj_inv / w_scale))
+            V.append(V_next)
             widths.append(w_next)
             col_off.append(n_cols)
 
@@ -273,8 +290,10 @@ def block_gmres(A, x0, y, basis, double slaterWeightMin, atol=1e-8, restart=40, 
 
     else:
         # max_restarts exhausted: measure the final residual for the info record.
-        gram = b_inner(R, R)
-        r_scale = np.sqrt(max(np.max(gram.diagonal().real), 0.0))
+        r_cols2 = np.linalg.norm(R, axis=0) ** 2 if is_arr else R.col_norm2()
+        if mpi:
+            comm.Allreduce(MPI.IN_PLACE, r_cols2, op=MPI.SUM)
+        r_scale = np.sqrt(max(np.max(r_cols2), 0.0))
         scale = y_scale if y_scale > 0.0 else r_scale
         rel_res = r_scale / scale if scale > 0.0 else 0.0
         converged = r_scale <= atol * scale

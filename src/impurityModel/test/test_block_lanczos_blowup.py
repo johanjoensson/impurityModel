@@ -33,17 +33,19 @@ ill-conditioned / near-degenerate problems that exercise the failure path.
 """
 
 import numpy as np
+import pytest
 import scipy.linalg as la
 
 from impurityModel.ed.BlockLanczos import block_lanczos_cy
 from impurityModel.ed.BlockLanczosArray import (
     DEFLATE_EVAL_TOL,
-    DEFLATE_TOL,
     Reort,
     _cholesky_or_deflate,
     _cholesky_qr2,
     block_lanczos_array,
 )
+from impurityModel.ed.TSQR import EPS as EPS_LOCAL
+from impurityModel.ed.TSQR import tsqr
 from impurityModel.ed.greens_function import (
     _gf_sample_mesh,
     _greens_function_change,
@@ -74,35 +76,53 @@ def _ill_conditioned_block(n, p, sep, rng):
 # --------------------------------------------------------------------------- #
 
 
-def test_single_choleskyqr_is_unstable_but_choleskyqr2_recovers():
-    """A single Cholesky-QR of an ill-conditioned block loses orthonormality;
-    the second pass (using the real-vector Gram) restores it to machine precision."""
+@pytest.mark.parametrize("kappa", [1e5, 1e8])
+def test_the_live_factorization_is_orthonormal_where_cholesky_qr_is_not(kappa):
+    """What the production path now does on the block that used to seed the blow-up.
+
+    The *subject* is :func:`TSQR.tsqr` -- the factorization every block-Krylov call site runs
+    -- and the assertion is unconditional: an ill-conditioned but retained block comes back
+    orthonormal to machine precision and reconstructs exactly, with no second pass required
+    of the caller.
+
+    The Cholesky path is kept alongside as the contrast, because it is *why* this changed: a
+    single Cholesky-QR of the same block leaves an orthonormality error above ``sqrt(EPS)``
+    -- the very semi-orthogonality level the reort estimator assumes it maintains -- which is
+    what fed the ``||beta|| -> 1e90`` divergence this module is named after.
+    """
     rng = np.random.default_rng(0)
     n, p = 50, 2
-    # Stay just above the rank-deficiency floor so the block is *kept* but maximally
-    # ill-conditioned within the retained regime (sigma_min/sigma_max ~ sep/2, which must
-    # exceed DEFLATE_TOL). A more singular block is now deflated rather than kept, so the
-    # CholeskyQR2 recovery path is exercised on the worst *retained* conditioning.
-    Wp = _ill_conditioned_block(n, p, sep=4 * DEFLATE_TOL, rng=rng)
+    # sigma_min/sigma_max ~ sep/2, so `sep` sets the conditioning directly.
+    Wp = _ill_conditioned_block(n, p, sep=2.0 / kappa, rng=rng)
+    assert np.linalg.cond(Wp) > 0.1 * kappa
+
+    # --- the live path -------------------------------------------------------------
+    Q, beta, k, _ = tsqr(Wp)
+    assert k == p, "the live rank floor should retain this block"
+    assert np.linalg.norm(Q.conj().T @ Q - np.eye(k)) < 1e-13
+    assert np.linalg.norm(Q @ beta - Wp) < 1e-13 * np.linalg.norm(Wp)
+
+    # --- the historic contrast ------------------------------------------------------
     M = Wp.conj().T @ Wp
-    assert np.linalg.cond(M) > 1e7  # genuinely ill-conditioned (but within the kept regime)
+    beta_j, beta_inv, k_chol = _cholesky_or_deflate(M, p)
+    if k_chol == p:
+        Q1 = Wp @ beta_inv
+        orth1 = np.linalg.norm(Q1.conj().T @ Q1 - np.eye(k_chol))
+        assert orth1 > SQRT_EPS, "the Cholesky path is supposed to be the unstable one here"
 
-    beta_j, beta_inv, k = _cholesky_or_deflate(M, p)
-    assert k == p  # above the rank-deficiency floor -> kept, but ill-conditioned
-    Q1 = Wp @ beta_inv
-    orth1 = np.linalg.norm(Q1.conj().T @ Q1 - np.eye(k))
-    assert orth1 > SQRT_EPS  # single pass is non-orthonormal -> the historic blowup seed
-
-    # Second pass: recompute the Gram from the *actual* vectors (not from M).
-    M2 = Q1.conj().T @ Q1
-    M2 = 0.5 * (M2 + M2.conj().T)
-    beta2_inv, beta_j2, k2 = _cholesky_qr2(M2, beta_j, k)
-    assert k2 == k
-    Q2 = Q1 @ beta2_inv
-    orth2 = np.linalg.norm(Q2.conj().T @ Q2 - np.eye(k2))
-    assert orth2 < SQRT_EPS
-    # Reconstruction Wp = Q2 @ beta_j2 holds.
-    assert np.linalg.norm(Q2 @ beta_j2 - Wp) < 1e-10
+        # ... and that a second pass was needed to repair it (the CholeskyQR2 the live path
+        # no longer has to perform).
+        M2 = Q1.conj().T @ Q1
+        M2 = 0.5 * (M2 + M2.conj().T)
+        beta2_inv, beta_j2, k2 = _cholesky_qr2(M2, beta_j, k_chol)
+        assert k2 == k_chol
+        Q2 = Q1 @ beta2_inv
+        assert np.linalg.norm(Q2.conj().T @ Q2 - np.eye(k2)) < SQRT_EPS
+        assert np.linalg.norm(Q2 @ beta_j2 - Wp) < 1e-10
+    else:
+        # Beyond kappa ~ EPS**(-1/2) the Gram is no longer numerically positive definite and
+        # the Cholesky path cannot factor the block at all -- the other half of the argument.
+        assert kappa > 1.0 / np.sqrt(EPS_LOCAL)
 
 
 def test_deflation_threshold_consistent_between_paths():

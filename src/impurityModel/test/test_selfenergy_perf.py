@@ -269,7 +269,7 @@ def test_calc_selfenergy_benchmark():
             except Exception:
                 prof = {}
             if prof:
-                ops = ["matvec", "recurrence", "choleskyqr2_cond", "w_estimate", "reort", "monitor"]
+                ops = ["matvec", "recurrence", "tsqr", "w_estimate", "reort", "monitor"]
                 tot = sum(prof.get(o, 0.0) for o in ops)
                 print("\n[selfenergy-bench] --- block-Lanczos per-op split (GF kernel) ---")
                 print(f"  {'op':<18}{'time(s)':>10}{'%':>8}{'calls':>10}")

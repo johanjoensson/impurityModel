@@ -66,6 +66,34 @@ cdef class ManyBodyBlockState:
         out.b = ManyBodyBlockState_cpp(move(support), move(amps), <size_t>p)
         return out
 
+    @staticmethod
+    def from_keys_and_amps(ManyBodyBlockState src, amps):
+        """Build a block over ``src``'s determinant support with new amplitudes.
+
+        The write-back counterpart of the buffer protocol (``np.asarray(block)`` exports the
+        ``(rows x width)`` coefficients for reading): a dense array computed from that view —
+        the orthonormal factor of a QR, say — becomes a block again without a detour through
+        ``ManyBodyState`` objects. ``amps`` must have exactly ``len(src)`` rows; its column
+        count is the new width, which may differ from ``src``'s (a deflated QR returns fewer
+        columns than it was given).
+        """
+        arr = np.ascontiguousarray(amps, dtype=complex)
+        if arr.ndim == 1:
+            arr = arr[:, np.newaxis]
+        if arr.ndim != 2 or arr.shape[0] != <Py_ssize_t>src.b.rows():
+            raise ValueError(f"amps rows {arr.shape[0]} != block rows {src.b.rows()}")
+        cdef Py_ssize_t ns = arr.shape[0]
+        cdef Py_ssize_t w = arr.shape[1]
+        cdef double complex[:, ::1] av = arr
+        cdef vector[ManyBodyBlockState_cpp.Value] vals
+        vals.resize(ns * w)
+        if ns > 0 and w > 0:
+            memcpy(vals.data(), &av[0, 0], ns * w * sizeof(ManyBodyBlockState_cpp.Value))
+        cdef vector[SlaterDeterminant_cpp[uint64_t]] keys = src.b.keys()
+        cdef ManyBodyBlockState out = ManyBodyBlockState()
+        out.b = ManyBodyBlockState_cpp(move(keys), move(vals), <size_t>w)
+        return out
+
     def to_states(self):
         """Materialize the columns back to a list of ``ManyBodyState`` (exact-zero
         entries are skipped, so a ``from_states`` round-trip is bit-identical)."""

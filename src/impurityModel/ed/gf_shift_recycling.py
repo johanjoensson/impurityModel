@@ -21,6 +21,7 @@ from mpi4py import MPI
 from impurityModel.ed import config
 from impurityModel.ed.basis_transcription import build_sparse_matrix, build_state
 from impurityModel.ed.BlockLanczos import block_lanczos_cy
+from impurityModel.ed.TSQR import DEFLATE_TOL_SEEDS
 from impurityModel.ed.BlockLanczosArray import resolve_reort
 from impurityModel.ed.gf_primitives import _CappedBasisProxy, _distributed_seed_qr, _trim_blocks
 from impurityModel.ed.ManyBodyUtils import ManyBodyBlockState, ManyBodyState
@@ -425,6 +426,9 @@ class KrylovShiftedResolvent:
                 W_init=W,
                 block_widths_init=widths,
                 store_krylov=True,
+                # The recycled right-hand side is the RIXS Cartesian polarization block;
+                # its dependent components must deflate. See DEFLATE_TOL_SEEDS in TSQR.pyx.
+                deflate_tol=DEFLATE_TOL_SEEDS,
             )
             Y, res = _shifted_tridiag_solutions(alphas, betas, widths, b0, zs)
             # An invariant subspace closes the recurrence: the coupling out of the

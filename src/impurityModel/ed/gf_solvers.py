@@ -21,6 +21,7 @@ from impurityModel.ed import config
 from impurityModel.ed.basis_transcription import build_dense_matrix, build_sparse_matrix, build_state, build_vector
 from impurityModel.ed.BlockLanczos import block_lanczos_cy
 from impurityModel.ed.BlockLanczosArray import Reort, block_lanczos_array, resolve_reort
+from impurityModel.ed.TSQR import DEFLATE_TOL_SEEDS
 from impurityModel.ed.cg import block_bicgstab
 from impurityModel.ed.cipsi_solver import CIPSISolver
 from impurityModel.ed.gf_convergence import _make_gf_convergence_monitor
@@ -214,6 +215,10 @@ def block_green_impl(basis, hOp, psi_arr, delta, reort, slaterWeightMin, verbose
             # w-1 dimensions of the sector unresolved -- a systematic resolvent error that grows
             # with the block width (the RIXS tensor floor). The final block simply deflates.
             max_iter=-(-H.shape[0] // psi_dense_local.shape[1]),
+            # The seed block is the stacked transition operators of this unit; its
+            # symmetry-dependent components are what deflation has to remove, and they are
+            # zero only to their construction rounding. See DEFLATE_TOL_SEEDS in TSQR.pyx.
+            deflate_tol=DEFLATE_TOL_SEEDS,
         )
     else:
         h_local = build_sparse_matrix(basis, hOp)[:, basis.local_indices]
@@ -265,6 +270,10 @@ def block_green_impl(basis, hOp, psi_arr, delta, reort, slaterWeightMin, verbose
             # w-1 dimensions of the sector unresolved -- a systematic resolvent error that grows
             # with the block width (the RIXS tensor floor). The final block simply deflates.
             max_iter=-(-H.shape[0] // psi_dense_local.shape[1]),
+            # The seed block is the stacked transition operators of this unit; its
+            # symmetry-dependent components are what deflation has to remove, and they are
+            # zero only to their construction rounding. See DEFLATE_TOL_SEEDS in TSQR.pyx.
+            deflate_tol=DEFLATE_TOL_SEEDS,
         )
     # An invariant subspace closes the Krylov space under H, so the continued fraction is
     # exact: treat it as converged (same semantics as the sparse path) so it does not trip
@@ -382,6 +391,8 @@ def block_Green_sparse(
             block_widths_init=widths,
             store_krylov=resolved_reort != Reort.NONE,
             krylov_dtype=krylov_dtype,
+            # Transition-operator seed block: see DEFLATE_TOL_SEEDS in TSQR.pyx.
+            deflate_tol=DEFLATE_TOL_SEEDS,
         )
         # The kernel reports exactly why it stopped (see block_lanczos_cy):
         #   * "converged"          -- the GF convergence monitor was satisfied.

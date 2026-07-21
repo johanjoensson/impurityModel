@@ -23,13 +23,14 @@ import numpy as np
 from mpi4py import MPI
 
 from impurityModel.ed.BlockLanczosArray import (
-    _cholesky_or_deflate,
     block_add_scaled,
     block_apply,
     block_combine,
     block_inner,
+    block_tsqr,
     is_array,
 )
+from impurityModel.ed.TSQR import DEFLATE_TOL_SEEDS
 from impurityModel.ed.ManyBodyUtils import (
     ManyBodyBlockState,
     ManyBodyState,
@@ -230,21 +231,18 @@ def block_bicgstab(A, x0, y, basis, double slaterWeightMin, atol=1e-8, rtol=1e-1
             comm.Allreduce(MPI.IN_PLACE, y_cols2, op=MPI.SUM)
     y_scale = np.sqrt(np.max(y_cols2))
 
-    # Deflate R0 = Q @ beta_j into rank independent directions (Q = R0 @ beta_inv, orthonormal).
-    # Solve the full-rank reduced system A Zq = Q, then reconstruct the correction
-    # Z = Zq @ beta_j so that A Z = A Zq @ beta_j = Q @ beta_j = R0, exactly (the dependent
-    # directions are recovered by linearity, never solved for). Reuses the same Gram-matrix
-    # deflation as the block-Lanczos recurrence (:func:`_cholesky_or_deflate`).
-    if is_arr:
-        gram = block_inner(ri, ri, mpi=mpi, comm=comm)
-    else:
-        gram = block_inner_cy(ri, ri)
-        if mpi:
-            comm.Allreduce(MPI.IN_PLACE, gram, op=MPI.SUM)
-
-    # ``gram``'s diagonal holds the squared column norms of R0, so its largest entry is the
-    # block's overall scale -- free, no extra reduction.
-    r0_scale = np.sqrt(max(np.max(gram.diagonal().real), 0.0))
+    # Deflate R0 = Q @ beta_j into rank independent directions (Q orthonormal). Solve the
+    # full-rank reduced system A Zq = Q, then reconstruct the correction Z = Zq @ beta_j so
+    # that A Z = A Zq @ beta_j = Q @ beta_j = R0, exactly (the dependent directions are
+    # recovered by linearity, never solved for). Uses the same TSQR and the same deflation
+    # policy as the block-Lanczos recurrence (:func:`block_tsqr`).
+    #
+    # R0's overall scale is the largest of its column norms -- an O(n) reduction, where the
+    # Gram this used to read the scale off the diagonal of is O(n^2).
+    r0_cols2 = np.linalg.norm(ri, axis=0) ** 2 if is_arr else ri.col_norm2()
+    if mpi:
+        comm.Allreduce(MPI.IN_PLACE, r0_cols2, op=MPI.SUM)
+    r0_scale = np.sqrt(max(np.max(r0_cols2), 0.0))
 
     # A zero RHS has no scale of its own to measure the residual against; fall back to
     # R0's, which makes `atol` absolute there (and keeps the degenerate y = 0, x0 != 0
@@ -253,31 +251,37 @@ def block_bicgstab(A, x0, y, basis, double slaterWeightMin, atol=1e-8, rtol=1e-1
         y_scale = r0_scale
 
     # Converged before we started: a warm start (or a zero RHS) already meets the tolerance.
-    # This test has to live here, explicitly. `_cholesky_or_deflate`'s rank floor is
-    # *absolute* (`evals > DEFLATE_EVAL_TOL * max(evals[-1], 1.0)`), which is right for a
-    # block-Lanczos residual block but would otherwise silently deflate any R0 with
-    # ||R0|| < sqrt(DEFLATE_EVAL_TOL) ~ 6e-6 to rank 0 and return x0 unrefined, whatever
-    # `atol` asked for.
+    # This test has to live here, explicitly, because "R0 is small" is a statement about
+    # convergence and the factorization's breakdown test is a statement about the block being
+    # zero against a *reference* -- pass the wrong reference and any R0 below it is silently
+    # deflated to rank 0 and x0 returned unrefined, whatever `atol` asked for.
     if r0_scale <= atol * y_scale:
         _fill_info(info, 0, True, r0_scale / y_scale if y_scale > 0.0 else 0.0)
         return x0
 
-    # Deflate the *normalized* Gram: the rank of R0 is a property of its column directions,
-    # not of its overall scale. beta_j/beta_inv are rescaled to keep Q = R0 @ beta_inv
-    # orthonormal and R0 = Q @ beta_j exact.
-    beta_j, beta_inv, rank = _cholesky_or_deflate(gram / (r0_scale * r0_scale), n)
+    # The rank of R0 is a property of its column directions, not of its overall scale, so the
+    # relative rank test needs no normalization; only the breakdown test does, and it takes
+    # R0's own scale as its reference. Q comes straight out of the factorization -- no
+    # combine against an explicit inverse.
+    #
+    # DEFLATE_TOL_SEEDS, not the default floor: this solver's production caller is the RIXS
+    # intermediate-state resolvent, whose right-hand side is the Cartesian polarization block.
+    # Symmetry makes some of those components dependent and this deflation is what removes
+    # them -- but they are zero only to within the rounding accumulated while the seeds were
+    # built (measured up to 3.5e-11 relative on a *small* benchmark, and growing with the
+    # basis). Judged against the default floor such a direction would be retained, and the
+    # solve would carry a pure-noise column with sigma_min ~ 1e-11.
+    q_block, beta_j, rank, _sv0 = block_tsqr(
+        ri, mpi, comm, r0_scale, slaterWeightMin, deflate_tol=DEFLATE_TOL_SEEDS
+    )
     if rank == 0:
         _fill_info(info, 0, True, r0_scale / y_scale if y_scale > 0.0 else 0.0)
         return x0  # zero residual: x0 already solves the system
-    beta_j = beta_j * r0_scale
-    beta_inv = beta_inv / r0_scale
-
-    if is_arr:
-        q_block = block_combine(ri, beta_inv, slaterWeightMin)
-    else:
-        q_block = ri.combine_columns(beta_inv)
-        if slaterWeightMin > 0:
-            q_block.prune_rows(slaterWeightMin)
+    if rank < 0:
+        # Non-finite residual block: the warm start or the operator is corrupted. Report the
+        # failure rather than iterating on NaNs.
+        _fill_info(info, 0, False, float("nan"))
+        return x0
 
     # The core drives the residual of the *normalized* system A Zq = Q (unit columns) below
     # its tolerance, and the true residual is that times ||R0|| (Z = Zq @ beta_j). Scaling by

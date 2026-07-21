@@ -61,7 +61,7 @@ from mpi4py import MPI
 
 cimport numpy as np
 
-from impurityModel.ed.BlockLanczosArray import estimate_orthonormality, _build_full_T, _cholesky_or_deflate, _cholesky_qr2, eigh_block_tridiagonal
+from impurityModel.ed.BlockLanczosArray import estimate_orthonormality, _build_full_T, eigh_block_tridiagonal
 from impurityModel.ed.BlockLanczosArray import (
     apply_reort,
     divergence_guard,
@@ -73,6 +73,7 @@ from impurityModel.ed.BlockLanczosArray import (
     block_inner,
     block_orthogonalize,
     block_normalize,
+    block_tsqr,
     Reort,
     EPS,
     REORT_TOL,
@@ -84,8 +85,8 @@ from impurityModel.ed.BlockLanczosArray import (
 
 # --- Optional per-step profiling (env-gated, ~zero cost when off) -------------------
 # Set BLOCKLANCZOS_PROFILE=1 to accumulate wall time per sub-operation of the sparse
-# block-Lanczos step (matvec / recurrence-LA / W-estimator / triggered reort /
-# CholeskyQR2 / convergence monitor). Read with get_block_lanczos_profile().
+# block-Lanczos step (matvec / recurrence-LA / W-estimator / triggered reort / TSQR /
+# convergence monitor). Read with get_block_lanczos_profile().
 import os as _os
 import time as _time
 _PROF = {}
@@ -134,20 +135,12 @@ cpdef tuple block_orthogonalize_sparse(list wp, list Q, object overlaps=None, ob
 
 
 cpdef tuple block_normalize_sparse(list wp, bint mpi=False, object comm=None, double slaterWeightMin=0.0):
-    cdef np.ndarray M = inner_multi(wp, wp)
-    if comm is not None:
-        comm.Allreduce(MPI.IN_PLACE, M, op=MPI.SUM)
-    cdef int n = M.shape[0]
-    cdef np.ndarray beta_j, beta_inv
-    cdef int active_k
-    beta_j, beta_inv, active_k = _cholesky_or_deflate(M, n)
-    if active_k == 0:
+    """``block_normalize_array``'s counterpart for a list of ``ManyBodyState`` (see it for the
+    breakdown convention). The states go through their shared-support block form, which is
+    what the TSQR factors."""
+    q_next, beta_j, active_k, _ = block_tsqr(wp, mpi, comm, 1.0, slaterWeightMin)
+    if active_k <= 0:
         raise ValueError("Block collapsed to zero rank")
-    cdef list q_next = [ManyBodyState() for _ in range(active_k)]
-    add_scaled_multi(q_next, wp, beta_inv)
-    if slaterWeightMin > 0:
-        for st in q_next:
-            st.prune(slaterWeightMin)
     return q_next, beta_j
 
 # ---------------------------------------------------------------------------
@@ -192,8 +185,9 @@ def _block_inner_mpi(states_a, states_b, mpi: bool, comm):
     return G
 
 
-# _cholesky_or_deflate is shared: imported from BlockLanczosArray (identical logic,
-# single source of the EA16 shrinking-block deflation policy).
+# Orthonormalization is shared: block_tsqr (imported from BlockLanczosArray, which includes
+# _reort.pxi) dispatches on the block representation, so this kernel and the array kernel run
+# the same factorization and the same EA16 shrinking-block deflation policy.
 
 
 include "_lanczos_step.pxi"

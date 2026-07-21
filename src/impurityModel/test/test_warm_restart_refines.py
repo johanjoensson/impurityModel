@@ -19,14 +19,15 @@ So the floor became *relative*: a warm start is refined until its residual reach
 
 These tests pin that for **both** restarted solvers on **both** paths, since ``_trlm_core`` and
 ``_irlm_core`` are path-agnostic and share the sweep. The operator is scaled to ``||H|| ~ 3.8e5``
-so that the three regimes separate:
+so the warm start's residual sits well inside the *live* refinable window:
 
-    BREAKDOWN_TOL * ||H|| = 3.8e-7  <  ||R0|| = 1.2e-6  <  DEFLATE_TOL = 6.06e-6
+    BREAKDOWN_TOL * ||H|| = 3.8e-7  <  ||R0|| = 1.2e-6  <  sqrt(EPS) * ||H|| = 5.7e-3
 
-The warm start sits between the new relative floor and the old absolute one -- refinable now,
-deflated away before. Measured against ``2eeac1b`` (the commit before the deflation work), every
-solver below returned its input unrefined at ``1.16e-06``; TRLM additionally *diverged* to
-``5.7e+07`` when handed a start block just above the old floor.
+The lower edge is the only threshold the live code can stop on (it is the sole absolute test);
+the upper edge merely keeps the start block genuinely near-converged, so the test is about
+refinement rather than about ordinary iteration. Measured against ``2eeac1b`` (the commit
+before the deflation work), every solver below returned its input unrefined at ``1.16e-06``;
+TRLM additionally *diverged* to ``5.7e+07`` when handed a start block just above the old floor.
 """
 
 import numpy as np
@@ -47,7 +48,8 @@ from impurityModel.ed.BlockLanczos import (
     implicitly_restarted_block_lanczos_cy,
     thick_restart_block_lanczos_cy,
 )
-from impurityModel.ed.BlockLanczosArray import BREAKDOWN_TOL, DEFLATE_TOL, Reort, block_normalize
+from impurityModel.ed.BlockLanczosArray import BREAKDOWN_TOL, Reort, block_normalize
+from impurityModel.ed.TSQR import EPS
 from impurityModel.ed.ManyBodyUtils import ManyBodyOperator, ManyBodyState, SlaterDeterminant
 from impurityModel.test.test_restarted_lanczos import MockBasis
 
@@ -120,17 +122,22 @@ def _mbs_residual(h_op, psi, theta):
     return float(np.sqrt((h_op.apply(psi) - psi * complex(theta)).norm2()))
 
 
-def _assert_window(h, q0):
-    """The warm start must sit strictly between the new relative floor and the old absolute one.
+def _assert_refinable(h, q0):
+    """The warm start must be refinable under the *live* rule, and small enough to matter.
 
-    Without this the test silently stops proving anything: above ``DEFLATE_TOL`` the old code
-    also refines, below ``BREAKDOWN_TOL * ||H||`` the new code correctly declares invariance.
+    Under the live code there is exactly one threshold that can stop a sweep on a
+    well-conditioned start block, and it is absolute: ``BREAKDOWN_TOL * ||H||``. The rank test
+    is relative, so ``||R0||`` being small does not by itself deflate anything -- which is the
+    whole point, and was not true when the rank test carried an absolute clamp at
+    ``EPS**(1/3) = 6.06e-6`` (see the module docstring). The second bound keeps the scenario
+    honest in the other direction: a start block whose residual is already at ``sqrt(EPS)``
+    relative to ``||H||`` is not "nearly converged" and would be refined by anything.
     """
     h_norm = np.linalg.norm(h, 2)
     r0 = float(np.max(_start_residuals(h, q0)))
-    assert BREAKDOWN_TOL * h_norm < r0 < DEFLATE_TOL, (
-        f"warm start ||R0||={r0:.3e} is outside the window "
-        f"({BREAKDOWN_TOL * h_norm:.3e}, {DEFLATE_TOL:.3e}); the test no longer bites"
+    assert BREAKDOWN_TOL * h_norm < r0 < np.sqrt(EPS) * h_norm, (
+        f"warm start ||R0||={r0:.3e} is outside the refinable window "
+        f"({BREAKDOWN_TOL * h_norm:.3e}, {np.sqrt(EPS) * h_norm:.3e}); the test no longer bites"
     )
     return r0
 
@@ -145,7 +152,7 @@ def test_array_warm_start_is_refined_not_returned(solver):
     """Pre-fix both returned ``q0`` at ``||r|| = 1.16e-06``; TRLM at a looser start diverged."""
     h, d, u, rng = _designer_hermitian(_N)
     q0 = _warm_start(u, d, rng, _N)
-    r0 = _assert_window(h, q0)
+    r0 = _assert_refinable(h, q0)
 
     class _Basis:
         size = _N
@@ -177,7 +184,7 @@ def test_array_warm_start_is_refined_not_returned(solver):
 def test_manybodystate_warm_start_is_refined_not_returned(solver):
     t, d, u, rng = _designer_hermitian(_N_ORB, seed=1)
     q0 = _warm_start(u, d, rng, _N_ORB)
-    r0 = _assert_window(t, q0)
+    r0 = _assert_refinable(t, q0)
 
     h_op, basis_states = _one_particle_operator(t)
     psi0 = _states_from_columns(basis_states, q0)
@@ -201,7 +208,7 @@ def test_manybodystate_warm_start_is_refined_not_returned(solver):
 @pytest.mark.skipif(not _has_mpi, reason="mpi4py not available")
 @pytest.mark.parametrize("solver", ["trlm", "irlm"])
 def test_warm_start_refinement_is_collective(solver):
-    """``_cholesky_or_deflate`` runs on the Allreduced Gram, so ``active_k`` agrees on every rank.
+    """The factorization runs on a globally reduced factor, so ``active_k`` agrees on every rank.
 
     If the deflation decision ever became rank-local, one rank would break out of the sweep while
     the others kept calling ``block_apply``'s collectives, and this test would **hang** rather than
@@ -216,7 +223,7 @@ def test_warm_start_refinement_is_collective(solver):
 
     h, d, u, rng = _designer_hermitian(n, seed=7)
     q0_full = _warm_start(u, d, rng, n)
-    r0 = _assert_window(h, q0_full)
+    r0 = _assert_refinable(h, q0_full)
 
     counts = [n // comm.size + (1 if r < n % comm.size else 0) for r in range(comm.size)]
     c0 = sum(counts[: comm.rank])
