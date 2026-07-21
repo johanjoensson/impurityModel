@@ -261,9 +261,17 @@ def test_get_sigma():
     np.testing.assert_allclose(sigma[0], np.zeros((2, 2, 2), dtype=complex), atol=1e-12)
 
 
+def _identity_moments(n_corr=1, max_order=3):
+    """A stand-in for get_greens_function_moments in the mocked orchestration tests."""
+    M = np.zeros((max_order + 1, n_corr, n_corr), dtype=complex)
+    M[0] = np.eye(n_corr)
+    return M
+
+
+@patch("impurityModel.ed.selfenergy.get_greens_function_moments")
 @patch("impurityModel.ed.selfenergy.calc_gs")
 @patch("impurityModel.ed.selfenergy.get_Greens_function")
-def test_calc_selfenergy(mock_get_gf, mock_calc_gs):
+def test_calc_selfenergy(mock_get_gf, mock_calc_gs, mock_moments):
     # Setup mocks
     mock_calc_gs.return_value = (
         [np.array([1.0])],  # psis
@@ -278,18 +286,24 @@ def test_calc_selfenergy(mock_get_gf, mock_calc_gs):
         [np.array([[[-1j]]])],  # gs_realaxis
         None,
     )
+    mock_moments.return_value = _identity_moments()
 
     res = selfenergy.calc_selfenergy(**_selfenergy_args(), comm=None)
 
     assert res["sigma"] is not None
     assert res["sigma_real"] is not None
+    assert res["sigma_moment_1"] is not None
+    assert res["sigma_moment_2"] is not None
+    assert res["sigma_moment_1"].shape == res["sigma_static"].shape
     assert mock_calc_gs.called
     assert mock_get_gf.called
+    assert mock_moments.called
 
 
+@patch("impurityModel.ed.selfenergy.get_greens_function_moments")
 @patch("impurityModel.ed.selfenergy.calc_gs")
 @patch("impurityModel.ed.selfenergy.get_Greens_function")
-def test_calc_selfenergy_retries_on_truncated_ensemble(mock_get_gf, mock_calc_gs):
+def test_calc_selfenergy_retries_on_truncated_ensemble(mock_get_gf, mock_calc_gs, mock_moments):
     """A diagnostics report flagging a truncated thermal ensemble triggers exactly one
     auto-retry of calc_gs with a larger num_wanted; a clean report stops the loop."""
     mock_calc_gs.return_value = (
@@ -307,6 +321,7 @@ def test_calc_selfenergy_retries_on_truncated_ensemble(mock_get_gf, mock_calc_gs
     gf = ([np.array([[[-1j]]])], [np.array([[[-1j]]])], None)
     # First call returns the truncated report, second the clean one.
     mock_get_gf.side_effect = [gf[:-1] + (truncated,), gf[:-1] + (clean,)]
+    mock_moments.return_value = _identity_moments()
 
     selfenergy.calc_selfenergy(**_selfenergy_args(verbosity=1), comm=None)
 
@@ -321,9 +336,10 @@ def test_calc_selfenergy_retries_on_truncated_ensemble(mock_get_gf, mock_calc_gs
 # fixed_peak_dc and fixed_occupation_dc are covered end-to-end in test_fixed_dc.py.
 
 
+@patch("impurityModel.ed.selfenergy.get_greens_function_moments")
 @patch("impurityModel.ed.selfenergy.calc_gs")
 @patch("impurityModel.ed.selfenergy.get_Greens_function")
-def test_calc_selfenergy_no_matsubara(mock_get_gf, mock_calc_gs):
+def test_calc_selfenergy_no_matsubara(mock_get_gf, mock_calc_gs, mock_moments):
     mock_calc_gs.return_value = (
         [np.array([1.0])],
         [0.0],
@@ -332,9 +348,12 @@ def test_calc_selfenergy_no_matsubara(mock_get_gf, mock_calc_gs):
         {"rhos": [np.array([[1.0]])]},
     )
     mock_get_gf.return_value = (None, [np.array([[[-1j]]])], None)  # gs_matsubara=None, gs_realaxis=one block
+    mock_moments.return_value = _identity_moments()
     res = selfenergy.calc_selfenergy(**_selfenergy_args(), comm=None)
     assert res["sigma"] is None
     assert res["sigma_real"] is not None
+    assert res["sigma_moment_1"] is not None
+    assert res["sigma_moment_2"] is not None
 
 
 @patch("impurityModel.ed.selfenergy.calc_gs")
@@ -385,3 +404,127 @@ def test_calc_selfenergy_sigma_exceptions(mock_get_sigma, mock_get_gf, mock_calc
 
     with pytest.raises(UnphysicalGreensFunctionError):
         selfenergy.calc_selfenergy(**_selfenergy_args(), comm=None)
+
+
+# --- Self-energy moments (Sigma_1, Sigma_2) --------------------------------------------------
+
+
+def test_get_Sigma_moments_formulas():
+    """get_Sigma_moments reproduces the three high-frequency coefficients and is Hermitian.
+
+    Uses hand-built Green's-function moments and hybridization blocks; checks the closed forms
+    Sigma_inf = M1 - hcorr, Sigma_1 = M2 - M1^2 - V^dag V,
+    Sigma_2 = M3 - M1 M2 - M2 M1 + M1^3 - V^dag hbath V.
+    """
+    rng = np.random.default_rng(0)
+
+    def herm(n):
+        a = rng.standard_normal((n, n)) + 1j * rng.standard_normal((n, n))
+        return a + a.conj().T
+
+    n_corr, n_bath = 2, 3
+    M = np.stack([np.eye(n_corr).astype(complex), herm(n_corr), herm(n_corr), herm(n_corr)])
+    hcorr = herm(n_corr)
+    hbath = herm(n_bath)
+    v = rng.standard_normal((n_bath, n_corr)) + 1j * rng.standard_normal((n_bath, n_corr))
+
+    sigma_inf, sigma_1, sigma_2 = selfenergy.get_Sigma_moments(M, hcorr, v, hbath)
+
+    m1, m2, m3 = M[1], M[2], M[3]
+    np.testing.assert_allclose(sigma_inf, m1 - hcorr, atol=1e-12)
+    np.testing.assert_allclose(sigma_1, m2 - m1 @ m1 - v.conj().T @ v, atol=1e-12)
+    np.testing.assert_allclose(sigma_2, m3 - m1 @ m2 - m2 @ m1 + m1 @ m1 @ m1 - v.conj().T @ hbath @ v, atol=1e-12)
+    # Sigma_1, Sigma_2 are Hermitian for Hermitian inputs.
+    np.testing.assert_allclose(sigma_1, sigma_1.conj().T, atol=1e-12)
+    np.testing.assert_allclose(sigma_2, sigma_2.conj().T, atol=1e-12)
+
+
+def _serial_basis(impurity_orbitals, bath_states, initial_basis):
+    from mpi4py import MPI
+
+    from impurityModel.ed.manybody_basis import Basis
+
+    return Basis(
+        impurity_orbitals=impurity_orbitals,
+        bath_states=bath_states,
+        initial_basis=initial_basis,
+        comm=MPI.COMM_SELF,
+    )
+
+
+def test_greens_function_moments_noninteracting():
+    """For a non-interacting impurity+bath the exact GF moments are M_n = (h^n) restricted to
+    the impurity, and both dynamic self-energy moments vanish.
+
+    One impurity spin-orbital (0) hybridising with one bath spin-orbital (1); the many-body
+    ground state is the vacuum (a valid Slater determinant), for which the impurity GF is the
+    single-particle resolvent [(z - h)^-1]_00 independent of filling.
+    """
+    from impurityModel.ed.greens_function import get_greens_function_moments
+    from impurityModel.ed.ManyBodyUtils import ManyBodyOperator, ManyBodyState, SlaterDeterminant
+
+    eps_d, eps_b, vhop = -0.4, 1.1, 0.7
+    hOp = ManyBodyOperator(
+        {
+            ((0, "c"), (0, "a")): eps_d,
+            ((1, "c"), (1, "a")): eps_b,
+            ((0, "c"), (1, "a")): vhop,
+            ((1, "c"), (0, "a")): vhop,
+        }
+    )
+    h = np.array([[eps_d, vhop], [vhop, eps_b]], dtype=complex)
+
+    basis = _serial_basis({0: [[0]]}, ({0: [[1]]}, {0: [[]]}), [b"\x00"])
+    vac = ManyBodyState({SlaterDeterminant.from_bytes(b"\x00"): 1.0})
+
+    M = get_greens_function_moments([vac], [0.0], tau=1.0, basis=basis, hOp=hOp, impurity_indices=[0])
+
+    for n in range(4):
+        np.testing.assert_allclose(M[n], np.linalg.matrix_power(h, n)[0:1, 0:1], atol=1e-10)
+
+    sigma_inf, sigma_1, sigma_2 = selfenergy.get_Sigma_moments(
+        M, np.array([[eps_d]], dtype=complex), np.array([[vhop]], dtype=complex), np.array([[eps_b]], dtype=complex)
+    )
+    np.testing.assert_allclose(sigma_inf, 0.0, atol=1e-10)
+    np.testing.assert_allclose(sigma_1, 0.0, atol=1e-10)
+    np.testing.assert_allclose(sigma_2, 0.0, atol=1e-10)
+
+
+def test_greens_function_moments_hubbard_atom():
+    """Half-filled single-orbital Hubbard atom: the thermally averaged impurity GF is a
+    two-pole function with poles {eps, eps+U} and equal weights, giving the atomic self-energy
+    Sigma_inf = U/2, Sigma_1 = U^2/4, Sigma_2 = (U^2/4)(eps + U/2)."""
+    from impurityModel.ed.atomic_physics import getUop_from_rspt_u4
+    from impurityModel.ed.greens_function import get_greens_function_moments
+    from impurityModel.ed.ManyBodyUtils import ManyBodyOperator, ManyBodyState, SlaterDeterminant
+
+    eps, U = -0.7, 3.0
+    U4 = np.zeros((2, 2, 2, 2))
+    U4[0, 1, 0, 1] = U4[1, 0, 1, 0] = U  # density-density U n_up n_dn
+    hOp = ManyBodyOperator({((0, "c"), (0, "a")): eps, ((1, "c"), (1, "a")): eps}) + ManyBodyOperator(
+        getUop_from_rspt_u4(U4)
+    )
+
+    # The degenerate half-filled ground manifold: |up> (orbital 0) and |dn> (orbital 1), E = eps.
+    basis = _serial_basis({0: [[0, 1]]}, ({0: [[]]}, {0: [[]]}), [b"\x80", b"\x40"])
+    psi_up = ManyBodyState({SlaterDeterminant.from_bytes(b"\x80"): 1.0})
+    psi_dn = ManyBodyState({SlaterDeterminant.from_bytes(b"\x40"): 1.0})
+
+    M = get_greens_function_moments(
+        [psi_up, psi_dn], [eps, eps], tau=1.0, basis=basis, hOp=hOp, impurity_indices=[0, 1]
+    )
+
+    # Reference: two-pole G per spin, poles {eps, eps+U}, weights {1/2, 1/2}; no spin mixing.
+    poles = np.array([eps, eps + U])
+    weights = np.array([0.5, 0.5])
+    for n in range(4):
+        m_n = np.sum(weights * poles**n)
+        np.testing.assert_allclose(M[n], m_n * np.eye(2), atol=1e-10)
+
+    hcorr = eps * np.eye(2, dtype=complex)
+    empty_v = np.zeros((0, 2), dtype=complex)
+    empty_hbath = np.zeros((0, 0), dtype=complex)
+    sigma_inf, sigma_1, sigma_2 = selfenergy.get_Sigma_moments(M, hcorr, empty_v, empty_hbath)
+    np.testing.assert_allclose(sigma_inf, (U / 2) * np.eye(2), atol=1e-10)
+    np.testing.assert_allclose(sigma_1, (U**2 / 4) * np.eye(2), atol=1e-10)
+    np.testing.assert_allclose(sigma_2, (U**2 / 4) * (eps + U / 2) * np.eye(2), atol=1e-10)

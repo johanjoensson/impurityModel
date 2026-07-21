@@ -143,6 +143,9 @@ def _save_results(result, meshes, cluster_label, output):
     with h5py.File(output, "w") as f:
         g = f.create_group(cluster_label)
         g.create_dataset("Sigma Static", data=result["sigma_static"])
+        # High-frequency self-energy moments: Sigma(z) = Sigma_Static + Moment1/z + Moment2/z^2 + ...
+        g.create_dataset("Sigma Moment 1", data=result["sigma_moment_1"])
+        g.create_dataset("Sigma Moment 2", data=result["sigma_moment_2"])
         g.create_dataset("thermal_rho", data=result["thermal_rho"])
         g.create_dataset("gs_energies", data=result["gs_energies"])
         if meshes.iw is not None and result["sigma"] is not None:

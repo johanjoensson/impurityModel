@@ -184,3 +184,59 @@ def get_Sigma_static(U4, rho):
         sigma_static += (U4[j, :, i, :] - U4[j, :, :, i]) * rho[i, j]
 
     return sigma_static
+
+
+def get_Sigma_moments(M, hcorr, v, hbath):
+    r"""High-frequency self-energy moments from the interacting Green's-function moments.
+
+    Given the spectral moments ``M[n]`` of the impurity Green's function
+    (:math:`G(z) = \sum_n M_n / z^{n+1}`, ``M[0] = I``; see
+    :func:`impurityModel.ed.greens_function.get_greens_function_moments`) and the
+    correlated/hybridization/bath blocks of the non-interacting Hamiltonian
+    (:func:`get_hcorr_v_hbath`), return the coefficients of
+
+    .. math::
+
+        \Sigma(z) = \Sigma_\infty + \Sigma_1 / z + \Sigma_2 / z^2 + \dots
+
+    The non-interacting inverse Green's function is
+    :math:`G_0^{-1}(z) = z - h_{corr} - \Delta(z)` with the hybridization moments
+    :math:`\Delta(z) = V^\dagger V / z + V^\dagger h_{bath} V / z^2 + \dots`, so with
+    :math:`\Sigma = G_0^{-1} - G^{-1}`:
+
+    .. math::
+
+        \Sigma_\infty &= M_1 - h_{corr}, \\
+        \Sigma_1 &= M_2 - M_1^2 - V^\dagger V, \\
+        \Sigma_2 &= M_3 - M_1 M_2 - M_2 M_1 + M_1^3 - V^\dagger h_{bath} V.
+
+    :math:`\Sigma_\infty` equals the static (Hartree-Fock) self-energy
+    :func:`get_Sigma_static` and is returned as a consistency handle.
+
+    Parameters
+    ----------
+    M : np.ndarray
+        ``(>=4, n_corr, n_corr)`` Green's-function moments ``M[0..3]`` (solver basis).
+    hcorr : np.ndarray
+        ``(n_corr, n_corr)`` correlated one-body block.
+    v : np.ndarray
+        ``(n_bath, n_corr)`` impurity-to-bath hopping ``V``.
+    hbath : np.ndarray
+        ``(n_bath, n_bath)`` bath Hamiltonian.
+
+    Returns
+    -------
+    sigma_inf : np.ndarray
+        The static moment :math:`\Sigma_\infty` (``= M_1 - h_{corr}``).
+    sigma_1 : np.ndarray
+        The first dynamic moment :math:`\Sigma_1`.
+    sigma_2 : np.ndarray
+        The second dynamic moment :math:`\Sigma_2`.
+    """
+    m1, m2, m3 = M[1], M[2], M[3]
+    vtv = v.conj().T @ v
+    vt_hbath_v = v.conj().T @ hbath @ v
+    sigma_inf = m1 - hcorr
+    sigma_1 = m2 - m1 @ m1 - vtv
+    sigma_2 = m3 - m1 @ m2 - m2 @ m1 + m1 @ m1 @ m1 - vt_hbath_v
+    return sigma_inf, sigma_1, sigma_2

@@ -9,7 +9,12 @@ from impurityModel.ed.basis_restrictions import build_weighted_restrictions
 # re-export their public entry points so calc_selfenergy's calls and existing
 # selfenergy.<name> callers (and their test patches) resolve here unchanged.
 from impurityModel.ed.double_counting import fixed_occupation_dc, fixed_peak_dc  # noqa: F401
-from impurityModel.ed.greens_function import build_full_greens_function, get_Greens_function, save_Greens_function
+from impurityModel.ed.greens_function import (
+    build_full_greens_function,
+    get_Greens_function,
+    get_greens_function_moments,
+    save_Greens_function,
+)
 from impurityModel.ed.groundstate import calc_gs
 from impurityModel.ed.ManyBodyUtils import ManyBodyOperator
 from impurityModel.ed.memory_estimate import log_memory_budget, log_peak_vs_predicted, suggest_truncation_threshold
@@ -18,6 +23,7 @@ from impurityModel.ed.sigma import (  # noqa: F401
     check_greens_function,
     get_hcorr_v_hbath,
     get_sigma,
+    get_Sigma_moments,
     get_Sigma_static,
     hyb,
 )
@@ -549,6 +555,31 @@ def calc_selfenergy(model, meshes, basis, solver, *, comm, verbosity=0, cluster_
     # Static (Hartree-Fock) self-energy from the input-basis density matrix and u4 (input basis).
     sigma_static = get_Sigma_static(u4, thermal_rho[impurity_ix])
 
+    # High-frequency self-energy moments Sigma_1, Sigma_2 (coefficients of 1/(iw), 1/(iw)^2).
+    # Built from the exact interacting Green's-function spectral moments M1..M3 -- collective
+    # (applies h + Allreduce), so run unconditionally on every rank. The M tensor is replicated
+    # after the reduction, so the conversion and block-symmetrisation below are identical on all
+    # ranks (pure numpy on replicated data).
+    log("Calculating self-energy moments ...")
+    M = get_greens_function_moments(psis, es, tau, ground_state_basis, h, impurity_indices)
+    hcorr, v_full, _, h_bath = get_hcorr_v_hbath(h0_solve, total_impurity_orbitals, sum_bath_states)
+    sigma_inf_s, sigma_1_s, sigma_2_s = get_Sigma_moments(M, hcorr, v_full, h_bath)
+
+    def _moment_to_input_basis(full_s):
+        """Symmetry-match a full solver-basis moment matrix against the GF blocks, then rotate to B."""
+        return _to_input_basis([full_s[np.ix_(block, block)] for block in inequivalent_blocks])
+
+    sigma_moment_1 = _moment_to_input_basis(sigma_1_s)
+    sigma_moment_2 = _moment_to_input_basis(sigma_2_s)
+
+    # Consistency handle: Sigma_infinity = M1 - hcorr must equal the static (Hartree-Fock)
+    # self-energy. This holds exactly (not just to solver tolerance) because both use the same
+    # one-body density matrix, so a mismatch flags a basis/ordering bug rather than truncation.
+    static_from_moment = u_imp @ sigma_inf_s @ u_imp.conj().T
+    static_mismatch = float(np.max(np.abs(static_from_moment - sigma_static))) if sigma_static.size else 0.0
+    if static_mismatch > 1e-6 and rank == 0:
+        print(f"WARNING: static self-energy vs (M1 - hcorr) mismatch = {static_mismatch:.2e} (expected ~0).")
+
     # Predicted-vs-measured peak feedback for re-calibrating the byte model on
     # production-size runs (doc/plans/truncation_reliability.md). Collective on comm,
     # so it runs unconditionally; only the printing is verbosity-gated.
@@ -558,6 +589,8 @@ def calc_selfenergy(model, meshes, basis, solver, *, comm, verbosity=0, cluster_
         "sigma": sigma_full,
         "sigma_real": sigma_real_full,
         "sigma_static": sigma_static,
+        "sigma_moment_1": sigma_moment_1,
+        "sigma_moment_2": sigma_moment_2,
         "gs_matsubara": gs_matsubara_full,
         "gs_realaxis": gs_realaxis_full,
         "thermal_rho": thermal_rho,

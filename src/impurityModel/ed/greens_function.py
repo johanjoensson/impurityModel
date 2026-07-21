@@ -6,6 +6,7 @@ from mpi4py import MPI
 
 from impurityModel.ed import config
 from impurityModel.ed import gf_diagnostics as _gfd
+from impurityModel.ed.average import thermal_average_scale_indep
 from impurityModel.ed.basis_restrictions import build_excited_restrictions
 from impurityModel.ed.block_structure import BlockStructure
 from impurityModel.ed.BlockLanczosArray import Reort
@@ -55,7 +56,7 @@ from impurityModel.ed.gf_units import (
     unit_cost_weights,
 )
 from impurityModel.ed.manybody_basis import Basis
-from impurityModel.ed.ManyBodyUtils import ManyBodyOperator, ManyBodyState
+from impurityModel.ed.ManyBodyUtils import ManyBodyOperator, ManyBodyState, inner_multi
 from impurityModel.ed.symmetries import widen_weighted_restrictions
 
 comm = MPI.COMM_WORLD
@@ -135,6 +136,100 @@ def build_full_greens_function(block_gf, block_structure: BlockStructure):
     else:
         raise RuntimeError(f"Block structure does not match block_gf.\n{block_structure=} {len(block_gf)=}")
     return res
+
+
+def get_greens_function_moments(psis, es, tau, basis, hOp, impurity_indices, max_order=3):
+    r"""Exact spectral moments of the interacting impurity Green's function.
+
+    Returns ``M`` of shape ``(max_order + 1, n_corr, n_corr)`` (``n_corr = len(impurity_indices)``)
+    in the *solver* basis, thermally averaged over the retained eigenstates, with ``M[0] = I``.
+    These are the high-frequency coefficients of :math:`G(z) = \sum_n M_n / z^{n+1}`:
+
+    .. math::
+
+        M_n[a,b] = \frac{1}{Z} \sum_e e^{-(E_e-E_0)/\tau}
+            \Big( \langle \psi_e| c_a (H-E_e)^n c_b^\dagger |\psi_e\rangle
+                + (-1)^n \langle \psi_e| c_b^\dagger (H-E_e)^n c_a |\psi_e\rangle \Big),
+
+    the addition (greater, poles at :math:`+(E_m-E_e)`) and removal (lesser, poles at
+    :math:`-(E_m-E_e)`, hence the alternating sign) contributions -- the standard spectral
+    decomposition of the anticommutator Green's function. Only two applications of ``(H - E_e)``
+    per seed are needed for ``max_order <= 3``, using the Hermiticity of ``H - E_e`` (e.g.
+    :math:`M_3^>[a,b] = \langle (H-E)c_a^\dagger\psi | (H-E)^2 c_b^\dagger\psi\rangle`).
+
+    Parameters
+    ----------
+    psis : list of ManyBodyState
+        The retained (thermal) eigenstates, distributed over ``basis``.
+    es : array_like
+        Their eigen-energies.
+    tau : float
+        Thermal energy scale ``k_B * T`` (same weighting as ``thermal_rho``).
+    basis : Basis
+        The ground-state basis owning ``psis`` (provides ``redistribute_psis``, ``comm``).
+    hOp : ManyBodyOperator
+        The interacting solver-basis Hamiltonian.
+    impurity_indices : sequence of int
+        Sorted impurity spin-orbital indices (the correlated block).
+    max_order : int, optional
+        Highest moment order to compute (default 3, i.e. ``M0..M3``).
+
+    Returns
+    -------
+    np.ndarray
+        ``(max_order + 1, n_corr, n_corr)`` complex moment tensor, ``M[0] = I``.
+
+    Notes
+    -----
+    .. warning:: **Collective on** ``basis.comm``. Applies ``hOp`` -- which discovers
+       determinants outside ``basis`` (the ``N \pm 1`` sectors); inner products stay correct
+       because :meth:`Basis.redistribute_psis` routes purely by ``hash(sd) % size``, independent
+       of basis membership -- and ``Allreduce``\ s the per-state moments. Call it unconditionally
+       on every rank, exactly like :func:`basis_transcription.build_density_matrices`.
+    """
+    es = np.asarray(es, dtype=float)
+    n_corr = len(impurity_indices)
+    n_states = len(psis)
+    # Per-state moments, indexed [state, order, a, b]. M[., 0] is the identity because
+    # {c_a, c_b^dag} = delta_ab, so the greater/lesser contributions sum to I on every state.
+    M_per_state = np.zeros((n_states, max_order + 1, n_corr, n_corr), dtype=complex)
+    M_per_state[:, 0] = np.eye(n_corr)[np.newaxis, :, :]
+
+    creation = [ManyBodyOperator({((orb, "c"),): 1.0}) for orb in impurity_indices]
+    annihilation = [ManyBodyOperator({((orb, "a"),): 1.0}) for orb in impurity_indices]
+
+    def side_krylov_moments(seeds, e):
+        """K[n][a,b] = <seed_a | (H - e)^n | seed_b> for n = 1..max_order (Hermitian H - e)."""
+        s0 = seeds
+        s1 = [hOp(s, 0) - complex(e) * s for s in s0]
+        s2 = [hOp(s, 0) - complex(e) * s for s in s1] if max_order >= 3 else None
+        if basis.is_distributed:
+            s0 = basis.redistribute_psis(s0)
+            s1 = basis.redistribute_psis(s1)
+            s2 = basis.redistribute_psis(s2) if s2 is not None else None
+        k = {}
+        if max_order >= 1:
+            k[1] = inner_multi(s0, s1)  # <s0_a | (H-e) s0_b>
+        if max_order >= 2:
+            k[2] = inner_multi(s1, s1)  # <s0_a | (H-e)^2 s0_b>
+        if max_order >= 3:
+            k[3] = inner_multi(s1, s2)  # <s0_a | (H-e)^3 s0_b>
+        return k
+
+    for n, (psi_n, e_n) in enumerate(zip(psis, es)):
+        # Greater (addition): seed c_a^dag|psi>, so greater[order][a,b] = <psi|c_a (H-E)^order c_b^dag|psi>.
+        greater = side_krylov_moments([op(psi_n, 0) for op in creation], e_n)
+        # Lesser (removal): seed c_a|psi> gives <psi|c_a (H-E)^order c_b|psi>; the moment needs the
+        # mirrored index order <psi|c_b (H-E)^order c_a|psi>, hence the transpose, and the
+        # (-1)^order sign of the removal poles at -(E_m - E).
+        lesser = side_krylov_moments([op(psi_n, 0) for op in annihilation], e_n)
+        for order in range(1, max_order + 1):
+            M_per_state[n, order] = greater[order] + ((-1) ** order) * lesser[order].T
+
+    if basis.is_distributed:
+        basis.comm.Allreduce(MPI.IN_PLACE, M_per_state, op=MPI.SUM)
+
+    return thermal_average_scale_indep(es, M_per_state, tau)
 
 
 def get_Greens_function(
