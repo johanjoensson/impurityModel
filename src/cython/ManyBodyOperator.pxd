@@ -48,6 +48,7 @@ cdef extern from "ManyBodyOperator.h" nogil:
 
         mapped_type constant()
         void set_constant(mapped_type)
+        ManyBodyOperator power(unsigned int) except +
 
         ManyBodyOperator operator-()
         ManyBodyOperator operator+(const ManyBodyOperator&, const ManyBodyOperator&)
@@ -56,6 +57,7 @@ cdef extern from "ManyBodyOperator.h" nogil:
         ManyBodyOperator operator+(mapped_type, const ManyBodyOperator&)
         ManyBodyOperator operator-(const ManyBodyOperator&, mapped_type)
         ManyBodyOperator operator-(mapped_type, const ManyBodyOperator&)
+        ManyBodyOperator operator*(const ManyBodyOperator&, const ManyBodyOperator&) except +
         ManyBodyOperator operator*(const ManyBodyOperator&, mapped_type)
         ManyBodyOperator operator*(mapped_type, const ManyBodyOperator&)
         ManyBodyOperator operator/(const ManyBodyOperator&, mapped_type)

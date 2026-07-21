@@ -1265,6 +1265,45 @@ ManyBodyOperator::operator-=(const ManyBodyOperator &other) noexcept {
   return *this;
 }
 
+ManyBodyOperator &ManyBodyOperator::operator*=(const ManyBodyOperator &other) {
+  m_flat_dirty = true;
+  // An empty operator is the ZERO operator (the identity is the empty *term*,
+  // {} -> 1), so either factor being empty annihilates the product.
+  if (m_ops.empty() || other.m_ops.empty()) {
+    m_ops.clear();
+    m_canonical = true;
+    return *this;
+  }
+  std::vector<value_type> combined;
+  combined.reserve(m_ops.size() * other.m_ops.size());
+  for (const auto &left : m_ops) {
+    for (const auto &right : other.m_ops) {
+      key_type ops;
+      ops.reserve(left.first.size() + right.first.size());
+      // Terms are stored rightmost-first, i.e. in the order apply() runs them,
+      // so composing A*B (act with B, then with A) lays down B's string first.
+      ops.insert(ops.end(), right.first.begin(), right.first.end());
+      ops.insert(ops.end(), left.first.begin(), left.first.end());
+      combined.emplace_back(std::move(ops), left.second * right.second);
+    }
+  }
+  m_ops = std::move(combined);
+  // Restores the sorted/merged storage invariant AND collapses the product:
+  // concatenated strings are generally not in normal order, and this is where
+  // Pauli-vanishing and contracting pairs cancel.
+  canonicalize();
+  return *this;
+}
+
+ManyBodyOperator ManyBodyOperator::power(unsigned n) const {
+  ManyBodyOperator res;
+  res.set_constant(mapped_type{1.0, 0.0}); // n == 0 -> identity
+  for (unsigned k = 0; k < n; k++) {
+    res *= *this;
+  }
+  return res;
+}
+
 ManyBodyOperator::mapped_type ManyBodyOperator::constant() const noexcept {
   // The empty key sorts before every other term, so this is the front element
   // whenever a constant is present at all.

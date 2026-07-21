@@ -186,19 +186,59 @@ cdef class ManyBodyOperator:
             res.o = -self.o
         return res
 
-    def __mul__(self, ManyBodyOperator_cpp.mapped_type s) ->ManyBodyOperator:
-        res = ManyBodyOperator()
-        with nogil:
-            res.o = self.o*s
+    def __mul__(self, other) -> ManyBodyOperator:
+        """
+        Scale by a scalar, or compose with another operator.
+
+        ``A * B`` is composition: ``(A * B)(psi) == A(B(psi))``. The result is
+        canonicalized, so terms that cancel do cancel. Cost is ``len(A) * len(B)`` term
+        pairs *before* that cancellation, so compose small operators -- squaring a full
+        Hamiltonian is not tractable. ``A @ B`` is a synonym.
+        """
+        cdef ManyBodyOperator res = ManyBodyOperator()
+        cdef ManyBodyOperator rhs
+        cdef ManyBodyOperator_cpp.mapped_type s
+        if isinstance(other, ManyBodyOperator):
+            rhs = <ManyBodyOperator>other
+            with nogil:
+                res.o = self.o * rhs.o
+        else:
+            s = other
+            with nogil:
+                res.o = self.o * s
         return res
 
-    def __imul__(self, ManyBodyOperator_cpp.mapped_type s) ->ManyBodyOperator:
-        with nogil:
-            self.o = self.o*s
+    def __matmul__(self, other) -> ManyBodyOperator:
+        """Operator composition; a synonym for ``*`` between two operators."""
+        return self.__mul__(other)
+
+    def __imul__(self, other) -> ManyBodyOperator:
+        cdef ManyBodyOperator rhs
+        cdef ManyBodyOperator_cpp.mapped_type s
+        if isinstance(other, ManyBodyOperator):
+            rhs = <ManyBodyOperator>other
+            with nogil:
+                self.o = self.o * rhs.o
+        else:
+            s = other
+            with nogil:
+                self.o = self.o * s
         return self
 
     def __rmul__(self, ManyBodyOperator_cpp.mapped_type s) -> ManyBodyOperator:
-        return self*s
+        return self * s
+
+    def __pow__(self, int n, mod=None) -> ManyBodyOperator:
+        """``op ** n``: the n-fold composition. ``n == 0`` gives the identity."""
+        if mod is not None:
+            raise TypeError("ManyBodyOperator does not support modular exponentiation")
+        if n < 0:
+            raise ValueError("ManyBodyOperator cannot be raised to a negative power (no inverse)")
+        cdef ManyBodyOperator res = ManyBodyOperator()
+        cdef unsigned int k = n
+        with nogil:
+            res.o = self.o.power(k)
+        return res
 
     def __truediv__(self, ManyBodyOperator_cpp.mapped_type s) -> ManyBodyOperator:
         res = ManyBodyOperator()

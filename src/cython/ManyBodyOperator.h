@@ -221,6 +221,23 @@ public:
 
   ManyBodyOperator &operator+=(const ManyBodyOperator &) noexcept;
   ManyBodyOperator &operator-=(const ManyBodyOperator &) noexcept;
+  /**
+   * @brief Operator composition: `(A *= B)` acts as A(B|psi>).
+   *
+   * Each pair of terms concatenates its operator strings. Terms are stored
+   * rightmost-first (apply order), so the RIGHT factor's string is laid down
+   * first -- writing them the other way round silently computes B*A.
+   *
+   * The result is canonicalized, which is what makes the product usable: the
+   * raw concatenation has |A|*|B| terms of combined length, and normal ordering
+   * merges and cancels them back down. Cost is still |A|*|B| pairs before that
+   * cancellation, so this is for small operators (a few ladder operators, a
+   * transition operator, an impurity-only interaction) -- squaring a full
+   * Hamiltonian is not tractable.
+   */
+  ManyBodyOperator &operator*=(const ManyBodyOperator &);
+  /** @brief n-fold product with itself; n == 0 gives the identity. */
+  [[nodiscard]] ManyBodyOperator power(unsigned n) const;
   /** @brief Add a multiple of the identity. */
   ManyBodyOperator &operator+=(mapped_type) noexcept;
   /** @brief Subtract a multiple of the identity. */
@@ -237,6 +254,11 @@ public:
   [[nodiscard]] friend ManyBodyOperator
   operator-(const ManyBodyOperator &self, const ManyBodyOperator &other) {
     return ManyBodyOperator{self} -= other;
+  }
+
+  [[nodiscard]] friend ManyBodyOperator
+  operator*(const ManyBodyOperator &self, const ManyBodyOperator &other) {
+    return ManyBodyOperator{self} *= other;
   }
 
   [[nodiscard]] friend ManyBodyOperator operator+(const ManyBodyOperator &self,
