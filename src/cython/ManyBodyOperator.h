@@ -161,16 +161,38 @@ public:
   bool clear();
 
   /**
+   * @brief Rewrite the STORED terms into canonical normal order.
+   *
+   * Canonical form: creations before annihilations, each group ascending in
+   * orbital, Pauli-vanishing terms dropped, terms equal up to ordering merged,
+   * and coefficients below 1e-12 in magnitude removed. Contractions emitted
+   * when a creation crosses an annihilation of the same orbital produce shorter
+   * terms, down to the constant (empty) term.
+   *
+   * This is a representation change only: the operator's action on any state is
+   * unchanged. Every constructor and every algebraic operation
+   * (product/commutator/adjoint/...) leaves the operator canonical, so that
+   * algebra actually cancels -- without it A*B - B*A never simplifies. Only the
+   * raw map-style mutators (operator[], insert, emplace, non-const at) can
+   * break the invariant; they clear the flag and apply() falls back to
+   * normal-ordering the flat representation, so correctness never depends on
+   * the invariant holding.
+   */
+  void canonicalize();
+  /** @brief Whether the stored terms are known to be in canonical normal order.
+   */
+  [[nodiscard]] bool is_canonical() const noexcept;
+
+  /**
    * @brief Enable/disable build-time normal ordering of the apply()
    * representation.
    *
-   * When enabled (default) each term is rewritten to canonical order (creations
-   * before annihilations, each group ascending in orbital) via the fermionic
-   * anticommutators, emitting contraction terms when a creation crosses an
-   * annihilation of the same orbital and dropping Pauli-vanishing terms. This
-   * is a representation change only: the operator's action on any state is
-   * unchanged. It lets the diagonal/density fast path absorb forms like c_i
-   * c^d_i = 1 - n_i and merges terms equal up to ordering.
+   * Only has an observable effect on an operator whose stored terms are NOT
+   * canonical, i.e. one mutated through operator[] / insert / emplace after
+   * construction -- everything built through a constructor or through the
+   * algebra is canonical already, and its flat representation is a plain copy
+   * of the stored terms either way. Disabling it on such an operator makes
+   * apply() run the raw, unordered term strings.
    */
   void set_normal_ordering(bool enable) noexcept;
   [[nodiscard]] bool normal_ordering() const noexcept;
@@ -295,6 +317,12 @@ private:
       m_weighted_restrictions_mask;
 
   bool m_normal_order{true};
+  // True when m_ops is known to be in canonical normal order (see
+  // canonicalize()). Set by canonicalize(), preserved by the algebraic
+  // operations, cleared by the raw map-style mutators. Purely an optimization
+  // hint for build_flat_representation: when set, the flat rep is a copy of
+  // m_ops and the normal-ordering recursion is skipped.
+  bool m_canonical{false};
   mutable bool m_flat_dirty{true};
   mutable std::vector<int64_t> m_flat_indices;
   mutable std::vector<size_t> m_flat_offsets;

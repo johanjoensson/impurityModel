@@ -28,8 +28,12 @@ def test_tensor_extraction():
     # Spot-check the tensor entries against the known terms.
     assert np.isclose(h[0, 1], 0.3 + 0.2j)
     assert np.isclose(h[2, 3], -1.1)
-    # term c†_0 c†_1 c_1 c_0 -> V[i,j,k,l] with i=0,j=1,l=1,k=0 -> V[0,1,0,1]
-    assert np.isclose(V[0, 1, 0, 1], 1.7)
+    # The operator stores terms in canonical normal order, which sorts the two
+    # annihilators ascending: c†_0 c†_1 c_1 c_0 is stored as -c†_0 c†_1 c_0 c_1. So the
+    # tensor entry lands on V[i,j,k,l] with i=0, j=1, l=0, k=1 -> V[0,1,1,0] = -1.7.
+    # Same operator, antisymmetric-conjugate representative: V[0,1,0,1] is now empty.
+    assert np.isclose(V[0, 1, 1, 0], -1.7)
+    assert np.isclose(V[0, 1, 0, 1], 0.0)
     assert np.isclose(const, 2.5)
 
     # Full round-trip.

@@ -127,32 +127,13 @@ static inline int mask_parity(const ManyBodyState::key_type &state,
   return pc & 1;
 }
 
-static void
-initialize_from_ops(std::vector<ManyBodyOperator::value_type> &m_ops) {
-  std::sort(
-      m_ops.begin(), m_ops.end(),
-      [](const ManyBodyOperator::value_type &a,
-         const ManyBodyOperator::value_type &b) { return a.first < b.first; });
-  if (!m_ops.empty()) {
-    size_t merge_at_idx = 0;
-    for (size_t read_from_idx = 1; read_from_idx < m_ops.size();
-         read_from_idx++) {
-      if (m_ops[merge_at_idx].first == m_ops[read_from_idx].first) {
-        m_ops[merge_at_idx].second += m_ops[read_from_idx].second;
-      } else {
-        merge_at_idx++;
-        if (merge_at_idx != read_from_idx) {
-          m_ops[merge_at_idx] = std::move(m_ops[read_from_idx]);
-        }
-      }
-    }
-    m_ops.resize(merge_at_idx + 1);
-  }
-}
-
+// Every constructor leaves the operator canonical (see canonicalize()), so the
+// stored terms of anything built from Python or from the algebra are in normal
+// order. canonicalize() subsumes initialize_from_ops: it sorts, merges equal
+// terms and drops the zeros as part of the rewrite.
 ManyBodyOperator::ManyBodyOperator(const std::vector<value_type> &ops)
     : m_ops(ops) {
-  initialize_from_ops(m_ops);
+  canonicalize();
 }
 
 bool ManyBodyOperator::empty() const noexcept { return m_ops.empty(); }
@@ -160,12 +141,13 @@ bool ManyBodyOperator::empty() const noexcept { return m_ops.empty(); }
 bool ManyBodyOperator::clear() {
   m_ops.clear();
   m_flat_dirty = true;
+  m_canonical = true; // the empty (zero) operator is trivially canonical
   return true;
 }
 
 ManyBodyOperator::ManyBodyOperator(std::vector<value_type> &&ops)
     : m_ops(std::move(ops)) {
-  initialize_from_ops(m_ops);
+  canonicalize();
 }
 
 ManyBodyOperator::ManyBodyOperator(const OPS_VEC &ops, const SCALAR_VEC &amps)
@@ -174,14 +156,14 @@ ManyBodyOperator::ManyBodyOperator(const OPS_VEC &ops, const SCALAR_VEC &amps)
   for (size_t i = 0; i < ops.size(); i++) {
     m_ops.emplace_back(ops[i], amps[i]);
   }
-  initialize_from_ops(m_ops);
+  canonicalize();
 }
 ManyBodyOperator::ManyBodyOperator(OPS_VEC &&ops, SCALAR_VEC &&amps) : m_ops() {
   m_ops.reserve(ops.size());
   for (size_t i = 0; i < ops.size(); i++) {
     m_ops.emplace_back(std::move(ops[i]), std::move(amps[i]));
   }
-  initialize_from_ops(m_ops);
+  canonicalize();
 }
 
 ManyBodyOperator::iterator ManyBodyOperator::find(iterator first, iterator last,
@@ -218,12 +200,19 @@ ManyBodyOperator::const_iterator ManyBodyOperator::find(const K &key) const {
   return find(m_ops.cbegin(), m_ops.cend(), static_cast<key_type>(key));
 }
 
+// The raw map-style accessors hand out a mutable reference to a coefficient and
+// may insert an arbitrary (possibly non-normal-ordered) key, so they have to
+// invalidate BOTH caches conservatively: the flat representation, because the
+// caller is about to write a new amplitude through the returned reference, and
+// the canonical flag, because the new key need not be in normal order.
 ManyBodyOperator::mapped_type &
 ManyBodyOperator::operator[](const key_type &key) {
   auto it = find(key);
   if (it == m_ops.end() || it->first != key) {
     it = m_ops.emplace(it, key, mapped_type{});
+    m_canonical = false;
   }
+  m_flat_dirty = true;
   return it->second;
 }
 
@@ -231,7 +220,9 @@ ManyBodyOperator::mapped_type &ManyBodyOperator::operator[](key_type &&key) {
   auto it = find(key);
   if (it == m_ops.end() || it->first != key) {
     it = m_ops.emplace(it, std::move(key), mapped_type{});
+    m_canonical = false;
   }
+  m_flat_dirty = true;
   return it->second;
 }
 
@@ -240,6 +231,7 @@ ManyBodyOperator::mapped_type &ManyBodyOperator::at(const key_type &key) {
   if (it == m_ops.end() || it->first != key) {
     throw std::out_of_range("Element not found!");
   }
+  m_flat_dirty = true;
   return it->second;
 }
 
@@ -260,6 +252,7 @@ ManyBodyOperator::insert(const value_type &val) {
   }
   it = m_ops.emplace(it, val);
   m_flat_dirty = true;
+  m_canonical = false;
   return {it, true};
 }
 std::pair<ManyBodyOperator::iterator, bool>
@@ -270,12 +263,14 @@ ManyBodyOperator::insert(value_type &&val) {
   }
   it = m_ops.emplace(it, std::move(val));
   m_flat_dirty = true;
+  m_canonical = false;
   return {it, true};
 }
 ManyBodyOperator::iterator ManyBodyOperator::insert(iterator pos,
                                                     const value_type &val) {
   auto it = find(m_ops.begin(), pos, val.first);
   m_flat_dirty = true;
+  m_canonical = false;
   return m_ops.emplace(it, val);
 }
 
@@ -283,6 +278,7 @@ ManyBodyOperator::iterator ManyBodyOperator::insert(iterator pos,
                                                     value_type &&val) {
   auto it = find(m_ops.begin(), pos, val.first);
   m_flat_dirty = true;
+  m_canonical = false;
   return m_ops.emplace(it, std::move(val));
 }
 template <class InputIt>
@@ -308,6 +304,7 @@ ManyBodyOperator::emplace(Args &&...args) {
   }
   it = m_ops.emplace(it, std::move(val));
   m_flat_dirty = true;
+  m_canonical = false;
   return {it, true};
 }
 
@@ -1225,6 +1222,9 @@ ManyBodyOperator::apply(const ManyBodyBlockState &block, double cutoff) const {
 ManyBodyOperator &
 ManyBodyOperator::operator+=(const ManyBodyOperator &other) noexcept {
   m_flat_dirty = true;
+  // Merging two canonical term sets keeps the result canonical: no term string
+  // changes, and equal keys are combined in place.
+  m_canonical = m_canonical && other.m_canonical;
   if (m_ops.empty()) {
     m_ops = other.m_ops;
     return *this;
@@ -1245,6 +1245,7 @@ ManyBodyOperator::operator+=(const ManyBodyOperator &other) noexcept {
 ManyBodyOperator &
 ManyBodyOperator::operator-=(const ManyBodyOperator &other) noexcept {
   m_flat_dirty = true;
+  m_canonical = m_canonical && other.m_canonical;
   if (m_ops.empty()) {
     m_ops = other.m_ops;
     for (auto &op : m_ops) {
@@ -1412,6 +1413,18 @@ collect_flat_terms(const std::vector<ManyBodyOperator::value_type> &m_ops,
 }
 } // namespace
 
+void ManyBodyOperator::canonicalize() {
+  // collect_flat_terms already does the whole job: it normal-orders every term
+  // string, sorts by key, merges terms equal up to ordering and drops the ones
+  // whose coefficient cancelled. Its Term type is layout-identical to
+  // value_type, so the result is the new m_ops.
+  m_ops = collect_flat_terms(m_ops, true);
+  m_canonical = true;
+  m_flat_dirty = true;
+}
+
+bool ManyBodyOperator::is_canonical() const noexcept { return m_canonical; }
+
 void ManyBodyOperator::build_flat_representation() const {
   if (!m_flat_dirty)
     return;
@@ -1427,7 +1440,12 @@ void ManyBodyOperator::build_flat_representation() const {
   m_onebody_j.clear();
   m_onebody_between.clear();
 
-  const std::vector<Term> terms = collect_flat_terms(m_ops, m_normal_order);
+  // Canonical storage is already normal-ordered and merged, so the flat rep is
+  // a plain copy and the (potentially expensive) anticommutator recursion is
+  // skipped. It only has work to do for terms injected through the raw
+  // mutators.
+  const std::vector<Term> terms =
+      collect_flat_terms(m_ops, m_normal_order && !m_canonical);
 
   m_flat_offsets.push_back(0);
   std::vector<int64_t> creators;     // reused scratch

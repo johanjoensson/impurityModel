@@ -41,6 +41,42 @@ from impurityModel.ed.lie_algebra import (  # noqa: F401  -- most names re-expor
 )
 
 
+def _one_body_matrix(op, n_orb=None, h0_matrix=None, must_span=None):
+    """One-body matrix of ``op``, guaranteed large enough to index by ``must_span``.
+
+    :func:`lie_algebra.extract_tensors` sizes ``h`` from the operator's own extent
+    (``1 + max index``) when ``n_orb`` is ``None``. Every caller below then slices that
+    matrix with a *caller-supplied* orbital list, so an operator that simply does not
+    touch its highest-numbered orbital — a genuinely decoupled orbital at zero on-site
+    energy, which carries no term at all — yields a matrix too small to index. Widen the
+    inferred extent to cover the orbitals the caller intends to address.
+
+    Parameters
+    ----------
+    op : ManyBodyOperator or dict
+        The operator to extract from (ignored when ``h0_matrix`` is given).
+    n_orb : int, optional
+        Explicit spin-orbital count; inferred (and widened) when ``None``.
+    h0_matrix : ndarray, optional
+        Pre-extracted one-body matrix; returned as-is.
+    must_span : sequence of int, optional
+        Orbital indices the returned matrix must be indexable by.
+
+    Returns
+    -------
+    ndarray
+    """
+    if h0_matrix is not None:
+        return h0_matrix
+    if n_orb is None and must_span is not None:
+        span = list(must_span)
+        if span:
+            terms = op.to_dict() if hasattr(op, "to_dict") else dict(op)
+            op_extent = 1 + max((idx for factors in terms for (idx, _) in factors), default=-1)
+            n_orb = max(op_extent, 1 + max(span))
+    return extract_tensors(op, n_orb=n_orb, two_body=False)[0]
+
+
 def conserved_subset_charges(op, n_orb=None, tol=1e-9):
     r"""Find the orbital subsets whose total occupation is conserved by the **full** ``op``.
 
@@ -255,7 +291,7 @@ def group_orbitals_by_blocks(
     imp = sorted(impurity_orbitals)
     val_set = set(valence_orbitals)
     con_set = set(conduction_orbitals)
-    h = h0_matrix if h0_matrix is not None else extract_tensors(op, n_orb=n_orb, two_body=False)[0]
+    h = _one_body_matrix(op, n_orb=n_orb, h0_matrix=h0_matrix, must_span=imp)
 
     # get_equivalent_orbs returns local (0..n_imp-1) indices per inequivalent block; map back
     # to global spin-orbital indices via the sorted impurity list.
@@ -307,7 +343,7 @@ def classify_bath_occupation(op, impurity_orbitals, n_orb=None, h0_matrix=None):
     conduction_orbitals : list[int]
         Initially-empty bath orbital indices (``h[o, o] >= 0``), sorted.
     """
-    h = h0_matrix if h0_matrix is not None else extract_tensors(op, n_orb=n_orb, two_body=False)[0]
+    h = _one_body_matrix(op, n_orb=n_orb, h0_matrix=h0_matrix, must_span=impurity_orbitals)
     imp_set = set(impurity_orbitals)
     bath = [o for o in range(h.shape[0]) if o not in imp_set]
     valence = [o for o in bath if h[o, o].real < 0]
@@ -436,7 +472,7 @@ def auto_block_structure(op, n_orb=None, orbitals=None):
     -------
     BlockStructure
     """
-    h, _, _ = extract_tensors(op, n_orb=n_orb, two_body=False)
+    h = _one_body_matrix(op, n_orb=n_orb, must_span=orbitals)
     if orbitals is not None:
         h = h[np.ix_(list(orbitals), list(orbitals))]
     return build_block_structure(None, mat=h)
@@ -502,7 +538,7 @@ def impurity_block_structure(op, impurity_orbitals, n_orb=None, h0_matrix=None):
     """
     imp = sorted(impurity_orbitals)
     imp_set = set(imp)
-    h = h0_matrix if h0_matrix is not None else extract_tensors(op, n_orb=n_orb, two_body=False)[0]
+    h = _one_body_matrix(op, n_orb=n_orb, h0_matrix=h0_matrix, must_span=imp)
     n = h.shape[0]
     bath = [o for o in range(n) if o not in imp_set]
 
@@ -564,9 +600,9 @@ def impurity_symmetry_rotation(op, impurity_orbitals, n_orb=None, h0_matrix=None
         The impurity-block rotation, in the sorted-``impurity_orbitals`` order (columns are the
         eigenvectors of ``h[imp, imp]``).
     """
-    h = h0_matrix if h0_matrix is not None else extract_tensors(op, n_orb=n_orb, two_body=False)[0]
-    n = h.shape[0]
     imp = sorted(impurity_orbitals)
+    h = _one_body_matrix(op, n_orb=n_orb, h0_matrix=h0_matrix, must_span=imp)
+    n = h.shape[0]
     h_imp = h[np.ix_(imp, imp)]
     h_imp = 0.5 * (h_imp + h_imp.conj().T)  # symmetrise away round-off before eigh
 
@@ -809,7 +845,7 @@ def impurity_gf_block_consistency(op, impurity_orbitals, n_orb=None):
     # Impurity-only partition: connected components of h[imp, imp] (auto_block_structure with
     # orbitals=imp), mapped from local matrix indices back to global orbital indices.
     imp_set = set(imp)
-    h, _, _ = extract_tensors(op, n_orb=n_orb, two_body=False)
+    h = _one_body_matrix(op, n_orb=n_orb, must_span=imp)
     n = h.shape[0]
     bath = [o for o in range(n) if o not in imp_set]
     h_imp = h[np.ix_(imp, imp)]

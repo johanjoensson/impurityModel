@@ -31,7 +31,24 @@ cdef class ManyBodyOperator:
     Cython wrapper class for C++ ManyBodyOperator.
 
     Represents a quantum many-body operator composed of creation
-    and annihilation process sequences with corresponding amplitudes.
+    and annihilation process sequences with corresponding amplitudes. A term is keyed
+    by its process tuple in product (left-to-right) order, e.g.
+    ``((i, 'c'), (j, 'a'))`` for :math:`c^\\dagger_i c_j`; the empty tuple ``()`` keys
+    the constant (identity) term.
+
+    Stored terms are kept in **canonical normal order**: creations before
+    annihilations, each group ascending in orbital, Pauli-vanishing terms dropped and
+    terms equal up to ordering merged. Constructors and all algebra maintain this, so
+    ``to_dict()`` reports the canonical form rather than the terms as they were
+    written -- e.g. ``{((0, 'a'), (0, 'c')): 1}`` reads back as
+    ``{(): 1, ((0, 'c'), (0, 'a')): -1}``, the same operator. Only ``__setitem__`` can
+    break the invariant; see :meth:`canonicalize`.
+
+    Occupation restrictions (:meth:`set_restrictions` /
+    :meth:`set_weighted_restrictions`) are a property of the operator *object*, not of
+    the operator algebra: they are NOT propagated through ``+``, ``-``, ``*`` or any
+    other operation, so a result must have its restrictions set explicitly (this is
+    what e.g. ``gf_solvers`` and ``manybody_basis.Basis`` do).
     """
     cdef ManyBodyOperator_cpp o
 
@@ -289,11 +306,30 @@ cdef class ManyBodyOperator:
         """
         self.o.clear()
 
+    def canonicalize(self):
+        """
+        Rewrite the stored terms into canonical normal order, in place.
+
+        Only ever needed after mutating the operator through ``__setitem__``, which is
+        the one route that can introduce a non-normal-ordered term; every constructor
+        and every algebraic operation leaves the operator canonical already.
+
+        Representation change only -- the operator's action on any state is unchanged.
+        """
+        with nogil:
+            self.o.canonicalize()
+
+    def is_canonical(self) -> bool:
+        """Whether the stored terms are known to be in canonical normal order."""
+        return self.o.is_canonical()
+
     def set_normal_ordering(self, bint enable):
         """
         Enable/disable build-time normal ordering of the apply() representation.
 
-        Representation change only; the operator's action is unchanged. Default enabled.
+        Only observable on an operator made non-canonical through ``__setitem__``;
+        see :meth:`canonicalize`. Representation change only; the operator's action
+        is unchanged. Default enabled.
         """
         self.o.set_normal_ordering(enable)
 

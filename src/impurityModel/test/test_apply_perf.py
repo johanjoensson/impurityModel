@@ -174,14 +174,22 @@ def _regen_golden():
 
 
 def _assert_matches(name, produced, reference):
-    """Compare two serialized states key-by-key within TOL."""
+    """Compare two serialized states key-by-key within TOL.
+
+    A determinant present on only one side is a mismatch only if its amplitude is
+    resolvable: ``apply`` drops an output whose contributions cancel to *exactly* 0.0
+    but keeps one that cancels to a rounding residue, so two summation orders over the
+    same operator legitimately differ by keys carrying ~1e-16. Below TOL the two states
+    are numerically indistinguishable, and a genuine regression moves weight far above it.
+    """
     prod = {tuple(c): (re, im) for c, re, im in produced}
     ref = {tuple(c): (re, im) for c, re, im in reference}
-    assert prod.keys() == ref.keys(), (
-        f"[{name}] key set differs: " f"{len(prod.keys() - ref.keys())} extra, {len(ref.keys() - prod.keys())} missing"
-    )
+    for label, only in (("extra", prod.keys() - ref.keys()), ("missing", ref.keys() - prod.keys())):
+        side = prod if label == "extra" else ref
+        significant = [k for k in only if abs(complex(*side[k])) >= TOL]
+        assert not significant, f"[{name}] {len(significant)} {label} determinant(s) with amplitude >= {TOL}"
     for key, (re, im) in ref.items():
-        pre, pim = prod[key]
+        pre, pim = prod.get(key, (0.0, 0.0))
         assert abs(pre - re) < TOL and abs(pim - im) < TOL, f"[{name}] amplitude mismatch at {key}"
 
 
@@ -235,12 +243,23 @@ def test_diagonal_independent(oracle_fixtures):
 
     The diagonal fixture is built only from ``n_i n_j`` (``c^d_i c^d_j c_j c_i`` with
     i!=j, which equals ``n_i n_j`` exactly since the two number operators commute) and
-    ``n_i`` terms. Each has eigenvalue ``prod_o occ(o)`` and sign +1, so the expected
-    output amplitude is computable from occupancies alone -- no fermion-sign machinery,
-    making this a true cross-check of the C++ apply rather than a self-comparison.
+    ``n_i`` terms. Each has eigenvalue ``prod_o occ(o)`` up to a sign fixed purely by the
+    term's *shape*, so the expected output amplitude is computable from occupancies alone
+    -- no fermion-sign machinery, making this a true cross-check of the C++ apply rather
+    than a self-comparison.
+
+    The sign: terms are stored in canonical normal order, which sorts the annihilators
+    ascending, whereas ``n_{a_1}..n_{a_k} = c^d_{a_1}..c^d_{a_k} c_{a_k}..c_{a_1}`` has
+    them descending. Reversing k elements costs ``(-1)^(k(k-1)/2)``, so a canonical
+    k-body diagonal term with coefficient ``c`` has eigenvalue
+    ``c * (-1)^(k(k-1)/2) * prod_o occ(o)`` -- +1 for k=1, -1 for k=2.
     """
     op, psi = oracle_fixtures["diagonal"]
-    terms = [({p[0] for p in processes}, coeff) for processes, coeff in op.items()]
+    terms = []
+    for processes, coeff in op.items():
+        orbs = {p[0] for p in processes}
+        k = sum(1 for p in processes if p[1] == "c")
+        terms.append((orbs, coeff * (-1) ** ((k * (k - 1)) // 2)))
 
     expected = {}
     for sd, amp in psi.items():
@@ -256,13 +275,29 @@ def test_diagonal_independent(oracle_fixtures):
 
 
 def _make_non_normal_ordered(rng, n):
-    """Contraction-heavy operator with annihilations left of creations (Phase 3 input)."""
-    op = {}
+    """Contraction-heavy operator with annihilations left of creations (Phase 3 input).
+
+    Built through ``__setitem__`` rather than the constructor **on purpose**: the
+    constructor canonicalizes (see ``ManyBodyOperator.canonicalize``), so a
+    dict-constructed operator is normal-ordered before it is ever applied and could not
+    exercise the flat-representation ordering path at all. ``__setitem__`` is the one
+    route that leaves raw, unordered term strings in storage.
+    """
+    op = ManyBodyOperator()
+    amps = {}
     for _ in range(n):
-        a, b, c, d = (rng.randrange(N_ORBS) for _ in range(4))
+        a, c = rng.randrange(N_ORBS), rng.randrange(N_ORBS)
+        # Half the adjacent (annihilation, creation) pairs share an orbital, so the
+        # anticommutator c_a c^d_a = 1 - n_a actually fires and the recursion emits
+        # contraction terms -- with four independent draws over N_ORBS orbitals a
+        # collision is vanishingly rare and the path would go untested.
+        b = a if rng.random() < 0.5 else rng.randrange(N_ORBS)
+        d = c if rng.random() < 0.5 else rng.randrange(N_ORBS)
         key = ((a, "a"), (b, "c"), (c, "a"), (d, "c"))  # c_a c^d_b c_c c^d_d
-        op[key] = op.get(key, 0) + complex(rng.gauss(0, 1), rng.gauss(0, 1))
-    return ManyBodyOperator(op)
+        amps[key] = amps.get(key, 0) + complex(rng.gauss(0, 1), rng.gauss(0, 1))
+        op[key] = amps[key]
+    assert not op.is_canonical(), "fixture must stay non-canonical to be a meaningful A/B"
+    return op
 
 
 def test_normal_ordering_contraction():
@@ -292,17 +327,28 @@ def test_normal_ordering_ab_invariance(oracle_fixtures):
 
 
 def test_normal_ordering_multiplier(oracle_fixtures, capsys):
-    """Report the term-count multiplier (Phase 3b). Already-normal-ordered Hamiltonian
-    fixtures must not expand (multiplier ~1); the report flags any blow-up."""
+    """Report the term-count multiplier (Phase 3b) and guard against a blow-up.
+
+    The constructor-built fixtures are canonical, so their flat representation is a copy
+    of their stored terms by construction -- an on/off A/B on them measures nothing. The
+    measurement that still has content is on a raw, non-canonical operator, where the
+    anticommutator recursion actually runs: a contraction-heavy input is *allowed* to
+    expand (each ``c_a c^d_b`` crossing emits a contraction term), but not without bound.
+    """
     with capsys.disabled():
         for name in FIXTURE_NAMES:
             op, _ = oracle_fixtures[name]
-            op.set_normal_ordering(False)
-            raw = op.num_flat_terms()
-            op.set_normal_ordering(True)
-            normal = op.num_flat_terms()
-            mult = normal / raw if raw else 1.0
-            assert mult <= 1.5, f"{name} normal-order expansion {mult:.2f} exceeds 1.5"
+            assert op.is_canonical(), f"{name} fixture should be canonical from its constructor"
+            assert op.num_flat_terms() == len(op), f"{name} flat rep should mirror canonical storage"
+
+        raw_op = _make_non_normal_ordered(random.Random(11), 60)
+        raw_op.set_normal_ordering(False)
+        raw = raw_op.num_flat_terms()
+        raw_op.set_normal_ordering(True)
+        normal = raw_op.num_flat_terms()
+        mult = normal / raw if raw else 1.0
+        print(f"non-canonical normal-order multiplier: {raw} -> {normal} ({mult:.2f}x)")
+        assert mult <= 4.0, f"normal-order expansion {mult:.2f} exceeds 4.0"
 
 
 @pytest.mark.benchmark
