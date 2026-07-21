@@ -35,6 +35,7 @@ from impurityModel.ed.BlockLanczosArray import (
     block_tsqr,
     is_array,
 )
+from impurityModel.ed.TSQR import DEFLATE_TOL_SEEDS
 from impurityModel.ed.ManyBodyUtils import (
     ManyBodyBlockState,
     block_add_scaled_cy,
@@ -201,7 +202,11 @@ def block_gmres(A, x0, y, basis, double slaterWeightMin, atol=1e-8, restart=40, 
         # Rank is a property of the directions, not the scale, so only the breakdown test
         # needs R's scale as its reference; beta_j reconstructs R = V_1 @ beta_j so dependent
         # columns are recovered by linearity, exactly as in block_bicgstab's entry.
-        V_1, beta_j, rank_r, _sv_r = block_tsqr(R, mpi, comm, r_scale, slaterWeightMin)
+        # DEFLATE_TOL_SEEDS: this is the same transition-operator right-hand side
+        # block_bicgstab deflates at entry -- see the note there.
+        V_1, beta_j, rank_r, _sv_r = block_tsqr(
+            R, mpi, comm, r_scale, slaterWeightMin, deflate_tol=DEFLATE_TOL_SEEDS
+        )
         if rank_r == 0:
             converged = True
             break
@@ -247,7 +252,9 @@ def block_gmres(A, x0, y, basis, double slaterWeightMin, atol=1e-8, restart=40, 
             h_scale = np.linalg.norm(Hbar[: col_off[j] + widths[j], col_off[j] : col_off[j] + widths[j]])
             V_next = None
             if w_scale > BREAKDOWN_TOL * max(h_scale, w_scale):
-                V_next, bj, w_next, _sv_w = block_tsqr(W, mpi, comm, w_scale, slaterWeightMin)
+                V_next, bj, w_next, _sv_w = block_tsqr(
+                    W, mpi, comm, w_scale, slaterWeightMin, deflate_tol=DEFLATE_TOL_SEEDS
+                )
                 if w_next < 0:
                     w_next = 0  # non-finite: treat as a closed space and stop this cycle
             else:

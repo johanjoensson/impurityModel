@@ -25,6 +25,7 @@ from impurityModel.ed.ManyBodyUtils import ManyBodyBlockState, ManyBodyState, Sl
 from impurityModel.ed.TSQR import (
     BREAKDOWN_TOL,
     DEFLATE_TOL,
+    DEFLATE_TOL_SEEDS,
     EPS,
     local_r,
     merge_packed_r,
@@ -237,6 +238,57 @@ def test_tsqr_rank_matches_the_singular_value_floor():
         V, _ = np.linalg.qr(rng.standard_normal((p, p)) + 1j * rng.standard_normal((p, p)))
         _, _, k, _ = tsqr((U * s) @ V.conj().T)
         assert k == n_keep
+
+
+def _marginal_block(n, p, independent_part, seed=0):
+    """``p`` orthonormal columns, the last of which is a copy of the first plus a genuinely
+    independent component of size ``independent_part`` — a direction whose rank is a
+    question of *where the floor is*, not of exact dependence."""
+    rng = _rng(seed)
+    u = np.linalg.qr(rng.standard_normal((n, p + 1)) + 1j * rng.standard_normal((n, p + 1)))[0]
+    return np.hstack([u[:, : p - 1], u[:, :1] + independent_part * u[:, p : p + 1]])
+
+
+@pytest.mark.parametrize("independent_part", [1e-4, 1e-7, 1e-10, 1e-13])
+def test_deflate_tol_is_a_per_call_property_of_the_block(independent_part):
+    """The rank floor is an argument, like ``scale``, because different callers are asking
+    about different blocks.
+
+    The default resolves directions down to the factorization's own noise, so that a
+    restarted eigensolver can tell apart near-degenerate copies. A *seed* block — the stacked
+    polarization components of a spectroscopy — needs the opposite: its symmetry-dependent
+    components are zero only to their construction rounding, and retaining one injects a
+    noise column into the solve.
+    """
+    a = _marginal_block(300, 4, independent_part)
+    sigma_ratio = tsqr(a)[3][-1] / tsqr(a)[3][0]
+
+    k_default = tsqr(a)[2]
+    k_seeds = tsqr(a, deflate_tol=DEFLATE_TOL_SEEDS)[2]
+
+    assert k_default == (4 if sigma_ratio > DEFLATE_TOL else 3)
+    assert k_seeds == (4 if sigma_ratio > DEFLATE_TOL_SEEDS else 3)
+    # ... and the whole point: between the two floors the answers differ.
+    if DEFLATE_TOL < sigma_ratio <= DEFLATE_TOL_SEEDS:
+        assert k_default == 4 and k_seeds == 3
+
+
+def test_seeds_floor_is_looser_than_the_default():
+    """Measured on the RIXS tensor benchmark, symmetry-dependent components are discarded at
+    ``sigma/sigma_max`` up to 1.2e-9 — four orders above the default floor. The seeds floor
+    has to sit above that with room for the rounding to grow with the basis."""
+    assert DEFLATE_TOL_SEEDS > 1e-6 > 1e-9 > DEFLATE_TOL
+
+
+def test_block_tsqr_forwards_the_rank_floor():
+    """The dispatcher must pass the knob through for every representation, or the solvers
+    that ask for the seeds floor would silently get the default."""
+    a = _marginal_block(60, 3, 1e-10)
+    dets = _dets(60)
+    blk = ManyBodyBlockState.from_states(_states(a, dets))
+    for wp in (a, blk, blk.to_states()):
+        assert block_tsqr(wp)[2] == 3
+        assert block_tsqr(wp, deflate_tol=DEFLATE_TOL_SEEDS)[2] == 2
 
 
 def test_tsqr_breakdown_is_relative_to_scale():

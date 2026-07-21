@@ -79,6 +79,25 @@ EPS = EPS_VAL                              # ~2.22e-16
 # of 1.7e5, which propagates into ||beta^+|| in the W-estimator and into T.
 DEFLATE_TOL = EPS_VAL ** (2.0 / 3.0)       # ~3.67e-11
 DEFLATE_EVAL_TOL = DEFLATE_TOL * DEFLATE_TOL  # ~1.35e-21 : the same floor on a squared norm
+# Rank floor for blocks whose deficiency is *structural* rather than emergent, i.e. seed
+# blocks built by applying a set of transition operators (the Cartesian polarization
+# components of XAS/NIXS/RIXS) to an eigenstate. Symmetry makes some of those components
+# linearly dependent, and the solvers rely on the factorization to find that out -- the
+# group-rule dedup that would otherwise do it was refuted for rank-4 tensors, so automatic
+# rank deflation *is* the mechanism (doc/plans/rixs_r2_performance.md).
+#
+# Such a dependent direction is zero only up to the rounding accumulated while building the
+# seed, and that grows with the basis. Measured on the RIXS tensor benchmark the discarded
+# sigma/sigma_max reach 3.5e-11 -- already within 6% of the default DEFLATE_TOL, on a small
+# problem. Above the floor they would be *retained*, injecting a pure-noise direction with
+# sigma_min ~ 1e-11 into the block: ||beta^+|| ~ 1e11 in the estimator and a near-null
+# direction in the resolvent.
+#
+# So these callers ask a different question and get a different floor. There is no tension
+# with the default's job (resolving near-degeneracies down to ~1e-9): a genuinely distinct
+# polarization component has a singular value O(1) relative to the block, five orders above
+# this floor, so nothing physical is at risk of being deflated by it.
+DEFLATE_TOL_SEEDS = EPS_VAL ** (1.0 / 3.0)  # ~6.06e-6
 BREAKDOWN_TOL = 1e-12                      # absolute: ||beta||_2 <= this * scale => invariant subspace
 # Condition number above which the A R^{-1} back substitution is repeated. One pass leaves
 # ||Q^H Q - I|| ~ kappa * EPS, so this bounds it by EPS**(3/4) ~ 1e-12.
@@ -447,7 +466,8 @@ cdef void _trsm_right_inv(double complex[:, ::1] Q, double complex[:, ::1] R) no
             Q[i, j] = s * rdiag_inv[j]
 
 
-def tsqr(A, comm=None, double scale=1.0, Py_ssize_t panel_rows=PANEL_ROWS, bint refine=True):
+def tsqr(A, comm=None, double scale=1.0, Py_ssize_t panel_rows=PANEL_ROWS, bint refine=True,
+         double deflate_tol=-1.0):
     r"""Orthonormalize a row-distributed tall-skinny block: ``A = Q @ beta``.
 
     **Collective** when ``comm`` is not ``None`` (one ``Allgather`` per pass; a second pass
@@ -471,6 +491,14 @@ def tsqr(A, comm=None, double scale=1.0, Py_ssize_t panel_rows=PANEL_ROWS, bint 
         Local panel height (see :func:`local_r`).
     refine : bool
         Allow the conditional second pass. ``False`` inside the recursion.
+    deflate_tol : float
+        Rank floor: a direction is deflated when ``sigma_k <= deflate_tol * sigma_max``.
+        Negative (the default) means :data:`DEFLATE_TOL`, which is set to resolve directions
+        down to the factorization's own noise. Callers whose blocks are *structurally*
+        rank-deficient -- the transition-operator seed blocks of the spectroscopies, whose
+        symmetry-dependent components are zero only up to their construction rounding --
+        pass :data:`DEFLATE_TOL_SEEDS` instead. Like ``scale``, this is a property of the
+        block the caller is handing over, not of the factorization.
 
     Returns
     -------
@@ -488,6 +516,8 @@ def tsqr(A, comm=None, double scale=1.0, Py_ssize_t panel_rows=PANEL_ROWS, bint 
         ``||beta||_2`` and ``1/sv[k-1]`` is ``||beta^+||_2``, so callers need no SVD of
         their own.
     """
+    if deflate_tol < 0.0:
+        deflate_tol = DEFLATE_TOL
     A_np = np.asarray(A, dtype=complex)
     if A_np.ndim != 2:
         raise ValueError("tsqr expects a 2-D (n_local, p) block")
@@ -506,7 +536,7 @@ def tsqr(A, comm=None, double scale=1.0, Py_ssize_t panel_rows=PANEL_ROWS, bint 
     cdef double s_max = float(sv[0]) if sv.size else 0.0
     if s_max <= BREAKDOWN_TOL * scale:
         return None, None, 0, sv
-    cdef Py_ssize_t k = int(np.count_nonzero(sv > DEFLATE_TOL * s_max))
+    cdef Py_ssize_t k = int(np.count_nonzero(sv > deflate_tol * s_max))
     if k == 0:                       # unreachable: sv[0] > 0 always survives its own floor
         return None, None, 0, sv
 
@@ -521,7 +551,7 @@ def tsqr(A, comm=None, double scale=1.0, Py_ssize_t panel_rows=PANEL_ROWS, bint 
     else:
         # Deflated: keep the k leading right-singular directions. Q = A V_k Sigma_k^{-1}
         # equals (A R^{-1}) U_k, without needing R to be invertible; the retained
-        # conditioning is bounded by 1/DEFLATE_TOL, so the scaling is safe.
+        # conditioning is bounded by 1/deflate_tol, so the scaling is safe.
         Y = Vh[:k].conj().T / sv[:k][np.newaxis, :]
         Q = np.ascontiguousarray(A_np @ Y)
         beta = sv[:k][:, np.newaxis] * Vh[:k]
@@ -530,7 +560,7 @@ def tsqr(A, comm=None, double scale=1.0, Py_ssize_t panel_rows=PANEL_ROWS, bint 
         # The back substitution leaves ||Q^H Q - I|| ~ kappa * EPS. One repetition on the
         # (now well-conditioned) Q drives that to O(EPS) and folds the correction into
         # beta. Unlike CholeskyQR2 this is never a rescue: pass 1 cannot fail.
-        Q2, R2, k2, _ = tsqr(Q, comm, 1.0, panel_rows, False)
+        Q2, R2, k2, _ = tsqr(Q, comm, 1.0, panel_rows, False, deflate_tol)
         if k2 <= 0:
             return None, None, k2, sv
         return Q2, R2 @ beta, k2, sv

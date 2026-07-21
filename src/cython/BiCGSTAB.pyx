@@ -30,6 +30,7 @@ from impurityModel.ed.BlockLanczosArray import (
     block_tsqr,
     is_array,
 )
+from impurityModel.ed.TSQR import DEFLATE_TOL_SEEDS
 from impurityModel.ed.ManyBodyUtils import (
     ManyBodyBlockState,
     ManyBodyState,
@@ -262,7 +263,17 @@ def block_bicgstab(A, x0, y, basis, double slaterWeightMin, atol=1e-8, rtol=1e-1
     # relative rank test needs no normalization; only the breakdown test does, and it takes
     # R0's own scale as its reference. Q comes straight out of the factorization -- no
     # combine against an explicit inverse.
-    q_block, beta_j, rank, _sv0 = block_tsqr(ri, mpi, comm, r0_scale, slaterWeightMin)
+    #
+    # DEFLATE_TOL_SEEDS, not the default floor: this solver's production caller is the RIXS
+    # intermediate-state resolvent, whose right-hand side is the Cartesian polarization block.
+    # Symmetry makes some of those components dependent and this deflation is what removes
+    # them -- but they are zero only to within the rounding accumulated while the seeds were
+    # built (measured up to 3.5e-11 relative on a *small* benchmark, and growing with the
+    # basis). Judged against the default floor such a direction would be retained, and the
+    # solve would carry a pure-noise column with sigma_min ~ 1e-11.
+    q_block, beta_j, rank, _sv0 = block_tsqr(
+        ri, mpi, comm, r0_scale, slaterWeightMin, deflate_tol=DEFLATE_TOL_SEEDS
+    )
     if rank == 0:
         _fill_info(info, 0, True, r0_scale / y_scale if y_scale > 0.0 else 0.0)
         return x0  # zero residual: x0 already solves the system

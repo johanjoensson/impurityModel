@@ -31,6 +31,7 @@ def block_lanczos_step_cy(
     beta_norm_hist=None,
     force_reort: bool = False,
     h_norm_est: float = 0.0,
+    deflate_tol: float = -1.0,
 ):
     """Perform one step of the distributed block Lanczos iteration.
 
@@ -195,7 +196,8 @@ def block_lanczos_step_cy(
     # (0 on the first step of a cold start, where alpha_i carries the scale). Mirrors
     # block_lanczos_array_cy so both kernels deflate on the same criterion.
     q_next, beta_i, active_k, sv_i = block_tsqr(
-        wp, mpi, comm, max(float(h_norm_est), float(np.linalg.norm(alpha_i, ord=2)))
+        wp, mpi, comm, max(float(h_norm_est), float(np.linalg.norm(alpha_i, ord=2))),
+        deflate_tol=deflate_tol,
     )
     if active_k < 0:
         # Non-finite factor => the recurrence is *corrupted*, not a genuine invariant
@@ -228,7 +230,7 @@ def block_lanczos_step_cy(
     # wp = (q_next @ R2) @ beta_i. Unlike the CholeskyQR2 pass this replaces, no second pass
     # is needed for well-conditioned blocks — TSQR delivers orthonormality directly.
     if did_truncate:
-        q_next, R2, active_k, _sv2 = block_tsqr(q_next, mpi, comm, 1.0)
+        q_next, R2, active_k, _sv2 = block_tsqr(q_next, mpi, comm, 1.0, deflate_tol=deflate_tol)
         if active_k <= 0:
             return None, alpha_i, None, W, 0, True, False
         beta_i = R2 @ beta_i
@@ -306,7 +308,7 @@ def block_lanczos_step_cy(
             # otherwise it is unchanged and this would be an exact no-op (R2 == I), so skip the
             # factorization entirely. Mirrors block_lanczos_array_cy.
             if _reort_acted:
-                q_next_2, R2, active_k, sv2 = block_tsqr(q_next, mpi, comm, 1.0)
+                q_next_2, R2, active_k, sv2 = block_tsqr(q_next, mpi, comm, 1.0, deflate_tol=deflate_tol)
                 # Absolutely tiny residual after projection => block contained in the existing span
                 # (invariant subspace); renormalizing it would amplify rounding. Treat as breakdown.
                 # sqrt(EPS) is the largest column norm the old max(diag(<q|q>)) < EPS test admitted.
@@ -350,6 +352,7 @@ def block_lanczos_cy(
     locked_reort="full",
     store_krylov=True,
     krylov_dtype=None,
+    deflate_tol=-1.0,
 ):
     """Run the distributed block Lanczos iteration with ``ManyBodyState``.
 
@@ -725,11 +728,12 @@ def block_lanczos_cy(
             beta_norm_hist=beta_norm_hist,
             force_reort=_force_reort,
             h_norm_est=max(h_norm_est, t_norm_max),
+            deflate_tol=deflate_tol,
         )
         _force_reort = _step_acted
 
         if breakdown:
-            # active_k < 0 marks a non-finite (corrupted) Gram matrix -> truncated, NOT exact;
+            # active_k < 0 marks a non-finite (corrupted) factor -> truncated, NOT exact;
             # active_k == 0 is a genuine rank-deficient residual -> the block-Krylov space is
             # closed under H -> the continued fraction is exact on it.
             termination = "diverged" if active_k < 0 else "invariant_subspace"

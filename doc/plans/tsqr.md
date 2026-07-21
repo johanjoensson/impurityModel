@@ -126,11 +126,37 @@ the FCC Ni production ground state the floor never fired at all, and the relaxat
 converged energies bit-identical (`-14.985551211434395`), at the cost of ~10% more blocks
 (3209 vs 2911) because the restart locks later.
 
-**The trade.** The retained block's condition number is now bounded by `1/DEFLATE_TOL ~ 2.7e10`
-rather than 1.7e5. That propagates into `||beta^+||` in the W-estimator and into the
-conditioning of `T`. Nothing measured regressed, but the Green's-function coverage in the
-suite is small and the production GF path is width-1, so this is the place to look first if
-something does.
+**The trade, and why the floor became a per-call argument.** Checking the RIXS path found the
+limit of a single global value. RIXS builds its right-hand side from the Cartesian
+polarization components, symmetry makes some of them dependent, and the solvers *rely* on
+deflation to remove them (group-rule dedup was refuted for rank-4 tensors — automatic rank
+deflation is the mechanism). Those directions are zero only to the rounding accumulated
+while the seeds were built: on the RIXS tensor benchmark they reach `sigma/sigma_max = 1.2e-9`,
+four orders **above** `EPS^(2/3)`. At the default floor six of them were being **retained as
+genuine**, each injecting a noise column with `sigma_min ~ 1e-10` into the solve.
+
+So the floor is squeezed by two opposing physical requirements — below any splitting worth
+resolving, above the construction noise of a structurally rank-deficient block — and the
+window between them is under half an order of magnitude and workload-dependent. `tsqr` and
+`block_tsqr` therefore take `deflate_tol` as an argument, exactly as they already take
+`scale`: both are properties of *the block the caller is handing over*, not of the
+factorization. `scale` answers "zero compared to what?"; `deflate_tol` answers "how much
+construction noise do these columns carry?".
+
+* default `DEFLATE_TOL = EPS^(2/3)` — recurrences, where the question is which directions the
+  factorization can still resolve;
+* `DEFLATE_TOL_SEEDS = EPS^(1/3)` — transition-operator seed blocks and the solves built on
+  them (`block_bicgstab`, `block_gmres`, the seeded `block_Green*` recurrences,
+  `KrylovShiftedResolvent`). A genuinely distinct polarization component sits at O(1)
+  relative, five orders above this floor, so nothing physical is at risk from it.
+
+Measured effect on the RIXS benchmark: the margin between the largest discarded direction and
+the floor applied goes from **1.06x to 4901x**, and three more directions deflate that should
+always have done.
+
+The residual trade is unchanged for the recurrences: retained `kappa` is bounded by
+`1/DEFLATE_TOL ~ 2.7e10` rather than 1.7e5, which propagates into `||beta^+||` in the
+W-estimator and into the conditioning of `T`.
 
 **Consequence for the calibrated tests.** `EPS^(2/3)` is *below* `BREAKDOWN_TOL * ||H||` for
 any `||H|| > 37`, so the window the CholeskyQR2-era regression tests were written against —

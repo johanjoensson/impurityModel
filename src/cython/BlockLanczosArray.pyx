@@ -841,6 +841,7 @@ def block_lanczos_array_cy(
     return_widths=False,
     return_status=False,
     build_krylov_basis=None,
+    deflate_tol=-1.0,
     **kwargs
 ):
     # Resolve a string reort (e.g. "full") to the Reort enum, mirroring
@@ -1100,7 +1101,9 @@ def block_lanczos_array_cy(
         # ||H||), widened by this step's alpha since the guard has not run yet. On the first
         # step of a cold start h_norm_est is still 0 and alpha_0 carries the scale.
         _h_scale = max(h_norm_est, t_norm_max, float(np.linalg.norm(alpha_i_arr, ord=2)))
-        q_next, beta_i, active_k, sv_i = tsqr(wp_arr, comm if mpi else None, _h_scale)
+        q_next, beta_i, active_k, sv_i = tsqr(
+            wp_arr, comm if mpi else None, _h_scale, deflate_tol=deflate_tol
+        )
         if active_k < 0:
             # Non-finite factor => corrupted recurrence, truncated (NOT exact).
             termination = "diverged"
@@ -1232,7 +1235,9 @@ def block_lanczos_array_cy(
                     # deflated) before it feeds the next iteration — else the recurrence amplifies
                     # the tiny leftover and the basis blows up. Re-factoring folds the correction
                     # into beta_i: wp = (q_next @ R2) @ beta_i.
-                    q_next_2, R2, active_k, sv2 = tsqr(q_next, comm if mpi else None, 1.0)
+                    q_next_2, R2, active_k, sv2 = tsqr(
+                        q_next, comm if mpi else None, 1.0, deflate_tol=deflate_tol
+                    )
                     # An *absolutely* tiny residual => the new block is fully contained in the
                     # existing Krylov span (invariant subspace, e.g. a tight cluster whose
                     # effective rank is exhausted). Renormalizing that noise would amplify rounding

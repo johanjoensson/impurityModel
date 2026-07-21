@@ -104,7 +104,7 @@ cpdef tuple block_normalize(object wp, bint mpi=False, object comm=None, double 
 
 
 cpdef tuple block_tsqr(object wp, bint mpi=False, object comm=None, double scale=1.0,
-                       double slaterWeightMin=0.0):
+                       double slaterWeightMin=0.0, double deflate_tol=-1.0):
     """Orthonormalize a distributed block through TSQR, in whatever representation it comes.
 
     The single orthonormalization entry point of the Krylov layer: dispatches on ``is_array``
@@ -117,6 +117,10 @@ cpdef tuple block_tsqr(object wp, bint mpi=False, object comm=None, double scale
     exported view blocks row-structure mutation of ``wp`` while it is alive, so it is dropped
     before this returns (``Q`` is always freshly allocated), and a zero-row block is
     materialized as an empty array because there is no buffer to point at.
+
+    ``deflate_tol`` overrides the rank floor for this block; see
+    :func:`impurityModel.ed.TSQR.tsqr`. Structurally rank-deficient seed blocks (the
+    spectroscopies' polarization components) pass ``DEFLATE_TOL_SEEDS``.
 
     **Collective** when ``mpi`` and ``comm`` are given: every rank must call it, and all ranks
     return the same ``beta``, ``k`` and ``sv``.
@@ -141,7 +145,7 @@ cpdef tuple block_tsqr(object wp, bint mpi=False, object comm=None, double scale
     else:
         A = wp
 
-    Q, beta, k, sv = tsqr(A, comm if mpi else None, scale)
+    Q, beta, k, sv = tsqr(A, comm if mpi else None, scale, deflate_tol=deflate_tol)
     if k <= 0 or src is None:
         return Q, beta, k, sv
 
