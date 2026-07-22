@@ -40,7 +40,7 @@ cdef extern from "ManyBodyOperator.h" nogil:
         ManyBodyState.mapped_type& operator[](const key_type&)
         ManyBodyState.mapped_type& at(const key_type&)
         ManyBodyState operator()(const ManyBodyState&, double)
-        ManyBodyState build_restriction_mask(const restrictions&)
+        void build_restriction_mask(const restrictions&)
         void build_weighted_restriction_mask(const weighted_restrictions&)
         ManyBodyState apply(const ManyBodyState&, double)
         vector[ManyBodyState] apply(const vector[const ManyBodyState*]&, double)
