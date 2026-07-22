@@ -15,7 +15,7 @@ from impurityModel.ed.gs_statistics import (
 )
 from impurityModel.ed.hartree_fock import hartree_fock_occupation
 from impurityModel.ed.manybody_basis import Basis
-from impurityModel.ed.ManyBodyUtils import ManyBodyOperator
+from impurityModel.ed.ManyBodyUtils import ManyBodyBlockState, ManyBodyOperator
 from impurityModel.ed.memory_estimate import log_memory_budget, suggest_truncation_threshold
 from impurityModel.ed.observables import (
     casimir_operator,
@@ -575,6 +575,14 @@ def calc_gs(
     ground_state_basis.clear()
     ground_state_basis.add_states({state for p in psis for state in p})
     psis = ground_state_basis.redistribute_psis(psis)
+    # Shared-support block view of the same redistributed states, built once and used
+    # by every manifold_observable_values-based diagnostic below (Phase 6a of the
+    # state-unification refactor, doc/plans/manybodystate_block_unification.md): each
+    # such call becomes one apply_block/block_inner_cy pass over the whole manifold
+    # instead of `width` independent per-state applies. `psis` itself stays a list
+    # (build_density_matrices / compute_gs_statistics / compute_entanglement_entropy
+    # are not yet converted, and calc_gs's own return contract is list[ManyBodyState]).
+    psis_blk = ManyBodyBlockState.from_states(psis)
 
     # The effective restrictions are printed in the ground-state-report overview below.
     effective_restrictions = get_effective_restrictions(ground_state_basis)
@@ -629,14 +637,14 @@ def calc_gs(
     impurity_ix = np.ix_(impurity_indices, impurity_indices)
     # Impurity S^2 / L^2 / J^2 and <S_imp.S_bath> are two-body observables, so they
     # need the actual eigenstates rather than the density matrix. They are evaluated
-    # *distributed*: each rank applies the operator to its local partition,
-    # redistribute_psis realigns it, and manifold_observable_values Allreduces the
+    # *distributed*: each rank block-applies the operator to its local partition,
+    # redistribute_block realigns it, and manifold_observable_values Allreduces the
     # small <m|O|n> matrix (so this is a collective call with an identical result on
     # every rank — no state-vector gather). The L/S/J operators are built in the
     # spherical basis and rotated to the computational basis via rot_to_spherical
     # (symmetry-plan Phase 5).
     mov_comm = ground_state_basis.comm if ground_state_basis.is_distributed else None
-    mov_redistribute = ground_state_basis.redistribute_psis if ground_state_basis.is_distributed else None
+    mov_redistribute = ground_state_basis.redistribute_block if ground_state_basis.is_distributed else None
     s_values = l_values = j_values = None
     s2_thermal = l2_thermal = j2_thermal = None
     try:
@@ -665,9 +673,9 @@ def calc_gs(
             for name, ops in (("S", s_ops), ("L", l_ops), ("J", j_ops)):
                 op2 = casimir_operator(*ops)
                 vals = manifold_observable_values(
-                    psis,
+                    psis_blk,
                     es,
-                    lambda psi, _op=op2: _op(psi, 0),
+                    lambda blk, _op=op2: _op.apply_block(blk, 0),
                     comm=mov_comm,
                     redistribute=mov_redistribute,
                 )
@@ -722,9 +730,9 @@ def calc_gs(
             ops_bath = make_spin_operators(bath_pairs)
             sisb_op = spin_correlation_operator(ops_imp, ops_bath)
             sisb_raw = manifold_observable_values(
-                psis,
+                psis_blk,
                 es,
-                lambda psi: sisb_op(psi, 0),
+                lambda blk: sisb_op.apply_block(blk, 0),
                 comm=mov_comm,
                 redistribute=mov_redistribute,
             )
@@ -736,9 +744,9 @@ def calc_gs(
                 # plus its connected form against the thermal single-particle polarizations.
                 sisb_z_op = spin_correlation_operator(ops_imp, ops_bath, z_only=True)
                 sisb_z_raw = manifold_observable_values(
-                    psis,
+                    psis_blk,
                     es,
-                    lambda psi: sisb_z_op(psi, 0),
+                    lambda blk: sisb_z_op.apply_block(blk, 0),
                     comm=mov_comm,
                     redistribute=mov_redistribute,
                 )
@@ -765,7 +773,7 @@ def calc_gs(
     static_susceptibilities = None
     try:
         static_susceptibilities = compute_static_susceptibilities(
-            psis,
+            psis_blk,
             es,
             tau,
             impurity_indices,
@@ -790,7 +798,7 @@ def calc_gs(
         if spin_pairs is not None:
             imp_pairs, bath_pairs = spin_pairs
             corr_diagnostics = compute_correlation_diagnostics(
-                psis, es, tau, thermal_rho, imp_pairs, comm=mov_comm, redistribute=mov_redistribute
+                psis_blk, es, tau, thermal_rho, imp_pairs, comm=mov_comm, redistribute=mov_redistribute
             )
             # Impurity channels grouped like the N(...) columns (equivalent-block groups).
             # Block orbitals are positions into the sorted impurity list (offset like
@@ -806,7 +814,7 @@ def calc_gs(
             if len(imp_groups) < 2:
                 imp_groups = None  # a single channel equals the total <S_imp.S_bath>; skip
             screening_diagnostics = compute_screening_diagnostics(
-                psis,
+                psis_blk,
                 es,
                 tau,
                 thermal_rho,

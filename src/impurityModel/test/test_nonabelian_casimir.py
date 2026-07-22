@@ -4,7 +4,14 @@ from itertools import combinations
 
 import numpy as np
 
-from impurityModel.ed.ManyBodyUtils import ManyBodyOperator, ManyBodyState, SlaterDeterminant, applyOp, inner
+from impurityModel.ed.ManyBodyUtils import (
+    ManyBodyBlockState,
+    ManyBodyOperator,
+    ManyBodyState,
+    SlaterDeterminant,
+    applyOp,
+    inner,
+)
 from impurityModel.ed.symmetries import (
     apply_reconstructed_casimir,
     discover_one_body_symmetries,
@@ -114,20 +121,22 @@ def test_casimir_commutes_with_H():
 def test_multiplet_labeling():
     """A degenerate singlet+triplet manifold is labeled S=0 (x1) and S=1 (x3) by the
     reconstructed Casimir, with degeneracy 2S+1."""
+    from impurityModel.ed.lie_algebra import reconstructed_casimir_operator
     from impurityModel.ed.observables import casimir_to_quantum_number, manifold_observable_values
 
     # Two spatial orbitals (up:0/dn:2, up:1/dn:3), one electron each -> singlet + triplet.
-    manifold = [
-        _state([([0, 1], 1.0)]),  # both up (triplet S_z=+1)
-        _state([([2, 3], 1.0)]),  # both down (triplet S_z=-1)
-        _state([([0, 3], 1.0)]),  # up0 + dn1 (mixes singlet/triplet)
-        _state([([2, 1], 1.0)]),  # dn0 + up1 (mixes singlet/triplet)
-    ]
+    manifold = ManyBodyBlockState.from_states(
+        [
+            _state([([0, 1], 1.0)]),  # both up (triplet S_z=+1)
+            _state([([2, 3], 1.0)]),  # both down (triplet S_z=-1)
+            _state([([0, 3], 1.0)]),  # up0 + dn1 (mixes singlet/triplet)
+            _state([([2, 1], 1.0)]),  # dn0 + up1 (mixes singlet/triplet)
+        ]
+    )
     energies = np.zeros(4)  # degenerate manifold
 
-    s2_vals = manifold_observable_values(
-        manifold, energies, lambda psi: apply_reconstructed_casimir(psi, [_SX, _SY, _SZ])
-    )
+    casimir_op = reconstructed_casimir_operator([_SX, _SY, _SZ])
+    s2_vals = manifold_observable_values(manifold, energies, lambda blk: casimir_op.apply_block(blk, 0))
     s_labels = sorted(round(casimir_to_quantum_number(v), 6) for v in s2_vals)
     assert s_labels == [0.0, 1.0, 1.0, 1.0]  # one singlet, one triplet (2S+1=3 states)
     assert sum(np.isclose(casimir_to_quantum_number(v), 1.0) for v in s2_vals) == 3

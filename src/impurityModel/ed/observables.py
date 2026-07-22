@@ -14,7 +14,7 @@ from mpi4py import MPI
 from impurityModel.ed.atomic_physics import gauntC
 from impurityModel.ed.average import thermal_average_scale_indep
 from impurityModel.ed.block_structure import get_equivalent_blocks
-from impurityModel.ed.ManyBodyUtils import ManyBodyOperator, inner
+from impurityModel.ed.ManyBodyUtils import ManyBodyOperator, block_inner_cy, inner
 from impurityModel.ed.utils import rotate_matrix
 
 
@@ -811,8 +811,11 @@ def compute_correlation_diagnostics(psis, es, tau, thermal_rho, imp_pairs, comm=
 
     Parameters
     ----------
-    psis, es, tau
-        Eigenstates (rank-local when distributed), energies, thermal energy scale.
+    psis : ManyBodyBlockState
+        Eigenstates as one shared-support block (rank-local when distributed), one
+        column per state.
+    es, tau
+        Energies, thermal energy scale.
     thermal_rho : np.ndarray
         Full thermally-averaged one-particle density matrix (replicated).
     imp_pairs : list of (int, int)
@@ -825,11 +828,11 @@ def compute_correlation_diagnostics(psis, es, tau, thermal_rho, imp_pairs, comm=
     dict
     """
     n_sp = len(imp_pairs)
-    docc_values = np.empty((n_sp, len(psis)))
+    docc_values = np.empty((n_sp, psis.width))
     for a, (dn, up) in enumerate(imp_pairs):
         op = ManyBodyOperator({((up, "c"), (dn, "c"), (dn, "a"), (up, "a")): 1.0})
         docc_values[a] = manifold_observable_values(
-            psis, es, lambda psi, _op=op: _op(psi, 0), comm=comm, redistribute=redistribute
+            psis, es, lambda blk, _op=op: _op.apply_block(blk, 0), comm=comm, redistribute=redistribute
         )
     docc_thermal = np.array([np.real(thermal_observable_value(docc_values[a], es, tau)) for a in range(n_sp)])
     n_dn = np.array([np.real(thermal_rho[dn, dn]) for dn, _ in imp_pairs])
@@ -841,7 +844,7 @@ def compute_correlation_diagnostics(psis, es, tau, thermal_rho, imp_pairs, comm=
     sz2_values = manifold_observable_values(
         psis,
         es,
-        lambda psi: sz2_op(psi, 0),
+        lambda blk: sz2_op.apply_block(blk, 0),
         comm=comm,
         redistribute=redistribute,
     )
@@ -857,7 +860,7 @@ def compute_correlation_diagnostics(psis, es, tau, thermal_rho, imp_pairs, comm=
             vals = manifold_observable_values(
                 psis,
                 es,
-                lambda psi, _op=corr_op: _op(psi, 0),
+                lambda blk, _op=corr_op: _op.apply_block(blk, 0),
                 comm=comm,
                 redistribute=redistribute,
             )
@@ -904,8 +907,11 @@ def compute_static_susceptibilities(
 
     Parameters
     ----------
-    psis, es, tau
-        Eigenstates (rank-local when distributed), energies, thermal energy scale.
+    psis : ManyBodyBlockState
+        Eigenstates as one shared-support block (rank-local when distributed), one
+        column per state.
+    es, tau
+        Energies, thermal energy scale.
     impurity_indices : sequence of int
         Flat impurity spin-orbital indices (for the charge operator).
     s_z_op, l_z_op : ManyBodyOperator, optional
@@ -926,14 +932,16 @@ def compute_static_susceptibilities(
         vals = manifold_observable_values(
             psis,
             es,
-            lambda psi: product(psi, 0),
+            lambda blk: product.apply_block(blk, 0),
             comm=comm,
             redistribute=redistribute,
         )
         return float(np.real(thermal_observable_value(vals, es, tau)))
 
     def thermal_single(op):
-        vals = manifold_observable_values(psis, es, lambda psi: op(psi, 0), comm=comm, redistribute=redistribute)
+        vals = manifold_observable_values(
+            psis, es, lambda blk: op.apply_block(blk, 0), comm=comm, redistribute=redistribute
+        )
         return float(np.real(thermal_observable_value(vals, es, tau)))
 
     n_th = thermal_single(n_op)
@@ -1066,7 +1074,7 @@ def compute_screening_diagnostics(
             vals = manifold_observable_values(
                 psis,
                 es,
-                lambda psi, _op=op_g: _op(psi, 0),
+                lambda blk, _op=op_g: _op.apply_block(blk, 0),
                 comm=comm,
                 redistribute=redistribute,
             )
@@ -1090,7 +1098,7 @@ def compute_screening_diagnostics(
             vals = manifold_observable_values(
                 psis,
                 es,
-                lambda psi, _op=op_b: _op(psi, 0),
+                lambda blk, _op=op_b: _op.apply_block(blk, 0),
                 comm=comm,
                 redistribute=redistribute,
             )
@@ -1302,31 +1310,34 @@ def manifold_observable_values(eigenstates, energies, apply_op, degeneracy_tol=1
     subspace this builds the small matrix :math:`O_{mn}=\langle m|\hat O|n\rangle`
     and diagonalises it; the eigenvalues are the physical observable values.
 
-    This may be evaluated distributed: pass the rank-local states together with
-    ``comm`` and a ``redistribute`` callback (e.g. ``Basis.redistribute_psis``). Then
+    This may be evaluated distributed: pass the rank-local block together with
+    ``comm`` and a ``redistribute`` callback (e.g. ``Basis.redistribute_block``). Then
     :math:`\hat O|n\rangle` is formed on each rank's local partition, redistributed to
     align with the bra partition, the local contributions to :math:`O_{mn}` are summed,
     and the small matrix is ``Allreduce``-d. The result is identical on every rank, so no
-    state-vector gather is needed. With ``comm=None`` the ``eigenstates`` are treated as
-    full (single-rank) states, as before.
+    state-vector gather is needed. With ``comm=None`` the ``eigenstates`` block is treated
+    as full (single-rank), as before.
 
     Parameters
     ----------
-    eigenstates : sequence of ManyBodyState
-        Orthonormal manifold basis (e.g. a Lanczos block); rank-local when ``comm`` is
-        given, otherwise full.
+    eigenstates : ManyBodyBlockState
+        Orthonormal manifold basis (e.g. a Lanczos block) as one shared-support block,
+        one column per state; rank-local when ``comm`` is given, otherwise full.
     energies : array_like of shape (N,)
         Energy of each eigenstate (used only to group degenerate subspaces).
     apply_op : callable
-        ``apply_op(psi)`` returns :math:`\hat O|\psi\rangle` as a ManyBodyState.
+        ``apply_op(eigenstates)`` returns :math:`\hat O` applied to every column at once,
+        as a ``ManyBodyBlockState`` of the same width (e.g. ``lambda blk: op.apply_block(blk,
+        0)``) -- one term/sign pass per determinant shared across all N states, not N
+        independent applies.
     degeneracy_tol : float, default 1e-6
         Energies within this tolerance are treated as degenerate.
     comm : MPI.Comm, optional
         Communicator over which the states are distributed. If ``None`` the computation
         is purely local.
     redistribute : callable, optional
-        ``redistribute(op_states)`` returns the operator-applied states reshuffled onto
-        the same determinant partition as ``eigenstates`` (e.g. ``Basis.redistribute_psis``).
+        ``redistribute(op_states)`` returns the operator-applied block reshuffled onto
+        the same determinant partition as ``eigenstates`` (e.g. ``Basis.redistribute_block``).
         Required when the states are distributed.
 
     Returns
@@ -1336,15 +1347,12 @@ def manifold_observable_values(eigenstates, energies, apply_op, degeneracy_tol=1
         degenerate subspace receive that subspace's eigenvalues (their assignment
         within the subspace is arbitrary, the values being physically interchangeable).
     """
-    n = len(eigenstates)
+    n = eigenstates.width
     energies = np.asarray(energies, dtype=float)
-    op_states = [apply_op(psi) for psi in eigenstates]
+    op_states = apply_op(eigenstates)
     if redistribute is not None:
         op_states = redistribute(op_states)
-    o_matrix = np.array(
-        [[inner(eigenstates[i], op_states[j]) for j in range(n)] for i in range(n)],
-        dtype=complex,
-    )
+    o_matrix = block_inner_cy(eigenstates, op_states)
     if comm is not None:
         comm.Allreduce(MPI.IN_PLACE, o_matrix, op=MPI.SUM)
     # Hermitise to kill rounding asymmetry before diagonalising.
