@@ -615,7 +615,7 @@ def calc_gs(
     # Many-body impurity-bath entanglement from the impurity RDM (collective call; its
     # memory guard may skip it, deterministically on every rank). Degrades to None.
     try:
-        entanglement = compute_entanglement_entropy(ground_state_basis, psis, es, tau)
+        entanglement = compute_entanglement_entropy(ground_state_basis, psis_blk, es, tau)
     except Exception:
         entanglement = None
     if gs_stats is not None:

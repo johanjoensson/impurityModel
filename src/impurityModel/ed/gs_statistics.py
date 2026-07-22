@@ -408,8 +408,8 @@ def compute_impurity_rdm(basis, psis, max_bytes=256 * 1024**2):
         Provides ``num_spin_orbitals``, ``impurity_spin_orbital_indices``, ``comm``,
         ``is_distributed``. The ``psis`` must be redistributed onto this basis (each
         determinant owned by exactly one rank).
-    psis : list of ManyBodyState
-        Rank-local eigenstates.
+    psis : ManyBodyBlockState or list of ManyBodyState
+        Rank-local eigenstates, one column/element per state.
     max_bytes : int, optional
         Memory guard: if the dense blocks for all states would exceed this, return
         ``None`` instead (e.g. a half-filled f shell with a wide occupation window).
@@ -420,6 +420,9 @@ def compute_impurity_rdm(basis, psis, max_bytes=256 * 1024**2):
         ``state_blocks[n][N]`` is the :math:`N_\mathrm{imp}=N` block of state ``n``'s
         impurity RDM (identical on every rank), or ``None`` if the memory guard tripped.
     """
+    if not isinstance(psis, ManyBodyBlockState):
+        psis = ManyBodyBlockState.from_states(list(psis))
+    width = psis.width
     n_orb = basis.num_spin_orbitals
     imp_idx = sorted(basis.impurity_spin_orbital_indices)
     n_imp = len(imp_idx)
@@ -428,16 +431,27 @@ def compute_impurity_rdm(basis, psis, max_bytes=256 * 1024**2):
     comm = basis.comm if basis.is_distributed else None
 
     # Local pass: bath configuration -> [(state, N_imp, imp-config rank, amplitude)].
+    # Each determinant (row) is visited once regardless of width: its impurity
+    # configuration / bath key depend only on its own bit pattern, not on which
+    # column supplied it (Phase 6a of the state-unification refactor). A column's
+    # missing determinants are exact zeros in the block's shared support (documented
+    # ManyBodyBlockState.from_states contract); skipping them here reproduces the old
+    # per-state sparse traversal exactly (a zero-amplitude outer product contributes
+    # nothing to the RDM either way) while avoiding shipping p-fold more entries
+    # through the alltoall below than the sparse states actually held.
     local_groups = defaultdict(list)
     observed_n = set()
-    for n, psi in enumerate(psis):
-        for state, amp in psi.items():
-            bits = psr.bytes2bitarray(bytes(state.to_bytearray()), n_orb)
-            imp_positions = [k for k, orb in enumerate(imp_idx) if bits[orb]]
-            n_e = len(imp_positions)
-            bath_key = bits[bath_idx].tobytes()
-            local_groups[bath_key].append((n, n_e, _combination_rank(imp_positions), complex(amp)))
-            observed_n.add(n_e)
+    for state, row in psis.items():
+        bits = psr.bytes2bitarray(bytes(state.to_bytearray()), n_orb)
+        imp_positions = [k for k, orb in enumerate(imp_idx) if bits[orb]]
+        n_e = len(imp_positions)
+        bath_key = bits[bath_idx].tobytes()
+        m = _combination_rank(imp_positions)
+        for n in range(width):
+            amp = row[n]
+            if amp != 0:
+                local_groups[bath_key].append((n, n_e, m, complex(amp)))
+                observed_n.add(n_e)
 
     if comm is not None and comm.size > 1:
         send = [defaultdict(list) for _ in range(comm.size)]
@@ -455,10 +469,10 @@ def compute_impurity_rdm(basis, psis, max_bytes=256 * 1024**2):
     # Memory guard on the dense blocks (identical decision on every rank: observed_n is
     # the allgathered union).
     dims = {n_e: comb(n_imp, n_e) for n_e in observed_n}
-    if sum(d * d for d in dims.values()) * 16 * max(len(psis), 1) > max_bytes:
+    if sum(d * d for d in dims.values()) * 16 * max(width, 1) > max_bytes:
         return None
 
-    state_blocks = [{n_e: np.zeros((dims[n_e], dims[n_e]), dtype=complex) for n_e in observed_n} for _ in psis]
+    state_blocks = [{n_e: np.zeros((dims[n_e], dims[n_e]), dtype=complex) for n_e in observed_n} for _ in range(width)]
     for entries in groups.values():
         per_state = defaultdict(list)
         for n, n_e, m, amp in entries:
@@ -469,7 +483,7 @@ def compute_impurity_rdm(basis, psis, max_bytes=256 * 1024**2):
             state_blocks[n][n_e][np.ix_(idx, idx)] += np.outer(amps, amps.conj())
 
     if comm is not None and comm.size > 1:
-        for n in range(len(psis)):
+        for n in range(width):
             for n_e in sorted(observed_n):
                 comm.Allreduce(MPI.IN_PLACE, state_blocks[n][n_e], op=MPI.SUM)
     return state_blocks
