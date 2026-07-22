@@ -631,27 +631,104 @@ distinction either. Fixed by adding a second test
 actual row-granularity semantics rather than equality with `combine()`. Gates green at
 baseline+2 (serial 1203/230/18/30, `-n 2` 1403/18/60).
 
+## Phase 5 step 5a — block arms for `block_combine`/`block_orthogonalize`/`block_normalize`/`block_apply` (DONE, commit `bf4ca55`)
+
+Prerequisite for step 5 below: before `_trlm.pxi`/`_irlm.pxi`'s `Q_basis` could stay a
+`ManyBodyBlockState` across a restart, every `block_*` dispatcher it flows through needed a
+real block arm, or it would silently reach the list-only `_sparse`/`_multi` implementations
+(`inner_multi`'s `list(V)` on a block iterates determinant KEYS, not rows). Audited every
+dispatcher in `_reort.pxi`:
+
+- `block_combine`: new `ManyBodyBlockState` arm via `combine_columns` (already bit-for-bit
+  against `block_combine_sparse`). `slaterWeightMin` reaches this path from live TRLM/IRLM
+  calls (unlike `combine_block`'s caller, always `0.0`), so pruning takes a round trip
+  through per-state `prune` to match `block_combine_sparse`'s per-column semantics exactly,
+  rather than reusing `prune_rows` (row-granularity — the same divergence step 4 found in
+  `combine_block`, but here it is live, not latent).
+- `block_orthogonalize`: new `ManyBodyBlockState` arm composing the already-block-native
+  `block_inner`/`block_add_scaled`.
+- `block_normalize`: `block_normalize_sparse` relaxed from a list-typed parameter to a plain
+  passthrough — its body is already just `block_tsqr`, which dispatches on block vs. list
+  itself; no new branch needed, only the type annotation removed.
+- `block_apply`: new `ManyBodyBlockState` arm via `apply_block` (Phase 2.2's near-flat-in-
+  width kernel) + `redistribute_block`, since `apply_multi` is list-typed and would raise
+  rather than silently accept a block.
+
+Also fixed independently of production reachability: `_q_cols` in `_irlm.pxi` (shared by
+`_trlm.pxi`) fell through to `len(Q)` for anything not an array — correct for a list or
+`SparseKrylovDense`, wrong for a `ManyBodyBlockState`, whose own `len()` is its ROW count
+(dict-like), not its column count.
+
+Four new tests in `test_block_state.py`, including one against a hand-built mixed row
+proving the new `block_combine` arm's pruning matches `block_combine_sparse` exactly, not
+`prune_rows`. Gates green at baseline+4 (serial 1207/230/18/30, `-n 2` 1407/18/60).
+
+## Phase 5 step 5 — `_trlm.pxi`/`_irlm.pxi`'s `Q_basis` bookkeeping goes block-native (DONE, commit `f51c4d4`)
+
+The genuine list-to-block conversion step 5a set up: `block_lanczos_cy`'s sweep always
+returns its Krylov basis as a `SparseKrylovDense` store, but the shared path-agnostic
+helpers (`_q_cols`/`_q_slice`/`_q_concat`/`_copy_block`, in `_irlm.pxi`, used by both files)
+immediately downgraded it to a plain list on the very first slice, so the whole restart
+loop ran through the slow Python-level list kernels regardless of step 5a's new block arms.
+
+`_q_slice` now converts `SparseKrylovDense` -> `ManyBodyBlockState` at that one first-slice
+point (via the store's existing `__getitem__` scatter — same cost as before, only what
+happens to the result afterwards differs), and every helper gained a block branch:
+`_q_cols` via `.width`, `_q_slice` via `.select`, `_copy_block` via `.copy()`, `_q_concat`
+via a `from_states` round trip over the union support (no cheaper zero-copy hstack exists
+without new C++; confirmed by review to be a constant-factor addition on top of an
+already-O(D)-per-restart-step recurrence, not a new order of growth). IRLM's locked-Ritz
+accumulator `Xl` is coupled to `Q_basis` the same way (every column sliced off `Q_basis` is
+a block once `Q_basis` is), so it converts too. `block_lanczos_cy`'s `Q_init` warm-start
+ingestion and its `locked` parameter handling gained matching block-vs-list branches, since
+IRLM's restart continuation now passes its own block-native `Q_basis_new`/`Xl` back in.
+
+The documented external contract (`eigvecs: list[ManyBodyState]`, relied on by
+`cipsi_solver.py`/`groundstate.py`) predates this conversion and was out of scope to change:
+a new `_as_state_list` helper materializes a block result back to a list only at the actual
+function-return boundaries, never inside the restart loop.
+
+Reviewed at high effort. One CRITICAL finding, confirmed by live reproduction (not just
+inferred): `_irlm_core`'s psi0-reseed branch — hit when a sweep closes on an invariant
+subspace smaller than `num_wanted`, so IRLM locks everything reachable and reseeds from the
+original start vector projected against the locked set — called
+`_orth_against_locked(_copy_block(psi0))`. `psi0` stays `list[ManyBodyState]` throughout
+(`block_lanczos_cy`'s fresh-start ingestion needs a real list: `p = len(psi0)` and
+`list(psi0)` are both wrong on a block), but `Xl` is a `ManyBodyBlockState` once anything
+has locked. `block_orthogonalize` dispatches on its first argument only, so the mixed
+list/block pair fell through to the list-typed `block_orthogonalize_sparse`, raising
+`TypeError` on a block second argument — a live crash the existing test suite never
+exercised (no prior test closes an invariant subspace strictly smaller than `num_wanted`
+while locking). Fixed by converting `v0` to a block for the projection only, then
+materializing back to a list before the sweep call; added
+`test_manybody_path_reseed_after_locking_whole_invariant_subspace`
+(`test_irlm_locking_deflation.py`), confirmed to fail with the exact reported traceback
+against the unfixed code and pass against the fix. One MINOR/latent finding noted with a
+comment rather than restructured: `if locked`/`bool(locked)` truthiness checks rely on
+width>0 implying rows>0 for a `ManyBodyBlockState` (no `__bool__`, falls back to `len()` =
+row count) — true today because `_irlm_core` passes `locked=None` outright whenever empty
+rather than an empty block, but fragile if that invariant ever changes.
+
+Gates green at baseline+1 over step 5a (serial 1208/230/18/30, `-n 2` 1408/18/60).
+
 ## Still open
 
 - The FCC Ni fill measurement (above) — blocks `determine_new_Dj`'s/`select_at`'s `Hpsi_ref`
   conversion, every per-frequency seed union found in Phase 6c, and `ChebyshevFilter.pyx`'s
   caller in `greens_function.py`.
-- Phase 5's remaining pieces, roughly in cut order:
-  1. `_trlm.pxi`/`_irlm.pxi`'s `Q_basis` bookkeeping (`_q_slice`/`_q_concat`/`_copy_block`) —
-     the genuinely list-based real conversion, needs new block-native slice/concat
-     primitives for the array-vs-list-vs-block three-way split these helpers currently paper
-     over. This is now most of what's left in Phase 5.
-  2. `gf_shift_recycling.py`'s direct `Q.combine(...)` call (and its `rixs.py` R1-fallback
+- Phase 5's remaining pieces:
+  1. `gf_shift_recycling.py`'s direct `Q.combine(...)` call (and its `rixs.py` R1-fallback
      consumer) — migrate onto `combine_block()` in its own reviewable commit once it's clear
      the per-shift-solution consumers there actually want a block (they currently treat a
      solution as `list[ManyBodyState]` end to end); only then can `combine()` itself be
      deleted.
-  3. The `_reort.pxi` collapse itself (`is_array` 3 arms -> 2, delete `block_combine_sparse`
+  2. The `_reort.pxi` collapse itself (`is_array` 3 arms -> 2, delete `block_combine_sparse`
      / `block_orthogonalize_sparse` / `block_normalize_sparse` / `_block_inner_mpi`, drop the
      `as_list` branch in `block_tsqr` and `was_block` in `apply_reort`) once nothing feeds a
      bare list into those dispatchers — grep-checkable: unblocked exactly when no caller
      passes `list[ManyBodyState]` into `block_normalize`/`block_combine`/
-     `block_orthogonalize`/`block_tsqr`/`apply_reort`.
+     `block_orthogonalize`/`block_tsqr`/`apply_reort`. Item 1 above is the last production
+     caller still doing that.
 - Phase 7 (the rename, the flat_map class's deletion) — see the session plan file for the
   phase breakdown; each remaining phase is its own multi-commit body of work across a large
   fraction of `src/cython/` and `src/impurityModel/ed/`.
