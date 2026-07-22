@@ -220,6 +220,67 @@ Both are legitimate Phase 6 work, sized the way Phase 6 was always scoped (a who
 module moves together, with its own review pass) — not something to fold into an odd moment
 between phases.
 
+## Phase 6a — `groundstate.py`'s `calc_gs` observable pipeline (IN PROGRESS)
+
+User chose `groundstate.py:calc_gs` over `cipsi_solver.py:expand` as the first Phase 6 site
+(smaller-looking at a glance; that estimate itself grew twice as the trace went deeper — see
+below). Decision: convert fully, keeping `calc_gs`'s external return contract as
+`list[ManyBodyState]` (convert back at the return, `.to_states()`), so every external caller
+(`susceptibility.py`, `get_spectra.py`, `selfenergy.py`, 5 test files) is unaffected. Spans
+multiple turns/sessions; each function below is its own reviewed commit, same cadence as
+Phase 1.
+
+**Why this got bigger twice, on the record** (so a future session doesn't have to re-derive
+it): the first pass found 3 downstream functions (`build_density_matrices`,
+`compute_gs_statistics`, `compute_entanglement_entropy`). Reading `calc_gs` end to end found
+4 more calls to `manifold_observable_values` (S²/L²/J² Casimirs, `<S_imp.S_bath>`, its z-only
+variant) plus `compute_static_susceptibilities` and the `try` block around
+`compute_correlation_diagnostics`/`compute_screening_diagnostics` — all of which *also* call
+`manifold_observable_values` internally, several times each (`compute_screening_diagnostics`
+loops over every bath pair, up to `max_bath_correlation_levels=200`). Tracing
+`compute_entanglement_entropy` one level deeper found it bottoms out in
+`compute_impurity_rdm` (`gs_statistics.py`) — a third file, with its own MPI collective
+(`crc32`-keyed `graph_alltoall`, not a plain `Allreduce`) and block-diagonal RDM construction
+keyed on impurity electron count. Also: `psis` is part of `calc_gs`'s **return tuple**, so its
+type is a public contract, not just an internal detail.
+
+**Conversion checklist** (✅ = landed and reviewed; the rest not started):
+
+1. `manifold_observable_values` (`observables.py:1295`) — the common leaf, called ~10 times.
+   Today: `eigenstates: list[ManyBodyState]`, `apply_op(psi) -> ManyBodyState` (called once per
+   state), `o_matrix` built via a Python-level `n x n` list comprehension of scalar `inner()`
+   calls. Target: `eigenstates: ManyBodyBlockState`, `apply_op(block) -> ManyBodyBlockState`
+   (one `apply_block` covering all `p` states — the actual win, cutting the redundant
+   term/sign work `p`-fold, consistent with the measured `apply_block` width-scaling speedup),
+   `redistribute` becomes block-based, `o_matrix` via one `block_inner_cy` call. Every call
+   site's lambda changes shape (`lambda psi: op(psi, 0)` → `lambda blk: op.apply_block(blk,
+   0)`) — this is the one commit that cannot be split further without breaking green, since
+   every caller's lambda must move together with the signature change.
+2. `compute_correlation_diagnostics`, `compute_static_susceptibilities`,
+   `compute_screening_diagnostics` (`observables.py`) — their own `psis` parameter becomes a
+   block (lands in the same commit as (1); they're the direct callers whose lambdas move).
+3. `build_density_matrices` (`basis_transcription.py:195`) — independent of (1)/(2), own
+   commit. Today: `for psi_n in psis: phi = [op_orb(psi_n, 0) for orb in ...]` (`p * n_orb`
+   scalar applies). Target: one `apply_block` per orbital (`n_orb` block-applies of width
+   `p`), `rhos[n]` extracted from `block_inner_cy`'s full Gram diagonal per orbital pair.
+4. `_local_partials` / `compute_gs_statistics` (`gs_statistics.py:108,146`) — independent, own
+   commit. Today: `for n, psi in enumerate(psis): for state, amp in psi.items(): ...` (`p`
+   separate dict traversals). Target: one pass over the block's rows
+   (`for det, row in blk.items(): for n in range(width): amp = row[n]`) — a genuine
+   algorithmic win (one merge over the union support instead of `p`), not just a boundary
+   change.
+5. `compute_impurity_rdm` / `compute_entanglement_entropy` (`gs_statistics.py:376,466`) —
+   independent, own commit, highest MPI-review priority in this checklist (`crc32`-keyed
+   `graph_alltoall`, not a plain `Allreduce`; block-diagonal-by-`N_imp` RDM construction).
+6. `calc_gs` itself (`groundstate.py:577`) — lands last, once (1)-(5) are all in: build the
+   block right after `solver.get_eigenvectors`, thread it through every call updated above,
+   convert back to `list[ManyBodyState]` via `.to_states()` immediately before the `return`
+   (the one place the external contract is re-established).
+
+Each step gets its own gate run (serial + `-n 2 --with-mpi`) and, per the plan's review
+process, an independent code review before landing — (5) and (6) at the highest effort level
+(MPI collective + the function that changes the widest public-facing contract).
+
 ## Still open
 
 - The FCC Ni fill measurement (above).
