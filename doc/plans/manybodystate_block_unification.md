@@ -296,13 +296,25 @@ type is a public contract, not just an internal detail.
    mid-run): `from_states`'s zero-padding contract, `items()`'s one-row-per-determinant
    iteration, `state_configs`'s length invariant under either input type, and that no MPI
    collective downstream changed.
-5. `compute_impurity_rdm` / `compute_entanglement_entropy` (`gs_statistics.py:376,466`) —
-   independent, own commit, highest MPI-review priority in this checklist (`crc32`-keyed
-   `graph_alltoall`, not a plain `Allreduce`; block-diagonal-by-`N_imp` RDM construction).
-6. `calc_gs` itself (`groundstate.py:577`) — lands last, once (1)-(5) are all in: build the
-   block right after `solver.get_eigenvectors`, thread it through every call updated above,
-   convert back to `list[ManyBodyState]` via `.to_states()` immediately before the `return`
-   (the one place the external contract is re-established).
+5. ✅ **`compute_impurity_rdm`** (`gs_statistics.py:388`, commit `9014fc0`) — same shape as
+   (4): a determinant's impurity config / bath key depend only on its own bit pattern, so
+   the local pass visits each row once instead of once per `(state, determinant)` pair.
+   Zero-padded columns are skipped via `if amp != 0`, reproducing the old sparse traversal's
+   exact entry set (a zero-amplitude outer product contributes nothing either way) while
+   avoiding shipping `p`-fold more entries through the crc32-keyed `graph_alltoall` than the
+   sparse states actually held. Reviewed at high effort (the highest MPI-review-priority item
+   in this checklist — an alltoall, not a plain `Allreduce`): the alltoall's participation
+   stays unconditional regardless of how the filter thins a rank's local groups, the
+   `observed_n` allgather and the final per-`(n,n_e)` `Allreduce` loop are untouched, and the
+   hoisted per-row computation is bit-for-bit identical to recomputing it per state. No
+   findings. `compute_entanglement_entropy` needed no change (only forwards `psis` through).
+6. `calc_gs` itself (`groundstate.py:577`) — lands last, now that (1)-(5) are all in: replace
+   the kept-alongside `psis` list with `psis_blk` everywhere it's still used
+   (`build_density_matrices` already takes `psis_blk`; the last remaining list-typed uses are
+   `ground_state_basis.add_states({state for p in psis for state in p})`, the `redistribute_psis`
+   call itself, and the final `return` tuple), convert back to `list[ManyBodyState]` via
+   `.to_states()` immediately before the `return` (the one place the external contract is
+   re-established), drop the now-redundant separate `psis` variable if nothing else needs it.
 
 Each step gets its own gate run (serial + `-n 2 --with-mpi`) and, per the plan's review
 process, an independent code review before landing — (5) and (6) at the highest effort level
