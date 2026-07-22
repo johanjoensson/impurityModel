@@ -241,6 +241,27 @@ public:
 
   /** @brief Drop every term whose coefficient satisfies |c| <= tol. */
   void prune(double tol) noexcept;
+
+  /**
+   * @brief Hermitian adjoint: reverse each operator string, exchange creation
+   * with annihilation on the same orbital, and conjugate the coefficient.
+   */
+  [[nodiscard]] ManyBodyOperator adjoint() const;
+  /** @brief Whether the operator equals its adjoint to within `tol`. */
+  [[nodiscard]] bool is_hermitian(double tol = 1e-12) const;
+  /** @brief (A + A^dagger) / 2. */
+  [[nodiscard]] ManyBodyOperator hermitian_part() const;
+
+  /** @brief Sorted, de-duplicated orbital indices this operator acts on. */
+  [[nodiscard]] std::vector<int64_t> orbitals() const;
+  /**
+   * @brief Highest n-body rank present, i.e. ceil(len / 2) over the term
+   * strings: 0 for a pure constant, 1 for one-body, 2 for a Coulomb term.
+   */
+  [[nodiscard]] size_t body_rank() const noexcept;
+  /** @brief Whether every coefficient agrees with `other`'s to within `tol`. */
+  [[nodiscard]] bool approx_equal(const ManyBodyOperator &other,
+                                  double tol) const;
   /** @brief Add a multiple of the identity. */
   ManyBodyOperator &operator+=(mapped_type) noexcept;
   /** @brief Subtract a multiple of the identity. */

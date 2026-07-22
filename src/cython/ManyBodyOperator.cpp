@@ -1640,6 +1640,84 @@ void ManyBodyOperator::prune(double tol) noexcept {
   // Dropping terms cannot disturb the ordering of the ones that remain.
 }
 
+ManyBodyOperator ManyBodyOperator::adjoint() const {
+  std::vector<value_type> terms;
+  terms.reserve(m_ops.size());
+  for (const auto &[ops, coeff] : m_ops) {
+    key_type dag;
+    dag.reserve(ops.size());
+    // (o_n ... o_1)^dagger = o_1^dagger ... o_n^dagger: reverse the string and
+    // dagger each factor. In the index encoding (i >= 0 creates orbital i,
+    // i < 0 annihilates orbital -(i+1)) daggering is -(i+1) either way, since
+    // that maps create(i) <-> annihilate(i) involutively.
+    for (auto it = ops.rbegin(); it != ops.rend(); ++it) {
+      dag.push_back(-(*it + 1));
+    }
+    terms.emplace_back(std::move(dag), std::conj(coeff));
+  }
+  return ManyBodyOperator{std::move(terms)};
+}
+
+bool ManyBodyOperator::is_hermitian(double tol) const {
+  return approx_equal(adjoint(), tol);
+}
+
+ManyBodyOperator ManyBodyOperator::hermitian_part() const {
+  ManyBodyOperator res = *this;
+  res += adjoint();
+  res *= mapped_type{0.5, 0.0};
+  return res;
+}
+
+std::vector<int64_t> ManyBodyOperator::orbitals() const {
+  std::vector<int64_t> orbs;
+  for (const auto &[ops, coeff] : m_ops) {
+    for (int64_t idx : ops) {
+      orbs.push_back(idx >= 0 ? idx : -(idx + 1));
+    }
+  }
+  std::sort(orbs.begin(), orbs.end());
+  orbs.erase(std::unique(orbs.begin(), orbs.end()), orbs.end());
+  return orbs;
+}
+
+size_t ManyBodyOperator::body_rank() const noexcept {
+  size_t rank = 0;
+  for (const auto &[ops, coeff] : m_ops) {
+    rank = std::max(rank, (ops.size() + 1) / 2);
+  }
+  return rank;
+}
+
+bool ManyBodyOperator::approx_equal(const ManyBodyOperator &other,
+                                    double tol) const {
+  // Both sides are sorted by key, so walk them together and treat a key present
+  // on only one side as having coefficient zero on the other.
+  const double tol2 = tol * tol;
+  auto a = m_ops.cbegin();
+  auto b = other.m_ops.cbegin();
+  while (a != m_ops.cend() || b != other.m_ops.cend()) {
+    if (b == other.m_ops.cend() || (a != m_ops.cend() && a->first < b->first)) {
+      if (std::norm(a->second) > tol2) {
+        return false;
+      }
+      ++a;
+    } else if (a == m_ops.cend() || b->first < a->first) {
+      if (std::norm(b->second) > tol2) {
+        return false;
+      }
+      ++b;
+    } else {
+      if (std::norm(a->second - b->second) > tol2) {
+        return false;
+      }
+      ++a;
+      ++b;
+    }
+  }
+  return true;
+}
+
 namespace {
 // Orbital support of one term, precomputed once per term instead of per pair.
 struct TermSupport {

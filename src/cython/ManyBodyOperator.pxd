@@ -50,6 +50,12 @@ cdef extern from "ManyBodyOperator.h" nogil:
         void set_constant(mapped_type)
         ManyBodyOperator power(unsigned int) except +
         void prune(double)
+        ManyBodyOperator adjoint() except +
+        bint is_hermitian(double) except +
+        ManyBodyOperator hermitian_part() except +
+        vector[int64_t] orbitals() except +
+        size_t body_rank()
+        bint approx_equal(const ManyBodyOperator&, double) except +
 
         ManyBodyOperator operator-()
         ManyBodyOperator operator+(const ManyBodyOperator&, const ManyBodyOperator&)

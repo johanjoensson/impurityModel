@@ -452,6 +452,56 @@ cdef class ManyBodyOperator:
             res.o = anticommutator_cpp(self.o, other.o)
         return res
 
+    def adjoint(self) -> ManyBodyOperator:
+        """
+        Return the Hermitian adjoint ``self^dagger``.
+
+        Each operator string is reversed and each factor exchanged between creation and
+        annihilation on the same orbital, with the coefficient conjugated. The
+        operator-level counterpart of :func:`operator_algebra.daggerOp`, which does the
+        same thing on a plain term dict for the Hamiltonian-construction path.
+        """
+        cdef ManyBodyOperator res = ManyBodyOperator()
+        with nogil:
+            res.o = self.o.adjoint()
+        return res
+
+    def dagger(self) -> ManyBodyOperator:
+        """Alias for :meth:`adjoint`."""
+        return self.adjoint()
+
+    def is_hermitian(self, double tol=1e-12) -> bool:
+        """Whether the operator equals its adjoint to within ``tol``."""
+        return self.o.is_hermitian(tol)
+
+    def hermitian_part(self) -> ManyBodyOperator:
+        """Return ``(self + self.adjoint()) / 2``."""
+        cdef ManyBodyOperator res = ManyBodyOperator()
+        with nogil:
+            res.o = self.o.hermitian_part()
+        return res
+
+    def orbitals(self) -> tuple:
+        """Sorted spin-orbital indices this operator acts on."""
+        return tuple(self.o.orbitals())
+
+    def body_rank(self) -> int:
+        """
+        Highest n-body rank present: 0 for a pure constant, 1 for a one-body operator,
+        2 for a Coulomb term. Computed as ``ceil(len / 2)`` over the term strings, so a
+        bare ``c_i`` counts as one-body.
+        """
+        return self.o.body_rank()
+
+    def approx_equal(self, ManyBodyOperator other, double tol=1e-12) -> bool:
+        """
+        Whether every coefficient agrees with ``other``'s to within ``tol``.
+
+        ``==`` compares complex coefficients exactly, which is rarely what you want
+        after a chain of algebra.
+        """
+        return self.o.approx_equal(other.o, tol)
+
     def prune(self, double tol):
         """
         Drop every term with ``abs(coefficient) <= tol``, in place.
