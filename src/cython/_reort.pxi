@@ -68,6 +68,14 @@ cpdef object block_apply(object H, object V, object basis=None, bint mpi=False, 
             offsets = np.array([np.sum(counts[:r]) for r in range(comm.size)], dtype=int)
             return res_global[offsets[rank] : offsets[rank] + local_N, :]
         return res
+    elif isinstance(V, ManyBodyBlockState):
+        # apply_multi is list-typed (a plain ManyBodyBlockState would raise TypeError
+        # there); apply_block is the block-native counterpart (Phase 2.2), near-flat
+        # cost in width vs. apply_multi's linear scaling.
+        wp = H.apply_block(V, cutoff=slaterWeightMin)
+        if mpi and basis is not None and getattr(basis, "comm", None) is not None:
+            wp = basis.redistribute_block(wp)
+        return wp
     else:
         wp = H.apply_multi(V, cutoff=slaterWeightMin)
         if mpi and basis is not None and basis.comm is not None:
@@ -106,6 +114,23 @@ cpdef object block_combine(object Q, object Y, double slaterWeightMin=0.0):
         # block_inner/block_add_scaled, which need a ManyBodyBlockState, not a
         # list[ManyBodyState] (see combine() vs combine_block() on SparseKrylovDense).
         return Q.combine_block(Y, slaterWeightMin=slaterWeightMin)
+    elif isinstance(Q, ManyBodyBlockState):
+        # Already a shared-support block: combine_columns is the block-native "self @ Y"
+        # (bit-for-bit the same j-ascending accumulation as block_combine_sparse's
+        # add_scaled_multi, see test_combine_columns_matches_block_combine_sparse).
+        out = Q.combine_columns(Y)
+        if slaterWeightMin > 0:
+            # slaterWeightMin reaches this path from live TRLM/IRLM callers (unlike
+            # combine_block's caller, which always passes 0.0), so the pruning semantics
+            # must not silently diverge from block_combine_sparse's per-state prune here.
+            # prune_rows is row-granularity (a row survives if ANY column is above
+            # cutoff) -- not the same thing, see combine_block's docstring -- so we take
+            # the round trip to match the sparse path's per-column prune exactly instead.
+            pruned = out.to_states()
+            for st in pruned:
+                st.prune(slaterWeightMin)
+            out = ManyBodyBlockState.from_states(pruned)
+        return out
     else:
         from impurityModel.ed.BlockLanczos import block_combine_sparse
         return block_combine_sparse(Q, Y, slaterWeightMin)
@@ -115,6 +140,16 @@ cpdef tuple block_orthogonalize(object wp, object Q, object overlaps=None, bint 
         if isinstance(Q, list):
             Q = np.column_stack(Q)
         return block_orthogonalize_array(wp, Q, overlaps, comm if mpi else None)
+    elif isinstance(wp, ManyBodyBlockState):
+        # Both operands must be blocks (the caller's responsibility, same as every other
+        # block-native pairing in this module, e.g. selective_orthogonalize's ritz_blk/
+        # q_next): block_inner/block_add_scaled dispatch on their first argument only, so
+        # a stray list Q here would silently reach inner_multi/add_scaled_multi with a
+        # ManyBodyBlockState instead of raising.
+        if overlaps is None:
+            overlaps = block_inner(Q, wp, mpi, comm)
+        wp = block_add_scaled(wp, Q, -overlaps)
+        return wp, overlaps
     else:
         from impurityModel.ed.BlockLanczos import block_orthogonalize_sparse
         return block_orthogonalize_sparse(wp, Q, overlaps, comm if mpi else None)

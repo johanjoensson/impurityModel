@@ -545,3 +545,92 @@ def test_seen_and_offered_masks_track_sub_cutoff_determinants_separately():
 
     # Idempotent: a third sighting offers nothing.
     assert step2.keys_new_above(offered, cutoff2).keys() == []
+
+
+def test_block_combine_dispatcher_accepts_blocks():
+    """``BlockLanczosArray.block_combine`` must dispatch a ``ManyBodyBlockState`` Q to
+    ``combine_columns`` rather than falling through to the list-only
+    ``block_combine_sparse`` (prerequisite for Phase 5's TRLM/IRLM Q_basis conversion:
+    once Q_basis stays a block across a restart, every ``block_combine(Q_basis, ...)``
+    call in ``_trlm.pxi``/``_irlm.pxi`` hits this path)."""
+    from impurityModel.ed.BlockLanczos import block_combine_sparse
+    from impurityModel.ed.BlockLanczosArray import block_combine
+
+    rng = np.random.default_rng(70)
+    states = _random_states(rng, 4, 30)
+    blk = ManyBodyBlockState.from_states(states)
+    Y = rng.standard_normal((4, 2)) + 1j * rng.standard_normal((4, 2))
+
+    ref = block_combine_sparse(states, Y)
+    out = block_combine(blk, Y)
+    assert isinstance(out, ManyBodyBlockState)
+    for j, col in enumerate(out.to_states()):
+        diff = col - ref[j]
+        assert np.sqrt(diff.norm2()) < 1e-13 * max(np.sqrt(ref[j].norm2()), 1.0)
+
+
+def test_block_combine_dispatcher_pruning_matches_sparse_on_mixed_row():
+    """``block_combine``'s slaterWeightMin must match ``block_combine_sparse``'s
+    per-column ``prune`` exactly, including on a "mixed" row (above cutoff in one
+    output column, below it in another) -- the case that exposed a false pruning-
+    semantics claim in ``SparseKrylovDense.combine_block`` (Phase 5 step 4). Unlike
+    that store, slaterWeightMin genuinely reaches this dispatcher from live TRLM/IRLM
+    calls, so the block arm takes the round trip through per-state ``prune`` rather
+    than reusing the cheaper but differently-scoped ``prune_rows``."""
+    from impurityModel.ed.BlockLanczos import block_combine_sparse
+    from impurityModel.ed.BlockLanczosArray import block_combine
+
+    det0 = _det(1)
+    det1 = _det(2)
+    col0 = ManyBodyState({det0: 1.0})
+    col1 = ManyBodyState({det1: 1.0})
+    blk = ManyBodyBlockState.from_states([col0, col1])
+
+    cutoff = 0.1
+    # Q = identity (det0, det1), so C = Y itself: row det0 = Y[0] = [0.5, 0.05] (above
+    # cutoff in column 0, below it in column 1); row det1 is the mirror image.
+    Y = np.array([[0.5, 0.05], [0.05, 0.5]], dtype=complex)
+
+    ref = block_combine_sparse([col0, col1], Y, cutoff)
+    out = block_combine(blk, Y, cutoff)
+    assert [s.to_dict() for s in out.to_states()] == [s.to_dict() for s in ref]
+
+
+def test_block_orthogonalize_dispatcher_accepts_blocks():
+    """``BlockLanczosArray.block_orthogonalize`` must dispatch a ``ManyBodyBlockState``
+    wp/Q pair to the block-native ``block_inner``/``block_add_scaled`` composition
+    rather than the list-only ``block_orthogonalize_sparse``."""
+    from impurityModel.ed.BlockLanczos import block_orthogonalize_sparse
+    from impurityModel.ed.BlockLanczosArray import block_orthogonalize
+
+    rng = np.random.default_rng(71)
+    Q_states = _random_states(rng, 3, 25)
+    wp_states = _random_states(rng, 2, 25)
+
+    ref_wp, ref_overlaps = block_orthogonalize_sparse([s.copy() for s in wp_states], Q_states)
+    out_wp, out_overlaps = block_orthogonalize(
+        ManyBodyBlockState.from_states(wp_states), ManyBodyBlockState.from_states(Q_states)
+    )
+    np.testing.assert_allclose(out_overlaps, ref_overlaps, rtol=1e-13, atol=1e-14)
+    for j, col in enumerate(out_wp.to_states()):
+        diff = col - ref_wp[j]
+        assert np.sqrt(diff.norm2()) < 1e-13 * max(np.sqrt(ref_wp[j].norm2()), 1.0)
+
+
+def test_block_normalize_accepts_blocks():
+    """``block_normalize``'s non-array branch must accept a ``ManyBodyBlockState``
+    (``block_normalize_sparse`` was relaxed from a ``list``-typed parameter to a plain
+    passthrough, since ``block_tsqr`` beneath it already dispatches on both)."""
+    from impurityModel.ed.BlockLanczosArray import block_normalize
+
+    rng = np.random.default_rng(72)
+    states = _random_states(rng, 3, 25)
+
+    ref_q, ref_beta = block_normalize([s.copy() for s in states], mpi=False, comm=None)
+    out_q, out_beta = block_normalize(ManyBodyBlockState.from_states(states), mpi=False, comm=None)
+    assert isinstance(out_q, ManyBodyBlockState)
+    np.testing.assert_allclose(out_beta, ref_beta, rtol=1e-12, atol=1e-13)
+    ref_states = ref_q if isinstance(ref_q, list) else ref_q.to_states()
+    for j, col in enumerate(out_q.to_states()):
+        diff = col - ref_states[j]
+        assert np.sqrt(diff.norm2()) < 1e-12 * max(np.sqrt(ref_states[j].norm2()), 1.0)

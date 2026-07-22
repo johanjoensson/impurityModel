@@ -134,10 +134,11 @@ cpdef tuple block_orthogonalize_sparse(list wp, list Q, object overlaps=None, ob
     return wp, overlaps
 
 
-cpdef tuple block_normalize_sparse(list wp, bint mpi=False, object comm=None, double slaterWeightMin=0.0):
-    """``block_normalize_array``'s counterpart for a list of ``ManyBodyState`` (see it for the
-    breakdown convention). The states go through their shared-support block form, which is
-    what the TSQR factors."""
+cpdef tuple block_normalize_sparse(object wp, bint mpi=False, object comm=None, double slaterWeightMin=0.0):
+    """``block_normalize_array``'s counterpart for a list of ``ManyBodyState`` or a
+    ``ManyBodyBlockState`` (see it for the breakdown convention). Untyped (not ``list``):
+    ``block_tsqr`` itself dispatches on ``ManyBodyBlockState`` vs. list, so this is a pure
+    passthrough for either representation, not list-only."""
     q_next, beta_j, active_k, _ = block_tsqr(wp, mpi, comm, 1.0, slaterWeightMin)
     if active_k <= 0:
         raise ValueError("Block collapsed to zero rank")
