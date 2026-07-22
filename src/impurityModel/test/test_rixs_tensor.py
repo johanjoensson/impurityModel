@@ -160,8 +160,8 @@ def test_rixs_component_sum_is_rotation_invariant():
     # Rotate the impurity block (0,1); rotate H, the operators and re-solve the states.
     W, _ = impurity_symmetry_rotation(op, [0, 1], n_orb=N_ORB)
     op_rot = rotate_hamiltonian(op, W)
-    tin_rot = [ManyBodyOperator(spectra._rotate_op_dict(t.to_dict(), W)) for t in tin]
-    tout_rot = [ManyBodyOperator(spectra._rotate_op_dict(t.to_dict(), W)) for t in tout]
+    tin_rot = [spectra._rotate_op(t, W) for t in tin]
+    tout_rot = [spectra._rotate_op(t, W) for t in tout]
     psis_rot, es_rot, dets_rot, _, _ = _thermal_states(op_rot, 2)
     rot = _run_rixs(op_rot, psis_rot, es_rot, tin_rot, tout_rot, dets_rot).sum(axis=(0, 1))
 
@@ -262,8 +262,8 @@ def test_rixs_tensor_is_rotation_invariant():
 
     W, _ = impurity_symmetry_rotation(op, [0, 1], n_orb=N_ORB)
     op_rot = rotate_hamiltonian(op, W)
-    tin_rot = [ManyBodyOperator(spectra._rotate_op_dict(t.to_dict(), W)) for t in tin]
-    tout_rot = [ManyBodyOperator(spectra._rotate_op_dict(t.to_dict(), W)) for t in tout]
+    tin_rot = [spectra._rotate_op(t, W) for t in tin]
+    tout_rot = [spectra._rotate_op(t, W) for t in tout]
     psis_rot, es_rot, dets_rot, _, _ = _thermal_states(op_rot, 2)
     rot = _run_rixs_tensor(op_rot, psis_rot, es_rot, tin_rot, tout_rot, dets_rot, ident, ident).sum(axis=(0, 1))
 

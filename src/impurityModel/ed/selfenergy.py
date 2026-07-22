@@ -130,7 +130,7 @@ class _SolverBasis:
     """
 
     h: object
-    h0_solve: object
+    h0_solve: ManyBodyOperator
     n_spin_orbitals: int
     block_structure: object
     impurity_orbitals: dict
@@ -183,14 +183,14 @@ def _prepare_solver_basis(h0, u4, impurity_orbitals, nominal_occ, mixed_valence,
     rotate = fill_ratio <= _MAX_ROTATION_FILL
     if rotate:
         h = h_rotated
-        h0_solve = rotate_hamiltonian(ManyBodyOperator(h0), rotation_full, tol=_ROTATION_TRIM_TOL).to_dict()
+        h0_solve = rotate_hamiltonian(ManyBodyOperator(h0), rotation_full, tol=_ROTATION_TRIM_TOL)
         # Observable rotation for the solve (spherical -> S): compose the caller's input rotation
         # R_in (spherical -> B) with W^dag (B -> S). On the impurity block, R = u_imp^dag @ R_in.
         rot_to_spherical = u_imp.conj().T @ np.asarray(rot_to_spherical, dtype=complex)
     else:
         # Stay in the input basis; make the output rotation below a no-op.
         h = h_input
-        h0_solve = h0
+        h0_solve = ManyBodyOperator(h0)
         rotation_full = np.eye(n_spin_orbitals, dtype=complex)
         u_imp = np.eye(len(impurity_indices), dtype=complex)
 

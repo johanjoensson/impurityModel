@@ -195,8 +195,8 @@ def get_greens_function_moments(psis, es, tau, basis, hOp, impurity_indices, max
     M_per_state = np.zeros((n_states, max_order + 1, n_corr, n_corr), dtype=complex)
     M_per_state[:, 0] = np.eye(n_corr)[np.newaxis, :, :]
 
-    creation = [ManyBodyOperator({((orb, "c"),): 1.0}) for orb in impurity_indices]
     annihilation = [ManyBodyOperator({((orb, "a"),): 1.0}) for orb in impurity_indices]
+    creation = [op.adjoint() for op in annihilation]
 
     def side_krylov_moments(seeds, e):
         """K[n][a,b] = <seed_a | (H - e)^n | seed_b> for n = 1..max_order (Hermitian H - e)."""

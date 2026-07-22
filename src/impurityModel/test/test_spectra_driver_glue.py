@@ -1,7 +1,7 @@
 """Driver-glue helpers for rotated spectra: operator rotation + PES/IPS dedup grouping.
 
 These cover the pieces get_spectra.main / simulate_spectra use to run spectra in the
-symmetry-adapted basis: :func:`spectra._rotate_op_dict` (rotate a one-body transition operator)
+symmetry-adapted basis: :func:`spectra._rotate_op` (rotate a one-body transition operator)
 and :func:`spectra._pes_ips_equivalence_groups` (label degenerate PES/IPS operators for B2a).
 """
 
@@ -18,18 +18,21 @@ from impurityModel.ed.symmetries import (
 )
 
 
-def test_rotate_op_dict_identity_is_noop():
+def test_rotate_op_identity_is_noop():
     op = {((2, "c"), (0, "a")): 0.7, ((3, "c"), (1, "a")): -0.4}
-    rotated = spectra._rotate_op_dict(op, np.eye(4, dtype=complex))
-    assert rotated.keys() == op.keys()
-    for k, value in op.items():
-        assert np.isclose(rotated[k], value)
+    # Accepts either a dict (what the transition_operators builders return) or an operator.
+    for arg in (op, ManyBodyOperator(op)):
+        rotated = spectra._rotate_op(arg, np.eye(4, dtype=complex))
+        assert isinstance(rotated, ManyBodyOperator)
+        assert set(rotated.keys()) == set(op.keys())
+        for k, value in op.items():
+            assert np.isclose(rotated[k], value)
 
 
-def test_rotate_op_dict_swaps_under_permutation():
+def test_rotate_op_swaps_under_permutation():
     # Swap orbitals 0 and 1: c_0 <-> c_1. Rotating c^dagger_0 c_0 gives c^dagger_1 c_1.
     W = np.array([[0.0, 1.0], [1.0, 0.0]], dtype=complex)
-    rotated = spectra._rotate_op_dict({((0, "c"), (0, "a")): 1.0}, W)
+    rotated = spectra._rotate_op({((0, "c"), (0, "a")): 1.0}, W)
     assert set(rotated.keys()) == {((1, "c"), (1, "a"))}
     assert np.isclose(rotated[((1, "c"), (1, "a"))], 1.0)
 

@@ -182,7 +182,7 @@ correlations: they cannot distinguish a spin singlet from an unpolarized triplet
 These are genuine two-body observables evaluated on the eigenstates themselves
 (`observables.make_impurity_casimir_operators` builds $S^2$, $L^2$, $J^2$ for the
 impurity shell in the spherical basis and rotates them to the computational basis;
-`observables.apply_spin_correlation` handles $\mathbf S_\mathrm{imp}\!\cdot\!\mathbf S_\mathrm{bath}$;
+`observables.spin_correlation_operator` handles $\mathbf S_\mathrm{imp}\!\cdot\!\mathbf S_\mathrm{bath}$;
 both are evaluated distributed via `observables.manifold_observable_values`).
 
 - `<S^2>` etc. are the thermal averages of $S(S{+}1)$; the parenthesised quantum number

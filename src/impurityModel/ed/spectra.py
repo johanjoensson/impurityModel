@@ -49,9 +49,15 @@ _ROTATION_TRIM_TOL = 1e-8
 _MAX_ROTATION_FILL = 2.0
 
 
-def _rotate_op_dict(tOp_dict, rotation):
-    """Rotate a one-body transition-operator dict into the symmetry-adapted basis (U† T U)."""
-    return rotate_hamiltonian(ManyBodyOperator(tOp_dict), rotation, tol=_ROTATION_TRIM_TOL).to_dict()
+def _rotate_op(tOp, rotation):
+    """Rotate a one-body transition operator into the symmetry-adapted basis (U† T U).
+
+    Accepts a ``ManyBodyOperator`` or the ``{process: amplitude}`` dict the
+    :mod:`transition_operators` builders return; always returns an operator.
+    """
+    if not isinstance(tOp, ManyBodyOperator):
+        tOp = ManyBodyOperator(tOp)
+    return rotate_hamiltonian(tOp, rotation, tol=_ROTATION_TRIM_TOL)
 
 
 def _shell_orbitals(nBaths, l):
@@ -204,7 +210,7 @@ def simulate_spectra(
     def _prep_one_body(tOp_dicts):
         if rotation is None:
             return [ManyBodyOperator(t) for t in tOp_dicts]
-        return [ManyBodyOperator(_rotate_op_dict(t, rotation)) for t in tOp_dicts]
+        return [_rotate_op(t, rotation) for t in tOp_dicts]
 
     if rotation is not None and correlated_block_structure is not None:
         correlated_groups = _pes_ips_equivalence_groups(nBaths, correlated_l, correlated_block_structure)
