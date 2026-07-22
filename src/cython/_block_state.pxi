@@ -4,6 +4,112 @@
 # ManyBodyBlockState: a block (column set) of many-body states with width-0 key-only masks
 # and nogil merge primitives, plus block inner/add and the MPI block pack/unpack.
 
+cdef inline double complex _amp_to_py(ManyBodyBlockState_cpp.Value v) noexcept nogil:
+    """std::complex<double> -> C double complex (no implicit conversion exists)."""
+    cdef double complex z
+    z.real = v.real()
+    z.imag = v.imag()
+    return z
+
+
+cdef inline ManyBodyBlockState_cpp.Value _amp_to_cpp(double complex z) noexcept nogil:
+    """C double complex -> std::complex<double>."""
+    return ManyBodyBlockState_cpp.Value(z.real, z.imag)
+
+
+cdef class Row:
+    """A zero-copy view of ONE determinant's ``width`` amplitudes.
+
+    What the mapping API of a state yields: ``state[det]``, and the second element of
+    every ``items()`` pair. Indexable, iterable, and exportable as a ``(width,)`` complex
+    array through the buffer protocol (``np.asarray(row)``); writes through it land in the
+    block's storage.
+
+    The view is non-owning. It keeps its state alive, and while it exists the state
+    refuses the operations that would reallocate its rows (``prune_rows``, ``keep_rows``,
+    ``merge_keys``, inserting a new determinant) -- the same export guard
+    ``np.asarray(state)`` already uses, so a stale view can never be read.
+    """
+    cdef ManyBodyBlockState _owner
+    cdef ManyBodyBlockState_cpp.Value* _data
+    cdef Py_ssize_t _size
+    cdef Py_ssize_t _shape[1]
+    cdef Py_ssize_t _strides[1]
+
+    def __cinit__(self):
+        self._owner = None
+        self._data = NULL
+        self._size = 0
+
+    def __dealloc__(self):
+        if self._owner is not None:
+            self._owner._n_exports -= 1
+
+    def __len__(self):
+        return self._size
+
+    def __getitem__(self, index):
+        cdef Py_ssize_t i
+        if isinstance(index, slice):
+            return [self[i] for i in range(*index.indices(self._size))]
+        i = index
+        if i < 0:
+            i += self._size
+        if i < 0 or i >= self._size:
+            raise IndexError(f"column {index} out of range for width {self._size}")
+        return _amp_to_py(self._data[i])
+
+    def __setitem__(self, index, value):
+        cdef Py_ssize_t i
+        cdef Py_ssize_t k
+        if isinstance(index, slice):
+            for k, i in enumerate(range(*index.indices(self._size))):
+                self[i] = value[k]
+            return
+        i = index
+        if i < 0:
+            i += self._size
+        if i < 0 or i >= self._size:
+            raise IndexError(f"column {index} out of range for width {self._size}")
+        self._data[i] = _amp_to_cpp(<double complex>value)
+
+    def __iter__(self):
+        cdef Py_ssize_t i
+        for i in range(self._size):
+            yield _amp_to_py(self._data[i])
+
+    def __repr__(self):
+        return "Row(" + ", ".join(repr(v) for v in self) + ")"
+
+    def __getbuffer__(self, Py_buffer *buffer, int flags):
+        self._shape[0] = self._size
+        self._strides[0] = <Py_ssize_t>sizeof(double complex)
+        buffer.buf = <void*>self._data
+        buffer.format = "Zd"
+        buffer.internal = NULL
+        buffer.itemsize = <Py_ssize_t>sizeof(double complex)
+        buffer.len = self._size * <Py_ssize_t>sizeof(double complex)
+        buffer.ndim = 1
+        buffer.obj = self
+        buffer.readonly = 0
+        buffer.shape = self._shape
+        buffer.strides = self._strides
+        buffer.suboffsets = NULL
+
+    def __releasebuffer__(self, Py_buffer *buffer):
+        pass
+
+
+cdef Row _make_row(ManyBodyBlockState owner, ManyBodyBlockState_cpp.Row span):
+    """Wrap a C++ row span, registering it against the owner's export guard."""
+    cdef Row res = Row.__new__(Row)
+    res._owner = owner
+    res._data = span.data()
+    res._size = <Py_ssize_t>span.size()
+    owner._n_exports += 1
+    return res
+
+
 cdef class ManyBodyBlockState:
     r"""A block of ``p`` many-body vectors over ONE shared Slater-determinant support.
 
@@ -24,6 +130,44 @@ cdef class ManyBodyBlockState:
     cdef Py_ssize_t _shape[2]
     cdef Py_ssize_t _strides[2]
     cdef int _n_exports
+
+    def __cinit__(self, mapping=None, width=None):
+        """Build a state from a determinant mapping, or an empty one of a given width.
+
+        ``ManyBodyBlockState()`` is the polymorphic zero: width 0 and no rows, which
+        adopts a width on the first ``+=``. ``ManyBodyBlockState(width=p)`` is the zero
+        block of an explicit width ``p`` (widths are then checked, not adopted).
+        ``mapping`` maps determinants to a scalar amplitude (width 1) or to a sequence of
+        ``width`` amplitudes.
+        """
+        cdef vector[SlaterDeterminant_cpp[uint64_t]] keys
+        cdef vector[ManyBodyBlockState_cpp.Value] amps
+        cdef SlaterDeterminant sd
+        cdef Py_ssize_t w
+        if mapping is None:
+            self.b = ManyBodyBlockState_cpp(<size_t>(0 if width is None else width))
+            return
+        items = sorted(mapping.items(), key=lambda kv: kv[0])
+        if not items:
+            self.b = ManyBodyBlockState_cpp(<size_t>(1 if width is None else width))
+            return
+        first = items[0][1]
+        w = 1 if (np.isscalar(first) or isinstance(first, complex)) else len(first)
+        if width is not None and <Py_ssize_t>width != w:
+            raise ValueError(f"width {width} does not match the {w} amplitudes given per determinant")
+        keys.reserve(len(items))
+        amps.reserve(len(items) * w)
+        for key, value in items:
+            sd = <SlaterDeterminant?>key
+            keys.push_back(sd.s)
+            if w == 1 and (np.isscalar(value) or isinstance(value, complex)):
+                amps.push_back(_amp_to_cpp(<double complex>value))
+            else:
+                if len(value) != w:
+                    raise ValueError(f"expected {w} amplitudes per determinant, got {len(value)}")
+                for c in value:
+                    amps.push_back(_amp_to_cpp(<double complex>c))
+        self.b = ManyBodyBlockState_cpp(move(keys), move(amps), <size_t>w)
 
     @staticmethod
     def from_states(list states):
@@ -126,6 +270,169 @@ cdef class ManyBodyBlockState:
     def __len__(self):
         """Number of shared-support determinants (rows)."""
         return self.b.rows()
+
+    # --- mapping surface: determinant -> Row --------------------------------
+    # Lookup is a binary search over the sorted support. Inserting a NEW
+    # determinant shifts the tail of both arrays, so building a state one key at
+    # a time is O(n^2) -- build from a dict or from_states instead.
+
+    def __contains__(self, SlaterDeterminant key):
+        return self.b.contains(key.s)
+
+    def __getitem__(self, SlaterDeterminant key):
+        """The determinant's row of amplitudes, or ``KeyError`` if it is absent."""
+        cdef size_t r = self.b.find_row(key.s)
+        if r == self.b.rows():
+            raise KeyError(repr(key))
+        return _make_row(self, self.b.row(r))
+
+    def __setitem__(self, SlaterDeterminant key, value):
+        """Write a determinant's row, inserting it when absent.
+
+        ``value`` is either a scalar (broadcast across the row) or a sequence of
+        ``width`` amplitudes.
+        """
+        cdef ManyBodyBlockState_cpp.Row span
+        cdef Py_ssize_t w
+        cdef Py_ssize_t c
+        if self._n_exports > 0:
+            raise RuntimeError("cannot assign a row while a buffer view is exported")
+        span = self.b[key.s]
+        w = <Py_ssize_t>span.size()
+        if np.isscalar(value) or isinstance(value, complex):
+            for c in range(w):
+                span[c] = _amp_to_cpp(<double complex>value)
+            return
+        if len(value) != w:
+            raise ValueError(f"expected {w} amplitudes, got {len(value)}")
+        for c in range(w):
+            span[c] = _amp_to_cpp(<double complex>value[c])
+
+    def get(self, SlaterDeterminant key, default=None):
+        """The determinant's row, or ``default`` when it is absent (no insertion)."""
+        cdef size_t r = self.b.find_row(key.s)
+        if r == self.b.rows():
+            return default
+        return _make_row(self, self.b.row(r))
+
+    def __iter__(self):
+        """Iterate the support determinants, in row (sorted) order."""
+        return iter(self.keys())
+
+    def values(self):
+        """The rows, in row order."""
+        cdef Py_ssize_t r
+        for r in range(<Py_ssize_t>self.b.rows()):
+            yield _make_row(self, self.b.row(r))
+
+    def items(self):
+        """``(determinant, row)`` pairs, in row order."""
+        cdef SlaterDeterminant sd
+        cdef Py_ssize_t r
+        for r in range(<Py_ssize_t>self.b.rows()):
+            sd = SlaterDeterminant.__new__(SlaterDeterminant)
+            sd.s = self.b.key(r)
+            yield sd, _make_row(self, self.b.row(r))
+
+    def to_dict(self):
+        """``{determinant: (width,) complex array}`` -- a detached copy of the block."""
+        cdef dict res = {}
+        cdef SlaterDeterminant sd
+        cdef Py_ssize_t r
+        for r in range(<Py_ssize_t>self.b.rows()):
+            sd = SlaterDeterminant.__new__(SlaterDeterminant)
+            sd.s = self.b.key(r)
+            res[sd] = np.array(_make_row(self, self.b.row(r)), dtype=complex)
+        return res
+
+    def erase(self, SlaterDeterminant key):
+        """Drop a determinant's row. Returns True if it was present."""
+        if self._n_exports > 0:
+            raise RuntimeError("cannot erase a row while a buffer view is exported")
+        return self.b.erase(key.s) > 0
+
+    def clear(self):
+        """Drop every row (the width is kept)."""
+        if self._n_exports > 0:
+            raise RuntimeError("cannot clear while a buffer view is exported")
+        self.b.clear()
+
+    def is_empty(self):
+        """True when the state holds no determinants."""
+        return self.b.empty()
+
+    # --- vector space -------------------------------------------------------
+
+    def norm2(self):
+        """Frobenius norm squared: the sum over every stored amplitude."""
+        return self.b.norm2()
+
+    def norm(self):
+        """Frobenius norm."""
+        return self.b.norm()
+
+    def max_norm2(self):
+        """Largest ``|amplitude|^2`` anywhere in the block."""
+        return self.b.max_norm2()
+
+    def count_above(self, double cutoff2):
+        """Rows whose largest column ``|amplitude|^2`` exceeds ``cutoff2``."""
+        return self.b.count_above(cutoff2)
+
+    def truncate(self, size_t max_rows):
+        """Keep the ``max_rows`` rows with the largest row-max ``|amplitude|^2``.
+
+        Ties at the cutoff are all kept, so the result can exceed ``max_rows``.
+        """
+        if self._n_exports > 0:
+            raise RuntimeError("cannot truncate while a buffer view is exported")
+        with nogil:
+            self.b.truncate(max_rows)
+
+    def add_scaled(self, ManyBodyBlockState other, ManyBodyBlockState_cpp.Value scalar):
+        """In place: ``self += scalar * other``, over the union support.
+
+        Widths must match, except that a width-0 row-less state (a default
+        construction) is the polymorphic zero and adopts ``other``'s width.
+        """
+        if self._n_exports > 0:
+            raise RuntimeError("cannot add while a buffer view is exported")
+        with nogil:
+            self.b.add_scaled(other.b, scalar)
+        return self
+
+    def __add__(self, ManyBodyBlockState other):
+        cdef ManyBodyBlockState res = ManyBodyBlockState()
+        with nogil:
+            res.b = self.b + other.b
+        return res
+
+    def __sub__(self, ManyBodyBlockState other):
+        cdef ManyBodyBlockState res = ManyBodyBlockState()
+        with nogil:
+            res.b = self.b - other.b
+        return res
+
+    def __neg__(self):
+        cdef ManyBodyBlockState res = ManyBodyBlockState()
+        with nogil:
+            res.b = -self.b
+        return res
+
+    def __mul__(self, ManyBodyBlockState_cpp.Value s):
+        cdef ManyBodyBlockState res = ManyBodyBlockState()
+        with nogil:
+            res.b = self.b * s
+        return res
+
+    def __rmul__(self, ManyBodyBlockState_cpp.Value s):
+        return self.__mul__(s)
+
+    def __truediv__(self, ManyBodyBlockState_cpp.Value s):
+        cdef ManyBodyBlockState res = ManyBodyBlockState()
+        with nogil:
+            res.b = self.b / s
+        return res
 
     def prune_rows(self, double cutoff):
         """Drop rows where ALL columns satisfy the ``ManyBodyState.prune`` test
@@ -246,7 +553,7 @@ cdef class ManyBodyBlockState:
         cdef double cutoff2 = min_amp * min_amp
         cdef Py_ssize_t p = <Py_ssize_t>self.b.width()
         cdef Py_ssize_t r, c
-        cdef const ManyBodyBlockState_cpp.Value* row
+        cdef ManyBodyBlockState_cpp.Row row
         cdef list out = []
         cdef SlaterDeterminant sd
         for r in range(<Py_ssize_t>self.b.rows()):

@@ -278,7 +278,7 @@ void pack_block_fill(const ManyBodyBlockState &block, int comm_size,
   for (size_t r = 0; r < block.rows(); ++r) {
     char *dst = send_buf + (next[owners[r]]++) * bpe;
     std::memcpy(dst, block.key(r).data(), state_bytes);
-    std::memcpy(dst + state_bytes, block.row(r), amp_bytes);
+    std::memcpy(dst + state_bytes, block.row(r).data(), amp_bytes);
   }
 }
 

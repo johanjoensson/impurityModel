@@ -20,7 +20,7 @@ cdef void _scatter_block_rows(
     narrowing conversion happens element-wise here and nowhere else.
     """
     cdef Py_ssize_t r, ci
-    cdef ManyBodyBlockState_cpp.Value* src
+    cdef ManyBodyBlockState_cpp.Row src
     for r in range(nrow):
         src = dereference(b).row(r)
         for ci in range(ncol):

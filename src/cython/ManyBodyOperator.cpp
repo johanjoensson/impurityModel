@@ -925,7 +925,7 @@ ManyBodyOperator::apply(const ManyBodyBlockState &block, double cutoff) const {
         ManyBodyState::key_type out_sd;
         for (std::size_t r = start_row; r < end_row; ++r) {
           const auto &slater = block.key(r);
-          const ManyBodyBlockState::Value *amp = block.row(r);
+          const ManyBodyBlockState::ConstRow amp = block.row(r);
           out_sd = slater;
           std::fill(diag_accum.begin(), diag_accum.end(),
                     ManyBodyBlockState::Value{0.0, 0.0});
@@ -1100,7 +1100,7 @@ ManyBodyOperator::apply(const ManyBodyBlockState &block, double cutoff) const {
   ManyBodyState::key_type out_slater_determinant;
   for (std::size_t r = 0; r < block.rows(); ++r) {
     const auto &slater = block.key(r);
-    const ManyBodyBlockState::Value *amp = block.row(r);
+    const ManyBodyBlockState::ConstRow amp = block.row(r);
     out_slater_determinant = slater;
     std::fill(diag_accum.begin(), diag_accum.end(),
               ManyBodyBlockState::Value{0.0, 0.0});
