@@ -295,6 +295,21 @@ type is a public contract, not just an internal detail.
     Gram matrix per orbital pair — `p`-fold more inner-product work than the existing
     per-state loop, with no cheap diagonal-only primitive to avoid it. `calc_gs` passes the
     already-built `psis_blk`, so its call needs no conversion.
+
+    **Re-evaluated in Phase 8** once `select`/`column` got a direct O(rows) gather
+    (`select_cols`): the "no cheap diagonal-only primitive" ground no longer holds as
+    stated — `column(n)` extraction + `block_inner_scalar` now reads a per-state value
+    back out in O(rows), not O(rows · width). **Verdict unchanged: still not converting.**
+    The cheap extraction only matches this loop's *existing* per-state inner-product cost
+    (O(rows) per `(orbital-pair, state)` triple, same order the current loop already pays
+    via `inner_multi`) — it removes what would otherwise have been a `p`-fold penalty on a
+    naive block rewrite, but creates no new asymmetric win. The one place `apply_block`
+    could still win — near-flat cost in block width vs. one term/sign/restriction/hash
+    pass per state — is untouched by this and stays the real, still-standing reason not to
+    bother: every operator applied here is a *trivial* single-term annihilator, so there's
+    little shared per-determinant work left to amortize across states regardless of how
+    cheaply the output columns can be read back. Docstring updated to drop the stale
+    "no cheap diagonal-only primitive" framing and state the surviving reason plainly.
 4. ✅ **`_local_partials` / `compute_gs_statistics`** (`gs_statistics.py:108,146`, commit
    `ea1eaea`) — pure support iteration, no inner products, so this one *is* a genuine
    algorithmic win (unlike 3b): was `for n, psi in enumerate(psis): for state, amp in
@@ -763,6 +778,72 @@ real 2-rank MPI distribution via `test_groundstate_and_density_matrix_mpi`, whic
 the IRLM solver on a 252-determinant basis).
 
 Gates green, exact baseline match (serial 1208/230/18/30, `-n 2` 1408/18/60).
+
+## Phase 8 — `ManyBodyBlockState` column extraction + plan re-survey
+
+User-requested capability (not a traced item from the checklist above): a fast primitive
+to pull individual columns out of a block onto the same determinant support, prompted by
+`select`/`column` sitting on a hot path (TRLM/IRLM's restart-loop `_q_slice` calls
+`Q.select(range(a, b))` with `n` approx the block width every restart) while still costing
+O(rows · width · n) — `select`/`column` (Phase 1.2) were implemented as `self @ Y` for a
+dense 0/1 selection matrix through `block_combine_cols`, which scans every input column
+per row regardless of how few are wanted.
+
+**Step 1 (DONE, commit `8306a89`).** Added `ManyBodyBlockState::select_cols` (C++ member,
+`ManyBodyBlockState.h`, next to `key_union`/`keys_new_above`): a direct gather —
+`out.row(r)[k] = row(r)[cols[k]]`, keys copied verbatim (same support, including rows zero
+in every selected column) — O(rows · n) instead of O(rows · width · n). Bit-for-bit the
+same output `select` always produced (`block_combine_cols` copies `A.keys()` wholesale and
+multiplies by exactly 1.0 for a 0/1 matrix, so this was a pure speedup, not a semantic
+change). `select()`/`column()` (`_block_state.pxi`) rewired to call it directly under
+`nogil`; `combine_columns` itself untouched (Cholesky-QR normalization/BiCGSTAB/GMRES
+still need the general zgemm shape). 8 new tests in `test_block_state.py`: parity against
+the old selection-matrix path as an inline oracle (contiguous ranges, arbitrary order,
+repeats, negative indices, width-0), support preservation of all-zero rows, out-of-range
+`IndexError`, `column`/`select` equivalence. Reviewed at high effort: no findings (the
+constructor call, `n==0` sizing, nogil aliasing, and the repeated-index "skip-zero vs
+overwrite" equivalence were all independently traced and confirmed correct).
+
+**Step 2 (DONE, commit `59837c8`) — `SparseKrylovDense.slice_block(a, b)`.** `_q_slice`'s
+store arm (`_irlm.pxi`) and `block_lanczos_cy`'s warm-start/resume ingestion
+(`_lanczos_step.pxi`, 3 call sites) both built
+`ManyBodyBlockState.from_states(store[a:b])`: materialize each column as an
+independently-pruned `ManyBodyState` (`__getitem__`), then re-merge via `from_states`'s
+union-support scatter. `slice_block` reads the requested columns directly off the store's
+dense chunks (the same union-of-nonzero-rows construction `combine_block`/`reort` already
+use, but a plain per-chunk column copy instead of a `Y`-matrix gemm — there's no linear
+combination to perform). All three call sites rewired. 4 new tests in
+`test_krylov_store.py` (parity vs the old `from_states(store[a:b])` reference, a
+chunk-boundary-straddling case, the `_q_slice` dispatch itself, and a regression test —
+see below).
+
+Caught by the high-effort review before this landed: `slice_block`'s first draft didn't
+clamp `b` to `n_cols` the way Python slicing (and the `from_states(store[a:b])` path it
+replaced) does — `slice_block(0, 5)` on a 3-column store returned width 5 with two
+spurious all-zero columns instead of width 3. `_lanczos_step.pxi`'s own
+`len(Q_basis) < p: q_curr = Q_basis.slice_block(0, p)` branch hits exactly this regime
+(a resumed store holding fewer columns than the target block width). Fixed by clamping
+`bb = min(b, n_cols)`; regression test added (`test_store_slice_block_clamps_b_past_n_cols`).
+
+Gates green, baseline+8 over Phase 5 step 6 for step 1 (serial 1216/230/18/30, `-n 2`
+1416/18/60) and baseline+4 more for step 2 including the clamp fix (serial 1220/230/18/30,
+`-n 2` 1420/18/60).
+
+**Step 3 — survey verdicts.** What cheap column extraction unlocks and doesn't, across the
+rest of the checklist:
+
+- Re-evaluated item 3b below (`build_density_matrices`) now that a cheap diagonal-only
+  column extraction exists — still not converting; see the updated entry.
+- **`_q_concat` (`_irlm.pxi`)** — not unlocked: operands have different supports; column
+  extraction doesn't create a zero-copy hstack across two independently-supported blocks.
+  Stays `from_states(A.to_states() + B.to_states())`.
+- **`apply_global_truncation`'s per-column truncate round trip (`_lanczos_step.pxi`)** —
+  not unlocked: the obstacle is semantic (per-column truncation desyncs the block's shared
+  support), not extraction cost.
+- **`block_combine`'s `slaterWeightMin` round trip (`_reort.pxi`)** — not unlocked:
+  pruning-granularity mismatch (per-column vs per-row pruning), unrelated to extraction.
+- **`to_states()`/`_as_state_list` boundaries** — already single-pass optimal; nothing to
+  extract columns from that isn't already a direct materialization.
 
 ## Still open
 

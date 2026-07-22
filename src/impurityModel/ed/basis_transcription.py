@@ -209,12 +209,17 @@ def build_density_matrices(basis, psis, orbital_indices_left=None, orbital_indic
     ``psis`` may also be a ``ManyBodyBlockState`` (Phase 6a of the state-unification
     refactor); it is unpacked to a list once on entry and the body below is otherwise
     unchanged. Rewriting the per-state loop as one block-apply per orbital was
-    considered and rejected: this function applies many *trivial* single-term
-    annihilators (little shared term/sign work to amortize across states), and
-    reading each orbital's per-state value back out would need the diagonal of a
-    full ``width x width`` Gram matrix per orbital pair -- p-fold more inner-product
-    work than the per-state loop below, with no cheap diagonal-only primitive to
-    avoid it. See doc/plans/manybodystate_block_unification.md, Phase 6a, item 3.
+    considered and rejected, re-evaluated after ``ManyBodyBlockState.select``/``column``
+    got a direct O(rows) gather (no longer routed through a selection-matrix matvec) and
+    still rejected: reading each orbital's per-state value back out no longer needs a
+    full ``width x width`` Gram matrix (cheap columns make a per-state diagonal
+    extraction possible), but that only matches this loop's existing per-state
+    inner-product cost -- it doesn't beat it. The apply side is the one place
+    ``apply_block`` could still win (near-flat cost in block width vs one term/sign/
+    restriction/hash pass per state), and that gain is genuinely small here: every
+    operator applied is a *trivial* single-term annihilator, so there is little shared
+    per-determinant work left to amortize across states in the first place. See
+    doc/plans/manybodystate_block_unification.md, Phase 6a, item 3b.
     """
     if isinstance(psis, ManyBodyBlockState):
         psis = psis.to_states()
