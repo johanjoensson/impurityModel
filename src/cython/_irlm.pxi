@@ -66,10 +66,11 @@ def _q_slice(Q, a, b):
         # The store is never itself sliced again below this point (the assigned
         # result -- not Q -- is what every caller keeps rebinding to): this is the one
         # place a TRLM/IRLM run converts its raw Krylov store into the persistent block
-        # representation the rest of the restart bookkeeping stays in. Materializes via
-        # the store's existing list scatter (__getitem__), same cost as before this
-        # change; only what happens to the result afterwards differs.
-        return ManyBodyBlockState.from_states(Q[a:b])
+        # representation the rest of the restart bookkeeping stays in. slice_block reads
+        # the requested columns directly off the store's dense chunks; no more
+        # per-column ManyBodyState materialization (__getitem__) followed by a
+        # from_states union re-merge.
+        return Q.slice_block(a, b)
     return Q[a:b]
 
 

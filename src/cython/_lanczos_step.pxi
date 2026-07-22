@@ -589,13 +589,13 @@ def block_lanczos_cy(
                     Q_basis.append(list(Q_init))
             if start_it == 0 or len(Q_basis) < p:
                 q_prev = ManyBodyBlockState.from_states([ManyBodyState() for _ in range(p)])
-                q_curr = ManyBodyBlockState.from_states(Q_basis[0:p])
+                q_curr = Q_basis.slice_block(0, p)
             else:
                 q_prev_start = sum(block_widths[:start_it - 1])
                 q_prev_len = block_widths[start_it - 1]
                 q_curr_start = sum(block_widths[:start_it])
-                q_prev = ManyBodyBlockState.from_states(Q_basis[q_prev_start : q_prev_start + q_prev_len])
-                q_curr = ManyBodyBlockState.from_states(Q_basis[q_curr_start : len(Q_basis)])
+                q_prev = Q_basis.slice_block(q_prev_start, q_prev_start + q_prev_len)
+                q_curr = Q_basis.slice_block(q_curr_start, len(Q_basis))
     else:
         start_it = 0
         W = None

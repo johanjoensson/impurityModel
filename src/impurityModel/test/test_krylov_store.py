@@ -178,6 +178,76 @@ def test_store_combine_block_prunes_by_row_not_by_column():
     assert out_col1.to_dict() == {det0: 0.05 + 0j, det1: 0.5 + 0j}
 
 
+def test_store_slice_block_matches_from_states_getitem():
+    """``slice_block`` replaces ``ManyBodyBlockState.from_states(store[a:b])`` at its two
+    production call sites -- verify it produces the same block (same support, same
+    coefficients) as that reference path, not just the same combine() product."""
+    rng = np.random.default_rng(31)
+    states = _random_states(rng, 8, 60)
+    store = SparseKrylovDense()
+    store.append(states)
+
+    ref = ManyBodyBlockState.from_states(store[2:6])
+    out = store.slice_block(2, 6)
+    assert isinstance(out, ManyBodyBlockState)
+    assert out.width == 4
+    assert out.to_states() == ref.to_states()
+
+    # whole range, default b
+    assert store.slice_block(0).to_states() == ManyBodyBlockState.from_states(store[0:8]).to_states()
+
+    # empty range
+    empty = store.slice_block(3, 3)
+    assert empty.width == 0 or len(empty.to_states()) == 0
+
+
+def test_store_slice_block_clamps_b_past_n_cols():
+    """``b`` beyond the stored column count must clamp to ``n_cols``, matching Python
+    slice semantics (``store[a:b]`` silently narrows) -- not zero-pad the output out to
+    the requested width. This is the regime ``_lanczos_step.pxi``'s
+    ``len(Q_basis) < p: q_curr = Q_basis.slice_block(0, p)`` guards against: a resumed
+    store holding fewer columns than the target block width ``p``."""
+    rng = np.random.default_rng(34)
+    states = _random_states(rng, 3, 20)
+    store = SparseKrylovDense()
+    store.append(states)
+
+    ref = ManyBodyBlockState.from_states(store[0:5])
+    out = store.slice_block(0, 5)
+    assert out.width == ref.width == 3
+    assert out.to_states() == ref.to_states()
+
+
+def test_store_slice_block_across_chunk_boundary():
+    """Same check, but with the slice straddling a chunk boundary (the initial chunk is
+    32 columns; 40 states force at least one more)."""
+    rng = np.random.default_rng(32)
+    states = _random_states(rng, 40, 100, sparsity=0.5)
+    store = SparseKrylovDense()
+    for i in range(0, 40, 7):
+        store.append(states[i : i + 7])
+
+    ref = ManyBodyBlockState.from_states(store[28:36])
+    out = store.slice_block(28, 36)
+    assert out.to_states() == ref.to_states()
+
+
+def test_store_slice_block_used_by_q_slice():
+    """``_q_slice`` (shared by TRLM/IRLM) dispatches a ``SparseKrylovDense`` operand
+    through ``slice_block`` -- exercise that dispatch directly, not just the primitive."""
+    from impurityModel.ed.BlockLanczos import _q_slice
+
+    rng = np.random.default_rng(33)
+    states = _random_states(rng, 6, 25)
+    store = SparseKrylovDense()
+    store.append(states)
+
+    ref = ManyBodyBlockState.from_states(store[1:4])
+    out = _q_slice(store, 1, 4)
+    assert isinstance(out, ManyBodyBlockState)
+    assert out.to_states() == ref.to_states()
+
+
 def test_store_gram_matches_states():
     """Materialized store columns give the same Gram matrix as the original states."""
     rng = np.random.default_rng(13)

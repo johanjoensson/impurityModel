@@ -453,6 +453,59 @@ cdef class SparseKrylovDense:
             out.prune_rows(slaterWeightMin)
         return out
 
+    def slice_block(self, Py_ssize_t a, object b=None):
+        """``ManyBodyBlockState`` of columns ``[a:b)``, built directly off the store's
+        chunks -- the union-of-nonzero-rows construction :meth:`combine_block`/:meth:`reort`
+        already use, but a plain column COPY per chunk instead of a ``Y``-matrix gemm
+        (there is no linear combination to perform: the requested columns are lifted out
+        verbatim). Replaces ``ManyBodyBlockState.from_states(self[a:b])`` at the two sites
+        that used to materialize the slice as a list of independently-pruned
+        ``ManyBodyState`` (:meth:`__getitem__`) and then re-merge it into one block
+        (``from_states``'s union-support scatter) -- same result, one fewer round trip.
+
+        ``b`` beyond the stored column count is clamped to ``n_cols`` (Python slice
+        semantics, matching what ``self[a:b]`` returned before this method existed) --
+        NOT zero-padded out to ``b``, which would silently change the output width.
+        """
+        cdef Py_ssize_t bb = self.n_cols if b is None else min(<Py_ssize_t>b, self.n_cols)
+        cdef Py_ssize_t ncol = bb - a
+        if ncol < 0:
+            raise ValueError(f"slice_block: empty range [{a}:{bb})")
+        cdef Py_ssize_t ns = self.n_rows
+        C = np.zeros((ns, ncol), dtype=complex)
+        cdef Py_ssize_t off = 0
+        cdef Py_ssize_t k, lo, hi, rows_c, used
+        for k in range(len(self._chunks)):
+            chunk = self._chunks[k]
+            used = <Py_ssize_t>self._used[k]
+            lo = max(a, off)
+            hi = min(bb, off + used)
+            if hi > lo:
+                rows_c = min(<Py_ssize_t>chunk.shape[0], <Py_ssize_t>self.n_rows)
+                C[:rows_c, lo - a : hi - a] = chunk[:rows_c, lo - off : hi - off]
+            off += used
+        cdef complex[:, :] Cv = C
+        cdef vector[SlaterDeterminant_cpp[uint64_t]] out_keys
+        cdef vector[ManyBodyBlockState_cpp.Value] out_amps
+        out_keys.reserve(ns)
+        out_amps.reserve(<Py_ssize_t>(ns * ncol))
+        cdef Py_ssize_t row, kk
+        cdef bint any_nonzero
+        for row in range(ns):
+            any_nonzero = False
+            for kk in range(ncol):
+                if Cv[row, kk].real != 0 or Cv[row, kk].imag != 0:
+                    any_nonzero = True
+                    break
+            if not any_nonzero:
+                continue
+            out_keys.push_back(self.row_det[row])
+            for kk in range(ncol):
+                out_amps.push_back(_amp_to_cpp(Cv[row, kk]))
+        cdef ManyBodyBlockState out = ManyBodyBlockState()
+        out.b = ManyBodyBlockState_cpp.from_unsorted(out_keys, out_amps, <size_t>ncol)
+        return out
+
     def memory_bytes(self):
         """Estimated heap bytes: the dense chunk buffers (capacity) plus the support
         map / row_det key storage (one 32-B-class heap block per determinant key
