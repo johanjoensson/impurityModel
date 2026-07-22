@@ -438,13 +438,76 @@ site resolved into one of five buckets, and none of them is "convert now":
 No O(n²) single-key-insert hazard turned up in this batch (the one instance, in
 `cipsi_solver.py`, was Phase 6b's).
 
+## Phase 5 step 1 — `block_bicgstab`/`block_gmres` go block end to end (DONE, commit `e47ad5c`)
+
+Before writing anything, read `BiCGSTAB.pyx`, `GMRES.pyx`, `ChebyshevFilter.pyx`, `_trlm.pxi`
+and `_irlm.pxi` in full, because the plan's "delete the dual dispatch" framing covers two
+structurally different situations that must not be sized the same way:
+
+- **BiCGSTAB and GMRES were already internally block-native.** Their sparse-path cores
+  (`_block_bicgstab_core`, the Arnoldi loop in `block_gmres`) never touch
+  `list[ManyBodyState]` — every operation already ran on the `ManyBodyBlockState` the
+  `is_arr` branch builds on entry. The `ManyBodyBlockState.from_states(list(x0))` /
+  `.to_states()` at entry/exit were pure boundary ceremony around an already-block
+  computation — a **relocation**, not a conversion.
+- **`_trlm.pxi`/`_irlm.pxi` are genuinely list-based internally.** `_q_slice`/`_q_concat`/
+  `_copy_block` (the shared `_irlm_core`/`_trlm_core` basis helpers) operate on
+  `list[ManyBodyState]` via plain Python slicing/concatenation for the ManyBodyState path,
+  mirroring the array path's `(N, k)` ndarray column-slicing. Converting `Q_basis` in these
+  to a `ManyBodyBlockState` needs real new block-native slicing/concat primitives, not a
+  boundary move. **Not started** — this is the bulk of what's left in Phase 5.
+
+Shipped this step: moved `block_bicgstab`/`block_gmres`'s sparse-path list boundary out to
+every caller, so the two functions now accept and return `ManyBodyBlockState` directly.
+The real win isn't just deleted ceremony: `gf_solvers.solve_shifted_block`'s restart loop
+used to round-trip list->block->list on *every* BiCGSTAB attempt (up to
+`1 + GF_BICGSTAB_RESTARTS` of them) and again into the GMRES escalation; now the same block
+carries through the whole chain with zero conversions in between. Updated every caller:
+`gf_solvers.py` (`solve_shifted_block`, `block_Green_bicgstab`, `block_Green_cipsi` — the
+last of these found by a full-repo grep for `solve_shifted_block(`, not just
+`block_bicgstab(`/`block_gmres(`, after the first gate run caught a caller the narrower grep
+had missed), `rixs.py`'s R1 fallback, and the BiCGSTAB/GMRES test suites (`test_cg.py`,
+`test_gmres.py`, `test_gf_bicgstab_driver.py`, `test_bicgstab_perf.py`).
+
+Reviewed at high effort (subagent, focused on the MPI collective rules and the new
+pass-by-reference aliasing surface — the old `from_states` boundary conversion incidentally
+built a fresh copy, which is now gone). No correctness findings: every sparse-path
+operation on `x0`/`y` was traced and confirmed non-mutating (`apply_block`,
+`redistribute_block`, `block_add_scaled_cy`, `combine_columns` all return fresh blocks;
+the one in-place mutator, `prune_rows`, only ever runs on freshly-built results). One
+low-severity note acted on: `test_block_bicgstab_sparse_info_and_rhs_untouched` asserted
+only on the *original list* of states, which the `from_states` copy at the test's own call
+boundary made blind to block-level mutation — the actual new hazard surface. Strengthened
+to snapshot the passed block's own amplitudes (`np.asarray(y_blk)`) before/after.
+
+Gates green, matching baseline exactly: serial 1199/230/30, `-n 2` 1399/60.
+
+**Traced and explicitly NOT converted: `ChebyshevFilter.pyx`.** `chebyshev_apply`'s
+recurrence is also already block-native internally (`block_add_scaled_cy`/`combine_columns`,
+no `is_array` dispatch at all). But unlike BiCGSTAB/GMRES, its list boundary is not
+redundant: the entry conversion is tied to `redistribute_psis` (list-based; unifying it is
+Phase 4's job), and the exit conversion is inherent to the caller
+(`greens_function.py`'s spectrum-slicing loop unpacks each filtered window into per-state
+`prune`/concatenation-with-seeds to build a fresh ad-hoc list per window — Phase 6c's
+already-deferred fill-gated seed-union shape). Relocating the boundary here would not
+eliminate any round trip the way it did for BiCGSTAB/GMRES, so there is nothing to do until
+either Phase 4 or the FCC Ni fill measurement unblocks the caller side.
+
 ## Still open
 
 - The FCC Ni fill measurement (above) — blocks `determine_new_Dj`'s/`select_at`'s `Hpsi_ref`
-  conversion, and by the same reasoning, every per-frequency seed union found in Phase 6c.
-- Phase 5 (Krylov/Lanczos dual-dispatch deletion, including the BiCGSTAB/GMRES/Chebyshev list
-  boundary Phase 6c found but didn't touch), Phase 7 (the rename, the flat_map class's
-  deletion) — see the session plan file for the phase breakdown; each is its own multi-commit
-  body of work across a large fraction of `src/cython/` and `src/impurityModel/ed/`.
+  conversion, every per-frequency seed union found in Phase 6c, and (per the note just
+  above) `ChebyshevFilter.pyx`'s caller in `greens_function.py`.
+- Phase 5's remaining, larger piece: `_trlm.pxi`/`_irlm.pxi`'s `Q_basis` bookkeeping (real
+  list-to-block conversion, needs new block-native slice/concat primitives), and then the
+  `_reort.pxi` collapse itself (`is_array` 3 arms -> 2, delete `block_combine_sparse` /
+  `block_orthogonalize_sparse` / `block_normalize_sparse` / `_block_inner_mpi`, drop the
+  `as_list` branch in `block_tsqr` and `was_block` in `apply_reort`) once nothing feeds a
+  bare list into those dispatchers — grep-checkable: unblocked exactly when no caller passes
+  `list[ManyBodyState]` into `block_normalize`/`block_combine`/`block_orthogonalize`/
+  `block_tsqr`/`apply_reort`.
+- Phase 7 (the rename, the flat_map class's deletion) — see the session plan file for the
+  phase breakdown; each remaining phase is its own multi-commit body of work across a large
+  fraction of `src/cython/` and `src/impurityModel/ed/`.
 - No further Phase 6 sites identified — 6a, 6b and 6c between them covered every module the
   plan's Phase 6 list named.
