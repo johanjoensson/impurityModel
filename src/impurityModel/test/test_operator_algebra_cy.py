@@ -5,8 +5,8 @@ The dict-level helpers in :mod:`impurityModel.ed.operator_algebra` are covered b
 
 Where possible each property is checked against something independent of the code under
 test -- the fermionic anticommutation relations, a naive product loop, the dict-level
-``daggerOp``, or the sequential ``observables.apply_casimir`` -- rather than against
-another call into the same machinery.
+``daggerOp``, or a sequential application of the su(2) ladder factors -- rather than
+against another call into the same machinery.
 """
 
 import itertools
@@ -351,18 +351,31 @@ def test_approx_equal_is_tolerant_where_eq_is_exact():
 # --------------------------------------------------------------------------- #
 # Physics cross-check
 # --------------------------------------------------------------------------- #
-def test_casimir_built_as_an_operator_product_matches_the_sequential_form():
-    r"""J^2 = J_- J_+ + J_z^2 + J_z assembled with ``*`` must agree with apply_casimir.
+def _apply_casimir_sequentially(psi, j_plus, j_minus, j_z):
+    r"""``J^2 |psi>`` by applying the ladder/Cartan factors one after another.
 
-    ``observables.apply_casimir`` deliberately never forms the two-body product -- it
-    applies the ladder/Cartan factors to the state one after another. Building the same
-    Casimir as an explicit operator product exercises the product, the scalar algebra and
-    the constant against an already-trusted independent implementation, on a real
-    cubic d-shell rather than a toy operator.
+    The oracle for the product-built Casimir. ``observables`` used to be written this way;
+    it now builds the product with ``*``, so the sequential form has to live here to stay
+    independent of the code under test.
+    """
+    jz_psi = j_z(psi, 0)
+    result = j_minus(j_plus(psi, 0), 0)
+    result += j_z(jz_psi, 0)
+    result += jz_psi
+    return result
+
+
+def test_casimir_built_as_an_operator_product_matches_the_sequential_form():
+    r"""J^2 = J_- J_+ + J_z^2 + J_z assembled with ``*`` must agree with sequential application.
+
+    Applying the ladder/Cartan factors to the state one after another never forms the
+    two-body product. Building the same Casimir as an explicit operator product therefore
+    exercises the product, the scalar algebra and the constant against an implementation
+    that shares none of that machinery, on a real cubic d-shell rather than a toy operator.
     """
     from impurityModel.ed.atomic_physics import get_spherical_2_cubic_matrix
     from impurityModel.ed.ManyBodyUtils import inner
-    from impurityModel.ed.observables import apply_casimir, make_impurity_casimir_operators
+    from impurityModel.ed.observables import make_impurity_casimir_operators
 
     rot = get_spherical_2_cubic_matrix(spinpol=True, l=2)
     _, s_ops, j_ops = make_impurity_casimir_operators({0: [list(range(10))]}, rot.conj().T)
@@ -378,7 +391,7 @@ def test_casimir_built_as_an_operator_product_matches_the_sequential_form():
 
     for plus, minus, z in (s_ops, j_ops):
         casimir = minus * plus + z * z + z
-        sequential = apply_casimir(psi, plus, minus, z)
+        sequential = _apply_casimir_sequentially(psi, plus, minus, z)
         produced = casimir(psi)
         keys = set(sequential.to_dict()) | set(produced.to_dict())
         worst = max(abs(sequential.to_dict().get(k, 0) - produced.to_dict().get(k, 0)) for k in keys)

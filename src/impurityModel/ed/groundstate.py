@@ -18,9 +18,7 @@ from impurityModel.ed.manybody_basis import Basis
 from impurityModel.ed.ManyBodyUtils import ManyBodyOperator
 from impurityModel.ed.memory_estimate import log_memory_budget, suggest_truncation_threshold
 from impurityModel.ed.observables import (
-    apply_casimir,
-    apply_spin_correlation,
-    apply_spin_z_correlation,
+    casimir_operator,
     casimir_to_quantum_number,
     compute_correlation_diagnostics,
     compute_energy_decomposition,
@@ -37,6 +35,7 @@ from impurityModel.ed.observables import (
     print_screening_diagnostics,
     print_state_summary,
     print_thermal_expectation_values,
+    spin_correlation_operator,
     static_susceptibility_rows,
     thermal_observable_value,
 )
@@ -664,10 +663,11 @@ def calc_gs(
         try:
             casimir = {}
             for name, ops in (("S", s_ops), ("L", l_ops), ("J", j_ops)):
+                op2 = casimir_operator(*ops)
                 vals = manifold_observable_values(
                     psis,
                     es,
-                    lambda psi, _ops=ops: apply_casimir(psi, *_ops),
+                    lambda psi, _op=op2: _op(psi, 0),
                     comm=mov_comm,
                     redistribute=mov_redistribute,
                 )
@@ -720,10 +720,11 @@ def calc_gs(
             imp_pairs, bath_pairs = spin_pairs
             ops_imp = make_spin_operators(imp_pairs)
             ops_bath = make_spin_operators(bath_pairs)
+            sisb_op = spin_correlation_operator(ops_imp, ops_bath)
             sisb_raw = manifold_observable_values(
                 psis,
                 es,
-                lambda psi: apply_spin_correlation(psi, ops_imp, ops_bath),
+                lambda psi: sisb_op(psi, 0),
                 comm=mov_comm,
                 redistribute=mov_redistribute,
             )
@@ -733,10 +734,11 @@ def calc_gs(
                 # Longitudinal part <Sz_imp Sz_bath>: exact under the collinear check (needs only
                 # the verified spin labels), reported next to the pairing-dependent full value,
                 # plus its connected form against the thermal single-particle polarizations.
+                sisb_z_op = spin_correlation_operator(ops_imp, ops_bath, z_only=True)
                 sisb_z_raw = manifold_observable_values(
                     psis,
                     es,
-                    lambda psi: apply_spin_z_correlation(psi, ops_imp, ops_bath),
+                    lambda psi: sisb_z_op(psi, 0),
                     comm=mov_comm,
                     redistribute=mov_redistribute,
                 )

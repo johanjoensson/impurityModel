@@ -474,33 +474,38 @@ def structure_constants(generators):
     return f
 
 
-def apply_reconstructed_casimir(psi, generators):
-    r"""Apply a reconstructed Casimir ``Ĉ = Σ_a Ô_a²`` to a state.
+def reconstructed_casimir_operator(generators):
+    r"""Build a reconstructed Casimir ``Ĉ = Σ_a Ô_a²``.
 
     Given a (sub)set of one-body symmetry generators ``{O_a}`` (single-particle
     matrices, e.g. an su(2) spin triplet ``{S_x, S_y, S_z}``), each is promoted to a
-    one-body ``ManyBodyOperator`` ``Ô_a = Σ_ij (O_a)_ij c†_i c_j`` and the Casimir is
-    ``Ĉ = Σ_a Ô_a Ô_a``, applied by sequential one-body application (no explicit
-    two-body product is formed). For the spin triplet this is exactly ``Ŝ²`` (companion
-    plan Phase A.2).
+    one-body ``ManyBodyOperator`` ``Ô_a = Σ_ij (O_a)_ij c†_i c_j`` and squared. For the
+    spin triplet this is exactly ``Ŝ²`` (companion plan Phase A.2). Build once and reuse
+    across states rather than calling :func:`apply_reconstructed_casimir` per state.
 
     Parameters
     ----------
-    psi : ManyBodyState
     generators : sequence of np.ndarray
         Single-particle generator matrices spanning the sub-algebra.
 
     Returns
     -------
-    ManyBodyState
-        ``Ĉ |psi>``.
+    ManyBodyOperator
+        ``Ĉ``.
     """
-    ops = [tensors_to_operator(np.asarray(g, dtype=complex)) for g in generators]
-    result = None
-    for op in ops:
-        term = op(op(psi, 0), 0)
-        result = term if result is None else result + term
-    return result
+    return sum(
+        (tensors_to_operator(np.asarray(g, dtype=complex)) ** 2 for g in generators),
+        ManyBodyOperator(),
+    )
+
+
+def apply_reconstructed_casimir(psi, generators):
+    r"""Apply a reconstructed Casimir ``Ĉ = Σ_a Ô_a²`` to a state.
+
+    Convenience wrapper over :func:`reconstructed_casimir_operator`; hoist that out of
+    any loop over states instead of calling this repeatedly.
+    """
+    return reconstructed_casimir_operator(generators)(psi, 0)
 
 
 def expect_reconstructed_casimir(psi, generators, comm=None):

@@ -638,13 +638,32 @@ def make_impurity_casimir_operators(impurity_orbitals, rot_to_spherical):
     return l_ops, s_ops, j_ops
 
 
+def casimir_operator(j_plus, j_minus, j_z):
+    r"""The su(2) Casimir :math:`\hat J^2` as an explicit two-body operator.
+
+    Built from the ladder identity :math:`\hat J^2 = \hat J_- \hat J_+ + \hat J_z^2 +
+    \hat J_z` (with :math:`\hat J_- = \hat J_+^\dagger`), so only the one-body
+    ladder/Cartan operators are needed as input. Build this once and reuse it across
+    states rather than calling :func:`apply_casimir` per state, which rebuilds it.
+
+    Parameters
+    ----------
+    j_plus, j_minus, j_z : ManyBodyOperator
+        The raising, lowering, and Cartan operators of the su(2) algebra.
+
+    Returns
+    -------
+    ManyBodyOperator
+        :math:`\hat J^2`.
+    """
+    return j_minus * j_plus + j_z * j_z + j_z
+
+
 def apply_casimir(psi, j_plus, j_minus, j_z):
     r"""Apply a su(2) Casimir operator to ``psi`` and return the resulting state.
 
-    Uses the ladder identity :math:`\hat J^2 = \hat J_- \hat J_+ + \hat J_z^2 +
-    \hat J_z` (with :math:`\hat J_- = \hat J_+^\dagger`), so only the one-body
-    ladder/Cartan operators are needed — no explicit two-body operator product is
-    constructed. Each factor is applied sequentially to the state.
+    Convenience wrapper over :func:`casimir_operator`; hoist that out of any loop over
+    states instead of calling this repeatedly.
 
     Parameters
     ----------
@@ -658,72 +677,61 @@ def apply_casimir(psi, j_plus, j_minus, j_z):
     ManyBodyState
         :math:`\hat J^2 |\psi\rangle`.
     """
-    jz_psi = j_z(psi, 0)
-    result = j_minus(j_plus(psi, 0), 0)
-    result += j_z(jz_psi, 0)
-    result += jz_psi
-    return result
+    return casimir_operator(j_plus, j_minus, j_z)(psi, 0)
 
 
-def apply_spin_correlation(psi, ops_a, ops_b):
-    r"""Apply the spin-correlation operator :math:`\hat{\mathbf S}_A\cdot\hat{\mathbf S}_B`.
+def spin_correlation_operator(ops_a, ops_b, z_only=False):
+    r"""The spin-correlation operator :math:`\hat{\mathbf S}_A\cdot\hat{\mathbf S}_B`.
 
     For two **disjoint** orbital sets A and B the spin operators commute, so
 
     .. math::
         \hat{\mathbf S}_A\cdot\hat{\mathbf S}_B
             = \hat S^A_z \hat S^B_z
-            + \tfrac12\left(\hat S^A_+ \hat S^B_- + \hat S^A_- \hat S^B_+\right),
+            + \tfrac12\left(\hat S^A_+ \hat S^B_- + \hat S^A_- \hat S^B_+\right).
 
-    with no normal-ordering correction. Each factor is applied sequentially.
+    ``z_only`` keeps just the Ising term :math:`\hat S^A_z \hat S^B_z`. That part needs
+    only the spin *labels* (up vs down), not the down↔up pairing, so it stays exact for a
+    collinear spin-polarized bath where the transverse pairing is a modelling choice
+    (see :func:`spin_pairs.collinear_spin_pairs_consistent_with_h`), and A and B need not
+    be disjoint there — passing the same set twice yields :math:`\hat S_z^2`.
 
     Parameters
     ----------
-    psi : ManyBodyState
-        The state to act on.
     ops_a, ops_b : (ManyBodyOperator, ManyBodyOperator, ManyBodyOperator)
         The ``(S_+, S_-, S_z)`` operators for set A and set B (see
-        :func:`make_spin_operators`). A and B must address disjoint orbitals.
+        :func:`make_spin_operators`). A and B must address disjoint orbitals unless
+        ``z_only``.
+    z_only : bool, optional
+        Drop the transverse terms.
 
     Returns
     -------
-    ManyBodyState
-        :math:`\hat{\mathbf S}_A\cdot\hat{\mathbf S}_B\,|\psi\rangle`.
+    ManyBodyOperator
     """
     a_plus, a_minus, a_z = ops_a
     b_plus, b_minus, b_z = ops_b
-    result = a_z(b_z(psi, 0), 0)
-    result += 0.5 * a_plus(b_minus(psi, 0), 0)
-    result += 0.5 * a_minus(b_plus(psi, 0), 0)
-    return result
+    op = a_z * b_z
+    if not z_only:
+        op += 0.5 * (a_plus * b_minus) + 0.5 * (a_minus * b_plus)
+    return op
+
+
+def apply_spin_correlation(psi, ops_a, ops_b):
+    r"""Apply :math:`\hat{\mathbf S}_A\cdot\hat{\mathbf S}_B` to ``psi``.
+
+    Convenience wrapper over :func:`spin_correlation_operator`; hoist that out of any
+    loop over states instead of calling this repeatedly.
+    """
+    return spin_correlation_operator(ops_a, ops_b)(psi, 0)
 
 
 def apply_spin_z_correlation(psi, ops_a, ops_b):
-    r"""Apply the longitudinal spin-correlation operator :math:`\hat S^A_z \hat S^B_z`.
+    r"""Apply the longitudinal :math:`\hat S^A_z \hat S^B_z` to ``psi``.
 
-    The Ising part of :func:`apply_spin_correlation`. Unlike the transverse part it
-    only needs the spin *labels* (up vs down), not the down↔up pairing, so it stays
-    exact for a collinear spin-polarized bath where the transverse pairing is a
-    modelling choice (see :func:`spin_pairs.collinear_spin_pairs_consistent_with_h`).
-
-    Parameters
-    ----------
-    psi : ManyBodyState
-        The state to act on.
-    ops_a, ops_b : (ManyBodyOperator, ManyBodyOperator, ManyBodyOperator)
-        The ``(S_+, S_-, S_z)`` operators for set A and set B (see
-        :func:`make_spin_operators`). Unlike :func:`apply_spin_correlation`, A and B need
-        not be disjoint: the ``S_z`` operators are diagonal and commute, so passing the
-        same set twice yields :math:`\hat S_z^2|\psi\rangle`.
-
-    Returns
-    -------
-    ManyBodyState
-        :math:`\hat S^A_z \hat S^B_z\,|\psi\rangle`.
+    Convenience wrapper over ``spin_correlation_operator(..., z_only=True)``.
     """
-    a_z = ops_a[2]
-    b_z = ops_b[2]
-    return a_z(b_z(psi, 0), 0)
+    return spin_correlation_operator(ops_a, ops_b, z_only=True)(psi, 0)
 
 
 def get_Sz_from_rho_pairs(rho, spin_pairs):
@@ -753,7 +761,7 @@ def expect_spin_correlation(psi, ops_a, ops_b, comm=None):
     r"""Return :math:`\langle\psi|\hat{\mathbf S}_A\cdot\hat{\mathbf S}_B|\psi\rangle`.
 
     A negative value signals impurity-bath singlet (Kondo) screening. See
-    :func:`apply_spin_correlation` for the operator and disjointness requirement.
+    :func:`spin_correlation_operator` for the operator and disjointness requirement.
     """
     val = inner(psi, apply_spin_correlation(psi, ops_a, ops_b))
     if comm is not None:
@@ -829,10 +837,11 @@ def compute_correlation_diagnostics(psis, es, tau, thermal_rho, imp_pairs, comm=
     mz2 = (n_dn + n_up - 2.0 * docc_thermal) / 4.0
 
     ops_imp = make_spin_operators(imp_pairs)
+    sz2_op = spin_correlation_operator(ops_imp, ops_imp, z_only=True)
     sz2_values = manifold_observable_values(
         psis,
         es,
-        lambda psi: apply_spin_z_correlation(psi, ops_imp, ops_imp),
+        lambda psi: sz2_op(psi, 0),
         comm=comm,
         redistribute=redistribute,
     )
@@ -844,10 +853,11 @@ def compute_correlation_diagnostics(psis, es, tau, thermal_rho, imp_pairs, comm=
     orbital_ops = [make_spin_operators([pair]) for pair in imp_pairs]
     for i in range(n_sp):
         for j in range(i + 1, n_sp):
+            corr_op = spin_correlation_operator(orbital_ops[i], orbital_ops[j])
             vals = manifold_observable_values(
                 psis,
                 es,
-                lambda psi, _i=i, _j=j: apply_spin_correlation(psi, orbital_ops[_i], orbital_ops[_j]),
+                lambda psi, _op=corr_op: _op(psi, 0),
                 comm=comm,
                 redistribute=redistribute,
             )
@@ -912,10 +922,11 @@ def compute_static_susceptibilities(
 
     def thermal_pair(op_a, op_b):
         """Thermal <A B> (A, B commuting) and, for A == B, the pieces for the variance."""
+        product = op_a * op_b
         vals = manifold_observable_values(
             psis,
             es,
-            lambda psi: op_a(op_b(psi, 0), 0),
+            lambda psi: product(psi, 0),
             comm=comm,
             redistribute=redistribute,
         )
@@ -1039,7 +1050,10 @@ def compute_screening_diagnostics(
     -------
     dict
     """
-    apply_corr = apply_spin_z_correlation if z_only else apply_spin_correlation
+
+    def corr_op(ops_left, ops_right):
+        return spin_correlation_operator(ops_left, ops_right, z_only=z_only)
+
     imp_orbs = sorted(orb for pair in imp_pairs for orb in pair)
 
     channels = []
@@ -1048,11 +1062,11 @@ def compute_screening_diagnostics(
         for label, pairs in imp_groups.items():
             if not pairs:
                 continue
-            ops_g = make_spin_operators(pairs)
+            op_g = corr_op(make_spin_operators(pairs), ops_bath)
             vals = manifold_observable_values(
                 psis,
                 es,
-                lambda psi, _ops_g=ops_g: apply_corr(psi, _ops_g, ops_bath),
+                lambda psi, _op=op_g: _op(psi, 0),
                 comm=comm,
                 redistribute=redistribute,
             )
@@ -1072,11 +1086,11 @@ def compute_screening_diagnostics(
             "v_up": float(np.linalg.norm(h1[imp_orbs, up])),
         }
         if with_correlation:
-            ops_b = make_spin_operators([(dn, up)])
+            op_b = corr_op(ops_imp, make_spin_operators([(dn, up)]))
             vals = manifold_observable_values(
                 psis,
                 es,
-                lambda psi, _ops_b=ops_b: apply_corr(psi, ops_imp, _ops_b),
+                lambda psi, _op=op_b: _op(psi, 0),
                 comm=comm,
                 redistribute=redistribute,
             )

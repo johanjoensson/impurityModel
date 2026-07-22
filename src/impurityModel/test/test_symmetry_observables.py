@@ -245,6 +245,54 @@ def test_spin_z_correlation():
     assert np.isclose(get_Sz_from_rho_pairs(rho, [(2, 3)]), 0.5, atol=1e-12)
 
 
+def test_spin_correlation_operator_matches_sequential_application_everywhere():
+    """The product-built S_A.S_B agrees with sequential application on every determinant.
+
+    ``spin_correlation_operator`` composes the one-body factors with ``*``; the oracle here
+    applies them to the state one after another, which never forms the two-body product.
+    Sweeping the entire 2^10 Fock space of a 2-pair model (rather than a handful of
+    hand-picked states) is what makes a fermionic sign slip in the normal-ordering of the
+    composed four-ladder string impossible to miss -- flipping one such sign moves the
+    action by 1.0 here.
+
+    It does *not* test the operand order of ``*``: A and B address disjoint orbitals and
+    every factor is an even-length string, so the two factors genuinely commute and
+    ``A*B == B*A``. Operand order is pinned by
+    ``test_operator_algebra_cy.test_product_is_composition_not_its_reverse``.
+    """
+    import itertools
+
+    from impurityModel.ed.observables import spin_correlation_operator
+
+    ops_a = make_spin_operators([(0, 5)])
+    ops_b = make_spin_operators([(1, 6)])
+    a_plus, a_minus, a_z = ops_a
+    b_plus, b_minus, b_z = ops_b
+
+    def sequential(psi, z_only):
+        result = a_z(b_z(psi, 0), 0)
+        if not z_only:
+            result += 0.5 * a_plus(b_minus(psi, 0), 0)
+            result += 0.5 * a_minus(b_plus(psi, 0), 0)
+        return result
+
+    n_orb = 10
+    worst = 0.0
+    nonzero = 0
+    for z_only in (False, True):
+        product = spin_correlation_operator(ops_a, ops_b, z_only=z_only)
+        for k in range(n_orb + 1):
+            for occupied in itertools.combinations(range(n_orb), k):
+                psi = ManyBodyState({_sd(occupied, n_orbs=n_orb): 1.0 + 0j})
+                expected = sequential(psi, z_only)
+                produced = product(psi, 0)
+                nonzero += len(expected)
+                for key in set(expected.keys()) | set(produced.keys()):
+                    worst = max(worst, abs(expected.get(key, 0) - produced.get(key, 0)))
+    assert nonzero > 0, "the sweep never produced a non-trivial action"
+    assert worst == 0.0
+
+
 def test_magnetic_dipole_tz():
     """T_z matrix: Hermitian, traceless, matches the closed form on pure |ml,ms> states."""
     from impurityModel.ed.observables import _single_particle_tz_matrix, get_Tz_from_rho_spherical
