@@ -173,9 +173,57 @@ Gate: serial 1199 passed (matches Phase 1 exactly), `-n 2 --with-mpi` 1399 passe
 Phase 1 exactly) — the correct outcome for a declaration-only fix plus a benchmark run with
 no production code touched.
 
+## Phases 3–4 — traced, found hollow (no code change)
+
+Both phases were scoped against the current tree before writing anything, using the Phase-2
+discriminator ("does this stay gate-green without adding a `from_states`/`to_states` a later
+phase deletes?"). Neither has a real move available yet:
+
+- **Phase 3's one substantive item, `apply_global_truncation`**, has exactly one caller:
+  `_lanczos_step.pxi:220-226`, which does `to_states()` → per-column
+  `apply_global_truncation` → `from_states()`. Porting it to operate on a block directly is
+  not a mechanical port: the caller today truncates **per-column**, but the `prune_rows`
+  comment three lines above it explicitly warns that per-column pruning desyncs the block's
+  shared support — a block-native version has to choose whole-row vs per-column, and that
+  choice changes the Krylov recurrence. That is exactly the kind of decision the plan
+  reserves for Phase 5's highest-effort review, not a Phase-1.2-style additive port. Left
+  alone; the call-site sweep and file merge stay correctly deferred to Phase 7.
+- **Phase 4's `redistribute_psis`/`redistribute_block` unification** can't collapse while
+  callers still pass both types — confirmed by tracing every basis object that reaches
+  `block_lanczos_step_cy` (production `Basis`, `_CappedBasisProxy`, and the two test mocks
+  that actually exercise this path, `MockBasis` in `test_restarted_lanczos.py` and
+  `_FakeBasis` in `test_gf_truncation.py`): all four already implement **both** methods
+  today. One incidental finding from that trace: the `hasattr(basis, "redistribute_block")`
+  duck-typing fallback at `_lanczos_step.pxi:138-144` (with its `from_states`/`to_states`
+  round-trip) appears to have no reachable caller in the tree as it stands — worth deleting
+  when Phase 4 lands, but not touched now. It sits inside the MPI hot loop CLAUDE.md flags
+  for deadlock history, its value is a 4-line readability trim, and confirming "no caller"
+  by grep is weaker evidence than the review Phase 4 will get anyway — the risk/reward
+  doesn't clear the bar for touching it opportunistically outside that reviewed phase.
+
+## Phase 6 candidates — traced, both larger than a boundary tweak
+
+The two Phase-0 CONVERT-verdict sites are not simple boundary conversions once traced to
+their actual data flow:
+
+- **`cipsi_solver.py:741`** (`expand`, `psi_refs`): threads through `determine_new_Dj`,
+  `self.truncate`, and `self.psi_refs` (read by external callers, e.g. `groundstate.py`).
+  Converting the `redistribute_psis` call alone would add a conversion at that one line while
+  every neighboring consumer stays list-typed — the wasteful pattern the Phase-2 discriminator
+  exists to catch. A real conversion means `determine_new_Dj` and `truncate` becoming
+  block-native too.
+- **`groundstate.py:577`** (`calc_gs`, `psis`): same shape — flows into
+  `build_density_matrices`, `compute_gs_statistics`, `compute_entanglement_entropy`, each in a
+  different module. Converting the site means converting all three signatures together.
+
+Both are legitimate Phase 6 work, sized the way Phase 6 was always scoped (a whole consumer
+module moves together, with its own review pass) — not something to fold into an odd moment
+between phases.
+
 ## Still open
 
 - The FCC Ni fill measurement (above).
-- Phases 3–7 (the actual consumer migration, the rename, the flat_map class's deletion) —
-  see the session plan file for the phase breakdown; each is its own multi-commit body of
-  work across a large fraction of `src/cython/` and `src/impurityModel/ed/`.
+- Phases 5–7 (the Krylov/reort dual-dispatch deletion, the solver/physics-layer consumer
+  migration, the rename, the flat_map class's deletion) — see the session plan file for the
+  phase breakdown; each is its own multi-commit body of work across a large fraction of
+  `src/cython/` and `src/impurityModel/ed/`.
