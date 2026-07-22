@@ -306,6 +306,51 @@ def test_block_add_scaled_matches_add_scaled_multi():
         )
 
 
+def test_block_inner_dispatcher_accepts_blocks():
+    """``BlockLanczosArray.block_inner`` must dispatch a ``ManyBodyBlockState`` to
+    ``block_inner_cy`` rather than falling through to the list-only ``inner_multi``
+    (which would silently iterate determinant keys instead of rows)."""
+    from impurityModel.ed.BlockLanczosArray import block_inner
+    from impurityModel.ed.ManyBodyUtils import block_inner_cy
+
+    rng = np.random.default_rng(65)
+    A_states = _random_states(rng, 3, 25)
+    B_states = _random_states(rng, 2, 25)
+    A = ManyBodyBlockState.from_states(A_states)
+    B = ManyBodyBlockState.from_states(B_states)
+    np.testing.assert_array_equal(block_inner(A, B), block_inner_cy(A, B))
+
+
+def test_block_add_scaled_dispatcher_accepts_blocks():
+    """``BlockLanczosArray.block_add_scaled`` must rebind (not mutate in place) when fed
+    a ``ManyBodyBlockState`` -- the union support can outgrow the target's own storage,
+    so the caller must use the returned block, exactly as every current caller does."""
+    from impurityModel.ed.BlockLanczosArray import block_add_scaled
+    from impurityModel.ed.ManyBodyUtils import block_add_scaled_cy
+
+    rng = np.random.default_rng(66)
+    A_states = _random_states(rng, 3, 25)
+    B_states = [
+        ManyBodyState(
+            {_det(i + 15): rng.standard_normal() + 1j * rng.standard_normal() for i in range(20) if rng.random() < 0.7}
+        )
+        for _ in range(3)
+    ]
+    A = ManyBodyBlockState.from_states(A_states)
+    B = ManyBodyBlockState.from_states(B_states)
+    C = rng.standard_normal((3, 3)) + 1j * rng.standard_normal((3, 3))
+
+    ref = block_add_scaled_cy(A, B, C)
+    out = block_add_scaled(A, B, C)
+    assert out.to_states() == ref.to_states()
+    # A itself is untouched -- the block was rebound, not mutated.
+    assert A.to_states() == A_states
+
+    # slaterWeightMin pruning is applied to the rebound result.
+    pruned = block_add_scaled(A, B, C, slaterWeightMin=1e6)
+    assert all(len(s) == 0 for s in pruned.to_states())
+
+
 def test_combine_columns_matches_block_combine_sparse():
     from impurityModel.ed.BlockLanczos import block_combine_sparse
 

@@ -13,6 +13,8 @@ from impurityModel.ed.ManyBodyUtils import (
     reorth_cgs2_dense,
     SparseKrylovDense,
     ManyBodyBlockState,
+    block_inner_cy,
+    block_add_scaled_cy,
 )
 
 cpdef bint is_array(object V):
@@ -29,6 +31,15 @@ cpdef object block_inner(object V, object W, bint mpi=False, object comm=None):
         if isinstance(W, list):
             W = np.column_stack(W)
         res = np.ascontiguousarray(np.conj(V.T) @ W)
+        if mpi and comm is not None:
+            comm.Allreduce(MPI.IN_PLACE, res, op=MPI.SUM)
+        return res
+    elif isinstance(V, ManyBodyBlockState):
+        # A shared-support block: dispatch to the block-native Gram matrix directly.
+        # ``inner_multi`` below assumes list[ManyBodyState] -- ``list(a_block)`` iterates
+        # its determinant KEYS, not rows, so it would silently return garbage rather than
+        # raise if a block ever reached it.
+        res = block_inner_cy(V, W)
         if mpi and comm is not None:
             comm.Allreduce(MPI.IN_PLACE, res, op=MPI.SUM)
         return res
@@ -66,6 +77,16 @@ cpdef object block_apply(object H, object V, object basis=None, bint mpi=False, 
 cpdef object block_add_scaled(object V, object W, object alpha, double slaterWeightMin=0.0):
     if is_array(V):
         V += W @ alpha
+    elif isinstance(V, ManyBodyBlockState):
+        # A shared-support block is never mutated in place (its union support can outgrow
+        # V's own storage, same as every other block_add_scaled_cy caller) -- rebind V to
+        # the new block instead. Every current caller of this dispatcher already captures
+        # the return value for exactly this reason (see block_add_scaled's callers: the
+        # array-only in-place calls are all guarded by an `is_array` check at the call site
+        # and never reach here).
+        V = block_add_scaled_cy(V, W, alpha)
+        if slaterWeightMin > 0:
+            V.prune_rows(slaterWeightMin)
     else:
         add_scaled_multi(V, W, alpha)
         if slaterWeightMin > 0:
