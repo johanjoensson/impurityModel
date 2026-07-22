@@ -420,6 +420,61 @@ cdef class ManyBodyBlockState:
         """True when the state holds no determinants."""
         return self.b.empty()
 
+    def insert_rows(self, keys, amps):
+        """Bulk-insert (or overwrite) ``(determinant, row)`` pairs in ``O(n log n)``
+        total, instead of the ``O(rows)``-per-insertion of repeated ``state[det] = ...``
+        once the state already holds rows (``O(n^2)`` over a build loop of ``n`` new
+        keys). Duplicate keys are last-write-wins (``dict.update`` semantics): the LAST
+        matching entry in ``keys`` wins, whether the match is against another entry in
+        this same call or an existing row.
+
+        ``keys`` is any sequence of ``SlaterDeterminant``; ``amps`` is ``(len(keys),
+        width)`` (or ``(len(keys),)`` at width 1). On the polymorphic zero (width 0, no
+        rows) the width is adopted from ``amps``, exactly like ``__setitem__`` -- unless
+        ``keys`` is empty, which is always a true no-op (nothing to adopt a width from).
+        """
+        if self._n_exports > 0:
+            raise RuntimeError("cannot insert_rows while a buffer view is exported")
+        keys = list(keys)
+        cdef Py_ssize_t n_new = len(keys)
+        if n_new == 0:
+            return
+        cdef Py_ssize_t w = <Py_ssize_t>self.b.width()
+        amps_arr = np.ascontiguousarray(amps, dtype=complex)
+        if amps_arr.ndim == 1:
+            amps_arr = amps_arr[:, np.newaxis]
+        if w == 0 and self.b.rows() == 0:
+            w = amps_arr.shape[1]
+        if amps_arr.shape != (n_new, w):
+            raise ValueError(f"amps shape {tuple(amps_arr.shape)} != ({n_new}, {w})")
+        cdef vector[SlaterDeterminant_cpp[uint64_t]] all_keys
+        cdef vector[ManyBodyBlockState_cpp.Value] all_amps
+        cdef Py_ssize_t n_old = <Py_ssize_t>self.b.rows()
+        all_keys.reserve(n_new + n_old)
+        all_amps.reserve((n_new + n_old) * w)
+        cdef SlaterDeterminant sd
+        cdef double complex[:, ::1] av = amps_arr
+        cdef Py_ssize_t i, c, r
+        cdef ManyBodyBlockState_cpp.Row old_row
+        # `from_unsorted` stable-sorts by key and keeps the FIRST of each run of equal
+        # keys, so whichever row we push first among a set of duplicates is the one that
+        # survives. New rows must win over old ones (this call is meant to replace/extend
+        # them), so they go first; and within the new batch itself, a LATER entry of
+        # `keys` must win over an earlier one (dict.update semantics), so the new rows are
+        # pushed in REVERSE order -- the true-last entry ends up first, and therefore wins.
+        for i in range(n_new - 1, -1, -1):
+            sd = <SlaterDeterminant?>keys[i]
+            all_keys.push_back(sd.s)
+            for c in range(w):
+                all_amps.push_back(_amp_to_cpp(av[i, c]))
+        for r in range(n_old):
+            all_keys.push_back(self.b.key(r))
+            old_row = self.b.row(r)
+            for c in range(w):
+                all_amps.push_back(old_row[c])
+        self.b = ManyBodyBlockState_cpp.from_unsorted(all_keys, all_amps, <size_t>w)
+        self._bump_generation()
+
     # --- vector space -------------------------------------------------------
 
     def norm2(self):
@@ -473,11 +528,20 @@ cdef class ManyBodyBlockState:
             res.b = self.b + other.b
         return res
 
+    def __iadd__(self, ManyBodyBlockState other):
+        """``self += other``: true in-place, via ``add_scaled`` (bumps the generation,
+        since the union support can outgrow this state's storage -- unlike ``*=``/``/=``,
+        a live ``Row`` does not survive it)."""
+        return self.add_scaled(other, 1.0 + 0j)
+
     def __sub__(self, ManyBodyBlockState other):
         cdef ManyBodyBlockState res = ManyBodyBlockState()
         with nogil:
             res.b = self.b - other.b
         return res
+
+    def __isub__(self, ManyBodyBlockState other):
+        return self.add_scaled(other, -1.0 + 0j)
 
     def __neg__(self):
         cdef ManyBodyBlockState res = ManyBodyBlockState()
@@ -494,11 +558,23 @@ cdef class ManyBodyBlockState:
     def __rmul__(self, ManyBodyBlockState_cpp.Value s):
         return self.__mul__(s)
 
+    def __imul__(self, ManyBodyBlockState_cpp.Value s):
+        """``self *= s``: true in-place scaling of every stored amplitude, without
+        touching the row layout -- a live ``Row`` survives this."""
+        with nogil:
+            self.b.scale(s)
+        return self
+
     def __truediv__(self, ManyBodyBlockState_cpp.Value s):
         cdef ManyBodyBlockState res = ManyBodyBlockState()
         with nogil:
             res.b = self.b / s
         return res
+
+    def __itruediv__(self, ManyBodyBlockState_cpp.Value s):
+        with nogil:
+            self.b.scale_inv(s)
+        return self
 
     def prune_rows(self, double cutoff):
         """Drop rows where ALL columns satisfy the ``ManyBodyState.prune`` test
@@ -673,6 +749,30 @@ cdef class ManyBodyBlockState:
             out.b = c_block_combine_cols(self.b, yptr, wout)
         return out
 
+    def select(self, cols):
+        """A new block of the given columns (any order, repeats allowed), same support.
+
+        Expressed as ``self @ Y`` for a 0/1 selection matrix ``Y`` -- reuses
+        ``combine_columns`` exactly, rather than a second hand-rolled gather.
+        """
+        cdef Py_ssize_t w = <Py_ssize_t>self.b.width()
+        cols = list(cols)
+        cdef Py_ssize_t n = len(cols)
+        Y = np.zeros((w, n), dtype=complex)
+        cdef Py_ssize_t k, c
+        for k in range(n):
+            c = cols[k]
+            if c < 0:
+                c += w
+            if c < 0 or c >= w:
+                raise IndexError(f"column {cols[k]} out of range for width {w}")
+            Y[c, k] = 1.0
+        return self.combine_columns(Y)
+
+    def column(self, Py_ssize_t i):
+        """The ``i``-th column, as a width-1 block over the same support."""
+        return self.select([i])
+
     def copy(self):
         """Deep copy (independent key and amplitude storage)."""
         cdef ManyBodyBlockState res = ManyBodyBlockState()
@@ -772,6 +872,23 @@ def block_inner_cy(ManyBodyBlockState A, ManyBodyBlockState B):
         with nogil:
             c_block_inner(A.b, B.b, <ManyBodyBlockState_cpp.Value*>&rv[0, 0])
     return res
+
+
+def block_inner_scalar(ManyBodyBlockState a, ManyBodyBlockState b):
+    """Scalar inner product ``<a|b>`` for width-1 states -- the block counterpart of
+    ``ManyBodyState``'s free ``inner()``, for callers with nothing but width-1 blocks.
+    ``block_inner_cy`` is the general (any width) Gram matrix this reduces to.
+
+    Deliberately not named ``block_inner``: ``_reort.pxi`` (compiled into
+    ``BlockLanczosArray``) already exports an array/state-dispatching ``block_inner``
+    that several solver modules import by that exact name (``BiCGSTAB.pyx``,
+    ``GMRES.pyx``, ``BlockLanczos.pyx``) -- reusing the name here would not collide
+    today (different module), but a caller pulling both into one namespace later would
+    silently shadow one with the other.
+    """
+    if a.b.width() != 1 or b.b.width() != 1:
+        raise ValueError(f"block_inner_scalar requires width-1 states, got widths {a.b.width()} and {b.b.width()}")
+    return block_inner_cy(a, b)[0, 0]
 
 
 def block_add_scaled_cy(ManyBodyBlockState A, ManyBodyBlockState B, C):

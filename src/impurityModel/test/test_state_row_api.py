@@ -13,7 +13,13 @@ away with the flat_map class; the width-1 vs width-p equivalences below outlive 
 import numpy as np
 import pytest
 
-from impurityModel.ed.ManyBodyUtils import ManyBodyBlockState, ManyBodyState, SlaterDeterminant
+from impurityModel.ed.ManyBodyUtils import (
+    ManyBodyBlockState,
+    ManyBodyState,
+    SlaterDeterminant,
+    block_inner_cy,
+    block_inner_scalar,
+)
 
 
 def _det(i):
@@ -313,3 +319,118 @@ def test_width_p_columns_are_independent(data):
 def test_dict_width_mismatch_rejected(data):
     with pytest.raises(ValueError):
         ManyBodyBlockState({k: (v, 2 * v) for k, v in data.items()}, width=3)
+
+
+# --- Phase 1.2 additions: column/select, block_inner_scalar, insert_rows, in-place ops --
+
+
+def test_column_and_select(data):
+    wide = ManyBodyBlockState({k: (v, 2 * v, 3 * v) for k, v in data.items()})
+    col1 = wide.column(1)
+    assert col1.width == 1
+    assert all(col1[k][0] == 2 * data[k] for k in data)
+
+    sel = wide.select([2, 0])
+    assert sel.width == 2
+    assert all(sel[k][0] == 3 * data[k] and sel[k][1] == data[k] for k in data)
+
+    assert all(wide.select([-1])[k][0] == 3 * data[k] for k in data)
+    with pytest.raises(IndexError):
+        wide.select([5])
+
+
+def test_block_inner_scalar_matches_gram_and_flat_map(data, other):
+    from impurityModel.ed.ManyBodyUtils import inner as flat_inner
+
+    a, b = ManyBodyBlockState(data), ManyBodyBlockState(other)
+    sa, sb = ManyBodyState(data), ManyBodyState(other)
+    scalar = block_inner_scalar(a, b)
+    mat = block_inner_cy(a, b)
+    assert scalar == pytest.approx(mat[0, 0])
+    assert scalar == pytest.approx(flat_inner(sa, sb))
+
+
+def test_block_inner_scalar_requires_width_one(data, other):
+    wide = ManyBodyBlockState({k: (v, 2 * v) for k, v in other.items()})
+    with pytest.raises(ValueError):
+        block_inner_scalar(ManyBodyBlockState(data), wide)
+
+
+def test_insert_rows_bulk_build_and_overwrite(data):
+    base = ManyBodyBlockState(data)
+    new_keys = [_det(9001), _det(9002)]
+    existing_key = sorted(data)[3]
+    base.insert_rows(new_keys + [existing_key], [5 + 0j, 6 + 0j, 999 + 0j])
+    assert base[new_keys[0]][0] == 5 + 0j
+    assert base[new_keys[1]][0] == 6 + 0j
+    assert base[existing_key][0] == 999 + 0j  # last-write-wins, like dict.update
+    assert len(base) == len(data) + 2
+
+
+def test_insert_rows_last_write_wins_within_one_call(data):
+    """A determinant repeated WITHIN the same `keys` argument must resolve to the LAST
+    entry, matching dict.update -- not merely new-beats-old (the from_unsorted merge
+    this is built on keeps the FIRST of equal keys, so the new rows must be handed to
+    it in reverse order for a true "last wins")."""
+    base = ManyBodyBlockState(data)
+    new_key = _det(9001)
+    base.insert_rows([new_key, new_key, new_key], [1 + 0j, 2 + 0j, 3 + 0j])
+    assert base[new_key][0] == 3 + 0j
+
+
+def test_insert_rows_empty_is_a_true_no_op():
+    """An empty batch must not commit the polymorphic zero to a width -- there is no
+    width to adopt it from."""
+    zero = ManyBodyBlockState()
+    zero.insert_rows([], [])
+    assert zero.width == 0 and zero.is_empty()
+
+
+def test_insert_rows_adopts_width_on_the_polymorphic_zero():
+    zero = ManyBodyBlockState()
+    zero.insert_rows([_det(1)], [[1 + 0j, 2 + 0j]])
+    assert zero.width == 2
+
+
+def test_in_place_operators_match_flat_map(data, other):
+    s1, s2 = ManyBodyState(data), ManyBodyState(other)
+    b1, b2 = ManyBodyBlockState(data), ManyBodyBlockState(other)
+
+    b1 += b2
+    s1 += s2
+    assert all(b1[k][0] == pytest.approx(s1[k]) for k in data)
+
+    b1 -= b2
+    s1 -= s2
+    assert all(b1[k][0] == pytest.approx(s1[k]) for k in data)
+
+    z = 2 + 1j
+    b1 *= z
+    s1 *= z
+    assert all(b1[k][0] == pytest.approx(s1[k]) for k in data)
+
+    b1 /= z
+    s1 /= z
+    assert all(b1[k][0] == pytest.approx(s1[k]) for k in data)
+
+
+def test_imul_and_itruediv_do_not_invalidate_a_row(data):
+    """*= and /= scale values without moving anything, so a live Row survives them --
+    unlike += and -= (add_scaled), which rebuild storage over the union support."""
+    block = ManyBodyBlockState(data)
+    key = sorted(data)[0]
+    row = block[key]
+
+    block *= 2 + 0j
+    assert row[0] == 2 * data[key]
+
+    block /= 2 + 0j
+    assert row[0] == pytest.approx(data[key])
+
+
+def test_iadd_invalidates_a_row(data, other):
+    block = ManyBodyBlockState(data)
+    row = block[sorted(data)[0]]
+    block += ManyBodyBlockState(other)
+    with pytest.raises(RuntimeError):
+        row[0]

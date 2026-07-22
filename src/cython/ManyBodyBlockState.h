@@ -376,6 +376,12 @@ public:
     }
     return *this;
   }
+  // Plain-named aliases for operator*=/operator/=: Cython's cppclass declarations do
+  // not support compound-assignment operators, so these are what the Python wrapper's
+  // true in-place __imul__/__itruediv__ (no reallocation; a live Row survives them,
+  // unlike add_scaled/+=/-=) actually call.
+  void scale(Value s) noexcept { *this *= s; }
+  void scale_inv(Value s) noexcept { *this /= s; }
   ManyBodyBlockState operator-() const {
     ManyBodyBlockState res(*this);
     return res *= Value{-1.0, 0.0};

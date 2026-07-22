@@ -57,6 +57,13 @@ cdef extern from "ManyBodyBlockState.h" nogil:
         void truncate(size_t) except +
         ManyBodyBlockState& add_scaled(const ManyBodyBlockState&, Value) except +
 
+        # True in-place scaling: values change, the row layout does not, so (unlike
+        # add_scaled/+=/-=, which rebuild storage over the union support) a live Row
+        # survives these. Plain-named (not operator*=/operator/=) because Cython's
+        # cppclass declarations do not support compound-assignment operators.
+        void scale(Value)
+        void scale_inv(Value)
+
         # Every one of these builds a temporary via the copy constructor and/or
         # reallocates through add_scaled, either of which can raise on a width
         # mismatch or bad_alloc; without `except +` such a C++ exception would
