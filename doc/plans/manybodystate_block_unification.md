@@ -380,11 +380,71 @@ also force `determine_new_Dj`'s parameter to become a block, which forces exactl
 MIXED-verdict conversion above through propagation, or a wasteful `to_states()` round-trip at
 its entry — neither is worth it for zero compute win.
 
+## Phase 6c — GF/spectra/RIXS/susceptibility modules (TRACED, hollow — no code change)
+
+Swept `gf_solvers.py`, `gf_shift_recycling.py`, `gf_units.py`, `gf_primitives.py`,
+`greens_function.py`, `spectra.py`, `rixs.py`, `susceptibility.py`, `basis_split.py` for the
+same three things Phase 6b looked for: a redundant list↔block round trip on an already-formed
+union (fill-neutral, convertible now), a genuine per-operator/per-state union not yet formed
+(fill-gated, same class as `Hpsi_ref`), and any leftover O(n²) single-key-insert hazard. Every
+site resolved into one of five buckets, and none of them is "convert now":
+
+1. **Already block-native, nothing to do.** `gf_units.py`'s `_apply_transition_ops` builds
+   `psi_blk = ManyBodyBlockState.from_states(list(psis))` once (the thermal eigenstates
+   genuinely share support) and runs `tOp.apply_block(psi_blk, ...)` per operator — exactly
+   the Phase 6a win shape, already landed (not part of this session's work, but confirmed
+   correct and not needing further change).
+2. **Fill-gated, same class as `Hpsi_ref` — left alone pending the FCC Ni measurement.** Every
+   per-frequency/per-shift seed union in this file family has the same shape: independent
+   per-(eigenstate, operator) applies get stacked into one block only at the point they're
+   redistributed onto a rebuilt-and-discarded `tmp_basis` (`gf_solvers.py`'s
+   `block_Green_bicgstab` loop at `:689-696`/`:741-744`, `gf_shift_recycling.py`'s
+   `_expand_to_closure` seed union at `:174-175`, `rixs.py`'s R1 fallback at `:328-338`,
+   `greens_function.py`'s spectrum-slicing `unit_seeds[u]` redistribute at `:822`). None of
+   these forms a genuinely new union beyond what `Hpsi_ref` already measured MIXED on — they
+   are the same seed-construction pattern reappearing at each call site, not new evidence — so
+   the same held-pending-measurement verdict applies without a separate number for each.
+3. **Structurally not a shared-support block.** `greens_function.py`'s `get_greens_function_moments`
+   (`side_krylov_moments`) applies `n_corr` *different* creation/annihilation operators to *one*
+   reference state (`s0 = [op(psi_n, 0) for op in creation]`) — the inverse shape of Phase 6a's
+   win (many states, one operator), so there is no shared term/sign work to amortize by
+   blocking, and the cross term is already computed as one batched Gram matrix via
+   `inner_multi`, not a loop of scalar `inner()` calls. Nothing to convert.
+4. **Width-1, excluded by the plan's own rule (`f* = 1.000`).** `gf_primitives.py:310`,
+   `greens_function.py:1016`/`:1033`, `susceptibility.py`'s per-seed
+   `redistribute([seed])[0]` at `:226`, and `gf_solvers.py`'s `block_green_impl` residual
+   probe (`last_q`/`q_last = Q_list[:, -1:]`, `:301` — verified this is a *single* Krylov
+   column regardless of the block width `n`, so the `ManyBodyBlockState.from_states(list(last_q))`
+   at `:85`/`:102` is already a degenerate width-1 wrap, not a `p > 1` site as it first looked).
+5. **Already scoped to a later phase — converting now would fragment it.** `gf_solvers.py:743`'s
+   `ManyBodyBlockState.from_states(list(X))` looks like a redundant round trip (`X` comes back
+   from `solve_shifted_block` → `block_bicgstab`), and it is one: `BiCGSTAB.pyx:222-223`
+   already converts its inputs to a block internally and runs the whole core iteration on it,
+   only converting back via `.to_states()` at `BiCGSTAB.pyx:318`. But `block_bicgstab` and
+   `block_gmres` are shared kernels (`cg.py`/`gmres.py`) with several callers beyond this one
+   site, and removing their list boundary is exactly what **Phase 5** ("`ChebyshevFilter.pyx`,
+   `BiCGSTAB.pyx`, `GMRES.pyx`, `cg.py`, `gmres.py`: block end to end; the list boundary at
+   entry/exit disappears") already commits to doing properly, across every caller at once.
+   Patching this one caller ahead of Phase 5 would just split that future diff without a
+   present compute or memory win (`X` is still handed to `hist_x`/`_warm_start_extrapolation`
+   as a list a few lines later regardless). `greens_function.py`'s spectrum-slicing seeds
+   feeding `chebyshev_apply` (`:839`) are blocked the same way — `ChebyshevFilter.pyx` is
+   list-based until Phase 5. `basis_split.py:241`'s cross-color `psis` transfer is its own
+   hand-rolled byte-serialization protocol over MPI intercomms (not the standard
+   pack/unpack path Phase 4 unifies) — converting it safely needs the `-n 3` multi-rank gate
+   Phase 4 already flags for this file, so it stays with Phase 4/7 rather than a one-off 6c
+   edit.
+
+No O(n²) single-key-insert hazard turned up in this batch (the one instance, in
+`cipsi_solver.py`, was Phase 6b's).
+
 ## Still open
 
 - The FCC Ni fill measurement (above) — blocks `determine_new_Dj`'s/`select_at`'s `Hpsi_ref`
-  conversion specifically.
-- Phases 5, 6c+ (other solver/physics modules), 7 (the Krylov/reort dual-dispatch deletion,
-  the rename, the flat_map class's deletion) — see the session plan file for the
-  phase breakdown; each is its own multi-commit body of work across a large fraction of
-  `src/cython/` and `src/impurityModel/ed/`.
+  conversion, and by the same reasoning, every per-frequency seed union found in Phase 6c.
+- Phase 5 (Krylov/Lanczos dual-dispatch deletion, including the BiCGSTAB/GMRES/Chebyshev list
+  boundary Phase 6c found but didn't touch), Phase 7 (the rename, the flat_map class's
+  deletion) — see the session plan file for the phase breakdown; each is its own multi-commit
+  body of work across a large fraction of `src/cython/` and `src/impurityModel/ed/`.
+- No further Phase 6 sites identified — 6a, 6b and 6c between them covered every module the
+  plan's Phase 6 list named.
