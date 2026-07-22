@@ -246,19 +246,29 @@ type is a public contract, not just an internal detail.
 
 **Conversion checklist** (✅ = landed and reviewed; the rest not started):
 
-1. `manifold_observable_values` (`observables.py:1295`) — the common leaf, called ~10 times.
-   Today: `eigenstates: list[ManyBodyState]`, `apply_op(psi) -> ManyBodyState` (called once per
-   state), `o_matrix` built via a Python-level `n x n` list comprehension of scalar `inner()`
-   calls. Target: `eigenstates: ManyBodyBlockState`, `apply_op(block) -> ManyBodyBlockState`
-   (one `apply_block` covering all `p` states — the actual win, cutting the redundant
-   term/sign work `p`-fold, consistent with the measured `apply_block` width-scaling speedup),
-   `redistribute` becomes block-based, `o_matrix` via one `block_inner_cy` call. Every call
-   site's lambda changes shape (`lambda psi: op(psi, 0)` → `lambda blk: op.apply_block(blk,
-   0)`) — this is the one commit that cannot be split further without breaking green, since
-   every caller's lambda must move together with the signature change.
-2. `compute_correlation_diagnostics`, `compute_static_susceptibilities`,
-   `compute_screening_diagnostics` (`observables.py`) — their own `psis` parameter becomes a
-   block (lands in the same commit as (1); they're the direct callers whose lambdas move).
+1. ✅ **`manifold_observable_values`** (`observables.py:1295`, commit `24a5146`) — the common
+   leaf, called ~10 times. Was: `eigenstates: list[ManyBodyState]`, `apply_op(psi) ->
+   ManyBodyState` (called once per state), `o_matrix` built via a Python-level `n x n` list
+   comprehension of scalar `inner()` calls. Now: `eigenstates: ManyBodyBlockState`,
+   `apply_op(block) -> ManyBodyBlockState` (one `apply_block` covering all `p` states — the
+   actual win, cutting the redundant term/sign work `p`-fold), `redistribute` block-based,
+   `o_matrix` via one `block_inner_cy` call. `calc_gs` builds `psis_blk =
+   ManyBodyBlockState.from_states(psis)` once, right after the existing `redistribute_psis`
+   call, keeping the original `psis` list alongside it for items (3)-(5) below. Reviewed at
+   high effort (MPI-collective + physics correctness): `block_inner_cy`'s summation order
+   confirmed bit-for-bit-equal to the old scalar path; every per-loop closure confirmed to
+   capture its operator correctly (no late-binding bug); the bra ket redistribute routing
+   (`redistribute_psis` for build_density_matrices etc. vs `redistribute_block` for the
+   converted calls) confirmed to hash identically per determinant, so nothing is dropped from
+   a Gram matrix built from two different redistribute calls. No CRITICAL/SERIOUS findings;
+   fixed 2 MINOR (black formatting, one orphaned import). **Follow-up noted, not fixed**: no
+   test exercises the `comm != None` distributed path's VALUES directly (only that it doesn't
+   crash/deadlock, via the `-n 2` `calc_gs` test, which doesn't assert the Casimir/sisb/
+   susceptibility numbers since they're wrapped in a degrade-to-`None` `try/except`) — a
+   worthwhile follow-up test, not blocking.
+2. ✅ `compute_correlation_diagnostics`, `compute_static_susceptibilities`,
+   `compute_screening_diagnostics` (`observables.py`) — their own `psis` parameter is now a
+   block; landed in the same commit as (1).
 3. `build_density_matrices` (`basis_transcription.py:195`) — independent of (1)/(2), own
    commit. Today: `for psi_n in psis: phi = [op_orb(psi_n, 0) for orb in ...]` (`p * n_orb`
    scalar applies). Target: one `apply_block` per orbital (`n_orb` block-applies of width
