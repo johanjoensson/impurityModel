@@ -220,15 +220,28 @@ Both are legitimate Phase 6 work, sized the way Phase 6 was always scoped (a who
 module moves together, with its own review pass) — not something to fold into an odd moment
 between phases.
 
-## Phase 6a — `groundstate.py`'s `calc_gs` observable pipeline (IN PROGRESS)
+## Phase 6a — `groundstate.py`'s `calc_gs` observable pipeline (COMPLETE)
 
 User chose `groundstate.py:calc_gs` over `cipsi_solver.py:expand` as the first Phase 6 site
 (smaller-looking at a glance; that estimate itself grew twice as the trace went deeper — see
 below). Decision: convert fully, keeping `calc_gs`'s external return contract as
-`list[ManyBodyState]` (convert back at the return, `.to_states()`), so every external caller
-(`susceptibility.py`, `get_spectra.py`, `selfenergy.py`, 5 test files) is unaffected. Spans
-multiple turns/sessions; each function below is its own reviewed commit, same cadence as
-Phase 1.
+`list[ManyBodyState]`, so every external caller (`susceptibility.py`, `get_spectra.py`,
+`selfenergy.py`, 5 test files) is unaffected. In the event the return needed no explicit
+`.to_states()` conversion: `psis` (the list) was never discarded — it survives alongside
+`psis_blk` for its own genuinely list-only uses (`add_states`, `redistribute_psis`), so the
+function's existing return statement already produces the right type with no round trip.
+
+Landed as 5 commits (`24a5146`, `0bccfad`, `ea1eaea`, `9014fc0`, `e8891b5`), each independently
+reviewed, gates green throughout (serial 1199 / `-n 2` 1399 unchanged end to end — a pure
+internal-representation refactor, no test added or removed). One deliberate scope revision
+mid-way (`build_density_matrices` stayed a thin shim rather than going block-native — see item
+3b below) after an advisor review flagged that its per-orbital annihilators are too cheap to
+amortize a shared apply, while reading per-state values back out would cost a p-fold Gram-matrix
+diagonal with no cheap primitive to avoid it. The two genuine algorithmic wins
+(`manifold_observable_values`'s shared-apply, `_local_partials`/`compute_impurity_rdm`'s
+one-pass-per-determinant) landed as designed; the crc32-keyed `graph_alltoall` in
+`compute_impurity_rdm` (the checklist's highest MPI-review-priority item) came through review
+clean.
 
 **Why this got bigger twice, on the record** (so a future session doesn't have to re-derive
 it): the first pass found 3 downstream functions (`build_density_matrices`,
@@ -308,22 +321,25 @@ type is a public contract, not just an internal detail.
    `observed_n` allgather and the final per-`(n,n_e)` `Allreduce` loop are untouched, and the
    hoisted per-row computation is bit-for-bit identical to recomputing it per state. No
    findings. `compute_entanglement_entropy` needed no change (only forwards `psis` through).
-6. `calc_gs` itself (`groundstate.py:577`) — lands last, now that (1)-(5) are all in: replace
-   the kept-alongside `psis` list with `psis_blk` everywhere it's still used
-   (`build_density_matrices` already takes `psis_blk`; the last remaining list-typed uses are
-   `ground_state_basis.add_states({state for p in psis for state in p})`, the `redistribute_psis`
-   call itself, and the final `return` tuple), convert back to `list[ManyBodyState]` via
-   `.to_states()` immediately before the `return` (the one place the external contract is
-   re-established), drop the now-redundant separate `psis` variable if nothing else needs it.
+6. ✅ **`calc_gs` itself** (`groundstate.py`, commit `e8891b5`) — no functional change needed:
+   steps 1-4 already left `calc_gs` in the target end state as a side effect of building
+   `psis_blk` once and reusing it everywhere. The plain `psis` list survives only where it's
+   genuinely still a list (`add_states`, `redistribute_psis`, the function's own
+   `list[ManyBodyState]` return contract) — converting the return via `.to_states()` would
+   have been a pointless round trip since the list was never discarded. Landed as a stale-
+   comment fix only.
 
-Each step gets its own gate run (serial + `-n 2 --with-mpi`) and, per the plan's review
-process, an independent code review before landing — (5) and (6) at the highest effort level
-(MPI collective + the function that changes the widest public-facing contract).
+Each step got its own gate run (serial + `-n 2 --with-mpi`) and, per the plan's review
+process, an independent code review before landing — (5) at the highest effort level (MPI
+alltoall collective).
 
 ## Still open
 
 - The FCC Ni fill measurement (above).
-- Phases 5–7 (the Krylov/reort dual-dispatch deletion, the solver/physics-layer consumer
-  migration, the rename, the flat_map class's deletion) — see the session plan file for the
+- **`cipsi_solver.py`'s `expand`** — the other Phase-0 CONVERT-verdict site, not yet
+  converted; still expected to be a genuine multi-commit body of work given its `psi_refs`
+  threads through `determine_new_Dj`/`truncate` (see "Phase 6 candidates" above).
+- Phases 5, 6b+ (other solver/physics modules), 7 (the Krylov/reort dual-dispatch deletion,
+  the rename, the flat_map class's deletion) — see the session plan file for the
   phase breakdown; each is its own multi-commit body of work across a large fraction of
   `src/cython/` and `src/impurityModel/ed/`.
