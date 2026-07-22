@@ -446,7 +446,7 @@ def simulate_spectra(
             if rank == 0 and h5f:
                 h5f.create_dataset("RIXS/projected", data=gs)
                 g = h5f.create_group("RIXSprojectors")
-                for key, proj in RIXS_projectors:
+                for key, proj in RIXS_projectors.items():
                     g.create_dataset(key, data=str(proj))
         else:
             # Dipole is linear in the polarization: compute and store the full rank-4

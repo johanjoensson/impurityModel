@@ -181,14 +181,16 @@ def i2c(nBaths, i):
 
 def arrayOp2Dict(nbaths, opsArray):
     r"""
-    Return an array of dicts of the form {(i,j):val ...} corresponding to the
-    operators c^dagger_i c_j, stored in the opsArray
+    Convert several label-keyed one-body projectors to index-keyed dicts.
+
+    See :func:`op2Dict` for the accepted input forms.
+
     Parameters
     ----------
     nbaths : dict
         l : nb
-    opsArray : [dict]
-        [{(((l, m, s, b), 'c'), ((l, m, s, b), 'a'))}, ...]
+    opsArray : iterable of dict
+        ``[{((l, s, m), 'c'), ((l, s, m), 'a')): val, ...}, ...]``
     """
     res = []
     for ops in opsArray:
@@ -196,38 +198,97 @@ def arrayOp2Dict(nbaths, opsArray):
     return res
 
 
+def _is_ladder_factor(element):
+    """Whether ``element`` is a ``(spin_orbital_label, 'c'|'a')`` factor.
+
+    Dispatching on the action string rather than on ``len(element)`` matters: a bath
+    label is itself the 2-tuple ``(l, b)``, so a length test cannot tell
+    ``((l, b), 'c')`` from a bare ``(l, b)``.
+    """
+    return len(element) == 2 and isinstance(element[1], str) and element[1] in ("c", "a")
+
+
+def _term_to_index_key(nBaths, term):
+    """One label-keyed process tuple -> the same process with integer orbital indices.
+
+    The written operator order is preserved; normal ordering is left to
+    :class:`ManyBodyOperator`.
+    """
+    if len(term) != 2:
+        raise ValueError(
+            f"Projector term {term} has {len(term)} factors; only one-body terms "
+            "(c^dagger_i c_j) can be projected onto a transition operator."
+        )
+    first, second = term
+    labelled = [_is_ladder_factor(element) for element in term]
+    if all(labelled):
+        return tuple((c2i(nBaths, orbital), action) for orbital, action in term)
+    if any(labelled):
+        raise ValueError(
+            f"Projector term {term} mixes the labelled form ((l, s, m), 'c') with the bare "
+            "form (l, s, m); write both factors the same way."
+        )
+    # Bare pair ((l, s, m), (l', s', m')), which means c^dagger_i c_j.
+    return ((c2i(nBaths, first), "c"), (c2i(nBaths, second), "a"))
+
+
 def op2Dict(nBaths, ops):
     r"""
-    returns a dict of the form {(i,j):val,...} correspoding to the opeator c^dagger_i c_j
-    where i, j are obtained from c2i
+    Convert a label-keyed one-body projector to an index-keyed operator dict.
+
+    The XAS/RIXS ``*_projectors`` options take projectors written in spin-orbital
+    labels; this maps those labels to the flat indices (:func:`c2i`) the rest of the
+    package uses, so that :func:`combineOp` can project a transition operator onto an
+    irrep and :func:`spectra.simulate_spectra` can report that irrep's contribution
+    separately.
+
+    Both spellings of a term are accepted:
+
+    - ``(((l, s, m), 'c'), ((l', s', m'), 'a')): val`` — explicit ladder operators, in
+      either order;
+    - ``((l, s, m), (l', s', m')): val`` — a bare pair, meaning
+      :math:`c^\dagger_i c_j`.
+
+    Terms written anti-normal-ordered are normal-ordered by
+    :class:`ManyBodyOperator`, using :math:`c_i c^\dagger_j = \delta_{ij} - c^\dagger_j c_i`,
+    and terms that collide after reordering are summed.
+
     Parameters
     ----------
     nBaths : dict
         angular momentum : number of bath sets
-    ops: dict
-        Multi configurational state.
+    ops : dict
+        The projector, ``{process: amplitude}``.
+
+    Returns
+    -------
+    dict
+        ``{((i, 'c'), (j, 'a')): val, ...}`` in canonical normal order.
+
+    Raises
+    ------
+    ValueError
+        If a term is not one-body, mixes the two spellings, or leaves an identity
+        (constant) part after normal ordering -- the projected transition operator is
+        built by a single-particle matrix product (:func:`combineOp`), which has no way
+        to represent a multiple of the identity.
     """
-    d = {}
-    for t, val in ops.items():
-        # Only one particle terms
-        if len(t) == 2:
-            # Accept both ((l,m,s,b),'c/a') and (l,m,s,b)
-            if len(t[0]) == 2:
-                if t[0][1] == "c" and t[1][1] == "a":
-                    d[((c2i(nBaths, t[0][0]), "c"), (c2i(nBaths, t[1][0]), "a"))] = val
-                elif t[0][1] == "a" and t[1][1] == "c":
-                    # Legacy convention, kept because this reads *user-supplied* projector
-                    # dicts keyed by (l, s, m) tuples -- they never pass through
-                    # ManyBodyOperator, so nothing canonicalizes them first. Note the
-                    # diagonal case does NOT agree with canonical normal ordering, which
-                    # sends val*c_i c^dag_i to -val*c^dag_i c_i plus a constant val.
-                    if t[0][0] == t[1][0]:
-                        d[((c2i(nBaths, t[1][0]), "c"), (c2i(nBaths, t[0][0]), "a"))] = 1.0 - val
-                    else:
-                        d[((c2i(nBaths, t[1][0]), "c"), (c2i(nBaths, t[0][0]), "a"))] = -val
-            else:
-                d[((c2i(nBaths, t[0]), "c"), (c2i(nBaths, t[1]), "a"))] = val
-    return d
+    # Sum term by term through the operator algebra: it normal-orders each term and
+    # accumulates ones that collide, which a plain dict assignment would silently drop.
+    op = ManyBodyOperator()
+    for term, val in ops.items():
+        op += ManyBodyOperator({_term_to_index_key(nBaths, term): val})
+
+    if op.constant != 0:
+        raise ValueError(
+            f"Projector normal-orders to an identity part {op.constant:g} (from an "
+            "anti-normal-ordered diagonal term such as c_i c^dagger_i = 1 - n_i). A "
+            "projector must be a pure one-body operator here, because it is applied to "
+            "the transition operator as a single-particle matrix product. Write the "
+            "complement explicitly instead, e.g. sum_{j != i} c^dagger_j c_j over the "
+            "shell rather than c_i c^dagger_i."
+        )
+    return op.to_dict()
 
 
 def combineOp(nBaths, op1, op2):
