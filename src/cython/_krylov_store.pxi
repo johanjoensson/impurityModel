@@ -212,14 +212,15 @@ cdef class SparseKrylovDense:
             off += used
         return plan
 
-    def reort(self, list wp, object cols, int n_passes, object comm):
+    def reort(self, ManyBodyBlockState wp, object cols, int n_passes, object comm):
         """``n_passes`` of CGS2: ``O = Q[:,cols]^H wp`` (Allreduced); ``wp -= Q[:,cols] O``.
 
         ``cols`` is a list of column indices (the flagged bad blocks) or ``None`` for all
-        columns. Returns ``(out, O_last)``: the new list of ``wp`` ManyBodyStates and the
-        FINAL pass's measured (Allreduced) overlap matrix ``(len(cols) x p)`` — an upper
-        bound on the residual overlap left after the projection, which the caller uses as
-        the honest post-reorthogonalization W-estimate (``None`` when nothing was done).
+        columns. Returns ``(out, O_last)``: the cleaned ``wp`` as a ``ManyBodyBlockState``
+        and the FINAL pass's measured (Allreduced) overlap matrix ``(len(cols) x p)`` — an
+        upper bound on the residual overlap left after the projection, which the caller
+        uses as the honest post-reorthogonalization W-estimate (``None`` when nothing was
+        done).
 
         Both gemms stream over the column chunks (:meth:`_plan_selection`) rather than
         gathering ``Q[:, cols]`` into one dense buffer: the old ``_gather_columns`` +
@@ -237,36 +238,29 @@ cdef class SparseKrylovDense:
            is broadcast by the caller), but ``n_rows`` is not — a rank owning zero
            determinants contributes zero-row gemms and must still join every ``Allreduce``.
         """
-        cdef int p = len(wp)
+        cdef int p = <int>wp.b.width()
         if p == 0 or self.n_cols == 0 or n_passes <= 0:
             return wp, None
-        cdef vector[ManyBodyState_cpp*] wptrs
-        cdef ManyBodyState ms
+        cdef Py_ssize_t nrow_wp = <Py_ssize_t>wp.b.rows()
+        cdef Py_ssize_t ri
         cdef int ci
-        for obj in wp:
-            ms = <ManyBodyState?>obj
-            wptrs.push_back(&ms.v)
         # Register wp's determinants so its components outside the current Q support get rows
         # (Q is zero there -> untouched by the projection, preserved by the scatter).
-        cdef ManyBodyState_cpp.iterator it
-        for ci in range(p):
-            it = wptrs[ci].begin()
-            while it != wptrs[ci].end():
-                self._register(dereference(it).first)
-                preincrement(it)
+        cdef vector[int] wp_rows
+        wp_rows.reserve(nrow_wp)
+        for ri in range(nrow_wp):
+            wp_rows.push_back(self._register(wp.b.key(ri)))
         cdef Py_ssize_t ns = self.n_rows
         Wd = np.zeros((ns, p), dtype=complex)
         cdef complex[:, :] Wv = Wd
-        cdef Py_ssize_t row
-        cdef ManyBodyState_cpp.mapped_type cval
-        for ci in range(p):
-            it = wptrs[ci].begin()
-            while it != wptrs[ci].end():
-                row = dereference(self.support.find(dereference(it).first)).second
-                cval = dereference(it).second
-                Wv[row, ci].real = cval.real()
-                Wv[row, ci].imag = cval.imag()
-                preincrement(it)
+        cdef int row
+        cdef ManyBodyBlockState_cpp.Row wprow
+        for ri in range(nrow_wp):
+            row = wp_rows[ri]
+            wprow = wp.b.row(ri)
+            for ci in range(p):
+                Wv[row, ci].real = wprow[ci].real()
+                Wv[row, ci].imag = wprow[ci].imag()
         cdef list plan = self._plan_selection(cols)
         cdef Py_ssize_t n_sel = self.n_cols if cols is None else len(cols)
         if comm is not None:
@@ -286,22 +280,28 @@ cdef class SparseKrylovDense:
                 entry = plan[k_plan]
                 Wd[: entry[2]] -= entry[0] @ O[entry[1]]
         cdef complex[:, :] Wout = Wd
-        cdef list out = []
-        cdef vector[ManyBodyState_cpp.key_type] keys
-        cdef vector[ManyBodyState_cpp.mapped_type] vals
-        cdef ManyBodyState new_ms
+        # Build the cleaned block directly over the union of rows that are nonzero in ANY
+        # column -- the same support a from_states() build over p independently-pruned
+        # ManyBodyStates would produce -- instead of materializing p sparse states first.
+        cdef vector[SlaterDeterminant_cpp[uint64_t]] out_keys
+        cdef vector[ManyBodyBlockState_cpp.Value] out_amps
+        out_keys.reserve(ns)
+        out_amps.reserve(<Py_ssize_t>(ns * p))
         cdef double complex z
-        for ci in range(p):
-            keys.clear()
-            vals.clear()
-            for row in range(ns):
-                z = Wout[row, ci]
-                if z.real != 0 or z.imag != 0:
-                    keys.push_back(self.row_det[row])
-                    vals.push_back(ManyBodyState_cpp.mapped_type(z.real, z.imag))
-            new_ms = ManyBodyState()
-            new_ms.v = ManyBodyState_cpp(keys, vals)
-            out.append(new_ms)
+        cdef bint any_nonzero
+        for row in range(ns):
+            any_nonzero = False
+            for ci in range(p):
+                if Wout[row, ci].real != 0 or Wout[row, ci].imag != 0:
+                    any_nonzero = True
+                    break
+            if not any_nonzero:
+                continue
+            out_keys.push_back(self.row_det[row])
+            for ci in range(p):
+                out_amps.push_back(_amp_to_cpp(Wout[row, ci]))
+        cdef ManyBodyBlockState out = ManyBodyBlockState()
+        out.b = ManyBodyBlockState_cpp.from_unsorted(out_keys, out_amps, <size_t>p)
         return out, O
 
     def __len__(self):

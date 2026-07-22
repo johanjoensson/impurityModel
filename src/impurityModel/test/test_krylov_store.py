@@ -14,6 +14,7 @@ import pytest
 
 from impurityModel.ed.BlockLanczos import block_combine_sparse
 from impurityModel.ed.ManyBodyUtils import (
+    ManyBodyBlockState,
     ManyBodyState,
     SlaterDeterminant,
     SparseKrylovDense,
@@ -174,7 +175,9 @@ def test_store_reort_matches_reorth_cgs2_dense(cols):
     wp = _random_states(rng, p, n_dets, sparsity=0.9)
     selected = qcols if cols is None else [qcols[c] for c in cols]
 
-    out_new, o_new = store.reort([ManyBodyState(dict(s.items())) for s in wp], cols, 2, None)
+    wp_blk = ManyBodyBlockState.from_states([ManyBodyState(dict(s.items())) for s in wp])
+    out_new_blk, o_new = store.reort(wp_blk, cols, 2, None)
+    out_new = out_new_blk.to_states()
     out_ref, o_ref = reorth_cgs2_dense([ManyBodyState(dict(s.items())) for s in wp], selected, 2, None)
 
     np.testing.assert_allclose(o_new, o_ref, atol=1e-12)
@@ -201,7 +204,7 @@ def test_store_reort_transient_is_not_store_sized(cols):
         store.append(qcols[i : i + p])
 
     buffer_bytes = store.stats()["buffer_bytes"]
-    wp = _random_states(rng, p, n_dets, sparsity=1.0)
+    wp = ManyBodyBlockState.from_states(_random_states(rng, p, n_dets, sparsity=1.0))
 
     tracemalloc.start()
     try:

@@ -293,15 +293,26 @@ cpdef tuple apply_reort(object wp, object Q_list, object W, object reort, bint m
         if is_array(wp):
             for _ in range(2):
                 wp, _ = block_orthogonalize(wp, Q_list, mpi=mpi, comm=comm)
+        elif krylov is not None:
+            # Sparse path with a maintained dense Krylov basis: slice all columns, no gather.
+            # krylov.reort is block-native end to end (no round trip through ManyBodyState);
+            # convert only if wp itself arrived as a plain list rather than a block.
+            if was_block:
+                wp, _ = krylov.reort(wp, None, 2, comm if mpi else None)
+            else:
+                # Defensive only: every current caller with krylov set (the MBS kernel)
+                # already hands wp in as a block, so this branch is not exercised today.
+                # `from_unsorted`'s stable sort means the states would come back key-sorted
+                # rather than in wp's original row order -- harmless (ManyBodyState is
+                # itself a sorted map), but worth knowing if this path is ever revived.
+                wp_blk = ManyBodyBlockState.from_states(wp)
+                wp_blk, _ = krylov.reort(wp_blk, None, 2, comm if mpi else None)
+                wp = wp_blk.to_states()
         else:
             if was_block:
                 wp = wp.to_states()
-            if krylov is not None:
-                # Sparse path with a maintained dense Krylov basis: slice all columns, no gather.
-                wp, _ = krylov.reort(wp, None, 2, comm if mpi else None)
-            else:
-                # Sparse path fallback: 2-pass CGS2 in dense BLAS (materialize Q from flat_maps).
-                wp, _ = reorth_cgs2_dense(wp, Q_list, 2, comm if mpi else None)
+            # Sparse path fallback: 2-pass CGS2 in dense BLAS (materialize Q from flat_maps).
+            wp, _ = reorth_cgs2_dense(wp, Q_list, 2, comm if mpi else None)
             if was_block:
                 wp = ManyBodyBlockState.from_states(wp)
         acted = True
@@ -340,16 +351,24 @@ cpdef tuple apply_reort(object wp, object Q_list, object W, object reort, bint m
                     Q_bad = Q_mat[:, bad_cols]
                     for _ in range(2):
                         wp, O_last = block_orthogonalize(wp, Q_bad, mpi=mpi, comm=comm)
+                elif krylov is not None:
+                    # Sparse path with a maintained dense Krylov basis: slice the flagged
+                    # columns. krylov.reort is block-native end to end; convert only if wp
+                    # itself arrived as a plain list rather than a block.
+                    if was_block:
+                        wp, O_last = krylov.reort(wp, bad_cols, 2, comm if mpi else None)
+                    else:
+                        # Defensive only: see the matching branch in the FULL/PERIODIC case
+                        # above -- not exercised by any current caller.
+                        wp_blk = ManyBodyBlockState.from_states(wp)
+                        wp_blk, O_last = krylov.reort(wp_blk, bad_cols, 2, comm if mpi else None)
+                        wp = wp_blk.to_states()
                 else:
                     if was_block:
                         wp = wp.to_states()
-                    if krylov is not None:
-                        # Sparse path with a maintained dense Krylov basis: slice the flagged columns.
-                        wp, O_last = krylov.reort(wp, bad_cols, 2, comm if mpi else None)
-                    else:
-                        Q_bad = [Q_list[col] for col in bad_cols]
-                        # Sparse path fallback: 2-pass CGS2 in dense BLAS over the flagged bad blocks.
-                        wp, O_last = reorth_cgs2_dense(wp, Q_bad, 2, comm if mpi else None)
+                    Q_bad = [Q_list[col] for col in bad_cols]
+                    # Sparse path fallback: 2-pass CGS2 in dense BLAS over the flagged bad blocks.
+                    wp, O_last = reorth_cgs2_dense(wp, Q_bad, 2, comm if mpi else None)
                     if was_block:
                         wp = ManyBodyBlockState.from_states(wp)
 
