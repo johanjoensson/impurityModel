@@ -576,12 +576,12 @@ def calc_gs(
     ground_state_basis.add_states({state for p in psis for state in p})
     psis = ground_state_basis.redistribute_psis(psis)
     # Shared-support block view of the same redistributed states, built once and used
-    # by every manifold_observable_values-based diagnostic below (Phase 6a of the
-    # state-unification refactor, doc/plans/manybodystate_block_unification.md): each
-    # such call becomes one apply_block/block_inner_cy pass over the whole manifold
-    # instead of `width` independent per-state applies. `psis` itself stays a list
-    # (build_density_matrices / compute_gs_statistics / compute_entanglement_entropy
-    # are not yet converted, and calc_gs's own return contract is list[ManyBodyState]).
+    # by every observable diagnostic below (Phase 6a of the state-unification refactor,
+    # doc/plans/manybodystate_block_unification.md) instead of `width` independent
+    # per-state calls. `psis` itself stays a list alongside it: `calc_gs`'s own return
+    # contract is `list[ManyBodyState]`, and it is still needed as a list for
+    # `add_states`/`redistribute_psis` above, so keeping both avoids a redundant
+    # to_states() round trip at the return.
     psis_blk = ManyBodyBlockState.from_states(psis)
 
     # The effective restrictions are printed in the ground-state-report overview below.
