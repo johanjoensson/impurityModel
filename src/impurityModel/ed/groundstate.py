@@ -592,7 +592,7 @@ def calc_gs(
     # Single-particle density matrices, built distributed (each rank applies c_orb to its
     # local partition, redistributes, computes local inner products, then Allreduce); the
     # full rho is returned replicated on every rank. No full-state-vector gather needed.
-    rhos = build_density_matrices(ground_state_basis, psis)
+    rhos = build_density_matrices(ground_state_basis, psis_blk)
 
     e_avg = thermal_average_scale_indep(es, es, tau)
     thermal_rho = thermal_average_scale_indep(es, rhos, tau)

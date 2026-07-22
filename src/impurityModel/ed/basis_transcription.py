@@ -16,7 +16,7 @@ import numpy as np
 import scipy as sp
 from mpi4py import MPI
 
-from impurityModel.ed.ManyBodyUtils import ManyBodyOperator, ManyBodyState, applyOp, inner_multi
+from impurityModel.ed.ManyBodyUtils import ManyBodyBlockState, ManyBodyOperator, ManyBodyState, applyOp, inner_multi
 
 
 def build_vector(
@@ -205,7 +205,19 @@ def build_density_matrices(basis, psis, orbital_indices_left=None, orbital_indic
     For the general rectangular case we also exploit this decomposition
     ``rho[i, j] = <chi_j | phi_i>`` (where ``|chi_k> = c_{orb_k}|psi>`` and
     ``|phi_k> = c_{orb_k}|psi>``), reducing operator applications to O(n).
+
+    ``psis`` may also be a ``ManyBodyBlockState`` (Phase 6a of the state-unification
+    refactor); it is unpacked to a list once on entry and the body below is otherwise
+    unchanged. Rewriting the per-state loop as one block-apply per orbital was
+    considered and rejected: this function applies many *trivial* single-term
+    annihilators (little shared term/sign work to amortize across states), and
+    reading each orbital's per-state value back out would need the diagonal of a
+    full ``width x width`` Gram matrix per orbital pair -- p-fold more inner-product
+    work than the per-state loop below, with no cheap diagonal-only primitive to
+    avoid it. See doc/plans/manybodystate_block_unification.md, Phase 6a, item 3.
     """
+    if isinstance(psis, ManyBodyBlockState):
+        psis = psis.to_states()
     if orbital_indices_left is None:
         orbital_indices_left = list(range(basis.num_spin_orbitals))
     if orbital_indices_right is None:
