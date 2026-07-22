@@ -273,12 +273,29 @@ type is a public contract, not just an internal detail.
    commit. Today: `for psi_n in psis: phi = [op_orb(psi_n, 0) for orb in ...]` (`p * n_orb`
    scalar applies). Target: one `apply_block` per orbital (`n_orb` block-applies of width
    `p`), `rhos[n]` extracted from `block_inner_cy`'s full Gram diagonal per orbital pair.
-4. `_local_partials` / `compute_gs_statistics` (`gs_statistics.py:108,146`) — independent, own
-   commit. Today: `for n, psi in enumerate(psis): for state, amp in psi.items(): ...` (`p`
-   separate dict traversals). Target: one pass over the block's rows
-   (`for det, row in blk.items(): for n in range(width): amp = row[n]`) — a genuine
-   algorithmic win (one merge over the union support instead of `p`), not just a boundary
-   change.
+3b. ✅ **`build_density_matrices`** (`basis_transcription.py:195`, commit `0bccfad`) — NOT
+    rewritten block-native (initial plan target revised after advisor review). Accepts a
+    `ManyBodyBlockState` via a thin `isinstance` + `to_states()` shim on entry; body
+    unchanged. Rejected the block-native rewrite: this function applies many trivial
+    single-term annihilators (little shared term/sign work an `apply_block` would amortize),
+    while reading per-state values back out would need the diagonal of a full `width x width`
+    Gram matrix per orbital pair — `p`-fold more inner-product work than the existing
+    per-state loop, with no cheap diagonal-only primitive to avoid it. `calc_gs` passes the
+    already-built `psis_blk`, so its call needs no conversion.
+4. ✅ **`_local_partials` / `compute_gs_statistics`** (`gs_statistics.py:108,146`, commit
+   `ea1eaea`) — pure support iteration, no inner products, so this one *is* a genuine
+   algorithmic win (unlike 3b): was `for n, psi in enumerate(psis): for state, amp in
+   psi.items(): ...` (`p` separate dict traversals); now one pass over the block's rows
+   (`for det, row in blk.items(): for n in range(width): amp = row[n]`) — each determinant's
+   config/occupation info computed once instead of redundantly per state. Missing
+   determinants of a column are exact zeros in the block (documented `from_states`
+   contract), so summing over every column reproduces the old sparse accumulation exactly.
+   `compute_gs_statistics`'s `[... for _ in psis]` idiom (relied on iterating `psis` for its
+   width) fixed to `[... for _ in state_configs]`, since iterating a block yields one entry
+   per row, not per column. Manually verified (the review subagent hit a session token limit
+   mid-run): `from_states`'s zero-padding contract, `items()`'s one-row-per-determinant
+   iteration, `state_configs`'s length invariant under either input type, and that no MPI
+   collective downstream changed.
 5. `compute_impurity_rdm` / `compute_entanglement_entropy` (`gs_statistics.py:376,466`) —
    independent, own commit, highest MPI-review priority in this checklist (`crc32`-keyed
    `graph_alltoall`, not a plain `Allreduce`; block-diagonal-by-`N_imp` RDM construction).
