@@ -583,23 +583,70 @@ rather than trusting the comment, and confirmed the two new tests can't pass vac
 findings. Gates green: serial 1201/230/18/30 xfailed (+2 over baseline, the new tests), `-n 2`
 1401/18/60 xfailed (+2).
 
+## Phase 5 step 4 — `SparseKrylovDense.combine_block()` + `selective_orthogonalize` block end to end (DONE, commit `91f4e64`)
+
+`SparseKrylovDense.combine()` only ever produced `list[ManyBodyState]`. Its sole reachable
+caller through `block_combine`'s `SparseKrylovDense` arm is `selective_orthogonalize`'s
+Ritz-projection loop (`_reort.pxi`), called from `_lanczos_step.pxi`'s SELECTIVE-reort branch
+— and *that* call site round-tripped `q_next` through `.to_states()`/`from_states()` on every
+sample even though `q_next` is already a `ManyBodyBlockState` there (built by `block_tsqr`
+earlier in the same function). Checked with the advisor before writing anything, since
+`combine()` has a second caller (`gf_shift_recycling.py`'s shift-recycled solve, consumed by
+`rixs.py`'s R1 fallback as `list[ManyBodyState]`) and a return-type change is atomic across
+every caller in one commit — changing `combine()` itself would have forced that unrelated
+GF/RIXS subsystem into the same diff. The deciding fact, traced directly: `block_lanczos_cy`
+(the driver) raises `ValueError` if `store_krylov=False` and `reort_mode != Reort.NONE`, so
+reaching SELECTIVE *guarantees* `store_krylov=True`, which guarantees `Q_basis` was
+constructed as a `SparseKrylovDense` — there is no path where `selective_orthogonalize`'s
+`SparseKrylovDense` branch sees a bare list. That confirms the two callers (Lanczos-reort vs.
+GF-shift-recycling) are genuinely separable.
+
+Added `combine_block()` alongside the existing `combine()` (left untouched — `gf_shift_recycling.py`
+stays on the list form, matching the plan's add-alongside-then-migrate-separately pattern; it
+can't be deleted until that caller moves, which is expected, not a gap). Same dense zgemm via
+`_combine_dense`, but scattered into ONE `ManyBodyBlockState` via `from_unsorted` over the union
+of rows nonzero in *any* output column — mirroring `reort()`'s existing union-support
+construction exactly. `block_combine`'s `SparseKrylovDense` arm now calls `combine_block`, and
+the `_lanczos_step.pxi` SELECTIVE branch drops the `.to_states()`/`from_states()` round trip:
+`q_next` passes straight through as a block, and `selective_orthogonalize`'s own `ritz_blk`
+(now also a block) feeds `block_inner`/`block_add_scaled`'s block arms (added in step 3) instead
+of `inner_multi`/`add_scaled_multi` — the first time that path is genuinely exercised with real
+blocks rather than lists.
+
+Reviewed at high effort (subagent, explicitly asked to try to break the store_krylov=True
+safety argument rather than trust it, and to check the new test for vacuous coverage). Result:
+the safety argument held under an independent re-trace (no other caller of
+`block_lanczos_step_cy` exists; the `Q_basis = []` assignments live only in the
+`not store_krylov` branches). One SERIOUS finding, fixed: `combine_block`'s docstring falsely
+claimed its `slaterWeightMin` matches `combine()`'s per-column `prune` — it actually prunes by
+ROW (`prune_rows`: a row survives if *any* column is above cutoff), so a "mixed" row (one
+column above cutoff, another below) keeps its sub-cutoff entry in `combine_block` but loses it
+in `combine`. Not reachable today (`block_combine`'s caller always passes
+`slaterWeightMin=0.0`), but the docstring was corrected and the original test
+(`test_store_combine_block_matches_combine`) was confirmed to pass *vacuously* — a random `Y`
+essentially never produces a mixed row, so it never exercised the union-vs-intersection
+distinction either. Fixed by adding a second test
+(`test_store_combine_block_prunes_by_row_not_by_column`) that constructs a mixed row explicitly
+(a 2-determinant, 2-column store engineered so `Y` itself is the dense result) and asserts the
+actual row-granularity semantics rather than equality with `combine()`. Gates green at
+baseline+2 (serial 1203/230/18/30, `-n 2` 1403/18/60).
+
 ## Still open
 
 - The FCC Ni fill measurement (above) — blocks `determine_new_Dj`'s/`select_at`'s `Hpsi_ref`
   conversion, every per-frequency seed union found in Phase 6c, and `ChebyshevFilter.pyx`'s
   caller in `greens_function.py`.
 - Phase 5's remaining pieces, roughly in cut order:
-  1. `SparseKrylovDense.combine()` block-native — unblocked now that `block_inner`/
-     `block_add_scaled` have a real block arm (step 3, above).
-  2. `_lanczos_step.pxi`'s four `Q_basis[a:b]` -> `ManyBodyBlockState.from_states(...)` sites
-     (only meaningful once (1) lands, since `Q_basis[a:b]` on the store already returns a
-     list today, and the `.from_states` wrapping around it is only removable once its own
-     consumers accept blocks).
-  3. `_trlm.pxi`/`_irlm.pxi`'s `Q_basis` bookkeeping (`_q_slice`/`_q_concat`/`_copy_block`) —
+  1. `_trlm.pxi`/`_irlm.pxi`'s `Q_basis` bookkeeping (`_q_slice`/`_q_concat`/`_copy_block`) —
      the genuinely list-based real conversion, needs new block-native slice/concat
      primitives for the array-vs-list-vs-block three-way split these helpers currently paper
-     over.
-  4. The `_reort.pxi` collapse itself (`is_array` 3 arms -> 2, delete `block_combine_sparse`
+     over. This is now most of what's left in Phase 5.
+  2. `gf_shift_recycling.py`'s direct `Q.combine(...)` call (and its `rixs.py` R1-fallback
+     consumer) — migrate onto `combine_block()` in its own reviewable commit once it's clear
+     the per-shift-solution consumers there actually want a block (they currently treat a
+     solution as `list[ManyBodyState]` end to end); only then can `combine()` itself be
+     deleted.
+  3. The `_reort.pxi` collapse itself (`is_array` 3 arms -> 2, delete `block_combine_sparse`
      / `block_orthogonalize_sparse` / `block_normalize_sparse` / `_block_inner_mpi`, drop the
      `as_list` branch in `block_tsqr` and `was_block` in `apply_reort`) once nothing feeds a
      bare list into those dispatchers — grep-checkable: unblocked exactly when no caller
