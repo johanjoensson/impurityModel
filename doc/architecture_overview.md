@@ -21,6 +21,14 @@ operators.
 3. **`ManyBodyOperator`**
    - **Role:** Represents a many-body operator as creation/annihilation sequences with amplitudes.
    - **Details:** Maps tuples of integer-indexed creation/annihilation operators (e.g. $c^\dagger_i c_j$) to complex amplitudes. Its `__call__` applies the operator to a `ManyBodyState`, returning a new `ManyBodyState`; the sparse operator-state product is heavily optimized in C++.
+   - **Term keys:** a term is keyed by its process tuple in *product* (left-to-right) order, so `((i, 'c'), (j, 'a'))` is $c^\dagger_i c_j$. The empty tuple `()` keys the **constant** (identity) term — a constant is just the zero-length operator string, and needs no orbitals of its own. `ManyBodyOperator()` is the **zero** operator; the identity is `ManyBodyOperator.identity()`.
+   - **Canonical form:** stored terms are always in canonical normal order — creations before annihilations, each group ascending in orbital, Pauli-vanishing terms dropped, terms equal up to ordering merged. Constructors and all algebra maintain this, so `to_dict()` reports the canonical strings rather than the terms as written (`{((0,'a'),(0,'c')): 1}` reads back as $1 - n_0$). Only `__setitem__` can break the invariant; `canonicalize()` restores it and `is_canonical()` reports it. This is what makes the algebra simplify: without it `A*B - B*A` would never cancel.
+
+   - **Algebra:** `+`, `-`, unary `-`, scalar `*` and `/`, and a scalar on either side of `+`/`-` (so `z - hOp` is the resolvent shift). `A * B` — equivalently `A @ B` — is composition, `(A*B)(psi) == A(B(psi))`; `A ** n` is the n-fold product. `commutator(A, B)` and `anticommutator(A, B)` are available as module-level functions and as methods; both skip term pairs on disjoint orbitals exactly, which is what makes `[H, c_i]` cost a pass over the terms touching orbital `i` rather than `len(H)` products. Also `adjoint()`/`dagger()`, `is_hermitian()`, `hermitian_part()`, `prune(tol)`, `approx_equal(other, tol)`, `orbitals()` and `body_rank()`.
+
+     Products cost `len(A) * len(B)` term pairs before cancellation, so compose small operators — squaring a full Hamiltonian is not tractable.
+
+   - **Restrictions are not algebraic:** the occupation masks set by `set_restrictions` / `set_weighted_restrictions` belong to the operator *object*, not to the operator, and are **not** propagated through `+`, `-`, `*` or any bracket. A derived operator must have its restrictions set explicitly — which is what `gf_solvers` and `manybody_basis.Basis.set_restrictions` do.
 
 4. **MPI Utilities**
    - **Role:** Efficient parallelization across ranks.
