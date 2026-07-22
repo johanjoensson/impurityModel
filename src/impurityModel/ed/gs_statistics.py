@@ -20,6 +20,7 @@ import numpy as np
 from mpi4py import MPI
 
 from impurityModel.ed import product_state_representation as psr
+from impurityModel.ed.ManyBodyUtils import ManyBodyBlockState
 from impurityModel.ed.mpi_comm import graph_alltoall
 
 
@@ -110,36 +111,46 @@ def _local_partials(basis, psis, weights):
 
     Returns per-state config buckets, the thermally-weighted config buckets, and the
     rank-local determinant thermal-weights (+ occupation info). After
-    ``redistribute_psis`` each determinant is owned by exactly one rank, so the local
-    determinant weights are globally complete for the determinants this rank owns.
+    ``redistribute_psis``/``redistribute_block`` each determinant is owned by exactly
+    one rank, so the local determinant weights are globally complete for the
+    determinants this rank owns.
+
+    ``psis`` is a ``ManyBodyBlockState`` (one shared-support block, one column per
+    state; a plain ``list[ManyBodyState]`` is accepted too and converted once). Pure
+    support iteration with no inner products, so this is one pass over the block's
+    rows instead of ``width`` separate per-state dict traversals -- a genuine
+    algorithmic win, not just a container change (Phase 6a of the state-unification
+    refactor; see doc/plans/manybodystate_block_unification.md).
     """
+    if not isinstance(psis, ManyBodyBlockState):
+        psis = ManyBodyBlockState.from_states(list(psis))
     n_orb = basis.num_spin_orbitals
     imp_idx = basis.impurity_spin_orbital_indices
     val_idx = basis.valence_spin_orbital_indices
     con_idx = basis.conduction_spin_orbital_indices
 
-    state_configs = [defaultdict(float) for _ in psis]
+    state_configs = [defaultdict(float) for _ in range(psis.width)]
     thermal_config = defaultdict(float)
     local_det = {}  # det-bytes -> thermal weight
     local_det_info = {}  # det-bytes -> (config, occupied-per-channel)
 
-    for n, psi in enumerate(psis):
-        w_n = weights[n]
-        for state, amp in psi.items():
-            key = bytes(state.to_bytearray())
-            p = abs(amp) ** 2
-            bits = psr.bytes2bitarray(key, n_orb)
-            config = (bits[imp_idx].count(), bits[val_idx].count(), bits[con_idx].count())
+    for state, row in psis.items():
+        key = bytes(state.to_bytearray())
+        bits = psr.bytes2bitarray(key, n_orb)
+        config = (bits[imp_idx].count(), bits[val_idx].count(), bits[con_idx].count())
+        local_det_info[key] = (
+            config,
+            _channel_occupied(bits, imp_idx),
+            _channel_occupied(bits, val_idx),
+            _channel_occupied(bits, con_idx),
+        )
+        det_weight = 0.0
+        for n in range(psis.width):
+            p = abs(row[n]) ** 2
             state_configs[n][config] += p
-            thermal_config[config] += w_n * p
-            local_det[key] = local_det.get(key, 0.0) + w_n * p
-            if key not in local_det_info:
-                local_det_info[key] = (
-                    config,
-                    _channel_occupied(bits, imp_idx),
-                    _channel_occupied(bits, val_idx),
-                    _channel_occupied(bits, con_idx),
-                )
+            thermal_config[config] += weights[n] * p
+            det_weight += weights[n] * p
+        local_det[key] = det_weight
     return state_configs, thermal_config, local_det, local_det_info
 
 
@@ -166,8 +177,9 @@ def compute_gs_statistics(
     basis : Basis
         The ground-state basis (provides the flat orbital-index lists,
         ``num_spin_orbitals``, ``comm`` and ``is_distributed``).
-    psis : list of ManyBodyState
-        The rank-local low-energy eigenstates (as redistributed onto ``basis``).
+    psis : ManyBodyBlockState or list of ManyBodyState
+        The rank-local low-energy eigenstates (as redistributed onto ``basis``), one
+        column/element per state.
     es : array_like
         The corresponding eigen-energies.
     tau : float
@@ -213,7 +225,7 @@ def compute_gs_statistics(
         n_dets = comm.reduce(local_n_dets, root=0)
         if comm.rank != 0:
             return None
-        merged_state_configs = [defaultdict(float) for _ in psis]
+        merged_state_configs = [defaultdict(float) for _ in state_configs]
         for rank_configs in gathered_state_configs:
             for n, c in enumerate(rank_configs):
                 for cfg, w in c.items():

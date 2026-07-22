@@ -601,7 +601,7 @@ def calc_gs(
     # (collective call); returns the dict on rank 0 and None elsewhere.
     gs_stats = compute_gs_statistics(
         ground_state_basis,
-        psis,
+        psis_blk,
         es,
         tau,
         thermal_rho,
