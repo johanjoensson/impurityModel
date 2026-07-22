@@ -333,13 +333,58 @@ Each step got its own gate run (serial + `-n 2 --with-mpi`) and, per the plan's 
 process, an independent code review before landing — (5) at the highest effort level (MPI
 alltoall collective).
 
+## Phase 6b — `cipsi_solver.py`
+
+Traced with a discriminator Phase 6a's `build_density_matrices` decision didn't need: the
+Phase-0 fill gate is a MEMORY verdict per call site, not a blanket verdict on the file, and it
+does not always agree with which sites have a compute win. Three sites in this file, three
+different outcomes:
+
+- **`determine_new_Dj`'s / `select_at`'s `Hpsi_ref` apply+redistribute path** (the
+  `Hpsi_ref = [applyOp_test(H, psi_i, ...) for psi_i in psi_ref]` then
+  `self.basis.redistribute_psis(Hpsi_ref)` pattern) has the same "few expensive operators,
+  many independent per-state applies" shape that made `manifold_observable_values` a clean
+  win in Phase 6a — but its own fill measurement (`cipsi_solver.py:427`, see "Fill
+  measurements" above) came back **MIXED** on `nio_20` (0.237–0.444 vs f*=0.309) and was
+  explicitly left unconverted "until a later, more careful pass confirms the worst-case call
+  across production runs clears f*". The metal-tier (FCC Ni) measurement that would settle
+  this is the one this environment can't complete (30+ min, killed twice). **Left
+  unconverted** — the compute win alone does not license overriding a memory-gate
+  precondition the plan itself wrote down.
+- **`truncate`** (commit `a0c9743`) operates on the *clean* reference/eigenvector manifold —
+  the same fill profile as the `expand:741` CONVERT-verdict site, not the wider H-applied
+  candidate space `determine_new_Dj` builds — so it isn't subject to that MIXED verdict.
+  Landed: reuses the `ManyBodyBlockState` it already built for `row_max_norms2` (previously
+  discarded) via `keep_rows` instead of a second per-state dict-comprehension pass, and one
+  `redistribute_block` instead of `len(psis)` separate `redistribute_psis` transfers.
+  Reviewed at high effort (this is the core CIPSI selection loop): `keep_rows` only ever
+  reads the mask's key set (row amplitudes untouched), determinant ownership routes
+  identically through `redistribute_psis`/`redistribute_block` (both hash on
+  `routing_hash() % comm_size`), the empty-`retained` edge case matches old behavior on
+  every rank. No findings.
+- **`determine_new_Dj`'s symmetry-generator closure** (commit `a0c9743`) had a genuinely
+  pre-existing, block-independent O(n²) hazard: `next_chunk_state[state] = amp` inserting
+  one key at a time into a flat_map (`operator[]` on a missing key is a sorted-vector
+  insert). Not a block-conversion question at all — width-1, no `p` dimension — fixed by
+  batching into a plain dict and constructing once (one bulk range-insert), safe because
+  each determinant can only be written once across the whole pass (the existing
+  `state not in new_Dj` guard).
+
+`expand`'s own outer `psi_refs`/`psi0` were traced and deliberately **left as a list**: the
+actual eigensolve in the `dense_cutoff` branch runs through the *array* IRLM kernel
+(`build_distributed_vector`/`build_state` boundary conversions to/from a dense matrix, per
+`cipsi-partial-runs-array-kernel` in memory) — there is no `ManyBodyOperator.apply` in that
+hot path for a block to speed up, and `block_normalize`'s existing array/list dispatch
+(`_reort.pxi`) is Phase 5's territory, not this one's. Converting `psi_refs` end-to-end would
+also force `determine_new_Dj`'s parameter to become a block, which forces exactly the
+MIXED-verdict conversion above through propagation, or a wasteful `to_states()` round-trip at
+its entry — neither is worth it for zero compute win.
+
 ## Still open
 
-- The FCC Ni fill measurement (above).
-- **`cipsi_solver.py`'s `expand`** — the other Phase-0 CONVERT-verdict site, not yet
-  converted; still expected to be a genuine multi-commit body of work given its `psi_refs`
-  threads through `determine_new_Dj`/`truncate` (see "Phase 6 candidates" above).
-- Phases 5, 6b+ (other solver/physics modules), 7 (the Krylov/reort dual-dispatch deletion,
+- The FCC Ni fill measurement (above) — blocks `determine_new_Dj`'s/`select_at`'s `Hpsi_ref`
+  conversion specifically.
+- Phases 5, 6c+ (other solver/physics modules), 7 (the Krylov/reort dual-dispatch deletion,
   the rename, the flat_map class's deletion) — see the session plan file for the
   phase breakdown; each is its own multi-commit body of work across a large fraction of
   `src/cython/` and `src/impurityModel/ed/`.
