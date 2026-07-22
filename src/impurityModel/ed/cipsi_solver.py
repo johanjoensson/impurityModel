@@ -185,7 +185,8 @@ class CIPSISolver:
         """
         if target is None:
             target = self.basis.truncation_threshold
-        keys, norms2 = ManyBodyBlockState.from_states(list(psis)).row_max_norms2()
+        blk = ManyBodyBlockState.from_states(list(psis))
+        keys, norms2 = blk.row_max_norms2()
         cutoff2 = collective_amplitude_cutoff(norms2, int(target), self.basis.comm)
         keep_mask = norms2 > cutoff2
         if self._allreduce_sum(int(np.count_nonzero(keep_mask))) == 0:
@@ -211,8 +212,19 @@ class CIPSISolver:
         # seed block ("Block collapsed to zero rank").
         self.basis.clear()
         self.basis.add_states(retained)
-        psis = [{state: amp for state, amp in psi.items() if state in retained} for psi in psis]
-        return self.basis.redistribute_psis(psis)
+        # Reuse the block already built for the norms above: dropping the non-retained
+        # rows in place (one linear merge over the sorted key vectors, `keep_rows`)
+        # replaces a second per-state dict-comprehension pass over every psi's own
+        # flat_map, and `redistribute_block` replaces `len(psis)` separate
+        # `redistribute_psis` transfers with one shared-support wire pass. This site
+        # operates on the clean reference manifold (not the wider H-applied candidate
+        # space `determine_new_Dj` builds), so it isn't subject to that function's
+        # MIXED fill-gate verdict (Phase 6b of the state-unification refactor; see
+        # doc/plans/manybodystate_block_unification.md).
+        mask = ManyBodyBlockState.from_states([ManyBodyState(dict.fromkeys(retained, 1.0 + 0j))])
+        blk.keep_rows(mask)
+        blk = self.basis.redistribute_block(blk)
+        return blk.to_states()
 
     def _candidate_overlaps_and_energies(self, H, Hpsi_ref, slaterWeightMin: float = 0):
         """Enumerate the out-of-basis candidates of ``Hpsi_ref`` with couplings and energies.
@@ -464,7 +476,17 @@ class CIPSISolver:
                 chunk_state = ManyBodyState({state: _amplitude_from_hash(state.get_hash()) for state in chunk})
 
                 while chunk_state:
-                    next_chunk_state = ManyBodyState()
+                    # Collect into a plain dict and build the next ManyBodyState in one
+                    # bulk range-insert (its dict constructor's flat_map insert(begin,
+                    # end)) instead of `p` repeated single-key inserts: `operator[]` on a
+                    # missing key is a sorted-vector insert, so accumulating one
+                    # determinant at a time here was O(n^2) in the size of the closure
+                    # wave. Every determinant can only be discovered once across the
+                    # whole pass (the `state not in new_Dj` guard below), so no key here
+                    # is ever written twice -- batching changes nothing about which
+                    # (state, amp) pairs end up in the next wave, only how they're
+                    # assembled into it.
+                    next_amps = {}
                     for op in gen_ops:
                         # Apply generator (cutoff=1e-12 to prune float noise)
                         psi_op = applyOp_test(op, chunk_state, cutoff=1e-12)
@@ -472,9 +494,9 @@ class CIPSISolver:
                         for state, amp in psi_op.items():
                             if state not in new_Dj:
                                 new_Dj.add(state)
-                                next_chunk_state[state] = amp
+                                next_amps[state] = amp
 
-                    chunk_state = next_chunk_state
+                    chunk_state = ManyBodyState(next_amps)
 
         if return_Hpsi_ref:
             return new_Dj, Hpsi_ref
