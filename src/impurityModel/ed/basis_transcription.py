@@ -232,9 +232,15 @@ def build_density_matrices(basis, psis, orbital_indices_left=None, orbital_indic
 
     square = orbital_indices_left == orbital_indices_right
 
+    # Built once, not once per state: each annihilator is a pure function of orb, not
+    # of psi_n, so constructing it inside the loop below paid len(psis)x redundant
+    # ManyBodyOperator construction for no reason.
+    left_ops = [ManyBodyOperator({((orb, "a"),): 1.0}) for orb in orbital_indices_left]
+    right_ops = left_ops if square else [ManyBodyOperator({((orb, "a"),): 1.0}) for orb in orbital_indices_right]
+
     for n, psi_n in enumerate(psis):
-        phi = [ManyBodyOperator({((orb, "a"),): 1.0})(psi_n, 0) for orb in orbital_indices_left]
-        chi = phi if square else [ManyBodyOperator({((orb, "a"),): 1.0})(psi_n, 0) for orb in orbital_indices_right]
+        phi = [op(psi_n, 0) for op in left_ops]
+        chi = phi if square else [op(psi_n, 0) for op in right_ops]
 
         if basis.is_distributed:
             phi = basis.redistribute_psis(phi)
