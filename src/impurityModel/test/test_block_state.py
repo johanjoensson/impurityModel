@@ -367,6 +367,71 @@ def test_combine_columns_matches_block_combine_sparse():
     assert blk.combine_columns(np.eye(4)[:, :1]).width == 1
 
 
+def _select_oracle(blk, cols):
+    """The pre-select_cols implementation: a 0/1 selection matrix through
+    combine_columns -- used as the bit-for-bit reference for the direct-gather select()."""
+    w = blk.width
+    cols = list(cols)
+    Y = np.zeros((w, len(cols)), dtype=complex)
+    for k, c in enumerate(cols):
+        if c < 0:
+            c += w
+        Y[c, k] = 1.0
+    return blk.combine_columns(Y)
+
+
+@pytest.mark.parametrize(
+    "cols",
+    [
+        [0, 1, 2],  # contiguous range
+        [3, 0, 2],  # arbitrary order
+        [1, 1, 4],  # repeats
+        [-1, -5],  # negative indices
+        [],  # width-0 selection
+    ],
+)
+def test_select_matches_selection_matrix_oracle(cols):
+    rng = np.random.default_rng(70)
+    states = _random_states(rng, 5, 40)
+    blk = ManyBodyBlockState.from_states(states)
+    ref = _select_oracle(blk, cols)
+    out = blk.select(cols)
+    assert out.width == len(cols)
+    assert out.to_states() == ref.to_states()
+
+
+def test_select_preserves_support_including_zero_rows():
+    """A row that is zero in every selected column keeps its key (same support as the
+    parent block), not just the rows with nonzero selected amplitudes."""
+    a = ManyBodyState({_det(1): 1.0 + 0j, _det(2): 2.0 + 0j})
+    b = ManyBodyState({_det(1): 0.0 + 0j, _det(3): 3.0 + 0j})
+    blk = ManyBodyBlockState.from_states([a, b])
+    # column 1 (b) is exactly zero at det(1); selecting only column 1 must still
+    # carry det(1)'s row (as an exact zero), matching the parent's shared support.
+    out = blk.select([1])
+    assert out.keys() == blk.keys()
+    (col,) = out.to_states()
+    assert col[_det(1)] == 0j
+
+
+def test_select_out_of_range_raises():
+    rng = np.random.default_rng(71)
+    states = _random_states(rng, 3, 10)
+    blk = ManyBodyBlockState.from_states(states)
+    with pytest.raises(IndexError):
+        blk.select([3])
+    with pytest.raises(IndexError):
+        blk.select([-4])
+
+
+def test_column_matches_select_singleton():
+    rng = np.random.default_rng(72)
+    states = _random_states(rng, 4, 25)
+    blk = ManyBodyBlockState.from_states(states)
+    for i in range(4):
+        assert blk.column(i).to_states() == blk.select([i]).to_states()
+
+
 def test_store_append_block_matches_append():
     from impurityModel.ed.ManyBodyUtils import SparseKrylovDense
 

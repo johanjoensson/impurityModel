@@ -612,6 +612,28 @@ public:
     std::inplace_merge(m_keys.begin(), m_keys.begin() + mid, m_keys.end());
   }
 
+  /**
+   * @brief Gather columns `cols` into a new block on the SAME support (same
+   * `keys()`, including rows that are zero in every selected column).
+   * `out.row(r)[k] = row(r)[cols[k]]` -- bit-for-bit what
+   * `block_combine_cols(*this, Y, cols.size())` produces for a 0/1 selection
+   * matrix `Y`, but O(rows() * cols.size()) instead of
+   * O(rows() * width() * cols.size()). `cols` entries are assumed already
+   * validated (in range, non-negative) by the caller.
+   */
+  ManyBodyBlockState select_cols(const std::vector<std::size_t> &cols) const {
+    const std::size_t n = cols.size();
+    std::vector<Value> out_amps(rows() * n);
+    for (std::size_t r = 0; r < rows(); ++r) {
+      const ConstRow src = row(r);
+      Value *dst = out_amps.data() + r * n;
+      for (std::size_t k = 0; k < n; ++k) {
+        dst[k] = src[cols[k]];
+      }
+    }
+    return ManyBodyBlockState(m_keys, std::move(out_amps), n);
+  }
+
   /** @brief Per-column sum of |amp|^2 into out[0..width). */
   void col_norm2(double *out) const noexcept {
     for (std::size_t c = 0; c < m_width; ++c) {

@@ -85,6 +85,7 @@ cdef extern from "ManyBodyBlockState.h" nogil:
         ManyBodyBlockState key_union(const ManyBodyBlockState&) except +
         void merge_keys(const ManyBodyBlockState&) except +
         void col_norm2(double*)
+        ManyBodyBlockState select_cols(const vector[size_t]&) except +
 
         bint operator==(const ManyBodyBlockState&)
         bint operator!=(const ManyBodyBlockState&)

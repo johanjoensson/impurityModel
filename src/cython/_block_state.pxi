@@ -750,15 +750,18 @@ cdef class ManyBodyBlockState:
         return out
 
     def select(self, cols):
-        """A new block of the given columns (any order, repeats allowed), same support.
+        """A new block of the given columns (any order, repeats allowed), same support
+        (including rows that are zero in every selected column).
 
-        Expressed as ``self @ Y`` for a 0/1 selection matrix ``Y`` -- reuses
-        ``combine_columns`` exactly, rather than a second hand-rolled gather.
+        A direct gather (``select_cols``): O(rows * n) rather than building an
+        (width x n) 0/1 selection matrix and routing through ``combine_columns``'s
+        O(rows * width * n) matvec -- bit-for-bit the same output either way.
         """
         cdef Py_ssize_t w = <Py_ssize_t>self.b.width()
         cols = list(cols)
         cdef Py_ssize_t n = len(cols)
-        Y = np.zeros((w, n), dtype=complex)
+        cdef vector[size_t] cvec
+        cvec.reserve(n)
         cdef Py_ssize_t k, c
         for k in range(n):
             c = cols[k]
@@ -766,8 +769,11 @@ cdef class ManyBodyBlockState:
                 c += w
             if c < 0 or c >= w:
                 raise IndexError(f"column {cols[k]} out of range for width {w}")
-            Y[c, k] = 1.0
-        return self.combine_columns(Y)
+            cvec.push_back(<size_t>c)
+        cdef ManyBodyBlockState out = ManyBodyBlockState()
+        with nogil:
+            out.b = self.b.select_cols(cvec)
+        return out
 
     def column(self, Py_ssize_t i):
         """The ``i``-th column, as a width-1 block over the same support."""
