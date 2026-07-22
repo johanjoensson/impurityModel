@@ -734,13 +734,10 @@ def calc_spectra(
 
 def _combine_component_ops(component_ops, coeffs):
     r"""Linear combination :math:`\sum_\alpha c_\alpha T_\alpha` of one-body component operators."""
-    combined = {}
-    for coeff, op in zip(coeffs, component_ops):
-        if abs(coeff) == 0:
-            continue
-        for factors, amp in (op.to_dict() if hasattr(op, "to_dict") else op).items():
-            combined[factors] = combined.get(factors, 0) + coeff * amp
-    return ManyBodyOperator(combined)
+    return sum(
+        (coeff * op for coeff, op in zip(coeffs, component_ops) if abs(coeff) != 0),
+        ManyBodyOperator(),
+    )
 
 
 def _component_seed_moments(hOp, comp_ops, psis, es, e0, tau, basis, slaterWeightMin):

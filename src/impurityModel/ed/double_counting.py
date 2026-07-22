@@ -25,7 +25,6 @@ from impurityModel.ed.cipsi_solver import CIPSISolver
 from impurityModel.ed.lie_algebra import extract_tensors, tensors_to_operator
 from impurityModel.ed.manybody_basis import Basis
 from impurityModel.ed.ManyBodyUtils import ManyBodyOperator
-from impurityModel.ed.operator_algebra import addOps
 from impurityModel.ed.utils import matrix_print
 
 
@@ -385,7 +384,7 @@ def fixed_peak_dc(model, basis, solver, *, peak_position, dc_guess, comm=None, v
             "With multiple groups it is ambiguous which group gains/loses the electron."
         )
     u = atomic_physics.getUop_from_rspt_u4(u4)
-    h_op_i = ManyBodyOperator(addOps([h0_op, u]))
+    h_op_i = ManyBodyOperator(h0_op) + ManyBodyOperator(u)
     impurity_orbitals, bath_states = _normalize_dc_orbitals(impurity_orbitals, bath_states)
 
     # Keep the requested peak outside the thermal broadening, preserving the
@@ -567,7 +566,7 @@ def fixed_occupation_dc(
     verbose = verbosity > 0
 
     u = atomic_physics.getUop_from_rspt_u4(u4)
-    h_op_i = ManyBodyOperator(addOps([h0_op, u]))
+    h_op_i = ManyBodyOperator(h0_op) + ManyBodyOperator(u)
     impurity_orbitals, bath_states = _normalize_dc_orbitals(impurity_orbitals, bath_states)
 
     impurity_indices = [orb for orb_blocks in impurity_orbitals.values() for block in orb_blocks for orb in block]

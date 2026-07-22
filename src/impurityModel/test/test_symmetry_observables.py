@@ -12,7 +12,7 @@ from impurityModel.ed.observables import (
     make_spin_operators,
     manifold_observable_values,
 )
-from impurityModel.ed.operator_algebra import addOps, c2i
+from impurityModel.ed.operator_algebra import c2i
 
 
 def _sd(occupied, n_orbs=4):
@@ -1058,7 +1058,7 @@ def test_calc_gs_reports_casimirs_for_cubic_manifold_grouped_dshell(capsys):
         h0[((b, "c"), (b, "a"))] = -0.5  # valence (below Fermi 0)
         h0[((k, "c"), (b, "a"))] = 0.15
         h0[((b, "c"), (k, "a"))] = 0.15
-    Hop = ManyBodyOperator(addOps([h0, u_dict]))
+    Hop = ManyBodyOperator(h0) + ManyBodyOperator(u_dict)
 
     imp_flat = list(range(10))
     bs = impurity_block_structure(Hop, imp_flat)

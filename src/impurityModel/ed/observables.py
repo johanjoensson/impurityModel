@@ -597,8 +597,10 @@ def make_impurity_casimir_operators(impurity_orbitals, rot_to_spherical):
         Each is ``(plus, minus, z)`` as ``ManyBodyOperator``s, ready for
         :func:`apply_casimir` / :func:`expect_casimir`. ``J = L + S``.
     """
-    l_plus, l_minus, l_z = {}, {}, {}
-    s_plus, s_minus, s_z = {}, {}, {}
+    # One operator per component, accumulated over the shells with the operator algebra
+    # (the shells address disjoint orbitals, so this is a plain direct sum).
+    l_plus, l_minus, l_z = ManyBodyOperator(), ManyBodyOperator(), ManyBodyOperator()
+    s_plus, s_minus, s_z = ManyBodyOperator(), ManyBodyOperator(), ManyBodyOperator()
     for partition, blocks in impurity_orbitals.items():
         orbs = [orb for block in blocks for orb in block]
         n_so = len(orbs)
@@ -611,22 +613,27 @@ def make_impurity_casimir_operators(impurity_orbitals, rot_to_spherical):
         lz_m, lp_m, lm_m, sz_m, sp_m, sm_m = _single_particle_lsj_matrices(shell_l)
         rot = rot_to_spherical[partition] if isinstance(rot_to_spherical, dict) else rot_to_spherical
         rot = np.asarray(rot, dtype=complex)
-        for target, matrix in (
-            (l_z, lz_m),
-            (l_plus, lp_m),
-            (l_minus, lm_m),
-            (s_z, sz_m),
-            (s_plus, sp_m),
-            (s_minus, sm_m),
-        ):
+        shell = []
+        for matrix in (lz_m, lp_m, lm_m, sz_m, sp_m, sm_m):
             computational = rot @ matrix @ rot.conj().T
-            for i in range(n_so):
-                for j in range(n_so):
-                    if abs(computational[i, j]) > 1e-12:
-                        key = ((orbs[i], "c"), (orbs[j], "a"))
-                        target[key] = target.get(key, 0.0) + computational[i, j]
-    l_ops = (ManyBodyOperator(l_plus), ManyBodyOperator(l_minus), ManyBodyOperator(l_z))
-    s_ops = (ManyBodyOperator(s_plus), ManyBodyOperator(s_minus), ManyBodyOperator(s_z))
+            shell.append(
+                ManyBodyOperator(
+                    {
+                        ((orbs[i], "c"), (orbs[j], "a")): computational[i, j]
+                        for i in range(n_so)
+                        for j in range(n_so)
+                        if abs(computational[i, j]) > 1e-12
+                    }
+                )
+            )
+        l_z += shell[0]
+        l_plus += shell[1]
+        l_minus += shell[2]
+        s_z += shell[3]
+        s_plus += shell[4]
+        s_minus += shell[5]
+    l_ops = (l_plus, l_minus, l_z)
+    s_ops = (s_plus, s_minus, s_z)
     j_ops = (l_ops[0] + s_ops[0], l_ops[1] + s_ops[1], l_ops[2] + s_ops[2])
     return l_ops, s_ops, j_ops
 
