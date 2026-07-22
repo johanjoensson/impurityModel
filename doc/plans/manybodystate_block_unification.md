@@ -547,15 +547,50 @@ or converting `inner_multi`/`add_scaled_multi` would trade one dual-dispatch haz
 silent-corruption one, so it stays a separate, later cut — the advisor's "small single-concern
 commits" cut point most of Phase 5's remaining risk was already flagged to sit at.
 
+## Phase 5 step 3 — `block_inner`/`block_add_scaled` gain a real block arm (DONE, commit `1e85f61`)
+
+Closed the hazard flagged at the end of step 2 before it could be exercised. `block_inner` and
+`block_add_scaled` (`_reort.pxi`) fell through to `inner_multi`/`add_scaled_multi`
+unconditionally in their non-array branch; both are list-only (`inner_multi` does `list(V)` if
+`V` isn't already a list, which on a `ManyBodyBlockState` iterates *determinant keys*, not
+per-column states — silent corruption, not a raise). No caller passes a block through this path
+today (verified by grep + trace: `_trlm.pxi`/`_irlm.pxi` only call `block_inner`, never
+`block_add_scaled`; `_reort.pxi`'s own `selective_orthogonalize` calls both but only ever with
+lists while `SparseKrylovDense.combine()` still returns `list[ManyBodyState]`;
+`BiCGSTAB.pyx`/`GMRES.pyx`'s five call sites are all inside an `is_arr` guard and can't reach
+the non-array branch at all) — but `combine()`'s conversion (next) and `_trlm.pxi`/`_irlm.pxi`'s
+`Q_basis` conversion (after that) are both about to start feeding real blocks through exactly
+this path, so this is genuinely preparatory, not speculative.
+
+Added an `elif isinstance(V, ManyBodyBlockState):` branch to each: `block_inner` dispatches to
+`block_inner_cy(V, W)` (already bit-for-bit parity-tested against `inner_multi`, see
+`test_block_inner_matches_inner_multi`) with the same `Allreduce` reduction as the other two
+branches; `block_add_scaled` dispatches to `V = block_add_scaled_cy(V, W, alpha)` then
+`V.prune_rows(slaterWeightMin)` if requested. The add-scaled case can't mutate in place — the
+union support can outgrow `V`'s own storage, exactly the reason `block_add_scaled_cy` itself
+returns a new block rather than mutating — so it rebinds instead; traced every existing caller
+of the dispatcher to confirm each already captures the return value where it matters (the ones
+that don't are all array-only call sites, structurally unreachable from the new branch).
+
+Two new tests in `test_block_state.py`
+(`test_block_inner_dispatcher_accepts_blocks`/`test_block_add_scaled_dispatcher_accepts_blocks`)
+check the new branches directly, including that `block_add_scaled` rebinds rather than mutates
+and that `slaterWeightMin` pruning lands on the returned block. Reviewed at high effort
+(subagent): confirmed `block_inner_cy`/`block_add_scaled_cy`'s signatures match what's assumed,
+confirmed the `Allreduce` shape is rank-uniform (driven by `.width()`, never local row count),
+independently re-traced the "no current caller reaches the new branch with a bare list" claim
+rather than trusting the comment, and confirmed the two new tests can't pass vacuously. No
+findings. Gates green: serial 1201/230/18/30 xfailed (+2 over baseline, the new tests), `-n 2`
+1401/18/60 xfailed (+2).
+
 ## Still open
 
 - The FCC Ni fill measurement (above) — blocks `determine_new_Dj`'s/`select_at`'s `Hpsi_ref`
   conversion, every per-frequency seed union found in Phase 6c, and `ChebyshevFilter.pyx`'s
   caller in `greens_function.py`.
 - Phase 5's remaining pieces, roughly in cut order:
-  1. `SparseKrylovDense.combine()` block-native, which first needs `inner_multi`/
-     `add_scaled_multi` (or their `block_inner`/`block_add_scaled` callers) to have a real
-     block arm instead of silently mis-iterating a block as a list of determinant keys.
+  1. `SparseKrylovDense.combine()` block-native — unblocked now that `block_inner`/
+     `block_add_scaled` have a real block arm (step 3, above).
   2. `_lanczos_step.pxi`'s four `Q_basis[a:b]` -> `ManyBodyBlockState.from_states(...)` sites
      (only meaningful once (1) lands, since `Q_basis[a:b]` on the store already returns a
      list today, and the `.from_states` wrapping around it is only removable once its own
