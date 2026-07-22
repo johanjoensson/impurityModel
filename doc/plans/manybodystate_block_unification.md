@@ -493,19 +493,83 @@ already-deferred fill-gated seed-union shape). Relocating the boundary here woul
 eliminate any round trip the way it did for BiCGSTAB/GMRES, so there is nothing to do until
 either Phase 4 or the FCC Ni fill measurement unblocks the caller side.
 
+## Phase 5 step 2 — `SparseKrylovDense.reort` goes block end to end (DONE, commit `404f2a6`)
+
+`apply_reort`'s `was_block` dual dispatch had exactly one production-reachable purpose:
+`krylov.reort()` (the Krylov store's CGS2 projection) only accepted/returned
+`list[ManyBodyState]`, so every FULL/PERIODIC and PARTIAL/SELECTIVE reorthogonalization pass
+paid a `ManyBodyBlockState` -> list -> `ManyBodyBlockState` round trip purely to match that
+signature — `wp` at both call sites in `_lanczos_step.pxi` is always already a block (the
+Phase 2.4 shared-support recurrence), so the round trip bought nothing.
+
+Fixed at the source: `reort()` now takes and returns a `ManyBodyBlockState` directly. Its
+internal `Wd` scatter used to walk each `ManyBodyState`'s flat_map iterator; it now walks
+`wp.b.row(r)`/`wp.b.key(r)` (the block's own C++ accessors) instead — no behavior change,
+just reading the same values through a different container. The output side changes more:
+instead of scanning `Wd` per column and building `p` independently-pruned sparse
+`ManyBodyState`s (then, at the old call site, `from_states`-ing them back into a block), it
+builds **one** `ManyBodyBlockState` directly from `Wd`, keeping a row iff it is nonzero in
+*any* column — the same union-of-supports a `from_states` build over those `p` pruned states
+would have produced, verified by tracing both constructions rather than assumed. Needed
+`from_unsorted` (stable sort + first-wins dedup) because the store's `row_det` order is
+registration order, not key order; no duplicate keys are possible here since `row_det` is
+1:1 with `_register`'s dedup.
+
+`apply_reort` drops the `was_block` round trip on the krylov-backed path in both branches
+(FULL/PERIODIC and PARTIAL/SELECTIVE); the `reorth_cgs2_dense` fallback (reached only when
+`krylov is None`, which requires `store_krylov=False`, which requires `reort='none'` — so
+provably dead whenever `apply_reort` is actually doing FULL/PERIODIC/PARTIAL/SELECTIVE work)
+is untouched. A defensive `was_block=False` branch is kept around the block-native
+`krylov.reort()` call for robustness even though no current caller reaches it — noted inline
+rather than silently assumed unreachable forever.
+
+Reviewed at high effort (subagent): traced the `Wd`-scatter and output-construction
+equivalence against the old per-state code path line by line, confirmed `wp.b.width()` stays
+rank-uniform on an empty-local-determinant rank (so the `Allreduce(O)` collective is never
+skipped), confirmed `from_unsorted`'s dedup path is never exercised here, and confirmed the
+restructured `apply_reort` branches preserve "type out == type in" exactly like the original.
+No CRITICAL or SERIOUS findings; the one MINOR note (the dead defensive branch would return
+key-sorted rather than row-order states, harmless but worth flagging) got a one-line comment
+rather than being left implicit.
+
+Gates green, exact baseline match: serial 1199/230/18/30 xfailed, `-n 2` 1399/18/60 xfailed.
+
+**Not converted in this step, and why:** `SparseKrylovDense.combine()` (the other
+production caller of the store, via `block_combine`'s `isinstance(Q, SparseKrylovDense)`
+branch in `_reort.pxi:84`, and transitively `selective_orthogonalize`'s
+`ritz_blk = block_combine(Q_basis, ...)`) has the same "already dense, could return a block
+for free" shape as `reort()` — but its output feeds `block_inner`/`block_add_scaled`, whose
+non-array arms call `inner_multi`/`add_scaled_multi` unconditionally. Those two functions are
+list-only today (`inner_multi` does `list(V)` if not already a list — which on a
+`ManyBodyBlockState` would iterate *determinant keys*, not states, silently corrupting the
+computation rather than raising). Converting `combine()`'s return type without first auditing
+or converting `inner_multi`/`add_scaled_multi` would trade one dual-dispatch hazard for a
+silent-corruption one, so it stays a separate, later cut — the advisor's "small single-concern
+commits" cut point most of Phase 5's remaining risk was already flagged to sit at.
+
 ## Still open
 
 - The FCC Ni fill measurement (above) — blocks `determine_new_Dj`'s/`select_at`'s `Hpsi_ref`
-  conversion, every per-frequency seed union found in Phase 6c, and (per the note just
-  above) `ChebyshevFilter.pyx`'s caller in `greens_function.py`.
-- Phase 5's remaining, larger piece: `_trlm.pxi`/`_irlm.pxi`'s `Q_basis` bookkeeping (real
-  list-to-block conversion, needs new block-native slice/concat primitives), and then the
-  `_reort.pxi` collapse itself (`is_array` 3 arms -> 2, delete `block_combine_sparse` /
-  `block_orthogonalize_sparse` / `block_normalize_sparse` / `_block_inner_mpi`, drop the
-  `as_list` branch in `block_tsqr` and `was_block` in `apply_reort`) once nothing feeds a
-  bare list into those dispatchers — grep-checkable: unblocked exactly when no caller passes
-  `list[ManyBodyState]` into `block_normalize`/`block_combine`/`block_orthogonalize`/
-  `block_tsqr`/`apply_reort`.
+  conversion, every per-frequency seed union found in Phase 6c, and `ChebyshevFilter.pyx`'s
+  caller in `greens_function.py`.
+- Phase 5's remaining pieces, roughly in cut order:
+  1. `SparseKrylovDense.combine()` block-native, which first needs `inner_multi`/
+     `add_scaled_multi` (or their `block_inner`/`block_add_scaled` callers) to have a real
+     block arm instead of silently mis-iterating a block as a list of determinant keys.
+  2. `_lanczos_step.pxi`'s four `Q_basis[a:b]` -> `ManyBodyBlockState.from_states(...)` sites
+     (only meaningful once (1) lands, since `Q_basis[a:b]` on the store already returns a
+     list today, and the `.from_states` wrapping around it is only removable once its own
+     consumers accept blocks).
+  3. `_trlm.pxi`/`_irlm.pxi`'s `Q_basis` bookkeeping (`_q_slice`/`_q_concat`/`_copy_block`) —
+     the genuinely list-based real conversion, needs new block-native slice/concat
+     primitives for the array-vs-list-vs-block three-way split these helpers currently paper
+     over.
+  4. The `_reort.pxi` collapse itself (`is_array` 3 arms -> 2, delete `block_combine_sparse`
+     / `block_orthogonalize_sparse` / `block_normalize_sparse` / `_block_inner_mpi`, drop the
+     `as_list` branch in `block_tsqr` and `was_block` in `apply_reort`) once nothing feeds a
+     bare list into those dispatchers — grep-checkable: unblocked exactly when no caller
+     passes `list[ManyBodyState]` into `block_normalize`/`block_combine`/
+     `block_orthogonalize`/`block_tsqr`/`apply_reort`.
 - Phase 7 (the rename, the flat_map class's deletion) — see the session plan file for the
   phase breakdown; each remaining phase is its own multi-commit body of work across a large
   fraction of `src/cython/` and `src/impurityModel/ed/`.
