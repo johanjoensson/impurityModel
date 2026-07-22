@@ -165,7 +165,10 @@ so this is the main remaining lever; it also gemm-ifies `inner_multi`/
 argument as the Krylov store (fill ratio 1.00 measured).
 
 Design constraints: `ManyBodyState` is NOT retrofitted (it stays the scalar boundary
-type everywhere outside the hot loop); block width p is runtime (no compile-time
+type everywhere outside the hot loop) -- **superseded 2026-07-22**, see
+`manybodystate_block_unification.md`: `ManyBodyBlockState` is absorbing `ManyBodyState`'s
+container surface and will be renamed to it, so `p == 1` becomes an ordinary block rather
+than a special case; block width p is runtime (no compile-time
 width); row pruning keeps a row if ANY column survives the cutoff (deliberate,
 flagged semantic difference vs per-column prune); deflation narrows p via column
 subset. The Lanczos-loop conversion is contained because the kernel already funnels
