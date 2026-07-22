@@ -467,6 +467,8 @@ cdef class SparseKrylovDense:
         semantics, matching what ``self[a:b]`` returned before this method existed) --
         NOT zero-padded out to ``b``, which would silently change the output width.
         """
+        if a < 0:
+            raise ValueError(f"slice_block: negative start {a} (unlike self[a:b], not Python-slice-wrapped)")
         cdef Py_ssize_t bb = self.n_cols if b is None else min(<Py_ssize_t>b, self.n_cols)
         cdef Py_ssize_t ncol = bb - a
         if ncol < 0:

@@ -218,6 +218,17 @@ def test_store_slice_block_clamps_b_past_n_cols():
     assert out.to_states() == ref.to_states()
 
 
+def test_store_slice_block_rejects_negative_start():
+    """Unlike ``self[a:b]`` (Python slice semantics wrap a negative index), ``slice_block``
+    takes a plain integer start and does not wrap -- a negative ``a`` must raise rather
+    than silently shift which columns are read."""
+    rng = np.random.default_rng(35)
+    store = SparseKrylovDense()
+    store.append(_random_states(rng, 3, 10))
+    with pytest.raises(ValueError):
+        store.slice_block(-1, 2)
+
+
 def test_store_slice_block_across_chunk_boundary():
     """Same check, but with the slice straddling a chunk boundary (the initial chunk is
     32 columns; 40 states force at least one more)."""
