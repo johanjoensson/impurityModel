@@ -116,6 +116,10 @@ cdef inline void _prof_acc(str key, double t0):
 
 
 cpdef list block_combine_sparse(list Q, np.ndarray Y, double slaterWeightMin=0.0):
+    """No production caller reaches this since Phase 5 step 6 (block_combine's dispatcher
+    now raises on a bare list[ManyBodyState] instead of falling through here) -- kept as
+    test_block_state.py's / test_krylov_store.py's bit-for-bit oracle for
+    ManyBodyBlockState.combine_columns."""
     cdef int n_out = Y.shape[1]
     cdef list out = [ManyBodyState() for _ in range(n_out)]
     add_scaled_multi(out, Q, np.ascontiguousarray(Y, dtype=complex))
@@ -126,6 +130,9 @@ cpdef list block_combine_sparse(list Q, np.ndarray Y, double slaterWeightMin=0.0
 
 
 cpdef tuple block_orthogonalize_sparse(list wp, list Q, object overlaps=None, object comm=None):
+    """No production caller reaches this since Phase 5 step 6 (block_orthogonalize's
+    dispatcher now raises on a bare list[ManyBodyState] instead of falling through here) --
+    kept as test_block_state.py's oracle for the ManyBodyBlockState arm."""
     if overlaps is None:
         overlaps = inner_multi(Q, wp)
         if comm is not None:
@@ -143,48 +150,6 @@ cpdef tuple block_normalize_sparse(object wp, bint mpi=False, object comm=None, 
     if active_k <= 0:
         raise ValueError("Block collapsed to zero rank")
     return q_next, beta_j
-
-# ---------------------------------------------------------------------------
-# Internal helpers
-# ---------------------------------------------------------------------------
-
-
-def _block_inner_mpi(states_a, states_b, mpi: bool, comm):
-    """Compute the block inner product :math:`G = \\langle A | B \\rangle` with MPI reduction.
-
-    Computes the :math:`p \\times p` Gram matrix
-
-    .. math::
-
-        G_{ij} = \\langle a_i \\mid b_j \\rangle, \\quad i, j = 0, \\dots, p-1
-
-    using a *zero-copy* local pass via ``inner_multi`` (which sums contributions from
-    the Slater determinants owned by this rank), then performs a single ``MPI_Allreduce``
-    (``MPI.SUM``) so that every rank holds the identical, globally reduced :math:`G`.
-
-    Note:
-        **Collective operation** – all MPI ranks must call this function simultaneously
-        whenever ``mpi=True``.  The inner computation itself (``inner_multi``) is local
-        (no communication); only the subsequent ``Allreduce`` is collective.
-
-    Args:
-        states_a: List of ``ManyBodyState`` of length ``p`` representing the bra block
-            :math:`A = [a_0, \\dots, a_{p-1}]`.
-        states_b: List of ``ManyBodyState`` of length ``p`` representing the ket block
-            :math:`B = [b_0, \\dots, b_{p-1}]`.
-        mpi: ``True`` when running under MPI with more than one rank.  When ``False`` no
-            communication occurs and the local result is returned directly.
-        comm: Active ``mpi4py.MPI.Comm`` communicator, or ``None`` when running serially.
-
-    Returns:
-        numpy.ndarray: Complex array of shape ``(p, p)`` holding the globally reduced
-        Gram matrix :math:`G`.
-    """
-    G = inner_multi(states_a, states_b)
-    if mpi and comm is not None:
-        comm.Allreduce(MPI.IN_PLACE, G, op=MPI.SUM)
-    return G
-
 
 # Orthonormalization is shared: block_tsqr (imported from BlockLanczosArray, which includes
 # _reort.pxi) dispatches on the block representation, so this kernel and the array kernel run

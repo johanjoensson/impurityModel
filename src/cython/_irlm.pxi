@@ -200,7 +200,13 @@ def _implicitly_restarted_block_lanczos_manybody(
     sweep callable (the Cython ``block_lanczos_cy`` kernel), then delegates to the
     shared :func:`_irlm_core`. Bit-for-bit consistent with the array path."""
     mpi = comm is not None and comm.size > 1
-    psi0 = list(psi0) if isinstance(psi0, (list, tuple)) else psi0
+    # Adopt the block-native seed representation up front (matching what the sweep's
+    # fresh-start ingestion and every restart-loop primitive already work in) instead of
+    # coercing to a list: a bare list only ever reaches block_normalize's list-only
+    # fallback from here on out because of this conversion, not because anything downstream
+    # still needs one.
+    if not isinstance(psi0, ManyBodyBlockState):
+        psi0 = ManyBodyBlockState.from_states(list(psi0))
     psi0, _ = block_normalize(psi0, mpi, comm, slaterWeightMin)
 
     def sweep(
@@ -299,7 +305,7 @@ def _irlm_core(
         cntl2 = tol
 
     is_arr = is_array(psi0)
-    p = (psi0.shape[1] if psi0.ndim == 2 else 1) if is_arr else len(psi0)
+    p = (psi0.shape[1] if psi0.ndim == 2 else 1) if is_arr else _q_cols(psi0)
     m = max_subspace_blocks
     k0 = int(np.ceil(num_wanted / p))
     if m <= k0:
@@ -431,20 +437,12 @@ def _irlm_core(
         k_blocks = int(np.ceil(n_need / p))
         n_keep = k_blocks * p
         if total - n_keep < p:
-            v0 = _copy_block(psi0)
-            if not is_arr and _nlock() > 0:
-                # psi0/v0 must stay list[ManyBodyState] for the sweep's fresh-start
-                # ingestion below (block_lanczos_cy's fresh-start branch does
-                # p = len(psi0) and list(psi0), both wrong on a ManyBodyBlockState) --
-                # but Xl is already block-native once anything has locked, and
-                # block_orthogonalize dispatches on its first argument only, so a bare
-                # list v0 against a block Xl falls through to the list-only
-                # block_orthogonalize_sparse, which raises TypeError on a block Q.
-                # Convert just for this projection and materialize back immediately.
-                v0 = ManyBodyBlockState.from_states(v0)
-                v0 = _orth_against_locked(v0).to_states()
-            else:
-                v0 = _orth_against_locked(v0)
+            # psi0 is already block-native on the MBS path (the entry point converts it
+            # before the first sweep), matching Xl's representation, and block_lanczos_cy's
+            # fresh-start ingestion now accepts a ManyBodyBlockState seed directly -- so
+            # v0 can stay a block end to end instead of round-tripping through
+            # list[ManyBodyState] just for the _orth_against_locked projection.
+            v0 = _orth_against_locked(_copy_block(psi0))
             try:
                 v0, _ = block_normalize(v0, mpi, comm, slater)
             except ValueError:

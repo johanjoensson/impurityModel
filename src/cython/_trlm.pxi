@@ -91,7 +91,7 @@ def _trlm_core(
     rank0 = (not mpi) or comm.rank == 0
 
     is_arr = is_array(psi0)
-    p = (psi0.shape[1] if (is_arr and psi0.ndim == 2) else 1) if is_arr else len(psi0)
+    p = (psi0.shape[1] if (is_arr and psi0.ndim == 2) else 1) if is_arr else _q_cols(psi0)
     k_blocks = int(np.ceil(num_wanted / p))
     m = max_subspace_blocks
     if m <= k_blocks:
@@ -397,7 +397,13 @@ def thick_restart_block_lanczos_cy(
     mpi = comm is not None and comm.Get_size() > 1
     reort_mode = resolve_reort(reort)
 
-    psi0 = list(psi0) if isinstance(psi0, (list, tuple)) else psi0
+    # Adopt the block-native seed representation up front (matching what the sweep's
+    # fresh-start ingestion and every restart-loop primitive already work in) instead of
+    # coercing to a list: a bare list only ever reaches block_normalize's list-only
+    # fallback from here on out because of this conversion, not because anything downstream
+    # still needs one.
+    if not isinstance(psi0, ManyBodyBlockState):
+        psi0 = ManyBodyBlockState.from_states(list(psi0))
     psi0, _ = block_normalize(psi0, mpi, comm, slaterWeightMin)
 
     def sweep(v0, max_iter):

@@ -264,13 +264,17 @@ def test_manybody_path_reseed_after_locking_whole_invariant_subspace():
     than a further restart needs -- reseeds from the original ``psi0``, projected
     orthogonal to the now fully-populated locked set ``Xl``.
 
-    ``Xl`` is a ``ManyBodyBlockState`` once anything has locked (Phase 5 step 5), but
-    ``psi0``/the reseed vector stays ``list[ManyBodyState]`` (block_lanczos_cy's
-    fresh-start ingestion needs a real list). Regression guard for the resulting
-    mixed-representation crash caught by code review: ``_orth_against_locked`` handed a
-    list ``v0`` to ``block_orthogonalize`` against a block ``Xl``, which dispatches on
-    its first argument only and fell through to the list-only
-    ``block_orthogonalize_sparse``, raising ``TypeError`` on a block second argument.
+    ``Xl`` is a ``ManyBodyBlockState`` once anything has locked (Phase 5 step 5). This was
+    originally a regression guard for a mixed-representation crash caught by code review:
+    at the time, ``psi0``/the reseed vector stayed ``list[ManyBodyState]`` (block_lanczos_cy's
+    fresh-start ingestion only accepted a real list), so ``_orth_against_locked`` handed a
+    list ``v0`` to ``block_orthogonalize`` against a block ``Xl``, which dispatches on its
+    first argument only and fell through to the list-only ``block_orthogonalize_sparse``,
+    raising ``TypeError`` on a block second argument. Phase 5 step 6 closed the gap at the
+    source instead (``block_lanczos_cy``'s fresh-start ingestion now accepts a
+    ``ManyBodyBlockState`` seed directly, so ``psi0``/``v0`` stay block-native throughout),
+    but this test is kept as a standing regression guard for the reseed-after-full-locking
+    path itself.
     """
     n_sites = 4
     op_dict = {}

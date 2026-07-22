@@ -132,8 +132,14 @@ cpdef object block_combine(object Q, object Y, double slaterWeightMin=0.0):
             out = ManyBodyBlockState.from_states(pruned)
         return out
     else:
-        from impurityModel.ed.BlockLanczos import block_combine_sparse
-        return block_combine_sparse(Q, Y, slaterWeightMin)
+        # A bare list[ManyBodyState] Q reached here until Phase 5 step 6: TRLM/IRLM's own
+        # seed (psi0) was the last production path that fed one in, and it is now converted
+        # to a ManyBodyBlockState at the entry point before ever reaching this dispatcher.
+        # list[ManyBodyBlockState] (the store_krylov=False Q_basis shape) never reaches
+        # block_combine either -- its one caller (ChebyshevFilter.pyx) discards Q_basis
+        # outright. block_combine_sparse itself is kept only as test_block_state.py's /
+        # test_krylov_store.py's bit-for-bit oracle for the ManyBodyBlockState arm above.
+        raise TypeError(f"block_combine: unsupported Q type {type(Q)!r}")
 
 cpdef tuple block_orthogonalize(object wp, object Q, object overlaps=None, bint mpi=False, object comm=None):
     if is_array(wp):
@@ -151,8 +157,11 @@ cpdef tuple block_orthogonalize(object wp, object Q, object overlaps=None, bint 
         wp = block_add_scaled(wp, Q, -overlaps)
         return wp, overlaps
     else:
-        from impurityModel.ed.BlockLanczos import block_orthogonalize_sparse
-        return block_orthogonalize_sparse(wp, Q, overlaps, comm if mpi else None)
+        # See the matching branch in block_combine: dead for the same reason (TRLM/IRLM's
+        # psi0 is the last thing that fed a bare list in, and Phase 5 step 6 converts it to
+        # a block at the entry point). block_orthogonalize_sparse stays as
+        # test_block_state.py's oracle for the ManyBodyBlockState arm above.
+        raise TypeError(f"block_orthogonalize: unsupported wp type {type(wp)!r}")
 
 cpdef tuple block_normalize(object wp, bint mpi=False, object comm=None, double slaterWeightMin=0.0):
     if is_array(wp):

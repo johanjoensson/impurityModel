@@ -406,8 +406,9 @@ def block_lanczos_cy(
         rounding errors.
 
     Args:
-        psi0: Initial block of ``p`` ``ManyBodyState`` objects, or ``None``
-            when resuming from ``Q_init`` (warm-start mode).
+        psi0: Initial block of ``p`` ``ManyBodyState`` objects (or an equivalent
+            ``ManyBodyBlockState``), or ``None`` when resuming from ``Q_init``
+            (warm-start mode).
         h_op: ``ManyBodyOperator`` that implements ``apply_multi(psis, cutoff)``.
         basis: ``Basis`` object providing ``redistribute_psis`` and ``basis.comm``.
         converged_fn: Callable with signature
@@ -597,12 +598,20 @@ def block_lanczos_cy(
                 q_curr = ManyBodyBlockState.from_states(Q_basis[q_curr_start : len(Q_basis)])
     else:
         start_it = 0
-        p = len(psi0)
         W = None
 
-        # Redistribute initial states across ranks, then adopt the shared-support block
+        # psi0 may already be a ManyBodyBlockState (a caller with its own block-native
+        # seed, e.g. the TRLM/IRLM entry points) or a legacy flat list of ManyBodyState --
+        # len()/list() on a block would read its ROW count / iterate its determinant KEYS,
+        # not its width/states, so the two must be told apart explicitly rather than
+        # funneled through one call. Either way, adopt the shared-support block
         # representation for the live recurrence blocks (Phase 2.4).
-        q_curr = ManyBodyBlockState.from_states(basis.redistribute_psis(list(psi0)))
+        if isinstance(psi0, ManyBodyBlockState):
+            p = psi0.width
+            q_curr = basis.redistribute_block(psi0)
+        else:
+            p = len(psi0)
+            q_curr = ManyBodyBlockState.from_states(basis.redistribute_psis(list(psi0)))
         q_prev = ManyBodyBlockState.from_states([ManyBodyState() for _ in range(p)])
         if store_krylov:
             Q_basis = SparseKrylovDense(krylov_dtype)
