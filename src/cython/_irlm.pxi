@@ -9,9 +9,17 @@
 
 # --- Path-agnostic basis helpers. The array path represents a basis as an
 # ``(N, k)`` ndarray (column blocks); the ManyBodyState path as a length-``k``
-# list of states. ---------------------------------------------------------
+# list of states or (Phase 5 step 5) a single shared-support ``ManyBodyBlockState``.
+# Get the block branch right BEFORE the list branch in every one of these: a
+# ``ManyBodyBlockState``'s own ``len()`` is its ROW count (dict-like, matching
+# ``len(dict)`), not its column count -- silently wrong for "how many Krylov columns",
+# not a raise. ---------------------------------------------------------------------
 def _q_cols(Q):
-    return Q.shape[1] if is_array(Q) else len(Q)
+    if is_array(Q):
+        return Q.shape[1]
+    if isinstance(Q, ManyBodyBlockState):
+        return Q.width
+    return len(Q)
 
 
 def _check_width_sync(Q, widths, where, exact=False):
@@ -50,15 +58,49 @@ def _check_width_sync(Q, widths, where, exact=False):
 
 
 def _q_slice(Q, a, b):
-    return Q[:, a:b] if is_array(Q) else Q[a:b]
+    if is_array(Q):
+        return Q[:, a:b]
+    if isinstance(Q, ManyBodyBlockState):
+        return Q.select(range(a, b))
+    if isinstance(Q, SparseKrylovDense):
+        # The store is never itself sliced again below this point (the assigned
+        # result -- not Q -- is what every caller keeps rebinding to): this is the one
+        # place a TRLM/IRLM run converts its raw Krylov store into the persistent block
+        # representation the rest of the restart bookkeeping stays in. Materializes via
+        # the store's existing list scatter (__getitem__), same cost as before this
+        # change; only what happens to the result afterwards differs.
+        return ManyBodyBlockState.from_states(Q[a:b])
+    return Q[a:b]
 
 
 def _q_concat(A, B):
-    return np.concatenate([A, B], axis=1) if is_array(A) else (list(A) + list(B))
+    """Concatenate two column blocks. For ``ManyBodyBlockState`` operands, ``A`` and
+    ``B`` need not share support: the result is built via ``from_states``, the same
+    union-support merge every other block boundary in this module already pays for
+    (``block_combine``, ``SparseKrylovDense.combine_block``) -- there is no cheaper
+    zero-copy hstack across two independently-supported blocks."""
+    if is_array(A):
+        return np.concatenate([A, B], axis=1)
+    if isinstance(A, ManyBodyBlockState):
+        return ManyBodyBlockState.from_states(A.to_states() + B.to_states())
+    return list(A) + list(B)
 
 
 def _copy_block(V):
-    return V.copy() if is_array(V) else [s.copy() for s in V]
+    if is_array(V):
+        return V.copy()
+    if isinstance(V, ManyBodyBlockState):
+        return V.copy()
+    return [s.copy() for s in V]
+
+
+def _as_state_list(V):
+    """Boundary conversion for TRLM/IRLM's returned Ritz vectors: the documented
+    ``eigvecs: list[ManyBodyState]`` contract (relied on by every downstream caller,
+    e.g. ``cipsi_solver.py``/``groundstate.py``) predates the block-native restart
+    bookkeeping, so a ``ManyBodyBlockState`` result is materialized once here, at the
+    actual return boundary -- never inside the restart loop itself."""
+    return V.to_states() if isinstance(V, ManyBodyBlockState) else V
 
 
 def _implicitly_restarted_block_lanczos_array(
@@ -263,11 +305,15 @@ def _irlm_core(
     if m <= k0:
         raise ValueError("max_subspace_blocks must be strictly greater than ceil(num_wanted / p).")
 
-    Xl = np.zeros((psi0.shape[0], 0), dtype=complex) if is_arr else []
+    # Xl (the running locked/converged Ritz set) is coupled to Q_basis: once the sweep's
+    # Q_basis is a ManyBodyBlockState, every column sliced out of it (_lock_block's ``col``,
+    # _assemble_results' ``col``) is a block too, so Xl must be block-compatible from the
+    # start -- an empty ManyBodyBlockState (width 0), not an empty list.
+    Xl = np.zeros((psi0.shape[0], 0), dtype=complex) if is_arr else ManyBodyBlockState()
     theta_l = []
 
     def _nlock():
-        return Xl.shape[1] if is_arr else len(Xl)
+        return Xl.shape[1] if is_arr else _q_cols(Xl)
 
     def _orth_against_locked(V):
         if _nlock() == 0:
@@ -302,7 +348,7 @@ def _irlm_core(
                 # reached only on an exactly-zero column. It reduces M with a collective
                 # Allreduce, so every rank raises together and skipping is MPI-collective-safe.
                 continue
-            Xl = np.concatenate([Xl, col], axis=1) if is_arr else (list(Xl) + list(col))
+            Xl = np.concatenate([Xl, col], axis=1) if is_arr else _q_concat(Xl, col)
             theta_l.append(float(vals[j]))
             n_locked_now += 1
         return n_locked_now
@@ -385,7 +431,20 @@ def _irlm_core(
         k_blocks = int(np.ceil(n_need / p))
         n_keep = k_blocks * p
         if total - n_keep < p:
-            v0 = _orth_against_locked(_copy_block(psi0))
+            v0 = _copy_block(psi0)
+            if not is_arr and _nlock() > 0:
+                # psi0/v0 must stay list[ManyBodyState] for the sweep's fresh-start
+                # ingestion below (block_lanczos_cy's fresh-start branch does
+                # p = len(psi0) and list(psi0), both wrong on a ManyBodyBlockState) --
+                # but Xl is already block-native once anything has locked, and
+                # block_orthogonalize dispatches on its first argument only, so a bare
+                # list v0 against a block Xl falls through to the list-only
+                # block_orthogonalize_sparse, which raises TypeError on a block Q.
+                # Convert just for this projection and materialize back immediately.
+                v0 = ManyBodyBlockState.from_states(v0)
+                v0 = _orth_against_locked(v0).to_states()
+            else:
+                v0 = _orth_against_locked(v0)
             try:
                 v0, _ = block_normalize(v0, mpi, comm, slater)
             except ValueError:
@@ -503,7 +562,7 @@ def _assemble_results(Xl, theta_l, alphas, betas, Q_basis, num_wanted, p, mpi, c
     smaller than ``num_wanted``; callers must use ``len(eigvals)``.
     """
     eigvals_list = list(theta_l)
-    nlock = Xl.shape[1] if is_arr else len(Xl)
+    nlock = Xl.shape[1] if is_arr else _q_cols(Xl)
     eigvecs_cols = [_q_slice(Xl, j, j + 1) for j in range(nlock)]
 
     n_need = num_wanted - len(eigvals_list)
@@ -526,7 +585,7 @@ def _assemble_results(Xl, theta_l, alphas, betas, Q_basis, num_wanted, p, mpi, c
             if len(eigvals_list) >= num_wanted:
                 break
             col = block_combine(Q_used, Z[:, k : k + 1], slater)
-            n_acc = accepted.shape[1] if is_arr else len(accepted)
+            n_acc = accepted.shape[1] if is_arr else _q_cols(accepted)
             if n_acc > 0:
                 for _ in range(2):
                     col, _ = block_orthogonalize(col, accepted, mpi=mpi, comm=comm)
@@ -542,7 +601,7 @@ def _assemble_results(Xl, theta_l, alphas, betas, Q_basis, num_wanted, p, mpi, c
                 continue
             eigvals_list.append(float(evals[k].real))
             eigvecs_cols.append(col)
-            accepted = np.concatenate([accepted, col], axis=1) if is_arr else (list(accepted) + list(col))
+            accepted = np.concatenate([accepted, col], axis=1) if is_arr else _q_concat(accepted, col)
 
     eigvals = np.array(eigvals_list[:num_wanted])
     order = np.argsort(eigvals)
@@ -551,7 +610,10 @@ def _assemble_results(Xl, theta_l, alphas, betas, Q_basis, num_wanted, p, mpi, c
         eigvecs = np.concatenate(cols, axis=1) if cols else np.zeros((0, 0))
         eigvecs = eigvecs[:, order]
     else:
-        flat = [c[0] if isinstance(c, list) else c for c in cols]
+        # Every entry of cols is a width-1 ManyBodyBlockState here (Xl and every col above
+        # are blocks throughout); materialize to the documented list[ManyBodyState]
+        # contract only at this actual return boundary.
+        flat = [c.to_states()[0] for c in cols]
         eigvecs = [flat[i] for i in order]
     return eigvals[order], eigvecs
 

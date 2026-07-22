@@ -6,16 +6,21 @@
 def _trlm_extract(T_full, Q, dim, num_wanted, comm, slater):
     """Diagonalize the leading ``dim`` x ``dim`` block of the (possibly arrowhead)
     ``T_full`` and form the ``num_wanted`` lowest Ritz vectors as combinations of
-    ``Q[:dim]``. Path-agnostic (array ndarray or ManyBodyState list) via ``block_combine``.
-    Shared by the TRLM early-exit / breakdown / final-extraction paths so they all honor
-    the true (possibly deflated) subspace dimension ``dim`` instead of a padded
-    ``m_actual * p``."""
+    ``Q[:dim]``. Path-agnostic (array ndarray, ManyBodyState list, or ManyBodyBlockState)
+    via ``block_combine``. Shared by the TRLM early-exit / breakdown / final-extraction
+    paths so they all honor the true (possibly deflated) subspace dimension ``dim``
+    instead of a padded ``m_actual * p``.
+
+    Materializes a block result to ``list[ManyBodyState]`` here, at the actual return
+    boundary: the documented ``eigvecs`` contract predates the block-native restart
+    bookkeeping (see ``_as_state_list``)."""
     eigvals_T, eigvecs_T = sp.eigh(T_full[:dim, :dim])
     if comm is not None:
         eigvals_T = comm.bcast(eigvals_T, root=0)
         eigvecs_T = comm.bcast(eigvecs_T, root=0)
     wanted = np.argsort(eigvals_T)[:num_wanted]
-    return eigvals_T[wanted], block_combine(_q_slice(Q, 0, dim), eigvecs_T[:, wanted], slater)
+    eigvecs = block_combine(_q_slice(Q, 0, dim), eigvecs_T[:, wanted], slater)
+    return eigvals_T[wanted], _as_state_list(eigvecs)
 
 
 def _trlm_core(
@@ -128,7 +133,7 @@ def _trlm_core(
             eigvals_T = comm.bcast(eigvals_T, root=0)
             eigvecs_T = comm.bcast(eigvecs_T, root=0)
         wanted = np.argsort(eigvals_T)[:num_wanted]
-        return eigvals_T[wanted], block_combine(Q_basis, eigvecs_T[:, wanted], slater)
+        return eigvals_T[wanted], _as_state_list(block_combine(Q_basis, eigvecs_T[:, wanted], slater))
 
     # The thick restart below builds an *arrowhead* T (a spike couples the retained Ritz
     # block to the residual), which is not banded; this path keeps the dense T_full.

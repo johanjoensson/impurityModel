@@ -254,6 +254,68 @@ def test_manybody_path_no_spurious_eigenvalue(mode):
     np.testing.assert_allclose(ev[0], eigvals[0], atol=1e-6)
 
 
+def test_manybody_path_reseed_after_locking_whole_invariant_subspace():
+    """``num_wanted`` larger than the dimension psi0 can ever reach must not crash.
+
+    A 4-site tight-binding chain (1-particle sector) is exactly closed under H: the
+    Lanczos sweep exhausts its whole 4-dimensional space and stops (invariant
+    subspace). ``_irlm_core`` then locks all 4 Ritz pairs, still wants 5 more
+    (``num_wanted=9``), and -- since the remaining subspace dimension (0) is smaller
+    than a further restart needs -- reseeds from the original ``psi0``, projected
+    orthogonal to the now fully-populated locked set ``Xl``.
+
+    ``Xl`` is a ``ManyBodyBlockState`` once anything has locked (Phase 5 step 5), but
+    ``psi0``/the reseed vector stays ``list[ManyBodyState]`` (block_lanczos_cy's
+    fresh-start ingestion needs a real list). Regression guard for the resulting
+    mixed-representation crash caught by code review: ``_orth_against_locked`` handed a
+    list ``v0`` to ``block_orthogonalize`` against a block ``Xl``, which dispatches on
+    its first argument only and fell through to the list-only
+    ``block_orthogonalize_sparse``, raising ``TypeError`` on a block second argument.
+    """
+    n_sites = 4
+    op_dict = {}
+    for i in range(n_sites - 1):
+        op_dict[((i, "c"), (i + 1, "a"))] = -1.0
+        op_dict[((i + 1, "c"), (i, "a"))] = -1.0
+    h_op = ManyBodyOperator(op_dict)
+
+    vac = ManyBodyState({SlaterDeterminant((0,)): 1.0})
+    states = []
+    for i in range(n_sites):
+        op = ManyBodyOperator({((i, "c"),): 1.0})
+        states.append(next(iter(op.apply(vac).keys())))
+
+    basis = MockBasis(n_sites)
+    basis.local_basis = states
+
+    rng = np.random.RandomState(7)
+    psi0 = ManyBodyState()
+    for s in states:
+        psi0[s] = rng.standard_normal() + 1j * rng.standard_normal()
+    psi0, _ = block_normalize([psi0], False, None, 0.0)
+
+    # num_wanted (9) exceeds the chain's total dimension (4): every reachable eigenpair
+    # gets locked, then the code must reseed from psi0 (now fully deflated against Xl)
+    # and stop cleanly instead of crashing.
+    ev, _ = mbs_irlm(
+        psi0=psi0,
+        h_op=h_op,
+        basis=basis,
+        num_wanted=9,
+        max_subspace_blocks=15,
+        tol=1e-8,
+        max_restarts=50,
+        verbose=False,
+        reort="partial",
+        comm=None,
+    )
+    ev = np.sort(np.asarray(ev).real)
+    exact_eigvals = -2 * np.cos(np.pi * np.arange(1, n_sites + 1) / (n_sites + 1))
+    exact_eigvals.sort()
+    assert len(ev) == n_sites, f"expected all {n_sites} reachable eigenpairs, got {len(ev)}"
+    np.testing.assert_allclose(ev, exact_eigvals, atol=1e-7)
+
+
 def test_select_restart_indices_ghost_filter():
     """The optional ghost filter shifts away locked-eigenvalue copies; default keeps them.
 

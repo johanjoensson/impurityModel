@@ -575,7 +575,16 @@ def block_lanczos_cy(
                 _local_basis = getattr(basis, "local_basis", None)
                 if _local_basis is not None:
                     Q_basis.reserve_rows(len(_local_basis))
-                if len(Q_init) > 0:
+                if isinstance(Q_init, ManyBodyBlockState):
+                    # A caller (IRLM's restart continuation) resuming from its own
+                    # block-native Q_basis_new. list(Q_init) below is for the OTHER
+                    # branch only (a legacy flat list of ManyBodyState): iterating a
+                    # ManyBodyBlockState yields its determinant KEYS, not states, so
+                    # append(list(Q_init)) would silently corrupt the store instead of
+                    # raising. append_block is the direct, no-round-trip ingestion.
+                    if Q_init.width > 0:
+                        Q_basis.append_block(Q_init)
+                elif len(Q_init) > 0:
                     Q_basis.append(list(Q_init))
             if start_it == 0 or len(Q_basis) < p:
                 q_prev = ManyBodyBlockState.from_states([ManyBodyState() for _ in range(p)])
@@ -668,8 +677,17 @@ def block_lanczos_cy(
     # Estimate-driven locking reorthogonalization (EA16 §2.6.2) state. Only active when a
     # locked set is supplied and locked_reort == "partial"; otherwise the step does the
     # unconditional "full" projection. See ea16.locked_overlap_step for the recurrence.
+    # bool(locked)/`if locked` below fall back to len(locked) for a ManyBodyBlockState (no
+    # __bool__ defined), i.e. its ROW count, not its width -- relies on callers never handing
+    # in a width>0-but-rows==0 (or the reverse) block. True today: _irlm_core passes
+    # locked=None outright whenever its locked set is empty rather than an empty block, and
+    # every locked column is a normalized nonzero state, so width>0 implies rows>0 in
+    # practice. Fragile if that ever changes; an explicit width check would be needed then.
     partial_locked = bool(locked) and locked_reort == "partial"
-    nlock = len(locked) if locked else 0
+    # locked is either list[ManyBodyState] or a ManyBodyBlockState (see the deflation
+    # branch above): len() means "number of columns" for the former but "number of
+    # shared-support rows" for the latter, so it cannot be used uniformly here.
+    nlock = (locked.width if isinstance(locked, ManyBodyBlockState) else len(locked)) if locked else 0
     if partial_locked:
         from impurityModel.ed import ea16 as _ea16
         locked_evals_arr = np.ascontiguousarray(np.real(np.asarray(locked_evals)), dtype=float)
@@ -785,7 +803,10 @@ def block_lanczos_cy(
             )
             if xi_trigger:
                 idx_l = np.nonzero(xi_mask)[0]
-                Lm_blk = ManyBodyBlockState.from_states([locked[int(t)] for t in idx_l])
+                if isinstance(locked, ManyBodyBlockState):
+                    Lm_blk = locked.select([int(t) for t in idx_l])
+                else:
+                    Lm_blk = ManyBodyBlockState.from_states([locked[int(t)] for t in idx_l])
                 for _ in range(2):
                     _lovl = block_inner_cy(Lm_blk, q_next)
                     if mpi and comm is not None:
