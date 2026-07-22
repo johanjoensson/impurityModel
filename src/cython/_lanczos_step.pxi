@@ -281,14 +281,14 @@ def block_lanczos_step_cy(
         if reort_mode == Reort.SELECTIVE and it > 0 and it % reort_period == 0:
             # EA16 §2.6.2 selective orthogonalization (shared with block_lanczos_array_cy).
             # beta_i's 2-norm is the Ritz residual scale; the driver has not computed it yet at
-            # this point, so pass it explicitly. The cadence gate is replicated here (the
-            # function gates internally too) so the block<->list boundary conversion only
-            # happens on the steps where the Ritz check actually runs.
-            q_next = ManyBodyBlockState.from_states(
-                selective_orthogonalize(
-                    q_next.to_states(), Q_basis, alphas, betas, W, block_widths,
-                    it, p, np.linalg.norm(beta_i, ord=2), reort_eps, reort_period, mpi, comm,
-                )
+            # this point, so pass it explicitly. Q_basis is always a SparseKrylovDense here
+            # (block_lanczos_cy requires store_krylov=True whenever reort != 'none'), so
+            # q_next passes straight through as a block -- no to_states()/from_states()
+            # round trip (block_combine's SparseKrylovDense arm now returns a block too, see
+            # SparseKrylovDense.combine_block).
+            q_next = selective_orthogonalize(
+                q_next, Q_basis, alphas, betas, W, block_widths,
+                it, p, np.linalg.norm(beta_i, ord=2), reort_eps, reort_period, mpi, comm,
             )
 
         if reort_mode in (Reort.PARTIAL, Reort.SELECTIVE):

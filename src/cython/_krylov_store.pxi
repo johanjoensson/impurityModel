@@ -410,6 +410,49 @@ cdef class SparseKrylovDense:
             out.append(ms)
         return out
 
+    def combine_block(self, object Y, Py_ssize_t a=0, object b=None, double slaterWeightMin=0.0):
+        """Same linear combinations as :meth:`combine`, but returned as ONE
+        ``ManyBodyBlockState`` over the union of rows nonzero in any output column,
+        instead of ``Y.shape[1]`` independently-pruned ``ManyBodyState`` columns.
+
+        Built directly off the dense result via ``from_unsorted`` -- the same
+        union-support construction :meth:`reort` uses -- rather than scattering into
+        many sparse states first.
+
+        ``slaterWeightMin > 0`` prunes by ROW (:meth:`ManyBodyBlockState.prune_rows`):
+        a row survives if ANY column exceeds the cutoff, so a row can keep a
+        sub-cutoff amplitude in one column when another column is above cutoff. This
+        is NOT the same as :meth:`combine`'s per-state ``prune``, which drops each
+        column's sub-cutoff entries independently -- the two only agree when no row
+        is simultaneously above cutoff in one column and below it in another.
+        """
+        C = self._combine_dense(Y, a, b)
+        cdef Py_ssize_t n_out = C.shape[1]
+        cdef complex[:, :] Cv = C
+        cdef Py_ssize_t ns = self.n_rows
+        cdef vector[SlaterDeterminant_cpp[uint64_t]] out_keys
+        cdef vector[ManyBodyBlockState_cpp.Value] out_amps
+        out_keys.reserve(ns)
+        out_amps.reserve(<Py_ssize_t>(ns * n_out))
+        cdef Py_ssize_t row, kk
+        cdef bint any_nonzero
+        for row in range(ns):
+            any_nonzero = False
+            for kk in range(n_out):
+                if Cv[row, kk].real != 0 or Cv[row, kk].imag != 0:
+                    any_nonzero = True
+                    break
+            if not any_nonzero:
+                continue
+            out_keys.push_back(self.row_det[row])
+            for kk in range(n_out):
+                out_amps.push_back(_amp_to_cpp(Cv[row, kk]))
+        cdef ManyBodyBlockState out = ManyBodyBlockState()
+        out.b = ManyBodyBlockState_cpp.from_unsorted(out_keys, out_amps, <size_t>n_out)
+        if slaterWeightMin > 0:
+            out.prune_rows(slaterWeightMin)
+        return out
+
     def memory_bytes(self):
         """Estimated heap bytes: the dense chunk buffers (capacity) plus the support
         map / row_det key storage (one 32-B-class heap block per determinant key

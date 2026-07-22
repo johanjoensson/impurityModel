@@ -100,9 +100,12 @@ cpdef object block_combine(object Q, object Y, double slaterWeightMin=0.0):
             Q = np.column_stack(Q)
         return block_combine_array(Q, Y)
     elif isinstance(Q, SparseKrylovDense):
-        # Columnar Krylov store: one zgemm over the dense buffer + scatter of only the
-        # output columns — no materialization of the inputs.
-        return Q.combine(Y, slaterWeightMin=slaterWeightMin)
+        # Columnar Krylov store: one zgemm over the dense buffer + scatter directly into
+        # ONE block over the union of nonzero rows (combine_block) — every current caller
+        # of this branch (selective_orthogonalize) immediately feeds the result into
+        # block_inner/block_add_scaled, which need a ManyBodyBlockState, not a
+        # list[ManyBodyState] (see combine() vs combine_block() on SparseKrylovDense).
+        return Q.combine_block(Y, slaterWeightMin=slaterWeightMin)
     else:
         from impurityModel.ed.BlockLanczos import block_combine_sparse
         return block_combine_sparse(Q, Y, slaterWeightMin)
@@ -204,9 +207,9 @@ def selective_orthogonalize(q_next, Q_basis, alphas, betas, W, block_widths,
 
     Parameters
     ----------
-    q_next : ndarray or list of ManyBodyState
+    q_next : ndarray or ManyBodyBlockState
         The freshly QR'd block to be cleaned; returned (possibly modified).
-    Q_basis : ndarray or list of ManyBodyState
+    Q_basis : ndarray or SparseKrylovDense
         The accumulated Krylov basis (all ``it+1`` blocks), indexed by ``s_k``.
     alphas, betas : ndarray
         Block-tridiagonal coefficients built so far (views ``[: it+1]`` are used).
@@ -230,7 +233,7 @@ def selective_orthogonalize(q_next, Q_basis, alphas, betas, W, block_widths,
 
     Returns
     -------
-    q_next : ndarray or list of ManyBodyState
+    q_next : ndarray or ManyBodyBlockState
         ``q_next`` with the flagged converged Ritz directions removed.
     """
     if not (it > 0 and it % period == 0):

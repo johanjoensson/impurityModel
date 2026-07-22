@@ -121,6 +121,63 @@ def test_store_combine_single_vector_and_shape_check():
         store.combine(np.ones((3, 1)))
 
 
+def test_store_combine_block_matches_combine():
+    """``combine_block`` must equal ``combine`` -- same dense product, scattered into ONE
+    ``ManyBodyBlockState`` over the union of nonzero rows instead of per-column states."""
+    rng = np.random.default_rng(23)
+    states = _random_states(rng, 8, 60)
+    store = SparseKrylovDense()
+    store.append(states)
+
+    Y = rng.standard_normal((8, 3)) + 1j * rng.standard_normal((8, 3))
+    ref = store.combine(Y)
+    out = store.combine_block(Y)
+    assert isinstance(out, ManyBodyBlockState)
+    assert out.width == 3
+    assert out.to_states() == ref
+
+    # column-range combine: rows of Y address Q[:, a:b]
+    Y2 = rng.standard_normal((3, 2)) + 1j * rng.standard_normal((3, 2))
+    ref2 = store.combine(Y2, 2, 5)
+    out2 = store.combine_block(Y2, 2, 5)
+    assert out2.to_states() == ref2
+
+
+def test_store_combine_block_prunes_by_row_not_by_column():
+    """``combine_block``'s ``slaterWeightMin`` is a ROW cutoff (:meth:`prune_rows`: a row
+    survives if ANY column exceeds the cutoff) -- NOT the same as ``combine``'s per-column
+    ``prune``. A "mixed" row (above cutoff in one column, below it in another) keeps its
+    sub-cutoff entries in ``combine_block`` but loses them in ``combine``.
+
+    A random Y (as in ``test_store_combine_block_matches_combine``) essentially never
+    produces such a row -- every store-support row there is nonzero in every column, so
+    that test cannot see this divergence. Construct the mixed row explicitly instead.
+    """
+    det0 = _det(1)
+    det1 = _det(2)
+    col0 = ManyBodyState()
+    col0[det0] = 1.0
+    col1 = ManyBodyState()
+    col1[det1] = 1.0
+    store = SparseKrylovDense()
+    store.append([col0, col1])
+
+    cutoff = 0.1
+    # Q = [[1, 0], [0, 1]] (det0, det1), so C = Y itself: row det0 = Y[0] = [0.5, 0.05]
+    # (above cutoff in column 0, below it in column 1); row det1 = Y[1] = [0.05, 0.5]
+    # (the mirror image).
+    Y = np.array([[0.5, 0.05], [0.05, 0.5]], dtype=complex)
+
+    ref = store.combine(Y, slaterWeightMin=cutoff)
+    assert ref[0].to_dict() == {det0: 0.5 + 0j}
+    assert ref[1].to_dict() == {det1: 0.5 + 0j}
+
+    out = store.combine_block(Y, slaterWeightMin=cutoff)
+    out_col0, out_col1 = out.to_states()
+    assert out_col0.to_dict() == {det0: 0.5 + 0j, det1: 0.05 + 0j}
+    assert out_col1.to_dict() == {det0: 0.05 + 0j, det1: 0.5 + 0j}
+
+
 def test_store_gram_matches_states():
     """Materialized store columns give the same Gram matrix as the original states."""
     rng = np.random.default_rng(13)
