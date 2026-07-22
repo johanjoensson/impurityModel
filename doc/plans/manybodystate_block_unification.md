@@ -711,24 +711,75 @@ rather than an empty block, but fragile if that invariant ever changes.
 
 Gates green at baseline+1 over step 5a (serial 1208/230/18/30, `-n 2` 1408/18/60).
 
+**Phase 5 step 6 — TRLM/IRLM's seed `psi0` goes block-native too (DONE, commit `4e07cae`).**
+The two "Still open" items recorded just below this section (before this step) turned out to
+both rest on a stale premise, caught by tracing rather than trusting the prior write-up:
+`gf_shift_recycling.py`'s `Q.combine()` migration (item 1) doesn't actually buy anything --
+traced its RIXS consumer (`eval_out`) and it genuinely wants a `list[ManyBodyState]` (each
+component gets a *different* out-operator applied independently, not a shared block
+operation) -- so `combine()` stays, undocumented as dead weight; **left alone, not touched**.
+And the claim that item 1 was "the last production caller" feeding a bare list into
+`block_normalize`/`block_combine`/`block_orthogonalize` (item 2) was simply wrong:
+`thick_restart_block_lanczos_cy`/`_implicitly_restarted_block_lanczos_manybody` (TRLM/IRLM's
+own entry points) called `block_normalize(psi0, ...)` with `psi0` as a genuine
+`list[ManyBodyState]` on **every** invocation, not an edge case -- because
+`block_lanczos_cy`'s fresh-start ingestion computed `p = len(psi0)` and iterated `list(psi0)`,
+both silently wrong on a `ManyBodyBlockState` (this is the exact constraint the step-5 critical
+fix's `_copy_block`/materialize-back dance existed to route around).
+
+Closed at the source instead of documenting around it: `block_lanczos_cy`'s fresh-start
+branch (mirroring its warm-start `Q_init` branch, which already told the two representations
+apart) now takes `p = psi0.width` / `basis.redistribute_block(psi0)` when `psi0` is already a
+`ManyBodyBlockState`. TRLM/IRLM's entry points convert `psi0` to a block immediately, before
+`block_normalize`, instead of coercing to a list -- external contract unchanged (callers still
+pass a list; `eigvecs` still materializes back to one at the return boundary). `_irlm_core`'s
+reseed branch dropped its list<->block round trip entirely as a result: `v0 =
+_orth_against_locked(_copy_block(psi0))` now works directly on both paths.
+
+This genuinely retired `block_combine`'s and `block_orthogonalize`'s bare-list arms in
+`_reort.pxi` (TRLM/IRLM's `psi0` really was the last thing feeding one in, once traced
+correctly) -- replaced with an explicit `raise TypeError` rather than deleted outright, since
+`block_combine_sparse`/`block_orthogonalize_sparse` stay on as `test_block_state.py`'s/
+`test_krylov_store.py`'s bit-for-bit oracles for the block arms. `_block_inner_mpi`
+(zero callers anywhere, unrelated pre-existing dead code) deleted alongside.
+
+**`block_normalize`'s own list arm (`block_normalize_sparse` -> `block_tsqr`'s `as_list`
+branch) is deliberately NOT retired** -- `cipsi_solver.py`'s `expand()` calls it directly on a
+genuine `list[ManyBodyState]` for an unrelated reason (sizing `max_subspace_blocks`/
+`num_wanted` before handing off to a completely separate array-based eigensolve), which Phase
+6b already traced and correctly declined to convert (no compute win; would force the
+MIXED-verdict `Hpsi_ref` site to convert too through propagation). So the `_reort.pxi`
+collapse is now a real **partial**: `block_combine`/`block_orthogonalize` are 3-arms-worth of
+dead weight removed; `block_normalize`/`block_tsqr`'s `as_list` branch and `apply_reort`'s
+`was_block` dance stay, genuinely load-bearing, not oversight.
+
+Reviewed at high effort (MPI collective safety of `redistribute_block` vs `redistribute_psis`;
+the reseed simplification traced on both the array and MBS paths for behavioral equivalence;
+the list-arm-unreachability claim independently re-verified by grepping every call site, not
+trusted from the diff's own comments). No critical or serious findings. One minor,
+non-blocking note: no test directly constructs a `ManyBodyBlockState` and calls
+`block_lanczos_cy`'s fresh start in isolation -- covered transitively today (including under
+real 2-rank MPI distribution via `test_groundstate_and_density_matrix_mpi`, which defaults to
+the IRLM solver on a 252-determinant basis).
+
+Gates green, exact baseline match (serial 1208/230/18/30, `-n 2` 1408/18/60).
+
 ## Still open
 
 - The FCC Ni fill measurement (above) — blocks `determine_new_Dj`'s/`select_at`'s `Hpsi_ref`
   conversion, every per-frequency seed union found in Phase 6c, and `ChebyshevFilter.pyx`'s
   caller in `greens_function.py`.
-- Phase 5's remaining pieces:
-  1. `gf_shift_recycling.py`'s direct `Q.combine(...)` call (and its `rixs.py` R1-fallback
-     consumer) — migrate onto `combine_block()` in its own reviewable commit once it's clear
-     the per-shift-solution consumers there actually want a block (they currently treat a
-     solution as `list[ManyBodyState]` end to end); only then can `combine()` itself be
-     deleted.
-  2. The `_reort.pxi` collapse itself (`is_array` 3 arms -> 2, delete `block_combine_sparse`
-     / `block_orthogonalize_sparse` / `block_normalize_sparse` / `_block_inner_mpi`, drop the
-     `as_list` branch in `block_tsqr` and `was_block` in `apply_reort`) once nothing feeds a
-     bare list into those dispatchers — grep-checkable: unblocked exactly when no caller
-     passes `list[ManyBodyState]` into `block_normalize`/`block_combine`/
-     `block_orthogonalize`/`block_tsqr`/`apply_reort`. Item 1 above is the last production
-     caller still doing that.
+- Phase 5's remaining pieces (both are genuinely load-bearing, not unfinished business):
+  1. `gf_shift_recycling.py`'s direct `Q.combine(...)` call stays -- its RIXS consumer wants a
+     list (see step 6 above); `combine_block()` migration is a non-goal here.
+  2. The rest of the `_reort.pxi` collapse (`block_normalize`/`block_tsqr`'s `as_list` branch,
+     `apply_reort`'s `was_block` dance) is blocked on `cipsi_solver.py`'s `expand()` no longer
+     needing to call `block_normalize` on a genuine `list[ManyBodyState]` -- which Phase 6b
+     already declined to change (no compute win there; the actual eigensolve in that branch
+     runs through a separate array-based kernel). Retiring this fully would mean either
+     converting that cipsi_solver.py call site (against Phase 6b's own reasoning) or accepting
+     `block_normalize`/`block_tsqr` permanently keep a list arm that `block_combine`/
+     `block_orthogonalize` no longer have. Leave as is unless that calculus changes.
 - Phase 7 (the rename, the flat_map class's deletion) — see the session plan file for the
   phase breakdown; each remaining phase is its own multi-commit body of work across a large
   fraction of `src/cython/` and `src/impurityModel/ed/`.
