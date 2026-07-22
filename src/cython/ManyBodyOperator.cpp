@@ -1628,3 +1628,133 @@ void ManyBodyOperator::build_flat_representation() const {
   }
   m_flat_dirty = false;
 }
+
+void ManyBodyOperator::prune(double tol) noexcept {
+  const double tol2 = tol * tol;
+  m_ops.erase(std::remove_if(m_ops.begin(), m_ops.end(),
+                             [tol2](const value_type &t) {
+                               return std::norm(t.second) <= tol2;
+                             }),
+              m_ops.end());
+  m_flat_dirty = true;
+  // Dropping terms cannot disturb the ordering of the ones that remain.
+}
+
+namespace {
+// Orbital support of one term, precomputed once per term instead of per pair.
+struct TermSupport {
+  // Cheap reject mask: bit (orbital % 64). Two terms sharing an orbital always
+  // share that bit, so a zero AND proves the supports are disjoint; the reverse
+  // can alias (orbitals 64 apart), which is why a nonzero AND falls through to
+  // the exact test rather than concluding anything.
+  uint64_t signature;
+  std::vector<int64_t> orbitals; // sorted, unique
+  size_t length;                 // number of ladder operators in the string
+};
+
+TermSupport make_support(const ManyBodyOperator::key_type &ops) {
+  TermSupport s;
+  s.signature = 0;
+  s.length = ops.size();
+  s.orbitals.reserve(ops.size());
+  for (int64_t idx : ops) {
+    const int64_t orb = idx >= 0 ? idx : -(idx + 1);
+    s.signature |= (uint64_t{1} << (static_cast<uint64_t>(orb) & 63U));
+    s.orbitals.push_back(orb);
+  }
+  std::sort(s.orbitals.begin(), s.orbitals.end());
+  s.orbitals.erase(std::unique(s.orbitals.begin(), s.orbitals.end()),
+                   s.orbitals.end());
+  return s;
+}
+
+bool supports_disjoint(const TermSupport &a, const TermSupport &b) noexcept {
+  if ((a.signature & b.signature) == 0) {
+    return true;
+  }
+  // Exact merge of two sorted orbital lists; stops at the first shared orbital.
+  size_t i = 0;
+  size_t j = 0;
+  while (i < a.orbitals.size() && j < b.orbitals.size()) {
+    if (a.orbitals[i] < b.orbitals[j]) {
+      i++;
+    } else if (b.orbitals[j] < a.orbitals[i]) {
+      j++;
+    } else {
+      return false;
+    }
+  }
+  return true;
+}
+
+// Shared engine for [A,B] (anti == false) and {A,B} (anti == true).
+ManyBodyOperator bracket(const ManyBodyOperator &A, const ManyBodyOperator &B,
+                         bool anti) {
+  if (A.empty() || B.empty()) {
+    return ManyBodyOperator{};
+  }
+  std::vector<TermSupport> support_a;
+  std::vector<TermSupport> support_b;
+  support_a.reserve(A.size());
+  support_b.reserve(B.size());
+  for (const auto &t : A) {
+    support_a.push_back(make_support(t.first));
+  }
+  for (const auto &t : B) {
+    support_b.push_back(make_support(t.first));
+  }
+
+  const ManyBodyOperator::mapped_type second_sign =
+      anti ? ManyBodyOperator::mapped_type{1.0, 0.0}
+           : ManyBodyOperator::mapped_type{-1.0, 0.0};
+
+  std::vector<ManyBodyOperator::value_type> terms;
+  size_t ia = 0;
+  for (const auto &a : A) {
+    size_t ib = 0;
+    for (const auto &b : B) {
+      const TermSupport &sa = support_a[ia];
+      const TermSupport &sb = support_b[ib];
+      ib++;
+      // Disjoint strings obey a b = (-1)^(len_a * len_b) b a, so the pair's two
+      // orderings either cancel or reinforce depending on that parity alone.
+      // Skipping is exact: it drops only pairs contributing identically zero.
+      if (supports_disjoint(sa, sb)) {
+        const bool both_odd = (sa.length % 2 == 1) && (sb.length % 2 == 1);
+        if (anti ? both_odd : !both_odd) {
+          continue;
+        }
+      }
+      const ManyBodyOperator::mapped_type coeff = a.second * b.second;
+      // Stored order is apply order (rightmost first), so A*B lays down B's
+      // string first, and B*A lays down A's first.
+      ManyBodyOperator::key_type ab;
+      ab.reserve(a.first.size() + b.first.size());
+      ab.insert(ab.end(), b.first.begin(), b.first.end());
+      ab.insert(ab.end(), a.first.begin(), a.first.end());
+      terms.emplace_back(std::move(ab), coeff);
+
+      ManyBodyOperator::key_type ba;
+      ba.reserve(a.first.size() + b.first.size());
+      ba.insert(ba.end(), a.first.begin(), a.first.end());
+      ba.insert(ba.end(), b.first.begin(), b.first.end());
+      terms.emplace_back(std::move(ba), second_sign * coeff);
+    }
+    ia++;
+  }
+  // One canonicalization over the combined term list: the two orderings of a
+  // pair only cancel once they are both in normal form, so building the
+  // products separately and subtracting would leave the cancellation undone.
+  return ManyBodyOperator{std::move(terms)};
+}
+} // namespace
+
+ManyBodyOperator commutator(const ManyBodyOperator &A,
+                            const ManyBodyOperator &B) {
+  return bracket(A, B, false);
+}
+
+ManyBodyOperator anticommutator(const ManyBodyOperator &A,
+                                const ManyBodyOperator &B) {
+  return bracket(A, B, true);
+}

@@ -238,6 +238,9 @@ public:
   ManyBodyOperator &operator*=(const ManyBodyOperator &);
   /** @brief n-fold product with itself; n == 0 gives the identity. */
   [[nodiscard]] ManyBodyOperator power(unsigned n) const;
+
+  /** @brief Drop every term whose coefficient satisfies |c| <= tol. */
+  void prune(double tol) noexcept;
   /** @brief Add a multiple of the identity. */
   ManyBodyOperator &operator+=(mapped_type) noexcept;
   /** @brief Subtract a multiple of the identity. */
@@ -426,4 +429,30 @@ private:
   [[nodiscard]] bool
   state_is_within_restrictions(const ManyBodyState::key_type &) const noexcept;
 };
+
+/**
+ * @brief [A, B] = AB - BA.
+ *
+ * Term pairs acting on disjoint sets of orbitals are skipped without being
+ * formed. Two operator strings on disjoint orbitals satisfy
+ * `a b = (-1)^(len_a * len_b) b a`, so such a pair cancels exactly in the
+ * commutator unless BOTH strings have odd length. The test is exact, not a
+ * tolerance -- it only ever drops pairs whose contribution is identically zero.
+ *
+ * This is what makes commutators against a large Hamiltonian affordable: [H,
+ * c_i] costs one pass over the terms that actually touch orbital i instead of
+ * the |H| products of the naive definition.
+ */
+[[nodiscard]] ManyBodyOperator commutator(const ManyBodyOperator &A,
+                                          const ManyBodyOperator &B);
+
+/**
+ * @brief {A, B} = AB + BA.
+ *
+ * Same disjoint-support skip as commutator(), with the opposite parity rule: a
+ * disjoint pair cancels in the anticommutator exactly when both strings have
+ * odd length (e.g. {c_i, c_j} for i != j).
+ */
+[[nodiscard]] ManyBodyOperator anticommutator(const ManyBodyOperator &A,
+                                              const ManyBodyOperator &B);
 #endif // MANYBODYOPERATOR_H

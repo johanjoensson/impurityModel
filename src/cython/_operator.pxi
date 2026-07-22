@@ -424,6 +424,45 @@ cdef class ManyBodyOperator:
         """
         self.o.clear()
 
+    def commutator(self, ManyBodyOperator other) -> ManyBodyOperator:
+        """
+        Return the commutator ``[self, other] = self*other - other*self``.
+
+        Term pairs acting on disjoint orbitals are skipped without being formed --
+        exactly, not within a tolerance: two strings on disjoint orbitals satisfy
+        ``a b = (-1)^(len_a * len_b) b a``, so the pair cancels unless both strings have
+        odd length. That is what makes ``H.commutator(c_i)`` cost a pass over the terms
+        touching orbital ``i`` rather than ``len(H)`` products.
+        """
+        cdef ManyBodyOperator res = ManyBodyOperator()
+        with nogil:
+            res.o = commutator_cpp(self.o, other.o)
+        return res
+
+    def anticommutator(self, ManyBodyOperator other) -> ManyBodyOperator:
+        """
+        Return the anticommutator ``{self, other} = self*other + other*self``.
+
+        Same disjoint-support skip as :meth:`commutator`, with the opposite parity rule:
+        a disjoint pair cancels exactly when both strings have odd length (which is why
+        ``{c_i, c_j} == 0`` for ``i != j`` costs nothing to discover).
+        """
+        cdef ManyBodyOperator res = ManyBodyOperator()
+        with nogil:
+            res.o = anticommutator_cpp(self.o, other.o)
+        return res
+
+    def prune(self, double tol):
+        """
+        Drop every term with ``abs(coefficient) <= tol``, in place.
+
+        Products and commutators canonicalize their result, which already removes terms
+        that cancel exactly. ``+`` and ``-`` do not: they merge coefficients but keep the
+        key, so ``A - A`` retains its terms with zero amplitude. Prune when that matters.
+        """
+        with nogil:
+            self.o.prune(tol)
+
     def canonicalize(self):
         """
         Rewrite the stored terms into canonical normal order, in place.
@@ -465,3 +504,17 @@ def applyOp(ManyBodyOperator op, ManyBodyState psi, double cutoff=0) ->ManyBodyS
     Apply a ManyBodyOperator to a ManyBodyState.
     """
     return op(psi, cutoff)
+
+
+def commutator(ManyBodyOperator A, ManyBodyOperator B) -> ManyBodyOperator:
+    """
+    Return ``[A, B] = A*B - B*A``. See :meth:`ManyBodyOperator.commutator`.
+    """
+    return A.commutator(B)
+
+
+def anticommutator(ManyBodyOperator A, ManyBodyOperator B) -> ManyBodyOperator:
+    """
+    Return ``{A, B} = A*B + B*A``. See :meth:`ManyBodyOperator.anticommutator`.
+    """
+    return A.anticommutator(B)

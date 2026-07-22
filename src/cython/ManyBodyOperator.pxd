@@ -49,6 +49,7 @@ cdef extern from "ManyBodyOperator.h" nogil:
         mapped_type constant()
         void set_constant(mapped_type)
         ManyBodyOperator power(unsigned int) except +
+        void prune(double)
 
         ManyBodyOperator operator-()
         ManyBodyOperator operator+(const ManyBodyOperator&, const ManyBodyOperator&)
@@ -99,3 +100,6 @@ cdef extern from "ManyBodyOperator.h" nogil:
         iterator lower_bound[K](const K&)
 
         iterator upper_bound[K](const K&)
+
+    ManyBodyOperator commutator(const ManyBodyOperator&, const ManyBodyOperator&) except +
+    ManyBodyOperator anticommutator(const ManyBodyOperator&, const ManyBodyOperator&) except +

@@ -9,7 +9,12 @@ from ManyBodyBlockState cimport (
     block_add_scaled as c_block_add_scaled,
     block_combine_cols as c_block_combine_cols,
 )
-from ManyBodyOperator cimport ManyBodyOperator as ManyBodyOperator_cpp, apply_parallel_build as c_apply_parallel_build
+from ManyBodyOperator cimport (
+    ManyBodyOperator as ManyBodyOperator_cpp,
+    apply_parallel_build as c_apply_parallel_build,
+    commutator as commutator_cpp,
+    anticommutator as anticommutator_cpp,
+)
 from SlaterDeterminant cimport SlaterDeterminant as SlaterDeterminant_cpp
 from libcpp.pair cimport pair
 from libcpp.vector cimport vector
