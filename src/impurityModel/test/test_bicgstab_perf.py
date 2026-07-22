@@ -64,7 +64,7 @@ from mpi4py import MPI
 
 from impurityModel.ed.cg import block_bicgstab
 from impurityModel.ed.greens_function import _build_excited_restrictions
-from impurityModel.ed.ManyBodyUtils import ManyBodyOperator, ManyBodyState, applyOp, inner
+from impurityModel.ed.ManyBodyUtils import ManyBodyBlockState, ManyBodyOperator, ManyBodyState, applyOp, inner
 
 RUN = os.environ.get("RUN_BICGSTAB_BENCH") == "1"
 pytestmark = [
@@ -252,18 +252,19 @@ def _solve(workload, width, z, sample_rss=True):
     a_op = CountingOperator(shift - h)
 
     y = excited_basis.redistribute_psis(list(seeds))
-    x0 = [ManyBodyState() for _ in y]
+    y_blk = ManyBodyBlockState.from_states(y)
+    x0 = ManyBodyBlockState.from_states([ManyBodyState() for _ in y])
 
     sampler = RssSampler() if sample_rss else None
     if sampler is not None:
         sampler.start()
     t0 = time.perf_counter()
-    x = block_bicgstab(a_op, x0, y, basis=excited_basis, slaterWeightMin=SLATER_WEIGHT_MIN, atol=ATOL, rtol=RTOL)
+    x = block_bicgstab(a_op, x0, y_blk, basis=excited_basis, slaterWeightMin=SLATER_WEIGHT_MIN, atol=ATOL, rtol=RTOL)
     elapsed = time.perf_counter() - t0
     if sampler is not None:
         sampler.stop()
 
-    return elapsed, a_op.iterations, excited_basis, x, y, sampler.peak_delta_bytes if sampler else 0
+    return elapsed, a_op.iterations, excited_basis, x.to_states(), y, sampler.peak_delta_bytes if sampler else 0
 
 
 def _residual_norm(workload, excited_basis, z, x, y):

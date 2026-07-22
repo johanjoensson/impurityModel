@@ -6,7 +6,7 @@ import pytest
 from impurityModel.ed.basis_transcription import build_sparse_matrix, build_vector
 from impurityModel.ed.cg import block_bicgstab
 from impurityModel.ed.manybody_basis import Basis
-from impurityModel.ed.ManyBodyUtils import ManyBodyOperator, ManyBodyState
+from impurityModel.ed.ManyBodyUtils import ManyBodyBlockState, ManyBodyOperator, ManyBodyState
 
 
 def test_block_bicgstab_array_single():
@@ -196,10 +196,10 @@ def test_block_bicgstab_sparse_matches_dense():
     H, basis = _sparse_system()
     rng = np.random.default_rng(17)
     ys = _rand_states(basis, rng, 3)
-    x0 = [ManyBodyState() for _ in range(3)]
-    xs = block_bicgstab(H, x0, ys, basis=basis, slaterWeightMin=0.0)
+    x0 = ManyBodyBlockState.from_states([ManyBodyState() for _ in range(3)])
+    xs = block_bicgstab(H, x0, ManyBodyBlockState.from_states(ys), basis=basis, slaterWeightMin=0.0)
     _, X_ref = _dense_ref(basis, H, ys)
-    X = build_vector(basis, xs).T
+    X = build_vector(basis, xs.to_states()).T
     np.testing.assert_allclose(X, X_ref, atol=1e-6)
 
 
@@ -209,8 +209,8 @@ def test_block_bicgstab_sparse_rank_deficient_rhs():
     rng = np.random.default_rng(19)
     y = _rand_states(basis, rng, 1)[0]
     ys = [y, y * (2.0 + 0j)]
-    x0 = [ManyBodyState() for _ in range(2)]
-    xs = block_bicgstab(H, x0, ys, basis=basis, slaterWeightMin=0.0)
+    x0 = ManyBodyBlockState.from_states([ManyBodyState() for _ in range(2)])
+    xs = block_bicgstab(H, x0, ManyBodyBlockState.from_states(ys), basis=basis, slaterWeightMin=0.0).to_states()
     _, X_ref = _dense_ref(basis, H, ys)
     X = build_vector(basis, xs).T
     np.testing.assert_allclose(X, X_ref, atol=1e-6)
@@ -222,39 +222,44 @@ def test_block_bicgstab_sparse_warm_start_exact():
     """An exact initial guess returns immediately (zero residual -> rank 0)."""
     H, basis = _sparse_system()
     rng = np.random.default_rng(23)
-    ys = _rand_states(basis, rng, 2)
-    xs = block_bicgstab(H, [ManyBodyState() for _ in range(2)], ys, basis=basis, slaterWeightMin=0.0)
+    ys = ManyBodyBlockState.from_states(_rand_states(basis, rng, 2))
+    x0 = ManyBodyBlockState.from_states([ManyBodyState() for _ in range(2)])
+    xs = block_bicgstab(H, x0, ys, basis=basis, slaterWeightMin=0.0)
     xs2 = block_bicgstab(H, xs, ys, basis=basis, slaterWeightMin=0.0)
-    for a, b in zip(xs, xs2):
+    for a, b in zip(xs.to_states(), xs2.to_states()):
         diff = a - b
         assert np.sqrt(diff.norm2()) < 1e-10
 
 
 def test_block_bicgstab_sparse_info_and_rhs_untouched():
-    """Sparse path: ``info`` reports convergence, and the caller's RHS states are unmodified
+    """Sparse path: ``info`` reports convergence, and the caller's RHS block is unmodified
     (guards the ``ri = r0_t = pi = rhs`` aliasing at the core's entry -- an in-place update
-    would corrupt the shadow residual *and* the caller's states)."""
+    would corrupt the shadow residual *and* the caller's block, which is now passed straight
+    through with no defensive copy at the solver's boundary)."""
     H, basis = _sparse_system()
     rng = np.random.default_rng(31)
     ys = _rand_states(basis, rng, 2)
-    y_before = build_vector(basis, ys).T.copy()
+    y_blk = ManyBodyBlockState.from_states(ys)
+    y_before = np.asarray(y_blk).copy()
     info = {}
-    xs = block_bicgstab(H, [ManyBodyState() for _ in range(2)], ys, basis=basis, slaterWeightMin=0.0, info=info)
+    x0 = ManyBodyBlockState.from_states([ManyBodyState() for _ in range(2)])
+    xs = block_bicgstab(H, x0, y_blk, basis=basis, slaterWeightMin=0.0, info=info)
     assert info["converged"]
     assert info["iterations"] > 0
     assert info["rel_residual"] < 1e-7
-    np.testing.assert_array_equal(build_vector(basis, ys).T, y_before)
+    np.testing.assert_array_equal(np.asarray(y_blk), y_before)
     _, X_ref = _dense_ref(basis, H, ys)
-    np.testing.assert_allclose(build_vector(basis, xs).T, X_ref, atol=1e-6)
+    np.testing.assert_allclose(build_vector(basis, xs.to_states()).T, X_ref, atol=1e-6)
 
 
 def test_block_bicgstab_sparse_max_iter():
     H, basis = _sparse_system()
     rng = np.random.default_rng(29)
     ys = _rand_states(basis, rng, 2)
-    xs = block_bicgstab(H, [ManyBodyState() for _ in range(2)], ys, basis=basis, slaterWeightMin=0.0, max_iter=0)
+    x0 = ManyBodyBlockState.from_states([ManyBodyState() for _ in range(2)])
+    xs = block_bicgstab(H, x0, ManyBodyBlockState.from_states(ys), basis=basis, slaterWeightMin=0.0, max_iter=0)
     _, X_ref = _dense_ref(basis, H, ys)
-    X = build_vector(basis, xs).T
+    X = build_vector(basis, xs.to_states()).T
     assert not np.allclose(X, X_ref, atol=1e-6)
 
 
@@ -344,11 +349,25 @@ def test_block_bicgstab_sparse_rank_deficient():
     y_block = [ManyBodyState({det0: 1.0}), ManyBodyState({det0: 2.0})]  # proportional -> rank 1
 
     x_block = block_bicgstab(
-        A, [ManyBodyState(), ManyBodyState()], y_block, basis=_basis(), slaterWeightMin=0.0, atol=1e-10, rtol=1e-12
-    )
+        A,
+        ManyBodyBlockState.from_states([ManyBodyState(), ManyBodyState()]),
+        ManyBodyBlockState.from_states(y_block),
+        basis=_basis(),
+        slaterWeightMin=0.0,
+        atol=1e-10,
+        rtol=1e-12,
+    ).to_states()
 
     ref = [
-        block_bicgstab(A, [ManyBodyState()], [col], basis=_basis(), slaterWeightMin=0.0, atol=1e-10, rtol=1e-12)[0]
+        block_bicgstab(
+            A,
+            ManyBodyBlockState.from_states([ManyBodyState()]),
+            ManyBodyBlockState.from_states([col]),
+            basis=_basis(),
+            slaterWeightMin=0.0,
+            atol=1e-10,
+            rtol=1e-12,
+        ).to_states()[0]
         for col in y_block
     ]
     for k in range(2):

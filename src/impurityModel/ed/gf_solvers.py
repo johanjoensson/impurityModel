@@ -490,7 +490,10 @@ def solve_shifted_block(A_op, x0, rhs, basis, slaterWeightMin, atol, rtol=0.0, m
     ----------
     A_op, x0, rhs, basis, slaterWeightMin, atol
         Forwarded to ``block_bicgstab``/``block_gmres`` (``x0`` is the warm start; ``rhs`` is
-        the right-hand side block, ``y`` in their signature).
+        the right-hand side block, ``y`` in their signature). ``x0``/``rhs`` are
+        ``ManyBodyBlockState`` on the sparse path; the restart loop below carries the same
+        block ``X`` through every attempt (and into the GMRES escalation) with no
+        list round trip in between.
     rtol : float, optional
         BiCGSTAB-only relative tolerance floor (some callers pin the RIXS R1 solve to one
         additionally); 0 (default) omits it and uses ``block_bicgstab``'s own default.
@@ -503,7 +506,7 @@ def solve_shifted_block(A_op, x0, rhs, basis, slaterWeightMin, atol, rtol=0.0, m
 
     Returns
     -------
-    list of ManyBodyState
+    ManyBodyBlockState
         The solution block.
     """
     if info is None:
@@ -715,9 +718,19 @@ def block_Green_bicgstab(
                 # Solve, restarting while unconverged and still making progress and
                 # escalating to GMRES on stagnation (block_Green_bicgstab's own warm-start
                 # chain is separate from the RIXS one but shares the same solver policy).
+                # seeds/x0 are wrapped into blocks once here, at the solver boundary; the
+                # restart loop inside solve_shifted_block then carries X as a block with no
+                # further round trip.
                 info = {}
                 X = solve_shifted_block(
-                    A_op, x0, seeds, solve_basis, slaterWeightMin, atol, max_iter=max_iter, info=info
+                    A_op,
+                    ManyBodyBlockState.from_states(list(x0)),
+                    ManyBodyBlockState.from_states(list(seeds)),
+                    solve_basis,
+                    slaterWeightMin,
+                    atol,
+                    max_iter=max_iter,
+                    info=info,
                 )
 
                 stats["n_points"] += 1
@@ -740,14 +753,14 @@ def block_Green_bicgstab(
                 # local Gram + Allreduce is the whole inner product (no state-vector gather).
                 gram = block_inner_cy(
                     ManyBodyBlockState.from_states(bras if bras is not None else seeds),
-                    ManyBodyBlockState.from_states(list(X)),
+                    X,
                 )
                 if sub_comm is not None:
                     sub_comm.Allreduce(MPI.IN_PLACE, gram, op=MPI.SUM)
                 G_axes[ax][p, k] = gram
 
                 hist_z.append(z)
-                hist_x.append(list(X))
+                hist_x.append(X.to_states())
                 if len(hist_z) > _GF_BICGSTAB_WARM_HISTORY:
                     hist_z.pop(0)
                     hist_x.pop(0)
@@ -916,6 +929,10 @@ def block_Green_cipsi(
                     sub_comm.Allreduce(MPI.IN_PLACE, seed_norms2, op=MPI.SUM)
                 nonzero = seed_norms2 > 0.0
 
+                # seeds are fixed for every round of this point; the selector between
+                # rounds (selector.select_at) needs X as a list, so only the solve call
+                # itself is wrapped into a block, at each round's boundary.
+                seeds_blk = ManyBodyBlockState.from_states(seeds)
                 X = x0
                 sel = None
                 for _round in range(max_rounds):
@@ -928,7 +945,10 @@ def block_Green_cipsi(
                     A_op = z - hOp
                     A_op.set_weighted_restrictions(excited_weighted_restrictions)
                     info = {}
-                    X = solve_shifted_block(A_op, X, seeds, frozen, slaterWeightMin, atol, max_iter=max_iter, info=info)
+                    X = solve_shifted_block(
+                        A_op, ManyBodyBlockState.from_states(X), seeds_blk, frozen, slaterWeightMin, atol,
+                        max_iter=max_iter, info=info,
+                    ).to_states()
                     stats["iterations"] += info["iterations"]
                     stats["max_rel_residual"] = max(stats["max_rel_residual"], info["rel_residual"])
                     if info["gmres_used"]:
@@ -971,10 +991,7 @@ def block_Green_cipsi(
                     if stats["retained_size"] is None or retained < stats["retained_size"]:
                         stats["retained_size"] = retained
 
-                gram = block_inner_cy(
-                    ManyBodyBlockState.from_states(seeds),
-                    ManyBodyBlockState.from_states(list(X)),
-                )
+                gram = block_inner_cy(seeds_blk, ManyBodyBlockState.from_states(X))
                 if sub_comm is not None:
                     sub_comm.Allreduce(MPI.IN_PLACE, gram, op=MPI.SUM)
 

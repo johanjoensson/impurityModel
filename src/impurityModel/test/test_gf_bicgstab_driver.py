@@ -198,18 +198,18 @@ def _capped_solve_with(solver, cap, z, comm=None):
     proxy = _CappedBasisProxy(basis, cap)
     # redistribute_psis SUMS per-rank contributions, so only rank 0 provides amplitudes.
     seeds = _seeds() if comm is None or comm.rank == 0 else [ManyBodyState() for _ in _seeds()]
-    seeds = basis.redistribute_psis(seeds)
+    seeds = ManyBodyBlockState.from_states(basis.redistribute_psis(seeds))
     A = z - _siam_6()
     # Restart while unconverged, as the driver does: a near-pole z stagnates a single
     # BiCGSTAB pass (fresh shadow residual each call). GMRES restarts internally, so its
     # first call already converges and the loop is a no-op for it.
-    X = [ManyBodyState() for _ in seeds]
+    X = ManyBodyBlockState.from_states([ManyBodyState() for _ in range(seeds.width)])
     info = {}
     for _ in range(10):
         X = solver(A, X, seeds, proxy, 0.0, atol=1e-12, info=info)
         if info["converged"]:
             break
-    gram = block_inner_cy(ManyBodyBlockState.from_states(list(seeds)), ManyBodyBlockState.from_states(list(X)))
+    gram = block_inner_cy(seeds, X)
     if comm is not None:
         comm.Allreduce(MPI.IN_PLACE, gram, op=MPI.SUM)
     return gram, proxy

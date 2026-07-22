@@ -37,7 +37,6 @@ from impurityModel.ed.BlockLanczosArray import (
 )
 from impurityModel.ed.TSQR import DEFLATE_TOL_SEEDS
 from impurityModel.ed.ManyBodyUtils import (
-    ManyBodyBlockState,
     block_add_scaled_cy,
     block_inner_cy,
 )
@@ -57,7 +56,7 @@ def block_gmres(A, x0, y, basis, double slaterWeightMin, atol=1e-8, restart=40, 
     Solve ``A X = Y`` with restarted block GMRES (block Arnoldi + least squares).
 
     Contract-compatible with :func:`BiCGSTAB.block_bicgstab`: dense (``numpy``) and
-    sparse (``ManyBodyState`` list) blocks, arbitrary -- possibly rank-deficient --
+    sparse (``ManyBodyBlockState``) blocks, arbitrary -- possibly rank-deficient --
     right-hand sides (the residual block is deflated to its independent directions and
     dependent columns are reconstructed by linearity), warm starts pay off in iterations
     (``atol`` is relative to ``||Y||``, never to the warm-start residual), and an
@@ -75,9 +74,9 @@ def block_gmres(A, x0, y, basis, double slaterWeightMin, atol=1e-8, restart=40, 
     ----------
     A : ManyBodyOperator or ndarray
         The linear operator.
-    x0 : list of ManyBodyState or ndarray
+    x0 : ManyBodyBlockState or ndarray
         Initial guess block (warm start).
-    y : list of ManyBodyState or ndarray
+    y : ManyBodyBlockState or ndarray
         Right-hand side block.
     basis : Basis
         The many-body state basis object (``None`` for the dense path). A
@@ -100,11 +99,11 @@ def block_gmres(A, x0, y, basis, double slaterWeightMin, atol=1e-8, restart=40, 
 
     Returns
     -------
-    list of ManyBodyState or ndarray
+    ManyBodyBlockState or ndarray
         The solution block ``X``.
     """
     cdef bint is_arr = is_array(x0)
-    cdef Py_ssize_t n = x0.shape[1] if is_arr and len(x0.shape) == 2 else len(x0)
+    cdef Py_ssize_t n = x0.shape[1] if is_arr and len(x0.shape) == 2 else x0.width
     cdef bint mpi = basis is not None and getattr(basis, "is_distributed", False)
     cdef int total_iters = 0
     cdef int cycle
@@ -163,8 +162,8 @@ def block_gmres(A, x0, y, basis, double slaterWeightMin, atol=1e-8, restart=40, 
         xi = x0.copy()
         y_cols2 = np.linalg.norm(y, axis=0) ** 2
     else:
-        xi = ManyBodyBlockState.from_states(list(x0))
-        y_blk = ManyBodyBlockState.from_states(list(y))
+        xi = x0
+        y_blk = y
         y_cols2 = y_blk.col_norm2()
         if mpi:
             comm.Allreduce(MPI.IN_PLACE, y_cols2, op=MPI.SUM)
@@ -299,7 +298,7 @@ def block_gmres(A, x0, y, basis, double slaterWeightMin, atol=1e-8, restart=40, 
         converged = r_scale <= atol * scale
 
     _fill_info(info, total_iters, converged, rel_res)
-    return xi if is_arr else xi.to_states()
+    return xi
 
 
 def _hessenberg_lstsq(Hbar, e1, Py_ssize_t n_cols, Py_ssize_t n_rows):

@@ -157,15 +157,18 @@ def block_bicgstab(A, x0, y, basis, double slaterWeightMin, atol=1e-8, rtol=1e-1
     one shared determinant support per block, ``ManyBodyOperator.apply_block`` matvecs
     (term/sign/accumulator work once per determinant, near-flat in the block width), the
     fused block redistribute, and per-column norms straight off the dense amplitude rows.
-    Callers keep the ``list[ManyBodyState]`` interface — conversion happens at this boundary.
+    Callers pass and receive ``ManyBodyBlockState`` directly -- no conversion at this
+    boundary, so a warm-start chain (:func:`~impurityModel.ed.gf_solvers.solve_shifted_block`'s
+    restart loop, the BiCGSTAB->GMRES escalation) carries the same block through every
+    attempt instead of round-tripping through a list each call.
 
     Parameters
     ----------
     A : ManyBodyOperator or ndarray
         The linear operator.
-    x0 : list of ManyBodyState or ndarray
+    x0 : ManyBodyBlockState or ndarray
         Initial guess block (warm start).
-    y : list of ManyBodyState or ndarray
+    y : ManyBodyBlockState or ndarray
         Right-hand side block.
     basis : Basis
         The many-body state basis object (``None`` for the dense path).
@@ -194,11 +197,11 @@ def block_bicgstab(A, x0, y, basis, double slaterWeightMin, atol=1e-8, rtol=1e-1
 
     Returns
     -------
-    list of ManyBodyState or ndarray
+    ManyBodyBlockState or ndarray
         The solution block ``X``.
     """
     cdef bint is_arr = is_array(x0)
-    cdef Py_ssize_t n = x0.shape[1] if is_arr and len(x0.shape) == 2 else len(x0)
+    cdef Py_ssize_t n = x0.shape[1] if is_arr and len(x0.shape) == 2 else x0.width
     cdef bint mpi = basis is not None and getattr(basis, "is_distributed", False)
     cdef Py_ssize_t rank
     cdef double y_scale
@@ -219,8 +222,8 @@ def block_bicgstab(A, x0, y, basis, double slaterWeightMin, atol=1e-8, rtol=1e-1
         block_add_scaled(ri, Axi, -eye_n, slaterWeightMin=slaterWeightMin)
         y_cols2 = np.linalg.norm(y, axis=0) ** 2
     else:
-        x_blk = ManyBodyBlockState.from_states(list(x0))
-        y_blk = ManyBodyBlockState.from_states(list(y))
+        x_blk = x0
+        y_blk = y
         Axi = matmat(x_blk)
         ri = block_add_scaled_cy(y_blk, Axi, -eye_n)
         if slaterWeightMin > 0:
@@ -315,7 +318,7 @@ def block_bicgstab(A, x0, y, basis, double slaterWeightMin, atol=1e-8, rtol=1e-1
     xi = block_add_scaled_cy(x_blk, correction, eye_n)
     if slaterWeightMin > 0:
         xi.prune_rows(slaterWeightMin)
-    return xi.to_states()
+    return xi
 
 
 def _block_bicgstab_core(

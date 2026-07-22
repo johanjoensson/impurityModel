@@ -16,7 +16,7 @@ from impurityModel.ed.basis_transcription import build_sparse_matrix, build_vect
 from impurityModel.ed.cg import block_bicgstab
 from impurityModel.ed.gmres import block_gmres
 from impurityModel.ed.manybody_basis import Basis
-from impurityModel.ed.ManyBodyUtils import ManyBodyOperator, ManyBodyState, SlaterDeterminant
+from impurityModel.ed.ManyBodyUtils import ManyBodyBlockState, ManyBodyOperator, ManyBodyState, SlaterDeterminant
 from impurityModel.test.test_gf_bicgstab_driver import _capped_solve_with, _dense_G_on
 
 
@@ -232,10 +232,11 @@ def test_block_gmres_sparse_matches_dense():
     rng = np.random.default_rng(17)
     ys = _rand_states(basis, rng, 3)
     info = {}
-    xs = block_gmres(H, [ManyBodyState() for _ in range(3)], ys, basis=basis, slaterWeightMin=0.0, info=info)
+    x0 = ManyBodyBlockState.from_states([ManyBodyState() for _ in range(3)])
+    xs = block_gmres(H, x0, ManyBodyBlockState.from_states(ys), basis=basis, slaterWeightMin=0.0, info=info)
     H_mat = build_sparse_matrix(basis, H).toarray()
     X_ref = np.linalg.solve(H_mat, build_vector(basis, ys).T)
-    np.testing.assert_allclose(build_vector(basis, xs).T, X_ref, atol=1e-6)
+    np.testing.assert_allclose(build_vector(basis, xs.to_states()).T, X_ref, atol=1e-6)
     assert info["converged"]
 
 
@@ -244,7 +245,8 @@ def test_block_gmres_sparse_rank_deficient_rhs():
     rng = np.random.default_rng(19)
     y = _rand_states(basis, rng, 1)[0]
     ys = [y, y * (2.0 + 0j)]
-    xs = block_gmres(H, [ManyBodyState() for _ in range(2)], ys, basis=basis, slaterWeightMin=0.0)
+    x0 = ManyBodyBlockState.from_states([ManyBodyState() for _ in range(2)])
+    xs = block_gmres(H, x0, ManyBodyBlockState.from_states(ys), basis=basis, slaterWeightMin=0.0).to_states()
     diff = xs[1] - xs[0] * (2.0 + 0j)
     assert np.sqrt(diff.norm2()) < 1e-8  # exact linearity of the dependent column
 
@@ -264,7 +266,8 @@ def test_block_gmres_sparse_happy_breakdown_exact():
     det0 = SlaterDeterminant.from_bytes(b"\x80")
     ys = [ManyBodyState({det0: 1.0})]
     info = {}
-    block_gmres(A, [ManyBodyState()], ys, basis=basis, slaterWeightMin=0.0, atol=1e-12, info=info)
+    x0 = ManyBodyBlockState.from_states([ManyBodyState()])
+    block_gmres(A, x0, ManyBodyBlockState.from_states(ys), basis=basis, slaterWeightMin=0.0, atol=1e-12, info=info)
     assert info["converged"] and info["iterations"] <= 2
     assert info["rel_residual"] < 1e-12
 
@@ -272,12 +275,13 @@ def test_block_gmres_sparse_happy_breakdown_exact():
 def test_block_gmres_sparse_warm_start_exact():
     H, basis = _sparse_system()
     rng = np.random.default_rng(23)
-    ys = _rand_states(basis, rng, 2)
-    xs = block_gmres(H, [ManyBodyState() for _ in range(2)], ys, basis=basis, slaterWeightMin=0.0)
+    ys = ManyBodyBlockState.from_states(_rand_states(basis, rng, 2))
+    x0 = ManyBodyBlockState.from_states([ManyBodyState() for _ in range(2)])
+    xs = block_gmres(H, x0, ys, basis=basis, slaterWeightMin=0.0)
     info = {}
     xs2 = block_gmres(H, xs, ys, basis=basis, slaterWeightMin=0.0, info=info)
     assert info["iterations"] == 0
-    for a, b in zip(xs, xs2):
+    for a, b in zip(xs.to_states(), xs2.to_states()):
         assert np.sqrt((a - b).norm2()) < 1e-10
 
 
@@ -328,9 +332,10 @@ def test_block_gmres_mpi_matches_dense():
     ]
     ys = dist_basis.redistribute_psis(ys_full if comm.rank == 0 else [ManyBodyState() for _ in ys_full])
     info = {}
-    xs = block_gmres(op, [ManyBodyState() for _ in range(2)], ys, basis=dist_basis, slaterWeightMin=0.0, info=info)
+    x0 = ManyBodyBlockState.from_states([ManyBodyState() for _ in range(2)])
+    xs = block_gmres(op, x0, ManyBodyBlockState.from_states(ys), basis=dist_basis, slaterWeightMin=0.0, info=info)
     assert info["converged"]
-    X_dist = build_vector(dist_basis, xs, root=0).T
+    X_dist = build_vector(dist_basis, xs.to_states(), root=0).T
 
     # Dense reference in dist_basis's OWN global ordering (hash distribution orders
     # determinants by owner, not lexicographically -- a serial basis would permute the

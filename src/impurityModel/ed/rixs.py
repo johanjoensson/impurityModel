@@ -24,7 +24,7 @@ from impurityModel.ed import config
 from impurityModel.ed.basis_restrictions import build_excited_restrictions
 from impurityModel.ed.BlockLanczosArray import Reort
 from impurityModel.ed.gf_solvers import solve_shifted_block
-from impurityModel.ed.ManyBodyUtils import ManyBodyOperator, ManyBodyState
+from impurityModel.ed.ManyBodyUtils import ManyBodyBlockState, ManyBodyOperator, ManyBodyState
 from impurityModel.ed.ManyBodyUtils import applyOp as applyOp_test
 from impurityModel.ed.rational_sampling import barycentric_eval, greedy_next_samples, set_valued_aaa
 from impurityModel.ed.symmetries import (
@@ -349,8 +349,15 @@ class _R1SolverChain:
         # failing that, loud.
         solve_info = {}
         psi2_all[:] = solve_shifted_block(
-            A_op, psi2_all, psi1_all, tmp_basis, slaterWeightMin, _RIXS_R1_ATOL, rtol=1e-7, info=solve_info
-        )
+            A_op,
+            ManyBodyBlockState.from_states(psi2_all),
+            ManyBodyBlockState.from_states(psi1_all),
+            tmp_basis,
+            slaterWeightMin,
+            _RIXS_R1_ATOL,
+            rtol=1e-7,
+            info=solve_info,
+        ).to_states()
         if self.counters is not None:
             self.counters["r1_bicgstab"] += 1
             if solve_info["gmres_used"]:
