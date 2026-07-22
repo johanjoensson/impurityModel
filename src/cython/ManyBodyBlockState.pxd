@@ -26,7 +26,9 @@ cdef extern from "ManyBodyBlockState.h" nogil:
         ManyBodyBlockState(const ManyBodyBlockState&)
         ManyBodyBlockState(size_t)
         ManyBodyBlockState(vector[Key], vector[Value], size_t)
-        ManyBodyBlockState(const vector[Key]&, const vector[Value]&)
+
+        @staticmethod
+        ManyBodyBlockState from_unsorted(const vector[Key]&, const vector[Value]&, size_t) except +
 
         size_t width()
         size_t rows()
@@ -41,40 +43,45 @@ cdef extern from "ManyBodyBlockState.h" nogil:
 
         bint contains(const Key&)
         Row at(const Key&) except +
-        Row operator[](const Key&)
-        size_t erase(const Key&)
+        Row operator[](const Key&) except +
+        size_t erase(const Key&) except +
         void erase_row(size_t)
         void clear()
-        void reserve(size_t)
+        void reserve(size_t) except +
         void swap(ManyBodyBlockState&)
 
         double norm2()
         double norm()
         double max_norm2()
         size_t count_above(double)
-        void truncate(size_t)
+        void truncate(size_t) except +
         ManyBodyBlockState& add_scaled(const ManyBodyBlockState&, Value) except +
 
-        ManyBodyBlockState operator-()
-        ManyBodyBlockState operator+(const ManyBodyBlockState&, const ManyBodyBlockState&)
-        ManyBodyBlockState operator-(const ManyBodyBlockState&, const ManyBodyBlockState&)
-        ManyBodyBlockState operator*(const ManyBodyBlockState&, Value)
-        ManyBodyBlockState operator*(Value, const ManyBodyBlockState&)
-        ManyBodyBlockState operator/(const ManyBodyBlockState&, Value)
+        # Every one of these builds a temporary via the copy constructor and/or
+        # reallocates through add_scaled, either of which can raise on a width
+        # mismatch or bad_alloc; without `except +` such a C++ exception would
+        # unwind past Cython's generated code with no handler and abort the
+        # process (see the commit fixing this).
+        ManyBodyBlockState operator-() except +
+        ManyBodyBlockState operator+(const ManyBodyBlockState&, const ManyBodyBlockState&) except +
+        ManyBodyBlockState operator-(const ManyBodyBlockState&, const ManyBodyBlockState&) except +
+        ManyBodyBlockState operator*(const ManyBodyBlockState&, Value) except +
+        ManyBodyBlockState operator*(Value, const ManyBodyBlockState&) except +
+        ManyBodyBlockState operator/(const ManyBodyBlockState&, Value) except +
 
         void prune_rows(double)
-        void keep_rows(const vector[Key]&)
+        void keep_rows(const vector[Key]&) except +
         void row_max_norm2(double*)
         size_t count_rows_in(const vector[Key]&)
-        void new_row_max_norm2(const vector[Key]&, vector[double]&)
-        ManyBodyBlockState keys_new_above(const vector[Key]&, double)
-        ManyBodyBlockState key_union(const ManyBodyBlockState&)
-        void merge_keys(const ManyBodyBlockState&)
+        void new_row_max_norm2(const vector[Key]&, vector[double]&) except +
+        ManyBodyBlockState keys_new_above(const vector[Key]&, double) except +
+        ManyBodyBlockState key_union(const ManyBodyBlockState&) except +
+        void merge_keys(const ManyBodyBlockState&) except +
         void col_norm2(double*)
 
         bint operator==(const ManyBodyBlockState&)
         bint operator!=(const ManyBodyBlockState&)
 
     void block_inner(const ManyBodyBlockState&, const ManyBodyBlockState&, ManyBodyBlockState.Value*)
-    ManyBodyBlockState block_add_scaled(const ManyBodyBlockState&, const ManyBodyBlockState&, const ManyBodyBlockState.Value*)
-    ManyBodyBlockState block_combine_cols(const ManyBodyBlockState&, const ManyBodyBlockState.Value*, size_t)
+    ManyBodyBlockState block_add_scaled(const ManyBodyBlockState&, const ManyBodyBlockState&, const ManyBodyBlockState.Value*) except +
+    ManyBodyBlockState block_combine_cols(const ManyBodyBlockState&, const ManyBodyBlockState.Value*, size_t) except +

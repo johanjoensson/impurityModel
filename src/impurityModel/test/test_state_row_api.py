@@ -104,6 +104,18 @@ def test_setitem_scalar_and_sequence(data):
         wide[key] = (1 + 0j, 2 + 0j, 3 + 0j)
 
 
+def test_rejected_setitem_does_not_insert_a_row(data):
+    """A ValueError from a bad-width assignment must not leave a spurious zero row in
+    the support -- it would otherwise ship over the wire on the next redistribute."""
+    wide = ManyBodyBlockState({k: (v, 2 * v) for k, v in data.items()})
+    new = _det(9999)
+    before = len(wide)
+    with pytest.raises(ValueError):
+        wide[new] = (1 + 0j, 2 + 0j, 3 + 0j)
+    assert len(wide) == before
+    assert new not in wide
+
+
 def test_setitem_inserts_a_new_determinant(data):
     block = ManyBodyBlockState(data)
     new = _det(9999)
@@ -135,21 +147,42 @@ def test_row_write_aliases_the_block(data):
     assert np.asarray(block)[0, 0] == 7.5 + 0.25j
 
 
-def test_row_view_blocks_reallocation(data):
-    """A live row participates in the same export guard as np.asarray(block)."""
+def test_row_does_not_block_mutation(data):
+    """A live row does not pin the state against structural mutation -- unlike
+    np.asarray(block), it re-derives its pointer on every access rather than caching
+    one, so mutation is safe and a STALE read is what raises."""
     block = ManyBodyBlockState(data)
     row = block[sorted(data)[0]]
+    block.prune_rows(0.0)  # allowed even with `row` alive
+    block[_det(9999)] = 1 + 0j  # ditto
     with pytest.raises(RuntimeError):
-        block.prune_rows(0.0)
-    with pytest.raises(RuntimeError):
-        block[_det(9999)] = 1 + 0j
-    del row
-    block.prune_rows(0.0)  # released, so the mutation is allowed again
+        row[0]  # but reading through the now-stale view raises
 
 
 def test_row_keeps_its_state_alive(data):
     row = ManyBodyBlockState(data)[sorted(data)[0]]
     assert row[0] == data[sorted(data)[0]]
+
+
+def test_row_survives_a_reference_cycle(data):
+    """A Row caught only in a garbage-collected cycle must not permanently wedge its
+    state: tp_clear may null Row._owner before __dealloc__ runs, so the guard must not
+    depend on a __dealloc__-time decrement (see the commit fixing this)."""
+    import gc
+
+    block = ManyBodyBlockState(data)
+    row = block[sorted(data)[0]]
+
+    class _Cycle:
+        pass
+
+    cycle = _Cycle()
+    cycle.self_ref = cycle
+    cycle.row = row
+    del row, cycle
+    gc.collect()
+
+    block.prune_rows(0.0)  # would stay locked forever under the old export-count design
 
 
 # --- vector space vs the flat_map oracle ------------------------------------
@@ -211,10 +244,53 @@ def test_default_state_is_the_polymorphic_zero(data, other):
     assert (ManyBodyBlockState() + wide).width == 2
 
 
+def test_empty_dict_is_also_the_polymorphic_zero(data):
+    """An empty mapping carries no width information, so it must NOT default to width 1
+    -- that would make ManyBodyBlockState({}) + wide_block raise on the width check."""
+    empty = ManyBodyBlockState({})
+    assert empty.width == 0 and empty.is_empty()
+
+    wide = ManyBodyBlockState({k: (v, 2 * v) for k, v in data.items()})
+    grown = empty + wide
+    assert grown.width == 2 and len(grown) == len(data)
+
+
+def test_width_mismatch_raises_python_exception_not_abort(data, other):
+    """Every arithmetic operator must translate the C++ width-mismatch exception into a
+    Python one (via `except +`) instead of letting it unwind into an abort."""
+    narrow = ManyBodyBlockState(data)
+    wide = ManyBodyBlockState({k: (v, 2 * v) for k, v in other.items()})
+    for op in (
+        lambda: narrow + wide,
+        lambda: narrow - wide,
+        lambda: narrow.add_scaled(wide, 1.0 + 0j),
+    ):
+        with pytest.raises(ValueError):
+            op()
+
+
 def test_explicit_width_is_checked_not_adopted(data, other):
     wide = ManyBodyBlockState.from_states([ManyBodyState(data), ManyBodyState(other)])
     with pytest.raises(ValueError):
         ManyBodyBlockState(width=3).add_scaled(wide, 1.0 + 0j)
+
+
+def test_mask_block_rejects_amplitude_assignment(data):
+    """A width-0 state that already HAS rows is a key-only mask, not the polymorphic
+    zero; assigning amplitudes into it is rejected rather than silently discarding
+    them or corrupting its width-0 invariant."""
+    mask = ManyBodyBlockState.from_states([ManyBodyState(data)]).key_union(ManyBodyBlockState())
+    assert mask.width == 0 and len(mask) > 0
+    with pytest.raises(ValueError):
+        mask[next(iter(data))] = 5 + 0j
+
+
+def test_mask_block_rejects_truncate(data):
+    """Every row-max is 0 on a width-0 mask, so truncate would otherwise silently keep
+    everything regardless of max_rows -- reject instead of pretending it worked."""
+    mask = ManyBodyBlockState.from_states([ManyBodyState(data)]).key_union(ManyBodyBlockState())
+    with pytest.raises(ValueError):
+        mask.truncate(1)
 
 
 def test_explicit_width_builds_an_empty_block():

@@ -25,66 +25,90 @@ cdef class Row:
     array through the buffer protocol (``np.asarray(row)``); writes through it land in the
     block's storage.
 
-    The view is non-owning. It keeps its state alive, and while it exists the state
-    refuses the operations that would reallocate its rows (``prune_rows``, ``keep_rows``,
-    ``merge_keys``, inserting a new determinant) -- the same export guard
-    ``np.asarray(state)`` already uses, so a stale view can never be read.
+    The view is non-owning and re-derives its pointer from the owning state on every
+    access (never caching one) rather than blocking the state against mutation, so a
+    ``Row`` sitting unused in a reference cycle can never wedge the state: it records the
+    owner's generation counter at creation and compares on every access, raising
+    ``RuntimeError`` if the state was structurally modified since (the row count or order
+    changed -- see the invalidation list on ``ManyBodyBlockState::row``) rather than
+    silently reading stale or freed memory. In-place scaling (``*=``, ``/=``) does not
+    change the generation, since it does not move anything.
+
+    ``np.asarray(row)`` is the one case where a raw pointer genuinely escapes to another
+    object; for that (and only that) duration the owning state's export guard applies, the
+    same as ``np.asarray(state)``.
     """
     cdef ManyBodyBlockState _owner
-    cdef ManyBodyBlockState_cpp.Value* _data
+    cdef Py_ssize_t _row_idx
+    cdef unsigned long long _generation
     cdef Py_ssize_t _size
     cdef Py_ssize_t _shape[1]
     cdef Py_ssize_t _strides[1]
 
     def __cinit__(self):
         self._owner = None
-        self._data = NULL
+        self._row_idx = 0
+        self._generation = 0
         self._size = 0
-
-    def __dealloc__(self):
-        if self._owner is not None:
-            self._owner._n_exports -= 1
 
     def __len__(self):
         return self._size
 
+    cdef ManyBodyBlockState_cpp.Value* _ptr(self) except? NULL:
+        """The row's current storage, freshly looked up, or a clear error if the owning
+        state moved under us since this row was taken."""
+        if self._owner._generation != self._generation:
+            raise RuntimeError(
+                "stale Row: the state was structurally modified (row count or order "
+                "changed) since this row was taken"
+            )
+        return self._owner.b.row(<size_t>self._row_idx).data()
+
     def __getitem__(self, index):
+        cdef ManyBodyBlockState_cpp.Value* data
         cdef Py_ssize_t i
         if isinstance(index, slice):
-            return [self[i] for i in range(*index.indices(self._size))]
+            data = self._ptr()
+            return [_amp_to_py(data[i]) for i in range(*index.indices(self._size))]
         i = index
         if i < 0:
             i += self._size
         if i < 0 or i >= self._size:
             raise IndexError(f"column {index} out of range for width {self._size}")
-        return _amp_to_py(self._data[i])
+        data = self._ptr()
+        return _amp_to_py(data[i])
 
     def __setitem__(self, index, value):
-        cdef Py_ssize_t i
-        cdef Py_ssize_t k
+        cdef ManyBodyBlockState_cpp.Value* data
+        cdef Py_ssize_t i, k
         if isinstance(index, slice):
-            for k, i in enumerate(range(*index.indices(self._size))):
-                self[i] = value[k]
+            idxs = range(*index.indices(self._size))
+            data = self._ptr()
+            for k, i in enumerate(idxs):
+                data[i] = _amp_to_cpp(<double complex>value[k])
             return
         i = index
         if i < 0:
             i += self._size
         if i < 0 or i >= self._size:
             raise IndexError(f"column {index} out of range for width {self._size}")
-        self._data[i] = _amp_to_cpp(<double complex>value)
+        data = self._ptr()
+        data[i] = _amp_to_cpp(<double complex>value)
 
     def __iter__(self):
+        cdef ManyBodyBlockState_cpp.Value* data = self._ptr()
         cdef Py_ssize_t i
         for i in range(self._size):
-            yield _amp_to_py(self._data[i])
+            yield _amp_to_py(data[i])
 
     def __repr__(self):
         return "Row(" + ", ".join(repr(v) for v in self) + ")"
 
     def __getbuffer__(self, Py_buffer *buffer, int flags):
+        cdef ManyBodyBlockState_cpp.Value* data = self._ptr()
         self._shape[0] = self._size
         self._strides[0] = <Py_ssize_t>sizeof(double complex)
-        buffer.buf = <void*>self._data
+        buffer.buf = <void*>data
         buffer.format = "Zd"
         buffer.internal = NULL
         buffer.itemsize = <Py_ssize_t>sizeof(double complex)
@@ -95,18 +119,19 @@ cdef class Row:
         buffer.shape = self._shape
         buffer.strides = self._strides
         buffer.suboffsets = NULL
+        self._owner._n_exports += 1
 
     def __releasebuffer__(self, Py_buffer *buffer):
-        pass
+        self._owner._n_exports -= 1
 
 
-cdef Row _make_row(ManyBodyBlockState owner, ManyBodyBlockState_cpp.Row span):
-    """Wrap a C++ row span, registering it against the owner's export guard."""
+cdef Row _make_row(ManyBodyBlockState owner, Py_ssize_t row_idx, Py_ssize_t size):
+    """A view of row ``row_idx``, stamped with the owner's current generation."""
     cdef Row res = Row.__new__(Row)
     res._owner = owner
-    res._data = span.data()
-    res._size = <Py_ssize_t>span.size()
-    owner._n_exports += 1
+    res._row_idx = row_idx
+    res._generation = owner._generation
+    res._size = size
     return res
 
 
@@ -125,39 +150,45 @@ cdef class ManyBodyBlockState:
     ``(rows, width)`` complex view (the array keeps this object alive). Mutating the
     row structure (``prune_rows``) while such a view is exported raises, because the
     reallocation would dangle the view.
+
+    ``_generation`` counts every structural mutation (a change in row count or order);
+    a live ``Row`` view stamps its creation generation and compares on each access
+    instead of pinning the state against mutation for as long as the ``Row`` object
+    happens to be reachable -- see ``Row`` for why.
     """
     cdef ManyBodyBlockState_cpp b
     cdef Py_ssize_t _shape[2]
     cdef Py_ssize_t _strides[2]
     cdef int _n_exports
+    cdef unsigned long long _generation
+
+    cdef inline void _bump_generation(self) noexcept:
+        self._generation += 1
 
     def __cinit__(self, mapping=None, width=None):
         """Build a state from a determinant mapping, or an empty one of a given width.
 
         ``ManyBodyBlockState()`` is the polymorphic zero: width 0 and no rows, which
-        adopts a width on the first ``+=``. ``ManyBodyBlockState(width=p)`` is the zero
-        block of an explicit width ``p`` (widths are then checked, not adopted).
-        ``mapping`` maps determinants to a scalar amplitude (width 1) or to a sequence of
-        ``width`` amplitudes.
+        adopts a width on the first ``+=`` (or ``__setitem__``). ``ManyBodyBlockState({})``
+        is the same polymorphic zero -- an empty mapping carries no width information.
+        ``ManyBodyBlockState(width=p)`` is the zero block of an explicit width ``p``
+        (widths are then checked, not adopted). ``mapping`` maps determinants to a scalar
+        amplitude (width 1) or to a sequence of ``width`` amplitudes.
         """
         cdef vector[SlaterDeterminant_cpp[uint64_t]] keys
         cdef vector[ManyBodyBlockState_cpp.Value] amps
         cdef SlaterDeterminant sd
         cdef Py_ssize_t w
-        if mapping is None:
+        if not mapping:
             self.b = ManyBodyBlockState_cpp(<size_t>(0 if width is None else width))
             return
-        items = sorted(mapping.items(), key=lambda kv: kv[0])
-        if not items:
-            self.b = ManyBodyBlockState_cpp(<size_t>(1 if width is None else width))
-            return
-        first = items[0][1]
+        first = next(iter(mapping.values()))
         w = 1 if (np.isscalar(first) or isinstance(first, complex)) else len(first)
         if width is not None and <Py_ssize_t>width != w:
             raise ValueError(f"width {width} does not match the {w} amplitudes given per determinant")
-        keys.reserve(len(items))
-        amps.reserve(len(items) * w)
-        for key, value in items:
+        keys.reserve(len(mapping))
+        amps.reserve(len(mapping) * w)
+        for key, value in mapping.items():
             sd = <SlaterDeterminant?>key
             keys.push_back(sd.s)
             if w == 1 and (np.isscalar(value) or isinstance(value, complex)):
@@ -167,7 +198,11 @@ cdef class ManyBodyBlockState:
                     raise ValueError(f"expected {w} amplitudes per determinant, got {len(value)}")
                 for c in value:
                     amps.push_back(_amp_to_cpp(<double complex>c))
-        self.b = ManyBodyBlockState_cpp(move(keys), move(amps), <size_t>w)
+        # from_unsorted sorts (stable) and dedups in C++, so no Python-level sort of
+        # mapping.items() is needed -- dict keys are unique anyway, so "first wins on
+        # duplicates" never actually triggers here; it matters for from_unsorted's other
+        # (non-dict) callers.
+        self.b = ManyBodyBlockState_cpp.from_unsorted(keys, amps, <size_t>w)
 
     @staticmethod
     def from_states(list states):
@@ -284,27 +319,44 @@ cdef class ManyBodyBlockState:
         cdef size_t r = self.b.find_row(key.s)
         if r == self.b.rows():
             raise KeyError(repr(key))
-        return _make_row(self, self.b.row(r))
+        return _make_row(self, <Py_ssize_t>r, <Py_ssize_t>self.b.width())
 
     def __setitem__(self, SlaterDeterminant key, value):
         """Write a determinant's row, inserting it when absent.
 
         ``value`` is either a scalar (broadcast across the row) or a sequence of
-        ``width`` amplitudes.
+        ``width`` amplitudes. On a width-0, row-less state (the polymorphic zero) the
+        first assignment adopts ``value``'s width; on a width-0 state that already has
+        rows (a key-only mask), assigning amplitudes is rejected -- use ``merge_keys``
+        to add keys to a mask instead.
         """
         cdef ManyBodyBlockState_cpp.Row span
-        cdef Py_ssize_t w
-        cdef Py_ssize_t c
+        cdef Py_ssize_t w, c
+        cdef bint is_scalar = np.isscalar(value) or isinstance(value, complex)
+        cdef bint existed
+        if self.b.width() == 0:
+            if self.b.rows() > 0:
+                raise ValueError(
+                    "cannot assign amplitudes into a width-0 (key-only) mask block; "
+                    "use merge_keys to add keys instead"
+                )
+            if self._n_exports > 0:
+                raise RuntimeError("cannot assign a row while a buffer view is exported")
+            self.b = ManyBodyBlockState_cpp(<size_t>(1 if is_scalar else len(value)))
+            self._bump_generation()
+        w = <Py_ssize_t>self.b.width()
+        if not is_scalar and len(value) != w:
+            raise ValueError(f"expected {w} amplitudes, got {len(value)}")
         if self._n_exports > 0:
             raise RuntimeError("cannot assign a row while a buffer view is exported")
-        span = self.b[key.s]
-        w = <Py_ssize_t>span.size()
-        if np.isscalar(value) or isinstance(value, complex):
+        existed = self.b.contains(key.s)
+        span = self.b[key.s]  # inserts a zero row when absent
+        if not existed:
+            self._bump_generation()
+        if is_scalar:
             for c in range(w):
                 span[c] = _amp_to_cpp(<double complex>value)
             return
-        if len(value) != w:
-            raise ValueError(f"expected {w} amplitudes, got {len(value)}")
         for c in range(w):
             span[c] = _amp_to_cpp(<double complex>value[c])
 
@@ -313,7 +365,7 @@ cdef class ManyBodyBlockState:
         cdef size_t r = self.b.find_row(key.s)
         if r == self.b.rows():
             return default
-        return _make_row(self, self.b.row(r))
+        return _make_row(self, <Py_ssize_t>r, <Py_ssize_t>self.b.width())
 
     def __iter__(self):
         """Iterate the support determinants, in row (sorted) order."""
@@ -322,40 +374,47 @@ cdef class ManyBodyBlockState:
     def values(self):
         """The rows, in row order."""
         cdef Py_ssize_t r
+        cdef Py_ssize_t w = <Py_ssize_t>self.b.width()
         for r in range(<Py_ssize_t>self.b.rows()):
-            yield _make_row(self, self.b.row(r))
+            yield _make_row(self, r, w)
 
     def items(self):
         """``(determinant, row)`` pairs, in row order."""
         cdef SlaterDeterminant sd
         cdef Py_ssize_t r
+        cdef Py_ssize_t w = <Py_ssize_t>self.b.width()
         for r in range(<Py_ssize_t>self.b.rows()):
             sd = SlaterDeterminant.__new__(SlaterDeterminant)
             sd.s = self.b.key(r)
-            yield sd, _make_row(self, self.b.row(r))
+            yield sd, _make_row(self, r, w)
 
     def to_dict(self):
         """``{determinant: (width,) complex array}`` -- a detached copy of the block."""
         cdef dict res = {}
         cdef SlaterDeterminant sd
         cdef Py_ssize_t r
+        cdef Py_ssize_t w = <Py_ssize_t>self.b.width()
         for r in range(<Py_ssize_t>self.b.rows()):
             sd = SlaterDeterminant.__new__(SlaterDeterminant)
             sd.s = self.b.key(r)
-            res[sd] = np.array(_make_row(self, self.b.row(r)), dtype=complex)
+            res[sd] = np.array(_make_row(self, r, w), dtype=complex)
         return res
 
     def erase(self, SlaterDeterminant key):
         """Drop a determinant's row. Returns True if it was present."""
         if self._n_exports > 0:
             raise RuntimeError("cannot erase a row while a buffer view is exported")
-        return self.b.erase(key.s) > 0
+        cdef bint removed = self.b.erase(key.s) > 0
+        if removed:
+            self._bump_generation()
+        return removed
 
     def clear(self):
         """Drop every row (the width is kept)."""
         if self._n_exports > 0:
             raise RuntimeError("cannot clear while a buffer view is exported")
         self.b.clear()
+        self._bump_generation()
 
     def is_empty(self):
         """True when the state holds no determinants."""
@@ -384,10 +443,16 @@ cdef class ManyBodyBlockState:
 
         Ties at the cutoff are all kept, so the result can exceed ``max_rows``.
         """
+        if self.b.width() == 0 and self.b.rows() > 0:
+            # A width-0 mask has no amplitudes, so every row-max is 0 and this would
+            # silently keep everything regardless of max_rows -- reject rather than
+            # let that pass for "it worked".
+            raise ValueError("cannot truncate a width-0 (key-only) mask block")
         if self._n_exports > 0:
             raise RuntimeError("cannot truncate while a buffer view is exported")
         with nogil:
             self.b.truncate(max_rows)
+        self._bump_generation()
 
     def add_scaled(self, ManyBodyBlockState other, ManyBodyBlockState_cpp.Value scalar):
         """In place: ``self += scalar * other``, over the union support.
@@ -399,6 +464,7 @@ cdef class ManyBodyBlockState:
             raise RuntimeError("cannot add while a buffer view is exported")
         with nogil:
             self.b.add_scaled(other.b, scalar)
+        self._bump_generation()
         return self
 
     def __add__(self, ManyBodyBlockState other):
@@ -442,6 +508,7 @@ cdef class ManyBodyBlockState:
         if self._n_exports > 0:
             raise RuntimeError("cannot prune_rows while a buffer view is exported (np.asarray view alive)")
         self.b.prune_rows(cutoff)
+        self._bump_generation()
 
     def keep_rows(self, ManyBodyBlockState mask):
         """Keep only rows whose determinant appears in ``mask``'s support (the
@@ -454,6 +521,7 @@ cdef class ManyBodyBlockState:
             raise RuntimeError("cannot keep_rows while a buffer view is exported (np.asarray view alive)")
         with nogil:
             self.b.keep_rows(mask.b.keys())
+        self._bump_generation()
 
     def row_max_norms2(self):
         """Per-row max column ``|amp|^2`` and the row keys, as ``(keys, norms2)``.
@@ -528,6 +596,7 @@ cdef class ManyBodyBlockState:
             raise RuntimeError("cannot merge_keys while a buffer view is exported (np.asarray view alive)")
         with nogil:
             self.b.merge_keys(other.b)
+        self._bump_generation()
 
     def col_norm2(self):
         """Per-column squared L2 norms as a float array of length ``width``."""

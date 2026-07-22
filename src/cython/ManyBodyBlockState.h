@@ -110,8 +110,15 @@ public:
    * The pair is built on dereference rather than stored -- keys and amplitudes
    * live in separate arrays -- so it is returned by value (a proxy reference)
    * and `operator->` goes through the standard arrow proxy. Random access, so
-   * `std::advance` / `std::distance` stay O(1) (the threaded apply relies on
-   * advancing into the middle of a state).
+   * `std::advance` / `std::distance` stay O(1) -- a property future threaded
+   * chunking can rely on; nothing advances into the middle of a state today
+   * (the current threaded apply partitions by row index directly).
+   *
+   * `reference` is `value_type` (a proxy returned by value), which is not a
+   * conforming C++17 random-access iterator's `reference` -- algorithms that
+   * bind through it (`std::sort`, `std::rotate`, ...) would not compile or
+   * would be ill-formed. `std::advance`, `std::distance` and range-for, which
+   * is everything this iterator is used for, are unaffected.
    */
   template <bool Const> class BasicIterator {
   public:
@@ -196,13 +203,15 @@ public:
       : m_keys(std::move(keys)), m_amps(std::move(amps)), m_width(width) {}
 
   /**
-   * @brief Width-1 state from parallel (key, amplitude) arrays in ANY order.
+   * @brief State from parallel (key, row) arrays given in ANY order.
    *
-   * Sorts into the row order this container maintains; on duplicate keys the
-   * first occurrence wins, matching the flat_map range-insert this replaces.
+   * `amps` holds `width` amplitudes per key, in the same order as `keys`. Sorts
+   * into the row order this container maintains; on duplicate keys the first
+   * occurrence wins, matching the flat_map range-insert this replaces.
    */
-  ManyBodyBlockState(const std::vector<Key> &keys,
-                     const std::vector<Value> &values);
+  static ManyBodyBlockState from_unsorted(const std::vector<Key> &keys,
+                                          const std::vector<Value> &amps,
+                                          std::size_t width);
 
   std::size_t width() const noexcept { return m_width; }
   std::size_t rows() const noexcept { return m_keys.size(); }
@@ -218,8 +227,11 @@ public:
   /**
    * @brief The amplitudes of row `r`.
    *
-   * Non-owning: invalidated by anything that reallocates the storage
-   * (prune_rows, keep_rows, merge_keys, erase, and inserting a new key).
+   * Non-owning: invalidated by anything that changes the row count or order
+   * (prune_rows, keep_rows, merge_keys, truncate, clear, swap, erase,
+   * add_scaled/+=/-= -- which rebuild storage over the union support --, and
+   * operator[] when it inserts a new key). In-place scaling (*=, /=) does NOT
+   * invalidate a row: the layout is unchanged, only the values are.
    */
   Row row(std::size_t r) noexcept {
     return Row(m_amps.data() + r * m_width, m_width);
@@ -618,29 +630,36 @@ public:
   }
 };
 
-inline ManyBodyBlockState::ManyBodyBlockState(const std::vector<Key> &keys,
-                                              const std::vector<Value> &values)
-    : m_width(1) {
+inline ManyBodyBlockState
+ManyBodyBlockState::from_unsorted(const std::vector<Key> &keys,
+                                  const std::vector<Value> &amps,
+                                  std::size_t width) {
   const std::size_t n = keys.size();
+  if (amps.size() != n * width) {
+    throw std::invalid_argument(
+        "ManyBodyBlockState::from_unsorted: amps size does not match keys * width");
+  }
   std::vector<std::size_t> order(n);
   for (std::size_t i = 0; i < n; ++i) {
     order[i] = i;
   }
   // Stable, so that among equal keys the earliest input entry sorts first and
   // the dedup below keeps it -- the flat_map range-insert semantics.
-  std::stable_sort(order.begin(), order.end(),
-                   [&keys](std::size_t a, std::size_t b) {
-                     return keys[a] < keys[b];
-                   });
-  m_keys.reserve(n);
-  m_amps.reserve(n);
+  std::stable_sort(
+      order.begin(), order.end(),
+      [&keys](std::size_t a, std::size_t b) { return keys[a] < keys[b]; });
+  ManyBodyBlockState res(width);
+  res.m_keys.reserve(n);
+  res.m_amps.reserve(n * width);
   for (const std::size_t i : order) {
-    if (!m_keys.empty() && m_keys.back() == keys[i]) {
+    if (!res.m_keys.empty() && res.m_keys.back() == keys[i]) {
       continue;
     }
-    m_keys.push_back(keys[i]);
-    m_amps.push_back(values[i]);
+    res.m_keys.push_back(keys[i]);
+    res.m_amps.insert(res.m_amps.end(), amps.begin() + static_cast<difference_type>(i * width),
+                      amps.begin() + static_cast<difference_type>((i + 1) * width));
   }
+  return res;
 }
 
 inline ManyBodyBlockState &
@@ -676,8 +695,8 @@ ManyBodyBlockState::add_scaled(const ManyBodyBlockState &other, Value scale) {
   const auto emit = [&](const Key &k, ConstRow a, ConstRow b) {
     keys.push_back(k);
     for (std::size_t c = 0; c < m_width; ++c) {
-      Value v = a.data() != nullptr ? a[c] : Value{0.0, 0.0};
-      if (b.data() != nullptr) {
+      Value v = a.empty() ? Value{0.0, 0.0} : a[c];
+      if (!b.empty()) {
         v += scale * b[c];
       }
       amps.push_back(v);
@@ -706,18 +725,21 @@ inline void ManyBodyBlockState::truncate(std::size_t max_rows) {
   if (max_rows == 0 || rows() <= max_rows) {
     return;
   }
-  std::vector<double> norms;
-  norms.reserve(rows());
+  // norms[r] stays index-aligned with row r; nth_element reorders a SEPARATE
+  // copy to find the cutoff, so row_max2 is computed once per row rather than
+  // once to rank it and again to compact (the naive two-pass approach).
+  std::vector<double> norms(rows());
   for (std::size_t r = 0; r < rows(); ++r) {
-    norms.push_back(row_max2(r));
+    norms[r] = row_max2(r);
   }
-  std::nth_element(norms.begin(),
-                   norms.begin() + static_cast<difference_type>(max_rows - 1),
-                   norms.end(), std::greater<double>());
-  const double cutoff2 = norms[max_rows - 1];
+  std::vector<double> ranked(norms);
+  std::nth_element(ranked.begin(),
+                   ranked.begin() + static_cast<difference_type>(max_rows - 1),
+                   ranked.end(), std::greater<double>());
+  const double cutoff2 = ranked[max_rows - 1];
   std::size_t out = 0;
   for (std::size_t r = 0; r < rows(); ++r) {
-    if (row_max2(r) < cutoff2) {
+    if (norms[r] < cutoff2) {
       continue;
     }
     if (out != r) {
@@ -809,15 +831,15 @@ inline ManyBodyBlockState block_add_scaled(const ManyBodyBlockState &A,
   std::vector<ManyBodyBlockState::Value> amps;
   amps.reserve((A.rows() + B.rows()) * wa);
 
-  // A default-constructed (null) row means "this side has no entry for this
+  // A default-constructed (empty) row means "this side has no entry for this
   // determinant" -- the same sentinel the raw-pointer version used.
   const ManyBodyBlockState::ConstRow absent{};
   const auto emit_bc = [&](ManyBodyBlockState::ConstRow base,
                            ManyBodyBlockState::ConstRow rb) {
     for (std::size_t j = 0; j < wa; ++j) {
       ManyBodyBlockState::Value v =
-          base.data() != nullptr ? base[j] : ManyBodyBlockState::Value{0.0, 0.0};
-      if (rb.data() != nullptr) {
+          base.empty() ? ManyBodyBlockState::Value{0.0, 0.0} : base[j];
+      if (!rb.empty()) {
         for (std::size_t i = 0; i < wb; ++i) {
           const ManyBodyBlockState::Value c = C[i * wa + j];
           if (c.real() != 0 || c.imag() != 0) {
