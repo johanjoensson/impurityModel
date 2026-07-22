@@ -134,12 +134,48 @@ extension, not just reasoned about.
 All test-count growth is new tests (`test_state_row_api.py`, 37 as of `e4496fd`); no
 pre-existing test was removed or weakened.
 
+## Phase 2 — `ManyBodyOperator`: one `apply`
+
+Phase 2 is deliberately thin, not a caller migration. A caller can only switch to
+`apply(block)` once its own data is already a block; the actual apply callers
+(`applyOp`, `op(psi)`, `.apply_multi`) live in the basis + solver/physics layer, i.e.
+Phases 3–6's territory. Migrating them here would inject exactly the boundary-conversion
+churn (`from_states`/`to_states` wrapping) this refactor exists to delete, and double-count
+Phase 6. So "move every caller onto `apply(block)`" is the end state Phases 3–6 reach
+collectively, not a Phase-2 action; discriminator for future phases: a site belongs in the
+phase that converts its *data* to a block, not earlier.
+
+What Phase 2 actually did, landed as `703da53`:
+
+- Fixed the stale `ManyBodyState build_restriction_mask(const restrictions&)` declaration in
+  `ManyBodyOperator.pxd:43` (true C++ signature is `void`, `ManyBodyOperator.h:105`). Latent,
+  not actually broken — the one call site (`_operator.pxi:281`) discards the result, so no
+  temporary was ever fabricated — but wrong on its face. Reviewed independently (verified the
+  true signature, the implementation's `noexcept` contract, every call site, and that the fix
+  can't change generated code at the discard site); no residual concerns.
+- Recorded the Phase-2 acceptance benchmark, doubling as the still-open Phase-0 baseline:
+  `pytest -m benchmark` on `test_apply_perf.py::test_apply_block_width_scaling` (the 2000-SD,
+  n_orbs=160 hamiltonian fixture) gives, at `p == 1`, block apply **faster** than the
+  list-based `apply_multi` it will eventually replace (two runs: 1.06x and 1.21x speedup) —
+  comfortably inside the "~5% regression" acceptance bar, in the winning direction. Width
+  scaling is preserved: p=2/4/8 speedups of 2.3–2.5x / 3.9–4.3x / 7.1–7.7x over the
+  independent-solves baseline, consistent with prior measurements.
+  `test_block_lanczos_perf.py`'s apply p-scaling (tiny NiO 124-basis fixture) gives p=1
+  block/multi = 0.97x — within tolerance, size too small to read further into.
+  `test_bicgstab_perf.py` benchmarks all skip in this environment (missing real-workload
+  fixture) — not run, not a Phase 2 regression signal either way.
+  `test_block_lanczos_perf.py::test_partial_sparse_kernel_bench` fails
+  (`|Q^H Q - I| = 1.449e-04` vs `1e-6`) — this is the pre-existing, already-documented
+  `preexisting-partial-bench-orth-failure` (predates TSQR, toy NiO fixture, opt-in only),
+  unrelated to this change.
+
+Gate: serial 1199 passed (matches Phase 1 exactly), `-n 2 --with-mpi` 1399 passed (matches
+Phase 1 exactly) — the correct outcome for a declaration-only fix plus a benchmark run with
+no production code touched.
+
 ## Still open
 
 - The FCC Ni fill measurement (above).
-- Benchmark baselines (`pytest -m benchmark`: `test_apply_perf.py`,
-  `test_block_lanczos_perf.py`, `test_bicgstab_perf.py`) not yet recorded — needed before
-  Phase 2 (`ManyBodyOperator`: one `apply`) can claim "no regression at width 1".
-- Phases 2–7 (the actual consumer migration, the rename, the flat_map class's deletion) —
+- Phases 3–7 (the actual consumer migration, the rename, the flat_map class's deletion) —
   see the session plan file for the phase breakdown; each is its own multi-commit body of
   work across a large fraction of `src/cython/` and `src/impurityModel/ed/`.
