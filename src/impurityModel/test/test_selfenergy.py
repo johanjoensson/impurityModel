@@ -5,6 +5,7 @@ import pytest
 
 from impurityModel.ed import gf_diagnostics as gd
 from impurityModel.ed import selfenergy
+from impurityModel.ed.ManyBodyUtils import ManyBodyOperator
 from impurityModel.ed.model import BasisOptions, ImpurityModel, Meshes, SolverOptions
 from impurityModel.ed.selfenergy import UnphysicalGreensFunctionError
 
@@ -204,27 +205,41 @@ def test_get_Sigma_static_consistent_with_operator():
 
 
 def test_get_hcorr_v_hbath_reversed():
+    """Anti-normal-ordered input is normal-ordered first: c_i c^dag_j = delta_ij - c^dag_j c_i.
+
+    The Hamiltonian is always built normal-ordered in production, but ``ManyBodyOperator``
+    accepts either order and canonicalizes, so the extraction must agree with the algebra
+    rather than with the old hand-rolled ``1 - val`` convention (which folded the identity
+    into the matrix element and was not even linear in ``val``).
+    """
     impurity_orbitals = {0: 2}
     sum_bath_states = {0: 2}
 
-    # Test opj == "c" and opi == "a" (lines 510-514)
+    # 0.2 * c_0 c^dag_0 = 0.2 - 0.2 n_0 and 0.3 * c_1 c^dag_2 = -0.3 c^dag_2 c_1.
     h0op = {
-        ((0, "a"), (0, "c")): 0.2,  # i==j case: h0Matrix[0, 0] = 1 - 0.2 = 0.8
-        ((1, "a"), (2, "c")): 0.3,  # i!=j case: h0Matrix[1, 2] = -0.3
+        ((0, "a"), (0, "c")): 0.2,
+        ((1, "a"), (2, "c")): 0.3,
     }
 
-    hcorr, _v, v_dagger, _h_bath = selfenergy.get_hcorr_v_hbath(h0op, impurity_orbitals, sum_bath_states)
+    for op in (h0op, ManyBodyOperator(h0op)):
+        hcorr, v, v_dagger, _h_bath = selfenergy.get_hcorr_v_hbath(op, impurity_orbitals, sum_bath_states)
+        assert hcorr[0, 0] == -0.2  # the constant +0.2 is dropped, not folded in here
+        assert hcorr[1, 1] == 0.0  # not set
+        # h0Matrix is 4x4 and n_corr == 2, so entry [2, 1] lands in v = h0Matrix[2:, 0:2].
+        assert v[0, 1] == -0.3
+        assert not np.any(v_dagger)
 
-    assert hcorr[0, 0] == 0.8
-    assert hcorr[1, 1] == 0.0  # not set
-    assert (
-        v_dagger[1, 0] == -0.3
-    )  # n_corr=2, so j=2 corresponds to col 0 of v_dagger. wait, h0Matrix[1, 2] is hcorr vs v_dagger?
-    # let's be careful. h0Matrix is 4x4.
-    # [1, 2] is row 1, col 2. n_corr=2. so it's in v_dagger.
-    # v_dagger = h0Matrix[0:2, 2:4].
-    # v_dagger[1, 0] = h0Matrix[1, 2] = -0.3.
-    assert v_dagger[1, 0] == -0.3
+
+def test_get_hcorr_v_hbath_ignores_constant():
+    """A ``()`` identity term (e.g. from ``z - hOp``) is dropped, not a crash."""
+    impurity_orbitals = {0: 2}
+    sum_bath_states = {0: 2}
+    h0op = ManyBodyOperator({((0, "c"), (0, "a")): 1.0, ((3, "c"), (3, "a")): -2.0}) + 7.5
+
+    assert h0op.constant == 7.5
+    hcorr, _v, _v_dagger, h_bath = selfenergy.get_hcorr_v_hbath(h0op, impurity_orbitals, sum_bath_states)
+    assert hcorr[0, 0] == 1.0
+    assert h_bath[1, 1] == -2.0
 
 
 def test_get_sigma():

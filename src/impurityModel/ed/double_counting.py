@@ -22,7 +22,7 @@ from impurityModel.ed import atomic_physics
 from impurityModel.ed.average import thermal_average_scale_indep
 from impurityModel.ed.basis_transcription import build_density_matrices
 from impurityModel.ed.cipsi_solver import CIPSISolver
-from impurityModel.ed.lie_algebra import extract_tensors
+from impurityModel.ed.lie_algebra import extract_tensors, tensors_to_operator
 from impurityModel.ed.manybody_basis import Basis
 from impurityModel.ed.ManyBodyUtils import ManyBodyOperator
 from impurityModel.ed.operator_algebra import addOps
@@ -71,14 +71,7 @@ def _require_bath_states(model, func_name):
 
 def _dc_operator(dc):
     """Build the double-counting one-body operator, ``-dc[i, j] c^dagger_i c_j``."""
-    return ManyBodyOperator(
-        {
-            ((i, "c"), (j, "a")): -dc[i, j] + 0j
-            for i in range(dc.shape[0])
-            for j in range(dc.shape[1])
-            if abs(dc[i, j]) > 0
-        }
-    )
+    return tensors_to_operator(-np.asarray(dc, dtype=complex))
 
 
 def _prepare_dc_solver(

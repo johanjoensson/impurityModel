@@ -12,6 +12,9 @@ import itertools
 
 import numpy as np
 
+from impurityModel.ed.lie_algebra import extract_tensors
+from impurityModel.ed.ManyBodyUtils import ManyBodyOperator
+
 
 class UnphysicalGreensFunctionError(Exception):
     """
@@ -48,7 +51,8 @@ def get_hcorr_v_hbath(h0op, impurity_orbitals, sum_bath_states):
     Parameters
     ----------
     h0op : dict or ManyBodyOperator
-        The non-interacting Hamiltonian operator.
+        The non-interacting Hamiltonian operator. Any identity (constant) term is dropped:
+        it shifts every eigenvalue equally and carries no hybridization information.
     impurity_orbitals : dict
         Dictionary of impurity orbitals.
     sum_bath_states : dict
@@ -68,15 +72,12 @@ def get_hcorr_v_hbath(h0op, impurity_orbitals, sum_bath_states):
 
     num_spin_orbitals = sum(impurity_orbitals[i] + sum_bath_states[i] for i in impurity_orbitals)
     n_corr = sum(ni for ni in impurity_orbitals.values())
-    h0Matrix = np.zeros((num_spin_orbitals, num_spin_orbitals), dtype=complex)
-    for ((i, opi), (j, opj)), val in h0op.items():
-        if opi == "c" and opj == "a":
-            h0Matrix[i, j] = val
-        elif opj == "c" and opi == "a":
-            if i == j:
-                h0Matrix[i, j] = 1 - val
-            else:
-                h0Matrix[i, j] = -val
+    # Wrapping a plain dict normal-orders it first, so a caller-supplied anti-normal-ordered
+    # term (c_i c^dag_j) is handled by the operator algebra rather than by a second, subtly
+    # different convention here.
+    if not isinstance(h0op, ManyBodyOperator):
+        h0op = ManyBodyOperator(dict(h0op))
+    h0Matrix = extract_tensors(h0op, n_orb=num_spin_orbitals, two_body=False)[0]
     hcorr = h0Matrix[0:n_corr, 0:n_corr]
     v_dagger = h0Matrix[0:n_corr, n_corr:]
     v = h0Matrix[n_corr:, 0:n_corr]

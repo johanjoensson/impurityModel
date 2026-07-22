@@ -9,6 +9,9 @@ flat index (see :func:`c2i` / :func:`i2c` for the mapping).
 
 import numpy as np
 
+from impurityModel.ed.lie_algebra import extract_tensors
+from impurityModel.ed.ManyBodyUtils import ManyBodyOperator
+
 
 def daggerOp(op):
     """
@@ -213,6 +216,11 @@ def op2Dict(nBaths, ops):
                 if t[0][1] == "c" and t[1][1] == "a":
                     d[((c2i(nBaths, t[0][0]), "c"), (c2i(nBaths, t[1][0]), "a"))] = val
                 elif t[0][1] == "a" and t[1][1] == "c":
+                    # Legacy convention, kept because this reads *user-supplied* projector
+                    # dicts keyed by (l, s, m) tuples -- they never pass through
+                    # ManyBodyOperator, so nothing canonicalizes them first. Note the
+                    # diagonal case does NOT agree with canonical normal ordering, which
+                    # sends val*c_i c^dag_i to -val*c^dag_i c_i plus a constant val.
                     if t[0][0] == t[1][0]:
                         d[((c2i(nBaths, t[1][0]), "c"), (c2i(nBaths, t[0][0]), "a"))] = 1.0 - val
                     else:
@@ -226,6 +234,11 @@ def combineOp(nBaths, op1, op2):
     r"""
     Return a dict of the form {(i, j) : val, ...} corresponding to the
     operator op1*op2
+
+    This is the *single-particle matrix* product, i.e. the one-body operator
+    :math:`\sum_{ij} (M_1 M_2)_{ij} c^\dagger_i c_j`. It is deliberately NOT
+    ``ManyBodyOperator.__mul__``, which composes the many-body operators and so also
+    produces the two-body terms of :math:`\hat O_1 \hat O_2`.
 
     Parameters
     ----------
@@ -257,7 +270,7 @@ def iOpToMatrix(nBaths, op):
     ----------
     nBaths : dict
         angular momentum : number of bath sets
-    op : dict
+    op : dict or ManyBodyOperator
         Operator dictionary {(i, j) : val}
 
     Returns
@@ -268,16 +281,11 @@ def iOpToMatrix(nBaths, op):
     dsize = 0
     for l, nb in nBaths.items():
         dsize += nb + (2 * l + 1) * 2
-    m = np.zeros((dsize, dsize), dtype=complex)
-    for ((i, opi), (j, opj)), val in op.items():
-        if opi == "c" and opj == "a":
-            m[i, j] = val
-        elif opj == "c" and opi == "a":
-            if i == j:
-                m[i, j] = 1 - val
-            else:
-                m[i, j] = -val
-    return m
+    # Wrapping a plain dict normal-orders it first, so an anti-normal-ordered term
+    # (c_i c^dag_j) is resolved by the operator algebra rather than by a second convention.
+    if not isinstance(op, ManyBodyOperator):
+        op = ManyBodyOperator(dict(op))
+    return extract_tensors(op, n_orb=dsize, two_body=False)[0]
 
 
 def matrixToIOp(mat):
