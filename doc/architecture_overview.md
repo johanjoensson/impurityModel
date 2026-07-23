@@ -15,12 +15,12 @@ operators.
    - **Details:** Wraps `std::vector<uint64_t>`. Bit manipulation compactly represents fermion occupation numbers, allowing very fast application of creation/annihilation operators and comparison of basis states.
 
 2. **`ManyBodyState`**
-   - **Role:** Represents a quantum many-body state as a superposition of Slater determinants.
-   - **Details:** Wraps a custom C++ `flat_map<SlaterDeterminant, std::complex<double>>` — essentially a highly optimized dictionary mapping basis states to complex amplitudes, with vectorized addition, scalar multiplication, and inner products.
+   - **Role:** Represents a quantum many-body state — or a shared-support block of `p` states sharing the same set of nonzero Slater determinants (e.g. the `p` columns of a Block Lanczos iteration) — as a superposition of Slater determinants.
+   - **Details:** Wraps a custom C++ block container (`ManyBodyBlockState`, sorted-unique determinant keys with `p` amplitudes per row): `psi[det]` / `.get()` / `.items()` / `.values()` return length-`p` `Row` views. A single ordinary state is `p == 1`, not a distinct class or code path — the block storage is the only representation, and every boundary kernel (`apply`, inner products, MPI redistribution) is written block-native. This replaced an earlier two-class design (a `std::flat_map`-backed single-vector class alongside the block class); the flat class was fully retired in the `ManyBodyState`/`ManyBodyBlockState` unification campaign (see `doc/plans/manybodystate_block_unification.md`).
 
 3. **`ManyBodyOperator`**
    - **Role:** Represents a many-body operator as creation/annihilation sequences with amplitudes.
-   - **Details:** Maps tuples of integer-indexed creation/annihilation operators (e.g. $c^\dagger_i c_j$) to complex amplitudes. Its `__call__` applies the operator to a `ManyBodyState`, returning a new `ManyBodyState`; the sparse operator-state product is heavily optimized in C++.
+   - **Details:** Maps tuples of integer-indexed creation/annihilation operators (e.g. $c^\dagger_i c_j$) to complex amplitudes. Its `__call__` (equivalently `apply()`) applies the operator to a `ManyBodyState`, returning a new `ManyBodyState` of the same width: the term loop, fermion sign and restriction check run once per (determinant, term), emitting all `p` columns with `p` fused multiply-adds — bit-for-bit identical to `p` independent single-column applies at cutoff 0, and with no measurable overhead at `p == 1` (see the unification campaign doc's Phase 7 step-4 perf check). The sparse operator-state product is heavily optimized in C++.
    - **Term keys:** a term is keyed by its process tuple in *product* (left-to-right) order, so `((i, 'c'), (j, 'a'))` is $c^\dagger_i c_j$. The empty tuple `()` keys the **constant** (identity) term — a constant is just the zero-length operator string, and needs no orbitals of its own. `ManyBodyOperator()` is the **zero** operator; the identity is `ManyBodyOperator.identity()`.
    - **Canonical form:** stored terms are always in canonical normal order — creations before annihilations, each group ascending in orbital, Pauli-vanishing terms dropped, terms equal up to ordering merged. Constructors and all algebra maintain this, so `to_dict()` reports the canonical strings rather than the terms as written (`{((0,'a'),(0,'c')): 1}` reads back as $1 - n_0$). Only `__setitem__` can break the invariant; `canonicalize()` restores it and `is_canonical()` reports it. This is what makes the algebra simplify: without it `A*B - B*A` would never cancel.
 
@@ -32,7 +32,7 @@ operators.
 
 4. **MPI Utilities**
    - **Role:** Efficient parallelization across ranks.
-   - **Details:** Functions like `pack_determinants_cy` and `pack_psis_fused_cy` serialize `ManyBodyState` objects into contiguous NumPy arrays for fast communication via `mpi4py`. Determinants are hash-distributed: each Slater determinant is owned by rank `hash(sd) % size`, and no rank ever holds a full state vector.
+   - **Details:** Functions like `pack_determinants_cy` and `pack_block_fused_cy`/`unpack_block_fused_cy` serialize `ManyBodyState` blocks into contiguous byte buffers for a single-round `Neighbor_alltoallv` via `mpi4py`. Determinants are hash-distributed: each Slater determinant is owned by rank `hash(sd) % size`, and no rank ever holds a full state vector.
 
 ### Block Lanczos kernels: which one to use
 
@@ -83,7 +83,7 @@ then forms `Q = A R^{-1}` by back substitution, instead of going through the Gra
 - `TSQR.pyx` owns `EPS`, `DEFLATE_TOL`, `DEFLATE_EVAL_TOL` and `BREAKDOWN_TOL`;
   `BlockLanczosArray` re-exports the ones its callers read from it.
 - `block_tsqr` (in `_reort.pxi`) is the representation-dispatching entry point, so array,
-  `ManyBodyBlockState` and `ManyBodyState`-list callers all run the same factorization.
+  single-`ManyBodyState` and `list[ManyBodyState]` callers all run the same factorization.
 
 `_cholesky_or_deflate` / `_cholesky_qr2` remain in `BlockLanczosArray.pyx` as the reference
 implementation the CholeskyQR2-era regression tests are written against; no production path
@@ -97,8 +97,9 @@ recompile). Each `.pxi` opens with a reading-map header:
 
 - `BlockLanczos.pyx` = `_lanczos_step.pxi` (core recurrence) + `_trlm.pxi` (thick-restart) +
   `_irlm.pxi` (implicitly-restarted / EA16).
-- `ManyBodyUtils.pyx` = `_slater_state.pxi` + `_operator.pxi` + `_mpi_pack.pxi` +
-  `_krylov_store.pxi` (`SparseKrylovDense`) + `_block_state.pxi` (`ManyBodyBlockState`).
+- `ManyBodyUtils.pyx` = `_slater_state.pxi` (`SlaterDeterminant`) + `_operator.pxi`
+  (`ManyBodyOperator`) + `_mpi_pack.pxi` + `_krylov_store.pxi` (`SparseKrylovDense`) +
+  `_block_state.pxi` (`ManyBodyState`).
 - `BlockLanczosArray.pyx` keeps the array kernel and includes `_reort.pxi` (the
   `ManyBodyState`-path block primitives + `selective_orthogonalize`/`apply_reort`).
 

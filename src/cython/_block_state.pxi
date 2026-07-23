@@ -865,8 +865,8 @@ def pack_block_fused_cy(ManyBodyState block, int comm_size, size_t chunks_per_st
     ``Neighbor_alltoallv(MPI.BYTE)`` redistribute. One entry per shared-support row:
     ``[det | width x complex amp]`` — no per-entry psi index (the column position
     identifies the vector), so the wire cost per determinant is ``state_bytes +
-    16*width`` instead of ``width * (state_bytes + 20)``. Ownership uses the same
-    ``routing_hash() % comm_size`` as ``pack_psis_fused_cy``."""
+    16*width`` instead of ``width * (state_bytes + 20)`` for a per-vector scalar pack.
+    Ownership uses the same ``routing_hash() % comm_size`` convention throughout."""
     cdef vector[int64_t] send_counts
     cdef vector[int] owners
 
@@ -897,7 +897,7 @@ def pack_block_fused_cy(ManyBodyState block, int comm_size, size_t chunks_per_st
 def unpack_block_fused_cy(int comm_size, size_t width, int64_t[:] recv_counts, uint8_t[:] recv_buf, size_t chunks_per_state):
     """Rebuild a ``ManyBodyState`` from the received fused byte buffer. Rows for
     the same determinant arriving from different ranks are summed in arrival order,
-    matching ``unpack_psis_fused_cy``'s accumulate semantics bit-for-bit per column."""
+    an insert-then-accumulate convention matching ``pack_block_fused_cy``'s pairing."""
     cdef vector[int64_t] c_recv_counts
 
     if comm_size > 0:
