@@ -33,6 +33,7 @@ cdef extern from "ManyBodyBlockState.h" nogil:
         size_t width()
         size_t rows()
         size_t size()
+        size_t max_size()
         bint empty()
 
         const Key& key(size_t)

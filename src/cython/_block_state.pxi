@@ -306,6 +306,18 @@ cdef class ManyBodyBlockState:
         """Number of shared-support determinants (rows)."""
         return self.b.rows()
 
+    def size(self):
+        """Number of shared-support determinants (rows) -- ``len(self)``, spelled for
+        parity with the flat_map class's ``size()`` (its number of stored entries)."""
+        return self.b.rows()
+
+    def max_size(self):
+        """Theoretical row-count bound (the underlying key vector's ``max_size()``) --
+        a container-capacity figure, not a real usable limit; parity with the flat_map
+        class's forwarded ``std::map::max_size()``, which is equally not meaningful in
+        practice."""
+        return self.b.max_size()
+
     # --- mapping surface: determinant -> Row --------------------------------
     # Lookup is a binary search over the sorted support. Inserting a NEW
     # determinant shifts the tail of both arrays, so building a state one key at
@@ -586,6 +598,16 @@ cdef class ManyBodyBlockState:
         self.b.prune_rows(cutoff)
         self._bump_generation()
 
+    def prune(self, double cutoff):
+        """Alias for :meth:`prune_rows` -- parity with the flat_map class's
+        per-entry ``prune``, which this coincides with exactly at width 1 (a row IS an
+        entry there). At width > 1 this is still the per-ROW test documented on
+        :meth:`prune_rows`, not a per-entry one; kept under this name so call sites
+        written against the flat_map class's ``psi.prune(cutoff)`` (``gf_solvers.py``,
+        ``greens_function.py``, ``rixs.py``) keep working once their producer is a
+        width-1 block."""
+        self.prune_rows(cutoff)
+
     def keep_rows(self, ManyBodyBlockState mask):
         """Keep only rows whose determinant appears in ``mask``'s support (the
         set-intersection complement of ``prune_rows``): a linear merge over the two
@@ -789,6 +811,20 @@ cdef class ManyBodyBlockState:
         if not isinstance(other, ManyBodyBlockState):
             return NotImplemented
         return self.b == (<ManyBodyBlockState>other).b
+
+    def __repr__(self):
+        body = ", ".join(f"{key!r}: {list(row)}" for key, row in self.items())
+        return f"ManyBodyBlockState({{ {body} }}, width={self.width})"
+
+    def __reduce__(self):
+        """``(to_dict(), width)`` round-trips exactly through ``__cinit__``, including
+        the two cases a bare dict alone would lose: a width-0 (key-only) mask block
+        with rows (``to_dict()`` gives each row an empty array, which the constructor's
+        non-scalar branch accepts and still records the key), and a rows-less block of
+        an explicit nonzero width (``to_dict()`` gives ``{}``, which without the
+        explicit ``width`` argument would reconstruct as the width-0 polymorphic zero
+        instead)."""
+        return (self.__class__, (self.to_dict(), self.width))
 
     def __getbuffer__(self, Py_buffer *buffer, int flags):
         self._shape[0] = <Py_ssize_t>self.b.rows()

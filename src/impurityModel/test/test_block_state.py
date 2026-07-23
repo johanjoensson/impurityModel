@@ -3,6 +3,8 @@ doc/plans/blocklanczos_partial_perf_memory.md): shared-support block container â
 conversion round-trips, union-support semantics, row pruning (any-column-survives),
 zero-copy buffer protocol with its export guard."""
 
+import pickle
+
 import numpy as np
 import pytest
 
@@ -699,3 +701,90 @@ def test_block_normalize_accepts_blocks():
     for j, col in enumerate(out_q.to_states()):
         diff = col - ref_states[j]
         assert np.sqrt(diff.norm2()) < 1e-12 * max(np.sqrt(ref_states[j].norm2()), 1.0)
+
+
+# --- Phase 7 step 0: surface parity with the flat_map ManyBodyState class -----------
+
+
+def test_size_matches_len():
+    rng = np.random.default_rng(80)
+    blk = ManyBodyBlockState.from_states(_random_states(rng, 3, 20))
+    assert blk.size() == len(blk)
+    assert ManyBodyBlockState().size() == 0
+
+
+def test_max_size_is_a_large_positive_bound():
+    """Container-capacity figure, not a real usable limit -- same spirit as the
+    flat_map class's forwarded ``std::map::max_size()``; just check it's sane."""
+    rng = np.random.default_rng(81)
+    blk = ManyBodyBlockState.from_states(_random_states(rng, 2, 10))
+    assert blk.max_size() >= len(blk)
+
+
+def test_prune_alias_matches_prune_rows():
+    rng = np.random.default_rng(82)
+    states = _random_states(rng, 3, 30)
+    a = ManyBodyBlockState.from_states(states)
+    b = a.copy()
+    a.prune(1e-1)
+    b.prune_rows(1e-1)
+    assert a.to_states() == b.to_states()
+
+
+def test_prune_at_width_one_matches_flat_state_prune():
+    """At width 1 a row IS an entry, so the row-max test ``prune``/``prune_rows``
+    applies and the flat_map class's per-entry ``prune`` must agree exactly."""
+    rng = np.random.default_rng(83)
+    (state,) = _random_states(rng, 1, 40)
+    flat_ref = state.copy()
+    flat_ref.prune(0.5)
+
+    blk = ManyBodyBlockState.from_states([state.copy()])
+    blk.prune(0.5)
+    (blk_col,) = blk.to_states()
+    assert blk_col == flat_ref
+
+
+def test_repr_contains_keys_and_width():
+    a = ManyBodyBlockState({_det(1): 1.0 + 0j, _det(2): 2.0 + 0j})
+    r = repr(a)
+    assert "ManyBodyBlockState(" in r
+    assert "width=1" in r
+    assert repr(_det(1)) in r
+
+
+def test_reduce_roundtrip_normal_block():
+    rng = np.random.default_rng(84)
+    states = _random_states(rng, 4, 25)
+    a = ManyBodyBlockState.from_states(states)
+    b = pickle.loads(pickle.dumps(a))
+    assert a == b
+    assert a.width == b.width
+
+
+def test_reduce_roundtrip_width_zero_mask_with_rows():
+    """A width-0 (key-only) mask block WITH rows: to_dict() gives each row an empty
+    array, which the constructor's non-scalar branch must still record as a key (the
+    edge case a naive dict-only reduce could silently drop)."""
+    a = ManyBodyBlockState.from_states(_random_states(np.random.default_rng(85), 2, 15))
+    b = ManyBodyBlockState.from_states(_random_states(np.random.default_rng(86), 2, 15))
+    mask = a.key_union(b)
+    assert mask.width == 0
+    assert len(mask) > 0
+
+    restored = pickle.loads(pickle.dumps(mask))
+    assert restored.width == 0
+    assert restored.keys() == mask.keys()
+
+
+def test_reduce_roundtrip_empty_explicit_width():
+    """A rows-less block of an explicit nonzero width: to_dict() alone gives ``{}``,
+    which without carrying ``width`` through __reduce__ would silently collapse to the
+    width-0 polymorphic zero on unpickling."""
+    z = ManyBodyBlockState(width=5)
+    assert z.width == 5
+    assert len(z) == 0
+
+    restored = pickle.loads(pickle.dumps(z))
+    assert restored.width == 5
+    assert len(restored) == 0

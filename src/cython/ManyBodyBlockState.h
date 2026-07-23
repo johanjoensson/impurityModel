@@ -218,6 +218,10 @@ public:
   /** @brief Number of stored determinants -- rows(), spelled for the map surface. */
   size_type size() const noexcept { return m_keys.size(); }
   bool empty() const noexcept { return m_keys.empty(); }
+  /** @brief Theoretical row-count bound (the key vector's own max_size()) -- a
+   * container-capacity figure, not a real usable limit; spelled for map-surface parity
+   * with the flat_map class's forwarded std::map::max_size(). */
+  size_type max_size() const noexcept { return m_keys.max_size(); }
 
   const Key &key(std::size_t r) const { return m_keys[r]; }
   const std::vector<Key> &keys() const noexcept { return m_keys; }
