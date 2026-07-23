@@ -891,6 +891,65 @@ confirming there's no width-1 performance cliff to worry about at the eventual k
 
 Reviewed (no findings). Gates green, baseline+8 (serial 1229/230/18/30, `-n 2` 1429/18/60).
 
+**Step 1.1/1.2 (DONE, commit `4f3b382`) — operator apply + inner product boundaries
+accept width-1 blocks.** `ManyBodyOperator.__call__`/`apply`/`apply_multi`, the
+module-level `applyOp`, and the free functions `inner`/`inner_multi` now dispatch
+transparently between a flat `ManyBodyState` and a width-1 `ManyBodyBlockState`:
+`__call__`/`apply` route a block operand straight to `apply_block`; `apply_multi`
+detects a list of blocks (checking the first element, matching every other
+homogeneous-list dispatch already in this codebase) and applies each one via
+`apply_block`; `applyOp` inherits `__call__`'s dispatch for free (its body was already
+just `return op(psi, cutoff)`); `inner` requires both operands to be the same
+representation (raises `TypeError` on a mix — a deliberate asymmetry vs. `inner_multi`,
+justified below) and routes a block pair to `block_inner_scalar`; `inner_multi` accepts
+mixed block/flat lists on either side, merging whichever side holds blocks into one via
+`ManyBodyBlockState.from_states` and computing the whole Gram matrix through
+`block_inner_cy`'s single merge-join instead of an `na * nb` pairwise loop — reviewed and
+confirmed bit-for-bit identical to the old pairwise `inner_cpp` loop, not just
+numerically close.
+
+These are all *permanent* implementations, not migration shims: the point is that once
+a later step flips a producer module to emit width-1 blocks instead of flat states, none
+of the ~20 modules calling `apply`/`inner`/`applyOp` need their call sites touched at
+all — only the state *construction* sites in that module. `inner`'s strict mixed-type
+rejection vs. `inner_multi`'s mixed-type acceptance was reviewed and judged deliberate,
+not inconsistent: `inner` is a single-pair fast path a silent conversion would defeat,
+while `inner_multi` already builds a common block representation for the block case
+regardless, so accepting a mix costs nothing extra.
+
+Reviewed at high effort with empirical verification (not just code-reading): dispatch
+confirmed correct for width>1 too (not just width-1, the only case the new unit tests
+cover — noted as a minor gap, not fixed), both directions of a mixed flat/block
+`apply_multi` list confirmed to fail loudly (`TypeError`) rather than silently
+misroute, the block-merge path's bit-for-bit equivalence to the pairwise loop verified
+via `np.array_equal`. 10 new tests in `test_block_state.py`. Gates green, baseline+10
+(serial 1239/230/18/30, `-n 2` 1439/18/60).
+
+**Incidental fix (commit `c1e9fcc`) — `block_lanczos_cy`'s Exact-Overlap-Restart (EOR)
+resume path.** The review above, doing due diligence by grepping every `inner_multi`
+call site, surfaced a pre-existing, independent bug: the documented EOR feature (resume
+with `W_init=None` and `reort` partial/selective, which reconstructs the Paige-Simon
+`W` estimator from exact overlaps of the resumed blocks against every prior block) called
+`inner_multi(Q_j, q_curr)` with `q_curr` a *bare* `ManyBodyBlockState`, not a list.
+`inner_multi`'s non-list coercion iterates a block's determinant keys, not its columns,
+so this raised `TypeError` unconditionally whenever the branch actually ran. Confirmed
+this is currently dead in production — none of the three callers of `block_lanczos_cy`
+(IRLM always supplies its own `W_init` on resume; TRLM never resumes, always starts
+fresh; `gf_solvers.py`'s per-frequency GF driver always carries a real `W` forward from
+round 2 onward) hits the exact `resuming, W is None, start_it>0, reort in
+(PARTIAL, SELECTIVE)` combination — but it's advertised, documented behavior, so fixed
+rather than left broken: materialize `q_curr`/`q_prev` via `.to_states()` before the
+`inner_multi` calls, the same pattern `block_lanczos_step_cy`'s own EOR seed already
+uses a few hundred lines up. Regression test in `test_block_lanczos_cy.py` drives the
+70-determinant tight-binding fixture through 2 fresh blocks, an EOR resume, then 10
+further blocks (long enough for PARTIAL's tracking to actually have to reorthogonalize
+repeatedly against the reconstructed `W`, not just the two blocks at the seam — confirmed
+via `git stash`/rebuild that the test fails with the original `TypeError` and passes
+against the fix, and that comparing against the resumed run's own one-shot equivalent
+rather than the exact many-body spectrum avoids conflating EOR correctness with
+plain under-convergence at this iteration count). Gates green, baseline+1 over step 1.2
+(serial 1240/230/18/30, `-n 2` 1440/18/60).
+
 ## Still open
 
 - The FCC Ni fill measurement (above) — blocks `determine_new_Dj`'s/`select_at`'s `Hpsi_ref`
