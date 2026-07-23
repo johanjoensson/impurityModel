@@ -649,14 +649,17 @@ def block_lanczos_cy(
                 w_j = block_widths[j]
                 Q_j = Q_basis[sum(block_widths[:j]) : sum(block_widths[:j+1])]
 
-                # q_curr/q_prev are blocks; inner_multi materializes them (resume-only path)
-                ov_curr = inner_multi(Q_j, q_curr)
+                # q_curr/q_prev are ManyBodyBlockStates (Phase 2.4); inner_multi only
+                # coerces a bare non-list argument via list(...), which over a block
+                # iterates its determinant KEYS, not its columns -- materialize the
+                # columns explicitly instead of relying on that coercion to do it.
+                ov_curr = inner_multi(Q_j, q_curr.to_states())
                 if mpi:
                     comm.Allreduce(MPI.IN_PLACE, ov_curr, op=MPI.SUM)
                 W[1, j, :w_j, :q_curr.width] = ov_curr
 
                 if j < start_it - 1:
-                    ov_prev = inner_multi(Q_j, q_prev)
+                    ov_prev = inner_multi(Q_j, q_prev.to_states())
                     if mpi:
                         comm.Allreduce(MPI.IN_PLACE, ov_prev, op=MPI.SUM)
                     W[0, j, :w_j, :q_prev.width] = ov_prev
