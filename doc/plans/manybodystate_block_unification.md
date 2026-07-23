@@ -950,6 +950,53 @@ rather than the exact many-body spectrum avoids conflating EOR correctness with
 plain under-convergence at this iteration count). Gates green, baseline+1 over step 1.2
 (serial 1240/230/18/30, `-n 2` 1440/18/60).
 
+**Step 1.3 (DONE, commit `6dd3ac3`) — `redistribute_psis` accepts width-1 blocks.**
+`Basis.redistribute_psis(list[ManyBodyState])` now also accepts `list[width-1
+ManyBodyBlockState]`, same type in/same type out, completing the boundary-dispatch set
+started in 1.1/1.2. Advisor-consulted before writing anything, because this touches the
+MPI redistribution collective and hand-rolled MPI code is exactly what's deadlocked this
+repo before (CLAUDE.md's own warnings): the resolved question was whether the block-list
+case could be *composed* from primitives that already exist and are already tested,
+rather than requiring a new collective. It could — `redistribute_block`
+(`graph_alltoall_block`) already redistributes a `ManyBodyBlockState` of ANY width, and
+its docstring already documents the identical per-determinant summing semantics as the
+flat `graph_alltoall_psis` path. So the implementation is: merge the list into one
+N-column block (`ManyBodyBlockState.from_states`), redistribute that ONE block via the
+existing `redistribute_block`, split back into N width-1 blocks via `column(i)` (Phase
+8's O(rows) gather). Zero new Cython, zero new collective.
+
+Verified under real `mpiexec -n 2` and `-n 3` (not just pytest): block-list
+redistribution matches the flat-list reference bit-for-bit, including a
+genuinely-empty-state/empty-column edge case (a rank ending up with zero rows for one
+block specifically, not just the whole basis). Reviewed at high effort (mandated for
+MPI-collective code): `is_distributed` confirmed to be a plain stored attribute set once
+from `comm.size` at construction — MPI-guaranteed identical across ranks, not a
+per-rank/verbose-style flag that could gate the collective divergently; the one
+collective (inside `redistribute_block`) confirmed reached unconditionally by every rank
+whenever the branch is taken; column order/width preservation traced through
+`from_states`/`column`/`graph_alltoall_block`'s explicit width parameter, not assumed.
+One theoretical, unconfirmed risk noted (not fixed, not currently reachable): the
+per-element width==1 validation loop runs before the collective, so if a future caller
+ever constructed differently-shaped block lists on different ranks, one rank could raise
+before reaching the collective while others proceeded into it — a partial-participation
+shape, but no current call site does this (grepped), and the flat path's own dict-coercion
+loop already has the identical risk shape, so this isn't a new category of exposure.
+
+`-n 3` note: the FULL suite at `-n 3` is not part of this repo's normal gate (CI only
+runs serial/`-n 1`/`-n 2`) and turned out to be dramatically — not just proportionally —
+slower than `-n 2` (all three rank processes pinned near 100% CPU, not hung, but only
+~5% through the suite after 10+ minutes vs. ~2.5 minutes for the entire suite at `-n 2`).
+Likely cause: `basis_split.py`/`run_units_distributed`'s multi-rank-only splitting code
+(per CLAUDE.md, "splitting only activates multi-rank") sits dormant at 2 ranks and
+engages for the first time at 3, exercising much more expensive, rarely-run code paths
+unrelated to this change. Killed the full-suite run and instead ran just
+`test_mpi_comm.py` at `-n 3` (33 passed, ~1s) — this step's own code doesn't touch
+`basis_split.py`, and the full-suite `-n 3` run is orthogonal to verifying it; a full
+`-n 3` run stays warranted only when actually touching the splitting code itself, per
+CLAUDE.md's existing guidance. Gates green, baseline+4 over the EOR fix (serial
+1242/232/18/30 — 2 new MPI-marked tests raise the skip count too, `-n 2` 1444/18/60,
+`-n 3` targeted 33/33).
+
 ## Still open
 
 - The FCC Ni fill measurement (above) — blocks `determine_new_Dj`'s/`select_at`'s `Hpsi_ref`
