@@ -313,25 +313,43 @@ cdef class ManyBodyOperator:
         with nogil:
             self.o.build_weighted_restriction_mask(rest)
 
-    def  __call__(self, ManyBodyState psi, double cutoff = 0) -> ManyBodyState:
-        cdef ManyBodyState res
-        res = ManyBodyState()
+    def  __call__(self, psi, double cutoff = 0):
+        """Apply to a ``ManyBodyState`` or a ``ManyBodyBlockState`` (any width) --
+        the operator boundary is representation-transparent, so a producer that hands
+        back a width-1 block instead of a flat state needs no call-site change here."""
+        if isinstance(psi, ManyBodyBlockState):
+            return self.apply_block(<ManyBodyBlockState>psi, cutoff)
+        cdef ManyBodyState st = <ManyBodyState?>psi
+        cdef ManyBodyState res = ManyBodyState()
         with nogil:
-            res.v = self.o(psi.v, cutoff)
+            res.v = self.o(st.v, cutoff)
         return res
 
-    def apply(self, ManyBodyState psi, double cutoff=0) -> ManyBodyState:
-        cdef ManyBodyState res
-        res = ManyBodyState()
-
+    def apply(self, psi, double cutoff=0):
+        """Same representation-transparent dispatch as :meth:`__call__` (this is the
+        ``self.o.apply(...)`` spelling rather than ``self.o(...)``; both reach the same
+        C++ ``apply`` -- ``operator()`` is defined to forward to it)."""
+        if isinstance(psi, ManyBodyBlockState):
+            return self.apply_block(<ManyBodyBlockState>psi, cutoff)
+        cdef ManyBodyState st = <ManyBodyState?>psi
+        cdef ManyBodyState res = ManyBodyState()
         with nogil:
-            res.v = self.o.apply(psi.v, cutoff)
+            res.v = self.o.apply(st.v, cutoff)
         return res
 
     def apply_multi(self, list psis, double cutoff = 0) -> list:
         """
         Apply operator to a list of ManyBodyStates without python looping.
+
+        A list of ``ManyBodyBlockState`` operands (assumed homogeneous, like every other
+        list this module dispatches on) can't share one C++ batch call the way flat
+        ``ManyBodyState``s can -- each block may have its own support and width -- so
+        it's applied one block at a time via :meth:`apply_block` instead. This is the
+        list-boundary counterpart of :meth:`__call__`'s dispatch: a producer returning
+        ``list[width-1 block]`` needs no call-site change here either.
         """
+        if len(psis) > 0 and isinstance(psis[0], ManyBodyBlockState):
+            return [self.apply_block(<ManyBodyBlockState>p, cutoff) for p in psis]
         cdef int n = len(psis)
         cdef vector[const ManyBodyState_cpp*] p_ptrs
         p_ptrs.reserve(n)
@@ -549,9 +567,10 @@ cdef class ManyBodyOperator:
         return self.o.num_flat_terms()
 
 
-def applyOp(ManyBodyOperator op, ManyBodyState psi, double cutoff=0) ->ManyBodyState :
+def applyOp(ManyBodyOperator op, psi, double cutoff=0):
     """
-    Apply a ManyBodyOperator to a ManyBodyState.
+    Apply a ManyBodyOperator to a ManyBodyState or a ManyBodyBlockState (see
+    ManyBodyOperator.__call__).
     """
     return op(psi, cutoff)
 

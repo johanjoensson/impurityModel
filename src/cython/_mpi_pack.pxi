@@ -202,6 +202,24 @@ def extract_new_states(list states, object existing_dict):
     return new_states
 
 
+cdef ManyBodyBlockState _as_width1_block(list states):
+    """A list of width-1 ``ManyBodyBlockState``s (each its own, generally different,
+    support) or plain ``ManyBodyState``s, merged into ONE block via ``from_states`` --
+    the union-support representation ``block_inner_cy`` needs to compute a whole Gram
+    matrix in one merge-join instead of one per pair."""
+    cdef ManyBodyBlockState blk
+    cdef list flat
+    if len(states) > 0 and isinstance(states[0], ManyBodyBlockState):
+        flat = []
+        for s in states:
+            blk = <ManyBodyBlockState?>s
+            if blk.width != 1:
+                raise ValueError(f"inner_multi: expected width-1 blocks, got width {blk.width}")
+            flat.append(blk.to_states()[0])
+        return ManyBodyBlockState.from_states(flat)
+    return ManyBodyBlockState.from_states(states)
+
+
 def inner_multi(states_a, states_b):
     """
     Compute inner products between two sequences of ManyBodyStates.
@@ -211,11 +229,20 @@ def inner_multi(states_a, states_b):
     list first: the loop below collects raw pointers into the states, so the Python
     objects must stay alive for the whole call — a bare iterator's temporaries would
     be collected mid-loop and leave the pointers dangling.
+
+    Elements may also be width-1 ``ManyBodyBlockState``s (a producer's list of
+    independently-supported blocks, not a shared-support block itself) -- merged into
+    one block per side and routed through ``block_inner_cy``'s single merge-join
+    instead of the ``na * nb`` pairwise loop below.
     """
     if not isinstance(states_a, list):
         states_a = list(states_a)
     if not isinstance(states_b, list):
         states_b = list(states_b)
+    if (len(states_a) > 0 and isinstance(states_a[0], ManyBodyBlockState)) or (
+        len(states_b) > 0 and isinstance(states_b[0], ManyBodyBlockState)
+    ):
+        return block_inner_cy(_as_width1_block(states_a), _as_width1_block(states_b))
     cdef int na = len(states_a)
     cdef int nb = len(states_b)
     cdef res = np.zeros((na, nb), dtype=complex)

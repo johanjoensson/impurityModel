@@ -8,7 +8,13 @@ import pickle
 import numpy as np
 import pytest
 
-from impurityModel.ed.ManyBodyUtils import ManyBodyBlockState, ManyBodyState, SlaterDeterminant
+from impurityModel.ed.ManyBodyUtils import (
+    ManyBodyBlockState,
+    ManyBodyOperator,
+    ManyBodyState,
+    SlaterDeterminant,
+    applyOp,
+)
 
 
 def _det(i):
@@ -788,3 +794,136 @@ def test_reduce_roundtrip_empty_explicit_width():
     restored = pickle.loads(pickle.dumps(z))
     assert restored.width == 5
     assert len(restored) == 0
+
+
+# --- Phase 7 step 1.1: operator boundary accepts width-1 blocks --------------------
+
+
+def _random_op(rng, n_terms=8, n_orb=20):
+    op_dict = {}
+    for _ in range(n_terms):
+        num_c = int(rng.integers(1, 3))
+        num_a = int(rng.integers(1, 3))
+        k_c = tuple((int(rng.integers(0, n_orb)), "c") for _ in range(num_c))
+        k_a = tuple((int(rng.integers(0, n_orb)), "a") for _ in range(num_a))
+        op_dict[k_c + k_a] = rng.standard_normal() + 1j * rng.standard_normal()
+    return ManyBodyOperator(op_dict)
+
+
+def test_call_dispatches_width_one_block_to_apply_block():
+    rng = np.random.default_rng(90)
+    op = _random_op(rng)
+    (state,) = _random_states(rng, 1, 15)
+    blk = ManyBodyBlockState.from_states([state])
+
+    ref = op(state, 0)
+    out = op(blk, 0)
+    assert isinstance(out, ManyBodyBlockState)
+    (out_state,) = out.to_states()
+    assert out_state == ref
+
+
+def test_apply_dispatches_width_one_block_to_apply_block():
+    rng = np.random.default_rng(91)
+    op = _random_op(rng)
+    (state,) = _random_states(rng, 1, 15)
+    blk = ManyBodyBlockState.from_states([state])
+
+    ref = op.apply(state, 0)
+    out = op.apply(blk, 0)
+    (out_state,) = out.to_states()
+    assert out_state == ref
+
+
+def test_apply_multi_dispatches_block_list_elementwise():
+    rng = np.random.default_rng(92)
+    op = _random_op(rng)
+    states = _random_states(rng, 3, 15)
+    blocks = [ManyBodyBlockState.from_states([s]) for s in states]
+
+    ref = op.apply_multi(states, 0)
+    out = op.apply_multi(blocks, 0)
+    assert len(out) == len(ref)
+    for o, r in zip(out, ref):
+        assert isinstance(o, ManyBodyBlockState)
+        (o_state,) = o.to_states()
+        assert o_state == r
+
+
+def test_apply_multi_empty_block_list():
+    rng = np.random.default_rng(93)
+    op = _random_op(rng)
+    assert op.apply_multi([], 0) == []
+
+
+def test_applyop_dispatches_width_one_block():
+    rng = np.random.default_rng(94)
+    op = _random_op(rng)
+    (state,) = _random_states(rng, 1, 15)
+    blk = ManyBodyBlockState.from_states([state])
+
+    ref = applyOp(op, state, 0)
+    out = applyOp(op, blk, 0)
+    (out_state,) = out.to_states()
+    assert out_state == ref
+
+
+def test_call_still_raises_typeerror_on_neither_type():
+    op = ManyBodyOperator({((0, "c"),): 1.0})
+    with pytest.raises(TypeError):
+        op(42, 0)
+
+
+# --- Phase 7 step 1.2: inner product boundary accepts width-1 blocks ---------------
+
+
+def test_inner_dispatches_width_one_blocks():
+    from impurityModel.ed.ManyBodyUtils import inner
+
+    rng = np.random.default_rng(95)
+    a, b = _random_states(rng, 2, 20)
+    ref = inner(a, b)
+    out = inner(ManyBodyBlockState.from_states([a]), ManyBodyBlockState.from_states([b]))
+    assert out == pytest.approx(ref)
+
+
+def test_inner_rejects_mixed_operand_types():
+    from impurityModel.ed.ManyBodyUtils import inner
+
+    rng = np.random.default_rng(96)
+    a, b = _random_states(rng, 2, 10)
+    with pytest.raises(TypeError):
+        inner(a, ManyBodyBlockState.from_states([b]))
+
+
+def test_inner_multi_matches_pairwise_for_width_one_block_lists():
+    from impurityModel.ed.ManyBodyUtils import inner, inner_multi
+
+    rng = np.random.default_rng(97)
+    left = _random_states(rng, 4, 20)
+    right = _random_states(rng, 3, 20)
+
+    ref = inner_multi(left, right)
+    left_blocks = [ManyBodyBlockState.from_states([s]) for s in left]
+    right_blocks = [ManyBodyBlockState.from_states([s]) for s in right]
+    out = inner_multi(left_blocks, right_blocks)
+    np.testing.assert_allclose(out, ref, atol=1e-12)
+
+    # explicit pairwise cross-check too, not just against the flat inner_multi
+    for i, li in enumerate(left_blocks):
+        for j, rj in enumerate(right_blocks):
+            assert out[i, j] == pytest.approx(inner(li, rj))
+
+    # mixed block/flat lists on either side
+    mixed = inner_multi(left_blocks, right)
+    np.testing.assert_allclose(mixed, ref, atol=1e-12)
+
+
+def test_inner_multi_rejects_non_width_one_blocks():
+    from impurityModel.ed.ManyBodyUtils import inner_multi
+
+    rng = np.random.default_rng(98)
+    states = _random_states(rng, 2, 10)
+    wide = ManyBodyBlockState.from_states(states)
+    with pytest.raises(ValueError):
+        inner_multi([wide], states)

@@ -425,11 +425,21 @@ def apply_global_truncation(ManyBodyState st, int max_size, object comm):
     st.prune(math.sqrt(high))
 
 
-def inner(ManyBodyState a, ManyBodyState b):
+def inner(a, b):
     """
     Compute the inner product of many-body states: <a|b>.
+
+    ``a``/``b`` may also be width-1 ``ManyBodyBlockState``s (``block_inner_scalar``,
+    the block counterpart of this function) -- the boundary is representation-
+    transparent, matching ``ManyBodyOperator.__call__``'s dispatch.
     """
+    if isinstance(a, ManyBodyBlockState) or isinstance(b, ManyBodyBlockState):
+        if not (isinstance(a, ManyBodyBlockState) and isinstance(b, ManyBodyBlockState)):
+            raise TypeError(f"inner: mixed operand types {type(a)!r} and {type(b)!r}")
+        return block_inner_scalar(<ManyBodyBlockState>a, <ManyBodyBlockState>b)
+    cdef ManyBodyState sa = <ManyBodyState?>a
+    cdef ManyBodyState sb = <ManyBodyState?>b
     cdef ManyBodyState_cpp.mapped_type res
     with nogil:
-        res = inner_cpp(a.v, b.v)
+        res = inner_cpp(sa.v, sb.v)
     return res
