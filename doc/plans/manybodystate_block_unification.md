@@ -1211,19 +1211,88 @@ commit that updates its consumers. This is the concrete confirmation of what `bu
 own docstring already predicted ("flip once its consumers are block-tolerant... or as part
 of the mechanical rename in step 3").
 
+## Phase 7 step 3.1 — retire the sparse-oracle cpdefs (DONE, commit `6050fb5`)
+
+`block_combine_sparse`/`block_orthogonalize_sparse` (`BlockLanczos.pyx`) had no production
+caller since Phase 5 step 6 — their only remaining role was as bit-for-bit test oracles for
+`ManyBodyBlockState.combine_columns`/`block_orthogonalize`. Deleted as a precondition for
+the rename: both functions built bare flat `ManyBodyState()` placeholders that would become
+the width-0 polymorphic zero once the flat and block classes merge. Re-pinned the oracle
+asserts in `test_block_state.py`/`test_krylov_store.py` to a from-scratch dense-matrix
+reference (`_dense_combine`/`_dense_orthogonalize`) instead of the retired functions.
+`add_scaled_multi` survives (still has a production caller in `_reort.pxi`'s bare-list arm,
+retired in step 3.4); `block_normalize_sparse` survives (production caller, not test-only).
+
+## Phase 7 step 3.2 — rename-proof `redistribute_psis`' isinstance shadow (DONE, commit `bb489d7`)
+
+`redistribute_psis` checked `isinstance(psis, ManyBodyBlockState)` (unconditional raise)
+before `isinstance(psis, ManyBodyState)` (warn + wrap in a list) to classify a bare single
+argument. Once the flat and block classes merge under one name, these two checks become
+identical — the block arm's raise would shadow the flat arm for every bare state, including
+a legitimate bare width-1 block that should wrap-and-warn like a bare flat state always did.
+Made the block arm width-aware: raise only when `width != 1` (a genuine multi-column block
+passed bare, must go through `redistribute_block` explicitly), fall through to wrap-and-warn
+otherwise — correct both before and after the rename. This changes behavior pre-rename for a
+bare width-1 `ManyBodyBlockState` (previously rejected unconditionally, now accepted), so the
+test asserting the old blanket rejection was split into an accept-width-1 case and a
+reject-wider-than-1 case. Audited the other `isinstance(_, ManyBodyBlockState)`/
+`isinstance(_, ManyBodyState)` sites (`basis_split.py`, `gs_statistics.py`,
+`basis_transcription.py`, `basis_restrictions.py`): each discriminates "is this argument a
+list/container" vs. "a bare instance", not "flat vs. block", so none change behavior
+post-rename — confirmed correct-or-benign, no code changes needed (dead-branch cleanup
+deferred to step 4).
+
+## Phase 7 step 3.3 — width-0 placeholder hygiene ahead of the rename (DONE, commit `ddb9dc8`)
+
+Every non-owning-rank/empty seed placeholder reaching `redistribute_psis` (or
+`split_basis_and_redistribute_psi`/`run_units_distributed`) as a bare
+`ManyBodyState()`/`ManyBodyState({})` is harmless today (the flat class carries no width
+concept) but becomes the width-0 polymorphic zero the moment the flat and block classes
+merge — an asymmetric mismatch against another rank's populated (eventually width-1) seed
+reaching the same collective. Exactly the asymmetric-exception MPI deadlock pattern this
+campaign has hit before (see Phase 7 step 2b): the width guard raises on the
+empty-placeholder rank only, while the other rank's populated seed sails into the matching
+collective and hangs waiting for a partner that already died.
+
+Fixed the one production site (`cipsi_solver.py:652`'s `psi0` seed) and every test file
+building a rank-conditional placeholder feeding one of those three entry points
+(`test_chebyshev_filter`, `test_gf_truncation`, `test_cipsi_truncation`,
+`test_gf_bicgstab_driver`, `test_gmres`, `test_greens_function_and_basis_split`,
+`test_gs_statistics`, `test_lanczos`, `test_no_ghost_bands`, `test_susceptibility`,
+`test_mpi_comm`, `test_block_lanczos_reort_matrix`): every placeholder now goes through
+`ManyBodyBlockState.from_states([...])` to force an explicit width-1 block — empty or not —
+on every rank, then immediately unpacks back via `.to_states()` so every downstream consumer
+(none of which are Row-safe yet) sees the exact same flat `ManyBodyState` shape as before.
+Left alone (uniform across ranks already, no asymmetry — deferred to step 3.4's own
+`from_states` re-typing): x0/X placeholders built identically on every rank
+(`test_bicgstab_perf.py`, `test_gf_bicgstab_driver.py`, `test_gmres.py`,
+`test_restarted_lanczos.py`'s `psi0_orth`) and `test_block_lanczos_cy_mpi.py`'s
+per-rank-independent-RNG seeds (every rank fills the same dict keys with different values).
+
+Code-reviewed (general-purpose agent, high scrutiny): verified the deleted functions' exact
+semantics against their dense-reference replacements, confirmed the width-aware
+`redistribute_psis` branch is reachable and correct on both paths, swept the full repo for
+any missed `redistribute_psis`/`split_basis_and_redistribute_psi`/`run_units_distributed`
+call site (none found), and re-ran both gates against a freshly rebuilt extension. No bugs
+found — signed off as safe to build step 3.4 on top of.
+
 ## Still open
 
 - The FCC Ni fill measurement (above) — blocks `determine_new_Dj`'s/`select_at`'s `Hpsi_ref`
   conversion, every per-frequency seed union found in Phase 6c, and `ChebyshevFilter.pyx`'s
   caller in `greens_function.py`. Orthogonal to step 3 (a compute-win question, not a type
   one) — does not block the rename.
-- **Phase 7 step 3 (the rename)** is the next milestone: per the session plan file,
-  `from_states` re-types to accept width-1 blocks (the `_q_concat` construction), the ~14
-  remaining production flat-state sites above update in the same commit, the flat class is
-  deleted from `_slater_state.pxi`, and `ManyBodyBlockState` is renamed to `ManyBodyState`
-  tree-wide with no alias left behind. Precondition grep sizing done this session: 17
-  production sites in `ed/*.py`, 55 test files (332 `ManyBodyState(` calls), 14 `.pxi`/`.pyx`
-  files reference the flat class name.
+- **Phase 7 step 3.4 (the rename mega-commit)** is the next milestone: per the session plan
+  file, `from_states`/`to_states` re-type to width-1 blocks, the flat class is deleted from
+  `_slater_state.pxi`, every flat arm in `_operator.pxi`/`_mpi_pack.pxi`/`_krylov_store.pxi`/
+  `_reort.pxi` is dropped (forced by the rename itself — those arms dereference `.v`, which
+  stops compiling once `ManyBodyState` binds to the block class), `ManyBodyBlockState` is
+  renamed to `ManyBodyState` tree-wide with no alias left behind, and the ~14 remaining
+  production flat-state sites + ~4 test files with genuine scalar-access edits update in the
+  same commit. Precondition sizing (this session): 17 production sites in `ed/*.py`, 55 test
+  files (332 `ManyBodyState(` calls, but ~55 files need zero text changes — they already use
+  the rename-target name and never scalar-access results), 14 `.pxi`/`.pyx` files reference
+  the flat class name.
 - `test_irlm_cy_diagonal_mpi` hangs under `mpiexec -n 3` (see Phase 7 step 2b above) —
   pre-existing, unrelated to this campaign; needs its own investigation of the IRLM Cython
   kernel's restart/deflation path at non-power-of-2 rank counts.
