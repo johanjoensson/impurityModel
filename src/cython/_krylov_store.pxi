@@ -384,7 +384,7 @@ cdef class SparseKrylovDense:
     def combine(self, object Y, Py_ssize_t a=0, object b=None, double slaterWeightMin=0.0):
         """Linear combinations ``out_k = sum_j Q[:, a:b][:, j] * Y[j, k]`` as ManyBodyStates.
 
-        ``slaterWeightMin > 0`` prunes the outputs exactly like ``block_combine_sparse``.
+        ``slaterWeightMin > 0`` prunes the outputs via each output state's own ``prune``.
         """
         C = self._combine_dense(Y, a, b)
         cdef Py_ssize_t n_out = C.shape[1]

@@ -33,6 +33,44 @@ def _random_states(rng, n_states, n_dets, sparsity=0.7):
     return states
 
 
+def _dense_combine(states, Y, slater_weight_min=0.0):
+    """Dense-matrix ``Q @ Y`` reference built directly from the union support, replacing
+    the retired ``block_combine_sparse`` (which was itself only a thin wrapper around
+    ``add_scaled_multi`` -- the very kernel these tests exist to validate)."""
+    keys = []
+    idx = {}
+    for st in states:
+        for k in st.to_dict():
+            if k not in idx:
+                idx[k] = len(keys)
+                keys.append(k)
+    M = np.zeros((len(keys), len(states)), dtype=complex)
+    for j, st in enumerate(states):
+        for k, v in st.to_dict().items():
+            M[idx[k], j] = v
+    out = M @ np.asarray(Y, dtype=complex)
+    result = [ManyBodyState({keys[i]: out[i, c] for i in range(len(keys))}) for c in range(out.shape[1])]
+    if slater_weight_min > 0:
+        for st in result:
+            st.prune(slater_weight_min)
+    return result
+
+
+def _dense_orthogonalize(wp_states, q_states):
+    """Dense-matrix reference for ``block_orthogonalize``'s Gram-Schmidt step, replacing
+    the retired ``block_orthogonalize_sparse``: overlaps = <Q, wp>, then wp -= Q @ overlaps."""
+    from impurityModel.ed.ManyBodyUtils import inner_multi
+
+    overlaps = inner_multi(q_states, wp_states)
+    corrected = _dense_combine(q_states, -overlaps)
+    out = []
+    for wp, c in zip(wp_states, corrected):
+        s = wp.copy()
+        s += c
+        out.append(s)
+    return out, overlaps
+
+
 def test_roundtrip_bit_exact():
     rng = np.random.default_rng(21)
     states = _random_states(rng, 5, 60)
@@ -359,14 +397,12 @@ def test_block_add_scaled_dispatcher_accepts_blocks():
     assert all(len(s) == 0 for s in pruned.to_states())
 
 
-def test_combine_columns_matches_block_combine_sparse():
-    from impurityModel.ed.BlockLanczos import block_combine_sparse
-
+def test_combine_columns_matches_dense_reference():
     rng = np.random.default_rng(63)
     states = _random_states(rng, 4, 30)
     blk = ManyBodyBlockState.from_states(states)
     Y = rng.standard_normal((4, 2)) + 1j * rng.standard_normal((4, 2))
-    ref = block_combine_sparse(states, Y)
+    ref = _dense_combine(states, Y)
     for j, col in enumerate(blk.combine_columns(Y).to_states()):
         # same accumulation order; last-ulp tolerance for compiler FMA differences
         diff = col - ref[j]
@@ -626,7 +662,6 @@ def test_block_combine_dispatcher_accepts_blocks():
     ``block_combine_sparse`` (prerequisite for Phase 5's TRLM/IRLM Q_basis conversion:
     once Q_basis stays a block across a restart, every ``block_combine(Q_basis, ...)``
     call in ``_trlm.pxi``/``_irlm.pxi`` hits this path)."""
-    from impurityModel.ed.BlockLanczos import block_combine_sparse
     from impurityModel.ed.BlockLanczosArray import block_combine
 
     rng = np.random.default_rng(70)
@@ -634,7 +669,7 @@ def test_block_combine_dispatcher_accepts_blocks():
     blk = ManyBodyBlockState.from_states(states)
     Y = rng.standard_normal((4, 2)) + 1j * rng.standard_normal((4, 2))
 
-    ref = block_combine_sparse(states, Y)
+    ref = _dense_combine(states, Y)
     out = block_combine(blk, Y)
     assert isinstance(out, ManyBodyBlockState)
     for j, col in enumerate(out.to_states()):
@@ -650,7 +685,6 @@ def test_block_combine_dispatcher_pruning_matches_sparse_on_mixed_row():
     that store, slaterWeightMin genuinely reaches this dispatcher from live TRLM/IRLM
     calls, so the block arm takes the round trip through per-state ``prune`` rather
     than reusing the cheaper but differently-scoped ``prune_rows``."""
-    from impurityModel.ed.BlockLanczos import block_combine_sparse
     from impurityModel.ed.BlockLanczosArray import block_combine
 
     det0 = _det(1)
@@ -664,7 +698,7 @@ def test_block_combine_dispatcher_pruning_matches_sparse_on_mixed_row():
     # cutoff in column 0, below it in column 1); row det1 is the mirror image.
     Y = np.array([[0.5, 0.05], [0.05, 0.5]], dtype=complex)
 
-    ref = block_combine_sparse([col0, col1], Y, cutoff)
+    ref = _dense_combine([col0, col1], Y, cutoff)
     out = block_combine(blk, Y, cutoff)
     assert [s.to_dict() for s in out.to_states()] == [s.to_dict() for s in ref]
 
@@ -673,14 +707,13 @@ def test_block_orthogonalize_dispatcher_accepts_blocks():
     """``BlockLanczosArray.block_orthogonalize`` must dispatch a ``ManyBodyBlockState``
     wp/Q pair to the block-native ``block_inner``/``block_add_scaled`` composition
     rather than the list-only ``block_orthogonalize_sparse``."""
-    from impurityModel.ed.BlockLanczos import block_orthogonalize_sparse
     from impurityModel.ed.BlockLanczosArray import block_orthogonalize
 
     rng = np.random.default_rng(71)
     Q_states = _random_states(rng, 3, 25)
     wp_states = _random_states(rng, 2, 25)
 
-    ref_wp, ref_overlaps = block_orthogonalize_sparse([s.copy() for s in wp_states], Q_states)
+    ref_wp, ref_overlaps = _dense_orthogonalize([s.copy() for s in wp_states], Q_states)
     out_wp, out_overlaps = block_orthogonalize(
         ManyBodyBlockState.from_states(wp_states), ManyBodyBlockState.from_states(Q_states)
     )

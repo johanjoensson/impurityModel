@@ -116,16 +116,16 @@ cpdef object block_combine(object Q, object Y, double slaterWeightMin=0.0):
         return Q.combine_block(Y, slaterWeightMin=slaterWeightMin)
     elif isinstance(Q, ManyBodyBlockState):
         # Already a shared-support block: combine_columns is the block-native "self @ Y"
-        # (bit-for-bit the same j-ascending accumulation as block_combine_sparse's
-        # add_scaled_multi, see test_combine_columns_matches_block_combine_sparse).
+        # (bit-for-bit the same j-ascending accumulation as add_scaled_multi, see
+        # test_combine_columns_matches_dense_reference).
         out = Q.combine_columns(Y)
         if slaterWeightMin > 0:
             # slaterWeightMin reaches this path from live TRLM/IRLM callers (unlike
             # combine_block's caller, which always passes 0.0), so the pruning semantics
-            # must not silently diverge from block_combine_sparse's per-state prune here.
-            # prune_rows is row-granularity (a row survives if ANY column is above
-            # cutoff) -- not the same thing, see combine_block's docstring -- so we take
-            # the round trip to match the sparse path's per-column prune exactly instead.
+            # must be per-column, not per-row. prune_rows is row-granularity (a row
+            # survives if ANY column is above cutoff) -- not the same thing, see
+            # combine_block's docstring -- so we take the round trip through each output
+            # state's own per-column prune instead.
             pruned = out.to_states()
             for st in pruned:
                 st.prune(slaterWeightMin)
@@ -137,8 +137,7 @@ cpdef object block_combine(object Q, object Y, double slaterWeightMin=0.0):
         # to a ManyBodyBlockState at the entry point before ever reaching this dispatcher.
         # list[ManyBodyBlockState] (the store_krylov=False Q_basis shape) never reaches
         # block_combine either -- its one caller (ChebyshevFilter.pyx) discards Q_basis
-        # outright. block_combine_sparse itself is kept only as test_block_state.py's /
-        # test_krylov_store.py's bit-for-bit oracle for the ManyBodyBlockState arm above.
+        # outright.
         raise TypeError(f"block_combine: unsupported Q type {type(Q)!r}")
 
 cpdef tuple block_orthogonalize(object wp, object Q, object overlaps=None, bint mpi=False, object comm=None):
@@ -159,8 +158,7 @@ cpdef tuple block_orthogonalize(object wp, object Q, object overlaps=None, bint 
     else:
         # See the matching branch in block_combine: dead for the same reason (TRLM/IRLM's
         # psi0 is the last thing that fed a bare list in, and Phase 5 step 6 converts it to
-        # a block at the entry point). block_orthogonalize_sparse stays as
-        # test_block_state.py's oracle for the ManyBodyBlockState arm above.
+        # a block at the entry point).
         raise TypeError(f"block_orthogonalize: unsupported wp type {type(wp)!r}")
 
 cpdef tuple block_normalize(object wp, bint mpi=False, object comm=None, double slaterWeightMin=0.0):

@@ -753,9 +753,8 @@ cdef class ManyBodyBlockState:
     def combine_columns(self, Y):
         """New block ``OUT = self @ Y`` on the same support: ``out[det, k] =
         sum_j self[det, j] * Y[j, k]``. The j-ascending accumulation matches
-        ``block_combine_sparse`` (add_scaled_multi) bit-for-bit. Used for the
-        Cholesky-QR normalization ``q_next = wp @ beta_inv`` (the output width may
-        shrink under deflation)."""
+        ``add_scaled_multi`` bit-for-bit. Used for the Cholesky-QR normalization
+        ``q_next = wp @ beta_inv`` (the output width may shrink under deflation)."""
         Ya = np.ascontiguousarray(Y, dtype=complex)
         if Ya.ndim == 1:
             Ya = Ya[:, np.newaxis]

@@ -51,7 +51,6 @@ import scipy.linalg as sp
 from impurityModel.ed.ManyBodyUtils import (
     ManyBodyState,
     ManyBodyBlockState,
-    add_scaled_multi,
     block_add_scaled_cy,
     block_inner_cy,
     inner_multi,
@@ -113,32 +112,6 @@ cdef inline void _prof_acc(str key, double t0):
     if _PROF_ON:
         _PROF[key] = _PROF.get(key, 0.0) + (_time.perf_counter() - t0)
         _PROF[key + "#n"] = _PROF.get(key + "#n", 0.0) + 1.0
-
-
-cpdef list block_combine_sparse(list Q, np.ndarray Y, double slaterWeightMin=0.0):
-    """No production caller reaches this since Phase 5 step 6 (block_combine's dispatcher
-    now raises on a bare list[ManyBodyState] instead of falling through here) -- kept as
-    test_block_state.py's / test_krylov_store.py's bit-for-bit oracle for
-    ManyBodyBlockState.combine_columns."""
-    cdef int n_out = Y.shape[1]
-    cdef list out = [ManyBodyState() for _ in range(n_out)]
-    add_scaled_multi(out, Q, np.ascontiguousarray(Y, dtype=complex))
-    if slaterWeightMin > 0:
-        for st in out:
-            st.prune(slaterWeightMin)
-    return out
-
-
-cpdef tuple block_orthogonalize_sparse(list wp, list Q, object overlaps=None, object comm=None):
-    """No production caller reaches this since Phase 5 step 6 (block_orthogonalize's
-    dispatcher now raises on a bare list[ManyBodyState] instead of falling through here) --
-    kept as test_block_state.py's oracle for the ManyBodyBlockState arm."""
-    if overlaps is None:
-        overlaps = inner_multi(Q, wp)
-        if comm is not None:
-            comm.Allreduce(MPI.IN_PLACE, overlaps, op=MPI.SUM)
-    add_scaled_multi(wp, Q, -overlaps)
-    return wp, overlaps
 
 
 cpdef tuple block_normalize_sparse(object wp, bint mpi=False, object comm=None, double slaterWeightMin=0.0):

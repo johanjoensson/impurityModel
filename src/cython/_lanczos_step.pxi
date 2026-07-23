@@ -182,8 +182,8 @@ def block_lanczos_step_cy(
     # --- 4. Full / Periodic reorthogonalization -------------------------
     # The PERIODIC cadence gate stays in the caller; the reort action itself goes
     # through the shared apply_reort (single FULL implementation for both kernels;
-    # bit-for-bit equal to the old 2x inner_multi/add_scaled_multi loop because
-    # block_orthogonalize_sparse does exactly that with comm=comm-if-mpi).
+    # bit-for-bit equal to the old 2x inner_multi/add_scaled_multi loop, classical
+    # block Gram-Schmidt with comm=comm-if-mpi).
     if reort_mode == Reort.FULL or (reort_mode == Reort.PERIODIC and it > 0 and it % reort_period == 0):
         wp, _, _ = apply_reort(wp, Q_basis, None, Reort.FULL, mpi, comm, block_widths or [], krylov)
 

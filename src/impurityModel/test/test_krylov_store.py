@@ -12,7 +12,6 @@ import tracemalloc
 import numpy as np
 import pytest
 
-from impurityModel.ed.BlockLanczos import block_combine_sparse
 from impurityModel.ed.ManyBodyUtils import (
     ManyBodyBlockState,
     ManyBodyState,
@@ -38,6 +37,29 @@ def _random_states(rng, n_states, n_dets, sparsity=0.7):
                 st[d] = rng.standard_normal() + 1j * rng.standard_normal()
         states.append(st)
     return states
+
+
+def _dense_combine(states, Y, slater_weight_min=0.0):
+    """Dense-matrix ``Q @ Y`` reference built directly from the union support, replacing
+    the retired ``block_combine_sparse`` (which was itself only a thin wrapper around
+    ``add_scaled_multi`` -- the very kernel these tests exist to validate)."""
+    keys = []
+    idx = {}
+    for st in states:
+        for k in st.to_dict():
+            if k not in idx:
+                idx[k] = len(keys)
+                keys.append(k)
+    M = np.zeros((len(keys), len(states)), dtype=complex)
+    for j, st in enumerate(states):
+        for k, v in st.to_dict().items():
+            M[idx[k], j] = v
+    out = M @ np.asarray(Y, dtype=complex)
+    result = [ManyBodyState({keys[i]: out[i, c] for i in range(len(keys))}) for c in range(out.shape[1])]
+    if slater_weight_min > 0:
+        for st in result:
+            st.prune(slater_weight_min)
+    return result
 
 
 def test_store_roundtrip_bit_exact():
@@ -81,14 +103,14 @@ def test_store_growth_across_realloc():
         assert store[i] == states[i]
 
 
-def test_store_combine_matches_block_combine_sparse():
+def test_store_combine_matches_dense_reference():
     rng = np.random.default_rng(11)
     states = _random_states(rng, 8, 60)
     store = SparseKrylovDense()
     store.append(states)
 
     Y = rng.standard_normal((8, 3)) + 1j * rng.standard_normal((8, 3))
-    ref = block_combine_sparse(states, Y)
+    ref = _dense_combine(states, Y)
     out = store.combine(Y)
     assert len(out) == 3
     for r, o in zip(ref, out):
@@ -97,14 +119,14 @@ def test_store_combine_matches_block_combine_sparse():
 
     # column-range combine: rows of Y address Q[:, a:b]
     Y2 = rng.standard_normal((3, 2)) + 1j * rng.standard_normal((3, 2))
-    ref2 = block_combine_sparse(states[2:5], Y2)
+    ref2 = _dense_combine(states[2:5], Y2)
     out2 = store.combine(Y2, 2, 5)
     for r, o in zip(ref2, out2):
         diff = r - o
         assert np.sqrt(diff.norm2()) < 1e-13 * max(np.sqrt(r.norm2()), 1.0)
 
     # pruning matches the reference semantics
-    ref3 = block_combine_sparse(states, Y, slaterWeightMin=1e-1)
+    ref3 = _dense_combine(states, Y, slater_weight_min=1e-1)
     out3 = store.combine(Y, slaterWeightMin=1e-1)
     for r, o in zip(ref3, out3):
         assert len(r) == len(o)
@@ -281,7 +303,7 @@ def _orthonormal_columns(rng, n_cols, n_dets):
     """A Krylov-like orthonormal column set, so projecting it out is meaningful."""
     cols = _random_states(rng, n_cols, n_dets, sparsity=0.8)
     L = np.linalg.cholesky(inner_multi(cols, cols))
-    return block_combine_sparse(cols, np.linalg.inv(L).conj().T)
+    return _dense_combine(cols, np.linalg.inv(L).conj().T)
 
 
 @pytest.mark.parametrize(

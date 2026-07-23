@@ -352,7 +352,7 @@ def reorth_cgs2_dense(list wp, list Q, int n_passes, object comm):
 
     but materializes ``wp`` and ``Q`` onto their merged determinant support and runs the two
     projections as ``zgemm`` instead of per-pair ``flat_map`` inner products / merges.
-    Mathematically equivalent (to floating point) to repeating ``block_orthogonalize_sparse``
+    Mathematically equivalent (to floating point) to repeating classical block Gram-Schmidt
     ``n_passes`` times -- the W-estimator / bad-block selection is unchanged; only the projection
     is accelerated. Returns ``(out, O_last)``: the new list of ``wp`` ManyBodyStates and the
     final pass's measured (Allreduced) ``(nq x p)`` overlap (``None`` when nothing was done) —
