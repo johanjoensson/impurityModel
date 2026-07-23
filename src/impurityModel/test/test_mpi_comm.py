@@ -336,9 +336,26 @@ def test_redistribute_psis_width_one_blocks_empty_state():
     assert np.sqrt(diff.norm2()) < 1e-12
 
 
-def test_redistribute_psis_rejects_bare_block():
+def test_redistribute_psis_accepts_bare_width_one_block():
+    """A bare (non-list) width-1 block is treated like a bare ManyBodyState: wrapped
+    into a one-element list with a warning, not rejected -- only a bare block of
+    width != 1 must go through redistribute_block explicitly (see the next test)."""
     basis = _make_basis([b"\x80", b"\x40"])
-    blk = ManyBodyBlockState.from_states([ManyBodyState({SlaterDeterminant.from_bytes(b"\x80"): 1.0})])
+    state = ManyBodyState({SlaterDeterminant.from_bytes(b"\x80"): 1.0})
+    blk = ManyBodyBlockState.from_states([state])
+    (out,) = basis.redistribute_psis(blk)
+    (ref,) = basis.redistribute_psis([state.copy()])
+    diff = out.to_states()[0] - ref
+    assert np.sqrt(diff.norm2()) < 1e-12
+
+
+def test_redistribute_psis_rejects_bare_wide_block():
+    basis = _make_basis([b"\x80", b"\x40"])
+    states = [
+        ManyBodyState({SlaterDeterminant.from_bytes(b"\x80"): 1.0}),
+        ManyBodyState({SlaterDeterminant.from_bytes(b"\x40"): 2.0}),
+    ]
+    blk = ManyBodyBlockState.from_states(states)
     with pytest.raises(TypeError):
         basis.redistribute_psis(blk)
 

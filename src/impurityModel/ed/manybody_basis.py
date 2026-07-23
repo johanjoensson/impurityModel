@@ -337,7 +337,10 @@ class Basis:
             back into width-1 blocks (``column``, Phase 8's cheap gather) -- same
             per-determinant summing semantics as the plain-state path below (both
             ``graph_alltoall_psis`` and ``graph_alltoall_block`` sum rows/entries
-            arriving from several ranks for the same determinant, bit-identically).
+            arriving from several ranks for the same determinant, bit-identically). A
+            bare (non-list) width-1 block or a bare ``ManyBodyState`` is also accepted,
+            with a warning, and wrapped into a one-element list; a bare block of any
+            other width raises -- use :meth:`redistribute_block` for that case.
 
         Returns
         -------
@@ -345,13 +348,25 @@ class Basis:
             The redistributed wavefunctions.
         """
         if isinstance(psis, ManyBodyBlockState):
-            raise TypeError(
-                "redistribute_psis expected a list, got a bare ManyBodyBlockState -- use redistribute_block instead"
-            )
-        if isinstance(psis, ManyBodyState):
+            # Width>1 bare blocks must go through redistribute_block explicitly. A bare
+            # width-1 block is treated like a bare ManyBodyState below (rename-stable:
+            # once the flat class and the width-1 block are the same type, this ``if``
+            # and the ``elif`` below collapse onto the same branch by width alone).
+            if psis.width != 1:
+                raise TypeError(
+                    f"redistribute_psis expected a list, got a bare ManyBodyBlockState of width "
+                    f"{psis.width} -- use redistribute_block instead"
+                )
             print("WARNING in redistribute_psi:")
             print(
-                "Expetced a list of ManyBodyStates, received a single ManyBodyState."
+                "Expected a list of ManyBodyStates, received a single ManyBodyState."
+                " Remaking into list of one ManyBodyState"
+            )
+            psis = [psis]
+        elif isinstance(psis, ManyBodyState):
+            print("WARNING in redistribute_psi:")
+            print(
+                "Expected a list of ManyBodyStates, received a single ManyBodyState."
                 " Remaking into list of one ManyBodyState"
             )
             psis = [psis]
