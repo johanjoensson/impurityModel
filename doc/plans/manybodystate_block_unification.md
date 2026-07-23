@@ -1164,16 +1164,66 @@ serial 1243 passed (unchanged), `mpiexec -n 2` 1446 passed (unchanged) — this 
 internal implementation only, no new tests, so counts don't move. No `-n 3` run needed
 (doesn't touch `basis_split.py`/`run_units_distributed`).
 
+## Phase 7 step 2 — closed out: the remaining producer flips fold into step 3
+
+Sized the "build_state cluster flip" flagged in step 2c before attempting it, per the
+plan's own "grep the consumer set to size it before attempting" rule — and it turned out
+not to be attemptable as its own commit at all, cluster or not.
+
+**`from_states` is the actual wall, not `build_state`.** `psi0`/`psi_refs` (`cipsi_solver`)
+and every GF-stack seed (`gf_solvers`' `x0`/`seeds`/`_warm_start_extrapolation`,
+`gf_shift_recycling`, `gf_units`'s `_apply_transition_ops`) get wrapped into a
+`ManyBodyBlockState` locally, right at whichever solver boundary needs block-native math,
+via `ManyBodyBlockState.from_states(list(...))` — that's the established, deliberate
+pattern (see step 6's `SparseKrylovDense.combine_block` comment and `_as_state_list`'s
+docstring in `_irlm.pxi`). `from_states`'s Cython constructor requires literal
+`ManyBodyState` elements (`cdef ManyBodyState ms = <ManyBodyState?>obj`); a
+`ManyBodyBlockState` element raises. So flipping any producer that feeds one of these
+`from_states` calls to emit width-1 blocks instead of flat states doesn't just touch that
+producer and its direct consumers — it needs `from_states` itself to accept width-1-block
+elements, which is exactly step 3's own scheduled work (*"`from_states` re-typed: input
+`list[ManyBodyState]` = list of width-1 blocks"*). Doing it now would mean a transitional
+dual-type `from_states` for the gap — the exact dead-path anti-pattern step 2b already
+burned time on.
+
+Confirmed this is total, not partial: grepped every remaining production `ManyBodyState(`
+construction outside `_slater_state.pxi` (17 sites across 9 `ed/*.py` modules, minus the
+two already-transient `from_states([ManyBodyState(...)])` call sites step 2c added). Every
+one of the other ~14 (`gf_solvers.py`'s `x0`/warm-start accumulators, `gf_shift_recycling`'s
+per-shift extraction and cold-start lists, `gf_units.py`'s `block_v`, `gf_primitives.py`'s
+seed, `manybody_basis.py`'s flat fallback, `mpi_comm.py:415`, `rixs.py:513`,
+`basis_transcription.py`'s `build_state`/`build_local_operator_list`) is a persistent
+`list[ManyBodyState]` read downstream with raw scalar arithmetic (`.items()`, `+=`,
+`.prune()`) before ever reaching a `from_states` call — the same shape in every case. No
+exception turned up anywhere in steps 2d/2e/2f's named sites (the GF stack, spectra, rixs,
+observables, groundstate, `mpi_comm`) or the kernel-adjacent ones (`SparseKrylovDense`,
+`_as_state_list`, `ChebyshevFilter`/`BiCGSTAB` seeds) — `_as_state_list`'s own docstring
+says as much directly ("the documented `eigvecs: list[ManyBodyState]` contract... predates
+the block-native restart bookkeeping").
+
+**Conclusion:** Phase 7 step 2 (module-by-module producer flips) is done to the extent it
+safely can be short of the rename. What landed: `basis_generation` (step 2a),
+`manybody_basis`/`basis_split` (step 2b), `cipsi_solver`'s two self-contained probes (step
+2c). Everything else named in the original step 2c/2d/2e/2f list is `from_states`-bound and
+folds into step 3 — not as a separate "cluster flip" commit beforehand, but as part of the
+rename itself, where `from_states` re-types one-way and the flat class dies in the same
+commit that updates its consumers. This is the concrete confirmation of what `build_state`'s
+own docstring already predicted ("flip once its consumers are block-tolerant... or as part
+of the mechanical rename in step 3").
+
 ## Still open
 
 - The FCC Ni fill measurement (above) — blocks `determine_new_Dj`'s/`select_at`'s `Hpsi_ref`
   conversion, every per-frequency seed union found in Phase 6c, and `ChebyshevFilter.pyx`'s
-  caller in `greens_function.py`.
-- **The `build_state` cluster flip** (Phase 7 step 2, remainder): one coordinated commit
-  flipping `build_state`/`build_vector`/`build_distributed_vector` together with every
-  consumer of their output across `cipsi_solver`, the GF stack, `spectra`, `groundstate`,
-  `rixs`, `susceptibility` — grep the consumer set to size it before attempting. This
-  supersedes the per-module step 2c/2d/2e ordering for anything that touches `psi_refs`.
+  caller in `greens_function.py`. Orthogonal to step 3 (a compute-win question, not a type
+  one) — does not block the rename.
+- **Phase 7 step 3 (the rename)** is the next milestone: per the session plan file,
+  `from_states` re-types to accept width-1 blocks (the `_q_concat` construction), the ~14
+  remaining production flat-state sites above update in the same commit, the flat class is
+  deleted from `_slater_state.pxi`, and `ManyBodyBlockState` is renamed to `ManyBodyState`
+  tree-wide with no alias left behind. Precondition grep sizing done this session: 17
+  production sites in `ed/*.py`, 55 test files (332 `ManyBodyState(` calls), 14 `.pxi`/`.pyx`
+  files reference the flat class name.
 - `test_irlm_cy_diagonal_mpi` hangs under `mpiexec -n 3` (see Phase 7 step 2b above) —
   pre-existing, unrelated to this campaign; needs its own investigation of the IRLM Cython
   kernel's restart/deflation path at non-power-of-2 rank counts.
