@@ -24,9 +24,9 @@ bool apply_parallel_build() noexcept;
  *
  * This class stores a collection of creation and annihilation operator
  * sequences along with their corresponding complex amplitudes. It provides
- * functionality to apply the operator to a ManyBodyState, with support for
- * multithreading (when PARALLEL is defined) and restriction masks to filter
- * allowed states.
+ * functionality to apply the operator to a shared-support block of many-body
+ * state vectors (ManyBodyBlockState), with support for multithreading (when
+ * PARALLEL is defined) and restriction masks to filter allowed states.
  */
 class ManyBodyOperator {
 
