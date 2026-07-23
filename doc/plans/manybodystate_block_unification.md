@@ -1457,19 +1457,41 @@ passed / 19 deselected / 60 xfailed / 0 failed. Final tree-wide check: `grep -rn
 Code-reviewed (general-purpose agent on `opus`, high scrutiny, isolated worktree) before
 being considered landed.
 
-## Still open
+## Phase 7 step 5 — close-out (DONE, commit `c02e5d4`)
+
+`doc/architecture_overview.md`'s `ManyBodyState` entry described the retired flat_map
+single-vector class; rewrote it to describe the block container (`p == 1` the ordinary
+case, not a special case — the campaign's stated target), the surviving `apply()`/
+`__call__` contract, and the actual `pack_block_fused_cy`/`unpack_block_fused_cy`
+functions (the doc still named the deleted `pack_psis_fused_cy`). Two other stray
+mentions (`_slater_state.pxi`'s/`_block_state.pxi`'s file-organization line, `block_tsqr`'s
+caller description) updated to the current names. The step-4 code review additionally
+flagged two `_block_state.pxi` docstrings (`pack_block_fused_cy`/`unpack_block_fused_cy`
+themselves) that still named their deleted flat-class predecessors by name — fixed in the
+same commit, since by step 4c those functions do not exist anywhere in the tree, not just
+renamed.
+
+The optional `ManyBodyBlockState.h`/`.pxd`/`_cpp`-alias → freed-name rename that step 4's
+plan flagged as optional was deliberately **not** done: no correctness or clarity need
+forced it, and the C++ class keeps its historical name. Noted here explicitly so it is
+not mistaken for an oversight by whoever reads this doc next.
+
+## Campaign status: COMPLETE
+
+Every phase of the `ManyBodyState`/`ManyBodyBlockState` unification is landed. The
+target stated at the top of this doc is reached exactly: **one state type, named
+`ManyBodyState`, with block storage — `p == 1` an ordinary block, not a special case**.
+The flat_map class no longer exists at any layer (Python, Cython, or C++); every boundary
+kernel (`apply`, inner products, MPI pack/redistribute, the Krylov store, TSQR) is
+block-native with no dual dispatch remaining. Phase-by-phase summary above; the session
+plan file referenced at the top of this doc (not checked in) holds the turn-by-turn
+narrative for Phase 7 specifically.
+
+## Still open (genuinely unrelated to this campaign, not deferred pieces of it)
 
 - The FCC Ni fill measurement (above) — blocks `determine_new_Dj`'s/`select_at`'s `Hpsi_ref`
   conversion, every per-frequency seed union found in Phase 6c, and `ChebyshevFilter.pyx`'s
-  caller in `greens_function.py`. Orthogonal to step 3 (a compute-win question, not a type
-  one) — does not block the rename.
-- **Phase 7 step 5 (close-out)** is the next and final milestone: `doc/architecture_overview.md`
-  update (the flat_map class no longer exists at any layer), a final campaign-doc section
-  marking Phase 7 and the whole campaign COMPLETE, and a memory update. The optional
-  `ManyBodyBlockState.h`/`.pxd`/`_cpp`-alias → freed-name rename that step 4's own plan flagged
-  as optional was not done (no correctness or clarity need forced it; the C++ class keeps its
-  historical name) — note this explicitly in the step 5 write-up so it isn't mistaken for an
-  oversight.
+  caller in `greens_function.py`. A compute-win question, not a type one.
 - `test_irlm_cy_diagonal_mpi` hangs under `mpiexec -n 3` (see Phase 7 step 2b above) —
   pre-existing, unrelated to this campaign; needs its own investigation of the IRLM Cython
   kernel's restart/deflation path at non-power-of-2 rank counts.
@@ -1484,8 +1506,5 @@ being considered landed.
      converting that cipsi_solver.py call site (against Phase 6b's own reasoning) or accepting
      `block_normalize`/`block_tsqr` permanently keep a list arm that `block_combine`/
      `block_orthogonalize` no longer have. Leave as is unless that calculus changes.
-- Phase 7 (the rename, the flat_map class's deletion) — see the session plan file for the
-  phase breakdown; each remaining phase is its own multi-commit body of work across a large
-  fraction of `src/cython/` and `src/impurityModel/ed/`.
 - No further Phase 6 sites identified — 6a, 6b and 6c between them covered every module the
   plan's Phase 6 list named.
