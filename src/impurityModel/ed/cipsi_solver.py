@@ -132,6 +132,11 @@ def _amplitude_from_hash(det_hash: int) -> complex:
     return complex(re, im)
 
 
+def _scalar_amp(row, default: complex = 0.0) -> complex:
+    """Read back a width-1 block ``Row`` (or ``None``) as a plain scalar amplitude."""
+    return default if row is None else row[0]
+
+
 class CIPSISolver:
     def __init__(self, basis: Basis):
         self.basis = basis
@@ -263,7 +268,12 @@ class CIPSISolver:
         # that happens to own no candidates at all, whose probe is simply empty. Returning
         # early on `not local_Djs` before it deadlocks the ranks that do have candidates.
         phases = np.exp(2j * np.pi * np.array([(hash(Dj) & 0xFFFF) / 65536.0 for Dj in local_Djs]))
-        psi_all_Dj = ManyBodyState({Dj: phases[j] for j, Dj in enumerate(local_Djs)})
+        # from_states (not a bare ManyBodyBlockState({...}) dict) forces an explicit width-1
+        # block even when local_Djs is empty on this rank: a bare empty dict would construct
+        # the width-0 polymorphic zero, which redistribute_psis's width guard rejects on this
+        # rank only while a rank with real candidates sails into the matching collective --
+        # the exact asymmetric-exception deadlock fixed in Phase 7 step 2b.
+        psi_all_Dj = ManyBodyBlockState.from_states([ManyBodyState({Dj: phases[j] for j, Dj in enumerate(local_Djs)})])
         H_psi_all = applyOp_test(H, psi_all_Dj, cutoff=slaterWeightMin)
         if self.basis.is_distributed:
             H_psi_all = self.basis.redistribute_psis([H_psi_all])[0]
@@ -279,7 +289,8 @@ class CIPSISolver:
                 if j is not None:
                     overlaps[i, j] = amp
         e_Dj = np.array(
-            [np.real(np.conj(phases[j]) * H_psi_all.get(Dj, 0.0)) for j, Dj in enumerate(local_Djs)], dtype=float
+            [np.real(np.conj(phases[j]) * _scalar_amp(H_psi_all.get(Dj))) for j, Dj in enumerate(local_Djs)],
+            dtype=float,
         )
         return local_Djs, overlaps, e_Dj
 
@@ -473,11 +484,15 @@ class CIPSISolver:
                 # on `new_Dj`'s (rank-local, insertion-order-dependent) set iteration order,
                 # the same reproducibility failure `_amplitude_from_hash` was introduced to
                 # close off elsewhere in this class.
-                chunk_state = ManyBodyState({state: _amplitude_from_hash(state.get_hash()) for state in chunk})
+                # No MPI collective anywhere in this closure (each rank explores its own
+                # local_Djs independently), so ManyBodyBlockState's width-0 polymorphic
+                # zero on an empty next_amps below is just a local falsy value, not the
+                # cross-rank deadlock hazard it is at a collective boundary.
+                chunk_state = ManyBodyBlockState({state: _amplitude_from_hash(state.get_hash()) for state in chunk})
 
                 while chunk_state:
-                    # Collect into a plain dict and build the next ManyBodyState in one
-                    # bulk range-insert (its dict constructor's flat_map insert(begin,
+                    # Collect into a plain dict and build the next ManyBodyBlockState in
+                    # one bulk range-insert (its dict constructor's flat_map insert(begin,
                     # end)) instead of `p` repeated single-key inserts: `operator[]` on a
                     # missing key is a sorted-vector insert, so accumulating one
                     # determinant at a time here was O(n^2) in the size of the closure
@@ -491,12 +506,12 @@ class CIPSISolver:
                         # Apply generator (cutoff=1e-12 to prune float noise)
                         psi_op = applyOp_test(op, chunk_state, cutoff=1e-12)
 
-                        for state, amp in psi_op.items():
+                        for state, row in psi_op.items():
                             if state not in new_Dj:
                                 new_Dj.add(state)
-                                next_amps[state] = amp
+                                next_amps[state] = row[0]
 
-                    chunk_state = ManyBodyState(next_amps)
+                    chunk_state = ManyBodyBlockState(next_amps)
 
         if return_Hpsi_ref:
             return new_Dj, Hpsi_ref
