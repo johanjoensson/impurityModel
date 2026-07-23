@@ -845,6 +845,52 @@ rest of the checklist:
 - **`to_states()`/`_as_state_list` boundaries** — already single-pass optimal; nothing to
   extract columns from that isn't already a direct materialization.
 
+## Phase 7 — rename `ManyBodyBlockState` → `ManyBodyState`, complete the unification
+
+Endgame of the campaign: one state type, named `ManyBodyState`, with block storage —
+`p == 1` an ordinary block, not a special case — and the flat_map class deleted at every
+layer (Cython and C++). Full step breakdown lives in the session plan file
+(`/home/johan/.claude/plans/i-want-to-change-calm-shannon.md` at the time of writing);
+this doc gets the durable per-step record as each step lands, same as every prior phase.
+
+User-confirmed decisions (2026-07-23): (1) the unified class's map surface (`psi[det]`,
+`.get()`, `.items()`, `.values()`) always returns `Row` views, even at width 1 — no
+polymorphic scalar returns; (2) full demolition — the C++ flat_map class, its
+`ManyBodyOperator::apply` overloads, and the list-based MPI pack paths are rewritten
+block-native and deleted, not left as internal detail; (3) clean break — no
+`ManyBodyBlockState` compatibility alias survives the rename; out-of-tree code
+(impmod_interface) updates its own imports.
+
+**Step 0 (DONE, commit `21c03ce`) — surface parity audit + gap-fill.** Filled the block
+class's remaining gaps vs. the flat_map class while the flat class still exists as oracle:
+`size()`/`max_size()` (map-surface parity; `max_size()` forwards the underlying key
+vector's own `max_size()`, a capacity bound not a real limit, matching how meaningless the
+flat_map class's forwarded `std::map::max_size()` already is), `prune(cutoff)` as an alias
+for the existing `prune_rows(cutoff)` (exact agreement with the flat class's per-entry
+`prune` at width 1, verified against both C++ implementations' cutoff boundary: both keep
+strictly `> cutoff^2` — not a lucky pass), `__repr__`, and `__reduce__` (pickling) that
+carries `width` alongside `to_dict()` — traced and confirmed this is what correctly
+round-trips two cases a bare-dict-only reduce would silently get wrong: a width-0
+"key-only mask" block that has rows (`key_union`/`keys_new_above` results — the key
+survives because `__cinit__` pushes it before checking whether the row's value is scalar
+or a sequence), and a rows-less block of an explicit nonzero width (`to_dict()` alone gives
+`{}`, which without the explicit `width` would collapse to the width-0 polymorphic zero).
+
+Incidental finding while auditing pickling exposure: neither state class is actually
+pickled anywhere in production code today (`mpi_comm.py`'s generic `graph_alltoall` pickles
+plain dicts/lists at its two call sites, never a `ManyBodyState`/`ManyBodyBlockState`
+directly; the GF sector cache uses `.npz`, not pickle) — the "pickled disk caches" risk
+noted when this phase was scoped does not currently apply. Left in the plan's risk section
+as a corrected note rather than removed, since a future caller could still pickle one
+directly and `__reduce__` needs to keep working regardless.
+
+Width-1 apply baseline recorded for step 4's later comparison (`test_apply_block_width_scaling`,
+NiO 10-bath/basis-124 fixture, `-m benchmark`): `p=1  multi 0.35 ms  block 0.35 ms  speedup 0.99x`
+— `apply_block` at width 1 is within noise of the flat `apply_multi`/`apply` it will replace,
+confirming there's no width-1 performance cliff to worry about at the eventual kernel deletion.
+
+Reviewed (no findings). Gates green, baseline+8 (serial 1229/230/18/30, `-n 2` 1429/18/60).
+
 ## Still open
 
 - The FCC Ni fill measurement (above) — blocks `determine_new_Dj`'s/`select_at`'s `Hpsi_ref`
