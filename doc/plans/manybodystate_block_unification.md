@@ -997,6 +997,66 @@ CLAUDE.md's existing guidance. Gates green, baseline+4 over the EOR fix (serial
 1242/232/18/30 — 2 new MPI-marked tests raise the skip count too, `-n 2` 1444/18/60,
 `-n 3` targeted 33/33).
 
+## Phase 7 step 2a — producer flips: `basis_generation`/`basis_transcription` (PARTIAL, commit `793d863`)
+
+Step 2 of the plan flips each producer of flat states to width-1 blocks, module by
+module, updating that module's own scalar-access sites in the same commit. 2a's two
+targets turned out to be very different in shape:
+
+- **`basis_generation.py`'s `spin_flipped_determinants`** constructs a disposable probe
+  state per determinant purely to read a number operator's eigenvalue back off it
+  (`applyOp(n_dn_mbo, ManyBodyState({det: 1.0}), cutoff=0).get(det, 0).real`). Flipped
+  the probe to `ManyBodyBlockState({det: 1.0})` (the dict-constructor path pins width 1
+  unambiguously: a single scalar value makes `np.isscalar` true, so `w = 1` with no
+  `width` kwarg to conflict) and added a `_real_occupation(psi, det)` helper that reads
+  `.get(det)` (returns a `Row` or `None` — never a bare `0` default, since `Row` doesn't
+  support `.real`) and unwraps `row[0].real`, matching the old scalar behavior exactly
+  for all three cases (present-zero, present-nonzero, absent). Fully self-contained — no
+  other module reads these probes — so this landed with zero blast radius.
+- **`basis_transcription.py`'s `build_state`** was the other named target (its producer
+  output feeding `build_distributed_vector`'s `.get(state, 0)` and `build_vector`'s
+  `.items()` loop). Attempted the flip (emit `ManyBodyBlockState(width=1)`, unwrap the
+  two in-module consumers with an `isinstance` check) and ran the full serial gate before
+  touching anything MPI — **75 tests failed** across `test_gf_truncation`,
+  `test_greens_function(_and_basis_split)`, `test_groundstate`, `test_rixs_tensor`,
+  `test_sectorization`, `test_spectra*`, `test_susceptibility`, `test_symmetry_observables`,
+  `test_weighted_restrictions`, `test_lanczos`, `test_manybody_basis`, `test_memory_estimate`,
+  `test_krylov_dtype` — all `TypeError: unsupported operand type(s) for /: 'Row' and
+  'float'` or equivalent, from raw scalar arithmetic on `build_state`'s output in
+  consumers not scheduled to flip until steps 2c–2f (the GF stack, groundstate, spectra,
+  rixs, susceptibility, sectorization — even test code itself does `amp / N` on
+  `psi.items()`, e.g. `test_lanczos.py::test_lancos`). Confirmed none of the 75 failures
+  trace back to the `basis_generation.py` change (grepped the failure log for it — zero
+  hits), so the two flips are cleanly independent.
+  **Reverted** `build_state` and its two in-module consumers back to their original
+  flat-only form (the dual-path tolerance added to `build_vector`/`build_distributed_vector`
+  was also reverted, not just `build_state` — with `build_state` staying flat, that
+  tolerance code would be untested and unreachable, so keeping it would have been
+  premature). Left a one-paragraph docstring note on `build_state` recording the finding
+  so the next attempt starts from it rather than re-discovering it: flip `build_state`
+  once its consumers are block-tolerant (i.e., interleaved with or after steps 2c–2f),
+  or fold it into step 3's mechanical rename when the flat class disappears and every
+  remaining flat-scalar call site has to update regardless.
+
+This is the concrete version of the risk the plan's own Step 2 already flagged
+("numpy interop at scalar sites... each step-2 module's tests must cover its own
+access-site updates") — but sharpened: it's not just about *this* module's own tests,
+it's about transitively reaching every consumer of a producer's output, which for a
+foundational leaf like `build_state` is nearly the whole tree. The practical rule this
+sets for the rest of Step 2: **before flipping any producer, grep its call sites for
+who consumes the return value, and run the full serial gate (not a targeted subset)
+before running MPI** — a full-gate failure spike is cheap, fast, unambiguous signal
+(no scalar silently coerces since `Row` has none of that machinery) that immediately
+tells you whether a producer's consumers are ready, without a separate audit pass.
+
+Reviewed at standard effort (no MPI/Cython/C++ touched): no findings. Gates green:
+serial 1242 passed/232 skipped/18 deselected/30 xfailed (unchanged from step 1.3's
+baseline — the landed change is test-invisible, since nothing exercises
+`spin_flipped_determinants` at the exact eigenvalue-arithmetic edge this touched
+differently than before); `mpiexec -n 2` 1444 passed/18 deselected/60 xfailed
+(unchanged). No `-n 3` run — this step touches neither the MPI pack layer nor
+`basis_split.py`.
+
 ## Still open
 
 - The FCC Ni fill measurement (above) — blocks `determine_new_Dj`'s/`select_at`'s `Hpsi_ref`
