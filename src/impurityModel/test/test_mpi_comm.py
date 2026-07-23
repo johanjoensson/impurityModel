@@ -18,6 +18,7 @@ from mpi4py import MPI
 from impurityModel.ed.basis_transcription import build_density_matrices, build_sparse_matrix
 from impurityModel.ed.manybody_basis import Basis
 from impurityModel.ed.ManyBodyUtils import (
+    ManyBodyBlockState,
     ManyBodyOperator,
     ManyBodyState,
     SlaterDeterminant,
@@ -274,6 +275,83 @@ def test_redistribute_psis_normalisation():
     local_norm_sq = sum(abs(v) ** 2 for v in redist.values())
     total_norm_sq = comm.allreduce(local_norm_sq, op=MPI.SUM)
     assert abs(total_norm_sq - 1.0) < 1e-12, f"Norm not preserved: {total_norm_sq}"
+
+
+@pytest.mark.mpi
+def test_redistribute_psis_accepts_width_one_blocks():
+    """A list of width-1 ``ManyBodyBlockState``s must redistribute to the same result
+    as the equivalent list of ``ManyBodyState``s, and come back as blocks (same type in,
+    same type out -- Phase 7 step 1.3's composed redistribute_block round trip)."""
+    comm = MPI.COMM_WORLD
+    states_bytes = [b"\x80", b"\x40", b"\x20", b"\x10"]
+    basis = _make_basis(states_bytes, comm=comm)
+
+    if comm.rank == 0:
+        psi_a = ManyBodyState({SlaterDeterminant.from_bytes(s): 1.0 / len(states_bytes) for s in states_bytes})
+        psi_b = ManyBodyState({SlaterDeterminant.from_bytes(states_bytes[0]): 2.0 + 1j})
+    else:
+        psi_a = ManyBodyState({})
+        psi_b = ManyBodyState({})
+
+    ref_a, ref_b = basis.redistribute_psis([psi_a.copy(), psi_b.copy()])
+
+    blk_a = ManyBodyBlockState.from_states([psi_a])
+    blk_b = ManyBodyBlockState.from_states([psi_b])
+    out = basis.redistribute_psis([blk_a, blk_b])
+
+    assert len(out) == 2
+    assert all(isinstance(o, ManyBodyBlockState) and o.width == 1 for o in out)
+    (out_a,) = out[0].to_states()
+    (out_b,) = out[1].to_states()
+    diff_a = out_a - ref_a
+    diff_b = out_b - ref_b
+    assert np.sqrt(diff_a.norm2()) < 1e-12
+    assert np.sqrt(diff_b.norm2()) < 1e-12
+
+
+@pytest.mark.mpi
+def test_redistribute_psis_width_one_blocks_empty_state():
+    """An entirely-empty state among the block list (a genuine empty-rank/empty-column
+    edge case, not just an empty-rank-of-the-whole-basis one) must redistribute the same
+    as its flat equivalent, not crash or silently drop the other column."""
+    comm = MPI.COMM_WORLD
+    states_bytes = [b"\x80", b"\x40", b"\x20", b"\x10"]
+    basis = _make_basis(states_bytes, comm=comm)
+
+    empty = ManyBodyState()
+    if comm.rank == 0:
+        singleton = ManyBodyState({SlaterDeterminant.from_bytes(states_bytes[0]): 1.0 + 2j})
+    else:
+        singleton = ManyBodyState({})
+
+    ref_empty, ref_singleton = basis.redistribute_psis([empty.copy(), singleton.copy()])
+
+    out = basis.redistribute_psis(
+        [ManyBodyBlockState.from_states([empty]), ManyBodyBlockState.from_states([singleton])]
+    )
+    (out_empty,) = out[0].to_states()
+    (out_singleton,) = out[1].to_states()
+    assert out_empty == ref_empty
+    diff = out_singleton - ref_singleton
+    assert np.sqrt(diff.norm2()) < 1e-12
+
+
+def test_redistribute_psis_rejects_bare_block():
+    basis = _make_basis([b"\x80", b"\x40"])
+    blk = ManyBodyBlockState.from_states([ManyBodyState({SlaterDeterminant.from_bytes(b"\x80"): 1.0})])
+    with pytest.raises(TypeError):
+        basis.redistribute_psis(blk)
+
+
+def test_redistribute_psis_rejects_non_width_one_blocks():
+    basis = _make_basis([b"\x80", b"\x40"])
+    states = [
+        ManyBodyState({SlaterDeterminant.from_bytes(b"\x80"): 1.0}),
+        ManyBodyState({SlaterDeterminant.from_bytes(b"\x40"): 2.0}),
+    ]
+    wide = ManyBodyBlockState.from_states(states)
+    with pytest.raises(ValueError):
+        basis.redistribute_psis([wide])
 
 
 @pytest.mark.mpi

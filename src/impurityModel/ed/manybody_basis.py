@@ -9,6 +9,7 @@ from mpi4py import MPI
 
 from impurityModel.ed.basis_generation import generate_initial_basis, spin_flipped_determinants
 from impurityModel.ed.ManyBodyUtils import (
+    ManyBodyBlockState,
     ManyBodyOperator,
     ManyBodyState,
     SlaterDeterminant,
@@ -321,19 +322,33 @@ class Basis:
         if __debug__:
             assert all(self.local_basis[i] < self.local_basis[i + 1] for i in range(len(self.local_basis) - 1))
 
-    def redistribute_psis(self, psis: list[ManyBodyState]) -> list[ManyBodyState]:
+    def redistribute_psis(self, psis):
         """Redistribute wavefunctions across MPI ranks based on state ownership.
 
         Parameters
         ----------
-        psis : list of ManyBodyState
-            The wavefunctions to redistribute.
+        psis : list of ManyBodyState, or list of width-1 ManyBodyBlockState
+            The wavefunctions to redistribute. A list of width-1 blocks (a producer's
+            independently-supported blocks, not a shared-support block itself) is
+            accepted too -- same type in, same type out, matching the boundary
+            dispatch convention ``ManyBodyOperator.apply_multi``/``inner_multi`` already
+            follow. Composed from existing primitives rather than a new collective:
+            merge into one block (``ManyBodyBlockState.from_states``), redistribute it
+            (:meth:`redistribute_block`, the already-tested block collective), split
+            back into width-1 blocks (``column``, Phase 8's cheap gather) -- same
+            per-determinant summing semantics as the plain-state path below (both
+            ``graph_alltoall_psis`` and ``graph_alltoall_block`` sum rows/entries
+            arriving from several ranks for the same determinant, bit-identically).
 
         Returns
         -------
-        list of ManyBodyState
+        list of ManyBodyState, or list of ManyBodyBlockState (matching the input)
             The redistributed wavefunctions.
         """
+        if isinstance(psis, ManyBodyBlockState):
+            raise TypeError(
+                "redistribute_psis expected a list, got a bare ManyBodyBlockState -- use redistribute_block instead"
+            )
         if isinstance(psis, ManyBodyState):
             print("WARNING in redistribute_psi:")
             print(
@@ -341,6 +356,15 @@ class Basis:
                 " Remaking into list of one ManyBodyState"
             )
             psis = [psis]
+        if isinstance(psis, list) and len(psis) > 0 and isinstance(psis[0], ManyBodyBlockState):
+            for p in psis:
+                if p.width != 1:
+                    raise ValueError(f"redistribute_psis: expected width-1 blocks, got width {p.width}")
+            if not self.is_distributed:
+                return psis
+            merged = ManyBodyBlockState.from_states([p.to_states()[0] for p in psis])
+            redistributed = self.redistribute_block(merged)
+            return [redistributed.column(i) for i in range(redistributed.width)]
         psis = [
             (
                 psi
