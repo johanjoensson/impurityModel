@@ -1390,24 +1390,86 @@ compatibility alias, per the user-confirmed decisions in the session plan):** an
 `impmod_interface` WIP (out-of-tree) imports `ManyBodyBlockState` by name in at least one
 place and must update to `ManyBodyState` before it will import again.
 
+## Phase 7 step 4 — C++ demolition (DONE, commits `99bd3ce`/`8ff00dd`/`1559c27`/`80dfc96`)
+
+Four small, independently-gated commits (each rebuilt and re-run on all three test
+gates before the next), rather than one mega-commit — unlike step 3.4, nothing here
+changes Cython-visible behavior, so there was no reason to bundle:
+
+- **4a** (`99bd3ce`): deleted `mpi_utils::pack_psis`/`unpack_psis`/`pack_psis_fused`/
+  `unpack_psis_fused` from `MpiUtils.h`/`.cpp`/`.pxd` — the C++-layer flat-state pack
+  functions underneath the Cython backers step 3.4 already deleted (`pack_psis_fused_cy`
+  etc.). Confirmed zero remaining callers before deleting. `pack_determinants`/
+  `unpack_determinants` (SlaterDeterminant-only, never touched the flat class) and the
+  block-native `pack_block_count`/`pack_block_fill`/`unpack_block_fused` are untouched.
+- **4b** (`8ff00dd`): deleted `ManyBodyOperator`'s flat-state `operator()`/
+  `apply(const ManyBodyState&, ...)` overloads — a ~300-line duplicate implementation of
+  the same term-loop/fermion-sign machinery the surviving `apply(const
+  ManyBodyBlockState&, ...)` already has, confirmed dead the same way (step 3.4 routed
+  every Cython call site through the block overload already). The shared free helpers
+  both apply paths actually called (`set_bits`/`create`/`annihilate`/`toggle_bit`/
+  `mask_occupied`/`bit_set`/`mask_parity`, `SlaterKeyHash`, `build_orbital_mask`, the
+  restriction-mask builders, `ManyBodyOperator::SLATER`) were retyped from
+  `ManyBodyState::key_type`/`::mapped_type` — pure aliases for
+  `SlaterDeterminant<uint64_t>`/`std::complex<double>`, identical to what
+  `ManyBodyBlockState::Key`/`::Value` already meant — to a local `using SlaterKey =
+  ManyBodyOperator::SLATER;`, a compile-time-only change with zero codegen difference.
+  The flat-only `ResultMap` accumulator type (only ever used inside the deleted apply)
+  was deleted alongside it; `apply_thread_cap()` (used by both paths) was kept as-is.
+- **4c** (`1559c27`): `git rm`'d `ManyBodyState.h`/`.cpp`/`.pxd` outright — by this point
+  the last consumer (4b) was gone, confirmed via a repo-wide grep for
+  `ManyBodyState_cpp`/`from ManyBodyState cimport`/`"ManyBodyState.h"`/
+  `"ManyBodyState.cpp"` (excluding gitignored Cython-generated `.cpp` build artifacts,
+  which regenerate from the `.pyx`/`.pxi` sources and briefly still mentioned the deleted
+  header until the next rebuild). `setup.py` never listed these files as explicit
+  `Extension.sources` (they reached the build only via the `cdef extern from
+  "X.cpp" nogil: pass` include-trick already used throughout this codebase), so no build
+  config change was needed.
+- **4d** (`80dfc96`): the dead-branch cleanup deferred from step 3.2's isinstance audit.
+  `basis_split.py`'s `split_basis_and_redistribute_psi` had an `is_block =
+  isinstance(psis[0], ManyBodyState)` dispatch and a `state_cls = ManyBodyState if
+  is_block else ManyBodyState` self-ternary left over from when flat and block states
+  could both reach this function — post-rename `is_block` is always true (every
+  `ManyBodyState` is the block class), so the flat-list `else` branches were
+  unreachable. Removed both branches down to the single surviving code path; refreshed a
+  stale comment in `test_greens_function_and_basis_split.py` that still described the
+  removed dispatch. The other `isinstance(psis, ManyBodyState)` sites the 3.2 audit
+  flagged (`gs_statistics.py:125/423`, `basis_transcription.py:240`,
+  `basis_restrictions.py:358`, `manybody_basis.py:344`) are a different, still-live
+  distinction — bare state vs. `list[ManyBodyState]` argument shape — confirmed correct
+  and left alone.
+
+**Perf check against step 0's baseline** (`test_apply_perf.py -m benchmark`,
+`test_apply_block_width_scaling`): width-1 `apply_block` runs at 140.42 ms vs. 141.68 ms
+for the p-independent-calls baseline at p=1 — 1.01x, noise-level, confirming the deleted
+flat `apply` had no speed advantage the block path doesn't already match at width 1
+(matches the step-0 prediction; the whole point of steps 1-3 was that width-1 block
+storage carries no overhead over the flat class it replaced).
+
+**Verification:** serial suite 1231 passed / 231 skipped / 18 deselected / 30 xfailed
+after every one of the four commits. `mpiexec -n 2 --with-mpi`: both ranks independently
+1432 passed / 18 deselected / 60 xfailed / 0 failed after 4a, 4b, 4c and 4d. `mpiexec -n
+3` (with the `test_irlm_cy_diagonal_mpi` deselect) run once at 4d, since `basis_split.py`
+only activates its multi-color path at 3+ ranks: all three ranks independently 1431
+passed / 19 deselected / 60 xfailed / 0 failed. Final tree-wide check: `grep -rn
+"ManyBodyState_cpp\|ManyBodyState\.h" src/cython/ --include=*.px*` → 0.
+
+Code-reviewed (general-purpose agent on `opus`, high scrutiny, isolated worktree) before
+being considered landed.
+
 ## Still open
 
 - The FCC Ni fill measurement (above) — blocks `determine_new_Dj`'s/`select_at`'s `Hpsi_ref`
   conversion, every per-frequency seed union found in Phase 6c, and `ChebyshevFilter.pyx`'s
   caller in `greens_function.py`. Orthogonal to step 3 (a compute-win question, not a type
   one) — does not block the rename.
-- **Phase 7 step 4 (C++ demolition, SHRUNK)** is the next milestone. Step 3.4 force-absorbed
-  old step 4a (every flat Cython arm had to be dropped as part of the rename itself — those
-  arms dereferenced `.v`, which stops compiling once `ManyBodyState` binds to the block
-  class), so what remains is C++-header-only: delete `ManyBodyState.h`'s flat_map class and
-  `ManyBodyState.pxd` (and the `ManyBodyBlockState_cpp` cimport alias sites now that only one
-  C++ class needs a Python-visible name); `ManyBodyOperator.h` loses the flat `apply`/
-  `operator()` overloads (block apply is the sole kernel); `MpiUtils`'s flat pack paths (if
-  any remain — the Cython-level `graph_alltoall_psis` backers are already gone as of 3.4;
-  check for a C++-only flat pack path underneath) go too. Also in scope: the dead-branch
-  cleanup deferred from step 3.2 (`isinstance` sites that are now always-true), and the perf
-  check against step 0's baseline (width-1 `apply_block` must be within noise of the deleted
-  flat `apply` — see "Width-1 apply baseline recorded for step 4's later comparison" above).
+- **Phase 7 step 5 (close-out)** is the next and final milestone: `doc/architecture_overview.md`
+  update (the flat_map class no longer exists at any layer), a final campaign-doc section
+  marking Phase 7 and the whole campaign COMPLETE, and a memory update. The optional
+  `ManyBodyBlockState.h`/`.pxd`/`_cpp`-alias → freed-name rename that step 4's own plan flagged
+  as optional was not done (no correctness or clarity need forced it; the C++ class keeps its
+  historical name) — note this explicitly in the step 5 write-up so it isn't mistaken for an
+  oversight.
 - `test_irlm_cy_diagonal_mpi` hangs under `mpiexec -n 3` (see Phase 7 step 2b above) —
   pre-existing, unrelated to this campaign; needs its own investigation of the IRLM Cython
   kernel's restart/deflation path at non-power-of-2 rank counts.
