@@ -1057,11 +1057,69 @@ differently than before); `mpiexec -n 2` 1444 passed/18 deselected/60 xfailed
 (unchanged). No `-n 3` run — this step touches neither the MPI pack layer nor
 `basis_split.py`.
 
+## Phase 7 step 2b — `manybody_basis`/`basis_split` accept width-1 blocks (DONE, commit `102c0e7`)
+
+Small, self-contained producer flips, plus one preemptive dual-path dispatch addition for a
+future step:
+
+- `manybody_basis.py`: `Basis.__init__`'s type probe (`ManyBodyState({SlaterDeterminant...
+  : 1.0})` just to read back the key type) simplified to construct the `SlaterDeterminant`
+  directly — no flat-state round trip needed at all. `Basis.expand`'s internal seed
+  (`ManyBodyState({state: 1})` fed to `applyOp_test`, only `.keys()` ever read off the
+  result) flipped to `ManyBodyBlockState({state: 1})`, riding the operator-apply boundary
+  dispatch already landed in step 1.1/1.2. Both are fully self-contained (nothing outside
+  the function ever sees the intermediate object), so neither needed the "grep consumers
+  first" caution step 2a's `build_state` attempt required.
+- `basis_split.py`: `split_basis_and_redistribute_psi` (the one function in this file that
+  actually touches wavefunction amplitudes — MPI-collective, serializes/deserializes psis
+  across split-communicator colors via raw `send`/`recv` of Python dicts) gained dual-path
+  dispatch: `is_block = isinstance(psis[0], ManyBodyBlockState)` routes serialization
+  through `v[0]` (unwrap the width-1 `Row` to a scalar) instead of using `v` directly, and
+  deserialization through `ManyBodyBlockState({...})` instead of `ManyBodyState({...})`.
+  Its only production caller (`gf_units.py`) still passes flat lists — this branch is
+  unreachable in production until that caller is flipped in step 2d, added now so the two
+  functions in this file don't diverge in a later step's diff.
+
+A code-review pass (standard effort) came back clean on the diff itself but flagged two
+real gaps before commit: (1) `split_basis_and_redistribute_psi` had no `width != 1` guard,
+unlike its sibling `Basis.redistribute_psis`; (2) this step's `basis_split.py` touch
+requires a one-off `-n 3` run per CLAUDE.md ("splitting only activates multi-rank"), which
+hadn't been done. Both were actioned — but adding the width guard *first*, without also
+fixing the new test, caused a real deadlock: the test's non-owning-rank placeholder was
+`ManyBodyBlockState({})` (the width-0 "polymorphic zero", not a width-1 block — see its
+constructor docstring), so the new guard raised `ValueError` on that rank only, while the
+other rank sailed into its matching `recv` and hung forever waiting for a send that would
+never come (confirmed via `py-spy dump`: one rank stuck at `basis_split.py`'s `recv` line,
+the other already past it into pytest teardown). Fixed in the test, not the guard: the
+non-owning-rank placeholder must be `ManyBodyBlockState.from_states([ManyBodyState({})])`,
+which forces an explicit width-1 zero block — the same convention already used by
+`test_mpi_comm.py`'s block-redistribute tests for exactly this case.
+
+While chasing that deadlock down, incidentally ran the *full* suite at `-n 3` (not just the
+new targeted test) and hit a second, entirely unrelated hang: `test_irlm_cy_diagonal_mpi`
+(`test_block_lanczos_cy_mpi.py`) never returns under `mpiexec -n 3` — confirmed pre-existing
+by stashing this step's changes and reproducing on the clean tree with a bare 90s timeout.
+The problem it solves is tiny (6-dimensional diagonal Hamiltonian, 2 wanted eigenvalues), so
+this reads as a genuine deadlock/infinite loop in the IRLM Cython kernel that only manifests
+at odd/non-power-of-2 rank counts — never caught before because the standing gate is `-n 2`
+only. Recorded in memory (`irlm-cy-diagonal-mpi-hangs-at-3-ranks`), **not investigated or
+fixed here** — out of scope for this step, orthogonal to the state-unification work.
+
+Gates green: serial 1243 passed/233 skipped/18 deselected/30 xfailed (+1 passed from the new
+non-mpi test, otherwise unchanged from step 2a's baseline); `mpiexec -n 2` 1446 passed/18
+deselected/60 xfailed (+2 from the two new tests); `mpiexec -n 3` 1445 passed/**19**
+deselected/60 xfailed (18 baseline + the one pre-existing-hang test excluded via
+`--deselect`) — the required one-off `-n 3` check for this `basis_split.py` touch, satisfied
+short of the unrelated hang.
+
 ## Still open
 
 - The FCC Ni fill measurement (above) — blocks `determine_new_Dj`'s/`select_at`'s `Hpsi_ref`
   conversion, every per-frequency seed union found in Phase 6c, and `ChebyshevFilter.pyx`'s
   caller in `greens_function.py`.
+- `test_irlm_cy_diagonal_mpi` hangs under `mpiexec -n 3` (see Phase 7 step 2b above) —
+  pre-existing, unrelated to this campaign; needs its own investigation of the IRLM Cython
+  kernel's restart/deflation path at non-power-of-2 rank counts.
 - Phase 5's remaining pieces (both are genuinely load-bearing, not unfinished business):
   1. `gf_shift_recycling.py`'s direct `Q.combine(...)` call stays -- its RIXS consumer wants a
      list (see step 6 above); `combine_block()` migration is a non-goal here.
