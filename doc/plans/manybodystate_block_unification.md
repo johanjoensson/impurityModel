@@ -1112,11 +1112,68 @@ deselected/60 xfailed (18 baseline + the one pre-existing-hang test excluded via
 `--deselect`) — the required one-off `-n 3` check for this `basis_split.py` touch, satisfied
 short of the unrelated hang.
 
+## Phase 7 step 2c (partial) — `cipsi_solver`'s self-contained probes (DONE, commit `4ec17b7`)
+
+The plan's step 2c bundled "seed constructions [...], `Hpsi_i.items()` [...], `H_psi_all.get`
+[...]" as one unit, but consulting the advisor before editing surfaced that this bundle isn't
+uniform risk — it splits cleanly by *ancestry*, not by line number:
+
+- **Genuinely fresh** (construction and every consumer entirely local to one method, never
+  escaping into `psi_refs`/`Hpsi_ref`): the diagonal probe in
+  `_candidate_overlaps_and_energies` (`psi_all_Dj`/`H_psi_all`), and the `gen_ops` symmetry-
+  closure loop in `determine_new_Dj` (`chunk_state`). Flipped both to `ManyBodyBlockState`.
+- **`build_state`-bound** (cannot flip in isolation): `psi_refs`/`Hpsi_ref` themselves, and
+  every site that reads or writes them (`Hpsi_i.items()` in the overlaps-accumulation loop,
+  `build_vector`/`build_distributed_vector` calls, the several `ManyBodyState({...})` seed
+  constructions in `expand`/`get_eigenvectors`) — on the second and later CIPSI iterations
+  the "seed" *is* `build_state`'s flat output fed back in (`psi0 = psi_refs`), so these
+  cannot be flipped without `build_state` flipping too, which is exactly the move that broke
+  75 tests in step 2a. Left untouched.
+
+Added a small helper, `_scalar_amp(row, default=0.0)`, mirroring step 2a's
+`_real_occupation` pattern (`None` -> default, else `row[0]`).
+
+The advisor also flagged the landmine that made this worth pausing for: the diagonal probe's
+`redistribute_psis` call is unconditional on every rank (the early return on `not local_Djs`
+happens *after* it, on purpose — see the comment in the code — so a rank with no local
+candidates doesn't deadlock a rank that has some). A bare `ManyBodyBlockState({Dj: ...})`
+would construct the width-0 polymorphic zero when `local_Djs` is empty on that rank, tripping
+`redistribute_psis`'s width guard on that rank only while a rank with real candidates sails
+into the matching collective — the exact asymmetric-exception deadlock just fixed in step
+2b, reintroduced at a second call site. Fixed via `ManyBodyBlockState.from_states([...])`,
+which the review traced through `apply_block` / C++ `ManyBodyOperator::apply` to confirm
+stays width-1 on every rank regardless of local candidate count. The `gen_ops` closure has no
+such hazard (no MPI collective anywhere in it — confirmed by grep — so a per-rank width-0
+zero there is just an ordinary falsy value, not a deadlock).
+
+**The scope deviation this surfaces, flagged to the user:** step 3's precondition ("zero
+production constructions of the flat class outside oracle/test code") is unreachable for
+`cipsi_solver`, the GF stack, `spectra`, `groundstate`, etc. until `build_state` itself
+flips — and `build_state` cannot flip alone (step 2a). So steps 2c/2d/2e's *`build_state`-
+bound* portions are not really three independent per-module steps; they collapse into one
+coordinated commit that flips `build_state` + `build_vector` + `build_distributed_vector` +
+every `psi_refs`/GF-seed consumer in lockstep — step 2a's attempt, done properly this time,
+with its consumers updated in the same commit instead of separately. The per-module
+2c/2d/2e list in the original plan still correctly orders the *self-contained* subset of
+each module (this commit did `cipsi_solver`'s); the `build_state`-bound remainder of each
+waits for that one larger cluster flip.
+
+Reviewed at standard effort: no findings (the `from_states` width-1 claim and the `gen_ops`
+closure's collective-free status were both independently traced and confirmed). Gates green:
+serial 1243 passed (unchanged), `mpiexec -n 2` 1446 passed (unchanged) — this diff changes
+internal implementation only, no new tests, so counts don't move. No `-n 3` run needed
+(doesn't touch `basis_split.py`/`run_units_distributed`).
+
 ## Still open
 
 - The FCC Ni fill measurement (above) — blocks `determine_new_Dj`'s/`select_at`'s `Hpsi_ref`
   conversion, every per-frequency seed union found in Phase 6c, and `ChebyshevFilter.pyx`'s
   caller in `greens_function.py`.
+- **The `build_state` cluster flip** (Phase 7 step 2, remainder): one coordinated commit
+  flipping `build_state`/`build_vector`/`build_distributed_vector` together with every
+  consumer of their output across `cipsi_solver`, the GF stack, `spectra`, `groundstate`,
+  `rixs`, `susceptibility` — grep the consumer set to size it before attempting. This
+  supersedes the per-module step 2c/2d/2e ordering for anything that touches `psi_refs`.
 - `test_irlm_cy_diagonal_mpi` hangs under `mpiexec -n 3` (see Phase 7 step 2b above) —
   pre-existing, unrelated to this campaign; needs its own investigation of the IRLM Cython
   kernel's restart/deflation path at non-power-of-2 rank counts.
