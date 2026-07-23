@@ -330,7 +330,18 @@ def test_block_gmres_mpi_matches_dense():
     ys_full = [
         ManyBodyState({d: complex(rng.standard_normal(), rng.standard_normal()) for d in dets_sd}) for _ in range(2)
     ]
-    ys = dist_basis.redistribute_psis(ys_full if comm.rank == 0 else [ManyBodyState() for _ in ys_full])
+    # Each seed goes through its own explicit width-1 block rather than a bare
+    # ManyBodyState() placeholder on the non-owning ranks: once the flat and block
+    # classes merge (Phase 7 step 3), a bare placeholder is the width-0 polymorphic
+    # zero, an asymmetric mismatch against the owning rank's populated (eventually
+    # width-1) seeds that would deadlock redistribute_psis' collective.
+    owns_ys = comm.rank == 0
+    y_blocks = (
+        [ManyBodyBlockState.from_states([y]) for y in ys_full]
+        if owns_ys
+        else [ManyBodyBlockState.from_states([ManyBodyState()]) for _ in ys_full]
+    )
+    ys = [blk.to_states()[0] for blk in dist_basis.redistribute_psis(y_blocks)]
     info = {}
     x0 = ManyBodyBlockState.from_states([ManyBodyState() for _ in range(2)])
     xs = block_gmres(op, x0, ManyBodyBlockState.from_states(ys), basis=dist_basis, slaterWeightMin=0.0, info=info)

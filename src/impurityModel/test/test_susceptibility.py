@@ -15,6 +15,7 @@ from mpi4py import MPI
 from impurityModel.ed import susceptibility
 from impurityModel.ed.manybody_basis import Basis
 from impurityModel.ed.ManyBodyUtils import (
+    ManyBodyBlockState,
     ManyBodyOperator,
     ManyBodyState,
     SlaterDeterminant,
@@ -257,7 +258,13 @@ def test_susceptibility_distributed_matches_dense_lehmann():
         ]
     else:
         psis = [ManyBodyState({}) for _ in keep]
-    psis = basis.redistribute_psis(psis)
+    # Each seed goes through its own explicit width-1 block rather than a bare
+    # ManyBodyState({}) placeholder on the non-owning rank: once the flat and block
+    # classes merge (Phase 7 step 3), a bare placeholder is the width-0 polymorphic
+    # zero, an asymmetric mismatch against the owning rank's populated (eventually
+    # width-1) seeds that would deadlock redistribute_psis' collective.
+    psi_blocks = [ManyBodyBlockState.from_states([psi]) for psi in psis]
+    psis = [blk.to_states()[0] for blk in basis.redistribute_psis(psi_blocks)]
 
     w = np.linspace(-6.0, 6.0, 31)
     delta = 0.1

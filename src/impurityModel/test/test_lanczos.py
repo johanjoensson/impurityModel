@@ -7,7 +7,7 @@ from impurityModel.ed.BlockLanczos import block_lanczos_cy
 from impurityModel.ed.BlockLanczosArray import Reort, eigsh
 from impurityModel.ed.eigensolvers import eigensystem
 from impurityModel.ed.manybody_basis import Basis
-from impurityModel.ed.ManyBodyUtils import ManyBodyOperator, ManyBodyState, applyOp
+from impurityModel.ed.ManyBodyUtils import ManyBodyBlockState, ManyBodyOperator, ManyBodyState, applyOp
 
 
 def test_lancos():
@@ -240,7 +240,13 @@ def test_block_eigsh_mpi(reort_mode):
         ]
     else:
         psi0 = [ManyBodyState(), ManyBodyState()]
-    psi0 = list(basis.redistribute_psis(psi0))
+    # Each seed goes through its own explicit width-1 block rather than a bare
+    # ManyBodyState() placeholder on the non-owning rank: once the flat and block
+    # classes merge (Phase 7 step 3), a bare placeholder is the width-0 polymorphic
+    # zero, an asymmetric mismatch against the owning rank's populated (eventually
+    # width-1) seeds that would deadlock redistribute_psis' collective.
+    psi0_blocks = [ManyBodyBlockState.from_states([psi]) for psi in psi0]
+    psi0 = [blk.to_states()[0] for blk in basis.redistribute_psis(psi0_blocks)]
     print(f"RANK {basis.comm.rank} psi0: {psi0}", flush=True)
     alphas, betas, _, _ = block_lanczos_cy(psi0, ManyBodyOperator(hop), basis, converged, reort=reort_mode)
     ev, _ = eigsh(alphas, betas, eigvals_only=True, de=10)

@@ -10,7 +10,7 @@ from impurityModel.ed.block_structure import BlockStructure
 from impurityModel.ed.cipsi_solver import CIPSISolver
 from impurityModel.ed.groundstate import calc_gs
 from impurityModel.ed.manybody_basis import Basis, collective_amplitude_cutoff
-from impurityModel.ed.ManyBodyUtils import ManyBodyOperator, ManyBodyState, SlaterDeterminant
+from impurityModel.ed.ManyBodyUtils import ManyBodyBlockState, ManyBodyOperator, ManyBodyState, SlaterDeterminant
 
 IMPURITY_ORBITALS = {0: [[0, 1]]}
 BATH_STATES = ({0: [[2, 3]]}, {0: [[4, 5]]})
@@ -30,6 +30,19 @@ def _four_electron_dets(n):
     dets = [_det(occ) for occ in itertools.combinations(range(N_SPIN_ORBITALS), 4)]
     assert n <= len(dets)
     return dets[:n]
+
+
+def _redistribute_single_as_width1(basis, psi):
+    """Redistribute a single seed (populated on one rank, an empty placeholder on the
+    others) through an explicit width-1 block, then unpack back to a flat state.
+
+    A bare ``ManyBodyState({})`` placeholder is the width-0 polymorphic zero once the
+    flat and block classes merge (Phase 7 step 3) -- an asymmetric mismatch against the
+    populated (eventually width-1) seed on the owning rank that would deadlock
+    redistribute_psis' collective. from_states forces an explicit width-1 block on
+    every rank instead."""
+    (out,) = basis.redistribute_psis([ManyBodyBlockState.from_states([psi])])[0].to_states()
+    return out
 
 
 def _make_basis(comm, truncation_threshold=np.inf):
@@ -184,7 +197,7 @@ def test_truncate_top_k_mpi():
 
     # Amplitudes seeded on rank 0 only; redistribute puts each det on its owner rank.
     psi = ManyBodyState({det: float(i + 1) for i, det in enumerate(dets)} if comm.rank == 0 else {})
-    psis = basis.redistribute_psis([psi])
+    psis = [_redistribute_single_as_width1(basis, psi)]
     psis = solver.truncate(psis, target=4)
 
     assert basis.size == 4
@@ -212,7 +225,7 @@ def test_truncate_rank_may_retain_zero_rows_mpi():
     solver = CIPSISolver(basis)
 
     psi = ManyBodyState({det: float(i + 1) for i, det in enumerate(dets)} if comm.rank == 0 else {})
-    psis = basis.redistribute_psis([psi])
+    psis = [_redistribute_single_as_width1(basis, psi)]
     solver.truncate(psis, target=1)
 
     assert basis.size == 1

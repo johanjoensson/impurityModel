@@ -14,10 +14,24 @@ except ImportError:
 
 from impurityModel.ed.BlockLanczosArray import Reort, block_normalize
 from impurityModel.ed.irlm import implicitly_restarted_block_lanczos_cy
-from impurityModel.ed.ManyBodyUtils import ManyBodyState, inner_multi
+from impurityModel.ed.ManyBodyUtils import ManyBodyBlockState, ManyBodyState, inner_multi
 from impurityModel.ed.trlm import thick_restart_block_lanczos
 from impurityModel.test.test_block_lanczos_array_empty_rank import _contiguous_counts_with_empty_last
 from impurityModel.test.test_restarted_lanczos import MockBasis, get_test_system
+
+
+def _redistribute_as_width1(basis, psi0_full):
+    """Redistribute a list of seeds (populated on one rank, bare empty ManyBodyState()
+    placeholders on the others) through explicit width-1 blocks, then unpack back to
+    flat states.
+
+    A bare ManyBodyState() placeholder is the width-0 polymorphic zero once the flat
+    and block classes merge (Phase 7 step 3) -- an asymmetric mismatch against another
+    rank's populated (eventually width-1) seeds that would deadlock redistribute_psis'
+    collective. from_states forces an explicit width-1 block -- empty or not -- on
+    every rank instead."""
+    blocks = [ManyBodyBlockState.from_states([s]) for s in psi0_full]
+    return [blk.to_states()[0] for blk in basis.redistribute_psis(blocks)]
 
 
 def build_dense_matrix_from_manybody(h_op, basis_states):
@@ -183,7 +197,7 @@ def test_reort_matrix_mpi(mode, path, solver):
         else:
             psi0_full = [ManyBodyState() for _ in range(n_blocks)]
 
-        psi0 = basis.redistribute_psis(psi0_full)
+        psi0 = _redistribute_as_width1(basis, psi0_full)
         psi0, _ = block_normalize(psi0, mpi=True, comm=comm)
 
     if solver == "TRLM":
@@ -271,7 +285,7 @@ def test_W_identical_across_ranks(mode, path):
         else:
             psi0_full = [ManyBodyState() for _ in range(n_blocks)]
 
-        psi0 = basis.redistribute_psis(psi0_full)
+        psi0 = _redistribute_as_width1(basis, psi0_full)
         psi0, _ = block_normalize(psi0, mpi=True, comm=comm)
 
         from impurityModel.ed.BlockLanczos import block_lanczos_cy
@@ -410,7 +424,7 @@ def test_deflation_shrinking_block_mpi(p, path):
         else:
             psi0_full = [ManyBodyState() for _ in range(p)]
 
-        psi0 = basis.redistribute_psis(psi0_full)
+        psi0 = _redistribute_as_width1(basis, psi0_full)
         psi0, _ = block_normalize(psi0, mpi=True, comm=comm)
 
         from impurityModel.ed.BlockLanczos import block_lanczos_cy

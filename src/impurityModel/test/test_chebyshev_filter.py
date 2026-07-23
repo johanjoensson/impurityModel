@@ -17,7 +17,7 @@ from impurityModel.ed.basis_transcription import build_sparse_matrix, build_vect
 from impurityModel.ed.chebyshev_filter import chebyshev_apply, partition_of_unity, spectral_bounds
 from impurityModel.ed.greens_function import _CappedBasisProxy
 from impurityModel.ed.manybody_basis import Basis
-from impurityModel.ed.ManyBodyUtils import ManyBodyOperator, ManyBodyState, SlaterDeterminant
+from impurityModel.ed.ManyBodyUtils import ManyBodyBlockState, ManyBodyOperator, ManyBodyState, SlaterDeterminant
 
 
 def _det(occupied):
@@ -65,6 +65,24 @@ def _seeds():
         ManyBodyState({_det([0, 2, 3]): 1.0 + 0j, _det([1, 2, 3]): 0.5 + 0j}),
         ManyBodyState({_det([0, 1, 2]): 1.0 + 0j}),
     ]
+
+
+def _redistribute_as_width1(basis, states, n):
+    """Redistribute ``n`` seeds through width-1 blocks on every rank, then unpack back
+    to flat states. Some ranks in these tests hold no amplitudes at all (``states`` is
+    None there) -- a bare ``ManyBodyState()`` placeholder for that case is the width-0
+    polymorphic zero once the flat and block classes merge (Phase 7 step 3), an
+    asymmetric mismatch against another rank's populated (eventually width-1) seeds
+    that would deadlock redistribute_psis' collective. from_states forces an explicit
+    width-1 block -- empty or not -- on every rank instead, so the collective sees the
+    same representation everywhere; to_states() immediately unpacks the result back to
+    the flat list chebyshev_apply still expects (not yet Row-safe, Phase 7 step 3.4)."""
+    blocks = (
+        [ManyBodyBlockState.from_states([s]) for s in states]
+        if states is not None
+        else [ManyBodyBlockState.from_states([ManyBodyState()]) for _ in range(n)]
+    )
+    return [blk.to_states()[0] for blk in basis.redistribute_psis(blocks)]
 
 
 def test_spectral_bounds_bracket_the_spectrum():
@@ -228,7 +246,7 @@ def test_chebyshev_apply_mpi_matches_serial():
     ev_bounds = spectral_bounds(_siam_6(), dist, n_iter=20)
     coeff_sets, _, _ = partition_of_unity(ev_bounds, np.linspace(ev_bounds[0] + 1, ev_bounds[1] - 1, 3), degree=80)
     seeds_full = _seeds()
-    seeds = dist.redistribute_psis(seeds_full if comm.rank == 0 else [ManyBodyState() for _ in seeds_full])
+    seeds = _redistribute_as_width1(dist, seeds_full if comm.rank == 0 else None, len(seeds_full))
     filtered = chebyshev_apply(H, dist, list(seeds), coeff_sets, 0.0, ev_bounds)
     # partition identity holds distributed: sum_s p_s v == v on this rank's rows
     for col in range(2):
@@ -276,7 +294,8 @@ def test_chebyshev_apply_mpi_redistributes_misplaced_seeds():
 
     # sum_s p_s v == v, compared against the *properly* distributed seeds: the entry
     # redistribute must have moved every row to its owner.
-    owned = dist.redistribute_psis(_seeds() if comm.rank == 0 else [ManyBodyState() for _ in _seeds()])
+    owned_full = _seeds()
+    owned = _redistribute_as_width1(dist, owned_full if comm.rank == 0 else None, len(owned_full))
     for col in range(2):
         total = ManyBodyState()
         for s in range(len(coeff_sets)):

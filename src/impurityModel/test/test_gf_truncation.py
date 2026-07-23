@@ -68,15 +68,31 @@ def _excited_basis(cap, comm=None):
     )
 
 
+def _redistribute_as_width1(basis, states, n):
+    """Redistribute ``n`` seeds through width-1 blocks on every rank, then unpack back to
+    flat states. A bare ManyBodyState() placeholder for a non-owning rank is the width-0
+    polymorphic zero once the flat and block classes merge (Phase 7 step 3), an
+    asymmetric mismatch against another rank's populated (eventually width-1) seeds that
+    would deadlock redistribute_psis' collective. from_states forces an explicit width-1
+    block -- empty or not -- on every rank instead."""
+    blocks = (
+        [ManyBodyBlockState.from_states([s]) for s in states]
+        if states is not None
+        else [ManyBodyBlockState.from_states([ManyBodyState()]) for _ in range(n)]
+    )
+    return [blk.to_states()[0] for blk in basis.redistribute_psis(blocks)]
+
+
 def _run_capped(cap, reort=None, comm=None):
     basis = _excited_basis(cap, comm=comm)
     # redistribute_psis SUMS per-rank contributions (production seeds are partial per
     # rank), so only rank 0 may provide the full amplitudes here.
-    seeds = _seeds() if comm is None or comm.rank == 0 else [ManyBodyState() for _ in _seeds()]
+    seeds_full = _seeds()
+    seeds = _redistribute_as_width1(basis, seeds_full if comm is None or comm.rank == 0 else None, len(seeds_full))
     info = {}
     alphas, betas, r = block_Green_sparse(
         _siam_6(),
-        basis.redistribute_psis(seeds),
+        seeds,
         basis,
         DELTA,
         reort=reort,

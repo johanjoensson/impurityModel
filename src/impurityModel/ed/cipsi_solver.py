@@ -649,8 +649,18 @@ class CIPSISolver:
                     # with no scatter needed.
                     local_states = list(self.basis.local_basis)
                     psi0_dict = {state: _amplitude_from_hash(state.get_hash()) for state in local_states}
-                    psi0 = [ManyBodyState(psi0_dict)] if psi0_dict else [ManyBodyState()]
-                    psi0 = self.basis.redistribute_psis(psi0)
+                    # An empty-local-basis rank must not reach redistribute_psis with a bare
+                    # ManyBodyState() -- that is the polymorphic zero once the flat/block
+                    # classes merge (Phase 7 step 3), width-0 rather than width-1 like every
+                    # other rank's seed, and an asymmetric width guard on just this rank would
+                    # deadlock the others' matching collective. from_states forces an explicit
+                    # width-1 block on every rank instead (same representation everywhere);
+                    # to_states() immediately unpacks back to the flat list the rest of this
+                    # function still expects.
+                    psi0_blk = ManyBodyBlockState.from_states(
+                        [ManyBodyState(psi0_dict)] if psi0_dict else [ManyBodyState()]
+                    )
+                    psi0 = self.basis.redistribute_psis([psi0_blk])[0].to_states()
 
                     N2s = np.array([psi.norm2() for psi in psi0], dtype=float)
                     if self.basis.is_distributed:

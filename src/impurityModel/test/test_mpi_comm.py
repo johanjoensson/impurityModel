@@ -239,7 +239,7 @@ def test_redistribute_psis_roundtrip():
     else:
         psi = ManyBodyState({})
 
-    redist = basis.redistribute_psis([psi])[0]
+    (redist,) = basis.redistribute_psis([ManyBodyBlockState.from_states([psi])])[0].to_states()
 
     # Gather back and check completeness
     gathered = comm.gather(redist, root=0)
@@ -269,7 +269,7 @@ def test_redistribute_psis_normalisation():
     else:
         psi = ManyBodyState({})
 
-    redist = basis.redistribute_psis([psi])[0]
+    (redist,) = basis.redistribute_psis([ManyBodyBlockState.from_states([psi])])[0].to_states()
 
     # Local norm squared contribution from this rank
     local_norm_sq = sum(abs(v) ** 2 for v in redist.values())
@@ -293,7 +293,13 @@ def test_redistribute_psis_accepts_width_one_blocks():
         psi_a = ManyBodyState({})
         psi_b = ManyBodyState({})
 
-    ref_a, ref_b = basis.redistribute_psis([psi_a.copy(), psi_b.copy()])
+    # The reference computation goes through the same width-1-block round trip as the
+    # block path below: a bare psi_a/psi_b placeholder on the non-owning rank is a
+    # width-0 polymorphic zero once the flat and block classes merge (Phase 7 step 3),
+    # an asymmetric mismatch against the owning rank's populated (eventually width-1)
+    # states that would deadlock redistribute_psis' collective.
+    ref_blocks = [ManyBodyBlockState.from_states([psi_a.copy()]), ManyBodyBlockState.from_states([psi_b.copy()])]
+    (ref_a,), (ref_b,) = (blk.to_states() for blk in basis.redistribute_psis(ref_blocks))
 
     blk_a = ManyBodyBlockState.from_states([psi_a])
     blk_b = ManyBodyBlockState.from_states([psi_b])
@@ -324,7 +330,11 @@ def test_redistribute_psis_width_one_blocks_empty_state():
     else:
         singleton = ManyBodyState({})
 
-    ref_empty, ref_singleton = basis.redistribute_psis([empty.copy(), singleton.copy()])
+    # Same width-1-block round trip as test_redistribute_psis_accepts_width_one_blocks:
+    # a bare empty/singleton placeholder would be a width-0 polymorphic zero once the
+    # flat and block classes merge (Phase 7 step 3).
+    ref_blocks = [ManyBodyBlockState.from_states([empty.copy()]), ManyBodyBlockState.from_states([singleton.copy()])]
+    (ref_empty,), (ref_singleton,) = (blk.to_states() for blk in basis.redistribute_psis(ref_blocks))
 
     out = basis.redistribute_psis(
         [ManyBodyBlockState.from_states([empty]), ManyBodyBlockState.from_states([singleton])]
@@ -506,7 +516,7 @@ def test_density_matrix_mpi_vs_serial():
         psi_m = ManyBodyState({SlaterDeterminant.from_bytes(s): c for s, c in zip(states_bytes, coeffs)})
     else:
         psi_m = ManyBodyState({})
-    psi_m = basis_m.redistribute_psis([psi_m])[0]
+    (psi_m,) = basis_m.redistribute_psis([ManyBodyBlockState.from_states([psi_m])])[0].to_states()
 
     rho_mpi = build_density_matrices(
         basis_m,

@@ -197,8 +197,19 @@ def _capped_solve_with(solver, cap, z, comm=None):
     basis = _seed_basis(comm=comm)
     proxy = _CappedBasisProxy(basis, cap)
     # redistribute_psis SUMS per-rank contributions, so only rank 0 provides amplitudes.
-    seeds = _seeds() if comm is None or comm.rank == 0 else [ManyBodyState() for _ in _seeds()]
-    seeds = ManyBodyBlockState.from_states(basis.redistribute_psis(seeds))
+    # Each seed goes through its own explicit width-1 block rather than a bare
+    # ManyBodyState() placeholder on the non-owning ranks: once the flat and block
+    # classes merge (Phase 7 step 3), a bare placeholder is the width-0 polymorphic
+    # zero, an asymmetric mismatch against the owning rank's populated (eventually
+    # width-1) seeds that would deadlock redistribute_psis' collective.
+    seeds_full = _seeds()
+    owns_seeds = comm is None or comm.rank == 0
+    seed_blocks = (
+        [ManyBodyBlockState.from_states([s]) for s in seeds_full]
+        if owns_seeds
+        else [ManyBodyBlockState.from_states([ManyBodyState()]) for _ in seeds_full]
+    )
+    seeds = ManyBodyBlockState.from_states([blk.to_states()[0] for blk in basis.redistribute_psis(seed_blocks)])
     A = z - _siam_6()
     # Restart while unconverged, as the driver does: a near-pole z stagnates a single
     # BiCGSTAB pass (fresh shadow residual each call). GMRES restarts internally, so its
@@ -271,8 +282,17 @@ def _run_driver(gf_method, reort, comm=None, monkeypatch_env=None):
     )
     psis = [ManyBodyState({SlaterDeterminant.from_bytes(b): 1.0}) for b in state_bytes]
     if comm is not None and comm.size > 1:
-        # production seeds are hash-distributed; rank 0 provides the full amplitudes
-        psis = basis.redistribute_psis(psis if comm.rank == 0 else [ManyBodyState() for _ in psis])
+        # production seeds are hash-distributed; rank 0 provides the full amplitudes.
+        # Each seed goes through its own explicit width-1 block rather than a bare
+        # ManyBodyState() placeholder on the non-owning ranks (see _capped_solve_with's
+        # comment for why a bare placeholder is a rename-time asymmetric-width hazard).
+        owns_psis = comm.rank == 0
+        psi_blocks = (
+            [ManyBodyBlockState.from_states([p]) for p in psis]
+            if owns_psis
+            else [ManyBodyBlockState.from_states([ManyBodyState()]) for _ in psis]
+        )
+        psis = [blk.to_states()[0] for blk in basis.redistribute_psis(psi_blocks)]
     old_env = {}
     for key, value in (monkeypatch_env or {}).items():
         old_env[key] = os.environ.get(key)
