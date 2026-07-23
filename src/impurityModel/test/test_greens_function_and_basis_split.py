@@ -210,14 +210,12 @@ def test_memory_budget_caps_unit_split_mpi(monkeypatch):
         comm=comm,
         truncation_threshold=100,
     )
-    # Every rank must build the SAME representation (a width-1 block, not a bare flat
-    # ManyBodyState): run_units_distributed funnels unit_seeds through
-    # split_basis_and_redistribute_psi, whose is_block dispatch is evaluated per-rank
-    # from each rank's own local first element -- a bare ManyBodyState({}) placeholder
-    # on the non-owning rank would diverge onto the flat-list code path there while the
-    # owning rank takes the block path, an asymmetric mismatch reaching the same
-    # collective (and, once the flat and block classes merge in Phase 7 step 3, a bare
-    # placeholder is the width-0 polymorphic zero regardless, tripping the width guard).
+    # Every rank must build the SAME representation (a width-1 block): run_units_distributed
+    # funnels unit_seeds through split_basis_and_redistribute_psi, which requires width == 1
+    # on every rank's psis. A bare ManyBodyState({}) placeholder on the non-owning rank is the
+    # width-0 polymorphic zero, which would trip that width guard on that rank only -- an
+    # asymmetric exception against the owning rank's real width-1 state, reaching the same
+    # collective. Explicit width=1 avoids that.
     psi = ManyBodyState.from_states(
         [ManyBodyState({SlaterDeterminant.from_bytes(states[0]): 1.0} if comm.rank == 0 else {}, width=1)]
     )

@@ -116,9 +116,8 @@ def split_basis_and_redistribute_psi(
     ----------
     priorities : list of float
         The split priority weights for each block.
-    psis : list of ManyBodyState, or list of width-1 ManyBodyState, optional
-        The wavefunctions to redistribute, or None. Same type in, same type out --
-        matching the boundary convention ``Basis.redistribute_psis`` follows.
+    psis : list of width-1 ManyBodyState, optional
+        The wavefunctions to redistribute, or None.
     max_colors : int, optional
         Hard cap on the number of colors (see :func:`_pack_units`); must be identical
         on every rank of ``basis.comm``.
@@ -220,26 +219,16 @@ def split_basis_and_redistribute_psi(
     )
 
     if psis is not None:
-        # Same dual-path convention as Basis.redistribute_psis: a list of width-1
-        # ManyBodyState is accepted alongside plain ManyBodyState, same type out.
-        # The wire format serializes to plain scalars either way (``v[0]`` unwraps the
-        # Row), so the intercomm payload shape does not depend on which producer sent it.
-        is_block = len(psis) > 0 and isinstance(psis[0], ManyBodyState)
-        if is_block:
-            for p in psis:
-                if p.width != 1:
-                    raise ValueError(f"split_basis_and_redistribute_psi: expected width-1 blocks, got width {p.width}")
+        # ManyBodyState is block storage throughout; the split-basis wire format only
+        # supports width-1 (same convention as Basis.redistribute_psis). The payload
+        # serializes to plain scalars (``v[0]`` unwraps the Row).
+        for p in psis:
+            if p.width != 1:
+                raise ValueError(f"split_basis_and_redistribute_psi: expected width-1 blocks, got width {p.width}")
         new_psis = [p.copy() for p in psis]
         for c, _c_root in enumerate(split_roots):
             if color != c:
-                if is_block:
-                    serialized_psis = [
-                        {bytes(k.to_bytearray()[: basis.n_bytes]): v[0] for k, v in p.items()} for p in psis
-                    ]
-                else:
-                    serialized_psis = [
-                        {bytes(k.to_bytearray()[: basis.n_bytes]): v for k, v in p.items()} for p in psis
-                    ]
+                serialized_psis = [{bytes(k.to_bytearray()[: basis.n_bytes]): v[0] for k, v in p.items()} for p in psis]
                 target = intercomms[c]
                 assert target is not None  # never None on the color != c branch
                 target.send(serialized_psis, dest=split_comm.rank % procs_per_color[c])
@@ -254,8 +243,7 @@ def split_basis_and_redistribute_psi(
                         assert source_comm is not None
                         received_psis = source_comm.recv(source=sender)
                         for i, received_psi in enumerate(received_psis):
-                            state_cls = ManyBodyState if is_block else ManyBodyState
-                            new_psis[i] += state_cls({basis.type.from_bytes(k): v for k, v in received_psi.items()})
+                            new_psis[i] += ManyBodyState({basis.type.from_bytes(k): v for k, v in received_psi.items()})
         psis = split_basis.redistribute_psis(new_psis)
 
     # Free the intercommunicators collectively while all ranks are still
