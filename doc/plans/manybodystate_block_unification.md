@@ -1276,23 +1276,138 @@ any missed `redistribute_psis`/`split_basis_and_redistribute_psi`/`run_units_dis
 call site (none found), and re-ran both gates against a freshly rebuilt extension. No bugs
 found — signed off as safe to build step 3.4 on top of.
 
+## Phase 7 step 3.4 — the rename lands (DONE, commit `397f18c`)
+
+The mega-commit: `_slater_state.pxi`'s flat class body deleted outright (kept
+`SlaterDeterminant`); `_block_state.pxi`'s cdef class renamed `ManyBodyBlockState` →
+`ManyBodyState`, with `from_states`/`to_states` re-typed to require/produce width-1 blocks
+(`to_states` keeps its exact-zero-skipping — never switches to `column(i)`'s zero-row
+retention); `_operator.pxi`/`_mpi_pack.pxi` boundary kernels collapse from dual flat/block
+dispatch arms to single unconditional block-native calls; `_krylov_store.pxi`/`_reort.pxi`/
+`_lanczos_step.pxi`/`_irlm.pxi`/`_trlm.pxi`/`ChebyshevFilter.pyx`/`BiCGSTAB.pyx`/
+`GMRES.pyx`/`BlockLanczos.pyx` mechanically renamed; the dead MPI pack functions
+(`graph_alltoall_psis` and its Cython backers `pack_psis_fused_cy`/`unpack_psis_fused_cy`/
+`pack_psis_cy`/`unpack_psis_cy`/`extract_new_states`) deleted, confirmed zero remaining
+callers anywhere in `src/`. `ManyBodyBlockState` no longer exists as a Python-visible name
+anywhere in `src/impurityModel/`; the only surviving occurrences tree-wide are the C++
+surface (`ManyBodyBlockState_cpp` cimport alias, `ManyBodyBlockState.h`/`.pxd`,
+`MpiUtils.h`/`.cpp`, `ManyBodyOperator.h`/`.cpp`/`.pxd`) — deferred to step 4.
+
+**Two real bugs surfaced by the rename itself, not just scope:**
+
+- `ManyBodyBlockState::add_scaled`'s early return (`if other.rows() == 0 ...: return *this;`)
+  ran *before* the width-adoption check for the polymorphic zero. `ManyBodyState() +=
+  <width-1, zero-row state>` therefore silently stayed width-0 instead of adopting width 1 —
+  broke the documented "polymorphic zero adopts the other operand's width" contract whenever
+  the right-hand side happened to have zero surviving rows (an operator applied to a state and
+  producing nothing). Found via `test_get_Greens_function` failing with
+  `redistribute_psis: expected width-1 blocks, got width 0` for a `(tOp, psi)` cell that should
+  have been a real, if empty, width-1 result; root-caused by tracing `gf_units.py`'s
+  `_apply_transition_ops` down through `apply_block` into the C++ `add_scaled`. Fixed by
+  reordering the two checks — width adoption first, then the empty-`other` short-circuit.
+- The block `ManyBodyState` was missing `__array_ufunc__ = None` (the fix `ManyBodyOperator`
+  already carries). Without it, `numpy_scalar * state` — e.g. `c * psis[m]` where `c` is the
+  `np.complex128` a C++ inner product returns — gets silently hijacked by numpy's
+  buffer-protocol-based broadcast into a raw `ndarray` instead of calling `__rmul__`. Found via
+  `test_susceptibility.py`'s `TypeError: Argument 'other' has incorrect type (expected
+  ManyBodyState, got numpy.ndarray)`.
+
+**The width-0-placeholder deadlock hunt.** Every "placeholder"/cold-start construction across
+the codebase needed an explicit `width=1` — `from_states` now rejects the width-0 polymorphic
+zero as an element, where the pre-rename flat class had no width concept to violate. Most such
+fixes are inert (a serial test, or a placeholder never reaching a collective). Several are not:
+a non-root MPI rank's bare `ManyBodyState()`/`ManyBodyState({})` standing in for "no data on
+this rank" raises inside `from_states` on that rank only, right where the code goes on to call
+a collective (`redistribute_psis`/`redistribute_block`/`graph_alltoall_block`) that the other
+ranks still enter — an asymmetric mismatch that deadlocks, not a clean test failure. Six
+separate instances of exactly this shape were found live under `mpiexec -n 2`/`-n 3`, each by
+comparing `py-spy dump` stack traces between the ranks (the tell: one rank stuck inside the
+collective, the other already at `pytest_runtest_teardown`'s `Barrier()`, having exited the
+test body early via the `from_states` raise):
+
+- `test_block_lanczos_reort_matrix.py`'s `test_reort_matrix_mpi` (two sites) and a third
+  `p`-parametrized site further down the same file.
+- `test_no_ghost_bands.py`, `test_chebyshev_filter.py` (a `misplaced` seed feeding
+  `chebyshev_apply`'s internal `redistribute_psis`), `test_rixs_tensor.py`,
+  `test_lanczos.py` (`test_eigsh_mpi`'s and `test_block_lanczos_cy_mpi`'s `psi0` built from
+  `basis.local_basis`, empty on a rank at odd rank counts with few states),
+  `test_block_lanczos_cy_mpi.py` (two sites, same `basis.local_basis` shape),
+  `test_gs_statistics.py`, `test_susceptibility.py`, `test_mpi_comm.py` (four sites),
+  `test_block_state.py`'s `test_graph_alltoall_block_empty_contributor`.
+- **One production instance**: `cipsi_solver.py`'s `truncate()` built its retained-determinant
+  mask from a rank-local `retained` set that can legitimately be empty (a rank keeping zero
+  rows at a small `target`) as a bare `ManyBodyState(dict.fromkeys(retained, ...))` — width-0
+  when `retained` is empty. Reproduced live as a genuine deadlock in
+  `test_truncate_rank_may_retain_zero_rows_mpi` under `mpiexec -n 2`. A parallel defensive fix
+  went into `gf_primitives.py`'s `_CappedBasisProxy.__init__` (same shape, `basis.local_basis`
+  empty-rank case).
+
+A second, distinct bug class also surfaced: `Row`-typed values from `.items()`/`.values()`/
+`.get()` used in scalar arithmetic without unwrapping (`abs(v)`, `v - x`, `.real`) — not a
+width issue, but the same failure signature (one rank raises inside the test body before a
+collective it should have reached, the other proceeds and hangs). Found the same way, fixed
+across `test_mpi_comm.py`, `test_manybody_basis.py` (four `test_operator_dict_*_mpi` variants),
+`test_cipsi_truncation.py` (a `comm.allgather` of a dict containing `Row` values — `Row` has no
+`__reduce__`, so this additionally failed to pickle), `test_irlm_locking_deflation.py`,
+`test_restarted_lanczos.py`, `test_apply_perf.py`, `test_block_lanczos_cy.py`,
+`test_symmetry_observables.py`, `test_krylov_dtype.py`, `test_slicing_probe.py`, and several
+GF-driver test files (`test_gf_bicgstab_driver.py`, `test_gf_truncation.py`, `test_cg.py`,
+`test_greens_function_deflation.py`, `test_block_lanczos_reort_matrix.py`).
+
+One more test-only bug, found only via a non-root rank's *own* pytest report:
+`test_block_state.py`'s `_reference_redistribute` helper produced a width-0 result for an
+all-empty column where `graph_alltoall_block` correctly produced width-1 — an assertion that
+failed on rank 1's specific hash-distributed data split but not on rank 0's, so rank 0's own
+terminal report showed a clean pass while rank 1's redirected `.pytest_mpi_rank1.out` recorded
+the failure. **Lesson recorded for future MPI-gate runs on this campaign: rank 0's summary
+alone is not sufficient — check every rank's own report** (`conftest.py`'s
+`pytest_configure` redirects non-root terminal output to `.pytest_mpi_rankN.out`; a per-rank
+SPMD test outcome can diverge with the specific hash/rank split, invisible in rank 0's log).
+
+**Verification:** serial suite 1231 passed / 231 skipped / 18 deselected / 30 xfailed.
+`mpiexec -n 2 --with-mpi`: both ranks independently report 1432 passed / 18 deselected / 60
+xfailed / 0 failed (both `.pytest_mpi_rank1.out` and rank 0's own log checked). `mpiexec -n 3`
+(with `--deselect ...test_irlm_cy_diagonal_mpi` for the known pre-existing hang): all three
+ranks report 1431 passed / 19 deselected / 60 xfailed / 0 failed. `black -l 120` and
+`cython-lint` clean on every touched file. `grep -rn "ManyBodyBlockState"
+src/impurityModel/ doc/sphinx/conf*` → 0; `grep -rn "\.v\b" src/cython/*.pxi` → no survivor.
+
+Code-reviewed (general-purpose agent on `opus`, high scrutiny, isolated worktree): verified
+both C++/Cython bug fixes against the surrounding code (not just this doc's summary),
+confirmed no sibling early-return-before-width-adoption bug elsewhere in the add-family
+methods, confirmed `from_states`/`to_states`'s exact-zero-skipping and no-leak-on-raise
+behavior, extended the width-0-placeholder sweep with a multi-line forward trace through
+every production `from_states`/`redistribute` call site, confirmed the deleted pack
+functions have zero remaining callers, and confirmed general MPI-collective safety per this
+project's standing rules. Clean bill of health; two cosmetic-only observations (a stale
+"placeholder" docstring wording and a slightly-overstated `__array_ufunc__` comment, the
+latter corrected) — neither blocks landing.
+
+**Loud note for anyone touching disk caches or out-of-tree code (clean break, no
+compatibility alias, per the user-confirmed decisions in the session plan):** any pickled
+`ManyBodyBlockState`/flat-`ManyBodyState` object in an on-disk cache (the GF sector cache,
+`GF_SECTOR_CACHE_DIR`) is now unreadable — caches are regenerable, not migrated. The
+`impmod_interface` WIP (out-of-tree) imports `ManyBodyBlockState` by name in at least one
+place and must update to `ManyBodyState` before it will import again.
+
 ## Still open
 
 - The FCC Ni fill measurement (above) — blocks `determine_new_Dj`'s/`select_at`'s `Hpsi_ref`
   conversion, every per-frequency seed union found in Phase 6c, and `ChebyshevFilter.pyx`'s
   caller in `greens_function.py`. Orthogonal to step 3 (a compute-win question, not a type
   one) — does not block the rename.
-- **Phase 7 step 3.4 (the rename mega-commit)** is the next milestone: per the session plan
-  file, `from_states`/`to_states` re-type to width-1 blocks, the flat class is deleted from
-  `_slater_state.pxi`, every flat arm in `_operator.pxi`/`_mpi_pack.pxi`/`_krylov_store.pxi`/
-  `_reort.pxi` is dropped (forced by the rename itself — those arms dereference `.v`, which
-  stops compiling once `ManyBodyState` binds to the block class), `ManyBodyBlockState` is
-  renamed to `ManyBodyState` tree-wide with no alias left behind, and the ~14 remaining
-  production flat-state sites + ~4 test files with genuine scalar-access edits update in the
-  same commit. Precondition sizing (this session): 17 production sites in `ed/*.py`, 55 test
-  files (332 `ManyBodyState(` calls, but ~55 files need zero text changes — they already use
-  the rename-target name and never scalar-access results), 14 `.pxi`/`.pyx` files reference
-  the flat class name.
+- **Phase 7 step 4 (C++ demolition, SHRUNK)** is the next milestone. Step 3.4 force-absorbed
+  old step 4a (every flat Cython arm had to be dropped as part of the rename itself — those
+  arms dereferenced `.v`, which stops compiling once `ManyBodyState` binds to the block
+  class), so what remains is C++-header-only: delete `ManyBodyState.h`'s flat_map class and
+  `ManyBodyState.pxd` (and the `ManyBodyBlockState_cpp` cimport alias sites now that only one
+  C++ class needs a Python-visible name); `ManyBodyOperator.h` loses the flat `apply`/
+  `operator()` overloads (block apply is the sole kernel); `MpiUtils`'s flat pack paths (if
+  any remain — the Cython-level `graph_alltoall_psis` backers are already gone as of 3.4;
+  check for a C++-only flat pack path underneath) go too. Also in scope: the dead-branch
+  cleanup deferred from step 3.2 (`isinstance` sites that are now always-true), and the perf
+  check against step 0's baseline (width-1 `apply_block` must be within noise of the deleted
+  flat `apply` — see "Width-1 apply baseline recorded for step 4's later comparison" above).
 - `test_irlm_cy_diagonal_mpi` hangs under `mpiexec -n 3` (see Phase 7 step 2b above) —
   pre-existing, unrelated to this campaign; needs its own investigation of the IRLM Cython
   kernel's restart/deflation path at non-power-of-2 rank counts.
