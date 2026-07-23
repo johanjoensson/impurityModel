@@ -7,7 +7,6 @@ from libc.stdint cimport int64_t, uint8_t
 from libcpp.complex cimport complex
 cimport cython
 
-from ManyBodyState cimport ManyBodyState
 from ManyBodyBlockState cimport ManyBodyBlockState
 
 cdef extern from "ManyBodyOperator.cpp" nogil:
@@ -37,13 +36,10 @@ cdef extern from "ManyBodyOperator.h" nogil:
         ManyBodyOperator(const vector[value_type]&)
         ManyBodyOperator(const vector[key_type]&, const vector[mapped_type]&)
 
-        ManyBodyState.mapped_type& operator[](const key_type&)
-        ManyBodyState.mapped_type& at(const key_type&)
-        ManyBodyState operator()(const ManyBodyState&, double)
+        mapped_type& operator[](const key_type&)
+        mapped_type& at(const key_type&)
         void build_restriction_mask(const restrictions&)
         void build_weighted_restriction_mask(const weighted_restrictions&)
-        ManyBodyState apply(const ManyBodyState&, double)
-        vector[ManyBodyState] apply(const vector[const ManyBodyState*]&, double)
         ManyBodyBlockState apply(const ManyBodyBlockState&, double)
 
         mapped_type constant()

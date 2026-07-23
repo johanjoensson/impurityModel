@@ -62,7 +62,7 @@ cdef class ManyBodyOperator:
     def __cinit__(self, dict[tuple[tuple[int, str]], complex_cpp] op=None):
         if op is None:
             op = {}
-        cdef ManyBodyState_cpp.mapped_type amp
+        cdef ManyBodyOperator_cpp.mapped_type amp
         cdef tuple[int, str] processes
         cdef vector[ManyBodyOperator_cpp.value_type] new_ops
         for processes, amp in op.items():
@@ -84,7 +84,7 @@ cdef class ManyBodyOperator:
     def __getitem__(self, tuple[tuple[int, str]] key):
         return self.o[processes_to_ints(key)]
 
-    def __setitem__(self, tuple[tuple[int, str]]key, ManyBodyState_cpp.mapped_type value):
+    def __setitem__(self, tuple[tuple[int, str]]key, ManyBodyOperator_cpp.mapped_type value):
         self.o[processes_to_ints(key)] = value
 
     @staticmethod

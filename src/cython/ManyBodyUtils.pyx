@@ -2,7 +2,6 @@
 # cython: language_level=3, boundscheck=False, initializedcheck=False, wraparound=False, freethreading_compatible=True, cdivision=True, cpow=True
 
 
-from ManyBodyState cimport ManyBodyState as ManyBodyState_cpp, inner as inner_cpp
 from ManyBodyBlockState cimport (
     ManyBodyBlockState as ManyBodyBlockState_cpp,
     block_inner as c_block_inner,
@@ -64,7 +63,6 @@ def enable_manybody_profile(on=True):
 
 
 cdef extern from "<utility>" namespace "std" nogil:
-    ManyBodyState_cpp& move(ManyBodyState_cpp)
     SlaterDeterminant_cpp& move(SlaterDeterminant_cpp)
     vector[SlaterDeterminant_cpp[uint64_t]]& move(vector[SlaterDeterminant_cpp[uint64_t]])
     vector[complex_cpp[double]]& move(vector[complex_cpp[double]])

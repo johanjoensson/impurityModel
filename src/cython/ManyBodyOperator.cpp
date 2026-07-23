@@ -1,5 +1,4 @@
 #include "ManyBodyOperator.h"
-#include "ManyBodyState.h"
 #include <algorithm>
 #include <boost/unordered/unordered_flat_map.hpp>
 #include <cassert>
@@ -16,26 +15,28 @@
 #include <iostream>
 #include <thread>
 
-int set_bits(ManyBodyState::key_type::value_type byte) noexcept {
+using SlaterKey = ManyBodyOperator::SLATER;
+
+int set_bits(SlaterKey::value_type byte) noexcept {
 #if __cplusplus >= 202002L
-  return std::popcount<ManyBodyState::key_type::value_type>(byte);
+  return std::popcount<SlaterKey::value_type>(byte);
 #else
-  return std::bitset<sizeof(ManyBodyState::key_type::value_type) * CHAR_BIT>(
+  return std::bitset<sizeof(SlaterKey::value_type) * CHAR_BIT>(
              byte)
       .count();
 #endif
 }
 
-[[nodiscard]] int create(ManyBodyState::key_type &state,
+[[nodiscard]] int create(SlaterKey &state,
                          size_t idx) /*noexcept*/ {
-  const size_t num_bits{8 * sizeof(ManyBodyState::key_type::value_type)};
+  const size_t num_bits{8 * sizeof(SlaterKey::value_type)};
   const size_t state_idx = idx / num_bits;
   if (state_idx >= state.size()) {
     return 0;
   }
   const size_t bit_idx = num_bits - 1 - (idx % num_bits);
-  const ManyBodyState::key_type::value_type mask =
-      static_cast<ManyBodyState::key_type::value_type>(1) << bit_idx;
+  const SlaterKey::value_type mask =
+      static_cast<SlaterKey::value_type>(1) << bit_idx;
   if (state[state_idx] & mask) {
     return 0;
   }
@@ -48,16 +49,16 @@ int set_bits(ManyBodyState::key_type::value_type byte) noexcept {
   return n_set % 2 ? -1 : 1;
 }
 
-[[nodiscard]] int annihilate(ManyBodyState::key_type &state,
+[[nodiscard]] int annihilate(SlaterKey &state,
                              size_t idx) /*noexcept*/ {
-  const size_t num_bits = 8 * sizeof(ManyBodyState::key_type::value_type);
+  const size_t num_bits = 8 * sizeof(SlaterKey::value_type);
   const size_t state_idx = idx / num_bits;
   if (state_idx >= state.size()) {
     return 0;
   }
   const size_t bit_idx = num_bits - 1 - (idx % num_bits);
-  const ManyBodyState::key_type::value_type mask =
-      static_cast<ManyBodyState::key_type::value_type>(1) << bit_idx;
+  const SlaterKey::value_type mask =
+      static_cast<SlaterKey::value_type>(1) << bit_idx;
   if (!(state[state_idx] & mask)) {
     return 0;
   }
@@ -76,21 +77,21 @@ int set_bits(ManyBodyState::key_type::value_type byte) noexcept {
 // order-independent, so re-toggling every successfully-applied operator
 // restores the determinant to its input value without copying it again per
 // term.
-static inline void toggle_bit(ManyBodyState::key_type &state,
+static inline void toggle_bit(SlaterKey &state,
                               size_t idx) noexcept {
-  const size_t num_bits = 8 * sizeof(ManyBodyState::key_type::value_type);
+  const size_t num_bits = 8 * sizeof(SlaterKey::value_type);
   const size_t state_idx = idx / num_bits;
   const size_t bit_idx = num_bits - 1 - (idx % num_bits);
   state[state_idx] ^=
-      (static_cast<ManyBodyState::key_type::value_type>(1) << bit_idx);
+      (static_cast<SlaterKey::value_type>(1) << bit_idx);
 }
 
 // Phase 2b fast-path test: are all orbitals in `mask` occupied in `state`?
 // Chunks of `mask` beyond `state.size()` would require occupied orbitals the
 // determinant cannot hold, so they fail. Zero mask chunks (and the empty mask
 // of a constant term) pass.
-static inline bool mask_occupied(const ManyBodyState::key_type &state,
-                                 const ManyBodyState::key_type &mask) noexcept {
+static inline bool mask_occupied(const SlaterKey &state,
+                                 const SlaterKey &mask) noexcept {
   for (size_t j = 0; j < mask.size(); j++) {
     if (mask[j] == 0) {
       continue;
@@ -104,9 +105,9 @@ static inline bool mask_occupied(const ManyBodyState::key_type &state,
 
 // Is orbital `idx` occupied in `state`? (chunks beyond the determinant are
 // empty.)
-static inline bool bit_set(const ManyBodyState::key_type &state,
+static inline bool bit_set(const SlaterKey &state,
                            size_t idx) noexcept {
-  const size_t num_bits = 8 * sizeof(ManyBodyState::key_type::value_type);
+  const size_t num_bits = 8 * sizeof(SlaterKey::value_type);
   const size_t state_idx = idx / num_bits;
   if (state_idx >= state.size()) {
     return false;
@@ -117,8 +118,8 @@ static inline bool bit_set(const ManyBodyState::key_type &state,
 
 // Parity (0/1) of the number of occupied orbitals selected by `mask` -- the
 // one-body fermion sign exponent. Loops over the actual key_size chunks.
-static inline int mask_parity(const ManyBodyState::key_type &state,
-                              const ManyBodyState::key_type &mask) noexcept {
+static inline int mask_parity(const SlaterKey &state,
+                              const SlaterKey &mask) noexcept {
   int pc = 0;
   const size_t lim = std::min(state.size(), mask.size());
   for (size_t j = 0; j < lim; j++) {
@@ -402,14 +403,14 @@ ManyBodyOperator::size() const noexcept {
 namespace {
 // Build the bitmask (a SlaterDeterminant key) marking the given orbital
 // indices.
-ManyBodyState::key_type
+SlaterKey
 build_orbital_mask(const std::vector<size_t> &orbitals) {
-  const size_t num_bits = 8 * sizeof(ManyBodyState::key_type::value_type);
+  const size_t num_bits = 8 * sizeof(SlaterKey::value_type);
   std::vector<size_t> sorted_orbitals(orbitals);
   std::sort(sorted_orbitals.begin(), sorted_orbitals.end());
 
-  ManyBodyState::key_type mask;
-  ManyBodyState::key_type::value_type current = 0;
+  SlaterKey mask;
+  SlaterKey::value_type current = 0;
   size_t mask_i = 0;
   for (auto idx : sorted_orbitals) {
     size_t mask_j = idx / num_bits;
@@ -420,7 +421,7 @@ build_orbital_mask(const std::vector<size_t> &orbitals) {
       mask_i += 1;
     }
     current |=
-        (static_cast<ManyBodyState::key_type::value_type>(1) << local_idx);
+        (static_cast<SlaterKey::value_type>(1) << local_idx);
   }
   if (current != 0) {
     mask.push_back(current);
@@ -431,7 +432,7 @@ build_orbital_mask(const std::vector<size_t> &orbitals) {
 
 void ManyBodyOperator::build_restriction_mask(
     const Restrictions &restrictions) noexcept {
-  std::vector<ManyBodyState::key_type> masks;
+  std::vector<SlaterKey> masks;
   std::vector<size_t> min_vals;
   std::vector<size_t> max_vals;
   masks.reserve(restrictions.size());
@@ -444,7 +445,7 @@ void ManyBodyOperator::build_restriction_mask(
   }
 
   this->m_restrictions_mask =
-      std::tuple<std::vector<ManyBodyState::key_type>, std::vector<size_t>,
+      std::tuple<std::vector<SlaterKey>, std::vector<size_t>,
                  std::vector<size_t>>{std::move(masks), std::move(min_vals),
                                       std::move(max_vals)};
 }
@@ -454,7 +455,7 @@ void ManyBodyOperator::build_weighted_restriction_mask(
   m_weighted_restrictions_mask.clear();
   m_weighted_restrictions_mask.reserve(restrictions.size());
   for (const auto &restriction : restrictions) {
-    std::vector<std::pair<long, ManyBodyState::key_type>> groups;
+    std::vector<std::pair<long, SlaterKey>> groups;
     groups.reserve(restriction.first.size());
     for (const auto &[weight, orbitals] : restriction.first) {
       groups.emplace_back(weight, build_orbital_mask(orbitals));
@@ -465,7 +466,7 @@ void ManyBodyOperator::build_weighted_restriction_mask(
 }
 
 bool ManyBodyOperator::state_is_within_restrictions(
-    const ManyBodyState::key_type &state) const noexcept {
+    const SlaterKey &state) const noexcept {
 
   const auto &[masks, min_vals, max_vals] = m_restrictions_mask;
   for (size_t i = 0; i < masks.size(); i++) {
@@ -504,13 +505,10 @@ namespace {
 // the std::hash<SlaterDeterminant> specialization in SlaterDeterminant.h, so
 // wrap it explicitly.
 struct SlaterKeyHash {
-  std::size_t operator()(const ManyBodyState::key_type &k) const noexcept {
-    return std::hash<ManyBodyState::key_type>{}(k);
+  std::size_t operator()(const SlaterKey &k) const noexcept {
+    return std::hash<SlaterKey>{}(k);
   }
 };
-using ResultMap =
-    boost::unordered_flat_map<ManyBodyState::key_type,
-                              ManyBodyState::mapped_type, SlaterKeyHash>;
 
 #if defined(PARALLEL)
 // Maximum threads the apply path may use. Prefer OMP_NUM_THREADS (the cores the
@@ -531,303 +529,6 @@ unsigned int apply_thread_cap() {
 }
 #endif
 } // namespace
-
-[[nodiscard]] ManyBodyState ManyBodyOperator::apply(const ManyBodyState &state,
-                                                    double cutoff) const {
-  std::vector<std::pair<ManyBodyState::Key, ManyBodyState::Value>> local_res;
-  const double cutoff2 = cutoff * cutoff;
-
-  // Phase 1c: most operators carry no occupation restrictions, so hoist the
-  // emptiness test out of the per-output hot path and skip
-  // state_is_within_restrictions entirely when there is nothing to check.
-  const bool check_restrictions = !std::get<0>(m_restrictions_mask).empty() ||
-                                  !m_weighted_restrictions_mask.empty();
-
-#if defined(PARALLEL)
-  if (m_flat_dirty) {
-    build_flat_representation();
-  }
-  // Phase 5b: scale the thread count to the workload instead of always grabbing
-  // every core. Small states (few SDs) don't amortize thread spawn + the bucket
-  // merge, and under MPI every rank would otherwise oversubscribe the node;
-  // require >= MIN_SD_PER_THREAD input determinants per thread, so tiny applies
-  // run on a single thread.
-  constexpr size_t MIN_SD_PER_THREAD = 256;
-  const ManyBodyState::size_type num_slater = state.size();
-  const unsigned int hw = apply_thread_cap(); // OMP_NUM_THREADS, else 1
-  const unsigned int want = static_cast<unsigned int>(
-      std::max<size_t>(1, num_slater / MIN_SD_PER_THREAD));
-  const unsigned int num_threads = std::max(1u, std::min(hw, want));
-  // Output is partitioned across `num_buckets` by key hash so the merge below
-  // runs one lock-free thread per bucket (disjoint key sets), instead of the
-  // old serial merge that re-did every insert on one thread and capped the
-  // speedup.
-  const unsigned int num_buckets = num_threads;
-  const SlaterKeyHash hasher;
-  // local_buckets[t * num_buckets + b]: outputs from compute-thread t hashing
-  // to bucket b.
-  std::vector<ResultMap> local_buckets(static_cast<size_t>(num_threads) *
-                                       num_buckets);
-  std::vector<std::thread> threads;
-  size_t chunk_size = (num_slater + num_threads - 1) / num_threads;
-  for (unsigned int t = 0; t < num_threads; t++) {
-    size_t start_slater = t * chunk_size;
-    size_t end_slater = std::min(start_slater + chunk_size, num_slater);
-    if (start_slater >= num_slater) {
-      break;
-    }
-    threads.push_back(std::thread([&, t, start_slater, end_slater]() {
-      ResultMap *buckets = &local_buckets[static_cast<size_t>(t) * num_buckets];
-      auto emit = [&](const ManyBodyState::key_type &k,
-                      ManyBodyState::mapped_type v) {
-        buckets[hasher(k) % num_buckets][k] += v;
-      };
-      ManyBodyState::key_type out_slater_determinant;
-
-      ManyBodyState::const_iterator it = state.begin(), end = state.begin();
-      std::advance(it, start_slater);
-      std::advance(end, end_slater);
-      for (; it != end; it++) {
-        const auto &[slater, amp] = *it;
-
-        // Copy the input determinant ONCE per SD; each term applies in place
-        // and undoes its operators afterwards (Phase 1a), instead of copying
-        // per term.
-        out_slater_determinant = slater;
-        // Phase 2b: accumulate all diagonal terms into one scalar -> single
-        // insert.
-        ManyBodyState::mapped_type diag_accum{0.0, 0.0};
-        for (size_t op_idx = 0; op_idx < m_flat_coeffs.size(); op_idx++) {
-          // Phase 2b fast path: pure number-operator product -> one occupancy
-          // AND-test and a constant-signed scalar add, no create/annihilate.
-          if (m_flat_density[op_idx]) {
-            if (mask_occupied(slater, m_density_mask[op_idx]) &&
-                (!check_restrictions || state_is_within_restrictions(slater))) {
-              diag_accum += m_density_coeff[op_idx] * amp;
-            }
-            continue;
-          }
-          // Phase 2c fast path: off-diagonal one-body hop c^d_i c_j -> bit
-          // tests + a masked-popcount sign, no create/annihilate.
-          if (m_flat_onebody[op_idx]) {
-            const size_t ob_i = m_onebody_i[op_idx];
-            const size_t ob_j = m_onebody_j[op_idx];
-            if (bit_set(slater, ob_j) && !bit_set(slater, ob_i)) {
-              const double sgn =
-                  mask_parity(slater, m_onebody_between[op_idx]) ? -1.0 : 1.0;
-              toggle_bit(out_slater_determinant, ob_j); // remove j
-              toggle_bit(out_slater_determinant, ob_i); // add i
-              if (!check_restrictions ||
-                  state_is_within_restrictions(out_slater_determinant)) {
-                emit(out_slater_determinant, m_flat_coeffs[op_idx] * amp * sgn);
-              }
-              toggle_bit(out_slater_determinant, ob_j); // restore scratch
-              toggle_bit(out_slater_determinant, ob_i);
-            }
-            continue;
-          }
-          double sign = 1;
-          const size_t start_idx = m_flat_offsets[op_idx];
-          const size_t end_idx = m_flat_offsets[op_idx + 1];
-          const auto coeff = m_flat_coeffs[op_idx];
-
-          size_t i = start_idx;
-          for (; i < end_idx; i++) {
-            const int64_t idx = m_flat_indices[i];
-            const int s =
-                idx >= 0
-                    ? create(out_slater_determinant, static_cast<size_t>(idx))
-                    : annihilate(out_slater_determinant,
-                                 static_cast<size_t>(-(idx + 1)));
-            if (s == 0) {
-              sign = 0;
-              break;
-            }
-            sign *= s;
-          }
-          if (sign != 0 &&
-              (!check_restrictions ||
-               state_is_within_restrictions(out_slater_determinant))) {
-            const auto contribution = coeff * amp * sign;
-            if (m_flat_diagonal[op_idx]) {
-              diag_accum += contribution; // out == slater
-            } else {
-              emit(out_slater_determinant, contribution);
-            }
-          }
-          // Restore out_slater_determinant to `slater`: undo the [start_idx, i)
-          // operators that actually toggled a bit.
-          for (size_t j = start_idx; j < i; j++) {
-            const int64_t idx = m_flat_indices[j];
-            toggle_bit(out_slater_determinant,
-                       idx >= 0 ? static_cast<size_t>(idx)
-                                : static_cast<size_t>(-(idx + 1)));
-          }
-        }
-        if (diag_accum != ManyBodyState::mapped_type(0.0, 0.0)) {
-          emit(slater, diag_accum);
-        }
-      }
-    }));
-  }
-  for (auto &thread : threads) {
-    if (thread.joinable()) {
-      thread.join();
-    }
-  }
-
-  // Phase 5a: parallel merge -- one thread per output bucket. Bucket b owns a
-  // disjoint set of keys (all hashing to b), so the threads never touch the
-  // same entry and need no locks. Each thread also applies the cutoff while
-  // collecting its bucket's survivors.
-  std::vector<std::vector<std::pair<ManyBodyState::Key, ManyBodyState::Value>>>
-      bucket_vecs(num_buckets);
-  std::vector<std::thread> merge_threads;
-  for (unsigned int b = 0; b < num_buckets; b++) {
-    merge_threads.push_back(std::thread([&, b]() {
-      ResultMap acc;
-      for (unsigned int t = 0; t < num_threads; t++) {
-        for (auto &[k, v] :
-             local_buckets[static_cast<size_t>(t) * num_buckets + b]) {
-          acc[k] += v;
-        }
-      }
-      auto &outv = bucket_vecs[b];
-      outv.reserve(acc.size());
-      for (auto &[k, v] : acc) {
-        if (std::norm(v) > cutoff2) {
-          outv.emplace_back(k, v);
-        }
-      }
-    }));
-  }
-  for (auto &thread : merge_threads) {
-    if (thread.joinable()) {
-      thread.join();
-    }
-  }
-  size_t total_out = 0;
-  for (const auto &v : bucket_vecs) {
-    total_out += v.size();
-  }
-  local_res.reserve(total_out);
-  for (auto &v : bucket_vecs) {
-    for (auto &kv : v) {
-      local_res.emplace_back(std::move(kv));
-    }
-  }
-
-#else
-  if (m_flat_dirty) {
-    build_flat_representation();
-  }
-  ResultMap map_res;
-  map_res.reserve(state.size());
-  ManyBodyState::key_type out_slater_determinant;
-  for (const auto &[slater, amp] : state) {
-    // Copy the input determinant ONCE per SD; each term applies its operators
-    // in place and undoes them afterwards (Phase 1a), instead of copying per
-    // term.
-    out_slater_determinant = slater;
-    // Phase 2b: sum every diagonal term's contribution (all map to `slater`)
-    // into one scalar and emit a single insert, instead of one colliding insert
-    // per term.
-    ManyBodyState::mapped_type diag_accum{0.0, 0.0};
-    for (size_t op_idx = 0; op_idx < m_flat_coeffs.size(); op_idx++) {
-      // Phase 2b fast path: pure number-operator product -> one occupancy
-      // AND-test and a constant-signed scalar add, no create/annihilate.
-      if (m_flat_density[op_idx]) {
-        if (mask_occupied(slater, m_density_mask[op_idx]) &&
-            (!check_restrictions || state_is_within_restrictions(slater))) {
-          diag_accum += m_density_coeff[op_idx] * amp;
-        }
-        continue;
-      }
-      // Phase 2c fast path: off-diagonal one-body hop c^d_i c_j -> bit tests +
-      // a masked- popcount sign, no create/annihilate.
-      if (m_flat_onebody[op_idx]) {
-        const size_t ob_i = m_onebody_i[op_idx];
-        const size_t ob_j = m_onebody_j[op_idx];
-        if (bit_set(slater, ob_j) && !bit_set(slater, ob_i)) {
-          const double sgn =
-              mask_parity(slater, m_onebody_between[op_idx]) ? -1.0 : 1.0;
-          toggle_bit(out_slater_determinant, ob_j); // remove j
-          toggle_bit(out_slater_determinant, ob_i); // add i
-          if (!check_restrictions ||
-              state_is_within_restrictions(out_slater_determinant)) {
-            map_res[out_slater_determinant] +=
-                m_flat_coeffs[op_idx] * amp * sgn;
-          }
-          toggle_bit(out_slater_determinant, ob_j); // restore scratch
-          toggle_bit(out_slater_determinant, ob_i);
-        }
-        continue;
-      }
-      double sign = 1;
-      const size_t start_idx = m_flat_offsets[op_idx];
-      const size_t end_idx = m_flat_offsets[op_idx + 1];
-      const auto coeff = m_flat_coeffs[op_idx];
-
-      size_t i = start_idx;
-      for (; i < end_idx; i++) {
-        const int64_t idx = m_flat_indices[i];
-        const int s =
-            idx >= 0 ? create(out_slater_determinant, static_cast<size_t>(idx))
-                     : annihilate(out_slater_determinant,
-                                  static_cast<size_t>(-(idx + 1)));
-        if (s == 0) {
-          sign = 0;
-          break;
-        }
-        sign *= s;
-      }
-      if (sign != 0 && (!check_restrictions ||
-                        state_is_within_restrictions(out_slater_determinant))) {
-        const auto contribution = coeff * amp * sign;
-        if (m_flat_diagonal[op_idx]) {
-          // out_slater_determinant == slater here (occupation conserved).
-          diag_accum += contribution;
-        } else {
-          map_res[out_slater_determinant] += contribution;
-        }
-      }
-      // Restore out_slater_determinant to `slater`: undo the [start_idx, i)
-      // operators that actually toggled a bit. A failing op (s == 0) at index i
-      // did not modify the determinant, so it is excluded.
-      for (size_t j = start_idx; j < i; j++) {
-        const int64_t idx = m_flat_indices[j];
-        toggle_bit(out_slater_determinant,
-                   idx >= 0 ? static_cast<size_t>(idx)
-                            : static_cast<size_t>(-(idx + 1)));
-      }
-    }
-    if (diag_accum != ManyBodyState::mapped_type(0.0, 0.0)) {
-      map_res[slater] += diag_accum;
-    }
-  }
-  local_res.reserve(map_res.size());
-  for (auto &[k, v] : map_res) {
-    if (std::norm(v) > cutoff2) {
-      local_res.emplace_back(std::move(k), v);
-    }
-  }
-#endif
-
-  // Sort vector to move duplicate keys next to each other
-  std::sort(local_res.begin(), local_res.end(),
-            [](const std::pair<ManyBodyState::Key, ManyBodyState::Value> &a,
-               const std::pair<ManyBodyState::Key, ManyBodyState::Value> &b) {
-              return a.first < b.first;
-            });
-
-  // Build the final ManyBodyState
-  ManyBodyState res{};
-  res.reserve(local_res.size());
-  for (auto &[slater, amp] : local_res) {
-    res.emplace(std::move(slater), amp);
-  }
-  return res;
-}
 
 // True when the extension was compiled with the opt-in threaded apply
 // (IMPURITYMODEL_PARALLEL=1 at install time). Exposed to Python so tests can
@@ -857,7 +558,7 @@ ManyBodyOperator::apply(const ManyBodyBlockState &block, double cutoff) const {
   const bool check_restrictions = !std::get<0>(m_restrictions_mask).empty() ||
                                   !m_weighted_restrictions_mask.empty();
 
-  boost::unordered_flat_map<ManyBodyState::key_type, std::size_t, SlaterKeyHash>
+  boost::unordered_flat_map<SlaterKey, std::size_t, SlaterKeyHash>
       row_of;
   row_of.reserve(block.rows());
   std::vector<ManyBodyBlockState::Value> acc; // row-major, row_of.size() * p
@@ -865,7 +566,7 @@ ManyBodyOperator::apply(const ManyBodyBlockState &block, double cutoff) const {
 
   // Row of `k` in acc, appending a zero row on first sight. resize() grows the
   // buffer geometrically, so the amortized cost stays O(1) per new row.
-  const auto emit_row = [&](const ManyBodyState::key_type &k) {
+  const auto emit_row = [&](const SlaterKey &k) {
     const auto [it, inserted] = row_of.try_emplace(k, row_of.size());
     if (inserted) {
       acc.resize(acc.size() + p);
@@ -888,7 +589,7 @@ ManyBodyOperator::apply(const ManyBodyBlockState &block, double cutoff) const {
   const unsigned int num_threads = std::max(1u, std::min(hw, want));
   if (num_threads > 1) {
     struct BucketAcc {
-      boost::unordered_flat_map<ManyBodyState::key_type, std::size_t,
+      boost::unordered_flat_map<SlaterKey, std::size_t,
                                 SlaterKeyHash>
           row_of;
       std::vector<ManyBodyBlockState::Value> acc;
@@ -908,7 +609,7 @@ ManyBodyOperator::apply(const ManyBodyBlockState &block, double cutoff) const {
       threads.push_back(std::thread([&, t, start_row, end_row]() {
         BucketAcc *buckets =
             &local_buckets[static_cast<size_t>(t) * num_buckets];
-        const auto emit_row_t = [&](const ManyBodyState::key_type &k) {
+        const auto emit_row_t = [&](const SlaterKey &k) {
           BucketAcc &ba = buckets[hasher(k) % num_buckets];
           const auto [it, inserted] =
               ba.row_of.try_emplace(k, ba.row_of.size());
@@ -922,7 +623,7 @@ ManyBodyOperator::apply(const ManyBodyBlockState &block, double cutoff) const {
         // flat-term members, so a shared free function would need an unwieldy
         // signature).
         std::vector<ManyBodyBlockState::Value> diag_accum(p);
-        ManyBodyState::key_type out_sd;
+        SlaterKey out_sd;
         for (std::size_t r = start_row; r < end_row; ++r) {
           const auto &slater = block.key(r);
           const ManyBodyBlockState::ConstRow amp = block.row(r);
@@ -1097,7 +798,7 @@ ManyBodyOperator::apply(const ManyBodyBlockState &block, double cutoff) const {
 #endif
 
   std::vector<ManyBodyBlockState::Value> diag_accum(p);
-  ManyBodyState::key_type out_slater_determinant;
+  SlaterKey out_slater_determinant;
   for (std::size_t r = 0; r < block.rows(); ++r) {
     const auto &slater = block.key(r);
     const ManyBodyBlockState::ConstRow amp = block.row(r);
@@ -1193,7 +894,7 @@ ManyBodyOperator::apply(const ManyBodyBlockState &block, double cutoff) const {
 
   // Keep rows where ANY column survives the cutoff, then sort by determinant to
   // establish the container's sorted-unique invariant.
-  std::vector<std::pair<ManyBodyState::key_type, std::size_t>> survivors;
+  std::vector<std::pair<SlaterKey, std::size_t>> survivors;
   survivors.reserve(row_of.size());
   for (auto &[k, row] : row_of) {
     const ManyBodyBlockState::Value *src = acc.data() + row * p;
@@ -1560,20 +1261,20 @@ void ManyBodyOperator::build_flat_representation() const {
       }
     }
     bool is_density = diagonal && all_distinct;
-    ManyBodyState::key_type mask; // occupancy mask over the involved orbitals
+    SlaterKey mask; // occupancy mask over the involved orbitals
     std::complex<double> signed_coeff{0.0, 0.0};
     if (is_density) {
-      const size_t num_bits = 8 * sizeof(ManyBodyState::key_type::value_type);
+      const size_t num_bits = 8 * sizeof(SlaterKey::value_type);
       for (int64_t o : creators) {
         const size_t chunk = static_cast<size_t>(o) / num_bits;
         const size_t bit = num_bits - 1 - (static_cast<size_t>(o) % num_bits);
         if (chunk >= mask.size()) {
           mask.resize(chunk + 1, 0);
         }
-        mask[chunk] |= static_cast<ManyBodyState::key_type::value_type>(1)
+        mask[chunk] |= static_cast<SlaterKey::value_type>(1)
                        << bit;
       }
-      ManyBodyState::key_type probe = mask; // involved orbitals occupied
+      SlaterKey probe = mask; // involved orbitals occupied
       double sign = 1;
       for (int64_t idx : indices) {
         const int s = idx >= 0
@@ -1604,11 +1305,11 @@ void ManyBodyOperator::build_flat_representation() const {
                             creators[0] != annihilators[0];
     size_t ob_i = 0;
     size_t ob_j = 0;
-    ManyBodyState::key_type between;
+    SlaterKey between;
     if (is_onebody) {
       ob_i = static_cast<size_t>(creators[0]);     // created orbital
       ob_j = static_cast<size_t>(annihilators[0]); // annihilated orbital
-      const size_t num_bits = 8 * sizeof(ManyBodyState::key_type::value_type);
+      const size_t num_bits = 8 * sizeof(SlaterKey::value_type);
       const size_t lo = std::min(ob_i, ob_j);
       const size_t hi = std::max(ob_i, ob_j);
       for (size_t o = lo + 1; o < hi; o++) {
@@ -1617,7 +1318,7 @@ void ManyBodyOperator::build_flat_representation() const {
         if (chunk >= between.size()) {
           between.resize(chunk + 1, 0);
         }
-        between[chunk] |= static_cast<ManyBodyState::key_type::value_type>(1)
+        between[chunk] |= static_cast<SlaterKey::value_type>(1)
                           << bit;
       }
     }

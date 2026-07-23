@@ -2,7 +2,7 @@
 #define MANYBODYOPERATOR_H
 
 #include "ManyBodyBlockState.h"
-#include "ManyBodyState.h"
+#include "SlaterDeterminant.h"
 #include <complex>
 #include <cstdint>
 #include <utility>
@@ -49,7 +49,7 @@ public:
   using OPS = std::vector<int64_t>;
   using OPS_VEC = std::vector<OPS>;
   using SCALAR_VEC = std::vector<SCALAR>;
-  using SLATER = ManyBodyState::key_type;
+  using SLATER = SlaterDeterminant<uint64_t>;
   using Restrictions =
       std::vector<std::pair<std::vector<size_t>, std::pair<size_t, size_t>>>;
   // Weighted-sum restrictions: each entry is a list of (integer weight, orbital
@@ -89,16 +89,6 @@ public:
   ManyBodyOperator(const OPS_VEC &, const SCALAR_VEC &);
   ManyBodyOperator(OPS_VEC &&, SCALAR_VEC &&);
 
-  [[nodiscard]] ManyBodyState operator()(const ManyBodyState &psi,
-                                         double cutoff = 0) const /*noexcept*/ {
-    return apply(psi, cutoff);
-  }
-  [[nodiscard]] std::vector<ManyBodyState>
-  operator()(const std::vector<ManyBodyState> &psis, double cutoff = 0) const
-  /*noexcept*/ {
-    return apply(psis, cutoff);
-  }
-
   /**
    * @brief Configure orbital occupation constraints.
    */
@@ -109,38 +99,6 @@ public:
    */
   void build_weighted_restriction_mask(
       const WeightedRestrictions &restrictions) noexcept;
-
-  /**
-   * @brief Apply this operator to a ManyBodyState.
-   *
-   * @param psi The input many-body state.
-   * @param cutoff Threshold for pruning components with negligible amplitudes.
-   * @return ManyBodyState The resulting many-body state.
-   */
-  [[nodiscard]] ManyBodyState apply(const ManyBodyState &,
-                                    double cutoff = 0) const /*noexcept*/;
-
-  [[nodiscard]] std::vector<ManyBodyState>
-  apply(const std::vector<ManyBodyState> &psis, double cutoff) const
-  /*noexcept*/ {
-    std::vector<ManyBodyState> res;
-    res.reserve(psis.size());
-    for (const ManyBodyState &psi : psis) {
-      res.push_back(this->apply(psi, cutoff));
-    }
-    return res;
-  }
-
-  [[nodiscard]] std::vector<ManyBodyState>
-  apply(const std::vector<const ManyBodyState *> &psis, double cutoff) const
-  /*noexcept*/ {
-    std::vector<ManyBodyState> res;
-    res.reserve(psis.size());
-    for (const ManyBodyState *psi : psis) {
-      res.push_back(this->apply(*psi, cutoff));
-    }
-    return res;
-  }
 
   /**
    * @brief Apply this operator to a shared-support block of p vectors.
@@ -395,14 +353,14 @@ public:
 private:
   std::vector<std::pair<key_type, mapped_type>> m_ops;
 
-  std::tuple<std::vector<ManyBodyState::key_type>, std::vector<size_t>,
+  std::tuple<std::vector<SLATER>, std::vector<size_t>,
              std::vector<size_t>>
       m_restrictions_mask;
 
   // For each weighted restriction: a list of (weight, precomputed bitmask)
   // groups and the inclusive [q_min, q_max] bound on the weighted occupation
   // sum.
-  std::vector<std::pair<std::vector<std::pair<long, ManyBodyState::key_type>>,
+  std::vector<std::pair<std::vector<std::pair<long, SLATER>>,
                         std::pair<long, long>>>
       m_weighted_restrictions_mask;
 
@@ -432,7 +390,7 @@ private:
   // c^d_i = 1 - n_i) fail the probe and fall back to the general diagonal path,
   // so correctness never depends on this optimization firing.
   mutable std::vector<uint8_t> m_flat_density;
-  mutable std::vector<ManyBodyState::key_type> m_density_mask;
+  mutable std::vector<SLATER> m_density_mask;
   mutable std::vector<std::complex<double>> m_density_coeff;
   // Per-term flag (1 = off-diagonal one-body hop c^d_i c_j, i != j). These get
   // a masked kernel: occupancy/vacancy bit tests + the fermion sign as
@@ -443,12 +401,12 @@ private:
   mutable std::vector<uint8_t> m_flat_onebody;
   mutable std::vector<size_t> m_onebody_i;
   mutable std::vector<size_t> m_onebody_j;
-  mutable std::vector<ManyBodyState::key_type> m_onebody_between;
+  mutable std::vector<SLATER> m_onebody_between;
 
   void build_flat_representation() const;
 
   [[nodiscard]] bool
-  state_is_within_restrictions(const ManyBodyState::key_type &) const noexcept;
+  state_is_within_restrictions(const SLATER &) const noexcept;
 };
 
 /**
